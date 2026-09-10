@@ -11,7 +11,7 @@ TOOLS   := $(ROOT)/tools
 
 export KRYPTIK_ROOT := $(ROOT)
 
-.PHONY: help check sources lock toolchain temp-tools system kernel iso audit clean distclean
+.PHONY: help check sources lock verify toolchain temp-tools system kernel iso audit clean distclean
 
 help:
 	@echo "Kryptik build targets"
@@ -25,6 +25,7 @@ help:
 	@echo "  make kernel      stage 05: hardened kernel           [Phase 4]"
 	@echo "  make iso         stage 06: bootable image            [Phase 7]"
 	@echo
+	@echo "  make verify      verify upstream GPG signatures on fetched sources"
 	@echo "  make audit       run security audits over the build tree"
 	@echo "  make clean       remove build work directory"
 	@echo "  make distclean   also remove downloaded sources and output"
@@ -39,6 +40,9 @@ sources:
 
 lock:
 	@$(TOOLS)/fetch-sources.sh --lock
+
+verify:
+	@$(TOOLS)/verify-signatures.sh
 
 toolchain: check sources
 	@$(STAGES)/01-toolchain.sh
