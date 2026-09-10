@@ -8,9 +8,8 @@
 # Resumable via per-step stamps.
 #   ./02-temp-tools.sh --redo ncurses
 #
-# STATUS: written but not yet executed end-to-end. Stage 01 must complete
-# first. Expect the usual first-contact failures; the per-step logs under
-# build/work/logs are the place to start.
+# STATUS: 16 of 17 packages verified building on 2026-09-10; gcc pass 2 was
+# still running at time of writing. Per-step logs land in build/work/logs.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
 load_config
@@ -177,15 +176,40 @@ s_binutils_pass2() {
     local src; src="$(unpack "binutils-${V_BINUTILS}.tar.xz" "binutils-${V_BINUTILS}")"
     cd "$src"
 
-    # libtool bakes a build-machine -L path into the link line, which poisons a
-    # cross build. LFS patches this by line number; matching on content instead
-    # survives a binutils version bump.
-    if grep -q 'func_append compile_command " $add_dir"' ltmain.sh; then
-        sed -i 's/func_append compile_command " \$add_dir"//' ltmain.sh
-        sed -i 's/func_append finalize_command " \$add_dir"//' ltmain.sh
-    else
-        echo "NOTE: ltmain.sh add_dir pattern not found; binutils may have changed"
+    # libtool accumulates an install-prefix -L path into the link line during
+    # relink, which poisons a cross build. LFS patches this with a bare line
+    # number (sed '6009s/$add_dir//'), which silently does nothing useful the
+    # moment binutils shifts a line.
+    #
+    # The target line appears TWICE in ltmain.sh - once in each of two
+    # branches - and only the second is the one LFS patches. So: locate both by
+    # content, assert there are exactly two, and patch the second.
+    #
+    # If the count ever changes, FAIL rather than continue. An earlier version
+    # of this matched a pattern that does not exist in binutils 2.43.1 at all
+    # and fell through to a printed notice, which is how a silent no-op looks
+    # right up until it matters.
+    local -a lines
+    mapfile -t lines < <(grep -n -F 'add_dir="$add_dir -L$inst_prefix_dir$libdir"' ltmain.sh | cut -d: -f1)
+
+    if [[ "${#lines[@]}" -ne 2 ]]; then
+        echo "ltmain.sh: expected 2 occurrences of the add_dir pattern, found ${#lines[@]}"
+        echo "binutils ${V_BINUTILS} has changed shape; re-derive this patch"
+        echo "against the LFS book before continuing."
+        grep -n -F 'inst_prefix_dir' ltmain.sh || true
+        return 1
     fi
+
+    local target="${lines[1]}"
+    echo "patching ltmain.sh line ${target} (second of ${#lines[@]} occurrences)"
+    sed -i "${target}s/\$add_dir//" ltmain.sh
+
+    # Prove it took.
+    if sed -n "${target}p" ltmain.sh | grep -qF 'add_dir="$add_dir'; then
+        echo "ltmain.sh patch did not apply"
+        return 1
+    fi
+    echo "ltmain.sh line ${target} now: $(sed -n "${target}p" ltmain.sh)"
 
     mkdir -p build
     cd build
