@@ -16,7 +16,7 @@ jobs:
     name: Shell lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install shellcheck
         run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
@@ -63,7 +63,7 @@ jobs:
     name: Source manifest
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Manifest resolves
         run: ./tools/fetch-sources.sh --list
@@ -129,7 +129,7 @@ jobs:
     name: Kernel currency
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Pinned kernel is longterm and not EOL
         run: ./tools/check-kernel-eol.sh
