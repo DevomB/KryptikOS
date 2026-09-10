@@ -201,12 +201,12 @@ verify_gnu() {
     check_sig "$name" "$sig" "${KRYPTIK_SOURCES}/${file}" || true
 }
 
-# Detached .sig alongside the file, same URL plus .sig.
+# Detached signature alongside the file, at the same URL plus a suffix.
 verify_detached() {
-    local name="$1" url="$2" file="$3"
-    local sig="${SIGDIR}/${file}.sig"
+    local name="$1" url="$2" file="$3" suffix="${4:-.sig}"
+    local sig="${SIGDIR}/${file}${suffix}"
 
-    if [[ ! -s "$sig" ]] && ! quiet_fetch "${url}.sig" "$sig"; then
+    if [[ ! -s "$sig" ]] && ! quiet_fetch "${url}${suffix}" "$sig"; then
         rm -f "$sig"
         warn "${name}: no .sig published upstream"
         mark_unverifiable "${name} (no signature upstream)"
@@ -254,8 +254,11 @@ while read -r name ver url; do
     case "$url" in
         *gnu.org*|*mirrors.kernel.org/gnu*) verify_gnu    "$name" "$url" "$file" ;;
         *cdn.kernel.org*)                   verify_kernel "$name" "$url" "$file" ;;
-        *github.com/anthraxx/linux-hardened*)
+        *github.com/anthraxx/linux-hardened*|*github.com/tukaani-project/xz*)
             verify_detached "$name" "$url" "$file"
+            ;;
+        *astron.com*)
+            verify_detached "$name" "$url" "$file" ".asc"
             ;;
         *linuxfromscratch.org*)
             # LFS publishes md5sums for its patch set, not per-patch signatures.

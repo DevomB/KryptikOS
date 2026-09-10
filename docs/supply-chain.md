@@ -46,6 +46,34 @@ at routine key expiry gets ignored, and an ignored tool protects nothing. Only
 `BADSIG` (the file does not match its signature) and `REVKEYSIG` (the key was
 revoked, which can mean compromise) stop a build.
 
+## Not all valid signatures are equally strong
+
+`verify-signatures.sh` reports a binary verified/unverified, but the strength
+behind a "verified" varies and the difference is worth knowing:
+
+| Source | Key | Assessment |
+|---|---|---|
+| Linux kernel | RSA-4096, Kroah-Hartman | Strong |
+| binutils, gcc, glibc, bash, coreutils | RSA-4096 GNU maintainer keys | Strong |
+| linux-hardened | RSA-4096, Levente Polyak | Strong |
+| xz | RSA, Lasse Collin | Strong |
+| **file** | **DSA-1024, SHA-1 digest, expired 2026-08-15** | **Weak** |
+
+A DSA-1024 key signing with a SHA-1 digest is below what should be relied on in
+2026. The signature on `file` is evidence, but not the same kind of evidence as
+the others. It is recorded here rather than hidden behind a green checkmark.
+
+## On xz specifically
+
+Kryptik pins **xz 5.8.4**, not the 5.6.x line. xz 5.6.0 and 5.6.1 shipped the
+CVE-2024-3094 backdoor; 5.6.2 removed it.
+
+Pinning one patch past a build-system compromise is not the same as being clear
+of it. The xz incident was an attack on the release process itself, carried out
+over years by a co-maintainer, and the versions immediately following it were
+produced while that process was still being audited. Kryptik pins well past
+that window.
+
 ## Open problems
 
 - **The GNU keyring is fetched over the network.** This establishes "signed by
