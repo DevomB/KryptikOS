@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Kryptik pre-commit hook.
+#
+# Install with:  ./tools/install-git-hooks.sh
+#
+# Catches the two Windows-authoring mistakes that have each broken a clone in
+# this repository already, before they reach a commit rather than after CI
+# finds them.
+
+set -uo pipefail
+
+fail=0
+
+# --- executable bits --------------------------------------------------------
+#
+# NTFS cannot express the POSIX executable bit, so a script committed from
+# Windows records as 100644 and a Linux clone fails with "Permission denied"
+# before bash is even reached. Fix it in the index rather than refusing the
+# commit: the intent is never "commit a non-executable script".
+while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    mode="$(git ls-files -s -- "$f" | awk '{print $1}')"
+    if [[ "$mode" == "100644" ]]; then
+        echo "pre-commit: setting exec bit on ${f}"
+        git update-index --chmod=+x -- "$f"
+        fail=0
+    fi
+done < <(git diff --cached --name-only --diff-filter=ACM \
+         | grep -E '^(build/stages/|tools/|compartments/tests/).*\.sh$' || true)
+
+# build/lib/common.sh is sourced, not executed, and stays 644 deliberately.
+
+# --- CRLF -------------------------------------------------------------------
+#
+# .gitattributes normalises this, but a file added with -f or an editor writing
+# CRLF into the index would still produce "bad interpreter: bash^M".
+while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    if git show ":${f}" 2>/dev/null | grep -qU $'\r'; then
+        echo "pre-commit: ERROR ${f} contains CRLF; scripts must be LF" >&2
+        fail=1
+    fi
+done < <(git diff --cached --name-only --diff-filter=ACM \
+         | grep -E '\.(sh|rs)$|Makefile' || true)
+
+# --- shell syntax -----------------------------------------------------------
+#
+# Cheap, and a syntax error in a build stage is worth catching before it is
+# committed rather than at minute 35 of a toolchain build.
+while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    [[ -f "$f" ]] || continue
+    if ! bash -n "$f" 2>/dev/null; then
+        echo "pre-commit: ERROR ${f} has a shell syntax error" >&2
+        bash -n "$f" 2>&1 | sed 's/^/    /' >&2
+        fail=1
+    fi
+done < <(git diff --cached --name-only --diff-filter=ACM | grep -E '\.sh$' || true)
+
+if [[ "$fail" -ne 0 ]]; then
+    echo >&2
+    echo "pre-commit: refusing the commit. Fix the above, or use --no-verify" >&2
+    echo "if you genuinely intend it." >&2
+    exit 1
+fi
+
+exit 0
