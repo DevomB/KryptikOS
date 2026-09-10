@@ -276,6 +276,36 @@ echo
 
 [[ -d "$KRYPTIK_SOURCES" ]] || die "no sources found. Run: make sources"
 
+# Preflight: confirm every tarball this stage needs is present BEFORE starting.
+# A 40-minute build that dies at minute 35 on a missing file is a bad trade for
+# the two seconds this costs.
+preflight() {
+    local missing=0 f
+    for f in "binutils-${V_BINUTILS}.tar.xz" \
+             "gcc-${V_GCC}.tar.xz" \
+             "gmp-${V_GMP}.tar.xz" \
+             "mpfr-${V_MPFR}.tar.xz" \
+             "mpc-${V_MPC}.tar.gz" \
+             "linux-${V_LINUX}.tar.xz" \
+             "glibc-${V_GLIBC}.tar.xz"; do
+        if [[ ! -f "${KRYPTIK_SOURCES}/${f}" ]]; then
+            err "missing source: ${f}"
+            missing=$((missing + 1))
+        fi
+    done
+    [[ "$missing" -eq 0 ]] || die "${missing} source tarball(s) missing. Run: make sources"
+
+    # Host tools this stage invokes directly. The host checker covers these too,
+    # but stage 01 can be run on its own.
+    local t
+    for t in tar make gcc g++ bison flex makeinfo patch readelf find sed; do
+        have "$t" || die "required host tool not found: ${t}
+Run 'make check' for the full host requirement list."
+    done
+    ok "preflight: sources and host tools present"
+}
+preflight
+
 step layout          s_layout
 step binutils-pass1  s_binutils_pass1
 step gcc-pass1       s_gcc_pass1
