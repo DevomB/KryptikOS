@@ -1,0 +1,64 @@
+# Kryptik kernel fragment: options that exist ONLY with the linux-hardened
+# patchset applied (ADR-009).
+#
+# These symbols do not exist in vanilla Linux. Merging this fragment against an
+# unpatched tree silently drops every line. Stage 05 applies the patch first.
+# Validate with: make validate-kernel-hardened
+#
+# Rationale: docs/hardening.md
+
+# --- heap hardening ---
+# Canaries on slab objects, plus verification that sanitization actually
+# happened rather than trusting it did. These are the core of what
+# linux-hardened buys over a well-configured vanilla kernel.
+CONFIG_SLAB_CANARY=y
+CONFIG_SLAB_SANITIZE_VERIFY=y
+CONFIG_PAGE_SANITIZE_VERIFY=y
+
+# --- terminal injection ---
+# TIOCSTI lets a process push characters into its controlling terminal's input
+# queue - a classic sandbox-escape primitive when a confined process shares a
+# tty with a shell. Kryptik zones should never share a tty with zone 0, so this
+# is defense in depth behind that, not the primary control.
+CONFIG_SECURITY_TIOCSTI_RESTRICT=y
+
+# --- perf ---
+# perf_event_open has a long history of privilege escalation bugs and Kryptik
+# has no need for unprivileged profiling.
+CONFIG_SECURITY_PERF_EVENTS_RESTRICT=y
+
+# --- unprivileged namespaces ---
+#
+# This is the one place where linux-hardened's posture and Kryptik's
+# architecture have to be reconciled deliberately rather than by default.
+#
+# Unprivileged user namespaces are a well-worn local privilege escalation
+# vector: they hand unprivileged code a large amount of previously
+# root-only kernel surface. linux-hardened exists partly to let you turn
+# them off.
+#
+# Kryptik's zone model is built on namespaces (ADR-002), so the reflex is to
+# assume we need them enabled. We do not. Zones are created by kryptikd, which
+# runs privileged in zone 0 - it has CAP_SYS_ADMIN and does not need the
+# unprivileged path. Nothing inside a zone ever needs to create a namespace of
+# its own.
+#
+# So this is set to 'n': strictly better posture, and the zone model is
+# unaffected because zone creation was always going to be privileged.
+#
+# If a future design requires nested zones created from inside a zone, this is
+# the line that has to change, and that change needs its own ADR - it would
+# hand every compromised zone a known LPE surface.
+# CONFIG_USER_NS_UNPRIVILEGED is not set
+
+# Same reasoning: overlayfs mounts are performed by kryptikd for ephemeral
+# zones, never by zone occupants.
+# CONFIG_OVERLAY_FS_UNPRIVILEGED is not set
+
+# --- memory corruption detection ---
+CONFIG_KFENCE_BUG_ON_DATA_CORRUPTION=y
+
+# --- network ---
+# Disables simultaneous-connect, which is a rarely used TCP feature with a
+# history of being an attack surface.
+# CONFIG_TCP_SIMULT_CONNECT_DEFAULT_ON is not set

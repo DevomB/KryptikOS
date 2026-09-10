@@ -24,7 +24,17 @@
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 load_config
 
-FRAGMENT="${KRYPTIK_ROOT}/build/config/kernel/hardening.fragment"
+# --hardened validates the linux-hardened fragment instead. Those symbols do
+# not exist in vanilla source, so the patch's own "+config X" additions are
+# folded into the known-symbol set.
+HARDENED_MODE=0
+[[ "${1:-}" == "--hardened" ]] && HARDENED_MODE=1
+
+if [[ "$HARDENED_MODE" -eq 1 ]]; then
+    FRAGMENT="${KRYPTIK_ROOT}/build/config/kernel/hardened.fragment"
+else
+    FRAGMENT="${KRYPTIK_ROOT}/build/config/kernel/hardening.fragment"
+fi
 KCONFIG_DIR="${KRYPTIK_WORK}/kconfig/linux-${V_LINUX}"
 TARBALL="${KRYPTIK_SOURCES}/linux-${V_LINUX}.tar.xz"
 
@@ -51,6 +61,19 @@ if [[ ! -s "$SYMBOLS" ]]; then
         | sort -u > "$SYMBOLS"
 fi
 dim "  kernel defines $(wc -l < "$SYMBOLS") config symbols"
+
+# Fold in symbols the linux-hardened patch adds.
+EFFECTIVE_SYMBOLS="$SYMBOLS"
+if [[ "$HARDENED_MODE" -eq 1 ]]; then
+    PATCH="${KRYPTIK_SOURCES}/linux-hardened-v${V_LINUX_HARDENED}.patch"
+    [[ -f "$PATCH" ]] || die "linux-hardened patch not fetched. Run: make sources"
+    EFFECTIVE_SYMBOLS="${KRYPTIK_WORK}/kconfig/.symbols-hardened"
+    { cat "$SYMBOLS"
+      grep -E "^\+config [A-Z_0-9]+" "$PATCH" | sed -E "s/^\+config //"
+    } | sort -u > "$EFFECTIVE_SYMBOLS"
+    added=$(( $(wc -l < "$EFFECTIVE_SYMBOLS") - $(wc -l < "$SYMBOLS") ))
+    dim "  linux-hardened adds ${added} more"
+fi
 echo
 
 KNOWN=0
@@ -67,7 +90,7 @@ while IFS= read -r line; do
         continue
     fi
 
-    if grep -qxF "$sym" "$SYMBOLS"; then
+    if grep -qxF "$sym" "$EFFECTIVE_SYMBOLS"; then
         KNOWN=$((KNOWN + 1))
     else
         err "CONFIG_${sym}: not defined in linux-${V_LINUX}"
@@ -100,4 +123,4 @@ if [[ "$UNKNOWN" -gt 0 ]]; then
     die "${UNKNOWN} stale config symbol(s). Fix the fragment before building a kernel."
 fi
 
-ok "every symbol in the fragment exists in linux-${V_LINUX}"
+ok "every symbol in $(basename "$FRAGMENT") exists in linux-${V_LINUX}$([[ "$HARDENED_MODE" -eq 1 ]] && printf " + linux-hardened")"
