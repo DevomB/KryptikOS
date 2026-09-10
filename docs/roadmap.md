@@ -33,6 +33,8 @@ failures to come from the hardening flags, not from LFS.
 ## Phase 2 — Temporary tools and chroot
 
 Enough userland to enter a chroot and build the rest of the system from inside.
+Implemented in `build/stages/02-temp-tools.sh` (17 packages, resumable).
+**Written but not yet executed** — stage 01 must land first.
 
 **Exit test:** `chroot` into the target with a working shell and coreutils, host
 filesystem fully detached.
