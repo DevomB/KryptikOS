@@ -64,53 +64,81 @@ See [hardening.md](hardening.md).
 
 ---
 
-## ADR-006: Init system and service supervisor
-**Status:** **OPEN** — blocks Phase 3
+## ADR-006: s6-rc as init and service supervisor
+**Status:** Accepted (2026-09-10, resolved by maintainer delegation)
 
-Zone lifecycle management needs a supervisor. Candidates:
+PID 1 is s6-svscan; service dependency management is s6-rc.
 
-- **systemd** — best-in-class sandboxing primitives, cgroup v2 integration, and
-  socket activation, all of which the zone model wants. Very large trust base
-  running as PID 1, which cuts against everything else here.
-- **s6 / s6-rc** — small, auditable, excellent supervision semantics. Requires
-  building zone lifecycle management ourselves.
-- **runit** — simplest, but weakest cgroup story.
+systemd has the better sandboxing primitives, but Kryptik does not need them:
+zones already provide namespace, cgroup, seccomp and Landlock confinement, and
+`kryptikd` owns zone lifecycle regardless. That reduces systemd's advantage to
+socket activation and journald, neither of which justifies a very large,
+privileged PID 1 in a system whose threat model (L1) already assumes a hostile
+local attacker hunting for privileged surface.
 
-Leaning **s6-rc**: `kryptikd` has to own zone lifecycle regardless, so systemd's
-main advantage is largely redundant, and a small PID 1 is easier to justify in
-a threat model that already assumes a hostile local attacker.
+**Cost — real and worth stating:**
+- Off the documented LFS path. Both LFS editions ship sysvinit or systemd;
+  s6-rc means writing service definitions from scratch.
+- No `logind`. Wayland seat management needs **seatd** instead.
+- No `networkd`. The `net` zone runs its own DHCP client; other zones never
+  touch a real interface, so this is narrower than it sounds.
+- No journald. Logging is s6-log per service, which is simpler but means
+  building log aggregation if it is ever wanted.
 
-**Needs:** a decision before stage 04 (base system) writes any service files.
-
----
-
-## ADR-007: Mandatory access control layer
-**Status:** **OPEN** — blocks Phase 4
-
-Landlock and seccomp are already required by ADR-002. The question is whether a
-traditional MAC layer sits alongside them.
-
-- **SELinux** — strictest, best-understood, enormous policy authoring burden on
-  a distro with no inherited policy.
-- **AppArmor** — path-based, far easier to author, weaker guarantees.
-- **Landlock only** — no policy language to maintain; unprivileged and
-  composable, but coverage is narrower than either alternative.
-
-Leaning **Landlock + seccomp only for v1**, revisited once zone semantics are
-stable. Writing SELinux policy from zero for a from-scratch distro is plausibly
-a larger project than the distro itself.
+**Revisit if:** service definition authoring becomes the dominant cost in
+Phase 3.
 
 ---
 
-## ADR-008: libc
-**Status:** **OPEN** — blocks Phase 1
+## ADR-007: Landlock + seccomp only for v1; no SELinux or AppArmor
+**Status:** Accepted (2026-09-10, resolved by maintainer delegation)
 
-- **glibc** — LFS default, maximum compatibility, large attack surface.
-- **musl** — small, auditable, cleanly written. Breaks glibc-assuming software
-  and complicates shipping proprietary binaries in zones.
+No traditional MAC layer ships in v1.
 
-Leaning **glibc** for v1. Choosing musl means fighting compatibility bugs during
-the phase where the goal is simply "does it boot", and that fight can be taken
-later if it is worth taking at all.
+Writing SELinux policy from zero for a from-scratch distribution is plausibly a
+larger project than the distribution itself, and a policy that is too large to
+audit provides confidence rather than security. AppArmor is easier to author but
+path-based, and path-based confinement composes badly with per-zone mount
+namespaces where the same path means different things in different zones.
 
-**Needs:** a decision before stage 01 — the toolchain is built around this.
+What actually carries the isolation:
+
+| Concern | Mechanism |
+|---|---|
+| Filesystem access | Landlock ruleset, applied at zone entry, unprivileged and unbypassable |
+| Syscall surface | seccomp-bpf, default-deny allowlist |
+| Network | dedicated netns — not a policy rule, an absent interface |
+| IPC | dedicated ipcns |
+| Resources | cgroup v2 |
+
+Landlock's coverage is narrower than SELinux's, and its network restrictions
+arrived only in later ABI versions. Neither matters here: Kryptik isolates
+networks with namespaces rather than policy, so the gap falls on ground already
+covered.
+
+**Cost:** Less defense-in-depth. A Landlock bypass is not backstopped by a
+second MAC layer.
+
+**Revisit at Phase 6**, once zone semantics are stable and a policy would be
+written against a fixed target rather than a moving one.
+
+---
+
+## ADR-008: glibc
+**Status:** Accepted (2026-09-10, resolved by maintainer delegation)
+
+musl is smaller, cleaner, and easier to audit — genuinely the better fit for
+Kryptik's stated values. It is still the wrong choice right now.
+
+Phase 1's goal is "does it boot". Choosing musl means spending that phase
+debugging glibc-assuming software instead, and every hour spent on a
+compatibility shim is an hour not spent on the compartment layer in Phase 5 —
+which is the part of Kryptik that is actually novel. The libc is not what makes
+this project interesting.
+
+**Cost:** Larger attack surface than musl, and a real migration cost if this is
+revisited later — the toolchain is built around this choice, so changing it
+means rebuilding from stage 01.
+
+**Revisit after Phase 5**, when the interesting work is done and a libc swap is
+a contained experiment rather than a bootstrap risk.

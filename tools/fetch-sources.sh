@@ -47,6 +47,7 @@ patch|${V_PATCH}|${gnu}/patch/patch-${V_PATCH}.tar.xz
 m4|${V_M4}|${gnu}/m4/m4-${V_M4}.tar.xz
 ncurses|${V_NCURSES}|${gnu}/ncurses/ncurses-${V_NCURSES}.tar.gz
 readline|${V_READLINE}|${gnu}/readline/readline-${V_READLINE}.tar.gz
+glibc-fhs-patch|${V_GLIBC}|${MIRROR_LFS_PATCHES}/glibc-${V_GLIBC}-fhs-1.patch
 MANIFEST
 }
 

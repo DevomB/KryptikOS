@@ -1,5 +1,5 @@
 # Kryptik kernel hardening fragment
-# Merge with: scripts/kconfig/merge_config.sh .config hardening.fragment zones.fragment
+# Merge with: scripts/kconfig/merge_config.sh .config hardening.fragment
 # Rationale: docs/hardening.md
 # Verify with: kernel-hardening-checker -c .config
 

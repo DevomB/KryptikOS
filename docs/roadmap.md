@@ -9,15 +9,16 @@ test — "it works" is not an exit test.
 - [x] Architecture, threat model, hardening rationale
 - [x] Host requirement checker
 - [x] Source fetching with checksum locking
-- [ ] Resolve ADR-008 (libc) — **blocks Phase 1**
+- [x] Resolve ADR-008 (libc) — glibc
 - [ ] Generate and audit `sources.lock`
 
 **Exit test:** `make check && make sources` succeeds on a clean Debian/Arch host.
 
-## Phase 1 — Cross toolchain
+## Phase 1 — Cross toolchain *(in progress)*
 
 Binutils + GCC + glibc, two passes, built against a sysroot so the host
-toolchain never contaminates the target.
+toolchain never contaminates the target. Implemented in
+`build/stages/01-toolchain.sh`; resumable via per-step stamps.
 
 Hardening flags are introduced *after* the bootstrap compiler exists. Pass-1
 GCC cannot be built with the full flag set — it is the thing that implements
@@ -41,7 +42,7 @@ filesystem fully detached.
 Full package set, all built with the hardening flag set. hardened_malloc wired
 in as the system allocator. Init system from ADR-006.
 
-- [ ] Resolve ADR-006 (init) — **blocks this phase**
+- [x] Resolve ADR-006 (init) — s6-rc (+ seatd for Wayland seat management)
 
 **Exit test:** system boots to a shell under QEMU. `tools/audit-setuid.sh`
 reports zero unjustified setuid binaries.
@@ -54,7 +55,7 @@ reports zero unjustified setuid binaries.
 Kernel built with the KSPP fragment, module signing enforced, lockdown in
 confidentiality mode, dm-verity and Landlock enabled.
 
-- [ ] Resolve ADR-007 (MAC layer)
+- [x] Resolve ADR-007 (MAC layer) — Landlock + seccomp only for v1
 
 **Exit test:** boots; `lockdown` reports confidentiality; unsigned module load
 fails; `kernel-hardening-checker` reports no missing KSPP options.
