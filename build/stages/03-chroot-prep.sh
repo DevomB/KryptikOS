@@ -62,6 +62,21 @@ create_layout() {
     # Kryptik-specific: zone definitions live here and kryptikd reads them.
     install -dv -m 0755 "$LFS/etc/kryptik"
     install -dv -m 0700 "$LFS/etc/kryptik/zones"
+
+    # Mount point for the repository itself. Stage 04 runs INSIDE the chroot
+    # and needs its own scripts, config and source tarballs; without this it
+    # would have neither.
+    install -dv -m 0755 "$LFS/kryptik"
+}
+
+# Stage 04 refuses to run outside the chroot, and this marker is how it tells.
+# A file rather than an environment variable: env vars survive into a plain
+# shell and would let stage 04 believe it is chrooted when it is not, which is
+# precisely the mistake the check exists to prevent.
+create_chroot_marker() {
+    printf 'Created by stage 03 on %s\nsysroot: %s\n' "$(date -Iseconds)" "$LFS" \
+        > "$LFS/etc/kryptik/inside-chroot"
+    chmod 0644 "$LFS/etc/kryptik/inside-chroot"
 }
 
 # --- essential files --------------------------------------------------------
@@ -143,6 +158,19 @@ mount_virtual() {
     mountpoint -q "$LFS/sys" || mount -vt sysfs sysfs "$LFS/sys"
     mountpoint -q "$LFS/run" || mount -vt tmpfs tmpfs "$LFS/run"
 
+    # The repository itself, so stage 04 can reach its scripts, its config and
+    # the source tarballs. Bind rather than copy: 600MB of sources should not
+    # be duplicated, and edits on the host take effect immediately.
+    #
+    # The second mount is not redundant. A bind mount SILENTLY IGNORES -o
+    # nodev,nosuid on the initial call - it inherits the source's flags - so
+    # passing them there produces a mount that looks hardened in the command
+    # line and is not. They only take effect on a subsequent remount.
+    if ! mountpoint -q "$LFS/kryptik"; then
+        mount -v --bind "$KRYPTIK_ROOT" "$LFS/kryptik"
+        mount -v -o remount,bind,nodev,nosuid "$LFS/kryptik"
+    fi
+
     # nosuid,nodev on shm: nothing in a build chroot needs setuid binaries or
     # device nodes in shared memory, and both are escape primitives.
     if [[ -h "$LFS/dev/shm" ]]; then
@@ -156,7 +184,7 @@ mount_virtual() {
 umount_virtual() {
     log "unmounting virtual filesystems"
     # Reverse order, and lazily where a stale process may hold a reference.
-    for m in dev/pts dev/shm dev run sys proc; do
+    for m in kryptik dev/pts dev/shm dev run sys proc; do
         if mountpoint -q "$LFS/$m" 2>/dev/null; then
             umount -v "$LFS/$m" 2>/dev/null || umount -lv "$LFS/$m"
         fi
@@ -173,7 +201,9 @@ CHROOT_ENV=(
     # PATH deliberately excludes the host: if a build reaches a host binary the
     # chroot has failed and we want it to fail loudly, not silently succeed.
     PATH=/usr/bin:/usr/sbin
+    KRYPTIK_ROOT=/kryptik
     "MAKEFLAGS=-j${KRYPTIK_JOBS:-$(nproc)}"
+    "KRYPTIK_JOBS=${KRYPTIK_JOBS:-$(nproc)}"
 )
 
 enter_chroot() {
@@ -197,6 +227,14 @@ verify_chroot() {
     }
     echo "$out" | sed 's/^/  /'
 
+    # Stage 04 needs the repo and its sources visible from inside.
+    if chroot "$LFS" /usr/bin/env -i PATH=/usr/bin:/usr/sbin         /bin/bash -c '[ -d /kryptik/sources ] && [ -x /kryptik/build/stages/04-base-system.sh ]' 2>/dev/null; then
+        ok "repository and sources reachable at /kryptik inside the chroot"
+    else
+        err "the repository is NOT visible inside the chroot; stage 04 cannot run"
+        return 1
+    fi
+
     # The chroot's bash must be OURS, not the host's.
     if echo "$out" | grep -q "kryptik"; then
         ok "chroot is running Kryptik's own bash"
@@ -210,12 +248,19 @@ case "$ACTION" in
         create_layout
         create_passwd_group
         create_devices
+        create_chroot_marker
         mount_virtual
         verify_chroot
         echo
         ok "chroot ready at ${LFS}"
-        dim "Enter it with: sudo $0 enter"
-        dim "Unmount with:  sudo $0 umount"
+        echo
+        dim "Build the base system with:"
+        dim "  sudo chroot ${LFS} /usr/bin/env -i HOME=/root TERM=\$TERM \\"
+        dim "      PATH=/usr/bin:/usr/sbin KRYPTIK_ROOT=/kryptik \\"
+        dim "      /bin/bash -c /kryptik/build/stages/04-base-system.sh"
+        echo
+        dim "Or interactively: sudo $0 enter"
+        dim "Unmount with:     sudo $0 umount"
         ;;
     umount)
         umount_virtual
