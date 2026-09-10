@@ -241,10 +241,19 @@ verify_chroot() {
     fi
 
     # The chroot's bash must be OURS, not the host's.
-    if echo "$out" | grep -q "kryptik"; then
-        ok "chroot is running Kryptik's own bash"
+    #
+    # $BASH_VERSION carries only the version ("5.2.32(1)-release") - the build
+    # triple appears only in `bash --version`. Grepping the former for
+    # "kryptik" always fails and warned on a perfectly good chroot.
+    local ver
+    ver="$(chroot "$LFS" /usr/bin/env -i PATH=/usr/bin:/usr/sbin \
+           /bin/bash --version 2>/dev/null | head -1)"
+    if [[ "$ver" == *"kryptik"* ]]; then
+        ok "chroot is running Kryptik's own bash: ${ver}"
     else
-        warn "chroot bash does not report the kryptik triple - verify manually"
+        err "chroot bash is NOT Kryptik's: ${ver:-unknown}"
+        err "The chroot may be reaching host binaries; stage 04 would build against them."
+        return 1
     fi
 }
 
