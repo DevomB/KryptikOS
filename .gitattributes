@@ -1,0 +1,21 @@
+# Kryptik is built on Linux. CRLF in a shell script produces
+# "bad interpreter: /usr/bin/env bash^M" — force LF for everything textual,
+# regardless of the contributor's core.autocrlf setting.
+* text=auto eol=lf
+
+*.sh        text eol=lf
+Makefile    text eol=lf
+*.env       text eol=lf
+*.conf      text eol=lf
+*.fragment  text eol=lf
+*.md        text eol=lf
+*.txt       text eol=lf
+*.toml      text eol=lf
+
+# Binary artifacts must never be normalized.
+*.iso    binary
+*.img    binary
+*.tar.*  binary
+*.gz     binary
+*.xz     binary
+*.sqfs   binary
