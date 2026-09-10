@@ -2,6 +2,7 @@
 # Merge with: scripts/kconfig/merge_config.sh .config hardening.fragment
 # Rationale: docs/hardening.md
 # Verify with: kernel-hardening-checker -c .config
+# Validate symbols exist in the pinned kernel: make validate-kernel
 
 # --- memory ---
 CONFIG_INIT_ON_ALLOC_DEFAULT_ON=y
@@ -64,7 +65,7 @@ CONFIG_SECURITY_YAMA=y
 
 # --- attack surface removal ---
 # CONFIG_DEVMEM is not set
-# CONFIG_DEVKMEM is not set
+# (CONFIG_DEVKMEM removed upstream in 5.13 - /dev/kmem support is gone)
 # CONFIG_LEGACY_PTYS is not set
 # CONFIG_BINFMT_MISC is not set
 # CONFIG_COMPAT_BRK is not set
@@ -75,7 +76,7 @@ CONFIG_SECURITY_YAMA=y
 
 # --- debug interfaces that leak kernel state ---
 # CONFIG_DEBUG_FS is not set
-CONFIG_DEBUG_CREDENTIALS=y
+# (CONFIG_DEBUG_CREDENTIALS removed upstream in 6.5)
 CONFIG_DEBUG_NOTIFIERS=y
 CONFIG_DEBUG_LIST=y
 CONFIG_DEBUG_SG=y
@@ -85,10 +86,24 @@ CONFIG_BUG_ON_DATA_CORRUPTION=y
 CONFIG_BPF_UNPRIV_DEFAULT_OFF=y
 CONFIG_BPF_JIT_ALWAYS_ON=y
 
+# --- speculative execution mitigations ---
+# These moved under a MITIGATION_ prefix in 6.9. The pre-6.9 spellings
+# (CONFIG_RETPOLINE, CONFIG_SLS) are silently ignored by merge_config.sh,
+# which would leave the kernel without them while the fragment still claimed
+# otherwise. Validated by tools/validate-kernel-config.sh.
+CONFIG_MITIGATION_RETPOLINE=y
+CONFIG_MITIGATION_SLS=y
+CONFIG_MITIGATION_RETHUNK=y
+CONFIG_MITIGATION_PAGE_TABLE_ISOLATION=y
+CONFIG_MITIGATION_SPECTRE_BHI=y
+CONFIG_MITIGATION_SRSO=y
+CONFIG_MITIGATION_RFDS=y
+CONFIG_MITIGATION_IBRS_ENTRY=y
+CONFIG_MITIGATION_IBPB_ENTRY=y
+CONFIG_MITIGATION_UNRET_ENTRY=y
+
 # --- misc ---
 CONFIG_HARDENED_USERCOPY=y
-CONFIG_RETPOLINE=y
-CONFIG_SLS=y
 CONFIG_GCC_PLUGIN_STACKLEAK=y
 CONFIG_GCC_PLUGIN_STRUCTLEAK_BYREF_ALL=y
 CONFIG_GCC_PLUGIN_LATENT_ENTROPY=y
