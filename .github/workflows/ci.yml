@@ -68,19 +68,49 @@ jobs:
       - name: Manifest resolves
         run: ./tools/fetch-sources.sh --list
 
+      # Informational, deliberately non-blocking.
+      #
+      # MIRROR_GNU is ftpmirror.gnu.org, which redirects to a nearby mirror
+      # chosen per-request. Individual mirrors go down, rate-limit, or reject
+      # requests, and none of that is a defect in this repository - failing the
+      # build on it would just train people to ignore red CI.
+      #
+      # Uses a one-byte ranged GET rather than HEAD: several GNU mirrors answer
+      # HEAD with 403 while serving GET fine. Checks curl's exit status instead
+      # of parsing %{http_code}, which reports one code per redirect hop and
+      # produced nonsense like "302000".
       - name: Every source URL is reachable
+        continue-on-error: true
         run: |
-          fail=0
+          reach() {
+            curl -fsSL --range 0-0 --retry 3 --retry-delay 2 \
+                 --connect-timeout 20 --max-time 60 -o /dev/null "$1"
+          }
+
+          missing=0
           while read -r name ver url; do
-            code=$(curl -o /dev/null -s -w '%{http_code}' -I -L --max-time 30 "$url" || echo 000)
-            if [ "$code" = "200" ]; then
-              echo "  ok   $name $ver"
+            if reach "$url"; then
+              echo "  ok        $name $ver"
+              continue
+            fi
+            # Mirror what fetch-sources.sh actually does: fall back to
+            # mirrors.kernel.org for GNU packages before giving up.
+            fallback="${url/https:\/\/ftpmirror.gnu.org/https://mirrors.kernel.org/gnu}"
+            if [ "$fallback" != "$url" ] && reach "$fallback"; then
+              echo "  ok        $name $ver  (via fallback mirror)"
             else
-              echo "  DEAD $name $ver (HTTP $code) $url"
-              fail=1
+              echo "  UNREACHED $name $ver  $url"
+              missing=$((missing + 1))
             fi
           done < <(./tools/fetch-sources.sh --list)
-          exit $fail
+          echo
+          if [ "$missing" -gt 0 ]; then
+            echo "$missing source(s) unreachable this run."
+            echo "Usually a transient mirror problem. Investigate only if the"
+            echo "same package fails across several runs."
+          else
+            echo "all sources reachable"
+          fi
 
       - name: sources.lock covers the manifest
         run: |
