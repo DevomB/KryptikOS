@@ -201,6 +201,20 @@ verify_gnu() {
     check_sig "$name" "$sig" "${KRYPTIK_SOURCES}/${file}" || true
 }
 
+# Detached .sig alongside the file, same URL plus .sig.
+verify_detached() {
+    local name="$1" url="$2" file="$3"
+    local sig="${SIGDIR}/${file}.sig"
+
+    if [[ ! -s "$sig" ]] && ! quiet_fetch "${url}.sig" "$sig"; then
+        rm -f "$sig"
+        warn "${name}: no .sig published upstream"
+        mark_unverifiable "${name} (no signature upstream)"
+        return
+    fi
+    check_sig "$name" "$sig" "${KRYPTIK_SOURCES}/${file}" || true
+}
+
 verify_kernel() {
     local name="$1" url="$2" file="$3"
     local sign="${SIGDIR}/${file%.xz}.sign"
@@ -240,6 +254,9 @@ while read -r name ver url; do
     case "$url" in
         *gnu.org*|*mirrors.kernel.org/gnu*) verify_gnu    "$name" "$url" "$file" ;;
         *cdn.kernel.org*)                   verify_kernel "$name" "$url" "$file" ;;
+        *github.com/anthraxx/linux-hardened*)
+            verify_detached "$name" "$url" "$file"
+            ;;
         *linuxfromscratch.org*)
             # LFS publishes md5sums for its patch set, not per-patch signatures.
             warn "${name}: LFS patches are not individually signed upstream"

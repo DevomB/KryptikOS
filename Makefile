@@ -11,7 +11,7 @@ TOOLS   := $(ROOT)/tools
 
 export KRYPTIK_ROOT := $(ROOT)
 
-.PHONY: help check sources lock verify validate-kernel toolchain temp-tools system kernel iso audit clean distclean
+.PHONY: help check check-kernel-eol sources lock verify validate-kernel toolchain temp-tools system kernel iso audit clean distclean
 
 help:
 	@echo "Kryptik build targets"
@@ -27,6 +27,7 @@ help:
 	@echo
 	@echo "  make verify      verify upstream GPG signatures on fetched sources"
 	@echo "  make validate-kernel   check kernel fragment against pinned source"
+	@echo "  make check-kernel-eol  fail if the pinned kernel is EOL or not LTS"
 	@echo "  make audit       run security audits over the build tree"
 	@echo "  make clean       remove build work directory"
 	@echo "  make distclean   also remove downloaded sources and output"
@@ -35,6 +36,7 @@ help:
 
 check:
 	@$(STAGES)/00-host-check.sh
+	@$(TOOLS)/check-kernel-eol.sh
 
 sources:
 	@$(TOOLS)/fetch-sources.sh
@@ -47,6 +49,9 @@ verify:
 
 validate-kernel:
 	@$(TOOLS)/validate-kernel-config.sh
+
+check-kernel-eol:
+	@$(TOOLS)/check-kernel-eol.sh
 
 toolchain: check sources
 	@$(STAGES)/01-toolchain.sh

@@ -20,8 +20,18 @@ CONFIG_SCHED_STACK_END_CHECK=y
 CONFIG_STACKPROTECTOR=y
 CONFIG_STACKPROTECTOR_STRONG=y
 CONFIG_FORTIFY_SOURCE=y
-CONFIG_CFI_CLANG=y
 CONFIG_ZERO_CALL_USED_REGS=y
+
+# NOT SET: CONFIG_CFI / CONFIG_CFI_CLANG.
+# Kernel Control Flow Integrity requires the kernel to be built with Clang
+# (it depends on CC_IS_CLANG). Kryptik's toolchain is GCC, so setting it here
+# would be dropped for an unmet dependency and the fragment would be claiming
+# a mitigation the kernel does not have. In 6.18 CONFIG_CFI_CLANG is also
+# marked 'transitional' - the live symbol is CONFIG_CFI.
+#
+# Building the kernel with Clang while userspace stays GCC is a legitimate
+# split (Android does exactly this) and would buy CFI plus better sanitizer
+# coverage. Deferred to a Phase 4 evaluation rather than decided here.
 
 # --- kernel memory protection ---
 CONFIG_STRICT_KERNEL_RWX=y
@@ -105,6 +115,11 @@ CONFIG_MITIGATION_UNRET_ENTRY=y
 # --- misc ---
 CONFIG_HARDENED_USERCOPY=y
 CONFIG_GCC_PLUGIN_STACKLEAK=y
-CONFIG_GCC_PLUGIN_STRUCTLEAK_BYREF_ALL=y
 CONFIG_GCC_PLUGIN_LATENT_ENTROPY=y
 CONFIG_GCC_PLUGIN_RANDSTRUCT=y
+
+# Stack variable initialization. The GCC_PLUGIN_STRUCTLEAK_* options were
+# removed upstream once compilers gained -ftrivial-auto-var-init; INIT_STACK_
+# ALL_ZERO is the current spelling and matches the -ftrivial-auto-var-init=zero
+# Kryptik already applies to userspace (build/config/hardening.env).
+CONFIG_INIT_STACK_ALL_ZERO=y

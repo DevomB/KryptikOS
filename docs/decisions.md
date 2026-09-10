@@ -142,3 +142,56 @@ means rebuilding from stage 01.
 
 **Revisit after Phase 5**, when the interesting work is done and a libc swap is
 a contained experiment rather than a bootstrap risk.
+
+---
+
+## ADR-009: Track an LTS kernel and carry the linux-hardened patchset
+**Status:** Accepted (2026-09-10)
+
+Kryptik pins **linux 6.18.x (longterm)** and applies the matching
+**linux-hardened** patch before building.
+
+### The defect this fixes
+
+The original pin was 6.10.5. That kernel is **not longterm**, was released in
+August 2024, and reached end-of-life within about two months of release. A
+security distribution shipping a kernel with roughly two years of unpatched
+CVEs is not a security distribution — it is the single worst defect the project
+had, and it sat in `versions.env` looking like a normal version number.
+
+Non-LTS kernels are disqualified on principle from here on. `make check-kernel-eol`
+queries kernel.org and fails if the pinned version is EOL or not longterm, so
+this cannot silently recur.
+
+### Why linux-hardened
+
+Until now Kryptik only applied a kconfig fragment. That flips switches Torvalds
+already built — the same thing Fedora and Arch do — and does not justify calling
+the result a hardened kernel. linux-hardened carries mitigations upstream has
+rejected or not merged: stronger ASLR entropy, expanded slab sanitization,
+tighter usercopy checks, and reduced attack surface in areas mainline keeps for
+compatibility.
+
+It also constrains the kernel choice in a useful way: linux-hardened only tracks
+LTS branches, so adopting it makes the EOL mistake above structurally impossible
+to repeat.
+
+### Costs
+
+- **Version coupling.** The kernel can only move when a matching
+  `linux-hardened` release exists. A kernel CVE fix may therefore land days
+  behind mainline stable.
+- **Patch conflicts.** Any Kryptik-local kernel patch must be rebased against
+  linux-hardened rather than mainline.
+- **Not grsecurity.** linux-hardened is a partial, community-maintained
+  descendant of the grsecurity patchset, not the real thing. grsecurity is
+  commercially licensed and unavailable. Do not describe Kryptik as
+  grsecurity-hardened.
+
+### Rejected alternatives
+
+- **Mainline stable + kconfig only** — what Kryptik was doing. Insufficient for
+  the claim the project makes about itself.
+- **Own patchset from scratch** — Phase 5 may still require kernel work if the
+  zone model needs hooks Landlock cannot express (see ADR-002). That would be
+  carried *on top of* linux-hardened, not instead of it.

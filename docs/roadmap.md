@@ -52,13 +52,18 @@ reports zero unjustified setuid binaries.
 
 ## Phase 4 — Hardened kernel
 
-Kernel built with the KSPP fragment, module signing enforced, lockdown in
-confidentiality mode, dm-verity and Landlock enabled.
+Linux LTS with the linux-hardened patchset applied (ADR-009), then built with
+the KSPP fragment, module signing enforced, lockdown in confidentiality mode,
+dm-verity and Landlock enabled.
 
 - [x] Resolve ADR-007 (MAC layer) — Landlock + seccomp only for v1
+- [x] Resolve ADR-009 (kernel) — LTS only, plus linux-hardened
+- [ ] Apply the linux-hardened patch in stage 05
 
 **Exit test:** boots; `lockdown` reports confidentiality; unsigned module load
-fails; `kernel-hardening-checker` reports no missing KSPP options.
+fails; `kernel-hardening-checker` reports no missing KSPP options;
+`make validate-kernel` reports every fragment symbol present in the pinned
+source; `make check-kernel-eol` reports the kernel is longterm.
 
 ## Phase 5 — The compartment layer
 

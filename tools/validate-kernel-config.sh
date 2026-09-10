@@ -12,6 +12,14 @@
 # This checks every CONFIG_ symbol in the fragment against the `config` entries
 # in the pinned kernel's Kconfig files, so a stale fragment fails loudly here
 # rather than shipping a kernel that quietly lacks its mitigations.
+#
+# KNOWN LIMITATION: this proves a symbol EXISTS, not that its dependencies are
+# satisfiable. CONFIG_CFI_CLANG exists in 6.18 but requires CC_IS_CLANG; set it
+# while building with GCC and kconfig drops it just as silently as an unknown
+# symbol. Catching that class properly means evaluating Kconfig dependency
+# expressions, which is a kconfig-parser-sized job. Until then, verify the
+# generated .config with kernel-hardening-checker after the kernel is built -
+# that reads the real .config and sees what actually survived.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 load_config
