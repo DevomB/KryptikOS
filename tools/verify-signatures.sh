@@ -40,7 +40,16 @@ GNU_KEYRING="${KEYDIR}/gnu-keyring.gpg"
 # Isolated keyring home - never touches the user's own GnuPG configuration.
 export GNUPGHOME="${KEYDIR}/gnupg"
 
-[[ "${1:-}" == "--refresh" ]] && rm -rf "$GNUPGHOME" "$GNU_KEYRING"
+FETCH_UNKNOWN=0
+for a in "$@"; do
+    case "$a" in
+        --refresh) rm -rf "$GNUPGHOME" "$GNU_KEYRING" ;;
+        --fetch-unknown-keys) FETCH_UNKNOWN=1 ;;
+    esac
+done
+
+# Records every key that verification relied on, for human audit.
+KEYS_MANIFEST="${KRYPTIK_ROOT}/keys.manifest"
 
 mkdir -p "$KEYDIR" "$SIGDIR" "$GNUPGHOME"
 chmod 700 "$GNUPGHOME"
@@ -96,6 +105,7 @@ import_keys() {
 # --- verification ----------------------------------------------------------
 
 VERIFIED=0
+FETCHED=0
 FAILED=0
 UNVERIFIABLE=0
 EXPIRED=0
@@ -161,6 +171,34 @@ check_sig() {
 
     if printf '%s' "$out" | grep -q "^\[GNUPG:\] NO_PUBKEY"; then
         keyid="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] NO_PUBKEY //p' | head -1)"
+
+        # --fetch-unknown-keys pulls the key the signature NAMES and retries.
+        #
+        # Be clear about what this does and does not establish. Trusting a key
+        # because the signature it is checking told you its id is circular: it
+        # proves the file was signed by whoever signed it. It is still strictly
+        # better than no check at all - it detects later tampering and pins the
+        # signer - but the fingerprint must be confirmed out-of-band against
+        # the project before it means "signed by the maintainer".
+        #
+        # Every key used this way is written to keys.manifest for that audit.
+        if [[ "$FETCH_UNKNOWN" -eq 1 ]]; then
+            if gpg --batch --quiet --keyserver hkps://keyserver.ubuntu.com                    --recv-keys "$keyid" >/dev/null 2>&1; then
+                out="$(gpg --batch --status-fd 1 --verify "$sigfile" "$datafile" 2>/dev/null || true)"
+                if printf '%s' "$out" | grep -qE "^\[GNUPG:\] (GOODSIG|EXPKEYSIG)"; then
+                    signer="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] \(GOODSIG\|EXPKEYSIG\) [0-9A-F]* //p' | head -1)"
+                    local fpr
+                    fpr="$(gpg --batch --with-colons --fingerprint "$keyid" 2>/dev/null                            | awk -F: '$1=="fpr"{print $10; exit}')"
+                    ok "${name}: signature valid  [${signer:-unknown}] (key fetched, UNAUDITED)"
+                    printf '%-18s %-42s %s
+' "$name" "${fpr:-$keyid}" "${signer:-unknown}"                         >> "$KEYS_MANIFEST"
+                    VERIFIED=$((VERIFIED + 1))
+                    FETCHED=$((FETCHED + 1))
+                    return 0
+                fi
+            fi
+        fi
+
         warn "${name}: signing key ${keyid} not held"
         mark_unverifiable "${name} (signing key ${keyid} not held)"
         return 0
@@ -201,6 +239,27 @@ verify_gnu() {
     check_sig "$name" "$sig" "${KRYPTIK_SOURCES}/${file}" || true
 }
 
+# Try each conventional detached-signature suffix in turn.
+#
+# There is no single convention: GNU and kernel.org use .sig, python.org and
+# many others use .asc, some projects publish .sign. Trying all three turns a
+# vague "unknown source" into either a real verification or a specific,
+# actionable "signing key NNN not held".
+verify_any() {
+    local name="$1" url="$2" file="$3"
+    local suffix sig
+    for suffix in .sig .asc .sign; do
+        sig="${SIGDIR}/${file}${suffix}"
+        if [[ -s "$sig" ]] || quiet_fetch "${url}${suffix}" "$sig" 2>/dev/null; then
+            check_sig "$name" "$sig" "${KRYPTIK_SOURCES}/${file}" || true
+            return
+        fi
+        rm -f "$sig"
+    done
+    warn "${name}: no detached signature published (.sig/.asc/.sign)"
+    mark_unverifiable "${name} (upstream publishes no signature)"
+}
+
 # Detached signature alongside the file, at the same URL plus a suffix.
 verify_detached() {
     local name="$1" url="$2" file="$3" suffix="${4:-.sig}"
@@ -215,11 +274,17 @@ verify_detached() {
     check_sig "$name" "$sig" "${KRYPTIK_SOURCES}/${file}" || true
 }
 
+# kernel.org signs the UNCOMPRESSED tar, not the compressed tarball, and uses
+# this convention for the kernel AND for util-linux, kbd, kmod, iproute2,
+# libcap and e2fsprogs. Looking for "<file>.tar.xz.sig" finds nothing and
+# reports these as unsigned when they are all properly signed.
 verify_kernel() {
     local name="$1" url="$2" file="$3"
     local sign="${SIGDIR}/${file%.xz}.sign"
 
-    if [[ ! -s "$sign" ]] && ! quiet_fetch "${url%.tar.xz}.tar.sign" "$sign"; then
+    # Handles .tar.xz and .tar.gz alike.
+    local sign_url="${url%.tar.*}.tar.sign"
+    if [[ ! -s "$sign" ]] && ! quiet_fetch "$sign_url" "$sign"; then
         rm -f "$sign"
         warn "${name}: could not fetch .sign"
         mark_unverifiable "${name} (.sign unavailable)"
@@ -228,10 +293,12 @@ verify_kernel() {
 
     # kernel.org signs the uncompressed tar, so decompress before verifying.
     local tmptar
-    tmptar="${KRYPTIK_WORK}/verify-$(basename "${file%.xz}")"
+    tmptar="${KRYPTIK_WORK}/verify-$(basename "${file%.*}")"
     mkdir -p "$(dirname "$tmptar")"
-    dim "  decompressing kernel tarball to verify (~1.5GB, takes a moment)"
-    if ! xz -dc "${KRYPTIK_SOURCES}/${file}" > "$tmptar"; then
+    dim "  decompressing ${name} to verify against its .tar.sign"
+    local decomp="xz -dc"
+    [[ "$file" == *.gz ]] && decomp="gzip -dc"
+    if ! $decomp "${KRYPTIK_SOURCES}/${file}" > "$tmptar"; then
         rm -f "$tmptar"
         err "${name}: decompression failed"
         FAILED=$((FAILED + 1)); FAILED_LIST+=("$name")
@@ -244,6 +311,16 @@ verify_kernel() {
 # --- run -------------------------------------------------------------------
 
 log "Verifying upstream signatures"
+if [[ "$FETCH_UNKNOWN" -eq 1 ]]; then
+    warn "--fetch-unknown-keys: will import keys named by the signatures themselves."
+    warn "That proves a file was signed by whoever signed it, NOT that the signer"
+    warn "is the real maintainer. Confirm keys.manifest out-of-band."
+    : > "$KEYS_MANIFEST"
+    printf '# Keys fetched by --fetch-unknown-keys. AUDIT THESE.
+' >> "$KEYS_MANIFEST"
+    printf '# package           fingerprint                                signer
+' >> "$KEYS_MANIFEST"
+fi
 import_keys
 echo
 
@@ -254,7 +331,7 @@ while read -r name _ver url; do
 
     case "$url" in
         *gnu.org*|*mirrors.kernel.org/gnu*) verify_gnu    "$name" "$url" "$file" ;;
-        *cdn.kernel.org*)                   verify_kernel "$name" "$url" "$file" ;;
+        *cdn.kernel.org*|*www.kernel.org/pub*) verify_kernel "$name" "$url" "$file" ;;
         *github.com/anthraxx/linux-hardened*|*github.com/tukaani-project/xz*)
             verify_detached "$name" "$url" "$file"
             ;;
@@ -266,13 +343,20 @@ while read -r name _ver url; do
             warn "${name}: LFS patches are not individually signed upstream"
             mark_unverifiable "${name} (upstream publishes no signature)"
             ;;
-        *) mark_unverifiable "${name} (unknown source)" ;;
+        *)
+            # Everything else: try the two conventional detached-signature
+            # suffixes before giving up. Reporting "unknown source" for a
+            # package that publishes a perfectly good .sig was hiding real
+            # verifiable sources behind a vague label.
+            verify_any "$name" "$url" "$file"
+            ;;
     esac
 done < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list)
 
 echo
 log "Summary"
 ok "verified:     ${VERIFIED}$([[ "$EXPIRED" -gt 0 ]] && printf ' (%s with expired keys)' "$EXPIRED")"
+[[ "$FETCHED" -gt 0 ]] && warn "  of which ${FETCHED} used UNAUDITED fetched keys - see keys.manifest"
 [[ "$UNVERIFIABLE" -gt 0 ]] && warn "unverifiable: ${UNVERIFIABLE}"
 [[ "$FAILED" -gt 0 ]]       && err  "FAILED:       ${FAILED}"
 

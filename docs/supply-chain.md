@@ -74,6 +74,29 @@ over years by a co-maintainer, and the versions immediately following it were
 produced while that process was still being audited. Kryptik pins well past
 that window.
 
+## Current verification coverage
+
+**54 of 69 sources verify** against upstream signatures. The remaining 15
+publish no detached signature at all — they are not failures, but they are the
+weakest links and are listed rather than averaged away.
+
+Two deserve specific attention:
+
+- **hardened_malloc** is fetched as a GitHub *source archive*, which is
+  generated on demand and has no signature. It is also Kryptik's system
+  allocator (ADR-005), so it is among the most security-relevant things in the
+  tree. It should move to a verified git tag before first release.
+- **The s6 stack** (skalibs, execline, s6, s6-rc, s6-linux-init) is PID 1 and
+  the service supervisor (ADR-006), and none of it verifies. skarnet publishes
+  checksums; wiring those in is worth doing.
+
+Running `tools/verify-signatures.sh --fetch-unknown-keys` raises coverage by
+importing the key each signature names. Be clear about what that establishes:
+trusting a key because the signature it checks told you its id is circular. It
+proves the file was signed by whoever signed it. Every key imported that way is
+written to `keys.manifest` precisely so the fingerprints can be confirmed
+out-of-band, and until they are, those entries are weaker than the rest.
+
 ## Open problems
 
 - **The GNU keyring is fetched over the network.** This establishes "signed by

@@ -1,0 +1,8 @@
+# Keys fetched by --fetch-unknown-keys. AUDIT THESE.
+# package           fingerprint                                signer
+libcap             38A644698C69787344E954CE29EE848AE2CCF3F4   Andrew G. Morgan <morgan@kernel.org>
+util-linux         B0C64D14301CC6EFAEDF60E4E4B71D5EEC39C284   Karel Zak <kzak@redhat.com>
+e2fsprogs          3AB057B7E78D945C8C5591FBD36F769BC11804F0   Theodore Ts'o <tytso@mit.edu>
+iproute2           9F6FC345B05BE7E766B83C8F80A77F6095CDE47E   Stephen Hemminger (Microsoft corporate) <sthemmin@microsoft.com>
+kbd                7F2A3D07298149A0793C9A4EA45ABA544CFFD434   Alexey Gladkov <legion@kernel.org>
+kmod               EAB33C9690013C733916AC839BA2A5A630CBEA53   Lucas De Marchi <demarchi@kernel.org>
