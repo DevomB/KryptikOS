@@ -11,7 +11,7 @@ TOOLS   := $(ROOT)/tools
 
 export KRYPTIK_ROOT := $(ROOT)
 
-.PHONY: help check check-kernel-eol sources lock verify validate-kernel validate-kernel-hardened toolchain temp-tools chroot system kernel iso audit zones zone-test clean distclean
+.PHONY: help check check-kernel-eol sources lock verify verify-provenance validate-kernel validate-kernel-hardened toolchain temp-tools chroot system kernel iso audit zones zone-test clean distclean
 
 help:
 	@echo "Kryptik build targets"
@@ -27,6 +27,7 @@ help:
 	@echo "  make iso         stage 06: bootable image            [Phase 7]"
 	@echo
 	@echo "  make verify      verify upstream GPG signatures on fetched sources"
+	@echo "  make verify-provenance  signed tags + publisher checksums for the rest"
 	@echo "  make validate-kernel   check kernel fragment against pinned source"
 	@echo "  make check-kernel-eol  fail if the pinned kernel is EOL or not LTS"
 	@echo "  make validate-kernel-hardened  check the linux-hardened fragment"
@@ -50,6 +51,9 @@ lock:
 
 verify:
 	@$(TOOLS)/verify-signatures.sh
+
+verify-provenance:
+	@$(TOOLS)/verify-provenance.sh
 
 validate-kernel:
 	@$(TOOLS)/validate-kernel-config.sh

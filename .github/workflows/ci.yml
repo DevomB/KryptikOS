@@ -112,6 +112,13 @@ jobs:
             echo "all sources reachable"
           fi
 
+      - name: Provenance of unsigned sources
+        run: |
+          # hardened_malloc is the system allocator and the s6 stack is PID 1.
+          # Neither publishes a detached signature, so they are verified by
+          # signed git tag and publisher-published sha256 instead.
+          ./tools/verify-provenance.sh
+
       - name: sources.lock covers the manifest
         run: |
           fail=0

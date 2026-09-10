@@ -76,19 +76,33 @@ that window.
 
 ## Current verification coverage
 
-**54 of 69 sources verify** against upstream signatures. The remaining 15
-publish no detached signature at all — they are not failures, but they are the
-weakest links and are listed rather than averaged away.
+**54 of 69 sources verify** against upstream GPG signatures. A further **6**
+are verified by signed git tag or publisher-published checksum, giving **60 of
+69** with some independent confirmation.
 
-Two deserve specific attention:
+The remaining 9 rest on `sources.lock` alone. They are not failures, but they
+are the weakest links and are listed rather than averaged away.
 
-- **hardened_malloc** is fetched as a GitHub *source archive*, which is
-  generated on demand and has no signature. It is also Kryptik's system
-  allocator (ADR-005), so it is among the most security-relevant things in the
-  tree. It should move to a verified git tag before first release.
-- **The s6 stack** (skalibs, execline, s6, s6-rc, s6-linux-init) is PID 1 and
-  the service supervisor (ADR-006), and none of it verifies. skarnet publishes
-  checksums; wiring those in is worth doing.
+The two that mattered most are now covered by `tools/verify-provenance.sh`,
+which handles sources that publish no detached signature:
+
+- **hardened_malloc** — the system allocator (ADR-005). The GitHub source
+  archive is unsigned, but GrapheneOS GPG-signs the release *tag*, and the tag
+  covers the tree the archive is generated from. Verified as signed by
+  GrapheneOS.
+- **The s6 stack** — PID 1 and the service supervisor (ADR-006). skarnet ships
+  a `.tar.gz.sha256` beside each release, which is an independent confirmation
+  of the bytes: `sources.lock` records what Kryptik downloaded, the published
+  checksum records what the publisher intended. All five match.
+
+skarnet keeps a checksum only for the **current** release, which means an
+outdated pin is also an unverifiable pin. That is why `versions.env` now
+requires current versions for the s6 stack — the same reasoning as ADR-009
+applied to PID 1 instead of the kernel. The pins were three to five releases
+behind before this was noticed.
+
+Neither mechanism is a GPG signature over the artifact itself, and the tool
+says so in its own output rather than reporting a green tick.
 
 Running `tools/verify-signatures.sh --fetch-unknown-keys` raises coverage by
 importing the key each signature names. Be clear about what that establishes:
