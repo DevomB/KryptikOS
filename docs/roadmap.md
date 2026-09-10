@@ -101,7 +101,7 @@ and the brokered channels, not the isolation primitives.
 - [ ] `kryptikd` zone lifecycle (create, start, stop, destroy)
 - [ ] Per-zone veth + bridge topology; `net` zone as sole NIC holder
 - [ ] Per-zone LUKS2 volumes, unlocked on start, key-wiped on stop
-- [ ] Per-zone seccomp filters (Landlock is in; seccomp is not)
+- [x] Per-zone seccomp filters — default-deny BPF allowlist, 13 dangerous syscalls verified killed
 - [ ] Brokered file transfer and clipboard
 
 **Exit test: PASSING** as of 2026-09-10 — `compartments/tests/adversarial.sh`,
@@ -112,7 +112,14 @@ Requirement 1 — cannot list processes in another zone     PASS
 Requirement 2 — cannot read another zone's filesystem     PASS
 Requirement 3 — cannot reach the physical NIC             PASS
 Requirement 4 — cannot read the vault                     PASS
+Requirement 5 — cannot reach dangerous kernel syscalls    PASS
 ```
+
+Requirement 5 is not from `architecture.md`. The original four are about
+reaching another *zone*; none of them says anything about reaching the
+*kernel*, and `threat-model.md` concedes as L1 that a kernel LPE compromises
+every zone at once. The syscall surface a zone can touch is part of the
+boundary whether the original list said so or not.
 
 Two findings came out of writing it rather than out of reading the design:
 

@@ -9,6 +9,12 @@
 #   3. Reaching the physical NIC
 #   4. Reading anything in `vault`
 #
+# Requirement 5 is added here rather than taken from that document: the four
+# above are about reaching another ZONE, and none of them says anything about
+# reaching the KERNEL. threat-model.md concedes as L1 that a kernel LPE
+# compromises every zone at once, so the syscall surface a zone can touch is
+# part of the boundary whether the original list said so or not.
+#
 # This script attacks a zone rather than describing one. A zone model that has
 # not been attacked has not been tested.
 #
@@ -266,6 +272,51 @@ else
     info "there is no plaintext to reach even if Landlock were bypassed."
 fi
 
+# --- requirement 5: kernel attack surface -----------------------------------
+#
+# Not one of the original four, which were about reaching ANOTHER zone. This one
+# is about reaching the KERNEL. docs/threat-model.md concedes as L1 that a
+# kernel LPE compromises every zone at once, because they share one kernel.
+# seccomp is what raises the cost of finding one from inside a zone.
+
+head_ "Requirement 5 — cannot reach the kernel's dangerous syscalls"
+
+if [[ ! -x "${KRYPTIKD:-}" ]]; then
+    fail "kryptikd not built - cannot test seccomp"
+else
+    # Sanity first: a filter that blocks everything would "pass" the denial
+    # checks below while producing a zone nothing can run in.
+    allowed_ok=1
+    for sc in getpid write; do
+        "$KRYPTIKD" seccomp-test "$sc" >/dev/null 2>&1 || allowed_ok=0
+    done
+    if [[ "$allowed_ok" -eq 1 ]]; then
+        pass "permitted syscalls still work under the filter"
+    else
+        fail "the filter blocks syscalls a zone needs - over-restrictive"
+    fi
+
+    # setns is listed first deliberately: it is the syscall that would let a
+    # process step straight into another zone's namespaces, defeating
+    # requirements 1 through 4 in a single call.
+    leaked=0
+    for sc in setns ptrace unshare mount bpf perf_event_open userfaultfd \
+              keyctl init_module kexec_load process_vm_readv pivot_root chroot; do
+        "$KRYPTIKD" seccomp-test "$sc" >/dev/null 2>&1
+        rc=$?
+        if [[ "$rc" -ne 5 ]]; then
+            echo "      ${sc} was NOT blocked (rc=${rc})"
+            leaked=$((leaked + 1))
+        fi
+    done
+
+    if [[ "$leaked" -eq 0 ]]; then
+        pass "all 13 dangerous syscalls killed by SIGSYS (setns among them)"
+    else
+        fail "${leaked} dangerous syscall(s) reachable from inside a zone"
+    fi
+fi
+
 # --- consistency with kryptikd ----------------------------------------------
 
 head_ "Consistency — test matches kryptikd's namespace set"
@@ -280,6 +331,12 @@ if [[ -f "$ISOLATE_RS" ]]; then
     for fn in mount_proc mount_sysfs; do
         grep -q "fn ${fn}" "$ISOLATE_RS" || { echo "    kryptikd is missing ${fn}()"; missing=1; }
     done
+    # The seccomp filter must default-deny. A filter ending in ALLOW is an
+    # allowlist in name only.
+    SECCOMP_RS="$(dirname "${BASH_SOURCE[0]}")/../kryptikd/src/seccomp.rs"
+    if [[ -f "$SECCOMP_RS" ]]; then
+        grep -q "SECCOMP_RET_KILL_PROCESS" "$SECCOMP_RS"             || { echo "    seccomp filter has no kill action"; missing=1; }
+    fi
     if [[ "$missing" -eq 0 ]]; then
         pass "kryptikd declares every namespace this test exercises"
     else

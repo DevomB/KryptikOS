@@ -82,6 +82,38 @@ setuid binaries, which is not.
 Enforced by `tools/audit-setuid.sh`, which fails the build on any setuid binary
 not present in an explicit, justified allowlist.
 
+## Zone syscall filtering
+
+Every zoned process runs under a default-deny seccomp-bpf filter
+(`compartments/kryptikd/src/seccomp.rs`). The allowlist names roughly 150
+syscalls covering file and socket I/O, memory, process lifecycle, signals and
+time; anything unnamed is `SECCOMP_RET_KILL_PROCESS`.
+
+Verified blocked, by killing a real process rather than by inspection:
+
+| Syscall | Why it is denied |
+|---|---|
+| `setns` | **enters another zone's namespaces** — defeats requirements 1–4 in one call |
+| `ptrace`, `process_vm_readv/writev` | read or write another process's memory |
+| `mount`, `umount2`, `pivot_root`, `chroot` | remount the filesystem out from under Landlock |
+| `unshare` | nested namespaces; a known LPE surface |
+| `bpf`, `perf_event_open` | long histories of privilege escalation |
+| `userfaultfd` | reliable kernel heap-grooming primitive |
+| `keyctl`, `add_key`, `request_key` | kernel keyring, repeated CVEs |
+| `init_module`, `finit_module`, `kexec_load` | load kernel code |
+
+Two details that decide whether such a filter works or merely looks like it
+does. The x32 ABI reuses x86-64 syscall numbers with the high bit set, so a
+filter written against x86-64 numbers is bypassable through x32 unless it is
+explicitly rejected — it is. And every jump in the generated program has an
+offset of 0 or 1, because the obvious "jump to the ALLOW at the end" encoding
+silently breaks once the allowlist passes 255 entries.
+
+`mprotect` is allowed, which means W^X can be defeated from inside a zone. Every
+dynamic linker needs it, so denying it is not viable; the compensating control
+is that Kryptik builds everything with RELRO and BIND_NOW, so the GOT is
+read-only before `main()` runs.
+
 ## What hardening does not do
 
 These mitigations raise exploitation cost. They do not make the system

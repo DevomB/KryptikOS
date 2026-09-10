@@ -12,6 +12,7 @@
 
 mod isolate;
 mod landlock;
+mod seccomp;
 mod zone;
 
 use std::path::{Path, PathBuf};
@@ -98,6 +99,27 @@ fn main() -> ExitCode {
                 }
             }
         }
+        // kryptikd seccomp-test SYSCALL
+        //
+        // Forks; the child installs the zone seccomp filter and then makes the
+        // named syscall. The parent reports how the child ended. Used by the
+        // adversarial test to prove syscalls are actually killed rather than
+        // assert that a filter was installed.
+        //
+        //   exit 0 -> syscall completed (NOT blocked)
+        //   exit 5 -> child killed by SIGSYS (blocked, as intended)
+        //   exit 1 -> could not install the filter
+        "seccomp-test" => {
+            let Some(name) = args.get(1) else {
+                eprintln!("seccomp-test: expected a syscall name");
+                return ExitCode::from(2);
+            };
+            let Some(nr) = seccomp::syscall_by_name(name) else {
+                eprintln!("seccomp-test: unknown syscall {name:?}");
+                return ExitCode::from(2);
+            };
+            cmd_seccomp_test(name, nr)
+        }
         "start" | "stop" | "transfer" | "clipboard" => {
             eprintln!(
                 "kryptikd: '{}' is not implemented yet (Phase 5, docs/roadmap.md).\n\
@@ -152,6 +174,22 @@ fn cmd_check(dir: &Path) -> ExitCode {
             }
         }
         None => println!("  landlock         NO"),
+    }
+
+    // Prove the seccomp program actually builds and installs in a child, not
+    // merely that the kernel reports seccomp support.
+    match std::process::Command::new(std::env::current_exe().unwrap_or_default())
+        .args(["seccomp-test", "getpid"])
+        .output()
+    {
+        Ok(o) if o.status.code() == Some(0) => {
+            println!("  seccomp filter   builds and permits allowed calls");
+        }
+        Ok(o) => {
+            eprintln!("  seccomp filter   FAILED (exit {:?})", o.status.code());
+            failed = true;
+        }
+        Err(e) => eprintln!("  seccomp filter   could not self-test: {e}"),
     }
 
     let missing = s.missing();
@@ -257,6 +295,7 @@ fn cmd_show(dir: &Path, name: &str) -> ExitCode {
         }
     }
     println!("namespaces   {}", ns.join(", "));
+    println!("seccomp      default-deny, {} syscalls allowed", seccomp::BASE_ALLOWLIST.len());
 
     if z.is_airgapped() {
         println!();
@@ -265,6 +304,54 @@ fn cmd_show(dir: &Path, name: &str) -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+fn cmd_seccomp_test(name: &str, nr: libc::c_long) -> ExitCode {
+    // SAFETY: fork in a program that does no threading before this point.
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        eprintln!("seccomp-test: fork failed");
+        return ExitCode::FAILURE;
+    }
+
+    if pid == 0 {
+        // Child. Anything past the filter install must itself be permitted, so
+        // the syscall under test is made immediately and the result reported
+        // through the exit code rather than by printing.
+        if seccomp::confine_zone().is_err() {
+            unsafe { libc::_exit(1) };
+        }
+        // Deliberately harmless arguments: the filter decides before the
+        // kernel ever looks at them. A blocked call never returns.
+        unsafe {
+            libc::syscall(nr, 0, 0, 0, 0, 0, 0);
+            libc::_exit(0)
+        }
+    }
+
+    let mut status: libc::c_int = 0;
+    unsafe { libc::waitpid(pid, &mut status, 0) };
+
+    // libc::WIFSIGNALED / WTERMSIG are not const fns in all versions; decode
+    // the wait status directly.
+    let signalled = (status & 0x7f) != 0 && (status & 0x7f) != 0x7f;
+    let termsig = status & 0x7f;
+    let exited = (status & 0x7f) == 0;
+    let exitcode = (status >> 8) & 0xff;
+
+    if signalled && termsig == libc::SIGSYS {
+        eprintln!("seccomp-test: {name} killed by SIGSYS (blocked)");
+        ExitCode::from(5)
+    } else if signalled {
+        eprintln!("seccomp-test: {name} killed by signal {termsig}");
+        ExitCode::from(6)
+    } else if exited && exitcode == 1 {
+        eprintln!("seccomp-test: could not install filter");
+        ExitCode::FAILURE
+    } else {
+        eprintln!("seccomp-test: {name} COMPLETED - not blocked");
+        ExitCode::SUCCESS
+    }
 }
 
 /// Re-export for integration tests.
