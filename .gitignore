@@ -21,3 +21,6 @@ Thumbs.db
 *.swp
 .idea/
 .vscode/
+
+# Rust build output
+/compartments/kryptikd/target/

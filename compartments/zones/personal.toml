@@ -1,0 +1,25 @@
+# personal — Separate identity, separate cookies, separate everything.
+
+[zone]
+name        = "personal"
+description = "Separate identity, separate cookies, separate everything."
+
+[network]
+mode = "routed"
+
+[storage]
+mode      = "encrypted"
+volume    = "/dev/kryptik/personal"
+unlock    = "on-start"
+wipe_keys = "on-stop"
+
+[policy]
+seccomp  = "policy/personal.seccomp"
+landlock = "policy/personal.landlock"
+
+[limits]
+memory_max = "8G"
+pids_max   = 1024
+
+[ui]
+border_color = "#7a4fa3"

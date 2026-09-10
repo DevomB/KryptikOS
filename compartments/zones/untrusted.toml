@@ -1,0 +1,25 @@
+# untrusted — for opening things you do not trust.
+#
+# This is the zone the Phase 5 adversarial test attacks FROM. Everything it
+# holds is destroyed at teardown, and its network path is assumed hostile.
+
+[zone]
+name        = "untrusted"
+description = "Unknown files and sketchy links. Wiped on exit."
+
+[network]
+mode = "routed"
+
+[storage]
+mode = "ephemeral"
+
+[policy]
+seccomp  = "policy/untrusted.seccomp"
+landlock = "policy/untrusted.landlock"
+
+[limits]
+memory_max = "4G"
+pids_max   = 512
+
+[ui]
+border_color = "#aa3333"

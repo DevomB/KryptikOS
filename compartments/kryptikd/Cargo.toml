@@ -1,0 +1,23 @@
+[package]
+name = "kryptikd"
+version = "0.1.0"
+edition = "2021"
+description = "Kryptik compartment manager: zone lifecycle and isolation"
+license = "GPL-2.0-or-later"
+
+# Dependency policy (ADR-010): kryptikd runs privileged and mediates every
+# boundary in the system. Every dependency added here is a supply-chain
+# decision and must be justified in review. `libc` gives raw syscall access;
+# everything else is hand-rolled deliberately, including the TOML parsing,
+# rather than pulling a crate tree into the most privileged process.
+[dependencies]
+libc = "0.2"
+
+[profile.release]
+opt-level = 2
+lto = true
+codegen-units = 1
+panic = "abort"      # no unwinding through a privileged boundary
+strip = true
+overflow-checks = true   # keep these ON in release; this is security code
+debug-assertions = false

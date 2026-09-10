@@ -195,3 +195,48 @@ to repeat.
 - **Own patchset from scratch** — Phase 5 may still require kernel work if the
   zone model needs hooks Landlock cannot express (see ADR-002). That would be
   carried *on top of* linux-hardened, not instead of it.
+
+---
+
+## ADR-010: kryptikd is written in Rust
+**Status:** Accepted (2026-09-10)
+
+`kryptikd` runs privileged in zone 0. It parses zone definitions, creates
+namespaces, applies seccomp and Landlock policy, brokers the only three
+channels that cross a zone boundary, and holds the keys to per-zone volumes. It
+is the single most security-critical piece of userspace in the system: a
+memory-safety bug there does not compromise one zone, it compromises the
+mechanism that separates all of them.
+
+Writing that component in C, in a project whose entire premise is hardening,
+would be difficult to defend. Kryptik spends real performance to get
+`-D_FORTIFY_SOURCE=3`, hardened_malloc, and `INIT_ON_ALLOC` precisely because
+memory-safety bugs are the dominant exploited class. Choosing C for the one
+process that mediates every boundary would contradict that.
+
+### Costs, which are not small
+
+- **rustc must be bootstrapped into the build.** rustc is written in Rust, so
+  building it from source requires an existing rustc. The honest options are a
+  downloaded stage0 binary (a trust anchor Kryptik does not control, which cuts
+  against docs/supply-chain.md) or mrustc, which is a project of its own.
+  Unresolved; tracked as a Phase 5 blocker rather than pretended away.
+- **Large dependency surface if unmanaged.** kryptikd uses `libc` and direct
+  syscalls, not a broad crate tree. Every added dependency is a supply-chain
+  decision and needs justifying in review.
+- **Toolchain size.** A Rust toolchain in the base system is a lot of bytes for
+  one daemon.
+
+### Rejected
+
+- **C** — smallest bootstrap, no new toolchain, but see above.
+- **Go** — memory-safe, but the runtime and goroutine scheduler are awkward
+  around `clone()`, `unshare()`, and per-thread namespace semantics, which is
+  exactly the work kryptikd does.
+- **Shell** — genuinely unsuitable for holding privilege and parsing untrusted
+  zone state.
+
+### Boundary
+
+Rust is for `kryptikd` and Kryptik-authored tooling. It is not a general policy
+for the distribution: coreutils stays coreutils.

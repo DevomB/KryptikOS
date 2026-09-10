@@ -87,21 +87,43 @@ fails; `kernel-hardening-checker` reports no missing KSPP options;
 `make validate-kernel` reports every fragment symbol present in the pinned
 source; `make check-kernel-eol` reports the kernel is longterm.
 
-## Phase 5 — The compartment layer
+## Phase 5 — The compartment layer *(in progress)*
 
 Where Kryptik stops being "LFS with good flags" and becomes Kryptik.
 
-- [ ] `kryptikd` zone lifecycle (create, start, stop, destroy)
-- [ ] Per-zone netns + veth + bridge topology; `net` zone as sole NIC holder
-- [ ] Per-zone LUKS2 volumes, unlocked on start, key-wiped on stop
-- [ ] Per-zone seccomp and Landlock policy application
-- [ ] Brokered file transfer and clipboard
-- [ ] `vault` zone with no network namespace
+**The four exit requirements now hold** (see below). What remains is lifecycle
+and the brokered channels, not the isolation primitives.
 
-**Exit test:** from `untrusted`, with root inside the zone, it is impossible to
-(a) list processes in another zone, (b) read another zone's filesystem, (c)
-reach the physical NIC, or (d) read `vault`. Each verified by a written test,
-not by inspection.
+- [x] Zone definition format, parser, and cross-zone invariants
+- [x] Namespace set + `mount_proc` / `mount_sysfs` (isolate.rs)
+- [x] Landlock filesystem confinement (landlock.rs) — ABI-aware
+- [x] Adversarial exit test, passing 12/12
+- [ ] `kryptikd` zone lifecycle (create, start, stop, destroy)
+- [ ] Per-zone veth + bridge topology; `net` zone as sole NIC holder
+- [ ] Per-zone LUKS2 volumes, unlocked on start, key-wiped on stop
+- [ ] Per-zone seccomp filters (Landlock is in; seccomp is not)
+- [ ] Brokered file transfer and clipboard
+
+**Exit test: PASSING** as of 2026-09-10 — `compartments/tests/adversarial.sh`,
+12 checks, 0 failures, run as root *inside* the zone against a real 6.6 kernel.
+
+```
+Requirement 1 — cannot list processes in another zone     PASS
+Requirement 2 — cannot read another zone's filesystem     PASS
+Requirement 3 — cannot reach the physical NIC             PASS
+Requirement 4 — cannot read the vault                     PASS
+```
+
+Two findings came out of writing it rather than out of reading the design:
+
+- **sysfs is not namespaced by unshare.** The network namespace correctly denies
+  a zone the *use* of host interfaces, but `/sys/class/net` still enumerated
+  `docker0` and `eth0` — free reconnaissance for a compromised zone. Fixed by
+  `isolate.rs::mount_sysfs`.
+- **A mount namespace is not filesystem isolation.** It gives a zone its own
+  mount *table*, not its own view of the files; requirements 2 and 4 failed
+  outright until Landlock was implemented. The test keeps that as an explicit
+  negative control so the reason is never lost.
 
 ## Phase 6 — Compositor and GUI isolation
 

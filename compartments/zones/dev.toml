@@ -1,0 +1,25 @@
+# dev — Toolchains and build environments.
+
+[zone]
+name        = "dev"
+description = "Toolchains and build environments."
+
+[network]
+mode = "routed"
+
+[storage]
+mode      = "encrypted"
+volume    = "/dev/kryptik/dev"
+unlock    = "on-start"
+wipe_keys = "on-stop"
+
+[policy]
+seccomp  = "policy/dev.seccomp"
+landlock = "policy/dev.landlock"
+
+[limits]
+memory_max = "12G"
+pids_max   = 1024
+
+[ui]
+border_color = "#b5651d"

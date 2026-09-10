@@ -1,0 +1,31 @@
+# vault — long-term secrets. The most restricted zone in the system.
+
+[zone]
+name        = "vault"
+description = "Keys, password store, secrets. No network stack."
+
+[network]
+# "none" means this zone gets a network namespace containing ONLY loopback.
+# Not a firewall rule that could be misconfigured - there is no interface to
+# route through and no path to one.
+mode = "none"
+
+[storage]
+mode      = "encrypted"
+volume    = "/dev/kryptik/vault"
+unlock    = "on-start"
+wipe_keys = "on-stop"
+
+[policy]
+seccomp  = "policy/vault.seccomp"
+landlock = "policy/vault.landlock"
+
+[limits]
+memory_max = "2G"
+pids_max   = 128
+
+[ui]
+# Load-bearing, not decoration. If a user cannot tell at a glance which zone a
+# password prompt belongs to, compartmentalization has failed at the only layer
+# that matters. See docs/architecture.md.
+border_color = "#c9a227"

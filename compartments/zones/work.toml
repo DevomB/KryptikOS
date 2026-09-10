@@ -1,0 +1,25 @@
+# work — Daily productivity.
+
+[zone]
+name        = "work"
+description = "Daily productivity."
+
+[network]
+mode = "routed"
+
+[storage]
+mode      = "encrypted"
+volume    = "/dev/kryptik/work"
+unlock    = "on-start"
+wipe_keys = "on-stop"
+
+[policy]
+seccomp  = "policy/work.seccomp"
+landlock = "policy/work.landlock"
+
+[limits]
+memory_max = "8G"
+pids_max   = 1024
+
+[ui]
+border_color = "#3a7d44"

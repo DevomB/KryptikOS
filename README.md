@@ -32,11 +32,12 @@ the phase breakdown and what "done" means at each step.
 | Stage 02 — temporary tools | **Built and verified** — 17 packages, chroot-ready sysroot |
 | Stage 05 — hardened kernel | Implemented, not yet executed |
 | Stage 04, 06 — base system, ISO | Stubs — next work |
-| **Phase 5 — the compartment layer** | **Not started. This is the actual thesis.** |
+| **Phase 5 — compartment layer** | **Isolation primitives done — adversarial exit test 12/12** |
 
-Everything above the compartment layer is, so far, a well-audited Linux From
-Scratch build. What makes Kryptik *Kryptik* is Phase 5, and none of it exists
-yet. That is stated plainly here rather than buried.
+The four Phase 5 exit requirements now hold, proven adversarially with root
+*inside* the zone (`compartments/tests/adversarial.sh`). What remains in Phase 5
+is zone lifecycle, per-zone LUKS volumes, seccomp filters, and the brokered
+file/clipboard channels — not the isolation primitives.
 
 ## Why this exists
 

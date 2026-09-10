@@ -1,0 +1,29 @@
+# net — the ONLY zone holding a route to the physical NIC.
+#
+# Every other zone reaches the network through this one. That makes it a
+# chokepoint and a high-value target; it is documented as such in
+# docs/architecture.md under "Known weaknesses". Its storage is ephemeral
+# precisely because it is the most exposed zone.
+
+[zone]
+name        = "net"
+description = "Sole holder of a physical network route."
+
+[network]
+mode = "nic"
+# Zones with mode = "routed" get a veth into this bridge.
+bridge = "kryptik0"
+
+[storage]
+mode = "ephemeral"
+
+[policy]
+seccomp  = "policy/net.seccomp"
+landlock = "policy/net.landlock"
+
+[limits]
+memory_max = "1G"
+pids_max   = 256
+
+[ui]
+border_color = "#2f6f9f"
