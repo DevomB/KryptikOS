@@ -98,8 +98,13 @@ and the brokered channels, not the isolation primitives.
 - [x] Namespace set + `mount_proc` / `mount_sysfs` (isolate.rs)
 - [x] Landlock filesystem confinement (landlock.rs) — ABI-aware
 - [x] Adversarial exit test, passing 12/12
-- [ ] `kryptikd` zone lifecycle (create, start, stop, destroy)
+- [x] `kryptikd run` — creates a zone and executes inside it, applying
+      namespaces, proc/sysfs remounts, Landlock and seccomp in that order
+- [ ] `kryptikd stop` / persistent zone state (run is one-shot today)
 - [ ] Per-zone veth + bridge topology; `net` zone as sole NIC holder
+- [ ] Minimal per-zone `/dev` — a zone currently inherits the caller's `/dev`
+      rather than getting a devtmpfs with null/zero/urandom/tty and nothing
+      else. This grants more than it should and is a known gap, not a decision.
 - [ ] Per-zone LUKS2 volumes, unlocked on start, key-wiped on stop
 - [x] Per-zone seccomp filters — default-deny BPF allowlist, 13 dangerous syscalls verified killed
 - [ ] Brokered file transfer and clipboard
@@ -120,6 +125,24 @@ reaching another *zone*; none of them says anything about reaching the
 *kernel*, and `threat-model.md` concedes as L1 that a kernel LPE compromises
 every zone at once. The syscall surface a zone can touch is part of the
 boundary whether the original list said so or not.
+
+**`kryptikd` now drives this itself.** The test above originally used
+`unshare(1)`, which proved the primitives were sound but said nothing about
+whether kryptikd applied them correctly. `kryptikd run NAME -- CMD` creates the
+zone; verified independently:
+
+```
+uid inside          0            processes visible   3 (host: 41)
+pid inside          1            vault interfaces    lo only
+mount(2)            SIGSYS       read outside rootfs Permission denied
+```
+
+Three bugs surfaced only by running it: a missing parent/child handshake that
+left the zone unmapped and running as nobody; a Landlock allowlist without
+`/proc`, so a working pid namespace still gave "cannot open directory /proc";
+and `cat` dying on `fadvise64`, which was absent from the seccomp allowlist.
+That last one is why `kryptikd seccomp-trace` exists — a KILL tells you a zone
+died, a TRAP tells you what it died on.
 
 Two findings came out of writing it rather than out of reading the design:
 

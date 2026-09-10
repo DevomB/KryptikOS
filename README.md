@@ -32,12 +32,21 @@ the phase breakdown and what "done" means at each step.
 | Stage 02 — temporary tools | **Built and verified** — 17 packages, chroot-ready sysroot |
 | Stage 05 — hardened kernel | Implemented, not yet executed |
 | Stage 04, 06 — base system, ISO | Stubs — next work |
-| **Phase 5 — compartment layer** | **Isolation primitives done — adversarial exit test 12/12** |
+| **Phase 5 — compartment layer** | **`kryptikd run` creates real zones** — exit test 14/14 |
 
-The four Phase 5 exit requirements now hold, proven adversarially with root
-*inside* the zone (`compartments/tests/adversarial.sh`). What remains in Phase 5
-is zone lifecycle, per-zone LUKS volumes, seccomp filters, and the brokered
-file/clipboard channels — not the isolation primitives.
+The Phase 5 exit requirements hold, proven adversarially with root *inside* the
+zone (`compartments/tests/adversarial.sh`), and `kryptikd run` now creates those
+zones itself rather than the test simulating them with `unshare`:
+
+```
+$ kryptikd run untrusted -- /bin/sh -c 'echo pid=$$; ls /proc | grep -c "^[0-9]*$"'
+pid=1
+3                       # 41 processes visible on the host
+```
+
+What remains in Phase 5 is persistent zone lifecycle, per-zone LUKS volumes, a
+minimal per-zone `/dev`, the veth/bridge topology, and the brokered
+file/clipboard channels.
 
 ## Why this exists
 
