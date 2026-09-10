@@ -139,10 +139,23 @@ jobs:
           cd compartments/kryptikd && cargo build --quiet
           ./target/debug/kryptikd check --zones ../zones
 
+      - name: Allow unprivileged user namespaces
+        run: |
+          # Ubuntu 24.04 ships kernel.apparmor_restrict_unprivileged_userns=1,
+          # which blocks unprivileged userns creation. Kryptik zones are built
+          # on user namespaces, so the test cannot run without this.
+          #
+          # Note the irony worth being explicit about: Ubuntu restricts this
+          # BECAUSE unprivileged userns is a known LPE vector. Kryptik reaches
+          # the same conclusion from the other direction - hardened.fragment
+          # sets CONFIG_USER_NS_UNPRIVILEGED=n, because kryptikd creates zones
+          # with privilege and nothing inside a zone ever needs to.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          echo "userns check:"
+          unshare --user --map-root-user id -u
+
       - name: Phase 5 adversarial exit test
         run: |
-          # Attacks a zone as root inside it. Requires user namespaces, which
-          # GitHub's ubuntu runners provide.
           cd compartments/kryptikd && cargo build --quiet
           cd ../.. && ./compartments/tests/adversarial.sh
 

@@ -61,7 +61,25 @@ fi
 
 if ! unshare --user --map-root-user true 2>/dev/null; then
     fail "cannot create a user namespace on this host"
-    info "Kryptik zones require user namespaces. Nothing below can be tested."
+    info "Kryptik zones are built on user namespaces; nothing below can be tested."
+    # Ubuntu 24.04+ and some hardened kernels block this by default. Name the
+    # exact knob rather than leaving people to guess.
+    restrict="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo "")"
+    if [[ "$restrict" == "1" ]]; then
+        info ""
+        info "kernel.apparmor_restrict_unprivileged_userns=1 on this host."
+        info "Ubuntu 24.04+ sets this because unprivileged userns is a known"
+        info "LPE vector. To run this test:"
+        info "  sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0"
+        info ""
+        info "Kryptik agrees with the restriction, incidentally: it sets"
+        info "CONFIG_USER_NS_UNPRIVILEGED=n, because kryptikd creates zones"
+        info "with privilege and nothing inside a zone needs to."
+    fi
+    max_ns="$(sysctl -n user.max_user_namespaces 2>/dev/null || echo "")"
+    if [[ "$max_ns" == "0" ]]; then
+        info "user.max_user_namespaces is 0; raise it to run this test."
+    fi
     exit 1
 fi
 pass "user namespaces available"
