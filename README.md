@@ -10,7 +10,12 @@ A from-scratch Linux distribution built on two commitments:
    compiled with the full mitigation set.
 
 Kryptik is built from source via Linux From Scratch — no upstream distro base,
-no inherited packaging decisions.
+no inherited packaging decisions. Its binaries carry their own target triple:
+
+```
+$ sysroot/usr/bin/bash --version
+GNU bash, version 5.2.32(1)-release (x86_64-kryptik-linux-gnu)
+```
 
 ## Status
 

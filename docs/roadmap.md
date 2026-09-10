@@ -49,6 +49,16 @@ requests the target loader rather than the host's.
 Sysroot is 3.1GB. Slowest steps: gcc pass 2 ~29min, binutils pass 2 ~3min,
 findutils ~2min; everything else under 100s.
 
+The binaries identify as Kryptik's own target, not the host's:
+
+```
+$ sysroot/usr/bin/bash --version
+GNU bash, version 5.2.32(1)-release (x86_64-kryptik-linux-gnu)
+
+$ /usr/bin/bash --version                 # host, for comparison
+GNU bash, version 5.2.21(1)-release (x86_64-pc-linux-gnu)
+```
+
 ## Phase 3 — Base system
 
 Full package set, all built with the hardening flag set. hardened_malloc wired
