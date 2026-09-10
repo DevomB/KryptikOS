@@ -125,6 +125,27 @@ jobs:
           [ $fail -eq 0 ] && echo "sources.lock covers every manifest entry"
           exit $fail
 
+  compartments:
+    name: Compartment layer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: kryptikd unit tests
+        run: cd compartments/kryptikd && cargo test
+
+      - name: Zone definitions validate
+        run: |
+          cd compartments/kryptikd && cargo build --quiet
+          ./target/debug/kryptikd check --zones ../zones
+
+      - name: Phase 5 adversarial exit test
+        run: |
+          # Attacks a zone as root inside it. Requires user namespaces, which
+          # GitHub's ubuntu runners provide.
+          cd compartments/kryptikd && cargo build --quiet
+          cd ../.. && ./compartments/tests/adversarial.sh
+
   kernel:
     name: Kernel currency
     runs-on: ubuntu-latest
