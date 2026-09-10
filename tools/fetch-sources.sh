@@ -60,6 +60,44 @@ fi
 
 mkdir -p "$KRYPTIK_SOURCES"
 
+# Download one file, trying mirrors in order.
+#
+# Three things learned the hard way from ftp.gnu.org:
+#   --no-progress-meter   the progress bar renders as thousands of lines when
+#                         stdout is not a terminal, burying real errors
+#   --speed-limit/-time   a transfer that stalls at 54% otherwise hangs for
+#                         minutes before curl gives up; fail fast and retry
+#   -C -                  resume a partial file rather than restarting a 140MB
+#                         kernel tarball from zero
+fetch_one() {
+    local url="$1" dest="$2"
+    local -a urls=("$url")
+
+    # GNU tarballs get a second mirror.
+    if [[ -n "${MIRROR_GNU_FALLBACK:-}" && "$url" == "${MIRROR_GNU}/"* ]]; then
+        urls+=("${MIRROR_GNU_FALLBACK}/${url#"${MIRROR_GNU}/"}")
+    fi
+
+    local u attempt=0
+    for u in "${urls[@]}"; do
+        attempt=$((attempt + 1))
+        [[ "$attempt" -gt 1 ]] && warn "trying fallback mirror: ${u}"
+        if curl -fL \
+                --no-progress-meter \
+                --connect-timeout 20 \
+                --speed-limit 2048 --speed-time 30 \
+                --retry 3 --retry-delay 2 --retry-connrefused \
+                -C - -o "${dest}.part" "$u"; then
+            mv "${dest}.part" "$dest"
+            return 0
+        fi
+        warn "failed from ${u}"
+    done
+
+    # Keep the .part file: the next run resumes instead of restarting.
+    return 1
+}
+
 lookup_hash() {
     [[ -f "$KRYPTIK_LOCK" ]] || return 1
     awk -v f="$1" '$2 == f { print $1; found=1 } END { exit !found }' "$KRYPTIK_LOCK"
@@ -82,11 +120,10 @@ while IFS='|' read -r name ver url; do
         cached=$((cached + 1))
     else
         log "fetching ${name} ${ver}"
-        if ! curl -fSL --retry 3 --retry-delay 2 -o "${dest}.part" "$url"; then
-            rm -f "${dest}.part"
-            die "download failed: ${url}"
+        if ! fetch_one "$url" "$dest"; then
+            die "download failed: ${name} ${ver}
+Tried every mirror. Re-run to resume — partial downloads are kept."
         fi
-        mv "${dest}.part" "$dest"
         fetched=$((fetched + 1))
     fi
 
