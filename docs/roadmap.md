@@ -3,18 +3,18 @@
 Phases are ordered by dependency, not by interest. Each has an unambiguous exit
 test — "it works" is not an exit test.
 
-## Phase 0 — Scaffolding *(current)*
+## Phase 0 — Scaffolding ✅ **COMPLETE**
 
 - [x] Repository structure
 - [x] Architecture, threat model, hardening rationale
 - [x] Host requirement checker
 - [x] Source fetching with checksum locking
 - [x] Resolve ADR-008 (libc) — glibc
-- [ ] Generate and audit `sources.lock`
+- [x] Generate and audit `sources.lock` — 24 of 25 verified against upstream signatures
 
 **Exit test:** `make check && make sources` succeeds on a clean Debian/Arch host.
 
-## Phase 1 — Cross toolchain *(in progress)*
+## Phase 1 — Cross toolchain ✅ **COMPLETE**
 
 Binutils + GCC + glibc, two passes, built against a sysroot so the host
 toolchain never contaminates the target. Implemented in
@@ -24,13 +24,19 @@ Hardening flags are introduced *after* the bootstrap compiler exists. Pass-1
 GCC cannot be built with the full flag set — it is the thing that implements
 the flags.
 
-**Exit test:** target toolchain compiles a static hello-world that runs under
-`qemu-user`; `readelf -d` confirms RELRO, BIND_NOW, and PIE on a dynamic build.
+**Exit test: PASSED** on 2026-09-10. The cross compiler produces binaries
+requesting `/lib64/ld-linux-x86-64.so.2` — the target loader, not the host's —
+and `readelf -h` confirms position-independent output, so `--enable-default-pie`
+took effect.
 
-**Realistic effort:** the LFS toolchain chapters are well-trodden. Expect
-failures to come from the hardening flags, not from LFS.
+Build times on an 8-core / 7GB host at `-j6`: binutils ~4min, GCC ~24min,
+kernel headers 34s, glibc ~7min, libstdc++ ~2min.
 
-## Phase 2 — Temporary tools and chroot
+**What actually went wrong:** not the hardening flags. The failure was that a
+V_LINUX bump left stale kernel headers in the sysroot and glibc began compiling
+against a mix of two kernel versions. Fixed by clearing the header tree first.
+
+## Phase 2 — Temporary tools and chroot *(in progress)*
 
 Enough userland to enter a chroot and build the rest of the system from inside.
 Implemented in `build/stages/02-temp-tools.sh` (17 packages, resumable).

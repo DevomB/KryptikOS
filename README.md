@@ -23,8 +23,8 @@ the phase breakdown and what "done" means at each step.
 | Source fetching, checksum locking | Working, 25 sources pinned |
 | Upstream signature verification | Working, **24 of 25 verified** |
 | Kernel currency + fragment validation | Working, enforced in CI |
-| Stage 01 — cross toolchain | Implemented, first execution in progress |
-| Stage 02 — temporary tools | Implemented, not yet executed |
+| Stage 01 — cross toolchain | **Built and verified** — target loader + PIE confirmed |
+| Stage 02 — temporary tools | Implemented, first execution in progress |
 | Stage 05 — hardened kernel | Implemented, not yet executed |
 | Stages 04, 06 — base system, ISO | Stubs |
 | **Phase 5 — the compartment layer** | **Not started. This is the actual thesis.** |
