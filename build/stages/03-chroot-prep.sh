@@ -50,6 +50,11 @@ create_layout() {
     mkdir -pv "$LFS"/var/{cache,local,log,mail,opt,spool}
     mkdir -pv "$LFS"/var/lib/{color,misc,locate}
 
+    # Mount points for the virtual filesystems. These must exist before
+    # mount_virtual runs; without them the mounts fail with the distinctly
+    # unhelpful "mount point does not exist".
+    mkdir -pv "$LFS"/{dev,proc,sys,run}
+
     ln -sfv /run "$LFS/var/run"
     ln -sfv /run/lock "$LFS/var/lock"
 
