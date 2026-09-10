@@ -7,6 +7,7 @@ KRYPTIK_ROOT="${KRYPTIK_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd
 KRYPTIK_SOURCES="${KRYPTIK_SOURCES:-${KRYPTIK_ROOT}/sources}"
 KRYPTIK_WORK="${KRYPTIK_WORK:-${KRYPTIK_ROOT}/build/work}"
 KRYPTIK_OUT="${KRYPTIK_OUT:-${KRYPTIK_ROOT}/out}"
+# shellcheck disable=SC2034  # consumed by tools/fetch-sources.sh
 KRYPTIK_LOCK="${KRYPTIK_ROOT}/sources.lock"
 
 if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then

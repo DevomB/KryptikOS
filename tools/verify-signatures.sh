@@ -227,7 +227,8 @@ verify_kernel() {
     fi
 
     # kernel.org signs the uncompressed tar, so decompress before verifying.
-    local tmptar="${KRYPTIK_WORK}/verify-$(basename "${file%.xz}")"
+    local tmptar
+    tmptar="${KRYPTIK_WORK}/verify-$(basename "${file%.xz}")"
     mkdir -p "$(dirname "$tmptar")"
     dim "  decompressing kernel tarball to verify (~1.5GB, takes a moment)"
     if ! xz -dc "${KRYPTIK_SOURCES}/${file}" > "$tmptar"; then
@@ -246,7 +247,7 @@ log "Verifying upstream signatures"
 import_keys
 echo
 
-while read -r name ver url; do
+while read -r name _ver url; do
     [[ -z "$name" ]] && continue
     file="$(basename "$url")"
     [[ -f "${KRYPTIK_SOURCES}/${file}" ]] || { warn "${name}: not downloaded"; continue; }

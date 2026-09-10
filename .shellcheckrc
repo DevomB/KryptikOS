@@ -1,0 +1,13 @@
+# Kryptik shellcheck configuration
+
+# SC2164: "Use 'cd ... || exit'"
+#
+# Suppressed deliberately. Every Kryptik script sources build/lib/common.sh,
+# which sets 'set -Eeuo pipefail' plus an ERR trap that reports the failing
+# file and line. A failing cd therefore already aborts the build with a better
+# message than '|| exit' would produce. Adding 29 '|| exit' suffixes would be
+# noise that implies the guard is absent when it is not.
+#
+# If a script is ever written that does NOT source common.sh, this suppression
+# stops being safe for that file - re-enable it there with a local directive.
+disable=SC2164

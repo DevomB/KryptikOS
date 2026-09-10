@@ -67,8 +67,7 @@ PYEOF
 
 status="${result%%|*}"
 rest="${result#*|}"
-moniker="${rest%%|*}"
-message="${rest#*|}"
+message="${rest#*|}"   # field 2 (moniker) is already inside the message
 
 case "$status" in
     OK)

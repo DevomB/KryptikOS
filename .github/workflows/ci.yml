@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly. The kernel EOL check is the reason this runs on a timer: a pinned
+    # kernel does not change, but its support status does. Kryptik shipped an
+    # EOL kernel once already (ADR-009) and a scheduled check is what makes
+    # that a caught error rather than a discovered one.
+    - cron: '0 6 * * 1'
+
+jobs:
+  lint:
+    name: Shell lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+
+      - name: Syntax check every script
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            if bash -n "$f"; then
+              echo "  ok   $f"
+            else
+              echo "  FAIL $f"
+              fail=1
+            fi
+          done < <(find . -name '*.sh' -not -path './build/work/*')
+          exit $fail
+
+      - name: Shellcheck
+        run: shellcheck -S warning -x build/lib/common.sh build/stages/*.sh tools/*.sh
+
+      - name: Executable bits are recorded
+        run: |
+          # NTFS cannot express the POSIX exec bit, so a commit from Windows
+          # silently records 100644 and a Linux clone fails before bash runs.
+          fail=0
+          for f in build/stages/*.sh tools/*.sh; do
+            mode=$(git ls-files -s "$f" | awk '{print $1}')
+            if [ "$mode" != "100755" ]; then
+              echo "  NOT EXECUTABLE ($mode): $f"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: No CRLF in scripts
+        run: |
+          if grep -rlU $'\r' --include='*.sh' --include='Makefile' . ; then
+            echo "CRLF found - scripts will fail on Linux with 'bad interpreter'"
+            exit 1
+          fi
+          echo "no CRLF"
+
+  manifest:
+    name: Source manifest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Manifest resolves
+        run: ./tools/fetch-sources.sh --list
+
+      - name: Every source URL is reachable
+        run: |
+          fail=0
+          while read -r name ver url; do
+            code=$(curl -o /dev/null -s -w '%{http_code}' -I -L --max-time 30 "$url" || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "  ok   $name $ver"
+            else
+              echo "  DEAD $name $ver (HTTP $code) $url"
+              fail=1
+            fi
+          done < <(./tools/fetch-sources.sh --list)
+          exit $fail
+
+      - name: sources.lock covers the manifest
+        run: |
+          fail=0
+          while read -r name ver url; do
+            file=$(basename "$url")
+            if ! grep -q "  $file\$" sources.lock; then
+              echo "  MISSING FROM LOCK: $file"
+              fail=1
+            fi
+          done < <(./tools/fetch-sources.sh --list)
+          [ $fail -eq 0 ] && echo "sources.lock covers every manifest entry"
+          exit $fail
+
+  kernel:
+    name: Kernel currency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pinned kernel is longterm and not EOL
+        run: ./tools/check-kernel-eol.sh
+
+      - name: Kernel config fragments validate against pinned source
+        run: |
+          # Downloads the pinned kernel (~150MB) and the hardened patch to
+          # check every fragment symbol actually exists. Symbols get renamed
+          # and removed between releases, and merge_config.sh drops unknown
+          # ones silently - so a stale fragment ships a kernel that looks
+          # hardened and is not.
+          mkdir -p sources
+          # Match the exact package names: a bare '^linux ' would also catch
+          # the linux-hardened row.
+          ./tools/fetch-sources.sh --list \
+            | awk '$1 == "linux" || $1 == "linux-hardened" {print $3}' \
+            | while read -r u; do
+                echo "fetching $(basename "$u")"
+                curl -fL --no-progress-meter -o "sources/$(basename "$u")" "$u"
+              done
+          ./tools/validate-kernel-config.sh
+          ./tools/validate-kernel-config.sh --hardened
