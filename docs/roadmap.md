@@ -36,14 +36,18 @@ kernel headers 34s, glibc ~7min, libstdc++ ~2min.
 V_LINUX bump left stale kernel headers in the sysroot and glibc began compiling
 against a mix of two kernel versions. Fixed by clearing the header tree first.
 
-## Phase 2 — Temporary tools and chroot *(in progress)*
+## Phase 2 — Temporary tools and chroot ✅ **COMPLETE**
 
 Enough userland to enter a chroot and build the rest of the system from inside.
 Implemented in `build/stages/02-temp-tools.sh` (17 packages, resumable).
 **Written but not yet executed** — stage 01 must land first.
 
-**Exit test:** `chroot` into the target with a working shell and coreutils, host
-filesystem fully detached.
+**Exit test: PASSED** on 2026-09-10. All 17 packages cross-compiled into the
+sysroot; the nine binaries a chroot needs are present, and the built `bash`
+requests the target loader rather than the host's.
+
+Sysroot is 3.1GB. Slowest steps: gcc pass 2 ~29min, binutils pass 2 ~3min,
+findutils ~2min; everything else under 100s.
 
 ## Phase 3 — Base system
 

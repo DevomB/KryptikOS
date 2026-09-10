@@ -24,9 +24,9 @@ the phase breakdown and what "done" means at each step.
 | Upstream signature verification | Working, **24 of 25 verified** |
 | Kernel currency + fragment validation | Working, enforced in CI |
 | Stage 01 — cross toolchain | **Built and verified** — target loader + PIE confirmed |
-| Stage 02 — temporary tools | Implemented, first execution in progress |
+| Stage 02 — temporary tools | **Built and verified** — 17 packages, chroot-ready sysroot |
 | Stage 05 — hardened kernel | Implemented, not yet executed |
-| Stages 04, 06 — base system, ISO | Stubs |
+| Stage 04, 06 — base system, ISO | Stubs — next work |
 | **Phase 5 — the compartment layer** | **Not started. This is the actual thesis.** |
 
 Everything above the compartment layer is, so far, a well-audited Linux From
