@@ -1,0 +1,23 @@
+# Build output — never commit artifacts
+/out/
+/sources/
+/build/work/
+*.iso
+*.img
+*.tar.*
+*.sqfs
+*.log
+
+# Kernel build leftovers
+*.o
+*.ko
+*.mod
+*.mod.c
+.config.old
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

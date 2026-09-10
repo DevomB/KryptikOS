@@ -1,0 +1,12 @@
+# Binaries permitted to carry setuid/setgid in a Kryptik image.
+#
+# Format:  /absolute/path   # justification
+#
+# The default state of this file is EMPTY. Kryptik's position is that
+# privilege transitions go through kryptikd, where they are auditable, rather
+# than through scattered setuid binaries, where they are not.
+#
+# Before adding an entry, confirm that neither file capabilities
+# (e.g. CAP_NET_RAW for ping) nor a brokered service can do the job.
+
+# --- allowlist below this line ---

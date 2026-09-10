@@ -1,0 +1,12 @@
+# Packages exempted from the full hardening flag set.
+#
+# Format:  <package>  <flag-to-drop>  # justification
+#
+# An entry without a justification comment is a BUILD FAILURE, not a warning.
+# Exceptions are reviewed and removed, never accumulated. If you add one, say
+# what breaks and what you tried.
+#
+# Example (not active):
+# glibc  -pie  # glibc builds its own PIE handling; -pie breaks ld.so startup
+
+# --- active exceptions below this line ---
