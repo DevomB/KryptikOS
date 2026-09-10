@@ -172,7 +172,20 @@ s_linux_headers() {
     make mrproper
     make headers
     find usr/include -type f ! -name "*.h" -delete
+
+    # Remove any previously installed headers first. Without this, bumping
+    # V_LINUX leaves headers from the old kernel behind wherever the new one
+    # dropped a file - glibc then compiles against a mix of two kernel
+    # versions, which is exactly the kind of failure that surfaces much later
+    # as something unrelated.
+    rm -rf "${LFS}/usr/include"
     cp -rv usr/include "${LFS}/usr"
+
+    # Record what was installed so drift is visible.
+    if [[ -f "${LFS}/usr/include/linux/version.h" ]]; then
+        echo "installed kernel headers:"
+        grep -E "LINUX_VERSION_(MAJOR|PATCHLEVEL|SUBLEVEL)"             "${LFS}/usr/include/linux/version.h" || true
+    fi
 }
 
 s_glibc() {
