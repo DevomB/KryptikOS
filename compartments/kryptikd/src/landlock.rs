@@ -151,17 +151,29 @@ impl Ruleset {
         let handled = access_mask_for(abi);
 
         // The attr struct grew in ABI v4. Passing the wrong size is EINVAL.
+        //
+        // Both variants live on the stack. An earlier version used Box::leak,
+        // which leaked one allocation per ruleset - unbounded in a long-running
+        // kryptikd that creates a ruleset per zone start. The kernel copies the
+        // struct during the call and does not retain the pointer, so a stack
+        // local is correct and the borrow ends with the syscall.
+        let v4 = RulesetAttrV4 {
+            handled_access_fs: handled,
+            handled_access_net: 0,
+        };
+        let v1 = RulesetAttrV1 {
+            handled_access_fs: handled,
+        };
         let (ptr, size): (*const libc::c_void, usize) = if abi >= 4 {
-            let attr = Box::leak(Box::new(RulesetAttrV4 {
-                handled_access_fs: handled,
-                handled_access_net: 0,
-            }));
-            (attr as *const _ as *const libc::c_void, std::mem::size_of::<RulesetAttrV4>())
+            (
+                &v4 as *const _ as *const libc::c_void,
+                std::mem::size_of::<RulesetAttrV4>(),
+            )
         } else {
-            let attr = Box::leak(Box::new(RulesetAttrV1 {
-                handled_access_fs: handled,
-            }));
-            (attr as *const _ as *const libc::c_void, std::mem::size_of::<RulesetAttrV1>())
+            (
+                &v1 as *const _ as *const libc::c_void,
+                std::mem::size_of::<RulesetAttrV1>(),
+            )
         };
 
         let fd = unsafe { libc::syscall(SYS_LANDLOCK_CREATE_RULESET, ptr, size, 0u32) };

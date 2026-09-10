@@ -31,6 +31,7 @@ const BPF_W: u16 = 0x00;
 const BPF_ABS: u16 = 0x20;
 const BPF_JMP: u16 = 0x05;
 const BPF_JEQ: u16 = 0x10;
+const BPF_JGE: u16 = 0x30;
 const BPF_K: u16 = 0x00;
 const BPF_RET: u16 = 0x06;
 
@@ -69,6 +70,7 @@ const fn jump(code: u16, k: u32, jt: u8, jf: u8) -> SockFilter {
 pub enum SeccompError {
     UnsupportedArch,
     TooManyRules(usize),
+    BadSyscallNumber(libc::c_long),
     Syscall { call: &'static str, errno: i32 },
 }
 
@@ -83,6 +85,10 @@ impl std::fmt::Display for SeccompError {
             SeccompError::TooManyRules(n) => {
                 write!(f, "filter would be {n} instructions; the kernel limit is 4096")
             }
+            SeccompError::BadSyscallNumber(nr) => write!(
+                f,
+                "syscall number {nr} is out of range for a 32-bit comparison;                  refusing to build a filter that would compare a truncated value"
+            ),
             SeccompError::Syscall { call, errno } => {
                 write!(f, "{call}: {}", io::Error::from_raw_os_error(*errno))
             }
@@ -228,14 +234,33 @@ fn build_program(allow: &[libc::c_long]) -> Result<Vec<SockFilter>, SeccompError
 
     p.push(stmt(BPF_LD | BPF_W | BPF_ABS, OFF_NR));
 
-    // The x32 ABI reuses x86-64 syscall numbers with the high bit set. Without
-    // this check a filter written against x86-64 numbers can be bypassed by
-    // making the same call through x32.
-    p.push(jump(BPF_JMP | BPF_JEQ | BPF_K, X32_SYSCALL_BIT, 0, 1));
+    // The x32 ABI reuses x86-64 syscall numbers with the high bit set, so an
+    // x32 call arrives as 0x40000000 | nr. This must be a >= test, not ==:
+    // an equality check against the bare bit matches only x32 syscall 0 and
+    // silently lets every other x32 number through to the allowlist.
+    //
+    // Default-deny catches them anyway, since no x32 number can equal a plain
+    // x86-64 one - so this is defense in depth rather than the primary control.
+    // It is still worth being correct: a check that does nothing is worse than
+    // no check, because it reads as though the case is handled.
+    p.push(jump(BPF_JMP | BPF_JGE | BPF_K, X32_SYSCALL_BIT, 0, 1));
     p.push(stmt(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS));
 
     for &nr in allow {
-        p.push(jump(BPF_JMP | BPF_JEQ | BPF_K, nr as u32, 0, 1));
+        // seccomp_data.nr is a 32-bit field, so the comparison is 32-bit. A
+        // c_long that does not fit would be silently truncated and the filter
+        // would compare against a DIFFERENT syscall than intended - permitting
+        // one nobody reviewed. Refuse to build such a filter.
+        //
+        // No real syscall number comes close to this bound; the check exists so
+        // that a future edit adding a bad constant fails loudly at build time
+        // instead of producing a quietly wrong allowlist.
+        if nr < 0 || nr > u32::MAX as libc::c_long {
+            return Err(SeccompError::BadSyscallNumber(nr));
+        }
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        let nr_u32 = nr as u32; // bounds-checked immediately above
+        p.push(jump(BPF_JMP | BPF_JEQ | BPF_K, nr_u32, 0, 1));
         p.push(stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
     }
 
@@ -361,13 +386,118 @@ mod tests {
         assert!(p.iter().take(3).any(|i| i.k == AUDIT_ARCH_X86_64));
     }
 
+    /// A minimal interpreter for the BPF subset `build_program` emits.
+    ///
+    /// The previous x32 test asserted only that the constant 0x40000000
+    /// appeared somewhere in the program. It passed while the comparison was
+    /// BPF_JEQ instead of BPF_JGE - which matches only x32 syscall 0 and lets
+    /// every other x32 number through. Checking that a constant is present
+    /// says nothing about what the program DOES with it, so this evaluates the
+    /// filter the way the kernel would.
+    fn evaluate(prog: &[SockFilter], arch: u32, nr: u32) -> u32 {
+        let mut pc = 0usize;
+        let mut acc: u32 = 0;
+        loop {
+            let ins = prog[pc];
+            match ins.code {
+                c if c == BPF_LD | BPF_W | BPF_ABS => {
+                    acc = match ins.k {
+                        OFF_ARCH => arch,
+                        OFF_NR => nr,
+                        other => panic!("unexpected load offset {other}"),
+                    };
+                    pc += 1;
+                }
+                c if c == BPF_JMP | BPF_JEQ | BPF_K => {
+                    pc += 1 + if acc == ins.k { ins.jt as usize } else { ins.jf as usize };
+                }
+                c if c == BPF_JMP | BPF_JGE | BPF_K => {
+                    pc += 1 + if acc >= ins.k { ins.jt as usize } else { ins.jf as usize };
+                }
+                c if c == BPF_RET | BPF_K => return ins.k,
+                other => panic!("unexpected opcode {other:#x}"),
+            }
+            assert!(pc < prog.len(), "program ran off the end without returning");
+        }
+    }
+
     #[test]
-    fn x32_abi_is_rejected() {
+    fn interpreter_allows_permitted_syscalls() {
+        let p = build_program(&[libc::SYS_read, libc::SYS_write]).unwrap();
+        for nr in [libc::SYS_read, libc::SYS_write] {
+            assert_eq!(
+                evaluate(&p, AUDIT_ARCH_X86_64, nr as u32),
+                SECCOMP_RET_ALLOW,
+                "syscall {nr} should be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn interpreter_kills_unlisted_syscalls() {
         let p = build_program(&[libc::SYS_read]).unwrap();
-        assert!(
-            p.iter().any(|i| i.k == X32_SYSCALL_BIT),
-            "filter must reject the x32 ABI or its numbering bypasses the allowlist"
+        assert_eq!(
+            evaluate(&p, AUDIT_ARCH_X86_64, libc::SYS_ptrace as u32),
+            SECCOMP_RET_KILL_PROCESS
         );
+    }
+
+    #[test]
+    fn interpreter_kills_a_foreign_architecture() {
+        let p = build_program(&[libc::SYS_read]).unwrap();
+        // i386 would otherwise match on a syscall number meaning something else.
+        assert_eq!(evaluate(&p, 0x4000_0003, libc::SYS_read as u32), SECCOMP_RET_KILL_PROCESS);
+    }
+
+    #[test]
+    fn every_x32_syscall_number_is_killed() {
+        // The regression test for the JEQ/JGE bug. Checks a spread of x32
+        // numbers, not just the bare bit: with BPF_JEQ only the first of these
+        // was caught by the x32 check.
+        let p = build_program(BASE_ALLOWLIST).unwrap();
+        for offset in [0u32, 1, 2, 60, 101, 257, 1000] {
+            let x32_nr = X32_SYSCALL_BIT | offset;
+            assert_eq!(
+                evaluate(&p, AUDIT_ARCH_X86_64, x32_nr),
+                SECCOMP_RET_KILL_PROCESS,
+                "x32 syscall {x32_nr:#x} (x86-64 nr {offset}) was not killed"
+            );
+        }
+    }
+
+    #[test]
+    fn the_x32_guard_uses_a_range_comparison() {
+        // Named explicitly so the reason survives: == matches one value, and
+        // the guard needs to match a whole half of the number space.
+        let p = build_program(&[libc::SYS_read]).unwrap();
+        let guard = p
+            .iter()
+            .find(|i| i.k == X32_SYSCALL_BIT)
+            .expect("no x32 guard in the program");
+        assert_eq!(
+            guard.code,
+            BPF_JMP | BPF_JGE | BPF_K,
+            "x32 guard must be a >= comparison, not =="
+        );
+    }
+
+    #[test]
+    fn the_whole_allowlist_evaluates_correctly() {
+        let p = build_program(BASE_ALLOWLIST).unwrap();
+        for &nr in BASE_ALLOWLIST {
+            assert_eq!(
+                evaluate(&p, AUDIT_ARCH_X86_64, nr as u32),
+                SECCOMP_RET_ALLOW,
+                "allowlisted syscall {nr} was not allowed"
+            );
+        }
+        for (nr, why) in DENIED_RATIONALE {
+            assert_eq!(
+                evaluate(&p, AUDIT_ARCH_X86_64, *nr as u32),
+                SECCOMP_RET_KILL_PROCESS,
+                "denied syscall {nr} ({why}) was not killed"
+            );
+        }
     }
 
     /// The documentation-with-a-test: the denied list and the allowlist must
@@ -381,6 +511,15 @@ mod tests {
                 "syscall {nr} is in BASE_ALLOWLIST but documented as denied: {why}"
             );
         }
+    }
+
+    #[test]
+    fn out_of_range_syscall_numbers_are_refused() {
+        // Would truncate to 1 (SYS_write) in a 32-bit comparison, silently
+        // permitting a syscall nobody put on the list.
+        let bogus: libc::c_long = 0x1_0000_0001;
+        assert!(build_program(&[bogus]).is_err());
+        assert!(build_program(&[-1]).is_err());
     }
 
     #[test]
