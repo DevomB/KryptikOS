@@ -14,9 +14,24 @@ no inherited packaging decisions.
 
 ## Status
 
-**Pre-alpha. Nothing bootable yet.** The build system is being scaffolded; no
-stage has produced a working image. See [docs/roadmap.md](docs/roadmap.md) for
-the honest phase breakdown and what "done" means at each step.
+**Pre-alpha. Nothing bootable yet.** See [docs/roadmap.md](docs/roadmap.md) for
+the phase breakdown and what "done" means at each step.
+
+| Area | State |
+|---|---|
+| Host requirement check | Working, run against a real Ubuntu host |
+| Source fetching, checksum locking | Working, 25 sources pinned |
+| Upstream signature verification | Working, **24 of 25 verified** |
+| Kernel currency + fragment validation | Working, enforced in CI |
+| Stage 01 — cross toolchain | Implemented, first execution in progress |
+| Stage 02 — temporary tools | Implemented, not yet executed |
+| Stage 05 — hardened kernel | Implemented, not yet executed |
+| Stages 04, 06 — base system, ISO | Stubs |
+| **Phase 5 — the compartment layer** | **Not started. This is the actual thesis.** |
+
+Everything above the compartment layer is, so far, a well-audited Linux From
+Scratch build. What makes Kryptik *Kryptik* is Phase 5, and none of it exists
+yet. That is stated plainly here rather than buried.
 
 ## Why this exists
 
