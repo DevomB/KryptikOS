@@ -98,9 +98,15 @@ step() {
         err "${name} failed. Last 40 lines of ${logfile}:"
         tail -40 "$logfile" >&2
         echo >&2
-        err "If this is a hardening incompatibility, add an entry to"
-        err "build/config/hardening-exceptions.txt WITH a justification."
-        err "Do not remove the flag globally."
+        err "Full log: ${logfile}"
+        err ""
+        err "Check the actual error before assuming it is the hardening flags."
+        err "The first stage 04 failure looked like one and was not - it was a"
+        err "missing native glibc and no generated locales."
+        err ""
+        err "If it IS a hardening incompatibility, add an entry to"
+        err "build/config/hardening-exceptions.txt WITH a justification, so"
+        err "only that flag is dropped and only for that package."
         die "stage 04 aborted at ${name}"
     fi
 }
@@ -125,6 +131,71 @@ native_build() {
 }
 
 # --- packages that need more than ./configure ------------------------------
+
+# glibc, rebuilt natively inside the chroot.
+#
+# This MUST be first, for two reasons.
+#
+# 1. Hardening. Stage 01 built glibc with the cross toolchain and deliberately
+#    unsets CFLAGS/LDFLAGS there, because a pass-1 compiler cannot be built
+#    with the flags it implements. The consequence is that the C library every
+#    single binary links against is currently UNHARDENED. For a distribution
+#    whose premise is hardening, rebuilding it here is not optional.
+#
+# 2. Locales. Configure scripts probe locale behaviour, and a chroot with no
+#    generated locales makes those probes fail. perl 5.40 in particular then
+#    leaves PERL_LC_ALL_CATEGORY_POSITIONS_INIT undefined and fails to compile
+#    locale.c with an error that looks nothing like its cause. Generating
+#    locales is part of installing glibc, not a separate concern.
+s_glibc() {
+    local src; src="$(unpack "glibc-${V_GLIBC}.tar.xz" "glibc-${V_GLIBC}")"
+    cd "$src"
+
+    local fhs="${KRYPTIK_SOURCES}/glibc-${V_GLIBC}-fhs-1.patch"
+    [[ -f "$fhs" ]] && patch -Np1 -i "$fhs"
+
+    mkdir -p build
+    cd build
+    echo "rootsbindir=/usr/sbin" > configparms
+
+    # glibc supplies its own stack protector rather than taking ours; see the
+    # hardening exception for why external flags are dropped for this package.
+    ../configure         --prefix=/usr         --disable-werror         --enable-kernel=4.19         --enable-stack-protector=strong         --disable-nscd         libc_cv_slibdir=/usr/lib
+    make
+
+    # The install step runs a test-installation perl script that does not exist
+    # yet - perl is built later, and cannot be built before glibc.
+    sed '/test-installation/s@$(PERL)@true@' -i ../Makefile
+    touch /etc/ld.so.conf
+    make install
+
+    sed '/RTLDLIST=/s@/usr@@g' -i /usr/bin/ldd
+
+    echo "--- generating locales ---"
+    mkdir -p /usr/lib/locale
+    # The set LFS installs, plus C.UTF-8 which modern configure scripts probe
+    # for by name.
+    localedef -i C -f UTF-8 C.UTF-8 2>/dev/null || true
+    localedef -i en_US -f ISO-8859-1 en_US 2>/dev/null || true
+    localedef -i en_US -f UTF-8 en_US.UTF-8 2>/dev/null || true
+    localedef -i en_GB -f UTF-8 en_GB.UTF-8 2>/dev/null || true
+    localedef -i de_DE -f UTF-8 de_DE.UTF-8 2>/dev/null || true
+    localedef -i ja_JP -f UTF-8 ja_JP.UTF-8 2>/dev/null || true
+    echo "locales present: $(ls /usr/lib/locale 2>/dev/null | wc -l)"
+
+    # Minimal, sane defaults so the rest of the build is deterministic.
+    cat > /etc/nsswitch.conf <<'NSS'
+passwd: files
+group: files
+shadow: files
+hosts: files dns
+networks: files
+protocols: files
+services: files
+ethers: files
+rpc: files
+NSS
+}
 
 s_zlib() {
     local src; src="$(unpack "zlib-${V_ZLIB}.tar.gz" "zlib-${V_ZLIB}")"
@@ -334,6 +405,7 @@ s_s6_stack() {
 # "seems independent" is how a base system build breaks three packages later.
 
 declare -a PACKAGES=(
+    "glibc"       "s_glibc"
     "gettext"     "native_build gettext-${V_GETTEXT}.tar.xz gettext-${V_GETTEXT} --disable-shared"
     "bison"       "native_build bison-${V_BISON}.tar.xz bison-${V_BISON} --docdir=/usr/share/doc/bison-${V_BISON}"
     "perl"        "s_perl"

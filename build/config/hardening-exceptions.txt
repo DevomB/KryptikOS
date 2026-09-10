@@ -10,3 +10,6 @@
 # glibc  -pie  # glibc builds its own PIE handling; -pie breaks ld.so startup
 
 # --- active exceptions below this line ---
+glibc  -fPIE   # glibc builds its own PIE handling; external -fPIE breaks ld.so startup
+glibc  -pie    # same - the dynamic loader cannot itself be a PIE built this way
+glibc  -D_FORTIFY_SOURCE=3  # glibc DEFINES the fortify machinery; fortifying it against itself fails to build
