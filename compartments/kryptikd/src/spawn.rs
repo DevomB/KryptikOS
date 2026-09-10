@@ -44,11 +44,20 @@ fn errno() -> i32 {
 
 /// A one-byte pipe used to order the parent and child against each other.
 ///
-/// The child cannot write its own uid_map — that requires privilege in the
-/// PARENT user namespace — so it must stop and wait while the parent does it.
-/// Getting this ordering wrong produces a zone running as nobody (65534)
-/// instead of root, and every subsequent step then fails for reasons that
-/// look unrelated.
+/// TWO of these are needed, in both directions, and the first version of this
+/// code had only one. The handshake is:
+///
+///   child   unshare(CLONE_NEWUSER|...)
+///   child  --ready-->  parent      "I am in the new namespace"
+///   parent  writes /proc/PID/{setgroups,uid_map,gid_map}
+///   parent --mapped-->  child      "your maps exist, you may become root"
+///   child   setresuid(0,0,0)
+///
+/// Without the first signal the parent races ahead and writes the maps while
+/// the child is still in the OLD user namespace. That write fails with EPERM
+/// on setgroups, the maps never appear, and setresuid(0,0,0) then fails with
+/// EINVAL because uid 0 was never mapped - two errors, neither of which points
+/// at the missing synchronisation that caused them.
 struct SyncPipe {
     read: RawFd,
     write: RawFd,
@@ -107,8 +116,10 @@ pub fn run_in_zone(zone: &Zone, rootfs: &str, argv: &[String]) -> Result<i32, Sp
     let outer_uid = unsafe { libc::getuid() };
     let outer_gid = unsafe { libc::getgid() };
 
-    let sync = SyncPipe::new()?;
-    let flags = isolate::namespace_flags(zone);
+    // ready: child -> parent, "I have unshared"
+    // mapped: parent -> child, "your id maps are written"
+    let ready = SyncPipe::new()?;
+    let mapped = SyncPipe::new()?;
 
     let pid = unsafe { libc::fork() };
     if pid < 0 {
@@ -117,26 +128,32 @@ pub fn run_in_zone(zone: &Zone, rootfs: &str, argv: &[String]) -> Result<i32, Sp
 
     if pid == 0 {
         // --- child -----------------------------------------------------------
-        sync.close_write();
-        let rc = child_main(zone, rootfs, argv, &sync);
+        ready.close_read();
+        mapped.close_write();
+        let rc = child_main(zone, rootfs, argv, &ready, &mapped);
         // Never return: this process must not run the parent's cleanup.
         unsafe { libc::_exit(rc) };
     }
 
     // --- parent --------------------------------------------------------------
-    sync.close_read();
+    ready.close_write();
+    mapped.close_read();
+
+    // Wait until the child is actually inside the new user namespace. Writing
+    // the maps before this point fails with EPERM.
+    ready.wait();
 
     // Map the child's root to our uid. This is what makes "root inside the
     // zone" mean root in a namespace that owns nothing outside it.
     if let Err(e) = isolate::write_id_maps(pid, outer_uid, outer_gid) {
         // Release the child so it dies rather than blocking forever on the pipe.
-        sync.signal();
+        mapped.signal();
         unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
         return Err(SpawnError::Setup(format!("id maps: {e}")));
     }
 
-    sync.signal();
-    sync.close_write();
+    mapped.signal();
+    mapped.close_write();
 
     let mut status: libc::c_int = 0;
     if unsafe { libc::waitpid(pid, &mut status, 0) } < 0 {
@@ -156,7 +173,13 @@ fn decode_status(status: libc::c_int) -> i32 {
 }
 
 /// Everything that happens inside the zone. Returns the exit code.
-fn child_main(zone: &Zone, rootfs: &str, argv: &[String], sync: &SyncPipe) -> i32 {
+fn child_main(
+    zone: &Zone,
+    rootfs: &str,
+    argv: &[String],
+    ready: &SyncPipe,
+    mapped: &SyncPipe,
+) -> i32 {
     macro_rules! bail {
         ($($arg:tt)*) => {{
             eprintln!("kryptikd[zone {}]: {}", zone.name, format!($($arg)*));
@@ -171,9 +194,11 @@ fn child_main(zone: &Zone, rootfs: &str, argv: &[String], sync: &SyncPipe) -> i3
         bail!("unshare: {e}");
     }
 
-    // 2. Wait for the parent to write uid_map/gid_map. Until it does we are
-    //    nobody (65534) and cannot mount anything.
-    sync.wait();
+    // 2. Tell the parent we are in the new namespace, then wait for it to
+    //    write uid_map/gid_map. Until those exist we are nobody (65534) and
+    //    cannot mount anything or become root.
+    ready.signal();
+    mapped.wait();
 
     // 3. Become root in the new user namespace.
     if unsafe { libc::setresuid(0, 0, 0) } < 0 {
@@ -233,8 +258,22 @@ fn child_main(zone: &Zone, rootfs: &str, argv: &[String], sync: &SyncPipe) -> i3
     // 9. Filesystem confinement. After the mounts, because Landlock is
     //    evaluated against the mount tree as it stands when the ruleset is
     //    applied.
-    let extra: Vec<&str> = vec!["/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc"];
-    if let Err(e) = landlock::confine_to_zone(rootfs, &extra) {
+    //
+    // /proc and /sys are in the read set on purpose and it is not a weakening:
+    // both were re-mounted above against THIS zone's namespaces, so the zone
+    // sees only its own processes and its own interfaces through them. Leaving
+    // them out produced "ls: cannot open directory '/proc': Permission denied"
+    // in a zone whose pid namespace was working perfectly.
+    //
+    // /dev is a genuine gap rather than a decision. A zone should get a minimal
+    // devtmpfs with null/zero/urandom/tty and nothing else; it currently
+    // inherits whatever /dev the caller had, so this grants more than it
+    // should. Tracked as Phase 5 remaining work in docs/roadmap.md.
+    let extra: Vec<&str> = vec![
+        "/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc",
+        "/proc", "/sys", "/dev",
+    ];
+    if let Err(e) = landlock::confine_to_zone_with_dev(rootfs, &extra, &["/dev", "/proc"]) {
         bail!("landlock: {e}");
     }
 

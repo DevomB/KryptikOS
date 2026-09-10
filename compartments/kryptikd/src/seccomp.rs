@@ -38,6 +38,11 @@ const BPF_RET: u16 = 0x06;
 // Filter return actions.
 const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
 const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
+// TRAP raises SIGSYS with si_syscall set to the offending number, instead of
+// killing outright. Used only by `kryptikd seccomp-trace`, which is how a zone
+// policy gets debugged: a KILL tells you a zone died, a TRAP tells you which
+// syscall it died on.
+const SECCOMP_RET_TRAP: u32 = 0x0003_0000;
 
 // Offsets into struct seccomp_data.
 const OFF_NR: u32 = 0;
@@ -119,6 +124,17 @@ pub const BASE_ALLOWLIST: &[libc::c_long] = &[
     libc::SYS_linkat, libc::SYS_chmod, libc::SYS_fchmod, libc::SYS_fchmodat,
     libc::SYS_umask, libc::SYS_flock, libc::SYS_fallocate,
     libc::SYS_copy_file_range, libc::SYS_sendfile, libc::SYS_splice,
+    // fadvise64 is not optional in practice: GNU cat and cp call
+    // posix_fadvise() on every file they read. Leaving it out killed `cat`
+    // with SIGSYS while `echo` and `ls` worked, which is a confusing enough
+    // symptom to be worth naming here.
+    libc::SYS_fadvise64, libc::SYS_readahead,
+    // Timestamps and ownership: touch, cp -p, install.
+    libc::SYS_utimensat, libc::SYS_futimesat,
+    libc::SYS_chown, libc::SYS_fchown, libc::SYS_lchown, libc::SYS_fchownat,
+    libc::SYS_sync, libc::SYS_syncfs,
+    libc::SYS_getxattr, libc::SYS_lgetxattr, libc::SYS_fgetxattr,
+    libc::SYS_listxattr, libc::SYS_llistxattr, libc::SYS_flistxattr,
 
     // --- memory ---
     libc::SYS_mmap, libc::SYS_munmap, libc::SYS_mremap, libc::SYS_brk,
@@ -140,6 +156,10 @@ pub const BASE_ALLOWLIST: &[libc::c_long] = &[
     libc::SYS_prlimit64, libc::SYS_sched_yield, libc::SYS_sched_getaffinity,
     libc::SYS_set_tid_address, libc::SYS_set_robust_list, libc::SYS_get_robust_list,
     libc::SYS_futex, libc::SYS_arch_prctl, libc::SYS_membarrier,
+    libc::SYS_getpriority, libc::SYS_setpriority,
+    libc::SYS_sched_getparam, libc::SYS_sched_getscheduler,
+    libc::SYS_sched_get_priority_max, libc::SYS_sched_get_priority_min,
+    libc::SYS_getresuid, libc::SYS_getresgid,
 
     // --- signals ---
     libc::SYS_rt_sigaction, libc::SYS_rt_sigprocmask, libc::SYS_rt_sigreturn,
@@ -150,6 +170,7 @@ pub const BASE_ALLOWLIST: &[libc::c_long] = &[
     // --- time ---
     libc::SYS_clock_gettime, libc::SYS_clock_getres, libc::SYS_clock_nanosleep,
     libc::SYS_gettimeofday, libc::SYS_nanosleep, libc::SYS_times,
+    libc::SYS_alarm, libc::SYS_setitimer, libc::SYS_getitimer, libc::SYS_pause,
 
     // --- polling ---
     libc::SYS_poll, libc::SYS_ppoll, libc::SYS_select, libc::SYS_pselect6,
@@ -226,11 +247,18 @@ pub const DENIED_RATIONALE: &[(libc::c_long, &str)] = &[
 ///       ret ALLOW
 ///   ret KILL                       ; default deny
 fn build_program(allow: &[libc::c_long]) -> Result<Vec<SockFilter>, SeccompError> {
+    build_program_with(allow, SECCOMP_RET_KILL_PROCESS)
+}
+
+fn build_program_with(
+    allow: &[libc::c_long],
+    deny_action: u32,
+) -> Result<Vec<SockFilter>, SeccompError> {
     let mut p = Vec::with_capacity(allow.len() * 2 + 8);
 
     p.push(stmt(BPF_LD | BPF_W | BPF_ABS, OFF_ARCH));
     p.push(jump(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0));
-    p.push(stmt(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS));
+    p.push(stmt(BPF_RET | BPF_K, deny_action));
 
     p.push(stmt(BPF_LD | BPF_W | BPF_ABS, OFF_NR));
 
@@ -244,7 +272,7 @@ fn build_program(allow: &[libc::c_long]) -> Result<Vec<SockFilter>, SeccompError
     // It is still worth being correct: a check that does nothing is worse than
     // no check, because it reads as though the case is handled.
     p.push(jump(BPF_JMP | BPF_JGE | BPF_K, X32_SYSCALL_BIT, 0, 1));
-    p.push(stmt(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS));
+    p.push(stmt(BPF_RET | BPF_K, deny_action));
 
     for &nr in allow {
         // seccomp_data.nr is a 32-bit field, so the comparison is 32-bit. A
@@ -264,7 +292,7 @@ fn build_program(allow: &[libc::c_long]) -> Result<Vec<SockFilter>, SeccompError
         p.push(stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
     }
 
-    p.push(stmt(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS));
+    p.push(stmt(BPF_RET | BPF_K, deny_action));
 
     if p.len() > 4096 {
         return Err(SeccompError::TooManyRules(p.len()));
@@ -277,11 +305,21 @@ fn build_program(allow: &[libc::c_long]) -> Result<Vec<SockFilter>, SeccompError
 /// Irreversible. TSYNC applies it to every thread in the process, so a
 /// multi-threaded program cannot leave one thread unfiltered.
 pub fn install(allow: &[libc::c_long]) -> Result<(), SeccompError> {
+    install_with(allow, SECCOMP_RET_KILL_PROCESS)
+}
+
+/// Install the same filter but raise SIGSYS instead of killing, so a handler
+/// can report which syscall was denied. Diagnostics only.
+pub fn install_tracing(allow: &[libc::c_long]) -> Result<(), SeccompError> {
+    install_with(allow, SECCOMP_RET_TRAP)
+}
+
+fn install_with(allow: &[libc::c_long], deny_action: u32) -> Result<(), SeccompError> {
     if !cfg!(target_arch = "x86_64") {
         return Err(SeccompError::UnsupportedArch);
     }
 
-    let prog = build_program(allow)?;
+    let prog = build_program_with(allow, deny_action)?;
 
     // Required before seccomp for an unprivileged caller, and it is what stops
     // a setuid binary executed later from regaining what the filter removed.
@@ -340,6 +378,43 @@ pub fn syscall_by_name(name: &str) -> Option<libc::c_long> {
         "write" => libc::SYS_write,
         _ => return None,
     })
+}
+
+/// Best-effort name for a syscall number, for diagnostics.
+pub fn name_of(nr: i32) -> String {
+    let known: &[(libc::c_long, &str)] = &[
+        (libc::SYS_read, "read"), (libc::SYS_write, "write"),
+        (libc::SYS_openat, "openat"), (libc::SYS_close, "close"),
+        (libc::SYS_fstat, "fstat"), (libc::SYS_newfstatat, "newfstatat"),
+        (libc::SYS_statx, "statx"), (libc::SYS_mmap, "mmap"),
+        (libc::SYS_mprotect, "mprotect"), (libc::SYS_munmap, "munmap"),
+        (libc::SYS_brk, "brk"), (libc::SYS_ioctl, "ioctl"),
+        (libc::SYS_lseek, "lseek"), (libc::SYS_execve, "execve"),
+        (libc::SYS_exit_group, "exit_group"), (libc::SYS_getdents64, "getdents64"),
+        (libc::SYS_fadvise64, "fadvise64"), (libc::SYS_pread64, "pread64"),
+        (libc::SYS_prlimit64, "prlimit64"), (libc::SYS_getrandom, "getrandom"),
+        (libc::SYS_rseq, "rseq"), (libc::SYS_set_robust_list, "set_robust_list"),
+        (libc::SYS_futex, "futex"), (libc::SYS_sysinfo, "sysinfo"),
+        (libc::SYS_uname, "uname"), (libc::SYS_readlink, "readlink"),
+        (libc::SYS_access, "access"), (libc::SYS_arch_prctl, "arch_prctl"),
+        (libc::SYS_set_tid_address, "set_tid_address"),
+        (libc::SYS_rt_sigaction, "rt_sigaction"),
+        (libc::SYS_rt_sigprocmask, "rt_sigprocmask"),
+        (libc::SYS_getpid, "getpid"), (libc::SYS_dup2, "dup2"),
+        (libc::SYS_dup3, "dup3"), (libc::SYS_pipe2, "pipe2"),
+        (libc::SYS_wait4, "wait4"), (libc::SYS_clone, "clone"),
+        (libc::SYS_fcntl, "fcntl"), (libc::SYS_umask, "umask"),
+        (libc::SYS_getcwd, "getcwd"), (libc::SYS_chdir, "chdir"),
+        (libc::SYS_setpgid, "setpgid"), (libc::SYS_getpgrp, "getpgrp"),
+        (libc::SYS_geteuid, "geteuid"), (libc::SYS_getuid, "getuid"),
+        (libc::SYS_getgid, "getgid"), (libc::SYS_getegid, "getegid"),
+    ];
+    for (n, name) in known {
+        if *n as i32 == nr {
+            return (*name).to_string();
+        }
+    }
+    format!("syscall #{nr}")
 }
 
 #[cfg(test)]

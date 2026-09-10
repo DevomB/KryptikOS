@@ -13,6 +13,7 @@
 mod isolate;
 mod landlock;
 mod seccomp;
+mod spawn;
 mod zone;
 
 use std::path::{Path, PathBuf};
@@ -27,12 +28,17 @@ fn usage() -> &'static str {
     "kryptikd — Kryptik compartment manager
 
 USAGE:
-    kryptikd check [--zones DIR]     verify kernel support and validate zones
-    kryptikd list  [--zones DIR]     list configured zones
+    kryptikd check [--zones DIR]      verify kernel support and validate zones
+    kryptikd list  [--zones DIR]      list configured zones
     kryptikd show  NAME [--zones DIR]
+    kryptikd explain NAME             what starting this zone would do
+    kryptikd run NAME -- CMD [ARGS]   create the zone and run CMD inside it
 
-Not yet implemented (Phase 5): start, stop, transfer, clipboard.
-They exit with an error rather than pretending to work."
+    --rootfs DIR   base directory for zone filesystems
+                   (default: /var/lib/kryptik/zones)
+
+Not yet implemented (Phase 5): stop, transfer, clipboard, and per-zone
+encrypted volumes. They exit with an error rather than pretending to work."
 }
 
 fn main() -> ExitCode {
@@ -120,7 +126,33 @@ fn main() -> ExitCode {
             };
             cmd_seccomp_test(name, nr)
         }
-        "start" | "stop" | "transfer" | "clipboard" => {
+        "explain" => match args.get(1) {
+            Some(name) if !name.starts_with("--") => cmd_explain(&zone_dir, name, &args),
+            _ => {
+                eprintln!("explain: expected a zone name");
+                ExitCode::from(2)
+            }
+        },
+        "run" => cmd_run(&zone_dir, &args),
+        // kryptikd seccomp-trace -- CMD
+        //
+        // Runs CMD under the zone filter with the deny action set to TRAP
+        // rather than KILL, and reports which syscall was refused. This is how
+        // a zone policy gets debugged: a KILL tells you the zone died, a TRAP
+        // tells you what it died on.
+        "seccomp-trace" => {
+            let Some(sep) = args.iter().position(|a| a == "--") else {
+                eprintln!("seccomp-trace: expected `-- COMMAND`");
+                return ExitCode::from(2);
+            };
+            let cmd: Vec<String> = args[sep + 1..].to_vec();
+            if cmd.is_empty() {
+                eprintln!("seccomp-trace: no command after `--`");
+                return ExitCode::from(2);
+            }
+            cmd_seccomp_trace(&cmd)
+        }
+        "stop" | "transfer" | "clipboard" => {
             eprintln!(
                 "kryptikd: '{}' is not implemented yet (Phase 5, docs/roadmap.md).\n\
                  Refusing rather than pretending. A compartment manager that\n\
@@ -304,6 +336,172 @@ fn cmd_show(dir: &Path, name: &str) -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+const DEFAULT_ROOTFS_BASE: &str = "/var/lib/kryptik/zones";
+
+fn rootfs_base_from(args: &[String]) -> String {
+    args.iter()
+        .position(|a| a == "--rootfs")
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_ROOTFS_BASE.to_string())
+}
+
+fn load_zone(dir: &Path, name: &str) -> Result<Zone, ExitCode> {
+    let zones = zone::load_all(dir).map_err(|e| {
+        eprintln!("kryptikd: {e}");
+        ExitCode::FAILURE
+    })?;
+    zones.into_iter().find(|z| z.name == name).ok_or_else(|| {
+        eprintln!("kryptikd: no zone named {name:?}");
+        ExitCode::FAILURE
+    })
+}
+
+fn cmd_explain(dir: &Path, name: &str, args: &[String]) -> ExitCode {
+    let zone = match load_zone(dir, name) {
+        Ok(z) => z,
+        Err(c) => return c,
+    };
+    let base = rootfs_base_from(args);
+    let rootfs = spawn::zone_rootfs(&zone, &base);
+    println!("{}", spawn::explain(&zone, &rootfs));
+    ExitCode::SUCCESS
+}
+
+fn cmd_run(dir: &Path, args: &[String]) -> ExitCode {
+    let Some(name) = args.get(1).filter(|a| !a.starts_with("--")) else {
+        eprintln!("run: expected a zone name");
+        return ExitCode::from(2);
+    };
+
+    // Everything after `--` is the command. Requiring the separator keeps zone
+    // options and the command unambiguous.
+    let Some(sep) = args.iter().position(|a| a == "--") else {
+        eprintln!("run: expected `-- COMMAND`, e.g. kryptikd run untrusted -- /bin/sh");
+        return ExitCode::from(2);
+    };
+    let cmd: Vec<String> = args[sep + 1..].to_vec();
+    if cmd.is_empty() {
+        eprintln!("run: no command after `--`");
+        return ExitCode::from(2);
+    }
+
+    let zone = match load_zone(dir, name) {
+        Ok(z) => z,
+        Err(c) => return c,
+    };
+    let base = rootfs_base_from(args);
+    let rootfs = spawn::zone_rootfs(&zone, &base);
+
+    match spawn::run_in_zone(&zone, &rootfs, &cmd) {
+        Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
+        Err(e) => {
+            eprintln!("kryptikd: could not start zone {:?}: {e}", zone.name);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// SIGSYS handler: report the denied syscall number, then die.
+///
+/// Everything here must be async-signal-safe. An earlier version used
+/// `format!` and `seccomp::name_of`, both of which allocate - the handler ran
+/// (the process exited 159) but nothing was ever printed, which is exactly the
+/// silent failure mode allocation in a signal handler produces. This version
+/// formats the integer by hand into a stack buffer and uses a raw write(2).
+///
+/// The number is translated to a name by the PARENT, after the child dies,
+/// where allocation is safe.
+extern "C" fn sigsys_handler(
+    _sig: libc::c_int,
+    info: *mut libc::siginfo_t,
+    _ctx: *mut libc::c_void,
+) {
+    // si_syscall sits at a fixed offset in the SIGSYS layout of siginfo_t:
+    // si_signo, si_errno, si_code (3 x i32), si_call_addr (pointer), then
+    // si_syscall. libc does not expose it as a field, so read it positionally.
+    let nr: i32 = unsafe {
+        let base = info as *const u8;
+        let off = 3 * std::mem::size_of::<i32>() + std::mem::size_of::<usize>();
+        *(base.add(off) as *const i32)
+    };
+
+    // Emit the line KRYPTIK_SECCOMP_DENIED <nr> without allocating.
+    const PREFIX: &[u8] = b"KRYPTIK_SECCOMP_DENIED ";
+    let mut buf = [0u8; 48];
+    let mut len = 0;
+    for &b in PREFIX {
+        buf[len] = b;
+        len += 1;
+    }
+    let mut n = if nr < 0 { 0u32 } else { nr as u32 };
+    let mut digits = [0u8; 10];
+    let mut d = 0;
+    loop {
+        digits[d] = b'0' + (n % 10) as u8;
+        n /= 10;
+        d += 1;
+        if n == 0 {
+            break;
+        }
+    }
+    while d > 0 {
+        d -= 1;
+        buf[len] = digits[d];
+        len += 1;
+    }
+    buf[len] = b'\n';
+    len += 1;
+
+    unsafe {
+        libc::write(2, buf.as_ptr() as *const libc::c_void, len);
+        libc::_exit(159);
+    }
+}
+
+fn cmd_seccomp_trace(cmd: &[String]) -> ExitCode {
+    use std::ffi::CString;
+
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        eprintln!("seccomp-trace: fork failed");
+        return ExitCode::FAILURE;
+    }
+
+    if pid == 0 {
+        unsafe {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = sigsys_handler as usize;
+            sa.sa_flags = libc::SA_SIGINFO;
+            libc::sigaction(libc::SIGSYS, &sa, std::ptr::null_mut());
+        }
+        if seccomp::install_tracing(seccomp::BASE_ALLOWLIST).is_err() {
+            unsafe { libc::_exit(1) };
+        }
+        let prog = CString::new(cmd[0].as_str()).unwrap_or_default();
+        let args: Vec<CString> = cmd
+            .iter()
+            .filter_map(|a| CString::new(a.as_str()).ok())
+            .collect();
+        let mut ptrs: Vec<*const libc::c_char> = args.iter().map(|a| a.as_ptr()).collect();
+        ptrs.push(std::ptr::null());
+        unsafe {
+            libc::execvp(prog.as_ptr(), ptrs.as_ptr());
+            libc::_exit(127)
+        }
+    }
+
+    let mut status: libc::c_int = 0;
+    unsafe { libc::waitpid(pid, &mut status, 0) };
+    let code = if (status & 0x7f) == 0 { (status >> 8) & 0xff } else { 128 + (status & 0x7f) };
+    if code == 159 {
+        eprintln!(
+            "seccomp-trace: the command was denied a syscall (see              KRYPTIK_SECCOMP_DENIED above for the number)"
+        );
+    }
+    ExitCode::from(u8::try_from(code).unwrap_or(1))
 }
 
 fn cmd_seccomp_test(name: &str, nr: libc::c_long) -> ExitCode {

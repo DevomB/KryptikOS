@@ -270,6 +270,28 @@ pub fn confine_to_zone(rootfs: &str, extra_ro: &[&str]) -> Result<(), LandlockEr
     rs.restrict_self()
 }
 
+/// Like `confine_to_zone`, but a few paths need write access as well as read.
+///
+/// /dev/null and /dev/tty are written by essentially every program, and /proc
+/// takes writes for things like /proc/self/oom_score_adj. Granting read-only
+/// there produces failures that look like the program is broken rather than
+/// confined.
+pub fn confine_to_zone_with_dev(
+    rootfs: &str,
+    read_only: &[&str],
+    read_write: &[&str],
+) -> Result<(), LandlockError> {
+    let mut rs = Ruleset::new()?;
+    rs.allow(rootfs, ACCESS_READ | ACCESS_WRITE | ACCESS_EXEC)?;
+    for p in read_only {
+        let _ = rs.allow(p, ACCESS_READ | ACCESS_EXEC);
+    }
+    for p in read_write {
+        let _ = rs.allow(p, ACCESS_READ | ACCESS_WRITE | ACCESS_EXEC);
+    }
+    rs.restrict_self()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -60,7 +60,21 @@ step() {
     log "${name}"
     local logfile="${LOGS}/${name}.log"
     local start=$SECONDS
-    if "$@" > "$logfile" 2>&1; then
+    # Run the build in a SUBSHELL with errexit active, and capture its status
+    # without putting it in a condition.
+    #
+    # This was `if "$@" > "$logfile"; then`, which is silently broken: bash
+    # suppresses set -e for any command in a condition context, AND that
+    # suppression propagates into functions called from there. A build function
+    # whose `make` failed therefore carried on to its remaining commands and
+    # returned the status of the LAST one - so a package that never compiled
+    # got stamped as successfully built.
+    #
+    # That is exactly how glibc came to be marked built after its configure
+    # died with "critical programs are missing: python".
+    local rc=0
+    ( set -Eeuo pipefail; "$@" ) > "$logfile" 2>&1 || rc=$?
+    if [[ "$rc" -eq 0 ]]; then
         touch "${STAMPS}/${name}"
         ok "${name} ($(( SECONDS - start ))s)"
     else

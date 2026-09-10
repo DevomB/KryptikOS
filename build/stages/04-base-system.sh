@@ -91,7 +91,21 @@ step() {
     set_flags_for "$name"
     local logfile="${LOGS}/bs-${name}.log"
     local start=$SECONDS
-    if "$@" > "$logfile" 2>&1; then
+    # Run the build in a SUBSHELL with errexit active, and capture its status
+    # without putting it in a condition.
+    #
+    # This was `if "$@" > "$logfile"; then`, which is silently broken: bash
+    # suppresses set -e for any command in a condition context, AND that
+    # suppression propagates into functions called from there. A build function
+    # whose `make` failed therefore carried on to its remaining commands and
+    # returned the status of the LAST one - so a package that never compiled
+    # got stamped as successfully built.
+    #
+    # That is exactly how glibc came to be marked built after its configure
+    # died with "critical programs are missing: python".
+    local rc=0
+    ( set -Eeuo pipefail; "$@" ) > "$logfile" 2>&1 || rc=$?
+    if [[ "$rc" -eq 0 ]]; then
         touch "${STAMPS}/bs-${name}"
         ok "${name} ($(( SECONDS - start ))s)"
     else
@@ -132,21 +146,57 @@ native_build() {
 
 # --- packages that need more than ./configure ------------------------------
 
+# Locale generation, using the localedef already installed by stage 01/02.
+#
+# Split out from the glibc rebuild and placed FIRST because of a dependency
+# cycle that is easy to miss:
+#
+#   perl   needs locales  - without them Configure cannot probe LC_ALL, leaves
+#                           PERL_LC_ALL_CATEGORY_POSITIONS_INIT undefined, and
+#                           locale.c fails to compile with an error that looks
+#                           nothing like its cause
+#   glibc  needs python   - its configure calls python a critical program
+#   python is built between the two
+#
+# So locales cannot wait for the glibc rebuild, and the glibc rebuild cannot
+# come before python. Generating locales needs only localedef, which already
+# exists, so it goes first on its own.
+s_locales() {
+    mkdir -p /usr/lib/locale
+    localedef -i C -f UTF-8 C.UTF-8
+    localedef -i en_US -f ISO-8859-1 en_US
+    localedef -i en_US -f UTF-8 en_US.UTF-8
+    localedef -i en_GB -f UTF-8 en_GB.UTF-8
+    localedef -i de_DE -f UTF-8 de_DE.UTF-8
+    localedef -i ja_JP -f UTF-8 ja_JP.UTF-8
+    echo "locales generated:"
+    localedef --list-archive 2>/dev/null | head -10
+
+    # Minimal, sane defaults so the rest of the build is deterministic.
+    cat > /etc/nsswitch.conf <<'NSS'
+passwd: files
+group: files
+shadow: files
+hosts: files dns
+networks: files
+protocols: files
+services: files
+ethers: files
+rpc: files
+NSS
+}
+
 # glibc, rebuilt natively inside the chroot.
 #
-# This MUST be first, for two reasons.
+# Stage 01 built glibc with the cross toolchain and deliberately unsets
+# CFLAGS/LDFLAGS there, because a pass-1 compiler cannot be built with the
+# flags it implements. Nothing since has rebuilt it, so until this step runs
+# the C library every binary links against is UNHARDENED - the single largest
+# hole in the hardening story for a distribution built on the claim that
+# hardening is a toolchain property.
 #
-# 1. Hardening. Stage 01 built glibc with the cross toolchain and deliberately
-#    unsets CFLAGS/LDFLAGS there, because a pass-1 compiler cannot be built
-#    with the flags it implements. The consequence is that the C library every
-#    single binary links against is currently UNHARDENED. For a distribution
-#    whose premise is hardening, rebuilding it here is not optional.
-#
-# 2. Locales. Configure scripts probe locale behaviour, and a chroot with no
-#    generated locales makes those probes fail. perl 5.40 in particular then
-#    leaves PERL_LC_ALL_CATEGORY_POSITIONS_INIT undefined and fails to compile
-#    locale.c with an error that looks nothing like its cause. Generating
-#    locales is part of installing glibc, not a separate concern.
+# Positioned after python: glibc's configure treats python as a critical
+# program and fails outright without it.
 s_glibc() {
     local src; src="$(unpack "glibc-${V_GLIBC}.tar.xz" "glibc-${V_GLIBC}")"
     cd "$src"
@@ -171,30 +221,12 @@ s_glibc() {
 
     sed '/RTLDLIST=/s@/usr@@g' -i /usr/bin/ldd
 
-    echo "--- generating locales ---"
-    mkdir -p /usr/lib/locale
-    # The set LFS installs, plus C.UTF-8 which modern configure scripts probe
-    # for by name.
-    localedef -i C -f UTF-8 C.UTF-8 2>/dev/null || true
-    localedef -i en_US -f ISO-8859-1 en_US 2>/dev/null || true
-    localedef -i en_US -f UTF-8 en_US.UTF-8 2>/dev/null || true
-    localedef -i en_GB -f UTF-8 en_GB.UTF-8 2>/dev/null || true
-    localedef -i de_DE -f UTF-8 de_DE.UTF-8 2>/dev/null || true
-    localedef -i ja_JP -f UTF-8 ja_JP.UTF-8 2>/dev/null || true
-    echo "locales present: $(ls /usr/lib/locale 2>/dev/null | wc -l)"
-
-    # Minimal, sane defaults so the rest of the build is deterministic.
-    cat > /etc/nsswitch.conf <<'NSS'
-passwd: files
-group: files
-shadow: files
-hosts: files dns
-networks: files
-protocols: files
-services: files
-ethers: files
-rpc: files
-NSS
+    # Prove the rebuild actually happened. A configure that dies early leaves
+    # the stage 01 library in place, and the difference is invisible without
+    # checking - which is precisely what happened the first time this ran.
+    echo "--- installed libc ---"
+    ls -la /usr/lib/libc.so.6
+    strings /usr/lib/libc.so.6 | grep -m1 "GNU C Library"
 }
 
 s_zlib() {
@@ -405,13 +437,14 @@ s_s6_stack() {
 # "seems independent" is how a base system build breaks three packages later.
 
 declare -a PACKAGES=(
-    "glibc"       "s_glibc"
+    "locales"     "s_locales"
     "gettext"     "native_build gettext-${V_GETTEXT}.tar.xz gettext-${V_GETTEXT} --disable-shared"
     "bison"       "native_build bison-${V_BISON}.tar.xz bison-${V_BISON} --docdir=/usr/share/doc/bison-${V_BISON}"
     "perl"        "s_perl"
     "python"      "s_python"
     "texinfo"     "native_build texinfo-${V_TEXINFO}.tar.xz texinfo-${V_TEXINFO}"
     "util-linux"  "native_build util-linux-${V_UTIL_LINUX}.tar.xz util-linux-${V_UTIL_LINUX} --libdir=/usr/lib --runstatedir=/run --disable-chfn-chsh --disable-login --disable-nologin --disable-su --disable-setpriv --disable-runuser --disable-pylibmount --disable-liblastlog2 --disable-static --without-python"
+    "glibc"       "s_glibc"
     "zlib"        "s_zlib"
     "bzip2"       "s_bzip2"
     "xz"          "s_xz_native"
