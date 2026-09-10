@@ -29,7 +29,11 @@ LFS_TGT="$(uname -m)-kryptik-linux-gnu"
 export LFS_TGT
 export PATH="${LFS}/tools/bin:${PATH}"
 export CONFIG_SITE="${LFS}/usr/share/config.site"
-export MAKEFLAGS="-j$(nproc)"
+# Parallelism. GCC is memory-hungry; on a host with less than ~2GB per job,
+# -j$(nproc) invites the OOM killer partway through a 40-minute build. Override
+# with KRYPTIK_JOBS when RAM is tight.
+KRYPTIK_JOBS="${KRYPTIK_JOBS:-$(nproc)}"
+export MAKEFLAGS="-j${KRYPTIK_JOBS}"
 umask 022
 
 STAMPS="${KRYPTIK_WORK}/.stamps"
