@@ -616,21 +616,39 @@ fn intermediate_main(
 
     rootfs::ensure_stdio();
 
-    // 1. Identity. A privileged kryptikd switches to the zone's host identity
-    //    BEFORE creating the user namespace, dropping every supplementary
-    //    group on the way; the parent, still root, may then map any uid.
-    //    Unprivileged, the kernel only lets us map our own uid, and
-    //    setgroups needs CAP_SETGID we do not have - so the host groups come
-    //    along. They are named rather than hidden.
+    // 1. Identity. THE ID MAP IS THE DROP - see docs/design/01a-p5-correction.md.
+    //
+    //    This used to call setresuid/setresgid to the zone's host identity
+    //    here, before creating the user namespace, on the reasoning that the
+    //    namespace should not be created by root. Wiring the security tab's
+    //    own contract probe into the VM proved that cannot work: a kernel with
+    //    CONFIG_USER_NS_UNPRIVILEGED off (which is the kernel Kryptik intends
+    //    to ship) refuses unshare(CLONE_NEWUSER) from a process without
+    //    CAP_SYS_ADMIN in the initial namespace - so the process this code had
+    //    just made unprivileged was exactly the case the kernel refuses, and
+    //    no zone started at all. The kernel's own audit record named kryptikd.
+    //
+    //    The early switch was also not buying what it looked like it bought.
+    //    What makes the zone's root a harmless host uid N is the uid_map the
+    //    parent writes; the creator's identity only decides who OWNS the
+    //    namespace, and a root-owned user namespace gives root nothing it did
+    //    not already have. So: create the namespace as root, and let the map
+    //    do the dropping. Design 01a §2.
+    //
+    //    Supplementary groups still go before the unshare, and still fatally:
+    //    they are not covered by the map, and CAP_SETGID is needed to drop
+    //    them, which this process has here and will not have after.
+    //
+    //    The cost, named rather than hidden: between the unshare below and the
+    //    setresuid(0,0,0) at step 5, this process is host euid 0 inside a fresh
+    //    user namespace. It does nothing in that window but wait on a pipe.
+    //
+    //    Unprivileged, the kernel only lets us map our own uid, and setgroups
+    //    needs CAP_SETGID we do not have - so the host groups come along. They
+    //    are named rather than hidden.
     if id.privileged {
         if let Err(e) = isolate::drop_supplementary_groups() {
             bail!("setgroups: {e}");
-        }
-        if unsafe { libc::setresgid(id.gid, id.gid, id.gid) } < 0 {
-            bail!("setresgid({}): {}", id.gid, io::Error::last_os_error());
-        }
-        if unsafe { libc::setresuid(id.uid, id.uid, id.uid) } < 0 {
-            bail!("setresuid({}): {}", id.uid, io::Error::last_os_error());
         }
     } else if isolate::drop_supplementary_groups().is_err() {
         let n = isolate::supplementary_group_count();
@@ -643,9 +661,20 @@ fn intermediate_main(
         }
     }
 
-    // 2. Die with the parent. Set after the identity switch so no credential
-    //    change can clear it, and checked against the recorded parent pid to
-    //    close the window in which the parent died before the prctl.
+    // 2. Die with the parent.
+    //
+    //    Armed here AND again at step 5, because the kernel clears
+    //    PR_SET_PDEATHSIG on any credential change (commit_creds drops it when
+    //    the euid or egid moves). That used to be free: the identity switch
+    //    happened above this point, so nothing after it changed credentials.
+    //    Removing that switch for the P5 repair silently disarmed the whole
+    //    mechanism - SIGKILLing a launcher left its zone running, which the
+    //    suite caught as "2 zone process(es) outlived a SIGKILLed launcher"
+    //    and then as a dozen zones that would not start because the registry
+    //    correctly said they were already running.
+    //
+    //    Checked against the recorded parent pid to close the window in which
+    //    the parent died before the prctl.
     if let Err(e) = isolate::die_with_parent() {
         bail!("prctl(PR_SET_PDEATHSIG): {e}");
     }
@@ -673,6 +702,30 @@ fn intermediate_main(
 
     // 3. Enter the new namespaces.
     if let Err(e) = isolate::unshare_namespaces(flags) {
+        // P7: when the kernel refuses, say which restriction is refusing,
+        // because "Permission denied" on a machine whose administrator turned
+        // unprivileged user namespaces off is otherwise a half-hour of
+        // guessing. The two cases need different sentences: an unprivileged
+        // caller is hitting the restriction the way it is meant to work, while
+        // a root caller being refused means something is confining kryptikd
+        // itself.
+        if matches!(e, isolate::IsolateError::Syscall { errno, .. } if errno == libc::EPERM) {
+            if unsafe { libc::geteuid() } != 0 {
+                eprintln!(
+                    "kryptikd[zone {}]: creating a user namespace was refused. This kernel \
+                     restricts unprivileged user namespaces (CONFIG_USER_NS_UNPRIVILEGED=n, \
+                     kernel.unprivileged_userns_clone=0, or an LSM policy); kryptikd must be \
+                     started with CAP_SYS_ADMIN in the initial namespace.",
+                    zone.name
+                );
+            } else {
+                eprintln!(
+                    "kryptikd[zone {}]: unshare refused for a root caller: is kryptikd \
+                     confined by an LSM?",
+                    zone.name
+                );
+            }
+        }
         bail!("unshare: {e}");
     }
 
@@ -693,6 +746,20 @@ fn intermediate_main(
     }
     if unsafe { libc::setresgid(0, 0, 0) } < 0 {
         bail!("setresgid: {}", io::Error::last_os_error());
+    }
+
+    // 5b. Re-arm PR_SET_PDEATHSIG: the two calls above just cleared it. This
+    //     is the one that actually matters, because everything the zone does
+    //     from here on is after it - and without it a launcher killed with
+    //     SIGKILL (which it cannot catch, so it can clean up nothing) leaves
+    //     the zone running with nobody supervising it.
+    if let Err(e) = isolate::die_with_parent() {
+        bail!("prctl(PR_SET_PDEATHSIG) after the id switch: {e}");
+    }
+    // And check again: the parent may have died between step 2's check and
+    // now, in which case the signal we just re-armed will never be delivered.
+    if unsafe { libc::getppid() } != parent_pid {
+        return 125;
     }
 
     // 6. The zone's hostname is the zone's name. The UTS namespace is new,
