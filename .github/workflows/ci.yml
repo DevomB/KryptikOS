@@ -34,6 +34,9 @@ jobs:
           done < <(find . -name '*.sh' -not -path './build/work/*')
           exit $fail
 
+      - name: Failed builds cannot be stamped successful
+        run: ./tools/test-step-errexit.sh
+
       - name: Shellcheck
         run: shellcheck -S warning -x build/lib/common.sh build/stages/*.sh tools/*.sh
 

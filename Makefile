@@ -5,13 +5,22 @@ SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 .DEFAULT_GOAL := help
 
-ROOT    := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
+# $(CURDIR), not $(dir $(abspath $(MAKEFILE_LIST))).
+#
+# GNU make's text functions operate on whitespace-separated LISTS, so abspath
+# and dir silently mangle any path containing a space: this repository lives in
+# ".../Linux Distro" and $(ROOT) came out as ".../Coding-Projects Distro",
+# having dropped a word. Every target then failed with a path that looked
+# almost right. $(CURDIR) is a single value and survives.
+#
+# Recipe uses must still be quoted - see the "$(TOOLS)" below.
+ROOT    := $(CURDIR)
 STAGES  := $(ROOT)/build/stages
 TOOLS   := $(ROOT)/tools
 
 export KRYPTIK_ROOT := $(ROOT)
 
-.PHONY: help check check-kernel-eol sources lock verify verify-provenance validate-kernel validate-kernel-hardened toolchain temp-tools chroot system kernel iso audit zones zone-test clean distclean
+.PHONY: help check check-kernel-eol sources lock verify verify-provenance test-harness validate-kernel validate-kernel-hardened toolchain temp-tools chroot system kernel iso audit zones zone-test clean distclean
 
 help:
 	@echo "Kryptik build targets"
@@ -33,6 +42,7 @@ help:
 	@echo "  make validate-kernel-hardened  check the linux-hardened fragment"
 	@echo "  make zones       validate zone definitions + kernel support"
 	@echo "  make zone-test   run the Phase 5 adversarial exit test"
+	@echo "  make test-harness      verify failed builds cannot be stamped ok"
 	@echo "  make audit       run security audits over the build tree"
 	@echo "  make clean       remove build work directory"
 	@echo "  make distclean   also remove downloaded sources and output"
@@ -40,48 +50,64 @@ help:
 	@echo "Status: pre-alpha. See docs/roadmap.md for what actually works."
 
 check:
-	@$(STAGES)/00-host-check.sh
-	@$(TOOLS)/check-kernel-eol.sh
+	@"$(STAGES)"/00-host-check.sh
+	@"$(TOOLS)"/check-kernel-eol.sh
 
 sources:
-	@$(TOOLS)/fetch-sources.sh
+	@"$(TOOLS)"/fetch-sources.sh
 
 lock:
-	@$(TOOLS)/fetch-sources.sh --lock
+	@"$(TOOLS)"/fetch-sources.sh --lock
 
 verify:
-	@$(TOOLS)/verify-signatures.sh
+	@"$(TOOLS)"/verify-signatures.sh
 
 verify-provenance:
-	@$(TOOLS)/verify-provenance.sh
+	@"$(TOOLS)"/verify-provenance.sh
 
 validate-kernel:
-	@$(TOOLS)/validate-kernel-config.sh
+	@"$(TOOLS)"/validate-kernel-config.sh
 
 check-kernel-eol:
-	@$(TOOLS)/check-kernel-eol.sh
+	@"$(TOOLS)"/check-kernel-eol.sh
 
 validate-kernel-hardened:
-	@$(TOOLS)/validate-kernel-config.sh --hardened
+	@"$(TOOLS)"/validate-kernel-config.sh --hardened
 
 toolchain: check sources
-	@$(STAGES)/01-toolchain.sh
+	@"$(STAGES)"/01-toolchain.sh
 
 temp-tools: toolchain
-	@$(STAGES)/02-temp-tools.sh
+	@"$(STAGES)"/02-temp-tools.sh
 
 chroot: temp-tools
 	@echo "stage 03 needs root:"
-	@echo "  sudo $(STAGES)/03-chroot-prep.sh mount"
+	@echo "  sudo '$(STAGES)/03-chroot-prep.sh' mount"
 
-system: temp-tools
-	@$(STAGES)/04-base-system.sh
+# `make system` cannot simply run stage 04: that stage must execute INSIDE the
+# chroot, and it refuses to run anywhere else. Invoking it directly from here
+# always failed. Root is required to mount the chroot, so this target tells the
+# operator exactly what to run rather than pretending it can do it itself.
+system:
+	@echo "Stage 04 builds the base system INSIDE the chroot, and needs root"
+	@echo "to establish it. Run:"
+	@echo
+	@echo "  sudo '$(STAGES)/03-chroot-prep.sh' mount"
+	@echo "  sudo chroot '$(ROOT)/build/work/sysroot' /usr/bin/env -i \\"
+	@echo "      HOME=/root TERM=\$$TERM PATH=/usr/bin:/usr/sbin \\"
+	@echo "      KRYPTIK_ROOT=/kryptik KRYPTIK_JOBS=\$$(nproc) \\"
+	@echo "      /bin/bash -c /kryptik/build/stages/04-base-system.sh"
+	@echo
+	@echo "Then: sudo $(STAGES)/03-chroot-prep.sh' umount"
+	@false
 
-kernel: system
-	@$(STAGES)/05-kernel.sh
+# Same constraint as `system`: the kernel is built inside the chroot.
+kernel:
+	@echo "Stage 05 runs inside the chroot, like stage 04. See: make system"
+	@false
 
 iso: kernel
-	@$(STAGES)/06-iso.sh
+	@"$(STAGES)"/06-iso.sh
 
 zones:
 	@cd compartments/kryptikd && cargo build --quiet
@@ -91,8 +117,11 @@ zone-test:
 	@cd compartments/kryptikd && cargo build --quiet
 	@compartments/tests/adversarial.sh
 
+test-harness:
+	@"$(TOOLS)"/test-step-errexit.sh
+
 audit:
-	@$(TOOLS)/audit-setuid.sh
+	@"$(TOOLS)"/audit-setuid.sh
 
 clean:
 	@rm -rf "$(ROOT)/build/work"

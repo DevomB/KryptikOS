@@ -111,6 +111,67 @@ pub fn run_in_zone(zone: &Zone, rootfs: &str, argv: &[String]) -> Result<i32, Sp
         ));
     }
 
+    // Refuse to start a zone whose definition promises something this code
+    // does not deliver.
+    //
+    // A zone declaring storage.mode = "encrypted" currently gets an ordinary
+    // directory: per-zone LUKS2 volumes are not implemented. Starting it
+    // anyway would put secrets on plaintext storage while the configuration,
+    // the UI and the operator all believe otherwise - the precise failure this
+    // project exists to avoid. Same for "ephemeral", which is not yet wiped on
+    // stop.
+    //
+    // KRYPTIK_EXPERIMENTAL=1 allows it for development, loudly. There is
+    // deliberately no config option for this: it must be a conscious act at
+    // the command line, not a setting someone can forget they enabled.
+    let experimental = std::env::var("KRYPTIK_EXPERIMENTAL").as_deref() == Ok("1");
+    match zone.storage {
+        StorageMode::Encrypted if !experimental => {
+            return Err(SpawnError::Setup(format!(
+                "zone {:?} declares storage.mode = \"encrypted\", but per-zone
+                 encrypted volumes are NOT IMPLEMENTED - it would run on a plain
+                 directory. Refusing: a zone holding secrets must not start on
+                 plaintext storage while its configuration says otherwise.
+
+                 Set KRYPTIK_EXPERIMENTAL=1 to run it unencrypted anyway.",
+                zone.name
+            )));
+        }
+        StorageMode::Ephemeral if !experimental => {
+            return Err(SpawnError::Setup(format!(
+                "zone {:?} declares storage.mode = \"ephemeral\", but zone data is
+                 NOT yet wiped on stop. Refusing rather than implying a guarantee
+                 that does not hold.
+
+                 Set KRYPTIK_EXPERIMENTAL=1 to run it anyway.",
+                zone.name
+            )));
+        }
+        _ => {}
+    }
+    if experimental {
+        eprintln!(
+            "kryptikd: KRYPTIK_EXPERIMENTAL=1 - zone {:?} storage is a PLAIN              DIRECTORY, not {:?}",
+            zone.name, zone.storage
+        );
+    }
+
+    // Per-zone seccomp and Landlock policy paths are parsed from the zone file
+    // but not yet honoured - every zone gets the same base policy. Say so
+    // rather than let the file imply otherwise.
+    if zone.seccomp.is_some() || zone.landlock.is_some() {
+        eprintln!(
+            "kryptikd: note: zone {:?} names per-zone policy files, which are              not yet applied; the shared base policy is used",
+            zone.name
+        );
+    }
+    if zone.memory_max.is_some() || zone.pids_max.is_some() {
+        eprintln!(
+            "kryptikd: note: zone {:?} sets resource limits, which are not yet              applied - no cgroup is created",
+            zone.name
+        );
+    }
+
     std::fs::create_dir_all(rootfs)
         .map_err(|e| SpawnError::Setup(format!("{rootfs}: {e}")))?;
 
