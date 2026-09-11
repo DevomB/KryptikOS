@@ -566,6 +566,50 @@ else
     red "a substituted manifest was accepted without KRYPTIK_SIGCHECK_SELFTEST"; show
 fi
 
+# --- the pinned fingerprints themselves -------------------------------------
+#
+# A pin is the strongest thing this tool can say about a signer, so the pins
+# have to be the thing they claim to be. Pinning a short or long KEY ID instead
+# of a full fingerprint silently weakens the pin to an identifier that can be
+# collided, while still reading as "signature-pinned-key" in every report.
+# Nothing checked the shape of these before.
+
+PINS="$(awk '/^PINNED_FPRS=\(/{f=1;next} f&&/^\)/{f=0} f' "${ROOT}/tools/verify-signatures.sh"         | grep -oE '"[0-9A-Fa-f]+"' | tr -d '"')"
+
+if [[ -n "$PINS" ]]; then
+    green "the pinned-fingerprint list is readable and non-empty"
+else
+    red "the pinned-fingerprint list is readable and non-empty"
+fi
+
+badshape="$(printf '%s
+' "$PINS" | grep -vE '^[0-9A-F]{40}$' | tr '
+' ' ')"
+if [[ -z "${badshape// /}" ]]; then
+    green "every pin is a full 40-character uppercase fingerprint"
+else
+    red "pins that are not full uppercase fingerprints: ${badshape}"
+fi
+
+dupes="$(printf '%s
+' "$PINS" | sort | uniq -d | tr '
+' ' ')"
+if [[ -z "${dupes// /}" ]]; then
+    green "no fingerprint is pinned twice"
+else
+    red "duplicated pins: ${dupes}"
+fi
+
+# Each pin should be justified where it sits: an unexplained 40-hex string is
+# indistinguishable from one pasted in by mistake.
+uncommented="$(awk '/^PINNED_FPRS=\(/{f=1;next} f&&/^\)/{f=0} f && /"[0-9A-Fa-f]{40}"/ && $0 !~ /#/'                "${ROOT}/tools/verify-signatures.sh" | tr -d ' "' | tr '
+' ' ')"
+if [[ -z "${uncommented// /}" ]]; then
+    green "every pin carries a comment naming whose key it is"
+else
+    red "pins with no comment: ${uncommented}"
+fi
+
 echo
 if [[ "$FAIL" -gt 0 ]]; then
     echo "${FAIL} of $((PASS + FAIL)) checks failed."
