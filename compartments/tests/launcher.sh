@@ -1961,6 +1961,65 @@ lc_cleanup
 zrun alpha -- /bin/sh -c "$PRO if [ -e /run/kryptik ]; then echo PROBE=VISIBLE; else echo PROBE=absent; fi"
 probe "LC6 the registry does not exist inside a zone" "absent"
 
+# LC15: the registry directory itself must not be plantable.
+#
+# R-7b F1: base() falls back to a path under /tmp, which is world-writable, so
+# another local user could create it - or symlink it somewhere - before the
+# victim ever ran kryptikd, and then own the directory kryptikd keeps its
+# entries in. Driven here through the real `kryptikd run` rather than a unit
+# test, because what matters is that a zone does not start.
+#
+# XDG_RUNTIME_DIR points base() at a directory this suite owns, so the plant
+# happens in the suite's own workspace and the developer's real registry is
+# untouched.
+#
+# Unprivileged only, and that is not a convenience: as root, base() is
+# /run/kryptik/zones and never consults XDG_RUNTIME_DIR at all, because /run is
+# not world-writable and the whole class of attack this check is about does not
+# exist there. Planting a symlink at /run/kryptik as root would exercise the
+# same three lines of ensure_base against a path nobody can attack, while
+# displacing the registry of any zone still running in this VM. So the
+# unprivileged run is where this is measured; the VM says so rather than
+# pretending.
+if (( PRIVILEGED == 1 )); then
+    skip "LC15/LC16 the plantable-registry checks cover the UNPRIVILEGED base path; as root base() is /run/kryptik and ignores XDG_RUNTIME_DIR — the host run exercises them"
+else
+
+LC_XDG="$WORK/xdgplant"
+mkdir -p "$LC_XDG"
+ln -s "$WORK/elsewhere" "$LC_XDG/kryptik"
+mkdir -p "$WORK/elsewhere/zones"
+out="$(XDG_RUNTIME_DIR="$LC_XDG" KRYPTIK_EXPERIMENTAL=1 timeout "$TIMEOUT" \
+       "$KRYPTIKD" run alpha "${ZARGS[@]}" -- /bin/sh -c "$PRO echo PROBE=ran" 2>&1)"
+rc=$?
+if [[ "$out" == *"$LAUNCHED"* ]]; then
+    fail "LC15 a zone started with its registry inside a planted symlink"
+elif (( rc != 0 )) && [[ "$out" == *"$LC_XDG/kryptik"* ]]; then
+    pass "LC15 a registry directory that is a symlink is refused, naming the path"
+elif (( rc != 0 )); then
+    fail "LC15 refused (exit $rc) but did not name the planted path"
+    info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-220)"
+else
+    fail "LC15 exited 0 with a planted registry directory"
+fi
+rm -f "$LC_XDG/kryptik"
+
+# LC16: the positive control for LC15. The same launch, same variable, with a
+# real directory instead of the symlink, must start - otherwise LC15 passes for
+# the boring reason that XDG_RUNTIME_DIR breaks every launch.
+mkdir -p "$LC_XDG/kryptik"
+chmod 0700 "$LC_XDG/kryptik"
+out="$(XDG_RUNTIME_DIR="$LC_XDG" KRYPTIK_EXPERIMENTAL=1 timeout "$TIMEOUT" \
+       "$KRYPTIKD" run alpha "${ZARGS[@]}" -- /bin/sh -c "$PRO echo PROBE=ran" 2>&1)"
+if [[ "$out" == *"$LAUNCHED"* && "$out" == *"PROBE=ran"* ]]; then
+    pass "LC16 positive control: the same launch works with a registry directory we own"
+else
+    fail "LC16 positive control FAILED: the zone did not start even with a good directory"
+    info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-220)"
+fi
+
+fi   # end of the unprivileged-only LC15/LC16 pair
+
 # ============================================================================
 head_ "Mandatory checks NOT RUN here"
 # ============================================================================
