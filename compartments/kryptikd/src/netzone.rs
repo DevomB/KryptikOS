@@ -24,6 +24,7 @@
 //! the rest; this is the ownership and isolation half, which is the security
 //! boundary.
 
+use std::ffi::CStr;
 use std::io;
 use std::path::Path;
 
@@ -32,6 +33,80 @@ use crate::registry;
 use crate::zone::{NetworkMode, Zone};
 
 pub const BRIDGE: &str = "kryptik0";
+
+/// The kernel creates its fallback tunnel devices (sit0, tunl0, ...) in EVERY
+/// new network namespace when the tunnel modules are built in or loaded,
+/// unless this sysctl says otherwise: 0 = every namespace, 1 = only the
+/// initial one, 2 = none (since 4.16). The Kryptik kernel builds SIT in, and
+/// its first boot found sit0 inside an airgapped zone (R-13).
+pub const FB_TUNNELS_SYSCTL: &str = "/proc/sys/net/core/fb_tunnels_only_for_init_net";
+
+/// The fallback devices the kernel's tunnel modules register per namespace.
+pub const FALLBACK_DEVICES: &[&str] =
+    &["sit0", "tunl0", "ip6tnl0", "gre0", "gretap0", "erspan0", "ip6gre0", "ip_vti0", "ip6_vti0"];
+
+/// Every interface in the calling process's network namespace except
+/// loopback, as the kernel lists them.
+pub fn devices_besides_lo() -> io::Result<Vec<String>> {
+    // SAFETY: if_nameindex returns an array terminated by a zero index that
+    // we free with if_freenameindex; every entry before the terminator has a
+    // NUL-terminated if_name.
+    let list = unsafe { libc::if_nameindex() };
+    if list.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let mut out = Vec::new();
+    let mut p = list;
+    unsafe {
+        while (*p).if_index != 0 {
+            let name = CStr::from_ptr((*p).if_name).to_string_lossy().into_owned();
+            if name != "lo" {
+                out.push(name);
+            }
+            p = p.add(1);
+        }
+        libc::if_freenameindex(list);
+    }
+    Ok(out)
+}
+
+/// What a new network namespace would start with on this host, if not
+/// nothing: the fallback devices present here, when the sysctl says every
+/// namespace gets them. None when a new namespace would be loopback-only.
+pub fn fallback_tunnels_expected() -> Option<Vec<String>> {
+    let v = std::fs::read_to_string(FB_TUNNELS_SYSCTL).ok()?;
+    if v.trim() != "0" {
+        return None;
+    }
+    let here = devices_besides_lo().ok()?;
+    let fb: Vec<String> = here.into_iter().filter(|d| FALLBACK_DEVICES.contains(&d.as_str())).collect();
+    if fb.is_empty() {
+        None
+    } else {
+        Some(fb)
+    }
+}
+
+/// Make sure a zone's new network namespace will be empty. Ok(None): it will
+/// be, nothing to do. Ok(Some(note)): the sysctl was raised to 1 - the
+/// initial namespace keeps its devices, new ones get none - and the note
+/// says so. Err(why): a zone would get devices and this process cannot
+/// prevent it (an unprivileged launcher, or a read-only /proc/sys).
+pub fn suppress_fallback_tunnels() -> Result<Option<String>, String> {
+    let Some(devs) = fallback_tunnels_expected() else { return Ok(None) };
+    match std::fs::write(FB_TUNNELS_SYSCTL, "1") {
+        Ok(()) => Ok(Some(format!(
+            "set {FB_TUNNELS_SYSCTL} = 1 (was 0): this kernel would otherwise create {} in every \
+             new network namespace, a zone's included",
+            devs.join(", ")
+        ))),
+        Err(e) => Err(format!(
+            "this kernel creates {} in every new network namespace ({FB_TUNNELS_SYSCTL} = 0) and \
+             this process cannot change that ({e}); a zone would not start loopback-only",
+            devs.join(", ")
+        )),
+    }
+}
 
 #[derive(Debug)]
 pub enum NetError {
@@ -219,18 +294,33 @@ fn attach_routed(name: &str, k: u8, nic_ns: i32, zone_ns: i32) -> Result<(), Net
         // No router advertisements are ever accepted in a routed zone: its
         // addresses come from here and nowhere else (Design 03, IPv6).
         let _ = sysctl("/proc/sys/net/ipv6/conf/eth0/accept_ra", "0");
+        // IPv4 first and completely - address, link up, default route - so
+        // that nothing on the IPv6 side can cost the zone its path. The
+        // target kernel's first boot delivered a routed zone with an
+        // interface and no routes (R-13): one failure in this sequence lost
+        // every step after it, the IPv4 route included, and left the zone a
+        // device it could not use.
         netlink::add_addr4("eth0", netlink::zone_v4(k), 24)?;
-        netlink::add_addr6("eth0", netlink::zone_v6(k), 64)?;
         netlink::set_up("eth0")?;
         netlink::add_default_route4(netlink::BRIDGE_V4, "eth0")?;
-        netlink::add_default_route6(netlink::BRIDGE_V6, "eth0")?;
         // ping without CAP_NET_RAW: unprivileged ICMP echo sockets for every
         // group. A routed zone cannot keep CAP_NET_RAW, so this is the only
         // way it gets to ping, and it cannot forge anything with it.
         let _ = sysctl("/proc/sys/net/ipv4/ping_group_range", "0 65534");
         Ok(())
     })
-    .map_err(|e| io("address the zone's eth0", e))
+    .map_err(|e| io("address the zone's eth0", e))?;
+    // IPv6 is additive. A kernel or sysctl profile that disables it (a
+    // hardened image may well set disable_ipv6) refuses the address with
+    // EACCES; the zone then has IPv4 only - less connectivity, not less
+    // isolation - and that is reported rather than fatal.
+    if let Err(e) = netlink::with_netns(zone_ns, || {
+        netlink::add_addr6("eth0", netlink::zone_v6(k), 64)?;
+        netlink::add_default_route6(netlink::BRIDGE_V6, "eth0")
+    }) {
+        eprintln!("kryptikd: zone {name:?}: IPv6 on eth0 not configured ({e}); IPv4 is");
+    }
+    Ok(())
 }
 
 /// pid 1 of the running nic zone.
@@ -260,6 +350,22 @@ fn running_nic_zone_init(zones_dir: &Path) -> Result<libc::pid_t, NetError> {
 
 /// What the parent does for this zone, or why it does nothing.
 pub fn plan(zone: &Zone, privileged: bool) -> String {
+    let mut line = plan_line(zone, privileged);
+    if let Some(devs) = fallback_tunnels_expected() {
+        line.push_str(&format!(
+            "\n           this kernel creates {} in every new network namespace ({FB_TUNNELS_SYSCTL} = 0): {}",
+            devs.join(", "),
+            if privileged {
+                "the launcher sets it to 1 before the zone's namespace exists"
+            } else {
+                "an unprivileged launch cannot change that and is refused without KRYPTIK_EXPERIMENTAL=1"
+            }
+        ));
+    }
+    line
+}
+
+fn plan_line(zone: &Zone, privileged: bool) -> String {
     match (zone.network, privileged) {
         (NetworkMode::None, _) => "network    none: loopback only, nothing created".into(),
         (_, false) => "network    (unprivileged launch: no topology; loopback only)".into(),
@@ -319,6 +425,117 @@ mod tests {
         assert!(plan(&z("routed", Some(131072), None), true).contains("10.19.0.2/24"));
         assert!(plan(&z("routed", None, None), true).contains("needs [identity]"));
         assert!(plan(&z("nic", None, Some("eth0")), true).contains("eth0 moves"));
+    }
+
+    /// A fresh namespace holds exactly what `fallback_tunnels_expected`
+    /// predicts from the sysctl and the initial namespace: nothing on a host
+    /// without the tunnel modules, the fallback devices on one with them and
+    /// the sysctl at 0. Kernel-backed; the predictor is what the launcher
+    /// acts on before the zone's namespace exists.
+    #[test]
+    fn a_fresh_namespace_holds_exactly_what_the_predictor_says() {
+        use crate::netlink::tests::in_userns_netns;
+        let mut predicted = fallback_tunnels_expected().unwrap_or_default();
+        predicted.sort();
+        let rc = in_userns_netns(move || {
+            let mut got = match devices_besides_lo() {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("if_nameindex: {e}");
+                    return 1;
+                }
+            };
+            got.sort();
+            if got == predicted {
+                0
+            } else {
+                eprintln!("fresh namespace has {got:?}, predicted {predicted:?}");
+                2
+            }
+        });
+        match rc {
+            0 => {}
+            77 => eprintln!("no unprivileged user namespace; skipping"),
+            other => panic!("fresh-namespace contents test failed at step {other}"),
+        }
+    }
+
+    /// R-13: the target kernel's first boot delivered a routed zone with an
+    /// interface and no routes. Whatever fails on the IPv6 side must not cost
+    /// the zone its IPv4 path. Kernel-backed: this namespace plays the nic
+    /// zone (bridge and all), a holder plays the zone with IPv6 disabled the
+    /// way a hardened sysctl profile would, and the zone end must still come
+    /// out addressed, up and routed - counted the way the suite counts it.
+    #[test]
+    fn ipv4_survives_a_zone_whose_ipv6_is_disabled() {
+        use crate::netlink::tests::{in_userns_netns, spawn_netns_holder, step};
+        let rc = in_userns_netns(|| {
+            let (holder, zone_ns) = match spawn_netns_holder() {
+                Ok(v) => v,
+                Err(c) => return c,
+            };
+            let nic_ns = match netlink::open_netns_of(unsafe { libc::getpid() }) {
+                Ok(fd) => fd,
+                Err(_) => return 40,
+            };
+            let r: Result<(), i32> = (|| {
+                step(1, netlink::create_bridge(BRIDGE))?;
+                step(2, netlink::add_addr4(BRIDGE, netlink::BRIDGE_V4, 24))?;
+                step(3, netlink::set_up(BRIDGE))?;
+                step(
+                    4,
+                    netlink::with_netns(zone_ns, || {
+                        std::fs::write("/proc/sys/net/ipv6/conf/all/disable_ipv6", "1")?;
+                        std::fs::write("/proc/sys/net/ipv6/conf/default/disable_ipv6", "1")
+                    }),
+                )?;
+                attach_routed("t", 7, nic_ns, zone_ns).map_err(|e| {
+                    eprintln!("attach_routed: {e}");
+                    5
+                })?;
+                let (routes, v6, up) = netlink::with_netns(zone_ns, || {
+                    Ok((
+                        std::fs::read_to_string("/proc/self/net/route")?,
+                        std::fs::read_to_string("/proc/self/net/if_inet6").unwrap_or_default(),
+                        netlink::is_up("eth0")?,
+                    ))
+                })
+                .map_err(|_| 6)?;
+                if !up {
+                    return Err(7);
+                }
+                let rows: Vec<&str> = routes.lines().skip(1).collect();
+                let default = rows.iter().any(|l| {
+                    let mut f = l.split_whitespace();
+                    f.next() == Some("eth0") && f.next() == Some("00000000")
+                });
+                if !default || rows.len() < 2 {
+                    eprintln!("zone routes:\n{routes}");
+                    return Err(8);
+                }
+                // The premise: IPv6 really was refused, so the IPv4 path
+                // above was built in spite of a failure, not beside a success.
+                if v6.lines().any(|l| l.contains("eth0")) {
+                    eprintln!("IPv6 was not disabled in the zone namespace; this proved nothing:\n{v6}");
+                    return Err(9);
+                }
+                Ok(())
+            })();
+            unsafe {
+                libc::kill(holder, libc::SIGKILL);
+                libc::close(nic_ns);
+                libc::close(zone_ns);
+            }
+            match r {
+                Ok(()) => 0,
+                Err(c) => c,
+            }
+        });
+        match rc {
+            0 => {}
+            77 => eprintln!("no unprivileged user namespace; skipping"),
+            other => panic!("routed zone IPv4 path with IPv6 disabled: failed at step {other}"),
+        }
     }
 
     #[test]

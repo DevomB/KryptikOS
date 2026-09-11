@@ -417,14 +417,14 @@ pub fn zone_v6(k: u8) -> [u8; 16] {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::fs;
 
     /// Run `body` in a forked child inside a fresh user + network namespace
     /// (unprivileged where the kernel allows it). Returns the exit code, or
     /// 77 when no user namespace could be created.
-    fn in_userns_netns(body: impl FnOnce() -> i32) -> i32 {
+    pub(crate) fn in_userns_netns(body: impl FnOnce() -> i32) -> i32 {
         let pid = unsafe { libc::fork() };
         assert!(pid >= 0);
         if pid == 0 {
@@ -466,7 +466,7 @@ mod tests {
         if libc::WIFEXITED(status) { libc::WEXITSTATUS(status) } else { 200 + libc::WTERMSIG(status) }
     }
 
-    fn step(n: i32, r: io::Result<()>) -> Result<(), i32> {
+    pub(crate) fn step(n: i32, r: io::Result<()>) -> Result<(), i32> {
         r.map_err(|e| {
             eprintln!("step {n}: {e}");
             n
@@ -511,7 +511,7 @@ mod tests {
     /// to be killed. Returns (pid, fd of its netns). The namespace is owned
     /// by the caller's user namespace, so the caller may create interfaces
     /// in it and enter it with setns.
-    fn spawn_netns_holder() -> Result<(libc::pid_t, RawFd), i32> {
+    pub(crate) fn spawn_netns_holder() -> Result<(libc::pid_t, RawFd), i32> {
         let mut p = [0 as RawFd; 2];
         if unsafe { libc::pipe(p.as_mut_ptr()) } < 0 {
             return Err(60);

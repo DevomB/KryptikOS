@@ -124,10 +124,16 @@ fn ensure_subtree_control(dir: &Path) -> Result<(), CgroupError> {
 ///
 /// Answers by trying. Returns the directory per-zone cgroups go under.
 pub fn available() -> Result<PathBuf, CgroupError> {
-    let root = Path::new(CGROUP2_ROOT);
+    available_under(Path::new(CGROUP2_ROOT))
+}
+
+/// `available` against a given hierarchy root, so the answer can be tested
+/// against a directory tree shaped like one.
+pub fn available_under(root: &Path) -> Result<PathBuf, CgroupError> {
     if !root.join("cgroup.controllers").exists() {
         return Err(CgroupError::Unavailable(format!(
-            "{CGROUP2_ROOT} is not a cgroup v2 hierarchy (no cgroup.controllers)"
+            "{} is not a cgroup v2 hierarchy (no cgroup.controllers)",
+            root.display()
         )));
     }
 
@@ -140,6 +146,24 @@ pub fn available() -> Result<PathBuf, CgroupError> {
         fs::create_dir(&group).map_err(|e| io_err(&group, e))?;
     }
     ensure_subtree_control(&group)?;
+    // "Available" has to mean "this process can create a leaf here", not
+    // "the directory exists with the right controllers". On a host where a
+    // privileged run once created kryptik/ with memory and pids delegated,
+    // an unprivileged launcher read all of that successfully and then failed
+    // at mkdir with EACCES - a refusal that no longer named [limits]. Prove
+    // it by trying, the way the rest of this function does.
+    let trial = group.join(format!(".probe.{}", std::process::id()));
+    match fs::create_dir(&trial) {
+        Ok(()) => {
+            let _ = fs::remove_dir(&trial);
+        }
+        Err(e) => {
+            return Err(CgroupError::Unavailable(format!(
+                "cannot create a cgroup under {}: {e}",
+                group.display()
+            )))
+        }
+    }
     sweep_stale(&group);
     Ok(group)
 }
@@ -375,6 +399,38 @@ impl Drop for Cgroup {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    /// R-12: "available" must mean this process can create a leaf, not that
+    /// the directory exists with the right controllers. A root-owned kryptik/
+    /// left by a privileged run read fine and then failed at mkdir, and the
+    /// refusal stopped naming [limits].
+    #[test]
+    fn availability_is_proven_by_creating_a_leaf_not_by_reading() {
+        let root = std::env::temp_dir().join(format!("kryptik-cg-{}", std::process::id()));
+        let group = root.join(KRYPTIK_GROUP);
+        fs::create_dir_all(&group).unwrap();
+        for d in [&root, &group] {
+            fs::write(d.join("cgroup.controllers"), "cpu memory pids\n").unwrap();
+            fs::write(d.join("cgroup.subtree_control"), "memory pids\n").unwrap();
+        }
+        // Readable, delegated, and not writable by us: exactly the trap.
+        fs::set_permissions(&group, fs::Permissions::from_mode(0o555)).unwrap();
+        let r = available_under(&root);
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("running as root: a 0555 directory does not refuse root; skipping the negative half");
+        } else {
+            match r {
+                Err(CgroupError::Unavailable(m)) => assert!(m.contains("cannot create a cgroup under"), "{m}"),
+                other => panic!("expected Unavailable, got {other:?}"),
+            }
+        }
+        // Writable again: available, and the trial leaf is gone.
+        fs::set_permissions(&group, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(available_under(&root).unwrap(), group);
+        let left: Vec<_> = fs::read_dir(&group).unwrap().flatten().filter(|e| e.path().is_dir()).collect();
+        assert!(left.is_empty(), "trial directory left behind: {left:?}");
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn memory_suffixes_convert() {

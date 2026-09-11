@@ -143,7 +143,9 @@ impl std::fmt::Display for CapError {
     }
 }
 
-/// Drop every capability from the bounding set except [`KEEP`].
+/// Drop every capability from the bounding set except [`KEEP`] and those in
+/// `keep`. `KEEP` is always kept; a zone policy can add from `KEEPABLE` only,
+/// and that is enforced here as well as in the policy parser.
 ///
 /// Must run AFTER every privileged setup step - the mounts and `pivot_root`
 /// need `CAP_SYS_ADMIN` - and BEFORE `execvp`, so the payload can never
@@ -153,13 +155,11 @@ impl std::fmt::Display for CapError {
 /// CAP_SYS_ADMIN" and continuing would start a zone weaker than the one the
 /// operator asked for, which is the failure mode this project is built to
 /// avoid.
-pub fn drop_bounding_set() -> Result<(), CapError> {
-    drop_bounding_set_except(&[KEEP])
-}
-
-/// Drop every capability from the bounding set except those in `keep`.
-/// `KEEP` is always kept; a zone policy can add from `KEEPABLE` only, and
-/// that is enforced here as well as in the policy parser.
+///
+/// This is the only entry point. An earlier `drop_bounding_set()` with no
+/// `keep` and a `bounding_set()` reader were unused once policies could keep
+/// capabilities; security-relevant functions nothing calls are removed
+/// rather than left for someone to call by mistake.
 pub fn drop_bounding_set_except(keep: &[libc::c_int]) -> Result<(), CapError> {
     let last = last_cap();
     for cap in 0..=last {
@@ -180,16 +180,6 @@ pub fn drop_bounding_set_except(keep: &[libc::c_int]) -> Result<(), CapError> {
         }
     }
     Ok(())
-}
-
-/// The bounding set as the kernel reports it, for diagnostics and for
-/// `explain`. Returns None where /proc is unavailable.
-pub fn bounding_set() -> Option<u64> {
-    let status = std::fs::read_to_string("/proc/self/status").ok()?;
-    status
-        .lines()
-        .find_map(|l| l.strip_prefix("CapBnd:"))
-        .and_then(|v| u64::from_str_radix(v.trim(), 16).ok())
 }
 
 #[cfg(test)]
@@ -229,12 +219,5 @@ mod tests {
         // the caps we name above would mean we are not sweeping far enough.
         assert!(n >= cap::SYS_ADMIN, "cap_last_cap {n} is implausibly low");
         assert!(n <= 63, "cap_last_cap {n} is out of range for a u64 mask");
-    }
-
-    #[test]
-    fn the_bounding_set_is_readable_here() {
-        // The accessor must work, or the launcher check that reads CapBnd
-        // would silently measure nothing.
-        assert!(bounding_set().is_some(), "CapBnd not readable from /proc/self/status");
     }
 }
