@@ -189,6 +189,15 @@ else
             cp -aL "$lib" "$ROOT$lib" 2>/dev/null || true
         done < <(ldd "$s6bin" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i ~ /^\//) print $i}')
     done
+    # The CA bundle. kryptikd binds /etc/ssl/certs read-only into every zone so
+    # that TLS works there; without it in the image, the launcher check for
+    # that passthrough fails against an image gap rather than against kryptikd.
+    for ca in /etc/ssl/certs /usr/share/ca-certificates; do
+        if [[ -d "$ca" ]]; then
+            mkdir -p "$ROOT$ca"
+            cp -aL "$ca/." "$ROOT$ca/" 2>/dev/null || true
+        fi
+    done
     printf 'host-binaries\n' > "$ROOT/etc/kryptik-userspace-origin"
 fi
 
