@@ -474,7 +474,21 @@ declare -a PACKAGES=(
     "groff"       "native_build groff-${V_GROFF}.tar.gz groff-${V_GROFF}"
     "kmod"        "native_build kmod-${V_KMOD}.tar.xz kmod-${V_KMOD} --sysconfdir=/etc --with-openssl --with-xz --with-zstd --with-zlib"
     "libpipeline" "native_build libpipeline-${V_LIBPIPELINE}.tar.gz libpipeline-${V_LIBPIPELINE}"
-    "man-db"      "native_build man-db-${V_MANDB}.tar.xz man-db-${V_MANDB} --docdir=/usr/share/doc/man-db-${V_MANDB} --sysconfdir=/etc --disable-setuid --enable-cache-owner=bin"
+    # man-db has NO RECIPE, deliberately, and the stage reports it as an
+    # unwired package rather than pretending otherwise.
+    #
+    # Its configure requires a database library - gdbm, Berkeley db, or
+    # ndbm - and hard-errors with "Fatal: no supported database
+    # library/header found" when it finds none. Kryptik pins none of them,
+    # and glibc does not provide ndbm (gdbm-ndbm.h ships with gdbm).
+    #
+    # Adding gdbm is an integration change: it needs a version in
+    # versions.env, an entry in tools/fetch-sources.sh and an audited line
+    # in sources.lock. Until then this package cannot build, and blocking
+    # the kernel on a documentation tool would be the wrong trade - so it
+    # is listed, unwired, and counted in the "base system is INCOMPLETE"
+    # warning at the end of this stage.
+    "man-db"      ""
     "procps-ng"   "native_build procps-ng-${V_PROCPS}.tar.xz procps-ng-${V_PROCPS} --docdir=/usr/share/doc/procps-ng-${V_PROCPS} --disable-static --disable-kill"
     "e2fsprogs"   "s_e2fsprogs"
     "elfutils"    "s_elfutils"
