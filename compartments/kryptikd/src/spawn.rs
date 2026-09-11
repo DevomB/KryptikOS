@@ -29,6 +29,7 @@ use std::io;
 use std::os::unix::io::RawFd;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
+use crate::broker;
 use crate::caps;
 use crate::cgroup;
 use crate::isolate;
@@ -130,6 +131,32 @@ fn install_forwarding(target: libc::pid_t, arm_kill: bool) {
     }
     if arm_kill {
         install_handler(libc::SIGALRM, on_alarm);
+    }
+}
+
+/// Supervise the child while answering the zone broker requests: poll the
+/// listening socket with a short timeout, serve what arrives, and reap the
+/// child when it exits. Signals forwarded by the handlers interrupt the
+/// poll, which just loops.
+fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, zone: &str, uid: u32) -> Result<libc::c_int, SpawnError> {
+    loop {
+        let mut status: libc::c_int = 0;
+        let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+        if r == pid {
+            return Ok(status);
+        }
+        if r < 0 && errno() != libc::EINTR {
+            return Err(SpawnError::Syscall { call: "waitpid", errno: errno() });
+        }
+        let mut pfd = libc::pollfd { fd: listen_fd, events: libc::POLLIN, revents: 0 };
+        let n = unsafe { libc::poll(&mut pfd, 1, 200) };
+        if n > 0 && pfd.revents & libc::POLLIN != 0 {
+            match broker::serve_one(listen_fd, zone, uid) {
+                Ok(Some(verb)) => eprintln!("kryptikd[zone {zone}]: broker served {verb:?}"),
+                Ok(None) => {}
+                Err(e) => eprintln!("kryptikd[zone {zone}]: broker: {e}"),
+            }
+        }
     }
 }
 
@@ -430,6 +457,8 @@ pub fn run_in_zone(
             let path = policy::resolve(&opts.zones_dir, rel);
             let p = policy::load(&path)
                 .map_err(|e| SpawnError::Setup(format!("zone {:?} policy: {e}", zone.name)))?;
+            p.check_for_zone(zone)
+                .map_err(|e| SpawnError::Setup(format!("zone {:?} policy: {e}", zone.name)))?;
             for w in &p.warnings {
                 eprintln!("kryptikd: note: {w}");
             }
@@ -518,6 +547,13 @@ pub fn run_in_zone(
     // but the zone's own /proc/self/cgroup describes a path outside its
     // namespace root - a zone that cannot name its own cgroup correctly is one
     // that cannot manage sub-cgroups later.
+    // The zone's broker endpoint lives in its registry entry; the zone sees
+    // it at /run/kryptik/broker. Served by this process while it waits.
+    let broker_path = entry.dir().join(broker::SOCKET_NAME);
+    let broker_fd = broker::listen_at(&broker_path, id.uid, id.gid)
+        .map_err(|e| SpawnError::Setup(format!("broker socket {}: {e}", broker_path.display())))?;
+    let broker_path_str = broker_path.display().to_string();
+
     let placed = SyncPipe::new()?;
     let ready = SyncPipe::new()?;
     let mapped = SyncPipe::new()?;
@@ -545,7 +581,7 @@ pub fn run_in_zone(
         initpid.close_read();
         let rc = intermediate_main(
             zone, rootfs, argv, &id, parent_pid, &placed, &ready, &mapped, &initpid,
-            zone_policy.as_ref(),
+            zone_policy.as_ref(), &broker_path_str,
         );
         // Never return: this process must not run the parent's cleanup.
         unsafe { libc::_exit(rc) };
@@ -617,7 +653,7 @@ pub fn run_in_zone(
         match crate::netlink::open_netns_of(pid) {
             Ok(ns) => {
                 let r = match zone.network {
-                    crate::zone::NetworkMode::Nic => netzone::plumb_nic_zone(zone, ns),
+                    crate::zone::NetworkMode::Nic => netzone::plumb_nic_zone(zone, ns, &opts.zones_dir),
                     crate::zone::NetworkMode::Routed => netzone::plumb_routed_zone(zone, ns, &opts.zones_dir),
                     crate::zone::NetworkMode::None => Ok(()),
                 };
@@ -659,7 +695,9 @@ pub fn run_in_zone(
         let _ = entry.set_init(zp);
     }
 
-    let status = wait_for(pid)?;
+    let status = serve_until_exit(pid, broker_fd, &zone.name, id.uid)?;
+    unsafe { libc::close(broker_fd) };
+    let _ = std::fs::remove_file(&broker_path);
 
     // Remove the cgroup here rather than leaving it to Drop. Drop still covers
     // every early return above, but it has nowhere to report to, and the one
@@ -701,6 +739,7 @@ fn intermediate_main(
     mapped: &SyncPipe,
     initpid: &SyncPipe,
     zone_policy: Option<&policy::Policy>,
+    broker_path: &str,
 ) -> i32 {
     macro_rules! bail {
         ($($arg:tt)*) => {{
@@ -874,7 +913,7 @@ fn intermediate_main(
     }
 
     if inner == 0 {
-        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, plumbed);
+        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, plumbed, broker_path);
         unsafe { libc::_exit(rc) };
     }
 
@@ -905,6 +944,7 @@ fn zone_init(
     flags: libc::c_int,
     zone_policy: Option<&policy::Policy>,
     plumbed: bool,
+    broker_path: &str,
 ) -> i32 {
     macro_rules! bail {
         ($($arg:tt)*) => {{
@@ -940,7 +980,7 @@ fn zone_init(
         (crate::zone::NetworkMode::Routed, true) => rootfs::Resolver::Bridge,
         _ => rootfs::Resolver::None,
     };
-    let home = match rootfs::pivot_into(rootfs, &zone.name, ephemeral, resolver) {
+    let home = match rootfs::pivot_into(rootfs, &zone.name, ephemeral, resolver, Some(broker_path)) {
         Ok(h) => h,
         Err(e) => bail!("could not build the zone root: {e}"),
     };
@@ -1087,12 +1127,23 @@ pub fn zone_environment(zone: &Zone, home: &str, caller: &[(String, String)]) ->
 /// Describe what starting this zone would do, without doing it.
 pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String {
     let network_line = netzone::plan(zone, unsafe { libc::geteuid() } == 0);
-    let policy_line = match &zone.seccomp {
+    let loaded = zone
+        .seccomp
+        .as_ref()
+        .map(|rel| (rel.clone(), policy::load(&policy::resolve(zones_dir, rel)).and_then(|p| p.check_for_zone(zone).map(|_| p))));
+    let policy_line = match &loaded {
         None => "policy     base only".to_string(),
-        Some(rel) => match policy::load(&policy::resolve(zones_dir, rel)) {
-            Ok(p) => format!("policy     {rel}: {}", p.describe()),
-            Err(e) => format!("policy     {rel}: ERROR - {e} (the zone will not start)"),
-        },
+        Some((rel, Ok(p))) => format!("policy     {rel}: {}", p.describe()),
+        Some((rel, Err(e))) => format!("policy     {rel}: ERROR - {e} (the zone will not start)"),
+    };
+    // The capability line must say what the ZONE gets, which depends on its
+    // policy: a static "NET_BIND_SERVICE only" was wrong for the nic zone.
+    let caps_line = match &loaded {
+        Some((_, Ok(p))) if !p.keep_cap_names.is_empty() => format!(
+            "caps       bounding set: CAP_NET_BIND_SERVICE + {} (kept by policy)",
+            p.keep_cap_names.join(" + ")
+        ),
+        _ => "caps       bounding set dropped to CAP_NET_BIND_SERVICE only".to_string(),
     };
     let flags = isolate::namespace_flags(zone);
     let mut ns = Vec::new();
@@ -1167,7 +1218,7 @@ pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String
          /dev       {} + shm, pts\n\
          landlock   ABI >= {}, rules:\n           {}\n\
          env        {} + passthrough of {}\n\
-         caps       bounding set dropped to CAP_NET_BIND_SERVICE only\n\
+         {}\n\
          seccomp    default-deny, {} syscalls allowed, argument rules on {:?}\n\
          {}\n\
          {}",
@@ -1189,6 +1240,7 @@ pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String
         rules.join("\n           "),
         "PATH HOME TMPDIR USER LOGNAME SHELL KRYPTIK_ZONE",
         ENV_PASSTHROUGH.join(" "),
+        caps_line,
         seccomp::BASE_ALLOWLIST.len(),
         seccomp::ARG_RULES,
         policy_line,
@@ -1217,6 +1269,32 @@ mod tests {
              [identity]\nuid_base = {base}\n[ui]\nborder_color = \"#123456\"\n"
         ))
         .unwrap()
+    }
+
+    #[test]
+    fn explain_reports_capabilities_kept_by_policy() {
+        let dir = std::env::temp_dir().join(format!("kryptik-explain-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("policy")).unwrap();
+        std::fs::write(dir.join("policy/n.seccomp"), "keep-capability CAP_NET_RAW\nkeep-capability CAP_NET_ADMIN\n").unwrap();
+        let nic = Zone::from_str(
+            "[zone]\nname = \"n\"\n[network]\nmode = \"nic\"\nbridge = \"kryptik0\"\n\
+             [storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n[policy]\nseccomp = \"policy/n.seccomp\"\n\
+             [ui]\nborder_color = \"#123456\"\n",
+        )
+        .unwrap();
+        let e = explain(&nic, "/tmp/n", &dir);
+        assert!(e.contains("caps       bounding set: CAP_NET_BIND_SERVICE + CAP_NET_RAW + CAP_NET_ADMIN (kept by policy)"), "{e}");
+        // The same file on a routed zone is an error, and explain says so.
+        let routed = Zone::from_str(
+            "[zone]\nname = \"r\"\n[network]\nmode = \"routed\"\n\
+             [storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n[policy]\nseccomp = \"policy/n.seccomp\"\n\
+             [ui]\nborder_color = \"#123457\"\n",
+        )
+        .unwrap();
+        let e = explain(&routed, "/tmp/r", &dir);
+        assert!(e.contains("ERROR") && e.contains("owns the NIC"), "{e}");
+        assert!(e.contains("dropped to CAP_NET_BIND_SERVICE only"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
