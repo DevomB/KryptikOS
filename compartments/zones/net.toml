@@ -16,6 +16,10 @@ bridge = "kryptik0"
 
 [storage]
 mode = "ephemeral"
+# Required for ephemeral: $HOME is a tmpfs, and an unbounded tmpfs lets the
+# zone consume host memory by writing files - which the cgroup memory limit
+# does NOT catch, because those pages outlive the process that wrote them.
+size = "512M"
 
 [policy]
 seccomp  = "policy/net.seccomp"

@@ -304,6 +304,18 @@ pub fn run_in_zone(
     // KRYPTIK_EXPERIMENTAL=1 allows it for development, loudly. There is
     // deliberately no config option for this: it must be a conscious act at
     // the command line, not a setting someone can forget they enabled.
+    // The one thing about ephemeral storage that is not delivered, said every
+    // time rather than buried in a design document: tmpfs pages are swappable.
+    // memory.swap.max=0 keeps the zone's PROCESS pages out of swap, but not
+    // the tmpfs pages it wrote, which outlive the writer.
+    if zone.storage == StorageMode::Ephemeral {
+        eprintln!(
+            "kryptikd: zone {:?}: ephemeral storage is a tmpfs freed on exit; its pages \
+             can reach swap, so this is not secure erasure",
+            zone.name
+        );
+    }
+
     let experimental = std::env::var("KRYPTIK_EXPERIMENTAL").as_deref() == Ok("1");
     let mut unsupported: Vec<String> = Vec::new();
     match zone.storage {
@@ -312,9 +324,11 @@ pub fn run_in_zone(
              the zone would run on a PLAIN DIRECTORY while its configuration says otherwise"
                 .into(),
         ),
-        StorageMode::Ephemeral => unsupported.push(
-            "storage.mode = \"ephemeral\": a PLAIN DIRECTORY, NOT yet wiped on stop".into(),
-        ),
+        // Ephemeral is implemented (M2): the zone's home is a per-launch
+        // tmpfs in its own mount namespace, and the persistent directory is
+        // never bound anywhere. The one thing still worth saying out loud is
+        // swap - see the note printed below, and docs/design/02.
+        StorageMode::Ephemeral => {}
     }
     if zone.seccomp.is_some() || zone.landlock.is_some() {
         unsupported.push(
@@ -374,6 +388,14 @@ pub fn run_in_zone(
         }
     }
     rootfs::check_data_dir(rootfs, id.uid).map_err(|e| SpawnError::Setup(e.to_string()))?;
+
+    // An ephemeral zone must not start over data from an earlier run. Nothing
+    // it writes will reach this directory, so anything already there is data
+    // the operator believes is gone and is not.
+    if zone.storage == StorageMode::Ephemeral {
+        rootfs::check_data_dir_empty(rootfs, &zone.name)
+            .map_err(|e| SpawnError::Setup(e.to_string()))?;
+    }
 
     // placed: parent -> child, "you are in your cgroup, you may unshare"
     // ready:  child -> parent, "I have unshared"
@@ -632,7 +654,11 @@ fn zone_init(zone: &Zone, rootfs: &str, argv: &[String], flags: libc::c_int) -> 
     //    outside the zone, and chmod changed the mode of one. Both worked
     //    because those paths still EXISTED here. A permission layer cannot fix
     //    reachability.
-    let home = match rootfs::pivot_into(rootfs, &zone.name) {
+    let ephemeral = match zone.storage {
+        StorageMode::Ephemeral => zone.size.as_deref(),
+        StorageMode::Encrypted => None,
+    };
+    let home = match rootfs::pivot_into(rootfs, &zone.name, ephemeral) {
         Ok(h) => h,
         Err(e) => bail!("could not build the zone root: {e}"),
     };
@@ -772,10 +798,30 @@ pub fn explain(zone: &Zone, rootfs: &str) -> String {
             "encrypted volume {} (NOT YET IMPLEMENTED - using a plain directory)",
             zone.volume.as_deref().unwrap_or("?")
         ),
-        StorageMode::Ephemeral => "ephemeral (NOT YET IMPLEMENTED - using a plain directory)".into(),
+        StorageMode::Ephemeral => format!(
+            "ephemeral: $HOME is a per-launch tmpfs of {}, freed when the zone exits.\n\
+             \x20          Nothing the zone writes reaches its persistent directory.\n\
+             \x20          CAVEAT: tmpfs pages can be written to swap. Until Kryptik\n\
+             \x20          ships with encrypted or no swap this is NOT secure erasure.",
+            zone.size.as_deref().unwrap_or("?")
+        ),
     };
 
     let home = rootfs::zone_home(&zone.name);
+
+    // For an ephemeral zone the persistent directory is NOT visible inside -
+    // that is the whole change - so the line must not keep claiming it is. It
+    // is still worth printing, because it is the directory that must be empty
+    // for the zone to start at all.
+    let data_line = match zone.storage {
+        StorageMode::Ephemeral => format!(
+            "data dir   {rootfs} (NOT visible inside; must be empty for the zone to start)"
+        ),
+        StorageMode::Encrypted => {
+            format!("data dir   {rootfs} (visible inside as {home})")
+        }
+    };
+
     let rules: Vec<String> = landlock::zone_rules(&home)
         .iter()
         .map(|r| format!("{:<12} {}", r.path, landlock::describe_access(r.access)))
@@ -785,7 +831,7 @@ pub fn explain(zone: &Zone, rootfs: &str) -> String {
         "zone       {}\n\
          namespaces {}\n\
          hostname   {}\n\
-         data dir   {} (visible inside as {})\n\
+         {}\n\
          storage    {}\n\
          root       tmpfs, read-only; {} bound read-only recursively\n\
          /etc       synthesized (passwd, group, hosts, nsswitch) + read-only {}\n\
@@ -796,8 +842,7 @@ pub fn explain(zone: &Zone, rootfs: &str) -> String {
         zone.name,
         ns.join(", "),
         zone.name,
-        rootfs,
-        home,
+        data_line,
         storage,
         rootfs::SYSTEM_PATHS.join(" "),
         rootfs::ETC_RO_FILES
@@ -825,8 +870,17 @@ mod tests {
         let bridge = if mode == "nic" { "bridge = \"kryptik0\"\n" } else { "" };
         Zone::from_str(&format!(
             "[zone]\nname = \"t\"\n[network]\nmode = \"{mode}\"\n{bridge}\
-             [storage]\nmode = \"ephemeral\"\n[ui]\nborder_color = \"#123456\"\n"
+             [storage]\nmode = \"ephemeral\"\nsize = \"256M\"\n[ui]\nborder_color = \"#123456\"\n"
         ))
+        .unwrap()
+    }
+
+    fn z_encrypted() -> Zone {
+        Zone::from_str(
+            "[zone]\nname = \"t\"\n[network]\nmode = \"none\"\n\
+             [storage]\nmode = \"encrypted\"\nvolume = \"/dev/kryptik/t\"\n\
+             [ui]\nborder_color = \"#123456\"\n",
+        )
         .unwrap()
     }
 
@@ -841,11 +895,22 @@ mod tests {
         let e = explain(&z("none"), "/tmp/t");
         assert!(e.contains("user"), "{e}");
         assert!(e.contains("net"), "{e}");
-        // Storage is not implemented, and explain must say so rather than
-        // implying a zone gets an encrypted volume today.
-        assert!(e.contains("NOT YET IMPLEMENTED"), "{e}");
-        assert!(e.contains("/home/t"), "{e}");
-        assert!(e.contains("read+exec"), "{e}");
+        // Ephemeral storage IS implemented now, so the old assertion - that
+        // explain says NOT YET IMPLEMENTED - would be a lie in the other
+        // direction. What explain must still do is refuse to overclaim: a
+        // tmpfs freed on exit is not secure erasure while its pages can be
+        // swapped, and an operator reading this is deciding what to put in the
+        // zone.
+        assert!(e.contains("tmpfs"), "explain must say what ephemeral storage IS: {e}");
+        assert!(e.contains("swap"), "explain must name the swap caveat: {e}");
+        assert!(
+            e.contains("NOT secure erasure"),
+            "explain must not let 'ephemeral' be read as secure erasure: {e}"
+        );
+
+        // The other mode is still unimplemented, and must still say so.
+        let enc = explain(&z_encrypted(), "/tmp/t");
+        assert!(enc.contains("NOT YET IMPLEMENTED"), "{enc}");
     }
 
     #[test]
