@@ -51,7 +51,13 @@ jobs:
           exit $fail
 
       - name: Shellcheck
-        run: shellcheck -S warning -x build/lib/common.sh build/stages/*.sh tools/*.sh
+        # tools/vm/ and the launcher suite were outside this list until now,
+        # which left the two largest scripts in the tree ungated - including the
+        # one that decides whether a boot passed. Three real warnings came out
+        # of adding them.
+        run: |
+          shellcheck -S warning -x build/lib/common.sh build/stages/*.sh \
+            tools/*.sh tools/vm/*.sh compartments/tests/*.sh
 
       - name: Executable bits are recorded
         run: |

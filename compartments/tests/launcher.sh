@@ -630,7 +630,11 @@ fi
 zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(ls /proc | grep -c '^[0-9][0-9]*$')"
 if want_launch "E4b /proc shows only the zone's own processes"; then
     n="$(printf '%s\n' "$ZOUT" | sed -n 's/^PROBE=//p' | head -1)"
-    hostn="$(ls /proc | grep -c '^[0-9][0-9]*$')"
+    # Counted with a glob rather than `ls /proc | grep`: every /proc entry
+    # beginning with a digit is a pid, and this needs no subprocess of its own
+    # to miscount.
+    hostn=0
+    for p in /proc/[0-9]*; do [[ -d "$p" ]] && hostn=$((hostn+1)); done
     if [[ -n "$n" ]] && (( n <= 8 )) && (( hostn > n )); then
         pass "E4b /proc shows $n process(es), host has $hostn — zone-private"
     else
@@ -1493,7 +1497,7 @@ else
                 pass "M9  the next launch swept the abandoned cgroup"
             else
                 fail "M9  $still abandoned cgroup(s) survived the next launch's sweep"
-                find /sys/fs/cgroup/kryptik -mindepth 1 -maxdepth 1 -type d 2>/dev/null | xargs -r rmdir 2>/dev/null
+                find /sys/fs/cgroup/kryptik -mindepth 1 -maxdepth 1 -type d -exec rmdir {} + 2>/dev/null
             fi
         fi
     else
