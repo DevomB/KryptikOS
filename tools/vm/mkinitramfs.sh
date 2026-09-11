@@ -442,6 +442,43 @@ fi
 echo "KRYPTIK_VM_LANDLOCK_ABI=$(/usr/bin/kryptikd check --zones /etc/kryptik/zones 2>/dev/null | sed -n 's/.*landlock *yes (ABI v\([0-9]*\)).*/\1/p' | head -1)"
 echo "KRYPTIK_VM_USERNS_MAX=$(cat /proc/sys/user/max_user_namespaces 2>/dev/null)"
 
+# The privileged launch contract (security Design 01 P1/P2/P7). On this stock
+# kernel the restriction on unprivileged user namespaces is EMULATED with the
+# AppArmor sysctl; the probe reports which knob it used, and the distinction
+# must survive into the morning report - an emulated result is not target-kernel
+# evidence.
+if [ -x /usr/lib/kryptik/security/probes/vm-privileged-contract.sh ]; then
+    echo "KRYPTIK_VM_PRIVCONTRACT_BEGIN"
+    # The probe's contract: ZONES_DIR must contain a zone named "probe"
+    # (routed, ephemeral) and a nic zone. Build that set in its own directory
+    # rather than adding a test zone to the shipped one - `kryptikd check`
+    # reports the shipped set, and a fixture in it would show up there forever.
+    mkdir -p /run/probe-zones
+    cp /etc/kryptik/zones/*.toml /run/probe-zones/ 2>/dev/null
+    cat > /run/probe-zones/probe.toml <<'PROBEZONE'
+[zone]
+name        = "probe"
+description = "fixture for the privileged launch contract probe"
+[network]
+mode = "routed"
+[storage]
+mode = "ephemeral"
+size = "64M"
+[ui]
+border_color = "#0f0f0f"
+PROBEZONE
+    mkdir -p /var/lib/kryptik/zones
+    sysctl -w kernel.apparmor_restrict_unprivileged_userns=1 >/dev/null 2>&1 \
+        && echo "KRYPTIK_VM_USERNS_KNOB=apparmor-emulated" \
+        || echo "KRYPTIK_VM_USERNS_KNOB=none"
+    /usr/lib/kryptik/security/probes/vm-privileged-contract.sh \
+        /usr/bin/kryptikd /run/probe-zones /var/lib/kryptik/zones
+    echo "KRYPTIK_VM_PRIVCONTRACT_RC=$?"
+    # Put it back: every later check in this payload assumes the default.
+    sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null 2>&1
+    echo "KRYPTIK_VM_PRIVCONTRACT_END"
+fi
+
 echo "KRYPTIK_VM_CHECK_BEGIN"
 if /usr/bin/kryptikd check --zones /etc/kryptik/zones; then
     echo "KRYPTIK_VM_CHECK=pass"
@@ -497,6 +534,21 @@ done
 mkdir -p "$ROOT/usr/lib/kryptik/compartments/kryptikd/target/debug"
 ln -sf /usr/bin/kryptikd \
    "$ROOT/usr/lib/kryptik/compartments/kryptikd/target/debug/kryptikd" 2>/dev/null || true
+
+# The security tab's own probes, when present. They are written to run in the
+# VM as root and to print NOT RUN with a reason rather than passing when they
+# cannot measure something - so shipping them costs nothing and closes the gap
+# where a security-owned check existed but only ever ran on a developer host.
+KPROBES="$ROOT/usr/lib/kryptik/security/probes"
+SECPROBES="${KRYPTIK_SECURITY_PROBES:-$HOME/kryptik-overnight-2026-09-11/security/probes}"
+if [[ -d "$SECPROBES" ]]; then
+    mkdir -p "$KPROBES"
+    for pb in "$SECPROBES"/*.sh; do
+        [[ -f "$pb" ]] || continue
+        install -m 0755 "$pb" "$KPROBES/$(basename "$pb")"
+    done
+    note "security probes: $(find "$KPROBES" -name '*.sh' | wc -l) installed"
+fi
 
 # adversarial.sh cross-checks its namespace set against isolate.rs and skips
 # that check when the source is absent. Shipping the one file turns a skipped

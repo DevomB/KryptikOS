@@ -142,6 +142,21 @@ case "$lrc" in
         ;;
 esac
 
+# The privileged launch contract, if the security probe shipped.
+prc="$(valueof KRYPTIK_VM_PRIVCONTRACT_RC)"
+knob="$(valueof KRYPTIK_VM_USERNS_KNOB)"
+case "$prc" in
+    "")  info "the privileged-contract probe was not in this image" ;;
+    0)   pass "the privileged launch contract probe passed inside the VM"
+         [[ "$knob" == "apparmor-emulated" ]] && \
+            info "NOTE: the userns restriction was EMULATED with the AppArmor sysctl on a stock kernel — this is NOT target-kernel evidence"
+         ;;
+    *)   fail "the privileged launch contract probe reported $prc failure(s)"
+         sed -n '/KRYPTIK_VM_PRIVCONTRACT_BEGIN/,/KRYPTIK_VM_PRIVCONTRACT_END/p' "$LOG" \
+             | grep -E 'FAIL|NOT RUN' | sed 's/^/        /' | head -10
+         ;;
+esac
+
 arc="$(valueof KRYPTIK_VM_ADVERSARIAL_RC)"
 case "$arc" in
     0)  pass "the adversarial primitive suite passed inside the VM" ;;
