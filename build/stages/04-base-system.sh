@@ -549,6 +549,58 @@ s_pkgconf() {
     pkg-config --version
 }
 
+# GNU bc 1.07.1 generates libmath.h with an `ed` script, and Kryptik ships no
+# ed:
+#
+#   ./fix-libmath_h: line 1: ed: command not found
+#   make[2]: *** [Makefile:632: libmath.h] Error 127
+#
+# bc/fix-libmath_h wraps the text of libmath.b into a C string array. It is
+# four line edits, and ed is simply the tool upstream reached for in 1991.
+# Replacing it with the equivalent sed is what LFS does here, and it avoids
+# pinning an entire editor to run four substitutions once.
+#
+# The alternative - adding `ed` to versions.env, fetch-sources.sh and an
+# audited sources.lock line - buys a package that nothing else in the base
+# system uses.
+s_bc() {
+    local src; src="$(unpack "bc-${V_BC}.tar.gz" "bc-${V_BC}")"
+    cd "$src"
+
+    cat > bc/fix-libmath_h <<'FIXEOF'
+#! /bin/bash
+# Replaces upstream's ed script. Wraps libmath.h into a C string array.
+sed -e '1 s/^/{"/' \
+    -e 's/$/",/' \
+    -e '2,$ s/^/"/' \
+    -e '$ d' \
+    -i libmath.h
+sed -e '$ s/$/0}/' -i libmath.h
+FIXEOF
+    chmod 0755 bc/fix-libmath_h
+
+    ./configure --prefix=/usr --with-readline --mandir=/usr/share/man \
+        --infodir=/usr/share/info
+    make
+    make install
+
+    # The kernel calls `bc -q` on a real program; prove this bc evaluates it,
+    # not merely that a binary landed. This is the exact shape linux/Kbuild
+    # uses to generate include/generated/timeconst.h.
+    echo "--- bc answers ---"
+    local got
+    got="$(echo 'scale=0; 1000000000 / 250' | bc -q)"
+    echo "  1000000000/250 = ${got}"
+    [[ "$got" == "4000000" ]] || { echo "FAIL: bc computed ${got}, expected 4000000"; return 1; }
+
+    # libmath is what fix-libmath_h exists for; -l loads it.
+    got="$(echo 's(0)' | bc -q -l)"
+    echo "  s(0) = ${got}"
+    [[ "$got" == "0" || "$got" == ".00000000000000000000" ]] \
+        || { echo "FAIL: bc -l (libmath) is broken: ${got}"; return 1; }
+    echo "  ok: bc evaluates, and libmath loaded"
+}
+
 s_binutils_native() {
     local src; src="$(unpack "binutils-${V_BINUTILS}.tar.xz" "binutils-${V_BINUTILS}")"
     cd "$src"
@@ -1096,7 +1148,7 @@ declare -a PACKAGES=(
     # --with-readline is deliberately NOT passed: the kernel only ever calls
     # `bc -q` non-interactively, and it would add a dependency to the one
     # package here that exists solely to compute two constants.
-    "bc"          "native_build bc-${V_BC}.tar.gz bc-${V_BC}"
+    "bc"          "s_bc"
     "kmod"        "native_build kmod-${V_KMOD}.tar.xz kmod-${V_KMOD} --sysconfdir=/etc --with-openssl --with-xz --with-zstd --with-zlib --disable-manpages"
     "libpipeline" "native_build libpipeline-${V_LIBPIPELINE}.tar.gz libpipeline-${V_LIBPIPELINE}"
     # man-db has NO RECIPE, deliberately, and the stage reports it as an
