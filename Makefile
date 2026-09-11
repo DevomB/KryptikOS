@@ -17,10 +17,85 @@ SHELL := /bin/bash
 ROOT    := $(CURDIR)
 STAGES  := $(ROOT)/build/stages
 TOOLS   := $(ROOT)/tools
+CHROOTD := $(STAGES)/03-chroot-prep.sh
+
+# --- the build contract -----------------------------------------------------
+#
+# Three paths and a job count. Everything - the Makefile, the stage scripts and
+# the chroot - agrees on these names, and nothing derives a fourth path from
+# them behind your back.
+#
+#   KRYPTIK_ROOT      the repository. Read-only during a build.
+#   KRYPTIK_SOURCES   upstream tarballs. Read-only during a build.
+#   KRYPTIK_WORK      everything the build writes: sysroot, stamps, logs, trees.
+#
+# `?=` deliberately: GNU make imports the environment, so an exported
+# KRYPTIK_WORK from the caller wins, and
+#
+#   KRYPTIK_WORK=/build/kryptik make toolchain
+#
+# does what it looks like it does. This matters because the work tree must not
+# live on a filesystem that cannot represent POSIX ownership - /mnt/c under
+# WSL2, for instance - while the checkout very often does.
+KRYPTIK_WORK    ?= $(ROOT)/build/work
+KRYPTIK_SOURCES ?= $(ROOT)/sources
+KRYPTIK_OUT     ?= $(ROOT)/out
+# Empty means "let build/lib/common.sh choose from CPU count and RAM".
+KRYPTIK_JOBS    ?=
+# refuse | rebuild. See the stamp notes in build/lib/common.sh.
+KRYPTIK_STALE   ?= refuse
+# Stamped into /etc/os-release so a booted image names the commit that
+# built it. --dirty on purpose: an image claiming a clean commit while the
+# tree had edits is worse than one claiming nothing.
+KRYPTIK_BUILD_COMMIT ?= $(shell git -C "$(ROOT)" describe --always --dirty --abbrev=40 2>/dev/null || echo unknown)
+# Path to a kryptikd binary built outside the chroot; see `make help`.
+KRYPTIK_KRYPTIKD_BIN ?=
 
 export KRYPTIK_ROOT := $(ROOT)
+export KRYPTIK_WORK
+export KRYPTIK_SOURCES
+export KRYPTIK_OUT
+export KRYPTIK_JOBS
+export KRYPTIK_STALE
 
-.PHONY: help check check-kernel-eol sources lock verify verify-provenance test-harness validate-kernel validate-kernel-hardened toolchain temp-tools chroot system kernel iso audit zones zone-test launcher-test zone-tests vm-image vm-boot clean distclean
+# --- privilege --------------------------------------------------------------
+#
+# Exactly two things in this build need root: creating device nodes and
+# bind-mounting virtual filesystems into the sysroot (stage 03), and the
+# chroot() call itself. Nothing else runs privileged - not the compilers, not
+# make, not the package recipes.
+#
+# So SUDO wraps the chroot driver and nothing else. Override it when you are
+# already root (SUDO=) or when your site uses something other than sudo
+# (SUDO=doas, SUDO="pkexec --keep-cwd").
+SUDO ?= sudo
+
+# sudo resets the environment, which is why the contract is passed explicitly
+# rather than exported and hoped for. A `make system` that silently dropped
+# KRYPTIK_WORK would build into $(ROOT)/build/work instead - a different tree,
+# on possibly a different filesystem, with no error anywhere.
+CHROOT_ENV := KRYPTIK_ROOT="$(ROOT)" \
+              KRYPTIK_WORK="$(KRYPTIK_WORK)" \
+              KRYPTIK_SOURCES="$(KRYPTIK_SOURCES)" \
+              KRYPTIK_JOBS="$(KRYPTIK_JOBS)" \
+              KRYPTIK_STALE="$(KRYPTIK_STALE)" \
+              KRYPTIK_BUILD_COMMIT="$(KRYPTIK_BUILD_COMMIT)" \
+              KRYPTIK_KRYPTIKD_BIN="$(KRYPTIK_KRYPTIKD_BIN)" \
+              TERM="$(TERM)" \
+              NO_COLOR="$(NO_COLOR)"
+
+CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
+
+.PHONY: help check check-kernel-eol sources lock verify verify-provenance \
+        test-harness test-hardening test-artifacts audit-artifacts \
+        audit-artifacts-strict manifest verify-manifest test-manifest \
+        test-s6-init \
+        validate-kernel validate-kernel-hardened \
+        toolchain temp-tools chroot chroot-enter chroot-umount chroot-status \
+        system kernel iso audit zones zone-test paths reset-stamps \
+        sysroot-ready \
+        launcher-test zone-tests vm-image vm-boot \
+        clean distclean
 
 help:
 	@echo "Kryptik build targets"
@@ -28,12 +103,21 @@ help:
 	@echo "  make check       verify the host can build Kryptik"
 	@echo "  make sources     fetch upstream tarballs, verify against sources.lock"
 	@echo "  make lock        fetch and regenerate sources.lock (audit before committing)"
-	@echo "  make toolchain   stage 01: cross toolchain           [Phase 1]"
-	@echo "  make temp-tools  stage 02: temporary tools + chroot  [Phase 2]"
-	@echo "  make chroot      stage 03: prepare chroot (needs root) [Phase 3]"
-	@echo "  make system      stage 04: hardened base system      [Phase 3]"
-	@echo "  make kernel      stage 05: hardened kernel           [Phase 4]"
-	@echo "  make iso         stage 06: bootable image            [Phase 7]"
+	@echo "  make toolchain   stage 01: cross toolchain            [Phase 1]"
+	@echo "  make temp-tools  stage 02: temporary tools            [Phase 2]"
+	@echo "                   (stages 01 and 02 are UNPRIVILEGED - run them as you)"
+	@echo "  make system      stage 04: hardened base system       [Phase 3]"
+	@echo "  make kernel      stage 05: hardened kernel            [Phase 4]"
+	@echo "  make iso         stage 06: bootable image             [Phase 7]"
+	@echo
+	@echo "  'system' and 'kernel' build INSIDE the chroot. They mount it, run"
+	@echo "  the stage, and unmount again. Only the mounts and the chroot call"
+	@echo "  are privileged; override the escalation with SUDO=... or SUDO= ."
+	@echo
+	@echo "  make chroot          mount the chroot and leave it mounted"
+	@echo "  make chroot-enter    interactive shell inside the chroot"
+	@echo "  make chroot-umount   unmount it"
+	@echo "  make chroot-status   what is mounted right now"
 	@echo
 	@echo "  make verify      verify upstream GPG signatures on fetched sources"
 	@echo "  make verify-provenance  signed tags + publisher checksums for the rest"
@@ -47,11 +131,44 @@ help:
 	@echo "  make vm-image    build the developer VM initramfs"
 	@echo "  make vm-boot     boot it under QEMU and check the serial log"
 	@echo "  make test-harness      verify failed builds cannot be stamped ok"
+	@echo "  make test-hardening    verify the flag set builds exes AND .so files"
+	@echo "  make test-artifacts    self-test the artifact auditor (positive controls)"
+	@echo "  make audit-artifacts   audit the ELF objects the build actually produced"
+	@echo "  make audit-artifacts-strict   ... and fail on reported findings too"
+	@echo "  make manifest          record what was built and what built it"
+	@echo "  make verify-manifest   check the tree still matches that record"
+	@echo "  make test-manifest     self-test the manifest tool (positive controls)"
+	@echo "  make test-s6-init      check stage 04 produces a bootable s6 image"
 	@echo "  make audit       run security audits over the build tree"
-	@echo "  make clean       remove build work directory"
+	@echo "  make paths       print the resolved build contract"
+	@echo "  make reset-stamps  archive all build stamps (does not delete)"
+	@echo "  make clean       remove the build work directory"
 	@echo "  make distclean   also remove downloaded sources and output"
 	@echo
+	@echo "Contract (override any of these on the command line or in the env):"
+	@echo "  KRYPTIK_WORK     = $(KRYPTIK_WORK)"
+	@echo "  KRYPTIK_SOURCES  = $(KRYPTIK_SOURCES)"
+	@echo "  KRYPTIK_JOBS     = $(if $(KRYPTIK_JOBS),$(KRYPTIK_JOBS),auto)"
+	@echo "  KRYPTIK_STALE    = $(KRYPTIK_STALE)"
+	@echo "  KRYPTIK_BUILD_COMMIT = $(KRYPTIK_BUILD_COMMIT)"
+	@echo "  KRYPTIK_KRYPTIKD_BIN = $(if $(KRYPTIK_KRYPTIKD_BIN),$(KRYPTIK_KRYPTIKD_BIN),(not set - the image will have no kryptikd))"
+	@echo "  SUDO             = $(if $(SUDO),$(SUDO),(none))"
+	@echo
 	@echo "Status: pre-alpha. See docs/roadmap.md for what actually works."
+
+paths:
+	@echo "KRYPTIK_ROOT    = $(ROOT)"
+	@echo "KRYPTIK_BUILD_COMMIT = $(KRYPTIK_BUILD_COMMIT)"
+	@echo "KRYPTIK_SOURCES = $(KRYPTIK_SOURCES)"
+	@echo "KRYPTIK_WORK    = $(KRYPTIK_WORK)"
+	@echo "  sysroot       = $(KRYPTIK_WORK)/sysroot"
+	@echo "  stamps        = $(KRYPTIK_WORK)/.stamps"
+	@echo "  logs          = $(KRYPTIK_WORK)/logs"
+	@echo "  build trees   = $(KRYPTIK_WORK)/build"
+	@echo "KRYPTIK_OUT     = $(KRYPTIK_OUT)"
+	@echo
+	@echo "Inside the chroot these appear as /kryptik, /kryptik-sources and"
+	@echo "/kryptik-work; the sysroot is / and there is no second view of it."
 
 check:
 	@"$(STAGES)"/00-host-check.sh
@@ -84,31 +201,55 @@ toolchain: check sources
 temp-tools: toolchain
 	@"$(STAGES)"/02-temp-tools.sh
 
-chroot: temp-tools
-	@echo "stage 03 needs root:"
-	@echo "  sudo '$(STAGES)/03-chroot-prep.sh' mount"
+# --- the chroot stages ------------------------------------------------------
+#
+# These two targets used to print a wall of instructions and then `false`.
+# That was honest about the constraint - stage 04 runs inside the chroot and
+# needs root to get there - and useless as an entry point: the instructions
+# hardcoded $(ROOT)/build/work, so they were wrong the moment KRYPTIK_WORK was
+# overridden, and one of them had a stray quote that made the command it
+# printed unrunnable.
+#
+# The constraint is real; a target can satisfy it. `03-chroot-prep.sh run`
+# mounts, runs one command inside, and unmounts on every exit path.
 
-# `make system` cannot simply run stage 04: that stage must execute INSIDE the
-# chroot, and it refuses to run anywhere else. Invoking it directly from here
-# always failed. Root is required to mount the chroot, so this target tells the
-# operator exactly what to run rather than pretending it can do it itself.
-system:
-	@echo "Stage 04 builds the base system INSIDE the chroot, and needs root"
-	@echo "to establish it. Run:"
-	@echo
-	@echo "  sudo '$(STAGES)/03-chroot-prep.sh' mount"
-	@echo "  sudo chroot '$(ROOT)/build/work/sysroot' /usr/bin/env -i \\"
-	@echo "      HOME=/root TERM=\$$TERM PATH=/usr/bin:/usr/sbin \\"
-	@echo "      KRYPTIK_ROOT=/kryptik KRYPTIK_JOBS=\$$(nproc) \\"
-	@echo "      /bin/bash -c /kryptik/build/stages/04-base-system.sh"
-	@echo
-	@echo "Then: sudo $(STAGES)/03-chroot-prep.sh' umount"
-	@false
+system: sysroot-ready
+	@$(CHROOT_RUN) run /kryptik/build/stages/04-base-system.sh
 
-# Same constraint as `system`: the kernel is built inside the chroot.
-kernel:
-	@echo "Stage 05 runs inside the chroot, like stage 04. See: make system"
-	@false
+# The EOL check needs a network, and the chroot deliberately has none, so it
+# runs out here before we go in. Stage 05 repeats it inside, where it degrades
+# to a warning.
+kernel: check-kernel-eol system
+	@$(CHROOT_RUN) run /kryptik/build/stages/05-kernel.sh
+
+chroot: sysroot-ready
+	@$(CHROOT_RUN) mount
+
+chroot-enter:
+	@$(CHROOT_RUN) enter
+
+chroot-umount:
+	@$(CHROOT_RUN) umount
+
+chroot-status:
+	@"$(CHROOTD)" status
+
+# Verify that stage 02 finished; do not silently run it.
+#
+# The unprivileged stages and the privileged ones want different uids, and a
+# target that quietly does both under whichever one the caller happens to have
+# is how a cross toolchain ends up owned by root. `make system` as root - the
+# documented SUDO= configuration, and every container - would have rebuilt the
+# whole toolchain as root, which stage 00 exists to refuse.
+sysroot-ready:
+	@if [[ ! -x "$(KRYPTIK_WORK)/sysroot/usr/bin/gcc" ]]; then \
+	    echo "Stage 02 has not completed: no target compiler at"; \
+	    echo "  $(KRYPTIK_WORK)/sysroot/usr/bin/gcc"; \
+	    echo; \
+	    echo "Build it first, UNPRIVILEGED:"; \
+	    echo "  make temp-tools"; \
+	    exit 1; \
+	fi
 
 iso: kernel
 	@"$(STAGES)"/06-iso.sh
@@ -165,13 +306,75 @@ vm-boot: vm-image
 test-harness:
 	@"$(TOOLS)"/test-step-errexit.sh
 
+test-hardening:
+	@"$(TOOLS)"/test-hardening-flags.sh
+
+test-artifacts:
+	@"$(TOOLS)"/test-artifact-hardening.sh
+
+# What the build PRODUCED, not what it was asked to use.
+#
+# test-hardening compiles two toy files and proves the flag set can build
+# a hardened executable and a hardened shared library. It cannot tell you
+# whether the fifty-eight packages in stage 04 actually received those
+# flags, and the ways they quietly do not - a configure that overwrites
+# CFLAGS, a Makefile with its own hardcoded -O2, libtool relinking at
+# install time - fail nothing and are plainly visible in the ELF.
+audit-artifacts:
+	@"$(TOOLS)"/check-artifact-hardening.sh "$(KRYPTIK_WORK)/sysroot"
+
+audit-artifacts-strict:
+	@"$(TOOLS)"/check-artifact-hardening.sh "$(KRYPTIK_WORK)/sysroot" --strict
+
+test-manifest:
+	@"$(TOOLS)"/test-artifact-manifest.sh
+
+# The init configuration is the last step of a four-hour stage, and its
+# failure modes are quiet - a boot image with no stage 2 scripts, or an
+# early getty naming a program that does not exist, both leave the maker
+# exiting 0 and the machine booting to silence. The s6 stack builds in
+# about a minute, so it is checked up front instead.
+test-s6-init:
+	@"$(TOOLS)"/test-s6-init-config.sh
+
+# An identity record for the tree, and for what produced it. Answers the
+# three questions you cannot answer by looking at a sysroot: is this the
+# one you tested, what went into it, and has anything touched it since.
+manifest:
+	@"$(TOOLS)"/artifact-manifest.sh --root "$(KRYPTIK_WORK)/sysroot" \
+	                                  --out  "$(KRYPTIK_WORK)/artifact-manifest.txt"
+
+verify-manifest:
+	@"$(TOOLS)"/artifact-manifest.sh --root "$(KRYPTIK_WORK)/sysroot" \
+	                                  --verify "$(KRYPTIK_WORK)/artifact-manifest.txt"
+
 audit:
 	@"$(TOOLS)"/audit-setuid.sh
 
+# Archive rather than delete. Stamps are the only record of what a previous
+# run actually completed, and a stamp that can no longer be trusted is still
+# evidence worth keeping.
+reset-stamps:
+	@if [[ -d "$(KRYPTIK_WORK)/.stamps" ]]; then \
+	    dest="$(KRYPTIK_WORK)/.stamps/legacy/reset-$$(date +%Y%m%dT%H%M%S)"; \
+	    mkdir -p "$$dest"; \
+	    found=0; \
+	    for f in "$(KRYPTIK_WORK)/.stamps"/*; do \
+	        [[ -f "$$f" ]] || continue; \
+	        mv "$$f" "$$dest/"; found=1; \
+	    done; \
+	    if [[ "$$found" == 1 ]]; then echo "archived stamps to $$dest"; \
+	    else rmdir "$$dest" 2>/dev/null || true; echo "no stamps to archive"; fi; \
+	else echo "no stamp directory at $(KRYPTIK_WORK)/.stamps"; fi
+
+# Never remove a tree that still has filesystems mounted inside it. The chroot
+# bind-mounts the host's /dev into the sysroot; rm -rf over that is how a build
+# system eats its host.
 clean:
-	@rm -rf "$(ROOT)/build/work"
-	@echo "removed build/work"
+	@"$(CHROOTD)" guard-unmounted
+	@rm -rf "$(KRYPTIK_WORK)"
+	@echo "removed $(KRYPTIK_WORK)"
 
 distclean: clean
-	@rm -rf "$(ROOT)/out" "$(ROOT)/sources"
-	@echo "removed out/ and sources/"
+	@rm -rf "$(KRYPTIK_OUT)" "$(KRYPTIK_SOURCES)"
+	@echo "removed $(KRYPTIK_OUT) and $(KRYPTIK_SOURCES)"
