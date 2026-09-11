@@ -63,9 +63,14 @@ emit_inputs() {
 
     # The repository state. --dirty matters: a manifest that names a commit
     # while the tree had uncommitted edits is worse than one that names none.
+    # -c safe.directory='*' because this tool is MEANT to run as root - a
+    # sysroot has directories only root can read, and the refusal in emit_tree
+    # says so. git then rejects a repository owned by someone else with
+    # "detected dubious ownership", the describe fails, and the manifest
+    # records "unknown" for the one field that ties it to a commit.
     local commit="unknown"
-    if have git && git -C "$KRYPTIK_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
-        commit="$(git -C "$KRYPTIK_ROOT" describe --always --dirty --abbrev=40 2>/dev/null || echo unknown)"
+    if have git && git -c safe.directory='*' -C "$KRYPTIK_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+        commit="$(git -c safe.directory='*' -C "$KRYPTIK_ROOT" describe --always --dirty --abbrev=40 2>/dev/null || echo unknown)"
     fi
     printf 'input\trepo-commit\t%s\n' "$commit"
 
