@@ -66,7 +66,9 @@ for a in "$@"; do
     esac
 done
 
-# Records every key that verification relied on, for human audit.
+# The ledger of keys accepted WITHOUT audit, for human confirmation
+# out-of-band. It is read on every run, not only when --fetch-unknown-keys is
+# passed, and that is the whole point: see UNAUDITED_FPRS below.
 KEYS_MANIFEST="${KRYPTIK_ROOT}/keys.manifest"
 
 mkdir -p "$KEYDIR" "$SIGDIR" "$GNUPGHOME"
@@ -147,6 +149,40 @@ mark_unverifiable() {
     UNVERIFIABLE_LIST+=("$1")
 }
 
+# Fingerprints listed in keys.manifest: keys that were accepted because a
+# signature named them, and have not been confirmed against the project.
+#
+# WHY THIS IS READ ON EVERY RUN, NOT JUST WHEN FETCHING.
+# The imported keyring is cached under build/work/keys. Once a
+# --fetch-unknown-keys run has put a key there, every later run finds it
+# already held and reports an ordinary GOODSIG - so the "unaudited" label
+# lasted exactly one invocation and then evaporated, and --strict would have
+# passed those sources on the second run. The durable record of what was never
+# audited is keys.manifest, so that is what decides, independently of whatever
+# happens to be in the key cache.
+declare -a UNAUDITED_FPRS=()
+if [[ -f "$KEYS_MANIFEST" ]]; then
+    while read -r _pkg fpr _rest; do
+        [[ "$fpr" =~ ^[0-9A-Fa-f]{40}$ ]] && UNAUDITED_FPRS+=("${fpr^^}")
+    done < <(grep -v '^[[:space:]]*#' "$KEYS_MANIFEST" || true)
+fi
+
+# Does the key that made this signature appear in that ledger? Both the
+# primary fingerprint and any subkey fingerprints are compared, because a
+# GOODSIG names the SIGNING key while keys.manifest records the primary.
+key_is_unaudited() {
+    local keyid="$1" fpr known
+    [[ "${#UNAUDITED_FPRS[@]}" -gt 0 ]] || return 1
+    [[ -n "$keyid" ]] || return 1
+    while IFS= read -r fpr; do
+        for known in "${UNAUDITED_FPRS[@]}"; do
+            [[ "${fpr^^}" == "$known" ]] && return 0
+        done
+    done < <(gpg --batch --with-colons --fingerprint --fingerprint "$keyid" 2>/dev/null \
+             | awk -F: '$1=="fpr"{print $10}')
+    return 1
+}
+
 # Run gpg --verify and classify from its machine-readable status output.
 #
 # The distinction that matters, and which a naive implementation gets wrong:
@@ -172,19 +208,30 @@ check_sig() {
     local out signer keyid
     out="$(gpg --batch --status-fd 1 --verify "$sigfile" "$datafile" 2>/dev/null || true)"
 
-    if printf '%s' "$out" | grep -q "^\[GNUPG:\] GOODSIG"; then
-        signer="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] GOODSIG [0-9A-F]* //p' | head -1)"
-        ok "${name}: signature valid  [${signer:-unknown}]"
-        VERIFIED=$((VERIFIED + 1))
-        return 0
-    fi
+    # GOODSIG and EXPKEYSIG are handled together because they differ only in
+    # keyring freshness, and both have to pass through the keys.manifest check
+    # before they can be called verified.
+    if printf '%s' "$out" | grep -qE "^\[GNUPG:\] (GOODSIG|EXPKEYSIG)"; then
+        local kind
+        kind="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] \(GOODSIG\|EXPKEYSIG\) .*/\1/p' | head -1)"
+        signer="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] \(GOODSIG\|EXPKEYSIG\) [0-9A-F]* //p' | head -1)"
+        keyid="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] \(GOODSIG\|EXPKEYSIG\) \([0-9A-F]*\).*/\2/p' | head -1)"
 
-    if printf '%s' "$out" | grep -q "^\[GNUPG:\] EXPKEYSIG"; then
-        signer="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] EXPKEYSIG [0-9A-F]* //p' | head -1)"
-        ok "${name}: signature valid, signing key expired  [${signer:-unknown}]"
+        if key_is_unaudited "$keyid"; then
+            warn "${name}: signature valid  [${signer:-unknown}] but by an UNAUDITED key"
+            FETCHED=$((FETCHED + 1))
+            FETCHED_LIST+=("${name} - ${signer:-unknown} (key ${keyid})")
+            return 0
+        fi
+
+        if [[ "$kind" == "EXPKEYSIG" ]]; then
+            ok "${name}: signature valid, signing key expired  [${signer:-unknown}]"
+            EXPIRED=$((EXPIRED + 1))
+            EXPIRED_LIST+=("${name} - ${signer:-unknown}")
+        else
+            ok "${name}: signature valid  [${signer:-unknown}]"
+        fi
         VERIFIED=$((VERIFIED + 1))
-        EXPIRED=$((EXPIRED + 1))
-        EXPIRED_LIST+=("${name} - ${signer:-unknown}")
         return 0
     fi
 
@@ -224,8 +271,13 @@ check_sig() {
                     local fpr
                     fpr="$(gpg --batch --with-colons --fingerprint "$keyid" 2>/dev/null                            | awk -F: '$1=="fpr"{print $10; exit}')"
                     warn "${name}: signature valid  [${signer:-unknown}] but by an UNAUDITED key"
-                    printf '%-18s %-42s %s
-' "$name" "${fpr:-$keyid}" "${signer:-unknown}"                         >> "$KEYS_MANIFEST"
+                    if ! grep -qiF -- "${fpr:-$keyid}" "$KEYS_MANIFEST" 2>/dev/null; then
+                        printf '%-18s %-42s %s
+' "$name" "${fpr:-$keyid}" "${signer:-unknown}"                             >> "$KEYS_MANIFEST"
+                    fi
+                    # So that a second package signed by the same key in this
+                    # same run is recognised as unaudited too.
+                    [[ -n "$fpr" ]] && UNAUDITED_FPRS+=("${fpr^^}")
                     # Deliberately NOT counted as verified. The key came from
                     # the signature it was used to check, so no signer
                     # identity has been established - only self-consistency.
@@ -352,11 +404,18 @@ if [[ "$FETCH_UNKNOWN" -eq 1 ]]; then
     warn "--fetch-unknown-keys: will import keys named by the signatures themselves."
     warn "That proves a file was signed by whoever signed it, NOT that the signer"
     warn "is the real maintainer. Confirm keys.manifest out-of-band."
-    : > "$KEYS_MANIFEST"
-    printf '# Keys fetched by --fetch-unknown-keys. AUDIT THESE.
+    # Do NOT truncate. This file is the record of which keys were never
+    # audited, and truncating it on every run destroyed that record: a second
+    # --fetch-unknown-keys run finds every key already cached, fetches
+    # nothing, and would have left behind a manifest containing only its own
+    # two header lines. Entries accumulate and are deduplicated by
+    # fingerprint instead.
+    if [[ ! -s "$KEYS_MANIFEST" ]]; then
+        printf '# Keys fetched by --fetch-unknown-keys. AUDIT THESE.
 ' >> "$KEYS_MANIFEST"
-    printf '# package           fingerprint                                signer
+        printf '# package           fingerprint                                signer
 ' >> "$KEYS_MANIFEST"
+    fi
 fi
 import_keys
 echo
