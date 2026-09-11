@@ -206,6 +206,34 @@ fi
 
 if [[ "$MD" -eq 1 ]]; then exec 1>&3 3>&-; fi
 
+# WHICH KEYRING THIS WAS MEASURED AGAINST.
+#
+# The counts below depend on it, and not by a little. A keyring that a previous
+# --fetch-unknown-keys run warmed up holds keys taken from the signatures
+# themselves, which moves sources out of lock-only and into the unaudited and
+# kernel.org classes. Measured on this tree: 31 keyring-verified and 30
+# lock-only with the GNU keyring and the pinned keys alone, versus 47 and 9
+# once sixteen signature-named keys are also present.
+#
+# An inventory that does not say which of those two runs produced it is the
+# same kind of number as the "54 of 69" this tool exists to replace. So it
+# says.
+KEYSTATE="unknown"
+if [[ -f "${WORK}/signatures.log" ]]; then
+    KEYSTATE="$(grep -oE '(keyring ready \([0-9]+ public keys\)|using cached keyring \([0-9]+ keys\))' \
+                "${WORK}/signatures.log" | head -1 || true)"
+    [[ -n "$KEYSTATE" ]] || KEYSTATE="no keyring line in the signature log"
+fi
+if [[ "$MD" -eq 1 ]]; then
+    printf '**Keyring state for this run:** %s.\n' "$KEYSTATE"
+    printf 'A keyring warmed by a previous `--fetch-unknown-keys` run holds keys taken\n'
+    printf 'from the signatures themselves and shifts these counts; run\n'
+    printf '`verify-signatures.sh --refresh` first for the state a fresh checkout sees.\n\n'
+else
+    dim "keyring state for this run: ${KEYSTATE}"
+    echo
+fi
+
 export KRYPTIK_LOCK KRYPTIK_SOURCES MD OFFLINE
 python3 - "$MANIFEST" "$SIGREP" "$PROVREP" "$IDREP" <<'PYEOF'
 import hashlib
