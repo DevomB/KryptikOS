@@ -1,0 +1,304 @@
+#!/usr/bin/env bash
+# kryptik — the command people actually type.
+#
+# WHY THIS EXISTS SEPARATELY FROM kryptikd
+#
+# kryptikd is the compartment manager, and its interface is shaped by what it
+# has to be exact about: which zone directory, which data directory, which host
+# uid the zone maps to, and an explicit acknowledgement before it will start a
+# zone whose storage guarantees are not yet delivered. That is right for a
+# daemon and wrong for a person. Typing
+#
+#     KRYPTIK_EXPERIMENTAL=1 kryptikd run work --zones /etc/kryptik/zones \
+#         --rootfs /var/lib/kryptik/zones --zone-uid 100000 --zone-gid 100000 \
+#         -- /bin/bash
+#
+# every time is how people end up writing their own wrapper with the
+# acknowledgement hard-coded, which is exactly the outcome the acknowledgement
+# exists to prevent.
+#
+# So this fills in the paths from a config file. What it does NOT do is give
+# anyone a way past kryptikd's refusals.
+#
+# THE REFUSAL THAT MATTERS, AND WHY THERE IS NO FLAG FOR IT
+#
+# A zone with `storage.mode = "encrypted"` is refused outright: this build has
+# no per-zone encrypted volumes, so the zone would run on a plain directory
+# while its configuration says otherwise. kryptikd has a testing override for
+# that; this command deliberately does not expose it. "Encrypted, except not
+# really, because you passed a flag once" is precisely the claim that must
+# never reach a user, and a flag that turns a refusal into a warning is how it
+# would. If you need that override you are testing, and you can type
+# KRYPTIK_EXPERIMENTAL=1 yourself.
+#
+# A zone with `storage.mode = "ephemeral"` DOES start, and kryptikd prints the
+# caveat every single time - the tmpfs can reach swap, so this is not secure
+# erasure. That warning is passed through untouched rather than summarised.
+#
+# WHAT THIS DELIBERATELY DOES NOT DO
+#
+# It has no subcommand for anything kryptikd cannot do. There is no `transfer`,
+# no `clipboard`, no `mount`, because those are unimplemented, and a command
+# that exists and then fails teaches people to distrust the ones that work.
+set -uo pipefail
+
+PROG="${0##*/}"
+CONF="${KRYPTIK_CONF:-/etc/kryptik/kryptik.conf}"
+
+# Defaults, overridable from the config file and then from flags. These match
+# kryptikd's own defaults so that the wrapper changes nothing but the typing.
+ZONES_DIR=/etc/kryptik/zones
+ROOTFS=/var/lib/kryptik/zones
+UID_BASE=100000
+KRYPTIKD="${KRYPTIKD:-kryptikd}"
+
+C_RST=""; C_DIM=""; C_B=""
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+    C_RST=$'\033[0m'; C_DIM=$'\033[2m'; C_B=$'\033[1m'
+fi
+
+die()  { printf '%s: %s\n' "$PROG" "$1" >&2; exit "${2:-1}"; }
+info() { printf '%s%s%s\n' "$C_DIM" "$1" "$C_RST"; }
+
+usage() {
+    cat <<USAGE
+$PROG — run and manage Kryptik zones
+
+USAGE:
+    $PROG list                      zones on this system, and which are running
+    $PROG status [NAME]             one zone, or all of them
+    $PROG explain NAME              what starting this zone would and would not do
+    $PROG shell NAME                an interactive shell inside the zone
+    $PROG run NAME -- CMD [ARGS]    one command inside the zone
+    $PROG stop NAME [--now]         stop it (--now skips the polite request)
+    $PROG gc                        clean up after zones whose manager died
+    $PROG doctor                    check this system can run zones at all
+
+OPTIONS:
+    --zones DIR           override the zone directory (default: $ZONES_DIR)
+    --rootfs DIR          override the zone data directory (default: $ROOTFS)
+
+CONFIGURATION: $CONF
+    zones_dir = /etc/kryptik/zones
+    rootfs    = /var/lib/kryptik/zones
+    uid_base  = 100000
+
+Every zone runs as an unprivileged host user, in its own user, pid, mount, ipc,
+uts and cgroup namespaces, under a seccomp filter and a Landlock policy. What
+is NOT yet delivered: routed networking, encrypted volumes, cross-zone
+transfer, and the clipboard. $PROG has no commands for those.
+USAGE
+}
+
+# --- configuration ----------------------------------------------------------
+# Deliberately not `source`d: a config file is data, and sourcing it would let a
+# stray line in /etc run as whoever typed the command.
+load_conf() {
+    [[ -r "$CONF" ]] || return 0
+    local line key val
+    while IFS= read -r line; do
+        line="${line%%#*}"
+        [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+        key="${line%%=*}"; val="${line#*=}"
+        key="$(printf '%s' "$key" | tr -d '[:space:]')"
+        val="$(printf '%s' "$val" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+        case "$key" in
+            zones_dir) ZONES_DIR="$val" ;;
+            rootfs)    ROOTFS="$val" ;;
+            uid_base)  UID_BASE="$val" ;;
+            "")        ;;
+            *) printf '%s: %s: ignoring unknown setting %s\n' "$PROG" "$CONF" "$key" >&2 ;;
+        esac
+    done < "$CONF"
+}
+
+have_kryptikd() {
+    command -v "$KRYPTIKD" >/dev/null 2>&1 || die \
+"kryptikd is not on PATH.
+    This is the program that actually creates zones; $PROG only arranges its
+    arguments. Install it, or set KRYPTIKD=/path/to/kryptikd."
+}
+
+# The identity flags, which kryptikd accepts ONLY when it is running as root,
+# and REQUIRES when it is. Getting this wrong is the difference between a zone
+# mapped to an unprivileged host user and a zone whose root is the real root.
+identity_args() {
+    if [[ "$(id -u)" -eq 0 ]]; then
+        printf '%s\n' --zone-uid "$UID_BASE" --zone-gid "$UID_BASE"
+    fi
+}
+
+zone_exists() {
+    "$KRYPTIKD" list --zones "$ZONES_DIR" 2>/dev/null | grep -qx "$1"
+}
+
+# One place decides what to say when a zone name is wrong, because "unknown
+# zone" without the list is how people end up running `ls /etc/kryptik/zones`.
+require_zone() {
+    local name="$1"
+    zone_exists "$name" && return 0
+    printf '%s: no zone named %s\n\n' "$PROG" "$name" >&2
+    local known
+    known="$("$KRYPTIKD" list --zones "$ZONES_DIR" 2>/dev/null)"
+    if [[ -n "$known" ]]; then
+        printf 'Zones on this system:\n' >&2
+        printf '%s\n' "$known" | sed 's/^/    /' >&2
+    else
+        printf 'There are no zones in %s.\n' "$ZONES_DIR" >&2
+    fi
+    exit 1
+}
+
+# --- running state ----------------------------------------------------------
+# Reported as a WORD, never as a colour: this is the one piece of information
+# that decides whether a command will affect something already running, and it
+# has to survive a monochrome terminal, a pipe into a file, and a screen reader.
+running_state() {
+    local out
+    out="$("$KRYPTIKD" status "$1" 2>/dev/null)" || { printf 'unknown'; return; }
+    case "$out" in
+        *" running "*|*" running") printf 'RUNNING' ;;
+        *stale*)                   printf 'stale' ;;
+        *)                         printf 'stopped' ;;
+    esac
+}
+
+cmd_list() {
+    have_kryptikd
+    local zones
+    zones="$("$KRYPTIKD" list --zones "$ZONES_DIR" 2>&1)" || die \
+"could not read zones from $ZONES_DIR
+$zones"
+    [[ -n "$zones" ]] || { info "no zones are configured in $ZONES_DIR"; return 0; }
+    printf '%s%-16s %-8s %s%s\n' "$C_B" "ZONE" "STATE" "DESCRIPTION" "$C_RST"
+    local z desc
+    while IFS= read -r z; do
+        [[ -n "$z" ]] || continue
+        desc="$("$KRYPTIKD" show "$z" --zones "$ZONES_DIR" 2>/dev/null \
+                | sed -n 's/^ *description *[:=] *//p' | head -1)"
+        printf '%-16s %-8s %s\n' "$z" "$(running_state "$z")" "${desc:-}"
+    done <<< "$zones"
+}
+
+cmd_status() {
+    have_kryptikd
+    if [[ $# -eq 0 ]]; then
+        cmd_list
+        return
+    fi
+    require_zone "$1"
+    printf '%-16s %s\n' "$1" "$(running_state "$1")"
+    "$KRYPTIKD" status "$1" 2>&1 | sed 's/^/    /'
+}
+
+cmd_explain() {
+    have_kryptikd
+    require_zone "$1"
+    "$KRYPTIKD" explain "$1" --zones "$ZONES_DIR"
+}
+
+cmd_doctor() {
+    have_kryptikd
+    printf '%szones:%s     %s\n' "$C_B" "$C_RST" "$ZONES_DIR"
+    printf '%sdata:%s      %s\n' "$C_B" "$C_RST" "$ROOTFS"
+    printf '%srunning as:%s uid %s%s\n' "$C_B" "$C_RST" "$(id -u)" \
+        "$([[ "$(id -u)" -eq 0 ]] && printf ' (zones map to uid %s)' "$UID_BASE")"
+    printf '\n'
+    "$KRYPTIKD" check --zones "$ZONES_DIR"
+}
+
+cmd_gc() { have_kryptikd; "$KRYPTIKD" gc; }
+
+cmd_stop() {
+    have_kryptikd
+    local name="$1"; shift
+    require_zone "$name"
+    local state; state="$(running_state "$name")"
+    if [[ "$state" == "stopped" ]]; then
+        info "zone $name is not running"
+        return 0
+    fi
+    "$KRYPTIKD" stop "$name" "$@"
+}
+
+# --- starting ---------------------------------------------------------------
+
+# The one place that runs a zone. `shell` and `run` are the same operation with
+# a different command, and keeping them one function is what stops them from
+# drifting into two different sets of arguments.
+start_zone() {
+    local name="$1"; shift
+    have_kryptikd
+    require_zone "$name"
+
+    mkdir -p "$ROOTFS" 2>/dev/null || true
+
+    local rc
+    local -a idargs=()
+    while IFS= read -r a; do [[ -n "$a" ]] && idargs+=("$a"); done < <(identity_args)
+
+    # Not captured and re-printed: an interactive shell needs the terminal, and
+    # a command whose output this swallowed until it exited would be unusable
+    # for the one thing people will do most. kryptikd's own messages - the
+    # ephemeral swap caveat, the refusals - reach the person directly.
+    "$KRYPTIKD" run "$name" --zones "$ZONES_DIR" \
+        --rootfs "$ROOTFS" "${idargs[@]}" -- "$@"
+    rc=$?
+    if (( rc != 0 )); then
+        # kryptikd has already said what was wrong and this must not restate it
+        # in weaker words. The one thing worth adding is where to look next.
+        printf '\n%s: %s did not start (kryptikd exited %d).\n' "$PROG" "$name" "$rc" >&2
+        printf '    %s explain %s    what this zone asks for, and what this build provides\n' \
+            "$PROG" "$name" >&2
+    fi
+    return "$rc"
+}
+
+cmd_shell() {
+    local name="$1"; shift
+    # /bin/sh, not $SHELL: $SHELL is the host's and may not exist in the zone.
+    start_zone "$name" /bin/sh -l
+}
+
+cmd_run() {
+    local name="$1"; shift
+    [[ "${1:-}" == "--" ]] && shift
+    [[ $# -gt 0 ]] || die "$PROG run NAME -- CMD [ARGS]: no command given"
+    start_zone "$name" "$@"
+}
+
+# --- argument parsing -------------------------------------------------------
+load_conf
+
+ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --zones)  ZONES_DIR="${2:?--zones needs a directory}"; shift 2 ;;
+        --rootfs) ROOTFS="${2:?--rootfs needs a directory}"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        --) ARGS+=("$@"); break ;;
+        *)  ARGS+=("$1"); shift ;;
+    esac
+done
+set -- "${ARGS[@]:-}"
+
+cmd="${1:-}"; [[ $# -gt 0 ]] && shift
+case "$cmd" in
+    list)    cmd_list "$@" ;;
+    status)  cmd_status "$@" ;;
+    explain) [[ $# -ge 1 ]] || die "explain needs a zone name"; cmd_explain "$@" ;;
+    shell)   [[ $# -ge 1 ]] || die "shell needs a zone name"; cmd_shell "$@" ;;
+    run)     [[ $# -ge 1 ]] || die "run needs a zone name"; cmd_run "$@" ;;
+    stop)    [[ $# -ge 1 ]] || die "stop needs a zone name"; cmd_stop "$@" ;;
+    gc)      cmd_gc ;;
+    doctor)  cmd_doctor ;;
+    ""|help) usage ;;
+    # Named explicitly rather than falling into "unknown command", because
+    # these are the things people will reasonably expect to exist.
+    transfer|copy|clipboard|paste|mount)
+        die "\`$cmd\` does not exist yet.
+    Cross-zone transfer and the clipboard need the broker, which is not built.
+    Nothing in $PROG will move a file between zones today, and a command that
+    pretended to would be worse than its absence." 2 ;;
+    *) usage >&2; die "unknown command: $cmd" 2 ;;
+esac
