@@ -391,6 +391,7 @@ export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 /bin/busybox mount -t devtmpfs devtmpfs /dev
 
 echo "KRYPTIK_VM_STAGE1_OK"
+echo "KRYPTIK_VM_T_STAGE1=$(/bin/busybox cut -d' ' -f1 /proc/uptime 2>/dev/null)"
 echo "KRYPTIK_VM_ROOTFS=disk"
 
 if [ ! -x /init2 ]; then
@@ -415,6 +416,7 @@ export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 /bin/busybox mount -t devtmpfs devtmpfs /dev
 
 echo "KRYPTIK_VM_STAGE1_OK"
+echo "KRYPTIK_VM_T_STAGE1=$(/bin/busybox cut -d' ' -f1 /proc/uptime 2>/dev/null)"
 
 /bin/busybox mkdir -p /newroot
 if ! /bin/busybox mount -t tmpfs -o size=1500m,mode=0755 tmpfs /newroot; then
@@ -481,6 +483,7 @@ for _if in /sys/class/net/*; do
     /bin/busybox udhcpc -i "$_n" -t 2 -T 2 -n -q 2>/dev/null &
 done
 
+echo "KRYPTIK_VM_T_STAGE2=$(cut -d' ' -f1 /proc/uptime 2>/dev/null)"
 echo "KRYPTIK_VM_STAGE2_OK root=$(/bin/busybox stat -f -c %T / 2>/dev/null)"
 
 # Mode comes from the kernel command line so one image serves both the
@@ -586,6 +589,7 @@ RUN
     /bin/busybox chmod 0755 "$SVC/smoke/run"
 fi
 
+echo "KRYPTIK_VM_T_S6=$(cut -d' ' -f1 /proc/uptime 2>/dev/null)"
 echo "KRYPTIK_VM_S6_START"
 # s6-svscan becomes PID 1 for the rest of the boot: it supervises the service
 # directory and reaps orphans. s6-linux-init, the full PID-1 package, is not
@@ -604,6 +608,7 @@ cat > "$ROOT/usr/bin/kryptik-vm-smoke" <<'SMOKE'
 # a truncated serial log cannot be mistaken for a pass.
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
+echo "KRYPTIK_VM_T_PAYLOAD=$(cut -d' ' -f1 /proc/uptime 2>/dev/null)"
 echo "KRYPTIK_VM_SMOKE_BEGIN"
 echo "KRYPTIK_VM_KERNEL=$(uname -r)"
 echo "KRYPTIK_VM_ARCH=$(uname -m)"
@@ -646,7 +651,13 @@ fi
 # /proc/self/status only exists when CONFIG_SECCOMP is on, which is the fact
 # being established.
 if grep -q '^Seccomp:' /proc/self/status 2>/dev/null; then
-    echo "KRYPTIK_VM_SECCOMP=supported"
+    # Idle cost, measured BEFORE the suites run - afterwards the numbers describe
+# the tests rather than the system. MemAvailable rather than MemFree: free
+# memory excludes reclaimable page cache and makes any Linux system look full.
+echo "KRYPTIK_VM_MEM_TOTAL_KB=$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null)"
+echo "KRYPTIK_VM_MEM_AVAIL_KB=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo 2>/dev/null)"
+echo "KRYPTIK_VM_PROCS=$(ls -d /proc/[0-9]* 2>/dev/null | wc -l)"
+echo "KRYPTIK_VM_SECCOMP=supported"
 else
     echo "KRYPTIK_VM_SECCOMP=absent"
 fi
@@ -860,6 +871,7 @@ if [ -x /usr/lib/kryptik/compartments/tests/adversarial.sh ]; then
     echo "KRYPTIK_VM_ADVERSARIAL_END"
 fi
 
+echo "KRYPTIK_VM_T_END=$(cut -d' ' -f1 /proc/uptime 2>/dev/null)"
 echo "KRYPTIK_VM_SMOKE_END"
 sync
 echo "KRYPTIK_VM_POWEROFF"
