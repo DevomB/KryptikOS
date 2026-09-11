@@ -138,7 +138,7 @@ fn install_forwarding(target: libc::pid_t, arm_kill: bool) {
 /// listening socket with a short timeout, serve what arrives, and reap the
 /// child when it exits. Signals forwarded by the handlers interrupt the
 /// poll, which just loops.
-fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, zone: &str, uid: u32) -> Result<libc::c_int, SpawnError> {
+fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, zone: &str, uid: u32, entry: &std::path::Path) -> Result<libc::c_int, SpawnError> {
     loop {
         let mut status: libc::c_int = 0;
         let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
@@ -151,7 +151,7 @@ fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, zone: &str, uid: u32) ->
         let mut pfd = libc::pollfd { fd: listen_fd, events: libc::POLLIN, revents: 0 };
         let n = unsafe { libc::poll(&mut pfd, 1, 200) };
         if n > 0 && pfd.revents & libc::POLLIN != 0 {
-            match broker::serve_one(listen_fd, zone, uid) {
+            match broker::serve_one(listen_fd, zone, uid, entry) {
                 Ok(Some(verb)) => eprintln!("kryptikd[zone {zone}]: broker served {verb:?}"),
                 Ok(None) => {}
                 Err(e) => eprintln!("kryptikd[zone {zone}]: broker: {e}"),
@@ -760,7 +760,7 @@ pub fn run_in_zone(
         let _ = entry.set_init(zp);
     }
 
-    let status = serve_until_exit(pid, broker_fd, &zone.name, id.uid)?;
+    let status = serve_until_exit(pid, broker_fd, &zone.name, id.uid, entry.dir())?;
     unsafe { libc::close(broker_fd) };
     let _ = std::fs::remove_file(&broker_path);
 

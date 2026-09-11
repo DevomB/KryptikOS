@@ -48,6 +48,8 @@ USAGE:
     kryptikd status NAME              running, stale or absent
     kryptikd list --running           the zones the registry knows about
     kryptikd gc                       reclaim stale entries and empty cgroups
+    kryptikd clipboard move FROM TO   the zone 0 gesture: give TO a copy of FROM's
+                                      clipboard payload (both zones running)
 
     --rootfs DIR   base directory for zone data (default: /var/lib/kryptik/zones);
                    the zone sees its own directory as /home/NAME
@@ -57,8 +59,8 @@ USAGE:
 Only descriptors 0, 1 and 2 reach the zone; the environment is rebuilt from
 an allowlist (see `kryptikd explain NAME`).
 
-Not yet implemented (Phase 5): transfer, clipboard, and per-zone encrypted
-volumes. They exit with an error rather than pretending to work."
+Not yet implemented: transfer (Design 05) and per-zone encrypted volumes.
+They exit with an error rather than pretending to work."
 }
 
 fn main() -> ExitCode {
@@ -202,12 +204,12 @@ fn main() -> ExitCode {
             }
         },
         "gc" => cmd_gc(),
-        "transfer" | "clipboard" => {
+        "clipboard" => cmd_clipboard(&args),
+        "transfer" => {
             eprintln!(
-                "kryptikd: '{}' is not implemented yet (Phase 5, docs/roadmap.md).\n\
+                "kryptikd: 'transfer' is not implemented yet (Design 05).\n\
                  Refusing rather than pretending. A compartment manager that\n\
-                 silently does nothing is worse than one that will not start.",
-                args[0]
+                 silently does nothing is worse than one that will not start."
             );
             ExitCode::from(3)
         }
@@ -322,6 +324,52 @@ fn cmd_stop(name: &str, now: bool) -> ExitCode {
                 l.pid
             );
             ExitCode::from(2)
+        }
+    }
+}
+
+/// The cross-zone paste is a zone 0 gesture (Design 05): no zone can ask for
+/// another zone's payload - the verb does not exist on a zone's socket - so
+/// the only way a payload moves is this command, run by the operator (or the
+/// compositor on their behalf) in zone 0. Both zones must be running: the
+/// payload lives in the running zone's registry entry and nowhere else.
+fn cmd_clipboard(args: &[String]) -> ExitCode {
+    let (from, to) = match (args.get(1).map(|s| s.as_str()), args.get(2), args.get(3)) {
+        (Some("move"), Some(f), Some(t)) if !f.starts_with("--") && !t.starts_with("--") => (f.as_str(), t.as_str()),
+        _ => {
+            eprintln!("usage: kryptikd clipboard move FROM TO");
+            return ExitCode::from(2);
+        }
+    };
+    if from == to {
+        eprintln!("clipboard: FROM and TO are the same zone");
+        return ExitCode::from(2);
+    }
+    for z in [from, to] {
+        match registry::state(z) {
+            Ok(registry::State::Running { .. }) => {}
+            Ok(registry::State::Stale { .. }) => {
+                eprintln!("clipboard: zone {z:?} is not running (stale entry)");
+                return ExitCode::from(1);
+            }
+            Ok(registry::State::Absent) => {
+                eprintln!("clipboard: zone {z:?} is not running");
+                return ExitCode::from(1);
+            }
+            Err(e) => {
+                eprintln!("clipboard: {e}");
+                return ExitCode::from(1);
+            }
+        }
+    }
+    match broker::clipboard_move(&registry::entry_dir(from), &registry::entry_dir(to)) {
+        Ok((mime, len)) => {
+            println!("clipboard: moved {len} bytes of {mime} from {from} to {to}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("clipboard: {e}");
+            ExitCode::from(1)
         }
     }
 }
