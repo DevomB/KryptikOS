@@ -322,6 +322,54 @@ fresh_root; run --strict
 expect_fail "a source that was never downloaded fails --strict" "unverifiable"
 
 # ---------------------------------------------------------------------------
+# a suffix is not a format
+# ---------------------------------------------------------------------------
+#
+# python.org publishes both a Sigstore `.sig` (a base64 ECDSA blob) and an
+# OpenPGP `.asc`. The probe tried `.sig` first, handed the blob to gpg, got "no
+# valid OpenPGP data found" and reported the source as inconclusive — with the
+# real signature one suffix away. These cases pin that.
+
+# `shadowed` has a non-OpenPGP .sig and a good .asc.
+printf 'fixture payload for shadowed\n' > "${SRC}/shadowed.tar.gz"
+printf 'MGUCMBOJQYFWjEHjcb7SgCw+RRyHV+y1vbKshHpSSo/jK85X2kajmKLKf3hhR2LT\n' \
+    > "${SRC}/shadowed.tar.gz.sig"
+fixgpg --yes --local-user good@example.test \
+    --detach-sign -o "${SRC}/shadowed.tar.gz.asc" "${SRC}/shadowed.tar.gz" \
+    >/dev/null 2>&1
+
+write_manifest shadowed
+fresh_root; run
+expect_pass "a non-OpenPGP .sig does not shadow a good .asc" "signature valid"
+
+write_manifest shadowed
+fresh_root; run --strict
+expect_pass "and that source passes --strict" "verified:     1"
+
+# The wrong-format file must not be left in the signature cache, or it would
+# shadow the real one on every later run.
+if [[ ! -e "${SRC}/.signatures/shadowed.tar.gz.sig" ]]; then
+    green "the non-OpenPGP candidate is not left cached"
+else
+    red "a non-OpenPGP .sig was cached and will shadow the .asc next run"
+fi
+
+# `onlyblob` publishes a .sig that is not OpenPGP, and nothing else.
+printf 'fixture payload for onlyblob\n' > "${SRC}/onlyblob.tar.gz"
+printf 'MGUCMBOJQYFWjEHjcb7SgCw+RRyHV+y1vbKshHpSSo/jK85X2kajmKLKf3hhR2LT\n' \
+    > "${SRC}/onlyblob.tar.gz.sig"
+
+write_manifest onlyblob
+fresh_root; run
+expect_pass "a publisher offering only a non-OpenPGP signature is unverifiable" \
+    "none of them is an"
+
+write_manifest onlyblob
+fresh_root; run --strict
+expect_fail "and it fails --strict rather than being called inconclusive" \
+    "unverifiable"
+
+# ---------------------------------------------------------------------------
 # unaudited imported keys
 # ---------------------------------------------------------------------------
 
