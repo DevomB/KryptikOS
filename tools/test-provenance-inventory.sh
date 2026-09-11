@@ -388,6 +388,177 @@ else
     red "supplied evidence was accepted without KRYPTIK_INVENTORY_SELFTEST"; show
 fi
 
+# --- recorded caveats -------------------------------------------------------
+#
+# A caveat records something true about a source that no assurance class can
+# express: a recipe that rewrites upstream's files, or a signature whose signer
+# upstream never designated. The one thing a caveat must never do is read as
+# assurance, so the kinds are checked to stay out of the class counts.
+
+NOTES="${W}/notes.tsv"
+write_notes() { printf '%s\n' "$@" > "$NOTES"; }
+
+write_notes \
+    '# fixture caveats' \
+    'lockonly  recipe-transformation  build/stages/04.sh:1-9  the recipe rewrites an upstream file and the result is compiled in' \
+    'pubsha    undesignated-signer    https://example.test/   upstream designates nobody as its release signer'
+
+run --offline --notes="$NOTES"
+if [[ "$RC" -eq 0 ]] && grep -qF 'RECORDED CAVEATS' "$OUT"; then
+    green "recorded caveats are printed in the text report"
+else
+    red "recorded caveats are printed in the text report (exit ${RC})"; show
+fi
+if grep -qF 'never added to the' "$OUT"; then
+    green "labelled explicitly as not assurance classes"
+else
+    red "labelled explicitly as not assurance classes"; show
+fi
+if grep -qF 'recipe-transformation' "$OUT" && grep -qF 'undesignated-signer' "$OUT"; then
+    green "both kinds appear in the report"
+else
+    red "both kinds appear in the report"; show
+fi
+if grep -qF 'build/stages/04.sh:1-9' "$OUT"; then
+    green "and each caveat carries the location it was found at"
+else
+    red "and each caveat carries the location it was found at"; show
+fi
+
+run --offline --md --notes="$NOTES"
+if grep -qF '### Recorded caveats' "$OUT"; then
+    green "markdown output gets a caveats section"
+else
+    red "markdown output gets a caveats section"; show
+fi
+
+# The JSON document is on stdout; progress goes to stderr. Capturing both into
+# one file is how an earlier draft of these six cases got ERR for every value.
+NJSON="${W}/notes.json"
+KRYPTIK_ROOT="$FAKE" KRYPTIK_INVENTORY_SELFTEST=1 \
+    KRYPTIK_INVENTORY_REPORTS="$EV" NO_COLOR=1 \
+    bash "$TOOL" --offline --json --notes="$NOTES" > "$NJSON" 2>/dev/null
+
+jget() { python3 -c "
+import json,sys
+d=json.load(open(sys.argv[1]))
+print(eval(sys.argv[2], {'d': d, 'json': json}))
+" "$NJSON" "$1" 2>/dev/null || printf 'ERR'; }
+
+got="$(jget "json.dumps(d.get('per_note_kind_counts'), sort_keys=True)")"
+if [[ "$got" == '{"recipe-transformation": 1, "undesignated-signer": 1}' ]]; then
+    green "per_note_kind_counts counts each kind once"
+else
+    red "per_note_kind_counts counts each kind once (got ${got})"
+fi
+
+got="$(jget "d.get('noted_source_count')")"
+if [[ "$got" == "2" ]]; then
+    green "noted_source_count counts the sources carrying caveats"
+else
+    red "noted_source_count counts the sources carrying caveats (got ${got})"
+fi
+
+got="$(jget "[n['kind'] for s in d['sources'] if s['name']=='lockonly' for n in s.get('notes',[])]")"
+if [[ "$got" == "['recipe-transformation']" ]]; then
+    green "the caveat is attached to the source it names"
+else
+    red "the caveat is attached to the source it names (got ${got})"
+fi
+
+got="$(jget "sorted(k for k in d['per_class_counts'] if 'transformation' in k or 'designated' in k)")"
+if [[ "$got" == "[]" ]]; then
+    green "caveat kinds never appear among the assurance classes"
+else
+    red "caveat kinds leaked into per_class_counts (${got})"
+fi
+
+got="$(jget "[s['assurance_class'] for s in d['sources'] if s['name']=='lockonly']")"
+if [[ "$got" == "['lock-only']" ]]; then
+    green "a caveat does not change the source's assurance class"
+else
+    red "a caveat changed the assurance class (got ${got})"
+fi
+
+got="$(jget "'notes' in [k for s in d['sources'] if s['name']=='korgcert' for k in s]")"
+if [[ "$got" == "False" ]]; then
+    green "sources with no caveat carry no notes field"
+else
+    red "sources with no caveat carry no notes field (got ${got})"
+fi
+
+# Positive control: caveats are optional, and a tree without the file is not an
+# error. The fixture tree has no tools/source-notes.tsv.
+run --offline
+if [[ "$RC" -eq 0 ]] && ! grep -qF 'RECORDED CAVEATS' "$OUT"; then
+    green "a tree with no caveat file inventories cleanly"
+else
+    red "a tree with no caveat file inventories cleanly (exit ${RC})"; show
+fi
+
+# --- a malformed caveat file is a tooling fault, not a provenance result -----
+
+bad_note() {  # bad_note ROW NAME
+    write_notes "$1"
+    run --offline --notes="$NOTES"
+    if [[ "$RC" -ne 0 ]] && grep -qF 'malformed' "$OUT"; then
+        green "$2"
+    else
+        red "$2 (exit ${RC})"; show
+    fi
+}
+
+bad_note 'lockonly  rewritten-somehow  build/x.sh:1  a kind nobody defined' \
+         "an unknown caveat kind is refused"
+bad_note 'lockonly  recipe-transformation  build/x.sh:1' \
+         "a caveat with no note text is refused"
+bad_note 'lockonly  recipe-transformation' \
+         "a caveat missing its location is refused"
+bad_note 'nosuchsource  recipe-transformation  build/x.sh:1  describes something not shipped' \
+         "a caveat naming a source outside the manifest is refused"
+
+write_notes 'lockonly  recipe-transformation  build/x.sh:1  fine' \
+            'alsomissing  undesignated-signer  https://x.test/  stale'
+run --offline --notes="$NOTES"
+if [[ "$RC" -ne 0 ]] && grep -qE 'notes\.tsv:2|:2: ' "$OUT"; then
+    green "the refusal names the offending line number"
+else
+    red "the refusal names the offending line number (exit ${RC})"; show
+fi
+if grep -qF 'not a provenance' "$OUT"; then
+    green "and says nothing was reported rather than reporting a partial inventory"
+else
+    red "and says nothing was reported rather than reporting a partial inventory"; show
+fi
+
+run --offline --notes="${W}/no-such-notes.tsv"
+if [[ "$RC" -ne 0 ]] && grep -qF 'named with --notes' "$OUT"; then
+    green "a caveat file named explicitly but missing is refused"
+else
+    red "a caveat file named explicitly but missing is refused (exit ${RC})"; show
+fi
+
+# --- the shipped caveat file is itself valid --------------------------------
+#
+# Guards the real data rather than a fixture: a row added with an undefined
+# kind, or naming a source that has since been dropped, must break here.
+#
+# KRYPTIK_SOURCES and KRYPTIK_WORK are set deliberately here, against this
+# file's own rule, and only for this one invocation: pointing them at empty
+# directories keeps the real KRYPTIK_ROOT (so the real manifest and the real
+# caveat file are used) while skipping the sha256 of every tarball in
+# sources/, which is gigabytes of hashing this check does not need.
+mkdir -p "${W}/empty-sources" "${W}/realwork"
+RC=0
+KRYPTIK_SOURCES="${W}/empty-sources" KRYPTIK_WORK="${W}/realwork" NO_COLOR=1 \
+    bash "$TOOL" --offline --json > "$OUT" 2>&1 || RC=$?
+if [[ "$RC" -eq 0 ]] && ! grep -qF 'malformed' "$OUT"; then
+    green "the shipped tools/source-notes.tsv is well formed against the real manifest"
+else
+    red "the shipped tools/source-notes.tsv is well formed against the real manifest (exit ${RC})"
+    grep -F 'source-notes' "$OUT" | sed 's/^/        /' | head -5
+fi
+
 echo
 if [[ "$FAIL" -gt 0 ]]; then
     echo "${FAIL} of $((PASS + FAIL)) checks failed."
