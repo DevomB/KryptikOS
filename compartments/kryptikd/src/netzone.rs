@@ -161,12 +161,30 @@ fn plumb_nic_zone_bridge(zone: &Zone, zone_ns: i32) -> Result<(), NetError> {
         netlink::add_addr4(BRIDGE, netlink::BRIDGE_V4, 24)?;
         netlink::add_addr6(BRIDGE, netlink::BRIDGE_V6, 64)?;
         netlink::set_up(BRIDGE)?;
+        // Forward between the bridge and the uplink. Without NAT this only
+        // reaches the world behind something that accepts any source address
+        // (QEMU user networking does); behind a real NIC the routed zones'
+        // addresses are not routable and NAT (nftables) is still required.
+        // Said in `plan` so nobody reads a VM result as more than it is.
+        //
+        // Forwarding also opens an L3 path between two routed zones through
+        // the bridge address itself, which the port isolation does not cover
+        // - but only for a zone that can install a host route, and a routed
+        // zone can never keep CAP_NET_ADMIN (policy::check_for_zone).
+        sysctl("/proc/sys/net/ipv4/ip_forward", "1")?;
+        sysctl("/proc/sys/net/ipv6/conf/all/forwarding", "1")?;
         match nic {
             Some(n) => netlink::set_up(n),
             None => Ok(()),
         }
     })
     .map_err(|e| io("configure the nic zone", e))
+}
+
+/// Write a network sysctl of the CURRENT network namespace (procfs resolves
+/// /proc/sys/net against the namespace of the process that opens it).
+fn sysctl(path: &str, value: &str) -> io::Result<()> {
+    std::fs::write(path, value).map_err(|e| io::Error::new(e.kind(), format!("{path} = {value}: {e}")))
 }
 
 /// A routed zone: a veth pair whose bridge end lives in the running net
@@ -198,11 +216,19 @@ fn attach_routed(name: &str, k: u8, nic_ns: i32, zone_ns: i32) -> Result<(), Net
     .map_err(|e| io("attach the zone to the bridge", e))?;
     netlink::with_netns(zone_ns, || {
         up_lo()?;
+        // No router advertisements are ever accepted in a routed zone: its
+        // addresses come from here and nowhere else (Design 03, IPv6).
+        let _ = sysctl("/proc/sys/net/ipv6/conf/eth0/accept_ra", "0");
         netlink::add_addr4("eth0", netlink::zone_v4(k), 24)?;
         netlink::add_addr6("eth0", netlink::zone_v6(k), 64)?;
         netlink::set_up("eth0")?;
         netlink::add_default_route4(netlink::BRIDGE_V4, "eth0")?;
-        netlink::add_default_route6(netlink::BRIDGE_V6, "eth0")
+        netlink::add_default_route6(netlink::BRIDGE_V6, "eth0")?;
+        // ping without CAP_NET_RAW: unprivileged ICMP echo sockets for every
+        // group. A routed zone cannot keep CAP_NET_RAW, so this is the only
+        // way it gets to ping, and it cannot forge anything with it.
+        let _ = sysctl("/proc/sys/net/ipv4/ping_group_range", "0 65534");
+        Ok(())
     })
     .map_err(|e| io("address the zone's eth0", e))
 }
@@ -245,7 +271,8 @@ pub fn plan(zone: &Zone, privileged: bool) -> String {
         (NetworkMode::Routed, true) => match host_number(zone) {
             Some(k) => format!(
                 "network    routed: eth0 = 10.19.0.{k}/24 fd19::{k:x}/64 via the nic zone's {BRIDGE}, \
-                 isolated port {}",
+                 isolated port {}; forwarded without NAT (reaches the world only behind a \
+                 gateway that accepts any source, e.g. QEMU user networking)",
                 port_name(&zone.name)
             ),
             None => "network    routed: needs [identity] uid_base to derive an address".into(),

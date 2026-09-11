@@ -529,7 +529,7 @@ fn cmd_check(dir: &Path, target: bool) -> ExitCode {
                 };
                 println!("  {:<10} {:<20} {:<16} {}", z.name, net, ident, z.border_color);
                 if let Some(rel) = &z.seccomp {
-                    match policy::load(&policy::resolve(dir, rel)) {
+                    match policy::load(&policy::resolve(dir, rel)).and_then(|p| p.check_for_zone(z).map(|_| p)) {
                         Ok(p) => {
                             println!("             policy {rel}: {}", p.describe());
                             for w in &p.warnings {
