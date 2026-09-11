@@ -138,7 +138,7 @@ fn install_forwarding(target: libc::pid_t, arm_kill: bool) {
 /// listening socket with a short timeout, serve what arrives, and reap the
 /// child when it exits. Signals forwarded by the handlers interrupt the
 /// poll, which just loops.
-fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, zone: &str, uid: u32) -> Result<libc::c_int, SpawnError> {
+fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, zone: &str, uid: u32, entry: &std::path::Path) -> Result<libc::c_int, SpawnError> {
     loop {
         let mut status: libc::c_int = 0;
         let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
@@ -151,7 +151,7 @@ fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, zone: &str, uid: u32) ->
         let mut pfd = libc::pollfd { fd: listen_fd, events: libc::POLLIN, revents: 0 };
         let n = unsafe { libc::poll(&mut pfd, 1, 200) };
         if n > 0 && pfd.revents & libc::POLLIN != 0 {
-            match broker::serve_one(listen_fd, zone, uid) {
+            match broker::serve_one(listen_fd, zone, uid, entry) {
                 Ok(Some(verb)) => eprintln!("kryptikd[zone {zone}]: broker served {verb:?}"),
                 Ok(None) => {}
                 Err(e) => eprintln!("kryptikd[zone {zone}]: broker: {e}"),
@@ -469,6 +469,21 @@ pub fn run_in_zone(
                 .into(),
         );
     }
+    // [network]: every zone starts from an EMPTY network namespace - loopback
+    // and nothing else - and only the parent adds to it. A kernel with the
+    // tunnel modules built in (the Kryptik kernel builds SIT in) creates its
+    // fallback devices in every new namespace unless
+    // net.core.fb_tunnels_only_for_init_net says otherwise, and the target
+    // kernel's first boot found sit0 inside an airgapped zone (R-13). A root
+    // launcher raises the sysctl once; an unprivileged one cannot, and the
+    // zone is then refused like any other guarantee this build cannot give.
+    if isolate::namespace_flags(zone) & libc::CLONE_NEWNET != 0 {
+        match netzone::suppress_fallback_tunnels() {
+            Ok(Some(note)) => eprintln!("kryptikd: {note}"),
+            Ok(None) => {}
+            Err(why) => unsupported.push(format!("[network]: {why}")),
+        }
+    }
     let zone_policy: Option<policy::Policy> = match &zone.seccomp {
         Some(rel) => {
             let path = policy::resolve(&opts.zones_dir, rel);
@@ -745,7 +760,7 @@ pub fn run_in_zone(
         let _ = entry.set_init(zp);
     }
 
-    let status = serve_until_exit(pid, broker_fd, &zone.name, id.uid)?;
+    let status = serve_until_exit(pid, broker_fd, &zone.name, id.uid, entry.dir())?;
     unsafe { libc::close(broker_fd) };
     let _ = std::fs::remove_file(&broker_path);
 
@@ -913,6 +928,39 @@ fn intermediate_main(
         bail!("unshare: {e}");
     }
 
+    // 3a. The network namespace must be empty: loopback and nothing else.
+    //     The parent has already dealt with the kernel's fallback tunnel
+    //     devices (net.core.fb_tunnels_only_for_init_net), so anything here
+    //     now is a device this zone was never given. A privileged launch
+    //     will not start a zone in a namespace it did not build; a developer
+    //     launch, which cannot change the sysctl, says what it found.
+    if flags & libc::CLONE_NEWNET != 0 {
+        match netzone::devices_besides_lo() {
+            Ok(devs) if !devs.is_empty() => {
+                if id.privileged {
+                    bail!(
+                        "the new network namespace is not empty: {} besides loopback (see {}); \
+                         refusing to start a zone in a namespace that is not loopback-only",
+                        devs.join(", "),
+                        netzone::FB_TUNNELS_SYSCTL
+                    );
+                }
+                eprintln!(
+                    "kryptikd[zone {}]: note: the new network namespace has {} besides loopback; \
+                     this kernel creates them in every namespace and {} = 1 would stop that",
+                    zone.name,
+                    devs.join(", "),
+                    netzone::FB_TUNNELS_SYSCTL
+                );
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!(
+                "kryptikd[zone {}]: note: could not list the new namespace's interfaces: {e}",
+                zone.name
+            ),
+        }
+    }
+
     // 3b. Open the broker socket NOW: this process has its own mount namespace
     //     (so a bind from /proc/self/fd resolves in it) and is still root (so
     //     it can traverse the 0700 registry). Neither is true later - the
@@ -921,8 +969,9 @@ fn intermediate_main(
     //
     //     O_PATH because nothing reads or writes the socket here; the fd only
     //     names the inode for the bind. Not CLOEXEC: it has to survive the
-    //     fork at step 7 into the process that builds the root. The exec at
-    //     the end of zone_init closes it.
+    //     fork at step 7 into the process that builds the root. It is closed
+    //     by zone_init's descriptor sweep (rootfs::close_inherited_fds), not
+    //     by the exec: the sweep is what keeps it out of the zone.
     let broker_fd_for_zone = {
         let c = match std::ffi::CString::new(broker_path) {
             Ok(c) => c,

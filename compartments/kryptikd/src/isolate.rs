@@ -60,12 +60,18 @@ fn check(call: &'static str, ret: libc::c_int) -> Result<(), IsolateError> {
 }
 
 /// Which namespace flags a given zone needs.
+///
+/// Every zone gets its own network namespace, the nic zone included: it
+/// OWNS the physical interface, which the parent moves into its namespace
+/// (netzone), so zone 0 is left with loopback. Until security increment 15
+/// the nic zone stayed in zone 0's namespace - a Phase 5 rule from before
+/// the topology existed - which made "move the NIC into the nic zone" a
+/// no-op and built the bridge in zone 0. Nothing measured it: the suite's
+/// NETR1 only checked that the zone started, and the VM topology probe that
+/// asks whether eth0 left zone 0 (T1) had not run yet.
 pub fn namespace_flags(zone: &Zone) -> libc::c_int {
     match zone.network {
-        // The NIC-holding zone stays in the host network namespace: it is the
-        // zone that owns the real interface. Everything else gets its own.
-        NetworkMode::Nic => ZONE_NAMESPACES,
-        NetworkMode::None | NetworkMode::Routed => ZONE_NAMESPACES | NS_NET,
+        NetworkMode::None | NetworkMode::Routed | NetworkMode::Nic => ZONE_NAMESPACES | NS_NET,
     }
 }
 
@@ -441,15 +447,14 @@ mod tests {
     }
 
     #[test]
-    fn non_nic_zones_get_a_network_namespace() {
+    fn every_zone_gets_a_network_namespace_the_nic_zone_included() {
         assert_ne!(namespace_flags(&zone("none")) & libc::CLONE_NEWNET, 0);
         assert_ne!(namespace_flags(&zone("routed")) & libc::CLONE_NEWNET, 0);
-    }
-
-    #[test]
-    fn the_nic_zone_does_not_get_its_own_netns() {
-        // It owns the real interface; isolating it from itself is meaningless.
-        assert_eq!(namespace_flags(&zone("nic")) & libc::CLONE_NEWNET, 0);
+        // The nic zone owns the real interface: the parent moves it INTO the
+        // zone's namespace, which has to exist. Sharing zone 0's namespace
+        // (the rule until increment 15) made the move a no-op and left the
+        // NIC, the bridge and the forwarding in zone 0.
+        assert_ne!(namespace_flags(&zone("nic")) & libc::CLONE_NEWNET, 0);
     }
 
     #[test]
