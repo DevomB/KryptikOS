@@ -139,6 +139,28 @@ mkzone wiped    none   "#555555" ''                      ephemeral
 # For K7: a zone whose data directory is deliberately owned by someone else.
 mkzone stranger none   "#666666"
 
+# M1 fixtures. `capped` is the zone under test; `roomy` is its positive
+# control - the same shape with limits high enough that nothing should hit
+# them, so a failure in `capped` can be attributed to the limit rather than to
+# the zone being broken.
+mkzone_limited() { # name colour memory pids
+    {
+        printf '[zone]\nname = "%s"\ndescription = "launcher-suite limit fixture"\n' "$1"
+        printf '[network]\nmode = "none"\n'
+        printf '[storage]\nmode = "ephemeral"\n'
+        printf '[limits]\nmemory_max = "%s"\npids_max = %s\n' "$3" "$4"
+        printf '[ui]\nborder_color = "%s"\n' "$2"
+    } > "$ZONES/$1.toml"
+}
+# ONE LIMIT PER FIXTURE. `capped` originally carried memory_max=48M and
+# pids_max=8 together, and the pids check then measured the wrong thing: 48M is
+# below what a zone needs to set up its own tmpfs root and start a shell, so
+# memory.oom.group killed the whole cgroup before the fork loop ever ran. The
+# check reported pids_max as "never reached" - correctly, and uselessly.
+mkzone_limited memcapped "#777777" "48M"  200   # memory is the variable
+mkzone_limited pidcapped "#999999" "512M" 32    # pids is the variable
+mkzone_limited roomy     "#888888" "512M" 200   # neither: the positive control
+
 # A root launch MUST name an unprivileged identity for the zone to map to.
 # kryptikd refuses one that does not, because mapping the zone's root to host
 # uid 0 makes "root inside the zone" mean real root for every DAC check on
@@ -1046,12 +1068,297 @@ filter_probe "L7  ioctl(TIOCSTI) is killed (terminal input injection)" ioctl-tio
 filter_probe "L8  positive control: socket(AF_INET) still works" socket-inet 0
 
 # ============================================================================
+head_ "M. cgroup resource limits  [unpriv where delegated, otherwise vm]"
+# ============================================================================
+# A limit that silently does nothing is worse than no limit: an operator who
+# believes `untrusted` is capped will run things in it they otherwise would
+# not. So there are two correct outcomes here and the suite checks whichever
+# one applies - enforcement where a cgroup can be created, and REFUSAL where it
+# cannot. What is never acceptable is a zone starting unlimited while its
+# definition says otherwise.
+
+# Probe the same way kryptikd does: by trying, not by looking at the uid. A
+# delegated subtree is writable by an ordinary user and a root process in a
+# container may still find the hierarchy read-only.
+CGROUP_OK=0
+if [[ -f /sys/fs/cgroup/cgroup.controllers ]] \
+   && mkdir /sys/fs/cgroup/kryptik-suite-probe 2>/dev/null; then
+    rmdir /sys/fs/cgroup/kryptik-suite-probe 2>/dev/null
+    CGROUP_OK=1
+fi
+
+if (( CGROUP_OK == 0 )); then
+    info "this host cannot create cgroups; checking the REFUSAL instead of enforcement"
+
+    # The refusal must name the limits, and the command must not run.
+    zrun_raw pidcapped -- /bin/sh -c "echo $LAUNCHED"
+    if [[ "$ZOUT" == *"$LAUNCHED"* ]]; then
+        fail "M1  a zone declaring [limits] RAN on a host that cannot enforce them"
+    elif (( ZRC == 0 )); then
+        fail "M1  a zone declaring [limits] exited 0 where they cannot be enforced"
+    elif [[ "$ZOUT" == *"[limits]"* ]]; then
+        pass "M1  [limits] is refused where no cgroup can be created, and does not run"
+    else
+        fail "M1  refused (exit $ZRC) but the message did not mention [limits]"
+        info "output: $(printf '%s' "$ZOUT" | tr '\n' '|' | cut -c1-220)"
+    fi
+
+    skip "M2-M6 cgroup enforcement [vm] this host cannot create cgroups; run the suite in the VM"
+else
+    info "cgroups are creatable here; checking enforcement"
+
+    # --- pids_max -----------------------------------------------------------
+    #
+    # MEASURED FROM OUTSIDE, and the reason matters. The first version had the
+    # zone count its own processes and report the number. In the capped zone
+    # that probe came back EMPTY: the shell could not fork to run the count,
+    # because pids_max was working. A test that asks a starved process to
+    # describe its own starvation cannot distinguish "the limit held" from
+    # "the zone broke", and it reported the limit as unproven while the limit
+    # was in fact holding perfectly.
+    #
+    # pids.events carries the kernel's own tally: `max N` is the number of
+    # forks the limit refused. That is direct evidence of enforcement rather
+    # than an inference from a process count, and nothing inside the zone has
+    # to be healthy enough to report it.
+    #
+    # The cgroup leaf is named <zone>.<launcher-pid>, so $! gives the path.
+    # POLLED, not sampled once. A single read at +3s found nothing for the
+    # capped zone, and the reason was the launcher behaving correctly: the zone
+    # died quickly under its own limit, the launcher exited, and Cgroup::drop
+    # removed the directory before the read. Sampling a resource that the
+    # system is correctly reclaiming is a race the test loses.
+    #
+    # So poll from 0.2s and keep the last good reading. pids.current only ever
+    # falls as processes die; pids.events `max` only ever rises, and it is the
+    # number that matters - the kernel's own count of forks the limit refused.
+    # PIDS_PEAK, not PIDS_CUR, is what the verdict uses. pids.current only
+    # describes the instant it was read, and a zone that has hit its limit is
+    # usually on its way down by then - sampling it gave "2 tasks" for a zone
+    # that had just been refused a dozen forks. pids.peak is the kernel's own
+    # high-water mark and needs no sampling luck at all.
+    pids_probe() { # zone ATTEMPTS -> sets PIDS_CUR, PIDS_PEAK, PIDS_MAXEV, PIDS_LIMIT
+        local zone="$1"
+        local ATTEMPTS="${2:-20}"
+        PIDS_CUR=""; PIDS_PEAK=""; PIDS_MAXEV=""; PIDS_LIMIT=""
+        PIDS_SAMPLES=0; PIDS_TRACE=""
+        PIDS_ERR="$WORK/pids-probe-$zone.err"
+        PIDS_LEAF=""
+        # busybox ash where it exists, and NOT bash. bash aborts the script
+        # when a fork fails, so under pids_max the capped zone died in under
+        # 200ms and its cgroup was correctly removed before the poll saw it -
+        # the launcher was behaving, and the probe was measuring its own
+        # sampling interval. ash reports the failure and carries on, which
+        # keeps the zone alive long enough to be observed.
+        local sh_cmd=(/bin/sh -c)
+        [[ -x /bin/busybox ]] && sh_cmd=(/bin/busybox ash -c)
+        KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run "$zone" "${ZARGS[@]}" -- \
+            "${sh_cmd[@]}" "i=0; while [ \$i -lt $ATTEMPTS ]; do sleep 8 & i=\$((i+1)); done 2>/dev/null; sleep 7" \
+            >/dev/null 2>"$PIDS_ERR" &
+        local lp=$!
+        BG_PIDS+=("$lp")
+        local leaf="/sys/fs/cgroup/kryptik/${zone}.${lp}"
+        PIDS_LEAF="$leaf"
+        # 5ms steps for the first second, then 100ms. The interesting window is
+        # at the start and it can be very short.
+        local i=0 cur ev lim pk step
+        while (( i < 300 )); do
+            if [[ -d "$leaf" ]]; then
+                cur="$(cat "$leaf/pids.current" 2>/dev/null)"
+                lim="$(cat "$leaf/pids.max" 2>/dev/null)"
+                # pids.events `max` is HIERARCHICAL: it counts refusals caused
+                # by this cgroup's limit and by any ancestor's, which is why it
+                # reported a refusal for a zone holding 2 tasks under a cap of
+                # 32. pids.events.local counts only this cgroup's own limit and
+                # is the number the claim needs.
+                ev="$(sed -n 's/^max //p' "$leaf/pids.events.local" 2>/dev/null)"
+                [[ -z "$ev" ]] && ev="$(sed -n 's/^max //p' "$leaf/pids.events" 2>/dev/null)"
+                pk="$(cat "$leaf/pids.peak" 2>/dev/null)"
+                [[ -n "$cur" ]] && PIDS_CUR="$cur"
+                [[ -n "$lim" ]] && PIDS_LIMIT="$lim"
+                [[ -n "$ev"  ]] && PIDS_MAXEV="$ev"
+                # pids.peak needs kernel 6.1+; fall back to the largest
+                # pids.current we happened to see.
+                if [[ -n "$pk" ]]; then
+                    PIDS_PEAK="$pk"
+                elif [[ -n "$cur" ]] && { [[ -z "$PIDS_PEAK" ]] || (( cur > PIDS_PEAK )); }; then
+                    PIDS_PEAK="$cur"
+                fi
+                PIDS_SAMPLES=$((PIDS_SAMPLES+1))
+                PIDS_TRACE="$PIDS_TRACE [$i cur=$cur pk=$pk ev=$ev]"
+            elif [[ -n "$PIDS_CUR" ]]; then
+                break   # it existed, we read it, and it has now been cleaned up
+            fi
+            if (( i < 200 )); then step=0.005; else step=0.1; fi
+            sleep "$step"
+            i=$((i+1))
+        done
+        kill -9 "$lp" 2>/dev/null
+        wait "$lp" 2>/dev/null
+        sleep 1
+    }
+
+    pids_probe roomy 20
+    if [[ -z "$PIDS_CUR" ]]; then
+        fail "M2  positive control FAILED: no cgroup for the roomy zone; M3 proves nothing"
+    elif [[ "$PIDS_MAXEV" == "0" ]] && (( PIDS_PEAK > 10 )); then
+        pass "M2  positive control: roomy peaked at $PIDS_PEAK tasks against a limit of $PIDS_LIMIT, refusing none"
+        info "     samples=$PIDS_SAMPLES trace:$(printf '%s' "$PIDS_TRACE" | cut -c1-300)"
+    else
+        fail "M2  positive control FAILED: roomy peaked at $PIDS_PEAK, limit $PIDS_LIMIT, $PIDS_MAXEV refusal(s)"
+    fi
+
+    pids_probe pidcapped 60
+    if [[ -z "$PIDS_CUR" ]]; then
+        fail "M3a pids_max: no cgroup was created for the pidcapped zone"
+        info "expected leaf: $PIDS_LEAF"
+        info "launcher stderr: $(tr '\n' '|' < "$PIDS_ERR" 2>/dev/null | cut -c1-300)"
+    elif [[ "$PIDS_LIMIT" != "32" ]]; then
+        fail "M3a pids_max was not written: the cgroup says $PIDS_LIMIT, the zone file says 32"
+    else
+        pass "M3a pids_max reaches the kernel: the zone's cgroup has pids.max=$PIDS_LIMIT"
+    fi
+
+    # M3b: ENFORCEMENT, which is a different claim from "the number was written",
+    # and one this suite cannot currently make.
+    #
+    # The zone is asked to start 60 processes against a cap of 32. It reaches a
+    # peak of about 13 and the kernel's refusal counter (pids.events `max`)
+    # stays at 0 - so the forks are stopping for some reason OTHER than the
+    # pids limit, and the limit is never exercised. Until the cause is known,
+    # this is NOT evidence that pids_max would hold under pressure, and it is
+    # NOT evidence that it would fail either.
+    #
+    # What is known: the value reaches the cgroup (M3a), memory_max IS enforced
+    # by the kernel (M5), and cleanup works (M7-M9). What is unknown is whether
+    # a zone that genuinely tries to exceed pids_max is stopped.
+    #
+    # Reported as NOT RUN rather than as a pass, because a limit that has never
+    # been reached is not a limit that has been shown to hold.
+    # Three conditions, and all three are required. A refusal count alone is
+    # not evidence - the previous version accepted "peaked at 2 tasks, refused
+    # 1 fork" against a cap of 32, which cannot happen and was the hierarchical
+    # counter reporting someone else's limit. If the zone never reached the cap
+    # then the cap was never tested, whatever any counter says.
+    if [[ -n "$PIDS_PEAK" ]] && [[ -n "$PIDS_MAXEV" ]] \
+       && (( PIDS_PEAK >= 32 )) && (( PIDS_PEAK <= 32 )) && (( PIDS_MAXEV > 0 )); then
+        pass "M3b pids_max held: the zone reached the cap at $PIDS_PEAK tasks and the kernel refused $PIDS_MAXEV fork(s)"
+    else
+        skip "M3b pids_max enforcement is UNVERIFIED: peak ${PIDS_PEAK:-?} of 32, ${PIDS_MAXEV:-0} refusal(s) — the cap was never reached"
+        info "     the zone stopped forking before the limit; cause not yet identified"
+        info "     leaf=$PIDS_LEAF cur=$PIDS_CUR peak=$PIDS_PEAK limit=$PIDS_LIMIT events=$PIDS_MAXEV samples=$PIDS_SAMPLES"
+    fi
+
+    # --- memory_max ---------------------------------------------------------
+    # Writing to /dev/shm charges the zone's memory cgroup, so this needs no
+    # compiler and no allocator tricks. memory.oom.group=1 means the kernel
+    # kills the whole zone rather than one process, so the launcher sees 137.
+    zrun roomy -- /bin/sh -c "$PRO dd if=/dev/zero of=/dev/shm/blob bs=1M count=32 2>/dev/null && echo PROBE=wrote32M"
+    probe "M4  positive control: 32M fits inside a 512M zone" "wrote32M"
+
+    zrun memcapped -- /bin/sh -c "$PRO dd if=/dev/zero of=/dev/shm/blob bs=1M count=256 2>/dev/null; echo PROBE=survived"
+    if [[ "$ZOUT" != *"$LAUNCHED"* ]]; then
+        fail "M5  memory_max: the zone did not launch, so nothing is proven"
+    elif [[ "$ZOUT" == *"PROBE=survived"* ]]; then
+        fail "M5  memory_max=48M did NOT hold: the zone wrote 256M and lived"
+    elif (( ZRC == 137 )); then
+        pass "M5  memory_max=48M held: the kernel killed the zone (137), it did not fail on its own"
+    elif (( ZRC != 0 )); then
+        pass "M5  memory_max=48M held: the zone died writing 256M (exit $ZRC)"
+    else
+        fail "M5  memory_max: the zone exited 0 without printing its sentinel"
+    fi
+
+    # --- the zone cannot reach its own cgroup -------------------------------
+    zrun pidcapped -- /bin/sh -c "$PRO if [ -w /sys/fs/cgroup/cgroup.procs ]; then echo PROBE=WRITABLE; else echo PROBE=denied; fi"
+    probe "M6  a zone cannot write the cgroup filesystem from inside" "denied"
+
+    # --- cleanup ------------------------------------------------------------
+    # A cgroup left behind holds its limits and accumulates one directory per
+    # launch. rmdir fails with EBUSY while any process remains, so a leftover
+    # directory is also evidence that something outlived the launcher.
+    # Scoped to ONE launcher that exits normally, not to the whole directory.
+    # M2, M3 and M8 SIGKILL their launchers on purpose, so those runs leave
+    # empty cgroups behind by design - that is what M9's sweep is for. A
+    # directory-wide count here would fail on their leftovers and say nothing
+    # about the property M7 is actually about: that a launcher which exits
+    # normally cleans up after itself.
+    KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run roomy "${ZARGS[@]}" -- /bin/true >/dev/null 2>&1 &
+    normal_lp=$!
+    wait "$normal_lp" 2>/dev/null
+    sleep 0.5
+    normal_leaf="/sys/fs/cgroup/kryptik/roomy.${normal_lp}"
+    if [[ -d "$normal_leaf" ]]; then
+        fail "M7  a normally-exited launcher left its cgroup behind: $normal_leaf"
+    else
+        pass "M7  a launcher that exits normally removes its own zone cgroup"
+    fi
+
+    # --- cleanup after a killed launcher ------------------------------------
+    MARK_CG=2913
+    KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run pidcapped "${ZARGS[@]}" -- /bin/sleep "$MARK_CG" >/dev/null 2>&1 &
+    cgpid=$!
+    BG_PIDS+=("$cgpid")
+    sleep 1.5
+    kill -9 "$cgpid" 2>/dev/null
+    sleep 2
+    after_procs="$(pgrep -f "sleep $MARK_CG" 2>/dev/null | wc -l)"
+    after_cg="$(find /sys/fs/cgroup/kryptik -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"
+    # What a SIGKILLed launcher can and cannot guarantee, precisely.
+    #
+    # It cannot run its own cleanup - that is what SIGKILL means - so demanding
+    # that the directory be gone immediately is demanding something the design
+    # cannot deliver. PR_SET_PDEATHSIG still kills every process, so what
+    # remains is an EMPTY cgroup: inert, holding nothing, limiting nothing.
+    # The guarantee is that it is empty, and that the next launch sweeps it.
+    if (( after_procs != 0 )); then
+        fail "M8  $after_procs process(es) survived a SIGKILLed launcher with limits"
+        pkill -9 -f "sleep $MARK_CG" 2>/dev/null
+    else
+        populated=0
+        for d in /sys/fs/cgroup/kryptik/*/; do
+            [[ -d "$d" ]] || continue
+            if [[ -s "$d/cgroup.procs" ]]; then populated=$((populated+1)); fi
+        done
+        if (( populated == 0 )); then
+            pass "M8  a SIGKILLed launcher leaves no process and no populated cgroup"
+            (( after_cg > 0 )) && info "     ($after_cg empty cgroup awaiting the sweep, as designed)"
+        else
+            fail "M8  $populated cgroup(s) still hold processes after the launcher was killed"
+        fi
+    fi
+
+    # M9: the sweep. An empty leaf older than the staleness window is removed by
+    # the next launch that needs a cgroup. This is the half of cleanup that a
+    # killed launcher cannot do for itself, so it is tested end to end rather
+    # than asserted.
+    if (( after_cg > 0 )); then
+        sleep 6   # older than cgroup.rs::STALE_AFTER
+        zrun pidcapped -- /bin/sh -c "$PRO echo PROBE=swept"
+        if want_launch "M9  the next launch sweeps cgroups a killed launcher left"; then
+            sleep 1
+            still="$(find /sys/fs/cgroup/kryptik -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"
+            if (( still == 0 )); then
+                pass "M9  the next launch swept the abandoned cgroup"
+            else
+                fail "M9  $still abandoned cgroup(s) survived the next launch's sweep"
+                find /sys/fs/cgroup/kryptik -mindepth 1 -maxdepth 1 -type d 2>/dev/null | xargs -r rmdir 2>/dev/null
+            fi
+        fi
+    else
+        pass "M9  nothing was left to sweep"
+    fi
+fi
+
+# ============================================================================
 head_ "Mandatory checks NOT RUN here"
 # ============================================================================
 # A skipped mandatory check is not a release pass. These are named so the gap
 # is visible in the summary rather than absent from it.
 
-skip "cgroup memory/pids limits are enforced          [vm] not implemented (spawn.rs says so)"
+if (( CGROUP_OK == 0 )); then
+    skip "cgroup memory/pids limits are enforced          [vm] this host cannot create cgroups; group M covers it there"
+fi
 skip "routed network reaches the bridge via the nic zone [vm] not implemented"
 skip "ephemeral storage is wiped on stop              [vm] not implemented"
 skip "per-zone seccomp/landlock policy files applied  [vm] not implemented"
