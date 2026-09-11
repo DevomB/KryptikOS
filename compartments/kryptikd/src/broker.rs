@@ -87,6 +87,101 @@ pub fn identify<'a>(zones: &'a [Zone], fd: RawFd) -> Result<&'a Zone, String> {
     }
 }
 
+/// The socket file name inside a registry entry, and the path a zone sees.
+pub const SOCKET_NAME: &str = "broker";
+pub const ZONE_PATH: &str = "/run/kryptik/broker";
+
+/// Bind a listening AF_UNIX socket at `path`, owned by the zone identity so
+/// the zone (and nobody else) may connect to it. A stale file is removed
+/// first: the path is inside a registry entry this launcher has just
+/// claimed, so nothing else can own it.
+pub fn listen_at(path: &std::path::Path, uid: u32, gid: u32) -> io::Result<RawFd> {
+    let _ = std::fs::remove_file(path);
+    let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in socket path"))?;
+    if c.as_bytes().len() >= 108 {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "socket path too long for sockaddr_un"));
+    }
+    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut sa: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    sa.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (i, b) in c.as_bytes().iter().enumerate() {
+        sa.sun_path[i] = *b as libc::c_char;
+    }
+    let len = (std::mem::size_of::<libc::sa_family_t>() + c.as_bytes().len() + 1) as libc::socklen_t;
+    let r = unsafe {
+        // Nobody but the owner may connect: 0600 before the bind is visible.
+        let old = libc::umask(0o177);
+        let r = libc::bind(fd, &sa as *const _ as *const libc::sockaddr, len);
+        libc::umask(old);
+        r
+    };
+    if r < 0 {
+        let e = io::Error::last_os_error();
+        unsafe { libc::close(fd) };
+        return Err(e);
+    }
+    if unsafe { libc::geteuid() } == 0 && unsafe { libc::chown(c.as_ptr(), uid, gid) } < 0 {
+        let e = io::Error::last_os_error();
+        unsafe { libc::close(fd) };
+        return Err(e);
+    }
+    if unsafe { libc::listen(fd, 8) } < 0 {
+        let e = io::Error::last_os_error();
+        unsafe { libc::close(fd) };
+        return Err(e);
+    }
+    Ok(fd)
+}
+
+/// Accept one connection and answer one request. The peer must be the zone
+/// this launcher runs (`uid` is its mapped host uid); anything else gets a
+/// refusal and no information. Verbs: `version`. Everything else is an
+/// error reply. Returns the verb handled, for logging.
+pub fn serve_one(listen_fd: RawFd, zone: &str, uid: u32) -> io::Result<Option<String>> {
+    let fd = unsafe { libc::accept4(listen_fd, std::ptr::null_mut(), std::ptr::null_mut(), libc::SOCK_CLOEXEC) };
+    if fd < 0 {
+        let e = io::Error::last_os_error();
+        return if e.raw_os_error() == Some(libc::EAGAIN) || e.raw_os_error() == Some(libc::EINTR) {
+            Ok(None)
+        } else {
+            Err(e)
+        };
+    }
+    let result = (|| {
+        let cred = peer_identity(fd)?;
+        if cred.uid != uid {
+            reply(fd, "error: unidentified peer\n");
+            return Ok(None);
+        }
+        let tv = libc::timeval { tv_sec: 1, tv_usec: 0 };
+        unsafe {
+            libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVTIMEO, &tv as *const _ as *const libc::c_void, std::mem::size_of::<libc::timeval>() as u32)
+        };
+        let mut buf = [0u8; 256];
+        let n = unsafe { libc::recv(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) };
+        if n <= 0 {
+            return Ok(None);
+        }
+        let line = String::from_utf8_lossy(&buf[..n as usize]);
+        let verb = line.lines().next().unwrap_or("").trim().to_string();
+        match verb.as_str() {
+            "version" => reply(fd, &format!("kryptik-broker 1 zone={zone}\n")),
+            _ => reply(fd, "error: unknown verb\n"),
+        }
+        Ok(Some(verb))
+    })();
+    unsafe { libc::close(fd) };
+    result
+}
+
+fn reply(fd: RawFd, text: &str) {
+    unsafe { libc::send(fd, text.as_ptr() as *const libc::c_void, text.len(), libc::MSG_NOSIGNAL) };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

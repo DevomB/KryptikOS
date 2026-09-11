@@ -29,6 +29,7 @@ use std::io;
 use std::os::unix::io::RawFd;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
+use crate::broker;
 use crate::caps;
 use crate::cgroup;
 use crate::isolate;
@@ -130,6 +131,32 @@ fn install_forwarding(target: libc::pid_t, arm_kill: bool) {
     }
     if arm_kill {
         install_handler(libc::SIGALRM, on_alarm);
+    }
+}
+
+/// Supervise the child while answering the zone broker requests: poll the
+/// listening socket with a short timeout, serve what arrives, and reap the
+/// child when it exits. Signals forwarded by the handlers interrupt the
+/// poll, which just loops.
+fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, zone: &str, uid: u32) -> Result<libc::c_int, SpawnError> {
+    loop {
+        let mut status: libc::c_int = 0;
+        let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+        if r == pid {
+            return Ok(status);
+        }
+        if r < 0 && errno() != libc::EINTR {
+            return Err(SpawnError::Syscall { call: "waitpid", errno: errno() });
+        }
+        let mut pfd = libc::pollfd { fd: listen_fd, events: libc::POLLIN, revents: 0 };
+        let n = unsafe { libc::poll(&mut pfd, 1, 200) };
+        if n > 0 && pfd.revents & libc::POLLIN != 0 {
+            match broker::serve_one(listen_fd, zone, uid) {
+                Ok(Some(verb)) => eprintln!("kryptikd[zone {zone}]: broker served {verb:?}"),
+                Ok(None) => {}
+                Err(e) => eprintln!("kryptikd[zone {zone}]: broker: {e}"),
+            }
+        }
     }
 }
 
@@ -520,6 +547,13 @@ pub fn run_in_zone(
     // but the zone's own /proc/self/cgroup describes a path outside its
     // namespace root - a zone that cannot name its own cgroup correctly is one
     // that cannot manage sub-cgroups later.
+    // The zone's broker endpoint lives in its registry entry; the zone sees
+    // it at /run/kryptik/broker. Served by this process while it waits.
+    let broker_path = entry.dir().join(broker::SOCKET_NAME);
+    let broker_fd = broker::listen_at(&broker_path, id.uid, id.gid)
+        .map_err(|e| SpawnError::Setup(format!("broker socket {}: {e}", broker_path.display())))?;
+    let broker_path_str = broker_path.display().to_string();
+
     let placed = SyncPipe::new()?;
     let ready = SyncPipe::new()?;
     let mapped = SyncPipe::new()?;
@@ -547,7 +581,7 @@ pub fn run_in_zone(
         initpid.close_read();
         let rc = intermediate_main(
             zone, rootfs, argv, &id, parent_pid, &placed, &ready, &mapped, &initpid,
-            zone_policy.as_ref(),
+            zone_policy.as_ref(), &broker_path_str,
         );
         // Never return: this process must not run the parent's cleanup.
         unsafe { libc::_exit(rc) };
@@ -661,7 +695,9 @@ pub fn run_in_zone(
         let _ = entry.set_init(zp);
     }
 
-    let status = wait_for(pid)?;
+    let status = serve_until_exit(pid, broker_fd, &zone.name, id.uid)?;
+    unsafe { libc::close(broker_fd) };
+    let _ = std::fs::remove_file(&broker_path);
 
     // Remove the cgroup here rather than leaving it to Drop. Drop still covers
     // every early return above, but it has nowhere to report to, and the one
@@ -703,6 +739,7 @@ fn intermediate_main(
     mapped: &SyncPipe,
     initpid: &SyncPipe,
     zone_policy: Option<&policy::Policy>,
+    broker_path: &str,
 ) -> i32 {
     macro_rules! bail {
         ($($arg:tt)*) => {{
@@ -876,7 +913,7 @@ fn intermediate_main(
     }
 
     if inner == 0 {
-        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, plumbed);
+        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, plumbed, broker_path);
         unsafe { libc::_exit(rc) };
     }
 
@@ -907,6 +944,7 @@ fn zone_init(
     flags: libc::c_int,
     zone_policy: Option<&policy::Policy>,
     plumbed: bool,
+    broker_path: &str,
 ) -> i32 {
     macro_rules! bail {
         ($($arg:tt)*) => {{
@@ -942,7 +980,7 @@ fn zone_init(
         (crate::zone::NetworkMode::Routed, true) => rootfs::Resolver::Bridge,
         _ => rootfs::Resolver::None,
     };
-    let home = match rootfs::pivot_into(rootfs, &zone.name, ephemeral, resolver) {
+    let home = match rootfs::pivot_into(rootfs, &zone.name, ephemeral, resolver, Some(broker_path)) {
         Ok(h) => h,
         Err(e) => bail!("could not build the zone root: {e}"),
     };
