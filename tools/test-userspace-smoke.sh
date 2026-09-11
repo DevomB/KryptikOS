@@ -91,14 +91,20 @@ INNER
 chmod 0755 /tmp/kryptik-smoke-inner.sh
 cp /tmp/kryptik-smoke-inner.sh "$C/work/sysroot/run-smoke.sh" 2>/dev/null || true
 
+# The status has to leave the redirection block by hand. `rc=$?` after a
+# `{ ... } >> log` reads the last command INSIDE the block - here an echo,
+# which always succeeds - so the runner would report success for a failed
+# smoke test. Same shape as the bug in this build's own runner scripts.
+RCFILE="$(mktemp)"
 {
     date -Iseconds
     env KRYPTIK_ROOT="$WT" KRYPTIK_WORK="$C/work" KRYPTIK_SOURCES="$C/sources" \
         NO_COLOR=1 TERM=xterm \
         "$WT/build/stages/03-chroot-prep.sh" run /run-smoke.sh
-    echo "smoke rc=$?"
+    echo "$?" > "$RCFILE"
+    echo "smoke rc=$(cat "$RCFILE")"
 } >> "$LOG" 2>&1
-rc=$?
+rc="$(cat "$RCFILE")"; rm -f "$RCFILE"
 
 # Put the tree back exactly as it was: the copied script is the only thing
 # this added, and the manifest must describe the sysroot, not the test.
