@@ -39,6 +39,27 @@ STAMPS="${KRYPTIK_WORK}/.stamps"
 LOGS="${KRYPTIK_WORK}/logs"
 BUILDDIR="${KRYPTIK_WORK}/build"
 KRYPTIK_JOBS="${KRYPTIK_JOBS:-$(kryptik_default_jobs)}"
+
+# Every package in this stage configures and builds as root, and that is a
+# property of the stage rather than a shortcut: stage 04 runs INSIDE the
+# chroot, where root owns the whole filesystem and there is no unprivileged
+# user to drop to. Creating one would mean inventing an account the target
+# does not have.
+#
+# gnulib's configure probes "whether mknod can create a fifo without root
+# privileges" and then refuses to continue, because as root the probe always
+# succeeds and so answers nothing about the machine the binaries will run on.
+# The check is aimed at someone building in their own shell, where running as
+# root is a mistake. FORCE_UNSAFE_CONFIGURE=1 is upstream's own escape hatch,
+# named in upstream's own error message, and it affects nothing but that probe.
+#
+# Set once for the stage rather than per package. coreutils and tar both
+# refuse - and the first attempt to enumerate which packages refuse got tar
+# wrong, because it piped `tar -xO` into `grep -q` with stderr discarded, so
+# "could not read the tarball" and "the tarball is fine" produced the same
+# answer. The condition here is the stage's, so the setting is the stage's.
+export FORCE_UNSAFE_CONFIGURE=1
+
 export MAKEFLAGS="-j${KRYPTIK_JOBS}"
 umask 022
 
@@ -365,30 +386,6 @@ s_python() {
     # back to the bundled copy, so the flag was describing something untrue -
     # the harder kind of wrong to notice, because nothing fails.
     ./configure --prefix=/usr --enable-shared
-    make
-    make install
-}
-
-# coreutils' configure refuses to run as root, and stage 04 is always root.
-#
-# gnulib probes "whether mknod can create a fifo without root privileges" and
-# then errors out, because as root the probe always succeeds and so answers
-# nothing about the machine the binaries will run on:
-#
-#   configure: error: you should not run configure as root
-#   (set FORCE_UNSAFE_CONFIGURE=1 in environment to bypass this check)
-#
-# The check is aimed at someone building in their own shell, where running as
-# root is a mistake. Stage 04 runs inside a chroot where root owns everything
-# and there is no unprivileged user to be - so the situation the check warns
-# about is not the situation we are in. FORCE_UNSAFE_CONFIGURE=1 is upstream's
-# own escape hatch, named in its own error message, and is what LFS uses at
-# this point for the same reason.
-s_coreutils() {
-    local src; src="$(unpack "coreutils-${V_COREUTILS}.tar.xz" "coreutils-${V_COREUTILS}")"
-    cd "$src"
-    FORCE_UNSAFE_CONFIGURE=1 ./configure --prefix=/usr \
-        --enable-no-install-program=kill,uptime
     make
     make install
 }
@@ -1035,7 +1032,7 @@ declare -a PACKAGES=(
     "less"        "native_build less-${V_LESS}.tar.gz less-${V_LESS} --sysconfdir=/etc"
     "openssl"     "s_openssl"
     "libffi"      "native_build libffi-${V_LIBFFI}.tar.gz libffi-${V_LIBFFI} --disable-static --with-gcc-arch=native"
-    "coreutils"   "s_coreutils"
+    "coreutils"   "native_build coreutils-${V_COREUTILS}.tar.xz coreutils-${V_COREUTILS} --enable-no-install-program=kill,uptime"
     "diffutils"   "native_build diffutils-${V_DIFFUTILS}.tar.xz diffutils-${V_DIFFUTILS}"
     "gawk"        "native_build gawk-${V_GAWK}.tar.xz gawk-${V_GAWK}"
     "findutils"   "native_build findutils-${V_FINDUTILS}.tar.xz findutils-${V_FINDUTILS} --localstatedir=/var/lib/locate"
