@@ -25,11 +25,29 @@ INITRD=""
 LOG=""
 MODE="smoke"
 TIMEOUT=300
+# 3G is sized for the INITRAMFS path, where the entire image is unpacked into
+# RAM and then copied onto a tmpfs root - so the guest needs room for two
+# copies of its own userspace. A disk-rooted guest needs none of that: its root
+# filesystem is on virtio-blk and stays there. Asking for 3G anyway is not
+# harmless on a developer machine, where this VM shares a 7G WSL budget with a
+# distribution build; it pushed that budget to its cap and WSL stopped
+# accepting new sessions. --mem still overrides both.
 MEM=3072
+MEM_SET_BY_USER=0
+ROOT_DISK_MEM=1536
 CPUS=2
 QEMU="${QEMU:-qemu-system-x86_64}"
 EXTRA_APPEND=""
 NIC="none"
+# A raw image attached as virtio-blk. Always a file this harness made, never a
+# host device: the guest gets write access to whatever this names, and the one
+# mistake that cannot be undone is naming something real.
+DISK=""
+# Boot the disk AS the root filesystem rather than attaching it alongside an
+# initramfs. Only possible because this kernel has virtio_blk and ext4 built in
+# rather than as modules in an initrd - measured, not assumed: the guest
+# reports KRYPTIK_VM_BLOCKDEV and mounts /dev/vda in the smoke payload.
+ROOT_DISK=0
 
 usage() {
     cat <<'EOF'
@@ -69,9 +87,11 @@ while [[ $# -gt 0 ]]; do
         --log) LOG="$2"; shift 2 ;;
         --mode) MODE="$2"; shift 2 ;;
         --timeout) TIMEOUT="$2"; shift 2 ;;
-        --mem) MEM="$2"; shift 2 ;;
+        --mem) MEM="$2"; MEM_SET_BY_USER=1; shift 2 ;;
         --cpus) CPUS="$2"; shift 2 ;;
         --append) EXTRA_APPEND="$2"; shift 2 ;;
+        --disk) DISK="$2"; shift 2 ;;
+        --root-disk) ROOT_DISK=1; shift ;;
         --nic) NIC="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) die "unknown argument: $1" ;;
@@ -79,10 +99,18 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$KERNEL" ]] || { usage; die "--kernel is required"; }
-[[ -n "$INITRD" ]] || { usage; die "--initrd is required"; }
+if (( ROOT_DISK )); then
+    [[ -n "$DISK" ]] || { usage; die "--root-disk needs --disk"; }
+    [[ -z "$INITRD" ]] || die "--root-disk and --initrd are alternatives: the
+ disk IS the root filesystem, and an initramfs would take over as / instead."
+else
+    [[ -n "$INITRD" ]] || { usage; die "--initrd is required (or --root-disk with --disk)"; }
+fi
 [[ -n "$LOG" ]]    || { usage; die "--log is required"; }
 [[ -r "$KERNEL" ]] || die "kernel not readable: $KERNEL"
-[[ -r "$INITRD" ]] || die "initramfs not readable: $INITRD"
+if [[ -n "$INITRD" ]]; then
+    [[ -r "$INITRD" ]] || die "initramfs not readable: $INITRD"
+fi
 command -v "$QEMU" >/dev/null 2>&1 || [[ -x "$QEMU" ]] || die "qemu not found: $QEMU"
 
 mkdir -p "$(dirname "$LOG")"
@@ -104,6 +132,31 @@ fi
 
 # Networking. The default remains NONE: a test VM that cannot reach anything is
 # the right default, and every check that matters runs without a NIC.
+INITRD_ARGS=()
+[[ -n "$INITRD" ]] && INITRD_ARGS=(-initrd "$INITRD")
+
+DISK_ARGS=()
+if [[ -n "$DISK" ]]; then
+    [[ -f "$DISK" ]] || die "--disk $DISK is not a file. This harness only ever
+ attaches images it made; it will not open a device node."
+    case "$(readlink -f "$DISK")" in
+        /dev/*) die "--disk $DISK resolves to a device node. Refusing: the guest
+ gets write access to whatever this names." ;;
+    esac
+    # -snapshot: the guest's writes go to a temporary file QEMU makes and
+    # deletes, never to the image. Two reasons, and both matter. The image is
+    # an artifact whose sha256 is recorded as evidence, and a boot that edited
+    # it would invalidate the record it was measured against. And a smoke check
+    # that mutates its own input is not repeatable: the second run would be
+    # testing something the first run wrote.
+    # cache=writeback rather than unsafe: with -snapshot every write is
+    # discarded at exit regardless, so "unsafe" bought no durability trade and
+    # only kept more dirty pages in the host's page cache - which is the
+    # resource that ran out.
+    DISK_ARGS=(-drive "file=$DISK,format=raw,if=virtio,cache=writeback" -snapshot)
+    printf 'run-qemu: disk    %s (raw, virtio, disposable)\n' "$DISK" >&2
+fi
+
 case "$NIC" in
     none)
         NIC_ARGS=(-nic none)
@@ -131,10 +184,24 @@ case "$NIC" in
 esac
 
 APPEND="console=ttyS0,115200 panic=-1 loglevel=6 kryptik.mode=$MODE $EXTRA_APPEND"
+if (( ROOT_DISK && ! MEM_SET_BY_USER )); then
+    MEM="$ROOT_DISK_MEM"
+    printf 'run-qemu: mem     %sM (disk-rooted: no RAM needed for the root filesystem)\n' "$MEM" >&2
+fi
+
+if (( ROOT_DISK )); then
+    # init=/init because the image's stage-1 init is at the root, where an
+    # initramfs would have found it; rw because the zone tests write.
+    APPEND="root=/dev/vda rw init=/init $APPEND"
+fi
 
 printf 'run-qemu: accel   %s\n' "$ACCEL_NAME" >&2
 printf 'run-qemu: kernel  %s\n' "$KERNEL" >&2
-printf 'run-qemu: initrd  %s (%s bytes)\n' "$INITRD" "$(stat -c %s "$INITRD")" >&2
+if [[ -n "$INITRD" ]]; then
+    printf 'run-qemu: initrd  %s (%s bytes)\n' "$INITRD" "$(stat -c %s "$INITRD")" >&2
+else
+    printf 'run-qemu: initrd  none - the disk is the root filesystem\n' >&2
+fi
 printf 'run-qemu: mode    %s, timeout %ss\n' "$MODE" "$TIMEOUT" >&2
 printf 'run-qemu: log     %s\n' "$LOG" >&2
 
@@ -149,10 +216,11 @@ fi
 
 QEMU_ARGS+=(
     -m "$MEM"
+    "${DISK_ARGS[@]}"
     -smp "$CPUS"
     "${ACCEL[@]}"
     -kernel "$KERNEL"
-    -initrd "$INITRD"
+    "${INITRD_ARGS[@]}"
     -append "$APPEND"
     "${NIC_ARGS[@]}"
     -no-reboot                # a panic ends the run instead of looping

@@ -39,6 +39,7 @@ die() { printf 'mkinitramfs: %s\n' "$*" >&2; exit 1; }
 note() { printf '  %s\n' "$*" >&2; }
 
 OUT=""
+AS_DISK=""
 KRYPTIKD=""
 SYSROOT=""
 S6ROOT=""
@@ -48,7 +49,13 @@ usage() {
     cat <<'EOF'
 usage: mkinitramfs.sh --out FILE --kryptikd BIN --s6root DIR [--sysroot DIR] [--zones DIR]
 
-  --out FILE      where to write the initramfs (cpio.gz)
+  --out FILE      where to write the image
+  --as-disk SIZE  write an ext4 ROOT FILESYSTEM of this size (e.g. 6G) instead
+                  of a cpio.gz initramfs. Needed for a real Kryptik userspace:
+                  an initramfs is unpacked into RAM, and the stage 04 sysroot is
+                  3.6G, so it would need more memory than the machine has. The
+                  staged tree is identical either way - only the packing and the
+                  first three lines of /init differ.
   --kryptikd BIN  the kryptikd binary to install at /usr/bin/kryptikd.
                   Build it statically (--target x86_64-unknown-linux-musl) or
                   its dynamic dependencies must exist in the image.
@@ -69,6 +76,7 @@ while [[ $# -gt 0 ]]; do
         --kryptikd) KRYPTIKD="$2"; shift 2 ;;
         --s6root) S6ROOT="$2"; shift 2 ;;
         --sysroot) SYSROOT="$2"; shift 2 ;;
+        --as-disk) AS_DISK="$2"; shift 2 ;;
         --zones) ZONES="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) die "unknown argument: $1" ;;
@@ -174,10 +182,27 @@ if [[ -n "$SYSROOT" ]]; then
     # boot-smoke.sh reported as "a Kryptik userspace booted" - the exact false
     # claim this harness exists to prevent, made by the harness itself.
     #
-    # The evidence is the one the README uses: Kryptik's binaries carry their
-    # own target triple. A host bash says x86_64-pc-linux-gnu; a Kryptik bash
-    # says x86_64-kryptik-linux-gnu. That is a property of the compiler that
-    # built it, not a label anyone set.
+    # WHAT COUNTS AS EVIDENCE, and why the first version of this was wrong.
+    #
+    # It looked for `x86_64-kryptik-linux-gnu` inside the sysroot's bash, on the
+    # reasoning that a host bash says x86_64-pc-linux-gnu and a Kryptik one does
+    # not. That held for a stage-02 sysroot, where bash is cross-compiled with
+    # --host=x86_64-kryptik-linux-gnu, and it stopped holding the moment stage
+    # 04 finished: the final bash is built natively INSIDE the sysroot, where
+    # config.guess correctly reports x86_64-pc-linux-gnu, because that is the
+    # build system now. So this check refused the first real, complete Kryptik
+    # userspace the build tab produced.
+    #
+    # The build tab hit the identical bug in their own chroot check and wrote
+    # the lesson down: "the triple was never evidence of whose bash this is. It
+    # recorded which stage built it last."
+    #
+    # So: two kinds of evidence, and at least one MEASURED kind is required.
+    #   - a binary from the sysroot, run, reporting a Kryptik target: the
+    #     sysroot's own gcc -dumpmachine, or a cross-built shell's embedded
+    #     triple. This cannot be faked by editing a file.
+    #   - /etc/os-release saying ID=kryptik. Corroboration only, and never
+    #     sufficient on its own: it is a text file, and anyone can write one.
     sysroot_shell=""
     for cand in usr/bin/bash bin/bash usr/bin/sh bin/sh; do
         if [[ -f "$SYSROOT/$cand" ]]; then sysroot_shell="$SYSROOT/$cand"; break; fi
@@ -187,33 +212,95 @@ if [[ -n "$SYSROOT" ]]; then
  That is not a userspace this image can boot, and stamping it as one would make
  boot-smoke.sh report a Kryptik boot that did not happen."
 
+    sysroot_evidence=()
+    sysroot_measured=0
+
+    # 1. The sysroot's own compiler, asked what it targets. A stage-04 sysroot
+    #    contains the target gcc; running it is a behaviour, not a string.
+    for gcc_cand in usr/bin/gcc bin/gcc; do
+        [[ -x "$SYSROOT/$gcc_cand" ]] || continue
+        gcc_triple="$("$SYSROOT/$gcc_cand" -dumpmachine 2>/dev/null || true)"
+        if [[ "$gcc_triple" == *-kryptik-linux-* ]]; then
+            sysroot_evidence+=("$gcc_cand -dumpmachine = $gcc_triple")
+            sysroot_measured=1
+        fi
+        break
+    done
+
+    # 2. A cross-built shell still carries the triple it was configured with.
+    #    NOT `|| echo unknown` on the pipeline: `grep -m1` exits non-zero when
+    #    `strings` is killed by SIGPIPE after the match, so a fallback there
+    #    fired even on success and printed "x86_64-pc-linux-gnu\nunknown".
     sysroot_triple="$(strings -a "$sysroot_shell" 2>/dev/null \
                       | grep -m1 -o '[a-z0-9_]*-kryptik-linux-[a-z]*' || true)"
-    if [[ -z "$sysroot_triple" ]]; then
-        # NOT `|| echo unknown` on the pipeline: `grep -m1` exits non-zero when
-        # `strings` is killed by SIGPIPE after the match, so the fallback fired
-        # even on success and the message read "x86_64-pc-linux-gnu\nunknown".
+    if [[ -n "$sysroot_triple" ]]; then
+        sysroot_evidence+=("${sysroot_shell#"$SYSROOT"/} carries $sysroot_triple")
+        sysroot_measured=1
+    fi
+
+    # 3. Corroboration.
+    sysroot_id=""
+    if [[ -f "$SYSROOT/etc/os-release" ]]; then
+        sysroot_id="$(sed -n 's/^ID=//p' "$SYSROOT/etc/os-release" | tr -d '"')"
+        sysroot_build="$(sed -n 's/^BUILD_ID=//p' "$SYSROOT/etc/os-release" | tr -d '"')"
+        [[ "$sysroot_id" == "kryptik" ]] && \
+            sysroot_evidence+=("etc/os-release ID=kryptik BUILD_ID=${sysroot_build:-none}")
+    fi
+
+    if (( sysroot_measured == 0 )); then
         host_triple="$(strings -a "$sysroot_shell" 2>/dev/null \
                        | grep -m1 -o '[a-z0-9_]*-[a-z]*-linux-[a-z]*' || true)"
         [[ -n "$host_triple" ]] || host_triple="none found"
         die "--sysroot $SYSROOT does not look like a Kryptik userspace.
- Its shell ($sysroot_shell) reports the target triple '$host_triple', not
- *-kryptik-linux-*. Refusing rather than producing an image that would be
- reported as a Kryptik boot. Pass a sysroot built by stage 04, or leave
- --sysroot off and the image will honestly say it uses host binaries."
+ Nothing in it, when RUN, reports a Kryptik target: its shell ($sysroot_shell)
+ carries '$host_triple', and there is no gcc there that targets
+ *-kryptik-linux-*.${sysroot_id:+
+ (etc/os-release says ID=$sysroot_id, but that is a text file and not evidence
+ on its own.)}
+ Refusing rather than producing an image that would be reported as a Kryptik
+ boot. Pass a sysroot built by stage 04, or leave --sysroot off and the image
+ will honestly say it uses host binaries."
     fi
 
     note "userspace: Kryptik sysroot $SYSROOT"
-    note "  verified: $sysroot_shell reports $sysroot_triple"
+    for e in "${sysroot_evidence[@]}"; do note "  verified: $e"; done
     for d in bin sbin usr lib lib64 etc; do
         [[ -d "$SYSROOT/$d" ]] && cp -a "$SYSROOT/$d/." "$ROOT/$d/" 2>/dev/null || true
     done
+
+    # AFTER the copy, not before it. The sysroot ships its own
+    # /usr/bin/kryptikd - stage 04 installs one - and the loop above has just
+    # written it over the binary this image exists to test. Placing this
+    # reinstall before the copy, as the first attempt did, changes nothing at
+    # all: the copy still wins, and the image still boots stage 04's kryptikd.
+    #
+    # It is not a theoretical objection. Two boots from a real sysroot failed
+    # 105 checks each with
+    #     kryptikd: unknown key "storage.size"
+    # because stage 04's copy predates the ephemeral-storage work - a perfect
+    # Kryptik userspace in which every single zone failed to start.
+    #
+    # Both hashes go in the stamp, so the substitution is visible to whoever
+    # reads the image rather than being something they have to know.
+    if [[ -f "$SYSROOT/usr/bin/kryptikd" ]]; then
+        SYSROOT_KRYPTIKD="$(sha256sum "$SYSROOT/usr/bin/kryptikd" | cut -d" " -f1)"
+        note "  the sysroot ships its own kryptikd (${SYSROOT_KRYPTIKD:0:12}...); the one under test overrides it"
+    fi
+    install -m 0755 "$KRYPTIKD" "$ROOT/usr/bin/kryptikd"
     # The stamp records what was MEASURED, not what was requested, so anything
     # reading it later is reading evidence. The shell's hash pins which build.
     {
         printf 'kryptik-sysroot\n'
-        printf 'triple %s\n' "$sysroot_triple"
+        # Every line here is something that was measured, so a reader of this
+        # stamp is reading evidence rather than a claim. The shell's hash pins
+        # which build it was.
+        for e in "${sysroot_evidence[@]}"; do printf 'evidence %s\n' "$e"; done
         printf 'shell %s\n' "$(sha256sum "$sysroot_shell" | cut -d" " -f1)"
+        printf 'kryptikd-under-test %s\n' "$(sha256sum "$KRYPTIKD" | cut -d' ' -f1)"
+        [[ -n "${SYSROOT_KRYPTIKD:-}" ]] && \
+            printf 'kryptikd-in-sysroot-overridden %s\n' "$SYSROOT_KRYPTIKD"
+        printf 'shell-version %s\n' \
+            "$("$sysroot_shell" --version 2>/dev/null | head -1 || echo unknown)"
     } > "$ROOT/etc/kryptik-userspace-origin"
 else
     note "userspace: HOST binaries (this image is NOT a Kryptik system)"
@@ -266,7 +353,36 @@ printf 'root:x:0:\n'                       > "$ROOT/etc/group"
 printf 'kryptik-vm\n'                      > "$ROOT/etc/hostname"
 printf '127.0.0.1 localhost kryptik-vm\n'  > "$ROOT/etc/hosts"
 
-# --- stage 1 init: the switch_root ------------------------------------------
+# --- stage 1 init -----------------------------------------------------------
+#
+# Two versions, because the problem stage 1 solves only exists for an
+# initramfs. pivot_root(2) returns EINVAL when the current root is the initial
+# ramfs, and kryptikd's zone setup is built on pivot_root - so an initramfs
+# image has to get off rootfs before any zone can start. A disk image is
+# already on a real ext4 root, where pivot_root works, and copying it onto a
+# tmpfs would defeat the entire point of putting it on a disk.
+if [[ -n "$AS_DISK" ]]; then
+cat > "$ROOT/init" <<'INIT'
+#!/bin/busybox sh
+# Stage 1, disk image. PID 1 on a real ext4 root mounted by the kernel from
+# /dev/vda. No switch_root: we are already where the initramfs version spends
+# its whole life trying to get to.
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
+/bin/busybox mount -t proc     proc     /proc
+/bin/busybox mount -t sysfs    sysfs    /sys
+/bin/busybox mount -t devtmpfs devtmpfs /dev
+
+echo "KRYPTIK_VM_STAGE1_OK"
+echo "KRYPTIK_VM_ROOTFS=disk"
+
+if [ ! -x /init2 ]; then
+    echo "KRYPTIK_VM_FAIL stage1: /init2 missing from the root filesystem"
+    exec /bin/busybox sh
+fi
+exec /init2
+INIT
+else
 cat > "$ROOT/init" <<'INIT'
 #!/bin/busybox sh
 # Stage 1. Runs as PID 1 on the initial rootfs.
@@ -304,6 +420,7 @@ fi
 echo "KRYPTIK_VM_SWITCHROOT"
 exec /bin/busybox switch_root /newroot /init2
 INIT
+fi
 chmod 0755 "$ROOT/init"
 
 # --- stage 2 init: mounts, then s6 ------------------------------------------
@@ -400,14 +517,26 @@ echo "KRYPTIK_VM_SMOKE_BEGIN"
 echo "KRYPTIK_VM_KERNEL=$(uname -r)"
 echo "KRYPTIK_VM_ARCH=$(uname -m)"
 echo "KRYPTIK_VM_USERSPACE=$(head -1 /etc/kryptik-userspace-origin 2>/dev/null)"
-echo "KRYPTIK_VM_USERSPACE_TRIPLE=$(sed -n 's/^triple //p' /etc/kryptik-userspace-origin 2>/dev/null)"
+# The stamp now holds one `evidence` line per thing that was measured at build
+# time, replacing the single `triple` line this had gone on grepping for -
+# reporting an empty string about an image carrying three pieces of evidence.
+sed -n 's/^evidence /KRYPTIK_VM_USERSPACE_EVIDENCE=/p' /etc/kryptik-userspace-origin 2>/dev/null
+echo "KRYPTIK_VM_USERSPACE_KRYPTIKD=$(sed -n 's/^kryptikd-under-test //p' /etc/kryptik-userspace-origin 2>/dev/null)"
+# And the same question asked of the RUNNING system rather than of a stamp: a
+# Kryptik userspace carries the target gcc, and its own compiler naming the
+# target is a fact about what actually booted.
+echo "KRYPTIK_VM_GCC_TRIPLE=$(gcc -dumpmachine 2>/dev/null)"
+echo "KRYPTIK_VM_OSRELEASE_ID=$(sed -n 's/^ID=//p' /etc/os-release 2>/dev/null | tr -d '\"')"
 # Measured in the guest, from the shell the guest is actually running - not
 # copied from what the image builder recorded. If these two ever disagree, the
 # image was assembled from one tree and stamped from another.
 echo "KRYPTIK_VM_SHELL_TRIPLE=$(strings -a /bin/sh 2>/dev/null | grep -m1 -o '[a-z0-9_]*-[a-z]*-linux-[a-z]*' || echo unknown)"
 echo "KRYPTIK_VM_UID=$(id -u)"
 echo "KRYPTIK_VM_PID1=$(cat /proc/1/comm 2>/dev/null)"
-echo "KRYPTIK_VM_ROOTFS=$(stat -f -c %T / 2>/dev/null)"
+# From /proc/mounts, not `stat -f -c %T`: ext4 shares a magic number with ext2
+# and ext3, so stat calls a Kryptik ext4 root "ext2/ext3" and the log then reads
+# as though the image were something it is not.
+echo "KRYPTIK_VM_ROOTFS=$(awk '$2=="/" {print $3; exit}' /proc/mounts 2>/dev/null)"
 
 # Security features the zone model depends on, reported from inside the VM
 # rather than assumed from the host.
@@ -479,6 +608,26 @@ PROBEZONE
     echo "KRYPTIK_VM_PRIVCONTRACT_END"
 fi
 
+# What block devices does the guest actually have? Printed unconditionally,
+# because "the disk was attached" and "the kernel has a driver for it" are
+# different facts and only the guest can tell you the second one. A stock
+# distribution kernel keeps virtio_blk and ext4 as modules in its initrd, and
+# this image carries no modules at all.
+echo "KRYPTIK_VM_BLOCKDEV=$(awk 'NR>2 {printf "%s(%sK) ", $4, $3}' /proc/partitions 2>/dev/null)"
+echo "KRYPTIK_VM_FILESYSTEMS=$(awk '{print $NF}' /proc/filesystems 2>/dev/null | tr '\n' ',')"
+if [ -b /dev/vda ]; then
+    mkdir -p /mnt/disk
+    if mount -t ext4 /dev/vda /mnt/disk 2>/dev/null; then
+        echo "KRYPTIK_VM_DISKMOUNT=ok"
+        echo "KRYPTIK_VM_DISKMARK=$(cat /mnt/disk/kryptik-disk-marker 2>/dev/null)"
+        umount /mnt/disk 2>/dev/null
+    else
+        echo "KRYPTIK_VM_DISKMOUNT=failed"
+    fi
+else
+    echo "KRYPTIK_VM_DISKMOUNT=no-vda"
+fi
+
 echo "KRYPTIK_VM_CHECK_BEGIN"
 if /usr/bin/kryptikd check --zones /etc/kryptik/zones; then
     echo "KRYPTIK_VM_CHECK=pass"
@@ -497,6 +646,32 @@ if [ -x /usr/lib/kryptik/compartments/tests/launcher.sh ]; then
     echo "KRYPTIK_VM_LAUNCHER_END"
 else
     echo "KRYPTIK_VM_LAUNCHER_RC=missing"
+fi
+
+# The same suite again, with the restriction on.
+#
+# This is the evidence R-7a asks for and the reason the P5 repair exists. The
+# run above is on the stock default, where unprivileged user namespaces are
+# allowed - which is NOT the kernel Kryptik intends to ship, so on its own it
+# says nothing about the privileged path on the target. With the AppArmor knob
+# set, a root kryptikd is the only thing that can create a user namespace at
+# all, which is exactly the target's rule.
+#
+# The whole suite runs rather than group K alone: if the repair were wrong, the
+# failure would not be confined to the checks that look privileged.
+if [ -x /usr/lib/kryptik/compartments/tests/launcher.sh ]; then
+    echo "KRYPTIK_VM_RESTRICTED_BEGIN"
+    if sysctl -w kernel.apparmor_restrict_unprivileged_userns=1 >/dev/null 2>&1; then
+        echo "KRYPTIK_VM_RESTRICTED_KNOB=apparmor-emulated"
+        KRYPTIKD=/usr/bin/kryptikd KRYPTIK_TEST_TIMEOUT=60 \
+            /usr/lib/kryptik/compartments/tests/launcher.sh
+        echo "KRYPTIK_VM_RESTRICTED_RC=$?"
+        sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null 2>&1
+    else
+        echo "KRYPTIK_VM_RESTRICTED_KNOB=none"
+        echo "KRYPTIK_VM_RESTRICTED_RC=noknob"
+    fi
+    echo "KRYPTIK_VM_RESTRICTED_END"
 fi
 
 # The same suite again, with the restriction on.
@@ -642,7 +817,38 @@ mkdir -p "$ROOT/usr/lib/kryptik/compartments/zones"
 
 # --- pack -------------------------------------------------------------------
 mkdir -p "$(dirname "$OUT")"
-( cd "$ROOT" && find . -print0 | cpio --null -o --format=newc --quiet ) | gzip -9 > "$OUT"
-
-note "wrote $OUT ($(stat -c %s "$OUT") bytes)"
-note "sha256 $(sha256sum "$OUT" | cut -d' ' -f1)"
+if [[ -n "$AS_DISK" ]]; then
+    command -v mke2fs >/dev/null || die "--as-disk needs mke2fs (e2fsprogs)"
+    # mke2fs -d populates the filesystem from a directory WITHOUT mounting it,
+    # so this needs no root and no loop device - which matters, because the
+    # developer host has neither.
+    #
+    # ONE LIMITATION, STATED RATHER THAN HIDDEN: -d preserves each file's
+    # numeric owner, and the staging tree was assembled by an unprivileged
+    # user, so the image's files are owned by that uid instead of by root.
+    # Nothing this harness measures depends on it - the guest runs as root and
+    # root ignores DAC ownership, and the checks that care about ownership
+    # (group K) chown their own fixtures at runtime. But this is a development
+    # image builder and not a release one: a real image must be built as root,
+    # or under fakeroot, neither of which exists on this host. The stamp below
+    # records it so nobody has to rediscover it.
+    note "packing as an ext4 root filesystem ($AS_DISK)"
+    note "  NOTE: files are owned by uid $(id -u), not root — development image only"
+    rm -f "$OUT"
+    # Not piped into sed: a pipeline reports the LAST command's status, so
+    # `mke2fs ... | sed` would report sed's success and swallow a failed image.
+    if ! mke2fs -q -t ext4 -F -L kryptik -d "$ROOT" "$OUT" "$AS_DISK" > "$ROOT.mke2fs.log" 2>&1; then
+        sed 's/^/  mke2fs: /' "$ROOT.mke2fs.log" >&2 || true
+        die "mke2fs failed writing $OUT"
+    fi
+    [[ -s "$ROOT.mke2fs.log" ]] && sed 's/^/  mke2fs: /' "$ROOT.mke2fs.log" >&2
+    rm -f "$ROOT.mke2fs.log"
+    [[ -s "$OUT" ]] || die "mke2fs produced no image at $OUT"
+    note "wrote $OUT ($(stat -c %s "$OUT") bytes, ext4, label kryptik)"
+    note "sha256 $(sha256sum "$OUT" | cut -d' ' -f1)"
+    note "boot it with: run-qemu.sh --kernel K --disk $OUT --root-disk"
+else
+    ( cd "$ROOT" && find . -print0 | cpio --null -o --format=newc --quiet ) | gzip -9 > "$OUT"
+    note "wrote $OUT ($(stat -c %s "$OUT") bytes)"
+    note "sha256 $(sha256sum "$OUT" | cut -d' ' -f1)"
+fi
