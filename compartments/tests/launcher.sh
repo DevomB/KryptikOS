@@ -1867,6 +1867,82 @@ zrun alpha -- /bin/sh -c "$PRO echo hi > \$HOME/capfile && cat \$HOME/capfile | 
 probe "CAP4 positive control: the zone still runs normally after the drop" "hi"
 
 # ============================================================================
+head_ "NETR. Routed networking, end to end  [vm / root only]"
+# ============================================================================
+# Security implemented the topology: the nic zone takes the physical interface
+# and the bridge, and a routed zone gets a veth into it. This is the check that
+# turns "implemented" into "tested" - it starts both and looks at what the
+# routed zone actually has.
+#
+# TWO GATES, AND THE SECOND IS NOT OPTIONAL. Starting the nic zone MOVES THE
+# PHYSICAL INTERFACE into another network namespace. In a disposable VM that
+# this harness built, that is fine and it is the point. On a developer's
+# machine it would take their network away mid-command. So this runs only when
+# the payload that built the VM says so, and reports NOT RUN anywhere else -
+# including for root on a real host, which is exactly the case that would
+# otherwise do damage.
+if (( PRIVILEGED == 1 )) && [[ "${KRYPTIK_VM_DISPOSABLE:-}" == "1" ]]; then
+    # A routed fixture. `carrier` already holds the nic.
+    mkzone router none "#0f0f0f"
+    sed -i 's/^mode = "none"$/mode = "routed"/' "$ZONES/router.toml"
+
+    # The nic zone has to be RUNNING for a routed zone to have anything to
+    # attach to, so it goes in the background and stays there.
+    KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run carrier "${ZARGS[@]}" -- \
+        /bin/sh -c "$PRO echo PROBE=nic-up; /bin/sleep 60" > "$WORK/nic.out" 2>&1 &
+    nicpid=$!
+    BG_PIDS+=("$nicpid")
+
+    nic_ready=0
+    for _ in $(seq 1 200); do
+        grep -q "$LAUNCHED" "$WORK/nic.out" 2>/dev/null && { nic_ready=1; break; }
+        kill -0 "$nicpid" 2>/dev/null || break
+        sleep 0.1
+    done
+
+    if (( nic_ready == 0 )); then
+        fail "NETR1 the nic zone did not start, so nothing can be routed through it"
+        info "output: $(tr '\n' '|' < "$WORK/nic.out" 2>/dev/null | cut -c1-240)"
+    else
+        pass "NETR1 the nic zone started and holds the interface"
+
+        # What a routed zone actually gets. Counted from /proc/net/dev, which
+        # needs no iproute2 in the image.
+        zrun router -- /bin/sh -c "$PRO n=\$(sed 1,2d /proc/net/dev | grep -vc ' *lo:'); r=\$(sed 1d /proc/net/route | wc -l); echo PROBE=if=\$n,routes=\$r"
+        if want_launch "NETR2 a routed zone starts while the nic zone is up"; then
+            got="$(printf '%s\n' "$ZOUT" | sed -n 's/^PROBE=//p' | head -1)"
+            ifn="${got#if=}"; ifn="${ifn%%,*}"
+            rts="${got##*routes=}"
+            if [[ "${ifn:-0}" -ge 1 ]]; then
+                pass "NETR3 the routed zone has $ifn interface(s) besides loopback"
+            else
+                fail "NETR3 the routed zone has no interface besides loopback ($got)"
+            fi
+            if [[ "${rts:-0}" -ge 1 ]]; then
+                pass "NETR4 the routed zone has $rts route(s)"
+            else
+                fail "NETR4 the routed zone has no routes ($got)"
+            fi
+        fi
+
+        # THE CONTROL. A mode=none zone in the same conditions, with the nic
+        # zone still up, must still see only loopback - otherwise NETR3 is
+        # measuring something every zone gets rather than something routing
+        # gave this one.
+        zrun alpha -- /bin/sh -c "$PRO n=\$(sed 1,2d /proc/net/dev | grep -vc ' *lo:'); echo PROBE=\$n"
+        probe "NETR5 control: an airgapped zone still sees only loopback while the nic zone runs" "0"
+    fi
+
+    kill -9 "$nicpid" 2>/dev/null
+    wait "$nicpid" 2>/dev/null
+    "$KRYPTIKD" gc >/dev/null 2>&1 || true
+elif (( PRIVILEGED == 1 )); then
+    skip "NETR routed networking [vm] needs a disposable VM: this check MOVES THE PHYSICAL NIC into a zone, and will not do that to a machine it did not build"
+else
+    skip "NETR routed networking [vm] needs root and a disposable VM"
+fi
+
+# ============================================================================
 head_ "POL. Per-zone policy files  [unpriv]"
 # ============================================================================
 # These were reported as "not implemented" by this suite until security landed
@@ -2203,7 +2279,9 @@ head_ "Mandatory checks NOT RUN here"
 if (( CGROUP_OK == 0 )); then
     skip "cgroup memory/pids limits are enforced          [vm] this host cannot create cgroups; group M covers it there"
 fi
-skip "routed network reaches the bridge via the nic zone [vm] not implemented"
+# Routed networking is implemented and is covered by group NETR, which runs
+# only inside the disposable VM. The gap this line reported is now a check
+# with a positive control.
 # ephemeral storage is implemented (M2) and covered by group E-EPH above, so
 # it is no longer listed as a gap. The one thing it does NOT deliver - secure
 # erasure, because tmpfs pages can be swapped - is asserted by EPH8 rather than
