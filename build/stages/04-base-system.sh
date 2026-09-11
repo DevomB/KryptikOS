@@ -975,6 +975,28 @@ EOF
 #                            source tree because s6-rc-compile reads every
 #                            directory there as a service
 #   rc.init looks for.
+s_installer() {
+    # The installer runs INSIDE a booted Kryptik system, onto a second disk, so
+    # it has to be in the image. It is never run on the build host and has no
+    # business there - the host's disks are not something this project writes
+    # to, and the installer's own refusals assume a guest.
+    local src="${KRYPTIK_ROOT}/tools/install/kryptik-install.sh"
+    [[ -f "$src" ]] || { echo "no installer at ${src}"; return 1; }
+
+    install -D -m 0755 "$src" /usr/sbin/kryptik-install
+
+    # It is /bin/sh, and the target's sh is the one that will run it. Parsing it
+    # with the shell that will execute it is worth more than parsing it with the
+    # build host's.
+    sh -n /usr/sbin/kryptik-install || {
+        echo "the installer does not parse under the target sh"
+        return 1
+    }
+    echo "--- installer ---"
+    ls -la /usr/sbin/kryptik-install
+    /usr/sbin/kryptik-install --help
+}
+
 s_services() {
     local src="${KRYPTIK_ROOT}/build/services"
     [[ -d "$src" ]] || { echo "no service source tree at ${src}"; return 1; }
@@ -1385,6 +1407,9 @@ declare -a PACKAGES=(
     # reads by path. Without their digest, editing sysinit.sh left the stamp
     # looking valid and the old script installed - which is exactly the
     # stale-stamp defect the kernel fragments had.
+    # Its content is an argument so the step rebuilds when the installer
+    # changes; the recipe reads it by path, which declare -f cannot see.
+    "installer"   "s_installer $(sha256_of "${KRYPTIK_ROOT}/tools/install/kryptik-install.sh" 2>/dev/null || echo none)"
     "services"    "s_services $(cat "${KRYPTIK_ROOT}"/build/services/*/* \n                                    "${KRYPTIK_ROOT}"/build/service-scripts/*.sh \n                                    "${KRYPTIK_ROOT}"/build/config/sysctl.d/*.conf \n                                2>/dev/null | sha256_of_stdin || echo nosvc)"
     # The path and the binary's content hash are arguments so that both are
     # part of this step's fingerprint; see s_kryptikd.

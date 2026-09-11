@@ -943,88 +943,59 @@ KRYPTIK_SMOKE: kd:              policy policy/personal.seccomp: /etc/kryptik/zon
 KRYPTIK_SMOKE: kd:              landlock policy file: not applied (unimplemented; refused without the override)
 ```
 
-### 12b. Shutdown, narrowed: shutdownd reads the fifo and ignores the command
+### 12a/12b superseded — shutdown works. What it actually was.
 
-The elimination in 12a left one question that mattered — is shutdownd actually
-reading that fifo, or does everything about it merely look right? The boot
-smoke now answers it by writing a deliberately invalid byte:
+An interactive bash was ignoring SIGTERM.
 
-```
-KRYPTIK_SMOKE: fifo_probe=sending an invalid byte
-KRYPTIK_SMOKE: fifo_probe_write=ok
-KRYPTIK_SMOKE: probe: s6-linux-init-shutdownd: warning: unknown command: X
-KRYPTIK_SMOKE: shutdownd_pid_before=92
-```
+`getty-tty1` runs `agetty -n -l /usr/bin/bash`, which execs an **interactive**
+bash, and an interactive bash ignores SIGTERM by design. `s6-svc -d` sends
+SIGTERM and then waits. So `s6-rc change` inside `rc.shutdown` blocked on that
+one service, `rc.shutdown` never returned, and `s6-linux-init-shutdownd` waits
+for stage 3 to exit before it touches the hardware.
 
-That warning is the exact line `s6-linux-init-shutdownd.c` emits for an
-unrecognised command. So the fifo is the right fifo, shutdownd has it open, it
-is reading it, and its output reaches the catch-all log where we can see it.
+That is why it looked for four boots like shutdownd was receiving a well-formed
+request and ignoring it. It was doing exactly the right thing and waiting on a
+script that could not finish.
 
-The defect is therefore not "shutdown does not work". It is:
-
-> shutdownd reads its fifo, receives a well-formed poweroff request from
-> `s6-linux-init-hpr` (which exits 0), and then neither acts nor complains
-> within 45 seconds. `rc.shutdown` is never spawned, the pid does not change,
-> and nothing is logged.
-
-Reading 1.2.0.2's source, a `p` byte should set `what='p'`, consume the 16-byte
-`tain`+grace payload, set the deadline to `tain_zero + STAMP` — that is, now —
-and the next `iopause` should time out immediately and run stage 3. Every step
-of that is consistent with what we observe up to the point where nothing
-happens.
-
-Worth trying next, cheapest first:
-
-1. `s6-linux-init-hpr -p -W` (skip the wall message) and `-d` (skip wtmp), to
-   see whether either changes the outcome. hpr does `updwtmpx` and `hpr_wall`
-   between opening the fifo and sending the command.
-2. Whether `prepare_shutdown` is getting a short read: hpr writes 17 bytes in
-   one `write()`, which is atomic well under PIPE_BUF, but a short read would
-   die with "bad shutdown protocol" and we would see it — its absence is
-   itself informative.
-3. Whether sharing `/run/service` between s6-linux-init's own scandir and
-   `s6-rc-init` disturbs anything shutdownd depends on.
-
-Until then `s6-linux-init-hpr -p -f` powers the machine off immediately by
-calling `reboot(RB_POWER_OFF)` directly, bypassing shutdownd entirely. That is
-a working emergency stop, not a clean shutdown: it runs no `rc.shutdown` and
-tears no services down, so it is not wired into anything.
-
-### 12a. The one thing that does not work: clean shutdown
-
-`/sbin/poweroff` is `s6-linux-init-hpr -p`. Measured inside the guest:
+The fix is two files s6 already supports:
 
 ```
-shutdownd_dir=event fifo notification-fd run supervise
-shutdownd_fifo=present          # /run/service/s6-linux-init-shutdownd/fifo
-svc_shutdownd=true              # supervised and up
-POWEROFF                        # hpr exited 0 - no poweroff_rc line
-POWEROFF_DID_NOT_TAKE_EFFECT after 45s
-[  50.9] reboot: Power down     # sysrq, not s6
+build/services/getty-tty1/down-signal    SIGHUP
+build/services/getty-tty1/timeout-kill   3000
 ```
 
-So: shutdownd is running, its fifo exists at the path `s6-linux-init-hpr`
-actually opens, hpr writes and exits successfully, and shutdownd does not act
-within 45 seconds. `rc.shutdown` begins with `exec >/dev/console 2>&1` and
-prints nothing, so it is never reached.
+SIGHUP is what a shell on a dying terminal is supposed to receive, and bash
+honours it. `timeout-kill` is the bound that makes the question moot: SIGKILL
+after three seconds whatever the signal. `eudev` has the bound too — it stops
+correctly on SIGTERM, but "this daemon behaves" is not a reason to leave a
+shutdown unbounded. `tools/test-services.sh` now fails any longrun without a
+positive `timeout-kill`.
 
-Ruled out already: a missing fifo (present), a wrong fifo path (the first
-version of this check watched `/run/s6-linux-init/shutdownd/fifo`, which
-nothing uses - `strings` on the hpr binary names the real one), shutdownd not
-being supervised (it is), and an impatient timer (ten seconds became
-forty-five, with the elapsed time reported).
+#### Why it took four boots, which is the part worth keeping
 
-Not yet checked, in the order worth trying: whether `s6-rc-init` sharing
-`/run/service` with s6-linux-init's own scandir disturbs shutdownd's fifo
-between open and read; whether hpr's default mode needs `-f` or a different
-flag on 1.2.0.2; and whether shutdownd's `-g 3000` grace interacts with the
-s6-rc teardown.
+Every hypothesis was checked against something real, and three of them were
+wrong in a way that was not obvious:
 
-Until it is fixed the smoke service stops the machine through sysrq after
-announcing `POWEROFF_DID_NOT_TAKE_EFFECT`, and `tools/image/boot-smoke.sh`
-asserts that line is **absent**. The run therefore reports 29 passed and 1
-failed rather than a clean sheet: the fallback must never be able to pass for
-a clean shutdown.
+1. *The fifo is missing.* It was not. The check was watching
+   `/run/s6-linux-init/shutdownd/fifo`; `strings` on the hpr binary shows it
+   opens `/run/service/s6-linux-init-shutdownd/fifo`. A check pointed at a path
+   nothing uses reports absence forever.
+2. *shutdownd is not reading the fifo.* It is. Writing a deliberately invalid
+   byte produced `unknown command: X` in the catch-all log, which is the exact
+   line its source emits. That single probe was worth more than all the
+   inference before it.
+3. *The smoke oneshot deadlocks against its own teardown.* Plausible, fit every
+   observation, and wrong — fixing it changed nothing. Recorded as wrong in the
+   commit rather than quietly dropped.
+
+What finally answered it was instrumenting the step that had only ever been
+inferred about. `rc.shutdown` now prints before and after `s6-rc change`, which
+distinguishes "shutdownd never spawned stage 3" from "stage 3 ran and blocked" —
+a distinction no amount of staring at the fifo could make.
+
+The `-t 20000` on `s6-rc change` was added defensively in the same commit, and
+it is the only reason that diagnostic boot completed at all. Bounding things
+you do not yet know are unbounded pays for itself.
 
 ## 13. The base system is complete: 67 entries, none unwired
 
