@@ -890,9 +890,10 @@ EOF
 # the build would report success. Passing the path AND the binary's content
 # hash makes both part of the step's identity.
 s_kryptikd() {
-    local src="$1" want_sha="${2:-absent}"
+    local src="$1" want_sha="${2:-absent}" zones_sha="${3:-nozones}"
     [[ "$src" == "none" ]] && src=""
     echo "requested: ${src:-<none>} (sha256 ${want_sha})"
+    echo "zone definitions: ${zones_sha}"
 
     install -d -m 0755 /etc/kryptik
     install -d -m 0700 /etc/kryptik/zones
@@ -1186,7 +1187,13 @@ declare -a PACKAGES=(
     "init"        "s_init"
     # The path and the binary's content hash are arguments so that both are
     # part of this step's fingerprint; see s_kryptikd.
-    "kryptikd"    "s_kryptikd ${KRYPTIK_KRYPTIKD_BIN:-none} $([[ -f "${KRYPTIK_KRYPTIKD_BIN:-}" ]] && sha256_of "${KRYPTIK_KRYPTIKD_BIN}" || echo absent)"
+    # The zone definitions are an input too, not just the binary. kryptikd
+    # validates them at install time, and the pair has to move together: a
+    # newer kryptikd made "storage.size" mandatory for ephemeral zones and
+    # rejected the definitions this branch was carrying. Hashing the directory
+    # means changing a .toml re-runs this step instead of silently shipping a
+    # binary that will not read its own config.
+    "kryptikd"    "s_kryptikd ${KRYPTIK_KRYPTIKD_BIN:-none} $([[ -f "${KRYPTIK_KRYPTIKD_BIN:-}" ]] && sha256_of "${KRYPTIK_KRYPTIKD_BIN}" || echo absent) $(cat "${KRYPTIK_ROOT}"/compartments/zones/*.toml 2>/dev/null | sha256_of_stdin || echo nozones)"
     "boot-check"  "s_boot_check"
 )
 
