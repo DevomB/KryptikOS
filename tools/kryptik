@@ -130,11 +130,27 @@ have_kryptikd() {
 # worked on the developer host. A wrapper whose job is to be the easy interface
 # should not be the thing that needs a richer /dev than the daemon does.
 IDENTITY_ARGS=()
-set_identity_args() {
+set_identity_args() { # zone name
     IDENTITY_ARGS=()
-    if [[ "$(id -u)" -eq 0 ]]; then
-        IDENTITY_ARGS=(--zone-uid "$UID_BASE" --zone-gid "$UID_BASE")
+    [[ "$(id -u)" -eq 0 ]] || return 0
+
+    # A zone may declare its own range with [identity] uid_base. kryptikd then
+    # REFUSES --zone-uid/--zone-gid:
+    #
+    #   zone "untrusted" declares [identity] uid_base = 327680;
+    #   --zone-uid/--zone-gid are not accepted for a zone with a declared identity
+    #
+    # and it is right to - two sources for the same fact is how they end up
+    # disagreeing. Every shipped zone declares one, so passing the flags
+    # unconditionally meant `kryptik run` could not start any of them as root.
+    #
+    # A presence test on the zone file rather than a TOML parse: kryptikd is
+    # the authority on the value and refuses clearly either way, so all this
+    # has to get right is "does this zone bring its own".
+    if grep -qE '^[[:space:]]*uid_base[[:space:]]*=' "$ZONES_DIR/$1.toml" 2>/dev/null; then
+        return 0
     fi
+    IDENTITY_ARGS=(--zone-uid "$UID_BASE" --zone-gid "$UID_BASE")
 }
 
 # Both the list and whether reading it worked at all. These are different
@@ -267,7 +283,7 @@ start_zone() {
     mkdir -p "$ROOTFS" 2>/dev/null || true
 
     local rc
-    set_identity_args
+    set_identity_args "$name"
 
     # Not captured and re-printed: an interactive shell needs the terminal, and
     # a command whose output this swallowed until it exited would be unusable
