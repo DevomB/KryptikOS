@@ -70,11 +70,28 @@
 #      the account, and `.tagger.name` is free text inside the tag. Neither
 #      names a key Kryptik decided to trust in advance.
 #
-#   3. IT PASSED WHEN IT COULD NOT CHECK. No gh CLI, an unresolvable tag, an
-#      unreachable API - each incremented a "skipped" counter and exited 0.
-#      The bundled CI step ran it on a runner with no authenticated gh, so the
-#      hardened_malloc check that docs/supply-chain.md reports as verified was
-#      reporting "skipped" and passing.
+#      That field is not merely weak in theory. hardened_malloc tags 12, 13
+#      and 14 are all signed by ONE key - the one pinned below - and the old
+#      check would have reported the signer of 12 and 13 as "Daniel Micay"
+#      and of 14 as "GrapheneOS", because the display name changed and the
+#      key did not. A name that varies while the key is constant is not an
+#      identity; it is a label.
+#
+#   3. IT PASSED WHEN IT COULD NOT CHECK. A missing gh CLI, an unresolvable
+#      tag, an unreachable API - each incremented a "skipped" counter and
+#      exited 0.
+#
+#      The bundled CI step took that path on every run, and the reason is
+#      worth getting right: gh IS pre-installed on GitHub's Ubuntu runner
+#      images (GitHub CLI 2.100.0 on both Ubuntu 24.04, which is what
+#      `ubuntu-latest` resolves to, and 26.04 - see actions/runner-images).
+#      What it is not is authenticated. GITHUB_TOKEN is a secret, not an
+#      exported environment variable, and .github/workflows/ci.yml sets no
+#      GH_TOKEN for that step. An unauthenticated `gh api` fails even against
+#      a public repository - measured with gh 2.97.0 and an empty config
+#      directory: exit 4, "please run gh auth login". So `gh api` failed, the
+#      script warned and skipped, and the one assertion
+#      docs/supply-chain.md describes as verified passed without being made.
 #
 # It also described the tag as GPG-signed. It is not: GrapheneOS signs these
 # tags with an SSH key (ssh-ed25519), which is why the trust anchor below is
@@ -116,6 +133,14 @@ done
 # Pinned HERE, in the repository, rather than fetched at check time. A key
 # fetched when the check runs is only as trustworthy as that fetch; a key in
 # the tree changes visibly, in review, as a diff.
+#
+# How far one pinned key reaches: tags 12, 13 and 14 are all signed by this
+# key, confirmed by decoding the SSHSIG blob of each tag and comparing the
+# embedded public key byte-for-byte with the published one. So a pin bump
+# across that range does not need a new anchor. If upstream ever rotates or
+# adds a key, this check fails closed - it reports the wrong signer rather
+# than accepting the new one - which is the intended direction, and means a
+# rotation is a deliberate, reviewable edit here.
 #
 # WHAT THIS ANCHOR IS WORTH. It establishes that a tag was signed by the key
 # GrapheneOS publishes at its own HTTPS origin - the same class of anchor as
