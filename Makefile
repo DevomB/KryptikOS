@@ -90,6 +90,7 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
         test-harness test-hardening test-artifacts audit-artifacts \
         audit-artifacts-strict manifest verify-manifest test-manifest \
         test-s6-init smoke-userspace test-services image image-boot \
+        image-smoke \
         validate-kernel validate-kernel-hardened \
         toolchain temp-tools chroot chroot-enter chroot-umount chroot-status \
         system kernel iso audit zones zone-test paths reset-stamps \
@@ -307,6 +308,9 @@ image:
 	@mkdir -p "$(dir $(IMAGE))"
 	@"$(TOOLS)"/image/mkdisk.sh --sysroot "$(KRYPTIK_WORK)/sysroot" \
 	    $(if $(KERNEL),--kernel "$(KERNEL)",) --out "$(IMAGE)"
+
+image-smoke:
+	@"$(TOOLS)"/image/boot-smoke.sh --image "$(IMAGE)" --kernel "$(KERNEL)"
 
 image-boot:
 	@"$(TOOLS)"/image/run-qemu-disk.sh --image "$(IMAGE)" \
