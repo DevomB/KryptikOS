@@ -180,7 +180,11 @@ mkzone_limited() { # name colour memory pids
     {
         printf '[zone]\nname = "%s"\ndescription = "launcher-suite limit fixture"\n' "$1"
         printf '[network]\nmode = "none"\n'
-        printf '[storage]\nmode = "ephemeral"\nsize = "64M"\n'
+        # 32M, under every memory_max these fixtures use. A tmpfs larger than
+        # the zone's memory limit is refused at parse time now - it could never
+        # reach its stated size, because its pages are charged to that same
+        # limit - and memcapped's cap is 48M.
+        printf '[storage]\nmode = "ephemeral"\nsize = "32M"\n'
         printf '[limits]\nmemory_max = "%s"\npids_max = %s\n' "$3" "$4"
         printf '[ui]\nborder_color = "%s"\n' "$2"
     } > "$ZONES/$1.toml"

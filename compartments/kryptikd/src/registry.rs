@@ -476,6 +476,18 @@ pub fn claim(zone: &str) -> Result<Handle, RegistryError> {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                 match state(zone)? {
+                    // No launcher pid recorded. Usually that means another
+                    // launcher really is mid-start and refusing is right. But
+                    // state() itself takes and releases the entry lock to test
+                    // liveness, so a `status` running concurrently with this
+                    // call produces the same reading for an entry that is
+                    // merely stale (R-7b F2). One retry after 50ms tells them
+                    // apart: a real starting launcher still holds the lock,
+                    // and a passing status has let go by then.
+                    State::Running { launcher: None, .. } if attempt == 0 => {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        continue;
+                    }
                     State::Running { launcher, .. } => {
                         return Err(RegistryError::AlreadyRunning {
                             zone: zone.to_string(),
