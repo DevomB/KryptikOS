@@ -286,7 +286,14 @@ recipe_fingerprint() {
         while IFS= read -r v; do
             [[ -z "$v" ]] && continue
             printf 'ver:%s=%s\n' "$v" "${!v-unset}"
-        done < <(printf '%s\n%s\n' "$body" "$*" | grep -oE 'V_[A-Z0-9_]+' | sort -u)
+        # `|| true`: a recipe with no V_* variables is normal, and grep
+        # exits 1 when it matches nothing. Without this the ERR trap fires
+        # inside the process substitution and prints a failure line for a
+        # step that is about to succeed.
+        done < <(printf '%s
+%s
+' "$body" "$*" \
+                 | grep -oE 'V_[A-Z0-9_]+' | sort -u || true)
     } | sha256_of_stdin
 }
 
