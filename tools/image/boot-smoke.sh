@@ -41,6 +41,31 @@ deny()  { # deny <description> <regex that must NOT appear>
     if grep -qE "$2" "$SERIAL_TXT"; then red "$1"; else green "$1"; fi
 }
 
+# --- refuse to boot an image that does not match its own signature ---------
+#
+# A signature nothing checks is decoration. If the image has been signed, that
+# signature is verified HERE, before the VM starts; booting first and checking
+# afterwards would mean the thing under test had already run.
+#
+# An unsigned image is allowed and said so out loud. This is a developer flow,
+# and the failure worth avoiding is silently treating "no signature" as
+# "verified".
+if [[ -f "${IMAGE}.sig" && -f "${IMAGE}.sigdoc.json" ]]; then
+    if [[ ! -f "${IMAGE}.pub" ]]; then
+        red "the image is signed but no public key is beside it"
+        exit 1
+    fi
+    if "${SELF}/verify-image.sh" --image "$IMAGE" --key "${IMAGE}.pub"            --expect-kind developer > "${IMAGE}.verify.log" 2>&1; then
+        green "image matches its developer signature"
+    else
+        red "image does NOT match its signature - refusing to boot it"
+        sed 's/^/       /' "${IMAGE}.verify.log"
+        exit 1
+    fi
+else
+    log "image is unsigned (tools/image/sign-image.sh will sign it)"
+fi
+
 log "booting for smoke"
 "${SELF}/run-qemu-disk.sh" --image "$IMAGE" --kernel "$KERNEL" \
     --mode smoke --timeout "$TIMEOUT" --append "kryptik.smoke=1"
