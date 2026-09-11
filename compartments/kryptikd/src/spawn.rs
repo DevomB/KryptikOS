@@ -32,6 +32,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use crate::caps;
 use crate::cgroup;
 use crate::isolate;
+use crate::registry;
 use crate::landlock;
 use crate::rootfs;
 use crate::seccomp;
@@ -208,6 +209,46 @@ impl SyncPipe {
         }
     }
 
+    /// Send a pid to the other end. Four bytes in native order: both ends are
+    /// the same process image on the same machine.
+    fn write_i32(&self, v: i32) {
+        let b = v.to_ne_bytes();
+        let mut off = 0usize;
+        while off < 4 {
+            let r = unsafe {
+                libc::write(self.write, b[off..].as_ptr() as *const libc::c_void, 4 - off)
+            };
+            if r > 0 {
+                off += r as usize;
+            } else if r < 0 && errno() == libc::EINTR {
+                continue;
+            } else {
+                return; // peer gone; the parent will see EOF and say so
+            }
+        }
+    }
+
+    /// Read a pid. `None` on EOF or a short read - which means the sender died
+    /// before it could tell us. That is a real outcome, not an error: the
+    /// caller is about to report why the zone failed.
+    fn read_i32(&self) -> Option<i32> {
+        let mut b = [0u8; 4];
+        let mut off = 0usize;
+        while off < 4 {
+            let r = unsafe {
+                libc::read(self.read, b[off..].as_mut_ptr() as *mut libc::c_void, 4 - off)
+            };
+            if r > 0 {
+                off += r as usize;
+            } else if r < 0 && errno() == libc::EINTR {
+                continue;
+            } else {
+                return None;
+            }
+        }
+        Some(i32::from_ne_bytes(b))
+    }
+
     fn close_read(&self) { unsafe { libc::close(self.read) }; }
     fn close_write(&self) { unsafe { libc::close(self.write) }; }
 }
@@ -374,7 +415,17 @@ pub fn run_in_zone(
         }
     }
 
+    // Claim the zone name before doing any work. One instance per zone is the
+    // v1 rule: two launchers of the same zone would share a data directory, a
+    // cgroup name and - once M3 lands - a veth name, and the second would
+    // quietly corrupt the first. `mkdir` is the atomic operation; a stale
+    // entry from a crashed launcher is reclaimed rather than obeyed.
+    let entry = registry::claim(&zone.name).map_err(|e| SpawnError::Setup(e.to_string()))?;
+
     let id = launch_identity(opts)?;
+    entry
+        .set_identity(id.uid, id.gid)
+        .map_err(|e| SpawnError::Setup(e.to_string()))?;
 
     // The persistent directory. Created if missing; when kryptikd is root it
     // is handed to the zone's identity, but an existing directory is never
@@ -412,6 +463,15 @@ pub fn run_in_zone(
     let placed = SyncPipe::new()?;
     let ready = SyncPipe::new()?;
     let mapped = SyncPipe::new()?;
+    // initpid: child -> parent, carrying the zone's pid 1 as the HOST sees it.
+    //
+    // Design 06 suggested widening `ready` to an i32 instead. It cannot be:
+    // `ready` is signalled before the id maps are written, and the grandchild
+    // that becomes pid 1 cannot be forked until after them, because it must be
+    // root in the new user namespace first. So the pid does not exist yet when
+    // `ready` fires, and this is a fourth pipe rather than a wider third one.
+    // Same outcome, and only the parent ever writes the registry.
+    let initpid = SyncPipe::new()?;
 
     let parent_pid = unsafe { libc::getpid() };
     let pid = unsafe { libc::fork() };
@@ -424,7 +484,10 @@ pub fn run_in_zone(
         placed.close_write();
         ready.close_read();
         mapped.close_write();
-        let rc = intermediate_main(zone, rootfs, argv, &id, parent_pid, &placed, &ready, &mapped);
+        initpid.close_read();
+        let rc = intermediate_main(
+            zone, rootfs, argv, &id, parent_pid, &placed, &ready, &mapped, &initpid,
+        );
         // Never return: this process must not run the parent's cleanup.
         unsafe { libc::_exit(rc) };
     }
@@ -433,6 +496,7 @@ pub fn run_in_zone(
     placed.close_read();
     ready.close_write();
     mapped.close_read();
+    initpid.close_write();
     install_forwarding(pid, false);
 
     // Create the zone's cgroup and put the child in it before releasing it to
@@ -450,12 +514,23 @@ pub fn run_in_zone(
                 .map_err(|e| SpawnError::Setup(format!("cgroup limits: {e}")))?;
             cg.attach(pid)
                 .map_err(|e| SpawnError::Setup(format!("cgroup attach: {e}")))?;
+            // Recorded so a later `stop` or `gc` can reach whatever is left if
+            // this launcher dies without cleaning up. The cgroup is the only
+            // safe handle to a dead launcher's processes: unlike a pid, it
+            // cannot have been reused.
+            let _ = entry.set_cgroup(&cg.path().display().to_string());
             Some(cg)
         }
         None => None,
     };
 
     // Release the child to unshare, whether or not it got a cgroup.
+    // The launcher's own pid, with its start time, so `stop` can signal it and
+    // be certain it is signalling the same process.
+    entry
+        .set_launcher(parent_pid)
+        .map_err(|e| SpawnError::Setup(format!("registry: {e}")))?;
+
     placed.signal();
     placed.close_write();
 
@@ -483,6 +558,13 @@ pub fn run_in_zone(
     mapped.signal();
     mapped.close_write();
 
+    // The zone's pid 1, as the host sees it. Read before waitpid because the
+    // intermediate sends it as soon as it has forked; EOF means the zone died
+    // during setup and the failure is reported below, not here.
+    if let Some(zp) = initpid.read_i32() {
+        let _ = entry.set_init(zp);
+    }
+
     let status = wait_for(pid)?;
     Ok(decode_status(status))
 }
@@ -507,6 +589,7 @@ fn intermediate_main(
     placed: &SyncPipe,
     ready: &SyncPipe,
     mapped: &SyncPipe,
+    initpid: &SyncPipe,
 ) -> i32 {
     macro_rules! bail {
         ($($arg:tt)*) => {{
@@ -620,6 +703,11 @@ fn intermediate_main(
     // them (pid 1 of a namespace ignores every signal from inside it that it
     // has no handler for, so a forwarded SIGTERM alone may do nothing), and
     // mirror its exit code.
+    // Tell the parent the zone's pid 1 before waiting on it: the parent needs
+    // it for the registry, and once we block in wait_for we cannot.
+    initpid.write_i32(inner);
+    initpid.close_write();
+
     install_forwarding(inner, true);
     match wait_for(inner) {
         Ok(status) => decode_status(status),

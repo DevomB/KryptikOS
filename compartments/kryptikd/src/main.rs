@@ -14,6 +14,7 @@ mod caps;
 mod cgroup;
 mod isolate;
 mod landlock;
+mod registry;
 mod rootfs;
 mod seccomp;
 mod spawn;
@@ -36,6 +37,10 @@ USAGE:
     kryptikd show  NAME [--zones DIR]
     kryptikd explain NAME             what starting this zone would do
     kryptikd run NAME -- CMD [ARGS]   create the zone and run CMD inside it
+    kryptikd stop NAME [--now]        stop a running zone (--now = SIGKILL)
+    kryptikd status NAME              running, stale or absent
+    kryptikd list --running           the zones the registry knows about
+    kryptikd gc                       reclaim stale entries and empty cgroups
 
     --rootfs DIR   base directory for zone data (default: /var/lib/kryptik/zones);
                    the zone sees its own directory as /home/NAME
@@ -45,8 +50,8 @@ USAGE:
 Only descriptors 0, 1 and 2 reach the zone; the environment is rebuilt from
 an allowlist (see `kryptikd explain NAME`).
 
-Not yet implemented (Phase 5): stop, transfer, clipboard, and per-zone
-encrypted volumes. They exit with an error rather than pretending to work."
+Not yet implemented (Phase 5): transfer, clipboard, and per-zone encrypted
+volumes. They exit with an error rather than pretending to work."
 }
 
 fn main() -> ExitCode {
@@ -60,6 +65,7 @@ fn main() -> ExitCode {
 
     match args[0].as_str() {
         "check" => cmd_check(&zone_dir),
+        "list" if args.iter().any(|a| a == "--running") => cmd_list_running(),
         "list" => cmd_list(&zone_dir),
         "show" => match args.get(1) {
             Some(name) if !name.starts_with("--") => cmd_show(&zone_dir, name),
@@ -172,7 +178,24 @@ fn main() -> ExitCode {
             }
             cmd_seccomp_trace(&cmd)
         }
-        "stop" | "transfer" | "clipboard" => {
+        "stop" => match args.get(1) {
+            Some(name) if !name.starts_with("--") => {
+                cmd_stop(name, args.iter().any(|a| a == "--now"))
+            }
+            _ => {
+                eprintln!("stop: expected a zone name");
+                ExitCode::from(2)
+            }
+        },
+        "status" => match args.get(1) {
+            Some(name) if !name.starts_with("--") => cmd_status(name),
+            _ => {
+                eprintln!("status: expected a zone name");
+                ExitCode::from(2)
+            }
+        },
+        "gc" => cmd_gc(),
+        "transfer" | "clipboard" => {
             eprintln!(
                 "kryptikd: '{}' is not implemented yet (Phase 5, docs/roadmap.md).\n\
                  Refusing rather than pretending. A compartment manager that\n\
@@ -190,6 +213,166 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// Stop a running zone.
+///
+/// Signals the LAUNCHER, not the zone. The launcher forwards to the
+/// intermediate, which forwards to pid 1 and escalates to SIGKILL after five
+/// seconds - the supervision path that already exists and is already tested.
+/// A second teardown path would be a second thing to get wrong.
+///
+/// The recorded pid is only signalled when both the pid AND its start time
+/// still match. Pids are reused, and a stale entry's pid may belong to an
+/// unrelated process by now; signalling it would be far worse than leaving a
+/// directory behind.
+fn cmd_stop(name: &str, now: bool) -> ExitCode {
+    let st = match registry::state(name) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("kryptikd: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match st {
+        registry::State::Absent => {
+            eprintln!("kryptikd: zone {name:?} is not running");
+            ExitCode::FAILURE
+        }
+        registry::State::Stale { launcher, .. } => {
+            let pid = launcher.map(|l| l.pid).unwrap_or(-1);
+            if let Err(e) = registry::reclaim(name) {
+                eprintln!("kryptikd: reclaiming {name:?}: {e}");
+                return ExitCode::FAILURE;
+            }
+            println!("zone {name:?} was not running (stale entry from pid {pid} reclaimed)");
+            ExitCode::SUCCESS
+        }
+        registry::State::Running { launcher: None, .. } => {
+            eprintln!(
+                "kryptikd: zone {name:?} is still starting (no launcher pid recorded yet); \
+                 try again in a moment"
+            );
+            ExitCode::FAILURE
+        }
+        registry::State::Running { launcher: Some(l), .. } => {
+            if !l.still_alive() {
+                // The lock said live and the stamp says otherwise: the
+                // launcher died between the two reads. Reclaim rather than
+                // signal a pid that is no longer the process we meant.
+                let _ = registry::reclaim(name);
+                println!("zone {name:?} exited while stopping it");
+                return ExitCode::SUCCESS;
+            }
+            let sig = if now { libc::SIGKILL } else { libc::SIGTERM };
+            if unsafe { libc::kill(l.pid, sig) } < 0 {
+                eprintln!(
+                    "kryptikd: signalling launcher {}: {}",
+                    l.pid,
+                    std::io::Error::last_os_error()
+                );
+                return ExitCode::FAILURE;
+            }
+
+            // Wait for the entry to go. The launcher removes it on the way
+            // out, so its disappearance is the zone actually being gone -
+            // not a timer we hope is long enough. The bound is the 5 s
+            // escalation plus teardown.
+            for _ in 0..160 {
+                match registry::state(name) {
+                    Ok(registry::State::Absent) => {
+                        println!("zone {name:?} stopped");
+                        return ExitCode::SUCCESS;
+                    }
+                    Ok(registry::State::Stale { .. }) => {
+                        let _ = registry::reclaim(name);
+                        println!("zone {name:?} stopped");
+                        return ExitCode::SUCCESS;
+                    }
+                    _ => {}
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            eprintln!(
+                "kryptikd: zone {name:?} did not stop: launcher {} is still running. \
+                 This should not happen; report it.",
+                l.pid
+            );
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn cmd_status(name: &str) -> ExitCode {
+    match registry::state(name) {
+        Ok(registry::State::Absent) => {
+            println!("{name}  absent");
+            ExitCode::SUCCESS
+        }
+        Ok(registry::State::Stale { launcher, cgroup }) => {
+            println!(
+                "{name}  stale  (launcher {} is gone{})",
+                launcher.map(|l| l.pid.to_string()).unwrap_or_else(|| "?".into()),
+                cgroup.map(|c| format!(", cgroup {c}")).unwrap_or_default()
+            );
+            ExitCode::SUCCESS
+        }
+        Ok(registry::State::Running { launcher, init, cgroup, started }) => {
+            println!(
+                "{name}  running  launcher {}  init {}  since {}{}",
+                launcher.map(|l| l.pid.to_string()).unwrap_or_else(|| "starting".into()),
+                init.map(|i| i.pid.to_string()).unwrap_or_else(|| "-".into()),
+                started,
+                cgroup.map(|c| format!("  cgroup {c}")).unwrap_or_default()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("kryptikd: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_list_running() -> ExitCode {
+    let names = registry::names();
+    if names.is_empty() {
+        println!("no zones are running");
+        return ExitCode::SUCCESS;
+    }
+    for n in names {
+        let _ = cmd_status(&n);
+    }
+    ExitCode::SUCCESS
+}
+
+/// Reclaim every stale entry, and every empty per-zone cgroup.
+///
+/// Safe by construction rather than by bookkeeping: an entry is stale only if
+/// its lock can be taken, and `rmdir` on a cgroup with live processes fails
+/// with EBUSY - so the kernel itself refuses to let this remove a live zone's
+/// cgroup, whatever the registry says.
+fn cmd_gc() -> ExitCode {
+    let mut reclaimed = 0usize;
+    for n in registry::names() {
+        if let Ok(registry::State::Stale { .. }) = registry::state(&n) {
+            match registry::reclaim(&n) {
+                Ok(()) => {
+                    println!("reclaimed stale entry for zone {n:?}");
+                    reclaimed += 1;
+                }
+                Err(e) => eprintln!("kryptikd: reclaiming {n:?}: {e}"),
+            }
+        }
+    }
+    let swept = cgroup::sweep_now();
+    if reclaimed == 0 && swept == 0 {
+        println!("nothing to reclaim");
+    } else if swept > 0 {
+        println!("removed {swept} empty zone cgroup(s)");
+    }
+    ExitCode::SUCCESS
 }
 
 fn zone_dir_from(args: &[String]) -> PathBuf {

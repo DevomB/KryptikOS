@@ -191,6 +191,31 @@ fn sweep_stale(base: &Path) {
     }
 }
 
+/// Remove every empty per-zone cgroup, regardless of age. Returns how many.
+///
+/// `gc` is an explicit operator action, so it does not need the age heuristic
+/// that `sweep_stale` uses to avoid racing a concurrent launch - but it is
+/// still safe if one is racing, because `rmdir` on a cgroup with any process
+/// in it fails with EBUSY. The kernel is the interlock, not the timestamp.
+pub fn sweep_now() -> usize {
+    let root = Path::new(CGROUP2_ROOT).join(KRYPTIK_GROUP);
+    let Ok(entries) = fs::read_dir(&root) else { return 0 };
+    let mut n = 0;
+    for e in entries.flatten() {
+        let p = e.path();
+        if !p.is_dir() {
+            continue;
+        }
+        let populated = fs::read_to_string(p.join("cgroup.procs"))
+            .map(|s| s.lines().any(|l| !l.trim().is_empty()))
+            .unwrap_or(true);
+        if !populated && fs::remove_dir(&p).is_ok() {
+            n += 1;
+        }
+    }
+    n
+}
+
 /// One zone's cgroup. Removed when dropped, so an early return cannot leak it.
 #[derive(Debug)]
 pub struct Cgroup {
