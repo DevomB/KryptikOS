@@ -14,6 +14,7 @@ mod caps;
 mod cgroup;
 mod isolate;
 mod landlock;
+mod netlink;
 mod policy;
 mod registry;
 mod rootfs;
