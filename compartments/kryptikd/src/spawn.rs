@@ -36,7 +36,7 @@ use crate::registry;
 use crate::landlock;
 use crate::rootfs;
 use crate::seccomp;
-use crate::zone::{StorageMode, Zone};
+use crate::zone::{NetworkMode, StorageMode, Zone};
 
 #[derive(Debug)]
 pub enum SpawnError {
@@ -354,6 +354,35 @@ pub fn run_in_zone(
         eprintln!(
             "kryptikd: zone {:?}: ephemeral storage is a tmpfs freed on exit; its pages \
              can reach swap, so this is not secure erasure",
+            zone.name
+        );
+    }
+
+    // The same treatment for the other half of a zone definition that this
+    // build cannot yet honour.
+    //
+    // `network.mode = "routed"` means "this zone reaches the outside through
+    // the net zone, filtered". What it gets today is an empty net namespace:
+    // loopback, and zero routes. Measured, not assumed - a routed zone reports
+    //     ifaces: lo
+    //     routes: 0
+    //
+    // This is a WARNING and not a refusal, unlike encrypted storage, and the
+    // difference is which way the gap points. A zone told it has an encrypted
+    // volume would write secrets to a plain directory: the configuration
+    // promises protection the zone does not have, so it must not start. A
+    // routed zone that gets no network has MORE isolation than it asked for,
+    // not less - nothing leaks because of it. What it breaks is the operator's
+    // expectation, and four of the six shipped zones are routed, so refusing
+    // would make the system unusable to say something a sentence can say.
+    //
+    // It goes away when M3 lands, and until then it is said every launch
+    // rather than once in a design document.
+    if zone.network == NetworkMode::Routed {
+        eprintln!(
+            "kryptikd: zone {:?}: network.mode is \"routed\", but routed networking is \
+             NOT IMPLEMENTED: this zone gets an empty net namespace - loopback only, no \
+             routes, no path out. It is isolated, and it is not connected.",
             zone.name
         );
     }
@@ -1021,11 +1050,34 @@ pub fn explain(zone: &Zone, rootfs: &str) -> String {
         .map(|r| format!("{:<12} {}", r.path, landlock::describe_access(r.access)))
         .collect();
 
+    // The network, which this did not mention at all - it listed `net` among
+    // the namespaces and left the reader to guess what was in it. For a routed
+    // zone that guess is wrong in the direction that matters: "routed" reads as
+    // connected, and the zone gets loopback and no routes.
+    let network = match zone.network {
+        NetworkMode::None => "none: an empty net namespace, loopback only. \
+                              Not a firewall rule - there is no interface."
+            .to_string(),
+        NetworkMode::Nic => format!(
+            "nic: this zone is intended to hold the physical interface and the {} bridge.\n\
+             \x20          NOT IMPLEMENTED: no interface is moved into it yet.",
+            zone.bridge.as_deref().unwrap_or("?")
+        ),
+        NetworkMode::Routed => "routed: intended to reach the outside through the nic zone, \
+                                filtered.\n\
+                                \x20          NOT IMPLEMENTED: this zone gets an empty net \
+                                namespace - loopback\n\
+                                \x20          only, no routes, no path out. It is isolated, \
+                                and it is not connected."
+            .to_string(),
+    };
+
     format!(
         "zone       {}\n\
          namespaces {}\n\
          hostname   {}\n\
          {}\n\
+         network    {}\n\
          storage    {}\n\
          root       tmpfs, read-only; {} bound read-only recursively\n\
          /etc       synthesized (passwd, group, hosts, nsswitch) + read-only {}\n\
@@ -1038,6 +1090,7 @@ pub fn explain(zone: &Zone, rootfs: &str) -> String {
         ns.join(", "),
         zone.name,
         data_line,
+        network,
         storage,
         rootfs::SYSTEM_PATHS.join(" "),
         rootfs::ETC_RO_FILES
@@ -1097,6 +1150,19 @@ mod tests {
         // swapped, and an operator reading this is deciding what to put in the
         // zone.
         assert!(e.contains("tmpfs"), "explain must say what ephemeral storage IS: {e}");
+    }
+
+    #[test]
+    fn explain_does_not_promise_routed_networking_it_cannot_deliver() {
+        // A routed zone gets loopback and no routes today. Someone reading
+        // `explain` is deciding what to put in the zone, and "routed" without
+        // qualification reads as "connected, filtered".
+        let e = explain(&z("routed"), "/tmp/t");
+        let honest = e.contains("NOT IMPLEMENTED")
+            || e.contains("not implemented")
+            || e.contains("no path out")
+            || e.contains("loopback");
+        assert!(honest, "explain must not present routed networking as working: {e}");
         assert!(e.contains("swap"), "explain must name the swap caveat: {e}");
         assert!(
             e.contains("NOT secure erasure"),
