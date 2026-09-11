@@ -1219,34 +1219,58 @@ else
         pass "M3a pids_max reaches the kernel: the zone's cgroup has pids.max=$PIDS_LIMIT"
     fi
 
-    # M3b: ENFORCEMENT, which is a different claim from "the number was written",
-    # and one this suite cannot currently make.
+    # M3b: ENFORCEMENT, measured by the refusal rather than by the cgroup.
     #
-    # The zone is asked to start 60 processes against a cap of 32. It reaches a
-    # peak of about 13 and the kernel's refusal counter (pids.events `max`)
-    # stays at 0 - so the forks are stopping for some reason OTHER than the
-    # pids limit, and the limit is never exercised. Until the cause is known,
-    # this is NOT evidence that pids_max would hold under pressure, and it is
-    # NOT evidence that it would fail either.
+    # Three sampling approaches failed here before the cause was understood, and
+    # the cause is worth writing down because it defeats the obvious test.
     #
-    # What is known: the value reaches the cgroup (M3a), memory_max IS enforced
-    # by the kernel (M5), and cleanup works (M7-M9). What is unknown is whether
-    # a zone that genuinely tries to exceed pids_max is stopped.
+    # When a zone hits pids.max, fork(2) returns EAGAIN. The shell reports
+    # "can't fork: Resource temporarily unavailable" and DIES - and that shell
+    # is pid 1 of the zone's pid namespace, so the kernel tears down every
+    # process in the zone with it and the cgroup empties and is removed within
+    # a few milliseconds. Every attempt to read pids.current, pids.peak or
+    # pids.events from outside was therefore racing a cgroup that the system
+    # was correctly reclaiming; readings came back as "2 tasks" or with the
+    # files already gone.
     #
-    # Reported as NOT RUN rather than as a pass, because a limit that has never
-    # been reached is not a limit that has been shown to hold.
-    # Three conditions, and all three are required. A refusal count alone is
-    # not evidence - the previous version accepted "peaked at 2 tasks, refused
-    # 1 fork" against a cap of 32, which cannot happen and was the hierarchical
-    # counter reporting someone else's limit. If the zone never reached the cap
-    # then the cap was never tested, whatever any counter says.
-    if [[ -n "$PIDS_PEAK" ]] && [[ -n "$PIDS_MAXEV" ]] \
-       && (( PIDS_PEAK >= 32 )) && (( PIDS_PEAK <= 32 )) && (( PIDS_MAXEV > 0 )); then
-        pass "M3b pids_max held: the zone reached the cap at $PIDS_PEAK tasks and the kernel refused $PIDS_MAXEV fork(s)"
+    # The refusal itself is not racy. A zone that hits its cap exits non-zero
+    # and says EAGAIN on stderr; a zone that does not, does not. With
+    # RLIMIT_NPROC at ~9836 in the guest and the same payload succeeding in the
+    # roomy zone, an EAGAIN under a pids_max of 32 can only be the pids
+    # controller.
+    fork_storm() { # zone attempts -> sets FS_RC, FS_OUT
+        local zone="$1" attempts="$2"
+        local sh_cmd=(/bin/sh -c)
+        [[ -x /bin/busybox ]] && sh_cmd=(/bin/busybox ash -c)
+        FS_OUT="$(KRYPTIK_EXPERIMENTAL=1 timeout "$TIMEOUT" \
+            "$KRYPTIKD" run "$zone" "${ZARGS[@]}" -- \
+            "${sh_cmd[@]}" "i=0; while [ \$i -lt $attempts ]; do sleep 4 & i=\$((i+1)); done; echo FORKED_ALL; wait" 2>&1)"
+        FS_RC=$?
+    }
+
+    # Positive control FIRST: the identical payload, the identical attempt
+    # count, under a cap it cannot reach. If this does not complete, M3b is
+    # measuring something other than the limit.
+    fork_storm roomy 24
+    if [[ "$FS_OUT" == *FORKED_ALL* ]] && (( FS_RC == 0 )); then
+        pass "M3b1 positive control: 24 forks complete under pids_max=200"
     else
-        skip "M3b pids_max enforcement is UNVERIFIED: peak ${PIDS_PEAK:-?} of 32, ${PIDS_MAXEV:-0} refusal(s) — the cap was never reached"
-        info "     the zone stopped forking before the limit; cause not yet identified"
-        info "     leaf=$PIDS_LEAF cur=$PIDS_CUR peak=$PIDS_PEAK limit=$PIDS_LIMIT events=$PIDS_MAXEV samples=$PIDS_SAMPLES"
+        fail "M3b1 positive control FAILED: 24 forks did not complete under pids_max=200 (exit $FS_RC)"
+        info "output: $(printf '%s' "$FS_OUT" | tr '\n' '|' | cut -c1-220)"
+    fi
+
+    fork_storm pidcapped 60
+    if [[ "$FS_OUT" == *FORKED_ALL* ]]; then
+        fail "M3b pids_max=32 did NOT hold: all 60 forks completed"
+    elif [[ "$FS_OUT" == *"can't fork"* || "$FS_OUT" == *"Resource temporarily unavailable"* \
+            || "$FS_OUT" == *"fork: retry"* || "$FS_OUT" == *"Cannot allocate"* ]]; then
+        pass "M3b pids_max=32 held: the kernel refused a fork with EAGAIN and the zone did not finish"
+    elif (( FS_RC != 0 )); then
+        fail "M3b the zone failed (exit $FS_RC) but not visibly on a fork refusal"
+        info "output: $(printf '%s' "$FS_OUT" | tr '\n' '|' | cut -c1-220)"
+    else
+        fail "M3b the zone exited 0 without completing its forks and without a refusal"
+        info "output: $(printf '%s' "$FS_OUT" | tr '\n' '|' | cut -c1-220)"
     fi
 
     # --- memory_max ---------------------------------------------------------
