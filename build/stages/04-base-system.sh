@@ -1086,6 +1086,17 @@ declare -a PACKAGES=(
     # The option is the one kmod's own error message names. man-db is not
     # built either (it needs gdbm, see the entry below), so this image has
     # no man infrastructure to read them with in any case.
+    # A build-time requirement of the KERNEL, not a shipped convenience:
+    # linux/Kbuild generates include/generated/timeconst.h with `bc -q`, and
+    # arch/x86 asm-offsets depends on that header. Without it stage 05 dies at
+    # "bc: command not found" - after the config step has already succeeded,
+    # which is what made it look like a kernel problem rather than a missing
+    # tool. Placed after flex and bison, which bc needs and which are earlier.
+    #
+    # --with-readline is deliberately NOT passed: the kernel only ever calls
+    # `bc -q` non-interactively, and it would add a dependency to the one
+    # package here that exists solely to compute two constants.
+    "bc"          "native_build bc-${V_BC}.tar.gz bc-${V_BC}"
     "kmod"        "native_build kmod-${V_KMOD}.tar.xz kmod-${V_KMOD} --sysconfdir=/etc --with-openssl --with-xz --with-zstd --with-zlib --disable-manpages"
     "libpipeline" "native_build libpipeline-${V_LIBPIPELINE}.tar.gz libpipeline-${V_LIBPIPELINE}"
     # man-db has NO RECIPE, deliberately, and the stage reports it as an
