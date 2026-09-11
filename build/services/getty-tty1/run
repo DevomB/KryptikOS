@@ -1,0 +1,4 @@
+#!/bin/sh
+# -n -l: skip login(1), which Kryptik does not ship. Same reasoning as
+# /usr/libexec/kryptik-console on the serial side.
+exec /usr/sbin/agetty -n -l /usr/bin/bash --noclear tty1 linux

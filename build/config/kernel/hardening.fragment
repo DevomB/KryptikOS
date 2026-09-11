@@ -86,6 +86,16 @@ CONFIG_SECURITY_YAMA=y
 
 # --- debug interfaces that leak kernel state ---
 # CONFIG_DEBUG_FS is not set
+#
+# ... and the option that was quietly turning it back on. x86_64 defconfig sets
+# CONFIG_BLK_DEV_IO_TRACE=y, which `select`s DEBUG_FS - and a Kconfig select is
+# unconditional, so it overrode the line above without a word. The first kernel
+# built from this fragment had DEBUG_FS=y and nothing noticed, because s_config
+# only ever verified the options that must be ON.
+#
+# blktrace is block-layer tracing. Kryptik has no use for it, and debugfs is a
+# broad window into kernel internals that lockdown does not fully close.
+# CONFIG_BLK_DEV_IO_TRACE is not set
 # (CONFIG_DEBUG_CREDENTIALS removed upstream in 6.5)
 CONFIG_DEBUG_NOTIFIERS=y
 CONFIG_DEBUG_LIST=y
