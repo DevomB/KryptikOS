@@ -105,7 +105,10 @@ mem_gb=$(( $(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0) / 1
 if [[ "$mem_gb" -ge 8 ]]; then ok "memory: ${mem_gb}G"
 else warn "memory: ${mem_gb}G — GCC bootstrap wants 8G+"; WARN=$((WARN + 1)); fi
 
-ok "parallelism: will use -j$(nproc)"
+# Report the number the stages will actually use, not nproc. They cap it
+# by available RAM, and a host check that promises -j8 on a box that will
+# build with -j4 is describing a different build.
+ok "parallelism: will use -j$(kryptik_default_jobs) ($(nproc) cpus, ${mem_gb}G ram)"
 
 # A C++ toolchain that cannot link is a classic silent failure.
 log "Compiler link test"

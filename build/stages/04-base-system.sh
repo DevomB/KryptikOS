@@ -30,10 +30,17 @@ load_config
 load_hardening
 validate_hardening_exceptions
 
+# Contract for the shared step() in build/lib/common.sh. Stage 04 runs
+# inside the chroot and drives the native target compiler.
+STAGE_FILE="${BASH_SOURCE[0]}"
+STAMP_PREFIX="bs-"
+STAMP_CC="gcc"
+KRYPTIK_FAIL_TAIL=40
+
 STAMPS="${KRYPTIK_WORK}/.stamps"
 LOGS="${KRYPTIK_WORK}/logs"
 BUILDDIR="${KRYPTIK_WORK}/build"
-KRYPTIK_JOBS="${KRYPTIK_JOBS:-$(nproc)}"
+KRYPTIK_JOBS="${KRYPTIK_JOBS:-$(kryptik_default_jobs)}"
 export MAKEFLAGS="-j${KRYPTIK_JOBS}"
 umask 022
 
@@ -77,55 +84,17 @@ set_flags_for() {
 
 # --- step machinery ---------------------------------------------------------
 
-step() {
-    local name="$1"; shift
-    if [[ "$REDO" == "$name" ]]; then
-        warn "forcing rebuild of ${name}"
-        rm -f "${STAMPS:?}/bs-${name}"
-    fi
-    if [[ -f "${STAMPS}/bs-${name}" ]]; then
-        dim "  skip ${name} (already built)"
-        return 0
-    fi
-    log "${name}"
-    set_flags_for "$name"
-    local logfile="${LOGS}/bs-${name}.log"
-    local start=$SECONDS
-    # Capture the subshell's status WITHOUT putting it in a condition.
-    #
-    # `( set -e; "$@" ) || rc=$?` looks like it fixes this and does not: the
-    # trailing || still suppresses errexit inside the subshell, even though the
-    # subshell sets it explicitly. Verified - a recipe of `false` followed by a
-    # succeeding command runs to completion and returns 0.
-    #
-    # `if ! ( ... ); then` is broken the same way. Only disabling errexit
-    # around a bare subshell, then reading $?, actually works.
-    #
-    # tools/test-step-errexit.sh is the regression test for this. It has caught
-    # the bug twice now: once as `if "$@"; then`, once as the || form above.
-    local rc=0
-    set +e
-    ( set -Eeuo pipefail; "$@" ) > "$logfile" 2>&1
-    rc=$?
-    set -e
-    if [[ "$rc" -eq 0 ]]; then
-        touch "${STAMPS}/bs-${name}"
-        ok "${name} ($(( SECONDS - start ))s)"
-    else
-        err "${name} failed. Last 40 lines of ${logfile}:"
-        tail -40 "$logfile" >&2
-        echo >&2
-        err "Full log: ${logfile}"
-        err ""
-        err "Check the actual error before assuming it is the hardening flags."
-        err "The first stage 04 failure looked like one and was not - it was a"
-        err "missing native glibc and no generated locales."
-        err ""
-        err "If it IS a hardening incompatibility, add an entry to"
-        err "build/config/hardening-exceptions.txt WITH a justification, so"
-        err "only that flag is dropped and only for that package."
-        die "stage 04 aborted at ${name}"
-    fi
+
+# The shared step() calls this after printing the tail of a failed log.
+step_failure_hint() {
+    err ""
+    err "Check the actual error before assuming it is the hardening flags."
+    err "The first stage 04 failure looked like one and was not - it was a"
+    err "missing native glibc and no generated locales."
+    err ""
+    err "If it IS a hardening incompatibility, add an entry to"
+    err "build/config/hardening-exceptions.txt WITH a justification, so"
+    err "only that flag is dropped and only for that package."
 }
 
 unpack() {
@@ -532,19 +501,10 @@ dim "  LDFLAGS: ${LDFLAGS}"
 dim "  jobs   : ${KRYPTIK_JOBS}"
 echo
 
-# Refuse to run outside the chroot. Building the base system against the host
-# would produce packages linked to host libraries that then get installed into
-# the sysroot - broken in a way that surfaces much later.
-if [[ ! -f /etc/kryptik/inside-chroot ]] && [[ "${KRYPTIK_ALLOW_UNCHROOTED:-0}" != "1" ]]; then
-    die "stage 04 must run INSIDE the chroot.
-
-  sudo build/stages/03-chroot-prep.sh mount
-  sudo build/stages/03-chroot-prep.sh enter
-  # then, inside:
-  build/stages/04-base-system.sh
-
-Set KRYPTIK_ALLOW_UNCHROOTED=1 only if you know exactly why."
-fi
+# Refuse to run outside the chroot. Building the base system against the
+# host would produce packages linked to host libraries that then get
+# installed into the sysroot - broken in a way that surfaces much later.
+require_inside_chroot "stage 04" "system"
 
 unwired=0
 for ((i = 0; i < ${#PACKAGES[@]}; i += 2)); do
