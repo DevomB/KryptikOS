@@ -368,6 +368,38 @@ if [[ -n "$ZONES" && -d "$ZONES" ]]; then
     cp -a "$ZONES/." "$ROOT/etc/kryptik/zones/"
     note "zones: $(find "$ROOT/etc/kryptik/zones" -name '*.toml' | wc -l) definition(s)"
 
+    # THE BINARY MUST BE ABLE TO READ THE ZONES IT SHIPS WITH.
+    #
+    # These two come from different places - the binary from a cargo build, the
+    # zone files from the repository - and nothing tied them together. A
+    # kryptikd built before a zone-format change ships happily beside zone files
+    # that use it, and the first sign is a VM that booted 25 minutes ago
+    # reporting
+    #
+    #     zone configuration error: unknown key "identity.uid_base"
+    #
+    # with every zone check failing for a reason that has nothing to do with
+    # the code under test. It costs one exec to ask, here, where the answer is
+    # still cheap.
+    #
+    # `check` also probes kernel features and will report some as unavailable on
+    # a build host, so only the zone-parsing half is fatal: the zone section of
+    # its output must not contain an error.
+    if ! zc="$("$ROOT/usr/bin/kryptikd" check --zones "$ROOT/etc/kryptik/zones" 2>&1)"; then
+        : # a non-zero exit may be a kernel-feature gap on the build host
+    fi
+    if printf '%s' "$zc" | grep -qiE 'zone configuration error|unknown key|could not read'; then
+        printf '%s\n' "$zc" | sed -n '/^zones in/,$p' | sed 's/^/    /' >&2
+        die "the kryptikd being installed cannot parse the zone files being installed.
+
+ They come from different places - the binary from cargo, the zones from the
+ repository - so one can be older than the other. Rebuild kryptikd against this
+ checkout:
+
+     (cd compartments/kryptikd && cargo build --release --target x86_64-unknown-linux-musl)"
+    fi
+    note "zone files parse with the kryptikd being installed"
+
     # The command a person types. Shipped next to kryptikd because an image
     # where the only interface is the daemon's argument list is an image nobody
     # can use, and because the VM should exercise what users will actually run
