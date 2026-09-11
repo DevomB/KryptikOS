@@ -179,12 +179,44 @@ head_ "Requirement 3 — cannot reach the physical NIC"
 
 # Probe the network namespace itself, not /sys - see the sysfs check below for
 # why those two disagree.
-ifaces="$(unshare "${ZONE_UNSHARE[@]}" bash -c 'ip -o link show 2>/dev/null | sed "s/^[0-9]*: //; s/:.*//"' 2>/dev/null | tr '\n' ' ' | xargs)"
-if [[ "$ifaces" == "lo" ]]; then
-    pass "zone network namespace contains only loopback (found: ${ifaces})"
+# The same list as launcher.sh, for the same reason, and it must stay the same:
+# devices the kernel puts in every netns, which the zone neither asked for nor
+# can remove. See the long comment there. The check below is not "is this list
+# exactly lo" - it is "is there anything here the kernel did not force, and can
+# anything here actually be used".
+KERNEL_FALLBACK_IFS="sit0"
+
+ifaces="$(unshare "${ZONE_UNSHARE[@]}" bash -c 'ip -o link show 2>/dev/null | sed "s/^[0-9]*: //; s/[:@].*//"' 2>/dev/null | tr '\n' ' ' | xargs)"
+adv_extra=""; adv_fallback=""
+for d in $ifaces; do
+    [[ "$d" == "lo" ]] && continue
+    if [[ "$d" =~ ^(${KERNEL_FALLBACK_IFS// /|})$ ]]; then adv_fallback+="$d "; else adv_extra+="$d "; fi
+done
+if [[ -n "$adv_extra" ]]; then
+    fail "zone network namespace has an interface nothing asked for: $adv_extra"
+elif [[ -n "$adv_fallback" ]]; then
+    pass "zone network namespace has loopback and only kernel fallback devices ($adv_fallback)"
 else
-    fail "zone network namespace has interfaces: ${ifaces:-none}"
+    pass "zone network namespace contains only loopback (found: ${ifaces})"
 fi
+
+# Whose fix is it? If a fallback device can be deleted from inside the
+# namespace, then kryptikd should be deleting it during zone setup and this is
+# a defect here - not something to ask the kernel build for. Measured, because
+# reading the driver and believing it is how the wrong person ends up owning a
+# bug. Each unshare makes a FRESH netns, so the delete and the listing below
+# happen in the same one.
+for d in $adv_fallback; do
+    delmsg="$(unshare "${ZONE_UNSHARE[@]}" bash -c "ip link del $d 2>&1 | head -1" 2>/dev/null)"
+    after="$(unshare "${ZONE_UNSHARE[@]}" bash -c "ip link del $d >/dev/null 2>&1; ip -o link show 2>/dev/null | sed 's/^[0-9]*: //; s/[:@].*//'" 2>/dev/null | tr '\n' ' ' | xargs)"
+    if [[ " $after " == *" $d "* ]]; then
+        pass "$d survives deletion in its own netns, so removing it is a kernel config item (B-6)"
+        info "ip link del $d said: ${delmsg:-<nothing>}"
+    else
+        fail "$d CAN be deleted inside a zone netns - kryptikd should delete it, not wait for a kernel rebuild"
+        info "after the delete the namespace held: ${after:-none}"
+    fi
+done
 
 # sysfs is NOT namespaced by unshare alone. Without remounting it the zone reads
 # the HOST's /sys/class/net and can enumerate every interface on the machine. It
@@ -192,9 +224,16 @@ fi
 # compromised `untrusted` zone should not get for free.
 sys_before="$(unshare "${ZONE_UNSHARE[@]}" bash -c 'ls /sys/class/net 2>/dev/null' 2>/dev/null | tr '\n' ' ' | xargs)"
 sys_after="$(unshare "${ZONE_UNSHARE[@]}" bash -c 'mount -t sysfs sysfs /sys 2>/dev/null; ls /sys/class/net 2>/dev/null' 2>/dev/null | tr '\n' ' ' | xargs)"
-if [[ "$sys_after" == "lo" ]]; then
-    pass "after remounting sysfs, /sys/class/net shows only lo"
-    if [[ "$sys_before" != "lo" ]]; then
+# Same treatment: what matters is that the remount stops the zone seeing the
+# HOST's devices, not that the result is the single string "lo".
+sys_extra=""
+for d in $sys_after; do
+    [[ "$d" == "lo" ]] && continue
+    [[ "$d" =~ ^(${KERNEL_FALLBACK_IFS// /|})$ ]] || sys_extra+="$d "
+done
+if [[ -z "$sys_extra" ]]; then
+    pass "after remounting sysfs, /sys/class/net shows only lo and kernel fallback devices (${sys_after})"
+    if [[ "$sys_before" != "$sys_after" ]]; then
         info "without the remount the zone would enumerate: ${sys_before}"
         info "kryptikd MUST remount sysfs per zone - isolate.rs::mount_sysfs"
     fi

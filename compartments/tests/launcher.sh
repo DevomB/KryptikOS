@@ -1027,8 +1027,55 @@ head_ "H. Network isolation, without overclaiming  [unpriv]"
 # bridge or route is created anywhere in the tree - see the explicit NOT RUN
 # entry at the end of this file rather than a check that would quietly pass.
 
-zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(cat /proc/net/dev | tail -n +3 | awk '{print \$1}' | tr -d ':' | sort | tr '\n' ',')"
-probe "H1  a mode=none zone sees loopback and nothing else" "lo,"
+# Devices the KERNEL creates in every new network namespace. Nothing in the
+# zone asked for them, and nothing in the zone can remove them - so "the
+# namespace contains only lo" is not a promise kryptikd is able to keep. What
+# it can keep, and what the promise is actually about, is that none of them can
+# carry traffic. That is what H1 checks now: the names may include these and
+# ONLY these, and every device other than loopback must be DOWN with no
+# address. That is strictly more than the old check, which looked at names and
+# never at state.
+#
+#   sit0  CONFIG_IPV6_SIT=y makes the SIT driver register an IPv6-in-IPv4
+#         fallback tunnel in each netns. Asked for as CONFIG_IPV6_SIT=n in
+#         build/REQUEST.md B-6; when that lands the device stops appearing and
+#         this list stops mattering, with no edit here.
+#
+# The same list is in adversarial.sh and the two must agree. They run in the
+# same boot, so a divergence shows up immediately as one suite passing where
+# the other fails on identical evidence.
+KERNEL_FALLBACK_IFS="sit0"
+FALLBACK_RE="lo|${KERNEL_FALLBACK_IFS// /|}"
+
+zrun alpha -- /bin/sh -c "$PRO ifs=\$(sed 1,2d /proc/net/dev | sed 's/:.*//' | tr -d ' ' | sort | tr '\n' ','); up=''; for f in /sys/class/net/*/flags; do d=\${f%/flags}; d=\${d##*/}; fl=\$(cat \"\$f\" 2>/dev/null || echo 0); [ \$((fl & 1)) -eq 1 ] && up=\"\$up\$d,\"; done; v6=\$(awk '{print \$NF}' /proc/net/if_inet6 2>/dev/null | sort -u | tr '\n' ','); echo PROBE=if:\$ifs~up:\$up~v6:\$v6"
+if want_launch "H1  a mode=none zone has loopback and nothing that can carry traffic"; then
+    h_got="$(printf '%s\n' "$ZOUT" | sed -n 's/^PROBE=//p' | head -1)"
+    h_if="${h_got#if:}";   h_if="${h_if%%~*}"
+    h_up="${h_got#*~up:}"; h_up="${h_up%%~*}"
+    h_v6="${h_got##*~v6:}"
+    h_extra=""; h_live=""; h_others=""
+    for d in ${h_if//,/ }; do
+        [[ -z "$d" || "$d" == "lo" ]] && continue
+        h_others+="$d "
+        [[ "$d" =~ ^(${KERNEL_FALLBACK_IFS// /|})$ ]] || h_extra+="$d "
+    done
+    # UP, or carrying an address: either one makes a device able to do
+    # something, which is the property the promise is about.
+    for d in ${h_up//,/ } ${h_v6//,/ }; do
+        [[ -z "$d" || "$d" == "lo" ]] && continue
+        h_live+="$d "
+    done
+    if [[ -n "$h_extra" ]]; then
+        fail "H1  a mode=none zone has a network device nothing asked for: $h_extra"
+        info "full view: $h_got"
+    elif [[ -n "$h_live" ]]; then
+        fail "H1  a device in a mode=none zone is UP or has an address: $h_live"
+        info "full view: $h_got"
+    else
+        pass "H1  a mode=none zone has loopback and nothing that can carry traffic"
+        [[ -n "$h_others" ]] && info "kernel fallback devices, present and inert: $h_others"
+    fi
+fi
 
 zrun alpha -- /bin/sh -c "$PRO if [ -s /proc/net/route ] && [ \$(tail -n +2 /proc/net/route | wc -l) -gt 0 ]; then echo PROBE=ROUTES; else echo PROBE=none; fi"
 probe "H2  a mode=none zone has no routes at all" "none"
@@ -2032,7 +2079,11 @@ if (( PRIVILEGED == 1 )) && [[ "${KRYPTIK_VM_DISPOSABLE:-}" == "1" ]]; then
 
         # What a routed zone actually gets. Counted from /proc/net/dev, which
         # needs no iproute2 in the image.
-        zrun router -- /bin/sh -c "$PRO n=\$(sed 1,2d /proc/net/dev | grep -vc ' *lo:'); r=\$(sed 1d /proc/net/route | wc -l); echo PROBE=if=\$n,routes=\$r"
+        # Excluding the kernel fallback devices is not cosmetic here: this
+        # count is what NETR3 calls "an interface besides loopback", and on a
+        # kernel with SIT the 1 it reported could have been sit0 rather than
+        # the veth routing was supposed to give this zone.
+        zrun router -- /bin/sh -c "$PRO n=\$(sed 1,2d /proc/net/dev | sed 's/:.*//' | tr -d ' ' | grep -vxE '$FALLBACK_RE' | wc -l); r=\$(sed 1d /proc/net/route | wc -l); echo PROBE=if=\$n,routes=\$r"
         if want_launch "NETR2 a routed zone starts while the nic zone is up"; then
             got="$(printf '%s\n' "$ZOUT" | sed -n 's/^PROBE=//p' | head -1)"
             ifn="${got#if=}"; ifn="${ifn%%,*}"
@@ -2053,7 +2104,7 @@ if (( PRIVILEGED == 1 )) && [[ "${KRYPTIK_VM_DISPOSABLE:-}" == "1" ]]; then
         # zone still up, must still see only loopback - otherwise NETR3 is
         # measuring something every zone gets rather than something routing
         # gave this one.
-        zrun alpha -- /bin/sh -c "$PRO n=\$(sed 1,2d /proc/net/dev | grep -vc ' *lo:'); echo PROBE=\$n"
+        zrun alpha -- /bin/sh -c "$PRO n=\$(sed 1,2d /proc/net/dev | sed 's/:.*//' | tr -d ' ' | grep -vxE '$FALLBACK_RE' | wc -l); echo PROBE=\$n"
         probe "NETR5 control: an airgapped zone still sees only loopback while the nic zone runs" "0"
     fi
 
