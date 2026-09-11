@@ -175,7 +175,7 @@ $zones"
     while IFS= read -r z; do
         [[ -n "$z" ]] || continue
         desc="$("$KRYPTIKD" show "$z" --zones "$ZONES_DIR" 2>/dev/null \
-                | sed -n 's/^ *description *[:=] *//p' | head -1)"
+                | sed -n 's/^description  *//p' | head -1)"
         printf '%-16s %-8s %s\n' "$z" "$(running_state "$z")" "${desc:-}"
     done <<< "$zones"
 }
