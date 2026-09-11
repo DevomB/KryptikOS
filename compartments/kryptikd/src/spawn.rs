@@ -34,6 +34,7 @@ use crate::cgroup;
 use crate::isolate;
 use crate::registry;
 use crate::landlock;
+use crate::netzone;
 use crate::policy;
 use crate::rootfs;
 use crate::seccomp;
@@ -594,6 +595,39 @@ pub fn run_in_zone(
         )));
     }
 
+    // The zone's network namespace now exists and nothing runs in it. A root
+    // launch builds the topology from OUTSIDE, here, before the zone becomes
+    // anything: the nic zone takes the physical interface and gets the
+    // bridge; a routed zone gets an isolated port on that bridge and an eth0
+    // addressed from its identity. A failure to attach is not fatal - the
+    // zone starts with loopback only, fail-closed - except for the nic zone,
+    // where a NIC that could not be moved must not be left half-configured.
+    if id.privileged && zone.network != crate::zone::NetworkMode::None {
+        match crate::netlink::open_netns_of(pid) {
+            Ok(ns) => {
+                let r = match zone.network {
+                    crate::zone::NetworkMode::Nic => netzone::plumb_nic_zone(zone, ns),
+                    crate::zone::NetworkMode::Routed => netzone::plumb_routed_zone(zone, ns),
+                    crate::zone::NetworkMode::None => Ok(()),
+                };
+                unsafe { libc::close(ns) };
+                match (r, zone.network) {
+                    (Ok(()), _) => {}
+                    (Err(e), crate::zone::NetworkMode::Nic) => {
+                        mapped.close_write();
+                        let _ = wait_for(pid);
+                        return Err(SpawnError::Setup(format!("nic zone network: {e}")));
+                    }
+                    (Err(e), _) => eprintln!(
+                        "kryptikd: zone {:?} has no network path: {e}",
+                        zone.name
+                    ),
+                }
+            }
+            Err(e) => eprintln!("kryptikd: zone {:?}: cannot open its netns: {e}", zone.name),
+        }
+    }
+
     // Map the child's root to the zone identity. This is what makes "root
     // inside the zone" mean root in a namespace that owns nothing outside it.
     if let Err(e) = isolate::write_id_maps(pid, id.uid, id.gid, id.privileged) {
@@ -1031,6 +1065,7 @@ pub fn zone_environment(zone: &Zone, home: &str, caller: &[(String, String)]) ->
 
 /// Describe what starting this zone would do, without doing it.
 pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String {
+    let network_line = netzone::plan(zone, unsafe { libc::geteuid() } == 0);
     let policy_line = match &zone.seccomp {
         None => "policy     base only".to_string(),
         Some(rel) => match policy::load(&policy::resolve(zones_dir, rel)) {
@@ -1113,6 +1148,7 @@ pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String
          env        {} + passthrough of {}\n\
          caps       bounding set dropped to CAP_NET_BIND_SERVICE only\n\
          seccomp    default-deny, {} syscalls allowed, argument rules on {:?}\n\
+         {}\n\
          {}",
         zone.name,
         ns.join(", "),
@@ -1135,6 +1171,7 @@ pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String
         seccomp::BASE_ALLOWLIST.len(),
         seccomp::ARG_RULES,
         policy_line,
+        network_line,
     )
 }
 
