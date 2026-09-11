@@ -101,6 +101,41 @@ zone nopolicy \
     '[policy]' 'seccomp = "policy/absent.seccomp"' \
     '[ui]' 'border_color = "#333333"'
 
+# narrowed: a zone whose Landlock policy file grants read everywhere and
+# write only in /tmp and /dev - so its own HOME, which the base rules make
+# writable, becomes read-only. The second layer can only subtract.
+zone narrowed \
+    '[zone]' 'name = "narrowed"' \
+    '[network]' 'mode = "none"' \
+    '[storage]' 'mode = "ephemeral"' 'size = "64M"' \
+    '[policy]' 'landlock = "policy/narrowed.landlock"' \
+    '[ui]' 'border_color = "#778899"'
+printf '%s\n' \
+    '# Synthetic: read anywhere, write only where a scratch file belongs.' \
+    'read-exec  /' \
+    'read-write /tmp' \
+    'read-write /dev' > "$F/zones/policy/narrowed.landlock"
+
+# badfs: a Landlock policy the parser must refuse. There is no deny
+# directive, because Landlock grants rather than subtracts.
+zone badfs \
+    '[zone]' 'name = "badfs"' \
+    '[network]' 'mode = "none"' \
+    '[storage]' 'mode = "ephemeral"' 'size = "64M"' \
+    '[policy]' 'landlock = "policy/badfs.landlock"' \
+    '[ui]' 'border_color = "#998877"'
+printf '%s\n' 'deny /tmp' > "$F/zones/policy/badfs.landlock"
+
+# relfs: a Landlock policy naming a relative path, which would be resolved
+# against whatever the launcher's cwd happened to be.
+zone relfs \
+    '[zone]' 'name = "relfs"' \
+    '[network]' 'mode = "none"' \
+    '[storage]' 'mode = "ephemeral"' 'size = "64M"' \
+    '[policy]' 'landlock = "policy/relfs.landlock"' \
+    '[ui]' 'border_color = "#887799"'
+printf '%s\n' 'read-exec /' 'read-write tmp' > "$F/zones/policy/relfs.landlock"
+
 # badpolicy: a policy file that tries to re-allow something on the denied
 # list. The parser must refuse it.
 zone badpolicy \
