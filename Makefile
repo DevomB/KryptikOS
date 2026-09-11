@@ -89,7 +89,7 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
 .PHONY: help check check-kernel-eol sources lock verify verify-provenance \
         test-harness test-hardening test-artifacts audit-artifacts \
         audit-artifacts-strict manifest verify-manifest test-manifest \
-        test-s6-init smoke-userspace test-services image image-boot \
+        test-s6-init smoke-userspace test-services test-libc-unwind image image-boot \
         image-smoke \
         validate-kernel validate-kernel-hardened \
         toolchain temp-tools chroot chroot-enter chroot-umount chroot-status \
@@ -137,6 +137,7 @@ help:
 	@echo "  make test-s6-init      check stage 04 produces a bootable s6 image"
 	@echo "  make smoke-userspace   RUN the built userland in the chroot (needs root)"
 	@echo "  make test-services     validate the s6-rc service tree"
+	@echo "  make test-libc-unwind  prove the target libc can unwind (needs root)"
 	@echo "  make image KERNEL=...  build a bootable disk image from the sysroot"
 	@echo "  make image-boot KERNEL=...  boot that image on a serial console"
 	@echo "  make audit       run security audits over the build tree"
@@ -299,6 +300,11 @@ test-manifest:
 # execline `up`, a script installed into every image that nothing runs.
 test-services:
 	@"$(TOOLS)"/test-services.sh
+
+# Runs inside the chroot, because it is the TARGET system's C library that has
+# to be able to unwind - not the build host's.
+test-libc-unwind:
+	@$(CHROOT_RUN) run /kryptik/tools/test-libc-unwind.sh
 
 # Build a bootable disk image from a finished sysroot and a kernel.
 #   make image KERNEL=... IMAGE=...
