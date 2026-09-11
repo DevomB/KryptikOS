@@ -15,6 +15,7 @@ mod cgroup;
 mod isolate;
 mod landlock;
 mod netlink;
+mod netzone;
 mod policy;
 mod registry;
 mod rootfs;

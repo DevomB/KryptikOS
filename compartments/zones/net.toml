@@ -13,6 +13,9 @@ description = "Sole holder of a physical network route."
 mode = "nic"
 # Zones with mode = "routed" get a veth into this bridge.
 bridge = "kryptik0"
+# The physical interface this zone takes out of zone 0 when it starts. Named
+# explicitly: kryptikd never guesses which NIC to move.
+nic = "eth0"
 
 [storage]
 mode = "ephemeral"

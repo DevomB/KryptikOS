@@ -69,6 +69,9 @@ pub struct Zone {
     pub description: String,
     pub network: NetworkMode,
     pub bridge: Option<String>,
+    /// The physical interface a `nic` zone takes ownership of (`[network]
+    /// nic = "eth0"`). Required for mode = "nic", refused otherwise.
+    pub nic: Option<String>,
     pub storage: StorageMode,
     pub volume: Option<String>,
     pub seccomp: Option<String>,
@@ -126,7 +129,7 @@ impl fmt::Display for ZoneError {
 /// parsed and ignored is a setting the operator believes is in force.
 pub const KNOWN_KEYS: &[&str] = &[
     "zone.name", "zone.description",
-    "network.mode", "network.bridge",
+    "network.mode", "network.bridge", "network.nic",
     "storage.mode", "storage.volume", "storage.size", "storage.unlock", "storage.wipe_keys",
     "policy.seccomp", "policy.landlock",
     "limits.memory_max", "limits.pids_max",
@@ -386,7 +389,20 @@ impl Zone {
             }
         };
 
+        let nic = get("network.nic");
+        if let Some(n) = &nic {
+            if n.is_empty() || n.len() > 15 || n.contains('/') || n.contains(char::is_whitespace) {
+                return Err(bad("network.nic", n, "an interface name of at most 15 characters"));
+            }
+            if network != NetworkMode::Nic {
+                return Err(ZoneError::Invalid(format!(
+                    "zone {name:?}: network.nic is only meaningful for network.mode = \"nic\""
+                )));
+            }
+        }
+
         let zone = Zone {
+            nic,
             uid_base,
             description: get("zone.description").unwrap_or_default(),
             bridge: get("network.bridge"),
@@ -648,6 +664,17 @@ border_color = "#000000"
         let bad = VAULT.replace("mode = \"none\"", "mode = \"nic\"");
         let err = Zone::from_str(&bad).unwrap_err();
         assert!(format!("{err}").contains("network.bridge"), "got: {err}");
+    }
+
+    #[test]
+    fn only_the_nic_zone_may_name_an_interface_and_it_must_be_a_name() {
+        let ok = VAULT.replace("mode = \"none\"", "mode = \"nic\"\nbridge = \"kryptik0\"\nnic = \"eth0\"");
+        assert_eq!(Zone::from_str(&ok).unwrap().nic.as_deref(), Some("eth0"));
+        let bad = VAULT.replace("mode = \"none\"", "mode = \"none\"\nnic = \"eth0\"");
+        let err = Zone::from_str(&bad).unwrap_err();
+        assert!(format!("{err}").contains("only meaningful"), "got: {err}");
+        let bad = VAULT.replace("mode = \"none\"", "mode = \"nic\"\nbridge = \"kryptik0\"\nnic = \"averylongname123\"");
+        assert!(Zone::from_str(&bad).is_err());
     }
 
     #[test]
