@@ -80,7 +80,8 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
 
 .PHONY: help check check-kernel-eol sources lock verify verify-provenance \
         test-harness test-hardening test-artifacts audit-artifacts \
-        audit-artifacts-strict validate-kernel validate-kernel-hardened \
+        audit-artifacts-strict manifest verify-manifest test-manifest \
+        validate-kernel validate-kernel-hardened \
         toolchain temp-tools chroot chroot-enter chroot-umount chroot-status \
         system kernel iso audit zones zone-test paths reset-stamps \
         sysroot-ready \
@@ -120,6 +121,9 @@ help:
 	@echo "  make test-artifacts    self-test the artifact auditor (positive controls)"
 	@echo "  make audit-artifacts   audit the ELF objects the build actually produced"
 	@echo "  make audit-artifacts-strict   ... and fail on reported findings too"
+	@echo "  make manifest          record what was built and what built it"
+	@echo "  make verify-manifest   check the tree still matches that record"
+	@echo "  make test-manifest     self-test the manifest tool (positive controls)"
 	@echo "  make audit       run security audits over the build tree"
 	@echo "  make paths       print the resolved build contract"
 	@echo "  make reset-stamps  archive all build stamps (does not delete)"
@@ -262,6 +266,20 @@ audit-artifacts:
 
 audit-artifacts-strict:
 	@"$(TOOLS)"/check-artifact-hardening.sh "$(KRYPTIK_WORK)/sysroot" --strict
+
+test-manifest:
+	@"$(TOOLS)"/test-artifact-manifest.sh
+
+# An identity record for the tree, and for what produced it. Answers the
+# three questions you cannot answer by looking at a sysroot: is this the
+# one you tested, what went into it, and has anything touched it since.
+manifest:
+	@"$(TOOLS)"/artifact-manifest.sh --root "$(KRYPTIK_WORK)/sysroot" \
+	                                  --out  "$(KRYPTIK_WORK)/artifact-manifest.txt"
+
+verify-manifest:
+	@"$(TOOLS)"/artifact-manifest.sh --root "$(KRYPTIK_WORK)/sysroot" \
+	                                  --verify "$(KRYPTIK_WORK)/artifact-manifest.txt"
 
 audit:
 	@"$(TOOLS)"/audit-setuid.sh
