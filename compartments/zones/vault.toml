@@ -18,7 +18,6 @@ wipe_keys = "on-stop"
 
 [policy]
 seccomp  = "policy/vault.seccomp"
-landlock = "policy/vault.landlock"
 
 [limits]
 memory_max = "2G"

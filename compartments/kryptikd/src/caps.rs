@@ -46,6 +46,14 @@ use std::io;
 #[allow(dead_code)]
 mod cap {
     use libc::c_int;
+    pub const CHOWN: c_int = 0;
+    pub const DAC_READ_SEARCH: c_int = 2;
+    pub const FOWNER: c_int = 3;
+    pub const FSETID: c_int = 4;
+    pub const KILL: c_int = 5;
+    pub const NET_BROADCAST: c_int = 11;
+    pub const IPC_LOCK: c_int = 14;
+    pub const SYS_NICE: c_int = 23;
     pub const DAC_OVERRIDE: c_int = 1;
     pub const SETGID: c_int = 6;
     pub const SETUID: c_int = 7;
@@ -66,6 +74,42 @@ mod cap {
 /// kryptikd builds, so the port number is not a boundary and pretending it is
 /// would break ordinary software for no gain.
 pub const KEEP: libc::c_int = cap::NET_BIND_SERVICE;
+
+/// Capabilities a zone POLICY may keep, by name (`keep-capability CAP_X`).
+///
+/// A short list on purpose: each is scoped to something the zone already
+/// owns (its network namespace, its own processes, its own files) and none
+/// reaches the host. `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE`, `CAP_DAC_OVERRIDE`,
+/// `CAP_SETUID`/`SETGID`, `CAP_MKNOD`, `CAP_SYS_MODULE` and everything else
+/// cannot be kept by writing a line in a file.
+pub const KEEPABLE: &[libc::c_int] = &[
+    cap::NET_BIND_SERVICE, cap::NET_ADMIN, cap::NET_RAW, cap::NET_BROADCAST,
+    cap::SYS_NICE, cap::IPC_LOCK, cap::KILL, cap::CHOWN, cap::FOWNER, cap::FSETID,
+    cap::DAC_READ_SEARCH,
+];
+
+/// Every capability number the kernel defines today, by name.
+pub const CAP_NAMES: &[(&str, libc::c_int)] = &[
+    ("CAP_CHOWN", 0), ("CAP_DAC_OVERRIDE", 1), ("CAP_DAC_READ_SEARCH", 2), ("CAP_FOWNER", 3),
+    ("CAP_FSETID", 4), ("CAP_KILL", 5), ("CAP_SETGID", 6), ("CAP_SETUID", 7), ("CAP_SETPCAP", 8),
+    ("CAP_LINUX_IMMUTABLE", 9), ("CAP_NET_BIND_SERVICE", 10), ("CAP_NET_BROADCAST", 11),
+    ("CAP_NET_ADMIN", 12), ("CAP_NET_RAW", 13), ("CAP_IPC_LOCK", 14), ("CAP_IPC_OWNER", 15),
+    ("CAP_SYS_MODULE", 16), ("CAP_SYS_RAWIO", 17), ("CAP_SYS_CHROOT", 18), ("CAP_SYS_PTRACE", 19),
+    ("CAP_SYS_PACCT", 20), ("CAP_SYS_ADMIN", 21), ("CAP_SYS_BOOT", 22), ("CAP_SYS_NICE", 23),
+    ("CAP_SYS_RESOURCE", 24), ("CAP_SYS_TIME", 25), ("CAP_SYS_TTY_CONFIG", 26), ("CAP_MKNOD", 27),
+    ("CAP_LEASE", 28), ("CAP_AUDIT_WRITE", 29), ("CAP_AUDIT_CONTROL", 30), ("CAP_SETFCAP", 31),
+    ("CAP_MAC_OVERRIDE", 32), ("CAP_MAC_ADMIN", 33), ("CAP_SYSLOG", 34), ("CAP_WAKE_ALARM", 35),
+    ("CAP_BLOCK_SUSPEND", 36), ("CAP_AUDIT_READ", 37), ("CAP_PERFMON", 38), ("CAP_BPF", 39),
+    ("CAP_CHECKPOINT_RESTORE", 40),
+];
+
+pub fn cap_by_name(name: &str) -> Option<libc::c_int> {
+    CAP_NAMES.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
+}
+
+pub fn cap_name(cap: libc::c_int) -> &'static str {
+    CAP_NAMES.iter().find(|(_, v)| *v == cap).map(|(n, _)| *n).unwrap_or("CAP_?")
+}
 
 /// The highest capability this kernel knows about.
 ///
@@ -110,9 +154,16 @@ impl std::fmt::Display for CapError {
 /// operator asked for, which is the failure mode this project is built to
 /// avoid.
 pub fn drop_bounding_set() -> Result<(), CapError> {
+    drop_bounding_set_except(&[KEEP])
+}
+
+/// Drop every capability from the bounding set except those in `keep`.
+/// `KEEP` is always kept; a zone policy can add from `KEEPABLE` only, and
+/// that is enforced here as well as in the policy parser.
+pub fn drop_bounding_set_except(keep: &[libc::c_int]) -> Result<(), CapError> {
     let last = last_cap();
     for cap in 0..=last {
-        if cap == KEEP {
+        if cap == KEEP || (keep.contains(&cap) && KEEPABLE.contains(&cap)) {
             continue;
         }
         // SAFETY: prctl with PR_CAPBSET_DROP takes an integer and touches no

@@ -15,7 +15,6 @@ wipe_keys = "on-stop"
 
 [policy]
 seccomp  = "policy/dev.seccomp"
-landlock = "policy/dev.landlock"
 
 [limits]
 memory_max = "12G"

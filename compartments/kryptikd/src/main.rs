@@ -14,6 +14,7 @@ mod caps;
 mod cgroup;
 mod isolate;
 mod landlock;
+mod policy;
 mod registry;
 mod rootfs;
 mod seccomp;
@@ -525,6 +526,23 @@ fn cmd_check(dir: &Path, target: bool) -> ExitCode {
                     None => "no [identity]".to_string(),
                 };
                 println!("  {:<10} {:<20} {:<16} {}", z.name, net, ident, z.border_color);
+                if let Some(rel) = &z.seccomp {
+                    match policy::load(&policy::resolve(dir, rel)) {
+                        Ok(p) => {
+                            println!("             policy {rel}: {}", p.describe());
+                            for w in &p.warnings {
+                                println!("             note: {w}");
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("             policy {rel}: {e}");
+                            failed = true;
+                        }
+                    }
+                }
+                if z.landlock.is_some() {
+                    println!("             landlock policy file: not applied (unimplemented; refused without the override)");
+                }
                 if target && z.uid_base.is_none() {
                     eprintln!(
                         "  --target: zone {:?} declares no [identity] uid_base; a root launch cannot start it",
@@ -651,7 +669,7 @@ fn cmd_explain(dir: &Path, name: &str, args: &[String]) -> ExitCode {
     };
     let base = rootfs_base_from(args);
     let rootfs = spawn::zone_rootfs(&zone, &base);
-    println!("{}", spawn::explain(&zone, &rootfs));
+    println!("{}", spawn::explain(&zone, &rootfs, dir));
     ExitCode::SUCCESS
 }
 
@@ -748,6 +766,7 @@ fn run_options_from(args: &[String]) -> Result<spawn::RunOptions, String> {
     Ok(spawn::RunOptions {
         zone_uid: num("--zone-uid")?,
         zone_gid: num("--zone-gid")?,
+        zones_dir: std::path::PathBuf::new(),
     })
 }
 
@@ -776,13 +795,14 @@ fn cmd_run(dir: &Path, args: &[String]) -> ExitCode {
     let base = rootfs_base_from(args);
     let rootfs = spawn::zone_rootfs(&zone, &base);
     // Options live before `--`; the command after it is never inspected.
-    let opts = match run_options_from(&args[..sep]) {
+    let mut opts = match run_options_from(&args[..sep]) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("run: {e}");
             return ExitCode::from(2);
         }
     };
+    opts.zones_dir = dir.to_path_buf();
 
     match spawn::run_in_zone(&zone, &rootfs, &cmd, &opts) {
         Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
