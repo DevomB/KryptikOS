@@ -105,8 +105,14 @@ trap cleanup EXIT
 CANARY="KRYPTIK_CANARY_a7f3c091_DO_NOT_LEAK"
 
 # A harmless stand-in for host configuration a zone must not see.
+#
+# Deliberately world-READABLE (0644, not 0600). If the zone fails to read it,
+# that must be because the path does not exist in the zone's mount namespace -
+# not because file permissions happened to deny it. On a privileged run the
+# zone maps to an unprivileged uid, and a 0600 root-owned fixture would make
+# C1 pass on DAC alone while proving nothing about containment.
 printf 'token = %s\n' "$CANARY" > "$HOSTFIX/hostconfig.conf"
-chmod 0600 "$HOSTFIX/hostconfig.conf"
+chmod 0644 "$HOSTFIX/hostconfig.conf"
 
 mkzone() { # name mode colour [extra-network-lines] [storage-mode]
     local name="$1" mode="$2" colour="$3" extra="${4:-}" storage="${5:-ephemeral}"
@@ -131,7 +137,42 @@ mkzone carrier  nic    "#333333" 'bridge = "kryptik0"'
 mkzone sealed   none   "#444444" ''                      encrypted
 mkzone wiped    none   "#555555" ''                      ephemeral
 
-ZARGS=(--zones "$ZONES" --rootfs "$ROOTFS")
+# A root launch MUST name an unprivileged identity for the zone to map to.
+# kryptikd refuses one that does not, because mapping the zone's root to host
+# uid 0 makes "root inside the zone" mean real root for every DAC check on
+# every bound path - which is the opposite of a zone.
+#
+# The suite runs unprivileged on a developer host and as root inside the
+# developer VM, so it has to handle both. Detecting it here rather than
+# requiring two invocations is what lets the VM exercise the privileged path
+# at all.
+ZONE_UID=100000
+ZONE_GID=100000
+IDENTITY=()
+if (( EUID == 0 )); then
+    PRIVILEGED=1
+    IDENTITY=(--zone-uid "$ZONE_UID" --zone-gid "$ZONE_GID")
+    info "running as root: zones map to host uid/gid $ZONE_UID"
+else
+    PRIVILEGED=0
+    info "running unprivileged as uid $EUID: zones map to this uid"
+fi
+
+# mktemp -d creates 0700. On a privileged run the zone's setup drops to the
+# mapped uid BEFORE it opens the zone data directory, so a 0700 root-owned
+# workspace makes every launch fail with
+#   could not build the zone root: open(data dir)(...): Permission denied
+# which reads like a kryptikd defect and is entirely this file's doing. The
+# workspace has to be traversable by the identity the zone runs as.
+chmod 0755 "$WORK" "$ZONES" "$ROOTFS" "$HOSTFIX"
+if (( PRIVILEGED == 1 )); then
+    # kryptikd refuses a data directory owned by anyone but the mapped uid, so
+    # the rootfs base is handed over up front rather than left as root's.
+    chown -R "$ZONE_UID:$ZONE_GID" "$ROOTFS" 2>/dev/null || \
+        info "WARNING: could not chown the rootfs base; privileged launches may be refused"
+fi
+
+ZARGS=(--zones "$ZONES" --rootfs "$ROOTFS" "${IDENTITY[@]}")
 
 # --- launch helpers ---------------------------------------------------------
 
@@ -767,9 +808,16 @@ probe "J8  no host identity or secret files are visible in /etc" "absent"
 zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(hostname)"
 probe "J9  the zone's hostname is the zone name, not the host's" "alpha"
 
-# Positive control: the CA bundle must still be there or TLS breaks in zones.
-zrun alpha -- /bin/sh -c "$PRO if [ -d /etc/ssl/certs ]; then echo PROBE=present; else echo PROBE=MISSING; fi"
-probe "J10 positive control: the CA certificate directory is still available" "present"
+# Positive control: the CA bundle must be passed through or TLS breaks in every
+# zone. It can only be checked where the HOST has one to pass through - an
+# image without a CA bundle would otherwise fail this against its own gap
+# rather than against kryptikd.
+if [[ -d /etc/ssl/certs ]]; then
+    zrun alpha -- /bin/sh -c "$PRO if [ -d /etc/ssl/certs ]; then echo PROBE=present; else echo PROBE=MISSING; fi"
+    probe "J10 positive control: the CA certificate directory reaches the zone" "present"
+else
+    skip "J10 the host has no /etc/ssl/certs, so the CA passthrough cannot be checked here"
+fi
 
 # A recursive bind mount silently ignores MS_RDONLY on every SUBMOUNT: the
 # remount only affects the top mount. On this host that left /usr/lib/wsl/lib
@@ -813,6 +861,63 @@ else
 fi
 
 # ============================================================================
+head_ "K. The privileged launch path  [vm / root only]"
+# ============================================================================
+# Everything above runs the same way unprivileged. This group is about what
+# changes when kryptikd itself is root - which is how it will actually run, in
+# zone 0, on a real Kryptik system. It cannot be exercised on a developer host
+# without sudo, so it is the reason the VM exists rather than a bonus from it.
+
+if (( PRIVILEGED == 1 )); then
+    # The refusal itself. Mapping zone root to host uid 0 would make the zone's
+    # root real root for every DAC check on every bound path.
+    out="$(KRYPTIK_EXPERIMENTAL=1 timeout "$TIMEOUT" "$KRYPTIKD" run alpha \
+           --zones "$ZONES" --rootfs "$ROOTFS" -- /bin/echo "$LAUNCHED" 2>&1)"
+    rc=$?
+    if [[ "$out" == *"$LAUNCHED"* ]]; then
+        fail "K1  a root launch without --zone-uid/--zone-gid RAN the command"
+    elif (( rc != 0 )) && [[ "$out" == *"zone-uid"* ]]; then
+        pass "K1  a root launch without an unprivileged identity is refused"
+    else
+        fail "K1  root launch refused (exit $rc) but the message did not name --zone-uid"
+        info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
+    fi
+
+    # Zone root is uid 0 INSIDE the zone...
+    zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(id -u)"
+    probe "K2  the zone's process is uid 0 inside its own user namespace" "0"
+
+    # ...and the files it creates are owned by the unprivileged host identity,
+    # not by real root. This is the whole point of the mapping, and it is
+    # checked on the HOST side where it can actually be falsified.
+    zrun alpha -- /bin/sh -c "$PRO echo k3 > \$HOME/k3file; echo PROBE=written"
+    if want_launch "K3  a zone's files are owned by the mapped identity"; then
+        owner="$(stat -c %u "$ROOTFS/alpha/k3file" 2>/dev/null)"
+        if [[ "$owner" == "$ZONE_UID" ]]; then
+            pass "K3  a zone's files are owned by host uid $ZONE_UID, not root"
+        else
+            fail "K3  file owned by uid ${owner:-<missing>}, expected $ZONE_UID"
+            info "a zone running as real root on the host is not a zone"
+        fi
+    fi
+
+    # Supplementary groups are dropped on a privileged launch. Unprivileged
+    # launches cannot do this (setgroups needs CAP_SETGID), which is why it is
+    # only asserted here.
+    zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(grep '^Groups:' /proc/self/status | cut -f2- | wc -w)"
+    probe "K4  the host's supplementary groups are dropped in the zone" "0"
+
+    # The sealed root must hold against real root, not merely against a user.
+    zrun alpha -- /bin/sh -c "$PRO if touch /rootprobe 2>/dev/null; then echo PROBE=WRITABLE; else echo PROBE=sealed; fi"
+    probe "K5  the zone root is read-only even to a privileged launch" "sealed"
+
+    zrun alpha -- /bin/sh -c "$PRO if touch /usr/rootprobe 2>/dev/null; then echo PROBE=WRITABLE; else echo PROBE=readonly; fi"
+    probe "K6  /usr is read-only even to a privileged launch" "readonly"
+else
+    skip "K1-K6 the privileged launch path [vm] needs root; run this suite inside the developer VM"
+fi
+
+# ============================================================================
 head_ "Mandatory checks NOT RUN here"
 # ============================================================================
 # A skipped mandatory check is not a release pass. These are named so the gap
@@ -822,7 +927,9 @@ skip "cgroup memory/pids limits are enforced          [vm] not implemented (spaw
 skip "routed network reaches the bridge via the nic zone [vm] not implemented"
 skip "ephemeral storage is wiped on stop              [vm] not implemented"
 skip "per-zone seccomp/landlock policy files applied  [vm] not implemented"
-skip "zone runs correctly under real root (not a userns) [vm] needs a disposable VM"
+if (( PRIVILEGED == 0 )); then
+    skip "zone runs correctly under real root (not a userns) [vm] needs a disposable VM — group K covers it there"
+fi
 
 # ============================================================================
 printf '\n%s==>%s summary\n' "$C_BLU" "$C_RST"

@@ -20,7 +20,7 @@ TOOLS   := $(ROOT)/tools
 
 export KRYPTIK_ROOT := $(ROOT)
 
-.PHONY: help check check-kernel-eol sources lock verify verify-provenance test-harness validate-kernel validate-kernel-hardened toolchain temp-tools chroot system kernel iso audit zones zone-test launcher-test zone-tests clean distclean
+.PHONY: help check check-kernel-eol sources lock verify verify-provenance test-harness validate-kernel validate-kernel-hardened toolchain temp-tools chroot system kernel iso audit zones zone-test launcher-test zone-tests vm-image vm-boot clean distclean
 
 help:
 	@echo "Kryptik build targets"
@@ -44,6 +44,8 @@ help:
 	@echo "  make zone-test   run the Phase 5 adversarial exit test (primitives)"
 	@echo "  make launcher-test  attack \`kryptikd run\` itself (the launch path)"
 	@echo "  make zone-tests  both of the above; what a zone change must pass"
+	@echo "  make vm-image    build the developer VM initramfs"
+	@echo "  make vm-boot     boot it under QEMU and check the serial log"
 	@echo "  make test-harness      verify failed builds cannot be stamped ok"
 	@echo "  make audit       run security audits over the build tree"
 	@echo "  make clean       remove build work directory"
@@ -128,6 +130,37 @@ launcher-test:
 	@compartments/tests/launcher.sh
 
 zone-tests: zone-test launcher-test
+
+# --- the developer VM ------------------------------------------------------
+#
+# KERNEL and SYSROOT are inputs rather than assumptions. Until stage 04 and 05
+# produce them, point KERNEL at any bzImage and leave SYSROOT empty: the image
+# records that its userspace is not Kryptik's and tools/vm/boot-smoke.sh
+# reports "PASSED (HARNESS ONLY)" rather than claiming a Kryptik boot.
+VM_OUT     ?= $(ROOT)/build/work/vm
+VM_INITRD  ?= $(VM_OUT)/initramfs.cpio.gz
+VM_LOG     ?= $(VM_OUT)/serial.log
+VM_KRYPTIKD ?= $(ROOT)/compartments/kryptikd/target/x86_64-unknown-linux-musl/release/kryptikd
+KERNEL     ?=
+SYSROOT    ?=
+S6ROOT     ?=
+
+$(VM_KRYPTIKD):
+	@cd compartments/kryptikd && cargo build --release --target x86_64-unknown-linux-musl
+
+vm-image: $(VM_KRYPTIKD)
+	@test -n "$(S6ROOT)" || { echo "set S6ROOT=<dir with usr/bin/{s6-svscan,busybox}>"; exit 1; }
+	@mkdir -p "$(VM_OUT)"
+	@"$(ROOT)"/tools/vm/mkinitramfs.sh --out "$(VM_INITRD)" \
+	    --kryptikd "$(VM_KRYPTIKD)" --s6root "$(S6ROOT)" \
+	    --zones "$(ROOT)/compartments/zones" \
+	    $(if $(SYSROOT),--sysroot "$(SYSROOT)",)
+
+vm-boot: vm-image
+	@test -n "$(KERNEL)" || { echo "set KERNEL=<path to a bzImage>"; exit 1; }
+	@"$(ROOT)"/tools/vm/run-qemu.sh --kernel "$(KERNEL)" --initrd "$(VM_INITRD)" \
+	    --log "$(VM_LOG)" --mode smoke || true
+	@"$(ROOT)"/tools/vm/boot-smoke.sh "$(VM_LOG)"
 
 test-harness:
 	@"$(TOOLS)"/test-step-errexit.sh
