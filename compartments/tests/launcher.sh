@@ -264,6 +264,12 @@ zrun_raw() {
 # run is admissible.
 LAUNCHED="ZONE_LAUNCH_OK"
 
+# Where kryptikd keeps its zone registry, derived the same way base() does.
+# Defined here rather than beside its first use because two groups read it (K's
+# T11 and all of LC), and a path defined twice is a path that drifts.
+REG="${XDG_RUNTIME_DIR:-/tmp/kryptik-$(id -u)}/kryptik/zones"
+[[ "$EUID" -eq 0 ]] && REG=/run/kryptik/zones
+
 # Preflight: none of this suite's zones may already be running.
 #
 # Since the lifecycle registry landed, a second `run` of a name that is already
@@ -1124,6 +1130,83 @@ else
     skip "K1-K6 the privileged launch path [vm] needs root; run this suite inside the developer VM"
 fi
 
+# --- T11: the zone as the HOST sees it --------------------------------------
+#
+# Design 01a T11, in the shape security asked for in R-8a: one assertion, made
+# from outside, about the zone's pid 1.
+#
+# Every other check of the zone's identity asks the zone. That is not worthless
+# - a compromised zone would have to lie consistently - but it is an inside
+# view, and the whole point of the privileged path is what the HOST sees. This
+# reads /proc/<init>/status and /proc/<init>/ns from outside the zone entirely,
+# using the pid the registry recorded, and it is the falsifiable one: if
+# kryptikd ever mapped a zone to real root, or left a capability in the
+# effective set, or shared a namespace with pid 1, this line fails while every
+# in-zone check keeps passing.
+if (( PRIVILEGED == 1 )); then
+    KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run alpha "${ZARGS[@]}" -- \
+        /bin/sh -c "$PRO echo PROBE=up; /bin/sleep 30" > "$WORK/t11.out" 2>&1 &
+    t11launcher=$!
+    BG_PIDS+=("$t11launcher")
+
+    t11init=""
+    for _ in $(seq 1 200); do
+        # "<pid> <starttime>" - the start time is what makes the pid safe to
+        # use, and the registry records both for exactly that reason.
+        t11init="$(awk '{print $1; exit}' "$REG/alpha/init.pid" 2>/dev/null || true)"
+        [[ -n "$t11init" && -d "/proc/$t11init" ]] && break
+        t11init=""
+        sleep 0.05
+    done
+
+    if [[ -z "$t11init" ]]; then
+        fail "T11 the registry never recorded a pid 1 for the zone, so nothing can be checked from the host"
+        info "output: $(tr '\n' '|' < "$WORK/t11.out" 2>/dev/null | cut -c1-200)"
+    else
+        t11st="/proc/$t11init/status"
+        t11uid="$(awk '/^Uid:/{print $2" "$3" "$4" "$5}' "$t11st" 2>/dev/null)"
+        t11gid="$(awk '/^Gid:/{print $2" "$3" "$4" "$5}' "$t11st" 2>/dev/null)"
+        t11grp="$(awk '/^Groups:/{$1=""; print}' "$t11st" 2>/dev/null | tr -d ' \t')"
+        t11eff="$(awk '/^CapEff:/{print $2}' "$t11st" 2>/dev/null)"
+        t11prm="$(awk '/^CapPrm:/{print $2}' "$t11st" 2>/dev/null)"
+        t11bnd="$(awk '/^CapBnd:/{print $2}' "$t11st" 2>/dev/null)"
+        t11nnp="$(awk '/^NoNewPrivs:/{print $2}' "$t11st" 2>/dev/null)"
+        t11sec="$(awk '/^Seccomp:/{print $2}' "$t11st" 2>/dev/null)"
+
+        want_ids="$ZONE_UID $ZONE_UID $ZONE_UID $ZONE_UID"
+        want_gids="$ZONE_GID $ZONE_GID $ZONE_GID $ZONE_GID"
+        t11bad=()
+        [[ "$t11uid" == "$want_ids"  ]] || t11bad+=("Uid is '$t11uid', not '$want_ids'")
+        [[ "$t11gid" == "$want_gids" ]] || t11bad+=("Gid is '$t11gid', not '$want_gids'")
+        [[ -z "$t11grp" ]] || t11bad+=("Groups is '$t11grp', not empty")
+        [[ "$t11eff" == "0000000000000400" ]] || t11bad+=("CapEff is $t11eff, not 0000000000000400")
+        [[ "$t11prm" == "0000000000000400" ]] || t11bad+=("CapPrm is $t11prm, not 0000000000000400")
+        [[ "$t11bnd" == "0000000000000400" ]] || t11bad+=("CapBnd is $t11bnd, not 0000000000000400")
+        [[ "$t11nnp" == "1" ]] || t11bad+=("NoNewPrivs is '$t11nnp', not 1")
+        [[ "$t11sec" == "2" ]] || t11bad+=("Seccomp is '$t11sec', not 2 (filter mode)")
+
+        for ns in user pid mnt net; do
+            a="$(readlink "/proc/$t11init/ns/$ns" 2>/dev/null)"
+            b="$(readlink "/proc/1/ns/$ns" 2>/dev/null)"
+            if [[ -z "$a" ]]; then
+                t11bad+=("ns/$ns unreadable")
+            elif [[ "$a" == "$b" ]]; then
+                t11bad+=("ns/$ns is SHARED with pid 1 ($a)")
+            fi
+        done
+
+        if (( ${#t11bad[@]} == 0 )); then
+            pass "T11 from the host, the zone's pid 1 is uid/gid $ZONE_UID, no groups, CapEff=CapPrm=CapBnd=0000000000000400, NoNewPrivs, seccomp filtered, and in its own user/pid/mnt/net namespaces"
+        else
+            fail "T11 the host's view of the zone's pid 1 ($t11init) is wrong in ${#t11bad[@]} way(s)"
+            for b in "${t11bad[@]}"; do info "     $b"; done
+        fi
+    fi
+    kill -9 "$t11launcher" 2>/dev/null
+    wait "$t11launcher" 2>/dev/null
+    "$KRYPTIKD" gc >/dev/null 2>&1 || true
+fi
+
 # ============================================================================
 head_ "L. Supervision, termination and the filter probes  [unpriv]"
 # ============================================================================
@@ -1792,8 +1875,6 @@ head_ "LC. Zone lifecycle: registry, stop, concurrency  [unpriv]"
 # something to signal, and it is recorded WITH the process start time so a
 # reused pid can never be mistaken for the original.
 
-REG="${XDG_RUNTIME_DIR:-/tmp/kryptik-$(id -u)}/kryptik/zones"
-[[ "$EUID" -eq 0 ]] && REG=/run/kryptik/zones
 info "registry: $REG"
 
 lc_cleanup() {
