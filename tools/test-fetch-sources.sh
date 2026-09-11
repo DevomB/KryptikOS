@@ -47,8 +47,14 @@ UPSTREAM="${W}/upstream"      # what the "mirror" serves
 FAKE="${W}/root"              # KRYPTIK_ROOT for the run
 mkdir -p "$UPSTREAM"
 
+# 4KB each, deliberately. A "same length, wrong bytes" partial needs a file
+# long enough for a prefix to exist; a 30-byte payload made every partial
+# longer than the file it was supposedly a partial of, which is a different
+# case entirely.
 for f in alpha-1.0 beta-2.0 gamma-3.0; do
-    printf 'upstream payload for %s\n' "$f" > "${UPSTREAM}/${f}.tar.gz"
+    { printf 'upstream payload for %s\n' "$f"
+      head -c 4096 /dev/urandom | base64 | head -c 4000
+      printf '\n'; } > "${UPSTREAM}/${f}.tar.gz"
 done
 
 MANIFEST="${W}/manifest"
@@ -146,8 +152,8 @@ build_root alpha-1.0:good beta-2.0:good gamma-3.0:good
 place alpha-1.0; place beta-2.0 tampered; place gamma-3.0
 run
 expect_fail "a tampered download is refused" "CHECKSUM MISMATCH for beta-2.0.tar.gz"
-if grep -qF "Refusing to continue" "$OUT"; then
-    green "the refusal says it is refusing, not warning"
+if grep -qF "CHANGED after it was locked" "$OUT" && grep -qF "Do not" "$OUT"; then
+    green "the refusal says it is refusing, and which kind of mismatch it is"
 else
     red "the mismatch did not produce a refusal message"; show
 fi
@@ -193,6 +199,88 @@ KRYPTIK_ROOT="$FAKE" KRYPTIK_FETCH_SELFTEST=1 \
     bash "$TOOL" > "$OUT" 2>&1
 RC=$?
 expect_fail "an unfetchable source is refused" "download failed"
+
+# ---------------------------------------------------------------------------
+# interrupted downloads
+# ---------------------------------------------------------------------------
+#
+# `-C -` asks the server to continue from the size of the local .part. Three
+# states of that file behave differently and all three used to be untested.
+
+part() { printf '%s' "${FAKE}/sources/$1.tar.gz.part"; }
+
+# A genuine interruption: a prefix of the real file. Resuming is the point of
+# keeping it, so this must complete and verify.
+build_root alpha-1.0:good beta-2.0:good gamma-3.0:good
+place beta-2.0; place gamma-3.0
+head -c 1500 "${UPSTREAM}/alpha-1.0.tar.gz" > "$(part alpha-1.0)"
+run
+expect_pass "a truncated partial file is resumed and verifies" "3 package(s) verified"
+if [[ ! -e "$(part alpha-1.0)" ]]; then
+    green "the partial file is consumed, not left behind"
+else
+    red "a .part survived a successful download"
+fi
+
+# A partial LONGER than the upstream file makes the range unsatisfiable: curl
+# exits 36 on file:// and 33/416 over HTTP. This used to be reported as a dead
+# mirror and then reproduced itself on every retry, because the file keeping it
+# broken was the one the error message promised to keep.
+build_root alpha-1.0:good beta-2.0:good gamma-3.0:good
+place beta-2.0; place gamma-3.0
+head -c 100000 /dev/zero > "$(part alpha-1.0)"
+run
+expect_pass "an over-long stale partial is discarded and the fetch restarts" \
+    "3 package(s) verified"
+if grep -qF "discarding the partial file" "$OUT"; then
+    green "the restart says why it happened rather than blaming the mirror"
+else
+    red "the over-long partial was handled without explanation"; show
+fi
+if [[ "$(sha_of "${FAKE}/sources/alpha-1.0.tar.gz")" == "$(sha_of "${UPSTREAM}/alpha-1.0.tar.gz")" ]]; then
+    green "the restarted download produced the correct bytes"
+else
+    red "the restarted download produced wrong bytes"
+fi
+
+# A partial that is the right length but the wrong bytes cannot be detected by
+# resuming - the range is satisfiable and the result is a corrupt file. The
+# checksum is what catches it, and the message must say the DOWNLOAD is wrong
+# rather than implying the disk changed under them.
+build_root alpha-1.0:good beta-2.0:good gamma-3.0:good
+place beta-2.0; place gamma-3.0
+# Shorter than upstream, so the range IS satisfiable and the resume succeeds
+# into a corrupt file. Only the checksum can catch this one.
+head -c 1500 /dev/zero > "$(part alpha-1.0)"
+run
+expect_fail "a poisoned partial is caught by the checksum, not by the resume" \
+    "CHECKSUM MISMATCH for alpha-1.0.tar.gz"
+if grep -qF "downloaded just now" "$OUT" && grep -qF ".part" "$OUT"; then
+    green "a fresh download's mismatch blames the download and names the .part"
+else
+    red "the fresh-download mismatch did not diagnose itself"; show
+fi
+
+# The same mismatch on a file that was ALREADY on disk is a different fact and
+# must read differently: nothing was fetched, so the file changed after it was
+# locked.
+build_root alpha-1.0:good beta-2.0:good gamma-3.0:good
+place alpha-1.0 tampered; place beta-2.0; place gamma-3.0
+run
+expect_fail "a cached mismatch is diagnosed as a change after locking" \
+    "CHANGED after it was locked"
+if grep -qF "Do not" "$OUT" && ! grep -qF "downloaded just now" "$OUT"; then
+    green "the cached mismatch does not tell them to delete it first"
+else
+    red "the cached mismatch used the fresh-download wording"; show
+fi
+
+# Neither diagnosis deletes anything: a hash that does not match is evidence.
+if [[ -f "${FAKE}/sources/alpha-1.0.tar.gz" ]]; then
+    green "the mismatching file is preserved for inspection"
+else
+    red "the mismatching file was deleted"
+fi
 
 # ---------------------------------------------------------------------------
 # --lock
