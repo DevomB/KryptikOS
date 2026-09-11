@@ -132,9 +132,40 @@ emit_tree() {
     # -xdev is not an optimisation. After stage 03 the sysroot has the host's
     # /dev bind-mounted inside it; without -xdev this would walk the host's
     # device tree and record it as Kryptik's.
+    #
+    # find's exit status is CHECKED, and its stderr is kept rather than
+    # discarded. A sysroot contains directories this tool may not be able to
+    # read - /root is 0750, /etc/kryptik/zones is 0700 - and find reports
+    # those on stderr and exits 1 while still printing everything else. With
+    # the errors sent to /dev/null that looked like a mysterious failure; with
+    # the exit status ignored it would have been far worse, quietly producing
+    # a manifest that omitted exactly the files nobody could see.
+    local ferr; ferr="$(mktemp)"
+    local raw;  raw="$(mktemp)"
+    # shellcheck disable=SC2064
+    trap "rm -f '$ferr' '$raw'" RETURN
+
+    local frc=0
+    set +e
     find "$ROOT" -xdev -mindepth 1 \
-         -printf '%y\t%m\t%U\t%G\t%s\t%P\t%l\n' 2>/dev/null \
-        | LC_ALL=C sort -t "$(printf '\t')" -k6,6 > "$meta"
+         -printf '%y\t%m\t%U\t%G\t%s\t%P\t%l\n' > "$raw" 2>"$ferr"
+    frc=$?
+    set -e
+
+    if [[ "$frc" -ne 0 ]]; then
+        err "could not read every entry under ${ROOT}:"
+        sed 's/^/    /' "$ferr" | head -10 >&2
+        [[ "$(grep -c '' < "$ferr")" -gt 10 ]] && echo "    ..." >&2
+        die "Refusing to write a manifest that omits what it could not read.
+
+A sysroot has directories only root can enter. An identity record with
+holes in it is worse than no identity record, because it still produces a
+digest and the digest still looks authoritative.
+
+  sudo tools/artifact-manifest.sh --root ${ROOT} --out ..."
+    fi
+
+    LC_ALL=C sort -t "$(printf '\t')" -k6,6 < "$raw" > "$meta"
 
     # Content hashes for regular files, batched. Fifty thousand sha256sum
     # processes is the difference between a manifest people take and one they
@@ -142,6 +173,8 @@ emit_tree() {
     ( cd "$ROOT" && find . -xdev -mindepth 1 -type f -printf '%P\0' 2>/dev/null \
         | xargs -0 -r sha256sum 2>/dev/null ) > "$hashes"
 
+    # Anything the hash pass could not read is recorded as UNREADABLE by the
+    # awk below; the caller turns that into a refusal for the same reason.
     LC_ALL=C awk -F '\t' -v hashfile="$hashes" '
     BEGIN {
         # sha256sum prints "<hash>  <path>", and escapes a leading backslash
@@ -197,6 +230,14 @@ generate)
     # shellcheck disable=SC2064
     trap "rm -f '$body'" EXIT
     build_manifest > "$body"
+
+    local unreadable
+    unreadable="$(grep -c 'UNREADABLE' < "$body" || true)"
+    if [[ "$unreadable" -gt 0 ]]; then
+        err "${unreadable} file(s) could not be hashed:"
+        grep 'UNREADABLE' "$body" | head -10 | sed 's/^/    /' >&2
+        die "Refusing to write a manifest with unhashed entries - see above."
+    fi
 
     digest="$(sha256_of "$body")"
     entries="$(grep -c '' < "$body")"
