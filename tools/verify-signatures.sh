@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Verify upstream GPG signatures for fetched source tarballs.
 #
-#   ./tools/verify-signatures.sh            verify
+#   ./tools/verify-signatures.sh            verify (informational)
+#   ./tools/verify-signatures.sh --strict   release gate
 #   ./tools/verify-signatures.sh --refresh  discard cached keys and re-import
 #
 # This is the check that gives sources.lock its meaning. A SHA-256 recorded by
@@ -22,6 +23,19 @@
 # establishes "signed by whoever the keyring says" rather than "signed by the
 # person you believe maintains this package". See docs/supply-chain.md.
 #
+# UNVERIFIED IS NOT VERIFIED, AND --strict IS WHERE THAT BITES.
+# An unverifiable source is not a failure - upstream may publish no signature
+# at all - but it is not a pass either, and this script used to exit 0 with any
+# number of them. `--strict` is the release-gate invocation: it refuses to
+# succeed while anything went unverified.
+#
+# Keys imported by --fetch-unknown-keys are counted separately from verified,
+# not added to it. Trusting a key because the signature it checks named it is
+# circular: it establishes that a file was signed by whoever signed it, and
+# nothing about who that is. Counting those into the verified total is how a
+# coverage number grows without any trust being established, so they now have
+# their own bucket that --strict refuses to pass.
+#
 # IMPLEMENTATION NOTE - do not "simplify" this back to --keyring.
 # GnuPG 2.4 with keyboxd enabled SILENTLY IGNORES --keyring, printing only a
 # note, and verifies against the user's default store instead. Every signature
@@ -41,14 +55,20 @@ GNU_KEYRING="${KEYDIR}/gnu-keyring.gpg"
 export GNUPGHOME="${KEYDIR}/gnupg"
 
 FETCH_UNKNOWN=0
+STRICT=0
 for a in "$@"; do
     case "$a" in
         --refresh) rm -rf "$GNUPGHOME" "$GNU_KEYRING" ;;
         --fetch-unknown-keys) FETCH_UNKNOWN=1 ;;
+        --strict) STRICT=1 ;;
+        -h|--help) sed -n '2,7p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        *) die "unknown argument: $a" ;;
     esac
 done
 
-# Records every key that verification relied on, for human audit.
+# The ledger of keys accepted WITHOUT audit, for human confirmation
+# out-of-band. It is read on every run, not only when --fetch-unknown-keys is
+# passed, and that is the whole point: see UNAUDITED_FPRS below.
 KEYS_MANIFEST="${KRYPTIK_ROOT}/keys.manifest"
 
 mkdir -p "$KEYDIR" "$SIGDIR" "$GNUPGHOME"
@@ -96,6 +116,14 @@ import_keys() {
     printf '%s' "$count" > "$IMPORTED_MARK"
 
     if [[ "$count" -lt 2 ]]; then
+        # No keys means every signature below reports "key not held", which a
+        # release gate must not read as an absence of problems.
+        if [[ "$STRICT" -eq 1 ]]; then
+            err "only ${count} key(s) imported"
+            die "Without the maintainer keys nothing can be authenticated, and
+--strict will not report a run that could not check anything as a pass.
+Restore network access, or re-run without --strict for an informational pass."
+        fi
         warn "only ${count} key(s) imported - verification will be mostly unverifiable"
     else
         ok "keyring ready (${count} public keys)"
@@ -114,10 +142,45 @@ declare -a FAILED_LIST=()
 declare -a UNVERIFIABLE_LIST=()
 declare -a EXPIRED_LIST=()
 declare -a REVOKED_LIST=()
+declare -a FETCHED_LIST=()
 
 mark_unverifiable() {
     UNVERIFIABLE=$((UNVERIFIABLE + 1))
     UNVERIFIABLE_LIST+=("$1")
+}
+
+# Fingerprints listed in keys.manifest: keys that were accepted because a
+# signature named them, and have not been confirmed against the project.
+#
+# WHY THIS IS READ ON EVERY RUN, NOT JUST WHEN FETCHING.
+# The imported keyring is cached under build/work/keys. Once a
+# --fetch-unknown-keys run has put a key there, every later run finds it
+# already held and reports an ordinary GOODSIG - so the "unaudited" label
+# lasted exactly one invocation and then evaporated, and --strict would have
+# passed those sources on the second run. The durable record of what was never
+# audited is keys.manifest, so that is what decides, independently of whatever
+# happens to be in the key cache.
+declare -a UNAUDITED_FPRS=()
+if [[ -f "$KEYS_MANIFEST" ]]; then
+    while read -r _pkg fpr _rest; do
+        [[ "$fpr" =~ ^[0-9A-Fa-f]{40}$ ]] && UNAUDITED_FPRS+=("${fpr^^}")
+    done < <(grep -v '^[[:space:]]*#' "$KEYS_MANIFEST" || true)
+fi
+
+# Does the key that made this signature appear in that ledger? Both the
+# primary fingerprint and any subkey fingerprints are compared, because a
+# GOODSIG names the SIGNING key while keys.manifest records the primary.
+key_is_unaudited() {
+    local keyid="$1" fpr known
+    [[ "${#UNAUDITED_FPRS[@]}" -gt 0 ]] || return 1
+    [[ -n "$keyid" ]] || return 1
+    while IFS= read -r fpr; do
+        for known in "${UNAUDITED_FPRS[@]}"; do
+            [[ "${fpr^^}" == "$known" ]] && return 0
+        done
+    done < <(gpg --batch --with-colons --fingerprint --fingerprint "$keyid" 2>/dev/null \
+             | awk -F: '$1=="fpr"{print $10}')
+    return 1
 }
 
 # Run gpg --verify and classify from its machine-readable status output.
@@ -145,19 +208,30 @@ check_sig() {
     local out signer keyid
     out="$(gpg --batch --status-fd 1 --verify "$sigfile" "$datafile" 2>/dev/null || true)"
 
-    if printf '%s' "$out" | grep -q "^\[GNUPG:\] GOODSIG"; then
-        signer="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] GOODSIG [0-9A-F]* //p' | head -1)"
-        ok "${name}: signature valid  [${signer:-unknown}]"
-        VERIFIED=$((VERIFIED + 1))
-        return 0
-    fi
+    # GOODSIG and EXPKEYSIG are handled together because they differ only in
+    # keyring freshness, and both have to pass through the keys.manifest check
+    # before they can be called verified.
+    if printf '%s' "$out" | grep -qE "^\[GNUPG:\] (GOODSIG|EXPKEYSIG)"; then
+        local kind
+        kind="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] \(GOODSIG\|EXPKEYSIG\) .*/\1/p' | head -1)"
+        signer="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] \(GOODSIG\|EXPKEYSIG\) [0-9A-F]* //p' | head -1)"
+        keyid="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] \(GOODSIG\|EXPKEYSIG\) \([0-9A-F]*\).*/\2/p' | head -1)"
 
-    if printf '%s' "$out" | grep -q "^\[GNUPG:\] EXPKEYSIG"; then
-        signer="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] EXPKEYSIG [0-9A-F]* //p' | head -1)"
-        ok "${name}: signature valid, signing key expired  [${signer:-unknown}]"
+        if key_is_unaudited "$keyid"; then
+            warn "${name}: signature valid  [${signer:-unknown}] but by an UNAUDITED key"
+            FETCHED=$((FETCHED + 1))
+            FETCHED_LIST+=("${name} - ${signer:-unknown} (key ${keyid})")
+            return 0
+        fi
+
+        if [[ "$kind" == "EXPKEYSIG" ]]; then
+            ok "${name}: signature valid, signing key expired  [${signer:-unknown}]"
+            EXPIRED=$((EXPIRED + 1))
+            EXPIRED_LIST+=("${name} - ${signer:-unknown}")
+        else
+            ok "${name}: signature valid  [${signer:-unknown}]"
+        fi
         VERIFIED=$((VERIFIED + 1))
-        EXPIRED=$((EXPIRED + 1))
-        EXPIRED_LIST+=("${name} - ${signer:-unknown}")
         return 0
     fi
 
@@ -166,6 +240,13 @@ check_sig() {
         err "${name}: signature made with a REVOKED key [${signer:-unknown}]"
         REVOKED=$((REVOKED + 1))
         REVOKED_LIST+=("${name} - ${signer:-unknown}")
+        # A revoked key can mean the key was compromised, which is the one
+        # thing here more serious than BADSIG. docs/supply-chain.md has said
+        # since ADR time that REVKEYSIG stops a build; it was counted into a
+        # bucket that nothing ever read, so it stopped nothing. It now lands
+        # in FAILED like a bad signature does.
+        FAILED=$((FAILED + 1))
+        FAILED_LIST+=("${name} (REVOKED signing key)")
         return 0
     fi
 
@@ -189,11 +270,19 @@ check_sig() {
                     signer="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] \(GOODSIG\|EXPKEYSIG\) [0-9A-F]* //p' | head -1)"
                     local fpr
                     fpr="$(gpg --batch --with-colons --fingerprint "$keyid" 2>/dev/null                            | awk -F: '$1=="fpr"{print $10; exit}')"
-                    ok "${name}: signature valid  [${signer:-unknown}] (key fetched, UNAUDITED)"
-                    printf '%-18s %-42s %s
-' "$name" "${fpr:-$keyid}" "${signer:-unknown}"                         >> "$KEYS_MANIFEST"
-                    VERIFIED=$((VERIFIED + 1))
+                    warn "${name}: signature valid  [${signer:-unknown}] but by an UNAUDITED key"
+                    if ! grep -qiF -- "${fpr:-$keyid}" "$KEYS_MANIFEST" 2>/dev/null; then
+                        printf '%-18s %-42s %s
+' "$name" "${fpr:-$keyid}" "${signer:-unknown}"                             >> "$KEYS_MANIFEST"
+                    fi
+                    # So that a second package signed by the same key in this
+                    # same run is recognised as unaudited too.
+                    [[ -n "$fpr" ]] && UNAUDITED_FPRS+=("${fpr^^}")
+                    # Deliberately NOT counted as verified. The key came from
+                    # the signature it was used to check, so no signer
+                    # identity has been established - only self-consistency.
                     FETCHED=$((FETCHED + 1))
+                    FETCHED_LIST+=("${name} - ${signer:-unknown} (${fpr:-$keyid})")
                     return 0
                 fi
             fi
@@ -315,11 +404,18 @@ if [[ "$FETCH_UNKNOWN" -eq 1 ]]; then
     warn "--fetch-unknown-keys: will import keys named by the signatures themselves."
     warn "That proves a file was signed by whoever signed it, NOT that the signer"
     warn "is the real maintainer. Confirm keys.manifest out-of-band."
-    : > "$KEYS_MANIFEST"
-    printf '# Keys fetched by --fetch-unknown-keys. AUDIT THESE.
+    # Do NOT truncate. This file is the record of which keys were never
+    # audited, and truncating it on every run destroyed that record: a second
+    # --fetch-unknown-keys run finds every key already cached, fetches
+    # nothing, and would have left behind a manifest containing only its own
+    # two header lines. Entries accumulate and are deduplicated by
+    # fingerprint instead.
+    if [[ ! -s "$KEYS_MANIFEST" ]]; then
+        printf '# Keys fetched by --fetch-unknown-keys. AUDIT THESE.
 ' >> "$KEYS_MANIFEST"
-    printf '# package           fingerprint                                signer
+        printf '# package           fingerprint                                signer
 ' >> "$KEYS_MANIFEST"
+    fi
 fi
 import_keys
 echo
@@ -356,9 +452,31 @@ done < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list)
 echo
 log "Summary"
 ok "verified:     ${VERIFIED}$([[ "$EXPIRED" -gt 0 ]] && printf ' (%s with expired keys)' "$EXPIRED")"
-[[ "$FETCHED" -gt 0 ]] && warn "  of which ${FETCHED} used UNAUDITED fetched keys - see keys.manifest"
+[[ "$FETCHED" -gt 0 ]]      && warn "unaudited:    ${FETCHED} (key taken from the signature itself)"
 [[ "$UNVERIFIABLE" -gt 0 ]] && warn "unverifiable: ${UNVERIFIABLE}"
+[[ "$REVOKED" -gt 0 ]]      && err  "REVOKED KEYS: ${REVOKED}"
 [[ "$FAILED" -gt 0 ]]       && err  "FAILED:       ${FAILED}"
+
+if [[ "${#EXPIRED_LIST[@]}" -gt 0 ]]; then
+    echo
+    dim "Cryptographically valid, signed with a key the keyring believes expired."
+    dim "Routine key extension, not tampering - see docs/supply-chain.md:"
+    printf '  - %s\n' "${EXPIRED_LIST[@]}"
+fi
+
+if [[ "${#REVOKED_LIST[@]}" -gt 0 ]]; then
+    echo
+    err "Signed with a REVOKED key. A revocation can mean the key was"
+    err "compromised; treat these as unusable until upstream explains why:"
+    printf '  - %s\n' "${REVOKED_LIST[@]}" >&2
+fi
+
+if [[ "${#FETCHED_LIST[@]}" -gt 0 ]]; then
+    echo
+    dim "Signed by an UNAUDITED key - self-consistent, signer not established."
+    dim "Confirm these fingerprints against the project out-of-band; see keys.manifest:"
+    printf '  - %s\n' "${FETCHED_LIST[@]}"
+fi
 
 if [[ "${#UNVERIFIABLE_LIST[@]}" -gt 0 ]]; then
     echo
@@ -373,8 +491,21 @@ if [[ "$FAILED" -gt 0 ]]; then
 fi
 
 echo
+# Under --strict, anything not authenticated ends the run. An unverifiable
+# source is not a failure, but a release gate that reports a run with fifteen
+# of them as a pass is not gating anything.
+if [[ "$STRICT" -eq 1 ]] && [[ "$((UNVERIFIABLE + FETCHED))" -gt 0 ]]; then
+    err "${UNVERIFIABLE} source(s) unverifiable, ${FETCHED} signed by unaudited keys"
+    die "--strict will not pass sources whose signer was never established.
+sources.lock pins these by hash, which detects later tampering and says
+nothing about the first fetch. Either obtain the maintainer keys and audit
+them, or accept the gap deliberately by running without --strict."
+fi
 if [[ "$UNVERIFIABLE" -gt 0 ]]; then
     warn "${UNVERIFIABLE} source(s) unverified. sources.lock pins them by hash,
 which protects against later tampering but not against a bad first fetch."
+fi
+if [[ "$((UNVERIFIABLE + FETCHED))" -gt 0 ]]; then
+    warn "This run is informational. --strict fails here."
 fi
 ok "No signature verification failures (${VERIFIED} verified)."

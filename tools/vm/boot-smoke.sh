@@ -23,7 +23,6 @@ pass() { printf '%s  PASS%s  %s\n' "$C_GRN" "$C_RST" "$1"; PASS=$((PASS+1)); }
 fail() { printf '%s  FAIL%s  %s\n' "$C_RED" "$C_RST" "$1"; FAIL=$((FAIL+1)); FAILED+=("$1"); }
 info() { printf '%s        %s%s\n' "$C_DIM" "$1" "$C_RST"; }
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG="${1:-}"
 [[ -n "$LOG" ]] || { printf 'usage: boot-smoke.sh SERIAL_LOG\n' >&2; exit 2; }
 [[ -r "$LOG" ]] || { printf 'boot-smoke: serial log not readable: %s\n' "$LOG" >&2; exit 2; }
