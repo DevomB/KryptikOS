@@ -689,8 +689,19 @@ EOF
 # built outside and installed here, and its ABSENCE is reported loudly rather
 # than passed over: a Kryptik image without kryptikd is a Linux system with
 # Kryptik's name on it.
+# Takes its input as ARGUMENTS rather than reading the environment, and that
+# is deliberate.
+#
+# step() fingerprints a step against its recipe and the arguments it was called
+# with. An environment variable is invisible to that, so pointing
+# KRYPTIK_KRYPTIKD_BIN at a binary after a run that had none would leave the
+# stamp valid and the step skipped - the image would stay without kryptikd and
+# the build would report success. Passing the path AND the binary's content
+# hash makes both part of the step's identity.
 s_kryptikd() {
-    local src="${KRYPTIK_KRYPTIKD_BIN:-}"
+    local src="$1" want_sha="${2:-absent}"
+    [[ "$src" == "none" ]] && src=""
+    echo "requested: ${src:-<none>} (sha256 ${want_sha})"
 
     install -d -m 0755 /etc/kryptik
     install -d -m 0700 /etc/kryptik/zones
@@ -720,6 +731,19 @@ s_kryptikd() {
     fi
 
     [[ -f "$src" ]] || { echo "KRYPTIK_KRYPTIKD_BIN=${src} does not exist"; return 1; }
+
+    # The hash was taken when the build order was built, outside the chroot.
+    # If it no longer matches, the file changed underneath the build and the
+    # stamp about to be written would describe something else.
+    local got_sha; got_sha="$(sha256_of "$src")"
+    if [[ "$want_sha" != "absent" && "$got_sha" != "$want_sha" ]]; then
+        echo "kryptikd binary changed during the build:"
+        echo "  fingerprinted: ${want_sha}"
+        echo "  now:           ${got_sha}"
+        return 1
+    fi
+    echo "sha256: ${got_sha}"
+
     install -Dm755 "$src" /usr/bin/kryptikd
     rm -f /etc/kryptik/kryptikd-absent
 
@@ -891,7 +915,9 @@ declare -a PACKAGES=(
     "etc"         "s_etc"
     "console"     "s_console"
     "init"        "s_init"
-    "kryptikd"    "s_kryptikd"
+    # The path and the binary's content hash are arguments so that both are
+    # part of this step's fingerprint; see s_kryptikd.
+    "kryptikd"    "s_kryptikd ${KRYPTIK_KRYPTIKD_BIN:-none} $([[ -f "${KRYPTIK_KRYPTIKD_BIN:-}" ]] && sha256_of "${KRYPTIK_KRYPTIKD_BIN}" || echo absent)"
     "boot-check"  "s_boot_check"
 )
 
