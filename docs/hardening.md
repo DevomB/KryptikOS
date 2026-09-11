@@ -13,11 +13,37 @@ Defined in [`build/config/hardening.env`](../build/config/hardening.env).
 | `-fstack-protector-strong` | Stack smashing | ~1% CPU |
 | `-fstack-clash-protection` | Stack-clash / guard-page jumping | Negligible |
 | `-fcf-protection=full` | ROP/JOP via Intel CET (shadow stack + IBT) | Negligible on supporting CPUs |
-| `-fPIE -pie` | Defeats fixed-address exploitation; enables full ASLR | ~2% on x86-64 register pressure |
+| *(PIE)* | Defeats fixed-address exploitation; enables full ASLR | ~2% on x86-64 register pressure |
 | `-Wl,-z,relro,-z,now` | GOT/PLT overwrite | Slower startup (eager binding) |
 | `-Wl,-z,noexecstack` | Executable stack payloads | None |
 | `-ftrivial-auto-var-init=zero` | Uninitialized-memory disclosure | ~0.5%, occasionally more |
 | `-fno-delete-null-pointer-checks` | Compiler removing NULL checks it assumes are dead | None |
+
+### PIE comes from the compiler, not from flags
+
+`-fPIE` and `-pie` are deliberately **absent** from `hardening.env`. Kryptik's
+GCC is configured `--enable-default-pie`, so executables are position-independent
+without them — confirmed by stage 01's sanity check and directly:
+
+```
+$ gcc <hardening flags, no -pie> -o exe exe.c
+$ readelf -h exe   ->  Type: DYN (Position-Independent Executable file)
+$ readelf -d exe   ->  FLAGS_1: NOW PIE
+```
+
+Carrying them anyway is not merely redundant, it is destructive. `-pie` makes
+the linker pull in `Scrt1.o`, the executable startup object, which references
+`main()`. A shared library has no `main`, so every `.so` fails to link:
+
+```
+ld: Scrt1.o: in function `_start`: undefined reference to `main`
+```
+
+This was found when Python — the first package in the build order that produces
+a `.so` — failed on it. Every library after it would have failed identically.
+The tempting fix, a per-package hardening exception, would have meant an
+exception for nearly every package in the distribution; the flags were wrong,
+not the packages.
 
 ### Known-incompatible packages
 

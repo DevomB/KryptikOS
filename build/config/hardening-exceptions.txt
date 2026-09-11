@@ -9,7 +9,9 @@
 # Example (not active):
 # glibc  -pie  # glibc builds its own PIE handling; -pie breaks ld.so startup
 
+# NOTE: the two glibc entries for -fPIE and -pie were removed when those flags
+# were dropped from hardening.env entirely. They are handled by GCC's
+# --enable-default-pie now, so there is nothing per-package to except.
+
 # --- active exceptions below this line ---
-glibc  -fPIE   # glibc builds its own PIE handling; external -fPIE breaks ld.so startup
-glibc  -pie    # same - the dynamic loader cannot itself be a PIE built this way
 glibc  -D_FORTIFY_SOURCE=3  # glibc DEFINES the fortify machinery; fortifying it against itself fails to build
