@@ -325,6 +325,97 @@ the stage says so; it is never silently missing.
 Zone definitions from `compartments/zones/*.toml` are installed to
 `/etc/kryptik/zones` (0700) regardless.
 
+## 8b. Defects the build run itself found
+
+Running the build is what produced these. None was visible from reading the
+code.
+
+### Two ordering defects, one shape
+
+Stage 04's order was derived from a documented dependency cycle between perl,
+python and glibc. What was never folded back in is what *those three* need.
+
+* **libxcrypt was nineteen packages after python.** glibc split libcrypt out
+  years ago and removed it in 2.39; Kryptik pins 2.40, so nothing defined
+  `crypt()`. Python links `_crypt` unconditionally, so the module built, failed
+  to import with `undefined symbol: crypt`, was never produced, and
+  `make install` died on the missing file. libxcrypt cannot go first either —
+  it generates part of its own source with perl — so after perl and before
+  python is the only slot. LFS lands in the same place. (`915b3ce`)
+
+* **zlib was four packages after python.** `make install` runs `ensurepip`,
+  which installs pip from a bundled `.whl` and needs zlib to decompress a zip.
+  Twenty minutes of work, then `ModuleNotFoundError: No module named 'zlib'`.
+  (`5d44520`)
+
+Both failed *late in a long package build*, which is the expensive way to find
+an ordering problem.
+
+### The harness detected failure and then said nothing about it
+
+Diagnosing the first of those meant grepping a 6060-line log by hand, because
+`step()` printed four words: `aborted at common.sh:446`.
+
+The cause is worth writing down. **`set +e` does not disable an `ERR` trap.**
+bash runs the trap whether or not errexit is enabled, and `_kryptik_trap` calls
+`exit` — so `step()` died *on* the subshell line and its entire failure branch
+(the log tail, `step_failure_hint`, `die`) was unreachable code. Verified
+directly:
+
+```
+set -Eeuo pipefail; trap t ERR; set +e
+( set -Eeuo pipefail; false ) >/dev/null 2>&1
+-> TRAP FIRED
+```
+
+The property that matters had held throughout: a failed recipe never got a
+stamp and the stage always exited non-zero. What was missing was every word of
+diagnosis. `run_in_chroot` had the identical bug, where it cost only the
+"chroot command failed" message because the EXIT trap still unmounted.
+
+**The regression test could not have caught it**, and that is the part worth
+keeping. Every assertion it made was satisfied either way — non-zero exit
+either way, no stamp either way, and "the ERR trap fired and named the line"
+was satisfied by the *subshell's* trap output landing in the recipe log. It
+tested that failures fail, never that they are reported. Three assertions were
+added and each was checked to fail against the old code first. (`5caac6b`)
+
+A failed step now also greps its log for the lines that look like the cause,
+because the tail is frequently the wrong forty lines: python failed at line
+1659 of 6060 and then produced another 4400 lines of `Compiling ...`.
+
+### Evidence that the input-aware resume works
+
+After the libxcrypt fix, the resume printed:
+
+```
+skip locales (already built, inputs unchanged)
+skip gettext (already built, inputs unchanged)
+skip bison  (already built, inputs unchanged)
+skip perl   (already built, inputs unchanged)
+==> libxcrypt
+```
+
+A recipe fix invalidated exactly the steps it should and nothing else. When
+`common.sh` changed — an input to every stamp — the same machinery correctly
+refused all of them, and `KRYPTIK_STALE=rebuild` named each one before
+rebuilding it.
+
+### A limitation recorded rather than papered over
+
+The stage 04 Python is built seventh, so `_ssl`, `_ctypes`, `readline`, `_bz2`
+and `_lzma` are all missing — those libraries come later in the order. It is
+sufficient for glibc's configure, which is the only reason it sits there, and
+it is **not a Python worth shipping**.
+
+The fix is the one LFS uses: a second pass late in the order, after openssl,
+libffi and readline, overwriting the bootstrap one. It is about five minutes of
+build time and one array entry. It was not done mid-run because it cannot be
+tested without reaching package 50, and tonight's priority is a kernel and a
+sysroot. Tracked as **B-e** below.
+
+---
+
 ## 9. Requests for integration
 
 Not mine to change; each is a real defect with enough detail to act on.
@@ -397,6 +488,12 @@ and the work tree on native storage. §3 and §5 here are written to be liftable
   invalidate a running stage 01/02.
 - **B-d** Signed images and recoverable updates (role item 6), once boot is
   demonstrated.
+- **B-e** Second Python pass after openssl/libffi/readline, so the shipped
+  Python has `_ssl`, `_ctypes`, `readline`, `_bz2` and `_lzma`. See §8b.
+- **B-f** Decide whether Kryptik ships `pip`. `ensurepip` currently runs, so it
+  does. For a distribution whose documentation leads on supply chain, a
+  network-facing package installer in the base system is a policy question, not
+  a build one — `--without-ensurepip` is a one-word change either way.
 
 ## 11. How to reuse or rebuild safely
 
