@@ -105,6 +105,11 @@ pub struct Zone {
     /// files. `None` means a root launch must name an identity with
     /// `--zone-uid/--zone-gid`, and is refused on the target (`check --target`).
     pub uid_base: Option<u32>,
+    /// `[transfer] to = "work personal"`: the zones this zone may send files
+    /// to through the broker (Design 05). Absent means it sends nothing.
+    /// Every name must be a configured zone and never the one holding the
+    /// NIC, which receives nothing, ever (`check_invariants`).
+    pub transfer_to: Vec<String>,
 }
 
 /// Smallest permitted `identity.uid_base`, and the alignment every base must
@@ -145,6 +150,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "policy.seccomp", "policy.landlock",
     "limits.memory_max", "limits.pids_max",
     "identity.uid_base",
+    "transfer.to",
     "ui.border_color",
 ];
 
@@ -428,9 +434,41 @@ impl Zone {
             }
         }
 
+        let transfer_to: Vec<String> = match get("transfer.to") {
+            None => Vec::new(),
+            Some(v) => {
+                let mut out: Vec<String> = Vec::new();
+                for n in v.split_whitespace() {
+                    if !n.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+                        return Err(bad("transfer.to", &v, "space-separated zone names"));
+                    }
+                    if n == name {
+                        return Err(ZoneError::Invalid(format!(
+                            "zone {name:?}: [transfer] to names the zone itself"
+                        )));
+                    }
+                    if out.iter().any(|o| o == n) {
+                        return Err(ZoneError::Invalid(format!(
+                            "zone {name:?}: [transfer] to names {n:?} twice"
+                        )));
+                    }
+                    out.push(n.to_string());
+                }
+                if out.is_empty() {
+                    return Err(bad(
+                        "transfer.to",
+                        &v,
+                        "at least one zone name, or omit [transfer] to send nothing",
+                    ));
+                }
+                out
+            }
+        };
+
         let zone = Zone {
             nic,
             uid_base,
+            transfer_to,
             description: get("zone.description").unwrap_or_default(),
             bridge: get("network.bridge"),
             volume: get("storage.volume"),
@@ -557,6 +595,29 @@ pub fn load_all(dir: &Path) -> Result<Vec<Zone>, ZoneError> {
 
 /// Invariants that hold across the whole zone set, not within one file.
 pub fn check_invariants(zones: &[Zone]) -> Result<(), ZoneError> {
+    // [transfer] to must name configured zones, and never the one holding
+    // the NIC: it receives nothing, ever (Design 05 B12). Checked here, over
+    // the whole directory, because a single zone file cannot know the set.
+    for z in zones {
+        for d in &z.transfer_to {
+            match zones.iter().find(|o| &o.name == d) {
+                None => {
+                    return Err(ZoneError::Invalid(format!(
+                        "zone {:?}: [transfer] to names {d:?}, which is not a zone",
+                        z.name
+                    )))
+                }
+                Some(o) if o.network == NetworkMode::Nic => {
+                    return Err(ZoneError::Invalid(format!(
+                        "zone {:?}: [transfer] to names {d:?}, the zone that holds the NIC; \
+                         it receives nothing, ever",
+                        z.name
+                    )))
+                }
+                Some(_) => {}
+            }
+        }
+    }
     // Exactly one zone may hold the physical NIC. Two would mean two
     // independent paths to the network, and the `net` chokepoint that the
     // architecture depends on would not exist.
@@ -699,6 +760,45 @@ border_color = "#000000"
     // The mode exists because refusing an "encrypted" zone is right and left
     // nothing that keeps a file. These check that it keeps its own promise
     // narrow: persistence, and no claim about what protects it.
+
+    // ---- [transfer] to -----------------------------------------------------
+
+    fn with_transfer(name: &str, mode: &str, to: Option<&str>) -> Result<Zone, ZoneError> {
+        let t = to.map(|v| format!("[transfer]\nto = \"{v}\"\n")).unwrap_or_default();
+        let bridge = if mode == "nic" { "bridge = \"kryptik0\"\n" } else { "" };
+        // Distinct colours: the directory invariants also refuse two zones a
+        // user could not tell apart.
+        let colour = format!("#1234{:02x}", name.bytes().next().unwrap_or(0));
+        Zone::from_str(&format!(
+            "[zone]\nname = \"{name}\"\n[network]\nmode = \"{mode}\"\n{bridge}\
+             [storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n{t}[ui]\nborder_color = \"{colour}\"\n"
+        ))
+    }
+
+    #[test]
+    fn transfer_to_is_a_validated_list_of_other_zones() {
+        assert!(with_transfer("a", "none", None).unwrap().transfer_to.is_empty());
+        assert_eq!(with_transfer("a", "none", Some("b c")).unwrap().transfer_to, vec!["b", "c"]);
+        for bad in ["a", "b b", "", "B", "../x", "b/c"] {
+            assert!(with_transfer("a", "none", Some(bad)).is_err(), "{bad:?} must be refused");
+        }
+    }
+
+    #[test]
+    fn transfer_destinations_must_exist_and_never_be_the_nic_zone() {
+        let set = |to: &str| {
+            vec![
+                with_transfer("n", "nic", None).unwrap(),
+                with_transfer("b", "none", None).unwrap(),
+                with_transfer("a", "none", Some(to)).unwrap(),
+            ]
+        };
+        check_invariants(&set("b")).unwrap();
+        let e = check_invariants(&set("zzz")).unwrap_err().to_string();
+        assert!(e.contains("not a zone"), "{e}");
+        let e = check_invariants(&set("n")).unwrap_err().to_string();
+        assert!(e.contains("receives nothing"), "{e}");
+    }
 
     fn persistent(extra: &str) -> Result<Zone, ZoneError> {
         Zone::from_str(&format!(
