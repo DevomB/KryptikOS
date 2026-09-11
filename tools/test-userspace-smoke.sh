@@ -7,7 +7,20 @@
 set -uo pipefail
 C=/home/devomb/kryptik-overnight-2026-09-11
 WT=$C/worktrees/build
-[[ "$(id -u)" -eq 0 ]] || { echo "must run as root"; exit 1; }
+# Exit 77, not 1: this suite runs the built sysroot in a chroot, so it needs
+# root AND it needs that sysroot to exist on this machine. Neither is true in
+# CI, and "cannot run here" is a different fact from "failed" - reporting it as
+# a failure made the whole fixture-suite job red for a reason that says nothing
+# about the code. 77 is the autotools convention for skipped, and the CI loop
+# lists what it skipped rather than counting it as a pass.
+if [[ "$(id -u)" -ne 0 ]]; then
+    echo "SKIP (77): needs root - this suite chroots into the built sysroot"
+    exit 77
+fi
+if [[ ! -d "$WT" || ! -d "$C" ]]; then
+    echo "SKIP (77): this machine has no build worktree at $WT"
+    exit 77
+fi
 
 LOG="$C/logs/userspace-smoke.$(date +%Y%m%dT%H%M%S).log"
 ln -sfn "$LOG" "$C/logs/userspace-smoke.latest.log"

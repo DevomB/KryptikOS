@@ -40,14 +40,29 @@ jobs:
           # need no network and no build, so there is no reason for any of them
           # to be absent: each one is the regression net for a tool that was
           # found reporting more than it had established.
+          # Exit 77 means "cannot run here" - the autotools convention. One of
+          # these suites chroots into a built sysroot and needs root plus that
+          # sysroot, neither of which exists on a CI runner. Skipped is listed
+          # separately and is NOT counted as a pass: a suite that did not run
+          # has established nothing, and the whole point of this job is that
+          # nothing here reports more than it has established.
           fail=0
+          skipped=""
           for t in tools/test-*.sh; do
             echo "=== $t"
-            if ! "$t"; then
+            "$t"; rc=$?
+            if [ "$rc" -eq 77 ]; then
+              echo "  SKIPPED: $t"
+              skipped="$skipped $t"
+            elif [ "$rc" -ne 0 ]; then
               echo "  FAILED: $t"
               fail=1
             fi
           done
+          if [ -n "$skipped" ]; then
+            echo
+            echo "did not run (not passes):$skipped"
+          fi
           exit $fail
 
       - name: Shellcheck
