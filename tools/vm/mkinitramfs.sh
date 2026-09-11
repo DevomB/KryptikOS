@@ -345,6 +345,23 @@ mkdir -p "$ROOT/etc/kryptik/zones"
 if [[ -n "$ZONES" && -d "$ZONES" ]]; then
     cp -a "$ZONES/." "$ROOT/etc/kryptik/zones/"
     note "zones: $(find "$ROOT/etc/kryptik/zones" -name '*.toml' | wc -l) definition(s)"
+
+    # The command a person types. Shipped next to kryptikd because an image
+    # where the only interface is the daemon's argument list is an image nobody
+    # can use, and because the VM should exercise what users will actually run
+    # rather than a developer path they never see.
+    if [[ -f "$REPO/tools/kryptik" ]]; then
+        install -m 0755 "$REPO/tools/kryptik" "$ROOT/usr/bin/kryptik"
+        cat > "$ROOT/etc/kryptik/kryptik.conf" <<'KCONF'
+# Where `kryptik` looks for zone definitions and zone data.
+# Read as DATA - this file is never sourced, so a line here cannot run a command.
+zones_dir = /etc/kryptik/zones
+rootfs    = /var/lib/kryptik/zones
+uid_base  = 100000
+KCONF
+        chmod 0644 "$ROOT/etc/kryptik/kryptik.conf"
+        note "kryptik: the user-facing command, with /etc/kryptik/kryptik.conf"
+    fi
 fi
 
 # --- minimal /etc -----------------------------------------------------------
@@ -473,6 +490,80 @@ for a in $(/bin/busybox cat /proc/cmdline); do
     case "$a" in kryptik.mode=*) MODE="${a#kryptik.mode=}" ;; esac
 done
 echo "KRYPTIK_VM_MODE=$MODE"
+
+# Restart mode. The question is whether this system comes back by itself after a
+# reboot, and the only way to ask it is to reboot and see.
+#
+# The boot counter lives on the ROOT FILESYSTEM, not in /run, and that is the
+# point: /run is a tmpfs and would be empty on the second boot whether the
+# reboot worked or not, so a counter there would prove nothing. On disk it
+# survives the reset and is discarded when QEMU exits, because the image is
+# attached with -snapshot - so the run is repeatable and the artifact whose
+# hash is the evidence is never written to.
+if [ "$MODE" = "restart" ]; then
+    # GUARD, and it is not optional: the boot counter has to survive the
+    # reboot, and on an initramfs it cannot - the root is rebuilt from the cpio
+    # every time, so every boot reads 1, reboots, and the VM loops until the
+    # harness timeout kills it. Restart mode needs a disk image, and saying so
+    # is better than a runaway guest.
+    if [ "$(awk '$2=="/" {print $3; exit}' /proc/mounts 2>/dev/null)" = "tmpfs" ]; then
+        echo "KRYPTIK_VM_RESTART_SKIP=needs-a-disk-image"
+        echo "KRYPTIK_VM_RESTART_SKIP_WHY=the root is a tmpfs, so a boot counter cannot survive a reboot"
+        MODE=smoke
+    fi
+fi
+
+if [ "$MODE" = "restart" ]; then
+    BOOTC=/var/lib/kryptik/boot-count
+    mkdir -p /var/lib/kryptik
+    n=0
+    [ -f "$BOOTC" ] && n=$(cat "$BOOTC" 2>/dev/null)
+    case "$n" in ''|*[!0-9]*) n=0 ;; esac
+    n=$((n+1))
+    echo "$n" > "$BOOTC"
+    sync
+    echo "KRYPTIK_VM_BOOT_NUMBER=$n"
+    if [ "$n" -gt 2 ]; then
+        # Belt as well as braces: even on a disk, one bad condition must not
+        # produce an endless reboot loop.
+        echo "KRYPTIK_VM_FAIL restart: boot $n - refusing to reboot again"
+    elif [ "$n" -eq 1 ]; then
+        # Prove the zone machinery works BEFORE the reboot, so a second boot
+        # that comes up broken is distinguishable from one that never ran.
+        if /usr/bin/kryptikd list --running >/dev/null 2>&1; then
+            echo "KRYPTIK_VM_RESTART_PRE=ok"
+        else
+            echo "KRYPTIK_VM_RESTART_PRE=failed"
+        fi
+        echo "KRYPTIK_VM_REBOOTING"
+        sync
+        /bin/busybox reboot -f
+        sleep 30
+        echo "KRYPTIK_VM_FAIL restart: reboot did not take effect"
+    else
+        echo "KRYPTIK_VM_RESTART_SECOND_BOOT=ok"
+        if /usr/bin/kryptikd list --running >/dev/null 2>&1; then
+            echo "KRYPTIK_VM_RESTART_POST=ok"
+        else
+            echo "KRYPTIK_VM_RESTART_POST=failed"
+        fi
+        # A zone that actually runs after the restart, not just a daemon that
+        # answers. This is the difference between "it booted" and "it works".
+        #
+        # `untrusted`, because it is a SHIPPED zone: the first version of this
+        # named `alpha`, which is a fixture the launcher suite creates in its
+        # own scratch directory and which no real system has - so it reported
+        # "failed" about a restart that was fine. Of the six shipped zones,
+        # four declare encrypted storage and are refused by design; `net` holds
+        # the NIC; `untrusted` is the one an ordinary user would start.
+        zout="$(/usr/bin/kryptik run untrusted -- /bin/sh -c 'echo ZONE_RAN_AFTER_RESTART' 2>&1)"
+        case "$zout" in
+            *ZONE_RAN_AFTER_RESTART*) echo "KRYPTIK_VM_RESTART_ZONE=ran" ;;
+            *) echo "KRYPTIK_VM_RESTART_ZONE=failed"
+               echo "KRYPTIK_VM_RESTART_ZONE_WHY=$(printf '%s' "$zout" | tr '\n' '|' | cut -c1-200)" ;;
+        esac
+    fi
+fi
 
 # Build the s6 scan directory. /run is a fresh tmpfs, so this is rebuilt every
 # boot rather than shipped.
@@ -752,6 +843,16 @@ if [ -x /usr/lib/kryptik/compartments/tests/launcher.sh ]; then
     echo "KRYPTIK_VM_RESTRICTED_END"
 fi
 
+# The user-facing command, exercised where a user would meet it: as root, on
+# the real zone set, in the VM. Its own suite builds fixtures in a scratch
+# directory, so it does not disturb the shipped zones.
+if [ -x /usr/lib/kryptik/compartments/tests/cli.sh ]; then
+    echo "KRYPTIK_VM_CLI_BEGIN"
+    KRYPTIKD=/usr/bin/kryptikd /usr/lib/kryptik/compartments/tests/cli.sh
+    echo "KRYPTIK_VM_CLI_RC=$?"
+    echo "KRYPTIK_VM_CLI_END"
+fi
+
 if [ -x /usr/lib/kryptik/compartments/tests/adversarial.sh ]; then
     echo "KRYPTIK_VM_ADVERSARIAL_BEGIN"
     /usr/lib/kryptik/compartments/tests/adversarial.sh
@@ -778,11 +879,15 @@ KTESTS="$ROOT/usr/lib/kryptik/compartments/tests"
 mkdir -p "$KTESTS"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
-for t in launcher.sh adversarial.sh; do
-    if [[ -f "$REPO/compartments/tests/$t" ]]; then
-        install -m 0755 "$REPO/compartments/tests/$t" "$KTESTS/$t"
-    fi
+# Every suite, by glob, not a list. A hardcoded pair is how cli.sh came to
+# exist, be wired into the smoke payload, and then not be in the image - the
+# payload would have found nothing and said nothing, because it tests for the
+# file before running it.
+for t in "$REPO"/compartments/tests/*.sh; do
+    [[ -f "$t" ]] || continue
+    install -m 0755 "$t" "$KTESTS/$(basename "$t")"
 done
+note "test suites: $(find "$KTESTS" -name '*.sh' | wc -l) installed"
 
 mkdir -p "$ROOT/usr/lib/kryptik/compartments/kryptikd/target/debug"
 ln -sf /usr/bin/kryptikd \
