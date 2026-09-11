@@ -86,6 +86,31 @@ set_flags_for() {
 
 # The shared step() calls this after printing the tail of a failed log.
 step_failure_hint() {
+    # Two locals, not one. An assignment in a `local` list is not visible to
+    # the ones beside it, so ${name} would have been empty and this would
+    # have opened the wrong file - silently, since the guard below just
+    # skips a log it cannot find.
+    local name="$1"
+    local logfile="${LOGS}/${STAMP_PREFIX}${name}.log"
+
+    # The tail is often the wrong forty lines.
+    #
+    # Python's install failed at line 1659 of a 6060-line log and then kept
+    # going for another 4400 lines of "Compiling ...", so the tail showed
+    # nothing but noise and the actual message - "undefined symbol: crypt" -
+    # was four thousand lines above it. A log that hides its own error is
+    # barely better than no log.
+    if [[ -f "$logfile" ]]; then
+        local hits
+        hits="$(grep -nE '^(make(\[[0-9]+\])?: \*\*\*|.*: \*\*\* )|\[ERROR\]|undefined (symbol|reference)|No such file or directory|Permission denied|command not found|configure: error|fatal error|cannot find -l' \
+                "$logfile" 2>/dev/null | tail -15)"
+        if [[ -n "$hits" ]]; then
+            err ""
+            err "Lines in ${logfile} that look like the actual cause:"
+            printf '%s\n' "$hits" | sed 's/^/    /' >&2
+        fi
+    fi
+
     err ""
     err "Check the actual error before assuming it is the hardening flags."
     err "The first stage 04 failure looked like one and was not - it was a"
@@ -854,6 +879,25 @@ declare -a PACKAGES=(
     "gettext"     "native_build gettext-${V_GETTEXT}.tar.xz gettext-${V_GETTEXT} --disable-shared"
     "bison"       "native_build bison-${V_BISON}.tar.xz bison-${V_BISON} --docdir=/usr/share/doc/bison-${V_BISON}"
     "perl"        "s_perl"
+    # BEFORE python, and the ordering is not cosmetic.
+    #
+    # glibc no longer provides crypt(). It was split out years ago and
+    # removed outright in 2.39; Kryptik pins 2.40, so nothing in this
+    # sysroot defines the symbol until libxcrypt is built.
+    #
+    # Python links a _crypt module against it unconditionally. With
+    # libxcrypt further down the list, that module built, failed to import
+    # with "undefined symbol: crypt", was therefore not produced, and
+    # `make install` died on a missing file:
+    #
+    #   install: cannot stat 'Modules/_crypt.cpython-312-...so'
+    #   make: *** [Makefile:2066: sharedinstall] Error 1
+    #
+    # It has to come after perl, though, not before: libxcrypt generates
+    # part of its own source with perl at build time. So this is the only
+    # position that works - after perl, before python. LFS reaches the same
+    # order for the same reason.
+    "libxcrypt"   "native_build libxcrypt-${V_LIBXCRYPT}.tar.xz libxcrypt-${V_LIBXCRYPT} --enable-hashes=strong,glibc --enable-obsolete-api=no --disable-static --disable-failure-tokens"
     "python"      "s_python"
     "texinfo"     "native_build texinfo-${V_TEXINFO}.tar.xz texinfo-${V_TEXINFO}"
     "util-linux"  "native_build util-linux-${V_UTIL_LINUX}.tar.xz util-linux-${V_UTIL_LINUX} --libdir=/usr/lib --runstatedir=/run --disable-chfn-chsh --disable-login --disable-nologin --disable-su --disable-setpriv --disable-runuser --disable-pylibmount --disable-liblastlog2 --disable-static --without-python"
@@ -879,7 +923,6 @@ declare -a PACKAGES=(
     "attr"        "native_build attr-${V_ATTR}.tar.gz attr-${V_ATTR} --disable-static --sysconfdir=/etc"
     "acl"         "native_build acl-${V_ACL}.tar.xz acl-${V_ACL} --disable-static"
     "libcap"      "s_libcap"
-    "libxcrypt"   "native_build libxcrypt-${V_LIBXCRYPT}.tar.xz libxcrypt-${V_LIBXCRYPT} --enable-hashes=strong,glibc --enable-obsolete-api=no --disable-static --disable-failure-tokens"
     "shadow"      "s_shadow"
     "ncurses"     "native_build ncurses-${V_NCURSES}.tar.gz ncurses-${V_NCURSES} --mandir=/usr/share/man --with-shared --without-debug --without-normal --with-cxx-shared --enable-pc-files"
     "sed"         "native_build sed-${V_SED}.tar.xz sed-${V_SED}"
