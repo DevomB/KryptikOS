@@ -866,7 +866,17 @@ fi
 # failure would not be confined to the checks that look privileged.
 if [ -x /usr/lib/kryptik/compartments/tests/launcher.sh ]; then
     echo "KRYPTIK_VM_RESTRICTED_BEGIN"
-    if sysctl -w kernel.apparmor_restrict_unprivileged_userns=1 >/dev/null 2>&1; then
+    # Is the restriction already in force, because this kernel was built with
+    # it? On the Kryptik kernel it is - `kryptikd check` reports
+    #     unpriv userns  restricted (EPERM; kernel.unprivileged_userns_clone)
+    # - and then there is nothing to emulate: the run that just happened was
+    # already the restricted one, which is a stronger result than the emulated
+    # second run was ever able to give.
+    if /usr/bin/kryptikd check --zones /etc/kryptik/zones 2>&1 | grep -q 'unpriv userns *restricted'; then
+        echo "KRYPTIK_VM_RESTRICTED_KNOB=native"
+        echo "KRYPTIK_VM_RESTRICTED_RC=$rc"
+        echo "KRYPTIK_VM_RESTRICTED_END"
+    elif sysctl -w kernel.apparmor_restrict_unprivileged_userns=1 >/dev/null 2>&1; then
         echo "KRYPTIK_VM_RESTRICTED_KNOB=apparmor-emulated"
         KRYPTIKD=/usr/bin/kryptikd KRYPTIK_TEST_TIMEOUT=60 KRYPTIK_VM_DISPOSABLE=1 \
             /usr/lib/kryptik/compartments/tests/launcher.sh
@@ -875,8 +885,8 @@ if [ -x /usr/lib/kryptik/compartments/tests/launcher.sh ]; then
     else
         echo "KRYPTIK_VM_RESTRICTED_KNOB=none"
         echo "KRYPTIK_VM_RESTRICTED_RC=noknob"
+        echo "KRYPTIK_VM_RESTRICTED_END"
     fi
-    echo "KRYPTIK_VM_RESTRICTED_END"
 fi
 
 # The same suite again, with the restriction on.
