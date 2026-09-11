@@ -30,11 +30,9 @@ load_config
 load_hardening
 validate_hardening_exceptions
 
-# Contract for the shared step() in build/lib/common.sh. Stage 04 runs
-# inside the chroot and drives the native target compiler.
-STAGE_FILE="${BASH_SOURCE[0]}"
-STAMP_PREFIX="bs-"
-STAMP_CC="gcc"
+# Stage 04 runs inside the chroot and drives the native target compiler.
+stage_contract "${BASH_SOURCE[0]}" "bs-" gcc
+# shellcheck disable=SC2034  # consumed by step() in common.sh
 KRYPTIK_FAIL_TAIL=40
 
 STAMPS="${KRYPTIK_WORK}/.stamps"
@@ -46,6 +44,7 @@ umask 022
 
 MODE="build"
 REDO=""
+# shellcheck disable=SC2034  # REDO is consumed by step() in common.sh
 case "${1:-}" in
     --list) MODE="list" ;;
     --redo) REDO="${2:?--redo needs a package name}" ;;
@@ -437,6 +436,12 @@ declare -a PACKAGES=(
     "readline"    "native_build readline-${V_READLINE}.tar.gz readline-${V_READLINE} --disable-static --with-curses"
     "m4"          "native_build m4-${V_M4}.tar.xz m4-${V_M4}"
     "flex"        "native_build flex-${V_FLEX}.tar.gz flex-${V_FLEX} --disable-static"
+    # Before anything that probes for its dependencies. e2fsprogs, iproute2,
+    # kmod and eudev all ask pkg-config where zlib, openssl, zstd and xz are;
+    # without it kmod's --with-openssl --with-zstd --with-zlib --with-xz have
+    # nothing to answer them and configure fails. The tarball was already
+    # pinned in versions.env and fetched - the package simply had no recipe.
+    "pkgconf"     "native_build pkgconf-${V_PKGCONF}.tar.xz pkgconf-${V_PKGCONF} --disable-static --docdir=/usr/share/doc/pkgconf-${V_PKGCONF}"
     "binutils"    "s_binutils_native"
     "gmp"         "native_build gmp-${V_GMP}.tar.xz gmp-${V_GMP} --enable-cxx --disable-static"
     "mpfr"        "native_build mpfr-${V_MPFR}.tar.xz mpfr-${V_MPFR} --disable-static --enable-thread-safe"

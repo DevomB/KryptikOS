@@ -29,18 +29,15 @@ KRYPTIK_JOBS="${KRYPTIK_JOBS:-$(kryptik_default_jobs)}"
 export MAKEFLAGS="-j${KRYPTIK_JOBS}"
 umask 022
 
-# Contract for the shared step() in build/lib/common.sh. Stage 02 drives
-# the cross compiler stage 01 built, so that is what its stamps are
-# fingerprinted against.
-STAGE_FILE="${BASH_SOURCE[0]}"
-STAMP_PREFIX="tt-"
-STAMP_CC="${LFS_TGT}-gcc"
+# Stage 02 drives the cross compiler stage 01 just built.
+stage_contract "${BASH_SOURCE[0]}" "tt-" "${LFS_TGT}-gcc"
 
 STAMPS="${KRYPTIK_WORK}/.stamps"
 LOGS="${KRYPTIK_WORK}/logs"
 BUILDDIR="${KRYPTIK_WORK}/build"
 
 REDO=""
+# shellcheck disable=SC2034  # consumed by step() in common.sh
 [[ "${1:-}" == "--redo" ]] && REDO="${2:?--redo needs a step name}"
 
 mkdir -p "$STAMPS" "$LOGS" "$BUILDDIR"
