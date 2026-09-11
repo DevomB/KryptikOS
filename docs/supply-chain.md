@@ -110,9 +110,19 @@ which handles sources that publish no detached signature:
   any substituted tarball whose hash was already in `sources.lock` passed. The
   check also passed when it could not check at all: a missing `gh`, an
   unresolvable tag or an unreachable API each counted as "skipped" and exited
-  0, and `gh` is neither installed nor authenticated on the CI runner — so the
-  CI step named "Provenance of unsigned sources" had been skipping and passing
-  for the one assertion this document described as verified.
+  0. On the CI runner `gh` **is** installed — GitHub CLI ships in
+  `actions/runner-images` for the Ubuntu that `ubuntu-latest` resolves to — but
+  it is **not authenticated**: `GITHUB_TOKEN` is a secret rather than an
+  exported variable, and `.github/workflows/ci.yml` sets no `GH_TOKEN` for that
+  step, so `gh api` exits 4 asking for `gh auth login` even against a public
+  repository. Either way the call failed, the check counted it as skipped and
+  exited 0, and the CI step named "Provenance of unsigned sources" had been
+  passing without ever making the assertion this document described as
+  verified.
+
+  (An earlier revision of this paragraph said `gh` was not installed. It is.
+  The conclusion did not change but the reason did, and the wrong reason was
+  published here before it was checked.)
 
   `tools/verify-provenance.sh` now binds the archive to the signed tree and
   fails rather than skipping. What it establishes is that the bytes on disk
