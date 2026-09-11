@@ -19,10 +19,17 @@ make verify
 ```
 
 It verifies detached GPG signatures against the GNU keyring and kernel.org
-maintainer keys. Current state of the committed `sources.lock`: **21 of 22
-sources verified** against upstream maintainer signatures (Nick Clifton for
-binutils, Jakub Jelinek for GCC, Greg Kroah-Hartman for the kernel, and so on).
-The exception is the LFS FHS patch, which upstream does not sign individually.
+maintainer keys — Nick Clifton for binutils, Jakub Jelinek for GCC, Greg
+Kroah-Hartman for the kernel, and so on. The LFS FHS patch is the known
+exception: upstream does not sign it individually.
+
+**No coverage count is quoted in this document.** Three different ones used to
+appear in it and a fourth in the README, and the tool producing them was
+miscounting: imported keys are cached under `build/work/keys`, so a second run
+found fetched keys already held, read an ordinary `GOODSIG`, and promoted them
+to verified. Identical inputs gave 34 verified / 20 unaudited on the first run
+and 54 / 0 on the second. The caching bug is fixed; quoting the number in prose
+is not, and will not be. Run `make verify` and read its summary.
 
 A lock file generated on an untrusted network and committed unaudited provides
 the appearance of integrity without the substance. That is worse than no lock
@@ -76,20 +83,42 @@ that window.
 
 ## Current verification coverage
 
-**54 of 69 sources verify** against upstream GPG signatures. A further **6**
-are verified by signed git tag or publisher-published checksum, giving **60 of
-69** with some independent confirmation.
+Run `make verify` and `make verify-provenance`. Both print a per-source result.
 
-The remaining 9 rest on `sources.lock` alone. They are not failures, but they
-are the weakest links and are listed rather than averaged away.
+Totals are deliberately absent here, and not only because the old ones were
+wrong. A detached GPG signature from a maintainer key, a signed git tag bound
+to an archive hash, and a publisher-published checksum are three different
+strengths of evidence, and a single "60 of 69" figure adds them together as if
+they were one. Sources resting on `sources.lock` alone are not failures, but
+they are the weakest links and must be readable as such rather than averaged
+into a reassuring fraction.
+
+A source-by-source inventory that keeps the assurance levels separate is
+tracked as a task rather than written here from memory.
 
 The two that mattered most are now covered by `tools/verify-provenance.sh`,
 which handles sources that publish no detached signature:
 
 - **hardened_malloc** — the system allocator (ADR-005). The GitHub source
-  archive is unsigned, but GrapheneOS GPG-signs the release *tag*, and the tag
-  covers the tree the archive is generated from. Verified as signed by
-  GrapheneOS.
+  archive is unsigned and GrapheneOS signs the release *tag*.
+
+  Two corrections to what this section used to say. First, the tag is **not
+  GPG-signed**: GrapheneOS signs it with `ssh-ed25519`. Second, and worse, the
+  old check asked the GitHub API whether the tag was signed, printed
+  `.tagger.name`, and called that verified — **nothing compared the tag to the
+  tarball on this disk**. GitHub generates the source archive on request, so
+  any substituted tarball whose hash was already in `sources.lock` passed. The
+  check also passed when it could not check at all: a missing `gh`, an
+  unresolvable tag or an unreachable API each counted as "skipped" and exited
+  0, and `gh` is neither installed nor authenticated on the CI runner — so the
+  CI step named "Provenance of unsigned sources" had been skipping and passing
+  for the one assertion this document described as verified.
+
+  `tools/verify-provenance.sh` now binds the archive to the signed tree and
+  fails rather than skipping. What it establishes is that the bytes on disk
+  match the tree the signed tag covers. What it does **not** yet establish is
+  that the signing key is one Kryptik chose in advance; the remaining signer
+  identity work is tracked separately.
 - **The s6 stack** — PID 1 and the service supervisor (ADR-006). skarnet ships
   a `.tar.gz.sha256` beside each release, which is an independent confirmation
   of the bytes: `sources.lock` records what Kryptik downloaded, the published
