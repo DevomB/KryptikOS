@@ -38,6 +38,8 @@ ACTION="${1:-mount}"
 IN_ROOT="/kryptik"
 IN_SOURCES="/kryptik-sources"
 IN_WORK="/kryptik-work"
+# A single file, not a directory: the kryptikd binary built outside.
+IN_KRYPTIKD="/kryptik-kryptikd"
 
 # The work tree is bind-mounted SUBDIRECTORY BY SUBDIRECTORY, deliberately.
 #
@@ -206,6 +208,7 @@ mount_list() {
     printf '%s\n' \
         "$IN_ROOT" \
         "$IN_SOURCES" \
+        "$IN_KRYPTIKD" \
         "/dev/pts" \
         "/dev/shm" \
         "/dev" \
@@ -276,6 +279,19 @@ mount_virtual() {
         bind_hardened "${KRYPTIK_WORK}/${d}" "${LFS}${IN_WORK}/${d}" "nodev,nosuid"
     done
 
+    # kryptikd is Rust, built outside the chroot because the sysroot has no
+    # Rust toolchain. Bind the binary in read-only so stage 04 can install
+    # it; copying would put a host path in the build and leave a stale copy
+    # behind on the next run.
+    if [[ -n "${KRYPTIK_KRYPTIKD_BIN:-}" ]]; then
+        if [[ -f "$KRYPTIK_KRYPTIKD_BIN" ]]; then
+            : > "${LFS}${IN_KRYPTIKD}"
+            bind_hardened "$KRYPTIK_KRYPTIKD_BIN" "${LFS}${IN_KRYPTIKD}" "nodev,nosuid,ro"
+        else
+            die "KRYPTIK_KRYPTIKD_BIN=${KRYPTIK_KRYPTIKD_BIN} does not exist"
+        fi
+    fi
+
     # nosuid,nodev on shm: nothing in a build chroot needs setuid binaries or
     # device nodes in shared memory, and both are escape primitives.
     if [[ -h "$LFS/dev/shm" ]]; then
@@ -322,6 +338,8 @@ chroot_env() {
         "KRYPTIK_JOBS=${jobs}" \
         "MAKEFLAGS=-j${jobs}" \
         "KRYPTIK_STALE=${KRYPTIK_STALE:-refuse}" \
+        "KRYPTIK_BUILD_COMMIT=${KRYPTIK_BUILD_COMMIT:-unknown}" \
+        "KRYPTIK_KRYPTIKD_BIN=${KRYPTIK_KRYPTIKD_BIN:+$IN_KRYPTIKD}" \
         "KRYPTIK_ALLOW_UNCHROOTED=0" \
         "NO_COLOR=${NO_COLOR:-}"
 }

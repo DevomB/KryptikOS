@@ -44,6 +44,12 @@ KRYPTIK_OUT     ?= $(ROOT)/out
 KRYPTIK_JOBS    ?=
 # refuse | rebuild. See the stamp notes in build/lib/common.sh.
 KRYPTIK_STALE   ?= refuse
+# Stamped into /etc/os-release so a booted image names the commit that
+# built it. --dirty on purpose: an image claiming a clean commit while the
+# tree had edits is worse than one claiming nothing.
+KRYPTIK_BUILD_COMMIT ?= $(shell git -C "$(ROOT)" describe --always --dirty --abbrev=40 2>/dev/null || echo unknown)
+# Path to a kryptikd binary built outside the chroot; see `make help`.
+KRYPTIK_KRYPTIKD_BIN ?=
 
 export KRYPTIK_ROOT := $(ROOT)
 export KRYPTIK_WORK
@@ -73,6 +79,8 @@ CHROOT_ENV := KRYPTIK_ROOT="$(ROOT)" \
               KRYPTIK_SOURCES="$(KRYPTIK_SOURCES)" \
               KRYPTIK_JOBS="$(KRYPTIK_JOBS)" \
               KRYPTIK_STALE="$(KRYPTIK_STALE)" \
+              KRYPTIK_BUILD_COMMIT="$(KRYPTIK_BUILD_COMMIT)" \
+              KRYPTIK_KRYPTIKD_BIN="$(KRYPTIK_KRYPTIKD_BIN)" \
               TERM="$(TERM)" \
               NO_COLOR="$(NO_COLOR)"
 
@@ -135,12 +143,15 @@ help:
 	@echo "  KRYPTIK_SOURCES  = $(KRYPTIK_SOURCES)"
 	@echo "  KRYPTIK_JOBS     = $(if $(KRYPTIK_JOBS),$(KRYPTIK_JOBS),auto)"
 	@echo "  KRYPTIK_STALE    = $(KRYPTIK_STALE)"
+	@echo "  KRYPTIK_BUILD_COMMIT = $(KRYPTIK_BUILD_COMMIT)"
+	@echo "  KRYPTIK_KRYPTIKD_BIN = $(if $(KRYPTIK_KRYPTIKD_BIN),$(KRYPTIK_KRYPTIKD_BIN),(not set - the image will have no kryptikd))"
 	@echo "  SUDO             = $(if $(SUDO),$(SUDO),(none))"
 	@echo
 	@echo "Status: pre-alpha. See docs/roadmap.md for what actually works."
 
 paths:
 	@echo "KRYPTIK_ROOT    = $(ROOT)"
+	@echo "KRYPTIK_BUILD_COMMIT = $(KRYPTIK_BUILD_COMMIT)"
 	@echo "KRYPTIK_SOURCES = $(KRYPTIK_SOURCES)"
 	@echo "KRYPTIK_WORK    = $(KRYPTIK_WORK)"
 	@echo "  sysroot       = $(KRYPTIK_WORK)/sysroot"
