@@ -47,7 +47,16 @@ else
     fail "stage 1 init did not report — the initramfs /init did not run"
 fi
 
-if have "KRYPTIK_VM_SWITCHROOT"; then
+# Two ways to satisfy one requirement: / must not be the initial ramfs, because
+# pivot_root(2) returns EINVAL there and every zone start would fail. An
+# initramfs image gets off rootfs by copying itself onto a tmpfs and
+# switch_root'ing. A disk image was never on rootfs at all - the kernel mounted
+# its ext4 root directly - and demanding the switch_root line from both made the
+# first disk boot report "every zone start will fail" about a run in which zones
+# started perfectly well.
+if grep -q 'KRYPTIK_VM_ROOTFS=disk' "$LOG"; then
+    pass "the root filesystem is a real disk, so pivot_root works without a switch_root"
+elif have "KRYPTIK_VM_SWITCHROOT"; then
     pass "the image switch_rooted off the initial rootfs"
 else
     fail "no switch_root — pivot_root and therefore every zone start will fail"
@@ -212,6 +221,27 @@ case "$rrc" in
         ;;
 esac
 
+# The same suite with the userns restriction ON. This is the check that makes
+# any privileged result target-relevant: without it, every group K number was
+# measured on a kernel that allows what the target forbids.
+rrc="$(valueof KRYPTIK_VM_RESTRICTED_RC)"
+rknob="$(valueof KRYPTIK_VM_RESTRICTED_KNOB)"
+case "$rrc" in
+    0)  if [ "$rknob" = "apparmor-emulated" ]; then
+            pass "the launcher suite passed again with unprivileged user namespaces RESTRICTED (emulated)"
+            info "emulated with kernel.apparmor_restrict_unprivileged_userns=1, not the target kernel's own build option"
+        else
+            pass "the launcher suite passed again with the restriction on"
+        fi
+        ;;
+    "")     info "no restricted run in this image" ;;
+    nokno*) fail "the restriction could not be turned on, so the privileged path is untested against it" ;;
+    *)      fail "the launcher suite exited $rrc with the restriction on - the privileged path does not hold on the target's rule"
+            sed -n '/KRYPTIK_VM_RESTRICTED_BEGIN/,/KRYPTIK_VM_RESTRICTED_END/p' "$LOG" \
+                | grep -E 'FAIL' | sed 's/^/        /' | head -20
+        ;;
+esac
+
 # The privileged launch contract, if the security probe shipped.
 prc="$(valueof KRYPTIK_VM_PRIVCONTRACT_RC)"
 knob="$(valueof KRYPTIK_VM_USERNS_KNOB)"
@@ -276,20 +306,47 @@ fi
 
 printf '\n'
 if [[ "$origin" == "kryptik-sysroot" ]]; then
-    # The image records the target triple it measured out of the sysroot's own
-    # shell, so this line rests on evidence rather than on a flag someone
-    # passed to the builder.
-    triple="$(valueof KRYPTIK_VM_USERSPACE_TRIPLE)"
-    measured="$(valueof KRYPTIK_VM_SHELL_TRIPLE)"
-    if [[ -n "$measured" && -n "$triple" && "$measured" != "$triple" ]]; then
-        printf '%sMISMATCH%s: the image was stamped %s but its running shell reports %s.\n' \
-            "$C_RED" "$C_RST" "$triple" "$measured"
+    # Two separate claims, and conflating them is the failure this harness was
+    # written to prevent: whose USERSPACE booted, and whose KERNEL booted.
+    #
+    # The userspace claim rests on what the running system says about itself,
+    # not on the build-time stamp. An earlier version compared the stamped
+    # triple against the running shell's triple - which broke the moment a
+    # complete sysroot existed, because stage 04 rebuilds bash natively and
+    # config.guess then reports the BUILD system (x86_64-pc-linux-gnu),
+    # correctly. The discriminator that survives is the target compiler: a
+    # Kryptik userspace carries a gcc that says x86_64-kryptik-linux-gnu.
+    gcc_triple="$(valueof KRYPTIK_VM_GCC_TRIPLE)"
+    os_id="$(valueof KRYPTIK_VM_OSRELEASE_ID)"
+    if [[ "$gcc_triple" == *-kryptik-linux-* ]]; then
+        printf '%sVM BOOT SMOKE PASSED%s — a Kryptik USERSPACE booted and the suites ran.\n' \
+            "$C_GRN" "$C_RST"
+        printf 'Measured in the running guest: gcc -dumpmachine = %s' "$gcc_triple"
+        [[ -n "$os_id" ]] && printf ', /etc/os-release ID=%s' "$os_id"
+        printf '\n'
+    elif [[ "$os_id" == "kryptik" ]]; then
+        printf '%sVM BOOT SMOKE PASSED (WEAK USERSPACE EVIDENCE)%s\n' "$C_YEL" "$C_RST"
+        printf 'The image was stamped kryptik-sysroot and the guest'"'"'s /etc/os-release says\n'
+        printf 'ID=kryptik, but nothing in the running system was measured: there is no gcc\n'
+        printf 'in it to name the target. os-release is a text file. Treat this as a harness\n'
+        printf 'result until a measured one is available.\n'
+    else
+        printf '%sMISMATCH%s: the image was stamped kryptik-sysroot, but the running guest\n' \
+            "$C_RED" "$C_RST"
+        printf 'reports neither a Kryptik gcc target (%s) nor ID=kryptik (%s).\n' \
+            "${gcc_triple:-none}" "${os_id:-none}"
         printf 'The image was assembled from one tree and stamped from another.\n'
         exit 1
     fi
-    printf '%sVM BOOT SMOKE PASSED%s — a Kryptik userspace booted and the suites ran.\n' \
-        "$C_GRN" "$C_RST"
-    [[ -n "$triple" ]] && printf 'Userspace target triple, measured in the image: %s\n' "$triple"
+    # The kernel is a separate question, and on this host it has one answer.
+    case "$kver" in
+        *kryptik*) printf 'Kernel: %s — built by Kryptik.\n' "$kver" ;;
+        *) printf '%sKernel: %s — NOT Kryptik'"'"'s kernel.%s A Kryptik userspace on a stock\n' \
+               "$C_YEL" "${kver:-unknown}" "$C_RST"
+           printf 'kernel is a real milestone and is not a Kryptik system: the hardening\n'
+           printf 'options, the userns restriction and the LSM set are all the distribution\n'
+           printf 'kernel'"'"'s, not the ones Kryptik intends to ship.\n' ;;
+    esac
 else
     printf '%sVM BOOT SMOKE PASSED (HARNESS ONLY)%s\n' "$C_YEL" "$C_RST"
     printf 'The guest booted, s6 came up and the suites ran — but its userspace is\n'
