@@ -130,6 +130,24 @@ pub fn is_size(s: &str) -> bool {
         && matches!(suffix, "" | "K" | "M" | "G" | "T" | "k" | "m" | "g" | "t")
 }
 
+/// A validated size as bytes, for comparing two of them.
+///
+/// Deliberately separate from cgroup::parse_memory_max: this one is about the
+/// relationship between two values in a zone file, runs during parsing, and
+/// must not pull the cgroup module into zone validation. Returns None rather
+/// than erroring - is_size has already accepted the shape, and a value too
+/// large to compare is caught where it is applied.
+fn size_bytes(v: &str) -> Option<u64> {
+    let (digits, mult) = match v.as_bytes().last() {
+        Some(b'K') | Some(b'k') => (&v[..v.len() - 1], 1024u64),
+        Some(b'M') | Some(b'm') => (&v[..v.len() - 1], 1024 * 1024),
+        Some(b'G') | Some(b'g') => (&v[..v.len() - 1], 1024 * 1024 * 1024),
+        Some(b'T') | Some(b't') => (&v[..v.len() - 1], 1024u64 * 1024 * 1024 * 1024),
+        _ => (v, 1),
+    };
+    digits.parse::<u64>().ok()?.checked_mul(mult)
+}
+
 /// Minimal TOML reader: `[section]` headers and `key = value` pairs, with `#`
 /// comments. Values are strings or bare integers. Anything the zone format does
 /// not use (arrays, nested tables, multi-line strings) is rejected rather than
@@ -287,7 +305,28 @@ impl Zone {
                 Some(v) if !is_size(v) => {
                     return Err(bad("storage.size", v, "a size such as 512M or 2G"))
                 }
-                Some(_) => {}
+                Some(v) => {
+                    // A tmpfs bigger than the zone's memory limit cannot ever
+                    // reach its stated size: its pages are charged to the
+                    // zone's memcg, so the OOM group-kill fires first. Two
+                    // limits where only one can bind misleads the operator
+                    // about which one is in force, so say so at parse time
+                    // rather than at the OOM (security R-7c).
+                    if let Some(m) = kv.get("limits.memory_max") {
+                        match (size_bytes(v), size_bytes(m)) {
+                            (Some(sz), Some(mm)) if sz > mm => {
+                                return Err(ZoneError::Invalid(format!(
+                                    "zone {name:?}: storage.size = {v:?} is larger than \
+                                     limits.memory_max = {m:?}. The tmpfs is charged to the \
+                                     zone's memory limit, so it can never reach {v}: the zone \
+                                     would be OOM-killed first. Lower storage.size, or raise \
+                                     memory_max."
+                                )))
+                            }
+                            _ => {}
+                        }
+                    }
+                }
             },
             StorageMode::Encrypted => {
                 if kv.contains_key("storage.size") {
@@ -514,6 +553,36 @@ border_color = "#c9a227"
     }
 
     #[test]
+    fn a_tmpfs_larger_than_the_memory_limit_is_refused() {
+        // R-7c. Both limits are valid on their own; together only one of them
+        // can ever bind, and the operator has no way to tell which.
+        // r##"..."## and not r#"..."#: the border colour contains `"#`, which
+        // is exactly the sequence that would close a single-hash raw string.
+        let toml = r##"
+[zone]
+name = "z"
+description = "d"
+[network]
+mode = "none"
+[storage]
+mode = "ephemeral"
+size = "64M"
+[limits]
+memory_max = "48M"
+[ui]
+border_color = "#000000"
+"##;
+        let err = Zone::from_str(toml).expect_err("64M of tmpfs under a 48M cap must be refused");
+        let msg = format!("{err}");
+        assert!(msg.contains("storage.size"), "the message must name the key: {msg}");
+        assert!(msg.contains("memory_max"), "and the limit it conflicts with: {msg}");
+
+        // The same file with the sizes the other way round is fine.
+        let ok = toml.replace("size = \"64M\"", "size = \"32M\"");
+        Zone::from_str(&ok).expect("32M under a 48M cap is a sensible pair");
+    }
+
+    #[test]
     fn encrypted_storage_requires_a_volume() {
         let bad = VAULT.replace("volume = \"/dev/kryptik/vault\"\n", "");
         let err = Zone::from_str(&bad).unwrap_err();
@@ -571,6 +640,9 @@ border_color = "#c9a227"
         assert!(format!("{err}").contains("limits.memory_max"), "got: {err}");
         let ok = VAULT.replace("pids_max = 128", "memory_max = \"2G\"");
         assert_eq!(Zone::from_str(&ok).unwrap().memory_max.as_deref(), Some("2G"));
+        assert_eq!(size_bytes("32M"), Some(32 * 1024 * 1024));
+        assert_eq!(size_bytes("1G"), Some(1024 * 1024 * 1024));
+        assert!(size_bytes("64M").unwrap() > size_bytes("48M").unwrap());
         assert!(is_size("512M") && is_size("1G") && is_size("4096"));
         assert!(!is_size("0") && !is_size("") && !is_size("2GB") && !is_size("max"));
     }

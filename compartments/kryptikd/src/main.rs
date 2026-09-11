@@ -227,13 +227,28 @@ fn main() -> ExitCode {
 /// unrelated process by now; signalling it would be far worse than leaving a
 /// directory behind.
 fn cmd_stop(name: &str, now: bool) -> ExitCode {
-    let st = match registry::state(name) {
+    let mut st = match registry::state(name) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("kryptikd: {e}");
             return ExitCode::FAILURE;
         }
     };
+
+    // "Still starting" is a window of a few milliseconds between claim() and
+    // the fork that records the launcher pid. A script that does `run &` then
+    // `stop` lands in it often enough to be annoying, and the answer is not to
+    // report failure but to look again (R-7b F3).
+    if matches!(st, registry::State::Running { launcher: None, .. }) {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        st = match registry::state(name) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("kryptikd: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+    }
 
     match st {
         registry::State::Absent => {
