@@ -55,12 +55,16 @@ USAGE:
                    the zone sees its own directory as /home/NAME
     --zone-uid N   host uid/gid the zone's root maps to. Required, and only
     --zone-gid N   accepted, when kryptikd itself runs as root.
+    --auto-approve-transfers
+                   development flag: approve every file this zone offers to
+                   another zone without a prompt (warns; the prompt is desktop work)
 
 Only descriptors 0, 1 and 2 reach the zone; the environment is rebuilt from
 an allowlist (see `kryptikd explain NAME`).
 
-Not yet implemented: transfer (Design 05) and per-zone encrypted volumes.
-They exit with an error rather than pretending to work."
+Not yet implemented: per-zone encrypted volumes. They exit with an error
+rather than pretending to work. Transfers are a zone verb on the broker
+socket (docs/design/05a), not a zone 0 command."
 }
 
 fn main() -> ExitCode {
@@ -207,11 +211,10 @@ fn main() -> ExitCode {
         "clipboard" => cmd_clipboard(&args),
         "transfer" => {
             eprintln!(
-                "kryptikd: 'transfer' is not implemented yet (Design 05).\n\
-                 Refusing rather than pretending. A compartment manager that\n\
-                 silently does nothing is worse than one that will not start."
+                "kryptikd: 'transfer' is a zone verb on the broker socket, sent by the zone\n\
+                 that offers the file (docs/design/05a); zone 0 has no transfer command."
             );
-            ExitCode::from(3)
+            ExitCode::from(2)
         }
         "-h" | "--help" | "help" => {
             println!("{}", usage());
@@ -826,6 +829,7 @@ fn run_options_from(args: &[String]) -> Result<spawn::RunOptions, String> {
         zone_uid: num("--zone-uid")?,
         zone_gid: num("--zone-gid")?,
         zones_dir: std::path::PathBuf::new(),
+        auto_approve_transfers: args.iter().any(|a| a == "--auto-approve-transfers"),
     })
 }
 
