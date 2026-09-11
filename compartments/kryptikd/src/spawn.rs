@@ -471,16 +471,21 @@ pub fn run_in_zone(
         // does so honestly until encrypted volumes land.
         StorageMode::Persistent => {}
     }
-    // A seccomp policy file is applied (docs/design/07); a Landlock policy
-    // file is not, and a zone naming one is still refused without the
-    // override.
-    if zone.landlock.is_some() {
-        unsupported.push(
-            "[policy] landlock: per-zone Landlock policy files are NOT yet applied; the \
-             shared base rules would be used"
-                .into(),
-        );
-    }
+    // A Landlock policy file is applied as a second layer over the base
+    // rules (docs/design/07). Read and parsed HERE, in the parent, because
+    // the zone cannot reach the zone directory once it has pivoted - and a
+    // file that does not parse must stop the launch before anything is built.
+    let fs_rules: Vec<landlock::ZoneRule> = match &zone.landlock {
+        None => Vec::new(),
+        Some(rel) => {
+            let path = policy::resolve(&opts.zones_dir, rel);
+            let text = std::fs::read_to_string(&path).map_err(|e| {
+                SpawnError::Setup(format!("zone {:?} landlock policy {}: {e}", zone.name, path.display()))
+            })?;
+            landlock::parse_policy(&text, &path.display().to_string())
+                .map_err(|e| SpawnError::Setup(format!("zone {:?} landlock policy: {e}", zone.name)))?
+        }
+    };
     // [network]: every zone starts from an EMPTY network namespace - loopback
     // and nothing else - and only the parent adds to it. A kernel with the
     // tunnel modules built in (the Kryptik kernel builds SIT in) creates its
@@ -650,7 +655,7 @@ pub fn run_in_zone(
         initpid.close_read();
         let rc = intermediate_main(
             zone, rootfs, argv, &id, parent_pid, &placed, &ready, &mapped, &initpid,
-            zone_policy.as_ref(), &broker_path_str,
+            zone_policy.as_ref(), &fs_rules, &broker_path_str,
         );
         // Never return: this process must not run the parent's cleanup.
         unsafe { libc::_exit(rc) };
@@ -840,6 +845,7 @@ fn intermediate_main(
     mapped: &SyncPipe,
     initpid: &SyncPipe,
     zone_policy: Option<&policy::Policy>,
+    fs_rules: &[landlock::ZoneRule],
     broker_path: &str,
 ) -> i32 {
     macro_rules! bail {
@@ -1071,7 +1077,7 @@ fn intermediate_main(
     }
 
     if inner == 0 {
-        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, plumbed, &broker_in_zone);
+        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, fs_rules, plumbed, &broker_in_zone);
         unsafe { libc::_exit(rc) };
     }
 
@@ -1101,6 +1107,7 @@ fn zone_init(
     argv: &[String],
     flags: libc::c_int,
     zone_policy: Option<&policy::Policy>,
+    fs_rules: &[landlock::ZoneRule],
     plumbed: bool,
     broker_path: &str,
 ) -> i32 {
@@ -1160,6 +1167,14 @@ fn zone_init(
     //     mean if it means anything.
     if let Err(e) = landlock::confine_pivoted_zone(&home) {
         bail!("landlock: {e}");
+    }
+    // 11b. The zone's own policy file, as a SECOND layer. Layers intersect,
+    //      so this can only narrow what step 11 allowed - a zone file cannot
+    //      hand itself anything, and the kernel is what guarantees that.
+    if !fs_rules.is_empty() {
+        if let Err(e) = landlock::confine_further(fs_rules) {
+            bail!("landlock policy: {e}");
+        }
     }
 
     // 12. Close every descriptor above stderr.
@@ -1378,10 +1393,27 @@ pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String
         }
     };
 
-    let rules: Vec<String> = landlock::zone_rules(&home)
+    let mut rules: Vec<String> = landlock::zone_rules(&home)
         .iter()
         .map(|r| format!("{:<12} {}", r.path, landlock::describe_access(r.access)))
         .collect();
+    if let Some(rel) = &zone.landlock {
+        let path = policy::resolve(zones_dir, rel);
+        match std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|t| landlock::parse_policy(&t, rel))
+        {
+            Ok(extra) => {
+                rules.push(format!("-- and then narrowed by {rel}, which grants only:"));
+                rules.extend(
+                    extra
+                        .iter()
+                        .map(|r| format!("{:<12} {}", r.path, landlock::describe_access(r.access))),
+                );
+            }
+            Err(e) => rules.push(format!("-- {rel}: ERROR - {e} (the zone will not start)")),
+        }
+    }
 
     format!(
         "zone       {}\n\

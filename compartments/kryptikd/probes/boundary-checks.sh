@@ -155,6 +155,16 @@ MATCH="owns the NIC" checkz routedraw "E3  a zone that does not own the NIC may 
 MATCH="policy" checkz nopolicy "E4  a policy file that does not exist is a refusal, not a fallback" 1 /bin/sh -c "echo RAN-ANYWAY"
 MATCH="ptrace" checkz badpolicy "E5  a policy may not re-allow something on the denied list" 1 /bin/sh -c "echo RAN-ANYWAY"
 
+# The Landlock half. A zone policy file is a SECOND layer, and layers
+# intersect, so it can only take access away - these rows are what that
+# means from inside a zone.
+MATCH="^ok$"   checkz narrowed "E6  a zone with a Landlock policy still runs and can read its root" 0 /bin/sh -c "test -r /usr/bin/env && echo ok"
+MATCH="^ok$"   checkz narrowed "E7  ... and writes where the policy grants write" 0 /bin/sh -c "echo x > /tmp/f && echo x > /dev/null && echo ok"
+MATCH="^denied$" checkz narrowed "E8  ... but NOT its own HOME, which the base rules alone would allow" 0 /bin/sh -c "echo x > \$HOME/f 2>/dev/null && echo WROTE || echo denied"
+MATCH="^ok$"   check "E9  control: the same write succeeds in a zone with no Landlock policy" 0 /bin/sh -c "echo x > \$HOME/f && echo ok"
+MATCH="deny"   checkz badfs "E10 a Landlock policy using a directive that cannot exist is refused" 1 /bin/sh -c "echo RAN-ANYWAY"
+MATCH="absolute" checkz relfs "E11 a Landlock policy naming a relative path is refused" 1 /bin/sh -c "echo RAN-ANYWAY"
+
 # ---------------------------------------------------------------------------
 head_ "F. Guarantees a build cannot give are refused, not implied"
 

@@ -73,3 +73,73 @@ extra syscalls and socket/netlink sets), `policy.rs` (parser), `spawn.rs`
 (load at launch; install), `main.rs` (`check` parses; `explain`), unit tests,
 `security/probes/fixed-checks.sh` PF rows (a fixture zone `packet` with
 `policy/packet.seccomp`).
+
+
+## Update: `[policy] landlock` is implemented (security increment 19)
+
+The text above said a Landlock policy file stayed unimplemented and refused,
+because "Landlock rules over a pivoted tree are a different design". The
+different design turned out to be one sentence, and it is now built.
+
+**A zone's policy file is a second Landlock layer, applied over the base
+rules.** Landlock layers intersect: an access is permitted only if *every*
+layer permits it. So a zone policy file can only ever narrow what the base
+already allowed, and the kernel enforces that — not the parser, and not a
+review of the file. A file asking for more than the base gave receives
+nothing more. That is the whole safety argument, and it is why the feature no
+longer needs to be refused.
+
+It also settles the question the earlier note was stuck on. Rules are written
+against the **pivoted** tree, as the zone sees it, and applied inside the
+zone after `pivot_root` — the file is read and parsed in the parent, where
+the zone directory is still reachable, so a file that does not parse stops
+the launch before anything is built.
+
+```text
+# compartments/zones/policy/<name>.landlock
+read-exec        /
+read-write       /tmp
+read-write       /dev
+```
+
+Directives: `read`, `read-exec`, `read-write`, `read-write-exec`. Each grants
+those rights on the path and everything beneath it.
+
+**There is deliberately no `deny`.** Landlock grants rights on a path
+hierarchy; it has no subtraction. Expressing "all of `/home/w` except
+`/home/w/.ssh`" would mean enumerating every sibling of `.ssh`, and would
+silently stop denying the day someone added another one. Listing what the
+zone may reach says the same thing and cannot rot that way.
+
+Rules of the file, each of which is a refusal rather than a warning:
+
+- Paths must be absolute and contain no `..`. A relative path would resolve
+  against whatever the launcher's working directory happened to be.
+- A path may be named only once.
+- A file that grants nothing — empty, or only comments — is refused, because
+  it would stop the zone reaching even its own binaries. Omitting
+  `[policy] landlock` is how a zone asks for the base rules.
+- A path that does not exist at apply time is an error. It would grant
+  nothing either way, so the launch would otherwise continue with the zone
+  quietly narrower than its file says, and a typo is far likelier than a
+  deliberately absent path. An ephemeral zone should therefore name only
+  paths that exist at launch, since its `$HOME` is a fresh tmpfs.
+
+`kryptikd explain` prints the base rules, then the line
+`-- and then narrowed by <file>, which grants only:` and the file's own
+rules, so the two layers are never confused for one list.
+
+**Evidence.** `landlock::tests` includes a kernel-backed test that builds two
+layers in a forked child and checks all three properties that matter: a path
+the second layer omits becomes unreachable although the first layer allowed
+it; a path both layers allow still works; and a right the second layer asks
+for but the first never granted is still denied — the last being the one that
+would make the feature unsafe if it failed. The boundary probes exercise it
+through the real launcher: a zone whose policy grants write only in `/tmp`
+and `/dev` can no longer write its own `$HOME`, which the base rules alone
+would allow, with a control zone showing the same write succeeding without a
+policy file.
+
+No shipped zone declares `[policy] landlock` yet. The six in
+`compartments/zones/` keep the base rules until each one's needs are written
+down deliberately.
