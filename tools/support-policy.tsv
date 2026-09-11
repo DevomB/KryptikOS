@@ -1,0 +1,66 @@
+# Upstream support status for Kryptik's pinned release series.
+#
+# Read by tools/check-support-status.sh.
+#
+# Every row records WHERE the claim came from and WHEN it was read, because a
+# support date with no source is a rumour and a support date with no retrieval
+# date rots silently into one.
+#
+# Columns are whitespace separated; the note runs to the end of the line.
+#
+#   package       source name, as in sources.lock and tools/fetch-sources.sh
+#   config_var    the pin in build/config/versions.env
+#   series        the release series this row describes, or * for any series
+#   status        supported | security-only | none-published | delegated
+#   support_ends  YYYY-MM-DD, or YYYY-MM when upstream publishes only a month,
+#                 or - when upstream publishes a support tier and not a date
+#   policy_url    the upstream page this row was read from
+#   retrieved     the date it was read
+#   note          free text
+#
+# What the statuses mean:
+#
+#   supported       upstream supports the series; support_ends says until when.
+#                   Some projects publish a TIER instead of a calendar date --
+#                   perlpolicy names the two most recent stable series and
+#                   calls every older one end of life. Leave support_ends as -
+#                   for those and record the tier in the note. Such a row can
+#                   never expire on its own, which is precisely why it must say
+#                   what it was read from; the note is required, not optional.
+#   security-only   upstream ships security fixes only for this series. Still
+#                   supported, so this is a warning and not a failure, but it
+#                   is the last stop before end of life.
+#   none-published  upstream publishes NO version-based support window at all.
+#                   This is a RECORDED FACT AND NOT A STATEMENT THAT THE PIN
+#                   IS CURRENT. A package can be twenty security releases
+#                   behind and still sit honestly on this row. Currency is
+#                   tools/check-source-currency.sh's question, not this file's.
+#   delegated       support status is established by another tool, named in the
+#                   note. --strict requires that tool to exist, because a
+#                   delegation to something absent is a skipped check, and a
+#                   skipped check is not a pass.
+#
+# A pinned series with no row here is reported as off the policy map and fails
+# --strict. That is deliberate: moving a pin to a series nobody has looked up
+# should require looking it up. Add the row from upstream's own page.
+#
+# DO NOT populate this file from a distribution's security tracker or a
+# third-party end-of-life aggregator. Those are someone else's summary of
+# upstream, and when the summary is wrong this file becomes confidently wrong
+# in the one place a reader would trust it.
+
+# package  config_var   series  status          support_ends  policy_url                                            retrieved   note
+openssl    V_OPENSSL    3.0     supported       2026-09-07    https://openssl-library.org/policies/releasestrat/    2026-09-11  LTS
+openssl    V_OPENSSL    3.2     supported       2025-11-23    https://openssl-library.org/policies/releasestrat/    2026-09-11  -
+openssl    V_OPENSSL    3.3     supported       2026-04-09    https://openssl-library.org/policies/releasestrat/    2026-09-11  -
+openssl    V_OPENSSL    3.4     supported       2026-10-22    https://openssl-library.org/policies/releasestrat/    2026-09-11  -
+openssl    V_OPENSSL    3.5     supported       2030-04-08    https://openssl-library.org/policies/releasestrat/    2026-09-11  LTS
+openssl    V_OPENSSL    3.6     supported       2026-11-01    https://openssl-library.org/policies/releasestrat/    2026-09-11  -
+openssl    V_OPENSSL    4.0     supported       2027-05-14    https://openssl-library.org/policies/releasestrat/    2026-09-11  -
+python     V_PYTHON     3.11    security-only   2027-10       https://devguide.python.org/versions/                 2026-09-11  PEP 664 branch, security-fix phase
+python     V_PYTHON     3.12    security-only   2028-10       https://devguide.python.org/versions/                 2026-09-11  PEP 693 branch, security-fix phase since 2025-04
+perl       V_PERL       5.40    security-only   -             https://perldoc.perl.org/perlpolicy                   2026-09-11  perlpolicy: security fixes only
+perl       V_PERL       5.42    supported       -             https://perldoc.perl.org/perlpolicy                   2026-09-11  perlpolicy: full support, previous stable
+perl       V_PERL       5.44    supported       -             https://perldoc.perl.org/perlpolicy                   2026-09-11  perlpolicy: full support, current stable
+expat      V_EXPAT      *       none-published  -             https://github.com/libexpat/libexpat/blob/master/SECURITY.md  2026-09-11  volunteer project on a reasonable-effort basis; no version-based support window
+linux      V_LINUX      *       delegated       -             https://www.kernel.org/releases.json                  2026-09-11  tools/check-kernel-eol.sh queries releases.json live
