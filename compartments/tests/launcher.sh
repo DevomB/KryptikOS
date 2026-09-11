@@ -1867,6 +1867,86 @@ zrun alpha -- /bin/sh -c "$PRO echo hi > \$HOME/capfile && cat \$HOME/capfile | 
 probe "CAP4 positive control: the zone still runs normally after the drop" "hi"
 
 # ============================================================================
+head_ "POL. Per-zone policy files  [unpriv]"
+# ============================================================================
+# These were reported as "not implemented" by this suite until security landed
+# them, which made the suite under-report what the system does - the same
+# defect as over-reporting it, pointing the other way.
+#
+# What is checked is that the file CHANGES the zone, not that kryptikd says it
+# read one. `keep-capability CAP_NET_RAW` is the directive with a consequence
+# visible from inside a zone without a compiler: the bounding set gains
+# CAP_NET_RAW (bit 13, 0x2000) on top of CAP_NET_BIND_SERVICE (bit 10, 0x400).
+mkdir -p "$ZONES/policy"
+
+# A zone whose file keeps one extra capability...
+cat > "$ZONES/policy/widened.seccomp" <<'POLICY'
+# launcher.sh fixture: one directive with an effect that can be seen from
+# inside the zone with nothing but /proc/self/status.
+keep-capability CAP_NET_RAW
+POLICY
+mkzone_policy() { # name colour policyfile
+    {
+        printf '[zone]\nname = "%s"\ndescription = "policy fixture"\n' "$1"
+        printf '[network]\nmode = "none"\n'
+        printf '[storage]\nmode = "ephemeral"\nsize = "32M"\n'
+        [[ -n "${3:-}" ]] && printf '[policy]\nseccomp = "%s"\n' "$3"
+        printf '[ui]\nborder_color = "%s"\n' "$2"
+    } > "$ZONES/$1.toml"
+}
+mkzone_policy widened "#0b0b0b" "policy/widened.seccomp"
+mkzone_policy plainpol "#0c0c0c" ""
+
+CAPBND='grep ^CapBnd /proc/self/status | tr -d "\t" | sed s/CapBnd://'
+
+zrun plainpol -- /bin/sh -c "$PRO echo PROBE=\$($CAPBND)"
+probe "POL1 positive control: a zone with no policy file keeps only CAP_NET_BIND_SERVICE" \
+      "0000000000000400"
+
+zrun widened -- /bin/sh -c "$PRO echo PROBE=\$($CAPBND)"
+probe "POL2 a policy file's keep-capability reaches the zone's bounding set" \
+      "0000000000002400"
+
+# A file that names something outside the vocabulary must refuse the launch,
+# not silently do nothing: a typo that produced a quietly narrower zone than
+# the file says would be the worst outcome of having files at all.
+cat > "$ZONES/policy/typo.seccomp" <<'POLICY'
+keep-capability CAP_NET_RWA
+POLICY
+mkzone_policy typoed "#0d0d0d" "policy/typo.seccomp"
+zrun typoed -- /bin/sh -c "$PRO echo PROBE=ran"
+if [[ "$ZOUT" == *"$LAUNCHED"* ]]; then
+    fail "POL3 a policy file with an unknown capability started the zone anyway"
+elif [[ "$ZOUT" == *CAP_NET_RWA* || "$ZOUT" == *typo.seccomp* ]]; then
+    pass "POL3 an unknown name in a policy file refuses the launch and names it"
+else
+    fail "POL3 refused, but the message named neither the file nor the bad name"
+    info "output: $(printf '%s' "$ZOUT" | tr '\n' '|' | cut -c1-200)"
+fi
+
+# And a file must not be able to re-allow something the base policy denies.
+cat > "$ZONES/policy/escalate.seccomp" <<'POLICY'
+allow-syscall ptrace
+POLICY
+mkzone_policy escalated "#0e0e0e" "policy/escalate.seccomp"
+zrun escalated -- /bin/sh -c "$PRO echo PROBE=ran"
+if [[ "$ZOUT" == *"$LAUNCHED"* ]]; then
+    fail "POL4 a policy file RE-ALLOWED ptrace, which the base policy denies"
+else
+    pass "POL4 a policy file cannot re-allow a syscall the base policy denies"
+fi
+
+# The Landlock half is NOT implemented, and the suite says so by name rather
+# than leaving it inside a message about seccomp.
+lp="$("$KRYPTIKD" explain widened --zones "$ZONES" 2>&1 | sed -n 's/^policy *//p' | head -1)"
+if [[ -n "$lp" ]]; then
+    pass "POL5 explain reports what the policy file adds ($lp)"
+else
+    fail "POL5 explain does not report the policy file's additions"
+fi
+skip "POL6 per-zone LANDLOCK policy files are NOT applied (seccomp files are; kryptikd refuses a zone naming a landlock file)"
+
+# ============================================================================
 head_ "LC. Zone lifecycle: registry, stop, concurrency  [unpriv]"
 # ============================================================================
 # `kryptikd run` was one-shot: it supervised its own zone and nothing else
@@ -2129,7 +2209,9 @@ skip "routed network reaches the bridge via the nic zone [vm] not implemented"
 # erasure, because tmpfs pages can be swapped - is asserted by EPH8 rather than
 # listed here, since it is a property of the implementation and not a missing
 # feature.
-skip "per-zone seccomp/landlock policy files applied  [vm] not implemented"
+# Per-zone SECCOMP policy files are applied and are covered by group POL;
+# the Landlock half is still refused and is reported there as POL6. This
+# line claimed both were unimplemented long after one of them was.
 if (( PRIVILEGED == 0 )); then
     skip "zone runs correctly under real root (not a userns) [vm] needs a disposable VM — group K covers it there"
 fi
