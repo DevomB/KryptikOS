@@ -16,6 +16,7 @@ SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SELF}/../../build/lib/common.sh"
 
 IMAGE=""
+EXTRA_DISK=""
 KERNEL=""
 MODE="console"
 MEM="2048"
@@ -26,6 +27,7 @@ EXTRA_APPEND=""
 
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
+        --extra-disk) EXTRA_DISK="${2:-}"; shift 2 ;;
         --image)   IMAGE="${2:?}";  shift 2 ;;
         --kernel)  KERNEL="${2:?}"; shift 2 ;;
         --mode)    MODE="${2:?}";   shift 2 ;;
@@ -125,6 +127,20 @@ QEMU_ARGS=(
     -no-reboot
 )
 [[ "$NET" == "none" ]] && QEMU_ARGS+=( -nic none )
+
+# A second disk, for the installer to install onto.
+#
+# Files only, and the check is the same one mkdisk.sh makes for the same
+# reason: this hands a path to a process that will partition and mkfs whatever
+# it finds there. A guest cannot reach the host's disks through a file, and it
+# is not given anything else.
+if [[ -n "$EXTRA_DISK" ]]; then
+    [[ -e "$EXTRA_DISK" ]] || die "no such extra disk: ${EXTRA_DISK}"
+    [[ -f "$EXTRA_DISK" ]] || die "refusing to attach ${EXTRA_DISK}: it is a
+$(stat -c %F "$EXTRA_DISK"), not a regular file. Virtual disks are files here."
+    QEMU_ARGS+=( -drive "file=${EXTRA_DISK},format=raw,if=virtio,cache=unsafe" )
+    dim "  disk2  : ${EXTRA_DISK} (attaches as /dev/vdb)"
+fi
 [[ -n "${QEMU_DATA:-}" && -d "${QEMU_DATA}" ]] && QEMU_ARGS+=( -L "$QEMU_DATA" )
 
 log "booting ${IMAGE##*/}"
