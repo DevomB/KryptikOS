@@ -873,6 +873,87 @@ EOF
     ls -la /sbin/init /sbin/telinit /sbin/shutdown /sbin/halt /sbin/poweroff /sbin/reboot
 }
 
+# The service database, and the kernel tunables that were never installed.
+#
+# Until this step existed the image booted to a console and printed "no
+# compiled s6-rc database ... no services will start", which was honest and
+# not a system. s6-svscan was running as pid 1 supervising nothing but its own
+# logger and the early getty.
+#
+# Two things get installed here that the build had been carrying and not
+# shipping:
+#
+#   build/config/sysctl.d/99-kryptik-hardening.conf - present in the
+#   repository since the beginning, referenced by docs/hardening.md, and never
+#   copied into a target. Every tunable in it was inert.
+#
+#   build/services/ - the s6-rc source tree, compiled into the database
+#   rc.init looks for.
+s_services() {
+    local src="${KRYPTIK_ROOT}/build/services"
+    [[ -d "$src" ]] || { echo "no service source tree at ${src}"; return 1; }
+
+    # The scripts the oneshot `up` files name. They live outside the database
+    # so they can be read, checked and run by hand on a machine that is not
+    # booting properly.
+    install -d -m 0755 /usr/libexec/kryptik
+    install -m 0755 "$src"/scripts/*.sh /usr/libexec/kryptik/
+    echo "--- boot scripts ---"
+    ls -la /usr/libexec/kryptik/
+
+    # Kryptik's kernel tunables.
+    install -d -m 0755 /etc/sysctl.d
+    if compgen -G "${KRYPTIK_ROOT}/build/config/sysctl.d/*.conf" > /dev/null; then
+        install -m 0644 "${KRYPTIK_ROOT}"/build/config/sysctl.d/*.conf /etc/sysctl.d/
+        echo "--- sysctl.d ---"
+        ls -la /etc/sysctl.d/
+    else
+        echo "no sysctl.d fragments to install"
+    fi
+
+    # Compile the database. s6-rc-compile refuses to overwrite, so build
+    # beside and swap: a half-written database is a machine that does not boot.
+    local tmpdb=/etc/s6-rc/compiled.new
+    rm -rf "$tmpdb"
+    install -d -m 0755 /etc/s6-rc
+    s6-rc-compile -v2 "$tmpdb" "$src"
+    rm -rf /etc/s6-rc/compiled.old
+    [[ -d /etc/s6-rc/compiled ]] && mv /etc/s6-rc/compiled /etc/s6-rc/compiled.old
+    mv "$tmpdb" /etc/s6-rc/compiled
+    rm -rf /etc/s6-rc/compiled.old
+
+    # Read the database back. "s6-rc-compile exited 0" and "the database
+    # describes the services we wrote" are different claims, and the second is
+    # the one a boot depends on.
+    echo "--- compiled database ---"
+    local all
+    all="$(s6-rc-db -c /etc/s6-rc/compiled list all)"
+    printf '%s\n' "$all" | sed 's/^/  /'
+
+    local svc missing=0
+    for svc in sysinit eudev eudev-trigger kryptikd-check getty-tty1 default; do
+        if ! printf '%s\n' "$all" | grep -qx "$svc"; then
+            echo "MISSING from the database: ${svc}"; missing=$((missing + 1))
+        fi
+    done
+    [[ "$missing" -eq 0 ]] || { echo "${missing} service(s) did not compile in"; return 1; }
+
+    # The dependency graph has to be the one we declared, or services start in
+    # an order nobody chose.
+    echo "--- what 'default' pulls in, in order ---"
+    s6-rc-db -c /etc/s6-rc/compiled pipeline default 2>/dev/null || true
+    s6-rc-db -c /etc/s6-rc/compiled dependencies default | sed 's/^/  /'
+
+    echo "--- eudev-trigger must depend on eudev ---"
+    if s6-rc-db -c /etc/s6-rc/compiled dependencies eudev-trigger | grep -qx eudev; then
+        echo "  ok"
+    else
+        echo "  FAIL: eudev-trigger does not depend on eudev"
+        return 1
+    fi
+    echo "service database compiled and verified"
+}
+
 # kryptikd, the zone supervisor.
 #
 # It is Rust, and the sysroot has no Rust toolchain - bootstrapping one into
@@ -1022,6 +1103,25 @@ s_boot_check() {
     else
         echo "  MISSING ${svcdir}"; n=$((n + 1))
     fi
+
+    # The service database. Without it the machine boots to a bare console,
+    # which is a state worth distinguishing from a broken one.
+    if [[ -d /etc/s6-rc/compiled ]]; then
+        local nsvc
+        nsvc="$(s6-rc-db -c /etc/s6-rc/compiled list all 2>/dev/null | grep -c . || echo 0)"
+        printf '  ok      s6-rc database (%s services)\n' "$nsvc"
+        if s6-rc-db -c /etc/s6-rc/compiled list all 2>/dev/null | grep -qx default; then
+            echo "  ok      a 'default' bundle exists for rc.init to bring up"
+        else
+            echo "  MISSING a 'default' bundle"; n=$((n + 1))
+        fi
+    else
+        echo "  MISSING /etc/s6-rc/compiled - the image will boot to a bare console"
+        n=$((n + 1))
+    fi
+
+    chk "sysctl fragments"  /etc/sysctl.d
+    chk "boot scripts"      /usr/libexec/kryptik/sysinit.sh x
 
     if [[ -e /etc/kryptik/kryptikd-absent ]]; then
         echo "  NOTE    kryptikd is not installed in this image (see the kryptikd step)"
@@ -1185,6 +1285,9 @@ declare -a PACKAGES=(
     "etc"         "s_etc"
     "console"     "s_console"
     "init"        "s_init"
+    # After init: the database lives beside the stage 2 scripts that look
+    # for it. Before kryptikd: boot-check verifies both together.
+    "services"    "s_services"
     # The path and the binary's content hash are arguments so that both are
     # part of this step's fingerprint; see s_kryptikd.
     # The zone definitions are an input too, not just the binary. kryptikd
