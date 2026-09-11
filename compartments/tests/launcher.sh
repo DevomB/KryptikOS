@@ -80,7 +80,15 @@ fi
 #
 # Comparing mtimes is crude and that is fine - it is a hint, not a gate, and it
 # is checked against the sources that decide whether a zone file parses.
-if [[ -z "${KRYPTIK_SKIP_STALE_CHECK:-}" ]]; then
+#
+# Cargo.toml is the gate, and not incidentally: it is what distinguishes a
+# BUILD TREE from a deployment. The developer VM image carries a copy of
+# isolate.rs (adversarial.sh cross-checks its namespace set against it) and
+# installs kryptikd at /usr/bin, so the copied source is newer than the binary
+# and this check fired on every VM run - a false alarm about a binary that was
+# built minutes earlier. Where there is no Cargo.toml there is nothing to
+# rebuild and nothing to be stale.
+if [[ -z "${KRYPTIK_SKIP_STALE_CHECK:-}" && -f "$REPO/compartments/kryptikd/Cargo.toml" ]]; then
     newer="$(find "$REPO/compartments/kryptikd/src" "$REPO/compartments/kryptikd/Cargo.toml" \
                   -newer "$KRYPTIKD" 2>/dev/null | head -3)"
     if [[ -n "$newer" ]]; then
