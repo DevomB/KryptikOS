@@ -63,8 +63,13 @@ jobs:
         run: |
           # NTFS cannot express the POSIX exec bit, so a commit from Windows
           # silently records 100644 and a Linux clone fails before bash runs.
+          # Same gap the shellcheck step had: tools/vm/, the test suites and
+          # the git hooks were not in this list, and tools/git-hooks/pre-commit
+          # was committed 100644 - so git skipped it silently on every commit
+          # and the hook has never once run.
           fail=0
-          for f in build/stages/*.sh tools/*.sh; do
+          for f in build/stages/*.sh tools/*.sh tools/vm/*.sh \
+                   compartments/tests/*.sh tools/git-hooks/*; do
             mode=$(git ls-files -s "$f" | awk '{print $1}')
             if [ "$mode" != "100755" ]; then
               echo "  NOT EXECUTABLE ($mode): $f"
