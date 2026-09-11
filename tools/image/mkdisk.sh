@@ -45,6 +45,36 @@ done
 
 [[ -n "$SYSROOT" ]] || die "--sysroot is required"
 [[ -n "$OUT" ]]     || die "--out is required"
+
+# --out has to be a plain file, and this is not paranoia about typos.
+#
+# This script runs as root and does `rm -f "$OUT"` followed by six gigabytes of
+# writes. Given --out /dev/sda it would remove the device node and then write
+# over whatever came back. "Never modify the host's disks" is a hard
+# constraint, and "the operator will pass the right path" is not a mechanism -
+# it is a hope with root privileges attached.
+#
+# This tool writes image FILES. It has no reason to touch a device, ever, so it
+# is not given the option.
+OUT_DIR="$(cd "$(dirname "$OUT")" 2>/dev/null && pwd)"     || die "the directory for --out does not exist: $(dirname "$OUT")"
+OUT_REAL="${OUT_DIR}/$(basename "$OUT")"
+
+case "$OUT_REAL" in
+    /dev/*|/sys/*|/proc/*|/boot/*|/run/*|/etc/*)
+        die "refusing to write an image to ${OUT_REAL}.
+That path is not a disposable file. This tool writes image files only." ;;
+esac
+
+if [[ -e "$OUT_REAL" && ! -f "$OUT_REAL" ]]; then
+    die "refusing to write an image to ${OUT_REAL}.
+It exists and is a $(stat -c %F "$OUT_REAL"), not a regular file. This tool
+writes image files only, and would otherwise rm -f that path first."
+fi
+
+if [[ -L "$OUT" ]]; then
+    die "refusing to write an image through the symlink ${OUT}.
+It points at ${OUT_REAL}; pass that path directly if you mean it."
+fi
 [[ -d "$SYSROOT" ]] || die "no such sysroot: ${SYSROOT}"
 
 for t in mkfs.ext4 sgdisk truncate dd blkid dumpe2fs; do
