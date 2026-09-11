@@ -90,7 +90,7 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
 	vm-disk vm-disk-boot vm-restart vm-measure cli-test update-test \
         test-harness test-hardening test-artifacts audit-artifacts \
         audit-artifacts-strict manifest verify-manifest test-manifest \
-        test-s6-init smoke-userspace test-services test-libc-unwind \n        sign-image verify-image test-image-signing test-mkdisk-guards \n        install-test \n        image image-boot \
+        test-s6-init smoke-userspace test-services test-libc-unwind \n        sign-image verify-image test-image-signing test-installer test-mkdisk-guards \n        install-test \n        image image-boot \
         image-smoke \
         validate-kernel validate-kernel-hardened \
         toolchain temp-tools chroot chroot-enter chroot-umount chroot-status \
@@ -156,6 +156,7 @@ help:
 	@echo "  make sign-image        sign the disk image with a developer key"
 	@echo "  make verify-image      verify that signature against the image"
 	@echo "  make test-image-signing  prove the verifier refuses what it should"
+	@echo "  make test-installer    installer checks that need no VM"
 	@echo "  make install-test      install onto a blank disk, then boot it"
 	@echo "  make image KERNEL=...  build a bootable disk image from the sysroot"
 	@echo "  make image-boot KERNEL=...  boot that image on a serial console"
@@ -452,6 +453,9 @@ install-test:
 
 test-mkdisk-guards:
 	@"$(TOOLS)"/test-mkdisk-guards.sh
+
+test-installer:
+	@"$(TOOLS)"/test-installer.sh
 
 test-image-signing:
 	@"$(TOOLS)"/test-image-signing.sh
