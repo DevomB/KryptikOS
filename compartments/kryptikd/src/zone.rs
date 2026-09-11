@@ -713,7 +713,7 @@ border_color = "#000000"
 
     #[test]
     fn identity_base_is_aligned_and_above_the_floor() {
-        for bad in ["1000", "100000", "131073", "196607", "0", "x"] {
+        for bad in ["1000", "100000", "131073", "196607", "0", "\"x\""] {
             let t = VAULT.replace("[ui]", &format!("[identity]\nuid_base = {bad}\n[ui]"));
             let err = Zone::from_str(&t).unwrap_err();
             assert!(format!("{err}").contains("identity.uid_base"), "{bad}: {err}");
