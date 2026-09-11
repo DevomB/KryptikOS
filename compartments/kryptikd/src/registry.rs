@@ -28,6 +28,7 @@
 //! never signalled unless both match. That closes the reuse window between
 //! checking the lock and calling `kill`.
 
+use crate::cgroup;
 use std::fs;
 use std::io;
 use std::os::unix::io::RawFd;
@@ -38,6 +39,8 @@ pub enum RegistryError {
     AlreadyRunning { zone: String, pid: i32 },
     Io { path: String, err: io::Error },
     Malformed { path: String, what: String },
+    /// The registry directory exists but is not ours to use.
+    UnsafeBase { path: String, why: String },
 }
 
 impl std::fmt::Display for RegistryError {
@@ -55,6 +58,12 @@ impl std::fmt::Display for RegistryError {
             ),
             RegistryError::Io { path, err } => write!(f, "{path}: {err}"),
             RegistryError::Malformed { path, what } => write!(f, "{path}: {what}"),
+            RegistryError::UnsafeBase { path, why } => write!(
+                f,
+                "refusing to use the zone registry at {path}: {why}. \
+                 Remove it (or point XDG_RUNTIME_DIR at a directory you own) \
+                 and start the zone again."
+            ),
         }
     }
 }
@@ -102,14 +111,99 @@ pub fn base() -> PathBuf {
     PathBuf::from(format!("/tmp/kryptik-{uid}/zones"))
 }
 
+/// Create the registry base, or satisfy ourselves that the one already there
+/// is ours.
+///
+/// This used to return `Ok` the moment the path existed, which is a hole on the
+/// developer path: `base()` falls back to `/tmp/kryptik-<uid>/zones`, and /tmp
+/// is world-writable, so any local user can create that directory - or make it
+/// a symlink - before the victim first runs kryptikd. Owning the registry's
+/// parent is enough to rename a freshly created entry away and substitute one
+/// whose `launcher.pid` is a symlink into the victim's home; `fs::write`
+/// follows symlinks and truncates, so the victim's own kryptikd would then
+/// overwrite whatever it pointed at. Found by the security tab (R-7b F1).
+///
+/// The check refuses rather than repairs. Making a planted directory fit by
+/// chowning or chmod'ing it would adopt it, which is the attacker's goal; the
+/// only safe response to "this is not the directory I would have created" is
+/// to stop and say so.
 fn ensure_base(b: &Path) -> Result<(), RegistryError> {
-    if b.exists() {
-        return Ok(());
+    // Both levels matter: owning `/tmp/kryptik-<uid>` is enough to replace
+    // `zones` underneath it, so the parent is checked as well as the leaf.
+    if let Some(parent) = b.parent() {
+        if parent != Path::new("/") && !parent.as_os_str().is_empty() {
+            check_or_create(parent)?;
+        }
     }
-    fs::create_dir_all(b).map_err(|e| io_err(b, e))?;
-    // 0700: the registry names running zones, their identities and their
-    // cgroups. Nothing that is not kryptikd has any business reading it.
-    set_mode(b, 0o700)
+    check_or_create(b)
+}
+
+/// One directory: create it 0700, or verify the existing one is a directory
+/// (not a symlink to one), owned by us, and 0700.
+fn check_or_create(p: &Path) -> Result<(), RegistryError> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+
+    // symlink_metadata, not metadata: a symlink pointing at a directory we do
+    // own would otherwise pass every test below while the attacker keeps the
+    // ability to re-aim it.
+    match fs::symlink_metadata(p) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let mut db = fs::DirBuilder::new();
+            db.mode(0o700);
+            // Not recursive: each level is created with 0700 by its own call,
+            // so no intermediate is briefly world-writable.
+            db.create(p).map_err(|e| io_err(p, e))
+        }
+        Err(e) => Err(io_err(p, e)),
+        Ok(md) => {
+            let me = unsafe { libc::getuid() };
+            let mode = md.mode() & 0o777;
+
+            // Refuse: someone else can still influence what this directory is.
+            let refuse = if md.file_type().is_symlink() {
+                Some("it is a symlink, and a symlink can be re-aimed after this check".to_string())
+            } else if !md.is_dir() {
+                Some("it is not a directory".to_string())
+            } else if md.uid() != me {
+                Some(format!("it is owned by uid {}, not by uid {me}", md.uid()))
+            } else if mode & 0o022 != 0 {
+                // Ours, but group- or world-WRITABLE. Tightening it now would
+                // not undo anything already placed inside it while it was
+                // open, so this one stops rather than repairs.
+                Some(format!(
+                    "its mode is {mode:04o}: it is writable by others, so its contents \
+                     cannot be trusted even though it belongs to uid {me}"
+                ))
+            } else {
+                None
+            };
+            if let Some(why) = refuse {
+                return Err(RegistryError::UnsafeBase { path: p.display().to_string(), why });
+            }
+
+            // Ours, not writable by anyone else, but readable or searchable by
+            // them - 0755, say, which is what kryptikd's own earlier
+            // create_dir_all left behind under a default umask. That is an
+            // information leak (the registry is an inventory of what this user
+            // is running), not a foothold, and it can be closed here.
+            //
+            // This is a deliberate narrowing of what R-7b F1 asked for, which
+            // was to refuse any mode other than 0700. The reasoning for
+            // refusing was that chmod'ing a directory into shape would adopt a
+            // planted one - but planting requires creating the directory, and
+            // the uid check above has already excluded anything this process
+            // did not create. Raised with security in the reply to R-7.
+            if mode != 0o700 {
+                eprintln!(
+                    "kryptikd: tightening {} from {mode:04o} to 0700; the zone registry \
+                     lists what you are running and should not be readable by others",
+                    p.display()
+                );
+                set_mode(p, 0o700)?;
+            }
+            Ok(())
+        }
+    }
 }
 
 fn set_mode(p: &Path, mode: u32) -> Result<(), RegistryError> {
@@ -262,7 +356,18 @@ pub fn reclaim(zone: &str) -> Result<(), RegistryError> {
     }
     if let Some(path) = read_field(&dir, "cgroup") {
         let p = Path::new(&path);
-        if p.is_dir() {
+        // Only ever inside kryptikd's own cgroup tree. With F1 fixed nothing
+        // hostile can reach this field, but `cgroup.kill` is a loaded weapon
+        // and one starts_with is a cheap safety catch: a malformed or planted
+        // entry must not be able to aim it at, say, /sys/fs/cgroup/user.slice.
+        if !p.starts_with(cgroup::kryptik_root()) {
+            eprintln!(
+                "kryptikd: ignoring a registry entry for zone {zone:?} that names a cgroup \
+                 outside {}: {}",
+                cgroup::kryptik_root().display(),
+                p.display()
+            );
+        } else if p.is_dir() {
             let _ = fs::write(p.join("cgroup.kill"), "1");
             for _ in 0..100 {
                 if fs::remove_dir(p).is_ok() {
@@ -291,9 +396,29 @@ impl Handle {
         &self.dir
     }
 
+    /// Write one entry field.
+    ///
+    /// O_NOFOLLOW, and 0600 at creation rather than afterwards. `fs::write`
+    /// follows symlinks and truncates, so if anything ever managed to plant a
+    /// symlink here it would be kryptikd that did the damage, to a file of the
+    /// attacker's choosing. ensure_base should make that unreachable; this is
+    /// the second lock on the same door (R-7b F1).
     fn write(&self, name: &str, contents: &str) -> Result<(), RegistryError> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
         let p = self.dir.join(name);
-        fs::write(&p, contents).map_err(|e| io_err(&p, e))?;
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&p)
+            .map_err(|e| io_err(&p, e))?;
+        f.write_all(contents.as_bytes()).map_err(|e| io_err(&p, e))?;
+        // .mode() only applies when the file is created, so an entry that
+        // already existed still gets its permissions asserted.
         set_mode(&p, 0o600)
     }
 
@@ -486,6 +611,54 @@ mod tests {
             Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
             None => std::env::remove_var("XDG_RUNTIME_DIR"),
         }
+    }
+
+    #[test]
+    fn a_registry_directory_someone_else_could_control_is_refused() {
+        // R-7b F1. Each case is a directory an attacker could have left in
+        // /tmp before the victim's first `kryptikd run`.
+        use std::os::unix::fs::MetadataExt;
+        let root = std::env::temp_dir().join(format!("kryptik-f1-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let mode_of = |p: &Path| fs::metadata(p).unwrap().mode() & 0o777;
+        let refused = |p: &Path| matches!(check_or_create(p), Err(RegistryError::UnsafeBase { .. }));
+
+        // A symlink, even one aimed at a directory we do own: the attacker
+        // keeps the ability to re-aim it after the check and before the write.
+        let target = root.join("real");
+        fs::create_dir(&target).unwrap();
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(refused(&link), "a symlink must be refused");
+
+        // Ours, but world-writable: tightening it now would not undo whatever
+        // was put inside while it was open.
+        let loose = root.join("loose");
+        fs::create_dir(&loose).unwrap();
+        set_mode(&loose, 0o777).unwrap();
+        assert!(refused(&loose), "a world-writable directory must be refused");
+
+        // Not a directory at all.
+        let file = root.join("file");
+        fs::write(&file, "").unwrap();
+        assert!(refused(&file), "a plain file must be refused");
+
+        // Ours and not writable by anyone else, just too readable - which is
+        // what kryptikd's own earlier create_dir_all left behind. Repairable,
+        // so it is repaired rather than refused.
+        let readable = root.join("readable");
+        fs::create_dir(&readable).unwrap();
+        set_mode(&readable, 0o755).unwrap();
+        check_or_create(&readable).expect("a directory only we can write is repairable");
+        assert_eq!(mode_of(&readable), 0o700, "it must be tightened to 0700");
+
+        // Absent: created 0700, not 0755-by-umask.
+        let fresh = root.join("fresh");
+        check_or_create(&fresh).unwrap();
+        assert_eq!(mode_of(&fresh), 0o700, "a new registry directory must be 0700");
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

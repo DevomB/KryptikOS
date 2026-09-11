@@ -216,6 +216,16 @@ pub fn sweep_now() -> usize {
     n
 }
 
+/// The directory every zone's cgroup is created under.
+///
+/// Exposed because `registry::reclaim` checks a recorded cgroup path against it
+/// before writing `cgroup.kill`: the registry entry is only as trustworthy as
+/// the directory it was read from, and this is the one place that decides what
+/// counts as ours.
+pub fn kryptik_root() -> PathBuf {
+    Path::new(CGROUP2_ROOT).join(KRYPTIK_GROUP)
+}
+
 /// One zone's cgroup. Removed when dropped, so an early return cannot leak it.
 #[derive(Debug)]
 pub struct Cgroup {
