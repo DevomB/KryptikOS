@@ -242,34 +242,57 @@ fingerprint code printed `fail aborted at …` before every step that had no
 
 ## 7. R-1 — the artifact identities you asked for
 
-### 7.1 Kernel — NOT BUILT. Blocked on `bc`.
-
-Stage 05 completed `unpack`, `patch`, `config` and `compiler-check`, then
-stopped:
+### 7.1 Kernel — BUILT
 
 ```
-/bin/sh: line 1: bc: command not found
-make[2]: *** [Kbuild:24: include/generated/timeconst.h] Error 127
+/home/devomb/kryptik-overnight-2026-09-11/work/sysroot/boot/kryptik-6.18.50
+  size    14922752 bytes
+  sha256  88f77fe62300161ea3cf923fd6916692800fbf8d3ced00f701ebdbb8c831e2a8
 ```
 
-`linux-6.18.50/Kbuild:21` is `filechk_gentimeconst = echo $(CONFIG_HZ) | bc -q $<`,
-and `arch/x86` asm-offsets depends on that header, so every kernel build needs
-it. Kryptik pins no `bc`, fetched none, and has none in `sources.lock`.
+(no Linux version banner recovered)
 
-Fixing it needs `versions.env`, `tools/fetch-sources.sh` and an audited
-`sources.lock` line — none of which this tab owns. The full change, including
-the stage 04 recipe line ready to paste, is in **`build/BLOCKER.md`** (copied
-to `integration/REQUEST-from-build.md` and `provenance/REQUEST-from-build.md`).
+Modules installed: `/home/devomb/kryptik-overnight-2026-09-11/work/sysroot/lib/modules/6.18.50-hardened1`, 9 .ko files
 
-What was deliberately *not* done: building the kernel on the host, which has
-`bc` and the wrong compiler; copying the host's `bc` into a chroot whose PATH
-excludes the host on purpose; or writing a shim, which would be fabricated
-build output.
+Built inside the chroot by the native toolchain — `gcc -dumpmachine` is
+`x86_64-kryptik-linux-gnu` and is not under `/tools`; `s_compiler_check`
+asserts both before a single object is compiled.
 
-`compiler-check` passing before the failure is worth recording on its own: the
-kernel *would* be built by `gcc (GCC) 14.2.0` reporting
-`x86_64-kryptik-linux-gnu`, from `/usr/bin`, not by a cross compiler and not by
-the host's.
+The first attempt at this kernel reached the final link and died at
+`scripts/sorttable` with no message. That was not a kernel problem: our glibc
+cannot unwind through a library loaded after startup, so `pthread_exit` aborts.
+The full diagnosis is in `build/BLOCKER.md`; the kernel's host tools now link
+`libgcc_s` eagerly to step around it, and `make test-libc-unwind` fails for as
+long as the underlying defect is present.
+
+Configuration as actually built, read back from `.config`:
+
+| option | built as |
+|---|---|
+| `CONFIG_DEBUG_FS` | `off` |
+| `CONFIG_BLK_DEV_IO_TRACE` | `off` |
+| `CONFIG_SECURITY_LANDLOCK` | `y` |
+| `CONFIG_SECCOMP_FILTER` | `y` |
+| `CONFIG_USER_NS` | `y` |
+| `CONFIG_USER_NS_UNPRIVILEGED` | `off` |
+| `CONFIG_MODULE_SIG_FORCE` | `y` |
+| `CONFIG_SECURITY_LOCKDOWN_LSM` | `y` |
+| `CONFIG_INIT_ON_ALLOC_DEFAULT_ON` | `y` |
+| `CONFIG_SLAB_CANARY` | `y` |
+| `CONFIG_MITIGATION_PAGE_TABLE_ISOLATION` | `y` |
+| `CONFIG_KEXEC` | `off` |
+| `CONFIG_VIRTIO_BLK` | `y` |
+| `CONFIG_EXT4_FS` | `y` |
+| `CONFIG_SERIAL_8250_CONSOLE` | `y` |
+| `CONFIG_DEVTMPFS_MOUNT` | `y` |
+
+`CONFIG_DEBUG_FS` is the one worth noting. The hardening fragment has said
+`# CONFIG_DEBUG_FS is not set` all along, and the previous kernel had it `=y`
+anyway, because `CONFIG_BLK_DEV_IO_TRACE` from `defconfig` `select`s it and a
+Kconfig `select` overrides an explicit off without a diagnostic. `s_config`
+verified only the options that had to be ON, so nothing noticed. It now checks
+every `is not set` line in both fragments and fails the step if one did not
+survive.
 
 ### 7.2 Sysroot — COMPLETE
 
@@ -477,6 +500,45 @@ Zone definitions from `compartments/zones/*.toml` are installed to
 `/etc/kryptik/zones` (0700) regardless.
 
 ## 8b. Defects the build run itself found
+
+### The C library cannot unwind after a dlopen, and says nothing
+
+The kernel link died with `Failed to sort kernel tables` and no other output.
+`sorttable` imports neither `abort()` nor `assert()`, so the `SIGABRT` came
+from inside a library; the register dump the WSL kernel logged showed
+`tgkill(pid, tid, SIGABRT)` raised on a *thread* stack, which is glibc's
+`raise()` from one of sorttable's sorter threads. Those threads end with
+`pthread_exit()`.
+
+glibc implements `pthread_exit` by dlopening `libgcc_s.so.1` and forcing an
+unwind, and calls a bare `abort()` if the unwind returns instead of unwinding.
+Reduced to six lines, `pthread_exit` from a thread aborts on this system, 0 of
+5 runs. So do `pthread_cancel` and `backtrace`. A C++ `throw` inside a thread
+works — because that links `libgcc_s` at startup instead of dlopening it, which
+is what isolated the cause:
+
+```
+_dl_find_object(address inside a DLOPENED libgcc_s)
+  Kryptik glibc 2.40 -> /lib64/ld-linux-x86-64.so.2   (the loader)
+  host    glibc 2.39 -> /lib/x86_64-linux-gnu/libgcc_s.so.1
+```
+
+The unwinder trusts that answer, reads the loader's `.eh_frame`, finds no FDE,
+and aborts. Ruled out along the way: a missing or broken `libgcc_s` (present,
+`dlsym` resolves every `_Unwind_*`, and `_Unwind_Backtrace` called directly
+walks both stacks); the static-TLS surplus (512/4096/16384 all abort); and
+glibc BZ #32245, whose title matches exactly but whose commit only adds
+`__builtin_unreachable` to silence an hppa warning — reading the patch instead
+of the summary is what ruled it out.
+
+Two lessons already applied elsewhere in this run:
+
+- glibc writes fatal messages to `/dev/tty`, not stderr, unless
+  `LIBC_FATAL_STDERR_` is set. A diagnostic can therefore never reach a log
+  file. Every probe in `tools/test-libc-unwind.sh` sets it.
+- The first backtrace handler used glibc's `backtrace()` — which is itself
+  broken by this defect. A diagnostic tool has to avoid the mechanism it is
+  diagnosing; the working one uses `__builtin_return_address`.
 
 Running the build is what produced these. None was visible from reading the
 code.
@@ -785,3 +847,134 @@ fix. If you want one anyway, `make reset-stamps` archives rather than deletes.
 
 **Do not** `rm -rf` the work tree while the chroot is mounted; `make clean`
 guards this, a bare `rm` does not.
+
+## 12. The image, and what booting it proved
+```
+/home/devomb/kryptik-overnight-2026-09-11/work/images/kryptik-dev.img
+  apparent size 6444548096 bytes (6 GiB)
+  on disk       6442496000 bytes (sparse)
+```
+Exact commands, in order:
+```sh
+export KRYPTIK_WORK=/home/devomb/kryptik-overnight-2026-09-11/work
+export KRYPTIK_SOURCES=/home/devomb/kryptik-overnight-2026-09-11/sources
+
+# 1. the service database (stage 04 skips the 64 packages already stamped)
+sudo ./build/stages/03-chroot-prep.sh run /kryptik/build/stages/04-base-system.sh
+
+# 2. the kernel
+sudo ./build/stages/03-chroot-prep.sh run /kryptik/build/stages/05-kernel.sh
+
+# 3. the image - no root-owned loop devices, mkfs.ext4 -d populates it
+sudo ./tools/image/mkdisk.sh      --sysroot $KRYPTIK_WORK/sysroot      --kernel  $KRYPTIK_WORK/sysroot/boot/kryptik-6.18.50      --out     $KRYPTIK_WORK/images/kryptik-dev.img --size 6G
+
+# 4. boot it and assert on the transcript
+sudo ./tools/image/boot-smoke.sh      --image  $KRYPTIK_WORK/images/kryptik-dev.img      --kernel $KRYPTIK_WORK/sysroot/boot/kryptik-6.18.50 --timeout 300
+
+# or watch it interactively
+sudo ./tools/image/run-qemu-disk.sh --mode console      --image  $KRYPTIK_WORK/images/kryptik-dev.img      --kernel $KRYPTIK_WORK/sysroot/boot/kryptik-6.18.50
+```
+Serial transcript: `/home/devomb/kryptik-overnight-2026-09-11/work/logs/vm-serial.20260911T095859.log` (539 lines)
+Kernel panic or oops in it: none
+Guest reached its own poweroff: yes
+
+What the guest reported about itself:
+
+```
+KRYPTIK_SMOKE: BEGIN
+KRYPTIK_SMOKE: pid1=s6-svscan
+KRYPTIK_SMOKE: kernel=6.18.50-hardened1
+KRYPTIK_SMOKE: kernel_version_full=Linux version 6.18.50-hardened1 (root@DB) (gcc (GCC) 14.2.0, GNU ld (GNU Binutils) 2.43.1) #3 SMP PREEMPT_DYNAMIC Fri Sep 11 16:49:44 UTC 2026
+KRYPTIK_SMOKE: arch=x86_64
+KRYPTIK_SMOKE: os_id=kryptik build_id=a04cc9a7e51bffd8fdb488e24032a138a3747a63
+KRYPTIK_SMOKE: image_json_present=yes
+KRYPTIK_SMOKE: image: {
+KRYPTIK_SMOKE: image:   "built_at": "2026-09-11T09:57:09-07:00",
+KRYPTIK_SMOKE: image:   "built_from_commit": "8aafe78d4acc0a02c2838b44eb50ebbe5a6fa661-dirty",
+KRYPTIK_SMOKE: image:   "sysroot": "/home/devomb/kryptik-overnight-2026-09-11/work/sysroot",
+KRYPTIK_SMOKE: image:   "sysroot_manifest_digest": "75222ae334ea671c43b4ef3707342e87db7eb537deaf5a14a9b97e9c2ec85af4",
+KRYPTIK_SMOKE: image:   "kernel": "kryptik-6.18.50",
+KRYPTIK_SMOKE: image:   "kernel_sha256": "cf3a165dfe282ae870dad63a5ac953007c6cd1e7a64b2bc6614342ab5c64128e",
+KRYPTIK_SMOKE: image:   "image_kind": "developer",
+KRYPTIK_SMOKE: image:   "signed": false,
+KRYPTIK_SMOKE: image:   "verity": false,
+KRYPTIK_SMOKE: image:   "note": "Developer image. No ESP, no bootloader, no dm-verity, no signature. Boots via qemu -kernel."
+KRYPTIK_SMOKE: image: }
+KRYPTIK_SMOKE: compiler=x86_64-kryptik-linux-gnu
+KRYPTIK_SMOKE: root_source=/dev/root ext4
+KRYPTIK_SMOKE: mount_ok=/proc
+KRYPTIK_SMOKE: mount_ok=/sys
+KRYPTIK_SMOKE: mount_ok=/dev/pts
+KRYPTIK_SMOKE: mount_ok=/dev/shm
+KRYPTIK_SMOKE: mount_ok=/run
+KRYPTIK_SMOKE: scandir=/run/service
+KRYPTIK_SMOKE: svc_eudev=up
+KRYPTIK_SMOKE: svc_getty-tty1=up
+KRYPTIK_SMOKE: s6rc_up_begin
+KRYPTIK_SMOKE: s6rc_up_end
+KRYPTIK_SMOKE: sysctl kernel.kptr_restrict=2
+KRYPTIK_SMOKE: sysctl kernel.dmesg_restrict=1
+KRYPTIK_SMOKE: sysctl kernel.yama.ptrace_scope=3
+KRYPTIK_SMOKE: sysctl kernel.unprivileged_bpf_disabled=unreadable
+KRYPTIK_SMOKE: sysctl kernel.kexec_load_disabled=unreadable
+KRYPTIK_SMOKE: sysctl fs.protected_symlinks=1
+KRYPTIK_SMOKE: sysctl kernel.randomize_va_space=2
+KRYPTIK_SMOKE: kryptikd_check_begin
+KRYPTIK_SMOKE: kd: kernel support:
+KRYPTIK_SMOKE: kd:   user namespaces  yes
+KRYPTIK_SMOKE: kd:   pid namespaces   yes
+KRYPTIK_SMOKE: kd:   net namespaces   yes
+KRYPTIK_SMOKE: kd:   cgroup v2        yes
+KRYPTIK_SMOKE: kd:   seccomp          yes
+KRYPTIK_SMOKE: kd:   landlock         yes (ABI v7)
+KRYPTIK_SMOKE: kd:   landlock ruleset creatable
+KRYPTIK_SMOKE: kd:   seccomp filter   builds and permits allowed calls
+KRYPTIK_SMOKE: kd:   unpriv userns    restricted (EPERM; kernel.unprivileged_userns_clone)
+KRYPTIK_SMOKE: kd: 
+KRYPTIK_SMOKE: kd: zones in /etc/kryptik/zones:
+KRYPTIK_SMOKE: kd:   dev        routed via nic zone  no [identity]    #b5651d
+KRYPTIK_SMOKE: kd:              policy policy/dev.seccomp: /etc/kryptik/zones/policy/dev.seccomp: No such file or directory (os error 2)
+KRYPTIK_SMOKE: kd:              landlock policy file: not applied (unimplemented; refused without the override)
+KRYPTIK_SMOKE: kd:   net        HOLDS PHYSICAL NIC   no [identity]    #2f6f9f
+KRYPTIK_SMOKE: kd:              policy policy/net.seccomp: /etc/kryptik/zones/policy/net.seccomp: No such file or directory (os error 2)
+KRYPTIK_SMOKE: kd:              landlock policy file: not applied (unimplemented; refused without the override)
+KRYPTIK_SMOKE: kd:   personal   routed via nic zone  no [identity]    #7a4fa3
+KRYPTIK_SMOKE: kd:              policy policy/personal.seccomp: /etc/kryptik/zones/policy/personal.seccomp: No such file or directory (os error 2)
+KRYPTIK_SMOKE: kd:              landlock policy file: not applied (unimplemented; refused without the override)
+```
+
+### 12a. The one thing that does not work: clean shutdown
+
+`/sbin/poweroff` is `s6-linux-init-hpr -p`. Measured inside the guest:
+
+```
+shutdownd_dir=event fifo notification-fd run supervise
+shutdownd_fifo=present          # /run/service/s6-linux-init-shutdownd/fifo
+svc_shutdownd=true              # supervised and up
+POWEROFF                        # hpr exited 0 - no poweroff_rc line
+POWEROFF_DID_NOT_TAKE_EFFECT after 45s
+[  50.9] reboot: Power down     # sysrq, not s6
+```
+
+So: shutdownd is running, its fifo exists at the path `s6-linux-init-hpr`
+actually opens, hpr writes and exits successfully, and shutdownd does not act
+within 45 seconds. `rc.shutdown` begins with `exec >/dev/console 2>&1` and
+prints nothing, so it is never reached.
+
+Ruled out already: a missing fifo (present), a wrong fifo path (the first
+version of this check watched `/run/s6-linux-init/shutdownd/fifo`, which
+nothing uses - `strings` on the hpr binary names the real one), shutdownd not
+being supervised (it is), and an impatient timer (ten seconds became
+forty-five, with the elapsed time reported).
+
+Not yet checked, in the order worth trying: whether `s6-rc-init` sharing
+`/run/service` with s6-linux-init's own scandir disturbs shutdownd's fifo
+between open and read; whether hpr's default mode needs `-f` or a different
+flag on 1.2.0.2; and whether shutdownd's `-g 3000` grace interacts with the
+s6-rc teardown.
+
+Until it is fixed the smoke service stops the machine through sysrq after
+announcing `POWEROFF_DID_NOT_TAKE_EFFECT`, and `tools/image/boot-smoke.sh`
+asserts that line is **absent**. The run therefore reports 29 passed and 1
+failed rather than a clean sheet: the fallback must never be able to pass for
+a clean shutdown.
