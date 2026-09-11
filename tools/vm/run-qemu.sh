@@ -257,5 +257,19 @@ else
     fi
 fi
 
+# What the harness booted, appended to its own log so that boot-smoke stays a
+# pure log reader. These are HOST facts and are named as such: the guest cannot
+# know which file was handed to qemu, and the host cannot know what the guest
+# did with it. boot-smoke compares the two.
+#
+# `file` prints the version string that is compiled into the bzImage, which is
+# the same string the running kernel reports in /proc/version.
+{
+    printf 'KRYPTIK_HOST_KERNEL_FILE=%s\n' "$KERNEL"
+    printf 'KRYPTIK_HOST_KERNEL_SHA256=%s\n' "$(sha256sum "$KERNEL" 2>/dev/null | cut -d" " -f1)"
+    kfv="$(file -b "$KERNEL" 2>/dev/null | sed -n 's/.*version \([^ ]*\) .*/\1/p')"
+    printf 'KRYPTIK_HOST_KERNEL_VERSION=%s\n' "$kfv"
+} >> "$LOG" 2>/dev/null || true
+
 printf 'run-qemu: qemu exited %s, serial log %s bytes\n' "$rc" "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" >&2
 exit "$rc"

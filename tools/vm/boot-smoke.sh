@@ -32,6 +32,9 @@ info "serial log: $LOG ($(stat -c %s "$LOG") bytes)"
 
 have() { grep -qF "$1" "$LOG"; }
 valueof() { sed -n "s/.*${1}=\\([^ $'\r']*\\).*/\\1/p" "$LOG" | tr -d '\r' | head -1; }
+# valueof stops at the first space, which is right for a token and wrong for a
+# value that contains spaces - /proc/version is one.
+lineof() { sed -n "s/.*${1}=\\(.*\\)/\\1/p" "$LOG" | tr -d '\r' | head -1; }
 
 # --- did it get off the ground at all? --------------------------------------
 if have "Linux version"; then
@@ -219,69 +222,6 @@ case "$rrc" in
         ;;
 esac
 
-# The same suite with the userns restriction ON. This is the check that makes
-# any privileged result target-relevant: without it, every group K number was
-# measured on a kernel that allows what the target forbids.
-rrc="$(valueof KRYPTIK_VM_RESTRICTED_RC)"
-rknob="$(valueof KRYPTIK_VM_RESTRICTED_KNOB)"
-case "$rrc" in
-    0)  if [ "$rknob" = "apparmor-emulated" ]; then
-            pass "the launcher suite passed again with unprivileged user namespaces RESTRICTED (emulated)"
-            info "emulated with kernel.apparmor_restrict_unprivileged_userns=1, not the target kernel's own build option"
-        else
-            pass "the launcher suite passed again with the restriction on"
-        fi
-        ;;
-    "")     info "no restricted run in this image" ;;
-    nokno*) fail "the restriction could not be turned on, so the privileged path is untested against it" ;;
-    *)      fail "the launcher suite exited $rrc with the restriction on - the privileged path does not hold on the target's rule"
-            sed -n '/KRYPTIK_VM_RESTRICTED_BEGIN/,/KRYPTIK_VM_RESTRICTED_END/p' "$LOG" \
-                | grep -E 'FAIL' | sed 's/^/        /' | head -20
-        ;;
-esac
-
-# The same suite with the userns restriction ON. This is the check that makes
-# any privileged result target-relevant: without it, every group K number was
-# measured on a kernel that allows what the target forbids.
-rrc="$(valueof KRYPTIK_VM_RESTRICTED_RC)"
-rknob="$(valueof KRYPTIK_VM_RESTRICTED_KNOB)"
-case "$rrc" in
-    0)  if [ "$rknob" = "apparmor-emulated" ]; then
-            pass "the launcher suite passed again with unprivileged user namespaces RESTRICTED (emulated)"
-            info "emulated with kernel.apparmor_restrict_unprivileged_userns=1, not the target kernel's own build option"
-        else
-            pass "the launcher suite passed again with the restriction on"
-        fi
-        ;;
-    "")     info "no restricted run in this image" ;;
-    nokno*) fail "the restriction could not be turned on, so the privileged path is untested against it" ;;
-    *)      fail "the launcher suite exited $rrc with the restriction on - the privileged path does not hold on the target's rule"
-            sed -n '/KRYPTIK_VM_RESTRICTED_BEGIN/,/KRYPTIK_VM_RESTRICTED_END/p' "$LOG" \
-                | grep -E 'FAIL' | sed 's/^/        /' | head -20
-        ;;
-esac
-
-# The same suite with the userns restriction ON. This is the check that makes
-# any privileged result target-relevant: without it, every group K number was
-# measured on a kernel that allows what the target forbids.
-rrc="$(valueof KRYPTIK_VM_RESTRICTED_RC)"
-rknob="$(valueof KRYPTIK_VM_RESTRICTED_KNOB)"
-case "$rrc" in
-    0)  if [ "$rknob" = "apparmor-emulated" ]; then
-            pass "the launcher suite passed again with unprivileged user namespaces RESTRICTED (emulated)"
-            info "emulated with kernel.apparmor_restrict_unprivileged_userns=1, not the target kernel's own build option"
-        else
-            pass "the launcher suite passed again with the restriction on"
-        fi
-        ;;
-    "")     info "no restricted run in this image" ;;
-    nokno*) fail "the restriction could not be turned on, so the privileged path is untested against it" ;;
-    *)      fail "the launcher suite exited $rrc with the restriction on - the privileged path does not hold on the target's rule"
-            sed -n '/KRYPTIK_VM_RESTRICTED_BEGIN/,/KRYPTIK_VM_RESTRICTED_END/p' "$LOG" \
-                | grep -E 'FAIL' | sed 's/^/        /' | head -20
-        ;;
-esac
-
 # The privileged launch contract, if the security probe shipped.
 prc="$(valueof KRYPTIK_VM_PRIVCONTRACT_RC)"
 knob="$(valueof KRYPTIK_VM_USERNS_KNOB)"
@@ -378,15 +318,54 @@ if [[ "$origin" == "kryptik-sysroot" ]]; then
         printf 'The image was assembled from one tree and stamped from another.\n'
         exit 1
     fi
-    # The kernel is a separate question, and on this host it has one answer.
-    case "$kver" in
-        *kryptik*) printf 'Kernel: %s — built by Kryptik.\n' "$kver" ;;
-        *) printf '%sKernel: %s — NOT Kryptik'"'"'s kernel.%s A Kryptik userspace on a stock\n' \
-               "$C_YEL" "${kver:-unknown}" "$C_RST"
-           printf 'kernel is a real milestone and is not a Kryptik system: the hardening\n'
-           printf 'options, the userns restriction and the LSM set are all the distribution\n'
-           printf 'kernel'"'"'s, not the ones Kryptik intends to ship.\n' ;;
-    esac
+    # The kernel is a separate question, and it is not answered by looking for
+    # the word "kryptik" in a version string. That test called
+    # 6.18.50-hardened1 - built by the build tab, carrying Kryptik's LSM set,
+    # refusing unprivileged user namespaces by its own configuration - "NOT
+    # Kryptik's kernel", which understated the strongest result this harness
+    # has produced. Understating a result is the same defect as overstating
+    # one. Two questions, each answered by something measured:
+    #
+    #   1. IS the running kernel the file the harness booted? The guest reports
+    #      /proc/version; the host reports the version string compiled into the
+    #      bzImage it handed to qemu. They are independent, and they must agree.
+    #   2. Is it hardened the way Kryptik intends? Decided by what it refuses,
+    #      not by what it is called.
+    kfile="$(valueof KRYPTIK_HOST_KERNEL_FILE)"
+    ksha="$(valueof KRYPTIK_HOST_KERNEL_SHA256)"
+    kfilever="$(lineof KRYPTIK_HOST_KERNEL_VERSION)"
+    procver="$(lineof KRYPTIK_VM_PROC_VERSION)"
+    printf 'Kernel: %s\n' "${kver:-unknown}"
+    if [[ -n "$kfile" ]]; then
+        printf '  booted from  %s\n' "$kfile"
+        [[ -n "$ksha" ]] && printf '  sha256       %s\n' "$ksha"
+    fi
+    if [[ -n "$kfilever" && -n "$procver" ]]; then
+        if [[ "$procver" == *"$kfilever"* ]]; then
+            printf '  identity     the guest reports a /proc/version carrying the version\n'
+            printf '               string compiled into that exact file, so that file is\n'
+            printf '               what ran\n'
+        else
+            printf '%s  MISMATCH     the guest is running %s\n' "$C_RED" "${procver:-unknown}"
+            printf '               but the file booted was built as %s%s\n' "$kfilever" "$C_RST"
+            FAILED+=("the running kernel is not the file the harness booted")
+        fi
+    fi
+    if [[ "$lsm" == *apparmor* ]]; then
+        printf '%s  hardening    a DISTRIBUTION kernel: apparmor is in its LSM list, and\n' "$C_YEL"
+        printf '               Kryptik does not enable it. The LSM set, the hardening\n'
+        printf '               options and any userns restriction here are the\n'
+        printf '               distribution'"'"'s, not the ones Kryptik intends to ship.%s\n' "$C_RST"
+    elif [[ "$rknob" == "native" ]]; then
+        printf '%s  hardening    unprivileged user namespaces are refused BY THIS KERNEL,\n' "$C_GRN"
+        printf '               with no sysctl set by this harness. LSMs: %s.\n' "${lsm:-unknown}"
+        printf '               Landlock ABI %s. That is Kryptik'"'"'s configuration, and it\n' "${abi:-unknown}"
+        printf '               was measured in the running guest.%s\n' "$C_RST"
+    else
+        printf '  hardening    LSMs: %s; landlock ABI %s. This kernel does NOT refuse\n' \
+               "${lsm:-unknown}" "${abi:-unknown}"
+        printf '               unprivileged user namespaces on its own.\n'
+    fi
 else
     printf '%sVM BOOT SMOKE PASSED (HARNESS ONLY)%s\n' "$C_YEL" "$C_RST"
     printf 'The guest booted, s6 came up and the suites ran — but its userspace is\n'
