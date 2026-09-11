@@ -179,12 +179,15 @@ import_keys() {
         gpg --batch --quiet --import "$GNU_KEYRING" 2>/dev/null || true
     fi
 
-    # kernel.org maintainer keys: Torvalds signs mainline, Kroah-Hartman stable.
-    log "fetching kernel.org signing keys"
+    # The pinned maintainer keys, fetched BY FINGERPRINT from the one array
+    # that also classifies them. A keyserver can serve any key it likes and
+    # cannot serve a different key under a given fingerprint, which is what
+    # makes this safe; it is also why the second hardcoded copy of this list
+    # that used to live here is gone.
+    log "fetching pinned maintainer keys (${#PINNED_FPRS[@]})"
     local fpr
-    for fpr in "ABAF11C65A2970B130ABE3C479BE3E4300411886" \
-               "647F28654894E3BD457199BE38DBBDC86092693E"; do
-        recv_key "$fpr" || true
+    for fpr in "${PINNED_FPRS[@]}"; do
+        recv_key "$fpr" || warn "could not fetch pinned key ${fpr}"
     done
 
     local count
@@ -245,17 +248,36 @@ if [[ -f "$KEYS_MANIFEST" ]]; then
 fi
 
 # Keys Kryptik has decided to trust IN THE TREE, by fingerprint, as opposed to
-# whichever keys the fetched GNU keyring happens to contain. Only these two so
-# far: kernel.org's mainline and stable signing keys, already relied on to
-# verify the kernel tarball itself.
+# whichever keys the fetched GNU keyring happens to contain.
 #
 # A signature checked against one of these is a stronger statement than one
 # checked against the keyring - the keyring is fetched over the network and
 # establishes "signed by whoever the keyring says" - and the inventory reports
 # them as different classes rather than one number.
+#
+# Each entry must be a fingerprint the PROJECT ITSELF publishes on its own
+# origin, with the URL recorded here so the claim can be rechecked. Pinning the
+# fingerprint is what makes fetching the key from a keyserver safe: a keyserver
+# can serve any key it likes, and cannot serve a different key under this
+# fingerprint.
+#
+# One array, used both to fetch and to classify, so the two cannot drift.
 PINNED_FPRS=(
+    # kernel.org mainline and stable. Pre-existing pins, already relied on to
+    # verify the kernel tarball itself.
     "ABAF11C65A2970B130ABE3C479BE3E4300411886"   # Linus Torvalds, mainline
     "647F28654894E3BD457199BE38DBBDC86092693E"   # Greg Kroah-Hartman, stable
+
+    # Thomas Wouters, who signs "3.12.x and 3.13.x source files and tags" per
+    # https://www.python.org/downloads/metadata/pgp/ - python.org's own
+    # OpenPGP verification page, retrieved 2026-09-11. V_PYTHON is in 3.12.x.
+    #
+    # Before this pin, python was reported as unverifiable, and for a reason
+    # worth recording: python.org publishes BOTH a Sigstore `.sig` and an
+    # OpenPGP `.asc`, and verify_any() probed `.sig` first, handed a
+    # base64 ECDSA blob to gpg, and reported "inconclusive". See
+    # is_pgp_signature() below.
+    "7169605F62C751356D054A26A821E680E5FA6305"   # Thomas Wouters, CPython 3.12/3.13
 )
 
 # All fingerprints of the key that made a signature: the primary and every
@@ -450,17 +472,45 @@ verify_gnu() {
 # many others use .asc, some projects publish .sign. Trying all three turns a
 # vague "unknown source" into either a real verification or a specific,
 # actionable "signing key NNN not held".
+# Is this file actually an OpenPGP signature?
+#
+# A suffix is not a format. python.org publishes BOTH a Sigstore `.sig` - a
+# base64 ECDSA blob, 141 bytes - and an OpenPGP `.asc`, and the probe below
+# used to take the `.sig`, hand it to gpg, get "no valid OpenPGP data found",
+# and report python as inconclusive. The real signature was one suffix away
+# the whole time. So a candidate that gpg cannot parse as a signature is not a
+# result; it is the wrong file, and the next suffix gets a turn.
+is_pgp_signature() {
+    [[ -s "$1" ]] || return 1
+    gpg --batch --list-packets "$1" 2>/dev/null | grep -q ':signature packet:'
+}
+
 verify_any() {
     local name="$1" url="$2" file="$3"
     local suffix sig
+    local -a wrong_format=()
     for suffix in .sig .asc .sign; do
         sig="${SIGDIR}/${file}${suffix}"
         if [[ -s "$sig" ]] || quiet_fetch "${url}${suffix}" "$sig" 2>/dev/null; then
-            check_sig "$name" "$sig" "${KRYPTIK_SOURCES}/${file}" || true
-            return
+            if is_pgp_signature "$sig"; then
+                check_sig "$name" "$sig" "${KRYPTIK_SOURCES}/${file}" || true
+                return
+            fi
+            # Do not leave it cached: a non-signature in SIGDIR would shadow
+            # the real one on every later run.
+            wrong_format+=("${suffix}")
+            rm -f "$sig"
+            continue
         fi
         rm -f "$sig"
     done
+    if [[ "${#wrong_format[@]}" -gt 0 ]]; then
+        warn "${name}: upstream publishes ${wrong_format[*]} but none of them is an"
+        warn "       OpenPGP signature (Sigstore, minisign or similar)"
+        mark_unverifiable "${name} (published ${wrong_format[*]} is not OpenPGP)"
+        report "$name" signature-not-openpgp "published ${wrong_format[*]} is not an OpenPGP signature"
+        return
+    fi
     warn "${name}: no detached signature published (.sig/.asc/.sign)"
     mark_unverifiable "${name} (upstream publishes no signature)"
     report "$name" no-signature-upstream "none of .sig/.asc/.sign is published"
@@ -476,6 +526,13 @@ verify_detached() {
         warn "${name}: no .sig published upstream"
         mark_unverifiable "${name} (no signature upstream)"
         report "$name" no-signature-upstream "no ${suffix} published beside the tarball"
+        return
+    fi
+    if ! is_pgp_signature "$sig"; then
+        rm -f "$sig"
+        warn "${name}: the published ${suffix} is not an OpenPGP signature"
+        mark_unverifiable "${name} (published ${suffix} is not OpenPGP)"
+        report "$name" signature-not-openpgp "published ${suffix} is not an OpenPGP signature"
         return
     fi
     check_sig "$name" "$sig" "${KRYPTIK_SOURCES}/${file}" || true
