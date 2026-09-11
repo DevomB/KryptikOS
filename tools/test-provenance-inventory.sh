@@ -246,6 +246,15 @@ else
     red "the output does not state that the counts are not a total"; show
 fi
 
+# The counts depend on which keyring produced them, so the report has to say
+# which one did. Under the self-test hook there is no signature log at all, and
+# "unknown" is the honest answer rather than a silent omission.
+if grep -qiE "keyring state for this run" "$OUT"; then
+    green "the report states which keyring state produced the counts"
+else
+    red "the report does not say which keyring state it was measured against"; show
+fi
+
 # Strongest first, so a reader cannot mistake the order for arbitrary.
 order="$(grep -oE '^  +[0-9]+  [a-z-]+' "$OUT" | awk '{print $2}' | tr '\n' ' ')"
 case "$order" in
@@ -269,8 +278,11 @@ fi
 KRYPTIK_ROOT="$FAKE" KRYPTIK_INVENTORY_SELFTEST=1 \
     KRYPTIK_INVENTORY_REPORTS="$EV" NO_COLOR=1 \
     bash "$TOOL" --md > "${W}/md.out" 2>/dev/null
-if [[ "$(head -1 "${W}/md.out")" == "| source | version | assurance class"* ]] \
-   && ! grep -qE '^(==>|  ok|warn|  manifest:)' "${W}/md.out"; then
+# The keyring-state note is part of the artifact and comes first; what must
+# NOT be there is the progress chatter, which belongs on stderr.
+if [[ "$(head -1 "${W}/md.out")" == "**Keyring state for this run:**"* ]] \
+   && grep -qF "| source | version | assurance class" "${W}/md.out" \
+   && ! grep -qE '^(==>|  ok|warn|  manifest:|  running)' "${W}/md.out"; then
     green "--md keeps progress output off stdout"
 else
     red "--md leaked progress into the artifact"
