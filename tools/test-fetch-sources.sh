@@ -342,6 +342,46 @@ else
     red "a substituted manifest was accepted without the flag (exit ${rc})"; show
 fi
 
+# --- the shipped manifest and the shipped lockfile must agree ---------------
+#
+# Nothing asserted this before, and both directions have a real failure mode. A
+# row added without its audited lock line is a source `make sources` refuses at
+# fetch time; a lock line left behind after a row is removed is a hash nobody
+# checks any more. Measured 71 = 71 when this was written.
+#
+# This also covers the rows carrying a documented default (bc, gdbm): --list
+# expands them, so a default naming an unlocked file fails right here.
+
+bash "$TOOL" --list > "${W}/live-manifest" 2>/dev/null
+awk '{n = $3; sub(/.*\//, "", n); print n}' "${W}/live-manifest" | sort -u > "${W}/mf"
+awk '{print $2}' "${ROOT}/sources.lock" | sort -u > "${W}/lk"
+
+miss="$(comm -23 "${W}/mf" "${W}/lk" | tr '
+' ' ')"
+if [[ -z "${miss// /}" ]]; then
+    green "every source in the manifest has a sources.lock entry"
+else
+    red "manifest rows with no lock entry: ${miss}"
+fi
+
+stale="$(comm -13 "${W}/mf" "${W}/lk" | tr '
+' ' ')"
+if [[ -z "${stale// /}" ]]; then
+    green "every sources.lock entry corresponds to a manifest row"
+else
+    red "lock entries with no manifest row: ${stale}"
+fi
+
+# An unset version with no documented default would emit a two-column row and
+# a URL like gdbm-.tar.gz, which fetches a 404 rather than failing loudly.
+blank="$(awk 'NF < 3 || $2 == "" {print $1}' "${W}/live-manifest" | tr '
+' ' ')"
+if [[ -z "${blank// /}" ]]; then
+    green "no manifest row resolves to an empty version"
+else
+    red "manifest rows resolving to an empty version: ${blank}"
+fi
+
 echo
 if [[ "$FAIL" -gt 0 ]]; then
     echo "${FAIL} of $((PASS + FAIL)) checks failed."
