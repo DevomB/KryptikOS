@@ -484,6 +484,73 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# missing prerequisites
+# ---------------------------------------------------------------------------
+#
+# A real pruned PATH, not a flag: `have gpg` is what the tool calls, so this
+# exercises the code that runs. Without gpg NOTHING can be authenticated, and
+# the one outcome that must not happen is a run that reports no problems.
+
+mkbin() {
+    local dir="$1"; shift
+    mkdir -p "$dir"
+    local t p src
+    for t in bash env curl tar gzip sha256sum awk sed grep head tail cut tr \
+             mkdir rm mv cp cat ls find sort wc dirname basename chmod \
+             mktemp date sleep seq python3 gpg gpgconf id uname od xz gpg2; do
+        for p in "$@"; do [[ "$t" == "$p" ]] && continue 2; done
+        src="$(command -v "$t" 2>/dev/null)" || continue
+        ln -sf "$src" "${dir}/${t}"
+    done
+}
+
+mkbin "${W}/bin-full"
+mkbin "${W}/bin-nogpg" gpg gpg2
+
+# Control first: the pruned-PATH harness itself must not break a good run, or
+# the two cases below would prove nothing.
+write_manifest good
+fresh_root
+PATH="${W}/bin-full" KRYPTIK_ROOT="$FAKE" KRYPTIK_SOURCES="$SRC" \
+    KRYPTIK_SIGCHECK_SELFTEST=1 KRYPTIK_SIGCHECK_MANIFEST="${W}/manifest" \
+    KRYPTIK_SIGCHECK_KEYRING="$KEYRING" NO_COLOR=1 \
+    bash "$TOOL" --strict > "$OUT" 2>&1
+if [[ "$?" -eq 0 ]] && grep -qF "signature valid" "$OUT"; then
+    green "the pruned-PATH harness still verifies with every tool present"
+else
+    red "the pruned-PATH harness broke a good run"; show
+fi
+
+write_manifest good
+fresh_root
+PATH="${W}/bin-nogpg" KRYPTIK_ROOT="$FAKE" KRYPTIK_SOURCES="$SRC" \
+    KRYPTIK_SIGCHECK_SELFTEST=1 KRYPTIK_SIGCHECK_MANIFEST="${W}/manifest" \
+    KRYPTIK_SIGCHECK_KEYRING="$KEYRING" NO_COLOR=1 \
+    bash "$TOOL" > "$OUT" 2>&1
+rc=$?
+if [[ "$rc" -ne 0 ]] && grep -qF "gpg not found" "$OUT"; then
+    green "missing gpg refuses to run at all, in either mode"
+else
+    red "missing gpg did not refuse (exit ${rc})"; show
+fi
+
+if ! grep -qF "No signature verification failures" "$OUT"; then
+    green "a run without gpg never reports an absence of failures"
+else
+    red "a run without gpg reported no failures"; show
+fi
+
+PATH="${W}/bin-nogpg" KRYPTIK_ROOT="$FAKE" KRYPTIK_SOURCES="$SRC" \
+    KRYPTIK_SIGCHECK_SELFTEST=1 KRYPTIK_SIGCHECK_MANIFEST="${W}/manifest" \
+    KRYPTIK_SIGCHECK_KEYRING="$KEYRING" NO_COLOR=1 \
+    bash "$TOOL" --strict > "$OUT" 2>&1
+if [[ "$?" -ne 0 ]]; then
+    green "missing gpg fails --strict too"
+else
+    red "missing gpg passed --strict"; show
+fi
+
+# ---------------------------------------------------------------------------
 # the selftest hooks cannot be used by accident
 # ---------------------------------------------------------------------------
 
