@@ -35,6 +35,17 @@
 #         HTTPS by that domain. A match means that domain publishes this key
 #         for that address. It is a third party's statement about the key and
 #         is not upstream designating a release signer.
+
+#   github  the key GitHub publishes for a named account, AND that account is
+#         the one that published the release we pin - checked through the
+#         releases API and recorded in the note. This only ever applies to a
+#         release whose tarball GitHub itself serves: the platform is already
+#         the delivery channel, so taking the key from the same platform adds
+#         no single point of failure that the download did not already have.
+#         BE CLEAR ABOUT THE LIMIT: an attacker holding that GitHub account
+#         breaks both halves at once. What it does establish is that the
+#         fingerprint was not learned from the signature under test - it came
+#         from the account that publishes the releases.
 #
 # NEITHER IS OUT-OF-BAND CONFIRMATION. Both rest on TLS and the CA system, and
 # no human here has checked any of these fingerprints through a second channel.
@@ -59,3 +70,6 @@ B0C64D14301CC6EFAEDF60E4E4B71D5EEC39C284    korg  https://git.kernel.org/pub/scm
 5D2FB320B825D93904D205193938F96BDF50FEA5    wkd   csmall@debian.org                                                                            2026-09-11  procps-ng,psmisc  Craig Small; also served by dropbear.xyz; signature names subkey 022166C0FF3C84E3
 E240B57E2C4630BA768E2F26FC1B547C8D8172C8    wkd   anthraxx@archlinux.org                                                                       2026-09-11  linux-hardened    Levente Polyak, Arch Linux developer
 66D0387DB85D320F8408166DB175CFA98F192AF2    wkd   sergeh@kernel.org                                                                            2026-09-11  shadow            Serge Hallyn; kernel.org's WKD, not the pgpkeys repo; signature names subkey 7DC24C36C3341D20
+3690C240CE51B4670D30AD1C38EE757D69184620    github  https://github.com/Larhzu.gpg                                                                2026-09-11  xz                Lasse Collin <lasse.collin@tukaani.org>; tukaani-project/xz v5.8.4 was published by Larhzu
+678CE3FEE430311596DB8C16F52E98007594C21D    github  https://github.com/besser82.gpg                                                              2026-09-11  libxcrypt         Bjoern Esser (besser82@fedoraproject.org); besser82/libxcrypt v4.4.36 was published by besser82
+BA60BC20F37E59444D6D25001365720913D2F22D    github  https://github.com/bbonev.gpg                                                                2026-09-11  eudev             Boian Bonev <bbonev@ipacct.com>; eudev-project/eudev v3.2.14 was published by bbonev

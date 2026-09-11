@@ -419,6 +419,8 @@ CLASSES = [
      "detached signature; signer key published by kernel.org, no certification on the material"),
     ("signature-wkd-published-key",
      "detached signature; signer key published over WKD by the signer's own email domain - a third party's statement, not upstream designating a signer"),
+    ("signature-platform-published-key",
+     "detached signature; signer key published by the hosting platform for the account that published the release - the platform was already the delivery channel, and holding that account breaks both halves"),
     ("signature-keyring-key",
      "detached signature verified against the network-fetched GNU keyring"),
     ("signature-unaudited-key",
@@ -503,7 +505,8 @@ def classify(name):
     # a worse answer than the one the verifier actually gave.
     if s and s[0] in ("signature-korg-published-key",
                       "signature-korg-certified-key",
-                      "signature-wkd-published-key"):
+                      "signature-wkd-published-key",
+                      "signature-platform-published-key"):
         return s[0], s[1]
 
     if s and s[0] == "signature-unaudited-key":
