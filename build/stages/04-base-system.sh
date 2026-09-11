@@ -102,7 +102,7 @@ step_failure_hint() {
     # barely better than no log.
     if [[ -f "$logfile" ]]; then
         local hits
-        hits="$(grep -nE '^(make(\[[0-9]+\])?: \*\*\*|.*: \*\*\* )|\[ERROR\]|undefined (symbol|reference)|No such file or directory|Permission denied|command not found|configure: error|fatal error|cannot find -l' \
+        hits="$(grep -nE '^(make(\[[0-9]+\])?: \*\*\*|.*: \*\*\* )|\[ERROR\]|undefined (symbol|reference)|No such file or directory|Permission denied|command not found|configure: error|fatal error|cannot find -l|ModuleNotFoundError|ImportError|^[A-Za-z_.]*Error:|Could not build' \
                 "$logfile" 2>/dev/null | tail -15)"
         if [[ -n "$hits" ]]; then
             err ""
@@ -898,11 +898,26 @@ declare -a PACKAGES=(
     # position that works - after perl, before python. LFS reaches the same
     # order for the same reason.
     "libxcrypt"   "native_build libxcrypt-${V_LIBXCRYPT}.tar.xz libxcrypt-${V_LIBXCRYPT} --enable-hashes=strong,glibc --enable-obsolete-api=no --disable-static --disable-failure-tokens"
+    # BEFORE python, for the same class of reason as libxcrypt above.
+    #
+    # Python's `make install` runs ensurepip, which installs pip from a
+    # bundled .whl - a zip archive - and so needs the zlib module to
+    # decompress it. Without it the install died after twenty minutes of
+    # work with a zipimport traceback:
+    #
+    #   ModuleNotFoundError: No module named 'zlib'
+    #   zipimport.ZipImportError: can't decompress data; zlib not available
+    #   make: *** [Makefile:2035: install] Error 1
+    #
+    # zlib needs nothing but a C compiler, so it can sit this early. It
+    # links against the stage 01 glibc rather than the rebuilt one, which
+    # is true of everything before the glibc step and is the same soname
+    # and ABI - see the note on the dependency cycle above.
+    "zlib"        "s_zlib"
     "python"      "s_python"
     "texinfo"     "native_build texinfo-${V_TEXINFO}.tar.xz texinfo-${V_TEXINFO}"
     "util-linux"  "native_build util-linux-${V_UTIL_LINUX}.tar.xz util-linux-${V_UTIL_LINUX} --libdir=/usr/lib --runstatedir=/run --disable-chfn-chsh --disable-login --disable-nologin --disable-su --disable-setpriv --disable-runuser --disable-pylibmount --disable-liblastlog2 --disable-static --without-python"
     "glibc"       "s_glibc"
-    "zlib"        "s_zlib"
     "bzip2"       "s_bzip2"
     "xz"          "s_xz_native"
     "zstd"        "s_zstd"
