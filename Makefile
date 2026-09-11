@@ -86,7 +86,7 @@ CHROOT_ENV := KRYPTIK_ROOT="$(ROOT)" \
 
 CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
 
-.PHONY: help check check-kernel-eol sources lock verify verify-provenance \
+.PHONY: test help check check-kernel-eol sources lock verify verify-provenance \
         test-harness test-hardening test-artifacts audit-artifacts \
         audit-artifacts-strict manifest verify-manifest test-manifest \
         test-s6-init smoke-userspace test-services test-libc-unwind \n        sign-image verify-image test-image-signing image image-boot \
@@ -265,6 +265,12 @@ zones:
 zone-test:
 	@cd compartments/kryptikd && cargo build --quiet
 	@compartments/tests/adversarial.sh
+
+# Runs every unprivileged suite and then names the ones it did not run.
+# The shell lives in tools/run-tests.sh rather than inline here: a recipe is
+# a bad place for a loop, and make quoting is a bad place for a report.
+test:
+	@"$(TOOLS)"/run-tests.sh
 
 test-harness:
 	@"$(TOOLS)"/test-step-errexit.sh
