@@ -189,6 +189,10 @@ s_patch() {
 }
 
 s_config() {
+    # $1 is the digest of the two config fragments. It is not used in the
+    # body: it exists so this step's fingerprint covers files the recipe
+    # reads by path, which `declare -f` cannot see.
+    echo "fragment digest: ${1:-none}"
     cd "$KSRC"
 
     # Start from the architecture default, then layer Kryptik's fragments.
@@ -226,6 +230,44 @@ s_config() {
         fi
     done
 
+    # Everything the fragments say must be OFF.
+    #
+    # s_config used to verify only the options that must be ON. An option can
+    # fail to be off silently: a Kconfig `select` from any enabled symbol turns
+    # one on unconditionally and overrides an explicit "is not set" without a
+    # diagnostic. That is not hypothetical - CONFIG_DEBUG_FS was =y in a kernel
+    # whose fragment asked for it off, because CONFIG_BLK_DEV_IO_TRACE from
+    # defconfig selects it.
+    #
+    # A fragment that claims a mitigation the kernel does not have is worse
+    # than one that never claimed it.
+    echo
+    echo "--- verifying the options the fragments say must be OFF ---"
+    local off_violations=0 opt_off
+    while read -r opt_off; do
+        [[ -z "$opt_off" ]] && continue
+        if grep -q "^${opt_off}=y" .config; then
+            echo "  ON, BUT REQUESTED OFF: ${opt_off}"
+            echo "      something enabled selects it; find it with"
+            echo "      grep -rn 'select ${opt_off#CONFIG_}' ."
+            off_violations=$((off_violations + 1))
+        elif grep -q "^${opt_off}=m" .config; then
+            echo "  MODULE, BUT REQUESTED OFF: ${opt_off}"
+            off_violations=$((off_violations + 1))
+        else
+            echo "  ok   ${opt_off} is off"
+        fi
+    done < <(grep -hoE '^# CONFIG_[A-Z0-9_]+ is not set' "$FRAG_BASE" "$FRAG_HARDENED"              | awk '{print $2}' | sort -u)
+
+    if [[ "$off_violations" -gt 0 ]]; then
+        echo
+        echo "${off_violations} option(s) the fragments disable are enabled anyway."
+        echo "Each one is a mitigation this kernel does not have while the"
+        echo "fragment says it does. Disable whatever selects them, or drop"
+        echo "the claim from the fragment."
+        return 1
+    fi
+
     # Kryptik requires unprivileged user namespaces to be OFF: zones are
     # created by kryptikd, which is privileged. See hardened.fragment.
     if grep -q "^CONFIG_USER_NS_UNPRIVILEGED=y" .config; then
@@ -245,6 +287,9 @@ s_config() {
 }
 
 s_build() {
+    # $1 is HOSTLDFLAGS, passed for the same fingerprinting reason as the
+    # fragment digest above.
+    echo "host link flags: ${1:-none}"
     cd "$KSRC"
     make
     # Record what actually compiled this kernel, in the kernel. This string is
@@ -331,11 +376,36 @@ echo
 # inside the chroot it always is.
 "${KRYPTIK_ROOT}/tools/check-kernel-eol.sh" || die "kernel EOL check failed"
 
+# Build-time host tools have to link libgcc_s.so.1 eagerly.
+#
+# sorttable - the host tool that sorts the kernel's exception tables - ends its
+# sorter threads with pthread_exit(). glibc implements that by dlopening
+# libgcc_s.so.1 and forcing an unwind. On this system _dl_find_object
+# misattributes objects loaded after startup: asked which object an address
+# inside the freshly dlopened libgcc_s belongs to, it answers
+# ld-linux-x86-64.so.2 and hands back the loader's .eh_frame. The unwinder then
+# finds no FDE and libgcc calls a bare abort(), so the kernel link died with
+# "Failed to sort kernel tables" and no diagnostic whatsoever.
+#
+# Linking libgcc_s at startup sidesteps the broken lookup: an object present
+# before the process starts is resolved correctly. This is a workaround for a
+# defect in our glibc, NOT a fix for it - the shipped system still has the bug,
+# any program that calls pthread_exit, pthread_cancel or backtrace() without
+# linking libgcc_s will abort. See build/BLOCKER.md for the full diagnosis and
+# tools/test-libc-unwind.sh, which fails for as long as the defect is present.
+export HOSTLDFLAGS="${HOSTLDFLAGS:-} -Wl,--no-as-needed -lgcc_s"
+
+# The fragments and the host link flags are inputs to these steps, and
+# `declare -f` cannot see a file read by path or a variable read from the
+# environment. Passing their digests makes a change to either rebuild rather
+# than silently reusing a stamp written under different inputs.
+FRAG_DIGEST="$(cat "$FRAG_BASE" "$FRAG_HARDENED" | sha256_of_stdin)"
+
 step compiler-check  s_compiler_check
 step unpack          s_unpack
 step patch           s_patch
-step config          s_config
-step build           s_build
+step config          s_config "$FRAG_DIGEST"
+step build           s_build "$HOSTLDFLAGS"
 step modules         s_modules
 step install         s_install
 step verify-install  s_verify_install
