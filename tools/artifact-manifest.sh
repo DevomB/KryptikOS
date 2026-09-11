@@ -63,9 +63,14 @@ emit_inputs() {
 
     # The repository state. --dirty matters: a manifest that names a commit
     # while the tree had uncommitted edits is worse than one that names none.
+    # -c safe.directory='*' because this tool is MEANT to run as root - a
+    # sysroot has directories only root can read, and the refusal in emit_tree
+    # says so. git then rejects a repository owned by someone else with
+    # "detected dubious ownership", the describe fails, and the manifest
+    # records "unknown" for the one field that ties it to a commit.
     local commit="unknown"
-    if have git && git -C "$KRYPTIK_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
-        commit="$(git -C "$KRYPTIK_ROOT" describe --always --dirty --abbrev=40 2>/dev/null || echo unknown)"
+    if have git && git -c safe.directory='*' -C "$KRYPTIK_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+        commit="$(git -c safe.directory='*' -C "$KRYPTIK_ROOT" describe --always --dirty --abbrev=40 2>/dev/null || echo unknown)"
     fi
     printf 'input\trepo-commit\t%s\n' "$commit"
 
@@ -132,9 +137,46 @@ emit_tree() {
     # -xdev is not an optimisation. After stage 03 the sysroot has the host's
     # /dev bind-mounted inside it; without -xdev this would walk the host's
     # device tree and record it as Kryptik's.
+    #
+    # find's exit status is CHECKED, and its stderr is kept rather than
+    # discarded. A sysroot contains directories this tool may not be able to
+    # read - /root is 0750, /etc/kryptik/zones is 0700 - and find reports
+    # those on stderr and exits 1 while still printing everything else. With
+    # the errors sent to /dev/null that looked like a mysterious failure; with
+    # the exit status ignored it would have been far worse, quietly producing
+    # a manifest that omitted exactly the files nobody could see.
+    local ferr; ferr="$(mktemp)"
+    local raw;  raw="$(mktemp)"
+    # shellcheck disable=SC2064
+    trap "rm -f '$ferr' '$raw'" RETURN
+
+    # `trap - ERR` as well as `set +e`: an ERR trap fires whether or not
+    # errexit is on, and common.sh's trap exits. Without this the find below
+    # aborts the script on the very failure this code exists to report - the
+    # same defect step() had, rediscovered here within the hour.
+    local frc=0
+    set +e
+    trap - ERR
     find "$ROOT" -xdev -mindepth 1 \
-         -printf '%y\t%m\t%U\t%G\t%s\t%P\t%l\n' 2>/dev/null \
-        | LC_ALL=C sort -t "$(printf '\t')" -k6,6 > "$meta"
+         -printf '%y\t%m\t%U\t%G\t%s\t%P\t%l\n' > "$raw" 2>"$ferr"
+    frc=$?
+    trap _kryptik_trap ERR
+    set -e
+
+    if [[ "$frc" -ne 0 ]]; then
+        err "could not read every entry under ${ROOT}:"
+        sed 's/^/    /' "$ferr" | head -10 >&2
+        [[ "$(grep -c '' < "$ferr")" -gt 10 ]] && echo "    ..." >&2
+        die "Refusing to write a manifest that omits what it could not read.
+
+A sysroot has directories only root can enter. An identity record with
+holes in it is worse than no identity record, because it still produces a
+digest and the digest still looks authoritative.
+
+  sudo tools/artifact-manifest.sh --root ${ROOT} --out ..."
+    fi
+
+    LC_ALL=C sort -t "$(printf '\t')" -k6,6 < "$raw" > "$meta"
 
     # Content hashes for regular files, batched. Fifty thousand sha256sum
     # processes is the difference between a manifest people take and one they
@@ -142,6 +184,8 @@ emit_tree() {
     ( cd "$ROOT" && find . -xdev -mindepth 1 -type f -printf '%P\0' 2>/dev/null \
         | xargs -0 -r sha256sum 2>/dev/null ) > "$hashes"
 
+    # Anything the hash pass could not read is recorded as UNREADABLE by the
+    # awk below; the caller turns that into a refusal for the same reason.
     LC_ALL=C awk -F '\t' -v hashfile="$hashes" '
     BEGIN {
         # sha256sum prints "<hash>  <path>", and escapes a leading backslash
@@ -198,6 +242,13 @@ generate)
     trap "rm -f '$body'" EXIT
     build_manifest > "$body"
 
+    unreadable="$(grep -c 'UNREADABLE' < "$body" || true)"
+    if [[ "$unreadable" -gt 0 ]]; then
+        err "${unreadable} file(s) could not be hashed:"
+        grep 'UNREADABLE' "$body" | head -10 | sed 's/^/    /' >&2
+        die "Refusing to write a manifest with unhashed entries - see above."
+    fi
+
     digest="$(sha256_of "$body")"
     entries="$(grep -c '' < "$body")"
 
@@ -253,6 +304,18 @@ verify)
     printf '  %s line(s) present now and not in the manifest\n' "$added" >&2
     printf '  %s line(s) in the manifest and not present now\n' "$removed" >&2
     echo >&2
+    # The most common cause of a difference in `input source` lines is not a
+    # changed tree at all - it is verifying with a different KRYPTIK_SOURCES
+    # than the manifest was generated under, so the tarballs enumerate
+    # differently. Say so, because the diff alone looks like tampering.
+    if LC_ALL=C comm -23 "$old" "$new" | grep -q '^input\tsource\t'; then
+        warn "some differences are in 'input source' lines."
+        warn "Those enumerate \$KRYPTIK_SOURCES, which is currently:"
+        warn "  ${KRYPTIK_SOURCES}"
+        warn "If that is not the directory this manifest was generated under,"
+        warn "the tree may be untouched and only the environment differs."
+    fi
+
     err "first 40 differences (- manifest, + now):"
     LC_ALL=C diff "$old" "$new" | grep -E '^[<>]' | sed 's/^</  -/; s/^>/  +/' | head -40 >&2
 

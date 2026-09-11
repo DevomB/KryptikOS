@@ -4,10 +4,11 @@ Task `build`, overnight of 2026-09-11.
 Branch `overnight/build-2026-09-11`, forked from `d2abaef`.
 Worktree `/home/devomb/kryptik-overnight-2026-09-11/worktrees/build`.
 
-**Status: working.** The tooling below is finished, tested and committed and
-can be integrated now. The *artifacts* — a Kryptik kernel and sysroot — are
-still building; §6 says exactly where that is and §7 is the empty space they
-will fill.
+**Status: sysroot ready, kernel blocked.** Stage 04 is complete and the
+sysroot is finished, audited and manifested — §7.2 and §7.3 have the paths and
+the digest, and it can be booted on a stock kernel today. Stage 05 stopped four
+steps in on a missing `bc`; `build/BLOCKER.md` has the whole change needed and
+it is small.
 
 Answers to `REQUEST.md` R-1 are in §7. R-1 point 4 is answered in §7.4 **now**,
 because the security tab's work is blocked on it and it does not need the
@@ -197,43 +198,149 @@ fingerprint code printed `fail aborted at …` before every step that had no
 
 ## 7. R-1 — the artifact identities you asked for
 
-### 7.1–7.3 kernel, sysroot, input identities — PENDING
+### 7.1 Kernel — NOT BUILT. Blocked on `bc`.
 
-Not yet built. When they exist this section will carry:
+Stage 05 completed `unpack`, `patch`, `config` and `compiler-check`, then
+stopped:
 
-- `bzImage` at `…/work/sysroot/boot/kryptik-6.18.50`, with sha256
-- sysroot at `…/work/sysroot`
-- module tree at `…/work/sysroot/lib/modules/6.18.50`
-
-For the input identities you asked for — "enough that I can tell whether an
-artifact matches the integrated tree or predates it" — use the manifest rather
-than trusting me or a timestamp:
-
-```sh
-make manifest          # writes $KRYPTIK_WORK/artifact-manifest.txt, prints a digest
-make verify-manifest   # recompute; non-zero if anything moved
+```
+/bin/sh: line 1: bc: command not found
+make[2]: *** [Kbuild:24: include/generated/timeconst.h] Error 127
 ```
 
-It records every entry in the tree (type, mode, owner, size, content hash,
-symlink target, device numbers) **and** the inputs: the repository commit
-(with `--dirty`), every recipe and config file by content, every source tarball
-by content, the compiler as reported by the sysroot's own gcc, and the
-per-step build fingerprints. The body has no timestamps, no absolute paths and
-no hostnames, so two manifests of one tree are byte-identical and `diff` means
-something.
+`linux-6.18.50/Kbuild:21` is `filechk_gentimeconst = echo $(CONFIG_HZ) | bc -q $<`,
+and `arch/x86` asm-offsets depends on that header, so every kernel build needs
+it. Kryptik pins no `bc`, fetched none, and has none in `sources.lock`.
 
-The per-step fingerprint lines are the specific thing you want: they bind
-"this file is in the tree" to "these are the inputs that put it there".
+Fixing it needs `versions.env`, `tools/fetch-sources.sh` and an audited
+`sources.lock` line — none of which this tab owns. The full change, including
+the stage 04 recipe line ready to paste, is in **`build/BLOCKER.md`** (copied
+to `integration/REQUEST-from-build.md` and `provenance/REQUEST-from-build.md`).
 
-It deliberately does **not** claim reproducibility. Identical inputs are not
-expected to give an identical digest — timestamps and build paths leak into
-objects all over an LFS build. It is an identity record, not a determinism
-proof.
+What was deliberately *not* done: building the kernel on the host, which has
+`bc` and the wrong compiler; copying the host's `bc` into a chroot whose PATH
+excludes the host on purpose; or writing a shim, which would be fabricated
+build output.
 
-The image also carries its own identity: `/etc/os-release` has
-`BUILD_ID=<repo commit>`, resolved outside the chroot and passed in. That
-should let `boot-smoke.sh` stop relying on `/etc/kryptik-userspace-origin` to
-tell whether it is looking at Kryptik's userspace or the host's.
+`compiler-check` passing before the failure is worth recording on its own: the
+kernel *would* be built by `gcc (GCC) 14.2.0` reporting
+`x86_64-kryptik-linux-gnu`, from `/usr/bin`, not by a cross compiler and not by
+the host's.
+
+### 7.2 Sysroot — COMPLETE
+
+| | |
+|---|---|
+| path | `/home/devomb/kryptik-overnight-2026-09-11/work/sysroot` |
+| size | 3.6 GB, 29,730 files |
+| produced by | stage 04, 63 of 64 packages |
+| `/etc/os-release` | `BUILD_ID=2501ecf214b108f1f193ff44ec768df5716146de` |
+| target compiler in it | `gcc (GCC) 14.2.0`, `x86_64-kryptik-linux-gnu` |
+
+`man-db` is the 64th and is deliberately unwired — it needs `gdbm`, which
+Kryptik also does not pin. The stage reports it and counts it in its "the base
+system is INCOMPLETE" warning rather than passing over it.
+
+**You can boot this today on your own kernel:**
+
+```sh
+make vm-boot KERNEL=<your stock bzImage> \
+             SYSROOT=/home/devomb/kryptik-overnight-2026-09-11/work/sysroot
+```
+
+`boot-smoke.sh` should stop needing `/etc/kryptik-userspace-origin` — the image
+names its own commit in `/etc/os-release`.
+
+### 7.3 Input identity — RECORDED
+
+```
+manifest : /home/devomb/kryptik-overnight-2026-09-11/work/artifact-manifest.txt
+           (copy at build/artifact-manifest.txt)
+digest   : 21527b4affa491273e8ed1e60d38682df6758fa772e600cbe7b9582d4faf6d66
+entries  : 38,768
+inputs   : 184 recorded
+```
+
+`make verify-manifest` recomputes and exits non-zero if anything moved; it was
+run after generation and the tree verifies against it.
+
+Run it **as root**. A sysroot has directories only root can enter, and the tool
+refuses rather than quietly producing a digest over the subset it could read.
+
+### 7.3a What the binaries actually got — measured, not asserted
+
+`make audit-artifacts`, on the finished sysroot:
+
+```
+objects 1208   executables 689   libraries 519
+with SSP 1128  with FORTIFY 726
+NO-BIND-NOW 101   NO-CET 104   NO-PIE 28   RPATH 32
+no object failed a hard check
+```
+
+Against the stage 01+02 baseline of 450 objects, *all* of which lacked BIND_NOW
+and CET, that is the hardening arriving. No RWX segment, no TEXTREL, no
+executable stack, and no RPATH naming the build tree anywhere in 1208 objects.
+
+The 101 that still lack BIND_NOW are not a mystery, and they are worth naming
+because they are the answer to "did the flags reach the packages":
+
+* **GCC and its runtime** — `gcc`, `g++`, `cpp`, `c++`, `gcov*`, `lto-dump`,
+  the `x86_64-kryptik-linux-gnu-*` wrappers, plus `libgcc_s`, `libstdc++`,
+  `libitm`. These are stage 02's cross-built pass-2 GCC, built deliberately
+  without hardening, and **stage 04 never rebuilds GCC**. This is §9.2 / B-a,
+  now measured rather than predicted.
+* **bzip2** — `bunzip2`, `bzcat`, `bzip2recover`, `libbz2`. bzip2 has no
+  configure; its Makefile hardcodes its own `CFLAGS` and ignores the
+  environment. The audit tool's header lists that as a way flags silently fail
+  to arrive; here it is, doing exactly that.
+* **perl and its extension modules** — perl links extensions with the flags it
+  recorded at its own build time, not the ones in the environment.
+
+None of these is visible from reading `hardening.env`, which is the entire
+argument for auditing the objects.
+
+### 7.3b The userland was RUN, not just listed
+
+`make smoke-userspace` (root; `tools/test-userspace-smoke.sh`) enters the
+chroot and executes what stage 04 built. All 31 checks pass:
+
+* every core tool reports its own pinned version — bash 5.2.32, coreutils 9.5,
+  sed 4.9, grep 3.11, gawk 5.3.0, tar 1.35, findutils 4.10.0, diffutils 3.10,
+  xz 5.8.4, zstd 1.5.6, openssl 3.3.1, perl 5.40.0, python 3.12.5,
+  pkgconf 2.3.0, kmod 33, procps-ng, iproute2, shadow 4.16.0, agetty
+* glibc 2.40 answers, `ldd` resolves
+* `s6-svscan` starts; `/sbin/init` and the console wrapper are executable
+* `kryptikd` runs **and parses the zone definitions installed beside it**
+* `gcc -dumpmachine` is `x86_64-kryptik-linux-gnu`, and it compiles, links and
+  runs a program *inside the target*
+* **bash survives `LD_PRELOAD=/usr/lib/libhardened_malloc.so`** — the first
+  actual evidence for ADR-005 here; until now the claim was that the allocator
+  had been installed
+
+Log: `logs/userspace-smoke.latest.log`.
+
+Two checks failed on the first run and both were the test's fault: `top -v` is
+not an option (top ran and said so) and `useradd` prints usage rather than a
+version. Fixed in the test. A check that reports failure on working software
+teaches people to ignore it, which is the failure mode most of tonight's
+defects shared.
+
+### 7.3c Entering the chroot changes the digest
+
+`03-chroot-prep.sh` rewrites `/etc/kryptik/inside-chroot` with a timestamp
+every time it mounts. That file is inside the sysroot, so **any chroot session
+— including the smoke test — changes the manifest digest**. Regenerate
+afterwards:
+
+```sh
+sudo tools/artifact-manifest.sh --root .../work/sysroot --out .../artifact-manifest.txt
+```
+
+Pass the same `KRYPTIK_SOURCES` when verifying as when generating. The inputs
+section enumerates that directory, so a mismatch produces a wall of differing
+`input source` lines for a tree that has not changed; the tool now says so
+rather than leaving it looking like tampering.
 
 ### 7.4 Kernel configuration — answerable now
 
