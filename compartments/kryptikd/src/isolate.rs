@@ -204,7 +204,12 @@ pub fn bring_up_loopback() -> Result<(), IsolateError> {
     }
     ifr.ifr_ifru.ifru_flags = (libc::IFF_UP | libc::IFF_RUNNING) as libc::c_short;
 
-    let ret = unsafe { libc::ioctl(sock, libc::SIOCSIFFLAGS, &ifr) };
+    // `as _`, not a named type. ioctl(2)'s request argument is c_ulong in
+    // glibc's binding and c_int in musl's, and SIOCSIFFLAGS is typed to match
+    // each one - so naming either type here compiles on one libc and fails on
+    // the other. Inferring it from the signature compiles on both, which is
+    // what building a static kryptikd for the initramfs needs.
+    let ret = unsafe { libc::ioctl(sock, libc::SIOCSIFFLAGS as _, &ifr) };
     unsafe { libc::close(sock) };
     check("ioctl(SIOCSIFFLAGS)", ret)
 }
