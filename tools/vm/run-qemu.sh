@@ -120,6 +120,8 @@ case "$NIC" in
         # refuses to start at all if it is absent. That is a hard failure over a
         # boot path this VM never uses: it boots from -kernel and has no reason
         # to PXE.
+        # shellcheck disable=SC2054  # commas belong to QEMU's option syntax,
+        # they are not array separators: each element here is one argv entry.
         NIC_ARGS=(-netdev user,id=kn0 -device virtio-net-pci,netdev=kn0,romfile=)
         printf 'run-qemu: nic     user-mode NAT (guest gets a virtio NIC; host NIC untouched)\n' >&2
         ;;

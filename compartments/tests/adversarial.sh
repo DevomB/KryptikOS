@@ -138,7 +138,10 @@ head_ "Requirement 1 — cannot list processes in another zone"
 # that /proc is empty. An earlier version of this asserted "<= 2 pids" and
 # reported a correctly isolated zone as a failure.
 visible="$(unshare "${ZONE_UNSHARE[@]}" --mount-proc bash -c 'ls /proc | grep -c "^[0-9]*$"' 2>/dev/null)"
-host_pids="$(ls /proc 2>/dev/null | grep -c "^[0-9]*$")"
+# A glob, not `ls /proc | grep`: every /proc entry starting with a digit is a
+# pid, and counting them here costs no subprocess that could itself miscount.
+host_pids=0
+for _p in /proc/[0-9]*; do [ -d "$_p" ] && host_pids=$((host_pids+1)); done
 if [[ -n "$visible" ]] && [[ "$visible" -lt 10 ]] && [[ "$visible" -lt "$host_pids" ]]; then
     pass "zone sees only its own processes (${visible} pids vs ${host_pids} on host)"
 else
