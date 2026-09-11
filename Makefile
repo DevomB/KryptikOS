@@ -89,7 +89,7 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
 .PHONY: help check check-kernel-eol sources lock verify verify-provenance \
         test-harness test-hardening test-artifacts audit-artifacts \
         audit-artifacts-strict manifest verify-manifest test-manifest \
-        test-s6-init smoke-userspace test-services test-libc-unwind image image-boot \
+        test-s6-init smoke-userspace test-services test-libc-unwind \n        sign-image verify-image test-image-signing image image-boot \
         image-smoke \
         validate-kernel validate-kernel-hardened \
         toolchain temp-tools chroot chroot-enter chroot-umount chroot-status \
@@ -138,6 +138,9 @@ help:
 	@echo "  make smoke-userspace   RUN the built userland in the chroot (needs root)"
 	@echo "  make test-services     validate the s6-rc service tree"
 	@echo "  make test-libc-unwind  prove the target libc can unwind (needs root)"
+	@echo "  make sign-image        sign the disk image with a developer key"
+	@echo "  make verify-image      verify that signature against the image"
+	@echo "  make test-image-signing  prove the verifier refuses what it should"
 	@echo "  make image KERNEL=...  build a bootable disk image from the sysroot"
 	@echo "  make image-boot KERNEL=...  boot that image on a serial console"
 	@echo "  make audit       run security audits over the build tree"
@@ -303,6 +306,18 @@ test-services:
 
 # Runs inside the chroot, because it is the TARGET system's C library that has
 # to be able to unwind - not the build host's.
+# Boot integrity, developer tier. Proves an image is byte-for-byte what this
+# build produced; it is not secure boot and not dm-verity, and the tools refuse
+# to let a developer signature pass for a release one.
+sign-image:
+	@"$(TOOLS)"/image/sign-image.sh --image "$(KRYPTIK_WORK)/images/kryptik-dev.img" 		--kernel "$(KRYPTIK_WORK)/sysroot/boot/kryptik-$(V_LINUX)"
+
+verify-image:
+	@"$(TOOLS)"/image/verify-image.sh --image "$(KRYPTIK_WORK)/images/kryptik-dev.img" 		--key "$(KRYPTIK_WORK)/images/kryptik-dev.img.pub" --expect-kind developer
+
+test-image-signing:
+	@"$(TOOLS)"/test-image-signing.sh
+
 test-libc-unwind:
 	@$(CHROOT_RUN) run /kryptik/tools/test-libc-unwind.sh
 
