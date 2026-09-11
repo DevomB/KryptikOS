@@ -247,8 +247,18 @@ ZOUT=""; ZRC=0
 zrun() {
     local zone="$1"; shift
     [[ "${1:-}" == "--" ]] && shift
+    # A zone that declares [identity] REFUSES --zone-uid/--zone-gid: the file
+    # is the authority, and a command-line override would silently change who
+    # owns that zone's data. `tools/kryptik` already works this out per zone;
+    # the suite has to as well, or a fixture with an identity cannot be
+    # launched here at all - which is why the routed fixture had none, and why
+    # it was never plumbed.
+    local -a za=("${ZARGS[@]}")
+    if (( ${#IDENTITY[@]} )) && grep -q '^\[identity\]' "$ZONES/$zone.toml" 2>/dev/null; then
+        za=(--zones "$ZONES" --rootfs "$ROOTFS")
+    fi
     ZOUT="$(KRYPTIK_EXPERIMENTAL=1 timeout "$TIMEOUT" \
-            "$KRYPTIKD" run "$zone" "${ZARGS[@]}" -- "$@" 2>&1)"
+            "$KRYPTIKD" run "$zone" "${za[@]}" -- "$@" 2>&1)"
     ZRC=$?
     return 0
 }
@@ -257,8 +267,18 @@ zrun() {
 zrun_raw() {
     local zone="$1"; shift
     [[ "${1:-}" == "--" ]] && shift
+    # A zone that declares [identity] REFUSES --zone-uid/--zone-gid: the file
+    # is the authority, and a command-line override would silently change who
+    # owns that zone's data. `tools/kryptik` already works this out per zone;
+    # the suite has to as well, or a fixture with an identity cannot be
+    # launched here at all - which is why the routed fixture had none, and why
+    # it was never plumbed.
+    local -a za=("${ZARGS[@]}")
+    if (( ${#IDENTITY[@]} )) && grep -q '^\[identity\]' "$ZONES/$zone.toml" 2>/dev/null; then
+        za=(--zones "$ZONES" --rootfs "$ROOTFS")
+    fi
     ZOUT="$(env -u KRYPTIK_EXPERIMENTAL timeout "$TIMEOUT" \
-            "$KRYPTIKD" run "$zone" "${ZARGS[@]}" -- "$@" 2>&1)"
+            "$KRYPTIKD" run "$zone" "${za[@]}" -- "$@" 2>&1)"
     ZRC=$?
     return 0
 }
@@ -2056,6 +2076,13 @@ if (( PRIVILEGED == 1 )) && [[ "${KRYPTIK_VM_DISPOSABLE:-}" == "1" ]]; then
     # A routed fixture. `carrier` already holds the nic.
     mkzone router none "#0f0f0f"
     sed -i 's/^mode = "none"$/mode = "routed"/' "$ZONES/router.toml"
+    # A routed zone's address on the bridge is derived from its identity -
+    # netzone::host_number reads [identity] uid_base, and plumb_routed_zone
+    # refuses the zone without one. A refusal there is NOT fatal: the zone
+    # starts with loopback only, fail-closed, which is the right behaviour and
+    # is precisely what NETR3 and NETR4 were reporting for a whole boot. They
+    # were measuring a fixture that never asked to be routed.
+    printf '[identity]\nuid_base = 393216\n' >> "$ZONES/router.toml"
 
     # The nic zone has to be RUNNING for a routed zone to have anything to
     # attach to, so it goes in the background and stays there.
@@ -2085,6 +2112,17 @@ if (( PRIVILEGED == 1 )) && [[ "${KRYPTIK_VM_DISPOSABLE:-}" == "1" ]]; then
         # the veth routing was supposed to give this zone.
         zrun router -- /bin/sh -c "$PRO n=\$(sed 1,2d /proc/net/dev | sed 's/:.*//' | tr -d ' ' | grep -vxE '$FALLBACK_RE' | wc -l); r=\$(sed 1d /proc/net/route | wc -l); echo PROBE=if=\$n,routes=\$r"
         if want_launch "NETR2 a routed zone starts while the nic zone is up"; then
+            # Did the launch build a network path at all? A plumb failure is
+            # deliberately not fatal, so without this NETR3 and NETR4 cannot
+            # tell "routing is broken" from "this zone never asked for it" -
+            # and they reported the second as the first until this check
+            # existed.
+            if [[ "$ZOUT" == *"has no network path"* ]]; then
+                fail "NETR2b the routed zone was never plumbed, so NETR3/NETR4 measure nothing"
+                info "kryptikd said: $(printf '%s\n' "$ZOUT" | grep -a 'no network path' | head -1)"
+            else
+                pass "NETR2b the launch reported no plumbing failure"
+            fi
             got="$(printf '%s\n' "$ZOUT" | sed -n 's/^PROBE=//p' | head -1)"
             ifn="${got#if=}"; ifn="${ifn%%,*}"
             rts="${got##*routes=}"
