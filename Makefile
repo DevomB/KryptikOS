@@ -20,7 +20,7 @@ TOOLS   := $(ROOT)/tools
 
 export KRYPTIK_ROOT := $(ROOT)
 
-.PHONY: help check check-kernel-eol sources lock verify verify-provenance test-harness validate-kernel validate-kernel-hardened toolchain temp-tools chroot system kernel iso audit zones zone-test clean distclean
+.PHONY: help check check-kernel-eol sources lock verify verify-provenance test-harness validate-kernel validate-kernel-hardened toolchain temp-tools chroot system kernel iso audit zones zone-test launcher-test zone-tests clean distclean
 
 help:
 	@echo "Kryptik build targets"
@@ -41,7 +41,9 @@ help:
 	@echo "  make check-kernel-eol  fail if the pinned kernel is EOL or not LTS"
 	@echo "  make validate-kernel-hardened  check the linux-hardened fragment"
 	@echo "  make zones       validate zone definitions + kernel support"
-	@echo "  make zone-test   run the Phase 5 adversarial exit test"
+	@echo "  make zone-test   run the Phase 5 adversarial exit test (primitives)"
+	@echo "  make launcher-test  attack \`kryptikd run\` itself (the launch path)"
+	@echo "  make zone-tests  both of the above; what a zone change must pass"
 	@echo "  make test-harness      verify failed builds cannot be stamped ok"
 	@echo "  make audit       run security audits over the build tree"
 	@echo "  make clean       remove build work directory"
@@ -116,6 +118,16 @@ zones:
 zone-test:
 	@cd compartments/kryptikd && cargo build --quiet
 	@compartments/tests/adversarial.sh
+
+# adversarial.sh drives the isolation PRIMITIVES with unshare(1); launcher.sh
+# drives `kryptikd run`. They are different claims - the primitives can be
+# sound while the launcher applies them in the wrong order - so a change to
+# the zone path has to pass both, and `zone-tests` is the target that says so.
+launcher-test:
+	@cd compartments/kryptikd && cargo build --quiet
+	@compartments/tests/launcher.sh
+
+zone-tests: zone-test launcher-test
 
 test-harness:
 	@"$(TOOLS)"/test-step-errexit.sh

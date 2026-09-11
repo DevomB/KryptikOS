@@ -327,14 +327,49 @@ fn child_main(
     //    working no matter what the mount namespace now looks like.
     rootfs::close_inherited_fds();
 
-    // 9. A predictable, minimal environment. The caller's environment can
-    //    carry paths, tokens and LD_* variables into the zone, none of which
-    //    it should inherit by accident.
-    std::env::remove_var("LD_PRELOAD");
-    std::env::remove_var("LD_LIBRARY_PATH");
+    // 9. A predictable, minimal environment.
+    //
+    //    ALLOWLIST, NOT DENYLIST. This step used to remove LD_PRELOAD and
+    //    LD_LIBRARY_PATH by name and set four variables, leaving everything
+    //    else the caller happened to have. That is not a minimal environment,
+    //    and the comment above it claimed otherwise. The real-launcher suite
+    //    showed a synthetic secret arriving in the zone unchanged, together
+    //    with DISPLAY, WAYLAND_DISPLAY, DBUS_SESSION_BUS_ADDRESS and
+    //    XDG_RUNTIME_DIR - four names that each hand a compartmentalised
+    //    process the address of a host socket.
+    //
+    //    Removing variables by name can only ever cover the ones someone
+    //    thought of, and the set of environment variables that carry secrets
+    //    is open-ended: every CI system, cloud SDK and agent invents more.
+    //    Clearing the environment and putting back exactly what a zone needs
+    //    cannot miss one.
+    //
+    //    This runs in the child, after fork and before execvp, in a process
+    //    that is single-threaded - so mutating the environment here is safe
+    //    and affects only the zone.
+    let term = std::env::var("TERM").ok().filter(|t| {
+        // TERM is the one caller-supplied value carried across, because an
+        // interactive shell in a zone is unusable without it. It names a
+        // terminfo entry, not a path or a token, so it is passed through only
+        // when it still looks like one.
+        !t.is_empty()
+            && t.len() <= 32
+            && t.bytes().all(|b| {
+                b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.'
+            })
+    });
+
+    let inherited: Vec<std::ffi::OsString> =
+        std::env::vars_os().map(|(k, _)| k).collect();
+    for k in inherited {
+        std::env::remove_var(&k);
+    }
+
     std::env::set_var("PATH", "/usr/bin:/usr/sbin:/bin:/sbin");
     std::env::set_var("HOME", "/");
     std::env::set_var("TMPDIR", "/tmp");
+    std::env::set_var("LANG", "C.UTF-8");
+    std::env::set_var("TERM", term.as_deref().unwrap_or("dumb"));
     std::env::set_var("KRYPTIK_ZONE", &zone.name);
 
     // 10. Syscall filtering, LAST. It must come after every privileged setup
