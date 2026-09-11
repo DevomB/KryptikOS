@@ -2,3 +2,4 @@ sysinit
 eudev-trigger
 kryptikd-check
 getty-tty1
+installer-run
