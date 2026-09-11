@@ -309,6 +309,26 @@ want_launch() {
     if [[ "$ZOUT" == *"$LAUNCHED"* ]]; then
         return 0
     fi
+
+    # A launch the TARGET kernel refuses on purpose is NOT RUN, not failed.
+    #
+    # kryptikd ignores KRYPTIK_EXPERIMENTAL for a root launch on a kernel that
+    # restricts unprivileged user namespaces (Design 01 P6), so a zone whose
+    # configuration asks for something this build cannot deliver cannot be
+    # started there at all. That is the rule working. Several checks here use
+    # such a zone as scaffolding - B1 needs a persistent directory and so uses
+    # the encrypted fixture, K3 checks ownership on the same one - and on the
+    # Kryptik kernel they reported as failures, which blamed the system for
+    # doing exactly what it was designed to do.
+    #
+    # Handled once, here, rather than in each check: every check reaches a
+    # launch through this function, and the next one to use an
+    # override-dependent fixture should not have to rediscover this.
+    if [[ "$ZOUT" == *"KRYPTIK_EXPERIMENTAL is ignored"* ]]; then
+        skip "$desc [needs a zone whose guarantees are unmet; this kernel correctly refuses to start one]"
+        return 1
+    fi
+
     if (( ZRC == 124 )); then
         fail "$desc [did not launch: TIMED OUT after ${TIMEOUT}s]"
     elif (( ZRC == 125 )); then

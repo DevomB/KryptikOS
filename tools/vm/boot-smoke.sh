@@ -194,7 +194,10 @@ esac
 rrc="$(valueof KRYPTIK_VM_RESTRICTED_RC)"
 rknob="$(valueof KRYPTIK_VM_RESTRICTED_KNOB)"
 case "$rrc" in
-    0)  if [ "$rknob" = "apparmor-emulated" ]; then
+    0)  if [ "$rknob" = "native" ]; then
+            pass "unprivileged user namespaces are restricted BY THIS KERNEL, and the suite passed under it"
+            info "not emulated: the kernel refuses unshare(CLONE_NEWUSER) without CAP_SYS_ADMIN by its own configuration, so the run above IS the restricted run"
+        elif [ "$rknob" = "apparmor-emulated" ]; then
             pass "the launcher suite passed again with unprivileged user namespaces RESTRICTED (emulated)"
             info "emulated with kernel.apparmor_restrict_unprivileged_userns=1, not the target kernel's own build option"
         else
