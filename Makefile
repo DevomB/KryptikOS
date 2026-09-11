@@ -87,6 +87,7 @@ CHROOT_ENV := KRYPTIK_ROOT="$(ROOT)" \
 CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
 
 .PHONY: help check check-kernel-eol sources lock verify verify-provenance \
+	vm-disk vm-disk-boot vm-restart vm-measure cli-test \
         test-harness test-hardening test-artifacts audit-artifacts \
         audit-artifacts-strict manifest verify-manifest test-manifest \
         test-s6-init smoke-userspace \
@@ -128,8 +129,16 @@ help:
 	@echo "  make zone-test   run the Phase 5 adversarial exit test (primitives)"
 	@echo "  make launcher-test  attack \`kryptikd run\` itself (the launch path)"
 	@echo "  make zone-tests  both of the above; what a zone change must pass"
-	@echo "  make vm-image    build the developer VM initramfs"
+	@echo "  make cli-test    test \`kryptik\`, the command a person types"
+	@echo "  make vm-image    build the developer VM initramfs (busybox userspace)"
 	@echo "  make vm-boot     boot it under QEMU and check the serial log"
+	@echo
+	@echo "  With a stage 04 sysroot, the image is a real Kryptik userspace and"
+	@echo "  is too big for an initramfs, so it becomes an ext4 disk instead:"
+	@echo "  make vm-disk       SYSROOT=... S6ROOT=...   build the root filesystem"
+	@echo "  make vm-disk-boot  KERNEL=...               boot it as /dev/vda"
+	@echo "  make vm-restart    KERNEL=...               boot, reboot, come back"
+	@echo "  make vm-measure                             what the last boot cost"
 	@echo "  make test-harness      verify failed builds cannot be stamped ok"
 	@echo "  make test-hardening    verify the flag set builds exes AND .so files"
 	@echo "  make test-artifacts    self-test the artifact auditor (positive controls)"
@@ -311,6 +320,55 @@ vm-boot: vm-image
 	@"$(ROOT)"/tools/vm/run-qemu.sh --kernel "$(KERNEL)" --initrd "$(VM_INITRD)" \
 	    --log "$(VM_LOG)" --mode smoke --nic "$(VM_NIC)" || true
 	@"$(ROOT)"/tools/vm/boot-smoke.sh "$(VM_LOG)"
+
+# --- the disk image ---------------------------------------------------------
+#
+# A separate target from vm-image, and not a flag on it, because the two
+# produce different things for different reasons. An initramfs is unpacked into
+# the guest's RAM, which is fine for a busybox harness and impossible for a
+# real userspace: the stage 04 sysroot is 3.6G. This writes an ext4 filesystem
+# with mke2fs -d, which needs no root and no loop device.
+VM_DISK      ?= $(VM_OUT)/kryptik-root.img
+VM_DISK_SIZE ?= 6G
+
+vm-disk: $(VM_KRYPTIKD)
+	@test -n "$(S6ROOT)" || { echo "set S6ROOT=<dir with usr/bin/{s6-svscan,busybox}>"; exit 1; }
+	@test -n "$(SYSROOT)" || { echo "set SYSROOT=<a stage 04 sysroot> — without one this would be a busybox image, and vm-image already builds those"; exit 1; }
+	@mkdir -p "$(VM_OUT)"
+	@"$(ROOT)"/tools/vm/mkinitramfs.sh --out "$(VM_DISK)" --as-disk "$(VM_DISK_SIZE)" \
+	    --kryptikd "$(VM_KRYPTIKD)" --s6root "$(S6ROOT)" \
+	    --zones "$(ROOT)/compartments/zones" --sysroot "$(SYSROOT)"
+
+# Boot that disk AS the root filesystem. No initramfs: this kernel has
+# virtio_blk and ext4 built in, which the guest reports rather than the harness
+# assuming.
+vm-disk-boot: vm-disk
+	@test -n "$(KERNEL)" || { echo "set KERNEL=<path to a bzImage>"; exit 1; }
+	@"$(ROOT)"/tools/vm/run-qemu.sh --kernel "$(KERNEL)" --disk "$(VM_DISK)" --root-disk \
+	    --log "$(VM_LOG)" --mode smoke --nic "$(VM_NIC)" || true
+	@"$(ROOT)"/tools/vm/boot-smoke.sh "$(VM_LOG)"
+
+# Boot it, reboot it from inside, and require the second boot to come back and
+# run a zone. Needs the disk: on an initramfs the boot counter would reset every
+# time and the guest would reboot until the timeout.
+VM_RESTART_LOG ?= $(VM_OUT)/serial-restart.log
+
+vm-restart: vm-disk
+	@test -n "$(KERNEL)" || { echo "set KERNEL=<path to a bzImage>"; exit 1; }
+	@"$(ROOT)"/tools/vm/run-qemu.sh --kernel "$(KERNEL)" --disk "$(VM_DISK)" --root-disk \
+	    --log "$(VM_RESTART_LOG)" --mode restart --nic "$(VM_NIC)" || true
+	@"$(ROOT)"/tools/vm/boot-smoke.sh "$(VM_RESTART_LOG)"
+
+# What the last boot cost. Reads the log that is already there rather than
+# booting again, so it is free to run and says nothing new if nothing was run.
+vm-measure:
+	@test -r "$(VM_LOG)" || { echo "no serial log at $(VM_LOG) — run make vm-boot or vm-disk-boot first"; exit 1; }
+	@"$(ROOT)"/tools/vm/measure.sh "$(VM_LOG)" $(if $(wildcard $(VM_DISK)),"$(VM_DISK)",)
+
+# The user-facing command's own suite.
+cli-test:
+	@cd compartments/kryptikd && cargo build --quiet
+	@compartments/tests/cli.sh
 
 test-harness:
 	@"$(TOOLS)"/test-step-errexit.sh
