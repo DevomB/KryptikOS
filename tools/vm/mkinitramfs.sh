@@ -813,7 +813,12 @@ echo "KRYPTIK_VM_CHECK_END"
 # The real launcher suite, inside the VM. This is the reason the image exists.
 if [ -x /usr/lib/kryptik/compartments/tests/launcher.sh ]; then
     echo "KRYPTIK_VM_LAUNCHER_BEGIN"
-    KRYPTIKD=/usr/bin/kryptikd KRYPTIK_TEST_TIMEOUT=60 \
+    # KRYPTIK_VM_DISPOSABLE is set HERE and nowhere else. One check in the
+    # suite moves the physical NIC into a zone, which is safe in a VM this
+    # harness built and threw away, and is not something to do on anybody's
+    # machine. The suite refuses to run it without this, so running the suite
+    # as root on a real host cannot take that host's network away.
+    KRYPTIKD=/usr/bin/kryptikd KRYPTIK_TEST_TIMEOUT=60 KRYPTIK_VM_DISPOSABLE=1 \
         /usr/lib/kryptik/compartments/tests/launcher.sh
     rc=$?
     echo "KRYPTIK_VM_LAUNCHER_RC=$rc"
@@ -837,7 +842,7 @@ if [ -x /usr/lib/kryptik/compartments/tests/launcher.sh ]; then
     echo "KRYPTIK_VM_RESTRICTED_BEGIN"
     if sysctl -w kernel.apparmor_restrict_unprivileged_userns=1 >/dev/null 2>&1; then
         echo "KRYPTIK_VM_RESTRICTED_KNOB=apparmor-emulated"
-        KRYPTIKD=/usr/bin/kryptikd KRYPTIK_TEST_TIMEOUT=60 \
+        KRYPTIKD=/usr/bin/kryptikd KRYPTIK_TEST_TIMEOUT=60 KRYPTIK_VM_DISPOSABLE=1 \
             /usr/lib/kryptik/compartments/tests/launcher.sh
         echo "KRYPTIK_VM_RESTRICTED_RC=$?"
         sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null 2>&1
