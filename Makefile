@@ -89,7 +89,7 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
 .PHONY: help check check-kernel-eol sources lock verify verify-provenance \
         test-harness test-hardening test-artifacts audit-artifacts \
         audit-artifacts-strict manifest verify-manifest test-manifest \
-        test-s6-init smoke-userspace \
+        test-s6-init smoke-userspace test-services image image-boot \
         validate-kernel validate-kernel-hardened \
         toolchain temp-tools chroot chroot-enter chroot-umount chroot-status \
         system kernel iso audit zones zone-test paths reset-stamps \
@@ -135,6 +135,9 @@ help:
 	@echo "  make test-manifest     self-test the manifest tool (positive controls)"
 	@echo "  make test-s6-init      check stage 04 produces a bootable s6 image"
 	@echo "  make smoke-userspace   RUN the built userland in the chroot (needs root)"
+	@echo "  make test-services     validate the s6-rc service tree"
+	@echo "  make image KERNEL=...  build a bootable disk image from the sysroot"
+	@echo "  make image-boot KERNEL=...  boot that image on a serial console"
 	@echo "  make audit       run security audits over the build tree"
 	@echo "  make paths       print the resolved build contract"
 	@echo "  make reset-stamps  archive all build stamps (does not delete)"
@@ -289,6 +292,26 @@ test-manifest:
 # early getty naming a program that does not exist, both leave the maker
 # exiting 0 and the machine booting to silence. The s6 stack builds in
 # about a minute, so it is checked up front instead.
+# Structural checks on build/services/ that cost a second, against
+# mistakes that otherwise surface at the end of a four-hour stage: a
+# dependency naming a service that does not exist, a shebang in an
+# execline `up`, a script installed into every image that nothing runs.
+test-services:
+	@"$(TOOLS)"/test-services.sh
+
+# Build a bootable disk image from a finished sysroot and a kernel.
+#   make image KERNEL=... IMAGE=...
+IMAGE ?= $(KRYPTIK_OUT)/kryptik-dev.img
+KERNEL ?=
+image:
+	@mkdir -p "$(dir $(IMAGE))"
+	@"$(TOOLS)"/image/mkdisk.sh --sysroot "$(KRYPTIK_WORK)/sysroot" \
+	    $(if $(KERNEL),--kernel "$(KERNEL)",) --out "$(IMAGE)"
+
+image-boot:
+	@"$(TOOLS)"/image/run-qemu-disk.sh --image "$(IMAGE)" \
+	    $(if $(KERNEL),--kernel "$(KERNEL)",) --mode $(or $(MODE),console)
+
 test-s6-init:
 	@"$(TOOLS)"/test-s6-init-config.sh
 
