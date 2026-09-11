@@ -37,6 +37,34 @@ done
 [ -n "$TARGET" ] || die "--target is required"
 [ "$(id -u)" = "0" ] || die "must run as root"
 
+# --- every external tool, checked before the first write -------------------
+#
+# The first run of this installer died with "sgdisk: command not found" AFTER it
+# had announced it was partitioning. It had not written anything yet, by luck
+# rather than design: a partitioner that dies part-way through leaves a disk
+# that is neither the old system nor the new one.
+#
+# So the whole tool list is checked up front, and the message names everything
+# that is missing at once rather than one per run.
+missing=""
+for tool in sfdisk partx blockdev blkid mkfs.ext4 tar mount umount sync awk sed; do
+    command -v "$tool" >/dev/null 2>&1 || missing="${missing} ${tool}"
+done
+[ -z "$missing" ] || die "this system is missing:${missing}
+Refusing to start. Every tool this installer needs has to exist before it
+touches a disk, not at the moment it is first called."
+
+# Partition device naming. A disk whose name ends in a digit takes a "p"
+# separator (nvme0n1 -> nvme0n1p2, mmcblk0 -> mmcblk0p2); one that does not
+# takes the number directly (vdb -> vdb2, sda -> sda2). Getting this wrong is
+# how the first run came to be looking for /dev/vdbp2.
+part_dev() {
+    case "$1" in
+        *[0-9]) printf "%sp%s" "$1" "$2" ;;
+        *)      printf "%s%s"  "$1" "$2" ;;
+    esac
+}
+
 # --- refuse anything that is not a disposable second disk ------------------
 
 [ -b "$TARGET" ] || die "${TARGET} is not a block device.
@@ -92,15 +120,37 @@ fi
 # Same layout as the developer image: partition 1 reserved for an ESP that does
 # not exist yet, root on partition 2, so adding a bootloader later renumbers
 # nothing.
-say "partitioning"
-sgdisk --zap-all "$TARGET" >/dev/null
-sgdisk --new=2:2048:0 --typecode=2:8304 --change-name=2:kryptik-root "$TARGET" >/dev/null
-partprobe "$TARGET" 2>/dev/null || true
-sleep 1
+# sfdisk, not sgdisk. gptfdisk is not in the base system, and pulling in a new
+# pinned source just to partition a disk is a poor trade when util-linux - which
+# is already here - does GPT perfectly well. The named-field script format takes
+# the partition DEVICE on the left and derives the number from it, which is what
+# lets this create partition 2 and leave slot 1 absent, matching the developer
+# image exactly.
+#
+# Type 4F68BCE3-... is "Linux root (x86-64)": the GUID behind sgdisk's 8304.
+ROOTPART="$(part_dev "$TARGET" 2)"
+GPT_LINUX_ROOT_X86_64=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709
 
-ROOTPART="${TARGET}2"
-[ -b "$ROOTPART" ] || ROOTPART="${TARGET}p2"
-[ -b "$ROOTPART" ] || die "no partition 2 appeared on ${TARGET}"
+say "partitioning (sfdisk, GPT, root on partition 2)"
+sfdisk --wipe always --wipe-partitions always "$TARGET" >/dev/null <<SFDISK
+label: gpt
+${ROOTPART} : start=2048, type=${GPT_LINUX_ROOT_X86_64}, name="kryptik-root"
+SFDISK
+
+# partprobe belongs to parted, which is also not in the base system. partx and
+# blockdev are util-linux and are. Either may fail harmlessly when the kernel
+# has already picked the table up, so the check that matters is the one below.
+partx -u "$TARGET" >/dev/null 2>&1 || blockdev --rereadpt "$TARGET" >/dev/null 2>&1 || true
+
+# Wait for the node instead of sleeping and hoping. eudev may take a moment, and
+# a fixed sleep is either too short on a loaded machine or wasted on a fast one.
+n=0
+while [ ! -b "$ROOTPART" ] && [ "$n" -lt 50 ]; do
+    n=$((n + 1))
+    sleep 0.1 2>/dev/null || sleep 1
+done
+[ -b "$ROOTPART" ] || die "no partition 2 appeared on ${TARGET} as ${ROOTPART}.
+sfdisk wrote the table; the kernel or eudev did not present the node."
 
 # --- filesystem ------------------------------------------------------------
 # -O encrypt: the filesystem half of CONFIG_FS_ENCRYPTION, so a zone on this

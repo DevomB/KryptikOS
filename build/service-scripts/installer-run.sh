@@ -25,22 +25,45 @@ say "BEGIN target=${target}"
 
 if [ ! -x /usr/sbin/kryptik-install ]; then
     say "FAILED no /usr/sbin/kryptik-install in this image"
+    # Reported as a failing rc on purpose, even though this oneshot exits 0.
+    # Exiting non-zero would fail the s6-rc bundle and cut the boot short, and
+    # the transcript IS the test result - losing it would tell us less than this
+    # line does. The host assertions key on rc=, not on the service exit status.
+    say "rc=127"
     say "END"
     exit 0
 fi
 
 # --yes because there is nobody to type ERASE at a serial console in a test.
 # The device still had to be named on the kernel command line to get here.
-/usr/sbin/kryptik-install --target "$target" --yes 2>&1 | sed 's/^/KRYPTIK_INSTALL: /'
+# Capture the status of the INSTALLER, not of the thing prefixing its output.
+#
+# This was `kryptik-install ... | sed ...` followed by `rc=$?`, which reads
+# SED's status. sed succeeds at prefixing whatever it is handed, including
+# nothing, so rc was 0 on every run. The first real failure - "sgdisk: command
+# not found" - was duly reported as rc=0, and the only reason anyone noticed is
+# that the separate result checks failed afterwards.
+#
+# /bin/sh here has no pipefail to lean on, so the output goes to a file and the
+# pipeline is removed entirely.
+logf=/run/kryptik-install.log
+/usr/sbin/kryptik-install --target "$target" --yes > "$logf" 2>&1
 rc=$?
+sed 's/^/KRYPTIK_INSTALL: /' "$logf"
 say "rc=${rc}"
 
 if [ "$rc" -eq 0 ]; then
     # Say what is actually on the disk now, from outside the installer, so the
     # claim does not rest on the installer's own report.
-    say "verify: $(sgdisk --print "$target" 2>/dev/null | grep -c 'kryptik-root') partition(s) named kryptik-root"
-    part="${target}2"
-    [ -b "$part" ] || part="${target}p2"
+    # sfdisk, because sgdisk is not in this image - which is why the previous
+    # version of this line reported "0 partitions named kryptik-root" about a
+    # disk it had never managed to look at.
+    case "$target" in
+        *[0-9]) part="${target}p2" ;;
+        *)      part="${target}2"  ;;
+    esac
+    say "verify: partition 2 label=$(sfdisk --part-label "$target" 2 2>/dev/null || echo none)"
+    say "verify: partition 2 node=${part} $([ -b "$part" ] && echo present || echo ABSENT)"
     say "verify: uuid=$(blkid -s UUID -o value "$part" 2>/dev/null || echo none)"
     say "verify: type=$(blkid -s TYPE -o value "$part" 2>/dev/null || echo none)"
     mkdir -p /run/verify
