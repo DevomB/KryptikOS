@@ -296,8 +296,20 @@ s_perl() {
 s_python() {
     local src; src="$(unpack "Python-${V_PYTHON}.tar.xz" "Python-${V_PYTHON}")"
     cd "$src"
-    ./configure --prefix=/usr --enable-shared --with-system-expat \
-        --enable-optimizations
+    # Two flags deliberately NOT passed here, both of which were and both of
+    # which were wrong at this point in the build.
+    #
+    # --enable-optimizations turns on PGO, whose instrumented first pass needs
+    # libgcov on the link line and does not get it - the build died with a wall
+    # of "undefined reference to __gcov_indirect_call" and similar. It is also
+    # roughly a 3x build-time cost for a Python whose only job here is to
+    # satisfy glibc's configure, which treats python as a critical program.
+    #
+    # --with-system-expat asks Python to link the system expat, which is built
+    # 25 packages further down this same list. It would have silently fallen
+    # back to the bundled copy, so the flag was describing something untrue -
+    # the harder kind of wrong to notice, because nothing fails.
+    ./configure --prefix=/usr --enable-shared
     make
     make install
 }
