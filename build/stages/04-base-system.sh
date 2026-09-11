@@ -166,7 +166,11 @@ s_locales() {
     localedef -i de_DE -f UTF-8 de_DE.UTF-8
     localedef -i ja_JP -f UTF-8 ja_JP.UTF-8
     echo "locales generated:"
-    localedef --list-archive 2>/dev/null | head -10
+    # Read, then trim. `localedef | head` is small enough not to SIGPIPE
+    # today, and that is a property of the data rather than of the code.
+    local archived
+    archived="$(localedef --list-archive 2>/dev/null || true)"
+    printf '%s\n' "$archived" | sed -n '1,10p'
 
     # Minimal, sane defaults so the rest of the build is deterministic.
     cat > /etc/nsswitch.conf <<'NSS'
@@ -206,7 +210,34 @@ s_glibc() {
 
     # glibc supplies its own stack protector rather than taking ours; see the
     # hardening exception for why external flags are dropped for this package.
-    ../configure         --prefix=/usr         --disable-werror         --enable-kernel=4.19         --enable-stack-protector=strong         --disable-nscd         libc_cv_slibdir=/usr/lib
+    #
+    # --enable-cet is not optional here, and the reason is a genuine
+    # configure-vs-build mismatch rather than a preference.
+    #
+    # glibc decides whether to COMPILE its CET support from
+    # libc_cv_compiler_default_cet - a test of whether the compiler defines
+    # __CET__ *by default*. Kryptik's GCC is not built --enable-cet-default,
+    # so that test says no and dl-cet.c is left out. The actual build then
+    # runs with Kryptik's CFLAGS, which contain -fcf-protection=full, and that
+    # DOES define __CET__ - so rtld.c and dl-open.c compile the CET code paths
+    # and call into functions nobody compiled:
+    #
+    #   undefined reference to `_dl_cet_open_check'
+    #   undefined reference to `_dl_cet_setup_features'
+    #   undefined reference to `_dl_cet_check'
+    #   hidden symbol `_dl_cet_open_check' isn't defined
+    #   collect2: error: ld returned 1 exit status
+    #
+    # The alternative fix - dropping -fcf-protection for glibc via an
+    # exception - also links, and gives a dynamic loader with no CET at all.
+    # The loader is the single place CET matters most: it is what arms IBT and
+    # the shadow stack for every process on the system. So the flag stays and
+    # glibc is told to build the support that flag implies.
+    #
+    # Enabling it here does not force anything at runtime. Activation still
+    # depends on the CPU and on kernel support; without those, glibc's CET
+    # code detects their absence and stays out of the way.
+    ../configure         --prefix=/usr         --disable-werror         --enable-kernel=4.19         --enable-stack-protector=strong         --enable-cet         --disable-nscd         libc_cv_slibdir=/usr/lib
     make
 
     # The install step runs a test-installation perl script that does not exist
@@ -222,7 +253,35 @@ s_glibc() {
     # checking - which is precisely what happened the first time this ran.
     echo "--- installed libc ---"
     ls -la /usr/lib/libc.so.6
-    strings /usr/lib/libc.so.6 | grep -m1 "GNU C Library"
+    # grep reads the file directly. Piping `strings` into `grep -m1` made
+    # grep exit at the first match while strings still had 2.4MB to write,
+    # so strings took SIGPIPE and pipefail reported 141 - failing the step
+    # on a glibc that had just installed correctly.
+    grep -a -m1 -o "GNU C Library.*" /usr/lib/libc.so.6 || \
+        echo "(no GNU C Library banner found - check the install)"
+
+    # And prove the CET support actually landed, rather than trusting that
+    # --enable-cet was accepted. A loader without the property note is a
+    # loader that will not arm IBT or the shadow stack for anything.
+    echo "--- CET in the dynamic loader ---"
+    local ldso=/usr/lib/ld-linux-x86-64.so.2
+    if [[ -e "$ldso" ]]; then
+        # Captured once, then matched in the shell. `readelf | grep -q` is the
+        # same SIGPIPE trap as above.
+        local props
+        props="$(readelf -n "$ldso" 2>/dev/null || true)"
+        if [[ "$props" == *IBT* || "$props" == *SHSTK* ]]; then
+            printf '%s\n' "$props" | sed -n '/IBT\|SHSTK/s/^/  /p'
+            echo "  ok: the loader carries the CET property"
+        else
+            echo "FAIL: ${ldso} has no CET property note, but glibc was built"
+            echo "      with -fcf-protection=full and --enable-cet."
+            return 1
+        fi
+    else
+        echo "FAIL: no dynamic loader at ${ldso}"
+        return 1
+    fi
 }
 
 s_zlib() {
@@ -356,7 +415,9 @@ s_hardened_malloc() {
         echo "note: config/default.mk still says CONFIG_NATIVE := true;"
         echo "      the command line above overrides it."
     fi
-    if readelf -p .comment out/libhardened_malloc.so 2>/dev/null | grep -q 'march=native'; then
+    local hm_comment
+    hm_comment="$(readelf -p .comment out/libhardened_malloc.so 2>/dev/null || true)"
+    if [[ "$hm_comment" == *march=native* ]]; then
         echo "FAIL: libhardened_malloc.so was built with -march=native"
         return 1
     fi
