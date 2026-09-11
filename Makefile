@@ -89,7 +89,7 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
 .PHONY: help check check-kernel-eol sources lock verify verify-provenance \
         test-harness test-hardening test-artifacts audit-artifacts \
         audit-artifacts-strict manifest verify-manifest test-manifest \
-        test-s6-init \
+        test-s6-init smoke-userspace \
         validate-kernel validate-kernel-hardened \
         toolchain temp-tools chroot chroot-enter chroot-umount chroot-status \
         system kernel iso audit zones zone-test paths reset-stamps \
@@ -134,6 +134,7 @@ help:
 	@echo "  make verify-manifest   check the tree still matches that record"
 	@echo "  make test-manifest     self-test the manifest tool (positive controls)"
 	@echo "  make test-s6-init      check stage 04 produces a bootable s6 image"
+	@echo "  make smoke-userspace   RUN the built userland in the chroot (needs root)"
 	@echo "  make audit       run security audits over the build tree"
 	@echo "  make paths       print the resolved build contract"
 	@echo "  make reset-stamps  archive all build stamps (does not delete)"
@@ -290,6 +291,13 @@ test-manifest:
 # about a minute, so it is checked up front instead.
 test-s6-init:
 	@"$(TOOLS)"/test-s6-init-config.sh
+
+# Runs the built userland instead of listing it. boot-check asserts files
+# exist; this executes them, compiles a program with the target compiler
+# inside the target, and loads hardened_malloc. Needs root and a finished
+# sysroot, so it is not part of the unit suites.
+smoke-userspace:
+	@$(SUDO) "$(TOOLS)"/test-userspace-smoke.sh
 
 # An identity record for the tree, and for what produced it. Answers the
 # three questions you cannot answer by looking at a sysroot: is this the
