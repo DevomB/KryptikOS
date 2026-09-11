@@ -260,6 +260,29 @@ zrun_raw() {
 # run is admissible.
 LAUNCHED="ZONE_LAUNCH_OK"
 
+# Preflight: none of this suite's zones may already be running.
+#
+# Since the lifecycle registry landed, a second `run` of a name that is already
+# running is refused - correctly. But the suite reuses a handful of zone names
+# for everything, so ONE launcher left behind by an overlapping run turns into
+# dozens of "did not launch" failures that describe nothing about the code. It
+# has happened once already: 56 failures, every one of them the same sentence.
+# Say the real thing once, and stop.
+if running="$("$KRYPTIKD" list --running 2>/dev/null)"; then
+    if [[ "$running" != *"no zones are running"* && -n "${running//[[:space:]]/}" ]]; then
+        printf '\n%s\n' "kryptikd reports zones already running:" >&2
+        printf '%s\n' "$running" | sed 's/^/    /' >&2
+        cat >&2 <<'PRE'
+
+This suite reuses these zone names, and the registry refuses a second launch of
+a name that is already running - so it would report dozens of failures that are
+all this one fact. Stop the launcher (or run `kryptikd gc` if it is dead) and
+try again.
+PRE
+        exit 2
+    fi
+fi
+
 # want_launch DESC -- fails the check if the sentinel is missing, and says
 # WHY (timeout / setup failure / exec failure) instead of silently passing.
 want_launch() {
@@ -754,19 +777,42 @@ else
 fi
 
 # Cleanup: no zone process outlives the launcher.
-# pgrep -c is deliberately NOT used here: it prints "0" and ALSO exits
-# non-zero when nothing matches, so a `|| echo 0` fallback yields "0\n0" and
-# (( )) dies with a syntax error - which made this check vanish from the
-# report entirely rather than fail. wc -l always emits exactly one number.
-count_zone_procs() { pgrep -f 'kryptikd run' 2>/dev/null | wc -l; }
-before="$(count_zone_procs)"
-zrun alpha -- /bin/sh -c "$PRO echo PROBE=done"
+#
+# Scoped to THIS launch by a marker in its argv, not to every `kryptikd run` on
+# the machine. The previous version counted them globally before and after,
+# which made the answer depend on whatever else happened to be running - and it
+# duly reported "2 kryptikd process(es) outlived the zone" about a zone that had
+# exited cleanly, because a second run of this suite had been started while the
+# first was still winding down. Two processes is also exactly what one launch
+# looks like (the launcher and the intermediate both keep `kryptikd run` in
+# their argv), which is how the wrong count looked plausible.
+#
+# pgrep -c is deliberately NOT used: it prints "0" and ALSO exits non-zero when
+# nothing matches, so a `|| echo 0` fallback yields "0\n0" and (( )) dies with a
+# syntax error - which once made this check vanish from the report rather than
+# fail. wc -l always emits exactly one number.
+G5MARK="G5PROBE_${$}_${RANDOM}"
+KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run alpha "${ZARGS[@]}" -- \
+    /bin/sh -c "$PRO echo PROBE=done; /bin/sleep 3; : $G5MARK" \
+    > "$WORK/g5.out" 2>&1 &
+g5pid=$!
+BG_PIDS+=("$g5pid")
 sleep 1
-after="$(count_zone_procs)"
-if (( after <= before )); then
-    pass "G5  no kryptikd zone process is left running after the zone exits"
+g5live="$(pgrep -f "$G5MARK" 2>/dev/null | wc -l)"
+if (( g5live > 0 )); then
+    pass "G5a positive control: this launch is visible as $g5live process(es) while it runs"
+    wait "$g5pid" 2>/dev/null
+    sleep 1
+    g5left="$(pgrep -f "$G5MARK" 2>/dev/null | wc -l)"
+    if (( g5left == 0 )); then
+        pass "G5  no kryptikd zone process is left running after the zone exits"
+    else
+        fail "G5  $g5left kryptikd process(es) outlived the zone"
+        pkill -9 -f "$G5MARK" 2>/dev/null
+    fi
 else
-    fail "G5  $((after - before)) kryptikd process(es) outlived the zone"
+    fail "G5a positive control FAILED: the launch was never visible; G5 proves nothing"
+    info "output: $(tr '\n' '|' < "$WORK/g5.out" 2>/dev/null | cut -c1-200)"
 fi
 
 # Cleanup: the host's mount table is unchanged. pivot_into makes the tree
@@ -993,13 +1039,56 @@ if (( PRIVILEGED == 1 )); then
     # the answer with or without setgroups - and this check passed vacuously in
     # exactly the environment it was written for. Caught by review, not by a
     # failure, which is the point of a positive control.
+    #
+    # When the launcher has none, the answer is not to skip: it is to give it
+    # some. `setpriv --groups` needs CAP_SETGID, which group K already has, so
+    # the launch can be staged with real supplementary groups and the drop then
+    # has something to show. This turned K4 from a permanent NOT RUN in the one
+    # environment that can run it - the VM, where init starts the suite with no
+    # groups at all - into a check that actually executes.
+    K4_GROUPS="4,27"
+    K4_WRAP=()
     launcher_groups="$(grep '^Groups:' /proc/self/status | cut -f2- | wc -w)"
+    if (( launcher_groups == 0 )); then
+        # Two candidates, because the obvious one is not available where this
+        # check actually runs: busybox's setpriv - what a minimal image has -
+        # implements --dump, --nnp and the two capability options, and has no
+        # --groups at all. s6-applyuidgid -G does exactly this job and the VM
+        # image already carries the s6 stack for its init.
+        #
+        # Whichever is chosen is then made to prove itself: the groups are read
+        # back from the same /proc file the zone reads, and a wrapper that did
+        # not actually grant any is discarded. Otherwise "0 groups in the zone"
+        # would once again be evidence of nothing.
+        for k4_cand in "setpriv --groups=$K4_GROUPS --" "s6-applyuidgid -G $K4_GROUPS"; do
+            read -ra k4_try <<< "$k4_cand"
+            command -v "${k4_try[0]}" >/dev/null 2>&1 || continue
+            k4_got="$("${k4_try[@]}" sh -c \
+                "grep '^Groups:' /proc/self/status | cut -f2- | wc -w" 2>/dev/null)"
+            if [[ -n "$k4_got" ]] && (( k4_got > 0 )); then
+                K4_WRAP=("${k4_try[@]}")
+                launcher_groups="$k4_got"
+                break
+            fi
+        done
+    fi
+
     if (( launcher_groups > 0 )); then
-        info "K4  the launcher holds $launcher_groups supplementary group(s) to drop"
-        zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(grep '^Groups:' /proc/self/status | cut -f2- | wc -w)"
+        if (( ${#K4_WRAP[@]} > 0 )); then
+            # The count can exceed what was asked for - s6-applyuidgid keeps
+            # the caller's primary group as well - so report what was measured
+            # and who granted it, not the request.
+            info "K4  positive control: \`${K4_WRAP[*]}\` gave the launcher $launcher_groups supplementary group(s) to drop"
+        else
+            info "K4  the launcher holds $launcher_groups supplementary group(s) to drop"
+        fi
+        ZOUT="$(KRYPTIK_EXPERIMENTAL=1 timeout "$TIMEOUT" "${K4_WRAP[@]}" \
+                "$KRYPTIKD" run alpha "${ZARGS[@]}" -- \
+                /bin/sh -c "$PRO echo PROBE=\$(grep '^Groups:' /proc/self/status | cut -f2- | wc -w)" 2>&1)"
+        ZRC=$?
         probe "K4  the host's supplementary groups are dropped in the zone" "0"
     else
-        skip "K4  the launcher has no supplementary groups here, so dropping them cannot be demonstrated"
+        skip "K4  the launcher has no supplementary groups and neither setpriv nor s6-applyuidgid could give it any"
     fi
 
     # The sealed root must hold against real root, not merely against a user.
