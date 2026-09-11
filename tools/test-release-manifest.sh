@@ -56,6 +56,19 @@ SIGNERS="${W}/keys/allowed_signers"
 printf 'release@kryptik.test %s\n' "$(cut -d' ' -f1,2 < "${W}/keys/rel.pub")" \
     > "$SIGNERS"
 
+# If key generation half-fails, every verify below reports "no
+# allowed-signers file" and this suite prints a dozen confusing failures
+# instead of one clear one. Seen once, transiently, while the WSL session
+# was dropping connections. A broken prerequisite is not a test result.
+for _f in "${W}/keys/rel" "${W}/keys/rel.pub" "${W}/keys/out" "$SIGNERS"; do
+    if [[ ! -s "$_f" ]]; then
+        echo "FATAL: test prerequisite missing or empty: ${_f}" >&2
+        echo "ssh-keygen did not produce the fixture keys, so nothing below" >&2
+        echo "would be testing what it claims to test." >&2
+        exit 1
+    fi
+done
+
 # --- the release tree -------------------------------------------------------
 
 REL="${W}/release"
@@ -369,6 +382,95 @@ if grep -qF "UNSIGNED" "$OUT"; then
 else
     red "create did not warn that the manifest is unsigned"; show
 fi
+
+# --- the installed-marker exemption to --exact ------------------------------
+#
+# apply-update.sh writes .kryptik-update INSIDE the tree so the marker lands
+# with the same rename as the payload. That leaves an installed tree holding
+# one file no release manifest lists, so `verify --exact` against the very
+# manifest it was installed from used to fail forever - which meant a rollback
+# could not be proved complete. Found by running the recovery recipe end to
+# end, not by reading the code.
+#
+# An exemption in a verifier is how holes get made, so these check that it is
+# exactly one name, at the root only, and self-validating.
+
+build_release
+MK="${W}/mk.manifest"
+bash "$TOOL" create --out "$MK" --root "$REL" --name kryptik-boot     --version 1.0 --role development . > /dev/null 2>&1
+bash "$TOOL" sign --key "${W}/keys/rel" "$MK" > /dev/null 2>&1
+MK_SHA="$(sha256sum "$MK" | cut -d' ' -f1)"
+
+marker() { printf 'KRYPTIK-UPDATE-1
+version: 1.0
+manifest-sha256: %s
+' "$1"            > "${REL}/.kryptik-update"; }
+
+vex() {
+    RC=0
+    bash "$TOOL" verify --signers "$SIGNERS" --principal release@kryptik.test         --root "$REL" --exact "$MK" > "$OUT" 2>&1 || RC=$?
+}
+
+# Positive control first: without any marker the tree must verify --exact, or
+# every case below would pass for the wrong reason.
+rm -f "${REL}/.kryptik-update"
+vex
+if [[ "$RC" -eq 0 ]]; then green "an uninstalled tree verifies --exact"; else red "an uninstalled tree verifies --exact"; show; fi
+
+marker "$MK_SHA"
+vex
+if [[ "$RC" -eq 0 ]]; then
+    green "an installed tree verifies --exact despite the marker"
+else
+    red "an installed tree verifies --exact despite the marker (exit ${RC})"; show
+fi
+if grep -qF "marker names this manifest" "$OUT"; then
+    green "and says the marker was recognised rather than ignored silently"
+else
+    red "and says the marker was recognised rather than ignored silently"; show
+fi
+
+marker "0000000000000000000000000000000000000000000000000000000000000000"
+vex
+if [[ "$RC" -ne 0 ]] && grep -qF "DIFFERENT release" "$OUT"; then
+    green "a marker naming another manifest is a finding, not an exemption"
+else
+    red "a marker naming another manifest is a finding, not an exemption (exit ${RC})"; show
+fi
+
+printf 'KRYPTIK-UPDATE-1
+version: 1.0
+' > "${REL}/.kryptik-update"
+vex
+if [[ "$RC" -ne 0 ]] && grep -qF "<none>" "$OUT"; then
+    green "a marker with no manifest-sha256 is refused"
+else
+    red "a marker with no manifest-sha256 is refused (exit ${RC})"; show
+fi
+
+# The exemption is one exact name, not a pattern and not a dotfile rule.
+rm -f "${REL}/.kryptik-update"
+printf 'x
+' > "${REL}/.kryptik-update.bak"
+vex
+if [[ "$RC" -ne 0 ]] && grep -qF "NOT in the manifest: .kryptik-update.bak" "$OUT"; then
+    green "a similarly named file is still refused"
+else
+    red "a similarly named file is still refused (exit ${RC})"; show
+fi
+rm -f "${REL}/.kryptik-update.bak"
+
+# Root only: a marker deeper in the tree is unsigned content, not metadata.
+mkdir -p "${REL}/usr/share"
+marker "$MK_SHA"
+cp "${REL}/.kryptik-update" "${REL}/usr/share/.kryptik-update"
+vex
+if [[ "$RC" -ne 0 ]] && grep -qF "usr/share/.kryptik-update" "$OUT"; then
+    green "a marker below the root is still refused"
+else
+    red "a marker below the root is still refused (exit ${RC})"; show
+fi
+rm -f "${REL}/usr/share/.kryptik-update" "${REL}/.kryptik-update"
 
 echo
 if [[ "$FAIL" -gt 0 ]]; then
