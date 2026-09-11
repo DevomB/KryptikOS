@@ -1,0 +1,61 @@
+# Where each signing key is PUBLISHED, independently of the signature it makes.
+#
+# Read by tools/verify-signatures.sh, which fetches each key from the locator
+# recorded here rather than asking a keyserver for the id a signature named.
+#
+# THE DISTINCTION THIS FILE EXISTS FOR.
+#
+#   DISCOVERY may be circular. Asking a keyserver for the key id a signature
+#   names is how you find out which address to look up. It establishes nothing:
+#   it proves a file was signed by whoever signed it.
+#
+#   CONFIRMATION must not be. A fingerprint earns a row here only when some
+#   publisher states it by a route that does not depend on the signature, and
+#   the row records exactly which route and when it was walked.
+#
+# Columns are whitespace separated; the note runs to the end of the line.
+#
+#   fingerprint  the full 40-character primary key fingerprint, uppercase
+#   kind         korg | wkd
+#   locator      kind korg: the URL the armoured key was fetched from
+#                kind wkd:  the email address whose Web Key Directory serves it
+#   retrieved    the date the confirmation was walked
+#   signs        comma-separated source names this key signs, no spaces
+#   note         the uid as published, and anything a reader needs
+#
+# What each kind establishes, precisely:
+#
+#   korg  git.kernel.org/pub/scm/docs/kernel/pgpkeys.git, whose README states
+#         its purpose as distributing "Linux kernel developer PGP keys that
+#         have valid trust paths to Linus Torvalds", one armoured key per long
+#         key id. A match means kernel.org publishes THIS EXACT KEY for a
+#         developer of that name.
+#
+#   wkd   the Web Key Directory of the signer's own email domain, served over
+#         HTTPS by that domain. A match means that domain publishes this key
+#         for that address. It is a third party's statement about the key and
+#         is not upstream designating a release signer.
+#
+# NEITHER IS OUT-OF-BAND CONFIRMATION. Both rest on TLS and the CA system, and
+# no human here has checked any of these fingerprints through a second channel.
+# They are strictly better than a keyserver lookup by the id under test, and
+# strictly weaker than a fingerprint Kryptik chose in advance - which is what
+# PINNED_FPRS in tools/verify-signatures.sh is for.
+#
+# ADDING A ROW: walk the confirmation yourself and put the route in locator.
+# Do not copy a fingerprint out of a distribution's package metadata or a blog
+# post. If the publisher later serves a DIFFERENT key for the same locator,
+# verify-signatures.sh treats that as a finding and refuses the key, because a
+# silently rotated key is the case this file has to be able to notice.
+
+# fingerprint                               kind  locator                                                                                      retrieved   signs             note
+B902B5271325F892AC251AD441633B9FE837F581    korg  https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git/plain/keys/41633B9FE837F581.asc       2026-09-11  acl,attr          Mike Frysinger <vapier@gentoo.org>
+9F6FC345B05BE7E766B83C8F80A77F6095CDE47E    korg  https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git/plain/keys/80A77F6095CDE47E.asc       2026-09-11  iproute2          Stephen Hemminger (Microsoft corporate) <sthemmin@microsoft.com>
+7F2A3D07298149A0793C9A4EA45ABA544CFFD434    korg  https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git/plain/keys/A45ABA544CFFD434.asc       2026-09-11  kbd               Alexey Gladkov <legion@kernel.org>
+EAB33C9690013C733916AC839BA2A5A630CBEA53    korg  https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git/plain/keys/9BA2A5A630CBEA53.asc       2026-09-11  kmod              Lucas De Marchi <demarchi@kernel.org>
+38A644698C69787344E954CE29EE848AE2CCF3F4    korg  https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git/plain/keys/29EE848AE2CCF3F4.asc       2026-09-11  libcap            Andrew G. Morgan <morgan@kernel.org>
+B0C64D14301CC6EFAEDF60E4E4B71D5EEC39C284    korg  https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git/plain/keys/E4B71D5EEC39C284.asc       2026-09-11  util-linux        Karel Zak <kzak@redhat.com>
+3AB057B7E78D945C8C5591FBD36F769BC11804F0    wkd   tytso@debian.org                                                                             2026-09-11  e2fsprogs         Theodore Ts'o; the signature names subkey F2F95956950D81A3
+5D2FB320B825D93904D205193938F96BDF50FEA5    wkd   csmall@debian.org                                                                            2026-09-11  procps-ng,psmisc  Craig Small; also served by dropbear.xyz; signature names subkey 022166C0FF3C84E3
+E240B57E2C4630BA768E2F26FC1B547C8D8172C8    wkd   anthraxx@archlinux.org                                                                       2026-09-11  linux-hardened    Levente Polyak, Arch Linux developer
+66D0387DB85D320F8408166DB175CFA98F192AF2    wkd   sergeh@kernel.org                                                                            2026-09-11  shadow            Serge Hallyn; kernel.org's WKD, not the pgpkeys repo; signature names subkey 7DC24C36C3341D20
