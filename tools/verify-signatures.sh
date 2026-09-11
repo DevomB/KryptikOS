@@ -56,15 +56,32 @@ export GNUPGHOME="${KEYDIR}/gnupg"
 
 FETCH_UNKNOWN=0
 STRICT=0
+REPORT=""
 for a in "$@"; do
     case "$a" in
         --refresh) rm -rf "$GNUPGHOME" "$GNU_KEYRING" ;;
         --fetch-unknown-keys) FETCH_UNKNOWN=1 ;;
         --strict) STRICT=1 ;;
+        # Machine-readable per-source outcome, for tools/provenance-inventory.sh.
+        # `--report=FILE` rather than `--report FILE` so that the simple loop
+        # over "$@" stays a simple loop over "$@".
+        --report=*) REPORT="${a#--report=}" ;;
         -h|--help) sed -n '2,7p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $a" ;;
     esac
 done
+[[ -n "$REPORT" ]] && : > "$REPORT"
+
+# report <source> <class> <detail>
+#
+# One tab-separated line per source. The class is the ASSURANCE CLASS, not a
+# pass/fail: the whole purpose of writing it out is that an inventory can show
+# "verified against a key we pinned" and "verified against a key the signature
+# named" as the different things they are, instead of adding them up.
+report() {
+    [[ -n "$REPORT" ]] || return 0
+    printf '%s\t%s\t%s\n' "$1" "$2" "${3//$'\t'/ }" >> "$REPORT"
+}
 
 # The ledger of keys accepted WITHOUT audit, for human confirmation
 # out-of-band. It is read on every run, not only when --fetch-unknown-keys is
@@ -85,9 +102,69 @@ quiet_fetch() {
 
 CANONICAL_GNU="https://ftp.gnu.org/gnu"
 
+# Self-test hooks, gated together below. tools/test-verify-signatures.sh needs
+# three things substituted to run offline - which manifest is verified, where
+# the keyring comes from, and where an "unknown" key is fetched from - and
+# nothing else. The classification in check_sig(), which is what the tests are
+# actually about, runs exactly as it does in production.
+if [[ -n "${KRYPTIK_SIGCHECK_MANIFEST:-}${KRYPTIK_SIGCHECK_KEYRING:-}${KRYPTIK_SIGCHECK_KEYSOURCE:-}" ]]; then
+    [[ "${KRYPTIK_SIGCHECK_SELFTEST:-0}" == "1" ]] || die \
+"A signature-check override is set (KRYPTIK_SIGCHECK_MANIFEST /
+KRYPTIK_SIGCHECK_KEYRING / KRYPTIK_SIGCHECK_KEYSOURCE) but
+KRYPTIK_SIGCHECK_SELFTEST is not.
+Refusing to verify signatures against a substituted manifest or keyring."
+    warn "SELF-TEST MODE: manifest and/or keyring are substituted, not upstream"
+fi
+
+# The list of sources to verify. Production asks fetch-sources.sh, which is
+# the single definition of the manifest.
+manifest_source() {
+    if [[ -n "${KRYPTIK_SIGCHECK_MANIFEST:-}" ]]; then
+        cat "$KRYPTIK_SIGCHECK_MANIFEST"
+        return
+    fi
+    "${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list
+}
+
+# Import one public key by id. Production asks a keyserver; the self-test
+# imports from a local directory, because a keyserver round trip is the one
+# part of --fetch-unknown-keys that cannot be exercised offline.
+recv_key() {
+    local keyid="$1" f
+    if [[ -n "${KRYPTIK_SIGCHECK_KEYSOURCE:-}" ]]; then
+        for f in "${KRYPTIK_SIGCHECK_KEYSOURCE}/${keyid}.gpg" \
+                 "${KRYPTIK_SIGCHECK_KEYSOURCE}/${keyid}.asc"; do
+            [[ -f "$f" ]] || continue
+            gpg --batch --quiet --import "$f" >/dev/null 2>&1 && return 0
+        done
+        return 1
+    fi
+    gpg --batch --quiet --keyserver hkps://keyserver.ubuntu.com \
+        --recv-keys "$keyid" >/dev/null 2>&1
+}
+
 import_keys() {
     if [[ -f "$IMPORTED_MARK" ]]; then
         dim "  using cached keyring ($(cat "$IMPORTED_MARK") keys)"
+        return 0
+    fi
+
+    if [[ -n "${KRYPTIK_SIGCHECK_KEYRING:-}" ]]; then
+        log "importing substituted keyring (self-test)"
+        gpg --batch --quiet --import "$KRYPTIK_SIGCHECK_KEYRING" >/dev/null 2>&1 || true
+        local n
+        n="$(gpg --batch --list-keys 2>/dev/null | grep -c '^pub' || true)"
+        [[ "$n" =~ ^[0-9]+$ ]] || n=0
+        printf '%s' "$n" > "$IMPORTED_MARK"
+        if [[ "$n" -lt 2 ]]; then
+            if [[ "$STRICT" -eq 1 ]]; then
+                err "only ${n} key(s) imported"
+                die "Without maintainer keys nothing can be authenticated."
+            fi
+            warn "only ${n} key(s) imported - verification will be mostly unverifiable"
+        else
+            ok "keyring ready (${n} public keys)"
+        fi
         return 0
     fi
 
@@ -102,17 +179,20 @@ import_keys() {
         gpg --batch --quiet --import "$GNU_KEYRING" 2>/dev/null || true
     fi
 
-    # kernel.org maintainer keys: Torvalds signs mainline, Kroah-Hartman stable.
-    log "fetching kernel.org signing keys"
+    # The pinned maintainer keys, fetched BY FINGERPRINT from the one array
+    # that also classifies them. A keyserver can serve any key it likes and
+    # cannot serve a different key under a given fingerprint, which is what
+    # makes this safe; it is also why the second hardcoded copy of this list
+    # that used to live here is gone.
+    log "fetching pinned maintainer keys (${#PINNED_FPRS[@]})"
     local fpr
-    for fpr in "ABAF11C65A2970B130ABE3C479BE3E4300411886" \
-               "647F28654894E3BD457199BE38DBBDC86092693E"; do
-        gpg --batch --quiet --keyserver hkps://keyserver.ubuntu.com \
-            --recv-keys "$fpr" >/dev/null 2>&1 || true
+    for fpr in "${PINNED_FPRS[@]}"; do
+        recv_key "$fpr" || warn "could not fetch pinned key ${fpr}"
     done
 
     local count
-    count="$(gpg --batch --list-keys 2>/dev/null | grep -c '^pub' || echo 0)"
+    count="$(gpg --batch --list-keys 2>/dev/null | grep -c '^pub' || true)"
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
     printf '%s' "$count" > "$IMPORTED_MARK"
 
     if [[ "$count" -lt 2 ]]; then
@@ -167,21 +247,67 @@ if [[ -f "$KEYS_MANIFEST" ]]; then
     done < <(grep -v '^[[:space:]]*#' "$KEYS_MANIFEST" || true)
 fi
 
-# Does the key that made this signature appear in that ledger? Both the
-# primary fingerprint and any subkey fingerprints are compared, because a
-# GOODSIG names the SIGNING key while keys.manifest records the primary.
-key_is_unaudited() {
-    local keyid="$1" fpr known
-    [[ "${#UNAUDITED_FPRS[@]}" -gt 0 ]] || return 1
+# Keys Kryptik has decided to trust IN THE TREE, by fingerprint, as opposed to
+# whichever keys the fetched GNU keyring happens to contain.
+#
+# A signature checked against one of these is a stronger statement than one
+# checked against the keyring - the keyring is fetched over the network and
+# establishes "signed by whoever the keyring says" - and the inventory reports
+# them as different classes rather than one number.
+#
+# Each entry must be a fingerprint the PROJECT ITSELF publishes on its own
+# origin, with the URL recorded here so the claim can be rechecked. Pinning the
+# fingerprint is what makes fetching the key from a keyserver safe: a keyserver
+# can serve any key it likes, and cannot serve a different key under this
+# fingerprint.
+#
+# One array, used both to fetch and to classify, so the two cannot drift.
+PINNED_FPRS=(
+    # kernel.org mainline and stable. Pre-existing pins, already relied on to
+    # verify the kernel tarball itself.
+    "ABAF11C65A2970B130ABE3C479BE3E4300411886"   # Linus Torvalds, mainline
+    "647F28654894E3BD457199BE38DBBDC86092693E"   # Greg Kroah-Hartman, stable
+
+    # Thomas Wouters, who signs "3.12.x and 3.13.x source files and tags" per
+    # https://www.python.org/downloads/metadata/pgp/ - python.org's own
+    # OpenPGP verification page, retrieved 2026-09-11. V_PYTHON is in 3.12.x.
+    #
+    # Before this pin, python was reported as unverifiable, and for a reason
+    # worth recording: python.org publishes BOTH a Sigstore `.sig` and an
+    # OpenPGP `.asc`, and verify_any() probed `.sig` first, handed a
+    # base64 ECDSA blob to gpg, and reported "inconclusive". See
+    # is_pgp_signature() below.
+    "7169605F62C751356D054A26A821E680E5FA6305"   # Thomas Wouters, CPython 3.12/3.13
+)
+
+# All fingerprints of the key that made a signature: the primary and every
+# subkey. A GOODSIG names the SIGNING key, while keys.manifest and the pins
+# above record primaries, so both have to be compared.
+key_fingerprints() {
+    gpg --batch --with-colons --fingerprint --fingerprint "$1" 2>/dev/null \
+        | awk -F: '$1=="fpr"{print $10}'
+}
+
+_key_in() {
+    local keyid="$1"; shift
+    local fpr known
     [[ -n "$keyid" ]] || return 1
+    [[ "$#" -gt 0 ]] || return 1
     while IFS= read -r fpr; do
-        for known in "${UNAUDITED_FPRS[@]}"; do
-            [[ "${fpr^^}" == "$known" ]] && return 0
+        for known in "$@"; do
+            [[ "${fpr^^}" == "${known^^}" ]] && return 0
         done
-    done < <(gpg --batch --with-colons --fingerprint --fingerprint "$keyid" 2>/dev/null \
-             | awk -F: '$1=="fpr"{print $10}')
+    done < <(key_fingerprints "$keyid")
     return 1
 }
+
+# Does the key that made this signature appear in the unaudited ledger?
+key_is_unaudited() {
+    [[ "${#UNAUDITED_FPRS[@]}" -gt 0 ]] || return 1
+    _key_in "$1" "${UNAUDITED_FPRS[@]}"
+}
+
+key_is_pinned() { _key_in "$1" "${PINNED_FPRS[@]}"; }
 
 # Run gpg --verify and classify from its machine-readable status output.
 #
@@ -221,15 +347,21 @@ check_sig() {
             warn "${name}: signature valid  [${signer:-unknown}] but by an UNAUDITED key"
             FETCHED=$((FETCHED + 1))
             FETCHED_LIST+=("${name} - ${signer:-unknown} (key ${keyid})")
+            report "$name" signature-unaudited-key "${signer:-unknown} (${keyid})"
             return 0
         fi
+
+        local klass=signature-keyring-key
+        key_is_pinned "$keyid" && klass=signature-pinned-key
 
         if [[ "$kind" == "EXPKEYSIG" ]]; then
             ok "${name}: signature valid, signing key expired  [${signer:-unknown}]"
             EXPIRED=$((EXPIRED + 1))
             EXPIRED_LIST+=("${name} - ${signer:-unknown}")
+            report "$name" "$klass" "${signer:-unknown} (${keyid}; key expired)"
         else
             ok "${name}: signature valid  [${signer:-unknown}]"
+            report "$name" "$klass" "${signer:-unknown} (${keyid})"
         fi
         VERIFIED=$((VERIFIED + 1))
         return 0
@@ -247,6 +379,7 @@ check_sig() {
         # in FAILED like a bad signature does.
         FAILED=$((FAILED + 1))
         FAILED_LIST+=("${name} (REVOKED signing key)")
+        report "$name" signature-revoked-key "${signer:-unknown}"
         return 0
     fi
 
@@ -264,7 +397,7 @@ check_sig() {
         #
         # Every key used this way is written to keys.manifest for that audit.
         if [[ "$FETCH_UNKNOWN" -eq 1 ]]; then
-            if gpg --batch --quiet --keyserver hkps://keyserver.ubuntu.com                    --recv-keys "$keyid" >/dev/null 2>&1; then
+            if recv_key "$keyid"; then
                 out="$(gpg --batch --status-fd 1 --verify "$sigfile" "$datafile" 2>/dev/null || true)"
                 if printf '%s' "$out" | grep -qE "^\[GNUPG:\] (GOODSIG|EXPKEYSIG)"; then
                     signer="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] \(GOODSIG\|EXPKEYSIG\) [0-9A-F]* //p' | head -1)"
@@ -290,23 +423,27 @@ check_sig() {
 
         warn "${name}: signing key ${keyid} not held"
         mark_unverifiable "${name} (signing key ${keyid} not held)"
+        report "$name" key-not-held "$keyid"
         return 0
     fi
 
     if printf '%s' "$out" | grep -q "^\[GNUPG:\] BADSIG"; then
         err "${name}: BAD SIGNATURE - the file does not match its signature"
         FAILED=$((FAILED + 1)); FAILED_LIST+=("$name")
+        report "$name" signature-bad "the file does not match its signature"
         return 0
     fi
 
     if printf '%s' "$out" | grep -q "^\[GNUPG:\] ERRSIG"; then
         warn "${name}: signature could not be checked"
         mark_unverifiable "${name} (ERRSIG - key unavailable or unsupported algorithm)"
+        report "$name" signature-uncheckable "ERRSIG: key unavailable or unsupported algorithm"
         return 0
     fi
 
     warn "${name}: inconclusive gpg result"
     mark_unverifiable "${name} (inconclusive)"
+    report "$name" inconclusive "gpg produced no status this script recognises"
     return 0
 }
 
@@ -322,6 +459,7 @@ verify_gnu() {
             rm -f "$sig"
             warn "${name}: no .sig published upstream"
             mark_unverifiable "${name} (no signature upstream)"
+            report "$name" no-signature-upstream "no .sig on the canonical GNU host"
             return
         fi
     fi
@@ -334,19 +472,48 @@ verify_gnu() {
 # many others use .asc, some projects publish .sign. Trying all three turns a
 # vague "unknown source" into either a real verification or a specific,
 # actionable "signing key NNN not held".
+# Is this file actually an OpenPGP signature?
+#
+# A suffix is not a format. python.org publishes BOTH a Sigstore `.sig` - a
+# base64 ECDSA blob, 141 bytes - and an OpenPGP `.asc`, and the probe below
+# used to take the `.sig`, hand it to gpg, get "no valid OpenPGP data found",
+# and report python as inconclusive. The real signature was one suffix away
+# the whole time. So a candidate that gpg cannot parse as a signature is not a
+# result; it is the wrong file, and the next suffix gets a turn.
+is_pgp_signature() {
+    [[ -s "$1" ]] || return 1
+    gpg --batch --list-packets "$1" 2>/dev/null | grep -q ':signature packet:'
+}
+
 verify_any() {
     local name="$1" url="$2" file="$3"
     local suffix sig
+    local -a wrong_format=()
     for suffix in .sig .asc .sign; do
         sig="${SIGDIR}/${file}${suffix}"
         if [[ -s "$sig" ]] || quiet_fetch "${url}${suffix}" "$sig" 2>/dev/null; then
-            check_sig "$name" "$sig" "${KRYPTIK_SOURCES}/${file}" || true
-            return
+            if is_pgp_signature "$sig"; then
+                check_sig "$name" "$sig" "${KRYPTIK_SOURCES}/${file}" || true
+                return
+            fi
+            # Do not leave it cached: a non-signature in SIGDIR would shadow
+            # the real one on every later run.
+            wrong_format+=("${suffix}")
+            rm -f "$sig"
+            continue
         fi
         rm -f "$sig"
     done
+    if [[ "${#wrong_format[@]}" -gt 0 ]]; then
+        warn "${name}: upstream publishes ${wrong_format[*]} but none of them is an"
+        warn "       OpenPGP signature (Sigstore, minisign or similar)"
+        mark_unverifiable "${name} (published ${wrong_format[*]} is not OpenPGP)"
+        report "$name" signature-not-openpgp "published ${wrong_format[*]} is not an OpenPGP signature"
+        return
+    fi
     warn "${name}: no detached signature published (.sig/.asc/.sign)"
     mark_unverifiable "${name} (upstream publishes no signature)"
+    report "$name" no-signature-upstream "none of .sig/.asc/.sign is published"
 }
 
 # Detached signature alongside the file, at the same URL plus a suffix.
@@ -358,6 +525,14 @@ verify_detached() {
         rm -f "$sig"
         warn "${name}: no .sig published upstream"
         mark_unverifiable "${name} (no signature upstream)"
+        report "$name" no-signature-upstream "no ${suffix} published beside the tarball"
+        return
+    fi
+    if ! is_pgp_signature "$sig"; then
+        rm -f "$sig"
+        warn "${name}: the published ${suffix} is not an OpenPGP signature"
+        mark_unverifiable "${name} (published ${suffix} is not OpenPGP)"
+        report "$name" signature-not-openpgp "published ${suffix} is not an OpenPGP signature"
         return
     fi
     check_sig "$name" "$sig" "${KRYPTIK_SOURCES}/${file}" || true
@@ -377,6 +552,7 @@ verify_kernel() {
         rm -f "$sign"
         warn "${name}: could not fetch .sign"
         mark_unverifiable "${name} (.sign unavailable)"
+        report "$name" signature-unavailable "the .tar.sign could not be fetched"
         return
     fi
 
@@ -391,6 +567,7 @@ verify_kernel() {
         rm -f "$tmptar"
         err "${name}: decompression failed"
         FAILED=$((FAILED + 1)); FAILED_LIST+=("$name")
+        report "$name" decompression-failed "the tarball could not be decompressed"
         return
     fi
     check_sig "$name" "$sign" "$tmptar" || true
@@ -423,7 +600,17 @@ echo
 while read -r name _ver url; do
     [[ -z "$name" ]] && continue
     file="$(basename "$url")"
-    [[ -f "${KRYPTIK_SOURCES}/${file}" ]] || { warn "${name}: not downloaded"; continue; }
+    # A source that was never downloaded has no signature to check, and that
+    # is an unchecked assertion rather than a non-event: this used to `warn`
+    # and `continue` without touching any counter, so a run in which nothing
+    # had been fetched reported zero problems and exited 0 - and would have
+    # satisfied --strict.
+    [[ -f "${KRYPTIK_SOURCES}/${file}" ]] || {
+        warn "${name}: not downloaded, so its signature cannot be checked"
+        mark_unverifiable "${name} (not downloaded)"
+        report "$name" not-downloaded "no local copy to check a signature against"
+        continue
+    }
 
     case "$url" in
         *gnu.org*|*mirrors.kernel.org/gnu*) verify_gnu    "$name" "$url" "$file" ;;
@@ -438,6 +625,7 @@ while read -r name _ver url; do
             # LFS publishes md5sums for its patch set, not per-patch signatures.
             warn "${name}: LFS patches are not individually signed upstream"
             mark_unverifiable "${name} (upstream publishes no signature)"
+            report "$name" no-signature-upstream "LFS publishes md5sums for the patch set, not per-patch signatures"
             ;;
         *)
             # Everything else: try the two conventional detached-signature
@@ -447,7 +635,7 @@ while read -r name _ver url; do
             verify_any "$name" "$url" "$file"
             ;;
     esac
-done < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list)
+done < <(manifest_source)
 
 echo
 log "Summary"

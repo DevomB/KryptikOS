@@ -30,15 +30,21 @@ load_config
 load_hardening
 validate_hardening_exceptions
 
+# Stage 04 runs inside the chroot and drives the native target compiler.
+stage_contract "${BASH_SOURCE[0]}" "bs-" gcc
+# shellcheck disable=SC2034  # consumed by step() in common.sh
+KRYPTIK_FAIL_TAIL=40
+
 STAMPS="${KRYPTIK_WORK}/.stamps"
 LOGS="${KRYPTIK_WORK}/logs"
 BUILDDIR="${KRYPTIK_WORK}/build"
-KRYPTIK_JOBS="${KRYPTIK_JOBS:-$(nproc)}"
+KRYPTIK_JOBS="${KRYPTIK_JOBS:-$(kryptik_default_jobs)}"
 export MAKEFLAGS="-j${KRYPTIK_JOBS}"
 umask 022
 
 MODE="build"
 REDO=""
+# shellcheck disable=SC2034  # REDO is consumed by step() in common.sh
 case "${1:-}" in
     --list) MODE="list" ;;
     --redo) REDO="${2:?--redo needs a package name}" ;;
@@ -77,55 +83,17 @@ set_flags_for() {
 
 # --- step machinery ---------------------------------------------------------
 
-step() {
-    local name="$1"; shift
-    if [[ "$REDO" == "$name" ]]; then
-        warn "forcing rebuild of ${name}"
-        rm -f "${STAMPS:?}/bs-${name}"
-    fi
-    if [[ -f "${STAMPS}/bs-${name}" ]]; then
-        dim "  skip ${name} (already built)"
-        return 0
-    fi
-    log "${name}"
-    set_flags_for "$name"
-    local logfile="${LOGS}/bs-${name}.log"
-    local start=$SECONDS
-    # Capture the subshell's status WITHOUT putting it in a condition.
-    #
-    # `( set -e; "$@" ) || rc=$?` looks like it fixes this and does not: the
-    # trailing || still suppresses errexit inside the subshell, even though the
-    # subshell sets it explicitly. Verified - a recipe of `false` followed by a
-    # succeeding command runs to completion and returns 0.
-    #
-    # `if ! ( ... ); then` is broken the same way. Only disabling errexit
-    # around a bare subshell, then reading $?, actually works.
-    #
-    # tools/test-step-errexit.sh is the regression test for this. It has caught
-    # the bug twice now: once as `if "$@"; then`, once as the || form above.
-    local rc=0
-    set +e
-    ( set -Eeuo pipefail; "$@" ) > "$logfile" 2>&1
-    rc=$?
-    set -e
-    if [[ "$rc" -eq 0 ]]; then
-        touch "${STAMPS}/bs-${name}"
-        ok "${name} ($(( SECONDS - start ))s)"
-    else
-        err "${name} failed. Last 40 lines of ${logfile}:"
-        tail -40 "$logfile" >&2
-        echo >&2
-        err "Full log: ${logfile}"
-        err ""
-        err "Check the actual error before assuming it is the hardening flags."
-        err "The first stage 04 failure looked like one and was not - it was a"
-        err "missing native glibc and no generated locales."
-        err ""
-        err "If it IS a hardening incompatibility, add an entry to"
-        err "build/config/hardening-exceptions.txt WITH a justification, so"
-        err "only that flag is dropped and only for that package."
-        die "stage 04 aborted at ${name}"
-    fi
+
+# The shared step() calls this after printing the tail of a failed log.
+step_failure_hint() {
+    err ""
+    err "Check the actual error before assuming it is the hardening flags."
+    err "The first stage 04 failure looked like one and was not - it was a"
+    err "missing native glibc and no generated locales."
+    err ""
+    err "If it IS a hardening incompatibility, add an entry to"
+    err "build/config/hardening-exceptions.txt WITH a justification, so"
+    err "only that flag is dropped and only for that package."
 }
 
 unpack() {
@@ -342,7 +310,32 @@ s_hardened_malloc() {
     # ADR-005. Built here so it exists before anything links against it.
     local src; src="$(unpack "${V_HARDENED_MALLOC}.tar.gz" "hardened_malloc-${V_HARDENED_MALLOC}")"
     cd "$src"
-    make VARIANT=default
+
+    # CONFIG_NATIVE=false, overriding config/default.mk.
+    #
+    # Upstream defaults it to true, which appends -march=native. That is the
+    # right default for someone compiling an allocator for the machine in front
+    # of them, and exactly wrong for a distribution: the .so would carry
+    # whatever instruction set extensions THIS build host happens to have, and
+    # on any older CPU the first hardened_malloc call executes an illegal
+    # instruction.
+    #
+    # This is the system allocator (ADR-005). "Some instruction is unavailable"
+    # in the allocator is not a degraded feature, it is every process on the
+    # machine dying at startup, on hardware the build never saw.
+    make VARIANT=default CONFIG_NATIVE=false
+
+    # Prove the override took, rather than trusting that a make variable beat
+    # an included .mk file.
+    if grep -qE '^\s*CONFIG_NATIVE\s*:?=\s*true' config/default.mk; then
+        echo "note: config/default.mk still says CONFIG_NATIVE := true;"
+        echo "      the command line above overrides it."
+    fi
+    if readelf -p .comment out/libhardened_malloc.so 2>/dev/null | grep -q 'march=native'; then
+        echo "FAIL: libhardened_malloc.so was built with -march=native"
+        return 1
+    fi
+
     install -Dm755 out/libhardened_malloc.so /usr/lib/libhardened_malloc.so
 
     # NOT wired into /etc/ld.so.preload yet. Making it the system allocator is
@@ -440,10 +433,398 @@ s_s6_stack() {
         echo "--- ${p} ---"
         local src; src="$(unpack "${p}.tar.gz" "$p")"
         cd "$src"
-        ./configure --prefix=/usr --libdir=/usr/lib --with-dynlib=/usr/lib
+
+        # s6-linux-init needs one extra argument, and it is not optional.
+        #
+        # Its --prefix defaults to "/" - not /usr - and --skeldir defaults to
+        # PREFIX/etc/s6-linux-init/skel. Passing --prefix=/usr, which is right
+        # for every other package here and right for this one's binaries, puts
+        # the skeleton in /usr/etc/s6-linux-init/skel. s6-linux-init-maker then
+        # looks in /etc/s6-linux-init/skel, finds nothing, and produces a boot
+        # image with no stage 2 scripts.
+        local extra=()
+        case "$p" in
+            s6-linux-init-*) extra=(--skeldir=/etc/s6-linux-init/skel) ;;
+        esac
+
+        ./configure --prefix=/usr --libdir=/usr/lib --with-dynlib=/usr/lib "${extra[@]}"
         make
         make install
     done
+}
+
+# --- system identity and boot configuration ---------------------------------
+
+# /etc/os-release and friends.
+#
+# This is not cosmetic. Integration has to answer "is the userspace I am
+# looking at inside the VM the one this build produced, or the host's?", and
+# the honest way to answer it is for the artifact to carry its own identity.
+# KRYPTIK_BUILD_ID is the repository commit, so a booted system names the
+# commit that built it.
+s_etc() {
+    local commit="${KRYPTIK_BUILD_COMMIT:-unknown}"
+
+    cat > /etc/os-release <<EOF
+NAME="Kryptik"
+PRETTY_NAME="Kryptik (pre-alpha)"
+ID=kryptik
+BUILD_ID=${commit}
+ANSI_COLOR="0;36"
+EOF
+
+    echo "kryptik" > /etc/hostname
+
+    # Minimal and honest: the root filesystem is whatever the bootloader
+    # handed us, and the kernel mounts devtmpfs itself
+    # (CONFIG_DEVTMPFS_MOUNT=y). Nothing here should invent a device name -
+    # a wrong root= line in fstab is worse than no fstab.
+    cat > /etc/fstab <<'EOF'
+# file system  mount point  type     options              dump  fsck
+proc           /proc        proc     nosuid,noexec,nodev  0     0
+sysfs          /sys         sysfs    nosuid,noexec,nodev  0     0
+devpts         /dev/pts     devpts   gid=5,mode=620       0     0
+tmpfs          /run         tmpfs    defaults             0     0
+devtmpfs       /dev         devtmpfs mode=0755,nosuid     0     0
+tmpfs          /dev/shm     tmpfs    nosuid,nodev         0     0
+EOF
+
+    cat > /etc/hosts <<'EOF'
+127.0.0.1  localhost kryptik
+::1        localhost ip6-localhost ip6-loopback
+EOF
+
+    echo "--- identity ---"
+    cat /etc/os-release
+}
+
+# A console that works without login(1).
+#
+# util-linux is configured --disable-login (it is a setuid-adjacent surface
+# Kryptik has no use for yet), so a plain getty would exec a /bin/login that
+# does not exist and the console would be dead. agetty -n -l skips login
+# entirely and execs the program named instead.
+#
+# The console DEVICE is discovered rather than guessed. A developer VM booted
+# with -nographic uses ttyS0; the same image on hardware uses tty1; hardcoding
+# either produces an image that boots to silence on the other. The kernel
+# already knows which it is and publishes it.
+s_console() {
+    mkdir -p /usr/libexec
+    cat > /usr/libexec/kryptik-console <<'EOF'
+#!/bin/sh
+# Start an interactive shell on the active kernel console.
+#
+# Called by the s6-linux-init early getty service. Takes an optional device
+# name; otherwise asks the kernel which console it is using.
+
+dev="$1"
+
+if [ -z "$dev" ]; then
+    # /sys/class/tty/console/active lists the active consoles, most recently
+    # added first. "ttyS0" under QEMU -nographic, "tty1" on a normal display.
+    if [ -r /sys/class/tty/console/active ]; then
+        dev=$(cut -d' ' -f1 < /sys/class/tty/console/active)
+    fi
+fi
+[ -n "$dev" ] || dev=console
+
+[ -e "/dev/$dev" ] || dev=console
+
+if [ -x /usr/sbin/agetty ]; then
+    # -n: do not prompt for a login name.
+    # -l: exec this program instead of /bin/login, which Kryptik does not ship.
+    exec /usr/sbin/agetty -n -l /usr/bin/bash --keep-baud \
+         115200,57600,38400,9600 "$dev" vt220
+fi
+
+# No agetty: put a shell directly on the device. Less capable - no baud
+# handling, no controlling-terminal setup beyond setsid - but a system whose
+# console is unreachable cannot be debugged at all.
+exec setsid -c /usr/bin/bash -l < "/dev/$dev" > "/dev/$dev" 2>&1
+EOF
+    chmod 0755 /usr/libexec/kryptik-console
+    sh -n /usr/libexec/kryptik-console || { echo "console wrapper has a syntax error"; return 1; }
+    echo "installed /usr/libexec/kryptik-console"
+}
+
+# s6-linux-init: generate /etc/s6-linux-init/current and the /sbin entry points.
+#
+# The upstream skeleton scripts are entirely commented out - they are a menu of
+# "if your services are managed by X" options, not a working configuration. We
+# replace them before running the maker, because the maker copies whatever is
+# in the skeldir.
+s_init() {
+    have() { command -v "$1" >/dev/null 2>&1; }
+    have s6-linux-init-maker || { echo "s6-linux-init-maker not installed; s6 stack step failed?"; return 1; }
+    have s6-svscan || { echo "s6-svscan not installed"; return 1; }
+
+    local skel=/etc/s6-linux-init/skel
+    mkdir -p "$skel"
+
+    # Stage 2: runs once s6-svscan is pid 1.
+    cat > "$skel/rc.init" <<'EOF'
+#!/bin/sh -e
+# Kryptik stage 2 init.
+
+rl="$1"
+shift
+
+# s6-linux-init has already set up /run and, with -1, our console output.
+# These are the mounts the rest of the system assumes exist. Each is guarded,
+# because the kernel may have mounted some of them already (devtmpfs is
+# automounted: CONFIG_DEVTMPFS_MOUNT=y).
+mountpoint -q /proc     || mount -t proc     proc     /proc  -o nosuid,noexec,nodev
+mountpoint -q /sys      || mount -t sysfs    sysfs    /sys   -o nosuid,noexec,nodev
+mountpoint -q /dev      || mount -t devtmpfs devtmpfs /dev   -o mode=0755,nosuid
+mkdir -p /dev/pts /dev/shm
+mountpoint -q /dev/pts  || mount -t devpts devpts /dev/pts -o gid=5,mode=620,nosuid,noexec
+mountpoint -q /dev/shm  || mount -t tmpfs  tmpfs  /dev/shm -o nosuid,nodev
+
+[ -r /etc/hostname ] && hostname "$(cat /etc/hostname)" 2>/dev/null || true
+
+# Kryptik's own state directories.
+mkdir -p /run/kryptik /run/lock
+chmod 0755 /run/kryptik
+
+# The service manager, IF a compiled database exists.
+#
+# It deliberately does not exist yet: building an s6-rc source tree and
+# compiling it is Phase 6 work. Saying so on the console is the point - a
+# system that silently boots with no services and no explanation is
+# indistinguishable from one whose service manager crashed.
+if [ -d /etc/s6-rc/compiled ]; then
+    s6-rc-init -c /etc/s6-rc/compiled /run/service
+    s6-rc -v1 -up change "$rl"
+else
+    echo "kryptik: no compiled s6-rc database at /etc/s6-rc/compiled."
+    echo "kryptik: booting with the early console only; no services will start."
+    echo "kryptik: this is expected in a pre-alpha image - see docs/roadmap.md Phase 6."
+fi
+EOF
+
+    # Shutdown: bring services down, then return. s6-linux-init-shutdownd does
+    # the unmounting and the actual poweroff - rc.shutdown must NOT try to halt
+    # the machine itself.
+    cat > "$skel/rc.shutdown" <<'EOF'
+#!/bin/sh -e
+# Kryptik shutdown. Bring services down and return; s6-linux-init-shutdownd
+# performs the unmount and the hardware poweroff after this exits.
+
+exec >/dev/console 2>&1
+
+if [ -d /run/service ] && command -v s6-rc >/dev/null 2>&1; then
+    s6-rc -v1 -bDa change || true
+fi
+echo "kryptik: services stopped, handing back to shutdownd"
+EOF
+
+    cat > "$skel/rc.shutdown.final" <<'EOF'
+#!/bin/sh -e
+# Runs after every filesystem is unmounted. Kryptik needs nothing here, and
+# upstream is emphatic that if you are unsure, the answer is nothing.
+EOF
+
+    cat > "$skel/runlevel" <<'EOF'
+#!/bin/sh -e
+test "$#" -gt 0 || { echo 'runlevel: fatal: too few arguments' 1>&2 ; exit 100 ; }
+if [ -d /run/service ] && command -v s6-rc >/dev/null 2>&1; then
+    exec s6-rc -v1 -up change "$1"
+fi
+echo "kryptik: no service database; runlevel '$1' has nothing to change" 1>&2
+EOF
+
+    chmod 0755 "$skel"/rc.init "$skel"/rc.shutdown "$skel"/rc.shutdown.final "$skel"/runlevel
+    local s
+    for s in rc.init rc.shutdown rc.shutdown.final runlevel; do
+        sh -n "$skel/$s" || { echo "skeleton script $s has a syntax error"; return 1; }
+    done
+
+    # The maker refuses to write into an existing directory, so build into a
+    # fresh path and move it into place.
+    local tmp=/tmp/s6-linux-init-build.$$
+    rm -rf "$tmp"
+
+    #  -1  stage 2 output also goes to /dev/console. Without it a boot failure
+    #      is only visible in the catch-all log, which you cannot read because
+    #      the machine did not boot.
+    #  -G  the early getty: our console wrapper, supervised for the lifetime
+    #      of the machine.
+    #  -p  PATH for the init scripts. The host is not on it; there is no host.
+    #  -s  kernel command line key=value pairs land in this envdir, so
+    #      services can read them. It MUST be under /run: s6-linux-init-maker
+    #      warns otherwise, and the reason bites Kryptik specifically. The
+    #      store is rewritten at every boot, and Kryptik's kernel fragment
+    #      enables dm-verity - a root filesystem that is read-only by design.
+    #      Pointing this at /etc would mean init trying to write to a verified
+    #      root on every boot.
+    #  -f  our skeleton, not the commented-out upstream one.
+    #
+    # NOT passed: -d /dev. Upstream says to add it when devtmpfs is not
+    # automounted by the kernel; Kryptik's kernel sets
+    # CONFIG_DEVTMPFS_MOUNT=y, so passing it would mount devtmpfs a second
+    # time over the kernel's own.
+    s6-linux-init-maker \
+        -1 \
+        -G "/usr/libexec/kryptik-console" \
+        -p /usr/bin:/usr/sbin \
+        -m 0022 \
+        -c /etc/s6-linux-init/current \
+        -s /run/s6-linux-init/env \
+        -f "$skel" \
+        -D default \
+        "$tmp"
+
+    rm -rf /etc/s6-linux-init/current
+    mv "$tmp" /etc/s6-linux-init/current
+
+    # /sbin/init, plus telinit, shutdown, halt, poweroff and reboot. /sbin is a
+    # symlink to usr/sbin in this layout, so these land in /usr/sbin and
+    # /sbin/init resolves - which is the path the kernel looks for.
+    cp -a /etc/s6-linux-init/current/bin/. /sbin/
+
+    echo "--- /sbin entry points ---"
+    ls -la /sbin/init /sbin/telinit /sbin/shutdown /sbin/halt /sbin/poweroff /sbin/reboot
+}
+
+# kryptikd, the zone supervisor.
+#
+# It is Rust, and the sysroot has no Rust toolchain - bootstrapping one into
+# the target is a much larger piece of work than this stage. So the binary is
+# built outside and installed here, and its ABSENCE is reported loudly rather
+# than passed over: a Kryptik image without kryptikd is a Linux system with
+# Kryptik's name on it.
+# Takes its input as ARGUMENTS rather than reading the environment, and that
+# is deliberate.
+#
+# step() fingerprints a step against its recipe and the arguments it was called
+# with. An environment variable is invisible to that, so pointing
+# KRYPTIK_KRYPTIKD_BIN at a binary after a run that had none would leave the
+# stamp valid and the step skipped - the image would stay without kryptikd and
+# the build would report success. Passing the path AND the binary's content
+# hash makes both part of the step's identity.
+s_kryptikd() {
+    local src="$1" want_sha="${2:-absent}"
+    [[ "$src" == "none" ]] && src=""
+    echo "requested: ${src:-<none>} (sha256 ${want_sha})"
+
+    install -d -m 0755 /etc/kryptik
+    install -d -m 0700 /etc/kryptik/zones
+    if [[ -d "${KRYPTIK_ROOT}/compartments/zones" ]]; then
+        install -m 0600 "${KRYPTIK_ROOT}"/compartments/zones/*.toml /etc/kryptik/zones/
+        echo "installed zone definitions:"
+        ls -la /etc/kryptik/zones/
+    else
+        echo "no zone definitions at ${KRYPTIK_ROOT}/compartments/zones"
+    fi
+
+    if [[ -z "$src" ]]; then
+        echo "KRYPTIK_KRYPTIKD_BIN is not set: kryptikd was NOT installed."
+        echo
+        echo "This image has the zone definitions and none of the code that"
+        echo "enforces them. Build a static kryptikd outside the chroot and"
+        echo "point KRYPTIK_KRYPTIKD_BIN at it:"
+        echo
+        echo "  cd compartments/kryptikd"
+        echo "  cargo build --release --target x86_64-unknown-linux-musl"
+        echo "  KRYPTIK_KRYPTIKD_BIN=\$PWD/target/x86_64-unknown-linux-musl/release/kryptikd \\"
+        echo "      make system"
+        echo
+        echo "Recorded as absent, not as installed."
+        : > /etc/kryptik/kryptikd-absent
+        return 0
+    fi
+
+    [[ -f "$src" ]] || { echo "KRYPTIK_KRYPTIKD_BIN=${src} does not exist"; return 1; }
+
+    # The hash was taken when the build order was built, outside the chroot.
+    # If it no longer matches, the file changed underneath the build and the
+    # stamp about to be written would describe something else.
+    local got_sha; got_sha="$(sha256_of "$src")"
+    if [[ "$want_sha" != "absent" && "$got_sha" != "$want_sha" ]]; then
+        echo "kryptikd binary changed during the build:"
+        echo "  fingerprinted: ${want_sha}"
+        echo "  now:           ${got_sha}"
+        return 1
+    fi
+    echo "sha256: ${got_sha}"
+
+    install -Dm755 "$src" /usr/bin/kryptikd
+    rm -f /etc/kryptik/kryptikd-absent
+
+    # It must actually run here. A dynamically linked binary built against the
+    # host's libc installs perfectly and then fails at boot with a missing
+    # loader, which is exactly the kind of failure this stage exists to catch
+    # before a VM does.
+    echo "--- installed kryptikd ---"
+    ls -la /usr/bin/kryptikd
+    readelf -l /usr/bin/kryptikd 2>/dev/null | grep 'Requesting program interpreter' \
+        || echo "  (static binary, no interpreter - good)"
+    /usr/bin/kryptikd --version || {
+        echo "FAIL: the installed kryptikd does not run inside the target."
+        return 1
+    }
+}
+
+# Everything a boot needs, checked from the target's own point of view.
+#
+# "make system finished" is not the same statement as "this tree can boot", and
+# the gap between them is where an overnight build quietly wastes a morning.
+s_boot_check() {
+    local n=0
+    chk() {  # chk <description> <path> [x]
+        if [[ -e "$2" ]] && { [[ "${3:-}" != x ]] || [[ -x "$2" ]]; }; then
+            printf '  ok      %s (%s)\n' "$1" "$2"
+        else
+            printf '  MISSING %s (%s)\n' "$1" "$2"; n=$((n + 1))
+        fi
+    }
+
+    chk "init"              /sbin/init x
+    chk "poweroff"          /sbin/poweroff x
+    chk "reboot"            /sbin/reboot x
+    chk "shutdown"          /sbin/shutdown x
+    chk "s6-svscan"         /usr/bin/s6-svscan x
+    chk "console wrapper"   /usr/libexec/kryptik-console x
+    chk "stage 2 script"    /etc/s6-linux-init/current/scripts/rc.init x
+    chk "shutdown script"   /etc/s6-linux-init/current/scripts/rc.shutdown x
+    chk "shell"             /bin/sh x
+    chk "bash"              /usr/bin/bash x
+    chk "os-release"        /etc/os-release
+    chk "fstab"             /etc/fstab
+    chk "C library"         /usr/lib/libc.so.6
+    chk "dynamic loader"    /usr/lib/ld-linux-x86-64.so.2
+
+    # /sbin/init must be reachable by the exact path the kernel uses.
+    if [[ -x /sbin/init ]]; then
+        printf '  ok      /sbin/init resolves to %s\n' "$(readlink -f /sbin/init)"
+    fi
+
+    # The early getty is what turns a booted kernel into something you can
+    # talk to. If the maker did not create it, the machine boots to silence.
+    local svcdir=/etc/s6-linux-init/current/run-image/service
+    if [[ -d "$svcdir" ]]; then
+        echo "  services in the boot image:"
+        local s
+        for s in "$svcdir"/*; do
+            [[ -e "$s" ]] || continue
+            printf '    %s\n' "$(basename "$s")"
+        done
+        if compgen -G "${svcdir}/*getty*" > /dev/null; then
+            echo "  ok      an early getty service exists"
+        else
+            echo "  MISSING early getty service"; n=$((n + 1))
+        fi
+    else
+        echo "  MISSING ${svcdir}"; n=$((n + 1))
+    fi
+
+    if [[ -e /etc/kryptik/kryptikd-absent ]]; then
+        echo "  NOTE    kryptikd is not installed in this image (see the kryptikd step)"
+    fi
+
+    [[ "$n" -eq 0 ]] || { echo "${n} boot prerequisite(s) missing"; return 1; }
+    echo "the sysroot has what a boot needs"
 }
 
 # --- build order ------------------------------------------------------------
@@ -468,6 +849,12 @@ declare -a PACKAGES=(
     "readline"    "native_build readline-${V_READLINE}.tar.gz readline-${V_READLINE} --disable-static --with-curses"
     "m4"          "native_build m4-${V_M4}.tar.xz m4-${V_M4}"
     "flex"        "native_build flex-${V_FLEX}.tar.gz flex-${V_FLEX} --disable-static"
+    # Before anything that probes for its dependencies. e2fsprogs, iproute2,
+    # kmod and eudev all ask pkg-config where zlib, openssl, zstd and xz are;
+    # without it kmod's --with-openssl --with-zstd --with-zlib --with-xz have
+    # nothing to answer them and configure fails. The tarball was already
+    # pinned in versions.env and fetched - the package simply had no recipe.
+    "pkgconf"     "native_build pkgconf-${V_PKGCONF}.tar.xz pkgconf-${V_PKGCONF} --disable-static --docdir=/usr/share/doc/pkgconf-${V_PKGCONF}"
     "binutils"    "s_binutils_native"
     "gmp"         "native_build gmp-${V_GMP}.tar.xz gmp-${V_GMP} --enable-cxx --disable-static"
     "mpfr"        "native_build mpfr-${V_MPFR}.tar.xz mpfr-${V_MPFR} --disable-static --enable-thread-safe"
@@ -500,7 +887,21 @@ declare -a PACKAGES=(
     "groff"       "native_build groff-${V_GROFF}.tar.gz groff-${V_GROFF}"
     "kmod"        "native_build kmod-${V_KMOD}.tar.xz kmod-${V_KMOD} --sysconfdir=/etc --with-openssl --with-xz --with-zstd --with-zlib"
     "libpipeline" "native_build libpipeline-${V_LIBPIPELINE}.tar.gz libpipeline-${V_LIBPIPELINE}"
-    "man-db"      "native_build man-db-${V_MANDB}.tar.xz man-db-${V_MANDB} --docdir=/usr/share/doc/man-db-${V_MANDB} --sysconfdir=/etc --disable-setuid --enable-cache-owner=bin"
+    # man-db has NO RECIPE, deliberately, and the stage reports it as an
+    # unwired package rather than pretending otherwise.
+    #
+    # Its configure requires a database library - gdbm, Berkeley db, or
+    # ndbm - and hard-errors with "Fatal: no supported database
+    # library/header found" when it finds none. Kryptik pins none of them,
+    # and glibc does not provide ndbm (gdbm-ndbm.h ships with gdbm).
+    #
+    # Adding gdbm is an integration change: it needs a version in
+    # versions.env, an entry in tools/fetch-sources.sh and an audited line
+    # in sources.lock. Until then this package cannot build, and blocking
+    # the kernel on a documentation tool would be the wrong trade - so it
+    # is listed, unwired, and counted in the "base system is INCOMPLETE"
+    # warning at the end of this stage.
+    "man-db"      ""
     "procps-ng"   "native_build procps-ng-${V_PROCPS}.tar.xz procps-ng-${V_PROCPS} --docdir=/usr/share/doc/procps-ng-${V_PROCPS} --disable-static --disable-kill"
     "e2fsprogs"   "s_e2fsprogs"
     "elfutils"    "s_elfutils"
@@ -510,6 +911,19 @@ declare -a PACKAGES=(
     "iana-etc"    "s_iana_etc"
     "hardened-malloc" "s_hardened_malloc"
     "s6"          "s_s6_stack"
+
+    # Past this line the stage stops compiling packages and starts making
+    # the result bootable. These are ordinary steps - stamped, resumable
+    # and fingerprinted like any other - because "configure the init
+    # system" fails in exactly the same ways as "build a package", and
+    # deserves the same machinery rather than a hand-rolled tail.
+    "etc"         "s_etc"
+    "console"     "s_console"
+    "init"        "s_init"
+    # The path and the binary's content hash are arguments so that both are
+    # part of this step's fingerprint; see s_kryptikd.
+    "kryptikd"    "s_kryptikd ${KRYPTIK_KRYPTIKD_BIN:-none} $([[ -f "${KRYPTIK_KRYPTIKD_BIN:-}" ]] && sha256_of "${KRYPTIK_KRYPTIKD_BIN}" || echo absent)"
+    "boot-check"  "s_boot_check"
 )
 
 # --- run --------------------------------------------------------------------
@@ -526,25 +940,22 @@ if [[ "$MODE" == "list" ]]; then
     exit 0
 fi
 
+# The commit that produced this image, for /etc/os-release. Resolved out
+# here because the chroot has no git, and passed in rather than guessed:
+# an image that names the wrong commit is worse than one that names none.
+KRYPTIK_BUILD_COMMIT="${KRYPTIK_BUILD_COMMIT:-unknown}"
+export KRYPTIK_BUILD_COMMIT
+
 log "Kryptik stage 04 — hardened base system"
 dim "  CFLAGS : ${CFLAGS}"
 dim "  LDFLAGS: ${LDFLAGS}"
 dim "  jobs   : ${KRYPTIK_JOBS}"
 echo
 
-# Refuse to run outside the chroot. Building the base system against the host
-# would produce packages linked to host libraries that then get installed into
-# the sysroot - broken in a way that surfaces much later.
-if [[ ! -f /etc/kryptik/inside-chroot ]] && [[ "${KRYPTIK_ALLOW_UNCHROOTED:-0}" != "1" ]]; then
-    die "stage 04 must run INSIDE the chroot.
-
-  sudo build/stages/03-chroot-prep.sh mount
-  sudo build/stages/03-chroot-prep.sh enter
-  # then, inside:
-  build/stages/04-base-system.sh
-
-Set KRYPTIK_ALLOW_UNCHROOTED=1 only if you know exactly why."
-fi
+# Refuse to run outside the chroot. Building the base system against the
+# host would produce packages linked to host libraries that then get
+# installed into the sysroot - broken in a way that surfaces much later.
+require_inside_chroot "stage 04" "system"
 
 unwired=0
 for ((i = 0; i < ${#PACKAGES[@]}; i += 2)); do

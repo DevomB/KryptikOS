@@ -34,8 +34,21 @@ jobs:
           done < <(find . -name '*.sh' -not -path './build/work/*')
           exit $fail
 
-      - name: Failed builds cannot be stamped successful
-        run: ./tools/test-step-errexit.sh
+      - name: Tool fixture suites
+        run: |
+          # Ten offline suites existed and exactly one of them ran in CI. They
+          # need no network and no build, so there is no reason for any of them
+          # to be absent: each one is the regression net for a tool that was
+          # found reporting more than it had established.
+          fail=0
+          for t in tools/test-*.sh; do
+            echo "=== $t"
+            if ! "$t"; then
+              echo "  FAILED: $t"
+              fail=1
+            fi
+          done
+          exit $fail
 
       - name: Shellcheck
         run: shellcheck -S warning -x build/lib/common.sh build/stages/*.sh tools/*.sh
@@ -116,11 +129,37 @@ jobs:
           fi
 
       - name: Provenance of unsigned sources
+        # GH_TOKEN is the whole fix. `gh` IS installed on the runner - it ships
+        # in actions/runner-images - but GITHUB_TOKEN is a secret rather than an
+        # exported variable, and this step set no GH_TOKEN. So `gh api` exited 4
+        # asking for `gh auth login` even against a public repository, the old
+        # script counted that as "skipped", and the step passed green for months
+        # without ever making the assertion docs/supply-chain.md calls verified.
+        #
+        # --strict on push and on the weekly schedule, informational on pull
+        # requests: secrets.GITHUB_TOKEN is not available to a pull request from
+        # a fork, and a gate that cannot run is not a gate. The distinction is
+        # written here rather than left for someone to discover from a red X.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # hardened_malloc is the system allocator and the s6 stack is PID 1.
-          # Neither publishes a detached signature, so they are verified by
-          # signed git tag and publisher-published sha256 instead.
-          ./tools/verify-provenance.sh
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "pull request: informational (no token for fork PRs)"
+            ./tools/verify-provenance.sh
+          else
+            ./tools/verify-provenance.sh --strict
+          fi
+
+      - name: Provenance inventory
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # One line per source and one assurance class per line. Deliberately
+          # no total: a detached GPG signature, a signed tag bound to an archive
+          # hash and a publisher checksum are three different strengths of
+          # evidence, and a single fraction adds them together as if they were
+          # one.
+          ./tools/provenance-inventory.sh
 
       - name: sources.lock covers the manifest
         run: |
@@ -164,10 +203,37 @@ jobs:
           echo "userns check:"
           unshare --user --map-root-user id -u
 
-      - name: Phase 5 adversarial exit test
+      - name: kryptikd builds for musl
+        run: |
+          # The developer VM installs a static kryptikd into an initramfs, and
+          # the musl target is where a glibc-only assumption shows up. It has
+          # already caught one: ioctl's request argument is c_ulong in glibc's
+          # binding and c_int in musl's.
+          rustup target add x86_64-unknown-linux-musl
+          cd compartments/kryptikd
+          cargo build --release --target x86_64-unknown-linux-musl
+          cargo test --target x86_64-unknown-linux-musl
+
+      - name: Phase 5 adversarial exit test (isolation primitives)
         run: |
           cd compartments/kryptikd && cargo build --quiet
           cd ../.. && ./compartments/tests/adversarial.sh
+
+      - name: Real-launcher suite (the launch path itself)
+        run: |
+          # adversarial.sh drives the primitives with unshare(1); this drives
+          # `kryptikd run`. They are different claims - the seccomp filter is
+          # installed at the last step of the child, and an ordering regression
+          # there would leave zones unfiltered while the primitive test kept
+          # passing. A change to the zone path has to pass both.
+          #
+          # This runs unprivileged here. Group K (the privileged launch path)
+          # and group M (cgroup limits) report NOT RUN on a runner and are
+          # covered by tools/vm/ instead - the suite prints them by name and
+          # exits "PASSED WITH GAPS" rather than "PASSED", so the gap is
+          # visible in the log rather than absent from it.
+          cd compartments/kryptikd && cargo build --quiet
+          cd ../.. && ./compartments/tests/launcher.sh
 
   kernel:
     name: Kernel currency
