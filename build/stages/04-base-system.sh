@@ -206,7 +206,34 @@ s_glibc() {
 
     # glibc supplies its own stack protector rather than taking ours; see the
     # hardening exception for why external flags are dropped for this package.
-    ../configure         --prefix=/usr         --disable-werror         --enable-kernel=4.19         --enable-stack-protector=strong         --disable-nscd         libc_cv_slibdir=/usr/lib
+    #
+    # --enable-cet is not optional here, and the reason is a genuine
+    # configure-vs-build mismatch rather than a preference.
+    #
+    # glibc decides whether to COMPILE its CET support from
+    # libc_cv_compiler_default_cet - a test of whether the compiler defines
+    # __CET__ *by default*. Kryptik's GCC is not built --enable-cet-default,
+    # so that test says no and dl-cet.c is left out. The actual build then
+    # runs with Kryptik's CFLAGS, which contain -fcf-protection=full, and that
+    # DOES define __CET__ - so rtld.c and dl-open.c compile the CET code paths
+    # and call into functions nobody compiled:
+    #
+    #   undefined reference to `_dl_cet_open_check'
+    #   undefined reference to `_dl_cet_setup_features'
+    #   undefined reference to `_dl_cet_check'
+    #   hidden symbol `_dl_cet_open_check' isn't defined
+    #   collect2: error: ld returned 1 exit status
+    #
+    # The alternative fix - dropping -fcf-protection for glibc via an
+    # exception - also links, and gives a dynamic loader with no CET at all.
+    # The loader is the single place CET matters most: it is what arms IBT and
+    # the shadow stack for every process on the system. So the flag stays and
+    # glibc is told to build the support that flag implies.
+    #
+    # Enabling it here does not force anything at runtime. Activation still
+    # depends on the CPU and on kernel support; without those, glibc's CET
+    # code detects their absence and stays out of the way.
+    ../configure         --prefix=/usr         --disable-werror         --enable-kernel=4.19         --enable-stack-protector=strong         --enable-cet         --disable-nscd         libc_cv_slibdir=/usr/lib
     make
 
     # The install step runs a test-installation perl script that does not exist
@@ -223,6 +250,25 @@ s_glibc() {
     echo "--- installed libc ---"
     ls -la /usr/lib/libc.so.6
     strings /usr/lib/libc.so.6 | grep -m1 "GNU C Library"
+
+    # And prove the CET support actually landed, rather than trusting that
+    # --enable-cet was accepted. A loader without the property note is a
+    # loader that will not arm IBT or the shadow stack for anything.
+    echo "--- CET in the dynamic loader ---"
+    local ldso=/usr/lib/ld-linux-x86-64.so.2
+    if [[ -e "$ldso" ]]; then
+        if readelf -n "$ldso" 2>/dev/null | grep -qE 'IBT|SHSTK'; then
+            readelf -n "$ldso" | grep -E 'IBT|SHSTK' | sed 's/^/  /'
+            echo "  ok: the loader carries the CET property"
+        else
+            echo "FAIL: ${ldso} has no CET property note, but glibc was built"
+            echo "      with -fcf-protection=full and --enable-cet."
+            return 1
+        fi
+    else
+        echo "FAIL: no dynamic loader at ${ldso}"
+        return 1
+    fi
 }
 
 s_zlib() {
