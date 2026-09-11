@@ -1867,6 +1867,80 @@ zrun alpha -- /bin/sh -c "$PRO echo hi > \$HOME/capfile && cat \$HOME/capfile | 
 probe "CAP4 positive control: the zone still runs normally after the drop" "hi"
 
 # ============================================================================
+head_ "BRK. The broker channel  [unpriv + vm]"
+# ============================================================================
+# The launcher serves a socket at /run/kryptik/broker for its own zone, and
+# decides who is on the other end from SO_PEERCRED - kernel-asserted, not
+# anything the zone sends. Nothing exercised it, and it is a boundary.
+#
+# The client is a python one-liner because AF_UNIX needs a real socket call:
+# bash can do /dev/tcp and not this, and busybox nc has no -U. python3 is
+# present both on the developer host and in the Kryptik sysroot, so the same
+# check runs in both places.
+BRK_CLIENT='import socket,sys
+s=socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout(5)
+s.connect(sys.argv[1])
+s.sendall(sys.argv[2].encode()+b"\n")
+sys.stdout.write(s.recv(256).decode(errors="replace").strip())'
+
+if command -v python3 >/dev/null 2>&1; then
+    # The zone asks the broker who it is. The answer has to be this zone: it is
+    # derived from the connecting uid, so a zone cannot ask to be another.
+    zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(python3 -c '$BRK_CLIENT' /run/kryptik/broker version 2>&1)"
+    probe "BRK1 a zone's broker answers version, naming that zone" "kryptik-broker 1 zone=alpha"
+
+    # The server parses rather than echoes.
+    zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(python3 -c '$BRK_CLIENT' /run/kryptik/broker notaverb 2>&1)"
+    probe "BRK2 an unknown verb is refused rather than echoed" "error: unknown verb"
+
+    # The socket must be the zone's alone. 0600 and owned by the zone identity,
+    # checked from inside, because a mode that drifted to 0666 would let
+    # anything in the zone's uid range talk to it.
+    zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(stat -c %a /run/kryptik/broker 2>/dev/null)"
+    probe "BRK3 the broker socket is 0600" "600"
+else
+    skip "BRK1-BRK3 need python3 for an AF_UNIX client; this environment has none"
+fi
+
+# BRK4 is the authentication itself, and it needs two different uids - which
+# only exist on a privileged launch, where each zone maps to its own range. On
+# the developer host every zone maps to the launching user, so there is no
+# second identity to be refused and the check would pass vacuously.
+if (( PRIVILEGED == 1 )) && command -v python3 >/dev/null 2>&1; then
+    KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run alpha "${ZARGS[@]}" -- \
+        /bin/sh -c "$PRO echo PROBE=up; /bin/sleep 20" > "$WORK/brk.out" 2>&1 &
+    brkpid=$!
+    BG_PIDS+=("$brkpid")
+    brk_sock=""
+    for _ in $(seq 1 200); do
+        [[ -S "$REG/alpha/broker" ]] && { brk_sock="$REG/alpha/broker"; break; }
+        kill -0 "$brkpid" 2>/dev/null || break
+        sleep 0.05
+    done
+    if [[ -z "$brk_sock" ]]; then
+        fail "BRK4 the zone's broker socket never appeared in the registry"
+    else
+        # Connecting as root (uid 0) to a socket whose zone is uid 100000. The
+        # kernel reports our uid; the broker must refuse us. This is the whole
+        # authentication claim, driven rather than reasoned about.
+        out="$(python3 -c "$BRK_CLIENT" "$brk_sock" version 2>&1)"
+        if [[ "$out" == *"unidentified peer"* ]]; then
+            pass "BRK4 the broker refuses a peer that is not its zone (root asking got: $out)"
+        elif [[ "$out" == *"zone=alpha"* ]]; then
+            fail "BRK4 the broker ANSWERED a peer that is not its zone - identity is not enforced"
+        else
+            fail "BRK4 unexpected answer to a foreign peer: $out"
+        fi
+    fi
+    kill -9 "$brkpid" 2>/dev/null
+    wait "$brkpid" 2>/dev/null
+    "$KRYPTIKD" gc >/dev/null 2>&1 || true
+else
+    skip "BRK4 broker authentication needs a privileged launch, where zones have distinct host uids"
+fi
+
+# ============================================================================
 head_ "NETR. Routed networking, end to end  [vm / root only]"
 # ============================================================================
 # Security implemented the topology: the nic zone takes the physical interface
