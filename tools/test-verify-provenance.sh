@@ -537,6 +537,56 @@ run --offline
 expect_pass "--offline reports informationally" "--strict fails here"
 
 # ---------------------------------------------------------------------------
+# --report is keyed by manifest name
+# ---------------------------------------------------------------------------
+#
+# tools/provenance-inventory.sh joins these rows against
+# `fetch-sources.sh --list`, so a row keyed by anything else silently vanishes
+# from its assurance class rather than failing loudly. That is how "s6 (PID 1)"
+# - the display label - was reported as lock-only in the first real inventory
+# while its publisher checksum had in fact been verified.
+
+build_root "${ARCHIVES}/authentic.tar.gz" auto
+REPORT="${TMP}/report.tsv"
+KRYPTIK_ROOT="$FAKE" \
+KRYPTIK_PROVENANCE_SELFTEST=1 \
+KRYPTIK_HM_REMOTE="$FIXREPO" \
+KRYPTIK_HM_SIGNERS="$FIX_SIGNERS" \
+KRYPTIK_HM_FPR="$FIX_FPR" \
+KRYPTIK_SKARNET_BASE="$FIX_SKARNET" \
+NO_COLOR=1 bash "$TOOL" --report="$REPORT" > "$OUT" 2>&1
+rc=$?
+
+missing=""
+for name in hardened-malloc skalibs execline s6 s6-rc s6-linux-init; do
+    cut -f1 "$REPORT" | grep -qx "$name" || missing="${missing} ${name}"
+done
+if [[ -z "$missing" && "$rc" -eq 0 ]]; then
+    green "--report keys every row by its manifest name"
+else
+    red "--report rows missing for:${missing:- (none)} (exit ${rc})"
+    sed 's/^/        /' "$REPORT"
+fi
+
+# And nothing keyed by a display label.
+if cut -f1 "$REPORT" | grep -q ' '; then
+    red "--report contains a key with a space, i.e. a display label"
+    cut -f1 "$REPORT" | grep ' ' | sed 's/^/        /'
+else
+    green "--report contains no display labels as keys"
+fi
+
+# awk, not grep -E: a backslash-t in an ERE pattern is a literal "t", not a
+# tab, so the obvious grep silently never matches.
+if awk -F'\t' '$1=="hardened-malloc" && $2=="tree:established"{found=1}
+               END{exit !found}' "$REPORT"; then
+    green "--report records the tree assertion as established"
+else
+    red "--report lacks hardened-malloc tree:established"
+    sed 's/^/        /' "$REPORT"
+fi
+
+# ---------------------------------------------------------------------------
 # the selftest hook cannot be used by accident
 # ---------------------------------------------------------------------------
 

@@ -56,15 +56,32 @@ export GNUPGHOME="${KEYDIR}/gnupg"
 
 FETCH_UNKNOWN=0
 STRICT=0
+REPORT=""
 for a in "$@"; do
     case "$a" in
         --refresh) rm -rf "$GNUPGHOME" "$GNU_KEYRING" ;;
         --fetch-unknown-keys) FETCH_UNKNOWN=1 ;;
         --strict) STRICT=1 ;;
+        # Machine-readable per-source outcome, for tools/provenance-inventory.sh.
+        # `--report=FILE` rather than `--report FILE` so that the simple loop
+        # over "$@" stays a simple loop over "$@".
+        --report=*) REPORT="${a#--report=}" ;;
         -h|--help) sed -n '2,7p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $a" ;;
     esac
 done
+[[ -n "$REPORT" ]] && : > "$REPORT"
+
+# report <source> <class> <detail>
+#
+# One tab-separated line per source. The class is the ASSURANCE CLASS, not a
+# pass/fail: the whole purpose of writing it out is that an inventory can show
+# "verified against a key we pinned" and "verified against a key the signature
+# named" as the different things they are, instead of adding them up.
+report() {
+    [[ -n "$REPORT" ]] || return 0
+    printf '%s\t%s\t%s\n' "$1" "$2" "${3//$'\t'/ }" >> "$REPORT"
+}
 
 # The ledger of keys accepted WITHOUT audit, for human confirmation
 # out-of-band. It is read on every run, not only when --fetch-unknown-keys is
@@ -227,21 +244,48 @@ if [[ -f "$KEYS_MANIFEST" ]]; then
     done < <(grep -v '^[[:space:]]*#' "$KEYS_MANIFEST" || true)
 fi
 
-# Does the key that made this signature appear in that ledger? Both the
-# primary fingerprint and any subkey fingerprints are compared, because a
-# GOODSIG names the SIGNING key while keys.manifest records the primary.
-key_is_unaudited() {
-    local keyid="$1" fpr known
-    [[ "${#UNAUDITED_FPRS[@]}" -gt 0 ]] || return 1
+# Keys Kryptik has decided to trust IN THE TREE, by fingerprint, as opposed to
+# whichever keys the fetched GNU keyring happens to contain. Only these two so
+# far: kernel.org's mainline and stable signing keys, already relied on to
+# verify the kernel tarball itself.
+#
+# A signature checked against one of these is a stronger statement than one
+# checked against the keyring - the keyring is fetched over the network and
+# establishes "signed by whoever the keyring says" - and the inventory reports
+# them as different classes rather than one number.
+PINNED_FPRS=(
+    "ABAF11C65A2970B130ABE3C479BE3E4300411886"   # Linus Torvalds, mainline
+    "647F28654894E3BD457199BE38DBBDC86092693E"   # Greg Kroah-Hartman, stable
+)
+
+# All fingerprints of the key that made a signature: the primary and every
+# subkey. A GOODSIG names the SIGNING key, while keys.manifest and the pins
+# above record primaries, so both have to be compared.
+key_fingerprints() {
+    gpg --batch --with-colons --fingerprint --fingerprint "$1" 2>/dev/null \
+        | awk -F: '$1=="fpr"{print $10}'
+}
+
+_key_in() {
+    local keyid="$1"; shift
+    local fpr known
     [[ -n "$keyid" ]] || return 1
+    [[ "$#" -gt 0 ]] || return 1
     while IFS= read -r fpr; do
-        for known in "${UNAUDITED_FPRS[@]}"; do
-            [[ "${fpr^^}" == "$known" ]] && return 0
+        for known in "$@"; do
+            [[ "${fpr^^}" == "${known^^}" ]] && return 0
         done
-    done < <(gpg --batch --with-colons --fingerprint --fingerprint "$keyid" 2>/dev/null \
-             | awk -F: '$1=="fpr"{print $10}')
+    done < <(key_fingerprints "$keyid")
     return 1
 }
+
+# Does the key that made this signature appear in the unaudited ledger?
+key_is_unaudited() {
+    [[ "${#UNAUDITED_FPRS[@]}" -gt 0 ]] || return 1
+    _key_in "$1" "${UNAUDITED_FPRS[@]}"
+}
+
+key_is_pinned() { _key_in "$1" "${PINNED_FPRS[@]}"; }
 
 # Run gpg --verify and classify from its machine-readable status output.
 #
@@ -281,15 +325,21 @@ check_sig() {
             warn "${name}: signature valid  [${signer:-unknown}] but by an UNAUDITED key"
             FETCHED=$((FETCHED + 1))
             FETCHED_LIST+=("${name} - ${signer:-unknown} (key ${keyid})")
+            report "$name" signature-unaudited-key "${signer:-unknown} (${keyid})"
             return 0
         fi
+
+        local klass=signature-keyring-key
+        key_is_pinned "$keyid" && klass=signature-pinned-key
 
         if [[ "$kind" == "EXPKEYSIG" ]]; then
             ok "${name}: signature valid, signing key expired  [${signer:-unknown}]"
             EXPIRED=$((EXPIRED + 1))
             EXPIRED_LIST+=("${name} - ${signer:-unknown}")
+            report "$name" "$klass" "${signer:-unknown} (${keyid}; key expired)"
         else
             ok "${name}: signature valid  [${signer:-unknown}]"
+            report "$name" "$klass" "${signer:-unknown} (${keyid})"
         fi
         VERIFIED=$((VERIFIED + 1))
         return 0
@@ -307,6 +357,7 @@ check_sig() {
         # in FAILED like a bad signature does.
         FAILED=$((FAILED + 1))
         FAILED_LIST+=("${name} (REVOKED signing key)")
+        report "$name" signature-revoked-key "${signer:-unknown}"
         return 0
     fi
 
@@ -350,23 +401,27 @@ check_sig() {
 
         warn "${name}: signing key ${keyid} not held"
         mark_unverifiable "${name} (signing key ${keyid} not held)"
+        report "$name" key-not-held "$keyid"
         return 0
     fi
 
     if printf '%s' "$out" | grep -q "^\[GNUPG:\] BADSIG"; then
         err "${name}: BAD SIGNATURE - the file does not match its signature"
         FAILED=$((FAILED + 1)); FAILED_LIST+=("$name")
+        report "$name" signature-bad "the file does not match its signature"
         return 0
     fi
 
     if printf '%s' "$out" | grep -q "^\[GNUPG:\] ERRSIG"; then
         warn "${name}: signature could not be checked"
         mark_unverifiable "${name} (ERRSIG - key unavailable or unsupported algorithm)"
+        report "$name" signature-uncheckable "ERRSIG: key unavailable or unsupported algorithm"
         return 0
     fi
 
     warn "${name}: inconclusive gpg result"
     mark_unverifiable "${name} (inconclusive)"
+    report "$name" inconclusive "gpg produced no status this script recognises"
     return 0
 }
 
@@ -382,6 +437,7 @@ verify_gnu() {
             rm -f "$sig"
             warn "${name}: no .sig published upstream"
             mark_unverifiable "${name} (no signature upstream)"
+            report "$name" no-signature-upstream "no .sig on the canonical GNU host"
             return
         fi
     fi
@@ -407,6 +463,7 @@ verify_any() {
     done
     warn "${name}: no detached signature published (.sig/.asc/.sign)"
     mark_unverifiable "${name} (upstream publishes no signature)"
+    report "$name" no-signature-upstream "none of .sig/.asc/.sign is published"
 }
 
 # Detached signature alongside the file, at the same URL plus a suffix.
@@ -418,6 +475,7 @@ verify_detached() {
         rm -f "$sig"
         warn "${name}: no .sig published upstream"
         mark_unverifiable "${name} (no signature upstream)"
+        report "$name" no-signature-upstream "no ${suffix} published beside the tarball"
         return
     fi
     check_sig "$name" "$sig" "${KRYPTIK_SOURCES}/${file}" || true
@@ -437,6 +495,7 @@ verify_kernel() {
         rm -f "$sign"
         warn "${name}: could not fetch .sign"
         mark_unverifiable "${name} (.sign unavailable)"
+        report "$name" signature-unavailable "the .tar.sign could not be fetched"
         return
     fi
 
@@ -451,6 +510,7 @@ verify_kernel() {
         rm -f "$tmptar"
         err "${name}: decompression failed"
         FAILED=$((FAILED + 1)); FAILED_LIST+=("$name")
+        report "$name" decompression-failed "the tarball could not be decompressed"
         return
     fi
     check_sig "$name" "$sign" "$tmptar" || true
@@ -491,6 +551,7 @@ while read -r name _ver url; do
     [[ -f "${KRYPTIK_SOURCES}/${file}" ]] || {
         warn "${name}: not downloaded, so its signature cannot be checked"
         mark_unverifiable "${name} (not downloaded)"
+        report "$name" not-downloaded "no local copy to check a signature against"
         continue
     }
 
@@ -507,6 +568,7 @@ while read -r name _ver url; do
             # LFS publishes md5sums for its patch set, not per-patch signatures.
             warn "${name}: LFS patches are not individually signed upstream"
             mark_unverifiable "${name} (upstream publishes no signature)"
+            report "$name" no-signature-upstream "LFS publishes md5sums for the patch set, not per-patch signatures"
             ;;
         *)
             # Everything else: try the two conventional detached-signature

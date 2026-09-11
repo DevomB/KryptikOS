@@ -108,14 +108,20 @@ load_config
 
 STRICT=0
 OFFLINE=0
+REPORT=""
 for a in "$@"; do
     case "$a" in
         --strict)  STRICT=1 ;;
         --offline) OFFLINE=1 ;;
+        # Machine-readable per-assertion outcome, for
+        # tools/provenance-inventory.sh. `--report=FILE`, not `--report FILE`,
+        # so this stays a plain loop over "$@".
+        --report=*) REPORT="${a#--report=}" ;;
         -h|--help) sed -n '2,6p' "${BASH_SOURCE[0]}"; exit 0 ;;
-        *) die "unknown argument: $a (expected --strict, --offline, or nothing)" ;;
+        *) die "unknown argument: $a (expected --strict, --offline, --report=FILE, or nothing)" ;;
     esac
 done
+[[ -n "$REPORT" ]] && : > "$REPORT"
 
 # ============================================================================
 # TRUST ANCHOR
@@ -207,10 +213,25 @@ fi
 PASS_N=0; FAIL_N=0; UNAVAIL_N=0; PREREQ_N=0
 declare -a PASS_LIST=() FAIL_LIST=() UNAVAIL_LIST=() PREREQ_LIST=()
 
-pass()    { ok   "[$1] $2";           PASS_N=$((PASS_N+1));       PASS_LIST+=("[$1] $2"); }
-fail()    { err  "[$1] $2";           FAIL_N=$((FAIL_N+1));       FAIL_LIST+=("[$1] $2"); }
-unavail() { warn "[$1] UNVERIFIED: $2"; UNAVAIL_N=$((UNAVAIL_N+1)); UNAVAIL_LIST+=("[$1] $2"); }
-prereq()  { warn "[$1] CANNOT CHECK: $2"; PREREQ_N=$((PREREQ_N+1)); PREREQ_LIST+=("[$1] $2"); }
+# Which source the assertions currently being recorded belong to. Set before
+# each group of checks; only the report lines use it.
+RSRC="-"
+
+# report <assertion> <result> <detail>
+# Tab-separated: source, assertion:result, detail. The assertion and the
+# result are kept in one field on purpose - "tree established" and "tree
+# unverified" are what an inventory needs to tell apart, and neither is a
+# number to be added to the other.
+report() {
+    [[ -n "$REPORT" ]] || return 0
+    local detail="${3//$'\n'/ }"
+    printf '%s\t%s:%s\t%s\n' "$RSRC" "$1" "$2" "${detail//$'\t'/ }" >> "$REPORT"
+}
+
+pass()    { ok   "[$1] $2";           PASS_N=$((PASS_N+1));       PASS_LIST+=("[$1] $2");    report "$1" established  "$2"; }
+fail()    { err  "[$1] $2";           FAIL_N=$((FAIL_N+1));       FAIL_LIST+=("[$1] $2");    report "$1" failed       "$2"; }
+unavail() { warn "[$1] UNVERIFIED: $2"; UNAVAIL_N=$((UNAVAIL_N+1)); UNAVAIL_LIST+=("[$1] $2"); report "$1" unverified   "$2"; }
+prereq()  { warn "[$1] CANNOT CHECK: $2"; PREREQ_N=$((PREREQ_N+1)); PREREQ_LIST+=("[$1] $2"); report "$1" uncheckable  "$2"; }
 
 lock_hash_for() {
     [[ -f "$KRYPTIK_LOCK" ]] || return 1
@@ -436,8 +457,15 @@ verify_hm_tree() {
 # exactly this reason, which is why absence is a strict-gate failure and not a
 # shrug.
 
+# verify_published_sha256 <url> <label> <manifest-name>
+#
+# The manifest name is kept separate from the display label on purpose: the
+# report is keyed by the name tools/fetch-sources.sh --list emits, so that an
+# inventory can join the two. Using the human label here silently dropped
+# "s6 (PID 1)" out of its class, because the manifest calls that source "s6".
 verify_published_sha256() {
-    local url="$1" label="$2"
+    local url="$1" label="$2" name="$3"
+    RSRC="$name"
     local file; file="$(basename "$url")"
     local body="${WORK}/${file}.sha256"
     local path="${KRYPTIK_SOURCES}/${file}"
@@ -514,17 +542,18 @@ fi
 echo
 
 log "hardened_malloc: authenticated source tree"
+RSRC="hardened-malloc"
 verify_hm_lock || true
 verify_hm_tree
 
 echo
 log "skarnet: publisher-published checksums"
-verify_published_sha256 "${SKARNET_BASE}/skalibs/skalibs-${V_SKALIBS}.tar.gz" "skalibs"
-verify_published_sha256 "${SKARNET_BASE}/execline/execline-${V_EXECLINE}.tar.gz" "execline"
-verify_published_sha256 "${SKARNET_BASE}/s6/s6-${V_S6}.tar.gz" "s6 (PID 1)"
-verify_published_sha256 "${SKARNET_BASE}/s6-rc/s6-rc-${V_S6_RC}.tar.gz" "s6-rc"
+verify_published_sha256 "${SKARNET_BASE}/skalibs/skalibs-${V_SKALIBS}.tar.gz" "skalibs" "skalibs"
+verify_published_sha256 "${SKARNET_BASE}/execline/execline-${V_EXECLINE}.tar.gz" "execline" "execline"
+verify_published_sha256 "${SKARNET_BASE}/s6/s6-${V_S6}.tar.gz" "s6 (PID 1)" "s6"
+verify_published_sha256 "${SKARNET_BASE}/s6-rc/s6-rc-${V_S6_RC}.tar.gz" "s6-rc" "s6-rc"
 verify_published_sha256 "${SKARNET_BASE}/s6-linux-init/s6-linux-init-${V_S6_LINUX_INIT}.tar.gz" \
-    "s6-linux-init"
+    "s6-linux-init" "s6-linux-init"
 
 echo
 log "Summary"
