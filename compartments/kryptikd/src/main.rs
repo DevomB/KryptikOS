@@ -12,6 +12,7 @@
 
 mod isolate;
 mod landlock;
+mod rootfs;
 mod seccomp;
 mod spawn;
 mod zone;

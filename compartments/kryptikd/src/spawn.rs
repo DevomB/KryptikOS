@@ -15,6 +15,7 @@ use std::io;
 use std::os::unix::io::RawFd;
 
 use crate::isolate;
+use crate::rootfs;
 use crate::landlock;
 use crate::seccomp;
 use crate::zone::{StorageMode, Zone};
@@ -226,56 +227,54 @@ fn child_main(
 
     // --- we are now pid 1 inside the zone ---------------------------------
 
-    // 5. Make mounts private BEFORE mounting anything, or every mount below
-    //    propagates back to the host mount namespace and the isolation is
-    //    decorative.
-    if let Err(e) = isolate::make_mounts_private() {
-        bail!("mount private: {e}");
+    // 5. Replace the root with a tree containing only what this zone should
+    //    see. This is the actual containment boundary; everything below is
+    //    defense in depth over it.
+    //
+    //    Before this existed, zones ran in the caller's mount namespace with
+    //    Landlock as the only filesystem control, and a review escaped it two
+    //    ways without a kernel bug: an inherited descriptor read a file
+    //    outside the zone, and chmod changed the mode of one. Both worked
+    //    because those paths still EXISTED here. A permission layer cannot fix
+    //    reachability.
+    if let Err(e) = rootfs::pivot_into(rootfs) {
+        bail!("could not build the zone root: {e}");
     }
 
-    // 6. A fresh /proc, so the pid namespace is actually visible. Skipping this
-    //    leaves the host /proc mounted and the zone can enumerate every process
-    //    even though its pid namespace is correct.
-    if let Err(e) = isolate::mount_proc("") {
-        bail!("mount /proc: {e}");
-    }
-
-    // 7. A fresh sysfs. The network namespace denies USE of host interfaces,
-    //    but without this /sys/class/net still lists them - free reconnaissance.
-    if let Err(e) = isolate::mount_sysfs("") {
-        // Non-fatal: a read-only sysfs can fail in odd environments, and the
-        // network namespace is the actual control. Say so rather than hide it.
-        eprintln!("kryptikd[zone {}]: warning: sysfs remount failed: {e}", zone.name);
-    }
-
-    // 8. Loopback, for zones that have a network namespace at all.
+    // 6. Loopback, for zones that have a network namespace at all.
     if flags & libc::CLONE_NEWNET != 0 {
         if let Err(e) = isolate::bring_up_loopback() {
             eprintln!("kryptikd[zone {}]: warning: lo did not come up: {e}", zone.name);
         }
     }
 
-    // 9. Filesystem confinement. After the mounts, because Landlock is
-    //    evaluated against the mount tree as it stands when the ruleset is
-    //    applied.
-    //
-    // /proc and /sys are in the read set on purpose and it is not a weakening:
-    // both were re-mounted above against THIS zone's namespaces, so the zone
-    // sees only its own processes and its own interfaces through them. Leaving
-    // them out produced "ls: cannot open directory '/proc': Permission denied"
-    // in a zone whose pid namespace was working perfectly.
-    //
-    // /dev is a genuine gap rather than a decision. A zone should get a minimal
-    // devtmpfs with null/zero/urandom/tty and nothing else; it currently
-    // inherits whatever /dev the caller had, so this grants more than it
-    // should. Tracked as Phase 5 remaining work in docs/roadmap.md.
-    let extra: Vec<&str> = vec![
-        "/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc",
-        "/proc", "/sys", "/dev",
-    ];
-    if let Err(e) = landlock::confine_to_zone_with_dev(rootfs, &extra, &["/dev", "/proc"]) {
+    // 7. Filesystem confinement, now over a tree that contains only the zone.
+    //    The system paths are already bind-mounted read-only by pivot_into,
+    //    so this is a second, independent control rather than the only one.
+    if let Err(e) = landlock::confine_to_zone_with_dev(
+        "/",
+        &["/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/proc", "/sys"],
+        &["/dev", "/tmp"],
+    ) {
         bail!("landlock: {e}");
     }
+
+    // 8. Close every descriptor above stderr.
+    //
+    //    The other half of the inherited-descriptor escape. pivot_root does
+    //    NOT fix this on its own: a descriptor that was already open keeps
+    //    working no matter what the mount namespace now looks like.
+    rootfs::close_inherited_fds();
+
+    // 9. A predictable, minimal environment. The caller's environment can
+    //    carry paths, tokens and LD_* variables into the zone, none of which
+    //    it should inherit by accident.
+    std::env::remove_var("LD_PRELOAD");
+    std::env::remove_var("LD_LIBRARY_PATH");
+    std::env::set_var("PATH", "/usr/bin:/usr/sbin:/bin:/sbin");
+    std::env::set_var("HOME", "/");
+    std::env::set_var("TMPDIR", "/tmp");
+    std::env::set_var("KRYPTIK_ZONE", &zone.name);
 
     // 10. Syscall filtering, LAST. It must come after every privileged setup
     //     step above, because mount() and friends are not in the allowlist -

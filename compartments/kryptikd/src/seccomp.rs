@@ -121,7 +121,7 @@ pub const BASE_ALLOWLIST: &[libc::c_long] = &[
     libc::SYS_fchdir, libc::SYS_rename, libc::SYS_renameat, libc::SYS_renameat2,
     libc::SYS_mkdir, libc::SYS_mkdirat, libc::SYS_rmdir, libc::SYS_unlink,
     libc::SYS_unlinkat, libc::SYS_symlink, libc::SYS_symlinkat, libc::SYS_link,
-    libc::SYS_linkat, libc::SYS_chmod, libc::SYS_fchmod, libc::SYS_fchmodat,
+    libc::SYS_linkat,
     libc::SYS_umask, libc::SYS_flock, libc::SYS_fallocate,
     libc::SYS_copy_file_range, libc::SYS_sendfile, libc::SYS_splice,
     // fadvise64 is not optional in practice: GNU cat and cp call
@@ -131,7 +131,6 @@ pub const BASE_ALLOWLIST: &[libc::c_long] = &[
     libc::SYS_fadvise64, libc::SYS_readahead,
     // Timestamps and ownership: touch, cp -p, install.
     libc::SYS_utimensat, libc::SYS_futimesat,
-    libc::SYS_chown, libc::SYS_fchown, libc::SYS_lchown, libc::SYS_fchownat,
     libc::SYS_sync, libc::SYS_syncfs,
     libc::SYS_getxattr, libc::SYS_lgetxattr, libc::SYS_fgetxattr,
     libc::SYS_listxattr, libc::SYS_llistxattr, libc::SYS_flistxattr,
@@ -229,6 +228,19 @@ pub const DENIED_RATIONALE: &[(libc::c_long, &str)] = &[
     (libc::SYS_quotactl, "filesystem quota manipulation"),
     (libc::SYS_open_by_handle_at, "open a file by handle, bypassing path checks"),
     (libc::SYS_name_to_handle_at, "obtain the handle used by the above"),
+    // Landlock ABI 3 has NO right governing metadata changes, so these were
+    // controlled by DAC alone - and a zone's uid maps to the launching user,
+    // who owns the files outside it. A review used chmod to change a file
+    // outside the zone from 600 to 777. pivot_root now removes those paths
+    // entirely, but leaving the syscalls out too means the boundary does not
+    // rest on a single mechanism.
+    (libc::SYS_chmod, "change file mode; not covered by any Landlock right"),
+    (libc::SYS_fchmod, "change file mode via descriptor"),
+    (libc::SYS_fchmodat, "change file mode relative to a descriptor"),
+    (libc::SYS_chown, "change ownership; not covered by any Landlock right"),
+    (libc::SYS_fchown, "change ownership via descriptor"),
+    (libc::SYS_lchown, "change ownership of a symlink"),
+    (libc::SYS_fchownat, "change ownership relative to a descriptor"),
 ];
 
 /// Build the BPF program for a set of permitted syscalls.

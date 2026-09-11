@@ -91,20 +91,23 @@ step() {
     set_flags_for "$name"
     local logfile="${LOGS}/bs-${name}.log"
     local start=$SECONDS
-    # Run the build in a SUBSHELL with errexit active, and capture its status
-    # without putting it in a condition.
+    # Capture the subshell's status WITHOUT putting it in a condition.
     #
-    # This was `if "$@" > "$logfile"; then`, which is silently broken: bash
-    # suppresses set -e for any command in a condition context, AND that
-    # suppression propagates into functions called from there. A build function
-    # whose `make` failed therefore carried on to its remaining commands and
-    # returned the status of the LAST one - so a package that never compiled
-    # got stamped as successfully built.
+    # `( set -e; "$@" ) || rc=$?` looks like it fixes this and does not: the
+    # trailing || still suppresses errexit inside the subshell, even though the
+    # subshell sets it explicitly. Verified - a recipe of `false` followed by a
+    # succeeding command runs to completion and returns 0.
     #
-    # That is exactly how glibc came to be marked built after its configure
-    # died with "critical programs are missing: python".
+    # `if ! ( ... ); then` is broken the same way. Only disabling errexit
+    # around a bare subshell, then reading $?, actually works.
+    #
+    # tools/test-step-errexit.sh is the regression test for this. It has caught
+    # the bug twice now: once as `if "$@"; then`, once as the || form above.
     local rc=0
-    ( set -Eeuo pipefail; "$@" ) > "$logfile" 2>&1 || rc=$?
+    set +e
+    ( set -Eeuo pipefail; "$@" ) > "$logfile" 2>&1
+    rc=$?
+    set -e
     if [[ "$rc" -eq 0 ]]; then
         touch "${STAMPS}/bs-${name}"
         ok "${name} ($(( SECONDS - start ))s)"
