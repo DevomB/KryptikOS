@@ -90,6 +90,20 @@ recipe_src() {
     echo "recipe: consuming \$1"
 }
 
+# step() calls this after printing the tail of a failed log. Its output is
+# how the test tells that step() survived the failure far enough to report
+# it, rather than being killed on the subshell line by the ERR trap.
+step_failure_hint() {
+    echo "HINT-RAN:\$1"
+}
+
+# step() calls this after printing the tail of a failed log. Its output is
+# how the test tells that step() survived the failure far enough to report
+# it, rather than being killed on the subshell line by the ERR trap.
+step_failure_hint() {
+    echo "HINT-RAN:\$1"
+}
+
 # A recipe that names its tarball from a version variable instead, the way
 # s_glibc and the stage 05 steps do.
 recipe_ver() {
@@ -165,6 +179,38 @@ test_negative() {
     # single most useful diagnostic the build has.
     check "failing recipe: common.sh ERR trap fired and named the line" \
           "$(grep -q 'aborted at' "$log" 2>/dev/null && echo ok)"
+
+    # Everything above passes whether or not step() SURVIVED the failure.
+    #
+    # `set +e` does not disable an ERR trap, and common.sh's trap exits, so
+    # step() used to die on the subshell line: no stamp, non-zero exit, and
+    # the recipe's own abort line in the log - every assertion above still
+    # satisfied - while the log tail, the hint and die() never ran. A python
+    # failure buried at line 1659 of 6060 then had to be found by hand.
+    #
+    # These two assertions are the difference.
+    check "failing recipe: step() reports which step failed and where" \
+          "$(grep -q 'bad failed. Last .* lines of' <<<"$out" && echo ok)"
+    check "failing recipe: step_failure_hint ran" \
+          "$(grep -q 'HINT-RAN:bad' <<<"$out" && echo ok)"
+    check "failing recipe: the log tail reached the caller" \
+          "$(grep -q 'recipe: step 1' <<<"$out" && echo ok)"
+
+    # Everything above passes whether or not step() SURVIVED the failure.
+    #
+    # `set +e` does not disable an ERR trap, and common.sh's trap exits, so
+    # step() used to die on the subshell line: no stamp, non-zero exit, and
+    # the recipe's own abort line in the log - every assertion above still
+    # satisfied - while the log tail, the hint and die() never ran. A python
+    # failure buried at line 1659 of 6060 then had to be found by hand.
+    #
+    # These two assertions are the difference.
+    check "failing recipe: step() reports which step failed and where" \
+          "$(grep -q 'bad failed. Last .* lines of' <<<"$out" && echo ok)"
+    check "failing recipe: step_failure_hint ran" \
+          "$(grep -q 'HINT-RAN:bad' <<<"$out" && echo ok)"
+    check "failing recipe: the log tail reached the caller" \
+          "$(grep -q 'recipe: step 1' <<<"$out" && echo ok)"
 
     rm -rf "$work"
 }

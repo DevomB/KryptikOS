@@ -448,10 +448,16 @@ run_in_chroot() {
 
     log "running inside chroot: $*"
     echo
+    # Same as step(): `set +e` does not stop the ERR trap, and the trap
+    # exits. Without disarming it, "chroot command failed (exit N)" below was
+    # never printed - the unmount still happened, via the EXIT trap, so the
+    # damage was limited to losing the message.
     local rc=0
     set +e
+    trap - ERR
     in_chroot /bin/bash -c 'exec "$@"' kryptik-chroot "$@"
     rc=$?
+    trap _kryptik_trap ERR
     set -e
     echo
 
