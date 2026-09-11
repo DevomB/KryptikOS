@@ -64,6 +64,8 @@ fi
 # root=/dev/vda2: partition 1 is reserved for the ESP; see mkdisk.sh.
 APPEND="root=/dev/vda2 rootwait rw console=ttyS0,115200 panic=10 ${EXTRA_APPEND}"
 
+# shellcheck disable=SC2054  # the commas are QEMU option syntax
+#   (q35,accel=tcg / file=...,format=raw), not array separators.
 QEMU_ARGS=(
     -machine q35,accel=tcg
     -cpu max
