@@ -264,6 +264,19 @@ else
     red "--md did not emit a markdown table"; show
 fi
 
+# The markdown is an artifact that gets committed, so progress chatter must not
+# be in it. stdout is checked on its own here; stderr is where progress belongs.
+KRYPTIK_ROOT="$FAKE" KRYPTIK_INVENTORY_SELFTEST=1 \
+    KRYPTIK_INVENTORY_REPORTS="$EV" NO_COLOR=1 \
+    bash "$TOOL" --md > "${W}/md.out" 2>/dev/null
+if [[ "$(head -1 "${W}/md.out")" == "| source | version | assurance class"* ]] \
+   && ! grep -qE '^(==>|  ok|warn|  manifest:)' "${W}/md.out"; then
+    green "--md keeps progress output off stdout"
+else
+    red "--md leaked progress into the artifact"
+    sed 's/^/        /' "${W}/md.out" | head -8
+fi
+
 # --- the selftest hook cannot be used by accident ---------------------------
 
 KRYPTIK_ROOT="$FAKE" KRYPTIK_INVENTORY_REPORTS="$EV" NO_COLOR=1 \

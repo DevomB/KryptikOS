@@ -56,6 +56,11 @@ PROVREP="${WORK}/provenance.tsv"
 # 1. gather
 # ---------------------------------------------------------------------------
 
+# Under --md the output is an artifact that gets committed, so progress has to
+# stay out of it. Park stdout on fd 3 and send everything up to the table to
+# stderr, then put it back.
+if [[ "$MD" -eq 1 ]]; then exec 3>&1 1>&2; fi
+
 log "Collecting per-source evidence"
 
 MANIFEST="${WORK}/manifest.tsv"
@@ -198,6 +203,8 @@ fi
 # ---------------------------------------------------------------------------
 # 3. aggregate and print
 # ---------------------------------------------------------------------------
+
+if [[ "$MD" -eq 1 ]]; then exec 1>&3 3>&-; fi
 
 export KRYPTIK_LOCK KRYPTIK_SOURCES MD OFFLINE
 python3 - "$MANIFEST" "$SIGREP" "$PROVREP" "$IDREP" <<'PYEOF'
