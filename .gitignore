@@ -24,3 +24,6 @@ Thumbs.db
 
 # Rust build output
 /compartments/kryptikd/target/
+
+# Tectonix session state (tooling, not source)
+.tectonix/
