@@ -398,15 +398,39 @@ verify_chroot() {
 
     # The chroot's bash must be OURS, not the host's.
     #
-    # $BASH_VERSION carries only the version ("5.2.32(1)-release") - the build
-    # triple appears only in `bash --version`. Grepping the former for
-    # "kryptik" always fails and warned on a perfectly good chroot.
+    # Two earlier versions of this check were wrong, in two different ways,
+    # and the second way is worth keeping written down because it only
+    # appeared once the build got far enough to trip it.
+    #
+    # First: $BASH_VERSION carries only "5.2.32(1)-release". The build triple
+    # appears only in `bash --version`, so grepping the former for "kryptik"
+    # always failed and warned on a perfectly good chroot.
+    #
+    # Then: grepping the latter for "kryptik" worked - right up until stage 04
+    # rebuilt bash. Stage 02 cross-compiles it with
+    # --host=x86_64-kryptik-linux-gnu, which stamps that triple into the
+    # version string. Stage 04 rebuilds it natively, and config.guess then
+    # reports x86_64-pc-linux-gnu, correctly, because that IS the build system
+    # now. The triple was never evidence of whose bash this is; it only ever
+    # recorded which stage built it last. The check failed on the correct
+    # chroot it was meant to protect, and would have blocked stage 05 too.
+    #
+    # What actually discriminates is the VERSION. This host runs bash 5.2.21;
+    # Kryptik pins 5.2.32. A chroot reaching a host binary reports the host's
+    # version, and a sysroot that never got its own bash cannot report ours at
+    # all.
     local ver
-    ver="$(in_chroot /bin/bash --version 2>/dev/null | head -1)"
-    if [[ "$ver" == *"kryptik"* ]]; then
-        ok "chroot is running Kryptik's own bash: ${ver}"
+    ver="$(in_chroot /bin/bash --version 2>/dev/null || true)"
+    ver="${ver%%$'\n'*}"
+    if [[ "$ver" == *"version ${V_BASH}"* ]]; then
+        ok "chroot bash is the one Kryptik built (${V_BASH}): ${ver}"
+        if [[ "$ver" == *"kryptik"* ]]; then
+            dim "  still carrying stage 02's cross-build triple"
+        else
+            dim "  native triple - stage 04 has rebuilt bash, which is expected"
+        fi
     else
-        err "chroot bash is NOT Kryptik's: ${ver:-unknown}"
+        err "chroot bash is not Kryptik's pinned ${V_BASH}: ${ver:-unknown}"
         err "The chroot may be reaching host binaries; stage 04 would build against them."
         return 1
     fi
