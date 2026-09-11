@@ -522,6 +522,28 @@ s_iana_etc() {
     cp -v services protocols /etc
 }
 
+# pkgconf installs a binary called "pkgconf". Everything that looks for it
+# looks for "pkg-config".
+#
+# There is no configure option for this - pkgconf offers --with-pkg-config-dir
+# for where .pc files live, and nothing that creates the compatibility name -
+# so the symlink is made by hand, which is what LFS does at this point too.
+#
+# Without it kmod's configure fails with "The pkg-config script could not be
+# found or is too old", and e2fsprogs, elfutils, iproute2 and eudev would each
+# have quietly configured without the dependencies they ask pkg-config about.
+# The package was present and built; only the name everyone uses was missing.
+s_pkgconf() {
+    native_build "pkgconf-${V_PKGCONF}.tar.xz" "pkgconf-${V_PKGCONF}" \
+        --disable-static --docdir="/usr/share/doc/pkgconf-${V_PKGCONF}"
+
+    ln -sfv pkgconf /usr/bin/pkg-config
+    ln -sfv pkgconf.1 /usr/share/man/man1/pkg-config.1
+
+    # Prove the name resolves and answers, rather than just that a link exists.
+    pkg-config --version
+}
+
 s_binutils_native() {
     local src; src="$(unpack "binutils-${V_BINUTILS}.tar.xz" "binutils-${V_BINUTILS}")"
     cd "$src"
@@ -1012,7 +1034,7 @@ declare -a PACKAGES=(
     # without it kmod's --with-openssl --with-zstd --with-zlib --with-xz have
     # nothing to answer them and configure fails. The tarball was already
     # pinned in versions.env and fetched - the package simply had no recipe.
-    "pkgconf"     "native_build pkgconf-${V_PKGCONF}.tar.xz pkgconf-${V_PKGCONF} --disable-static --docdir=/usr/share/doc/pkgconf-${V_PKGCONF}"
+    "pkgconf"     "s_pkgconf"
     "binutils"    "s_binutils_native"
     "gmp"         "native_build gmp-${V_GMP}.tar.xz gmp-${V_GMP} --enable-cxx --disable-static"
     "mpfr"        "native_build mpfr-${V_MPFR}.tar.xz mpfr-${V_MPFR} --disable-static --enable-thread-safe"
