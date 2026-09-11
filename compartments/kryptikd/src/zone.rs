@@ -101,6 +101,29 @@ impl fmt::Display for ZoneError {
     }
 }
 
+/// Every key a zone file may contain. Anything else is refused: a key that is
+/// parsed and ignored is a setting the operator believes is in force.
+pub const KNOWN_KEYS: &[&str] = &[
+    "zone.name", "zone.description",
+    "network.mode", "network.bridge",
+    "storage.mode", "storage.volume", "storage.unlock", "storage.wipe_keys",
+    "policy.seccomp", "policy.landlock",
+    "limits.memory_max", "limits.pids_max",
+    "ui.border_color",
+];
+
+/// A byte size as cgroup v2 memory.max accepts it: digits, optionally
+/// followed by one of K, M, G, T. "max" is not accepted - leave the key out.
+pub fn is_size(s: &str) -> bool {
+    let (digits, suffix) = match s.char_indices().find(|(_, c)| !c.is_ascii_digit()) {
+        Some((i, _)) => s.split_at(i),
+        None => (s, ""),
+    };
+    !digits.is_empty()
+        && digits.chars().any(|c| c != '0')
+        && matches!(suffix, "" | "K" | "M" | "G" | "T" | "k" | "m" | "g" | "t")
+}
+
 /// Minimal TOML reader: `[section]` headers and `key = value` pairs, with `#`
 /// comments. Values are strings or bare integers. Anything the zone format does
 /// not use (arrays, nested tables, multi-line strings) is rejected rather than
@@ -209,9 +232,50 @@ impl Zone {
         let get = |k: &str| kv.get(k).cloned();
         let need = |k: &str| kv.get(k).cloned().ok_or_else(|| ZoneError::Missing(k.into()));
 
+        for k in kv.keys() {
+            if !KNOWN_KEYS.contains(&k.as_str()) {
+                return Err(ZoneError::Invalid(format!(
+                    "unknown key {k:?}: not a zone setting, and an unknown key would \
+                     otherwise be silently ignored"
+                )));
+            }
+        }
+
         let name = need("zone.name")?;
         let network = NetworkMode::parse(&need("network.mode")?)?;
         let storage = StorageMode::parse(&need("storage.mode")?)?;
+
+        let bad = |field: &str, value: &str, expected: &str| ZoneError::BadValue {
+            field: field.into(),
+            value: value.into(),
+            expected: expected.into(),
+        };
+        // A limit that does not parse must be an error, not None: the first
+        // version turned `pids_max = "lots"` into "no limit".
+        let pids_max = match kv.get("limits.pids_max") {
+            None => None,
+            Some(v) => Some(
+                v.parse::<u32>()
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| bad("limits.pids_max", v, "a positive integer"))?,
+            ),
+        };
+        if let Some(v) = kv.get("limits.memory_max") {
+            if !is_size(v) {
+                return Err(bad("limits.memory_max", v, "a size such as 512M or 2G"));
+            }
+        }
+        if let Some(v) = kv.get("storage.unlock") {
+            if v != "on-start" {
+                return Err(bad("storage.unlock", v, "on-start"));
+            }
+        }
+        if let Some(v) = kv.get("storage.wipe_keys") {
+            if v != "on-stop" {
+                return Err(bad("storage.wipe_keys", v, "on-stop"));
+            }
+        }
 
         let zone = Zone {
             description: get("zone.description").unwrap_or_default(),
@@ -220,7 +284,7 @@ impl Zone {
             seccomp: get("policy.seccomp"),
             landlock: get("policy.landlock"),
             memory_max: get("limits.memory_max"),
-            pids_max: get("limits.pids_max").and_then(|v| v.parse().ok()),
+            pids_max,
             border_color: need("ui.border_color")?,
             name,
             network,
@@ -458,6 +522,32 @@ border_color = "#c9a227"
     fn rejects_duplicate_keys() {
         let bad = format!("{VAULT}\n[ui]\nborder_color = \"#111111\"\n");
         assert!(Zone::from_str(&bad).is_err());
+    }
+
+    #[test]
+    fn rejects_an_unparseable_limit_rather_than_dropping_it() {
+        let bad = VAULT.replace("pids_max = 128", "pids_max = 0");
+        let err = Zone::from_str(&bad).unwrap_err();
+        assert!(format!("{err}").contains("limits.pids_max"), "got: {err}");
+        let bad = VAULT.replace("pids_max = 128", "pids_max = \"many\"");
+        assert!(Zone::from_str(&bad).is_err());
+        let bad = VAULT.replace("pids_max = 128", "memory_max = \"2 gigs\"");
+        let err = Zone::from_str(&bad).unwrap_err();
+        assert!(format!("{err}").contains("limits.memory_max"), "got: {err}");
+        let ok = VAULT.replace("pids_max = 128", "memory_max = \"2G\"");
+        assert_eq!(Zone::from_str(&ok).unwrap().memory_max.as_deref(), Some("2G"));
+        assert!(is_size("512M") && is_size("1G") && is_size("4096"));
+        assert!(!is_size("0") && !is_size("") && !is_size("2GB") && !is_size("max"));
+    }
+
+    #[test]
+    fn rejects_unknown_keys_rather_than_ignoring_them() {
+        let bad = format!("{VAULT}\n[limits]\ncpu_max = 2\n");
+        let err = Zone::from_str(&bad).unwrap_err();
+        assert!(format!("{err}").contains("unknown key"), "got: {err}");
+        let bad = format!("{VAULT}\n[storage]\nunlock = \"never\"\n");
+        let err = Zone::from_str(&bad).unwrap_err();
+        assert!(format!("{err}").contains("storage.unlock"), "got: {err}");
     }
 
     #[test]

@@ -225,14 +225,17 @@ else
     info "A2  note: /bin/sh appears static here; A2 proves less than usual"
 fi
 
-zrun alpha -- /bin/sh -c "$PRO echo hello > /zonefile; cat /zonefile | sed 's/^/PROBE=/'"
+# $HOME, not /. The zone root is a sealed read-only tmpfs and the zone's
+# persistent directory is bound at /home/<zone>; writing to / now fails with
+# EROFS by design. On the host the file still lands at <rootfs-base>/<zone>/.
+zrun alpha -- /bin/sh -c "$PRO echo hello > \$HOME/zonefile; sed 's/^/PROBE=/' \$HOME/zonefile"
 probe "A3  a zone can write and read back a file it owns" "hello"
 
 zrun alpha -- /bin/sh -c "$PRO out=\$(/bin/echo nested); echo PROBE=\$out"
 probe "A4  a zone can fork a child process and collect its output" "nested"
 
 # Two generations deep, plus a wait: covers clone/wait4 in the allowlist.
-zrun alpha -- /bin/sh -c "$PRO ( ( echo deep ) ) > /d; wait; sed 's/^/PROBE=/' /d"
+zrun alpha -- /bin/sh -c "$PRO ( ( echo deep ) ) > \$HOME/d; wait; sed 's/^/PROBE=/' \$HOME/d"
 probe "A5  nested child processes and wait(2) work" "deep"
 
 zrun alpha -- /bin/sh -c "$PRO exit 42"
@@ -246,7 +249,7 @@ head_ "B. Two real zones cannot reach each other  [unpriv]"
 # ============================================================================
 
 # alpha writes a canary into its own root.
-zrun alpha -- /bin/sh -c "$PRO printf '%s' '$CANARY' > /alpha-secret; echo PROBE=written"
+zrun alpha -- /bin/sh -c "$PRO printf '%s' '$CANARY' > \$HOME/alpha-secret; echo PROBE=written"
 probe "B1a alpha can write a file in its own zone" "written"
 
 # Positive control: that file exists on the host, so a failure to read it from
@@ -260,8 +263,10 @@ fi
 
 # beta tries the same absolute path, and the host path alpha's data really
 # lives at. Neither exists in beta's root.
-zrun beta -- /bin/sh -c "$PRO if cat /alpha-secret 2>/dev/null | grep -q '$CANARY'; then echo PROBE=LEAKED; else echo PROBE=denied; fi"
-probe "B1c beta cannot read alpha's file by zone-absolute path" "denied"
+# /home/alpha is where alpha's data is mounted INSIDE ALPHA. Beta's tree has no
+# such path: each zone binds only its own directory.
+zrun beta -- /bin/sh -c "$PRO if cat /home/alpha/alpha-secret 2>/dev/null | grep -q '$CANARY'; then echo PROBE=LEAKED; else echo PROBE=denied; fi"
+probe "B1c beta cannot read alpha's file at alpha's in-zone path" "denied"
 
 zrun beta -- /bin/sh -c "$PRO if cat '$ROOTFS/alpha/alpha-secret' 2>/dev/null | grep -q '$CANARY'; then echo PROBE=LEAKED; else echo PROBE=denied; fi"
 probe "B1d beta cannot read alpha's data by its host path" "denied"
@@ -485,8 +490,12 @@ probe "E2d /usr is mounted nosuid" "nosuid"
 
 # Device visibility. rootfs.rs::DEVICES is the allowlist; anything else must
 # not exist for the zone.
+# The list grew deliberately: /dev/shm is a private tmpfs, /dev/pts + ptmx a
+# private devpts, and fd/stdin/stdout/stderr are the standard symlinks. What
+# matters is that it is still an exact list and E3b still finds no hardware.
 zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(ls /dev | sort | tr '\n' ',')"
-probe "E3a /dev contains exactly the allowlisted nodes" "full,null,random,tty,urandom,zero,"
+probe "E3a /dev contains exactly the allowlisted entries" \
+      "fd,full,null,ptmx,pts,random,shm,stderr,stdin,stdout,tty,urandom,zero,"
 
 zrun alpha -- /bin/sh -c "$PRO for d in /dev/mem /dev/kmem /dev/port /dev/kvm /dev/sda /dev/sdd /dev/nvme0n1 /dev/input; do [ -e \$d ] && { echo PROBE=EXPOSED_\$d; exit 0; }; done; echo PROBE=absent"
 probe "E3b no hardware, memory or input devices are visible" "absent"
@@ -690,13 +699,83 @@ seccomp_kill "I4  chroot(2) kills the zone (double-chroot escape)" \
              '/usr/sbin/chroot / /bin/true'
 seccomp_kill "I5  unshare(2) kills the zone (nested namespace LPE surface)" \
              '/usr/bin/unshare -U /bin/true'
-seccomp_kill "I6  mknod(2) kills the zone (fabricate a device node)" \
-             '/usr/bin/mknod /tmp/n c 1 3'
+# NOT a seccomp kill any more, and the distinction is the point. mknod(2) is
+# allowed again so that mkfifo works; a DEVICE node is refused by Landlock
+# (MAKE_CHAR/MAKE_BLOCK are handled and granted nowhere) and by nodev on every
+# mount. So the command fails rather than being killed - and the assertion that
+# matters is that no device node exists afterwards, not which mechanism said no.
+zrun alpha -- /bin/sh -c "$PRO /usr/bin/mknod /tmp/n c 1 3 2>/dev/null; if [ -e /tmp/n ]; then echo PROBE=CREATED; else echo PROBE=refused; fi"
+probe "I6  a zone cannot create a device node (Landlock + nodev, not SIGSYS)" "refused"
+
+# ...and the positive control: mknod itself still works for a FIFO, so I6 is
+# measuring the device-node refusal and not a blanket mknod failure.
+zrun alpha -- /bin/sh -c "$PRO /usr/bin/mknod /tmp/f p 2>/dev/null; if [ -p /tmp/f ]; then echo PROBE=fifo-ok; else echo PROBE=BLOCKED; fi"
+probe "I6b positive control: mknod still creates a FIFO (mkfifo must work)" "fifo-ok"
 
 # Positive control: the filter is not simply killing everything. Without this,
 # a filter that denied ALL syscalls would pass I3-I6 and look like a success.
 zrun alpha -- /bin/sh -c "$PRO /bin/true && /bin/echo PROBE=allowed-calls-work"
 probe "I7  positive control: allowed syscalls still work under the filter" "allowed-calls-work"
+
+# ============================================================================
+head_ "J. The hardened zone tree  [unpriv]"
+# ============================================================================
+# These cover boundaries introduced by the security audit of the launch path.
+# Each one had a demonstrated escape against the previous code, so each is a
+# regression check rather than a restatement of intent.
+
+# The zone root is a sealed read-only tmpfs. Before, / WAS the zone's writable
+# persistent directory and the mount scaffold was built inside it, so a zone
+# could replace a future mount point with a symlink between runs.
+zrun alpha -- /bin/sh -c "$PRO if touch /probe 2>/dev/null; then echo PROBE=WRITABLE; else echo PROBE=sealed; fi"
+probe "J1  the zone root is read-only, even to zone root" "sealed"
+
+zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$HOME"
+probe "J2  the zone's writable data is at /home/<zone>, not /" "/home/alpha"
+
+zrun alpha -- /bin/sh -c "$PRO if touch \$HOME/w 2>/dev/null; then echo PROBE=writable; else echo PROBE=BROKEN; fi"
+probe "J2b positive control: \$HOME IS writable (the zone is not inert)" "writable"
+
+# Landlock previously granted read+write+exec on / and its read-only rules
+# added nothing - it was a no-op and every guarantee rested on mount flags.
+# Creating a directory under /dev is the cheapest way to see whether the
+# ruleset actually denies anything.
+zrun alpha -- /bin/sh -c "$PRO if mkdir /dev/evil 2>/dev/null; then echo PROBE=ALLOWED; else echo PROBE=denied; fi"
+probe "J3  Landlock denies creating a directory under /dev" "denied"
+
+# Positive controls for the write rights Landlock MUST still grant. Each of
+# these was broken by an over-tight ruleset at some point: truncate needs
+# FS_TRUNCATE, and mv across directories needs FS_REFER or it falls back to
+# copy+fchmod and dies.
+zrun alpha -- /bin/sh -c "$PRO echo aaaa > /tmp/t; echo b > /tmp/t; echo PROBE=\$(cat /tmp/t)"
+probe "J4  truncating an existing file works (FS_TRUNCATE granted)" "b"
+
+zrun alpha -- /bin/sh -c "$PRO mkdir -p /tmp/d; echo x > /tmp/a; mv /tmp/a /tmp/d/ 2>/dev/null; if [ -f /tmp/d/a ]; then echo PROBE=moved; else echo PROBE=BLOCKED; fi"
+probe "J5  moving a file between directories works (FS_REFER granted)" "moved"
+
+zrun alpha -- /bin/sh -c "$PRO touch /tmp/c; chmod 0700 /tmp/c 2>/dev/null && echo PROBE=chmod-ok || echo PROBE=BLOCKED"
+probe "J6  chmod works (it is needed by tar, git and cargo)" "chmod-ok"
+
+# The host's /etc used to be bind-mounted wholesale: 178 entries including
+# machine-id, the host user list, and ssh/ssl directories.
+zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(wc -l < /etc/passwd)"
+probe "J7  /etc/passwd is synthesized and names only root and nobody" "2"
+
+zrun alpha -- /bin/sh -c "$PRO for f in machine-id shadow sudoers ssl/private ssh resolv.conf; do [ -e /etc/\$f ] && { echo PROBE=EXPOSED_\$f; exit 0; }; done; echo PROBE=absent"
+probe "J8  no host identity or secret files are visible in /etc" "absent"
+
+zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(hostname)"
+probe "J9  the zone's hostname is the zone name, not the host's" "alpha"
+
+# Positive control: the CA bundle must still be there or TLS breaks in zones.
+zrun alpha -- /bin/sh -c "$PRO if [ -d /etc/ssl/certs ]; then echo PROBE=present; else echo PROBE=MISSING; fi"
+probe "J10 positive control: the CA certificate directory is still available" "present"
+
+# A recursive bind mount silently ignores MS_RDONLY on every SUBMOUNT: the
+# remount only affects the top mount. On this host that left /usr/lib/wsl/lib
+# and /lib/modules/... read-write inside every zone.
+zrun alpha -- /bin/sh -c "$PRO n=\$(awk '\$5 ~ /^\/(usr|lib|lib64|bin|sbin|etc)/ && \$6 ~ /(^|,)rw(,|\$)/ {c++} END{print c+0}' /proc/self/mountinfo); echo PROBE=\$n"
+probe "J11 no system mount or submount is read-write inside the zone" "0"
 
 # ============================================================================
 head_ "H. Network isolation, without overclaiming  [unpriv]"
