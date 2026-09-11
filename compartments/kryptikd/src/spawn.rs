@@ -73,6 +73,9 @@ pub struct RunOptions {
     pub zone_gid: Option<u32>,
     /// The zone directory, against which `[policy]` paths resolve.
     pub zones_dir: std::path::PathBuf,
+    /// Development stand-in for the zone 0 prompt: approve every transfer
+    /// this zone offers. Prints a warning at launch.
+    pub auto_approve_transfers: bool,
 }
 
 /// Seconds a zone gets to exit after a forwarded SIGINT/SIGTERM before its
@@ -138,7 +141,8 @@ fn install_forwarding(target: libc::pid_t, arm_kill: bool) {
 /// listening socket with a short timeout, serve what arrives, and reap the
 /// child when it exits. Signals forwarded by the handlers interrupt the
 /// poll, which just loops.
-fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, zone: &str, uid: u32, entry: &std::path::Path) -> Result<libc::c_int, SpawnError> {
+fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, s: &broker::Served) -> Result<libc::c_int, SpawnError> {
+    let zone = s.zone.name.as_str();
     loop {
         let mut status: libc::c_int = 0;
         let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
@@ -151,7 +155,7 @@ fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, zone: &str, uid: u32, en
         let mut pfd = libc::pollfd { fd: listen_fd, events: libc::POLLIN, revents: 0 };
         let n = unsafe { libc::poll(&mut pfd, 1, 200) };
         if n > 0 && pfd.revents & libc::POLLIN != 0 {
-            match broker::serve_one(listen_fd, zone, uid, entry) {
+            match broker::serve_one(listen_fd, s) {
                 Ok(Some(verb)) => eprintln!("kryptikd[zone {zone}]: broker served {verb:?}"),
                 Ok(None) => {}
                 Err(e) => eprintln!("kryptikd[zone {zone}]: broker: {e}"),
@@ -421,6 +425,14 @@ pub fn run_in_zone(
         eprintln!(
             "kryptikd: zone {:?}: persistent storage is a PLAIN DIRECTORY on the host \
              filesystem - kept between launches, and NOT encrypted at rest",
+            zone.name
+        );
+    }
+
+    if opts.auto_approve_transfers {
+        eprintln!(
+            "kryptikd: WARNING: --auto-approve-transfers: every file zone {:?} offers to another \
+             zone is approved without a prompt (development flag; the prompt is desktop work)",
             zone.name
         );
     }
@@ -756,11 +768,35 @@ pub fn run_in_zone(
     // The zone's pid 1, as the host sees it. Read before waitpid because the
     // intermediate sends it as soon as it has forked; EOF means the zone died
     // during setup and the failure is reported below, not here.
-    if let Some(zp) = initpid.read_i32() {
+    let init_pid = initpid.read_i32();
+    if let Some(zp) = init_pid {
         let _ = entry.set_init(zp);
     }
 
-    let status = serve_until_exit(pid, broker_fd, &zone.name, id.uid, entry.dir())?;
+    // The broker serves this zone until it exits. A transfer must know the
+    // zone's data mount as the zone sees it (/home/<zone>, through its pid
+    // 1's root) so that only files from there are accepted (Design 05 B5).
+    // Asked at request time, not here: pid 1 exists before its root is
+    // built, and a request can only arrive once the zone runs. Unknown
+    // means every transfer is refused.
+    let zone_name = zone.name.clone();
+    let home_dev = move || -> Option<u64> {
+        let zp = init_pid?;
+        std::fs::metadata(format!("/proc/{zp}/root/home/{zone_name}"))
+            .ok()
+            .map(|m| std::os::unix::fs::MetadataExt::dev(&m))
+    };
+    let served = broker::Served {
+        zone,
+        uid: id.uid,
+        entry: entry.dir(),
+        zones_dir: &opts.zones_dir,
+        home_dev: &home_dev,
+        auto_approve: opts.auto_approve_transfers,
+        max_bytes: broker::TRANSFER_MAX,
+        resolve_dest: &broker::registry_target,
+    };
+    let status = serve_until_exit(pid, broker_fd, &served)?;
     unsafe { libc::close(broker_fd) };
     let _ = std::fs::remove_file(&broker_path);
 
@@ -1252,6 +1288,14 @@ pub fn zone_environment(zone: &Zone, home: &str, caller: &[(String, String)]) ->
 /// Describe what starting this zone would do, without doing it.
 pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String {
     let network_line = netzone::plan(zone, unsafe { libc::geteuid() } == 0);
+    let transfer_line = if zone.transfer_to.is_empty() {
+        "transfer   none: no [transfer] to, this zone sends files nowhere".to_string()
+    } else {
+        format!(
+            "transfer   to {} (through the broker, into their incoming/; each one needs zone 0 approval)",
+            zone.transfer_to.join(", ")
+        )
+    };
     let loaded = zone
         .seccomp
         .as_ref()
@@ -1354,6 +1398,7 @@ pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String
          {}\n\
          seccomp    default-deny, {} syscalls allowed, argument rules on {:?}\n\
          {}\n\
+         {}\n\
          {}",
         zone.name,
         ns.join(", "),
@@ -1378,6 +1423,7 @@ pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String
         seccomp::ARG_RULES,
         policy_line,
         network_line,
+        transfer_line,
     )
 }
 
