@@ -89,7 +89,7 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
 .PHONY: test help check check-kernel-eol sources lock verify verify-provenance \
         test-harness test-hardening test-artifacts audit-artifacts \
         audit-artifacts-strict manifest verify-manifest test-manifest \
-        test-s6-init smoke-userspace test-services test-libc-unwind \n        sign-image verify-image test-image-signing test-mkdisk-guards \n        image image-boot \
+        test-s6-init smoke-userspace test-services test-libc-unwind \n        sign-image verify-image test-image-signing test-mkdisk-guards \n        install-test \n        image image-boot \
         image-smoke \
         validate-kernel validate-kernel-hardened \
         toolchain temp-tools chroot chroot-enter chroot-umount chroot-status \
@@ -141,6 +141,7 @@ help:
 	@echo "  make sign-image        sign the disk image with a developer key"
 	@echo "  make verify-image      verify that signature against the image"
 	@echo "  make test-image-signing  prove the verifier refuses what it should"
+	@echo "  make install-test      install onto a blank disk, then boot it"
 	@echo "  make image KERNEL=...  build a bootable disk image from the sysroot"
 	@echo "  make image-boot KERNEL=...  boot that image on a serial console"
 	@echo "  make audit       run security audits over the build tree"
@@ -323,6 +324,12 @@ verify-image:
 
 # mkdisk runs as root and rm -f's its --out. These prove it will only ever
 # aim that at a regular file.
+# Installs onto a blank virtual disk in one VM, then BOOTS that disk in a
+# second one. The second half is the point: "the installer exited 0" and
+# "what it wrote comes up" are different claims.
+install-test:
+	@$(SUDO) $(CHROOT_ENV) "$(TOOLS)"/image/install-test.sh \n		--image "$(KRYPTIK_WORK)/images/kryptik-dev.img" \n		--kernel "$(KRYPTIK_WORK)/sysroot/boot/kryptik-$(V_LINUX)"
+
 test-mkdisk-guards:
 	@"$(TOOLS)"/test-mkdisk-guards.sh
 
