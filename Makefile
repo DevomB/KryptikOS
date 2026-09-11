@@ -87,7 +87,7 @@ CHROOT_ENV := KRYPTIK_ROOT="$(ROOT)" \
 CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
 
 .PHONY: help check check-kernel-eol sources lock verify verify-provenance \
-	vm-disk vm-disk-boot vm-restart vm-measure cli-test \
+	vm-disk vm-disk-boot vm-restart vm-measure cli-test update-test \
         test-harness test-hardening test-artifacts audit-artifacts \
         audit-artifacts-strict manifest verify-manifest test-manifest \
         test-s6-init smoke-userspace test-services test-libc-unwind image image-boot \
@@ -131,6 +131,7 @@ help:
 	@echo "  make launcher-test  attack \`kryptikd run\` itself (the launch path)"
 	@echo "  make zone-tests  both of the above; what a zone change must pass"
 	@echo "  make cli-test    test \`kryptik\`, the command a person types"
+	@echo "  make update-test install a signed update, interrupt it, roll it back"
 	@echo "  make vm-image    build the developer VM initramfs (busybox userspace)"
 	@echo "  make vm-boot     boot it under QEMU and check the serial log"
 	@echo
@@ -374,6 +375,13 @@ vm-measure:
 cli-test:
 	@cd compartments/kryptikd && cargo build --quiet
 	@compartments/tests/cli.sh
+
+# Update, rollback and recovery, end to end, against a real Kryptik tree.
+# Needs ssh-keygen (the release manifests are OpenSSH signatures) and a built
+# kryptikd; without either it exits 77 and says so rather than passing.
+update-test:
+	@cd compartments/kryptikd && cargo build --quiet
+	@compartments/tests/update.sh
 
 test-harness:
 	@"$(TOOLS)"/test-step-errexit.sh

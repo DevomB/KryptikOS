@@ -327,6 +327,30 @@ jobs:
           # single green tick over both would hide which one failed.
           ./compartments/tests/cli.sh
 
+      - name: Update, rollback and recovery (end to end)
+        run: |
+          # tools/test-apply-update.sh already proves the byte-level property:
+          # a target is never a mixture of two releases. This asks the question
+          # that one cannot - after the update, does the system DO something
+          # different? - by installing a real Kryptik tree and then running the
+          # INSTALLED kryptikd against the INSTALLED zone files.
+          #
+          # It also kills the update at ten points across a padded payload and
+          # requires that every outcome is a complete, signed, working release,
+          # recovered by the command the tool itself documents for that state.
+          #
+          # 77 means a dependency is missing (ssh-keygen, or no built
+          # kryptikd). That is reported as "did not run", never as a pass.
+          set +e
+          ./compartments/tests/update.sh
+          rc=$?
+          set -e
+          if [ "$rc" = 77 ]; then
+            echo "::warning::update.sh did not run (missing dependency); this CI run establishes nothing about updates"
+            exit 0
+          fi
+          exit "$rc"
+
   kernel:
     name: Kernel currency
     runs-on: ubuntu-latest
