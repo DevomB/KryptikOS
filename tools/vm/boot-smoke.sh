@@ -177,9 +177,19 @@ else
     fail "the guest never powered off cleanly"
 fi
 
-if grep -qE 'Kernel panic|BUG: |Oops: ' "$LOG"; then
+# Two faults the original three patterns would have missed. A general
+# protection fault and a NULL pointer dereference both print a Call Trace, and
+# an x86 GPF in particular need not be followed by "Oops:" or "BUG: " in the
+# same line, so a run could fault and still be reported as a clean boot.
+#
+# Note what is deliberately NOT here: "Call Trace" on its own. M5 asks the
+# kernel to OOM-kill a zone on purpose, and the OOM report carries a stack
+# trace. Matching that would turn a test doing exactly what it was written to
+# do into a kernel bug.
+KPANIC='Kernel panic|BUG: |Oops: |general protection fault|kernel NULL pointer'
+if grep -qE "$KPANIC" "$LOG"; then
     fail "the guest kernel panicked or oopsed"
-    grep -m3 -E 'Kernel panic|BUG: |Oops: ' "$LOG" | sed 's/^/        /'
+    grep -m3 -E "$KPANIC" "$LOG" | sed 's/^/        /'
 else
     pass "no kernel panic, oops or BUG in the serial log"
 fi

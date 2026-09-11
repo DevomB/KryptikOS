@@ -170,6 +170,7 @@ mkzone sealed   none   "#444444" ''                      encrypted
 mkzone wiped    none   "#555555" ''                      ephemeral
 # For K7: a zone whose data directory is deliberately owned by someone else.
 mkzone stranger none   "#666666"
+mkzone lczone   none   "#0a0a0a"
 
 # M1 fixtures. `capped` is the zone under test; `roomy` is its positive
 # control - the same shape with limits high enough that nothing should hit
@@ -1333,46 +1334,89 @@ else
     # `oom_kill` counter, and it has to be read from the host BEFORE the
     # launcher removes the cgroup - so this polls, as the pids probe does.
     MEM_OOM=""; MEM_GROUP=""; MEM_LEAF=""; MEM_RC=""
+
+    # Where the counter is read from matters more than how often.
+    #
+    # The first version of this polled the zone's OWN cgroup leaf. That loses a
+    # race it cannot win: memory.oom.group=1 makes the kernel kill every
+    # process in the zone in one go, the launcher reaps them and removes the
+    # leaf a few milliseconds later, and the counter is only readable in the
+    # gap between those two events. A 100ms poll missed it on essentially every
+    # VM run and reported "never read memory.events" about a run whose OOM is
+    # printed in the kernel log:
+    #     Memory cgroup out of memory: Killed process 3441 (dd) ...
+    # Tightening the poll would only shrink the odds, not remove them.
+    #
+    # memory.events is hierarchical, and the parent /sys/fs/cgroup/kryptik is
+    # created once and outlives every zone - so its counter still holds this
+    # zone's OOM after the leaf is gone. Sampling it either side of a single
+    # serialized launch attributes the delta to that launch. The leaf poll is
+    # kept because when it does win the race it names the exact cgroup.
+    MEM_PARENT="/sys/fs/cgroup/kryptik"
+    mem_ev() { sed -n "s/^$1 //p" "$MEM_PARENT/memory.events" 2>/dev/null; }
+    MEM_P_BEFORE="$(mem_ev oom_kill)"
+    MEM_PG_BEFORE="$(mem_ev oom_group_kill)"
+
     KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run memcapped "${ZARGS[@]}" -- \
         /bin/sh -c "$PRO dd if=/dev/zero of=/dev/shm/blob bs=1M count=256 2>/dev/null; echo PROBE=survived" \
         > "$WORK/mem.out" 2>&1 &
     mempid=$!
     BG_PIDS+=("$mempid")
-    MEM_LEAF="/sys/fs/cgroup/kryptik/memcapped.${mempid}"
+    MEM_LEAF="$MEM_PARENT/memcapped.${mempid}"
+    # Wait for as long as the LAUNCHER lives, not for a fixed interval: writing
+    # 256M into a capped tmpfs takes as long as it takes, and in the emulated
+    # VM the OOM lands around 36s.
     i=0
-    while (( i < 300 )); do
+    while (( i < 1200 )); do                       # 120s hard ceiling
         if [[ -d "$MEM_LEAF" ]]; then
             v="$(sed -n 's/^oom_kill //p' "$MEM_LEAF/memory.events" 2>/dev/null)"
             g="$(sed -n 's/^oom_group_kill //p' "$MEM_LEAF/memory.events" 2>/dev/null)"
-            [[ -n "$v" ]] && MEM_OOM="$v"
-            [[ -n "$g" ]] && MEM_GROUP="$g"
-        elif [[ -n "$MEM_OOM" ]]; then
-            break
+            [[ -n "$v" ]] && (( v > 0 )) && MEM_OOM="$v"
+            [[ -n "$g" ]] && (( g > 0 )) && MEM_GROUP="$g"
         fi
-        if (( i < 200 )); then sleep 0.005; else sleep 0.1; fi
+        kill -0 "$mempid" 2>/dev/null || break     # the launcher is done
+        sleep 0.1
         i=$((i+1))
     done
     wait "$mempid" 2>/dev/null
     MEM_RC=$?
     memout="$(cat "$WORK/mem.out" 2>/dev/null)"
 
+    # Resolve the two sources into one number plus a plain statement of where
+    # it came from, so a pass line can never be read as more than it is.
+    MEM_KILLS=""; MEM_GROUP_KILLS=0; MEM_SRC=""
+    if [[ -n "$MEM_OOM" ]]; then
+        MEM_KILLS="$MEM_OOM"; MEM_GROUP_KILLS="${MEM_GROUP:-0}"
+        MEM_SRC="memory.events oom_kill=$MEM_OOM in the zone's own cgroup"
+    elif [[ -n "$MEM_P_BEFORE" ]]; then
+        p_after="$(mem_ev oom_kill)"; g_after="$(mem_ev oom_group_kill)"
+        if [[ -n "$p_after" ]]; then
+            MEM_KILLS=$(( p_after - MEM_P_BEFORE ))
+            MEM_GROUP_KILLS=$(( ${g_after:-0} - ${MEM_PG_BEFORE:-0} ))
+            MEM_SRC="kryptik/memory.events oom_kill rose $MEM_P_BEFORE->$p_after across this launch"
+        fi
+    fi
+
     if [[ "$memout" != *"$LAUNCHED"* ]]; then
         fail "M5  memory_max: the zone did not launch, so nothing is proven"
         info "output: $(printf '%s' "$memout" | tr '\n' '|' | cut -c1-200)"
     elif [[ "$memout" == *"PROBE=survived"* ]]; then
         fail "M5  memory_max=48M did NOT hold: the zone wrote 256M and lived"
-    elif [[ -n "$MEM_OOM" ]] && (( MEM_OOM > 0 )); then
-        pass "M5  memory_max=48M held: the kernel OOM-killed the zone (memory.events oom_kill=$MEM_OOM, exit $MEM_RC)"
-        if [[ -n "$MEM_GROUP" ]] && (( MEM_GROUP > 0 )); then
-            pass "M5b memory.oom.group killed the WHOLE zone, not one process (oom_group_kill=$MEM_GROUP)"
+    elif [[ -n "$MEM_KILLS" ]] && (( MEM_KILLS > 0 )); then
+        pass "M5  memory_max=48M held: the kernel OOM-killed the zone ($MEM_SRC, exit $MEM_RC)"
+        if (( MEM_GROUP_KILLS > 0 )); then
+            pass "M5b memory.oom.group killed the WHOLE zone, not one process (oom_group_kill +$MEM_GROUP_KILLS)"
         else
             info "M5b oom_group_kill not reported by this kernel; oom.group is still set"
         fi
-    elif [[ -z "$MEM_OOM" ]]; then
-        fail "M5  memory_max: never read memory.events (leaf $MEM_LEAF); the OOM is unproven"
-        info "     exit was $MEM_RC, which on its own is also what a SIGKILL from the test would give"
+    elif [[ -z "$MEM_SRC" ]]; then
+        skip "M5  memory_max: no readable oom_kill counter (leaf $MEM_LEAF, parent $MEM_PARENT)"
+        info "     exit was $MEM_RC, which on its own is also what a SIGKILL from the test would give,"
+        info "     so this run neither proves nor disproves the limit"
+        info "     launcher said: $(printf '%s' "$memout" | tr '\n' '|' | cut -c1-260)"
     else
         fail "M5  memory_max=48M: the zone died (exit $MEM_RC) but the kernel recorded no OOM kill"
+        info "     $MEM_SRC"
         info "     so it was not the memory limit that stopped it"
     fi
 
@@ -1624,6 +1668,197 @@ probe "CAP3 SYS_ADMIN, NET_ADMIN, NET_RAW, SYS_MODULE, PTRACE and MKNOD are gone
 # break every zone, so this is the check that stops the drop going too far.
 zrun alpha -- /bin/sh -c "$PRO echo hi > \$HOME/capfile && cat \$HOME/capfile | sed 's/^/PROBE=/'"
 probe "CAP4 positive control: the zone still runs normally after the drop" "hi"
+
+# ============================================================================
+head_ "LC. Zone lifecycle: registry, stop, concurrency  [unpriv]"
+# ============================================================================
+# `kryptikd run` was one-shot: it supervised its own zone and nothing else
+# could find that zone. There was no `stop`, no way to ask what was running,
+# and therefore no way for a routed zone to attach to a running `net` zone -
+# which is what blocks M3.
+#
+# The registry is how a SECOND kryptikd finds the first. There is still no
+# daemon. Design 06.
+#
+# The invariant that carries the rest: liveness is a LOCK, not a pid. The
+# launcher holds flock(LOCK_EX) on the entry for its whole life, so a crash
+# releases it and "the lock is free" means "nothing is supervising this" with
+# no bookkeeping to get wrong. The pid is recorded only so `stop` has
+# something to signal, and it is recorded WITH the process start time so a
+# reused pid can never be mistaken for the original.
+
+REG="${XDG_RUNTIME_DIR:-/tmp/kryptik-$(id -u)}/kryptik/zones"
+[[ "$EUID" -eq 0 ]] && REG=/run/kryptik/zones
+info "registry: $REG"
+
+lc_cleanup() {
+    "$KRYPTIKD" stop lczone --now >/dev/null 2>&1
+    "$KRYPTIKD" gc >/dev/null 2>&1
+}
+lc_cleanup
+
+# --- LC1: one instance per zone ---------------------------------------------
+# Two launchers of one zone would share a data directory, a cgroup name and -
+# once M3 lands - a veth name, and the second would quietly corrupt the first.
+KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run lczone "${ZARGS[@]}" -- /bin/sleep 20 >/dev/null 2>&1 &
+lc1=$!
+BG_PIDS+=("$lc1")
+sleep 1.5
+out="$(KRYPTIK_EXPERIMENTAL=1 timeout 20 "$KRYPTIKD" run lczone "${ZARGS[@]}" -- /bin/echo SECOND 2>&1)"
+rc=$?
+if [[ "$out" == *SECOND* ]]; then
+    fail "LC1 a second launch of the same zone RAN"
+elif (( rc != 0 )) && [[ "$out" == *"already running"* || "$out" == *"already being started"* ]]; then
+    pass "LC1 a second launch of a running zone is refused, and does not run"
+else
+    fail "LC1 second launch exited $rc without saying the zone is already running"
+    info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
+fi
+
+# LC8a: while it runs, the registry says so.
+st="$("$KRYPTIKD" status lczone 2>&1)"
+if [[ "$st" == *running* ]]; then
+    pass "LC8a status reports a running zone as running"
+    info "     $st"
+else
+    fail "LC8a status did not report the running zone: $st"
+fi
+
+# LC10: init.pid really is the zone's pid 1 - a different pid namespace from
+# ours, and NSpid ending in 1.
+initpid="$(awk '{print $1}' "$REG/lczone/init.pid" 2>/dev/null)"
+if [[ -n "$initpid" ]] && [[ -r "/proc/$initpid/status" ]]; then
+    ourns="$(readlink /proc/self/ns/pid 2>/dev/null)"
+    zns="$(readlink "/proc/$initpid/ns/pid" 2>/dev/null)"
+    nspid="$(awk '/^NSpid:/{print $NF}' "/proc/$initpid/status" 2>/dev/null)"
+    if [[ "$zns" != "$ourns" && "$nspid" == "1" ]]; then
+        pass "LC10 init.pid $initpid is pid 1 of its own pid namespace"
+    else
+        fail "LC10 init.pid $initpid: ns=$zns (ours $ourns) NSpid=$nspid"
+    fi
+else
+    fail "LC10 no usable init.pid in the registry entry"
+fi
+
+# LC7: mode and owner. The registry names running zones, their identities and
+# their cgroups; nothing that is not kryptikd should be able to read it.
+mode="$(stat -c '%a %u' "$REG" 2>/dev/null)"
+if [[ "$mode" == "700 $EUID" ]]; then
+    pass "LC7 the registry is 0700 and owned by the launching uid ($mode)"
+else
+    fail "LC7 registry mode/owner is '$mode', expected '700 $EUID'"
+fi
+
+# --- LC2: stop ends a cooperative zone --------------------------------------
+t0=$SECONDS
+"$KRYPTIKD" stop lczone >/dev/null 2>&1
+rc=$?
+elapsed=$(( SECONDS - t0 ))
+sleep 0.5
+if (( rc == 0 )) && [[ ! -d "$REG/lczone" ]]; then
+    pass "LC2 stop ended the zone and removed its entry (${elapsed}s)"
+else
+    fail "LC2 stop exited $rc and the entry is $([[ -d "$REG/lczone" ]] && echo present || echo gone)"
+fi
+wait "$lc1" 2>/dev/null
+
+# LC8b: and afterwards it is absent.
+st="$("$KRYPTIKD" status lczone 2>&1)"
+[[ "$st" == *absent* ]] && pass "LC8b status reports a stopped zone as absent" \
+                        || fail "LC8b status after stop: $st"
+
+# --- LC9: stop waits, so `stop && run` works --------------------------------
+KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run lczone "${ZARGS[@]}" -- /bin/sleep 20 >/dev/null 2>&1 &
+lc9=$!
+BG_PIDS+=("$lc9")
+sleep 1.5
+if "$KRYPTIKD" stop lczone >/dev/null 2>&1 && \
+   KRYPTIK_EXPERIMENTAL=1 timeout 20 "$KRYPTIKD" run lczone "${ZARGS[@]}" -- /bin/echo AFTER >/dev/null 2>&1; then
+    pass "LC9 stop waits for the zone to be gone, so 'stop && run' succeeds"
+else
+    fail "LC9 'stop && run' did not succeed"
+fi
+wait "$lc9" 2>/dev/null
+
+# --- LC3: a zone that ignores SIGTERM still dies ----------------------------
+# pid 1 of a namespace cannot be killed from inside by anything but its
+# supervisor, so a zone that traps TERM must not be able to keep itself alive.
+# The 5s escalation in the supervision path is the whole policy.
+KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run lczone "${ZARGS[@]}" -- \
+    /bin/sh -c 'trap "" TERM; sleep 60' >/dev/null 2>&1 &
+lc3=$!
+BG_PIDS+=("$lc3")
+sleep 1.5
+t0=$SECONDS
+"$KRYPTIKD" stop lczone >/dev/null 2>&1
+rc=$?
+elapsed=$(( SECONDS - t0 ))
+if (( rc == 0 )) && (( elapsed >= 3 )) && (( elapsed <= 20 )); then
+    pass "LC3 a zone that ignores SIGTERM is killed by the escalation (${elapsed}s)"
+elif (( rc == 0 )) && (( elapsed < 3 )); then
+    fail "LC3 the zone died in ${elapsed}s - too fast for the 5s grace to have been real"
+else
+    fail "LC3 stop exited $rc after ${elapsed}s against a zone that ignores TERM"
+fi
+wait "$lc3" 2>/dev/null
+lc_cleanup
+
+# --- LC4: a stale entry is reclaimed, never signalled -----------------------
+KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run lczone "${ZARGS[@]}" -- /bin/sleep 30 >/dev/null 2>&1 &
+lc4=$!
+BG_PIDS+=("$lc4")
+sleep 1.5
+kill -9 "$lc4" 2>/dev/null
+wait "$lc4" 2>/dev/null
+sleep 1
+st="$("$KRYPTIKD" status lczone 2>&1)"
+if [[ "$st" == *stale* ]]; then
+    pass "LC4a a killed launcher leaves the entry STALE, not running"
+else
+    fail "LC4a status after kill -9: $st"
+fi
+out="$("$KRYPTIKD" stop lczone 2>&1)"; rc=$?
+if (( rc == 0 )) && [[ "$out" == *stale* ]]; then
+    pass "LC4b stop reclaims a stale entry and says so"
+else
+    fail "LC4b stop on a stale entry: exit $rc, $out"
+fi
+if KRYPTIK_EXPERIMENTAL=1 timeout 20 "$KRYPTIKD" run lczone "${ZARGS[@]}" -- /bin/echo OK >/dev/null 2>&1; then
+    pass "LC4c the zone can be started again after the stale entry is reclaimed"
+else
+    fail "LC4c could not start the zone after reclaiming its stale entry"
+fi
+
+# --- LC5: a reused pid is never signalled -----------------------------------
+# The scenario that makes a naive implementation dangerous: a stale entry whose
+# recorded pid now belongs to something else entirely. kryptikd must leave that
+# process alone.
+lc_cleanup
+mkdir -p "$REG/lczone"
+/bin/sleep 25 & victim=$!
+BG_PIDS+=("$victim")
+# Record the victim's pid with a deliberately WRONG start time.
+victim_start="$(awk '{print $22}' "/proc/$victim/stat" 2>/dev/null)"
+printf '%s %s\n' "$victim" "$(( ${victim_start:-1} + 7 ))" > "$REG/lczone/launcher.pid"
+: > "$REG/lczone/lock"
+out="$("$KRYPTIKD" stop lczone 2>&1)"; rc=$?
+sleep 0.5
+if kill -0 "$victim" 2>/dev/null; then
+    pass "LC5 a stale entry naming a reused pid did NOT signal that process"
+else
+    fail "LC5 kryptikd killed an unrelated process whose pid the entry had reused"
+fi
+if [[ ! -d "$REG/lczone" ]]; then
+    pass "LC5b and the stale entry was reclaimed (exit $rc)"
+else
+    fail "LC5b the stale entry survived: $out"
+fi
+kill -9 "$victim" 2>/dev/null
+lc_cleanup
+
+# --- LC6: the registry is invisible inside a zone ---------------------------
+zrun alpha -- /bin/sh -c "$PRO if [ -e /run/kryptik ]; then echo PROBE=VISIBLE; else echo PROBE=absent; fi"
+probe "LC6 the registry does not exist inside a zone" "absent"
 
 # ============================================================================
 head_ "Mandatory checks NOT RUN here"
