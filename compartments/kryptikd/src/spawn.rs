@@ -308,11 +308,11 @@ pub fn run_in_zone(
     match zone.storage {
         StorageMode::Encrypted => unsupported.push(
             "storage.mode = \"encrypted\": per-zone encrypted volumes are NOT IMPLEMENTED; \
-             the zone would run on a plain directory while its configuration says otherwise"
+             the zone would run on a PLAIN DIRECTORY while its configuration says otherwise"
                 .into(),
         ),
         StorageMode::Ephemeral => unsupported.push(
-            "storage.mode = \"ephemeral\": zone data is NOT yet wiped on stop".into(),
+            "storage.mode = \"ephemeral\": a PLAIN DIRECTORY, NOT yet wiped on stop".into(),
         ),
     }
     if zone.seccomp.is_some() || zone.landlock.is_some() {
@@ -668,6 +668,14 @@ pub fn zone_environment(zone: &Zone, home: &str, caller: &[(String, String)]) ->
             env.push((k.clone(), v.clone()));
         }
     }
+    // A UTF-8 locale by default: without LANG, Python and friends fall back
+    // to ASCII and choke on non-ASCII filenames. C.UTF-8 names no country.
+    if !env.iter().any(|(k, _)| k == "LANG") {
+        env.push(("LANG".into(), "C.UTF-8".into()));
+    }
+    if !env.iter().any(|(k, _)| k == "TERM") {
+        env.push(("TERM".into(), "dumb".into()));
+    }
     env
 }
 
@@ -821,7 +829,9 @@ mod tests {
         assert!(!env_value_is_sane(&"x".repeat(65)));
         let caller = vec![("TERM".to_string(), "xterm;rm -rf /".to_string())];
         let env = zone_environment(&z("routed"), "/home/t", &caller);
-        assert!(!env.iter().any(|(k, _)| k == "TERM"));
+        let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("TERM"), Some("dumb"), "a malformed TERM is replaced, not passed");
+        assert_eq!(get("LANG"), Some("C.UTF-8"), "no caller LANG means a UTF-8 default");
     }
 
     #[test]

@@ -637,8 +637,8 @@ mod tests {
             assert!(ins.jt <= 9, "instruction {i} has jt={}", ins.jt);
             assert!(ins.jf <= 9, "instruction {i} has jf={}", ins.jf);
             if ins.code & 0x07 == BPF_JMP {
-                assert!(i + 1 + ins.jt as usize < p.len(), "instruction {i} jt runs off the end");
-                assert!(i + 1 + ins.jf as usize < p.len(), "instruction {i} jf runs off the end");
+                assert!((i + 1 + ins.jt as usize) < p.len(), "instruction {i} jt runs off the end");
+                assert!((i + 1 + ins.jf as usize) < p.len(), "instruction {i} jf runs off the end");
             }
         }
     }
