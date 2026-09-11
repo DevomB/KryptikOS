@@ -326,7 +326,18 @@ s_verify_install() {
 
     [[ -s "$img" ]] || { echo "FAIL: ${img} missing or empty"; n=$((n + 1)); }
 
-    local modver="${MODDIR}/${V_LINUX}"
+    # The module tree is named by the kernel RELEASE, not by the source
+    # version - LOCALVERSION makes those differ. Looking under
+    # ${MODDIR}/${V_LINUX} reported "no module tree at /lib/modules/6.18.50"
+    # about a kernel whose modules had installed, signed and depmod'd perfectly
+    # well into /lib/modules/6.18.50-hardened1. include/config/kernel.release
+    # is the name the kernel's own build used, so ask it instead of rebuilding
+    # the name from parts.
+    local krel
+    krel="$(cat "${KSRC}/include/config/kernel.release" 2>/dev/null || true)"
+    [[ -n "$krel" ]] || krel="${V_LINUX}"
+    echo "kernel release: ${krel}"
+    local modver="${MODDIR}/${krel}"
     if [[ -d "$modver" ]]; then
         echo "modules      : ${modver} ($(find "$modver" -name '*.ko*' | wc -l) objects)"
         [[ -f "${modver}/modules.dep" ]] || { echo "FAIL: depmod did not run"; n=$((n + 1)); }
@@ -346,8 +357,33 @@ s_verify_install() {
     fi
 
     echo "--- compiler recorded in the image ---"
-    strings "$KSRC/vmlinux" 2>/dev/null | grep -m1 -i "gcc version" || \
-        echo "(no GCC version string found in vmlinux)"
+    # This check was wrong twice over, and both ways said "no compiler here"
+    # about a kernel that records one:
+    #
+    #   1. It searched for "gcc version". The kernel writes the compiler into
+    #      linux_banner as "gcc (GCC) 14.2.0" - that text never appears.
+    #   2. `strings | grep -m1` makes grep exit at the first match while
+    #      strings still has megabytes to write, so strings dies of SIGPIPE and
+    #      the || branch fires regardless. Same trap that once failed a good
+    #      glibc.
+    #
+    # grep reads the file directly, and [ -~] stops at the NUL that ends the
+    # banner. The compiler is the only durable evidence of what built an image,
+    # so an absent banner is a failure, not a remark.
+    local banner
+    banner="$(grep -a -m1 -o 'Linux version [ -~]*' "$KSRC/vmlinux" 2>/dev/null || true)"
+    if [[ -z "$banner" ]]; then
+        echo "FAIL: vmlinux carries no Linux version banner - the image does"
+        echo "      not record what compiled it."
+        n=$((n + 1))
+    else
+        echo "  ${banner}"
+        case "$banner" in
+            *GCC*|*gcc*) : ;;
+            *) echo "FAIL: the banner names no compiler: ${banner}"
+               n=$((n + 1)) ;;
+        esac
+    fi
 
     [[ "$n" -eq 0 ]] || { echo "${n} installation problem(s)"; return 1; }
 }
@@ -413,5 +449,8 @@ step verify-install  s_verify_install
 echo
 ok "Stage 05 complete."
 dim "  kernel : ${BOOTDIR}/kryptik-${V_LINUX}"
-dim "  modules: ${MODDIR}/${V_LINUX}"
+# The release, not the source version: they differ whenever LOCALVERSION
+# is set, and a summary naming a directory that does not exist is the
+# same defect the verify step had.
+dim "  modules: ${MODDIR}/$(cat "${KSRC}/include/config/kernel.release" 2>/dev/null || echo "${V_LINUX}")"
 dim "Verify hardening with: kernel-hardening-checker -c ${KSRC}/.config"
