@@ -85,9 +85,69 @@ quiet_fetch() {
 
 CANONICAL_GNU="https://ftp.gnu.org/gnu"
 
+# Self-test hooks, gated together below. tools/test-verify-signatures.sh needs
+# three things substituted to run offline - which manifest is verified, where
+# the keyring comes from, and where an "unknown" key is fetched from - and
+# nothing else. The classification in check_sig(), which is what the tests are
+# actually about, runs exactly as it does in production.
+if [[ -n "${KRYPTIK_SIGCHECK_MANIFEST:-}${KRYPTIK_SIGCHECK_KEYRING:-}${KRYPTIK_SIGCHECK_KEYSOURCE:-}" ]]; then
+    [[ "${KRYPTIK_SIGCHECK_SELFTEST:-0}" == "1" ]] || die \
+"A signature-check override is set (KRYPTIK_SIGCHECK_MANIFEST /
+KRYPTIK_SIGCHECK_KEYRING / KRYPTIK_SIGCHECK_KEYSOURCE) but
+KRYPTIK_SIGCHECK_SELFTEST is not.
+Refusing to verify signatures against a substituted manifest or keyring."
+    warn "SELF-TEST MODE: manifest and/or keyring are substituted, not upstream"
+fi
+
+# The list of sources to verify. Production asks fetch-sources.sh, which is
+# the single definition of the manifest.
+manifest_source() {
+    if [[ -n "${KRYPTIK_SIGCHECK_MANIFEST:-}" ]]; then
+        cat "$KRYPTIK_SIGCHECK_MANIFEST"
+        return
+    fi
+    "${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list
+}
+
+# Import one public key by id. Production asks a keyserver; the self-test
+# imports from a local directory, because a keyserver round trip is the one
+# part of --fetch-unknown-keys that cannot be exercised offline.
+recv_key() {
+    local keyid="$1" f
+    if [[ -n "${KRYPTIK_SIGCHECK_KEYSOURCE:-}" ]]; then
+        for f in "${KRYPTIK_SIGCHECK_KEYSOURCE}/${keyid}.gpg" \
+                 "${KRYPTIK_SIGCHECK_KEYSOURCE}/${keyid}.asc"; do
+            [[ -f "$f" ]] || continue
+            gpg --batch --quiet --import "$f" >/dev/null 2>&1 && return 0
+        done
+        return 1
+    fi
+    gpg --batch --quiet --keyserver hkps://keyserver.ubuntu.com \
+        --recv-keys "$keyid" >/dev/null 2>&1
+}
+
 import_keys() {
     if [[ -f "$IMPORTED_MARK" ]]; then
         dim "  using cached keyring ($(cat "$IMPORTED_MARK") keys)"
+        return 0
+    fi
+
+    if [[ -n "${KRYPTIK_SIGCHECK_KEYRING:-}" ]]; then
+        log "importing substituted keyring (self-test)"
+        gpg --batch --quiet --import "$KRYPTIK_SIGCHECK_KEYRING" >/dev/null 2>&1 || true
+        local n
+        n="$(gpg --batch --list-keys 2>/dev/null | grep -c '^pub' || true)"
+        [[ "$n" =~ ^[0-9]+$ ]] || n=0
+        printf '%s' "$n" > "$IMPORTED_MARK"
+        if [[ "$n" -lt 2 ]]; then
+            if [[ "$STRICT" -eq 1 ]]; then
+                err "only ${n} key(s) imported"
+                die "Without maintainer keys nothing can be authenticated."
+            fi
+            warn "only ${n} key(s) imported - verification will be mostly unverifiable"
+        else
+            ok "keyring ready (${n} public keys)"
+        fi
         return 0
     fi
 
@@ -107,12 +167,12 @@ import_keys() {
     local fpr
     for fpr in "ABAF11C65A2970B130ABE3C479BE3E4300411886" \
                "647F28654894E3BD457199BE38DBBDC86092693E"; do
-        gpg --batch --quiet --keyserver hkps://keyserver.ubuntu.com \
-            --recv-keys "$fpr" >/dev/null 2>&1 || true
+        recv_key "$fpr" || true
     done
 
     local count
-    count="$(gpg --batch --list-keys 2>/dev/null | grep -c '^pub' || echo 0)"
+    count="$(gpg --batch --list-keys 2>/dev/null | grep -c '^pub' || true)"
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
     printf '%s' "$count" > "$IMPORTED_MARK"
 
     if [[ "$count" -lt 2 ]]; then
@@ -264,7 +324,7 @@ check_sig() {
         #
         # Every key used this way is written to keys.manifest for that audit.
         if [[ "$FETCH_UNKNOWN" -eq 1 ]]; then
-            if gpg --batch --quiet --keyserver hkps://keyserver.ubuntu.com                    --recv-keys "$keyid" >/dev/null 2>&1; then
+            if recv_key "$keyid"; then
                 out="$(gpg --batch --status-fd 1 --verify "$sigfile" "$datafile" 2>/dev/null || true)"
                 if printf '%s' "$out" | grep -qE "^\[GNUPG:\] (GOODSIG|EXPKEYSIG)"; then
                     signer="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] \(GOODSIG\|EXPKEYSIG\) [0-9A-F]* //p' | head -1)"
@@ -423,7 +483,16 @@ echo
 while read -r name _ver url; do
     [[ -z "$name" ]] && continue
     file="$(basename "$url")"
-    [[ -f "${KRYPTIK_SOURCES}/${file}" ]] || { warn "${name}: not downloaded"; continue; }
+    # A source that was never downloaded has no signature to check, and that
+    # is an unchecked assertion rather than a non-event: this used to `warn`
+    # and `continue` without touching any counter, so a run in which nothing
+    # had been fetched reported zero problems and exited 0 - and would have
+    # satisfied --strict.
+    [[ -f "${KRYPTIK_SOURCES}/${file}" ]] || {
+        warn "${name}: not downloaded, so its signature cannot be checked"
+        mark_unverifiable "${name} (not downloaded)"
+        continue
+    }
 
     case "$url" in
         *gnu.org*|*mirrors.kernel.org/gnu*) verify_gnu    "$name" "$url" "$file" ;;
@@ -447,7 +516,7 @@ while read -r name _ver url; do
             verify_any "$name" "$url" "$file"
             ;;
     esac
-done < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list)
+done < <(manifest_source)
 
 echo
 log "Summary"

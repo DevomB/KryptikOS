@@ -19,6 +19,14 @@
 
 set -uo pipefail
 
+# The tool under test reads KRYPTIK_SOURCES, KRYPTIK_WORK, KRYPTIK_LOCK and
+# KRYPTIK_OUT from the environment when they are set, in preference to deriving
+# them from KRYPTIK_ROOT. A developer who has any of those exported - pointing
+# at the real downloads, say - would otherwise see this suite verify the wrong
+# tree and report failures that are nothing to do with the code. Each case sets
+# what it needs explicitly, so clear all of them here rather than inheriting.
+unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TOOL="${ROOT}/tools/check-kernel-eol.sh"
 
