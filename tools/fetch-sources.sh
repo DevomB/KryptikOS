@@ -36,6 +36,21 @@ Refusing to fetch or lock against a substituted manifest."
     warn "SELF-TEST MODE: the manifest is substituted, not the real one"
 fi
 
+# WHY bc CARRIES A DEFAULT VERSION AND NOTHING ELSE DOES.
+#
+# bc is a build-time requirement of the KERNEL, not a shipped convenience:
+# linux/Kbuild generates include/generated/timeconst.h with `bc -q`, and
+# arch/x86 asm-offsets depends on that header, so stage 05 dies at "bc:
+# command not found" after its config step has already succeeded.
+#
+# `${V_BC:-1.08.2}` exists so that this row and the `V_BC` pin in
+# build/config/versions.env can land in either order without breaking a build
+# in flight - versions.env belongs to the build tab, this file to provenance.
+# The default cannot smuggle in an unaudited source: sources.lock pins the
+# BYTES by filename, so any other value for V_BC produces a filename with no
+# lock entry and fetch-sources.sh refuses it by name. Remove the default once
+# versions.env carries the pin; it is redundancy for a handover, not policy.
+
 # name|version|url
 manifest() {
     if [[ -n "${KRYPTIK_FETCH_MANIFEST:-}" ]]; then
@@ -76,6 +91,7 @@ libxcrypt|${V_LIBXCRYPT}|${MIRROR_GITHUB}/besser82/libxcrypt/releases/download/v
 openssl|${V_OPENSSL}|https://www.openssl.org/source/openssl-${V_OPENSSL}.tar.gz
 bison|${V_BISON}|${gnu}/bison/bison-${V_BISON}.tar.xz
 flex|${V_FLEX}|${MIRROR_GITHUB}/westes/flex/releases/download/v${V_FLEX}/flex-${V_FLEX}.tar.gz
+bc|${V_BC:-1.08.2}|${gnu}/bc/bc-${V_BC:-1.08.2}.tar.gz
 gettext|${V_GETTEXT}|${gnu}/gettext/gettext-${V_GETTEXT}.tar.xz
 texinfo|${V_TEXINFO}|${gnu}/texinfo/texinfo-${V_TEXINFO}.tar.xz
 autoconf|${V_AUTOCONF}|${gnu}/autoconf/autoconf-${V_AUTOCONF}.tar.xz
