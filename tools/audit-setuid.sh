@@ -25,7 +25,12 @@ while IFS= read -r -d '' bin; do
         err "unjustified setuid/setgid binary: ${rel} ($(stat -c '%A %U:%G' "$bin"))"
         violations=$((violations + 1))
     fi
-done < <(find "$TARGET" -type f -perm /6000 -print0 2>/dev/null)
+# `|| true`: find exits non-zero on directories it cannot read, which a
+# chroot-built tree always has. Without it common.sh's ERR trap prints
+# "aborted at audit-setuid.sh:NN" above the real findings, and an
+# operator reasonably reads that as the audit having crashed rather than
+# having found 16 things.
+done < <(find "$TARGET" -type f -perm /6000 -print0 2>/dev/null || true)
 
 echo
 if [[ "$violations" -gt 0 ]]; then
