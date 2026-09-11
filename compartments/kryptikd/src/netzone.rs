@@ -25,6 +25,7 @@
 //! boundary.
 
 use std::io;
+use std::path::Path;
 
 use crate::netlink;
 use crate::registry;
@@ -121,11 +122,11 @@ pub fn plumb_nic_zone(zone: &Zone, zone_ns: i32) -> Result<(), NetError> {
 /// A routed zone: a veth pair whose bridge end lives in the running net
 /// zone's namespace (isolated port on kryptik0) and whose other end is
 /// created directly in the new zone as eth0, addressed from its identity.
-pub fn plumb_routed_zone(zone: &Zone, zone_ns: i32) -> Result<(), NetError> {
+pub fn plumb_routed_zone(zone: &Zone, zone_ns: i32, zones_dir: &Path) -> Result<(), NetError> {
     let k = host_number(zone).ok_or_else(|| {
         NetError::Refused("a routed zone needs [identity] uid_base to derive its address".into())
     })?;
-    let net_pid = running_nic_zone_init()?;
+    let net_pid = running_nic_zone_init(zones_dir)?;
     let net_ns = netlink::open_netns_of(net_pid).map_err(|e| io("open the nic zone's netns", e))?;
     let port = port_name(&zone.name);
     let r = netlink::with_netns(net_ns, || {
@@ -148,38 +149,29 @@ pub fn plumb_routed_zone(zone: &Zone, zone_ns: i32) -> Result<(), NetError> {
     .map_err(|e| io("address the zone's eth0", e))
 }
 
-/// pid 1 of the running nic zone, from the registry.
-fn running_nic_zone_init() -> Result<libc::pid_t, NetError> {
+/// pid 1 of the running nic zone.
+///
+/// WHICH zone is the nic zone comes from the zone directory - the operator's
+/// files, root-owned, the same source `run` itself trusts - never from what
+/// a namespace happens to contain. An earlier draft recognised the nic zone
+/// by finding a bridge called kryptik0 in its namespace; a routed zone whose
+/// policy keeps CAP_NET_ADMIN could have created one and been chosen as the
+/// gateway for every zone started after it. The registry says who is
+/// running; the zone file says who is allowed to be the gateway.
+fn running_nic_zone_init(zones_dir: &Path) -> Result<libc::pid_t, NetError> {
     for name in registry::names() {
+        let file = zones_dir.join(format!("{name}.toml"));
+        let Ok(z) = Zone::from_file(&file) else { continue };
+        if z.network != NetworkMode::Nic {
+            continue;
+        }
         if let Ok(registry::State::Running { init: Some(st), .. }) = registry::state(&name) {
-            if st.still_alive() && is_nic_zone_name(&name) {
+            if st.still_alive() {
                 return Ok(st.pid);
             }
         }
     }
     Err(NetError::NoNetZone)
-}
-
-/// The registry does not record zone modes; the nic zone is found by the
-/// bridge it owns. Cheap and exact: only the nic zone ever has kryptik0.
-fn is_nic_zone_name(name: &str) -> bool {
-    match registry::state(name) {
-        Ok(registry::State::Running { init: Some(st), .. }) => {
-            match netlink::open_netns_of(st.pid) {
-                Ok(fd) => {
-                    let has = netlink::with_netns(fd, || {
-                        let c = std::ffi::CString::new(BRIDGE).unwrap();
-                        Ok(unsafe { libc::if_nametoindex(c.as_ptr()) } != 0)
-                    })
-                    .unwrap_or(false);
-                    unsafe { libc::close(fd) };
-                    has
-                }
-                Err(_) => false,
-            }
-        }
-        _ => false,
-    }
 }
 
 /// What the parent does for this zone, or why it does nothing.
@@ -242,6 +234,17 @@ mod tests {
         assert!(plan(&z("routed", Some(131072), None), true).contains("10.19.0.2/24"));
         assert!(plan(&z("routed", None, None), true).contains("needs [identity]"));
         assert!(plan(&z("nic", None, Some("eth0")), true).contains("eth0 moves"));
+    }
+
+    #[test]
+    fn the_gateway_is_chosen_from_the_zone_directory_not_from_a_namespace() {
+        // No running nic zone in this (empty) zone directory: the lookup must
+        // say so rather than pick any running zone.
+        let dir = std::env::temp_dir().join(format!("kryptik-nz-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let e = running_nic_zone_init(&dir).unwrap_err();
+        assert!(matches!(e, NetError::NoNetZone));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
