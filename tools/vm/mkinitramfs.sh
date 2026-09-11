@@ -309,6 +309,24 @@ if [[ -n "$SYSROOT" ]]; then
         note "  the sysroot ships its own kryptikd (${SYSROOT_KRYPTIKD:0:12}...); the one under test overrides it"
     fi
     install -m 0755 "$KRYPTIKD" "$ROOT/usr/bin/kryptikd"
+
+    # EVERY kryptikd in the image, not only the one at /usr/bin.
+    #
+    # The sysroot ships copies in more than one place, /bin here is a real
+    # directory rather than a symlink to usr/bin, and the guest's PATH is
+    # /bin:/sbin:/usr/bin:/usr/sbin - so /bin/kryptikd wins. The image ran
+    # stage 04's older binary while the one under test sat unused at
+    # /usr/bin/kryptikd, and `kryptik` reported `unknown key
+    # "identity.uid_base"` about zone files this very build had just verified.
+    #
+    # Hard-linked, not copied, so the image contains one binary and the two
+    # paths cannot drift apart again.
+    while IFS= read -r dup; do
+        [[ "$dup" == "$ROOT/usr/bin/kryptikd" ]] && continue
+        ln -f "$ROOT/usr/bin/kryptikd" "$dup" 2>/dev/null             || install -m 0755 "$KRYPTIKD" "$dup"
+        note "  replaced a second copy at ${dup#"$ROOT"}"
+    done < <(find "$ROOT" -name kryptikd -type f 2>/dev/null)
+
     # The stamp records what was MEASURED, not what was requested, so anything
     # reading it later is reading evidence. The shell's hash pins which build.
     {
@@ -385,7 +403,15 @@ if [[ -n "$ZONES" && -d "$ZONES" ]]; then
     # `check` also probes kernel features and will report some as unavailable on
     # a build host, so only the zone-parsing half is fatal: the zone section of
     # its output must not contain an error.
-    if ! zc="$("$ROOT/usr/bin/kryptikd" check --zones "$ROOT/etc/kryptik/zones" 2>&1)"; then
+    # Ask the binary the GUEST's PATH would find, not the path this script
+    # happens to know about. The first version checked /usr/bin/kryptikd and
+    # passed while the guest ran /bin/kryptikd and failed on every zone.
+    guest_kryptikd="$ROOT/usr/bin/kryptikd"
+    for d in bin sbin usr/bin usr/sbin; do
+        if [[ -x "$ROOT/$d/kryptikd" ]]; then guest_kryptikd="$ROOT/$d/kryptikd"; break; fi
+    done
+    note "zone check uses ${guest_kryptikd#"$ROOT"} - what the guest's PATH finds first"
+    if ! zc="$("$guest_kryptikd" check --zones "$ROOT/etc/kryptik/zones" 2>&1)"; then
         : # a non-zero exit may be a kernel-feature gap on the build host
     fi
     if printf '%s' "$zc" | grep -qiE 'zone configuration error|unknown key|could not read'; then
