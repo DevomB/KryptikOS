@@ -79,7 +79,8 @@ CHROOT_ENV := KRYPTIK_ROOT="$(ROOT)" \
 CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
 
 .PHONY: help check check-kernel-eol sources lock verify verify-provenance \
-        test-harness test-hardening validate-kernel validate-kernel-hardened \
+        test-harness test-hardening test-artifacts audit-artifacts \
+        audit-artifacts-strict validate-kernel validate-kernel-hardened \
         toolchain temp-tools chroot chroot-enter chroot-umount chroot-status \
         system kernel iso audit zones zone-test paths reset-stamps \
         sysroot-ready \
@@ -116,6 +117,9 @@ help:
 	@echo "  make zone-test   run the Phase 5 adversarial exit test"
 	@echo "  make test-harness      verify failed builds cannot be stamped ok"
 	@echo "  make test-hardening    verify the flag set builds exes AND .so files"
+	@echo "  make test-artifacts    self-test the artifact auditor (positive controls)"
+	@echo "  make audit-artifacts   audit the ELF objects the build actually produced"
+	@echo "  make audit-artifacts-strict   ... and fail on reported findings too"
 	@echo "  make audit       run security audits over the build tree"
 	@echo "  make paths       print the resolved build contract"
 	@echo "  make reset-stamps  archive all build stamps (does not delete)"
@@ -241,6 +245,23 @@ test-harness:
 
 test-hardening:
 	@"$(TOOLS)"/test-hardening-flags.sh
+
+test-artifacts:
+	@"$(TOOLS)"/test-artifact-hardening.sh
+
+# What the build PRODUCED, not what it was asked to use.
+#
+# test-hardening compiles two toy files and proves the flag set can build
+# a hardened executable and a hardened shared library. It cannot tell you
+# whether the fifty-eight packages in stage 04 actually received those
+# flags, and the ways they quietly do not - a configure that overwrites
+# CFLAGS, a Makefile with its own hardcoded -O2, libtool relinking at
+# install time - fail nothing and are plainly visible in the ELF.
+audit-artifacts:
+	@"$(TOOLS)"/check-artifact-hardening.sh "$(KRYPTIK_WORK)/sysroot"
+
+audit-artifacts-strict:
+	@"$(TOOLS)"/check-artifact-hardening.sh "$(KRYPTIK_WORK)/sysroot" --strict
 
 audit:
 	@"$(TOOLS)"/audit-setuid.sh
