@@ -47,6 +47,16 @@ pub enum StorageMode {
     Encrypted,
     /// tmpfs overlay, destroyed at teardown.
     Ephemeral,
+    /// A plain directory on the host filesystem, kept between launches.
+    ///
+    /// Persistence and nothing else: the data is NOT encrypted at rest, and
+    /// every place that reports this mode says so. It exists because
+    /// "encrypted" is not implemented and refusing to start is the right
+    /// answer for a zone that asked for encryption - which left no way at all
+    /// to keep a file, and made ephemeral the only working mode. Someone who
+    /// needs their editor to still have the document tomorrow is better served
+    /// by storage they understand than by a mode that lies.
+    Persistent,
 }
 
 impl StorageMode {
@@ -54,10 +64,11 @@ impl StorageMode {
         match s {
             "encrypted" => Ok(StorageMode::Encrypted),
             "ephemeral" => Ok(StorageMode::Ephemeral),
+            "persistent" => Ok(StorageMode::Persistent),
             other => Err(ZoneError::BadValue {
                 field: "storage.mode".into(),
                 value: other.into(),
-                expected: "encrypted | ephemeral".into(),
+                expected: "encrypted | ephemeral | persistent".into(),
             }),
         }
     }
@@ -77,7 +88,7 @@ pub struct Zone {
     pub seccomp: Option<String>,
     pub landlock: Option<String>,
     /// Upper bound on an ephemeral zone's tmpfs. Required for ephemeral,
-    /// refused for encrypted: an unbounded tmpfs is a zone that can exhaust
+    /// refused for encrypted and persistent: an unbounded tmpfs is a zone that can exhaust
     /// host memory by writing files, which the cgroup memory limit does NOT
     /// catch - tmpfs pages outlive the process that wrote them and are charged
     /// to whoever touches them next.
@@ -309,7 +320,8 @@ impl Zone {
                 return Err(bad("limits.memory_max", v, "a size such as 512M or 2G"));
             }
         }
-        // storage.size: required for ephemeral, refused for encrypted.
+        // storage.size: required for ephemeral, refused for the two modes
+        // whose size kryptikd does not control.
         match storage {
             StorageMode::Ephemeral => match kv.get("storage.size") {
                 None => {
@@ -352,6 +364,21 @@ impl Zone {
                     return Err(ZoneError::Invalid(format!(
                         "zone {:?}: storage.size is only meaningful for storage.mode = \
                          \"ephemeral\"; an encrypted zone is sized by its volume",
+                        name
+                    )));
+                }
+            }
+            StorageMode::Persistent => {
+                // A persistent zone writes into a directory on a filesystem
+                // kryptikd did not create and does not control. Accepting a
+                // size here would record a bound nothing enforces, and the
+                // operator would believe the zone could not fill the disk.
+                if kv.contains_key("storage.size") {
+                    return Err(ZoneError::Invalid(format!(
+                        "zone {:?}: storage.size is only meaningful for storage.mode = \
+                         \"ephemeral\". A persistent zone writes into a directory on the \
+                         host filesystem, and kryptikd does not impose a quota on it - \
+                         so a size here would be a limit that is not in force.",
                         name
                     )));
                 }
@@ -457,6 +484,21 @@ impl Zone {
             return Err(ZoneError::Invalid(format!(
                 "zone {:?}: storage.mode is 'encrypted' but no storage.volume given",
                 self.name
+            )));
+        }
+        // storage.volume names the block device an encrypted zone unlocks. A
+        // persistent zone has no volume - it is a directory - so a volume line
+        // here is either a leftover from the encrypted zone this one was
+        // copied from, or a belief that the data lands somewhere it does not.
+        if self.storage == StorageMode::Persistent && self.volume.is_some() {
+            return Err(ZoneError::Invalid(format!(
+                "zone {:?}: storage.volume is only meaningful for storage.mode = \
+                 \"encrypted\". A persistent zone keeps its data in a plain directory \
+                 under the zone root; it does not open {:?}. If this zone was meant to \
+                 be encrypted, say so - kryptikd will refuse to start it until encrypted \
+                 volumes exist, which is the point.",
+                self.name,
+                self.volume.as_deref().unwrap_or("")
             )));
         }
 
@@ -650,6 +692,62 @@ border_color = "#000000"
         // The same file with the sizes the other way round is fine.
         let ok = toml.replace("size = \"64M\"", "size = \"32M\"");
         Zone::from_str(&ok).expect("32M under a 48M cap is a sensible pair");
+    }
+
+    // ---- storage.mode = "persistent" ------------------------------------
+    //
+    // The mode exists because refusing an "encrypted" zone is right and left
+    // nothing that keeps a file. These check that it keeps its own promise
+    // narrow: persistence, and no claim about what protects it.
+
+    fn persistent(extra: &str) -> Result<Zone, ZoneError> {
+        Zone::from_str(&format!(
+            "[zone]\nname = \"keeper\"\n[network]\nmode = \"none\"\n\
+             [storage]\nmode = \"persistent\"\n{extra}[ui]\nborder_color = \"#123456\"\n"
+        ))
+    }
+
+    #[test]
+    fn a_persistent_zone_parses_and_needs_no_volume() {
+        let z = persistent("").expect("persistent should be a valid mode");
+        assert_eq!(z.storage, StorageMode::Persistent);
+        assert_eq!(z.volume, None);
+        assert_eq!(z.size, None);
+        z.validate().expect("a bare persistent zone is complete as written");
+    }
+
+    #[test]
+    fn a_persistent_zone_refuses_a_size_it_would_not_enforce() {
+        // The zone writes into a directory on a filesystem kryptikd neither
+        // made nor controls. Accepting a size would record a bound nothing
+        // applies, and the operator would believe the zone was capped.
+        let e = persistent("size = \"512M\"\n").expect_err("size must be refused");
+        let m = e.to_string();
+        assert!(m.contains("not in force"), "say why, not just no: {m}");
+    }
+
+    #[test]
+    fn a_persistent_zone_refuses_a_volume_that_would_never_be_opened() {
+        // from_str validates, so the refusal lands here rather than later.
+        let e = persistent("volume = \"/dev/kryptik/keeper\"\n")
+            .expect_err("a persistent zone opens no volume");
+        let m = e.to_string();
+        assert!(m.contains("/dev/kryptik/keeper"), "name the device: {m}");
+        assert!(
+            m.contains("refuse"),
+            "point at the encrypted mode that WOULD be refused, so the reader learns \
+             the difference rather than deleting the line: {m}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_storage_mode_lists_persistent_among_the_choices() {
+        let e = Zone::from_str(
+            "[zone]\nname = \"t\"\n[network]\nmode = \"none\"\n\
+             [storage]\nmode = \"durable\"\n[ui]\nborder_color = \"#123456\"\n",
+        )
+        .expect_err("durable is not a mode");
+        assert!(e.to_string().contains("persistent"), "offer it: {e}");
     }
 
     #[test]
