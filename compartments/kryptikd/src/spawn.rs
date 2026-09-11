@@ -430,6 +430,8 @@ pub fn run_in_zone(
             let path = policy::resolve(&opts.zones_dir, rel);
             let p = policy::load(&path)
                 .map_err(|e| SpawnError::Setup(format!("zone {:?} policy: {e}", zone.name)))?;
+            p.check_for_zone(zone)
+                .map_err(|e| SpawnError::Setup(format!("zone {:?} policy: {e}", zone.name)))?;
             for w in &p.warnings {
                 eprintln!("kryptikd: note: {w}");
             }
