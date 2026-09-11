@@ -292,9 +292,17 @@ probe "B1d beta cannot read alpha's data by its host path" "denied"
 # with a shell loop rather than grep so no child carries it either.
 
 MARKER_TOKEN="KRYPTIKMARKER7f3c091"
-MARKER_BIN="$WORK/${MARKER_TOKEN}_sleep"
-cp /bin/sleep "$MARKER_BIN" 2>/dev/null
-"$MARKER_BIN" "$TIMEOUT" >/dev/null 2>&1 &
+MARKER_BIN="$WORK/${MARKER_TOKEN}_marker.sh"
+# A SCRIPT, not a renamed copy of /bin/sleep. On a busybox system /bin/sleep is
+# a symlink into the multi-call binary, which dispatches on argv[0] and exits
+# with "applet not found" under any other name - so the copied marker never ran
+# in the VM and the positive control correctly refused to vouch for B2b/B2c.
+#
+# The script does NOT exec: `exec sleep` would replace argv and take the token
+# out of the command line that the whole check is looking for.
+printf '#!/bin/sh\nsleep %s\n' "$TIMEOUT" > "$MARKER_BIN"
+chmod 0755 "$MARKER_BIN"
+/bin/sh "$MARKER_BIN" >/dev/null 2>&1 &
 MARKER_PID=$!
 BG_PIDS+=("$MARKER_PID")
 # Detach from job control so killing it at cleanup does not print a "Killed"
@@ -709,14 +717,20 @@ probe "H2  a mode=none zone has no routes at all" "none"
 zrun alpha -- /bin/sh -c "$PRO if timeout 3 /bin/sh -c 'exec 3<>/dev/tcp/10.255.255.1/80' 2>/dev/null; then echo PROBE=CONNECTED; else echo PROBE=unreachable; fi"
 probe "H3  an outbound TCP connect from a mode=none zone cannot succeed" "unreachable"
 
-# Positive control: the same connect attempt behaves differently outside the
-# zone, i.e. the check is measuring the namespace and not a universally dead
-# address. We only require that the host HAS a non-loopback interface.
-hostifs="$(cat /proc/net/dev | tail -n +3 | awk '{print $1}' | tr -d ':' | grep -cv '^lo$')"
+# Positive control for H1. "The zone sees only lo" is evidence of a network
+# namespace only if the host sees MORE than lo - otherwise the zone's view and
+# the host's view are identical and H1 has discriminated nothing.
+#
+# In the developer VM the host itself is started with -nic none, so there is
+# genuinely no second interface to distinguish against. That is an inability to
+# measure, not a pass and not a launcher failure, so it is reported as NOT RUN
+# with the reason attached.
+hostifs="$(tail -n +3 /proc/net/dev | awk '{print $1}' | tr -d ':' | grep -cv '^lo$')"
 if (( hostifs > 0 )); then
-    pass "H1c positive control: the host has $hostifs non-loopback interface(s)"
+    pass "H1c positive control: the host has $hostifs non-loopback interface(s) the zone did not see"
 else
-    fail "H1c positive control FAILED: host has no non-loopback interface either"
+    skip "H1c H1 cannot discriminate here: this host has no non-loopback interface either"
+    info "     (expected in the developer VM, which is launched with -nic none)"
 fi
 
 # ============================================================================
