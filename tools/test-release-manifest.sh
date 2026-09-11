@@ -288,6 +288,38 @@ expect_fail "after rotation, the retired key is refused" \
 printf 'release@kryptik.test %s\n' "$OLDPUB" > "$SIGNERS"
 
 # ---------------------------------------------------------------------------
+# whole-tree manifests: `.` must not poison --exact
+# ---------------------------------------------------------------------------
+#
+# `create --root DIR .` is the natural way to manifest an entire tree, and
+# `find . -type f` emits "./usr/bin/x" while --exact's listing emits
+# "usr/bin/x". Every file was then reported as "present but NOT in the
+# manifest" while simultaneously matching its recorded hash. Found by
+# manifesting the real sysroot, not by reading the code.
+
+build_release
+rm -f "$MAN" "${MAN}.sig"
+bash "$TOOL" create --out "$MAN" --root "$REL" --version 5.0 \
+    --role development . > /dev/null 2>&1
+bash "$TOOL" sign --key "${W}/keys/rel" "$MAN" > /dev/null 2>&1
+verify --exact
+expect_pass "a whole-tree manifest created with '.' passes --exact" \
+    "no unlisted files"
+
+if grep -qE '^[0-9a-f]{64}  [0-9]+  [.]/' "$MAN"; then
+    red "manifest paths still carry a './' prefix"
+    grep -m3 -E '  [.]/' "$MAN" | sed 's/^/        /'
+else
+    green "manifest paths carry no './' prefix"
+fi
+
+# Tamper detection must still name a path an operator can act on.
+printf 'x\n' >> "${REL}/usr/bin/kryptikd"
+verify
+expect_fail "a whole-tree manifest still detects a changed file" \
+    "CONTENT MISMATCH: usr/bin/kryptikd"
+
+# ---------------------------------------------------------------------------
 # no default trust anchor
 # ---------------------------------------------------------------------------
 

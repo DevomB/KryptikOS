@@ -113,8 +113,13 @@ do_create() {
 
     # Sorted, so the manifest of an unchanged tree is byte-identical and a diff
     # of two manifests is readable.
+    # Canonicalise away a leading "./". `create --root DIR .` is the natural
+    # way to manifest a whole tree, and `find . -type f` emits "./usr/bin/x"
+    # while --exact's listing emits "usr/bin/x" - so every single file was
+    # reported as "present but NOT in the manifest" while simultaneously
+    # matching its recorded hash. Found by manifesting the real sysroot.
     local -a sorted=()
-    while IFS= read -r rel; do sorted+=("$rel"); done \
+    while IFS= read -r rel; do rel="${rel#./}"; sorted+=("$rel"); done \
         < <(printf '%s\n' "${files[@]}" | LC_ALL=C sort -u)
 
     printf 'files: %s\n' "${#sorted[@]}" >> "$tmp"
@@ -294,6 +299,10 @@ role and version headers."
     local want_hash want_size rel actual_hash actual_size
     while read -r want_hash want_size rel; do
         [[ -n "$rel" ]] || continue
+        # Manifests written before paths were canonicalised carry "./x"; the
+        # signature covers those bytes, so they cannot be rewritten. Normalise
+        # on read instead, or such a manifest would stop verifying.
+        rel="${rel#./}"
         listed=$((listed + 1))
         local path="${root}/${rel}"
         if [[ ! -f "$path" ]]; then
