@@ -45,9 +45,39 @@ done
 
 [[ -n "$SYSROOT" ]] || die "--sysroot is required"
 [[ -n "$OUT" ]]     || die "--out is required"
+
+# --out has to be a plain file, and this is not paranoia about typos.
+#
+# This script runs as root and does `rm -f "$OUT"` followed by six gigabytes of
+# writes. Given --out /dev/sda it would remove the device node and then write
+# over whatever came back. "Never modify the host's disks" is a hard
+# constraint, and "the operator will pass the right path" is not a mechanism -
+# it is a hope with root privileges attached.
+#
+# This tool writes image FILES. It has no reason to touch a device, ever, so it
+# is not given the option.
+OUT_DIR="$(cd "$(dirname "$OUT")" 2>/dev/null && pwd)"     || die "the directory for --out does not exist: $(dirname "$OUT")"
+OUT_REAL="${OUT_DIR}/$(basename "$OUT")"
+
+case "$OUT_REAL" in
+    /dev/*|/sys/*|/proc/*|/boot/*|/run/*|/etc/*)
+        die "refusing to write an image to ${OUT_REAL}.
+That path is not a disposable file. This tool writes image files only." ;;
+esac
+
+if [[ -e "$OUT_REAL" && ! -f "$OUT_REAL" ]]; then
+    die "refusing to write an image to ${OUT_REAL}.
+It exists and is a $(stat -c %F "$OUT_REAL"), not a regular file. This tool
+writes image files only, and would otherwise rm -f that path first."
+fi
+
+if [[ -L "$OUT" ]]; then
+    die "refusing to write an image through the symlink ${OUT}.
+It points at ${OUT_REAL}; pass that path directly if you mean it."
+fi
 [[ -d "$SYSROOT" ]] || die "no such sysroot: ${SYSROOT}"
 
-for t in mkfs.ext4 sgdisk truncate dd blkid; do
+for t in mkfs.ext4 sgdisk truncate dd blkid dumpe2fs; do
     have "$t" || die "required tool not found: ${t}"
 done
 
@@ -156,8 +186,20 @@ log "staged $(numfmt --to=iec "$STAGE_BYTES" 2>/dev/null || echo "$STAGE_BYTES")
 log "building the ext4 filesystem"
 FS_SIZE="$SIZE"
 truncate -s "$FS_SIZE" "$ROOTFS"
-mkfs.ext4 -q -F -L "$LABEL" -d "$STAGE" -O '^has_journal' -E root_owner=0:0 "$ROOTFS" \
+# -O encrypt: the filesystem half of CONFIG_FS_ENCRYPTION. Without the feature
+# flag on the superblock the kernel support is unusable on this root, and a zone
+# asking for an encrypted directory would fail at its first ioctl.
+mkfs.ext4 -q -F -L "$LABEL" -d "$STAGE" -O '^has_journal,encrypt' -E root_owner=0:0 "$ROOTFS" \
     || die "mkfs.ext4 failed - is ${FS_SIZE} large enough for ${STAGE_BYTES} bytes?"
+
+# Read it back. "mkfs accepted -O encrypt" and "this filesystem has the
+# feature" are different claims, and only the second matters to a zone.
+FS_FEATURES="$(dumpe2fs -h "$ROOTFS" 2>/dev/null || true)"
+case "$FS_FEATURES" in
+    *encrypt*) ok "root filesystem carries the encrypt feature" ;;
+    *)         die "the root filesystem has no encrypt feature, so
+CONFIG_FS_ENCRYPTION would be unusable on it. Is mke2fs too old for -O encrypt?" ;;
+esac
 
 # Journal on afterwards: mkfs -d with a journal is slower and the journal is
 # rebuilt here anyway.

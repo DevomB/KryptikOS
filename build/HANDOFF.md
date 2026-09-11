@@ -943,6 +943,53 @@ KRYPTIK_SMOKE: kd:              policy policy/personal.seccomp: /etc/kryptik/zon
 KRYPTIK_SMOKE: kd:              landlock policy file: not applied (unimplemented; refused without the override)
 ```
 
+### 12b. Shutdown, narrowed: shutdownd reads the fifo and ignores the command
+
+The elimination in 12a left one question that mattered — is shutdownd actually
+reading that fifo, or does everything about it merely look right? The boot
+smoke now answers it by writing a deliberately invalid byte:
+
+```
+KRYPTIK_SMOKE: fifo_probe=sending an invalid byte
+KRYPTIK_SMOKE: fifo_probe_write=ok
+KRYPTIK_SMOKE: probe: s6-linux-init-shutdownd: warning: unknown command: X
+KRYPTIK_SMOKE: shutdownd_pid_before=92
+```
+
+That warning is the exact line `s6-linux-init-shutdownd.c` emits for an
+unrecognised command. So the fifo is the right fifo, shutdownd has it open, it
+is reading it, and its output reaches the catch-all log where we can see it.
+
+The defect is therefore not "shutdown does not work". It is:
+
+> shutdownd reads its fifo, receives a well-formed poweroff request from
+> `s6-linux-init-hpr` (which exits 0), and then neither acts nor complains
+> within 45 seconds. `rc.shutdown` is never spawned, the pid does not change,
+> and nothing is logged.
+
+Reading 1.2.0.2's source, a `p` byte should set `what='p'`, consume the 16-byte
+`tain`+grace payload, set the deadline to `tain_zero + STAMP` — that is, now —
+and the next `iopause` should time out immediately and run stage 3. Every step
+of that is consistent with what we observe up to the point where nothing
+happens.
+
+Worth trying next, cheapest first:
+
+1. `s6-linux-init-hpr -p -W` (skip the wall message) and `-d` (skip wtmp), to
+   see whether either changes the outcome. hpr does `updwtmpx` and `hpr_wall`
+   between opening the fifo and sending the command.
+2. Whether `prepare_shutdown` is getting a short read: hpr writes 17 bytes in
+   one `write()`, which is atomic well under PIPE_BUF, but a short read would
+   die with "bad shutdown protocol" and we would see it — its absence is
+   itself informative.
+3. Whether sharing `/run/service` between s6-linux-init's own scandir and
+   `s6-rc-init` disturbs anything shutdownd depends on.
+
+Until then `s6-linux-init-hpr -p -f` powers the machine off immediately by
+calling `reboot(RB_POWER_OFF)` directly, bypassing shutdownd entirely. That is
+a working emergency stop, not a clean shutdown: it runs no `rc.shutdown` and
+tears no services down, so it is not wired into anything.
+
 ### 12a. The one thing that does not work: clean shutdown
 
 `/sbin/poweroff` is `s6-linux-init-hpr -p`. Measured inside the guest:
@@ -978,3 +1025,117 @@ announcing `POWEROFF_DID_NOT_TAKE_EFFECT`, and `tools/image/boot-smoke.sh`
 asserts that line is **absent**. The run therefore reports 29 passed and 1
 failed rather than a clean sheet: the fallback must never be able to pass for
 a clean shutdown.
+
+## 13. The base system is complete: 67 entries, none unwired
+
+`man-db` was the last package stage 04 listed without a recipe. It needs
+`gdbm`, and Kryptik pinned none, so the stage ended every run with a "base
+system is INCOMPLETE" warning and a count of unwired entries. That count is now
+zero.
+
+```
+gdbm     1.26   (provenance commit ceab126, cherry-picked as 3037bc1)
+man-db   2.12.1
+```
+
+Provenance's audit corrected the recipe before it was written. I had reasoned
+that man-db would reach for ndbm, so gdbm would need
+`--enable-libgdbm-compat`. They read `configure.ac`: man-db tries the gdbm
+**native** interface first — `gdbm.h` plus `gdbm_fetch` in `-lgdbm` — and only
+falls back afterwards. So gdbm is built with no extra flags.
+
+Both recipes check the thing the pin was for:
+
+- `s_gdbm` compiles a program against the gdbm it has just installed and makes
+  it store and fetch a key, because "make install exited 0" and "this database
+  returns what you put in it" are different claims.
+- `s_man_db` asserts `/usr/bin/mandb` links `libgdbm`. Had configure fallen
+  back to another database interface, the pin would have bought nothing and the
+  failure would have surfaced the first time anyone ran `mandb`. Measured:
+  `ok: mandb links libgdbm`, `man 2.12.1`, `mandb 2.12.1`.
+
+man-db is built `--disable-setuid`. It would otherwise install `man` setuid to
+a `man` user so it can maintain a shared page cache; a setuid binary that
+parses untrusted files is not a trade this distribution makes for faster man
+pages.
+
+Inserting two packages into the order re-ran every package after them. That is
+the fingerprint working as designed rather than a fault: a step's hash covers
+the ordered names of the steps before it, so a package built with a different
+set of predecessors is not assumed to be the same artifact. Everything before
+`gdbm` was correctly skipped.
+
+### Not taken: bc 1.07.1 -> 1.08.2
+
+Provenance's branch also moves `bc`, and the cherry-pick conflicted there. Only
+their gdbm row was taken. `s_bc` on this branch carries a workaround specific
+to 1.07.1 — its `fix-libmath_h` wants `ed`, which Kryptik does not build, so
+the recipe performs the same edit with `sed` and then proves `bc` works. 1.08.2
+needs none of that, so moving the pin means rewriting the recipe in the same
+increment. Raised with provenance in
+`$C/build/NOTE-from-build-gdbm-openssl-bc.md` rather than resolved inside a
+conflict marker.
+
+## 14. Boot integrity, developer tier
+
+An image can be signed and verified:
+
+```sh
+make sign-image     # ed25519, key generated on first use, 0600, never in the repo
+make verify-image
+make test-image-signing
+```
+
+`tools/image/boot-smoke.sh` verifies before QEMU starts and refuses to boot an
+image that does not match its signature. Before, not after: the image is the
+thing under test, so checking once the guest has run would be checking the lock
+after walking through the door. An unsigned image still boots and says so on
+its own line — unsigned is legitimate in a developer flow; treating "no
+signature" as "verified" is not, so the two never share a message.
+
+### What it proves, and what it does not
+
+A developer signature proves an image is byte-for-byte what this build
+produced. That is the whole claim. It is not secure boot, there is no dm-verity,
+the key is not escrowed or rotated, and nothing binds it to a person.
+`key_kind: "developer"` is inside the signed document, and
+`--expect-kind release` against a developer signature is a refusal. An image
+that merely *looks* signed is worse than an unsigned one, because it invites
+someone to skip a check they would otherwise have made.
+
+### The verifier checks three things, separately
+
+1. the signature is valid over the signed document, under the given key
+2. the document describes **this** image — sha256 recomputed from disk
+3. the document does not claim to be a kind of signature it is not
+
+The second is the one worth having. Checking only the first accepts a genuinely
+valid signature over a document about a *different* image, which is the classic
+way signature checking is got wrong. `tools/test-image-signing.sh` builds that
+exact case — sign image A, sign image B, then offer B's document and signature
+for A — and it is refused.
+
+Thirteen checks. Every refusal is paired with the control that gives it
+meaning: the same harness must accept the untampered image, twice, before and
+after the tamper tests. A suite of nothing but denials cannot tell a working
+verifier from one that refuses everything.
+
+Refused, each proven: a flipped byte, an edited document, a different key,
+another image's valid signature, a developer signature offered as a release
+one, and a missing signature file.
+
+## 15. `make test`
+
+Runs the six suites that need neither root nor the chroot — 174 checks — and
+then names the three it did not run:
+
+```
+make test-libc-unwind   can the TARGET libc unwind? Expected to FAIL while the
+                        glibc defect in build/BLOCKER.md stands.
+make smoke-userspace    run the built userland inside the chroot
+make image-smoke        build a disk image and boot it under QEMU
+```
+
+Those three are the only ones that touch the built system rather than the
+scripts that build it. A green `make test` must not be readable as "the libc is
+fine", because it is not.

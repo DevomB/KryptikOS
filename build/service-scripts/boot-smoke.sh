@@ -77,6 +77,39 @@ say "END"
 echo
 
 # --- and shut down, which is itself under test ----------------------------
+# --- the catch-all log ------------------------------------------------------
+# s6-svscan-log catches the output of every supervised daemon that does not
+# have its own logger. It is the only place a daemon's complaint can be read
+# after the fact, and nothing had ever looked at it.
+if [ -d /run/uncaught-logs ]; then
+    say "uncaught_logs=present"
+    say "uncaught_files=$(ls -A /run/uncaught-logs 2>/dev/null | tr '
+' ' ')"
+    if [ -r /run/uncaught-logs/current ]; then
+        tail -n 25 /run/uncaught-logs/current 2>/dev/null | sed 's/^/KRYPTIK_SMOKE: log: /'
+    fi
+else
+    say "uncaught_logs=MISSING - no catch-all logger, daemon output is lost"
+fi
+
+# --- is shutdownd actually reading its fifo? -------------------------------
+# Everything else about the shutdown path checks out - the fifo exists at the
+# path s6-linux-init-hpr opens, shutdownd is supervised and up, rc.shutdown is
+# executable - and yet a poweroff request produces no action and no diagnostic.
+#
+# So ask the daemon directly. s6-linux-init-shutdownd.c logs
+# "unknown command: X" for any byte it does not recognise. If that line appears
+# below, shutdownd is reading this fifo and the problem is in what happens
+# after; if it does not, shutdownd is not reading this fifo at all and every
+# other observation about it is beside the point.
+say "fifo_probe=sending an invalid byte"
+printf 'X' > /run/service/s6-linux-init-shutdownd/fifo 2>/dev/null     && say "fifo_probe_write=ok" || say "fifo_probe_write=failed"
+sleep 2
+if [ -r /run/uncaught-logs/current ]; then
+    tail -n 5 /run/uncaught-logs/current 2>/dev/null       | grep -a "unknown command" | sed 's/^/KRYPTIK_SMOKE: probe: /'       || say "fifo_probe_result=no 'unknown command' line - shutdownd is not reading it"
+fi
+say "shutdownd_pid_before=$(s6-svstat -o pid /run/service/s6-linux-init-shutdownd 2>/dev/null)"
+
 # --- the shutdown path, before we depend on it -----------------------------
 # /sbin/poweroff is s6-linux-init-hpr, which writes to shutdownd's fifo under
 # /run/s6-linux-init. Stage 1 warned it could not write /run/s6-linux-init/env,
@@ -95,22 +128,39 @@ else
     say "svc_shutdownd=not-supervised"
 fi
 
+# Try the request three ways, narrowing as we go. shutdownd demonstrably reads
+# this fifo (the invalid-byte probe above proves it), so the question is which
+# part of what hpr does between opening the fifo and sending the command is
+# getting in the way. hpr writes wtmp and broadcasts a wall message in between;
+# -d skips the first and -W the second.
+#
+# Whichever variant works, the machine powers off here and the rest of this
+# script never runs - which is the point. The transcript then says which one
+# did it.
 say "POWEROFF"
 say "shutdownd_fifo=$( [ -p /run/service/s6-linux-init-shutdownd/fifo ] && echo present || echo absent )"
-/sbin/poweroff || say "poweroff_rc=$?"
 
-# If the clean path works we never reach the next line. If we do reach it, say
-# so in terms that cannot be read as a clean shutdown, then stop the machine so
-# a broken shutdown costs one line instead of the whole timeout.
-# shutdownd runs rc.shutdown, signals every service, and waits out its grace
-# time (-g 3000) before it powers the machine off. Ten seconds was not a
-# verdict on the shutdown path, it was a verdict on the timer: give it long
-# enough that reaching the next line means something.
-i=0
-while [ "$i" -lt 45 ]; do
-    sleep 1
-    i=$((i + 1))
-done
-say "POWEROFF_DID_NOT_TAKE_EFFECT after ${i}s"
-sync
-[ -w /proc/sysrq-trigger ] && echo o > /proc/sysrq-trigger
+# Request the shutdown and then GET OUT OF THE WAY.
+#
+# This script runs as an s6-rc oneshot. rc.shutdown brings every service down
+# with `s6-rc -bDa change`, and "every service" includes this one. Waiting here
+# for the machine to stop means s6-rc waits for this oneshot to exit while this
+# oneshot waits for s6-rc to finish shutting down - a deadlock.
+#
+# That deadlock is what three boots read as "shutdownd received the command and
+# ignored it". It never ignored anything: it ran rc.shutdown exactly as it
+# should, and rc.shutdown blocked in s6-rc before reaching its first echo, so
+# there was nothing in the log either. The test was breaking the thing it was
+# measuring.
+#
+# The watchdog is detached with setsid so the service teardown cannot take it
+# with it, and it announces itself loudly - tools/image/boot-smoke.sh asserts
+# that line is absent, so a stuck shutdown can never read as a clean one.
+setsid sh -c 'sleep 90
+    echo "KRYPTIK_SMOKE: POWEROFF_DID_NOT_TAKE_EFFECT after 90s" > /dev/console 2>/dev/null
+    sync
+    [ -w /proc/sysrq-trigger ] && echo o > /proc/sysrq-trigger'     </dev/null >/dev/null 2>&1 &
+
+/sbin/poweroff || say "poweroff_rc=$?"
+say "poweroff_requested_now_exiting"
+exit 0
