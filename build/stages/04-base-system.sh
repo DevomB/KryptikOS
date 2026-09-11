@@ -369,6 +369,30 @@ s_python() {
     make install
 }
 
+# coreutils' configure refuses to run as root, and stage 04 is always root.
+#
+# gnulib probes "whether mknod can create a fifo without root privileges" and
+# then errors out, because as root the probe always succeeds and so answers
+# nothing about the machine the binaries will run on:
+#
+#   configure: error: you should not run configure as root
+#   (set FORCE_UNSAFE_CONFIGURE=1 in environment to bypass this check)
+#
+# The check is aimed at someone building in their own shell, where running as
+# root is a mistake. Stage 04 runs inside a chroot where root owns everything
+# and there is no unprivileged user to be - so the situation the check warns
+# about is not the situation we are in. FORCE_UNSAFE_CONFIGURE=1 is upstream's
+# own escape hatch, named in its own error message, and is what LFS uses at
+# this point for the same reason.
+s_coreutils() {
+    local src; src="$(unpack "coreutils-${V_COREUTILS}.tar.xz" "coreutils-${V_COREUTILS}")"
+    cd "$src"
+    FORCE_UNSAFE_CONFIGURE=1 ./configure --prefix=/usr \
+        --enable-no-install-program=kill,uptime
+    make
+    make install
+}
+
 s_shadow() {
     local src; src="$(unpack "shadow-${V_SHADOW}.tar.xz" "shadow-${V_SHADOW}")"
     cd "$src"
@@ -1011,7 +1035,7 @@ declare -a PACKAGES=(
     "less"        "native_build less-${V_LESS}.tar.gz less-${V_LESS} --sysconfdir=/etc"
     "openssl"     "s_openssl"
     "libffi"      "native_build libffi-${V_LIBFFI}.tar.gz libffi-${V_LIBFFI} --disable-static --with-gcc-arch=native"
-    "coreutils"   "native_build coreutils-${V_COREUTILS}.tar.xz coreutils-${V_COREUTILS} --enable-no-install-program=kill,uptime"
+    "coreutils"   "s_coreutils"
     "diffutils"   "native_build diffutils-${V_DIFFUTILS}.tar.xz diffutils-${V_DIFFUTILS}"
     "gawk"        "native_build gawk-${V_GAWK}.tar.xz gawk-${V_GAWK}"
     "findutils"   "native_build findutils-${V_FINDUTILS}.tar.xz findutils-${V_FINDUTILS} --localstatedir=/var/lib/locate"

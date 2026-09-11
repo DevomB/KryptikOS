@@ -241,9 +241,15 @@ _hash_file() {
 stamp_compiler_id() {
     local cc="${STAMP_CC:-${CC:-gcc}}"
     if have "$cc"; then
+        # No pipe. `"$cc" --version | head -1` can hand the compiler a SIGPIPE
+        # and, with the `|| echo unknown` below it, silently substitute a
+        # DIFFERENT fingerprint input depending on a race. A fingerprint input
+        # that can vary between two identical runs is not a fingerprint.
+        local ver
+        ver="$("$cc" --version 2>/dev/null || echo unknown)"
         printf '%s %s' \
             "$("$cc" -dumpmachine 2>/dev/null || echo unknown)" \
-            "$("$cc" --version 2>/dev/null | head -1 || echo unknown)"
+            "${ver%%$'\n'*}"
     else
         printf 'absent:%s' "$cc"
     fi
@@ -399,6 +405,22 @@ Stamp: ${stamp}"
 step() {
     local name="$1"; shift
     local stamp="${STAMPS}/${STAMP_PREFIX}${name}"
+
+    # Narrow the flags BEFORE fingerprinting, not after.
+    #
+    # This used to happen further down, just before running the recipe, with
+    # the fingerprint recomputed afterwards and that second value written into
+    # the stamp. The comparison above it still used the first value - computed
+    # with whatever flags the PREVIOUS package had left in the environment.
+    #
+    # For 63 of stage 04's 64 packages those are the same string, because
+    # set_flags_for changes nothing. glibc is the exception - literally: it is
+    # the one package with an entry in hardening-exceptions.txt - so glibc's
+    # stamp was written with -D_FORTIFY_SOURCE=3 dropped and compared with it
+    # present. It could never match. It went stale on every resume, and the
+    # "inputs unchanged" the other packages reported was not true of it.
+    if declare -F set_flags_for >/dev/null; then set_flags_for "$name"; fi
+
     local want; want="$(stamp_fingerprint "$name" "$@")"
 
     if [[ "${REDO:-}" == "$name" ]]; then
@@ -418,13 +440,6 @@ step() {
     fi
 
     log "${name}"
-
-    # Stage 04 narrows the hardening flags per package; the fingerprint above
-    # was computed before that happened, so recompute once the flags are set.
-    if declare -F set_flags_for >/dev/null; then
-        set_flags_for "$name"
-        want="$(stamp_fingerprint "$name" "$@")"
-    fi
 
     local logfile="${LOGS}/${STAMP_PREFIX}${name}.log"
     local start=$SECONDS

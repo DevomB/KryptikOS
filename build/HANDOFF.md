@@ -384,6 +384,79 @@ A failed step now also greps its log for the lines that look like the cause,
 because the tail is frequently the wrong forty lines: python failed at line
 1659 of 6060 and then produced another 4400 lines of `Compiling ...`.
 
+### Three more, all of them checks that were testing a coincidence
+
+* **coreutils refuses to configure as root** (`7ad2e20`). gnulib probes
+  "whether mknod can create a fifo without root privileges" and errors out,
+  because as root the probe always succeeds and so answers nothing about the
+  machine the binaries will run on. Stage 04 is necessarily root inside the
+  chroot, where there is no unprivileged user to be, so the situation the check
+  warns about is not the one we are in. `FORCE_UNSAFE_CONFIGURE=1` is
+  upstream's own escape hatch, named in upstream's own error message. The other
+  nine gnulib packages in the list were checked for the same probe; coreutils
+  is the only one.
+
+* **The chroot check failed on the correct chroot it exists to protect**
+  (`cc04de2`). `verify_chroot` refused with "chroot bash is NOT Kryptik's:
+  ... (x86_64-pc-linux-gnu)". The chroot was fine: stage 04 had just rebuilt
+  bash natively, and config.guess then reports `x86_64-pc-linux-gnu`
+  correctly, because that *is* the build system now. Stage 02 cross-compiles
+  bash with `--host=x86_64-kryptik-linux-gnu`, which stamps the kryptik triple
+  into the version string — so the check passed for exactly as long as the
+  stage 02 bash was in the sysroot and failed the moment the final one
+  replaced it. The triple was never evidence of whose bash this is; it recorded
+  which stage built it last. The version discriminates: this host runs 5.2.21,
+  Kryptik pins 5.2.32. This was the second defect in that one check.
+
+* **A stamp written with one set of flags was compared against another**
+  (`e79d8e9`) — the one that matters most, because it was in the trust
+  mechanism itself.
+
+  glibc went stale on every resume while its neighbours skipped cleanly, and
+  nothing had touched its recipe. `step()` computed the fingerprint for the
+  skip comparison *before* calling `set_flags_for`, and wrote the stamp
+  *after*. For 63 of 64 packages those are the same string, because
+  `set_flags_for` changes nothing. glibc is the exception — literally: it is
+  the only package with an entry in `hardening-exceptions.txt`. So its stamp
+  was written with `-D_FORTIFY_SOURCE=3` absent and compared with it present,
+  could never match, and reported "inputs changed" on a build where nothing
+  had.
+
+  One package behaving oddly while sixty-three behave looks like a quirk of
+  that package. It was arithmetic.
+
+  The regression suite could not have caught it: it had no per-step flag hook
+  at all, so every step it exercised took the identical path. It now models
+  stage 04's per-package narrowing, and the three new checks fail against the
+  old code.
+
+  Fixing it invalidated every stamp, because `common.sh` is an input to all of
+  them, and stage 04 was rebuilt from scratch as a result. That cost was paid
+  deliberately: the alternative is a resume mechanism that quietly lies about
+  one package, and "trustworthy when resumed" is the deliverable.
+
+### Four SIGPIPE traps, one of which was live
+
+Recipes run under `set -o pipefail`, so a reader that exits early
+(`grep -q`, `grep -m1`, `head`) makes the writer's SIGPIPE the pipeline's
+status. `strings /usr/lib/libc.so.6 | grep -m1 "GNU C Library"` returned 141
+and failed the step **on a glibc that had just built, installed, and produced
+a loader carrying IBT and SHSTK**. The verification killed what it was
+verifying.
+
+Whether one of these fires depends on how much the writer still had buffered —
+a property of the data, not of the code. Three more of the same shape were
+latent in stage 04, including the CET check added an hour earlier, plus one in
+`common.sh` that could have made the *fingerprint itself* non-deterministic.
+All are fixed by reading into a variable and matching in the shell, or letting
+`grep -a` read the file directly. `|| true` was rejected: it silences real
+failures too. (`d4cf2cc`, `e79d8e9`)
+
+Four instances remain in stages 00-03. All sit inside `if` conditions, where a
+spurious 141 reads as "false" rather than aborting, and all operate on small
+output. Tracked as **B-g**; they were left alone rather than invalidating a
+completed stage 01 and 02 mid-build for a fault none has shown.
+
 ### Evidence that the input-aware resume works
 
 After the libxcrypt fix, the resume printed:
@@ -490,6 +563,9 @@ and the work tree on native storage. §3 and §5 here are written to be liftable
   demonstrated.
 - **B-e** Second Python pass after openssl/libffi/readline, so the shipped
   Python has `_ssl`, `_ctypes`, `readline`, `_bz2` and `_lzma`. See §8b.
+- **B-g** The four remaining early-exit pipelines in stages 00-03 and the
+  `if readelf ... | grep -q` forms. Harmless where they sit; worth removing
+  next time those stages are rebuilt anyway.
 - **B-f** Decide whether Kryptik ships `pip`. `ensurepip` currently runs, so it
   does. For a distribution whose documentation leads on supply chain, a
   network-facing package installer in the base system is a policy question, not
