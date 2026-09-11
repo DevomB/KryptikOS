@@ -1043,7 +1043,19 @@ declare -a PACKAGES=(
     "acl"         "native_build acl-${V_ACL}.tar.xz acl-${V_ACL} --disable-static"
     "libcap"      "s_libcap"
     "shadow"      "s_shadow"
-    "ncurses"     "native_build ncurses-${V_NCURSES}.tar.gz ncurses-${V_NCURSES} --mandir=/usr/share/man --with-shared --without-debug --without-normal --with-cxx-shared --enable-pc-files"
+    # --enable-pc-files needs --with-pkg-config-libdir to go with it.
+    #
+    # Without the second flag ncurses has nowhere to put its .pc files and
+    # installs none, silently. Everything that asks pkg-config for ncursesw
+    # then gets "no": procps-ng stopped the stage with "ncurses support
+    # missing/incomplete" while libncursesw.so.6.5 sat in /usr/lib, built
+    # and working, twenty minutes earlier.
+    #
+    # It went unnoticed because ncurses was built BEFORE /usr/bin/pkg-config
+    # existed - pkgconf installs under its own name, and the compatibility
+    # symlink was a separate fix - so ncurses could not have located the
+    # directory even to guess at it. Two absences that each hid the other.
+    "ncurses"     "native_build ncurses-${V_NCURSES}.tar.gz ncurses-${V_NCURSES} --mandir=/usr/share/man --with-shared --without-debug --without-normal --with-cxx-shared --enable-pc-files --with-pkg-config-libdir=/usr/lib/pkgconfig"
     "sed"         "native_build sed-${V_SED}.tar.xz sed-${V_SED}"
     "psmisc"      "native_build psmisc-${V_PSMISC}.tar.xz psmisc-${V_PSMISC}"
     "bash"        "native_build bash-${V_BASH}.tar.gz bash-${V_BASH} --without-bash-malloc --with-installed-readline"
