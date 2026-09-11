@@ -145,11 +145,17 @@ emit_tree() {
     # shellcheck disable=SC2064
     trap "rm -f '$ferr' '$raw'" RETURN
 
+    # `trap - ERR` as well as `set +e`: an ERR trap fires whether or not
+    # errexit is on, and common.sh's trap exits. Without this the find below
+    # aborts the script on the very failure this code exists to report - the
+    # same defect step() had, rediscovered here within the hour.
     local frc=0
     set +e
+    trap - ERR
     find "$ROOT" -xdev -mindepth 1 \
          -printf '%y\t%m\t%U\t%G\t%s\t%P\t%l\n' > "$raw" 2>"$ferr"
     frc=$?
+    trap _kryptik_trap ERR
     set -e
 
     if [[ "$frc" -ne 0 ]]; then
@@ -231,7 +237,6 @@ generate)
     trap "rm -f '$body'" EXIT
     build_manifest > "$body"
 
-    local unreadable
     unreadable="$(grep -c 'UNREADABLE' < "$body" || true)"
     if [[ "$unreadable" -gt 0 ]]; then
         err "${unreadable} file(s) could not be hashed:"
