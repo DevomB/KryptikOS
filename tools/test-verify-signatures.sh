@@ -757,6 +757,49 @@ bad_prov "${UNKFPR}  korg  file://${PROV}/unknown.asc  2026-09-11" \
 bad_prov "${UNKFPR}  korg  file://${PROV}/unknown.asc  2026-09-11  unknown" \
          "a row with no published uid recorded is refused"
 
+# --- the platform-published kind --------------------------------------------
+#
+# kind github means: GitHub publishes this key for an account, AND that account
+# published the release we pin. It applies only where GitHub already serves the
+# tarball, so it adds no single point of failure the download did not have -
+# but holding that account breaks both halves at once, which is why it is its
+# own class and not folded in with the others.
+
+fresh_root
+write_manifest unknown
+prov_table "${UNKFPR}  github  file://${PROV}/unknown.asc  2026-09-11  unknown  unknown fixture; fixture/repo v1.0 was published by nobody"
+runprov --report="${W}/g1.tsv"
+if [[ "$(klass_of "${W}/g1.tsv" unknown)" == "signature-platform-published-key" ]]; then
+    green "a github row classes the signature as platform-published"
+else
+    red "expected signature-platform-published-key, got $(klass_of "${W}/g1.tsv" unknown)"; show
+fi
+
+# The locator is pinned to one endpoint shape, so a row cannot point "github"
+# at some other host and inherit the class.
+bad_prov "${UNKFPR}  github  https://not-github.example/x.gpg  2026-09-11  unknown  x published by someone" \
+         "a github locator on another host is refused"
+bad_prov "${UNKFPR}  github  https://github.com/acct/extra.gpg  2026-09-11  unknown  x published by someone" \
+         "a github locator that is not <account>.gpg is refused"
+
+# Without the release-author tie the row says only "GitHub hosts this key",
+# which is not the claim the class makes.
+bad_prov "${UNKFPR}  github  https://github.com/acct.gpg  2026-09-11  unknown  just a uid, no tie recorded" \
+         "a github row with no recorded release author is refused"
+
+# And the shipped rows must each carry both halves.
+gh_bad=0
+while read -r _fpr kind loc _ret _signs rest; do
+    [[ "$kind" == "github" ]] || continue
+    [[ "$loc" =~ ^https://github\.com/[A-Za-z0-9-]+\.gpg$ ]] || gh_bad=$((gh_bad + 1))
+    case "$rest" in *"published by"*) ;; *) gh_bad=$((gh_bad + 1)) ;; esac
+done < <(grep -E '^[0-9A-F]{40}' "${ROOT}/tools/key-provenance.tsv")
+if [[ "$gh_bad" -eq 0 ]]; then
+    green "every shipped github row names an account endpoint and its release author"
+else
+    red "${gh_bad} shipped github row(s) are missing the endpoint shape or the tie"
+fi
+
 # --- the shipped table, and the hook that must not be usable by accident ----
 
 fresh_root

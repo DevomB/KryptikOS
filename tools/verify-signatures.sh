@@ -391,6 +391,21 @@ load_key_provenance() {
                             || why="a korg locator must be an https URL"
                     fi
                     ;;
+                github)
+                    # Pinned to the exact endpoint shape, so a row cannot point
+                    # "github" at some other host and inherit the class.
+                    if [[ "$l" =~ ^https://github\.com/[A-Za-z0-9-]+\.gpg$ ]]; then
+                        :
+                    elif [[ "${KRYPTIK_SIGCHECK_SELFTEST:-0}" == "1" && "$l" == file://* ]]; then
+                        :
+                    else
+                        why="a github locator must be https://github.com/<account>.gpg"
+                    fi
+                    # The note has to carry the release-author tie, because
+                    # without it the row says only "GitHub hosts this key".
+                    [[ "$rest" == *published\ by* ]] \
+                        || why="a github row must record which account published the release"
+                    ;;
                 wkd)  [[ "$l" == *@*.* ]]     || why="a wkd locator must be an email address" ;;
                 *)    why="unknown kind '${k}'" ;;
             esac
@@ -429,7 +444,7 @@ import_provenance_keys_for() {
         local tmp got
         tmp="$(mktemp)"
         case "${PROV_KIND[$i]}" in
-            korg)
+            korg|github)
                 if ! curl -fsSL --max-time 30 -o "$tmp" "${PROV_LOC[$i]}" 2>/dev/null; then
                     warn "${name}: could not fetch the published key from ${PROV_LOC[$i]}"
                     rm -f "$tmp"; continue
@@ -545,8 +560,9 @@ check_sig() {
 
         local klass=signature-keyring-key
         case "$pkind" in
-            korg) klass=signature-korg-published-key ;;
-            wkd)  klass=signature-wkd-published-key ;;
+            korg)   klass=signature-korg-published-key ;;
+            wkd)    klass=signature-wkd-published-key ;;
+            github) klass=signature-platform-published-key ;;
         esac
         key_is_pinned "$keyid" && klass=signature-pinned-key
 
