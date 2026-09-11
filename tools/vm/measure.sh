@@ -95,12 +95,16 @@ printf '  %-34s %s\n' "payload (the test suites)"            "$(fmt "$(delta "$K
 printf '  %-34s %s\n' "whole run, to power down"             "$(fmt "$K_POWER")"
 
 # --- what the guest said about itself ---------------------------------------
-mem_total="$(strip | grep -a -m1 'KRYPTIK_VM_MEM_TOTAL_KB=' | sed 's/.*=//')"
-mem_free="$(strip  | grep -a -m1 'KRYPTIK_VM_MEM_AVAIL_KB=' | sed 's/.*=//')"
-procs="$(strip     | grep -a -m1 'KRYPTIK_VM_PROCS='        | sed 's/.*=//')"
+# tr -dc '0-9': a serial console writes CRLF, so these values arrive with a
+# carriage return attached and `(( 1494320 - 1360820\r ))` is a syntax error -
+# which is what this printed instead of the memory line.
+num_marker() { strip | grep -a -m1 "$1=" | sed 's/.*=//' | tr -dc '0-9'; }
+mem_total="$(num_marker KRYPTIK_VM_MEM_TOTAL_KB)"
+mem_free="$(num_marker KRYPTIK_VM_MEM_AVAIL_KB)"
+procs="$(num_marker KRYPTIK_VM_PROCS)"
 if [[ -n "$mem_total" || -n "$procs" ]]; then
     printf '\n%sidle cost, measured in the guest before the suites ran%s\n\n' "$C_B" "$C_RST"
-    if [[ -n "$mem_total" && -n "$mem_free" ]]; then
+    if [[ -n "$mem_total" && -n "$mem_free" ]] && (( mem_total > 0 )); then
         printf '  %-34s %s MiB of %s MiB\n' "memory in use" \
             "$(( (mem_total - mem_free) / 1024 ))" "$(( mem_total / 1024 ))"
     fi
