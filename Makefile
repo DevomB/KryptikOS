@@ -82,6 +82,7 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
         test-harness test-hardening validate-kernel validate-kernel-hardened \
         toolchain temp-tools chroot chroot-enter chroot-umount chroot-status \
         system kernel iso audit zones zone-test paths reset-stamps \
+        sysroot-ready \
         clean distclean
 
 help:
@@ -92,6 +93,7 @@ help:
 	@echo "  make lock        fetch and regenerate sources.lock (audit before committing)"
 	@echo "  make toolchain   stage 01: cross toolchain            [Phase 1]"
 	@echo "  make temp-tools  stage 02: temporary tools            [Phase 2]"
+	@echo "                   (stages 01 and 02 are UNPRIVILEGED - run them as you)"
 	@echo "  make system      stage 04: hardened base system       [Phase 3]"
 	@echo "  make kernel      stage 05: hardened kernel            [Phase 4]"
 	@echo "  make iso         stage 06: bootable image             [Phase 7]"
@@ -185,7 +187,7 @@ temp-tools: toolchain
 # The constraint is real; a target can satisfy it. `03-chroot-prep.sh run`
 # mounts, runs one command inside, and unmounts on every exit path.
 
-system: temp-tools
+system: sysroot-ready
 	@$(CHROOT_RUN) run /kryptik/build/stages/04-base-system.sh
 
 # The EOL check needs a network, and the chroot deliberately has none, so it
@@ -194,7 +196,7 @@ system: temp-tools
 kernel: check-kernel-eol system
 	@$(CHROOT_RUN) run /kryptik/build/stages/05-kernel.sh
 
-chroot: temp-tools
+chroot: sysroot-ready
 	@$(CHROOT_RUN) mount
 
 chroot-enter:
@@ -205,6 +207,23 @@ chroot-umount:
 
 chroot-status:
 	@"$(CHROOTD)" status
+
+# Verify that stage 02 finished; do not silently run it.
+#
+# The unprivileged stages and the privileged ones want different uids, and a
+# target that quietly does both under whichever one the caller happens to have
+# is how a cross toolchain ends up owned by root. `make system` as root - the
+# documented SUDO= configuration, and every container - would have rebuilt the
+# whole toolchain as root, which stage 00 exists to refuse.
+sysroot-ready:
+	@if [[ ! -x "$(KRYPTIK_WORK)/sysroot/usr/bin/gcc" ]]; then \
+	    echo "Stage 02 has not completed: no target compiler at"; \
+	    echo "  $(KRYPTIK_WORK)/sysroot/usr/bin/gcc"; \
+	    echo; \
+	    echo "Build it first, UNPRIVILEGED:"; \
+	    echo "  make temp-tools"; \
+	    exit 1; \
+	fi
 
 iso: kernel
 	@"$(STAGES)"/06-iso.sh
