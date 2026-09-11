@@ -132,6 +132,18 @@ fi
 
 # Networking. The default remains NONE: a test VM that cannot reach anything is
 # the right default, and every check that matters runs without a NIC.
+# -no-reboot is right for every mode but one: a panic should end the run rather
+# than loop forever. The restart mode is the exception, because the thing it is
+# measuring IS the reboot - the guest resets, the firmware runs again, and the
+# second boot has to come back on its own. The payload powers off on that second
+# boot, so the run still terminates; the harness timeout is the backstop if it
+# does not.
+REBOOT_ARGS=(-no-reboot)
+if [[ "$MODE" == "restart" ]]; then
+    REBOOT_ARGS=()
+    printf 'run-qemu: reboot  allowed once - restart mode measures the second boot\n' >&2
+fi
+
 INITRD_ARGS=()
 [[ -n "$INITRD" ]] && INITRD_ARGS=(-initrd "$INITRD")
 
@@ -223,7 +235,7 @@ QEMU_ARGS+=(
     "${INITRD_ARGS[@]}"
     -append "$APPEND"
     "${NIC_ARGS[@]}"
-    -no-reboot                # a panic ends the run instead of looping
+    "${REBOOT_ARGS[@]}"
     -display none
 )
 

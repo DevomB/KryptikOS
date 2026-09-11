@@ -136,6 +136,36 @@ else
     fail "kryptikd check never ran"
 fi
 
+# --- the user-facing command -------------------------------------------------
+crc="$(valueof KRYPTIK_VM_CLI_RC)"
+case "$crc" in
+    0)  pass "the user-facing \`kryptik\` command works inside the VM" ;;
+    "") info "the kryptik command's suite was not in this image" ;;
+    *)  fail "the kryptik command's suite exited $crc inside the VM"
+        sed -n '/KRYPTIK_VM_CLI_BEGIN/,/KRYPTIK_VM_CLI_END/p' "$LOG" \
+            | grep -E 'FAIL' | sed 's/^/        /' | head -10
+        ;;
+esac
+
+# --- restart, when the log is from a restart run ----------------------------
+if grep -q 'KRYPTIK_VM_BOOT_NUMBER=' "$LOG"; then
+    boots="$(grep -c 'KRYPTIK_VM_BOOT_NUMBER=' "$LOG")"
+    second="$(grep -c 'KRYPTIK_VM_BOOT_NUMBER=2' "$LOG")"
+    if [ "$second" -ge 1 ]; then
+        pass "the guest rebooted and came back ($boots boots in one run)"
+    else
+        fail "the guest never reached a second boot — restart is unproven"
+    fi
+    for k in RESTART_PRE RESTART_POST RESTART_ZONE; do
+        v="$(valueof "KRYPTIK_VM_$k")"
+        case "$v" in
+            ok|ran) pass "restart: $k = $v" ;;
+            "")     fail "restart: $k was never reported" ;;
+            *)      fail "restart: $k = $v" ;;
+        esac
+    done
+fi
+
 # --- the real launcher suite, inside the VM ---------------------------------
 lrc="$(valueof KRYPTIK_VM_LAUNCHER_RC)"
 case "$lrc" in
