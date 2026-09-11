@@ -336,6 +336,16 @@ fi
 
 /bin/busybox hostname kryptik-vm 2>/dev/null
 /bin/busybox ip link set lo up 2>/dev/null || /bin/busybox ifconfig lo up 2>/dev/null
+# Bring up any NIC the VM was given. With --nic none there is none and this is
+# a no-op; with --nic user there is one, and the launcher suite's H1 positive
+# control needs it UP to be a control at all - a down interface still appears
+# in /proc/net/dev, but a zone that cannot see it has been shown nothing.
+for _if in /sys/class/net/*; do
+    _n="$(/bin/busybox basename "$_if")"
+    [ "$_n" = "lo" ] && continue
+    /bin/busybox ip link set "$_n" up 2>/dev/null
+    /bin/busybox udhcpc -i "$_n" -t 2 -T 2 -n -q 2>/dev/null &
+done
 
 echo "KRYPTIK_VM_STAGE2_OK root=$(/bin/busybox stat -f -c %T / 2>/dev/null)"
 
