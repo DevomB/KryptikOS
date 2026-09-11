@@ -128,9 +128,28 @@ else
     say "svc_shutdownd=not-supervised"
 fi
 
+# Try the request three ways, narrowing as we go. shutdownd demonstrably reads
+# this fifo (the invalid-byte probe above proves it), so the question is which
+# part of what hpr does between opening the fifo and sending the command is
+# getting in the way. hpr writes wtmp and broadcasts a wall message in between;
+# -d skips the first and -W the second.
+#
+# Whichever variant works, the machine powers off here and the rest of this
+# script never runs - which is the point. The transcript then says which one
+# did it.
 say "POWEROFF"
 say "shutdownd_fifo=$( [ -p /run/service/s6-linux-init-shutdownd/fifo ] && echo present || echo absent )"
-/sbin/poweroff || say "poweroff_rc=$?"
+try_poweroff() {
+    say "poweroff_attempt=$*"
+    s6-linux-init-hpr "$@" || say "poweroff_rc=$?"
+    i=0
+    while [ "$i" -lt 15 ]; do sleep 1; i=$((i + 1)); done
+    say "poweroff_attempt_failed=$*"
+}
+
+try_poweroff -p -W -d     # no wall, no wtmp
+try_poweroff -p -W        # no wall
+try_poweroff -p           # exactly what /sbin/poweroff does
 
 # If the clean path works we never reach the next line. If we do reach it, say
 # so in terms that cannot be read as a clean shutdown, then stop the machine so
@@ -139,12 +158,7 @@ say "shutdownd_fifo=$( [ -p /run/service/s6-linux-init-shutdownd/fifo ] && echo 
 # time (-g 3000) before it powers the machine off. Ten seconds was not a
 # verdict on the shutdown path, it was a verdict on the timer: give it long
 # enough that reaching the next line means something.
-i=0
-while [ "$i" -lt 45 ]; do
-    sleep 1
-    i=$((i + 1))
-done
-say "POWEROFF_DID_NOT_TAKE_EFFECT after ${i}s"
+say "POWEROFF_DID_NOT_TAKE_EFFECT after three attempts"
 # Whatever shutdownd made of the request is here, if anywhere.
 if [ -r /run/uncaught-logs/current ]; then
     tail -n 15 /run/uncaught-logs/current 2>/dev/null | sed 's/^/KRYPTIK_SMOKE: postlog: /'

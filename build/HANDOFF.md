@@ -943,6 +943,53 @@ KRYPTIK_SMOKE: kd:              policy policy/personal.seccomp: /etc/kryptik/zon
 KRYPTIK_SMOKE: kd:              landlock policy file: not applied (unimplemented; refused without the override)
 ```
 
+### 12b. Shutdown, narrowed: shutdownd reads the fifo and ignores the command
+
+The elimination in 12a left one question that mattered — is shutdownd actually
+reading that fifo, or does everything about it merely look right? The boot
+smoke now answers it by writing a deliberately invalid byte:
+
+```
+KRYPTIK_SMOKE: fifo_probe=sending an invalid byte
+KRYPTIK_SMOKE: fifo_probe_write=ok
+KRYPTIK_SMOKE: probe: s6-linux-init-shutdownd: warning: unknown command: X
+KRYPTIK_SMOKE: shutdownd_pid_before=92
+```
+
+That warning is the exact line `s6-linux-init-shutdownd.c` emits for an
+unrecognised command. So the fifo is the right fifo, shutdownd has it open, it
+is reading it, and its output reaches the catch-all log where we can see it.
+
+The defect is therefore not "shutdown does not work". It is:
+
+> shutdownd reads its fifo, receives a well-formed poweroff request from
+> `s6-linux-init-hpr` (which exits 0), and then neither acts nor complains
+> within 45 seconds. `rc.shutdown` is never spawned, the pid does not change,
+> and nothing is logged.
+
+Reading 1.2.0.2's source, a `p` byte should set `what='p'`, consume the 16-byte
+`tain`+grace payload, set the deadline to `tain_zero + STAMP` — that is, now —
+and the next `iopause` should time out immediately and run stage 3. Every step
+of that is consistent with what we observe up to the point where nothing
+happens.
+
+Worth trying next, cheapest first:
+
+1. `s6-linux-init-hpr -p -W` (skip the wall message) and `-d` (skip wtmp), to
+   see whether either changes the outcome. hpr does `updwtmpx` and `hpr_wall`
+   between opening the fifo and sending the command.
+2. Whether `prepare_shutdown` is getting a short read: hpr writes 17 bytes in
+   one `write()`, which is atomic well under PIPE_BUF, but a short read would
+   die with "bad shutdown protocol" and we would see it — its absence is
+   itself informative.
+3. Whether sharing `/run/service` between s6-linux-init's own scandir and
+   `s6-rc-init` disturbs anything shutdownd depends on.
+
+Until then `s6-linux-init-hpr -p -f` powers the machine off immediately by
+calling `reboot(RB_POWER_OFF)` directly, bypassing shutdownd entirely. That is
+a working emergency stop, not a clean shutdown: it runs no `rc.shutdown` and
+tears no services down, so it is not wired into anything.
+
 ### 12a. The one thing that does not work: clean shutdown
 
 `/sbin/poweroff` is `s6-linux-init-hpr -p`. Measured inside the guest:
