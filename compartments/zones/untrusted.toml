@@ -19,7 +19,6 @@ size = "2G"
 
 [policy]
 seccomp  = "policy/untrusted.seccomp"
-landlock = "policy/untrusted.landlock"
 
 [limits]
 memory_max = "4G"

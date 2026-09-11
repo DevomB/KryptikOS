@@ -15,7 +15,6 @@ wipe_keys = "on-stop"
 
 [policy]
 seccomp  = "policy/work.seccomp"
-landlock = "policy/work.landlock"
 
 [limits]
 memory_max = "8G"

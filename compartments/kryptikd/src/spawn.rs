@@ -34,6 +34,7 @@ use crate::cgroup;
 use crate::isolate;
 use crate::registry;
 use crate::landlock;
+use crate::policy;
 use crate::rootfs;
 use crate::seccomp;
 use crate::zone::{StorageMode, Zone};
@@ -62,12 +63,14 @@ fn errno() -> i32 {
 }
 
 /// Options from the command line that change how the zone is launched.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 pub struct RunOptions {
     /// Host uid the zone's root maps to. Only meaningful, and only accepted,
     /// when kryptikd itself runs as root.
     pub zone_uid: Option<u32>,
     pub zone_gid: Option<u32>,
+    /// The zone directory, against which `[policy]` paths resolve.
+    pub zones_dir: std::path::PathBuf,
 }
 
 /// Seconds a zone gets to exit after a forwarded SIGINT/SIGTERM before its
@@ -401,13 +404,28 @@ pub fn run_in_zone(
         // swap - see the note printed below, and docs/design/02.
         StorageMode::Ephemeral => {}
     }
-    if zone.seccomp.is_some() || zone.landlock.is_some() {
+    // A seccomp policy file is applied (docs/design/07); a Landlock policy
+    // file is not, and a zone naming one is still refused without the
+    // override.
+    if zone.landlock.is_some() {
         unsupported.push(
-            "[policy]: per-zone seccomp/landlock files are NOT yet applied; the shared base \
-             policy would be used"
+            "[policy] landlock: per-zone Landlock policy files are NOT yet applied; the \
+             shared base rules would be used"
                 .into(),
         );
     }
+    let zone_policy: Option<policy::Policy> = match &zone.seccomp {
+        Some(rel) => {
+            let path = policy::resolve(&opts.zones_dir, rel);
+            let p = policy::load(&path)
+                .map_err(|e| SpawnError::Setup(format!("zone {:?} policy: {e}", zone.name)))?;
+            for w in &p.warnings {
+                eprintln!("kryptikd: note: {w}");
+            }
+            Some(p)
+        }
+        None => None,
+    };
     // [limits] is no longer unconditionally unsupported: it is supported when
     // this process can actually create a cgroup, and refused when it cannot.
     // The question is answered by TRYING, not by checking uid - a delegated
@@ -516,6 +534,7 @@ pub fn run_in_zone(
         initpid.close_read();
         let rc = intermediate_main(
             zone, rootfs, argv, &id, parent_pid, &placed, &ready, &mapped, &initpid,
+            zone_policy.as_ref(),
         );
         // Never return: this process must not run the parent's cleanup.
         unsafe { libc::_exit(rc) };
@@ -635,6 +654,7 @@ fn intermediate_main(
     ready: &SyncPipe,
     mapped: &SyncPipe,
     initpid: &SyncPipe,
+    zone_policy: Option<&policy::Policy>,
 ) -> i32 {
     macro_rules! bail {
         ($($arg:tt)*) => {{
@@ -807,7 +827,7 @@ fn intermediate_main(
     }
 
     if inner == 0 {
-        let rc = zone_init(zone, rootfs, argv, flags);
+        let rc = zone_init(zone, rootfs, argv, flags, zone_policy);
         unsafe { libc::_exit(rc) };
     }
 
@@ -831,7 +851,13 @@ fn intermediate_main(
 }
 
 /// pid 1 of the zone. Returns only on failure; on success it has exec'd.
-fn zone_init(zone: &Zone, rootfs: &str, argv: &[String], flags: libc::c_int) -> i32 {
+fn zone_init(
+    zone: &Zone,
+    rootfs: &str,
+    argv: &[String],
+    flags: libc::c_int,
+    zone_policy: Option<&policy::Policy>,
+) -> i32 {
     macro_rules! bail {
         ($($arg:tt)*) => {{
             eprintln!("kryptikd[zone {}]: {}", zone.name, format!($($arg)*));
@@ -920,11 +946,16 @@ fn zone_init(zone: &Zone, rootfs: &str, argv: &[String], flags: libc::c_int) -> 
     //
     // Fatal on failure: a zone that starts with a fuller set than the operator
     // asked for is the failure this project exists to avoid.
-    if let Err(e) = caps::drop_bounding_set() {
+    let keep: Vec<libc::c_int> = zone_policy.map(|p| p.keep_caps.clone()).unwrap_or_default();
+    if let Err(e) = caps::drop_bounding_set_except(&keep) {
         bail!("could not drop the capability bounding set: {e}");
     }
 
-    if let Err(e) = seccomp::confine_zone() {
+    let installed = match zone_policy {
+        Some(p) => seccomp::confine_zone_with(&p.extra_syscalls, &p.sockets),
+        None => seccomp::confine_zone(),
+    };
+    if let Err(e) = installed {
         bail!("seccomp: {e}");
     }
 
@@ -999,7 +1030,14 @@ pub fn zone_environment(zone: &Zone, home: &str, caller: &[(String, String)]) ->
 }
 
 /// Describe what starting this zone would do, without doing it.
-pub fn explain(zone: &Zone, rootfs: &str) -> String {
+pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String {
+    let policy_line = match &zone.seccomp {
+        None => "policy     base only".to_string(),
+        Some(rel) => match policy::load(&policy::resolve(zones_dir, rel)) {
+            Ok(p) => format!("policy     {rel}: {}", p.describe()),
+            Err(e) => format!("policy     {rel}: ERROR - {e} (the zone will not start)"),
+        },
+    };
     let flags = isolate::namespace_flags(zone);
     let mut ns = Vec::new();
     for (f, n) in [
@@ -1074,7 +1112,8 @@ pub fn explain(zone: &Zone, rootfs: &str) -> String {
          landlock   ABI >= {}, rules:\n           {}\n\
          env        {} + passthrough of {}\n\
          caps       bounding set dropped to CAP_NET_BIND_SERVICE only\n\
-         seccomp    default-deny, {} syscalls allowed, argument rules on {:?}",
+         seccomp    default-deny, {} syscalls allowed, argument rules on {:?}\n\
+         {}",
         zone.name,
         ns.join(", "),
         zone.name,
@@ -1095,6 +1134,7 @@ pub fn explain(zone: &Zone, rootfs: &str) -> String {
         ENV_PASSTHROUGH.join(" "),
         seccomp::BASE_ALLOWLIST.len(),
         seccomp::ARG_RULES,
+        policy_line,
     )
 }
 
@@ -1123,8 +1163,8 @@ mod tests {
 
     #[test]
     fn explain_names_the_identity_range_or_its_absence() {
-        assert!(explain(&z_identity(196608), "/tmp/t").contains("uid_base 196608"));
-        assert!(explain(&z("routed"), "/tmp/t").contains("none declared"));
+        assert!(explain(&z_identity(196608), "/tmp/t", std::path::Path::new("/nonexistent")).contains("uid_base 196608"));
+        assert!(explain(&z("routed"), "/tmp/t", std::path::Path::new("/nonexistent")).contains("none declared"));
     }
 
     fn z_encrypted() -> Zone {
@@ -1144,7 +1184,7 @@ mod tests {
 
     #[test]
     fn explain_names_the_namespaces_and_is_honest_about_storage() {
-        let e = explain(&z("none"), "/tmp/t");
+        let e = explain(&z("none"), "/tmp/t", std::path::Path::new("/nonexistent"));
         assert!(e.contains("user"), "{e}");
         assert!(e.contains("net"), "{e}");
         // Ephemeral storage IS implemented now, so the old assertion - that
@@ -1161,7 +1201,7 @@ mod tests {
         );
 
         // The other mode is still unimplemented, and must still say so.
-        let enc = explain(&z_encrypted(), "/tmp/t");
+        let enc = explain(&z_encrypted(), "/tmp/t", std::path::Path::new("/nonexistent"));
         assert!(enc.contains("NOT YET IMPLEMENTED"), "{enc}");
     }
 
@@ -1228,7 +1268,7 @@ mod tests {
             // test below only when not root.
             return;
         }
-        let err = launch_identity(&RunOptions { zone_uid: Some(1001), zone_gid: Some(1001) }, &z("routed")).unwrap_err();
+        let err = launch_identity(&RunOptions { zone_uid: Some(1001), zone_gid: Some(1001), ..Default::default() }, &z("routed")).unwrap_err();
         assert!(err.to_string().contains("need root"), "{err}");
         let id = launch_identity(&RunOptions::default(), &z("routed")).unwrap();
         assert_eq!(id.uid, unsafe { libc::getuid() });
@@ -1241,13 +1281,13 @@ mod tests {
             return;
         }
         assert!(launch_identity(&RunOptions::default(), &z("routed")).is_err());
-        assert!(launch_identity(&RunOptions { zone_uid: Some(0), zone_gid: Some(0) }, &z("routed")).is_err());
-        let id = launch_identity(&RunOptions { zone_uid: Some(100000), zone_gid: Some(100000) }, &z("routed")).unwrap();
+        assert!(launch_identity(&RunOptions { zone_uid: Some(0), zone_gid: Some(0), ..Default::default() }, &z("routed")).is_err());
+        let id = launch_identity(&RunOptions { zone_uid: Some(100000), zone_gid: Some(100000), ..Default::default() }, &z("routed")).unwrap();
         assert!(id.privileged);
         // A declared identity wins, and an override of it is refused.
         let id = launch_identity(&RunOptions::default(), &z_identity(196608)).unwrap();
         assert_eq!((id.uid, id.gid), (196608, 196608));
-        let err = launch_identity(&RunOptions { zone_uid: Some(100000), zone_gid: Some(100000) }, &z_identity(196608)).unwrap_err();
+        let err = launch_identity(&RunOptions { zone_uid: Some(100000), zone_gid: Some(100000), ..Default::default() }, &z_identity(196608)).unwrap_err();
         assert!(err.to_string().contains("not accepted"), "{err}");
     }
 }

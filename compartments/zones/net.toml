@@ -23,7 +23,6 @@ size = "512M"
 
 [policy]
 seccomp  = "policy/net.seccomp"
-landlock = "policy/net.landlock"
 
 [limits]
 memory_max = "1G"
