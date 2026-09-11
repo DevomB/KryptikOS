@@ -77,14 +77,40 @@ say "END"
 echo
 
 # --- and shut down, which is itself under test ----------------------------
+# --- the shutdown path, before we depend on it -----------------------------
+# /sbin/poweroff is s6-linux-init-hpr, which writes to shutdownd's fifo under
+# /run/s6-linux-init. Stage 1 warned it could not write /run/s6-linux-init/env,
+# so report what is actually there rather than inferring it from the hang.
+say "run_entries=$(ls -A /run 2>/dev/null | tr '
+' ' ')"
+# The fifo s6-linux-init-hpr actually opens. The first version of this check
+# looked under /run/s6-linux-init and reported "absent" about a path nothing
+# uses - the fifo lives in shutdownd's own service directory, which `strings`
+# on the hpr binary says plainly.
+say "shutdownd_dir=$(ls -A /run/service/s6-linux-init-shutdownd 2>/dev/null | tr '
+' ' ')"
+if s6-svstat /run/service/s6-linux-init-shutdownd >/dev/null 2>&1; then
+    say "svc_shutdownd=$(s6-svstat -o up /run/service/s6-linux-init-shutdownd 2>/dev/null)"
+else
+    say "svc_shutdownd=not-supervised"
+fi
+
 say "POWEROFF"
-say "shutdownd_fifo=$( [ -p /run/s6-linux-init/shutdownd/fifo ] && echo present || echo absent )"
+say "shutdownd_fifo=$( [ -p /run/service/s6-linux-init-shutdownd/fifo ] && echo present || echo absent )"
 /sbin/poweroff || say "poweroff_rc=$?"
 
 # If the clean path works we never reach the next line. If we do reach it, say
 # so in terms that cannot be read as a clean shutdown, then stop the machine so
 # a broken shutdown costs one line instead of the whole timeout.
-sleep 10
-say "POWEROFF_DID_NOT_TAKE_EFFECT"
+# shutdownd runs rc.shutdown, signals every service, and waits out its grace
+# time (-g 3000) before it powers the machine off. Ten seconds was not a
+# verdict on the shutdown path, it was a verdict on the timer: give it long
+# enough that reaching the next line means something.
+i=0
+while [ "$i" -lt 45 ]; do
+    sleep 1
+    i=$((i + 1))
+done
+say "POWEROFF_DID_NOT_TAKE_EFFECT after ${i}s"
 sync
 [ -w /proc/sysrq-trigger ] && echo o > /proc/sysrq-trigger
