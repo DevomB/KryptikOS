@@ -278,7 +278,16 @@ REG="${XDG_RUNTIME_DIR:-/tmp/kryptik-$(id -u)}/kryptik/zones"
 # dozens of "did not launch" failures that describe nothing about the code. It
 # has happened once already: 56 failures, every one of them the same sentence.
 # Say the real thing once, and stop.
+# Only the names THIS suite uses. The registry is per-uid and shared across
+# every checkout on the machine, so another tab running its own fixture - a
+# `probe` zone, say - would otherwise stop this suite dead with a message about
+# a zone it has never heard of and does not touch. It happened.
+mine="$(cd "$ZONES" && ls ./*.toml 2>/dev/null | sed 's|^\./||; s|\.toml$||' | tr '\n' '|')"
+mine="${mine%|}"
 if running="$("$KRYPTIKD" list --running 2>/dev/null)"; then
+    if [[ -n "$mine" ]]; then
+        running="$(printf '%s\n' "$running" | grep -E "^(${mine})[[:space:]]" || true)"
+    fi
     if [[ "$running" != *"no zones are running"* && -n "${running//[[:space:]]/}" ]]; then
         printf '\n%s\n' "kryptikd reports zones already running:" >&2
         printf '%s\n' "$running" | sed 's/^/    /' >&2

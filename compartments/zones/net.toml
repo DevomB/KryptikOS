@@ -13,6 +13,9 @@ description = "Sole holder of a physical network route."
 mode = "nic"
 # Zones with mode = "routed" get a veth into this bridge.
 bridge = "kryptik0"
+# The physical interface this zone takes out of zone 0 when it starts. Named
+# explicitly: kryptikd never guesses which NIC to move.
+nic = "eth0"
 
 [storage]
 mode = "ephemeral"
@@ -23,11 +26,15 @@ size = "512M"
 
 [policy]
 seccomp  = "policy/net.seccomp"
-landlock = "policy/net.landlock"
 
 [limits]
 memory_max = "1G"
 pids_max   = 256
+
+[identity]
+# Fixed host uid/gid range for this zone: root inside maps to 196608,
+# nobody to 262142. Never derived from zone order; see docs/design/01.
+uid_base = 196608
 
 [ui]
 border_color = "#2f6f9f"

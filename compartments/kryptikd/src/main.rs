@@ -14,6 +14,9 @@ mod caps;
 mod cgroup;
 mod isolate;
 mod landlock;
+mod netlink;
+mod netzone;
+mod policy;
 mod registry;
 mod rootfs;
 mod seccomp;
@@ -33,6 +36,9 @@ fn usage() -> &'static str {
 
 USAGE:
     kryptikd check [--zones DIR]      verify kernel support and validate zones
+                   [--target]         and require what a Kryptik kernel must have:
+                                      root, unprivileged userns restricted, cgroup2
+                                      with memory+pids, every zone with [identity]
     kryptikd list  [--zones DIR]      list configured zones
     kryptikd show  NAME [--zones DIR]
     kryptikd explain NAME             what starting this zone would do
@@ -64,7 +70,7 @@ fn main() -> ExitCode {
     let zone_dir = zone_dir_from(&args);
 
     match args[0].as_str() {
-        "check" => cmd_check(&zone_dir),
+        "check" => cmd_check(&zone_dir, args.iter().any(|a| a == "--target")),
         "list" if args.iter().any(|a| a == "--running") => cmd_list_running(),
         "list" => cmd_list(&zone_dir),
         "show" => match args.get(1) {
@@ -398,8 +404,16 @@ fn zone_dir_from(args: &[String]) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(DEFAULT_ZONE_DIR))
 }
 
-fn cmd_check(dir: &Path) -> ExitCode {
+fn cmd_check(dir: &Path, target: bool) -> ExitCode {
     let mut failed = false;
+    let euid = unsafe { libc::geteuid() };
+    if target {
+        println!("target contract: required (--target)");
+        if euid != 0 {
+            eprintln!("  --target must run as root: zones on a Kryptik kernel are created by a root kryptikd");
+            failed = true;
+        }
+    }
 
     println!("kernel support:");
     let s = KernelSupport::probe();
@@ -442,6 +456,51 @@ fn cmd_check(dir: &Path) -> ExitCode {
         Err(e) => eprintln!("  seccomp filter   could not self-test: {e}"),
     }
 
+    // Design 01, P2: on the target, only a process with CAP_SYS_ADMIN in the
+    // initial namespace may create a user namespace. Read the knob, then
+    // PROVE it by trying as uid 65534 (or as ourselves when unprivileged).
+    let knob = isolate::userns_restriction_sysctl();
+    match isolate::probe_userns_restriction() {
+        Ok(true) => println!(
+            "  unpriv userns    restricted (EPERM{})",
+            knob.map(|(_, k)| format!("; {k}")).unwrap_or_default()
+        ),
+        Ok(false) => {
+            println!(
+                "  unpriv userns    ALLOWED{} - a developer kernel, not the target",
+                knob.map(|(_, k)| format!(" ({k})")).unwrap_or_default()
+            );
+            if target {
+                eprintln!("  --target: this kernel lets unprivileged processes create user namespaces");
+                failed = true;
+            }
+        }
+        Err(e) => {
+            println!("  unpriv userns    could not probe: {e}");
+            if target {
+                failed = true;
+            }
+        }
+    }
+    if target {
+        // The controllers M1 needs must be delegable from the root; the actual
+        // creation is tried by every launch, this only names a missing one.
+        let ctl = std::fs::read_to_string("/sys/fs/cgroup/cgroup.controllers").unwrap_or_default();
+        for c in ["memory", "pids"] {
+            if !ctl.split_whitespace().any(|x| x == c) {
+                eprintln!("  --target: cgroup v2 root does not offer the {c} controller");
+                failed = true;
+            }
+        }
+        match s.landlock {
+            Some(v) if v >= landlock::MIN_ABI => {}
+            _ => {
+                eprintln!("  --target: landlock ABI {} or newer is required", landlock::MIN_ABI);
+                failed = true;
+            }
+        }
+    }
+
     let missing = s.missing();
     if !missing.is_empty() {
         println!();
@@ -464,7 +523,35 @@ fn cmd_check(dir: &Path) -> ExitCode {
                     zone::NetworkMode::Routed => "routed via nic zone",
                     zone::NetworkMode::Nic => "HOLDS PHYSICAL NIC",
                 };
-                println!("  {:<10} {:<20} {}", z.name, net, z.border_color);
+                let ident = match z.uid_base {
+                    Some(b) => format!("uid_base {b}"),
+                    None => "no [identity]".to_string(),
+                };
+                println!("  {:<10} {:<20} {:<16} {}", z.name, net, ident, z.border_color);
+                if let Some(rel) = &z.seccomp {
+                    match policy::load(&policy::resolve(dir, rel)) {
+                        Ok(p) => {
+                            println!("             policy {rel}: {}", p.describe());
+                            for w in &p.warnings {
+                                println!("             note: {w}");
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("             policy {rel}: {e}");
+                            failed = true;
+                        }
+                    }
+                }
+                if z.landlock.is_some() {
+                    println!("             landlock policy file: not applied (unimplemented; refused without the override)");
+                }
+                if target && z.uid_base.is_none() {
+                    eprintln!(
+                        "  --target: zone {:?} declares no [identity] uid_base; a root launch cannot start it",
+                        z.name
+                    );
+                    failed = true;
+                }
             }
             println!();
             println!("  {} zone(s), invariants hold", zones.len());
@@ -592,7 +679,7 @@ fn cmd_explain(dir: &Path, name: &str, args: &[String]) -> ExitCode {
     };
     let base = rootfs_base_from(args);
     let rootfs = spawn::zone_rootfs(&zone, &base);
-    println!("{}", spawn::explain(&zone, &rootfs));
+    println!("{}", spawn::explain(&zone, &rootfs, dir));
     ExitCode::SUCCESS
 }
 
@@ -689,6 +776,7 @@ fn run_options_from(args: &[String]) -> Result<spawn::RunOptions, String> {
     Ok(spawn::RunOptions {
         zone_uid: num("--zone-uid")?,
         zone_gid: num("--zone-gid")?,
+        zones_dir: std::path::PathBuf::new(),
     })
 }
 
@@ -717,13 +805,14 @@ fn cmd_run(dir: &Path, args: &[String]) -> ExitCode {
     let base = rootfs_base_from(args);
     let rootfs = spawn::zone_rootfs(&zone, &base);
     // Options live before `--`; the command after it is never inspected.
-    let opts = match run_options_from(&args[..sep]) {
+    let mut opts = match run_options_from(&args[..sep]) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("run: {e}");
             return ExitCode::from(2);
         }
     };
+    opts.zones_dir = dir.to_path_buf();
 
     match spawn::run_in_zone(&zone, &rootfs, &cmd, &opts) {
         Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),

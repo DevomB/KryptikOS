@@ -88,13 +88,54 @@ const TIOCLINUX: u32 = 0x541C;
 /// netlink families - NETLINK_NETFILTER in particular, the nf_tables LPE
 /// surface - are refused. The `net` zone's DHCP client will need AF_PACKET;
 /// that belongs in its per-zone policy, not the base.
-const AF_UNIX: u32 = 1;
-const AF_INET: u32 = 2;
-const AF_INET6: u32 = 10;
-const AF_NETLINK: u32 = 16;
-const NETLINK_ROUTE: u32 = 0;
+pub const AF_UNIX: u32 = 1;
+pub const AF_INET: u32 = 2;
+pub const AF_INET6: u32 = 10;
+pub const AF_NETLINK: u32 = 16;
+pub const NETLINK_ROUTE: u32 = 0;
 const EAFNOSUPPORT: u32 = 97;
 const ENOSYS: u32 = 38;
+
+/// Families the base policy allows outright (AF_NETLINK only with
+/// NETLINK_ROUTE; see `SocketPolicy`).
+pub const BASE_SOCKET_FAMILIES: &[u32] = &[AF_UNIX, AF_INET, AF_INET6, AF_NETLINK];
+
+/// The families a zone policy may name. Numbers from <linux/socket.h>.
+pub const SOCKET_FAMILY_NAMES: &[(&str, u32)] = &[
+    ("AF_UNIX", AF_UNIX), ("AF_INET", AF_INET), ("AF_INET6", AF_INET6), ("AF_NETLINK", AF_NETLINK),
+    ("AF_PACKET", 17), ("AF_KEY", 15), ("AF_RDS", 21), ("AF_CAN", 29), ("AF_TIPC", 30),
+    ("AF_BLUETOOTH", 31), ("AF_ALG", 38), ("AF_VSOCK", 40), ("AF_XDP", 44),
+];
+
+/// The netlink protocols a zone policy may name. Numbers from <linux/netlink.h>.
+pub const NETLINK_PROTOCOL_NAMES: &[(&str, u32)] = &[
+    ("NETLINK_ROUTE", NETLINK_ROUTE), ("NETLINK_XFRM", 6), ("NETLINK_AUDIT", 9),
+    ("NETLINK_NETFILTER", 12), ("NETLINK_KOBJECT_UEVENT", 15), ("NETLINK_GENERIC", 16),
+];
+
+pub fn socket_family_by_name(name: &str) -> Option<u32> {
+    SOCKET_FAMILY_NAMES.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
+}
+
+pub fn netlink_protocol_by_name(name: &str) -> Option<u32> {
+    NETLINK_PROTOCOL_NAMES.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
+}
+
+/// What a zone policy adds to the socket(2) rule. Empty = the base rule.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SocketPolicy {
+    /// Extra families allowed outright (never AF_NETLINK: see `netlink_all`).
+    pub families: Vec<u32>,
+    /// Extra netlink protocols allowed besides NETLINK_ROUTE.
+    pub netlink_protocols: Vec<u32>,
+    /// AF_NETLINK allowed with any protocol.
+    pub netlink_all: bool,
+}
+
+/// Is this syscall on the base denied list? A zone policy cannot re-allow it.
+pub fn is_denied(nr: libc::c_long) -> bool {
+    DENIED_RATIONALE.iter().any(|(n, _)| *n == nr)
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -371,7 +412,7 @@ const fn errno_action(e: u32) -> u32 {
 /// the whole block when the number does not match, so the accumulator still
 /// holds the number for whatever follows. Every path inside a matched block
 /// ends in a `ret`.
-fn emit_arg_rule(p: &mut Vec<SockFilter>, rule: ArgRule, deny_action: u32) {
+fn emit_arg_rule(p: &mut Vec<SockFilter>, rule: ArgRule, deny_action: u32, sockets: &SocketPolicy) {
     let body: Vec<SockFilter> = match rule {
         ArgRule::CloneNoNamespaces => vec![
             stmt(BPF_LD | BPF_W | BPF_ABS, arg_lo(0)),
@@ -387,17 +428,66 @@ fn emit_arg_rule(p: &mut Vec<SockFilter>, rule: ArgRule, deny_action: u32) {
             stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
             stmt(BPF_RET | BPF_K, deny_action),
         ],
-        ArgRule::SocketFamilies => vec![
-            stmt(BPF_LD | BPF_W | BPF_ABS, arg_lo(0)),
-            jump(BPF_JMP | BPF_JEQ | BPF_K, AF_UNIX, 5, 0),
-            jump(BPF_JMP | BPF_JEQ | BPF_K, AF_INET, 4, 0),
-            jump(BPF_JMP | BPF_JEQ | BPF_K, AF_INET6, 3, 0),
-            jump(BPF_JMP | BPF_JEQ | BPF_K, AF_NETLINK, 0, 3),
-            stmt(BPF_LD | BPF_W | BPF_ABS, arg_lo(2)),
-            jump(BPF_JMP | BPF_JEQ | BPF_K, NETLINK_ROUTE, 0, 1),
-            stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
-            stmt(BPF_RET | BPF_K, errno_action(EAFNOSUPPORT)),
-        ],
+        // Generated rather than hand-numbered, because a zone policy can add
+        // families and netlink protocols. Layout:
+        //
+        //   ld args[0]                       ; family
+        //   jeq FAM_i  -> ALLOW              ; for each allowed family
+        //   [ jeq AF_NETLINK ? next : DENY   ; unless netlink_all
+        //     ld args[2]                     ; protocol
+        //     jeq PROTO_j -> ALLOW ]         ; for each allowed protocol
+        //   ret ALLOW
+        //   ret ERRNO(EAFNOSUPPORT)
+        //
+        // The last comparison before `ret ALLOW` falls through to DENY on a
+        // miss; every other miss falls through to the next comparison.
+        ArgRule::SocketFamilies => {
+            let mut fams: Vec<u32> = vec![AF_UNIX, AF_INET, AF_INET6];
+            for f in &sockets.families {
+                if !fams.contains(f) && *f != AF_NETLINK {
+                    fams.push(*f);
+                }
+            }
+            if sockets.netlink_all {
+                fams.push(AF_NETLINK);
+            }
+            let mut protos: Vec<u32> = vec![NETLINK_ROUTE];
+            for pr in &sockets.netlink_protocols {
+                if !protos.contains(pr) {
+                    protos.push(*pr);
+                }
+            }
+            let netlink_block = !sockets.netlink_all;
+            let n = fams.len();
+            let nl_len = if netlink_block { 2 + protos.len() } else { 0 };
+            let allow_idx = 1 + n + nl_len;
+            let deny_idx = allow_idx + 1;
+            let off = |from: usize, to: usize| -> u8 {
+                let d = to - (from + 1);
+                assert!(d <= 255, "socket rule too long for a BPF jump");
+                d as u8
+            };
+            let mut body = Vec::with_capacity(deny_idx + 1);
+            body.push(stmt(BPF_LD | BPF_W | BPF_ABS, arg_lo(0)));
+            for (i, f) in fams.iter().enumerate() {
+                let idx = 1 + i;
+                let jf = if idx + 1 == allow_idx { off(idx, deny_idx) } else { 0 };
+                body.push(jump(BPF_JMP | BPF_JEQ | BPF_K, *f, off(idx, allow_idx), jf));
+            }
+            if netlink_block {
+                let idx = 1 + n;
+                body.push(jump(BPF_JMP | BPF_JEQ | BPF_K, AF_NETLINK, 0, off(idx, deny_idx)));
+                body.push(stmt(BPF_LD | BPF_W | BPF_ABS, arg_lo(2)));
+                for (j, pr) in protos.iter().enumerate() {
+                    let idx = 1 + n + 2 + j;
+                    let jf = if idx + 1 == allow_idx { off(idx, deny_idx) } else { 0 };
+                    body.push(jump(BPF_JMP | BPF_JEQ | BPF_K, *pr, off(idx, allow_idx), jf));
+                }
+            }
+            body.push(stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
+            body.push(stmt(BPF_RET | BPF_K, errno_action(EAFNOSUPPORT)));
+            body
+        }
     };
     let nr = match rule {
         ArgRule::CloneNoNamespaces => libc::SYS_clone,
@@ -434,6 +524,14 @@ fn build_program_with(
     allow: &[libc::c_long],
     deny_action: u32,
 ) -> Result<Vec<SockFilter>, SeccompError> {
+    build_program_full(allow, deny_action, &SocketPolicy::default())
+}
+
+fn build_program_full(
+    allow: &[libc::c_long],
+    deny_action: u32,
+    sockets: &SocketPolicy,
+) -> Result<Vec<SockFilter>, SeccompError> {
     let mut p = Vec::with_capacity(allow.len() * 2 + 8);
 
     p.push(stmt(BPF_LD | BPF_W | BPF_ABS, OFF_ARCH));
@@ -457,7 +555,7 @@ fn build_program_with(
     // Argument-inspected syscalls are decided here, before the plain
     // allowlist can wave them through.
     for &rule in ARG_RULES {
-        emit_arg_rule(&mut p, rule, deny_action);
+        emit_arg_rule(&mut p, rule, deny_action, sockets);
     }
 
     for &nr in allow {
@@ -491,21 +589,25 @@ fn build_program_with(
 /// Irreversible. TSYNC applies it to every thread in the process, so a
 /// multi-threaded program cannot leave one thread unfiltered.
 pub fn install(allow: &[libc::c_long]) -> Result<(), SeccompError> {
-    install_with(allow, SECCOMP_RET_KILL_PROCESS)
+    install_with(allow, SECCOMP_RET_KILL_PROCESS, &SocketPolicy::default())
 }
 
 /// Install the same filter but raise SIGSYS instead of killing, so a handler
 /// can report which syscall was denied. Diagnostics only.
 pub fn install_tracing(allow: &[libc::c_long]) -> Result<(), SeccompError> {
-    install_with(allow, SECCOMP_RET_TRAP)
+    install_with(allow, SECCOMP_RET_TRAP, &SocketPolicy::default())
 }
 
-fn install_with(allow: &[libc::c_long], deny_action: u32) -> Result<(), SeccompError> {
+fn install_with(
+    allow: &[libc::c_long],
+    deny_action: u32,
+    sockets: &SocketPolicy,
+) -> Result<(), SeccompError> {
     if !cfg!(target_arch = "x86_64") {
         return Err(SeccompError::UnsupportedArch);
     }
 
-    let prog = build_program_with(allow, deny_action)?;
+    let prog = build_program_full(allow, deny_action, sockets)?;
 
     // Required before seccomp for an unprivileged caller, and it is what stops
     // a setuid binary executed later from regaining what the filter removed.
@@ -544,26 +646,89 @@ pub fn confine_zone() -> Result<(), SeccompError> {
     install(BASE_ALLOWLIST)
 }
 
-/// Look up a syscall number by name, for the test harness.
+/// Install the zone filter widened by a zone policy: the base allowlist plus
+/// `extra` syscalls (already checked against the denied list by the policy
+/// parser; checked again here, because this is the last line of defence and
+/// the parser is not), and the socket rule widened by `sockets`.
+pub fn confine_zone_with(extra: &[libc::c_long], sockets: &SocketPolicy) -> Result<(), SeccompError> {
+    let mut allow: Vec<libc::c_long> = BASE_ALLOWLIST.to_vec();
+    for &nr in extra {
+        if is_denied(nr) {
+            return Err(SeccompError::BadSyscallNumber(nr));
+        }
+        if !allow.contains(&nr) {
+            allow.push(nr);
+        }
+    }
+    install_with(&allow, SECCOMP_RET_KILL_PROCESS, sockets)
+}
+
+/// The vocabulary of syscall names a zone policy (and the test harness) may
+/// use. Not every x86-64 syscall: the ones a policy could plausibly need to
+/// add, plus every denied one so that `allow-syscall ptrace` is refused by
+/// name rather than failing as "unknown".
+pub const SYSCALL_NAMES: &[(&str, libc::c_long)] = &[
+    // denied (named so the refusal is explicit)
+    ("ptrace", libc::SYS_ptrace), ("process_vm_readv", libc::SYS_process_vm_readv),
+    ("process_vm_writev", libc::SYS_process_vm_writev), ("mount", libc::SYS_mount),
+    ("umount2", libc::SYS_umount2), ("pivot_root", libc::SYS_pivot_root), ("chroot", libc::SYS_chroot),
+    ("unshare", libc::SYS_unshare), ("setns", libc::SYS_setns), ("bpf", libc::SYS_bpf),
+    ("perf_event_open", libc::SYS_perf_event_open), ("userfaultfd", libc::SYS_userfaultfd),
+    ("keyctl", libc::SYS_keyctl), ("add_key", libc::SYS_add_key), ("request_key", libc::SYS_request_key),
+    ("init_module", libc::SYS_init_module), ("finit_module", libc::SYS_finit_module),
+    ("delete_module", libc::SYS_delete_module), ("kexec_load", libc::SYS_kexec_load),
+    ("reboot", libc::SYS_reboot), ("swapon", libc::SYS_swapon), ("swapoff", libc::SYS_swapoff),
+    ("setuid", libc::SYS_setuid), ("setgid", libc::SYS_setgid), ("ioperm", libc::SYS_ioperm),
+    ("iopl", libc::SYS_iopl), ("quotactl", libc::SYS_quotactl),
+    ("open_by_handle_at", libc::SYS_open_by_handle_at), ("name_to_handle_at", libc::SYS_name_to_handle_at),
+    ("chown", libc::SYS_chown), ("fchown", libc::SYS_fchown), ("lchown", libc::SYS_lchown),
+    ("fchownat", libc::SYS_fchownat), ("fsopen", libc::SYS_fsopen), ("fsconfig", libc::SYS_fsconfig),
+    ("fsmount", libc::SYS_fsmount), ("fspick", libc::SYS_fspick), ("move_mount", libc::SYS_move_mount),
+    ("open_tree", libc::SYS_open_tree), ("mount_setattr", libc::SYS_mount_setattr),
+    ("io_uring_setup", libc::SYS_io_uring_setup), ("io_uring_enter", libc::SYS_io_uring_enter),
+    ("io_uring_register", libc::SYS_io_uring_register), ("pidfd_getfd", libc::SYS_pidfd_getfd),
+    ("kcmp", libc::SYS_kcmp), ("sethostname", libc::SYS_sethostname), ("setdomainname", libc::SYS_setdomainname),
+    ("setgroups", libc::SYS_setgroups), ("setresuid", libc::SYS_setresuid), ("setresgid", libc::SYS_setresgid),
+    ("setreuid", libc::SYS_setreuid), ("setregid", libc::SYS_setregid), ("setfsuid", libc::SYS_setfsuid),
+    ("setfsgid", libc::SYS_setfsgid), ("capset", libc::SYS_capset), ("personality", libc::SYS_personality),
+    // allowed by the base (named so a redundant line is a warning, not "unknown")
+    ("read", libc::SYS_read), ("write", libc::SYS_write), ("openat", libc::SYS_openat),
+    ("close", libc::SYS_close), ("getpid", libc::SYS_getpid), ("clone", libc::SYS_clone),
+    ("clone3", libc::SYS_clone3), ("execve", libc::SYS_execve), ("socket", libc::SYS_socket),
+    ("ioctl", libc::SYS_ioctl), ("prctl", libc::SYS_prctl), ("mknod", libc::SYS_mknod),
+    ("chmod", libc::SYS_chmod), ("memfd_create", libc::SYS_memfd_create), ("capget", libc::SYS_capget),
+    // plausible additions for specific zones
+    ("adjtimex", libc::SYS_adjtimex), ("clock_adjtime", libc::SYS_clock_adjtime),
+    ("clock_settime", libc::SYS_clock_settime), ("settimeofday", libc::SYS_settimeofday),
+    ("sched_setscheduler", libc::SYS_sched_setscheduler), ("sched_setparam", libc::SYS_sched_setparam),
+    ("ioprio_set", libc::SYS_ioprio_set), ("ioprio_get", libc::SYS_ioprio_get),
+    ("mlockall", libc::SYS_mlockall), ("munlockall", libc::SYS_munlockall), ("mlock2", libc::SYS_mlock2),
+    ("rt_sigqueueinfo", libc::SYS_rt_sigqueueinfo), ("rt_tgsigqueueinfo", libc::SYS_rt_tgsigqueueinfo),
+    ("pidfd_open", libc::SYS_pidfd_open), ("pidfd_send_signal", libc::SYS_pidfd_send_signal),
+    ("process_madvise", libc::SYS_process_madvise), ("msync", libc::SYS_msync),
+    ("mincore", libc::SYS_mincore), ("remap_file_pages", libc::SYS_remap_file_pages),
+    ("timer_create", libc::SYS_timer_create), ("timer_settime", libc::SYS_timer_settime),
+    ("timer_gettime", libc::SYS_timer_gettime), ("timer_delete", libc::SYS_timer_delete),
+    ("timer_getoverrun", libc::SYS_timer_getoverrun), ("semget", libc::SYS_semget),
+    ("semop", libc::SYS_semop), ("semctl", libc::SYS_semctl), ("shmget", libc::SYS_shmget),
+    ("shmat", libc::SYS_shmat), ("shmdt", libc::SYS_shmdt), ("shmctl", libc::SYS_shmctl),
+    ("msgget", libc::SYS_msgget), ("msgsnd", libc::SYS_msgsnd), ("msgrcv", libc::SYS_msgrcv),
+    ("msgctl", libc::SYS_msgctl), ("mq_open", libc::SYS_mq_open), ("mq_unlink", libc::SYS_mq_unlink),
+    ("mq_timedsend", libc::SYS_mq_timedsend), ("mq_timedreceive", libc::SYS_mq_timedreceive),
+    ("mq_notify", libc::SYS_mq_notify), ("mq_getsetattr", libc::SYS_mq_getsetattr),
+    ("setxattr", libc::SYS_setxattr), ("lsetxattr", libc::SYS_lsetxattr), ("fsetxattr", libc::SYS_fsetxattr),
+    ("removexattr", libc::SYS_removexattr), ("lremovexattr", libc::SYS_lremovexattr),
+    ("fremovexattr", libc::SYS_fremovexattr), ("fanotify_init", libc::SYS_fanotify_init),
+    ("fanotify_mark", libc::SYS_fanotify_mark), ("sched_getattr", libc::SYS_sched_getattr),
+    ("sched_setattr", libc::SYS_sched_setattr), ("vhangup", libc::SYS_vhangup),
+    ("syslog", libc::SYS_syslog), ("acct", libc::SYS_acct), ("getpgid", libc::SYS_getpgid),
+    ("seccomp", libc::SYS_seccomp), ("landlock_create_ruleset", libc::SYS_landlock_create_ruleset),
+    ("landlock_add_rule", libc::SYS_landlock_add_rule), ("landlock_restrict_self", libc::SYS_landlock_restrict_self),
+];
+
+/// Look up a syscall number by name, for policy files and the test harness.
 pub fn syscall_by_name(name: &str) -> Option<libc::c_long> {
-    Some(match name {
-        "ptrace" => libc::SYS_ptrace,
-        "setns" => libc::SYS_setns,
-        "unshare" => libc::SYS_unshare,
-        "mount" => libc::SYS_mount,
-        "bpf" => libc::SYS_bpf,
-        "perf_event_open" => libc::SYS_perf_event_open,
-        "userfaultfd" => libc::SYS_userfaultfd,
-        "keyctl" => libc::SYS_keyctl,
-        "init_module" => libc::SYS_init_module,
-        "kexec_load" => libc::SYS_kexec_load,
-        "process_vm_readv" => libc::SYS_process_vm_readv,
-        "pivot_root" => libc::SYS_pivot_root,
-        "chroot" => libc::SYS_chroot,
-        "getpid" => libc::SYS_getpid,
-        "write" => libc::SYS_write,
-        _ => return None,
-    })
+    SYSCALL_NAMES.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
 }
 
 /// Best-effort name for a syscall number, for diagnostics.
@@ -614,7 +779,7 @@ mod tests {
         // 4 prologue + 2 x32 + arg rules + 2 per syscall + 1 default deny
         let mut rules = Vec::new();
         for &r in ARG_RULES {
-            emit_arg_rule(&mut rules, r, SECCOMP_RET_KILL_PROCESS);
+            emit_arg_rule(&mut rules, r, SECCOMP_RET_KILL_PROCESS, &SocketPolicy::default());
         }
         assert_eq!(p.len(), 3 + 1 + 2 + rules.len() + 4 + 1);
         assert_eq!(p[0].code, BPF_LD | BPF_W | BPF_ABS);
@@ -970,5 +1135,82 @@ mod tests {
         for nr in [libc::SYS_chown, libc::SYS_fchown, libc::SYS_fchownat, libc::SYS_lchown] {
             assert!(!allowed.contains(&nr), "chown family must stay denied");
         }
+    }
+
+    // --- zone policy widenings ---------------------------------------------
+
+    #[test]
+    fn a_widened_socket_rule_allows_exactly_the_named_extras() {
+        let sp = SocketPolicy { families: vec![17], netlink_protocols: vec![12], netlink_all: false };
+        let p = build_program_full(BASE_ALLOWLIST, SECCOMP_RET_KILL_PROCESS, &sp).unwrap();
+        // The base families still pass...
+        for fam in [AF_UNIX, AF_INET, AF_INET6] {
+            assert_eq!(evaluate_args(&p, X86, libc::SYS_socket as u32, with_arg(0, fam as u64)), SECCOMP_RET_ALLOW, "{fam}");
+        }
+        // ...the extra family passes...
+        assert_eq!(evaluate_args(&p, X86, libc::SYS_socket as u32, with_arg(0, 17)), SECCOMP_RET_ALLOW);
+        // ...an unnamed family still does not...
+        assert_eq!(evaluate_args(&p, X86, libc::SYS_socket as u32, with_arg(0, 40)), errno_action(EAFNOSUPPORT));
+        // ...NETLINK_ROUTE and the extra protocol pass, another does not.
+        let mut a = [0u64; 6];
+        a[0] = AF_NETLINK as u64;
+        for (proto, want) in [(0u64, SECCOMP_RET_ALLOW), (12, SECCOMP_RET_ALLOW), (9, errno_action(EAFNOSUPPORT))] {
+            a[2] = proto;
+            assert_eq!(evaluate_args(&p, X86, libc::SYS_socket as u32, a), want, "netlink proto {proto}");
+        }
+        // Everything else in the program is untouched by the widening.
+        assert_eq!(evaluate_args(&p, X86, libc::SYS_ptrace as u32, [0; 6]), SECCOMP_RET_KILL_PROCESS);
+        assert_eq!(evaluate_args(&p, X86, libc::SYS_read as u32, [0; 6]), SECCOMP_RET_ALLOW);
+        for (i, ins) in p.iter().enumerate() {
+            if ins.code & 0x07 == BPF_JMP {
+                assert!((i + 1 + ins.jt as usize) < p.len() && (i + 1 + ins.jf as usize) < p.len(), "instruction {i} jumps off the end");
+            }
+        }
+    }
+
+    #[test]
+    fn allow_socket_af_netlink_lifts_the_protocol_check_in_the_program() {
+        let sp = SocketPolicy { families: vec![], netlink_protocols: vec![], netlink_all: true };
+        let p = build_program_full(BASE_ALLOWLIST, SECCOMP_RET_KILL_PROCESS, &sp).unwrap();
+        let mut a = [0u64; 6];
+        a[0] = AF_NETLINK as u64;
+        a[2] = 12;
+        assert_eq!(evaluate_args(&p, X86, libc::SYS_socket as u32, a), SECCOMP_RET_ALLOW);
+        assert_eq!(evaluate_args(&p, X86, libc::SYS_socket as u32, with_arg(0, 17)), errno_action(EAFNOSUPPORT));
+    }
+
+    #[test]
+    fn the_generated_base_socket_block_matches_the_original_hand_written_one() {
+        let mut generated = Vec::new();
+        emit_arg_rule(&mut generated, ArgRule::SocketFamilies, SECCOMP_RET_KILL_PROCESS, &SocketPolicy::default());
+        let expected = [
+            (BPF_LD | BPF_W | BPF_ABS, 0, 0, arg_lo(0)),
+            (BPF_JMP | BPF_JEQ | BPF_K, 5, 0, AF_UNIX),
+            (BPF_JMP | BPF_JEQ | BPF_K, 4, 0, AF_INET),
+            (BPF_JMP | BPF_JEQ | BPF_K, 3, 0, AF_INET6),
+            (BPF_JMP | BPF_JEQ | BPF_K, 0, 3, AF_NETLINK),
+            (BPF_LD | BPF_W | BPF_ABS, 0, 0, arg_lo(2)),
+            (BPF_JMP | BPF_JEQ | BPF_K, 0, 1, NETLINK_ROUTE),
+            (BPF_RET | BPF_K, 0, 0, SECCOMP_RET_ALLOW),
+            (BPF_RET | BPF_K, 0, 0, errno_action(EAFNOSUPPORT)),
+        ];
+        assert_eq!(generated.len(), expected.len() + 1); // + the leading jeq SYS_socket
+        for (ins, (code, jt, jf, k)) in generated[1..].iter().zip(expected.iter()) {
+            assert_eq!((ins.code, ins.jt, ins.jf, ins.k), (*code, *jt, *jf, *k));
+        }
+    }
+
+    #[test]
+    fn every_denied_syscall_has_a_name_and_the_name_table_is_consistent() {
+        for (nr, why) in DENIED_RATIONALE {
+            assert!(SYSCALL_NAMES.iter().any(|(_, n)| n == nr), "denied syscall {nr} ({why}) has no name in SYSCALL_NAMES");
+            assert!(is_denied(*nr));
+        }
+        let mut seen = HashSet::new();
+        for (name, nr) in SYSCALL_NAMES {
+            assert!(seen.insert(*name), "duplicate name {name}");
+            assert_eq!(syscall_by_name(name), Some(*nr));
+        }
+        assert!(!is_denied(libc::SYS_read));
     }
 }
