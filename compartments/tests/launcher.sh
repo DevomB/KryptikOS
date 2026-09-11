@@ -168,6 +168,10 @@ mkzone beta     none   "#222222"
 mkzone carrier  nic    "#333333" 'bridge = "kryptik0"'
 mkzone sealed   none   "#444444" ''                      encrypted
 mkzone wiped    none   "#555555" ''                      ephemeral
+# The zone that keeps things. `sealed` cannot do this job any more: it declares
+# encryption this build does not deliver, so the target kernel refuses to start
+# it at all - correctly - and every check built on it stopped running there.
+mkzone keeper   none   "#4a4a4a" ''                      persistent
 # For K7: a zone whose data directory is deliberately owned by someone else.
 mkzone stranger none   "#666666"
 mkzone lczone   none   "#0a0a0a"
@@ -408,33 +412,59 @@ fi
 head_ "B. Two real zones cannot reach each other  [unpriv]"
 # ============================================================================
 
-# alpha writes a canary into its own root.
-# `sealed` rather than `alpha`, and the reason matters: alpha is ephemeral now,
-# so nothing it writes reaches the host and B1b would have nothing to find. The
-# cross-zone claim needs a zone whose data actually persists, and the only
-# persistent mode is "encrypted" - which still runs on a plain directory under
-# the override. When per-zone LUKS lands this becomes a real encrypted volume
-# and the check does not change.
-zrun sealed -- /bin/sh -c "$PRO printf '%s' '$CANARY' > \$HOME/alpha-secret; echo PROBE=written"
+# keeper writes a canary into its own home.
+# `keeper` rather than `alpha`, and the reason matters: alpha is ephemeral, so
+# nothing it writes reaches the host and B1b would have nothing to find. The
+# cross-zone claim needs a zone whose data actually persists.
+#
+# This group used `sealed` - the ENCRYPTED fixture, started under
+# KRYPTIK_EXPERIMENTAL - until the target kernel existed. There the override is
+# ignored (Design 01 P6) and sealed cannot start, so B1a skipped and B1c/B1d
+# went on reporting PASS: no other zone could read a file that was never
+# written. A vacuous pass on an isolation check is the failure this file exists
+# to prevent, and it survived for as long as it did because the group looked
+# green.
+#
+# storage.mode = "persistent" is the honest version of what that fixture was
+# pretending to be: a plain directory, kept between launches, claiming nothing
+# about encryption. When per-zone encrypted volumes land, `sealed` becomes a
+# real one and these checks do not change.
+zrun keeper -- /bin/sh -c "$PRO printf '%s' '$CANARY' > \$HOME/alpha-secret; echo PROBE=written"
 probe "B1a a persistent zone can write a file in its own zone" "written"
 
 # Positive control: that file exists on the host, so a failure to read it from
 # beta means something. Without this the next check would pass on a typo.
-if [[ -f "$ROOTFS/sealed/alpha-secret" ]] && grep -q "$CANARY" "$ROOTFS/sealed/alpha-secret"; then
+if [[ -f "$ROOTFS/keeper/alpha-secret" ]] && grep -q "$CANARY" "$ROOTFS/keeper/alpha-secret"; then
     pass "B1b positive control: the file is real and readable from the host"
 else
     fail "B1b positive control FAILED: the file is not where the test expects"
-    info "looked for: $ROOTFS/sealed/alpha-secret"
+    info "looked for: $ROOTFS/keeper/alpha-secret"
 fi
 
-# beta tries the same absolute path, and the host path alpha's data really
+# B1e is the persistence claim itself, and the thing that makes it a check
+# rather than a restatement of B1b is that it is a SECOND LAUNCH. The zone
+# exited, its mount namespace and pid namespace are gone, its tmpfs would have
+# been freed - and the file is still in its home.
+zrun keeper -- /bin/sh -c "$PRO if grep -q '$CANARY' \$HOME/alpha-secret 2>/dev/null; then echo PROBE=kept; else echo PROBE=LOST; fi"
+probe "B1e a persistent zone still has its file on the NEXT launch" "kept"
+
+# The control, and it is the half that gives B1e its meaning: the identical
+# sequence in an EPHEMERAL zone must lose the file. Without it, B1e would also
+# pass if every zone kept everything - which is the bug, not the feature.
+zrun wiped -- /bin/sh -c "$PRO printf '%s' '$CANARY' > \$HOME/eph-secret; echo PROBE=written"
+probe "B1f control: an ephemeral zone can write the same file" "written"
+
+zrun wiped -- /bin/sh -c "$PRO if grep -q '$CANARY' \$HOME/eph-secret 2>/dev/null; then echo PROBE=KEPT; else echo PROBE=gone; fi"
+probe "B1g control: the ephemeral zone does NOT have it on its next launch" "gone"
+
+# beta tries the same absolute path, and the host path keeper's data really
 # lives at. Neither exists in beta's root.
 # /home/alpha is where alpha's data is mounted INSIDE ALPHA. Beta's tree has no
 # such path: each zone binds only its own directory.
-zrun beta -- /bin/sh -c "$PRO if cat /home/sealed/alpha-secret 2>/dev/null | grep -q '$CANARY'; then echo PROBE=LEAKED; else echo PROBE=denied; fi"
+zrun beta -- /bin/sh -c "$PRO if cat /home/keeper/alpha-secret 2>/dev/null | grep -q '$CANARY'; then echo PROBE=LEAKED; else echo PROBE=denied; fi"
 probe "B1c another zone cannot read it at its in-zone path" "denied"
 
-zrun beta -- /bin/sh -c "$PRO if cat '$ROOTFS/sealed/alpha-secret' 2>/dev/null | grep -q '$CANARY'; then echo PROBE=LEAKED; else echo PROBE=denied; fi"
+zrun beta -- /bin/sh -c "$PRO if cat '$ROOTFS/keeper/alpha-secret' 2>/dev/null | grep -q '$CANARY'; then echo PROBE=LEAKED; else echo PROBE=denied; fi"
 probe "B1d another zone cannot read it by its host path" "denied"
 
 # --- process visibility ------------------------------------------------------
@@ -1054,12 +1084,12 @@ if (( PRIVILEGED == 1 )); then
     # ...and the files it creates are owned by the unprivileged host identity,
     # not by real root. This is the whole point of the mapping, and it is
     # checked on the HOST side where it can actually be falsified.
-    # `sealed`, not `alpha`: K3 is the one check in this group that looks at the
+    # `keeper`, not `alpha`: K3 is the one check in this group that looks at the
     # HOST side, and an ephemeral zone writes nothing there. Using alpha here
     # would test M2 by accident and report it as an ownership failure.
-    zrun sealed -- /bin/sh -c "$PRO echo k3 > \$HOME/k3file; echo PROBE=written"
+    zrun keeper -- /bin/sh -c "$PRO echo k3 > \$HOME/k3file; echo PROBE=written"
     if want_launch "K3  a zone's files are owned by the mapped identity"; then
-        owner="$(stat -c %u "$ROOTFS/sealed/k3file" 2>/dev/null)"
+        owner="$(stat -c %u "$ROOTFS/keeper/k3file" 2>/dev/null)"
         if [[ "$owner" == "$ZONE_UID" ]]; then
             pass "K3  a zone's files are owned by host uid $ZONE_UID, not root"
         else
