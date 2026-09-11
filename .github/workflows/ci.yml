@@ -259,7 +259,58 @@ jobs:
           # exits "PASSED WITH GAPS" rather than "PASSED", so the gap is
           # visible in the log rather than absent from it.
           cd compartments/kryptikd && cargo build --quiet
-          cd ../.. && ./compartments/tests/launcher.sh
+          cd ../.. && ./compartments/tests/launcher.sh | tee /tmp/launcher.out
+          exit "${PIPESTATUS[0]}"
+
+      - name: The runner must ADMIT what it could not test
+        run: |
+          # THE TIER GUARD.
+          #
+          # Three kinds of evidence exist in this repository and they are not
+          # interchangeable:
+          #
+          #   component    - unit tests and tool fixtures. No kernel features.
+          #   developer    - the launcher suite on THIS runner's kernel, which
+          #                  is a stock Ubuntu one, unprivileged.
+          #   target       - the same suite as root, in a VM, with the userns
+          #                  restriction on. CI CANNOT PRODUCE THIS. It needs
+          #                  a disposable VM and it lives in tools/vm/.
+          #
+          # A green tick here therefore never means the privileged path works.
+          # The suite already prints its own gaps and exits "PASSED WITH GAPS"
+          # rather than "PASSED" - this step fails if it ever stops doing so on
+          # a runner, because a clean pass here would mean the checks that need
+          # root either ran unprivileged (and proved nothing) or stopped
+          # reporting themselves. Both are worse than a red tick.
+          if ! grep -q 'PASSED WITH GAPS' /tmp/launcher.out; then
+            echo "::error::The launcher suite reported a clean pass on a CI runner."
+            echo "Group K (privileged launch) and group M (cgroup limits) cannot run"
+            echo "here. If they are no longer reported as NOT RUN, they are either"
+            echo "running vacuously or have been dropped. Neither is a pass."
+            grep -E 'passed,|not run' /tmp/launcher.out || true
+            exit 1
+          fi
+          echo "The suite reported its gaps, as it must on a runner:"
+          sed -n '/not run (mandatory gaps/,/^$/p' /tmp/launcher.out
+
+      - name: What this CI run did and did not establish
+        if: always()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'SUMMARY'
+          ### What a green run here means
+
+          | tier | established here? |
+          |---|---|
+          | component (unit tests, tool fixtures) | yes |
+          | developer host (this runner's kernel, unprivileged) | yes |
+          | **target kernel (root, VM, userns restricted)** | **no — needs `tools/vm/`** |
+
+          The privileged launch path, the cgroup limits, the zone lifecycle
+          under root and the boot itself are validated by `tools/vm/run-qemu.sh`
+          and `tools/vm/boot-smoke.sh` against a disposable VM. Nothing in this
+          workflow can stand in for that, and a green tick here is not evidence
+          about it.
+          SUMMARY
 
       - name: The user-facing command
         run: |
