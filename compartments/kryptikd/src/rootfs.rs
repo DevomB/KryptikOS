@@ -315,6 +315,24 @@ pub fn hosts_for(zone: &str) -> String {
     format!("127.0.0.1 localhost {zone}\n::1 localhost {zone}\n")
 }
 
+/// What a zone finds at /etc/resolv.conf (docs/design/03, DNS).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resolver {
+    /// No file at all: offline zones, and routed zones that got no path.
+    None,
+    /// A routed zone with a path: the nic zone's bridge address answers
+    /// (once the stub resolver lands there); nothing else is ever named.
+    Bridge,
+    /// The nic zone: its DHCP client writes the file. The root tmpfs is
+    /// sealed read-only, so /etc/resolv.conf is a symlink into the zone's
+    /// private /tmp, where the client can write it.
+    Writable,
+}
+
+pub fn resolv_conf_for_bridge() -> String {
+    "nameserver 10.19.0.1\nnameserver fd19::1\n".to_string()
+}
+
 /// Refuse a zone data directory that is not a plain directory owned by the
 /// identity the zone will run as.
 ///
@@ -388,6 +406,7 @@ pub fn pivot_into(
     data_dir: &str,
     zone: &str,
     ephemeral: Option<&str>,
+    resolver: Resolver,
 ) -> Result<String, RootfsError> {
     let home = zone_home(zone);
 
@@ -458,7 +477,7 @@ pub fn pivot_into(
         }
     }
 
-    populate_etc(root, zone, &home)?;
+    populate_etc(root, zone, &home, resolver)?;
 
     // Fresh /proc, showing only this zone's pid namespace.
     let proc_dir = mkdir("proc")?;
@@ -601,7 +620,7 @@ pub fn pivot_into(
 
 /// The zone's /etc: synthesized identity files plus a read-only view of a
 /// few non-secret host files. See the module comment for what is left out.
-fn populate_etc(root: &str, zone: &str, home: &str) -> Result<(), RootfsError> {
+fn populate_etc(root: &str, zone: &str, home: &str, resolver: Resolver) -> Result<(), RootfsError> {
     let etc = format!("{root}/etc");
     fs::create_dir_all(&etc).map_err(|e| RootfsError::Setup(format!("{etc}: {e}")))?;
     let write = |name: &str, content: String| -> Result<(), RootfsError> {
@@ -613,6 +632,14 @@ fn populate_etc(root: &str, zone: &str, home: &str) -> Result<(), RootfsError> {
     write("nsswitch.conf", nsswitch())?;
     write("hosts", hosts_for(zone))?;
     write("hostname", format!("{zone}\n"))?;
+    match resolver {
+        Resolver::None => {}
+        Resolver::Bridge => write("resolv.conf", resolv_conf_for_bridge())?,
+        Resolver::Writable => {
+            std::os::unix::fs::symlink("/tmp/resolv.conf", format!("{etc}/resolv.conf"))
+                .map_err(|e| RootfsError::Setup(format!("{etc}/resolv.conf: {e}")))?;
+        }
+    }
 
     for f in ETC_RO_FILES {
         // metadata() follows symlinks: only a real regular file is bound.
@@ -891,6 +918,14 @@ mod tests {
             assert!(p.starts_with("/etc/"), "{p}");
             assert!(!p.starts_with("/etc/ssl/private"), "{p}");
         }
+    }
+
+    #[test]
+    fn the_bridge_resolver_names_only_the_bridge() {
+        let r = resolv_conf_for_bridge();
+        assert_eq!(r.lines().count(), 2);
+        assert!(r.contains("nameserver 10.19.0.1") && r.contains("nameserver fd19::1"));
+        assert!(!r.contains("10.0.2.3"), "must never name a host or slirp resolver");
     }
 
     #[test]
