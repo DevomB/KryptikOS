@@ -617,7 +617,7 @@ pub fn run_in_zone(
         match crate::netlink::open_netns_of(pid) {
             Ok(ns) => {
                 let r = match zone.network {
-                    crate::zone::NetworkMode::Nic => netzone::plumb_nic_zone(zone, ns),
+                    crate::zone::NetworkMode::Nic => netzone::plumb_nic_zone(zone, ns, &opts.zones_dir),
                     crate::zone::NetworkMode::Routed => netzone::plumb_routed_zone(zone, ns, &opts.zones_dir),
                     crate::zone::NetworkMode::None => Ok(()),
                 };
