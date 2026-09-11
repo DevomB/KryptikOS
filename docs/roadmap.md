@@ -10,7 +10,9 @@ test — "it works" is not an exit test.
 - [x] Host requirement checker
 - [x] Source fetching with checksum locking
 - [x] Resolve ADR-008 (libc) — glibc
-- [x] Generate and audit `sources.lock` — 24 of 25 verified against upstream signatures
+- [x] Generate and audit `sources.lock` — run `make verify` for the current
+      count; it is deliberately not quoted here, because four different
+      counts were in circulation and the tool producing them was miscounting
 
 **Exit test:** `make check && make sources` succeeds on a clean Debian/Arch host.
 
@@ -97,12 +99,13 @@ and the brokered channels, not the isolation primitives.
 - [x] Zone definition format, parser, and cross-zone invariants
 - [x] Namespace set + `mount_proc` / `mount_sysfs` (isolate.rs)
 - [x] Landlock filesystem confinement (landlock.rs) — ABI-aware
-- [x] Adversarial exit test, passing 12/12
+- [x] Adversarial exit test (the isolation primitives), passing 14/14
 - [x] `kryptikd run` — creates a zone and executes inside it, applying
       namespaces, proc/sysfs remounts, Landlock and seccomp in that order
 - [ ] `kryptikd stop` / persistent zone state (run is one-shot today)
 - [ ] Per-zone veth + bridge topology; `net` zone as sole NIC holder
-- [ ] Minimal per-zone `/dev` — a zone currently inherits the caller's `/dev`
+- [x] Minimal per-zone `/dev` — tmpfs with an explicit node list, plus a
+      private `/dev/shm` and `/dev/pts`; nothing else exists for the zone
       rather than getting a devtmpfs with null/zero/urandom/tty and nothing
       else. This grants more than it should and is a known gap, not a decision.
 - [ ] Per-zone LUKS2 volumes, unlocked on start, key-wiped on stop
