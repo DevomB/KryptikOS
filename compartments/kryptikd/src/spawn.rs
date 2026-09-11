@@ -506,7 +506,7 @@ pub fn run_in_zone(
     //
     // The handle is held for the whole launch and dropped at the end, so an
     // early return cannot leak the directory.
-    let _zone_cgroup = match &limits {
+    let zone_cgroup = match &limits {
         Some(base) => {
             let cg = cgroup::Cgroup::create(base, &zone.name, parent_pid)
                 .map_err(|e| SpawnError::Setup(format!("cgroup: {e}")))?;
@@ -566,6 +566,22 @@ pub fn run_in_zone(
     }
 
     let status = wait_for(pid)?;
+
+    // Remove the cgroup here rather than leaving it to Drop. Drop still covers
+    // every early return above, but it has nowhere to report to, and the one
+    // failure that matters is worth reporting: rmdir returns EBUSY while any
+    // process remains, so a cgroup that will not go away means something in
+    // the zone outlived the launcher. Cleaning that up silently is how a
+    // survivor holding the zone's files goes unnoticed.
+    if let Some(cg) = &zone_cgroup {
+        if let Err(e) = cg.destroy() {
+            eprintln!(
+                "kryptikd[zone {}]: the zone's cgroup could not be removed ({e});                  something in the zone may have outlived the launcher",
+                zone.name
+            );
+        }
+    }
+
     Ok(decode_status(status))
 }
 

@@ -267,10 +267,38 @@ impl Cgroup {
         // memory.max alone lets the kernel reclaim forever instead of killing.
         // memory.oom.group makes the whole zone die together rather than
         // leaving a half-dead process tree when one allocation loses.
-        let _ = fs::write(self.path.join("memory.oom.group"), "1");
+        //
+        // Both of these were `let _ = fs::write(...)` until security's
+        // REVIEW-R5 required follow-up 1, which is to say this module's own
+        // header - "every path in this file either establishes the limit or
+        // reports that it could not" - was false in its last four lines. A
+        // zone capped without oom.group dies one process at a time and the
+        // survivors keep the zone's files and sockets open; an operator who
+        // read `memory_max = "4G"` was promised something else.
+        let og = self.path.join("memory.oom.group");
+        fs::write(&og, "1").map_err(|e| io_err(&og, e))?;
+
         // Swap must be capped too, or a zone "limited" to 4G simply pages the
         // rest out and the limit measures nothing the operator cares about.
-        let _ = fs::write(self.path.join("memory.swap.max"), "0");
+        //
+        // Absent is not the same failure as unwritable. Without swap
+        // accounting the file does not exist in any cgroup, so there is no
+        // per-zone swap limit to lose - the operator's exposure is the same
+        // for every process on the machine, and saying so once is more use
+        // than refusing to start. cgroupfs does not create files on write, so
+        // this really does arrive as ENOENT rather than as a new file. A file
+        // that exists and refuses the write is a limit we failed to apply,
+        // and that is fatal.
+        let sw = self.path.join("memory.swap.max");
+        match fs::write(&sw, "0") {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => eprintln!(
+                "kryptikd: {} does not exist - this kernel has no swap accounting, \
+                 so the zone's memory limit does not bound what it can page out",
+                sw.display()
+            ),
+            Err(e) => return Err(io_err(&sw, e)),
+        }
         Ok(())
     }
 
@@ -336,6 +364,7 @@ impl Drop for Cgroup {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn memory_suffixes_convert() {
@@ -368,6 +397,38 @@ mod tests {
         assert!(!populated(""));
         assert!(!populated("\n"));
         assert!(!populated("   \n"));
+    }
+
+    #[test]
+    fn a_limit_that_cannot_be_written_is_an_error_not_a_shrug() {
+        // REVIEW-R5 required 1. The regression this locks in: set_limits used
+        // to discard the result of the memory.oom.group write, so a zone whose
+        // limit was only half applied started anyway and reported success.
+        //
+        // Staged with a directory the process cannot create files in, holding
+        // the attribute files that already exist in a real leaf. memory.max
+        // and pids.max are writable, so the failure lands exactly where it is
+        // being tested: on the file that is missing.
+        let dir = std::env::temp_dir().join(format!("kryptik-cgtest-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        for f in ["memory.max", "pids.max"] {
+            fs::write(dir.join(f), "max").unwrap();
+        }
+        let ro = fs::Permissions::from_mode(0o555);
+        fs::set_permissions(&dir, ro).unwrap();
+
+        let cg = Cgroup { path: dir.clone() };
+        let err = cg.set_limits(Some("1M"), Some(10)).unwrap_err();
+        let msg = err.to_string();
+
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+
+        assert!(
+            msg.contains("memory.oom.group"),
+            "set_limits must fail naming the limit it could not apply, said: {msg}"
+        );
     }
 
     #[test]
