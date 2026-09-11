@@ -55,8 +55,7 @@ echo "serial log: ${SERIAL} ($(grep -c '' < "$SERIAL") lines)"
 # against a CR-stripped copy.
 SERIAL_TXT="$(mktemp)"
 trap 'rm -f "$SERIAL_TXT"' EXIT INT TERM
-tr -d "
-" < "$SERIAL" > "$SERIAL_TXT"
+tr -d '\r' < "$SERIAL" > "$SERIAL_TXT"
 echo
 
 # The transcript has to exist at all. Without this every check below could
