@@ -32,6 +32,7 @@ const BPF_ABS: u16 = 0x20;
 const BPF_JMP: u16 = 0x05;
 const BPF_JEQ: u16 = 0x10;
 const BPF_JGE: u16 = 0x30;
+const BPF_JSET: u16 = 0x40;
 const BPF_K: u16 = 0x00;
 const BPF_RET: u16 = 0x06;
 
@@ -43,10 +44,57 @@ const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
 // policy gets debugged: a KILL tells you a zone died, a TRAP tells you which
 // syscall it died on.
 const SECCOMP_RET_TRAP: u32 = 0x0003_0000;
+// ERRNO makes the syscall fail with the given errno instead of killing. Used
+// where a program legitimately PROBES for a feature and must be told "no"
+// rather than shot: clone3 (glibc falls back to clone on ENOSYS) and socket
+// families a zone has no business opening.
+const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
 
 // Offsets into struct seccomp_data.
 const OFF_NR: u32 = 0;
 const OFF_ARCH: u32 = 4;
+// args[6] are u64 at offset 16; on little-endian x86-64 the low 32 bits of
+// args[i] sit at 16 + 8*i. Every argument inspected below is one the kernel
+// itself reads as a 32-bit value (clone flags, ioctl cmd, socket family and
+// protocol), so comparing the low word is exactly what the kernel sees.
+const fn arg_lo(i: u32) -> u32 {
+    16 + 8 * i
+}
+
+/// Namespace-creating clone(2) flags. clone() with any of these is the
+/// unfiltered twin of unshare(2): it would hand a zone a fresh user namespace
+/// with a full capability set inside it, which is the entry point of most
+/// kernel privilege-escalation chains of the last decade. unshare was denied;
+/// clone(CLONE_NEWUSER) sailed through the allowlist.
+///
+/// CLONE_NEWTIME (0x80) is deliberately absent: for legacy clone() the low
+/// byte is the exit signal and the kernel strips it, so 0x80 there can never
+/// request a namespace.
+pub const CLONE_NS_MASK: u32 = 0x7e02_0000;
+
+/// ioctl(2) requests that inject input into or read from the controlling
+/// terminal. TIOCSTI is the classic sandbox escape: a zone that inherits the
+/// operator's tty on stdin types commands into the operator's shell.
+/// Kernels since 6.2 disable it by default (LEGACY_TIOCSTI=n); this filter
+/// does not depend on that.
+const TIOCSTI: u32 = 0x5412;
+const TIOCLINUX: u32 = 0x541C;
+
+/// Socket families a zone may open. Everything else - AF_VSOCK (not
+/// namespaced: reaches the hypervisor/host), AF_ALG, AF_RDS, AF_TIPC,
+/// AF_PACKET, AF_KEY, AF_XDP, AF_BLUETOOTH ... - is a kernel subsystem with a
+/// CVE history that no zoned application needs. AF_NETLINK is limited to
+/// NETLINK_ROUTE (protocol 0), which getifaddrs() and ip(8) need; the other
+/// netlink families - NETLINK_NETFILTER in particular, the nf_tables LPE
+/// surface - are refused. The `net` zone's DHCP client will need AF_PACKET;
+/// that belongs in its per-zone policy, not the base.
+const AF_UNIX: u32 = 1;
+const AF_INET: u32 = 2;
+const AF_INET6: u32 = 10;
+const AF_NETLINK: u32 = 16;
+const NETLINK_ROUTE: u32 = 0;
+const EAFNOSUPPORT: u32 = 97;
+const ENOSYS: u32 = 38;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -122,7 +170,20 @@ pub const BASE_ALLOWLIST: &[libc::c_long] = &[
     libc::SYS_mkdir, libc::SYS_mkdirat, libc::SYS_rmdir, libc::SYS_unlink,
     libc::SYS_unlinkat, libc::SYS_symlink, libc::SYS_symlinkat, libc::SYS_link,
     libc::SYS_linkat,
-    libc::SYS_umask, libc::SYS_flock, libc::SYS_fallocate,
+    libc::SYS_umask, libc::SYS_flock, libc::SYS_fallocate, libc::SYS_creat,
+    libc::SYS_openat2, libc::SYS_close_range,
+    // FIFOs and unix sockets. Character and block nodes are refused by
+    // Landlock (MAKE_CHAR / MAKE_BLOCK are handled and granted nowhere) and by
+    // nodev on every zone mount, so the syscall itself is not the control.
+    libc::SYS_mknod, libc::SYS_mknodat,
+    // Mode changes on the zone's OWN files. These were removed after a review
+    // changed the mode of a file outside the zone, but that escape depended
+    // on the outside path being reachable - pivot_root removed it. Killing
+    // chmod with SIGSYS instead broke tar, git checkout, cargo build, mv
+    // across directories and install(1), all of which set modes on files they
+    // create. The mounts a zone must not modify are read-only, which chmod
+    // cannot cross (EROFS), and Landlock denies write there independently.
+    libc::SYS_chmod, libc::SYS_fchmod, libc::SYS_fchmodat,
     libc::SYS_copy_file_range, libc::SYS_sendfile, libc::SYS_splice,
     // fadvise64 is not optional in practice: GNU cat and cp call
     // posix_fadvise() on every file they read. Leaving it out killed `cat`
@@ -137,7 +198,7 @@ pub const BASE_ALLOWLIST: &[libc::c_long] = &[
 
     // --- memory ---
     libc::SYS_mmap, libc::SYS_munmap, libc::SYS_mremap, libc::SYS_brk,
-    libc::SYS_madvise, libc::SYS_mlock, libc::SYS_munlock,
+    libc::SYS_madvise, libc::SYS_mlock, libc::SYS_munlock, libc::SYS_memfd_create,
     // NOTE: mprotect is allowed because every dynamic linker needs it. It is
     // also how W^X is defeated. The kernel-side mitigation is that Kryptik
     // builds everything with RELRO+BIND_NOW so the GOT is read-only before
@@ -145,6 +206,10 @@ pub const BASE_ALLOWLIST: &[libc::c_long] = &[
     libc::SYS_mprotect,
 
     // --- process / thread lifecycle ---
+    // clone is argument-filtered (no namespace flags) and clone3 returns
+    // ENOSYS rather than being allowed: its arguments live in a struct the
+    // filter cannot read, and glibc falls back to clone() on ENOSYS. See
+    // `ARG_RULES`.
     libc::SYS_clone, libc::SYS_clone3, libc::SYS_fork, libc::SYS_vfork,
     libc::SYS_execve, libc::SYS_execveat, libc::SYS_exit, libc::SYS_exit_group,
     libc::SYS_wait4, libc::SYS_waitid,
@@ -153,6 +218,7 @@ pub const BASE_ALLOWLIST: &[libc::c_long] = &[
     libc::SYS_getgroups, libc::SYS_getpgrp, libc::SYS_getpgid, libc::SYS_setpgid,
     libc::SYS_getsid, libc::SYS_setsid, libc::SYS_getrusage, libc::SYS_getrlimit,
     libc::SYS_prlimit64, libc::SYS_sched_yield, libc::SYS_sched_getaffinity,
+    libc::SYS_sched_setaffinity, libc::SYS_getcpu, libc::SYS_capget,
     libc::SYS_set_tid_address, libc::SYS_set_robust_list, libc::SYS_get_robust_list,
     libc::SYS_futex, libc::SYS_arch_prctl, libc::SYS_membarrier,
     libc::SYS_getpriority, libc::SYS_setpriority,
@@ -173,8 +239,10 @@ pub const BASE_ALLOWLIST: &[libc::c_long] = &[
 
     // --- polling ---
     libc::SYS_poll, libc::SYS_ppoll, libc::SYS_select, libc::SYS_pselect6,
-    libc::SYS_epoll_create1, libc::SYS_epoll_ctl, libc::SYS_epoll_wait,
-    libc::SYS_epoll_pwait, libc::SYS_eventfd2, libc::SYS_signalfd4,
+    libc::SYS_epoll_create, libc::SYS_epoll_create1, libc::SYS_epoll_ctl,
+    libc::SYS_epoll_wait, libc::SYS_epoll_pwait, libc::SYS_epoll_pwait2,
+    libc::SYS_eventfd, libc::SYS_eventfd2, libc::SYS_signalfd, libc::SYS_signalfd4,
+    libc::SYS_inotify_init,
     libc::SYS_timerfd_create, libc::SYS_timerfd_settime, libc::SYS_timerfd_gettime,
     libc::SYS_inotify_init1, libc::SYS_inotify_add_watch, libc::SYS_inotify_rm_watch,
 
@@ -182,6 +250,7 @@ pub const BASE_ALLOWLIST: &[libc::c_long] = &[
     // Present so zoned applications can talk to the network they are routed to
     // and to their own Wayland/broker sockets. A zone with network.mode="none"
     // has no interface to reach regardless (docs/architecture.md).
+    // socket(2) is additionally argument-filtered: see `ARG_RULES`.
     libc::SYS_socket, libc::SYS_socketpair, libc::SYS_bind, libc::SYS_listen,
     libc::SYS_accept, libc::SYS_accept4, libc::SYS_connect, libc::SYS_shutdown,
     libc::SYS_getsockname, libc::SYS_getpeername, libc::SYS_setsockopt,
@@ -228,20 +297,119 @@ pub const DENIED_RATIONALE: &[(libc::c_long, &str)] = &[
     (libc::SYS_quotactl, "filesystem quota manipulation"),
     (libc::SYS_open_by_handle_at, "open a file by handle, bypassing path checks"),
     (libc::SYS_name_to_handle_at, "obtain the handle used by the above"),
-    // Landlock ABI 3 has NO right governing metadata changes, so these were
-    // controlled by DAC alone - and a zone's uid maps to the launching user,
-    // who owns the files outside it. A review used chmod to change a file
-    // outside the zone from 600 to 777. pivot_root now removes those paths
-    // entirely, but leaving the syscalls out too means the boundary does not
-    // rest on a single mechanism.
-    (libc::SYS_chmod, "change file mode; not covered by any Landlock right"),
-    (libc::SYS_fchmod, "change file mode via descriptor"),
-    (libc::SYS_fchmodat, "change file mode relative to a descriptor"),
+    // Ownership changes are refused outright. A zone has exactly one mapped
+    // uid, so chown to anything else is meaningless, and Landlock has no right
+    // governing ownership. (chmod is allowed again - see BASE_ALLOWLIST.)
     (libc::SYS_chown, "change ownership; not covered by any Landlock right"),
     (libc::SYS_fchown, "change ownership via descriptor"),
     (libc::SYS_lchown, "change ownership of a symlink"),
     (libc::SYS_fchownat, "change ownership relative to a descriptor"),
+    // The new mount API. mount(2) is denied above; these are the same power
+    // through different entry points and were simply missing from the list.
+    (libc::SYS_fsopen, "new mount API: open a filesystem context"),
+    (libc::SYS_fsconfig, "new mount API: configure a filesystem context"),
+    (libc::SYS_fsmount, "new mount API: create a mount from a context"),
+    (libc::SYS_fspick, "new mount API: reconfigure an existing mount"),
+    (libc::SYS_move_mount, "new mount API: attach a mount"),
+    (libc::SYS_open_tree, "new mount API: detach a mount tree"),
+    (libc::SYS_mount_setattr, "change mount flags, e.g. clear read-only"),
+    // io_uring performs file and socket operations WITHOUT syscalls once set
+    // up, which makes it a seccomp bypass by design, and it has its own CVE
+    // history.
+    (libc::SYS_io_uring_setup, "io_uring: bypasses the syscall filter by design"),
+    (libc::SYS_io_uring_enter, "io_uring"),
+    (libc::SYS_io_uring_register, "io_uring"),
+    (libc::SYS_pidfd_getfd, "steal a descriptor from another process"),
+    (libc::SYS_kcmp, "compare kernel objects across processes; ASLR/ptrace aid"),
+    (libc::SYS_sethostname, "the zone's hostname is set by kryptikd, once"),
+    (libc::SYS_setdomainname, "as sethostname"),
+    (libc::SYS_setgroups, "no zoned process changes its groups"),
+    (libc::SYS_setresuid, "no zoned process should change uid"),
+    (libc::SYS_setresgid, "no zoned process should change gid"),
+    (libc::SYS_setreuid, "no zoned process should change uid"),
+    (libc::SYS_setregid, "no zoned process should change gid"),
+    (libc::SYS_setfsuid, "no zoned process should change uid"),
+    (libc::SYS_setfsgid, "no zoned process should change gid"),
+    (libc::SYS_capset, "capabilities are fixed at zone entry"),
+    (libc::SYS_personality, "change the execution domain; ASLR-disabling flag"),
 ];
+
+/// Argument-inspected rules for syscalls that are on the allowlist but must
+/// not be allowed with every argument. Applied BEFORE the plain allowlist, so
+/// a syscall named here is decided here.
+///
+/// Each rule is a fixed BPF block; the shapes are written out in
+/// `emit_arg_rule` with their jump offsets, and the interpreter-based tests
+/// below evaluate them the way the kernel would.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArgRule {
+    /// clone(2): kill if any CLONE_NEW* flag is set in args[0].
+    CloneNoNamespaces,
+    /// clone3(2): fail with ENOSYS so libc falls back to clone(2), which the
+    /// filter can inspect.
+    Clone3Enosys,
+    /// ioctl(2): kill on TIOCSTI / TIOCLINUX (terminal injection).
+    IoctlNoTtyInject,
+    /// socket(2): only AF_UNIX, AF_INET, AF_INET6 and AF_NETLINK/NETLINK_ROUTE;
+    /// everything else fails with EAFNOSUPPORT.
+    SocketFamilies,
+}
+
+pub const ARG_RULES: &[ArgRule] = &[
+    ArgRule::CloneNoNamespaces,
+    ArgRule::Clone3Enosys,
+    ArgRule::IoctlNoTtyInject,
+    ArgRule::SocketFamilies,
+];
+
+const fn errno_action(e: u32) -> u32 {
+    SECCOMP_RET_ERRNO | (e & 0xffff)
+}
+
+/// Emit one argument rule as a self-contained block. The block is entered
+/// with the syscall number in the accumulator; its first instruction skips
+/// the whole block when the number does not match, so the accumulator still
+/// holds the number for whatever follows. Every path inside a matched block
+/// ends in a `ret`.
+fn emit_arg_rule(p: &mut Vec<SockFilter>, rule: ArgRule, deny_action: u32) {
+    let body: Vec<SockFilter> = match rule {
+        ArgRule::CloneNoNamespaces => vec![
+            stmt(BPF_LD | BPF_W | BPF_ABS, arg_lo(0)),
+            jump(BPF_JMP | BPF_JSET | BPF_K, CLONE_NS_MASK, 0, 1),
+            stmt(BPF_RET | BPF_K, deny_action),
+            stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        ],
+        ArgRule::Clone3Enosys => vec![stmt(BPF_RET | BPF_K, errno_action(ENOSYS))],
+        ArgRule::IoctlNoTtyInject => vec![
+            stmt(BPF_LD | BPF_W | BPF_ABS, arg_lo(1)),
+            jump(BPF_JMP | BPF_JEQ | BPF_K, TIOCSTI, 2, 0),
+            jump(BPF_JMP | BPF_JEQ | BPF_K, TIOCLINUX, 1, 0),
+            stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+            stmt(BPF_RET | BPF_K, deny_action),
+        ],
+        ArgRule::SocketFamilies => vec![
+            stmt(BPF_LD | BPF_W | BPF_ABS, arg_lo(0)),
+            jump(BPF_JMP | BPF_JEQ | BPF_K, AF_UNIX, 5, 0),
+            jump(BPF_JMP | BPF_JEQ | BPF_K, AF_INET, 4, 0),
+            jump(BPF_JMP | BPF_JEQ | BPF_K, AF_INET6, 3, 0),
+            jump(BPF_JMP | BPF_JEQ | BPF_K, AF_NETLINK, 0, 3),
+            stmt(BPF_LD | BPF_W | BPF_ABS, arg_lo(2)),
+            jump(BPF_JMP | BPF_JEQ | BPF_K, NETLINK_ROUTE, 0, 1),
+            stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+            stmt(BPF_RET | BPF_K, errno_action(EAFNOSUPPORT)),
+        ],
+    };
+    let nr = match rule {
+        ArgRule::CloneNoNamespaces => libc::SYS_clone,
+        ArgRule::Clone3Enosys => libc::SYS_clone3,
+        ArgRule::IoctlNoTtyInject => libc::SYS_ioctl,
+        ArgRule::SocketFamilies => libc::SYS_socket,
+    };
+    // Skip offsets are relative to the next instruction, so skipping a body
+    // of N instructions is jf = N. All bodies are far below 255.
+    p.push(jump(BPF_JMP | BPF_JEQ | BPF_K, nr as u32, 0, body.len() as u8));
+    p.extend(body);
+}
 
 /// Build the BPF program for a set of permitted syscalls.
 ///
@@ -285,6 +453,12 @@ fn build_program_with(
     // no check, because it reads as though the case is handled.
     p.push(jump(BPF_JMP | BPF_JGE | BPF_K, X32_SYSCALL_BIT, 0, 1));
     p.push(stmt(BPF_RET | BPF_K, deny_action));
+
+    // Argument-inspected syscalls are decided here, before the plain
+    // allowlist can wave them through.
+    for &rule in ARG_RULES {
+        emit_arg_rule(&mut p, rule, deny_action);
+    }
 
     for &nr in allow {
         // seccomp_data.nr is a 32-bit field, so the comparison is 32-bit. A
@@ -437,8 +611,12 @@ mod tests {
     #[test]
     fn program_has_expected_shape() {
         let p = build_program(&[libc::SYS_read, libc::SYS_write]).unwrap();
-        // 4 prologue + 2 x32 + 2 per syscall + 1 default deny
-        assert_eq!(p.len(), 3 + 1 + 2 + 4 + 1);
+        // 4 prologue + 2 x32 + arg rules + 2 per syscall + 1 default deny
+        let mut rules = Vec::new();
+        for &r in ARG_RULES {
+            emit_arg_rule(&mut rules, r, SECCOMP_RET_KILL_PROCESS);
+        }
+        assert_eq!(p.len(), 3 + 1 + 2 + rules.len() + 4 + 1);
         assert_eq!(p[0].code, BPF_LD | BPF_W | BPF_ABS);
         assert_eq!(p[0].k, OFF_ARCH);
         // Must END in a deny, never an allow.
@@ -452,9 +630,16 @@ mod tests {
         // The whole point of the two-instruction encoding: a "jump to the end"
         // encoding silently breaks once the allowlist passes 255 entries.
         let p = build_program(BASE_ALLOWLIST).unwrap();
+        // The arg-rule blocks are small fixed shapes with offsets up to 9;
+        // everything else is 0 or 1. Either way, every jump must land inside
+        // the program.
         for (i, ins) in p.iter().enumerate() {
-            assert!(ins.jt <= 1, "instruction {i} has jt={}", ins.jt);
-            assert!(ins.jf <= 1, "instruction {i} has jf={}", ins.jf);
+            assert!(ins.jt <= 9, "instruction {i} has jt={}", ins.jt);
+            assert!(ins.jf <= 9, "instruction {i} has jf={}", ins.jf);
+            if ins.code & 0x07 == BPF_JMP {
+                assert!(i + 1 + ins.jt as usize < p.len(), "instruction {i} jt runs off the end");
+                assert!(i + 1 + ins.jf as usize < p.len(), "instruction {i} jf runs off the end");
+            }
         }
     }
 
@@ -482,6 +667,10 @@ mod tests {
     /// says nothing about what the program DOES with it, so this evaluates the
     /// filter the way the kernel would.
     fn evaluate(prog: &[SockFilter], arch: u32, nr: u32) -> u32 {
+        evaluate_args(prog, arch, nr, [0; 6])
+    }
+
+    fn evaluate_args(prog: &[SockFilter], arch: u32, nr: u32, args: [u64; 6]) -> u32 {
         let mut pc = 0usize;
         let mut acc: u32 = 0;
         loop {
@@ -491,6 +680,12 @@ mod tests {
                     acc = match ins.k {
                         OFF_ARCH => arch,
                         OFF_NR => nr,
+                        k if (16..64).contains(&k) && (k - 16) % 8 == 0 => {
+                            args[((k - 16) / 8) as usize] as u32
+                        }
+                        k if (16..64).contains(&k) && (k - 16) % 8 == 4 => {
+                            (args[((k - 16) / 8) as usize] >> 32) as u32
+                        }
                         other => panic!("unexpected load offset {other}"),
                     };
                     pc += 1;
@@ -500,6 +695,9 @@ mod tests {
                 }
                 c if c == BPF_JMP | BPF_JGE | BPF_K => {
                     pc += 1 + if acc >= ins.k { ins.jt as usize } else { ins.jf as usize };
+                }
+                c if c == BPF_JMP | BPF_JSET | BPF_K => {
+                    pc += 1 + if acc & ins.k != 0 { ins.jt as usize } else { ins.jf as usize };
                 }
                 c if c == BPF_RET | BPF_K => return ins.k,
                 other => panic!("unexpected opcode {other:#x}"),
@@ -572,11 +770,15 @@ mod tests {
     fn the_whole_allowlist_evaluates_correctly() {
         let p = build_program(BASE_ALLOWLIST).unwrap();
         for &nr in BASE_ALLOWLIST {
-            assert_eq!(
-                evaluate(&p, AUDIT_ARCH_X86_64, nr as u32),
-                SECCOMP_RET_ALLOW,
-                "allowlisted syscall {nr} was not allowed"
-            );
+            let r = evaluate(&p, AUDIT_ARCH_X86_64, nr as u32);
+            // Argument-ruled syscalls decide on their arguments (all zero
+            // here): clone3 is ENOSYS and socket family 0 is refused. They
+            // must never be KILLED for being on the list, and everything
+            // else must be allowed outright.
+            assert_ne!(r, SECCOMP_RET_KILL_PROCESS, "allowlisted syscall {nr} was killed");
+            if ![libc::SYS_clone3, libc::SYS_socket].contains(&nr) {
+                assert_eq!(r, SECCOMP_RET_ALLOW, "allowlisted syscall {nr} was not allowed");
+            }
         }
         for (nr, why) in DENIED_RATIONALE {
             assert_eq!(
@@ -628,6 +830,145 @@ mod tests {
             libc::SYS_execve, libc::SYS_futex, libc::SYS_brk,
         ] {
             assert!(allowed.contains(&nr), "essential syscall {nr} is not allowed");
+        }
+    }
+
+    // --- argument rules -----------------------------------------------------
+
+    const X86: u32 = AUDIT_ARCH_X86_64;
+
+    fn with_arg(i: usize, v: u64) -> [u64; 6] {
+        let mut a = [0u64; 6];
+        a[i] = v;
+        a
+    }
+
+    #[test]
+    fn clone_without_namespace_flags_is_allowed() {
+        let p = build_program(BASE_ALLOWLIST).unwrap();
+        // What pthread_create and fork() actually pass.
+        let thread = 0x3d0f00u64; // VM|FS|FILES|SIGHAND|THREAD|SYSVSEM|SETTLS|PARENT_SETTID|CHILD_CLEARTID
+        let fork = 0x1200011u64; // CHILD_SETTID|CHILD_CLEARTID|SIGCHLD
+        for f in [thread, fork, 17] {
+            assert_eq!(
+                evaluate_args(&p, X86, libc::SYS_clone as u32, with_arg(0, f)),
+                SECCOMP_RET_ALLOW,
+                "clone flags {f:#x} should be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn clone_with_any_namespace_flag_is_killed() {
+        // The regression test for the nested-userns escape: unshare(2) was
+        // denied while clone(CLONE_NEWUSER) sailed through the allowlist.
+        let p = build_program(BASE_ALLOWLIST).unwrap();
+        for f in [
+            libc::CLONE_NEWUSER, libc::CLONE_NEWNS, libc::CLONE_NEWPID,
+            libc::CLONE_NEWNET, libc::CLONE_NEWIPC, libc::CLONE_NEWUTS,
+            libc::CLONE_NEWCGROUP,
+        ] {
+            let flags = (f as u32 | libc::SIGCHLD as u32) as u64;
+            assert_eq!(
+                evaluate_args(&p, X86, libc::SYS_clone as u32, with_arg(0, flags)),
+                SECCOMP_RET_KILL_PROCESS,
+                "clone flags {flags:#x} must be killed"
+            );
+            // High bits are ignored by the kernel for legacy clone; the low
+            // word is what matters and is what the filter reads.
+            assert_eq!(
+                evaluate_args(&p, X86, libc::SYS_clone as u32, with_arg(0, flags | (1 << 40))),
+                SECCOMP_RET_KILL_PROCESS
+            );
+        }
+    }
+
+    #[test]
+    fn clone3_fails_with_enosys_rather_than_killing() {
+        let p = build_program(BASE_ALLOWLIST).unwrap();
+        let r = evaluate_args(&p, X86, libc::SYS_clone3 as u32, [0; 6]);
+        assert_eq!(r & 0xffff_0000, SECCOMP_RET_ERRNO);
+        assert_eq!(r & 0xffff, ENOSYS);
+    }
+
+    #[test]
+    fn tty_injection_ioctls_are_killed_and_others_allowed() {
+        let p = build_program(BASE_ALLOWLIST).unwrap();
+        for cmd in [TIOCSTI, TIOCLINUX] {
+            assert_eq!(
+                evaluate_args(&p, X86, libc::SYS_ioctl as u32, with_arg(1, cmd as u64)),
+                SECCOMP_RET_KILL_PROCESS,
+                "ioctl {cmd:#x} must be killed"
+            );
+        }
+        // The kernel reads cmd as 32 bits: junk in the high word does not
+        // hide TIOCSTI from the kernel and must not hide it from the filter.
+        assert_eq!(
+            evaluate_args(&p, X86, libc::SYS_ioctl as u32, with_arg(1, (1u64 << 40) | TIOCSTI as u64)),
+            SECCOMP_RET_KILL_PROCESS
+        );
+        for cmd in [libc::TCGETS, libc::TIOCGWINSZ, libc::FIONREAD, libc::FIOCLEX] {
+            assert_eq!(
+                evaluate_args(&p, X86, libc::SYS_ioctl as u32, with_arg(1, cmd as u64)),
+                SECCOMP_RET_ALLOW,
+                "ioctl {cmd:#x} should be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn socket_families_are_limited() {
+        let p = build_program(BASE_ALLOWLIST).unwrap();
+        for fam in [AF_UNIX, AF_INET, AF_INET6] {
+            assert_eq!(
+                evaluate_args(&p, X86, libc::SYS_socket as u32, with_arg(0, fam as u64)),
+                SECCOMP_RET_ALLOW,
+                "family {fam} should be allowed"
+            );
+        }
+        // netlink: only NETLINK_ROUTE
+        let mut a = [0u64; 6];
+        a[0] = AF_NETLINK as u64;
+        a[2] = NETLINK_ROUTE as u64;
+        assert_eq!(evaluate_args(&p, X86, libc::SYS_socket as u32, a), SECCOMP_RET_ALLOW);
+        a[2] = 12; // NETLINK_NETFILTER
+        let r = evaluate_args(&p, X86, libc::SYS_socket as u32, a);
+        assert_eq!(r, errno_action(EAFNOSUPPORT), "NETLINK_NETFILTER must be refused");
+        for fam in [40u32 /* VSOCK */, 38 /* ALG */, 17 /* PACKET */, 15 /* KEY */, 21 /* RDS */, 30 /* TIPC */, 44 /* XDP */] {
+            let r = evaluate_args(&p, X86, libc::SYS_socket as u32, with_arg(0, fam as u64));
+            assert_eq!(r, errno_action(EAFNOSUPPORT), "family {fam} must be refused");
+        }
+    }
+
+    #[test]
+    fn arg_rules_do_not_disturb_the_plain_allowlist() {
+        // Every arg-rule block must leave the accumulator holding the syscall
+        // number when it does not match, or the allowlist after it compares
+        // garbage. Checked by evaluating every allowed syscall with arguments
+        // that would trip the rules if they were consulted.
+        let p = build_program(BASE_ALLOWLIST).unwrap();
+        let args = [CLONE_NS_MASK as u64, TIOCSTI as u64, 40, 7, 1 << 33, 9];
+        for &nr in BASE_ALLOWLIST {
+            if [libc::SYS_clone, libc::SYS_clone3, libc::SYS_ioctl, libc::SYS_socket].contains(&nr) {
+                continue;
+            }
+            assert_eq!(
+                evaluate_args(&p, X86, nr as u32, args),
+                SECCOMP_RET_ALLOW,
+                "syscall {nr} was affected by an argument rule"
+            );
+        }
+    }
+
+    #[test]
+    fn chmod_is_allowed_and_chown_is_not() {
+        // Documented decision, tested so it cannot drift silently either way.
+        let allowed: HashSet<libc::c_long> = BASE_ALLOWLIST.iter().copied().collect();
+        for nr in [libc::SYS_chmod, libc::SYS_fchmod, libc::SYS_fchmodat] {
+            assert!(allowed.contains(&nr), "chmod family must be allowed (tar, git, cargo)");
+        }
+        for nr in [libc::SYS_chown, libc::SYS_fchown, libc::SYS_fchownat, libc::SYS_lchown] {
+            assert!(!allowed.contains(&nr), "chown family must stay denied");
         }
     }
 }
