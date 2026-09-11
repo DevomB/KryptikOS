@@ -43,13 +43,26 @@ done
 [[ -f "$IMAGE" ]] || die "no such image: ${IMAGE}"
 
 # QEMU: the host's if it has one, otherwise the copy integration unpacked.
-QEMU="$(command -v qemu-system-x86_64 2>/dev/null || true)"
-for cand in "${KRYPTIK_QEMU:-}" \
-            "$HOME/kryptik-overnight-2026-09-11/tooling/qemu/usr/bin/qemu-system-x86_64"; do
-    [[ -n "$QEMU" ]] && break
-    [[ -n "$cand" && -x "$cand" ]] && QEMU="$cand"
-done
-[[ -n "$QEMU" ]] || die "no qemu-system-x86_64 found. Set KRYPTIK_QEMU to one."
+# $HOME is useless here: this runs under sudo, where it is /root, so a path
+# built from it named a tooling tree that does not exist and the search fell
+# through to "no qemu-system-x86_64 found" on a host that has one.
+# KRYPTIK_WORK is part of the build contract and is always set, so derive the
+# coordination directory from it instead of from the invoking user.
+QEMU="${KRYPTIK_QEMU:-}"
+if [[ -z "$QEMU" ]]; then
+    QEMU="$(command -v qemu-system-x86_64 2>/dev/null || true)"
+fi
+if [[ -z "$QEMU" ]]; then
+    for cand in "${KRYPTIK_WORK%/*}/tooling/qemu/usr/bin/qemu-system-x86_64" \
+                "${SUDO_USER:+/home/${SUDO_USER}}"/kryptik-overnight-*/tooling/qemu/usr/bin/qemu-system-x86_64 \
+                "$HOME"/kryptik-overnight-*/tooling/qemu/usr/bin/qemu-system-x86_64; do
+        [[ -n "$QEMU" ]] && break
+        [[ -n "$cand" && -x "$cand" ]] && QEMU="$cand"
+    done
+fi
+[[ -n "$QEMU" ]] || die "no qemu-system-x86_64 found. Looked on PATH and under
+  ${KRYPTIK_WORK%/*}/tooling/qemu/usr/bin/
+Set KRYPTIK_QEMU to one."
 
 # The unpacked QEMU is a relocated Debian package, not an installed one: its
 # libraries sit beside it rather than on the system search path, and its BIOS

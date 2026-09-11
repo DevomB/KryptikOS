@@ -42,7 +42,10 @@ if [ -d /run/service ]; then
     say "scandir=/run/service"
     for svc in eudev getty-tty1; do
         if s6-svstat "/run/service/$svc" >/dev/null 2>&1; then
-            say "svc_$svc=$(s6-svstat -o up,pid "/run/service/$svc" 2>/dev/null | tr '\n' ' ')"
+            up=$(s6-svstat -o up "/run/service/$svc" 2>/dev/null)
+            # -o up,pid prints "true <pid>"; report the state plainly so the
+            # host side is not matching an s6 output format.
+            [ "$up" = "true" ] && say "svc_$svc=up" || say "svc_$svc=down"
         else
             say "svc_$svc=not-supervised"
         fi
@@ -75,4 +78,13 @@ echo
 
 # --- and shut down, which is itself under test ----------------------------
 say "POWEROFF"
-/sbin/poweroff
+say "shutdownd_fifo=$( [ -p /run/s6-linux-init/shutdownd/fifo ] && echo present || echo absent )"
+/sbin/poweroff || say "poweroff_rc=$?"
+
+# If the clean path works we never reach the next line. If we do reach it, say
+# so in terms that cannot be read as a clean shutdown, then stop the machine so
+# a broken shutdown costs one line instead of the whole timeout.
+sleep 10
+say "POWEROFF_DID_NOT_TAKE_EFFECT"
+sync
+[ -w /proc/sysrq-trigger ] && echo o > /proc/sysrq-trigger
