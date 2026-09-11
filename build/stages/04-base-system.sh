@@ -39,6 +39,27 @@ STAMPS="${KRYPTIK_WORK}/.stamps"
 LOGS="${KRYPTIK_WORK}/logs"
 BUILDDIR="${KRYPTIK_WORK}/build"
 KRYPTIK_JOBS="${KRYPTIK_JOBS:-$(kryptik_default_jobs)}"
+
+# Every package in this stage configures and builds as root, and that is a
+# property of the stage rather than a shortcut: stage 04 runs INSIDE the
+# chroot, where root owns the whole filesystem and there is no unprivileged
+# user to drop to. Creating one would mean inventing an account the target
+# does not have.
+#
+# gnulib's configure probes "whether mknod can create a fifo without root
+# privileges" and then refuses to continue, because as root the probe always
+# succeeds and so answers nothing about the machine the binaries will run on.
+# The check is aimed at someone building in their own shell, where running as
+# root is a mistake. FORCE_UNSAFE_CONFIGURE=1 is upstream's own escape hatch,
+# named in upstream's own error message, and it affects nothing but that probe.
+#
+# Set once for the stage rather than per package. coreutils and tar both
+# refuse - and the first attempt to enumerate which packages refuse got tar
+# wrong, because it piped `tar -xO` into `grep -q` with stderr discarded, so
+# "could not read the tarball" and "the tarball is fine" produced the same
+# answer. The condition here is the stage's, so the setting is the stage's.
+export FORCE_UNSAFE_CONFIGURE=1
+
 export MAKEFLAGS="-j${KRYPTIK_JOBS}"
 umask 022
 
@@ -369,30 +390,6 @@ s_python() {
     make install
 }
 
-# coreutils' configure refuses to run as root, and stage 04 is always root.
-#
-# gnulib probes "whether mknod can create a fifo without root privileges" and
-# then errors out, because as root the probe always succeeds and so answers
-# nothing about the machine the binaries will run on:
-#
-#   configure: error: you should not run configure as root
-#   (set FORCE_UNSAFE_CONFIGURE=1 in environment to bypass this check)
-#
-# The check is aimed at someone building in their own shell, where running as
-# root is a mistake. Stage 04 runs inside a chroot where root owns everything
-# and there is no unprivileged user to be - so the situation the check warns
-# about is not the situation we are in. FORCE_UNSAFE_CONFIGURE=1 is upstream's
-# own escape hatch, named in its own error message, and is what LFS uses at
-# this point for the same reason.
-s_coreutils() {
-    local src; src="$(unpack "coreutils-${V_COREUTILS}.tar.xz" "coreutils-${V_COREUTILS}")"
-    cd "$src"
-    FORCE_UNSAFE_CONFIGURE=1 ./configure --prefix=/usr \
-        --enable-no-install-program=kill,uptime
-    make
-    make install
-}
-
 s_shadow() {
     local src; src="$(unpack "shadow-${V_SHADOW}.tar.xz" "shadow-${V_SHADOW}")"
     cd "$src"
@@ -503,7 +500,12 @@ s_kbd() {
     cd "$src"
     sed -i '/RESIZECONS_PROGS=/s/yes/no/' configure
     sed -i 's/resizecons.8 //' docs/man/man8/Makefile.in
-    ./configure --prefix=/usr --disable-vlock
+
+    # --disable-tests: kbd ships tests/testsuite.at but no generated
+    # tests/testsuite, so `make all` tries to produce one with autom4te and
+    # dies with "command not found" - Kryptik installs no autoconf, and has no
+    # reason to: the suite runs at build time and ships nothing.
+    ./configure --prefix=/usr --disable-vlock --disable-tests
     make
     make install
 }
@@ -523,6 +525,28 @@ s_iana_etc() {
     local src; src="$(unpack "iana-etc-${V_IANA_ETC}.tar.gz" "iana-etc-${V_IANA_ETC}")"
     cd "$src"
     cp -v services protocols /etc
+}
+
+# pkgconf installs a binary called "pkgconf". Everything that looks for it
+# looks for "pkg-config".
+#
+# There is no configure option for this - pkgconf offers --with-pkg-config-dir
+# for where .pc files live, and nothing that creates the compatibility name -
+# so the symlink is made by hand, which is what LFS does at this point too.
+#
+# Without it kmod's configure fails with "The pkg-config script could not be
+# found or is too old", and e2fsprogs, elfutils, iproute2 and eudev would each
+# have quietly configured without the dependencies they ask pkg-config about.
+# The package was present and built; only the name everyone uses was missing.
+s_pkgconf() {
+    native_build "pkgconf-${V_PKGCONF}.tar.xz" "pkgconf-${V_PKGCONF}" \
+        --disable-static --docdir="/usr/share/doc/pkgconf-${V_PKGCONF}"
+
+    ln -sfv pkgconf /usr/bin/pkg-config
+    ln -sfv pkgconf.1 /usr/share/man/man1/pkg-config.1
+
+    # Prove the name resolves and answers, rather than just that a link exists.
+    pkg-config --version
 }
 
 s_binutils_native() {
@@ -1015,7 +1039,7 @@ declare -a PACKAGES=(
     # without it kmod's --with-openssl --with-zstd --with-zlib --with-xz have
     # nothing to answer them and configure fails. The tarball was already
     # pinned in versions.env and fetched - the package simply had no recipe.
-    "pkgconf"     "native_build pkgconf-${V_PKGCONF}.tar.xz pkgconf-${V_PKGCONF} --disable-static --docdir=/usr/share/doc/pkgconf-${V_PKGCONF}"
+    "pkgconf"     "s_pkgconf"
     "binutils"    "s_binutils_native"
     "gmp"         "native_build gmp-${V_GMP}.tar.xz gmp-${V_GMP} --enable-cxx --disable-static"
     "mpfr"        "native_build mpfr-${V_MPFR}.tar.xz mpfr-${V_MPFR} --disable-static --enable-thread-safe"
@@ -1024,7 +1048,19 @@ declare -a PACKAGES=(
     "acl"         "native_build acl-${V_ACL}.tar.xz acl-${V_ACL} --disable-static"
     "libcap"      "s_libcap"
     "shadow"      "s_shadow"
-    "ncurses"     "native_build ncurses-${V_NCURSES}.tar.gz ncurses-${V_NCURSES} --mandir=/usr/share/man --with-shared --without-debug --without-normal --with-cxx-shared --enable-pc-files"
+    # --enable-pc-files needs --with-pkg-config-libdir to go with it.
+    #
+    # Without the second flag ncurses has nowhere to put its .pc files and
+    # installs none, silently. Everything that asks pkg-config for ncursesw
+    # then gets "no": procps-ng stopped the stage with "ncurses support
+    # missing/incomplete" while libncursesw.so.6.5 sat in /usr/lib, built
+    # and working, twenty minutes earlier.
+    #
+    # It went unnoticed because ncurses was built BEFORE /usr/bin/pkg-config
+    # existed - pkgconf installs under its own name, and the compatibility
+    # symlink was a separate fix - so ncurses could not have located the
+    # directory even to guess at it. Two absences that each hid the other.
+    "ncurses"     "native_build ncurses-${V_NCURSES}.tar.gz ncurses-${V_NCURSES} --mandir=/usr/share/man --with-shared --without-debug --without-normal --with-cxx-shared --enable-pc-files --with-pkg-config-libdir=/usr/lib/pkgconfig"
     "sed"         "native_build sed-${V_SED}.tar.xz sed-${V_SED}"
     "psmisc"      "native_build psmisc-${V_PSMISC}.tar.xz psmisc-${V_PSMISC}"
     "bash"        "native_build bash-${V_BASH}.tar.gz bash-${V_BASH} --without-bash-malloc --with-installed-readline"
@@ -1035,7 +1071,7 @@ declare -a PACKAGES=(
     "less"        "native_build less-${V_LESS}.tar.gz less-${V_LESS} --sysconfdir=/etc"
     "openssl"     "s_openssl"
     "libffi"      "native_build libffi-${V_LIBFFI}.tar.gz libffi-${V_LIBFFI} --disable-static --with-gcc-arch=native"
-    "coreutils"   "s_coreutils"
+    "coreutils"   "native_build coreutils-${V_COREUTILS}.tar.xz coreutils-${V_COREUTILS} --enable-no-install-program=kill,uptime"
     "diffutils"   "native_build diffutils-${V_DIFFUTILS}.tar.xz diffutils-${V_DIFFUTILS}"
     "gawk"        "native_build gawk-${V_GAWK}.tar.xz gawk-${V_GAWK}"
     "findutils"   "native_build findutils-${V_FINDUTILS}.tar.xz findutils-${V_FINDUTILS} --localstatedir=/var/lib/locate"
@@ -1045,7 +1081,12 @@ declare -a PACKAGES=(
     "patch"       "native_build patch-${V_PATCH}.tar.xz patch-${V_PATCH}"
     "tar"         "native_build tar-${V_TAR}.tar.xz tar-${V_TAR}"
     "groff"       "native_build groff-${V_GROFF}.tar.gz groff-${V_GROFF}"
-    "kmod"        "native_build kmod-${V_KMOD}.tar.xz kmod-${V_KMOD} --sysconfdir=/etc --with-openssl --with-xz --with-zstd --with-zlib"
+    # --disable-manpages: kmod 33 generates its man pages with scdoc, which
+    # Kryptik does not pin and which exists only to produce documentation.
+    # The option is the one kmod's own error message names. man-db is not
+    # built either (it needs gdbm, see the entry below), so this image has
+    # no man infrastructure to read them with in any case.
+    "kmod"        "native_build kmod-${V_KMOD}.tar.xz kmod-${V_KMOD} --sysconfdir=/etc --with-openssl --with-xz --with-zstd --with-zlib --disable-manpages"
     "libpipeline" "native_build libpipeline-${V_LIBPIPELINE}.tar.gz libpipeline-${V_LIBPIPELINE}"
     # man-db has NO RECIPE, deliberately, and the stage reports it as an
     # unwired package rather than pretending otherwise.
