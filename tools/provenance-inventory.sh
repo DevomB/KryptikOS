@@ -8,6 +8,8 @@
 #                                                   against kernel.org's
 #                                                   published developer keys
 #   ./tools/provenance-inventory.sh --md            markdown table
+#   ./tools/provenance-inventory.sh --notes=FILE    caveats from FILE rather
+#                                                   than tools/source-notes.tsv
 #
 # WHY THIS EXISTS, AND WHY IT REFUSES TO PRINT A TOTAL.
 #
@@ -44,6 +46,7 @@ for a in "$@"; do
         --json)     JSON=1 ;;
         --licences|--licenses) LICENCES=1 ;;
         --artifacts=*) ARTIFACTS="${a#--artifacts=}" ;;
+        --notes=*)  NOTES_ARG="${a#--notes=}" ;;
         -h|--help)  sed -n '2,15p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $a" ;;
     esac
@@ -74,6 +77,75 @@ MANIFEST="${WORK}/manifest.tsv"
 "${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list \
     | awk '{printf "%s\t%s\t%s\n", $1, $2, $3}' > "$MANIFEST"
 dim "  manifest: $(wc -l < "$MANIFEST") sources"
+
+# ---------------------------------------------------------------------------
+# 1b. recorded provenance caveats
+# ---------------------------------------------------------------------------
+#
+# Some facts about a source are true, material, and invisible to every check:
+# a build recipe that rewrites upstream's own files, or a signature verifying
+# against a key upstream never designated. Those go in tools/source-notes.tsv.
+#
+# A NOTE IS A CAVEAT AND NEVER AN ASSURANCE CLASS. Notes are not added to the
+# per-class counts and do not raise or lower any source's class.
+#
+# Resolved through KRYPTIK_ROOT, unlike scan-licenses.sh which is resolved
+# through BASH_SOURCE. The difference is deliberate and it is the difference
+# between a helper and data: the licence scanner is a tool this script needs
+# wherever it runs, while caveats describe THE TREE BEING INVENTORIED. Pointing
+# the inventory at another tree must pick up that tree's caveats, or their
+# absence -- not carry this repository's caveats across and then reject them as
+# naming sources the other tree does not ship.
+#
+# --notes=FILE names a different caveat file. The default is OPTIONAL: a tree
+# without one simply has no recorded caveats. A file named explicitly and then
+# missing is an error, because the caller asked for caveats that are not there
+# and continuing would drop them silently.
+NOTESF="${KRYPTIK_ROOT}/tools/source-notes.tsv"
+if [[ -n "${NOTES_ARG:-}" ]]; then
+    NOTESF="$NOTES_ARG"
+    [[ -f "$NOTESF" ]] || die "no caveat file at ${NOTESF} (named with --notes)"
+fi
+NOTES_TSV="${WORK}/notes.tsv"
+: > "$NOTES_TSV"
+if [[ -f "$NOTESF" ]]; then
+    nbad=0
+    nline=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        nline=$((nline + 1))
+        [[ -z "${line//[[:space:]]/}" ]] && continue
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        read -r n_pkg n_kind n_loc n_note <<< "$line"
+
+        nb=""
+        [[ -n "$n_pkg" && -n "$n_kind" && -n "$n_loc" && -n "${n_note// }" ]] \
+            || nb="expected a package, a kind, a location and a note"
+        if [[ -z "$nb" ]]; then
+            case "$n_kind" in
+                recipe-transformation|undesignated-signer) ;;
+                *) nb="unknown kind '${n_kind}'" ;;
+            esac
+        fi
+        # A note about a source that is not in the manifest is a stale note,
+        # and a stale caveat is worse than none: it describes something that
+        # is not being shipped.
+        if [[ -z "$nb" ]] \
+           && ! awk -F'\t' -v p="$n_pkg" '$1==p{f=1} END{exit !f}' "$MANIFEST"; then
+            nb="'${n_pkg}' is not a source in the manifest"
+        fi
+
+        if [[ -n "$nb" ]]; then
+            err "${NOTESF}:${nline}: ${nb}"
+            nbad=$((nbad + 1))
+            continue
+        fi
+        printf '%s\t%s\t%s\t%s\n' "$n_pkg" "$n_kind" "$n_loc" "$n_note" >> "$NOTES_TSV"
+    done < "$NOTESF"
+    [[ "$nbad" -eq 0 ]] || die "${nbad} malformed row(s) in ${NOTESF}.
+A caveat file that cannot be parsed is a tooling fault, not a provenance
+result: reporting the inventory without it would drop recorded facts silently."
+    dim "  notes: $(grep -c . "$NOTES_TSV" || true) recorded caveat(s)"
+fi
 
 # Self-test hook. tools/test-provenance-inventory.sh supplies pre-made report
 # files so the classification and the per-class accounting - which is all this
@@ -306,7 +378,7 @@ fi
 export KRYPTIK_LOCK KRYPTIK_SOURCES MD OFFLINE JSON KEYSTATE
 INV_COMMIT="$(git -C "$KRYPTIK_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
 export INV_COMMIT
-python3 - "$MANIFEST" "$SIGREP" "$PROVREP" "$IDREP" "$LICREP" "$ARTREP" <<'PYEOF'
+python3 - "$MANIFEST" "$SIGREP" "$PROVREP" "$IDREP" "$LICREP" "$ARTREP" "$NOTES_TSV" <<'PYEOF'
 import datetime
 import hashlib
 import json
@@ -314,7 +386,7 @@ import os
 import sys
 
 (manifest_path, sig_path, prov_path, id_path,
- lic_path, art_path) = sys.argv[1:7]
+ lic_path, art_path, notes_path) = sys.argv[1:8]
 lock_path = os.environ["KRYPTIK_LOCK"]
 sources = os.environ["KRYPTIK_SOURCES"]
 markdown = os.environ.get("MD") == "1"
@@ -473,6 +545,14 @@ for r in rows(lic_path):
         lic[r[0]] = {"spdx": r[2], "multiple": r[3] == "yes",
                      "files": r[4], "method": r[5]}
 
+# recorded caveats, keyed by source name. Validated in the shell above, so a
+# row reaching here is well formed and names a source in the manifest.
+notes = {}
+for r in rows(notes_path):
+    if len(r) >= 4:
+        notes.setdefault(r[0], []).append(
+            {"kind": r[1], "location": r[2], "note": r[3]})
+
 artefacts = []
 for r in rows(art_path):
     if len(r) >= 6:
@@ -503,7 +583,9 @@ if os.environ.get("JSON") == "1":
         "note": ("assurance_class is the strongest ESTABLISHED assertion about "
                  "each source. Classes are never summed and there is no total. "
                  "licence.method says how the licence was determined; it is "
-                 "evidence, not a compliance judgement."),
+                 "evidence, not a compliance judgement. A source's notes[] are "
+                 "recorded CAVEATS and not classes: they are counted in "
+                 "per_note_kind_counts and never in per_class_counts."),
         "assurance_classes": [{"id": k, "means": m} for k, m in CLASSES],
         "sources": [],
         "artifacts": artefacts,
@@ -526,6 +608,8 @@ if os.environ.get("JSON") == "1":
         if name in ident:
             entry["signer_identity"] = {"finding": ident[name][0],
                                         "detail": ident[name][1]}
+        if name in notes:
+            entry["notes"] = notes[name]
         doc["sources"].append(entry)
 
     counts = {}
@@ -537,6 +621,15 @@ if os.environ.get("JSON") == "1":
     doc["per_class_counts"] = counts
     doc["per_licence_counts"] = lic_counts
     doc["source_count"] = len(doc["sources"])
+
+    # Counted separately and deliberately never folded into per_class_counts:
+    # a caveat is not a weaker class, and a class is not a caveat.
+    note_counts = {}
+    for src in doc["sources"]:
+        for n in src.get("notes", []):
+            note_counts[n["kind"]] = note_counts.get(n["kind"], 0) + 1
+    doc["per_note_kind_counts"] = note_counts
+    doc["noted_source_count"] = sum(1 for s in doc["sources"] if s.get("notes"))
 
     json.dump(doc, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write(chr(10))
@@ -579,6 +672,41 @@ print()
 print("No single coverage figure is printed. Adding a signature checked against")
 print("a pinned key to one checked against a key the signature itself named")
 print("produces a number whose meaning is the weakest term in it.")
+
+if notes:
+    print()
+    if markdown:
+        print("### Recorded caveats")
+        print()
+        print("A caveat is **not** an assurance class. These are counted")
+        print("separately and never added to the per-class counts above: a class")
+        print("says what was established, a caveat says what is true anyway.")
+        print()
+        print("| source | kind | location | note |")
+        print("|---|---|---|---|")
+        for nm in sorted(notes):
+            for n in notes[nm]:
+                print("| `%s` | `%s` | `%s` | %s |"
+                      % (nm, n["kind"], n["location"],
+                         n["note"].replace("|", "/")))
+    else:
+        print("RECORDED CAVEATS - not assurance classes, and never added to the")
+        print("counts above. A class says what was established; a caveat says")
+        print("what is true anyway.")
+        print()
+        for nm in sorted(notes):
+            for n in notes[nm]:
+                print("  %s  [%s]" % (nm, n["kind"]))
+                print("      %s" % n["location"])
+                line = "     "
+                for w in n["note"].split():
+                    if len(line) + len(w) + 1 > 76:
+                        print(line)
+                        line = "     "
+                    line += " " + w
+                if line.strip():
+                    print(line)
+                print()
 
 bad = counts.get("signature-failed", 0)
 if bad:
