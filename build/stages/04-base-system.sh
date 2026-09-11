@@ -544,28 +544,6 @@ s_pkgconf() {
     pkg-config --version
 }
 
-# pkgconf installs a binary called "pkgconf". Everything that looks for it
-# looks for "pkg-config".
-#
-# There is no configure option for this - pkgconf offers --with-pkg-config-dir
-# for where .pc files live, and nothing that creates the compatibility name -
-# so the symlink is made by hand, which is what LFS does at this point too.
-#
-# Without it kmod's configure fails with "The pkg-config script could not be
-# found or is too old", and e2fsprogs, elfutils, iproute2 and eudev would each
-# have quietly configured without the dependencies they ask pkg-config about.
-# The package was present and built; only the name everyone uses was missing.
-s_pkgconf() {
-    native_build "pkgconf-${V_PKGCONF}.tar.xz" "pkgconf-${V_PKGCONF}" \
-        --disable-static --docdir="/usr/share/doc/pkgconf-${V_PKGCONF}"
-
-    ln -sfv pkgconf /usr/bin/pkg-config
-    ln -sfv pkgconf.1 /usr/share/man/man1/pkg-config.1
-
-    # Prove the name resolves and answers, rather than just that a link exists.
-    pkg-config --version
-}
-
 s_binutils_native() {
     local src; src="$(unpack "binutils-${V_BINUTILS}.tar.xz" "binutils-${V_BINUTILS}")"
     cd "$src"
@@ -1086,7 +1064,12 @@ declare -a PACKAGES=(
     "patch"       "native_build patch-${V_PATCH}.tar.xz patch-${V_PATCH}"
     "tar"         "native_build tar-${V_TAR}.tar.xz tar-${V_TAR}"
     "groff"       "native_build groff-${V_GROFF}.tar.gz groff-${V_GROFF}"
-    "kmod"        "native_build kmod-${V_KMOD}.tar.xz kmod-${V_KMOD} --sysconfdir=/etc --with-openssl --with-xz --with-zstd --with-zlib"
+    # --disable-manpages: kmod 33 generates its man pages with scdoc, which
+    # Kryptik does not pin and which exists only to produce documentation.
+    # The option is the one kmod's own error message names. man-db is not
+    # built either (it needs gdbm, see the entry below), so this image has
+    # no man infrastructure to read them with in any case.
+    "kmod"        "native_build kmod-${V_KMOD}.tar.xz kmod-${V_KMOD} --sysconfdir=/etc --with-openssl --with-xz --with-zstd --with-zlib --disable-manpages"
     "libpipeline" "native_build libpipeline-${V_LIBPIPELINE}.tar.gz libpipeline-${V_LIBPIPELINE}"
     # man-db has NO RECIPE, deliberately, and the stage reports it as an
     # unwired package rather than pretending otherwise.
