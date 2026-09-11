@@ -139,31 +139,28 @@ fi
 # did it.
 say "POWEROFF"
 say "shutdownd_fifo=$( [ -p /run/service/s6-linux-init-shutdownd/fifo ] && echo present || echo absent )"
-try_poweroff() {
-    say "poweroff_attempt=$*"
-    s6-linux-init-hpr "$@" || say "poweroff_rc=$?"
-    i=0
-    while [ "$i" -lt 15 ]; do sleep 1; i=$((i + 1)); done
-    say "poweroff_attempt_failed=$*"
-}
 
-try_poweroff -p -W -d     # no wall, no wtmp
-try_poweroff -p -W        # no wall
-try_poweroff -p           # exactly what /sbin/poweroff does
+# Request the shutdown and then GET OUT OF THE WAY.
+#
+# This script runs as an s6-rc oneshot. rc.shutdown brings every service down
+# with `s6-rc -bDa change`, and "every service" includes this one. Waiting here
+# for the machine to stop means s6-rc waits for this oneshot to exit while this
+# oneshot waits for s6-rc to finish shutting down - a deadlock.
+#
+# That deadlock is what three boots read as "shutdownd received the command and
+# ignored it". It never ignored anything: it ran rc.shutdown exactly as it
+# should, and rc.shutdown blocked in s6-rc before reaching its first echo, so
+# there was nothing in the log either. The test was breaking the thing it was
+# measuring.
+#
+# The watchdog is detached with setsid so the service teardown cannot take it
+# with it, and it announces itself loudly - tools/image/boot-smoke.sh asserts
+# that line is absent, so a stuck shutdown can never read as a clean one.
+setsid sh -c 'sleep 90
+    echo "KRYPTIK_SMOKE: POWEROFF_DID_NOT_TAKE_EFFECT after 90s" > /dev/console 2>/dev/null
+    sync
+    [ -w /proc/sysrq-trigger ] && echo o > /proc/sysrq-trigger'     </dev/null >/dev/null 2>&1 &
 
-# If the clean path works we never reach the next line. If we do reach it, say
-# so in terms that cannot be read as a clean shutdown, then stop the machine so
-# a broken shutdown costs one line instead of the whole timeout.
-# shutdownd runs rc.shutdown, signals every service, and waits out its grace
-# time (-g 3000) before it powers the machine off. Ten seconds was not a
-# verdict on the shutdown path, it was a verdict on the timer: give it long
-# enough that reaching the next line means something.
-say "POWEROFF_DID_NOT_TAKE_EFFECT after three attempts"
-# Whatever shutdownd made of the request is here, if anywhere.
-if [ -r /run/uncaught-logs/current ]; then
-    tail -n 15 /run/uncaught-logs/current 2>/dev/null | sed 's/^/KRYPTIK_SMOKE: postlog: /'
-fi
-say "shutdownd_after=$(s6-svstat -o up,pid /run/service/s6-linux-init-shutdownd 2>/dev/null | tr '
-' ' ')"
-sync
-[ -w /proc/sysrq-trigger ] && echo o > /proc/sysrq-trigger
+/sbin/poweroff || say "poweroff_rc=$?"
+say "poweroff_requested_now_exiting"
+exit 0

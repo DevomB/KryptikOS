@@ -144,3 +144,41 @@ CONFIG_INIT_STACK_ALL_ZERO=y
 # distribution that cannot show which LSMs are loaded is asking to be taken on
 # faith.
 CONFIG_SECURITYFS=y
+
+# --- requested by the security tab (REQUEST.md B-6), measured on this kernel -
+
+# An airgapped zone is not alone in its namespace.
+#
+# The SIT driver registers a fallback tunnel device per network namespace, so
+# every netns the kernel creates gets a sit0 - including one for a zone
+# declared network.mode = "none", whose whole promise is loopback and nothing
+# else. Measured in the guest: expected PROBE=lo, got PROBE=lo,sit0.
+#
+# It comes up DOWN with no addresses and no routes, so this is not a claim that
+# it is reachable. It is that `explain` tells an operator "loopback only" and
+# that is not what they get, and a guarantee that is narrower than its wording
+# is the kind of thing this distribution exists to not do.
+#
+# CONFIG_IPV6_SIT_6RD and CONFIG_IPV6_TUNNEL are already off; this is the same
+# direction, one symbol further.
+# CONFIG_IPV6_SIT is not set
+
+# dm-crypt could not open a single standard volume.
+#
+# CONFIG_DM_CRYPT and CONFIG_BLK_DEV_DM were already on, which reads as "we
+# have encrypted storage". CONFIG_CRYPTO_XTS was not, so aes-xts-plain64 - the
+# cipher named in every LUKS2 header in the world - had no implementation
+# behind it. The feature was present in the config and absent in fact, which is
+# exactly the shape of defect this build keeps finding.
+CONFIG_CRYPTO_XTS=y
+
+# Per-directory ext4 encryption, so "keys wiped on zone stop" can be true.
+#
+# Preferred over the dm-crypt route for zones: no cryptsetup, no loop device,
+# no LVM, no new pinned source. kryptikd adds and removes keys with ioctls it
+# can issue itself, and dropping a zone's key on stop is then an actual erasure
+# of access rather than a comment describing one.
+#
+# The filesystem needs the feature too - see tools/image/mkdisk.sh, which now
+# creates the root with -O encrypt.
+CONFIG_FS_ENCRYPTION=y

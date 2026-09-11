@@ -1025,3 +1025,53 @@ announcing `POWEROFF_DID_NOT_TAKE_EFFECT`, and `tools/image/boot-smoke.sh`
 asserts that line is **absent**. The run therefore reports 29 passed and 1
 failed rather than a clean sheet: the fallback must never be able to pass for
 a clean shutdown.
+
+## 13. The base system is complete: 67 entries, none unwired
+
+`man-db` was the last package stage 04 listed without a recipe. It needs
+`gdbm`, and Kryptik pinned none, so the stage ended every run with a "base
+system is INCOMPLETE" warning and a count of unwired entries. That count is now
+zero.
+
+```
+gdbm     1.26   (provenance commit ceab126, cherry-picked as 3037bc1)
+man-db   2.12.1
+```
+
+Provenance's audit corrected the recipe before it was written. I had reasoned
+that man-db would reach for ndbm, so gdbm would need
+`--enable-libgdbm-compat`. They read `configure.ac`: man-db tries the gdbm
+**native** interface first — `gdbm.h` plus `gdbm_fetch` in `-lgdbm` — and only
+falls back afterwards. So gdbm is built with no extra flags.
+
+Both recipes check the thing the pin was for:
+
+- `s_gdbm` compiles a program against the gdbm it has just installed and makes
+  it store and fetch a key, because "make install exited 0" and "this database
+  returns what you put in it" are different claims.
+- `s_man_db` asserts `/usr/bin/mandb` links `libgdbm`. Had configure fallen
+  back to another database interface, the pin would have bought nothing and the
+  failure would have surfaced the first time anyone ran `mandb`. Measured:
+  `ok: mandb links libgdbm`, `man 2.12.1`, `mandb 2.12.1`.
+
+man-db is built `--disable-setuid`. It would otherwise install `man` setuid to
+a `man` user so it can maintain a shared page cache; a setuid binary that
+parses untrusted files is not a trade this distribution makes for faster man
+pages.
+
+Inserting two packages into the order re-ran every package after them. That is
+the fingerprint working as designed rather than a fault: a step's hash covers
+the ordered names of the steps before it, so a package built with a different
+set of predecessors is not assumed to be the same artifact. Everything before
+`gdbm` was correctly skipped.
+
+### Not taken: bc 1.07.1 -> 1.08.2
+
+Provenance's branch also moves `bc`, and the cherry-pick conflicted there. Only
+their gdbm row was taken. `s_bc` on this branch carries a workaround specific
+to 1.07.1 — its `fix-libmath_h` wants `ed`, which Kryptik does not build, so
+the recipe performs the same edit with `sed` and then proves `bc` works. 1.08.2
+needs none of that, so moving the pin means rewriting the recipe in the same
+increment. Raised with provenance in
+`$C/build/NOTE-from-build-gdbm-openssl-bc.md` rather than resolved inside a
+conflict marker.

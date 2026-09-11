@@ -47,7 +47,7 @@ done
 [[ -n "$OUT" ]]     || die "--out is required"
 [[ -d "$SYSROOT" ]] || die "no such sysroot: ${SYSROOT}"
 
-for t in mkfs.ext4 sgdisk truncate dd blkid; do
+for t in mkfs.ext4 sgdisk truncate dd blkid dumpe2fs; do
     have "$t" || die "required tool not found: ${t}"
 done
 
@@ -156,8 +156,20 @@ log "staged $(numfmt --to=iec "$STAGE_BYTES" 2>/dev/null || echo "$STAGE_BYTES")
 log "building the ext4 filesystem"
 FS_SIZE="$SIZE"
 truncate -s "$FS_SIZE" "$ROOTFS"
-mkfs.ext4 -q -F -L "$LABEL" -d "$STAGE" -O '^has_journal' -E root_owner=0:0 "$ROOTFS" \
+# -O encrypt: the filesystem half of CONFIG_FS_ENCRYPTION. Without the feature
+# flag on the superblock the kernel support is unusable on this root, and a zone
+# asking for an encrypted directory would fail at its first ioctl.
+mkfs.ext4 -q -F -L "$LABEL" -d "$STAGE" -O '^has_journal,encrypt' -E root_owner=0:0 "$ROOTFS" \
     || die "mkfs.ext4 failed - is ${FS_SIZE} large enough for ${STAGE_BYTES} bytes?"
+
+# Read it back. "mkfs accepted -O encrypt" and "this filesystem has the
+# feature" are different claims, and only the second matters to a zone.
+FS_FEATURES="$(dumpe2fs -h "$ROOTFS" 2>/dev/null || true)"
+case "$FS_FEATURES" in
+    *encrypt*) ok "root filesystem carries the encrypt feature" ;;
+    *)         die "the root filesystem has no encrypt feature, so
+CONFIG_FS_ENCRYPTION would be unusable on it. Is mke2fs too old for -O encrypt?" ;;
+esac
 
 # Journal on afterwards: mkfs -d with a journal is slower and the journal is
 # rebuilt here anyway.

@@ -868,8 +868,22 @@ EOF
 
 exec >/dev/console 2>&1
 
+# Say so on the console at every step. Three boots could not distinguish
+# "shutdownd never spawned this script" from "this script ran and hung", and
+# the difference is the whole diagnosis: shutdownd waits for stage 3 to exit
+# before it touches the hardware, so anything that blocks here looks exactly
+# like a shutdown daemon that ignored the request.
+echo "kryptik: rc.shutdown starting"
+
 if [ -d /run/service ] && command -v s6-rc >/dev/null 2>&1; then
-    s6-rc -v1 -bDa change || true
+    echo "kryptik: bringing services down"
+    # -t: a service that will not stop must not wedge the shutdown forever.
+    # Without a timeout the only way out is the hardware, which is the outcome
+    # this script exists to avoid.
+    s6-rc -v2 -t 20000 -bDa change || echo "kryptik: s6-rc change exited $?"
+    echo "kryptik: s6-rc returned"
+else
+    echo "kryptik: no service database to bring down"
 fi
 echo "kryptik: services stopped, handing back to shutdownd"
 EOF
