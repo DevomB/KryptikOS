@@ -304,6 +304,18 @@ verify)
     printf '  %s line(s) present now and not in the manifest\n' "$added" >&2
     printf '  %s line(s) in the manifest and not present now\n' "$removed" >&2
     echo >&2
+    # The most common cause of a difference in `input source` lines is not a
+    # changed tree at all - it is verifying with a different KRYPTIK_SOURCES
+    # than the manifest was generated under, so the tarballs enumerate
+    # differently. Say so, because the diff alone looks like tampering.
+    if LC_ALL=C comm -23 "$old" "$new" | grep -q '^input\tsource\t'; then
+        warn "some differences are in 'input source' lines."
+        warn "Those enumerate \$KRYPTIK_SOURCES, which is currently:"
+        warn "  ${KRYPTIK_SOURCES}"
+        warn "If that is not the directory this manifest was generated under,"
+        warn "the tree may be untouched and only the environment differs."
+    fi
+
     err "first 40 differences (- manifest, + now):"
     LC_ALL=C diff "$old" "$new" | grep -E '^[<>]' | sed 's/^</  -/; s/^>/  +/' | head -40 >&2
 
