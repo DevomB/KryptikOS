@@ -159,23 +159,59 @@ fetch_one() {
         urls+=("${MIRROR_GNU_FALLBACK}/${url#"${MIRROR_GNU}/"}")
     fi
 
+    # One place, two attempts per mirror: resume, then - if resuming is what
+    # failed - from the start.
+    #
+    # A STALE PARTIAL USED TO WEDGE A SOURCE FOREVER. `-C -` asks the server to
+    # continue from the size of the local .part. If that partial is LONGER than
+    # the upstream file, the range is unsatisfiable: curl exits 36 ("failed to
+    # resume") for file:// and 33/416 over HTTP. The old loop treated that as a
+    # dead mirror, tried the fallback, failed the same way, and died with
+    # "Tried every mirror. Re-run to resume - partial downloads are kept."
+    #
+    # Every subsequent run then did exactly the same thing, because the thing
+    # keeping it broken was the file the message promised to keep. Measured: a
+    # 90000-byte .part against a 65536-byte upstream file failed identically on
+    # every attempt, blaming the mirrors for a problem on local disk.
+    #
+    # So a failed attempt that had a partial to resume from discards it and
+    # retries the SAME url once from zero before moving on. A genuinely dead
+    # mirror still falls through to the next one; a poisoned partial no longer
+    # survives to poison the retry.
     local u attempt=0
     for u in "${urls[@]}"; do
         attempt=$((attempt + 1))
         [[ "$attempt" -gt 1 ]] && warn "trying fallback mirror: ${u}"
-        if curl -fL \
-                --no-progress-meter \
-                --connect-timeout 20 \
-                --speed-limit 2048 --speed-time 30 \
-                --retry 3 --retry-delay 2 --retry-connrefused \
-                -C - -o "${dest}.part" "$u"; then
-            mv "${dest}.part" "$dest"
-            return 0
+
+        if fetch_attempt "$u" "$dest" resume; then return 0; fi
+
+        if [[ -s "${dest}.part" ]]; then
+            warn "resume failed; discarding the partial file and starting over"
+            rm -f "${dest}.part"
+            if fetch_attempt "$u" "$dest" fresh; then return 0; fi
         fi
         warn "failed from ${u}"
     done
 
-    # Keep the .part file: the next run resumes instead of restarting.
+    # Keep any .part: the next run resumes instead of restarting. It is only
+    # kept when it was not itself the reason for the failure.
+    return 1
+}
+
+# fetch_attempt <url> <dest> resume|fresh
+fetch_attempt() {
+    local u="$1" dest="$2" mode="$3"
+    local -a resume=()
+    [[ "$mode" == resume ]] && resume=(-C -)
+    if curl -fL \
+            --no-progress-meter \
+            --connect-timeout 20 \
+            --speed-limit 2048 --speed-time 30 \
+            --retry 3 --retry-delay 2 --retry-connrefused \
+            "${resume[@]}" -o "${dest}.part" "$u"; then
+        mv "${dest}.part" "$dest"
+        return 0
+    fi
     return 1
 }
 
@@ -197,15 +233,18 @@ while IFS='|' read -r name ver url; do
     file="$(basename "$url")"
     dest="${KRYPTIK_SOURCES}/${file}"
 
+    was_fetched=no
     if [[ -f "$dest" ]]; then
         cached=$((cached + 1))
     else
         log "fetching ${name} ${ver}"
         if ! fetch_one "$url" "$dest"; then
             die "download failed: ${name} ${ver}
-Tried every mirror. Re-run to resume — partial downloads are kept."
+Tried every mirror. Re-run to resume — a partial download is kept unless
+resuming from it is what failed, in which case it has been discarded."
         fi
         fetched=$((fetched + 1))
+        was_fetched=yes
     fi
 
     actual="$(sha256_of "$dest")"
@@ -222,7 +261,18 @@ Run './tools/fetch-sources.sh --lock' to generate one, then audit it."
             err "CHECKSUM MISMATCH for ${file}"
             err "  expected ${expected}"
             err "  actual   ${actual}"
-            die "Refusing to continue. Delete ${dest} and retry, or investigate."
+            # The same mismatch means two very different things, and the
+            # operator needs to know which one they are looking at. Neither
+            # case deletes anything: a hash that does not match is evidence,
+            # and evidence is not something a tool should destroy on its own.
+            if [[ "$was_fetched" == yes ]]; then
+                die "This file was downloaded just now, so the DOWNLOAD is
+wrong rather than the disk: a bad mirror, or a stale partial file that
+poisoned a resume. Remove ${dest} and any ${dest}.part, then retry."
+            fi
+            die "This file was already on disk and does not match the hash
+sources.lock recorded for it, so it CHANGED after it was locked. Do not
+delete it yet - work out why first. See docs/supply-chain.md."
         fi
         ok "${name} ${ver}  verified"
     fi
