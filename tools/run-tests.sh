@@ -20,6 +20,7 @@ SUITES=(
     test-manifest
     test-s6-init
     test-image-signing
+    test-mkdisk-guards
 )
 
 failed=()

@@ -89,7 +89,7 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
 .PHONY: test help check check-kernel-eol sources lock verify verify-provenance \
         test-harness test-hardening test-artifacts audit-artifacts \
         audit-artifacts-strict manifest verify-manifest test-manifest \
-        test-s6-init smoke-userspace test-services test-libc-unwind \n        sign-image verify-image test-image-signing image image-boot \
+        test-s6-init smoke-userspace test-services test-libc-unwind \n        sign-image verify-image test-image-signing test-mkdisk-guards \n        image image-boot \
         image-smoke \
         validate-kernel validate-kernel-hardened \
         toolchain temp-tools chroot chroot-enter chroot-umount chroot-status \
@@ -320,6 +320,11 @@ sign-image:
 
 verify-image:
 	@"$(TOOLS)"/image/verify-image.sh --image "$(KRYPTIK_WORK)/images/kryptik-dev.img" 		--key "$(KRYPTIK_WORK)/images/kryptik-dev.img.pub" --expect-kind developer
+
+# mkdisk runs as root and rm -f's its --out. These prove it will only ever
+# aim that at a regular file.
+test-mkdisk-guards:
+	@"$(TOOLS)"/test-mkdisk-guards.sh
 
 test-image-signing:
 	@"$(TOOLS)"/test-image-signing.sh
