@@ -166,11 +166,55 @@ copy_with_libs() { # src dest-root
 
 if [[ -n "$SYSROOT" ]]; then
     [[ -d "$SYSROOT" ]] || die "--sysroot $SYSROOT is not a directory"
+
+    # VERIFY, do not take the flag's word for it.
+    #
+    # This used to stamp the image "kryptik-sysroot" because --sysroot was
+    # passed, full stop. An EMPTY directory therefore produced an image that
+    # boot-smoke.sh reported as "a Kryptik userspace booted" - the exact false
+    # claim this harness exists to prevent, made by the harness itself.
+    #
+    # The evidence is the one the README uses: Kryptik's binaries carry their
+    # own target triple. A host bash says x86_64-pc-linux-gnu; a Kryptik bash
+    # says x86_64-kryptik-linux-gnu. That is a property of the compiler that
+    # built it, not a label anyone set.
+    sysroot_shell=""
+    for cand in usr/bin/bash bin/bash usr/bin/sh bin/sh; do
+        if [[ -f "$SYSROOT/$cand" ]]; then sysroot_shell="$SYSROOT/$cand"; break; fi
+    done
+    [[ -n "$sysroot_shell" ]] || die \
+        "--sysroot $SYSROOT has no shell at usr/bin/bash, bin/bash, usr/bin/sh or bin/sh.
+ That is not a userspace this image can boot, and stamping it as one would make
+ boot-smoke.sh report a Kryptik boot that did not happen."
+
+    sysroot_triple="$(strings -a "$sysroot_shell" 2>/dev/null \
+                      | grep -m1 -o '[a-z0-9_]*-kryptik-linux-[a-z]*' || true)"
+    if [[ -z "$sysroot_triple" ]]; then
+        # NOT `|| echo unknown` on the pipeline: `grep -m1` exits non-zero when
+        # `strings` is killed by SIGPIPE after the match, so the fallback fired
+        # even on success and the message read "x86_64-pc-linux-gnu\nunknown".
+        host_triple="$(strings -a "$sysroot_shell" 2>/dev/null \
+                       | grep -m1 -o '[a-z0-9_]*-[a-z]*-linux-[a-z]*' || true)"
+        [[ -n "$host_triple" ]] || host_triple="none found"
+        die "--sysroot $SYSROOT does not look like a Kryptik userspace.
+ Its shell ($sysroot_shell) reports the target triple '$host_triple', not
+ *-kryptik-linux-*. Refusing rather than producing an image that would be
+ reported as a Kryptik boot. Pass a sysroot built by stage 04, or leave
+ --sysroot off and the image will honestly say it uses host binaries."
+    fi
+
     note "userspace: Kryptik sysroot $SYSROOT"
+    note "  verified: $sysroot_shell reports $sysroot_triple"
     for d in bin sbin usr lib lib64 etc; do
         [[ -d "$SYSROOT/$d" ]] && cp -a "$SYSROOT/$d/." "$ROOT/$d/" 2>/dev/null || true
     done
-    printf 'kryptik-sysroot\n' > "$ROOT/etc/kryptik-userspace-origin"
+    # The stamp records what was MEASURED, not what was requested, so anything
+    # reading it later is reading evidence. The shell's hash pins which build.
+    {
+        printf 'kryptik-sysroot\n'
+        printf 'triple %s\n' "$sysroot_triple"
+        printf 'shell %s\n' "$(sha256sum "$sysroot_shell" | cut -d" " -f1)"
+    } > "$ROOT/etc/kryptik-userspace-origin"
 else
     note "userspace: HOST binaries (this image is NOT a Kryptik system)"
     for b in "${HOST_BINS[@]}"; do copy_with_libs "$b" "$ROOT"; done
@@ -345,7 +389,12 @@ export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 echo "KRYPTIK_VM_SMOKE_BEGIN"
 echo "KRYPTIK_VM_KERNEL=$(uname -r)"
 echo "KRYPTIK_VM_ARCH=$(uname -m)"
-echo "KRYPTIK_VM_USERSPACE=$(cat /etc/kryptik-userspace-origin 2>/dev/null)"
+echo "KRYPTIK_VM_USERSPACE=$(head -1 /etc/kryptik-userspace-origin 2>/dev/null)"
+echo "KRYPTIK_VM_USERSPACE_TRIPLE=$(sed -n 's/^triple //p' /etc/kryptik-userspace-origin 2>/dev/null)"
+# Measured in the guest, from the shell the guest is actually running - not
+# copied from what the image builder recorded. If these two ever disagree, the
+# image was assembled from one tree and stamped from another.
+echo "KRYPTIK_VM_SHELL_TRIPLE=$(strings -a /bin/sh 2>/dev/null | grep -m1 -o '[a-z0-9_]*-[a-z]*-linux-[a-z]*' || echo unknown)"
 echo "KRYPTIK_VM_UID=$(id -u)"
 echo "KRYPTIK_VM_PID1=$(cat /proc/1/comm 2>/dev/null)"
 echo "KRYPTIK_VM_ROOTFS=$(stat -f -c %T / 2>/dev/null)"

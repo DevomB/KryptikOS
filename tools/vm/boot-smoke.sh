@@ -181,8 +181,20 @@ fi
 
 printf '\n'
 if [[ "$origin" == "kryptik-sysroot" ]]; then
+    # The image records the target triple it measured out of the sysroot's own
+    # shell, so this line rests on evidence rather than on a flag someone
+    # passed to the builder.
+    triple="$(valueof KRYPTIK_VM_USERSPACE_TRIPLE)"
+    measured="$(valueof KRYPTIK_VM_SHELL_TRIPLE)"
+    if [[ -n "$measured" && -n "$triple" && "$measured" != "$triple" ]]; then
+        printf '%sMISMATCH%s: the image was stamped %s but its running shell reports %s.\n' \
+            "$C_RED" "$C_RST" "$triple" "$measured"
+        printf 'The image was assembled from one tree and stamped from another.\n'
+        exit 1
+    fi
     printf '%sVM BOOT SMOKE PASSED%s — a Kryptik userspace booted and the suites ran.\n' \
         "$C_GRN" "$C_RST"
+    [[ -n "$triple" ]] && printf 'Userspace target triple, measured in the image: %s\n' "$triple"
 else
     printf '%sVM BOOT SMOKE PASSED (HARNESS ONLY)%s\n' "$C_YEL" "$C_RST"
     printf 'The guest booted, s6 came up and the suites ran — but its userspace is\n'
