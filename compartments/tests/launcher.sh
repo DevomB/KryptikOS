@@ -136,6 +136,8 @@ mkzone beta     none   "#222222"
 mkzone carrier  nic    "#333333" 'bridge = "kryptik0"'
 mkzone sealed   none   "#444444" ''                      encrypted
 mkzone wiped    none   "#555555" ''                      ephemeral
+# For K7: a zone whose data directory is deliberately owned by someone else.
+mkzone stranger none   "#666666"
 
 # A root launch MUST name an unprivileged identity for the zone to map to.
 # kryptikd refuses one that does not, because mapping the zone's root to host
@@ -457,6 +459,15 @@ ZOUT="$(exec 9<"$HOSTFIX"; KRYPTIK_EXPERIMENTAL=1 timeout "$TIMEOUT" \
         /bin/sh -c "$PRO if ls /proc/self/fd/9/ 2>/dev/null | grep -q hostconfig; then echo PROBE=LEAKED; else echo PROBE=denied; fi" 2>&1)"
 ZRC=$?
 probe "C4  an inherited DIRECTORY descriptor cannot be walked from the zone" "denied"
+
+# 5000 is above the 4096 bound of the old fallback sweep, and above anything a
+# naive 3..64 loop reaches. It is the descriptor the previous implementation
+# would have leaked into the zone if /proc had been unreadable.
+ZOUT="$(exec 5000<"$HOSTFIX/hostconfig.conf"; KRYPTIK_EXPERIMENTAL=1 timeout "$TIMEOUT" \
+        "$KRYPTIKD" run alpha "${ZARGS[@]}" -- \
+        /bin/sh -c "$PRO if cat <&5000 2>/dev/null | grep -q '$CANARY'; then echo PROBE=LEAKED; else echo PROBE=denied; fi" 2>&1)"
+ZRC=$?
+probe "C5  a descriptor above the old sweep bound (fd 5000) is closed too" "denied"
 
 # ============================================================================
 head_ "D. Environment and host configuration exposure  [unpriv]"
@@ -904,8 +915,21 @@ if (( PRIVILEGED == 1 )); then
     # Supplementary groups are dropped on a privileged launch. Unprivileged
     # launches cannot do this (setgroups needs CAP_SETGID), which is why it is
     # only asserted here.
-    zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(grep '^Groups:' /proc/self/status | cut -f2- | wc -w)"
-    probe "K4  the host's supplementary groups are dropped in the zone" "0"
+    #
+    # POSITIVE CONTROL FIRST, and it is not optional. "Groups: is empty in the
+    # zone" is evidence of dropping only if the LAUNCHER had groups to drop. An
+    # init-spawned root in an initramfs typically has none, in which case 0 is
+    # the answer with or without setgroups - and this check passed vacuously in
+    # exactly the environment it was written for. Caught by review, not by a
+    # failure, which is the point of a positive control.
+    launcher_groups="$(grep '^Groups:' /proc/self/status | cut -f2- | wc -w)"
+    if (( launcher_groups > 0 )); then
+        info "K4  the launcher holds $launcher_groups supplementary group(s) to drop"
+        zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(grep '^Groups:' /proc/self/status | cut -f2- | wc -w)"
+        probe "K4  the host's supplementary groups are dropped in the zone" "0"
+    else
+        skip "K4  the launcher has no supplementary groups here, so dropping them cannot be demonstrated"
+    fi
 
     # The sealed root must hold against real root, not merely against a user.
     zrun alpha -- /bin/sh -c "$PRO if touch /rootprobe 2>/dev/null; then echo PROBE=WRITABLE; else echo PROBE=sealed; fi"
@@ -913,9 +937,113 @@ if (( PRIVILEGED == 1 )); then
 
     zrun alpha -- /bin/sh -c "$PRO if touch /usr/rootprobe 2>/dev/null; then echo PROBE=WRITABLE; else echo PROBE=readonly; fi"
     probe "K6  /usr is read-only even to a privileged launch" "readonly"
+
+    # kryptikd refuses a data directory owned by anyone but the identity the
+    # zone maps to - otherwise a directory planted by another user becomes the
+    # zone's root. The suite chowns its own rootfs base to the mapped uid, so
+    # without this check that refusal is never executed and the chown could be
+    # hiding it.
+    mkdir -p "$ROOTFS/stranger"
+    chown 100001:100001 "$ROOTFS/stranger" 2>/dev/null
+    out="$(KRYPTIK_EXPERIMENTAL=1 timeout "$TIMEOUT" "$KRYPTIKD" run stranger \
+           "${ZARGS[@]}" -- /bin/echo "$LAUNCHED" 2>&1)"
+    rc=$?
+    if [[ "$out" == *"$LAUNCHED"* ]]; then
+        fail "K7  a data directory owned by another uid was accepted and RAN"
+    elif (( rc != 0 )) && [[ "$out" == *"100001"* || "$out" == *"own"* ]]; then
+        pass "K7  a data directory owned by another uid is refused, and does not run"
+    else
+        fail "K7  refused (exit $rc) but the message did not name the owner"
+        info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
+    fi
 else
     skip "K1-K6 the privileged launch path [vm] needs root; run this suite inside the developer VM"
 fi
+
+# ============================================================================
+head_ "L. Supervision, termination and the filter probes  [unpriv]"
+# ============================================================================
+# These exist because the security audit's own probes covered them and this
+# suite did not - so the VM run, which is the only privileged and the only
+# ABI-8 run, never exercised them. They are the regression checks for the
+# descriptor, namespace and orphan defects (D5, D6, D7).
+
+# --- D7: nothing outlives the launcher ---------------------------------------
+# A unique sleep duration is the marker: it appears in the zone process's argv
+# and in nothing else this suite runs.
+MARK_KILL=2911
+KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run alpha "${ZARGS[@]}" -- /bin/sleep "$MARK_KILL" >/dev/null 2>&1 &
+kpid=$!
+BG_PIDS+=("$kpid")
+sleep 1.5
+before="$(pgrep -f "sleep $MARK_KILL" 2>/dev/null | wc -l)"
+if (( before > 0 )); then
+    pass "L1a positive control: the zone's long-running process is up ($before proc)"
+    kill -9 "$kpid" 2>/dev/null
+    sleep 2
+    after="$(pgrep -f "sleep $MARK_KILL" 2>/dev/null | wc -l)"
+    if (( after == 0 )); then
+        pass "L1b SIGKILLing the launcher leaves no zone process behind"
+    else
+        fail "L1b $after zone process(es) outlived a SIGKILLed launcher"
+        pkill -9 -f "sleep $MARK_KILL" 2>/dev/null
+    fi
+else
+    fail "L1a positive control FAILED: the zone process never started; L1b proves nothing"
+fi
+
+# --- D7: SIGTERM to the launcher ---------------------------------------------
+# The assertion here is "no zone process survives", NOT timeout(1)'s exit code.
+#
+# An earlier version demanded 124 and passed on the host while failing in the
+# VM, for a reason that had nothing to do with kryptikd: GNU coreutils timeout
+# reports 124 whenever it had to signal the child, while busybox timeout - what
+# a minimal image actually has on its PATH - reports the child's wait status,
+# which here is 137. Both describe the same event.
+#
+# 137 is also the correct kryptikd behaviour rather than a fallback: the zone's
+# pid 1 is /bin/sleep, and pid 1 of a namespace IGNORES a SIGTERM it has no
+# handler for, so the intermediate's 5-second escalation to SIGKILL is what
+# actually ends it. A test that demanded a clean SIGTERM exit would be
+# demanding something the kernel does not permit.
+MARK_TERM=2912
+KRYPTIK_EXPERIMENTAL=1 timeout 2 "$KRYPTIKD" run alpha "${ZARGS[@]}" -- /bin/sleep "$MARK_TERM" >/dev/null 2>&1
+trc=$?
+# The escalation is 5s after the signal, so wait past it before judging.
+sleep 6
+after="$(pgrep -f "sleep $MARK_TERM" 2>/dev/null | wc -l)"
+if (( trc == 0 )); then
+    fail "L2  the launcher exited 0 despite being signalled"
+    pkill -9 -f "sleep $MARK_TERM" 2>/dev/null
+elif (( after == 0 )); then
+    pass "L2  signalling the launcher tears the zone down with it (launcher exit $trc)"
+else
+    fail "L2  $after zone process(es) survived a signal to the launcher"
+    pkill -9 -f "sleep $MARK_TERM" 2>/dev/null
+fi
+
+# --- D6: the filter probes ---------------------------------------------------
+# `kryptikd seccomp-test` installs the real zone filter in a forked child and
+# makes the syscall, so in the VM these are target-kernel results. Exit 5 means
+# killed by SIGSYS; exit 7 means refused with the intended errno; 0 means the
+# call completed, which for the last one is the positive control.
+filter_probe() { # desc probe expected
+    local desc="$1" probe_name="$2" want="$3"
+    timeout "$TIMEOUT" "$KRYPTIKD" seccomp-test "$probe_name" >/dev/null 2>&1
+    local rc=$?
+    if (( rc == want )); then
+        pass "$desc"
+    else
+        fail "$desc [expected exit $want, got $rc]"
+    fi
+}
+
+filter_probe "L3  clone(CLONE_NEWUSER) is killed (nested user namespace)" clone-newuser 5
+filter_probe "L4  clone3 returns ENOSYS rather than killing (glibc falls back)" clone3 7
+filter_probe "L5  socket(AF_VSOCK) is refused with an errno" socket-vsock 7
+filter_probe "L6  socket(AF_NETLINK/NETFILTER) is refused with an errno" socket-netlink-nf 7
+filter_probe "L7  ioctl(TIOCSTI) is killed (terminal input injection)" ioctl-tiocsti 5
+filter_probe "L8  positive control: socket(AF_INET) still works" socket-inet 0
 
 # ============================================================================
 head_ "Mandatory checks NOT RUN here"
