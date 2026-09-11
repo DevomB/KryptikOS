@@ -77,6 +77,39 @@ say "END"
 echo
 
 # --- and shut down, which is itself under test ----------------------------
+# --- the catch-all log ------------------------------------------------------
+# s6-svscan-log catches the output of every supervised daemon that does not
+# have its own logger. It is the only place a daemon's complaint can be read
+# after the fact, and nothing had ever looked at it.
+if [ -d /run/uncaught-logs ]; then
+    say "uncaught_logs=present"
+    say "uncaught_files=$(ls -A /run/uncaught-logs 2>/dev/null | tr '
+' ' ')"
+    if [ -r /run/uncaught-logs/current ]; then
+        tail -n 25 /run/uncaught-logs/current 2>/dev/null | sed 's/^/KRYPTIK_SMOKE: log: /'
+    fi
+else
+    say "uncaught_logs=MISSING - no catch-all logger, daemon output is lost"
+fi
+
+# --- is shutdownd actually reading its fifo? -------------------------------
+# Everything else about the shutdown path checks out - the fifo exists at the
+# path s6-linux-init-hpr opens, shutdownd is supervised and up, rc.shutdown is
+# executable - and yet a poweroff request produces no action and no diagnostic.
+#
+# So ask the daemon directly. s6-linux-init-shutdownd.c logs
+# "unknown command: X" for any byte it does not recognise. If that line appears
+# below, shutdownd is reading this fifo and the problem is in what happens
+# after; if it does not, shutdownd is not reading this fifo at all and every
+# other observation about it is beside the point.
+say "fifo_probe=sending an invalid byte"
+printf 'X' > /run/service/s6-linux-init-shutdownd/fifo 2>/dev/null     && say "fifo_probe_write=ok" || say "fifo_probe_write=failed"
+sleep 2
+if [ -r /run/uncaught-logs/current ]; then
+    tail -n 5 /run/uncaught-logs/current 2>/dev/null       | grep -a "unknown command" | sed 's/^/KRYPTIK_SMOKE: probe: /'       || say "fifo_probe_result=no 'unknown command' line - shutdownd is not reading it"
+fi
+say "shutdownd_pid_before=$(s6-svstat -o pid /run/service/s6-linux-init-shutdownd 2>/dev/null)"
+
 # --- the shutdown path, before we depend on it -----------------------------
 # /sbin/poweroff is s6-linux-init-hpr, which writes to shutdownd's fifo under
 # /run/s6-linux-init. Stage 1 warned it could not write /run/s6-linux-init/env,
@@ -112,5 +145,11 @@ while [ "$i" -lt 45 ]; do
     i=$((i + 1))
 done
 say "POWEROFF_DID_NOT_TAKE_EFFECT after ${i}s"
+# Whatever shutdownd made of the request is here, if anywhere.
+if [ -r /run/uncaught-logs/current ]; then
+    tail -n 15 /run/uncaught-logs/current 2>/dev/null | sed 's/^/KRYPTIK_SMOKE: postlog: /'
+fi
+say "shutdownd_after=$(s6-svstat -o up,pid /run/service/s6-linux-init-shutdownd 2>/dev/null | tr '
+' ' ')"
 sync
 [ -w /proc/sysrq-trigger ] && echo o > /proc/sysrq-trigger
