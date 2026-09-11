@@ -185,7 +185,13 @@ impl SyncPipe {
     }
 
     fn signal(&self) {
-        let b = [1u8];
+        self.signal_byte(1)
+    }
+
+    /// Like `signal`, with a value the peer can read back. Used on `mapped`
+    /// to tell the intermediate whether the parent built a network path.
+    fn signal_byte(&self, v: u8) {
+        let b = [v];
         loop {
             let r = unsafe { libc::write(self.write, b.as_ptr() as *const libc::c_void, 1) };
             if r < 0 && errno() == libc::EINTR {
@@ -197,11 +203,15 @@ impl SyncPipe {
     }
 
     fn wait(&self) -> Result<(), SpawnError> {
+        self.wait_byte().map(|_| ())
+    }
+
+    fn wait_byte(&self) -> Result<u8, SpawnError> {
         let mut b = [0u8];
         loop {
             let r = unsafe { libc::read(self.read, b.as_mut_ptr() as *mut libc::c_void, 1) };
             if r == 1 {
-                return Ok(());
+                return Ok(b[0]);
             }
             if r == 0 {
                 return Err(SpawnError::Setup("peer exited before signalling".into()));
@@ -602,6 +612,7 @@ pub fn run_in_zone(
     // addressed from its identity. A failure to attach is not fatal - the
     // zone starts with loopback only, fail-closed - except for the nic zone,
     // where a NIC that could not be moved must not be left half-configured.
+    let mut plumbed = false;
     if id.privileged && zone.network != crate::zone::NetworkMode::None {
         match crate::netlink::open_netns_of(pid) {
             Ok(ns) => {
@@ -612,7 +623,7 @@ pub fn run_in_zone(
                 };
                 unsafe { libc::close(ns) };
                 match (r, zone.network) {
-                    (Ok(()), _) => {}
+                    (Ok(()), _) => plumbed = true,
                     (Err(e), crate::zone::NetworkMode::Nic) => {
                         mapped.close_write();
                         let _ = wait_for(pid);
@@ -637,7 +648,8 @@ pub fn run_in_zone(
         return Err(SpawnError::Setup(format!("id maps: {e}")));
     }
 
-    mapped.signal();
+    // 1 = mapped; 2 = mapped and a network path was built.
+    mapped.signal_byte(if plumbed { 2 } else { 1 });
     mapped.close_write();
 
     // The zone's pid 1, as the host sees it. Read before waitpid because the
@@ -818,9 +830,10 @@ fn intermediate_main(
     //    failed or died; either way there is no zone to build.
     ready.signal();
     ready.close_write();
-    if let Err(e) = mapped.wait() {
-        bail!("parent did not complete the id mapping: {e}");
-    }
+    let plumbed = match mapped.wait_byte() {
+        Ok(v) => v == 2,
+        Err(e) => bail!("parent did not complete the id mapping: {e}"),
+    };
     mapped.close_read();
 
     // 5. Become root in the new user namespace.
@@ -861,7 +874,7 @@ fn intermediate_main(
     }
 
     if inner == 0 {
-        let rc = zone_init(zone, rootfs, argv, flags, zone_policy);
+        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, plumbed);
         unsafe { libc::_exit(rc) };
     }
 
@@ -891,6 +904,7 @@ fn zone_init(
     argv: &[String],
     flags: libc::c_int,
     zone_policy: Option<&policy::Policy>,
+    plumbed: bool,
 ) -> i32 {
     macro_rules! bail {
         ($($arg:tt)*) => {{
@@ -919,7 +933,14 @@ fn zone_init(
         StorageMode::Ephemeral => zone.size.as_deref(),
         StorageMode::Encrypted => None,
     };
-    let home = match rootfs::pivot_into(rootfs, &zone.name, ephemeral) {
+    // /etc/resolv.conf follows the path the parent built, not the mode the
+    // file declares: a routed zone with no path names no resolver.
+    let resolver = match (zone.network, plumbed) {
+        (crate::zone::NetworkMode::Nic, true) => rootfs::Resolver::Writable,
+        (crate::zone::NetworkMode::Routed, true) => rootfs::Resolver::Bridge,
+        _ => rootfs::Resolver::None,
+    };
+    let home = match rootfs::pivot_into(rootfs, &zone.name, ephemeral, resolver) {
         Ok(h) => h,
         Err(e) => bail!("could not build the zone root: {e}"),
     };
