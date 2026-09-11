@@ -51,6 +51,31 @@ for cand in "${KRYPTIK_QEMU:-}" \
 done
 [[ -n "$QEMU" ]] || die "no qemu-system-x86_64 found. Set KRYPTIK_QEMU to one."
 
+# The unpacked QEMU is a relocated Debian package, not an installed one: its
+# libraries sit beside it rather than on the system search path, and its BIOS
+# and option ROMs live under usr/share/qemu. Without the first it dies with
+# "libfdt.so.1: cannot open shared object file"; without the second it starts
+# and then cannot find a BIOS. A QEMU found on the host PATH needs neither.
+QEMU_ENV=(env)
+case "$QEMU" in
+    */tooling/qemu/usr/bin/qemu-system-x86_64)
+        QEMU_PREFIX="${QEMU%/usr/bin/qemu-system-x86_64}"
+        QEMU_LIB="${QEMU_PREFIX}/usr/lib/x86_64-linux-gnu"
+        QEMU_DATA="${QEMU_PREFIX}/usr/share/qemu"
+        if [[ -d "$QEMU_LIB" ]]; then
+            QEMU_ENV=(env "LD_LIBRARY_PATH=${QEMU_LIB}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}")
+        fi
+        ;;
+esac
+
+# Prove it can start before a boot depends on it. A missing shared library here
+# is a two-second failure with a readable message; discovered during the boot
+# it is an empty serial log and a timeout.
+if ! "${QEMU_ENV[@]}" "$QEMU" --version >/dev/null 2>&1; then
+    die "found ${QEMU} but it will not run:
+$("${QEMU_ENV[@]}" "$QEMU" --version 2>&1 | head -3)"
+fi
+
 # A kernel is required while the image has no bootloader. Fall back to one
 # inside the image's own /boot if the caller did not name one.
 if [[ -z "$KERNEL" ]]; then
@@ -66,9 +91,18 @@ APPEND="root=/dev/vda2 rootwait rw console=ttyS0,115200 panic=10 ${EXTRA_APPEND}
 
 # shellcheck disable=SC2054  # the commas are QEMU option syntax
 #   (q35,accel=tcg / file=...,format=raw), not array separators.
+# A full boot under TCG takes minutes; with KVM it takes seconds. Fall back
+# to TCG rather than failing when /dev/kvm is not usable.
+ACCEL=tcg
+CPUMODEL=max
+if [[ -r /dev/kvm && -w /dev/kvm ]]; then
+    ACCEL=kvm
+    CPUMODEL=host
+fi
+
 QEMU_ARGS=(
-    -machine q35,accel=tcg
-    -cpu max
+    -machine "q35,accel=${ACCEL}"
+    -cpu "$CPUMODEL"
     -smp "$CPUS"
     -m "$MEM"
     -kernel "$KERNEL"
@@ -78,9 +112,10 @@ QEMU_ARGS=(
     -no-reboot
 )
 [[ "$NET" == "none" ]] && QEMU_ARGS+=( -nic none )
+[[ -n "${QEMU_DATA:-}" && -d "${QEMU_DATA}" ]] && QEMU_ARGS+=( -L "$QEMU_DATA" )
 
 log "booting ${IMAGE##*/}"
-dim "  qemu   : ${QEMU}"
+dim "  qemu   : ${QEMU} (accel=${ACCEL})"
 dim "  kernel : ${KERNEL}"
 dim "  append : ${APPEND}"
 dim "  mode   : ${MODE}"
@@ -90,7 +125,7 @@ case "$MODE" in
 console)
     dim "  interactive. Ctrl-A X to quit QEMU."
     echo
-    exec "$QEMU" "${QEMU_ARGS[@]}"
+    exec "${QEMU_ENV[@]}" "$QEMU" "${QEMU_ARGS[@]}"
     ;;
 smoke)
     LOGDIR="${KRYPTIK_WORK}/logs"
@@ -103,7 +138,7 @@ smoke)
     # a hang in userspace would otherwise wait forever.
     set +e
     trap - ERR
-    timeout --foreground "$TIMEOUT" "$QEMU" "${QEMU_ARGS[@]}" \
+    timeout --foreground "$TIMEOUT" "${QEMU_ENV[@]}" "$QEMU" "${QEMU_ARGS[@]}" \
         < /dev/null > "$SERIAL" 2>&1
     rc=$?
     trap _kryptik_trap ERR
