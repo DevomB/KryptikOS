@@ -887,7 +887,10 @@ EOF
 #   repository since the beginning, referenced by docs/hardening.md, and never
 #   copied into a target. Every tunable in it was inert.
 #
-#   build/services/ - the s6-rc source tree, compiled into the database
+#   build/services/       - the s6-rc source tree: service definitions ONLY
+#   build/service-scripts/ - the shell the oneshots run, kept out of the
+#                            source tree because s6-rc-compile reads every
+#                            directory there as a service
 #   rc.init looks for.
 s_services() {
     local src="${KRYPTIK_ROOT}/build/services"
@@ -895,9 +898,13 @@ s_services() {
 
     # The scripts the oneshot `up` files name. They live outside the database
     # so they can be read, checked and run by hand on a machine that is not
-    # booting properly.
+    # booting properly - and outside the s6-rc SOURCE tree, which is the part
+    # that matters here: s6-rc-compile treats every directory under the source
+    # as a service definition, so a scripts/ directory in there made it stop
+    # with "unable to read .../scripts/type: No such file or directory".
+    local scripts="${KRYPTIK_ROOT}/build/service-scripts"
     install -d -m 0755 /usr/libexec/kryptik
-    install -m 0755 "$src"/scripts/*.sh /usr/libexec/kryptik/
+    install -m 0755 "$scripts"/*.sh /usr/libexec/kryptik/
     echo "--- boot scripts ---"
     ls -la /usr/libexec/kryptik/
 
