@@ -321,6 +321,34 @@ pub fn hosts_for(zone: &str) -> String {
 /// A symlink here would redirect the bind mount to wherever it points; a
 /// directory owned by someone else would expose their files under the zone's
 /// mapped root.
+/// Refuse an ephemeral zone whose persistent directory is not empty.
+///
+/// This is what turns "labelled ephemeral" into "cannot have been persistent".
+/// An ephemeral zone's data lives in a tmpfs that exists only inside its mount
+/// namespace, so nothing it writes reaches this directory - but a directory
+/// left behind by an earlier build, or by the same zone before it was declared
+/// ephemeral, would sit on disk unreferenced and unwiped while the operator
+/// believed the zone kept nothing. Refusing is the only honest answer: kryptikd
+/// must not delete data it did not create.
+pub fn check_data_dir_empty(path: &str, zone: &str) -> Result<(), RootfsError> {
+    let entries = fs::read_dir(path)
+        .map_err(|e| RootfsError::Setup(format!("{path}: {e}")))?;
+    let leftovers: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .take(6)
+        .collect();
+    if leftovers.is_empty() {
+        return Ok(());
+    }
+    Err(RootfsError::Setup(format!(
+        "ephemeral zone {zone:?} has persistent data in {path} from an earlier run \
+         ({}); move or delete it. An ephemeral zone keeps nothing, so kryptikd will \
+         not start one over data it did not write and must not silently destroy.",
+        leftovers.join(", ")
+    )))
+}
+
 pub fn check_data_dir(path: &str, expected_uid: u32) -> Result<(), RootfsError> {
     let md = fs::symlink_metadata(path)
         .map_err(|e| RootfsError::Setup(format!("{path}: {e}")))?;
@@ -353,7 +381,14 @@ pub fn check_data_dir(path: &str, expected_uid: u32) -> Result<(), RootfsError> 
 /// called BEFORE the Landlock ruleset and the seccomp filter: both mount() and
 /// pivot_root() are absent from the zone syscall allowlist, deliberately, so
 /// doing this afterwards would kill the zone during its own construction.
-pub fn pivot_into(data_dir: &str, zone: &str) -> Result<String, RootfsError> {
+/// `ephemeral` carries the tmpfs size for a `storage.mode = "ephemeral"` zone.
+/// `None` means the persistent directory is bound at the zone's home, as
+/// before.
+pub fn pivot_into(
+    data_dir: &str,
+    zone: &str,
+    ephemeral: Option<&str>,
+) -> Result<String, RootfsError> {
     let home = zone_home(zone);
 
     // The whole tree must be private first, or every mount below propagates
@@ -371,20 +406,29 @@ pub fn pivot_into(data_dir: &str, zone: &str) -> Result<String, RootfsError> {
     // tmpfs. O_NOFOLLOW: a symlink was already refused by check_data_dir, but
     // the check and the open are two steps, and the second must not follow
     // what the first rejected.
-    let c_data = cs(data_dir)?;
-    let data_fd = unsafe {
-        libc::open(
-            c_data.as_ptr(),
-            libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        )
+    //
+    // An ephemeral zone takes no such handle: its home is a fresh tmpfs and the
+    // persistent directory is never bound anywhere. -1 stands for "there is no
+    // data directory to expose", which is the entire point of the mode.
+    let data_fd = if ephemeral.is_some() {
+        -1
+    } else {
+        let c_data = cs(data_dir)?;
+        let fd = unsafe {
+            libc::open(
+                c_data.as_ptr(),
+                libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(RootfsError::Syscall {
+                call: "open(data dir)",
+                path: data_dir.to_string(),
+                errno: errno(),
+            });
+        }
+        fd
     };
-    if data_fd < 0 {
-        return Err(RootfsError::Syscall {
-            call: "open(data dir)",
-            path: data_dir.to_string(),
-            errno: errno(),
-        });
-    }
 
     // The root of the zone: a fresh tmpfs mounted over the data directory's
     // path. Every mount point below is created here, by us, on a filesystem
@@ -464,15 +508,33 @@ pub fn pivot_into(data_dir: &str, zone: &str) -> Result<String, RootfsError> {
     // of a tree with locked submounts with EINVAL, which surfaces as a clear
     // error rather than a silently missing directory.
     let home_dir = mkdir(&home[1..])?;
-    let via_fd = format!("/proc/self/fd/{data_fd}");
-    mount_raw(&via_fd, &home_dir, None, libc::MS_BIND, None, "mount(bind zone data)")
-        .map_err(|e| match e {
-            RootfsError::Syscall { errno, .. } if errno == libc::EINVAL => RootfsError::Setup(
-                format!("{data_dir} contains mounts of its own; a zone data directory must be plain"),
-            ),
-            other => other,
-        })?;
-    unsafe { libc::close(data_fd) };
+    if let Some(size) = ephemeral {
+        // A per-launch tmpfs, in the zone's OWN mount namespace. When pid 1
+        // dies the namespace is released and the kernel frees these pages -
+        // there is no unmount step to forget and no teardown path that can be
+        // skipped by a crash, which is why the guarantee survives kill -9.
+        //
+        // mode=0700 and uid/gid 0: the zone's root inside its user namespace,
+        // which is the unprivileged host uid it maps to.
+        mount_raw(
+            "tmpfs",
+            &home_dir,
+            Some("tmpfs"),
+            (libc::MS_NOSUID | libc::MS_NODEV) as libc::c_ulong,
+            Some(&format!("mode=0700,uid=0,gid=0,size={size}")),
+            "mount(ephemeral home tmpfs)",
+        )?;
+    } else {
+        let via_fd = format!("/proc/self/fd/{data_fd}");
+        mount_raw(&via_fd, &home_dir, None, libc::MS_BIND, None, "mount(bind zone data)")
+            .map_err(|e| match e {
+                RootfsError::Syscall { errno, .. } if errno == libc::EINVAL => RootfsError::Setup(
+                    format!("{data_dir} contains mounts of its own; a zone data directory must be plain"),
+                ),
+                other => other,
+            })?;
+        unsafe { libc::close(data_fd) };
+    }
     if let Err(e) = set_mount_attr(&home_dir, MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV, false) {
         // nosuid is moot under no_new_privs and nodev under Landlock's
         // MAKE_CHAR/MAKE_BLOCK denial; say so rather than fail the zone.

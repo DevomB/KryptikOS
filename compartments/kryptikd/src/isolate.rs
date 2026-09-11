@@ -338,7 +338,7 @@ mod tests {
         let bridge = if mode == "nic" { "bridge = \"kryptik0\"\n" } else { "" };
         Zone::from_str(&format!(
             "[zone]\nname = \"t\"\n[network]\nmode = \"{mode}\"\n{bridge}\
-             [storage]\nmode = \"ephemeral\"\n[ui]\nborder_color = \"#123456\"\n"
+             [storage]\nmode = \"ephemeral\"\nsize = \"256M\"\n[ui]\nborder_color = \"#123456\"\n"
         ))
         .unwrap()
     }
