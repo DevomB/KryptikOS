@@ -243,6 +243,51 @@ expect_pass "reinstalling the installed version is allowed" \
     "is not older than the installed"
 
 # ---------------------------------------------------------------------------
+# key rotation
+# ---------------------------------------------------------------------------
+#
+# The allowed-signers file IS the rotation mechanism: enrolling a new key and
+# retiring an old one are edits to it. These are the acceptance checks for
+# that, because a rotation that leaves the retired key working has not
+# happened, and one that breaks before the new key is enrolled locks the
+# operator out of their own update channel.
+
+ssh-keygen -q -t ed25519 -N '' -C release-new -f "${W}/keys/new" </dev/null
+NEWPUB="$(cut -d' ' -f1,2 < "${W}/keys/new.pub")"
+OLDPUB="$(cut -d' ' -f1,2 < "${W}/keys/rel.pub")"
+
+build_release
+
+# Overlap: both keys enrolled, so releases signed with either are accepted.
+printf 'release@kryptik.test %s\nrelease@kryptik.test %s\n' "$OLDPUB" "$NEWPUB" \
+    > "$SIGNERS"
+make_signed 4.0 development
+verify
+expect_pass "during overlap, a release signed by the old key still verifies" \
+    "manifest verified"
+
+rm -f "$MAN" "${MAN}.sig"
+bash "$TOOL" create --out "$MAN" --root "$REL" --version 4.0 \
+    --role development boot usr > /dev/null 2>&1
+bash "$TOOL" sign --key "${W}/keys/new" "$MAN" > /dev/null 2>&1
+verify
+expect_pass "during overlap, a release signed by the new key verifies" \
+    "manifest verified"
+
+# Rotation complete: the retired key is removed.
+printf 'release@kryptik.test %s\n' "$NEWPUB" > "$SIGNERS"
+verify
+expect_pass "after rotation, the new key still verifies" "manifest verified"
+
+make_signed 4.0 development   # signs with the retired key
+verify
+expect_fail "after rotation, the retired key is refused" \
+    "the signing key is not enrolled"
+
+# Restore.
+printf 'release@kryptik.test %s\n' "$OLDPUB" > "$SIGNERS"
+
+# ---------------------------------------------------------------------------
 # no default trust anchor
 # ---------------------------------------------------------------------------
 
