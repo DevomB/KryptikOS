@@ -133,3 +133,14 @@ CONFIG_GCC_PLUGIN_RANDSTRUCT=y
 # ALL_ZERO is the current spelling and matches the -ftrivial-auto-var-init=zero
 # Kryptik already applies to userspace (build/config/hardening.env).
 CONFIG_INIT_STACK_ALL_ZERO=y
+
+# securityfs, for /sys/kernel/security/lsm.
+#
+# Landlock, lockdown and Yama all work without it - they are syscall and LSM
+# hooks, not files. What needs it is being able to SEE which LSMs a running
+# kernel has active. The first boot of a Kryptik image reported
+# "lsm=unreadable" while kryptikd, asking the kernel directly, reported
+# landlock ABI v7: the mitigation was there and unobservable. A security
+# distribution that cannot show which LSMs are loaded is asking to be taken on
+# faith.
+CONFIG_SECURITYFS=y
