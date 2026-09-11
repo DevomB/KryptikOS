@@ -388,6 +388,45 @@ else
     red "supplied evidence was accepted without KRYPTIK_INVENTORY_SELFTEST"; show
 fi
 
+# --- published-key classes pass through from the verifier -------------------
+#
+# verify-signatures.sh emits these directly when tools/key-provenance.tsv
+# names a publisher for the signing key. Before the passthrough existed they
+# fell off the end of classify() and were reported as "unverified" - a worse
+# answer than the one the verifier had actually given, and one that would have
+# quietly undone twelve sources' worth of evidence.
+
+cat > "${EV}/signatures.tsv" <<'TSV'
+korgpub	signature-korg-published-key	Karel Zak <kzak@redhat.com> (E4B71D5EEC39C284)
+korgcert	signature-korg-certified-key	Theodore Ts'o (F2F95956950D81A3)
+lockonly	signature-wkd-published-key	Craig Small <csmall@debian.org> (022166C0FF3C84E3)
+keyringpkg	signature-keyring-key	Nick Clifton <nickc@redhat.com> (13FCEF89DD9E3C4F)
+TSV
+run
+expect_class korgpub signature-korg-published-key
+expect_class korgcert signature-korg-certified-key
+expect_class lockonly signature-wkd-published-key
+
+# The classes are ranked, and the ranking is the point: a key the signer's own
+# domain publishes is not the same evidence as one in a keyring fetched
+# wholesale from ftp.gnu.org, so the report must not print them in an order
+# that implies otherwise.
+wkd_at=$(grep -n 'signature-wkd-published-key' "$OUT" | tail -1 | cut -d: -f1)
+gnu_at=$(grep -n 'signature-keyring-key' "$OUT" | tail -1 | cut -d: -f1)
+if [[ -n "$wkd_at" && -n "$gnu_at" && "$wkd_at" -lt "$gnu_at" ]]; then
+    green "the published-key class is ranked above the bulk-keyring class"
+else
+    red "class ordering: wkd at ${wkd_at:-?}, keyring at ${gnu_at:-?}"; show
+fi
+
+if grep -qF "not upstream designating a signer" "$OUT"; then
+    green "and the report says what a WKD publication does not establish"
+else
+    red "and the report says what a WKD publication does not establish"; show
+fi
+
+write_evidence
+
 # --- recorded caveats -------------------------------------------------------
 #
 # A caveat records something true about a source that no assurance class can
