@@ -551,6 +551,14 @@ fn cmd_show(dir: &Path, name: &str) -> ExitCode {
         println!();
         println!("This zone has no network stack: its net namespace contains only");
         println!("loopback. That is not a firewall rule - there is no interface.");
+    } else {
+        // The counterpart, which was missing. A reader who sees a paragraph
+        // for an airgapped zone and none for a routed one concludes the routed
+        // one is unremarkable - that is, that it works.
+        println!();
+        println!("network.mode is {:?}, and routed networking is NOT IMPLEMENTED.", z.network);
+        println!("This zone gets an empty net namespace: loopback only, no routes,");
+        println!("no path out. It is isolated, and it is not connected.");
     }
 
     ExitCode::SUCCESS
