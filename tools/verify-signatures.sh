@@ -107,11 +107,11 @@ CANONICAL_GNU="https://ftp.gnu.org/gnu"
 # the keyring comes from, and where an "unknown" key is fetched from - and
 # nothing else. The classification in check_sig(), which is what the tests are
 # actually about, runs exactly as it does in production.
-if [[ -n "${KRYPTIK_SIGCHECK_MANIFEST:-}${KRYPTIK_SIGCHECK_KEYRING:-}${KRYPTIK_SIGCHECK_KEYSOURCE:-}" ]]; then
+if [[ -n "${KRYPTIK_SIGCHECK_MANIFEST:-}${KRYPTIK_SIGCHECK_KEYRING:-}${KRYPTIK_SIGCHECK_KEYSOURCE:-}${KRYPTIK_SIGCHECK_PROVENANCE:-}" ]]; then
     [[ "${KRYPTIK_SIGCHECK_SELFTEST:-0}" == "1" ]] || die \
 "A signature-check override is set (KRYPTIK_SIGCHECK_MANIFEST /
-KRYPTIK_SIGCHECK_KEYRING / KRYPTIK_SIGCHECK_KEYSOURCE) but
-KRYPTIK_SIGCHECK_SELFTEST is not.
+KRYPTIK_SIGCHECK_KEYRING / KRYPTIK_SIGCHECK_KEYSOURCE /
+KRYPTIK_SIGCHECK_PROVENANCE) but KRYPTIK_SIGCHECK_SELFTEST is not.
 Refusing to verify signatures against a substituted manifest or keyring."
     warn "SELF-TEST MODE: manifest and/or keyring are substituted, not upstream"
 fi
@@ -353,6 +353,155 @@ key_is_unaudited() {
 
 key_is_pinned() { _key_in "$1" "${PINNED_FPRS[@]}"; }
 
+# --- published key provenance ----------------------------------------------
+#
+# tools/key-provenance.tsv records, per key, a publisher that states its
+# fingerprint BY A ROUTE THAT DOES NOT DEPEND ON THE SIGNATURE: kernel.org's
+# pgpkeys repository, or the Web Key Directory of the signer's own email
+# domain. Before this, a source whose key was in no keyring reported "key not
+# held" and fell to lock-only, and the only route on offer was
+# --fetch-unknown-keys, which imports the key the signature itself named.
+#
+# Resolved through BASH_SOURCE, like the pins above and unlike
+# tools/source-notes.tsv: this is the tool's own knowledge about keys, not data
+# about whichever tree is being inventoried.
+KEY_PROVENANCE="${KRYPTIK_SIGCHECK_PROVENANCE:-$(dirname "${BASH_SOURCE[0]}")/key-provenance.tsv}"
+
+declare -a PROV_FPR=() PROV_KIND=() PROV_LOC=() PROV_SIGNS=()
+
+load_key_provenance() {
+    [[ -f "$KEY_PROVENANCE" ]] || return 0
+    local line n=0 bad=0 f k l r s rest
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        n=$((n + 1))
+        [[ -z "${line//[[:space:]]/}" ]] && continue
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        read -r f k l r s rest <<< "$line"
+
+        local why=""
+        [[ "$f" =~ ^[0-9A-F]{40}$ ]] || why="fingerprint must be 40 uppercase hex characters"
+        if [[ -z "$why" ]]; then
+            case "$k" in
+                korg)
+                    if [[ "${KRYPTIK_SIGCHECK_SELFTEST:-0}" == "1" ]]; then
+                        [[ "$l" == https://* || "$l" == file://* ]] \
+                            || why="a korg locator must be an https or (self-test) file URL"
+                    else
+                        [[ "$l" == https://* ]] \
+                            || why="a korg locator must be an https URL"
+                    fi
+                    ;;
+                github)
+                    # Pinned to the exact endpoint shape, so a row cannot point
+                    # "github" at some other host and inherit the class.
+                    if [[ "$l" =~ ^https://github\.com/[A-Za-z0-9-]+\.gpg$ ]]; then
+                        :
+                    elif [[ "${KRYPTIK_SIGCHECK_SELFTEST:-0}" == "1" && "$l" == file://* ]]; then
+                        :
+                    else
+                        why="a github locator must be https://github.com/<account>.gpg"
+                    fi
+                    # The note has to carry the release-author tie, because
+                    # without it the row says only "GitHub hosts this key".
+                    [[ "$rest" == *published\ by* ]] \
+                        || why="a github row must record which account published the release"
+                    ;;
+                wkd)  [[ "$l" == *@*.* ]]     || why="a wkd locator must be an email address" ;;
+                *)    why="unknown kind '${k}'" ;;
+            esac
+        fi
+        [[ -z "$why" && ! "$r" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] \
+            && why="retrieved must be a YYYY-MM-DD date"
+        [[ -z "$why" && -z "${s//[[:space:]]/}" ]] && why="no source names in signs"
+        [[ -z "$why" && -z "${rest//[[:space:]]/}" ]] \
+            && why="a row must record the uid it was published under"
+
+        if [[ -n "$why" ]]; then
+            err "${KEY_PROVENANCE}:${n}: ${why}"
+            bad=$((bad + 1))
+            continue
+        fi
+        PROV_FPR+=("$f"); PROV_KIND+=("$k"); PROV_LOC+=("$l"); PROV_SIGNS+=(",${s},")
+    done < "$KEY_PROVENANCE"
+
+    [[ "$bad" -eq 0 ]] || die "${bad} malformed row(s) in ${KEY_PROVENANCE}.
+A key-provenance table that cannot be parsed is a tooling fault, not a
+verification result: nothing here has been checked."
+}
+
+# Fetch the published key(s) for one source, if any, and only if not already
+# held. The recorded fingerprint is the anchor: if the locator now serves a
+# DIFFERENT key, that is a finding and the key is refused, because a silently
+# rotated key is exactly what this table has to be able to notice.
+import_provenance_keys_for() {
+    local name="$1" i
+    for i in "${!PROV_FPR[@]}"; do
+        case "${PROV_SIGNS[$i]}" in *",${name},"*) ;; *) continue ;; esac
+
+        # Already held: nothing to fetch, and no reason to touch the network.
+        gpg --batch --list-keys "${PROV_FPR[$i]}" >/dev/null 2>&1 && continue
+
+        local tmp got
+        tmp="$(mktemp)"
+        case "${PROV_KIND[$i]}" in
+            korg|github)
+                if ! curl -fsSL --max-time 30 -o "$tmp" "${PROV_LOC[$i]}" 2>/dev/null; then
+                    warn "${name}: could not fetch the published key from ${PROV_LOC[$i]}"
+                    rm -f "$tmp"; continue
+                fi
+                got="$(gpg --batch --with-colons --import-options show-only \
+                         --import "$tmp" 2>/dev/null \
+                       | awk -F: '$1=="fpr"{print $10; exit}')"
+                if [[ "${got^^}" != "${PROV_FPR[$i]}" ]]; then
+                    err "${name}: ${PROV_LOC[$i]} now publishes ${got:-no key},"
+                    err "  not the recorded ${PROV_FPR[$i]}. REFUSING it: a key that"
+                    err "  changed at a published location is a finding, not an update."
+                    rm -f "$tmp"; continue
+                fi
+                gpg --batch --quiet --import "$tmp" >/dev/null 2>&1
+                ;;
+            wkd)
+                # --locate-external-key imports on success, so the fingerprint
+                # is checked after the fact and the key dropped if it differs.
+                if ! gpg --batch --quiet --auto-key-locate clear,wkd \
+                       --locate-external-key "${PROV_LOC[$i]}" >/dev/null 2>&1; then
+                    warn "${name}: no WKD answer for ${PROV_LOC[$i]}"
+                    rm -f "$tmp"; continue
+                fi
+                if ! gpg --batch --list-keys "${PROV_FPR[$i]}" >/dev/null 2>&1; then
+                    err "${name}: the WKD for ${PROV_LOC[$i]} did not serve"
+                    err "  ${PROV_FPR[$i]}. REFUSING: the recorded fingerprint is the anchor."
+                    gpg --batch --quiet --yes --delete-keys \
+                        "$(gpg --batch --with-colons --locate-keys "${PROV_LOC[$i]}" 2>/dev/null \
+                           | awk -F: '$1=="fpr"{print $10; exit}')" >/dev/null 2>&1 || true
+                    rm -f "$tmp"; continue
+                fi
+                ;;
+        esac
+        rm -f "$tmp"
+        dim "  ${name}: imported the key ${PROV_KIND[$i]} publishes (${PROV_FPR[$i]})"
+    done
+    return 0
+}
+
+# korg | wkd | empty, for whichever recorded key made this signature.
+key_provenance_kind() {
+    local keyid="$1" fpr i
+    [[ -n "$keyid" ]] || return 0
+    [[ "${#PROV_FPR[@]}" -gt 0 ]] || return 0
+    while IFS= read -r fpr; do
+        for i in "${!PROV_FPR[@]}"; do
+            if [[ "${fpr^^}" == "${PROV_FPR[$i]}" ]]; then
+                printf '%s' "${PROV_KIND[$i]}"
+                return 0
+            fi
+        done
+    done < <(key_fingerprints "$keyid")
+    return 0
+}
+
+load_key_provenance
+
 # Run gpg --verify and classify from its machine-readable status output.
 #
 # The distinction that matters, and which a naive implementation gets wrong:
@@ -376,6 +525,13 @@ key_is_pinned() { _key_in "$1" "${PINNED_FPRS[@]}"; }
 check_sig() {
     local name="$1" sigfile="$2" datafile="$3"
     local out signer keyid
+
+    # If a publisher states this source's signing key, obtain it from there
+    # FIRST. Doing it before the verification rather than in the NO_PUBKEY
+    # branch means the published route is always preferred over the circular
+    # one, and a key already held costs nothing.
+    import_provenance_keys_for "$name"
+
     out="$(gpg --batch --status-fd 1 --verify "$sigfile" "$datafile" 2>/dev/null || true)"
 
     # GOODSIG and EXPKEYSIG are handled together because they differ only in
@@ -387,7 +543,14 @@ check_sig() {
         signer="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] \(GOODSIG\|EXPKEYSIG\) [0-9A-F]* //p' | head -1)"
         keyid="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] \(GOODSIG\|EXPKEYSIG\) \([0-9A-F]*\).*/\2/p' | head -1)"
 
-        if key_is_unaudited "$keyid"; then
+        # A key that a publisher states is no longer a key accepted merely
+        # because the signature named it, so the published classes are tried
+        # before the unaudited ledger and supersede it.
+        local pkind
+        pkind="$(key_provenance_kind "$keyid")"
+
+        if [[ -z "$pkind" ]] && ! key_is_pinned "$keyid" \
+           && key_is_unaudited "$keyid"; then
             warn "${name}: signature valid  [${signer:-unknown}] but by an UNAUDITED key"
             FETCHED=$((FETCHED + 1))
             FETCHED_LIST+=("${name} - ${signer:-unknown} (key ${keyid})")
@@ -396,6 +559,11 @@ check_sig() {
         fi
 
         local klass=signature-keyring-key
+        case "$pkind" in
+            korg)   klass=signature-korg-published-key ;;
+            wkd)    klass=signature-wkd-published-key ;;
+            github) klass=signature-platform-published-key ;;
+        esac
         key_is_pinned "$keyid" && klass=signature-pinned-key
 
         if [[ "$kind" == "EXPKEYSIG" ]]; then
