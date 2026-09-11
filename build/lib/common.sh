@@ -441,10 +441,20 @@ step() {
     #
     # tools/test-step-errexit.sh is the regression test for this. It has caught
     # the bug twice now: once as `if "$@"; then`, once as the || form above.
+    #
+    # AND `set +e` is not enough on its own. An ERR trap fires whether or not
+    # errexit is enabled, and _kryptik_trap calls exit - so without the
+    # `trap - ERR` below, this shell died on the next line and everything
+    # after it (the log tail, step_failure_hint, die) was unreachable code.
+    # The stamp logic still held, so failures were still failures; they just
+    # arrived with no diagnosis at all. Re-armed inside the subshell so the
+    # recipe's own abort line still lands in its log.
     local rc=0
     set +e
-    ( set -Eeuo pipefail; "$@" ) > "$logfile" 2>&1
+    trap - ERR
+    ( set -Eeuo pipefail; trap _kryptik_trap ERR; "$@" ) > "$logfile" 2>&1
     rc=$?
+    trap _kryptik_trap ERR
     set -e
 
     STAMP_DEPS="${STAMP_DEPS}${name};"
