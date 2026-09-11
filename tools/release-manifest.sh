@@ -338,9 +338,41 @@ role and version headers."
     # An update that only checks the files it was told about cannot see a
     # payload that arrived alongside them.
     if [[ "$exact" -eq 1 ]]; then
-        local extra=0 f
+        local extra=0 f man_sha
+        man_sha="$(sha256_of "$manifest")"
         while IFS= read -r f; do
             [[ "${root}/${f}" == "$manifest" || "${root}/${f}" == "${manifest}.sig" ]] && continue
+
+            # THE ONE EXEMPTION --exact MAKES, and it validates itself.
+            #
+            # tools/apply-update.sh writes .kryptik-update INSIDE the tree, on
+            # purpose: the marker then lands with the same rename as the payload
+            # and cannot disagree with it. The consequence is that an INSTALLED
+            # tree contains exactly one file no release manifest lists, so
+            # `verify --exact` against the manifest it was installed from used
+            # to fail forever - found by running the update recovery recipe
+            # end to end, where rollback could not be proved complete because
+            # the restored tree "did not match its signed manifest".
+            #
+            # An exemption in a verifier is how holes get made, so this one is
+            # narrow and self-checking: the name must be exactly
+            # .kryptik-update, it must be at the ROOT of the verified tree, and
+            # its manifest-sha256 must name THIS manifest. A marker naming a
+            # different manifest is not tolerated - it is a finding, because it
+            # means the tree was installed from another release.
+            if [[ "$f" == ".kryptik-update" ]]; then
+                local marked
+                marked="$(awk -F': ' '$1=="manifest-sha256"{print $2; exit}'                           "${root}/${f}" 2>/dev/null)"
+                if [[ -n "$marked" && "$marked" == "$man_sha" ]]; then
+                    ok "the installer's marker names this manifest"
+                    continue
+                fi
+                problem "the installed marker .kryptik-update names manifest ${marked:-<none>},
+not this one (${man_sha}). This tree was installed from a DIFFERENT release,
+or the marker was written by something other than apply-update.sh."
+                extra=$((extra + 1))
+                continue
+            fi
             if ! sed -n '/^--$/,$p' "$manifest" | tail -n +2 \
                  | awk '{ $1=""; $2=""; sub(/^  /, ""); print }' \
                  | grep -qxF "$f"; then
