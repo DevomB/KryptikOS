@@ -93,7 +93,29 @@ done
 command -v cpio >/dev/null || die "cpio is required"
 command -v gzip >/dev/null || die "gzip is required"
 
+# Where this script is and what repository it belongs to. Defined HERE, at the
+# top, because they used to be defined two thirds of the way down - next to
+# their first use at the time - and the moment something above that point
+# needed $REPO the script died with "REPO: unbound variable" halfway through a
+# twelve-minute build.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$HERE/../.." && pwd)"
+
 ROOT="$(mktemp -d)"
+# Refuse to leave a bootable image behind if this run does not finish.
+#
+# It has already happened once: this script died partway through, the caller
+# booted $OUT anyway - still the image from the previous run - and the whole
+# suite passed against a tree two commits old. Every number was real and none
+# of them described the code under test, which is the worst kind of green.
+#
+# Removed at the start rather than written atomically at the end, because the
+# failure mode to prevent is "something bootable is sitting at that path", and
+# the only way to be sure of that is for nothing to be there until this run
+# puts it there.
+if [[ -n "${OUT:-}" && -e "$OUT" ]]; then
+    rm -f "$OUT"
+fi
 trap 'rm -rf "$ROOT"' EXIT
 
 note "staging in $ROOT"
