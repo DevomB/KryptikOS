@@ -73,6 +73,12 @@ pub struct Zone {
     pub volume: Option<String>,
     pub seccomp: Option<String>,
     pub landlock: Option<String>,
+    /// Upper bound on an ephemeral zone's tmpfs. Required for ephemeral,
+    /// refused for encrypted: an unbounded tmpfs is a zone that can exhaust
+    /// host memory by writing files, which the cgroup memory limit does NOT
+    /// catch - tmpfs pages outlive the process that wrote them and are charged
+    /// to whoever touches them next.
+    pub size: Option<String>,
     pub memory_max: Option<String>,
     pub pids_max: Option<u32>,
     pub border_color: String,
@@ -106,7 +112,7 @@ impl fmt::Display for ZoneError {
 pub const KNOWN_KEYS: &[&str] = &[
     "zone.name", "zone.description",
     "network.mode", "network.bridge",
-    "storage.mode", "storage.volume", "storage.unlock", "storage.wipe_keys",
+    "storage.mode", "storage.volume", "storage.size", "storage.unlock", "storage.wipe_keys",
     "policy.seccomp", "policy.landlock",
     "limits.memory_max", "limits.pids_max",
     "ui.border_color",
@@ -266,6 +272,34 @@ impl Zone {
                 return Err(bad("limits.memory_max", v, "a size such as 512M or 2G"));
             }
         }
+        // storage.size: required for ephemeral, refused for encrypted.
+        match storage {
+            StorageMode::Ephemeral => match kv.get("storage.size") {
+                None => {
+                    return Err(ZoneError::Invalid(format!(
+                        "zone {:?}: storage.mode is \"ephemeral\" but no storage.size given. \
+                         An ephemeral zone's data lives in a tmpfs, and an unbounded tmpfs \
+                         lets the zone consume host memory by writing files - which the \
+                         memory limit does not stop, because those pages outlive the writer.",
+                        name
+                    )))
+                }
+                Some(v) if !is_size(v) => {
+                    return Err(bad("storage.size", v, "a size such as 512M or 2G"))
+                }
+                Some(_) => {}
+            },
+            StorageMode::Encrypted => {
+                if kv.contains_key("storage.size") {
+                    return Err(ZoneError::Invalid(format!(
+                        "zone {:?}: storage.size is only meaningful for storage.mode = \
+                         \"ephemeral\"; an encrypted zone is sized by its volume",
+                        name
+                    )));
+                }
+            }
+        }
+
         if let Some(v) = kv.get("storage.unlock") {
             if v != "on-start" {
                 return Err(bad("storage.unlock", v, "on-start"));
@@ -281,6 +315,7 @@ impl Zone {
             description: get("zone.description").unwrap_or_default(),
             bridge: get("network.bridge"),
             volume: get("storage.volume"),
+            size: get("storage.size"),
             seccomp: get("policy.seccomp"),
             landlock: get("policy.landlock"),
             memory_max: get("limits.memory_max"),
@@ -560,7 +595,7 @@ border_color = "#c9a227"
         let bridge = if mode == "nic" { "bridge = \"kryptik0\"\n" } else { "" };
         let text = format!(
             "[zone]\nname = \"{name}\"\n[network]\nmode = \"{mode}\"\n{bridge}\
-             [storage]\nmode = \"ephemeral\"\n[ui]\nborder_color = \"{colour}\"\n"
+             [storage]\nmode = \"ephemeral\"\nsize = \"256M\"\n[ui]\nborder_color = \"{colour}\"\n"
         );
         Zone::from_str(&text).unwrap()
     }

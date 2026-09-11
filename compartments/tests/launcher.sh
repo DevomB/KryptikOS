@@ -121,6 +121,8 @@ mkzone() { # name mode colour [extra-network-lines] [storage-mode]
         printf '[network]\nmode = "%s"\n' "$mode"
         [[ -n "$extra" ]] && printf '%s\n' "$extra"
         printf '[storage]\nmode = "%s"\n' "$storage"
+        # storage.size is required for ephemeral and refused for encrypted.
+        [[ "$storage" == "ephemeral" ]] && printf 'size = "64M"\n'
         [[ "$storage" == "encrypted" ]] && printf 'volume = "/dev/kryptik/%s"\n' "$name"
         printf '[ui]\nborder_color = "%s"\n' "$colour"
     } > "$ZONES/$name.toml"
@@ -147,7 +149,7 @@ mkzone_limited() { # name colour memory pids
     {
         printf '[zone]\nname = "%s"\ndescription = "launcher-suite limit fixture"\n' "$1"
         printf '[network]\nmode = "none"\n'
-        printf '[storage]\nmode = "ephemeral"\n'
+        printf '[storage]\nmode = "ephemeral"\nsize = "64M"\n'
         printf '[limits]\nmemory_max = "%s"\npids_max = %s\n' "$3" "$4"
         printf '[ui]\nborder_color = "%s"\n' "$2"
     } > "$ZONES/$1.toml"
@@ -314,27 +316,33 @@ head_ "B. Two real zones cannot reach each other  [unpriv]"
 # ============================================================================
 
 # alpha writes a canary into its own root.
-zrun alpha -- /bin/sh -c "$PRO printf '%s' '$CANARY' > \$HOME/alpha-secret; echo PROBE=written"
-probe "B1a alpha can write a file in its own zone" "written"
+# `sealed` rather than `alpha`, and the reason matters: alpha is ephemeral now,
+# so nothing it writes reaches the host and B1b would have nothing to find. The
+# cross-zone claim needs a zone whose data actually persists, and the only
+# persistent mode is "encrypted" - which still runs on a plain directory under
+# the override. When per-zone LUKS lands this becomes a real encrypted volume
+# and the check does not change.
+zrun sealed -- /bin/sh -c "$PRO printf '%s' '$CANARY' > \$HOME/alpha-secret; echo PROBE=written"
+probe "B1a a persistent zone can write a file in its own zone" "written"
 
 # Positive control: that file exists on the host, so a failure to read it from
 # beta means something. Without this the next check would pass on a typo.
-if [[ -f "$ROOTFS/alpha/alpha-secret" ]] && grep -q "$CANARY" "$ROOTFS/alpha/alpha-secret"; then
-    pass "B1b positive control: alpha's file is real and readable from the host"
+if [[ -f "$ROOTFS/sealed/alpha-secret" ]] && grep -q "$CANARY" "$ROOTFS/sealed/alpha-secret"; then
+    pass "B1b positive control: the file is real and readable from the host"
 else
-    fail "B1b positive control FAILED: alpha's file is not where the test expects"
-    info "looked for: $ROOTFS/alpha/alpha-secret"
+    fail "B1b positive control FAILED: the file is not where the test expects"
+    info "looked for: $ROOTFS/sealed/alpha-secret"
 fi
 
 # beta tries the same absolute path, and the host path alpha's data really
 # lives at. Neither exists in beta's root.
 # /home/alpha is where alpha's data is mounted INSIDE ALPHA. Beta's tree has no
 # such path: each zone binds only its own directory.
-zrun beta -- /bin/sh -c "$PRO if cat /home/alpha/alpha-secret 2>/dev/null | grep -q '$CANARY'; then echo PROBE=LEAKED; else echo PROBE=denied; fi"
-probe "B1c beta cannot read alpha's file at alpha's in-zone path" "denied"
+zrun beta -- /bin/sh -c "$PRO if cat /home/sealed/alpha-secret 2>/dev/null | grep -q '$CANARY'; then echo PROBE=LEAKED; else echo PROBE=denied; fi"
+probe "B1c another zone cannot read it at its in-zone path" "denied"
 
-zrun beta -- /bin/sh -c "$PRO if cat '$ROOTFS/alpha/alpha-secret' 2>/dev/null | grep -q '$CANARY'; then echo PROBE=LEAKED; else echo PROBE=denied; fi"
-probe "B1d beta cannot read alpha's data by its host path" "denied"
+zrun beta -- /bin/sh -c "$PRO if cat '$ROOTFS/sealed/alpha-secret' 2>/dev/null | grep -q '$CANARY'; then echo PROBE=LEAKED; else echo PROBE=denied; fi"
+probe "B1d another zone cannot read it by its host path" "denied"
 
 # --- process visibility ------------------------------------------------------
 #
@@ -606,15 +614,18 @@ head_ "F. Refusal of guarantees the code does not deliver  [unpriv]"
 # implemented. The check that matters is not just the exit code: it is that the
 # command NEVER RAN. A refusal that still executes the payload is not a refusal.
 
+# F1 asserts the OPPOSITE of what it used to, and that is the point of this
+# group: the refusal list must shrink as things get implemented, or it becomes
+# a list of lies in the other direction. Ephemeral storage is real now, so a
+# zone declaring it must start WITHOUT the experimental override.
 zrun_raw wiped -- /bin/sh -c "echo $LAUNCHED; echo PROBE=RAN"
-if [[ "$ZOUT" == *"$LAUNCHED"* ]]; then
-    fail "F1  ephemeral storage without the override: the command RAN anyway"
-elif (( ZRC == 0 )); then
-    fail "F1  ephemeral storage without the override: exit 0, expected refusal"
-elif [[ "$ZOUT" == *"ephemeral"* && "$ZOUT" == *"KRYPTIK_EXPERIMENTAL"* ]]; then
-    pass "F1  ephemeral storage is refused without the override, and does not run"
+if [[ "$ZOUT" == *"$LAUNCHED"* ]] && (( ZRC == 0 )); then
+    pass "F1  ephemeral storage no longer needs the override: it is implemented"
+elif [[ "$ZOUT" == *"KRYPTIK_EXPERIMENTAL"* ]]; then
+    fail "F1  ephemeral storage is still being refused although it is implemented"
+    info "output: $(printf '%s' "$ZOUT" | tr '\n' '|' | cut -c1-220)"
 else
-    fail "F1  refused (exit $ZRC) but the message did not name the mode or the override"
+    fail "F1  an ephemeral zone did not start without the override (exit $ZRC)"
     info "output: $(printf '%s' "$ZOUT" | tr '\n' '|' | cut -c1-220)"
 fi
 
@@ -631,7 +642,7 @@ else
 fi
 
 # The override must be an explicit "1", not merely "set".
-ZOUT="$(KRYPTIK_EXPERIMENTAL=0 timeout "$TIMEOUT" "$KRYPTIKD" run wiped "${ZARGS[@]}" \
+ZOUT="$(KRYPTIK_EXPERIMENTAL=0 timeout "$TIMEOUT" "$KRYPTIKD" run sealed "${ZARGS[@]}" \
         -- /bin/sh -c "echo $LAUNCHED" 2>&1)"
 ZRC=$?
 if [[ "$ZOUT" == *"$LAUNCHED"* ]]; then
@@ -641,7 +652,7 @@ else
 fi
 
 # And the refusal must be loud when it IS overridden.
-zrun wiped -- /bin/sh -c "echo $LAUNCHED"
+zrun sealed -- /bin/sh -c "echo $LAUNCHED"
 if want_launch "F4  overridden start warns that the guarantee does not hold"; then
     if [[ "$ZOUT" == *"EXPERIMENTAL"* && "$ZOUT" == *"PLAIN"* ]]; then
         pass "F4  overridden start warns that storage is a plain directory"
@@ -923,9 +934,12 @@ if (( PRIVILEGED == 1 )); then
     # ...and the files it creates are owned by the unprivileged host identity,
     # not by real root. This is the whole point of the mapping, and it is
     # checked on the HOST side where it can actually be falsified.
-    zrun alpha -- /bin/sh -c "$PRO echo k3 > \$HOME/k3file; echo PROBE=written"
+    # `sealed`, not `alpha`: K3 is the one check in this group that looks at the
+    # HOST side, and an ephemeral zone writes nothing there. Using alpha here
+    # would test M2 by accident and report it as an ownership failure.
+    zrun sealed -- /bin/sh -c "$PRO echo k3 > \$HOME/k3file; echo PROBE=written"
     if want_launch "K3  a zone's files are owned by the mapped identity"; then
-        owner="$(stat -c %u "$ROOTFS/alpha/k3file" 2>/dev/null)"
+        owner="$(stat -c %u "$ROOTFS/sealed/k3file" 2>/dev/null)"
         if [[ "$owner" == "$ZONE_UID" ]]; then
             pass "K3  a zone's files are owned by host uid $ZONE_UID, not root"
         else
@@ -1375,6 +1389,129 @@ else
 fi
 
 # ============================================================================
+head_ "E-EPH. Ephemeral zones keep nothing  [unpriv]"
+# ============================================================================
+# "ephemeral" used to be a label on a persistent directory, and the launcher
+# refused to start such a zone rather than let the word stand. It is now a
+# per-launch tmpfs mounted at $HOME inside the zone's own mount namespace, so
+# the guarantee is structural: there is no teardown step that a crash can skip,
+# because the kernel frees the mount when the namespace dies.
+#
+# What these checks must NOT do is let "ephemeral" be read as secure erasure.
+# tmpfs pages are swappable. EPH8 asserts that the tooling says so.
+
+# A dedicated rootfs base, so leftovers from other groups cannot confuse EPH4.
+EPHROOT="$WORK/ephroot"
+mkdir -p "$EPHROOT"
+chmod 0755 "$EPHROOT"
+(( PRIVILEGED == 1 )) && chown -R "$ZONE_UID:$ZONE_GID" "$EPHROOT" 2>/dev/null
+EPHARGS=(--zones "$ZONES" --rootfs "$EPHROOT" "${IDENTITY[@]}")
+
+ephrun() { # zone -- cmd...
+    local zone="$1"; shift
+    [[ "${1:-}" == "--" ]] && shift
+    ZOUT="$(KRYPTIK_EXPERIMENTAL=1 timeout "$TIMEOUT" \
+            "$KRYPTIKD" run "$zone" "${EPHARGS[@]}" -- "$@" 2>&1)"
+    ZRC=$?
+    return 0
+}
+
+# EPH1: the zone can use $HOME normally. Without this, every check below would
+# also pass on a zone whose home was unwritable, which is not ephemeral, just
+# broken.
+ephrun alpha -- /bin/sh -c "$PRO printf '%s' '$CANARY' > \$HOME/secret; cat \$HOME/secret | sed 's/^/PROBE=/'"
+probe "EPH1 positive control: an ephemeral zone can write and read its \$HOME" "$CANARY"
+
+# EPH2: and the host sees nothing. The tmpfs lives in the zone's mount
+# namespace, so the persistent directory must be untouched.
+if [[ -d "$EPHROOT/alpha" ]]; then
+    n="$(find "$EPHROOT/alpha" -mindepth 1 2>/dev/null | wc -l)"
+    if (( n == 0 )); then
+        pass "EPH2 the persistent directory is still empty after the zone wrote to \$HOME"
+    else
+        fail "EPH2 the zone's writes reached the persistent directory ($n entr(ies))"
+        find "$EPHROOT/alpha" -mindepth 1 2>/dev/null | head -3 | sed 's/^/        /'
+    fi
+else
+    fail "EPH2 the persistent directory was not created at all"
+fi
+
+# EPH3: a second launch cannot see the first launch's data. This is the claim.
+ephrun alpha -- /bin/sh -c "$PRO if [ -e \$HOME/secret ]; then echo PROBE=RECOVERED; else echo PROBE=gone; fi"
+probe "EPH3 a later launch cannot recover the previous run's data" "gone"
+
+# EPH4: the same, after the launcher is SIGKILLed rather than exiting. A crash
+# must not be the path by which data survives.
+MARK_EPH=2914
+KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run beta "${EPHARGS[@]}" -- \
+    /bin/sh -c "printf '%s' '$CANARY' > \$HOME/crashfile; sleep $MARK_EPH" >/dev/null 2>&1 &
+ephpid=$!
+BG_PIDS+=("$ephpid")
+sleep 2
+kill -9 "$ephpid" 2>/dev/null
+sleep 1
+host_left="$(find "$EPHROOT/beta" -mindepth 1 2>/dev/null | wc -l)"
+ephrun beta -- /bin/sh -c "$PRO if [ -e \$HOME/crashfile ]; then echo PROBE=RECOVERED; else echo PROBE=gone; fi"
+if want_launch "EPH4 a crashed launcher leaves nothing recoverable"; then
+    got="$(printf '%s\n' "$ZOUT" | sed -n 's/^PROBE=//p' | head -1)"
+    if [[ "$got" == "gone" ]] && (( host_left == 0 )); then
+        pass "EPH4 a SIGKILLed launcher leaves nothing on disk and nothing recoverable"
+    elif [[ "$got" != "gone" ]]; then
+        fail "EPH4 the next launch recovered the crashed run's data"
+    else
+        fail "EPH4 the crashed run left $host_left entr(ies) in the persistent directory"
+    fi
+fi
+
+# EPH5: the host's mount table must not carry the zone's tmpfs. If it did, the
+# mount would outlive the zone and would need a teardown step that a crash
+# could skip - which is the design this replaced.
+hm_before="$(wc -l < /proc/mounts)"
+ephrun alpha -- /bin/sh -c "$PRO echo PROBE=done"
+hm_after="$(wc -l < /proc/mounts)"
+if (( hm_before == hm_after )) && ! grep -q "$EPHROOT" /proc/mounts 2>/dev/null; then
+    pass "EPH5 the ephemeral tmpfs never appears in the host mount table"
+else
+    fail "EPH5 the host mount table changed ($hm_before -> $hm_after) or names the zone path"
+    grep "$EPHROOT" /proc/mounts 2>/dev/null | sed 's/^/        /' | head -3
+fi
+
+# EPH6: storage.size is a real bound, not decoration. 64M fixture, write 128M.
+ephrun alpha -- /bin/sh -c "$PRO dd if=/dev/zero of=\$HOME/big bs=1M count=128 2>/dev/null; s=\$(wc -c < \$HOME/big 2>/dev/null || echo 0); if [ \"\$s\" -gt 100000000 ]; then echo PROBE=UNBOUNDED; else echo PROBE=bounded; fi"
+probe "EPH6 storage.size bounds the tmpfs (128M into a 64M zone is truncated)" "bounded"
+
+# EPH7: an ephemeral zone will not start over data it did not write. kryptikd
+# must refuse rather than delete: silently destroying an operator's files is
+# the one behaviour worse than leaving them.
+mkdir -p "$EPHROOT/wiped"
+(( PRIVILEGED == 1 )) && chown "$ZONE_UID:$ZONE_GID" "$EPHROOT/wiped" 2>/dev/null
+echo "left over from an earlier build" > "$EPHROOT/wiped/stale.txt"
+(( PRIVILEGED == 1 )) && chown "$ZONE_UID:$ZONE_GID" "$EPHROOT/wiped/stale.txt" 2>/dev/null
+ephrun wiped -- /bin/sh -c "echo $LAUNCHED"
+if [[ "$ZOUT" == *"$LAUNCHED"* ]]; then
+    fail "EPH7 an ephemeral zone STARTED over data from an earlier run"
+elif (( ZRC == 0 )); then
+    fail "EPH7 exit 0 for an ephemeral zone with stale data"
+elif [[ "$ZOUT" == *"persistent data"* ]] && [[ -f "$EPHROOT/wiped/stale.txt" ]]; then
+    pass "EPH7 an ephemeral zone with stale data is refused, and the data is left alone"
+elif [[ ! -f "$EPHROOT/wiped/stale.txt" ]]; then
+    fail "EPH7 kryptikd DELETED data it did not write"
+else
+    fail "EPH7 refused (exit $ZRC) but not for the stale-data reason"
+    info "output: $(printf '%s' "$ZOUT" | tr '\n' '|' | cut -c1-200)"
+fi
+rm -rf "$EPHROOT/wiped"
+
+# EPH8: the tooling must not let "ephemeral" be read as secure erasure.
+expl="$("$KRYPTIKD" explain alpha "${EPHARGS[@]}" 2>&1)"
+if [[ "$expl" == *tmpfs* && "$expl" == *swap* && "$expl" == *"NOT secure erasure"* ]]; then
+    pass "EPH8 explain says what ephemeral is, and that swap makes it not erasure"
+else
+    fail "EPH8 explain does not state the swap caveat"
+    info "output: $(printf '%s' "$expl" | tr '\n' '|' | cut -c1-240)"
+fi
+
+# ============================================================================
 head_ "Mandatory checks NOT RUN here"
 # ============================================================================
 # A skipped mandatory check is not a release pass. These are named so the gap
@@ -1384,7 +1521,11 @@ if (( CGROUP_OK == 0 )); then
     skip "cgroup memory/pids limits are enforced          [vm] this host cannot create cgroups; group M covers it there"
 fi
 skip "routed network reaches the bridge via the nic zone [vm] not implemented"
-skip "ephemeral storage is wiped on stop              [vm] not implemented"
+# ephemeral storage is implemented (M2) and covered by group E-EPH above, so
+# it is no longer listed as a gap. The one thing it does NOT deliver - secure
+# erasure, because tmpfs pages can be swapped - is asserted by EPH8 rather than
+# listed here, since it is a property of the implementation and not a missing
+# feature.
 skip "per-zone seccomp/landlock policy files applied  [vm] not implemented"
 if (( PRIVILEGED == 0 )); then
     skip "zone runs correctly under real root (not a userns) [vm] needs a disposable VM — group K covers it there"
