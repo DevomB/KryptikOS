@@ -760,10 +760,27 @@ s_kryptikd() {
     ls -la /usr/bin/kryptikd
     readelf -l /usr/bin/kryptikd 2>/dev/null | grep 'Requesting program interpreter' \
         || echo "  (static binary, no interpreter - good)"
-    /usr/bin/kryptikd --version || {
+    # It must actually RUN here, and --help is the only subcommand that both
+    # exits 0 and touches nothing. (`--version` is not a kryptikd subcommand
+    # at all: it prints usage and exits 2, which would fail this step on a
+    # perfectly good binary.) `check` is deliberately not used - inside the
+    # build chroot it would probe the BUILD host's kernel for Landlock and
+    # seccomp and report an answer about the wrong machine.
+    /usr/bin/kryptikd --help > /dev/null || {
         echo "FAIL: the installed kryptikd does not run inside the target."
+        echo "A binary built against the host's libc installs fine and fails here."
         return 1
     }
+    echo "kryptikd --help: ok"
+
+    # And it must be able to read the zone definitions just installed. A zone
+    # file this binary cannot parse is a boot-time failure discovered at boot.
+    if /usr/bin/kryptikd list --zones /etc/kryptik/zones; then
+        echo "kryptikd parses the installed zone definitions"
+    else
+        echo "FAIL: kryptikd cannot read /etc/kryptik/zones"
+        return 1
+    fi
 }
 
 # Everything a boot needs, checked from the target's own point of view.
