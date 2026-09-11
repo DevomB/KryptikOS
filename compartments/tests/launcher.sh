@@ -1542,6 +1542,51 @@ else
 fi
 
 # ============================================================================
+head_ "CAP. The capability bounding set  [unpriv]"
+# ============================================================================
+# A zone's root is root in its own user namespace, so it held a full capability
+# set. Every capability-gated syscall that reaches outside the namespace is
+# already denied by the seccomp filter, which is why that was tolerable - and
+# why it stops being tolerable the moment a zone owns one end of a veth.
+# CAP_NET_ADMIN and CAP_NET_RAW in a namespace with a real interface let a
+# compromised zone re-address its link and open a raw socket on the segment it
+# shares with the bridge. The security review calls this a precondition for the
+# routed-network milestone rather than a follow-up to it.
+#
+# The expected value is not a round number and that is deliberate:
+# CAP_NET_BIND_SERVICE is capability 10, so the only bit that may survive is
+# 1 << 10 = 0x400. Anything else means something was kept that should not be.
+
+# Positive control FIRST. "The zone's bounding set is 0x400" is evidence only
+# if the launcher's is bigger - on a host that was already fully restricted,
+# the zone would show 0x400 with or without the drop.
+host_capbnd="$(grep -m1 '^CapBnd:' /proc/self/status | awk '{print $2}')"
+if [[ -n "$host_capbnd" && "$host_capbnd" != "0000000000000400" ]]; then
+    pass "CAP0 positive control: the launcher's bounding set is $host_capbnd, wider than a zone's"
+else
+    fail "CAP0 positive control FAILED: the launcher's own bounding set is already ${host_capbnd:-unknown}"
+    info "     the zone's set cannot be shown to be narrower than the launcher's"
+fi
+
+zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(grep -m1 '^CapBnd:' /proc/self/status | awk '{print \$2}')"
+probe "CAP1 the zone's bounding set is CAP_NET_BIND_SERVICE and nothing else" "0000000000000400"
+
+zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(grep -m1 '^CapEff:' /proc/self/status | awk '{print \$2}')"
+probe "CAP2 the zone's effective set is the same single capability" "0000000000000400"
+
+# The capabilities that matter most, named individually so a failure says which
+# one came back rather than printing a hex number and leaving the reader to
+# decode it. 21 = CAP_SYS_ADMIN, 12 = NET_ADMIN, 13 = NET_RAW, 16 = SYS_MODULE,
+# 19 = SYS_PTRACE, 27 = MKNOD.
+zrun alpha -- /bin/sh -c "$PRO b=\$(grep -m1 '^CapBnd:' /proc/self/status | awk '{print \$2}'); v=\$(printf '%d' 0x\$b); bad=''; for c in 21 12 13 16 19 27; do if [ \$(( (v >> c) & 1 )) -eq 1 ]; then bad=\"\$bad \$c\"; fi; done; if [ -n \"\$bad\" ]; then echo PROBE=KEPT\$bad; else echo PROBE=dropped; fi"
+probe "CAP3 SYS_ADMIN, NET_ADMIN, NET_RAW, SYS_MODULE, PTRACE and MKNOD are gone" "dropped"
+
+# And the zone still works. A bounding set of zero would pass CAP1-CAP3 and
+# break every zone, so this is the check that stops the drop going too far.
+zrun alpha -- /bin/sh -c "$PRO echo hi > \$HOME/capfile && cat \$HOME/capfile | sed 's/^/PROBE=/'"
+probe "CAP4 positive control: the zone still runs normally after the drop" "hi"
+
+# ============================================================================
 head_ "Mandatory checks NOT RUN here"
 # ============================================================================
 # A skipped mandatory check is not a release pass. These are named so the gap
