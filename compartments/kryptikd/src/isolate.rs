@@ -244,6 +244,13 @@ pub fn bring_up_loopback() -> Result<(), IsolateError> {
     // each one - so naming either type here compiles on one libc and fails on
     // the other. Inferring it from the signature compiles on both, which is
     // what building a static kryptikd for the initramfs needs.
+    // Every ioctl request is a 32-bit value (the kernel's sys_ioctl takes an
+    // `unsigned int cmd`), so narrowing to musl's c_int cannot drop a bit for
+    // any valid request number - including _IOR-encoded ones with bit 31 set,
+    // which become negative c_ints with identical bits. The assert states that
+    // invariant rather than leaving it to be re-derived, since `as _` is
+    // silent about it. Recommended by the security review of 2026-09-11.
+    const _: () = assert!((libc::SIOCSIFFLAGS as u64) <= u32::MAX as u64);
     let ret = unsafe { libc::ioctl(sock, libc::SIOCSIFFLAGS as _, &ifr) };
     unsafe { libc::close(sock) };
     check("ioctl(SIOCSIFFLAGS)", ret)
