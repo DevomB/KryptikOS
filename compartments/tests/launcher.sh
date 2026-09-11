@@ -1959,7 +1959,12 @@ mkdir -p "$ZONES/policy"
 cat > "$ZONES/policy/widened.seccomp" <<'POLICY'
 # launcher.sh fixture: one directive with an effect that can be seen from
 # inside the zone with nothing but /proc/self/status.
-keep-capability CAP_NET_RAW
+#
+# CAP_SYS_NICE and not CAP_NET_RAW: the network capabilities may be kept ONLY
+# by the zone that owns the NIC, which POL2b checks. This fixture is a
+# mode=none zone, so asking for CAP_NET_RAW here is refused - correctly - and
+# the check would be measuring that refusal instead of the widening.
+keep-capability CAP_SYS_NICE
 POLICY
 mkzone_policy() { # name colour policyfile
     {
@@ -1979,9 +1984,27 @@ zrun plainpol -- /bin/sh -c "$PRO echo PROBE=\$($CAPBND)"
 probe "POL1 positive control: a zone with no policy file keeps only CAP_NET_BIND_SERVICE" \
       "0000000000000400"
 
+# CAP_SYS_NICE is bit 23 (0x800000) on top of CAP_NET_BIND_SERVICE, bit 10.
 zrun widened -- /bin/sh -c "$PRO echo PROBE=\$($CAPBND)"
 probe "POL2 a policy file's keep-capability reaches the zone's bounding set" \
-      "0000000000002400"
+      "0000000000800400"
+
+# The network capabilities are the ones worth restricting, and security
+# restricted them: only the zone that owns the NIC may keep them. A zone that
+# asks anyway must be refused, and the refusal must say which rule it broke.
+cat > "$ZONES/policy/netraw.seccomp" <<'POLICY'
+keep-capability CAP_NET_RAW
+POLICY
+mkzone_policy netgrab "#1a1a1a" "policy/netraw.seccomp"
+zrun netgrab -- /bin/sh -c "$PRO echo PROBE=ran"
+if [[ "$ZOUT" == *"$LAUNCHED"* ]]; then
+    fail "POL2b a zone that does not own the NIC kept CAP_NET_RAW"
+elif [[ "$ZOUT" == *"owns the NIC"* || "$ZOUT" == *CAP_NET_RAW* ]]; then
+    pass "POL2b only the NIC-owning zone may keep the network capabilities"
+else
+    fail "POL2b refused, but not for the reason being tested"
+    info "output: $(printf '%s' "$ZOUT" | tr '\n' '|' | cut -c1-200)"
+fi
 
 # A file that names something outside the vocabulary must refuse the launch,
 # not silently do nothing: a typo that produced a quietly narrower zone than
@@ -2207,9 +2230,27 @@ fi
 kill -9 "$victim" 2>/dev/null
 lc_cleanup
 
-# --- LC6: the registry is invisible inside a zone ---------------------------
-zrun alpha -- /bin/sh -c "$PRO if [ -e /run/kryptik ]; then echo PROBE=VISIBLE; else echo PROBE=absent; fi"
-probe "LC6 the registry does not exist inside a zone" "absent"
+# --- LC6: the REGISTRY is invisible inside a zone ---------------------------
+#
+# This used to assert that /run/kryptik did not exist at all, and that stopped
+# being the right question when the broker landed: a zone now has
+# /run/kryptik/broker, deliberately, because that socket is how it will ask for
+# anything outside itself.
+#
+# What must still be true - and is the thing the old check was really about -
+# is that the REGISTRY is not in there. A zone that could read
+# /run/kryptik/zones would learn every other zone's name, pid and cgroup, which
+# is an inventory of the machine it is supposed to be sealed off from.
+zrun alpha -- /bin/sh -c "$PRO if [ -e /run/kryptik/zones ]; then echo PROBE=VISIBLE; else echo PROBE=absent; fi"
+probe "LC6 the zone registry is not visible inside a zone" "absent"
+
+# And the positive control for it: /run/kryptik itself IS there, holding the
+# broker socket and nothing else. Without this, LC6 would keep passing if the
+# whole directory quietly stopped being mounted - which is how a check outlives
+# the thing it was written for.
+zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(ls -A /run/kryptik 2>/dev/null | tr '
+' ',')"
+probe "LC6b control: /run/kryptik is present and contains only the broker socket" "broker,"
 
 # LC15: the registry directory itself must not be plantable.
 #

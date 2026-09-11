@@ -4,15 +4,59 @@ Task `build`, overnight of 2026-09-11.
 Branch `overnight/build-2026-09-11`, forked from `d2abaef`.
 Worktree `/home/devomb/kryptik-overnight-2026-09-11/worktrees/build`.
 
-**Status: sysroot ready, kernel blocked.** Stage 04 is complete and the
-sysroot is finished, audited and manifested — §7.2 and §7.3 have the paths and
-the digest, and it can be booted on a stock kernel today. Stage 05 stopped four
-steps in on a missing `bc`; `build/BLOCKER.md` has the whole change needed and
-it is small.
+Machine-readable commit list: **`build/COMMITS.jsonl`** — one object per
+commit, with files and a coarse area label, so increments can be consumed
+without reading prose.
 
-Answers to `REQUEST.md` R-1 are in §7. R-1 point 4 is answered in §7.4 **now**,
-because the security tab's work is blocked on it and it does not need the
-kernel to exist.
+---
+
+## 0. State, as of the second checkpoint
+
+| | |
+|---|---|
+| stage 01 cross toolchain | complete, 7/7 |
+| stage 02 temporary tools | complete, 18/18 |
+| stage 04 base system | complete, 64/65 (`man-db` unwired — needs `gdbm`) |
+| stage 05 kernel | **building** — `bc` blocker resolved |
+| sysroot | `…/work/sysroot`, ~2.8 GB excluding `/tools` |
+| userland | verified by running it: 31/31, `make smoke-userspace` |
+
+**The `bc` blocker is gone.** Provenance pinned and signature-verified GNU bc
+1.07.1 (`2fcd7e0`, cherry-picked here as `57b007e`); bc then needed one more
+fix of its own — it generates `libmath.h` with an `ed` script and Kryptik
+ships no `ed` — so the recipe replaces that with the equivalent sed, the way
+LFS does, and then *proves bc computes* rather than merely installed:
+
+```
+1000000000/250 = 4000000
+s(0) = 0
+ok: bc evaluates, and libmath loaded
+```
+
+That is the exact shape `linux/Kbuild` uses to generate `timeconst.h`.
+
+### New since the first checkpoint
+
+* **The machine has services.** It used to boot to a console and print "no
+  compiled s6-rc database … no services will start". `build/services/` is now
+  an s6-rc source tree — `sysinit`, `eudev`, `eudev-trigger`, `kryptikd-check`,
+  `getty-tty1`, and a `default` bundle — compiled into `/etc/s6-rc/compiled`
+  by a stage 04 step that reads the database back with `s6-rc-db` rather than
+  trusting the compiler's exit status.
+* **The hardening sysctls ship.** `build/config/sysctl.d/99-kryptik-hardening.conf`
+  has been in this repository from the start, is referenced by
+  `docs/hardening.md`, and no stage ever copied it into a target. Twenty-odd
+  tunables — `yama.ptrace_scope=3`, `kexec_load_disabled`,
+  `unprivileged_bpf_disabled`, `perf_event_paranoid=3` — were all inert.
+* **Disk images.** `tools/image/mkdisk.sh` builds a GPT disk with an ext4 root
+  from a sysroot and a kernel, with no root and no loop devices, and
+  `tools/image/run-qemu-disk.sh` boots it on a serial console. See §10.
+* **The zone definitions were stale and are now an input.** Stage 04's
+  kryptikd step refused to finish because the current kryptikd requires
+  `storage.size` on ephemeral zones and this branch carried pre-M2 `.toml`
+  files. Caught at build time rather than as every zone failing in a VM. The
+  step now hashes `compartments/zones/*.toml` into its fingerprint.
+* **`tools/test-services.sh`** validates the service tree offline in a second.
 
 ---
 
@@ -677,6 +721,56 @@ and the work tree on native storage. §3 and §5 here are written to be liftable
   does. For a distribution whose documentation leads on supply chain, a
   network-facing package installer in the base system is a policy question, not
   a build one — `--without-ensurepip` is a one-word change either way.
+
+## 10. Building and booting an image
+
+```sh
+export KRYPTIK_WORK=/home/devomb/kryptik-overnight-2026-09-11/work
+export KRYPTIK_SOURCES=/home/devomb/kryptik-overnight-2026-09-11/sources
+
+make image  KERNEL=$KRYPTIK_WORK/sysroot/boot/kryptik-6.18.50
+make image-boot KERNEL=$KRYPTIK_WORK/sysroot/boot/kryptik-6.18.50 MODE=console
+```
+
+or directly:
+
+```sh
+tools/image/mkdisk.sh --sysroot $KRYPTIK_WORK/sysroot \
+                      --kernel  $KRYPTIK_WORK/sysroot/boot/kryptik-6.18.50 \
+                      --out     out/kryptik-dev.img --size 6G
+tools/image/run-qemu-disk.sh --image out/kryptik-dev.img \
+                             --kernel $KRYPTIK_WORK/sysroot/boot/kryptik-6.18.50 \
+                             --mode console        # or --mode smoke
+```
+
+**No root, no loop devices.** `mkfs.ext4 -d` populates the filesystem from a
+directory; the partition table is written to a sparse file and the filesystem
+`dd`'d in at the right offset. Anything using `losetup(8)` needs privilege and
+leaves a device behind when it fails.
+
+It **refuses to image a sysroot with the chroot mounted**, and that is not
+hypothetical: `du` on the sysroot reads 18 GB while stage 05 runs and 2.8 GB
+when it does not, because the bind-mounted work tree carries the kernel build.
+
+`/tools` is excluded — the stage 01 cross toolchain is deliberately unhardened
+and has no business on a running machine.
+
+### What the image is, and is not
+
+Every image carries `/etc/kryptik-image.json` with the commit, the kernel's
+sha256, the sysroot manifest digest, and:
+
+```json
+"image_kind": "developer", "signed": false, "verity": false
+```
+
+There is **no ESP, no bootloader, no dm-verity and no signature**. `mkfs.vfat`
+is not on this host and stage 04 does not build GRUB, so it boots under
+`qemu -kernel`. Partition 1 is deliberately absent and the root is partition 2:
+that slot is the ESP a signed image will need, and leaving it empty now means
+adding one later renumbers nothing.
+
+---
 
 ## 11. How to reuse or rebuild safely
 

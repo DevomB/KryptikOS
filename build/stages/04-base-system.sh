@@ -549,6 +549,70 @@ s_pkgconf() {
     pkg-config --version
 }
 
+# GNU bc 1.07.1 generates libmath.h with an `ed` script, and Kryptik ships no
+# ed:
+#
+#   ./fix-libmath_h: line 1: ed: command not found
+#   make[2]: *** [Makefile:632: libmath.h] Error 127
+#
+# bc/fix-libmath_h wraps the text of libmath.b into a C string array. It is
+# four line edits, and ed is simply the tool upstream reached for in 1991.
+# Replacing it with the equivalent sed is what LFS does here, and it avoids
+# pinning an entire editor to run four substitutions once.
+#
+# The alternative - adding `ed` to versions.env, fetch-sources.sh and an
+# audited sources.lock line - buys a package that nothing else in the base
+# system uses.
+s_bc() {
+    local src; src="$(unpack "bc-${V_BC}.tar.gz" "bc-${V_BC}")"
+    cd "$src"
+
+    # Upstream's fix-libmath_h is an `ed` script in 1.07.1, and Kryptik pins no
+    # ed - so the build tab replaced it with a sed equivalent. 1.08.2, which is
+    # the version provenance audited and this tree pins, ships
+    # bc/fix-libmath.sed and needs no shim at all.
+    #
+    # Written only when the ed script is actually there, so the recipe works
+    # for either version instead of being silently specific to the one it was
+    # written against. An unconditional overwrite would put a bash script into
+    # a tree whose build may not call it, which is the kind of inert difference
+    # that is impossible to reason about later.
+    if [[ -f bc/fix-libmath_h ]] && head -1 bc/fix-libmath_h | grep -qv '^#'; then
+    cat > bc/fix-libmath_h <<'FIXEOF'
+#! /bin/bash
+# Replaces upstream's ed script. Wraps libmath.h into a C string array.
+sed -e '1 s/^/{"/' \
+    -e 's/$/",/' \
+    -e '2,$ s/^/"/' \
+    -e '$ d' \
+    -i libmath.h
+sed -e '$ s/$/0}/' -i libmath.h
+FIXEOF
+    chmod 0755 bc/fix-libmath_h
+    fi
+
+    ./configure --prefix=/usr --with-readline --mandir=/usr/share/man \
+        --infodir=/usr/share/info
+    make
+    make install
+
+    # The kernel calls `bc -q` on a real program; prove this bc evaluates it,
+    # not merely that a binary landed. This is the exact shape linux/Kbuild
+    # uses to generate include/generated/timeconst.h.
+    echo "--- bc answers ---"
+    local got
+    got="$(echo 'scale=0; 1000000000 / 250' | bc -q)"
+    echo "  1000000000/250 = ${got}"
+    [[ "$got" == "4000000" ]] || { echo "FAIL: bc computed ${got}, expected 4000000"; return 1; }
+
+    # libmath is what fix-libmath_h exists for; -l loads it.
+    got="$(echo 's(0)' | bc -q -l)"
+    echo "  s(0) = ${got}"
+    [[ "$got" == "0" || "$got" == ".00000000000000000000" ]] \
+        || { echo "FAIL: bc -l (libmath) is broken: ${got}"; return 1; }
+    echo "  ok: bc evaluates, and libmath loaded"
+}
+
 s_binutils_native() {
     local src; src="$(unpack "binutils-${V_BINUTILS}.tar.xz" "binutils-${V_BINUTILS}")"
     cd "$src"
@@ -821,6 +885,87 @@ EOF
     ls -la /sbin/init /sbin/telinit /sbin/shutdown /sbin/halt /sbin/poweroff /sbin/reboot
 }
 
+# The service database, and the kernel tunables that were never installed.
+#
+# Until this step existed the image booted to a console and printed "no
+# compiled s6-rc database ... no services will start", which was honest and
+# not a system. s6-svscan was running as pid 1 supervising nothing but its own
+# logger and the early getty.
+#
+# Two things get installed here that the build had been carrying and not
+# shipping:
+#
+#   build/config/sysctl.d/99-kryptik-hardening.conf - present in the
+#   repository since the beginning, referenced by docs/hardening.md, and never
+#   copied into a target. Every tunable in it was inert.
+#
+#   build/services/ - the s6-rc source tree, compiled into the database
+#   rc.init looks for.
+s_services() {
+    local src="${KRYPTIK_ROOT}/build/services"
+    [[ -d "$src" ]] || { echo "no service source tree at ${src}"; return 1; }
+
+    # The scripts the oneshot `up` files name. They live outside the database
+    # so they can be read, checked and run by hand on a machine that is not
+    # booting properly.
+    install -d -m 0755 /usr/libexec/kryptik
+    install -m 0755 "$src"/scripts/*.sh /usr/libexec/kryptik/
+    echo "--- boot scripts ---"
+    ls -la /usr/libexec/kryptik/
+
+    # Kryptik's kernel tunables.
+    install -d -m 0755 /etc/sysctl.d
+    if compgen -G "${KRYPTIK_ROOT}/build/config/sysctl.d/*.conf" > /dev/null; then
+        install -m 0644 "${KRYPTIK_ROOT}"/build/config/sysctl.d/*.conf /etc/sysctl.d/
+        echo "--- sysctl.d ---"
+        ls -la /etc/sysctl.d/
+    else
+        echo "no sysctl.d fragments to install"
+    fi
+
+    # Compile the database. s6-rc-compile refuses to overwrite, so build
+    # beside and swap: a half-written database is a machine that does not boot.
+    local tmpdb=/etc/s6-rc/compiled.new
+    rm -rf "$tmpdb"
+    install -d -m 0755 /etc/s6-rc
+    s6-rc-compile -v2 "$tmpdb" "$src"
+    rm -rf /etc/s6-rc/compiled.old
+    [[ -d /etc/s6-rc/compiled ]] && mv /etc/s6-rc/compiled /etc/s6-rc/compiled.old
+    mv "$tmpdb" /etc/s6-rc/compiled
+    rm -rf /etc/s6-rc/compiled.old
+
+    # Read the database back. "s6-rc-compile exited 0" and "the database
+    # describes the services we wrote" are different claims, and the second is
+    # the one a boot depends on.
+    echo "--- compiled database ---"
+    local all
+    all="$(s6-rc-db -c /etc/s6-rc/compiled list all)"
+    printf '%s\n' "$all" | sed 's/^/  /'
+
+    local svc missing=0
+    for svc in sysinit eudev eudev-trigger kryptikd-check getty-tty1 default; do
+        if ! printf '%s\n' "$all" | grep -qx "$svc"; then
+            echo "MISSING from the database: ${svc}"; missing=$((missing + 1))
+        fi
+    done
+    [[ "$missing" -eq 0 ]] || { echo "${missing} service(s) did not compile in"; return 1; }
+
+    # The dependency graph has to be the one we declared, or services start in
+    # an order nobody chose.
+    echo "--- what 'default' pulls in, in order ---"
+    s6-rc-db -c /etc/s6-rc/compiled pipeline default 2>/dev/null || true
+    s6-rc-db -c /etc/s6-rc/compiled dependencies default | sed 's/^/  /'
+
+    echo "--- eudev-trigger must depend on eudev ---"
+    if s6-rc-db -c /etc/s6-rc/compiled dependencies eudev-trigger | grep -qx eudev; then
+        echo "  ok"
+    else
+        echo "  FAIL: eudev-trigger does not depend on eudev"
+        return 1
+    fi
+    echo "service database compiled and verified"
+}
+
 # kryptikd, the zone supervisor.
 #
 # It is Rust, and the sysroot has no Rust toolchain - bootstrapping one into
@@ -838,9 +983,10 @@ EOF
 # the build would report success. Passing the path AND the binary's content
 # hash makes both part of the step's identity.
 s_kryptikd() {
-    local src="$1" want_sha="${2:-absent}"
+    local src="$1" want_sha="${2:-absent}" zones_sha="${3:-nozones}"
     [[ "$src" == "none" ]] && src=""
     echo "requested: ${src:-<none>} (sha256 ${want_sha})"
+    echo "zone definitions: ${zones_sha}"
 
     install -d -m 0755 /etc/kryptik
     install -d -m 0700 /etc/kryptik/zones
@@ -970,6 +1116,25 @@ s_boot_check() {
         echo "  MISSING ${svcdir}"; n=$((n + 1))
     fi
 
+    # The service database. Without it the machine boots to a bare console,
+    # which is a state worth distinguishing from a broken one.
+    if [[ -d /etc/s6-rc/compiled ]]; then
+        local nsvc
+        nsvc="$(s6-rc-db -c /etc/s6-rc/compiled list all 2>/dev/null | grep -c . || echo 0)"
+        printf '  ok      s6-rc database (%s services)\n' "$nsvc"
+        if s6-rc-db -c /etc/s6-rc/compiled list all 2>/dev/null | grep -qx default; then
+            echo "  ok      a 'default' bundle exists for rc.init to bring up"
+        else
+            echo "  MISSING a 'default' bundle"; n=$((n + 1))
+        fi
+    else
+        echo "  MISSING /etc/s6-rc/compiled - the image will boot to a bare console"
+        n=$((n + 1))
+    fi
+
+    chk "sysctl fragments"  /etc/sysctl.d
+    chk "boot scripts"      /usr/libexec/kryptik/sysinit.sh x
+
     if [[ -e /etc/kryptik/kryptikd-absent ]]; then
         echo "  NOTE    kryptikd is not installed in this image (see the kryptikd step)"
     fi
@@ -1096,7 +1261,7 @@ declare -a PACKAGES=(
     # --with-readline is deliberately NOT passed: the kernel only ever calls
     # `bc -q` non-interactively, and it would add a dependency to the one
     # package here that exists solely to compute two constants.
-    "bc"          "native_build bc-${V_BC}.tar.gz bc-${V_BC}"
+    "bc"          "s_bc"
     "kmod"        "native_build kmod-${V_KMOD}.tar.xz kmod-${V_KMOD} --sysconfdir=/etc --with-openssl --with-xz --with-zstd --with-zlib --disable-manpages"
     "libpipeline" "native_build libpipeline-${V_LIBPIPELINE}.tar.gz libpipeline-${V_LIBPIPELINE}"
     # man-db has NO RECIPE, deliberately, and the stage reports it as an
@@ -1132,9 +1297,18 @@ declare -a PACKAGES=(
     "etc"         "s_etc"
     "console"     "s_console"
     "init"        "s_init"
+    # After init: the database lives beside the stage 2 scripts that look
+    # for it. Before kryptikd: boot-check verifies both together.
+    "services"    "s_services"
     # The path and the binary's content hash are arguments so that both are
     # part of this step's fingerprint; see s_kryptikd.
-    "kryptikd"    "s_kryptikd ${KRYPTIK_KRYPTIKD_BIN:-none} $([[ -f "${KRYPTIK_KRYPTIKD_BIN:-}" ]] && sha256_of "${KRYPTIK_KRYPTIKD_BIN}" || echo absent)"
+    # The zone definitions are an input too, not just the binary. kryptikd
+    # validates them at install time, and the pair has to move together: a
+    # newer kryptikd made "storage.size" mandatory for ephemeral zones and
+    # rejected the definitions this branch was carrying. Hashing the directory
+    # means changing a .toml re-runs this step instead of silently shipping a
+    # binary that will not read its own config.
+    "kryptikd"    "s_kryptikd ${KRYPTIK_KRYPTIKD_BIN:-none} $([[ -f "${KRYPTIK_KRYPTIKD_BIN:-}" ]] && sha256_of "${KRYPTIK_KRYPTIKD_BIN}" || echo absent) $(cat "${KRYPTIK_ROOT}"/compartments/zones/*.toml 2>/dev/null | sha256_of_stdin || echo nozones)"
     "boot-check"  "s_boot_check"
 )
 

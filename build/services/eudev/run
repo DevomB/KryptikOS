@@ -1,0 +1,4 @@
+#!/bin/sh
+# Foreground: s6-supervise owns the lifetime. udevd daemonises by default and
+# a supervisor cannot supervise a process that forks away from it.
+exec /usr/sbin/udevd
