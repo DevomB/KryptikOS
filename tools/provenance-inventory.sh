@@ -417,6 +417,8 @@ CLASSES = [
      "detached signature; signer key published by kernel.org AND certified by a reference key"),
     ("signature-korg-published-key",
      "detached signature; signer key published by kernel.org, no certification on the material"),
+    ("signature-wkd-published-key",
+     "detached signature; signer key published over WKD by the signer's own email domain - a third party's statement, not upstream designating a signer"),
     ("signature-keyring-key",
      "detached signature verified against the network-fetched GNU keyring"),
     ("signature-unaudited-key",
@@ -494,6 +496,15 @@ def classify(name):
 
     if s and s[0] == "signature-pinned-key":
         return "signature-pinned-key", s[1]
+
+    # verify-signatures.sh emits these directly when tools/key-provenance.tsv
+    # names a publisher for the key. Without this passthrough they would fall
+    # off the end of the chain and be reported as "unverified", which would be
+    # a worse answer than the one the verifier actually gave.
+    if s and s[0] in ("signature-korg-published-key",
+                      "signature-korg-certified-key",
+                      "signature-wkd-published-key"):
+        return s[0], s[1]
 
     if s and s[0] == "signature-unaudited-key":
         # keys.manifest entries are keyed by package name.

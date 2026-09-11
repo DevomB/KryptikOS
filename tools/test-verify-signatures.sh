@@ -610,6 +610,191 @@ else
     red "pins with no comment: ${uncommented}"
 fi
 
+# --- published key provenance -----------------------------------------------
+#
+# tools/key-provenance.tsv lets a key be fetched from a place the PUBLISHER
+# states it, rather than from a keyserver by the id the signature itself names.
+# Twelve sources moved from "key not held" to a verified signature because of
+# it, so the cases that matter most here are the ones that keep it honest: the
+# recorded fingerprint is the anchor, and a locator that starts serving a
+# different key is a finding rather than an update.
+#
+# The korg locators are file:// URLs, which the tool accepts only under
+# KRYPTIK_SIGCHECK_SELFTEST - the same gate as every other substituted input.
+
+PROV="${W}/prov"
+mkdir -p "$PROV"
+GNUPGHOME="$FIXG" gpg --batch --quiet --armor --export unknown@example.test \
+    > "${PROV}/unknown.asc"
+GNUPGHOME="$FIXG" gpg --batch --quiet --armor --export good@example.test \
+    > "${PROV}/good.asc"
+
+if [[ -s "${PROV}/unknown.asc" && -s "${PROV}/good.asc" ]]; then
+    green "provenance fixtures: both keys exported"
+else
+    red "provenance fixtures: export failed, the cases below would be vacuous"
+fi
+
+prov_table() { printf '%s\n' "$@" > "${W}/prov.tsv"; }
+
+runprov() {
+    KRYPTIK_ROOT="$FAKE" \
+    KRYPTIK_SOURCES="$SRC" \
+    KRYPTIK_SIGCHECK_SELFTEST=1 \
+    KRYPTIK_SIGCHECK_MANIFEST="${W}/manifest" \
+    KRYPTIK_SIGCHECK_KEYRING="$KEYRING" \
+    KRYPTIK_SIGCHECK_KEYSOURCE="$KEYSOURCE" \
+    KRYPTIK_SIGCHECK_PROVENANCE="${W}/prov.tsv" \
+    NO_COLOR=1 \
+    bash "$TOOL" "$@" > "$OUT" 2>&1
+    RC=$?
+}
+
+klass_of() {  # klass_of REPORT NAME
+    awk -F'\t' -v N="$2" '$1==N{print $2; exit}' "$1"
+}
+
+# Positive control: the same key, with no row, must still be unheld. Without
+# this every assertion below could be satisfied by a tool that verified
+# everything.
+fresh_root
+write_manifest unknown
+run --report="${W}/r0.tsv"
+if [[ "$(klass_of "${W}/r0.tsv" unknown)" == "key-not-held" ]]; then
+    green "with no published provenance the key is still not held"
+else
+    red "with no published provenance the key is still not held (got $(klass_of "${W}/r0.tsv" unknown))"; show
+fi
+
+fresh_root
+write_manifest unknown
+prov_table "${UNKFPR}  korg  file://${PROV}/unknown.asc  2026-09-11  unknown  unknown fixture <unknown@example.test>"
+runprov --report="${W}/r1.tsv"
+if [[ "$(klass_of "${W}/r1.tsv" unknown)" == "signature-korg-published-key" ]]; then
+    green "a published key is fetched from its locator and classed as published"
+else
+    red "expected signature-korg-published-key, got $(klass_of "${W}/r1.tsv" unknown)"; show
+fi
+if grep -qF "imported the key korg publishes" "$OUT"; then
+    green "and the import says where the key came from"
+else
+    red "and the import says where the key came from"; show
+fi
+
+# THE CASE THIS TABLE EXISTS TO BE ABLE TO NOTICE. The row records one
+# fingerprint; the locator serves a different key. That is a rotated or
+# substituted key, and the recorded fingerprint must win.
+fresh_root
+write_manifest unknown
+prov_table "${UNKFPR}  korg  file://${PROV}/good.asc  2026-09-11  unknown  deliberately the wrong key"
+runprov --report="${W}/r2.tsv"
+if grep -qF "REFUSING it" "$OUT" && grep -qF "now publishes" "$OUT"; then
+    green "a locator serving a different key is refused as a finding"
+else
+    red "a locator serving a different key is refused as a finding"; show
+fi
+if [[ "$(klass_of "${W}/r2.tsv" unknown)" == "key-not-held" ]]; then
+    green "and the source stays unverified rather than borrowing the wrong key"
+else
+    red "and the source stays unverified (got $(klass_of "${W}/r2.tsv" unknown))"; show
+fi
+
+# A published fingerprint is no longer a key accepted because a signature named
+# it, so the published class must supersede the unaudited ledger.
+fresh_root
+write_manifest unknown
+printf '%-18s %-42s %s\n' unknown "$UNKFPR" 'unknown fixture' > "${FAKE}/keys.manifest"
+prov_table "${UNKFPR}  korg  file://${PROV}/unknown.asc  2026-09-11  unknown  unknown fixture"
+runprov --report="${W}/r3.tsv"
+if [[ "$(klass_of "${W}/r3.tsv" unknown)" == "signature-korg-published-key" ]]; then
+    green "published provenance supersedes a keys.manifest unaudited entry"
+else
+    red "published provenance supersedes keys.manifest (got $(klass_of "${W}/r3.tsv" unknown))"; show
+fi
+rm -f "${FAKE}/keys.manifest"
+
+# A wkd row whose address resolves to nothing must warn and leave the source
+# unverified - never silently pass, and never abort the run.
+fresh_root
+write_manifest unknown
+prov_table "${UNKFPR}  wkd  nobody@wkd-does-not-exist.invalid  2026-09-11  unknown  unresolvable on purpose"
+runprov --report="${W}/r4.tsv"
+if [[ "$RC" -eq 0 ]] && grep -qF "no WKD answer" "$OUT" \
+   && [[ "$(klass_of "${W}/r4.tsv" unknown)" == "key-not-held" ]]; then
+    green "an unresolvable wkd locator warns and leaves the source unverified"
+else
+    red "an unresolvable wkd locator warns and leaves the source unverified (exit ${RC})"; show
+fi
+
+# --- malformed rows are a tooling fault, not a verification result ----------
+
+bad_prov() {  # bad_prov ROW NAME
+    fresh_root
+    write_manifest good
+    prov_table "$1"
+    runprov
+    if [[ "$RC" -ne 0 ]] && grep -qF "malformed" "$OUT"; then
+        green "$2"
+    else
+        red "$2 (exit ${RC})"; show
+    fi
+}
+
+bad_prov "${UNKFPR,,}  korg  file://${PROV}/unknown.asc  2026-09-11  unknown  lowercase" \
+         "a lowercase fingerprint is refused"
+bad_prov "DEADBEEF  korg  file://${PROV}/unknown.asc  2026-09-11  unknown  short" \
+         "a short key id in place of a fingerprint is refused"
+bad_prov "${UNKFPR}  someplace  file://${PROV}/unknown.asc  2026-09-11  unknown  x" \
+         "an unknown kind is refused"
+bad_prov "${UNKFPR}  korg  http://example.invalid/k.asc  2026-09-11  unknown  x" \
+         "a plain-http korg locator is refused"
+bad_prov "${UNKFPR}  wkd  not-an-address  2026-09-11  unknown  x" \
+         "a wkd locator that is not an address is refused"
+bad_prov "${UNKFPR}  korg  file://${PROV}/unknown.asc  11-09-2026  unknown  x" \
+         "a non-ISO retrieval date is refused"
+bad_prov "${UNKFPR}  korg  file://${PROV}/unknown.asc  2026-09-11" \
+         "a row naming no sources is refused"
+bad_prov "${UNKFPR}  korg  file://${PROV}/unknown.asc  2026-09-11  unknown" \
+         "a row with no published uid recorded is refused"
+
+# --- the shipped table, and the hook that must not be usable by accident ----
+
+fresh_root
+write_manifest good
+run
+if [[ "$RC" -eq 0 ]] && ! grep -qF "malformed" "$OUT"; then
+    green "the shipped tools/key-provenance.tsv is well formed"
+else
+    red "the shipped tools/key-provenance.tsv is well formed (exit ${RC})"
+    grep -F "key-provenance" "$OUT" | sed 's/^/        /' | head -5
+fi
+
+PINS_T="$(awk '/^# fingerprint/{f=1;next} f&&/^[0-9A-F]{40}/{print $1}' \
+          "${ROOT}/tools/key-provenance.tsv")"
+if [[ -n "$PINS_T" ]] && [[ -z "$(printf '%s\n' "$PINS_T" | grep -vE '^[0-9A-F]{40}$')" ]]; then
+    green "every shipped provenance row names a full uppercase fingerprint"
+else
+    red "the shipped provenance table has a malformed fingerprint column"
+fi
+if [[ -z "$(printf '%s\n' "$PINS_T" | sort | uniq -d)" ]]; then
+    green "no fingerprint appears twice in the shipped table"
+else
+    red "duplicated fingerprints: $(printf '%s\n' "$PINS_T" | sort | uniq -d | tr '\n' ' ')"
+fi
+
+fresh_root
+write_manifest good
+prov_table "${UNKFPR}  korg  file://${PROV}/unknown.asc  2026-09-11  unknown  x"
+KRYPTIK_ROOT="$FAKE" KRYPTIK_SOURCES="$SRC" \
+    KRYPTIK_SIGCHECK_PROVENANCE="${W}/prov.tsv" NO_COLOR=1 \
+    bash "$TOOL" > "$OUT" 2>&1
+rc=$?
+if [[ "$rc" -ne 0 ]] && grep -qF "Refusing to verify signatures" "$OUT"; then
+    green "a substituted provenance table is refused without the selftest flag"
+else
+    red "a substituted provenance table was accepted without the flag (exit ${rc})"; show
+fi
+
 echo
 if [[ "$FAIL" -gt 0 ]]; then
     echo "${FAIL} of $((PASS + FAIL)) checks failed."
