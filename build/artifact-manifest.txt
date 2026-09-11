@@ -1,7 +1,7 @@
 # kryptik artifact manifest
 # root: /home/devomb/kryptik-overnight-2026-09-11/work/sysroot
-# generated: 2026-09-11T05:33:58-07:00
-# digest: e97a3a8c20336277c6efa29e70a2949c5bc521a12446fd4c20dd061aade673f1
+# generated: 2026-09-11T05:50:54-07:00
+# digest: 21527b4affa491273e8ed1e60d38682df6758fa772e600cbe7b9582d4faf6d66
 #
 # The digest covers everything below this block and nothing in it.
 # Verify with: tools/artifact-manifest.sh --verify /home/devomb/kryptik-overnight-2026-09-11/work/artifact-manifest.txt
@@ -11,6 +11,8 @@ d	1777	0	0	-	-	tmp
 d	1777	0	0	-	-	var/tmp
 d	2750	0	0	-	-	etc/s6-linux-init/current/run-image/uncaught-logs
 d	700	0	0	-	-	etc/kryptik/zones
+d	700	0	0	-	-	root/.config
+d	700	0	0	-	-	root/.config/procps
 d	700	0	0	-	-	var/cache/ldconfig
 d	750	0	0	-	-	root
 d	755	0	0	-	-	boot
@@ -4889,8 +4891,8 @@ f	644	0	0	11293	36397632a7c435409ba022b86b5a281856114526b28ba650338388360bf7dd17
 f	644	0	0	112971	0be6ff8f4f9d9f7096a65df4fa55282a033662c31916f13f23922f1a2413fa8e	usr/lib/python3.12/test/__pycache__/test_minidom.cpython-312.opt-1.pyc
 f	644	0	0	112971	0be6ff8f4f9d9f7096a65df4fa55282a033662c31916f13f23922f1a2413fa8e	usr/lib/python3.12/test/__pycache__/test_minidom.cpython-312.opt-2.pyc
 f	644	0	0	112971	0be6ff8f4f9d9f7096a65df4fa55282a033662c31916f13f23922f1a2413fa8e	usr/lib/python3.12/test/__pycache__/test_minidom.cpython-312.pyc
+f	644	0	0	113	1a71f1f181ce9f056a128f5a769964b990f02ac735f4965aecd05c14317ce6db	etc/kryptik/inside-chroot
 f	644	0	0	113	2d004fc894a5f080c84b96451a2553eae9c36b97b40b6be47b70be3807697473	usr/lib/python3.12/test/encoded_modules/module_koi8_r.py
-f	644	0	0	113	a68ec527de0d66f39bf1e44ab87e30a3ca1cba558d7a95dc7459446b94c0b940	etc/kryptik/inside-chroot
 f	644	0	0	1130	0e796ba296e2dab58d64912b52124a15b353a703f3b5ef8040487ac44001b544	usr/share/doc/gettext/examples/hello-java/po/ru.po
 f	644	0	0	1130	3540f87d529d483d36ae2efe75bd2d9ced15a8b3fd687bb3992b5c5bbb40974f	usr/lib/python3.12/site-packages/pip/_vendor/truststore/_ssl_constants.py
 f	644	0	0	1130	ca27fe5655fea0ca3a66b42d1ea32e453cb3b41b49a3b678d55b588fff9f47d7	usr/share/man/man1/lsattr.1
@@ -31459,7 +31461,7 @@ input	recipe	build/stages/04-base-system.sh	4e573812448881a212bef2ad0595bdd201e0
 input	recipe	build/stages/05-kernel.sh	fe7afa46ebb26ec8d605ea809f9791b61a1fdf6d93a28b917568162cc5ac3a8b
 input	recipe	build/stages/06-iso.sh	bb21bd3cabf7570858bcaecf758e5ea5a07eab0ad4261363ac849479e93db225
 input	recipe	sources.lock	188e6de95c49ad85f8fbc6321e86edd8486925909851622edbb7dd59433bc535
-input	repo-commit	unknown
+input	repo-commit	e6ce3725c807b215f20771c60299d1b08ef5a750
 input	source	12.tar.gz	0bc99987ff149455cd790b1f99566094baeb2212c5ec116ac526685999a29db5
 input	source	14.tar.gz	4cd95ff3b83c433ebc6269d0778d79eb3480b7d5bc873503e1cc3768546bdbec
 input	source	Python-3.12.5.tar.xz	fa8a2e12c5e620b09f53e65bcd87550d2e5a1e2e04bf8ba991dcc55113876397
