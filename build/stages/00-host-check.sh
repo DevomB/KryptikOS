@@ -26,7 +26,19 @@ check_version() {
 }
 
 # Extract the first dotted version number from a tool's version output.
-ver_of() { "$@" 2>&1 | head -1 | grep -oE '[0-9]+(\.[0-9]+)+' | head -1 || true; }
+#
+# No pipeline. A reader that exits early - `head -1`, `grep -m1`, `grep -q` -
+# hands the writer a SIGPIPE, and under `set -o pipefail` that turns a
+# succeeding command into a failing one. The `|| true` here used to hide that,
+# which is worse: the version came back empty and the host check reported a
+# missing tool that was installed and fine.
+ver_of() {
+    local out
+    out="$("$@" 2>&1 || true)"
+    [[ "$out" =~ ([0-9]+(\.[0-9]+)+) ]] && printf '%s
+' "${BASH_REMATCH[1]}"
+    return 0
+}
 
 log "Host system check"
 require_linux
