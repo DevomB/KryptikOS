@@ -552,6 +552,31 @@ pub fn run_in_zone(
     let broker_path = entry.dir().join(broker::SOCKET_NAME);
     let broker_fd = broker::listen_at(&broker_path, id.uid, id.gid)
         .map_err(|e| SpawnError::Setup(format!("broker socket {}: {e}", broker_path.display())))?;
+
+    // THE ZONE OPENS THIS ITSELF, AFTER IT HAS ITS OWN MOUNT NAMESPACE.
+    //
+    // The child binds this socket into its root, and by then it has dropped to
+    // the zone identity - which cannot walk to it. The registry is 0700 and
+    // root-owned, deliberately (Design 06, and security's R-7b F1):
+    //
+    //     drwx------ root:root  /run/kryptik
+    //     drwx------ root:root  /run/kryptik/zones
+    //
+    // so binding by path failed with EPERM on every privileged launch and took
+    // the VM from 135 passing to 100 failing. It worked unprivileged only
+    // because every zone maps to the launching user, who owns those
+    // directories.
+    //
+    // The fix is a descriptor rather than a path - but it cannot be opened
+    // HERE. A bind whose source mount belongs to a different mount namespace
+    // is refused:
+    //
+    //     fd opened BEFORE unshare(CLONE_NEWNS): Invalid argument
+    //     fd opened AFTER  unshare(CLONE_NEWNS): ok
+    //
+    // measured directly. So the path travels to the child, and the child opens
+    // it in the window after it unshares and before it takes the zone's
+    // identity, when it still has its own mount namespace AND is still root.
     let broker_path_str = broker_path.display().to_string();
 
     let placed = SyncPipe::new()?;
@@ -863,6 +888,29 @@ fn intermediate_main(
         bail!("unshare: {e}");
     }
 
+    // 3b. Open the broker socket NOW: this process has its own mount namespace
+    //     (so a bind from /proc/self/fd resolves in it) and is still root (so
+    //     it can traverse the 0700 registry). Neither is true later - the
+    //     identity switch at step 5 is one-way, and the zone must not be given
+    //     a path it could not open for itself.
+    //
+    //     O_PATH because nothing reads or writes the socket here; the fd only
+    //     names the inode for the bind. Not CLOEXEC: it has to survive the
+    //     fork at step 7 into the process that builds the root. The exec at
+    //     the end of zone_init closes it.
+    let broker_fd_for_zone = {
+        let c = match std::ffi::CString::new(broker_path) {
+            Ok(c) => c,
+            Err(_) => bail!("broker socket path contains a NUL"),
+        };
+        let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH) };
+        if fd < 0 {
+            bail!("broker socket {}: {}", broker_path, io::Error::last_os_error());
+        }
+        fd
+    };
+    let broker_in_zone = format!("/proc/self/fd/{broker_fd_for_zone}");
+
     // 4. Tell the parent we are in the new namespace, then wait for it to
     //    write uid_map/gid_map. Until those exist we are nobody (65534) and
     //    cannot mount anything or become root. EOF here means the parent
@@ -913,7 +961,7 @@ fn intermediate_main(
     }
 
     if inner == 0 {
-        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, plumbed, broker_path);
+        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, plumbed, &broker_in_zone);
         unsafe { libc::_exit(rc) };
     }
 
