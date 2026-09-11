@@ -844,7 +844,12 @@ mod tests {
         let f = unsafe { libc::open(c.as_ptr(), libc::O_RDONLY) };
         assert!(f >= 0);
         assert!(unsafe { libc::dup2(f, fd) } == fd, "dup2 to {fd} failed");
-        unsafe { libc::close(f) };
+        // dup2(f, f) is a no-op, and closing f would then close the very
+        // descriptor this helper was asked to open. That is exactly what
+        // happened in a forked child whose lowest free descriptor was 3.
+        if f != fd {
+            unsafe { libc::close(f) };
+        }
     }
 
     #[test]

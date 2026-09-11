@@ -25,5 +25,10 @@ landlock = "policy/untrusted.landlock"
 memory_max = "4G"
 pids_max   = 512
 
+[identity]
+# Fixed host uid/gid range for this zone: root inside maps to 327680,
+# nobody to 393214. Never derived from zone order; see docs/design/01.
+uid_base = 327680
+
 [ui]
 border_color = "#aa3333"
