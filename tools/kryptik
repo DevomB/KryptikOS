@@ -137,8 +137,20 @@ set_identity_args() {
     fi
 }
 
+# Both the list and whether reading it worked at all. These are different
+# answers and the wrapper used to give the same one for both.
+ZONE_LIST=""
+ZONE_LIST_ERR=""
+ZONE_LIST_RC=0
+load_zone_list() {
+    ZONE_LIST_ERR="$("$KRYPTIKD" list --zones "$ZONES_DIR" 2>&1 >/dev/null)"
+    ZONE_LIST="$("$KRYPTIKD" list --zones "$ZONES_DIR" 2>/dev/null)"
+    ZONE_LIST_RC=$?
+}
+
 zone_exists() {
-    "$KRYPTIKD" list --zones "$ZONES_DIR" 2>/dev/null | grep -qx "$1"
+    load_zone_list
+    printf '%s\n' "$ZONE_LIST" | grep -qx "$1"
 }
 
 # One place decides what to say when a zone name is wrong, because "unknown
@@ -146,14 +158,26 @@ zone_exists() {
 require_zone() {
     local name="$1"
     zone_exists "$name" && return 0
+    # THREE different situations, which this used to report as one.
+    #
+    # "There are no zones in /etc/kryptik/zones" was printed whenever the list
+    # came back empty - including when the directory was full of zones that
+    # kryptikd had refused to read. A restart check in the VM reported exactly
+    # that about an image whose zone directory had six files in it, and the
+    # actual error was never shown to anyone.
+    if (( ZONE_LIST_RC != 0 )) || [[ -n "$ZONE_LIST_ERR" ]]; then
+        printf '%s: could not read the zones in %s\n\n' "$PROG" "$ZONES_DIR" >&2
+        [[ -n "$ZONE_LIST_ERR" ]] && printf '%s\n' "$ZONE_LIST_ERR" | sed 's/^/    /' >&2
+        printf '\nThis is not the same as having no zones. Until it is fixed, no zone\n' >&2
+        printf 'will start. Try: %s doctor\n' "$PROG" >&2
+        exit 1
+    fi
     printf '%s: no zone named %s\n\n' "$PROG" "$name" >&2
-    local known
-    known="$("$KRYPTIKD" list --zones "$ZONES_DIR" 2>/dev/null)"
-    if [[ -n "$known" ]]; then
+    if [[ -n "$ZONE_LIST" ]]; then
         printf 'Zones on this system:\n' >&2
-        printf '%s\n' "$known" | sed 's/^/    /' >&2
+        printf '%s\n' "$ZONE_LIST" | sed 's/^/    /' >&2
     else
-        printf 'There are no zones in %s.\n' "$ZONES_DIR" >&2
+        printf 'There are no zone definitions in %s.\n' "$ZONES_DIR" >&2
     fi
     exit 1
 }

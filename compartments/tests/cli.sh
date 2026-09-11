@@ -46,6 +46,18 @@ cleanup() {
 trap cleanup EXIT
 
 ZONES="$WORK/zones"; ROOTFS="$WORK/data"; mkdir -p "$ZONES" "$ROOTFS"
+
+# Running as root, a zone maps to host uid 100000, and it has to be able to
+# reach its own data directory - `mktemp -d` makes one 0700 and root-owned, so
+# the zone could not even traverse into it and every launch failed with
+#     could not build the zone root: mount(root tmpfs)(...): Permission denied
+# which reads like a mount problem and is a path-resolution one. The launcher
+# suite has done this from the start; this suite had not, so it passed on the
+# developer host and failed in the VM.
+if [[ "$(id -u)" -eq 0 ]]; then
+    chmod 0755 "$WORK" "$ZONES" "$ROOTFS"
+    chown -R 100000:100000 "$ROOTFS"
+fi
 CONF="$WORK/kryptik.conf"
 export KRYPTIK_CONF="$CONF"
 cat > "$CONF" <<CONF
