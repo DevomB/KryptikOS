@@ -168,6 +168,10 @@ mkzone beta     none   "#222222"
 mkzone carrier  nic    "#333333" 'bridge = "kryptik0"'
 mkzone sealed   none   "#444444" ''                      encrypted
 mkzone wiped    none   "#555555" ''                      ephemeral
+# The zone that keeps things. `sealed` cannot do this job any more: it declares
+# encryption this build does not deliver, so the target kernel refuses to start
+# it at all - correctly - and every check built on it stopped running there.
+mkzone keeper   none   "#4a4a4a" ''                      persistent
 # For K7: a zone whose data directory is deliberately owned by someone else.
 mkzone stranger none   "#666666"
 mkzone lczone   none   "#0a0a0a"
@@ -243,8 +247,18 @@ ZOUT=""; ZRC=0
 zrun() {
     local zone="$1"; shift
     [[ "${1:-}" == "--" ]] && shift
+    # A zone that declares [identity] REFUSES --zone-uid/--zone-gid: the file
+    # is the authority, and a command-line override would silently change who
+    # owns that zone's data. `tools/kryptik` already works this out per zone;
+    # the suite has to as well, or a fixture with an identity cannot be
+    # launched here at all - which is why the routed fixture had none, and why
+    # it was never plumbed.
+    local -a za=("${ZARGS[@]}")
+    if (( ${#IDENTITY[@]} )) && grep -q '^\[identity\]' "$ZONES/$zone.toml" 2>/dev/null; then
+        za=(--zones "$ZONES" --rootfs "$ROOTFS")
+    fi
     ZOUT="$(KRYPTIK_EXPERIMENTAL=1 timeout "$TIMEOUT" \
-            "$KRYPTIKD" run "$zone" "${ZARGS[@]}" -- "$@" 2>&1)"
+            "$KRYPTIKD" run "$zone" "${za[@]}" -- "$@" 2>&1)"
     ZRC=$?
     return 0
 }
@@ -253,8 +267,18 @@ zrun() {
 zrun_raw() {
     local zone="$1"; shift
     [[ "${1:-}" == "--" ]] && shift
+    # A zone that declares [identity] REFUSES --zone-uid/--zone-gid: the file
+    # is the authority, and a command-line override would silently change who
+    # owns that zone's data. `tools/kryptik` already works this out per zone;
+    # the suite has to as well, or a fixture with an identity cannot be
+    # launched here at all - which is why the routed fixture had none, and why
+    # it was never plumbed.
+    local -a za=("${ZARGS[@]}")
+    if (( ${#IDENTITY[@]} )) && grep -q '^\[identity\]' "$ZONES/$zone.toml" 2>/dev/null; then
+        za=(--zones "$ZONES" --rootfs "$ROOTFS")
+    fi
     ZOUT="$(env -u KRYPTIK_EXPERIMENTAL timeout "$TIMEOUT" \
-            "$KRYPTIKD" run "$zone" "${ZARGS[@]}" -- "$@" 2>&1)"
+            "$KRYPTIKD" run "$zone" "${za[@]}" -- "$@" 2>&1)"
     ZRC=$?
     return 0
 }
@@ -408,33 +432,59 @@ fi
 head_ "B. Two real zones cannot reach each other  [unpriv]"
 # ============================================================================
 
-# alpha writes a canary into its own root.
-# `sealed` rather than `alpha`, and the reason matters: alpha is ephemeral now,
-# so nothing it writes reaches the host and B1b would have nothing to find. The
-# cross-zone claim needs a zone whose data actually persists, and the only
-# persistent mode is "encrypted" - which still runs on a plain directory under
-# the override. When per-zone LUKS lands this becomes a real encrypted volume
-# and the check does not change.
-zrun sealed -- /bin/sh -c "$PRO printf '%s' '$CANARY' > \$HOME/alpha-secret; echo PROBE=written"
+# keeper writes a canary into its own home.
+# `keeper` rather than `alpha`, and the reason matters: alpha is ephemeral, so
+# nothing it writes reaches the host and B1b would have nothing to find. The
+# cross-zone claim needs a zone whose data actually persists.
+#
+# This group used `sealed` - the ENCRYPTED fixture, started under
+# KRYPTIK_EXPERIMENTAL - until the target kernel existed. There the override is
+# ignored (Design 01 P6) and sealed cannot start, so B1a skipped and B1c/B1d
+# went on reporting PASS: no other zone could read a file that was never
+# written. A vacuous pass on an isolation check is the failure this file exists
+# to prevent, and it survived for as long as it did because the group looked
+# green.
+#
+# storage.mode = "persistent" is the honest version of what that fixture was
+# pretending to be: a plain directory, kept between launches, claiming nothing
+# about encryption. When per-zone encrypted volumes land, `sealed` becomes a
+# real one and these checks do not change.
+zrun keeper -- /bin/sh -c "$PRO printf '%s' '$CANARY' > \$HOME/alpha-secret; echo PROBE=written"
 probe "B1a a persistent zone can write a file in its own zone" "written"
 
 # Positive control: that file exists on the host, so a failure to read it from
 # beta means something. Without this the next check would pass on a typo.
-if [[ -f "$ROOTFS/sealed/alpha-secret" ]] && grep -q "$CANARY" "$ROOTFS/sealed/alpha-secret"; then
+if [[ -f "$ROOTFS/keeper/alpha-secret" ]] && grep -q "$CANARY" "$ROOTFS/keeper/alpha-secret"; then
     pass "B1b positive control: the file is real and readable from the host"
 else
     fail "B1b positive control FAILED: the file is not where the test expects"
-    info "looked for: $ROOTFS/sealed/alpha-secret"
+    info "looked for: $ROOTFS/keeper/alpha-secret"
 fi
 
-# beta tries the same absolute path, and the host path alpha's data really
+# B1e is the persistence claim itself, and the thing that makes it a check
+# rather than a restatement of B1b is that it is a SECOND LAUNCH. The zone
+# exited, its mount namespace and pid namespace are gone, its tmpfs would have
+# been freed - and the file is still in its home.
+zrun keeper -- /bin/sh -c "$PRO if grep -q '$CANARY' \$HOME/alpha-secret 2>/dev/null; then echo PROBE=kept; else echo PROBE=LOST; fi"
+probe "B1e a persistent zone still has its file on the NEXT launch" "kept"
+
+# The control, and it is the half that gives B1e its meaning: the identical
+# sequence in an EPHEMERAL zone must lose the file. Without it, B1e would also
+# pass if every zone kept everything - which is the bug, not the feature.
+zrun wiped -- /bin/sh -c "$PRO printf '%s' '$CANARY' > \$HOME/eph-secret; echo PROBE=written"
+probe "B1f control: an ephemeral zone can write the same file" "written"
+
+zrun wiped -- /bin/sh -c "$PRO if grep -q '$CANARY' \$HOME/eph-secret 2>/dev/null; then echo PROBE=KEPT; else echo PROBE=gone; fi"
+probe "B1g control: the ephemeral zone does NOT have it on its next launch" "gone"
+
+# beta tries the same absolute path, and the host path keeper's data really
 # lives at. Neither exists in beta's root.
 # /home/alpha is where alpha's data is mounted INSIDE ALPHA. Beta's tree has no
 # such path: each zone binds only its own directory.
-zrun beta -- /bin/sh -c "$PRO if cat /home/sealed/alpha-secret 2>/dev/null | grep -q '$CANARY'; then echo PROBE=LEAKED; else echo PROBE=denied; fi"
+zrun beta -- /bin/sh -c "$PRO if cat /home/keeper/alpha-secret 2>/dev/null | grep -q '$CANARY'; then echo PROBE=LEAKED; else echo PROBE=denied; fi"
 probe "B1c another zone cannot read it at its in-zone path" "denied"
 
-zrun beta -- /bin/sh -c "$PRO if cat '$ROOTFS/sealed/alpha-secret' 2>/dev/null | grep -q '$CANARY'; then echo PROBE=LEAKED; else echo PROBE=denied; fi"
+zrun beta -- /bin/sh -c "$PRO if cat '$ROOTFS/keeper/alpha-secret' 2>/dev/null | grep -q '$CANARY'; then echo PROBE=LEAKED; else echo PROBE=denied; fi"
 probe "B1d another zone cannot read it by its host path" "denied"
 
 # --- process visibility ------------------------------------------------------
@@ -997,8 +1047,55 @@ head_ "H. Network isolation, without overclaiming  [unpriv]"
 # bridge or route is created anywhere in the tree - see the explicit NOT RUN
 # entry at the end of this file rather than a check that would quietly pass.
 
-zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(cat /proc/net/dev | tail -n +3 | awk '{print \$1}' | tr -d ':' | sort | tr '\n' ',')"
-probe "H1  a mode=none zone sees loopback and nothing else" "lo,"
+# Devices the KERNEL creates in every new network namespace. Nothing in the
+# zone asked for them, and nothing in the zone can remove them - so "the
+# namespace contains only lo" is not a promise kryptikd is able to keep. What
+# it can keep, and what the promise is actually about, is that none of them can
+# carry traffic. That is what H1 checks now: the names may include these and
+# ONLY these, and every device other than loopback must be DOWN with no
+# address. That is strictly more than the old check, which looked at names and
+# never at state.
+#
+#   sit0  CONFIG_IPV6_SIT=y makes the SIT driver register an IPv6-in-IPv4
+#         fallback tunnel in each netns. Asked for as CONFIG_IPV6_SIT=n in
+#         build/REQUEST.md B-6; when that lands the device stops appearing and
+#         this list stops mattering, with no edit here.
+#
+# The same list is in adversarial.sh and the two must agree. They run in the
+# same boot, so a divergence shows up immediately as one suite passing where
+# the other fails on identical evidence.
+KERNEL_FALLBACK_IFS="sit0"
+FALLBACK_RE="lo|${KERNEL_FALLBACK_IFS// /|}"
+
+zrun alpha -- /bin/sh -c "$PRO ifs=\$(sed 1,2d /proc/net/dev | sed 's/:.*//' | tr -d ' ' | sort | tr '\n' ','); up=''; for f in /sys/class/net/*/flags; do d=\${f%/flags}; d=\${d##*/}; fl=\$(cat \"\$f\" 2>/dev/null || echo 0); [ \$((fl & 1)) -eq 1 ] && up=\"\$up\$d,\"; done; v6=\$(awk '{print \$NF}' /proc/net/if_inet6 2>/dev/null | sort -u | tr '\n' ','); echo PROBE=if:\$ifs~up:\$up~v6:\$v6"
+if want_launch "H1  a mode=none zone has loopback and nothing that can carry traffic"; then
+    h_got="$(printf '%s\n' "$ZOUT" | sed -n 's/^PROBE=//p' | head -1)"
+    h_if="${h_got#if:}";   h_if="${h_if%%~*}"
+    h_up="${h_got#*~up:}"; h_up="${h_up%%~*}"
+    h_v6="${h_got##*~v6:}"
+    h_extra=""; h_live=""; h_others=""
+    for d in ${h_if//,/ }; do
+        [[ -z "$d" || "$d" == "lo" ]] && continue
+        h_others+="$d "
+        [[ "$d" =~ ^(${KERNEL_FALLBACK_IFS// /|})$ ]] || h_extra+="$d "
+    done
+    # UP, or carrying an address: either one makes a device able to do
+    # something, which is the property the promise is about.
+    for d in ${h_up//,/ } ${h_v6//,/ }; do
+        [[ -z "$d" || "$d" == "lo" ]] && continue
+        h_live+="$d "
+    done
+    if [[ -n "$h_extra" ]]; then
+        fail "H1  a mode=none zone has a network device nothing asked for: $h_extra"
+        info "full view: $h_got"
+    elif [[ -n "$h_live" ]]; then
+        fail "H1  a device in a mode=none zone is UP or has an address: $h_live"
+        info "full view: $h_got"
+    else
+        pass "H1  a mode=none zone has loopback and nothing that can carry traffic"
+        [[ -n "$h_others" ]] && info "kernel fallback devices, present and inert: $h_others"
+    fi
+fi
 
 zrun alpha -- /bin/sh -c "$PRO if [ -s /proc/net/route ] && [ \$(tail -n +2 /proc/net/route | wc -l) -gt 0 ]; then echo PROBE=ROUTES; else echo PROBE=none; fi"
 probe "H2  a mode=none zone has no routes at all" "none"
@@ -1054,12 +1151,12 @@ if (( PRIVILEGED == 1 )); then
     # ...and the files it creates are owned by the unprivileged host identity,
     # not by real root. This is the whole point of the mapping, and it is
     # checked on the HOST side where it can actually be falsified.
-    # `sealed`, not `alpha`: K3 is the one check in this group that looks at the
+    # `keeper`, not `alpha`: K3 is the one check in this group that looks at the
     # HOST side, and an ephemeral zone writes nothing there. Using alpha here
     # would test M2 by accident and report it as an ownership failure.
-    zrun sealed -- /bin/sh -c "$PRO echo k3 > \$HOME/k3file; echo PROBE=written"
+    zrun keeper -- /bin/sh -c "$PRO echo k3 > \$HOME/k3file; echo PROBE=written"
     if want_launch "K3  a zone's files are owned by the mapped identity"; then
-        owner="$(stat -c %u "$ROOTFS/sealed/k3file" 2>/dev/null)"
+        owner="$(stat -c %u "$ROOTFS/keeper/k3file" 2>/dev/null)"
         if [[ "$owner" == "$ZONE_UID" ]]; then
             pass "K3  a zone's files are owned by host uid $ZONE_UID, not root"
         else
@@ -1979,6 +2076,13 @@ if (( PRIVILEGED == 1 )) && [[ "${KRYPTIK_VM_DISPOSABLE:-}" == "1" ]]; then
     # A routed fixture. `carrier` already holds the nic.
     mkzone router none "#0f0f0f"
     sed -i 's/^mode = "none"$/mode = "routed"/' "$ZONES/router.toml"
+    # A routed zone's address on the bridge is derived from its identity -
+    # netzone::host_number reads [identity] uid_base, and plumb_routed_zone
+    # refuses the zone without one. A refusal there is NOT fatal: the zone
+    # starts with loopback only, fail-closed, which is the right behaviour and
+    # is precisely what NETR3 and NETR4 were reporting for a whole boot. They
+    # were measuring a fixture that never asked to be routed.
+    printf '[identity]\nuid_base = 393216\n' >> "$ZONES/router.toml"
 
     # The nic zone has to be RUNNING for a routed zone to have anything to
     # attach to, so it goes in the background and stays there.
@@ -2002,8 +2106,23 @@ if (( PRIVILEGED == 1 )) && [[ "${KRYPTIK_VM_DISPOSABLE:-}" == "1" ]]; then
 
         # What a routed zone actually gets. Counted from /proc/net/dev, which
         # needs no iproute2 in the image.
-        zrun router -- /bin/sh -c "$PRO n=\$(sed 1,2d /proc/net/dev | grep -vc ' *lo:'); r=\$(sed 1d /proc/net/route | wc -l); echo PROBE=if=\$n,routes=\$r"
+        # Excluding the kernel fallback devices is not cosmetic here: this
+        # count is what NETR3 calls "an interface besides loopback", and on a
+        # kernel with SIT the 1 it reported could have been sit0 rather than
+        # the veth routing was supposed to give this zone.
+        zrun router -- /bin/sh -c "$PRO n=\$(sed 1,2d /proc/net/dev | sed 's/:.*//' | tr -d ' ' | grep -vxE '$FALLBACK_RE' | wc -l); r=\$(sed 1d /proc/net/route | wc -l); echo PROBE=if=\$n,routes=\$r"
         if want_launch "NETR2 a routed zone starts while the nic zone is up"; then
+            # Did the launch build a network path at all? A plumb failure is
+            # deliberately not fatal, so without this NETR3 and NETR4 cannot
+            # tell "routing is broken" from "this zone never asked for it" -
+            # and they reported the second as the first until this check
+            # existed.
+            if [[ "$ZOUT" == *"has no network path"* ]]; then
+                fail "NETR2b the routed zone was never plumbed, so NETR3/NETR4 measure nothing"
+                info "kryptikd said: $(printf '%s\n' "$ZOUT" | grep -a 'no network path' | head -1)"
+            else
+                pass "NETR2b the launch reported no plumbing failure"
+            fi
             got="$(printf '%s\n' "$ZOUT" | sed -n 's/^PROBE=//p' | head -1)"
             ifn="${got#if=}"; ifn="${ifn%%,*}"
             rts="${got##*routes=}"
@@ -2023,7 +2142,7 @@ if (( PRIVILEGED == 1 )) && [[ "${KRYPTIK_VM_DISPOSABLE:-}" == "1" ]]; then
         # zone still up, must still see only loopback - otherwise NETR3 is
         # measuring something every zone gets rather than something routing
         # gave this one.
-        zrun alpha -- /bin/sh -c "$PRO n=\$(sed 1,2d /proc/net/dev | grep -vc ' *lo:'); echo PROBE=\$n"
+        zrun alpha -- /bin/sh -c "$PRO n=\$(sed 1,2d /proc/net/dev | sed 's/:.*//' | tr -d ' ' | grep -vxE '$FALLBACK_RE' | wc -l); echo PROBE=\$n"
         probe "NETR5 control: an airgapped zone still sees only loopback while the nic zone runs" "0"
     fi
 

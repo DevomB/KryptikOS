@@ -414,6 +414,17 @@ pub fn run_in_zone(
         );
     }
 
+    // Persistent storage is implemented and it keeps data, which is its whole
+    // promise. What it is not is encrypted, and that is said every launch
+    // rather than left to be inferred from the word nobody wrote.
+    if zone.storage == StorageMode::Persistent {
+        eprintln!(
+            "kryptikd: zone {:?}: persistent storage is a PLAIN DIRECTORY on the host \
+             filesystem - kept between launches, and NOT encrypted at rest",
+            zone.name
+        );
+    }
+
     // KRYPTIK_EXPERIMENTAL is a developer override. On a kernel that
     // restricts unprivileged user namespaces - the target, or its emulation -
     // a root launch is the real thing, and the override is ignored (Design
@@ -441,6 +452,12 @@ pub fn run_in_zone(
         // never bound anywhere. The one thing still worth saying out loud is
         // swap - see the note printed below, and docs/design/02.
         StorageMode::Ephemeral => {}
+        // Persistent is implemented, and it promises only what it does: the
+        // zone's own directory, bound at $HOME, still there next launch. It is
+        // NOT on the unsupported list, so it needs no override and it starts
+        // on the target kernel - the only mode that both survives a reboot and
+        // does so honestly until encrypted volumes land.
+        StorageMode::Persistent => {}
     }
     // A seccomp policy file is applied (docs/design/07); a Landlock policy
     // file is not, and a zone naming one is still refused without the
@@ -643,8 +660,16 @@ pub fn run_in_zone(
     // early return cannot leak the directory.
     let zone_cgroup = match &limits {
         Some(base) => {
-            let cg = cgroup::Cgroup::create(base, &zone.name, parent_pid)
-                .map_err(|e| SpawnError::Setup(format!("cgroup: {e}")))?;
+            // Naming [limits] and not just the syscall: available() proved a
+            // leaf could be made moments ago, so reaching here means something
+            // changed underneath us - and the operator still has to be able to
+            // connect the failure to the setting they wrote in the zone file.
+            let cg = cgroup::Cgroup::create(base, &zone.name, parent_pid).map_err(|e| {
+                SpawnError::Setup(format!(
+                    "[limits]: the zone's cgroup could not be created, so \
+                     limits.memory_max/limits.pids_max would not be in force: {e}"
+                ))
+            })?;
             cg.set_limits(zone.memory_max.as_deref(), zone.pids_max)
                 .map_err(|e| SpawnError::Setup(format!("cgroup limits: {e}")))?;
             cg.attach(pid)
@@ -1068,7 +1093,10 @@ fn zone_init(
     //    reachability.
     let ephemeral = match zone.storage {
         StorageMode::Ephemeral => zone.size.as_deref(),
-        StorageMode::Encrypted => None,
+        // Both of these bind the zone's own directory at $HOME. They differ in
+        // what protects it at rest, which is not this call's business: None
+        // here means "the data directory IS the home", not "unencrypted".
+        StorageMode::Encrypted | StorageMode::Persistent => None,
     };
     // /etc/resolv.conf follows the path the parent built, not the mode the
     // file declares: a routed zone with no path names no resolver.
@@ -1263,6 +1291,14 @@ pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String
             "encrypted volume {} (NOT YET IMPLEMENTED - using a plain directory)",
             zone.volume.as_deref().unwrap_or("?")
         ),
+        StorageMode::Persistent => format!(
+            "persistent: $HOME is {}, a plain directory kept between launches.\n\
+             \x20           It is NOT encrypted at rest: anything that can read the\n\
+             \x20           host filesystem can read this zone's files. On a privileged\n\
+             \x20           launch they are owned by the zone identity below, which is\n\
+             \x20           file ownership and not cryptography.",
+            rootfs
+        ),
         StorageMode::Ephemeral => format!(
             "ephemeral: $HOME is a per-launch tmpfs of {}, freed when the zone exits.\n\
              \x20          Nothing the zone writes reaches its persistent directory.\n\
@@ -1293,7 +1329,7 @@ pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String
         StorageMode::Ephemeral => format!(
             "data dir   {rootfs} (NOT visible inside; must be empty for the zone to start)"
         ),
-        StorageMode::Encrypted => {
+        StorageMode::Encrypted | StorageMode::Persistent => {
             format!("data dir   {rootfs} (visible inside as {home})")
         }
     };
@@ -1398,6 +1434,31 @@ mod tests {
     fn explain_names_the_identity_range_or_its_absence() {
         assert!(explain(&z_identity(196608), "/tmp/t", std::path::Path::new("/nonexistent")).contains("uid_base 196608"));
         assert!(explain(&z("routed"), "/tmp/t", std::path::Path::new("/nonexistent")).contains("none declared"));
+    }
+
+    #[test]
+    fn explain_says_persistent_storage_is_not_encrypted() {
+        // The whole risk of this mode is that its name sounds like a safe
+        // place to put things. explain is where someone checks before they do.
+        let z = Zone::from_str(
+            "[zone]\nname = \"t\"\n[network]\nmode = \"none\"\n\
+             [storage]\nmode = \"persistent\"\n[ui]\nborder_color = \"#123456\"\n",
+        )
+        .unwrap();
+        let e = explain(&z, "/var/lib/kryptik/zones/t", std::path::Path::new("/nonexistent"));
+        assert!(e.contains("NOT encrypted at rest"), "say it in those words: {e}");
+        assert!(
+            e.contains("kept between launches"),
+            "and say what it DOES do, or the line reads as a pure warning: {e}"
+        );
+        // The data directory is reachable from inside, unlike an ephemeral
+        // zone where naming it would be misleading.
+        assert!(
+            e.contains("/var/lib/kryptik/zones/t (visible inside as"),
+            "the data line must place it: {e}"
+        );
+        // And it must not borrow the encrypted mode's disclaimer.
+        assert!(!e.contains("NOT YET IMPLEMENTED"), "persistent IS implemented: {e}");
     }
 
     fn z_encrypted() -> Zone {

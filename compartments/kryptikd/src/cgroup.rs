@@ -146,24 +146,34 @@ pub fn available_under(root: &Path) -> Result<PathBuf, CgroupError> {
         fs::create_dir(&group).map_err(|e| io_err(&group, e))?;
     }
     ensure_subtree_control(&group)?;
-    // "Available" has to mean "this process can create a leaf here", not
-    // "the directory exists with the right controllers". On a host where a
-    // privileged run once created kryptik/ with memory and pids delegated,
-    // an unprivileged launcher read all of that successfully and then failed
-    // at mkdir with EACCES - a refusal that no longer named [limits]. Prove
-    // it by trying, the way the rest of this function does.
-    let trial = group.join(format!(".probe.{}", std::process::id()));
-    match fs::create_dir(&trial) {
-        Ok(()) => {
-            let _ = fs::remove_dir(&trial);
-        }
-        Err(e) => {
-            return Err(CgroupError::Unavailable(format!(
-                "cannot create a cgroup under {}: {e}",
-                group.display()
-            )))
-        }
+
+    // "Answers by trying" has to mean trying the thing that will actually be
+    // done. Creating the GROUP proves nothing once it exists - the first
+    // launcher to run creates it, and on a machine where that was a root one
+    // it is a root-owned directory an unprivileged launcher cannot make leaves
+    // in. available() then returned Ok, and the zone was refused far later by
+    // a raw EACCES on a path the operator never typed, instead of by the
+    // [limits] message that names the setting that could not be honoured.
+    //
+    // So create a leaf, which is what a launch does, and remove it.
+    let probe = group.join(format!(".probe.{}", std::process::id()));
+    let _ = fs::remove_dir(&probe);
+    if let Err(e) = fs::create_dir(&probe) {
+        return Err(CgroupError::Unavailable(format!(
+            "cannot create a cgroup under {} ({e}), so this launcher could not put a \
+             zone in one",
+            group.display()
+        )));
     }
+    if let Err(e) = fs::remove_dir(&probe) {
+        // Empty, so the sweep below reclaims it within STALE_AFTER; but a
+        // directory this process made and could not unmake is worth a line.
+        eprintln!(
+            "kryptikd: note: could not remove the cgroup probe {}: {e}",
+            probe.display()
+        );
+    }
+
     sweep_stale(&group);
     Ok(group)
 }
@@ -463,6 +473,24 @@ mod tests {
         assert!(!populated(""));
         assert!(!populated("\n"));
         assert!(!populated("   \n"));
+    }
+
+    #[test]
+    fn available_leaves_no_probe_directories_behind() {
+        // available() now proves it can create a leaf by creating one. A probe
+        // that is not removed is one directory per launch, forever.
+        let Ok(group) = available() else {
+            eprintln!("skipped: no usable cgroup v2 hierarchy here");
+            return;
+        };
+        let _ = available();
+        let left: Vec<_> = std::fs::read_dir(&group)
+            .expect("the group we were just handed must be readable")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(".probe."))
+            .collect();
+        assert!(left.is_empty(), "probe directories left behind: {left:?}");
     }
 
     #[test]
