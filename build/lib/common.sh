@@ -3,6 +3,7 @@
 
 set -Eeuo pipefail
 
+KRYPTIK_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 KRYPTIK_ROOT="${KRYPTIK_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 KRYPTIK_SOURCES="${KRYPTIK_SOURCES:-${KRYPTIK_ROOT}/sources}"
 KRYPTIK_WORK="${KRYPTIK_WORK:-${KRYPTIK_ROOT}/build/work}"
@@ -32,13 +33,114 @@ _kryptik_trap() {
 }
 trap _kryptik_trap ERR
 
+# Parallelism.
+#
+# GCC's bootstrap and glibc's build are memory-hungry: on a host with less than
+# roughly 1.5GB of RAM per job, -j$(nproc) meets the OOM killer partway through
+# a forty-minute link, and the failure looks like a compiler crash rather than
+# what it is. So the default is capped by memory as well as by CPU count.
+#
+# KRYPTIK_JOBS overrides it. Raise it when you have the RAM; lower it when a
+# build dies with "internal compiler error: Killed".
+kryptik_default_jobs() {
+    local cpus mem_kb mem_gb by_mem
+    cpus="$(nproc 2>/dev/null || echo 1)"
+    mem_kb="$(awk '/MemTotal/{print $2; exit}' /proc/meminfo 2>/dev/null || echo 0)"
+    mem_gb=$(( mem_kb / 1024 / 1024 ))
+    by_mem=$(( mem_gb * 2 / 3 ))
+    [[ "$by_mem" -lt 1 ]] && by_mem=1
+    if [[ "$by_mem" -lt "$cpus" ]]; then printf '%s' "$by_mem"
+    else printf '%s' "$cpus"; fi
+}
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+sha256_of() {
+    if have sha256sum; then sha256sum "$1" | cut -d' ' -f1
+    elif have shasum;   then shasum -a 256 "$1" | cut -d' ' -f1
+    else die "no sha256sum or shasum available"
+    fi
+}
+
+sha256_of_stdin() {
+    if have sha256sum; then sha256sum | cut -d' ' -f1
+    elif have shasum;   then shasum -a 256 | cut -d' ' -f1
+    else die "no sha256sum or shasum available"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Where things get installed
+#
+# Stages 01, 02 and 03 run on the host and install into a sysroot DIRECTORY.
+# Stages 04 and 05 run INSIDE that sysroot, after stage 03 chroots into it,
+# and there the sysroot is simply "/".
+#
+# Deriving "${KRYPTIK_WORK}/sysroot" unconditionally is what stage 05 used to
+# do, and it is wrong inside the chroot in two separate ways:
+#
+#   * With the default KRYPTIK_WORK the path resolves, through the /kryptik
+#     bind mount, back to the chroot's own root - so it happened to work by
+#     coincidence, and nobody noticed the reasoning was broken.
+#
+#   * With KRYPTIK_WORK pointed anywhere else - which a real build needs,
+#     because the work tree belongs on native storage - the path does not
+#     exist inside the chroot, and `cp` and `modules_install` cheerfully
+#     CREATE it. The result is a second, nested, half-populated target tree
+#     inside the real one: /boot looks empty while the kernel sits several
+#     levels down, and nothing reports an error.
+#
+# So the sysroot is resolved once, here, from which side of the chroot
+# boundary we are on. KRYPTIK_DESTDIR is the DESTDIR= value - empty inside the
+# chroot, which is what "install into the live root" means to every build
+# system there is.
+# ---------------------------------------------------------------------------
+
+KRYPTIK_CHROOT_MARKER="/etc/kryptik/inside-chroot"
+
+kryptik_in_chroot() { [[ -f "$KRYPTIK_CHROOT_MARKER" ]]; }
+
+# shellcheck disable=SC2034  # KRYPTIK_DESTDIR is consumed by stage 05
+if kryptik_in_chroot; then
+    KRYPTIK_CHROOT=1
+    KRYPTIK_SYSROOT="/"
+    KRYPTIK_DESTDIR=""
+else
+    KRYPTIK_CHROOT=0
+    KRYPTIK_SYSROOT="${KRYPTIK_WORK}/sysroot"
+    KRYPTIK_DESTDIR="${KRYPTIK_SYSROOT}"
+fi
+
+# Stages that only make sense on one side of the boundary say so.
+require_outside_chroot() {
+    [[ "$KRYPTIK_CHROOT" -eq 0 ]] || die \
+"${1:-this stage} populates the sysroot and must run OUTSIDE the chroot.
+Inside the chroot the sysroot is / and there is nothing left to cross-build."
+}
+
+require_inside_chroot() {
+    [[ "$KRYPTIK_CHROOT" -eq 1 ]] && return 0
+    [[ "${KRYPTIK_ALLOW_UNCHROOTED:-0}" == "1" ]] && {
+        warn "${1:-this stage} running outside the chroot (KRYPTIK_ALLOW_UNCHROOTED=1)"
+        return 0
+    }
+    die \
+"${1:-this stage} must run INSIDE the chroot.
+
+  make ${2:-system}
+
+mounts the chroot, runs this stage in it and unmounts again, escalating only
+for the mount and the chroot call themselves. Set KRYPTIK_ALLOW_UNCHROOTED=1
+only if you know exactly why."
+}
+
 require_linux() {
     [[ "$(uname -s)" == "Linux" ]] || die \
 "Kryptik must be built on Linux. Detected: $(uname -s).
 On Windows, use WSL2:  wsl --install -d Debian"
 }
 
-# Refuse to build as root. A stray 'rm -rf \$LFS/' as root removes your host.
+# Refuse to build as root. A stray 'rm -rf $LFS/' as root removes your host.
 refuse_root() {
     [[ "${EUID}" -ne 0 ]] || die \
 "Do not run the Kryptik build as root.
@@ -70,11 +172,290 @@ validate_hardening_exceptions() {
     [[ "$n" -eq 0 ]] || die "${n} undocumented hardening exception(s). See docs/hardening.md."
 }
 
-have() { command -v "$1" >/dev/null 2>&1; }
+# ---------------------------------------------------------------------------
+# Build stamps
+#
+# A stamp used to be an empty file meaning "this step ran once". That is not
+# enough to resume a build safely, for two separate reasons.
+#
+#   1. It cannot distinguish a completed step from one whose INPUTS have since
+#      moved. Edit a recipe, bump a version, change a hardening flag - the
+#      stamp still says "built", and the sysroot quietly contains something
+#      nobody asked for.
+#
+#   2. Stamps written before tools/test-step-errexit.sh caught the errexit bug
+#      came from a step() that recorded FAILED builds as successful. An empty
+#      file from that harness is not weak evidence of a good build; it is no
+#      evidence at all.
+#
+# So a stamp now carries a fingerprint of what the step was built from, and a
+# stamp whose fingerprint does not match current inputs is REFUSED rather than
+# trusted. The refusal is deliberately conservative: rebuilding one step in the
+# middle of an otherwise finished sysroot produces a tree built from two
+# different configurations, which is worse than stopping and saying so.
+#
+#   KRYPTIK_STALE=refuse    (default) stop and explain
+#   KRYPTIK_STALE=rebuild   rebuild the affected steps in place
+#
+# Fingerprint-less stamps are ARCHIVED under .stamps/legacy/ rather than
+# deleted - evidence of what an earlier run did is preserved, it is just not
+# trusted.
+# ---------------------------------------------------------------------------
 
-sha256_of() {
-    if have sha256sum; then sha256sum "$1" | cut -d' ' -f1
-    elif have shasum;   then shasum -a 256 "$1" | cut -d' ' -f1
-    else die "no sha256sum or shasum available"
+# Bump when the set of fingerprint inputs changes.
+KRYPTIK_STAMP_FORMAT=2
+
+STAMP_PREFIX=""
+STAGE_FILE=""
+STAMP_CC=""
+
+# Declared by each stage before its first step() call:
+#
+#   stage_contract <this-file> <stamp-prefix> <compiler>
+#
+# The compiler is the one the STAGE DRIVES, which is not always the
+# obvious one: stage 01 builds the cross toolchain with the HOST gcc, so
+# the host gcc is what its stamps are fingerprinted against - the cross
+# compiler does not exist until halfway through that stage, and naming it
+# would invalidate every early stamp the moment it appeared.
+stage_contract() {
+    STAGE_FILE="${1:?stage_contract needs the stage file}"
+    STAMP_PREFIX="${2-}"
+    STAMP_CC="${3:?stage_contract needs the compiler this stage drives}"
+}
+
+# Accumulated by step(): the ordered names of every step declared so far in
+# this stage. Reordering or inserting a package invalidates everything after
+# it, which is the dependency edge that actually matters in a linear build.
+STAMP_DEPS=""
+
+_hash_file() {
+    local f="${1:-}"
+    if [[ -n "$f" && -f "$f" ]]; then sha256_of "$f"; else printf 'absent'; fi
+}
+
+# The compiler a stage actually drives. Stage 01 builds the cross toolchain
+# with the HOST gcc, so that is its compiler; stage 02 drives the cross gcc;
+# stages 04 and 05 drive the native target gcc inside the chroot. Getting this
+# wrong in either direction makes stamps churn on every run or never at all.
+stamp_compiler_id() {
+    local cc="${STAMP_CC:-${CC:-gcc}}"
+    if have "$cc"; then
+        printf '%s %s' \
+            "$("$cc" -dumpmachine 2>/dev/null || echo unknown)" \
+            "$("$cc" --version 2>/dev/null | head -1 || echo unknown)"
+    else
+        printf 'absent:%s' "$cc"
+    fi
+}
+
+# What a single step was built from.
+#
+# Deliberately NOT the whole stage file. Hashing that meant a one-line fix to
+# one package's recipe invalidated all fifty-eight stamps in stage 04 - which
+# is conservative to the point of being unusable, and is the pressure that
+# makes people delete the check rather than answer it.
+#
+# So: the recipe function's own text, the arguments it was called with, the
+# content of any tarball or patch those arguments name, and the values of any
+# V_* version variables the recipe interpolates (s_glibc names no tarball in
+# its arguments - it builds the name from ${V_GLIBC} inside the function, and a
+# version bump has to invalidate it all the same).
+recipe_fingerprint() {
+    local fn="${1:-}"; shift || true
+    local body
+    if declare -F "$fn" >/dev/null 2>&1; then
+        body="$(declare -f "$fn")"
+    else
+        body="external:${fn}"
+    fi
+    {
+        printf '%s\n' "$body"
+        printf 'args:'; printf ' %q' "$@"; printf '\n'
+
+        local a
+        for a in "$@"; do
+            case "$a" in
+                *.tar.*|*.tgz|*.patch)
+                    printf 'src:%s=%s\n' "$a" "$(_hash_file "${KRYPTIK_SOURCES}/${a}")"
+                    ;;
+            esac
+        done
+
+        local v
+        while IFS= read -r v; do
+            [[ -z "$v" ]] && continue
+            printf 'ver:%s=%s\n' "$v" "${!v-unset}"
+        # `|| true`: a recipe with no V_* variables is normal, and grep
+        # exits 1 when it matches nothing. Without this the ERR trap fires
+        # inside the process substitution and prints a failure line for a
+        # step that is about to succeed.
+        done < <(printf '%s
+%s
+' "$body" "$*" \
+                 | grep -oE 'V_[A-Z0-9_]+' | sort -u || true)
+    } | sha256_of_stdin
+}
+
+# The full fingerprint: the step's own inputs, plus the things that legitimately
+# affect every step in the build.
+#
+# versions.env and hardening.env are NOT hashed wholesale. Their effect is
+# already here, precisely: a version reaches a step through a tarball name or a
+# V_* value, and a hardening flag reaches it through CFLAGS/LDFLAGS below.
+# Hashing the files instead would invalidate every stamp in the build whenever
+# any unrelated line in them moved.
+stamp_fingerprint() {
+    local name="$1"; shift
+    {
+        printf 'format=%s\n'   "$KRYPTIK_STAMP_FORMAT"
+        printf 'stage=%s\n'    "$(basename "${STAGE_FILE:-unknown}")"
+        printf 'step=%s\n'     "$name"
+        printf 'recipe=%s\n'   "$(recipe_fingerprint "$@")"
+        printf 'common=%s\n'   "$(_hash_file "${KRYPTIK_LIB:-}")"
+        printf 'cc=%s\n'       "$(stamp_compiler_id)"
+        printf 'cflags=%s\n'   "${CFLAGS:-}"
+        printf 'cxxflags=%s\n' "${CXXFLAGS:-}"
+        printf 'ldflags=%s\n'  "${LDFLAGS:-}"
+        printf 'deps=%s\n'     "${STAMP_DEPS}"
+    } | sha256_of_stdin
+}
+
+_stamp_read() {
+    [[ -f "$1" ]] || { printf ''; return 0; }
+    awk '$1 == "fingerprint:" { print $2; exit }' "$1"
+}
+
+_stamp_write() {
+    local stamp="$1" name="$2" fp="$3" secs="$4" logfile="$5"
+    local tmp="${stamp}.tmp.$$"
+    {
+        printf '# kryptik build stamp v%s\n' "$KRYPTIK_STAMP_FORMAT"
+        printf 'fingerprint: %s\n' "$fp"
+        printf 'step: %s\n' "$name"
+        printf 'stage: %s\n' "$(basename "${STAGE_FILE:-unknown}")"
+        printf 'completed: %s\n' "$(date -Iseconds)"
+        printf 'duration_s: %s\n' "$secs"
+        printf 'log: %s\n' "$logfile"
+        printf 'cc: %s\n' "$(stamp_compiler_id)"
+    } > "$tmp"
+    mv -f "$tmp" "$stamp"
+}
+
+_stamp_stale() {
+    local name="$1" stamp="$2" got="$3"
+
+    if [[ -z "$got" ]]; then
+        # Fingerprint-less: preserve the evidence, do not trust it.
+        local archive="${STAMPS}/legacy"
+        mkdir -p "$archive"
+        mv -f "$stamp" "${archive}/$(basename "$stamp")"
+        warn "${name}: stamp carries no fingerprint - it predates this harness,"
+        warn "${name}: which means it was written by the step() that recorded"
+        warn "${name}: FAILED builds as successful. It proves nothing."
+        warn "${name}: archived to ${archive}/ and rebuilding."
+        return 0
+    fi
+
+    local reason="records a different fingerprint than the current inputs.
+One of: the recipe, build/lib/common.sh, versions.env, the hardening flags,
+sources.lock, the compiler in use, or an earlier step in this stage has
+changed since ${name} was built."
+
+    case "${KRYPTIK_STALE:-refuse}" in
+        rebuild)
+            warn "${name}: stamp ${reason}"
+            warn "${name}: KRYPTIK_STALE=rebuild - rebuilding this step."
+            rm -f "$stamp"
+            return 0
+            ;;
+        *)
+            err "${name}: stamp ${reason}"
+            die "Refusing to resume onto changed inputs.
+
+A stamped step whose inputs moved leaves a sysroot built from two different
+configurations, and nothing downstream can tell. Choose deliberately:
+
+  KRYPTIK_STALE=rebuild <command>   rebuild only the affected steps
+  make reset-stamps                 archive every stamp and start clean
+                                    (archives under .stamps/legacy, never
+                                     deletes)
+
+Stamp: ${stamp}"
+            ;;
+    esac
+}
+
+# The step runner.
+#
+# ONE implementation, used by every stage. Four near-identical copies is how
+# the errexit bug below shipped twice in two different disguises: a fix landed
+# in one copy and not the others, and the regression test had to re-derive the
+# code it was testing from each file in turn.
+#
+# Stages provide: STAMPS, LOGS, STAMP_PREFIX, STAGE_FILE, and optionally REDO,
+# a set_flags_for() hook (stage 04's per-package hardening) and a
+# step_failure_hint() hook.
+step() {
+    local name="$1"; shift
+    local stamp="${STAMPS}/${STAMP_PREFIX}${name}"
+    local want; want="$(stamp_fingerprint "$name" "$@")"
+
+    if [[ "${REDO:-}" == "$name" ]]; then
+        warn "forcing rebuild of ${name}"
+        rm -f "$stamp"
+    fi
+
+    if [[ -f "$stamp" ]]; then
+        local got; got="$(_stamp_read "$stamp")"
+        if [[ "$got" == "$want" ]]; then
+            dim "  skip ${name} (already built, inputs unchanged)"
+            STAMP_DEPS="${STAMP_DEPS}${name};"
+            return 0
+        fi
+        # Dies unless KRYPTIK_STALE=rebuild, or the stamp was fingerprint-less.
+        _stamp_stale "$name" "$stamp" "$got"
+    fi
+
+    log "${name}"
+
+    # Stage 04 narrows the hardening flags per package; the fingerprint above
+    # was computed before that happened, so recompute once the flags are set.
+    if declare -F set_flags_for >/dev/null; then
+        set_flags_for "$name"
+        want="$(stamp_fingerprint "$name" "$@")"
+    fi
+
+    local logfile="${LOGS}/${STAMP_PREFIX}${name}.log"
+    local start=$SECONDS
+
+    # Capture the subshell's status WITHOUT putting it in a condition.
+    #
+    # `( set -e; "$@" ) || rc=$?` looks like it fixes this and does not: the
+    # trailing || still suppresses errexit inside the subshell, even though the
+    # subshell sets it explicitly. Verified - a recipe of `false` followed by a
+    # succeeding command runs to completion and returns 0.
+    #
+    # `if ! ( ... ); then` is broken the same way. Only disabling errexit
+    # around a bare subshell, then reading $?, actually works.
+    #
+    # tools/test-step-errexit.sh is the regression test for this. It has caught
+    # the bug twice now: once as `if "$@"; then`, once as the || form above.
+    local rc=0
+    set +e
+    ( set -Eeuo pipefail; "$@" ) > "$logfile" 2>&1
+    rc=$?
+    set -e
+
+    STAMP_DEPS="${STAMP_DEPS}${name};"
+
+    if [[ "$rc" -eq 0 ]]; then
+        _stamp_write "$stamp" "$name" "$want" "$(( SECONDS - start ))" "$logfile"
+        ok "${name} ($(( SECONDS - start ))s)"
+    else
+        err "${name} failed. Last ${KRYPTIK_FAIL_TAIL:-30} lines of ${logfile}:"
+        tail -"${KRYPTIK_FAIL_TAIL:-30}" "$logfile" >&2
+        if declare -F step_failure_hint >/dev/null; then step_failure_hint "$name"; fi
+        die "$(basename "${STAGE_FILE:-stage}") aborted at ${name}"
     fi
 }
