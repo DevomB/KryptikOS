@@ -217,6 +217,8 @@ s_config() {
                CONFIG_NET_NS \
                CONFIG_DM_VERITY \
                CONFIG_DM_CRYPT \
+               CONFIG_CRYPTO_XTS \
+               CONFIG_FS_ENCRYPTION \
                CONFIG_MODULE_SIG_FORCE \
                CONFIG_SECURITY_LOCKDOWN_LSM \
                CONFIG_INIT_ON_ALLOC_DEFAULT_ON \
