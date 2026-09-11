@@ -10,6 +10,7 @@
 //! stubbed with explicit errors rather than silent no-ops - a compartment
 //! manager that pretends to isolate is worse than one that refuses to start.
 
+mod caps;
 mod cgroup;
 mod isolate;
 mod landlock;
