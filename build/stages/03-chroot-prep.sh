@@ -61,7 +61,7 @@ the only stage that does - stages 01 and 02 build unprivileged, and 04 and 05
 run as root only INSIDE the chroot, where root owns nothing outside the
 sysroot.
 
-  sudo $0 ${*:-$ACTION}"
+  sudo $0 ${ACTION}"
 }
 
 # Checked lazily: `status` and `guard-unmounted` must work on a half-built or

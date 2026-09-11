@@ -59,10 +59,8 @@ export LFS_TGT
 KRYPTIK_JOBS="${KRYPTIK_JOBS:-$(nproc)}"
 export MAKEFLAGS="-j${KRYPTIK_JOBS}"
 
-# Contract for the shared step() in build/lib/common.sh.
-STAGE_FILE="${BASH_SOURCE[0]}"
-STAMP_PREFIX="kernel-"
-STAMP_CC="gcc"
+# Stage 05 runs inside the chroot and drives the native target compiler.
+stage_contract "${BASH_SOURCE[0]}" "kernel-" gcc
 
 STAMPS="${KRYPTIK_WORK}/.stamps"
 LOGS="${KRYPTIK_WORK}/logs"
@@ -79,6 +77,7 @@ FRAG_BASE="${CONFIG_DIR}/hardening.fragment"
 FRAG_HARDENED="${CONFIG_DIR}/hardened.fragment"
 
 REDO=""
+# shellcheck disable=SC2034  # consumed by step() in common.sh
 [[ "${1:-}" == "--redo" ]] && REDO="${2:?--redo needs a step name}"
 
 mkdir -p "$STAMPS" "$LOGS" "$BUILDDIR"

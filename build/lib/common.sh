@@ -100,6 +100,7 @@ KRYPTIK_CHROOT_MARKER="/etc/kryptik/inside-chroot"
 
 kryptik_in_chroot() { [[ -f "$KRYPTIK_CHROOT_MARKER" ]]; }
 
+# shellcheck disable=SC2034  # KRYPTIK_DESTDIR is consumed by stage 05
 if kryptik_in_chroot; then
     KRYPTIK_CHROOT=1
     KRYPTIK_SYSROOT="/"
@@ -204,10 +205,24 @@ validate_hardening_exceptions() {
 # Bump when the set of fingerprint inputs changes.
 KRYPTIK_STAMP_FORMAT=2
 
-# Set by each stage before its first step() call.
-STAMP_PREFIX="${STAMP_PREFIX:-}"
-STAGE_FILE="${STAGE_FILE:-}"
-STAMP_CC="${STAMP_CC:-}"
+STAMP_PREFIX=""
+STAGE_FILE=""
+STAMP_CC=""
+
+# Declared by each stage before its first step() call:
+#
+#   stage_contract <this-file> <stamp-prefix> <compiler>
+#
+# The compiler is the one the STAGE DRIVES, which is not always the
+# obvious one: stage 01 builds the cross toolchain with the HOST gcc, so
+# the host gcc is what its stamps are fingerprinted against - the cross
+# compiler does not exist until halfway through that stage, and naming it
+# would invalidate every early stamp the moment it appeared.
+stage_contract() {
+    STAGE_FILE="${1:?stage_contract needs the stage file}"
+    STAMP_PREFIX="${2-}"
+    STAMP_CC="${3:?stage_contract needs the compiler this stage drives}"
+}
 
 # Accumulated by step(): the ordered names of every step declared so far in
 # this stage. Reordering or inserting a package invalidates everything after
@@ -234,23 +249,68 @@ stamp_compiler_id() {
     fi
 }
 
-stamp_fingerprint() {
-    local name="$1"
+# What a single step was built from.
+#
+# Deliberately NOT the whole stage file. Hashing that meant a one-line fix to
+# one package's recipe invalidated all fifty-eight stamps in stage 04 - which
+# is conservative to the point of being unusable, and is the pressure that
+# makes people delete the check rather than answer it.
+#
+# So: the recipe function's own text, the arguments it was called with, the
+# content of any tarball or patch those arguments name, and the values of any
+# V_* version variables the recipe interpolates (s_glibc names no tarball in
+# its arguments - it builds the name from ${V_GLIBC} inside the function, and a
+# version bump has to invalidate it all the same).
+recipe_fingerprint() {
+    local fn="${1:-}"; shift || true
+    local body
+    if declare -F "$fn" >/dev/null 2>&1; then
+        body="$(declare -f "$fn")"
+    else
+        body="external:${fn}"
+    fi
     {
-        printf 'format=%s\n'     "$KRYPTIK_STAMP_FORMAT"
-        printf 'stage=%s\n'      "$(basename "${STAGE_FILE:-unknown}")"
-        printf 'step=%s\n'       "$name"
-        printf 'recipe=%s\n'     "$(_hash_file "${STAGE_FILE:-}")"
-        printf 'common=%s\n'     "$(_hash_file "${KRYPTIK_LIB:-}")"
-        printf 'versions=%s\n'   "$(_hash_file "${KRYPTIK_ROOT}/build/config/versions.env")"
-        printf 'hardening=%s\n'  "$(_hash_file "${KRYPTIK_ROOT}/build/config/hardening.env")"
-        printf 'exceptions=%s\n' "$(_hash_file "${KRYPTIK_ROOT}/build/config/hardening-exceptions.txt")"
-        printf 'sources=%s\n'    "$(_hash_file "${KRYPTIK_LOCK:-}")"
-        printf 'cc=%s\n'         "$(stamp_compiler_id)"
-        printf 'cflags=%s\n'     "${CFLAGS:-}"
-        printf 'cxxflags=%s\n'   "${CXXFLAGS:-}"
-        printf 'ldflags=%s\n'    "${LDFLAGS:-}"
-        printf 'deps=%s\n'       "${STAMP_DEPS}"
+        printf '%s\n' "$body"
+        printf 'args:'; printf ' %q' "$@"; printf '\n'
+
+        local a
+        for a in "$@"; do
+            case "$a" in
+                *.tar.*|*.tgz|*.patch)
+                    printf 'src:%s=%s\n' "$a" "$(_hash_file "${KRYPTIK_SOURCES}/${a}")"
+                    ;;
+            esac
+        done
+
+        local v
+        while IFS= read -r v; do
+            [[ -z "$v" ]] && continue
+            printf 'ver:%s=%s\n' "$v" "${!v-unset}"
+        done < <(printf '%s\n%s\n' "$body" "$*" | grep -oE 'V_[A-Z0-9_]+' | sort -u)
+    } | sha256_of_stdin
+}
+
+# The full fingerprint: the step's own inputs, plus the things that legitimately
+# affect every step in the build.
+#
+# versions.env and hardening.env are NOT hashed wholesale. Their effect is
+# already here, precisely: a version reaches a step through a tarball name or a
+# V_* value, and a hardening flag reaches it through CFLAGS/LDFLAGS below.
+# Hashing the files instead would invalidate every stamp in the build whenever
+# any unrelated line in them moved.
+stamp_fingerprint() {
+    local name="$1"; shift
+    {
+        printf 'format=%s\n'   "$KRYPTIK_STAMP_FORMAT"
+        printf 'stage=%s\n'    "$(basename "${STAGE_FILE:-unknown}")"
+        printf 'step=%s\n'     "$name"
+        printf 'recipe=%s\n'   "$(recipe_fingerprint "$@")"
+        printf 'common=%s\n'   "$(_hash_file "${KRYPTIK_LIB:-}")"
+        printf 'cc=%s\n'       "$(stamp_compiler_id)"
+        printf 'cflags=%s\n'   "${CFLAGS:-}"
+        printf 'cxxflags=%s\n' "${CXXFLAGS:-}"
+        printf 'ldflags=%s\n'  "${LDFLAGS:-}"
+        printf 'deps=%s\n'     "${STAMP_DEPS}"
     } | sha256_of_stdin
 }
 
@@ -332,7 +392,7 @@ Stamp: ${stamp}"
 step() {
     local name="$1"; shift
     local stamp="${STAMPS}/${STAMP_PREFIX}${name}"
-    local want; want="$(stamp_fingerprint "$name")"
+    local want; want="$(stamp_fingerprint "$name" "$@")"
 
     if [[ "${REDO:-}" == "$name" ]]; then
         warn "forcing rebuild of ${name}"
@@ -356,7 +416,7 @@ step() {
     # was computed before that happened, so recompute once the flags are set.
     if declare -F set_flags_for >/dev/null; then
         set_flags_for "$name"
-        want="$(stamp_fingerprint "$name")"
+        want="$(stamp_fingerprint "$name" "$@")"
     fi
 
     local logfile="${LOGS}/${STAMP_PREFIX}${name}.log"
