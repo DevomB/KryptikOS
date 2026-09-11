@@ -29,6 +29,7 @@ use std::io;
 use std::os::unix::io::RawFd;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
+use crate::caps;
 use crate::cgroup;
 use crate::isolate;
 use crate::landlock;
@@ -701,6 +702,28 @@ fn zone_init(zone: &Zone, rootfs: &str, argv: &[String], flags: libc::c_int) -> 
     //     step above, because mount() and friends are not in the allowlist -
     //     installing the filter earlier would kill the zone during its own
     //     construction.
+    // Drop the capability bounding set, keeping only CAP_NET_BIND_SERVICE.
+    //
+    // AFTER every privileged step - the mounts and pivot_root above need
+    // CAP_SYS_ADMIN - and BEFORE exec, so the payload can never acquire what
+    // this removes, including through a file capability on a binary it can
+    // reach.
+    //
+    // Inside its own user namespace the zone's root has held a full set. Every
+    // capability-gated syscall that reaches outside the namespace is already
+    // denied by the filter installed below, so the set has been inert - but it
+    // stops being inert the moment a zone owns one end of a veth, where
+    // CAP_NET_ADMIN and CAP_NET_RAW let a compromised zone re-address its link
+    // and open a raw socket on the segment it shares with the bridge. The
+    // security review calls this a precondition for that milestone rather than
+    // a follow-up to it.
+    //
+    // Fatal on failure: a zone that starts with a fuller set than the operator
+    // asked for is the failure this project exists to avoid.
+    if let Err(e) = caps::drop_bounding_set() {
+        bail!("could not drop the capability bounding set: {e}");
+    }
+
     if let Err(e) = seccomp::confine_zone() {
         bail!("seccomp: {e}");
     }
@@ -838,6 +861,7 @@ pub fn explain(zone: &Zone, rootfs: &str) -> String {
          /dev       {} + shm, pts\n\
          landlock   ABI >= {}, rules:\n           {}\n\
          env        {} + passthrough of {}\n\
+         caps       bounding set dropped to CAP_NET_BIND_SERVICE only\n\
          seccomp    default-deny, {} syscalls allowed, argument rules on {:?}",
         zone.name,
         ns.join(", "),
