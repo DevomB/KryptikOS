@@ -261,6 +261,21 @@ jobs:
           cd compartments/kryptikd && cargo build --quiet
           cd ../.. && ./compartments/tests/launcher.sh
 
+      - name: The user-facing command
+        run: |
+          # `kryptik` is what a person types; kryptikd is what it calls. A
+          # wrapper's whole job is convenience, and convenience is how a safety
+          # property gets lost - so this suite mostly checks that it did not
+          # become convenient in the wrong place: it must not start a zone that
+          # claims encryption this build cannot deliver, must not execute its
+          # own config file, and must not offer commands for things that do not
+          # work.
+          #
+          # Named separately from the launcher suite rather than folded into
+          # it: these are different claims about different programs, and a
+          # single green tick over both would hide which one failed.
+          ./compartments/tests/cli.sh
+
   kernel:
     name: Kernel currency
     runs-on: ubuntu-latest
