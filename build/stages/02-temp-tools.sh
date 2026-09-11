@@ -18,14 +18,23 @@ load_config
 # at stage 04. See docs/hardening.md.
 unset CFLAGS CXXFLAGS LDFLAGS CPPFLAGS LD_LIBRARY_PATH
 
-export LFS="${KRYPTIK_WORK}/sysroot"
+require_outside_chroot "stage 02"
+
+export LFS="${KRYPTIK_SYSROOT}"
 LFS_TGT="$(uname -m)-kryptik-linux-gnu"
 export LFS_TGT
 export PATH="${LFS}/tools/bin:${PATH}"
 export CONFIG_SITE="${LFS}/usr/share/config.site"
-KRYPTIK_JOBS="${KRYPTIK_JOBS:-$(nproc)}"
+KRYPTIK_JOBS="${KRYPTIK_JOBS:-$(kryptik_default_jobs)}"
 export MAKEFLAGS="-j${KRYPTIK_JOBS}"
 umask 022
+
+# Contract for the shared step() in build/lib/common.sh. Stage 02 drives
+# the cross compiler stage 01 built, so that is what its stamps are
+# fingerprinted against.
+STAGE_FILE="${BASH_SOURCE[0]}"
+STAMP_PREFIX="tt-"
+STAMP_CC="${LFS_TGT}-gcc"
 
 STAMPS="${KRYPTIK_WORK}/.stamps"
 LOGS="${KRYPTIK_WORK}/logs"
@@ -36,45 +45,6 @@ REDO=""
 
 mkdir -p "$STAMPS" "$LOGS" "$BUILDDIR"
 
-step() {
-    local name="$1"; shift
-    if [[ "$REDO" == "$name" ]]; then
-        warn "forcing rebuild of ${name}"
-        rm -f "${STAMPS:?}/tt-${name}"
-    fi
-    if [[ -f "${STAMPS}/tt-${name}" ]]; then
-        dim "  skip ${name} (already built)"
-        return 0
-    fi
-    log "${name}"
-    local logfile="${LOGS}/tt-${name}.log"
-    local start=$SECONDS
-    # Capture the subshell's status WITHOUT putting it in a condition.
-    #
-    # `( set -e; "$@" ) || rc=$?` looks like it fixes this and does not: the
-    # trailing || still suppresses errexit inside the subshell, even though the
-    # subshell sets it explicitly. Verified - a recipe of `false` followed by a
-    # succeeding command runs to completion and returns 0.
-    #
-    # `if ! ( ... ); then` is broken the same way. Only disabling errexit
-    # around a bare subshell, then reading $?, actually works.
-    #
-    # tools/test-step-errexit.sh is the regression test for this. It has caught
-    # the bug twice now: once as `if "$@"; then`, once as the || form above.
-    local rc=0
-    set +e
-    ( set -Eeuo pipefail; "$@" ) > "$logfile" 2>&1
-    rc=$?
-    set -e
-    if [[ "$rc" -eq 0 ]]; then
-        touch "${STAMPS}/tt-${name}"
-        ok "${name} ($(( SECONDS - start ))s)"
-    else
-        err "${name} failed. Last 30 lines of ${logfile}:"
-        tail -30 "$logfile" >&2
-        die "stage 02 aborted at ${name}"
-    fi
-}
 
 unpack() {
     local tarball="$1" dirname="$2"
