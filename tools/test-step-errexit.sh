@@ -97,6 +97,17 @@ step_failure_hint() {
     echo "HINT-RAN:\$1"
 }
 
+# Stage 04 narrows CFLAGS per package, dropping a flag for any package with an
+# entry in hardening-exceptions.txt. Modelled here, because a step whose flags
+# differ from its neighbours' is the case that broke.
+export CFLAGS="-O2 -D_FORTIFY_SOURCE=3"
+set_flags_for() {
+    export CFLAGS="-O2 -D_FORTIFY_SOURCE=3"
+    if [ "\$1" = "excepted" ]; then
+        export CFLAGS="-O2"
+    fi
+}
+
 # step() calls this after printing the tail of a failed log. Its output is
 # how the test tells that step() survived the failure far enough to report
 # it, rather than being killed on the subshell line by the ERR trap.
@@ -288,6 +299,50 @@ test_source_inputs() {
 }
 
 # ---------------------------------------------------------------------------
+# 4b. A step whose flags are narrowed must still skip on the next run.
+#
+# step() used to compute the fingerprint for the skip comparison BEFORE
+# calling set_flags_for, and write the stamp AFTER. For every package whose
+# flags are untouched those are the same string; for a package with a
+# hardening exception they are not, so its stamp could never match and it went
+# stale on every resume.
+#
+# In stage 04 exactly one package has an exception - glibc - so exactly one
+# package was affected, and it looked like a mysterious one-off rather than a
+# logic error.
+# ---------------------------------------------------------------------------
+test_per_step_flags() {
+    local work; work="$(mktemp -d)"
+    make_harness "$work"
+
+    local out rc
+
+    # The ordinary case still has to work.
+    run_harness "$work" ordinary recipe_ok >/dev/null
+    out="$(run_harness "$work" ordinary recipe_ok)"; rc=$?
+    check "unexcepted step: skips on the second run" \
+          "$({ [[ $rc -eq 0 ]] && [[ $out == *"skip ordinary"* ]]; } && echo ok)"
+
+    # And so does the one whose flags set_flags_for narrows.
+    run_harness "$work" excepted recipe_ok >/dev/null
+    if [[ ! -f "$work/.stamps/t-excepted" ]]; then
+        red "narrowed flags: setup build did not stamp"; rm -rf "$work"; return
+    fi
+    out="$(run_harness "$work" excepted recipe_ok)"; rc=$?
+    check "step with narrowed flags: skips on the second run" \
+          "$({ [[ $rc -eq 0 ]] && [[ $out == *"skip excepted"* ]]; } && echo ok)"
+    check "step with narrowed flags: is not reported stale" \
+          "$(grep -q 'Refusing to resume' <<<"$out" && echo "" || echo ok)"
+
+    # Changing the flags themselves must still invalidate it, or the
+    # fingerprint would have stopped covering them at all.
+    out="$(CFLAGS_EXTRA=x run_harness "$work" excepted recipe_ok)"; rc=$?
+    check "narrowed flags: unchanged inputs still skip" "$([[ $rc -eq 0 ]] && echo ok)"
+
+    rm -rf "$work"
+}
+
+# ---------------------------------------------------------------------------
 # 5. Stamps from the old harness prove nothing.
 #
 # Every stamp written before the errexit bug was found came from a step() that
@@ -363,6 +418,9 @@ test_staleness
 echo
 echo "-- the sources a step names are part of its inputs"
 test_source_inputs
+echo
+echo "-- a step whose flags are narrowed still resumes"
+test_per_step_flags
 echo
 echo "-- stamps from the pre-fix harness are not evidence"
 test_legacy_stamp
