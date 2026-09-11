@@ -1324,17 +1324,56 @@ else
     zrun roomy -- /bin/sh -c "$PRO dd if=/dev/zero of=/dev/shm/blob bs=1M count=32 2>/dev/null && echo PROBE=wrote32M"
     probe "M4  positive control: 32M fits inside a 512M zone" "wrote32M"
 
-    zrun memcapped -- /bin/sh -c "$PRO dd if=/dev/zero of=/dev/shm/blob bs=1M count=256 2>/dev/null; echo PROBE=survived"
-    if [[ "$ZOUT" != *"$LAUNCHED"* ]]; then
+    # M5 reads the KERNEL's counter, not the exit code.
+    #
+    # The security review's Required 3: exit 137 alone proves nothing, because
+    # it is exactly what the suite's own `timeout -s KILL` would produce. The
+    # fact that distinguishes "the kernel killed this zone for exceeding
+    # memory.max" from "something killed this zone" is memory.events'
+    # `oom_kill` counter, and it has to be read from the host BEFORE the
+    # launcher removes the cgroup - so this polls, as the pids probe does.
+    MEM_OOM=""; MEM_GROUP=""; MEM_LEAF=""; MEM_RC=""
+    KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run memcapped "${ZARGS[@]}" -- \
+        /bin/sh -c "$PRO dd if=/dev/zero of=/dev/shm/blob bs=1M count=256 2>/dev/null; echo PROBE=survived" \
+        > "$WORK/mem.out" 2>&1 &
+    mempid=$!
+    BG_PIDS+=("$mempid")
+    MEM_LEAF="/sys/fs/cgroup/kryptik/memcapped.${mempid}"
+    i=0
+    while (( i < 300 )); do
+        if [[ -d "$MEM_LEAF" ]]; then
+            v="$(sed -n 's/^oom_kill //p' "$MEM_LEAF/memory.events" 2>/dev/null)"
+            g="$(sed -n 's/^oom_group_kill //p' "$MEM_LEAF/memory.events" 2>/dev/null)"
+            [[ -n "$v" ]] && MEM_OOM="$v"
+            [[ -n "$g" ]] && MEM_GROUP="$g"
+        elif [[ -n "$MEM_OOM" ]]; then
+            break
+        fi
+        if (( i < 200 )); then sleep 0.005; else sleep 0.1; fi
+        i=$((i+1))
+    done
+    wait "$mempid" 2>/dev/null
+    MEM_RC=$?
+    memout="$(cat "$WORK/mem.out" 2>/dev/null)"
+
+    if [[ "$memout" != *"$LAUNCHED"* ]]; then
         fail "M5  memory_max: the zone did not launch, so nothing is proven"
-    elif [[ "$ZOUT" == *"PROBE=survived"* ]]; then
+        info "output: $(printf '%s' "$memout" | tr '\n' '|' | cut -c1-200)"
+    elif [[ "$memout" == *"PROBE=survived"* ]]; then
         fail "M5  memory_max=48M did NOT hold: the zone wrote 256M and lived"
-    elif (( ZRC == 137 )); then
-        pass "M5  memory_max=48M held: the kernel killed the zone (137), it did not fail on its own"
-    elif (( ZRC != 0 )); then
-        pass "M5  memory_max=48M held: the zone died writing 256M (exit $ZRC)"
+    elif [[ -n "$MEM_OOM" ]] && (( MEM_OOM > 0 )); then
+        pass "M5  memory_max=48M held: the kernel OOM-killed the zone (memory.events oom_kill=$MEM_OOM, exit $MEM_RC)"
+        if [[ -n "$MEM_GROUP" ]] && (( MEM_GROUP > 0 )); then
+            pass "M5b memory.oom.group killed the WHOLE zone, not one process (oom_group_kill=$MEM_GROUP)"
+        else
+            info "M5b oom_group_kill not reported by this kernel; oom.group is still set"
+        fi
+    elif [[ -z "$MEM_OOM" ]]; then
+        fail "M5  memory_max: never read memory.events (leaf $MEM_LEAF); the OOM is unproven"
+        info "     exit was $MEM_RC, which on its own is also what a SIGKILL from the test would give"
     else
-        fail "M5  memory_max: the zone exited 0 without printing its sentinel"
+        fail "M5  memory_max=48M: the zone died (exit $MEM_RC) but the kernel recorded no OOM kill"
+        info "     so it was not the memory limit that stopped it"
     fi
 
     # --- the zone cannot reach its own cgroup -------------------------------
