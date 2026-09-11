@@ -192,6 +192,33 @@ pub fn parse(text: &str, source: &str) -> Result<Policy, PolicyError> {
 }
 
 impl Policy {
+    /// Rules that depend on which zone the file is for. A routed zone may
+    /// never keep CAP_NET_ADMIN or CAP_NET_RAW: with either it could
+    /// re-address its end of the veth, install a host route through the
+    /// bridge address (an L3 path around port isolation once the nic zone
+    /// forwards), or forge frames on the segment. Only the nic zone owns
+    /// interfaces; only it may keep those two.
+    pub fn check_for_zone(&self, zone: &crate::zone::Zone) -> Result<(), PolicyError> {
+        if zone.network != crate::zone::NetworkMode::Nic {
+            for (c, name) in self.keep_caps.iter().zip(&self.keep_cap_names) {
+                if *c == caps::cap_by_name("CAP_NET_ADMIN").unwrap()
+                    || *c == caps::cap_by_name("CAP_NET_RAW").unwrap()
+                {
+                    return Err(PolicyError::Line {
+                        path: self.source.clone(),
+                        line: 0,
+                        msg: format!(
+                            "{name} may be kept only by the zone that owns the NIC \
+                             (network.mode = \"nic\"); zone {:?} is {:?}",
+                            zone.name, zone.network
+                        ),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn is_empty(&self) -> bool {
         self.extra_syscalls.is_empty()
             && self.sockets == seccomp::SocketPolicy::default()
@@ -291,6 +318,28 @@ mod tests {
         let p = parse("allow-syscall read\nallow-socket AF_INET\nallow-netlink NETLINK_ROUTE\nkeep-capability CAP_NET_BIND_SERVICE\n", "t").unwrap();
         assert!(p.is_empty());
         assert_eq!(p.warnings.len(), 4, "{:?}", p.warnings);
+    }
+
+    #[test]
+    fn only_the_nic_zone_may_keep_the_network_capabilities() {
+        let z = |mode: &str| {
+            let bridge = if mode == "nic" { "bridge = \"kryptik0\"\n" } else { "" };
+            crate::zone::Zone::from_str(&format!(
+                "[zone]\nname = \"t\"\n[network]\nmode = \"{mode}\"\n{bridge}\
+                 [storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n[ui]\nborder_color = \"#123456\"\n"
+            ))
+            .unwrap()
+        };
+        for cap in ["CAP_NET_ADMIN", "CAP_NET_RAW"] {
+            let p = parse(&format!("keep-capability {cap}\n"), "t").unwrap();
+            assert!(p.check_for_zone(&z("nic")).is_ok(), "{cap} must be allowed for the nic zone");
+            let e = p.check_for_zone(&z("routed")).unwrap_err();
+            assert!(e.to_string().contains("owns the NIC"), "{cap}: {e}");
+            assert!(p.check_for_zone(&z("none")).is_err());
+        }
+        // Other keepable capabilities are not mode-restricted.
+        let p = parse("keep-capability CAP_SYS_NICE\n", "t").unwrap();
+        assert!(p.check_for_zone(&z("routed")).is_ok());
     }
 
     #[test]

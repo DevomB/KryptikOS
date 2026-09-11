@@ -387,7 +387,7 @@ pub fn reclaim(zone: &str) -> Result<(), RegistryError> {
             }
         }
     }
-    for f in ["launcher.pid", "init.pid", "cgroup", "started", "identity", "lock"] {
+    for f in ["launcher.pid", "init.pid", "cgroup", "started", "identity", "broker", "lock"] {
         let _ = fs::remove_file(dir.join(f));
     }
     fs::remove_dir(&dir).map_err(|e| io_err(&dir, e))
@@ -460,7 +460,7 @@ impl Handle {
 
 impl Drop for Handle {
     fn drop(&mut self) {
-        for f in ["launcher.pid", "init.pid", "cgroup", "started", "identity", "lock"] {
+        for f in ["launcher.pid", "init.pid", "cgroup", "started", "identity", "broker", "lock"] {
             let _ = fs::remove_file(self.dir.join(f));
         }
         let _ = fs::remove_dir(&self.dir);

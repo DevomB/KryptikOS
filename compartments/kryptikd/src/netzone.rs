@@ -84,7 +84,57 @@ fn up_lo() -> io::Result<()> {
 
 /// The nic zone: create the bridge in its namespace and move the physical
 /// interface into it. Called by the root parent with the zone's netns fd.
-pub fn plumb_nic_zone(zone: &Zone, zone_ns: i32) -> Result<(), NetError> {
+pub fn plumb_nic_zone(zone: &Zone, zone_ns: i32, zones_dir: &Path) -> Result<(), NetError> {
+    plumb_nic_zone_bridge(zone, zone_ns)?;
+    // Routed zones that are already running - started before this gateway,
+    // or stranded when a previous gateway died and took their peers with it
+    // - are attached now (Design 03 N8, reconnection). Each failure is
+    // reported and does not stop the others or the nic zone.
+    for (name, r) in replumb_routed_zones(zones_dir, zone_ns) {
+        match r {
+            Ok(()) => eprintln!("kryptikd: zone {name:?} reattached to the new nic zone"),
+            Err(e) => eprintln!("kryptikd: zone {name:?} could not be reattached: {e}"),
+        }
+    }
+    Ok(())
+}
+
+/// Attach every running routed zone (per the zone directory and the
+/// registry) to the nic zone whose namespace is `nic_ns`. Returns one result
+/// per zone attempted; an empty registry attempts nothing.
+///
+/// A routed zone keeps the resolv.conf it was started with: a zone that
+/// started before any gateway has none, and gets a path here but no
+/// resolver until it is restarted. Its root is sealed; kryptikd does not
+/// reach into a running zone to change its files.
+pub fn replumb_routed_zones(zones_dir: &Path, nic_ns: i32) -> Vec<(String, Result<(), NetError>)> {
+    let mut out = Vec::new();
+    for name in registry::names() {
+        let Ok(z) = Zone::from_file(&zones_dir.join(format!("{name}.toml"))) else { continue };
+        if z.network != NetworkMode::Routed {
+            continue;
+        }
+        let Ok(registry::State::Running { init: Some(st), .. }) = registry::state(&name) else { continue };
+        if !st.still_alive() {
+            continue;
+        }
+        let r = (|| {
+            let k = host_number(&z).ok_or_else(|| {
+                NetError::Refused("no [identity] uid_base to derive an address".into())
+            })?;
+            let zone_ns = netlink::open_netns_of(st.pid).map_err(|e| io("open the zone netns", e))?;
+            let r = attach_routed(&z.name, k, nic_ns, zone_ns);
+            unsafe { libc::close(zone_ns) };
+            r
+        })();
+        out.push((name, r));
+    }
+    out
+}
+
+/// The bridge half of the nic zone: create kryptik0 in its namespace and
+/// move the physical interface into it.
+fn plumb_nic_zone_bridge(zone: &Zone, zone_ns: i32) -> Result<(), NetError> {
     // A nic zone without `[network] nic` gets the bridge and no interface:
     // routed zones can attach and reach it, nothing reaches the world. Said
     // out loud rather than guessed - kryptikd never picks a NIC to move out
@@ -111,12 +161,30 @@ pub fn plumb_nic_zone(zone: &Zone, zone_ns: i32) -> Result<(), NetError> {
         netlink::add_addr4(BRIDGE, netlink::BRIDGE_V4, 24)?;
         netlink::add_addr6(BRIDGE, netlink::BRIDGE_V6, 64)?;
         netlink::set_up(BRIDGE)?;
+        // Forward between the bridge and the uplink. Without NAT this only
+        // reaches the world behind something that accepts any source address
+        // (QEMU user networking does); behind a real NIC the routed zones'
+        // addresses are not routable and NAT (nftables) is still required.
+        // Said in `plan` so nobody reads a VM result as more than it is.
+        //
+        // Forwarding also opens an L3 path between two routed zones through
+        // the bridge address itself, which the port isolation does not cover
+        // - but only for a zone that can install a host route, and a routed
+        // zone can never keep CAP_NET_ADMIN (policy::check_for_zone).
+        sysctl("/proc/sys/net/ipv4/ip_forward", "1")?;
+        sysctl("/proc/sys/net/ipv6/conf/all/forwarding", "1")?;
         match nic {
             Some(n) => netlink::set_up(n),
             None => Ok(()),
         }
     })
     .map_err(|e| io("configure the nic zone", e))
+}
+
+/// Write a network sysctl of the CURRENT network namespace (procfs resolves
+/// /proc/sys/net against the namespace of the process that opens it).
+fn sysctl(path: &str, value: &str) -> io::Result<()> {
+    std::fs::write(path, value).map_err(|e| io::Error::new(e.kind(), format!("{path} = {value}: {e}")))
 }
 
 /// A routed zone: a veth pair whose bridge end lives in the running net
@@ -128,23 +196,39 @@ pub fn plumb_routed_zone(zone: &Zone, zone_ns: i32, zones_dir: &Path) -> Result<
     })?;
     let net_pid = running_nic_zone_init(zones_dir)?;
     let net_ns = netlink::open_netns_of(net_pid).map_err(|e| io("open the nic zone's netns", e))?;
-    let port = port_name(&zone.name);
-    let r = netlink::with_netns(net_ns, || {
+    let r = attach_routed(&zone.name, k, net_ns, zone_ns);
+    unsafe { libc::close(net_ns) };
+    r
+}
+
+/// One routed zone onto the bridge: the pair is created from inside the nic
+/// zone's namespace with the peer landing directly in the routed zone as
+/// eth0; the port is enslaved, isolated and brought up; then the routed end
+/// is addressed from its host number with default routes to the bridge.
+fn attach_routed(name: &str, k: u8, nic_ns: i32, zone_ns: i32) -> Result<(), NetError> {
+    let port = port_name(name);
+    netlink::with_netns(nic_ns, || {
         netlink::create_veth(&port, "eth0", Some(zone_ns))?;
         netlink::set_master(&port, BRIDGE)?;
         netlink::set_port_isolated(&port, true)?;
         netlink::set_up(&port)
     })
-    .map_err(|e| io("attach the zone to the bridge", e));
-    unsafe { libc::close(net_ns) };
-    r?;
+    .map_err(|e| io("attach the zone to the bridge", e))?;
     netlink::with_netns(zone_ns, || {
         up_lo()?;
+        // No router advertisements are ever accepted in a routed zone: its
+        // addresses come from here and nowhere else (Design 03, IPv6).
+        let _ = sysctl("/proc/sys/net/ipv6/conf/eth0/accept_ra", "0");
         netlink::add_addr4("eth0", netlink::zone_v4(k), 24)?;
         netlink::add_addr6("eth0", netlink::zone_v6(k), 64)?;
         netlink::set_up("eth0")?;
         netlink::add_default_route4(netlink::BRIDGE_V4, "eth0")?;
-        netlink::add_default_route6(netlink::BRIDGE_V6, "eth0")
+        netlink::add_default_route6(netlink::BRIDGE_V6, "eth0")?;
+        // ping without CAP_NET_RAW: unprivileged ICMP echo sockets for every
+        // group. A routed zone cannot keep CAP_NET_RAW, so this is the only
+        // way it gets to ping, and it cannot forge anything with it.
+        let _ = sysctl("/proc/sys/net/ipv4/ping_group_range", "0 65534");
+        Ok(())
     })
     .map_err(|e| io("address the zone's eth0", e))
 }
@@ -187,7 +271,8 @@ pub fn plan(zone: &Zone, privileged: bool) -> String {
         (NetworkMode::Routed, true) => match host_number(zone) {
             Some(k) => format!(
                 "network    routed: eth0 = 10.19.0.{k}/24 fd19::{k:x}/64 via the nic zone's {BRIDGE}, \
-                 isolated port {}",
+                 isolated port {}; forwarded without NAT (reaches the world only behind a \
+                 gateway that accepts any source, e.g. QEMU user networking)",
                 port_name(&zone.name)
             ),
             None => "network    routed: needs [identity] uid_base to derive an address".into(),
@@ -250,7 +335,16 @@ mod tests {
     #[test]
     fn an_unknown_nic_is_refused_before_anything_moves() {
         // Needs no privilege: the check happens before any netlink call.
-        let e = plumb_nic_zone(&z("nic", None, Some("nosuchnic99")), -1).unwrap_err();
+        let dir = std::env::temp_dir();
+        let e = plumb_nic_zone(&z("nic", None, Some("nosuchnic99")), -1, &dir).unwrap_err();
         assert!(e.to_string().contains("not an interface"), "{e}");
+    }
+
+    #[test]
+    fn replumb_with_no_routed_zones_in_the_directory_attempts_nothing() {
+        let dir = std::env::temp_dir().join(format!("kryptik-rp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(replumb_routed_zones(&dir, -1).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

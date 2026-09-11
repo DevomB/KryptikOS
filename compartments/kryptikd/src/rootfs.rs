@@ -407,6 +407,7 @@ pub fn pivot_into(
     zone: &str,
     ephemeral: Option<&str>,
     resolver: Resolver,
+    broker: Option<&str>,
 ) -> Result<String, RootfsError> {
     let home = zone_home(zone);
 
@@ -518,6 +519,20 @@ pub fn pivot_into(
         Some("mode=1777"),
         "mount(tmp)",
     )?;
+
+    // --- the broker socket, at /run/kryptik/broker --------------------------
+    // The one thing under /run a zone sees: its own broker endpoint, a socket
+    // file bound in from the registry entry. connect(2) on a Unix socket path
+    // is not a Landlock filesystem access, and the file is owned by the zone
+    // identity with mode 0600, so the zone can reach it and nothing else can.
+    if let Some(sock) = broker {
+        let rk = mkdir("run/kryptik")?;
+        let target = format!("{rk}/{}", crate::broker::SOCKET_NAME);
+        // Read-only like every other bound file: connect(2) needs no write
+        // access to a socket inode (S_ISSOCK is exempt from the read-only
+        // check), and nothing else the zone could do to the file is wanted.
+        bind_ro_file(sock, &target)?;
+    }
 
     // --- the zone's own data, at /home/<zone> ------------------------------
     // Bound through the descriptor taken above, so it is the directory that
