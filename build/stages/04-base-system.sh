@@ -305,6 +305,75 @@ s_glibc() {
     fi
 }
 
+s_gdbm() {
+    # Provenance audited this pin and was explicit that it needs no extra
+    # flags: man-db's configure.ac tries the gdbm NATIVE interface first
+    # (gdbm.h plus gdbm_fetch in -lgdbm), so the ndbm compatibility layer that
+    # --enable-libgdbm-compat would add is not what man-db reaches for.
+    local src; src="$(unpack "gdbm-${V_GDBM}.tar.gz" "gdbm-${V_GDBM}")"
+    cd "$src"
+    ./configure --prefix=/usr --disable-static
+    make
+    make install
+    rm -fv /usr/lib/libgdbm.la
+
+    # "make install exited 0" and "this database can store and return a key"
+    # are different claims, and man-db depends on the second.
+    echo "--- gdbm round trip ---"
+    cat > /tmp/kryptik-gdbm-check.c <<'CEOF'
+#include <gdbm.h>
+#include <string.h>
+#include <stdio.h>
+int main(void)
+{
+    GDBM_FILE f = gdbm_open("/tmp/kryptik-gdbm-check.db", 0, GDBM_NEWDB, 0600, 0);
+    if (!f) { puts("gdbm_open failed"); return 1; }
+    datum k = { (char *) "kryptik", 7 }, v = { (char *) "works", 5 };
+    if (gdbm_store(f, k, v, GDBM_INSERT)) { puts("gdbm_store failed"); return 2; }
+    datum r = gdbm_fetch(f, k);
+    if (!r.dptr || r.dsize != 5 || memcmp(r.dptr, "works", 5)) { puts("fetch mismatch"); return 3; }
+    puts("gdbm stored and returned a key");
+    gdbm_close(f);
+    return 0;
+}
+CEOF
+    gcc -O0 -o /tmp/kryptik-gdbm-check /tmp/kryptik-gdbm-check.c -lgdbm || {
+        echo "FAIL: could not compile against the gdbm we just installed"; return 1; }
+    /tmp/kryptik-gdbm-check || { echo "FAIL: gdbm cannot round-trip a key"; return 1; }
+    rm -f /tmp/kryptik-gdbm-check /tmp/kryptik-gdbm-check.c /tmp/kryptik-gdbm-check.db
+}
+
+s_man_db() {
+    local src; src="$(unpack "man-db-${V_MANDB}.tar.xz" "man-db-${V_MANDB}")"
+    cd "$src"
+
+    # --disable-setuid: man-db would otherwise install man setuid to a man
+    # user so it can write a shared page cache. A setuid binary that parses
+    # untrusted files is not a trade Kryptik makes for faster man pages.
+    # The browser/vgrind/grap helpers are deliberately absent; naming paths to
+    # programs this system does not have would only bake in dead references.
+    ./configure --prefix=/usr                 --docdir="/usr/share/doc/man-db-${V_MANDB}"                 --sysconfdir=/etc                 --disable-setuid                 --enable-cache-owner=bin
+    make
+    make install
+
+    # The whole reason gdbm was pinned. If configure quietly fell back to
+    # another database interface then the pin bought nothing, and the failure
+    # would otherwise only show up the first time someone ran mandb.
+    echo "--- which database interface did man-db link? ---"
+    if readelf -dW /usr/bin/mandb 2>/dev/null | grep -q "libgdbm"; then
+        echo "  ok: mandb links libgdbm"
+    else
+        echo "FAIL: mandb does not link libgdbm."
+        echo "      configure fell back to a different database interface, which"
+        echo "      is exactly what pinning gdbm was meant to prevent."
+        readelf -dW /usr/bin/mandb 2>/dev/null | grep NEEDED | sed 's/^/      /'
+        return 1
+    fi
+    echo "--- man-db runs ---"
+    man --version
+    mandb --version
+}
+
 s_zlib() {
     local src; src="$(unpack "zlib-${V_ZLIB}.tar.gz" "zlib-${V_ZLIB}")"
     cd "$src"
@@ -811,8 +880,22 @@ EOF
 
 exec >/dev/console 2>&1
 
+# Say so on the console at every step. Three boots could not distinguish
+# "shutdownd never spawned this script" from "this script ran and hung", and
+# the difference is the whole diagnosis: shutdownd waits for stage 3 to exit
+# before it touches the hardware, so anything that blocks here looks exactly
+# like a shutdown daemon that ignored the request.
+echo "kryptik: rc.shutdown starting"
+
 if [ -d /run/service ] && command -v s6-rc >/dev/null 2>&1; then
-    s6-rc -v1 -bDa change || true
+    echo "kryptik: bringing services down"
+    # -t: a service that will not stop must not wedge the shutdown forever.
+    # Without a timeout the only way out is the hardware, which is the outcome
+    # this script exists to avoid.
+    s6-rc -v2 -t 20000 -bDa change || echo "kryptik: s6-rc change exited $?"
+    echo "kryptik: s6-rc returned"
+else
+    echo "kryptik: no service database to bring down"
 fi
 echo "kryptik: services stopped, handing back to shutdownd"
 EOF
@@ -1285,7 +1368,10 @@ declare -a PACKAGES=(
     # the kernel on a documentation tool would be the wrong trade - so it
     # is listed, unwired, and counted in the "base system is INCOMPLETE"
     # warning at the end of this stage.
-    "man-db"      ""
+    # gdbm before man-db: man-db's configure looks for the gdbm native
+    # interface first, and silently picks a different one if it is absent.
+    "gdbm"        "s_gdbm"
+    "man-db"      "s_man_db"
     "procps-ng"   "native_build procps-ng-${V_PROCPS}.tar.xz procps-ng-${V_PROCPS} --docdir=/usr/share/doc/procps-ng-${V_PROCPS} --disable-static --disable-kill"
     "e2fsprogs"   "s_e2fsprogs"
     "elfutils"    "s_elfutils"

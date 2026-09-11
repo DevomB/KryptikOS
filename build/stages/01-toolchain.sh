@@ -238,7 +238,17 @@ s_sanity_check() {
     echo "PASS: binaries link against the target loader."
 
     # Verifies --enable-default-pie actually took effect.
-    if readelf -h sanity | grep -q "DYN (Position-Independent"; then
+    #
+    # Read the header into a variable first. `readelf -h x | grep -q y` looks
+    # harmless and is not: grep -q exits the instant it matches, readelf takes
+    # SIGPIPE, and `set -o pipefail` makes the pipeline return 141 - so a
+    # SUCCESSFUL match reads as a failed condition and this branch reports a
+    # PIE binary as non-PIE. It happens to work here only because `readelf -h`
+    # writes little enough to finish first, which is a coincidence, not a
+    # design.
+    local hdr
+    hdr="$(readelf -h sanity 2>/dev/null || true)"
+    if [[ "$hdr" == *"DYN (Position-Independent"* ]]; then
         echo "PASS: default-PIE active"
     else
         echo "FAIL: binaries are not position-independent by default"

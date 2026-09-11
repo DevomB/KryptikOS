@@ -155,6 +155,33 @@ PY
 check "no dependency cycle" "$([[ -z "$cycle" ]] && echo ok)"
 [[ -n "$cycle" ]] && echo "        cycle: ${cycle}"
 
+# --- no service may hold a shutdown open ------------------------------------
+
+echo
+echo "-- every longrun bounds its own stop"
+# s6-svc -d sends the down signal and then waits. Forever, unless timeout-kill
+# says otherwise. getty-tty1 is the case that proved this matters: it runs
+# `agetty -n -l /usr/bin/bash`, which execs an INTERACTIVE bash, and an
+# interactive bash ignores SIGTERM by design. `s6-rc change` blocked on it
+# during every shutdown until rc.shutdown's own timeout fired.
+#
+# So: a down-signal the process will actually honour, and a hard bound after it.
+for d in "${SRC}"/*/; do
+    svc="$(basename "$d")"
+    [[ -f "${d}type" ]] || continue
+    [[ "$(cat "${d}type")" == "longrun" ]] || continue
+    if [[ -f "${d}timeout-kill" ]]; then
+        tk="$(cat "${d}timeout-kill")"
+        if [[ "$tk" =~ ^[0-9]+$ && "$tk" -gt 0 ]]; then
+            green "${svc}: timeout-kill is ${tk}ms"
+        else
+            red "${svc}: timeout-kill is '${tk}', which is not a positive number of ms"
+        fi
+    else
+        red "${svc}: longrun with no timeout-kill - it can block a shutdown forever"
+    fi
+done
+
 # --- what s6-rc-compile itself requires -------------------------------------
 
 echo
