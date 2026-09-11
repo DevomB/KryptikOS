@@ -161,6 +161,33 @@ Logs, all preserved:
 - per-step logs: `…/work/logs/<step>.log`
 - stamps: `…/work/.stamps/`
 
+### Hardening baseline, measured
+
+`make audit-artifacts` was run against the stage 01+02 sysroot as it stood, and
+the numbers are worth keeping because they are the *before* half of a
+measurement:
+
+```
+objects 450   executables 131   libraries 319
+with SSP 137  with FORTIFY 108
+NO-BIND-NOW 450   NO-CET 450   RPATH 14
+no object failed a hard check
+```
+
+Every object lacking BIND_NOW and CET is exactly right at this point: stages 01
+and 02 build the cross toolchain and temporary tools deliberately *without*
+hardening flags, because the compiler that implements them cannot be built with
+them. Stage 04 rebuilds this userland natively with the full set, so running the
+same audit afterwards should collapse both counts. If it does not, the flags are
+not reaching the packages and the ELF will say so.
+
+The result that matters now is the one that could have gone wrong: **no
+BUILD-RPATH**. All 14 RPATHs are `$ORIGIN` on glibc's own gconv modules, which
+is how glibc makes them find their libc. A cross build leaking `$LFS` into a
+RUNPATH is a classic failure and there is none here.
+
+Saved at `…/logs/audits/stage02-baseline.{txt,json}`.
+
 Two earlier runs were stopped on purpose and their logs kept:
 `build-1.20260911T004312.log` stopped because I edited stage files while bash
 was reading them, and `build-1.20260911T005405.log` because a bug in my own
@@ -333,6 +360,24 @@ committed mode, so every fresh clone starts with it disabled. CI's
 "Executable bits are recorded" step covers `build/stages/*.sh` and `tools/*.sh`
 and does not descend into `tools/git-hooks/`. Fix:
 `git update-index --chmod=+x tools/git-hooks/pre-commit` and extend the CI check.
+
+**9.5 CI does not run the new checks.** `.github/workflows/ci.yml` runs
+`tools/test-step-errexit.sh` and shellcheck. Three more suites now exist and
+each guards something that has already been got wrong once:
+
+```yaml
+- run: ./tools/test-hardening-flags.sh    # 27 checks
+- run: ./tools/test-artifact-hardening.sh # 18 checks, positive controls
+- run: ./tools/test-artifact-manifest.sh  # 25 checks
+```
+
+All three are self-contained: they build their own fixtures with the host
+compiler, need no sysroot, no network and no privilege, and run in seconds.
+`audit-artifacts` and `verify-manifest` need a built tree and do not belong in
+this workflow.
+
+While there: the "Executable bits are recorded" step should also cover
+`tools/git-hooks/*`, which is 9.3.
 
 **9.4 `docs/building.md` describes a build that no longer exists.** It says
 stages past `00-host-check` are not implemented and exit with a message. That
