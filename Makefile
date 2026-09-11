@@ -297,10 +297,18 @@ vm-image: $(VM_KRYPTIKD)
 	    --zones "$(ROOT)/compartments/zones" \
 	    $(if $(SYSROOT),--sysroot "$(SYSROOT)",)
 
+# VM_NIC=user gives the guest a NIC on QEMU's internal user-mode NAT. The
+# default is none, because a test VM that cannot reach anything is the right
+# default - but with a NIC the launcher suite's H1 positive control becomes a
+# real one: "the zone sees only lo" means nothing when the host sees only lo
+# too, and without a NIC that check reports NOT RUN in the VM, which is the one
+# place it runs as root.
+VM_NIC ?= none
+
 vm-boot: vm-image
 	@test -n "$(KERNEL)" || { echo "set KERNEL=<path to a bzImage>"; exit 1; }
 	@"$(ROOT)"/tools/vm/run-qemu.sh --kernel "$(KERNEL)" --initrd "$(VM_INITRD)" \
-	    --log "$(VM_LOG)" --mode smoke || true
+	    --log "$(VM_LOG)" --mode smoke --nic "$(VM_NIC)" || true
 	@"$(ROOT)"/tools/vm/boot-smoke.sh "$(VM_LOG)"
 
 test-harness:

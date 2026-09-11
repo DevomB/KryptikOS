@@ -29,6 +29,7 @@ MEM=3072
 CPUS=2
 QEMU="${QEMU:-qemu-system-x86_64}"
 EXTRA_APPEND=""
+NIC="none"
 
 usage() {
     cat <<'EOF'
@@ -42,6 +43,16 @@ usage: run-qemu.sh --kernel FILE --initrd FILE --log FILE [options]
   --mem MB        guest memory (default 3072; the tmpfs root needs room)
   --cpus N        guest cpus (default 2)
   --append STR    extra kernel command line arguments
+  --nic MODE      none (default) | user
+                  "user" gives the guest a virtio NIC on QEMU's built-in
+                  user-mode network: a NAT implemented inside the QEMU process,
+                  outbound only, with no inbound path and no bridge, tap device
+                  or capability required. It does NOT touch the host's NIC, ask
+                  for root, or create anything that outlives the process.
+                  It exists so the guest has a non-loopback interface for a
+                  zone's isolation to be measured AGAINST - without one, "the
+                  zone sees only lo" is not evidence, because the host sees
+                  only lo as well.
 
   QEMU=/path/to/qemu-system-x86_64 selects a specific binary.
   QEMU_DATADIR=/path/to/share/qemu points a relocated QEMU at its own BIOS,
@@ -61,6 +72,7 @@ while [[ $# -gt 0 ]]; do
         --mem) MEM="$2"; shift 2 ;;
         --cpus) CPUS="$2"; shift 2 ;;
         --append) EXTRA_APPEND="$2"; shift 2 ;;
+        --nic) NIC="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
@@ -90,6 +102,32 @@ else
     TIMEOUT=$(( TIMEOUT * 3 ))
 fi
 
+# Networking. The default remains NONE: a test VM that cannot reach anything is
+# the right default, and every check that matters runs without a NIC.
+case "$NIC" in
+    none)
+        NIC_ARGS=(-nic none)
+        ;;
+    user)
+        # QEMU user-mode networking. The NAT runs inside the QEMU process; there
+        # is no tap device, no bridge, no capability and no root, and nothing
+        # survives the process exiting. The host's own NIC is untouched.
+        # -netdev plus -device, not -nic, because romfile= is a DEVICE
+        # property and -nic rejects it outright ("Invalid parameter 'romfile'").
+        #
+        # romfile= disables the NIC's option ROM. Without it QEMU insists on
+        # efi-virtio.rom - an iPXE image that ships in a separate package - and
+        # refuses to start at all if it is absent. That is a hard failure over a
+        # boot path this VM never uses: it boots from -kernel and has no reason
+        # to PXE.
+        NIC_ARGS=(-netdev user,id=kn0 -device virtio-net-pci,netdev=kn0,romfile=)
+        printf 'run-qemu: nic     user-mode NAT (guest gets a virtio NIC; host NIC untouched)\n' >&2
+        ;;
+    *)
+        die "--nic must be 'none' or 'user', not '$NIC'"
+        ;;
+esac
+
 APPEND="console=ttyS0,115200 panic=-1 loglevel=6 kryptik.mode=$MODE $EXTRA_APPEND"
 
 printf 'run-qemu: accel   %s\n' "$ACCEL_NAME" >&2
@@ -114,7 +152,7 @@ QEMU_ARGS+=(
     -kernel "$KERNEL"
     -initrd "$INITRD"
     -append "$APPEND"
-    -nic none                 # no host networking, deliberately
+    "${NIC_ARGS[@]}"
     -no-reboot                # a panic ends the run instead of looping
     -display none
 )
