@@ -1406,7 +1406,7 @@ else
         info "output: $(printf '%s' "$memout" | tr '\n' '|' | cut -c1-200)"
     elif [[ "$memout" == *"PROBE=survived"* ]]; then
         fail "M5  memory_max=48M did NOT hold: the zone wrote 256M and lived"
-    elif [[ -n "$MEM_KILLS" ]] && (( MEM_KILLS > 0 )); then
+    elif [[ -n "$MEM_KILLS" ]] && (( MEM_KILLS > 0 )) && (( MEM_RC == 137 )); then
         pass "M5  memory_max=48M held: the kernel OOM-killed the zone ($MEM_SRC, exit $MEM_RC)"
         if (( MEM_GROUP_KILLS > 0 )); then
             pass "M5b memory.oom.group killed the WHOLE zone, not one process (oom_group_kill +$MEM_GROUP_KILLS)"
@@ -1418,6 +1418,14 @@ else
         info "     exit was $MEM_RC, which on its own is also what a SIGKILL from the test would give,"
         info "     so this run neither proves nor disproves the limit"
         info "     launcher said: $(printf '%s' "$memout" | tr '\n' '|' | cut -c1-260)"
+    elif [[ -n "$MEM_KILLS" ]] && (( MEM_KILLS > 0 )); then
+        # REVIEW-R5 required 2 asks for both signals, not either. They disagree
+        # here: the kernel counted an OOM kill for this zone, and the launcher
+        # came back with something other than 128+SIGKILL. That is not a pass
+        # (the launcher's own exit path is unaccounted for) and not a plain
+        # failure of the limit (the kill happened), so it is neither.
+        skip "M5  the kernel OOM-killed the zone but the launcher exited $MEM_RC, not 137"
+        info "     $MEM_SRC"
     else
         fail "M5  memory_max=48M: the zone died (exit $MEM_RC) but the kernel recorded no OOM kill"
         info "     $MEM_SRC"
