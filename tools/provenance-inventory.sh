@@ -33,15 +33,22 @@ load_config
 OFFLINE=0
 IDENTITY=0
 MD=0
+JSON=0
+LICENCES=0
+ARTIFACTS=""
 for a in "$@"; do
     case "$a" in
         --offline)  OFFLINE=1 ;;
         --identity) IDENTITY=1 ;;
         --md)       MD=1 ;;
-        -h|--help)  sed -n '2,12p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        --json)     JSON=1 ;;
+        --licences|--licenses) LICENCES=1 ;;
+        --artifacts=*) ARTIFACTS="${a#--artifacts=}" ;;
+        -h|--help)  sed -n '2,15p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $a" ;;
     esac
 done
+[[ "$JSON" -eq 1 && "$MD" -eq 1 ]] && die "--json and --md are different documents; pick one"
 
 have python3 || die "python3 required"
 
@@ -59,7 +66,7 @@ PROVREP="${WORK}/provenance.tsv"
 # Under --md the output is an artifact that gets committed, so progress has to
 # stay out of it. Park stdout on fd 3 and send everything up to the table to
 # stderr, then put it back.
-if [[ "$MD" -eq 1 ]]; then exec 3>&1 1>&2; fi
+if [[ "$MD" -eq 1 || "$JSON" -eq 1 ]]; then exec 3>&1 1>&2; fi
 
 log "Collecting per-source evidence"
 
@@ -201,10 +208,69 @@ elif [[ "$IDENTITY" -eq 1 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 2b. licence evidence and built artefacts
+# ---------------------------------------------------------------------------
+#
+# Licence detection is delegated to tools/scan-licenses.sh, which caches by
+# tarball sha256 because listing a 154MB xz tarball means decompressing all of
+# it. Off by default for that reason, and the field then reads `not-collected`
+# rather than `unknown`, so "nobody looked" and "looked and could not tell"
+# stay distinguishable.
+
+LICREP="${WORK}/licences.tsv"
+: > "$LICREP"
+if [[ "$LICENCES" -eq 1 ]]; then
+    log "Collecting licence evidence"
+    # Resolved next to THIS script, not through KRYPTIK_ROOT. The manifest is a
+    # property of the tree being inventoried, so fetch-sources.sh is found
+    # through KRYPTIK_ROOT above; the licence scanner is an implementation
+    # detail of this tool and travels with it. Going through KRYPTIK_ROOT meant
+    # that pointing the inventory at any tree without a full tools/ directory
+    # silently produced `not-collected` for every source.
+    "$(dirname "${BASH_SOURCE[0]}")/scan-licenses.sh" > "$LICREP" 2>/dev/null || true
+    dim "  $(grep -c . "$LICREP" || true) source(s) scanned"
+fi
+
+# A source inventory that cannot say what was produced from those sources is
+# half an answer. This records the IDENTITY of a built tree when one is named -
+# path, file count, size, the os-release BUILD_ID it carries, and the sha256 of
+# the build tab's own artifact manifest if it sits beside it. It does not
+# re-hash 30,000 files: that is `make verify-manifest` in the build worktree,
+# and a second implementation of one check is how two answers start disagreeing.
+ARTREP="${WORK}/artifacts.tsv"
+: > "$ARTREP"
+if [[ -n "$ARTIFACTS" ]]; then
+    if [[ ! -d "$ARTIFACTS" ]]; then
+        warn "--artifacts=${ARTIFACTS} is not a directory; recorded as absent"
+        printf 'sysroot\t%s\tabsent\t-\t-\t-\t-\n' "$ARTIFACTS" >> "$ARTREP"
+    else
+        log "Recording built artefact identity"
+        # `|| true` throughout: a sysroot built through a chroot contains
+        # root-owned directories this process cannot descend, so find and du
+        # exit non-zero while still producing a usable count. Under pipefail
+        # that status reaches common.sh's ERR trap and aborts the inventory -
+        # which is how an unreadable directory took the whole document down.
+        # A partial count is recorded as partial below rather than as fact.
+        art_files="$(find "$ARTIFACTS" -type f 2>/dev/null | wc -l || true)"
+        art_readable=yes
+        find "$ARTIFACTS" -type d >/dev/null 2>&1 || art_readable=partial
+        art_size="$(du -sh "$ARTIFACTS" 2>/dev/null | cut -f1 || true)"
+        art_id="$(sed -n 's/^BUILD_ID=//p' "${ARTIFACTS}/etc/os-release" 2>/dev/null | head -1)"
+        art_man="${ARTIFACTS%/*}/artifact-manifest.txt"
+        art_man_sha="-"
+        [[ -f "$art_man" ]] && art_man_sha="$(sha256_of "$art_man")"
+        printf 'sysroot\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$ARTIFACTS" "present-${art_readable}" "$art_files" "${art_size:--}" \
+            "${art_id:--}" "$art_man_sha" >> "$ARTREP"
+        dim "  ${art_files} files (${art_readable} read), BUILD_ID ${art_id:-none}"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # 3. aggregate and print
 # ---------------------------------------------------------------------------
 
-if [[ "$MD" -eq 1 ]]; then exec 1>&3 3>&-; fi
+if [[ "$MD" -eq 1 || "$JSON" -eq 1 ]]; then exec 1>&3 3>&-; fi
 
 # WHICH KEYRING THIS WAS MEASURED AGAINST.
 #
@@ -224,7 +290,10 @@ if [[ -f "${WORK}/signatures.log" ]]; then
                 "${WORK}/signatures.log" | head -1 || true)"
     [[ -n "$KEYSTATE" ]] || KEYSTATE="no keyring line in the signature log"
 fi
-if [[ "$MD" -eq 1 ]]; then
+if [[ "$JSON" -eq 1 ]]; then
+    : # carried as the keyring_state field; printing it here would corrupt the
+      # document, which is what happened the first time this was wired.
+elif [[ "$MD" -eq 1 ]]; then
     printf '**Keyring state for this run:** %s.\n' "$KEYSTATE"
     printf 'A keyring warmed by a previous `--fetch-unknown-keys` run holds keys taken\n'
     printf 'from the signatures themselves and shifts these counts; run\n'
@@ -234,13 +303,18 @@ else
     echo
 fi
 
-export KRYPTIK_LOCK KRYPTIK_SOURCES MD OFFLINE
-python3 - "$MANIFEST" "$SIGREP" "$PROVREP" "$IDREP" <<'PYEOF'
+export KRYPTIK_LOCK KRYPTIK_SOURCES MD OFFLINE JSON KEYSTATE
+INV_COMMIT="$(git -C "$KRYPTIK_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+export INV_COMMIT
+python3 - "$MANIFEST" "$SIGREP" "$PROVREP" "$IDREP" "$LICREP" "$ARTREP" <<'PYEOF'
+import datetime
 import hashlib
+import json
 import os
 import sys
 
-manifest_path, sig_path, prov_path, id_path = sys.argv[1:5]
+(manifest_path, sig_path, prov_path, id_path,
+ lic_path, art_path) = sys.argv[1:7]
 lock_path = os.environ["KRYPTIK_LOCK"]
 sources = os.environ["KRYPTIK_SOURCES"]
 markdown = os.environ.get("MD") == "1"
@@ -392,10 +466,81 @@ def lock_state(url):
     return "lock OK" if h.hexdigest() == want else "LOCK MISMATCH"
 
 
+# licence evidence, keyed by source name
+lic = {}
+for r in rows(lic_path):
+    if len(r) >= 6:
+        lic[r[0]] = {"spdx": r[2], "multiple": r[3] == "yes",
+                     "files": r[4], "method": r[5]}
+
+artefacts = []
+for r in rows(art_path):
+    if len(r) >= 6:
+        artefacts.append({
+            "kind": r[0], "path": r[1], "state": r[2],
+            "files": int(r[3]) if r[3].isdigit() else None,
+            "size": r[4], "build_id": r[5],
+            "build_manifest_sha256": r[6] if len(r) > 6 else "-",
+            # A tree built through a chroot has root-owned directories this
+            # process cannot descend, so the count is a floor, not a fact.
+            "count_complete": not r[2].endswith("partial"),
+        })
+
 results = []
 for name, ver, url in manifest:
     klass, detail = classify(name)
     results.append((name, ver, klass, lock_state(url), detail))
+
+if os.environ.get("JSON") == "1":
+    by_url = {n: u for n, _v, u in manifest}
+    doc = {
+        "schema": "kryptik-provenance-inventory-1",
+        "generated": datetime.datetime.now(datetime.timezone.utc)
+                             .strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "repository_commit": os.environ.get("INV_COMMIT", "unknown"),
+        "keyring_state": os.environ.get("KEYSTATE", "unknown"),
+        "offline": offline,
+        "note": ("assurance_class is the strongest ESTABLISHED assertion about "
+                 "each source. Classes are never summed and there is no total. "
+                 "licence.method says how the licence was determined; it is "
+                 "evidence, not a compliance judgement."),
+        "assurance_classes": [{"id": k, "means": m} for k, m in CLASSES],
+        "sources": [],
+        "artifacts": artefacts,
+    }
+    for name, ver, klass, ls, detail in results:
+        url = by_url.get(name, "")
+        fname = url.rsplit("/", 1)[-1]
+        entry = {
+            "name": name,
+            "version": ver,
+            "file": fname,
+            "url": url,
+            "sha256_locked": lock.get(fname),
+            "lockfile_state": ls,
+            "assurance_class": klass,
+            "assurance_detail": detail,
+            "licence": lic.get(name, {"spdx": "not-collected", "multiple": False,
+                                      "files": "-", "method": "not-collected"}),
+        }
+        if name in ident:
+            entry["signer_identity"] = {"finding": ident[name][0],
+                                        "detail": ident[name][1]}
+        doc["sources"].append(entry)
+
+    counts = {}
+    lic_counts = {}
+    for src in doc["sources"]:
+        counts[src["assurance_class"]] = counts.get(src["assurance_class"], 0) + 1
+        k = src["licence"]["spdx"]
+        lic_counts[k] = lic_counts.get(k, 0) + 1
+    doc["per_class_counts"] = counts
+    doc["per_licence_counts"] = lic_counts
+    doc["source_count"] = len(doc["sources"])
+
+    json.dump(doc, sys.stdout, indent=2, sort_keys=True)
+    sys.stdout.write(chr(10))
+    raise SystemExit(1 if counts.get("signature-failed", 0) else 0)
 
 # ---- output ----------------------------------------------------------------
 
