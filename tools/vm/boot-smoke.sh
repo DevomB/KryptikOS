@@ -142,6 +142,76 @@ case "$lrc" in
         ;;
 esac
 
+# The same suite with the userns restriction ON. This is the check that makes
+# any privileged result target-relevant: without it, every group K number was
+# measured on a kernel that allows what the target forbids.
+rrc="$(valueof KRYPTIK_VM_RESTRICTED_RC)"
+rknob="$(valueof KRYPTIK_VM_RESTRICTED_KNOB)"
+case "$rrc" in
+    0)  if [ "$rknob" = "apparmor-emulated" ]; then
+            pass "the launcher suite passed again with unprivileged user namespaces RESTRICTED (emulated)"
+            info "emulated with kernel.apparmor_restrict_unprivileged_userns=1, not the target kernel's own build option"
+        else
+            pass "the launcher suite passed again with the restriction on"
+        fi
+        ;;
+    "")     info "no restricted run in this image" ;;
+    2)      fail "the restricted run refused to start (exit 2) and tested nothing"
+            info "the suite exits 2 when it declines to run at all - a stale binary, or a zone left running by the run before it"
+            sed -n '/KRYPTIK_VM_RESTRICTED_BEGIN/,/KRYPTIK_VM_RESTRICTED_END/p' "$LOG"                 | tail -6 | sed 's/^/        /'
+        ;;
+    nokno*) fail "the restriction could not be turned on, so the privileged path is untested against it" ;;
+    "$lrc") fail "the launcher suite exited $rrc with the restriction on, the same way it did without it"
+            info "identical exit codes: whatever is failing is not about the restriction — read the unrestricted run's failures first"
+        ;;
+    *)      fail "the launcher suite exited $rrc with the restriction on - the privileged path does not hold on the target's rule"
+            sed -n '/KRYPTIK_VM_RESTRICTED_BEGIN/,/KRYPTIK_VM_RESTRICTED_END/p' "$LOG" \
+                | grep -E 'FAIL' | sed 's/^/        /' | head -20
+        ;;
+esac
+
+# The same suite with the userns restriction ON. This is the check that makes
+# any privileged result target-relevant: without it, every group K number was
+# measured on a kernel that allows what the target forbids.
+rrc="$(valueof KRYPTIK_VM_RESTRICTED_RC)"
+rknob="$(valueof KRYPTIK_VM_RESTRICTED_KNOB)"
+case "$rrc" in
+    0)  if [ "$rknob" = "apparmor-emulated" ]; then
+            pass "the launcher suite passed again with unprivileged user namespaces RESTRICTED (emulated)"
+            info "emulated with kernel.apparmor_restrict_unprivileged_userns=1, not the target kernel's own build option"
+        else
+            pass "the launcher suite passed again with the restriction on"
+        fi
+        ;;
+    "")     info "no restricted run in this image" ;;
+    nokno*) fail "the restriction could not be turned on, so the privileged path is untested against it" ;;
+    *)      fail "the launcher suite exited $rrc with the restriction on - the privileged path does not hold on the target's rule"
+            sed -n '/KRYPTIK_VM_RESTRICTED_BEGIN/,/KRYPTIK_VM_RESTRICTED_END/p' "$LOG" \
+                | grep -E 'FAIL' | sed 's/^/        /' | head -20
+        ;;
+esac
+
+# The same suite with the userns restriction ON. This is the check that makes
+# any privileged result target-relevant: without it, every group K number was
+# measured on a kernel that allows what the target forbids.
+rrc="$(valueof KRYPTIK_VM_RESTRICTED_RC)"
+rknob="$(valueof KRYPTIK_VM_RESTRICTED_KNOB)"
+case "$rrc" in
+    0)  if [ "$rknob" = "apparmor-emulated" ]; then
+            pass "the launcher suite passed again with unprivileged user namespaces RESTRICTED (emulated)"
+            info "emulated with kernel.apparmor_restrict_unprivileged_userns=1, not the target kernel's own build option"
+        else
+            pass "the launcher suite passed again with the restriction on"
+        fi
+        ;;
+    "")     info "no restricted run in this image" ;;
+    nokno*) fail "the restriction could not be turned on, so the privileged path is untested against it" ;;
+    *)      fail "the launcher suite exited $rrc with the restriction on - the privileged path does not hold on the target's rule"
+            sed -n '/KRYPTIK_VM_RESTRICTED_BEGIN/,/KRYPTIK_VM_RESTRICTED_END/p' "$LOG" \
+                | grep -E 'FAIL' | sed 's/^/        /' | head -20
+        ;;
+esac
+
 # The privileged launch contract, if the security probe shipped.
 prc="$(valueof KRYPTIK_VM_PRIVCONTRACT_RC)"
 knob="$(valueof KRYPTIK_VM_USERNS_KNOB)"
