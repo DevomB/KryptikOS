@@ -16,6 +16,7 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="${ROOT}/build/services"
+SCRIPTS="${ROOT}/build/service-scripts"
 PASS=0
 FAIL=0
 
@@ -73,11 +74,11 @@ for svc in "${SERVICES[@]}"; do
             fi
             # If it names a script this repository ships, that script must exist.
             if [[ "$first" == /usr/libexec/kryptik/* ]]; then
-                s="${SRC}/scripts/${first##*/}"
+                s="${SCRIPTS}/${first##*/}"
                 if [[ -f "$s" ]]; then
-                    green "${svc}: up names ${first##*/}, which exists in scripts/"
+                    green "${svc}: up names ${first##*/}, which exists in service-scripts/"
                 else
-                    red "${svc}: up names ${first} but scripts/${first##*/} is missing"
+                    red "${svc}: up names ${first} but service-scripts/${first##*/} is missing"
                 fi
             fi
         fi
@@ -127,7 +128,7 @@ src = sys.argv[1]
 deps = {}
 for svc in os.listdir(src):
     d = os.path.join(src, svc)
-    if not os.path.isdir(d) or svc == "scripts":
+    if not os.path.isdir(d):
         continue
     f = os.path.join(d, "dependencies")
     deps[svc] = [l.strip() for l in open(f)] if os.path.exists(f) else []
@@ -154,10 +155,28 @@ PY
 check "no dependency cycle" "$([[ -z "$cycle" ]] && echo ok)"
 [[ -n "$cycle" ]] && echo "        cycle: ${cycle}"
 
+# --- what s6-rc-compile itself requires -------------------------------------
+
+echo
+echo "-- every directory in the source tree is a service definition"
+# s6-rc-compile reads EVERY directory under the source as a service and wants a
+# `type` file in each. A stray directory stops the compile with
+# "unable to read .../type: No such file or directory". This tree once had a
+# scripts/ directory in it and these tests passed anyway, because they checked
+# the layout this file expected rather than the layout s6-rc-compile demands.
+for d in "${SRC}"/*/; do
+    svc="$(basename "$d")"
+    if [[ -f "${d}type" ]]; then
+        green "${svc}/ has a type file"
+    else
+        red "${svc}/ has no type file - s6-rc-compile will refuse the whole tree"
+    fi
+done
+
 # --- scripts ---------------------------------------------------------------
 echo
 echo "-- the scripts the services name"
-for s in "${SRC}"/scripts/*.sh; do
+for s in "${SCRIPTS}"/*.sh; do
     [[ -f "$s" ]] || continue
     n="$(basename "$s")"
     check "${n}: valid sh"    "$(sh -n "$s" 2>/dev/null && echo ok)"
@@ -176,7 +195,7 @@ echo
 echo "-- what rc.init will ask for"
 check "a 'default' bundle exists" "$(is_service default && echo ok)"
 check "stage 04 installs the scripts" \
-      "$(grep -q 'install -m 0755 "\$src"/scripts/\*\.sh /usr/libexec/kryptik/' \
+      "$(grep -q 'install -m 0755 "\$scripts"/\*\.sh /usr/libexec/kryptik/' \
          "$ROOT/build/stages/04-base-system.sh" && echo ok)"
 check "stage 04 compiles the database" \
       "$(grep -q 's6-rc-compile' "$ROOT/build/stages/04-base-system.sh" && echo ok)"
