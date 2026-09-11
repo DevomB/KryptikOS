@@ -500,7 +500,12 @@ s_kbd() {
     cd "$src"
     sed -i '/RESIZECONS_PROGS=/s/yes/no/' configure
     sed -i 's/resizecons.8 //' docs/man/man8/Makefile.in
-    ./configure --prefix=/usr --disable-vlock
+
+    # --disable-tests: kbd ships tests/testsuite.at but no generated
+    # tests/testsuite, so `make all` tries to produce one with autom4te and
+    # dies with "command not found" - Kryptik installs no autoconf, and has no
+    # reason to: the suite runs at build time and ships nothing.
+    ./configure --prefix=/usr --disable-vlock --disable-tests
     make
     make install
 }
