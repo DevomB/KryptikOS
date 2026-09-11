@@ -1075,3 +1075,67 @@ needs none of that, so moving the pin means rewriting the recipe in the same
 increment. Raised with provenance in
 `$C/build/NOTE-from-build-gdbm-openssl-bc.md` rather than resolved inside a
 conflict marker.
+
+## 14. Boot integrity, developer tier
+
+An image can be signed and verified:
+
+```sh
+make sign-image     # ed25519, key generated on first use, 0600, never in the repo
+make verify-image
+make test-image-signing
+```
+
+`tools/image/boot-smoke.sh` verifies before QEMU starts and refuses to boot an
+image that does not match its signature. Before, not after: the image is the
+thing under test, so checking once the guest has run would be checking the lock
+after walking through the door. An unsigned image still boots and says so on
+its own line — unsigned is legitimate in a developer flow; treating "no
+signature" as "verified" is not, so the two never share a message.
+
+### What it proves, and what it does not
+
+A developer signature proves an image is byte-for-byte what this build
+produced. That is the whole claim. It is not secure boot, there is no dm-verity,
+the key is not escrowed or rotated, and nothing binds it to a person.
+`key_kind: "developer"` is inside the signed document, and
+`--expect-kind release` against a developer signature is a refusal. An image
+that merely *looks* signed is worse than an unsigned one, because it invites
+someone to skip a check they would otherwise have made.
+
+### The verifier checks three things, separately
+
+1. the signature is valid over the signed document, under the given key
+2. the document describes **this** image — sha256 recomputed from disk
+3. the document does not claim to be a kind of signature it is not
+
+The second is the one worth having. Checking only the first accepts a genuinely
+valid signature over a document about a *different* image, which is the classic
+way signature checking is got wrong. `tools/test-image-signing.sh` builds that
+exact case — sign image A, sign image B, then offer B's document and signature
+for A — and it is refused.
+
+Thirteen checks. Every refusal is paired with the control that gives it
+meaning: the same harness must accept the untampered image, twice, before and
+after the tamper tests. A suite of nothing but denials cannot tell a working
+verifier from one that refuses everything.
+
+Refused, each proven: a flipped byte, an edited document, a different key,
+another image's valid signature, a developer signature offered as a release
+one, and a missing signature file.
+
+## 15. `make test`
+
+Runs the six suites that need neither root nor the chroot — 174 checks — and
+then names the three it did not run:
+
+```
+make test-libc-unwind   can the TARGET libc unwind? Expected to FAIL while the
+                        glibc defect in build/BLOCKER.md stands.
+make smoke-userspace    run the built userland inside the chroot
+make image-smoke        build a disk image and boot it under QEMU
+```
+
+Those three are the only ones that touch the built system rather than the
+scripts that build it. A green `make test` must not be readable as "the libc is
+fine", because it is not.
