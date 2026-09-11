@@ -90,6 +90,17 @@ else
 fi
 
 out="$(K list 2>&1)"
+# The DESCRIPTION column too, not just the names. It was empty for every zone
+# for a while - the wrapper matched "description:" against output that says
+# "description  text" - and a list of names beside a blank column reads as
+# zones that have no description rather than a wrapper that cannot read them.
+if [[ "$out" == *"cli.sh fixture plain"* ]]; then
+    pass "A2b list shows each zone's description, not just its name"
+else
+    fail "A2b list printed no description for 'plain'"
+    info "output: $(printf '%s' "$out" | tr '
+' '|' | cut -c1-200)"
+fi
 if [[ "$out" == *plain* && "$out" == *sealed* && "$out" == *carrier* ]]; then
     pass "A2  list shows the configured zones, read from the config file"
 else
