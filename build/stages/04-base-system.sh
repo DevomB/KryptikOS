@@ -166,7 +166,11 @@ s_locales() {
     localedef -i de_DE -f UTF-8 de_DE.UTF-8
     localedef -i ja_JP -f UTF-8 ja_JP.UTF-8
     echo "locales generated:"
-    localedef --list-archive 2>/dev/null | head -10
+    # Read, then trim. `localedef | head` is small enough not to SIGPIPE
+    # today, and that is a property of the data rather than of the code.
+    local archived
+    archived="$(localedef --list-archive 2>/dev/null || true)"
+    printf '%s\n' "$archived" | sed -n '1,10p'
 
     # Minimal, sane defaults so the rest of the build is deterministic.
     cat > /etc/nsswitch.conf <<'NSS'
@@ -249,7 +253,12 @@ s_glibc() {
     # checking - which is precisely what happened the first time this ran.
     echo "--- installed libc ---"
     ls -la /usr/lib/libc.so.6
-    strings /usr/lib/libc.so.6 | grep -m1 "GNU C Library"
+    # grep reads the file directly. Piping `strings` into `grep -m1` made
+    # grep exit at the first match while strings still had 2.4MB to write,
+    # so strings took SIGPIPE and pipefail reported 141 - failing the step
+    # on a glibc that had just installed correctly.
+    grep -a -m1 -o "GNU C Library.*" /usr/lib/libc.so.6 || \
+        echo "(no GNU C Library banner found - check the install)"
 
     # And prove the CET support actually landed, rather than trusting that
     # --enable-cet was accepted. A loader without the property note is a
@@ -257,8 +266,12 @@ s_glibc() {
     echo "--- CET in the dynamic loader ---"
     local ldso=/usr/lib/ld-linux-x86-64.so.2
     if [[ -e "$ldso" ]]; then
-        if readelf -n "$ldso" 2>/dev/null | grep -qE 'IBT|SHSTK'; then
-            readelf -n "$ldso" | grep -E 'IBT|SHSTK' | sed 's/^/  /'
+        # Captured once, then matched in the shell. `readelf | grep -q` is the
+        # same SIGPIPE trap as above.
+        local props
+        props="$(readelf -n "$ldso" 2>/dev/null || true)"
+        if [[ "$props" == *IBT* || "$props" == *SHSTK* ]]; then
+            printf '%s\n' "$props" | sed -n '/IBT\|SHSTK/s/^/  /p'
             echo "  ok: the loader carries the CET property"
         else
             echo "FAIL: ${ldso} has no CET property note, but glibc was built"
@@ -402,7 +415,9 @@ s_hardened_malloc() {
         echo "note: config/default.mk still says CONFIG_NATIVE := true;"
         echo "      the command line above overrides it."
     fi
-    if readelf -p .comment out/libhardened_malloc.so 2>/dev/null | grep -q 'march=native'; then
+    local hm_comment
+    hm_comment="$(readelf -p .comment out/libhardened_malloc.so 2>/dev/null || true)"
+    if [[ "$hm_comment" == *march=native* ]]; then
         echo "FAIL: libhardened_malloc.so was built with -march=native"
         return 1
     fi
