@@ -89,6 +89,7 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
 .PHONY: help check check-kernel-eol sources lock verify verify-provenance \
         test-harness test-hardening test-artifacts audit-artifacts \
         audit-artifacts-strict manifest verify-manifest test-manifest \
+        test-s6-init \
         validate-kernel validate-kernel-hardened \
         toolchain temp-tools chroot chroot-enter chroot-umount chroot-status \
         system kernel iso audit zones zone-test paths reset-stamps \
@@ -132,6 +133,7 @@ help:
 	@echo "  make manifest          record what was built and what built it"
 	@echo "  make verify-manifest   check the tree still matches that record"
 	@echo "  make test-manifest     self-test the manifest tool (positive controls)"
+	@echo "  make test-s6-init      check stage 04 produces a bootable s6 image"
 	@echo "  make audit       run security audits over the build tree"
 	@echo "  make paths       print the resolved build contract"
 	@echo "  make reset-stamps  archive all build stamps (does not delete)"
@@ -280,6 +282,14 @@ audit-artifacts-strict:
 
 test-manifest:
 	@"$(TOOLS)"/test-artifact-manifest.sh
+
+# The init configuration is the last step of a four-hour stage, and its
+# failure modes are quiet - a boot image with no stage 2 scripts, or an
+# early getty naming a program that does not exist, both leave the maker
+# exiting 0 and the machine booting to silence. The s6 stack builds in
+# about a minute, so it is checked up front instead.
+test-s6-init:
+	@"$(TOOLS)"/test-s6-init-config.sh
 
 # An identity record for the tree, and for what produced it. Answers the
 # three questions you cannot answer by looking at a sysroot: is this the

@@ -652,7 +652,12 @@ EOF
     #      of the machine.
     #  -p  PATH for the init scripts. The host is not on it; there is no host.
     #  -s  kernel command line key=value pairs land in this envdir, so
-    #      services can read them.
+    #      services can read them. It MUST be under /run: s6-linux-init-maker
+    #      warns otherwise, and the reason bites Kryptik specifically. The
+    #      store is rewritten at every boot, and Kryptik's kernel fragment
+    #      enables dm-verity - a root filesystem that is read-only by design.
+    #      Pointing this at /etc would mean init trying to write to a verified
+    #      root on every boot.
     #  -f  our skeleton, not the commented-out upstream one.
     #
     # NOT passed: -d /dev. Upstream says to add it when devtmpfs is not
@@ -665,7 +670,7 @@ EOF
         -p /usr/bin:/usr/sbin \
         -m 0022 \
         -c /etc/s6-linux-init/current \
-        -s /etc/s6-linux-init/env \
+        -s /run/s6-linux-init/env \
         -f "$skel" \
         -D default \
         "$tmp"
