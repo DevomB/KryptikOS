@@ -58,3 +58,40 @@ does and where it deliberately stops. Read this before the M3 review.
 `security/probes/vm-topology.sh` T1–T10, root, `--nic user`. T9 (a routed
 zone pings the VM gateway) is the forwarding path and is expected to pass
 only under QEMU user networking; the report must say "forwarding, no NAT".
+
+
+## Correction (security increment 15): the nic zone's namespace
+
+Until increment 15, `isolate::namespace_flags` gave every zone its own network
+namespace EXCEPT the nic zone, a Phase 5 rule ("it owns the real interface;
+isolating it from itself is meaningless") written before the topology existed.
+The topology code assumed the opposite: `plumb_nic_zone` opens the nic zone's
+namespace and moves the NIC into it. With the flags as they were, that
+namespace was zone 0's own, the move was a no-op, and the bridge, the
+forwarding sysctls and every routed zone's port were created in zone 0.
+Nothing measured it: NETR1 in the launcher suite checks that the nic zone
+started, and the topology probe that asks whether eth0 left zone 0
+(`vm-topology.sh` T1) had not yet run on a target kernel.
+
+As of increment 15 the nic zone gets `CLONE_NEWNET` like every other zone, so
+the move is real. Two consequences:
+
+- **The uplink's configuration travels with the NIC.** The kernel flushes
+  addresses and routes when an interface changes namespace. The parent reads
+  the NIC's IPv4 addresses (`getifaddrs`) and default gateway
+  (`/proc/self/net/route`) before the move and re-applies them inside the nic
+  zone, then brings the interface up. No DHCP is spoken; what was there is what
+  arrives, and a DHCP client running in the nic zone can take over the lease.
+  Kernel-backed test: `the_uplink_configuration_travels_with_the_nic`.
+- **Zone 0 loses its network path when the nic zone starts**, by design
+  (Design 03). In the developer VM this is what `KRYPTIK_VM_DISPOSABLE=1`
+  gates. When the nic zone exits, the kernel returns the physical interface to
+  zone 0 down and unaddressed; kryptikd does not reconfigure zone 0.
+
+IPv6 on the bridge is additive from increment 15, as it is on the routed side
+from increment 14: a namespace where IPv6 cannot be configured still gets its
+IPv4 path, and the launcher says so. Every zone's namespace also starts empty
+from increment 14: the launcher raises `net.core.fb_tunnels_only_for_init_net`
+to 1 before the namespace exists (the target kernel builds SIT in and put
+`sit0` into an airgapped zone), and the child refuses, on a privileged launch,
+to start in a namespace that holds anything besides loopback.

@@ -327,6 +327,12 @@ fn try_lock(dir: &Path) -> Result<Option<RawFd>, RegistryError> {
     }
 }
 
+/// Where a zone's entry lives. For zone 0 acts on a running zone's entry
+/// (the clipboard move); the entry itself is owned by its launcher.
+pub fn entry_dir(zone: &str) -> PathBuf {
+    base().join(zone)
+}
+
 /// Read a zone's state. Takes and immediately releases the lock to decide
 /// liveness, so it is safe to call from any process.
 pub fn state(zone: &str) -> Result<State, RegistryError> {
@@ -387,7 +393,7 @@ pub fn reclaim(zone: &str) -> Result<(), RegistryError> {
             }
         }
     }
-    for f in ["launcher.pid", "init.pid", "cgroup", "started", "identity", "broker", "lock"] {
+    for f in ["launcher.pid", "init.pid", "cgroup", "started", "identity", "broker", "clipboard", "lock"] {
         let _ = fs::remove_file(dir.join(f));
     }
     fs::remove_dir(&dir).map_err(|e| io_err(&dir, e))
@@ -460,7 +466,7 @@ impl Handle {
 
 impl Drop for Handle {
     fn drop(&mut self) {
-        for f in ["launcher.pid", "init.pid", "cgroup", "started", "identity", "broker", "lock"] {
+        for f in ["launcher.pid", "init.pid", "cgroup", "started", "identity", "broker", "clipboard", "lock"] {
             let _ = fs::remove_file(self.dir.join(f));
         }
         let _ = fs::remove_dir(&self.dir);
