@@ -287,9 +287,10 @@ s_config() {
 }
 
 s_build() {
-    # $1 is HOSTLDFLAGS, passed for the same fingerprinting reason as the
-    # fragment digest above.
+    # $1 is HOSTLDFLAGS and $2 the digest of .config, both arguments so this
+    # step's fingerprint covers them; see the step list.
     echo "host link flags: ${1:-none}"
+    echo "config digest  : ${2:-none}"
     cd "$KSRC"
     make
     # Record what actually compiled this kernel, in the kernel. This string is
@@ -300,6 +301,7 @@ s_build() {
 }
 
 s_modules() {
+    echo "config digest: ${1:-none}"
     cd "$KSRC"
     # Empty INSTALL_MOD_PATH: inside the chroot the target IS the root. The
     # old value here was ${KRYPTIK_WORK}/sysroot, which is the nested-tree bug
@@ -308,6 +310,7 @@ s_modules() {
 }
 
 s_install() {
+    echo "config digest: ${1:-none}"
     cd "$KSRC"
     mkdir -p "$BOOTDIR"
     cp -v arch/x86/boot/bzImage "${BOOTDIR}/kryptik-${V_LINUX}"
@@ -441,10 +444,22 @@ step compiler-check  s_compiler_check
 step unpack          s_unpack
 step patch           s_patch
 step config          s_config "$FRAG_DIGEST"
-step build           s_build "$HOSTLDFLAGS"
-step modules         s_modules
-step install         s_install
-step verify-install  s_verify_install
+
+# .config is an input to every step after this one, and a step's fingerprint
+# covers its own recipe and arguments - not the outputs of the steps before it.
+# So editing a fragment rebuilt the config and then SKIPPED build, modules and
+# install as "already built, inputs unchanged". The kernel in /boot stayed the
+# previous one, and the boot proved it: the guest called securityfs an unknown
+# filesystem type while the .config beside it said CONFIG_SECURITYFS=y.
+#
+# Evaluated here, after s_config has written the file, so it is the digest of
+# the configuration these steps are about to build from.
+CFG_DIGEST="$(sha256_of "${KSRC}/.config" 2>/dev/null || echo noconfig)"
+
+step build           s_build "$HOSTLDFLAGS" "$CFG_DIGEST"
+step modules         s_modules "$CFG_DIGEST"
+step install         s_install "$CFG_DIGEST"
+step verify-install  s_verify_install "$CFG_DIGEST"
 
 echo
 ok "Stage 05 complete."
