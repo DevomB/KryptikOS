@@ -93,6 +93,7 @@ bc|${V_BC}|${gnu}/bc/bc-${V_BC}.tar.gz
 bison|${V_BISON}|${gnu}/bison/bison-${V_BISON}.tar.xz
 flex|${V_FLEX}|${MIRROR_GITHUB}/westes/flex/releases/download/v${V_FLEX}/flex-${V_FLEX}.tar.gz
 bc|${V_BC:-1.08.2}|${gnu}/bc/bc-${V_BC:-1.08.2}.tar.gz
+gdbm|${V_GDBM:-1.26}|${gnu}/gdbm/gdbm-${V_GDBM:-1.26}.tar.gz
 gettext|${V_GETTEXT}|${gnu}/gettext/gettext-${V_GETTEXT}.tar.xz
 texinfo|${V_TEXINFO}|${gnu}/texinfo/texinfo-${V_TEXINFO}.tar.xz
 autoconf|${V_AUTOCONF}|${gnu}/autoconf/autoconf-${V_AUTOCONF}.tar.xz
