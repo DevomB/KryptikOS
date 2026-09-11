@@ -9,6 +9,14 @@
 //! and needs no privilege. That is why ADR-007 leans on it instead of a
 //! traditional MAC layer.
 //!
+//! RULES ARE ADDITIVE. A path_beneath rule grants rights on everything under
+//! its path, and a second rule on a sub-path can only ADD rights, never take
+//! them away. An earlier version granted read+write+exec on "/" and then
+//! listed /usr, /etc and friends as "read-only": those rules did nothing, and
+//! the zone had full Landlock rights everywhere, including /dev and /proc. The
+//! rule set in `zone_rules` therefore grants the WIDEST scope the FEWEST
+//! rights and names every writable location explicitly.
+//!
 //! glibc does not wrap these syscalls, so they are invoked directly.
 
 use std::ffi::CString;
@@ -40,13 +48,41 @@ const FS_MAKE_BLOCK: u64 = 1 << 11;
 const FS_MAKE_SYM: u64 = 1 << 12;
 const FS_REFER: u64 = 1 << 13; // ABI v2
 const FS_TRUNCATE: u64 = 1 << 14; // ABI v3
+const FS_IOCTL_DEV: u64 = 1 << 15; // ABI v5
+
+/// Oldest ABI a zone may run on.
+///
+/// Below v3 the kernel cannot express TRUNCATE (v3) or REFER (v2): a ruleset
+/// that names them would have those rights silently dropped, so "write" would
+/// mean less than the policy says. Refuse rather than run with a policy whose
+/// words and effect disagree. ABI 3 is Linux 6.2; Kryptik targets 6.18.
+pub const MIN_ABI: i32 = 3;
 
 /// Everything a zone may be granted on a path it is allowed to use.
 pub const ACCESS_READ: u64 = FS_READ_FILE | FS_READ_DIR;
-pub const ACCESS_WRITE: u64 =
-    FS_WRITE_FILE | FS_REMOVE_DIR | FS_REMOVE_FILE | FS_MAKE_DIR | FS_MAKE_REG
-        | FS_MAKE_SYM | FS_MAKE_SOCK | FS_MAKE_FIFO;
+/// Full write: create, remove, rename, truncate. REFER is what lets a file be
+/// renamed or linked into a different directory - without it `mv a dir/`
+/// fails with EXDEV on ABI >= 2, which killed tar, cargo and git inside
+/// zones. TRUNCATE is what `>` needs on an existing file.
+pub const ACCESS_WRITE: u64 = FS_WRITE_FILE
+    | FS_REMOVE_DIR
+    | FS_REMOVE_FILE
+    | FS_MAKE_DIR
+    | FS_MAKE_REG
+    | FS_MAKE_SYM
+    | FS_MAKE_SOCK
+    | FS_MAKE_FIFO
+    | FS_REFER
+    | FS_TRUNCATE;
+/// Write to files that already exist, but create and remove nothing. What
+/// /dev and /proc need: programs write /dev/null and /proc/self/oom_score_adj,
+/// none of them should be able to create entries there.
+pub const ACCESS_WRITE_FILE: u64 = FS_WRITE_FILE | FS_TRUNCATE;
 pub const ACCESS_EXEC: u64 = FS_EXECUTE;
+/// ioctl on device files (ABI 5+). Needed on /dev for terminals; not granted
+/// anywhere else, so on a kernel that handles it a zone cannot ioctl a device
+/// it somehow reaches outside /dev.
+pub const ACCESS_IOCTL_DEV: u64 = FS_IOCTL_DEV;
 
 #[repr(C)]
 struct RulesetAttrV1 {
@@ -71,6 +107,7 @@ struct PathBeneathAttr {
 #[derive(Debug)]
 pub enum LandlockError {
     Unsupported,
+    TooOld { abi: i32, need: i32 },
     Syscall { call: &'static str, errno: i32 },
     BadPath(String),
 }
@@ -82,6 +119,12 @@ impl std::fmt::Display for LandlockError {
                 f,
                 "landlock is not available on this kernel; \
                  a zone cannot be confined without it"
+            ),
+            LandlockError::TooOld { abi, need } => write!(
+                f,
+                "landlock ABI v{abi} is too old (need v{need}, Linux 6.2+): the kernel \
+                 cannot express truncate/rename restrictions, so the zone policy \
+                 would silently mean less than it says"
             ),
             LandlockError::Syscall { call, errno } => {
                 write!(f, "{call}: {}", io::Error::from_raw_os_error(*errno))
@@ -132,6 +175,9 @@ fn access_mask_for(abi: i32) -> u64 {
     if abi >= 3 {
         mask |= FS_TRUNCATE;
     }
+    if abi >= 5 {
+        mask |= FS_IOCTL_DEV;
+    }
     mask
 }
 
@@ -148,9 +194,14 @@ pub struct Ruleset {
 impl Ruleset {
     pub fn new() -> Result<Self, LandlockError> {
         let abi = abi_version().ok_or(LandlockError::Unsupported)?;
+        if abi < MIN_ABI {
+            return Err(LandlockError::TooOld { abi, need: MIN_ABI });
+        }
         let handled = access_mask_for(abi);
 
         // The attr struct grew in ABI v4. Passing the wrong size is EINVAL.
+        // Later ABIs (v6 adds `scoped`) accept the v4 size and treat the
+        // missing fields as zero.
         //
         // Both variants live on the stack. An earlier version used Box::leak,
         // which leaked one allocation per ruleset - unbounded in a long-running
@@ -257,8 +308,9 @@ impl Ruleset {
 
 /// Confine the current process to a zone's permitted paths.
 ///
-/// `rootfs` is the zone's own filesystem; it gets read, write and execute.
-/// Everything else on the system becomes unreadable, including other zones'
+/// Used by `kryptikd confine-test`, which confines the test process ITSELF in
+/// the caller's mount namespace. `rootfs` gets read, write and execute;
+/// everything else on the system becomes unreadable, including other zones'
 /// data and the vault — which is exactly requirements 2 and 4.
 pub fn confine_to_zone(rootfs: &str, extra_ro: &[&str]) -> Result<(), LandlockError> {
     let mut rs = Ruleset::new()?;
@@ -270,24 +322,76 @@ pub fn confine_to_zone(rootfs: &str, extra_ro: &[&str]) -> Result<(), LandlockEr
     rs.restrict_self()
 }
 
-/// Like `confine_to_zone`, but a few paths need write access as well as read.
+/// One Landlock rule for a pivoted zone: the path, the rights, and whether a
+/// missing path is fatal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ZoneRule {
+    pub path: String,
+    pub access: u64,
+    pub required: bool,
+}
+
+/// The rule set for a zone that has already pivoted into its own root
+/// (`rootfs::pivot_into`). Paths are as the ZONE sees them.
 ///
-/// /dev/null and /dev/tty are written by essentially every program, and /proc
-/// takes writes for things like /proc/self/oom_score_adj. Granting read-only
-/// there produces failures that look like the program is broken rather than
-/// confined.
-pub fn confine_to_zone_with_dev(
-    rootfs: &str,
-    read_only: &[&str],
-    read_write: &[&str],
-) -> Result<(), LandlockError> {
-    let mut rs = Ruleset::new()?;
-    rs.allow(rootfs, ACCESS_READ | ACCESS_WRITE | ACCESS_EXEC)?;
-    for p in read_only {
-        let _ = rs.allow(p, ACCESS_READ | ACCESS_EXEC);
+/// The widest rule, "/", grants read and execute only. Every mount that a
+/// zone must not modify - the read-only system paths, the sealed root tmpfs,
+/// /sys - is therefore denied write by Landlock as well as by its mount flags:
+/// two independent controls, which is what the previous version claimed and
+/// did not have. Writable places are named one by one.
+pub fn zone_rules(home: &str) -> Vec<ZoneRule> {
+    let rule = |path: &str, access: u64, required: bool| ZoneRule {
+        path: path.to_string(),
+        access,
+        required,
+    };
+    vec![
+        rule("/", ACCESS_READ | ACCESS_EXEC, true),
+        // The zone's own data. Exec is allowed so a zone can run what it
+        // builds or downloads; that is what dev and untrusted are for.
+        rule(home, ACCESS_READ | ACCESS_WRITE | ACCESS_EXEC, true),
+        rule("/tmp", ACCESS_READ | ACCESS_WRITE | ACCESS_EXEC, true),
+        // Write to the device nodes kryptikd provided; create nothing.
+        rule("/dev", ACCESS_READ | ACCESS_WRITE_FILE | ACCESS_IOCTL_DEV, true),
+        // POSIX shared memory needs create/unlink; the mount is noexec.
+        rule("/dev/shm", ACCESS_READ | ACCESS_WRITE, false),
+        // /proc/self/oom_score_adj, /proc/self/comm and friends.
+        rule("/proc", ACCESS_READ | ACCESS_WRITE_FILE, true),
+    ]
+}
+
+/// Human-readable form of a rule's rights, for `kryptikd explain`.
+pub fn describe_access(access: u64) -> String {
+    let mut parts = Vec::new();
+    if access & ACCESS_READ != 0 {
+        parts.push("read");
     }
-    for p in read_write {
-        let _ = rs.allow(p, ACCESS_READ | ACCESS_WRITE | ACCESS_EXEC);
+    if access & ACCESS_WRITE == ACCESS_WRITE {
+        parts.push("write");
+    } else if access & FS_WRITE_FILE != 0 {
+        parts.push("write-existing-files");
+    }
+    if access & ACCESS_EXEC != 0 {
+        parts.push("exec");
+    }
+    if access & ACCESS_IOCTL_DEV != 0 {
+        parts.push("ioctl-dev");
+    }
+    parts.join("+")
+}
+
+/// Apply `zone_rules` to the current process. Must run after pivot_root and
+/// before the seccomp filter (landlock_* are not in the allowlist).
+pub fn confine_pivoted_zone(home: &str) -> Result<(), LandlockError> {
+    let mut rs = Ruleset::new()?;
+    for r in zone_rules(home) {
+        match rs.allow(&r.path, r.access) {
+            Ok(()) => {}
+            Err(e) if !r.required => {
+                eprintln!("kryptikd: note: landlock: {} absent, no rule added ({e})", r.path);
+            }
+            Err(e) => return Err(e),
+        }
     }
     rs.restrict_self()
 }
@@ -313,10 +417,13 @@ mod tests {
         let v1 = access_mask_for(1);
         let v2 = access_mask_for(2);
         let v3 = access_mask_for(3);
+        let v5 = access_mask_for(5);
         assert_eq!(v1 & FS_REFER, 0, "REFER must not be set on ABI v1");
         assert_ne!(v2 & FS_REFER, 0, "REFER should appear at ABI v2");
         assert_eq!(v2 & FS_TRUNCATE, 0, "TRUNCATE must not be set on ABI v2");
         assert_ne!(v3 & FS_TRUNCATE, 0, "TRUNCATE should appear at ABI v3");
+        assert_eq!(v3 & FS_IOCTL_DEV, 0, "IOCTL_DEV must not be set on ABI v3");
+        assert_ne!(v5 & FS_IOCTL_DEV, 0, "IOCTL_DEV should appear at ABI v5");
     }
 
     #[test]
@@ -326,11 +433,64 @@ mod tests {
     }
 
     #[test]
+    fn write_access_includes_truncate_and_refer() {
+        // Regression: without TRUNCATE, `echo x > existing` was denied inside
+        // a zone; without REFER, `mv a dir/` failed with EXDEV.
+        assert_ne!(ACCESS_WRITE & FS_TRUNCATE, 0);
+        assert_ne!(ACCESS_WRITE & FS_REFER, 0);
+        assert_ne!(ACCESS_WRITE_FILE & FS_TRUNCATE, 0);
+        assert_eq!(ACCESS_WRITE_FILE & FS_MAKE_REG, 0, "write-file must not create");
+    }
+
+    #[test]
+    fn device_node_creation_is_never_granted() {
+        // MAKE_CHAR and MAKE_BLOCK are handled (denied by default) and no rule
+        // grants them, so a zone cannot create device nodes anywhere even
+        // where it can create files.
+        for r in zone_rules("/home/t") {
+            assert_eq!(r.access & (FS_MAKE_CHAR | FS_MAKE_BLOCK), 0, "{}", r.path);
+        }
+        assert_ne!(access_mask_for(MIN_ABI) & (FS_MAKE_CHAR | FS_MAKE_BLOCK), 0);
+    }
+
+    #[test]
+    fn root_rule_never_grants_write() {
+        // The regression test for the additive-rules bug: any write right on
+        // "/" is a write right on every mount beneath it, and the read-only
+        // rules for /usr and friends would be decoration.
+        let rules = zone_rules("/home/t");
+        let root = rules.iter().find(|r| r.path == "/").expect("no rule for /");
+        assert_eq!(root.access & ACCESS_WRITE, 0, "/ must not be writable");
+        assert_eq!(root.access & FS_WRITE_FILE, 0);
+        assert!(root.required);
+        // And the writable places are exactly the ones a zone may change.
+        let writable: Vec<&str> = rules
+            .iter()
+            .filter(|r| r.access & (FS_WRITE_FILE | FS_MAKE_REG) != 0)
+            .map(|r| r.path.as_str())
+            .collect();
+        assert_eq!(writable, vec!["/home/t", "/tmp", "/dev", "/dev/shm", "/proc"]);
+        // Only the data dir and /tmp may create files.
+        for r in &rules {
+            if r.access & FS_MAKE_REG != 0 {
+                assert!(
+                    r.path == "/home/t" || r.path == "/tmp" || r.path == "/dev/shm",
+                    "{} must not allow creating files",
+                    r.path
+                );
+            }
+        }
+    }
+
+    #[test]
     fn ruleset_can_be_created_when_supported() {
         match abi_version() {
-            Some(v) => {
+            Some(v) if v >= MIN_ABI => {
                 let rs = Ruleset::new().expect("ruleset creation should succeed");
                 assert_eq!(rs.abi(), v);
+            }
+            Some(v) => {
+                assert!(matches!(Ruleset::new(), Err(LandlockError::TooOld { .. })), "ABI {v}");
             }
             None => eprintln!("landlock unavailable on this kernel; skipping"),
         }
@@ -338,10 +498,17 @@ mod tests {
 
     #[test]
     fn allow_rejects_a_nonexistent_path() {
-        if abi_version().is_none() {
+        if abi_version().map_or(true, |v| v < MIN_ABI) {
             return;
         }
         let mut rs = Ruleset::new().unwrap();
         assert!(rs.allow("/definitely/not/a/real/path", ACCESS_READ).is_err());
+    }
+
+    #[test]
+    fn describe_access_is_readable() {
+        assert_eq!(describe_access(ACCESS_READ | ACCESS_EXEC), "read+exec");
+        assert_eq!(describe_access(ACCESS_READ | ACCESS_WRITE_FILE), "read+write-existing-files");
+        assert_eq!(describe_access(ACCESS_READ | ACCESS_WRITE | ACCESS_EXEC), "read+write+exec");
     }
 }

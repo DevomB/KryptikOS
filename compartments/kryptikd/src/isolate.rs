@@ -112,6 +112,41 @@ pub fn write_id_maps(pid: libc::pid_t, outer_uid: u32, outer_gid: u32) -> Result
     Ok(())
 }
 
+/// Die (SIGKILL) when the parent process exits.
+///
+/// Cleared by fork, so every process in the chain sets it for itself. Not
+/// cleared by setresuid; cleared by execve of a set-id or file-capable
+/// binary, which no_new_privs makes irrelevant for the zone's command.
+pub fn die_with_parent() -> Result<(), IsolateError> {
+    check(
+        "prctl(PR_SET_PDEATHSIG)",
+        unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) },
+    )
+}
+
+/// Set the hostname in the current UTS namespace. Needs CAP_SYS_ADMIN in
+/// the user namespace that owns it - which the zone's root has once the id
+/// maps are written.
+pub fn set_hostname(name: &str) -> Result<(), IsolateError> {
+    check("sethostname", unsafe {
+        libc::sethostname(name.as_ptr() as *const libc::c_char, name.len())
+    })
+}
+
+/// Drop every supplementary group. Needs CAP_SETGID in the CURRENT user
+/// namespace: works for a privileged kryptikd before it creates the zone's
+/// namespace, fails with EPERM for an unprivileged one (which then cannot
+/// drop them at all, since setgroups is denied inside the new namespace).
+pub fn drop_supplementary_groups() -> Result<(), IsolateError> {
+    check("setgroups", unsafe { libc::setgroups(0, std::ptr::null()) })
+}
+
+/// How many supplementary groups this process carries.
+pub fn supplementary_group_count() -> usize {
+    let n = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
+    if n < 0 { 0 } else { n as usize }
+}
+
 /// Make mount propagation private.
 ///
 /// Without this, mounts performed inside the zone propagate back to the host

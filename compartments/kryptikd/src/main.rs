@@ -35,8 +35,13 @@ USAGE:
     kryptikd explain NAME             what starting this zone would do
     kryptikd run NAME -- CMD [ARGS]   create the zone and run CMD inside it
 
-    --rootfs DIR   base directory for zone filesystems
-                   (default: /var/lib/kryptik/zones)
+    --rootfs DIR   base directory for zone data (default: /var/lib/kryptik/zones);
+                   the zone sees its own directory as /home/NAME
+    --zone-uid N   host uid/gid the zone's root maps to. Required, and only
+    --zone-gid N   accepted, when kryptikd itself runs as root.
+
+Only descriptors 0, 1 and 2 reach the zone; the environment is rebuilt from
+an allowlist (see `kryptikd explain NAME`).
 
 Not yet implemented (Phase 5): stop, transfer, clipboard, and per-zone
 encrypted volumes. They exit with an error rather than pretending to work."
@@ -116,11 +121,23 @@ fn main() -> ExitCode {
         //   exit 0 -> syscall completed (NOT blocked)
         //   exit 5 -> child killed by SIGSYS (blocked, as intended)
         //   exit 1 -> could not install the filter
+        // kryptikd seccomp-test PROBE
+        //
+        // PROBE may also name an argument-rule probe rather than a syscall:
+        //   clone-newuser      clone(CLONE_NEWUSER)     -> expect SIGSYS   (exit 5)
+        //   clone3             clone3()                 -> expect ENOSYS   (exit 7)
+        //   socket-vsock       socket(AF_VSOCK)         -> expect EAFNOSUPPORT (exit 7)
+        //   socket-netlink-nf  socket(NETLINK_NETFILTER)-> expect EAFNOSUPPORT (exit 7)
+        //   socket-inet        socket(AF_INET)          -> expect success  (exit 0)
+        //   ioctl-tiocsti      ioctl(0, TIOCSTI)        -> expect SIGSYS   (exit 5)
         "seccomp-test" => {
             let Some(name) = args.get(1) else {
                 eprintln!("seccomp-test: expected a syscall name");
                 return ExitCode::from(2);
             };
+            if let Some(code) = cmd_seccomp_probe(name) {
+                return code;
+            }
             let Some(nr) = seccomp::syscall_by_name(name) else {
                 eprintln!("seccomp-test: unknown syscall {name:?}");
                 return ExitCode::from(2);
@@ -371,6 +388,102 @@ fn cmd_explain(dir: &Path, name: &str, args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Argument-rule probes for `seccomp-test`. Returns None when `name` is not
+/// a probe (so the plain syscall path runs instead).
+fn cmd_seccomp_probe(name: &str) -> Option<ExitCode> {
+    // The probe itself, run in the filtered child. Returns the child's exit
+    // code: 7 = refused with the intended errno, 0 = completed.
+    let probe: fn() -> i32 = match name {
+        "clone-newuser" => || unsafe {
+            let r = libc::syscall(
+                libc::SYS_clone,
+                (libc::CLONE_NEWUSER | libc::SIGCHLD) as libc::c_long,
+                0usize, 0usize, 0usize, 0usize,
+            );
+            if r == 0 {
+                libc::_exit(0); // we are the child in the nested namespace
+            }
+            if r > 0 {
+                libc::waitpid(r as libc::pid_t, std::ptr::null_mut(), 0);
+            }
+            0
+        },
+        "clone3" => || unsafe {
+            let r = libc::syscall(libc::SYS_clone3, std::ptr::null::<u8>(), 0usize);
+            if r < 0 && *libc::__errno_location() == libc::ENOSYS { 7 } else { 0 }
+        },
+        "socket-vsock" => || unsafe {
+            let r = libc::socket(40, libc::SOCK_STREAM, 0);
+            if r < 0 && *libc::__errno_location() == libc::EAFNOSUPPORT { 7 } else { 0 }
+        },
+        "socket-netlink-nf" => || unsafe {
+            let r = libc::socket(libc::AF_NETLINK, libc::SOCK_RAW, 12);
+            if r < 0 && *libc::__errno_location() == libc::EAFNOSUPPORT { 7 } else { 0 }
+        },
+        "socket-inet" => || unsafe {
+            let r = libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0);
+            if r >= 0 { 0 } else { 7 }
+        },
+        "ioctl-tiocsti" => || unsafe {
+            let c = b"x";
+            libc::ioctl(0, libc::TIOCSTI as _, c.as_ptr());
+            0
+        },
+        _ => return None,
+    };
+
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        eprintln!("seccomp-test: fork failed");
+        return Some(ExitCode::FAILURE);
+    }
+    if pid == 0 {
+        if seccomp::confine_zone().is_err() {
+            unsafe { libc::_exit(1) };
+        }
+        let rc = probe();
+        unsafe { libc::_exit(rc) };
+    }
+    let mut status: libc::c_int = 0;
+    unsafe { libc::waitpid(pid, &mut status, 0) };
+    let signalled = (status & 0x7f) != 0 && (status & 0x7f) != 0x7f;
+    let termsig = status & 0x7f;
+    let exitcode = (status >> 8) & 0xff;
+    Some(if signalled && termsig == libc::SIGSYS {
+        eprintln!("seccomp-test: {name} killed by SIGSYS (blocked)");
+        ExitCode::from(5)
+    } else if signalled {
+        eprintln!("seccomp-test: {name} killed by signal {termsig}");
+        ExitCode::from(6)
+    } else if exitcode == 7 {
+        eprintln!("seccomp-test: {name} refused with the intended errno");
+        ExitCode::from(7)
+    } else if exitcode == 1 {
+        eprintln!("seccomp-test: could not install filter");
+        ExitCode::FAILURE
+    } else {
+        eprintln!("seccomp-test: {name} COMPLETED - not blocked");
+        ExitCode::SUCCESS
+    })
+}
+
+fn run_options_from(args: &[String]) -> Result<spawn::RunOptions, String> {
+    let num = |flag: &str| -> Result<Option<u32>, String> {
+        match args.iter().position(|a| a == flag) {
+            None => Ok(None),
+            Some(i) => args
+                .get(i + 1)
+                .and_then(|v| v.parse::<u32>().ok())
+                .map(Some)
+                .ok_or_else(|| format!("{flag}: expected a numeric id")),
+        }
+    };
+    Ok(spawn::RunOptions {
+        zone_uid: num("--zone-uid")?,
+        zone_gid: num("--zone-gid")?,
+    })
+}
+
 fn cmd_run(dir: &Path, args: &[String]) -> ExitCode {
     let Some(name) = args.get(1).filter(|a| !a.starts_with("--")) else {
         eprintln!("run: expected a zone name");
@@ -395,8 +508,16 @@ fn cmd_run(dir: &Path, args: &[String]) -> ExitCode {
     };
     let base = rootfs_base_from(args);
     let rootfs = spawn::zone_rootfs(&zone, &base);
+    // Options live before `--`; the command after it is never inspected.
+    let opts = match run_options_from(&args[..sep]) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("run: {e}");
+            return ExitCode::from(2);
+        }
+    };
 
-    match spawn::run_in_zone(&zone, &rootfs, &cmd) {
+    match spawn::run_in_zone(&zone, &rootfs, &cmd, &opts) {
         Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
         Err(e) => {
             eprintln!("kryptikd: could not start zone {:?}: {e}", zone.name);
