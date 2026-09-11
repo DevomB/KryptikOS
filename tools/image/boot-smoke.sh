@@ -35,10 +35,10 @@ PASS=0; FAIL=0
 green() { printf '\033[32m  PASS\033[0m  %s\n' "$1"; PASS=$((PASS + 1)); }
 red()   { printf '\033[31m  FAIL\033[0m  %s\n' "$1"; FAIL=$((FAIL + 1)); }
 want()  { # want <description> <regex>
-    if grep -qE "$2" "$SERIAL"; then green "$1"; else red "$1"; fi
+    if grep -qE "$2" "$SERIAL_TXT"; then green "$1"; else red "$1"; fi
 }
 deny()  { # deny <description> <regex that must NOT appear>
-    if grep -qE "$2" "$SERIAL"; then red "$1"; else green "$1"; fi
+    if grep -qE "$2" "$SERIAL_TXT"; then red "$1"; else green "$1"; fi
 }
 
 log "booting for smoke"
@@ -48,6 +48,15 @@ qrc=$?
 SERIAL="${KRYPTIK_WORK}/logs/vm-serial.latest.log"
 [[ -f "$SERIAL" ]] || die "no serial log at ${SERIAL}"
 echo "serial log: ${SERIAL} ($(grep -c '' < "$SERIAL") lines)"
+
+# A serial console ends every line with CR LF, so every regex here anchored on
+# $ failed against a transcript that said exactly the right thing: the guest
+# reported all five mounts and all five were recorded as failures. Match
+# against a CR-stripped copy.
+SERIAL_TXT="$(mktemp)"
+trap 'rm -f "$SERIAL_TXT"' EXIT INT TERM
+tr -d "
+" < "$SERIAL" > "$SERIAL_TXT"
 echo
 
 # The transcript has to exist at all. Without this every check below could
@@ -63,7 +72,10 @@ want "pid 1 is s6-svscan"                'KRYPTIK_SMOKE: pid1=s6-svscan'
 want "os-release says kryptik"           'KRYPTIK_SMOKE: os_id=kryptik'
 want "the image carries its provenance"  'KRYPTIK_SMOKE: image_json_present=yes'
 want "compiler targets kryptik"          'KRYPTIK_SMOKE: compiler=x86_64-kryptik-linux-gnu'
-want "root came from a virtio disk"      'KRYPTIK_SMOKE: root_source=/dev/vda2'
+# Without an initramfs the kernel mounts root itself and /proc/mounts names
+# /dev/root rather than the underlying device. That is a correct observation,
+# not a failure; what matters is that root is the ext4 we wrote.
+want "root is ext4 from the disk"        'KRYPTIK_SMOKE: root_source=(/dev/root|/dev/vda2) ext4'
 
 echo
 echo "-- the mounts sysinit is responsible for"
@@ -82,8 +94,12 @@ echo "-- the hardening tunables reached the kernel"
 want "kptr_restrict=2"                   'sysctl kernel.kptr_restrict=2'
 want "dmesg_restrict=1"                  'sysctl kernel.dmesg_restrict=1'
 want "yama.ptrace_scope=3"               'sysctl kernel.yama.ptrace_scope=3'
-want "unprivileged_bpf_disabled=1"       'sysctl kernel.unprivileged_bpf_disabled=1'
-want "kexec_load_disabled=1"             'sysctl kernel.kexec_load_disabled=1'
+# These report "unreadable" on this kernel and that is the right answer: the
+# sysctls do not exist because the features are compiled out. Asserting a value
+# for a tunable that cannot exist asserts the wrong thing - absence by
+# compilation is the stronger guarantee, and s_config is where it is checked.
+want "unprivileged bpf tunable absent or 1" 'sysctl kernel.unprivileged_bpf_disabled=(unreadable|1)'
+want "kexec tunable absent (compiled out)"  'sysctl kernel.kexec_load_disabled=(unreadable|1)'
 
 echo
 echo "-- the zone model on this kernel"
@@ -95,6 +111,7 @@ echo
 echo "-- it shut down, rather than being killed"
 want "poweroff was requested"            'KRYPTIK_SMOKE: POWEROFF'
 want "the machine powered down"          'reboot: Power down|Power down'
+deny "shutdown fell back to sysrq"       'POWEROFF_DID_NOT_TAKE_EFFECT'
 deny "no kernel panic"                   'Kernel panic'
 deny "no oops"                           'Oops:|BUG:'
 [[ "$qrc" -ne 124 ]] && green "qemu exited without hitting the timeout" \

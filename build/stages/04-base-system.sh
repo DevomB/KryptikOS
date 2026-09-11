@@ -1294,7 +1294,12 @@ declare -a PACKAGES=(
     "init"        "s_init"
     # After init: the database lives beside the stage 2 scripts that look
     # for it. Before kryptikd: boot-check verifies both together.
-    "services"    "s_services"
+    # The service tree, the boot scripts and the sysctl fragments are inputs
+    # to this step, and `declare -f s_services` cannot see a file the recipe
+    # reads by path. Without their digest, editing sysinit.sh left the stamp
+    # looking valid and the old script installed - which is exactly the
+    # stale-stamp defect the kernel fragments had.
+    "services"    "s_services $(cat "${KRYPTIK_ROOT}"/build/services/*/* \n                                    "${KRYPTIK_ROOT}"/build/service-scripts/*.sh \n                                    "${KRYPTIK_ROOT}"/build/config/sysctl.d/*.conf \n                                2>/dev/null | sha256_of_stdin || echo nosvc)"
     # The path and the binary's content hash are arguments so that both are
     # part of this step's fingerprint; see s_kryptikd.
     # The zone definitions are an input too, not just the binary. kryptikd
