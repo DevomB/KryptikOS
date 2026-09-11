@@ -278,6 +278,50 @@ PINNED_FPRS=(
     # base64 ECDSA blob to gpg, and reported "inconclusive". See
     # is_pgp_signature() below.
     "7169605F62C751356D054A26A821E680E5FA6305"   # Thomas Wouters, CPython 3.12/3.13
+
+    # OpenSSL. Before these pins openssl - the most security-critical source in
+    # the tree - was reported "key not held" and fell to lock-only, because its
+    # keys are in no keyring here and --fetch-unknown-keys would have imported
+    # whatever key the signature itself named.
+    #
+    # Two keys are pinned because two are needed. The OMC key signed the
+    # currently pinned 3.3.1 (verified 2026-09-11: EXPKEYSIG, RSA/SHA-256 -
+    # a VALID signature made 2024-06-04 whose key has since EXPIRED, which is
+    # not revocation and which check_sig reports distinctly). The 2026 key
+    # signs 3.5.8, the LTS release proposed in
+    # provenance/PROPOSAL-openssl-expat.md, so the pin is in place before the
+    # bump rather than after it.
+    #
+    # WHERE THESE FINGERPRINTS COME FROM, precisely, because the two differ:
+    # https://openssl-library.org/source/ names B146 647E ... 2D40 in prose as
+    # "the canonical trust anchor for verifying OpenSSL Library release
+    # artifacts", and says it is cross-certified by the retired key
+    # BA5473A2B0587B07FB27CF2D216094DFD0CB81EF - which is not pinned here
+    # because nothing Kryptik pins or proposes is signed by it. The OMC
+    # fingerprint is not printed on that page; it is the fingerprint of a key
+    # in the pubkeys.asc bundle the same page links. Both therefore rest on TLS
+    # to openssl-library.org and neither has been confirmed out of band, the
+    # same standing as the python pin above. Retrieved 2026-09-11.
+    "EFC0A467D613CB83C7ED6D30D894E2CE8B3D79F5"   # OpenSSL OMC, signs 3.3.1
+    "B146647E45A7B33947AB226B2A2C87D161692D40"   # OpenSSL 2026 key, signs 3.5.8
+
+    # expat. Verified 2026-09-11: this key GOODSIGs both the currently pinned
+    # 2.6.2 and the 2.8.4 proposed in provenance/PROPOSAL-openssl-expat.md,
+    # RSA/SHA-256, surviving --weak-digest SHA1.
+    #
+    # BE CLEAR WHAT THIS PIN DOES NOT ESTABLISH. The fingerprint comes from
+    # gentoo.org's Web Key Directory, which serves it over HTTPS for
+    # sping@gentoo.org: a THIRD PARTY attesting that the key belongs to that
+    # address. It is not circular - the route does not depend on the signature,
+    # unlike a keyserver lookup by the id the signature names - but libexpat
+    # itself designates NO release signer and publishes no fingerprint on its
+    # site, in SECURITY.md, or in its release notes (checked 2026-09-11). So
+    # this pin means "the key gentoo.org publishes for sping@gentoo.org signed
+    # this", and not "expat's authorised release signer signed this". That gap
+    # is recorded as a machine-readable caveat in tools/source-notes.tsv under
+    # kind undesignated-signer, so the inventory reports it alongside the class
+    # rather than letting the class imply more than it should.
+    "3176EF7DB2367F1FCA4F306B1F9B0E909AF37285"   # Sebastian Pipping, expat
 )
 
 # All fingerprints of the key that made a signature: the primary and every
