@@ -157,6 +157,99 @@ fn up_lo() -> io::Result<()> {
     netlink::set_up("lo")
 }
 
+/// The IPv4 configuration an uplink carries: what DHCP or an installer left
+/// on it, read back from the kernel so it can be re-applied where the
+/// interface is going. Moving an interface between namespaces flushes its
+/// addresses and routes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Uplink {
+    pub addrs: Vec<([u8; 4], u8)>,
+    pub gateway: Option<[u8; 4]>,
+}
+
+impl std::fmt::Display for Uplink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.addrs.is_empty() {
+            write!(f, "no IPv4 address")?;
+        }
+        for (i, (a, p)) in self.addrs.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}.{}.{}.{}/{p}", a[0], a[1], a[2], a[3])?;
+        }
+        match self.gateway {
+            Some(g) => write!(f, " via {}.{}.{}.{}", g[0], g[1], g[2], g[3]),
+            None => write!(f, ", no default route"),
+        }
+    }
+}
+
+/// The IPv4 addresses (getifaddrs) and default gateway (/proc/self/net/route)
+/// of `nic` in the calling process's network namespace.
+pub fn uplink_config(nic: &str) -> io::Result<Uplink> {
+    let mut addrs = Vec::new();
+    let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: getifaddrs fills a list we walk and free with freeifaddrs;
+    // ifa_addr/ifa_netmask may be null and are checked; an AF_INET entry's
+    // sockaddr is a sockaddr_in.
+    if unsafe { libc::getifaddrs(&mut list) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut p = list;
+    while !p.is_null() {
+        unsafe {
+            let e = &*p;
+            let name = if e.ifa_name.is_null() { String::new() } else { CStr::from_ptr(e.ifa_name).to_string_lossy().into_owned() };
+            if name == nic && !e.ifa_addr.is_null() && (*e.ifa_addr).sa_family as i32 == libc::AF_INET && !e.ifa_netmask.is_null() {
+                let sa = &*(e.ifa_addr as *const libc::sockaddr_in);
+                let mask = &*(e.ifa_netmask as *const libc::sockaddr_in);
+                let prefix = u32::from_be(mask.sin_addr.s_addr).leading_ones() as u8;
+                addrs.push((sa.sin_addr.s_addr.to_ne_bytes(), prefix));
+            }
+            p = e.ifa_next;
+        }
+    }
+    unsafe { libc::freeifaddrs(list) };
+    let gateway = std::fs::read_to_string("/proc/self/net/route")?
+        .lines()
+        .skip(1)
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            // Iface Destination Gateway Flags ... Mask: a default route is
+            // destination and mask both zero on this interface.
+            if f.len() > 7 && f[0] == nic && f[1] == "00000000" && f[7] == "00000000" {
+                u32::from_str_radix(f[2], 16).ok().map(|g| g.to_ne_bytes())
+            } else {
+                None
+            }
+        })
+        .next();
+    Ok(Uplink { addrs, gateway })
+}
+
+/// Move `nic` into `zone_ns` and give it back the IPv4 configuration it had
+/// here: the kernel flushes addresses and routes on a namespace move, and a
+/// nic zone with a bare interface would route every zone to nothing. What
+/// travels is what was there - no DHCP is spoken here; a client in the nic
+/// zone can take over the lease later. Returns what was carried.
+fn carry_nic(nic: &str, zone_ns: i32) -> Result<Uplink, NetError> {
+    let cfg = uplink_config(nic).map_err(|e| io(&format!("read the configuration of {nic}"), e))?;
+    netlink::set_netns(nic, zone_ns).map_err(|e| io(&format!("move {nic} into the nic zone"), e))?;
+    netlink::with_netns(zone_ns, || {
+        for (a, p) in &cfg.addrs {
+            netlink::add_addr4(nic, *a, *p)?;
+        }
+        netlink::set_up(nic)?;
+        if let Some(gw) = cfg.gateway {
+            netlink::add_default_route4(gw, nic)?;
+        }
+        Ok(())
+    })
+    .map_err(|e| io(&format!("configure {nic} inside the nic zone"), e))?;
+    Ok(cfg)
+}
+
 /// The nic zone: create the bridge in its namespace and move the physical
 /// interface into it. Called by the root parent with the zone's netns fd.
 pub fn plumb_nic_zone(zone: &Zone, zone_ns: i32, zones_dir: &Path) -> Result<(), NetError> {
@@ -223,7 +316,8 @@ fn plumb_nic_zone_bridge(zone: &Zone, zone_ns: i32) -> Result<(), NetError> {
                 "[network] nic = {n:?} is not an interface in this namespace"
             )));
         }
-        netlink::set_netns(n, zone_ns).map_err(|e| io(&format!("move {n} into the nic zone"), e))?;
+        let carried = carry_nic(n, zone_ns)?;
+        eprintln!("kryptikd: zone {:?}: {n} moved in with {carried}", zone.name);
     } else {
         eprintln!(
             "kryptikd: zone {:?} declares no [network] nic: bridge only, no interface moved",
@@ -234,8 +328,12 @@ fn plumb_nic_zone_bridge(zone: &Zone, zone_ns: i32) -> Result<(), NetError> {
         up_lo()?;
         netlink::create_bridge(BRIDGE)?;
         netlink::add_addr4(BRIDGE, netlink::BRIDGE_V4, 24)?;
-        netlink::add_addr6(BRIDGE, netlink::BRIDGE_V6, 64)?;
         netlink::set_up(BRIDGE)?;
+        // IPv6 is additive here as on the routed side: a nic zone that
+        // cannot have it still starts, with IPv4, and says so.
+        if let Err(e) = netlink::add_addr6(BRIDGE, netlink::BRIDGE_V6, 64) {
+            eprintln!("kryptikd: zone {:?}: IPv6 on {BRIDGE} not configured ({e}); IPv4 is", zone.name);
+        }
         // Forward between the bridge and the uplink. Without NAT this only
         // reaches the world behind something that accepts any source address
         // (QEMU user networking does); behind a real NIC the routed zones'
@@ -535,6 +633,75 @@ mod tests {
             0 => {}
             77 => eprintln!("no unprivileged user namespace; skipping"),
             other => panic!("routed zone IPv4 path with IPv6 disabled: failed at step {other}"),
+        }
+    }
+
+    /// Moving an interface between namespaces flushes what was configured on
+    /// it. Kernel-backed: a veth end plays the uplink with the configuration
+    /// DHCP leaves (address, prefix, default gateway); after `carry_nic` it
+    /// is gone from here and up, addressed and routed inside the holder's
+    /// namespace, read back through the same code the launcher uses.
+    #[test]
+    fn the_uplink_configuration_travels_with_the_nic() {
+        use crate::netlink::tests::{in_userns_netns, spawn_netns_holder, step};
+        let rc = in_userns_netns(|| {
+            let (holder, zone_ns) = match spawn_netns_holder() {
+                Ok(v) => v,
+                Err(c) => return c,
+            };
+            let r: Result<(), i32> = (|| {
+                step(1, netlink::create_veth("up0", "up1", None))?;
+                step(2, netlink::set_up("up1"))?;
+                step(3, netlink::set_up("up0"))?;
+                step(4, netlink::add_addr4("up0", [10, 77, 0, 5], 24))?;
+                step(5, netlink::add_default_route4([10, 77, 0, 1], "up0"))?;
+                let before = uplink_config("up0").map_err(|e| {
+                    eprintln!("uplink_config: {e}");
+                    6
+                })?;
+                if before.addrs != vec![([10, 77, 0, 5], 24)] || before.gateway != Some([10, 77, 0, 1]) {
+                    eprintln!("read back {before}");
+                    return Err(7);
+                }
+                let carried = carry_nic("up0", zone_ns).map_err(|e| {
+                    eprintln!("carry_nic: {e}");
+                    8
+                })?;
+                if carried != before {
+                    return Err(9);
+                }
+                // Gone from here...
+                if netlink::is_up("up0").is_ok() {
+                    return Err(10);
+                }
+                // ...and present, up and configured there.
+                let (after, up) = netlink::with_netns(zone_ns, || Ok((uplink_config("up0")?, netlink::is_up("up0")?)))
+                    .map_err(|e| {
+                        eprintln!("inside the zone: {e}");
+                        11
+                    })?;
+                if !up {
+                    return Err(12);
+                }
+                if after != before {
+                    eprintln!("inside the zone: {after}; expected {before}");
+                    return Err(13);
+                }
+                Ok(())
+            })();
+            unsafe {
+                libc::kill(holder, libc::SIGKILL);
+                libc::close(zone_ns);
+            }
+            match r {
+                Ok(()) => 0,
+                Err(c) => c,
+            }
+        });
+        match rc {
+            0 => {}
+            77 => eprintln!("no unprivileged user namespace; skipping"),
+            other => panic!("uplink carry failed at step {other}"),
         }
     }
 
