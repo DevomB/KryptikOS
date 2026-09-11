@@ -22,8 +22,26 @@ case "${1:-}" in
     *)      die "unknown argument: $1 (expected --lock, --list, or nothing)" ;;
 esac
 
+# Self-test hook. tools/test-fetch-sources.sh substitutes a small manifest of
+# file:// URLs so the checksum logic below - which is the part that enforces
+# sources.lock - can be driven offline. Only the manifest is substituted; the
+# download, the hashing and the refusal all run as they do in production.
+#
+# Gated, because a substituted manifest is a substituted definition of what
+# Kryptik is built from.
+if [[ -n "${KRYPTIK_FETCH_MANIFEST:-}" ]]; then
+    [[ "${KRYPTIK_FETCH_SELFTEST:-0}" == "1" ]] || die \
+"KRYPTIK_FETCH_MANIFEST is set but KRYPTIK_FETCH_SELFTEST is not.
+Refusing to fetch or lock against a substituted manifest."
+    warn "SELF-TEST MODE: the manifest is substituted, not the real one"
+fi
+
 # name|version|url
 manifest() {
+    if [[ -n "${KRYPTIK_FETCH_MANIFEST:-}" ]]; then
+        cat "$KRYPTIK_FETCH_MANIFEST"
+        return
+    fi
     local gnu="$MIRROR_GNU"
     cat <<MANIFEST
 binutils|${V_BINUTILS}|${gnu}/binutils/binutils-${V_BINUTILS}.tar.xz
