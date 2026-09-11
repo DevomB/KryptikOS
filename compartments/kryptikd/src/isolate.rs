@@ -94,22 +94,119 @@ pub fn unshare_namespaces(flags: libc::c_int) -> Result<(), IsolateError> {
 ///
 /// setgroups must be denied BEFORE writing gid_map, or the kernel refuses the
 /// gid_map write. This ordering is a kernel requirement, not a preference.
-pub fn write_id_maps(pid: libc::pid_t, outer_uid: u32, outer_gid: u32) -> Result<(), IsolateError> {
+///
+/// `with_nobody` adds a second line mapping the zone's `nobody` (65534) to
+/// `outer + 65534`, so files a zone creates as nobody are owned by a host uid
+/// inside the zone's own range rather than by the kernel's overflow id. Only a
+/// writer with CAP_SETUID in the parent namespace may map ids other than its
+/// own, so this is the privileged launch only; an unprivileged launch writes
+/// the single line the kernel permits.
+pub fn write_id_maps(
+    pid: libc::pid_t,
+    outer_uid: u32,
+    outer_gid: u32,
+    with_nobody: bool,
+) -> Result<(), IsolateError> {
     use std::fs;
 
     let deny = format!("/proc/{pid}/setgroups");
     fs::write(&deny, "deny")
         .map_err(|e| IsolateError::Refused(format!("{deny}: {e}")))?;
 
+    let map = |outer: u32| {
+        let mut m = format!("0 {outer} 1\n");
+        if with_nobody {
+            m.push_str(&format!("65534 {} 1\n", outer + 65534));
+        }
+        m
+    };
+
     let uid_map = format!("/proc/{pid}/uid_map");
-    fs::write(&uid_map, format!("0 {outer_uid} 1\n"))
+    fs::write(&uid_map, map(outer_uid))
         .map_err(|e| IsolateError::Refused(format!("{uid_map}: {e}")))?;
 
     let gid_map = format!("/proc/{pid}/gid_map");
-    fs::write(&gid_map, format!("0 {outer_gid} 1\n"))
+    fs::write(&gid_map, map(outer_gid))
         .map_err(|e| IsolateError::Refused(format!("{gid_map}: {e}")))?;
 
     Ok(())
+}
+
+/// The kernel's own answer to "may an unprivileged process create a user
+/// namespace?", read from whichever knob this kernel has.
+///
+/// linux-hardened exposes `kernel.unprivileged_userns_clone` (0 = restricted);
+/// Ubuntu's AppArmor exposes `kernel.apparmor_restrict_unprivileged_userns`
+/// (1 = restricted). `None` when neither exists: a stock kernel with no
+/// restriction knob, which is not the target and must not be mistaken for it.
+pub fn userns_restriction_sysctl() -> Option<(bool, &'static str)> {
+    let read = |p: &str| std::fs::read_to_string(p).ok().and_then(|s| s.trim().parse::<u32>().ok());
+    if let Some(v) = read("/proc/sys/kernel/unprivileged_userns_clone") {
+        return Some((v == 0, "kernel.unprivileged_userns_clone"));
+    }
+    if let Some(v) = read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") {
+        return Some((v == 1, "kernel.apparmor_restrict_unprivileged_userns (emulation of the target)"));
+    }
+    None
+}
+
+/// Prove the restriction rather than read it: fork, drop to uid 65534 when
+/// we are root, and try `unshare(CLONE_NEWUSER)`.
+///
+/// Returns `Ok(true)` when the kernel refused with EPERM (restricted),
+/// `Ok(false)` when the namespace was created (not restricted), and an error
+/// when the probe itself could not run. A sysctl says what is configured; this
+/// says what the kernel does, which is what the contract (Design 01, P2) is
+/// about.
+pub fn probe_userns_restriction() -> Result<bool, IsolateError> {
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return Err(IsolateError::Syscall {
+            call: "fork",
+            errno: io::Error::last_os_error().raw_os_error().unwrap_or(0),
+        });
+    }
+    if pid == 0 {
+        unsafe {
+            if libc::geteuid() == 0 {
+                // Become nobody with no supplementary groups: an ordinary
+                // unprivileged process, which is what P2 constrains.
+                if libc::setgroups(0, std::ptr::null()) < 0
+                    || libc::setresgid(65534, 65534, 65534) < 0
+                    || libc::setresuid(65534, 65534, 65534) < 0
+                {
+                    libc::_exit(3);
+                }
+            }
+            if libc::unshare(libc::CLONE_NEWUSER) == 0 {
+                libc::_exit(0);
+            }
+            let e = *libc::__errno_location();
+            libc::_exit(if e == libc::EPERM { 1 } else { 2 });
+        }
+    }
+    let mut status: libc::c_int = 0;
+    loop {
+        let r = unsafe { libc::waitpid(pid, &mut status, 0) };
+        if r == pid {
+            break;
+        }
+        if r < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+            continue;
+        }
+        return Err(IsolateError::Refused("probe: waitpid failed".into()));
+    }
+    if !libc::WIFEXITED(status) {
+        return Err(IsolateError::Refused("probe child died by signal".into()));
+    }
+    match libc::WEXITSTATUS(status) {
+        0 => Ok(false),
+        1 => Ok(true),
+        3 => Err(IsolateError::Refused("probe could not drop to uid 65534".into())),
+        _ => Err(IsolateError::Refused(
+            "unshare(CLONE_NEWUSER) failed with something other than EPERM".into(),
+        )),
+    }
 }
 
 /// Die (SIGKILL) when the parent process exits.

@@ -24,6 +24,11 @@ landlock = "policy/vault.landlock"
 memory_max = "2G"
 pids_max   = 128
 
+[identity]
+# Fixed host uid/gid range for this zone: root inside maps to 393216,
+# nobody to 458750. Never derived from zone order; see docs/design/01.
+uid_base = 393216
+
 [ui]
 # Load-bearing, not decoration. If a user cannot tell at a glance which zone a
 # password prompt belongs to, compartmentalization has failed at the only layer

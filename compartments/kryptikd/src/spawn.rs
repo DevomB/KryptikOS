@@ -268,19 +268,34 @@ struct Identity {
     privileged: bool,
 }
 
-fn launch_identity(opts: &RunOptions) -> Result<Identity, SpawnError> {
+fn launch_identity(opts: &RunOptions, zone: &Zone) -> Result<Identity, SpawnError> {
     let euid = unsafe { libc::geteuid() };
     if euid == 0 {
+        // The zone file is the authority. A declared range is fixed for the
+        // life of the zone's data, so a command-line override of it would
+        // silently change who owns that data; refuse the combination rather
+        // than pick one.
+        if let Some(base) = zone.uid_base {
+            if opts.zone_uid.is_some() || opts.zone_gid.is_some() {
+                return Err(SpawnError::Setup(format!(
+                    "zone {:?} declares [identity] uid_base = {base}; --zone-uid/--zone-gid \
+                     are not accepted for a zone with a declared identity",
+                    zone.name
+                )));
+            }
+            return Ok(Identity { uid: base, gid: base, privileged: true });
+        }
         match (opts.zone_uid, opts.zone_gid) {
             (Some(uid), Some(gid)) if uid != 0 && gid != 0 => Ok(Identity { uid, gid, privileged: true }),
-            _ => Err(SpawnError::Setup(
-                "kryptikd is running as root. Mapping the zone's root to host uid 0 \
-                 would make every permission check inside the zone succeed as the \
-                 real superuser on everything the zone can reach. Pass \
-                 --zone-uid UID --zone-gid GID (both non-zero) to map the zone to a \
-                 dedicated unprivileged host identity, or run kryptikd unprivileged."
-                    .into(),
-            )),
+            _ => Err(SpawnError::Setup(format!(
+                "kryptikd is running as root and zone {:?} declares no [identity]. \
+                 Mapping the zone's root to host uid 0 would make every permission \
+                 check inside the zone succeed as the real superuser on everything the \
+                 zone can reach. Add `[identity] uid_base = N` to the zone file (a \
+                 multiple of 65536, at least 131072), or pass --zone-uid UID --zone-gid \
+                 GID (both non-zero), or run kryptikd unprivileged.",
+                zone.name
+            ))),
         }
     } else {
         if opts.zone_uid.is_some() || opts.zone_gid.is_some() {
@@ -358,7 +373,21 @@ pub fn run_in_zone(
         );
     }
 
-    let experimental = std::env::var("KRYPTIK_EXPERIMENTAL").as_deref() == Ok("1");
+    // KRYPTIK_EXPERIMENTAL is a developer override. On a kernel that
+    // restricts unprivileged user namespaces - the target, or its emulation -
+    // a root launch is the real thing, and the override is ignored (Design
+    // 01, P6): a development flag must not be able to start a zone on a
+    // production kernel without the guarantees its file declares.
+    let mut experimental = std::env::var("KRYPTIK_EXPERIMENTAL").as_deref() == Ok("1");
+    if experimental && unsafe { libc::geteuid() } == 0 {
+        if let Some((true, knob)) = isolate::userns_restriction_sysctl() {
+            eprintln!(
+                "kryptikd: KRYPTIK_EXPERIMENTAL is ignored for a root launch on a kernel that \
+                 restricts unprivileged user namespaces ({knob})"
+            );
+            experimental = false;
+        }
+    }
     let mut unsupported: Vec<String> = Vec::new();
     match zone.storage {
         StorageMode::Encrypted => unsupported.push(
@@ -422,7 +451,7 @@ pub fn run_in_zone(
     // entry from a crashed launcher is reclaimed rather than obeyed.
     let entry = registry::claim(&zone.name).map_err(|e| SpawnError::Setup(e.to_string()))?;
 
-    let id = launch_identity(opts)?;
+    let id = launch_identity(opts, zone)?;
     entry
         .set_identity(id.uid, id.gid)
         .map_err(|e| SpawnError::Setup(e.to_string()))?;
@@ -548,7 +577,7 @@ pub fn run_in_zone(
 
     // Map the child's root to the zone identity. This is what makes "root
     // inside the zone" mean root in a namespace that owns nothing outside it.
-    if let Err(e) = isolate::write_id_maps(pid, id.uid, id.gid) {
+    if let Err(e) = isolate::write_id_maps(pid, id.uid, id.gid, id.privileged) {
         // Close our end so the child reads EOF and dies rather than blocking.
         mapped.close_write();
         let _ = wait_for(pid);
@@ -1002,6 +1031,17 @@ pub fn explain(zone: &Zone, rootfs: &str) -> String {
     };
 
     let home = rootfs::zone_home(&zone.name);
+    let identity_line = match zone.uid_base {
+        Some(b) => format!(
+            "identity   uid_base {b}: a root launch maps zone root -> host {b}, nobody -> {} \
+             (range {b}..{})",
+            b + 65534,
+            b + 65535
+        ),
+        None => "identity   none declared: a root launch needs --zone-uid/--zone-gid; \
+                 check --target refuses this zone"
+            .to_string(),
+    };
 
     // For an ephemeral zone the persistent directory is NOT visible inside -
     // that is the whole change - so the line must not keep claiming it is. It
@@ -1026,6 +1066,7 @@ pub fn explain(zone: &Zone, rootfs: &str) -> String {
          namespaces {}\n\
          hostname   {}\n\
          {}\n\
+         {}\n\
          storage    {}\n\
          root       tmpfs, read-only; {} bound read-only recursively\n\
          /etc       synthesized (passwd, group, hosts, nsswitch) + read-only {}\n\
@@ -1037,6 +1078,7 @@ pub fn explain(zone: &Zone, rootfs: &str) -> String {
         zone.name,
         ns.join(", "),
         zone.name,
+        identity_line,
         data_line,
         storage,
         rootfs::SYSTEM_PATHS.join(" "),
@@ -1068,6 +1110,21 @@ mod tests {
              [storage]\nmode = \"ephemeral\"\nsize = \"256M\"\n[ui]\nborder_color = \"#123456\"\n"
         ))
         .unwrap()
+    }
+
+    fn z_identity(base: u32) -> Zone {
+        Zone::from_str(&format!(
+            "[zone]\nname = \"t\"\n[network]\nmode = \"routed\"\n\
+             [storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n\
+             [identity]\nuid_base = {base}\n[ui]\nborder_color = \"#123456\"\n"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn explain_names_the_identity_range_or_its_absence() {
+        assert!(explain(&z_identity(196608), "/tmp/t").contains("uid_base 196608"));
+        assert!(explain(&z("routed"), "/tmp/t").contains("none declared"));
     }
 
     fn z_encrypted() -> Zone {
@@ -1171,9 +1228,9 @@ mod tests {
             // test below only when not root.
             return;
         }
-        let err = launch_identity(&RunOptions { zone_uid: Some(1001), zone_gid: Some(1001) }).unwrap_err();
+        let err = launch_identity(&RunOptions { zone_uid: Some(1001), zone_gid: Some(1001) }, &z("routed")).unwrap_err();
         assert!(err.to_string().contains("need root"), "{err}");
-        let id = launch_identity(&RunOptions::default()).unwrap();
+        let id = launch_identity(&RunOptions::default(), &z("routed")).unwrap();
         assert_eq!(id.uid, unsafe { libc::getuid() });
         assert!(!id.privileged);
     }
@@ -1183,9 +1240,14 @@ mod tests {
         if unsafe { libc::geteuid() } != 0 {
             return;
         }
-        assert!(launch_identity(&RunOptions::default()).is_err());
-        assert!(launch_identity(&RunOptions { zone_uid: Some(0), zone_gid: Some(0) }).is_err());
-        let id = launch_identity(&RunOptions { zone_uid: Some(100000), zone_gid: Some(100000) }).unwrap();
+        assert!(launch_identity(&RunOptions::default(), &z("routed")).is_err());
+        assert!(launch_identity(&RunOptions { zone_uid: Some(0), zone_gid: Some(0) }, &z("routed")).is_err());
+        let id = launch_identity(&RunOptions { zone_uid: Some(100000), zone_gid: Some(100000) }, &z("routed")).unwrap();
         assert!(id.privileged);
+        // A declared identity wins, and an override of it is refused.
+        let id = launch_identity(&RunOptions::default(), &z_identity(196608)).unwrap();
+        assert_eq!((id.uid, id.gid), (196608, 196608));
+        let err = launch_identity(&RunOptions { zone_uid: Some(100000), zone_gid: Some(100000) }, &z_identity(196608)).unwrap_err();
+        assert!(err.to_string().contains("not accepted"), "{err}");
     }
 }

@@ -82,7 +82,22 @@ pub struct Zone {
     pub memory_max: Option<String>,
     pub pids_max: Option<u32>,
     pub border_color: String,
+    /// The zone's fixed host identity range: `[identity] uid_base = N`.
+    ///
+    /// A privileged launch maps the zone's root to host uid/gid N and its
+    /// `nobody` to N + 65534; the whole 65536-wide range is reserved to the
+    /// zone. Declared in the zone file, never derived from zone order, so
+    /// adding a zone can never change which host uid owns another zone's
+    /// files. `None` means a root launch must name an identity with
+    /// `--zone-uid/--zone-gid`, and is refused on the target (`check --target`).
+    pub uid_base: Option<u32>,
 }
+
+/// Smallest permitted `identity.uid_base`, and the alignment every base must
+/// have. 131072 = 2 * 65536: the first aligned range clear of the host's own
+/// users and of the conventional first subordinate range.
+pub const IDENTITY_MIN: u32 = 131072;
+pub const IDENTITY_STRIDE: u32 = 65536;
 
 #[derive(Debug)]
 pub enum ZoneError {
@@ -115,6 +130,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "storage.mode", "storage.volume", "storage.size", "storage.unlock", "storage.wipe_keys",
     "policy.seccomp", "policy.landlock",
     "limits.memory_max", "limits.pids_max",
+    "identity.uid_base",
     "ui.border_color",
 ];
 
@@ -350,7 +366,28 @@ impl Zone {
             }
         }
 
+        let uid_base = match kv.get("identity.uid_base") {
+            None => None,
+            Some(v) => {
+                let n = v.parse::<u32>().ok().ok_or_else(|| {
+                    bad("identity.uid_base", v, "an unsigned integer")
+                })?;
+                if n < IDENTITY_MIN
+                    || n % IDENTITY_STRIDE != 0
+                    || n.checked_add(IDENTITY_STRIDE - 1).is_none()
+                {
+                    return Err(bad(
+                        "identity.uid_base",
+                        v,
+                        "a multiple of 65536, at least 131072, with room for a 65536-wide range",
+                    ));
+                }
+                Some(n)
+            }
+        };
+
         let zone = Zone {
+            uid_base,
             description: get("zone.description").unwrap_or_default(),
             bridge: get("network.bridge"),
             volume: get("storage.volume"),
@@ -494,6 +531,23 @@ pub fn check_invariants(zones: &[Zone]) -> Result<(), ZoneError> {
     for z in zones {
         if !seen.insert(&z.name) {
             return Err(ZoneError::Invalid(format!("duplicate zone name {:?}", z.name)));
+        }
+    }
+
+    // Two zones with the same identity range would own each other's files on
+    // the host and could not be told apart by anything that authenticates by
+    // uid (the broker, the compositor proxy). Bases are aligned to the stride,
+    // so distinct bases are disjoint ranges; equality is the whole check.
+    let mut bases: HashMap<u32, &str> = HashMap::new();
+    for z in zones {
+        if let Some(b) = z.uid_base {
+            if let Some(prev) = bases.insert(b, &z.name) {
+                return Err(ZoneError::Invalid(format!(
+                    "zones {:?} and {:?} both declare identity.uid_base = {b}; \
+                     identity ranges must not overlap",
+                    prev, z.name
+                )));
+            }
         }
     }
 
@@ -655,6 +709,39 @@ border_color = "#000000"
         let bad = format!("{VAULT}\n[storage]\nunlock = \"never\"\n");
         let err = Zone::from_str(&bad).unwrap_err();
         assert!(format!("{err}").contains("storage.unlock"), "got: {err}");
+    }
+
+    #[test]
+    fn identity_base_is_aligned_and_above_the_floor() {
+        for bad in ["1000", "100000", "131073", "196607", "0", "x"] {
+            let t = VAULT.replace("[ui]", &format!("[identity]\nuid_base = {bad}\n[ui]"));
+            let err = Zone::from_str(&t).unwrap_err();
+            assert!(format!("{err}").contains("identity.uid_base"), "{bad}: {err}");
+        }
+        for ok in ["131072", "196608", "4294901760"] {
+            let t = VAULT.replace("[ui]", &format!("[identity]\nuid_base = {ok}\n[ui]"));
+            assert_eq!(Zone::from_str(&t).unwrap().uid_base, Some(ok.parse().unwrap()), "{ok}");
+        }
+        // 4294967296 - 65536 = 4294901760 is the last base with room; one
+        // stride above it does not fit in a u32.
+        assert!(Zone::from_str(&VAULT.replace("[ui]", "[identity]\nuid_base = 4294967295\n[ui]")).is_err());
+        assert_eq!(Zone::from_str(VAULT).unwrap().uid_base, None);
+    }
+
+    #[test]
+    fn identity_ranges_must_not_collide() {
+        let with = |name: &str, colour: &str, base: u32| {
+            let text = format!(
+                "[zone]\nname = \"{name}\"\n[network]\nmode = \"routed\"\n\
+                 [storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n\
+                 [identity]\nuid_base = {base}\n[ui]\nborder_color = \"{colour}\"\n"
+            );
+            Zone::from_str(&text).unwrap()
+        };
+        let nic = zone_with("net", "nic", "#111111");
+        let err = check_invariants(&[nic.clone(), with("a", "#222222", 131072), with("b", "#333333", 131072)]).unwrap_err();
+        assert!(format!("{err}").contains("identity ranges must not overlap"), "{err}");
+        assert!(check_invariants(&[nic, with("a", "#222222", 131072), with("b", "#333333", 196608)]).is_ok());
     }
 
     #[test]

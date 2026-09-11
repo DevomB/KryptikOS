@@ -21,5 +21,10 @@ landlock = "policy/dev.landlock"
 memory_max = "12G"
 pids_max   = 1024
 
+[identity]
+# Fixed host uid/gid range for this zone: root inside maps to 131072,
+# nobody to 196606. Never derived from zone order; see docs/design/01.
+uid_base = 131072
+
 [ui]
 border_color = "#b5651d"
