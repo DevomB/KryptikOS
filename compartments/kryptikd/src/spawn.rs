@@ -34,9 +34,11 @@ use crate::cgroup;
 use crate::isolate;
 use crate::registry;
 use crate::landlock;
+use crate::netzone;
+use crate::policy;
 use crate::rootfs;
 use crate::seccomp;
-use crate::zone::{NetworkMode, StorageMode, Zone};
+use crate::zone::{StorageMode, Zone};
 
 #[derive(Debug)]
 pub enum SpawnError {
@@ -62,12 +64,14 @@ fn errno() -> i32 {
 }
 
 /// Options from the command line that change how the zone is launched.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 pub struct RunOptions {
     /// Host uid the zone's root maps to. Only meaningful, and only accepted,
     /// when kryptikd itself runs as root.
     pub zone_uid: Option<u32>,
     pub zone_gid: Option<u32>,
+    /// The zone directory, against which `[policy]` paths resolve.
+    pub zones_dir: std::path::PathBuf,
 }
 
 /// Seconds a zone gets to exit after a forwarded SIGINT/SIGTERM before its
@@ -181,7 +185,13 @@ impl SyncPipe {
     }
 
     fn signal(&self) {
-        let b = [1u8];
+        self.signal_byte(1)
+    }
+
+    /// Like `signal`, with a value the peer can read back. Used on `mapped`
+    /// to tell the intermediate whether the parent built a network path.
+    fn signal_byte(&self, v: u8) {
+        let b = [v];
         loop {
             let r = unsafe { libc::write(self.write, b.as_ptr() as *const libc::c_void, 1) };
             if r < 0 && errno() == libc::EINTR {
@@ -193,11 +203,15 @@ impl SyncPipe {
     }
 
     fn wait(&self) -> Result<(), SpawnError> {
+        self.wait_byte().map(|_| ())
+    }
+
+    fn wait_byte(&self) -> Result<u8, SpawnError> {
         let mut b = [0u8];
         loop {
             let r = unsafe { libc::read(self.read, b.as_mut_ptr() as *mut libc::c_void, 1) };
             if r == 1 {
-                return Ok(());
+                return Ok(b[0]);
             }
             if r == 0 {
                 return Err(SpawnError::Setup("peer exited before signalling".into()));
@@ -268,19 +282,34 @@ struct Identity {
     privileged: bool,
 }
 
-fn launch_identity(opts: &RunOptions) -> Result<Identity, SpawnError> {
+fn launch_identity(opts: &RunOptions, zone: &Zone) -> Result<Identity, SpawnError> {
     let euid = unsafe { libc::geteuid() };
     if euid == 0 {
+        // The zone file is the authority. A declared range is fixed for the
+        // life of the zone's data, so a command-line override of it would
+        // silently change who owns that data; refuse the combination rather
+        // than pick one.
+        if let Some(base) = zone.uid_base {
+            if opts.zone_uid.is_some() || opts.zone_gid.is_some() {
+                return Err(SpawnError::Setup(format!(
+                    "zone {:?} declares [identity] uid_base = {base}; --zone-uid/--zone-gid \
+                     are not accepted for a zone with a declared identity",
+                    zone.name
+                )));
+            }
+            return Ok(Identity { uid: base, gid: base, privileged: true });
+        }
         match (opts.zone_uid, opts.zone_gid) {
             (Some(uid), Some(gid)) if uid != 0 && gid != 0 => Ok(Identity { uid, gid, privileged: true }),
-            _ => Err(SpawnError::Setup(
-                "kryptikd is running as root. Mapping the zone's root to host uid 0 \
-                 would make every permission check inside the zone succeed as the \
-                 real superuser on everything the zone can reach. Pass \
-                 --zone-uid UID --zone-gid GID (both non-zero) to map the zone to a \
-                 dedicated unprivileged host identity, or run kryptikd unprivileged."
-                    .into(),
-            )),
+            _ => Err(SpawnError::Setup(format!(
+                "kryptikd is running as root and zone {:?} declares no [identity]. \
+                 Mapping the zone's root to host uid 0 would make every permission \
+                 check inside the zone succeed as the real superuser on everything the \
+                 zone can reach. Add `[identity] uid_base = N` to the zone file (a \
+                 multiple of 65536, at least 131072), or pass --zone-uid UID --zone-gid \
+                 GID (both non-zero), or run kryptikd unprivileged.",
+                zone.name
+            ))),
         }
     } else {
         if opts.zone_uid.is_some() || opts.zone_gid.is_some() {
@@ -358,36 +387,21 @@ pub fn run_in_zone(
         );
     }
 
-    // The same treatment for the other half of a zone definition that this
-    // build cannot yet honour.
-    //
-    // `network.mode = "routed"` means "this zone reaches the outside through
-    // the net zone, filtered". What it gets today is an empty net namespace:
-    // loopback, and zero routes. Measured, not assumed - a routed zone reports
-    //     ifaces: lo
-    //     routes: 0
-    //
-    // This is a WARNING and not a refusal, unlike encrypted storage, and the
-    // difference is which way the gap points. A zone told it has an encrypted
-    // volume would write secrets to a plain directory: the configuration
-    // promises protection the zone does not have, so it must not start. A
-    // routed zone that gets no network has MORE isolation than it asked for,
-    // not less - nothing leaks because of it. What it breaks is the operator's
-    // expectation, and four of the six shipped zones are routed, so refusing
-    // would make the system unusable to say something a sentence can say.
-    //
-    // It goes away when M3 lands, and until then it is said every launch
-    // rather than once in a design document.
-    if zone.network == NetworkMode::Routed {
-        eprintln!(
-            "kryptikd: zone {:?}: network.mode is \"routed\", but routed networking is \
-             NOT IMPLEMENTED: this zone gets an empty net namespace - loopback only, no \
-             routes, no path out. It is isolated, and it is not connected.",
-            zone.name
-        );
+    // KRYPTIK_EXPERIMENTAL is a developer override. On a kernel that
+    // restricts unprivileged user namespaces - the target, or its emulation -
+    // a root launch is the real thing, and the override is ignored (Design
+    // 01, P6): a development flag must not be able to start a zone on a
+    // production kernel without the guarantees its file declares.
+    let mut experimental = std::env::var("KRYPTIK_EXPERIMENTAL").as_deref() == Ok("1");
+    if experimental && unsafe { libc::geteuid() } == 0 {
+        if let Some((true, knob)) = isolate::userns_restriction_sysctl() {
+            eprintln!(
+                "kryptikd: KRYPTIK_EXPERIMENTAL is ignored for a root launch on a kernel that \
+                 restricts unprivileged user namespaces ({knob})"
+            );
+            experimental = false;
+        }
     }
-
-    let experimental = std::env::var("KRYPTIK_EXPERIMENTAL").as_deref() == Ok("1");
     let mut unsupported: Vec<String> = Vec::new();
     match zone.storage {
         StorageMode::Encrypted => unsupported.push(
@@ -401,13 +415,28 @@ pub fn run_in_zone(
         // swap - see the note printed below, and docs/design/02.
         StorageMode::Ephemeral => {}
     }
-    if zone.seccomp.is_some() || zone.landlock.is_some() {
+    // A seccomp policy file is applied (docs/design/07); a Landlock policy
+    // file is not, and a zone naming one is still refused without the
+    // override.
+    if zone.landlock.is_some() {
         unsupported.push(
-            "[policy]: per-zone seccomp/landlock files are NOT yet applied; the shared base \
-             policy would be used"
+            "[policy] landlock: per-zone Landlock policy files are NOT yet applied; the \
+             shared base rules would be used"
                 .into(),
         );
     }
+    let zone_policy: Option<policy::Policy> = match &zone.seccomp {
+        Some(rel) => {
+            let path = policy::resolve(&opts.zones_dir, rel);
+            let p = policy::load(&path)
+                .map_err(|e| SpawnError::Setup(format!("zone {:?} policy: {e}", zone.name)))?;
+            for w in &p.warnings {
+                eprintln!("kryptikd: note: {w}");
+            }
+            Some(p)
+        }
+        None => None,
+    };
     // [limits] is no longer unconditionally unsupported: it is supported when
     // this process can actually create a cgroup, and refused when it cannot.
     // The question is answered by TRYING, not by checking uid - a delegated
@@ -451,7 +480,7 @@ pub fn run_in_zone(
     // entry from a crashed launcher is reclaimed rather than obeyed.
     let entry = registry::claim(&zone.name).map_err(|e| SpawnError::Setup(e.to_string()))?;
 
-    let id = launch_identity(opts)?;
+    let id = launch_identity(opts, zone)?;
     entry
         .set_identity(id.uid, id.gid)
         .map_err(|e| SpawnError::Setup(e.to_string()))?;
@@ -516,6 +545,7 @@ pub fn run_in_zone(
         initpid.close_read();
         let rc = intermediate_main(
             zone, rootfs, argv, &id, parent_pid, &placed, &ready, &mapped, &initpid,
+            zone_policy.as_ref(),
         );
         // Never return: this process must not run the parent's cleanup.
         unsafe { libc::_exit(rc) };
@@ -575,16 +605,51 @@ pub fn run_in_zone(
         )));
     }
 
+    // The zone's network namespace now exists and nothing runs in it. A root
+    // launch builds the topology from OUTSIDE, here, before the zone becomes
+    // anything: the nic zone takes the physical interface and gets the
+    // bridge; a routed zone gets an isolated port on that bridge and an eth0
+    // addressed from its identity. A failure to attach is not fatal - the
+    // zone starts with loopback only, fail-closed - except for the nic zone,
+    // where a NIC that could not be moved must not be left half-configured.
+    let mut plumbed = false;
+    if id.privileged && zone.network != crate::zone::NetworkMode::None {
+        match crate::netlink::open_netns_of(pid) {
+            Ok(ns) => {
+                let r = match zone.network {
+                    crate::zone::NetworkMode::Nic => netzone::plumb_nic_zone(zone, ns),
+                    crate::zone::NetworkMode::Routed => netzone::plumb_routed_zone(zone, ns, &opts.zones_dir),
+                    crate::zone::NetworkMode::None => Ok(()),
+                };
+                unsafe { libc::close(ns) };
+                match (r, zone.network) {
+                    (Ok(()), _) => plumbed = true,
+                    (Err(e), crate::zone::NetworkMode::Nic) => {
+                        mapped.close_write();
+                        let _ = wait_for(pid);
+                        return Err(SpawnError::Setup(format!("nic zone network: {e}")));
+                    }
+                    (Err(e), _) => eprintln!(
+                        "kryptikd: zone {:?} has no network path: {e}",
+                        zone.name
+                    ),
+                }
+            }
+            Err(e) => eprintln!("kryptikd: zone {:?}: cannot open its netns: {e}", zone.name),
+        }
+    }
+
     // Map the child's root to the zone identity. This is what makes "root
     // inside the zone" mean root in a namespace that owns nothing outside it.
-    if let Err(e) = isolate::write_id_maps(pid, id.uid, id.gid) {
+    if let Err(e) = isolate::write_id_maps(pid, id.uid, id.gid, id.privileged) {
         // Close our end so the child reads EOF and dies rather than blocking.
         mapped.close_write();
         let _ = wait_for(pid);
         return Err(SpawnError::Setup(format!("id maps: {e}")));
     }
 
-    mapped.signal();
+    // 1 = mapped; 2 = mapped and a network path was built.
+    mapped.signal_byte(if plumbed { 2 } else { 1 });
     mapped.close_write();
 
     // The zone's pid 1, as the host sees it. Read before waitpid because the
@@ -635,6 +700,7 @@ fn intermediate_main(
     ready: &SyncPipe,
     mapped: &SyncPipe,
     initpid: &SyncPipe,
+    zone_policy: Option<&policy::Policy>,
 ) -> i32 {
     macro_rules! bail {
         ($($arg:tt)*) => {{
@@ -764,9 +830,10 @@ fn intermediate_main(
     //    failed or died; either way there is no zone to build.
     ready.signal();
     ready.close_write();
-    if let Err(e) = mapped.wait() {
-        bail!("parent did not complete the id mapping: {e}");
-    }
+    let plumbed = match mapped.wait_byte() {
+        Ok(v) => v == 2,
+        Err(e) => bail!("parent did not complete the id mapping: {e}"),
+    };
     mapped.close_read();
 
     // 5. Become root in the new user namespace.
@@ -807,7 +874,7 @@ fn intermediate_main(
     }
 
     if inner == 0 {
-        let rc = zone_init(zone, rootfs, argv, flags);
+        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, plumbed);
         unsafe { libc::_exit(rc) };
     }
 
@@ -831,7 +898,14 @@ fn intermediate_main(
 }
 
 /// pid 1 of the zone. Returns only on failure; on success it has exec'd.
-fn zone_init(zone: &Zone, rootfs: &str, argv: &[String], flags: libc::c_int) -> i32 {
+fn zone_init(
+    zone: &Zone,
+    rootfs: &str,
+    argv: &[String],
+    flags: libc::c_int,
+    zone_policy: Option<&policy::Policy>,
+    plumbed: bool,
+) -> i32 {
     macro_rules! bail {
         ($($arg:tt)*) => {{
             eprintln!("kryptikd[zone {}]: {}", zone.name, format!($($arg)*));
@@ -859,7 +933,14 @@ fn zone_init(zone: &Zone, rootfs: &str, argv: &[String], flags: libc::c_int) -> 
         StorageMode::Ephemeral => zone.size.as_deref(),
         StorageMode::Encrypted => None,
     };
-    let home = match rootfs::pivot_into(rootfs, &zone.name, ephemeral) {
+    // /etc/resolv.conf follows the path the parent built, not the mode the
+    // file declares: a routed zone with no path names no resolver.
+    let resolver = match (zone.network, plumbed) {
+        (crate::zone::NetworkMode::Nic, true) => rootfs::Resolver::Writable,
+        (crate::zone::NetworkMode::Routed, true) => rootfs::Resolver::Bridge,
+        _ => rootfs::Resolver::None,
+    };
+    let home = match rootfs::pivot_into(rootfs, &zone.name, ephemeral, resolver) {
         Ok(h) => h,
         Err(e) => bail!("could not build the zone root: {e}"),
     };
@@ -920,11 +1001,16 @@ fn zone_init(zone: &Zone, rootfs: &str, argv: &[String], flags: libc::c_int) -> 
     //
     // Fatal on failure: a zone that starts with a fuller set than the operator
     // asked for is the failure this project exists to avoid.
-    if let Err(e) = caps::drop_bounding_set() {
+    let keep: Vec<libc::c_int> = zone_policy.map(|p| p.keep_caps.clone()).unwrap_or_default();
+    if let Err(e) = caps::drop_bounding_set_except(&keep) {
         bail!("could not drop the capability bounding set: {e}");
     }
 
-    if let Err(e) = seccomp::confine_zone() {
+    let installed = match zone_policy {
+        Some(p) => seccomp::confine_zone_with(&p.extra_syscalls, &p.sockets),
+        None => seccomp::confine_zone(),
+    };
+    if let Err(e) = installed {
         bail!("seccomp: {e}");
     }
 
@@ -999,7 +1085,15 @@ pub fn zone_environment(zone: &Zone, home: &str, caller: &[(String, String)]) ->
 }
 
 /// Describe what starting this zone would do, without doing it.
-pub fn explain(zone: &Zone, rootfs: &str) -> String {
+pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String {
+    let network_line = netzone::plan(zone, unsafe { libc::geteuid() } == 0);
+    let policy_line = match &zone.seccomp {
+        None => "policy     base only".to_string(),
+        Some(rel) => match policy::load(&policy::resolve(zones_dir, rel)) {
+            Ok(p) => format!("policy     {rel}: {}", p.describe()),
+            Err(e) => format!("policy     {rel}: ERROR - {e} (the zone will not start)"),
+        },
+    };
     let flags = isolate::namespace_flags(zone);
     let mut ns = Vec::new();
     for (f, n) in [
@@ -1031,6 +1125,17 @@ pub fn explain(zone: &Zone, rootfs: &str) -> String {
     };
 
     let home = rootfs::zone_home(&zone.name);
+    let identity_line = match zone.uid_base {
+        Some(b) => format!(
+            "identity   uid_base {b}: a root launch maps zone root -> host {b}, nobody -> {} \
+             (range {b}..{})",
+            b + 65534,
+            b + 65535
+        ),
+        None => "identity   none declared: a root launch needs --zone-uid/--zone-gid; \
+                 check --target refuses this zone"
+            .to_string(),
+    };
 
     // For an ephemeral zone the persistent directory is NOT visible inside -
     // that is the whole change - so the line must not keep claiming it is. It
@@ -1050,34 +1155,12 @@ pub fn explain(zone: &Zone, rootfs: &str) -> String {
         .map(|r| format!("{:<12} {}", r.path, landlock::describe_access(r.access)))
         .collect();
 
-    // The network, which this did not mention at all - it listed `net` among
-    // the namespaces and left the reader to guess what was in it. For a routed
-    // zone that guess is wrong in the direction that matters: "routed" reads as
-    // connected, and the zone gets loopback and no routes.
-    let network = match zone.network {
-        NetworkMode::None => "none: an empty net namespace, loopback only. \
-                              Not a firewall rule - there is no interface."
-            .to_string(),
-        NetworkMode::Nic => format!(
-            "nic: this zone is intended to hold the physical interface and the {} bridge.\n\
-             \x20          NOT IMPLEMENTED: no interface is moved into it yet.",
-            zone.bridge.as_deref().unwrap_or("?")
-        ),
-        NetworkMode::Routed => "routed: intended to reach the outside through the nic zone, \
-                                filtered.\n\
-                                \x20          NOT IMPLEMENTED: this zone gets an empty net \
-                                namespace - loopback\n\
-                                \x20          only, no routes, no path out. It is isolated, \
-                                and it is not connected."
-            .to_string(),
-    };
-
     format!(
         "zone       {}\n\
          namespaces {}\n\
          hostname   {}\n\
          {}\n\
-         network    {}\n\
+         {}\n\
          storage    {}\n\
          root       tmpfs, read-only; {} bound read-only recursively\n\
          /etc       synthesized (passwd, group, hosts, nsswitch) + read-only {}\n\
@@ -1085,12 +1168,14 @@ pub fn explain(zone: &Zone, rootfs: &str) -> String {
          landlock   ABI >= {}, rules:\n           {}\n\
          env        {} + passthrough of {}\n\
          caps       bounding set dropped to CAP_NET_BIND_SERVICE only\n\
-         seccomp    default-deny, {} syscalls allowed, argument rules on {:?}",
+         seccomp    default-deny, {} syscalls allowed, argument rules on {:?}\n\
+         {}\n\
+         {}",
         zone.name,
         ns.join(", "),
         zone.name,
+        identity_line,
         data_line,
-        network,
         storage,
         rootfs::SYSTEM_PATHS.join(" "),
         rootfs::ETC_RO_FILES
@@ -1106,6 +1191,8 @@ pub fn explain(zone: &Zone, rootfs: &str) -> String {
         ENV_PASSTHROUGH.join(" "),
         seccomp::BASE_ALLOWLIST.len(),
         seccomp::ARG_RULES,
+        policy_line,
+        network_line,
     )
 }
 
@@ -1121,6 +1208,21 @@ mod tests {
              [storage]\nmode = \"ephemeral\"\nsize = \"256M\"\n[ui]\nborder_color = \"#123456\"\n"
         ))
         .unwrap()
+    }
+
+    fn z_identity(base: u32) -> Zone {
+        Zone::from_str(&format!(
+            "[zone]\nname = \"t\"\n[network]\nmode = \"routed\"\n\
+             [storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n\
+             [identity]\nuid_base = {base}\n[ui]\nborder_color = \"#123456\"\n"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn explain_names_the_identity_range_or_its_absence() {
+        assert!(explain(&z_identity(196608), "/tmp/t", std::path::Path::new("/nonexistent")).contains("uid_base 196608"));
+        assert!(explain(&z("routed"), "/tmp/t", std::path::Path::new("/nonexistent")).contains("none declared"));
     }
 
     fn z_encrypted() -> Zone {
@@ -1140,7 +1242,7 @@ mod tests {
 
     #[test]
     fn explain_names_the_namespaces_and_is_honest_about_storage() {
-        let e = explain(&z("none"), "/tmp/t");
+        let e = explain(&z("none"), "/tmp/t", std::path::Path::new("/nonexistent"));
         assert!(e.contains("user"), "{e}");
         assert!(e.contains("net"), "{e}");
         // Ephemeral storage IS implemented now, so the old assertion - that
@@ -1157,7 +1259,7 @@ mod tests {
         // A routed zone gets loopback and no routes today. Someone reading
         // `explain` is deciding what to put in the zone, and "routed" without
         // qualification reads as "connected, filtered".
-        let e = explain(&z("routed"), "/tmp/t");
+        let e = explain(&z("routed"), "/tmp/t", std::path::Path::new("/tmp"));
         let honest = e.contains("NOT IMPLEMENTED")
             || e.contains("not implemented")
             || e.contains("no path out")
@@ -1170,7 +1272,7 @@ mod tests {
         );
 
         // The other mode is still unimplemented, and must still say so.
-        let enc = explain(&z_encrypted(), "/tmp/t");
+        let enc = explain(&z_encrypted(), "/tmp/t", std::path::Path::new("/nonexistent"));
         assert!(enc.contains("NOT YET IMPLEMENTED"), "{enc}");
     }
 
@@ -1237,9 +1339,9 @@ mod tests {
             // test below only when not root.
             return;
         }
-        let err = launch_identity(&RunOptions { zone_uid: Some(1001), zone_gid: Some(1001) }).unwrap_err();
+        let err = launch_identity(&RunOptions { zone_uid: Some(1001), zone_gid: Some(1001), ..Default::default() }, &z("routed")).unwrap_err();
         assert!(err.to_string().contains("need root"), "{err}");
-        let id = launch_identity(&RunOptions::default()).unwrap();
+        let id = launch_identity(&RunOptions::default(), &z("routed")).unwrap();
         assert_eq!(id.uid, unsafe { libc::getuid() });
         assert!(!id.privileged);
     }
@@ -1249,9 +1351,14 @@ mod tests {
         if unsafe { libc::geteuid() } != 0 {
             return;
         }
-        assert!(launch_identity(&RunOptions::default()).is_err());
-        assert!(launch_identity(&RunOptions { zone_uid: Some(0), zone_gid: Some(0) }).is_err());
-        let id = launch_identity(&RunOptions { zone_uid: Some(100000), zone_gid: Some(100000) }).unwrap();
+        assert!(launch_identity(&RunOptions::default(), &z("routed")).is_err());
+        assert!(launch_identity(&RunOptions { zone_uid: Some(0), zone_gid: Some(0), ..Default::default() }, &z("routed")).is_err());
+        let id = launch_identity(&RunOptions { zone_uid: Some(100000), zone_gid: Some(100000), ..Default::default() }, &z("routed")).unwrap();
         assert!(id.privileged);
+        // A declared identity wins, and an override of it is refused.
+        let id = launch_identity(&RunOptions::default(), &z_identity(196608)).unwrap();
+        assert_eq!((id.uid, id.gid), (196608, 196608));
+        let err = launch_identity(&RunOptions { zone_uid: Some(100000), zone_gid: Some(100000), ..Default::default() }, &z_identity(196608)).unwrap_err();
+        assert!(err.to_string().contains("not accepted"), "{err}");
     }
 }

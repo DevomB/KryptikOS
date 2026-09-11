@@ -32,15 +32,16 @@ on a target build this is a `check` failure. `check` also reads
 depend on the hardened default alone.
 
 **P3. Each zone has a fixed, declared, unique host identity range.** Zone
-files gain `[identity] uid_base = N` (integer). Validation: `N >= 100000`,
-`N % 65536 == 0`, unique across the zone set, and the range
+files gain `[identity] uid_base = N` (integer). Validation: `N >= 131072`
+(the first aligned range; 100000 is not a multiple of 65536, an error in
+the first draft), `N % 65536 == 0`, unique across the zone set, and the range
 `[N, N+65536)` must not overlap any other zone's. The mapping written is
 `0 -> N` (one uid) and `65534 -> N+65534` (so "nobody" inside is a distinct
 host uid, not an unmapped 65534 alias); gid likewise. `--zone-uid/--zone-gid`
 remain as an override only for zones without `[identity]`, and a root launch
 without either is still refused. Ordinal-derived ranges are rejected as a
 design: adding a zone must never change another zone's file ownership.
-Shipped zone files get `uid_base` values `100000, 165536, …` in name order,
+Shipped zone files get `uid_base` values `131072, 196608, …` in name order,
 once, by hand.
 
 **P4. The data directory belongs to the zone's identity and nothing else.**

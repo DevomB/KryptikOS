@@ -15,11 +15,15 @@ wipe_keys = "on-stop"
 
 [policy]
 seccomp  = "policy/work.seccomp"
-landlock = "policy/work.landlock"
 
 [limits]
 memory_max = "8G"
 pids_max   = 1024
+
+[identity]
+# Fixed host uid/gid range for this zone: root inside maps to 458752,
+# nobody to 524286. Never derived from zone order; see docs/design/01.
+uid_base = 458752
 
 [ui]
 border_color = "#3a7d44"

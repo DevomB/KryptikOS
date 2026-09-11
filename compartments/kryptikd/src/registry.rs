@@ -80,8 +80,18 @@ fn io_err(p: &Path, e: io::Error) -> RegistryError {
 /// the lifecycle path is first exercised in the VM, which is where bugs are
 /// most expensive to find.
 pub fn base() -> PathBuf {
-    let uid = unsafe { libc::getuid() };
-    if unsafe { libc::geteuid() } == 0 {
+    base_for(
+        unsafe { libc::getuid() },
+        unsafe { libc::geteuid() },
+        std::env::var("XDG_RUNTIME_DIR").ok().as_deref(),
+    )
+}
+
+/// `base()` as a function of its inputs, so the fallback rules can be tested
+/// without mutating the process environment (which raced other tests that
+/// resolve the registry concurrently).
+pub fn base_for(uid: u32, euid: u32, xdg_runtime_dir: Option<&str>) -> PathBuf {
+    if euid == 0 {
         return PathBuf::from("/run/kryptik/zones");
     }
 
@@ -97,9 +107,9 @@ pub fn base() -> PathBuf {
     // ownership matters as much as existence - a registry in someone else's
     // directory would let them see which zones are running and, worse, create
     // entries that look live.
-    if let Ok(x) = std::env::var("XDG_RUNTIME_DIR") {
+    if let Some(x) = xdg_runtime_dir {
         if !x.is_empty() {
-            let p = Path::new(&x);
+            let p = Path::new(x);
             if let Ok(md) = fs::metadata(p) {
                 use std::os::unix::fs::MetadataExt;
                 if md.is_dir() && md.uid() == uid {
@@ -606,23 +616,15 @@ mod tests {
             return; // root uses /run/kryptik regardless
         }
         let uid = unsafe { libc::getuid() };
-        let saved = std::env::var("XDG_RUNTIME_DIR").ok();
-
-        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/9999-does-not-exist");
-        assert_eq!(base(), PathBuf::from(format!("/tmp/kryptik-{uid}/zones")));
-
-        std::env::set_var("XDG_RUNTIME_DIR", "");
-        assert_eq!(base(), PathBuf::from(format!("/tmp/kryptik-{uid}/zones")));
-
+        let fallback = PathBuf::from(format!("/tmp/kryptik-{uid}/zones"));
+        assert_eq!(base_for(uid, uid, Some("/run/user/9999-does-not-exist")), fallback);
+        assert_eq!(base_for(uid, uid, Some("")), fallback);
+        assert_eq!(base_for(uid, uid, None), fallback);
         // A directory that exists but belongs to someone else is refused too:
         // /run is root-owned.
-        std::env::set_var("XDG_RUNTIME_DIR", "/run");
-        assert_eq!(base(), PathBuf::from(format!("/tmp/kryptik-{uid}/zones")));
-
-        match saved {
-            Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
-            None => std::env::remove_var("XDG_RUNTIME_DIR"),
-        }
+        assert_eq!(base_for(uid, uid, Some("/run")), fallback);
+        // Root never consults the variable.
+        assert_eq!(base_for(0, 0, Some("/run/user/0")), PathBuf::from("/run/kryptik/zones"));
     }
 
     #[test]
