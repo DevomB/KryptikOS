@@ -310,7 +310,32 @@ s_hardened_malloc() {
     # ADR-005. Built here so it exists before anything links against it.
     local src; src="$(unpack "${V_HARDENED_MALLOC}.tar.gz" "hardened_malloc-${V_HARDENED_MALLOC}")"
     cd "$src"
-    make VARIANT=default
+
+    # CONFIG_NATIVE=false, overriding config/default.mk.
+    #
+    # Upstream defaults it to true, which appends -march=native. That is the
+    # right default for someone compiling an allocator for the machine in front
+    # of them, and exactly wrong for a distribution: the .so would carry
+    # whatever instruction set extensions THIS build host happens to have, and
+    # on any older CPU the first hardened_malloc call executes an illegal
+    # instruction.
+    #
+    # This is the system allocator (ADR-005). "Some instruction is unavailable"
+    # in the allocator is not a degraded feature, it is every process on the
+    # machine dying at startup, on hardware the build never saw.
+    make VARIANT=default CONFIG_NATIVE=false
+
+    # Prove the override took, rather than trusting that a make variable beat
+    # an included .mk file.
+    if grep -qE '^\s*CONFIG_NATIVE\s*:?=\s*true' config/default.mk; then
+        echo "note: config/default.mk still says CONFIG_NATIVE := true;"
+        echo "      the command line above overrides it."
+    fi
+    if readelf -p .comment out/libhardened_malloc.so 2>/dev/null | grep -q 'march=native'; then
+        echo "FAIL: libhardened_malloc.so was built with -march=native"
+        return 1
+    fi
+
     install -Dm755 out/libhardened_malloc.so /usr/lib/libhardened_malloc.so
 
     # NOT wired into /etc/ld.so.preload yet. Making it the system allocator is
