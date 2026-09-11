@@ -29,6 +29,7 @@ use std::io;
 use std::os::unix::io::RawFd;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
+use crate::cgroup;
 use crate::isolate;
 use crate::landlock;
 use crate::rootfs;
@@ -322,10 +323,26 @@ pub fn run_in_zone(
                 .into(),
         );
     }
-    if zone.memory_max.is_some() || zone.pids_max.is_some() {
-        unsupported.push(
-            "[limits]: resource limits are NOT yet applied; no cgroup would be created".into(),
-        );
+    // [limits] is no longer unconditionally unsupported: it is supported when
+    // this process can actually create a cgroup, and refused when it cannot.
+    // The question is answered by TRYING, not by checking uid - a delegated
+    // subtree is writable by an ordinary user, and root inside a container may
+    // still find the hierarchy read-only.
+    //
+    // `limits` holds the base directory when enforcement is possible. When it
+    // is None and the zone asked for limits, the zone is refused exactly as it
+    // was before, because a limit that silently does nothing is worse than no
+    // limit: the operator's belief in it is what causes the damage.
+    let wants_limits = zone.memory_max.is_some() || zone.pids_max.is_some();
+    let mut limits: Option<std::path::PathBuf> = None;
+    if wants_limits {
+        match cgroup::available() {
+            Ok(base) => limits = Some(base),
+            Err(e) => unsupported.push(format!(
+                "[limits]: resource limits CANNOT be applied here ({e}); no cgroup \
+                 would be created and the zone would run unlimited"
+            )),
+        }
     }
     if !unsupported.is_empty() {
         if !experimental {
@@ -358,8 +375,18 @@ pub fn run_in_zone(
     }
     rootfs::check_data_dir(rootfs, id.uid).map_err(|e| SpawnError::Setup(e.to_string()))?;
 
-    // ready: child -> parent, "I have unshared"
+    // placed: parent -> child, "you are in your cgroup, you may unshare"
+    // ready:  child -> parent, "I have unshared"
     // mapped: parent -> child, "your id maps are written"
+    //
+    // `placed` is third and it is ordered FIRST for a reason. The move into
+    // the cgroup has to happen before the child unshares, because
+    // CLONE_NEWCGROUP roots the child's cgroup namespace at whatever cgroup it
+    // is in at that moment. Move it afterwards and enforcement still works,
+    // but the zone's own /proc/self/cgroup describes a path outside its
+    // namespace root - a zone that cannot name its own cgroup correctly is one
+    // that cannot manage sub-cgroups later.
+    let placed = SyncPipe::new()?;
     let ready = SyncPipe::new()?;
     let mapped = SyncPipe::new()?;
 
@@ -371,17 +398,43 @@ pub fn run_in_zone(
 
     if pid == 0 {
         // --- intermediate ------------------------------------------------------
+        placed.close_write();
         ready.close_read();
         mapped.close_write();
-        let rc = intermediate_main(zone, rootfs, argv, &id, parent_pid, &ready, &mapped);
+        let rc = intermediate_main(zone, rootfs, argv, &id, parent_pid, &placed, &ready, &mapped);
         // Never return: this process must not run the parent's cleanup.
         unsafe { libc::_exit(rc) };
     }
 
     // --- parent --------------------------------------------------------------
+    placed.close_read();
     ready.close_write();
     mapped.close_read();
     install_forwarding(pid, false);
+
+    // Create the zone's cgroup and put the child in it before releasing it to
+    // unshare. Everything here runs in the PARENT, which still holds whatever
+    // privilege kryptikd started with; the child never writes to the cgroup
+    // filesystem and /sys/fs/cgroup is not bound into the zone.
+    //
+    // The handle is held for the whole launch and dropped at the end, so an
+    // early return cannot leak the directory.
+    let _zone_cgroup = match &limits {
+        Some(base) => {
+            let cg = cgroup::Cgroup::create(base, &zone.name, parent_pid)
+                .map_err(|e| SpawnError::Setup(format!("cgroup: {e}")))?;
+            cg.set_limits(zone.memory_max.as_deref(), zone.pids_max)
+                .map_err(|e| SpawnError::Setup(format!("cgroup limits: {e}")))?;
+            cg.attach(pid)
+                .map_err(|e| SpawnError::Setup(format!("cgroup attach: {e}")))?;
+            Some(cg)
+        }
+        None => None,
+    };
+
+    // Release the child to unshare, whether or not it got a cgroup.
+    placed.signal();
+    placed.close_write();
 
     // Wait until the child is actually inside the new user namespace. Writing
     // the maps before this point fails with EPERM. EOF means it died first;
@@ -428,6 +481,7 @@ fn intermediate_main(
     argv: &[String],
     id: &Identity,
     parent_pid: libc::pid_t,
+    placed: &SyncPipe,
     ready: &SyncPipe,
     mapped: &SyncPipe,
 ) -> i32 {
@@ -476,6 +530,22 @@ fn intermediate_main(
     if unsafe { libc::getppid() } != parent_pid {
         return 125;
     }
+
+    // 2b. Wait until the parent has placed us in the zone's cgroup.
+    //
+    //     This MUST precede the unshare below. CLONE_NEWCGROUP roots our
+    //     cgroup namespace at whichever cgroup we occupy at that instant, so a
+    //     process moved afterwards is still limited - enforcement is by
+    //     membership, not by namespace - but its own /proc/self/cgroup then
+    //     describes a path outside its namespace root, and a zone that cannot
+    //     name its own cgroup cannot manage sub-cgroups later.
+    //
+    //     EOF means the parent failed before it could place us; it has already
+    //     said why.
+    if let Err(e) = placed.wait() {
+        bail!("parent did not place the zone in its cgroup: {e}");
+    }
+    placed.close_read();
 
     let flags = isolate::namespace_flags(zone);
 
