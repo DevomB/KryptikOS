@@ -499,6 +499,84 @@ else
     echo "KRYPTIK_VM_LAUNCHER_RC=missing"
 fi
 
+# The same suite again, with the restriction on.
+#
+# This is the evidence R-7a asks for and the reason the P5 repair exists. The
+# run above is on the stock default, where unprivileged user namespaces are
+# allowed - which is NOT the kernel Kryptik intends to ship, so on its own it
+# says nothing about the privileged path on the target. With the AppArmor knob
+# set, a root kryptikd is the only thing that can create a user namespace at
+# all, which is exactly the target's rule.
+#
+# The whole suite runs rather than group K alone: if the repair were wrong, the
+# failure would not be confined to the checks that look privileged.
+if [ -x /usr/lib/kryptik/compartments/tests/launcher.sh ]; then
+    echo "KRYPTIK_VM_RESTRICTED_BEGIN"
+    if sysctl -w kernel.apparmor_restrict_unprivileged_userns=1 >/dev/null 2>&1; then
+        echo "KRYPTIK_VM_RESTRICTED_KNOB=apparmor-emulated"
+        KRYPTIKD=/usr/bin/kryptikd KRYPTIK_TEST_TIMEOUT=60 \
+            /usr/lib/kryptik/compartments/tests/launcher.sh
+        echo "KRYPTIK_VM_RESTRICTED_RC=$?"
+        sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null 2>&1
+    else
+        echo "KRYPTIK_VM_RESTRICTED_KNOB=none"
+        echo "KRYPTIK_VM_RESTRICTED_RC=noknob"
+    fi
+    echo "KRYPTIK_VM_RESTRICTED_END"
+fi
+
+# The same suite again, with the restriction on.
+#
+# This is the evidence R-7a asks for and the reason the P5 repair exists. The
+# run above is on the stock default, where unprivileged user namespaces are
+# allowed - which is NOT the kernel Kryptik intends to ship, so on its own it
+# says nothing about the privileged path on the target. With the AppArmor knob
+# set, a root kryptikd is the only thing that can create a user namespace at
+# all, which is exactly the target's rule.
+#
+# The whole suite runs rather than group K alone: if the repair were wrong, the
+# failure would not be confined to the checks that look privileged.
+if [ -x /usr/lib/kryptik/compartments/tests/launcher.sh ]; then
+    echo "KRYPTIK_VM_RESTRICTED_BEGIN"
+    if sysctl -w kernel.apparmor_restrict_unprivileged_userns=1 >/dev/null 2>&1; then
+        echo "KRYPTIK_VM_RESTRICTED_KNOB=apparmor-emulated"
+        KRYPTIKD=/usr/bin/kryptikd KRYPTIK_TEST_TIMEOUT=60 \
+            /usr/lib/kryptik/compartments/tests/launcher.sh
+        echo "KRYPTIK_VM_RESTRICTED_RC=$?"
+        sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null 2>&1
+    else
+        echo "KRYPTIK_VM_RESTRICTED_KNOB=none"
+        echo "KRYPTIK_VM_RESTRICTED_RC=noknob"
+    fi
+    echo "KRYPTIK_VM_RESTRICTED_END"
+fi
+
+# The same suite again, with the restriction on.
+#
+# This is the evidence R-7a asks for and the reason the P5 repair exists. The
+# run above is on the stock default, where unprivileged user namespaces are
+# allowed - which is NOT the kernel Kryptik intends to ship, so on its own it
+# says nothing about the privileged path on the target. With the AppArmor knob
+# set, a root kryptikd is the only thing that can create a user namespace at
+# all, which is exactly the target's rule.
+#
+# The whole suite runs rather than group K alone: if the repair were wrong, the
+# failure would not be confined to the checks that look privileged.
+if [ -x /usr/lib/kryptik/compartments/tests/launcher.sh ]; then
+    echo "KRYPTIK_VM_RESTRICTED_BEGIN"
+    if sysctl -w kernel.apparmor_restrict_unprivileged_userns=1 >/dev/null 2>&1; then
+        echo "KRYPTIK_VM_RESTRICTED_KNOB=apparmor-emulated"
+        KRYPTIKD=/usr/bin/kryptikd KRYPTIK_TEST_TIMEOUT=60 \
+            /usr/lib/kryptik/compartments/tests/launcher.sh
+        echo "KRYPTIK_VM_RESTRICTED_RC=$?"
+        sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null 2>&1
+    else
+        echo "KRYPTIK_VM_RESTRICTED_KNOB=none"
+        echo "KRYPTIK_VM_RESTRICTED_RC=noknob"
+    fi
+    echo "KRYPTIK_VM_RESTRICTED_END"
+fi
+
 if [ -x /usr/lib/kryptik/compartments/tests/adversarial.sh ]; then
     echo "KRYPTIK_VM_ADVERSARIAL_BEGIN"
     /usr/lib/kryptik/compartments/tests/adversarial.sh
