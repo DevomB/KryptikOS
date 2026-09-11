@@ -289,6 +289,94 @@ else
     sed 's/^/        /' "${W}/md.out" | head -8
 fi
 
+# --- --json -----------------------------------------------------------------
+
+build_tree
+write_evidence
+KRYPTIK_ROOT="$FAKE" KRYPTIK_INVENTORY_SELFTEST=1 \
+    KRYPTIK_INVENTORY_REPORTS="$EV" NO_COLOR=1 \
+    bash "$TOOL" --json > "${W}/inv.json" 2>/dev/null
+rc=$?
+if [[ "$rc" -eq 0 ]] && python3 -c "import json,sys; json.load(open(sys.argv[1]))" \
+        "${W}/inv.json" 2>/dev/null; then
+    green "--json emits a parseable document on stdout alone"
+else
+    red "--json did not emit parseable JSON (exit ${rc})"
+    head -5 "${W}/inv.json" | sed 's/^/        /'
+fi
+
+python3 - "${W}/inv.json" > "${W}/jchk" 2>&1 <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+out = []
+
+
+def ck(name, cond):
+    out.append(("ok " if cond else "no ") + name)
+
+
+ck("schema is named", d.get("schema") == "kryptik-provenance-inventory-1")
+ck("every source has a name and an assurance class",
+   all(s.get("name") and s.get("assurance_class") for s in d["sources"]))
+ck("per-class counts account for every row",
+   sum(d["per_class_counts"].values()) == len(d["sources"]))
+ck("no coverage ratio is published",
+   not [k for k in d if "coverage" in k or "verified_total" in k])
+ck("the document explains its own assurance classes",
+   len(d["assurance_classes"]) >= 8
+   and all("means" in c for c in d["assurance_classes"]))
+ck("licence reads not-collected when it was not requested",
+   all(s["licence"]["spdx"] == "not-collected" for s in d["sources"]))
+ck("the keyring state is carried as a field", "keyring_state" in d)
+ck("a locked hash is carried per source",
+   any(s.get("sha256_locked") for s in d["sources"]))
+print("\n".join(out))
+PY
+while read -r verdict rest; do
+    if [[ "$verdict" == "ok" ]]; then green "--json: ${rest}"; else red "--json: ${rest}"; fi
+done < "${W}/jchk"
+
+# Licences requested: the field must carry evidence rather than not-collected.
+KRYPTIK_ROOT="$FAKE" KRYPTIK_INVENTORY_SELFTEST=1 \
+    KRYPTIK_INVENTORY_REPORTS="$EV" NO_COLOR=1 \
+    bash "$TOOL" --json --licences > "${W}/inv2.json" 2>/dev/null
+if python3 -c "
+import json,sys
+d=json.load(open(sys.argv[1]))
+vals={s['licence']['method'] for s in d['sources']}
+raise SystemExit(0 if vals and vals != {'not-collected'} else 1)
+" "${W}/inv2.json" 2>/dev/null; then
+    green "--licences replaces not-collected with a real method"
+else
+    red "--licences did not populate the licence method"
+fi
+
+# An artefact tree that does not exist is recorded as absent, not omitted:
+# a missing artefact is a fact about the release, not a gap in the document.
+KRYPTIK_ROOT="$FAKE" KRYPTIK_INVENTORY_SELFTEST=1 \
+    KRYPTIK_INVENTORY_REPORTS="$EV" NO_COLOR=1 \
+    bash "$TOOL" --json --artifacts=/nonexistent/tree > "${W}/inv3.json" 2>/dev/null
+if python3 -c "
+import json,sys
+d=json.load(open(sys.argv[1]))
+a=d['artifacts']
+raise SystemExit(0 if len(a)==1 and a[0]['state']=='absent' else 1)
+" "${W}/inv3.json" 2>/dev/null; then
+    green "a missing artefact tree is recorded as absent, not omitted"
+else
+    red "a missing artefact tree was not recorded"
+fi
+
+KRYPTIK_ROOT="$FAKE" KRYPTIK_INVENTORY_SELFTEST=1 \
+    KRYPTIK_INVENTORY_REPORTS="$EV" NO_COLOR=1 \
+    bash "$TOOL" --json --md > "$OUT" 2>&1
+rc=$?
+if [[ "$rc" -ne 0 ]] && grep -qF "different documents" "$OUT"; then
+    green "--json with --md is refused rather than producing a hybrid"
+else
+    red "--json --md was accepted (exit ${rc})"; show
+fi
+
 # --- the selftest hook cannot be used by accident ---------------------------
 
 KRYPTIK_ROOT="$FAKE" KRYPTIK_INVENTORY_REPORTS="$EV" NO_COLOR=1 \
