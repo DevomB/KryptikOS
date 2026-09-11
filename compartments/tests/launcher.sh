@@ -72,6 +72,28 @@ if [[ ! -x "$KRYPTIKD" ]]; then
     exit 2
 fi
 
+# A kryptikd older than the sources it was built from is the single most
+# confusing way for this suite to fail. It does not fail honestly: every zone
+# refuses to start, every check reports "did not launch", and nothing in the
+# output points at the binary. A merge that added one zone-file key once
+# produced 74 failures this way, all of them false.
+#
+# Comparing mtimes is crude and that is fine - it is a hint, not a gate, and it
+# is checked against the sources that decide whether a zone file parses.
+if [[ -z "${KRYPTIK_SKIP_STALE_CHECK:-}" ]]; then
+    newer="$(find "$REPO/compartments/kryptikd/src" "$REPO/compartments/kryptikd/Cargo.toml" \
+                  -newer "$KRYPTIKD" 2>/dev/null | head -3)"
+    if [[ -n "$newer" ]]; then
+        printf '%sSTALE BINARY%s: %s is older than its sources.\n' "$C_YEL" "$C_RST" "$KRYPTIKD"
+        printf 'Every check would report "did not launch" and none of them would say why.\n'
+        printf 'Newer than the binary:\n'
+        printf '  %s\n' $newer
+        printf '\nRun: (cd %s/compartments/kryptikd && cargo build)\n' "$REPO"
+        printf 'Set KRYPTIK_SKIP_STALE_CHECK=1 to run anyway.\n'
+        exit 2
+    fi
+fi
+
 TIMEOUT="${KRYPTIK_TEST_TIMEOUT:-30}"
 
 printf '%sKryptik real-launcher suite%s\n' "$C_BLU" "$C_RST"
