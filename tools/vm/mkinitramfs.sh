@@ -505,6 +505,16 @@ for _if in /sys/class/net/*; do
     /bin/busybox udhcpc -i "$_n" -t 2 -T 2 -n -q 2>/dev/null &
 done
 
+# /dev/fd and the standard stream links. devtmpfs does not create these - every
+# distribution adds them - and without /dev/fd, bash process substitution
+# `< <(cmd)` fails with "/dev/fd/63: No such file or directory". That broke
+# `kryptik run` in this VM while the identical command worked on the developer
+# host, and it would break any shell script in the system that uses the idiom.
+ln -sf /proc/self/fd /dev/fd 2>/dev/null
+ln -sf /proc/self/fd/0 /dev/stdin 2>/dev/null
+ln -sf /proc/self/fd/1 /dev/stdout 2>/dev/null
+ln -sf /proc/self/fd/2 /dev/stderr 2>/dev/null
+
 echo "KRYPTIK_VM_T_STAGE2=$(cut -d' ' -f1 /proc/uptime 2>/dev/null)"
 echo "KRYPTIK_VM_STAGE2_OK root=$(/bin/busybox stat -f -c %T / 2>/dev/null)"
 
@@ -679,6 +689,14 @@ if grep -q '^Seccomp:' /proc/self/status 2>/dev/null; then
 echo "KRYPTIK_VM_MEM_TOTAL_KB=$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null)"
 echo "KRYPTIK_VM_MEM_AVAIL_KB=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo 2>/dev/null)"
 echo "KRYPTIK_VM_PROCS=$(ls -d /proc/[0-9]* 2>/dev/null | wc -l)"
+# Process substitution, which needs /dev/fd. Reported rather than assumed: it
+# was missing, and the only symptom was one test suite failing in the VM and
+# passing everywhere else.
+if [ "$(cat < <(echo devfd-ok) 2>/dev/null)" = "devfd-ok" ]; then
+    echo "KRYPTIK_VM_DEVFD=ok"
+else
+    echo "KRYPTIK_VM_DEVFD=missing"
+fi
 echo "KRYPTIK_VM_SECCOMP=supported"
 else
     echo "KRYPTIK_VM_SECCOMP=absent"

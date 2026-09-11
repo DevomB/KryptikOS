@@ -136,6 +136,13 @@ else
     fail "kryptikd check never ran"
 fi
 
+devfd="$(valueof KRYPTIK_VM_DEVFD)"
+case "$devfd" in
+    ok)  pass "/dev/fd works in the guest (shell process substitution)" ;;
+    "")  info "no /dev/fd probe in this image" ;;
+    *)   fail "/dev/fd is $devfd in the guest — process substitution fails, and every shell script using < <(...) breaks" ;;
+esac
+
 # --- the user-facing command -------------------------------------------------
 crc="$(valueof KRYPTIK_VM_CLI_RC)"
 case "$crc" in

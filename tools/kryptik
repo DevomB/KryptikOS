@@ -122,9 +122,18 @@ have_kryptikd() {
 # The identity flags, which kryptikd accepts ONLY when it is running as root,
 # and REQUIRES when it is. Getting this wrong is the difference between a zone
 # mapped to an unprivileged host user and a zone whose root is the real root.
-identity_args() {
+#
+# Sets an array directly rather than printing lines for the caller to read back
+# through `< <(...)`. Process substitution needs /dev/fd, a minimal system does
+# not necessarily have it, and the Kryptik VM did not: every `kryptik run` there
+# failed with "/dev/fd/63: No such file or directory" while the same command
+# worked on the developer host. A wrapper whose job is to be the easy interface
+# should not be the thing that needs a richer /dev than the daemon does.
+IDENTITY_ARGS=()
+set_identity_args() {
+    IDENTITY_ARGS=()
     if [[ "$(id -u)" -eq 0 ]]; then
-        printf '%s\n' --zone-uid "$UID_BASE" --zone-gid "$UID_BASE"
+        IDENTITY_ARGS=(--zone-uid "$UID_BASE" --zone-gid "$UID_BASE")
     fi
 }
 
@@ -234,15 +243,14 @@ start_zone() {
     mkdir -p "$ROOTFS" 2>/dev/null || true
 
     local rc
-    local -a idargs=()
-    while IFS= read -r a; do [[ -n "$a" ]] && idargs+=("$a"); done < <(identity_args)
+    set_identity_args
 
     # Not captured and re-printed: an interactive shell needs the terminal, and
     # a command whose output this swallowed until it exited would be unusable
     # for the one thing people will do most. kryptikd's own messages - the
     # ephemeral swap caveat, the refusals - reach the person directly.
     "$KRYPTIKD" run "$name" --zones "$ZONES_DIR" \
-        --rootfs "$ROOTFS" "${idargs[@]}" -- "$@"
+        --rootfs "$ROOTFS" "${IDENTITY_ARGS[@]}" -- "$@"
     rc=$?
     if (( rc != 0 )); then
         # kryptikd has already said what was wrong and this must not restate it
