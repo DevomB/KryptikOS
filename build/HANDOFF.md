@@ -256,8 +256,8 @@ names its own commit in `/etc/os-release`.
 ```
 manifest : /home/devomb/kryptik-overnight-2026-09-11/work/artifact-manifest.txt
            (copy at build/artifact-manifest.txt)
-digest   : e97a3a8c20336277c6efa29e70a2949c5bc521a12446fd4c20dd061aade673f1
-entries  : 38,766
+digest   : 21527b4affa491273e8ed1e60d38682df6758fa772e600cbe7b9582d4faf6d66
+entries  : 38,768
 inputs   : 184 recorded
 ```
 
@@ -299,6 +299,48 @@ because they are the answer to "did the flags reach the packages":
 
 None of these is visible from reading `hardening.env`, which is the entire
 argument for auditing the objects.
+
+### 7.3b The userland was RUN, not just listed
+
+`make smoke-userspace` (root; `tools/test-userspace-smoke.sh`) enters the
+chroot and executes what stage 04 built. All 31 checks pass:
+
+* every core tool reports its own pinned version — bash 5.2.32, coreutils 9.5,
+  sed 4.9, grep 3.11, gawk 5.3.0, tar 1.35, findutils 4.10.0, diffutils 3.10,
+  xz 5.8.4, zstd 1.5.6, openssl 3.3.1, perl 5.40.0, python 3.12.5,
+  pkgconf 2.3.0, kmod 33, procps-ng, iproute2, shadow 4.16.0, agetty
+* glibc 2.40 answers, `ldd` resolves
+* `s6-svscan` starts; `/sbin/init` and the console wrapper are executable
+* `kryptikd` runs **and parses the zone definitions installed beside it**
+* `gcc -dumpmachine` is `x86_64-kryptik-linux-gnu`, and it compiles, links and
+  runs a program *inside the target*
+* **bash survives `LD_PRELOAD=/usr/lib/libhardened_malloc.so`** — the first
+  actual evidence for ADR-005 here; until now the claim was that the allocator
+  had been installed
+
+Log: `logs/userspace-smoke.latest.log`.
+
+Two checks failed on the first run and both were the test's fault: `top -v` is
+not an option (top ran and said so) and `useradd` prints usage rather than a
+version. Fixed in the test. A check that reports failure on working software
+teaches people to ignore it, which is the failure mode most of tonight's
+defects shared.
+
+### 7.3c Entering the chroot changes the digest
+
+`03-chroot-prep.sh` rewrites `/etc/kryptik/inside-chroot` with a timestamp
+every time it mounts. That file is inside the sysroot, so **any chroot session
+— including the smoke test — changes the manifest digest**. Regenerate
+afterwards:
+
+```sh
+sudo tools/artifact-manifest.sh --root .../work/sysroot --out .../artifact-manifest.txt
+```
+
+Pass the same `KRYPTIK_SOURCES` when verifying as when generating. The inputs
+section enumerates that directory, so a mismatch produces a wall of differing
+`input source` lines for a tree that has not changed; the tool now says so
+rather than leaving it looking like tampering.
 
 ### 7.4 Kernel configuration — answerable now
 
