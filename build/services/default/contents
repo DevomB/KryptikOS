@@ -4,6 +4,7 @@ eudev-trigger
 kryptikd-check
 firstboot
 seatd
+net-zone
 getty-tty1
 installer-run
 boot-success

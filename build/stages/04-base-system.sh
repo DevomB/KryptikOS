@@ -800,6 +800,12 @@ EOF
         printf 'SU_WHEEL_ONLY yes\n' >> /etc/login.defs
     fi
 
+    # Kernel interface names (eth0, not enp0s3): the shipped net zone names
+    # its NIC `eth0`, and a name that depends on the bus slot would make
+    # every machine's zone file different. eudev's slot-naming rule is masked.
+    install -d -m 0755 /etc/udev/rules.d
+    ln -sf /dev/null /etc/udev/rules.d/80-net-name-slot.rules
+
     cat > /etc/kryptik/kryptik.conf <<'EOF'
 # The kryptik command's defaults on an installed system.
 zones_dir = /etc/kryptik/zones
@@ -873,6 +879,20 @@ s_release_trust() {
     fi
     echo "ok: a foreign key is refused"
     rm -rf "$t"
+}
+
+# The net zone's own startup program (Design 03a): dhcpcd, nftables NAT and
+# dnsmasq inside the zone that holds the NIC. Installed beside the boot
+# scripts; run by the net-zone service through kryptikd.
+s_netzone() {
+    local src="${KRYPTIK_ROOT}/tools/net/netzone-init.sh"
+    [[ -f "$src" ]] || { echo "no netzone-init at ${src}"; return 1; }
+    echo "source sha256: ${1:-unknown}"
+    install -D -m 0755 "$src" /usr/libexec/kryptik/netzone-init.sh
+    sh -n /usr/libexec/kryptik/netzone-init.sh || { echo "netzone-init does not parse under the target sh"; return 1; }
+    for t in dhcpcd nft dnsmasq ip; do
+        command -v "$t" >/dev/null 2>&1 && echo "  ok $t" || { echo "  MISSING $t"; return 1; }
+    done
 }
 
 s_updater() {
@@ -1192,7 +1212,7 @@ s_services() {
     printf '%s\n' "$all" | sed 's/^/  /'
 
     local svc missing=0
-    for svc in sysinit eudev eudev-trigger kryptikd-check firstboot seatd getty-tty1 boot-success boot-smoke default; do
+    for svc in sysinit eudev eudev-trigger kryptikd-check firstboot seatd net-zone getty-tty1 boot-success boot-smoke default; do
         if ! printf '%s\n' "$all" | grep -qx "$svc"; then
             echo "MISSING from the database: ${svc}"; missing=$((missing + 1))
         fi
@@ -1854,6 +1874,7 @@ PACKAGES=(
     # changes; the recipe reads it by path, which declare -f cannot see.
     "release-trust" "s_release_trust"
     "updater"     "s_updater $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-update" 2>/dev/null || echo none)"
+    "netzone"     "s_netzone $(sha256_of "${KRYPTIK_ROOT}/tools/net/netzone-init.sh" 2>/dev/null || echo none)"
     "efiboot"     "s_efiboot $(sha256_of "${KRYPTIK_ROOT}/tools/efi/kryptik-efiboot.c" 2>/dev/null || echo none)"
     "installer"   "s_installer $(sha256_of "${KRYPTIK_ROOT}/tools/install/kryptik-install.sh" 2>/dev/null || echo none)"
     # These globs were separated by a literal backslash-n, which inside a
