@@ -6,3 +6,19 @@ e2fsprogs          3AB057B7E78D945C8C5591FBD36F769BC11804F0   Theodore Ts'o <tyt
 iproute2           9F6FC345B05BE7E766B83C8F80A77F6095CDE47E   Stephen Hemminger (Microsoft corporate) <sthemmin@microsoft.com>
 kbd                7F2A3D07298149A0793C9A4EA45ABA544CFFD434   Alexey Gladkov <legion@kernel.org>
 kmod               EAB33C9690013C733916AC839BA2A5A630CBEA53   Lucas De Marchi <demarchi@kernel.org>
+file               BE04995BA8F90ED0C0C176C471112AB16CB33B3A   Christos Zoulas (personal key) <christos@zoulas.com>
+zlib               5ED46A6721D365587791E2AA783FCD8E58BCAFBA   Mark Adler <madler@alumni.caltech.edu>
+zstd               4EF4AC63455FC9F4545D9B7DEF8FE99528B52FFD   Zstandard Release Signing Key <signing@zstd.net>
+flex               56C67868E93390AA1039AD1CE4B29C8D64885307   Will Estes <westes575@gmail.com>
+elfutils           6C2B631563B8D330578D3CB474FD3FA2779E7073   Aaron Merey <amerey@redhat.com>
+lvm2               D501A478440AE2FD130A1BE8B9112431E509039F   Marian Csontos <marian.csontos@gmail.com>
+cryptsetup         2A2918243FDE46648D0686F9D9B0577BD93E98FC   Milan Broz <gmazyland@gmail.com>
+openssh            7168B983815A5EEF59A4ADFD2A3F414E736060BA   Damien Miller <djm@mindrot.org>
+libmnl             37D964ACC04981C75500FB9BD55D978A8A1420E4   Netfilter Core Team <coreteam@netfilter.org>
+libnftnl           8C5F7146A1757A65E2422A94D70D1A666ACF2B21   Netfilter Core Team <coreteam@netfilter.org>
+dnsmasq            D6EACBD6EE46B834248D111215CDDA6AE19135A2   Simon Kelley <simon@thekelleys.org.uk>
+dhcpcd             A785ED2755955D9E93EA59F6597F97EA9AD45549   Roy Marples <roy@marples.name>
+meson              19E2D6D9B46D8DAA6288F877C24E631BABB1FE70   Jussi Pakkanen <jussi.pakkanen@mailbox.org>
+wayland            34FF9526CFEF0E97A340E2E40FDE7BE0E88F5E48   Simon Ser <contact@emersion.fr>
+xkeyboard-config   FFB4CCD275AAA422F5F9808E0661D98FC933A145   Sergey Udaltsov <sergey.udaltsov@gmail.com>
+libevdev           3C2C43D9447D5938EF4551EBE23B7E70B467F0BF   Peter Hutterer (Who-T) <office@who-t.net>
