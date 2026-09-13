@@ -225,6 +225,16 @@ s_glibc() {
     local fhs="${KRYPTIK_SOURCES}/glibc-${V_GLIBC}-fhs-1.patch"
     [[ -f "$fhs" ]] && patch -Np1 -i "$fhs"
 
+    # The loader defect recorded in build/BLOCKER.md: 2.40's ld.so is linked
+    # with -z separate-code, the kernel maps it with gaps between its LOAD
+    # segments, later dlopen()s land in those gaps, and _dl_find_object then
+    # attributes every object loaded after startup to ld.so itself - so
+    # libgcc's unwinder reads the wrong .eh_frame and pthread_exit(),
+    # pthread_cancel() and backtrace() abort. Upstream fixed it as glibc bug
+    # 31943 (release/2.40/master 2193f42); build/patches/glibc-2.40/ carries
+    # that fix and its two prerequisites, with provenance in its README.
+    apply_repo_patches "glibc-${V_GLIBC}"
+
     mkdir -p build
     cd build
     echo "rootsbindir=/usr/sbin" > configparms
@@ -1470,6 +1480,11 @@ echo
 # host would produce packages linked to host libraries that then get
 # installed into the sysroot - broken in a way that surfaces much later.
 require_inside_chroot "stage 04" "system"
+
+# Every package here is compiled by stage 02's toolchain, so every stamp in
+# this stage carries the fingerprint stage 02 finished on: rebuild the
+# temporary tools and nothing built with them can claim to be unchanged.
+stage_depends_on "tt-" verify
 
 unwired=0
 for ((i = 0; i < ${#PACKAGES[@]}; i += 2)); do
