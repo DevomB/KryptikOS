@@ -197,6 +197,10 @@ r="$(ask 'run alpha\nend\n')"
 if [[ "$r" == "error: run: no command"* ]]; then pass "S3c run without a command is refused"; else fail "S3c: $r"; fi
 r="$(ask 'run nosuch\narg /bin/true\nend\n')"
 if [[ "$r" == "error: no zone named"* ]]; then pass "S3d run of an unknown zone is refused before anything is forked"; else fail "S3d: $r"; fi
+r="$(ask 'clipboard-move alpha alpha\n')"
+if [[ "$r" == "error: clipboard-move needs two different zone names"* ]]; then pass "S3f clipboard-move refuses the same zone twice"; else fail "S3f: $r"; fi
+r="$(ask 'clipboard-move alpha beta\n')"
+if [[ "$r" == "error:"* && "$r" == *"not running"* ]]; then pass "S3g clipboard-move of zones that are not running is refused: ${r%$'\n'}"; else fail "S3g: $r"; fi
 r="$(ask 'runtime\n')"
 if [[ "$r" == ok\ /* ]]; then
     d="${r#ok }"; d="${d%$'\n'}"

@@ -25,6 +25,12 @@ pids_max   = 1024
 # nobody to 196606. Never derived from zone order; see docs/design/01.
 uid_base = 131072
 
+[transfer]
+# The one shipped transfer policy: what dev builds may be handed to work,
+# through the broker and a confirmation in zone 0 - never the other way,
+# never to vault or net (Design 05). Every other zone sends nothing.
+to = "work"
+
 [ui]
 # Identity in four channels (compositor/zoneid, `zoneid explain`): the
 # colour is from `zoneid propose` (every pair of shipped zones differs by

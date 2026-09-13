@@ -185,6 +185,14 @@ mountpoint -q /tmp  || mount -t tmpfs -o nosuid,nodev,mode=1777 tmpfs /tmp
 mkdir -p /run/kryptik /run/lock /var/log/kryptik /var/lib/kryptik/boot
 chmod 0700 /run/kryptik
 chmod 0755 /run/lock /var/log/kryptik
+# The transfer-consent channel (kryptikd consent.rs): questions from the
+# broker, answers from the desktop session (group kryptik). Beside
+# /run/kryptik-launch, not under /run/kryptik, which the zone registry keeps
+# 0700. No zone has a path here. Group-writable and setgid so the session's
+# answers belong to the group.
+mkdir -p /run/kryptik-consent
+chown root:kryptik /run/kryptik-consent 2>/dev/null || true
+chmod 2770 /run/kryptik-consent
 
 # What booted, for everything that needs to know.
 printf 'slot=%s\nmedia=%s\nstate=%s\nstate_dev=%s\nroot_disk=%s\n' \
