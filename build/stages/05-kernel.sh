@@ -75,6 +75,8 @@ MODDIR="${KRYPTIK_DESTDIR}/lib/modules"
 CONFIG_DIR="${KRYPTIK_ROOT}/build/config/kernel"
 FRAG_BASE="${CONFIG_DIR}/hardening.fragment"
 FRAG_HARDENED="${CONFIG_DIR}/hardened.fragment"
+# What firmware boot, the verified root and the desktop need (Design 08).
+FRAG_BOOT="${CONFIG_DIR}/boot.fragment"
 
 REDO=""
 # shellcheck disable=SC2034  # consumed by step() in common.sh
@@ -203,7 +205,7 @@ s_config() {
 
     # -m merges without running a config pass, so both fragments land before
     # dependency resolution happens once, here, at the end.
-    "$merge" -m .config "$FRAG_BASE" "$FRAG_HARDENED"
+    "$merge" -m .config "$FRAG_BASE" "$FRAG_HARDENED" "$FRAG_BOOT"
     make olddefconfig
 
     # merge_config.sh silently drops symbols whose dependencies are unmet, so
@@ -215,6 +217,14 @@ s_config() {
                CONFIG_SECCOMP_FILTER \
                CONFIG_USER_NS \
                CONFIG_NET_NS \
+               CONFIG_EFI_STUB \
+               CONFIG_CMDLINE_BOOL \
+               CONFIG_CMDLINE_OVERRIDE \
+               CONFIG_DM_INIT \
+               CONFIG_EFIVAR_FS \
+               CONFIG_OVERLAY_FS \
+               CONFIG_DRM_VIRTIO_GPU \
+               CONFIG_NFT_MASQ \
                CONFIG_DM_VERITY \
                CONFIG_DM_CRYPT \
                CONFIG_CRYPTO_XTS \
@@ -440,7 +450,7 @@ export HOSTLDFLAGS="${HOSTLDFLAGS:-} -Wl,--no-as-needed -lgcc_s"
 # `declare -f` cannot see a file read by path or a variable read from the
 # environment. Passing their digests makes a change to either rebuild rather
 # than silently reusing a stamp written under different inputs.
-FRAG_DIGEST="$(cat "$FRAG_BASE" "$FRAG_HARDENED" | sha256_of_stdin)"
+FRAG_DIGEST="$(cat "$FRAG_BASE" "$FRAG_HARDENED" "$FRAG_BOOT" | sha256_of_stdin)"
 
 # The kernel is compiled by the toolchain stage 04 assembled - its glibc,
 # binutils, the libraries its host tools link (openssl, libelf, zlib), and
