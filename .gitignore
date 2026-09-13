@@ -27,3 +27,4 @@ Thumbs.db
 
 # Tectonix session state (tooling, not source)
 .tectonix/
+__pycache__/

@@ -374,10 +374,37 @@ s_iso() {
     cat "${iso}.sha256"
 }
 
+# The update payload for this release: the root image, both slot kernels and
+# root.json under a manifest signed with the release key the image trusts
+# (stage 04's release-trust step wrote the matching allowed-signers line).
+s_payload() {
+    echo "inputs digest: $1"
+    local keydir="${KRYPTIK_WORK}/keys/release"
+    [[ -f "$keydir/kryptik-release" ]] || { echo "no release key at ${keydir}; stage 04 (release-trust) makes it"; return 1; }
+    local out="${IMG}/payload-${KRYPTIK_VERSION}"
+    rm -rf "$out"; mkdir -p "$out"
+    cp --sparse=always "${IMG}/kryptik-root.img" "$out/"
+    cp "${IMG}/kernels/slot-a.signed.efi" "$out/kryptik-a.efi"
+    cp "${IMG}/kernels/slot-b.signed.efi" "$out/kryptik-b.efi"
+    cp "${IMG}/root.json" "$out/"
+    "${KRYPTIK_ROOT}/tools/release-manifest.sh" create --out "$out/manifest" --name kryptik \
+        --version "$KRYPTIK_VERSION" --role development --root "$out" \
+        kryptik-root.img kryptik-a.efi kryptik-b.efi root.json
+    "${KRYPTIK_ROOT}/tools/release-manifest.sh" sign --key "$keydir/kryptik-release" "$out/manifest"
+    # Verify it the way the guest will: through the allowed-signers line the
+    # image carries, with --exact.
+    local signers="${SYSROOT}/etc/kryptik/trust/release-signers"
+    [[ -f "$signers" ]] || { echo "the sysroot has no ${signers}"; return 1; }
+    "${KRYPTIK_ROOT}/tools/release-manifest.sh" verify --signers "$signers" --principal kryptik-release \
+        --root "$out" --exact --strict "$out/manifest"
+    ls -la "$out"
+}
+
 s_export() {
     echo "inputs digest: $1"
     local out="${KRYPTIK_OUT}/kryptik-${KRYPTIK_VERSION}"
     rm -rf "$out"; mkdir -p "$out/kernels"
+    cp -a "${IMG}/payload-${KRYPTIK_VERSION}" "$out/payload"
     cp --sparse=always "${IMG}/kryptik-${KRYPTIK_VERSION}-usb.img" "$out/"
     cp "${IMG}/kryptik-${KRYPTIK_VERSION}-usb.img.sha256" "$out/"
     cp "${IMG}/kryptik-${KRYPTIK_VERSION}.iso" "${IMG}/kryptik-${KRYPTIK_VERSION}.iso.sha256" "$out/"
@@ -407,6 +434,7 @@ step sign-kernels   s_sign_kernels "$(cat "${IMG}"/kernels/{slot-a,slot-b,media-
 step esp            s_esp "$(cat "${IMG}"/kernels/{slot-a,slot-b,media-usb}.signed.efi "${IMG}/root.json" | sha256_of_stdin)"
 step usb            s_usb "$(cat "${IMG}/esp-usb.img" | sha256_of_stdin)$(root_json sha256)"
 step iso            s_iso "$(cat "${IMG}"/kernels/{slot-a,slot-b}.signed.efi "${IMG}/root.json" | sha256_of_stdin)"
-step export         s_export "$(cat "${IMG}"/kryptik-*.sha256 | sha256_of_stdin)"
+step payload        s_payload "$(cat "${IMG}"/kernels/{slot-a,slot-b}.signed.efi "${IMG}/root.json" | sha256_of_stdin)"
+step export         s_export "$(cat "${IMG}"/kryptik-*.sha256 "${IMG}/payload-${KRYPTIK_VERSION}/manifest" | sha256_of_stdin)"
 echo
 ok "Stage 06 finished: ${KRYPTIK_OUT}/kryptik-${KRYPTIK_VERSION}"

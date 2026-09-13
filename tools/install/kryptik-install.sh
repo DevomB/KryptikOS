@@ -43,7 +43,7 @@ while [ $# -gt 0 ]; do
         -h|--help)
             printf 'usage: %s --target /dev/vdb [--yes] [--dry-run] [--preseed FILE]\n' "$PROG"
             printf '\nInstalls the running medium onto --target. Destroys everything on it.\n'
-            printf '--dry-run checks everything and writes nothing.\n'
+            printf '%s\n' '--dry-run checks everything and writes nothing.'
             exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
