@@ -901,14 +901,19 @@ s_updater() {
     echo "source sha256: ${1:-unknown}"
     install -D -m 0755 "$src" /usr/sbin/kryptik-update
     sh -n /usr/sbin/kryptik-update || { echo "the updater does not parse under the target sh"; return 1; }
-    /usr/sbin/kryptik-update 2>&1 | grep -q 'apply DIR' && echo "ok: kryptik-update runs"
+    # Captured, not piped into grep -q: the usage text comes with a non-zero
+    # exit, which pipefail would report as this check failing.
+    local out
+    out="$(/usr/sbin/kryptik-update 2>&1 || true)"
+    case "$out" in *"apply DIR"*) echo "ok: kryptik-update runs" ;; *) echo "FAIL: kryptik-update does not run: ${out}"; return 1 ;; esac
     # The recovery path runs from the medium, which is this same image.
     local rec="${KRYPTIK_ROOT}/tools/update/kryptik-recover"
     [[ -f "$rec" ]] || { echo "no recover tool at ${rec}"; return 1; }
     echo "recover sha256: ${2:-unknown}"
     install -D -m 0755 "$rec" /usr/sbin/kryptik-recover
     sh -n /usr/sbin/kryptik-recover || { echo "the recover tool does not parse under the target sh"; return 1; }
-    /usr/sbin/kryptik-recover --help 2>&1 | grep -q 'restore-slot' && echo "ok: kryptik-recover runs"
+    out="$(/usr/sbin/kryptik-recover --help 2>&1 || true)"
+    case "$out" in *restore-slot*) echo "ok: kryptik-recover runs" ;; *) echo "FAIL: kryptik-recover does not run: ${out}"; return 1 ;; esac
 }
 
 # The firmware-side half of the A/B trial: a small C program that writes
@@ -921,7 +926,9 @@ s_efiboot() {
     echo "source sha256: ${1:-unknown}"
     # shellcheck disable=SC2086  # CFLAGS/LDFLAGS are deliberately word-split
     gcc $CFLAGS $LDFLAGS -std=gnu11 -Wall -Wextra -o /usr/sbin/kryptik-efiboot "$src"
-    /usr/sbin/kryptik-efiboot 2>&1 | grep -q usage && echo "ok: kryptik-efiboot runs"
+    local out
+    out="$(/usr/sbin/kryptik-efiboot 2>&1 || true)"
+    case "$out" in *usage*) echo "ok: kryptik-efiboot runs" ;; *) echo "FAIL: kryptik-efiboot does not run: ${out}"; return 1 ;; esac
 }
 
 # A console that works without login(1).
@@ -1219,7 +1226,7 @@ s_services() {
     printf '%s\n' "$all" | sed 's/^/  /'
 
     local svc missing=0
-    for svc in sysinit eudev eudev-trigger kryptikd-check firstboot seatd net-zone getty-tty1 boot-success boot-smoke default; do
+    for svc in sysinit eudev eudev-trigger kryptikd-check kryptikd-serve firstboot seatd net-zone getty-tty1 boot-success boot-smoke default; do
         if ! printf '%s\n' "$all" | grep -qx "$svc"; then
             echo "MISSING from the database: ${svc}"; missing=$((missing + 1))
         fi
@@ -1367,6 +1374,16 @@ s_boot_check() {
     chk "fstab"             /etc/fstab
     chk "C library"         /usr/lib/libc.so.6
     chk "dynamic loader"    /usr/lib/ld-linux-x86-64.so.2
+    # The desktop (Design 05/06): the compositor, the terminal, the launch
+    # client, the session, the chrome, the per-zone proxy and the daemon.
+    chk "compositor"        /usr/bin/dwl x
+    chk "terminal"          /usr/bin/havoc x
+    chk "seatd"             /usr/bin/seatd x
+    chk "kryptik-launch"    /usr/bin/kryptik-launch x
+    chk "kryptik-session"   /usr/bin/kryptik-session x
+    chk "kryptik-chrome"    /usr/bin/kryptik-chrome x
+    chk "kryptik-wlproxy"   /usr/bin/kryptik-wlproxy x
+    chk "kryptikd"          /usr/bin/kryptikd x
 
     # /sbin/init must be reachable by the exact path the kernel uses.
     if [[ -x /sbin/init ]]; then
@@ -1558,7 +1575,11 @@ s_openssh() {
         --with-pid-dir=/run --without-pam
     make ssh-keygen
     install -m 0755 ssh-keygen /usr/bin/ssh-keygen
-    ssh-keygen -Y verify 2>&1 | grep -q 'usage\|-f' && echo "ok: ssh-keygen supports -Y"
+    # Captured, not piped into grep -q: ssh-keygen prints its usage and exits
+    # non-zero, and pipefail made that the step's status (the 13:08 stop).
+    local out
+    out="$(ssh-keygen -Y verify 2>&1 || true)"
+    case "$out" in *usage*|*"-f"*) echo "ok: ssh-keygen supports -Y" ;; *) echo "FAIL: ssh-keygen -Y is not supported: ${out}"; return 1 ;; esac
 }
 
 # --- the net zone (Design 03): NAT, resolver, DHCP client -------------------
@@ -1712,6 +1733,69 @@ s_havoc() {
     make PREFIX=/usr install
     install -Dm644 havoc.cfg /usr/share/kryptik/havoc.cfg
     [[ -x /usr/bin/havoc ]] || { echo "no havoc binary"; return 1; }
+}
+
+# --- the desktop's own pieces (Design 05/06) --------------------------------
+#
+# kryptik-launch (C: the session's client of the launch daemon), the session
+# and the chrome (shell, tools/desktop/), and the per-zone Wayland proxy,
+# which is Rust and built outside the chroot like kryptikd and handed in
+# through KRYPTIK_WLPROXY_BIN. Every input is a digest argument of the step,
+# so a change to any of them re-runs it and a binary that changed under the
+# build is refused (as s_kryptikd does).
+s_desktop() {
+    local wl="$1" wl_sha="${2:-absent}" launch_sha="${3:-none}" session_sha="${4:-none}" chrome_sha="${5:-none}"
+    [[ "$wl" == "none" ]] && wl=""
+    local d="${KRYPTIK_ROOT}/tools/desktop"
+    echo "inputs: kryptik-launch.c ${launch_sha}"
+    echo "        kryptik-session   ${session_sha}"
+    echo "        kryptik-chrome    ${chrome_sha}"
+    echo "        kryptik-wlproxy   ${wl:-<none>} (${wl_sha})"
+    local f
+    for f in kryptik-launch.c kryptik-session kryptik-chrome; do
+        [[ -f "$d/$f" ]] || { echo "missing ${d}/${f}"; return 1; }
+    done
+
+    # The launch client, with the stage's hardening flags (step() set them).
+    # shellcheck disable=SC2086
+    gcc ${CFLAGS} ${LDFLAGS} -o /usr/bin/kryptik-launch "$d/kryptik-launch.c"
+    chmod 0755 /usr/bin/kryptik-launch
+    local out; out="$(/usr/bin/kryptik-launch 2>&1 || true)"
+    [[ "$out" == *usage:* ]] || { echo "FAIL: kryptik-launch does not run here: ${out}"; return 1; }
+    echo "kryptik-launch: built and runs"
+
+    install -m 0755 "$d/kryptik-session" /usr/bin/kryptik-session
+    install -m 0755 "$d/kryptik-chrome" /usr/bin/kryptik-chrome
+    sh -n /usr/bin/kryptik-session || { echo "FAIL: kryptik-session has a syntax error"; return 1; }
+    sh -n /usr/bin/kryptik-chrome || { echo "FAIL: kryptik-chrome has a syntax error"; return 1; }
+    echo "kryptik-session, kryptik-chrome: installed"
+
+    install -d -m 0755 /etc/kryptik
+    if [[ -z "$wl" ]]; then
+        echo "KRYPTIK_WLPROXY_BIN is not set: kryptik-wlproxy was NOT installed."
+        echo "Zones cannot be given a display. Build it outside the chroot:"
+        echo "  cd compositor && cargo build --release --target x86_64-unknown-linux-musl -p wlproxy --bin kryptik-wlproxy"
+        echo "and pass KRYPTIK_WLPROXY_BIN=... to make system. Recorded as absent."
+        : > /etc/kryptik/wlproxy-absent
+        return 0
+    fi
+    [[ -f "$wl" ]] || { echo "KRYPTIK_WLPROXY_BIN=${wl} does not exist"; return 1; }
+    local got_sha; got_sha="$(sha256_of "$wl")"
+    if [[ "$wl_sha" != "absent" && "$got_sha" != "$wl_sha" ]]; then
+        echo "kryptik-wlproxy changed during the build: fingerprinted ${wl_sha}, now ${got_sha}"
+        return 1
+    fi
+    install -Dm755 "$wl" /usr/bin/kryptik-wlproxy
+    rm -f /etc/kryptik/wlproxy-absent
+    echo "--- installed kryptik-wlproxy (sha256 ${got_sha}) ---"
+    readelf -l /usr/bin/kryptik-wlproxy 2>/dev/null | grep 'Requesting program interpreter' \
+        || echo "  (static binary, no interpreter - good)"
+    # It must run on the target, not just install; without arguments it
+    # prints its usage and exits 2, which is the one thing it does without
+    # a compositor.
+    out="$(/usr/bin/kryptik-wlproxy 2>&1 || true)"
+    [[ "$out" == *usage:* ]] || { echo "FAIL: the installed kryptik-wlproxy does not run here: ${out}"; return 1; }
+    echo "kryptik-wlproxy: runs"
 }
 
 s_lynx() {
@@ -1916,6 +2000,10 @@ PACKAGES=(
     "havoc"       "s_havoc"
     "lynx"        "s_lynx"
     "nano"        "native_build nano-${V_NANO}.tar.xz nano-${V_NANO} --sysconfdir=/etc --enable-utf8"
+    # The desktop's own pieces: the launch client, the session and the
+    # chrome from this tree, and the proxy binary built outside (path and
+    # content hash are the step's identity, as for kryptikd).
+    "desktop"     "s_desktop ${KRYPTIK_WLPROXY_BIN:-none} $([[ -f "${KRYPTIK_WLPROXY_BIN:-}" ]] && sha256_of "${KRYPTIK_WLPROXY_BIN}" || echo absent) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-launch.c" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-session" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-chrome" 2>/dev/null || echo none)"
 
     "etc"         "s_etc"
     "console"     "s_console"

@@ -2,6 +2,7 @@ sysinit
 eudev
 eudev-trigger
 kryptikd-check
+kryptikd-serve
 firstboot
 seatd
 net-zone

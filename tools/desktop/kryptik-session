@@ -1,0 +1,55 @@
+#!/bin/sh
+# kryptik-session: the zoned desktop, from an authenticated tty1 login.
+#
+# /etc/profile.d/kryptik-session.sh execs this for a login on tty1 (s_etc),
+# so the compositor is what an ordinary user gets after typing a password,
+# and every other terminal is a shell. It runs as that user: the compositor
+# never has privilege. What it needs from root it asks the launch daemon
+# (kryptikd serve) for through kryptik-launch, which is also how zones get
+# started; the session itself creates nothing but windows.
+#
+# Two groups make a desktop user: seat (to open the display and input through
+# seatd) and kryptik (to talk to the launch daemon). kryptik-firstboot gives
+# both to the user it creates.
+
+umask 077
+
+if [ "$(id -u)" -eq 0 ]; then
+    echo "kryptik-session: the desktop is an ordinary user's session, not root's" >&2
+    exit 1
+fi
+
+# There is no logind: the daemon creates /run/user/<uid> for the session and
+# tells us where it is. Everything the session leaves behind lives there.
+if ! rt="$(/usr/bin/kryptik-launch --runtime-dir)"; then
+    echo "kryptik-session: no runtime directory from the launch daemon" >&2
+    echo "kryptik-session: is kryptikd-serve running, and is $(id -un) in group kryptik?" >&2
+    exit 1
+fi
+case "$rt" in
+    /*) ;;
+    *) echo "kryptik-session: unusable runtime directory '$rt'" >&2; exit 1 ;;
+esac
+
+export XDG_RUNTIME_DIR="$rt"
+export XDG_SESSION_TYPE=wayland
+export WAYLAND_DISPLAY=wayland-0
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+mkdir -p "$rt/kryptik" && chmod 0700 "$rt/kryptik"
+log="$rt/kryptik/session.log"
+
+{
+    echo "kryptik-session: $(id -un) uid $(id -u) on $(tty 2>/dev/null || echo '?') at $(date -Iseconds 2>/dev/null || date)"
+    for g in seat kryptik; do
+        if ! id -Gn | tr ' ' '\n' | grep -qx "$g"; then
+            echo "kryptik-session: WARNING: not in group $g - the desktop will not work fully"
+        fi
+    done
+} >> "$log"
+
+# dwl draws the zone borders (per-zone colours from the app_id prefix the
+# proxy stamps; build/desktop/dwl-config.h) and pipes its status stream to
+# the startup command: the chrome, which shows the focused zone as text and
+# is the launcher. When dwl exits the login shell is gone with it (this
+# script was exec'd), so the machine returns to the login prompt.
+exec /usr/bin/dwl -s /usr/bin/kryptik-chrome 2>> "$log"

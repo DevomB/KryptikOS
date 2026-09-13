@@ -1,0 +1,160 @@
+#!/bin/sh
+# kryptik-chrome: the trusted desktop chrome, text edition.
+#
+# Runs in zone 0 as the session user, on the compositor directly - no proxy
+# in between - which is what makes it trusted: everything it shows comes
+# from the compositor and the launch daemon, never from a zone, and dwl
+# draws its windows with the UNZONED border (build/desktop/zone-colours.h),
+# the one colour no zone client can be given. A zone cannot draw over it
+# (no layer shell through the proxy), read its input (no global input
+# through the proxy) or capture it (no screencopy through the proxy).
+#
+#   kryptik-chrome                 dwl's startup command (`dwl -s`): reads
+#                                  dwl's status stream on stdin, records the
+#                                  focused zone in $XDG_RUNTIME_DIR/kryptik/
+#                                  focus as text, and opens the launcher
+#   kryptik-chrome --menu          the launcher: zones, their state, apps
+#   kryptik-chrome --prompt ZONE [--no-display] -- CMD [ARG...]
+#                                  ask for the zone's passphrase in a trusted
+#                                  window, then launch (kryptik-launch hands
+#                                  over here when it has no terminal)
+#   kryptik-chrome --focus         print the focused zone, from the record
+#
+# The launcher and the prompt are terminal windows (havoc) running this
+# script: the passphrase is read by kryptik-launch on that terminal, travels
+# to the daemon as a descriptor, and never touches argv or the environment.
+
+ZONES=/etc/kryptik/zones
+LAUNCH=/usr/bin/kryptik-launch
+TERMINAL=/usr/bin/havoc
+RT="${XDG_RUNTIME_DIR:-/tmp}"
+FOCUS="$RT/kryptik/focus"
+
+die() { echo "kryptik-chrome: $*" >&2; exit 1; }
+
+# The zone's label, glyph and description from its definition: text
+# identity, as the zone files declare it (compositor/zoneid audits them).
+zone_field() { # zone key
+    sed -n "s/^$2[[:space:]]*=[[:space:]]*\"\\(.*\\)\"[[:space:]]*$/\\1/p" "$ZONES/$1.toml" 2>/dev/null | head -1
+}
+zone_is_nic() { grep -q '^mode[[:space:]]*=[[:space:]]*"nic"' "$ZONES/$1.toml" 2>/dev/null; }
+
+# --- the status stream ---------------------------------------------------------
+
+# dwl writes, per output, `<output> title <t>`, `<output> appid <id>`,
+# `<output> fullscreen <0|1>` ... whenever focus or state changes. The
+# app_id of a zone window is kryptik.<zone>.<claimed>, stamped by the
+# proxy; anything else is zone 0's own (this chrome, say).
+run_status() {
+    mkdir -p "$RT/kryptik" 2>/dev/null
+    appid=""; title=""; fs=0
+    # The launcher window, so a fresh session shows something usable.
+    "$TERMINAL" -e /usr/bin/kryptik-chrome --menu &
+    while IFS= read -r line; do
+        out="${line%% *}"; rest="${line#* }"; key="${rest%% *}"; val="${rest#* }"
+        [ "$key" = "$rest" ] && val=""
+        case "$key" in
+            appid) appid="$val" ;;
+            title) title="$val" ;;
+            fullscreen) fs="$val" ;;
+            *) continue ;;
+        esac
+        case "$appid" in
+            kryptik.*) zone="${appid#kryptik.}"; zone="${zone%%.*}" ;;
+            "") zone="-" ;;
+            *) zone="0" ;;
+        esac
+        label="$(zone_field "$zone" label)"
+        glyph="$(zone_field "$zone" glyph)"
+        [ "$zone" = "0" ] && label="ZONE 0 (trusted)"
+        [ "$zone" = "-" ] && label="(no window)"
+        [ -n "$label" ] || label="UNKNOWN ZONE $zone"
+        tmp="$FOCUS.tmp.$$"
+        printf 'output=%s\nzone=%s\nlabel=%s\nglyph=%s\ntitle=%s\nfullscreen=%s\n' \
+            "$out" "$zone" "$label" "$glyph" "$title" "$fs" > "$tmp" && mv -f "$tmp" "$FOCUS"
+        echo "focus: zone=$zone label=$label fullscreen=$fs title=$title" >&2
+    done
+}
+
+# --- the launcher ---------------------------------------------------------------
+
+menu_zones() {
+    n=0
+    for f in "$ZONES"/*.toml; do
+        [ -f "$f" ] || continue
+        z="$(basename "$f" .toml)"
+        zone_is_nic "$z" && continue
+        n=$((n + 1))
+        eval "Z$n=\"\$z\""
+        info="$("$LAUNCH" --info "$z" 2>/dev/null)"
+        enc="$(printf '%s\n' "$info" | sed -n 's/^encrypted //p')"
+        run="$(printf '%s\n' "$info" | sed -n 's/^running //p')"
+        state=""
+        [ "$enc" = yes ] && state="encrypted "
+        [ "$run" = yes ] && state="${state}RUNNING" || state="${state}stopped"
+        [ -z "$info" ] && state="(daemon not answering)"
+        printf '  %d) %-10s %-3s %-10s %s\n' "$n" "$z" "$(zone_field "$z" glyph)" "$(zone_field "$z" label)" "$state"
+    done
+    NZONES=$n
+}
+
+run_menu() {
+    while :; do
+        clear 2>/dev/null
+        echo "================ KRYPTIK - trusted launcher (zone 0) ================"
+        echo "This window is drawn by the compositor with the unzoned border."
+        echo "Zone windows carry their zone's colour and a [zone] title prefix."
+        echo
+        echo "Zones:"
+        menu_zones
+        echo
+        echo "Apps:  t terminal   e editor (nano)   b browser (lynx, needs routed network)"
+        echo "Also:  s<N> stop zone N   f focused zone   r refresh   q close this window"
+        echo
+        printf 'choice (e.g. 1t): '
+        if ! read -r choice; then break; fi
+        case "$choice" in
+            q) break ;;
+            r|"") continue ;;
+            f) cat "$FOCUS" 2>/dev/null || echo "no focus record yet"; sleep 2; continue ;;
+            s[1-9]*) idx="${choice#s}"; eval "z=\"\${Z$idx:-}\""
+                      [ -n "$z" ] || { echo "no zone $idx"; sleep 1; continue; }
+                      "$LAUNCH" --stop "$z"; sleep 1; continue ;;
+            [1-9]*[teb]) idx="${choice%?}"; app="${choice#"$idx"}"; eval "z=\"\${Z$idx:-}\""
+                      [ -n "$z" ] || { echo "no zone $idx"; sleep 1; continue; }
+                      case "$app" in
+                          t) set -- "$TERMINAL" ;;
+                          e) set -- "$TERMINAL" -e /usr/bin/nano ;;
+                          b) set -- "$TERMINAL" -e /usr/bin/lynx ;;
+                      esac
+                      echo "launching in zone $z: $*"
+                      # --ask: the passphrase, if the zone needs one, is read on
+                      # THIS terminal - zone 0's window - and never on a zone's.
+                      "$LAUNCH" --ask "$z" -- "$@" || sleep 3
+                      ;;
+            *) echo "?"; sleep 1 ;;
+        esac
+    done
+}
+
+# --- the prompt -----------------------------------------------------------------
+
+run_prompt() { # ZONE [--no-display] -- CMD...
+    zone="$1"; shift
+    nodisp=""
+    [ "${1:-}" = "--no-display" ] && { nodisp="--no-display"; shift; }
+    [ "${1:-}" = "--" ] && shift
+    [ $# -gt 0 ] || die "--prompt: no command"
+    [ -n "${WAYLAND_DISPLAY:-}" ] || die "--prompt: no display to draw the prompt on"
+    # A trusted window whose only content is the question. kryptik-launch
+    # reads the answer from this terminal and sends it as a descriptor.
+    exec "$TERMINAL" -e /usr/bin/kryptik-launch --ask $nodisp "$zone" -- "$@"
+}
+
+case "${1:-}" in
+    "") run_status ;;
+    --menu) run_menu ;;
+    --prompt) shift; run_prompt "$@" ;;
+    --focus) cat "$FOCUS" 2>/dev/null || { echo "zone=-"; exit 1; } ;;
+    *) die "usage: kryptik-chrome [--menu | --prompt ZONE [--no-display] -- CMD... | --focus]" ;;
+esac
