@@ -771,8 +771,82 @@ EOF
 ::1        localhost ip6-localhost ip6-loopback
 EOF
 
+    # Groups and system accounts the boot-time services and the desktop
+    # need. seat: who may talk to seatd (the compositor's user); kryptik:
+    # who may launch zones through the trusted UI; dhcpcd: the net zone's
+    # DHCP client drops privileges to it.
+    local g
+    for g in seat kryptik wheel; do
+        getent group "$g" >/dev/null 2>&1 || groupadd -r "$g"
+    done
+    getent passwd dhcpcd >/dev/null 2>&1 || \
+        useradd -r -g nogroup -d /var/lib/dhcpcd -s /usr/bin/false -c "dhcpcd privsep" dhcpcd 2>/dev/null || \
+        useradd -r -d /var/lib/dhcpcd -s /usr/bin/false -c "dhcpcd privsep" dhcpcd
+    install -d -m 0755 -o dhcpcd /var/lib/dhcpcd 2>/dev/null || install -d -m 0755 /var/lib/dhcpcd
+
+    # root ships WITHOUT a password ("*": nothing hashes to it), so neither
+    # login nor su can reach root until the first boot of an installed system
+    # sets one (kryptik-firstboot). /etc/securetty is present and empty, so
+    # root can never log in at a terminal even then; administration is su
+    # from the wheel group. The install medium's console does not go through
+    # login at all.
+    [[ -f /etc/shadow ]] || pwconv
+    usermod -p '*' root
+    grep -q '^root:\*:' /etc/shadow && echo "root: no password" || { echo "FAIL: root has a password in the image"; return 1; }
+    : > /etc/securetty
+    if grep -q '^SU_WHEEL_ONLY' /etc/login.defs; then
+        sed -i 's/^SU_WHEEL_ONLY.*/SU_WHEEL_ONLY yes/' /etc/login.defs
+    else
+        printf 'SU_WHEEL_ONLY yes\n' >> /etc/login.defs
+    fi
+
+    cat > /etc/kryptik/kryptik.conf <<'EOF'
+# The kryptik command's defaults on an installed system.
+zones_dir = /etc/kryptik/zones
+rootfs    = /var/lib/kryptik/zones
+uid_base  = 100000
+EOF
+
+    # The desktop session: a login on tty1 becomes the compositor session
+    # when kryptik-session is installed. Any other tty stays a shell.
+    install -d -m 0755 /etc/profile.d /etc/skel
+    cat > /etc/profile.d/kryptik-session.sh <<'EOF'
+# Start the zoned desktop from a tty1 login; every other login is a shell.
+if [ -z "${WAYLAND_DISPLAY:-}" ] && [ "$(tty 2>/dev/null)" = /dev/tty1 ] \
+   && [ -x /usr/bin/kryptik-session ] && [ "$(id -u)" -ne 0 ]; then
+    exec /usr/bin/kryptik-session
+fi
+EOF
+    cat > /etc/skel/.bash_profile <<'EOF'
+[ -r /etc/profile ] && . /etc/profile
+[ -r ~/.bashrc ] && . ~/.bashrc
+EOF
+    [[ -f /etc/profile ]] || cat > /etc/profile <<'EOF'
+# Kryptik /etc/profile
+export PATH=/usr/bin:/usr/sbin
+umask 022
+for f in /etc/profile.d/*.sh; do [ -r "$f" ] && . "$f"; done
+EOF
+    grep -q 'profile.d' /etc/profile || printf '%s\n' 'for f in /etc/profile.d/*.sh; do [ -r "$f" ] && . "$f"; done' >> /etc/profile
+    printf '/bin/sh\n/bin/bash\n/usr/bin/bash\n' > /etc/shells
+
     echo "--- identity ---"
     cat /etc/os-release
+    echo "--- groups ---"
+    grep -E '^(seat|kryptik|wheel|dhcpcd):' /etc/group
+}
+
+# The firmware-side half of the A/B trial: a small C program that writes
+# Boot#### and BootNext through efivarfs. Built here with the target
+# toolchain and the hardening flags like everything else; its source hash is
+# an argument so the step re-runs when the source changes.
+s_efiboot() {
+    local src="${KRYPTIK_ROOT}/tools/efi/kryptik-efiboot.c"
+    [[ -f "$src" ]] || { echo "no source at ${src}"; return 1; }
+    echo "source sha256: ${1:-unknown}"
+    # shellcheck disable=SC2086  # CFLAGS/LDFLAGS are deliberately word-split
+    gcc $CFLAGS $LDFLAGS -std=gnu11 -Wall -Wextra -o /usr/sbin/kryptik-efiboot "$src"
+    /usr/sbin/kryptik-efiboot 2>&1 | grep -q usage && echo "ok: kryptik-efiboot runs"
 }
 
 # A console that works without login(1).
@@ -809,10 +883,15 @@ fi
 [ -e "/dev/$dev" ] || dev=console
 
 if [ -x /usr/sbin/agetty ]; then
-    # -n: do not prompt for a login name.
-    # -l: exec this program instead of /bin/login, which Kryptik does not ship.
-    exec /usr/sbin/agetty -n -l /usr/bin/bash --keep-baud \
-         115200,57600,38400,9600 "$dev" vt220
+    # On an install medium (kryptik.media= is on the signed command line) the
+    # serial console is the installer's root shell: -n -l skips login(1).
+    # On an installed system it is an ordinary login prompt; root is locked,
+    # so it admits the first-boot user, not root.
+    if grep -qw 'kryptik\.media=[a-z]' /proc/cmdline 2>/dev/null; then
+        exec /usr/sbin/agetty -n -l /usr/bin/bash --keep-baud \
+             115200,57600,38400,9600 "$dev" vt220
+    fi
+    exec /usr/sbin/agetty --keep-baud 115200,57600,38400,9600 "$dev" vt220
 fi
 
 # No agetty: put a shell directly on the device. Less capable - no baud
@@ -1065,7 +1144,7 @@ s_services() {
     printf '%s\n' "$all" | sed 's/^/  /'
 
     local svc missing=0
-    for svc in sysinit eudev eudev-trigger kryptikd-check getty-tty1 default; do
+    for svc in sysinit eudev eudev-trigger kryptikd-check firstboot seatd getty-tty1 boot-success boot-smoke default; do
         if ! printf '%s\n' "$all" | grep -qx "$svc"; then
             echo "MISSING from the database: ${svc}"; missing=$((missing + 1))
         fi
@@ -1256,6 +1335,12 @@ s_boot_check() {
 
     chk "sysctl fragments"  /etc/sysctl.d
     chk "boot scripts"      /usr/libexec/kryptik/sysinit.sh x
+    chk "test control helper" /usr/libexec/kryptik/testctl.sh
+    chk "boot-success"      /usr/libexec/kryptik/boot-success.sh x
+    chk "first-boot setup"  /usr/libexec/kryptik/firstboot.sh x
+    chk "login"             /usr/bin/login x
+    chk "efiboot"           /usr/sbin/kryptik-efiboot x
+    chk "seatd"             /usr/bin/seatd x
 
     if [[ -e /etc/kryptik/kryptikd-absent ]]; then
         echo "  NOTE    kryptikd is not installed in this image (see the kryptikd step)"
@@ -1715,6 +1800,7 @@ PACKAGES=(
     # stale-stamp defect the kernel fragments had.
     # Its content is an argument so the step rebuilds when the installer
     # changes; the recipe reads it by path, which declare -f cannot see.
+    "efiboot"     "s_efiboot $(sha256_of "${KRYPTIK_ROOT}/tools/efi/kryptik-efiboot.c" 2>/dev/null || echo none)"
     "installer"   "s_installer $(sha256_of "${KRYPTIK_ROOT}/tools/install/kryptik-install.sh" 2>/dev/null || echo none)"
     # These globs were separated by a literal backslash-n, which inside a
     # command substitution on one physical line is the FILENAME n, not a line

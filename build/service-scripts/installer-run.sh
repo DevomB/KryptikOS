@@ -1,22 +1,24 @@
 #!/bin/sh
-# Run the installer, but only when the kernel command line asks for it.
-#
-# Armed the same way boot-smoke is: an ordinary boot must not partition a disk
-# because one happens to be attached. The device is named explicitly on the
-# command line, so "which disk" is never inferred.
+# Run the installer, but only on an install medium and only when a test
+# control disk asks for it (see testctl.sh). A person installs by logging in
+# on the medium's console and running kryptik-install; this is the unattended
+# path the VM tests use, and it is a no-op on an installed system.
 set -u
+. /usr/libexec/kryptik/testctl.sh
 
 say() { echo "KRYPTIK_INSTALL: $*"; }
 
-target=""
-for word in $(cat /proc/cmdline 2>/dev/null); do
-    case "$word" in
-        kryptik.install=*) target="${word#kryptik.install=}" ;;
-    esac
-done
-
+if ! testctl_media; then
+    echo "installer: not an install medium; nothing to do"
+    exit 0
+fi
+if ! testctl_load; then
+    echo "installer: no kryptik-testctl control disk; nothing to do (run kryptik-install by hand)"
+    exit 0
+fi
+target="$(testctl_get install_target)"
 if [ -z "$target" ]; then
-    echo "installer: not requested on the kernel command line; nothing to do"
+    echo "installer: control disk names no install_target; nothing to do"
     exit 0
 fi
 
@@ -25,58 +27,63 @@ say "BEGIN target=${target}"
 
 if [ ! -x /usr/sbin/kryptik-install ]; then
     say "FAILED no /usr/sbin/kryptik-install in this image"
-    # Reported as a failing rc on purpose, even though this oneshot exits 0.
-    # Exiting non-zero would fail the s6-rc bundle and cut the boot short, and
-    # the transcript IS the test result - losing it would tell us less than this
-    # line does. The host assertions key on rc=, not on the service exit status.
     say "rc=127"
     say "END"
     exit 0
 fi
 
-# --yes because there is nobody to type ERASE at a serial console in a test.
-# The device still had to be named on the kernel command line to get here.
-# Capture the status of the INSTALLER, not of the thing prefixing its output.
-#
-# This was `kryptik-install ... | sed ...` followed by `rc=$?`, which reads
-# SED's status. sed succeeds at prefixing whatever it is handed, including
-# nothing, so rc was 0 on every run. The first real failure - "sgdisk: command
-# not found" - was duly reported as rc=0, and the only reason anyone noticed is
-# that the separate result checks failed afterwards.
-#
-# /bin/sh here has no pipefail to lean on, so the output goes to a file and the
-# pipeline is removed entirely.
+# Preseed for the installed system's first boot: an account the test driver
+# can log in as. Written by the installer into the new state partition and
+# consumed once by kryptik-firstboot there.
+preseed_args=""
+pu="$(testctl_get preseed_user)"; ph="$(testctl_get preseed_password_hash)"
+rh="$(testctl_get preseed_root_hash)"
+if [ -n "$pu" ] && [ -n "$ph" ]; then
+    umask 077
+    printf 'user=%s\npassword_hash=%s\nroot_password_hash=%s\n' "$pu" "$ph" "$rh" > /run/kryptik/firstboot.preseed
+    preseed_args="--preseed /run/kryptik/firstboot.preseed"
+fi
+
+# Capture the status of the INSTALLER, not of the thing prefixing its output:
+# `... | sed` followed by rc=$? reads sed's status, which is how a missing
+# partitioner was once reported as rc=0.
 logf=/run/kryptik-install.log
-/usr/sbin/kryptik-install --target "$target" --yes > "$logf" 2>&1
+# shellcheck disable=SC2086  # preseed_args is deliberately word-split
+/usr/sbin/kryptik-install --target "$target" --yes $preseed_args > "$logf" 2>&1
 rc=$?
 sed 's/^/KRYPTIK_INSTALL: /' "$logf"
 say "rc=${rc}"
 
 if [ "$rc" -eq 0 ]; then
     # Say what is actually on the disk now, from outside the installer, so the
-    # claim does not rest on the installer's own report.
-    # sfdisk, because sgdisk is not in this image - which is why the previous
-    # version of this line reported "0 partitions named kryptik-root" about a
-    # disk it had never managed to look at.
-    case "$target" in
-        *[0-9]) part="${target}p2" ;;
-        *)      part="${target}2"  ;;
-    esac
-    say "verify: partition 2 label=$(sfdisk --part-label "$target" 2 2>/dev/null || echo none)"
-    say "verify: partition 2 node=${part} $([ -b "$part" ] && echo present || echo ABSENT)"
-    say "verify: uuid=$(blkid -s UUID -o value "$part" 2>/dev/null || echo none)"
-    say "verify: type=$(blkid -s TYPE -o value "$part" 2>/dev/null || echo none)"
+    # claim does not rest on the installer's own report. Every partition by
+    # label, as the boot chain will look for them.
+    say "verify: table=$(sfdisk -l "$target" 2>/dev/null | grep -c "^${target}")"
+    for lbl in kryptik-esp kryptik-a kryptik-b kryptik-state; do
+        dev="$(blkid -t PARTLABEL="$lbl" -o device 2>/dev/null | grep "^${target}" | head -1)"
+        say "verify: ${lbl}=${dev:-ABSENT} type=$(blkid -s TYPE -o value "$dev" 2>/dev/null || echo none)"
+    done
+    esp="$(blkid -t PARTLABEL=kryptik-esp -o device 2>/dev/null | grep "^${target}" | head -1)"
     mkdir -p /run/verify
-    if mount -o ro "$part" /run/verify 2>/dev/null; then
-        say "verify: os_id=$(. /run/verify/etc/os-release 2>/dev/null && echo "${ID:-none}")"
-        say "verify: has_init=$([ -x /run/verify/sbin/init ] && echo yes || echo no)"
-        say "verify: has_kernel=$(ls /run/verify/boot/kryptik-* 2>/dev/null | wc -l)"
-        say "verify: has_installjson=$([ -r /run/verify/etc/kryptik-install.json ] && echo yes || echo no)"
-        say "verify: fstab_root=$(awk '$2=="/"{print $1; exit}' /run/verify/etc/fstab 2>/dev/null)"
+    if [ -n "$esp" ] && mount -o ro "$esp" /run/verify 2>/dev/null; then
+        say "verify: esp_files=$(cd /run/verify && find . -type f | sort | tr '\n' ' ')"
+        say "verify: bootx64_sha256=$(sha256sum /run/verify/EFI/BOOT/BOOTX64.EFI 2>/dev/null | cut -c1-64)"
+        say "verify: version_a=$(cat /run/verify/kryptik/version-a 2>/dev/null || echo none)"
         umount /run/verify
     else
-        say "verify: could not mount ${part} read-only"
+        say "verify: could not mount the ESP read-only"
+    fi
+    st="$(blkid -t PARTLABEL=kryptik-state -o device 2>/dev/null | grep "^${target}" | head -1)"
+    if [ -n "$st" ] && mount -o ro "$st" /run/verify 2>/dev/null; then
+        say "verify: state_marker=$([ -e /run/verify/.kryptik-state ] && echo yes || echo no)"
+        say "verify: install_json=$([ -r /run/verify/lib/kryptik/install.json ] && echo yes || echo no)"
+        say "verify: preseed=$([ -r /run/verify/lib/kryptik/firstboot.preseed ] && echo present || echo none)"
+        umount /run/verify
+    fi
+    slot_a="$(blkid -t PARTLABEL=kryptik-a -o device 2>/dev/null | grep "^${target}" | head -1)"
+    if [ -n "$slot_a" ]; then
+        say "verify: slot_a_sha256=$(head -c "$(cat /etc/kryptik/root-image-bytes 2>/dev/null || echo 0)" "$slot_a" | sha256sum | cut -c1-64)"
+        say "verify: image_sha256=$(sed -n 's/.*"root_image_sha256": *"\([0-9a-f]*\)".*/\1/p' /etc/kryptik-image.json 2>/dev/null)"
     fi
 fi
-
 say "END"
