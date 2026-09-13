@@ -93,7 +93,7 @@ CHROOT_ENV := KRYPTIK_ROOT="$(ROOT)" \
 CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
 
 .PHONY: test help check check-kernel-eol sources lock verify verify-provenance \
-	vm-disk vm-disk-boot vm-restart vm-measure cli-test update-test \
+	vm-disk vm-disk-boot vm-restart vm-measure cli-test update-tree-test identity-test serve-test \
         test-harness test-hardening test-artifacts audit-artifacts \
         audit-artifacts-strict manifest verify-manifest test-manifest \
         test-s6-init smoke-userspace test-services test-libc-unwind \
@@ -149,6 +149,7 @@ help:
 	@echo "  make launcher-test  attack \`kryptikd run\` itself (the launch path)"
 	@echo "  make zone-tests  both of the above; what a zone change must pass"
 	@echo "  make cli-test    test \`kryptik\`, the command a person types"
+	@echo "  make serve-test  drive \`kryptikd serve\`, the launch daemon, over its socket"
 	@echo "  make update-tree-test  install a signed update into a kryptikd program/config"
 	@echo "                   tree, interrupt it, roll it back (directories, no VM)"
 	@echo "  make vm-image    build the developer VM initramfs (busybox userspace)"
@@ -171,6 +172,7 @@ help:
 	@echo "  make test-s6-init      check stage 04 produces a bootable s6 image"
 	@echo "  make smoke-userspace   RUN the built userland in the chroot (needs root)"
 	@echo "  make test-services     validate the s6-rc service tree"
+	@echo "  make identity-test     zone files, compositor colour table and zoneid audit agree"
 	@echo "  make test-libc-unwind  prove the target libc can unwind (needs root)"
 	@echo "  make sign-image        sign the disk image with a developer key"
 	@echo "  make verify-image      verify that signature against the image"
@@ -456,6 +458,12 @@ cli-test:
 	@cd compartments/kryptikd && cargo build --quiet
 	@compartments/tests/cli.sh
 
+# The launch daemon, driven over its socket as the desktop drives it: who may
+# ask, what a request may carry, the deadline, readiness, the proxy socket.
+serve-test:
+	@cd compartments/kryptikd && cargo build --quiet
+	@compartments/tests/serve.sh
+
 # Update, rollback and recovery of a kryptikd PROGRAM/CONFIG TREE in temporary
 # directories (tools/apply-update.sh): the application-tree suite. It is not
 # the installed-OS update - that is `update-test` above, which boots real A/B
@@ -510,6 +518,11 @@ test-manifest:
 # execline `up`, a script installed into every image that nothing runs.
 test-services:
 	@"$(TOOLS)"/test-services.sh
+
+# The zone identity contract: the zone files, the compositor's colour table
+# (generated from them) and the distinctness invariant, checked together.
+identity-test:
+	@"$(TOOLS)"/test-desktop-identity.sh
 
 # Runs inside the chroot, because it is the TARGET system's C library that has
 # to be able to unwind - not the build host's.

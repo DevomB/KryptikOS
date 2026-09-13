@@ -87,6 +87,16 @@ pub struct RunOptions {
     /// The per-zone Wayland proxy socket to bind into the zone at
     /// /run/kryptik/wayland-0 (Design 05a). None: the zone has no display.
     pub wayland_socket: Option<std::path::PathBuf>,
+    /// The (device, inode) the socket must be, as the launch daemon
+    /// verified it: the child opens the path without following symlinks
+    /// and refuses any other inode, so nothing renamed or linked into
+    /// place between the daemon's check and the bind is accepted.
+    pub wayland_inode: Option<(u64, u64)>,
+    /// A pipe the launch daemon reads (serve.rs): `ready` is written to it
+    /// when the zone's pid 1 exists, and it is closed then. Closed by exit
+    /// before that means the zone did not start. CLOEXEC, so no zone
+    /// command inherits it.
+    pub ready_fd: Option<i32>,
 }
 
 /// Seconds a zone gets to exit after a forwarded SIGINT/SIGTERM before its
@@ -712,9 +722,14 @@ pub fn run_in_zone(
         ready.close_read();
         mapped.close_write();
         initpid.close_read();
+        // The daemon's readiness pipe is the parent's to answer; holding a
+        // copy here would only delay the EOF that reports a failed launch.
+        if let Some(fd) = opts.ready_fd {
+            unsafe { libc::close(fd) };
+        }
         let rc = intermediate_main(
             zone, rootfs, argv, &id, parent_pid, &placed, &ready, &mapped, &initpid,
-            zone_policy.as_ref(), &fs_rules, &broker_path_str, wayland_path_str.as_deref(),
+            zone_policy.as_ref(), &fs_rules, &broker_path_str, wayland_path_str.as_deref(), opts.wayland_inode,
         );
         // Never return: this process must not run the parent's cleanup.
         unsafe { libc::_exit(rc) };
@@ -835,6 +850,14 @@ pub fn run_in_zone(
     let init_pid = initpid.read_i32();
     if let Some(zp) = init_pid {
         let _ = entry.set_init(zp);
+        // Readiness, for the launch daemon: the zone's pid 1 exists, so
+        // every setup step before it succeeded. Written once, then closed.
+        if let Some(fd) = opts.ready_fd {
+            unsafe {
+                libc::write(fd, "ready\n".as_ptr() as *const libc::c_void, 6);
+                libc::close(fd);
+            }
+        }
     }
 
     // The broker serves this zone until it exits. A transfer must know the
@@ -916,6 +939,7 @@ fn intermediate_main(
     fs_rules: &[landlock::ZoneRule],
     broker_path: &str,
     wayland_path: Option<&str>,
+    wayland_inode: Option<(u64, u64)>,
 ) -> i32 {
     macro_rules! bail {
         ($($arg:tt)*) => {{
@@ -1095,19 +1119,36 @@ fn intermediate_main(
         fd
     };
     let broker_in_zone = format!("/proc/self/fd/{broker_fd_for_zone}");
-    // Same for the Wayland proxy socket, when there is one.
+    // Same for the Wayland proxy socket, when there is one - opened HERE,
+    // in the zone's own mount namespace (a descriptor from the daemon's
+    // namespace cannot be bind-mounted from this one), walking the path
+    // without following a single symlink, and refusing any inode but the
+    // one the daemon verified.
     let wayland_in_zone: Option<String> = match wayland_path {
         None => None,
         Some(p) => {
-            let c = match std::ffi::CString::new(p) {
-                Ok(c) => c,
-                Err(_) => bail!("wayland socket path contains a NUL"),
+            let fd = match crate::serve::open_nofollow(std::path::Path::new(p), true) {
+                Ok(fd) => fd,
+                Err(e) => bail!("wayland socket {e}"),
             };
-            let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH) };
-            if fd < 0 {
-                bail!("wayland socket {}: {}", p, io::Error::last_os_error());
+            if let Some((dev, ino)) = wayland_inode {
+                let mut st: libc::stat = unsafe { std::mem::zeroed() };
+                if unsafe { libc::fstat(fd.raw(), &mut st) } < 0 {
+                    bail!("wayland socket {}: fstat: {}", p, io::Error::last_os_error());
+                }
+                if st.st_dev as u64 != dev || st.st_ino as u64 != ino {
+                    bail!("wayland socket {} is not the socket the launch daemon verified (inode changed)", p);
+                }
             }
-            Some(format!("/proc/self/fd/{fd}"))
+            // Not CLOEXEC, for the same reason as the broker's: it must
+            // survive into the process that builds the root, and it is
+            // closed by the descriptor sweep, not the exec.
+            let raw = fd.into_raw();
+            unsafe {
+                let fl = libc::fcntl(raw, libc::F_GETFD);
+                libc::fcntl(raw, libc::F_SETFD, fl & !libc::FD_CLOEXEC);
+            }
+            Some(format!("/proc/self/fd/{raw}"))
         }
     };
 

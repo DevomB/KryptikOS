@@ -52,6 +52,10 @@ USAGE:
     kryptikd gc                       reclaim stale entries and empty cgroups
     kryptikd clipboard move FROM TO   the zone 0 gesture: give TO a copy of FROM's
                                       clipboard payload (both zones running)
+    kryptikd serve [--rootfs DIR]     the launch daemon the desktop session talks
+                   [--socket PATH]    to (root; --socket PATH runs a developer
+                   [--group G]        instance that serves only your own uid)
+                   [--proxy-exe P]
 
     --rootfs DIR   base directory for zone data (default: /var/lib/kryptik/zones);
                    the zone sees its own directory as /home/NAME
@@ -60,6 +64,11 @@ USAGE:
     --auto-approve-transfers
                    development flag: approve every file this zone offers to
                    another zone without a prompt (warns; the prompt is desktop work)
+    --wayland-socket P   the zone's proxy socket, bound at /run/kryptik/wayland-0
+    --wayland-inode D:I  ... and the (device, inode) it must be, or the launch fails
+    --passphrase-fd N    an encrypted zone's passphrase, read from descriptor N
+    --ready-fd N         written `ready` and closed once the zone's pid 1 exists
+                         (the launch daemon passes all three; see `serve`)
 
 Only descriptors 0, 1 and 2 reach the zone; the environment is rebuilt from
 an allowlist (see `kryptikd explain NAME`).
@@ -870,6 +879,35 @@ fn run_options_from(args: &[String]) -> Result<spawn::RunOptions, String> {
             .position(|a| a == "--wayland-socket")
             .and_then(|i| args.get(i + 1))
             .map(PathBuf::from),
+        wayland_inode: match args.iter().position(|a| a == "--wayland-inode") {
+            None => None,
+            Some(i) => {
+                let v = args.get(i + 1).ok_or_else(|| "--wayland-inode: expected DEV:INO".to_string())?;
+                let (d, n) = v.split_once(':').ok_or_else(|| "--wayland-inode: expected DEV:INO".to_string())?;
+                Some((
+                    d.parse::<u64>().map_err(|_| "--wayland-inode: DEV is not a number".to_string())?,
+                    n.parse::<u64>().map_err(|_| "--wayland-inode: INO is not a number".to_string())?,
+                ))
+            }
+        },
+        ready_fd: match args.iter().position(|a| a == "--ready-fd") {
+            None => None,
+            Some(i) => {
+                let fd = args
+                    .get(i + 1)
+                    .and_then(|v| v.parse::<i32>().ok())
+                    .ok_or_else(|| "--ready-fd: expected a descriptor number".to_string())?;
+                // Ours alone from here: the zone's command must not inherit it.
+                unsafe {
+                    let fl = libc::fcntl(fd, libc::F_GETFD);
+                    if fl < 0 {
+                        return Err(format!("--ready-fd {fd}: not an open descriptor"));
+                    }
+                    libc::fcntl(fd, libc::F_SETFD, fl | libc::FD_CLOEXEC);
+                }
+                Some(fd)
+            }
+        },
     })
 }
 
