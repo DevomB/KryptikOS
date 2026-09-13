@@ -198,6 +198,11 @@ s_glibc() {
         echo "note: FHS patch absent, continuing without it"
     fi
 
+    # Upstream loader fixes 2.40 shipped without (build/patches/glibc-2.40/).
+    # Applied to the toolchain glibc as well as the final one in stage 04, so
+    # both are built from the same source.
+    apply_repo_patches "glibc-${V_GLIBC}"
+
     mkdir -p build
     cd build
     echo "rootsbindir=/usr/sbin" > configparms
