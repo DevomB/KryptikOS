@@ -1644,9 +1644,12 @@ mod tests {
             "explain must not let 'ephemeral' be read as secure erasure: {e}"
         );
 
-        // The other mode is still unimplemented, and must still say so.
+        // Encrypted storage is implemented for a root launch (Design 04):
+        // explain names the container, the mapping and the close, and says
+        // that an unprivileged launch cannot open it.
         let enc = explain(&z_encrypted(), "/tmp/t", std::path::Path::new("/nonexistent"));
-        assert!(enc.contains("NOT YET IMPLEMENTED"), "{enc}");
+        assert!(enc.contains("LUKS2") && enc.contains("/dev/mapper/kryptik-t"), "{enc}");
+        assert!(enc.contains("Unprivileged launches are refused"), "{enc}");
     }
 
     #[test]
