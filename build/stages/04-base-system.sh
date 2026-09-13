@@ -1513,7 +1513,12 @@ s_lvm2() {
         --disable-readline --disable-selinux --with-default-dm-run-dir=/run \
         --enable-udev_sync --disable-silent-rules
     make device-mapper
-    make install_device-mapper
+    # The install target recurses into libdm and dm-tools with separate make
+    # processes that both rebuild dmsetup; with the stage's -j4 they ran at
+    # once, one relinking while the other recompiled dmsetup.o, and the link
+    # saw no object at all ("undefined reference to `main'"). Serial here;
+    # the parallel build above is where the time goes.
+    make -j1 install_device-mapper
     dmsetup --version | head -1
     [[ -f /usr/lib/pkgconfig/devmapper.pc ]] || { echo "no devmapper.pc"; return 1; }
 }
