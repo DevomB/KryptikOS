@@ -64,7 +64,8 @@ USAGE:
     --zone-gid N   accepted, when kryptikd itself runs as root.
     --auto-approve-transfers
                    development flag: approve every file this zone offers to
-                   another zone without a prompt (warns; the prompt is desktop work)
+                   another zone without asking the person through the chrome
+                   (/run/kryptik-consent); warns, for tests without a session
     --wayland-socket P   the zone's proxy socket, bound at /run/kryptik/wayland-0
     --wayland-inode D:I  ... and the (device, inode) it must be, or the launch fails
     --passphrase-fd N    an encrypted zone's passphrase, read from descriptor N
@@ -74,9 +75,14 @@ USAGE:
 Only descriptors 0, 1 and 2 reach the zone; the environment is rebuilt from
 an allowlist (see `kryptikd explain NAME`).
 
-Not yet implemented: per-zone encrypted volumes. They exit with an error
-rather than pretending to work. Transfers are a zone verb on the broker
-socket (docs/design/05a), not a zone 0 command."
+    kryptikd volume init|passwd|backup-header|restore-header|status NAME
+                                      an encrypted zone's LUKS2 volume (root;
+                                      the passphrase comes on a descriptor or
+                                      the terminal, never on a command line)
+
+Transfers are a zone verb on the broker socket, sent by the zone that offers
+the file (docs/design/05a), not a zone 0 command; the person answers through
+the chrome."
 }
 
 fn main() -> ExitCode {

@@ -49,6 +49,7 @@ COMPARTMENT=(
     "serve-test|compartments/tests/serve.sh"
     "update-tree-test|compartments/tests/update.sh"
     "identity-test|tools/test-desktop-identity.sh"
+    "compositor-test|tools/test-compositor.sh"
 )
 
 passed=()

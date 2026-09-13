@@ -109,6 +109,7 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
         validate-kernel validate-kernel-hardened validate-kernel-boot \
         media ovmf-vars media-smoke-usb media-smoke-iso media-smoke-secureboot \
         media-refused-foreign-keys integrity-test update-test \
+        state-test zones-test gui-test compositor-test acceptance \
         toolchain temp-tools chroot chroot-enter chroot-umount chroot-status \
         system kernel iso audit zones zone-test paths reset-stamps \
         sysroot-ready \
@@ -357,6 +358,42 @@ PAYLOAD_B ?=
 update-test:
 	@test -n "$(PAYLOAD_A)" -a -n "$(PAYLOAD_B)" || { echo "set PAYLOAD_A=... PAYLOAD_B=... (stage 06 payload dirs of two releases)"; exit 1; }
 	@"$(TOOLS)"/image/update-test.sh --usb-a "$(MEDIA_USB)" --payload-a "$(PAYLOAD_A)" --payload-b "$(PAYLOAD_B)" --vars $(or $(VARS),clean)
+
+# The installed system's state partition: found by identity, degraded and
+# honest when it cannot be used (clone, ambiguous labels, corrupt, missing).
+state-test:
+	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
+	@"$(TOOLS)"/image/state-test.sh --usb "$(MEDIA_USB)"
+
+# Zones, the network and encrypted storage on the installed system, on the
+# Kryptik kernel (gates G6 and G7). Not to be confused with zone-test, the
+# host-side adversarial suite for the isolation primitives.
+zones-test:
+	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
+	@"$(TOOLS)"/image/zones-test.sh --usb "$(MEDIA_USB)"
+
+# The zoned desktop on the installed system, driven by keystrokes and
+# screenshots through QMP (gate G8).
+gui-test:
+	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
+	@"$(TOOLS)"/image/gui-test.sh --usb "$(MEDIA_USB)"
+
+# The compositor layer's own tests (wlproxy, zoneid, the shipped zone files).
+compositor-test:
+	@"$(TOOLS)"/test-compositor.sh
+
+# Every gate, G1 to G10, on the media named (the newest under images/ by
+# default), in one run with one verdict and a report. Needs root: the chroot
+# proofs and the VM drivers. EXPORT=DIR copies the tested media, hashes,
+# trust material, revision, report and instructions there and verifies the
+# copies. PAYLOAD_A/PAYLOAD_B default to the payload directory matching
+# MEDIA_USB's version and the newest other one.
+EXPORT ?=
+acceptance:
+	@$(SUDO) env $(CHROOT_ENV) "$(TOOLS)"/acceptance.sh \
+	    $(if $(MEDIA_USB),--media-usb "$(MEDIA_USB)") $(if $(MEDIA_ISO),--media-iso "$(MEDIA_ISO)") \
+	    $(if $(PAYLOAD_A),--payload-a "$(PAYLOAD_A)") $(if $(PAYLOAD_B),--payload-b "$(PAYLOAD_B)") \
+	    $(if $(EXPORT),--export "$(EXPORT)") $(if $(ONLY),--only "$(ONLY)")
 
 zones:
 	@cd compartments/kryptikd && cargo build --quiet
