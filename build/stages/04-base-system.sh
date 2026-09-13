@@ -902,6 +902,13 @@ s_updater() {
     install -D -m 0755 "$src" /usr/sbin/kryptik-update
     sh -n /usr/sbin/kryptik-update || { echo "the updater does not parse under the target sh"; return 1; }
     /usr/sbin/kryptik-update 2>&1 | grep -q 'apply DIR' && echo "ok: kryptik-update runs"
+    # The recovery path runs from the medium, which is this same image.
+    local rec="${KRYPTIK_ROOT}/tools/update/kryptik-recover"
+    [[ -f "$rec" ]] || { echo "no recover tool at ${rec}"; return 1; }
+    echo "recover sha256: ${2:-unknown}"
+    install -D -m 0755 "$rec" /usr/sbin/kryptik-recover
+    sh -n /usr/sbin/kryptik-recover || { echo "the recover tool does not parse under the target sh"; return 1; }
+    /usr/sbin/kryptik-recover --help 2>&1 | grep -q 'restore-slot' && echo "ok: kryptik-recover runs"
 }
 
 # The firmware-side half of the A/B trial: a small C program that writes
@@ -1409,6 +1416,7 @@ s_boot_check() {
     chk "login"             /usr/bin/login x
     chk "efiboot"           /usr/sbin/kryptik-efiboot x
     chk "updater"           /usr/sbin/kryptik-update x
+    chk "recover"           /usr/sbin/kryptik-recover x
     chk "release trust"     /etc/kryptik/trust/release-signers
     chk "ssh-keygen"        /usr/bin/ssh-keygen x
     chk "cryptsetup"        /usr/sbin/cryptsetup x
@@ -1873,7 +1881,7 @@ PACKAGES=(
     # Its content is an argument so the step rebuilds when the installer
     # changes; the recipe reads it by path, which declare -f cannot see.
     "release-trust" "s_release_trust"
-    "updater"     "s_updater $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-update" 2>/dev/null || echo none)"
+    "updater"     "s_updater $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-update" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-recover" 2>/dev/null || echo none)"
     "netzone"     "s_netzone $(sha256_of "${KRYPTIK_ROOT}/tools/net/netzone-init.sh" 2>/dev/null || echo none)"
     "efiboot"     "s_efiboot $(sha256_of "${KRYPTIK_ROOT}/tools/efi/kryptik-efiboot.c" 2>/dev/null || echo none)"
     "installer"   "s_installer $(sha256_of "${KRYPTIK_ROOT}/tools/install/kryptik-install.sh" 2>/dev/null || echo none)"

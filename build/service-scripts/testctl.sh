@@ -15,6 +15,7 @@
 #
 # Keys: install_target=/dev/vdb   smoke_poweroff=1   preseed_user=NAME
 #       preseed_password_hash=HASH  preseed_root_hash=HASH  install_wait=SECONDS
+#       recover_disk=/dev/vda recover_slot=a|b recover_mode=restore|commit|status
 
 TESTCTL_MNT=/run/kryptik/testctl
 TESTCTL_FILE=""

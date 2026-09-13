@@ -16,6 +16,25 @@ if ! testctl_load; then
     echo "installer: no kryptik-testctl control disk; nothing to do (run kryptik-install by hand)"
     exit 0
 fi
+# Recovery of an installed disk from this medium (kryptik-recover), armed
+# the same way as an install and reported on its own prefix.
+rdisk="$(testctl_get recover_disk)"
+if [ -n "$rdisk" ]; then
+    rslot="$(testctl_get recover_slot)"; rmode="$(testctl_get recover_mode)"
+    echo
+    echo "KRYPTIK_RECOVER: BEGIN disk=${rdisk} slot=${rslot} mode=${rmode}"
+    logr=/run/kryptik-recover.log
+    case "$rmode" in
+        restore) /usr/sbin/kryptik-recover --disk "$rdisk" --restore-slot "$rslot" > "$logr" 2>&1 ;;
+        commit)  /usr/sbin/kryptik-recover --disk "$rdisk" --commit-slot "$rslot" > "$logr" 2>&1 ;;
+        *)       /usr/sbin/kryptik-recover --disk "$rdisk" --status > "$logr" 2>&1 ;;
+    esac
+    rrc=$?
+    sed 's/^/KRYPTIK_RECOVER: /' "$logr"
+    echo "KRYPTIK_RECOVER: rc=${rrc}"
+    echo "KRYPTIK_RECOVER: END"
+fi
+
 target="$(testctl_get install_target)"
 if [ -z "$target" ]; then
     echo "installer: control disk names no install_target; nothing to do"
