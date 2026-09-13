@@ -47,6 +47,7 @@ DRV="${SELF}/vm-drive.py"
 VARSF="${VMDIR}/gui-vars.fd"; cp /usr/share/OVMF/OVMF_VARS_4M.fd "$VARSF"
 LATEST="${KRYPTIK_WORK}/logs/ovmf-serial.latest.log"
 SHOT="${VMDIR}/gui-untrusted.ppm"
+SHOT_FS="${VMDIR}/gui-untrusted-fullscreen.ppm"
 
 # ---------------------------------------------------------------- phase 1 --
 phase "phase 1: install"
@@ -59,7 +60,7 @@ tr -d '\r' < "$LATEST" | grep -q 'KRYPTIK_INSTALL: rc=0' && green "installed" ||
 
 # ---------------------------------------------------------------- phase 2 --
 phase "phase 2: the desktop, driven"
-rm -f "$SHOT"
+rm -f "$SHOT" "$SHOT_FS"
 out="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --net user --gpu --mem 3072 --name gui-p2)"
 SER="$(sed -n 's/^serial=//p' <<<"$out")"; PIDF="$(sed -n 's/^pid=//p' <<<"$out")"; LOG="$(sed -n 's/^log=//p' <<<"$out")"; QMP="$(sed -n 's/^qmp=//p' <<<"$out")"
 [[ -S "$SER" ]] || die "no serial socket: ${out}"
@@ -69,6 +70,7 @@ python3 "$DRV" --serial "$SER" --qmp "$QMP" --timeout 600 \
     "expect:Password: ?" "send:${RPASS}" \
     "expect:GT SCREENSHOT-READY" "sleep:2" "screendump:${SHOT}" \
     "expect:GT KEY-FULLSCREEN\r?\n" "key:alt+e" \
+    "expect:GT SCREENSHOT-FULLSCREEN" "sleep:2" "screendump:${SHOT_FS}" \
     "expect:GT KEY-FULLSCREEN-AGAIN" "key:alt+e" \
     "expect:GT CONSENT-WAIT 1" "sleep:6" "key:y" "key:ret" \
     "expect:GT CONSENT-WAIT 2" "sleep:6" "key:n" "key:ret" \
@@ -91,10 +93,12 @@ for name in session-socket compositor-running chrome-focus-record chrome-window-
 done
 
 # ---------------------------------------------------------------- phase 3 --
-phase "phase 3: the screenshot shows the zone's border"
-if [[ -s "$SHOT" ]]; then
+phase "phase 3: the screenshots show the zone's border, windowed and fullscreen"
+check_shot() {   # check_shot FILE WHAT
+local shot="$1" what="$2" verdict
+if [[ -s "$shot" ]]; then
     # The colours dwl was built with: the header is the single source.
-    verdict="$(python3 - "$SHOT" "${SELF}/../../build/desktop/zone-colours.h" <<'PY'
+    verdict="$(python3 - "$shot" "${SELF}/../../build/desktop/zone-colours.h" <<'PY'
 import re, sys
 shot, header = sys.argv[1], sys.argv[2]
 h = open(header).read()
@@ -124,11 +128,16 @@ print("SHOT-OK" if counts["focused"] + counts["unfocused"] >= 400 else "SHOT-NO-
 PY
 )"
     printf '%s\n' "$verdict" | grep -v 'SHOT-'
-    [[ "$verdict" == *SHOT-OK* ]] && green "the focused zone window's border is on screen in the zone's colour (${SHOT})" || red "the zone's border colour was not found in the screenshot (${SHOT})"
+    [[ "$verdict" == *SHOT-OK* ]] && green "${what}: the zone window's border is on screen in the zone's colour (${shot})" || red "${what}: the zone's border colour was not found in the screenshot (${shot})"
 else
-    red "no screenshot was taken"
+    red "${what}: no screenshot was taken"
 fi
+}
+check_shot "$SHOT" "windowed"
+# dwl keeps the zone border in fullscreen (dwl-zone-borders.py edit 6), so a
+# window cannot hide which zone it belongs to by going fullscreen.
+check_shot "$SHOT_FS" "fullscreen"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
-echo "Guest log: /var/log/kryptik/gui-check.log on ${DISK}; serial transcript ${LOG}; screenshot ${SHOT}"
+echo "Guest log: /var/log/kryptik/gui-check.log on ${DISK}; serial transcript ${LOG}; screenshots ${SHOT} ${SHOT_FS}"
 [[ "$FAIL" -eq 0 ]] || exit 1

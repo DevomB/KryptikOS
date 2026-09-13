@@ -114,6 +114,11 @@ if wait_for 20 grep -q '^fullscreen=1' "$RT/kryptik/focus"; then
 else
     fail "fullscreen-identity-recorded" "focus after Alt+e: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
 fi
+# the window is fullscreen now: the host takes a screenshot in which the
+# zone's border colour must still be on screen (dwl keeps the frame)
+sleep 2
+echo "GT SCREENSHOT-FULLSCREEN"
+sleep 6
 echo "GT KEY-FULLSCREEN-AGAIN"
 wait_for 20 grep -q '^fullscreen=0' "$RT/kryptik/focus" && pass "fullscreen-off-again" || fail "fullscreen-off-again"
 
