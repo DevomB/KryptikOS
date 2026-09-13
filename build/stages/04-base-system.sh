@@ -1534,9 +1534,17 @@ s_cryptsetup() {
     cryptsetup --version
     veritysetup --version
     # LUKS2 with argon2id is the contract in Design 04; prove the binary
-    # offers it rather than trusting configure.
+    # offers it rather than trusting configure. The help text is captured,
+    # not piped into grep -q: grep -q exits at its first match, cryptsetup
+    # then dies of SIGPIPE, and under pipefail a successful match read as a
+    # failed command (exit 141) - which is what stopped the 13:04 run right
+    # after cryptsetup had installed.
     cryptsetup benchmark --help >/dev/null 2>&1 || true
-    cryptsetup --help 2>&1 | grep -q 'luks2' && echo "ok: luks2 is a known type"
+    local help; help="$(cryptsetup --help 2>&1 || true)"
+    case "$help" in
+        *luks2*) echo "ok: luks2 is a known type" ;;
+        *) echo "FAIL: cryptsetup --help does not mention luks2"; return 1 ;;
+    esac
 }
 
 # --- release manifests are verified by the installed system (Design 08) ---
