@@ -836,6 +836,54 @@ EOF
     grep -E '^(seat|kryptik|wheel|dhcpcd):' /etc/group
 }
 
+# The trust anchor for OS updates (Design 08). The release signing key is an
+# OpenSSH key under ${KRYPTIK_WORK}/keys/release, generated once, never in
+# Git and never in an image; only the allowed-signers line (its public half,
+# principal kryptik-release) is installed. Stage 06 signs update manifests
+# with the private half, so the image built here verifies what the same
+# build signs - and nothing signed by any other key.
+s_release_trust() {
+    local keydir="${KRYPTIK_WORK}/keys/release"
+    mkdir -p "$keydir"; chmod 0700 "$keydir"
+    if [[ ! -f "$keydir/kryptik-release" ]]; then
+        ssh-keygen -q -t ed25519 -N "" -C "kryptik-release (developer)" -f "$keydir/kryptik-release"
+        chmod 0600 "$keydir/kryptik-release"
+        echo "generated a new developer release signing key"
+    fi
+    install -d -m 0755 /etc/kryptik/trust
+    printf 'kryptik-release namespaces="kryptik-release" %s\n' "$(cut -d' ' -f1,2 "$keydir/kryptik-release.pub")" \
+        > /etc/kryptik/trust/release-signers
+    chmod 0644 /etc/kryptik/trust/release-signers
+    # Developer tier: the updater accepts development-role manifests. A
+    # production image changes this file (and its key), deliberately.
+    printf 'development\n' > /etc/kryptik/trust/required-role
+    echo "--- trust anchor ---"; cat /etc/kryptik/trust/release-signers
+    # Prove the anchor works end to end with the key beside it: sign a
+    # scratch file and verify it through the installed signers file.
+    local t; t="$(mktemp -d)"
+    printf 'probe\n' > "$t/m"
+    ssh-keygen -Y sign -f "$keydir/kryptik-release" -n kryptik-release "$t/m" >/dev/null 2>&1
+    ssh-keygen -Y verify -f /etc/kryptik/trust/release-signers -I kryptik-release -n kryptik-release -s "$t/m.sig" < "$t/m" >/dev/null \
+        && echo "ok: the anchor verifies a signature by the release key" || { echo "FAIL: anchor does not verify"; rm -rf "$t"; return 1; }
+    # and refuses one by a different key (control)
+    ssh-keygen -q -t ed25519 -N "" -f "$t/other" >/dev/null 2>&1
+    ssh-keygen -Y sign -f "$t/other" -n kryptik-release "$t/m" >/dev/null 2>&1
+    if ssh-keygen -Y verify -f /etc/kryptik/trust/release-signers -I kryptik-release -n kryptik-release -s "$t/m.sig" < "$t/m" >/dev/null 2>&1; then
+        echo "FAIL: a foreign key verified against the anchor"; rm -rf "$t"; return 1
+    fi
+    echo "ok: a foreign key is refused"
+    rm -rf "$t"
+}
+
+s_updater() {
+    local src="${KRYPTIK_ROOT}/tools/update/kryptik-update"
+    [[ -f "$src" ]] || { echo "no updater at ${src}"; return 1; }
+    echo "source sha256: ${1:-unknown}"
+    install -D -m 0755 "$src" /usr/sbin/kryptik-update
+    sh -n /usr/sbin/kryptik-update || { echo "the updater does not parse under the target sh"; return 1; }
+    /usr/sbin/kryptik-update 2>&1 | grep -q 'apply DIR' && echo "ok: kryptik-update runs"
+}
+
 # The firmware-side half of the A/B trial: a small C program that writes
 # Boot#### and BootNext through efivarfs. Built here with the target
 # toolchain and the hardening flags like everything else; its source hash is
@@ -1340,6 +1388,10 @@ s_boot_check() {
     chk "first-boot setup"  /usr/libexec/kryptik/firstboot.sh x
     chk "login"             /usr/bin/login x
     chk "efiboot"           /usr/sbin/kryptik-efiboot x
+    chk "updater"           /usr/sbin/kryptik-update x
+    chk "release trust"     /etc/kryptik/trust/release-signers
+    chk "ssh-keygen"        /usr/bin/ssh-keygen x
+    chk "cryptsetup"        /usr/sbin/cryptsetup x
     chk "seatd"             /usr/bin/seatd x
 
     if [[ -e /etc/kryptik/kryptikd-absent ]]; then
@@ -1800,6 +1852,8 @@ PACKAGES=(
     # stale-stamp defect the kernel fragments had.
     # Its content is an argument so the step rebuilds when the installer
     # changes; the recipe reads it by path, which declare -f cannot see.
+    "release-trust" "s_release_trust"
+    "updater"     "s_updater $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-update" 2>/dev/null || echo none)"
     "efiboot"     "s_efiboot $(sha256_of "${KRYPTIK_ROOT}/tools/efi/kryptik-efiboot.c" 2>/dev/null || echo none)"
     "installer"   "s_installer $(sha256_of "${KRYPTIK_ROOT}/tools/install/kryptik-install.sh" 2>/dev/null || echo none)"
     # These globs were separated by a literal backslash-n, which inside a
