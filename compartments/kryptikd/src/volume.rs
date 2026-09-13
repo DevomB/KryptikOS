@@ -101,6 +101,37 @@ impl Passphrase {
     }
 }
 
+impl Passphrase {
+    /// Read a passphrase from an inherited descriptor (a memfd or pipe the
+    /// launch daemon received over SCM_RIGHTS). Bounded; the descriptor is
+    /// closed afterwards.
+    pub fn from_fd(fd: i32) -> Result<Self, VolumeError> {
+        let mut b = Vec::new();
+        let mut buf = [0u8; 512];
+        loop {
+            let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+            if n < 0 {
+                let e = std::io::Error::last_os_error();
+                unsafe { libc::close(fd) };
+                return Err(VolumeError::Passphrase(format!("reading fd {fd}: {e}")));
+            }
+            if n == 0 {
+                break;
+            }
+            b.extend_from_slice(&buf[..n as usize]);
+            if b.len() > 4096 {
+                unsafe { libc::close(fd) };
+                return Err(VolumeError::Passphrase("passphrase longer than 4096 bytes".into()));
+            }
+        }
+        unsafe { libc::close(fd) };
+        if b.is_empty() {
+            return Err(VolumeError::Passphrase(format!("fd {fd} carried no passphrase")));
+        }
+        Ok(Passphrase::from_bytes(b))
+    }
+}
+
 impl Drop for Passphrase {
     fn drop(&mut self) {
         unsafe { libc::explicit_bzero(self.0.as_mut_ptr() as *mut libc::c_void, self.0.len()) };

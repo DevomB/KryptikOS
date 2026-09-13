@@ -81,6 +81,12 @@ pub struct RunOptions {
     /// (development). The trusted prompt is desktop work; nothing reads a
     /// passphrase from argv or the environment.
     pub passphrase_file: Option<std::path::PathBuf>,
+    /// Or from an inherited descriptor (the launch daemon hands over what
+    /// the trusted prompt collected, through SCM_RIGHTS, never argv).
+    pub passphrase_fd: Option<i32>,
+    /// The per-zone Wayland proxy socket to bind into the zone at
+    /// /run/kryptik/wayland-0 (Design 05a). None: the zone has no display.
+    pub wayland_socket: Option<std::path::PathBuf>,
 }
 
 /// Seconds a zone gets to exit after a forwarded SIGINT/SIGTERM before its
@@ -585,9 +591,10 @@ pub fn run_in_zone(
     let mut opened_volume: Option<volume::Opened> = None;
     if zone.storage == StorageMode::Encrypted && id.privileged {
         let vol = zone.volume.clone().unwrap_or_else(|| volume::default_volume_path(&zone.name));
-        let pass = match &opts.passphrase_file {
-            Some(p) => volume::Passphrase::from_file(p).map_err(|e| SpawnError::Setup(e.to_string()))?,
-            None => {
+        let pass = match (&opts.passphrase_file, opts.passphrase_fd) {
+            (Some(p), _) => volume::Passphrase::from_file(p).map_err(|e| SpawnError::Setup(e.to_string()))?,
+            (None, Some(fd)) => volume::Passphrase::from_fd(fd).map_err(|e| SpawnError::Setup(e.to_string()))?,
+            (None, None) => {
                 return Err(SpawnError::Setup(format!(
                     "zone {:?} is encrypted: a passphrase is needed (--passphrase-file FILE, a 0600 \
                      root-owned file; the trusted prompt is desktop work)",
@@ -666,6 +673,20 @@ pub fn run_in_zone(
     // identity, when it still has its own mount namespace AND is still root.
     let broker_path_str = broker_path.display().to_string();
 
+    // The Wayland proxy socket, if the zone gets a display: it must exist,
+    // be a socket, and be one the launcher can name; the child opens it by
+    // path after unshare, exactly like the broker's.
+    let wayland_path_str: Option<String> = match &opts.wayland_socket {
+        None => None,
+        Some(p) => {
+            let md = std::fs::metadata(p).map_err(|e| SpawnError::Setup(format!("wayland socket {}: {e}", p.display())))?;
+            if !std::os::unix::fs::FileTypeExt::is_socket(&md.file_type()) {
+                return Err(SpawnError::Setup(format!("wayland socket {} is not a socket", p.display())));
+            }
+            Some(p.display().to_string())
+        }
+    };
+
     let placed = SyncPipe::new()?;
     let ready = SyncPipe::new()?;
     let mapped = SyncPipe::new()?;
@@ -693,7 +714,7 @@ pub fn run_in_zone(
         initpid.close_read();
         let rc = intermediate_main(
             zone, rootfs, argv, &id, parent_pid, &placed, &ready, &mapped, &initpid,
-            zone_policy.as_ref(), &fs_rules, &broker_path_str,
+            zone_policy.as_ref(), &fs_rules, &broker_path_str, wayland_path_str.as_deref(),
         );
         // Never return: this process must not run the parent's cleanup.
         unsafe { libc::_exit(rc) };
@@ -894,6 +915,7 @@ fn intermediate_main(
     zone_policy: Option<&policy::Policy>,
     fs_rules: &[landlock::ZoneRule],
     broker_path: &str,
+    wayland_path: Option<&str>,
 ) -> i32 {
     macro_rules! bail {
         ($($arg:tt)*) => {{
@@ -1073,6 +1095,21 @@ fn intermediate_main(
         fd
     };
     let broker_in_zone = format!("/proc/self/fd/{broker_fd_for_zone}");
+    // Same for the Wayland proxy socket, when there is one.
+    let wayland_in_zone: Option<String> = match wayland_path {
+        None => None,
+        Some(p) => {
+            let c = match std::ffi::CString::new(p) {
+                Ok(c) => c,
+                Err(_) => bail!("wayland socket path contains a NUL"),
+            };
+            let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH) };
+            if fd < 0 {
+                bail!("wayland socket {}: {}", p, io::Error::last_os_error());
+            }
+            Some(format!("/proc/self/fd/{fd}"))
+        }
+    };
 
     // 4. Tell the parent we are in the new namespace, then wait for it to
     //    write uid_map/gid_map. Until those exist we are nobody (65534) and
@@ -1124,7 +1161,7 @@ fn intermediate_main(
     }
 
     if inner == 0 {
-        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, fs_rules, plumbed, &broker_in_zone);
+        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, fs_rules, plumbed, &broker_in_zone, wayland_in_zone.as_deref());
         unsafe { libc::_exit(rc) };
     }
 
@@ -1157,6 +1194,7 @@ fn zone_init(
     fs_rules: &[landlock::ZoneRule],
     plumbed: bool,
     broker_path: &str,
+    wayland_path: Option<&str>,
 ) -> i32 {
     macro_rules! bail {
         ($($arg:tt)*) => {{
@@ -1195,7 +1233,7 @@ fn zone_init(
         (crate::zone::NetworkMode::Routed, true) => rootfs::Resolver::Bridge,
         _ => rootfs::Resolver::None,
     };
-    let home = match rootfs::pivot_into(rootfs, &zone.name, ephemeral, resolver, Some(broker_path)) {
+    let home = match rootfs::pivot_into(rootfs, &zone.name, ephemeral, resolver, Some(broker_path), wayland_path) {
         Ok(h) => h,
         Err(e) => bail!("could not build the zone root: {e}"),
     };
@@ -1234,7 +1272,7 @@ fn zone_init(
     // 13. An explicit environment. Nothing from the caller reaches the zone
     //     unless it is on the allowlist and looks like what it claims to be.
     let caller: Vec<(String, String)> = std::env::vars().collect();
-    let env = zone_environment(zone, &home, &caller);
+    let env = zone_environment_with(zone, &home, &caller, wayland_path.is_some());
     for (k, _) in std::env::vars_os().collect::<Vec<_>>() {
         std::env::remove_var(k);
     }
@@ -1322,6 +1360,22 @@ pub fn env_value_is_sane(v: &str) -> bool {
 
 /// The complete environment the zone's command starts with.
 pub fn zone_environment(zone: &Zone, home: &str, caller: &[(String, String)]) -> Vec<(String, String)> {
+    zone_environment_with(zone, home, caller, false)
+}
+
+/// With a display: WAYLAND_DISPLAY names the proxy socket by absolute path
+/// (libwayland accepts that without XDG_RUNTIME_DIR), and XDG_RUNTIME_DIR
+/// is the zone's own tmpfs so clients that insist on one have one.
+pub fn zone_environment_with(zone: &Zone, home: &str, caller: &[(String, String)], wayland: bool) -> Vec<(String, String)> {
+    let mut env = zone_environment_base(zone, home, caller);
+    if wayland {
+        env.push(("WAYLAND_DISPLAY".into(), rootfs::WAYLAND_SOCKET_IN_ZONE.into()));
+        env.push(("XDG_RUNTIME_DIR".into(), "/tmp".into()));
+    }
+    env
+}
+
+fn zone_environment_base(zone: &Zone, home: &str, caller: &[(String, String)]) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = vec![
         ("PATH".into(), "/usr/bin:/usr/sbin:/bin:/sbin".into()),
         ("HOME".into(), home.into()),

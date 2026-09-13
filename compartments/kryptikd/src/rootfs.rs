@@ -289,6 +289,11 @@ pub const DEVICES: &[(&str, &str)] = &[
 ];
 
 /// The zone's home: where its persistent directory appears inside the zone.
+/// The proxy socket's name inside the zone; WAYLAND_DISPLAY names it by
+/// absolute path.
+pub const WAYLAND_SOCKET_NAME: &str = "wayland-0";
+pub const WAYLAND_SOCKET_IN_ZONE: &str = "/run/kryptik/wayland-0";
+
 pub fn zone_home(zone: &str) -> String {
     format!("/home/{zone}")
 }
@@ -408,6 +413,7 @@ pub fn pivot_into(
     ephemeral: Option<&str>,
     resolver: Resolver,
     broker: Option<&str>,
+    wayland: Option<&str>,
 ) -> Result<String, RootfsError> {
     let home = zone_home(zone);
 
@@ -531,6 +537,15 @@ pub fn pivot_into(
         // Read-only like every other bound file: connect(2) needs no write
         // access to a socket inode (S_ISSOCK is exempt from the read-only
         // check), and nothing else the zone could do to the file is wanted.
+        bind_ro_file(sock, &target)?;
+    }
+    // --- the Wayland proxy socket, at /run/kryptik/wayland-0 ---------------
+    // The second and last thing under /run a zone sees (Design 05a): the
+    // per-zone kryptik-wlproxy endpoint, bound in the same way. The
+    // compositor's own socket is never reachable from a zone.
+    if let Some(sock) = wayland {
+        let rk = mkdir("run/kryptik")?;
+        let target = format!("{rk}/{}", WAYLAND_SOCKET_NAME);
         bind_ro_file(sock, &target)?;
     }
 

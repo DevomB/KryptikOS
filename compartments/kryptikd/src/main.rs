@@ -21,6 +21,7 @@ mod policy;
 mod registry;
 mod rootfs;
 mod seccomp;
+mod serve;
 mod spawn;
 mod volume;
 mod zone;
@@ -210,6 +211,7 @@ fn main() -> ExitCode {
         },
         "gc" => cmd_gc(),
         "volume" => cmd_volume(&zone_dir, &args),
+        "serve" => serve::cmd_serve(&zone_dir, &args),
         "clipboard" => cmd_clipboard(&args),
         "transfer" => {
             eprintln!(
@@ -853,6 +855,19 @@ fn run_options_from(args: &[String]) -> Result<spawn::RunOptions, String> {
         passphrase_file: args
             .iter()
             .position(|a| a == "--passphrase-file")
+            .and_then(|i| args.get(i + 1))
+            .map(PathBuf::from),
+        passphrase_fd: match args.iter().position(|a| a == "--passphrase-fd") {
+            None => None,
+            Some(i) => Some(
+                args.get(i + 1)
+                    .and_then(|v| v.parse::<i32>().ok())
+                    .ok_or_else(|| "--passphrase-fd: expected a descriptor number".to_string())?,
+            ),
+        },
+        wayland_socket: args
+            .iter()
+            .position(|a| a == "--wayland-socket")
             .and_then(|i| args.get(i + 1))
             .map(PathBuf::from),
     })
