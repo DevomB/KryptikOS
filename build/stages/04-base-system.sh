@@ -225,14 +225,17 @@ s_glibc() {
     local fhs="${KRYPTIK_SOURCES}/glibc-${V_GLIBC}-fhs-1.patch"
     [[ -f "$fhs" ]] && patch -Np1 -i "$fhs"
 
-    # The loader defect recorded in build/BLOCKER.md: 2.40's ld.so is linked
-    # with -z separate-code, the kernel maps it with gaps between its LOAD
-    # segments, later dlopen()s land in those gaps, and _dl_find_object then
-    # attributes every object loaded after startup to ld.so itself - so
-    # libgcc's unwinder reads the wrong .eh_frame and pthread_exit(),
-    # pthread_cancel() and backtrace() abort. Upstream fixed it as glibc bug
-    # 31943 (release/2.40/master 2193f42); build/patches/glibc-2.40/ carries
-    # that fix and its two prerequisites, with provenance in its README.
+    # The loader defect recorded in build/BLOCKER.md - pthread_exit(),
+    # pthread_cancel() and backtrace() aborting because _dl_find_object
+    # attributed every object loaded after startup to ld.so itself - and
+    # what fixes it. build/patches/glibc-2.40/ carries four upstream loader
+    # fixes, with provenance in its README: the release/2.40/master fixes
+    # for bug 31943 (a loader mapped with gaps, plus two prerequisites) and
+    # the one that turned out to be Kryptik's actual defect, bug 33088: GCC
+    # 14 at -O2 took the address of __ehdr_start for the loader's own map
+    # bounds from a constant that is only right after self-relocation, so
+    # ld.so recorded itself as starting at address 0. The two checks below
+    # (rtld.os relocations, ldd's map start) fail this step if it returns.
     apply_repo_patches "glibc-${V_GLIBC}"
 
     mkdir -p build
@@ -270,6 +273,23 @@ s_glibc() {
     # code detects their absence and stays out of the way.
     ../configure         --prefix=/usr         --disable-werror         --enable-kernel=4.19         --enable-stack-protector=strong         --enable-cet         --disable-nscd         libc_cv_slibdir=/usr/lib
     make
+
+    # Upstream's make-check rule for bug 33088, run here because this build
+    # does not run glibc's test suite: the loader's startup code must take
+    # the addresses of __ehdr_start and _end without a run-time relocation,
+    # or the values it stores before relocating itself are the link-time
+    # ones (0 for __ehdr_start).
+    echo "--- run-time relocations against __ehdr_start or _end in rtld.os ---"
+    local rtld_relocs
+    rtld_relocs="$(readelf -rW elf/rtld.os | grep -E 'R_X86_64_64.*(__ehdr_start|_end)' || true)"
+    if [[ -n "$rtld_relocs" ]]; then
+        printf '%s\n' "$rtld_relocs"
+        echo "FAIL: rtld.os reaches __ehdr_start or _end through a relocated"
+        echo "      constant (glibc bug 33088, GCC bug 120653); the loader"
+        echo "      would record its own map as starting at address 0."
+        return 1
+    fi
+    echo "  ok: none"
 
     # The install step runs a test-installation perl script that does not exist
     # yet - perl is built later, and cannot be built before glibc.
@@ -313,6 +333,28 @@ s_glibc() {
         echo "FAIL: no dynamic loader at ${ldso}"
         return 1
     fi
+
+    # The runtime form of the rtld.os check above: LD_TRACE_LOADED_OBJECTS
+    # (what ldd runs) prints each object's map start, and a loader with bug
+    # 33088 prints its own as 0. tools/test-libc-unwind.sh then proves the
+    # consequence - unwinding through a dlopen()ed libgcc_s - on the whole
+    # system; this catches the cause at the step that builds it.
+    echo "--- the loader's own map start ---"
+    local trace ldso_start
+    trace="$(LD_TRACE_LOADED_OBJECTS=1 /usr/bin/bash 2>&1 || true)"
+    ldso_start="$(printf '%s\n' "$trace" | sed -n 's/.*ld-linux[^ ]* (0x\([0-9a-f]*\)).*/\1/p' | head -1)"
+    if [[ -z "$ldso_start" ]]; then
+        printf '%s\n' "$trace" | sed 's/^/  /'
+        echo "FAIL: LD_TRACE_LOADED_OBJECTS did not report the loader's map start"
+        return 1
+    elif [[ "$ldso_start" =~ ^0+$ ]]; then
+        printf '%s\n' "$trace" | sed 's/^/  /'
+        echo "FAIL: the loader records its own map as starting at address 0"
+        echo "      (glibc bug 33088); _dl_find_object would attribute every"
+        echo "      later dlopen()ed object to ld.so and the unwinder would abort."
+        return 1
+    fi
+    echo "  ok: ld.so at 0x${ldso_start}"
 }
 
 s_gdbm() {

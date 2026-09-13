@@ -145,6 +145,32 @@ probe "pthread_cancel() a thread"     pcancel.c -lpthread
 probe "backtrace() returns frames"    bt.c
 
 echo
+echo "=== the loader knows where it is ==="
+
+# LD_TRACE_LOADED_OBJECTS (what ldd runs) prints each object's map start. A
+# loader with glibc bug 33088 records its own as 0, and _dl_find_object then
+# hands ld.so every address below libc that belongs to nothing else - which
+# is where every later dlopen lands. That was Kryptik's defect; the "why"
+# section below shows its consequence.
+if [[ -x ./ctl_ok ]]; then
+    trace="$(LD_TRACE_LOADED_OBJECTS=1 ./ctl_ok 2>&1 || true)"
+    ldso_start="$(printf '%s\n' "$trace" | sed -n 's/.*ld-linux[^ ]* (0x\([0-9a-f]*\)).*/\1/p' | head -1)"
+    if [[ -z "$ldso_start" ]]; then
+        bad "LD_TRACE_LOADED_OBJECTS did not report the loader's map start"
+        printf '%s\n' "$trace" | sed 's/^/       /'
+    elif [[ "$ldso_start" =~ ^0+$ ]]; then
+        bad "the loader records its own map as starting at address 0"
+        note "$(printf '%s\n' "$trace" | grep ld-linux)"
+        note "glibc bug 33088: the address of __ehdr_start was taken from a"
+        note "constant that is only right after the loader relocated itself."
+    else
+        ok "the loader records its own map start (0x${ldso_start})"
+    fi
+else
+    bad "no control binary to trace the loader with"
+fi
+
+echo
 echo "=== why, if the above failed: which object does the loader blame? ==="
 
 cat > dlfo.c <<'EOF'

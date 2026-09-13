@@ -427,24 +427,16 @@ echo
 # inside the chroot it always is.
 "${KRYPTIK_ROOT}/tools/check-kernel-eol.sh" || die "kernel EOL check failed"
 
-# Build-time host tools have to link libgcc_s.so.1 eagerly.
+# Build-time host tools link libgcc_s.so.1 the ordinary way, when needed.
 #
-# sorttable - the host tool that sorts the kernel's exception tables - ends its
-# sorter threads with pthread_exit(). glibc implements that by dlopening
-# libgcc_s.so.1 and forcing an unwind. On this system _dl_find_object
-# misattributes objects loaded after startup: asked which object an address
-# inside the freshly dlopened libgcc_s belongs to, it answers
-# ld-linux-x86-64.so.2 and hands back the loader's .eh_frame. The unwinder then
-# finds no FDE and libgcc calls a bare abort(), so the kernel link died with
-# "Failed to sort kernel tables" and no diagnostic whatsoever.
-#
-# Linking libgcc_s at startup sidesteps the broken lookup: an object present
-# before the process starts is resolved correctly. This is a workaround for a
-# defect in our glibc, NOT a fix for it - the shipped system still has the bug,
-# any program that calls pthread_exit, pthread_cancel or backtrace() without
-# linking libgcc_s will abort. See build/BLOCKER.md for the full diagnosis and
-# tools/test-libc-unwind.sh, which fails for as long as the defect is present.
-export HOSTLDFLAGS="${HOSTLDFLAGS:-} -Wl,--no-as-needed -lgcc_s"
+# Until 2026-09-13 this exported HOSTLDFLAGS="-Wl,--no-as-needed -lgcc_s" so
+# that sorttable - which ends its sorter threads with pthread_exit() - did not
+# abort on a loader that could not unwind through a dlopen()ed libgcc_s
+# (build/BLOCKER.md, glibc bug 33088). The loader is fixed at its source
+# (build/patches/glibc-2.40/0004-*.patch) and the workaround is gone on
+# purpose: a kernel link that sorts its tables is now part of the proof.
+# HOSTLDFLAGS is still an input to the build step below, so setting it in
+# the environment still rebuilds rather than being silently ignored.
 
 # The fragments and the host link flags are inputs to these steps, and
 # `declare -f` cannot see a file read by path or a variable read from the
@@ -476,7 +468,7 @@ step config          s_config "$FRAG_DIGEST"
 # the configuration these steps are about to build from.
 CFG_DIGEST="$(sha256_of "${KSRC}/.config" 2>/dev/null || echo noconfig)"
 
-step build           s_build "$HOSTLDFLAGS" "$CFG_DIGEST"
+step build           s_build "${HOSTLDFLAGS:-}" "$CFG_DIGEST"
 step modules         s_modules "$CFG_DIGEST"
 step install         s_install "$CFG_DIGEST"
 step verify-install  s_verify_install "$CFG_DIGEST"
