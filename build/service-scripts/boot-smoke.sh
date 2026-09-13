@@ -79,7 +79,7 @@ done
 
 # --- the zone model, on this kernel ---------------------------------------
 say "kryptikd_check_begin"
-/usr/bin/kryptikd check --zones /etc/kryptik/zones 2>&1 | sed 's/^/KRYPTIK_SMOKE: kd: /'
+/usr/bin/kryptikd check --zones /usr/lib/kryptik/zones 2>&1 | sed 's/^/KRYPTIK_SMOKE: kd: /'
 say "kryptikd_check_rc=$?"
 say "kryptikd_check_end"
 say "lsm=$(cat /sys/kernel/security/lsm 2>/dev/null || echo unreadable)"

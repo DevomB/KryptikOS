@@ -18,6 +18,13 @@ if [ "$(id -u)" -eq 0 ]; then
     echo "kryptik-session: the desktop is an ordinary user's session, not root's" >&2
     exit 1
 fi
+# An installed system whose state partition could not be used (sysinit.sh)
+# has nothing to keep a session's work in. Say so and leave a shell.
+if [ -r /run/kryptik/state-degraded ]; then
+    echo "kryptik-session: NOT starting the desktop: state is degraded ($(cat /run/kryptik/state-degraded))." >&2
+    echo "kryptik-session: nothing would persist. Repair the state partition, or boot the install medium." >&2
+    exit 1
+fi
 
 # There is no logind: the daemon creates /run/user/<uid> for the session and
 # tells us where it is. Everything the session leaves behind lives there.

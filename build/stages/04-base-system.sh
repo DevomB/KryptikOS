@@ -808,7 +808,7 @@ EOF
 
     cat > /etc/kryptik/kryptik.conf <<'EOF'
 # The kryptik command's defaults on an installed system.
-zones_dir = /etc/kryptik/zones
+zones_dir = /usr/lib/kryptik/zones
 rootfs    = /var/lib/kryptik/zones
 uid_base  = 100000
 EOF
@@ -849,6 +849,10 @@ EOF
 # with the private half, so the image built here verifies what the same
 # build signs - and nothing signed by any other key.
 s_release_trust() {
+    # Under /usr/share, on the verified root: /etc is overlaid with an
+    # unauthenticated upper layer on the state partition (sysinit.sh, "the
+    # trust boundary"), and the key that decides what may be booted next
+    # must not be replaceable by whoever can write that partition.
     local keydir="${KRYPTIK_WORK}/keys/release"
     mkdir -p "$keydir"; chmod 0700 "$keydir"
     if [[ ! -f "$keydir/kryptik-release" ]]; then
@@ -856,25 +860,25 @@ s_release_trust() {
         chmod 0600 "$keydir/kryptik-release"
         echo "generated a new developer release signing key"
     fi
-    install -d -m 0755 /etc/kryptik/trust
+    install -d -m 0755 /usr/share/kryptik/trust
     printf 'kryptik-release namespaces="kryptik-release" %s\n' "$(cut -d' ' -f1,2 "$keydir/kryptik-release.pub")" \
-        > /etc/kryptik/trust/release-signers
-    chmod 0644 /etc/kryptik/trust/release-signers
+        > /usr/share/kryptik/trust/release-signers
+    chmod 0644 /usr/share/kryptik/trust/release-signers
     # Developer tier: the updater accepts development-role manifests. A
     # production image changes this file (and its key), deliberately.
-    printf 'development\n' > /etc/kryptik/trust/required-role
-    echo "--- trust anchor ---"; cat /etc/kryptik/trust/release-signers
+    printf 'development\n' > /usr/share/kryptik/trust/required-role
+    echo "--- trust anchor ---"; cat /usr/share/kryptik/trust/release-signers
     # Prove the anchor works end to end with the key beside it: sign a
     # scratch file and verify it through the installed signers file.
     local t; t="$(mktemp -d)"
     printf 'probe\n' > "$t/m"
     ssh-keygen -Y sign -f "$keydir/kryptik-release" -n kryptik-release "$t/m" >/dev/null 2>&1
-    ssh-keygen -Y verify -f /etc/kryptik/trust/release-signers -I kryptik-release -n kryptik-release -s "$t/m.sig" < "$t/m" >/dev/null \
+    ssh-keygen -Y verify -f /usr/share/kryptik/trust/release-signers -I kryptik-release -n kryptik-release -s "$t/m.sig" < "$t/m" >/dev/null \
         && echo "ok: the anchor verifies a signature by the release key" || { echo "FAIL: anchor does not verify"; rm -rf "$t"; return 1; }
     # and refuses one by a different key (control)
     ssh-keygen -q -t ed25519 -N "" -f "$t/other" >/dev/null 2>&1
     ssh-keygen -Y sign -f "$t/other" -n kryptik-release "$t/m" >/dev/null 2>&1
-    if ssh-keygen -Y verify -f /etc/kryptik/trust/release-signers -I kryptik-release -n kryptik-release -s "$t/m.sig" < "$t/m" >/dev/null 2>&1; then
+    if ssh-keygen -Y verify -f /usr/share/kryptik/trust/release-signers -I kryptik-release -n kryptik-release -s "$t/m.sig" < "$t/m" >/dev/null 2>&1; then
         echo "FAIL: a foreign key verified against the anchor"; rm -rf "$t"; return 1
     fi
     echo "ok: a foreign key is refused"
@@ -986,7 +990,9 @@ EOF
     echo "installed /usr/libexec/kryptik-console"
 }
 
-# s6-linux-init: generate /etc/s6-linux-init/current and the /sbin entry points.
+# s6-linux-init: generate /usr/lib/s6-linux-init/current and the /sbin entry
+# points. Under /usr/lib, not /etc: the stage 2 scripts run as root before
+# anything else and must come from the verified root, not the /etc overlay.
 #
 # The upstream skeleton scripts are entirely commented out - they are a menu of
 # "if your services are managed by X" options, not a working configuration. We
@@ -1031,11 +1037,11 @@ chmod 0755 /run/kryptik
 # compiling it is Phase 6 work. Saying so on the console is the point - a
 # system that silently boots with no services and no explanation is
 # indistinguishable from one whose service manager crashed.
-if [ -d /etc/s6-rc/compiled ]; then
-    s6-rc-init -c /etc/s6-rc/compiled /run/service
+if [ -d /usr/lib/kryptik/s6-rc/compiled ]; then
+    s6-rc-init -c /usr/lib/kryptik/s6-rc/compiled /run/service
     s6-rc -v1 -up change "$rl"
 else
-    echo "kryptik: no compiled s6-rc database at /etc/s6-rc/compiled."
+    echo "kryptik: no compiled s6-rc database at /usr/lib/kryptik/s6-rc/compiled."
     echo "kryptik: booting with the early console only; no services will start."
     echo "kryptik: this is expected in a pre-alpha image - see docs/roadmap.md Phase 6."
 fi
@@ -1121,19 +1127,20 @@ EOF
         -G "/usr/libexec/kryptik-console" \
         -p /usr/bin:/usr/sbin \
         -m 0022 \
-        -c /etc/s6-linux-init/current \
+        -c /usr/lib/s6-linux-init/current \
         -s /run/s6-linux-init/env \
         -f "$skel" \
         -D default \
         "$tmp"
 
-    rm -rf /etc/s6-linux-init/current
-    mv "$tmp" /etc/s6-linux-init/current
+    install -d -m 0755 /usr/lib/s6-linux-init
+    rm -rf /usr/lib/s6-linux-init/current
+    mv "$tmp" /usr/lib/s6-linux-init/current
 
     # /sbin/init, plus telinit, shutdown, halt, poweroff and reboot. /sbin is a
     # symlink to usr/sbin in this layout, so these land in /usr/sbin and
     # /sbin/init resolves - which is the path the kernel looks for.
-    cp -a /etc/s6-linux-init/current/bin/. /sbin/
+    cp -a /usr/lib/s6-linux-init/current/bin/. /sbin/
 
     echo "--- /sbin entry points ---"
     ls -la /sbin/init /sbin/telinit /sbin/shutdown /sbin/halt /sbin/poweroff /sbin/reboot
@@ -1196,33 +1203,35 @@ s_services() {
     echo "--- boot scripts ---"
     ls -la /usr/libexec/kryptik/
 
-    # Kryptik's kernel tunables.
-    install -d -m 0755 /etc/sysctl.d
+    # Kryptik's kernel tunables, on the verified root: sysinit applies these
+    # and nothing under /etc, which the state partition can shadow.
+    install -d -m 0755 /usr/lib/kryptik/sysctl.d
     if compgen -G "${KRYPTIK_ROOT}/build/config/sysctl.d/*.conf" > /dev/null; then
-        install -m 0644 "${KRYPTIK_ROOT}"/build/config/sysctl.d/*.conf /etc/sysctl.d/
+        install -m 0644 "${KRYPTIK_ROOT}"/build/config/sysctl.d/*.conf /usr/lib/kryptik/sysctl.d/
         echo "--- sysctl.d ---"
-        ls -la /etc/sysctl.d/
+        ls -la /usr/lib/kryptik/sysctl.d/
     else
         echo "no sysctl.d fragments to install"
     fi
 
     # Compile the database. s6-rc-compile refuses to overwrite, so build
     # beside and swap: a half-written database is a machine that does not boot.
-    local tmpdb=/etc/s6-rc/compiled.new
+    local dbdir=/usr/lib/kryptik/s6-rc
+    local tmpdb="$dbdir/compiled.new"
     rm -rf "$tmpdb"
-    install -d -m 0755 /etc/s6-rc
+    install -d -m 0755 "$dbdir"
     s6-rc-compile -v2 "$tmpdb" "$src"
-    rm -rf /etc/s6-rc/compiled.old
-    [[ -d /etc/s6-rc/compiled ]] && mv /etc/s6-rc/compiled /etc/s6-rc/compiled.old
-    mv "$tmpdb" /etc/s6-rc/compiled
-    rm -rf /etc/s6-rc/compiled.old
+    rm -rf "$dbdir/compiled.old"
+    [[ -d "$dbdir/compiled" ]] && mv "$dbdir/compiled" "$dbdir/compiled.old"
+    mv "$tmpdb" "$dbdir/compiled"
+    rm -rf "$dbdir/compiled.old"
 
     # Read the database back. "s6-rc-compile exited 0" and "the database
     # describes the services we wrote" are different claims, and the second is
     # the one a boot depends on.
     echo "--- compiled database ---"
     local all
-    all="$(s6-rc-db -c /etc/s6-rc/compiled list all)"
+    all="$(s6-rc-db -c /usr/lib/kryptik/s6-rc/compiled list all)"
     printf '%s\n' "$all" | sed 's/^/  /'
 
     local svc missing=0
@@ -1236,11 +1245,11 @@ s_services() {
     # The dependency graph has to be the one we declared, or services start in
     # an order nobody chose.
     echo "--- what 'default' pulls in, in order ---"
-    s6-rc-db -c /etc/s6-rc/compiled pipeline default 2>/dev/null || true
-    s6-rc-db -c /etc/s6-rc/compiled dependencies default | sed 's/^/  /'
+    s6-rc-db -c /usr/lib/kryptik/s6-rc/compiled pipeline default 2>/dev/null || true
+    s6-rc-db -c /usr/lib/kryptik/s6-rc/compiled dependencies default | sed 's/^/  /'
 
     echo "--- eudev-trigger must depend on eudev ---"
-    if s6-rc-db -c /etc/s6-rc/compiled dependencies eudev-trigger | grep -qx eudev; then
+    if s6-rc-db -c /usr/lib/kryptik/s6-rc/compiled dependencies eudev-trigger | grep -qx eudev; then
         echo "  ok"
     else
         echo "  FAIL: eudev-trigger does not depend on eudev"
@@ -1271,15 +1280,38 @@ s_kryptikd() {
     echo "requested: ${src:-<none>} (sha256 ${want_sha})"
     echo "zone definitions: ${zones_sha}"
 
-    install -d -m 0755 /etc/kryptik
-    install -d -m 0700 /etc/kryptik/zones
+    # The zone definitions and the policy files they name live on the
+    # verified root; every privileged consumer (the services, the launch
+    # daemon, the net zone) reads them there. /etc/kryptik/zones is a symlink
+    # to them for the kryptik command's default, and nothing more: the /etc
+    # overlay could replace that link, and only the unprivileged wrapper
+    # would follow it.
+    install -d -m 0755 /etc/kryptik /usr/lib/kryptik
+    install -d -m 0700 /usr/lib/kryptik/zones /usr/lib/kryptik/zones/policy
     if [[ -d "${KRYPTIK_ROOT}/compartments/zones" ]]; then
-        install -m 0600 "${KRYPTIK_ROOT}"/compartments/zones/*.toml /etc/kryptik/zones/
-        echo "installed zone definitions:"
-        ls -la /etc/kryptik/zones/
+        install -m 0600 "${KRYPTIK_ROOT}"/compartments/zones/*.toml /usr/lib/kryptik/zones/
+        # The seccomp/Landlock policies the zone files reference, relative
+        # to the zone directory. The first version installed the .toml files
+        # alone, so every zone would have failed to start on the target with
+        # "policy/<zone>.seccomp: No such file".
+        install -m 0600 "${KRYPTIK_ROOT}"/compartments/zones/policy/* /usr/lib/kryptik/zones/policy/
+        echo "installed zone definitions and policies:"
+        ls -la /usr/lib/kryptik/zones/ /usr/lib/kryptik/zones/policy/
+        local z p
+        for z in /usr/lib/kryptik/zones/*.toml; do
+            for p in $(sed -n 's/^[[:space:]]*\(seccomp\|landlock\)[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\2/p' "$z"); do
+                [[ "$p" == /* ]] || p="/usr/lib/kryptik/zones/$p"
+                [[ -f "$p" ]] || { echo "FAIL: $(basename "$z") names policy ${p}, which is not installed"; return 1; }
+            done
+        done
+        echo "every policy a zone names is installed"
     else
         echo "no zone definitions at ${KRYPTIK_ROOT}/compartments/zones"
     fi
+    if [[ -d /etc/kryptik/zones && ! -L /etc/kryptik/zones ]]; then
+        rm -rf /etc/kryptik/zones
+    fi
+    ln -sfn /usr/lib/kryptik/zones /etc/kryptik/zones
 
     if [[ -z "$src" ]]; then
         echo "KRYPTIK_KRYPTIKD_BIN is not set: kryptikd was NOT installed."
@@ -1338,10 +1370,10 @@ s_kryptikd() {
 
     # And it must be able to read the zone definitions just installed. A zone
     # file this binary cannot parse is a boot-time failure discovered at boot.
-    if /usr/bin/kryptikd list --zones /etc/kryptik/zones; then
+    if /usr/bin/kryptikd list --zones /usr/lib/kryptik/zones; then
         echo "kryptikd parses the installed zone definitions"
     else
-        echo "FAIL: kryptikd cannot read /etc/kryptik/zones"
+        echo "FAIL: kryptikd cannot read /usr/lib/kryptik/zones"
         return 1
     fi
 }
@@ -1366,8 +1398,8 @@ s_boot_check() {
     chk "shutdown"          /sbin/shutdown x
     chk "s6-svscan"         /usr/bin/s6-svscan x
     chk "console wrapper"   /usr/libexec/kryptik-console x
-    chk "stage 2 script"    /etc/s6-linux-init/current/scripts/rc.init x
-    chk "shutdown script"   /etc/s6-linux-init/current/scripts/rc.shutdown x
+    chk "stage 2 script"    /usr/lib/s6-linux-init/current/scripts/rc.init x
+    chk "shutdown script"   /usr/lib/s6-linux-init/current/scripts/rc.shutdown x
     chk "shell"             /bin/sh x
     chk "bash"              /usr/bin/bash x
     chk "os-release"        /etc/os-release
@@ -1392,7 +1424,7 @@ s_boot_check() {
 
     # The early getty is what turns a booted kernel into something you can
     # talk to. If the maker did not create it, the machine boots to silence.
-    local svcdir=/etc/s6-linux-init/current/run-image/service
+    local svcdir=/usr/lib/s6-linux-init/current/run-image/service
     if [[ -d "$svcdir" ]]; then
         echo "  services in the boot image:"
         local s
@@ -1411,21 +1443,24 @@ s_boot_check() {
 
     # The service database. Without it the machine boots to a bare console,
     # which is a state worth distinguishing from a broken one.
-    if [[ -d /etc/s6-rc/compiled ]]; then
+    if [[ -d /usr/lib/kryptik/s6-rc/compiled ]]; then
         local nsvc
-        nsvc="$(s6-rc-db -c /etc/s6-rc/compiled list all 2>/dev/null | grep -c . || echo 0)"
+        nsvc="$(s6-rc-db -c /usr/lib/kryptik/s6-rc/compiled list all 2>/dev/null | grep -c . || echo 0)"
         printf '  ok      s6-rc database (%s services)\n' "$nsvc"
-        if s6-rc-db -c /etc/s6-rc/compiled list all 2>/dev/null | grep -qx default; then
+        if s6-rc-db -c /usr/lib/kryptik/s6-rc/compiled list all 2>/dev/null | grep -qx default; then
             echo "  ok      a 'default' bundle exists for rc.init to bring up"
         else
             echo "  MISSING a 'default' bundle"; n=$((n + 1))
         fi
     else
-        echo "  MISSING /etc/s6-rc/compiled - the image will boot to a bare console"
+        echo "  MISSING /usr/lib/kryptik/s6-rc/compiled - the image will boot to a bare console"
         n=$((n + 1))
     fi
 
-    chk "sysctl fragments"  /etc/sysctl.d
+    chk "sysctl fragments"  /usr/lib/kryptik/sysctl.d
+    chk "zone definitions"  /usr/lib/kryptik/zones/work.toml
+    chk "zone policies"     /usr/lib/kryptik/zones/policy/work.seccomp
+    chk "device helper"     /usr/libexec/kryptik/devices.sh
     chk "boot scripts"      /usr/libexec/kryptik/sysinit.sh x
     chk "test control helper" /usr/libexec/kryptik/testctl.sh
     chk "boot-success"      /usr/libexec/kryptik/boot-success.sh x
@@ -1434,7 +1469,7 @@ s_boot_check() {
     chk "efiboot"           /usr/sbin/kryptik-efiboot x
     chk "updater"           /usr/sbin/kryptik-update x
     chk "recover"           /usr/sbin/kryptik-recover x
-    chk "release trust"     /etc/kryptik/trust/release-signers
+    chk "release trust"     /usr/share/kryptik/trust/release-signers
     chk "ssh-keygen"        /usr/bin/ssh-keygen x
     chk "cryptsetup"        /usr/sbin/cryptsetup x
     chk "seatd"             /usr/bin/seatd x
@@ -1593,8 +1628,12 @@ s_dnsmasq() {
     local src; src="$(unpack "dnsmasq-${V_DNSMASQ}.tar.xz" "dnsmasq-${V_DNSMASQ}")"
     cd "$src"
     make PREFIX=/usr COPTS="-DNO_DBUS -DNO_ID"
-    make PREFIX=/usr install-common
-    dnsmasq --version | head -1
+    # `install`, not the internal `install-common`, which with PREFIX on the
+    # command line had nothing to do and installed nothing (the 13:17 stop:
+    # "dnsmasq: command not found" right after a successful build).
+    make PREFIX=/usr install
+    [[ -x /usr/sbin/dnsmasq ]] || { echo "FAIL: /usr/sbin/dnsmasq was not installed"; return 1; }
+    /usr/sbin/dnsmasq --version | head -1
 }
 
 s_dhcpcd() {

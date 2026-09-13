@@ -14,7 +14,9 @@
 #
 # THE ORDER IS THE WHOLE DESIGN. Verify everything before the first write:
 # the signature over the manifest against the trust anchor shipped in this
-# image (/etc/kryptik/trust/release-signers, namespace kryptik-release);
+# image (/usr/share/kryptik/trust/release-signers, on the verified root -
+# never under /etc, which the state partition can shadow; namespace
+# kryptik-release);
 # every file's hash and size; the role; that the version is newer than the
 # running one (or --recovery, which is authorised downgrade: still signed,
 # still verified, explicitly asked for); that the kernel for the inactive
@@ -33,7 +35,9 @@ die() { printf '%s: FAILED: %s\n' "$PROG" "$*" >&2; exit 1; }
 
 NAMESPACE=kryptik-release
 MAGIC=KRYPTIK-MANIFEST-1
-SIGNERS=/etc/kryptik/trust/release-signers
+SIGNERS=/usr/share/kryptik/trust/release-signers
+ROLE_FILE=/usr/share/kryptik/trust/required-role
+DEGRADED=/run/kryptik/state-degraded
 B=/var/lib/kryptik/boot
 ESP_MNT=/run/kryptik/update-esp
 LOCK=/run/kryptik/update.lock
@@ -41,19 +45,31 @@ LOG=/var/log/kryptik/update.log
 
 [ "$(id -u)" = 0 ] || die "must run as root"
 mkdir -p "$B" /run/kryptik /var/log/kryptik
-for tool in ssh-keygen sha256sum blkid dd cp mv sync flock mount umount cmp kryptik-efiboot awk sed sort head wc stat grep; do
+for tool in ssh-keygen sha256sum blkid dd cp mv sync flock mount umount cmp kryptik-efiboot awk sed sort head wc stat grep blockdev; do
     command -v "$tool" >/dev/null 2>&1 || die "missing tool: $tool"
 done
+# Partitions are this installation's - the ones on the disk the root came
+# from - and nothing else's; an ambiguity is refused, never resolved by
+# taking the first (devices.sh).
+# shellcheck source=/dev/null
+. /usr/libexec/kryptik/devices.sh
 
 running_slot() { sed -n 's/^slot=//p' /run/kryptik/boot-identity 2>/dev/null; }
 other_slot() { case "$1" in a) echo b ;; b) echo a ;; *) echo "" ;; esac; }
 running_version() { sed -n 's/^VERSION_ID=//p' /etc/os-release | tr -d '"' | head -1; }
-esp_dev() { blkid -t PARTLABEL=kryptik-esp -o device 2>/dev/null | head -1; }
-slot_dev() { blkid -t PARTLABEL="kryptik-$1" -o device 2>/dev/null | head -1; }
+own_part() {   # own_part LABEL -> the partition, or die with what was found
+    p="$(kryptik_part "$1" 2>/dev/null)"
+    if [ -z "$p" ]; then
+        die "no unambiguous partition labelled $1 on this installation's disk $(kryptik_root_disk 2>/dev/null || echo '?') ($(kryptik_part_count "$1" 2>/dev/null || echo 0) there; elsewhere, ignored: $(kryptik_others "$1" 2>/dev/null | tr '\n' ' '))"
+    fi
+    printf '%s\n' "$p"
+}
+esp_dev() { own_part kryptik-esp; }
+slot_dev() { own_part "kryptik-$1"; }
 hdr() { awk -F': ' -v k="$2" '$1==k {print $2; exit}' "$1"; }
 
 mount_esp() {
-    dev="$(esp_dev)"; [ -n "$dev" ] || die "no partition labelled kryptik-esp"
+    dev="$(esp_dev)" || exit 1
     mkdir -p "$ESP_MNT"
     mountpoint -q "$ESP_MNT" || mount -o rw,nosuid,nodev,noexec "$dev" "$ESP_MNT" || die "cannot mount the ESP"
 }
@@ -62,7 +78,7 @@ trap umount_esp EXIT
 
 cmd_status() {
     slot="$(running_slot)"; echo "running slot:     ${slot:-unknown} (version $(running_version))"
-    echo "trial pending:    $(cat "$B/trial" 2>/dev/null || echo none)"
+    echo "trial pending:    $(sed -n 1p "$B/trial" 2>/dev/null || true)$([ -r "$B/trial" ] && printf ' (%s)' "$(sed -n 's/^armed=//p' "$B/trial" | sed 's/1/BootNext armed/;s/0/not yet armed/')" || echo none)"
     echo "last boot result: $(cat "$B/last-result" 2>/dev/null || echo none)"
     echo "failed trial:     $(cat "$B/trial.failed" 2>/dev/null || echo none)"
     mount_esp
@@ -94,8 +110,8 @@ verify_payload() {   # verify_payload DIR RECOVERY -> sets VERSION ROOT_HASH
     # 2. Headers inside the signed bytes.
     role="$(hdr "$m" role)"; VERSION="$(hdr "$m" version)"; count="$(hdr "$m" files)"
     case "$role" in development|production) ;; *) die "manifest role '$role' is unknown" ;; esac
-    [ "$role" = "$(cat /etc/kryptik/trust/required-role 2>/dev/null || echo development)" ] \
-        || die "manifest role is '$role'; this image requires '$(cat /etc/kryptik/trust/required-role)'"
+    [ "$role" = "$(cat "$ROLE_FILE" 2>/dev/null || echo development)" ] \
+        || die "manifest role is '$role'; this image requires '$(cat "$ROLE_FILE")'"
     [ -n "$VERSION" ] || die "manifest has no version"
     cur="$(running_version)"
     if [ "$VERSION" = "$cur" ]; then
@@ -137,13 +153,21 @@ EOF
     done
     say "$listed file(s) match the manifest, nothing unlisted"
 
-    # 4. The root hash the kernels carry is the image's.
+    # 4. The manifest's hashes, kept: every check after the first write
+    #    compares what landed against THESE, never against the payload
+    #    files again - a payload directory is mutable, a signed manifest
+    #    that verified is not.
+    manifest_hash() { sed -n '/^--$/,$p' "$m" | sed '1d' | awk -v r="$1" '$3==r {print $1; exit}'; }
+    H_ROOT="$(manifest_hash kryptik-root.img)"; H_KA="$(manifest_hash kryptik-a.efi)"; H_KB="$(manifest_hash kryptik-b.efi)"
+    [ "${#H_ROOT}" = 64 ] && [ "${#H_KA}" = 64 ] && [ "${#H_KB}" = 64 ] || die "the manifest does not list the root image and both kernels"
+
+    # 5. The root hash the kernels carry is the image's.
     ROOT_HASH="$(sed -n 's/^  "root_hash": "\([0-9a-f]*\)".*/\1/p' "$dir/root.json" | head -1)"
     [ "${#ROOT_HASH}" = 64 ] || die "root.json has no root hash"
     ROOT_BYTES="$(sed -n 's/^  "total_bytes": \([0-9]*\).*/\1/p' "$dir/root.json" | head -1)"
     ROOT_SHA="$(sed -n 's/^  "sha256": "\([0-9a-f]*\)".*/\1/p' "$dir/root.json" | head -1)"
     [ "$(stat -c %s "$dir/kryptik-root.img")" = "$ROOT_BYTES" ] || die "root.json total_bytes does not match kryptik-root.img"
-    [ "$(sha256sum "$dir/kryptik-root.img" | cut -c1-64)" = "$ROOT_SHA" ] || die "root.json sha256 does not match kryptik-root.img"
+    [ "$ROOT_SHA" = "$H_ROOT" ] || die "root.json's sha256 disagrees with the signed manifest's for kryptik-root.img"
     for s in a b; do
         [ "$(grep -a -c -F "$ROOT_HASH" "$dir/kryptik-$s.efi")" -ge 1 ] \
             || die "kryptik-$s.efi does not embed the root hash $ROOT_HASH; kernel and root are not one release"
@@ -163,12 +187,13 @@ cmd_apply() {
         shift
     done
     [ -n "$dir" ] && [ -d "$dir" ] || die "apply needs a payload directory"
+    [ -r "$DEGRADED" ] && die "the state partition is degraded ($(cat "$DEGRADED")); a trial could neither be recorded nor judged"
     exec 9>"$LOCK"
     flock -n 9 || die "another update is in progress (lock $LOCK)"
     slot="$(running_slot)"; target="$(other_slot "$slot")"
     [ -n "$target" ] || die "cannot tell which slot is running (kryptik.slot= missing)"
     if [ -f "$B/trial" ]; then
-        die "a trial of slot $(cat "$B/trial") is already armed; reboot first, or run rollback"
+        die "a trial of slot $(sed -n 1p "$B/trial") is already armed; reboot first, or run rollback"
     fi
     if [ "$retry" != 1 ] && [ -f "$B/trial.failed" ]; then
         die "the last trial of slot $(cat "$B/trial.failed") failed to boot. Pass --retry to arm it again."
@@ -177,7 +202,8 @@ cmd_apply() {
     say "running slot $slot ($(running_version)); target slot $target"
     verify_payload "$dir" "$recovery"
 
-    tdev="$(slot_dev "$target")"; [ -b "$tdev" ] || die "no partition labelled kryptik-$target"
+    tdev="$(slot_dev "$target")" || exit 1
+    [ -b "$tdev" ] || die "kryptik-$target ($tdev) is not a block device"
     tsize="$(blockdev --getsize64 "$tdev")"
     [ "$tsize" -ge "$ROOT_BYTES" ] || die "slot $target is $tsize bytes; the root image needs $ROOT_BYTES"
 
@@ -185,7 +211,7 @@ cmd_apply() {
     say "writing kryptik-$target ($ROOT_BYTES bytes)"
     dd if="$dir/kryptik-root.img" of="$tdev" bs=4M conv=fsync status=none || die "writing slot $target failed"
     got="$(dd if="$tdev" bs=4M iflag=count_bytes count="$ROOT_BYTES" status=none | sha256sum | cut -c1-64)"
-    [ "$got" = "$ROOT_SHA" ] || die "slot $target read back as $got, expected $ROOT_SHA"
+    [ "$got" = "$H_ROOT" ] || die "slot $target read back as $got; the manifest says $H_ROOT"
     say "slot $target verifies after write"
 
     mount_esp
@@ -193,7 +219,9 @@ cmd_apply() {
     cp "$dir/kryptik-$target.efi" "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new" || die "staging the kernel on the ESP failed"
     sync -f "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new"
     mv -f "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new" "$ESP_MNT/EFI/kryptik/kryptik-$target.efi"
-    cmp -s "$dir/kryptik-$target.efi" "$ESP_MNT/EFI/kryptik/kryptik-$target.efi" || die "the ESP copy of the kernel differs"
+    want_k="$H_KA"; [ "$target" = b ] && want_k="$H_KB"
+    [ "$(sha256sum "$ESP_MNT/EFI/kryptik/kryptik-$target.efi" | cut -c1-64)" = "$want_k" ] \
+        || die "the kernel on the ESP does not hash to the manifest's kryptik-$target.efi"
     printf '%s\n' "$VERSION" > "$ESP_MNT/kryptik/version-$target.new"
     mv -f "$ESP_MNT/kryptik/version-$target.new" "$ESP_MNT/kryptik/version-$target"
     sync
@@ -201,16 +229,30 @@ cmd_apply() {
     say "kernel for slot $target installed on the ESP (version $VERSION)"
 
     # --- arm one trial boot --------------------------------------------------
-    kryptik-efiboot set-next "$target" || die "could not arm BootNext for slot $target"
-    printf '%s\n' "$target" > "$B/trial.new" && mv -f "$B/trial.new" "$B/trial"
-    rm -f "$B/trial.failed"
-    sync
+    arm_trial "$target"
     printf '%s apply %s -> slot %s\n' "$(date -Iseconds 2>/dev/null)" "$VERSION" "$target" >> "$LOG"
     say "armed: the next boot tries slot $target ($VERSION) once. Reboot to try it."
     say "if it does not come up, the firmware falls back to the committed slot ($slot)."
 }
 
+# The record first (armed=0), then BootNext, then the record again (armed=1):
+# whichever gap an interruption lands in, boot-success can tell what happened.
+# Killed before BootNext: the old slot boots, the record says armed=0, and
+# boot-success clears it as "nothing was tried". Killed after BootNext but
+# before armed=1: the new slot boots, is judged and committed as a trial
+# regardless of the armed line. Killed after both: the normal case.
+arm_trial() {   # arm_trial SLOT
+    rm -f "$B/trial.failed"
+    printf '%s\narmed=0\n' "$1" > "$B/trial.new" && mv -f "$B/trial.new" "$B/trial" && sync
+    if ! kryptik-efiboot set-next "$1"; then
+        rm -f "$B/trial"; sync
+        die "could not arm BootNext for slot $1; the trial record was removed"
+    fi
+    printf '%s\narmed=1\n' "$1" > "$B/trial.new" && mv -f "$B/trial.new" "$B/trial" && sync
+}
+
 cmd_rollback() {
+    [ -r "$DEGRADED" ] && die "the state partition is degraded ($(cat "$DEGRADED")); a trial could neither be recorded nor judged"
     exec 9>"$LOCK"
     flock -n 9 || die "another update is in progress (lock $LOCK)"
     slot="$(running_slot)"; target="$(other_slot "$slot")"
@@ -219,13 +261,12 @@ cmd_rollback() {
     [ -f "$ESP_MNT/EFI/kryptik/kryptik-$target.efi" ] || die "slot $target has no kernel on the ESP; nothing to roll back to"
     ver="$(cat "$ESP_MNT/kryptik/version-$target" 2>/dev/null || echo unknown)"
     umount_esp
-    tdev="$(slot_dev "$target")"; [ -b "$tdev" ] || die "no partition labelled kryptik-$target"
+    tdev="$(slot_dev "$target")" || exit 1
+    [ -b "$tdev" ] || die "kryptik-$target ($tdev) is not a block device"
     # The slot must hold a filesystem, not zeros: check the ext4 magic.
     magic="$(dd if="$tdev" bs=1 skip=1080 count=2 status=none | od -An -tx1 | tr -d ' \n')"
     [ "$magic" = "53ef" ] || die "slot $target holds no filesystem (magic $magic); it was never installed"
-    kryptik-efiboot set-next "$target" || die "could not arm BootNext for slot $target"
-    printf '%s\n' "$target" > "$B/trial.new" && mv -f "$B/trial.new" "$B/trial"
-    rm -f "$B/trial.failed"
+    arm_trial "$target"
     printf '%s rollback -> slot %s (%s)\n' "$(date -Iseconds 2>/dev/null)" "$target" "$ver" >> "$LOG"
     say "armed: the next boot tries slot $target ($ver) once; boot-success commits it if it comes up. Reboot."
 }

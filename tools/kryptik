@@ -47,7 +47,7 @@ CONF="${KRYPTIK_CONF:-/etc/kryptik/kryptik.conf}"
 
 # Defaults, overridable from the config file and then from flags. These match
 # kryptikd's own defaults so that the wrapper changes nothing but the typing.
-ZONES_DIR=/etc/kryptik/zones
+ZONES_DIR=/usr/lib/kryptik/zones
 ROOTFS=/var/lib/kryptik/zones
 UID_BASE=100000
 KRYPTIKD="${KRYPTIKD:-kryptikd}"
@@ -79,7 +79,7 @@ OPTIONS:
     --rootfs DIR          override the zone data directory (default: $ROOTFS)
 
 CONFIGURATION: $CONF
-    zones_dir = /etc/kryptik/zones
+    zones_dir = /usr/lib/kryptik/zones
     rootfs    = /var/lib/kryptik/zones
     uid_base  = 100000
 

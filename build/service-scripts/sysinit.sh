@@ -48,36 +48,91 @@ if [ -d /sys/firmware/efi/efivars ] && ! mountpoint -q /sys/firmware/efi/efivars
         || echo "sysinit: efivarfs did not mount" >&2
 fi
 
+# --- what booted: the slot or the medium, from the signed command line ------
+#
+# Both come from the kernel's compiled-in command line (Design 08): nothing
+# a bootloader, a firmware variable or a person at a prompt could change.
+slot=""; media=""
+for word in $(cat /proc/cmdline 2>/dev/null); do
+    case "$word" in
+        kryptik.slot=*)  slot="${word#kryptik.slot=}" ;;
+        kryptik.media=*) media="${word#kryptik.media=}" ;;
+    esac
+done
+
 # --- persistent state (Design 08) -------------------------------------------
 #
 # The root filesystem is dm-verity and read-only. Everything that has to
-# change after the build lives on the partition labelled kryptik-state, or,
-# on install media without one, on a tmpfs that says so. The image's own /var
-# is copied into a fresh state volume once, so packages find the directories
-# they installed; after that the volume is authoritative.
+# change after the build lives on the partition labelled kryptik-state ON THE
+# DISK THE ROOT CAME FROM (devices.sh: a label is not an identity, and a
+# second disk carrying the same layout must not be mistaken for this
+# installation's). The image's own /var is copied into a fresh state volume
+# once, so packages find the directories they installed; after that the
+# volume is authoritative.
 #
-# Then /etc becomes an overlay (lower: the verified /etc; upper: on state),
-# /home and /root come from state, and /tmp is a tmpfs. Nothing writes to the
-# verified root, and a write that tries fails with EROFS rather than quietly
-# landing somewhere the next boot will not see.
+# Three outcomes, and they are told apart on purpose:
+#   persistent  the installed system's state partition is mounted at /var
+#   tmpfs       an install medium: nothing persists, by design
+#   degraded    an INSTALLED system whose state partition is missing,
+#               ambiguous or unmountable. /var is a tmpfs so the machine can
+#               be logged into and repaired, and every later step that would
+#               otherwise act as if the machine were fine - first-boot setup,
+#               the desktop session, the update trial commit, the updater -
+#               reads /run/kryptik/state-degraded and refuses. Silently
+#               booting a fresh non-persistent user state on an installed
+#               machine is exactly what this must not do.
+. /usr/libexec/kryptik/devices.sh
 state_mnt=/run/kryptik/state
+STATE=""; STATE_REASON=""; state_dev=""; root_disk=""
 mkdir -p /run/kryptik "$state_mnt"
 chmod 0700 /run/kryptik
+rm -f /run/kryptik/state-degraded
 if ! mountpoint -q /var; then
-    state_dev="$(blkid -t PARTLABEL=kryptik-state -o device 2>/dev/null | head -1)"
-    if [ -n "$state_dev" ] && [ -b "$state_dev" ]; then
-        if mount -t ext4 -o nosuid,nodev,noatime "$state_dev" "$state_mnt"; then
-            echo "sysinit: state partition ${state_dev} mounted"
-        else
-            echo "sysinit: FAILED to mount state partition ${state_dev}; using tmpfs" >&2
-            mount -t tmpfs -o nosuid,nodev,mode=0755 tmpfs "$state_mnt"
-        fi
+    root_disk="$(kryptik_root_disk 2>/dev/null || true)"
+    n="$(kryptik_part_count kryptik-state 2>/dev/null || echo 0)"
+    others="$(kryptik_others kryptik-state 2>/dev/null | tr '\n' ' ')"
+    [ -n "$others" ] && echo "sysinit: kryptik-state on other disks ignored: ${others}(not this root's disk ${root_disk:-?})"
+    if [ -n "$media" ]; then
+        STATE=tmpfs; STATE_REASON="install medium"
+        echo "sysinit: install medium: state is a tmpfs and will not persist"
+    elif [ -z "$root_disk" ]; then
+        STATE=degraded; STATE_REASON="cannot tell which disk the root came from"
+    elif [ "$n" -eq 0 ]; then
+        STATE=degraded; STATE_REASON="no partition labelled kryptik-state on ${root_disk}"
+    elif [ "$n" -gt 1 ]; then
+        STATE=degraded; STATE_REASON="${n} partitions labelled kryptik-state on ${root_disk}; refusing to guess"
     else
-        echo "sysinit: no kryptik-state partition (install medium?); state is a tmpfs and will not persist"
+        state_dev="$(kryptik_part kryptik-state)"
+        if [ ! -b "$state_dev" ]; then
+            STATE=degraded; STATE_REASON="${state_dev} is not a block device"
+        elif mount -t ext4 -o nosuid,nodev,noatime "$state_dev" "$state_mnt" 2>/run/kryptik/state-mount.err; then
+            STATE=persistent
+            echo "sysinit: state partition ${state_dev} mounted (disk ${root_disk})"
+        else
+            STATE=degraded; STATE_REASON="mount of ${state_dev} failed: $(tr '\n' ' ' < /run/kryptik/state-mount.err)"
+        fi
+    fi
+    if [ "$STATE" != persistent ]; then
         mount -t tmpfs -o nosuid,nodev,mode=0755 tmpfs "$state_mnt"
     fi
+    if [ "$STATE" = degraded ]; then
+        printf '%s\n' "$STATE_REASON" > /run/kryptik/state-degraded
+        {
+            echo
+            echo "sysinit: ******************************************************************"
+            echo "sysinit: *  STATE DEGRADED: ${STATE_REASON}"
+            echo "sysinit: *  This is an installed system (slot ${slot}) and its persistent"
+            echo "sysinit: *  state could not be used. /var is a TEMPORARY filesystem now:"
+            echo "sysinit: *  nothing changed in this session will survive a reboot."
+            echo "sysinit: *  The desktop will not start; log in on the console to repair,"
+            echo "sysinit: *  or boot the install medium and run kryptik-recover --status."
+            echo "sysinit: ******************************************************************"
+            echo
+        } > /dev/console 2>&1 || true
+        echo "sysinit: STATE DEGRADED: ${STATE_REASON}" >&2
+    fi
     if [ ! -e "$state_mnt/.kryptik-state" ]; then
-        echo "sysinit: initialising state from the image's /var"
+        echo "sysinit: initialising state from the image's /var (${STATE})"
         cp -a /var/. "$state_mnt/"
         mkdir -p "$state_mnt/lib/kryptik/etc/upper" "$state_mnt/lib/kryptik/etc/work" \
                  "$state_mnt/lib/kryptik/zones" "$state_mnt/lib/kryptik/volumes" \
@@ -88,12 +143,28 @@ if ! mountpoint -q /var; then
         date -Iseconds > "$state_mnt/.kryptik-state" 2>/dev/null || : > "$state_mnt/.kryptik-state"
     fi
     mount --move "$state_mnt" /var
+else
+    STATE="$(awk '$2=="/var"{print ($3=="tmpfs")?"tmpfs":"persistent"; exit}' /proc/mounts)"
 fi
 rmdir "$state_mnt" 2>/dev/null || true
 
 # /etc as an overlay. The lower layer is the verified root's /etc, which is
 # what every later boot verifies; the upper layer holds the machine's own
 # changes - passwords, hostname, the first-boot user - on state.
+#
+# THE TRUST BOUNDARY, stated once: the upper layer is mutable and is not
+# authenticated. Anyone who can write the state partition offline can put any
+# file under /etc. So nothing that decides what runs with privilege, or what
+# the system trusts, is read from /etc:
+#   the init scripts and the service database   /usr/lib/s6-linux-init, /usr/lib/kryptik/s6-rc
+#   the kernel tunables applied below           /usr/lib/kryptik/sysctl.d
+#   the zone definitions the services use       /usr/lib/kryptik/zones
+#   the release trust anchor (kryptik-update)   /usr/share/kryptik/trust
+# all of which sit on the verified root. What remains under /etc is what
+# must be mutable: accounts and passwords, hostname, the local user's
+# session hooks. Their protection is the state partition's, and that
+# partition is not encrypted in this developer tier - a stated limitation,
+# not tamper protection.
 if ! mountpoint -q /etc; then
     mkdir -p /var/lib/kryptik/etc/upper /var/lib/kryptik/etc/work
     if mount -t overlay overlay \
@@ -115,22 +186,16 @@ mkdir -p /run/kryptik /run/lock /var/log/kryptik /var/lib/kryptik/boot
 chmod 0700 /run/kryptik
 chmod 0755 /run/lock /var/log/kryptik
 
-# What booted, for everything that needs to know: the slot, and whether this
-# is an install medium. Both come from the signed command line.
-slot=""; media=""
-for word in $(cat /proc/cmdline 2>/dev/null); do
-    case "$word" in
-        kryptik.slot=*)  slot="${word#kryptik.slot=}" ;;
-        kryptik.media=*) media="${word#kryptik.media=}" ;;
-    esac
-done
-printf 'slot=%s\nmedia=%s\n' "$slot" "$media" > /run/kryptik/boot-identity
-echo "sysinit: booted slot='${slot}' media='${media}'"
+# What booted, for everything that needs to know.
+printf 'slot=%s\nmedia=%s\nstate=%s\nstate_dev=%s\nroot_disk=%s\n' \
+    "$slot" "$media" "$STATE" "$state_dev" "$root_disk" > /run/kryptik/boot-identity
+echo "sysinit: booted slot='${slot}' media='${media}' state=${STATE}${state_dev:+ (${state_dev})}"
 
-# Kryptik's kernel tunables. A boot that silently skipped these would look
-# exactly like one that applied them, so failures are reported.
-if [ -d /etc/sysctl.d ]; then
-    for f in /etc/sysctl.d/*.conf; do
+# Kryptik's kernel tunables, from the verified root only (see above). A boot
+# that silently skipped these would look exactly like one that applied them,
+# so failures are reported.
+if [ -d /usr/lib/kryptik/sysctl.d ]; then
+    for f in /usr/lib/kryptik/sysctl.d/*.conf; do
         [ -r "$f" ] || continue
         sysctl -p "$f" >/dev/null || echo "sysinit: sysctl -p $f reported errors" >&2
     done

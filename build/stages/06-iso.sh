@@ -393,7 +393,7 @@ s_payload() {
     "${KRYPTIK_ROOT}/tools/release-manifest.sh" sign --key "$keydir/kryptik-release" "$out/manifest"
     # Verify it the way the guest will: through the allowed-signers line the
     # image carries, with --exact.
-    local signers="${SYSROOT}/etc/kryptik/trust/release-signers"
+    local signers="${SYSROOT}/usr/share/kryptik/trust/release-signers"
     [[ -f "$signers" ]] || { echo "the sysroot has no ${signers}"; return 1; }
     "${KRYPTIK_ROOT}/tools/release-manifest.sh" verify --signers "$signers" --principal kryptik-release \
         --root "$out" --exact --strict "$out/manifest"
