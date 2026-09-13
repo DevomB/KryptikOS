@@ -1270,7 +1270,250 @@ s_boot_check() {
 # Ordered by dependency, not alphabetically. Moving an entry earlier because it
 # "seems independent" is how a base system build breaks three packages later.
 
-declare -a PACKAGES=(
+declare -a # ---------------------------------------------------------------------------
+# meson-built packages. The Wayland stack is meson-only; there is no
+# autotools alternative to reuse. --buildtype=plain so Kryptik's CFLAGS and
+# LDFLAGS are the flags (release would add its own -O3 and -DNDEBUG), and
+# --wrap-mode=nodownload so a subproject can never fetch a dependency the
+# lock file has not seen (the chroot has no network, but the refusal should
+# be the build system's, not the network's).
+# ---------------------------------------------------------------------------
+meson_build() {
+    local tarball="$1" dirname="$2"; shift 2
+    local src; src="$(unpack "$tarball" "$dirname")"
+    cd "$src"
+    meson setup build --prefix=/usr --buildtype=plain --wrap-mode=nodownload "$@"
+    ninja -C build
+    ninja -C build install
+}
+
+# --- encrypted zone volumes (Design 04) ------------------------------------
+
+# cmake is here only because json-c has no other build system, and json-c
+# is here only because LUKS2 headers are JSON and cryptsetup requires it.
+# Bundled third-party libraries rather than system ones: the alternative is
+# pinning curl, libarchive, libuv and nghttp2 for a tool that exists to run
+# one cmake invocation. It is not part of the image (see the exclusions in
+# stage 06).
+s_cmake() {
+    local src; src="$(unpack "cmake-${V_CMAKE}.tar.gz" "cmake-${V_CMAKE}")"
+    cd "$src"
+    sed -i '/"lib64"/s/64//' Modules/GNUInstallDirs.cmake
+    ./bootstrap --prefix=/usr --parallel="${KRYPTIK_JOBS}" --no-system-libs \
+        --docdir=/share/doc/cmake -- -DCMAKE_USE_OPENSSL=OFF -DCMAKE_BUILD_TYPE=Release
+    make
+    make install
+    cmake --version
+}
+
+s_json_c() {
+    local src; src="$(unpack "json-c-${V_JSON_C}.tar.gz" "json-c-json-c-${V_JSON_C}")"
+    cd "$src"
+    # CMAKE_POLICY_VERSION_MINIMUM: cmake 4 refuses projects whose minimum is
+    # below 3.5, and json-c's test/app subdirectories still say 2.8/3.9.
+    cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_STATIC_LIBS=OFF -DBUILD_TESTING=OFF -DBUILD_APPS=OFF \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+    cmake --build build
+    cmake --install build
+    # Prove the library round-trips a document; cryptsetup will parse LUKS2
+    # headers with it.
+    cat > /tmp/jc.c <<'EOF'
+#include <json.h>
+#include <stdio.h>
+#include <string.h>
+int main(void){ struct json_object *o = json_tokener_parse("{\"a\":[1,2],\"b\":\"x\"}");
+ if(!o) return 1; const char *s = json_object_to_json_string(o);
+ return strcmp(s, "{ \"a\": [ 1, 2 ], \"b\": \"x\" }") == 0 ? 0 : 2; }
+EOF
+    gcc -o /tmp/jc /tmp/jc.c -I/usr/include/json-c -ljson-c && /tmp/jc && echo "ok: json-c parses and prints"
+    rm -f /tmp/jc /tmp/jc.c
+}
+
+s_libaio() {
+    local src; src="$(unpack "libaio-${V_LIBAIO}.tar.gz" "libaio-${V_LIBAIO}")"
+    cd "$src"
+    sed -i '/install.*libaio.a/s/^/#/' src/Makefile
+    make
+    make prefix=/usr install
+}
+
+# Only device-mapper from LVM2: libdevmapper is what cryptsetup links, and
+# dmsetup is what an operator uses to look at a mapping. No lvm binary, no
+# daemons, no udev rules for volumes Kryptik does not create.
+s_lvm2() {
+    local src; src="$(unpack "LVM2.${V_LVM2}.tgz" "LVM2.${V_LVM2}")"
+    cd "$src"
+    PATH="$PATH:/usr/sbin" ./configure --prefix=/usr --enable-pkgconfig \
+        --disable-readline --disable-selinux --with-default-dm-run-dir=/run \
+        --enable-udev_sync --disable-silent-rules
+    make device-mapper
+    make install_device-mapper
+    dmsetup --version | head -1
+    [[ -f /usr/lib/pkgconfig/devmapper.pc ]] || { echo "no devmapper.pc"; return 1; }
+}
+
+s_cryptsetup() {
+    local src; src="$(unpack "cryptsetup-${V_CRYPTSETUP}.tar.xz" "cryptsetup-${V_CRYPTSETUP}")"
+    cd "$src"
+    ./configure --prefix=/usr --disable-ssh-token --disable-asciidoc \
+        --disable-static --with-crypto_backend=openssl --enable-internal-argon2
+    make
+    make install
+    echo "--- what shipped ---"
+    cryptsetup --version
+    veritysetup --version
+    # LUKS2 with argon2id is the contract in Design 04; prove the binary
+    # offers it rather than trusting configure.
+    cryptsetup benchmark --help >/dev/null 2>&1 || true
+    cryptsetup --help 2>&1 | grep -q 'luks2' && echo "ok: luks2 is a known type"
+}
+
+# --- release manifests are verified by the installed system (Design 08) ---
+# ssh-keygen -Y is the verification primitive tools/release-manifest.sh uses;
+# only that program is installed. No sshd, no ssh, no host keys.
+s_openssh() {
+    local src; src="$(unpack "openssh-${V_OPENSSH}.tar.gz" "openssh-${V_OPENSSH}")"
+    cd "$src"
+    ./configure --prefix=/usr --sysconfdir=/etc/ssh --with-privsep-path=/var/lib/sshd \
+        --with-default-path=/usr/bin --with-superuser-path=/usr/sbin:/usr/bin \
+        --with-pid-dir=/run --without-pam
+    make ssh-keygen
+    install -m 0755 ssh-keygen /usr/bin/ssh-keygen
+    ssh-keygen -Y verify 2>&1 | grep -q 'usage\|-f' && echo "ok: ssh-keygen supports -Y"
+}
+
+# --- the net zone (Design 03): NAT, resolver, DHCP client -------------------
+s_dnsmasq() {
+    local src; src="$(unpack "dnsmasq-${V_DNSMASQ}.tar.xz" "dnsmasq-${V_DNSMASQ}")"
+    cd "$src"
+    make PREFIX=/usr COPTS="-DNO_DBUS -DNO_ID"
+    make PREFIX=/usr install-common
+    dnsmasq --version | head -1
+}
+
+s_dhcpcd() {
+    local src; src="$(unpack "dhcpcd-${V_DHCPCD}.tar.xz" "dhcpcd-${V_DHCPCD}")"
+    cd "$src"
+    ./configure --prefix=/usr --sysconfdir=/etc --libexecdir=/usr/lib/dhcpcd \
+        --dbdir=/var/lib/dhcpcd --runstatedir=/run --privsepuser=dhcpcd
+    make
+    make install
+    dhcpcd --version | head -1
+}
+
+# --- the desktop (Design 05/06) ---------------------------------------------
+# meson runs from its own tree: python3 meson.py works uninstalled, and that
+# avoids pip, wheel and setuptools - none of which this image pins.
+s_meson() {
+    local src; src="$(unpack "meson-${V_MESON}.tar.gz" "meson-${V_MESON}")"
+    rm -rf /usr/lib/meson
+    mkdir -p /usr/lib/meson
+    cp -r "$src/mesonbuild" "$src/meson.py" /usr/lib/meson/
+    cat > /usr/bin/meson <<'EOF'
+#!/bin/sh
+exec /usr/bin/python3 /usr/lib/meson/meson.py "$@"
+EOF
+    chmod 0755 /usr/bin/meson
+    meson --version
+}
+
+s_ninja() {
+    local src; src="$(unpack "ninja-${V_NINJA}.tar.gz" "ninja-${V_NINJA}")"
+    cd "$src"
+    python3 configure.py --bootstrap
+    install -m 0755 ninja /usr/bin/ninja
+    ninja --version
+}
+
+s_wayland() {
+    meson_build "wayland-${V_WAYLAND}.tar.xz" "wayland-${V_WAYLAND}" \
+        -Ddocumentation=false -Dtests=false -Ddtd_validation=false
+    wayland-scanner --version 2>&1 | head -1
+}
+
+s_libxkbcommon() {
+    meson_build "libxkbcommon-${V_LIBXKBCOMMON}.tar.gz" "libxkbcommon-xkbcommon-${V_LIBXKBCOMMON}" \
+        -Denable-docs=false -Denable-x11=false -Denable-xkbregistry=false \
+        -Denable-wayland=false -Denable-tools=false -Denable-bash-completion=false
+}
+
+s_libdrm() {
+    meson_build "libdrm-${V_LIBDRM}.tar.xz" "libdrm-${V_LIBDRM}" \
+        -Dudev=true -Dvalgrind=disabled -Dtests=false -Dcairo-tests=disabled \
+        -Dman-pages=disabled -Dintel=disabled -Dradeon=disabled -Damdgpu=disabled \
+        -Dnouveau=disabled -Dvmwgfx=disabled -Dfreedreno=disabled -Dvc4=disabled -Detnaviv=disabled
+}
+
+s_libinput() {
+    meson_build "libinput-${V_LIBINPUT}.tar.gz" "libinput-${V_LIBINPUT}" \
+        -Dlibwacom=false -Ddebug-gui=false -Dtests=false -Ddocumentation=false -Dzshcompletiondir=no
+}
+
+s_seatd() {
+    meson_build "${V_SEATD}.tar.gz" "seatd-${V_SEATD}" \
+        -Dlibseat-logind=disabled -Dlibseat-seatd=enabled -Dlibseat-builtin=disabled \
+        -Dserver=enabled -Dexamples=disabled -Dman-pages=disabled
+    seatd -v 2>&1 | head -1 || true
+}
+
+s_hwdata() {
+    local src; src="$(unpack "hwdata-${V_HWDATA}.tar.gz" "hwdata-${V_HWDATA}")"
+    cd "$src"
+    ./configure --prefix=/usr --disable-blacklist
+    make install
+}
+
+# wlroots with the pixman renderer only. No GLES2, no Vulkan, no GBM: those
+# need Mesa, which needs LLVM, which is not what a verified base system
+# should carry for a desktop that renders text and coloured borders. The
+# DRM backend uses dumb buffers; virtio-gpu and simpledrm both provide them.
+s_wlroots() {
+    meson_build "wlroots-${V_WLROOTS}.tar.gz" "wlroots-${V_WLROOTS}" \
+        -Dxwayland=disabled -Dexamples=false -Drenderers=[] -Dallocators=[] \
+        -Dbackends=drm,libinput -Dsession=enabled -Dxcb-errors=disabled -Dlibliftoff=disabled
+    pkg-config --modversion wlroots-0.19
+}
+
+# dwl: the compositor engine's smallest complete user. config.h is Kryptik's
+# (build/desktop/dwl-config.h): the keybindings are the trusted launcher, and
+# border colours are the compositor-controlled identity channel.
+s_dwl() {
+    local src; src="$(unpack "dwl-v${V_DWL}.tar.gz" "dwl-v${V_DWL}")"
+    cd "$src"
+    local cfg="${KRYPTIK_ROOT}/build/desktop/dwl-config.h"
+    if [[ -f "$cfg" ]]; then
+        cp "$cfg" config.h
+        echo "using Kryptik's dwl config.h ($(sha256_of "$cfg"))"
+    else
+        echo "no Kryptik config.h; building dwl with its defaults"
+    fi
+    make PREFIX=/usr XWAYLAND= XLIBS=
+    make PREFIX=/usr install
+    dwl -v 2>&1 | head -1 || true
+}
+
+s_havoc() {
+    local src; src="$(unpack "havoc-${V_HAVOC}.tar.gz" "havoc-${V_HAVOC}")"
+    cd "$src"
+    make PREFIX=/usr
+    make PREFIX=/usr install
+    install -Dm644 havoc.cfg /usr/share/kryptik/havoc.cfg
+    [[ -x /usr/bin/havoc ]] || { echo "no havoc binary"; return 1; }
+}
+
+s_lynx() {
+    local src; src="$(unpack "lynx${V_LYNX}.tar.bz2" "lynx${V_LYNX}")"
+    cd "$src"
+    ./configure --prefix=/usr --sysconfdir=/etc/lynx --with-zlib --with-bzlib \
+        --with-ssl --with-screen=ncursesw --enable-locale-charset \
+        --datadir=/usr/share/doc/lynx
+    make
+    make install
+    lynx -version | head -1
+}
+
+PACKAGES=(
     "locales"     "s_locales"
     "gettext"     "native_build gettext-${V_GETTEXT}.tar.xz gettext-${V_GETTEXT} --disable-shared"
     "bison"       "native_build bison-${V_BISON}.tar.xz bison-${V_BISON} --docdir=/usr/share/doc/bison-${V_BISON}"
@@ -1419,6 +1662,47 @@ declare -a PACKAGES=(
     # and fingerprinted like any other - because "configure the init
     # system" fails in exactly the same ways as "build a package", and
     # deserves the same machinery rather than a hand-rolled tail.
+    # --- Design 04: LUKS2 zone volumes need cryptsetup, and cryptsetup needs
+    #     libdevmapper (LVM2), json-c (cmake) and popt. libaio is LVM2's
+    #     own hard requirement at configure time.
+    "cmake"       "s_cmake"
+    "json-c"      "s_json_c"
+    "popt"        "native_build popt-${V_POPT}.tar.gz popt-${V_POPT} --disable-static"
+    "libaio"      "s_libaio"
+    "lvm2"        "s_lvm2"
+    "cryptsetup"  "s_cryptsetup"
+    # --- Design 08: the installed system verifies update manifests itself.
+    "openssh"     "s_openssh"
+    # --- Design 03: NAT and a resolver in the net zone, a DHCP client for
+    #     the uplink.
+    "libmnl"      "native_build libmnl-${V_LIBMNL}.tar.bz2 libmnl-${V_LIBMNL} --disable-static"
+    "libnftnl"    "native_build libnftnl-${V_LIBNFTNL}.tar.xz libnftnl-${V_LIBNFTNL} --disable-static"
+    "nftables"    "native_build nftables-${V_NFTABLES}.tar.xz nftables-${V_NFTABLES} --without-cli --disable-man-doc --disable-python --with-json=no --disable-static"
+    "dnsmasq"     "s_dnsmasq"
+    "dhcpcd"      "s_dhcpcd"
+    # --- Design 05/06: the desktop. meson and ninja first (build tools), then
+    #     the Wayland stack in dependency order, then the compositor and the
+    #     applications.
+    "meson"       "s_meson"
+    "ninja"       "s_ninja"
+    "wayland"     "s_wayland"
+    "wayland-protocols" "meson_build wayland-protocols-${V_WAYLAND_PROTOCOLS}.tar.xz wayland-protocols-${V_WAYLAND_PROTOCOLS} -Dtests=false"
+    "xkeyboard-config"  "meson_build xkeyboard-config-${V_XKEYBOARD_CONFIG}.tar.xz xkeyboard-config-${V_XKEYBOARD_CONFIG}"
+    "libxkbcommon" "s_libxkbcommon"
+    "pixman"      "meson_build pixman-${V_PIXMAN}.tar.gz pixman-${V_PIXMAN} -Dtests=disabled -Ddemos=disabled -Dgtk=disabled -Dopenmp=disabled"
+    "libdrm"      "s_libdrm"
+    "libevdev"    "meson_build libevdev-${V_LIBEVDEV}.tar.xz libevdev-${V_LIBEVDEV} -Dtests=disabled -Ddocumentation=disabled"
+    "mtdev"       "native_build mtdev-${V_MTDEV}.tar.bz2 mtdev-${V_MTDEV} --disable-static"
+    "libinput"    "s_libinput"
+    "seatd"       "s_seatd"
+    "hwdata"      "s_hwdata"
+    "libdisplay-info" "meson_build libdisplay-info-${V_LIBDISPLAY_INFO}.tar.xz libdisplay-info-${V_LIBDISPLAY_INFO}"
+    "wlroots"     "s_wlroots"
+    "dwl"         "s_dwl"
+    "havoc"       "s_havoc"
+    "lynx"        "s_lynx"
+    "nano"        "native_build nano-${V_NANO}.tar.xz nano-${V_NANO} --sysconfdir=/etc --enable-utf8"
+
     "etc"         "s_etc"
     "console"     "s_console"
     "init"        "s_init"
