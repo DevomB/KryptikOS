@@ -14,6 +14,8 @@ Steps (each one argument):
     grab:NAME:CMD           run CMD and record its output under NAME in --record
     sleep:SECONDS
     screendump:FILE         ask QEMU (QMP) for a PPM screenshot
+    key:NAME[+NAME...]      press keys on the guest's keyboard through QMP
+                            (qcodes, e.g. key:y  key:ret  key:alt+e)
     wait-exit               wait for the serial socket to close (guest gone)
 
 Exit status 0 when every step succeeded; the failing step is named otherwise.
@@ -184,6 +186,12 @@ def main():
                 if not qmpsock: raise RuntimeError("screendump needs --qmp")
                 r = qmp(qmpsock, "screendump", {"filename": rest})
                 if "error" in r: raise RuntimeError(f"screendump: {r['error']}")
+            elif kind == "key":
+                if not qmpsock: raise RuntimeError("key needs --qmp")
+                keys = [{"type": "qcode", "data": k} for k in rest.split("+")]
+                r = qmp(qmpsock, "send-key", {"keys": keys, "hold-time": 80})
+                if "error" in r: raise RuntimeError(f"send-key {rest}: {r['error']}")
+                time.sleep(0.3)
             elif kind == "wait-exit":
                 deadline = time.time() + timeout
                 while not d.closed and time.time() < deadline: d._read()
