@@ -1,0 +1,99 @@
+# Kryptik kernel boot fragment: what firmware boot, the verified root, the
+# update mechanism and the desktop need from the kernel (Design 08).
+# Merged after hardening.fragment; validated by make validate-kernel.
+
+# --- the kernel is the UEFI application ---
+# The EFI stub boots the kernel with no bootloader. EFI_MIXED (32-bit
+# firmware) is off: Kryptik is x86_64 only and a smaller stub is a smaller
+# signed surface.
+CONFIG_EFI=y
+CONFIG_EFI_STUB=y
+# CONFIG_EFI_MIXED is not set
+CONFIG_EFI_PARTITION=y
+# The update tool arms a one-shot BootNext and reads/writes Boot#### through
+# efivarfs; without it the A/B trial has no firmware-side state.
+CONFIG_EFIVAR_FS=y
+
+# --- the command line is part of the signed image ---
+# CMDLINE_OVERRIDE is the load-bearing option: the firmware's load options
+# and any Boot#### optional data are ignored, so root=, init= and
+# dm-mod.create= cannot be changed without re-signing the kernel. The value
+# here is a placeholder; stage 06 relinks the kernel once per boot variant
+# with the real command line (root slot, verity root hash, salt).
+CONFIG_CMDLINE_BOOL=y
+CONFIG_CMDLINE="kryptik.unbound=1"
+CONFIG_CMDLINE_OVERRIDE=y
+
+# --- the verified root, without an initramfs ---
+# dm-init builds the dm-verity (and, for the ISO, dm-linear) device from
+# dm-mod.create= before root is mounted. Devices are named PARTLABEL=...;
+# early_lookup_bdev resolves those. No initramfs means nothing unsigned runs
+# before the verified root.
+CONFIG_BLK_DEV_DM=y
+CONFIG_DM_INIT=y
+CONFIG_DM_VERITY=y
+CONFIG_DM_VERITY_VERIFY_ROOTHASH_SIG=y
+CONFIG_CRYPTO_SHA256=y
+CONFIG_EXT4_FS=y
+CONFIG_ISO9660_FS=y
+CONFIG_BLK_DEV_SR=y
+CONFIG_ATA=y
+CONFIG_SATA_AHCI=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_SCSI_VIRTIO=y
+CONFIG_USB_STORAGE=y
+CONFIG_USB_XHCI_HCD=y
+# The ESP is FAT; the installer and updater mount it from userspace.
+CONFIG_VFAT_FS=y
+CONFIG_FAT_DEFAULT_UTF8=y
+CONFIG_NLS_CODEPAGE_437=y
+CONFIG_NLS_ISO8859_1=y
+CONFIG_NLS_UTF8=y
+# /etc is an overlay on the state partition; zone volumes are LUKS2 files
+# opened through loop devices.
+CONFIG_OVERLAY_FS=y
+CONFIG_BLK_DEV_LOOP=y
+CONFIG_DM_CRYPT=y
+CONFIG_CRYPTO_XTS=y
+CONFIG_CRYPTO_AES=y
+CONFIG_CRYPTO_AES_NI_INTEL=y
+CONFIG_CRYPTO_USER_API_SKCIPHER=y
+CONFIG_CRYPTO_USER_API_HASH=y
+
+# --- the desktop: a display, a keyboard and a mouse in the test VM ---
+# virtio-gpu is what the QEMU tests use; simpledrm takes over the firmware
+# framebuffer on real hardware until a native driver does. The compositor
+# renders with pixman, so no GPU acceleration is needed or assumed.
+CONFIG_DRM=y
+CONFIG_DRM_VIRTIO_GPU=y
+CONFIG_DRM_SIMPLEDRM=y
+CONFIG_DRM_FBDEV_EMULATION=y
+CONFIG_SYSFB_SIMPLEFB=y
+CONFIG_FRAMEBUFFER_CONSOLE=y
+CONFIG_INPUT_EVDEV=y
+CONFIG_VIRTIO_INPUT=y
+CONFIG_INPUT_KEYBOARD=y
+CONFIG_INPUT_MOUSE=y
+CONFIG_KEYBOARD_ATKBD=y
+CONFIG_MOUSE_PS2=y
+CONFIG_HID=y
+CONFIG_HID_GENERIC=y
+CONFIG_USB_HID=y
+CONFIG_VT=y
+CONFIG_VT_CONSOLE=y
+
+# --- the net zone: NAT and a resolver for routed zones ---
+CONFIG_NF_TABLES=y
+CONFIG_NF_TABLES_INET=y
+CONFIG_NF_TABLES_IPV4=y
+CONFIG_NF_TABLES_IPV6=y
+CONFIG_NFT_NAT=y
+CONFIG_NFT_MASQ=y
+CONFIG_NFT_CT=y
+CONFIG_NFT_REJECT=y
+CONFIG_NF_NAT=y
+CONFIG_NF_CONNTRACK=y
+CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y
+CONFIG_VIRTIO_NET=y
+CONFIG_E1000=y
+CONFIG_E1000E=y

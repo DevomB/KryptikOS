@@ -28,10 +28,15 @@ load_config
 # not exist in vanilla source, so the patch's own "+config X" additions are
 # folded into the known-symbol set.
 HARDENED_MODE=0
+BOOT_MODE=0
 [[ "${1:-}" == "--hardened" ]] && HARDENED_MODE=1
+# --boot validates the firmware-boot/verified-root fragment (Design 08).
+[[ "${1:-}" == "--boot" ]] && BOOT_MODE=1
 
 if [[ "$HARDENED_MODE" -eq 1 ]]; then
     FRAGMENT="${KRYPTIK_ROOT}/build/config/kernel/hardened.fragment"
+elif [[ "$BOOT_MODE" -eq 1 ]]; then
+    FRAGMENT="${KRYPTIK_ROOT}/build/config/kernel/boot.fragment"
 else
     FRAGMENT="${KRYPTIK_ROOT}/build/config/kernel/hardening.fragment"
 fi
