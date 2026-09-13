@@ -1577,9 +1577,15 @@ s_openssh() {
     install -m 0755 ssh-keygen /usr/bin/ssh-keygen
     # Captured, not piped into grep -q: ssh-keygen prints its usage and exits
     # non-zero, and pipefail made that the step's status (the 13:08 stop).
+    # A ssh-keygen that knows -Y complains about the missing namespace or
+    # signature; one that does not says "unknown option -- Y".
     local out
     out="$(ssh-keygen -Y verify 2>&1 || true)"
-    case "$out" in *usage*|*"-f"*) echo "ok: ssh-keygen supports -Y" ;; *) echo "FAIL: ssh-keygen -Y is not supported: ${out}"; return 1 ;; esac
+    case "$out" in
+        *"unknown option"*|*"illegal option"*) echo "FAIL: ssh-keygen has no -Y: ${out}"; return 1 ;;
+        *namespace*|*verify*|*usage*) echo "ok: ssh-keygen supports -Y (${out})" ;;
+        *) echo "FAIL: unexpected ssh-keygen -Y verify output: ${out}"; return 1 ;;
+    esac
 }
 
 # --- the net zone (Design 03): NAT, resolver, DHCP client -------------------
