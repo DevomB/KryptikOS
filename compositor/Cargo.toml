@@ -22,3 +22,8 @@ panic = "abort"
 strip = true
 overflow-checks = true   # security code; keep these on in release
 debug-assertions = false
+
+# The zoneid tests run the palette search, which is seconds at -O2 and
+# minutes unoptimised.
+[profile.test]
+opt-level = 2

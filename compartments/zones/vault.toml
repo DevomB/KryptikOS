@@ -29,7 +29,12 @@ pids_max   = 128
 uid_base = 393216
 
 [ui]
-# Load-bearing, not decoration. If a user cannot tell at a glance which zone a
-# password prompt belongs to, compartmentalization has failed at the only layer
-# that matters. See docs/architecture.md.
-border_color = "#c9a227"
+# Identity in four channels (compositor/zoneid, `zoneid explain`): the
+# colour is from `zoneid propose` (every pair of shipped zones differs by
+# dE00 >= 15 under every vision model, 3:1 against both backgrounds);
+# the pattern, glyph and label are what remain for a user who cannot see
+# the colour difference. Every zone has a distinct value in each.
+border_color   = "#9e80ac"
+border_pattern = "double"
+glyph          = "★"
+label          = "VAULT"

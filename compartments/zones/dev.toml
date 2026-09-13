@@ -26,4 +26,12 @@ pids_max   = 1024
 uid_base = 131072
 
 [ui]
-border_color = "#b5651d"
+# Identity in four channels (compositor/zoneid, `zoneid explain`): the
+# colour is from `zoneid propose` (every pair of shipped zones differs by
+# dE00 >= 15 under every vision model, 3:1 against both backgrounds);
+# the pattern, glyph and label are what remain for a user who cannot see
+# the colour difference. Every zone has a distinct value in each.
+border_color   = "#7f623d"
+border_pattern = "dotted"
+glyph          = "◆"
+label          = "DEV"

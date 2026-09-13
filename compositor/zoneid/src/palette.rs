@@ -35,6 +35,7 @@ use crate::distinct::{BACKGROUNDS, MIN_BORDER_CONTRAST};
 
 /// A candidate colour with its appearance under every vision model
 /// precomputed, because the search evaluates each pair many times.
+#[derive(Clone)]
 struct Candidate {
     srgb: Srgb,
     /// Lab of this colour as seen under `Vision::ALL[i]`.
@@ -51,8 +52,19 @@ pub struct SearchOptions {
     /// model for a border drawn with a contrasting keyline - see
     /// docs/gui-isolation.md. It is a much bigger lever than it looks.
     pub min_contrast: f64,
-    /// Sampling step through each sRGB axis. 17 gives 16 levels per channel.
+    /// Sampling step through each sRGB axis for the coarse search. 17 gives
+    /// 16 levels per channel.
     pub step: u32,
+    /// Sampling step for the refinement pass that follows the coarse
+    /// search: each chosen colour is moved through its neighbourhood at
+    /// this resolution while the minimum improves. 0 disables refinement.
+    ///
+    /// The coarse grid alone is not enough. Measured on the default
+    /// constraints (2026-09-13, release build): step 17 reaches a floor of
+    /// 14.08 in 3 s, step 12 14.66, step 9 15.00 in 15 s, and step 6 15.87
+    /// in 2 min 18 s. Sampling finely is what finds a passing palette, and
+    /// refining around the coarse optimum is what makes that affordable.
+    pub refine: u32,
 }
 
 impl Default for SearchOptions {
@@ -60,42 +72,62 @@ impl Default for SearchOptions {
         SearchOptions {
             min_contrast: MIN_BORDER_CONTRAST,
             step: 17,
+            refine: 3,
         }
     }
 }
 
-fn build_candidates(min_contrast: f64, step: u32) -> Vec<Candidate> {
-    let step = step.max(1);
-    let mut out = Vec::new();
-    let mut backgrounds = Vec::new();
-    for (_, hex) in BACKGROUNDS {
-        if let Ok(c) = Srgb::from_hex(hex) {
-            backgrounds.push(c);
+/// How far, in sRGB levels per channel, refinement looks around a colour.
+/// One coarse cell in each direction: the coarse optimum is somewhere in the
+/// cell it was sampled in, and its true neighbours are in the cells around.
+const REFINE_RADIUS: i32 = 17;
+
+impl Candidate {
+    /// The candidate for an 8-bit sRGB triple, or `None` if it fails the
+    /// contrast floor against any background.
+    fn from_rgb8(r: i32, g: i32, b: i32, backgrounds: &[Srgb], min_contrast: f64) -> Option<Candidate> {
+        if !(0..=255).contains(&r) || !(0..=255).contains(&g) || !(0..=255).contains(&b) {
+            return None;
         }
+        let c = Srgb {
+            r: r as f64 / 255.0,
+            g: g as f64 / 255.0,
+            b: b as f64 / 255.0,
+        };
+        // A border has to be visible against every background the desktop
+        // might use, not just the one the designer had open.
+        if !backgrounds.iter().all(|&bg| contrast_ratio(c, bg) >= min_contrast) {
+            return None;
+        }
+        let mut lab = [Lab { l: 0.0, a: 0.0, b: 0.0 }; Vision::ALL.len()];
+        for (i, v) in Vision::ALL.into_iter().enumerate() {
+            lab[i] = simulate(c, v).to_lab();
+        }
+        Some(Candidate { srgb: c, lab })
     }
 
-    let mut r = 0u32;
+    fn rgb8(&self) -> (i32, i32, i32) {
+        let q = |x: f64| (x * 255.0).round() as i32;
+        (q(self.srgb.r), q(self.srgb.g), q(self.srgb.b))
+    }
+}
+
+fn backgrounds() -> Vec<Srgb> {
+    BACKGROUNDS.iter().filter_map(|(_, hex)| Srgb::from_hex(hex).ok()).collect()
+}
+
+fn build_candidates(min_contrast: f64, step: u32) -> Vec<Candidate> {
+    let step = step.max(1) as i32;
+    let bgs = backgrounds();
+    let mut out = Vec::new();
+    let mut r = 0;
     while r < 256 {
-        let mut g = 0u32;
+        let mut g = 0;
         while g < 256 {
-            let mut b = 0u32;
+            let mut b = 0;
             while b < 256 {
-                let c = Srgb {
-                    r: r.min(255) as f64 / 255.0,
-                    g: g.min(255) as f64 / 255.0,
-                    b: b.min(255) as f64 / 255.0,
-                };
-                // A border has to be visible against every background the
-                // desktop might use, not just the one the designer had open.
-                if backgrounds
-                    .iter()
-                    .all(|&bg| contrast_ratio(c, bg) >= min_contrast)
-                {
-                    let mut lab = [Lab { l: 0.0, a: 0.0, b: 0.0 }; Vision::ALL.len()];
-                    for (i, v) in Vision::ALL.into_iter().enumerate() {
-                        lab[i] = simulate(c, v).to_lab();
-                    }
-                    out.push(Candidate { srgb: c, lab });
+                if let Some(c) = Candidate::from_rgb8(r.min(255), g.min(255), b.min(255), &bgs, min_contrast) {
+                    out.push(c);
                 }
                 b += step;
             }
@@ -119,11 +151,12 @@ fn worst_pair_distance(a: &Candidate, b: &Candidate) -> f64 {
     worst
 }
 
-fn score(cands: &[Candidate], chosen: &[usize]) -> f64 {
+/// The score of a palette: its smallest pairwise difference.
+fn score_of(pal: &[&Candidate]) -> f64 {
     let mut worst = f64::INFINITY;
-    for i in 0..chosen.len() {
-        for j in (i + 1)..chosen.len() {
-            let d = worst_pair_distance(&cands[chosen[i]], &cands[chosen[j]]);
+    for i in 0..pal.len() {
+        for j in (i + 1)..pal.len() {
+            let d = worst_pair_distance(pal[i], pal[j]);
             if d < worst {
                 worst = d;
             }
@@ -132,12 +165,68 @@ fn score(cands: &[Candidate], chosen: &[usize]) -> f64 {
     worst
 }
 
+fn score(cands: &[Candidate], chosen: &[usize]) -> f64 {
+    let pal: Vec<&Candidate> = chosen.iter().map(|&i| &cands[i]).collect();
+    score_of(&pal)
+}
+
 /// The distance from candidate `c` to the nearest already-chosen colour.
 fn distance_to_set(cands: &[Candidate], chosen: &[usize], c: usize) -> f64 {
     chosen
         .iter()
         .map(|&i| worst_pair_distance(&cands[i], &cands[c]))
         .fold(f64::INFINITY, f64::min)
+}
+
+/// Coarse-to-fine: move each colour through the cube of radius
+/// `REFINE_RADIUS` around it, sampled every `fine` levels, taking the
+/// single move that most improves the palette's minimum, until no move
+/// does. Candidates are made on demand, so the fine grid never exists in
+/// full. Deterministic for the same reason the coarse search is: fixed
+/// iteration order, strict improvement only.
+fn refine(pal: &mut Vec<Candidate>, min_contrast: f64, fine: u32) {
+    if fine == 0 || pal.len() < 2 {
+        return;
+    }
+    let fine = fine as i32;
+    let bgs = backgrounds();
+    loop {
+        let mut improved = false;
+        for slot in 0..pal.len() {
+            let current = score_of(&pal.iter().collect::<Vec<_>>());
+            let (r0, g0, b0) = pal[slot].rgb8();
+            let mut best: Option<Candidate> = None;
+            let mut best_score = current;
+            let mut r = r0 - REFINE_RADIUS;
+            while r <= r0 + REFINE_RADIUS {
+                let mut g = g0 - REFINE_RADIUS;
+                while g <= g0 + REFINE_RADIUS {
+                    let mut b = b0 - REFINE_RADIUS;
+                    while b <= b0 + REFINE_RADIUS {
+                        if let Some(c) = Candidate::from_rgb8(r, g, b, &bgs, min_contrast) {
+                            let saved = std::mem::replace(&mut pal[slot], c);
+                            let s = score_of(&pal.iter().collect::<Vec<_>>());
+                            let moved = std::mem::replace(&mut pal[slot], saved);
+                            if s > best_score {
+                                best_score = s;
+                                best = Some(moved);
+                            }
+                        }
+                        b += fine;
+                    }
+                    g += fine;
+                }
+                r += fine;
+            }
+            if let Some(c) = best {
+                pal[slot] = c;
+                improved = true;
+            }
+        }
+        if !improved {
+            break;
+        }
+    }
 }
 
 pub struct Proposal {
@@ -169,7 +258,7 @@ pub fn propose_with(n: usize, opts: SearchOptions) -> Option<Proposal> {
     // construction - see the module comment on why that matters.
     let restarts: Vec<usize> = (0..7).map(|k| k * cands.len() / 7).collect();
 
-    let mut best: Option<Vec<usize>> = None;
+    let mut best: Option<Vec<Candidate>> = None;
     let mut best_score = f64::NEG_INFINITY;
 
     for &seed in &restarts {
@@ -195,8 +284,8 @@ pub fn propose_with(n: usize, opts: SearchOptions) -> Option<Proposal> {
             }
         }
 
-        // Steepest ascent: swap out whichever member most improves the
-        // minimum, until no single swap helps.
+        // Steepest ascent on the coarse grid: swap out whichever member most
+        // improves the minimum, until no single swap helps.
         loop {
             let current = score(&cands, &chosen);
             let mut improved = false;
@@ -225,21 +314,25 @@ pub fn propose_with(n: usize, opts: SearchOptions) -> Option<Proposal> {
             }
         }
 
-        let s = score(&cands, &chosen);
+        // Then off the grid, around what the grid found.
+        let mut pal: Vec<Candidate> = chosen.iter().map(|&i| cands[i].clone()).collect();
+        refine(&mut pal, opts.min_contrast, opts.refine);
+
+        let s = score_of(&pal.iter().collect::<Vec<_>>());
         if s > best_score {
             best_score = s;
-            best = Some(chosen);
+            best = Some(pal);
         }
     }
 
-    let chosen = best?;
+    let pal = best?;
 
     let mut worst_per_vision = Vec::new();
     for (i, v) in Vision::ALL.into_iter().enumerate() {
         let mut worst = f64::INFINITY;
-        for a in 0..chosen.len() {
-            for b in (a + 1)..chosen.len() {
-                let d = ciede2000(cands[chosen[a]].lab[i], cands[chosen[b]].lab[i]);
+        for a in 0..pal.len() {
+            for b in (a + 1)..pal.len() {
+                let d = ciede2000(pal[a].lab[i], pal[b].lab[i]);
                 if d < worst {
                     worst = d;
                 }
@@ -250,7 +343,7 @@ pub fn propose_with(n: usize, opts: SearchOptions) -> Option<Proposal> {
 
     // Sort the output by lightness so the palette reads as a palette rather
     // than in search order, which is meaningless to a human.
-    let mut colors: Vec<Srgb> = chosen.iter().map(|&i| cands[i].srgb).collect();
+    let mut colors: Vec<Srgb> = pal.iter().map(|c| c.srgb).collect();
     colors.sort_by(|a, b| {
         a.relative_luminance()
             .partial_cmp(&b.relative_luminance())
@@ -259,7 +352,7 @@ pub fn propose_with(n: usize, opts: SearchOptions) -> Option<Proposal> {
 
     Some(Proposal {
         colors,
-        score: if chosen.len() < 2 { f64::INFINITY } else { best_score },
+        score: if pal.len() < 2 { f64::INFINITY } else { best_score },
         candidates_considered: cands.len(),
         worst_per_vision,
     })
@@ -268,8 +361,16 @@ pub fn propose_with(n: usize, opts: SearchOptions) -> Option<Proposal> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::distinct::{analyze, Thresholds};
+    use crate::distinct::{analyze, Thresholds, MIN_DELTA_E};
     use crate::identity::ZoneIdentity;
+    use std::sync::OnceLock;
+
+    /// One default search, shared: it is deterministic (checked below), and
+    /// a coarse-to-fine search is seconds of work per call.
+    fn default_six() -> &'static Proposal {
+        static P: OnceLock<Proposal> = OnceLock::new();
+        P.get_or_init(|| propose(6).unwrap())
+    }
 
     #[test]
     fn candidates_all_meet_the_contrast_floor() {
@@ -294,7 +395,7 @@ mod tests {
 
     #[test]
     fn proposed_colours_are_distinct() {
-        let p = propose(6).unwrap();
+        let p = default_six();
         let mut seen: Vec<String> = Vec::new();
         for c in &p.colors {
             let h = c.to_hex();
@@ -310,7 +411,7 @@ mod tests {
     /// standard is wrong rather than that the palette is.
     #[test]
     fn a_passing_six_colour_palette_exists() {
-        let p = propose(6).unwrap();
+        let p = default_six();
         let zones: Vec<ZoneIdentity> = p
             .colors
             .iter()
@@ -325,6 +426,20 @@ mod tests {
             "proposed palette scored {:.2} yet still failed the invariant",
             p.score
         );
+        // The number the search reaches is part of the claim: a change that
+        // makes it worse must be seen, not absorbed by the floor.
+        assert!(p.score >= MIN_DELTA_E + 0.5, "default search reached only {:.2}", p.score);
+    }
+
+    /// The coarse grid alone does not reach the floor (14.08 at step 17);
+    /// refinement is what does. Pinned so that removing it cannot look like
+    /// a harmless cleanup.
+    #[test]
+    fn refinement_is_what_reaches_the_floor() {
+        let coarse = propose_with(6, SearchOptions { refine: 0, ..SearchOptions::default() }).unwrap();
+        let refined = default_six();
+        assert!(coarse.score < refined.score, "coarse {:.2} vs refined {:.2}", coarse.score, refined.score);
+        assert!(coarse.score < MIN_DELTA_E, "the coarse grid now passes on its own ({:.2}); update this comment and the doc on SearchOptions::refine", coarse.score);
     }
 
     #[test]

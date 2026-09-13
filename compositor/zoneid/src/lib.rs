@@ -49,6 +49,7 @@ pub mod distinct;
 pub mod identity;
 pub mod palette;
 pub mod toml;
+pub mod zones;
 
 pub use color::{contrast_ratio, delta_e, ciede2000, Lab, Srgb};
 pub use cvd::{simulate, Vision};

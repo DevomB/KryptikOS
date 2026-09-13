@@ -19,9 +19,8 @@ use std::process::ExitCode;
 use zoneid::color::Srgb;
 use zoneid::cvd::{simulate, Vision};
 use zoneid::distinct::{analyze, Thresholds, BACKGROUNDS};
-use zoneid::identity::ZoneIdentity;
 use zoneid::palette::{propose_with, SearchOptions};
-use zoneid::toml;
+use zoneid::zones::load_zones;
 
 const DEFAULT_ZONE_DIR: &str = "compartments/zones";
 
@@ -33,8 +32,10 @@ USAGE:
         Evaluate the zone set against the distinctness invariant.
         Exits 1 if any pair of zones is indistinguishable.
 
-    zoneid propose [-n N] [--min-contrast R] [--step S]
-        Search for N maximally distinguishable border colours.
+    zoneid propose [-n N] [--min-contrast R] [--step S] [--refine F]
+        Search for N maximally distinguishable border colours: a coarse
+        grid every S levels, then refinement every F levels around the
+        result (F = 0: coarse only).
 
     zoneid simulate HEX [HEX...]
         Show colours as they appear under each vision model.
@@ -221,6 +222,15 @@ fn cmd_propose(args: &[String]) -> ExitCode {
             }
         }
     }
+    if let Some(v) = flag(args, "--refine") {
+        match v.parse::<u32>() {
+            Ok(s) if s <= 17 => opts.refine = s,
+            _ => {
+                eprintln!("propose: --refine expects 0..=17 (0 = coarse grid only)");
+                return ExitCode::from(2);
+            }
+        }
+    }
 
     let Some(p) = propose_with(n, opts) else {
         eprintln!(
@@ -233,8 +243,8 @@ fn cmd_propose(args: &[String]) -> ExitCode {
 
     println!(
         "zoneid propose - {n} colours, chosen from {} candidates\n\
-         \x20 constraints: contrast >= {:.1}:1 against both backgrounds; sRGB sampled every {}\n",
-        p.candidates_considered, opts.min_contrast, opts.step
+         \x20 constraints: contrast >= {:.1}:1 against both backgrounds; sRGB sampled every {}, refined every {}\n",
+        p.candidates_considered, opts.min_contrast, opts.step, opts.refine
     );
 
     println!("Palette");
@@ -313,61 +323,6 @@ fn cmd_simulate(args: &[String]) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
-}
-
-/// Read every `*.toml` in `dir` as a zone definition.
-///
-/// A file without a `[ui] border_color` is skipped rather than failing the
-/// run: the directory is a zone directory, not a palette file, and a zone that
-/// does not configure a colour is a separate problem from zones whose colours
-/// collide.
-fn load_zones(dir: &Path) -> Result<Vec<ZoneIdentity>, String> {
-    let entries = std::fs::read_dir(dir)
-        .map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
-
-    let mut paths: Vec<PathBuf> = Vec::new();
-    for e in entries {
-        let e = e.map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
-        let p = e.path();
-        if p.extension().and_then(|s| s.to_str()) == Some("toml") {
-            paths.push(p);
-        }
-    }
-    // Sorted so the report is stable across filesystems.
-    paths.sort();
-
-    let mut out = Vec::new();
-    for p in paths {
-        let text = std::fs::read_to_string(&p)
-            .map_err(|e| format!("cannot read {}: {e}", p.display()))?;
-        let doc = toml::parse(&text).map_err(|e| format!("{}: {e}", p.display()))?;
-
-        let Some(color) = doc.get("ui", "border_color") else {
-            continue;
-        };
-        // Fall back to the filename only if the file does not name itself;
-        // the [zone] name is authoritative because that is what kryptikd uses.
-        let name = doc
-            .get("zone", "name")
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| {
-                p.file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("?")
-                    .to_string()
-            });
-
-        let id = ZoneIdentity::new(
-            &name,
-            color,
-            doc.get("ui", "border_pattern"),
-            doc.get("ui", "glyph"),
-            doc.get("ui", "label"),
-        )
-        .map_err(|e| format!("{}: [ui] {e}", p.display()))?;
-        out.push(id);
-    }
-    Ok(out)
 }
 
 const EXPLAIN: &str = "\
