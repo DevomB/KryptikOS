@@ -90,9 +90,12 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
 	vm-disk vm-disk-boot vm-restart vm-measure cli-test update-test \
         test-harness test-hardening test-artifacts audit-artifacts \
         audit-artifacts-strict manifest verify-manifest test-manifest \
-        test-s6-init smoke-userspace test-services test-libc-unwind \n        sign-image verify-image test-image-signing test-installer test-mkdisk-guards \n        install-test \n        image image-boot \
+        test-s6-init smoke-userspace test-services test-libc-unwind \
+        sign-image verify-image test-image-signing test-installer test-mkdisk-guards \
+        install-test \
+        image image-boot \
         image-smoke \
-        validate-kernel validate-kernel-hardened \
+        validate-kernel validate-kernel-hardened validate-kernel-boot \
         toolchain temp-tools chroot chroot-enter chroot-umount chroot-status \
         system kernel iso audit zones zone-test paths reset-stamps \
         sysroot-ready \
@@ -215,6 +218,9 @@ check-kernel-eol:
 
 validate-kernel-hardened:
 	@"$(TOOLS)"/validate-kernel-config.sh --hardened
+
+validate-kernel-boot:
+	@"$(TOOLS)"/validate-kernel-config.sh --boot
 
 toolchain: check sources
 	@"$(STAGES)"/01-toolchain.sh
@@ -449,7 +455,9 @@ verify-image:
 # second one. The second half is the point: "the installer exited 0" and
 # "what it wrote comes up" are different claims.
 install-test:
-	@$(SUDO) $(CHROOT_ENV) "$(TOOLS)"/image/install-test.sh \n		--image "$(KRYPTIK_WORK)/images/kryptik-dev.img" \n		--kernel "$(KRYPTIK_WORK)/sysroot/boot/kryptik-$(V_LINUX)"
+	@$(SUDO) $(CHROOT_ENV) "$(TOOLS)"/image/install-test.sh \
+		--image "$(KRYPTIK_WORK)/images/kryptik-dev.img" \
+		--kernel "$(KRYPTIK_WORK)/sysroot/boot/kryptik-$(V_LINUX)"
 
 test-mkdisk-guards:
 	@"$(TOOLS)"/test-mkdisk-guards.sh
