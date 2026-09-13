@@ -75,7 +75,7 @@ payload_disk "$PA" "$PAY_A"; payload_disk "$PB" "$PAY_B"
 # Variants of B for the refusal cases.
 BAD="${VMDIR}/bad"; rm -rf "$BAD"; mkdir -p "$BAD"
 mk_variant() {   # mk_variant NAME  -> $BAD/NAME is a copy of payload B
-    rm -rf "$BAD/$1"; cp -a --sparse=always "$PAY_B" "$BAD/$1"
+    rm -rf "${BAD:?}/$1"; cp -a --sparse=always "$PAY_B" "$BAD/$1"
 }
 mk_variant wrongkey; ssh-keygen -q -t ed25519 -N "" -f "$BAD/otherkey" >/dev/null; rm -f "$BAD/wrongkey/manifest.sig"
 ssh-keygen -Y sign -f "$BAD/otherkey" -n kryptik-release "$BAD/wrongkey/manifest" >/dev/null 2>&1
