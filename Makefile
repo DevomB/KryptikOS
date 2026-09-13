@@ -50,6 +50,10 @@ KRYPTIK_STALE   ?= refuse
 KRYPTIK_BUILD_COMMIT ?= $(shell git -C "$(ROOT)" describe --always --dirty --abbrev=40 2>/dev/null || echo unknown)
 # Path to a kryptikd binary built outside the chroot; see `make help`.
 KRYPTIK_KRYPTIKD_BIN ?=
+# Same for the per-zone Wayland proxy (compositor/, package wlproxy, binary
+# kryptik-wlproxy): Rust, static, built outside, installed by stage 04's
+# desktop step.
+KRYPTIK_WLPROXY_BIN ?=
 
 export KRYPTIK_ROOT := $(ROOT)
 # Pinned versions the image targets name. Read through the shell so the
@@ -87,6 +91,7 @@ CHROOT_ENV := KRYPTIK_ROOT="$(ROOT)" \
               KRYPTIK_STALE="$(KRYPTIK_STALE)" \
               KRYPTIK_BUILD_COMMIT="$(KRYPTIK_BUILD_COMMIT)" \
               KRYPTIK_KRYPTIKD_BIN="$(KRYPTIK_KRYPTIKD_BIN)" \
+              KRYPTIK_WLPROXY_BIN="$(KRYPTIK_WLPROXY_BIN)" \
               TERM="$(TERM)" \
               NO_COLOR="$(NO_COLOR)"
 
@@ -193,6 +198,7 @@ help:
 	@echo "  KRYPTIK_STALE    = $(KRYPTIK_STALE)"
 	@echo "  KRYPTIK_BUILD_COMMIT = $(KRYPTIK_BUILD_COMMIT)"
 	@echo "  KRYPTIK_KRYPTIKD_BIN = $(if $(KRYPTIK_KRYPTIKD_BIN),$(KRYPTIK_KRYPTIKD_BIN),(not set - the image will have no kryptikd))"
+	@echo "  KRYPTIK_WLPROXY_BIN  = $(if $(KRYPTIK_WLPROXY_BIN),$(KRYPTIK_WLPROXY_BIN),(not set - zones will have no display))"
 	@echo "  SUDO             = $(if $(SUDO),$(SUDO),(none))"
 	@echo
 	@echo "Status: pre-alpha. See docs/roadmap.md for what actually works."

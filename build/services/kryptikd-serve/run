@@ -1,0 +1,5 @@
+#!/bin/sh
+# The launch daemon: the one door between the desktop session (an ordinary
+# user in group kryptik) and zone creation (root). Foreground, supervised;
+# a crash restarts it and a session that cannot reach it says so.
+exec /usr/bin/kryptikd serve --zones /etc/kryptik/zones --rootfs /var/lib/kryptik/zones

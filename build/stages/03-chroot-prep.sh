@@ -40,6 +40,7 @@ IN_SOURCES="/kryptik-sources"
 IN_WORK="/kryptik-work"
 # A single file, not a directory: the kryptikd binary built outside.
 IN_KRYPTIKD="/kryptik-kryptikd"
+IN_WLPROXY="/kryptik-wlproxy"
 
 # The work tree is bind-mounted SUBDIRECTORY BY SUBDIRECTORY, deliberately.
 #
@@ -209,6 +210,7 @@ mount_list() {
         "$IN_ROOT" \
         "$IN_SOURCES" \
         "$IN_KRYPTIKD" \
+        "$IN_WLPROXY" \
         "/dev/pts" \
         "/dev/shm" \
         "/dev" \
@@ -291,6 +293,15 @@ mount_virtual() {
             die "KRYPTIK_KRYPTIKD_BIN=${KRYPTIK_KRYPTIKD_BIN} does not exist"
         fi
     fi
+    # The per-zone Wayland proxy, the same way and for the same reason.
+    if [[ -n "${KRYPTIK_WLPROXY_BIN:-}" ]]; then
+        if [[ -f "$KRYPTIK_WLPROXY_BIN" ]]; then
+            : > "${LFS}${IN_WLPROXY}"
+            bind_hardened "$KRYPTIK_WLPROXY_BIN" "${LFS}${IN_WLPROXY}" "nodev,nosuid,ro"
+        else
+            die "KRYPTIK_WLPROXY_BIN=${KRYPTIK_WLPROXY_BIN} does not exist"
+        fi
+    fi
 
     # nosuid,nodev on shm: nothing in a build chroot needs setuid binaries or
     # device nodes in shared memory, and both are escape primitives.
@@ -340,6 +351,7 @@ chroot_env() {
         "KRYPTIK_STALE=${KRYPTIK_STALE:-refuse}" \
         "KRYPTIK_BUILD_COMMIT=${KRYPTIK_BUILD_COMMIT:-unknown}" \
         "KRYPTIK_KRYPTIKD_BIN=${KRYPTIK_KRYPTIKD_BIN:+$IN_KRYPTIKD}" \
+        "KRYPTIK_WLPROXY_BIN=${KRYPTIK_WLPROXY_BIN:+$IN_WLPROXY}" \
         "KRYPTIK_ALLOW_UNCHROOTED=0" \
         "NO_COLOR=${NO_COLOR:-}"
 }
