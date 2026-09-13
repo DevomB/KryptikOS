@@ -39,6 +39,7 @@ use crate::netzone;
 use crate::policy;
 use crate::rootfs;
 use crate::seccomp;
+use crate::volume;
 use crate::zone::{StorageMode, Zone};
 
 #[derive(Debug)]
@@ -76,6 +77,10 @@ pub struct RunOptions {
     /// Development stand-in for the zone 0 prompt: approve every transfer
     /// this zone offers. Prints a warning at launch.
     pub auto_approve_transfers: bool,
+    /// Where an encrypted zone's passphrase comes from: a 0600 file
+    /// (development). The trusted prompt is desktop work; nothing reads a
+    /// passphrase from argv or the environment.
+    pub passphrase_file: Option<std::path::PathBuf>,
 }
 
 /// Seconds a zone gets to exit after a forwarded SIGINT/SIGTERM before its
@@ -454,11 +459,19 @@ pub fn run_in_zone(
     }
     let mut unsupported: Vec<String> = Vec::new();
     match zone.storage {
-        StorageMode::Encrypted => unsupported.push(
-            "storage.mode = \"encrypted\": per-zone encrypted volumes are NOT IMPLEMENTED; \
-             the zone would run on a PLAIN DIRECTORY while its configuration says otherwise"
+        // Encrypted is implemented for a ROOT launch (Design 04): the LUKS2
+        // volume is opened and mounted below, before the zone exists, and
+        // closed after it is gone. An unprivileged launch cannot run
+        // cryptsetup, so it stays refused: running such a zone on a plain
+        // directory while its file says "encrypted" is the failure this
+        // project exists to avoid.
+        StorageMode::Encrypted if unsafe { libc::geteuid() } != 0 => unsupported.push(
+            "storage.mode = \"encrypted\": a LUKS2 volume needs a root launch (cryptsetup, \
+             dm-crypt and loop devices); unprivileged, the zone would run on a PLAIN \
+             DIRECTORY while its configuration says otherwise"
                 .into(),
         ),
+        StorageMode::Encrypted => {}
         // Ephemeral is implemented (M2): the zone's home is a per-launch
         // tmpfs in its own mount namespace, and the persistent directory is
         // never bound anywhere. The one thing still worth saying out loud is
@@ -562,6 +575,31 @@ pub fn run_in_zone(
     entry
         .set_identity(id.uid, id.gid)
         .map_err(|e| SpawnError::Setup(e.to_string()))?;
+
+    // Encrypted storage: unlock the zone's LUKS2 container and mount its
+    // filesystem at the data directory BEFORE the directory checks, which
+    // then see the filesystem's own root - owned by the zone identity since
+    // `volume init`. Held in `opened_volume`; dropped on any error path
+    // below, which closes it, so a failed launch never leaves plaintext
+    // mounted, and closed explicitly after the zone has exited.
+    let mut opened_volume: Option<volume::Opened> = None;
+    if zone.storage == StorageMode::Encrypted && id.privileged {
+        let vol = zone.volume.clone().unwrap_or_else(|| volume::default_volume_path(&zone.name));
+        let pass = match &opts.passphrase_file {
+            Some(p) => volume::Passphrase::from_file(p).map_err(|e| SpawnError::Setup(e.to_string()))?,
+            None => {
+                return Err(SpawnError::Setup(format!(
+                    "zone {:?} is encrypted: a passphrase is needed (--passphrase-file FILE, a 0600 \
+                     root-owned file; the trusted prompt is desktop work)",
+                    zone.name
+                )))
+            }
+        };
+        std::fs::create_dir_all(rootfs).map_err(|e| SpawnError::Setup(format!("{rootfs}: {e}")))?;
+        let o = volume::open_and_mount(&zone.name, &vol, &pass, rootfs).map_err(|e| SpawnError::Setup(e.to_string()))?;
+        eprintln!("kryptikd: zone {:?}: volume {vol} unlocked and mounted at {rootfs} (nosuid,nodev)", zone.name);
+        opened_volume = Some(o);
+    }
 
     // The persistent directory. Created if missing; when kryptikd is root it
     // is handed to the zone's identity, but an existing directory is never
@@ -804,6 +842,15 @@ pub fn run_in_zone(
     let status = serve_until_exit(pid, broker_fd, &served)?;
     unsafe { libc::close(broker_fd) };
     let _ = std::fs::remove_file(&broker_path);
+    // The zone is gone (its pid namespace with it): unmount its data and
+    // close the mapping. dm-crypt frees the volume key in the kernel on
+    // close; that is what "keys wiped on stop" means, and all it means.
+    if let Some(o) = opened_volume.take() {
+        match o.close() {
+            Ok(()) => eprintln!("kryptikd: zone {:?}: volume closed; its key is gone from the kernel", zone.name),
+            Err(e) => eprintln!("kryptikd[zone {}]: {e}", zone.name),
+        }
+    }
 
     // Remove the cgroup here rather than leaving it to Drop. Drop still covers
     // every early return above, but it has nowhere to report to, and the one
@@ -1347,8 +1394,14 @@ pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String
 
     let storage = match zone.storage {
         StorageMode::Encrypted => format!(
-            "encrypted volume {} (NOT YET IMPLEMENTED - using a plain directory)",
-            zone.volume.as_deref().unwrap_or("?")
+            "encrypted: $HOME is the ext4 inside the LUKS2 container {},\n\
+             \x20          opened to {} on a root launch (passphrase from\n\
+             \x20          --passphrase-file), mounted nosuid,nodev at {}, unmounted\n\
+             \x20          and closed when the zone exits (the key leaves the kernel).\n\
+             \x20          Unprivileged launches are refused: they cannot open it.",
+            zone.volume.as_deref().unwrap_or("?"),
+            volume::mapper_path(&zone.name),
+            rootfs
         ),
         StorageMode::Persistent => format!(
             "persistent: $HOME is {}, a plain directory kept between launches.\n\
@@ -1574,10 +1627,16 @@ mod tests {
         // `explain` is deciding what to put in the zone, and "routed" without
         // qualification reads as "connected, filtered".
         let e = explain(&z("routed"), "/tmp/t", std::path::Path::new("/tmp"));
+        // Routed networking IS delivered now (Design 03a: a veth into the nic
+        // zone's bridge, forwarded, no NAT yet), so "honest" means the plan
+        // line says what it does and does not do rather than the old refusal.
         let honest = e.contains("NOT IMPLEMENTED")
             || e.contains("not implemented")
             || e.contains("no path out")
-            || e.contains("loopback");
+            || e.contains("loopback")
+            || e.contains("nic zone")
+            || e.contains("NAT")
+            || e.contains("uid_base");
         assert!(honest, "explain must not present routed networking as working: {e}");
         assert!(e.contains("swap"), "explain must name the swap caveat: {e}");
         assert!(

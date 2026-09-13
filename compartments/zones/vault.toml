@@ -12,7 +12,7 @@ mode = "none"
 
 [storage]
 mode      = "encrypted"
-volume    = "/dev/kryptik/vault"
+volume    = "/var/lib/kryptik/volumes/vault.luks"
 unlock    = "on-start"
 wipe_keys = "on-stop"
 

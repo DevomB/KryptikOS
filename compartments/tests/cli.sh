@@ -149,8 +149,8 @@ fi
 out="$(K run sealed -- /bin/sh -c 'echo CLI_STARTED' 2>&1)"; rc=$?
 if [[ "$out" == *CLI_STARTED* ]]; then
     fail "C1  a zone claiming ENCRYPTED storage ran on a plain directory"
-elif (( rc != 0 )) && [[ "$out" == *"NOT IMPLEMENTED"* ]]; then
-    pass "C1  a zone claiming encrypted storage is refused, saying encryption is not implemented"
+elif (( rc != 0 )) && [[ "$out" == *"encrypted"* && ( "$out" == *"NOT IMPLEMENTED"* || "$out" == *"root launch"* ) ]]; then
+    pass "C1  a zone claiming encrypted storage is refused unprivileged, saying why"
 else
     fail "C1  refused (exit $rc) without explaining that encryption is unimplemented"
     info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-240)"

@@ -511,6 +511,14 @@ mod tests {
         }
         let ro = fs::Permissions::from_mode(0o555);
         fs::set_permissions(&dir, ro).unwrap();
+        // Root writes through a 0555 directory; the refusal under test can
+        // only be observed unprivileged. Skipped, not passed, as root.
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("running as root: a read-only directory does not refuse root; skipped");
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+            let _ = fs::remove_dir_all(&dir);
+            return;
+        }
 
         let cg = Cgroup { path: dir.clone() };
         let err = cg.set_limits(Some("1M"), Some(10)).unwrap_err();

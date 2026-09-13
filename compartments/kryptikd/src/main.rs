@@ -22,6 +22,7 @@ mod registry;
 mod rootfs;
 mod seccomp;
 mod spawn;
+mod volume;
 mod zone;
 
 use std::path::{Path, PathBuf};
@@ -208,6 +209,7 @@ fn main() -> ExitCode {
             }
         },
         "gc" => cmd_gc(),
+        "volume" => cmd_volume(&zone_dir, &args),
         "clipboard" => cmd_clipboard(&args),
         "transfer" => {
             eprintln!(
@@ -440,7 +442,25 @@ fn cmd_gc() -> ExitCode {
         }
     }
     let swept = cgroup::sweep_now();
-    if reclaimed == 0 && swept == 0 {
+    // Volumes whose launcher died without closing them (Design 04, V5): a
+    // mapping with no running zone is plaintext nobody is using. Unmount
+    // and close it; the ext4 gets fsck -p at the next open.
+    let mut closed = 0usize;
+    let base = DEFAULT_ROOTFS_BASE.to_string();
+    for z in volume::mappings() {
+        if let Ok(registry::State::Running { .. }) = registry::state(&z) {
+            continue;
+        }
+        let mnt = volume::mountpoint_for(Path::new(&base), &z).display().to_string();
+        match volume::close_mapping(&z, &mnt) {
+            Ok(()) => {
+                println!("closed the volume of zone {z:?}, which had no running launcher");
+                closed += 1;
+            }
+            Err(e) => eprintln!("kryptikd: closing zone {z:?}'s volume: {e}"),
+        }
+    }
+    if reclaimed == 0 && swept == 0 && closed == 0 {
         println!("nothing to reclaim");
     } else if swept > 0 {
         println!("removed {swept} empty zone cgroup(s)");
@@ -830,7 +850,120 @@ fn run_options_from(args: &[String]) -> Result<spawn::RunOptions, String> {
         zone_gid: num("--zone-gid")?,
         zones_dir: std::path::PathBuf::new(),
         auto_approve_transfers: args.iter().any(|a| a == "--auto-approve-transfers"),
+        passphrase_file: args
+            .iter()
+            .position(|a| a == "--passphrase-file")
+            .and_then(|i| args.get(i + 1))
+            .map(PathBuf::from),
     })
+}
+
+/// `kryptikd volume` - the encrypted zone's container, outside any launch
+/// (Design 04). Root only: cryptsetup, dm-crypt and loop devices are.
+///
+///   volume init NAME [--size 512M] --passphrase-file F [--zone-uid N --zone-gid N]
+///   volume passwd NAME --passphrase-file OLD --new-passphrase-file NEW
+///   volume backup-header NAME FILE
+///   volume restore-header NAME FILE
+///   volume status NAME
+fn cmd_volume(dir: &Path, args: &[String]) -> ExitCode {
+    let sub = args.get(1).map(String::as_str).unwrap_or("");
+    let Some(name) = args.get(2).filter(|a| !a.starts_with("--")) else {
+        eprintln!("volume: usage: kryptikd volume init|passwd|backup-header|restore-header|status NAME ...");
+        return ExitCode::from(2);
+    };
+    let zone = match load_zone(dir, name) {
+        Ok(z) => z,
+        Err(c) => return c,
+    };
+    if zone.storage != zone::StorageMode::Encrypted {
+        eprintln!("volume: zone {name:?} has storage.mode {:?}, not \"encrypted\"", zone.storage);
+        return ExitCode::from(2);
+    }
+    let vol = zone.volume.clone().unwrap_or_else(|| volume::default_volume_path(name));
+    let opt = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
+    let pass_from = |flag: &str| -> Result<volume::Passphrase, ExitCode> {
+        let Some(p) = opt(flag) else {
+            eprintln!("volume: {flag} FILE is required (a 0600 file holding the passphrase; it never travels in argv)");
+            return Err(ExitCode::from(2));
+        };
+        volume::Passphrase::from_file(Path::new(&p)).map_err(|e| {
+            eprintln!("volume: {e}");
+            ExitCode::FAILURE
+        })
+    };
+    let root = unsafe { libc::geteuid() } == 0;
+    let done = |what: &str, r: Result<(), volume::VolumeError>| -> ExitCode {
+        match r {
+            Ok(()) => {
+                println!("volume {name:?}: {what}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("volume: {e}");
+                ExitCode::FAILURE
+            }
+        }
+    };
+    match sub {
+        "status" => {
+            println!("zone      {name}");
+            println!("container {vol} ({})", if Path::new(&vol).exists() { "present" } else { "ABSENT" });
+            println!("signature {}", if Path::new(&vol).exists() { volume::signature_of(&vol) } else { "-".into() });
+            println!("mapping   {} ({})", volume::mapper_path(name), if volume::mapping_exists(name) { "OPEN" } else { "closed" });
+            ExitCode::SUCCESS
+        }
+        "init" => {
+            if !root {
+                eprintln!("volume init needs root (cryptsetup, dm-crypt, loop)");
+                return ExitCode::from(2);
+            }
+            let size = match opt("--size").as_deref().map(volume::parse_size) {
+                None => 512 * 1024 * 1024,
+                Some(Some(n)) => n,
+                Some(None) => {
+                    eprintln!("volume: --size wants e.g. 512M or 2G");
+                    return ExitCode::from(2);
+                }
+            };
+            let pass = match pass_from("--passphrase-file") {
+                Ok(p) => p,
+                Err(c) => return c,
+            };
+            let uid = opt("--zone-uid").and_then(|v| v.parse::<u32>().ok());
+            let gid = opt("--zone-gid").and_then(|v| v.parse::<u32>().ok());
+            let (uid, gid) = match (uid, gid, zone.uid_base) {
+                (Some(u), Some(g), _) => (u, g),
+                (None, None, Some(b)) => (b, b),
+                _ => {
+                    eprintln!("volume init: give --zone-uid N --zone-gid N, or declare [identity] uid_base in the zone file");
+                    return ExitCode::from(2);
+                }
+            };
+            done(&format!("created {vol} ({} bytes, LUKS2/argon2id, ext4 owned by {uid}:{gid})", size), volume::init(name, &vol, size, &pass, uid, gid))
+        }
+        "passwd" => {
+            if !root {
+                eprintln!("volume passwd needs root");
+                return ExitCode::from(2);
+            }
+            let old = match pass_from("--passphrase-file") { Ok(p) => p, Err(c) => return c };
+            let new = match pass_from("--new-passphrase-file") { Ok(p) => p, Err(c) => return c };
+            done("passphrase changed", volume::change_key(&vol, &old, &new))
+        }
+        "backup-header" => {
+            let Some(file) = args.get(3) else { eprintln!("volume backup-header NAME FILE"); return ExitCode::from(2) };
+            done(&format!("LUKS header written to {file} (holds the wrapped key: passphrase-protected, but sensitive)"), volume::backup_header(&vol, file))
+        }
+        "restore-header" => {
+            let Some(file) = args.get(3) else { eprintln!("volume restore-header NAME FILE"); return ExitCode::from(2) };
+            done(&format!("LUKS header restored from {file}"), volume::restore_header(&vol, file))
+        }
+        other => {
+            eprintln!("volume: unknown subcommand {other:?}");
+            ExitCode::from(2)
+        }
+    }
 }
 
 fn cmd_run(dir: &Path, args: &[String]) -> ExitCode {
