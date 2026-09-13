@@ -174,6 +174,9 @@ console)
 smoke)
     LOG="${LOG:-${KRYPTIK_WORK}/logs/ovmf-serial.${RUN_ID}.log}"
     mkdir -p "$(dirname "$LOG")"
+    # The exact command, for the record: acceptance reads it back to prove
+    # that no -kernel, -initrd, -append or host filesystem reached the guest.
+    { printf '%q ' "$QEMU" "${ARGS[@]}"; echo; } > "${LOG}.cmd"
     ln -sfn "$LOG" "${KRYPTIK_WORK}/logs/ovmf-serial.latest.log"
     echo "serial log: ${LOG}"
     set +e; trap - ERR
@@ -188,6 +191,7 @@ serve)
     SER="${VMDIR}/${RUN_ID}.serial"; QMP="${VMDIR}/${RUN_ID}.qmp"; PID="${VMDIR}/${RUN_ID}.pid"
     LOG="${LOG:-${KRYPTIK_WORK}/logs/ovmf-serial.${RUN_ID}.log}"
     mkdir -p "$(dirname "$LOG")"
+    { printf '%q ' "$QEMU" "${ARGS[@]}"; echo; } > "${LOG}.cmd"
     setsid "$QEMU" "${ARGS[@]}" \
         -chardev "socket,id=ser0,path=${SER},server=on,wait=off,logfile=${LOG}" -serial chardev:ser0 \
         -qmp "unix:${QMP},server=on,wait=off" -monitor none -pidfile "$PID" \

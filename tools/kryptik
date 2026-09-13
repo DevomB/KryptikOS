@@ -20,26 +20,28 @@
 # So this fills in the paths from a config file. What it does NOT do is give
 # anyone a way past kryptikd's refusals.
 #
-# THE REFUSAL THAT MATTERS, AND WHY THERE IS NO FLAG FOR IT
+# TWO WAYS IN, AND WHICH ONE YOU GET
 #
-# A zone with `storage.mode = "encrypted"` is refused outright: this build has
-# no per-zone encrypted volumes, so the zone would run on a plain directory
-# while its configuration says otherwise. kryptikd has a testing override for
-# that; this command deliberately does not expose it. "Encrypted, except not
-# really, because you passed a flag once" is precisely the claim that must
-# never reach a user, and a flag that turns a refusal into a warning is how it
-# would. If you need that override you are testing, and you can type
-# KRYPTIK_EXPERIMENTAL=1 yourself.
+# On an installed system a person is not root, and zones are started by the
+# launch service (`kryptikd serve`, root, one socket per session) through
+# kryptik-launch, which also asks for an encrypted zone's passphrase on the
+# terminal and never puts it on a command line. So when this runs as an
+# ordinary user and the session's launch service answers, `shell`, `run` and
+# `stop` go through kryptik-launch. As root (a developer host, a test as
+# root) they drive kryptikd directly, the way they always did.
 #
-# A zone with `storage.mode = "ephemeral"` DOES start, and kryptikd prints the
+# A zone with `storage.mode = "ephemeral"` starts, and kryptikd prints the
 # caveat every single time - the tmpfs can reach swap, so this is not secure
 # erasure. That warning is passed through untouched rather than summarised.
 #
 # WHAT THIS DELIBERATELY DOES NOT DO
 #
-# It has no subcommand for anything kryptikd cannot do. There is no `transfer`,
-# no `clipboard`, no `mount`, because those are unimplemented, and a command
-# that exists and then fails teaches people to distrust the ones that work.
+# It has no `transfer`, `clipboard` or `mount`. Files cross zones only
+# through the broker, from inside the sending zone, and only after the person
+# answers the chrome's question; the clipboard moves only by the zone 0
+# gesture in the chrome's menu. A shell command that did either from zone 0
+# would be a way around the person, and that is the one thing this must not
+# be.
 set -uo pipefail
 
 PROG="${0##*/}"
@@ -84,10 +86,26 @@ CONFIGURATION: $CONF
     uid_base  = 100000
 
 Every zone runs as an unprivileged host user, in its own user, pid, mount, ipc,
-uts and cgroup namespaces, under a seccomp filter and a Landlock policy. What
-is NOT yet delivered: routed networking, encrypted volumes, cross-zone
-transfer, and the clipboard. $PROG has no commands for those.
+uts and cgroup namespaces, under a seccomp filter and a Landlock policy; a
+routed zone reaches the network only through the net zone; an encrypted zone
+lives on its own LUKS2 volume and asks for its passphrase when it starts.
+
+As an ordinary user in a desktop session, shell/run/stop go through the
+session's launch service (kryptik-launch). Files cross zones only through the
+broker, from inside a zone, after you answer the chrome's question; the
+clipboard moves only by the chrome's zone 0 gesture (Alt+p, then m<from><to>).
+$PROG has no commands for either, on purpose.
 USAGE
+}
+
+# The session's launch service, when this is not root and it answers. The
+# runtime request is the cheapest one it has, and it fails fast (no socket,
+# not a session member, a dead daemon) rather than hanging.
+LAUNCH="${KRYPTIK_LAUNCH:-kryptik-launch}"
+via_launch() {
+    [[ "$(id -u)" -ne 0 ]] || return 1
+    command -v "$LAUNCH" >/dev/null 2>&1 || return 1
+    "$LAUNCH" --runtime-dir >/dev/null 2>&1
 }
 
 # --- configuration ----------------------------------------------------------
@@ -259,8 +277,13 @@ cmd_doctor() {
 cmd_gc() { have_kryptikd; "$KRYPTIKD" gc; }
 
 cmd_stop() {
-    have_kryptikd
     local name="$1"; shift
+    if via_launch; then
+        [[ -f "$ZONES_DIR/$name.toml" ]] || die "no zone named $name in $ZONES_DIR"
+        "$LAUNCH" --stop "$name"
+        return
+    fi
+    have_kryptikd
     require_zone "$name"
     local state; state="$(running_state "$name")"
     if [[ "$state" == "stopped" ]]; then
@@ -277,6 +300,15 @@ cmd_stop() {
 # drifting into two different sets of arguments.
 start_zone() {
     local name="$1"; shift
+    if via_launch; then
+        [[ -f "$ZONES_DIR/$name.toml" ]] || die "no zone named $name in $ZONES_DIR"
+        # --ask: an encrypted zone's passphrase is read on this terminal and
+        # handed over on a descriptor; it never appears in a command line.
+        "$LAUNCH" --ask --no-display "$name" -- "$@"
+        local rc=$?
+        (( rc == 0 )) || printf '\n%s: %s did not start through the launch service (exit %d).\n' "$PROG" "$name" "$rc" >&2
+        return "$rc"
+    fi
     have_kryptikd
     require_zone "$name"
 
@@ -344,9 +376,11 @@ case "$cmd" in
     # Named explicitly rather than falling into "unknown command", because
     # these are the things people will reasonably expect to exist.
     transfer|copy|clipboard|paste|mount)
-        die "\`$cmd\` does not exist yet.
-    Cross-zone transfer and the clipboard need the broker, which is not built.
-    Nothing in $PROG will move a file between zones today, and a command that
-    pretended to would be worse than its absence." 2 ;;
+        die "\`$cmd\` is not a $PROG command, on purpose.
+    A file crosses zones only through the broker socket INSIDE the sending zone
+    (the zone verb \`transfer TO NAME\` with the file's descriptor; see
+    docs/design/05a), and only after you answer the question the chrome shows.
+    The clipboard moves only by the chrome's zone 0 gesture: Alt+p, then
+    m<from><to>. Nothing in zone 0 can do either for you." 2 ;;
     *) usage >&2; die "unknown command: $cmd" 2 ;;
 esac
