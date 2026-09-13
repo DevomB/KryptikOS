@@ -1,0 +1,24 @@
+# Kryptik compositor layer — Phase 6.
+#
+# Deliberately a SEPARATE cargo workspace from compartments/kryptikd. kryptikd
+# runs privileged in zone 0 and mediates every boundary in the system; the
+# proxy runs once per zone with no privilege at all. Sharing a lockfile would
+# mean a dependency added for the desktop lands in the most privileged process
+# on the machine, which is exactly what ADR-010 exists to prevent.
+[workspace]
+resolver = "2"
+members = ["zoneid", "wlproxy"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-or-later"
+
+[profile.release]
+opt-level = 2
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+overflow-checks = true   # security code; keep these on in release
+debug-assertions = false
