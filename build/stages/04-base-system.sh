@@ -2112,7 +2112,15 @@ PACKAGES=(
     "console"     "s_console"
     "init"        "s_init"
     # After init: the database lives beside the stage 2 scripts that look
-    # for it. Before kryptikd: boot-check verifies both together.
+    # for it. Before kryptikd: boot-check verifies both together. Before
+    # the updater and the EFI tool: their "does it run" checks source
+    # /usr/libexec/kryptik/devices.sh, which this step installs.
+    # These globs were separated by a literal backslash-n, which inside a
+    # command substitution on one physical line is the FILENAME n, not a line
+    # break. cat failed on it, and under pipefail the substitution would
+    # collapse to nosvc - silently removing the input fingerprint this step
+    # was added to have.
+    "services" "s_services $(cat "${KRYPTIK_ROOT}"/build/services/*/* "${KRYPTIK_ROOT}"/build/service-scripts/*.sh "${KRYPTIK_ROOT}"/build/config/sysctl.d/*.conf 2>/dev/null | sha256_of_stdin || echo nosvc)"
     # The service tree, the boot scripts and the sysctl fragments are inputs
     # to this step, and `declare -f s_services` cannot see a file the recipe
     # reads by path. Without their digest, editing sysinit.sh left the stamp
@@ -2127,12 +2135,6 @@ PACKAGES=(
     "updater"     "s_updater $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-update" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-recover" 2>/dev/null || echo none)"
     "netzone"     "s_netzone $(sha256_of "${KRYPTIK_ROOT}/tools/net/netzone-init.sh" 2>/dev/null || echo none)"
     "installer"   "s_installer $(sha256_of "${KRYPTIK_ROOT}/tools/install/kryptik-install.sh" 2>/dev/null || echo none)"
-    # These globs were separated by a literal backslash-n, which inside a
-    # command substitution on one physical line is the FILENAME n, not a line
-    # break. cat failed on it, and under pipefail the substitution would
-    # collapse to nosvc - silently removing the input fingerprint this step
-    # was added to have.
-    "services" "s_services $(cat "${KRYPTIK_ROOT}"/build/services/*/* "${KRYPTIK_ROOT}"/build/service-scripts/*.sh "${KRYPTIK_ROOT}"/build/config/sysctl.d/*.conf 2>/dev/null | sha256_of_stdin || echo nosvc)"
     # The path and the binary's content hash are arguments so that both are
     # part of this step's fingerprint; see s_kryptikd.
     # The zone definitions are an input too, not just the binary. kryptikd

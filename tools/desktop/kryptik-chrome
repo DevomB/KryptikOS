@@ -19,6 +19,8 @@
 #                                  window, then launch (kryptik-launch hands
 #                                  over here when it has no terminal)
 #   kryptik-chrome --focus         print the focused zone, from the record
+#   kryptik-chrome --confirm ID    the transfer question ID, asked in a trusted
+#                                  window; the answer goes back to the broker
 #
 # The launcher and the prompt are terminal windows (havoc) running this
 # script: the passphrase is read by kryptik-launch on that terminal, travels
@@ -29,6 +31,7 @@ LAUNCH=/usr/bin/kryptik-launch
 TERMINAL=/usr/bin/havoc
 RT="${XDG_RUNTIME_DIR:-/tmp}"
 FOCUS="$RT/kryptik/focus"
+CONSENT=/run/kryptik-consent
 
 die() { echo "kryptik-chrome: $*" >&2; exit 1; }
 
@@ -50,6 +53,25 @@ run_status() {
     appid=""; title=""; fs=0
     # The launcher window, so a fresh session shows something usable.
     "$TERMINAL" -e /usr/bin/kryptik-chrome --menu &
+    # The consent watcher: every question the broker leaves gets one
+    # trusted window, and the answer is that window's alone. A question
+    # nobody answers is withdrawn by the broker after its deadline.
+    (
+        while :; do
+            for ask in "$CONSENT"/*.ask; do
+                [ -e "$ask" ] || continue
+                id="${ask##*/}"; id="${id%.ask}"
+                [ -e "$CONSENT/$id.dialog" ] && continue
+                : > "$CONSENT/$id.dialog" 2>/dev/null || continue
+                "$TERMINAL" -e /usr/bin/kryptik-chrome --confirm "$id" &
+            done
+            for d in "$CONSENT"/*.dialog; do
+                [ -e "$d" ] || continue
+                [ -e "${d%.dialog}.ask" ] || rm -f "$d"
+            done
+            sleep 1
+        done
+    ) &
     while IFS= read -r line; do
         out="${line%% *}"; rest="${line#* }"; key="${rest%% *}"; val="${rest#* }"
         [ "$key" = "$rest" ] && val=""
@@ -109,7 +131,8 @@ run_menu() {
         menu_zones
         echo
         echo "Apps:  t terminal   e editor (nano)   b browser (lynx, needs routed network)"
-        echo "Also:  s<N> stop zone N   f focused zone   r refresh   q close this window"
+        echo "Also:  s<N> stop zone N   m<N><M> move zone N's clipboard to zone M (one payload, once)"
+        echo "       f focused zone   r refresh   q close this window"
         echo
         printf 'choice (e.g. 1t): '
         if ! read -r choice; then break; fi
@@ -117,6 +140,12 @@ run_menu() {
             q) break ;;
             r|"") continue ;;
             f) cat "$FOCUS" 2>/dev/null || echo "no focus record yet"; sleep 2; continue ;;
+            m[1-9][1-9]) a="${choice#m}"; b="${a#?}"; a="${a%?}"
+                      eval "za=\"\${Z$a:-}\""; eval "zb=\"\${Z$b:-}\""
+                      [ -n "$za" ] && [ -n "$zb" ] || { echo "no such zones"; sleep 1; continue; }
+                      echo "moving the clipboard of $za to $zb (this is the only way a payload crosses zones)"
+                      "$LAUNCH" --clipboard-move "$za" "$zb" || sleep 2
+                      sleep 1; continue ;;
             s[1-9]*) idx="${choice#s}"; eval "z=\"\${Z$idx:-}\""
                       [ -n "$z" ] || { echo "no zone $idx"; sleep 1; continue; }
                       "$LAUNCH" --stop "$z"; sleep 1; continue ;;
@@ -151,8 +180,34 @@ run_prompt() { # ZONE [--no-display] -- CMD...
     exec "$TERMINAL" -e /usr/bin/kryptik-launch --ask $nodisp "$zone" -- "$@"
 }
 
+run_confirm() { # ID
+    id="$1"
+    ask="$CONSENT/$id.ask"
+    [ -r "$ask" ] || { echo "kryptik-chrome: no question $id (withdrawn?)"; sleep 2; exit 1; }
+    from="$(sed -n 's/^from=//p' "$ask")"; to="$(sed -n 's/^to=//p' "$ask")"
+    name="$(sed -n 's/^name=//p' "$ask")"; bytes="$(sed -n 's/^bytes=//p' "$ask")"
+    echo "================ KRYPTIK - transfer request (zone 0) ================"
+    echo "This window is drawn by the compositor with the unzoned border."
+    echo
+    printf 'Zone %s (%s) wants to send a file to zone %s (%s):\n' "$from" "$(zone_field "$from" label)" "$to" "$(zone_field "$to" label)"
+    printf '    %s   (%s bytes)\n' "$name" "$bytes"
+    echo
+    echo "It will land in the receiving zone's incoming/ directory. Nothing else"
+    echo "is shared. Cancelling leaves both zones as they are."
+    echo
+    printf 'Allow this transfer? [y/N] '
+    answer=no
+    if read -r reply; then
+        case "$reply" in y|Y|yes|YES) answer=yes ;; esac
+    fi
+    printf '%s\n' "$answer" > "$CONSENT/$id.answer.tmp" && mv -f "$CONSENT/$id.answer.tmp" "$CONSENT/$id.answer"
+    echo "-> $answer"
+    sleep 1
+}
+
 case "${1:-}" in
     "") run_status ;;
+    --confirm) [ -n "${2:-}" ] || die "--confirm needs an id"; run_confirm "$2" ;;
     --menu) run_menu ;;
     --prompt) shift; run_prompt "$@" ;;
     --focus) cat "$FOCUS" 2>/dev/null || { echo "zone=-"; exit 1; } ;;

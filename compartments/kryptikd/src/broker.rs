@@ -392,11 +392,6 @@ fn handle_transfer(s: &Served, dest: &str, name: &str, fds: &[RawFd]) -> Result<
     if dz.network == NetworkMode::Nic {
         return Err(format!("zone {dest:?} holds the NIC and receives nothing, ever"));
     }
-    if !s.auto_approve {
-        return Err("transfers need zone 0 approval; there is no prompt yet, and this launcher was not \
-                    started with --auto-approve-transfers"
-            .into());
-    }
     let src = fds[0];
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
     if unsafe { libc::fstat(src, &mut st) } < 0 {
@@ -424,6 +419,13 @@ fn handle_transfer(s: &Served, dest: &str, name: &str, fds: &[RawFd]) -> Result<
     }
     if st.st_size as u64 > s.max_bytes {
         return Err(format!("file is {} bytes; the transfer limit is {}", st.st_size, s.max_bytes));
+    }
+    // Everything a machine can decide has been decided; the last word is
+    // the user's, through the trusted chrome (consent.rs). Asked only now,
+    // after the descriptor checks, so a request that would be refused
+    // anyway never becomes a question.
+    if !s.auto_approve {
+        crate::consent::ask(sender, dest, name, st.st_size as u64)?;
     }
     let target = (s.resolve_dest)(dest)?;
     deliver(&target, name, src, s.max_bytes)
@@ -1328,8 +1330,9 @@ mod tests {
         }
         // Consent, and an unknown data mount, each refuse on their own.
         sv.auto_approve = false;
+        std::env::set_var("KRYPTIK_CONSENT_DIR", "/nonexistent/kryptik-consent");
         let (_, r) = ask_with(&sv, "transfer b f.txt\n", &[ro()], false);
-        assert!(String::from_utf8_lossy(&r).contains("--auto-approve-transfers"), "{}", String::from_utf8_lossy(&r));
+        assert!(String::from_utf8_lossy(&r).contains("no consent channel"), "{}", String::from_utf8_lossy(&r));
         sv.auto_approve = true;
         sv.home_dev = &dev_unknown;
         let (_, r) = ask_with(&sv, "transfer b f.txt\n", &[ro()], false);

@@ -10,6 +10,7 @@
  *   kryptik-launch --stop ZONE
  *   kryptik-launch --info ZONE          encrypted yes|no, running yes|no
  *   kryptik-launch --runtime-dir        print the session's XDG_RUNTIME_DIR, creating it
+ *   kryptik-launch --clipboard-move FROM TO   the zone 0 gesture: give TO a copy of FROM's clipboard
  *
  * With a display, the zone's Wayland proxy (kryptik-wlproxy) is started
  * first if it is not already running, listening at
@@ -263,15 +264,26 @@ static void usage(void)
 	fputs("usage: kryptik-launch [--ask | --passphrase-fd N] [--no-display] ZONE -- COMMAND [ARG...]\n"
 	      "       kryptik-launch --stop ZONE\n"
 	      "       kryptik-launch --info ZONE\n"
-	      "       kryptik-launch --runtime-dir\n", stderr);
+	      "       kryptik-launch --runtime-dir\n"
+	      "       kryptik-launch --clipboard-move FROM TO\n", stderr);
 	exit(2);
 }
 
 int main(int argc, char **argv)
 {
 	int ask = 0, no_display = 0, pass_fd = -1, sep = -1;
-	const char *zone = NULL, *mode = "run";
+	const char *zone = NULL, *zone2 = NULL, *mode = "run";
 	int i;
+	if (argc == 4 && strcmp(argv[1], "--clipboard-move") == 0) {
+		if (!ident_ok(argv[2]) || !ident_ok(argv[3]))
+			usage();
+		char req[160];
+		snprintf(req, sizeof req, "clipboard-move %s %s\n", argv[2], argv[3]);
+		char *r = talk(req, -1);
+		fputs(r, strncmp(r, "ok", 2) == 0 ? stdout : stderr);
+		return strncmp(r, "ok", 2) == 0 ? 0 : 1;
+	}
+	(void)zone2;
 	for (i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--") == 0) { sep = i; break; }
 		else if (strcmp(argv[i], "--ask") == 0) ask = 1;

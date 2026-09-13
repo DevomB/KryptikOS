@@ -16,6 +16,8 @@
 //!              end\n
 //!            with pass=fd, one descriptor rides with the first bytes
 //!            stop <zone>\n
+//!            clipboard-move <from> <to>\n   the zone 0 gesture: give <to> a copy
+//!                                          of <from>'s clipboard payload
 //!            status\n
 //!            info <zone>\n                 encrypted yes|no, running yes|no
 //!            runtime\n                     the session's runtime directory
@@ -874,6 +876,26 @@ fn handle(cfg: &ServeConfig, conn: UnixStream) -> Option<Pending> {
             Ok(d) => reply(&conn, &format!("ok {}\n", d.display())),
             Err(e) => reply(&conn, &format!("error: {e}\n")),
         },
+        "clipboard-move" => {
+            let mut w = first.split_whitespace().skip(1);
+            let (from, to) = (w.next().unwrap_or(""), w.next().unwrap_or(""));
+            if !ident_ok(from) || !ident_ok(to) || from == to {
+                reply(&conn, "error: clipboard-move needs two different zone names\n");
+                return None;
+            }
+            // The gesture is a trusted-UI act; the daemon performs it as
+            // root through its own clipboard command, which requires both
+            // zones to be running and copies one payload, once.
+            let out = std::process::Command::new("/proc/self/exe").args(["clipboard", "move", from, to]).output();
+            match out {
+                Ok(o) if o.status.success() => {
+                    eprintln!("kryptikd serve: uid {uid} moved the clipboard {from:?} -> {to:?}");
+                    reply(&conn, &format!("ok {}", String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("moved").to_string() + "\n"));
+                }
+                Ok(o) => reply(&conn, &format!("error: {}\n", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("clipboard move failed"))),
+                Err(e) => reply(&conn, &format!("error: {e}\n")),
+            }
+        }
         "stop" => {
             let zone = first.split_whitespace().nth(1).unwrap_or("");
             if !ident_ok(zone) {

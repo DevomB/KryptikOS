@@ -13,6 +13,7 @@
 mod broker;
 mod caps;
 mod cgroup;
+mod consent;
 mod isolate;
 mod landlock;
 mod netlink;
