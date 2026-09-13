@@ -1643,18 +1643,52 @@ s_wlroots() {
 # dwl: the compositor engine's smallest complete user. config.h is Kryptik's
 # (build/desktop/dwl-config.h): the keybindings are the trusted launcher, and
 # border colours are the compositor-controlled identity channel.
+# Three Kryptik inputs go into dwl, and all three are fingerprints of this
+# step (the dispatch passes their digests as arguments, like s_kryptikd):
+#   build/desktop/dwl-config.h        the configuration; includes the next
+#   build/desktop/zone-colours.h      the zone -> border colour table
+#   tools/desktop/dwl-zone-borders.py the change to dwl.c that draws them
+# config.h uses `ZoneColor`, which only the patch introduces, so copying the
+# config without the header and the patch does not build - the first
+# version did exactly that (docs/OVERNIGHT_RESUME.md).
 s_dwl() {
+    local cfg_sha="${1:-none}" colours_sha="${2:-none}" patch_sha="${3:-none}"
+    local desk="${KRYPTIK_ROOT}/build/desktop"
+    local cfg="${desk}/dwl-config.h" colours="${desk}/zone-colours.h"
+    local patch="${KRYPTIK_ROOT}/tools/desktop/dwl-zone-borders.py"
+    local f
+    for f in "$cfg" "$colours" "$patch"; do
+        [[ -f "$f" ]] || { echo "desktop input missing: ${f}"; return 1; }
+    done
+    # The digests were taken when the build order was built. A mismatch
+    # means the inputs changed under the build and the stamp about to be
+    # written would describe something else.
+    local got
+    for f in "$cfg:$cfg_sha" "$colours:$colours_sha" "$patch:$patch_sha"; do
+        got="$(sha256_of "${f%%:*}")"
+        if [[ "${f##*:}" != "none" && "$got" != "${f##*:}" ]]; then
+            echo "${f%%:*} changed during the build (fingerprinted ${f##*:}, now ${got})"
+            return 1
+        fi
+    done
+    echo "inputs: dwl-config.h ${cfg_sha}"
+    echo "        zone-colours.h ${colours_sha}"
+    echo "        dwl-zone-borders.py ${patch_sha}"
+
     local src; src="$(unpack "dwl-v${V_DWL}.tar.gz" "dwl-v${V_DWL}")"
     cd "$src"
-    local cfg="${KRYPTIK_ROOT}/build/desktop/dwl-config.h"
-    if [[ -f "$cfg" ]]; then
-        cp "$cfg" config.h
-        echo "using Kryptik's dwl config.h ($(sha256_of "$cfg"))"
-    else
-        echo "no Kryptik config.h; building dwl with its defaults"
-    fi
+    # The patch is exact-string edits and refuses if the pinned dwl is not
+    # the one it was written for; that refusal is this step failing.
+    python3 "$patch" .
+    grep -q 'zonecolors(Client \*c)' dwl.c || { echo "FAIL: the zone border change is not in dwl.c"; return 1; }
+    cp "$colours" zone-colours.h
+    cp "$cfg" config.h
     make PREFIX=/usr XWAYLAND= XLIBS=
     make PREFIX=/usr install
+    # The installed compositor must carry the change, not just the source
+    # tree: the app_id prefix the chooser matches on is a literal in it.
+    grep -aq 'kryptik\.' /usr/bin/dwl || { echo "FAIL: /usr/bin/dwl does not contain the zone chooser"; return 1; }
+    echo "installed dwl with per-zone borders"
     dwl -v 2>&1 | head -1 || true
 }
 
@@ -1863,7 +1897,9 @@ PACKAGES=(
     "hwdata"      "s_hwdata"
     "libdisplay-info" "meson_build libdisplay-info-${V_LIBDISPLAY_INFO}.tar.xz libdisplay-info-${V_LIBDISPLAY_INFO}"
     "wlroots"     "s_wlroots"
-    "dwl"         "s_dwl"
+    # dwl takes its three Kryptik inputs as digests, so editing the config,
+    # the colour table or the patch rebuilds it (see s_dwl).
+    "dwl"         "s_dwl $(sha256_of "${KRYPTIK_ROOT}/build/desktop/dwl-config.h" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/build/desktop/zone-colours.h" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/dwl-zone-borders.py" 2>/dev/null || echo none)"
     "havoc"       "s_havoc"
     "lynx"        "s_lynx"
     "nano"        "native_build nano-${V_NANO}.tar.xz nano-${V_NANO} --sysconfdir=/etc --enable-utf8"
