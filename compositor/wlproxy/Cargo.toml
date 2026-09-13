@@ -1,0 +1,19 @@
+[package]
+name = "wlproxy"
+description = "kryptik-wlproxy: the per-zone Wayland filtering proxy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# ADR-010 applies here for the same reason it applies to kryptikd: this
+# process sits between an untrusted zone and the compositor in zone 0, and
+# parses attacker-controlled bytes for a living. libc gives the raw socket
+# calls; the Wayland wire format is hand-rolled deliberately, because a
+# general-purpose Wayland library is built to be permissive and this needs to
+# be the opposite.
+[dependencies]
+libc = "0.2"
+
+[[bin]]
+name = "kryptik-wlproxy"
+path = "src/main.rs"
