@@ -525,6 +525,11 @@ test-manifest:
 test-services:
 	@"$(TOOLS)"/test-services.sh
 
+# boot-success.sh's decision table (commit, refuse, fall back), driven on
+# the host with stand-ins for the services, the ESP and the firmware.
+test-boot-success:
+	@"$(TOOLS)"/test-boot-success.sh
+
 # The zone identity contract: the zone files, the compositor's colour table
 # (generated from them) and the distinctness invariant, checked together.
 identity-test:

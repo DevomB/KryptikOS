@@ -14,6 +14,12 @@ set -u
 say() { echo "kryptik-firstboot: $*"; }
 media="$(sed -n 's/^media=//p' /run/kryptik/boot-identity 2>/dev/null)"
 [ -n "$media" ] && { say "install medium; no setup"; exit 0; }
+# A degraded state (sysinit.sh) is a tmpfs: an account created now would be
+# gone at the next boot, and asking for a password for it would be a lie.
+if [ -r /run/kryptik/state-degraded ]; then
+    say "state is DEGRADED ($(cat /run/kryptik/state-degraded)); not creating accounts that would not persist"
+    exit 0
+fi
 
 PRESEED=/var/lib/kryptik/firstboot.preseed
 has_user() { awk -F: '$3>=1000 && $3<65534 {found=1} END {exit !found}' /etc/passwd; }

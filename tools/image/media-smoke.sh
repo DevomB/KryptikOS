@@ -47,9 +47,11 @@ TESTCTL="${VMDIR}/testctl-smoke.img"
 
 log "media smoke: ${KIND} ${MEDIUM##*/} (variables: ${VARS})"
 [[ "$REFUSED" -eq 1 ]] && [[ "$TIMEOUT" -gt 120 ]] && TIMEOUT=120
-"${SELF}/run-ovmf.sh" "--${KIND}" "$MEDIUM" --testctl "$TESTCTL" --vars "$VARS" --mode smoke --timeout "$TIMEOUT" --name "smoke-${KIND}"
+# This run's own log, named here and passed down: never the shared "latest"
+# symlink, which could be another run's.
+SERIAL="${KRYPTIK_WORK}/logs/ovmf-serial.smoke-${KIND}-${VARS}$([[ "$REFUSED" -eq 1 ]] && echo -refused).$(date +%Y%m%dT%H%M%S).$$.log"
+"${SELF}/run-ovmf.sh" "--${KIND}" "$MEDIUM" --testctl "$TESTCTL" --vars "$VARS" --mode smoke --timeout "$TIMEOUT" --name "smoke-${KIND}" --log "$SERIAL"
 qrc=$?
-SERIAL="${KRYPTIK_WORK}/logs/ovmf-serial.latest.log"
 [[ -f "$SERIAL" ]] || die "no serial log at ${SERIAL}"
 TXT="$(mktemp)"; trap 'rm -f "$TXT"' EXIT
 tr -d '\r' < "$SERIAL" > "$TXT"
@@ -57,13 +59,33 @@ echo "serial log: ${SERIAL} ($(grep -c '' < "$TXT") lines, qemu exit ${qrc})"
 echo
 
 if [[ "$REFUSED" -eq 1 ]]; then
-    echo "-- the firmware must refuse a kernel its keys did not sign"
+    # The negative control for the enforced chain. Three things must all be
+    # true, and each is checked on its own: no kernel ran; no userspace ran;
+    # and the firmware said, in its own words, that it REFUSED the image. A
+    # transcript that is merely empty or shows a firmware that never found
+    # the medium, hung, or crashed is NOT a refusal - the previous version
+    # of this check accepted any non-empty log ("|." at the end of its
+    # pattern), so a broken image passed as a refused one.
+    #
+    # OVMF's BDS reports a Secure Boot rejection as "Access Denied" (the
+    # EFI_ACCESS_DENIED status of LoadImage) or, from the DXE core, as
+    # "Security Violation". The image must have been TRIED: the firmware
+    # names the boot option it failed to load.
+    echo "-- the firmware must refuse a kernel its keys did not sign (variables: ${VARS})"
+    [[ "$VARS" == "ms" || "$VARS" == "enrolled" ]] || red "--expect-refused needs a store with Secure Boot on (ms or enrolled); '${VARS}' proves nothing"
     deny "no kernel banner appeared"                 'Linux version'
     deny "no Kryptik userspace ran"                  'KRYPTIK_SMOKE: BEGIN'
-    want "the firmware said why (or timed out silently)" 'Access Denied|Security Violation|failed to load|BdsDxe|Boot Failed|.'
+    want "the firmware tried the medium's boot file"  'BdsDxe: failed to load|BdsDxe: loading Boot'
+    want "and refused it for its signature"          'Access Denied|Security Violation'
+    deny "no firmware assertion or crash"            'ASSERT|Exception Type|!!!! X64'
+    [[ "$qrc" -ne 0 ]] && green "the guest never powered itself off (nothing ran that could)" || red "qemu exited 0: something in the guest powered it off, which means something ran"
     echo
-    if [[ "$FAIL" -gt 0 ]]; then echo "${FAIL} check(s) failed, ${PASS} passed. Transcript: ${SERIAL}"; exit 1; fi
-    echo "All ${PASS} checks passed: the ${KIND} medium was refused under foreign keys."
+    if [[ "$FAIL" -gt 0 ]]; then
+        echo "${FAIL} check(s) failed, ${PASS} passed. Transcript: ${SERIAL}"
+        echo "A refusal is only proven by the firmware's own refusal message; a silent or broken boot is a failure of this test."
+        exit 1
+    fi
+    echo "All ${PASS} checks passed: the ${KIND} medium was refused under foreign keys (${SERIAL})."
     exit 0
 fi
 

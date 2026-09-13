@@ -1,3 +1,8 @@
 sysinit
 eudev-trigger
 kryptikd-check
+kryptikd-serve
+seatd
+net-zone
+firstboot
+getty-tty1

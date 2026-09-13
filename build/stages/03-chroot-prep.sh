@@ -108,9 +108,9 @@ create_layout() {
     # files - a trivially exploitable local issue that is easy to forget.
     install -dv -m 1777 "$LFS/tmp" "$LFS/var/tmp"
 
-    # Kryptik-specific: zone definitions live here and kryptikd reads them.
+    # Kryptik-specific. The zone definitions themselves go to the verified
+    # /usr/lib/kryptik/zones (stage 04, s_kryptikd), which links this in.
     install -dv -m 0755 "$LFS/etc/kryptik"
-    install -dv -m 0700 "$LFS/etc/kryptik/zones"
 
     # Mount points for the three trees that live outside the sysroot: the
     # repository (scripts and config), the source tarballs, and the work tree

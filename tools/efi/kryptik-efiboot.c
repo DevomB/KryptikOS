@@ -9,9 +9,12 @@
  *   kryptik-efiboot clear-next           delete BootNext
  *   kryptik-efiboot ensure SLOT          create/refresh the entry only (no BootNext)
  *
- * The ESP is found by partition label (kryptik-esp); the HD() device path
- * node is built from the partition's GPT UUID, start and size read from
- * sysfs and blkid, which is everything a firmware needs to match it.
+ * The ESP is the partition labelled kryptik-esp ON THE DISK THE ROOT CAME
+ * FROM, resolved by /usr/libexec/kryptik/devices.sh (a label alone is not an
+ * identity; a second disk with the same layout must be ignored, and two
+ * candidates on the root disk are refused). The HD() device path node is
+ * built from the partition's GPT UUID, start and size read from sysfs and
+ * blkid, which is everything a firmware needs to match it.
  *
  * Entry numbers: Kryptik owns Boot00A0 for slot a and Boot00B0 for slot b.
  * Fixed numbers, so a repeated arming updates the same variable rather than
@@ -96,7 +99,7 @@ static int run_read(const char *cmd, char *out, size_t cap) {
 
 static int find_esp(struct part *p) {
     char dev[128];
-    if (run_read("blkid -t PARTLABEL=kryptik-esp -o device 2>/dev/null | head -1", dev, sizeof dev) || !dev[0]) return -1;
+    if (run_read("/usr/libexec/kryptik/devices.sh part kryptik-esp 2>/dev/null", dev, sizeof dev) || !dev[0]) return -1;
     snprintf(p->dev, sizeof p->dev, "%s", dev);
     char cmd[256], out[128];
     snprintf(cmd, sizeof cmd, "blkid -s PARTUUID -o value %s 2>/dev/null", dev);
@@ -167,7 +170,7 @@ static int slot_num(const char *slot, char out[9]) {
 static int ensure_entry(const char *slot) {
     char var[9]; if (slot_num(slot, var)) return die("slot must be a or b");
     struct part esp; errno = 0;
-    if (find_esp(&esp)) return die("no partition labelled kryptik-esp");
+    if (find_esp(&esp)) return die("no unambiguous kryptik-esp partition on this installation's disk (devices.sh)");
     char desc[64], file[64];
     snprintf(desc, sizeof desc, "Kryptik slot %s", slot);
     snprintf(file, sizeof file, "\\EFI\\kryptik\\kryptik-%s.efi", slot);

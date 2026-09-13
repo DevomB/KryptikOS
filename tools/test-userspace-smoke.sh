@@ -73,7 +73,7 @@ echo
 echo "== the pieces a boot needs =="
 t "s6-svscan runs"      "s6-svscan"     s6-svscan -h
 t "kryptikd runs"       "compartment"   kryptikd --help
-t "kryptikd reads zones" "vault"        kryptikd list --zones /etc/kryptik/zones
+t "kryptikd reads zones" "vault"        kryptikd list --zones /usr/lib/kryptik/zones
 [ -x /sbin/init ] && ok "/sbin/init is executable" || bad "/sbin/init is executable"
 [ -x /usr/libexec/kryptik-console ] && ok "console wrapper is executable" \
                                     || bad "console wrapper is executable"

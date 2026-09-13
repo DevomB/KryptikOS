@@ -11,5 +11,5 @@ if [ ! -e /sys/class/net/eth0 ]; then
     echo "net-zone: no eth0 on this machine; nothing to hold"
     exec sleep infinity
 fi
-exec /usr/bin/kryptikd run net --zones /etc/kryptik/zones --rootfs /var/lib/kryptik/zones \
+exec /usr/bin/kryptikd run net --zones /usr/lib/kryptik/zones --rootfs /var/lib/kryptik/zones \
      -- /usr/libexec/kryptik/netzone-init.sh eth0

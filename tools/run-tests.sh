@@ -31,6 +31,7 @@ SUITES=(
     "test-harness|tools/test-step-errexit.sh"
     "test-hardening|tools/test-hardening-flags.sh"
     "test-services|tools/test-services.sh"
+    "test-boot-success|tools/test-boot-success.sh"
     "test-manifest|tools/test-artifact-manifest.sh"
     "test-s6-init|tools/test-s6-init-config.sh"
     "test-image-signing|tools/test-image-signing.sh"
