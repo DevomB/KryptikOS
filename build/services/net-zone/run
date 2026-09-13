@@ -1,0 +1,15 @@
+#!/bin/sh
+# The net zone: sole holder of the physical NIC. Started by zone 0 at boot,
+# supervised; it runs the zone's own startup program inside the zone.
+# --passphrase-file is not needed: the net zone is ephemeral.
+#
+# eth0 is the kernel's name: the predictable-name udev rule is masked in the
+# image (s_etc) so the zone file's `nic = "eth0"` names the real interface.
+# A machine with no NIC has nothing to hold; the service idles rather than
+# restarting a launch that cannot succeed.
+if [ ! -e /sys/class/net/eth0 ]; then
+    echo "net-zone: no eth0 on this machine; nothing to hold"
+    exec sleep infinity
+fi
+exec /usr/bin/kryptikd run net --zones /etc/kryptik/zones --rootfs /var/lib/kryptik/zones \
+     -- /usr/libexec/kryptik/netzone-init.sh eth0
