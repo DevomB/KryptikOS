@@ -15,6 +15,9 @@ What it changes:
     so a window cannot claim another zone's colour.
   * focusclient and mapnotify draw those colours instead of the two global
     ones. Urgent stays global.
+  * setfullscreen keeps the border: a fullscreen window is framed by its
+    zone's colour like any other, so going fullscreen cannot remove the
+    compositor's statement of which zone it belongs to.
 
 Usage: dwl-zone-borders.py DWL_SOURCE_DIR           (edits dwl.c in place)
        dwl-zone-borders.py --check DWL_SOURCE_DIR   (exit 0 if it would apply)
@@ -116,6 +119,17 @@ applyrules(Client *c)
 """,
      """		} else if (old_c && !client_is_unmanaged(old_c) && (!c || !client_wants_focus(c))) {
 			client_set_border_color(old_c, old_c->zoneborder ? old_c->zoneborder : bordercolor);
+"""),
+    # (6) setfullscreen: the border stays. dwl drops it to 0 in fullscreen,
+    # which would let a window hide its zone by going fullscreen.
+    ("""	c->bw = fullscreen ? 0 : borderpx;
+	client_set_fullscreen(c, fullscreen);
+""",
+     """	/* Kryptik: a fullscreen window keeps its zone border. The border is the
+	 * compositor's statement of which zone the window belongs to, and a
+	 * window must not be able to remove it by going fullscreen. */
+	c->bw = borderpx;
+	client_set_fullscreen(c, fullscreen);
 """),
 ]
 

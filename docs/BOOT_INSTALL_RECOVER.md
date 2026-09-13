@@ -114,7 +114,7 @@ label; the title is prefixed with the zone name. Keys (Alt is the modifier):
 | Alt+Shift+Return | a terminal (havoc) in the work zone |
 | Alt+Shift+p | a terminal in the personal zone |
 | Alt+Shift+u | the browser (lynx) in the untrusted zone |
-| Alt+e | fullscreen (the zone identity is kept in the chrome's focus record) |
+| Alt+e | fullscreen (the window keeps its zone border, so the zone stays visible) |
 | Alt+Shift+c | close the focused window |
 | Alt+j / Alt+k | focus next / previous |
 
@@ -192,7 +192,7 @@ verified.
   hardware support beyond what the virtual machine exercised is claimed.
 - The builds are not reproducible bit for bit; the hashes name what was
   tested, not what a rebuild would produce.
-- Fullscreen windows keep their zone identity in the chrome's focus record
-  and in the window title, not in an always-visible on-screen bar.
+- A fullscreen window is framed by its zone's border colour; there is no
+  separate always-visible bar with the zone's name.
 - A trial boot is judged by services and the zone supervisor coming up; a
   userspace that hangs after that point is not detected by a watchdog.
