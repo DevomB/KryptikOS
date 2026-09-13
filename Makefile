@@ -149,7 +149,8 @@ help:
 	@echo "  make launcher-test  attack \`kryptikd run\` itself (the launch path)"
 	@echo "  make zone-tests  both of the above; what a zone change must pass"
 	@echo "  make cli-test    test \`kryptik\`, the command a person types"
-	@echo "  make update-test install a signed update, interrupt it, roll it back"
+	@echo "  make update-tree-test  install a signed update into a kryptikd program/config"
+	@echo "                   tree, interrupt it, roll it back (directories, no VM)"
 	@echo "  make vm-image    build the developer VM initramfs (busybox userspace)"
 	@echo "  make vm-boot     boot it under QEMU and check the serial log"
 	@echo
@@ -455,10 +456,14 @@ cli-test:
 	@cd compartments/kryptikd && cargo build --quiet
 	@compartments/tests/cli.sh
 
-# Update, rollback and recovery, end to end, against a real Kryptik tree.
-# Needs ssh-keygen (the release manifests are OpenSSH signatures) and a built
-# kryptikd; without either it exits 77 and says so rather than passing.
-update-test:
+# Update, rollback and recovery of a kryptikd PROGRAM/CONFIG TREE in temporary
+# directories (tools/apply-update.sh): the application-tree suite. It is not
+# the installed-OS update - that is `update-test` above, which boots real A/B
+# media under OVMF. The two used to share one target name, and GNU make took
+# the later recipe, so `make update-test` silently ran this suite and the OS
+# driver was unreachable. Needs ssh-keygen (the release manifests are OpenSSH
+# signatures) and a built kryptikd; without either it exits 77 and says so.
+update-tree-test:
 	@cd compartments/kryptikd && cargo build --quiet
 	@compartments/tests/update.sh
 
