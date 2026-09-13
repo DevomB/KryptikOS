@@ -287,6 +287,10 @@ echo
     || die "stage 01 has not completed - no cross compiler at ${LFS}/tools/bin
 Run: make toolchain"
 
+# Built by the stage 01 cross compiler against its glibc: seed the chain from
+# stage 01's last step so a toolchain rebuild invalidates all of this.
+stage_depends_on "" libstdcxx
+
 step m4         cross_build "m4-${V_M4}.tar.xz"               "m4-${V_M4}"
 step ncurses    s_ncurses
 step bash       s_bash
