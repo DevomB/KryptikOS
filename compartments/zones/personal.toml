@@ -9,7 +9,7 @@ mode = "routed"
 
 [storage]
 mode      = "encrypted"
-volume    = "/dev/kryptik/personal"
+volume    = "/var/lib/kryptik/volumes/personal.luks"
 unlock    = "on-start"
 wipe_keys = "on-stop"
 

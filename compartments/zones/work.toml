@@ -9,7 +9,7 @@ mode = "routed"
 
 [storage]
 mode      = "encrypted"
-volume    = "/dev/kryptik/work"
+volume    = "/var/lib/kryptik/volumes/work.luks"
 unlock    = "on-start"
 wipe_keys = "on-stop"
 
