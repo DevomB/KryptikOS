@@ -15,7 +15,7 @@ named below, never in Git.
 | G5 Boot integrity | OPEN | Implemented, untested: kernel EFI stub + CMDLINE_OVERRIDE + dm-init verity root (`build/config/kernel/boot.fragment`), developer Secure Boot key + sbsign in stage 06, `ovmf-vars.sh` (clean/enrolled/ms stores), `media-smoke.sh --vars enrolled` and `--expect-refused`. Tamper/recovery tests still to write. |
 | G6 Zones/network | OPEN | Landlock layer and probes integrated (e107095). NAT/resolver/DHCP packages pinned and recipes written; `netzone-init.sh` and the VM topology run still to do. |
 | G7 Storage | ACTIVE | LUKS2 volumes implemented in kryptikd (13123c7): real lifecycle test passed as root on the build host (init, double-format refused, wrong passphrase refused with no mapping, write/close/reopen). VM checks V1-V11 on the target kernel pending the build. |
-| G8 Desktop | OPEN | Wayland stack, wlroots/dwl, havoc, lynx, nano pinned and in stage 04. wlproxy main, trusted chrome, session, broker prompt: not started. |
+| G8 Desktop | ACTIVE | Wayland stack, wlroots/dwl, havoc, lynx, nano pinned and in stage 04. kryptik-wlproxy complete (ff7e21c, 35 tests). kryptikd launch daemon `serve`, `--wayland-socket`, `--passphrase-fd` (c42b2ec, 143 tests). Drafted, not yet built into the image: `build/desktop/{zone-colours.h,dwl-config.h}`, `tools/desktop/dwl-zone-borders.py` (applies cleanly to pinned dwl 0.8), `tools/desktop/kryptik-launch.c` (compiles). Still to write: kryptik-chrome (bar/prompt/menu), kryptik-session, `kryptikd-serve` s6 service, `info`/`runtime` requests in serve.rs, stage 04 `desktop` step, GUI/broker VM tests. |
 | G9 OS updates | OPEN | Implemented, untested: `tools/update/kryptik-update`, `boot-success.sh`, `kryptik-efiboot` (C), release trust anchor (stage 04 `release-trust`), signed payloads (stage 06 `payload`). Update test with A/B builds still to write. |
 | G10 Delivery | OPEN | `make acceptance` and the export to `out/overnight/` not written. |
 
@@ -48,7 +48,7 @@ named below, never in Git.
 
 | Job | Command | Log |
 | --- | --- | --- |
-| build orchestrator (pid 416 in the distro) | `/root/build-run.sh`: stages 01+02 as `build` (01 done 10:03, 02 running), then stage 04 (`GO-04` is present, starts automatically), then waits for `/root/kryptik/GO-05` | `/root/kryptik/logs/build-run.out`, `temp-tools.log`, `system.log`, `kernel.log` |
+| build orchestrator (pid 416 in the distro) | `/root/build-run.sh`: stages 01+02 done (02 complete 11:09), stage 04 running since 11:09 with `KRYPTIK_KRYPTIKD_BIN=/root/kryptik/kryptikd-musl` (sha256 76273631, includes serve/volume support), then waits for `/root/kryptik/GO-05` | `/root/kryptik/logs/build-run.out`, `temp-tools.log`, `system.log`, `kernel.log` |
 
 ## Source provenance of the 31 new pins
 
@@ -80,6 +80,23 @@ Nothing lock-only is called verified.
 - Stamps chain by fingerprint and seed across stages: a change to an early
   package rebuilds what follows; no stale downstream artifact can claim to be
   current.
+
+## Session checkpoint 2026-09-13 11:15 (session paused by the user)
+
+Committed on `overnight-2026-09-13/impl` since the last checkpoint: e892b42 net
+zone, a5ecf2e recover + integrity/update test drivers, ff7e21c wlproxy,
+c42b2ec kryptikd serve, d51e515 + 7dd445d desktop drafts. Stage 04 is
+building unattended in the `kryptik-build` distro; do NOT edit
+`build/stages/04-base-system.sh` while it runs (bash reads it incrementally)
+- write a temp file and rename, or wait for `system.log` to end.
+
+Resume order: (1) finish the desktop pieces listed under G8 and add the
+`desktop` step to stage 04 (after `nano`, before `etc`; wlproxy binary via
+`KRYPTIK_WLPROXY_BIN`, built with `cargo build --release --target
+x86_64-unknown-linux-musl -p kryptik-wlproxy` in `compositor/`); (2) when
+stage 04 ends, `make SUDO= test-libc-unwind` (G2 proof), then re-run `make
+SUDO= system` with both binaries so the new step runs; (3) `touch GO-05`;
+(4) media, boot, install, integrity and update tests as below.
 
 ## Next commands
 
