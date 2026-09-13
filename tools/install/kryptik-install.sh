@@ -1,15 +1,24 @@
 #!/bin/sh
 #
-# Install Kryptik from a running Kryptik system onto a second disk.
+# Install Kryptik from a booted install medium onto a whole disk (Design 08).
 #
-# This runs INSIDE a booted Kryptik guest, with a blank virtual disk attached.
-# It never runs on the build host and it has no business doing so: the host's
+# This runs INSIDE a booted Kryptik medium, with a blank disk attached. It
+# never runs on the build host and it has no business doing so: the host's
 # disks are not a thing this project writes to, ever.
 #
+# What it writes, in order, after every check has passed:
+#   GPT  1 kryptik-esp    the medium's ESP, byte for byte, then BOOTX64.EFI
+#                         made the slot A kernel
+#        2 kryptik-a      the medium's verity root image, byte for byte,
+#                         read back and hashed against the medium's record
+#        3 kryptik-b      empty (the first update fills it)
+#        4 kryptik-state  ext4, with install.json and the first-boot preseed
+#
 # It refuses to touch:
-#   - the device the running root is on
-#   - any device with a mounted partition
-#   - anything that is not a block device
+#   - the device the running root is on, through any dm/loop stack
+#   - the medium itself, the test-control disk, anything with a mounted
+#     partition or active swap, anything that is not a whole block device
+#   - a disk too small for the layout
 #
 # Those are not politeness. This runs as root with dd and mkfs in hand.
 #
@@ -17,18 +26,24 @@ set -eu
 
 PROG="kryptik-install"
 say()  { printf '%s: %s\n' "$PROG" "$*"; }
-die()  { printf '%s: %s\n' "$PROG" "$*" >&2; exit 1; }
+die()  { printf '%s: FAILED: %s\n' "$PROG" "$*" >&2; exit 1; }
 
 TARGET=""
 ASSUME_YES=0
+DRY_RUN=0
+PRESEED=""
+MNT_BASE=/run/kryptik-install
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --target) TARGET="${2:-}"; shift 2 ;;
-        --yes)    ASSUME_YES=1; shift ;;
+        --target)  TARGET="${2:-}"; shift 2 ;;
+        --yes)     ASSUME_YES=1; shift ;;
+        --dry-run) DRY_RUN=1; shift ;;
+        --preseed) PRESEED="${2:-}"; shift 2 ;;
         -h|--help)
-            printf 'usage: %s --target /dev/vdb [--yes]\n' "$PROG"
-            printf '\nInstalls the running system onto --target. Destroys everything on it.\n'
+            printf 'usage: %s --target /dev/vdb [--yes] [--dry-run] [--preseed FILE]\n' "$PROG"
+            printf '\nInstalls the running medium onto --target. Destroys everything on it.\n'
+            printf '--dry-run checks everything and writes nothing.\n'
             exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
@@ -38,16 +53,9 @@ done
 [ "$(id -u)" = "0" ] || die "must run as root"
 
 # --- every external tool, checked before the first write -------------------
-#
-# The first run of this installer died with "sgdisk: command not found" AFTER it
-# had announced it was partitioning. It had not written anything yet, by luck
-# rather than design: a partitioner that dies part-way through leaves a disk
-# that is neither the old system nor the new one.
-#
-# So the whole tool list is checked up front, and the message names everything
-# that is missing at once rather than one per run.
 missing=""
-for tool in sfdisk partx blockdev blkid mkfs.ext4 tar mount umount sync awk sed; do
+for tool in sfdisk partx blockdev blkid mkfs.ext4 dd sha256sum mount umount sync awk sed \
+            readlink lsblk head cmp cp mkdir stat tr; do
     command -v "$tool" >/dev/null 2>&1 || missing="${missing} ${tool}"
 done
 [ -z "$missing" ] || die "this system is missing:${missing}
@@ -56,8 +64,7 @@ touches a disk, not at the moment it is first called."
 
 # Partition device naming. A disk whose name ends in a digit takes a "p"
 # separator (nvme0n1 -> nvme0n1p2, mmcblk0 -> mmcblk0p2); one that does not
-# takes the number directly (vdb -> vdb2, sda -> sda2). Getting this wrong is
-# how the first run came to be looking for /dev/vdbp2.
+# takes the number directly (vdb -> vdb2, sda -> sda2).
 part_dev() {
     case "$1" in
         *[0-9]) printf "%sp%s" "$1" "$2" ;;
@@ -65,51 +72,141 @@ part_dev() {
     esac
 }
 
-# --- refuse anything that is not a disposable second disk ------------------
+# The whole disk a block device belongs to (a partition -> its disk).
+disk_of() {
+    n="$(basename "$1")"
+    if [ -e "/sys/class/block/$n/partition" ]; then
+        printf '/dev/%s' "$(basename "$(readlink -f "/sys/class/block/$n/..")")"
+    else
+        printf '/dev/%s' "$n"
+    fi
+}
 
+# Every physical disk under a device, through dm and loop stacks.
+# Prints one /dev/X per line.
+disks_under() {
+    n="$(basename "$1")"
+    if [ -d "/sys/class/block/$n/slaves" ] && [ -n "$(ls "/sys/class/block/$n/slaves" 2>/dev/null)" ]; then
+        for s in /sys/class/block/"$n"/slaves/*; do disks_under "/dev/$(basename "$s")"; done
+    elif [ -r "/sys/class/block/$n/loop/backing_file" ]; then
+        # a loop device: the disk holding its backing file
+        bf="$(cat "/sys/class/block/$n/loop/backing_file")"
+        src="$(awk -v f="$bf" 'BEGIN{best=""} {if (index(f, $2)==1 && length($2)>length(best)) {best=$2; dev=$1}} END{print dev}' /proc/mounts)"
+        [ -n "$src" ] && disks_under "$src"
+    else
+        disk_of "/dev/$n"
+    fi
+}
+
+# --- refuse anything that is not a disposable whole disk -------------------
 [ -b "$TARGET" ] || die "${TARGET} is not a block device.
 This installer writes to a whole disk. It does not write to files, and it does
 not create devices."
+TARGET_REAL="$(readlink -f "$TARGET")"
+[ -b "$TARGET_REAL" ] || die "${TARGET} resolves to ${TARGET_REAL}, which is not a block device"
+tname="$(basename "$TARGET_REAL")"
+[ -e "/sys/class/block/$tname/partition" ] && die "${TARGET} is a partition, not a whole disk. Name the disk."
+[ "$(lsblk -dno TYPE "$TARGET_REAL" 2>/dev/null)" = "disk" ] || die "${TARGET} is not a whole disk (lsblk type: $(lsblk -dno TYPE "$TARGET_REAL" 2>/dev/null || echo unknown))"
+[ "$(cat "/sys/class/block/$tname/ro" 2>/dev/null || echo 0)" = "0" ] || die "${TARGET} is read-only"
 
-# The device the running root lives on. If the target IS that device, or a
-# partition of it, refuse - installing over the system you are running from is
+# The device the running root lives on, through every layer. If the target
+# IS that disk, refuse - installing over the system you are running from is
 # not a supported outcome, it is a crash with extra steps.
 root_src="$(awk '$2 == "/" { print $1; exit }' /proc/mounts)"
-root_disk=""
-case "$root_src" in
-    /dev/*)
-        root_disk="$(basename "$root_src")"
-        # strip a trailing partition number: vda2 -> vda, sda1 -> sda
-        root_disk="$(printf '%s' "$root_disk" | sed 's/p\{0,1\}[0-9]\{1,\}$//')"
-        ;;
-esac
-target_disk="$(basename "$TARGET")"
-
-if [ -n "$root_disk" ] && [ "$target_disk" = "$root_disk" ]; then
-    die "${TARGET} is the disk this system is running from (root is ${root_src}).
+root_disks="$(disks_under "$root_src" 2>/dev/null | sort -u)"
+for d in $root_disks; do
+    [ "$(readlink -f "$d")" = "$TARGET_REAL" ] && die "${TARGET} is the disk this system is running from (root ${root_src} sits on ${d}).
 Refusing."
-fi
+done
+# Likewise the state partition, the medium's ESP and the test-control disk.
+for lbl in kryptik-state kryptik-testctl; do
+    for dev in $(blkid -t PARTLABEL="$lbl" -o device 2>/dev/null); do
+        [ "$(readlink -f "$(disk_of "$dev")")" = "$TARGET_REAL" ] && die "${TARGET} holds the ${lbl} partition in use by this system. Refusing."
+    done
+done
+for dev in $(blkid -t PARTLABEL=kryptik-media -o device 2>/dev/null); do
+    [ "$(readlink -f "$(disk_of "$dev")")" = "$TARGET_REAL" ] && die "${TARGET} is the install medium. Refusing."
+done
 
 # Anything mounted from the target, or any of its partitions, is a hard stop.
-mounted="$(awk -v d="/dev/${target_disk}" '$1 ~ "^" d { print $1 " on " $2 }' /proc/mounts)"
+mounted="$(awk -v d="${TARGET_REAL}" '$1 ~ "^" d { print $1 " on " $2 }' /proc/mounts)"
 if [ -n "$mounted" ]; then
     printf '%s\n' "$mounted" | sed 's/^/  /'
     die "the target has mounted filesystems. Unmount them first, or pick another disk."
 fi
+if awk -v d="${TARGET_REAL}" 'NR>1 && $1 ~ "^" d { found=1 } END { exit !found }' /proc/swaps 2>/dev/null; then
+    die "${TARGET} has active swap on it. Refusing."
+fi
 
-# The root filesystem's own device must not be a partition of the target.
-case "$root_src" in
-    "/dev/${target_disk}"*) die "root (${root_src}) is on ${TARGET}. Refusing." ;;
+# --- what we are installing, from the medium ---------------------------------
+media="$(sed -n 's/^media=//p' /run/kryptik/boot-identity 2>/dev/null)"
+[ -n "$media" ] || die "this is not an install medium (no kryptik.media= on the signed command line)"
+mkdir -p "$MNT_BASE/media" "$MNT_BASE/esp" "$MNT_BASE/state" "$MNT_BASE/tesp"
+cleanup() {
+    for m in "$MNT_BASE/tesp" "$MNT_BASE/state" "$MNT_BASE/esp" "$MNT_BASE/media"; do
+        mountpoint -q "$m" 2>/dev/null && umount "$m" 2>/dev/null || true
+        rmdir "$m" 2>/dev/null || true
+    done
+    rmdir "$MNT_BASE" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+ESP_SRC=""      # a block device or a regular file holding the ESP image
+ROOT_SRC=""     # block device holding the root image at ROOT_OFF
+ROOT_OFF=0
+case "$media" in
+    usb)
+        ROOT_SRC="$(blkid -t PARTLABEL=kryptik-media -o device 2>/dev/null | head -1)"
+        [ -b "$ROOT_SRC" ] || die "no partition labelled kryptik-media on this medium"
+        mdisk="$(disk_of "$ROOT_SRC")"
+        ESP_SRC="$(blkid -t PARTLABEL=kryptik-esp -o device 2>/dev/null | grep "^${mdisk}" | head -1)"
+        [ -b "$ESP_SRC" ] || die "no kryptik-esp partition on the medium ${mdisk}"
+        mount -o ro "$ESP_SRC" "$MNT_BASE/esp" || die "could not mount the medium's ESP"
+        ROOT_JSON="$MNT_BASE/esp/kryptik/root.json"
+        ;;
+    iso)
+        mount -t iso9660 -o ro /dev/sr0 "$MNT_BASE/media" || die "could not mount the medium (/dev/sr0)"
+        ESP_SRC="$MNT_BASE/media/esp.img"
+        [ -f "$ESP_SRC" ] || die "no esp.img on the medium"
+        ROOT_JSON="$MNT_BASE/media/root.json"
+        ROOT_SRC=/dev/sr0
+        # The signed command line's linear table is "0 N linear /dev/sr0 START":
+        # the root image starts at sector START of the medium.
+        ROOT_OFF="$(sed -n 's/.*linear \/dev\/sr0 \([0-9]*\).*/\1/p' /proc/cmdline | head -1)"
+        [ -n "$ROOT_OFF" ] || die "could not read the root image offset from the signed command line"
+        ROOT_OFF=$(( ROOT_OFF * 512 ))
+        ;;
+    *) die "unknown medium type '${media}'" ;;
 esac
+[ -r "$ROOT_JSON" ] || die "no root.json on the medium"
+jget() { sed -n "s/^  \"$1\": \"\{0,1\}\([^\",]*\)\"\{0,1\},\{0,1\}\$/\1/p" "$ROOT_JSON" | head -1; }
+ROOT_BYTES="$(jget total_bytes)"; ROOT_SHA="$(jget sha256)"; VERSION="$(jget version)"
+[ -n "$ROOT_BYTES" ] && [ -n "$ROOT_SHA" ] || die "root.json is incomplete"
+ESP_BYTES="$(stat -c %s "$ESP_SRC" 2>/dev/null || blockdev --getsize64 "$ESP_SRC")"
+[ -b "$ESP_SRC" ] && ESP_BYTES="$(blockdev --getsize64 "$ESP_SRC")"
 
-size_bytes="$(blockdev --getsize64 "$TARGET" 2>/dev/null || echo 0)"
+size_bytes="$(blockdev --getsize64 "$TARGET_REAL" 2>/dev/null || echo 0)"
 [ "$size_bytes" -gt 0 ] || die "could not read the size of ${TARGET}"
+MIB=1048576
+esp_mib=$(( (ESP_BYTES + MIB - 1) / MIB ))
+slot_mib=$(( (ROOT_BYTES + MIB - 1) / MIB + 16 ))
+state_min_mib=512
+need_mib=$(( 1 + esp_mib + 2 * slot_mib + state_min_mib + 1 ))
+have_mib=$(( size_bytes / MIB ))
+[ "$have_mib" -ge "$need_mib" ] || die "${TARGET} is ${have_mib} MiB; this layout needs at least ${need_mib} MiB
+(ESP ${esp_mib} + two root slots of ${slot_mib} + state ${state_min_mib})."
 
-say "target      ${TARGET}"
-say "size        ${size_bytes} bytes"
-say "running root ${root_src} (disk ${root_disk:-unknown})"
+say "medium       ${media} (version ${VERSION})"
+say "target       ${TARGET} -> ${TARGET_REAL}, ${have_mib} MiB"
+say "running root ${root_src} on ${root_disks:-unknown}"
+say "layout       esp ${esp_mib} MiB, kryptik-a ${slot_mib} MiB, kryptik-b ${slot_mib} MiB, kryptik-state $(( have_mib - need_mib + state_min_mib )) MiB"
+say "root image   ${ROOT_BYTES} bytes, sha256 ${ROOT_SHA}"
 echo
 
+if [ "$DRY_RUN" -eq 1 ]; then
+    say "dry run: every check passed; nothing was written"
+    exit 0
+fi
 if [ "$ASSUME_YES" -ne 1 ]; then
     printf '%s: this DESTROYS everything on %s. Type ERASE to continue: ' "$PROG" "$TARGET"
     read -r answer
@@ -117,95 +214,82 @@ if [ "$ASSUME_YES" -ne 1 ]; then
 fi
 
 # --- partition -------------------------------------------------------------
-# Same layout as the developer image: partition 1 reserved for an ESP that does
-# not exist yet, root on partition 2, so adding a bootloader later renumbers
-# nothing.
-# sfdisk, not sgdisk. gptfdisk is not in the base system, and pulling in a new
-# pinned source just to partition a disk is a poor trade when util-linux - which
-# is already here - does GPT perfectly well. The named-field script format takes
-# the partition DEVICE on the left and derives the number from it, which is what
-# lets this create partition 2 and leave slot 1 absent, matching the developer
-# image exactly.
-#
-# Type 4F68BCE3-... is "Linux root (x86-64)": the GUID behind sgdisk's 8304.
-ROOTPART="$(part_dev "$TARGET" 2)"
+say "partitioning (sfdisk, GPT: kryptik-esp, kryptik-a, kryptik-b, kryptik-state)"
+P1="$(part_dev "$TARGET_REAL" 1)"; P2="$(part_dev "$TARGET_REAL" 2)"
+P3="$(part_dev "$TARGET_REAL" 3)"; P4="$(part_dev "$TARGET_REAL" 4)"
+GPT_ESP=C12A7328-F81F-11D2-BA4B-00A0C93EC93B
 GPT_LINUX_ROOT_X86_64=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709
-
-say "partitioning (sfdisk, GPT, root on partition 2)"
-sfdisk --wipe always --wipe-partitions always "$TARGET" >/dev/null <<SFDISK
+GPT_LINUX_FS=0FC63DAF-8483-4772-8E79-3D69D8477DE4
+sfdisk --quiet --wipe always --wipe-partitions always "$TARGET_REAL" <<SFDISK
 label: gpt
-${ROOTPART} : start=2048, type=${GPT_LINUX_ROOT_X86_64}, name="kryptik-root"
+unit: sectors
+start=2048, size=$(( esp_mib * 2048 )), type=${GPT_ESP}, name="kryptik-esp"
+size=$(( slot_mib * 2048 )), type=${GPT_LINUX_ROOT_X86_64}, name="kryptik-a"
+size=$(( slot_mib * 2048 )), type=${GPT_LINUX_ROOT_X86_64}, name="kryptik-b"
+type=${GPT_LINUX_FS}, name="kryptik-state"
 SFDISK
-
-# partprobe belongs to parted, which is also not in the base system. partx and
-# blockdev are util-linux and are. Either may fail harmlessly when the kernel
-# has already picked the table up, so the check that matters is the one below.
-partx -u "$TARGET" >/dev/null 2>&1 || blockdev --rereadpt "$TARGET" >/dev/null 2>&1 || true
-
-# Wait for the node instead of sleeping and hoping. eudev may take a moment, and
-# a fixed sleep is either too short on a loaded machine or wasted on a fast one.
+partx -u "$TARGET_REAL" >/dev/null 2>&1 || blockdev --rereadpt "$TARGET_REAL" >/dev/null 2>&1 || true
 n=0
-while [ ! -b "$ROOTPART" ] && [ "$n" -lt 50 ]; do
-    n=$((n + 1))
-    sleep 0.1 2>/dev/null || sleep 1
-done
-[ -b "$ROOTPART" ] || die "no partition 2 appeared on ${TARGET} as ${ROOTPART}.
-sfdisk wrote the table; the kernel or eudev did not present the node."
+while { [ ! -b "$P1" ] || [ ! -b "$P4" ]; } && [ "$n" -lt 100 ]; do n=$((n + 1)); sleep 0.1 2>/dev/null || sleep 1; done
+for p in "$P1" "$P2" "$P3" "$P4"; do [ -b "$p" ] || die "partition ${p} did not appear"; done
+[ "$(blkid -s PARTLABEL -o value "$P2")" = "kryptik-a" ] || die "partition 2 is not labelled kryptik-a"
 
-# --- filesystem ------------------------------------------------------------
-# -O encrypt: the filesystem half of CONFIG_FS_ENCRYPTION, so a zone on this
-# installation can hold an encrypted directory. Same as the image builder.
-say "creating the root filesystem on ${ROOTPART}"
-mkfs.ext4 -q -F -L kryptik-root -O encrypt "$ROOTPART"
+# --- copy, and verify what landed ------------------------------------------
+say "writing the ESP (${esp_mib} MiB)"
+dd if="$ESP_SRC" of="$P1" bs=4M conv=fsync status=none || die "writing the ESP failed"
+say "writing the root image to kryptik-a (${ROOT_BYTES} bytes)"
+if [ "$ROOT_OFF" -gt 0 ]; then
+    dd if="$ROOT_SRC" of="$P2" bs=4M iflag=skip_bytes,count_bytes skip="$ROOT_OFF" count="$ROOT_BYTES" conv=fsync status=none || die "writing the root image failed"
+else
+    dd if="$ROOT_SRC" of="$P2" bs=4M iflag=count_bytes count="$ROOT_BYTES" conv=fsync status=none || die "writing the root image failed"
+fi
+say "reading kryptik-a back"
+got="$(dd if="$P2" bs=4M iflag=count_bytes count="$ROOT_BYTES" status=none | sha256sum | cut -c1-64)"
+[ "$got" = "$ROOT_SHA" ] || die "kryptik-a does not verify: wrote ${got}, the medium says ${ROOT_SHA}"
+say "kryptik-a verifies (${got})"
+say "clearing kryptik-b"
+dd if=/dev/zero of="$P3" bs=1M count=4 conv=fsync status=none || die "clearing kryptik-b failed"
+say "creating kryptik-state (ext4)"
+mkfs.ext4 -q -F -L kryptik-state "$P4" || die "mkfs.ext4 on ${P4} failed"
 
-MNT=/run/kryptik-install
-mkdir -p "$MNT"
-mount "$ROOTPART" "$MNT"
-cleanup() { umount "$MNT" 2>/dev/null || true; rmdir "$MNT" 2>/dev/null || true; }
-trap cleanup EXIT INT TERM
+# --- the target ESP: slot A is the committed boot file ----------------------
+mount -o rw "$P1" "$MNT_BASE/tesp" || die "could not mount the new ESP"
+[ -f "$MNT_BASE/tesp/EFI/kryptik/kryptik-a.efi" ] || die "the copied ESP has no slot A kernel"
+cp "$MNT_BASE/tesp/EFI/kryptik/kryptik-a.efi" "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI.new" || die "could not stage BOOTX64.EFI"
+sync -f "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI.new"
+mv -f "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI.new" "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI" || die "could not install BOOTX64.EFI"
+cmp -s "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI" "$MNT_BASE/tesp/EFI/kryptik/kryptik-a.efi" || die "BOOTX64.EFI is not the slot A kernel"
+printf 'a\n' > "$MNT_BASE/tesp/kryptik/committed-slot"
+rm -f "$MNT_BASE/tesp/kryptik/media-kernel"
+sync
+umount "$MNT_BASE/tesp" || die "could not unmount the new ESP"
 
-# --- copy ------------------------------------------------------------------
-# Everything except the virtual filesystems, the installer's own mountpoint,
-# and the build-time bind mounts that only exist inside a chroot.
-say "copying the system"
-tar -C / -cf - \
-    --exclude=./proc --exclude=./sys --exclude=./dev --exclude=./run \
-    --exclude=./tmp --exclude=./kryptik --exclude=./kryptik-sources \
-    --exclude=./kryptik-work --exclude=./kryptik-kryptikd \
-    --exclude=./lost+found \
-    . | tar -C "$MNT" -xf -
-
-mkdir -p "$MNT/proc" "$MNT/sys" "$MNT/dev" "$MNT/run" "$MNT/tmp"
-chmod 1777 "$MNT/tmp"
-
-# --- identity --------------------------------------------------------------
-ROOT_UUID="$(blkid -s UUID -o value "$ROOTPART")"
-
-cat > "$MNT/etc/fstab" <<EOF
-# Written by kryptik-install.
-UUID=${ROOT_UUID}  /      ext4   defaults,noatime  0 1
-proc               /proc  proc   nosuid,noexec,nodev  0 0
-sysfs              /sys   sysfs  nosuid,noexec,nodev  0 0
-tmpfs              /run   tmpfs  nosuid,nodev         0 0
-devpts             /dev/pts devpts gid=5,mode=620,nosuid,noexec 0 0
-EOF
-
-# What this installation is, and what produced it. An installed system that
-# cannot say where it came from is not auditable.
-cat > "$MNT/etc/kryptik-install.json" <<EOF
+# --- the state partition: what installed this, and the first-boot preseed --
+mount -o rw "$P4" "$MNT_BASE/state" || die "could not mount kryptik-state"
+mkdir -p "$MNT_BASE/state/lib/kryptik"
+cat > "$MNT_BASE/state/lib/kryptik/install.json" <<EOF
 {
   "installed_at": "$(date -Iseconds 2>/dev/null || echo unknown)",
   "installed_by": "kryptik-install",
-  "target": "${TARGET}",
-  "root_partition": "${ROOTPART}",
-  "root_uuid": "${ROOT_UUID}",
-  "source_root": "${root_src}",
-  "source_image": $( [ -r /etc/kryptik-image.json ] && cat /etc/kryptik-image.json || echo null ),
-  "note": "Installed from a running Kryptik system. No bootloader: boot it with qemu -kernel, same as the developer image."
+  "medium": "${media}",
+  "version": "${VERSION}",
+  "target": "${TARGET_REAL}",
+  "layout": "design-08",
+  "root_image_sha256": "${ROOT_SHA}",
+  "root_image_bytes": ${ROOT_BYTES},
+  "committed_slot": "a"
 }
 EOF
-
+if [ -n "$PRESEED" ] && [ -r "$PRESEED" ]; then
+    umask 077
+    cp "$PRESEED" "$MNT_BASE/state/lib/kryptik/firstboot.preseed"
+    chmod 0600 "$MNT_BASE/state/lib/kryptik/firstboot.preseed"
+    say "first-boot preseed installed"
+fi
 sync
-say "installed to ${ROOTPART} (UUID ${ROOT_UUID})"
-say "there is no bootloader; boot it the same way as the developer image:"
-say "  -drive file=<disk>,format=raw,if=virtio -kernel <kernel> -append 'root=UUID=${ROOT_UUID} rootwait rw console=ttyS0,115200'"
+umount "$MNT_BASE/state" || die "could not unmount kryptik-state"
+blockdev --flushbufs "$TARGET_REAL" 2>/dev/null || true
+sync
+
+say "installed ${VERSION} to ${TARGET_REAL}: boot it from firmware with the medium removed."
+say "  slot a: ${P2}   slot b: ${P3} (empty)   state: ${P4}   esp: ${P1}"
