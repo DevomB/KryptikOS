@@ -2,6 +2,9 @@ sysinit
 eudev
 eudev-trigger
 kryptikd-check
+firstboot
+seatd
 getty-tty1
-boot-smoke
 installer-run
+boot-success
+boot-smoke

@@ -1,4 +1,6 @@
 #!/bin/sh
-# -n -l: skip login(1), which Kryptik does not ship. Same reasoning as
-# /usr/libexec/kryptik-console on the serial side.
-exec /usr/sbin/agetty -n -l /usr/bin/bash --noclear tty1 linux
+# An authenticated login on the first virtual console. login(1) is shadow's.
+# The desktop session starts from the user's profile (see s_etc), so this is
+# the product's normal login path; the passwordless root shell exists only on
+# install media (see /usr/libexec/kryptik-console).
+exec /usr/sbin/agetty --noclear tty1 linux

@@ -3,3 +3,4 @@ eudev-trigger
 kryptikd-check
 getty-tty1
 installer-run
+boot-success

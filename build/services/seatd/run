@@ -1,0 +1,4 @@
+#!/bin/sh
+# seatd: the seat/session broker the compositor uses to open DRM and input
+# devices without running as root. Members of group seat may talk to it.
+exec /usr/bin/seatd -g seat

@@ -209,9 +209,16 @@ for s in "${SCRIPTS}"/*.sh; do
     check "${n}: valid sh"    "$(sh -n "$s" 2>/dev/null && echo ok)"
     check "${n}: executable"  "$([[ -x "$s" ]] && echo ok)"
     # An orphan script is either a service someone forgot to declare or dead
-    # weight installed into every image.
+    # weight installed into every image. A helper that another installed
+    # script sources (`. /usr/libexec/kryptik/x.sh`) is referenced through
+    # that script, provided the sourcing script is itself run by a service.
     if grep -rqF "/usr/libexec/kryptik/${n}" "$SRC"/*/up 2>/dev/null; then
         green "${n}: referenced by a service"
+    elif grep -lqE "^\s*\. +/usr/libexec/kryptik/${n}" "${SCRIPTS}"/*.sh 2>/dev/null \
+         && grep -lE "^\s*\. +/usr/libexec/kryptik/${n}" "${SCRIPTS}"/*.sh \
+            | xargs -r -n1 basename | while read -r u; do
+                  grep -rqF "/usr/libexec/kryptik/${u}" "$SRC"/*/up && exit 0; done; then
+        green "${n}: sourced by a script a service runs"
     else
         red "${n}: installed by the stage but no service runs it"
     fi
