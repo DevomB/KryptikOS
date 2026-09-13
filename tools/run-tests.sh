@@ -45,7 +45,7 @@ COMPARTMENT=(
     "zone-test|compartments/tests/adversarial.sh"
     "launcher-test|compartments/tests/launcher.sh"
     "cli-test|compartments/tests/cli.sh"
-    "update-test|compartments/tests/update.sh"
+    "update-tree-test|compartments/tests/update.sh"
 )
 
 passed=()
