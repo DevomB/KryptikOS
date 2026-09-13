@@ -145,5 +145,86 @@ rc=$?; sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
 tr -d '\r' < "$LOG4" | grep -q 'KRYPTIK_SMOKE: verity_root=0 [0-9]* verity V' && green "dm-verity reports the restored root valid" || red "restored root not reported valid"
 tr -d '\r' < "$LOG4" | grep -q 'kryptik-firstboot: created user' && red "first-boot setup ran again (state was lost)" || green "first-boot setup did not run again"
 
+# ---------------------------------------------------------------- phase 5 --
+phase "phase 5: offline tampering of the state partition does not reach privileged startup"
+# The state partition is mutable and unauthenticated by design (sysinit.sh,
+# "the trust boundary"). Someone with the disk in hand can put anything
+# under /etc through the overlay's upper layer. What they must NOT gain:
+# a trust anchor of their own for updates, a zone definition the launch
+# daemon will honour, a kernel tunable applied at boot. Plant all three from
+# the host, boot, and measure each from inside the guest.
+S_OFF=$(( $(part_start 4) * 512 ))
+TMPK="$(mktemp -d)"; MNT="$TMPK/state"; mkdir -p "$MNT"
+ssh-keygen -q -t ed25519 -N "" -f "$TMPK/attacker" >/dev/null
+if mount -o loop,offset="$S_OFF" "$DISK" "$MNT" 2>/dev/null; then
+    up="$MNT/lib/kryptik/etc/upper"
+    mkdir -p "$up/kryptik/trust" "$up/kryptik/zones" "$up/sysctl.d"
+    printf 'kryptik-release namespaces="kryptik-release" %s\n' "$(cut -d' ' -f1,2 "$TMPK/attacker.pub")" > "$up/kryptik/trust/release-signers"
+    printf 'development\n' > "$up/kryptik/trust/required-role"
+    # a zone directory in the upper layer replaces the verified symlink under /etc
+    cat > "$up/kryptik/zones/evil.toml" <<'EOF'
+[zone]
+name = "evil"
+[network]
+mode = "none"
+[storage]
+mode = "ephemeral"
+size = "64M"
+[identity]
+uid_base = 1310720
+[ui]
+border_color = "#000001"
+EOF
+    printf 'kernel.kptr_restrict = 0\n' > "$up/sysctl.d/99-evil.conf"
+    sync; umount "$MNT"
+    green "planted a trust anchor, a zone definition and a sysctl fragment under the state's /etc upper layer"
+else
+    red "could not mount the state partition from the host (loop/offset); phase 5 not performed"
+fi
+# A payload signed with the attacker's key: valid against the planted anchor,
+# not against the image's.
+PAYDIR="${KRYPTIK_WORK}/images/payload-$(sed -n 's/^  "version": "\([^"]*\)".*/\1/p' "${KRYPTIK_WORK}/images/root.json" 2>/dev/null)"
+if [[ -f "$PAYDIR/manifest" ]]; then
+    rm -rf "$TMPK/pay"; cp -a --sparse=always "$PAYDIR" "$TMPK/pay"; rm -f "$TMPK/pay/manifest.sig"
+    ssh-keygen -Y sign -f "$TMPK/attacker" -n kryptik-release "$TMPK/pay/manifest" >/dev/null 2>&1
+    PAYIMG="${VMDIR}/integrity-attacker-payload.img"; rm -f "$PAYIMG"
+    bytes="$(du -sb "$TMPK/pay" | cut -f1)"; truncate -s $(( bytes + bytes / 10 + 64 * 1024 * 1024 )) "$PAYIMG"
+    mkfs.ext4 -q -F -d "$TMPK/pay" "$PAYIMG"
+    EXTRA=(--disk "$PAYIMG")
+else
+    red "no stage 06 payload under ${KRYPTIK_WORK}/images; the attacker-signed update case cannot run"
+    EXTRA=()
+fi
+cp "$ENROLLED" "$VARSF"
+SERVE="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --name integ-p5 "${EXTRA[@]}")"
+SER="$(sed -n 's/^serial=//p' <<<"$SERVE")"; PIDF="$(sed -n 's/^pid=//p' <<<"$SERVE")"; LOG5="$(sed -n 's/^log=//p' <<<"$SERVE")"
+python3 "$DRV" --serial "$SER" --timeout 300 \
+    "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
+    "grab:overlay:grep -c attacker /etc/kryptik/trust/release-signers; ls /etc/kryptik/zones/ | head -3" \
+    "run:grep -q '^kryptik-release ' /etc/kryptik/trust/release-signers" \
+    "run:test -f /etc/kryptik/zones/evil.toml" \
+    "run:test \"\$(sysctl -n kernel.kptr_restrict)\" = 2" \
+    "run!:kryptik-launch --info evil; echo EVIL-RC=\$?" "expect:no zone named \"evil\"" \
+    "run:kryptik-launch --info work" \
+    "$(printf 'su:%s:%s' "$RPASS" 'kryptikd list --zones /usr/lib/kryptik/zones | grep -c evil; echo LIST-DONE')" "expect:LIST-DONE" \
+    ${EXTRA:+"$(printf 'su:%s:%s' "$RPASS" 'mkdir -p /mnt/x && mount -o ro /dev/vdb /mnt/x && kryptik-update apply /mnt/x; echo UPD-RC=$?')"} \
+    ${EXTRA:+"expect:not enrolled"} \
+    "$(printf 'su:%s:%s' "$RPASS" 'poweroff')" "expect:Power down" "wait-exit"
+rc=$?; sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
+T5="$(tr -d '\r' < "$LOG5")"
+[[ "$rc" -eq 0 ]] && green "the planted /etc content is visible (the overlay works) and none of it took effect" || red "phase 5 drive failed"
+grep -q 'no zone named "evil"' <<<"$T5" && green "the launch daemon does not know the planted zone (it reads /usr/lib/kryptik/zones)" || red "the daemon honoured a planted zone"
+if [[ -n "${EXTRA[*]:-}" ]]; then
+    grep -q 'not enrolled' <<<"$T5" && green "an update signed by the planted anchor's key is refused (the anchor is read from the verified root)" || red "an attacker-signed update was not refused"
+fi
+grep -q 'KRYPTIK_SMOKE: sysctl kernel.kptr_restrict=2' <<<"$T5" && green "the planted sysctl fragment was not applied" || red "the planted sysctl was applied"
+grep -q 'KRYPTIK_SMOKE: var_source=/dev/vda4' <<<"$T5" && green "state stayed persistent through the tamper (this is a repairable machine, not a bricked one)" || red "state not persistent in phase 5"
+# undo the planting so later runs start clean
+if mount -o loop,offset="$S_OFF" "$DISK" "$MNT" 2>/dev/null; then
+    rm -rf "$MNT/lib/kryptik/etc/upper/kryptik/trust" "$MNT/lib/kryptik/etc/upper/kryptik/zones" "$MNT/lib/kryptik/etc/upper/sysctl.d"
+    sync; umount "$MNT"
+fi
+rm -rf "$TMPK"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]] || exit 1

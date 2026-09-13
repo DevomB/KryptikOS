@@ -875,10 +875,17 @@ s_release_trust() {
     ssh-keygen -Y sign -f "$keydir/kryptik-release" -n kryptik-release "$t/m" >/dev/null 2>&1
     ssh-keygen -Y verify -f /usr/share/kryptik/trust/release-signers -I kryptik-release -n kryptik-release -s "$t/m.sig" < "$t/m" >/dev/null \
         && echo "ok: the anchor verifies a signature by the release key" || { echo "FAIL: anchor does not verify"; rm -rf "$t"; return 1; }
-    # and refuses one by a different key (control)
-    ssh-keygen -q -t ed25519 -N "" -f "$t/other" >/dev/null 2>&1
-    ssh-keygen -Y sign -f "$t/other" -n kryptik-release "$t/m" >/dev/null 2>&1
-    if ssh-keygen -Y verify -f /usr/share/kryptik/trust/release-signers -I kryptik-release -n kryptik-release -s "$t/m.sig" < "$t/m" >/dev/null 2>&1; then
+    # and refuses one by a different key (control). A SEPARATE file and
+    # signature, and the signing step must succeed: the first version
+    # re-signed m in place with its errors hidden, and when that signing
+    # failed the release key's signature was still in m.sig, so the
+    # "foreign key verified" verdict was about the wrong signature.
+    ssh-keygen -q -t ed25519 -N "" -f "$t/other" >/dev/null 2>&1 || { echo "FAIL: could not generate the control key"; rm -rf "$t"; return 1; }
+    printf 'probe by another key\n' > "$t/m2"
+    ssh-keygen -Y sign -f "$t/other" -n kryptik-release "$t/m2" < /dev/null >/dev/null 2>"$t/sign.err" \
+        || { echo "FAIL: signing with the control key failed: $(cat "$t/sign.err")"; rm -rf "$t"; return 1; }
+    [[ -s "$t/m2.sig" ]] || { echo "FAIL: no m2.sig from the control key"; rm -rf "$t"; return 1; }
+    if ssh-keygen -Y verify -f /usr/share/kryptik/trust/release-signers -I kryptik-release -n kryptik-release -s "$t/m2.sig" < "$t/m2" >/dev/null 2>&1; then
         echo "FAIL: a foreign key verified against the anchor"; rm -rf "$t"; return 1
     fi
     echo "ok: a foreign key is refused"
@@ -1789,17 +1796,19 @@ s_havoc() {
 # so a change to any of them re-runs it and a binary that changed under the
 # build is refused (as s_kryptikd does).
 s_desktop() {
-    local wl="$1" wl_sha="${2:-absent}" launch_sha="${3:-none}" session_sha="${4:-none}" chrome_sha="${5:-none}"
+    local wl="$1" wl_sha="${2:-absent}" launch_sha="${3:-none}" session_sha="${4:-none}" chrome_sha="${5:-none}" probe_sha="${6:-none}"
     [[ "$wl" == "none" ]] && wl=""
     local d="${KRYPTIK_ROOT}/tools/desktop"
-    echo "inputs: kryptik-launch.c ${launch_sha}"
+    echo "inputs: wlprobe.c ${probe_sha}"
+    echo "        kryptik-launch.c ${launch_sha}"
     echo "        kryptik-session   ${session_sha}"
     echo "        kryptik-chrome    ${chrome_sha}"
     echo "        kryptik-wlproxy   ${wl:-<none>} (${wl_sha})"
     local f
-    for f in kryptik-launch.c kryptik-session kryptik-chrome; do
+    for f in kryptik-launch.c kryptik-session kryptik-chrome wlprobe.c; do
         [[ -f "$d/$f" ]] || { echo "missing ${d}/${f}"; return 1; }
     done
+    install -d -m 0755 /usr/libexec/kryptik
 
     # The launch client, with the stage's hardening flags (step() set them).
     # shellcheck disable=SC2086
@@ -1808,6 +1817,16 @@ s_desktop() {
     local out; out="$(/usr/bin/kryptik-launch 2>&1 || true)"
     [[ "$out" == *usage:* ]] || { echo "FAIL: kryptik-launch does not run here: ${out}"; return 1; }
     echo "kryptik-launch: built and runs"
+
+    # The raw-socket Wayland probe the boundary tests run inside zones and
+    # in zone 0: what globals a client is offered, and what a bind of a
+    # hidden one gets. Measured in the guest, not inferred from unit tests.
+    # shellcheck disable=SC2086
+    gcc ${CFLAGS} ${LDFLAGS} -o /usr/libexec/kryptik/wlprobe "$d/wlprobe.c"
+    chmod 0755 /usr/libexec/kryptik/wlprobe
+    out="$(/usr/libexec/kryptik/wlprobe 2>&1 || true)"
+    [[ "$out" == *usage:* ]] || { echo "FAIL: wlprobe does not run here: ${out}"; return 1; }
+    echo "wlprobe: built and runs"
 
     install -m 0755 "$d/kryptik-session" /usr/bin/kryptik-session
     install -m 0755 "$d/kryptik-chrome" /usr/bin/kryptik-chrome
@@ -2048,7 +2067,7 @@ PACKAGES=(
     # The desktop's own pieces: the launch client, the session and the
     # chrome from this tree, and the proxy binary built outside (path and
     # content hash are the step's identity, as for kryptikd).
-    "desktop"     "s_desktop ${KRYPTIK_WLPROXY_BIN:-none} $([[ -f "${KRYPTIK_WLPROXY_BIN:-}" ]] && sha256_of "${KRYPTIK_WLPROXY_BIN}" || echo absent) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-launch.c" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-session" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-chrome" 2>/dev/null || echo none)"
+    "desktop"     "s_desktop ${KRYPTIK_WLPROXY_BIN:-none} $([[ -f "${KRYPTIK_WLPROXY_BIN:-}" ]] && sha256_of "${KRYPTIK_WLPROXY_BIN}" || echo absent) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-launch.c" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-session" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-chrome" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/wlprobe.c" 2>/dev/null || echo none)"
 
     "etc"         "s_etc"
     "console"     "s_console"

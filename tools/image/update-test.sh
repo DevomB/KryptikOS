@@ -95,6 +95,7 @@ start_vm() {   # start_vm NAME [extra run-ovmf args] -> sets SER PIDF LOG
 stop_vm() { sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null; sleep 1; }
 drive() { python3 "$DRV" --serial "$SER" --timeout 420 "$@"; }
 txt() { tr -d '\r' < "$LOG"; }
+part_start_disk() { sfdisk -d "$1" 2>/dev/null | awk -v n="$2" -F'[ ,]+' '$1 ~ n"$" {for(i=1;i<=NF;i++) if($i=="start=") print $(i+1)}'; }
 
 # ---------------------------------------------------------------- phase 1 --
 phase "phase 1: install ${VA}, boot it, create zone data"
@@ -214,6 +215,45 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "after a kill between arming and reboot: the trial boot happened and slot a was committed" || red "phase 6c drive failed"
+
+# ---------------------------------------------------------------- phase 7 --
+phase "phase 7: a deliberately broken trial falls back, is recorded, and is refused until retried"
+# On slot a (committed in phase 6). Arm B, power off, corrupt slot b's root
+# image from the host, boot: the firmware tries b (BootNext), dm-verity
+# panics on the first bad block, panic=10 reboots, BootNext is spent, so the
+# firmware loads BOOTX64.EFI - slot a - and boot-success records the failed
+# trial. The updater then refuses the same payload without --retry; with it
+# the slot is rewritten, verified, armed, and this time it comes up and is
+# committed. Detection, fallback and recovery, on the real chain.
+start_vm update-p7 --disk "$PB"
+drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
+    "$(ROOTSH 'cat /run/kryptik/boot-identity | head -1; mkdir -p /mnt/p /var/lib/kryptik/updates/b2 && mount -o ro /dev/vdb /mnt/p && cp -a /mnt/p/. /var/lib/kryptik/updates/b2/ && umount /mnt/p && kryptik-update apply /var/lib/kryptik/updates/b2 && echo ARM7-OK')" \
+    "expect:slot=a" "expect:ARM7-OK" \
+    "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
+rc=$?; stop_vm
+[[ "$rc" -eq 0 ]] && green "B armed from slot a" || red "phase 7 arming failed"
+B_OFF=$(( $(part_start_disk "$DISK" 3) * 512 ))
+printf '\xa5' | dd of="$DISK" bs=1 seek=$(( B_OFF + 4096 * 3000 + 100 )) conv=notrunc status=none
+green "slot b's root image corrupted from the host (one byte in block 3000)"
+start_vm update-p7b
+drive "expect:Linux version" \
+    "expect:device-mapper: verity:.*(corrupt|mismatch|error)|verity.*corrupt|dm-verity device corrupted" \
+    "expect:Kernel panic" \
+    "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
+    "login:${TUSER}:${TPASS}" \
+    "$(ROOTSH 'cat /run/kryptik/boot-identity | head -1; cat /var/lib/kryptik/boot/last-result; kryptik-update status; echo P7B-OK')" \
+    "expect:slot=a" "expect:trial-failed b" "expect:P7B-OK" \
+    "$(ROOTSH 'kryptik-update apply /var/lib/kryptik/updates/b2; echo RC=$?')" "expect:failed to boot" "expect:RC=1" \
+    "$(ROOTSH 'kryptik-update apply /var/lib/kryptik/updates/b2 --retry && echo RETRY-OK')" "expect:slot b verifies after write" "expect:RETRY-OK" \
+    "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
+    "login:${TUSER}:${TPASS}" \
+    "$(ROOTSH 'cat /run/kryptik/boot-identity | head -1; cat /var/lib/kryptik/boot/last-result; echo P7C-OK')" "expect:slot=b" "expect:commit b" "expect:P7C-OK" \
+    "run:test \"\$(cat /home/${TUSER}/marker)\" = before-update" \
+    "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
+rc=$?; stop_vm
+[[ "$rc" -eq 0 ]] && green "broken trial: verity panic, fallback to a, trial-failed recorded, refused without --retry, rewritten and committed with it; data intact" || red "phase 7 drive failed"
+txt | grep -q 'boot-success: trial slot b did NOT boot' && green "boot-success named the failed trial" || red "boot-success did not record the failed trial"
+if [[ "$(txt | grep -c 'Linux version')" -ge 3 ]]; then green "three kernel starts in one session: the corrupt trial, the fallback, the retried trial" ; else red "expected three kernel starts"; fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 echo "Limits: the interruptions are QEMU process kills with cache=writeback and explicit fsyncs;"
