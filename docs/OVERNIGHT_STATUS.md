@@ -42,9 +42,14 @@ named below, never in Git. The work is ongoing development on `main`; the
 | Job | Command | Log |
 | --- | --- | --- |
 | from-scratch rebuild (driver pid 1444554 in the distro, started 14:26:48) | `build-system.sh FRESH=1`: stamps archived to `.stamps/legacy/reset-20260913T142648`, previous trees set aside as `work/sysroot.old-20260913T142648` and `work/build.old-20260913T142648` (kept, not deleted); stage 01 and 02 as `build`, stage 04 and `make test-libc-unwind` as root, from snapshot eb72a56 | `/root/kryptik/logs/build-system.out`, `toolchain.log`, `temp-tools.log`, `system.log`, `libc-unwind.log` |
+| post-build follow-on (waiting for the line `SYSTEM AND LIBC PROOF DONE`) | `post-build.sh`: moves the snapshot to `main`'s current commit, rebuilds the musl binaries, incremental `make system` (the kryptikd, desktop, dwl and tests steps moved), `make kernel`, `make media` for release A (`0.1.<date>.<sha8>`) and release B (`<A>.1`) | `/root/kryptik/logs/post-build.out`, `system2.log`, `kernel.log`, `media-a.log`, `media-b.log` |
 
+The host driver scripts are in `tools/dev/build-host/` (and copied to
+`/root/kryptik/bin/` in the distro, from where the follow-on runs).
 Recorded durations of the previous run: stage 01 0.8 h, stage 02 1.1 h,
-stage 04 1.5 h. Expect the sysroot around 18:00 and the kernel after it.
+stage 04 1.5 h. Expect the sysroot around 18:00, the kernel and media by
+about 19:00. Nothing in the session has to be alive for them: both run
+detached (`setsid`) in the distro.
 
 ## Decisions taken in this run
 
@@ -76,14 +81,47 @@ stage 04 1.5 h. Expect the sysroot around 18:00 and the kernel after it.
 - Transfers between zones ask the person through the trusted chrome
   (`/run/kryptik-consent`); the clipboard moves only by the zone 0 gesture.
 
+## Session checkpoint 2026-09-13 14:55 (wound down at the user's request)
+
+Committed on `main` this session, in order: ae2e9c3 (GUI guest check and
+driver), eb72a56 (glibc bug 33088 backport, build-time checks, kernel
+workaround removed), 31941dd (`make acceptance`, instructions, status,
+`kryptik` command), 15c1e2d (driver fixes), b04819d (fullscreen keeps the
+zone border), plus this checkpoint. The tree is clean. The two detached
+jobs above continue without the session.
+
+Resume order, inside `kryptik-build` as root:
+
+1. `cat /root/kryptik/logs/post-build.out` - wait for `POST-BUILD DONE`
+   (or read which stage failed; each stage's log is named on its END line).
+   If the build driver failed instead: fix on `main`, then
+   `bash /root/kryptik/bin/sync-and-build.sh` (resumes from the stamps;
+   never FRESH=1 again unless the toolchain inputs change).
+2. `cd /root/kryptik/main && make SUDO= acceptance MEDIA_USB=/root/kryptik/work/images/kryptik-<A>-usb.img MEDIA_ISO=/root/kryptik/work/images/kryptik-<A>.iso EXPORT="/mnt/c/Coding-Projects/Linux Distro/out/overnight"`
+   where `<A>` is the version `post-build.out` prints (the B image is newer
+   by mtime, so name A explicitly). Payloads A and B are found by version.
+   Expect about two hours; the report is under `work/acceptance/<time>/`.
+3. Repair what fails (`ONLY=G3,G8` re-runs single gates), commit, re-sync
+   the snapshot at a safe boundary (`git checkout --detach main` in
+   `/root/kryptik/main` while no chroot driver runs), `make SUDO= system`
+   for image-side changes, `make SUDO= media KRYPTIK_VERSION=...` again
+   (both releases if the root changed), then the final full run with
+   `EXPORT=`.
+4. Update README.md and docs/roadmap.md to the evidence (both still
+   describe the pre-kernel, pre-image state), and this file's gate table.
+
+Known gaps that are documented rather than closed: no watchdog for a
+userspace that hangs after boot-success judged the trial healthy; the
+release is signed by a build-generated developer key; nothing has run on
+physical hardware; glibc 2.40 lacks the branch's later CVE backports.
+
 ## Next commands
 
 ```sh
-# inside kryptik-build, as root, from /root/kryptik/main
-tail -f /root/kryptik/logs/build-system.out
-# when it prints SYSTEM AND LIBC PROOF DONE:
-make SUDO= kernel && make SUDO= media && make SUDO= media KRYPTIK_VERSION=0.1.$(date +%Y%m%d).b
-make SUDO= acceptance EXPORT="/mnt/c/Coding-Projects/Linux Distro/out/overnight"
+# inside kryptik-build, as root
+tail -f /root/kryptik/logs/post-build.out          # until POST-BUILD DONE
+cd /root/kryptik/main && ls work/images/            # (KRYPTIK_WORK=/root/kryptik/work) the A and B media
+make SUDO= acceptance MEDIA_USB=/root/kryptik/work/images/kryptik-A-usb.img MEDIA_ISO=/root/kryptik/work/images/kryptik-A.iso EXPORT="/mnt/c/Coding-Projects/Linux Distro/out/overnight"
 ```
 
 ## Unresolved blockers
