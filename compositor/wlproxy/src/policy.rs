@@ -37,22 +37,36 @@ pub fn advertise(interface: &str) -> bool {
     allowed_version(interface).is_some()
 }
 
+/// The most bytes a rewritten title may carry. A title is not a channel
+/// for megabytes; the compositor and the chrome only ever show one line.
+pub const MAX_TITLE_BYTES: usize = 256;
+
 /// The identity prefix for titles: `[zone] `.
+///
+/// The claimed title follows the prefix whatever it contains: a client that
+/// writes its own `[vault] ` merely becomes `[work] [vault] ...`, visibly,
+/// after the real one.
 pub fn title_for(zone: &str, title: &str) -> String {
-    let t = if title.starts_with('[') && title.contains("] ") {
-        // A client pretending to carry a prefix: it becomes part of its own
-        // title, visibly, after the real one.
-        title
-    } else {
-        title
-    };
-    let mut out = format!("[{zone}] {t}");
-    // Bounded: a title is not a channel for megabytes.
-    if out.len() > 256 {
-        out.truncate(253);
-        out.push_str("...");
-    }
+    let mut out = format!("[{zone}] {title}");
+    bound_utf8(&mut out, MAX_TITLE_BYTES);
     out
+}
+
+/// Cut `s` down to at most `max` bytes, ending in `...` when anything was
+/// cut. The cut lands on a character boundary: a byte count is not a
+/// character count, and `String::truncate` panics inside a multi-byte
+/// sequence - which, with `panic = "abort"` in release, took the whole
+/// proxy down for a title of accented text (docs/OVERNIGHT_RESUME.md).
+fn bound_utf8(s: &mut String, max: usize) {
+    if s.len() <= max {
+        return;
+    }
+    let mut cut = max.saturating_sub(3);
+    while cut > 0 && !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    s.truncate(cut);
+    s.push_str("...");
 }
 
 /// The app_id the compositor sees: `kryptik.<zone>.<claimed>`, with the
@@ -129,5 +143,54 @@ mod tests {
         assert_eq!(zone_of_app_id("kryptik..x"), None);
         let long = title_for("w", &"x".repeat(1000));
         assert!(long.len() <= 256);
+    }
+
+    /// The bound is in bytes; the cut must still be a character boundary.
+    /// Each case is one the byte-index truncation got wrong or would have.
+    #[test]
+    fn long_multibyte_titles_are_bounded_on_a_character_boundary() {
+        // 200 x U+00E9 is 400 bytes; byte 253 is inside a character.
+        let t = title_for("vault", &"\u{00e9}".repeat(200));
+        assert!(t.len() <= MAX_TITLE_BYTES, "{}", t.len());
+        assert!(t.starts_with("[vault] "), "the identity prefix survives: {t}");
+        assert!(t.ends_with("..."), "a cut title says so: {t}");
+        let body = &t["[vault] ".len()..t.len() - 3];
+        assert!(body.chars().all(|c| c == '\u{00e9}'), "every kept character is intact: {body:?}");
+        assert!(!body.is_empty());
+
+        // Four-byte characters, with the prefix chosen so that byte 253 is
+        // the second byte of an emoji.
+        let t = title_for("w", &"\u{1F600}".repeat(120));
+        assert!(t.len() <= MAX_TITLE_BYTES);
+        assert!(t.ends_with("..."));
+        assert!(t.trim_end_matches("...").chars().skip(4).all(|c| c == '\u{1F600}'), "{t:?}");
+
+        // Mixed widths: an accented character exactly straddling the cut.
+        let mut title = "x".repeat(MAX_TITLE_BYTES - 3 - "[work] ".len() - 1);
+        title.push('\u{00e9}');
+        title.push_str("tail");
+        let t = title_for("work", &title);
+        assert!(t.len() <= MAX_TITLE_BYTES);
+        assert!(t.ends_with("..."));
+        assert!(std::str::from_utf8(t.as_bytes()).is_ok());
+
+        // Exactly at the bound: untouched. One byte over: cut.
+        let fits = "y".repeat(MAX_TITLE_BYTES - "[work] ".len());
+        assert_eq!(title_for("work", &fits).len(), MAX_TITLE_BYTES);
+        assert!(!title_for("work", &fits).ends_with("..."));
+        let over = format!("{fits}z");
+        let t = title_for("work", &over);
+        assert_eq!(t.len(), MAX_TITLE_BYTES);
+        assert!(t.ends_with("..."));
+
+        // A long zone name is bounded like everything else, and the
+        // multi-byte rule still holds when the prefix itself is what gets cut.
+        let t = title_for(&"\u{00e9}".repeat(300), "Editor");
+        assert!(t.len() <= MAX_TITLE_BYTES);
+        assert!(t.starts_with("[\u{00e9}"));
+        assert!(t.ends_with("..."));
+
+        // Nothing multi-byte in the input, nothing changes from before.
+        assert_eq!(title_for("work", "Editor"), "[work] Editor");
     }
 }
