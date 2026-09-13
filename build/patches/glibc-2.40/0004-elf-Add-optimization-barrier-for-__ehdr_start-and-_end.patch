@@ -1,0 +1,81 @@
+From 81467d4b6168c7ce40d951d6b32e387109c0e5ae Mon Sep 17 00:00:00 2001
+From: "H.J. Lu" <hjl.tools@gmail.com>
+Date: Sun, 15 Jun 2025 11:38:54 +0800
+Subject: [PATCH] elf: Add optimization barrier for __ehdr_start and _end
+
+rtld.c has
+
+extern const ElfW(Ehdr) __ehdr_start attribute_hidden;
+...
+  _dl_rtld_map.l_map_start = (ElfW(Addr)) &__ehdr_start;
+  _dl_rtld_map.l_map_end = (ElfW(Addr)) _end;
+
+As
+
+https://gcc.gnu.org/bugzilla/show_bug.cgi?id=120653
+
+shows, compiler may generate run-time relocation on __ehdr_start with
+
+	movq	.LC0(%rip), %xmm0
+...
+	.section	.data.rel.ro.local,"aw"
+	.align 8
+.LC0:
+	.quad	__ehdr_start
+
+This won't work before run-time relocation is finished in rtld.c.  Add
+optimization barrier to prevent run-time relocations against __ehdr_start
+and _end.
+
+Signed-off-by: H.J. Lu <hjl.tools@gmail.com>
+Reviewed-by: Sam James <sam@gentoo.org>
+
+[Kryptik: taken from glibc master (bug 33088); it is not on release/2.40/master. The elf/rtld.c hunk is re-expressed for 2.40, where the loader's link map is spelled GL(dl_rtld_map) rather than 2.42's _dl_rtld_map; the two asm statements it adds are otherwise the upstream ones. The sysdeps/x86_64/Makefile hunk (a make-check rule) is unmodified. See README.md beside this file.]
+---
+ elf/rtld.c              |  3 +++
+ sysdeps/x86_64/Makefile | 18 ++++++++++++++++++
+ 2 files changed, 21 insertions(+)
+
+diff --git a/elf/rtld.c b/elf/rtld.c
+--- a/elf/rtld.c
++++ b/elf/rtld.c
+@@ -476,7 +476,10 @@
+   _dl_setup_hash (&GL(dl_rtld_map));
+   GL(dl_rtld_map).l_real = &GL(dl_rtld_map);
+   GL(dl_rtld_map).l_map_start = (ElfW(Addr)) &__ehdr_start;
++  /* Prevent run-time relocations against __ehdr_start and _end.  */
++  asm ("" : "+g" (GL(dl_rtld_map).l_map_start));
+   GL(dl_rtld_map).l_map_end = (ElfW(Addr)) _end;
++  asm ("" : "+g" (GL(dl_rtld_map).l_map_end));
+   /* Copy the TLS related data if necessary.  */
+ #ifndef DONT_USE_BOOTSTRAP_MAP
+ # if NO_TLS_OFFSET != 0
+diff --git a/sysdeps/x86_64/Makefile b/sysdeps/x86_64/Makefile
+index 5723ec1847..e8f8a52eea 100644
+--- a/sysdeps/x86_64/Makefile
++++ b/sysdeps/x86_64/Makefile
+@@ -214,6 +214,24 @@ $(objpfx)tst-plt-rewrite2: $(objpfx)tst-plt-rewritemod2.so
+ endif
+ 
+ test-internal-extras += tst-gnu2-tls2mod1
++
++tests-special += $(objpfx)check-rtld.out
++
++$(objpfx)rtld.reloc: $(objpfx)rtld.os
++	@rm -f $@T
++	LC_ALL=C $(READELF) -rW $< > $@T
++	test -s $@T
++	mv -f $@T $@
++common-generated += $(objpfx)rtld.reloc
++
++# Verify that there are no run-time relocations against __ehdr_start nor
++# _end.
++$(objpfx)check-rtld.out: $(objpfx)rtld.reloc
++	LC_ALL=C; \
++	if grep -E "R_X86_64_64.*(__ehdr_start|_end)" $^ > $@; \
++	  then false; else true; fi; \
++	$(evaluate-test)
++generated += check-rtld.out
+ endif # $(subdir) == elf
+ 
+ ifeq ($(subdir),csu)

@@ -1,5 +1,10 @@
 # build → integration / provenance: the C library cannot unwind after a dlopen
 
+> **Resolved 2026-09-13** - see "Resolution" at the end. The mechanism
+> described below was the first hypothesis; the loader was contiguous after
+> all, and the defect was glibc bug 33088 (a compiler-side hazard in the
+> loader's own startup), fixed by `build/patches/glibc-2.40/0004-*.patch`.
+
 Written 2026-09-11 by the build tab.
 Build branch `overnight/build-2026-09-11`, worktree
 `/home/devomb/kryptik-overnight-2026-09-11/worktrees/build`.
@@ -143,3 +148,61 @@ after it — those hash prior step *names*, not their outputs — so a corrected
 glibc can be rebuilt and reinstalled without rebuilding the whole base system.
 Coordinate before starting one: the full distribution/kernel build slot is
 held by the build tab.
+
+## Resolution (2026-09-13)
+
+Two upstream loader bugs produce the symptom above. The first hypothesis -
+glibc bug 31943, an ld.so mapped with gaps between its LOAD segments - was
+backported (`build/patches/glibc-2.40/0001..0003`) and made no difference:
+`make test-libc-unwind` still failed 4 of 6, and `/proc/PID/maps` showed the
+loader mapped in five abutting ranges with no gap for anything to land in.
+The read that closed it, all inside the chroot against the stage 04 loader:
+
+```
+_dl_find_object((void *) 0x1000)     -> 0  map=[(nil),0x779f1bb562d8) name=/lib64/ld-linux-x86-64.so.2
+_dl_find_object((void *) 0x10000000) -> 0  map=[(nil),0x779f1bb562d8) name=/lib64/ld-linux-x86-64.so.2
+LD_TRACE_LOADED_OBJECTS=1 ./probe    ->    /lib64/ld-linux-x86-64.so.2 (0x0000000000000000)
+```
+
+The loader records its own map as `[0, l_addr + _end)`. Its map end is
+right; its map start, `&__ehdr_start`, is 0. In `elf/rtld.os`:
+
+```
+d64:  movq   .data.rel.ro.local+0x14(%rip),%xmm2    # the top of _dl_start
+d92:  lea    __ehdr_start-0x4(%rip),%rdx            # PC-relative: correct
+RELOCATION RECORDS FOR [.data.rel.ro.local]:  0x18  R_X86_64_64  __ehdr_start
+```
+
+GCC 14 at `-O2` SLP-vectorised the two adjacent stores of the loader's map
+bounds (`l_map_start = &__ehdr_start; l_map_end = _end;` in the always-inlined
+`_dl_start_final`), took `&__ehdr_start` from a `.quad` in
+`.data.rel.ro.local` - a word that needs a run-time relocation - and hoisted
+that load to the entry of `_dl_start`, above `ELF_DYNAMIC_RELOCATE`. Before
+the loader relocates itself the word holds the link-time value, 0. Every
+address below libc that belongs to no initially loaded object then falls
+inside `[0, _end)` and is attributed to ld.so; every later `dlopen` is mapped
+exactly there. Recompiling `rtld.c` with `-fno-tree-slp-vectorize` or `-O1`
+removed the relocated constant; removing each hardening flag in turn did not.
+
+This is glibc bug 33088 (GCC bug 120653 on the compiler side), fixed upstream
+for 2.42 by H.J. Lu with two `asm` barriers, never backported to 2.40.
+`build/patches/glibc-2.40/0004-elf-Add-optimization-barrier-for-__ehdr_start-and-_end.patch`
+carries it, re-expressed for 2.40's `GL(dl_rtld_map)` spelling. With it,
+`rtld.os` takes both addresses with `lea` and has no `R_X86_64_64` against
+either symbol.
+
+What holds it closed: `s_glibc` in stages 01 and 04 runs upstream's
+`make check` rule itself (`readelf -rW elf/rtld.os` must show no
+`R_X86_64_64` against `__ehdr_start` or `_end`), stage 04 reads the
+installed loader's own map start back through `LD_TRACE_LOADED_OBJECTS` and
+fails if it is 0, and `tools/test-libc-unwind.sh` does the same on the
+finished system before probing `pthread_exit`, `pthread_cancel`, `backtrace`
+and `_dl_find_object`. The kernel stage's `HOSTLDFLAGS` workaround is gone:
+`scripts/sorttable` ending its threads with `pthread_exit()` is now part of
+the proof.
+
+One correction to the text above: the note that a glibc change invalidates
+only the `glibc` step was written before stamps chained their predecessors'
+fingerprints (`deps=` in `stamp_fingerprint`). It now invalidates every step
+after it, in stage 01 and everything built on it, and that rebuild is what
+proved the fix.

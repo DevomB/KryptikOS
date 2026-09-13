@@ -198,9 +198,12 @@ s_glibc() {
         echo "note: FHS patch absent, continuing without it"
     fi
 
-    # Upstream loader fixes 2.40 shipped without (build/patches/glibc-2.40/).
-    # Applied to the toolchain glibc as well as the final one in stage 04, so
-    # both are built from the same source.
+    # Upstream loader fixes 2.40 shipped without (build/patches/glibc-2.40/,
+    # provenance in its README): the release/2.40/master _dl_find_object
+    # fixes and the bug 33088 barrier without which GCC 14 makes ld.so
+    # record its own map as starting at address 0. Applied to the toolchain
+    # glibc as well as the final one in stage 04, so both are built from the
+    # same source.
     apply_repo_patches "glibc-${V_GLIBC}"
 
     mkdir -p build
@@ -215,6 +218,23 @@ s_glibc() {
         --disable-nscd \
         libc_cv_slibdir=/usr/lib
     make
+
+    # Upstream's make-check rule for glibc bug 33088 (see the patch set's
+    # README): the loader's startup code must not reach __ehdr_start or
+    # _end through a run-time relocation, because it stores their addresses
+    # before it has relocated itself. Stage 04 repeats this on the final
+    # loader and adds the runtime form (ldd's map start).
+    echo "--- run-time relocations against __ehdr_start or _end in rtld.os ---"
+    local rtld_relocs
+    rtld_relocs="$(readelf -rW elf/rtld.os | grep -E 'R_X86_64_64.*(__ehdr_start|_end)' || true)"
+    if [[ -n "$rtld_relocs" ]]; then
+        printf '%s\n' "$rtld_relocs"
+        echo "FAIL: rtld.os takes the loader's own map bounds through a relocated"
+        echo "      constant (glibc bug 33088); ld.so would record itself at 0."
+        return 1
+    fi
+    echo "  ok: none"
+
     make DESTDIR="$LFS" install
 
     # The ldd wrapper hardcodes a prefix that is wrong for a sysroot install.
