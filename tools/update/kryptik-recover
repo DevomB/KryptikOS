@@ -1,0 +1,132 @@
+#!/bin/sh
+#
+# kryptik-recover: the dedicated recovery path (Design 08). Runs from a booted
+# install medium - itself a signed kernel over a verified root - against an
+# installed disk that no longer boots.
+#
+#   kryptik-recover --disk DEV --commit-slot a|b       make that slot the boot file
+#   kryptik-recover --disk DEV --restore-slot a|b      rewrite that slot from this medium's root image
+#   kryptik-recover --disk DEV --status
+#
+# --commit-slot: the other slot is intact (an update went wrong after the
+# commit, or the committed kernel file was damaged): copy that slot's kernel
+# over BOOTX64.EFI and record it. Refuses a slot with no filesystem.
+#
+# --restore-slot: the slot's root image is damaged (dm-verity refuses it):
+# write the medium's own root image and its kernel into that slot, exactly
+# as the installer does, then commit it. The state partition - users, zone
+# volumes, updates - is not touched. The result is the medium's version;
+# an older version than what was there is what "recover from the medium"
+# means, and it is said.
+#
+# Nothing here depends on the damaged system: every byte written comes from
+# the medium, which the firmware verified.
+set -eu
+PROG=kryptik-recover
+say() { printf '%s: %s\n' "$PROG" "$*"; }
+die() { printf '%s: FAILED: %s\n' "$PROG" "$*" >&2; exit 1; }
+DISK=""; COMMIT=""; RESTORE=""; STATUS=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --disk) DISK="${2:-}"; shift 2 ;;
+        --commit-slot) COMMIT="${2:-}"; shift 2 ;;
+        --restore-slot) RESTORE="${2:-}"; shift 2 ;;
+        --status) STATUS=1; shift ;;
+        -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) die "unknown argument: $1" ;;
+    esac
+done
+[ "$(id -u)" = 0 ] || die "must run as root"
+[ -n "$DISK" ] && [ -b "$DISK" ] || die "--disk DEV is required and must be a block device"
+media="$(sed -n 's/^media=//p' /run/kryptik/boot-identity 2>/dev/null)"
+[ -n "$media" ] || die "not running from an install medium"
+DISK="$(readlink -f "$DISK")"
+part_dev() { case "$1" in *[0-9]) printf "%sp%s" "$1" "$2" ;; *) printf "%s%s" "$1" "$2" ;; esac; }
+lbl() { blkid -s PARTLABEL -o value "$1" 2>/dev/null; }
+ESP="$(part_dev "$DISK" 1)"; SA="$(part_dev "$DISK" 2)"; SB="$(part_dev "$DISK" 3)"; ST="$(part_dev "$DISK" 4)"
+[ "$(lbl "$ESP")" = kryptik-esp ] || die "${ESP} is not labelled kryptik-esp; is ${DISK} a Kryptik installation?"
+[ "$(lbl "$SA")" = kryptik-a ] && [ "$(lbl "$SB")" = kryptik-b ] && [ "$(lbl "$ST")" = kryptik-state ] || die "${DISK} does not carry the Design 08 layout"
+for lblname in kryptik-state kryptik-media; do
+    for d in $(blkid -t PARTLABEL="$lblname" -o device 2>/dev/null); do
+        case "$(readlink -f "$d")" in "$DISK"*) [ "$lblname" = kryptik-state ] && [ "$d" = "$ST" ] && continue; die "${DISK} is the medium; refusing" ;; esac
+    done
+done
+mountpoint -q /run/kryptik-recover 2>/dev/null && umount /run/kryptik-recover
+mkdir -p /run/kryptik-recover
+cleanup() { mountpoint -q /run/kryptik-recover 2>/dev/null && umount /run/kryptik-recover; rmdir /run/kryptik-recover 2>/dev/null || true; }
+trap cleanup EXIT INT TERM
+slot_dev() { case "$1" in a) echo "$SA" ;; b) echo "$SB" ;; *) die "slot must be a or b" ;; esac; }
+has_fs() { [ "$(dd if="$1" bs=1 skip=1080 count=2 status=none | od -An -tx1 | tr -d ' \n')" = "53ef" ]; }
+
+if [ "$STATUS" = 1 ]; then
+    mount -o ro "$ESP" /run/kryptik-recover || die "cannot mount the ESP"
+    echo "disk           $DISK"
+    echo "committed slot $(cat /run/kryptik-recover/kryptik/committed-slot 2>/dev/null || echo unknown)"
+    for s in a b; do
+        printf 'slot %s         version %s, kernel %s, filesystem %s\n' "$s" \
+            "$(cat "/run/kryptik-recover/kryptik/version-$s" 2>/dev/null || echo none)" \
+            "$([ -f "/run/kryptik-recover/EFI/kryptik/kryptik-$s.efi" ] && echo present || echo absent)" \
+            "$(has_fs "$(slot_dev "$s")" && echo present || echo NONE)"
+    done
+    echo "BOOTX64.EFI    $(sha256sum /run/kryptik-recover/EFI/BOOT/BOOTX64.EFI 2>/dev/null | cut -c1-16)..."
+    exit 0
+fi
+
+commit_slot() {   # commit_slot SLOT (ESP mounted rw at /run/kryptik-recover)
+    s="$1"; k="/run/kryptik-recover/EFI/kryptik/kryptik-$s.efi"
+    [ -f "$k" ] || die "no kernel for slot $s on the ESP"
+    has_fs "$(slot_dev "$s")" || die "slot $s holds no filesystem; use --restore-slot $s"
+    cp "$k" /run/kryptik-recover/EFI/BOOT/BOOTX64.EFI.new
+    sync -f /run/kryptik-recover/EFI/BOOT/BOOTX64.EFI.new
+    mv -f /run/kryptik-recover/EFI/BOOT/BOOTX64.EFI.new /run/kryptik-recover/EFI/BOOT/BOOTX64.EFI
+    printf '%s\n' "$s" > /run/kryptik-recover/kryptik/committed-slot
+    sync
+    say "committed: BOOTX64.EFI is now slot $s ($(cat "/run/kryptik-recover/kryptik/version-$s" 2>/dev/null || echo unknown))"
+}
+
+if [ -n "$RESTORE" ]; then
+    sd="$(slot_dev "$RESTORE")"
+    # The medium's own root image and kernel, exactly as kryptik-install finds them.
+    mkdir -p /run/kryptik-recover-media
+    case "$media" in
+        usb)
+            src="$(blkid -t PARTLABEL=kryptik-media -o device 2>/dev/null | head -1)"; off=0
+            mdisk="$(printf '%s' "$src" | sed 's/p\{0,1\}[0-9]*$//')"
+            mesp="$(blkid -t PARTLABEL=kryptik-esp -o device 2>/dev/null | grep "^${mdisk}" | head -1)"
+            mount -o ro "$mesp" /run/kryptik-recover-media || die "cannot mount the medium's ESP"
+            rj=/run/kryptik-recover-media/kryptik/root.json; kdir=/run/kryptik-recover-media/EFI/kryptik ;;
+        iso)
+            mount -t iso9660 -o ro /dev/sr0 /run/kryptik-recover-media || die "cannot mount the medium"
+            src=/dev/sr0; off="$(sed -n 's/.*linear \/dev\/sr0 \([0-9]*\).*/\1/p' /proc/cmdline | head -1)"; off=$(( off * 512 ))
+            rj=/run/kryptik-recover-media/root.json
+            mkdir -p /run/kryptik-recover-esp && mount -o ro,loop /run/kryptik-recover-media/esp.img /run/kryptik-recover-esp || die "cannot mount the medium's ESP image"
+            kdir=/run/kryptik-recover-esp/EFI/kryptik ;;
+    esac
+    bytes="$(sed -n 's/^  "total_bytes": \([0-9]*\).*/\1/p' "$rj")"; sha="$(sed -n 's/^  "sha256": "\([0-9a-f]*\)".*/\1/p' "$rj")"; ver="$(sed -n 's/^  "version": "\([^"]*\)".*/\1/p' "$rj")"
+    [ "$(blockdev --getsize64 "$sd")" -ge "$bytes" ] || die "slot $RESTORE is smaller than the medium's root image"
+    say "restoring slot $RESTORE from this medium (${ver}, ${bytes} bytes); the state partition is untouched"
+    if [ "$off" -gt 0 ]; then dd if="$src" of="$sd" bs=4M iflag=skip_bytes,count_bytes skip="$off" count="$bytes" conv=fsync status=none
+    else dd if="$src" of="$sd" bs=4M iflag=count_bytes count="$bytes" conv=fsync status=none; fi
+    got="$(dd if="$sd" bs=4M iflag=count_bytes count="$bytes" status=none | sha256sum | cut -c1-64)"
+    [ "$got" = "$sha" ] || die "slot $RESTORE reads back as $got, expected $sha"
+    say "slot $RESTORE verifies"
+    mount -o rw "$ESP" /run/kryptik-recover || die "cannot mount the target ESP"
+    cp "$kdir/kryptik-$RESTORE.efi" "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi.new"
+    sync -f "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi.new"
+    mv -f "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi.new" "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi"
+    printf '%s\n' "$ver" > "/run/kryptik-recover/kryptik/version-$RESTORE"
+    commit_slot "$RESTORE"
+    umount /run/kryptik-recover
+    mountpoint -q /run/kryptik-recover-esp 2>/dev/null && umount /run/kryptik-recover-esp
+    umount /run/kryptik-recover-media
+    say "done: boot ${DISK} without the medium"
+    exit 0
+fi
+
+if [ -n "$COMMIT" ]; then
+    mount -o rw "$ESP" /run/kryptik-recover || die "cannot mount the target ESP"
+    commit_slot "$COMMIT"
+    umount /run/kryptik-recover
+    exit 0
+fi
+die "one of --status, --commit-slot or --restore-slot is required"

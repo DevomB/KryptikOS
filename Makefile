@@ -103,7 +103,7 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
         image-smoke \
         validate-kernel validate-kernel-hardened validate-kernel-boot \
         media ovmf-vars media-smoke-usb media-smoke-iso media-smoke-secureboot \
-        media-refused-foreign-keys \
+        media-refused-foreign-keys integrity-test update-test \
         toolchain temp-tools chroot chroot-enter chroot-umount chroot-status \
         system kernel iso audit zones zone-test paths reset-stamps \
         sysroot-ready \
@@ -127,6 +127,8 @@ help:
 	@echo "  make media-smoke-secureboot              same with the developer key enrolled"
 	@echo "  make media-refused-foreign-keys          Microsoft keys only: must be refused"
 	@echo "  make install-test  install to a blank virtual disk, boot it alone, refusals"
+	@echo "  make integrity-test  Secure Boot enforced, foreign boot file refused, root tamper refused, recovery"
+	@echo "  make update-test PAYLOAD_A=.. PAYLOAD_B=..  A/B update, rollback, refusals, interruptions"
 	@echo
 	@echo "  'system' and 'kernel' build INSIDE the chroot. They mount it, run"
 	@echo "  the stage, and unmount again. Only the mounts and the chroot call"
@@ -331,6 +333,21 @@ media-refused-foreign-keys:
 install-test:
 	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
 	@"$(TOOLS)"/image/install-test.sh --usb "$(MEDIA_USB)" --vars $(or $(VARS),clean)
+
+# Enforced Secure Boot, a foreign-signed boot file refused, a tampered root
+# refused by dm-verity, recovery from the medium.
+integrity-test: ovmf-vars
+	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
+	@"$(TOOLS)"/image/integrity-test.sh --usb "$(MEDIA_USB)"
+
+# A/B update, reboot, recovery/rollback, refusals, interruptions. Needs two
+# releases: PAYLOAD_A and PAYLOAD_B are stage 06 payload directories and
+# MEDIA_USB is release A's medium.
+PAYLOAD_A ?=
+PAYLOAD_B ?=
+update-test:
+	@test -n "$(PAYLOAD_A)" -a -n "$(PAYLOAD_B)" || { echo "set PAYLOAD_A=... PAYLOAD_B=... (stage 06 payload dirs of two releases)"; exit 1; }
+	@"$(TOOLS)"/image/update-test.sh --usb-a "$(MEDIA_USB)" --payload-a "$(PAYLOAD_A)" --payload-b "$(PAYLOAD_B)" --vars $(or $(VARS),clean)
 
 zones:
 	@cd compartments/kryptikd && cargo build --quiet
