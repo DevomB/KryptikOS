@@ -69,6 +69,7 @@ USAGE:
     --wayland-socket P   the zone's proxy socket, bound at /run/kryptik/wayland-0
     --wayland-inode D:I  ... and the (device, inode) it must be, or the launch fails
     --passphrase-fd N    an encrypted zone's passphrase, read from descriptor N
+    --passphrase-file F  ... or from file F (root, tests); never on the command line
     --ready-fd N         written `ready` and closed once the zone's pid 1 exists
                          (the launch daemon passes all three; see `serve`)
 

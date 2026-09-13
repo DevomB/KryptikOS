@@ -105,7 +105,8 @@ T2="$(txt_latest)"
 grep -q 'Linux version' <<<"$T2" && red "a foreign-signed kernel BOOTED under the enrolled key" || green "the firmware did not start the foreign-signed kernel"
 grep -q 'KRYPTIK_SMOKE: BEGIN' <<<"$T2" && red "Kryptik userspace ran from an untrusted boot file" || green "no userspace ran"
 # positive control: the same firmware and store boot the medium's signed kernel
-"${SELF}/run-ovmf.sh" --usb "$USB" --testctl "${VMDIR}/testctl-smoke.img" --vars enrolled --mode smoke --timeout 300 --name integ-p2ctl > /dev/null 2>&1 || "${SELF}/mk-testctl.sh" --out "${VMDIR}/testctl-smoke.img" smoke_poweroff=1 >/dev/null
+"${SELF}/mk-testctl.sh" --out "${VMDIR}/testctl-smoke.img" smoke_poweroff=1 > /dev/null
+"${SELF}/run-ovmf.sh" --usb "$USB" --testctl "${VMDIR}/testctl-smoke.img" --vars enrolled --mode smoke --timeout 300 --name integ-p2ctl > /dev/null 2>&1
 txt_latest | grep -q 'Linux version' && green "control: the developer-signed medium boots under the same store" || red "control failed: the signed medium did not boot"
 # restore the pristine ESP
 dd if="${ESPIMG}.pristine" of="$DISK" bs=1M oflag=seek_bytes seek="$ESP_OFF" conv=notrunc status=none
