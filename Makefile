@@ -99,7 +99,7 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
 
 .PHONY: test help check check-kernel-eol sources lock verify verify-provenance \
 	vm-disk vm-disk-boot vm-restart vm-measure cli-test update-tree-test identity-test serve-test \
-        test-harness test-hardening test-artifacts audit-artifacts \
+        test-harness test-hardening test-artifacts audit-artifacts test-boot-success \
         audit-artifacts-strict manifest verify-manifest test-manifest \
         test-s6-init smoke-userspace test-services test-libc-unwind \
         sign-image verify-image test-image-signing test-installer test-mkdisk-guards \
