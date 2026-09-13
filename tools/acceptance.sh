@@ -361,7 +361,10 @@ it_export() {
         cp --sparse=always "$f" "${d}/" || ok=1
         [[ -f "${f}.sha256" ]] && cp "${f}.sha256" "${d}/"
     done
-    [[ -f "${IMGDIR}/root.json" ]] && cp "${IMGDIR}/root.json" "${d}/"
+    # root.json from release A's payload, not images/root.json: a second
+    # release built after A overwrites the latter with its own record.
+    if [[ -n "$PAYLOAD_A" && -f "${PAYLOAD_A}/root.json" ]]; then cp "${PAYLOAD_A}/root.json" "${d}/"
+    elif [[ -f "${IMGDIR}/root.json" ]]; then cp "${IMGDIR}/root.json" "${d}/"; fi
     for f in "${KRYPTIK_WORK}/keys/sb/kryptik-sb.crt" "${KRYPTIK_WORK}/keys/sb/kryptik-sb.der"; do
         if [[ -f "$f" ]]; then cp "$f" "${d}/"; else echo "  missing trust material: $f"; ok=1; fi
     done
