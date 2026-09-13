@@ -25,6 +25,8 @@
  */
 #define _GNU_SOURCE
 #include <errno.h>
+#include <limits.h>
+#include <stdarg.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
