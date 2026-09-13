@@ -535,6 +535,37 @@ mod tests {
         assert_eq!(s.rewritten, 2);
     }
 
+    /// A long multi-byte title goes through the same rewrite as an ASCII
+    /// one: bounded, prefixed, still valid, and the session survives it.
+    #[test]
+    fn long_multibyte_titles_are_rewritten_and_forwarded() {
+        let (mut s, mut c, mut sv) = make();
+        c.write_all(&get_registry(2)).unwrap();
+        sv.write_all(&global(2, 1, "wl_compositor", 6)).unwrap();
+        sv.write_all(&global(2, 2, "xdg_wm_base", 6)).unwrap();
+        pump_all(&mut s).unwrap();
+        c.write_all(&MessageWriter::new(2, WL_REGISTRY_BIND).u32(1).string("wl_compositor").u32(6).u32(3).finish().unwrap()).unwrap();
+        c.write_all(&MessageWriter::new(2, WL_REGISTRY_BIND).u32(2).string("xdg_wm_base").u32(6).u32(4).finish().unwrap()).unwrap();
+        c.write_all(&MessageWriter::new(3, 0).u32(5).finish().unwrap()).unwrap();
+        c.write_all(&MessageWriter::new(4, 2).u32(6).u32(5).finish().unwrap()).unwrap();
+        c.write_all(&MessageWriter::new(6, 1).u32(7).finish().unwrap()).unwrap();
+        pump_all(&mut s).unwrap();
+        let _ = read_all(&mut sv);
+        let title = "\u{00e9}".repeat(200); // 400 bytes; byte 253 is mid-character
+        c.write_all(&MessageWriter::new(7, 2).string(&title).finish().unwrap()).unwrap();
+        pump_all(&mut s).unwrap();
+        let got = read_all(&mut sv);
+        let h = Header::parse(&got).unwrap();
+        assert_eq!((h.object, h.opcode), (7, 2));
+        let mut r = ArgReader::new(&got[HEADER_LEN..h.size as usize]);
+        let t = r.string().unwrap().unwrap();
+        assert!(t.starts_with("[work] \u{00e9}"), "{t:?}");
+        assert!(t.len() <= policy::MAX_TITLE_BYTES);
+        assert!(t.ends_with("..."));
+        assert_eq!(s.rewritten, 1);
+        assert!(!s.client.closed && !s.server.closed, "the session is still up");
+    }
+
     #[test]
     fn fragmented_and_malformed_input() {
         let (mut s, mut c, mut sv) = make();

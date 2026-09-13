@@ -103,7 +103,18 @@ fn main() {
     let mut served = 0u64;
     loop {
         // Build the poll set: the listener, then each session's two sockets.
-        let mut fds: Vec<libc::pollfd> = vec![libc::pollfd { fd: listener.as_raw_fd(), events: if sessions.len() < o.max_clients { libc::POLLIN } else { 0 }, revents: 0 }];
+        //
+        // The set is a snapshot of `sessions` as it stands here, indexed by
+        // position: session i owns entries 1+2i and 2+2i. Everything that
+        // reads those entries runs before `sessions` changes shape, which
+        // is why accepting a new client is the LAST thing an iteration does
+        // and why the service loop is bounded by `polled`, not by the
+        // vector's current length. The first version accepted first and
+        // then indexed the old array for the new session too: index out of
+        // bounds on the very first client (docs/OVERNIGHT_RESUME.md).
+        let polled = sessions.len();
+        let mut fds: Vec<libc::pollfd> = Vec::with_capacity(1 + 2 * polled);
+        fds.push(libc::pollfd { fd: listener.as_raw_fd(), events: if polled < o.max_clients { libc::POLLIN } else { 0 }, revents: 0 });
         for l in &sessions {
             let mut ce = 0i16;
             let mut se = 0i16;
@@ -114,6 +125,7 @@ fn main() {
             fds.push(libc::pollfd { fd: l.s.client.fd, events: ce, revents: 0 });
             fds.push(libc::pollfd { fd: l.s.server.fd, events: se, revents: 0 });
         }
+        debug_assert_eq!(fds.len(), 1 + 2 * polled);
         let n = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, -1) };
         if n < 0 {
             let e = std::io::Error::last_os_error();
@@ -121,35 +133,15 @@ fn main() {
             eprintln!("kryptik-wlproxy[{}]: poll: {e}", o.zone);
             std::process::exit(1);
         }
-        // Accept.
-        if fds[0].revents & libc::POLLIN != 0 {
-            match listener.accept() {
-                Ok((client, _)) => match UnixStream::connect(&o.upstream) {
-                    Ok(up) => {
-                        let cfd = client.into_raw_fd();
-                        let sfd = up.into_raw_fd();
-                        set_nonblocking(cfd);
-                        set_nonblocking(sfd);
-                        eprintln!("kryptik-wlproxy[{}]: client #{next_id} connected", o.zone);
-                        sessions.push(Live { s: Session::new(&o.zone, cfd, sfd), id: next_id });
-                        next_id += 1;
-                    }
-                    Err(e) => {
-                        eprintln!("kryptik-wlproxy[{}]: compositor at {} refused: {e}", o.zone, o.upstream.display());
-                        drop(client);
-                    }
-                },
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(e) => eprintln!("kryptik-wlproxy[{}]: accept: {e}", o.zone),
-            }
-        }
-        // Service sessions.
+        // Service the sessions that were polled, against their own entries.
         let mut closed: Vec<usize> = Vec::new();
-        for (idx, l) in sessions.iter_mut().enumerate() {
+        for (idx, l) in sessions.iter_mut().enumerate().take(polled) {
             let ce = fds[1 + idx * 2].revents;
             let se = fds[2 + idx * 2].revents;
-            let mut end: Option<String> = None;
             let step = |s: &mut Session, ce: i16, se: i16| -> Result<(), String> {
+                if (ce | se) & libc::POLLNVAL != 0 {
+                    return Err("a socket vanished under the proxy".into());
+                }
                 if ce & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
                     match s.client.read() {
                         Ok(0) => return Err("client disconnected".into()),
@@ -171,9 +163,6 @@ fn main() {
                 Ok(())
             };
             if let Err(why) = step(&mut l.s, ce, se) {
-                end = Some(why);
-            }
-            if let Some(why) = end {
                 eprintln!(
                     "kryptik-wlproxy[{}]: client #{} ended: {why} (forwarded {} requests, {} events; hid {} globals; rewrote {} identities)",
                     o.zone, l.id, l.s.forwarded_c2s, l.s.forwarded_s2c, l.s.hidden_count, l.s.rewritten
@@ -189,6 +178,29 @@ fn main() {
                 eprintln!("kryptik-wlproxy[{}]: --once: served {served}, exiting", o.zone);
                 let _ = std::fs::remove_file(&o.listen);
                 return;
+            }
+        }
+        // Accept, now that nothing indexes the snapshot any more. The new
+        // session's sockets join the poll set on the next iteration.
+        if fds[0].revents & libc::POLLIN != 0 {
+            match listener.accept() {
+                Ok((client, _)) => match UnixStream::connect(&o.upstream) {
+                    Ok(up) => {
+                        let cfd = client.into_raw_fd();
+                        let sfd = up.into_raw_fd();
+                        set_nonblocking(cfd);
+                        set_nonblocking(sfd);
+                        eprintln!("kryptik-wlproxy[{}]: client #{next_id} connected", o.zone);
+                        sessions.push(Live { s: Session::new(&o.zone, cfd, sfd), id: next_id });
+                        next_id += 1;
+                    }
+                    Err(e) => {
+                        eprintln!("kryptik-wlproxy[{}]: compositor at {} refused: {e}", o.zone, o.upstream.display());
+                        drop(client);
+                    }
+                },
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) => eprintln!("kryptik-wlproxy[{}]: accept: {e}", o.zone),
             }
         }
     }
