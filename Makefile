@@ -52,6 +52,12 @@ KRYPTIK_BUILD_COMMIT ?= $(shell git -C "$(ROOT)" describe --always --dirty --abb
 KRYPTIK_KRYPTIKD_BIN ?=
 
 export KRYPTIK_ROOT := $(ROOT)
+# Pinned versions the image targets name. Read through the shell so the
+# file stays shell syntax; a literal `include` would misparse its quotes.
+V_LINUX := $(shell . "$(ROOT)/build/config/versions.env" && echo $$V_LINUX)
+# The release name stamped into the media; override to build a "B" release.
+KRYPTIK_VERSION ?=
+export KRYPTIK_VERSION
 export KRYPTIK_WORK
 export KRYPTIK_SOURCES
 export KRYPTIK_OUT
@@ -96,6 +102,8 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
         image image-boot \
         image-smoke \
         validate-kernel validate-kernel-hardened validate-kernel-boot \
+        media ovmf-vars media-smoke-usb media-smoke-iso media-smoke-secureboot \
+        media-refused-foreign-keys \
         toolchain temp-tools chroot chroot-enter chroot-umount chroot-status \
         system kernel iso audit zones zone-test paths reset-stamps \
         sysroot-ready \
@@ -113,7 +121,12 @@ help:
 	@echo "                   (stages 01 and 02 are UNPRIVILEGED - run them as you)"
 	@echo "  make system      stage 04: hardened base system       [Phase 3]"
 	@echo "  make kernel      stage 05: hardened kernel            [Phase 4]"
-	@echo "  make iso         stage 06: bootable image             [Phase 7]"
+	@echo "  make iso         stage 06: verified root image, signed kernels, USB image + ISO"
+	@echo "  make media       stage 06 only (sysroot and kernel already built)"
+	@echo "  make media-smoke-usb | media-smoke-iso   boot the media under OVMF, assert"
+	@echo "  make media-smoke-secureboot              same with the developer key enrolled"
+	@echo "  make media-refused-foreign-keys          Microsoft keys only: must be refused"
+	@echo "  make install-test  install to a blank virtual disk, boot it alone, refusals"
 	@echo
 	@echo "  'system' and 'kernel' build INSIDE the chroot. They mount it, run"
 	@echo "  the stage, and unmount again. Only the mounts and the chroot call"
@@ -160,7 +173,6 @@ help:
 	@echo "  make verify-image      verify that signature against the image"
 	@echo "  make test-image-signing  prove the verifier refuses what it should"
 	@echo "  make test-installer    installer checks that need no VM"
-	@echo "  make install-test      install onto a blank disk, then boot it"
 	@echo "  make image KERNEL=...  build a bootable disk image from the sysroot"
 	@echo "  make image-boot KERNEL=...  boot that image on a serial console"
 	@echo "  make audit       run security audits over the build tree"
@@ -278,8 +290,47 @@ sysroot-ready:
 	    exit 1; \
 	fi
 
+# --- install media (Design 08) ----------------------------------------------
+#
+# Stage 06 builds the verity root image, relinks and signs a kernel per boot
+# variant, and assembles the USB image and the ISO. It runs as root (the
+# sysroot has root-only paths; the relink goes through the chroot) - SUDO=
+# when you already are.
 iso: kernel
-	@"$(STAGES)"/06-iso.sh
+	@$(SUDO) env $(CHROOT_ENV) KRYPTIK_VERSION="$(KRYPTIK_VERSION)" "$(STAGES)"/06-iso.sh
+
+# Same, without rebuilding anything first: for a sysroot and kernel that exist.
+media:
+	@$(SUDO) env $(CHROOT_ENV) KRYPTIK_VERSION="$(KRYPTIK_VERSION)" "$(STAGES)"/06-iso.sh
+
+MEDIA_USB ?= $(shell ls -t "$(KRYPTIK_WORK)"/images/kryptik-*-usb.img 2>/dev/null | head -1)
+MEDIA_ISO ?= $(shell ls -t "$(KRYPTIK_WORK)"/images/kryptik-*.iso 2>/dev/null | head -1)
+
+# The disposable OVMF variable stores: clean (no keys), enrolled (the
+# developer key: Secure Boot on), ms (Microsoft keys only: ours are refused).
+ovmf-vars:
+	@"$(TOOLS)"/image/ovmf-vars.sh
+
+# Boot the media through firmware alone and assert on the transcript.
+media-smoke-usb:
+	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
+	@"$(TOOLS)"/image/media-smoke.sh --usb "$(MEDIA_USB)" --vars clean
+media-smoke-iso:
+	@test -n "$(MEDIA_ISO)" || { echo "no ISO under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
+	@"$(TOOLS)"/image/media-smoke.sh --iso "$(MEDIA_ISO)" --vars clean
+# Under the enrolled developer key Secure Boot must be ON and boot must
+# succeed; under Microsoft's keys the same medium must be refused.
+media-smoke-secureboot: ovmf-vars
+	@"$(TOOLS)"/image/media-smoke.sh --usb "$(MEDIA_USB)" --vars enrolled
+media-refused-foreign-keys:
+	@"$(TOOLS)"/image/media-smoke.sh --usb "$(MEDIA_USB)" --vars ms --expect-refused
+
+# Install from the USB medium onto a blank virtual disk, then boot that disk
+# alone: medium detached, variable store fresh; reboot and power off from
+# inside; then the refusal cases. Needs KVM for a sane running time.
+install-test:
+	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
+	@"$(TOOLS)"/image/install-test.sh --usb "$(MEDIA_USB)" --vars $(or $(VARS),clean)
 
 zones:
 	@cd compartments/kryptikd && cargo build --quiet
@@ -454,10 +505,6 @@ verify-image:
 # Installs onto a blank virtual disk in one VM, then BOOTS that disk in a
 # second one. The second half is the point: "the installer exited 0" and
 # "what it wrote comes up" are different claims.
-install-test:
-	@$(SUDO) $(CHROOT_ENV) "$(TOOLS)"/image/install-test.sh \
-		--image "$(KRYPTIK_WORK)/images/kryptik-dev.img" \
-		--kernel "$(KRYPTIK_WORK)/sysroot/boot/kryptik-$(V_LINUX)"
 
 test-mkdisk-guards:
 	@"$(TOOLS)"/test-mkdisk-guards.sh

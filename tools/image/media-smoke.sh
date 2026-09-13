@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# Boot an install medium under OVMF and assert on what the guest said.
+#
+#   tools/image/media-smoke.sh (--usb IMG | --iso ISO) [--vars clean|enrolled|ms]
+#                              [--expect-refused] [--timeout N]
+#
+# The medium boots by firmware discovery alone (tools/image/run-ovmf.sh: no
+# -kernel, -initrd or -append). A kryptik-testctl disk arms the poweroff, so
+# the run ends by itself; the transcript is then checked line by line.
+# Every assertion is positive - something had to appear - and the whole
+# transcript has to exist, so an empty run cannot pass vacuously.
+#
+# --expect-refused: the variable store carries keys that did not sign our
+# kernel (--vars ms). The firmware must refuse to start it: no kernel banner
+# may appear. This is the negative control for the enforced chain.
+set -uo pipefail
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "${SELF}/../../build/lib/common.sh"
+trap - ERR; set +e
+
+USB=""; ISO=""; VARS="clean"; REFUSED=0; TIMEOUT=420
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        --usb) USB="${2:?}"; shift 2 ;;
+        --iso) ISO="${2:?}"; shift 2 ;;
+        --vars) VARS="${2:?}"; shift 2 ;;
+        --expect-refused) REFUSED=1; shift ;;
+        --timeout) TIMEOUT="${2:?}"; shift 2 ;;
+        -h|--help) sed -n '2,17p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        *) die "unknown argument: $1" ;;
+    esac
+done
+[[ -n "$USB" || -n "$ISO" ]] || die "--usb or --iso is required"
+MEDIUM="${USB:-$ISO}"; KIND="$([[ -n "$USB" ]] && echo usb || echo iso)"
+[[ -f "$MEDIUM" ]] || die "no such medium: ${MEDIUM}"
+
+PASS=0; FAIL=0
+green() { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
+red()   { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
+want()  { if grep -qE "$2" "$TXT"; then green "$1"; else red "$1"; fi; }
+deny()  { if grep -qE "$2" "$TXT"; then red "$1"; else green "$1"; fi; }
+
+VMDIR="${KRYPTIK_WORK}/vm"; mkdir -p "$VMDIR"
+TESTCTL="${VMDIR}/testctl-smoke.img"
+"${SELF}/mk-testctl.sh" --out "$TESTCTL" smoke_poweroff=1 > /dev/null || die "could not make the control disk"
+
+log "media smoke: ${KIND} ${MEDIUM##*/} (variables: ${VARS})"
+[[ "$REFUSED" -eq 1 ]] && [[ "$TIMEOUT" -gt 120 ]] && TIMEOUT=120
+"${SELF}/run-ovmf.sh" "--${KIND}" "$MEDIUM" --testctl "$TESTCTL" --vars "$VARS" --mode smoke --timeout "$TIMEOUT" --name "smoke-${KIND}"
+qrc=$?
+SERIAL="${KRYPTIK_WORK}/logs/ovmf-serial.latest.log"
+[[ -f "$SERIAL" ]] || die "no serial log at ${SERIAL}"
+TXT="$(mktemp)"; trap 'rm -f "$TXT"' EXIT
+tr -d '\r' < "$SERIAL" > "$TXT"
+echo "serial log: ${SERIAL} ($(grep -c '' < "$TXT") lines, qemu exit ${qrc})"
+echo
+
+if [[ "$REFUSED" -eq 1 ]]; then
+    echo "-- the firmware must refuse a kernel its keys did not sign"
+    deny "no kernel banner appeared"                 'Linux version'
+    deny "no Kryptik userspace ran"                  'KRYPTIK_SMOKE: BEGIN'
+    want "the firmware said why (or timed out silently)" 'Access Denied|Security Violation|failed to load|BdsDxe|Boot Failed|.'
+    echo
+    if [[ "$FAIL" -gt 0 ]]; then echo "${FAIL} check(s) failed, ${PASS} passed. Transcript: ${SERIAL}"; exit 1; fi
+    echo "All ${PASS} checks passed: the ${KIND} medium was refused under foreign keys."
+    exit 0
+fi
+
+echo "-- the firmware loaded our kernel from the medium's own boot file"
+want "kernel produced output"              'Linux version'
+want "the command line is the signed one"  'KRYPTIK_SMOKE: cmdline=.*kryptik\.media='"${KIND}"
+want "booted as an install medium"         "KRYPTIK_SMOKE: boot_identity=slot= media=${KIND}"
+want "UEFI boot"                           'KRYPTIK_SMOKE: efi=yes'
+if [[ "$VARS" == "enrolled" ]]; then
+    want "Secure Boot is enforced"         'KRYPTIK_SMOKE: secureboot=1'
+else
+    want "Secure Boot is off with a clean store" 'KRYPTIK_SMOKE: secureboot=(0|unreadable)'
+fi
+
+echo
+echo "-- the root is the verified image"
+if [[ "$KIND" == "iso" ]]; then
+    want "root is the verity device over the CD"  'KRYPTIK_SMOKE: root_source=/dev/dm-1 ext4 ro'
+else
+    want "root is the verity device"       'KRYPTIK_SMOKE: root_source=/dev/dm-0 ext4 ro'
+fi
+want "dm-verity reports the root valid"   'KRYPTIK_SMOKE: verity_root=0 [0-9]+ verity V'
+want "the root cannot be written"          'KRYPTIK_SMOKE: root_writable=no'
+want "state is a tmpfs on this medium"     'KRYPTIK_SMOKE: var_source=tmpfs tmpfs'
+want "/etc is an overlay"                  'KRYPTIK_SMOKE: etc_source=overlay'
+for m in /var /etc /home /tmp /run /dev/pts /dev/shm; do
+    want "mounted ${m}" "KRYPTIK_SMOKE: mount_ok=${m}$"
+done
+deny "no mount reported missing"           'KRYPTIK_SMOKE: mount_MISSING='
+
+echo
+echo "-- it is Kryptik, measured inside the guest"
+want "boot-smoke ran"                      'KRYPTIK_SMOKE: BEGIN'
+want "boot-smoke finished"                 'KRYPTIK_SMOKE: END'
+want "pid 1 is s6-svscan"                  'KRYPTIK_SMOKE: pid1=s6-svscan'
+want "os-release says kryptik"             'KRYPTIK_SMOKE: os_id=kryptik'
+want "the image carries its provenance"    'KRYPTIK_SMOKE: image_json_present=yes'
+want "kernel is the hardened build"        'KRYPTIK_SMOKE: kernel=.*hardened'
+want "eudev is supervised"                 'KRYPTIK_SMOKE: svc_eudev=up'
+want "seatd is supervised"                 'KRYPTIK_SMOKE: svc_seatd=up'
+want "landlock is an active LSM"           'KRYPTIK_SMOKE: lsm=.*landlock'
+want "cgroup v2 is mounted"                'KRYPTIK_SMOKE: cgroup2=/'
+want "kryptikd checked the kernel"         'KRYPTIK_SMOKE: kryptikd_check_rc=0'
+want "the installer was not armed"         'installer: no kryptik-testctl control disk|control disk names no install_target'
+
+echo
+echo "-- it shut down, rather than being killed"
+want "poweroff was requested"              'KRYPTIK_SMOKE: POWEROFF'
+want "the machine powered down"            'reboot: Power down|Power down'
+deny "shutdown fell back to sysrq"         'POWEROFF_DID_NOT_TAKE_EFFECT'
+deny "no kernel panic"                     'Kernel panic'
+deny "no oops"                             'Oops:|BUG:'
+[[ "$qrc" -ne 124 ]] && green "qemu exited without hitting the timeout" || red "qemu hit the ${TIMEOUT}s timeout"
+
+echo
+if [[ "$FAIL" -gt 0 ]]; then
+    echo "${FAIL} check(s) failed, ${PASS} passed. Transcript: ${SERIAL}"
+    exit 1
+fi
+echo "All ${PASS} checks passed."
