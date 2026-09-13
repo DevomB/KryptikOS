@@ -96,6 +96,15 @@ pub struct Zone {
     pub memory_max: Option<String>,
     pub pids_max: Option<u32>,
     pub border_color: String,
+    /// The non-colour identity channels (`[ui] border_pattern`, `glyph`,
+    /// `label`): what tells zones apart for a user who cannot see the colour
+    /// difference. kryptikd carries them for the desktop (the compositor and
+    /// the trusted chrome read the installed zone files) and checks only
+    /// their shape; `zoneid audit` is the authority on whether the set is
+    /// distinguishable, and the build runs it over the shipped zones.
+    pub border_pattern: Option<String>,
+    pub glyph: Option<String>,
+    pub label: Option<String>,
     /// The zone's fixed host identity range: `[identity] uid_base = N`.
     ///
     /// A privileged launch maps the zone's root to host uid/gid N and its
@@ -151,7 +160,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "limits.memory_max", "limits.pids_max",
     "identity.uid_base",
     "transfer.to",
-    "ui.border_color",
+    "ui.border_color", "ui.border_pattern", "ui.glyph", "ui.label",
 ];
 
 /// A byte size as cgroup v2 memory.max accepts it: digits, optionally
@@ -478,6 +487,9 @@ impl Zone {
             memory_max: get("limits.memory_max"),
             pids_max,
             border_color: need("ui.border_color")?,
+            border_pattern: get("ui.border_pattern"),
+            glyph: get("ui.glyph"),
+            label: get("ui.label"),
             name,
             network,
             storage,
@@ -556,6 +568,35 @@ impl Zone {
                 "zone {:?}: ui.border_color {:?} is not #rrggbb",
                 self.name, self.border_color
             )));
+        }
+        // Shape only, mirroring zoneid's rules where a wrong value would be a
+        // forgery vector rather than a typo: a pattern name from the fixed
+        // list; a glyph of exactly one character; a label of printable ASCII
+        // (no bidi controls, no homographs), at most 12 characters.
+        if let Some(p) = &self.border_pattern {
+            const PATTERNS: [&str; 6] = ["solid", "dashed", "dotted", "double", "dash-dot", "notched"];
+            if !PATTERNS.contains(&p.as_str()) {
+                return Err(ZoneError::Invalid(format!(
+                    "zone {:?}: ui.border_pattern {:?} is not one of {}",
+                    self.name, p, PATTERNS.join(", ")
+                )));
+            }
+        }
+        if let Some(g) = &self.glyph {
+            if g.chars().count() != 1 || g.chars().any(|c| c.is_control() || c.is_whitespace()) {
+                return Err(ZoneError::Invalid(format!(
+                    "zone {:?}: ui.glyph {:?} must be exactly one printable character",
+                    self.name, g
+                )));
+            }
+        }
+        if let Some(l) = &self.label {
+            if l.is_empty() || l.len() > 12 || !l.chars().all(|c| matches!(c, ' '..='~')) || l.starts_with(' ') || l.ends_with(' ') {
+                return Err(ZoneError::Invalid(format!(
+                    "zone {:?}: ui.label {:?} must be 1-12 printable ASCII characters, unpadded",
+                    self.name, l
+                )));
+            }
         }
 
         Ok(())

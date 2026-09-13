@@ -46,9 +46,11 @@ use crate::identity::{Channel, ZoneIdentity};
 ///
 /// 15.0 is chosen as a floor that keeps a pair separable under those
 /// conditions while remaining achievable: `zoneid propose` searches the sRGB
-/// gamut for six-colour palettes and finds solutions comfortably above it, so
-/// this is not a bound that forces the design into a corner. The shipped
-/// palette reaches 1.48.
+/// gamut for six-colour palettes under the 3:1 contrast constraint and its
+/// coarse-to-fine search reaches 15.88 (measured 2026-09-13; a finer grid
+/// reaches 16.2), so the floor is achievable but not by much: it is the
+/// binding constraint, and the shipped colours are the search's result.
+/// The original six colours reached 1.48.
 pub const MIN_DELTA_E: f64 = 15.0;
 
 /// Minimum contrast between a zone border and the background behind it.
@@ -437,12 +439,12 @@ mod tests {
         assert!(r.worst_per_vision.is_empty());
     }
 
-    /// The finding this crate exists for, pinned as a test.
-    ///
-    /// If someone later changes the shipped palette, this test tells them
-    /// whether they fixed the problem or merely moved it.
+    /// The finding this crate was written for, pinned as a test: the six
+    /// colours Kryptik originally shipped (2026-09-11) fail the invariant.
+    /// The zone files now carry the searched palette; zones.rs checks them.
+    /// This stays so the metric keeps detecting the palette it was built on.
     #[test]
-    fn the_shipped_palette_fails_the_invariant() {
+    fn the_original_palette_fails_the_invariant() {
         let shipped = [
             id("dev", "#b5651d"),
             id("net", "#2f6f9f"),
@@ -454,8 +456,8 @@ mod tests {
         let r = analyze(&shipped, Thresholds::default());
         assert!(
             r.is_fatal(),
-            "the shipped palette is expected to fail; if this now passes, the \
-             palette was fixed and this test should be inverted"
+            "the original palette is expected to fail; if this now passes, the \
+             metric has changed and needs looking at"
         );
 
         let pair = |a: &str, b: &str, v: Vision| {

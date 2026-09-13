@@ -30,4 +30,12 @@ pids_max   = 512
 uid_base = 327680
 
 [ui]
-border_color = "#aa3333"
+# Identity in four channels (compositor/zoneid, `zoneid explain`): the
+# colour is from `zoneid propose` (every pair of shipped zones differs by
+# dE00 >= 15 under every vision model, 3:1 against both backgrounds);
+# the pattern, glyph and label are what remain for a user who cannot see
+# the colour difference. Every zone has a distinct value in each.
+border_color   = "#ba7c02"
+border_pattern = "dash-dot"
+glyph          = "▲"
+label          = "UNTRUSTED"
