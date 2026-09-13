@@ -442,6 +442,14 @@ export HOSTLDFLAGS="${HOSTLDFLAGS:-} -Wl,--no-as-needed -lgcc_s"
 # than silently reusing a stamp written under different inputs.
 FRAG_DIGEST="$(cat "$FRAG_BASE" "$FRAG_HARDENED" | sha256_of_stdin)"
 
+# The kernel is compiled by the toolchain stage 04 assembled - its glibc,
+# binutils, the libraries its host tools link (openssl, libelf, zlib), and
+# the tools it runs (bc, bison, flex, perl, kmod). elfutils is the last of
+# those in stage 04's order, so seeding from it covers the whole closure
+# without tying a kernel rebuild to eudev, s6 or the service tree, which
+# the kernel never sees.
+stage_depends_on "bs-" elfutils
+
 step compiler-check  s_compiler_check
 step unpack          s_unpack
 step patch           s_patch

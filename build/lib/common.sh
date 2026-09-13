@@ -203,7 +203,7 @@ validate_hardening_exceptions() {
 # ---------------------------------------------------------------------------
 
 # Bump when the set of fingerprint inputs changes.
-KRYPTIK_STAMP_FORMAT=2
+KRYPTIK_STAMP_FORMAT=3
 
 STAMP_PREFIX=""
 STAGE_FILE=""
@@ -224,14 +224,100 @@ stage_contract() {
     STAMP_CC="${3:?stage_contract needs the compiler this stage drives}"
 }
 
-# Accumulated by step(): the ordered names of every step declared so far in
-# this stage. Reordering or inserting a package invalidates everything after
-# it, which is the dependency edge that actually matters in a linear build.
+# Accumulated by step(): "name=fingerprint;" for every step declared so far
+# in this stage, seeded by stage_depends_on() with the fingerprint an earlier
+# stage finished on.
+#
+# It used to hold the ordered NAMES only. That catches a reordered or inserted
+# package and misses the case that matters more: a step whose recipe, source
+# or flags changed and was rebuilt in place, followed by steps whose stamps
+# still matched because nothing THEY hashed had moved. A glibc rebuilt with a
+# fix would have left sixty packages linked against the old one, every one of
+# them reporting "inputs unchanged". With the fingerprint in the chain, a
+# change to step k invalidates k and everything after it in this stage, and
+# every stage that seeds from it - and nothing before it, so an unchanged
+# prefix still resumes without rebuilding.
 STAMP_DEPS=""
+
+# Seed this stage's dependency chain from a step of an earlier stage.
+#
+#   stage_depends_on <stamp-prefix> <step-name>
+#
+# Stage 02 is built by stage 01's compiler, stage 04 by stage 02's, and the
+# kernel by stage 04's toolchain closure, so their stamps have to carry the
+# fingerprint of what they were built WITH, not only what they were built
+# FROM. The named stamp must exist: a stage that starts on top of an
+# unfinished predecessor is building on nothing, and says so.
+stage_depends_on() {
+    local prefix="$1" name="$2"
+    local stamp="${STAMPS}/${prefix}${name}" fp
+    [[ -f "$stamp" ]] || die "${name}: the stage this one builds on has not completed.
+No stamp at ${stamp}. Finish that stage first."
+    fp="$(_stamp_read "$stamp")"
+    [[ -n "$fp" ]] || die "${stamp} carries no fingerprint. Rebuild that stage under the
+current harness before building on it."
+    STAMP_DEPS="${STAMP_DEPS}stage:${prefix}${name}=${fp};"
+}
 
 _hash_file() {
     local f="${1:-}"
     if [[ -n "$f" && -f "$f" ]]; then sha256_of "$f"; else printf 'absent'; fi
+}
+
+# One digest over every regular file in a directory: relative path and
+# content, in a fixed order, so the same set of files hashes the same
+# anywhere.
+_hash_dir() {
+    local d="${1:-}"
+    if [[ -n "$d" && -d "$d" ]]; then
+        ( cd "$d" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum ) \
+            | sha256_of_stdin
+    else
+        printf 'absent'
+    fi
+}
+
+# Expand ${V_*} references in a token lifted from a recipe's own text, without
+# eval: a version variable is the only substitution a patch-set name may use.
+_expand_v() {
+    local t="$1" v pat
+    while [[ "$t" =~ \$\{(V_[A-Z0-9_]+)\} ]]; do
+        v="${BASH_REMATCH[1]}"
+        pat='${'"$v"'}'
+        t="${t//"$pat"/${!v-unset}}"
+    done
+    printf '%s' "$t"
+}
+
+# Where in-repository patch sets live. Overridable so the harness test can
+# supply its own; the build never sets it.
+KRYPTIK_PATCHES="${KRYPTIK_PATCHES:-${KRYPTIK_ROOT}/build/patches}"
+
+# Apply the in-repository patch set build/patches/<set>/ to the current
+# directory: every *.patch in name order, -p1, no fuzz, stopping at the first
+# reject. SHA256SUMS is verified first and every patch must be listed in it,
+# so a patch cannot be added or altered without the record beside it moving.
+# recipe_fingerprint() hashes the whole set for any recipe that names it, so a
+# changed patch invalidates the step that applies it.
+apply_repo_patches() {
+    local set="${1:?apply_repo_patches needs a patch-set name}"
+    local pdir="${KRYPTIK_PATCHES}/${set}"
+    [[ -d "$pdir" ]] || die "no patch set at ${pdir}"
+    [[ -f "${pdir}/SHA256SUMS" ]] || die "${pdir} has no SHA256SUMS"
+    ( cd "$pdir" && sha256sum --check --quiet --strict SHA256SUMS ) \
+        || die "patch set ${set}: a patch does not match SHA256SUMS"
+    local p n=0
+    for p in "${pdir}"/*.patch; do
+        [[ -f "$p" ]] || continue
+        grep -q "  $(basename "$p")\$" "${pdir}/SHA256SUMS" \
+            || die "patch set ${set}: ${p##*/} is not listed in SHA256SUMS"
+        echo "applying ${p##*/}"
+        patch -Np1 -F0 --no-backup-if-mismatch -i "$p" \
+            || die "patch set ${set}: ${p##*/} did not apply"
+        n=$((n + 1))
+    done
+    [[ "$n" -gt 0 ]] || die "patch set ${set} contains no patches"
+    echo "applied ${n} patch(es) from ${set}"
 }
 
 # The compiler a stage actually drives. Stage 01 builds the cross toolchain
@@ -286,7 +372,22 @@ recipe_fingerprint() {
                     printf 'src:%s=%s\n' "$a" "$(_hash_file "${KRYPTIK_SOURCES}/${a}")"
                     ;;
             esac
+            # An argument naming an in-repository patch set is an input too.
+            if [[ -d "${KRYPTIK_PATCHES}/${a}" && -f "${KRYPTIK_PATCHES}/${a}/SHA256SUMS" ]]; then
+                printf 'patchset:%s=%s\n' "$a" "$(_hash_dir "${KRYPTIK_PATCHES}/${a}")"
+            fi
         done
+
+        # And so is any patch set the recipe's own text applies, with a
+        # ${V_*} in the name expanded the way the recipe would.
+        local ps
+        while IFS= read -r ps; do
+            [[ -z "$ps" ]] && continue
+            ps="$(_expand_v "$ps")"
+            printf 'patchset:%s=%s\n' "$ps" "$(_hash_dir "${KRYPTIK_PATCHES}/${ps}")"
+        done < <(printf '%s\n' "$body" \
+                 | sed -n 's/.*apply_repo_patches[[:space:]]\{1,\}"\{0,1\}\([^" ;)]*\).*/\1/p' \
+                 | sort -u || true)
 
         local v
         while IFS= read -r v; do
@@ -364,9 +465,10 @@ _stamp_stale() {
     fi
 
     local reason="records a different fingerprint than the current inputs.
-One of: the recipe, build/lib/common.sh, versions.env, the hardening flags,
-sources.lock, the compiler in use, or an earlier step in this stage has
-changed since ${name} was built."
+One of: the recipe, an in-repository patch set it applies, build/lib/common.sh,
+versions.env, the hardening flags, sources.lock, the compiler in use, an
+earlier step in this stage, or a stage this one builds on has changed since
+${name} was built."
 
     case "${KRYPTIK_STALE:-refuse}" in
         rebuild)
@@ -432,7 +534,7 @@ step() {
         local got; got="$(_stamp_read "$stamp")"
         if [[ "$got" == "$want" ]]; then
             dim "  skip ${name} (already built, inputs unchanged)"
-            STAMP_DEPS="${STAMP_DEPS}${name};"
+            STAMP_DEPS="${STAMP_DEPS}${name}=${want};"
             return 0
         fi
         # Dies unless KRYPTIK_STALE=rebuild, or the stamp was fingerprint-less.
@@ -472,7 +574,7 @@ step() {
     trap _kryptik_trap ERR
     set -e
 
-    STAMP_DEPS="${STAMP_DEPS}${name};"
+    STAMP_DEPS="${STAMP_DEPS}${name}=${want};"
 
     if [[ "$rc" -eq 0 ]]; then
         _stamp_write "$stamp" "$name" "$want" "$(( SECONDS - start ))" "$logfile"

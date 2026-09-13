@@ -59,6 +59,7 @@ make_harness() {
 export KRYPTIK_ROOT="${ROOT}"
 export KRYPTIK_WORK="${work}"
 export KRYPTIK_SOURCES="${work}/src"
+export KRYPTIK_PATCHES="${work}/patches"
 export NO_COLOR=1
 source "${ROOT}/build/lib/common.sh"
 
@@ -121,16 +122,65 @@ recipe_ver() {
     echo "recipe: building probe-\${V_PROBE}"
 }
 
+# Recipes that apply an in-repository patch set: one names it as an
+# argument, one in its own text through a version variable, the way s_glibc
+# does. Each rebuilds its tree from scratch, as unpack() would.
+recipe_patch() {
+    rm -rf "${work}/src/tree"; mkdir -p "${work}/src/tree"
+    echo a > "${work}/src/tree/file"
+    cd "${work}/src/tree"
+    apply_repo_patches "\$1"
+    grep -q '^b\$' file
+}
+recipe_patch_ver() {
+    rm -rf "${work}/src/tree"; mkdir -p "${work}/src/tree"
+    echo a > "${work}/src/tree/file"
+    cd "${work}/src/tree"
+    apply_repo_patches "probe-\${V_PROBE}"
+    grep -q '^b\$' file
+}
+
+# A later stage seeds its chain from an earlier stage's stamp; modelled with
+# an environment variable so one harness can play both stages.
+if [ -n "\${SEED_FROM:-}" ]; then
+    stage_depends_on "t-" "\$SEED_FROM"
+fi
+
 # Called BARE, exactly as the stage files call it. Adding \`|| true\` here would
 # create the very condition context under test and make a correct step() look
 # broken - the first version of this test did exactly that and reported all
 # four stages as failing.
-step "\$@"
+#
+# Several steps separated by -- run in ONE process, the way a stage runs its
+# list: the dependency chain between steps only exists inside a process.
+run_steps() {
+    local cur=() a
+    for a in "\$@" --; do
+        if [ "\$a" = "--" ]; then
+            if [ "\${#cur[@]}" -gt 0 ]; then
+                step "\${cur[@]}"
+            fi
+            cur=()
+        else
+            cur+=("\$a")
+        fi
+    done
+}
+run_steps "\$@"
 HARNESS
     chmod +x "$work/harness.sh"
 }
 
 run_harness() { bash "$1/harness.sh" "${@:2}" 2>&1; }
+
+# make_patchset <work> <set-name> <replacement-line>: a one-patch set that
+# turns the tree's "a" into the given line, with its SHA256SUMS beside it.
+make_patchset() {
+    local dir="$1/patches/$2"
+    mkdir -p "$dir"
+    printf -- '--- a/file\n+++ b/file\n@@ -1 +1 @@\n-a\n+%s\n' "$3" > "$dir/0001-change.patch"
+    ( cd "$dir" && sha256sum 0001-change.patch > SHA256SUMS )
+}
 
 # ---------------------------------------------------------------------------
 # 1. A recipe that succeeds must be recorded as succeeding.
@@ -343,6 +393,144 @@ test_per_step_flags() {
 }
 
 # ---------------------------------------------------------------------------
+# 4c. A step's stamp covers the steps before it BY FINGERPRINT, not by name.
+#
+# The chain used to carry names only, so a step rebuilt in place with a
+# changed recipe left every later step's stamp valid: sixty packages linked
+# against a glibc that no longer existed, all reporting "inputs unchanged".
+# Both halves are asserted - a change invalidates what comes after it, and
+# leaves what comes before it alone - because a chain that invalidated
+# everything would pass the first half and be useless.
+# ---------------------------------------------------------------------------
+test_dependency_chain() {
+    local work; work="$(mktemp -d)"
+    make_harness "$work"
+
+    local out rc s
+    run_harness "$work" zero recipe_ver -- first recipe_ok -- second recipe_src probe-1.0.tar.gz >/dev/null
+    for s in zero first second; do
+        if [[ ! -f "$work/.stamps/t-$s" ]]; then
+            red "dependency chain: setup build did not stamp ${s}"; rm -rf "$work"; return
+        fi
+    done
+
+    out="$(run_harness "$work" zero recipe_ver -- first recipe_ok -- second recipe_src probe-1.0.tar.gz)"; rc=$?
+    check "unchanged chain: every step skips" \
+          "$({ [[ $rc -eq 0 ]] && [[ $out == *"skip zero"* && $out == *"skip first"* && $out == *"skip second"* ]]; } && echo ok)"
+
+    # Change the MIDDLE step's recipe and rebuild it alone.
+    make_harness "$work" 'echo "recipe: an extra command"'
+    out="$(KRYPTIK_STALE=rebuild run_harness "$work" zero recipe_ver -- first recipe_ok)"; rc=$?
+    check "changed middle step: the step before it still skips" \
+          "$({ [[ $rc -eq 0 ]] && [[ $out == *"skip zero"* ]]; } && echo ok)"
+    check "changed middle step: it is rebuilt" \
+          "$([[ $out == *"first: KRYPTIK_STALE=rebuild"* ]] && echo ok)"
+
+    # The step AFTER it: its own recipe, source and flags are untouched, and
+    # its stamp must still be refused, because what it was built on changed.
+    out="$(run_harness "$work" zero recipe_ver -- first recipe_ok -- second recipe_src probe-1.0.tar.gz)"; rc=$?
+    check "changed middle step: the step after it is refused although its own inputs are unchanged" \
+          "$({ [[ $rc -ne 0 ]] && [[ $out == *"skip first"* ]] && [[ $out == *"second: stamp records a different fingerprint"* ]]; } && echo ok)"
+    out="$(KRYPTIK_STALE=rebuild run_harness "$work" zero recipe_ver -- first recipe_ok -- second recipe_src probe-1.0.tar.gz)"; rc=$?
+    check "changed middle step: KRYPTIK_STALE=rebuild rebuilds only what comes after it" \
+          "$({ [[ $rc -eq 0 ]] && [[ $out == *"skip zero"* && $out == *"skip first"* && $out == *"second: KRYPTIK_STALE=rebuild"* ]]; } && echo ok)"
+    out="$(run_harness "$work" zero recipe_ver -- first recipe_ok -- second recipe_src probe-1.0.tar.gz)"; rc=$?
+    check "rebuilt chain: everything skips again" \
+          "$({ [[ $rc -eq 0 ]] && [[ $out == *"skip zero"* && $out == *"skip first"* && $out == *"skip second"* ]]; } && echo ok)"
+
+    rm -rf "$work"
+}
+
+# ---------------------------------------------------------------------------
+# 4d. A stage seeds its chain from the stage it builds on.
+#
+# Stage 04 is compiled by stage 02's toolchain and the kernel by stage 04's.
+# A rebuilt predecessor has to reach their stamps, and a missing predecessor
+# has to stop the stage before it builds anything on nothing.
+# ---------------------------------------------------------------------------
+test_stage_seed() {
+    local work; work="$(mktemp -d)"
+    make_harness "$work"
+
+    local out rc
+    out="$(SEED_FROM=up run_harness "$work" down recipe_ver)"; rc=$?
+    check "missing predecessor stamp: the stage refuses to start" \
+          "$({ [[ $rc -ne 0 ]] && [[ $out == *"has not completed"* ]]; } && echo ok)"
+    check "missing predecessor stamp: nothing was built" \
+          "$([[ ! -f "$work/.stamps/t-down" ]] && echo ok)"
+
+    run_harness "$work" up recipe_ok >/dev/null
+    out="$(SEED_FROM=up run_harness "$work" down recipe_ver)"; rc=$?
+    check "seeded stage: builds on a finished predecessor" \
+          "$({ [[ $rc -eq 0 ]] && [[ -f "$work/.stamps/t-down" ]]; } && echo ok)"
+    out="$(SEED_FROM=up run_harness "$work" down recipe_ver)"; rc=$?
+    check "seeded stage: unchanged predecessor, the step skips" \
+          "$({ [[ $rc -eq 0 ]] && [[ $out == *"skip down"* ]]; } && echo ok)"
+
+    # Rebuild the predecessor with a changed recipe: the dependent is stale.
+    make_harness "$work" 'echo "recipe: an extra command"'
+    KRYPTIK_STALE=rebuild run_harness "$work" up recipe_ok >/dev/null
+    out="$(SEED_FROM=up run_harness "$work" down recipe_ver)"; rc=$?
+    check "rebuilt predecessor: the dependent stage's step is refused" \
+          "$({ [[ $rc -ne 0 ]] && [[ $out == *"Refusing to resume"* ]]; } && echo ok)"
+
+    rm -rf "$work"
+}
+
+# ---------------------------------------------------------------------------
+# 4e. In-repository patch sets are inputs, and are verified before they are
+#     applied.
+# ---------------------------------------------------------------------------
+test_patchset() {
+    local work; work="$(mktemp -d)"
+    make_harness "$work"
+    make_patchset "$work" probe-set b
+    make_patchset "$work" probe-1.0 b
+
+    local out rc
+    out="$(run_harness "$work" pat recipe_patch probe-set)"; rc=$?
+    check "patch set: applied, and the step succeeds" "$([[ $rc -eq 0 ]] && echo ok)"
+    check "patch set: the log names the patch it applied" \
+          "$(grep -q 'applying 0001-change.patch' "$work/logs/t-pat.log" 2>/dev/null && echo ok)"
+    out="$(run_harness "$work" pat recipe_patch probe-set)"; rc=$?
+    check "patch set: unchanged, the step skips" \
+          "$({ [[ $rc -eq 0 ]] && [[ $out == *"skip pat"* ]]; } && echo ok)"
+
+    run_harness "$work" patv recipe_patch_ver >/dev/null
+    out="$(run_harness "$work" patv recipe_patch_ver)"; rc=$?
+    check "patch set named through V_*: unchanged, the step skips" \
+          "$({ [[ $rc -eq 0 ]] && [[ $out == *"skip patv"* ]]; } && echo ok)"
+
+    # A different patch, with its record updated: both steps are stale.
+    make_patchset "$work" probe-set c
+    make_patchset "$work" probe-1.0 c
+    out="$(run_harness "$work" pat recipe_patch probe-set)"; rc=$?
+    check "changed patch: a step naming the set as an argument is refused" \
+          "$({ [[ $rc -ne 0 ]] && [[ $out == *"Refusing to resume"* ]]; } && echo ok)"
+    out="$(run_harness "$work" patv recipe_patch_ver)"; rc=$?
+    check "changed patch: a step naming the set in its text is refused" \
+          "$({ [[ $rc -ne 0 ]] && [[ $out == *"Refusing to resume"* ]]; } && echo ok)"
+
+    # A patch altered WITHOUT its record: the rebuild must fail, not apply it.
+    make_patchset "$work" probe-set b
+    printf -- '--- a/file\n+++ b/file\n@@ -1 +1 @@\n-a\n+z\n' > "$work/patches/probe-set/0001-change.patch"
+    out="$(KRYPTIK_STALE=rebuild run_harness "$work" pat recipe_patch probe-set)"; rc=$?
+    check "tampered patch: the step fails" "$([[ $rc -ne 0 ]] && echo ok)"
+    check "tampered patch: no stamp was written" "$([[ ! -f "$work/.stamps/t-pat" ]] && echo ok)"
+    check "tampered patch: the log says SHA256SUMS refused it" \
+          "$(grep -q 'does not match SHA256SUMS' "$work/logs/t-pat.log" 2>/dev/null && echo ok)"
+
+    # A patch present but not listed at all.
+    make_patchset "$work" probe-set b
+    cp "$work/patches/probe-set/0001-change.patch" "$work/patches/probe-set/0002-extra.patch"
+    out="$(KRYPTIK_STALE=rebuild run_harness "$work" pat recipe_patch probe-set)"; rc=$?
+    check "unlisted patch: the step fails and says why" \
+          "$({ [[ $rc -ne 0 ]] && grep -q 'not listed in SHA256SUMS' "$work/logs/t-pat.log"; } && echo ok)"
+
+    rm -rf "$work"
+}
+
+# ---------------------------------------------------------------------------
 # 5. Stamps from the old harness prove nothing.
 #
 # Every stamp written before the errexit bug was found came from a step() that
@@ -421,6 +609,15 @@ test_source_inputs
 echo
 echo "-- a step whose flags are narrowed still resumes"
 test_per_step_flags
+echo
+echo "-- a step's stamp covers what came before it, by fingerprint"
+test_dependency_chain
+echo
+echo "-- a stage seeds its chain from the stage it builds on"
+test_stage_seed
+echo
+echo "-- in-repository patch sets are inputs, verified before use"
+test_patchset
 echo
 echo "-- stamps from the pre-fix harness are not evidence"
 test_legacy_stamp
