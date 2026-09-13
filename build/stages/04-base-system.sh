@@ -1383,6 +1383,45 @@ s_kryptikd() {
         echo "FAIL: kryptikd cannot read /usr/lib/kryptik/zones"
         return 1
     fi
+
+    # The command a person types (tools/kryptik), beside the daemon it wraps.
+    # It was never installed before: cli.sh in the image looked for it on
+    # PATH and would have reported it missing.
+    install -m 0755 "${KRYPTIK_ROOT}/tools/kryptik" /usr/bin/kryptik
+    bash -n /usr/bin/kryptik || { echo "FAIL: /usr/bin/kryptik has a syntax error"; return 1; }
+    echo "installed /usr/bin/kryptik (sha256 ${4:-unknown})"
+}
+
+# The suites and the guest-side checks, in the image, so the VM drivers can
+# run the SAME isolation, launcher and CLI suites on the installed kernel as
+# root - the [vm] rows those suites declare NOT RUN on a developer host.
+# The layout matters: the suites locate their tree as $HERE/../.., so they
+# sit at /usr/lib/kryptik/compartments/tests, next to a kryptikd symlink at
+# the path they default to (see tools/vm/mkinitramfs.sh for the same rule).
+s_tests() {
+    echo "inputs digest: ${1:-none}"
+    local base=/usr/lib/kryptik
+    install -d -m 0755 "$base/compartments/tests" "$base/compartments/kryptikd/probes" \
+        "$base/compartments/kryptikd/target/debug" "$base/compartments/kryptikd/src" "$base/guest-tests"
+    local t
+    for t in "${KRYPTIK_ROOT}"/compartments/tests/*.sh; do
+        install -m 0755 "$t" "$base/compartments/tests/$(basename "$t")"
+    done
+    for t in "${KRYPTIK_ROOT}"/compartments/kryptikd/probes/*.sh; do
+        install -m 0755 "$t" "$base/compartments/kryptikd/probes/$(basename "$t")"
+    done
+    # adversarial.sh cross-checks its namespace set against isolate.rs.
+    install -m 0644 "${KRYPTIK_ROOT}/compartments/kryptikd/src/isolate.rs" "$base/compartments/kryptikd/src/isolate.rs"
+    ln -sfn /usr/bin/kryptikd "$base/compartments/kryptikd/target/debug/kryptikd"
+    for t in "${KRYPTIK_ROOT}"/build/guest-tests/*.sh; do
+        [[ -f "$t" ]] || continue
+        install -m 0755 "$t" "$base/guest-tests/$(basename "$t")"
+    done
+    for t in "$base"/compartments/tests/*.sh "$base"/compartments/kryptikd/probes/*.sh "$base"/guest-tests/*.sh; do
+        bash -n "$t" || { echo "FAIL: $t has a syntax error"; return 1; }
+    done
+    echo "--- installed ---"
+    find "$base/compartments" "$base/guest-tests" -type f -o -type l | sort
 }
 
 # Everything a boot needs, checked from the target's own point of view.
@@ -2082,9 +2121,11 @@ PACKAGES=(
     # Its content is an argument so the step rebuilds when the installer
     # changes; the recipe reads it by path, which declare -f cannot see.
     "release-trust" "s_release_trust"
+    # efiboot before the updater: the updater's "does it run" check runs
+    # kryptik-update, which refuses to start without kryptik-efiboot.
+    "efiboot"     "s_efiboot $(sha256_of "${KRYPTIK_ROOT}/tools/efi/kryptik-efiboot.c" 2>/dev/null || echo none)"
     "updater"     "s_updater $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-update" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-recover" 2>/dev/null || echo none)"
     "netzone"     "s_netzone $(sha256_of "${KRYPTIK_ROOT}/tools/net/netzone-init.sh" 2>/dev/null || echo none)"
-    "efiboot"     "s_efiboot $(sha256_of "${KRYPTIK_ROOT}/tools/efi/kryptik-efiboot.c" 2>/dev/null || echo none)"
     "installer"   "s_installer $(sha256_of "${KRYPTIK_ROOT}/tools/install/kryptik-install.sh" 2>/dev/null || echo none)"
     # These globs were separated by a literal backslash-n, which inside a
     # command substitution on one physical line is the FILENAME n, not a line
@@ -2100,7 +2141,10 @@ PACKAGES=(
     # rejected the definitions this branch was carrying. Hashing the directory
     # means changing a .toml re-runs this step instead of silently shipping a
     # binary that will not read its own config.
-    "kryptikd"    "s_kryptikd ${KRYPTIK_KRYPTIKD_BIN:-none} $([[ -f "${KRYPTIK_KRYPTIKD_BIN:-}" ]] && sha256_of "${KRYPTIK_KRYPTIKD_BIN}" || echo absent) $(cat "${KRYPTIK_ROOT}"/compartments/zones/*.toml 2>/dev/null | sha256_of_stdin || echo nozones)"
+    "kryptikd"    "s_kryptikd ${KRYPTIK_KRYPTIKD_BIN:-none} $([[ -f "${KRYPTIK_KRYPTIKD_BIN:-}" ]] && sha256_of "${KRYPTIK_KRYPTIKD_BIN}" || echo absent) $(cat "${KRYPTIK_ROOT}"/compartments/zones/*.toml "${KRYPTIK_ROOT}"/compartments/zones/policy/* 2>/dev/null | sha256_of_stdin || echo nozones) $(sha256_of "${KRYPTIK_ROOT}/tools/kryptik" 2>/dev/null || echo none)"
+    # The suites and guest checks the VM drivers run inside the installed
+    # system; every file is an input.
+    "tests"       "s_tests $(cat "${KRYPTIK_ROOT}"/compartments/tests/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/probes/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/src/isolate.rs "${KRYPTIK_ROOT}"/build/guest-tests/*.sh 2>/dev/null | sha256_of_stdin || echo none)"
     "boot-check"  "s_boot_check"
 )
 
