@@ -50,9 +50,10 @@ IN_WLPROXY="/kryptik-wlproxy"
 # computes "${KRYPTIK_WORK}/sysroot" as an install destination silently writes
 # into a nested tree instead of failing. Exposing only the four directories
 # the in-chroot stages actually need (stage 06 binds the kernels to their
-# command lines under images/) means that path does not exist, and the
+# command lines under images/; stage 04 makes the release signing key under
+# keys/release, which stage 06 signs payloads with) means that path does not exist, and the
 # mistake stops being invisible. verify_chroot asserts it.
-WORK_SUBDIRS=(.stamps logs build images)
+WORK_SUBDIRS=(.stamps logs build images keys/release)
 
 # common.sh refuses to run as root by default; this stage is the exception for
 # its privileged actions, and says so rather than quietly working around the
@@ -396,7 +397,7 @@ verify_chroot() {
         err "the build contract is not satisfied inside the chroot:"
         err "  ${IN_ROOT}                        <- ${KRYPTIK_ROOT}"
         err "  ${IN_SOURCES}                <- ${KRYPTIK_SOURCES}"
-        err "  ${IN_WORK}/{.stamps,logs,build}  <- ${KRYPTIK_WORK}/"
+        err "  ${IN_WORK}/{.stamps,logs,build,images,keys/release}  <- ${KRYPTIK_WORK}/"
         return 1
     fi
 
