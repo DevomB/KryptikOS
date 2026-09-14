@@ -311,6 +311,8 @@ impl Session {
 
             // --- policy, per message ---------------------------------------
             let mut forward = true;
+            // A message of the proxy's own, sent right behind this one.
+            let mut stamp: Option<Vec<u8>> = None;
             match dir {
                 Dir::ClientToServer => {
                     if h.object == WL_DISPLAY && h.opcode == WL_DISPLAY_GET_REGISTRY {
@@ -342,6 +344,24 @@ impl Session {
                                 }
                                 None => return Err(SessionError::Wire(WireError::BadSize(h.size))),
                             }
+                        }
+                    }
+                    // Identity is stamped on EVERY toplevel, whether or not the
+                    // client ever names itself. Rewriting set_app_id alone left
+                    // a toplevel that never sent one reaching the compositor
+                    // with no app_id at all, and the compositor draws an absent
+                    // id as zone 0's own - the trusted border - so a zone
+                    // window could pass for a trusted one by saying nothing
+                    // (reproduced on the wire, 2026-09-14). The proxy's own
+                    // set_app_id goes out right behind the get_toplevel that
+                    // creates the object; a set_app_id the client sends later
+                    // is rewritten as above and simply replaces it.
+                    if iface.name == "xdg_surface" && m.name == "get_toplevel" {
+                        if let Some((id, _)) = decoded.new_objects.first() {
+                            let opcode = protocol::find("xdg_toplevel")
+                                .and_then(|i| i.requests.iter().position(|r| r.name == "set_app_id"))
+                                .ok_or(SessionError::Wire(WireError::ArgOverrun))? as u16;
+                            stamp = MessageWriter::new(*id, opcode).string(&policy::app_id_for(&self.zone, "")).finish();
                         }
                     }
                 }
@@ -387,10 +407,15 @@ impl Session {
                 Dir::ServerToClient => &mut self.client,
             };
             if forward {
-                if dst.pending_out + msg.len() > policy::MAX_PENDING_BYTES {
+                let extra = stamp.as_ref().map(Vec::len).unwrap_or(0);
+                if dst.pending_out + msg.len() + extra > policy::MAX_PENDING_BYTES {
                     return Err(SessionError::TooMuchPending(dir));
                 }
                 dst.queue(msg, fds)?;
+                if let Some(s) = stamp {
+                    dst.queue(s, Vec::new())?;
+                    self.rewritten += 1;
+                }
                 match dir {
                     Dir::ClientToServer => self.forwarded_c2s += 1,
                     Dir::ServerToClient => self.forwarded_s2c += 1,
@@ -532,7 +557,55 @@ mod tests {
         assert!(got.contains("[work] Notes"), "{got}");
         assert!(got.contains("kryptik.work.editor"), "{got}");
         assert!(!got.contains("\0Notes\0"), "the bare title must not pass");
+        assert_eq!(s.rewritten, 3, "the title, the app_id, and the stamp at creation");
+    }
+
+    /// A toplevel whose client never sends set_app_id still reaches the
+    /// compositor with the zone's identity: the proxy stamps one at
+    /// creation, and an app_id the client sends later replaces it, rewritten.
+    #[test]
+    fn a_toplevel_that_never_names_itself_is_stamped_anyway() {
+        let (mut s, mut c, mut sv) = make();
+        c.write_all(&get_registry(2)).unwrap();
+        sv.write_all(&global(2, 1, "wl_compositor", 6)).unwrap();
+        sv.write_all(&global(2, 2, "xdg_wm_base", 6)).unwrap();
+        pump_all(&mut s).unwrap();
+        c.write_all(&MessageWriter::new(2, WL_REGISTRY_BIND).u32(1).string("wl_compositor").u32(6).u32(3).finish().unwrap()).unwrap();
+        c.write_all(&MessageWriter::new(2, WL_REGISTRY_BIND).u32(2).string("xdg_wm_base").u32(6).u32(4).finish().unwrap()).unwrap();
+        c.write_all(&MessageWriter::new(3, 0).u32(5).finish().unwrap()).unwrap(); // create_surface -> 5
+        c.write_all(&MessageWriter::new(4, 2).u32(6).u32(5).finish().unwrap()).unwrap(); // get_xdg_surface -> 6
+        pump_all(&mut s).unwrap();
+        let _ = read_all(&mut sv);
+        c.write_all(&MessageWriter::new(6, 1).u32(7).finish().unwrap()).unwrap(); // get_toplevel -> 7
+        c.write_all(&MessageWriter::new(5, 6).finish().unwrap()).unwrap(); // wl_surface.commit, and no set_app_id ever
+        pump_all(&mut s).unwrap();
+        let got = read_all(&mut sv);
+        let msgs = split_messages_for_test(&got);
+        // get_toplevel first, then the proxy's own set_app_id on the new
+        // object, then the commit: the compositor never sees a nameless toplevel.
+        assert_eq!(msgs[0].0, (6, 1), "get_toplevel is forwarded first: {msgs:?}");
+        assert_eq!(msgs[1].0, (7, 3), "the proxy's set_app_id follows on the new toplevel: {msgs:?}");
+        assert_eq!(msgs[2].0, (5, 6), "the commit comes after the identity: {msgs:?}");
+        assert!(String::from_utf8_lossy(&msgs[1].1).contains("kryptik.work.app"), "{:?}", msgs[1]);
+        assert_eq!(s.rewritten, 1);
+        // A name the client sends later is rewritten as before.
+        c.write_all(&MessageWriter::new(7, 3).string("editor").finish().unwrap()).unwrap();
+        pump_all(&mut s).unwrap();
+        let got = String::from_utf8_lossy(&read_all(&mut sv)).to_string();
+        assert!(got.contains("kryptik.work.editor"), "{got}");
         assert_eq!(s.rewritten, 2);
+    }
+
+    /// (object, opcode) and body of each message in a byte stream.
+    fn split_messages_for_test(mut bytes: &[u8]) -> Vec<((u32, u16), Vec<u8>)> {
+        let mut out = Vec::new();
+        while bytes.len() >= HEADER_LEN {
+            let h = Header::parse(bytes).unwrap();
+            let size = h.size as usize;
+            out.push(((h.object, h.opcode), bytes[HEADER_LEN..size].to_vec()));
+            bytes = &bytes[size..];
+        }
+        out
     }
 
     /// A long multi-byte title goes through the same rewrite as an ASCII
@@ -562,7 +635,7 @@ mod tests {
         assert!(t.starts_with("[work] \u{00e9}"), "{t:?}");
         assert!(t.len() <= policy::MAX_TITLE_BYTES);
         assert!(t.ends_with("..."));
-        assert_eq!(s.rewritten, 1);
+        assert_eq!(s.rewritten, 2, "the title, and the stamp at creation");
         assert!(!s.client.closed && !s.server.closed, "the session is still up");
     }
 

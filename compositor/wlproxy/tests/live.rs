@@ -373,7 +373,9 @@ fn long_unicode_titles_are_rewritten_not_fatal() {
     body.extend_from_slice(&u32le(5));
     c.write_all(&msg(4, 2, &body)).unwrap(); // xdg_wm_base.get_xdg_surface -> 6
     c.write_all(&msg(6, 1, &u32le(7))).unwrap(); // xdg_surface.get_toplevel -> 7
-    let _ = read_until(&mut u, |b| split_messages_ok(b, 5), "the five setup requests at the upstream");
+    // Six, not five: the proxy stamps the new toplevel's app_id right behind
+    // get_toplevel, so the compositor never sees a nameless toplevel.
+    let _ = read_until(&mut u, |b| split_messages_ok(b, 6), "the five setup requests and the stamped app_id at the upstream");
 
     for (label, title) in [
         ("accented", "\u{00e9}".repeat(200)),
