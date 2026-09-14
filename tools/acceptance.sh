@@ -147,6 +147,14 @@ item() {
     fi
     printf -- '-- %s: %s (exit %s, %ss, checks %s)%s\n' "$name" "$res" "$rc" "$((SECONDS - t0))" "$checks" "${note:+ - $note}"
     record "$gate" "$name" "$mand" "$kind" "$res" "$checks" "$rc" "$((SECONDS - t0))" "$log" "$note"
+    # The VM drivers each make 12 GB disks and clones under work/vm. The
+    # transcripts carry the evidence; the disks are kept only when the item
+    # failed and someone may want to look inside. On a WSL host every byte
+    # written into those disks grows the virtual disk file on the Windows
+    # side and never comes back by itself.
+    if [[ "$kind" == vm && "$res" == PASS ]]; then
+        rm -f "${KRYPTIK_WORK}"/vm/*.img "${KRYPTIK_WORK}"/vm/*.fd 2>/dev/null
+    fi
 }
 
 # ------------------------------------------------------------- prereqs --
