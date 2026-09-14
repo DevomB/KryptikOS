@@ -187,7 +187,7 @@ phase "phase 6: interruption during the slot write, then after arming"
 start_vm update-p6 --disk "$PA"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'mkdir -p /mnt/a /var/lib/kryptik/updates/a && mount -o ro /dev/vdb /mnt/a && cp -a /mnt/a/. /var/lib/kryptik/updates/a/ && umount /mnt/a && echo COPY-OK')" "expect:COPY-OK" \
-    "send:su -c 'kryptik-update apply /var/lib/kryptik/updates/a --recovery' root" "expect:Password: ?" "send:${RPASS}" \
+    "send:su - root -c 'kryptik-update apply /var/lib/kryptik/updates/a --recovery'" "expect:Password: ?" "send:${RPASS}" \
     "expect:writing kryptik-a"
 python3 - "$QMP" <<'PY'
 import json, socket, sys

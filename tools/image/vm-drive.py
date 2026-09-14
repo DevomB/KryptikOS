@@ -142,9 +142,12 @@ class Drive:
         return int(m.group(1))
 
     def su(self, password, cmd):
+        # A login shell for root: the image strips the sbin directories from
+        # an ordinary user's PATH, and a plain `su -c` inherits that PATH, so
+        # root's reboot and poweroff were "command not found".
         self.marker += 1
         tag = f"KRC{self.marker}"
-        self.send(f"su -c '{cmd}; echo {tag}=$?' root")
+        self.send(f"su - root -c '{cmd}; echo {tag}=$?'")
         self.expect(r"Password: ?", 60)
         self.send(password)
         m = self.expect(rf"{tag}=(\d+)|Power down|reboot: Restarting|Restarting system", self.timeout)
