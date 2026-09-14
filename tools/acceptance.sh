@@ -231,6 +231,7 @@ it_libc_unwind()   { env KRYPTIK_ROOT="$ROOT" KRYPTIK_WORK="$KRYPTIK_WORK" KRYPT
 it_userspace()     { "${SELF}/test-userspace-smoke.sh"; }
 it_artifacts()     { "${SELF}/check-artifact-hardening.sh" "$SYSROOT" --json "${OUT}/artifact-hardening.json"; }
 it_kernel_config() { "${SELF}/validate-kernel-config.sh" --boot && "${SELF}/validate-kernel-config.sh" --hardened; }
+it_support_status() { "${SELF}/check-support-status.sh" --strict; }
 it_ovmf_vars()     { "${IMG}/ovmf-vars.sh"; }
 it_smoke_usb()     { "${IMG}/media-smoke.sh" --usb "$MEDIA_USB" --vars clean; }
 it_smoke_iso()     { "${IMG}/media-smoke.sh" --iso "$MEDIA_ISO" --vars clean; }
@@ -278,6 +279,7 @@ item G2 libc-unwind         M host 0 it_libc_unwind need_sysroot
 item G2 userspace-smoke     M host 0 it_userspace need_sysroot
 item G2 artifact-hardening  M host 0 it_artifacts need_sysroot
 item G2 kernel-config       M host 0 it_kernel_config need_sources
+item G2 support-status      M host 0 it_support_status
 item G3 media-smoke-usb     M vm  25 it_smoke_usb need_vm
 item G3 media-smoke-iso     M vm  25 it_smoke_iso need_vm_iso
 item G4 install-test        M vm  10 it_install need_vm

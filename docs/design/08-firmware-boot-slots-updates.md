@@ -93,7 +93,11 @@ variant is then signed with `sbsign`.
 `sysinit` mounts `PARTLABEL=kryptik-state` at `/var` (ext4, `nosuid,nodev`),
 falling back to a tmpfs with a loud message on media without one; then an
 overlay for `/etc` (`lower=/etc` from the verified root, `upper=/var/lib/
-kryptik/etc/upper`), `/home` from `/var/home`, tmpfs on `/run`, `/tmp`.
+kryptik/etc/upper`; only the account database, the machine's identity and
+clock may live in that upper layer - anything else found there, a preload
+library or a udev rule say, is moved to `lib/kryptik/etc/quarantine` before
+the overlay is mounted, since the state partition is not authenticated),
+`/home` from `/var/home`, tmpfs on `/run`, `/tmp`.
 The verified root stays read-only; a write to it is an error, not a
 persistence bug. There is no swap: zone confidentiality is argued for the
 LUKS2 volumes (Design 04), and an unencrypted swap would undercut it.
