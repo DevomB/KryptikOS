@@ -140,6 +140,17 @@ create_chroot_marker() {
 # --- essential files --------------------------------------------------------
 
 create_passwd_group() {
+    # Once. These are the accounts the chroot needs before shadow exists;
+    # after that, stage 04 adds the groups and users the running system needs
+    # (seat, kryptik, dhcpcd, ...) with groupadd and useradd, and every later
+    # entry into the chroot - the kernel stage, the media stage's kernel
+    # bind, a test - must leave them alone. Rewriting the files on every
+    # entry is how the first media shipped a system in which seatd and the
+    # launch daemon could not find their groups.
+    if [[ -s "$LFS/etc/passwd" && -s "$LFS/etc/group" ]]; then
+        log "keeping /etc/passwd and /etc/group (already present)"
+        return 0
+    fi
     log "creating /etc/passwd and /etc/group"
 
     # Deliberately minimal. Every account here is one that something in the
