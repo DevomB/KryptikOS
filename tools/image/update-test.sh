@@ -84,6 +84,9 @@ ssh-keygen -Y sign -f "$BAD/otherkey" -n kryptik-release "$BAD/wrongkey/manifest
 mk_variant modified; printf '\xff' | dd of="$BAD/modified/kryptik-root.img" bs=1 seek=$((4096*200+3)) conv=notrunc status=none
 mk_variant truncated; truncate -s -1 "$BAD/truncated/kryptik-a.efi"
 mk_variant extra; echo "ride along" > "$BAD/extra/extra.bin"
+# An empty lost+found is the medium's own and is passed over (phase 2 applies
+# a payload that is the root of an ext4 disk); one with something in it is not.
+mk_variant hidden; mkdir -p "$BAD/hidden/lost+found"; echo "ride along" > "$BAD/hidden/lost+found/ride"
 BADIMG="${VMDIR}/payload-bad.img"; payload_disk "$BADIMG" "$BAD"
 
 # The guest side, as root through su.
@@ -148,6 +151,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'kryptik-update apply /run/upd/p/modified; echo RC=$?')" "expect:sha256 does not match" \
     "$(ROOTSH 'kryptik-update apply /run/upd/p/truncated; echo RC=$?')" "expect:truncated or altered" \
     "$(ROOTSH 'kryptik-update apply /run/upd/p/extra; echo RC=$?')" "expect:unlisted file" \
+    "$(ROOTSH 'kryptik-update apply /run/upd/p/hidden; echo RC=$?')" "expect:lost+found is not empty" \
     "$(ROOTSH 'kryptik-update apply /run/upd/a; echo RC=$?')" "expect:older than the running" \
     "$(ROOTSH 'flock /run/kryptik/update.lock sleep 20 & sleep 1; kryptik-update apply /run/upd/a --recovery; echo RC=$?')" "expect:another update is in progress" \
     "$(ROOTSH 'fallocate -l 100G /var/filler 2>/dev/null || dd if=/dev/zero of=/var/filler bs=1M 2>/dev/null; cp -a /run/upd/a /var/lib/kryptik/updates/a-full 2>&1 | tail -1; kryptik-update apply /var/lib/kryptik/updates/a-full --recovery; echo RC=$?; rm -rf /var/filler /var/lib/kryptik/updates/a-full')" "expect:RC=1" \

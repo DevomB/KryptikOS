@@ -146,6 +146,13 @@ EOF
     for f in "$dir"/*; do
         n="$(basename "$f")"
         case "$n" in manifest|manifest.sig) continue ;; esac
+        # A payload that is the root of an ext4 medium carries the
+        # filesystem's own lost+found. Empty, it is nothing and is passed
+        # over; anything inside it is a stowaway like any other and refused.
+        if [ "$n" = "lost+found" ] && [ -d "$f" ] && [ ! -L "$f" ]; then
+            [ -z "$(ls -A "$f")" ] || die "unlisted file in the payload: lost+found is not empty"
+            continue
+        fi
         grep -q "  $n\$" "$m" || die "unlisted file in the payload: $n"
     done
     for need in kryptik-root.img kryptik-a.efi kryptik-b.efi root.json; do
