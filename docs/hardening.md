@@ -8,7 +8,7 @@ construction. A package cannot opt out by forgetting to set a flag.
 Defined in [`build/config/hardening.env`](../build/config/hardening.env).
 
 | Flag | Defends against | Cost |
-|---|---|---|
+| --- | --- | --- |
 | `-D_FORTIFY_SOURCE=3` | Buffer overflows in libc calls, with dynamic object sizes | Negligible; requires `-O2`+ |
 | `-fstack-protector-strong` | Stack smashing | ~1% CPU |
 | `-fstack-clash-protection` | Stack-clash / guard-page jumping | Negligible |
@@ -54,6 +54,30 @@ hardening), and anything performing custom relocation.
 The escape hatch is `build/config/hardening-exceptions.txt`: one package per
 line with a **required justification comment**. An exception without a stated
 reason fails the build. Exceptions are reviewed, not accumulated.
+
+### What shipped, as the audit reads it
+
+The flags above are what the build is asked to use. `make audit-artifacts`
+(`tools/check-artifact-hardening.sh`) reads the ELF headers of what was
+actually produced, and its report is part of `make acceptance`. Its hard
+failures - a writable and executable segment, an executable stack, text
+relocations, an RPATH into the build tree - have no legitimate explanation
+and fail the build. Its reported findings are the honest gap between the
+flag set and the tree, and on the 2026-09-13 sysroot (1288 objects, no hard
+failure) they were:
+
+| finding | count | where it comes from |
+| --- | --- | --- |
+| no CET property (`-fcf-protection`) | 324 | packages whose build systems do not take `CFLAGS` as given or link assembly without the note: gcc's own binaries and runtime libraries (`libgcc_s`, `libstdc++`, `libitm`), binutils, bzip2, gawk, perl and its modules, python and its extension modules, util-linux and its libraries, gettext, bison, texinfo, zlib, gmp, libxcrypt, dnsmasq; and the two static Rust binaries (`kryptikd`, `kryptik-wlproxy`), which rustc does not mark |
+| no `BIND_NOW` | 107 | the same gcc, binutils, bzip2, gawk, perl and python objects, plus dnsmasq and `chroot` |
+| not PIE | 28 | gcc's own drivers, `cc1`, `cc1plus`, `lto1`, `collect2` and `gawk` |
+| an `RPATH` | 42 | perl and python modules naming their own install directories (not the build tree) |
+
+Everything else - the shell, coreutils, the libraries the desktop and the
+zone layer use - carries the full set. Closing the gap means teaching each
+of those build systems to honour the flags (or building the static Rust
+binaries with `-Z cf-protection`), package by package, and re-reading the
+audit; it does not mean weakening the check.
 
 ## Allocator
 
