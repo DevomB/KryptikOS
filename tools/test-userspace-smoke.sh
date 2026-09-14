@@ -5,8 +5,13 @@
 # are different claims, and the gap between them is where a sysroot that looks
 # finished panics on first boot.
 set -uo pipefail
-C=/home/devomb/kryptik-overnight-2026-09-11
-WT=$C/worktrees/build
+# The tree this script lives in, and the build contract (the same variables
+# make passes to every stage) - not a path to one machine's checkout, which
+# is what this used to carry and why it reported "no build worktree" on
+# every other machine, including the one that built the system.
+WT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WORK="${KRYPTIK_WORK:-$WT/build/work}"
+SOURCES="${KRYPTIK_SOURCES:-$WT/sources}"
 # Exit 77, not 1: this suite runs the built sysroot in a chroot, so it needs
 # root AND it needs that sysroot to exist on this machine. Neither is true in
 # CI, and "cannot run here" is a different fact from "failed" - reporting it as
@@ -17,13 +22,14 @@ if [[ "$(id -u)" -ne 0 ]]; then
     echo "SKIP (77): needs root - this suite chroots into the built sysroot"
     exit 77
 fi
-if [[ ! -d "$WT" || ! -d "$C" ]]; then
-    echo "SKIP (77): this machine has no build worktree at $WT"
+if [[ ! -x "$WORK/sysroot/usr/bin/bash" ]]; then
+    echo "SKIP (77): no built sysroot at $WORK/sysroot (make system)"
     exit 77
 fi
 
-LOG="$C/logs/userspace-smoke.$(date +%Y%m%dT%H%M%S).log"
-ln -sfn "$LOG" "$C/logs/userspace-smoke.latest.log"
+mkdir -p "$WORK/logs"
+LOG="$WORK/logs/userspace-smoke.$(date +%Y%m%dT%H%M%S).log"
+ln -sfn "$LOG" "$WORK/logs/userspace-smoke.latest.log"
 
 cat > /tmp/kryptik-smoke-inner.sh <<'INNER'
 #!/bin/bash
@@ -39,7 +45,13 @@ t() {  # t <description> <expected> <command...>
 
 echo "== identity =="
 t "os-release names Kryptik"        "ID=kryptik"        cat /etc/os-release
-t "os-release carries a build id"   "BUILD_ID=2501ecf"  cat /etc/os-release
+# BUILD_ID is the commit the system was built from: a hex id, never
+# "unknown", and not any one commit this file could name.
+if grep -qE '^BUILD_ID=[0-9a-f]{7,}$' /etc/os-release; then
+    ok "os-release carries a build id ($(sed -n 's/^BUILD_ID=//p' /etc/os-release))"
+else
+    bad "os-release carries a build id (got: $(grep '^BUILD_ID=' /etc/os-release))"
+fi
 t "uname is x86_64"                 "x86_64"            uname -m
 
 echo
@@ -102,7 +114,7 @@ if [ "$fail" -gt 0 ]; then echo "$fail check(s) failed"; exit 1; fi
 echo "userspace smoke: all checks passed"
 INNER
 chmod 0755 /tmp/kryptik-smoke-inner.sh
-cp /tmp/kryptik-smoke-inner.sh "$C/work/sysroot/run-smoke.sh" 2>/dev/null || true
+cp /tmp/kryptik-smoke-inner.sh "$WORK/sysroot/run-smoke.sh" 2>/dev/null || true
 
 # The status has to leave the redirection block by hand. `rc=$?` after a
 # `{ ... } >> log` reads the last command INSIDE the block - here an echo,
@@ -111,7 +123,7 @@ cp /tmp/kryptik-smoke-inner.sh "$C/work/sysroot/run-smoke.sh" 2>/dev/null || tru
 RCFILE="$(mktemp)"
 {
     date -Iseconds
-    env KRYPTIK_ROOT="$WT" KRYPTIK_WORK="$C/work" KRYPTIK_SOURCES="$C/sources" \
+    env KRYPTIK_ROOT="$WT" KRYPTIK_WORK="$WORK" KRYPTIK_SOURCES="$SOURCES" \
         NO_COLOR=1 TERM=xterm \
         "$WT/build/stages/03-chroot-prep.sh" run /run-smoke.sh
     echo "$?" > "$RCFILE"
@@ -121,7 +133,7 @@ rc="$(cat "$RCFILE")"; rm -f "$RCFILE"
 
 # Put the tree back exactly as it was: the copied script is the only thing
 # this added, and the manifest must describe the sysroot, not the test.
-rm -f "$C/work/sysroot/run-smoke.sh"
+rm -f "$WORK/sysroot/run-smoke.sh"
 
 sed -n '/== identity ==/,$p' "$LOG"
 echo
