@@ -171,7 +171,12 @@ wait_for 20 grep -q '^zone=work' "$RT/kryptik/focus" || info "work window not fo
 mark trf0 untrusted
 launch_plain untrusted "sh -c 'echo nope > \$HOME/x.txt; python3 -c \"$TRF\" work x.txt \$HOME/x.txt'" > /dev/null 2>&1; sleep 3
 [[ "$(since_mark trf0 untrusted)" == *"does not name"* ]] && pass "transfer-policy" "untrusted -> work refused by policy, with no question asked" || fail "transfer-policy" "$(since_mark trf0 untrusted | tail -2 | tr '\n' ' ')"
-[[ -z "$(ls /run/kryptik-consent/ 2>/dev/null)" ]] && pass "no-question-for-policy-refusal" || fail "no-question-for-policy-refusal" "$(ls /run/kryptik-consent/)"
+# The chrome's watcher holds watcher.lock in the channel for as long as the
+# session runs (kryptikd consent.rs); it is not a question, so it is not
+# counted. Everything else there is.
+questions() { ls /run/kryptik-consent/ 2>/dev/null | grep -v "^watcher.lock$"; }
+[[ -z "$(questions)" ]] && pass "no-question-for-policy-refusal" || fail "no-question-for-policy-refusal" "$(questions | tr '
+' ' ')"
 # dev -> work: allowed by policy, asked of the person
 mark trf1 dev
 echo "GT CONSENT-WAIT 1"
@@ -187,7 +192,8 @@ n=40; while [[ "$n" -gt 0 ]] && [[ "$(since_mark trf2 dev)" != *ok* && "$(since_
 out="$(since_mark trf2 dev)"
 [[ "$out" == *"refused by the user"* ]] && pass "transfer-denied" "after the person said no: refused" || fail "transfer-denied" "$(echo "$out" | tail -2 | tr '\n' ' ')"
 [[ -e "$R/work/incoming/report2.txt" ]] && fail "denied-file-absent" "the refused file landed anyway" || pass "denied-file-absent" "nothing landed"
-[[ -z "$(ls /run/kryptik-consent/ 2>/dev/null)" ]] && pass "consent-cleaned" "no question left behind" || fail "consent-cleaned" "$(ls /run/kryptik-consent/)"
+[[ -z "$(questions)" ]] && pass "consent-cleaned" "no question left behind" || fail "consent-cleaned" "$(questions | tr '
+' ' ')"
 
 # --- teardown ------------------------------------------------------------------------------
 # The session's own log and the last focus record live on the runtime tmpfs
