@@ -48,10 +48,11 @@ IN_WLPROXY="/kryptik-wlproxy"
 # the whole of $KRYPTIK_WORK to /kryptik-work and the chroot gains a complete
 # second view of itself at /kryptik-work/sysroot - so any stage that still
 # computes "${KRYPTIK_WORK}/sysroot" as an install destination silently writes
-# into a nested tree instead of failing. Exposing only the three directories
-# the in-chroot stages actually need means that path does not exist, and the
+# into a nested tree instead of failing. Exposing only the four directories
+# the in-chroot stages actually need (stage 06 binds the kernels to their
+# command lines under images/) means that path does not exist, and the
 # mistake stops being invisible. verify_chroot asserts it.
-WORK_SUBDIRS=(.stamps logs build)
+WORK_SUBDIRS=(.stamps logs build images)
 
 # common.sh refuses to run as root by default; this stage is the exception for
 # its privileged actions, and says so rather than quietly working around the
