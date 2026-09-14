@@ -50,7 +50,11 @@ jobs:
           skipped=""
           for t in tools/test-*.sh; do
             echo "=== $t"
-            "$t"; rc=$?
+            # The step's shell is `bash -e`: a bare non-zero exit ends the
+            # step before rc is read, so the first suite that answered 77 took
+            # the whole step down with "exit code 77" once nothing before it
+            # failed. Capture the status without letting -e see it.
+            "$t" && rc=0 || rc=$?
             if [ "$rc" -eq 77 ]; then
               echo "  SKIPPED: $t"
               skipped="$skipped $t"
