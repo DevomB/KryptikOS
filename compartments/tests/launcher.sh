@@ -1794,7 +1794,23 @@ else
     kill -9 "$cgpid" 2>/dev/null
     sleep 2
     after_procs="$(pgrep -f "sleep $MARK_CG" 2>/dev/null | wc -l)"
-    after_cg="$(find /sys/fs/cgroup/kryptik -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"
+    # The leaves a sweep may touch: those whose launcher - the pid in the
+    # leaf's name - is gone. A leaf with a live launcher is a running zone,
+    # and on the installed system one is always there: the supervised net
+    # zone's, populated, for as long as the machine is up. Counting every
+    # leaf under kryptik/ made M9 report that one as "surviving the sweep"
+    # on the target while the sweep had done its job; on the developer host
+    # nothing else runs there and the count was right by accident.
+    abandoned_leaves() {
+        local d n p
+        for d in /sys/fs/cgroup/kryptik/*/; do
+            [[ -d "$d" ]] || continue
+            n="$(basename "$d")"; p="${n##*.}"
+            [[ "$p" =~ ^[0-9]+$ && -e "/proc/$p" ]] && continue
+            printf '%s\n' "$d"
+        done
+    }
+    after_cg="$(abandoned_leaves | wc -l)"
     # What a SIGKILLed launcher can and cannot guarantee, precisely.
     #
     # It cannot run its own cleanup - that is what SIGKILL means - so demanding
@@ -1806,11 +1822,12 @@ else
         fail "M8  $after_procs process(es) survived a SIGKILLed launcher with limits"
         pkill -9 -f "sleep $MARK_CG" 2>/dev/null
     else
+        # Read the file: a cgroup file's size is 0 whatever it holds, so
+        # `-s` saw every leaf as empty and this check could not fail.
         populated=0
-        for d in /sys/fs/cgroup/kryptik/*/; do
-            [[ -d "$d" ]] || continue
-            if [[ -s "$d/cgroup.procs" ]]; then populated=$((populated+1)); fi
-        done
+        while IFS= read -r d; do
+            [[ -n "$d" && -n "$(cat "$d/cgroup.procs" 2>/dev/null)" ]] && populated=$((populated+1))
+        done < <(abandoned_leaves)
         if (( populated == 0 )); then
             pass "M8  a SIGKILLed launcher leaves no process and no populated cgroup"
             (( after_cg > 0 )) && info "     ($after_cg empty cgroup awaiting the sweep, as designed)"
@@ -1828,22 +1845,18 @@ else
         zrun pidcapped -- /bin/sh -c "$PRO echo PROBE=swept"
         if want_launch "M9  the next launch sweeps cgroups a killed launcher left"; then
             sleep 1
-            still="$(find /sys/fs/cgroup/kryptik -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"
+            still="$(abandoned_leaves | wc -l)"
             if (( still == 0 )); then
                 pass "M9  the next launch swept the abandoned cgroup"
             else
                 fail "M9  $still abandoned cgroup(s) survived the next launch's sweep"
-                # Which, and why: the leaf's name carries its launcher's pid,
-                # so say whether that pid is alive (and in what state), what
-                # the leaf holds, and what rmdir itself says about it.
-                for d in /sys/fs/cgroup/kryptik/*/; do
-                    [[ -d "$d" ]] || continue
-                    lpid="${d%/}"; lpid="${lpid##*.}"
-                    if [[ -e "/proc/$lpid" ]]; then lstate="alive ($(awk '{print $3}' "/proc/$lpid/stat" 2>/dev/null))"; else lstate="gone"; fi
-                    info "     $(basename "$d"): launcher $lpid $lstate; procs=[$(tr '\n' ' ' < "$d/cgroup.procs" 2>/dev/null)]; $(tr '\n' ' ' < "$d/cgroup.events" 2>/dev/null); rmdir: $(rmdir "$d" 2>&1 && echo ok)"
-                done
+                # Which, and why: what the leaf holds, and what rmdir itself
+                # says about it.
+                while IFS= read -r d; do
+                    [[ -n "$d" ]] || continue
+                    info "     $(basename "$d"): procs=[$(tr '\n' ' ' < "$d/cgroup.procs" 2>/dev/null)]; $(tr '\n' ' ' < "$d/cgroup.events" 2>/dev/null); rmdir: $(rmdir "$d" 2>&1 && echo ok)"
+                done < <(abandoned_leaves)
                 info "     launcher output: $(printf '%s' "$ZOUT" | grep -i 'cgroup\|sweep' | head -2 | tr '\n' ' ')"
-                find /sys/fs/cgroup/kryptik -mindepth 1 -maxdepth 1 -type d -exec rmdir {} + 2>/dev/null
             fi
         fi
     else
