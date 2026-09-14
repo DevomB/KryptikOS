@@ -227,6 +227,15 @@ phase "phase 7: a deliberately broken trial falls back, is recorded, and is refu
 # trial. The updater then refuses the same payload without --retry; with it
 # the slot is rewritten, verified, armed, and this time it comes up and is
 # committed. Detection, fallback and recovery, on the real chain.
+#
+# What a boot that dies before userspace looks like on the console: the
+# command line carries loglevel=4, so the kernel's own "Linux version"
+# banner (a notice) never reaches it; every "Linux version" the drivers
+# see is boot-smoke's kernel_version_full line, printed from userspace.
+# The corrupt trial therefore shows only the firmware's start line, the
+# verity error and the panic - so that boot is read by those, and the
+# session's boots are counted by the firmware's "BdsDxe: starting Boot"
+# lines, one per boot, rather than by a banner only a booted userspace prints.
 start_vm update-p7 --disk "$PB"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'cat /run/kryptik/boot-identity | head -1; mkdir -p /run/upd/p /var/lib/kryptik/updates/b2 && mount -o ro /dev/vdb /run/upd/p && cp -a /run/upd/p/. /var/lib/kryptik/updates/b2/ && umount /run/upd/p && kryptik-update apply /var/lib/kryptik/updates/b2 && echo ARM7-OK')" \
@@ -241,7 +250,7 @@ B_OFF=$(( $(part_start_disk "$DISK" 3) * 512 ))
 printf '\xa5' | dd of="$DISK" bs=1 seek=$(( B_OFF + 1024 + 0x78 )) conv=notrunc status=none
 green "slot b's root image corrupted from the host (one byte in the superblock)"
 start_vm update-p7b
-drive "expect:Linux version" \
+drive "expect:BdsDxe: starting Boot" \
     "expect:device-mapper: verity:.*(corrupt|mismatch|error)|dm-verity device corrupted" \
     "expect:Kernel panic" \
     "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
@@ -258,7 +267,8 @@ drive "expect:Linux version" \
 rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "broken trial: verity panic, fallback to a, trial-failed recorded, refused without --retry, rewritten and committed with it; data intact" || red "phase 7 drive failed"
 txt | grep -q 'boot-success: trial slot b did NOT boot' && green "boot-success named the failed trial" || red "boot-success did not record the failed trial"
-if [[ "$(txt | grep -c 'Linux version')" -ge 3 ]]; then green "three kernel starts in one session: the corrupt trial, the fallback, the retried trial" ; else red "expected three kernel starts"; fi
+starts="$(txt | grep -c 'BdsDxe: starting Boot')"; ups="$(txt | grep -c 'KRYPTIK_SMOKE: END')"; panics="$(txt | grep -c 'Kernel panic')"
+if [[ "$starts" -ge 3 && "$ups" -ge 2 && "$panics" -ge 1 ]]; then green "three boots in one session: the corrupt trial (panicked), the fallback and the retried trial (both reached userspace)"; else red "expected three boots: firmware starts=${starts}, userspace ends=${ups}, panics=${panics}"; fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 echo "Limits: the interruptions are QEMU process kills with cache=writeback and explicit fsyncs;"
