@@ -211,7 +211,7 @@ python3 "$DRV" --serial "$SER" --timeout 300 \
     "run!:kryptik-launch --info evil; echo EVIL-RC=\$?" "seen:no zone named \"evil\"" \
     "run:kryptik-launch --info work" \
     "$(printf 'su:%s:%s' "$RPASS" 'kryptikd list --zones /usr/lib/kryptik/zones | grep -c evil; echo LIST-DONE')" "expect:LIST-DONE" \
-    ${EXTRA:+"$(printf 'su:%s:%s' "$RPASS" 'mkdir -p /mnt/x && mount -o ro /dev/vdb /mnt/x && kryptik-update apply /mnt/x; echo UPD-RC=$?')"} \
+    ${EXTRA:+"$(printf 'su:%s:%s' "$RPASS" 'mkdir -p /run/upd/x && mount -o ro /dev/vdb /run/upd/x && kryptik-update apply /run/upd/x; echo UPD-RC=$?')"} \
     ${EXTRA:+"expect:not enrolled"} \
     "$(printf 'su:%s:%s' "$RPASS" 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
