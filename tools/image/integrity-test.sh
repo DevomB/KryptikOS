@@ -183,8 +183,17 @@ uid_base = 1310720
 border_color = "#000001"
 EOF
     printf 'kernel.kptr_restrict = 0\n' > "$up/sysctl.d/99-evil.conf"
+    # And the names root honours without asking: a preload library for every
+    # process, a udev rule that RUNs as root, both pointing at the state
+    # partition. Plus one change the system MAY keep (a subuid line), which
+    # proves the overlay still works for what is allowed.
+    mkdir -p "$up/udev/rules.d" "$MNT/lib/kryptik"
+    printf '/var/lib/kryptik/evil.so\n' > "$up/ld.so.preload"
+    printf 'ACTION=="add", RUN+="/var/lib/kryptik/evil.sh"\n' > "$up/udev/rules.d/99-evil.rules"
+    printf '#!/bin/sh\ntouch /var/lib/kryptik/evil-ran\n' > "$MNT/lib/kryptik/evil.sh"; chmod 0755 "$MNT/lib/kryptik/evil.sh"
+    printf 'planted:1310720:65536\n' > "$up/subuid"
     sync; umount "$MNT"
-    green "planted a trust anchor, a zone definition and a sysctl fragment under the state's /etc upper layer"
+    green "planted a trust anchor, a zone definition, a sysctl fragment, a preload library and a udev rule under the state's /etc upper layer, and one allowed change"
 else
     red "could not mount the state partition from the host (loop/offset); phase 5 not performed"
 fi
@@ -207,9 +216,15 @@ SERVE="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --
 SER="$(sed -n 's/^serial=//p' <<<"$SERVE")"; PIDF="$(sed -n 's/^pid=//p' <<<"$SERVE")"; LOG5="$(sed -n 's/^log=//p' <<<"$SERVE")"
 python3 "$DRV" --serial "$SER" --timeout 300 \
     "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
-    "grab:overlay:grep -c attacker /etc/kryptik/trust/release-signers; ls /etc/kryptik/zones/ | head -3" \
+    "grab:overlay:grep -c attacker /etc/kryptik/trust/release-signers; ls /var/lib/kryptik/etc/quarantine/ 2>&1 | head -8" \
     "run:grep -q '^kryptik-release ' /etc/kryptik/trust/release-signers" \
-    "run:test -f /etc/kryptik/zones/evil.toml" \
+    "run:test ! -e /etc/kryptik/zones/evil.toml" \
+    "run:test ! -e /etc/ld.so.preload" \
+    "run:test ! -e /etc/udev/rules.d/99-evil.rules" \
+    "run:test ! -e /var/lib/kryptik/evil-ran" \
+    "run:ls /var/lib/kryptik/etc/quarantine/ | grep -q '^ld.so.preload'" \
+    "run:ls /var/lib/kryptik/etc/quarantine/ | grep -q '^udev'" \
+    "run:grep -q '^planted:' /etc/subuid" \
     "run:test \"\$(sysctl -n kernel.kptr_restrict)\" = 2" \
     "run!:kryptik-launch --info evil; echo EVIL-RC=\$?" "seen:no zone named \"evil\"" \
     "run:kryptik-launch --info work" \
@@ -219,7 +234,7 @@ python3 "$DRV" --serial "$SER" --timeout 300 \
     "$(printf 'su:%s:%s' "$RPASS" 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
 T5="$(tr -d '\r' < "$LOG5")"
-[[ "$rc" -eq 0 ]] && green "the planted /etc content is visible (the overlay works) and none of it took effect" || red "phase 5 drive failed"
+[[ "$rc" -eq 0 ]] && green "the planted /etc content was quarantined before the overlay was mounted (preload, udev rule, zone, anchor, sysctl), the allowed change is in effect, and nothing planted ran" || red "phase 5 drive failed"
 grep -q 'no zone named "evil"' <<<"$T5" && green "the launch daemon does not know the planted zone (it reads /usr/lib/kryptik/zones)" || red "the daemon honoured a planted zone"
 if [[ -n "${EXTRA[*]:-}" ]]; then
     grep -q 'not enrolled' <<<"$T5" && green "an update signed by the planted anchor's key is refused (the anchor is read from the verified root)" || red "an attacker-signed update was not refused"
@@ -228,7 +243,9 @@ grep -q 'KRYPTIK_SMOKE: sysctl kernel.kptr_restrict=2' <<<"$T5" && green "the pl
 grep -q 'KRYPTIK_SMOKE: var_source=/dev/vda4' <<<"$T5" && green "state stayed persistent through the tamper (this is a repairable machine, not a bricked one)" || red "state not persistent in phase 5"
 # undo the planting so later runs start clean
 if mount -o loop,offset="$S_OFF" "$DISK" "$MNT" 2>/dev/null; then
-    rm -rf "$MNT/lib/kryptik/etc/upper/kryptik/trust" "$MNT/lib/kryptik/etc/upper/kryptik/zones" "$MNT/lib/kryptik/etc/upper/sysctl.d"
+    rm -rf "$MNT/lib/kryptik/etc/upper/kryptik/trust" "$MNT/lib/kryptik/etc/upper/kryptik/zones" "$MNT/lib/kryptik/etc/upper/sysctl.d" \
+           "$MNT/lib/kryptik/etc/upper/ld.so.preload" "$MNT/lib/kryptik/etc/upper/udev" "$MNT/lib/kryptik/etc/upper/subuid" \
+           "$MNT/lib/kryptik/etc/quarantine" "$MNT/lib/kryptik/evil.sh" "$MNT/lib/kryptik/evil-ran"
     sync; umount "$MNT"
 fi
 rm -rf "$TMPK"

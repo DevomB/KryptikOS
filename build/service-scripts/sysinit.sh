@@ -3,6 +3,30 @@
 
 [ -r /etc/hostname ] && hostname "$(cat /etc/hostname)" || true
 
+# The names under /etc the overlay's upper layer may carry: the account
+# database and what the shadow tools write beside it, the machine's own
+# identity and clock, and the resolver zone 0 keeps. Everything else under
+# /etc is the verified root's, whatever the state partition holds.
+ETC_MUTABLE="passwd shadow group gshadow subuid subgid passwd- shadow- group- gshadow- subuid- subgid- .pwd.lock hostname machine-id localtime adjtime resolv.conf"
+prune_etc_upper() {   # prune_etc_upper UPPER QUARANTINE
+    up="$1"; q="$2"; moved=0
+    [ -d "$up" ] || return 0
+    for e in "$up"/* "$up"/.[!.]*; do
+        [ -e "$e" ] || [ -L "$e" ] || continue
+        name="${e##*/}"
+        keep=0
+        for k in $ETC_MUTABLE; do [ "$name" = "$k" ] && keep=1; done
+        # A listed name that is a directory is not the file it shadows.
+        if [ "$keep" = 1 ] && [ ! -d "$e" ]; then continue; fi
+        mkdir -p "$q"
+        mv -- "$e" "$q/$name.$(date +%s 2>/dev/null || echo 0)" || continue
+        moved=$((moved + 1))
+        echo "sysinit: /etc overlay: quarantined '$name' from the state partition (not something the system may change under /etc)" >&2
+    done
+    [ "$moved" -gt 0 ] && echo "sysinit: /etc overlay: $moved entr(y/ies) moved to lib/kryptik/etc/quarantine on the state partition" >&2
+    return 0
+}
+
 # The kernel mounts devtmpfs itself (CONFIG_DEVTMPFS_MOUNT=y); these are the
 # rest, each guarded because stage 2 init may already have done it.
 mountpoint -q /proc    || mount -t proc  proc  /proc -o nosuid,noexec,nodev
@@ -142,6 +166,18 @@ if ! mountpoint -q /var; then
         chmod 0755 "$state_mnt/home"
         date -Iseconds > "$state_mnt/.kryptik-state" 2>/dev/null || : > "$state_mnt/.kryptik-state"
     fi
+    # The /etc overlay's upper layer, below, carries what the machine may
+    # change under /etc - and nothing else. The state partition is not
+    # authenticated: an offline writer can put any file there, and several
+    # names under /etc are honoured by root without asking - ld.so.preload
+    # and ld.so.cache by every dynamically linked process, nsswitch.conf by
+    # every name lookup, udev/rules.d by eudev (RUN+= executes as root),
+    # profile, the login and shadow configuration by every login. The
+    # boundary stated below says nothing that decides privilege is read from
+    # /etc; this is where that is enforced. Everything in the upper layer
+    # that is not on the list is moved, named, to a quarantine directory
+    # beside it before the overlay is mounted.
+    prune_etc_upper "$state_mnt/lib/kryptik/etc/upper" "$state_mnt/lib/kryptik/etc/quarantine" || true
     mount --move "$state_mnt" /var
 else
     STATE="$(awk '$2=="/var"{print ($3=="tmpfs")?"tmpfs":"persistent"; exit}' /proc/mounts)"

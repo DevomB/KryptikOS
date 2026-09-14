@@ -377,6 +377,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Every pinned series with a published support window must still be
+      # inside it. OpenSSL 3.3 went out of support on 2026-04-09 and Kryptik
+      # shipped 3.3.1 for five months after; the tool knew and nothing ran it.
+      - name: Pinned series are supported upstream
+        run: ./tools/check-support-status.sh --strict
+
       - name: Pinned kernel is longterm and not EOL
         run: ./tools/check-kernel-eol.sh
 
