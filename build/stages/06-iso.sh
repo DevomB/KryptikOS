@@ -161,8 +161,21 @@ EOF
     echo "--- dm-verity hash tree, appended ---"
     local data_blocks=$(( fs_bytes / 4096 ))
     local salt; salt="$(openssl rand -hex 32)"
-    # Room for the tree: about data/128 plus a superblock's worth, generous.
-    truncate -s $(( fs_bytes + fs_bytes / 64 + 4 * 1024 * 1024 )) "$img"
+    # Room for the tree: about data/128 plus a superblock's worth, generous -
+    # and a whole number of 4096-byte blocks. The ISO maps this image as a
+    # linear target over the CD, whose logical block is 2048 bytes, and
+    # device-mapper refuses a table whose length is not a multiple of that:
+    #
+    #     device-mapper: table: 252:0: len=5373942 not aligned to h/w
+    #     logical block size 2048 of sr0
+    #
+    # which is how release bae1de53 never booted from its ISO (its image
+    # ended 6 sectors past a multiple of 8) while the release before it, by
+    # the luck of its size, did. The USB medium never noticed: its partition
+    # is sized in MiB and its disk has 512-byte blocks.
+    local total_bytes=$(( fs_bytes + fs_bytes / 64 + 4 * 1024 * 1024 ))
+    total_bytes=$(( (total_bytes + 4095) / 4096 * 4096 ))
+    truncate -s "$total_bytes" "$img"
     veritysetup format --no-superblock --hash=sha256 --data-block-size=4096 --hash-block-size=4096 \
         --data-blocks="$data_blocks" --hash-offset="$fs_bytes" --salt="$salt" \
         --root-hash-file="${IMG}/root.hash" "$img" "$img" > "${IMG}/veritysetup-format.txt"
@@ -364,6 +377,13 @@ s_iso() {
     [[ -n "$start" ]] || { echo "could not read the appended partition's start"; sfdisk -d "${IMG}/layout.iso"; return 1; }
     echo "appended root partition starts at sector ${start}"
     local total_sectors=$(( $(root_json total_bytes) / 512 ))
+    # The linear map's length must be whole 2048-byte CD blocks, or the
+    # kernel refuses the table at boot (see the sizing of the image); a
+    # build that would produce such an ISO stops here instead.
+    if (( total_sectors % 4 != 0 )); then
+        echo "the root image is ${total_sectors} sectors, not a whole number of 2048-byte CD blocks; the ISO would not boot"
+        return 1
+    fi
     printf 'dm-mod.create="kmedia,,0,ro,0 %s linear /dev/sr0 %s;kroot,,1,ro,%s" root=/dev/dm-1 %s kryptik.media=iso\n' \
         "$total_sectors" "$start" "$(verity_table /dev/dm-0)" "$COMMON_ARGS" > "${IMG}/cmdlines/media-iso.txt"
     cat "${IMG}/cmdlines/media-iso.txt"
