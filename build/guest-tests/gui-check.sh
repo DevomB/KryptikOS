@@ -23,7 +23,6 @@
 #   transfer waits for the person and lands only after yes, is refused
 #   after no, and is refused without a question when policy forbids it.
 set -u
-Z=/usr/lib/kryptik/zones
 R=/var/lib/kryptik/zones
 KD=/usr/bin/kryptikd
 USER_NAME="${1:-tester}"
@@ -132,7 +131,11 @@ wait_for 20 grep -q '^fullscreen=0' "$RT/kryptik/focus" && pass "fullscreen-off-
 stop_zone() { as_user "kryptik-launch --stop $1" > /dev/null 2>&1; wait_for 15 test ! -e "/run/kryptik/zones/$1/init.pid"; sleep 1; }
 stop_zone untrusted
 mark probe personal
-launch personal "/usr/libexec/kryptik/wlprobe list" > "$LOG/launch-probe-personal.out" 2>&1; sleep 3
+launch personal "/usr/libexec/kryptik/wlprobe list" > "$LOG/launch-probe-personal.out" 2>&1
+# The probe has answered once its launcher exits; an encrypted zone's volume
+# closes after that, and only then may personal be launched again (one
+# instance per zone). Three seconds was not enough on installed media.
+wait_for 30 test ! -e /run/kryptik/zones/personal/init.pid; sleep 1
 out="$(since_mark probe personal)"
 if [[ "$out" == *"global "* && "$out" != *"virtual_keyboard"* && "$out" != *"virtual_pointer"* && "$out" != *"input_method"* ]]; then pass "no-virtual-input" "no virtual keyboard/pointer or input-method global in personal either"; else fail "no-virtual-input" "$(echo "$out" | grep -c global) globals; virtual input: $(echo "$out" | grep -o 'virtual_[a-z]*' | tr '\n' ' '); $(tr '\n' ' ' < "$LOG/launch-probe-personal.out")"; fi
 launch personal "havoc" > "$LOG/launch-havoc-personal.out" 2>&1
@@ -172,7 +175,14 @@ launch_plain untrusted "sh -c 'echo nope > \$HOME/x.txt; python3 $BC transfer wo
 # The chrome's watcher holds watcher.lock in the channel for as long as the
 # session runs (kryptikd consent.rs); it is not a question, so it is not
 # counted. Everything else there is.
-questions() { ls /run/kryptik-consent/ 2>/dev/null | grep -v "^watcher.lock$"; }
+questions() {   # every entry in the consent directory except the watcher lock
+    local f
+    for f in /run/kryptik-consent/* /run/kryptik-consent/.[!.]*; do
+        [[ -e "$f" ]] || continue
+        [[ "${f##*/}" = watcher.lock ]] && continue
+        echo "${f##*/}"
+    done
+}
 [[ -z "$(questions)" ]] && pass "no-question-for-policy-refusal" || fail "no-question-for-policy-refusal" "$(questions | tr '
 ' ' ')"
 # dev -> work: allowed by policy, asked of the person
