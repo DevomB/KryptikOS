@@ -338,13 +338,18 @@ pub const DENIED_RATIONALE: &[(libc::c_long, &str)] = &[
     (libc::SYS_quotactl, "filesystem quota manipulation"),
     (libc::SYS_open_by_handle_at, "open a file by handle, bypassing path checks"),
     (libc::SYS_name_to_handle_at, "obtain the handle used by the above"),
-    // Ownership changes are refused outright. A zone has exactly one mapped
-    // uid, so chown to anything else is meaningless, and Landlock has no right
-    // governing ownership. (chmod is allowed again - see BASE_ALLOWLIST.)
-    (libc::SYS_chown, "change ownership; not covered by any Landlock right"),
-    (libc::SYS_fchown, "change ownership via descriptor"),
-    (libc::SYS_lchown, "change ownership of a symlink"),
-    (libc::SYS_fchownat, "change ownership relative to a descriptor"),
+    // Ownership changes are NOT on this list, and not in BASE_ALLOWLIST
+    // either: a zone that calls chown dies, as before, unless its policy
+    // file allows it. They used to be denied outright ("a zone has exactly
+    // one mapped uid, so chown to anything else is meaningless"), which
+    // stopped being true when zones got a 65536-id range (Design 01), and
+    // was never what kept them harmless: CAP_CHOWN is dropped from every
+    // zone's bounding set, so the kernel refuses any change of owner and any
+    // group the caller is not in - a chown that can succeed is a no-op or a
+    // move between the caller's own groups. The nic zone's DHCP client
+    // chowns its control socket to its own gid; it died here with SIGSYS
+    // until its policy could say so. (chmod is allowed - see BASE_ALLOWLIST.)
+    //
     // The new mount API. mount(2) is denied above; these are the same power
     // through different entry points and were simply missing from the list.
     (libc::SYS_fsopen, "new mount API: open a filesystem context"),
@@ -1133,7 +1138,10 @@ mod tests {
             assert!(allowed.contains(&nr), "chmod family must be allowed (tar, git, cargo)");
         }
         for nr in [libc::SYS_chown, libc::SYS_fchown, libc::SYS_fchownat, libc::SYS_lchown] {
-            assert!(!allowed.contains(&nr), "chown family must stay denied");
+            assert!(!allowed.contains(&nr), "chown family must stay out of the base allowlist");
+            // ... but a zone policy may name it: the nic zone's DHCP client
+            // needs chown on its own control socket, and CAP_CHOWN is gone.
+            assert!(!is_denied(nr), "chown family must be allowable by a zone policy");
         }
     }
 

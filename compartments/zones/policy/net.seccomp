@@ -7,3 +7,6 @@ allow-socket AF_PACKET
 allow-netlink NETLINK_NETFILTER
 keep-capability CAP_NET_ADMIN
 keep-capability CAP_NET_RAW
+# dhcpcd chowns its control socket to its own gid (control.c) and dies of
+# SIGSYS without this; with CAP_CHOWN dropped, that is all a chown can do here.
+allow-syscall chown

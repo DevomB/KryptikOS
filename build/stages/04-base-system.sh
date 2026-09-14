@@ -1455,7 +1455,7 @@ s_tests() {
     # adversarial.sh cross-checks its namespace set against isolate.rs.
     install -m 0644 "${KRYPTIK_ROOT}/compartments/kryptikd/src/isolate.rs" "$base/compartments/kryptikd/src/isolate.rs"
     ln -sfn /usr/bin/kryptikd "$base/compartments/kryptikd/target/debug/kryptikd"
-    for t in "${KRYPTIK_ROOT}"/build/guest-tests/*.sh; do
+    for t in "${KRYPTIK_ROOT}"/build/guest-tests/*.sh "${KRYPTIK_ROOT}"/build/guest-tests/*.py; do
         [[ -f "$t" ]] || continue
         install -m 0755 "$t" "$base/guest-tests/$(basename "$t")"
     done
@@ -1502,6 +1502,7 @@ s_boot_check() {
     chk "kryptik-launch"    /usr/bin/kryptik-launch x
     chk "kryptik-session"   /usr/bin/kryptik-session x
     chk "kryptik-chrome"    /usr/bin/kryptik-chrome x
+    chk "havoc font"        /usr/share/fonts/TTF/DejaVuSansMono.ttf
     chk "kryptik-wlproxy"   /usr/bin/kryptik-wlproxy x
     chk "kryptikd"          /usr/bin/kryptikd x
 
@@ -1868,6 +1869,25 @@ s_havoc() {
     [[ -x /usr/bin/havoc ]] || { echo "no havoc binary"; return 1; }
 }
 
+# The terminal's font. havoc renders from ONE TrueType file, the path its
+# config names (/usr/share/fonts/TTF/DejaVuSansMono.ttf, the upstream
+# default), and the image shipped no font at all: the chrome's launcher
+# window and every zone terminal died before drawing a glyph, and the first
+# GUI run on installed media recorded "(no window)" for the whole session.
+# DejaVu Sans Mono is the file that default names; Sans and the bold face
+# come along for anything else that draws text. Licence: Bitstream Vera
+# terms plus the public-domain DejaVu changes (LICENSE, installed).
+s_fonts() {
+    local src; src="$(unpack "dejavu-fonts-ttf-${V_DEJAVU_FONTS}.tar.bz2" "dejavu-fonts-ttf-${V_DEJAVU_FONTS}")"
+    install -d -m 0755 /usr/share/fonts/TTF
+    install -m 0644 "$src/ttf/DejaVuSansMono.ttf" "$src/ttf/DejaVuSansMono-Bold.ttf" \
+        "$src/ttf/DejaVuSans.ttf" "$src/ttf/DejaVuSans-Bold.ttf" /usr/share/fonts/TTF/
+    install -Dm644 "$src/LICENSE" /usr/share/licenses/dejavu-fonts/LICENSE
+    local want; want="$(sed -n 's/^path=//p' /usr/share/kryptik/havoc.cfg | head -1)"
+    [[ -s "${want:-/nonexistent}" ]] || { echo "havoc.cfg names ${want:-no font}, which is not installed"; return 1; }
+    echo "havoc's font: ${want} ($(stat -c %s "$want") bytes)"
+}
+
 # --- the desktop's own pieces (Design 05/06) --------------------------------
 #
 # kryptik-launch (C: the session's client of the launch daemon), the session
@@ -2143,6 +2163,7 @@ PACKAGES=(
     # the colour table or the patch rebuilds it (see s_dwl).
     "dwl"         "s_dwl $(sha256_of "${KRYPTIK_ROOT}/build/desktop/dwl-config.h" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/build/desktop/zone-colours.h" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/dwl-zone-borders.py" 2>/dev/null || echo none)"
     "havoc"       "s_havoc"
+    "fonts"       "s_fonts"
     "lynx"        "s_lynx"
     "nano"        "native_build nano-${V_NANO}.tar.xz nano-${V_NANO} --sysconfdir=/etc --enable-utf8"
     # The desktop's own pieces: the launch client, the session and the
@@ -2188,7 +2209,7 @@ PACKAGES=(
     "kryptikd"    "s_kryptikd ${KRYPTIK_KRYPTIKD_BIN:-none} $([[ -f "${KRYPTIK_KRYPTIKD_BIN:-}" ]] && sha256_of "${KRYPTIK_KRYPTIKD_BIN}" || echo absent) $(cat "${KRYPTIK_ROOT}"/compartments/zones/*.toml "${KRYPTIK_ROOT}"/compartments/zones/policy/* 2>/dev/null | sha256_of_stdin || echo nozones) $(sha256_of "${KRYPTIK_ROOT}/tools/kryptik" 2>/dev/null || echo none)"
     # The suites and guest checks the VM drivers run inside the installed
     # system; every file is an input.
-    "tests"       "s_tests $(cat "${KRYPTIK_ROOT}"/compartments/tests/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/probes/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/src/isolate.rs "${KRYPTIK_ROOT}"/build/guest-tests/*.sh 2>/dev/null | sha256_of_stdin || echo none)"
+    "tests"       "s_tests $(cat "${KRYPTIK_ROOT}"/compartments/tests/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/probes/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/src/isolate.rs "${KRYPTIK_ROOT}"/build/guest-tests/*.sh "${KRYPTIK_ROOT}"/build/guest-tests/*.py 2>/dev/null | sha256_of_stdin || echo none)"
     "boot-check"  "s_boot_check"
 )
 

@@ -916,7 +916,7 @@ pub fn run_in_zone(
             Ok(ns) => {
                 let r = match zone.network {
                     crate::zone::NetworkMode::Nic => netzone::plumb_nic_zone(zone, ns, &opts.zones_dir),
-                    crate::zone::NetworkMode::Routed => netzone::plumb_routed_zone(zone, ns, &opts.zones_dir),
+                    crate::zone::NetworkMode::Routed => netzone::plumb_routed_zone(zone, ns, &opts.zones_dir, id.gid),
                     crate::zone::NetworkMode::None => Ok(()),
                 };
                 unsafe { libc::close(ns) };
