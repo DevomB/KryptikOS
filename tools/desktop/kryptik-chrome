@@ -26,7 +26,10 @@
 # script: the passphrase is read by kryptik-launch on that terminal, travels
 # to the daemon as a descriptor, and never touches argv or the environment.
 
-ZONES=/etc/kryptik/zones
+# The zone files on the verified root, not the /etc symlink to them: /etc is
+# an overlay the state partition can shadow, and the text identity this
+# chrome shows must come from the same place as the colours dwl draws.
+ZONES=/usr/lib/kryptik/zones
 LAUNCH=/usr/bin/kryptik-launch
 TERMINAL=/usr/bin/havoc
 RT="${XDG_RUNTIME_DIR:-/tmp}"
