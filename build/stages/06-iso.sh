@@ -213,11 +213,19 @@ COMMON_ARGS="ro rootwait console=tty0 console=ttyS0,115200 panic=10 loglevel=4"
 
 s_cmdlines() {
     local h="$1"; echo "root.json sha256: ${h}"
-    printf 'dm-mod.create="kroot,,0,ro,%s" root=/dev/dm-0 %s kryptik.slot=a\n' \
+    # dm-mod.waitfor: dm-init builds the verity table at late init, before
+    # a USB stick (or a disk behind an asynchronously probed controller)
+    # has been enumerated, and it does not retry: the first USB boot ended
+    # with "verity: Data device lookup failed (-ENODEV)" and then rootwait
+    # waiting forever for a device that would never be created. waitfor
+    # makes dm-init wait for the named partition before it creates
+    # anything. The same for the installed slots: real disks are
+    # asynchronous too.
+    printf 'dm-mod.waitfor=PARTLABEL=kryptik-a dm-mod.create="kroot,,0,ro,%s" root=/dev/dm-0 %s kryptik.slot=a\n' \
         "$(verity_table PARTLABEL=kryptik-a)" "$COMMON_ARGS" > "${IMG}/cmdlines/slot-a.txt"
-    printf 'dm-mod.create="kroot,,0,ro,%s" root=/dev/dm-0 %s kryptik.slot=b\n' \
+    printf 'dm-mod.waitfor=PARTLABEL=kryptik-b dm-mod.create="kroot,,0,ro,%s" root=/dev/dm-0 %s kryptik.slot=b\n' \
         "$(verity_table PARTLABEL=kryptik-b)" "$COMMON_ARGS" > "${IMG}/cmdlines/slot-b.txt"
-    printf 'dm-mod.create="kroot,,0,ro,%s" root=/dev/dm-0 %s kryptik.media=usb\n' \
+    printf 'dm-mod.waitfor=PARTLABEL=kryptik-media dm-mod.create="kroot,,0,ro,%s" root=/dev/dm-0 %s kryptik.media=usb\n' \
         "$(verity_table PARTLABEL=kryptik-media)" "$COMMON_ARGS" > "${IMG}/cmdlines/media-usb.txt"
     for f in "${IMG}"/cmdlines/{slot-a,slot-b,media-usb}.txt; do
         echo "--- $(basename "$f") ($(wc -c < "$f") bytes) ---"; cat "$f"
