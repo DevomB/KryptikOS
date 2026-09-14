@@ -31,6 +31,11 @@
 # chrome shows must come from the same place as the colours dwl draws.
 ZONES=/usr/lib/kryptik/zones
 LAUNCH=/usr/bin/kryptik-launch
+# havoc's form is `havoc [option...] [program [args...]]`: the program follows
+# the options directly. It has no -e, and an option it does not know makes it
+# print its usage and exit - which is what every window this chrome opened
+# did on the first installed system, silently, so the session had no
+# launcher window at all ("(no window)" in the focus record).
 TERMINAL=/usr/bin/havoc
 RT="${XDG_RUNTIME_DIR:-/tmp}"
 FOCUS="$RT/kryptik/focus"
@@ -55,7 +60,7 @@ run_status() {
     mkdir -p "$RT/kryptik" 2>/dev/null
     appid=""; title=""; fs=0
     # The launcher window, so a fresh session shows something usable.
-    "$TERMINAL" -e /usr/bin/kryptik-chrome --menu &
+    "$TERMINAL" /usr/bin/kryptik-chrome --menu &
     # The consent watcher: every question the broker leaves gets one
     # trusted window, and the answer is that window's alone. A question
     # nobody answers is withdrawn by the broker after its deadline.
@@ -76,7 +81,7 @@ run_status() {
                 id="${ask##*/}"; id="${id%.ask}"
                 [ -e "$CONSENT/$id.dialog" ] && continue
                 : > "$CONSENT/$id.dialog" 2>/dev/null || continue
-                "$TERMINAL" -e /usr/bin/kryptik-chrome --confirm "$id" 9>&- &
+                "$TERMINAL" /usr/bin/kryptik-chrome --confirm "$id" 9>&- &
             done
             for d in "$CONSENT"/*.dialog; do
                 [ -e "$d" ] || continue
@@ -166,8 +171,8 @@ run_menu() {
                       [ -n "$z" ] || { echo "no zone $idx"; sleep 1; continue; }
                       case "$app" in
                           t) set -- "$TERMINAL" ;;
-                          e) set -- "$TERMINAL" -e /usr/bin/nano ;;
-                          b) set -- "$TERMINAL" -e /usr/bin/lynx ;;
+                          e) set -- "$TERMINAL" /usr/bin/nano ;;
+                          b) set -- "$TERMINAL" /usr/bin/lynx ;;
                       esac
                       echo "launching in zone $z: $*"
                       # --ask: the passphrase, if the zone needs one, is read on
@@ -190,7 +195,7 @@ run_prompt() { # ZONE [--no-display] -- CMD...
     [ -n "${WAYLAND_DISPLAY:-}" ] || die "--prompt: no display to draw the prompt on"
     # A trusted window whose only content is the question. kryptik-launch
     # reads the answer from this terminal and sends it as a descriptor.
-    exec "$TERMINAL" -e /usr/bin/kryptik-launch --ask $nodisp "$zone" -- "$@"
+    exec "$TERMINAL" /usr/bin/kryptik-launch --ask $nodisp "$zone" -- "$@"
 }
 
 run_confirm() { # ID
