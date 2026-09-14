@@ -371,7 +371,8 @@ fn openat_component(dir: RawFd, name: &str, flags: libc::c_int) -> Result<Fd, St
 /// launcher gets: a path can be renamed under a check, an inode cannot.
 /// A verified proxy socket: the descriptor pins the inode for as long as
 /// the launch is being set up; the launcher is told the path and the inode
-/// and opens the path itself, after `unshare`, refusing a different inode.
+/// and opens the path itself, refusing a different inode, then stages it
+/// where its child can reach it after `unshare` (spawn.rs, StagedSocket).
 #[derive(Debug)]
 pub struct ProxySocket {
     pub fd: Fd,
@@ -524,8 +525,9 @@ fn spawn_launcher(
     ];
     // The path, not a descriptor: a descriptor opened here belongs to this
     // mount namespace and cannot be bind-mounted from the zone's (EINVAL).
-    // The launcher walks the path itself after unshare, without following
-    // symlinks, and refuses anything but this inode.
+    // The launcher re-opens the path itself without following symlinks,
+    // refuses anything but this inode, and stages it in the zone's registry
+    // entry for its child to bind after unshare (spawn.rs, StagedSocket).
     if let Some(w) = &wayland {
         args.push("--wayland-socket".into());
         args.push(w.path.display().to_string());

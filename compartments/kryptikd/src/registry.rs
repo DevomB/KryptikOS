@@ -393,6 +393,17 @@ pub fn reclaim(zone: &str) -> Result<(), RegistryError> {
             }
         }
     }
+    // A privileged launch stages the zone's Wayland proxy socket in its
+    // entry as a bind mount (spawn.rs, StagedSocket). A launcher that died
+    // without its Drop leaves the mount behind, and a mountpoint is a file
+    // remove_dir cannot get past: detach it first, and again until the
+    // path is no mountpoint (each detach takes only the topmost; EINVAL
+    // then is the answer wanted).
+    let wl = dir.join(crate::rootfs::WAYLAND_SOCKET_NAME);
+    if let Ok(c) = std::ffi::CString::new(wl.display().to_string()) {
+        while unsafe { libc::umount2(c.as_ptr(), libc::MNT_DETACH) } == 0 {}
+    }
+    let _ = fs::remove_file(&wl);
     for f in ["launcher.pid", "init.pid", "cgroup", "started", "identity", "broker", "clipboard", "lock"] {
         let _ = fs::remove_file(dir.join(f));
     }

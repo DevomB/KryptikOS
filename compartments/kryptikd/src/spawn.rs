@@ -99,6 +99,88 @@ pub struct RunOptions {
     pub ready_fd: Option<i32>,
 }
 
+/// The zone's Wayland proxy socket, staged in its registry entry for the
+/// child to open after unshare: a bind mount of the verified inode at
+/// `<entry>/wayland-0`, in the host mount namespace. Why it is needed is
+/// explained where it is made, in `spawn`. Dropping it undoes the staging:
+/// the bind is detached and the mountpoint file removed, so the registry
+/// entry can be removed after it.
+struct StagedSocket {
+    path: std::path::PathBuf,
+}
+
+impl StagedSocket {
+    fn stage(
+        session_path: &std::path::Path,
+        inode: Option<(u64, u64)>,
+        entry_dir: &std::path::Path,
+        zone: &str,
+    ) -> Result<Self, SpawnError> {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        // Open the session's socket as this process - root in the host
+        // namespace, which walks the session's private directories - one
+        // component at a time without following a symlink, and refuse any
+        // inode but the one the daemon verified: a rename between its check
+        // and this open is not honoured.
+        let fd = crate::serve::open_nofollow(session_path, true)
+            .map_err(|e| SpawnError::Setup(format!("wayland socket {e}")))?;
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        if unsafe { libc::fstat(fd.raw(), &mut st) } < 0 {
+            return Err(SpawnError::Syscall { call: "fstat(wayland socket)", errno: errno() });
+        }
+        if let Some((dev, ino)) = inode {
+            if st.st_dev as u64 != dev || st.st_ino as u64 != ino {
+                return Err(SpawnError::Setup(format!(
+                    "wayland socket {} is not the socket the launch daemon verified (inode changed)",
+                    session_path.display()
+                )));
+            }
+        }
+
+        let path = entry_dir.join(rootfs::WAYLAND_SOCKET_NAME);
+        let cpath = CString::new(path.display().to_string())
+            .map_err(|_| SpawnError::Setup("registry path contains a NUL".into()))?;
+        // A launcher that died between staging and its Drop left a bind
+        // here; the registry's reclaim detaches it, and so does this, so a
+        // stale mount is never bound over - every one of them, since each
+        // detach takes only the topmost. Then the mountpoint: an empty
+        // file, root's, 0600, created new so nothing planted is reused.
+        while unsafe { libc::umount2(cpath.as_ptr(), libc::MNT_DETACH) } == 0 {}
+        let _ = std::fs::remove_file(&path);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&path)
+            .map_err(|e| SpawnError::Setup(format!("{}: {e}", path.display())))?;
+        let src = CString::new(format!("/proc/self/fd/{}", fd.raw())).unwrap();
+        if unsafe { libc::mount(src.as_ptr(), cpath.as_ptr(), std::ptr::null(), libc::MS_BIND, std::ptr::null()) } < 0 {
+            let e = errno();
+            let _ = std::fs::remove_file(&path);
+            return Err(SpawnError::Setup(format!(
+                "staging the wayland socket of zone {zone:?} at {}: {}",
+                path.display(),
+                io::Error::from_raw_os_error(e)
+            )));
+        }
+        // The descriptor has done its work: the mount holds its own
+        // reference to the inode, and nothing else may inherit this one.
+        drop(fd);
+        Ok(StagedSocket { path })
+    }
+}
+
+impl Drop for StagedSocket {
+    fn drop(&mut self) {
+        if let Ok(c) = CString::new(self.path.display().to_string()) {
+            while unsafe { libc::umount2(c.as_ptr(), libc::MNT_DETACH) } == 0 {}
+        }
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 /// Seconds a zone gets to exit after a forwarded SIGINT/SIGTERM before its
 /// pid 1 is SIGKILLed, which takes the whole pid namespace with it.
 pub const GRACE_SECS: u32 = 5;
@@ -684,12 +766,35 @@ pub fn run_in_zone(
     // identity, when it still has its own mount namespace AND is still root.
     let broker_path_str = broker_path.display().to_string();
 
-    // The Wayland proxy socket, if the zone gets a display: it must exist,
-    // be a socket, and be one the launcher can name; the child opens it by
-    // path after unshare, exactly like the broker's.
-    let wayland_path_str: Option<String> = match &opts.wayland_socket {
-        None => None,
-        Some(p) => {
+    // The Wayland proxy socket, if the zone gets a display. The session made
+    // it under its own runtime directory - /run/user/<uid>/kryptik/<zone>/
+    // wayland-0, 0700 and the session's all the way down - and the child
+    // cannot walk that. After unshare(CLONE_NEWUSER) it is host uid 0 with
+    // no capability the host honours, and a directory it does not own that
+    // grants nothing to others refuses it. The first installed system showed
+    // exactly that: every zone with a window died at setup with "kryptik:
+    // Permission denied" on the session's directory. The developer suite
+    // never saw it because there the launcher IS the session's uid, and
+    // owner bits let it through.
+    //
+    // So a privileged launch stages the socket where the child already looks
+    // for the broker: the zone's registry entry, root-owned and 0700, which
+    // host uid 0 walks by ownership alone (Design 05 named this very path,
+    // /run/kryptik/zones/<zone>/wayland-0). The staging is a bind mount of
+    // the inode the daemon verified, made HERE - in the host mount
+    // namespace, which the child's unshare copies - and undone when the
+    // launch ends, on every path, by `staged`'s Drop; it is declared after
+    // `entry` so it is dropped before the entry directory is removed. A
+    // developer launch cannot mount and does not need to: it hands the child
+    // the path as given.
+    let staged: Option<StagedSocket> = match (&opts.wayland_socket, id.privileged) {
+        (Some(p), true) => Some(StagedSocket::stage(p, opts.wayland_inode, entry.dir(), &zone.name)?),
+        _ => None,
+    };
+    let wayland_path_str: Option<String> = match (&staged, &opts.wayland_socket) {
+        (Some(s), _) => Some(s.path.display().to_string()),
+        (None, None) => None,
+        (None, Some(p)) => {
             let md = std::fs::metadata(p).map_err(|e| SpawnError::Setup(format!("wayland socket {}: {e}", p.display())))?;
             if !std::os::unix::fs::FileTypeExt::is_socket(&md.file_type()) {
                 return Err(SpawnError::Setup(format!("wayland socket {} is not a socket", p.display())));
@@ -1124,7 +1229,11 @@ fn intermediate_main(
     // in the zone's own mount namespace (a descriptor from the daemon's
     // namespace cannot be bind-mounted from this one), walking the path
     // without following a single symlink, and refusing any inode but the
-    // one the daemon verified.
+    // one the daemon verified. On a privileged launch the path is the
+    // staging bind in the zone's registry entry (StagedSocket): root's own
+    // directory, which this process - host uid 0 with no capability the
+    // host honours, since the unshare - still walks by ownership. The
+    // session's runtime directory it could not: 0700 and not its own.
     let wayland_in_zone: Option<String> = match wayland_path {
         None => None,
         Some(p) => {
