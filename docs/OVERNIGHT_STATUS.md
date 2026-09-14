@@ -13,12 +13,12 @@ named below, never in Git. The work is ongoing development on `main`; the
 | G2 Runtime/build | PASS (host and chroot; the target-boot half is G3) | From-scratch rebuild of snapshot eb72a56 finished 20:18 (stage 01 14:27-17:52, throttled while the host was idle; stage 02 17:52-19:07; stage 04 19:08-20:18). `make test-libc-unwind` on the new sysroot: 7 passed, 0 failed - pthread_exit, pthread_cancel, backtrace, the loader's own map start recorded (0x0000707ced4c1000), `_dl_find_object` attributes a dlopened object correctly. The glibc step's own checks: no run-time relocation against `__ehdr_start`/`_end` in rtld.os, the loader carries IBT/SHSTK, ld.so's map start read back non-zero. The four reproduced failures are repaired with regressions: wlproxy pollfd crash (session loop bounded, accept last; `compositor/wlproxy/tests/live.rs`), UTF-8 title panic (char-boundary truncation), zoneid palette floor (coarse-to-fine refinement; shipped zones re-derived), Makefile `update-test` duplicate (`update-tree-test`). The libc defect: the bug 31943 backport was necessary but not what was wrong; the loader recorded its own map as starting at 0 (glibc bug 33088, GCC 14 SLP vectorisation of `_dl_start`), fixed by `build/patches/glibc-2.40/0004-*.patch` with build-time checks in stages 01/04 and a runtime probe in `test-libc-unwind` (eb72a56). The from-scratch rebuild that proves it started 14:26 (see Active jobs). Host side, on the current tree in isolation (18:40): kryptikd 149 unit tests; `run-tests.sh --strict` suites all pass on ext4 (launcher 145/0 with the 3 listed gaps, cli 17/0, serve 37/0, update-tree 20/0, compositor 104/0 + audit, harness 58, hardening 27, services 81, boot-success 28, s6-init 32, manifest 25); `validate-kernel-config --boot/--hardened` pass; the artifact audit of the previous sysroot has no hard failure (501 soft findings: 107 without BIND_NOW, 28 non-PIE, 324 without CET, 42 RPATH - recorded as a known weakness). On the new sysroot, inside the chroot, by `make acceptance`: `test-libc-unwind` 7/7, `userspace-smoke` 32 checks, the artifact audit with no hard failure, `validate-kernel-config`; stage 05 built without the `HOSTLDFLAGS` workaround. |
 | G3 Firmware boot | PASS on media `0.1.20260913.812998c6` | `make acceptance` items media-smoke-usb and media-smoke-iso (each above the 25-check control) and firmware-only-boot (every recorded QEMU command line free of `-kernel`/`-initrd`/`-append` and host sharing). What the first real media taught: the USB root needed `dm-mod.waitfor=PARTLABEL=...` before `dm-mod.create` (the verity data device was not there yet), the ISO's appended partition needed a GUID type, and boot-smoke resolves `/dev/root` to the dm device. Re-run on the media of db1a32a pending. |
 | G4 Installation | PASS on `812998c6` | install-test 43 passed, 0 failed (install, boot alone with fresh vars, reboot, cold boot, refusals including the blkdebug I/O error; firstboot created the preseeded user). state-test 47 passed, 0 failed (clone, ambiguous labels, corrupt, missing state: degraded and honest). |
-| G5 Boot integrity | 3 of 4 items PASS on `812998c6`; integrity-test repaired, unverified | ovmf-vars PASS (developer key enrolled, certificate read back); media-smoke-secureboot 36/0; media-refused-foreign-keys 6/0 (the firmware's own refusal, a tried boot option). integrity-test failed 18/5: its data-block tamper sat in a block nothing reads at boot, the system came up normally, and the "named the corruption" match was the command line's own verity text. Fixed 5435a8d (the tamper hits the ext4 superblock; only the kernel's verity message counts) and db1a32a (its payload mount under `/run`, not the read-only `/mnt`). |
-| G6 Zones/network | FAIL on `812998c6` (26 passed, 11 failed); repaired 05e9d7b, unverified | Root cause, probed on the kept VM disk: inside the nic zone `/run` was read-only and `/var` absent, so dhcpcd died on its pid file before asking for a lease, and `netzone-init.sh` itself was ended by the shell at `: > /run/uplink-resolv.conf` (a failed redirection on a special builtin exits a POSIX sh). No routed zone had a path; nine of the eleven failures follow from that. kryptikd now gives the nic zone, and only it, private tmpfs mounts at `/run` and `/var/lib` with matching Landlock rules; the script waits for the lease and reads the uplink's DNS from dhcpcd's own resolv.conf. The compartment suites on the target kernel: launcher exit 0 with the three accounted gaps (NETR, POL6, LC15/16), adversarial 0, cli 0; the boundary suite failed all 54 probes because as root its fixtures had no zone identity, which kryptikd refuses. Repaired the way the launcher suite does it; on the build host it now passes 54/0 as root and 50/0 unprivileged (4 designed skips), and the root run exposed a kryptikd defect fixed in the same commit: a privileged transfer into an ephemeral zone failed with EOVERFLOW because host root is not a uid the zone's user namespace maps. The broker delivers as the destination identity now. |
-| G7 Storage | same run as G6 (the storage checks are in `zones-check.sh`); three check defects repaired 05e9d7b | On the target: volume init, wrong passphrase refused, data persists, mapping gone after stop, ephemeral gone, concurrent open refused, full volume survived, header restore all PASS. The three that failed were the checks, not the volumes: the damaged-header check zeroed only the primary LUKS2 header and cryptsetup opened the volume from the intact secondary (now both headers, and the zone must not run); the vault check compared a raw `0` line; the passphrase-leak grep matched its own command line. |
-| G8 Desktop | FAIL on `812998c6` (5 of 25); repaired 05e9d7b, unverified | The first run of this gate on real media: the compositor never started. `kryptik-session` exported `WAYLAND_DISPLAY=wayland-0` before exec'ing dwl, and wlroots reads that as "nest inside that display", so dwl tried to connect to a socket that did not exist yet and died before opening the GPU ("Could not connect to remote display"). dwl names its own socket and exports it to the chrome itself; the session no longer sets it. Every other verdict followed from that one. What did pass: the GPU device, seatd, launch-daemon readiness, the hidden globals, consent cleanup. |
-| G9 OS updates | FAIL on `812998c6` at phase 2; repaired db1a32a, unverified past phase 1 | Phase 1 passed (install A, boot, zone volume created, version reported). Phase 2's first guest command did `mkdir /mnt/p` on the read-only verity root and phases 2-7 never ran; the driver mounts payloads under `/run/upd` now. Phases 2-7 (apply, trial boot, commit, refusals, recovery, rollback, interruptions, broken trial) are unproven until the next run. |
-| G10 Delivery | ACTIVE | `make acceptance` (`tools/acceptance.sh`) has run three times on `812998c6` (one full pass, two `ONLY=` repair passes): every gate on named artifacts, PASS/FAIL/INCOMPLETE per item, the minimum-checks control per VM driver, firmware-only attestation from the recorded QEMU commands, a report with revision/hashes/firmware/kernel/commands/exit/logs. `EXPORT=DIR` copies and re-hashes; `docs/BOOT_INSTALL_RECOVER.md` is the instructions file it ships. The export is made only by a run in which every gate is PASS, which is still ahead. |
+| G5 Boot integrity | 3 of 4 items PASS; integrity-test 22 of 23 on `d238dd44`, repaired 85b1c35, unverified | ovmf-vars, media-smoke-secureboot (36/0) and media-refused-foreign-keys (6/0) pass on both releases. On `d238dd44` the superblock tamper works as designed: dm-verity names the corruption at 3 s and the kernel panics before any userspace. The one failing check looked for the kernel's "Linux version" banner, which the command line's `loglevel=4` never lets reach the console (every "Linux version" the drivers see is boot-smoke's own line); the check now reads a panicking boot by its kernel console lines. The same assumption in update-test's phase 7 was fixed before it could fail (88657ea). |
+| G6 Zones/network | 28 passed, 9 failed on `d238dd44`; every cause repaired on main, unverified | The net zone came up (36 of 43 guest checks) but dhcpcd was killed by SIGSYS on `chown(2)` of its own control socket (audit syscall=92): chown sat on kryptikd's denied list, which no zone policy may re-allow, for a reason from the one-uid days; with CAP_CHOWN dropped a chown can only be a no-op, so the four chown syscalls left the denied list (still outside the base allowlist) and the net policy allows it (90a84de). No routed zone could reach even the bridge for two more reasons: kryptikd wrote the ICMP group range as `0 65534` in host gids, which maps to nothing inside a zone with a real identity, and the guest checks pinged with inetutils `ping`, which wants a raw socket a zone rightly lacks; the range now names the zone's own host gid and the checks probe with an ICMP datagram socket (`icmp-echo.py`). The pid storm is python (bash's fork retries outlasted the timeout) and the zones VM gets 3 GB for its tmpfs bound (4a6bd2b). Suites on the target: adversarial 0, cli 0; the boundary suite 2 failures (D1 imported ctypes, absent from the shipped python - now `unshare -U`, and the image rebuilds python after libffi/openssl/expat (bae1de5); G12 waited out a 60 s consent deadline - now 3 s); the launcher suite 143/1 with M9: a cgroup a killed launcher left survived the sweep because kernfs gives a cgroup directory the time it was first looked at, so the sweep now goes by whether the launcher pid is alive (4a6bd2b); H1c is an accounted gap (zone 0 has no interface by design). |
+| G7 Storage | PASS on `d238dd44` within zones-test (all eleven volume checks) | volume init, wrong passphrase refused, data persists, mapping gone after stop, ephemeral gone, concurrent open refused, full volume survived, both-headers-zeroed refused, header restore, vault offline, no passphrase leak. The driver's phase-4 "mapping left open" verdict was a false positive (it matched phase 2's own wording in the session transcript); it reads the tagged listing now (d068ab2). |
+| G8 Desktop | 9 of 21 on `d238dd44`; two causes repaired, one open | The compositor now starts (session socket, dwl running, focus record written) and the hidden-globals and consent-cleanup verdicts hold. Every zone window failed at setup: the zone child, root only inside its own user namespace, could not walk the session's 0700 `/run/user/1000/kryptik/` to the proxy socket; a privileged launch now stages the verified socket in the zone's registry entry (f906943). Open: the chrome's own launcher window never appeared ("(no window)" in the focus record). havoc draws with a built-in fallback font, so the absent TrueType file was not it (DejaVu is shipped now regardless); the guest check now preserves the session log on the state partition (8da6e5b) so the next run says why. |
+| G9 OS updates | 6 of 15 on `d238dd44`; phase 2's cause repaired, phases 2-7 unproven | Phase 1 passes. Phase 2 was refused at "unlisted file in the payload: lost+found": the payload is the root of an ext4 medium and carries the filesystem's own directory; the updater passes over an empty one and refuses a populated one (037e482, with a test variant). Phase 3's refusals that did run all held (wrong key, altered image, truncated kernel, extra file). Phases 4-7 only inherited phase 2's state. |
+| G10 Delivery | ACTIVE | `make acceptance` has run five times on real media (two full passes, three `ONLY=` repair passes); the report and per-item logs are under `work/acceptance/<time>/`. The export is made only by a run in which every gate is PASS, which is still ahead. |
 
 ## Environment and the one authoritative tree
 
@@ -41,19 +41,22 @@ named below, never in Git. The work is ongoing development on `main`; the
 
 | Job | Command | Log |
 | --- | --- | --- |
-| post-build on snapshot db1a32a - RUNNING since 01:26 on 2026-09-14 | `post-build.sh` (nice 10, ionice idle, so the host stays usable): the snapshot moved to db1a32a at a safe boundary (no chroot driver, no VM), the musl `kryptikd` and `kryptik-wlproxy` rebuilt from it, incremental `make system` (the kryptikd, desktop, netzone and tests steps re-run because their fingerprinted inputs changed, and what follows them), `make kernel` (inputs unchanged), then `make media` for release A (`0.1.20260914.<sha8 of db1a32a>`) and release B (`<A>.1`, the update test's target). | `/root/kryptik/logs/post-build.out`, then `musl-build.log`, `system2.log`, `kernel.log`, `media-a.log`, `media-b.log` |
+| post-build on snapshot bae1de5, then a full acceptance - RUNNING since 04:02 on 2026-09-14 (started by the second session) | `post-build.sh && run-acceptance.sh`: the musl binaries from bae1de5, incremental `make system` (python rebuilt after libffi/openssl/expat and everything after it, the DejaVu font step, the suites and guest checks, kryptikd with the chown and ICMP-range changes), the kernel (its recipe changed: 79d98c3), media A and B; then every gate with the export to `out/overnight`. Expect the build to take about two hours and the acceptance two more. | `/root/kryptik/logs/post-build.out`, `system2.log`, `kernel.log`, `media-a.log`, `media-b.log`; then `acceptance.out` and `work/acceptance/<time>/` |
 
-The previous media, `0.1.20260913.812998c6`, stay under `work/images/` until
-the new ones exist; their acceptance runs are under `work/acceptance/`
-(`20260914T001642` is the `ONLY=G4,G5,G6/G7,G8,G9` pass whose results the
-table records; it was stopped during update-test's phase 4, after phase 2
-had failed, because the later phases can only repeat that failure at a
-timeout each).
+Two sessions work in this checkout (both commit as DevomB). Rules that
+kept them from colliding: `git status` and `git log` before every commit;
+stage hunks, not files, when the other session has the file open; never
+two chroot drivers or two acceptance passes at once (`post-build.sh` refuses
+while the sysroot is mounted, which is what saved 04:02); the kept VM
+disks under `work/vm/` belong to whoever's run made them and may vanish.
 
 The host driver scripts are in `tools/dev/build-host/` (copied to
 `/root/kryptik/bin/` in the distro, from where they run detached with
 `setsid`). `probe-disk.sh DISK 'cmd'...` boots an installed test disk and
-runs commands as root over serial: how the net zone was diagnosed.
+runs commands as root over serial (`PROBE_OVMF_ARGS='--gpu --mem 3072'` for
+a desktop question); cheaper for logs alone: `losetup -Pf --show disk.img`
+and mount `p4` (kryptik-state) read-only, the guest logs are under
+`log/kryptik/`.
 
 ## Decisions taken in this run
 
@@ -85,38 +88,38 @@ runs commands as root over serial: how the net zone was diagnosed.
 - Transfers between zones ask the person through the trusted chrome
   (`/run/kryptik-consent`); the clipboard moves only by the zone 0 gesture.
 
-## Session checkpoint 2026-09-14 01:30
+## Session checkpoint 2026-09-14 04:15
 
-Since the 2026-09-13 checkpoint, on `main` in order: 9e24ceb (the drivers
-reach root through a login shell), 6557abb (the serial driver's su step
-keeps the command's output), 5435a8d (integrity tamper hits the
-superblock), 05e9d7b (the net zone's state directories, the desktop's
-compositor start, transfers into ephemeral zones as root, the boundary
-suite as root, three zones-check defects), db1a32a (payload mounts under
-`/run`). A second agent (Codex, also committing as DevomB) works in the same
-checkout: c4f903a (stage 06 records the release instead of copying it,
-acceptance removes VM disks after a pass) and 262f89a (zoneid import) are
-theirs. Before every commit: `git status`, `git log`; never run two
-acceptance passes against the same VM disks. The tree is clean.
+On `main` since the 01:30 checkpoint, in order: 79d98c3 (stage 05 archives
+the stamps of a kernel tree that is gone), 4cedb0d and 85b1c35 (integrity
+test reads a panicking boot by its console lines), 88657ea (update-test
+phase 7 the same way), d068ab2 (zones-test reads the mapper listing it
+asked for), f906943 (a privileged launch stages the zone's proxy socket in
+its registry entry), 037e482 (the updater passes over an empty
+lost+found), aae90bc (H1c accounted), 90a84de (chown leaves the denied
+list and the net zone allows it; the ICMP range names the zone's host gid;
+icmp-echo.py; DejaVu fonts; boundary D1/G12), 4a6bd2b (cgroup sweep by
+launcher liveness, immediate refusal with nobody to ask, python pid storm,
+3 GB for the zones VM), bae1de5 (python rebuilt with ctypes and ssl),
+8da6e5b (session log preserved; probe-disk GPU). The tree is clean.
 
 Resume order, inside `kryptik-build` as root:
 
-1. `cat /root/kryptik/logs/post-build.out` - wait for `POST-BUILD DONE`
-   (it prints A's version; each stage's log is named on its END line).
-   If a stage failed: fix on `main`, then `bash /root/kryptik/bin/post-build.sh`
-   again (it moves the snapshot and resumes from the stamps).
-2. `ONLY=G5,G6/G7,G8,G9 bash /root/kryptik/bin/run-acceptance.sh` - the
-   gates repaired since `812998c6`, on the new media, without export.
-   Read `/root/kryptik/logs/acceptance.out`; each item's log is under
-   `work/acceptance/<time>/`, each VM's transcript under `work/logs/`
-   (`ovmf-serial.<name>.<time>.log`, with `.cmd` beside it).
-3. Repair, commit, `post-build.sh` again (image-side changes need new media;
-   driver-only changes need only the snapshot moved: `git checkout --detach
-   main` in `/root/kryptik/main` while nothing runs from it).
-4. `bash /root/kryptik/bin/run-acceptance.sh` with no `ONLY`: every gate,
-   about two hours, exporting to `C:\Coding-Projects\Linux Distro\out\overnight`.
-   The task is complete only when that run's REPORT.md has every gate PASS.
-5. Update this table, README.md's release-validated line and
+1. `cat /root/kryptik/logs/post-build.out` until `POST-BUILD DONE` (A's
+   version is on that line), then `/root/kryptik/logs/run-acceptance.out`
+   and `acceptance.out` for the chained full run and its verdict. If a
+   stage failed, its log is named on the END line; fix on `main`, then
+   `bash /root/kryptik/bin/post-build.sh` again.
+2. If gates fail: read `work/acceptance/<time>/<gate>.log`, the VM
+   transcripts `work/logs/ovmf-serial.<name>.<time>.log`, and for the
+   desktop the kept disk's `log/kryptik/session.log` (loop-mount p4).
+   Repair, commit, `post-build.sh` for image-side changes (driver-only
+   changes need only `git checkout --detach main` in `/root/kryptik/main`
+   while nothing runs from it), then `ONLY=<gates> run-acceptance.sh`.
+3. `bash /root/kryptik/bin/run-acceptance.sh` with no `ONLY`: every gate,
+   exported to `C:\Coding-Projects\Linux Distro\out\overnight`. The task is
+   complete only when that run's REPORT.md has every gate PASS.
+4. Update this table, README.md's release-validated line and
    docs/roadmap.md to the evidence.
 
 Known gaps that are documented rather than closed: no watchdog for a
@@ -126,15 +129,17 @@ physical hardware; glibc 2.40 lacks the branch's later CVE backports; the
 artifact audit's soft findings (324 without CET, 107 without BIND_NOW, 28
 non-PIE, 42 RPATH); dhcpcd runs without its own privilege separation
 inside the net zone (no dhcpcd user in a zone's synthesized passwd; the
-zone is the sandbox).
+zone is the sandbox); the launcher suite's BRK4 answered a foreign peer
+with a broken pipe once on the target (seen in one instrumented run, not
+in the gate) and is worth watching.
 
 ## Next commands
 
 ```sh
 # inside kryptik-build, as root
 tail -f /root/kryptik/logs/post-build.out                       # until POST-BUILD DONE
-ONLY=G5,G6/G7,G8,G9 bash /root/kryptik/bin/run-acceptance.sh    # the repaired gates, no export
-bash /root/kryptik/bin/run-acceptance.sh                         # every gate, exported
+tail -f /root/kryptik/logs/acceptance.out                       # the chained full run
+bash /root/kryptik/bin/run-acceptance.sh                         # again, if repairs were needed
 ```
 
 ## Unresolved blockers
