@@ -1,0 +1,284 @@
+name: Distro
+
+# The whole distribution, built and tested on GitHub's runners and nowhere
+# else: the from-source stages, the signed media, and `make acceptance` (gates
+# G1-G10) on the exact images that come out, under KVM. Three jobs, because a
+# standard runner gives a job six hours and the build alone can take most of
+# that: what each job produces travels to the next as an artifact.
+#
+# Sizes and times that shaped this: stage 01 took about three and a half
+# hours and stage 02 an hour and a quarter on an 8-core laptop; stage 04 an
+# hour and a quarter; a full acceptance about two hours and up to 50 GB of
+# VM disks. The runner's / has ~14 GB free and /mnt about 65 GB, so
+# everything the build writes lives under /mnt/kryptik.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+  workflow_dispatch:
+
+concurrency:
+  group: distro-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  KRYPTIK_WORK: /mnt/kryptik/work
+  KRYPTIK_SOURCES: /mnt/kryptik/sources
+  KRYPTIK_OUT: /mnt/kryptik/out
+  # A stamped step whose inputs moved rebuilds instead of stopping the build:
+  # the cache below may hold a sysroot from an earlier version of a stage.
+  KRYPTIK_STALE: rebuild
+  NO_COLOR: "1"
+  # What 00-host-check and the stages need on the host, every job alike.
+  HOST_PACKAGES: >-
+    build-essential bison flex texinfo gawk m4 patch perl python3 python3-pip
+    xz-utils bzip2 zstd cpio rsync bc curl git openssl libssl-dev libelf-dev
+    e2fsprogs dosfstools mtools xorriso util-linux cryptsetup-bin sbsigntool
+    qemu-system-x86 ovmf musl-tools file
+
+jobs:
+  toolchain:
+    name: Stages 01-02 (cross toolchain, temporary tools)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Working directories on the large disk
+        run: |
+          sudo mkdir -p /mnt/kryptik
+          sudo chown "$(id -u):$(id -g)" /mnt/kryptik
+          mkdir -p "$KRYPTIK_WORK" "$KRYPTIK_SOURCES" "$KRYPTIK_OUT"
+          df -h /mnt | tail -1
+
+      - name: Host packages
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq $HOST_PACKAGES
+
+      - name: Upstream sources (cached by sources.lock)
+        id: sources
+        uses: actions/cache@v4
+        with:
+          path: /mnt/kryptik/sources
+          key: sources-${{ hashFiles('sources.lock') }}
+
+      - name: Fetch and verify the sources
+        if: steps.sources.outputs.cache-hit != 'true'
+        run: make sources
+
+      # The sysroot and the stamps after stage 02, keyed on everything those
+      # stages read. A hit skips both stages (their stamps still verify their
+      # own fingerprints); a partial hit on the prefix resumes where an
+      # earlier run stopped, which is what makes a six-hour limit survivable.
+      - name: Stage 01-02 sysroot (cached)
+        uses: actions/cache@v4
+        with:
+          path: |
+            /mnt/kryptik/work/sysroot
+            /mnt/kryptik/work/.stamps
+            /mnt/kryptik/work/kconfig
+          key: work02-${{ hashFiles('build/stages/00-host-check.sh', 'build/stages/01-toolchain.sh', 'build/stages/02-temp-tools.sh', 'build/lib/**', 'build/patches/**', 'build/config/**', 'sources.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            work02-${{ hashFiles('build/stages/00-host-check.sh', 'build/stages/01-toolchain.sh', 'build/stages/02-temp-tools.sh', 'build/lib/**', 'build/patches/**', 'build/config/**', 'sources.lock') }}-
+            work02-
+
+      - name: Stage 01, the cross toolchain (unprivileged)
+        run: make toolchain
+
+      - name: Stage 02, the temporary tools (unprivileged)
+        run: make temp-tools
+
+      - name: Pack the sysroot for the next job
+        run: |
+          cd /mnt/kryptik
+          rm -rf work/build
+          tar --zstd -cf work-after-02.tar.zst -C work sysroot .stamps kconfig logs 2>/dev/null || tar --zstd -cf work-after-02.tar.zst -C work sysroot .stamps
+          ls -la work-after-02.tar.zst
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: work-after-02
+          path: /mnt/kryptik/work-after-02.tar.zst
+          retention-days: 3
+          compression-level: 0
+
+      - name: Stage logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-toolchain
+          path: /mnt/kryptik/work/logs
+          retention-days: 7
+          if-no-files-found: ignore
+
+  system:
+    name: Stages 04-06 (base system, kernel, media)
+    needs: toolchain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Working directories on the large disk
+        run: |
+          sudo mkdir -p /mnt/kryptik
+          sudo chown "$(id -u):$(id -g)" /mnt/kryptik
+          mkdir -p "$KRYPTIK_WORK" "$KRYPTIK_SOURCES" "$KRYPTIK_OUT"
+
+      - name: Host packages
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq $HOST_PACKAGES
+
+      - name: Upstream sources (cached by sources.lock)
+        id: sources
+        uses: actions/cache@v4
+        with:
+          path: /mnt/kryptik/sources
+          key: sources-${{ hashFiles('sources.lock') }}
+
+      - name: Fetch and verify the sources
+        if: steps.sources.outputs.cache-hit != 'true'
+        run: make sources
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: work-after-02
+          path: /mnt/kryptik
+
+      - name: Unpack the sysroot
+        run: |
+          cd /mnt/kryptik
+          tar --zstd -xf work-after-02.tar.zst -C work
+          rm -f work-after-02.tar.zst
+          ls work; du -sh work/sysroot
+
+      # The two static binaries stage 04 installs are built outside the
+      # chroot, for musl, exactly as the build host did.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: kryptikd and kryptik-wlproxy, static
+        run: |
+          (cd compartments/kryptikd && cargo build --locked --release --target x86_64-unknown-linux-musl)
+          (cd compositor && cargo build --locked --release --target x86_64-unknown-linux-musl -p wlproxy --bin kryptik-wlproxy)
+          cp compartments/kryptikd/target/x86_64-unknown-linux-musl/release/kryptikd /mnt/kryptik/kryptikd-musl
+          cp compositor/target/x86_64-unknown-linux-musl/release/kryptik-wlproxy /mnt/kryptik/kryptik-wlproxy-musl
+          file /mnt/kryptik/kryptikd-musl /mnt/kryptik/kryptik-wlproxy-musl
+
+      - name: Stage 04, the base system (in the chroot, as root)
+        run: make system KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
+
+      - name: Stage 05, the hardened kernel
+        run: make kernel KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
+
+      # Two releases: A, and B = A's version with .1 (sorts after A), which
+      # the update test applies over A.
+      - name: Stage 06, the media (release A and the update B)
+        run: |
+          VER_A="0.1.$(date -u +%Y%m%d).${GITHUB_SHA::8}"
+          echo "VER_A=$VER_A" >> "$GITHUB_ENV"
+          make media KRYPTIK_VERSION="$VER_A" KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
+          make media KRYPTIK_VERSION="${VER_A}.1" KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
+          ls -la "$KRYPTIK_WORK/images" | grep -E 'usb.img|\.iso|payload'
+
+      - name: Pack the work tree for the acceptance job
+        run: |
+          cd /mnt/kryptik
+          rm -rf work/build work/vm
+          tar --zstd -cf work-after-media.tar.zst -C work --exclude='images/kryptik-root.img' --exclude='images/esp-*.img' .
+          ls -la work-after-media.tar.zst; df -h /mnt | tail -1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: work-after-media
+          path: /mnt/kryptik/work-after-media.tar.zst
+          retention-days: 3
+          compression-level: 0
+
+      - name: Stage logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-system
+          path: /mnt/kryptik/work/logs
+          retention-days: 7
+          if-no-files-found: ignore
+
+  acceptance:
+    name: make acceptance (gates G1-G10, under KVM)
+    needs: system
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Working directories on the large disk
+        run: |
+          sudo mkdir -p /mnt/kryptik
+          sudo chown "$(id -u):$(id -g)" /mnt/kryptik
+          mkdir -p "$KRYPTIK_WORK" "$KRYPTIK_SOURCES" "$KRYPTIK_OUT"
+
+      - name: Host packages
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq $HOST_PACKAGES
+          # virt-fw-vars, for the disposable Secure Boot variable stores.
+          sudo pip install --break-system-packages virt-firmware
+          virt-fw-vars --help > /dev/null
+
+      # KVM on a hosted runner: the device exists; it is the permissions that
+      # keep an unprivileged process out. Without it run-ovmf.sh falls back to
+      # TCG and every VM gate runs into its timeout.
+      - name: Let the runner use /dev/kvm
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -la /dev/kvm
+
+      - name: Upstream sources (cached by sources.lock)
+        uses: actions/cache@v4
+        with:
+          path: /mnt/kryptik/sources
+          key: sources-${{ hashFiles('sources.lock') }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: work-after-media
+          path: /mnt/kryptik
+
+      - name: Unpack the work tree
+        run: |
+          cd /mnt/kryptik
+          tar --zstd -xf work-after-media.tar.zst -C work
+          rm -f work-after-media.tar.zst
+          ls work/images; df -h /mnt | tail -1
+
+      - name: make acceptance
+        run: |
+          mkdir -p /mnt/kryptik/export
+          make acceptance EXPORT=/mnt/kryptik/export
+
+      - name: Acceptance report and per-item logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-report
+          path: |
+            /mnt/kryptik/work/acceptance
+            /mnt/kryptik/work/logs
+          retention-days: 14
+          if-no-files-found: ignore
+
+      # The export exists only when the run made one; what it holds is what
+      # was tested, re-hashed, with the instructions and the trust anchor.
+      - name: Tested images
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kryptik-release
+          path: /mnt/kryptik/export
+          retention-days: 14
+          if-no-files-found: ignore
+          compression-level: 1

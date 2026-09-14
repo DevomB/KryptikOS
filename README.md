@@ -194,6 +194,13 @@ make acceptance EXPORT=DIR     # every gate on the newest media; needs root and 
 Boot, install, update and recovery instructions for a built release:
 [docs/BOOT_INSTALL_RECOVER.md](docs/BOOT_INSTALL_RECOVER.md).
 
+The same build and the full acceptance run on GitHub's runners, not on a
+developer machine: the `Distro` workflow (`.github/workflows/distro.yml`)
+runs on every push to `main` and on demand, in three jobs (stages 01-02,
+stages 04-06 with the static kryptikd built there, then `make acceptance`
+under KVM), and uploads the acceptance report and, when a run exports one,
+the tested images as artifacts.
+
 ## Design documents
 
 - [docs/architecture.md](docs/architecture.md) — the compartmentalization model
