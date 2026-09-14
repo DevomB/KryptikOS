@@ -1356,14 +1356,14 @@ s_kryptikd() {
     # overlay could replace that link, and only the unprivileged wrapper
     # would follow it.
     install -d -m 0755 /etc/kryptik /usr/lib/kryptik
-    install -d -m 0700 /usr/lib/kryptik/zones /usr/lib/kryptik/zones/policy
+    install -d -m 0755 /usr/lib/kryptik/zones /usr/lib/kryptik/zones/policy
     if [[ -d "${KRYPTIK_ROOT}/compartments/zones" ]]; then
-        install -m 0600 "${KRYPTIK_ROOT}"/compartments/zones/*.toml /usr/lib/kryptik/zones/
+        install -m 0644 "${KRYPTIK_ROOT}"/compartments/zones/*.toml /usr/lib/kryptik/zones/
         # The seccomp/Landlock policies the zone files reference, relative
         # to the zone directory. The first version installed the .toml files
         # alone, so every zone would have failed to start on the target with
         # "policy/<zone>.seccomp: No such file".
-        install -m 0600 "${KRYPTIK_ROOT}"/compartments/zones/policy/* /usr/lib/kryptik/zones/policy/
+        install -m 0644 "${KRYPTIK_ROOT}"/compartments/zones/policy/* /usr/lib/kryptik/zones/policy/
         echo "installed zone definitions and policies:"
         ls -la /usr/lib/kryptik/zones/ /usr/lib/kryptik/zones/policy/
         local z p
