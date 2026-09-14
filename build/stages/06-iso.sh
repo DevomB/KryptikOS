@@ -329,12 +329,18 @@ from a USB stick use the USB image instead: this ISO's kernel looks for
 /dev/sr0.
 EOF
     rm -f "$out"
+    # The appended partition's type is a GPT GUID (Linux filesystem data):
+    # xorriso takes a one-byte MBR type or a GUID, and sfdisk's 0x8300
+    # shorthand is neither ("Partition type '0x8300' is out of range").
+    local rc
     xorriso -as mkisofs -quiet -o "$out" -iso-level 3 -V KRYPTIK -J -R \
         -e esp.img -no-emul-boot -isohybrid-gpt-basdat \
-        -append_partition 2 0x8300 "${IMG}/kryptik-root.img" -appended_part_as_gpt \
+        -append_partition 2 0FC63DAF-8483-4772-8E79-3D69D8477DE4 "${IMG}/kryptik-root.img" -appended_part_as_gpt \
         -graft-points esp.img="$esp" kryptik-sb.crt="$t/kryptik-sb.crt" root.json="$t/root.json" README.txt="$t/README.txt" \
-        2>&1 | grep -vE '^\s*$' || true
+        2>&1 | grep -vE '^\s*$'
+    rc="${PIPESTATUS[0]}"
     rm -rf "$t"
+    [[ "$rc" -eq 0 ]] || { echo "xorriso exited ${rc}"; return 1; }
     [[ -s "$out" ]] || return 1
 }
 
