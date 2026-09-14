@@ -147,11 +147,16 @@ start_dns() {
     else
         printf '' > "$up"
     fi
+    # --local=/test/: the reserved test TLD (RFC 6761) is answered here, never
+    # forwarded. The guest check asks 10.19.0.1 for kryptik.test to prove a
+    # routed zone reaches this resolver; with the uplink up that query went
+    # upstream and, on a host whose resolver was slow, timed out - a verdict
+    # about the internet, not about the path the check is for.
     # QEMU user networking's resolver, when nothing else is known
     grep -q '^nameserver' "$up" || echo "nameserver 10.0.2.3" >> "$up"
     dnsmasq --keep-in-foreground --no-daemon --no-hosts --bind-interfaces \
             --listen-address=10.19.0.1 --listen-address=fd19::1 --listen-address=127.0.0.1 \
-            --resolv-file="$up" --no-poll --cache-size=1000 --local-service \
+            --resolv-file="$up" --no-poll --cache-size=1000 --local-service             --local=/test/ \
             --pid-file=/run/dnsmasq.pid --user=root &
     DNSPID=$!
     sleep 1
