@@ -10,7 +10,9 @@
 # twice); B's VERSION_ID is the observable change, reported by the guest's
 # own boot report and os-release. The payload reaches the guest as files on
 # a plain ext4 disk image (fetching is out of scope here and out of zone 0
-# by design).
+# by design). Guest-side mounts go under /run: the installed root is a
+# read-only verity image, so /mnt cannot take a directory, which is how the
+# first run of this driver failed at its first mkdir.
 #
 # Sequence, every step through firmware boots and the serial login:
 #   1  install A onto a blank disk (control disk arms it), boot the disk
@@ -121,7 +123,7 @@ txt | grep -q "version_id=${VA}" && green "guest reports version ${VA}" || red "
 phase "phase 2: apply ${VB}, reboot into slot b"
 start_vm update-p2 --disk "$PB"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
-    "$(ROOTSH 'mkdir -p /mnt/p /var/lib/kryptik/updates/b && mount -o ro /dev/vdb /mnt/p && cp -a /mnt/p/. /var/lib/kryptik/updates/b/ && umount /mnt/p && kryptik-update apply /var/lib/kryptik/updates/b && echo APPLY-OK')" \
+    "$(ROOTSH 'mkdir -p /run/upd/p /var/lib/kryptik/updates/b && mount -o ro /dev/vdb /run/upd/p && cp -a /run/upd/p/. /var/lib/kryptik/updates/b/ && umount /run/upd/p && kryptik-update apply /var/lib/kryptik/updates/b && echo APPLY-OK')" \
     "expect:armed: the next boot tries slot b" "expect:APPLY-OK" \
     "$(ROOTSH 'kryptik-update status')" "expect:trial pending:    b" \
     "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
@@ -141,14 +143,14 @@ txt | grep -q "committed slot:   b" && green "status shows committed slot b" || 
 phase "phase 3: refusals on the running ${VB}"
 start_vm update-p3 --disk "$BADIMG" --disk "$PA"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
-    "$(ROOTSH 'mkdir -p /mnt/p /mnt/a && mount -o ro /dev/vdb /mnt/p && mount -o ro /dev/vdc /mnt/a && echo MNT-OK')" "expect:MNT-OK" \
-    "$(ROOTSH 'kryptik-update apply /mnt/p/wrongkey; echo RC=$?')" "expect:not enrolled" \
-    "$(ROOTSH 'kryptik-update apply /mnt/p/modified; echo RC=$?')" "expect:sha256 does not match" \
-    "$(ROOTSH 'kryptik-update apply /mnt/p/truncated; echo RC=$?')" "expect:truncated or altered" \
-    "$(ROOTSH 'kryptik-update apply /mnt/p/extra; echo RC=$?')" "expect:unlisted file" \
-    "$(ROOTSH 'kryptik-update apply /mnt/a; echo RC=$?')" "expect:older than the running" \
-    "$(ROOTSH 'flock /run/kryptik/update.lock sleep 20 & sleep 1; kryptik-update apply /mnt/a --recovery; echo RC=$?')" "expect:another update is in progress" \
-    "$(ROOTSH 'fallocate -l 100G /var/filler 2>/dev/null || dd if=/dev/zero of=/var/filler bs=1M 2>/dev/null; cp -a /mnt/a /var/lib/kryptik/updates/a-full 2>&1 | tail -1; kryptik-update apply /var/lib/kryptik/updates/a-full --recovery; echo RC=$?; rm -rf /var/filler /var/lib/kryptik/updates/a-full')" "expect:RC=1" \
+    "$(ROOTSH 'mkdir -p /run/upd/p /run/upd/a && mount -o ro /dev/vdb /run/upd/p && mount -o ro /dev/vdc /run/upd/a && echo MNT-OK')" "expect:MNT-OK" \
+    "$(ROOTSH 'kryptik-update apply /run/upd/p/wrongkey; echo RC=$?')" "expect:not enrolled" \
+    "$(ROOTSH 'kryptik-update apply /run/upd/p/modified; echo RC=$?')" "expect:sha256 does not match" \
+    "$(ROOTSH 'kryptik-update apply /run/upd/p/truncated; echo RC=$?')" "expect:truncated or altered" \
+    "$(ROOTSH 'kryptik-update apply /run/upd/p/extra; echo RC=$?')" "expect:unlisted file" \
+    "$(ROOTSH 'kryptik-update apply /run/upd/a; echo RC=$?')" "expect:older than the running" \
+    "$(ROOTSH 'flock /run/kryptik/update.lock sleep 20 & sleep 1; kryptik-update apply /run/upd/a --recovery; echo RC=$?')" "expect:another update is in progress" \
+    "$(ROOTSH 'fallocate -l 100G /var/filler 2>/dev/null || dd if=/dev/zero of=/var/filler bs=1M 2>/dev/null; cp -a /run/upd/a /var/lib/kryptik/updates/a-full 2>&1 | tail -1; kryptik-update apply /var/lib/kryptik/updates/a-full --recovery; echo RC=$?; rm -rf /var/filler /var/lib/kryptik/updates/a-full')" "expect:RC=1" \
     "$(ROOTSH 'kryptik-update status')" "expect:trial pending:    none" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
@@ -158,7 +160,7 @@ rc=$?; stop_vm
 phase "phase 4: authenticated recovery to ${VA} with --recovery"
 start_vm update-p4 --disk "$PA"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
-    "$(ROOTSH 'mkdir -p /mnt/a /var/lib/kryptik/updates/a && mount -o ro /dev/vdb /mnt/a && cp -a /mnt/a/. /var/lib/kryptik/updates/a/ && umount /mnt/a && kryptik-update apply /var/lib/kryptik/updates/a --recovery && echo REC-OK')" \
+    "$(ROOTSH 'mkdir -p /run/upd/a /var/lib/kryptik/updates/a && mount -o ro /dev/vdb /run/upd/a && cp -a /run/upd/a/. /var/lib/kryptik/updates/a/ && umount /run/upd/a && kryptik-update apply /var/lib/kryptik/updates/a --recovery && echo REC-OK')" \
     "expect:accepted because --recovery" "expect:REC-OK" \
     "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
     "login:${TUSER}:${TPASS}" \
@@ -186,7 +188,7 @@ txt | grep -q "version_id=${VB}" && green "guest reports ${VB} after rollback" |
 phase "phase 6: interruption during the slot write, then after arming"
 start_vm update-p6 --disk "$PA"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
-    "$(ROOTSH 'mkdir -p /mnt/a /var/lib/kryptik/updates/a && mount -o ro /dev/vdb /mnt/a && cp -a /mnt/a/. /var/lib/kryptik/updates/a/ && umount /mnt/a && echo COPY-OK')" "expect:COPY-OK" \
+    "$(ROOTSH 'mkdir -p /run/upd/a /var/lib/kryptik/updates/a && mount -o ro /dev/vdb /run/upd/a && cp -a /run/upd/a/. /var/lib/kryptik/updates/a/ && umount /run/upd/a && echo COPY-OK')" "expect:COPY-OK" \
     "send:su - root -c 'kryptik-update apply /var/lib/kryptik/updates/a --recovery'" "expect:Password: ?" "send:${RPASS}" \
     "expect:writing kryptik-a"
 python3 - "$QMP" <<'PY'
@@ -227,7 +229,7 @@ phase "phase 7: a deliberately broken trial falls back, is recorded, and is refu
 # committed. Detection, fallback and recovery, on the real chain.
 start_vm update-p7 --disk "$PB"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
-    "$(ROOTSH 'cat /run/kryptik/boot-identity | head -1; mkdir -p /mnt/p /var/lib/kryptik/updates/b2 && mount -o ro /dev/vdb /mnt/p && cp -a /mnt/p/. /var/lib/kryptik/updates/b2/ && umount /mnt/p && kryptik-update apply /var/lib/kryptik/updates/b2 && echo ARM7-OK')" \
+    "$(ROOTSH 'cat /run/kryptik/boot-identity | head -1; mkdir -p /run/upd/p /var/lib/kryptik/updates/b2 && mount -o ro /dev/vdb /run/upd/p && cp -a /run/upd/p/. /var/lib/kryptik/updates/b2/ && umount /run/upd/p && kryptik-update apply /var/lib/kryptik/updates/b2 && echo ARM7-OK')" \
     "expect:slot=a" "expect:ARM7-OK" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
