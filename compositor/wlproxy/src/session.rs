@@ -18,7 +18,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io;
-use std::os::unix::io::RawFd;
+use std::os::unix::io::{FromRawFd, IntoRawFd, OwnedFd, RawFd};
 
 use crate::policy;
 use crate::protocol::{self, Message};
@@ -83,24 +83,25 @@ pub struct Endpoint {
     /// (bytes, fds to send with them) in order; sent from the front.
     outq: VecDeque<(Vec<u8>, Vec<RawFd>)>,
     pub pending_out: usize,
+    pending_fds: usize,
     pub closed: bool,
 }
 
 impl Endpoint {
     pub fn new(fd: RawFd) -> Endpoint {
-        Endpoint { fd, inbuf: Vec::new(), in_fds: VecDeque::new(), outq: VecDeque::new(), pending_out: 0, closed: false }
+        Endpoint { fd, inbuf: Vec::new(), in_fds: VecDeque::new(), outq: VecDeque::new(), pending_out: 0, pending_fds: 0, closed: false }
     }
 
     /// One recvmsg with room for descriptors. Returns bytes read (0 = EOF).
     pub fn read(&mut self) -> io::Result<usize> {
         let mut buf = [0u8; 4096];
-        let mut cmsg = [0u8; 256];
+        let mut cmsg = [0usize; 32]; // cmsghdr needs native alignment
         let mut iov = libc::iovec { iov_base: buf.as_mut_ptr() as *mut libc::c_void, iov_len: buf.len() };
         let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
         msg.msg_iov = &mut iov;
         msg.msg_iovlen = 1;
         msg.msg_control = cmsg.as_mut_ptr() as *mut libc::c_void;
-        msg.msg_controllen = cmsg.len() as _;
+        msg.msg_controllen = std::mem::size_of_val(&cmsg) as _;
         let n = unsafe { libc::recvmsg(self.fd, &mut msg, libc::MSG_CMSG_CLOEXEC | libc::MSG_DONTWAIT) };
         if n < 0 {
             let e = io::Error::last_os_error();
@@ -124,6 +125,14 @@ impl Endpoint {
                 c = libc::CMSG_NXTHDR(&msg, c);
             }
         }
+        // Enforce bounds at ingress, including when pump waits for a missing
+        // descriptor. Surplus descriptors must not accumulate behind it.
+        if msg.msg_flags & libc::MSG_CTRUNC != 0
+            || self.in_fds.len() > policy::MAX_PENDING_FDS
+            || self.inbuf.len() + n as usize > policy::MAX_PENDING_BYTES
+        {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated control data or inbound resource limit exceeded"));
+        }
         if n == 0 {
             return Ok(0);
         }
@@ -139,10 +148,10 @@ impl Endpoint {
             let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
             msg.msg_iov = &mut iov;
             msg.msg_iovlen = 1;
-            let mut cbuf = [0u8; 256];
+            let mut cbuf = [0usize; 32];
             if !fds.is_empty() {
                 let space = unsafe { libc::CMSG_SPACE((fds.len() * std::mem::size_of::<RawFd>()) as u32) } as usize;
-                assert!(space <= cbuf.len());
+                assert!(space <= std::mem::size_of_val(&cbuf));
                 msg.msg_control = cbuf.as_mut_ptr() as *mut libc::c_void;
                 msg.msg_controllen = space as _;
                 unsafe {
@@ -167,6 +176,7 @@ impl Endpoint {
             let n = n as usize;
             // The descriptors went with the first byte; they must not be
             // sent again with the remainder. Close our copies.
+            self.pending_fds -= fds.len();
             for fd in fds.drain(..) {
                 unsafe { libc::close(fd) };
             }
@@ -182,6 +192,7 @@ impl Endpoint {
 
     fn queue(&mut self, bytes: Vec<u8>, fds: Vec<RawFd>) -> Result<(), SessionError> {
         self.pending_out += bytes.len();
+        self.pending_fds += fds.len();
         self.outq.push_back((bytes, fds));
         Ok(())
     }
@@ -199,6 +210,8 @@ impl Endpoint {
                 unsafe { libc::close(fd) };
             }
         }
+        self.pending_out = 0;
+        self.pending_fds = 0;
     }
 }
 
@@ -305,7 +318,9 @@ impl Session {
                 return Ok(()); // descriptors still in flight
             }
             let mut msg: Vec<u8> = src.inbuf.drain(..size).collect();
-            let fds: Vec<RawFd> = src.in_fds.drain(..needed).collect();
+            // Parsing or policy may reject this message before it is queued.
+            // Own the descriptors so every such return closes them.
+            let fds: Vec<OwnedFd> = src.in_fds.drain(..needed).map(|fd| unsafe { OwnedFd::from_raw_fd(fd) }).collect();
             let body = msg[HEADER_LEN..].to_vec();
             let decoded = protocol::decode(m, &body)?;
 
@@ -411,7 +426,10 @@ impl Session {
                 if dst.pending_out + msg.len() + extra > policy::MAX_PENDING_BYTES {
                     return Err(SessionError::TooMuchPending(dir));
                 }
-                dst.queue(msg, fds)?;
+                if dst.pending_fds + fds.len() > policy::MAX_PENDING_FDS {
+                    return Err(SessionError::TooManyFds);
+                }
+                dst.queue(msg, fds.into_iter().map(IntoRawFd::into_raw_fd).collect())?;
                 if let Some(s) = stamp {
                     dst.queue(s, Vec::new())?;
                     self.rewritten += 1;
@@ -419,10 +437,6 @@ impl Session {
                 match dir {
                     Dir::ClientToServer => self.forwarded_c2s += 1,
                     Dir::ServerToClient => self.forwarded_s2c += 1,
-                }
-            } else {
-                for fd in fds {
-                    unsafe { libc::close(fd) };
                 }
             }
         }
@@ -735,6 +749,93 @@ mod tests {
     }
 
     #[test]
+    fn rejected_messages_close_descriptors_already_taken_from_the_queue() {
+        for body in [
+            MessageWriter::new(3, 0).u32(4).finish().unwrap(), // create_pool: missing size
+            MessageWriter::new(3, 0).u32(0).i32(4096).finish().unwrap(), // invalid new object id
+        ] {
+            let (mut s, c, _sv) = make();
+            s.objects.insert(3, protocol::find("wl_shm").unwrap());
+            let (a, mut b) = UnixStream::pair().unwrap();
+            b.set_nonblocking(true).unwrap();
+            send_with_fd(c.as_raw_fd(), &body, a.as_raw_fd());
+            drop(a);
+            assert!(pump_all(&mut s).is_err());
+            s.refuse("malformed request");
+            assert_eq!(b.read(&mut [0u8; 1]).unwrap(), 0, "no received copy may keep the peer alive");
+        }
+    }
+
+    #[test]
+    fn surplus_descriptors_are_bounded_at_ingress() {
+        let (mut s, c, _sv) = make();
+        let (a, mut b) = UnixStream::pair().unwrap();
+        b.set_nonblocking(true).unwrap();
+        for _ in 0..policy::MAX_PENDING_FDS {
+            send_with_fd(c.as_raw_fd(), b"x", a.as_raw_fd());
+            assert_eq!(s.client.read().unwrap(), 1);
+        }
+        send_with_fd(c.as_raw_fd(), b"x", a.as_raw_fd());
+        assert_eq!(s.client.read().unwrap_err().kind(), io::ErrorKind::InvalidData);
+        drop(a);
+        s.refuse("descriptor limit");
+        assert_eq!(b.read(&mut [0u8; 1]).unwrap(), 0, "all accumulated descriptors closed");
+    }
+
+    #[test]
+    fn truncated_ancillary_data_is_refused_and_received_descriptors_closed() {
+        let (mut s, c, _sv) = make();
+        let (a, mut b) = UnixStream::pair().unwrap();
+        b.set_nonblocking(true).unwrap();
+        send_with_fds(c.as_raw_fd(), b"x", &[a.as_raw_fd(); 80]);
+        assert_eq!(s.client.read().unwrap_err().kind(), io::ErrorKind::InvalidData);
+        drop(a);
+        s.refuse("truncated control data");
+        assert_eq!(b.read(&mut [0u8; 1]).unwrap(), 0);
+    }
+
+    #[test]
+    fn blocked_compositor_cannot_accumulate_unbounded_outgoing_descriptors() {
+        let (mut s, c, _sv) = make();
+        s.objects.insert(3, protocol::find("wl_shm").unwrap());
+        let (a, mut b) = UnixStream::pair().unwrap();
+        b.set_nonblocking(true).unwrap();
+        for i in 0..=policy::MAX_PENDING_FDS {
+            let msg = MessageWriter::new(3, 0).u32(4 + i as u32).i32(4096).finish().unwrap();
+            send_with_fd(c.as_raw_fd(), &msg, a.as_raw_fd());
+            s.client.read().unwrap();
+            let result = s.pump(Dir::ClientToServer); // deliberately do not flush the compositor's queue
+            if i < policy::MAX_PENDING_FDS {
+                result.unwrap();
+            } else {
+                assert!(matches!(result, Err(SessionError::TooManyFds)));
+            }
+        }
+        drop(a);
+        s.refuse("outgoing descriptor limit");
+        assert_eq!(b.read(&mut [0u8; 1]).unwrap(), 0);
+    }
+
+    #[test]
+    fn missing_descriptor_cannot_hold_unbounded_input_bytes() {
+        let (mut s, mut c, _sv) = make();
+        s.objects.insert(3, protocol::find("wl_shm").unwrap());
+        c.write_all(&MessageWriter::new(3, 0).u32(4).i32(4096).finish().unwrap()).unwrap();
+        pump_all(&mut s).unwrap();
+        let mut refused = false;
+        for _ in 0..=policy::MAX_PENDING_BYTES / 4096 {
+            c.write_all(&[0u8; 4096]).unwrap();
+            if let Err(SessionError::Io(e)) = pump_all(&mut s) {
+                assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+                refused = true;
+                break;
+            }
+        }
+        assert!(refused, "a request waiting for an fd must still have a byte limit");
+        assert!(!s.has_object(4));
+    }
+
+    #[test]
     fn disconnect_and_refusal_close_both_sides() {
         let (mut s, mut c, sv) = make();
         c.write_all(&get_registry(2)).unwrap();
@@ -773,21 +874,26 @@ mod tests {
 
     // --- helpers --------------------------------------------------------------
     fn send_with_fd(sock: RawFd, bytes: &[u8], fd: RawFd) {
+        send_with_fds(sock, bytes, &[fd]);
+    }
+    fn send_with_fds(sock: RawFd, bytes: &[u8], fds: &[RawFd]) {
         assert!(!bytes.is_empty(), "SCM_RIGHTS needs at least one byte of data");
         let mut iov = libc::iovec { iov_base: bytes.as_ptr() as *mut libc::c_void, iov_len: bytes.len() };
         let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
         msg.msg_iov = &mut iov;
         msg.msg_iovlen = 1;
-        let mut cbuf = [0u8; 64];
-        let space = unsafe { libc::CMSG_SPACE(4) } as usize;
+        let mut cbuf = [0usize; 128];
+        let fd_bytes = std::mem::size_of_val(fds) as u32;
+        let space = unsafe { libc::CMSG_SPACE(fd_bytes) } as usize;
+        assert!(space <= std::mem::size_of_val(&cbuf));
         msg.msg_control = cbuf.as_mut_ptr() as *mut libc::c_void;
         msg.msg_controllen = space as _;
         unsafe {
             let c = libc::CMSG_FIRSTHDR(&msg);
             (*c).cmsg_level = libc::SOL_SOCKET;
             (*c).cmsg_type = libc::SCM_RIGHTS;
-            (*c).cmsg_len = libc::CMSG_LEN(4) as _;
-            *(libc::CMSG_DATA(c) as *mut RawFd) = fd;
+            (*c).cmsg_len = libc::CMSG_LEN(fd_bytes) as _;
+            std::ptr::copy_nonoverlapping(fds.as_ptr(), libc::CMSG_DATA(c) as *mut RawFd, fds.len());
             let n = libc::sendmsg(sock, &msg, 0);
             assert!(n >= 0, "sendmsg: {}", io::Error::last_os_error());
         }
