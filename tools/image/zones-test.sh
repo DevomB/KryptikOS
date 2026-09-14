@@ -75,7 +75,7 @@ tr -d '\r' < "$LATEST" | grep -q 'KRYPTIK_INSTALL: rc=0' && green "installed" ||
 # ---------------------------------------------------------------- phase 2 --
 phase "phase 2: the guest-side zone, network and storage checks (as root)"
 start_vm zones-p2
-drive 900 "expect:KRYPTIK_SMOKE: END" "expect:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
+drive 900 "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'bash /usr/lib/kryptik/guest-tests/zones-check.sh 2>&1 | tee /var/log/kryptik/zones-check.log; echo ZCHECK-DONE')" \
     "expect:ZT END" "expect:ZCHECK-DONE"
 rc=$?

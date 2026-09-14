@@ -111,7 +111,7 @@ CTL="${VMDIR}/testctl-state.img"
 "${SELF}/run-ovmf.sh" --usb "$USB" --disk "$DISK" --testctl "$CTL" --vars clean --mode smoke --timeout "$TIMEOUT" --name state-install > /dev/null
 tr -d '\r' < "$LATEST" | grep -q 'KRYPTIK_INSTALL: rc=0' && green "installed" || { red "install failed"; exit 1; }
 start_vm state-p1
-drive "expect:KRYPTIK_SMOKE: END" "expect:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
+drive "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
     "run:echo state-marker > /home/${TUSER}/state-marker && sync" \
     "grab:ident:cat /run/kryptik/boot-identity" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"

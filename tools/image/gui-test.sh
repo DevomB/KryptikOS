@@ -65,7 +65,7 @@ out="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mo
 SER="$(sed -n 's/^serial=//p' <<<"$out")"; PIDF="$(sed -n 's/^pid=//p' <<<"$out")"; LOG="$(sed -n 's/^log=//p' <<<"$out")"; QMP="$(sed -n 's/^qmp=//p' <<<"$out")"
 [[ -S "$SER" ]] || die "no serial socket: ${out}"
 python3 "$DRV" --serial "$SER" --qmp "$QMP" --timeout 600 \
-    "expect:KRYPTIK_SMOKE: END" "expect:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
+    "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
     "send:su -c 'bash /usr/lib/kryptik/guest-tests/gui-check.sh ${TUSER} 2>&1 | tee /var/log/kryptik/gui-check.log; echo GCHECK-DONE' root" \
     "expect:Password: ?" "send:${RPASS}" \
     "expect:GT SCREENSHOT-READY" "sleep:2" "screendump:${SHOT}" \
