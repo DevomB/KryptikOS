@@ -1351,10 +1351,16 @@ mod tests {
             eprintln!("/dev/shm is on the same filesystem as the lab; the st_dev case is not exercised here");
         }
         // Consent, and an unknown data mount, each refuse on their own.
+        // The environment is the process's: consent's own tests set the
+        // same variable, so this section takes their lock.
         sv.auto_approve = false;
-        std::env::set_var("KRYPTIK_CONSENT_DIR", "/nonexistent/kryptik-consent");
-        let (_, r) = ask_with(&sv, "transfer b f.txt\n", &[ro()], false);
-        assert!(String::from_utf8_lossy(&r).contains("no consent channel"), "{}", String::from_utf8_lossy(&r));
+        {
+            let _env = crate::consent::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var("KRYPTIK_CONSENT_DIR", "/nonexistent/kryptik-consent");
+            let (_, r) = ask_with(&sv, "transfer b f.txt\n", &[ro()], false);
+            assert!(String::from_utf8_lossy(&r).contains("no consent channel"), "{}", String::from_utf8_lossy(&r));
+            std::env::remove_var("KRYPTIK_CONSENT_DIR");
+        }
         sv.auto_approve = true;
         sv.home_dev = &dev_unknown;
         let (_, r) = ask_with(&sv, "transfer b f.txt\n", &[ro()], false);

@@ -200,29 +200,57 @@ const STALE_AFTER: Duration = Duration::from_secs(5);
 /// EBUSY anyway, but relying on that would mean asking the kernel to protect
 /// us from a mistake rather than not making it.
 fn sweep_stale(base: &Path) {
-    let Ok(entries) = fs::read_dir(base) else { return };
+    for p in abandoned_leaves(base) {
+        let _ = fs::remove_dir(&p);
+    }
+}
+
+/// The leaves under `base` the sweep may remove: empty, and abandoned.
+fn abandoned_leaves(base: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir(base) else { return out };
     let now = SystemTime::now();
     for e in entries.flatten() {
         let p = e.path();
         if !p.is_dir() {
             continue;
         }
-        let Ok(meta) = e.metadata() else { continue };
-        let old_enough = meta
-            .modified()
-            .ok()
-            .and_then(|m| now.duration_since(m).ok())
-            .is_some_and(|age| age > STALE_AFTER);
-        if !old_enough {
+        // A leaf is named <zone>.<launcher pid>, and the launcher is what
+        // decides whether an empty leaf is abandoned: one whose launcher is
+        // gone will never be populated, however young the directory looks -
+        // and on the target kernel it always looks young, because kernfs
+        // gives a cgroup directory the time it was FIRST LOOKED AT, not the
+        // time it was made (6.18: stat 7 s after mkdir reported the stat's
+        // own second), so the age rule alone never swept a leaf nobody had
+        // stat'ed, and the launcher suite's M9 found one surviving. A
+        // launcher still alive - or a reused pid, treated the same - keeps
+        // its leaf. The age rule remains for a leaf whose name carries no
+        // pid.
+        let abandoned = match launcher_of(&p) {
+            Some(pid) => !Path::new(&format!("/proc/{pid}")).exists(),
+            None => e
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|m| now.duration_since(m).ok())
+                .is_some_and(|age| age > STALE_AFTER),
+        };
+        if !abandoned {
             continue;
         }
         let populated = fs::read_to_string(p.join("cgroup.procs"))
             .map(|s| s.lines().any(|l| !l.trim().is_empty()))
             .unwrap_or(true); // unreadable: assume live, leave it alone
         if !populated {
-            let _ = fs::remove_dir(&p);
+            out.push(p);
         }
     }
+    out
+}
+
+/// The launcher pid a leaf is named after (`<zone>.<pid>`), if it is.
+fn launcher_of(leaf: &Path) -> Option<i32> {
+    leaf.file_name()?.to_str()?.rsplit_once('.')?.1.parse().ok()
 }
 
 /// Remove every empty per-zone cgroup, regardless of age. Returns how many.
@@ -473,6 +501,43 @@ mod tests {
         assert!(!populated(""));
         assert!(!populated("\n"));
         assert!(!populated("   \n"));
+    }
+
+    #[test]
+    fn the_sweep_goes_by_the_launcher_not_the_directory_time() {
+        // Staged with plain directories: the sweep reads cgroup.procs as a
+        // file and looks the launcher up in /proc, neither of which needs a
+        // real hierarchy. A dead launcher's empty leaf goes at once; a live
+        // launcher's empty leaf (a launch in progress) stays; a populated
+        // leaf stays whoever its launcher was.
+        let base = std::env::temp_dir().join(format!("kryptik-sweep-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let mut dead = 4_000_000;
+        while Path::new(&format!("/proc/{dead}")).exists() {
+            dead -= 1;
+        }
+        let alive = std::process::id();
+        let leaf = |name: &str, procs: &str| {
+            let p = base.join(name);
+            fs::create_dir(&p).unwrap();
+            fs::write(p.join("cgroup.procs"), procs).unwrap();
+            p
+        };
+        let gone = leaf(&format!("untrusted.{dead}"), "");
+        let live = leaf(&format!("work.{alive}"), "");
+        let busy = leaf(&format!("dev.{dead}"), "4242\n");
+        let unnamed = leaf("nopid", "");
+        assert_eq!(launcher_of(&gone), Some(dead));
+        assert_eq!(launcher_of(&live), Some(alive as i32));
+        assert_eq!(launcher_of(&unnamed), None);
+        // Only the dead launcher's empty leaf, and at once: a live launcher's
+        // empty leaf is a launch in progress, a populated leaf is never
+        // touched, and a leaf without a pid falls back to the age rule, under
+        // which it is new.
+        assert_eq!(abandoned_leaves(&base), vec![gone.clone()]);
+        assert!(live.exists() && busy.exists() && unnamed.exists());
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
