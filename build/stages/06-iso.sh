@@ -414,16 +414,21 @@ s_payload() {
     ls -la "$out"
 }
 
+# The release record under ${KRYPTIK_OUT}: the small things (hashes, root
+# record, signed kernels, certificate, manifest) and the PATHS of the
+# images, which stay under ${IMG}. This used to copy the USB image, the ISO,
+# the root image and the payload - some 9 GB per release, a byte-for-byte
+# duplicate of what ${IMG} holds - and on a WSL host four releases of that
+# grew the virtual disk file by 40 GB that never came back by itself.
+# `make acceptance EXPORT=DIR` is what delivers tested images, from ${IMG}.
 s_export() {
     echo "inputs digest: $1"
     local out="${KRYPTIK_OUT}/kryptik-${KRYPTIK_VERSION}"
     rm -rf "$out"; mkdir -p "$out/kernels"
-    cp -a "${IMG}/payload-${KRYPTIK_VERSION}" "$out/payload"
-    cp --sparse=always "${IMG}/kryptik-${KRYPTIK_VERSION}-usb.img" "$out/"
     cp "${IMG}/kryptik-${KRYPTIK_VERSION}-usb.img.sha256" "$out/"
-    cp "${IMG}/kryptik-${KRYPTIK_VERSION}.iso" "${IMG}/kryptik-${KRYPTIK_VERSION}.iso.sha256" "$out/"
-    cp --sparse=always "${IMG}/kryptik-root.img" "$out/"
+    cp "${IMG}/kryptik-${KRYPTIK_VERSION}.iso.sha256" "$out/"
     cp "${IMG}/kryptik-root.img.sha256" "${IMG}/root.json" "$out/"
+    cp "${IMG}/payload-${KRYPTIK_VERSION}/manifest" "${IMG}/payload-${KRYPTIK_VERSION}/manifest.sig" "$out/"
     cp "${IMG}"/kernels/*.signed.efi "$out/kernels/"
     cp "$KEYS/kryptik-sb.crt" "$KEYS/kryptik-sb.der" "$out/"
     {
@@ -433,7 +438,13 @@ s_export() {
         echo "kernel: ${V_LINUX_HARDENED} (unbound bzImage sha256 $(sha256_of "${SYSROOT}/boot/kryptik-${V_LINUX}"))"
         echo "root hash: $(root_json root_hash)"
         echo
-        ( cd "$out" && sha256sum ./*.img ./*.iso ./kernels/*.efi ./*.crt ./*.der ./root.json )
+        echo "images (not copied here; make acceptance EXPORT=DIR delivers the tested ones):"
+        echo "  ${IMG}/kryptik-${KRYPTIK_VERSION}-usb.img"
+        echo "  ${IMG}/kryptik-${KRYPTIK_VERSION}.iso"
+        echo "  ${IMG}/payload-${KRYPTIK_VERSION}/"
+        echo
+        cat "${IMG}/kryptik-${KRYPTIK_VERSION}-usb.img.sha256" "${IMG}/kryptik-${KRYPTIK_VERSION}.iso.sha256"
+        ( cd "$out" && sha256sum ./kernels/*.efi ./*.crt ./*.der ./root.json ./manifest )
     } > "$out/MANIFEST.txt"
     cat "$out/MANIFEST.txt"
     ln -sfn "kryptik-${KRYPTIK_VERSION}" "${KRYPTIK_OUT}/latest"
