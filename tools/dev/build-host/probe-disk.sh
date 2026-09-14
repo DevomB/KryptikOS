@@ -5,12 +5,15 @@
 # asserted. Commands must not contain single quotes (su -c wraps them).
 #
 #   probe-disk.sh DISK 'cmd1' 'cmd2' ...
+#   PROBE_OVMF_ARGS='--gpu --mem 3072' probe-disk.sh DISK ...   extra run-ovmf
+#   arguments (a virtual GPU, for a disk whose desktop session is the question)
 set -u
 export KRYPTIK_WORK=/root/kryptik/work KRYPTIK_SOURCES=/root/kryptik/sources KRYPTIK_OUT=/root/kryptik/out NO_COLOR=1
 WT=/root/kryptik/main
 disk="$1"; shift
 VARSF="$KRYPTIK_WORK/vm/probe-vars.fd"; cp /usr/share/OVMF/OVMF_VARS_4M.fd "$VARSF"
-out="$("$WT/tools/image/run-ovmf.sh" --no-media --disk "$disk" --vars-file "$VARSF" --mode serve --allow-reboot --net user --name probe-disk)"
+# shellcheck disable=SC2086  # PROBE_OVMF_ARGS is a word list by design
+out="$("$WT/tools/image/run-ovmf.sh" --no-media --disk "$disk" --vars-file "$VARSF" --mode serve --allow-reboot --net user ${PROBE_OVMF_ARGS:-} --name probe-disk)"
 SER="$(sed -n 's/^serial=//p' <<<"$out")"; PIDF="$(sed -n 's/^pid=//p' <<<"$out")"; LOG="$(sed -n 's/^log=//p' <<<"$out")"
 [[ -S "$SER" ]] || { echo "no serial: $out"; exit 1; }
 steps=("expect:KRYPTIK_SMOKE: END" "login:tester:tester-pw")
