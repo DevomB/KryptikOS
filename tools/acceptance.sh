@@ -147,14 +147,6 @@ item() {
     fi
     printf -- '-- %s: %s (exit %s, %ss, checks %s)%s\n' "$name" "$res" "$rc" "$((SECONDS - t0))" "$checks" "${note:+ - $note}"
     record "$gate" "$name" "$mand" "$kind" "$res" "$checks" "$rc" "$((SECONDS - t0))" "$log" "$note"
-    # The VM drivers each make 12 GB disks and clones under work/vm. The
-    # transcripts carry the evidence; the disks are kept only when the item
-    # failed and someone may want to look inside. On a WSL host every byte
-    # written into those disks grows the virtual disk file on the Windows
-    # side and never comes back by itself.
-    if [[ "$kind" == vm && "$res" == PASS ]]; then
-        rm -f "${KRYPTIK_WORK}"/vm/*.img "${KRYPTIK_WORK}"/vm/*.fd 2>/dev/null
-    fi
 }
 
 # ------------------------------------------------------------- prereqs --
@@ -423,4 +415,16 @@ echo
 echo "================================================================"
 sed -n '/^| gate/,/^$/p' "${OUT}/REPORT.md"
 echo "Verdict: ${V}   (report: ${OUT}/REPORT.md)"
+# The VM drivers each make 12 GB disks and clones under work/vm. The
+# transcripts carry the evidence; the disks are worth keeping only when an
+# item failed and someone may want to look inside. On a WSL host every byte
+# written into them grows the virtual disk file on the Windows side and never
+# comes back by itself, so a run in which everything passed removes them all
+# here. (Removing after each passing item, as an earlier version did, took
+# the disks of items that had failed EARLIER in the same run with them.)
+if [[ "$V" == PASS ]]; then
+    rm -f "${KRYPTIK_WORK}"/vm/*.img "${KRYPTIK_WORK}"/vm/*.fd "${KRYPTIK_WORK}"/vm/*.pristine 2>/dev/null
+    rm -rf "${KRYPTIK_WORK}"/vm/bad 2>/dev/null
+    echo "VM disks removed (every item passed; the transcripts under ${KRYPTIK_WORK}/logs are the evidence)"
+fi
 case "$V" in PASS) exit 0 ;; FAIL) exit 1 ;; *) exit 2 ;; esac
