@@ -238,10 +238,29 @@ if [[ -n "$JSON" ]]; then
         printf '  "findings": {\n'
         sep=""
         for k in "${!COUNT[@]}"; do
+            # A real newline in the separator: through %s, "\n" would be two
+            # literal characters, and the file would not parse.
             printf '%s    "%s": %d' "$sep" "$k" "${COUNT[$k]}"
-            sep=",\n"
+            sep=$',\n'
         done
-        printf '\n  }\n}\n'
+        printf '\n  },\n'
+        # The objects behind the counts, so a report can be read without
+        # re-running the scan. One string per finding, as the text mode
+        # prints it.
+        json_list() {   # json_list NAME LINE...
+            local name="$1"; shift
+            local first=1 l
+            printf '  "%s": [' "$name"
+            for l in "$@"; do
+                [[ "$first" -eq 1 ]] || printf ','
+                first=0
+                printf '\n    "%s"' "$(printf '%s' "$l" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+            done
+            [[ "$first" -eq 1 ]] || printf '\n  '
+            printf ']'
+        }
+        json_list hard "${HARD_LINES[@]}"; printf ',\n'
+        json_list reported "${SOFT_LINES[@]}"; printf '\n}\n'
     } > "$JSON"
     dim "wrote ${JSON}"
 fi
