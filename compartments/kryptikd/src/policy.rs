@@ -279,7 +279,10 @@ mod tests {
 
     #[test]
     fn a_denied_syscall_cannot_be_re_allowed() {
-        for name in ["ptrace", "mount", "setns", "unshare", "bpf", "keyctl", "chown"] {
+        // chown is not among them any more: it is outside the base allowlist
+        // but a zone policy may name it (the nic zone's DHCP client needs
+        // it on its own control socket) - see seccomp::DENIED_RATIONALE.
+        for name in ["ptrace", "mount", "setns", "unshare", "bpf", "keyctl", "reboot"] {
             let err = parse(&format!("allow-syscall {name}\n"), "t").unwrap_err();
             let s = err.to_string();
             assert!(s.contains("cannot be re-allowed") && s.contains("t:1:"), "{name}: {s}");

@@ -157,6 +157,7 @@ libdisplay-info|${V_LIBDISPLAY_INFO}|${MIRROR_FDO_GITLAB}/emersion/libdisplay-in
 wlroots|${V_WLROOTS}|${MIRROR_FDO_GITLAB}/wlroots/wlroots/-/releases/${V_WLROOTS}/downloads/wlroots-${V_WLROOTS}.tar.gz
 dwl|${V_DWL}|${MIRROR_CODEBERG}/dwl/dwl/releases/download/v${V_DWL}/dwl-v${V_DWL}.tar.gz
 havoc|${V_HAVOC}|${MIRROR_GITHUB}/ii8/havoc/archive/${V_HAVOC}/havoc-${V_HAVOC}.tar.gz
+dejavu-fonts|${V_DEJAVU_FONTS}|${MIRROR_GITHUB}/dejavu-fonts/dejavu-fonts/releases/download/version_${V_DEJAVU_FONTS//./_}/dejavu-fonts-ttf-${V_DEJAVU_FONTS}.tar.bz2
 lynx|${V_LYNX}|${MIRROR_DICKEY}/lynx/tarballs/lynx${V_LYNX}.tar.bz2
 nano|${V_NANO}|${MIRROR_NANO}/v${V_NANO%%.*}/nano-${V_NANO}.tar.xz
 glibc-fhs-patch|${V_GLIBC}|${MIRROR_LFS_PATCHES}/glibc-${V_GLIBC}-fhs-1.patch

@@ -291,7 +291,9 @@ pub fn replumb_routed_zones(zones_dir: &Path, nic_ns: i32) -> Vec<(String, Resul
                 NetError::Refused("no [identity] uid_base to derive an address".into())
             })?;
             let zone_ns = netlink::open_netns_of(st.pid).map_err(|e| io("open the zone netns", e))?;
-            let r = attach_routed(&z.name, k, nic_ns, zone_ns);
+            // The zone's namespace is the one it started with; its ICMP
+            // group range was written at that first plumbing and stays.
+            let r = attach_routed(&z.name, k, nic_ns, zone_ns, None);
             unsafe { libc::close(zone_ns) };
             r
         })();
@@ -363,13 +365,13 @@ fn sysctl(path: &str, value: &str) -> io::Result<()> {
 /// A routed zone: a veth pair whose bridge end lives in the running net
 /// zone's namespace (isolated port on kryptik0) and whose other end is
 /// created directly in the new zone as eth0, addressed from its identity.
-pub fn plumb_routed_zone(zone: &Zone, zone_ns: i32, zones_dir: &Path) -> Result<(), NetError> {
+pub fn plumb_routed_zone(zone: &Zone, zone_ns: i32, zones_dir: &Path, host_gid: u32) -> Result<(), NetError> {
     let k = host_number(zone).ok_or_else(|| {
         NetError::Refused("a routed zone needs [identity] uid_base to derive its address".into())
     })?;
     let net_pid = running_nic_zone_init(zones_dir)?;
     let net_ns = netlink::open_netns_of(net_pid).map_err(|e| io("open the nic zone's netns", e))?;
-    let r = attach_routed(&zone.name, k, net_ns, zone_ns);
+    let r = attach_routed(&zone.name, k, net_ns, zone_ns, Some(host_gid));
     unsafe { libc::close(net_ns) };
     r
 }
@@ -378,7 +380,7 @@ pub fn plumb_routed_zone(zone: &Zone, zone_ns: i32, zones_dir: &Path) -> Result<
 /// zone's namespace with the peer landing directly in the routed zone as
 /// eth0; the port is enslaved, isolated and brought up; then the routed end
 /// is addressed from its host number with default routes to the bridge.
-fn attach_routed(name: &str, k: u8, nic_ns: i32, zone_ns: i32) -> Result<(), NetError> {
+fn attach_routed(name: &str, k: u8, nic_ns: i32, zone_ns: i32, host_gid: Option<u32>) -> Result<(), NetError> {
     let port = port_name(name);
     netlink::with_netns(nic_ns, || {
         netlink::create_veth(&port, "eth0", Some(zone_ns))?;
@@ -401,10 +403,18 @@ fn attach_routed(name: &str, k: u8, nic_ns: i32, zone_ns: i32) -> Result<(), Net
         netlink::add_addr4("eth0", netlink::zone_v4(k), 24)?;
         netlink::set_up("eth0")?;
         netlink::add_default_route4(netlink::BRIDGE_V4, "eth0")?;
-        // ping without CAP_NET_RAW: unprivileged ICMP echo sockets for every
-        // group. A routed zone cannot keep CAP_NET_RAW, so this is the only
-        // way it gets to ping, and it cannot forge anything with it.
-        let _ = sysctl("/proc/sys/net/ipv4/ping_group_range", "0 65534");
+        // ping without CAP_NET_RAW: unprivileged ICMP echo sockets for the
+        // zone's own group. A routed zone cannot keep CAP_NET_RAW, so this
+        // is the only way it gets to ping, and it cannot forge anything
+        // with it. The range is in HOST gids (the sysctl belongs to the
+        // namespace, the parent writes it from outside), and the zone's root
+        // is host gid `host_gid`: the first installed system wrote "0 65534"
+        // here, which held no gid the zone's user namespace mapped, so
+        // inside the zone the range read as nobody-to-nobody and every
+        // echo socket was refused.
+        if let Some(g) = host_gid {
+            let _ = sysctl("/proc/sys/net/ipv4/ping_group_range", &format!("{g} {g}"));
+        }
         Ok(())
     })
     .map_err(|e| io("address the zone's eth0", e))?;
@@ -587,7 +597,7 @@ mod tests {
                         std::fs::write("/proc/sys/net/ipv6/conf/default/disable_ipv6", "1")
                     }),
                 )?;
-                attach_routed("t", 7, nic_ns, zone_ns).map_err(|e| {
+                attach_routed("t", 7, nic_ns, zone_ns, None).map_err(|e| {
                     eprintln!("attach_routed: {e}");
                     5
                 })?;

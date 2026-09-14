@@ -144,8 +144,9 @@ MATCH="^0 1 2 3$" check "C3  the only descriptors are 0, 1, 2 and the lister's o
 # ---------------------------------------------------------------------------
 head_ "D. Seccomp"
 
-check "D1  clone(CLONE_NEWUSER) from inside the zone is killed, not refused" 159 /usr/bin/python3 -c "
-import ctypes; libc=ctypes.CDLL(None,use_errno=True); print('clone returned', libc.syscall(56, 0x10000000|17,0,0,0,0))"
+# unshare(1) makes the call; the image's python has no ctypes, and a killed
+# process reports 128+SIGSYS either way.
+check "D1  clone(CLONE_NEWUSER) from inside the zone is killed, not refused" 159 /usr/bin/unshare -U /bin/true
 MATCH="AF_VSOCK refused 97" check "D2  AF_VSOCK, AF_ALG and AF_PACKET are refused by family, with EAFNOSUPPORT" 0 /usr/bin/python3 -c "
 import socket
 for n,f,t in [('AF_VSOCK',40,1),('AF_ALG',38,5),('AF_PACKET',17,2)]:
@@ -265,7 +266,10 @@ MATCH="not a regular file" check "G9  a descriptor to a directory is refused" 0 
 MATCH="not on the zone" check "G10 a file from the zone's tmpfs, not its data mount, is refused" 0 /bin/sh -c "echo x > /tmp/f && python3 -c '$TX' packet f /tmp/f 0"
 MATCH="not running" check "G11 a destination that is not running is refused"  0 /bin/sh -c "echo x > /home/probe/f && python3 -c '$TX' packet f /home/probe/f 0"
 ZFLAGS=()
-MATCH="approv\|consent" check "G12 without the approval flag every transfer is refused for want of consent" 0 /bin/sh -c "echo x > /home/probe/f && python3 -c '$TX' packet f /home/probe/f 0"
+# On a system with a consent channel the question is asked and nobody
+# answers; a short deadline keeps that a refusal rather than a timeout of
+# the check itself.
+KRYPTIK_CONSENT_TIMEOUT=3 MATCH="approv\|consent\|refusal" check "G12 without the approval flag every transfer is refused for want of consent" 0 /bin/sh -c "echo x > /home/probe/f && python3 -c '$TX' packet f /home/probe/f 0"
 MATCH="does not name" check "G13 a destination outside the sender's [transfer] to is refused before consent" 0 /bin/sh -c "echo x > /home/probe/f && python3 -c '$TX' capped f /home/probe/f 0"
 MATCH="single path component" check "G14 a name carrying a path separator is refused at parse time" 0 /bin/sh -c "echo x > /home/probe/f && python3 -c '$TX' packet ../f /home/probe/f 0"
 
