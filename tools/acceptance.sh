@@ -74,9 +74,11 @@ VER_A=""
 if [[ -n "$MEDIA_USB" ]]; then b="$(basename "$MEDIA_USB")"; VER_A="${b#kryptik-}"; VER_A="${VER_A%-usb.img}"; fi
 [[ -z "$PAYLOAD_A" && -n "$VER_A" && -d "${IMGDIR}/payload-${VER_A}" ]] && PAYLOAD_A="${IMGDIR}/payload-${VER_A}"
 if [[ -z "$PAYLOAD_B" ]]; then
-    for d in $(ls -td "${IMGDIR}"/payload-* 2>/dev/null); do
+    # Newest payload directory that is not A (mtime order, newest first).
+    while IFS= read -r d; do
         [[ -d "$d" && "$d" != "$PAYLOAD_A" ]] && { PAYLOAD_B="$d"; break; }
-    done
+    done < <(find "$IMGDIR" -maxdepth 1 -type d -name 'payload-*' -printf '%T@ %p
+' 2>/dev/null | sort -rn | cut -d' ' -f2-)
 fi
 VER_B=""
 if [[ -n "$PAYLOAD_B" ]]; then VER_B="$(basename "$PAYLOAD_B")"; VER_B="${VER_B#payload-}"; fi
