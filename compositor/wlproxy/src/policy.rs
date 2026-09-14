@@ -47,6 +47,11 @@ pub const MAX_TITLE_BYTES: usize = 256;
 /// writes its own `[vault] ` merely becomes `[work] [vault] ...`, visibly,
 /// after the real one.
 pub fn title_for(zone: &str, title: &str) -> String {
+    // Titles enter dwl's line-based status stream and terminal chrome.
+    // Controls must not inject records, terminal escapes, or bidi overrides.
+    let title: String = title.chars().map(|c| {
+        if c.is_control() || matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}') { ' ' } else { c }
+    }).collect();
     let mut out = format!("[{zone}] {title}");
     bound_utf8(&mut out, MAX_TITLE_BYTES);
     out
@@ -143,6 +148,13 @@ mod tests {
         assert_eq!(zone_of_app_id("kryptik..x"), None);
         let long = title_for("w", &"x".repeat(1000));
         assert!(long.len() <= 256);
+    }
+
+    #[test]
+    fn title_controls_cannot_inject_status_lines_or_reorder_identity() {
+        let title = title_for("untrusted", "notes\nmonitor appid trusted\r\u{1b}[2J\u{202e}VAULT\u{2069}\u{2028}é");
+        assert_eq!(title, "[untrusted] notes monitor appid trusted  [2J VAULT  é");
+        assert_eq!(title.lines().count(), 1);
     }
 
     /// The bound is in bytes; the cut must still be a character boundary.

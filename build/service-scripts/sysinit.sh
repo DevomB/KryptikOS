@@ -10,16 +10,27 @@
 ETC_MUTABLE="passwd shadow group gshadow subuid subgid passwd- shadow- group- gshadow- subuid- subgid- .pwd.lock hostname machine-id localtime adjtime resolv.conf"
 prune_etc_upper() {   # prune_etc_upper UPPER QUARANTINE
     up="$1"; q="$2"; moved=0
+    # State is untrusted, including directory symlinks. Never follow one
+    # while pruning, creating the overlay workdir, or saving quarantined data.
+    for path in "$up" "${up%/*}/work" "$q"; do
+        [ "$(realpath -m -- "$path")" = "$path" ] || return 1
+    done
+    [ ! -e "$up" ] || [ -d "$up" ] || return 1
     [ -d "$up" ] || return 0
-    for e in "$up"/* "$up"/.[!.]*; do
+    for e in "$up"/* "$up"/.[!.]* "$up"/..?*; do
         [ -e "$e" ] || [ -L "$e" ] || continue
         name="${e##*/}"
         keep=0
         for k in $ETC_MUTABLE; do [ "$name" = "$k" ] && keep=1; done
-        # A listed name that is a directory is not the file it shadows.
-        if [ "$keep" = 1 ] && [ ! -d "$e" ]; then continue; fi
-        mkdir -p "$q"
-        mv -- "$e" "$q/$name.$(date +%s 2>/dev/null || echo 0)" || continue
+        # Accounts must be regular files, not FIFOs or links into mutable
+        # state. localtime may point only into the verified zoneinfo tree.
+        if [ "$keep" = 1 ] && [ -f "$e" ] && [ ! -L "$e" ]; then continue; fi
+        if [ "$name" = localtime ] && [ -L "$e" ] && [ -f "$e" ]; then
+            case "$(realpath -e -- "$e")" in /usr/share/zoneinfo/*) continue ;; esac
+        fi
+        mkdir -p "$q" || return 1
+        saved="$(mktemp -d "$q/$name.XXXXXX")" || return 1
+        mv -T -- "$e" "$saved/entry" || return 1
         moved=$((moved + 1))
         echo "sysinit: /etc overlay: quarantined '$name' from the state partition (not something the system may change under /etc)" >&2
     done
@@ -177,7 +188,10 @@ if ! mountpoint -q /var; then
     # /etc; this is where that is enforced. Everything in the upper layer
     # that is not on the list is moved, named, to a quarantine directory
     # beside it before the overlay is mounted.
-    prune_etc_upper "$state_mnt/lib/kryptik/etc/upper" "$state_mnt/lib/kryptik/etc/quarantine" || true
+    prune_etc_upper "$state_mnt/lib/kryptik/etc/upper" "$state_mnt/lib/kryptik/etc/quarantine" || {
+        echo "sysinit: refusing to boot with an unsafe /etc upper layer; recover from the install medium" >&2
+        exit 1
+    }
     mount --move "$state_mnt" /var
 else
     STATE="$(awk '$2=="/var"{print ($3=="tmpfs")?"tmpfs":"persistent"; exit}' /proc/mounts)"

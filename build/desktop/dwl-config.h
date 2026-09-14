@@ -94,7 +94,7 @@ static const enum libinput_config_tap_button_map button_map = LIBINPUT_CONFIG_TA
  * passphrase if it needs one" - the trusted chrome draws that prompt. */
 static const char *termcmd[]      = { "kryptik-launch", "--ask", "work",      "--", "havoc", NULL };
 static const char *personalcmd[]  = { "kryptik-launch", "--ask", "personal",  "--", "havoc", NULL };
-static const char *untrustedcmd[] = { "kryptik-launch", "--ask", "untrusted", "--", "havoc", "-e", "lynx", NULL };
+static const char *untrustedcmd[] = { "kryptik-launch", "--ask", "untrusted", "--", "havoc", "lynx", NULL };
 static const char *menucmd[]      = { "kryptik-chrome", "--menu", NULL };
 
 static const Key keys[] = {

@@ -64,5 +64,44 @@ sh -e -c ". $T/fn.sh; prune_etc_upper $T/up $T/q" >/dev/null 2>&1 && ok "a missi
 mkdir -p "$T/up"
 sh -e -c ". $T/fn.sh; prune_etc_upper $T/up $T/q" >/dev/null 2>&1 && [[ ! -e "$T/q" ]] && ok "an empty upper layer creates no quarantine directory" || bad "an empty upper layer was not left alone"
 
+# A failed move must propagate even when the caller tests the result (which
+# disables sh -e inside the function). Never mount the unfiltered upper layer.
+stage
+if sh -e -c '. "$1"; mv() { return 1; }; if prune_etc_upper "$2" "$3"; then exit 0; else exit 1; fi' sh "$T/fn.sh" "$T/up" "$T/q" >/dev/null 2>&1; then
+    bad "a failed quarantine move was reported as success"
+else
+    [[ -f "$T/up/ld.so.preload" ]] && ok "failed quarantine refuses without deleting the original" || bad "failed quarantine lost the original"
+fi
+
+stage
+ln -s "$T/up" "$T/linked-upper"
+sh -e -c '. "$1"; prune_etc_upper "$2" "$3"' sh "$T/fn.sh" "$T/linked-upper" "$T/q" >/dev/null 2>&1 && bad "symlinked upper accepted" || ok "symlinked upper refused"
+ln -s "$T/up" "$T/q"
+sh -e -c '. "$1"; prune_etc_upper "$2" "$3"' sh "$T/fn.sh" "$T/up" "$T/q" >/dev/null 2>&1 && bad "symlinked quarantine accepted" || ok "symlinked quarantine refused"
+rm "$T/q"
+ln -s "$T/up" "$T/work"
+sh -e -c '. "$1"; prune_etc_upper "$2" "$3"' sh "$T/fn.sh" "$T/up" "$T/q" >/dev/null 2>&1 && bad "symlinked overlay workdir accepted" || ok "symlinked overlay workdir refused"
+rm "$T/work"
+
+stage
+rm "$T/up/shadow" "$T/up/group"
+ln -s "$T/untrusted-shadow" "$T/up/shadow"
+mkfifo "$T/up/group"
+printf 'hidden\n' > "$T/up/..hidden"
+sh -e -c '. "$1"; prune_etc_upper "$2" "$3"' sh "$T/fn.sh" "$T/up" "$T/q" >/dev/null 2>&1
+[[ ! -L "$T/up/shadow" ]] && quarantined shadow && ok "symlinked account file quarantined" || bad "symlinked shadow kept"
+[[ ! -e "$T/up/group" ]] && quarantined group && ok "FIFO account file quarantined" || bad "FIFO group kept"
+[[ ! -e "$T/up/..hidden" ]] && quarantined ..hidden && ok "double-dot hidden entry quarantined" || bad "double-dot hidden entry missed"
+
+if [[ -f /usr/share/zoneinfo/UTC ]]; then
+    rm "$T/up/localtime"
+    ln -s /usr/share/zoneinfo/UTC "$T/up/localtime"
+    if sh -e -c '. "$1"; prune_etc_upper "$2" "$3"' sh "$T/fn.sh" "$T/up" "$T/q" >/dev/null 2>&1 && [[ -L "$T/up/localtime" ]]; then
+        ok "localtime may still link into verified zoneinfo"
+    else
+        bad "legitimate zoneinfo symlink was not preserved"
+    fi
+fi
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
