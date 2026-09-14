@@ -18,6 +18,8 @@ on:
     paths-ignore:
       - 'docs/**'
       - '*.md'
+      # A change to the CI workflow alone does not restart a six-hour build.
+      - '.github/workflows/ci.yml'
   workflow_dispatch:
 
 concurrency:
