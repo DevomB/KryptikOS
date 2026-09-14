@@ -10,3 +10,9 @@ keep-capability CAP_NET_RAW
 # dhcpcd chowns its control socket to its own gid (control.c) and dies of
 # SIGSYS without this; with CAP_CHOWN dropped, that is all a chown can do here.
 allow-syscall chown
+# dhcpcd opens a NETLINK_GENERIC socket as it starts (if-linux.c, for
+# nl80211 wireless events; it is built with nl80211.h) and exits on the
+# refusal - "if_opensockets: Address family not supported by protocol" - so
+# no lease was ever asked for and routed zones had no uplink. With it, on
+# the installed system, eth0 leased 10.0.2.15 and took its default route.
+allow-netlink NETLINK_GENERIC
