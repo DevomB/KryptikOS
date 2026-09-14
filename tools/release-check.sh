@@ -365,6 +365,12 @@ fi
 # verdict
 # ---------------------------------------------------------------------------
 
+# The fixture test (tools/test-release-check.sh) lands a write in the tree
+# while the checks run and expects this run to notice. On a fast runner the
+# checks over its small tree finish before the write does, and the run passed
+# for the wrong reason. A settle time before the closing fingerprint, set only
+# by that test, keeps the check deterministic; nothing else sets it.
+if [[ -n "${KRYPTIK_RELEASE_CHECK_SETTLE:-}" ]]; then sleep "$KRYPTIK_RELEASE_CHECK_SETTLE"; fi
 FP_AFTER="$(tree_fingerprint)"
 if [[ "$FP_BEFORE" != "$FP_AFTER" ]]; then
     echo

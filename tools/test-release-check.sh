@@ -280,7 +280,11 @@ rm -f "$SENTINEL"
     printf 'late\n' > "${TREE}/usr/bin/arrived-late"
 ) &
 racer=$!
-run --only=setuid,caps,perms,source-availability
+# Two seconds of settle before the closing fingerprint: the racer writes
+# within a few milliseconds of the sentinel, and on a fast runner the whole
+# run over this small tree finished first (CI reported PASSED where it
+# should have failed).
+KRYPTIK_RELEASE_CHECK_SETTLE=2 run --only=setuid,caps,perms,source-availability
 wait "$racer" 2>/dev/null
 expect_fail "a tree that changes during the run invalidates every result" \
     "being written to"

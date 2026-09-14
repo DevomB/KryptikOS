@@ -110,6 +110,22 @@ jobs:
       - name: Manifest resolves
         run: ./tools/fetch-sources.sh --list
 
+      # The strict provenance gate below hashes the downloaded tarballs
+      # against what upstream publishes; without them it reported seven
+      # assertions unverified and failed (which was the honest answer, and the
+      # reason this step exists). Cached by sources.lock, so a run downloads
+      # them only when the manifest changes.
+      - name: Upstream sources (cached by sources.lock)
+        id: sources
+        uses: actions/cache@v4
+        with:
+          path: sources
+          key: sources-${{ hashFiles('sources.lock') }}
+
+      - name: Fetch and verify the sources
+        if: steps.sources.outputs.cache-hit != 'true'
+        run: make sources
+
       # Informational, deliberately non-blocking.
       #
       # MIRROR_GNU is ftpmirror.gnu.org, which redirects to a nearby mirror
