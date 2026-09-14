@@ -44,9 +44,9 @@ virt-fw-vars --input "${OVMF_DIR}/OVMF_VARS_4M.fd" --output "${OUT}/enrolled.fd"
     --secure-boot --set-pk "$GUID" "$CERT" --add-kek "$GUID" "$CERT" --add-db "$GUID" "$CERT" >/dev/null
 
 echo "--- enrolled.fd ---"
-virt-fw-vars --input "${OUT}/enrolled.fd" --print 2>/dev/null | grep -E 'SecureBoot|^  (PK|KEK|db|dbx)|Kryptik' | head -20 || true
+virt-fw-vars --input "${OUT}/enrolled.fd" --print --verbose 2>/dev/null | grep -E 'SecureBoot|^  (PK|KEK|db|dbx)|Kryptik' | head -20 || true
 # Prove the store has exactly our certificate in db and that Secure Boot is on.
-virt-fw-vars --input "${OUT}/enrolled.fd" --print 2>/dev/null | grep -q 'Kryptik developer Secure Boot key' \
+virt-fw-vars --input "${OUT}/enrolled.fd" --print --verbose 2>/dev/null | grep -q 'Kryptik developer Secure Boot key' \
     || die "the enrolled store does not list the developer certificate"
 ok "variable stores under ${OUT}: clean.fd enrolled.fd ms.fd"
 sha256sum "${OUT}"/*.fd | sed 's/^/  /'
