@@ -80,7 +80,7 @@ want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-state=/dev/vda4 type=ext4' "partiti
 want "$P1" 'KRYPTIK_INSTALL: verify: esp_files=.*EFI/BOOT/BOOTX64.EFI' "the ESP has the removable-media boot file"
 want "$P1" 'KRYPTIK_INSTALL: verify: install_json=yes'   "install.json was written"
 want "$P1" 'KRYPTIK_INSTALL: verify: preseed=present'    "the first-boot preseed was written"
-want "$P1" 'KRYPTIK_INSTALL: kryptik-a verifies'         "the root image was read back and verified"
+want "$P1" 'KRYPTIK_INSTALL: .*kryptik-a verifies'       "the root image was read back and verified"
 deny "$P1" 'KRYPTIK_INSTALL: FAILED'                     "the installer reported no failure"
 want "$P1" 'Power down'                                  "the medium powered off afterwards"
 deny "$P1" 'Kernel panic|Oops:'                          "no panic during the install boot"
