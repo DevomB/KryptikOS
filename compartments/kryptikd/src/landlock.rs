@@ -449,6 +449,22 @@ pub fn zone_rules(home: &str) -> Vec<ZoneRule> {
     ]
 }
 
+/// What the nic zone may write beyond the base rules: the two private tmpfs
+/// mounts `rootfs::pivot_into` gives it for the network stack's state (pid
+/// files, control sockets and the resolver's upstream list under /run, the
+/// DHCP lease database under /var/lib). No exec: nothing runs from there.
+/// Every other zone gets none of this - its /run is on the sealed root.
+pub fn nic_zone_rules() -> Vec<ZoneRule> {
+    ["/run", "/var/lib"]
+        .iter()
+        .map(|p| ZoneRule {
+            path: p.to_string(),
+            access: ACCESS_READ | ACCESS_WRITE,
+            required: true,
+        })
+        .collect()
+}
+
 /// Human-readable form of a rule's rights, for `kryptikd explain`.
 pub fn describe_access(access: u64) -> String {
     let mut parts = Vec::new();
@@ -471,9 +487,13 @@ pub fn describe_access(access: u64) -> String {
 
 /// Apply `zone_rules` to the current process. Must run after pivot_root and
 /// before the seccomp filter (landlock_* are not in the allowlist).
-pub fn confine_pivoted_zone(home: &str) -> Result<(), LandlockError> {
+pub fn confine_pivoted_zone(home: &str, nic: bool) -> Result<(), LandlockError> {
     let mut rs = Ruleset::new()?;
-    for r in zone_rules(home) {
+    let mut rules = zone_rules(home);
+    if nic {
+        rules.extend(nic_zone_rules());
+    }
+    for r in rules {
         match rs.allow(&r.path, r.access) {
             Ok(()) => {}
             Err(e) if !r.required => {
@@ -665,6 +685,20 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_nic_zone_adds_exactly_its_two_state_directories_and_no_exec() {
+        let extra = nic_zone_rules();
+        let paths: Vec<&str> = extra.iter().map(|r| r.path.as_str()).collect();
+        assert_eq!(paths, vec!["/run", "/var/lib"]);
+        for r in &extra {
+            assert_eq!(r.access & ACCESS_EXEC, 0, "{} must not be executable", r.path);
+            assert_ne!(r.access & FS_MAKE_REG, 0, "{} must allow creating files", r.path);
+            assert!(r.required, "{} is a mount kryptikd made; its absence is a defect", r.path);
+        }
+        // And the base rules are untouched by it: no other zone gains /run.
+        assert!(zone_rules("/home/t").iter().all(|r| r.path != "/run" && r.path != "/var/lib"));
     }
 
     #[test]

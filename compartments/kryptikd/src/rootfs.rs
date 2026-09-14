@@ -271,7 +271,14 @@ pub const SYSTEM_PATHS: &[&str] = &["/usr", "/lib", "/lib64", "/bin", "/sbin"];
 /// (the zone's resolver will come from kryptikd with its network path),
 /// localtime (host fingerprint; zones run UTC), everything under ssh/, ssl/
 /// private/, sudoers, shadow, fstab, crypttab.
-pub const ETC_RO_FILES: &[&str] = &["/etc/ld.so.cache", "/etc/services", "/etc/protocols"];
+pub const ETC_RO_FILES: &[&str] = &[
+    "/etc/ld.so.cache",
+    "/etc/services",
+    "/etc/protocols",
+    // The DHCP client's shipped defaults (require the server identifier,
+    // which options to ask for): the nic zone's dhcpcd reads them; no secret.
+    "/etc/dhcpcd.conf",
+];
 pub const ETC_RO_DIRS: &[&str] = &["/etc/alternatives", "/etc/ssl/certs", "/etc/pki/tls/certs"];
 
 /// Device nodes a zone is allowed. Anything not listed does not exist for it.
@@ -525,6 +532,31 @@ pub fn pivot_into(
         Some("mode=1777"),
         "mount(tmp)",
     )?;
+
+    // --- the nic zone's own /run and /var/lib -------------------------------
+    // The network stack's daemons keep their state where they were built to:
+    // pid files, control sockets and the resolver's upstream list under /run,
+    // the DHCP lease database under /var/lib. In the nic zone both are
+    // private tmpfs mounts, empty when the zone starts and gone with it;
+    // nothing of the host's /run or /var is in them, and the socket binds
+    // below land on top of the first. Every other zone sees no /var at all
+    // and a /run on the sealed root that holds only what kryptikd binds
+    // there. Without these the first net zone's dhcpcd died on its pid file
+    // ("/run/dhcpcd: Read-only file system") and the routed zones had no
+    // path out, which the guest check reported as "no READY line".
+    if resolver == Resolver::Writable {
+        for (rel, call) in [("run", "mount(nic /run tmpfs)"), ("var/lib", "mount(nic /var/lib tmpfs)")] {
+            let d = mkdir(rel)?;
+            mount_raw(
+                "tmpfs",
+                &d,
+                Some("tmpfs"),
+                (libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC) as libc::c_ulong,
+                Some("mode=0755,size=8m"),
+                call,
+            )?;
+        }
+    }
 
     // --- the broker socket, at /run/kryptik/broker --------------------------
     // The one thing under /run a zone sees: its own broker endpoint, a socket

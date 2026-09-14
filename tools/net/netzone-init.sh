@@ -97,28 +97,56 @@ else
 fi
 
 # --- uplink: DHCP if anyone answers, else what zone 0 carried over ---------
+# /run and /var/lib are this zone's own tmpfs mounts (kryptikd gives the nic
+# zone both; every other zone's /run is read-only): dhcpcd's pid file and
+# control socket, its lease database, and the files below live there. The
+# first version of this zone had neither, and dhcpcd died on its pid file
+# before it ever asked for a lease.
+#
+# dhcpcd runs as this zone's root WITHOUT its own privilege separation: the
+# zone's passwd is synthesized (root and nobody), so the dhcpcd user it was
+# built with does not exist here and it says so once, then carries on
+# unseparated. The zone - its own user, mount, network and pid namespaces,
+# seccomp and Landlock - is the sandbox; nothing dhcpcd could do reaches
+# past it. That one line is filtered; every other error is kept.
+uplink_addr() { ip -4 -o addr show "$NIC" 2>/dev/null | awk '{print $4}' | head -1; }
 if command -v dhcpcd >/dev/null 2>&1; then
     mkdir -p /run/dhcpcd /var/lib/dhcpcd 2>/dev/null
-    # -b background, -q quiet, --nohook resolv.conf: we own resolv.conf below.
-    if dhcpcd -b -q -t 15 --nohook resolv.conf --nodev "$NIC" 2>/dev/null; then
-        say "dhcpcd started on ${NIC}"
+    # -b: background at once and keep asking for as long as the zone runs;
+    # -q: errors only; --nodev: no device manager in here. The resolv.conf
+    # hook stays on: /etc/resolv.conf is this zone's own file (under /tmp),
+    # and what dhcpcd writes there is what the resolver below forwards to.
+    if dhcpcd -b -q --nodev "$NIC" 2>/tmp/dhcpcd.err; then
+        grep -v 'no such user dhcpcd' /tmp/dhcpcd.err
+        # Give the lease up to 15 s to arrive so the resolver starts with the
+        # uplink's servers; a slower one is picked up by dhcpcd all the same.
+        n=0
+        while [ "$n" -lt 30 ] && [ -z "$(uplink_addr)" ]; do sleep 0.5; n=$((n+1)); done
+        [ -n "$(uplink_addr)" ] && sleep 1   # let the hook finish resolv.conf
+        say "dhcpcd on ${NIC}: uplink=$(uplink_addr || true)"
     else
+        cat /tmp/dhcpcd.err
         say "dhcpcd did not start on ${NIC}; keeping the carried-over configuration"
     fi
 else
     say "no dhcpcd; keeping the carried-over configuration"
 fi
-uplink_addr() { ip -4 -o addr show "$NIC" 2>/dev/null | awk '{print $4}' | head -1; }
 
 # --- the resolver routed zones already point at ----------------------------
 DNSPID=""
 start_dns() {
     command -v dnsmasq >/dev/null 2>&1 || { say "no dnsmasq; routed zones have no resolver"; return 1; }
     up=/run/uplink-resolv.conf
-    # what the uplink gave us (dhcpcd's lease) or what was carried over
-    if [ -r /run/dhcpcd/resolv.conf ]; then cp /run/dhcpcd/resolv.conf "$up"
-    elif [ -r /etc/resolv.conf ] && grep -q '^nameserver' /etc/resolv.conf; then cp /etc/resolv.conf "$up"
-    else : > "$up"; fi
+    # What the uplink gave us: dhcpcd's hook wrote /etc/resolv.conf from the
+    # lease, or zone 0 carried a static one over. (printf, not ':', creates
+    # the empty file: a redirection that fails on a special builtin ends a
+    # POSIX sh outright, which is how this script once died on a read-only
+    # /run without a word.)
+    if [ -r /etc/resolv.conf ] && grep -q '^nameserver' /etc/resolv.conf; then
+        grep '^nameserver' /etc/resolv.conf > "$up"
+    else
+        printf '' > "$up"
+    fi
     # QEMU user networking's resolver, when nothing else is known
     grep -q '^nameserver' "$up" || echo "nameserver 10.0.2.3" >> "$up"
     dnsmasq --keep-in-foreground --no-daemon --no-hosts --bind-interfaces \
