@@ -61,18 +61,24 @@ $ /usr/bin/bash --version                 # host, for comparison
 GNU bash, version 5.2.21(1)-release (x86_64-pc-linux-gnu)
 ```
 
-## Phase 3 — Base system
+## Phase 3 — Base system ✅ **COMPLETE**
 
 Full package set, all built with the hardening flag set. hardened_malloc wired
 in as the system allocator. Init system from ADR-006.
 
 - [x] Resolve ADR-006 (init) — s6-rc (+ seatd for Wayland seat management)
+- [x] Every package of stage 04 builds and installs; `make audit-artifacts`
+      reads the ELF headers of what shipped rather than trusting the flags
+- [x] The target libc unwinds through a dlopened library
+      (`make test-libc-unwind`): glibc 2.40's loader needed two upstream
+      fixes the tarball lacks (`build/patches/glibc-2.40/`, bugs 31943 and
+      33088); the second was found by reading the built loader, not the bug
+      titles
 
-**Exit test:** system boots to a shell under QEMU. `tools/audit-setuid.sh`
-reports zero unjustified setuid binaries.
-
-**Realistic effort:** the longest phase. Each package that breaks under
-`-D_FORTIFY_SOURCE=3` or `-pie` is an individual investigation.
+**Exit test:** the system boots to a shell under QEMU — met by the media of
+Phase 7, which boot this base system on the Phase 4 kernel
+(`make media-smoke-usb`). `tools/audit-setuid.sh` reports zero unjustified
+setuid binaries.
 
 ## Phase 4 — Hardened kernel
 
@@ -82,19 +88,26 @@ dm-verity and Landlock enabled.
 
 - [x] Resolve ADR-007 (MAC layer) — Landlock + seccomp only for v1
 - [x] Resolve ADR-009 (kernel) — LTS only, plus linux-hardened
-- [ ] Apply the linux-hardened patch in stage 05
+- [x] Apply the linux-hardened patch in stage 05
+- [x] EFI stub with the command line compiled in (`CMDLINE_OVERRIDE`), so the
+      root slot, the verity root hash and its salt are part of the signed
+      kernel; dm-init builds the verified root with no initramfs
 
 **Exit test:** boots; `lockdown` reports confidentiality; unsigned module load
 fails; `kernel-hardening-checker` reports no missing KSPP options;
 `make validate-kernel` reports every fragment symbol present in the pinned
-source; `make check-kernel-eol` reports the kernel is longterm.
+source; `make check-kernel-eol` reports the kernel is longterm. The boot is
+measured by the Phase 7 media tests; the module-signing and lockdown
+assertions are not yet individual checks.
 
-## Phase 5 — The compartment layer *(in progress)*
+## Phase 5 — The compartment layer
 
 Where Kryptik stops being "LFS with good flags" and becomes Kryptik.
 
-**The four exit requirements now hold** (see below). What remains is lifecycle
-and the brokered channels, not the isolation primitives.
+**The four exit requirements hold** (see below), and the lifecycle, the
+network topology, the encrypted volumes and the brokered channels have landed
+since. What remains on the target is the acceptance evidence
+(`make zones-test`, `make gui-test`).
 
 - [x] Zone definition format, parser, and cross-zone invariants
 - [x] Namespace set + `mount_proc` / `mount_sysfs` (isolate.rs)
@@ -102,15 +115,20 @@ and the brokered channels, not the isolation primitives.
 - [x] Adversarial exit test (the isolation primitives), passing 14/14
 - [x] `kryptikd run` — creates a zone and executes inside it, applying
       namespaces, proc/sysfs remounts, Landlock and seccomp in that order
-- [ ] `kryptikd stop` / persistent zone state (run is one-shot today)
-- [ ] Per-zone veth + bridge topology; `net` zone as sole NIC holder
+- [x] `kryptikd stop` / persistent zone state; a registry, `status`, `gc`
+- [x] Per-zone veth + bridge topology; the `net` zone as sole NIC holder,
+      fail-closed (`tools/net/netzone-init.sh`), NAT and DNS through it
 - [x] Minimal per-zone `/dev` — tmpfs with an explicit node list, plus a
       private `/dev/shm` and `/dev/pts`; nothing else exists for the zone
       rather than getting a devtmpfs with null/zero/urandom/tty and nothing
       else. This grants more than it should and is a known gap, not a decision.
-- [ ] Per-zone LUKS2 volumes, unlocked on start, key-wiped on stop
+- [x] Per-zone LUKS2 volumes, unlocked on start with a passphrase that never
+      touches a command line, closed on stop; header backup and restore
 - [x] Per-zone seccomp filters — default-deny BPF allowlist, 13 dangerous syscalls verified killed
-- [ ] Brokered file transfer and clipboard
+- [x] Brokered file transfer, answered by the person through the trusted
+      chrome, and per-zone clipboards moved only by the zone 0 gesture
+- [x] `kryptikd serve`: the launch daemon a session talks to, with socket
+      identity, descriptor ownership, request deadlines and real readiness
 
 **Exit test: PASSING** as of 2026-09-10 — `compartments/tests/adversarial.sh`,
 12 checks, 0 failures, run as root *inside* the zone against a real 6.6 kernel.
@@ -163,16 +181,48 @@ Two findings came out of writing it rather than out of reading the design:
 Per-zone Wayland proxy, clipboard brokering, screen-capture blocking, per-zone
 window border colors.
 
+- [x] `kryptik-wlproxy`: one proxy per zone, hand-rolled wire format, an
+      allowlist of globals (no screencopy, data device, layer shell, virtual
+      input, dmabuf export, gamma, output management or session lock), the
+      zone stamped into every app_id and title
+- [x] `zoneid`: the colour identity invariant (CIEDE2000 under colour-vision
+      deficiency models) and the palette the shipped zones must satisfy
+- [x] dwl draws every window's border in its zone's colour, fullscreen
+      included; the chrome (zone 0) records the focused zone, asks the
+      transfer questions and reads passphrases in its own windows
+- [x] `kryptik-session` from an authenticated tty1 login; the daemon owns
+      the runtime directory
+
 **Exit test:** an application in zone A cannot capture or keylog zone B's
-surfaces. Every window is visually attributable to its zone.
+surfaces; every window is visually attributable to its zone. Measured by
+`make gui-test` on the installed system: what a zone's client is offered and
+refused, the border colour photographed windowed and fullscreen, and the
+clipboard and transfer flows driven by keystrokes.
 
 ## Phase 7 — Bootable signed image
 
 Secure Boot chain, dm-verity signed root, initramfs embedded in the signed
 kernel image, installer.
 
+- [x] Stage 06: the verity root image, both slot kernels and the media kernel
+      signed with a developer key, a USB image and an ISO, a signed release
+      payload per version (Design 08)
+- [x] `kryptik-install`: whole-disk install with read-back verification and
+      refusals; unattended through a control disk for the tests
+- [x] State partition found by identity on the root disk; degraded and honest
+      when it is ambiguous, corrupt or missing
+- [x] A/B updates: `kryptik-update` verifies the manifest, every file and the
+      embedded root hash before its first write, arms one trial boot;
+      `boot-success` judges the trial and commits; rollback; `--recovery`
+- [x] `kryptik-recover` from the medium: commit or restore a slot, state
+      untouched
+- [ ] Physical hardware
+
 **Exit test:** installs on real hardware, boots with Secure Boot enabled, and a
-tampered root filesystem fails to boot rather than booting silently.
+tampered root filesystem fails to boot rather than booting silently. The
+second and third parts are measured under OVMF by `make integrity-test` and
+`make media-refused-foreign-keys`; the first has not happened, and the signing
+key is a build-generated test anchor, not a production one.
 
 ## Explicitly deferred
 
