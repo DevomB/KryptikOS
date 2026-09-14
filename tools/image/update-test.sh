@@ -74,10 +74,15 @@ payload_disk() {   # payload_disk OUT DIR
 PA="${VMDIR}/payload-a.img"; PB="${VMDIR}/payload-b.img"
 payload_disk "$PA" "$PAY_A"; payload_disk "$PB" "$PAY_B"
 
-# Variants of B for the refusal cases.
+# Variants of A for the refusal cases, applied on the running B with
+# --recovery: A is older, --recovery admits the version and leaves every
+# later check to do its work. A variant of the RUNNING version is refused
+# as "nothing to apply" before its defect is ever reached (the run on
+# bae1de53 showed that with variants of B), which proves nothing about the
+# check the variant was made for.
 BAD="${VMDIR}/bad"; rm -rf "$BAD"; mkdir -p "$BAD"
-mk_variant() {   # mk_variant NAME  -> $BAD/NAME is a copy of payload B
-    rm -rf "${BAD:?}/$1"; cp -a --sparse=always "$PAY_B" "$BAD/$1"
+mk_variant() {   # mk_variant NAME  -> $BAD/NAME is a copy of payload A
+    rm -rf "${BAD:?}/$1"; cp -a --sparse=always "$PAY_A" "$BAD/$1"
 }
 mk_variant wrongkey; ssh-keygen -q -t ed25519 -N "" -f "$BAD/otherkey" >/dev/null; rm -f "$BAD/wrongkey/manifest.sig"
 ssh-keygen -Y sign -f "$BAD/otherkey" -n kryptik-release "$BAD/wrongkey/manifest" >/dev/null 2>&1
@@ -139,7 +144,7 @@ rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "B applied, rebooted into slot b, home file and zone volume intact" || red "phase 2 drive failed"
 txt | grep -q "KRYPTIK_SMOKE: boot_identity=slot=b" && green "booted slot b" || red "did not boot slot b"
 txt | grep -q "version_id=${VB}" && green "guest reports version ${VB}" || red "guest did not report ${VB}"
-txt | grep -q "boot-success: trial slot b booted successfully; committing" && green "boot-success committed slot b" || red "no commit of slot b"
+txt | grep -q "boot-success: committed: BOOTX64.EFI is now slot b" && green "boot-success committed slot b" || red "no commit of slot b"
 txt | grep -q "committed slot:   b" && green "status shows committed slot b" || red "committed slot is not b"
 
 # ---------------------------------------------------------------- phase 3 --
@@ -148,10 +153,10 @@ start_vm update-p3 --disk "$BADIMG" --disk "$PA"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'mkdir -p /run/upd/p /run/upd/a && mount -o ro /dev/vdb /run/upd/p && mount -o ro /dev/vdc /run/upd/a && echo MNT-OK')" "expect:MNT-OK" \
     "$(ROOTSH 'kryptik-update apply /run/upd/p/wrongkey; echo RC=$?')" "expect:not enrolled" \
-    "$(ROOTSH 'kryptik-update apply /run/upd/p/modified; echo RC=$?')" "expect:sha256 does not match" \
-    "$(ROOTSH 'kryptik-update apply /run/upd/p/truncated; echo RC=$?')" "expect:truncated or altered" \
-    "$(ROOTSH 'kryptik-update apply /run/upd/p/extra; echo RC=$?')" "expect:unlisted file" \
-    "$(ROOTSH 'kryptik-update apply /run/upd/p/hidden; echo RC=$?')" "expect:lost+found is not empty" \
+    "$(ROOTSH 'kryptik-update apply /run/upd/p/modified --recovery; echo RC=$?')" "expect:sha256 does not match" \
+    "$(ROOTSH 'kryptik-update apply /run/upd/p/truncated --recovery; echo RC=$?')" "expect:truncated or altered" \
+    "$(ROOTSH 'kryptik-update apply /run/upd/p/extra --recovery; echo RC=$?')" "expect:unlisted file" \
+    "$(ROOTSH 'kryptik-update apply /run/upd/p/hidden --recovery; echo RC=$?')" "expect:lost+found is not empty" \
     "$(ROOTSH 'kryptik-update apply /run/upd/a; echo RC=$?')" "expect:older than the running" \
     "$(ROOTSH 'flock /run/kryptik/update.lock sleep 20 & sleep 1; kryptik-update apply /run/upd/a --recovery; echo RC=$?')" "expect:another update is in progress" \
     "$(ROOTSH 'fallocate -l 100G /var/filler 2>/dev/null || dd if=/dev/zero of=/var/filler bs=1M 2>/dev/null; cp -a /run/upd/a /var/lib/kryptik/updates/a-full 2>&1 | tail -1; kryptik-update apply /var/lib/kryptik/updates/a-full --recovery; echo RC=$?; rm -rf /var/filler /var/lib/kryptik/updates/a-full')" "expect:RC=1" \
@@ -240,9 +245,12 @@ phase "phase 7: a deliberately broken trial falls back, is recorded, and is refu
 # verity error and the panic - so that boot is read by those, and the
 # session's boots are counted by the firmware's "BdsDxe: starting Boot"
 # lines, one per boot, rather than by a banner only a booted userspace prints.
+# The payload copies of phases 2 and 6 are still on the state partition,
+# and a third one does not fit beside them (cp: No space left on device,
+# on bae1de53); they have served, so they go before B is copied again.
 start_vm update-p7 --disk "$PB"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
-    "$(ROOTSH 'cat /run/kryptik/boot-identity | head -1; mkdir -p /run/upd/p /var/lib/kryptik/updates/b2 && mount -o ro /dev/vdb /run/upd/p && cp -a /run/upd/p/. /var/lib/kryptik/updates/b2/ && umount /run/upd/p && kryptik-update apply /var/lib/kryptik/updates/b2 && echo ARM7-OK')" \
+    "$(ROOTSH 'cat /run/kryptik/boot-identity | head -1; rm -rf /var/lib/kryptik/updates/a /var/lib/kryptik/updates/b; mkdir -p /run/upd/p /var/lib/kryptik/updates/b2 && mount -o ro /dev/vdb /run/upd/p && cp -a /run/upd/p/. /var/lib/kryptik/updates/b2/ && umount /run/upd/p && kryptik-update apply /var/lib/kryptik/updates/b2 && echo ARM7-OK')" \
     "expect:slot=a" "expect:ARM7-OK" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
