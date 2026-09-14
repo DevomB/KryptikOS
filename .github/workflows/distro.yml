@@ -57,7 +57,10 @@ jobs:
           df -h /mnt | tail -1
 
       - name: Host packages
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq $HOST_PACKAGES
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq $HOST_PACKAGES
+          # LFS requires /bin/sh to be bash (00-host-check refuses dash).
+          sudo ln -sf /usr/bin/bash /bin/sh
 
       - name: Upstream sources (cached by sources.lock)
         id: sources
@@ -130,7 +133,10 @@ jobs:
           mkdir -p "$KRYPTIK_WORK" "$KRYPTIK_SOURCES" "$KRYPTIK_OUT"
 
       - name: Host packages
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq $HOST_PACKAGES
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq $HOST_PACKAGES
+          # LFS requires /bin/sh to be bash (00-host-check refuses dash).
+          sudo ln -sf /usr/bin/bash /bin/sh
 
       - name: Upstream sources (cached by sources.lock)
         id: sources
@@ -225,6 +231,7 @@ jobs:
       - name: Host packages
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq $HOST_PACKAGES
+          sudo ln -sf /usr/bin/bash /bin/sh
           # virt-fw-vars, for the disposable Secure Boot variable stores.
           sudo pip install --break-system-packages virt-firmware
           virt-fw-vars --help > /dev/null
