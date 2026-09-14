@@ -13,6 +13,10 @@
 # disposable VM, and the checks that would need them say NOT RUN rather than
 # passing on a weaker claim. Exit status is the number of failures.
 #
+# It also runs as root on the installed system (tools/image/zones-test.sh),
+# where kryptikd refuses a zone that would map its root to real root: there
+# the fixtures run under a named identity, the way the launcher suite does.
+#
 # It lives in the repository, next to the code it tests, because it once did
 # not: an earlier copy lived only in a scratch directory and was lost when
 # that directory was removed.
@@ -25,6 +29,19 @@ K="$(cd "$(dirname "$K")" && pwd)/$(basename "$K")"
 
 # shellcheck source=fixtures.sh
 source "$HERE/fixtures.sh"
+
+# Root must name the identity zones run as (kryptikd refuses to map a zone's
+# root to host uid 0), and the fixture roots must then belong to it: the
+# zone's setup drops to the mapped uid before it opens its data directory,
+# so a 0700 root-owned workspace makes every launch fail with "open(data
+# dir): Permission denied", which reads like a kryptikd defect and is not.
+IDFLAGS=()
+if [[ "$(id -u)" -eq 0 ]]; then
+    IDFLAGS=(--zone-uid 100000 --zone-gid 100000)
+    chmod 0755 "$F" "$F/zones" "$F/roots"
+    chown -R 100000:100000 "$F/roots"
+    echo "running as root: zones map to host uid/gid 100000"
+fi
 
 FAILS=0
 SKIPS=0
@@ -47,7 +64,7 @@ zrun() {
     # pipeline reports the LAST command's status, and an earlier draft of
     # this file graded every refusal against grep's exit code instead.
     local raw
-    raw="$(timeout 60 "$K" run "$zone" "${ZFLAGS[@]}" --zones "$F/zones" --rootfs "$F/roots" -- "$@" 2>&1)"
+    raw="$(timeout 60 "$K" run "$zone" "${ZFLAGS[@]}" "${IDFLAGS[@]}" --zones "$F/zones" --rootfs "$F/roots" -- "$@" 2>&1)"
     ZRC=$?
     ZOUT="$(denoise <<<"$raw")"
     return 0
@@ -168,8 +185,10 @@ MATCH="absolute" checkz relfs "E11 a Landlock policy naming a relative path is r
 # ---------------------------------------------------------------------------
 head_ "F. Guarantees a build cannot give are refused, not implied"
 
-MATCH="storage.mode" checkz sealed "F1  a zone declaring encrypted storage refuses to start" 1 /bin/sh -c "echo RAN-ANYWAY"
-if "$K" run capped "${ZFLAGS[@]}" --zones "$F/zones" --rootfs "$F/roots" -- /bin/sh -c "echo LIMITS-RAN" 2>&1 | grep -q LIMITS-RAN; then
+# Unprivileged the refusal names storage.mode (no LUKS without root); as root
+# the volume would be opened, and the first thing missing is the passphrase.
+MATCH="storage.mode\|passphrase is needed" checkz sealed "F1  a zone declaring encrypted storage does not start on a plain directory" 1 /bin/sh -c "echo RAN-ANYWAY"
+if "$K" run capped "${ZFLAGS[@]}" "${IDFLAGS[@]}" --zones "$F/zones" --rootfs "$F/roots" -- /bin/sh -c "echo LIMITS-RAN" 2>&1 | grep -q LIMITS-RAN; then
     pass "F2  [limits] is enforced here: cgroups are creatable and the zone ran"
 else
     zrun capped -- /bin/sh -c "echo LIMITS-RAN"
@@ -223,7 +242,7 @@ print(s.recv(300).decode().strip())'
 
 # G7/G8: the real thing, between two zones running at the same time. `packet`
 # waits and then reports what arrived; `probe` offers a file from its own home.
-"$K" run packet "${ZFLAGS[@]}" --zones "$F/zones" --rootfs "$F/roots" -- /usr/bin/python3 -c "
+"$K" run packet "${ZFLAGS[@]}" "${IDFLAGS[@]}" --zones "$F/zones" --rootfs "$F/roots" -- /usr/bin/python3 -c "
 import os,time
 time.sleep(6)
 d='/home/packet/incoming'
@@ -246,7 +265,7 @@ MATCH="not a regular file" check "G9  a descriptor to a directory is refused" 0 
 MATCH="not on the zone" check "G10 a file from the zone's tmpfs, not its data mount, is refused" 0 /bin/sh -c "echo x > /tmp/f && python3 -c '$TX' packet f /tmp/f 0"
 MATCH="not running" check "G11 a destination that is not running is refused"  0 /bin/sh -c "echo x > /home/probe/f && python3 -c '$TX' packet f /home/probe/f 0"
 ZFLAGS=()
-MATCH="approval" check "G12 without the approval flag every transfer is refused for want of consent" 0 /bin/sh -c "echo x > /home/probe/f && python3 -c '$TX' packet f /home/probe/f 0"
+MATCH="approv\|consent" check "G12 without the approval flag every transfer is refused for want of consent" 0 /bin/sh -c "echo x > /home/probe/f && python3 -c '$TX' packet f /home/probe/f 0"
 MATCH="does not name" check "G13 a destination outside the sender's [transfer] to is refused before consent" 0 /bin/sh -c "echo x > /home/probe/f && python3 -c '$TX' capped f /home/probe/f 0"
 MATCH="single path component" check "G14 a name carrying a path separator is refused at parse time" 0 /bin/sh -c "echo x > /home/probe/f && python3 -c '$TX' packet ../f /home/probe/f 0"
 
@@ -254,11 +273,11 @@ MATCH="single path component" check "G14 a name carrying a path separator is ref
 head_ "H. The zone dies with its launcher"
 
 MARK="kryptik-probe-sleep-$$"
-"$K" run probe --zones "$F/zones" --rootfs "$F/roots" -- /bin/sh -c "exec -a $MARK sleep 300" >/dev/null 2>&1 &
+"$K" run probe "${IDFLAGS[@]}" --zones "$F/zones" --rootfs "$F/roots" -- /bin/sh -c "exec -a $MARK sleep 300" >/dev/null 2>&1 &
 P=$!
 sleep 2; kill -9 "$P" 2>/dev/null; sleep 1
 if pgrep -f "$MARK" >/dev/null; then fail "H1  a zone process outlived a SIGKILLed launcher"; pkill -9 -f "$MARK"; else pass "H1  the zone dies when its launcher is SIGKILLed"; fi
-timeout 2 "$K" run probe --zones "$F/zones" --rootfs "$F/roots" -- /bin/sh -c "exec -a $MARK sleep 300" >/dev/null 2>&1; sleep 1
+timeout 2 "$K" run probe "${IDFLAGS[@]}" --zones "$F/zones" --rootfs "$F/roots" -- /bin/sh -c "exec -a $MARK sleep 300" >/dev/null 2>&1; sleep 1
 if pgrep -f "$MARK" >/dev/null; then fail "H2  a zone process outlived a SIGTERMed launcher"; pkill -9 -f "$MARK"; else pass "H2  the zone dies when its launcher is SIGTERMed"; fi
 
 # ---------------------------------------------------------------------------

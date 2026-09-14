@@ -94,14 +94,15 @@ zrun untrusted 30 -- sh -c "ping -c1 -W2 10.19.0.$PER >/dev/null 2>&1 && echo CR
 [[ "$ZOUT" == *"personal"* ]] && fail "home-hidden" "another zone's home is visible" || pass "home-hidden" "no other zone's home under /home"
 
 # the net zone restarted: routed zones fail closed while it is down, come back when it is up
-before="$(grep -hc 'netzone: READY' /run/uncaught-logs/current 2>/dev/null || echo 0)"
+# grep -c prints its 0 AND exits 1, so "|| echo 0" made this two numbers
+before="$(grep -hc 'netzone: READY' /run/uncaught-logs/current 2>/dev/null)"; before="${before:-0}"
 s6-svc -d /run/service/net-zone; sleep 3
 zrun untrusted 20 -- sh -c 'ping -c1 -W2 10.0.2.2 >/dev/null 2>&1 && echo EGRESS-WHILE-DOWN || echo CLOSED-WHILE-DOWN; ip -o link show eth0 >/dev/null 2>&1 && echo HAS-ETH0 || echo NO-ETH0'
 [[ "$ZOUT" == *CLOSED-WHILE-DOWN* ]] && pass "fail-closed" "no egress while the net zone is down ($(grep -o 'HAS-ETH0\|NO-ETH0' "$LOG/untrusted.out" | head -1))" || fail "fail-closed" "$ZOUT"
 s6-svc -u /run/service/net-zone
 ok=0
 for _ in $(seq 1 60); do
-    after="$(grep -hc 'netzone: READY' /run/uncaught-logs/current 2>/dev/null || echo 0)"
+    after="$(grep -hc 'netzone: READY' /run/uncaught-logs/current 2>/dev/null)"; after="${after:-0}"
     [[ "$after" -gt "$before" ]] && { ok=1; break; }; sleep 1
 done
 [[ "$ok" = 1 ]] && pass "net-restart-ready" "the net zone came back READY after a restart" || fail "net-restart-ready" "no new READY line ($before -> $after)"
@@ -157,9 +158,13 @@ zrun personal 120 --passphrase-file /root/zt/personal.pass -- sh -c 'dd if=/dev/
 [[ "$ZOUT" == *FULL-SURVIVED* && "$ZOUT" == *secret-data-1* ]] && pass "full-volume" "ENOSPC inside the volume; the zone and its data survived" || fail "full-volume" "$(tail -2 "$LOG/personal.err" | tr '\n' ' ')"
 # header backup and restore
 if "$KD" volume backup-header personal /root/zt/personal.hdr > "$LOG/hdr.out" 2>&1; then
-    dd if=/dev/zero of="$R/../volumes/personal.luks" bs=4096 count=4 conv=notrunc status=none
+    # Both LUKS2 headers: the primary at 0 and the secondary at the metadata
+    # size (16 KiB by default). Zeroing only the first 16 KiB left the
+    # secondary intact and cryptsetup opened the volume from it, which is
+    # cryptsetup being good, not the volume being refused.
+    dd if=/dev/zero of="$R/../volumes/personal.luks" bs=4096 count=16 conv=notrunc status=none
     zrun personal 30 --passphrase-file /root/zt/personal.pass -- sh -c 'echo OPENED-DAMAGED'
-    [[ "$ZRC" != 0 ]] && pass "damaged-header-refused" "a volume with a zeroed header does not open" || fail "damaged-header-refused"
+    [[ "$ZRC" != 0 && "$ZOUT" != *OPENED-DAMAGED* ]] && pass "damaged-header-refused" "a volume with both headers zeroed does not open" || fail "damaged-header-refused" "rc=$ZRC"
     if "$KD" volume restore-header personal /root/zt/personal.hdr >> "$LOG/hdr.out" 2>&1; then
         zrun personal 30 --passphrase-file /root/zt/personal.pass -- sh -c 'cat "$HOME/keep"'
         [[ "$ZOUT" == *secret-data-1* ]] && pass "header-restore" "the restored header opens the volume; data intact" || fail "header-restore" "$ZOUT"
@@ -172,10 +177,11 @@ fi
 # the vault: encrypted, offline
 printf 'vault-pass\n' > /root/zt/vault.pass; chmod 600 /root/zt/vault.pass
 "$KD" volume init vault --size 64M --passphrase-file /root/zt/vault.pass > "$LOG/vol-vault.out" 2>&1 || fail "vault-volume" "$(tail -1 "$LOG/vol-vault.out")"
-zrun vault 30 --passphrase-file /root/zt/vault.pass -- sh -c 'ip -o link | grep -vc " lo:"; ping -c1 -W1 10.19.0.1 >/dev/null 2>&1 && echo VAULT-REACHED-BRIDGE || echo VAULT-ISOLATED; echo vault-secret > "$HOME/v" && echo VAULT-WROTE'
-[[ "$ZOUT" == *VAULT-ISOLATED* && "$ZOUT" == *VAULT-WROTE* && "$ZOUT" == *$'\n0'* ]] && pass "vault-offline" "vault has loopback only, no path to the bridge, and keeps data" || fail "vault-offline" "$ZOUT $(tail -1 "$LOG/vault.err")"
-# keys and passphrases: none on any command line or in the registry
-if grep -rqs 'personal-pass\|vault-pass' /run/kryptik /proc/*/cmdline 2>/dev/null; then fail "no-passphrase-leak" "a passphrase appeared in the registry or a command line"; else pass "no-passphrase-leak" "no passphrase in /run/kryptik or any command line"; fi
+zrun vault 30 --passphrase-file /root/zt/vault.pass -- sh -c 'echo LINKS=$(ip -o link | grep -vc " lo:"); ping -c1 -W1 10.19.0.1 >/dev/null 2>&1 && echo VAULT-REACHED-BRIDGE || echo VAULT-ISOLATED; echo vault-secret > "$HOME/v" && echo VAULT-WROTE'
+[[ "$ZOUT" == *VAULT-ISOLATED* && "$ZOUT" == *VAULT-WROTE* && "$ZOUT" == *LINKS=0* ]] && pass "vault-offline" "vault has loopback only, no path to the bridge, and keeps data" || fail "vault-offline" "$(tr '\n' ' ' <<<"$ZOUT") $(tail -1 "$LOG/vault.err")"
+# keys and passphrases: none on any command line or in the registry. The
+# pattern is spelled so that this grep's own command line does not match it.
+if grep -rqs 'personal-pas[s]\|vault-pas[s]' /run/kryptik /proc/*/cmdline 2>/dev/null; then fail "no-passphrase-leak" "a passphrase appeared in the registry or a command line"; else pass "no-passphrase-leak" "no passphrase in /run/kryptik or any command line"; fi
 
 echo "ZT SUMMARY passed=$PASS failed=$FAIL"
 echo "ZT END"

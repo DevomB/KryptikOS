@@ -1292,7 +1292,12 @@ fn zone_init(
     //     landlock::zone_rules - so the read-only mounts are denied write by
     //     two independent mechanisms, which is what "defense in depth" has to
     //     mean if it means anything.
-    if let Err(e) = landlock::confine_pivoted_zone(&home) {
+    //     The nic zone alone also writes the two state mounts pivot_into gave
+    //     it (/run, /var/lib); see landlock::nic_zone_rules. The condition
+    //     is the one pivot_into used: a nic-mode zone that was NOT plumbed
+    //     (unprivileged, nothing moved in) has no such mounts, and a
+    //     required rule on a path that is not there would refuse the zone.
+    if let Err(e) = landlock::confine_pivoted_zone(&home, resolver == rootfs::Resolver::Writable) {
         bail!("landlock: {e}");
     }
     // 11b. The zone's own policy file, as a SECOND layer. Layers intersect,
@@ -1546,6 +1551,14 @@ pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String
         .iter()
         .map(|r| format!("{:<12} {}", r.path, landlock::describe_access(r.access)))
         .collect();
+    if zone.network == crate::zone::NetworkMode::Nic {
+        rules.push("-- and, once it holds the NIC, its own tmpfs for the network stack's state:".to_string());
+        rules.extend(
+            landlock::nic_zone_rules()
+                .iter()
+                .map(|r| format!("{:<12} {}", r.path, landlock::describe_access(r.access))),
+        );
+    }
     if let Some(rel) = &zone.landlock {
         let path = policy::resolve(zones_dir, rel);
         match std::fs::read_to_string(&path)

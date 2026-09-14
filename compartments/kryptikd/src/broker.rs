@@ -440,7 +440,29 @@ fn deliver(target: &Target, name: &str, src: RawFd, cap: u64) -> Result<(String,
         RESOLVE_IN_ROOT | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS,
     )
     .map_err(|e| format!("destination home is not reachable: {e}"))?;
+    // As root, create AS the destination identity. An ephemeral zone's home
+    // is a tmpfs mounted inside the zone's own user namespace, and the
+    // kernel refuses to create an inode there for a uid that namespace does
+    // not map - host root is exactly such a uid, and the first privileged
+    // transfer into an ephemeral zone died on `incoming/` with EOVERFLOW.
+    // The zone identity IS mapped (to 0 inside), so with the filesystem
+    // uid/gid set to it everything lands owned by the destination without a
+    // chown, and the chowns below become no-ops. Restored on every path out;
+    // the broker serves one request at a time, so nothing else is affected.
+    let switched = unsafe { libc::geteuid() } == 0;
+    if switched {
+        unsafe {
+            libc::setfsgid(target.gid);
+            libc::setfsuid(target.uid);
+        }
+    }
     let r = deliver_into(home, target, name, src, cap);
+    if switched {
+        unsafe {
+            libc::setfsuid(0);
+            libc::setfsgid(0);
+        }
+    }
     unsafe { libc::close(home) };
     r
 }
