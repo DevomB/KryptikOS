@@ -77,9 +77,9 @@ pub struct RunOptions {
     /// Development stand-in for the zone 0 prompt: approve every transfer
     /// this zone offers. Prints a warning at launch.
     pub auto_approve_transfers: bool,
-    /// Where an encrypted zone's passphrase comes from: a 0600 file
-    /// (development). The trusted prompt is desktop work; nothing reads a
-    /// passphrase from argv or the environment.
+    /// Where an encrypted zone's passphrase comes from: a 0600 file (tests
+    /// and root at a terminal). Nothing reads a passphrase from argv or the
+    /// environment.
     pub passphrase_file: Option<std::path::PathBuf>,
     /// Or from an inherited descriptor (the launch daemon hands over what
     /// the trusted prompt collected, through SCM_RIGHTS, never argv).
@@ -606,8 +606,9 @@ pub fn run_in_zone(
             (None, Some(fd)) => volume::Passphrase::from_fd(fd).map_err(|e| SpawnError::Setup(e.to_string()))?,
             (None, None) => {
                 return Err(SpawnError::Setup(format!(
-                    "zone {:?} is encrypted: a passphrase is needed (--passphrase-file FILE, a 0600 \
-                     root-owned file; the trusted prompt is desktop work)",
+                    "zone {:?} is encrypted: a passphrase is needed (--passphrase-fd N from the launch \
+                     daemon, which asks in a trusted window; or --passphrase-file FILE, a 0600 \
+                     root-owned file, for tests)",
                     zone.name
                 )))
             }

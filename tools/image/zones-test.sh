@@ -108,7 +108,23 @@ for s in LAUNCHER ADVERSARIAL BOUNDARY CLI; do
     code="$(grep -o "${s}-RC=[0-9]*" <<<"$T3" | tail -1 | cut -d= -f2)"
     if [[ "$code" = 0 ]]; then green "${s,,} suite exit 0"; else red "${s,,} suite exit ${code:-none}"; fi
 done
-grep -q 'LAUNCHER SUITE PASSED$' <<<"$T3" && green "launcher suite passed with no gaps (every [vm] row ran as root)" || { grep -q 'PASSED WITH GAPS' <<<"$T3" && red "launcher suite passed with gaps" || red "launcher suite did not report PASSED"; }
+# The launcher suite's [vm] network group (NETR) moves the physical NIC into
+# a fixture zone; on the installed system the real net zone already holds
+# it, and zones-check.sh above proves routing through that one. So NETR
+# stays a gap here by design, as do POL6 (Landlock policy files are refused,
+# not applied) and LC15/LC16 (unprivileged-only). Any other gap is a failure.
+if grep -q 'LAUNCHER SUITE PASSED$' <<<"$T3"; then
+    green "launcher suite passed with no gaps"
+elif grep -q 'LAUNCHER SUITE PASSED WITH GAPS' <<<"$T3"; then
+    other="$(sed -n '/not run (mandatory gaps/,/^$/p' <<<"$T3" | grep -E '^ *- ' | grep -vE 'NETR|POL6|LC15/LC16')"
+    if [[ -z "$other" ]]; then
+        green "launcher suite passed; its only gaps are the accounted-for ones (NETR: the real net zone is measured by zones-check; POL6: by design; LC15/16: unprivileged-only)"
+    else
+        red "launcher suite passed with unaccounted gaps: $(tr '\n' ' ' <<<"$other")"
+    fi
+else
+    red "launcher suite did not report PASSED"
+fi
 grep -E 'passed, [0-9]+ failed, [0-9]+ not run' <<<"$T3" | tail -1 | sed 's/^/        launcher: /'
 fi
 
