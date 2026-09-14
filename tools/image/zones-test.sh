@@ -132,11 +132,15 @@ fi
 phase "phase 4: reboot; the encrypted zone's data is still there"
 drive 300 "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'kryptikd run personal --zones /usr/lib/kryptik/zones --rootfs /var/lib/kryptik/zones --passphrase-file /root/zt/personal.pass -- cat /home/personal/keep; echo REOPEN-RC=$?')" "expect:secret-data-1" "expect:REOPEN-RC=0" \
-    "$(ROOTSH 'ls /dev/mapper; echo MAPPER-DONE')" "expect:MAPPER-DONE" \
+    "$(ROOTSH 'ls /dev/mapper | sed s/^/MAPPER:/; echo MAPPER-DONE')" "expect:MAPPER-DONE" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "after a reboot the LUKS2 volume opens with its passphrase and the data is there" || red "phase 4 drive failed"
-txt | grep -q 'kryptik-personal' && red "a mapping was left open after the reboot check" || green "no mapping left after the zone exited"
+# Only the mapper listing the guest printed just before MAPPER-DONE counts:
+# the name kryptik-personal appears legitimately many times earlier in the
+# same transcript (the guest checks open and close that volume), so a grep
+# over the whole session reported a leak that the listing itself refutes.
+if txt | tr -d '\r' | sed -n '/^Password: */,/MAPPER-DONE/p' | grep -q 'kryptik-personal'; then red "a mapping was left open after the reboot check"; else green "no mapping left after the zone exited"; fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 echo "Guest logs: /var/log/kryptik/zones-check.log and the suite logs on the disk ${DISK}; serial transcript ${LOG}"
