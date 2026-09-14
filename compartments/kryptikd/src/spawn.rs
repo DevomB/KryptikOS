@@ -563,12 +563,23 @@ pub fn run_in_zone(
         // cryptsetup, so it stays refused: running such a zone on a plain
         // directory while its file says "encrypted" is the failure this
         // project exists to avoid.
-        StorageMode::Encrypted if unsafe { libc::geteuid() } != 0 => unsupported.push(
-            "storage.mode = \"encrypted\": a LUKS2 volume needs a root launch (cryptsetup, \
-             dm-crypt and loop devices); unprivileged, the zone would run on a PLAIN \
-             DIRECTORY while its configuration says otherwise"
-                .into(),
-        ),
+        //
+        // Refused outright, not listed as an unimplemented guarantee that
+        // KRYPTIK_EXPERIMENTAL may waive: the override exists for guarantees
+        // this build does not provide, and encryption is provided - by a root
+        // launch. Waiving it here would start the zone on a plain directory,
+        // which the launcher suite (F3) and the cli suite (C1) both refuse to
+        // accept, and which the first CI run after the volumes landed did.
+        StorageMode::Encrypted if unsafe { libc::geteuid() } != 0 => {
+            return Err(SpawnError::Setup(format!(
+                "zone {:?} is encrypted: its LUKS2 volume is opened by a root launch with the \
+                 passphrase from the trusted prompt (kryptik-launch) or --passphrase-file; an \
+                 unprivileged launch cannot open it (cryptsetup, dm-crypt, loop devices) and \
+                 will not run the zone on a plain directory instead. KRYPTIK_EXPERIMENTAL does \
+                 not change this.",
+                zone.name
+            )));
+        }
         StorageMode::Encrypted => {}
         // Ephemeral is implemented (M2): the zone's home is a per-launch
         // tmpfs in its own mount namespace, and the persistent directory is
