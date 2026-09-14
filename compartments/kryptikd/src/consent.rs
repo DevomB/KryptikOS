@@ -22,17 +22,34 @@
 //! directory as a refusal. `--auto-approve-transfers` (development) bypasses
 //! this and says so at launch.
 //!
+//! Whether anyone is there to ask is a lock, not a guess: the chrome's
+//! watcher holds `watcher.lock` in that directory exclusively for as long
+//! as it runs, and a broker that can take the lock shared knows nobody is
+//! watching and refuses at once. Without that, a transfer offered while no
+//! desktop session is up waited the whole minute for a window that could
+//! never open - the boundary suite measured exactly that (G12, rc 124).
+//!
 //! Tests point the directory and the timeout elsewhere through the
 //! environment; nothing else reads those variables.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 pub const DIR: &str = "/run/kryptik-consent";
 pub const TIMEOUT_SECS: u64 = 60;
+/// Held exclusively by the chrome's consent watcher while it runs.
+pub const WATCHER_LOCK: &str = "watcher.lock";
 
 static COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// The tests here and the broker's set the environment this module reads,
+/// and a process has one environment: they take turns on this. (The full
+/// suite runs tests in parallel; without it a consent test could read the
+/// broker test's "/nonexistent" channel and fail for a reason that is not
+/// in the code under test.)
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn dir() -> PathBuf {
     std::env::var("KRYPTIK_CONSENT_DIR").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(DIR))
@@ -46,12 +63,31 @@ fn timeout() -> Duration {
         .unwrap_or(Duration::from_secs(TIMEOUT_SECS))
 }
 
+/// Is something in zone 0 watching the channel? True only when the watcher
+/// lock exists and is held exclusively by someone else; a lock that can be
+/// taken shared, or no lock file at all, means nothing would ever answer.
+fn watched(d: &Path) -> bool {
+    use std::os::unix::io::AsRawFd;
+    let Ok(f) = std::fs::File::open(d.join(WATCHER_LOCK)) else { return false };
+    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } == 0 {
+        return false;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EWOULDBLOCK)
+}
+
 /// Ask, and wait for the answer. `Ok(())` only on an explicit `yes`.
 pub fn ask(from: &str, to: &str, name: &str, bytes: u64) -> Result<(), String> {
     let d = dir();
     if !d.is_dir() {
         return Err(format!(
             "no consent channel at {}: nothing in zone 0 can approve this transfer",
+            d.display()
+        ));
+    }
+    if !watched(&d) {
+        return Err(format!(
+            "no consent channel: nothing in zone 0 is watching {} (no trusted window to ask); \
+             refused for want of consent",
             d.display()
         ));
     }
@@ -95,7 +131,22 @@ mod tests {
     }
 
     /// The tests share the process environment, so they run one at a time.
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Stand in for the chrome's watcher: hold the lock for as long as the
+    /// returned file lives. A flock travels with the open file into any
+    /// child forked while it is held, and tests elsewhere in this binary
+    /// fork helpers that outlive them - so no test here relies on the lock
+    /// being RELEASED while this process runs: the "nobody watching" cases
+    /// come before the lock is ever taken.
+    fn hold_watch(d: &std::path::Path) -> std::fs::File {
+        use std::os::unix::io::AsRawFd;
+        let f = std::fs::File::create(d.join(WATCHER_LOCK)).unwrap();
+        assert_eq!(unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+        f
+    }
 
     fn answer_when_asked(d: &std::path::Path, reply: &'static str) -> std::thread::JoinHandle<String> {
         let d = d.to_path_buf();
@@ -116,10 +167,11 @@ mod tests {
 
     #[test]
     fn yes_approves_no_refuses_and_the_question_names_everything() {
-        let _g = LOCK.lock().unwrap();
+        let _g = env_lock();
         with_dir(|d| {
             std::env::set_var("KRYPTIK_CONSENT_DIR", d);
             std::env::set_var("KRYPTIK_CONSENT_TIMEOUT", "5");
+            let _w = hold_watch(d);
             let h = answer_when_asked(d, "yes\n");
             assert!(ask("dev", "work", "report.pdf", 4096).is_ok());
             let q = h.join().unwrap();
@@ -132,19 +184,37 @@ mod tests {
             let e = ask("dev", "work", "x", 1).unwrap_err();
             h.join().unwrap();
             assert!(e.contains("malformed"), "{e}");
-            assert!(std::fs::read_dir(d).unwrap().count() == 0, "question and answer are cleaned up");
+            let left: Vec<_> = std::fs::read_dir(d).unwrap().flatten().map(|e| e.file_name()).collect();
+            assert_eq!(left, vec![std::ffi::OsString::from(WATCHER_LOCK)], "question and answer are cleaned up");
         });
     }
 
     #[test]
     fn silence_and_a_missing_channel_refuse() {
-        let _g = LOCK.lock().unwrap();
+        let _g = env_lock();
         with_dir(|d| {
             std::env::set_var("KRYPTIK_CONSENT_DIR", d);
             std::env::set_var("KRYPTIK_CONSENT_TIMEOUT", "1");
+            // Nobody watching: refused at once, with no question left behind
+            // for a window that will never open - first with no lock file at
+            // all, then with one nothing holds (a watcher that went away).
+            for lock_file in [false, true] {
+                if lock_file {
+                    std::fs::File::create(d.join(WATCHER_LOCK)).unwrap();
+                }
+                let t = Instant::now();
+                let e = ask("dev", "work", "x", 1).unwrap_err();
+                assert!(e.contains("no consent channel") && e.contains("watching"), "{e}");
+                assert!(t.elapsed() < Duration::from_millis(500), "refused without waiting for the deadline");
+                let placed = std::fs::read_dir(d).unwrap().flatten().filter(|e| e.file_name() != WATCHER_LOCK).count();
+                assert_eq!(placed, 0, "no question was placed");
+            }
+            // Someone watching, nobody answering: the deadline, then a refusal.
+            let _w = hold_watch(d);
             let e = ask("dev", "work", "x", 1).unwrap_err();
             assert!(e.contains("no answer"), "{e}");
-            assert!(std::fs::read_dir(d).unwrap().count() == 0, "the unanswered question is withdrawn");
+            let left: Vec<_> = std::fs::read_dir(d).unwrap().flatten().map(|e| e.file_name()).collect();
+            assert_eq!(left, vec![std::ffi::OsString::from(WATCHER_LOCK)], "the unanswered question is withdrawn");
             std::env::set_var("KRYPTIK_CONSENT_DIR", d.join("absent"));
             let e = ask("dev", "work", "x", 1).unwrap_err();
             assert!(e.contains("no consent channel"), "{e}");

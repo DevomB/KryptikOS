@@ -58,7 +58,7 @@ if ping -c1 -W2 10.0.2.2 >/dev/null 2>&1; then fail "zone0-offline" "zone 0 reac
 
 # --- G6: a routed zone reaches the world through net; vault reaches nothing --
 UNT=$(host_of untrusted); PER=$(host_of personal)
-zrun untrusted 40 -- sh -c 'ip -4 -o addr show eth0; ping -c1 -W3 10.19.0.1 >/dev/null 2>&1 && echo BRIDGE-OK; ping -c1 -W3 10.0.2.2 >/dev/null 2>&1 && echo GATEWAY-OK; ip -6 -o addr show eth0 | grep -q " fd19:" && echo ULA-OK; ip -6 -o addr show eth0 | grep -qE " (2|3)[0-9a-f]{3}:" && echo GLOBAL6-PRESENT; ping -6 -c1 -W3 fd19::1 >/dev/null 2>&1 && echo BRIDGE6-OK; python3 - <<"PY"
+zrun untrusted 40 -- sh -c 'ip -4 -o addr show eth0; python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.19.0.1 3 >/dev/null 2>&1 && echo BRIDGE-OK; python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.0.2.2 3 >/dev/null 2>&1 && echo GATEWAY-OK; ip -6 -o addr show eth0 | grep -q " fd19:" && echo ULA-OK; ip -6 -o addr show eth0 | grep -qE " (2|3)[0-9a-f]{3}:" && echo GLOBAL6-PRESENT; python3 /usr/lib/kryptik/guest-tests/icmp-echo.py fd19::1 3 >/dev/null 2>&1 && echo BRIDGE6-OK; python3 - <<"PY"
 import socket, struct
 q = struct.pack(">HHHHHH", 0x1234, 0x0100, 1, 0, 0, 0) + b"\x07kryptik\x04test\x00" + struct.pack(">HH", 1, 1)
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(4)
@@ -88,7 +88,7 @@ PBG=$!
 for _ in $(seq 1 60); do grep -q PERSONAL-UP "$LOG/personal-bg.out" 2>/dev/null && break; sleep 0.5; done
 grep -q PERSONAL-UP "$LOG/personal-bg.out" && pass "encrypted-zone-start" "personal up on its LUKS2 volume" || fail "encrypted-zone-start" "$(tail -3 "$LOG/personal-bg.out" | tr '\n' ' ')"
 [[ -e /dev/mapper/kryptik-personal ]] && pass "mapping-while-running" "/dev/mapper/kryptik-personal exists while the zone runs" || fail "mapping-while-running"
-zrun untrusted 30 -- sh -c "ping -c1 -W2 10.19.0.$PER >/dev/null 2>&1 && echo CROSS-ZONE-REACHED || echo CROSS-ZONE-BLOCKED; ls /var/lib/kryptik/volumes 2>&1 | head -1; ls /home 2>&1 | tr '\n' ' '"
+zrun untrusted 30 -- sh -c "python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.19.0.$PER 2 >/dev/null 2>&1 && echo CROSS-ZONE-REACHED || echo CROSS-ZONE-BLOCKED; ls /var/lib/kryptik/volumes 2>&1 | head -1; ls /home 2>&1 | tr '\n' ' '"
 [[ "$ZOUT" == *CROSS-ZONE-BLOCKED* ]] && pass "zone-separation" "untrusted cannot reach personal (10.19.0.$PER) on the bridge" || fail "zone-separation" "$ZOUT"
 [[ "$ZOUT" == *"volumes"* && "$ZOUT" != *"No such"* ]] && fail "volume-hidden" "the volume directory is visible from untrusted" || pass "volume-hidden" "no /var/lib/kryptik/volumes inside untrusted"
 [[ "$ZOUT" == *"personal"* ]] && fail "home-hidden" "another zone's home is visible" || pass "home-hidden" "no other zone's home under /home"
@@ -97,7 +97,7 @@ zrun untrusted 30 -- sh -c "ping -c1 -W2 10.19.0.$PER >/dev/null 2>&1 && echo CR
 # grep -c prints its 0 AND exits 1, so "|| echo 0" made this two numbers
 before="$(grep -hc 'netzone: READY' /run/uncaught-logs/current 2>/dev/null)"; before="${before:-0}"
 s6-svc -d /run/service/net-zone; sleep 3
-zrun untrusted 20 -- sh -c 'ping -c1 -W2 10.0.2.2 >/dev/null 2>&1 && echo EGRESS-WHILE-DOWN || echo CLOSED-WHILE-DOWN; ip -o link show eth0 >/dev/null 2>&1 && echo HAS-ETH0 || echo NO-ETH0'
+zrun untrusted 20 -- sh -c 'python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.0.2.2 2 >/dev/null 2>&1 && echo EGRESS-WHILE-DOWN || echo CLOSED-WHILE-DOWN; ip -o link show eth0 >/dev/null 2>&1 && echo HAS-ETH0 || echo NO-ETH0'
 [[ "$ZOUT" == *CLOSED-WHILE-DOWN* ]] && pass "fail-closed" "no egress while the net zone is down ($(grep -o 'HAS-ETH0\|NO-ETH0' "$LOG/untrusted.out" | head -1))" || fail "fail-closed" "$ZOUT"
 s6-svc -u /run/service/net-zone
 ok=0
@@ -107,18 +107,38 @@ for _ in $(seq 1 60); do
 done
 [[ "$ok" = 1 ]] && pass "net-restart-ready" "the net zone came back READY after a restart" || fail "net-restart-ready" "no new READY line ($before -> $after)"
 sleep 2
-zrun untrusted 30 -- sh -c 'ping -c1 -W3 10.0.2.2 >/dev/null 2>&1 && echo GATEWAY-OK || echo GATEWAY-FAIL'
+zrun untrusted 30 -- sh -c 'python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.0.2.2 3 >/dev/null 2>&1 && echo GATEWAY-OK || echo GATEWAY-FAIL'
 [[ "$ZOUT" == *GATEWAY-OK* ]] && pass "egress-after-restart" "a zone started after the restart has egress" || fail "egress-after-restart" "$ZOUT"
 # the running zone was reattached
 ppid="$(cat /run/kryptik/zones/personal/init.pid 2>/dev/null | cut -d' ' -f1)"
 if [[ -n "$ppid" ]] && nsenter -t "$ppid" -n ping -c1 -W3 10.0.2.2 >/dev/null 2>&1; then pass "reattach-after-restart" "the zone that was running has egress again"; else fail "reattach-after-restart" "personal (init $ppid) has no egress after the net restart"; fi
 
 # --- G6: resource limits and lifecycle ------------------------------------------
-zrun untrusted 60 -- sh -c 'n=0; for i in $(seq 1 3000); do sleep 300 & n=$((n+1)); done 2>/dev/null; sleep 1; echo FORKED=$(ps 2>/dev/null | wc -l); kill $(jobs -p) 2>/dev/null; echo LIMIT-SURVIVED'
+# The storm is python, not the shell: bash answers a failed fork with four
+# retries and sleeps that add up to fifteen seconds, so a shell loop that
+# runs into pids.max never reaches its own end inside the timeout (the first
+# run on installed media timed out here). python's fork raises at once, the
+# loop stops at the limit, and the zone - pid 1 of its namespace - exits and
+# takes the sleepers with it.
+STORM='import os, time
+n = 0
+for i in range(3000):
+    try:
+        p = os.fork()
+    except BlockingIOError:
+        break
+    if p == 0:
+        time.sleep(300); os._exit(0)
+    n += 1
+print("FORKED=%d" % n)
+print("LIMIT-SURVIVED")'
+zrun untrusted 60 -- /usr/bin/python3 -c "$STORM"
 if [[ "$ZOUT" == *LIMIT-SURVIVED* ]]; then
     forked="$(grep -o 'FORKED=[0-9]*' "$LOG/untrusted.out" | cut -d= -f2)"
     limit="$(sed -n 's/^pids_max *= *\([0-9]*\).*/\1/p' "$Z/untrusted.toml")"
-    [[ -n "$forked" && "$forked" -le "${limit:-1024}" ]] && pass "pids-limit" "bounded at pids_max=$limit (saw $forked processes), zone survived" || fail "pids-limit" "forked=$forked limit=$limit"
+    # Under the limit, and near it: a storm the limit never touched would
+    # have forked all 3000, and one that failed early proves nothing.
+    [[ -n "$forked" && "$forked" -le "${limit:-1024}" && "$forked" -ge $(( ${limit:-1024} / 2 )) ]] && pass "pids-limit" "bounded at pids_max=$limit (forked $forked before EAGAIN), zone survived" || fail "pids-limit" "forked=$forked limit=$limit"
 else
     fail "pids-limit" "the zone did not survive the fork storm: $(tail -2 "$LOG/untrusted.err" | tr '\n' ' ')"
 fi
@@ -177,7 +197,7 @@ fi
 # the vault: encrypted, offline
 printf 'vault-pass\n' > /root/zt/vault.pass; chmod 600 /root/zt/vault.pass
 "$KD" volume init vault --size 64M --passphrase-file /root/zt/vault.pass > "$LOG/vol-vault.out" 2>&1 || fail "vault-volume" "$(tail -1 "$LOG/vol-vault.out")"
-zrun vault 30 --passphrase-file /root/zt/vault.pass -- sh -c 'echo LINKS=$(ip -o link | grep -vc " lo:"); ping -c1 -W1 10.19.0.1 >/dev/null 2>&1 && echo VAULT-REACHED-BRIDGE || echo VAULT-ISOLATED; echo vault-secret > "$HOME/v" && echo VAULT-WROTE'
+zrun vault 30 --passphrase-file /root/zt/vault.pass -- sh -c 'echo LINKS=$(ip -o link | grep -vc " lo:"); python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.19.0.1 1 >/dev/null 2>&1 && echo VAULT-REACHED-BRIDGE || echo VAULT-ISOLATED; echo vault-secret > "$HOME/v" && echo VAULT-WROTE'
 [[ "$ZOUT" == *VAULT-ISOLATED* && "$ZOUT" == *VAULT-WROTE* && "$ZOUT" == *LINKS=0* ]] && pass "vault-offline" "vault has loopback only, no path to the bridge, and keeps data" || fail "vault-offline" "$(tr '\n' ' ' <<<"$ZOUT") $(tail -1 "$LOG/vault.err")"
 # keys and passphrases: none on any command line or in the registry. The
 # pattern is spelled so that this grep's own command line does not match it.

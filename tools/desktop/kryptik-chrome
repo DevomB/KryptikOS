@@ -59,14 +59,24 @@ run_status() {
     # The consent watcher: every question the broker leaves gets one
     # trusted window, and the answer is that window's alone. A question
     # nobody answers is withdrawn by the broker after its deadline.
+    #
+    # The lock is how the broker knows someone is here to ask: held
+    # exclusively for as long as this watcher runs (kryptikd consent.rs
+    # takes it shared to test for us, and refuses a transfer at once when
+    # it can). Released by the kernel when this subshell dies, however it
+    # dies, so a session that ended leaves no promise behind. The confirm
+    # windows do not inherit it: a lingering question must not look like a
+    # watcher. One watcher per channel: a second session's exits quietly.
     (
+        exec 9> "$CONSENT/watcher.lock" 2>/dev/null || exit 0
+        flock -n 9 || exit 0
         while :; do
             for ask in "$CONSENT"/*.ask; do
                 [ -e "$ask" ] || continue
                 id="${ask##*/}"; id="${id%.ask}"
                 [ -e "$CONSENT/$id.dialog" ] && continue
                 : > "$CONSENT/$id.dialog" 2>/dev/null || continue
-                "$TERMINAL" -e /usr/bin/kryptik-chrome --confirm "$id" &
+                "$TERMINAL" -e /usr/bin/kryptik-chrome --confirm "$id" 9>&- &
             done
             for d in "$CONSENT"/*.dialog; do
                 [ -e "$d" ] || continue
