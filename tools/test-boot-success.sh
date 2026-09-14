@@ -17,7 +17,6 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$ROOT/build/service-scripts/boot-success.sh"
-DEVICES="$ROOT/build/service-scripts/devices.sh"
 PASS=0; FAIL=0
 ok()   { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
 bad()  { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
@@ -82,7 +81,7 @@ exit 0
 EOF
 chmod +x "$T"/bin/*
 
-run_case() {   # run_case NAME slot media state trial-content services... ; sets OUT, RESULT
+run_case() {   # run_case NAME slot media state trial-content services... ; sets RESULT (the script's output is discarded: the cases read what it wrote)
     local name="$1" slot="$2" media="$3" state="$4" trial="$5"; shift 5
     export KTEST="$T/case-$name"; rm -rf "$KTEST"; mkdir -p "$KTEST/svc" "$KTEST/run" "$KTEST/boot" "$KTEST/esp/EFI/BOOT" "$KTEST/esp/EFI/kryptik" "$KTEST/esp/kryptik"
     printf 'slot=%s\nmedia=%s\nstate=%s\n' "$slot" "$media" "$state" > "$KTEST/run/boot-identity"
@@ -96,7 +95,7 @@ run_case() {   # run_case NAME slot media state trial-content services... ; sets
     printf '1.0\n' > "$KTEST/esp/kryptik/version-a"; printf '2.0\n' > "$KTEST/esp/kryptik/version-b"
 }
 go() {   # go: run the script for the current case
-    OUT="$(PATH="$T/bin:$PATH" KRYPTIK_RUN="$KTEST/run" KRYPTIK_BOOT_STATE="$KTEST/boot" KRYPTIK_SERVICE_DIR="$KTEST/svc" \
+    _="$(PATH="$T/bin:$PATH" KRYPTIK_RUN="$KTEST/run" KRYPTIK_BOOT_STATE="$KTEST/boot" KRYPTIK_SERVICE_DIR="$KTEST/svc" \
            KRYPTIK_ZONES="$KTEST/zones" KRYPTIK_DEVICES="$T/devices.sh" sh "$SCRIPT" 2>&1)"
     RESULT="$(cut -d' ' -f1-2 "$KTEST/boot/last-result" 2>/dev/null | sed 's/ *$//')"
     CALLS="$(cat "$KTEST/calls" 2>/dev/null | tr '\n' ' ')"
@@ -141,7 +140,7 @@ check "trial with two kryptik-esp candidates: not committed (no guessing)" "${RE
 run_case noreboot b "" persistent 'b\narmed=1\n' eudev; go
 check "KRYPTIK_NO_REBOOT is not set by default: the unhealthy trial rebooted" "$(grep -c reboot "$KTEST/calls")" "1"
 run_case noreboot2 b "" persistent 'b\narmed=1\n' eudev
-OUT="$(PATH="$T/bin:$PATH" KRYPTIK_NO_REBOOT=1 KRYPTIK_RUN="$KTEST/run" KRYPTIK_BOOT_STATE="$KTEST/boot" KRYPTIK_SERVICE_DIR="$KTEST/svc" KRYPTIK_ZONES="$KTEST/zones" KRYPTIK_DEVICES="$T/devices.sh" sh "$SCRIPT" 2>&1)"
+_="$(PATH="$T/bin:$PATH" KRYPTIK_NO_REBOOT=1 KRYPTIK_RUN="$KTEST/run" KRYPTIK_BOOT_STATE="$KTEST/boot" KRYPTIK_SERVICE_DIR="$KTEST/svc" KRYPTIK_ZONES="$KTEST/zones" KRYPTIK_DEVICES="$T/devices.sh" sh "$SCRIPT" 2>&1)"
 check "KRYPTIK_NO_REBOOT=1 records without rebooting" "$(grep -c reboot "$KTEST/calls" 2>/dev/null || echo 0)" "0"
 
 echo "-- a trial that did not boot"
