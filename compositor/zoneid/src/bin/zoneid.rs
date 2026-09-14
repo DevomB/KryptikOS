@@ -13,7 +13,7 @@
 //!   2  usage error
 //!   3  could not read or parse the zone files
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use zoneid::color::Srgb;
