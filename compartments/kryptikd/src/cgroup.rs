@@ -201,7 +201,25 @@ const STALE_AFTER: Duration = Duration::from_secs(5);
 /// us from a mistake rather than not making it.
 fn sweep_stale(base: &Path) {
     for p in abandoned_leaves(base) {
-        let _ = fs::remove_dir(&p);
+        // A leaf whose last task is still on its way out returns EBUSY for
+        // a moment; a few tries cover that. What still cannot be removed is
+        // named, with the reason, rather than left to be found by a count.
+        let mut last = None;
+        for _ in 0..5 {
+            match fs::remove_dir(&p) {
+                Ok(()) => {
+                    last = None;
+                    break;
+                }
+                Err(e) => {
+                    last = Some(e);
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
+        if let Some(e) = last {
+            eprintln!("kryptikd: note: could not sweep the abandoned cgroup {}: {e}", p.display());
+        }
     }
 }
 
