@@ -127,7 +127,7 @@ T3="$(txt_latest)"
 # The kernel's banner is KERN_NOTICE and loglevel=4 keeps it off the console;
 # a boot that panics before userspace prints no smoke report either. Its own
 # timestamped console lines are the proof it started.
-grep -qE '^[ *[0-9]+.[0-9]+] |Linux version' <<<"$T3" && green "the (untampered) kernel still starts" || red "the kernel did not start after the root tamper"
+grep -qE '^\[ *[0-9]+\.[0-9]+\] |Linux version' <<<"$T3" && green "the (untampered) kernel still starts" || red "the kernel did not start after the root tamper"
 # The kernel's own message, not the command line's "panic_on_corruption".
 grep -qE 'device-mapper: verity:.*(corrupt|mismatch|error)|dm-verity device corrupted' <<<"$T3" && green "dm-verity named the corruption" || red "no dm-verity corruption report"
 grep -q 'Kernel panic' <<<"$T3" && green "the kernel panicked on the verity failure (panic_on_corruption)" || red "no panic on a corrupted root"
