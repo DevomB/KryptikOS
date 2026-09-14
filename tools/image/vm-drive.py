@@ -150,8 +150,25 @@ class Drive:
         self.send(f"su - root -c '{cmd}; echo {tag}=$?'")
         self.expect(r"Password: ?", 60)
         self.send(password)
-        m = self.expect(rf"{tag}=(\d+)|Power down|reboot: Restarting|Restarting system", self.timeout)
-        return m
+        # Wait for the exit marker, but keep what the command printed: the
+        # steps that follow expect lines of that output ("running slot: a",
+        # "ZT END"), and a plain expect() would have consumed them with the
+        # marker. Only the marker itself is dropped; a shutdown message that
+        # matched instead stays for the driver's own expect of it.
+        rx = re.compile(rf"{tag}=(\d+)|Power down|reboot: Restarting|Restarting system".encode(), re.M)
+        deadline = time.time() + self.timeout
+        while True:
+            m = rx.search(self.buf)
+            if m:
+                if m.group(1) is not None:
+                    self.buf = self.buf[:m.start()] + self.buf[m.end():]
+                return m
+            if self.closed:
+                raise RuntimeError(f"serial closed while waiting for the end of: {cmd}")
+            if time.time() > deadline:
+                tail = self.buf[-600:].decode("utf-8", "replace")
+                raise RuntimeError(f"timeout ({self.timeout}s) waiting for the end of: {cmd}; last output:\n{tail}")
+            self._read()
 
 def qmp(path, cmd, args=None):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
