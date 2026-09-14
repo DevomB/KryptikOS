@@ -104,9 +104,14 @@ else
 fi
 
 # The build is disk- and memory-hungry.
-avail_gb=$(df -BG --output=avail "$KRYPTIK_ROOT" 2>/dev/null | tail -1 | tr -dc '0-9' || echo 0)
+# The space that matters is where the build writes: KRYPTIK_WORK when it is
+# set (a CI runner keeps it on its large second disk while the checkout
+# sits on a small root disk), else the tree's default under the checkout.
+space_dir="${KRYPTIK_WORK:-$KRYPTIK_ROOT/build/work}"
+mkdir -p "$space_dir" 2>/dev/null || space_dir="$KRYPTIK_ROOT"
+avail_gb=$(df -BG --output=avail "$space_dir" 2>/dev/null | tail -1 | tr -dc '0-9' || echo 0)
 if [[ "${avail_gb:-0}" -ge 60 ]]; then
-    ok "disk space: ${avail_gb}G available"
+    ok "disk space: ${avail_gb}G available at ${space_dir}"
 elif [[ "${avail_gb:-0}" -ge 30 ]]; then
     warn "disk space: ${avail_gb}G — tight; 60G+ recommended"; WARN=$((WARN + 1))
 else
