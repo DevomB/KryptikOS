@@ -198,7 +198,11 @@ jobs:
         run: |
           cd /mnt/kryptik
           sudo rm -rf work/build work/vm
-          sudo tar --zstd -cf work-after-media.tar.zst -C work --exclude='images/kryptik-root.img' --exclude='images/esp-*.img' .
+          # Never the private halves of the keys: the acceptance job needs the
+          # certificate, its DER form and the variable stores, nothing that
+          # signs. An artifact of a public repository is public.
+          sudo tar --zstd -cf work-after-media.tar.zst -C work --exclude='images/kryptik-root.img' --exclude='images/esp-*.img' --exclude='keys/sb/kryptik-sb.key' --exclude='keys/release/kryptik-release' .
+          if sudo tar --zstd -tf work-after-media.tar.zst | grep -E 'kryptik-sb\.key$|keys/release/kryptik-release$'; then echo "a private key is in the artifact"; exit 1; fi
           sudo chown "$(id -u):$(id -g)" work-after-media.tar.zst
           ls -la work-after-media.tar.zst; df -h /mnt | tail -1
 
@@ -271,6 +275,8 @@ jobs:
           ls work/images; df -h /mnt | tail -1
 
       - name: make acceptance
+        id: acceptance
+        continue-on-error: true
         run: |
           mkdir -p /mnt/kryptik/export
           make acceptance EXPORT=/mnt/kryptik/export
@@ -291,14 +297,21 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
-      # The export exists only when the run made one; what it holds is what
-      # was tested, re-hashed, with the instructions and the trust anchor.
+      # Only a run in which every gate passed publishes images: the driver
+      # writes an export for a failed run too (its RELEASE.txt says FAIL), and
+      # the first version of this job uploaded that under the release name.
       - name: Tested images
-        if: always()
+        if: steps.acceptance.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: kryptik-release
           path: /mnt/kryptik/export
           retention-days: 14
-          if-no-files-found: ignore
+          if-no-files-found: error
           compression-level: 1
+
+      - name: The verdict is the job's
+        if: steps.acceptance.outcome != 'success'
+        run: |
+          echo "make acceptance did not pass; see the acceptance-report artifact"
+          exit 1

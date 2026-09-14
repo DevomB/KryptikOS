@@ -74,7 +74,7 @@ mount_esp() {
     mountpoint -q "$ESP_MNT" || mount -o rw,nosuid,nodev,noexec "$dev" "$ESP_MNT" || die "cannot mount the ESP"
 }
 umount_esp() { mountpoint -q "$ESP_MNT" 2>/dev/null && { sync; umount "$ESP_MNT"; } || true; }
-trap umount_esp EXIT
+trap 'umount_esp; [ -n "${SNAP:-}" ] && rm -rf -- "$SNAP"' EXIT
 
 cmd_status() {
     slot="$(running_slot)"; echo "running slot:     ${slot:-unknown} (version $(running_version))"
@@ -94,9 +94,20 @@ cmd_status() {
 # --- verification, all of it before any write ------------------------------
 verify_payload() {   # verify_payload DIR RECOVERY -> sets VERSION ROOT_HASH
     dir="$1"; recovery="$2"
-    m="$dir/manifest"; sig="$dir/manifest.sig"
-    [ -f "$m" ] || die "no manifest in $dir"
-    [ -f "$sig" ] || die "no manifest.sig in $dir: an unsigned manifest verifies nothing"
+    [ -f "$dir/manifest" ] || die "no manifest in $dir"
+    [ -f "$dir/manifest.sig" ] || die "no manifest.sig in $dir: an unsigned manifest verifies nothing"
+    # The manifest and its signature are read ONCE, into a directory only
+    # root can reach, and everything below - the signature check, the
+    # headers, the hash list the slot is verified against after the write -
+    # reads that copy. The payload directory is mutable and may be someone
+    # else's: verifying the file in place and then re-reading it for the
+    # version and the hashes left a window in which a replaced, unsigned
+    # manifest was accepted (reproduced with the real verifier).
+    SNAP="${SNAP:-$(mktemp -d /run/kryptik/update-manifest.XXXXXX 2>/dev/null || mktemp -d)}"
+    chmod 0700 "$SNAP"
+    cp -- "$dir/manifest" "$SNAP/manifest" || die "cannot copy the manifest"
+    cp -- "$dir/manifest.sig" "$SNAP/manifest.sig" || die "cannot copy the manifest signature"
+    m="$SNAP/manifest"; sig="$SNAP/manifest.sig"
     [ -f "$SIGNERS" ] || die "no trust anchor at $SIGNERS in this image"
     [ "$(head -1 "$m")" = "$MAGIC" ] || die "manifest is not a $MAGIC"
 
