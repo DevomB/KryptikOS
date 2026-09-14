@@ -143,11 +143,13 @@ drive 300 "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "after a reboot the LUKS2 volume opens with its passphrase and the data is there" || red "phase 4 drive failed"
-# Only the mapper listing the guest printed just before MAPPER-DONE counts:
-# the name kryptik-personal appears legitimately many times earlier in the
-# same transcript (the guest checks open and close that volume), so a grep
-# over the whole session reported a leak that the listing itself refutes.
-if txt | tr -d '\r' | sed -n '/^Password: */,/MAPPER-DONE/p' | grep -q 'kryptik-personal'; then red "a mapping was left open after the reboot check"; else green "no mapping left after the zone exited"; fi
+# Only the mapper listing the guest printed counts, and it is tagged for
+# that: the name kryptik-personal appears legitimately many times earlier
+# in the same transcript (the guest checks open and close that volume), so
+# a grep over the whole session reported a leak the listing itself refuted;
+# a range from the transcript's first "Password:" line did the same, since
+# that line is phase 2's. The listing on 8333d751 read "MAPPER:control".
+if txt | grep -q '^MAPPER:kryptik-personal'; then red "a mapping was left open after the reboot check"; else green "no mapping left after the zone exited"; fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 echo "Guest logs: /var/log/kryptik/zones-check.log and the suite logs on the disk ${DISK}; serial transcript ${LOG}"
