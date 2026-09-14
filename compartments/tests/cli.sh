@@ -141,18 +141,20 @@ else
     info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
 fi
 
-# --- a guarantee this build cannot deliver is refused, with no way past it ---
-# The check that matters most. A zone declaring encrypted storage would run on
-# a plain directory, so kryptikd refuses it. This command must not offer any
-# flag that turns that refusal into a warning: "encrypted, except not really"
-# is the one claim that must never reach a user.
+# --- an encrypted zone needs its passphrase; there is no way to skip that ----
+# The check that matters most. An encrypted zone lives on a LUKS2 volume and
+# starts only with its passphrase (on a descriptor from the launch daemon, or
+# a root-owned file). Without one it must be refused and the command must
+# never run; this command must not offer any flag that turns that into a
+# plain directory: "encrypted, except not really" is the one claim that must
+# never reach a user.
 out="$(K run sealed -- /bin/sh -c 'echo CLI_STARTED' 2>&1)"; rc=$?
 if [[ "$out" == *CLI_STARTED* ]]; then
-    fail "C1  a zone claiming ENCRYPTED storage ran on a plain directory"
-elif (( rc != 0 )) && [[ "$out" == *"encrypted"* && ( "$out" == *"NOT IMPLEMENTED"* || "$out" == *"root launch"* ) ]]; then
-    pass "C1  a zone claiming encrypted storage is refused unprivileged, saying why"
+    fail "C1  a zone claiming ENCRYPTED storage ran without its passphrase"
+elif (( rc != 0 )) && [[ "$out" == *"encrypted"* && ( "$out" == *"passphrase"* || "$out" == *"root"* ) ]]; then
+    pass "C1  an encrypted zone without its passphrase is refused, saying what it needs"
 else
-    fail "C1  refused (exit $rc) without explaining that encryption is unimplemented"
+    fail "C1  refused (exit $rc) without saying that the zone is encrypted and needs a passphrase"
     info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-240)"
 fi
 
@@ -226,13 +228,18 @@ else
     info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
 fi
 
-# --- commands that do not exist, do not exist --------------------------------
+# --- commands that do not exist, on purpose, say where the thing happens -----
+# A file crosses zones only through the broker inside the sending zone and
+# after the person's yes; the clipboard moves only by the chrome's gesture.
+# `kryptik transfer` or `kryptik clipboard` from zone 0 would be a way around
+# the person, so they are refused - and the refusal names the real path.
 for c in transfer clipboard; do
     out="$(K "$c" 2>&1)"; rc=$?
-    if (( rc != 0 )) && [[ "$out" == *"does not exist yet"* ]]; then
-        pass "G1  \`$c\` is refused with a reason rather than half-working"
+    if (( rc != 0 )) && [[ "$out" == *"not a"*"command"* && "$out" == *"broker"* && "$out" == *"chrome"* ]]; then
+        pass "G1  \`$c\` is refused, and the refusal names the broker and the chrome"
     else
         fail "G1  \`$c\` exited $rc without explaining itself"
+        info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
     fi
 done
 

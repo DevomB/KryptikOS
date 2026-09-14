@@ -153,7 +153,10 @@ mkzone() { # name mode colour [extra-network-lines] [storage-mode]
         printf '[storage]\nmode = "%s"\n' "$storage"
         # storage.size is required for ephemeral and refused for encrypted.
         [[ "$storage" == "ephemeral" ]] && printf 'size = "64M"\n'
-        [[ "$storage" == "encrypted" ]] && printf 'volume = "/dev/kryptik/%s"\n' "$name"
+        # An encrypted fixture's volume is a file under the suite's own
+        # directory: `kryptikd volume init` creates it there (F4, root), and
+        # nothing of the suite's touches /var/lib/kryptik.
+        [[ "$storage" == "encrypted" ]] && printf 'volume = "%s/volumes/%s.luks"\n' "$WORK" "$name"
         printf '[ui]\nborder_color = "%s"\n' "$colour"
     } > "$ZONES/$name.toml"
 }
@@ -168,9 +171,10 @@ mkzone beta     none   "#222222"
 mkzone carrier  nic    "#333333" 'bridge = "kryptik0"'
 mkzone sealed   none   "#444444" ''                      encrypted
 mkzone wiped    none   "#555555" ''                      ephemeral
-# The zone that keeps things. `sealed` cannot do this job any more: it declares
-# encryption this build does not deliver, so the target kernel refuses to start
-# it at all - correctly - and every check built on it stopped running there.
+# The zone that keeps things. `sealed` is the encrypted fixture and is used
+# by group F only: it needs a volume and a passphrase to start, which is
+# exactly what F proves, and would make every other check that merely needs
+# a persistent directory depend on root and dm-crypt.
 mkzone keeper   none   "#4a4a4a" ''                      persistent
 # For K7: a zone whose data directory is deliberately owned by someone else.
 mkzone stranger none   "#666666"
@@ -755,16 +759,14 @@ if want_launch "E4b /proc shows only the zone's own processes"; then
 fi
 
 # ============================================================================
-head_ "F. Refusal of guarantees the code does not deliver  [unpriv]"
+head_ "F. Encrypted storage: refused without its passphrase, real with it  [unpriv; F4 root]"
 # ============================================================================
-# spawn.rs refuses to start a zone whose storage mode promises something not
-# implemented. The check that matters is not just the exit code: it is that the
-# command NEVER RAN. A refusal that still executes the payload is not a refusal.
-
-# F1 asserts the OPPOSITE of what it used to, and that is the point of this
-# group: the refusal list must shrink as things get implemented, or it becomes
-# a list of lies in the other direction. Ephemeral storage is real now, so a
-# zone declaring it must start WITHOUT the experimental override.
+# An encrypted zone lives on a LUKS2 volume and starts only with its
+# passphrase. A refusal has to be a refusal - the command NEVER RAN - and the
+# development override must not turn it into a plain directory. F1 asserts
+# the opposite for ephemeral storage, and that is the point of this group:
+# the refusal list must shrink as things get implemented, or it becomes a
+# list of lies in the other direction.
 zrun_raw wiped -- /bin/sh -c "echo $LAUNCHED; echo PROBE=RAN"
 if [[ "$ZOUT" == *"$LAUNCHED"* ]] && (( ZRC == 0 )); then
     pass "F1  ephemeral storage no longer needs the override: it is implemented"
@@ -778,34 +780,58 @@ fi
 
 zrun_raw sealed -- /bin/sh -c "echo $LAUNCHED; echo PROBE=RAN"
 if [[ "$ZOUT" == *"$LAUNCHED"* ]]; then
-    fail "F2  encrypted storage without the override: the command RAN anyway"
+    fail "F2  an encrypted zone without a passphrase: the command RAN anyway"
 elif (( ZRC == 0 )); then
-    fail "F2  encrypted storage without the override: exit 0, expected refusal"
-elif [[ "$ZOUT" == *"encrypted"* && "$ZOUT" == *"KRYPTIK_EXPERIMENTAL"* ]]; then
-    pass "F2  encrypted storage is refused without the override, and does not run"
+    fail "F2  an encrypted zone without a passphrase: exit 0, expected refusal"
+elif [[ "$ZOUT" == *"encrypted"* && "$ZOUT" == *"passphrase"* ]]; then
+    pass "F2  an encrypted zone without a passphrase is refused, says what it needs, and does not run"
 else
-    fail "F2  refused (exit $ZRC) but the message did not name the mode or the override"
+    fail "F2  refused (exit $ZRC) but the message did not say the zone is encrypted and needs a passphrase"
     info "output: $(printf '%s' "$ZOUT" | tr '\n' '|' | cut -c1-220)"
 fi
 
-# The override must be an explicit "1", not merely "set".
-ZOUT="$(KRYPTIK_EXPERIMENTAL=0 timeout "$TIMEOUT" "$KRYPTIKD" run sealed "${ZARGS[@]}" \
-        -- /bin/sh -c "echo $LAUNCHED" 2>&1)"
-ZRC=$?
-if [[ "$ZOUT" == *"$LAUNCHED"* ]]; then
-    fail "F3  KRYPTIK_EXPERIMENTAL=0 was treated as an override"
+# The development override exists for guarantees that are NOT implemented.
+# It must not reach this one: with it set, still no passphrase, still no zone.
+zrun sealed -- /bin/sh -c "echo $LAUNCHED"
+if [[ "$ZOUT" == *"$LAUNCHED"* ]] || (( ZRC == 0 )); then
+    fail "F3  KRYPTIK_EXPERIMENTAL=1 started an encrypted zone without its passphrase"
+elif [[ "$ZOUT" == *"passphrase"* ]]; then
+    pass "F3  the override does not apply to encryption: still refused for want of a passphrase"
 else
-    pass "F3  the override requires exactly \"1\"; other values still refuse"
+    fail "F3  refused under the override, but not for the passphrase (exit $ZRC)"
+    info "output: $(printf '%s' "$ZOUT" | tr '\n' '|' | cut -c1-220)"
 fi
 
-# And the refusal must be loud when it IS overridden.
-zrun sealed -- /bin/sh -c "echo $LAUNCHED"
-if want_launch "F4  overridden start warns that the guarantee does not hold"; then
-    if [[ "$ZOUT" == *"EXPERIMENTAL"* && "$ZOUT" == *"PLAIN"* ]]; then
-        pass "F4  overridden start warns that storage is a plain directory"
+# With a volume and its passphrase the zone starts, and its home IS the
+# volume: /proc/mounts inside the zone names the dm-crypt mapping. Root only
+# (cryptsetup, dm-crypt, a loop device); anywhere else this is a gap, not a
+# pass. The VM runs the suite as root, so the gap closes there.
+if (( PRIVILEGED == 1 )) && command -v cryptsetup >/dev/null 2>&1 && [[ -e /dev/mapper/control ]]; then
+    F4PASS="$WORK/sealed.pass"; printf 'fixture-passphrase' > "$F4PASS"; chmod 600 "$F4PASS"
+    if ! F4INIT="$("$KRYPTIKD" volume init sealed --zones "$ZONES" --size 32M --passphrase-file "$F4PASS" "${IDENTITY[@]}" 2>&1)"; then
+        fail "F4  volume init for the encrypted fixture failed"
+        info "output: $(printf '%s' "$F4INIT" | tr '\n' '|' | cut -c1-220)"
     else
-        fail "F4  ran under the override without warning about the storage mode"
+        ZOUT="$(timeout "$TIMEOUT" "$KRYPTIKD" run sealed "${ZARGS[@]}" --passphrase-file "$F4PASS" \
+                -- /bin/sh -c "echo $LAUNCHED; awk '\$2==\"/home/sealed\" {print \"PROBE=\" \$1}' /proc/mounts" 2>&1)"
+        ZRC=$?
+        if want_launch "F4  an encrypted zone starts on its LUKS2 volume with the passphrase"; then
+            if [[ "$ZOUT" == *"PROBE=/dev/mapper/"* || "$ZOUT" == *"PROBE=/dev/dm-"* ]]; then
+                pass "F4  an encrypted zone starts, and its home is the dm-crypt mapping"
+            else
+                fail "F4  the zone started but its home is not on the mapping"
+                info "output: $(printf '%s' "$ZOUT" | tr '\n' '|' | cut -c1-220)"
+            fi
+        fi
+        if [[ -e /dev/mapper/kryptik-sealed ]]; then
+            fail "F4b the mapping is still open after the zone exited"
+            "$KRYPTIKD" stop sealed --now >/dev/null 2>&1 || true
+        else
+            pass "F4b the mapping is closed when the zone exits"
+        fi
     fi
+else
+    skip "F4  an encrypted zone starts on its LUKS2 volume [root + cryptsetup] - the VM runs this as root"
 fi
 
 # ============================================================================

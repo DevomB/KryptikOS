@@ -77,7 +77,16 @@ fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
 }
 
 fn cmd_audit(args: &[String]) -> ExitCode {
-    let dir = PathBuf::from(flag(args, "--zones").unwrap_or(DEFAULT_ZONE_DIR));
+    // --zones, else compartments/zones under the working directory, else the
+    // shipped set relative to this crate's source (cargo run from anywhere
+    // in the tree). Never a silent empty audit.
+    let dir = match flag(args, "--zones") {
+        Some(d) => PathBuf::from(d),
+        None => {
+            let cwd = PathBuf::from(DEFAULT_ZONE_DIR);
+            if cwd.is_dir() { cwd } else { zoneid::zones::shipped_zone_dir() }
+        }
+    };
     let mut t = Thresholds::default();
     if let Some(v) = flag(args, "--min-delta-e") {
         match v.parse::<f64>() {

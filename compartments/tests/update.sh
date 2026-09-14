@@ -40,7 +40,15 @@ unset KRYPTIK_RELEASE_SIGNERS
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TOOL="${ROOT}/tools/apply-update.sh"
 RM="${ROOT}/tools/release-manifest.sh"
-KD="${KRYPTIKD:-${ROOT}/compartments/kryptikd/target/release/kryptikd}"
+# KRYPTIKD, else whichever build exists - release first, then the debug build
+# the other suites (and tools/run-tests.sh) produce.
+KD="${KRYPTIKD:-}"
+if [[ -z "$KD" ]]; then
+    for _p in release debug; do
+        [[ -x "${ROOT}/compartments/kryptikd/target/${_p}/kryptikd" ]] && { KD="${ROOT}/compartments/kryptikd/target/${_p}/kryptikd"; break; }
+    done
+fi
+KD="${KD:-${ROOT}/compartments/kryptikd/target/release/kryptikd}"
 
 PASS=0; FAIL=0; SKIP=0
 C_G=$'\033[32m'; C_R=$'\033[31m'; C_Y=$'\033[33m'; C_0=$'\033[0m'
