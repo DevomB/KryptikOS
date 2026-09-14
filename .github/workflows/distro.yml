@@ -191,11 +191,15 @@ jobs:
           make media KRYPTIK_VERSION="${VER_A}.1" KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
           ls -la "$KRYPTIK_WORK/images" | grep -E 'usb.img|\.iso|payload'
 
+      # Stage 04 ran as root: the sysroot and the build trees are root's, so
+      # the packing is too (the first run failed here with "Permission
+      # denied" on the build trees, after every stage had passed).
       - name: Pack the work tree for the acceptance job
         run: |
           cd /mnt/kryptik
-          rm -rf work/build work/vm
-          tar --zstd -cf work-after-media.tar.zst -C work --exclude='images/kryptik-root.img' --exclude='images/esp-*.img' .
+          sudo rm -rf work/build work/vm
+          sudo tar --zstd -cf work-after-media.tar.zst -C work --exclude='images/kryptik-root.img' --exclude='images/esp-*.img' .
+          sudo chown "$(id -u):$(id -g)" work-after-media.tar.zst
           ls -la work-after-media.tar.zst; df -h /mnt | tail -1
 
       - uses: actions/upload-artifact@v4
@@ -257,10 +261,12 @@ jobs:
           name: work-after-media
           path: /mnt/kryptik
 
+      # Unpacked as root so the sysroot keeps its ownership and modes; the
+      # acceptance itself runs through sudo.
       - name: Unpack the work tree
         run: |
           cd /mnt/kryptik
-          tar --zstd -xf work-after-media.tar.zst -C work
+          sudo tar --zstd -xf work-after-media.tar.zst -C work
           rm -f work-after-media.tar.zst
           ls work/images; df -h /mnt | tail -1
 
@@ -268,6 +274,11 @@ jobs:
         run: |
           mkdir -p /mnt/kryptik/export
           make acceptance EXPORT=/mnt/kryptik/export
+
+      # What root wrote, the runner uploads.
+      - name: Hand the results to the runner user
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" /mnt/kryptik/export /mnt/kryptik/work/acceptance /mnt/kryptik/work/logs 2>/dev/null || true
 
       - name: Acceptance report and per-item logs
         if: always()
