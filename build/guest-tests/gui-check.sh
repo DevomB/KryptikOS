@@ -190,6 +190,13 @@ out="$(since_mark trf2 dev)"
 [[ -z "$(ls /run/kryptik-consent/ 2>/dev/null)" ]] && pass "consent-cleaned" "no question left behind" || fail "consent-cleaned" "$(ls /run/kryptik-consent/)"
 
 # --- teardown ------------------------------------------------------------------------------
+# The session's own log and the last focus record live on the runtime tmpfs
+# and vanish with the power; keep copies on the state partition, where a
+# post-mortem (loop-mount p4, log/kryptik/) can read what the compositor
+# and the chrome said. Without this the "(no window)" run left nothing to
+# read but the verdict.
+cp -f "$RT/kryptik/session.log" /var/log/kryptik/session.log 2>/dev/null
+cp -f "$RT/kryptik/focus" /var/log/kryptik/focus.last 2>/dev/null
 for z in untrusted personal dev work; do "$KD" stop "$z" >/dev/null 2>&1; done
 pkill -u "$USER_NAME" -x dwl 2>/dev/null
 sleep 2
