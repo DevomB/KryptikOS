@@ -115,15 +115,18 @@ rm -rf "$TMPK"
 # ---------------------------------------------------------------- phase 3 --
 phase "phase 3: a tampered root is refused by dm-verity before userspace"
 A_OFF=$(( $(part_start 2) * 512 ))
-# flip a byte deep inside the data area (block 3000, past the superblock and
-# group descriptors, inside inode/data blocks); the hash tree does not cover
-# the flipped value, so the first read of that block must fail
-printf '\xa5' | dd of="$DISK" bs=1 seek=$(( A_OFF + 4096 * 3000 + 100 )) conv=notrunc status=none
+# Flip a byte in the ext4 superblock (byte 1024 of the image, the volume
+# name field at +0x78): the first thing a root mount reads, so dm-verity
+# sees a block whose hash does not match before any userspace exists. A
+# byte deep in the data area, which this used to flip, sits in a block
+# nothing reads at boot, and the system came up as if untouched.
+printf '\xa5' | dd of="$DISK" bs=1 seek=$(( A_OFF + 1024 + 0x78 )) conv=notrunc status=none
 cp "$ENROLLED" "$VARSF"
 "${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode smoke --timeout 300 --name integ-p3 > /dev/null
 T3="$(txt_latest)"
 grep -q 'Linux version' <<<"$T3" && green "the (untampered) kernel still starts" || red "the kernel did not start after the root tamper"
-grep -qE 'device-mapper: verity:.*(corrupt|mismatch|error)|verity.*corrupt|dm-verity device corrupted' <<<"$T3" && green "dm-verity named the corruption" || red "no dm-verity corruption report"
+# The kernel's own message, not the command line's "panic_on_corruption".
+grep -qE 'device-mapper: verity:.*(corrupt|mismatch|error)|dm-verity device corrupted' <<<"$T3" && green "dm-verity named the corruption" || red "no dm-verity corruption report"
 grep -q 'Kernel panic' <<<"$T3" && green "the kernel panicked on the verity failure (panic_on_corruption)" || red "no panic on a corrupted root"
 grep -q 'KRYPTIK_SMOKE: BEGIN' <<<"$T3" && red "userspace ran on a tampered root" || green "no userspace ran on the tampered root"
 grep -q 'login:' <<<"$T3" && red "a login prompt appeared on a tampered root" || green "no login prompt on the tampered root"
@@ -205,7 +208,7 @@ python3 "$DRV" --serial "$SER" --timeout 300 \
     "run:grep -q '^kryptik-release ' /etc/kryptik/trust/release-signers" \
     "run:test -f /etc/kryptik/zones/evil.toml" \
     "run:test \"\$(sysctl -n kernel.kptr_restrict)\" = 2" \
-    "run!:kryptik-launch --info evil; echo EVIL-RC=\$?" "expect:no zone named \"evil\"" \
+    "run!:kryptik-launch --info evil; echo EVIL-RC=\$?" "seen:no zone named \"evil\"" \
     "run:kryptik-launch --info work" \
     "$(printf 'su:%s:%s' "$RPASS" 'kryptikd list --zones /usr/lib/kryptik/zones | grep -c evil; echo LIST-DONE')" "expect:LIST-DONE" \
     ${EXTRA:+"$(printf 'su:%s:%s' "$RPASS" 'mkdir -p /mnt/x && mount -o ro /dev/vdb /mnt/x && kryptik-update apply /mnt/x; echo UPD-RC=$?')"} \

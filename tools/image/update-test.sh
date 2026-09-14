@@ -233,11 +233,14 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
 rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "B armed from slot a" || red "phase 7 arming failed"
 B_OFF=$(( $(part_start_disk "$DISK" 3) * 512 ))
-printf '\xa5' | dd of="$DISK" bs=1 seek=$(( B_OFF + 4096 * 3000 + 100 )) conv=notrunc status=none
-green "slot b's root image corrupted from the host (one byte in block 3000)"
+# The ext4 superblock's volume name: the first block a root mount reads, so
+# the trial boot meets the corruption at once (a byte deep in the data area
+# can sit in a block nothing reads at boot, and the trial would succeed).
+printf '\xa5' | dd of="$DISK" bs=1 seek=$(( B_OFF + 1024 + 0x78 )) conv=notrunc status=none
+green "slot b's root image corrupted from the host (one byte in the superblock)"
 start_vm update-p7b
 drive "expect:Linux version" \
-    "expect:device-mapper: verity:.*(corrupt|mismatch|error)|verity.*corrupt|dm-verity device corrupted" \
+    "expect:device-mapper: verity:.*(corrupt|mismatch|error)|dm-verity device corrupted" \
     "expect:Kernel panic" \
     "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
     "login:${TUSER}:${TPASS}" \
