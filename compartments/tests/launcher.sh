@@ -1833,6 +1833,16 @@ else
                 pass "M9  the next launch swept the abandoned cgroup"
             else
                 fail "M9  $still abandoned cgroup(s) survived the next launch's sweep"
+                # Which, and why: the leaf's name carries its launcher's pid,
+                # so say whether that pid is alive (and in what state), what
+                # the leaf holds, and what rmdir itself says about it.
+                for d in /sys/fs/cgroup/kryptik/*/; do
+                    [[ -d "$d" ]] || continue
+                    lpid="${d%/}"; lpid="${lpid##*.}"
+                    if [[ -e "/proc/$lpid" ]]; then lstate="alive ($(awk '{print $3}' "/proc/$lpid/stat" 2>/dev/null))"; else lstate="gone"; fi
+                    info "     $(basename "$d"): launcher $lpid $lstate; procs=[$(tr '\n' ' ' < "$d/cgroup.procs" 2>/dev/null)]; $(tr '\n' ' ' < "$d/cgroup.events" 2>/dev/null); rmdir: $(rmdir "$d" 2>&1 && echo ok)"
+                done
+                info "     launcher output: $(printf '%s' "$ZOUT" | grep -i 'cgroup\|sweep' | head -2 | tr '\n' ' ')"
                 find /sys/fs/cgroup/kryptik -mindepth 1 -maxdepth 1 -type d -exec rmdir {} + 2>/dev/null
             fi
         fi
