@@ -122,54 +122,52 @@ sleep 6
 echo "GT KEY-FULLSCREEN-AGAIN"
 wait_for 20 grep -q '^fullscreen=0' "$RT/kryptik/focus" && pass "fullscreen-off-again" || fail "fullscreen-off-again"
 
-# --- a second zone with a window; no virtual input for either --------------------
+# --- a second zone with a window; no virtual input for either -------------
+# A zone runs ONE supervised command at a time (kryptikd: "One instance per
+# zone"), so the probe goes into personal before its window does, and the
+# untrusted window from above is stopped before anything else is asked of
+# that zone. The first run on installed media handed a second command to a
+# running zone at every step from here on, and each was refused as
+# "already running (launcher pid N)".
+stop_zone() { as_user "kryptik-launch --stop $1" > /dev/null 2>&1; wait_for 15 test ! -e "/run/kryptik/zones/$1/init.pid"; sleep 1; }
+stop_zone untrusted
+mark probe personal
+launch personal "/usr/libexec/kryptik/wlprobe list" > "$LOG/launch-probe-personal.out" 2>&1; sleep 3
+out="$(since_mark probe personal)"
+if [[ "$out" == *"global "* && "$out" != *"virtual_keyboard"* && "$out" != *"virtual_pointer"* && "$out" != *"input_method"* ]]; then pass "no-virtual-input" "no virtual keyboard/pointer or input-method global in personal either"; else fail "no-virtual-input" "$(echo "$out" | grep -c global) globals; virtual input: $(echo "$out" | grep -o 'virtual_[a-z]*' | tr '\n' ' '); $(tr '\n' ' ' < "$LOG/launch-probe-personal.out")"; fi
 launch personal "havoc" > "$LOG/launch-havoc-personal.out" 2>&1
 wait_for 20 grep -q '^zone=personal' "$RT/kryptik/focus" && pass "second-zone-window" "$(tr '\n' ' ' < "$RT/kryptik/focus")" || fail "second-zone-window" "$(cat "$LOG/launch-havoc-personal.out" | tr '\n' ' ')"
-mark probe personal
-launch personal "/usr/libexec/kryptik/wlprobe list" > /dev/null 2>&1; sleep 3
-out="$(since_mark probe personal)"
-if [[ "$out" == *"global "* && "$out" != *"virtual_keyboard"* && "$out" != *"virtual_pointer"* && "$out" != *"input_method"* ]]; then pass "no-virtual-input" "no virtual keyboard/pointer or input-method global in personal either"; else fail "no-virtual-input" "$(echo "$out" | grep -c global) globals; virtual input: $(echo "$out" | grep -o 'virtual_[a-z]*' | tr '\n' ' ')"; fi
+stop_zone personal
 
-# --- clipboards: per zone, until the zone 0 gesture ----------------------------------
-BRK='import socket,sys
-s=socket.socket(socket.AF_UNIX); s.connect("/run/kryptik/broker"); s.sendall(sys.argv[1].encode()); s.shutdown(socket.SHUT_WR)
-d=b""
-while True:
-    b=s.recv(4096)
-    if not b: break
-    d+=b
-sys.stdout.write(d.decode(errors="replace"))'
+# --- clipboards: per zone, until the zone 0 gesture -----------------------
+# A zone's clipboard lives in its launcher, so both zones stay up across the
+# gesture: each runs one resident command that speaks to its broker through
+# broker-client.py - one line per call, because the launch protocol refuses
+# an argument with a newline in it, which is how the first run's multi-line
+# `python3 -c` probes never reached a zone - and prints the broker's answer
+# into the zone's log.
+BC=/usr/lib/kryptik/guest-tests/broker-client.py
 mark clip untrusted
-launch_plain untrusted "python3 -c '$BRK' 'clipboard-set text/plain 14
-from-untrusted'" > /dev/null 2>&1; sleep 2
-[[ "$(since_mark clip untrusted)" == *ok* ]] && pass "clipboard-set" "untrusted set its clipboard through its broker" || fail "clipboard-set" "$(since_mark clip untrusted | tail -2 | tr '\n' ' ')"
+launch_plain untrusted "sh -c 'python3 $BC clipboard-set text/plain from-untrusted; echo SET-DONE; sleep 90'" > "$LOG/clip-set.out" 2>&1
+wait_for 15 grep -q SET-DONE /var/log/kryptik/zone-untrusted.log
+[[ "$(since_mark clip untrusted)" == *ok* ]] && pass "clipboard-set" "untrusted set its clipboard through its broker" || fail "clipboard-set" "$(since_mark clip untrusted | tail -2 | tr '\n' ' '); $(tr '\n' ' ' < "$LOG/clip-set.out")"
 mark clip1 personal
-launch personal "python3 -c '$BRK' 'clipboard-get
-'" > /dev/null 2>&1; sleep 2
-[[ "$(since_mark clip1 personal)" == *empty* ]] && pass "clipboard-isolated" "personal's clipboard is empty: nothing crosses by itself" || fail "clipboard-isolated" "$(since_mark clip1 personal | tail -2 | tr '\n' ' ')"
+launch personal "sh -c 'python3 $BC clipboard-get; echo GET1-DONE; sleep 25; python3 $BC clipboard-get; echo GET2-DONE'" > "$LOG/clip-get.out" 2>&1
+wait_for 15 grep -q GET1-DONE /var/log/kryptik/zone-personal.log
+first="$(since_mark clip1 personal | sed '/GET1-DONE/q')"
+[[ "$first" == *empty* ]] && pass "clipboard-isolated" "personal's clipboard is empty: nothing crosses by itself" || fail "clipboard-isolated" "$(echo "$first" | tail -2 | tr '\n' ' '); $(tr '\n' ' ' < "$LOG/clip-get.out")"
 as_user "kryptik-launch --clipboard-move untrusted personal" > "$LOG/clip-move.out" 2>&1 && pass "clipboard-move-gesture" "$(tr '\n' ' ' < "$LOG/clip-move.out")" || fail "clipboard-move-gesture" "$(tr '\n' ' ' < "$LOG/clip-move.out")"
-mark clip2 personal
-launch personal "python3 -c '$BRK' 'clipboard-get
-'" > /dev/null 2>&1; sleep 2
-[[ "$(since_mark clip2 personal)" == *from-untrusted* ]] && pass "clipboard-moved" "personal now holds the one payload the gesture moved" || fail "clipboard-moved" "$(since_mark clip2 personal | tail -2 | tr '\n' ' ')"
+wait_for 45 grep -q GET2-DONE /var/log/kryptik/zone-personal.log
+second="$(since_mark clip1 personal | sed -n '/GET1-DONE/,$p')"
+[[ "$second" == *from-untrusted* ]] && pass "clipboard-moved" "personal now holds the one payload the gesture moved" || fail "clipboard-moved" "$(echo "$second" | tail -2 | tr '\n' ' ')"
+stop_zone untrusted; stop_zone personal
 
 # --- transfers: the person decides ------------------------------------------------------
-TRF='import socket,sys,os,array
-s=socket.socket(socket.AF_UNIX); s.connect("/run/kryptik/broker")
-fd=os.open(sys.argv[3],os.O_RDONLY)
-s.sendmsg([("transfer %s %s\n"%(sys.argv[1],sys.argv[2])).encode()],[(socket.SOL_SOCKET,socket.SCM_RIGHTS,array.array("i",[fd]))])
-s.shutdown(socket.SHUT_WR)
-d=b""
-while True:
-    b=s.recv(4096)
-    if not b: break
-    d+=b
-sys.stdout.write(d.decode(errors="replace"))'
 launch work "havoc" > /dev/null 2>&1   # work must be running to receive
 wait_for 20 grep -q '^zone=work' "$RT/kryptik/focus" || info "work window not focused yet: $(tr '\n' ' ' < "$RT/kryptik/focus")"
 # policy first: untrusted names no destination
 mark trf0 untrusted
-launch_plain untrusted "sh -c 'echo nope > \$HOME/x.txt; python3 -c \"$TRF\" work x.txt \$HOME/x.txt'" > /dev/null 2>&1; sleep 3
+launch_plain untrusted "sh -c 'echo nope > \$HOME/x.txt; python3 $BC transfer work x.txt \$HOME/x.txt'" > /dev/null 2>&1; sleep 3
 [[ "$(since_mark trf0 untrusted)" == *"does not name"* ]] && pass "transfer-policy" "untrusted -> work refused by policy, with no question asked" || fail "transfer-policy" "$(since_mark trf0 untrusted | tail -2 | tr '\n' ' ')"
 # The chrome's watcher holds watcher.lock in the channel for as long as the
 # session runs (kryptikd consent.rs); it is not a question, so it is not
@@ -180,14 +178,14 @@ questions() { ls /run/kryptik-consent/ 2>/dev/null | grep -v "^watcher.lock$"; }
 # dev -> work: allowed by policy, asked of the person
 mark trf1 dev
 echo "GT CONSENT-WAIT 1"
-launch dev "sh -c 'echo report-body > \$HOME/report.txt; python3 -c \"$TRF\" work report.txt \$HOME/report.txt'" > "$LOG/trf1.out" 2>&1
+launch dev "sh -c 'echo report-body > \$HOME/report.txt; python3 $BC transfer work report.txt \$HOME/report.txt'" > "$LOG/trf1.out" 2>&1
 n=40; while [[ "$n" -gt 0 ]] && [[ "$(since_mark trf1 dev)" != *ok* && "$(since_mark trf1 dev)" != *error* ]]; do n=$((n - 1)); sleep 1; done
 out="$(since_mark trf1 dev)"
 [[ "$out" == *"ok report.txt"* ]] && pass "transfer-approved" "after the person said yes: $(echo "$out" | grep -o 'ok .*' | head -1)" || fail "transfer-approved" "$(echo "$out" | tail -2 | tr '\n' ' ')"
 if [[ -f "$R/work/incoming/report.txt" ]] && [[ "$(cat "$R/work/incoming/report.txt")" = report-body ]]; then pass "transfer-landed" "the file is in work's incoming/, byte-identical"; else fail "transfer-landed" "$(ls -la "$R/work/incoming" 2>&1 | tail -2 | tr '\n' ' ')"; fi
 mark trf2 dev
 echo "GT CONSENT-WAIT 2"
-launch dev "sh -c 'echo secret2 > \$HOME/report2.txt; python3 -c \"$TRF\" work report2.txt \$HOME/report2.txt'" > "$LOG/trf2.out" 2>&1
+launch dev "sh -c 'echo secret2 > \$HOME/report2.txt; python3 $BC transfer work report2.txt \$HOME/report2.txt'" > "$LOG/trf2.out" 2>&1
 n=40; while [[ "$n" -gt 0 ]] && [[ "$(since_mark trf2 dev)" != *ok* && "$(since_mark trf2 dev)" != *error* ]]; do n=$((n - 1)); sleep 1; done
 out="$(since_mark trf2 dev)"
 [[ "$out" == *"refused by the user"* ]] && pass "transfer-denied" "after the person said no: refused" || fail "transfer-denied" "$(echo "$out" | tail -2 | tr '\n' ' ')"
