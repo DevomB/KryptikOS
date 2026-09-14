@@ -74,7 +74,10 @@ tr -d '\r' < "$LATEST" | grep -q 'KRYPTIK_INSTALL: rc=0' && green "installed" ||
 
 # ---------------------------------------------------------------- phase 2 --
 phase "phase 2: the guest-side zone, network and storage checks (as root)"
-start_vm zones-p2
+# 3 GB, not the 2 GB default: the ephemeral-size-bound check fills untrusted's
+# 2G tmpfs to its limit, and those pages are RAM. In a 2 GB guest the fill
+# ran the machine out of memory before ENOSPC could be reached.
+start_vm zones-p2 --mem 3072
 drive 900 "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'bash /usr/lib/kryptik/guest-tests/zones-check.sh 2>&1 | tee /var/log/kryptik/zones-check.log; echo ZCHECK-DONE')" \
     "expect:ZT END" "expect:ZCHECK-DONE"
@@ -112,13 +115,17 @@ done
 # a fixture zone; on the installed system the real net zone already holds
 # it, and zones-check.sh above proves routing through that one. So NETR
 # stays a gap here by design, as do POL6 (Landlock policy files are refused,
-# not applied) and LC15/LC16 (unprivileged-only). Any other gap is a failure.
+# not applied), LC15/LC16 (unprivileged-only) and H1c (it needs a
+# non-loopback interface in zone 0 to tell the zone's view from the host's,
+# and on the installed system zone 0 has none: the NIC lives in the net
+# zone, which is exactly what zone0-nic above proves). Any other gap is a
+# failure.
 if grep -q 'LAUNCHER SUITE PASSED$' <<<"$T3"; then
     green "launcher suite passed with no gaps"
 elif grep -q 'LAUNCHER SUITE PASSED WITH GAPS' <<<"$T3"; then
-    other="$(sed -n '/not run (mandatory gaps/,/^$/p' <<<"$T3" | grep -E '^ *- ' | grep -vE 'NETR|POL6|LC15/LC16')"
+    other="$(sed -n '/not run (mandatory gaps/,/^$/p' <<<"$T3" | grep -E '^ *- ' | grep -vE 'NETR|POL6|LC15/LC16|H1c')"
     if [[ -z "$other" ]]; then
-        green "launcher suite passed; its only gaps are the accounted-for ones (NETR: the real net zone is measured by zones-check; POL6: by design; LC15/16: unprivileged-only)"
+        green "launcher suite passed; its only gaps are the accounted-for ones (NETR: the real net zone is measured by zones-check; POL6: by design; LC15/16: unprivileged-only; H1c: zone 0 has no interface here)"
     else
         red "launcher suite passed with unaccounted gaps: $(tr '\n' ' ' <<<"$other")"
     fi
