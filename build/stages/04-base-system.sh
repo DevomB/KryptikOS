@@ -511,6 +511,26 @@ s_python() {
     make install
 }
 
+# The full Python, built again after the libraries it wants. The early build
+# above exists to satisfy glibc's configure and is made before libffi,
+# openssl and expat, so it went out without _ctypes and without ssl: the
+# boundary suite's D1 probe died on `import ctypes` inside every zone on the
+# first installed system, and reported a seccomp failure that was nothing of
+# the kind. Same version, same prefix - this install overwrites the early
+# one's files - and the step fails unless the modules it exists for import.
+s_python_final() {
+    local src; src="$(unpack "Python-${V_PYTHON}.tar.xz" "Python-${V_PYTHON}")"
+    cd "$src"
+    ./configure --prefix=/usr --enable-shared --with-system-expat
+    make
+    make install
+    local m
+    for m in ctypes ssl pyexpat; do
+        python3 -c "import ${m}" || { echo "FAIL: python3 was built without ${m}"; return 1; }
+    done
+    echo "python3 imports ctypes, ssl and pyexpat"
+}
+
 s_shadow() {
     local src; src="$(unpack "shadow-${V_SHADOW}.tar.xz" "shadow-${V_SHADOW}")"
     cd "$src"
@@ -2062,6 +2082,7 @@ PACKAGES=(
     "less"        "native_build less-${V_LESS}.tar.gz less-${V_LESS} --sysconfdir=/etc"
     "openssl"     "s_openssl"
     "libffi"      "native_build libffi-${V_LIBFFI}.tar.gz libffi-${V_LIBFFI} --disable-static --with-gcc-arch=native"
+    "python-final" "s_python_final"
     "coreutils"   "native_build coreutils-${V_COREUTILS}.tar.xz coreutils-${V_COREUTILS} --enable-no-install-program=kill,uptime"
     "diffutils"   "native_build diffutils-${V_DIFFUTILS}.tar.xz diffutils-${V_DIFFUTILS}"
     "gawk"        "native_build gawk-${V_GAWK}.tar.xz gawk-${V_GAWK}"
