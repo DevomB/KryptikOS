@@ -4,7 +4,11 @@
     tools/image/vm-drive.py --serial SOCK [--log FILE] [--timeout N] [--qmp SOCK] STEP...
 
 Steps (each one argument):
-    expect:REGEX            wait until REGEX matches the serial stream
+    expect:REGEX            wait until REGEX matches the serial stream (and
+                            consume the stream up to the match)
+    seen:REGEX              wait until REGEX has appeared ANYWHERE in the
+                            transcript so far, consuming nothing - for a line
+                            whose order relative to other lines is not fixed
     absent:REGEX            assert REGEX has NOT appeared so far
     send:TEXT               send TEXT followed by Enter
     login:USER:PASSWORD     wait for "login:", authenticate, wait for a prompt
@@ -29,6 +33,7 @@ class Drive:
         self.s.connect(path)
         self.s.settimeout(0.5)
         self.buf = b""
+        self.all = b""   # everything received, never consumed
         self.log = open(log, "ab") if log else None
         self.timeout = timeout
         self.closed = False
@@ -44,9 +49,27 @@ class Drive:
             self.closed = True
             return False
         self.buf += d
+        self.all += d
         if self.log:
             self.log.write(d); self.log.flush()
         return True
+
+    def seen(self, regex, timeout=None):
+        """Wait until REGEX has appeared anywhere in the transcript so far.
+        Consumes nothing: a line that was printed before an earlier expect()
+        matched (and was discarded from buf) still counts."""
+        timeout = self.timeout if timeout is None else timeout
+        rx = re.compile(regex.encode(), re.M)
+        deadline = time.time() + timeout
+        while True:
+            if rx.search(self.all):
+                return True
+            if self.closed:
+                raise RuntimeError(f"serial closed before {regex!r} appeared")
+            if time.time() > deadline:
+                tail = self.all[-600:].decode("utf-8", "replace")
+                raise RuntimeError(f"timeout ({timeout}s): {regex!r} never appeared; last output:\n{tail}")
+            self._read()
 
     def expect(self, regex, timeout=None):
         timeout = self.timeout if timeout is None else timeout
@@ -76,6 +99,11 @@ class Drive:
             self._read()
 
     def login(self, user, password):
+        # The getty may have printed its prompt long before this step (an
+        # earlier expect() then discarded it). An empty line makes agetty
+        # print a fresh one, so the prompt is waited for, not assumed.
+        self.drain(1)
+        self.send("")
         self.expect(r"login: ?$", self.timeout)
         self.send(user)
         self.expect(r"Password: ?", 60)
@@ -155,6 +183,7 @@ def main():
         kind, _, rest = st.partition(":")
         try:
             if kind == "expect": d.expect(rest)
+            elif kind == "seen": d.seen(rest)
             elif kind == "absent":
                 if re.search(rest.encode(), d.buf): raise RuntimeError(f"forbidden output appeared: {rest!r}")
             elif kind == "send": d.send(rest)

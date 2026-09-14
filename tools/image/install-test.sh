@@ -104,7 +104,7 @@ DRV="${SELF}/vm-drive.py"
 REC="${VMDIR}/install-p2.json"
 python3 "$DRV" --serial "$SER" --timeout 300 --record "$REC" \
     "expect:KRYPTIK_SMOKE: END" \
-    "expect:kryptik-firstboot: created user '${TUSER}'" \
+    "seen:kryptik-firstboot: created user '${TUSER}'" \
     "login:${TUSER}:${TPASS}" \
     "grab:identity:cat /run/kryptik/boot-identity; grep -E '^(ID|VERSION_ID)=' /etc/os-release" \
     "grab:mounts:awk '\$2==\"/\"||\$2==\"/var\"||\$2==\"/etc\"||\$2==\"/home\" {print \$2, \$1, \$3, \$4}' /proc/mounts" \
