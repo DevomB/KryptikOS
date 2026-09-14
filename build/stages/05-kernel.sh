@@ -453,6 +453,24 @@ FRAG_DIGEST="$(cat "$FRAG_BASE" "$FRAG_HARDENED" "$FRAG_BOOT" | sha256_of_stdin)
 stage_depends_on "bs-" elfutils
 
 step compiler-check  s_compiler_check
+# The stamps record what was built; the tree records what is here. The build
+# tree under work/build is not an output and gets removed to reclaim space,
+# which leaves unpack, patch and config stamped as done for a tree that no
+# longer exists; the next time a later step goes stale (a stage this one
+# builds on changed) it dies in the middle with "cd: linux-...: No such file
+# or directory" - which is how the first post-build after the tree was
+# cleared ended. So: no tree, no tree stamps. They are archived together
+# with the steps that read the tree, and all of them run again.
+if [[ ! -d "$KSRC" && -f "${STAMPS}/${STAMP_PREFIX}unpack" ]]; then
+    gone="${STAMPS}/legacy/kernel-tree-gone-$(date +%Y%m%dT%H%M%S)"
+    mkdir -p "$gone"
+    for s in unpack patch config build modules install verify-install; do
+        [[ -f "${STAMPS}/${STAMP_PREFIX}${s}" ]] && mv -f "${STAMPS}/${STAMP_PREFIX}${s}" "$gone/"
+    done
+    warn "the kernel tree ${KSRC} is gone but its steps were stamped as built;"
+    warn "those stamps are archived under ${gone}/ and the tree is unpacked, patched, configured and built again."
+fi
+
 step unpack          s_unpack
 step patch           s_patch
 step config          s_config "$FRAG_DIGEST"
