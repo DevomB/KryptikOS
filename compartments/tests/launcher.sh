@@ -2020,11 +2020,19 @@ head_ "BRK. The broker channel  [unpriv + vm]"
 # bash can do /dev/tcp and not this, and busybox nc has no -U. python3 is
 # present both on the developer host and in the Kryptik sysroot, so the same
 # check runs in both places.
+# A refused peer is answered from its credentials alone, before the broker
+# reads a byte: the refusal can already be written and the socket closed by
+# the time this client sends, and the send then fails with EPIPE. The
+# answer is still in the socket; read it either way (BRK4 once reported a
+# traceback for a refusal that had happened exactly as it should).
 BRK_CLIENT='import socket,sys
 s=socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.settimeout(5)
 s.connect(sys.argv[1])
-s.sendall(sys.argv[2].encode()+b"\n")
+try:
+    s.sendall(sys.argv[2].encode()+b"\n")
+except BrokenPipeError:
+    pass
 sys.stdout.write(s.recv(256).decode(errors="replace").strip())'
 
 if command -v python3 >/dev/null 2>&1; then
