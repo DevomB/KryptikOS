@@ -82,6 +82,14 @@ done
 if command -v cargo >/dev/null 2>&1; then
     printf '\n=== building kryptikd for the compartment suites ===\n'
     if ( cd compartments/kryptikd && cargo build --quiet ); then
+        # The suites look for the binary; cargo puts it under CARGO_TARGET_DIR
+        # when that is set (acceptance points it at the large disk), not the
+        # default target/. Tell the suites where it landed - cli.sh and
+        # launcher.sh honour $KRYPTIKD, and adversarial.sh does now too.
+        for cand in "${CARGO_TARGET_DIR:-compartments/kryptikd/target}/debug/kryptikd" \
+                    "compartments/kryptikd/target/debug/kryptikd"; do
+            [[ -x "$cand" ]] && { KRYPTIKD="$(cd "$(dirname "$cand")" && pwd)/kryptikd"; export KRYPTIKD; break; }
+        done
         for entry in "${COMPARTMENT[@]}"; do
             run_suite "${entry%%|*}" "${entry#*|}"
         done

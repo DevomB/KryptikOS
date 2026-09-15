@@ -262,9 +262,12 @@ if unshare "${ZONE_UNSHARE[@]}" cat "$OTHER_ZONE_SECRET" >/dev/null 2>&1; then
 fi
 
 # Now the real check: Landlock confinement, applied by kryptikd itself.
-KRYPTIKD="$(dirname "${BASH_SOURCE[0]}")/../kryptikd/target/debug/kryptikd"
-if [[ ! -x "$KRYPTIKD" ]]; then
-    KRYPTIKD="$(dirname "${BASH_SOURCE[0]}")/../kryptikd/target/release/kryptikd"
+# Honour a KRYPTIKD set by the caller (run-tests.sh exports it, pointing at
+# wherever cargo put the binary under CARGO_TARGET_DIR); fall back to the
+# default build paths for a developer running this suite directly.
+if [[ -z "${KRYPTIKD:-}" || ! -x "${KRYPTIKD:-}" ]]; then
+    KRYPTIKD="$(dirname "${BASH_SOURCE[0]}")/../kryptikd/target/debug/kryptikd"
+    [[ -x "$KRYPTIKD" ]] || KRYPTIKD="$(dirname "${BASH_SOURCE[0]}")/../kryptikd/target/release/kryptikd"
 fi
 
 if [[ ! -x "$KRYPTIKD" ]]; then
