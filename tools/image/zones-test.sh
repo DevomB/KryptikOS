@@ -99,17 +99,32 @@ done
 # ---------------------------------------------------------------- phase 3 --
 if [[ "$SUITES" -eq 1 ]]; then
 phase "phase 3: the compartment suites on the target kernel (as root)"
+# Each suite writes its log on the guest; the console gets its exit code, the
+# summary tail and every FAIL row with three lines of detail, tagged with the
+# suite's name. The logs stay on the disk, which the acceptance runner does
+# not keep, so the transcript is the one place a failed row can be read
+# from: the run on 55904d05 reported "boundary suite exit 1" and nothing
+# about which of that suite's rows it was.
+suite_cmd() {   # suite_cmd TAG TAIL_LINES COMMAND -> the guest command line
+    printf '%s > /var/log/kryptik/%s-suite.log 2>&1; echo %s-RC=$?; tail -%s /var/log/kryptik/%s-suite.log; grep -n -A3 "^ *FAIL" /var/log/kryptik/%s-suite.log | sed "s/^/%s-FAIL: /" | head -80' \
+        "$3" "${1,,}" "$1" "$2" "${1,,}" "${1,,}" "$1"
+}
 drive 1800 \
-    "$(ROOTSH 'cd /usr/lib/kryptik/compartments/tests && KRYPTIKD=/usr/bin/kryptikd KRYPTIK_SKIP_STALE_CHECK=1 NO_COLOR=1 bash ./launcher.sh > /var/log/kryptik/launcher-suite.log 2>&1; echo LAUNCHER-RC=$?; tail -12 /var/log/kryptik/launcher-suite.log')" "expect:LAUNCHER-RC=[0-9]+" \
-    "$(ROOTSH 'cd /usr/lib/kryptik/compartments/tests && KRYPTIKD=/usr/bin/kryptikd NO_COLOR=1 bash ./adversarial.sh > /var/log/kryptik/adversarial-suite.log 2>&1; echo ADVERSARIAL-RC=$?; tail -6 /var/log/kryptik/adversarial-suite.log')" "expect:ADVERSARIAL-RC=[0-9]+" \
-    "$(ROOTSH 'cd /usr/lib/kryptik/compartments/kryptikd/probes && NO_COLOR=1 bash ./boundary-checks.sh /usr/bin/kryptikd > /var/log/kryptik/boundary-suite.log 2>&1; echo BOUNDARY-RC=$?; tail -6 /var/log/kryptik/boundary-suite.log')" "expect:BOUNDARY-RC=[0-9]+" \
-    "$(ROOTSH 'cd /usr/lib/kryptik/compartments/tests && KRYPTIKD=/usr/bin/kryptikd NO_COLOR=1 bash ./cli.sh > /var/log/kryptik/cli-suite.log 2>&1; echo CLI-RC=$?; tail -4 /var/log/kryptik/cli-suite.log')" "expect:CLI-RC=[0-9]+"
+    "$(ROOTSH "$(suite_cmd LAUNCHER 12 'cd /usr/lib/kryptik/compartments/tests && KRYPTIKD=/usr/bin/kryptikd KRYPTIK_SKIP_STALE_CHECK=1 NO_COLOR=1 bash ./launcher.sh')")" "expect:LAUNCHER-RC=[0-9]+" \
+    "$(ROOTSH "$(suite_cmd ADVERSARIAL 6 'cd /usr/lib/kryptik/compartments/tests && KRYPTIKD=/usr/bin/kryptikd NO_COLOR=1 bash ./adversarial.sh')")" "expect:ADVERSARIAL-RC=[0-9]+" \
+    "$(ROOTSH "$(suite_cmd BOUNDARY 6 'cd /usr/lib/kryptik/compartments/kryptikd/probes && NO_COLOR=1 bash ./boundary-checks.sh /usr/bin/kryptikd')")" "expect:BOUNDARY-RC=[0-9]+" \
+    "$(ROOTSH "$(suite_cmd CLI 4 'cd /usr/lib/kryptik/compartments/tests && KRYPTIKD=/usr/bin/kryptikd NO_COLOR=1 bash ./cli.sh')")" "expect:CLI-RC=[0-9]+"
 rc=$?
 T3="$(txt)"
 [[ "$rc" -eq 0 ]] && green "all four suites ran" || red "a suite did not run to its end"
 for s in LAUNCHER ADVERSARIAL BOUNDARY CLI; do
     code="$(grep -o "${s}-RC=[0-9]*" <<<"$T3" | tail -1 | cut -d= -f2)"
-    if [[ "$code" = 0 ]]; then green "${s,,} suite exit 0"; else red "${s,,} suite exit ${code:-none}"; fi
+    if [[ "$code" = 0 ]]; then
+        green "${s,,} suite exit 0"
+    else
+        red "${s,,} suite exit ${code:-none}"
+        grep "^${s}-FAIL: " <<<"$T3" | sed "s/^${s}-FAIL: /        /"
+    fi
 done
 # The launcher suite's [vm] network group (NETR) moves the physical NIC into
 # a fixture zone; on the installed system the real net zone already holds
