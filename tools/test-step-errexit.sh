@@ -35,6 +35,13 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PASS=0
 FAIL=0
 
+# This suite asserts step()'s DEFAULT behaviour: a changed input is refused,
+# not silently rebuilt. `make acceptance` (and any build run) exports
+# KRYPTIK_STALE=rebuild, which would turn every "is refused" case into a
+# rebuild and fail it. Neutralise the ambient value; the cases that test the
+# rebuild path set KRYPTIK_STALE=rebuild themselves, per invocation.
+unset KRYPTIK_STALE
+
 green() { printf '\033[32m  PASS\033[0m  %s\n' "$1"; PASS=$((PASS + 1)); }
 red()   { printf '\033[31m  FAIL\033[0m  %s\n' "$1"; FAIL=$((FAIL + 1)); }
 

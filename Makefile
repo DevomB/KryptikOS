@@ -388,12 +388,20 @@ compositor-test:
 # default), in one run with one verdict and a report. Needs root: the chroot
 # proofs and the VM drivers. EXPORT=DIR copies the tested media, hashes,
 # trust material, revision, report and instructions there and verifies the
-# copies. PAYLOAD_A/PAYLOAD_B default to the payload directory matching
-# MEDIA_USB's version and the newest other one.
+# copies. With no media or payloads named, acceptance.sh chooses the two
+# releases itself: B the highest version built, A the highest below it, so
+# the update test applies a newer release over an older one. MEDIA_USB and
+# MEDIA_ISO default (elsewhere) to the NEWEST image for the single-medium
+# targets; that default must NOT reach acceptance, or A becomes the newer
+# release and the update test refuses its own payload as a downgrade. So
+# they are forwarded only when set explicitly (on the command line or in the
+# environment), never from that default. Name PAYLOAD_A/PAYLOAD_B or a
+# medium explicitly to override the automatic choice.
 EXPORT ?=
 acceptance:
 	@$(SUDO) env $(CHROOT_ENV) "$(TOOLS)"/acceptance.sh \
-	    $(if $(MEDIA_USB),--media-usb "$(MEDIA_USB)") $(if $(MEDIA_ISO),--media-iso "$(MEDIA_ISO)") \
+	    $(if $(filter command line environment,$(origin MEDIA_USB)),--media-usb "$(MEDIA_USB)") \
+	    $(if $(filter command line environment,$(origin MEDIA_ISO)),--media-iso "$(MEDIA_ISO)") \
 	    $(if $(PAYLOAD_A),--payload-a "$(PAYLOAD_A)") $(if $(PAYLOAD_B),--payload-b "$(PAYLOAD_B)") \
 	    $(if $(EXPORT),--export "$(EXPORT)") $(if $(ONLY),--only "$(ONLY)")
 

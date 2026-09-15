@@ -205,6 +205,11 @@ n=40; while [[ "$n" -gt 0 ]] && [[ "$(since_mark trf2 dev)" != *ok* && "$(since_
 out="$(since_mark trf2 dev)"
 [[ "$out" == *"refused by the user"* ]] && pass "transfer-denied" "after the person said no: refused" || fail "transfer-denied" "$(echo "$out" | tail -2 | tr '\n' ' ')"
 [[ -e "$R/work/incoming/report2.txt" ]] && fail "denied-file-absent" "the refused file landed anyway" || pass "denied-file-absent" "nothing landed"
+# The broker withdraws its .ask and .answer as soon as the person answers;
+# the chrome's watcher then removes its own .dialog bookkeeping on its next
+# one-second pass. Give it that moment before asserting the channel is clean,
+# or the just-answered dialog is still there when we look.
+n=20; while [[ "$n" -gt 0 && -n "$(questions)" ]]; do n=$((n - 1)); sleep 1; done
 [[ -z "$(questions)" ]] && pass "consent-cleaned" "no question left behind" || fail "consent-cleaned" "$(questions | tr '
 ' ' ')"
 
