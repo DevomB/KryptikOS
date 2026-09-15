@@ -71,7 +71,7 @@ t "findutils"   "4.10.0"        find --version
 t "diffutils"   "3.10"          diff --version
 t "xz"          "5.8.4"         xz --version
 t "zstd"        "1.5.6"         zstd --version
-t "openssl"     "3.3.1"         openssl version
+t "openssl"     "3.5.8"         openssl version
 t "perl"        "v5.40.0"       perl --version
 t "python3"     "3.12.5"        python3 --version
 t "pkg-config"  "2.3.0"         pkg-config --version

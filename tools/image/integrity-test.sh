@@ -214,10 +214,17 @@ fi
 cp "$ENROLLED" "$VARSF"
 SERVE="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --name integ-p5 "${EXTRA[@]}")"
 SER="$(sed -n 's/^serial=//p' <<<"$SERVE")"; PIDF="$(sed -n 's/^pid=//p' <<<"$SERVE")"; LOG5="$(sed -n 's/^log=//p' <<<"$SERVE")"
+# What the guest must show: the planted kryptik/ directory (anchor and zone)
+# is in the quarantine and gone from /etc, and the anchor the updater reads -
+# /usr/share/kryptik/trust/release-signers, on the verified root - still
+# names the release key. (/etc/kryptik/trust never existed in the lower
+# layer; only the planted copy put it there.)
 python3 "$DRV" --serial "$SER" --timeout 300 \
     "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
-    "grab:overlay:grep -c attacker /etc/kryptik/trust/release-signers; ls /var/lib/kryptik/etc/quarantine/ 2>&1 | head -8" \
-    "run:grep -q '^kryptik-release ' /etc/kryptik/trust/release-signers" \
+    "grab:overlay:ls /etc/kryptik/ /var/lib/kryptik/etc/quarantine/ 2>&1 | head -12" \
+    "run:test ! -e /etc/kryptik/trust/release-signers" \
+    "run:grep -q '^kryptik-release ' /usr/share/kryptik/trust/release-signers" \
+    "run:ls /var/lib/kryptik/etc/quarantine/ | grep -q '^kryptik'" \
     "run:test ! -e /etc/kryptik/zones/evil.toml" \
     "run:test ! -e /etc/ld.so.preload" \
     "run:test ! -e /etc/udev/rules.d/99-evil.rules" \

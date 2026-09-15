@@ -39,7 +39,16 @@ export NO_COLOR=1
 # shellcheck source=/dev/null
 source "${ROOT}/build/lib/common.sh"
 trap - ERR; set +e
-[[ -d "${HOME:-/root}/.cargo/bin" ]] && PATH="${HOME:-/root}/.cargo/bin:${PATH}"
+# cargo is installed per user by rustup, and `sudo make acceptance` resets
+# PATH and HOME: look in root's home, then in the invoking user's, and point
+# rustup's proxies at that user's toolchains. (On the GitHub runner the
+# toolchain is the runner user's; root has none of its own.)
+for h in "${HOME:-/root}" "$(getent passwd "${SUDO_USER:-}" 2>/dev/null | cut -d: -f6)"; do
+    [[ -n "$h" && -d "$h/.cargo/bin" ]] || continue
+    PATH="$h/.cargo/bin:${PATH}"
+    [[ -z "${RUSTUP_HOME:-}" && -d "$h/.rustup" ]] && export RUSTUP_HOME="$h/.rustup"
+    break
+done
 export PATH KRYPTIK_ROOT="$ROOT" KRYPTIK_WORK KRYPTIK_SOURCES
 
 MEDIA_USB=""; MEDIA_ISO=""; PAYLOAD_A=""; PAYLOAD_B=""; OUT=""; EXPORT=""; ONLY=""; NOHOST=0
@@ -68,6 +77,26 @@ SYSROOT="${KRYPTIK_WORK}/sysroot"
 
 # ---------------------------------------------------------------- inputs --
 newest() { ls -t "$@" 2>/dev/null | head -1; }
+# Two releases on hand: the update test installs A from its medium and
+# applies B, so B is the highest version that has a payload and A the
+# highest below it that has a medium - whichever of the two was built
+# first. (Chosen by modification time alone, a B built after A became A,
+# and the update was refused as a downgrade.) Explicit inputs win.
+if [[ -z "$MEDIA_USB" && -z "$PAYLOAD_A" && -z "$PAYLOAD_B" ]]; then
+    versions=()
+    for d in "${IMGDIR}"/payload-*; do [[ -d "$d" ]] && versions+=("${d##*/payload-}"); done
+    mapfile -t versions < <(printf '%s\n' "${versions[@]}" | sort -V)
+    if [[ "${#versions[@]}" -ge 2 ]]; then
+        for ((i = ${#versions[@]} - 2; i >= 0; i--)); do
+            [[ -f "${IMGDIR}/kryptik-${versions[$i]}-usb.img" ]] || continue
+            MEDIA_USB="${IMGDIR}/kryptik-${versions[$i]}-usb.img"
+            PAYLOAD_A="${IMGDIR}/payload-${versions[$i]}"
+            PAYLOAD_B="${IMGDIR}/payload-${versions[-1]}"
+            [[ -z "$MEDIA_ISO" && -f "${IMGDIR}/kryptik-${versions[$i]}.iso" ]] && MEDIA_ISO="${IMGDIR}/kryptik-${versions[$i]}.iso"
+            break
+        done
+    fi
+fi
 [[ -z "$MEDIA_USB" ]] && MEDIA_USB="$(newest "${IMGDIR}"/kryptik-*-usb.img)"
 [[ -z "$MEDIA_ISO" ]] && MEDIA_ISO="$(newest "${IMGDIR}"/kryptik-*.iso)"
 VER_A=""
