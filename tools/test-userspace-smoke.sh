@@ -31,8 +31,20 @@ mkdir -p "$WORK/logs"
 LOG="$WORK/logs/userspace-smoke.$(date +%Y%m%dT%H%M%S).log"
 ln -sfn "$LOG" "$WORK/logs/userspace-smoke.latest.log"
 
-cat > /tmp/kryptik-smoke-inner.sh <<'INNER'
-#!/bin/bash
+# The versions the checks below expect come from the build contract itself,
+# build/config/versions.env - the one place a pin lives. This file used to
+# carry its own copies, and one fell behind an upgrade (OpenSSL 3.3 to 3.5)
+# while the build was right. They go into the head of the inner script,
+# which runs inside the chroot and cannot read the repository's copy.
+# shellcheck source=/dev/null
+. "$WT/build/config/versions.env"
+{
+    echo '#!/bin/bash'
+    for v in GLIBC BASH COREUTILS SED GREP GAWK TAR FINDUTILS DIFFUTILS XZ ZSTD OPENSSL PERL PYTHON PKGCONF KMOD; do
+        n="V_$v"; printf '%s=%q\n' "$n" "${!n:?versions.env does not define $n}"
+    done
+} > /tmp/kryptik-smoke-inner.sh
+cat >> /tmp/kryptik-smoke-inner.sh <<'INNER'
 # Runs INSIDE the chroot. Deliberately writes nothing outside /run.
 fail=0
 ok()   { printf '  PASS  %s\n' "$1"; }
@@ -56,26 +68,26 @@ t "uname is x86_64"                 "x86_64"            uname -m
 
 echo
 echo "== the C library and loader =="
-t "glibc reports its version"       "2.40"              /usr/lib/libc.so.6 --version
+t "glibc reports its version"       "$V_GLIBC"              /usr/lib/libc.so.6 --version
 t "ldd works"                       "libc.so.6"         ldd /usr/bin/bash
 
 echo
 echo "== core userland actually executes =="
-t "bash"        "5.2.32"        bash --version
-t "coreutils"   "9.5"           ls --version
-t "sed"         "4.9"           sed --version
-t "grep"        "3.11"          grep --version
-t "gawk"        "5.3.0"         gawk --version
-t "tar"         "1.35"          tar --version
-t "findutils"   "4.10.0"        find --version
-t "diffutils"   "3.10"          diff --version
-t "xz"          "5.8.4"         xz --version
-t "zstd"        "1.5.6"         zstd --version
-t "openssl"     "3.5.8"         openssl version
-t "perl"        "v5.40.0"       perl --version
-t "python3"     "3.12.5"        python3 --version
-t "pkg-config"  "2.3.0"         pkg-config --version
-t "kmod"        "33"            kmod --version
+t "bash"        "$V_BASH"        bash --version
+t "coreutils"   "$V_COREUTILS"           ls --version
+t "sed"         "$V_SED"           sed --version
+t "grep"        "$V_GREP"          grep --version
+t "gawk"        "$V_GAWK"         gawk --version
+t "tar"         "$V_TAR"          tar --version
+t "findutils"   "$V_FINDUTILS"        find --version
+t "diffutils"   "$V_DIFFUTILS"          diff --version
+t "xz"          "$V_XZ"         xz --version
+t "zstd"        "$V_ZSTD"         zstd --version
+t "openssl"     "$V_OPENSSL"         openssl version
+t "perl"        "v$V_PERL"       perl --version
+t "python3"     "$V_PYTHON"        python3 --version
+t "pkg-config"  "$V_PKGCONF"         pkg-config --version
+t "kmod"        "$V_KMOD"            kmod --version
 t "procps top"    "procps-ng"     top -V
 t "iproute2"    "ip utility"    ip -V
 t "shadow"      "Usage: useradd" useradd --help

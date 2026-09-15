@@ -388,15 +388,14 @@ compositor-test:
 # default), in one run with one verdict and a report. Needs root: the chroot
 # proofs and the VM drivers. EXPORT=DIR copies the tested media, hashes,
 # trust material, revision, report and instructions there and verifies the
-# copies. With no media or payloads named, acceptance.sh chooses the two
-# releases itself: B the highest version built, A the highest below it, so
-# the update test applies a newer release over an older one. MEDIA_USB and
-# MEDIA_ISO default (elsewhere) to the NEWEST image for the single-medium
-# targets; that default must NOT reach acceptance, or A becomes the newer
-# release and the update test refuses its own payload as a downgrade. So
-# they are forwarded only when set explicitly (on the command line or in the
-# environment), never from that default. Name PAYLOAD_A/PAYLOAD_B or a
-# medium explicitly to override the automatic choice.
+# copies. The release under test is the highest-versioned medium on hand;
+# its payload is release B. PAYLOAD_A defaults to the previous release - the
+# highest version below B with a payload and a USB medium - and the update
+# test installs that from its own medium and applies B over it. The
+# single-medium targets above default MEDIA_USB/MEDIA_ISO to the LAST image
+# written, which is not the same rule, so acceptance is handed a medium only
+# when the caller named one (command line or environment) and chooses by
+# version otherwise. PAYLOAD_A/PAYLOAD_B, when given, are taken as they are.
 EXPORT ?=
 acceptance:
 	@$(SUDO) env $(CHROOT_ENV) "$(TOOLS)"/acceptance.sh \
