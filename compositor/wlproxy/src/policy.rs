@@ -61,7 +61,7 @@ pub fn title_for(zone: &str, title: &str) -> String {
 /// cut. The cut lands on a character boundary: a byte count is not a
 /// character count, and `String::truncate` panics inside a multi-byte
 /// sequence - which, with `panic = "abort"` in release, took the whole
-/// proxy down for a title of accented text (docs/OVERNIGHT_RESUME.md).
+/// proxy down for a title of accented text.
 fn bound_utf8(s: &mut String, max: usize) {
     if s.len() <= max {
         return;

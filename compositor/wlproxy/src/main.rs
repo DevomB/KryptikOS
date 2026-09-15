@@ -111,7 +111,7 @@ fn main() {
         // and why the service loop is bounded by `polled`, not by the
         // vector's current length. The first version accepted first and
         // then indexed the old array for the new session too: index out of
-        // bounds on the very first client (docs/OVERNIGHT_RESUME.md).
+        // bounds on the very first client.
         let polled = sessions.len();
         let mut fds: Vec<libc::pollfd> = Vec::with_capacity(1 + 2 * polled);
         fds.push(libc::pollfd { fd: listener.as_raw_fd(), events: if polled < o.max_clients { libc::POLLIN } else { 0 }, revents: 0 });

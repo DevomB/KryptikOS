@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# make acceptance: the gates G1-G10 of docs/OVERNIGHT_GOAL.md, run against
+# make acceptance: the G1-G10 acceptance gates, run against
 # named artifacts in one invocation, with one verdict and a report that ties
 # every result to the source revision, the image hashes, the firmware, the
 # command, the exit status and the log.
