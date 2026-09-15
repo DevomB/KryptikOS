@@ -195,9 +195,14 @@ txt | grep -q "version_id=${VB}" && green "guest reports ${VB} after rollback" |
 
 # ---------------------------------------------------------------- phase 6 --
 phase "phase 6: interruption during the slot write, then after arming"
+# The copy is synced before the updater starts. The kill below discards the
+# guest's page cache, and on 55904d05 the copy had reached the disk only in
+# part (kryptik-root.img 1666211840 of 2754519040 bytes), so the re-apply
+# after the reboot refused its own payload as truncated. The interruption
+# under test is the slot write, not the operator's copy.
 start_vm update-p6 --disk "$PA"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
-    "$(ROOTSH 'mkdir -p /run/upd/a /var/lib/kryptik/updates/a && mount -o ro /dev/vdb /run/upd/a && cp -a /run/upd/a/. /var/lib/kryptik/updates/a/ && umount /run/upd/a && echo COPY-OK')" "expect:COPY-OK" \
+    "$(ROOTSH 'mkdir -p /run/upd/a /var/lib/kryptik/updates/a && mount -o ro /dev/vdb /run/upd/a && cp -a /run/upd/a/. /var/lib/kryptik/updates/a/ && umount /run/upd/a && sync && echo COPY-OK')" "expect:COPY-OK" \
     "send:su - root -c 'kryptik-update apply /var/lib/kryptik/updates/a --recovery'" "expect:Password: ?" "send:${RPASS}" \
     "expect:writing kryptik-a"
 python3 - "$QMP" <<'PY'

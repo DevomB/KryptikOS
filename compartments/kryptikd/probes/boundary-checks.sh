@@ -186,9 +186,12 @@ MATCH="absolute" checkz relfs "E11 a Landlock policy naming a relative path is r
 # ---------------------------------------------------------------------------
 head_ "F. Guarantees a build cannot give are refused, not implied"
 
-# Unprivileged the refusal names storage.mode (no LUKS without root); as root
-# the volume would be opened, and the first thing missing is the passphrase.
-MATCH="storage.mode\|passphrase is needed" checkz sealed "F1  a zone declaring encrypted storage does not start on a plain directory" 1 /bin/sh -c "echo RAN-ANYWAY"
+# Both refusals name the reason the same way: unprivileged, that a LUKS2
+# volume needs a root launch (no plain directory instead); as root, that the
+# volume would be opened and the passphrase is the first thing missing. The
+# older pattern here matched the unprivileged wording of before eef20e9, so
+# this row failed on every developer host while passing on the target.
+MATCH="is encrypted:" checkz sealed "F1  a zone declaring encrypted storage does not start on a plain directory" 1 /bin/sh -c "echo RAN-ANYWAY"
 if "$K" run capped "${ZFLAGS[@]}" "${IDFLAGS[@]}" --zones "$F/zones" --rootfs "$F/roots" -- /bin/sh -c "echo LIMITS-RAN" 2>&1 | grep -q LIMITS-RAN; then
     pass "F2  [limits] is enforced here: cgroups are creatable and the zone ran"
 else
@@ -242,18 +245,31 @@ s.sendmsg([("transfer %s %s\n"%(dest,name)).encode()],[(socket.SOL_SOCKET,socket
 print(s.recv(300).decode().strip())'
 
 # G7/G8: the real thing, between two zones running at the same time. `packet`
-# waits and then reports what arrived; `probe` offers a file from its own home.
-"$K" run packet "${ZFLAGS[@]}" "${IDFLAGS[@]}" --zones "$F/zones" --rootfs "$F/roots" -- /usr/bin/python3 -c "
+# says when it is up, waits for the file and reports what arrived; `probe`
+# offers a file from its own home once packet is up. Both waits are bounded
+# polls rather than fixed sleeps: a zone is up well within a second on a
+# developer host and can take several on the acceptance runner's nested VM,
+# and a sleep sized on the one measures the other's speed, not the transfer.
+# The broker creates the file under its final name and then fills it, so an
+# empty file is one still landing.
+"$K" run packet "${ZFLAGS[@]}" "${IDFLAGS[@]}" --zones "$F/zones" --rootfs "$F/roots" -- /usr/bin/python3 -u -c "
 import os,time
-time.sleep(6)
+print('PACKET-UP')
 d='/home/packet/incoming'
+p=d+'/report.txt'
+end=time.time()+90
+while time.time()<end and not (os.path.exists(p) and os.path.getsize(p)>0):
+    time.sleep(0.2)
 if os.path.isdir(d):
-    p=d+'/report.txt'
     print('ARRIVED', ','.join(sorted(os.listdir(d))), open(p).read().strip() if os.path.exists(p) else '-', oct(os.stat(p).st_mode & 0o777) if os.path.exists(p) else '-')
 else:
     print('ARRIVED none')" > "$F/dest.out" 2>&1 &
 DEST=$!
-sleep 2
+for _ in $(seq 1 300); do
+    grep -q '^PACKET-UP' "$F/dest.out" 2>/dev/null && break
+    kill -0 "$DEST" 2>/dev/null || break
+    sleep 0.1
+done
 ZFLAGS=(--auto-approve-transfers)
 MATCH="^ok report.txt$" check "G7  a zone offers a file from its data mount and learns the name it landed under" 0 /bin/sh -c "echo payload-42 > /home/probe/report.txt && python3 -c '$TX' packet report.txt /home/probe/report.txt 0"
 wait $DEST
@@ -276,13 +292,34 @@ MATCH="single path component" check "G14 a name carrying a path separator is ref
 # ---------------------------------------------------------------------------
 head_ "H. The zone dies with its launcher"
 
+# The marker is argv[0] of the zone's command, so `pgrep -f "^$MARK"` finds
+# that process and nothing else: the launcher's own command line carries the
+# marker too, further along. Each wait is a bounded poll, not a fixed sleep,
+# so a slow host measures the property and not itself: the zone is up
+# before its launcher is signalled (a launcher killed during setup proves
+# less), and it is given a moment to be gone.
 MARK="kryptik-probe-sleep-$$"
-"$K" run probe "${IDFLAGS[@]}" --zones "$F/zones" --rootfs "$F/roots" -- /bin/sh -c "exec -a $MARK sleep 300" >/dev/null 2>&1 &
-P=$!
-sleep 2; kill -9 "$P" 2>/dev/null; sleep 1
-if pgrep -f "$MARK" >/dev/null; then fail "H1  a zone process outlived a SIGKILLed launcher"; pkill -9 -f "$MARK"; else pass "H1  the zone dies when its launcher is SIGKILLed"; fi
-timeout 2 "$K" run probe "${IDFLAGS[@]}" --zones "$F/zones" --rootfs "$F/roots" -- /bin/sh -c "exec -a $MARK sleep 300" >/dev/null 2>&1; sleep 1
-if pgrep -f "$MARK" >/dev/null; then fail "H2  a zone process outlived a SIGTERMed launcher"; pkill -9 -f "$MARK"; else pass "H2  the zone dies when its launcher is SIGTERMed"; fi
+zone_up()   { for _ in $(seq 1 300); do pgrep -f "^$MARK" >/dev/null && return 0; kill -0 "$1" 2>/dev/null || return 1; sleep 0.1; done; return 1; }
+zone_gone() { for _ in $(seq 1 100); do pgrep -f "^$MARK" >/dev/null || return 0; sleep 0.1; done; return 1; }
+# dies_with SIG NAME: launch, wait for the zone, signal the launcher, wait.
+dies_with() {
+    local sig="$1" name="$2" p
+    "$K" run probe "${IDFLAGS[@]}" --zones "$F/zones" --rootfs "$F/roots" -- /bin/sh -c "exec -a $MARK sleep 300" > "$F/h.out" 2>&1 &
+    p=$!
+    if ! zone_up "$p"; then
+        fail "$name  the zone never came up, so there was no launcher to signal" "$(denoise < "$F/h.out" | tail -3)"
+    else
+        kill "-$sig" "$p" 2>/dev/null
+        if zone_gone; then
+            pass "$name  the zone dies when its launcher is SIG${sig}ed"
+        else
+            fail "$name  a zone process outlived a SIG${sig}ed launcher"; pkill -9 -f "^$MARK"
+        fi
+    fi
+    wait "$p" 2>/dev/null
+}
+dies_with KILL H1
+dies_with TERM H2
 
 # ---------------------------------------------------------------------------
 head_ "I. What only a privileged run on the target kernel can show"
