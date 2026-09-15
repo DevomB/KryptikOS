@@ -193,6 +193,11 @@ n=40; while [[ "$n" -gt 0 ]] && [[ "$(since_mark trf1 dev)" != *ok* && "$(since_
 out="$(since_mark trf1 dev)"
 [[ "$out" == *"ok report.txt"* ]] && pass "transfer-approved" "after the person said yes: $(echo "$out" | grep -o 'ok .*' | head -1)" || fail "transfer-approved" "$(echo "$out" | tail -2 | tr '\n' ' ')"
 if [[ -f "$R/work/incoming/report.txt" ]] && [[ "$(cat "$R/work/incoming/report.txt")" = report-body ]]; then pass "transfer-landed" "the file is in work's incoming/, byte-identical"; else fail "transfer-landed" "$(ls -la "$R/work/incoming" 2>&1 | tail -2 | tr '\n' ' ')"; fi
+# dev's launcher returns once the transfer command has run, and an encrypted
+# zone then closes its volume; a second launch into dev before that meets
+# "already running (launcher pid N)" (one instance per zone). Wait for the
+# registry to drop it, as for personal above.
+wait_for 30 test ! -e /run/kryptik/zones/dev/init.pid; sleep 1
 mark trf2 dev
 echo "GT CONSENT-WAIT 2"
 launch dev "sh -c 'echo secret2 > \$HOME/report2.txt; python3 $BC transfer work report2.txt \$HOME/report2.txt'" > "$LOG/trf2.out" 2>&1
