@@ -76,41 +76,49 @@ IMG="${SELF}/image"
 SYSROOT="${KRYPTIK_WORK}/sysroot"
 
 # ---------------------------------------------------------------- inputs --
+# The release under test is the highest-versioned medium on hand, or the
+# one named (the version, not the file's age: the build's own order is A
+# then B, and a medium is what it says it is whichever was written last):
+# every gate boots, installs and exports THAT, and its payload is release B,
+# the one the update test arrives at. Release A is the previous release: the
+# highest version below B that has both a payload and a USB medium. The
+# update test installs A from A's own medium and applies B over it.
+# (Taking the medium's release as A and "the other payload" as B chose, on
+# a tree where B was built after A, the newer one as A - and the update test
+# refused its own payload as a downgrade. Pointing every gate at the older
+# medium instead would have tested and exported the previous release.)
+# Explicit --media-*/--payload-* win. A lone release is B with no A, and
+# the update test says so rather than running.
 newest() { ls -t "$@" 2>/dev/null | head -1; }
-# Two releases on hand: the update test installs A from its medium and
-# applies B, so B is the highest version that has a payload and A the
-# highest below it that has a medium - whichever of the two was built
-# first. (Chosen by modification time alone, a B built after A became A,
-# and the update was refused as a downgrade.) Explicit inputs win.
-if [[ -z "$MEDIA_USB" && -z "$PAYLOAD_A" && -z "$PAYLOAD_B" ]]; then
-    versions=()
-    for d in "${IMGDIR}"/payload-*; do [[ -d "$d" ]] && versions+=("${d##*/payload-}"); done
-    mapfile -t versions < <(printf '%s\n' "${versions[@]}" | sort -V)
-    if [[ "${#versions[@]}" -ge 2 ]]; then
-        for ((i = ${#versions[@]} - 2; i >= 0; i--)); do
-            [[ -f "${IMGDIR}/kryptik-${versions[$i]}-usb.img" ]] || continue
-            MEDIA_USB="${IMGDIR}/kryptik-${versions[$i]}-usb.img"
-            PAYLOAD_A="${IMGDIR}/payload-${versions[$i]}"
-            PAYLOAD_B="${IMGDIR}/payload-${versions[-1]}"
-            [[ -z "$MEDIA_ISO" && -f "${IMGDIR}/kryptik-${versions[$i]}.iso" ]] && MEDIA_ISO="${IMGDIR}/kryptik-${versions[$i]}.iso"
-            break
-        done
+version_of_medium()  { local b; b="$(basename "$1")"; b="${b#kryptik-}"; printf '%s' "${b%-usb.img}"; }
+version_of_payload() { local b; b="$(basename "$1")"; printf '%s' "${b#payload-}"; }
+if [[ -z "$MEDIA_USB" ]]; then
+    media=()
+    for f in "${IMGDIR}"/kryptik-*-usb.img; do [[ -f "$f" ]] && media+=("$(version_of_medium "$f")"); done
+    if [[ "${#media[@]}" -gt 0 ]]; then
+        mapfile -t media < <(printf '%s\n' "${media[@]}" | sort -V)
+        MEDIA_USB="${IMGDIR}/kryptik-${media[-1]}-usb.img"
     fi
 fi
-[[ -z "$MEDIA_USB" ]] && MEDIA_USB="$(newest "${IMGDIR}"/kryptik-*-usb.img)"
+VER=""; [[ -n "$MEDIA_USB" ]] && VER="$(version_of_medium "$MEDIA_USB")"
+[[ -z "$MEDIA_ISO" && -n "$VER" && -f "${IMGDIR}/kryptik-${VER}.iso" ]] && MEDIA_ISO="${IMGDIR}/kryptik-${VER}.iso"
 [[ -z "$MEDIA_ISO" ]] && MEDIA_ISO="$(newest "${IMGDIR}"/kryptik-*.iso)"
-VER_A=""
-if [[ -n "$MEDIA_USB" ]]; then b="$(basename "$MEDIA_USB")"; VER_A="${b#kryptik-}"; VER_A="${VER_A%-usb.img}"; fi
-[[ -z "$PAYLOAD_A" && -n "$VER_A" && -d "${IMGDIR}/payload-${VER_A}" ]] && PAYLOAD_A="${IMGDIR}/payload-${VER_A}"
-if [[ -z "$PAYLOAD_B" ]]; then
-    # Newest payload directory that is not A (mtime order, newest first).
-    while IFS= read -r d; do
-        [[ -d "$d" && "$d" != "$PAYLOAD_A" ]] && { PAYLOAD_B="$d"; break; }
-    done < <(find "$IMGDIR" -maxdepth 1 -type d -name 'payload-*' -printf '%T@ %p
-' 2>/dev/null | sort -rn | cut -d' ' -f2-)
+[[ -z "$PAYLOAD_B" && -n "$VER" && -d "${IMGDIR}/payload-${VER}" ]] && PAYLOAD_B="${IMGDIR}/payload-${VER}"
+VER_B=""; [[ -n "$PAYLOAD_B" ]] && VER_B="$(version_of_payload "$PAYLOAD_B")"
+if [[ -z "$PAYLOAD_A" && -n "$VER_B" ]]; then
+    versions=()
+    for d in "${IMGDIR}"/payload-*; do [[ -d "$d" ]] && versions+=("$(version_of_payload "$d")"); done
+    mapfile -t versions < <(printf '%s\n' "${versions[@]}" "$VER_B" | sort -uV)
+    idx=-1
+    for ((i = 0; i < ${#versions[@]}; i++)); do [[ "${versions[$i]}" == "$VER_B" ]] && idx=$i; done
+    for ((i = idx - 1; i >= 0; i--)); do
+        [[ -f "${IMGDIR}/kryptik-${versions[$i]}-usb.img" ]] || continue
+        PAYLOAD_A="${IMGDIR}/payload-${versions[$i]}"
+        break
+    done
 fi
-VER_B=""
-if [[ -n "$PAYLOAD_B" ]]; then VER_B="$(basename "$PAYLOAD_B")"; VER_B="${VER_B#payload-}"; fi
+VER_A=""; [[ -n "$PAYLOAD_A" ]] && VER_A="$(version_of_payload "$PAYLOAD_A")"
+MEDIA_USB_A=""; [[ -n "$VER_A" && -f "${IMGDIR}/kryptik-${VER_A}-usb.img" ]] && MEDIA_USB_A="${IMGDIR}/kryptik-${VER_A}-usb.img"
 
 sha_of() { sha256sum "$1" | cut -c1-64; }
 H_USB=""; H_ISO=""
@@ -205,9 +213,12 @@ need_ms() {
 }
 need_update() {
     local r; r="$(need_vm)"; [[ -n "$r" ]] && { echo "$r"; return; }
-    [[ -n "$PAYLOAD_A" && -f "${PAYLOAD_A}/manifest" ]] || { echo "no payload for release A (${PAYLOAD_A:-none}); make media writes images/payload-VERSION"; return; }
-    [[ -n "$PAYLOAD_B" && -f "${PAYLOAD_B}/manifest" ]] || { echo "no second release to update to: make media KRYPTIK_VERSION=... once more"; return; }
-    [[ "$VER_A" != "$VER_B" ]] || echo "release A and B carry the same version (${VER_A})"
+    [[ -n "$PAYLOAD_B" && -f "${PAYLOAD_B}/manifest" ]] || { echo "no payload for the release under test (${VER:-unknown}); make media writes images/payload-VERSION"; return; }
+    [[ -n "$PAYLOAD_A" && -f "${PAYLOAD_A}/manifest" ]] || { echo "no previous release to update from: none below ${VER_B} has a payload and a USB medium (make media KRYPTIK_VERSION=<older> once more)"; return; }
+    [[ -f "$MEDIA_USB_A" ]] || { echo "no USB medium for the previous release ${VER_A} (images/kryptik-${VER_A}-usb.img)"; return; }
+    [[ "$VER_A" != "$VER_B" ]] || { echo "release A and B carry the same version (${VER_A})"; return; }
+    [[ "$(printf '%s\n' "$VER_A" "$VER_B" | sort -V | tail -1)" == "$VER_B" ]] \
+        || echo "release A (${VER_A}) is not older than B (${VER_B}); the update test applies a newer release over an older one"
 }
 need_cargo()   { have cargo || echo "no cargo on PATH"; }
 need_sources() { [[ -d "$KRYPTIK_SOURCES" && -f "${ROOT}/sources.lock" ]] || echo "no sources directory or sources.lock"; }
@@ -271,7 +282,7 @@ it_state()         { "${IMG}/state-test.sh" --usb "$MEDIA_USB"; }
 it_integrity()     { "${IMG}/integrity-test.sh" --usb "$MEDIA_USB"; }
 it_zones()         { "${IMG}/zones-test.sh" --usb "$MEDIA_USB"; }
 it_gui()           { "${IMG}/gui-test.sh" --usb "$MEDIA_USB"; }
-it_update()        { "${IMG}/update-test.sh" --usb-a "$MEDIA_USB" --payload-a "$PAYLOAD_A" --payload-b "$PAYLOAD_B" --vars clean; }
+it_update()        { "${IMG}/update-test.sh" --usb-a "$MEDIA_USB_A" --payload-a "$PAYLOAD_A" --payload-b "$PAYLOAD_B" --vars clean; }
 
 # Every boot this run started, read back from the runner's own record: the
 # firmware image, a variable store, disks and a serial line - and none of
@@ -293,7 +304,8 @@ echo "Kryptik acceptance ${START_TS}"
 echo "  tree      : ${ROOT} @ ${REV_DESC}"
 echo "  media usb : ${MEDIA_USB:-none}${H_USB:+ sha256 $H_USB}"
 echo "  media iso : ${MEDIA_ISO:-none}${H_ISO:+ sha256 $H_ISO}"
-echo "  payload A : ${PAYLOAD_A:-none}   payload B: ${PAYLOAD_B:-none}"
+echo "  release   : ${VER:-none} (its payload is release B: ${PAYLOAD_B:-none})"
+echo "  update    : from A ${VER_A:-none} (${MEDIA_USB_A:-no medium}; ${PAYLOAD_A:-no payload}) to B ${VER_B:-none}"
 echo "  firmware  : ${FW} ${H_FW:+sha256 $H_FW} (${FW_PKG}); ${QEMU_VER}; kvm=${KVM}"
 echo "  output    : ${OUT}"
 
@@ -345,7 +357,8 @@ write_report() {
         echo "| tree | ${ROOT} |"
         echo "| USB medium | ${MEDIA_USB:-none}${H_USB:+ (sha256 \`$H_USB\`)} |"
         echo "| ISO | ${MEDIA_ISO:-none}${H_ISO:+ (sha256 \`$H_ISO\`)} |"
-        echo "| release A / B | ${VER_A:-none} / ${VER_B:-none} (${PAYLOAD_A:-no payload}; ${PAYLOAD_B:-no payload}) |"
+        echo "| release under test | ${VER:-none} (payload B: ${PAYLOAD_B:-none}) |"
+        echo "| update test, A to B | ${VER_A:-none} (medium ${MEDIA_USB_A:-none}; ${PAYLOAD_A:-no payload}) to ${VER_B:-none} |"
         echo "| kernel (as the medium reported it) | ${KERNEL_LINE:-not observed} |"
         echo "| firmware | ${FW}${H_FW:+ (sha256 \`$H_FW\`)}; ${FW_PKG} |"
         echo "| QEMU | ${QEMU_VER}; kvm=${KVM} |"
@@ -394,9 +407,9 @@ it_export() {
         cp --sparse=always "$f" "${d}/" || ok=1
         [[ -f "${f}.sha256" ]] && cp "${f}.sha256" "${d}/"
     done
-    # root.json from release A's payload, not images/root.json: a second
-    # release built after A overwrites the latter with its own record.
-    if [[ -n "$PAYLOAD_A" && -f "${PAYLOAD_A}/root.json" ]]; then cp "${PAYLOAD_A}/root.json" "${d}/"
+    # root.json from the payload of the release under test (B), not
+    # images/root.json: whichever release was built last overwrote that.
+    if [[ -n "$PAYLOAD_B" && -f "${PAYLOAD_B}/root.json" ]]; then cp "${PAYLOAD_B}/root.json" "${d}/"
     elif [[ -f "${IMGDIR}/root.json" ]]; then cp "${IMGDIR}/root.json" "${d}/"; fi
     for f in "${KRYPTIK_WORK}/keys/sb/kryptik-sb.crt" "${KRYPTIK_WORK}/keys/sb/kryptik-sb.der"; do
         if [[ -f "$f" ]]; then cp "$f" "${d}/"; else echo "  missing trust material: $f"; ok=1; fi
@@ -431,7 +444,7 @@ if [[ -n "$EXPORT" ]] || wanted G10; then
     if [[ -n "$EXPORT" && -d "$EXPORT" ]]; then
         cp "${OUT}/REPORT.md" "${EXPORT}/ACCEPTANCE-REPORT.md"
         {
-            echo "Kryptik ${VER_A:-unknown}"
+            echo "Kryptik ${VER:-unknown}"
             echo "acceptance : ${V} (${START_TS}; see ACCEPTANCE-REPORT.md)"
             echo "revision   : ${REV}"
             echo "usb image  : $(basename "${MEDIA_USB:-none}") sha256 ${H_USB:-none}"
