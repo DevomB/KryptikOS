@@ -1,9 +1,9 @@
 # Kryptik run status (2026-09-13 to 2026-09-14)
 
-Authoritative run record for the scope in `docs/OVERNIGHT_GOAL.md`. Superseded
-facts are replaced, not appended. Raw logs live under the ignored build output
-named below, never in Git. The work is ongoing development on `main`; the
-"overnight" in the file names is historical.
+Authoritative run record for the G1-G10 acceptance gates in
+`tools/acceptance.sh`. Superseded facts are replaced, not appended. Raw logs
+live under the ignored build output named below, never in Git. The work is
+ongoing development on `main`; the "overnight" in the file name is historical.
 
 ## Acceptance gates
 

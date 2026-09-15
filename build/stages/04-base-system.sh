@@ -1838,7 +1838,7 @@ s_wlroots() {
 #   tools/desktop/dwl-zone-borders.py the change to dwl.c that draws them
 # config.h uses `ZoneColor`, which only the patch introduces, so copying the
 # config without the header and the patch does not build - the first
-# version did exactly that (docs/OVERNIGHT_RESUME.md).
+# version did exactly that.
 s_dwl() {
     local cfg_sha="${1:-none}" colours_sha="${2:-none}" patch_sha="${3:-none}"
     local desk="${KRYPTIK_ROOT}/build/desktop"

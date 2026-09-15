@@ -809,8 +809,29 @@ fn reply(fd: RawFd, text: &str) {
 }
 
 fn send_all(fd: RawFd, mut data: &[u8]) {
+    // A zone may stop reading, including halfway through a large clipboard.
+    // Bound the entire write, not each retry, so slow readers cannot keep
+    // their launcher out of its supervision loop indefinitely.
+    let started = Instant::now();
     while !data.is_empty() {
-        let n = unsafe { libc::send(fd, data.as_ptr() as *const libc::c_void, data.len(), libc::MSG_NOSIGNAL) };
+        let Some(left) = REQUEST_DEADLINE.checked_sub(started.elapsed()) else { return };
+        let n = unsafe {
+            libc::send(fd, data.as_ptr() as *const libc::c_void, data.len(), libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT)
+        };
+        if n < 0 {
+            match io::Error::last_os_error().raw_os_error() {
+                Some(libc::EINTR) => continue,
+                Some(libc::EAGAIN) => {
+                    let mut pfd = libc::pollfd { fd, events: libc::POLLOUT, revents: 0 };
+                    let ready = unsafe { libc::poll(&mut pfd, 1, left.as_millis() as i32) };
+                    if ready > 0 || (ready < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR)) {
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
         if n <= 0 {
             return; // the peer is gone; nothing to do about it
         }
@@ -1039,6 +1060,36 @@ mod tests {
             max_bytes: TRANSFER_MAX,
             resolve_dest: &no_dest,
         }
+    }
+
+    #[test]
+    fn a_clipboard_reader_that_stops_reading_cannot_stall_supervision() {
+        let dir = entry("stalled-reader");
+        clipboard_write(&dir, "text/plain", &vec![b'x'; CLIPBOARD_MAX]).unwrap();
+        let (server, client) = pair();
+        let size: libc::c_int = 4096;
+        assert_eq!(unsafe {
+            libc::setsockopt(server, libc::SOL_SOCKET, libc::SO_SNDBUF,
+                &size as *const _ as *const libc::c_void, std::mem::size_of_val(&size) as _)
+        }, 0);
+        send_str(client, "clipboard-get\n");
+        let (done, completion) = std::sync::mpsc::channel();
+        let worker_dir = dir.clone();
+        let worker = std::thread::spawn(move || {
+            let z = zone_t();
+            let s = served(&z, &worker_dir, unsafe { libc::geteuid() });
+            let result = serve_connection(server, &s);
+            unsafe { libc::close(server) };
+            let _ = done.send(result);
+        });
+        // Keep the peer open without reading. Closing it after the timeout
+        // also unblocks the old implementation, so a regression cannot hang tests.
+        let result = completion.recv_timeout(REQUEST_DEADLINE + Duration::from_secs(2));
+        unsafe { libc::close(client) };
+        worker.join().unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(result.is_ok(), "an unread clipboard response stalled the zone supervisor");
+        assert_eq!(result.unwrap().unwrap().as_deref(), Some("clipboard-get"));
     }
 
     #[test]
