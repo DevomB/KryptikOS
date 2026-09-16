@@ -10,7 +10,12 @@
 
 set -uo pipefail
 
-top="$(git rev-parse --show-toplevel)"
+# Located relative to this file, as in pre-commit, and missing means refuse.
+checker="$(dirname "${BASH_SOURCE[0]}")/../check-commit-identity.sh"
+if [[ ! -f "$checker" ]]; then
+    echo "pre-push: ERROR no identity checker at ${checker}; refusing to push unchecked" >&2
+    exit 1
+fi
 zero="0000000000000000000000000000000000000000"
 bad=0
 
@@ -26,7 +31,7 @@ while read -r _local_ref local_sha _remote_ref remote_sha; do
         range="${remote_sha}..${local_sha}"
     fi
 
-    "$top/tools/check-commit-identity.sh" "$range" || bad=1
+    bash "$checker" "$range" || bad=1
 done
 
 if [[ "$bad" -ne 0 ]]; then

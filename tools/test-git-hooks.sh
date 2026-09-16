@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Focused tests for tools/git-hooks/pre-commit and tools/install-git-hooks.sh.
+# Focused tests for tools/git-hooks/pre-commit, tools/git-hooks/pre-push,
+# tools/check-commit-identity.sh and tools/install-git-hooks.sh.
 #
 #   ./tools/test-git-hooks.sh
 #
@@ -24,7 +25,17 @@ unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOOK="${ROOT}/tools/git-hooks/pre-commit"
+PUSH_HOOK="${ROOT}/tools/git-hooks/pre-push"
+CHECKER="${ROOT}/tools/check-commit-identity.sh"
 INSTALLER="${ROOT}/tools/install-git-hooks.sh"
+
+# The one identity this repository commits under, and the one address that
+# must never appear. Both are what tools/check-commit-identity.sh says; the
+# suite reads them from there so a change to the checker cannot silently
+# disagree with the tests of it.
+ALLOWED_NAME="$(sed -n 's/^ALLOWED_NAME="\(.*\)"$/\1/p' "$CHECKER")"
+ALLOWED_EMAIL="$(sed -n 's/^ALLOWED_EMAIL="\(.*\)"$/\1/p' "$CHECKER")"
+BANNED_EMAIL="$(sed -n 's/^BANNED_EMAIL="\(.*\)"$/\1/p' "$CHECKER")"
 
 PASS=0
 FAIL=0
@@ -38,6 +49,9 @@ trap 'rm -rf "$W"' EXIT
 show() { sed 's/^/        /' "$OUT"; }
 
 [[ -f "$HOOK" ]] || { echo "no hook at ${HOOK}"; exit 1; }
+[[ -f "$PUSH_HOOK" ]] || { echo "no hook at ${PUSH_HOOK}"; exit 1; }
+[[ -f "$CHECKER" ]] || { echo "no checker at ${CHECKER}"; exit 1; }
+[[ -n "$ALLOWED_NAME" && -n "$ALLOWED_EMAIL" && -n "$BANNED_EMAIL" ]] || { echo "could not read the identity constants from ${CHECKER}"; exit 1; }
 
 # --- a throwaway repository with the real hook wired in ---------------------
 
@@ -46,11 +60,20 @@ newrepo() {
     FIX="${W}/repo$RANDOM$RANDOM"
     mkdir -p "${FIX}/tools/git-hooks" "${FIX}/build/lib" "${FIX}/build/stages"
     git -C "$FIX" init -q
-    git -C "$FIX" config user.name provenance-test
-    git -C "$FIX" config user.email test@kryptik.invalid
+    # The permitted identity: every other case in this file is about
+    # something else, and would be refused for the wrong reason otherwise.
+    git -C "$FIX" config user.name "$ALLOWED_NAME"
+    git -C "$FIX" config user.email "$ALLOWED_EMAIL"
     git -C "$FIX" config advice.ignoredHook false
+    # The CRLF case stages CR bytes on purpose. A Windows checkout, where Git
+    # for Windows defaults core.autocrlf to true, would normalise them away
+    # on add, and the case would then fail for a reason that is not the hook.
+    git -C "$FIX" config core.autocrlf false
     cp "$HOOK" "${FIX}/tools/git-hooks/pre-commit"
-    chmod +x "${FIX}/tools/git-hooks/pre-commit"
+    cp "$PUSH_HOOK" "${FIX}/tools/git-hooks/pre-push"
+    cp "$CHECKER" "${FIX}/tools/check-commit-identity.sh"
+    chmod +x "${FIX}/tools/git-hooks/pre-commit" "${FIX}/tools/git-hooks/pre-push" \
+             "${FIX}/tools/check-commit-identity.sh"
     git -C "$FIX" config core.hooksPath tools/git-hooks
 }
 
@@ -209,6 +232,139 @@ git -C "$FIX" add tools/broken.sh
 RC=0
 git -C "$FIX" commit -q --no-verify -m "bypass" > "$OUT" 2>&1 || RC=$?
 if [[ "$RC" -eq 0 ]]; then green "--no-verify still bypasses, as documented"; else red "--no-verify still bypasses, as documented"; show; fi
+
+echo
+echo "=== identity: one permitted, one banned by name, everything else refused ==="
+
+# Why this block exists: GitHub attributes a commit to whichever account has
+# registered its email, and the banned address belongs to a different account.
+# 282 commits of this repository displayed under it before the history was
+# rewritten on 2026-09-15. The hooks are what keep that from recurring, so a
+# hook that let the banned address through would be the worst regression in
+# this file.
+
+newrepo
+printf 'prose\n' > "${FIX}/note.md"
+git -C "$FIX" add note.md
+commit_in "under the permitted identity"
+if [[ "$RC" -eq 0 ]]; then green "the permitted identity commits"; else red "the permitted identity commits"; show; fi
+if has 'pending commit is'; then green "and the hook says which identity it confirmed"; else red "and the hook says which identity it confirmed"; show; fi
+
+newrepo
+printf 'prose\n' > "${FIX}/note.md"
+git -C "$FIX" add note.md
+RC=0
+git -C "$FIX" -c user.email="$BANNED_EMAIL" commit -q -m "banned address" > "$OUT" 2>&1 || RC=$?
+if [[ "$RC" -ne 0 ]] && has 'REFUSED'; then
+    green "the banned address is refused, even via -c user.email"
+else
+    red "the banned address is refused, even via -c user.email (exit ${RC})"; show
+fi
+if has 'DBs-Server-Service'; then green "and the refusal names the account it belongs to"; else red "and the refusal names the account it belongs to"; show; fi
+if has 'never pass -c user.email'; then green "and says what not to do"; else red "and says what not to do"; show; fi
+if [[ -z "$(git -C "$FIX" rev-parse --verify -q HEAD)" ]]; then green "and no commit was created"; else red "and no commit was created"; fi
+
+newrepo
+printf 'prose\n' > "${FIX}/note.md"
+git -C "$FIX" add note.md
+RC=0
+GIT_AUTHOR_EMAIL="$BANNED_EMAIL" git -C "$FIX" commit -q -m "banned author via env" > "$OUT" 2>&1 || RC=$?
+if [[ "$RC" -ne 0 ]] && has 'REFUSED author'; then
+    green "GIT_AUTHOR_EMAIL set to the banned address is refused"
+else
+    red "GIT_AUTHOR_EMAIL set to the banned address is refused (exit ${RC})"; show
+fi
+
+newrepo
+printf 'prose\n' > "${FIX}/note.md"
+git -C "$FIX" add note.md
+RC=0
+GIT_COMMITTER_EMAIL="$BANNED_EMAIL" git -C "$FIX" commit -q -m "banned committer via env" > "$OUT" 2>&1 || RC=$?
+if [[ "$RC" -ne 0 ]] && has 'REFUSED committer'; then
+    green "GIT_COMMITTER_EMAIL set to the banned address is refused"
+else
+    red "GIT_COMMITTER_EMAIL set to the banned address is refused (exit ${RC})"; show
+fi
+
+newrepo
+printf 'prose\n' > "${FIX}/note.md"
+git -C "$FIX" add note.md
+RC=0
+git -C "$FIX" -c user.name=somebody-else commit -q -m "another name" > "$OUT" 2>&1 || RC=$?
+if [[ "$RC" -ne 0 ]] && has 'REFUSED'; then
+    green "a different name with the right address is refused too"
+else
+    red "a different name with the right address is refused too (exit ${RC})"; show
+fi
+if ! has 'DBs-Server-Service'; then
+    green "and the account note appears only for the banned address"
+else
+    red "and the account note appears only for the banned address"; show
+fi
+
+newrepo
+printf 'prose\n' > "${FIX}/note.md"
+git -C "$FIX" add note.md
+RC=0
+upper="$(printf '%s' "$ALLOWED_EMAIL" | tr '[:lower:]' '[:upper:]')"
+git -C "$FIX" -c user.email="$upper" commit -q -m "same address, other case" > "$OUT" 2>&1 || RC=$?
+if [[ "$RC" -eq 0 ]]; then
+    green "the permitted address is matched without regard to case, as GitHub matches it"
+else
+    red "the permitted address is matched without regard to case, as GitHub matches it"; show
+fi
+
+newrepo
+rm -f "${FIX}/tools/check-commit-identity.sh"
+printf 'prose\n' > "${FIX}/note.md"
+git -C "$FIX" add note.md
+commit_in "with the checker missing"
+if [[ "$RC" -ne 0 ]] && has 'no identity checker'; then
+    green "a hook that cannot find the checker refuses rather than passing"
+else
+    red "a hook that cannot find the checker refuses rather than passing (exit ${RC})"; show
+fi
+
+echo
+echo "=== pre-push: nothing leaves under the wrong identity ==="
+
+# A bad commit made past the pre-commit hook (--no-verify, exactly the escape
+# hatch documented above) must still be stopped at the push.
+newrepo
+REMOTE="${W}/remote$RANDOM.git"
+git init -q --bare "$REMOTE"
+git -C "$FIX" remote add origin "$REMOTE"
+printf 'prose\n' > "${FIX}/a.md"
+git -C "$FIX" add a.md
+commit_in "good first commit"
+RC=0
+git -C "$FIX" push -q origin HEAD:refs/heads/main > "$OUT" 2>&1 || RC=$?
+if [[ "$RC" -eq 0 ]]; then green "a clean history pushes to a new ref"; else red "a clean history pushes to a new ref"; show; fi
+if has 'every one'; then green "and the hook reports how many commits it checked"; else red "and the hook reports how many commits it checked"; show; fi
+
+printf 'more\n' > "${FIX}/b.md"
+git -C "$FIX" add b.md
+git -C "$FIX" -c user.email="$BANNED_EMAIL" commit -q --no-verify -m "slipped past pre-commit" > /dev/null 2>&1
+RC=0
+git -C "$FIX" push -q origin HEAD:refs/heads/main > "$OUT" 2>&1 || RC=$?
+if [[ "$RC" -ne 0 ]] && has 'REFUSED'; then
+    green "a banned-address commit made with --no-verify is refused at the push"
+else
+    red "a banned-address commit made with --no-verify is refused at the push (exit ${RC})"; show
+fi
+if has 'refusing the push'; then green "with an explicit refusal"; else red "with an explicit refusal"; show; fi
+if has 'reset-author'; then green "and the repair is named"; else red "and the repair is named"; show; fi
+if [[ "$(git -C "$REMOTE" rev-list --count main)" == "1" ]]; then
+    green "and the remote still has only the clean commit"
+else
+    red "and the remote still has only the clean commit (has $(git -C "$REMOTE" rev-list --count main))"
+fi
+
+# The documented repair, then the push goes through.
+git -C "$FIX" commit -q --amend --no-edit --reset-author > /dev/null 2>&1
+RC=0
+git -C "$FIX" push -q origin HEAD:refs/heads/main > "$OUT" 2>&1 || RC=$?
+if [[ "$RC" -eq 0 ]]; then green "after --reset-author under the permitted identity, the push succeeds"; else red "after --reset-author under the permitted identity, the push succeeds"; show; fi
 
 echo
 echo "=== install-git-hooks.sh verifies rather than asserting ==="

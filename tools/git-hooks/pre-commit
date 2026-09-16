@@ -17,7 +17,17 @@ fail=0
 # does not break the build; it hands the commit to a different GitHub
 # account. tools/check-commit-identity.sh is the one place the permitted
 # identity is written down and says why.
-if ! "$(git rev-parse --show-toplevel)/tools/check-commit-identity.sh" --pending; then
+#
+# Located relative to this file, not to the working tree: core.hooksPath is
+# tools/git-hooks, so the checker is one directory up from here wherever the
+# hooks directory has been copied to. A checker that is missing is a refusal,
+# not a pass; a hook that cannot check has established nothing.
+checker="$(dirname "${BASH_SOURCE[0]}")/../check-commit-identity.sh"
+if [[ ! -f "$checker" ]]; then
+    echo "pre-commit: ERROR no identity checker at ${checker}; refusing to commit unchecked" >&2
+    exit 1
+fi
+if ! bash "$checker" --pending; then
     exit 1
 fi
 

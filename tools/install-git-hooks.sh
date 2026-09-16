@@ -56,7 +56,9 @@ for h in "${HOOKS_DIR}"/*; do
     # not installed, whatever the config says. A hook that runs and exits
     # non-zero is fine here, since nothing is staged.
     name="$(basename "$h")"
-    if git hook run "$name" 2>&1 | grep -q 'cannot find a hook'; then
+    # stdin is /dev/null: pre-push reads its ref list from stdin, and probed
+    # from a terminal it would wait for one that never comes.
+    if git hook run "$name" 2>&1 < /dev/null | grep -q 'cannot find a hook'; then
         err "git cannot find a hook named ${name} even after the above"
         problems=$((problems + 1))
     fi
