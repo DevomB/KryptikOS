@@ -1680,11 +1680,26 @@ s_json_c() {
     cd "$src"
     # CMAKE_POLICY_VERSION_MINIMUM: cmake 4 refuses projects whose minimum is
     # below 3.5, and json-c's test/app subdirectories still say 2.8/3.9.
+    #
+    # CMAKE_INSTALL_LIBDIR=lib: the source-built cmake had lib64 patched out
+    # of GNUInstallDirs.cmake; Kitware's binary has not, and on a 64-bit host
+    # with no /etc/debian_version it chooses lib64. The first run with the
+    # binary put libjson-c.so and json-c.pc under /usr/lib64, where nothing
+    # in this sysroot looks, and cryptsetup's configure then reported
+    # "Package 'json-c' not found" two steps later. Kryptik has one library
+    # directory and it is /usr/lib, so say so rather than trusting either
+    # cmake's guess.
     "$cmake" -S . -B build -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_LIBDIR=lib \
         -DBUILD_STATIC_LIBS=OFF -DBUILD_TESTING=OFF -DBUILD_APPS=OFF \
         -DCMAKE_POLICY_VERSION_MINIMUM=3.5
     "$cmake" --build build
     "$cmake" --install build
+    # The check cryptsetup will make, made here where the failure names the
+    # package that caused it. Same shape as the devmapper.pc check in s_lvm2.
+    [[ -f /usr/lib/pkgconfig/json-c.pc ]] || { echo "no /usr/lib/pkgconfig/json-c.pc (installed under lib64?)"; return 1; }
+    [[ -e /usr/lib64/libjson-c.so ]] && { echo "json-c installed into /usr/lib64, which this sysroot does not use"; return 1; }
+    pkg-config --exists --print-errors json-c || return 1
     # Prove the library round-trips a document; cryptsetup will parse LUKS2
     # headers with it.
     cat > /tmp/jc.c <<'EOF'
@@ -1695,7 +1710,11 @@ int main(void){ struct json_object *o = json_tokener_parse("{\"a\":[1,2],\"b\":\
  if(!o) return 1; const char *s = json_object_to_json_string(o);
  return strcmp(s, "{ \"a\": [ 1, 2 ], \"b\": \"x\" }") == 0 ? 0 : 2; }
 EOF
-    gcc -o /tmp/jc /tmp/jc.c -I/usr/include/json-c -ljson-c && /tmp/jc && echo "ok: json-c parses and prints"
+    # Through pkg-config, not hand-written flags: the -I and -l that were here
+    # passed on a tree where the .pc file was unfindable, and so proved nothing
+    # about what cryptsetup's configure was about to ask.
+    # shellcheck disable=SC2046
+    gcc -o /tmp/jc /tmp/jc.c $(pkg-config --cflags --libs json-c) && /tmp/jc && echo "ok: json-c parses and prints"
     rm -f /tmp/jc /tmp/jc.c
 }
 
