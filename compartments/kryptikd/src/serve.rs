@@ -142,11 +142,30 @@ fn gid_of_uid(uid: u32) -> Option<u32> {
 }
 
 /// Is `uid` root, or a member (primary or supplementary) of `group`?
+///
+/// One getgrnam(3), not two: the group entry carries both the gid for the
+/// primary-group comparison and the member list, and every lookup here may
+/// be an NSS round trip on the path each accepted connection takes. The
+/// member names are copied out before getpwuid(3), which is allowed to reuse
+/// the static buffer getgrnam(3) returned.
 fn in_group(uid: u32, group: &str) -> bool {
     if uid == 0 {
         return true;
     }
-    let Some(gid) = gid_of_group(group) else { return false };
+    let Ok(c) = CString::new(group) else { return false };
+    let g = unsafe { libc::getgrnam(c.as_ptr()) };
+    if g.is_null() {
+        return false;
+    }
+    let gid = unsafe { (*g).gr_gid };
+    let mut members: Vec<String> = Vec::new();
+    let mut mem = unsafe { (*g).gr_mem };
+    unsafe {
+        while !mem.is_null() && !(*mem).is_null() {
+            members.push(CStr::from_ptr(*mem).to_string_lossy().into_owned());
+            mem = mem.add(1);
+        }
+    }
     let pw = unsafe { libc::getpwuid(uid) };
     if pw.is_null() {
         return false;
@@ -154,22 +173,8 @@ fn in_group(uid: u32, group: &str) -> bool {
     if unsafe { (*pw).pw_gid } == gid {
         return true;
     }
-    let name = unsafe { CStr::from_ptr((*pw).pw_name) }.to_string_lossy().to_string();
-    let c = CString::new(group).unwrap();
-    let g = unsafe { libc::getgrnam(c.as_ptr()) };
-    if g.is_null() {
-        return false;
-    }
-    let mut mem = unsafe { (*g).gr_mem };
-    unsafe {
-        while !mem.is_null() && !(*mem).is_null() {
-            if CStr::from_ptr(*mem).to_string_lossy() == name {
-                return true;
-            }
-            mem = mem.add(1);
-        }
-    }
-    false
+    let name = unsafe { CStr::from_ptr((*pw).pw_name) }.to_string_lossy();
+    members.iter().any(|m| *m == name)
 }
 
 struct Peer {
@@ -377,8 +382,47 @@ fn openat_component(dir: RawFd, name: &str, flags: libc::c_int) -> Result<Fd, St
 pub struct ProxySocket {
     pub fd: Fd,
     pub path: PathBuf,
+    pub inode: InodeId,
+}
+
+/// A (device, inode) pair naming one filesystem object: what the launch
+/// daemon verified, handed to the launcher as `DEV:INO` on its command line,
+/// and checked again by the launcher and by the zone's setup after their own
+/// opens. One type, one comparison, one wire format, where there were bare
+/// tuples and three copies of each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InodeId {
     pub dev: u64,
     pub ino: u64,
+}
+
+impl InodeId {
+    pub fn of(st: &libc::stat) -> Self {
+        InodeId { dev: st.st_dev as u64, ino: st.st_ino as u64 }
+    }
+
+    /// Is `st` this object? A rename or a link into place between the
+    /// daemon's check and the later open shows up here.
+    pub fn matches(&self, st: &libc::stat) -> bool {
+        *self == Self::of(st)
+    }
+}
+
+impl std::fmt::Display for InodeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.dev, self.ino)
+    }
+}
+
+impl std::str::FromStr for InodeId {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        let (d, n) = s.split_once(':').ok_or_else(|| "expected DEV:INO".to_string())?;
+        Ok(InodeId {
+            dev: d.parse().map_err(|_| "DEV is not a number".to_string())?,
+            ino: n.parse().map_err(|_| "INO is not a number".to_string())?,
+        })
+    }
 }
 
 /// Open `path` one component at a time without following any symlink, as
@@ -443,7 +487,7 @@ fn verify_proxy_socket(p: &Path, uid: u32, zone: &str, proxy_exe: Option<&Path>)
         return Err(format!("wayland socket is owned by uid {}, not the session", st.st_uid));
     }
     verify_proxy_listener(&sock, uid, zone, proxy_exe)?;
-    Ok(ProxySocket { fd: sock, path: want, dev: st.st_dev as u64, ino: st.st_ino as u64 })
+    Ok(ProxySocket { fd: sock, path: want, inode: InodeId::of(&st) })
 }
 
 /// Connect to the socket through its inode and ask the kernel who is
@@ -534,7 +578,7 @@ fn spawn_launcher(
         args.push("--wayland-socket".into());
         args.push(w.path.display().to_string());
         args.push("--wayland-inode".into());
-        args.push(format!("{}:{}", w.dev, w.ino));
+        args.push(w.inode.to_string());
     }
     if let Some(p) = &pass {
         args.push("--passphrase-fd".into());
@@ -850,7 +894,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream) -> Option<Pending> {
             return None;
         }
     };
-    let text = String::from_utf8_lossy(&text).to_string();
+    let text = String::from_utf8_lossy(&text).into_owned();
     let first = text.lines().next().unwrap_or("");
     let verb = first.split_whitespace().next().unwrap_or("");
     match verb {
@@ -904,7 +948,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream) -> Option<Pending> {
             match out {
                 Ok(o) if o.status.success() => {
                     eprintln!("kryptikd serve: uid {uid} moved the clipboard {from:?} -> {to:?}");
-                    reply(&conn, &format!("ok {}", String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("moved").to_string() + "\n"));
+                    reply(&conn, &format!("ok {}\n", String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("moved")));
                 }
                 Ok(o) => reply(&conn, &format!("error: {}\n", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("clipboard move failed"))),
                 Err(e) => reply(&conn, &format!("error: {e}\n")),

@@ -639,9 +639,17 @@ pub fn check_invariants(zones: &[Zone]) -> Result<(), ZoneError> {
     // [transfer] to must name configured zones, and never the one holding
     // the NIC: it receives nothing, ever (Design 05 B12). Checked here, over
     // the whole directory, because a single zone file cannot know the set.
+    //
+    // One index, built once. The scan it replaces walked the whole zone list
+    // for every destination of every zone. First occurrence wins, as the scan
+    // did, so a duplicate name (refused below) reports the same error here.
+    let mut by_name: HashMap<&str, &Zone> = HashMap::with_capacity(zones.len());
+    for z in zones {
+        by_name.entry(z.name.as_str()).or_insert(z);
+    }
     for z in zones {
         for d in &z.transfer_to {
-            match zones.iter().find(|o| &o.name == d) {
+            match by_name.get(d.as_str()) {
                 None => {
                     return Err(ZoneError::Invalid(format!(
                         "zone {:?}: [transfer] to names {d:?}, which is not a zone",

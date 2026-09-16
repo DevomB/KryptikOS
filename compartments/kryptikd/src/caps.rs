@@ -103,6 +103,11 @@ pub const CAP_NAMES: &[(&str, libc::c_int)] = &[
     ("CAP_CHECKPOINT_RESTORE", 40),
 ];
 
+/// The capabilities only the zone that owns the NIC may keep: with either,
+/// a zone could re-address its veth, route around the bridge, or forge
+/// frames on the segment (policy.rs, `check_for_zone`).
+pub const NIC_ONLY: &[libc::c_int] = &[cap::NET_ADMIN, cap::NET_RAW];
+
 pub fn cap_by_name(name: &str) -> Option<libc::c_int> {
     CAP_NAMES.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
 }

@@ -402,26 +402,6 @@ impl Cgroup {
         fs::write(&p, pid.to_string()).map_err(|e| io_err(&p, e))
     }
 
-    /// How many processes are in this cgroup right now.
-    pub fn population(&self) -> usize {
-        fs::read_to_string(self.path.join("cgroup.procs"))
-            .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
-            .unwrap_or(0)
-    }
-
-    /// Did the kernel OOM-kill anything here? Read after the zone exits, to
-    /// tell "the zone hit its memory limit" apart from "the zone failed".
-    pub fn oom_kills(&self) -> u64 {
-        fs::read_to_string(self.path.join("memory.events"))
-            .ok()
-            .and_then(|s| {
-                s.lines()
-                    .find_map(|l| l.strip_prefix("oom_kill ").map(|v| v.trim().to_string()))
-            })
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0)
-    }
-
     /// Kill everything still inside, then remove the directory.
     ///
     /// rmdir on a cgroup fails with EBUSY while any process remains, so a

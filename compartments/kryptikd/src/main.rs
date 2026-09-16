@@ -533,10 +533,21 @@ fn cmd_check(dir: &Path, target: bool) -> ExitCode {
 
     // Prove the seccomp program actually builds and installs in a child, not
     // merely that the kernel reports seccomp support.
-    match std::process::Command::new(std::env::current_exe().unwrap_or_default())
-        .args(["seccomp-test", "getpid"])
-        .output()
-    {
+    //
+    // A self-test that could not run is a failure, not a pass: this command
+    // gates a kernel as fit to run zones, and "the filter was not verified"
+    // reported as success is the exact outcome the paragraph below argues
+    // against. (It used to fall through to success, and current_exe()
+    // failing produced Command::new(""), which lands in that same arm.)
+    let self_test = std::env::current_exe()
+        .map_err(|e| format!("current_exe: {e}"))
+        .and_then(|exe| {
+            std::process::Command::new(exe)
+                .args(["seccomp-test", "getpid"])
+                .output()
+                .map_err(|e| e.to_string())
+        });
+    match self_test {
         Ok(o) if o.status.code() == Some(0) => {
             println!("  seccomp filter   builds and permits allowed calls");
         }
@@ -544,7 +555,10 @@ fn cmd_check(dir: &Path, target: bool) -> ExitCode {
             eprintln!("  seccomp filter   FAILED (exit {:?})", o.status.code());
             failed = true;
         }
-        Err(e) => eprintln!("  seccomp filter   could not self-test: {e}"),
+        Err(e) => {
+            eprintln!("  seccomp filter   FAILED: could not self-test: {e}");
+            failed = true;
+        }
     }
 
     // Design 01, P2: on the target, only a process with CAP_SYS_ADMIN in the
@@ -832,14 +846,13 @@ fn cmd_seccomp_probe(name: &str) -> Option<ExitCode> {
     }
     let mut status: libc::c_int = 0;
     unsafe { libc::waitpid(pid, &mut status, 0) };
-    let signalled = (status & 0x7f) != 0 && (status & 0x7f) != 0x7f;
-    let termsig = status & 0x7f;
+    let termsig = spawn::signalled_by(status);
     let exitcode = (status >> 8) & 0xff;
-    Some(if signalled && termsig == libc::SIGSYS {
+    Some(if termsig == Some(libc::SIGSYS) {
         eprintln!("seccomp-test: {name} killed by SIGSYS (blocked)");
         ExitCode::from(5)
-    } else if signalled {
-        eprintln!("seccomp-test: {name} killed by signal {termsig}");
+    } else if let Some(sig) = termsig {
+        eprintln!("seccomp-test: {name} killed by signal {sig}");
         ExitCode::from(6)
     } else if exitcode == 7 {
         eprintln!("seccomp-test: {name} refused with the intended errno");
@@ -889,14 +902,12 @@ fn run_options_from(args: &[String]) -> Result<spawn::RunOptions, String> {
             .map(PathBuf::from),
         wayland_inode: match args.iter().position(|a| a == "--wayland-inode") {
             None => None,
-            Some(i) => {
-                let v = args.get(i + 1).ok_or_else(|| "--wayland-inode: expected DEV:INO".to_string())?;
-                let (d, n) = v.split_once(':').ok_or_else(|| "--wayland-inode: expected DEV:INO".to_string())?;
-                Some((
-                    d.parse::<u64>().map_err(|_| "--wayland-inode: DEV is not a number".to_string())?,
-                    n.parse::<u64>().map_err(|_| "--wayland-inode: INO is not a number".to_string())?,
-                ))
-            }
+            Some(i) => Some(
+                args.get(i + 1)
+                    .ok_or_else(|| "--wayland-inode: expected DEV:INO".to_string())?
+                    .parse::<serve::InodeId>()
+                    .map_err(|e| format!("--wayland-inode: {e}"))?,
+            ),
         },
         ready_fd: match args.iter().position(|a| a == "--ready-fd") {
             None => None,
@@ -968,10 +979,12 @@ fn cmd_volume(dir: &Path, args: &[String]) -> ExitCode {
     };
     match sub {
         "status" => {
+            let present = Path::new(&vol).exists();
+            let mapper = volume::mapper_path(name);
             println!("zone      {name}");
-            println!("container {vol} ({})", if Path::new(&vol).exists() { "present" } else { "ABSENT" });
-            println!("signature {}", if Path::new(&vol).exists() { volume::signature_of(&vol) } else { "-".into() });
-            println!("mapping   {} ({})", volume::mapper_path(name), if volume::mapping_exists(name) { "OPEN" } else { "closed" });
+            println!("container {vol} ({})", if present { "present" } else { "ABSENT" });
+            println!("signature {}", if present { volume::signature_of(&vol) } else { "-".into() });
+            println!("mapping   {} ({})", mapper, if Path::new(&mapper).exists() { "OPEN" } else { "closed" });
             ExitCode::SUCCESS
         }
         "init" => {
@@ -1161,7 +1174,7 @@ fn cmd_seccomp_trace(cmd: &[String]) -> ExitCode {
 
     let mut status: libc::c_int = 0;
     unsafe { libc::waitpid(pid, &mut status, 0) };
-    let code = if (status & 0x7f) == 0 { (status >> 8) & 0xff } else { 128 + (status & 0x7f) };
+    let code = spawn::decode_status(status);
     if code == 159 {
         eprintln!(
             "seccomp-trace: the command was denied a syscall (see              KRYPTIK_SECCOMP_DENIED above for the number)"
@@ -1196,20 +1209,18 @@ fn cmd_seccomp_test(name: &str, nr: libc::c_long) -> ExitCode {
     let mut status: libc::c_int = 0;
     unsafe { libc::waitpid(pid, &mut status, 0) };
 
-    // libc::WIFSIGNALED / WTERMSIG are not const fns in all versions; decode
-    // the wait status directly.
-    let signalled = (status & 0x7f) != 0 && (status & 0x7f) != 0x7f;
-    let termsig = status & 0x7f;
-    let exited = (status & 0x7f) == 0;
+    // libc::WIFSIGNALED / WTERMSIG are not const fns in all versions; the
+    // status is decoded by spawn.rs, which owns the one tested decoder.
+    let termsig = spawn::signalled_by(status);
     let exitcode = (status >> 8) & 0xff;
 
-    if signalled && termsig == libc::SIGSYS {
+    if termsig == Some(libc::SIGSYS) {
         eprintln!("seccomp-test: {name} killed by SIGSYS (blocked)");
         ExitCode::from(5)
-    } else if signalled {
-        eprintln!("seccomp-test: {name} killed by signal {termsig}");
+    } else if let Some(sig) = termsig {
+        eprintln!("seccomp-test: {name} killed by signal {sig}");
         ExitCode::from(6)
-    } else if exited && exitcode == 1 {
+    } else if exitcode == 1 {
         eprintln!("seccomp-test: could not install filter");
         ExitCode::FAILURE
     } else {

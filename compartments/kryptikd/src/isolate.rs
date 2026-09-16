@@ -8,7 +8,6 @@
 //! reasons are written next to each step. Reordering these without
 //! understanding why will produce a zone that looks isolated and is not.
 
-use std::ffi::CString;
 use std::io;
 
 use crate::zone::{NetworkMode, Zone};
@@ -73,17 +72,6 @@ pub fn namespace_flags(zone: &Zone) -> libc::c_int {
     match zone.network {
         NetworkMode::None | NetworkMode::Routed | NetworkMode::Nic => ZONE_NAMESPACES | NS_NET,
     }
-}
-
-/// Drop the ability to gain privilege through execve.
-///
-/// MUST be called before seccomp: without no_new_privs, a seccomp filter can be
-/// installed only by a privileged process, and a setuid binary executed later
-/// could regain what the filter was meant to remove. This is also what makes
-/// the filter survive execve.
-pub fn set_no_new_privs() -> Result<(), IsolateError> {
-    let ret = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
-    check("prctl(PR_SET_NO_NEW_PRIVS)", ret)
 }
 
 /// Enter new namespaces.
@@ -250,78 +238,6 @@ pub fn supplementary_group_count() -> usize {
     if n < 0 { 0 } else { n as usize }
 }
 
-/// Make mount propagation private.
-///
-/// Without this, mounts performed inside the zone propagate back to the host
-/// mount namespace and the filesystem isolation is decorative. This is the
-/// single easiest thing to omit and the hardest to notice.
-pub fn make_mounts_private() -> Result<(), IsolateError> {
-    let root = CString::new("/").unwrap();
-    let none = CString::new("none").unwrap();
-    let ret = unsafe {
-        libc::mount(
-            none.as_ptr(),
-            root.as_ptr(),
-            std::ptr::null(),
-            libc::MS_REC | libc::MS_PRIVATE,
-            std::ptr::null(),
-        )
-    };
-    check("mount(MS_REC|MS_PRIVATE)", ret)
-}
-
-/// Mount a fresh /proc so the zone sees only its own pid namespace.
-///
-/// Without this the zone inherits the host's /proc and can enumerate every
-/// process on the system - defeating requirement (1) of the Phase 5 exit test
-/// even though the pid namespace itself is correct.
-pub fn mount_proc(root: &str) -> Result<(), IsolateError> {
-    let target = CString::new(format!("{root}/proc"))
-        .map_err(|e| IsolateError::Refused(e.to_string()))?;
-    let proc_fs = CString::new("proc").unwrap();
-    let ret = unsafe {
-        libc::mount(
-            proc_fs.as_ptr(),
-            target.as_ptr(),
-            proc_fs.as_ptr(),
-            (libc::MS_NOSUID | libc::MS_NOEXEC | libc::MS_NODEV) as libc::c_ulong,
-            std::ptr::null(),
-        )
-    };
-    check("mount(proc)", ret)
-}
-
-/// Mount a fresh sysfs so the zone sees only its own network namespace.
-///
-/// Found by the Phase 5 adversarial test. A network namespace isolates the
-/// interfaces a zone can USE, but sysfs is not re-instantiated by unshare, so
-/// without this the zone reads the host's /sys/class/net and can enumerate
-/// every interface on the machine — docker0, eth0, the lot.
-///
-/// It cannot send packets through them, so this is not a containment break.
-/// It is reconnaissance: a compromised `untrusted` zone learns the host's
-/// network topology for free. Requirement 3 of the exit test treats that as a
-/// failure, and so should we.
-///
-/// Must be called AFTER unshare(CLONE_NEWNET), or the fresh sysfs is
-/// instantiated against the old namespace and shows the same interfaces.
-pub fn mount_sysfs(root: &str) -> Result<(), IsolateError> {
-    let target = CString::new(format!("{root}/sys"))
-        .map_err(|e| IsolateError::Refused(e.to_string()))?;
-    let sysfs = CString::new("sysfs").unwrap();
-    let ret = unsafe {
-        libc::mount(
-            sysfs.as_ptr(),
-            target.as_ptr(),
-            sysfs.as_ptr(),
-            (libc::MS_NOSUID | libc::MS_NOEXEC | libc::MS_NODEV | libc::MS_RDONLY)
-                as libc::c_ulong,
-            std::ptr::null(),
-        )
-    };
-    check("mount(sysfs)", ret)
-}
-
 /// Bring up loopback inside the zone's network namespace.
 ///
 /// Even an air-gapped zone needs `lo`: plenty of software fails in confusing
@@ -359,37 +275,6 @@ pub fn bring_up_loopback() -> Result<(), IsolateError> {
     check("ioctl(SIOCSIFFLAGS)", ret)
 }
 
-// --- Landlock ---------------------------------------------------------------
-//
-// Landlock is applied by the process itself and cannot be removed, which is why
-// the architecture leans on it (ADR-007). These are raw syscall numbers because
-// glibc does not wrap them.
-
-const SYS_LANDLOCK_CREATE_RULESET: libc::c_long = 444;
-const LANDLOCK_CREATE_RULESET_VERSION: u32 = 1 << 0;
-
-/// Query the Landlock ABI version the running kernel supports.
-///
-/// Returns None when Landlock is unavailable. kryptikd must treat that as a
-/// hard error at zone start rather than continuing without filesystem policy -
-/// silently running a zone with one fewer control is exactly the failure this
-/// project keeps finding elsewhere.
-pub fn landlock_abi_version() -> Option<i32> {
-    let ret = unsafe {
-        libc::syscall(
-            SYS_LANDLOCK_CREATE_RULESET,
-            std::ptr::null::<u8>(),
-            0usize,
-            LANDLOCK_CREATE_RULESET_VERSION,
-        )
-    };
-    if ret < 0 {
-        None
-    } else {
-        Some(ret as i32)
-    }
-}
-
 /// Report which isolation mechanisms this kernel actually provides.
 ///
 /// Used by `kryptikd check` and by the test suite so a missing mechanism is
@@ -415,7 +300,7 @@ impl KernelSupport {
             seccomp: std::fs::read_to_string("/proc/self/status")
                 .map(|s| s.contains("Seccomp:"))
                 .unwrap_or(false),
-            landlock: landlock_abi_version(),
+            landlock: crate::landlock::abi_version(),
         }
     }
 

@@ -298,8 +298,25 @@ pub enum State {
     Stale { launcher: Option<PidStamp>, cgroup: Option<String> },
 }
 
+/// Every file a registry entry may hold, for the two places that sweep one.
+/// The staged Wayland socket is not here: it is a mountpoint first and a
+/// file second, and `reclaim` handles it before this list.
+const ENTRY_FILES: &[&str] =
+    &["launcher.pid", "init.pid", "cgroup", "started", "identity", "broker", "clipboard", "lock"];
+
 fn read_field(dir: &Path, name: &str) -> Option<String> {
-    fs::read_to_string(dir.join(name)).ok().map(|s| s.trim().to_string())
+    // Trimmed in place. `state` reads two to four fields per call and is
+    // polled - up to 160 times per `stop` - so the second String per field
+    // that trim().to_string() cost was the bulk of that loop's allocation.
+    fs::read_to_string(dir.join(name)).ok().map(|mut s| {
+        let end = s.trim_end().len();
+        s.truncate(end);
+        let lead = s.len() - s.trim_start().len();
+        if lead > 0 {
+            s.drain(..lead);
+        }
+        s
+    })
 }
 
 /// Try to take the entry's lock without blocking.
@@ -404,7 +421,7 @@ pub fn reclaim(zone: &str) -> Result<(), RegistryError> {
         while unsafe { libc::umount2(c.as_ptr(), libc::MNT_DETACH) } == 0 {}
     }
     let _ = fs::remove_file(&wl);
-    for f in ["launcher.pid", "init.pid", "cgroup", "started", "identity", "broker", "clipboard", "lock"] {
+    for f in ENTRY_FILES {
         let _ = fs::remove_file(dir.join(f));
     }
     fs::remove_dir(&dir).map_err(|e| io_err(&dir, e))
@@ -477,7 +494,7 @@ impl Handle {
 
 impl Drop for Handle {
     fn drop(&mut self) {
-        for f in ["launcher.pid", "init.pid", "cgroup", "started", "identity", "broker", "clipboard", "lock"] {
+        for f in ENTRY_FILES {
             let _ = fs::remove_file(self.dir.join(f));
         }
         let _ = fs::remove_dir(&self.dir);

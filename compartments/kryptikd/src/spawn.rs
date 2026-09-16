@@ -91,7 +91,7 @@ pub struct RunOptions {
     /// verified it: the child opens the path without following symlinks
     /// and refuses any other inode, so nothing renamed or linked into
     /// place between the daemon's check and the bind is accepted.
-    pub wayland_inode: Option<(u64, u64)>,
+    pub wayland_inode: Option<crate::serve::InodeId>,
     /// A pipe the launch daemon reads (serve.rs): `ready` is written to it
     /// when the zone's pid 1 exists, and it is closed then. Closed by exit
     /// before that means the zone did not start. CLOEXEC, so no zone
@@ -112,7 +112,7 @@ struct StagedSocket {
 impl StagedSocket {
     fn stage(
         session_path: &std::path::Path,
-        inode: Option<(u64, u64)>,
+        inode: Option<crate::serve::InodeId>,
         entry_dir: &std::path::Path,
         zone: &str,
     ) -> Result<Self, SpawnError> {
@@ -129,8 +129,8 @@ impl StagedSocket {
         if unsafe { libc::fstat(fd.raw(), &mut st) } < 0 {
             return Err(SpawnError::Syscall { call: "fstat(wayland socket)", errno: errno() });
         }
-        if let Some((dev, ino)) = inode {
-            if st.st_dev as u64 != dev || st.st_ino as u64 != ino {
+        if let Some(want) = inode {
+            if !want.matches(&st) {
                 return Err(SpawnError::Setup(format!(
                     "wayland socket {} is not the socket the launch daemon verified (inode changed)",
                     session_path.display()
@@ -886,7 +886,12 @@ pub fn run_in_zone(
             // this launcher dies without cleaning up. The cgroup is the only
             // safe handle to a dead launcher's processes: unlike a pid, it
             // cannot have been reused.
-            let _ = entry.set_cgroup(&cg.path().display().to_string());
+            // Not fatal - the zone is up, and killing it over bookkeeping is
+            // worse - but not silent either: without this field, reclaim
+            // skips the cgroup.kill and a dead launcher's processes stay.
+            if let Err(e) = entry.set_cgroup(&cg.path().display().to_string()) {
+                eprintln!("kryptikd: registry: could not record the cgroup of zone {}: {e}", zone.name);
+            }
             Some(cg)
         }
         None => None,
@@ -966,7 +971,12 @@ pub fn run_in_zone(
     // during setup and the failure is reported below, not here.
     let init_pid = initpid.read_i32();
     if let Some(zp) = init_pid {
-        let _ = entry.set_init(zp);
+        // set_init already treats a pid that vanished as Ok; an Err here is
+        // a registry write that failed, after which every transfer into the
+        // zone reports "still starting" with nothing saying why.
+        if let Err(e) = entry.set_init(zp) {
+            eprintln!("kryptikd: registry: could not record pid 1 of zone {}: {e}", zone.name);
+        }
         // Readiness, for the launch daemon: the zone's pid 1 exists, so
         // every setup step before it succeeded. Written once, then closed.
         if let Some(fd) = opts.ready_fd {
@@ -1031,13 +1041,23 @@ pub fn run_in_zone(
     Ok(decode_status(status))
 }
 
-fn decode_status(status: libc::c_int) -> i32 {
+/// The exit code a wait status stands for, the way a shell reports it.
+///
+/// The one decoder in the crate: main.rs's seccomp probes decode the same
+/// status and used to carry their own copies of this arithmetic, untested.
+pub(crate) fn decode_status(status: libc::c_int) -> i32 {
     if (status & 0x7f) == 0 {
         (status >> 8) & 0xff
     } else {
         // Killed by a signal; report it the way a shell does.
         128 + (status & 0x7f)
     }
+}
+
+/// The signal that terminated the child, if a signal did.
+pub(crate) fn signalled_by(status: libc::c_int) -> Option<libc::c_int> {
+    let sig = status & 0x7f;
+    if sig != 0 && sig != 0x7f { Some(sig) } else { None }
 }
 
 /// The intermediate process: enters the namespaces, becomes root there, and
@@ -1056,7 +1076,7 @@ fn intermediate_main(
     fs_rules: &[landlock::ZoneRule],
     broker_path: &str,
     wayland_path: Option<&str>,
-    wayland_inode: Option<(u64, u64)>,
+    wayland_inode: Option<crate::serve::InodeId>,
 ) -> i32 {
     macro_rules! bail {
         ($($arg:tt)*) => {{
@@ -1252,12 +1272,12 @@ fn intermediate_main(
                 Ok(fd) => fd,
                 Err(e) => bail!("wayland socket {e}"),
             };
-            if let Some((dev, ino)) = wayland_inode {
+            if let Some(want) = wayland_inode {
                 let mut st: libc::stat = unsafe { std::mem::zeroed() };
                 if unsafe { libc::fstat(fd.raw(), &mut st) } < 0 {
                     bail!("wayland socket {}: fstat: {}", p, io::Error::last_os_error());
                 }
-                if st.st_dev as u64 != dev || st.st_ino as u64 != ino {
+                if !want.matches(&st) {
                     bail!("wayland socket {} is not the socket the launch daemon verified (inode changed)", p);
                 }
             }
@@ -1438,9 +1458,20 @@ fn zone_init(
 
     // 13. An explicit environment. Nothing from the caller reaches the zone
     //     unless it is on the allowlist and looks like what it claims to be.
-    let caller: Vec<(String, String)> = std::env::vars().collect();
+    //
+    //     One walk of the environment, as OsStrings, and every variable in it
+    //     is removed. Only the UTF-8 subset can be matched against the
+    //     allowlist; the rest is not skipped, it is removed with everything
+    //     else. (std::env::vars() would have panicked on a non-UTF-8 name or
+    //     value, in the zone's pid 1, and a second walk with vars_os() did
+    //     the removal.)
+    let all: Vec<(std::ffi::OsString, std::ffi::OsString)> = std::env::vars_os().collect();
+    let caller: Vec<(String, String)> = all
+        .iter()
+        .filter_map(|(k, v)| Some((k.to_str()?.to_string(), v.to_str()?.to_string())))
+        .collect();
     let env = zone_environment_with(zone, &home, &caller, wayland_path.is_some());
-    for (k, _) in std::env::vars_os().collect::<Vec<_>>() {
+    for (k, _) in &all {
         std::env::remove_var(k);
     }
     for (k, v) in &env {
@@ -1469,8 +1500,8 @@ fn zone_init(
     //
     // Fatal on failure: a zone that starts with a fuller set than the operator
     // asked for is the failure this project exists to avoid.
-    let keep: Vec<libc::c_int> = zone_policy.map(|p| p.keep_caps.clone()).unwrap_or_default();
-    if let Err(e) = caps::drop_bounding_set_except(&keep) {
+    let keep: &[libc::c_int] = zone_policy.map(|p| p.keep_caps.as_slice()).unwrap_or(&[]);
+    if let Err(e) = caps::drop_bounding_set_except(keep) {
         bail!("could not drop the capability bounding set: {e}");
     }
 
