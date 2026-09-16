@@ -25,14 +25,35 @@ that boot by UEFI firmware alone with no boot loader to configure, an
 installer, an installed system that verifies its root with dm-verity on every
 boot and keeps state on its own labelled partition, A/B updates with a judged
 trial boot and an authenticated recovery path from the medium, a zoned Wayland
-desktop, and one command, `make acceptance`, that runs every gate against
+desktop, and one command, `make acceptance`, that runs every suite against
 named images and refuses to call anything a pass that did not run.
 
-What that command has proven on which images is recorded, per gate, in
-[docs/OVERNIGHT_STATUS.md](docs/OVERNIGHT_STATUS.md) and in the acceptance
-report exported beside the tested images. Read that before this file: the
-table below says what exists and how it is tested, not that a particular
-build passed.
+What that command has proven on which images is recorded, per suite, in
+[docs/status.md](docs/status.md) and in the acceptance report exported
+beside the tested images. Read that before this file: the table below says
+what exists and how it is tested, not that a particular build passed.
+
+## Hardware
+
+x86-64 with UEFI firmware. Because the root is verified from the signed
+kernel with no initramfs and no loadable modules, a machine's devices must
+be among the drivers compiled in (`build/config/kernel/boot.fragment`):
+
+- **Storage:** NVMe, AHCI SATA, legacy PIIX SATA, LSI MegaRAID and MPT3 SAS,
+  USB mass storage, virtio.
+- **Network, wired only:** Intel e1000/e1000e, igb, igc, ixgbe, i40e;
+  Broadcom tg3 and bnxt; Realtek r8169; USB adapters (AX88179, RTL8152);
+  virtio. Wireless is not included: it needs firmware the image does not
+  ship.
+- **Display:** the firmware framebuffer (simpledrm) on any UEFI machine, the
+  ASPEED and Matrox framebuffers of server BMCs, virtio-gpu. No GPU
+  acceleration is needed; the compositor renders with pixman.
+- **Input:** USB HID, PS/2.
+
+A machine outside that list boots into a kernel that cannot find its disk or
+its network. Adding a driver is one line in the fragment and a rebuild. No
+build has yet been booted on physical hardware; every suite passes under
+QEMU with OVMF firmware, and the first real machine will say what is missing.
 
 ## How this document describes status
 
@@ -54,18 +75,18 @@ Four words, used the same way everywhere in this repository:
 | Stage 04 — base system | **tested** — every package builds with the hardening set; in the chroot, `make test-libc-unwind` proves the target libc unwinds through a dlopened library, `make smoke-userspace` runs the userland, `make audit-artifacts` reads the ELF headers of what shipped |
 | Stage 05 — hardened kernel | **implemented** — EFI stub, compiled-in command line with `CMDLINE_OVERRIDE`, dm-init verity root, Landlock, cgroup v2, restricted unprivileged user namespaces; the kernel proves itself only by booting the media (below) |
 | Stage 06 — install media and release payloads | **implemented** — USB image and ISO with the kernels signed by a build-generated developer Secure Boot key, a signed release manifest per payload |
-| Firmware boot of the media (G3) | **tested** — `make media-smoke-usb` / `media-smoke-iso`: firmware discovery only, no `-kernel`, `-initrd`, `-append` or host filesystem; the acceptance run reads the recorded QEMU commands back to attest it |
-| Installation and the installed system's state (G4) | **tested** — `make install-test` (install, boot alone with a fresh variable store, reboot, cold boot, refusals including an injected I/O error), `make state-test` (a cloned disk, ambiguous labels, a corrupt or missing state partition: the system boots degraded and says so) |
-| Boot integrity (G5) | **tested** — `make media-smoke-secureboot`, `make media-refused-foreign-keys` (Microsoft keys must refuse the medium, proven by the firmware's own refusal message), `make integrity-test` (a foreign-signed boot file refused, a tampered root refused by dm-verity before any userspace, recovery from the medium with state intact) |
-| Zones, network and encrypted storage on the installed kernel (G6, G7) | **tested** — `make zones-test`: the guest-side `zones-check.sh` and the compartment suites shipped in the image, run as root on the Kryptik kernel |
-| The zoned desktop (G8) | **tested** — `make gui-test`: the session on a virtual GPU, what a zone's client is and is not offered through its proxy, zone borders and title prefixes photographed windowed and fullscreen, per-zone clipboards, the clipboard-move gesture, and file transfers answered by keystrokes on the trusted chrome |
-| A/B updates and recovery (G9) | **tested** — `make update-test`: apply, trial boot, commit, rollback, refusals (wrong key, modified image, truncated kernel, unlisted file, downgrade, concurrent run, full disk), interruptions, and a deliberately broken trial that falls back |
+| Firmware boot of the media | **tested** — `make media-smoke-usb` / `media-smoke-iso`: firmware discovery only, no `-kernel`, `-initrd`, `-append` or host filesystem; the acceptance run reads the recorded QEMU commands back to attest it |
+| Installation and the installed system's state | **tested** — `make install-test` (install, boot alone with a fresh variable store, reboot, cold boot, refusals including an injected I/O error), `make state-test` (a cloned disk, ambiguous labels, a corrupt or missing state partition: the system boots degraded and says so) |
+| Boot integrity | **tested** — `make media-smoke-secureboot`, `make media-refused-foreign-keys` (Microsoft keys must refuse the medium, proven by the firmware's own refusal message), `make integrity-test` (a foreign-signed boot file refused, a tampered root refused by dm-verity before any userspace, recovery from the medium with state intact) |
+| Zones, network and encrypted storage on the installed kernel | **tested** — `make zones-test`: the guest-side `zones-check.sh` and the compartment suites shipped in the image, run as root on the Kryptik kernel |
+| The zoned desktop | **tested** — `make gui-test`: the session on a virtual GPU, what a zone's client is and is not offered through its proxy, zone borders and title prefixes photographed windowed and fullscreen, per-zone clipboards, the clipboard-move gesture, and file transfers answered by keystrokes on the trusted chrome |
+| A/B updates and recovery | **tested** — `make update-test`: apply, trial boot, commit, rollback, refusals (wrong key, modified image, truncated kernel, unlisted file, downgrade, concurrent run, full disk), interruptions, and a deliberately broken trial that falls back |
 | Zone definitions, `kryptikd run`, lifecycle, limits, ephemeral storage | **tested** — unit checks in kryptikd, `compartments/tests/` as root |
 | Per-zone LUKS2 volumes | **tested** — lifecycle as root on a developer host; on the target kernel inside `zones-test` |
 | The broker: file transfer with the person's consent, per-zone clipboards, the zone 0 clipboard gesture | **tested** — kryptikd unit tests, `compartments/tests/serve.sh`; on the target inside `gui-test` |
 | The compositor layer: `kryptik-wlproxy`, `zoneid`, the dwl zone-border patch | **tested** — `make compositor-test` (including the live proxy against a real socket), `make identity-test` |
 | `kryptik` — the command a person types | **tested** — `compartments/tests/cli.sh` |
-| `make acceptance` | **implemented** — every gate G1–G10 in one run, PASS / FAIL / INCOMPLETE per item, with a report and an export that re-hashes what it copies |
+| `make acceptance` | **implemented** — every suite in one run, PASS / FAIL / INCOMPLETE per item, with a report and an export that re-hashes what it copies |
 
 **Release-validated** is the column that matters, and it is earned per build:
 the acceptance report names the source revision, the image hashes, the
@@ -157,7 +178,7 @@ compartments/   Zone definitions and the compartment manager
   tests/        adversarial.sh (primitives), launcher.sh, cli.sh, serve.sh, update.sh
 compositor/     kryptik-wlproxy (the per-zone Wayland proxy) and zoneid (colour identity)
 tools/
-  acceptance.sh The one entrypoint: every gate, one verdict
+  acceptance.sh The one entrypoint: every suite, one verdict
   image/        Stage 06 helpers, the OVMF runner, the VM drivers
   install/      kryptik-install; update/ kryptik-update and kryptik-recover
   desktop/      kryptik-session, kryptik-chrome, kryptik-launch, the dwl patch
@@ -188,7 +209,7 @@ Testing needs no build for the host suites, and the built media for the rest:
 
 ```sh
 make test                      # every host-side suite that needs no root
-make acceptance EXPORT=DIR     # every gate on the newest media; needs root and KVM
+make acceptance EXPORT=DIR     # every suite on the newest media; needs root and KVM
 ```
 
 Boot, install, update and recovery instructions for a built release:
@@ -207,7 +228,7 @@ the tested images as artifacts.
 - [docs/threat-model.md](docs/threat-model.md) — what Kryptik defends against, and what it does not
 - [docs/hardening.md](docs/hardening.md) — toolchain and kernel hardening rationale
 - [docs/decisions.md](docs/decisions.md) — architecture decision records, including open questions
-- [docs/roadmap.md](docs/roadmap.md) — phased plan
+- [docs/roadmap.md](docs/roadmap.md) — what is built, in dependency order, with each part's exit test
 - [docs/supply-chain.md](docs/supply-chain.md) — source integrity and its current gaps
 - [docs/building.md](docs/building.md) — host setup
 

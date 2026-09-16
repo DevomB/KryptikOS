@@ -97,3 +97,32 @@ CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y
 CONFIG_VIRTIO_NET=y
 CONFIG_E1000=y
 CONFIG_E1000E=y
+
+# --- real hardware ---
+# There is no initramfs and no module loading (hardening.fragment), so a
+# machine's disk controller, network adapter and display have to be built
+# in or the kernel boots into nothing. The set below is what a download
+# is expected to meet: NVMe and SAS controllers, the Intel, Broadcom and
+# Realtek wired adapters of servers, desktops and docks, the two BMC
+# framebuffers, and USB 2 as well as 3. Wireless is deliberately absent:
+# it needs firmware files this image does not carry. None of this has
+# been booted on physical hardware yet; the first machine that does will
+# say what is missing.
+CONFIG_BLK_DEV_NVME=y
+CONFIG_MEGARAID_SAS=y
+CONFIG_SCSI_MPT3SAS=y
+CONFIG_ATA_PIIX=y
+CONFIG_USB_PCI=y
+CONFIG_USB_EHCI_HCD=y
+CONFIG_IGB=y
+CONFIG_IGC=y
+CONFIG_IXGBE=y
+CONFIG_I40E=y
+CONFIG_TG3=y
+CONFIG_BNXT=y
+CONFIG_R8169=y
+CONFIG_USB_USBNET=y
+CONFIG_USB_NET_AX88179_178A=y
+CONFIG_USB_RTL8152=y
+CONFIG_DRM_AST=y
+CONFIG_DRM_MGAG200=y
