@@ -378,9 +378,15 @@ if [[ -f "$ISOLATE_RS" ]]; then
     # for two functions of the same purpose that nothing called; the check
     # kept passing on dead code while the live mounts sat in another file.
     ROOTFS_RS="$(dirname "${BASH_SOURCE[0]}")/../kryptikd/src/rootfs.rs"
-    for m in "mount(proc)" "mount(sysfs)"; do
-        grep -qF "\"${m}\"" "$ROOTFS_RS" || { echo "    kryptikd rootfs build is missing ${m}"; missing=1; }
-    done
+    if [[ -f "$ROOTFS_RS" ]]; then
+        for m in "mount(proc)" "mount(sysfs)"; do
+            grep -qF "\"${m}\"" "$ROOTFS_RS" || { echo "    kryptikd rootfs build is missing ${m}"; missing=1; }
+        done
+    else
+        # Said, not silently skipped: a check that did not run established
+        # nothing, and the target ships this file precisely so that it can.
+        info "rootfs.rs not shipped beside this suite; the proc/sysfs mount check did not run"
+    fi
     # The seccomp filter must default-deny. A filter ending in ALLOW is an
     # allowlist in name only.
     SECCOMP_RS="$(dirname "${BASH_SOURCE[0]}")/../kryptikd/src/seccomp.rs"

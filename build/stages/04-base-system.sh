@@ -1478,8 +1478,13 @@ s_tests() {
     for t in "${KRYPTIK_ROOT}"/compartments/kryptikd/probes/*.sh; do
         install -m 0755 "$t" "$base/compartments/kryptikd/probes/$(basename "$t")"
     done
-    # adversarial.sh cross-checks its namespace set against isolate.rs.
-    install -m 0644 "${KRYPTIK_ROOT}/compartments/kryptikd/src/isolate.rs" "$base/compartments/kryptikd/src/isolate.rs"
+    # adversarial.sh cross-checks its namespace set against isolate.rs and
+    # the proc and sysfs mounts against rootfs.rs, where they are made. The
+    # first target run after that check moved reported both mounts missing:
+    # only isolate.rs had been shipped.
+    for src in isolate.rs rootfs.rs; do
+        install -m 0644 "${KRYPTIK_ROOT}/compartments/kryptikd/src/${src}" "$base/compartments/kryptikd/src/${src}"
+    done
     ln -sfn /usr/bin/kryptikd "$base/compartments/kryptikd/target/debug/kryptikd"
     for t in "${KRYPTIK_ROOT}"/build/guest-tests/*.sh "${KRYPTIK_ROOT}"/build/guest-tests/*.py; do
         [[ -f "$t" ]] || continue
@@ -2292,7 +2297,7 @@ PACKAGES=(
     "kryptikd"    "s_kryptikd ${KRYPTIK_KRYPTIKD_BIN:-none} $([[ -f "${KRYPTIK_KRYPTIKD_BIN:-}" ]] && sha256_of "${KRYPTIK_KRYPTIKD_BIN}" || echo absent) $(cat "${KRYPTIK_ROOT}"/compartments/zones/*.toml "${KRYPTIK_ROOT}"/compartments/zones/policy/* 2>/dev/null | sha256_of_stdin || echo nozones) $(sha256_of "${KRYPTIK_ROOT}/tools/kryptik" 2>/dev/null || echo none)"
     # The suites and guest checks the VM drivers run inside the installed
     # system; every file is an input.
-    "tests"       "s_tests $(cat "${KRYPTIK_ROOT}"/compartments/tests/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/probes/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/src/isolate.rs "${KRYPTIK_ROOT}"/build/guest-tests/*.sh "${KRYPTIK_ROOT}"/build/guest-tests/*.py 2>/dev/null | sha256_of_stdin || echo none)"
+    "tests"       "s_tests $(cat "${KRYPTIK_ROOT}"/compartments/tests/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/probes/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/src/isolate.rs "${KRYPTIK_ROOT}"/compartments/kryptikd/src/rootfs.rs "${KRYPTIK_ROOT}"/build/guest-tests/*.sh "${KRYPTIK_ROOT}"/build/guest-tests/*.py 2>/dev/null | sha256_of_stdin || echo none)"
     "boot-check"  "s_boot_check"
 )
 
