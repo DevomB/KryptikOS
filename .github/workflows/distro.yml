@@ -98,7 +98,6 @@ jobs:
           path: |
             /mnt/kryptik/work/sysroot
             /mnt/kryptik/work/.stamps
-            /mnt/kryptik/work/kconfig
           key: work02-${{ hashFiles('build/stages/00-host-check.sh', 'build/stages/01-toolchain.sh', 'build/stages/02-temp-tools.sh', 'build/lib/**', 'build/patches/**', 'build/config/**', 'sources.lock') }}-${{ github.run_id }}
           restore-keys: |
             work02-${{ hashFiles('build/stages/00-host-check.sh', 'build/stages/01-toolchain.sh', 'build/stages/02-temp-tools.sh', 'build/lib/**', 'build/patches/**', 'build/config/**', 'sources.lock') }}-
@@ -114,7 +113,14 @@ jobs:
         run: |
           cd /mnt/kryptik
           rm -rf work/build
-          tar --zstd -cf work-after-02.tar.zst -C work sysroot .stamps kconfig logs 2>/dev/null || tar --zstd -cf work-after-02.tar.zst -C work sysroot .stamps
+          # The logs travel when there are any; the tree's members are the
+          # ones the stages write (build/lib/common.sh: sysroot, .stamps,
+          # logs, build). There is no work/kconfig: the kernel's .config
+          # lives inside its source tree, and naming a directory that does
+          # not exist is how the stage 04-05 pack step below failed once.
+          members=(sysroot .stamps)
+          [ -d work/logs ] && members+=(logs)
+          tar --zstd -cf work-after-02.tar.zst -C work "${members[@]}"
           ls -la work-after-02.tar.zst
 
       - uses: actions/upload-artifact@v6
@@ -214,7 +220,7 @@ jobs:
         run: |
           cd /mnt/kryptik
           echo "restored ${{ steps.work05.outputs.cache-matched-key }}"
-          sudo rm -rf work/sysroot work/.stamps work/kconfig work/build
+          sudo rm -rf work/sysroot work/.stamps work/build
           sudo tar --zstd -xf work-after-05.tar.zst -C work
           rm -f work-after-05.tar.zst
           ls work work/build; sudo du -sh work/sysroot
@@ -249,7 +255,12 @@ jobs:
         run: |
           cd /mnt/kryptik
           kernel_tree="$(cd work && ls -d build/linux-* 2>/dev/null | head -1 || true)"
-          sudo tar --zstd -cf work-after-05.tar.zst -C work sysroot .stamps kconfig $kernel_tree
+          # Only members that exist: tar exits 2 for a name it cannot stat,
+          # and that failed this step on its first run, after stages 04 and
+          # 05 had both succeeded, over a directory nothing writes.
+          members=(sysroot .stamps)
+          [ -n "$kernel_tree" ] && members+=("$kernel_tree")
+          sudo tar --zstd -cf work-after-05.tar.zst -C work "${members[@]}"
           sudo chown "$(id -u):$(id -g)" work-after-05.tar.zst
           ls -la work-after-05.tar.zst; df -h /mnt | tail -1
 
