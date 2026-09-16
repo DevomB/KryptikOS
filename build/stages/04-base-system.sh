@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage 04 — Hardened base system (Phase 3 of docs/roadmap.md)
+# Stage 04 — Hardened base system (docs/roadmap.md, Base system)
 #
 # Builds the base system INSIDE the chroot prepared by stage 03. This is the
 # first stage where Kryptik's hardening flags are applied: every package here is
@@ -1109,7 +1109,7 @@ chmod 0755 /run/kryptik
 # The service manager, IF a compiled database exists.
 #
 # It deliberately does not exist yet: building an s6-rc source tree and
-# compiling it is Phase 6 work. Saying so on the console is the point - a
+# compiling it belongs to the compositor and GUI isolation work. Saying so on the console is the point - a
 # system that silently boots with no services and no explanation is
 # indistinguishable from one whose service manager crashed.
 if [ -d /usr/lib/kryptik/s6-rc/compiled ]; then
@@ -1118,7 +1118,7 @@ if [ -d /usr/lib/kryptik/s6-rc/compiled ]; then
 else
     echo "kryptik: no compiled s6-rc database at /usr/lib/kryptik/s6-rc/compiled."
     echo "kryptik: booting with the early console only; no services will start."
-    echo "kryptik: this is expected in a pre-alpha image - see docs/roadmap.md Phase 6."
+    echo "kryptik: this is expected in a pre-alpha image - see docs/roadmap.md, compositor and GUI isolation."
 fi
 EOF
 

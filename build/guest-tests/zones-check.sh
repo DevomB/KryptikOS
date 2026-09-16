@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Zones, the network and encrypted storage, measured on the installed system
-# (gates G6 and G7). Runs as root inside the guest; tools/image/zones-test.sh
+# (the zones suite). Runs as root inside the guest; tools/image/zones-test.sh
 # boots the disk, drives this over the serial login and reads the verdicts.
 #
 # Every line that matters starts with "ZT ": PASS/FAIL/INFO, then a name,
@@ -33,7 +33,7 @@ host_of() { local b; b="$(sed -n 's/^uid_base *= *\([0-9]*\).*/\1/p' "$Z/$1.toml
 [[ "$(id -u)" = 0 ]] || { fail "root" "this must run as root"; echo "ZT END"; exit 1; }
 echo "ZT BEGIN $(date -Iseconds 2>/dev/null)"
 
-# --- G6: the kernel and the zone set --------------------------------------
+# --- zones: the kernel and the zone set --------------------------------------
 if "$KD" check --target --zones "$Z" > "$LOG/check.out" 2>&1; then
     pass "kernel-support" "kryptikd check --target passes on $(uname -r)"
 else
@@ -44,7 +44,7 @@ zones="$("$KD" list --zones "$Z" 2>/dev/null | tr '\n' ' ')"
 for p in "$Z"/policy/*.seccomp; do [[ -f "$p" ]] || fail "policies" "no policy files"; done
 [[ -f "$Z/policy/work.seccomp" ]] && pass "policies" "seccomp policies installed beside the zones"
 
-# --- G6: the net zone and zone 0 --------------------------------------------
+# --- zones: the net zone and zone 0 --------------------------------------------
 if [[ "$(s6-svstat -o up /run/service/net-zone 2>/dev/null)" = true ]]; then pass "net-zone-up" "supervised and up"; else fail "net-zone-up" "$(s6-svstat /run/service/net-zone 2>&1)"; fi
 ready=""
 for _ in $(seq 1 30); do
@@ -56,7 +56,7 @@ if ip link show eth0 >/dev/null 2>&1; then fail "zone0-nic" "eth0 is still in zo
 if [[ -z "$(ip route show default 2>/dev/null)" ]]; then pass "zone0-no-route" "zone 0 has no default route"; else fail "zone0-no-route" "$(ip route show default)"; fi
 if ping -c1 -W2 10.0.2.2 >/dev/null 2>&1; then fail "zone0-offline" "zone 0 reached the VM gateway"; else pass "zone0-offline" "zone 0 cannot reach the VM gateway"; fi
 
-# --- G6: a routed zone reaches the world through net; vault reaches nothing --
+# --- zones: a routed zone reaches the world through net; vault reaches nothing --
 # The IPv6 echo waits for Duplicate Address Detection on the zone's fresh ULA
 # address: sent while the address is still tentative it fails at once with
 # EADDRNOTAVAIL. On bae1de53 it passed only because the IPv4 gateway echo
@@ -82,9 +82,9 @@ PY'
 [[ "$ZOUT" == *BRIDGE6-OK* ]] && pass "routed-ipv6-bridge" || fail "routed-ipv6-bridge"
 [[ "$ZOUT" == *DNS-ANSWERED* ]] && pass "routed-dns" "$(grep -o 'DNS-ANSWERED.*' "$LOG/untrusted.out")" || fail "routed-dns" "$(grep -o 'DNS-.*' "$LOG/untrusted.out")"
 
-# (the vault, which is encrypted, is probed once its volume exists: G7 below)
+# (the vault, which is encrypted, is probed once its volume exists: storage, below)
 
-# --- G6: separation between routed zones; fail-closed on a net restart -------
+# --- zones: separation between routed zones; fail-closed on a net restart -------
 printf 'personal-pass\n' > /root/zt/personal.pass; chmod 600 /root/zt/personal.pass
 "$KD" volume init personal --size 64M --passphrase-file /root/zt/personal.pass > "$LOG/vol-personal.out" 2>&1 \
     && pass "volume-init" "personal: $(tail -1 "$LOG/vol-personal.out")" || fail "volume-init" "$(tail -2 "$LOG/vol-personal.out" | tr '\n' ' ')"
@@ -119,7 +119,7 @@ zrun untrusted 30 -- sh -c 'python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10
 ppid="$(cat /run/kryptik/zones/personal/init.pid 2>/dev/null | cut -d' ' -f1)"
 if [[ -n "$ppid" ]] && nsenter -t "$ppid" -n ping -c1 -W3 10.0.2.2 >/dev/null 2>&1; then pass "reattach-after-restart" "the zone that was running has egress again"; else fail "reattach-after-restart" "personal (init $ppid) has no egress after the net restart"; fi
 
-# --- G6: resource limits and lifecycle ------------------------------------------
+# --- zones: resource limits and lifecycle ------------------------------------------
 # The storm is python, not the shell: bash answers a failed fork with four
 # retries and sleeps that add up to fifteen seconds, so a shell loop that
 # runs into pids.max never reaches its own end inside the timeout (the first
@@ -159,7 +159,7 @@ for _ in $(seq 1 20); do [[ -e /dev/mapper/kryptik-personal ]] || break; sleep 0
 [[ -e /dev/mapper/kryptik-personal ]] && fail "stop-closes-volume" "mapping still present after stop" || pass "stop-closes-volume" "the LUKS mapping is gone after stop"
 mountpoint -q "$R/personal" && fail "stop-unmounts" "plaintext still mounted" || pass "stop-unmounts" "nothing mounted at $R/personal after stop"
 
-# --- G7: encrypted storage lifecycle ---------------------------------------------
+# --- storage: encrypted storage lifecycle ----------------------------------------
 printf 'wrong-pass\n' > /root/zt/wrong.pass; chmod 600 /root/zt/wrong.pass
 zrun personal 30 --passphrase-file /root/zt/wrong.pass -- sh -c 'echo SHOULD-NOT-RUN'
 if [[ "$ZRC" != 0 && "$ZOUT" != *SHOULD-NOT-RUN* && ! -e /dev/mapper/kryptik-personal ]]; then pass "wrong-passphrase" "refused, no mapping left"; else fail "wrong-passphrase" "rc=$ZRC out=$ZOUT"; fi

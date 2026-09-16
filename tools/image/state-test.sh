@@ -24,8 +24,8 @@
 #      restored, normal.
 #
 # Every disk is a file made here. Degraded boots cannot be logged into (the
-# accounts live on the state that is unusable), so those phases assert on
-# the console transcript alone, and every restored phase logs in and
+# accounts live on the state that is unusable), so those steps assert on
+# the console transcript alone, and every restored step logs in and
 # checks the persisted file - the positive control that the damage was
 # real and the repair complete.
 set -uo pipefail
@@ -54,7 +54,7 @@ CLONE="${VMDIR}/state-clone.img"
 PASS=0; FAIL=0
 green() { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
 red()   { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
-phase() { printf '\n==> %s\n' "$*"; }
+step() { printf '\n==> %s\n' "$*"; }
 TUSER=tester; TPASS=tester-pw; RPASS=root-pw
 TUSER_HASH="$(openssl passwd -6 "$TPASS")"; ROOT_HASH="$(openssl passwd -6 "$RPASS")"
 DRV="${SELF}/vm-drive.py"
@@ -102,8 +102,8 @@ normal_boot() {   # normal_boot NAME
     txt | grep -q 'STATE DEGRADED' && red "$1: degraded banner on a healthy boot" || green "$1: no degraded banner"
 }
 
-# ---------------------------------------------------------------- phase 1 --
-phase "phase 1: install, first boot, a file on the state partition"
+# ----------------------------------------------------------------- step 1 --
+step "step 1: install, first boot, a file on the state partition"
 rm -f "$DISK"; truncate -s 12G "$DISK"
 CTL="${VMDIR}/testctl-state.img"
 "${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
@@ -116,12 +116,12 @@ drive "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER
     "grab:ident:cat /run/kryptik/boot-identity" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
-[[ "$rc" -eq 0 ]] && green "first boot: user created, file written" || { red "phase 1 drive failed"; exit 1; }
+[[ "$rc" -eq 0 ]] && green "first boot: user created, file written" || { red "step 1 drive failed"; exit 1; }
 txt | grep -q 'state=persistent' && green "state=persistent on the installed disk" || red "state not persistent"
 txt | grep -q 'root_disk=/dev/vda' && green "root disk identified as /dev/vda" || red "root disk not identified"
 
-# ---------------------------------------------------------------- phase 2 --
-phase "phase 2: a clone of the disk attached: the same labels twice"
+# ----------------------------------------------------------------- step 2 --
+step "step 2: a clone of the disk attached: the same labels twice"
 cp --sparse=always "$DISK" "$CLONE"
 start_vm state-p2 --disk "$CLONE"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
@@ -132,7 +132,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'kryptik-update status')" "expect:running slot:     a" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
-[[ "$rc" -eq 0 ]] && green "boots with a clone attached; login and the file work" || red "phase 2 drive failed"
+[[ "$rc" -eq 0 ]] && green "boots with a clone attached; login and the file work" || red "step 2 drive failed"
 txt | grep -q 'KRYPTIK_SMOKE: var_source=/dev/vda4 ext4' && green "/var is this disk's partition (vda4), not the clone's" || red "/var is not vda4"
 txt | grep -q 'state_dev=/dev/vda4' && green "boot identity names /dev/vda4" || red "boot identity does not name vda4"
 txt | grep -q 'sysinit: kryptik-state on other disks ignored: /dev/vdb4' && green "the clone's state partition was seen and ignored" || red "the clone's partition was not reported as ignored"
@@ -146,16 +146,16 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" "run:test -f /home/$
 rc=$?; stop_vm; DISK="$SAVED_DISK"
 [[ "$rc" -eq 0 ]] && green "the clone boots alone with its own copy of the state" || red "the clone did not boot alone"
 
-# ---------------------------------------------------------------- phase 3 --
-phase "phase 3: two kryptik-state partitions on the same disk"
+# ----------------------------------------------------------------- step 3 --
+step "step 3: two kryptik-state partitions on the same disk"
 # partition 3 is kryptik-b; give it the state label from the host
 sfdisk --part-label "$DISK" 3 kryptik-state >/dev/null 2>&1 || die "relabel"
 degraded_boot state-p3 '2 partitions labelled kryptik-state'
 sfdisk --part-label "$DISK" 3 kryptik-b >/dev/null 2>&1 || die "relabel back"
 normal_boot state-p3b
 
-# ---------------------------------------------------------------- phase 4 --
-phase "phase 4: a corrupt state partition"
+# ----------------------------------------------------------------- step 4 --
+step "step 4: a corrupt state partition"
 S4_OFF=$(( $(part_start "$DISK" 4) * 512 ))
 SAVE="${VMDIR}/state-super.bin"
 # the ext4 superblock and group descriptors: the first 64 KiB of the partition
@@ -165,8 +165,8 @@ degraded_boot state-p4 'mount of /dev/vda4 failed'
 dd if="$SAVE" of="$DISK" bs=1 seek="$S4_OFF" conv=notrunc status=none
 normal_boot state-p4b
 
-# ---------------------------------------------------------------- phase 5 --
-phase "phase 5: no state partition at all"
+# ----------------------------------------------------------------- step 5 --
+step "step 5: no state partition at all"
 sfdisk --part-label "$DISK" 4 not-kryptik >/dev/null 2>&1 || die "relabel"
 degraded_boot state-p5 'no partition labelled kryptik-state on /dev/vda'
 sfdisk --part-label "$DISK" 4 kryptik-state >/dev/null 2>&1 || die "relabel back"

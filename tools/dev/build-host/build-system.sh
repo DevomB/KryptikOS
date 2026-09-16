@@ -16,7 +16,7 @@
 # until someone decides to delete them.
 #
 # These host scripts are conveniences for this machine's layout (see
-# docs/OVERNIGHT_STATUS.md, "Environment"); the build itself is `make`.
+# docs/status.md, "Environment"); the build itself is `make`.
 set -u
 export KRYPTIK_WORK=/root/kryptik/work
 export KRYPTIK_SOURCES=/root/kryptik/sources

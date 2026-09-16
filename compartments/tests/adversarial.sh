@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 5 exit test — adversarial.
+# The isolation exit test — adversarial.
 #
 # docs/architecture.md states the requirement plainly: from inside `untrusted`,
 # WITH ROOT IN THAT ZONE, each of the following must be demonstrably impossible.
@@ -24,7 +24,7 @@
 # kryptikd applies (see compartments/kryptikd/src/isolate.rs).
 #
 # Exit status is the point: 0 only when all four requirements hold. While
-# Phase 5 is incomplete this script is EXPECTED to fail, and the failures name
+# the compartment layer is incomplete this script is EXPECTED to fail, and the failures name
 # precisely what is left to build.
 
 set -uo pipefail
@@ -53,7 +53,7 @@ trap cleanup EXIT
 # isolate.rs::namespace_flags; the mismatch test below checks that.
 ZONE_UNSHARE=(--user --map-root-user --pid --mount --ipc --uts --net --fork)
 
-printf '%sKryptik Phase 5 exit test — adversarial%s\n' "$C_BLU" "$C_RST"
+printf '%sKryptik isolation exit test — adversarial%s\n' "$C_BLU" "$C_RST"
 printf '%sAttacking from `untrusted`, as root inside the zone.%s\n' "$C_DIM" "$C_RST"
 
 # --- preconditions ----------------------------------------------------------
@@ -417,4 +417,4 @@ if [[ "$FAIL" -gt 0 ]]; then
     exit 1
 fi
 
-printf '\n%sAll Phase 5 exit requirements hold.%s\n' "$C_GRN" "$C_RST"
+printf '\n%sEvery isolation exit requirement holds.%s\n' "$C_GRN" "$C_RST"

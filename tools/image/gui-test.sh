@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# The zoned desktop on the INSTALLED system (gate G8): install from the
+# The zoned desktop on the INSTALLED system (the desktop suite): install from the
 # medium, boot the disk alone with a virtual GPU, keyboard and mouse, start
 # the desktop session for an ordinary user and run the guest-side checks
 # (build/guest-tests/gui-check.sh) as root over the serial login, pressing
@@ -40,7 +40,7 @@ DISK="${DISK:-${VMDIR}/gui.img}"
 PASS=0; FAIL=0
 green() { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
 red()   { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
-phase() { printf '\n==> %s\n' "$*"; }
+step() { printf '\n==> %s\n' "$*"; }
 TUSER=tester; TPASS=tester-pw; RPASS=root-pw
 TUSER_HASH="$(openssl passwd -6 "$TPASS")"; ROOT_HASH="$(openssl passwd -6 "$RPASS")"
 DRV="${SELF}/vm-drive.py"
@@ -49,8 +49,8 @@ LATEST="${KRYPTIK_WORK}/logs/ovmf-serial.latest.log"
 SHOT="${VMDIR}/gui-untrusted.ppm"
 SHOT_FS="${VMDIR}/gui-untrusted-fullscreen.ppm"
 
-# ---------------------------------------------------------------- phase 1 --
-phase "phase 1: install"
+# ----------------------------------------------------------------- step 1 --
+step "step 1: install"
 rm -f "$DISK"; truncate -s 12G "$DISK"
 CTL="${VMDIR}/testctl-gui.img"
 "${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
@@ -58,8 +58,8 @@ CTL="${VMDIR}/testctl-gui.img"
 "${SELF}/run-ovmf.sh" --usb "$USB" --disk "$DISK" --testctl "$CTL" --vars clean --mode smoke --timeout "$TIMEOUT" --name gui-install > /dev/null
 tr -d '\r' < "$LATEST" | grep -q 'KRYPTIK_INSTALL: rc=0' && green "installed" || { red "install failed"; exit 1; }
 
-# ---------------------------------------------------------------- phase 2 --
-phase "phase 2: the desktop, driven"
+# ----------------------------------------------------------------- step 2 --
+step "step 2: the desktop, driven"
 rm -f "$SHOT" "$SHOT_FS"
 out="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --net user --gpu --mem 3072 --name gui-p2)"
 SER="$(sed -n 's/^serial=//p' <<<"$out")"; PIDF="$(sed -n 's/^pid=//p' <<<"$out")"; LOG="$(sed -n 's/^log=//p' <<<"$out")"; QMP="$(sed -n 's/^qmp=//p' <<<"$out")"
@@ -92,8 +92,8 @@ for name in session-socket compositor-running chrome-focus-record chrome-window-
     grep -q "GT PASS ${name}" <<<"$T" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
 
-# ---------------------------------------------------------------- phase 3 --
-phase "phase 3: the screenshots show the zone's border, windowed and fullscreen"
+# ----------------------------------------------------------------- step 3 --
+step "step 3: the screenshots show the zone's border, windowed and fullscreen"
 check_shot() {   # check_shot FILE WHAT
 local shot="$1" what="$2" verdict
 if [[ -s "$shot" ]]; then

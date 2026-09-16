@@ -3,12 +3,15 @@
 //! Owns zone lifecycle. Runs privileged in zone 0 (ADR-003) and is the only
 //! process permitted to create zones or move data between them.
 //!
-//! STATUS: Phase 5 in progress. Implemented today are zone definition parsing
-//! and validation, kernel capability probing, and the namespace/isolation
-//! primitives the exit test exercises. NOT implemented: per-zone LUKS volumes,
-//! the Wayland proxy, and the brokered file/clipboard channels. Those are
-//! stubbed with explicit errors rather than silent no-ops - a compartment
-//! manager that pretends to isolate is worse than one that refuses to start.
+//! STATUS: implemented here are zone definition parsing and validation, kernel
+//! capability probing, the namespace, Landlock, seccomp and cgroup primitives
+//! the isolation exit test attacks, the launch path (`run`, `stop`, the
+//! registry, `gc`), the net zone's topology, per-zone LUKS2 volumes, the
+//! brokered clipboard and file-transfer channels with their consent path, and
+//! `serve`, the launch daemon. The per-zone Wayland proxy is the separate
+//! compositor workspace. Anything not built is refused with an explicit error
+//! rather than a silent no-op - a compartment manager that pretends to isolate
+//! is worse than one that refuses to start.
 
 mod broker;
 mod caps;
@@ -109,7 +112,7 @@ fn main() -> ExitCode {
         // kryptikd confine-test ROOTFS TARGET
         //
         // Confines this process to ROOTFS with Landlock, then attempts to read
-        // TARGET. Used by the Phase 5 adversarial test to prove requirements 2
+        // TARGET. Used by the isolation exit test to prove requirements 2
         // and 4 rather than assert them.
         //
         //   exit 0  -> the read SUCCEEDED (confinement failed)

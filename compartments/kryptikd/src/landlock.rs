@@ -1,6 +1,6 @@
 //! Landlock filesystem confinement.
 //!
-//! This is what makes requirements 2 and 4 of the Phase 5 exit test hold. A
+//! This is what makes requirements 2 and 4 of the isolation exit test hold. A
 //! mount namespace gives a zone its own mount *table*, not its own view of the
 //! files — the adversarial test proved a zone could still read another zone's
 //! data through the shared filesystem. Landlock closes that.

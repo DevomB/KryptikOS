@@ -3,8 +3,8 @@
 # printed), exporting to the Windows checkout's out/overnight. Runs as root in
 # the kryptik-build distro, from the main snapshot worktree.
 #
-#   run-acceptance.sh              every gate, with the export
-#   ONLY=G3,G8 run-acceptance.sh   a repair loop: those gates, no export
+#   run-acceptance.sh              every suite, with the export
+#   ONLY=boot,desktop run-acceptance.sh   a repair loop: those suites, no export
 set -u
 LOGS=/root/kryptik/logs; WT=/root/kryptik/main; IMG=/root/kryptik/work/images
 export KRYPTIK_WORK=/root/kryptik/work KRYPTIK_SOURCES=/root/kryptik/sources KRYPTIK_OUT=/root/kryptik/out NO_COLOR=1

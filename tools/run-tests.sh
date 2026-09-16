@@ -129,7 +129,7 @@ NOT run by this target - these need root, the build chroot or a VM:
   make smoke-userspace    run the built userland inside the chroot
   make acceptance         the mandatory installed-system evidence: firmware
                           boot, install, verified boot, zones, storage,
-                          desktop, updates - see docs/OVERNIGHT_STATUS.md
+                          desktop, updates - see docs/status.md
 EOF
 
 [[ "${#failed[@]}" -eq 0 ]] || exit 1

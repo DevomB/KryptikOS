@@ -30,7 +30,7 @@ runs**. Do not run the commands below without a later change to that instruction
   with only the fixed proxy executable and daemon socket paths redirected
   to temporary stand-ins.
 - Existing compiler warnings remain. No distro image was rebuilt and no
-  G1-G10 media-acceptance claim is made.
+  media-acceptance claim is made.
 
 The final diagnostic-tail and verifier-log changes postdate those runs.
 Keep them marked unexecuted until testing is authorized again. The temporary
@@ -59,7 +59,7 @@ build directories checked after the stop instruction were already absent.
   separate tools.
 - Boot-state authentication, upstream advisory coverage, actual image
   privilege bits, and production signing continuity still require the wider
-  review described in `CLAUDE_SECURITY_REVIEW.md`. That older handoff contains
+  review described in `security-review-2026-09.md`. That older handoff contains
   leads which subsequent commits have addressed; recheck the current code.
 
 No commits or pushes have been made for this bundle.

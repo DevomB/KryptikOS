@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 5 real-launcher suite — attacks `kryptikd run`, not unshare(1).
+# The real-launcher suite — attacks `kryptikd run`, not unshare(1).
 #
 # WHY THIS EXISTS, SEPARATELY FROM adversarial.sh
 #

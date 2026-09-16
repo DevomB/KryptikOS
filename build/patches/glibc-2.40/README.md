@@ -104,5 +104,5 @@ glibc inside the chroot) probes all three entry points, asks
 `_dl_find_object` directly which object it blames for a dlopen()ed
 address, and reads the loader's own map start back through
 `LD_TRACE_LOADED_OBJECTS`. With 0001-0003 alone it failed (2 passed, 4
-failed; the loader blamed itself). See docs/OVERNIGHT_STATUS.md for the
+failed; the loader blamed itself). See docs/status.md for the
 run with 0004 that closed build/BLOCKER.md.

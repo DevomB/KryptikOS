@@ -21,7 +21,7 @@ response writes. Before the fix, requesting a full clipboard without reading
 the response held the zone supervisor in a blocking `send`. Its new socketpair
 regression failed before the fix. Preserve it and inspect sibling paths.
 
-The supplied build schedule and old G1-G10 counts are historical. A successful
+The supplied build schedule and old acceptance-suite counts are historical. A successful
 build or unit test is not boot, isolation, physical-hardware, or release proof.
 Keep every media result tied to its commit, image digest, and exported report.
 
@@ -89,7 +89,7 @@ capabilities and a reachable path before assigning severity.
    `tools/release-check.sh`, and source/support inventory tooling.
    An earlier local sysroot audit found 16 setuid/setgid executables against an
    empty allowlist; that sysroot is not evidence about the newest image.
-   The earlier G2 log also contained soft hardening findings. Inspect the
+   The earlier build-suite log also contained soft hardening findings. Inspect the
    actual image, justify necessary privilege, and check whether acceptance
    enforces the relevant audits. Do not strip permissions blindly and break
    authentication, or count every missing ELF flag as an exploitable flaw.
@@ -132,4 +132,4 @@ reviewable fixes for up to three confirmed defects in this pass. Leave
 architectural changes as concrete proposals with acceptance criteria.
 If no additional defect is established, report the paths tested and the
 remaining uncertainty. Do not manufacture findings or declare the distro
-secure because its current acceptance gates pass.
+secure because its current acceptance suites pass.

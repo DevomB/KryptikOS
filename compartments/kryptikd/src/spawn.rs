@@ -1,7 +1,7 @@
 //! Zone spawning: create a zone and run something inside it.
 //!
 //! This is what turns kryptikd from a validator into a compartment manager.
-//! Until now the Phase 5 exit test drove the isolation primitives with
+//! Until now the isolation exit test drove the isolation primitives with
 //! `unshare(1)`, which proved the primitives were sound but said nothing about
 //! whether kryptikd applies them correctly. This module is what the test can
 //! attack instead.

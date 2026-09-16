@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage 05 — Hardened kernel (Phase 4 of docs/roadmap.md)
+# Stage 05 — Hardened kernel (docs/roadmap.md, Hardened kernel)
 #
 # Applies the linux-hardened patchset to the pinned LTS kernel (ADR-009), then
 # builds it with Kryptik's two config fragments:

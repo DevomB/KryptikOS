@@ -1,6 +1,6 @@
 //! Zone isolation primitives: namespaces, seccomp, Landlock, cgroups.
 //!
-//! This is the code the Phase 5 exit test attacks. Everything here is a direct
+//! This is the code the isolation exit test attacks. Everything here is a direct
 //! syscall via `libc` rather than a helper crate, because these calls are the
 //! security boundary and their exact arguments matter (ADR-010).
 //!
@@ -16,7 +16,7 @@ use crate::zone::{NetworkMode, Zone};
 ///
 /// CLONE_NEWUSER is first in the constant but NOT optional: it is what allows
 /// the remaining namespaces to be created and what makes "root inside the zone"
-/// mean something weaker than root outside it. The Phase 5 exit test runs as
+/// mean something weaker than root outside it. The isolation exit test runs as
 /// root *inside* a zone precisely to prove that distinction holds.
 pub const ZONE_NAMESPACES: libc::c_int = libc::CLONE_NEWUSER
     | libc::CLONE_NEWNS
@@ -63,7 +63,7 @@ fn check(call: &'static str, ret: libc::c_int) -> Result<(), IsolateError> {
 /// Every zone gets its own network namespace, the nic zone included: it
 /// OWNS the physical interface, which the parent moves into its namespace
 /// (netzone), so zone 0 is left with loopback. Until security increment 15
-/// the nic zone stayed in zone 0's namespace - a Phase 5 rule from before
+/// the nic zone stayed in zone 0's namespace - a compartment-layer rule from before
 /// the topology existed - which made "move the NIC into the nic zone" a
 /// no-op and built the bridge in zone 0. Nothing measured it: the suite's
 /// NETR1 only checked that the zone started, and the VM topology probe that

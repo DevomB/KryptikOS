@@ -17,7 +17,7 @@ hardware; the hardware notes say what should hold, not what was measured.
 | `root.json` | the verified root image's dm-verity record (root hash, salt, sizes) |
 | `manifest-VERSION`, `.sig` | the signed release manifest of each payload the update test used |
 | `REVISION.txt` | the source revision the images were built and tested from |
-| `ACCEPTANCE-REPORT.md`, `acceptance-logs/` | every gate, its result, the commands and their logs |
+| `ACCEPTANCE-REPORT.md`, `acceptance-logs/` | every suite, its result, the commands and their logs |
 
 Verify before use:
 

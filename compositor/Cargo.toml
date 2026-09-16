@@ -1,4 +1,4 @@
-# Kryptik compositor layer — Phase 6.
+# Kryptik compositor layer (docs/roadmap.md, Compositor and GUI isolation).
 #
 # Deliberately a SEPARATE cargo workspace from compartments/kryptikd. kryptikd
 # runs privileged in zone 0 and mediates every boundary in the system; the

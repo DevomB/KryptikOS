@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# make acceptance: the G1-G10 acceptance gates, run against
+# make acceptance: the acceptance suites, run against
 # named artifacts in one invocation, with one verdict and a report that ties
 # every result to the source revision, the image hashes, the firmware, the
 # command, the exit status and the log.
 #
 #   tools/acceptance.sh [--media-usb IMG] [--media-iso ISO]
 #                       [--payload-a DIR] [--payload-b DIR]
-#                       [--out DIR] [--export DIR] [--only G3,G8] [--no-host]
+#                       [--out DIR] [--export DIR] [--only boot,desktop] [--no-host]
 #
 # Three results, and only one of them is a pass:
 #   PASS        the item ran and every check inside it passed
@@ -22,7 +22,7 @@
 # Host-side suites (the unit and fixture suites, the compositor tests, the
 # chroot proofs) are tagged "host" in the report. They are mandatory - they
 # are the regressions this work repaired - but they are not installed-system
-# evidence, and the report keeps the two apart: a gate whose only evidence is
+# evidence, and the report keeps the two apart: a suite whose only evidence is
 # host-side says so.
 #
 # Every VM driver carries its own positive controls; this script adds one
@@ -31,7 +31,7 @@
 #
 # --export DIR copies the tested media, their hashes, the trust material, the
 # revision, this report and the boot/install/recovery instructions to DIR
-# and verifies that the copies hash the same as what was tested (gate G10).
+# and verifies that the copies hash the same as what was tested (the release suite).
 set -uo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SELF}/.." && pwd)"
@@ -79,13 +79,13 @@ SYSROOT="${KRYPTIK_WORK}/sysroot"
 # The release under test is the highest-versioned medium on hand, or the
 # one named (the version, not the file's age: the build's own order is A
 # then B, and a medium is what it says it is whichever was written last):
-# every gate boots, installs and exports THAT, and its payload is release B,
+# every suite boots, installs and exports THAT, and its payload is release B,
 # the one the update test arrives at. Release A is the previous release: the
 # highest version below B that has both a payload and a USB medium. The
 # update test installs A from A's own medium and applies B over it.
 # (Taking the medium's release as A and "the other payload" as B chose, on
 # a tree where B was built after A, the newer one as A - and the update test
-# refused its own payload as a downgrade. Pointing every gate at the older
+# refused its own payload as a downgrade. Pointing every suite at the older
 # medium instead would have tested and exported the previous release.)
 # Explicit --media-*/--payload-* win. A lone release is B with no A, and
 # the update test says so rather than running.
@@ -137,9 +137,9 @@ REV_DESC="$(git -c safe.directory='*' -C "$ROOT" describe --always --dirty --lon
 DIRTY="$(git -c safe.directory='*' -C "$ROOT" status --porcelain 2>/dev/null)"
 
 # --------------------------------------------------------------- results --
-R_GATE=(); R_NAME=(); R_MAND=(); R_KIND=(); R_RES=(); R_CHECKS=(); R_RC=(); R_SECS=(); R_LOG=(); R_NOTE=()
+R_SUITE=(); R_NAME=(); R_MAND=(); R_KIND=(); R_RES=(); R_CHECKS=(); R_RC=(); R_SECS=(); R_LOG=(); R_NOTE=()
 wanted() { [[ -z "$ONLY" || ",${ONLY}," == *",$1,"* ]]; }
-record() { R_GATE+=("$1"); R_NAME+=("$2"); R_MAND+=("$3"); R_KIND+=("$4"); R_RES+=("$5"); R_CHECKS+=("$6"); R_RC+=("$7"); R_SECS+=("$8"); R_LOG+=("$9"); R_NOTE+=("${10}"); }
+record() { R_SUITE+=("$1"); R_NAME+=("$2"); R_MAND+=("$3"); R_KIND+=("$4"); R_RES+=("$5"); R_CHECKS+=("$6"); R_RC+=("$7"); R_SECS+=("$8"); R_LOG+=("$9"); R_NOTE+=("${10}"); }
 
 # checks_in LOG: "passed/failed" from the driver's own summary line, or "-"
 checks_in() {
@@ -157,17 +157,17 @@ checks_in() {
     printf '%s' "-"
 }
 
-# item GATE NAME M|O host|vm|post MINPASS FN [PREREQ-FN]
+# item SUITE NAME M|O host|vm|post MINPASS FN [PREREQ-FN]
 #   PREREQ-FN prints a reason when the item cannot run here.
 item() {
-    local gate="$1" name="$2" mand="$3" kind="$4" minp="$5" fn="$6" pre="${7:-}"
-    local log="${OUT}/${gate//\//-}-${name}.log" rc res checks="-" note="" reason="" t0
-    if ! wanted "$gate"; then record "$gate" "$name" "$mand" "$kind" INCOMPLETE "-" "-" 0 "-" "not run (--only ${ONLY})"; return; fi
-    printf '\n==> [%s] %s\n' "$gate" "$name"
+    local suite="$1" name="$2" mand="$3" kind="$4" minp="$5" fn="$6" pre="${7:-}"
+    local log="${OUT}/${suite}-${name}.log" rc res checks="-" note="" reason="" t0
+    if ! wanted "$suite"; then record "$suite" "$name" "$mand" "$kind" INCOMPLETE "-" "-" 0 "-" "not run (--only ${ONLY})"; return; fi
+    printf '\n==> [%s] %s\n' "$suite" "$name"
     [[ -n "$pre" ]] && reason="$("$pre" 2>&1)"
     if [[ -n "$reason" ]]; then
         printf 'INCOMPLETE: %s\n' "$reason" | tee "$log"
-        record "$gate" "$name" "$mand" "$kind" INCOMPLETE "-" 77 0 "$log" "$reason"; return
+        record "$suite" "$name" "$mand" "$kind" INCOMPLETE "-" 77 0 "$log" "$reason"; return
     fi
     t0=$SECONDS
     "$fn" 2>&1 | tee "$log"
@@ -185,7 +185,7 @@ item() {
         fi
     fi
     printf -- '-- %s: %s (exit %s, %ss, checks %s)%s\n' "$name" "$res" "$rc" "$((SECONDS - t0))" "$checks" "${note:+ - $note}"
-    record "$gate" "$name" "$mand" "$kind" "$res" "$checks" "$rc" "$((SECONDS - t0))" "$log" "$note"
+    record "$suite" "$name" "$mand" "$kind" "$res" "$checks" "$rc" "$((SECONDS - t0))" "$log" "$note"
 }
 
 # ------------------------------------------------------------- prereqs --
@@ -309,36 +309,36 @@ echo "  update    : from A ${VER_A:-none} (${MEDIA_USB_A:-no medium}; ${PAYLOAD_
 echo "  firmware  : ${FW} ${H_FW:+sha256 $H_FW} (${FW_PKG}); ${QEMU_VER}; kvm=${KVM}"
 echo "  output    : ${OUT}"
 
-item G1 revision            M host 0 it_revision
-item G1 compositor-sources  M host 0 it_compositor_sources
-item G1 sources-lock        M host 0 it_sources_lock need_sources
-item G1 media-hashes        M host 0 it_media_hashes need_usb
+item inputs    revision                   M host  0 it_revision
+item inputs    compositor-sources         M host  0 it_compositor_sources
+item inputs    sources-lock               M host  0 it_sources_lock need_sources
+item inputs    media-hashes               M host  0 it_media_hashes need_usb
 if [[ "$NOHOST" -eq 0 ]]; then
-item G2 host-suites         M host 0 it_host_suites need_cargo
+item build     host-suites                M host  0 it_host_suites need_cargo
 fi
-item G2 libc-unwind         M host 0 it_libc_unwind need_sysroot
-item G2 userspace-smoke     M host 0 it_userspace need_sysroot
-item G2 artifact-hardening  M host 0 it_artifacts need_sysroot
-item G2 kernel-config       M host 0 it_kernel_config need_sources
-item G2 support-status      M host 0 it_support_status
-item G3 media-smoke-usb     M vm  25 it_smoke_usb need_vm
-item G3 media-smoke-iso     M vm  25 it_smoke_iso need_vm_iso
-item G4 install-test        M vm  10 it_install need_vm
-item G4 state-test          M vm  10 it_state need_vm
-item G5 ovmf-vars           M host 0 it_ovmf_vars need_usb
-item G5 media-smoke-secureboot M vm 25 it_smoke_sb need_enrolled
-item G5 media-refused-foreign-keys M vm 5 it_refused need_ms
-item G5 integrity-test      M vm   8 it_integrity need_enrolled
-item G6/G7 zones-test       M vm  10 it_zones need_vm
-item G8 gui-test            M vm  25 it_gui need_vm
-item G9 update-test         M vm  10 it_update need_update
-item G3 firmware-only-boot  M post 0 it_firmware_only
+item build     libc-unwind                M host  0 it_libc_unwind need_sysroot
+item build     userspace-smoke            M host  0 it_userspace need_sysroot
+item build     artifact-hardening         M host  0 it_artifacts need_sysroot
+item build     kernel-config              M host  0 it_kernel_config need_sources
+item build     support-status             M host  0 it_support_status
+item boot      media-smoke-usb            M vm   25 it_smoke_usb need_vm
+item boot      media-smoke-iso            M vm   25 it_smoke_iso need_vm_iso
+item install   install-test               M vm   10 it_install need_vm
+item install   state-test                 M vm   10 it_state need_vm
+item integrity ovmf-vars                  M host  0 it_ovmf_vars need_usb
+item integrity media-smoke-secureboot     M vm   25 it_smoke_sb need_enrolled
+item integrity media-refused-foreign-keys M vm    5 it_refused need_ms
+item integrity integrity-test             M vm    8 it_integrity need_enrolled
+item zones     zones-test                 M vm   10 it_zones need_vm
+item desktop   gui-test                   M vm   25 it_gui need_vm
+item update    update-test                M vm   10 it_update need_update
+item boot      firmware-only-boot         M post  0 it_firmware_only
 
 # ------------------------------------------------------------- report --
-KERNEL_LINE="$(grep -h -o 'KRYPTIK_SMOKE: kernel=[^ ]*' "${OUT}"/G3-media-smoke-usb.log 2>/dev/null | head -1 | sed 's/KRYPTIK_SMOKE: kernel=//')"
+KERNEL_LINE="$(grep -h -o 'KRYPTIK_SMOKE: kernel=[^ ]*' "${OUT}"/boot-media-smoke-usb.log 2>/dev/null | head -1 | sed 's/KRYPTIK_SMOKE: kernel=//')"
 verdict_of() {
     local i fail=0 inc=0
-    for i in "${!R_GATE[@]}"; do
+    for i in "${!R_SUITE[@]}"; do
         [[ "${R_MAND[$i]}" == M ]] || continue
         case "${R_RES[$i]}" in FAIL) fail=1 ;; INCOMPLETE) inc=1 ;; esac
     done
@@ -369,18 +369,18 @@ write_report() {
         echo "Results: PASS, FAIL, or INCOMPLETE (could not run here; never a pass)."
         echo "Kind: host = a host-side or chroot suite, not installed-system evidence; vm = the installed system or the medium under firmware; post = read from this run's own records."
         echo
-        echo "| gate | item | mandatory | kind | result | checks passed/failed | exit | seconds | log | note |"
+        echo "| suite | item | mandatory | kind | result | checks passed/failed | exit | seconds | log | note |"
         echo "|---|---|---|---|---|---|---|---|---|---|"
-        for i in "${!R_GATE[@]}"; do
-            printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' "${R_GATE[$i]}" "${R_NAME[$i]}" "$([[ "${R_MAND[$i]}" == M ]] && echo yes || echo no)" "${R_KIND[$i]}" "${R_RES[$i]}" "${R_CHECKS[$i]}" "${R_RC[$i]}" "${R_SECS[$i]}" "$(basename "${R_LOG[$i]}")" "${R_NOTE[$i]}"
+        for i in "${!R_SUITE[@]}"; do
+            printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' "${R_SUITE[$i]}" "${R_NAME[$i]}" "$([[ "${R_MAND[$i]}" == M ]] && echo yes || echo no)" "${R_KIND[$i]}" "${R_RES[$i]}" "${R_CHECKS[$i]}" "${R_RC[$i]}" "${R_SECS[$i]}" "$(basename "${R_LOG[$i]}")" "${R_NOTE[$i]}"
         done
         echo
-        echo "## Gates"
+        echo "## Suites"
         echo
-        for g in G1 G2 G3 G4 G5 G6/G7 G8 G9 G10; do
+        for g in inputs build boot install integrity zones desktop update release; do
             gs="PASS"; any=0
-            for i in "${!R_GATE[@]}"; do
-                [[ "${R_GATE[$i]}" == "$g" ]] || continue; any=1
+            for i in "${!R_SUITE[@]}"; do
+                [[ "${R_SUITE[$i]}" == "$g" ]] || continue; any=1
                 case "${R_RES[$i]}" in FAIL) gs=FAIL ;; INCOMPLETE) [[ "$gs" == FAIL ]] || gs=INCOMPLETE ;; esac
             done
             [[ "$any" -eq 1 ]] || gs="INCOMPLETE (no item)"
@@ -390,9 +390,9 @@ write_report() {
         echo "Exit status: 0 only for PASS; 1 for FAIL; 2 for INCOMPLETE."
     } > "${OUT}/REPORT.md"
     {
-        printf 'gate\titem\tmandatory\tkind\tresult\tchecks\texit\tseconds\tlog\tnote\n'
-        for i in "${!R_GATE[@]}"; do
-            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${R_GATE[$i]}" "${R_NAME[$i]}" "${R_MAND[$i]}" "${R_KIND[$i]}" "${R_RES[$i]}" "${R_CHECKS[$i]}" "${R_RC[$i]}" "${R_SECS[$i]}" "${R_LOG[$i]}" "${R_NOTE[$i]}"
+        printf 'suite\titem\tmandatory\tkind\tresult\tchecks\texit\tseconds\tlog\tnote\n'
+        for i in "${!R_SUITE[@]}"; do
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${R_SUITE[$i]}" "${R_NAME[$i]}" "${R_MAND[$i]}" "${R_KIND[$i]}" "${R_RES[$i]}" "${R_CHECKS[$i]}" "${R_RC[$i]}" "${R_SECS[$i]}" "${R_LOG[$i]}" "${R_NOTE[$i]}"
         done
     } > "${OUT}/results.tsv"
 }
@@ -437,8 +437,8 @@ it_export() {
 }
 V="$(verdict_of)"
 write_report "$V"
-if [[ -n "$EXPORT" ]] || wanted G10; then
-    item G10 export M host 0 it_export need_export
+if [[ -n "$EXPORT" ]] || wanted release; then
+    item release export M host 0 it_export need_export
     V="$(verdict_of)"
     write_report "$V"
     if [[ -n "$EXPORT" && -d "$EXPORT" ]]; then
@@ -459,7 +459,7 @@ fi
 
 echo
 echo "================================================================"
-sed -n '/^| gate/,/^$/p' "${OUT}/REPORT.md"
+sed -n '/^| suite/,/^$/p' "${OUT}/REPORT.md"
 echo "Verdict: ${V}   (report: ${OUT}/REPORT.md)"
 # The VM drivers each make 12 GB disks and clones under work/vm. The
 # transcripts carry the evidence; the disks are worth keeping only when an

@@ -134,7 +134,7 @@ class Drive:
         # event), and it flushes whatever arrived during the second after it
         # started or after such an event woke it. An Enter that lands in that
         # window is discarded, agetty goes back to waiting, and a driver that
-        # sent one Enter waits with it: 51500b01's G9 phase 4 spent 420 s on
+        # sent one Enter waits with it: 51500b01's update test, step 4, spent 420 s on
         # a console that had printed agetty's leading newline and nothing
         # else. Every transcript of that run shows the prompt only after the
         # driver's Enter. So knock again every few seconds until one answers.

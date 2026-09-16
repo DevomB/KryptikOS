@@ -2,12 +2,12 @@
 
 Zone definitions and the compartment manager (`kryptikd`).
 
-**Nothing here is implemented.** This is Phase 5 in [../docs/roadmap.md](../docs/roadmap.md)
-— the phase where Kryptik stops being "LFS with good compiler flags" and becomes
-Kryptik. The model it implements is specified in
+The compartment manager `kryptikd`, the zone definitions it loads and the
+suites that attack it live here; in [../docs/roadmap.md](../docs/roadmap.md)
+this is the compartment layer. The model it implements is specified in
 [../docs/architecture.md](../docs/architecture.md).
 
-## Planned layout
+## Layout
 
 ```
 compartments/
@@ -50,7 +50,7 @@ border_color = "#c9a227"   # load-bearing: the user must be able to tell zones a
 
 ## Test requirement
 
-Phase 5's exit test is adversarial, not descriptive. From inside `untrusted`,
+The isolation exit test is adversarial, not descriptive. From inside `untrusted`,
 **with root in that zone**, each of the following must be demonstrably
 impossible, each proven by a committed test:
 

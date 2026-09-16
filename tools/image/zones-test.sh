@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Zones, the network and encrypted storage on the INSTALLED system (gates G6
-# and G7): install from the medium, boot the disk alone with a NIC, and run
+# Zones, the network and encrypted storage on the INSTALLED system (the zones
+# suite): install from the medium, boot the disk alone with a NIC, and run
 # the guest-side checks and the compartment suites as root over the serial
 # login. The verdicts are the guest's own lines; this script only carries
 # them and refuses to call an absent verdict a pass.
@@ -49,7 +49,7 @@ DISK="${DISK:-${VMDIR}/zones.img}"
 PASS=0; FAIL=0
 green() { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
 red()   { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
-phase() { printf '\n==> %s\n' "$*"; }
+step() { printf '\n==> %s\n' "$*"; }
 TUSER=tester; TPASS=tester-pw; RPASS=root-pw
 TUSER_HASH="$(openssl passwd -6 "$TPASS")"; ROOT_HASH="$(openssl passwd -6 "$RPASS")"
 DRV="${SELF}/vm-drive.py"
@@ -63,8 +63,8 @@ stop_vm() { sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null; slee
 drive() { python3 "$DRV" --serial "$SER" --timeout "$1" "${@:2}"; }
 txt() { tr -d '\r' < "$LOG"; }
 
-# ---------------------------------------------------------------- phase 1 --
-phase "phase 1: install and boot alone with a NIC"
+# ----------------------------------------------------------------- step 1 --
+step "step 1: install and boot alone with a NIC"
 rm -f "$DISK"; truncate -s 12G "$DISK"
 CTL="${VMDIR}/testctl-zones.img"
 "${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
@@ -72,8 +72,8 @@ CTL="${VMDIR}/testctl-zones.img"
 "${SELF}/run-ovmf.sh" --usb "$USB" --disk "$DISK" --testctl "$CTL" --vars clean --mode smoke --timeout "$TIMEOUT" --name zones-install > /dev/null
 tr -d '\r' < "$LATEST" | grep -q 'KRYPTIK_INSTALL: rc=0' && green "installed" || { red "install failed"; exit 1; }
 
-# ---------------------------------------------------------------- phase 2 --
-phase "phase 2: the guest-side zone, network and storage checks (as root)"
+# ----------------------------------------------------------------- step 2 --
+step "step 2: the guest-side zone, network and storage checks (as root)"
 # 3 GB, not the 2 GB default: the ephemeral-size-bound check fills untrusted's
 # 2G tmpfs to its limit, and those pages are RAM. In a 2 GB guest the fill
 # ran the machine out of memory before ENOSPC could be reached.
@@ -90,15 +90,15 @@ echo "  guest summary: ${summary:-none}"
 zp="$(sed -n 's/.*passed=\([0-9]*\).*/\1/p' <<<"$summary")"; zf="$(sed -n 's/.*failed=\([0-9]*\).*/\1/p' <<<"$summary")"
 if [[ -n "$summary" && "${zf:-1}" -eq 0 && "${zp:-0}" -ge 30 ]]; then green "every guest check passed (${zp})"; else red "guest checks: ${zp:-0} passed, ${zf:-?} failed"; fi
 grep 'ZT FAIL' <<<"$T2" | sed 's/^/        /'
-# the verdicts that carry the gates, individually, so a pass is not one line
+# the verdicts that carry the suite, individually, so a pass is not one line
 for name in kernel-support net-ready zone0-nic zone0-no-route zone0-offline routed-egress routed-dns routed-ipv6-noglobal zone-separation fail-closed net-restart-ready reattach-after-restart pids-limit ephemeral-size-bound \
             volume-init encrypted-zone-start stop-closes-volume wrong-passphrase persist-reopen no-mapping-after ephemeral-gone concurrent-start-refused full-volume header-restore vault-offline no-passphrase-leak; do
     grep -q "ZT PASS ${name}" <<<"$T2" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
 
-# ---------------------------------------------------------------- phase 3 --
+# ----------------------------------------------------------------- step 3 --
 if [[ "$SUITES" -eq 1 ]]; then
-phase "phase 3: the compartment suites on the target kernel (as root)"
+step "step 3: the compartment suites on the target kernel (as root)"
 # Each suite writes its log on the guest; the console gets its exit code, the
 # summary tail and every FAIL row with three lines of detail, tagged with the
 # suite's name. The logs stay on the disk, which the acceptance runner does
@@ -150,20 +150,20 @@ fi
 grep -E 'passed, [0-9]+ failed, [0-9]+ not run' <<<"$T3" | tail -1 | sed 's/^/        launcher: /'
 fi
 
-# ---------------------------------------------------------------- phase 4 --
-phase "phase 4: reboot; the encrypted zone's data is still there"
+# ----------------------------------------------------------------- step 4 --
+step "step 4: reboot; the encrypted zone's data is still there"
 drive 300 "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'kryptikd run personal --zones /usr/lib/kryptik/zones --rootfs /var/lib/kryptik/zones --passphrase-file /root/zt/personal.pass -- cat /home/personal/keep; echo REOPEN-RC=$?')" "expect:secret-data-1" "expect:REOPEN-RC=0" \
     "$(ROOTSH 'ls /dev/mapper | sed s/^/MAPPER:/; echo MAPPER-DONE')" "expect:MAPPER-DONE" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
-[[ "$rc" -eq 0 ]] && green "after a reboot the LUKS2 volume opens with its passphrase and the data is there" || red "phase 4 drive failed"
+[[ "$rc" -eq 0 ]] && green "after a reboot the LUKS2 volume opens with its passphrase and the data is there" || red "step 4 drive failed"
 # Only the mapper listing the guest printed counts, and it is tagged for
 # that: the name kryptik-personal appears legitimately many times earlier
 # in the same transcript (the guest checks open and close that volume), so
 # a grep over the whole session reported a leak the listing itself refuted;
 # a range from the transcript's first "Password:" line did the same, since
-# that line is phase 2's. The listing on 8333d751 read "MAPPER:control".
+# that line is step 2's. The listing on 8333d751 read "MAPPER:control".
 if txt | grep -q '^MAPPER:kryptik-personal'; then red "a mapping was left open after the reboot check"; else green "no mapping left after the zone exited"; fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

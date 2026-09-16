@@ -288,7 +288,7 @@ jobs:
           cargo build --release --target x86_64-unknown-linux-musl
           cargo test --target x86_64-unknown-linux-musl
 
-      - name: Phase 5 adversarial exit test (isolation primitives)
+      - name: Isolation exit test (the primitives)
         run: |
           cd compartments/kryptikd && cargo build --quiet
           cd ../.. && ./compartments/tests/adversarial.sh

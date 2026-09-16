@@ -1,6 +1,6 @@
 # untrusted — for opening things you do not trust.
 #
-# This is the zone the Phase 5 adversarial test attacks FROM. Everything it
+# This is the zone the isolation exit test attacks FROM. Everything it
 # holds is destroyed at teardown, and its network path is assumed hostile.
 
 [zone]

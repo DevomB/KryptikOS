@@ -7,7 +7,7 @@
 #   tools/image/install-test.sh --usb IMG [--disk FILE] [--size 12G]
 #                               [--vars clean|enrolled] [--timeout N] [--quick]
 #
-# Phases:
+# Steps:
 #   1  blank disk + control disk (install_target, preseed): boot the medium,
 #      the installer runs unattended, the guest powers off; assert on its
 #      transcript and on the target's partition table from the host side.
@@ -52,7 +52,7 @@ green() { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
 red()   { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
 want()  { if grep -qE "$2" "$1"; then green "$3"; else red "$3"; fi; }
 deny()  { if grep -qE "$2" "$1"; then red "$3"; else green "$3"; fi; }
-phase() { printf '\n==> %s\n' "$*"; }
+step() { printf '\n==> %s\n' "$*"; }
 txt_of() { tr -d '\r' < "$1"; }
 
 # The test account and root password the preseed creates. The hashes are
@@ -61,8 +61,8 @@ TUSER=tester; TPASS=tester-pw; RPASS=root-pw
 hash_of() { openssl passwd -6 "$1"; }
 TUSER_HASH="$(hash_of "$TPASS")"; ROOT_HASH="$(hash_of "$RPASS")"
 
-# ---------------------------------------------------------------- phase 1 --
-phase "phase 1: install from the medium onto a blank ${SIZE} disk"
+# ----------------------------------------------------------------- step 1 --
+step "step 1: install from the medium onto a blank ${SIZE} disk"
 rm -f "$DISK"; truncate -s "$SIZE" "$DISK"
 CTL="${VMDIR}/testctl-install.img"
 "${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
@@ -92,8 +92,8 @@ if [[ "$lbls" == *kryptik-esp* && "$lbls" == *kryptik-a* && "$lbls" == *kryptik-
     green "host sees the four partition labels"; else red "host labels: ${lbls}"; fi
 if [[ "$FAIL" -ne 0 ]]; then printf '\nphase 1 failed; not booting the result.\n%d passed, %d failed\n' "$PASS" "$FAIL"; exit 1; fi
 
-# ---------------------------------------------------------------- phase 2 --
-phase "phase 2: boot the installed disk alone, medium detached, variables reset"
+# ----------------------------------------------------------------- step 2 --
+step "step 2: boot the installed disk alone, medium detached, variables reset"
 VARSF="${VMDIR}/installed-vars.fd"
 cp "/usr/share/OVMF/OVMF_VARS_4M.fd" "$VARSF"
 [[ "$VARS" == "enrolled" ]] && cp "${KRYPTIK_WORK}/keys/sb/vars/enrolled.fd" "$VARSF"
@@ -137,9 +137,9 @@ want "$P2" 'Power down'                                      "the guest powered 
 deny "$P2" 'Kernel panic|Oops:|POWEROFF_DID_NOT_TAKE_EFFECT' "no panic, no forced poweroff"
 if [[ -f "$REC" ]]; then echo "  recorded:"; sed 's/^/    /' "$REC" | head -30; fi
 
-# ---------------------------------------------------------------- phase 3 --
+# ----------------------------------------------------------------- step 3 --
 if [[ "$QUICK" -eq 0 ]]; then
-phase "phase 3: cold boot the installed disk again"
+step "step 3: cold boot the installed disk again"
 SERVE="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --name install-p3)"
 SER="$(sed -n 's/^serial=//p' <<<"$SERVE")"; PIDF="$(sed -n 's/^pid=//p' <<<"$SERVE")"; LOG3="$(sed -n 's/^log=//p' <<<"$SERVE")"
 python3 "$DRV" --serial "$SER" --timeout 300 \
@@ -153,8 +153,8 @@ P3="${VMDIR}/install-p3.txt"; txt_of "$LOG3" > "$P3"
 deny "$P3" 'kryptik-firstboot: created user'  "first-boot setup did not run again"
 fi
 
-# ---------------------------------------------------------------- phase 4 --
-phase "phase 4: refusals and failures report as failures"
+# ----------------------------------------------------------------- step 4 --
+step "step 4: refusals and failures report as failures"
 refusal_case() {   # refusal_case NAME DISK-SIZE EXTRA-RUN-ARGS... ; expects rc!=0 and FAILED, no kryptik-a
     local name="$1" size="$2"; shift 2
     local d="${VMDIR}/refuse-${name}.img"; rm -f "$d"; truncate -s "$size" "$d"

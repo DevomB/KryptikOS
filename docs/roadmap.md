@@ -1,9 +1,11 @@
 # Roadmap
 
-Phases are ordered by dependency, not by interest. Each has an unambiguous exit
+Sections are ordered by dependency, not by interest. Each has an unambiguous exit
 test — "it works" is not an exit test.
 
-## Phase 0 — Scaffolding ✅ **COMPLETE**
+## Scaffolding
+
+Complete.
 
 - [x] Repository structure
 - [x] Architecture, threat model, hardening rationale
@@ -16,7 +18,9 @@ test — "it works" is not an exit test.
 
 **Exit test:** `make check && make sources` succeeds on a clean Debian/Arch host.
 
-## Phase 1 — Cross toolchain ✅ **COMPLETE**
+## Cross toolchain
+
+Complete; exit test passed 2026-09-10.
 
 Binutils + GCC + glibc, two passes, built against a sysroot so the host
 toolchain never contaminates the target. Implemented in
@@ -38,12 +42,12 @@ kernel headers 34s, glibc ~7min, libstdc++ ~2min.
 V_LINUX bump left stale kernel headers in the sysroot and glibc began compiling
 against a mix of two kernel versions. Fixed by clearing the header tree first.
 
-## Phase 2 — Temporary tools and chroot ✅ **COMPLETE**
+## Temporary tools and chroot
+
+Complete; exit test passed 2026-09-10.
 
 Enough userland to enter a chroot and build the rest of the system from inside.
 Implemented in `build/stages/02-temp-tools.sh` (17 packages, resumable).
-**Written but not yet executed** — stage 01 must land first.
-
 **Exit test: PASSED** on 2026-09-10. All 17 packages cross-compiled into the
 sysroot; the nine binaries a chroot needs are present, and the built `bash`
 requests the target loader rather than the host's.
@@ -61,7 +65,9 @@ $ /usr/bin/bash --version                 # host, for comparison
 GNU bash, version 5.2.21(1)-release (x86_64-pc-linux-gnu)
 ```
 
-## Phase 3 — Base system ✅ **COMPLETE**
+## Base system
+
+Complete.
 
 Full package set, all built with the hardening flag set. hardened_malloc wired
 in as the system allocator. Init system from ADR-006.
@@ -76,11 +82,11 @@ in as the system allocator. Init system from ADR-006.
       titles
 
 **Exit test:** the system boots to a shell under QEMU — met by the media of
-Phase 7, which boot this base system on the Phase 4 kernel
+the bootable signed image, which boot this base system on the hardened kernel
 (`make media-smoke-usb`). `tools/audit-setuid.sh` reports zero unjustified
 setuid binaries.
 
-## Phase 4 — Hardened kernel
+## Hardened kernel
 
 Linux LTS with the linux-hardened patchset applied (ADR-009), then built with
 the KSPP fragment, module signing enforced, lockdown in confidentiality mode,
@@ -97,10 +103,10 @@ dm-verity and Landlock enabled.
 fails; `kernel-hardening-checker` reports no missing KSPP options;
 `make validate-kernel` reports every fragment symbol present in the pinned
 source; `make check-kernel-eol` reports the kernel is longterm. The boot is
-measured by the Phase 7 media tests; the module-signing and lockdown
+measured by the bootable signed image's media tests; the module-signing and lockdown
 assertions are not yet individual checks.
 
-## Phase 5 — The compartment layer
+## The compartment layer
 
 Where Kryptik stops being "LFS with good flags" and becomes Kryptik.
 
@@ -176,7 +182,7 @@ Two findings came out of writing it rather than out of reading the design:
   outright until Landlock was implemented. The test keeps that as an explicit
   negative control so the reason is never lost.
 
-## Phase 6 — Compositor and GUI isolation
+## Compositor and GUI isolation
 
 Per-zone Wayland proxy, clipboard brokering, screen-capture blocking, per-zone
 window border colors.
@@ -199,7 +205,7 @@ surfaces; every window is visually attributable to its zone. Measured by
 refused, the border colour photographed windowed and fullscreen, and the
 clipboard and transfer flows driven by keystrokes.
 
-## Phase 7 — Bootable signed image
+## Bootable signed image
 
 Secure Boot chain, dm-verity signed root, initramfs embedded in the signed
 kernel image, installer.
@@ -227,15 +233,15 @@ key is a build-generated test anchor, not a production one.
 ## Explicitly deferred
 
 - Reproducible builds — desirable, and a genuine differentiator, but it
-  multiplies Phase 3's difficulty. Revisit after Phase 5.
+  multiplies the base system's difficulty. Revisit after the compartment layer.
 - Package manager and binary repository — source-only until there is something
   worth distributing.
-- Side-channel mitigation (L4) — needs core scheduling; not before Phase 7.
+- Side-channel mitigation (L4) — needs core scheduling; not before the bootable signed image.
 - Hardware certification list.
 
 ## A note on timeline
 
 LFS to a bootable base is a well-documented path and mostly a matter of grinding
-through it. Phases 5 through 7 are the actual project, and they are not
-documented anywhere — that is original systems work. Anyone estimating this in
-weeks is estimating Phase 1.
+through it. The compartment layer, the compositor and the bootable signed image are the
+actual project, and they are not documented anywhere — that is original systems work. Anyone estimating this in
+weeks is estimating the cross toolchain.

@@ -169,7 +169,7 @@ out-of-band, and until they are, those entries are weaker than the rest.
 - **The kernel signing key comes from a keyserver**, pinned by fingerprint.
   Fingerprints are in `tools/verify-signatures.sh` and should be confirmed
   against kernel.org independently.
-- **No reproducible builds.** Deferred past Phase 5 (docs/roadmap.md). Until
+- **No reproducible builds.** Deferred past the compartment layer (docs/roadmap.md). Until
   then, "built from source" means trusting the machine that built it.
 - **No bootstrappable-builds story.** The initial compiler comes from the host
   distro, so Thompson's "Reflections on Trusting Trust" applies in full.

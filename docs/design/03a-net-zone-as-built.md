@@ -64,7 +64,7 @@ only under QEMU user networking; the report must say "forwarding, no NAT".
 ## Correction (security increment 15): the nic zone's namespace
 
 Until increment 15, `isolate::namespace_flags` gave every zone its own network
-namespace EXCEPT the nic zone, a Phase 5 rule ("it owns the real interface;
+namespace EXCEPT the nic zone, a compartment-layer rule ("it owns the real interface;
 isolating it from itself is meaningless") written before the topology existed.
 The topology code assumed the opposite: `plumb_nic_zone` opens the nic zone's
 namespace and moves the NIC into it. With the flags as they were, that

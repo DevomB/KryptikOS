@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage 02 — Temporary tools (Phase 2 of docs/roadmap.md)
+# Stage 02 — Temporary tools (docs/roadmap.md, Temporary tools and chroot)
 #
 # Cross-compiles enough userland into the sysroot to enter a chroot and build
 # the rest of the system from inside it. Everything here is built with the
