@@ -247,29 +247,13 @@ ZARGS=(--zones "$ZONES" --rootfs "$ROOTFS" "${IDENTITY[@]}")
 
 # zrun ZONE -- CMD...   Run inside a zone with the experimental override on.
 # Captures stdout+stderr into ZOUT and the exit code into ZRC.
-ZOUT=""; ZRC=0
-zrun() {
-    local zone="$1"; shift
-    [[ "${1:-}" == "--" ]] && shift
-    # A zone that declares [identity] REFUSES --zone-uid/--zone-gid: the file
-    # is the authority, and a command-line override would silently change who
-    # owns that zone's data. `tools/kryptik` already works this out per zone;
-    # the suite has to as well, or a fixture with an identity cannot be
-    # launched here at all - which is why the routed fixture had none, and why
-    # it was never plumbed.
-    local -a za=("${ZARGS[@]}")
-    if (( ${#IDENTITY[@]} )) && grep -q '^\[identity\]' "$ZONES/$zone.toml" 2>/dev/null; then
-        za=(--zones "$ZONES" --rootfs "$ROOTFS")
-    fi
-    ZOUT="$(KRYPTIK_EXPERIMENTAL=1 timeout "$TIMEOUT" \
-            "$KRYPTIKD" run "$zone" "${za[@]}" -- "$@" 2>&1)"
-    ZRC=$?
-    return 0
-}
-
 # zrun_raw: same, but WITHOUT the experimental override, for refusal checks.
-zrun_raw() {
-    local zone="$1"; shift
+#
+# One launcher, two wrappers. They were two eighteen-line copies that
+# differed in one word, comment included.
+ZOUT=""; ZRC=0
+zrun_with() {  # zrun_with with|without ZONE -- CMD...
+    local mode="$1" zone="$2"; shift 2
     [[ "${1:-}" == "--" ]] && shift
     # A zone that declares [identity] REFUSES --zone-uid/--zone-gid: the file
     # is the authority, and a command-line override would silently change who
@@ -281,11 +265,20 @@ zrun_raw() {
     if (( ${#IDENTITY[@]} )) && grep -q '^\[identity\]' "$ZONES/$zone.toml" 2>/dev/null; then
         za=(--zones "$ZONES" --rootfs "$ROOTFS")
     fi
-    ZOUT="$(env -u KRYPTIK_EXPERIMENTAL timeout "$TIMEOUT" \
-            "$KRYPTIKD" run "$zone" "${za[@]}" -- "$@" 2>&1)"
+    case "$mode" in
+        with)
+            ZOUT="$(KRYPTIK_EXPERIMENTAL=1 timeout "$TIMEOUT" \
+                    "$KRYPTIKD" run "$zone" "${za[@]}" -- "$@" 2>&1)" ;;
+        without)
+            ZOUT="$(env -u KRYPTIK_EXPERIMENTAL timeout "$TIMEOUT" \
+                    "$KRYPTIKD" run "$zone" "${za[@]}" -- "$@" 2>&1)" ;;
+        *) echo "zrun_with: bad mode ${mode}" >&2; return 2 ;;
+    esac
     ZRC=$?
     return 0
 }
+zrun()     { zrun_with with "$@"; }
+zrun_raw() { zrun_with without "$@"; }
 
 # The launch sentinel. A zone command prints this before doing anything else;
 # if it is absent the process never got to run and no isolation claim from that

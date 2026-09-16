@@ -77,6 +77,12 @@ MANIFEST="${WORK}/manifest.tsv"
 "${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list \
     | awk '{printf "%s\t%s\t%s\n", $1, $2, $3}' > "$MANIFEST"
 dim "  manifest: $(wc -l < "$MANIFEST") sources"
+# The manifest's package names, for the membership test the caveat loop
+# below makes once per row; it was an awk over the whole manifest per row.
+declare -A MANIFEST_HAS=()
+while IFS=$'\t' read -r m_pkg _; do
+    [[ -n "$m_pkg" ]] && MANIFEST_HAS["$m_pkg"]=1
+done < "$MANIFEST"
 
 # ---------------------------------------------------------------------------
 # 1b. recorded provenance caveats
@@ -129,8 +135,7 @@ if [[ -f "$NOTESF" ]]; then
         # A note about a source that is not in the manifest is a stale note,
         # and a stale caveat is worse than none: it describes something that
         # is not being shipped.
-        if [[ -z "$nb" ]] \
-           && ! awk -F'\t' -v p="$n_pkg" '$1==p{f=1} END{exit !f}' "$MANIFEST"; then
+        if [[ -z "$nb" && -z "${MANIFEST_HAS[$n_pkg]:-}" ]]; then
             nb="'${n_pkg}' is not a source in the manifest"
         fi
 

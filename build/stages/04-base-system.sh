@@ -1602,7 +1602,7 @@ s_boot_check() {
 # Ordered by dependency, not alphabetically. Moving an entry earlier because it
 # "seems independent" is how a base system build breaks three packages later.
 
-declare -a # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # meson-built packages. The Wayland stack is meson-only; there is no
 # autotools alternative to reuse. --buildtype=plain so Kryptik's CFLAGS and
 # LDFLAGS are the flags (release would add its own -O3 and -DNDEBUG), and

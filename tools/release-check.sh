@@ -73,7 +73,7 @@ fi
 
 wanted() {
     [[ -z "$ONLY" ]] && return 0
-    printf '%s' ",${ONLY}," | grep -q ",$1,"
+    [[ ",${ONLY}," == *",$1,"* ]]
 }
 
 PASS_N=0; FAIL_N=0; UNAVAIL_N=0
@@ -273,6 +273,8 @@ if wanted source-availability; then
         unavail source-availability "no sources.lock at ${KRYPTIK_LOCK}"
     else
         missing=0; mismatch=0; total=0
+        declare -A want_of=()
+        declare -a present=()
         while read -r want file; do
             [[ -n "$file" ]] || continue
             total=$((total + 1))
@@ -280,8 +282,22 @@ if wanted source-availability; then
             if [[ ! -f "$p" ]]; then
                 missing=$((missing + 1)); continue
             fi
-            [[ "$(sha256_of "$p")" == "$want" ]] || mismatch=$((mismatch + 1))
+            want_of["$p"]="$want"
+            present+=("$p")
         done < "$KRYPTIK_LOCK"
+        # One sha256sum over every present file, where it was two processes
+        # per file. Missing stays missing (counted above); a file sha256sum
+        # could not read produces no line and counts as a mismatch, as the
+        # per-file version's empty digest did.
+        if (( ${#present[@]} )); then
+            seen=0
+            while read -r got p; do
+                [[ -n "$p" ]] || continue
+                seen=$((seen + 1))
+                [[ "${want_of[$p]:-}" == "$got" ]] || mismatch=$((mismatch + 1))
+            done < <(sha256sum "${present[@]}" 2>/dev/null)
+            mismatch=$((mismatch + ${#present[@]} - seen))
+        fi
         if [[ "$mismatch" -gt 0 ]]; then
             fail source-availability "${mismatch} of ${total} locked sources do not
        match their recorded hash"
@@ -301,12 +317,41 @@ fi
 # Read from the inventory document rather than recomputed. If none is supplied,
 # that is UNAVAIL: guessing would be worse than saying nobody looked.
 
-inv_query() {  # inv_query <python expression over `d`>
-    python3 - "$INVENTORY" "$1" <<'PY' 2>/dev/null
+# One interpreter, one parse. This used to start python3 and re-read the
+# whole document once per question, seven times over. Each answer is
+# computed on its own so a document that lacks the licence fields still
+# yields its provenance numbers, as the separate queries did; an answer
+# that could not be computed is simply absent, and absent reads as "the
+# inventory could not be read" below, as before.
+inv_load() {
+    INV_WEAK=""; INV_TOTAL=""; INV_OFFLINE=""; INV_METHODS=""; INV_UNLICENSED=""; INV_UNLICENSED_NAMES=""
+    local k v
+    while IFS='=' read -r k v; do
+        case "$k" in
+            weak)             INV_WEAK="$v" ;;
+            total)            INV_TOTAL="$v" ;;
+            offline)          INV_OFFLINE="$v" ;;
+            methods)          INV_METHODS="$v" ;;
+            unlicensed)       INV_UNLICENSED="$v" ;;
+            unlicensed_names) INV_UNLICENSED_NAMES="$v" ;;
+        esac
+    done < <(python3 - "$INVENTORY" <<'PY' 2>/dev/null
 import json, sys
+def answer(key, f):
+    try:
+        print("%s=%s" % (key, f()))
+    except Exception:
+        pass
 d = json.load(open(sys.argv[1]))
-print(eval(sys.argv[2]))
+S = d['sources']
+answer("weak", lambda: sum(1 for s in S if s['assurance_class'] in ('lock-only', 'not-downloaded', 'unverified')))
+answer("total", lambda: len(S))
+answer("offline", lambda: d.get('offline', False))
+answer("methods", lambda: sorted({s['licence']['method'] for s in S}))
+answer("unlicensed", lambda: sum(1 for s in S if s['licence']['spdx'] in ('unknown', 'not-collected')))
+answer("unlicensed_names", lambda: '; '.join(s['name'] for s in S if s['licence']['spdx'] in ('unknown', 'not-collected')))
 PY
+)
 }
 
 if wanted provenance || wanted licences; then
@@ -319,10 +364,11 @@ if wanted provenance || wanted licences; then
         wanted provenance && unavail provenance "no inventory at ${INVENTORY}"
         wanted licences   && unavail licences   "no inventory at ${INVENTORY}"
     else
+        inv_load
         if wanted provenance; then
-            n="$(inv_query "sum(1 for s in d['sources'] if s['assurance_class'] in ('lock-only','not-downloaded','unverified'))")"
-            t="$(inv_query "len(d['sources'])")"
-            offline_inv="$(inv_query "d.get('offline', False)")"
+            n="$INV_WEAK"
+            t="$INV_TOTAL"
+            offline_inv="$INV_OFFLINE"
             if [[ -z "$n" ]]; then
                 unavail provenance "the inventory at ${INVENTORY} could not be read"
             elif [[ "$offline_inv" == "True" ]]; then
@@ -342,16 +388,16 @@ if wanted provenance || wanted licences; then
             fi
         fi
         if wanted licences; then
-            meth="$(inv_query "sorted({s['licence']['method'] for s in d['sources']})")"
+            meth="$INV_METHODS"
             if [[ "$meth" == "['not-collected']" ]]; then
                 unavail licences "the inventory carries no licence evidence; rerun
        tools/provenance-inventory.sh --json --licences"
             else
-                n="$(inv_query "sum(1 for s in d['sources'] if s['licence']['spdx'] in ('unknown','not-collected'))")"
-                t="$(inv_query "len(d['sources'])")"
+                n="$INV_UNLICENSED"
+                t="$INV_TOTAL"
                 if [[ "${n:-0}" -gt 0 ]]; then
                     fail licences "${n} of ${t} sources have no established licence"
-                    inv_query "'; '.join(s['name'] for s in d['sources'] if s['licence']['spdx'] in ('unknown','not-collected'))" \
+                    printf '%s\n' "$INV_UNLICENSED_NAMES" \
                         | fold -w 66 | sed 's/^/       /' >&2
                 else
                     pass licences "all ${t} sources have an established licence"
