@@ -101,6 +101,19 @@ say "users=$(awk -F: '$3>=1000 && $3<65534 {printf "%s ", $1}' /etc/passwd 2>/de
 say "root_password=$(awk -F: '$1=="root"{print ($2 ~ /^[!*]/ || $2=="") ? "none" : "set"}' /etc/shadow 2>/dev/null)"
 say "securetty=$([ -e /etc/securetty ] && echo "present ($(wc -l < /etc/securetty) lines)" || echo absent)"
 say "login_binary=$([ -x /usr/bin/login ] && echo present || echo MISSING)"
+# The serial console's getty, which a test driver logs in at. A boot whose
+# getty is down, restarting or blocked looks identical to a healthy one from
+# the host (this report ends, then silence), and the getty's own stderr goes
+# to the catch-all log, so this is the only record of its state at the moment
+# the driver starts knocking.
+for svc in /run/service/*early-getty*; do
+    [ -d "$svc" ] || continue
+    say "early_getty=$(s6-svstat "$svc" 2>&1 | head -c 160)"
+    pid="$(s6-svstat -p "$svc" 2>/dev/null)"
+    if [ -n "$pid" ] && [ -d "/proc/$pid" ]; then
+        say "early_getty_pid=${pid} comm=$(cat "/proc/$pid/comm" 2>/dev/null) state=$(awk '/^State:/{print $2}' "/proc/$pid/status" 2>/dev/null) wchan=$(cat "/proc/$pid/wchan" 2>/dev/null) stdin=$(readlink "/proc/$pid/fd/0" 2>/dev/null)"
+    fi
+done
 say "boot_success=$(cat /var/lib/kryptik/boot/last-result 2>/dev/null || echo none)"
 
 # --- the catch-all log ------------------------------------------------------

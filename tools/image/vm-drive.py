@@ -98,13 +98,48 @@ class Drive:
         while time.time() < end:
             self._read()
 
+    def knock(self, regex, timeout=None, every=5):
+        """Send an empty line, wait up to EVERY seconds for REGEX, and send
+        another until it matches or TIMEOUT runs out. Consumes like expect()."""
+        timeout = self.timeout if timeout is None else timeout
+        rx = re.compile(regex.encode(), re.M)
+        deadline = time.time() + timeout
+        next_knock = 0
+        knocks = 0
+        while True:
+            m = rx.search(self.buf)
+            if m:
+                self.buf = self.buf[m.end():]
+                return m
+            if self.closed:
+                raise RuntimeError(f"serial closed while waiting for {regex!r}")
+            now = time.time()
+            if now > deadline:
+                tail = self.buf[-600:].decode("utf-8", "replace")
+                raise RuntimeError(f"timeout ({timeout}s) waiting for {regex!r} after {knocks} empty lines; last output:\n{tail}")
+            if now >= next_knock:
+                self.send("")
+                knocks += 1
+                next_knock = now + every
+            self._read()
+
     def login(self, user, password):
         # The getty may have printed its prompt long before this step (an
         # earlier expect() then discarded it). An empty line makes agetty
         # print a fresh one, so the prompt is waited for, not assumed.
+        #
+        # One empty line is not enough. agetty prints "login:" only once it
+        # sees terminal input (util-linux builds it with AGETTY_RELOAD: the
+        # prompt waits in select() for a keypress, an inotify or a netlink
+        # event), and it flushes whatever arrived during the second after it
+        # started or after such an event woke it. An Enter that lands in that
+        # window is discarded, agetty goes back to waiting, and a driver that
+        # sent one Enter waits with it: 51500b01's G9 phase 4 spent 420 s on
+        # a console that had printed agetty's leading newline and nothing
+        # else. Every transcript of that run shows the prompt only after the
+        # driver's Enter. So knock again every few seconds until one answers.
         self.drain(1)
-        self.send("")
-        self.expect(r"login: ?$", self.timeout)
+        self.knock(r"login: ?$", self.timeout)
         self.send(user)
         self.expect(r"Password: ?", 60)
         self.send(password)
