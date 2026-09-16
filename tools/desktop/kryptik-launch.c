@@ -190,8 +190,12 @@ static const char *ensure_proxy(const char *zone)
 		setsid();
 		int null = open("/dev/null", O_RDONLY);
 		int log = open(logfile, O_WRONLY | O_CREAT | O_APPEND, 0600);
-		if (null >= 0) dup2(null, 0);
-		if (log >= 0) { dup2(log, 1); dup2(log, 2); }
+		if (null < 0 || log < 0 || dup2(null, 0) < 0 || dup2(log, 1) < 0 || dup2(log, 2) < 0)
+			_exit(127);
+		/* The proxy needs only stdio, never the passphrase (including an
+		 * externally supplied --passphrase-fd) or other session descriptors. */
+		if (close_range(3, ~0U, 0) < 0)
+			_exit(127);
 		execl(PROXY_BIN, "kryptik-wlproxy", "--zone", zone, "--listen", sock, "--upstream", upstream,
 		      "--max-clients", "32", (char *)NULL);
 		_exit(127);
@@ -237,12 +241,12 @@ static int passphrase_from_tty(const char *zone)
 		n--;
 	if (n == 0)
 		die("empty passphrase");
-	int fd = memfd_create("kryptik-passphrase", 0);
+	int fd = memfd_create("kryptik-passphrase", MFD_CLOEXEC);
 	if (fd < 0)
 		die("memfd_create: %s", strerror(errno));
 	if (write(fd, buf, (size_t)n) != n)
 		die("memfd write");
-	memset(buf, 0, sizeof buf);
+	explicit_bzero(buf, sizeof buf);
 	lseek(fd, 0, SEEK_SET);
 	return fd;
 }

@@ -173,8 +173,9 @@ if [[ -d "$TARGET" ]]; then
 fi
 vargs+=("$MANIFEST")
 
-vlog="${TARGET##*/}.verify.log"
-vlog="${TMPDIR:-/tmp}/kryptik-${vlog}"
+# A predictable /tmp name let another user plant a symlink that tee would
+# follow and truncate with the updater's privileges.
+vlog="$(mktemp "${TMPDIR:-/tmp}/kryptik-verify.XXXXXX")"
 if ! "$RM" "${vargs[@]}" 2>&1 | tee "$vlog"; then
     # A verifier that could not RUN has not established that the payload is
     # bad, and saying so would be a verification result nobody produced. The

@@ -354,6 +354,19 @@ run --payload="${W}/p9" --signers="$SIGNERS" --target="$TARGET"
 expect_fail "installing without a manifest is refused" "--manifest"
 untouched "and the target is untouched" "$BASE"
 
+# The verifier log must not follow a preplanted predictable /tmp name.
+mkdir -p "$W/log-tmp"
+printf 'untouched victim\n' > "$W/log-victim"
+ln -s "$W/log-victim" "$W/log-tmp/kryptik-${TARGET##*/}.verify.log"
+TMPDIR="$W/log-tmp" run --manifest="$M9" --signers="$SIGNERS" \
+    --payload="${W}/p9" --target="$TARGET" --dry-run
+expect_pass "verification uses a private temporary log" "verified only"
+if [[ "$(cat "$W/log-victim")" == "untouched victim" ]]; then
+    green "a planted verifier-log symlink leaves its target untouched"
+else
+    red "verification overwrote the planted symlink's target"
+fi
+
 echo
 if [[ "$FAIL" -gt 0 ]]; then
     echo "${FAIL} of $((PASS + FAIL)) checks failed."

@@ -74,7 +74,7 @@ jobs:
 
       - name: Upstream sources (cached by sources.lock)
         id: sources
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: /mnt/kryptik/sources
           key: sources-${{ hashFiles('sources.lock') }}
@@ -88,7 +88,7 @@ jobs:
       # own fingerprints); a partial hit on the prefix resumes where an
       # earlier run stopped, which is what makes a six-hour limit survivable.
       - name: Stage 01-02 sysroot (cached)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             /mnt/kryptik/work/sysroot
@@ -112,7 +112,7 @@ jobs:
           tar --zstd -cf work-after-02.tar.zst -C work sysroot .stamps kconfig logs 2>/dev/null || tar --zstd -cf work-after-02.tar.zst -C work sysroot .stamps
           ls -la work-after-02.tar.zst
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: work-after-02
           path: /mnt/kryptik/work-after-02.tar.zst
@@ -121,7 +121,7 @@ jobs:
 
       - name: Stage logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: logs-toolchain
           path: /mnt/kryptik/work/logs
@@ -160,7 +160,7 @@ jobs:
 
       - name: Upstream sources (cached by sources.lock)
         id: sources
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: /mnt/kryptik/sources
           key: sources-${{ hashFiles('sources.lock') }}
@@ -169,7 +169,7 @@ jobs:
         if: steps.sources.outputs.cache-hit != 'true'
         run: make sources
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: work-after-02
           path: /mnt/kryptik
@@ -226,7 +226,7 @@ jobs:
           sudo chown "$(id -u):$(id -g)" work-after-media.tar.zst
           ls -la work-after-media.tar.zst; df -h /mnt | tail -1
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: work-after-media
           path: /mnt/kryptik/work-after-media.tar.zst
@@ -235,7 +235,7 @@ jobs:
 
       - name: Stage logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: logs-system
           path: /mnt/kryptik/work/logs
@@ -285,12 +285,12 @@ jobs:
           ls -la /dev/kvm
 
       - name: Upstream sources (cached by sources.lock)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: /mnt/kryptik/sources
           key: sources-${{ hashFiles('sources.lock') }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: work-after-media
           path: /mnt/kryptik
@@ -318,7 +318,7 @@ jobs:
 
       - name: Acceptance report and per-item logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: acceptance-report
           path: |
@@ -332,7 +332,7 @@ jobs:
       # the first version of this job uploaded that under the release name.
       - name: Tested images
         if: steps.acceptance.outcome == 'success'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: kryptik-release
           path: /mnt/kryptik/export

@@ -18,8 +18,9 @@
 
 use std::ffi::CString;
 use std::fs;
-use std::io::{Read, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -76,7 +77,13 @@ impl Passphrase {
     /// refused rather than used, because using it would teach people that
     /// such a file is fine.
     pub fn from_file(path: &Path) -> Result<Self, VolumeError> {
-        let md = fs::metadata(path).map_err(|e| VolumeError::Passphrase(format!("{}: {e}", path.display())))?;
+        // Validate the inode we read, not a pathname that can be replaced
+        // between metadata() and open(). NONBLOCK also makes a planted FIFO
+        // reach the type check instead of holding the launcher at open().
+        let f = fs::OpenOptions::new().read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path)
+            .map_err(|e| VolumeError::Passphrase(format!("{}: {e}", path.display())))?;
+        let md = f.metadata().map_err(|e| VolumeError::Passphrase(format!("{}: {e}", path.display())))?;
         if !md.is_file() {
             return Err(VolumeError::Passphrase(format!("{} is not a regular file", path.display())));
         }
@@ -91,44 +98,77 @@ impl Passphrase {
                 md.permissions().mode() & 0o7777
             )));
         }
-        let mut f = fs::File::open(path).map_err(|e| VolumeError::Passphrase(format!("{}: {e}", path.display())))?;
-        let mut b = Vec::new();
-        f.read_to_end(&mut b).map_err(|e| VolumeError::Passphrase(format!("{}: {e}", path.display())))?;
-        if b.is_empty() {
-            return Err(VolumeError::Passphrase(format!("{} is empty", path.display())));
-        }
-        Ok(Passphrase::from_bytes(b))
+        Self::read_bounded(f)
     }
 }
 
 impl Passphrase {
     /// Read a passphrase from an inherited descriptor (a memfd or pipe the
-    /// launch daemon received over SCM_RIGHTS). Bounded; the descriptor is
-    /// closed afterwards.
+    /// launch daemon received over SCM_RIGHTS). The descriptor is closed on
+    /// every path; pipes must reach EOF within five seconds.
     pub fn from_fd(fd: i32) -> Result<Self, VolumeError> {
-        let mut b = Vec::new();
-        let mut buf = [0u8; 512];
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 {
+            return Err(VolumeError::Passphrase(format!("fd {fd} is not open")));
+        }
+        let mut original = unsafe { fs::File::from_raw_fd(fd) };
+        if flags & libc::O_PATH != 0 || flags & libc::O_ACCMODE == libc::O_WRONLY {
+            return Err(VolumeError::Passphrase("descriptor is not readable".into()));
+        }
+        let md = original.metadata().map_err(|e| VolumeError::Passphrase(e.to_string()))?;
+        if !md.is_file() && !md.file_type().is_fifo() {
+            return Err(VolumeError::Passphrase("descriptor must be a regular file or pipe".into()));
+        }
+        // SCM_RIGHTS shares flags and offsets with the sender. Reopen our
+        // pinned inode to get a private NONBLOCK description; dup() would
+        // still let a sender clear NONBLOCK or race the read offset.
+        let mut f = fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK)
+            .open(format!("/proc/self/fd/{fd}"))
+            .map_err(|e| VolumeError::Passphrase(format!("reopening fd {fd}: {e}")))?;
+        if md.is_file() {
+            let offset = original.stream_position().map_err(|e| VolumeError::Passphrase(e.to_string()))?;
+            f.seek(SeekFrom::Start(offset)).map_err(|e| VolumeError::Passphrase(e.to_string()))?;
+        }
+        drop(original);
+        Self::read_bounded(f)
+    }
+
+    fn read_bounded(mut f: fs::File) -> Result<Self, VolumeError> {
+        use std::time::{Duration, Instant};
+        // One fixed allocation, owned by Passphrase before any secret is
+        // read: errors and partial reads take the same zeroing Drop path.
+        let mut pass = Passphrase(vec![0; 4097]);
+        let mut used = 0;
+        let until = Instant::now() + Duration::from_secs(5);
         loop {
-            let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
-            if n < 0 {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(VolumeError::Passphrase("source did not reach EOF within 5 seconds".into()));
+            }
+            let mut pfd = libc::pollfd { fd: f.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+            let ready = unsafe { libc::poll(&mut pfd, 1, left.as_millis() as i32) };
+            if ready < 0 {
                 let e = std::io::Error::last_os_error();
-                unsafe { libc::close(fd) };
-                return Err(VolumeError::Passphrase(format!("reading fd {fd}: {e}")));
+                if e.kind() == std::io::ErrorKind::Interrupted { continue; }
+                return Err(VolumeError::Passphrase(e.to_string()));
             }
-            if n == 0 {
-                break;
+            if ready == 0 { continue; }
+            match f.read(&mut pass.0[used..]) {
+                Ok(0) => break,
+                Ok(n) => used += n,
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock) => continue,
+                Err(e) => return Err(VolumeError::Passphrase(e.to_string())),
             }
-            b.extend_from_slice(&buf[..n as usize]);
-            if b.len() > 4096 {
-                unsafe { libc::close(fd) };
+            if used > 4096 {
                 return Err(VolumeError::Passphrase("passphrase longer than 4096 bytes".into()));
             }
         }
-        unsafe { libc::close(fd) };
-        if b.is_empty() {
-            return Err(VolumeError::Passphrase(format!("fd {fd} carried no passphrase")));
+        pass.0.truncate(used);
+        while matches!(pass.0.last(), Some(b'\r' | b'\n')) { pass.0.pop(); }
+        if pass.0.is_empty() {
+            return Err(VolumeError::Passphrase("source carried no passphrase".into()));
         }
-        Ok(Passphrase::from_bytes(b))
+        Ok(pass)
     }
 }
 
@@ -455,6 +495,68 @@ mod tests {
         fs::write(&f, "").unwrap();
         assert!(Passphrase::from_file(&f).is_err(), "an empty passphrase file is refused");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn passphrase_files_refuse_links_and_oversized_or_empty_secrets() {
+        let dir = std::env::temp_dir().join(format!("kryptik-pass-boundary-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pass");
+        fs::write(&path, b"secret").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        std::os::unix::fs::symlink(&path, dir.join("link")).unwrap();
+        let link_refused = Passphrase::from_file(&dir.join("link")).is_err();
+        fs::write(&path, vec![b'x'; 4097]).unwrap();
+        let oversized_refused = Passphrase::from_file(&path).is_err();
+        fs::write(&path, b"\r\n").unwrap();
+        let empty_refused = Passphrase::from_file(&path).is_err();
+        fs::remove_dir_all(dir).unwrap();
+        assert!(link_refused && oversized_refused && empty_refused,
+            "link refused={link_refused}, oversized refused={oversized_refused}, empty refused={empty_refused}");
+    }
+
+    #[test]
+    fn a_passphrase_pipe_cannot_wait_forever_for_eof() {
+        let mut pipe = [0; 2];
+        assert_eq!(unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+        assert_eq!(unsafe { libc::write(pipe[1], b"partial".as_ptr() as *const libc::c_void, 7) }, 7);
+        let (done, completion) = std::sync::mpsc::channel();
+        let read_fd = pipe[0];
+        let worker = std::thread::spawn(move || {
+            let _ = done.send(Passphrase::from_fd(read_fd).is_err());
+        });
+        // Closing the writer after this wait releases the old blocking read
+        // too: the negative control fails without leaving a hung test thread.
+        let result = completion.recv_timeout(std::time::Duration::from_secs(7));
+        unsafe { libc::close(pipe[1]) };
+        worker.join().unwrap();
+        assert_eq!(result.ok(), Some(true), "a partial passphrase held the launcher indefinitely");
+    }
+
+    #[test]
+    fn passphrase_descriptors_accept_files_and_closed_pipes_without_sharing_flags_or_offsets() {
+        use std::os::unix::io::IntoRawFd;
+        let fd = unsafe { libc::memfd_create(b"kryptik-pass-test\0".as_ptr() as _, libc::MFD_CLOEXEC) };
+        assert!(fd >= 0);
+        let mut file = unsafe { fs::File::from_raw_fd(fd) };
+        file.write_all(b"skipsecret\r\n").unwrap();
+        file.seek(SeekFrom::Start(4)).unwrap();
+        let pass = Passphrase::from_fd(file.try_clone().unwrap().into_raw_fd()).unwrap();
+        assert_eq!(pass.as_bytes(), b"secret");
+        assert_eq!(file.stream_position().unwrap(), 4, "the sender's offset must not be consumed");
+        assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFL) } & libc::O_NONBLOCK, 0);
+        for len in [0, 4096, 4097] {
+            file.set_len(len).unwrap();
+            file.seek(SeekFrom::Start(0)).unwrap();
+            let result = Passphrase::from_fd(file.try_clone().unwrap().into_raw_fd());
+            assert_eq!(result.is_ok(), len == 4096, "descriptor length {len}");
+        }
+        let mut pipe = [0; 2];
+        assert_eq!(unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+        assert_eq!(unsafe { libc::write(pipe[1], b"secret\n".as_ptr() as *const libc::c_void, 7) }, 7);
+        unsafe { libc::close(pipe[1]) };
+        assert_eq!(Passphrase::from_fd(pipe[0]).unwrap().as_bytes(), b"secret");
+        assert!(Passphrase::from_fd(-1).is_err());
     }
 
     #[test]

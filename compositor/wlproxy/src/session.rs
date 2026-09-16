@@ -34,6 +34,7 @@ pub enum Dir {
 pub enum SessionError {
     Wire(WireError),
     UnknownObject(u32),
+    DuplicateObject(u32),
     UnknownOpcode { interface: &'static str, opcode: u16 },
     HiddenInterface(String),
     VersionTooHigh { interface: String, asked: u32, max: u32 },
@@ -50,6 +51,7 @@ impl std::fmt::Display for SessionError {
         match self {
             SessionError::Wire(e) => write!(f, "malformed message: {e}"),
             SessionError::UnknownObject(id) => write!(f, "message for unknown object {id}"),
+            SessionError::DuplicateObject(id) => write!(f, "object id {id} is already live"),
             SessionError::UnknownOpcode { interface, opcode } => write!(f, "{interface} has no opcode {opcode}"),
             SessionError::HiddenInterface(i) => write!(f, "bind of an interface not advertised to this zone: {i}"),
             SessionError::VersionTooHigh { interface, asked, max } => write!(f, "{interface} version {asked} asked, {max} allowed"),
@@ -220,8 +222,8 @@ pub struct Session {
     pub zone: String,
     pub client: Endpoint,
     pub server: Endpoint,
-    /// object id -> interface (static from the tables)
-    objects: HashMap<u32, &'static protocol::Interface>,
+    /// object id -> (interface from the tables, negotiated version)
+    objects: HashMap<u32, (&'static protocol::Interface, u32)>,
     /// Globals the server advertised and we let through: name -> (interface, version)
     globals: HashMap<u32, (&'static str, u32)>,
     /// Hidden globals: their names are never forwarded; a bind of them is refused.
@@ -242,7 +244,7 @@ const WL_REGISTRY_GLOBAL_REMOVE: u16 = 1; // event
 impl Session {
     pub fn new(zone: &str, client_fd: RawFd, server_fd: RawFd) -> Session {
         let mut objects = HashMap::new();
-        objects.insert(WL_DISPLAY, protocol::find("wl_display").expect("wl_display in tables"));
+        objects.insert(WL_DISPLAY, (protocol::find("wl_display").expect("wl_display in tables"), 1));
         Session {
             zone: zone.to_string(),
             client: Endpoint::new(client_fd),
@@ -256,17 +258,22 @@ impl Session {
         }
     }
 
-    fn lookup(&self, id: u32, dir: Dir, opcode: u16) -> Result<(&'static protocol::Interface, &'static Message), SessionError> {
-        let iface = *self.objects.get(&id).ok_or(SessionError::UnknownObject(id))?;
+    fn lookup(&self, id: u32, dir: Dir, opcode: u16) -> Result<(&'static protocol::Interface, &'static Message, u32), SessionError> {
+        let (iface, version) = *self.objects.get(&id).ok_or(SessionError::UnknownObject(id))?;
         let table = match dir {
             Dir::ClientToServer => iface.requests,
             Dir::ServerToClient => iface.events,
         };
         let m = table.get(opcode as usize).ok_or(SessionError::UnknownOpcode { interface: iface.name, opcode })?;
-        Ok((iface, m))
+        if m.since > version {
+            return Err(SessionError::VersionTooHigh {
+                interface: format!("{}.{}", iface.name, m.name), asked: m.since, max: version,
+            });
+        }
+        Ok((iface, m, version))
     }
 
-    fn register(&mut self, id: u32, iface_name: &str, dir: Dir) -> Result<(), SessionError> {
+    fn register(&mut self, id: u32, iface_name: &str, version: u32, dir: Dir) -> Result<(), SessionError> {
         let in_client_range = id < SERVER_ID_BASE;
         let ok = match dir {
             Dir::ClientToServer => in_client_range,
@@ -275,6 +282,9 @@ impl Session {
         if !ok || id == 0 {
             return Err(SessionError::IdOutOfRange { id, dir });
         }
+        if self.objects.contains_key(&id) {
+            return Err(SessionError::DuplicateObject(id));
+        }
         if self.objects.len() >= policy::MAX_OBJECTS {
             return Err(SessionError::TooManyObjects);
         }
@@ -282,7 +292,7 @@ impl Session {
         // (bind is checked against the allowlist) and a server creating one
         // means the tables are behind the compositor: refuse rather than guess.
         let iface = protocol::find(iface_name).ok_or_else(|| SessionError::HiddenInterface(iface_name.to_string()))?;
-        self.objects.insert(id, iface);
+        self.objects.insert(id, (iface, version));
         Ok(())
     }
 
@@ -305,7 +315,7 @@ impl Session {
                 }
                 return Ok(());
             }
-            let (iface, m) = self.lookup(h.object, dir, h.opcode)?;
+            let (iface, m, version) = self.lookup(h.object, dir, h.opcode)?;
             let needed = m.fd_count();
             let src = match dir {
                 Dir::ClientToServer => &mut self.client,
@@ -339,14 +349,18 @@ impl Session {
                             _ => return Err(SessionError::Wire(WireError::ArgOverrun)),
                         };
                         let max = policy::allowed_version(&name).ok_or_else(|| SessionError::HiddenInterface(name.clone()))?;
-                        if version > max {
-                            return Err(SessionError::VersionTooHigh { interface: name, asked: version, max });
-                        }
-                        // and the global name must be one we advertised
+                        // The numeric global identifies one advertised interface
+                        // and version cap, not any interface on the allowlist.
                         let mut r = ArgReader::new(&body);
                         let gname = r.u32()?;
-                        if !self.globals.contains_key(&gname) {
-                            return Err(SessionError::HiddenInterface(format!("{name} (global {gname} not advertised)")));
+                        let (advertised, cap) = self.globals.get(&gname).ok_or_else(||
+                            SessionError::HiddenInterface(format!("{name} (global {gname} not advertised)")))?;
+                        if *advertised != name || version == 0 {
+                            return Err(SessionError::HiddenInterface(format!("{name} v{version} (global {gname} advertises {advertised} v{cap})")));
+                        }
+                        let max = max.min(*cap);
+                        if version > max {
+                            return Err(SessionError::VersionTooHigh { interface: name, asked: version, max });
                         }
                     }
                     if iface.name == "xdg_toplevel" && (m.name == "set_title" || m.name == "set_app_id") {
@@ -415,7 +429,9 @@ impl Session {
             }
             // New objects, whichever side created them.
             for (id, name) in &decoded.new_objects {
-                self.register(*id, name, dir)?;
+                // Registry bindings choose a version; typed children inherit
+                // their parent's version, including server-created children.
+                self.register(*id, name, decoded.bind_version.unwrap_or(version), dir)?;
             }
             let dst = match dir {
                 Dir::ClientToServer => &mut self.server,
@@ -548,6 +564,80 @@ mod tests {
         let bind = MessageWriter::new(2, WL_REGISTRY_BIND).u32(1).string("wl_compositor").u32(99).u32(4).finish().unwrap();
         c.write_all(&bind).unwrap();
         assert!(matches!(pump_all(&mut s), Err(SessionError::VersionTooHigh { .. })));
+    }
+
+    #[test]
+    fn bindings_must_match_the_advertised_interface_and_version() {
+        for (name, version) in [("wl_shm", 1), ("wl_compositor", 2), ("wl_compositor", 0)] {
+            let (mut s, mut c, mut sv) = make();
+            c.write_all(&get_registry(2)).unwrap();
+            sv.write_all(&global(2, 11, "wl_compositor", 1)).unwrap();
+            pump_all(&mut s).unwrap();
+            read_all(&mut sv);
+            let bind = MessageWriter::new(2, WL_REGISTRY_BIND)
+                .u32(11).string(name).u32(version).u32(3).finish().unwrap();
+            c.write_all(&bind).unwrap();
+            assert!(pump_all(&mut s).is_err(), "accepted {name} v{version} for wl_compositor v1");
+            assert!(!s.has_object(3), "a rejected binding must not create an object");
+            assert!(read_all(&mut sv).is_empty(), "a rejected binding reached the compositor");
+        }
+    }
+
+    #[test]
+    fn creating_an_object_cannot_replace_a_live_object() {
+        let (mut s, mut c, mut sv) = make();
+        c.write_all(&get_registry(2)).unwrap();
+        pump_all(&mut s).unwrap();
+        read_all(&mut sv);
+        // sync creates a callback; using the registry's ID must not change
+        // its tracked interface or forward an invalid creation upstream.
+        c.write_all(&MessageWriter::new(1, 0).u32(2).finish().unwrap()).unwrap();
+        assert!(pump_all(&mut s).is_err(), "replaced a live registry with a callback");
+        assert_eq!(s.objects[&2].0.name, "wl_registry");
+        assert!(read_all(&mut sv).is_empty());
+    }
+
+    #[test]
+    fn an_object_id_can_be_reused_after_the_server_releases_it() {
+        let (mut s, mut c, mut sv) = make();
+        c.write_all(&MessageWriter::new(1, 0).u32(2).finish().unwrap()).unwrap();
+        pump_all(&mut s).unwrap();
+        sv.write_all(&MessageWriter::new(2, 0).u32(0).finish().unwrap()).unwrap();
+        sv.write_all(&MessageWriter::new(1, WL_DISPLAY_DELETE_ID).u32(2).finish().unwrap()).unwrap();
+        pump_all(&mut s).unwrap();
+        assert!(!s.has_object(2));
+        c.write_all(&get_registry(2)).unwrap();
+        pump_all(&mut s).unwrap();
+        assert_eq!(s.objects[&2].0.name, "wl_registry");
+    }
+
+    #[test]
+    fn requests_and_events_respect_the_bound_and_inherited_versions() {
+        for (interface, request, dir) in [
+            ("wl_shm", MessageWriter::new(3, 1).finish().unwrap(), Dir::ClientToServer), // release requires v2
+            ("wl_compositor", MessageWriter::new(4, 9).i32(0).i32(0).i32(1).i32(1).finish().unwrap(), Dir::ClientToServer), // surface.damage_buffer requires v4
+            ("wl_output", MessageWriter::new(3, 3).i32(2).finish().unwrap(), Dir::ServerToClient), // scale requires v2
+        ] {
+            let (mut s, mut c, mut sv) = make();
+            c.write_all(&get_registry(2)).unwrap();
+            sv.write_all(&global(2, 11, interface, 1)).unwrap();
+            pump_all(&mut s).unwrap();
+            c.write_all(&MessageWriter::new(2, WL_REGISTRY_BIND)
+                .u32(11).string(interface).u32(1).u32(3).finish().unwrap()).unwrap();
+            if interface == "wl_compositor" {
+                c.write_all(&MessageWriter::new(3, 0).u32(4).finish().unwrap()).unwrap();
+            }
+            pump_all(&mut s).unwrap();
+            read_all(&mut c);
+            read_all(&mut sv);
+            match dir {
+                Dir::ClientToServer => c.write_all(&request).unwrap(),
+                Dir::ServerToClient => sv.write_all(&request).unwrap(),
+            }
+            assert!(pump_all(&mut s).is_err(), "accepted a newer message on {interface} v1 ({dir:?})");
+            assert!(read_all(&mut c).is_empty());
+            assert!(read_all(&mut sv).is_empty());
+        }
     }
 
     #[test]
@@ -755,7 +845,7 @@ mod tests {
             MessageWriter::new(3, 0).u32(0).i32(4096).finish().unwrap(), // invalid new object id
         ] {
             let (mut s, c, _sv) = make();
-            s.objects.insert(3, protocol::find("wl_shm").unwrap());
+            s.objects.insert(3, (protocol::find("wl_shm").unwrap(), 2));
             let (a, mut b) = UnixStream::pair().unwrap();
             b.set_nonblocking(true).unwrap();
             send_with_fd(c.as_raw_fd(), &body, a.as_raw_fd());
@@ -797,7 +887,7 @@ mod tests {
     #[test]
     fn blocked_compositor_cannot_accumulate_unbounded_outgoing_descriptors() {
         let (mut s, c, _sv) = make();
-        s.objects.insert(3, protocol::find("wl_shm").unwrap());
+        s.objects.insert(3, (protocol::find("wl_shm").unwrap(), 2));
         let (a, mut b) = UnixStream::pair().unwrap();
         b.set_nonblocking(true).unwrap();
         for i in 0..=policy::MAX_PENDING_FDS {
@@ -819,7 +909,7 @@ mod tests {
     #[test]
     fn missing_descriptor_cannot_hold_unbounded_input_bytes() {
         let (mut s, mut c, _sv) = make();
-        s.objects.insert(3, protocol::find("wl_shm").unwrap());
+        s.objects.insert(3, (protocol::find("wl_shm").unwrap(), 2));
         c.write_all(&MessageWriter::new(3, 0).u32(4).i32(4096).finish().unwrap()).unwrap();
         pump_all(&mut s).unwrap();
         let mut refused = false;

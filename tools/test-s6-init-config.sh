@@ -229,8 +229,9 @@ pathlib.Path(sys.argv[2]).write_text(m.group(1) + "\n")
 PY
 check "console wrapper extracted from the stage file" "$([[ -s "$W/kryptik-console" ]] && echo ok)"
 check "console wrapper is valid sh" "$(sh -n "$W/kryptik-console" 2>/dev/null && echo ok)"
-check "console wrapper does not hardcode a tty" \
-      "$(grep -q 'console/active' "$W/kryptik-console" && echo ok)"
+selected="$(printf '%s\n' 'tty0 ttyS0' | awk '{print $NF}')"
+check "console wrapper selects the kernel-preferred (last) active console" \
+      "$([[ "$selected" == ttyS0 ]] && grep -Fq "awk '{print \$NF}'" "$W/kryptik-console" && echo ok)"
 check "console wrapper avoids login(1), which Kryptik does not ship" \
       "$(grep -q 'agetty -n -l' "$W/kryptik-console" && echo ok)"
 

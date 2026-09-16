@@ -55,7 +55,7 @@
 //! does, and logs beside its socket. Everything else is the same code.
 
 use std::ffi::{CStr, CString};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -451,7 +451,9 @@ fn verify_proxy_socket(p: &Path, uid: u32, zone: &str, proxy_exe: Option<&Path>)
 /// this zone. The connection is closed at once; the proxy logs it as a
 /// client that disconnected.
 fn verify_proxy_listener(sock: &Fd, uid: u32, zone: &str, proxy_exe: Option<&Path>) -> Result<(), String> {
-    let s = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+    // This listener belongs to the session and may never accept. A full
+    // Unix-socket backlog must refuse promptly, not block the root daemon.
+    let s = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK, 0) };
     if s < 0 {
         return Err(format!("socket: {}", std::io::Error::last_os_error()));
     }
@@ -590,7 +592,17 @@ fn spawn_launcher(
 /// The last thing a launcher wrote, for an error reply. One line, printable,
 /// bounded.
 fn last_log_line(log: &Path) -> String {
-    let Ok(text) = std::fs::read_to_string(log) else { return String::new() };
+    // Zone output can make this file arbitrarily large or non-UTF-8. Read
+    // only an 8 KiB tail for the diagnostic; full logs remain on disk.
+    let Ok(mut file) = std::fs::OpenOptions::new().read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(log) else { return String::new() };
+    let Ok(md) = file.metadata() else { return String::new() };
+    if !md.is_file() || file.seek(SeekFrom::Start(md.len().saturating_sub(8192))).is_err() {
+        return String::new();
+    }
+    let mut bytes = Vec::new();
+    if file.take(8192).read_to_end(&mut bytes).is_err() { return String::new(); }
+    let text = String::from_utf8_lossy(&bytes);
     let line = text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
     let mut out: String = line.chars().filter(|c| !c.is_control()).take(200).collect();
     if line.chars().count() > 200 {
@@ -1220,6 +1232,31 @@ mod tests {
     }
 
     #[test]
+    fn a_full_proxy_backlog_cannot_block_the_launch_daemon() {
+        let dir = std::env::temp_dir().join(format!("kryptik-backlog-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("socket");
+        let listener = UnixListener::bind(&path).unwrap();
+        assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), 0) }, 0);
+        let queued = UnixStream::connect(&path).unwrap();
+        let sock = open_nofollow(&path, true).unwrap();
+        let (done, completion) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = verify_proxy_listener(&sock, unsafe { libc::geteuid() }, "work", None);
+            let _ = done.send(result);
+        });
+        let result = completion.recv_timeout(Duration::from_secs(2));
+        // Closing the listener also releases the old blocking connect,
+        // so the regression fails cleanly rather than hanging the suite.
+        drop(listener);
+        drop(queued);
+        worker.join().unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(result.is_ok(), "a session-owned listener held the root daemon at connect");
+        assert!(result.unwrap().is_err(), "a full backlog must be refused");
+    }
+
+    #[test]
     fn identifiers() {
         assert!(ident_ok("work"));
         assert!(ident_ok("net-zone_2"));
@@ -1236,6 +1273,13 @@ mod tests {
         std::fs::write(&log, "first\nkryptikd: could not start zone \"x\": no such policy\n\n").unwrap();
         assert_eq!(last_log_line(&log), "kryptikd: could not start zone \"x\": no such policy");
         assert_eq!(last_log_line(&dir.join("absent.log")), "");
+        // Zone stdout shares this log and can contain arbitrary bytes. An
+        // invalid byte earlier in the file must not hide the launch error.
+        std::fs::write(&log, b"\xff\n").unwrap();
+        let mut large = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        large.set_len(32 * 1024 * 1024).unwrap(); // sparse: no large allocation or disk write
+        large.write_all(b"\nlast launch error\n\n").unwrap();
+        assert_eq!(last_log_line(&log), "last launch error");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -1027,10 +1027,11 @@ s_console() {
 dev="$1"
 
 if [ -z "$dev" ]; then
-    # /sys/class/tty/console/active lists the active consoles, most recently
-    # added first. "ttyS0" under QEMU -nographic, "tty1" on a normal display.
+    # /sys/class/tty/console/active lists the kernel-preferred console last.
+    # With both video and serial consoles that is "tty0 ttyS0", so taking the
+    # first field races rc.init's /sys mount and strands a headless login on tty0.
     if [ -r /sys/class/tty/console/active ]; then
-        dev=$(cut -d' ' -f1 < /sys/class/tty/console/active)
+        dev=$(awk '{print $NF}' < /sys/class/tty/console/active)
     fi
 fi
 [ -n "$dev" ] || dev=console
