@@ -12,6 +12,24 @@ on:
     - cron: '0 6 * * 1'
 
 jobs:
+  identity:
+    name: Commit identity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The whole history, because the check is over the whole history.
+          fetch-depth: 0
+
+      - name: Every commit is DevomB <Devom.hb@yahoo.com>
+        run: |
+          # GitHub attributes a commit to whichever account registered its
+          # email, and devom.b@yahoo.com is registered to DBs-Server-Service.
+          # A share of this repository displayed as that account's work until
+          # the history was rewritten on 2026-09-15. This goes red the moment
+          # one such commit comes back, anywhere in the history.
+          ./tools/check-commit-identity.sh --all
+
   lint:
     name: Shell lint
     runs-on: ubuntu-latest

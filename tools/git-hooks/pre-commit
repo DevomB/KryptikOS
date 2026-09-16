@@ -11,6 +11,16 @@ set -uo pipefail
 
 fail=0
 
+# --- identity -----------------------------------------------------------------
+#
+# Refused outright, before anything else is looked at. The wrong address here
+# does not break the build; it hands the commit to a different GitHub
+# account. tools/check-commit-identity.sh is the one place the permitted
+# identity is written down and says why.
+if ! "$(git rev-parse --show-toplevel)/tools/check-commit-identity.sh" --pending; then
+    exit 1
+fi
+
 # --- executable bits --------------------------------------------------------
 #
 # NTFS cannot express the POSIX executable bit, so a script committed from
