@@ -211,7 +211,7 @@ fn run(what: &str, prog: &str, args: &[&str], stdin: Option<&[u8]>) -> Result<St
         let detail = String::from_utf8_lossy(&out.stderr).trim().to_string();
         return Err((code, format!("{what}: {prog} exited {code}: {detail}")));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 fn tool_err(what: &str, e: (i32, String)) -> VolumeError {
@@ -461,7 +461,9 @@ pub fn parse_size(s: &str) -> Option<u64> {
         c if c.is_ascii_digit() => (s, 1),
         _ => return None,
     };
-    num.parse::<u64>().ok().map(|n| n * mult)
+    // checked_mul, as cgroup::parse_memory_max does: with overflow-checks on
+    // in release, `--size 17179869184G` was a panic, and panic = "abort".
+    num.parse::<u64>().ok().and_then(|n| n.checked_mul(mult))
 }
 
 #[cfg(test)]
@@ -566,6 +568,9 @@ mod tests {
         assert_eq!(parse_size("4096"), Some(4096));
         assert_eq!(parse_size("x"), None);
         assert_eq!(parse_size(""), None);
+        // Overflows u64 when multiplied out: refused, not wrapped, not a panic.
+        assert_eq!(parse_size("17179869184G"), None);
+        assert_eq!(parse_size("18446744073709551615K"), None);
     }
 
     #[test]

@@ -50,6 +50,23 @@ mkdir -p "$(dirname "$CACHE")"
 [[ "$REFRESH" -eq 1 ]] && rm -f "$CACHE"
 [[ -f "$CACHE" ]] || : > "$CACHE"
 
+# The cache, read once and indexed by tarball digest. It was read in full,
+# by an awk process, once per source; it grows with every source scanned.
+# First row for a digest wins, as awk's `exit` on first match did.
+declare -A CACHE_ROW=()
+while IFS= read -r c_line; do
+    [[ -n "$c_line" ]] || continue
+    c_key="${c_line#*$'\t'}"; c_key="${c_key%%$'\t'*}"
+    [[ -n "${CACHE_ROW[$c_key]:-}" ]] || CACHE_ROW["$c_key"]="$c_line"
+done < "$CACHE"
+
+# Print a row and record it, in the file and in the index.
+remember() {  # remember ROW DIGEST
+    printf '%s\n' "$1"
+    printf '%s\n' "$1" >> "$CACHE"
+    CACHE_ROW["$2"]="$1"
+}
+
 # Top-level licence-ish filenames, as a POSIX ERE anchored to depth 1.
 LICENCE_RE='^[^/]+/(COPYING[^/]*|COPYRIGHT[^/]*|LICEN[CS]E[^/]*|License)$'
 
@@ -70,7 +87,12 @@ LICENCE_RE='^[^/]+/(COPYING[^/]*|COPYRIGHT[^/]*|LICEN[CS]E[^/]*|License)$'
 # a different fact from GPL-3.0 and stays unknown.
 classify() {
     local f="$1" head ids=""
-    head="$(head -c 8000 "$f" 2>/dev/null | tr -s '[:space:]' ' ' | tr 'A-Z' 'a-z')"
+    # Whitespace folded to single spaces and case folded, in the shell: the
+    # two tr processes this used to spawn per licence file did the same.
+    head="$(head -c 8000 "$f" 2>/dev/null)" 2>/dev/null
+    head="${head//[[:space:]]/ }"
+    while [[ "$head" == *"  "* ]]; do head="${head//  / }"; done
+    head="${head,,}"
     add() { ids="${ids}${ids:+,}$1"; }
     has() { case "$head" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 
@@ -155,7 +177,7 @@ while read -r name _ver url; do
     digest="$(sha256_of "$path")"
 
     # Cache hit: the bytes are unchanged, so the answer is unchanged.
-    cached="$(awk -F'\t' -v k="$digest" '$2==k {print; exit}' "$CACHE" || true)"
+    cached="${CACHE_ROW[$digest]:-}"
     if [[ -n "$cached" ]]; then
         printf '%s\n' "$cached"
         continue
@@ -165,13 +187,13 @@ while read -r name _ver url; do
     case "$file" in
         *.patch|*.diff)
             row="$(emit "$name" "$digest" "unknown" "no" "-" "not-an-archive")"
-            printf '%s\n' "$row"; printf '%s\n' "$row" >> "$CACHE"; continue ;;
+            remember "$row" "$digest"; continue ;;
     esac
 
     names="$(tar tf "$path" 2>/dev/null | grep -E "$LICENCE_RE" | head -6 || true)"
     if [[ -z "$names" ]]; then
         row="$(emit "$name" "$digest" "unknown" "no" "-" "no-top-level-licence-file")"
-        printf '%s\n' "$row"; printf '%s\n' "$row" >> "$CACHE"; continue
+        remember "$row" "$digest"; continue
     fi
 
     tmp="$(mktemp -d)"
@@ -204,6 +226,5 @@ while read -r name _ver url; do
 
     row="$(emit "$name" "$digest" "${uniq_ids:-unknown}" "$multi" "${listed:--}" \
                 "tarball-top-level-licence-file")"
-    printf '%s\n' "$row"
-    printf '%s\n' "$row" >> "$CACHE"
+    remember "$row" "$digest"
 done < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list)

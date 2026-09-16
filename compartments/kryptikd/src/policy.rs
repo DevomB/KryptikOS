@@ -96,7 +96,9 @@ pub fn load(path: &Path) -> Result<Policy, PolicyError> {
 
 pub fn parse(text: &str, source: &str) -> Result<Policy, PolicyError> {
     let mut p = Policy { source: source.to_string(), ..Default::default() };
-    let mut seen: HashSet<String> = HashSet::new();
+    // Borrows from `text`, so a duplicate is detected without allocating a
+    // key per line, and "a b"+"c" cannot collide with "a"+"b c".
+    let mut seen: HashSet<(&str, &str)> = HashSet::new();
 
     for (idx, raw) in text.lines().enumerate() {
         let lineno = idx + 1;
@@ -114,7 +116,7 @@ pub fn parse(text: &str, source: &str) -> Result<Policy, PolicyError> {
         if it.next().is_some() {
             return Err(err(format!("{directive}: expected exactly one argument")));
         }
-        if !seen.insert(format!("{directive} {arg}")) {
+        if !seen.insert((directive, arg)) {
             return Err(err(format!("duplicate directive {directive} {arg}")));
         }
 
@@ -201,9 +203,7 @@ impl Policy {
     pub fn check_for_zone(&self, zone: &crate::zone::Zone) -> Result<(), PolicyError> {
         if zone.network != crate::zone::NetworkMode::Nic {
             for (c, name) in self.keep_caps.iter().zip(&self.keep_cap_names) {
-                if *c == caps::cap_by_name("CAP_NET_ADMIN").unwrap()
-                    || *c == caps::cap_by_name("CAP_NET_RAW").unwrap()
-                {
+                if caps::NIC_ONLY.contains(c) {
                     return Err(PolicyError::Line {
                         path: self.source.clone(),
                         line: 0,

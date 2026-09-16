@@ -169,7 +169,7 @@ fi
 leaked="$(unshare "${ZONE_UNSHARE[@]}" bash -c 'ls /proc | grep -c "^[0-9]*$"' 2>/dev/null)"
 if [[ -n "$leaked" ]] && [[ "$leaked" -gt 10 ]]; then
     info "control: without --mount-proc, ${leaked} host pids leak in (as expected)"
-    info "         kryptikd MUST mount a fresh /proc; isolate.rs::mount_proc"
+    info "         kryptikd MUST mount a fresh /proc; rootfs.rs::pivot_into"
 fi
 
 # --- requirement 3: network isolation ---------------------------------------
@@ -235,7 +235,7 @@ if [[ -z "$sys_extra" ]]; then
     pass "after remounting sysfs, /sys/class/net shows only lo and kernel fallback devices (${sys_after})"
     if [[ "$sys_before" != "$sys_after" ]]; then
         info "without the remount the zone would enumerate: ${sys_before}"
-        info "kryptikd MUST remount sysfs per zone - isolate.rs::mount_sysfs"
+        info "kryptikd MUST remount sysfs per zone - rootfs.rs::pivot_into"
     fi
 else
     fail "zone still enumerates host interfaces via /sys: ${sys_after:-none}"
@@ -373,8 +373,13 @@ if [[ -f "$ISOLATE_RS" ]]; then
         grep -q "CLONE_${ns}" "$ISOLATE_RS" || { echo "    kryptikd is missing CLONE_${ns}"; missing=1; }
     done
     # The proc and sysfs remounts are as load-bearing as the namespaces.
-    for fn in mount_proc mount_sysfs; do
-        grep -q "fn ${fn}" "$ISOLATE_RS" || { echo "    kryptikd is missing ${fn}()"; missing=1; }
+    # They live where the zone's root is built, rootfs.rs::pivot_into, and
+    # are named there by the mount they make. This used to grep isolate.rs
+    # for two functions of the same purpose that nothing called; the check
+    # kept passing on dead code while the live mounts sat in another file.
+    ROOTFS_RS="$(dirname "${BASH_SOURCE[0]}")/../kryptikd/src/rootfs.rs"
+    for m in "mount(proc)" "mount(sysfs)"; do
+        grep -qF "\"${m}\"" "$ROOTFS_RS" || { echo "    kryptikd rootfs build is missing ${m}"; missing=1; }
     done
     # The seccomp filter must default-deny. A filter ending in ALLOW is an
     # allowlist in name only.

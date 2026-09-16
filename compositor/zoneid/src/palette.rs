@@ -152,11 +152,11 @@ fn worst_pair_distance(a: &Candidate, b: &Candidate) -> f64 {
 }
 
 /// The score of a palette: its smallest pairwise difference.
-fn score_of(pal: &[&Candidate]) -> f64 {
+fn score_of(pal: &[Candidate]) -> f64 {
     let mut worst = f64::INFINITY;
     for i in 0..pal.len() {
         for j in (i + 1)..pal.len() {
-            let d = worst_pair_distance(pal[i], pal[j]);
+            let d = worst_pair_distance(&pal[i], &pal[j]);
             if d < worst {
                 worst = d;
             }
@@ -165,17 +165,20 @@ fn score_of(pal: &[&Candidate]) -> f64 {
     worst
 }
 
+/// The score of the palette `chosen` indexes into `cands`. Same quantity as
+/// `score_of`, without materialising the palette: this is evaluated once per
+/// candidate per slot in the ascent below, tens of thousands of times a run.
 fn score(cands: &[Candidate], chosen: &[usize]) -> f64 {
-    let pal: Vec<&Candidate> = chosen.iter().map(|&i| &cands[i]).collect();
-    score_of(&pal)
-}
-
-/// The distance from candidate `c` to the nearest already-chosen colour.
-fn distance_to_set(cands: &[Candidate], chosen: &[usize], c: usize) -> f64 {
-    chosen
-        .iter()
-        .map(|&i| worst_pair_distance(&cands[i], &cands[c]))
-        .fold(f64::INFINITY, f64::min)
+    let mut worst = f64::INFINITY;
+    for i in 0..chosen.len() {
+        for j in (i + 1)..chosen.len() {
+            let d = worst_pair_distance(&cands[chosen[i]], &cands[chosen[j]]);
+            if d < worst {
+                worst = d;
+            }
+        }
+    }
+    worst
 }
 
 /// Coarse-to-fine: move each colour through the cube of radius
@@ -184,7 +187,7 @@ fn distance_to_set(cands: &[Candidate], chosen: &[usize], c: usize) -> f64 {
 /// does. Candidates are made on demand, so the fine grid never exists in
 /// full. Deterministic for the same reason the coarse search is: fixed
 /// iteration order, strict improvement only.
-fn refine(pal: &mut Vec<Candidate>, min_contrast: f64, fine: u32) {
+fn refine(pal: &mut [Candidate], min_contrast: f64, fine: u32) {
     if fine == 0 || pal.len() < 2 {
         return;
     }
@@ -193,7 +196,7 @@ fn refine(pal: &mut Vec<Candidate>, min_contrast: f64, fine: u32) {
     loop {
         let mut improved = false;
         for slot in 0..pal.len() {
-            let current = score_of(&pal.iter().collect::<Vec<_>>());
+            let current = score_of(pal);
             let (r0, g0, b0) = pal[slot].rgb8();
             let mut best: Option<Candidate> = None;
             let mut best_score = current;
@@ -205,7 +208,7 @@ fn refine(pal: &mut Vec<Candidate>, min_contrast: f64, fine: u32) {
                     while b <= b0 + REFINE_RADIUS {
                         if let Some(c) = Candidate::from_rgb8(r, g, b, &bgs, min_contrast) {
                             let saved = std::mem::replace(&mut pal[slot], c);
-                            let s = score_of(&pal.iter().collect::<Vec<_>>());
+                            let s = score_of(pal);
                             let moved = std::mem::replace(&mut pal[slot], saved);
                             if s > best_score {
                                 best_score = s;
@@ -263,23 +266,40 @@ pub fn propose_with(n: usize, opts: SearchOptions) -> Option<Proposal> {
 
     for &seed in &restarts {
         let mut chosen = vec![seed];
+        // Membership of `chosen`, by candidate index: the loops below ask
+        // it once per candidate, and a scan of `chosen` for each of tens of
+        // thousands of candidates was most of the coarse search's time.
+        let mut in_set = vec![false; cands.len()];
+        in_set[seed] = true;
         // Farthest-point traversal: repeatedly take the candidate furthest
-        // from everything already picked.
+        // from everything already picked. `nearest[c]` is c's distance to
+        // the set so far; one pass against the newest pick keeps it current
+        // (min is exact, so the result is bit-identical to recomputing).
+        let mut nearest: Vec<f64> = cands.iter().map(|c| worst_pair_distance(c, &cands[seed])).collect();
         while chosen.len() < n {
             let mut best_c = None;
             let mut best_d = f64::NEG_INFINITY;
             for c in 0..cands.len() {
-                if chosen.contains(&c) {
+                if in_set[c] {
                     continue;
                 }
-                let d = distance_to_set(&cands, &chosen, c);
+                let d = nearest[c];
                 if d > best_d {
                     best_d = d;
                     best_c = Some(c);
                 }
             }
             match best_c {
-                Some(c) => chosen.push(c),
+                Some(c) => {
+                    chosen.push(c);
+                    in_set[c] = true;
+                    for (i, near) in nearest.iter_mut().enumerate() {
+                        let d = worst_pair_distance(&cands[i], &cands[c]);
+                        if d < *near {
+                            *near = d;
+                        }
+                    }
+                }
                 None => break,
             }
         }
@@ -294,7 +314,10 @@ pub fn propose_with(n: usize, opts: SearchOptions) -> Option<Proposal> {
                 let mut best_repl = original;
                 let mut best_repl_score = current;
                 for c in 0..cands.len() {
-                    if chosen.contains(&c) {
+                    // Members of the set are skipped, the slot's own colour
+                    // included: putting it back scores `current`, which is
+                    // never a strict improvement.
+                    if in_set[c] {
                         continue;
                     }
                     chosen[slot] = c;
@@ -306,6 +329,8 @@ pub fn propose_with(n: usize, opts: SearchOptions) -> Option<Proposal> {
                 }
                 chosen[slot] = best_repl;
                 if best_repl != original {
+                    in_set[original] = false;
+                    in_set[best_repl] = true;
                     improved = true;
                 }
             }
@@ -318,7 +343,7 @@ pub fn propose_with(n: usize, opts: SearchOptions) -> Option<Proposal> {
         let mut pal: Vec<Candidate> = chosen.iter().map(|&i| cands[i].clone()).collect();
         refine(&mut pal, opts.min_contrast, opts.refine);
 
-        let s = score_of(&pal.iter().collect::<Vec<_>>());
+        let s = score_of(&pal);
         if s > best_score {
             best_score = s;
             best = Some(pal);

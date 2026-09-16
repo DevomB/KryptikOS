@@ -25,8 +25,20 @@ pub struct Interface {
     pub events: &'static [Message],
 }
 
+/// The interface of that name, or None: an unknown name is a refusal in
+/// every caller, never a default.
+///
+/// Indexed once, on first use. This is asked for every object either peer
+/// creates and every global the server advertises, and the generated table
+/// is neither sorted nor small enough for a scan to be free.
 pub fn find(name: &str) -> Option<&'static Interface> {
-    crate::protocol_tables::INTERFACES.iter().find(|i| i.name == name)
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+    static BY_NAME: OnceLock<HashMap<&'static str, &'static Interface>> = OnceLock::new();
+    BY_NAME
+        .get_or_init(|| crate::protocol_tables::INTERFACES.iter().map(|i| (i.name, i)).collect())
+        .get(name)
+        .copied()
 }
 
 /// One argument of a message, as the wire carries it.
@@ -96,7 +108,6 @@ pub struct Decoded {
 pub fn decode(msg: &Message, body: &[u8]) -> Result<Decoded, WireError> {
     let mut r = ArgReader::new(body);
     let mut d = Decoded::default();
-    let mut pending_bind: Option<(String, u32)> = None;
     for arg in msg.args() {
         match arg {
             Arg::Int | Arg::Uint | Arg::Fixed | Arg::Object { .. } => {
@@ -125,7 +136,7 @@ pub fn decode(msg: &Message, body: &[u8]) -> Result<Decoded, WireError> {
                 };
                 let version = r.u32()?;
                 let id = r.u32()?;
-                pending_bind = Some((name.clone(), version));
+                d.bind_version = Some(version);
                 d.new_objects.push((id, name));
             }
             Arg::Fd => {}
@@ -133,9 +144,6 @@ pub fn decode(msg: &Message, body: &[u8]) -> Result<Decoded, WireError> {
     }
     if !r.is_empty() {
         return Err(WireError::ArgOverrun);
-    }
-    if let Some((_, v)) = pending_bind {
-        d.bind_version = Some(v);
     }
     Ok(d)
 }
@@ -152,6 +160,18 @@ mod tests {
                 let _ = m.args().count();
             }
         }
+    }
+
+    #[test]
+    fn find_answers_for_every_table_entry_and_nothing_else() {
+        // The index must be the table: every name resolves to its own
+        // entry, and a name that is not in the table stays a refusal.
+        for i in crate::protocol_tables::INTERFACES {
+            let found = find(i.name).expect("every generated interface is findable");
+            assert!(std::ptr::eq(found, i), "{} resolved to a different entry", i.name);
+        }
+        assert!(find("").is_none());
+        assert!(find("wl_compositor_").is_none());
     }
 
     #[test]

@@ -80,7 +80,12 @@ impl From<io::Error> for SessionError {
 /// bytes with the descriptors that must go with the first message in them.
 pub struct Endpoint {
     pub fd: RawFd,
+    /// Inbound bytes; those before `in_pos` have been consumed. Compacted
+    /// once per read rather than once per message: a single 4 KiB read
+    /// carrying dozens of small messages used to memmove the remainder of
+    /// the buffer for each of them.
     inbuf: Vec<u8>,
+    in_pos: usize,
     in_fds: VecDeque<RawFd>,
     /// (bytes, fds to send with them) in order; sent from the front.
     outq: VecDeque<(Vec<u8>, Vec<RawFd>)>,
@@ -91,7 +96,33 @@ pub struct Endpoint {
 
 impl Endpoint {
     pub fn new(fd: RawFd) -> Endpoint {
-        Endpoint { fd, inbuf: Vec::new(), in_fds: VecDeque::new(), outq: VecDeque::new(), pending_out: 0, pending_fds: 0, closed: false }
+        Endpoint { fd, inbuf: Vec::new(), in_pos: 0, in_fds: VecDeque::new(), outq: VecDeque::new(), pending_out: 0, pending_fds: 0, closed: false }
+    }
+
+    /// The inbound bytes not yet consumed.
+    fn pending_in(&self) -> &[u8] {
+        &self.inbuf[self.in_pos..]
+    }
+
+    /// Take the next `n` pending bytes as one message. The caller has
+    /// checked that many are present.
+    fn consume(&mut self, n: usize) -> Vec<u8> {
+        let msg = self.inbuf[self.in_pos..self.in_pos + n].to_vec();
+        self.in_pos += n;
+        if self.in_pos == self.inbuf.len() {
+            self.inbuf.clear();
+            self.in_pos = 0;
+        }
+        msg
+    }
+
+    /// Everything pending, leaving the buffer empty (tests).
+    #[cfg(test)]
+    fn take_inbuf(&mut self) -> Vec<u8> {
+        let bytes = self.inbuf.split_off(self.in_pos);
+        self.inbuf.clear();
+        self.in_pos = 0;
+        bytes
     }
 
     /// One recvmsg with room for descriptors. Returns bytes read (0 = EOF).
@@ -131,12 +162,17 @@ impl Endpoint {
         // descriptor. Surplus descriptors must not accumulate behind it.
         if msg.msg_flags & libc::MSG_CTRUNC != 0
             || self.in_fds.len() > policy::MAX_PENDING_FDS
-            || self.inbuf.len() + n as usize > policy::MAX_PENDING_BYTES
+            || self.pending_in().len() + n as usize > policy::MAX_PENDING_BYTES
         {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated control data or inbound resource limit exceeded"));
         }
         if n == 0 {
             return Ok(0);
+        }
+        // One compaction per read, here, rather than one per message.
+        if self.in_pos > 0 {
+            self.inbuf.drain(..self.in_pos);
+            self.in_pos = 0;
         }
         self.inbuf.extend_from_slice(&buf[..n as usize]);
         Ok(n as usize)
@@ -192,11 +228,10 @@ impl Endpoint {
         Ok(false)
     }
 
-    fn queue(&mut self, bytes: Vec<u8>, fds: Vec<RawFd>) -> Result<(), SessionError> {
+    fn queue(&mut self, bytes: Vec<u8>, fds: Vec<RawFd>) {
         self.pending_out += bytes.len();
         self.pending_fds += fds.len();
         self.outq.push_back((bytes, fds));
-        Ok(())
     }
 
     pub fn close_all(&mut self) {
@@ -304,13 +339,13 @@ impl Session {
                 Dir::ClientToServer => &mut self.client,
                 Dir::ServerToClient => &mut self.server,
             };
-            if src.inbuf.len() < HEADER_LEN {
+            if src.pending_in().len() < HEADER_LEN {
                 return Ok(());
             }
-            let h = Header::parse(&src.inbuf)?;
+            let h = Header::parse(src.pending_in())?;
             let size = h.size as usize;
-            if src.inbuf.len() < size {
-                if src.inbuf.len() > MAX_MESSAGE_LEN {
+            if src.pending_in().len() < size {
+                if src.pending_in().len() > MAX_MESSAGE_LEN {
                     return Err(SessionError::Wire(WireError::BadSize(h.size)));
                 }
                 return Ok(());
@@ -327,12 +362,12 @@ impl Session {
                 }
                 return Ok(()); // descriptors still in flight
             }
-            let mut msg: Vec<u8> = src.inbuf.drain(..size).collect();
+            let mut msg: Vec<u8> = src.consume(size);
             // Parsing or policy may reject this message before it is queued.
             // Own the descriptors so every such return closes them.
             let fds: Vec<OwnedFd> = src.in_fds.drain(..needed).map(|fd| unsafe { OwnedFd::from_raw_fd(fd) }).collect();
-            let body = msg[HEADER_LEN..].to_vec();
-            let decoded = protocol::decode(m, &body)?;
+            // The body is read in place; it was a second copy of every message.
+            let decoded = protocol::decode(m, &msg[HEADER_LEN..])?;
 
             // --- policy, per message ---------------------------------------
             let mut forward = true;
@@ -340,9 +375,9 @@ impl Session {
             let mut stamp: Option<Vec<u8>> = None;
             match dir {
                 Dir::ClientToServer => {
-                    if h.object == WL_DISPLAY && h.opcode == WL_DISPLAY_GET_REGISTRY {
-                        // registry is created by the client; track it
-                    }
+                    // (wl_display.get_registry needs nothing special here: the
+                    // registry it creates is tracked by the new-objects loop
+                    // below like every other typed child.)
                     if iface.name == "wl_registry" && h.opcode == WL_REGISTRY_BIND {
                         let (name, version) = match (&decoded.new_objects[..], decoded.bind_version) {
                             ([(_, n)], Some(v)) => (n.clone(), v),
@@ -351,7 +386,7 @@ impl Session {
                         let max = policy::allowed_version(&name).ok_or_else(|| SessionError::HiddenInterface(name.clone()))?;
                         // The numeric global identifies one advertised interface
                         // and version cap, not any interface on the allowlist.
-                        let mut r = ArgReader::new(&body);
+                        let mut r = ArgReader::new(&msg[HEADER_LEN..]);
                         let gname = r.u32()?;
                         let (advertised, cap) = self.globals.get(&gname).ok_or_else(||
                             SessionError::HiddenInterface(format!("{name} (global {gname} not advertised)")))?;
@@ -387,21 +422,30 @@ impl Session {
                     // is rewritten as above and simply replaces it.
                     if iface.name == "xdg_surface" && m.name == "get_toplevel" {
                         if let Some((id, _)) = decoded.new_objects.first() {
-                            let opcode = protocol::find("xdg_toplevel")
-                                .and_then(|i| i.requests.iter().position(|r| r.name == "set_app_id"))
-                                .ok_or(SessionError::Wire(WireError::ArgOverrun))? as u16;
+                            // A constant of the tables, resolved once. The
+                            // failure path stays: a table without the request
+                            // refuses rather than stamping a guessed opcode.
+                            static SET_APP_ID: std::sync::OnceLock<Option<u16>> = std::sync::OnceLock::new();
+                            let opcode = SET_APP_ID
+                                .get_or_init(|| {
+                                    protocol::find("xdg_toplevel")
+                                        .and_then(|i| i.requests.iter().position(|r| r.name == "set_app_id"))
+                                        .map(|p| p as u16)
+                                })
+                                .ok_or(SessionError::Wire(WireError::ArgOverrun))?;
                             stamp = MessageWriter::new(*id, opcode).string(&policy::app_id_for(&self.zone, "")).finish();
                         }
                     }
                 }
                 Dir::ServerToClient => {
                     if iface.name == "wl_registry" && h.opcode == WL_REGISTRY_GLOBAL {
-                        let mut r = ArgReader::new(&body);
+                        let mut r = ArgReader::new(&msg[HEADER_LEN..]);
                         let gname = r.u32()?;
                         let iname = r.string()?.unwrap_or("").to_string();
                         let version = r.u32()?;
-                        if policy::advertise(&iname) {
-                            let cap = policy::allowed_version(&iname).unwrap_or(1).min(version);
+                        // One allowlist lookup: advertise() is allowed_version().is_some().
+                        if let Some(allowed) = policy::allowed_version(&iname) {
+                            let cap = allowed.min(version);
                             // advertise at most the version we can parse
                             if cap != version {
                                 msg = MessageWriter::new(h.object, h.opcode).u32(gname).string(&iname).u32(cap).finish().unwrap_or(msg);
@@ -414,14 +458,14 @@ impl Session {
                         }
                     }
                     if iface.name == "wl_registry" && h.opcode == WL_REGISTRY_GLOBAL_REMOVE {
-                        let mut r = ArgReader::new(&body);
+                        let mut r = ArgReader::new(&msg[HEADER_LEN..]);
                         let gname = r.u32()?;
                         if self.globals.remove(&gname).is_none() {
                             forward = false; // was hidden; the client never saw it
                         }
                     }
                     if h.object == WL_DISPLAY && h.opcode == WL_DISPLAY_DELETE_ID {
-                        let mut r = ArgReader::new(&body);
+                        let mut r = ArgReader::new(&msg[HEADER_LEN..]);
                         let id = r.u32()?;
                         self.objects.remove(&id);
                     }
@@ -445,9 +489,9 @@ impl Session {
                 if dst.pending_fds + fds.len() > policy::MAX_PENDING_FDS {
                     return Err(SessionError::TooManyFds);
                 }
-                dst.queue(msg, fds.into_iter().map(IntoRawFd::into_raw_fd).collect())?;
+                dst.queue(msg, fds.into_iter().map(IntoRawFd::into_raw_fd).collect());
                 if let Some(s) = stamp {
-                    dst.queue(s, Vec::new())?;
+                    dst.queue(s, Vec::new());
                     self.rewritten += 1;
                 }
                 match dir {
@@ -464,7 +508,7 @@ impl Session {
     pub fn refuse(&mut self, why: &str) {
         let text = format!("kryptik-wlproxy: {why}");
         if let Some(m) = MessageWriter::new(WL_DISPLAY, WL_DISPLAY_ERROR).u32(WL_DISPLAY).u32(3).string(&text).finish() {
-            let _ = self.client.queue(m, Vec::new());
+            self.client.queue(m, Vec::new());
             let _ = self.client.flush();
         }
         self.client.close_all();
@@ -998,7 +1042,7 @@ mod tests {
             }
         }
         let fds: Vec<RawFd> = ep.in_fds.drain(..).collect();
-        let bytes = std::mem::take(&mut ep.inbuf);
+        let bytes = ep.take_inbuf();
         std::mem::forget(ep); // the test owns `sock`; do not close it here
         (bytes, fds)
     }

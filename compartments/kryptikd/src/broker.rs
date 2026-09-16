@@ -548,7 +548,10 @@ fn fill(out: RawFd, src: RawFd, cap: u64, target: &Target) -> Result<u64, String
 pub fn copy_capped(src: RawFd, out: RawFd, cap: u64) -> Result<u64, String> {
     let mut total: u64 = 0;
     let mut fallback = false;
-    let mut buf = vec![0u8; 1 << 16];
+    // Sized only if the read/write fallback is taken: on a kernel with
+    // copy_file_range this was a 64 KiB allocation and memset per transfer
+    // that nothing ever read.
+    let mut buf: Vec<u8> = Vec::new();
     loop {
         // One byte past the cap is enough to know the file is over it.
         let want = std::cmp::min(1u64 << 20, cap + 1 - total) as usize;
@@ -565,6 +568,7 @@ pub fn copy_capped(src: RawFd, out: RawFd, cap: u64) -> Result<u64, String> {
                         if total == 0 =>
                     {
                         fallback = true;
+                        buf.resize(1 << 16, 0);
                         continue;
                     }
                     _ => return Err(format!("copy: {e}")),
@@ -672,7 +676,7 @@ pub fn serve_connection(fd: RawFd, s: &Served) -> io::Result<Option<String>> {
         reply(fd, "error: header line missing or too long\n");
         return Ok(None);
     };
-    let header = String::from_utf8_lossy(&buf[..nl]).to_string();
+    let header = String::from_utf8_lossy(&buf[..nl]).into_owned();
     let mut rest: Vec<u8> = buf.split_off(nl + 1);
     let verb = header.split_whitespace().next().unwrap_or("").to_string();
     match parse_request(&header) {
@@ -855,7 +859,7 @@ pub fn clipboard_read(entry: &Path) -> io::Result<Option<(String, Vec<u8>)>> {
     let Some(nl) = all.iter().position(|b| *b == b'\n') else {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "clipboard file has no MIME line"));
     };
-    let mime = String::from_utf8_lossy(&all[..nl]).to_string();
+    let mime = String::from_utf8_lossy(&all[..nl]).into_owned();
     if !MIME_TYPES.contains(&mime.as_str()) {
         return Err(io::Error::new(io::ErrorKind::InvalidData, format!("clipboard file carries an unsupported MIME type {mime:?}")));
     }
