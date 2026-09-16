@@ -801,8 +801,13 @@ s_s6_stack() {
 # the honest way to answer it is for the artifact to carry its own identity.
 # KRYPTIK_BUILD_ID is the repository commit, so a booted system names the
 # commit that built it.
+#
+# The commit is an argument, not read from the environment here: the step's
+# fingerprint covers its recipe and arguments, and a sysroot restored from
+# the runner's cache would otherwise keep the os-release of the commit that
+# filled the cache, stamped as up to date.
 s_etc() {
-    local commit="${KRYPTIK_BUILD_COMMIT:-unknown}"
+    local commit="${1:-${KRYPTIK_BUILD_COMMIT:-unknown}}"
 
     cat > /etc/os-release <<EOF
 NAME="Kryptik"
@@ -1622,7 +1627,38 @@ meson_build() {
 # pinning curl, libarchive, libuv and nghttp2 for a tool that exists to run
 # one cmake invocation. It is not part of the image (see the exclusions in
 # stage 06).
+# cmake is here only to generate json-c's build files, and stage 06 leaves it
+# out of the image. Compiling it from source cost 13 of stage 04's 56 minutes
+# on the runner: a large C++ tree plus bundled curl, libarchive and libuv, for
+# one package's Makefiles. So the chroot runs Kitware's published Linux binary
+# instead - pinned by hash in sources.lock like every other input, unpacked
+# under the build tree, never installed. The binary writes Makefiles; json-c
+# itself is still compiled by this stage's toolchain. Should the binary not
+# run in this chroot (a loader or a libc it cannot find), s_cmake builds it
+# from source as before, and the log says which path was taken.
+#
+# Unpacked on demand rather than once: the build tree is cleared between
+# runs, and a resumed json-c step must not depend on a cmake step that was
+# skipped as already built.
+prebuilt_cmake() {
+    local dir="${BUILDDIR}/cmake-${V_CMAKE}-linux-x86_64"
+    if [[ ! -x "${dir}/bin/cmake" ]]; then
+        rm -rf "$dir"
+        tar -xf "${KRYPTIK_SOURCES}/cmake-${V_CMAKE}-linux-x86_64.tar.gz" -C "$BUILDDIR"
+    fi
+    [[ -x "${dir}/bin/cmake" ]] || return 1
+    "${dir}/bin/cmake" --version > /dev/null 2>&1 || return 1
+    printf '%s' "${dir}/bin/cmake"
+}
+
 s_cmake() {
+    local bin
+    if bin="$(prebuilt_cmake)"; then
+        echo "the prebuilt cmake runs in this chroot: ${bin}"
+        "$bin" --version
+        return 0
+    fi
+    warn "the prebuilt cmake does not run in this chroot; building cmake from source"
     local src; src="$(unpack "cmake-${V_CMAKE}.tar.gz" "cmake-${V_CMAKE}")"
     cd "$src"
     sed -i '/"lib64"/s/64//' Modules/GNUInstallDirs.cmake
@@ -1634,15 +1670,21 @@ s_cmake() {
 }
 
 s_json_c() {
+    local cmake
+    if ! cmake="$(prebuilt_cmake)"; then
+        cmake="$(command -v cmake || true)"
+        [[ -n "$cmake" ]] || die "json-c: no cmake - the prebuilt binary does not run here and none was built"
+    fi
+    echo "cmake: ${cmake}"
     local src; src="$(unpack "json-c-${V_JSON_C}.tar.gz" "json-c-json-c-${V_JSON_C}")"
     cd "$src"
     # CMAKE_POLICY_VERSION_MINIMUM: cmake 4 refuses projects whose minimum is
     # below 3.5, and json-c's test/app subdirectories still say 2.8/3.9.
-    cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release \
+    "$cmake" -S . -B build -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_STATIC_LIBS=OFF -DBUILD_TESTING=OFF -DBUILD_APPS=OFF \
         -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-    cmake --build build
-    cmake --install build
+    "$cmake" --build build
+    "$cmake" --install build
     # Prove the library round-trips a document; cryptsetup will parse LUKS2
     # headers with it.
     cat > /tmp/jc.c <<'EOF'
@@ -2193,7 +2235,7 @@ PACKAGES=(
     # content hash are the step's identity, as for kryptikd).
     "desktop"     "s_desktop ${KRYPTIK_WLPROXY_BIN:-none} $([[ -f "${KRYPTIK_WLPROXY_BIN:-}" ]] && sha256_of "${KRYPTIK_WLPROXY_BIN}" || echo absent) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-launch.c" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-session" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-chrome" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/wlprobe.c" 2>/dev/null || echo none)"
 
-    "etc"         "s_etc"
+    "etc"         "s_etc ${KRYPTIK_BUILD_COMMIT:-unknown}"
     "console"     "s_console"
     "init"        "s_init"
     # After init: the database lives beside the stage 2 scripts that look

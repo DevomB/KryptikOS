@@ -3,6 +3,17 @@
 Kryptik builds every shipped binary from source, which moves the trust question
 from "do I trust this distro's build servers" to "do I trust these tarballs".
 
+One build tool is the exception, and it is not shipped: the cmake that
+generates json-c's build files inside the stage 04 chroot runs from Kitware's
+published Linux binary (the `cmake-bin` manifest row), because compiling cmake
+cost a quarter of stage 04 on the runner for one package's Makefiles. It is
+pinned in `sources.lock` like every tarball, its hash was checked against
+Kitware's published SHA-256 list when the entry was written, it is unpacked
+under the build tree and never installed, and json-c itself is compiled by the
+stage's own toolchain. Stage 06 excludes cmake from the image in any case. The
+source tarball stays in the manifest as the fallback for a chroot the binary
+cannot run in.
+
 ## Source integrity
 
 `sources.lock` pins a SHA-256 for every upstream tarball.

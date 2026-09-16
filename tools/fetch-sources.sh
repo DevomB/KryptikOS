@@ -129,6 +129,7 @@ s6-rc|${V_S6_RC}|${MIRROR_SKARNET}/s6-rc/s6-rc-${V_S6_RC}.tar.gz
 s6-linux-init|${V_S6_LINUX_INIT}|${MIRROR_SKARNET}/s6-linux-init/s6-linux-init-${V_S6_LINUX_INIT}.tar.gz
 hardened-malloc|${V_HARDENED_MALLOC}|${MIRROR_GITHUB}/GrapheneOS/hardened_malloc/archive/refs/tags/${V_HARDENED_MALLOC}.tar.gz
 cmake|${V_CMAKE}|${MIRROR_CMAKE}/v${V_CMAKE%.*}/cmake-${V_CMAKE}.tar.gz
+cmake-bin|${V_CMAKE}|${MIRROR_CMAKE}/v${V_CMAKE%.*}/cmake-${V_CMAKE}-linux-x86_64.tar.gz
 json-c|${V_JSON_C}|${MIRROR_GITHUB}/json-c/json-c/archive/json-c-${V_JSON_C}/json-c-${V_JSON_C}.tar.gz
 popt|${V_POPT}|${MIRROR_OSUOSL_RPM}/popt/releases/popt-1.x/popt-${V_POPT}.tar.gz
 libaio|${V_LIBAIO}|${MIRROR_PAGURE}/libaio/libaio-${V_LIBAIO}.tar.gz

@@ -11,6 +11,11 @@ name: Distro
 # hour and a quarter; a full acceptance about two hours and up to 50 GB of
 # VM disks. The runner's / has ~14 GB free and /mnt about 65 GB, so
 # everything the build writes lives under /mnt/kryptik.
+#
+# Two caches carry built output between runs, keyed on the inputs of the
+# stages that produced it: the sysroot after stage 02, and the sysroot and
+# kernel after stage 05. A push that changes only tests or tools skips
+# straight to the media and the acceptance.
 
 on:
   push:
@@ -181,6 +186,39 @@ jobs:
           rm -f work-after-02.tar.zst
           ls work; du -sh work/sysroot
 
+      # The sysroot, the stamps and the kernel tree after stage 05, as one
+      # tarball that root made. Not the directories themselves: stage 04 runs
+      # as root and leaves files the runner user cannot read (the sysroot's
+      # /etc/shadow), and the cache action tars as the runner user. A hit
+      # replaces the stage 02 sysroot unpacked above with the later tree,
+      # which contains it. The key carries the toolchain inputs' hash first,
+      # so any hit was built on the same toolchain inputs and the tarball's
+      # own tt- stamps agree with its sysroot; the second hash is everything
+      # stages 04 and 05 read from the tree. A prefix hit (one of those inputs
+      # changed) restores the nearest earlier tree and the stamps decide what
+      # rebuilds: each verifies its own fingerprint (KRYPTIK_STALE=rebuild
+      # above), so the changed package and the steps after it rebuild and the
+      # rest are skipped. On 51500b01 stages 04 and 05 spent 70 minutes
+      # producing the same sysroot as the run before them.
+      - name: Stage 04-05 sysroot and kernel (cached)
+        id: work05
+        uses: actions/cache/restore@v5
+        with:
+          path: /mnt/kryptik/work-after-05.tar.zst
+          key: work05-${{ hashFiles('build/stages/00-host-check.sh', 'build/stages/01-toolchain.sh', 'build/stages/02-temp-tools.sh', 'build/lib/**', 'build/patches/**', 'build/config/**', 'sources.lock') }}-${{ hashFiles('build/**', 'tools/**', 'compartments/**', 'compositor/**', 'sources.lock', 'Makefile') }}
+          restore-keys: |
+            work05-${{ hashFiles('build/stages/00-host-check.sh', 'build/stages/01-toolchain.sh', 'build/stages/02-temp-tools.sh', 'build/lib/**', 'build/patches/**', 'build/config/**', 'sources.lock') }}-
+
+      - name: Unpack the stage 04-05 tree
+        if: steps.work05.outputs.cache-matched-key != ''
+        run: |
+          cd /mnt/kryptik
+          echo "restored ${{ steps.work05.outputs.cache-matched-key }}"
+          sudo rm -rf work/sysroot work/.stamps work/kconfig work/build
+          sudo tar --zstd -xf work-after-05.tar.zst -C work
+          rm -f work-after-05.tar.zst
+          ls work work/build; sudo du -sh work/sysroot
+
       # The two static binaries stage 04 installs are built outside the
       # chroot, for musl, exactly as the build host did.
       - uses: dtolnay/rust-toolchain@stable
@@ -200,6 +238,34 @@ jobs:
 
       - name: Stage 05, the hardened kernel
         run: make kernel KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
+
+      # Saved before stage 06, so the keys, the images and the media stay out
+      # of the cache, and only when the exact key missed: a prefix hit rebuilt
+      # something, and the result belongs under the new key. The kernel tree
+      # travels with the sysroot because stage 05 treats a stamped kernel
+      # whose tree is gone as unbuilt.
+      - name: Pack the stage 04-05 tree for the cache
+        if: steps.work05.outputs.cache-hit != 'true'
+        run: |
+          cd /mnt/kryptik
+          kernel_tree="$(cd work && ls -d build/linux-* 2>/dev/null | head -1 || true)"
+          sudo tar --zstd -cf work-after-05.tar.zst -C work sysroot .stamps kconfig $kernel_tree
+          sudo chown "$(id -u):$(id -g)" work-after-05.tar.zst
+          ls -la work-after-05.tar.zst; df -h /mnt | tail -1
+
+      # A cache that could not be saved (the repository's 10 GB is full, or
+      # the service is having a day) costs the next run an hour, not this one
+      # its verdict.
+      - uses: actions/cache/save@v5
+        if: steps.work05.outputs.cache-hit != 'true'
+        continue-on-error: true
+        with:
+          path: /mnt/kryptik/work-after-05.tar.zst
+          key: ${{ steps.work05.outputs.cache-primary-key }}
+
+      - name: Drop the cache tarball before the media are built
+        if: steps.work05.outputs.cache-hit != 'true'
+        run: rm -f /mnt/kryptik/work-after-05.tar.zst
 
       # Two releases: A, and B = A's version with .1 (sorts after A), which
       # the update test applies over A.
