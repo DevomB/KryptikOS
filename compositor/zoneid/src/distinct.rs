@@ -31,7 +31,7 @@
 //! a guarantee would be the same overreach as treating a passing test suite as
 //! proof of correctness.
 
-use crate::color::{contrast_ratio, delta_e, Srgb};
+use crate::color::{ciede2000, contrast_ratio, Lab, Srgb};
 use crate::cvd::{simulate, Vision};
 use crate::identity::{Channel, ZoneIdentity};
 
@@ -199,9 +199,25 @@ pub fn analyze(zones: &[ZoneIdentity], t: Thresholds) -> Report {
     }
 
     // Track the worst pair per vision model even when nothing fails.
+    // Indexed like Vision::ALL, and read that way below.
     let mut worst: Vec<(Vision, f64, String, String)> = Vision::ALL
         .iter()
         .map(|&v| (v, f64::INFINITY, String::new(), String::new()))
+        .collect();
+
+    // Each zone's colour under each vision model, converted to Lab once.
+    // The pair loop used to simulate and convert both colours of every pair
+    // under every model: n^2 times the work of doing it per zone, for the
+    // same numbers. (palette.rs precomputes the same table for its search.)
+    let labs: Vec<[Lab; Vision::ALL.len()]> = zones
+        .iter()
+        .map(|z| {
+            let mut lab = [Lab { l: 0.0, a: 0.0, b: 0.0 }; Vision::ALL.len()];
+            for (k, v) in Vision::ALL.into_iter().enumerate() {
+                lab[k] = simulate(z.color, v).to_lab();
+            }
+            lab
+        })
         .collect();
 
     for i in 0..zones.len() {
@@ -210,13 +226,11 @@ pub fn analyze(zones: &[ZoneIdentity], t: Thresholds) -> Report {
 
             // Colour, under each vision model.
             let mut colour_lost_under: Vec<(Vision, f64)> = Vec::new();
-            for v in Vision::ALL {
-                let d = delta_e(simulate(a.color, v), simulate(b.color, v));
+            for (k, v) in Vision::ALL.into_iter().enumerate() {
+                let d = ciede2000(labs[i][k], labs[j][k]);
 
-                if let Some(w) = worst.iter_mut().find(|w| w.0 == v) {
-                    if d < w.1 {
-                        *w = (v, d, a.zone.clone(), b.zone.clone());
-                    }
+                if d < worst[k].1 {
+                    worst[k] = (v, d, a.zone.clone(), b.zone.clone());
                 }
 
                 if d < t.min_delta_e() {
