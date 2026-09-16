@@ -28,7 +28,17 @@ jobs:
           # A share of this repository displayed as that account's work until
           # the history was rewritten on 2026-09-15. This goes red the moment
           # one such commit comes back, anywhere in the history.
-          ./tools/check-commit-identity.sh --all
+          #
+          # On a pull request the checkout is GitHub's synthetic merge of the
+          # branch into main, authored through a noreply address and
+          # committed by GitHub itself. It is not a commit of this repository
+          # and never reaches main as it is; the branch's own history is what
+          # is checked there.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            ./tools/check-commit-identity.sh "${{ github.event.pull_request.head.sha }}"
+          else
+            ./tools/check-commit-identity.sh --all
+          fi
 
   lint:
     name: Shell lint
