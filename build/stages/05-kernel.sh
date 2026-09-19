@@ -210,11 +210,43 @@ s_patch() {
     fi
 }
 
+# CPU microcode, built into the kernel image. The early loader runs before any
+# filesystem exists, and Kryptik has no initramfs to carry an update in, so the
+# only microcode a Kryptik machine can ever load is what the signed kernel
+# holds: CONFIG_EXTRA_FIRMWARE, with every file of Intel's release (the loader
+# picks the one named for the running family-model-stepping) and AMD's
+# containers from the pinned linux-firmware release. About 18 MB the image
+# cannot shed, which is the price of CPU vulnerability fixes on a machine whose
+# firmware vendor has stopped shipping them. Intel's "with caveats" directory
+# stays out: those updates need a BIOS that expects them.
+s_microcode() {
+    echo "inputs: intel ${1:-none}, amd from linux-firmware ${2:-none}"
+    local dir="${BUILDDIR}/microcode"
+    rm -rf "$dir"; mkdir -p "$dir"
+    tar -xf "${KRYPTIK_SOURCES}/microcode-${V_INTEL_MICROCODE}.tar.gz" -C "$dir" \
+        --strip-components=1 --wildcards '*/intel-ucode/*' '*/license'
+    tar -xf "${KRYPTIK_SOURCES}/linux-firmware-${V_LINUX_FIRMWARE}.tar.xz" -C "$dir" \
+        --strip-components=1 --wildcards '*/amd-ucode/microcode_amd*.bin'
+    local n_intel n_amd
+    n_intel="$(find "$dir/intel-ucode" -type f | wc -l)"
+    n_amd="$(find "$dir/amd-ucode" -type f -name '*.bin' | wc -l)"
+    echo "intel-ucode: ${n_intel} files, $(du -sh "$dir/intel-ucode" | cut -f1)"
+    echo "amd-ucode  : ${n_amd} files, $(du -sh "$dir/amd-ucode" | cut -f1)"
+    [[ "$n_intel" -gt 100 && "$n_amd" -ge 4 ]] \
+        || { echo "FAIL: the microcode releases did not unpack as expected"; return 1; }
+    # The value of CONFIG_EXTRA_FIRMWARE: every file, relative to the
+    # directory, in a fixed order so the same inputs give the same .config.
+    ( cd "$dir" && find intel-ucode amd-ucode -type f \( -path 'intel-ucode/*' -o -name '*.bin' \) \
+        | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//' ) > "$dir/list"
+    echo "list       : $(wc -w < "$dir/list") files"
+}
+
 s_config() {
-    # $1 is the digest of the two config fragments. It is not used in the
-    # body: it exists so this step's fingerprint covers files the recipe
-    # reads by path, which `declare -f` cannot see.
-    echo "fragment digest: ${1:-none}"
+    # $1 is the digest of the config fragments, $2 and $3 the microcode
+    # releases. They are not used in the body: they exist so this step's
+    # fingerprint covers inputs the recipe reads by path, which `declare -f`
+    # cannot see.
+    echo "fragment digest: ${1:-none}; microcode: ${2:-none} ${3:-none}"
     cd "$KSRC"
 
     # Start from the architecture default, then layer Kryptik's fragments.
@@ -226,7 +258,22 @@ s_config() {
     # -m merges without running a config pass, so both fragments land before
     # dependency resolution happens once, here, at the end.
     "$merge" -m .config "$FRAG_BASE" "$FRAG_HARDENED" "$FRAG_BOOT"
+
+    # The microcode s_microcode staged goes in by name. It is not a fragment
+    # line because its value is a list of some 160 files that changes with
+    # every release of either vendor; it is checked below like one.
+    local ucode="${BUILDDIR}/microcode"
+    [[ -s "${ucode}/list" ]] || { echo "no ${ucode}/list: the microcode step has not run"; return 1; }
+    scripts/config --set-str EXTRA_FIRMWARE "$(cat "${ucode}/list")" \
+                   --set-str EXTRA_FIRMWARE_DIR "$ucode"
     make olddefconfig
+
+    local fw; fw="$(sed -n 's/^CONFIG_EXTRA_FIRMWARE="\(.*\)"$/\1/p' .config)"
+    if [[ "$fw" != "$(cat "${ucode}/list")" ]]; then
+        echo "FAIL: CONFIG_EXTRA_FIRMWARE did not survive resolution ($(wc -w <<<"$fw") of $(wc -w < "${ucode}/list") files)"
+        return 1
+    fi
+    echo "  ok   CONFIG_EXTRA_FIRMWARE names $(wc -w <<<"$fw") microcode files under ${ucode}"
 
     # merge_config.sh silently drops symbols whose dependencies are unmet, so
     # verify the ones that carry Kryptik's actual guarantees actually survived.
@@ -313,6 +360,15 @@ s_build() {
     # which compiler built a given image.
     echo "--- linux_banner ---"
     strings vmlinux 2>/dev/null | grep -m1 "Linux version" || true
+    # The microcode is in the image, not merely in the config: the built-in
+    # firmware table names each blob, so one name per vendor must be there.
+    echo "--- built-in microcode ---"
+    local blob
+    for blob in "$(tr ' ' '\n' < "${BUILDDIR}/microcode/list" | grep -m1 '^intel-ucode/')" \
+                amd-ucode/microcode_amd_fam19h.bin; do
+        grep -a -q -F "$blob" vmlinux || { echo "FAIL: ${blob} is not built into vmlinux"; return 1; }
+        echo "  ok   ${blob}"
+    done
 }
 
 s_modules() {
@@ -481,7 +537,7 @@ step compiler-check  s_compiler_check
 if [[ ! -d "$KSRC" && -f "${STAMPS}/${STAMP_PREFIX}unpack" ]]; then
     gone="${STAMPS}/legacy/kernel-tree-gone-$(date +%Y%m%dT%H%M%S)"
     mkdir -p "$gone"
-    for s in unpack patch config hardening-check build modules install verify-install; do
+    for s in unpack patch microcode config hardening-check build modules install verify-install; do
         [[ -f "${STAMPS}/${STAMP_PREFIX}${s}" ]] && mv -f "${STAMPS}/${STAMP_PREFIX}${s}" "$gone/"
     done
     warn "the kernel tree ${KSRC} is gone but its steps were stamped as built;"
@@ -490,7 +546,8 @@ fi
 
 step unpack          s_unpack
 step patch           s_patch
-step config          s_config "$FRAG_DIGEST"
+step microcode       s_microcode "$V_INTEL_MICROCODE" "$V_LINUX_FIRMWARE"
+step config          s_config "$FRAG_DIGEST" "$V_INTEL_MICROCODE" "$V_LINUX_FIRMWARE"
 
 # kernel-hardening-checker, the Kernel Self-Protection Project's reference
 # list, on the .config that is about to be built and on the command line

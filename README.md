@@ -67,6 +67,9 @@ the same verified root, selected by `build/config/firmware.list` (ADR-012).
   (DesignWare I2C, the SoC pin controllers, HID multitouch), VMware and
   Hyper-V input.
 
+CPU microcode for Intel and AMD processors is built into the signed kernel
+and applied by the early loader, since there is no initramfs to carry it.
+
 Hyper-V's firmware trusts only Microsoft's keys, so Kryptik runs there with
 Secure Boot turned off in the VM's settings.
 

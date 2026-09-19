@@ -298,6 +298,14 @@ machines a display; the compositor needs no acceleration. Bluetooth and
 sound: no zone has a use for them yet. Anything not on the list is not
 shipped; the list is the decision.
 
+**CPU microcode is the same decision, in a different place.** It is vendor
+firmware too (Intel's release and AMD's containers from linux-firmware), but the
+early loader runs before any filesystem exists and there is no initramfs, so it
+is built into the signed kernel itself (`CONFIG_EXTRA_FIRMWARE`, stage 05):
+about 18 MB in each of the three signed kernels. Without it a machine runs
+whatever microcode its firmware vendor last shipped, which for most machines
+older than a few years means known CPU vulnerabilities with no fix.
+
 ### Costs
 
 About 135 MB, compressed, on a root image of 2.7 GB (385 MB of files, of

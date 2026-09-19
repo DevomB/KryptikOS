@@ -94,6 +94,11 @@ say "kryptikd_check_begin"
 say "kryptikd_check_rc=$?"
 say "kryptikd_check_end"
 say "lsm=$(cat /sys/kernel/security/lsm 2>/dev/null || echo unreadable)"
+# The CPU's microcode revision, and what the kernel's early loader said about
+# the copy built into it. Under a hypervisor the loader is off and there is no
+# message; on a real machine this line is the evidence that the update the
+# signed kernel carries was applied.
+say "microcode=$(awk -F': ' '/^microcode/ {print $2; exit}' /proc/cpuinfo 2>/dev/null) loader=$(dmesg 2>/dev/null | grep -m1 -o 'microcode: .*' || echo none)"
 say "cgroup2=$(awk '$3=="cgroup2"{print $2; exit}' /proc/mounts 2>/dev/null || echo none)"
 
 # --- users and the login path -------------------------------------------
