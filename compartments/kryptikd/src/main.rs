@@ -27,6 +27,8 @@ mod rootfs;
 mod seccomp;
 mod serve;
 mod spawn;
+#[allow(dead_code)] // the decision lands first; the broker verb and the clamp that call it follow
+mod time;
 mod volume;
 mod wifi;
 mod zone;
