@@ -30,6 +30,7 @@ STRICT=0
 SUITES=(
     "test-harness|tools/test-step-errexit.sh"
     "test-hardening|tools/test-hardening-flags.sh"
+    "test-kernel-hardening|tools/test-check-kernel-hardening.sh"
     "test-services|tools/test-services.sh"
     "test-boot-success|tools/test-boot-success.sh"
     "test-manifest|tools/test-artifact-manifest.sh"

@@ -6,6 +6,12 @@
 #
 #   hardening.fragment   KSPP options that exist in vanilla Linux
 #   hardened.fragment    options that exist ONLY with linux-hardened applied
+#   boot.fragment        firmware boot, the verified root, the desktop, the
+#                        drivers real machines need
+#
+# and refuses to build a config that does not honour every line of them, or
+# one that kernel-hardening-checker faults beyond the accepted list
+# (build/config/kernel/checker-accepted.txt).
 #
 # Runs INSIDE the chroot, like stage 04, and for the same reason: the kernel
 # must be compiled by the native TARGET compiler, and must land in the target's
@@ -46,6 +52,7 @@
 # ---------------------------------------------------------------------------
 
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/kconfig-check.sh"
 load_config
 
 require_inside_chroot "stage 05" "kernel"
@@ -124,6 +131,18 @@ s_compiler_check() {
         return 1
     fi
     echo "PASS: native target compiler"
+
+    # GCC plugins. KSTACK_ERASE, RANDSTRUCT_FULL and LATENT_ENTROPY are
+    # compiler plugins the kernel builds against this compiler's plugin
+    # headers; without the headers kconfig drops all three and s_config will
+    # refuse the config. This says why, first.
+    local plugin_dir; plugin_dir="$(gcc -print-file-name=plugin)"
+    if [[ -e "${plugin_dir}/include/plugin-version.h" ]]; then
+        echo "PASS: gcc plugin headers at ${plugin_dir}/include"
+    else
+        echo "WARNING: no gcc plugin headers (${plugin_dir}/include/plugin-version.h is missing):"
+        echo "         CONFIG_GCC_PLUGINS resolves to n and the fragment check in s_config will fail."
+    fi
 
     # It must also actually work, and produce target binaries.
     local t; t="$(mktemp -d)"
@@ -243,57 +262,24 @@ s_config() {
         fi
     done
 
-    # Every =y line in boot.fragment, not just the ones listed above. The
-    # hardware drivers there are what a real machine's disk, network and
-    # keyboard need, and one that kconfig drops for an unmet dependency is a
-    # machine that boots into nothing, found only when someone tries.
+    # Every line of every fragment, not just the ones listed above: an =value
+    # line must come out with that value, an "is not set" line must come out
+    # unset. kconfig drops a line without a word for an unmet dependency
+    # (CONFIG_TIGON3 without PTP_1588_CLOCK_OPTIONAL), for a `select` from
+    # something enabled (CONFIG_BLK_DEV_IO_TRACE from defconfig selected
+    # DEBUG_FS back on, in a kernel whose fragment asked for it off) and for a
+    # prompt that is invisible (every `if EXPERT` option, until EXPERT was
+    # set). Each is a mitigation or a driver this kernel does not have while
+    # the fragment says it does, which is worse than a fragment that never
+    # claimed it. The check is build/lib/kconfig-check.sh, shared with
+    # tools/resolve-kernel-config.sh so CI asks the same question of the same
+    # fragments in minutes.
     echo
-    echo "--- verifying every boot.fragment option survived ---"
-    local boot_opt boot_dropped=0
-    while read -r boot_opt; do
-        if ! grep -q "^${boot_opt}=y" .config; then
-            echo "  DROPPED ${boot_opt} ($(grep -E "^${boot_opt}=|^# ${boot_opt} is not set" .config || echo absent))"
-            boot_dropped=$((boot_dropped + 1))
-        fi
-    done < <(grep -oE '^CONFIG_[A-Z0-9_]+=y$' "$FRAG_BOOT" | cut -d= -f1)
-    echo "  $(grep -cE '^CONFIG_[A-Z0-9_]+=y$' "$FRAG_BOOT") options, ${boot_dropped} dropped"
-    missing=$((missing + boot_dropped))
-
-    # Everything the fragments say must be OFF.
-    #
-    # s_config used to verify only the options that must be ON. An option can
-    # fail to be off silently: a Kconfig `select` from any enabled symbol turns
-    # one on unconditionally and overrides an explicit "is not set" without a
-    # diagnostic. That is not hypothetical - CONFIG_DEBUG_FS was =y in a kernel
-    # whose fragment asked for it off, because CONFIG_BLK_DEV_IO_TRACE from
-    # defconfig selects it.
-    #
-    # A fragment that claims a mitigation the kernel does not have is worse
-    # than one that never claimed it.
-    echo
-    echo "--- verifying the options the fragments say must be OFF ---"
-    local off_violations=0 opt_off
-    while read -r opt_off; do
-        [[ -z "$opt_off" ]] && continue
-        if grep -q "^${opt_off}=y" .config; then
-            echo "  ON, BUT REQUESTED OFF: ${opt_off}"
-            echo "      something enabled selects it; find it with"
-            echo "      grep -rn 'select ${opt_off#CONFIG_}' ."
-            off_violations=$((off_violations + 1))
-        elif grep -q "^${opt_off}=m" .config; then
-            echo "  MODULE, BUT REQUESTED OFF: ${opt_off}"
-            off_violations=$((off_violations + 1))
-        else
-            echo "  ok   ${opt_off} is off"
-        fi
-    done < <(grep -hoE '^# CONFIG_[A-Z0-9_]+ is not set' "$FRAG_BASE" "$FRAG_HARDENED"              | awk '{print $2}' | sort -u)
-
-    if [[ "$off_violations" -gt 0 ]]; then
+    echo "--- verifying every fragment line survived resolution ---"
+    if ! kconfig_fragment_check .config "$FRAG_BASE" "$FRAG_HARDENED" "$FRAG_BOOT"; then
         echo
-        echo "${off_violations} option(s) the fragments disable are enabled anyway."
-        echo "Each one is a mitigation this kernel does not have while the"
-        echo "fragment says it does. Disable whatever selects them, or drop"
-        echo "the claim from the fragment."
+        echo "Fragment lines were not honoured. Fix the dependency, disable what"
+        echo "selects the option, or drop the claim from the fragment."
         return 1
     fi
 
@@ -481,7 +467,7 @@ step compiler-check  s_compiler_check
 if [[ ! -d "$KSRC" && -f "${STAMPS}/${STAMP_PREFIX}unpack" ]]; then
     gone="${STAMPS}/legacy/kernel-tree-gone-$(date +%Y%m%dT%H%M%S)"
     mkdir -p "$gone"
-    for s in unpack patch config build modules install verify-install; do
+    for s in unpack patch config hardening-check build modules install verify-install; do
         [[ -f "${STAMPS}/${STAMP_PREFIX}${s}" ]] && mv -f "${STAMPS}/${STAMP_PREFIX}${s}" "$gone/"
     done
     warn "the kernel tree ${KSRC} is gone but its steps were stamped as built;"
@@ -491,6 +477,29 @@ fi
 step unpack          s_unpack
 step patch           s_patch
 step config          s_config "$FRAG_DIGEST"
+
+# kernel-hardening-checker, the Kernel Self-Protection Project's reference
+# list, on the .config that is about to be built and on the command line
+# stage 06 compiles in (its COMMON_ARGS line). Every failure it reports is
+# fixed in a fragment or accepted, with its reason, in
+# build/config/kernel/checker-accepted.txt; tools/check-kernel-hardening.sh
+# holds the result to that list and fails the stage otherwise. Until
+# 2026-09-18 this stage ended with a suggestion to run the checker by hand,
+# and nobody had: its first run found stack erasing and structure layout
+# randomization absent from every kernel built so far, because the two
+# fragment symbols that named them had become derived ones upstream.
+#
+# The inputs are the config, the accepted list and the command line, so a
+# change to any of the three runs the check again.
+s_hardening_check() {
+    echo "config digest: ${1:-none}; accepted list digest: ${2:-none}; command line digest: ${3:-none}"
+    "${KRYPTIK_ROOT}/tools/check-kernel-hardening.sh" --config "${KSRC}/.config"
+}
+ACCEPTED_LIST="${CONFIG_DIR}/checker-accepted.txt"
+COMMON_ARGS_DIGEST="$(grep '^COMMON_ARGS=' "${KRYPTIK_ROOT}/build/stages/06-iso.sh" | sha256_of_stdin)"
+step hardening-check s_hardening_check \
+    "$(sha256_of "${KSRC}/.config" 2>/dev/null || echo noconfig)" \
+    "$(sha256_of "$ACCEPTED_LIST")" "$COMMON_ARGS_DIGEST"
 
 # .config is an input to every step after this one, and a step's fingerprint
 # covers its own recipe and arguments - not the outputs of the steps before it.
@@ -515,4 +524,4 @@ dim "  kernel : ${BOOTDIR}/kryptik-${V_LINUX}"
 # is set, and a summary naming a directory that does not exist is the
 # same defect the verify step had.
 dim "  modules: ${MODDIR}/$(cat "${KSRC}/include/config/kernel.release" 2>/dev/null || echo "${V_LINUX}")"
-dim "Verify hardening with: kernel-hardening-checker -c ${KSRC}/.config"
+dim "  hardening: kernel-hardening-checker ran in the hardening-check step; what it still reports, and why, is build/config/kernel/checker-accepted.txt"
