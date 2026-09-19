@@ -85,7 +85,7 @@ fi
 
 # --- what booted: the slot or the medium, from the signed command line ------
 #
-# Both come from the kernel's compiled-in command line (Design 08): nothing
+# Both come from the kernel's compiled-in command line: nothing
 # a bootloader, a firmware variable or a person at a prompt could change.
 slot=""; media=""
 for word in $(cat /proc/cmdline 2>/dev/null); do
@@ -95,7 +95,7 @@ for word in $(cat /proc/cmdline 2>/dev/null); do
     esac
 done
 
-# --- persistent state (Design 08) -------------------------------------------
+# --- persistent state --------------------------------------------------------
 #
 # The root filesystem is dm-verity and read-only. Everything that has to
 # change after the build lives on the partition labelled kryptik-state ON THE

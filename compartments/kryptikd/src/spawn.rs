@@ -85,7 +85,7 @@ pub struct RunOptions {
     /// the trusted prompt collected, through SCM_RIGHTS, never argv).
     pub passphrase_fd: Option<i32>,
     /// The per-zone Wayland proxy socket to bind into the zone at
-    /// /run/kryptik/wayland-0 (Design 05a). None: the zone has no display.
+    /// /run/kryptik/wayland-0. None: the zone has no display.
     pub wayland_socket: Option<std::path::PathBuf>,
     /// The (device, inode) the socket must be, as the launch daemon
     /// verified it: the child opens the path without following symlinks
@@ -542,8 +542,8 @@ pub fn run_in_zone(
 
     // KRYPTIK_EXPERIMENTAL is a developer override. On a kernel that
     // restricts unprivileged user namespaces - the target, or its emulation -
-    // a root launch is the real thing, and the override is ignored (Design
-    // 01, P6): a development flag must not be able to start a zone on a
+    // a root launch is the real thing, and the override is ignored
+    // (docs/design/privileged-launch.md): a development flag must not be able to start a zone on a
     // production kernel without the guarantees its file declares.
     let mut experimental = std::env::var("KRYPTIK_EXPERIMENTAL").as_deref() == Ok("1");
     if experimental && unsafe { libc::geteuid() } == 0 {
@@ -557,7 +557,7 @@ pub fn run_in_zone(
     }
     let mut unsupported: Vec<String> = Vec::new();
     match zone.storage {
-        // Encrypted is implemented for a ROOT launch (Design 04): the LUKS2
+        // Encrypted is implemented for a ROOT launch: the LUKS2
         // volume is opened and mounted below, before the zone exists, and
         // closed after it is gone. An unprivileged launch cannot run
         // cryptsetup, so it stays refused: running such a zone on a plain
@@ -568,8 +568,8 @@ pub fn run_in_zone(
         // KRYPTIK_EXPERIMENTAL may waive: the override exists for guarantees
         // this build does not provide, and encryption is provided - by a root
         // launch. Waiving it here would start the zone on a plain directory,
-        // which the launcher suite (F3) and the cli suite (C1) both refuse to
-        // accept, and which the first CI run after the volumes landed did.
+        // which the launcher suite's and the cli suite's encrypted-zone checks
+        // both refuse to accept, and which the first CI run after the volumes landed did.
         StorageMode::Encrypted if unsafe { libc::geteuid() } != 0 => {
             return Err(SpawnError::Setup(format!(
                 "zone {:?} is encrypted: its LUKS2 volume is opened by a root launch with the \
@@ -581,10 +581,11 @@ pub fn run_in_zone(
             )));
         }
         StorageMode::Encrypted => {}
-        // Ephemeral is implemented (M2): the zone's home is a per-launch
+        // Ephemeral is implemented: the zone's home is a per-launch
         // tmpfs in its own mount namespace, and the persistent directory is
         // never bound anywhere. The one thing still worth saying out loud is
-        // swap - see the note printed below, and docs/design/02.
+        // swap - see the note printed below, and
+        // docs/design/resource-limits-and-ephemeral-zones.md.
         StorageMode::Ephemeral => {}
         // Persistent is implemented, and it promises only what it does: the
         // zone's own directory, bound at $HOME, still there next launch. It is
@@ -594,7 +595,7 @@ pub fn run_in_zone(
         StorageMode::Persistent => {}
     }
     // A Landlock policy file is applied as a second layer over the base
-    // rules (docs/design/07). Read and parsed HERE, in the parent, because
+    // rules (docs/design/zone-policy-files.md). Read and parsed HERE, in the parent, because
     // the zone cannot reach the zone directory once it has pivoted - and a
     // file that does not parse must stop the launch before anything is built.
     let fs_rules: Vec<landlock::ZoneRule> = match &zone.landlock {
@@ -613,7 +614,7 @@ pub fn run_in_zone(
     // tunnel modules built in (the Kryptik kernel builds SIT in) creates its
     // fallback devices in every new namespace unless
     // net.core.fb_tunnels_only_for_init_net says otherwise, and the target
-    // kernel's first boot found sit0 inside an airgapped zone (R-13). A root
+    // kernel's first boot found sit0 inside an airgapped zone. A root
     // launcher raises the sysctl once; an unprivileged one cannot, and the
     // zone is then refused like any other guarantee this build cannot give.
     if isolate::namespace_flags(zone) & libc::CLONE_NEWNET != 0 {
@@ -675,7 +676,7 @@ pub fn run_in_zone(
 
     // Claim the zone name before doing any work. One instance per zone is the
     // v1 rule: two launchers of the same zone would share a data directory, a
-    // cgroup name and - once M3 lands - a veth name, and the second would
+    // cgroup name and - for a routed zone - a veth name, and the second would
     // quietly corrupt the first. `mkdir` is the atomic operation; a stale
     // entry from a crashed launcher is reclaimed rather than obeyed.
     let entry = registry::claim(&zone.name).map_err(|e| SpawnError::Setup(e.to_string()))?;
@@ -755,7 +756,8 @@ pub fn run_in_zone(
     //
     // The child binds this socket into its root, and by then it has dropped to
     // the zone identity - which cannot walk to it. The registry is 0700 and
-    // root-owned, deliberately (Design 06, and security's R-7b F1):
+    // root-owned, deliberately (docs/design/zone-registry.md, and the
+    // security review's planted-directory finding):
     //
     //     drwx------ root:root  /run/kryptik
     //     drwx------ root:root  /run/kryptik/zones
@@ -790,7 +792,7 @@ pub fn run_in_zone(
     //
     // So a privileged launch stages the socket where the child already looks
     // for the broker: the zone's registry entry, root-owned and 0700, which
-    // host uid 0 walks by ownership alone (Design 05 named this very path,
+    // host uid 0 walks by ownership alone (the broker design named this very path,
     // /run/kryptik/zones/<zone>/wayland-0). The staging is a bind mount of
     // the inode the daemon verified, made HERE - in the host mount
     // namespace, which the child's unshare copies - and undone when the
@@ -819,7 +821,7 @@ pub fn run_in_zone(
     let mapped = SyncPipe::new()?;
     // initpid: child -> parent, carrying the zone's pid 1 as the HOST sees it.
     //
-    // Design 06 suggested widening `ready` to an i32 instead. It cannot be:
+    // The registry design suggested widening `ready` to an i32 instead. It cannot be:
     // `ready` is signalled before the id maps are written, and the grandchild
     // that becomes pid 1 cannot be forked until after them, because it must be
     // root in the new user namespace first. So the pid does not exist yet when
@@ -989,7 +991,7 @@ pub fn run_in_zone(
 
     // The broker serves this zone until it exits. A transfer must know the
     // zone's data mount as the zone sees it (/home/<zone>, through its pid
-    // 1's root) so that only files from there are accepted (Design 05 B5).
+    // 1's root) so that only files from there are accepted.
     // Asked at request time, not here: pid 1 exists before its root is
     // built, and a request can only arrive once the zone runs. Unknown
     // means every transfer is refused.
@@ -1087,12 +1089,12 @@ fn intermediate_main(
 
     rootfs::ensure_stdio();
 
-    // 1. Identity. THE ID MAP IS THE DROP - see docs/design/01a-p5-correction.md.
+    // 1. Identity. THE ID MAP IS THE DROP - see docs/design/privileged-launch.md.
     //
     //    This used to call setresuid/setresgid to the zone's host identity
     //    here, before creating the user namespace, on the reasoning that the
-    //    namespace should not be created by root. Wiring the security tab's
-    //    own contract probe into the VM proved that cannot work: a kernel with
+    //    namespace should not be created by root. Wiring the security
+    //    review's own contract probe into the VM proved that cannot work: a kernel with
     //    CONFIG_USER_NS_UNPRIVILEGED off (which is the kernel Kryptik intends
     //    to ship) refuses unshare(CLONE_NEWUSER) from a process without
     //    CAP_SYS_ADMIN in the initial namespace - so the process this code had
@@ -1104,7 +1106,7 @@ fn intermediate_main(
     //    parent writes; the creator's identity only decides who OWNS the
     //    namespace, and a root-owned user namespace gives root nothing it did
     //    not already have. So: create the namespace as root, and let the map
-    //    do the dropping. Design 01a §2.
+    //    do the dropping.
     //
     //    Supplementary groups still go before the unshare, and still fatally:
     //    they are not covered by the map, and CAP_SETGID is needed to drop
@@ -1138,7 +1140,8 @@ fn intermediate_main(
     //    PR_SET_PDEATHSIG on any credential change (commit_creds drops it when
     //    the euid or egid moves). That used to be free: the identity switch
     //    happened above this point, so nothing after it changed credentials.
-    //    Removing that switch for the P5 repair silently disarmed the whole
+    //    Removing that switch so the id map would do the drop silently
+    //    disarmed the whole
     //    mechanism - SIGKILLing a launcher left its zone running, which the
     //    suite caught as "2 zone process(es) outlived a SIGKILLed launcher"
     //    and then as a dozen zones that would not start because the registry
@@ -1173,7 +1176,7 @@ fn intermediate_main(
 
     // 3. Enter the new namespaces.
     if let Err(e) = isolate::unshare_namespaces(flags) {
-        // P7: when the kernel refuses, say which restriction is refusing,
+        // Refusals are named: when the kernel refuses, say which restriction is refusing,
         // because "Permission denied" on a machine whose administrator turned
         // unprivileged user namespaces off is otherwise a half-hour of
         // guessing. The two cases need different sentences: an unprivileged
@@ -1495,8 +1498,8 @@ fn zone_init(
     // stops being inert the moment a zone owns one end of a veth, where
     // CAP_NET_ADMIN and CAP_NET_RAW let a compromised zone re-address its link
     // and open a raw socket on the segment it shares with the bridge. The
-    // security review calls this a precondition for that milestone rather than
-    // a follow-up to it.
+    // security review calls this a precondition for routed networking rather
+    // than a follow-up to it.
     //
     // Fatal on failure: a zone that starts with a fuller set than the operator
     // asked for is the failure this project exists to avoid.
@@ -1887,7 +1890,7 @@ mod tests {
         // `explain` is deciding what to put in the zone, and "routed" without
         // qualification reads as "connected, filtered".
         let e = explain(&z("routed"), "/tmp/t", std::path::Path::new("/tmp"));
-        // Routed networking IS delivered now (Design 03a: a veth into the nic
+        // Routed networking IS delivered now (docs/design/net-zone.md: a veth into the nic
         // zone's bridge, forwarded, no NAT yet), so "honest" means the plan
         // line says what it does and does not do rather than the old refusal.
         let honest = e.contains("NOT IMPLEMENTED")
@@ -1904,7 +1907,7 @@ mod tests {
             "explain must not let 'ephemeral' be read as secure erasure: {e}"
         );
 
-        // Encrypted storage is implemented for a root launch (Design 04):
+        // Encrypted storage is implemented for a root launch:
         // explain names the container, the mapping and the close, and says
         // that an unprivileged launch cannot open it.
         let enc = explain(&z_encrypted(), "/tmp/t", std::path::Path::new("/nonexistent"));

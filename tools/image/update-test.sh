@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# OS updates on an installed system (Design 08, the update suite): install release A,
+# OS updates on an installed system (the update suite): install release A,
 # update to release B, reboot into it, roll back, and prove the refusals.
 #
 #   tools/image/update-test.sh --usb-a IMG_A --payload-a DIR_A --payload-b DIR_B

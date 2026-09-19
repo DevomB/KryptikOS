@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Focused tests for tools/apply-update.sh — the M6 update and recovery
-# acceptance checks.
+# Focused tests for tools/apply-update.sh — the update and
+# recovery acceptance checks.
 #
 #   ./tools/test-apply-update.sh
 #

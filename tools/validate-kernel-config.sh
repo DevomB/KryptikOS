@@ -30,7 +30,7 @@ load_config
 HARDENED_MODE=0
 BOOT_MODE=0
 [[ "${1:-}" == "--hardened" ]] && HARDENED_MODE=1
-# --boot validates the firmware-boot/verified-root fragment (Design 08).
+# --boot validates the firmware-boot/verified-root fragment.
 [[ "${1:-}" == "--boot" ]] && BOOT_MODE=1
 
 if [[ "$HARDENED_MODE" -eq 1 ]]; then

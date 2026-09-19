@@ -173,53 +173,53 @@ rm -rf "$TARGET" "${TARGET}.previous" "${TARGET}.staged"
 head_ "A. The first install produces a system that works"
 # ============================================================================
 if apply "$M1" "${W}/v1"; then
-    pass "A1 v1 installs"
+    pass "v1 installs"
 else
-    fail "A1 v1 did not install"; show
+    fail "v1 did not install"; show
 fi
 
 if installed_runs; then
-    pass "A2 the INSTALLED kryptikd validates the INSTALLED zone set"
+    pass "the INSTALLED kryptikd validates the INSTALLED zone set"
 else
-    fail "A2 the installed tree does not work: kryptikd check failed"
+    fail "the installed tree does not work: kryptikd check failed"
     info "$("${TARGET}/bin/kryptikd" check --zones "${TARGET}/etc/kryptik/zones" 2>&1 | head -3)"
 fi
 
 # The discriminator every later check depends on. If this passed, nothing below
 # could tell v1 from v2.
 if has_gamma; then
-    fail "A3 v1 already knows the zone only v2 adds - the suite cannot discriminate"
+    fail "v1 already knows the zone only v2 adds - the suite cannot discriminate"
 else
-    pass "A3 v1 does not know zone 'gamma' (the discriminator works)"
+    pass "v1 does not know zone 'gamma' (the discriminator works)"
 fi
 
 # ============================================================================
 head_ "B. An update changes what the system does"
 # ============================================================================
 if apply "$M2" "${W}/v2"; then
-    pass "B1 v2 installs over v1"
+    pass "v2 installs over v1"
 else
-    fail "B1 v2 did not install"; show
+    fail "v2 did not install"; show
 fi
 
 if has_gamma; then
-    pass "B2 the installed system now knows zone 'gamma' - the update took effect"
+    pass "the installed system now knows zone 'gamma' - the update took effect"
 else
-    fail "B2 the update installed but the system behaves exactly as before"
+    fail "the update installed but the system behaves exactly as before"
     info "this is the failure no hash comparison can detect"
 fi
 
 if installed_runs; then
-    pass "B3 the updated tree still validates its own zone set"
+    pass "the updated tree still validates its own zone set"
 else
-    fail "B3 the update left a tree that does not work"
+    fail "the update left a tree that does not work"
 fi
 
 if bash "$RM" verify --signers "$SIGNERS" --principal "$PRINCIPAL" \
         --root "$TARGET" --exact "$M2" >"$OUT" 2>&1; then
-    pass "B4 the installed tree verifies against its own signed manifest, --exact"
+    pass "the installed tree verifies against its own signed manifest, --exact"
 else
-    fail "B4 the tree that was just installed does not match the manifest it came from"
+    fail "the tree that was just installed does not match the manifest it came from"
     show
 fi
 
@@ -233,25 +233,25 @@ head_ "C. A refusal leaves a system that still works"
 cp -a "${W}/v2" "${W}/tampered"
 printf 'tampered\n' >> "${W}/tampered/etc/kryptik/release"
 if apply "$M2" "${W}/tampered"; then
-    fail "C1 a payload that does not match its manifest was INSTALLED"
+    fail "a payload that does not match its manifest was INSTALLED"
 else
-    pass "C1 a payload that does not match its signed manifest is refused"
+    pass "a payload that does not match its signed manifest is refused"
 fi
 if has_gamma && installed_runs; then
-    pass "C2 after the refusal the system still works and is still v2"
+    pass "after the refusal the system still works and is still v2"
 else
-    fail "C2 a refused update damaged the running system"
+    fail "a refused update damaged the running system"
 fi
 
 if apply "$M2" "${W}/v2" --require-role=production; then
-    fail "C3 a development-signed manifest satisfied --require-role=production"
+    fail "a development-signed manifest satisfied --require-role=production"
 else
-    pass "C3 a development-signed manifest is refused for a production role"
+    pass "a development-signed manifest is refused for a production role"
 fi
 if has_gamma && installed_runs; then
-    pass "C4 after the role refusal the system still works"
+    pass "after the role refusal the system still works"
 else
-    fail "C4 the role refusal damaged the running system"
+    fail "the role refusal damaged the running system"
 fi
 
 # ============================================================================
@@ -370,39 +370,39 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
     fi
 done
 if (( safe == attempts )); then
-    pass "D1 all $attempts killed updates ended at a complete, working, signed release"
+    pass "all $attempts killed updates ended at a complete, working, signed release"
     info "before anything moved: $untouched; mid-staging: $staged; already committed: $done_; between the two renames: $window"
 else
-    fail "D1 only $safe of $attempts killed updates ended at a complete working release"
+    fail "only $safe of $attempts killed updates ended at a complete working release"
 fi
 if (( staged == 0 )); then
-    skip "D2 no kill landed during staging, so --status on an interrupted install is untested here"
+    skip "no kill landed during staging, so --status on an interrupted install is untested here"
 else
     if (( status_named == staged )); then
-        pass "D2 all $staged interrupted installs were named as interrupted by --status, which exited non-zero"
+        pass "all $staged interrupted installs were named as interrupted by --status, which exited non-zero"
         info "a script can detect this state, not only a person reading the output"
     else
-        fail "D2 $status_named of $staged interrupted installs were reported as interrupted"
+        fail "$status_named of $staged interrupted installs were reported as interrupted"
         info "an interrupted install that --status does not report is one nobody will recover"
     fi
     if (( staged_untouched == staged )); then
-        pass "D3 in all $staged cases the target was still the OLD release, untouched, before any recovery"
+        pass "in all $staged cases the target was still the OLD release, untouched, before any recovery"
         info "which is the whole claim of verify-then-swap: the running system is not at risk while an update is being staged"
     else
-        fail "D3 $staged_untouched of $staged interrupted stagings left the target intact"
+        fail "$staged_untouched of $staged interrupted stagings left the target intact"
     fi
 fi
 if (( untouched > 0 )); then
-    pass "D4 $untouched kills landed before the target moved and left it untouched and working"
+    pass "$untouched kills landed before the target moved and left it untouched and working"
     info "the largest window in an update is the one in which nothing has happened yet"
 else
-    skip "D4 no kill landed before the target moved"
+    skip "no kill landed before the target moved"
 fi
 if (( window == 0 )); then
-    skip "D5 no kill landed between the two renames - the window the design calls one rename wide"
+    skip "no kill landed between the two renames - the window the design calls one rename wide"
     info "not catching it in $attempts tries is weak evidence for that claim, and is reported as such rather than as a pass"
 else
-    pass "D5 $window kill(s) landed between the two renames and --rollback recovered every one"
+    pass "$window kill(s) landed between the two renames and --rollback recovered every one"
 fi
 
 # ============================================================================
@@ -411,29 +411,29 @@ head_ "E. Rollback returns the system, not just the files"
 reset_target
 if apply "$M2" "${W}/v2"; then
     if bash "$TOOL" --target="$TARGET" --rollback >"$OUT" 2>&1; then
-        pass "E1 rollback reports success"
+        pass "rollback reports success"
     else
-        fail "E1 rollback failed"; show
+        fail "rollback failed"; show
     fi
     if has_gamma; then
-        fail "E2 after rollback the system still behaves like v2"
+        fail "after rollback the system still behaves like v2"
     else
-        pass "E2 after rollback the system behaves like v1 again"
+        pass "after rollback the system behaves like v1 again"
     fi
     if installed_runs; then
-        pass "E3 the rolled-back tree still validates its own zone set"
+        pass "the rolled-back tree still validates its own zone set"
     else
-        fail "E3 rollback left a tree that does not work"
+        fail "rollback left a tree that does not work"
     fi
     if bash "$RM" verify --signers "$SIGNERS" --principal "$PRINCIPAL" \
             --root "$TARGET" --exact "$M1" >"$OUT" 2>&1; then
-        pass "E4 the rolled-back tree verifies --exact against v1's signed manifest"
+        pass "the rolled-back tree verifies --exact against v1's signed manifest"
         info "which is what distinguishes a complete rollback from a partial one"
     else
-        fail "E4 the rolled-back tree does not match v1's manifest"; show
+        fail "the rolled-back tree does not match v1's manifest"; show
     fi
 else
-    fail "E1 could not install v2 to roll it back"
+    fail "could not install v2 to roll it back"
 fi
 
 
@@ -449,23 +449,23 @@ head_ "F. An older release is not installed just because it is signed"
 reset_target
 if apply "$M2" "${W}/v2"; then
     if apply "$M1" "${W}/v1"; then
-        fail "F1 an older signed release was installed over a newer one"
+        fail "an older signed release was installed over a newer one"
     else
-        pass "F1 an older signed release is refused over a newer one"
+        pass "an older signed release is refused over a newer one"
         if grep -qi 'downgrade' "$OUT"; then
-            pass "F2 the refusal says it is a downgrade, not just that it failed"
+            pass "the refusal says it is a downgrade, not just that it failed"
         else
-            fail "F2 the refusal did not name the reason"
+            fail "the refusal did not name the reason"
             show
         fi
     fi
     if has_gamma && installed_runs; then
-        pass "F3 after the downgrade refusal the system is still the newer release, and works"
+        pass "after the downgrade refusal the system is still the newer release, and works"
     else
-        fail "F3 the downgrade refusal damaged the running system"
+        fail "the downgrade refusal damaged the running system"
     fi
 else
-    fail "F1 could not install v2 to try downgrading from it"
+    fail "could not install v2 to try downgrading from it"
 fi
 
 printf '\n%s%d passed, %d failed, %d not run%s\n' $'\033[1m' "$PASS" "$FAIL" "$SKIP" "$C_0"

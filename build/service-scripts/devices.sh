@@ -2,7 +2,7 @@
 # Which partitions belong to THIS installation. Sourced by the boot-time
 # services and the update tools; POSIX sh.
 #
-# Design 08 finds every partition by its GPT label. A label is not an
+# The boot design finds every partition by its GPT label. A label is not an
 # identity: a second disk carrying the same layout - a clone, a previous
 # install, a stick someone left in - carries the same labels, and `blkid
 # -t PARTLABEL=... | head -1` picks whichever the kernel enumerated first.
@@ -50,7 +50,7 @@ kryptik_root_disk() {
     case "$root_src" in
         /dev/root)
             # No initramfs: the kernel names root /dev/root. dm-0 is the
-            # verity device the signed command line built (Design 08).
+            # verity device the signed command line built.
             [ -e /sys/block/dm-0 ] && root_src=/dev/dm-0 ;;
     esac
     [ -n "$root_src" ] || return 1

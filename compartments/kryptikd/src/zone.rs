@@ -115,7 +115,7 @@ pub struct Zone {
     /// `--zone-uid/--zone-gid`, and is refused on the target (`check --target`).
     pub uid_base: Option<u32>,
     /// `[transfer] to = "work personal"`: the zones this zone may send files
-    /// to through the broker (Design 05). Absent means it sends nothing.
+    /// to through the broker. Absent means it sends nothing.
     /// Every name must be a configured zone and never the one holding the
     /// NIC, which receives nothing, ever (`check_invariants`).
     pub transfer_to: Vec<String>,
@@ -357,7 +357,7 @@ impl Zone {
                     // zone's memcg, so the OOM group-kill fires first. Two
                     // limits where only one can bind misleads the operator
                     // about which one is in force, so say so at parse time
-                    // rather than at the OOM (security R-7c).
+                    // rather than at the OOM.
                     if let Some(m) = kv.get("limits.memory_max") {
                         match (size_bytes(v), size_bytes(m)) {
                             (Some(sz), Some(mm)) if sz > mm => {
@@ -637,7 +637,7 @@ pub fn load_all(dir: &Path) -> Result<Vec<Zone>, ZoneError> {
 /// Invariants that hold across the whole zone set, not within one file.
 pub fn check_invariants(zones: &[Zone]) -> Result<(), ZoneError> {
     // [transfer] to must name configured zones, and never the one holding
-    // the NIC: it receives nothing, ever (Design 05 B12). Checked here, over
+    // the NIC: it receives nothing, ever. Checked here, over
     // the whole directory, because a single zone file cannot know the set.
     //
     // One index, built once. The scan it replaces walked the whole zone list
@@ -776,7 +776,7 @@ border_color = "#c9a227"
 
     #[test]
     fn a_tmpfs_larger_than_the_memory_limit_is_refused() {
-        // R-7c. Both limits are valid on their own; together only one of them
+        // Both limits are valid on their own; together only one of them
         // can ever bind, and the operator has no way to tell which.
         // r##"..."## and not r#"..."#: the border colour contains `"#`, which
         // is exactly the sequence that would close a single-hash raw string.

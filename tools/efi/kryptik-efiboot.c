@@ -1,4 +1,5 @@
-/* kryptik-efiboot: the firmware-side half of the A/B trial (Design 08).
+/* kryptik-efiboot: the firmware-side half of the A/B trial
+ * (docs/design/boot-and-updates.md).
  *
  * Writes and reads the UEFI Boot#### / BootNext / BootOrder variables through
  * efivarfs, with no library: the whole of what is needed is one load option

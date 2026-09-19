@@ -311,7 +311,7 @@ fi
 # A source inventory that cannot say what was produced from those sources is
 # half an answer. This records the IDENTITY of a built tree when one is named -
 # path, file count, size, the os-release BUILD_ID it carries, and the sha256 of
-# the build tab's own artifact manifest if it sits beside it. It does not
+# the build's own artifact manifest if it sits beside it. It does not
 # re-hash 30,000 files: that is `make verify-manifest` in the build worktree,
 # and a second implementation of one check is how two answers start disagreeing.
 ARTREP="${WORK}/artifacts.tsv"

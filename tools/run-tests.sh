@@ -125,7 +125,7 @@ cat <<'EOF'
 NOT run by this target - these need root, the build chroot or a VM:
 
   make test-libc-unwind   can the TARGET libc unwind through a dlopened
-                          object? (the glibc defect from build/BLOCKER.md)
+                          object? (docs/glibc-loader-defect.md)
   make smoke-userspace    run the built userland inside the chroot
   make acceptance         the mandatory installed-system evidence: firmware
                           boot, install, verified boot, zones, storage,

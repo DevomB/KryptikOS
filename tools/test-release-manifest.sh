@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Focused tests for tools/release-manifest.sh — the acceptance checks the
-# signed-image and recoverable-update work (roadmap M6) needs.
+# signed-image and recoverable-update work needs.
 #
 #   ./tools/test-release-manifest.sh
 #
@@ -8,7 +8,7 @@
 # throwaway ed25519 keys generated per run, one enrolled in the allowed-signers
 # file and one not.
 #
-# What is asserted, in the language of the M6 acceptance criteria:
+# What is asserted, in the language of the signed-release acceptance criteria:
 #
 #   * tampered artifacts are rejected — content changed, file removed, file
 #     added, and a manifest whose own bytes were edited after signing;

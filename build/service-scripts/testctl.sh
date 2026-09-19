@@ -1,7 +1,7 @@
 #!/bin/sh
 # Test control, for install media ONLY. Sourced by the boot-time services.
 #
-# The kernel command line is compiled into the signed kernel (Design 08), so
+# The kernel command line is compiled into the signed kernel, so
 # a test can no longer arm itself with kryptik.smoke=1 or kryptik.install=.
 # Instead a disposable disk labelled kryptik-testctl carries a plain
 # key=value file, and it is honoured only when this system booted from an

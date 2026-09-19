@@ -90,7 +90,7 @@ fi
 # A TREE BEING WRITTEN CANNOT BE CHECKED.
 #
 # Learned the hard way: the setuid check reported "no unjustified setuid/setgid
-# binaries" against a sysroot the build tab was mid-rebuild on, because
+# binaries" against a sysroot that was being rebuilt at the time, because
 # /usr/bin had not been installed yet at that instant. A minute later the same
 # check found sixteen. A gate that answers differently depending on when you
 # run it is worse than no gate, so the tree is fingerprinted before and after

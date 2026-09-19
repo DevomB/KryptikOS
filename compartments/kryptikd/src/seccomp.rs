@@ -342,7 +342,7 @@ pub const DENIED_RATIONALE: &[(libc::c_long, &str)] = &[
     // either: a zone that calls chown dies, as before, unless its policy
     // file allows it. They used to be denied outright ("a zone has exactly
     // one mapped uid, so chown to anything else is meaningless"), which
-    // stopped being true when zones got a 65536-id range (Design 01), and
+    // stopped being true when zones got a 65536-id range, and
     // was never what kept them harmless: CAP_CHOWN is dropped from every
     // zone's bounding set, so the kernel refuses any change of owner and any
     // group the caller is not in - a chown that can succeed is a no-op or a

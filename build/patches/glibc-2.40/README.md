@@ -7,8 +7,9 @@ verified before anything is applied.
 
 ## Why
 
-`build/BLOCKER.md` records the defect: on Kryptik, `pthread_exit()`,
-`pthread_cancel()` and `backtrace()` abort with no message, because
+[docs/glibc-loader-defect.md](../../../docs/glibc-loader-defect.md) records
+the defect: on Kryptik, `pthread_exit()`, `pthread_cancel()` and
+`backtrace()` abort with no message, because
 `_dl_find_object` attributes every object loaded after startup to
 `ld-linux-x86-64.so.2` itself, so libgcc's unwinder reads ld.so's
 `.eh_frame`, finds no FDE, and calls `abort()`. Two upstream loader bugs
@@ -105,4 +106,4 @@ glibc inside the chroot) probes all three entry points, asks
 address, and reads the loader's own map start back through
 `LD_TRACE_LOADED_OBJECTS`. With 0001-0003 alone it failed (2 passed, 4
 failed; the loader blamed itself). See docs/status.md for the
-run with 0004 that closed build/BLOCKER.md.
+run with 0004 that closed the defect.

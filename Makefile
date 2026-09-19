@@ -304,7 +304,7 @@ sysroot-ready:
 	    exit 1; \
 	fi
 
-# --- install media (Design 08) ----------------------------------------------
+# --- install media (docs/design/boot-and-updates.md) -------------------------
 #
 # Stage 06 builds the verity root image, relinks and signs a kernel per boot
 # variant, and assembles the USB image and the ISO. It runs as root (the

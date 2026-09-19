@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Boot integrity on an installed disk (Design 08, the integrity suite): enforced Secure
+# Boot integrity on an installed disk (the integrity suite): enforced Secure
 # Boot with the developer key, an untrusted boot file refused by the firmware,
 # root tampering refused by dm-verity before any userspace runs, and recovery
 # from the medium afterwards.

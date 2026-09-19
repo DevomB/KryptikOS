@@ -31,7 +31,7 @@ CONFIG_ZERO_CALL_USED_REGS=y
 #
 # Building the kernel with Clang while userspace stays GCC is a legitimate
 # split (Android does exactly this) and would buy CFI plus better sanitizer
-# coverage. Deferred to a Phase 4 evaluation rather than decided here.
+# coverage. Left for a later evaluation rather than decided here.
 
 # --- kernel memory protection ---
 CONFIG_STRICT_KERNEL_RWX=y
@@ -145,7 +145,7 @@ CONFIG_INIT_STACK_ALL_ZERO=y
 # faith.
 CONFIG_SECURITYFS=y
 
-# --- requested by the security tab (REQUEST.md B-6), measured on this kernel -
+# --- found by the security review, measured on this kernel ------------------
 
 # An airgapped zone is not alone in its namespace.
 #

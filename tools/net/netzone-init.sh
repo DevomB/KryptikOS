@@ -1,5 +1,5 @@
 #!/bin/sh
-# The net zone's own startup (Design 03/03a): the process kryptikd runs as
+# The net zone's own startup (docs/design/net-zone.md): the process kryptikd runs as
 # the nic zone's command. Zone 0 moved the physical NIC and the uplink's
 # addresses in and created the bridge kryptik0 (10.19.0.1/24, fd19::1/64);
 # this is what runs behind that, inside the zone, with the CAP_NET_ADMIN the
@@ -29,7 +29,7 @@
 # and retried by dhcpcd itself; the firewall and the resolver do not wait for
 # it, because nothing is exposed without an address anyway. Everything here
 # is in the zone: a compromised net zone owns this script's effects and
-# nothing outside its namespace (Design 03 "treated as hostile").
+# nothing outside its namespace: the net zone is treated as hostile.
 set -u
 say() { echo "netzone: $*"; }
 NIC="${1:-eth0}"

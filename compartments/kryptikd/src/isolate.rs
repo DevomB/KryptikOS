@@ -65,9 +65,9 @@ fn check(call: &'static str, ret: libc::c_int) -> Result<(), IsolateError> {
 /// (netzone), so zone 0 is left with loopback. Until security increment 15
 /// the nic zone stayed in zone 0's namespace - a compartment-layer rule from before
 /// the topology existed - which made "move the NIC into the nic zone" a
-/// no-op and built the bridge in zone 0. Nothing measured it: the suite's
-/// NETR1 only checked that the zone started, and the VM topology probe that
-/// asks whether eth0 left zone 0 (T1) had not run yet.
+/// no-op and built the bridge in zone 0. Nothing measured it: the launcher
+/// suite's routed-zone check only confirmed that the zone started, and the VM
+/// topology probe that asks whether eth0 left zone 0 had not run yet.
 pub fn namespace_flags(zone: &Zone) -> libc::c_int {
     match zone.network {
         NetworkMode::None | NetworkMode::Routed | NetworkMode::Nic => ZONE_NAMESPACES | NS_NET,
@@ -150,8 +150,8 @@ pub fn userns_restriction_sysctl() -> Option<(bool, &'static str)> {
 /// Returns `Ok(true)` when the kernel refused with EPERM (restricted),
 /// `Ok(false)` when the namespace was created (not restricted), and an error
 /// when the probe itself could not run. A sysctl says what is configured; this
-/// says what the kernel does, which is what the contract (Design 01, P2) is
-/// about.
+/// says what the kernel does, which is what the privileged launch contract
+/// (unprivileged user namespaces are off on the target) is about.
 pub fn probe_userns_restriction() -> Result<bool, IsolateError> {
     let pid = unsafe { libc::fork() };
     if pid < 0 {
@@ -164,7 +164,7 @@ pub fn probe_userns_restriction() -> Result<bool, IsolateError> {
         unsafe {
             if libc::geteuid() == 0 {
                 // Become nobody with no supplementary groups: an ordinary
-                // unprivileged process, which is what P2 constrains.
+                // unprivileged process, which is what the rule constrains.
                 if libc::setgroups(0, std::ptr::null()) < 0
                     || libc::setresgid(65534, 65534, 65534) < 0
                     || libc::setresuid(65534, 65534, 65534) < 0

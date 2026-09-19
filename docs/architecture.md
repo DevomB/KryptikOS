@@ -105,17 +105,19 @@ only layer that matters — the human one.
 
 ```
 UEFI Secure Boot
-  → signed shim
-  → signed bootloader
-  → signed kernel + baked-in initramfs
-  → dm-verity root (signature checked)
-  → kryptikd
+  → signed kernel (EFI stub, loaded directly as BOOTX64.EFI)
+  → compiled-in command line: root slot, verity root hash and salt
+  → dm-init builds the dm-verity root, no initramfs
+  → s6-rc and kryptikd
   → zone 0 compositor
 ```
 
-The initramfs is embedded in the kernel image so it falls inside the signature.
-An unsigned initramfs is an unmeasured initramfs, and an unmeasured initramfs
-means the verity root hash can be swapped.
+There is no boot loader and no initramfs. The command line is compiled into
+the kernel (`CMDLINE_OVERRIDE`), so the verity root hash falls inside the
+signature: anything that could change the command line or supply an
+initramfs could otherwise swap the root hash. The
+[boot and update design](design/boot-and-updates.md) covers the slots and
+updates built on this.
 
 ## Known weaknesses
 

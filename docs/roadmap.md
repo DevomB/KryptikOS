@@ -126,8 +126,6 @@ since. What remains on the target is the acceptance evidence
       fail-closed (`tools/net/netzone-init.sh`), NAT and DNS through it
 - [x] Minimal per-zone `/dev` — tmpfs with an explicit node list, plus a
       private `/dev/shm` and `/dev/pts`; nothing else exists for the zone
-      rather than getting a devtmpfs with null/zero/urandom/tty and nothing
-      else. This grants more than it should and is a known gap, not a decision.
 - [x] Per-zone LUKS2 volumes, unlocked on start with a passphrase that never
       touches a command line, closed on stop; header backup and restore
 - [x] Per-zone seccomp filters — default-deny BPF allowlist, 13 dangerous syscalls verified killed
@@ -149,8 +147,8 @@ Requirement 5 — cannot reach dangerous kernel syscalls    PASS
 
 Requirement 5 is not from `architecture.md`. The original four are about
 reaching another *zone*; none of them says anything about reaching the
-*kernel*, and `threat-model.md` concedes as L1 that a kernel LPE compromises
-every zone at once. The syscall surface a zone can touch is part of the
+*kernel*, and the threat model concedes that a kernel LPE compromises every
+zone at once. The syscall surface a zone can touch is part of the
 boundary whether the original list said so or not.
 
 **`kryptikd` now drives this itself.** The test above originally used
@@ -207,12 +205,13 @@ clipboard and transfer flows driven by keystrokes.
 
 ## Bootable signed image
 
-Secure Boot chain, dm-verity signed root, initramfs embedded in the signed
-kernel image, installer.
+Secure Boot chain, dm-verity signed root with its hash compiled into the
+signed kernel, installer.
 
 - [x] Stage 06: the verity root image, both slot kernels and the media kernel
       signed with a developer key, a USB image and an ISO, a signed release
-      payload per version (Design 08)
+      payload per version (the
+      [boot and update design](design/boot-and-updates.md))
 - [x] `kryptik-install`: whole-disk install with read-back verification and
       refusals; unattended through a control disk for the tests
 - [x] State partition found by identity on the root disk; degraded and honest
@@ -236,7 +235,7 @@ key is a build-generated test anchor, not a production one.
   multiplies the base system's difficulty. Revisit after the compartment layer.
 - Package manager and binary repository — source-only until there is something
   worth distributing.
-- Side-channel mitigation (L4) — needs core scheduling; not before the bootable signed image.
+- Side-channel mitigation — needs core scheduling; not before the bootable signed image.
 - Hardware certification list.
 
 ## A note on timeline

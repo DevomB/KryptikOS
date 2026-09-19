@@ -75,7 +75,8 @@ MODDIR="${KRYPTIK_DESTDIR}/lib/modules"
 CONFIG_DIR="${KRYPTIK_ROOT}/build/config/kernel"
 FRAG_BASE="${CONFIG_DIR}/hardening.fragment"
 FRAG_HARDENED="${CONFIG_DIR}/hardened.fragment"
-# What firmware boot, the verified root and the desktop need (Design 08).
+# What firmware boot, the verified root and the desktop need
+# (docs/design/boot-and-updates.md).
 FRAG_BOOT="${CONFIG_DIR}/boot.fragment"
 
 REDO=""

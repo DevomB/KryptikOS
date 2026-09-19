@@ -44,7 +44,7 @@ done
 [[ -n "$IMAGE" ]] || die "--image is required"
 [[ -f "$IMAGE" ]] || die "no such image: ${IMAGE}"
 
-# QEMU: the host's if it has one, otherwise the copy integration unpacked.
+# QEMU: the host's if it has one, otherwise a copy unpacked into a tooling tree.
 # $HOME is useless here: this runs under sudo, where it is /root, so a path
 # built from it named a tooling tree that does not exist and the search fell
 # through to "no qemu-system-x86_64 found" on a host that has one.

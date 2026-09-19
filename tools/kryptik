@@ -379,7 +379,7 @@ case "$cmd" in
         die "\`$cmd\` is not a $PROG command, on purpose.
     A file crosses zones only through the broker socket INSIDE the sending zone
     (the zone verb \`transfer TO NAME\` with the file's descriptor; see
-    docs/design/05a), and only after you answer the question the chrome shows.
+    docs/design/broker.md), and only after you answer the question the chrome shows.
     The clipboard moves only by the chrome's zone 0 gesture: Alt+p, then
     m<from><to>. Nothing in zone 0 can do either for you." 2 ;;
     *) usage >&2; die "unknown command: $cmd" 2 ;;

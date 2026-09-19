@@ -178,7 +178,8 @@ build/
   stages/       Ordered LFS build stages (00-host-check → 06-iso)
   config/       Pinned versions, hardening flags, kernel config fragments
   patches/      In-repository patch sets with provenance (glibc-2.40/)
-  services/     The s6-rc service tree; service-scripts/ what they run
+  services/     The s6-rc service tree
+  service-scripts/  What those services run
   desktop/      dwl config and the zone colour table the compositor is built with
   guest-tests/  Checks that run inside the installed system
   lib/          Shared shell helpers
@@ -186,15 +187,22 @@ compartments/   Zone definitions and the compartment manager
   kryptikd/     The compartment manager itself (Rust): zones, volumes, broker, serve
   zones/        The shipped zones and their policy
   tests/        adversarial.sh (primitives), launcher.sh, cli.sh, serve.sh, update.sh
-compositor/     kryptik-wlproxy (the per-zone Wayland proxy) and zoneid (colour identity)
+compositor/
+  wlproxy/      kryptik-wlproxy, the per-zone Wayland proxy
+  zoneid/       Zone colour identity
 tools/
   acceptance.sh The one entrypoint: every suite, one verdict
   image/        Stage 06 helpers, the OVMF runner, the VM drivers
-  install/      kryptik-install; update/ kryptik-update and kryptik-recover
+  install/      kryptik-install
+  update/       kryptik-update and kryptik-recover
+  efi/          kryptik-efiboot, the firmware side of the A/B trial boot
   desktop/      kryptik-session, kryptik-chrome, kryptik-launch, the dwl patch
   net/          The net zone's fail-closed setup
   vm/           The developer VM: an initramfs on any kernel, for the zone layer
+  dev/          Scripts for a developer build host
+  git-hooks/    The pre-commit and pre-push hooks
 docs/           Architecture, threat model, hardening rationale, decisions
+  design/       One document per part of the system, as designed and as built
 out/            Build artifacts (gitignored)
 ```
 
@@ -241,6 +249,20 @@ the tested images as artifacts.
 - [docs/roadmap.md](docs/roadmap.md) — what is built, in dependency order, with each part's exit test
 - [docs/supply-chain.md](docs/supply-chain.md) — source integrity and its current gaps
 - [docs/building.md](docs/building.md) — host setup
+- [docs/BOOT_INSTALL_RECOVER.md](docs/BOOT_INSTALL_RECOVER.md) — booting, installing, updating and recovering a release
+- [docs/glibc-loader-defect.md](docs/glibc-loader-defect.md) — the loader defect that broke unwinding after `dlopen`, and its fix
+- [docs/security-fixes-2026-09.md](docs/security-fixes-2026-09.md) — the September 2026 security fixes and their open leads
+
+The designs of the individual parts, each with what was built where it differs:
+
+- [Privileged launch](docs/design/privileged-launch.md) — the contract for starting a zone as root on the Kryptik kernel
+- [Resource limits and ephemeral zones](docs/design/resource-limits-and-ephemeral-zones.md) — cgroup limits, supervision, crash cleanup, tmpfs zones
+- [The net zone](docs/design/net-zone.md) — the only zone that holds the NIC, and how the others route through it
+- [Encrypted volumes](docs/design/encrypted-volumes.md) — per-zone LUKS2 volumes and their keys
+- [The broker](docs/design/broker.md) — file transfer, clipboards and the trusted desktop boundary
+- [The zone registry](docs/design/zone-registry.md) — persistent zone lifecycle: the registry, `stop`, concurrency
+- [Zone policy files](docs/design/zone-policy-files.md) — per-zone seccomp additions, enforced rather than parsed and ignored
+- [Boot and updates](docs/design/boot-and-updates.md) — firmware boot, A/B slots, signed updates and recovery
 
 ## License
 

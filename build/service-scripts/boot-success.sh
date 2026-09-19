@@ -1,5 +1,5 @@
 #!/bin/sh
-# A/B boot-success tracking (Design 08). Runs late in the default bundle,
+# A/B boot-success tracking (docs/design/boot-and-updates.md). Runs late in the default bundle,
 # after the services a usable system needs, and decides whether the slot
 # that booted is one to keep.
 #

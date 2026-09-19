@@ -334,7 +334,8 @@ want_launch() {
     # A launch the TARGET kernel refuses on purpose is NOT RUN, not failed.
     #
     # kryptikd ignores KRYPTIK_EXPERIMENTAL for a root launch on a kernel that
-    # restricts unprivileged user namespaces (Design 01 P6), so a zone whose
+    # restricts unprivileged user namespaces (docs/design/privileged-launch.md),
+    # so a zone whose
     # configuration asks for something this build cannot deliver cannot be
     # started there at all. That is the rule working. Several checks here use
     # such a zone as scaffolding - B1 needs a persistent directory and so uses
@@ -436,7 +437,7 @@ head_ "B. Two real zones cannot reach each other  [unpriv]"
 #
 # This group used `sealed` - the ENCRYPTED fixture, started under
 # KRYPTIK_EXPERIMENTAL - until the target kernel existed. There the override is
-# ignored (Design 01 P6) and sealed cannot start, so B1a skipped and B1c/B1d
+# ignored (docs/design/privileged-launch.md) and sealed cannot start, so B1a skipped and B1c/B1d
 # went on reporting PASS: no other zone could read a file that was never
 # written. A vacuous pass on an isolation check is the failure this file exists
 # to prevent, and it survived for as long as it did because the group looked
@@ -1077,7 +1078,7 @@ head_ "H. Network isolation, without overclaiming  [unpriv]"
 #
 #   sit0  CONFIG_IPV6_SIT=y makes the SIT driver register an IPv6-in-IPv4
 #         fallback tunnel in each netns. Asked for as CONFIG_IPV6_SIT=n in
-#         build/REQUEST.md B-6; when that lands the device stops appearing and
+#         the security review; when that lands the device stops appearing and
 #         this list stops mattering, with no edit here.
 #
 # The same list is in adversarial.sh and the two must agree. They run in the
@@ -1172,7 +1173,7 @@ if (( PRIVILEGED == 1 )); then
     # checked on the HOST side where it can actually be falsified.
     # `keeper`, not `alpha`: K3 is the one check in this group that looks at the
     # HOST side, and an ephemeral zone writes nothing there. Using alpha here
-    # would test M2 by accident and report it as an ownership failure.
+    # would test ephemeral storage by accident and report it as an ownership failure.
     zrun keeper -- /bin/sh -c "$PRO echo k3 > \$HOME/k3file; echo PROBE=written"
     if want_launch "K3  a zone's files are owned by the mapped identity"; then
         owner="$(stat -c %u "$ROOTFS/keeper/k3file" 2>/dev/null)"
@@ -1277,7 +1278,8 @@ fi
 
 # --- T11: the zone as the HOST sees it --------------------------------------
 #
-# Design 01a T11, in the shape security asked for in R-8a: one assertion, made
+# The privileged launch design's check from the host side, in the shape the
+# security review asked for: one assertion, made
 # from outside, about the zone's pid 1.
 #
 # Every other check of the zone's identity asks the zone. That is not worthless
@@ -1989,8 +1991,8 @@ head_ "CAP. The capability bounding set  [unpriv]"
 # why it stops being tolerable the moment a zone owns one end of a veth.
 # CAP_NET_ADMIN and CAP_NET_RAW in a namespace with a real interface let a
 # compromised zone re-address its link and open a raw socket on the segment it
-# shares with the bridge. The security review calls this a precondition for the
-# routed-network milestone rather than a follow-up to it.
+# shares with the bridge. The security review calls this a precondition for
+# routed networking rather than a follow-up to it.
 #
 # The expected value is not a round number and that is deliberate:
 # CAP_NET_BIND_SERVICE is capability 10, so the only bit that may survive is
@@ -2314,10 +2316,10 @@ head_ "LC. Zone lifecycle: registry, stop, concurrency  [unpriv]"
 # `kryptikd run` was one-shot: it supervised its own zone and nothing else
 # could find that zone. There was no `stop`, no way to ask what was running,
 # and therefore no way for a routed zone to attach to a running `net` zone -
-# which is what blocks M3.
+# which is what blocked the net zone.
 #
 # The registry is how a SECOND kryptikd finds the first. There is still no
-# daemon. Design 06.
+# daemon. See docs/design/zone-registry.md.
 #
 # The invariant that carries the rest: liveness is a LOCK, not a pid. The
 # launcher holds flock(LOCK_EX) on the entry for its whole life, so a crash
@@ -2336,7 +2338,7 @@ lc_cleanup
 
 # --- LC1: one instance per zone ---------------------------------------------
 # Two launchers of one zone would share a data directory, a cgroup name and -
-# once M3 lands - a veth name, and the second would quietly corrupt the first.
+# for a routed zone - a veth name, and the second would quietly corrupt the first.
 KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run lczone "${ZARGS[@]}" -- /bin/sleep 20 >/dev/null 2>&1 &
 lc1=$!
 BG_PIDS+=("$lc1")
@@ -2517,7 +2519,7 @@ probe "LC6b control: /run/kryptik is present and contains only the broker socket
 
 # LC15: the registry directory itself must not be plantable.
 #
-# R-7b F1: base() falls back to a path under /tmp, which is world-writable, so
+# Found by the security review: base() falls back to a path under /tmp, which is world-writable, so
 # another local user could create it - or symlink it somewhere - before the
 # victim ever ran kryptikd, and then own the directory kryptikd keeps its
 # entries in. Driven here through the real `kryptikd run` rather than a unit
@@ -2586,7 +2588,7 @@ fi
 # Routed networking is implemented and is covered by group NETR, which runs
 # only inside the disposable VM. The gap this line reported is now a check
 # with a positive control.
-# ephemeral storage is implemented (M2) and covered by group E-EPH above, so
+# ephemeral storage is implemented and covered by group E-EPH above, so
 # it is no longer listed as a gap. The one thing it does NOT deliver - secure
 # erasure, because tmpfs pages can be swapped - is asserted by EPH8 rather than
 # listed here, since it is a property of the implementation and not a missing

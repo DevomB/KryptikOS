@@ -6,7 +6,7 @@
 //!
 //! It is deliberately not a language. A policy file is a list of directives,
 //! one per line, each naming ONE thing the zone may do beyond the shared base
-//! policy (docs/design/07-zone-policy-files.md):
+//! policy (docs/design/zone-policy-files.md):
 //!
 //! ```text
 //! allow-syscall    sethostname        # a syscall, by name

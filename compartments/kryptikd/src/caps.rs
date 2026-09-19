@@ -14,7 +14,7 @@
 //! are not scoped to anything harmless: they let a compromised zone re-address
 //! its own link, forge a source MAC, and open a raw socket on a segment it
 //! shares with the bridge. The security review of 2026-09-11 calls dropping
-//! the bounding set a **precondition** for the routed-network milestone rather
+//! the bounding set a **precondition** for routed networking rather
 //! than a follow-up to it, and that is this file.
 //!
 //! WHAT IS KEPT, AND WHY ONLY THAT

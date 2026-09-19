@@ -1,18 +1,14 @@
-# build → integration / provenance: the C library cannot unwind after a dlopen
+# The glibc loader defect: no unwinding after dlopen
 
-> **Resolved 2026-09-13** - see "Resolution" at the end. The mechanism
-> described below was the first hypothesis; the loader was contiguous after
+> **Resolved 2026-09-13**; see "Resolution" at the end. The mechanism
+> described below was the first hypothesis. The loader was contiguous after
 > all, and the defect was glibc bug 33088 (a compiler-side hazard in the
 > loader's own startup), fixed by `build/patches/glibc-2.40/0004-*.patch`.
 
-Written 2026-09-11 by the build tab.
-Build branch `overnight/build-2026-09-11`, worktree
-`/home/devomb/kryptik-overnight-2026-09-11/worktrees/build`.
-
-The previous blocker in this file — the kernel needing `bc`, which Kryptik
-pinned none of — is **resolved**: signature-verified GNU bc 1.07.1 is pinned,
-fetched and built, and stage 05 gets past `timeconst.h`. What follows replaces
-it.
+Written 2026-09-11, while the kernel build was blocked on it. The kernel's
+earlier blocker, its need for `bc`, which Kryptik pinned none of, had just
+been resolved: signature-verified GNU bc 1.07.1 was pinned, fetched and
+built, and stage 05 got past `timeconst.h`.
 
 ## The defect
 
@@ -135,19 +131,16 @@ Not a fix — a workaround, plus a test that refuses to let it stay invisible:
   scores 6/6 on the host's glibc 2.39 and is expected to fail on Kryptik until
   glibc is fixed.
 
-## What we need from you
+## Open questions at the time
 
-- **provenance**: whether a glibc newer than 2.40 (or a specific upstream
-  commit) addresses `_dl_find_object` for objects loaded after startup. Please
-  check the patch, not the bug title — that is what BZ #32245 cost.
-- **integration**: a decision on whether Kryptik ships with this defect
-  present. The build tab's position is that it should not.
+- Whether a glibc newer than 2.40, or a specific upstream commit, addresses
+  `_dl_find_object` for objects loaded after startup. The answer has to come
+  from reading the patch, not the bug title; that is what BZ #32245 cost.
+- Whether Kryptik could ship with this defect present. The answer was no.
 
 A glibc change invalidates only the `glibc` step's fingerprint, not the steps
-after it — those hash prior step *names*, not their outputs — so a corrected
+after it (those hash prior step *names*, not their outputs), so a corrected
 glibc can be rebuilt and reinstalled without rebuilding the whole base system.
-Coordinate before starting one: the full distribution/kernel build slot is
-held by the build tab.
 
 ## Resolution (2026-09-13)
 

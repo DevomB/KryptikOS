@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # The installed system's state partition: found by identity, and a system
-# that tells the truth when it cannot be used (Design 08; sysinit.sh).
+# that tells the truth when it cannot be used (docs/design/boot-and-updates.md; sysinit.sh).
 #
 #   tools/image/state-test.sh --usb IMG [--disk FILE] [--timeout N]
 #

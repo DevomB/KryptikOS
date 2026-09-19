@@ -27,8 +27,8 @@ Qubes' hypervisor boundary is stronger. It also demands VT-d, punishes battery
 life, and makes GPU acceleration painful. Kryptik targets the user who would run
 Qubes but won't tolerate the hardware tax.
 
-**Cost:** A kernel LPE compromises every zone. Documented as L1 in the threat
-model. Non-negotiable consequence of this ADR.
+**Cost:** A kernel LPE compromises every zone. Documented in the threat model under
+"Kernel local privilege escalation". Non-negotiable consequence of this ADR.
 
 ---
 
@@ -73,7 +73,7 @@ systemd has the better sandboxing primitives, but Kryptik does not need them:
 zones already provide namespace, cgroup, seccomp and Landlock confinement, and
 `kryptikd` owns zone lifecycle regardless. That reduces systemd's advantage to
 socket activation and journald, neither of which justifies a very large,
-privileged PID 1 in a system whose threat model (L1) already assumes a hostile
+privileged PID 1 in a system whose threat model already assumes a hostile
 local attacker hunting for privileged surface.
 
 **Cost — real and worth stating:**
