@@ -11,6 +11,10 @@
  *   kryptik-launch --info ZONE          encrypted yes|no, running yes|no
  *   kryptik-launch --runtime-dir        print the session's XDG_RUNTIME_DIR, creating it
  *   kryptik-launch --clipboard-move FROM TO   the zone 0 gesture: give TO a copy of FROM's clipboard
+ *   kryptik-launch --wifi-list          the net zone's Wi-Fi networks, SSIDs one per line
+ *   kryptik-launch --wifi-add SSID      add one, or replace its passphrase; the passphrase
+ *                                       is one line on standard input, never an argument
+ *   kryptik-launch --wifi-forget SSID   remove one
  *
  * With a display, the zone's Wayland proxy (kryptik-wlproxy) is started
  * first if it is not already running, listening at
@@ -269,8 +273,93 @@ static void usage(void)
 	      "       kryptik-launch --stop ZONE\n"
 	      "       kryptik-launch --info ZONE\n"
 	      "       kryptik-launch --runtime-dir\n"
-	      "       kryptik-launch --clipboard-move FROM TO\n", stderr);
+	      "       kryptik-launch --clipboard-move FROM TO\n"
+	      "       kryptik-launch --wifi-list | --wifi-add SSID | --wifi-forget SSID\n"
+	      "                      (--wifi-add reads the passphrase from standard input)\n", stderr);
 	exit(2);
+}
+
+/* One secret line from standard input: with echo off and a prompt when it
+ * is a terminal, silently when it is a pipe (the kryptik command reads the
+ * terminal itself and pipes the line). Trailing newlines are dropped. */
+static void secret_from_stdin(const char *prompt, char *buf, size_t size)
+{
+	struct termios old, raw;
+	int tty = isatty(0);
+	if (tty) {
+		tcgetattr(0, &old);
+		raw = old;
+		raw.c_lflag &= ~(tcflag_t)ECHO;
+		fputs(prompt, stderr);
+		fflush(stderr);
+		tcsetattr(0, TCSAFLUSH, &raw);
+	}
+	char *got = fgets(buf, (int)size, stdin);
+	if (tty) {
+		tcsetattr(0, TCSAFLUSH, &old);
+		fputc('\n', stderr);
+	}
+	if (!got)
+		die("no passphrase on standard input");
+	size_t n = strlen(buf);
+	if (n == size - 1 && buf[n - 1] != '\n')
+		die("passphrase too long");
+	while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r'))
+		buf[--n] = 0;
+	if (n == 0)
+		die("empty passphrase");
+}
+
+/* The net zone's Wi-Fi networks: the daemon's wifi verbs (kryptikd's
+ * wifi.rs), which validate both values, write the file zone 0 keeps for
+ * the net zone and restart it. The passphrase travels in the request body
+ * the way an encrypted zone's does on a descriptor: never on a command
+ * line. The daemon's reply line is printed as the result. */
+static int wifi_main(int argc, char **argv)
+{
+	const char *mode = argv[1];
+	if (strcmp(mode, "--wifi-list") == 0) {
+		if (argc != 2)
+			usage();
+		char *r = talk("wifi-list\n", -1);
+		if (strncmp(r, "error", 5) == 0) {
+			fputs(r, stderr);
+			return 1;
+		}
+		/* `network <ssid>` lines, then `end`: print the names alone. */
+		for (char *p = r; *p; ) {
+			char *nl = strchr(p, '\n');
+			size_t n = nl ? (size_t)(nl - p) : strlen(p);
+			if (n > 8 && strncmp(p, "network ", 8) == 0) {
+				fwrite(p + 8, 1, n - 8, stdout);
+				fputc('\n', stdout);
+			}
+			p += n + (nl ? 1 : 0);
+		}
+		return 0;
+	}
+	if (argc != 3 || (strcmp(mode, "--wifi-add") != 0 && strcmp(mode, "--wifi-forget") != 0))
+		usage();
+	const char *ssid = argv[2];
+	if (!*ssid || strlen(ssid) > 32 || strchr(ssid, '\n'))
+		die("an SSID is 1 to 32 bytes without a newline");
+	char pass[256] = "";
+	if (strcmp(mode, "--wifi-add") == 0) {
+		char prompt[64];
+		snprintf(prompt, sizeof prompt, "passphrase for %s: ", ssid);
+		secret_from_stdin(prompt, pass, sizeof pass);
+	}
+	char req[512];
+	if (pass[0])
+		snprintf(req, sizeof req, "wifi-add\nssid %s\npsk %s\nend\n", ssid, pass);
+	else
+		snprintf(req, sizeof req, "wifi-forget\nssid %s\nend\n", ssid);
+	char *r = talk(req, -1);
+	explicit_bzero(pass, sizeof pass);
+	explicit_bzero(req, sizeof req);
+	int ok = strncmp(r, "ok", 2) == 0;
+	fputs(r, ok ? stdout : stderr);
+	return ok ? 0 : 1;
 }
 
 int main(int argc, char **argv)
@@ -278,6 +367,8 @@ int main(int argc, char **argv)
 	int ask = 0, no_display = 0, pass_fd = -1, sep = -1;
 	const char *zone = NULL, *zone2 = NULL, *mode = "run";
 	int i;
+	if (argc >= 2 && strncmp(argv[1], "--wifi-", 7) == 0)
+		return wifi_main(argc, argv);
 	if (argc == 4 && strcmp(argv[1], "--clipboard-move") == 0) {
 		if (!ident_ok(argv[2]) || !ident_ok(argv[3]))
 			usage();

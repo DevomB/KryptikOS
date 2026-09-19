@@ -39,7 +39,9 @@ info() { printf '%s        %s%s\n' "$C_DIM" "$1" "$C_RST"; }
 [[ -x "$KRYPTIKD" ]] || { echo "no kryptikd at $KRYPTIKD — run cargo build"; exit 2; }
 
 WORK="$(mktemp -d)"
+DAEMON=""
 cleanup() {
+    [[ -n "$DAEMON" ]] && kill -9 "$DAEMON" 2>/dev/null
     "$KRYPTIKD" gc >/dev/null 2>&1 || true
     rm -rf "$WORK"
 }
@@ -64,6 +66,7 @@ cat > "$CONF" <<CONF
 # written by cli.sh
 zones_dir = $ZONES
 rootfs    = $ROOTFS
+wifi_dir  = $WORK/wifi
 CONF
 
 mkzone() { # name storage-mode colour [network-mode]
@@ -249,6 +252,131 @@ if [[ "$out" == *"$ZONES"* ]]; then
     pass "doctor reports the paths it would use"
 else
     fail "doctor did not report its configuration"
+fi
+
+# --- wifi: the net zone's credentials ----------------------------------------
+# `kryptik wifi add` must never put a passphrase on a command line, where
+# every process on the host could read it. It reads the passphrase itself
+# (from the terminal with echo off, or from a pipe) and hands it on standard
+# input to whichever program does the writing: kryptik-launch through the
+# session's launch service, or kryptikd directly, as here.
+out="$(K wifi 2>&1)"; rc=$?
+if (( rc != 0 )) && [[ "$out" == *"list, add SSID or forget SSID"* ]]; then
+    pass "wifi without a subcommand fails and names the subcommands"
+else
+    fail "wifi without a subcommand: exit $rc"
+    info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
+fi
+
+WCONF="$WORK/wifi/wpa_supplicant.conf"
+out="$(K wifi list 2>&1)"; rc=$?
+if (( rc == 0 )) && [[ -z "$out" ]]; then
+    pass "wifi list with nothing configured prints nothing and succeeds"
+else
+    fail "wifi list on an empty configuration: exit $rc, output '$out'"
+fi
+
+out="$(printf 'correct horse battery\n' | K wifi add Home 2>&1)"; rc=$?
+if (( rc == 0 )) && [[ "$out" == *"added network \"Home\""* && -f "$WCONF" ]]; then
+    pass "wifi add takes the passphrase on standard input and writes the net zone's file"
+else
+    fail "wifi add: exit $rc"
+    info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-240)"
+fi
+if [[ "$(stat -c %a "$WCONF" 2>/dev/null)" == 400 ]] && grep -qxF $'\tssid="Home"' "$WCONF" && grep -qxF $'\tpsk="correct horse battery"' "$WCONF"; then
+    pass "the file is 0400 and holds the ssid= and psk= lines kryptikd writes"
+else
+    fail "the file is not as kryptikd writes it (mode $(stat -c %a "$WCONF" 2>&1))"
+fi
+out="$(K wifi list 2>&1)"; rc=$?
+if (( rc == 0 )) && [[ "$out" == "Home" ]]; then
+    pass "wifi list prints the SSID, one per line, and nothing else"
+else
+    fail "wifi list after add: exit $rc, output '$out'"
+fi
+if [[ "$out" != *"correct horse"* ]]; then
+    pass "wifi list never prints a passphrase"
+else
+    fail "the passphrase is in the listing"
+fi
+out="$(K wifi forget Home 2>&1)"; rc=$?
+if (( rc == 0 )) && [[ "$out" == *"forgot network \"Home\""* && "$(K wifi list 2>&1)" == "" ]]; then
+    pass "wifi forget removes the network"
+else
+    fail "wifi forget: exit $rc, output '$out'"
+fi
+
+# Through the launch service, the way an ordinary user in a session gets
+# there. kryptik-launch's socket path is fixed (/run/kryptik-launch), so a
+# stand-in with the same command line forwards the requests to this suite's
+# own daemon; what is under test is the wrapper's side: the arguments it
+# forms, the passphrase on standard input, and the reply it shows.
+if [[ "$(id -u)" -eq 0 ]]; then
+    skip "the launch-service path: as root the wrapper drives kryptikd directly, so there is nothing to stand in for"
+elif ! command -v python3 >/dev/null 2>&1; then
+    skip "the launch-service path needs python3 for the stand-in's socket client"
+else
+    SOCK="$WORK/launch.sock"; WDAEMON="$WORK/wifi-daemon"
+    "$KRYPTIKD" serve --zones "$ZONES" --rootfs "$ROOTFS" --socket "$SOCK" --wifi-dir "$WDAEMON" > "$WORK/serve.log" 2>&1 &
+    DAEMON=$!
+    for _ in $(seq 1 100); do [[ -S "$SOCK" ]] && break; sleep 0.05; done
+    cat > "$WORK/client.py" <<'PY'
+import socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(30); s.connect(sys.argv[1])
+s.sendall(sys.stdin.buffer.read()); s.shutdown(socket.SHUT_WR)
+out = b""
+while True:
+    b = s.recv(4096)
+    if not b: break
+    out += b
+sys.stdout.write(out.decode("utf-8", "replace"))
+PY
+    cat > "$WORK/launch-shim" <<SHIM
+#!/usr/bin/env bash
+# Stands in for kryptik-launch: the same command line, the same requests,
+# to this suite's daemon. The request is piped to the client, so the
+# passphrase is on no command line here either.
+client() { python3 "$WORK/client.py" "$SOCK"; }
+case "\${1:-}" in
+    --runtime-dir) exit 0 ;;
+    --wifi-list)   printf 'wifi-list\n' | client | sed -n 's/^network //p' ;;
+    --wifi-add)    IFS= read -r pass
+                   r="\$(printf 'wifi-add\nssid %s\npsk %s\nend\n' "\$2" "\$pass" | client)"
+                   printf '%s\n' "\$r"; [[ "\$r" == ok* ]] ;;
+    --wifi-forget) r="\$(printf 'wifi-forget\nssid %s\nend\n' "\$2" | client)"
+                   printf '%s\n' "\$r"; [[ "\$r" == ok* ]] ;;
+    *) exit 2 ;;
+esac
+SHIM
+    chmod +x "$WORK/launch-shim"
+    # What serve.sh's checks leave in the daemon's file: the header and one
+    # block, exactly as kryptikd writes them.
+    mkdir -p "$WDAEMON"
+    printf 'ctrl_interface=/run/wpa_supplicant\nupdate_config=0\n\nnetwork={\n\tssid="Fixture"\n\tpsk="fixture passphrase"\n}\n' > "$WDAEMON/wpa_supplicant.conf"
+    if [[ -S "$SOCK" ]] && kill -0 "$DAEMON" 2>/dev/null; then
+        out="$(KRYPTIK_LAUNCH="$WORK/launch-shim" K wifi list 2>&1)"; rc=$?
+        if (( rc == 0 )) && [[ "$out" == "Fixture" ]]; then
+            pass "through the launch service, wifi list prints what the daemon's file holds"
+        else
+            fail "wifi list through the launch service: exit $rc, output '$out'"
+        fi
+        out="$(printf 'cafe passphrase\n' | KRYPTIK_LAUNCH="$WORK/launch-shim" K wifi add Cafe 2>&1)"; rc=$?
+        if (( rc == 0 )) && [[ "$out" == "ok added network \"Cafe\";"* ]] && grep -qxF $'\tpsk="cafe passphrase"' "$WDAEMON/wpa_supplicant.conf"; then
+            pass "through the launch service, wifi add sends the passphrase in the request and shows the daemon's reply"
+        else
+            fail "wifi add through the launch service: exit $rc, output '$out'"
+            sed 's/^/        /' "$WORK/serve.log"
+        fi
+        out="$(printf 'short\n' | KRYPTIK_LAUNCH="$WORK/launch-shim" K wifi add Cafe 2>&1)"; rc=$?
+        if (( rc != 0 )) && [[ "$out" == *"8 to 63"* ]]; then
+            pass "a refusal comes back as the daemon's error line and a failing exit"
+        else
+            fail "a too-short passphrase through the launch service: exit $rc, output '$out'"
+        fi
+    else
+        fail "the launch daemon did not start for the launch-service checks"
+        sed 's/^/        /' "$WORK/serve.log"
+    fi
 fi
 
 printf '\n  %s%d passed, %d failed, %d not run%s\n' \
