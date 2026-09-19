@@ -95,8 +95,6 @@ flex|${V_FLEX}|${MIRROR_GITHUB}/westes/flex/releases/download/v${V_FLEX}/flex-${
 gdbm|${V_GDBM:-1.26}|${gnu}/gdbm/gdbm-${V_GDBM:-1.26}.tar.gz
 gettext|${V_GETTEXT}|${gnu}/gettext/gettext-${V_GETTEXT}.tar.xz
 texinfo|${V_TEXINFO}|${gnu}/texinfo/texinfo-${V_TEXINFO}.tar.xz
-autoconf|${V_AUTOCONF}|${gnu}/autoconf/autoconf-${V_AUTOCONF}.tar.xz
-automake|${V_AUTOMAKE}|${gnu}/automake/automake-${V_AUTOMAKE}.tar.xz
 libtool|${V_LIBTOOL}|${gnu}/libtool/libtool-${V_LIBTOOL}.tar.xz
 gperf|${V_GPERF}|${gnu}/gperf/gperf-${V_GPERF}.tar.gz
 attr|${V_ATTR}|${MIRROR_SAVANNAH}/attr/attr-${V_ATTR}.tar.gz
@@ -119,7 +117,6 @@ libpipeline|${V_LIBPIPELINE}|${MIRROR_SAVANNAH}/libpipeline/libpipeline-${V_LIBP
 man-db|${V_MANDB}|${MIRROR_SAVANNAH}/man-db/man-db-${V_MANDB}.tar.xz
 elfutils|${V_ELFUTILS}|${MIRROR_SOURCEWARE}/elfutils/${V_ELFUTILS}/elfutils-${V_ELFUTILS}.tar.bz2
 eudev|${V_EUDEV}|${MIRROR_GITHUB}/eudev-project/eudev/releases/download/v${V_EUDEV}/eudev-${V_EUDEV}.tar.gz
-grub|${V_GRUB}|${gnu}/grub/grub-${V_GRUB}.tar.xz
 perl|${V_PERL}|https://www.cpan.org/src/5.0/perl-${V_PERL}.tar.xz
 python|${V_PYTHON}|https://www.python.org/ftp/python/${V_PYTHON}/Python-${V_PYTHON}.tar.xz
 skalibs|${V_SKALIBS}|${MIRROR_SKARNET}/skalibs/skalibs-${V_SKALIBS}.tar.gz
