@@ -240,3 +240,30 @@ process that mediates every boundary would contradict that.
 
 Rust is for `kryptikd` and Kryptik-authored tooling. It is not a general policy
 for the distribution: coreutils stays coreutils.
+
+## ADR-011: SMT is off, and every CPU mitigation is on
+
+**Decision.** The command line compiled into every signed kernel carries
+`mitigations=auto,nosmt`: every CPU vulnerability mitigation the kernel knows
+for the processor it finds, and simultaneous multithreading disabled.
+
+**Why.** The threat model is a compromised zone trying to reach the kernel or
+another zone. The CPU vulnerabilities of the last decade (L1TF, MDS, TAA and
+their successors) leak across the two hardware threads of one core, and a zone
+scheduled beside another zone, or beside the kernel, is exactly the position
+those attacks need. Core scheduling (`CONFIG_SCHED_CORE`, which the kernel now
+carries) could keep untrusting tasks off sibling threads selectively, but
+nothing in Kryptik assigns the cookies yet, and a mitigation that depends on
+unwritten policy is not one. The Kernel Self-Protection Project recommends the
+same setting and `kernel-hardening-checker` fails without it.
+
+### Costs
+
+Half the logical CPUs on a machine with SMT: roughly 15 to 30 percent of
+throughput on parallel work. Single-threaded performance is unchanged, and
+machines without SMT lose nothing.
+
+### Revisit when
+
+Core scheduling is wired to zones, so that SMT can stay on and two trust
+domains still never share a core.

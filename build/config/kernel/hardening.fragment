@@ -1,7 +1,10 @@
 # Kryptik kernel hardening fragment
 # Merge with: scripts/kconfig/merge_config.sh .config hardening.fragment
 # Rationale: docs/hardening.md
-# Verify with: kernel-hardening-checker -c .config
+# Checked by: tools/check-kernel-hardening.sh, which runs kernel-hardening-checker
+#   on the resolved .config and the shipped command line in stage 05 and in CI;
+#   every failure it reports is either fixed here or accepted, with its reason,
+#   in checker-accepted.txt.
 # Validate symbols exist in the pinned kernel: make validate-kernel
 
 # --- memory ---
@@ -60,7 +63,8 @@ CONFIG_NET_NS=y
 CONFIG_IPC_NS=y
 CONFIG_UTS_NS=y
 CONFIG_CGROUPS=y
-CONFIG_CGROUP_BPF=y
+# (CONFIG_CGROUP_BPF is not listed: it needs the bpf() syscall, which is off;
+# see the BPF section below.)
 CONFIG_MEMCG=y
 CONFIG_BLK_CGROUP=y
 CONFIG_DM_CRYPT=y
@@ -102,9 +106,17 @@ CONFIG_DEBUG_LIST=y
 CONFIG_DEBUG_SG=y
 CONFIG_BUG_ON_DATA_CORRUPTION=y
 
-# --- BPF: a well-worn LPE path ---
-CONFIG_BPF_UNPRIV_DEFAULT_OFF=y
-CONFIG_BPF_JIT_ALWAYS_ON=y
+# --- BPF: a well-worn LPE path, and not built ---
+# Until 2026-09-18 the two lines here were CONFIG_BPF_UNPRIV_DEFAULT_OFF=y and
+# CONFIG_BPF_JIT_ALWAYS_ON=y: a hardened bpf(). Both depend on BPF_SYSCALL,
+# which the x86_64 defconfig never enables, so kconfig dropped both without a
+# word and every kernel built from this fragment had no bpf() at all. That is
+# the right kernel: nothing in Kryptik loads a BPF program (seccomp filters are
+# classic BPF handed to the seccomp syscall and need no bpf()), and the
+# verifier is where the privilege escalations come from. Off on purpose now,
+# so the fragment says what the kernel is. Found by the fragment-survival
+# check the first time it covered this file.
+# CONFIG_BPF_SYSCALL is not set
 
 # --- speculative execution mitigations ---
 # These moved under a MITIGATION_ prefix in 6.9. The pre-6.9 spellings
@@ -124,9 +136,21 @@ CONFIG_MITIGATION_UNRET_ENTRY=y
 
 # --- misc ---
 CONFIG_HARDENED_USERCOPY=y
-CONFIG_GCC_PLUGIN_STACKLEAK=y
 CONFIG_GCC_PLUGIN_LATENT_ENTROPY=y
-CONFIG_GCC_PLUGIN_RANDSTRUCT=y
+
+# Stack erasing and structure layout randomization.
+#
+# Until 2026-09-18 these two lines read CONFIG_GCC_PLUGIN_STACKLEAK=y and
+# CONFIG_GCC_PLUGIN_RANDSTRUCT=y. Both symbols still exist in 6.18, which is
+# why the symbol validator passed them, but both are now derived (`def_bool`)
+# from the options below and cannot be set from a fragment: the kernel built
+# from this file had no stack erasing and RANDSTRUCT_NONE. Found by
+# kernel-hardening-checker, the first time it was run on the resolved config.
+# KSTACK_ERASE is the 6.17 name of STACKLEAK.
+CONFIG_KSTACK_ERASE=y
+# CONFIG_KSTACK_ERASE_METRICS is not set
+# CONFIG_KSTACK_ERASE_RUNTIME_DISABLE is not set
+CONFIG_RANDSTRUCT_FULL=y
 
 # Stack variable initialization. The GCC_PLUGIN_STRUCTLEAK_* options were
 # removed upstream once compilers gained -ftrivial-auto-var-init; INIT_STACK_
@@ -182,3 +206,99 @@ CONFIG_CRYPTO_XTS=y
 # The filesystem needs the feature too - see tools/image/mkdisk.sh, which now
 # creates the root with -O encrypt.
 CONFIG_FS_ENCRYPTION=y
+
+# --- found by kernel-hardening-checker, applied where the product allows ------
+#
+# The checker's remaining findings, and why each stays, are in
+# checker-accepted.txt. Everything below is what could simply be done.
+
+# Several options below are prompted only `if EXPERT`. Without EXPERT the
+# prompt is invisible and an "is not set" line for it is ignored: kconfig keeps
+# the default, which is y for every one of them. EXPERT changes no value by
+# itself; it makes these settable.
+CONFIG_EXPERT=y
+
+# Self-protection.
+CONFIG_DEBUG_VIRTUAL=y
+CONFIG_KFENCE=y
+CONFIG_KFENCE_SAMPLE_INTERVAL=100
+CONFIG_UBSAN=y
+CONFIG_UBSAN_BOUNDS=y
+CONFIG_UBSAN_TRAP=y
+# With TRAP on, a sanitizer finding is a panic, so only the array bounds check
+# stays armed: the other sanitizers (a shift too wide, a division by zero, an
+# integer that wraps, an enum or bool out of range, an unaligned access) fire
+# on conditions the kernel tolerates and would make an oops of a warning. The
+# checker asks for exactly this set beside UBSAN_TRAP.
+# CONFIG_UBSAN_SHIFT is not set
+# CONFIG_UBSAN_DIV_ZERO is not set
+# CONFIG_UBSAN_UNREACHABLE is not set
+# CONFIG_UBSAN_INTEGER_WRAP is not set
+# CONFIG_UBSAN_BOOL is not set
+# CONFIG_UBSAN_ENUM is not set
+# CONFIG_UBSAN_ALIGNMENT is not set
+CONFIG_SCHED_CORE=y
+CONFIG_PAGE_TABLE_CHECK=y
+CONFIG_PAGE_TABLE_CHECK_ENFORCED=y
+CONFIG_TRIM_UNUSED_KSYMS=y
+# The EFI stub disables PCI bus mastering before ExitBootServices, so a device
+# the firmware left DMA-capable cannot write over the kernel while it starts;
+# and it asks the firmware to overwrite RAM on the next reset
+# (MemoryOverwriteRequestControl), against a reboot into another OS that
+# reads the previous one's memory. A clean shutdown leaves the request armed,
+# so every reboot pays for the wipe in POST time; the zone volumes' keys live
+# in that RAM, and Fedora ships the same option.
+CONFIG_EFI_DISABLE_PCI_DMA=y
+CONFIG_RESET_ATTACK_MITIGATION=y
+# The IOMMU on, strict, by default: a Thunderbolt or PCIe device gets the
+# mappings a driver asked for and nothing else, from boot, without a command
+# line parameter. Intel's SVM is what the checker asks for beside it.
+CONFIG_IOMMU_DEFAULT_DMA_STRICT=y
+CONFIG_INTEL_IOMMU_DEFAULT_ON=y
+CONFIG_INTEL_IOMMU_SVM=y
+# The TPM as an entropy source (and, later, for measured boot).
+CONFIG_TCG_TPM=y
+CONFIG_TCG_TIS=y
+CONFIG_TCG_CRB=y
+CONFIG_HW_RANDOM_TPM=y
+
+# Userspace hardening: /proc/pid/mem cannot be written through read-only
+# mappings even by a ptracer; shadow stacks for userspace built with CET
+# (build/config/hardening.env passes -fcf-protection, and glibc 2.40 enables
+# them per binary).
+CONFIG_PROC_MEM_NO_FORCE=y
+CONFIG_X86_USER_SHADOW_STACK=y
+
+# The running kernel's config, readable at /proc/config.gz, so a booted
+# system can be checked against what it was meant to be built with.
+CONFIG_IKCONFIG=y
+CONFIG_IKCONFIG_PROC=y
+
+# Attack surface Kryptik has no use for. The x86_64 defconfig compiles SELinux
+# in and lists every LSM in the boot order; ADR-007 chose Landlock and seccomp,
+# and a MAC framework with no policy loaded is code with no purpose. The LSM
+# list is the three that are actually built.
+# CONFIG_SECURITY_SELINUX is not set
+CONFIG_LSM="landlock,lockdown,yama"
+# CONFIG_X86_MSR is not set
+# CONFIG_X86_CPUID is not set
+# CONFIG_X86_IOPL_IOPERM is not set
+# CONFIG_LDISC_AUTOLOAD is not set
+# CONFIG_KPROBES is not set
+# CONFIG_FTRACE is not set
+# CONFIG_IO_URING is not set
+# CONFIG_RSEQ is not set
+# CONFIG_CACHESTAT_SYSCALL is not set
+# CONFIG_PROVIDE_OHCI1394_DMA_INIT is not set
+# CONFIG_ACPI_TABLE_UPGRADE is not set
+# CONFIG_EFI_CUSTOM_SSDT_OVERLAYS is not set
+# CONFIG_MAGIC_SYSRQ is not set
+# CONFIG_KALLSYMS_ALL is not set
+# Nothing writes to a mounted block device from userspace: the updater writes
+# the slot that is not mounted, the installer writes a disk nothing is mounted
+# from, and the zone volumes are written through dm-crypt.
+# CONFIG_BLK_DEV_WRITE_MOUNTED is not set
+# kernel.core_pattern is already |/bin/false; no core dump support at all.
+# CONFIG_COREDUMP is not set
+# /proc/pid/{pagemap,smaps,clear_refs}: physical layout leaks, unused here.
+# CONFIG_PROC_PAGE_MONITOR is not set

@@ -109,6 +109,7 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
         image image-boot \
         image-smoke \
         validate-kernel validate-kernel-hardened validate-kernel-boot \
+        resolve-kernel-config check-kernel-hardening test-kernel-hardening \
         media ovmf-vars media-smoke-usb media-smoke-iso media-smoke-secureboot \
         media-refused-foreign-keys integrity-test update-test \
         state-test zones-test gui-test compositor-test acceptance \
@@ -152,6 +153,9 @@ help:
 	@echo "  make validate-kernel   check kernel fragment against pinned source"
 	@echo "  make check-kernel-eol  fail if the pinned kernel is EOL or not LTS"
 	@echo "  make validate-kernel-hardened  check the linux-hardened fragment"
+	@echo "  make check-kernel-hardening  resolve the config against the pinned source as"
+	@echo "                   stage 05 does, refuse a dropped fragment line, then run"
+	@echo "                   kernel-hardening-checker on it and the shipped command line"
 	@echo "  make zones       validate zone definitions + kernel support"
 	@echo "  make zone-test   run the isolation exit test (the primitives)"
 	@echo "  make launcher-test  attack \`kryptikd run\` itself (the launch path)"
@@ -247,6 +251,17 @@ validate-kernel-hardened:
 
 validate-kernel-boot:
 	@"$(TOOLS)"/validate-kernel-config.sh --boot
+
+# Existence is half of it (the three targets above); this is the other half:
+# the same fragments resolved by kconfig against the same source, every line
+# checked for survival, then kernel-hardening-checker on the result. Needs the
+# kernel tarball, the linux-hardened patch and the checker from `make sources`,
+# and a host gcc with plugin headers (gcc-N-plugin-dev) for a faithful answer.
+resolve-kernel-config:
+	@"$(TOOLS)"/resolve-kernel-config.sh
+
+check-kernel-hardening: resolve-kernel-config
+	@"$(TOOLS)"/check-kernel-hardening.sh --config "$(KRYPTIK_WORK)/kconfig-tree/kryptik.config"
 
 toolchain: check sources
 	@"$(STAGES)"/01-toolchain.sh
@@ -538,6 +553,9 @@ test-harness:
 
 test-hardening:
 	@"$(TOOLS)"/test-hardening-flags.sh
+
+test-kernel-hardening:
+	@"$(TOOLS)"/test-check-kernel-hardening.sh
 
 test-artifacts:
 	@"$(TOOLS)"/test-artifact-hardening.sh

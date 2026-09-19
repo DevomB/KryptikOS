@@ -223,7 +223,27 @@ verity_table() {   # verity_table <dev> -> "0 <sectors> verity 1 dev dev 4096 40
         "$(root_json data_sectors)" "$1" "$1" "$(root_json data_blocks)" \
         "$(root_json hash_start_block)" "$(root_json root_hash)" "$(root_json salt)"
 }
-COMMON_ARGS="ro rootwait console=tty0 console=ttyS0,115200 panic=10 loglevel=4"
+# The four parameters after loglevel are the ones kernel-hardening-checker
+# asks for on the command line itself (the rest of its recommendations are
+# kconfig defaults, see build/config/kernel/hardening.fragment):
+#   mitigations=auto,nosmt   every CPU vulnerability mitigation the kernel
+#                            knows, and SMT off, because a sibling thread is
+#                            the side channel most of them leak through; a
+#                            zone escaping through the CPU is exactly the
+#                            threat model, and half the logical CPUs is the
+#                            price
+#   pti=on                   page table isolation on every CPU, not only the
+#                            ones the kernel believes vulnerable
+#   page_alloc.shuffle=1     randomize the free page lists (the kconfig
+#                            default is on; the parameter makes it explicit
+#                            and checkable)
+#   hash_pointers=always     %p prints hashed pointers even when a debug
+#                            option would otherwise turn hashing off
+#   nosmt                    the same SMT switch by its own name; the
+#                            checker looks for the word
+# tools/check-kernel-hardening.sh reads this line, so a change here is
+# checked against the same list.
+COMMON_ARGS="ro rootwait console=tty0 console=ttyS0,115200 panic=10 loglevel=4 mitigations=auto,nosmt pti=on page_alloc.shuffle=1 hash_pointers=always nosmt"
 
 s_cmdlines() {
     local h="$1"; echo "root.json sha256: ${h}"

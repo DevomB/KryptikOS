@@ -425,7 +425,7 @@ jobs:
           # Match the exact package names: a bare '^linux ' would also catch
           # the linux-hardened row.
           ./tools/fetch-sources.sh --list \
-            | awk '$1 == "linux" || $1 == "linux-hardened" {print $3}' \
+            | awk '$1 == "linux" || $1 == "linux-hardened" || $1 == "kernel-hardening-checker" {print $3}' \
             | while read -r u; do
                 echo "fetching $(basename "$u")"
                 curl -fL --no-progress-meter -o "sources/$(basename "$u")" "$u"
@@ -436,3 +436,26 @@ jobs:
           # driver symbol (CONFIG_TG3 for CONFIG_TIGON3) was caught only by
           # acceptance, hours into a Distro run.
           ./tools/validate-kernel-config.sh --boot
+
+      - name: The resolved config honours every fragment line and kernel-hardening-checker accepts it
+        run: |
+          # Existence is half of it. tools/resolve-kernel-config.sh runs
+          # kconfig on the pinned source exactly as stage 05 does (defconfig,
+          # the three fragments, olddefconfig) and refuses a result that drops
+          # a line: kconfig drops one without a word for an unmet dependency,
+          # an overriding `select` or an invisible prompt, and the fragment
+          # then claims a mitigation the kernel lacks. Then
+          # tools/check-kernel-hardening.sh runs the pinned
+          # kernel-hardening-checker on that config and the shipped command
+          # line and holds its failures to build/config/kernel/
+          # checker-accepted.txt. Stage 05 does both inside the chroot; this
+          # is the same answer in minutes instead of hours.
+          #
+          # kconfig asks the compiler questions. The GCC plugin options
+          # (KSTACK_ERASE, RANDSTRUCT_FULL, LATENT_ENTROPY) exist only when
+          # the compiler has plugin headers, which the runner's gcc does not
+          # carry by default; without them this step would report three
+          # dropped lines the chroot's compiler does not drop.
+          sudo apt-get install -y --no-install-recommends \
+            "gcc-$(gcc -dumpversion | cut -d. -f1)-plugin-dev" flex bison
+          make check-kernel-hardening

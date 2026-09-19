@@ -100,7 +100,10 @@ dm-verity and Landlock enabled.
       kernel; dm-init builds the verified root with no initramfs
 
 **Exit test:** boots; `lockdown` reports confidentiality; unsigned module load
-fails; `kernel-hardening-checker` reports no missing KSPP options;
+fails; `kernel-hardening-checker` reports nothing beyond the accepted list
+(`make check-kernel-hardening`; stage 05 runs it on the config it builds and
+CI on the same fragments resolved against the same source); every fragment
+line survives resolution (`build/lib/kconfig-check.sh`, in both places);
 `make validate-kernel` reports every fragment symbol present in the pinned
 source; `make check-kernel-eol` reports the kernel is longterm. The boot is
 measured by the bootable signed image's media tests; the module-signing and lockdown

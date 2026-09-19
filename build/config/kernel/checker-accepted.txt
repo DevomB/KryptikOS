@@ -1,0 +1,40 @@
+# Failures that kernel-hardening-checker reports on Kryptik's resolved kernel
+# config and shipped command line, and why each one stays.
+#
+# Format:  <kconfig|cmdline|sysctl>  <option>   # <why it stays>
+#
+# tools/check-kernel-hardening.sh, in stage 05 and in CI, fails on a reported
+# failure that is not listed here and on a line here without a reason, and
+# names a listed option that has started to pass so the line can go. The list
+# is reviewed and shrunk, never accumulated: an entry is a decision, not a
+# postponement.
+#
+# The checker's decision column says who recommends a setting: kspp is the
+# Kernel Self-Protection Project, clipos and grsec are those projects'
+# configurations, maintainer is a subsystem maintainer, a13xp0p0v is the
+# checker's author.
+
+# --- the toolchain is GCC (ADR-001) --------------------------------------------
+kconfig  CONFIG_CFI_CLANG         # kernel control-flow integrity needs Clang; hardening.fragment records why that split is not adopted yet
+kconfig  CONFIG_CFI_PERMISSIVE    # follows CFI_CLANG
+kconfig  CONFIG_CFI_AUTO_DEFAULT  # follows CFI_CLANG
+cmdline  cfi                      # cfi=kcfi selects the Clang CFI mode; no kernel CFI is built
+
+# --- the zone model needs them (docs/architecture.md, ADR-002) ---------------------
+kconfig  CONFIG_USER_NS           # zones are user namespaces; unprivileged creation is off (CONFIG_USER_NS_UNPRIVILEGED, hardened.fragment)
+kconfig  CONFIG_MODULES           # drivers that need firmware load after the verified root supplies /lib/firmware; only modules signed by this build load (MODULE_SIG_FORCE, lockdown)
+
+# --- the desktop and the console need them ------------------------------------------
+kconfig  CONFIG_VT                # the framebuffer console and the tty1 login (boot.fragment)
+kconfig  CONFIG_KCMP              # DRM selects it (drivers/gpu/drm/Kconfig) and the compositor needs DRM; the "is not set" line for it was ignored, so it is a decision here rather than a dead line there
+
+# --- ADR-007: Landlock and seccomp, no SELinux ------------------------------------
+kconfig  CONFIG_SECURITY_SELINUX  # the checker's author prefers SELinux; Kryptik compiles no MAC framework it loads no policy into (ADR-007)
+kconfig  CONFIG_LSM               # the LSM list is exactly what is built: landlock,lockdown,yama
+kconfig  CONFIG_LSM_MMAP_MIN_ADDR # exists only with SELinux; CONFIG_DEFAULT_MMAP_MIN_ADDR=65536 from defconfig is the same floor without it
+
+# --- an oops has to be readable ---------------------------------------------------
+kconfig  CONFIG_KALLSYMS          # a stack trace without symbols cannot be acted on; kernel.kptr_restrict=2 and kernel.dmesg_restrict=1 (build/config/sysctl.d) keep them from users, and KALLSYMS_ALL is off
+
+# --- the IOMMU is already on and strict by default -------------------------------
+cmdline  iommu                    # iommu=force is clipos's belt over the same braces: INTEL_IOMMU_DEFAULT_ON, AMD_IOMMU and IOMMU_DEFAULT_DMA_STRICT turn it on, strict, wherever there is one

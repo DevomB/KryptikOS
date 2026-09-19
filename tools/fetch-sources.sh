@@ -128,6 +128,7 @@ s6|${V_S6}|${MIRROR_SKARNET}/s6/s6-${V_S6}.tar.gz
 s6-rc|${V_S6_RC}|${MIRROR_SKARNET}/s6-rc/s6-rc-${V_S6_RC}.tar.gz
 s6-linux-init|${V_S6_LINUX_INIT}|${MIRROR_SKARNET}/s6-linux-init/s6-linux-init-${V_S6_LINUX_INIT}.tar.gz
 hardened-malloc|${V_HARDENED_MALLOC}|${MIRROR_GITHUB}/GrapheneOS/hardened_malloc/archive/refs/tags/${V_HARDENED_MALLOC}.tar.gz
+kernel-hardening-checker|${V_KERNEL_HARDENING_CHECKER}|${MIRROR_GITHUB}/a13xp0p0v/kernel-hardening-checker/archive/refs/tags/v${V_KERNEL_HARDENING_CHECKER}.tar.gz
 cmake|${V_CMAKE}|${MIRROR_CMAKE}/v${V_CMAKE%.*}/cmake-${V_CMAKE}.tar.gz
 cmake-bin|${V_CMAKE}|${MIRROR_CMAKE}/v${V_CMAKE%.*}/cmake-${V_CMAKE}-linux-x86_64.tar.gz
 json-c|${V_JSON_C}|${MIRROR_GITHUB}/json-c/json-c/archive/json-c-${V_JSON_C}/json-c-${V_JSON_C}.tar.gz

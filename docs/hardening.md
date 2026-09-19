@@ -111,13 +111,59 @@ Notable choices:
   surface that Kryptik does not need.
 - `CONFIG_SECURITY_LANDLOCK=y` — required by the zone model, not optional.
 
+### What the reference checker says
+
+`kernel-hardening-checker`, the Kernel Self-Protection Project's reference
+list (pinned in `versions.env` like every other input), runs on the resolved
+`.config` and on the shipped command line in stage 05 and in CI
+(`tools/check-kernel-hardening.sh`; `make check-kernel-hardening`). Every
+failure it reports is either fixed in the fragments or listed in
+[`build/config/kernel/checker-accepted.txt`](../build/config/kernel/checker-accepted.txt)
+with the reason it stays. The tool fails on a failure that is neither, on an
+entry without a reason, and names an entry whose option has started to pass so
+the list shrinks.
+
+Its first run, on 2026-09-18, found that every kernel built until then had had
+no stack erasing and no structure layout randomization. `CONFIG_GCC_PLUGIN_STACKLEAK`
+and `CONFIG_GCC_PLUGIN_RANDSTRUCT` still exist in 6.18, so the symbol
+validator passed them, but both had become derived symbols a fragment cannot
+set; the live options are `CONFIG_KSTACK_ERASE` and `CONFIG_RANDSTRUCT_FULL`.
+The fragment-survival check that followed found the three lines hardening
+`bpf()` had never applied either, because the defconfig never enables the
+syscall; it is now off by name.
+The same run switched off what the x86-64 defconfig leaves on and nothing here
+uses (SELinux and the rest of the LSM list, `/dev/cpu/*/msr` and `cpuid`,
+ftrace and kprobes, io_uring, sysrq, ACPI table overrides, core dumps,
+`/proc/pid/pagemap`) and switched on KFENCE, UBSAN bounds checks that trap,
+page table checking, `DEBUG_VIRTUAL`, the IOMMU on and strict by default, the
+EFI stub's early-DMA and reset-attack protections, the TPM as an entropy
+source, `/proc/pid/mem` write protection and userspace shadow stacks.
+
+Stage 05 also refuses a `.config` that does not carry every line of the three
+fragments (`build/lib/kconfig-check.sh`, shared with the CI-side
+`tools/resolve-kernel-config.sh`). kconfig drops a line without a word for an
+unmet dependency, an overriding `select` or an invisible prompt, and each of
+those is a mitigation the fragment claims and the kernel lacks.
+
+### The command line
+
+Stage 06 compiles the command line into each signed kernel. Beyond the root
+device it carries `mitigations=auto,nosmt nosmt pti=on page_alloc.shuffle=1
+hash_pointers=always`: every CPU vulnerability mitigation the kernel knows,
+with SMT off (ADR-011); page table isolation on every CPU, including the ones
+the kernel believes unaffected, at a few percent on system calls; randomized
+free page lists; and hashed `%p` pointers even under options that would print
+them raw. These are the parameters the checker wants on the command line
+itself; the rest of its recommendations are kconfig defaults.
+
 ### Runtime sysctls
 
 Set in `build/config/sysctl.d/`:
 
 - `kernel.kptr_restrict=2`, `kernel.dmesg_restrict=1` — no kernel pointer leaks
-- `kernel.unprivileged_bpf_disabled=1` and `net.core.bpf_jit_harden=2` — eBPF is
-  a well-worn LPE path
+- no BPF sysctls: the kernel has no `bpf()` syscall at all
+  (`CONFIG_BPF_SYSCALL` off), so there is no eBPF to restrict; seccomp's
+  classic filters do not need it
 - `kernel.yama.ptrace_scope=3` — no ptrace at all after boot
 - `vm.mmap_rnd_bits=32` — maximum ASLR entropy on x86-64
 - `net.ipv4.tcp_syncookies=1`, `rp_filter=1` — standard network hygiene

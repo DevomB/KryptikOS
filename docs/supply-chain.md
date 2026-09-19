@@ -14,6 +14,15 @@ stage's own toolchain. Stage 06 excludes cmake from the image in any case. The
 source tarball stays in the manifest as the fallback for a chroot the binary
 cannot run in.
 
+The other build-time tool that is not shipped is `kernel-hardening-checker`
+(the `kernel-hardening-checker` manifest row), which stage 05 and CI run on the
+resolved kernel configuration (`tools/check-kernel-hardening.sh`). It is pure
+Python and runs from its tarball. Its upstream tags are lightweight and carry no
+signature, so its GitHub archive is pinned by hash in `sources.lock` and that
+hash is the whole of its provenance, as hardened_malloc's was before
+`tools/verify-provenance.sh`; the tool refuses to run from a tarball that does
+not match the lock.
+
 ## Source integrity
 
 `sources.lock` pins a SHA-256 for every upstream tarball.
