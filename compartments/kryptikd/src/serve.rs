@@ -667,6 +667,18 @@ fn spawn_launcher(
         .collect();
     let env = CString::new(format!("KRYPTIK_LAUNCHED_BY_UID={uid}")).unwrap();
     let path = CString::new("PATH=/usr/bin:/usr/sbin").unwrap();
+    // The launcher's registry has to be this daemon's registry. Root's is
+    // one fixed path; a developer instance resolves its own from
+    // XDG_RUNTIME_DIR (registry::base), and a launcher that does not see
+    // the same variable falls back to /tmp/kryptik-<uid>: a zone this daemon
+    // started that its own `status` could not see and its `stop` could not
+    // stop, on every host where a session sets the variable. Nothing else
+    // of the environment crosses.
+    let runtime_dir = if unsafe { libc::geteuid() } != 0 {
+        std::env::var("XDG_RUNTIME_DIR").ok().and_then(|v| CString::new(format!("XDG_RUNTIME_DIR={v}")).ok())
+    } else {
+        None
+    };
 
     let pid = unsafe { libc::fork() };
     if pid < 0 {
@@ -686,7 +698,11 @@ fn spawn_launcher(
             }
             let mut ptrs: Vec<*const libc::c_char> = cargs.iter().map(|c| c.as_ptr()).collect();
             ptrs.push(std::ptr::null());
-            let envp: [*const libc::c_char; 3] = [env.as_ptr(), path.as_ptr(), std::ptr::null()];
+            let mut envp: Vec<*const libc::c_char> = vec![env.as_ptr(), path.as_ptr()];
+            if let Some(r) = &runtime_dir {
+                envp.push(r.as_ptr());
+            }
+            envp.push(std::ptr::null());
             libc::execve(cexe.as_ptr(), ptrs.as_ptr(), envp.as_ptr());
             libc::_exit(127);
         }
