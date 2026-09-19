@@ -198,12 +198,13 @@ s_glibc() {
         echo "note: FHS patch absent, continuing without it"
     fi
 
-    # Upstream loader fixes 2.40 shipped without (build/patches/glibc-2.40/,
-    # provenance in its README): the release/2.40/master _dl_find_object
-    # fixes and the bug 33088 barrier without which GCC 14 makes ld.so
-    # record its own map as starting at address 0. Applied to the toolchain
-    # glibc as well as the final one in stage 04, so both are built from the
-    # same source.
+    # What the 2.40 tarball shipped without (build/patches/glibc-2.40/,
+    # provenance in its README): upstream's maintained release/2.40/master
+    # branch as one patch - its security fixes and the _dl_find_object
+    # loader fixes among them - and the bug 33088 barrier the branch never
+    # got, without which GCC 14 makes ld.so record its own map as starting
+    # at address 0. Applied to the toolchain glibc as well as the final one
+    # in stage 04, so both are built from the same source.
     apply_repo_patches "glibc-${V_GLIBC}"
 
     mkdir -p build
