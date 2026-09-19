@@ -36,6 +36,20 @@ use std::io;
 use std::os::unix::io::RawFd;
 
 const NETLINK_ROUTE: libc::c_int = 0;
+const NETLINK_GENERIC: libc::c_int = 16;
+
+// Generic netlink: the controller family that maps a family name to the id
+// the kernel gave it at registration, and the nl80211 family's one command
+// and two attributes kryptikd uses. Numbers from <linux/genetlink.h> and
+// <linux/nl80211.h>.
+const GENL_ID_CTRL: u16 = 0x10;
+const CTRL_CMD_GETFAMILY: u8 = 3;
+const CTRL_ATTR_FAMILY_ID: u16 = 1;
+const CTRL_ATTR_FAMILY_NAME: u16 = 2;
+const NL80211_CMD_SET_WIPHY_NETNS: u8 = 49;
+const NL80211_ATTR_WIPHY: u16 = 1;
+const NL80211_ATTR_NETNS_FD: u16 = 219;
+const NLA_TYPE_MASK: u16 = 0x3fff;
 
 const RTM_NEWLINK: u16 = 16;
 const RTM_SETLINK: u16 = 19;
@@ -122,6 +136,11 @@ impl Msg {
         self.raw(&b);
     }
 
+    /// struct genlmsghdr { u8 cmd; u8 version; u16 reserved }
+    fn genlmsghdr(&mut self, cmd: u8, version: u8) {
+        self.raw(&[cmd, version, 0, 0]);
+    }
+
     /// struct rtmsg { u8 family, dst_len, src_len, tos, table, protocol, scope, type; u32 flags }
     fn rtmsg(&mut self, family: u8) {
         let b = [family, 0, 0, 0, RT_TABLE_MAIN, RTPROT_BOOT, RT_SCOPE_UNIVERSE, RTN_UNICAST, 0, 0, 0, 0];
@@ -167,7 +186,16 @@ impl Msg {
 
 /// One request/ack exchange on a fresh NETLINK_ROUTE socket.
 fn transact(msg: Vec<u8>, what: &str) -> io::Result<()> {
-    let fd = unsafe { libc::socket(libc::AF_NETLINK, libc::SOCK_RAW | libc::SOCK_CLOEXEC, NETLINK_ROUTE) };
+    transact_on(NETLINK_ROUTE, msg, what).map(|_| ())
+}
+
+/// One request on a fresh socket of the given netlink protocol, read until
+/// the kernel's ack (or DONE). Returns the payloads of every reply message
+/// that came before the ack, after their 16-byte netlink headers: empty
+/// for a plain configuration request, the answer for a query such as a
+/// generic-netlink family lookup.
+fn transact_on(proto: libc::c_int, msg: Vec<u8>, what: &str) -> io::Result<Vec<u8>> {
+    let fd = unsafe { libc::socket(libc::AF_NETLINK, libc::SOCK_RAW | libc::SOCK_CLOEXEC, proto) };
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }
@@ -177,6 +205,7 @@ fn transact(msg: Vec<u8>, what: &str) -> io::Result<()> {
             return Err(io::Error::last_os_error());
         }
         let mut buf = [0u8; 8192];
+        let mut replies = Vec::new();
         loop {
             let n = unsafe { libc::recv(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) };
             if n < 0 {
@@ -198,7 +227,7 @@ fn transact(msg: Vec<u8>, what: &str) -> io::Result<()> {
                     NLMSG_ERROR => {
                         let code = i32::from_ne_bytes(buf[off + 16..off + 20].try_into().unwrap());
                         return if code == 0 {
-                            Ok(())
+                            Ok(replies)
                         } else {
                             Err(io::Error::new(
                                 io::Error::from_raw_os_error(-code).kind(),
@@ -206,8 +235,8 @@ fn transact(msg: Vec<u8>, what: &str) -> io::Result<()> {
                             ))
                         };
                     }
-                    NLMSG_DONE => return Ok(()),
-                    _ => {}
+                    NLMSG_DONE => return Ok(replies),
+                    _ => replies.extend_from_slice(&buf[off + 16..off + len]),
                 }
                 off += align4(len);
             }
@@ -299,13 +328,71 @@ pub fn set_up(dev: &str) -> io::Result<()> {
     transact(m.finish(), &format!("bring up {dev}"))
 }
 
-/// Move `dev` into the network namespace behind `ns_fd`.
+/// Move `dev` into the network namespace behind `ns_fd`. Not for a wireless
+/// interface: the kernel marks those namespace-local and answers EINVAL;
+/// see `set_wiphy_netns`.
 pub fn set_netns(dev: &str, ns_fd: RawFd) -> io::Result<()> {
     let idx = index_of(dev)?;
     let mut m = Msg::new(RTM_NEWLINK, 0, 1);
     m.ifinfomsg(libc::AF_UNSPEC as u8, idx as i32, 0, 0);
     m.attr_u32(IFLA_NET_NS_FD, ns_fd as u32);
     transact(m.finish(), &format!("move {dev} into namespace"))
+}
+
+/// The wiphy index behind a wireless interface (`/sys/class/net/<dev>/
+/// phy80211/index`), or None for a wired one, which has no such link.
+pub fn wiphy_index_of(dev: &str) -> io::Result<Option<u32>> {
+    check_name(dev)?;
+    match std::fs::read_to_string(format!("/sys/class/net/{dev}/phy80211/index")) {
+        Ok(s) => s
+            .trim()
+            .parse::<u32>()
+            .map(Some)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, format!("{dev}: phy80211/index is not a number: {s:?}"))),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// The id the kernel gave a generic-netlink family at registration, asked
+/// of the controller family: the ids are not fixed, only the names are.
+fn genl_family_id(name: &str) -> io::Result<u16> {
+    let mut m = Msg::new(GENL_ID_CTRL, 0, 1);
+    m.genlmsghdr(CTRL_CMD_GETFAMILY, 1);
+    m.attr_str(CTRL_ATTR_FAMILY_NAME, name);
+    let reply = transact_on(NETLINK_GENERIC, m.finish(), &format!("look up the {name} family"))?;
+    // The answer is a genlmsghdr and then attributes; the family id is a
+    // u16 among them.
+    let mut off = 4;
+    while off + 4 <= reply.len() {
+        let len = u16::from_ne_bytes(reply[off..off + 2].try_into().unwrap()) as usize;
+        let kind = u16::from_ne_bytes(reply[off + 2..off + 4].try_into().unwrap()) & NLA_TYPE_MASK;
+        if len < 4 || off + len > reply.len() {
+            break;
+        }
+        if kind == CTRL_ATTR_FAMILY_ID && len >= 6 {
+            return Ok(u16::from_ne_bytes(reply[off + 4..off + 6].try_into().unwrap()));
+        }
+        off += align4(len);
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("the kernel has no {name} generic-netlink family (no wireless stack?)"),
+    ))
+}
+
+/// Move a whole wiphy - and every wireless interface on it, names intact -
+/// into the network namespace behind `ns_fd`. This is what `iw phy <phy>
+/// set netns` does, and the only way a wireless interface changes
+/// namespace: the netdev alone refuses (`set_netns`). Needs CAP_NET_ADMIN
+/// in the wiphy's current namespace.
+pub fn set_wiphy_netns(phy: u32, ns_fd: RawFd) -> io::Result<()> {
+    let family = genl_family_id("nl80211")?;
+    let mut m = Msg::new(family, 0, 1);
+    m.genlmsghdr(NL80211_CMD_SET_WIPHY_NETNS, 0);
+    m.attr_u32(NL80211_ATTR_WIPHY, phy);
+    m.attr_u32(NL80211_ATTR_NETNS_FD, ns_fd as u32);
+    transact_on(NETLINK_GENERIC, m.finish(), &format!("move wiphy {phy} into namespace")).map(|_| ())
 }
 
 pub fn add_addr4(dev: &str, addr: [u8; 4], prefix: u8) -> io::Result<()> {
@@ -471,6 +558,110 @@ pub(crate) mod tests {
             eprintln!("step {n}: {e}");
             n
         })
+    }
+
+    /// The simulator's wireless netdev, if mac80211_hwsim has one here: a
+    /// netdev with a wiphy whose bus device is the simulator's.
+    fn hwsim_netdev() -> Option<String> {
+        let mut found = Vec::new();
+        for e in fs::read_dir("/sys/class/net").ok()?.flatten() {
+            let p = e.path();
+            if !p.join("phy80211").exists() {
+                continue;
+            }
+            let dev = fs::read_link(p.join("device")).unwrap_or_default();
+            if dev.to_string_lossy().contains("mac80211_hwsim") {
+                found.push(e.file_name().to_string_lossy().into_owned());
+            }
+        }
+        found.sort();
+        found.into_iter().next()
+    }
+
+    /// A wireless interface moves by its wiphy, never on its own: RTM_SETLINK
+    /// answers EINVAL for a netdev the kernel marks namespace-local, and the
+    /// wiphy carries every interface on it, name intact. Kernel-backed and
+    /// root only, on mac80211_hwsim: the simulated radio's netdev leaves
+    /// this namespace, turns up in the holder's under the same name, and
+    /// comes back when the holder dies (cfg80211 returns wiphys to the
+    /// initial namespace when theirs is torn down). Without root or without
+    /// the module there is nothing to measure, and the test says so.
+    #[test]
+    fn a_wireless_interface_moves_by_its_wiphy() {
+        use std::process::Command;
+        if unsafe { libc::geteuid() } != 0 {
+            eprintln!("not root; skipping (the wiphy move needs CAP_NET_ADMIN in the initial namespace)");
+            return;
+        }
+        let loaded_before = std::path::Path::new("/sys/module/mac80211_hwsim").exists();
+        let modprobe = Command::new("modprobe").args(["mac80211_hwsim", "radios=1"]).status();
+        if !modprobe.map(|s| s.success()).unwrap_or(false) {
+            eprintln!("mac80211_hwsim not available on this kernel; skipping");
+            return;
+        }
+        let unload = || {
+            if !loaded_before {
+                let _ = Command::new("modprobe").args(["-r", "mac80211_hwsim"]).status();
+            }
+        };
+        let Some(dev) = hwsim_netdev() else {
+            unload();
+            panic!("mac80211_hwsim loaded but no wireless netdev of its own appeared");
+        };
+        let phy = match wiphy_index_of(&dev) {
+            Ok(Some(p)) => p,
+            other => {
+                unload();
+                panic!("{dev}: no wiphy index ({other:?})");
+            }
+        };
+        // The netdev alone must refuse: that refusal is why the wiphy path
+        // exists, and a kernel that accepted it would make this test prove
+        // less than it claims.
+        let (holder, zone_ns) = match spawn_netns_holder() {
+            Ok(v) => v,
+            Err(c) => {
+                unload();
+                panic!("no namespace holder ({c})");
+            }
+        };
+        let r: Result<(), String> = (|| {
+            match set_netns(&dev, zone_ns) {
+                Err(e) if e.raw_os_error() == Some(libc::EINVAL) => {}
+                Err(e) => return Err(format!("RTM_SETLINK on {dev}: expected EINVAL, got {e}")),
+                Ok(()) => return Err(format!("RTM_SETLINK moved wireless {dev} on its own; the premise is gone")),
+            }
+            set_wiphy_netns(phy, zone_ns).map_err(|e| format!("set_wiphy_netns: {e}"))?;
+            if index_of(&dev).is_ok() {
+                return Err(format!("{dev} is still in this namespace after the wiphy move"));
+            }
+            let there = with_netns(zone_ns, || index_of(&dev)).map_err(|e| format!("inside the holder: {e}"))?;
+            if there == 0 {
+                return Err(format!("{dev} has no index inside the holder"));
+            }
+            Ok(())
+        })();
+        unsafe {
+            libc::kill(holder, libc::SIGKILL);
+            let mut st = 0;
+            libc::waitpid(holder, &mut st, 0);
+            libc::close(zone_ns);
+        }
+        // The namespace's teardown runs on a workqueue; give the wiphy a
+        // moment to come home before deciding it did not.
+        let mut back = false;
+        for _ in 0..50 {
+            if index_of(&dev).is_ok() {
+                back = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        unload();
+        if let Err(e) = r {
+            panic!("{e}");
+        }
+        assert!(back, "{dev} did not return to the initial namespace after its holder died");
     }
 
     #[test]

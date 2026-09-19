@@ -81,7 +81,9 @@ pub struct Zone {
     pub network: NetworkMode,
     pub bridge: Option<String>,
     /// The physical interface a `nic` zone takes ownership of (`[network]
-    /// nic = "eth0"`). Required for mode = "nic", refused otherwise.
+    /// nic = "eth0"`), or `"*"` for every interface of zone 0 that sits on
+    /// a bus device (`netzone::physical_interfaces`). Only meaningful for
+    /// mode = "nic", refused otherwise.
     pub nic: Option<String>,
     pub storage: StorageMode,
     pub volume: Option<String>,
@@ -434,7 +436,7 @@ impl Zone {
         let nic = get("network.nic");
         if let Some(n) = &nic {
             if n.is_empty() || n.len() > 15 || n.contains('/') || n.contains(char::is_whitespace) {
-                return Err(bad("network.nic", n, "an interface name of at most 15 characters"));
+                return Err(bad("network.nic", n, "an interface name of at most 15 characters, or \"*\" for every physical interface"));
             }
             if network != NetworkMode::Nic {
                 return Err(ZoneError::Invalid(format!(
@@ -917,6 +919,9 @@ border_color = "#000000"
     fn only_the_nic_zone_may_name_an_interface_and_it_must_be_a_name() {
         let ok = VAULT.replace("mode = \"none\"", "mode = \"nic\"\nbridge = \"kryptik0\"\nnic = \"eth0\"");
         assert_eq!(Zone::from_str(&ok).unwrap().nic.as_deref(), Some("eth0"));
+        // "*": every physical interface of zone 0, decided at launch.
+        let all = VAULT.replace("mode = \"none\"", "mode = \"nic\"\nbridge = \"kryptik0\"\nnic = \"*\"");
+        assert_eq!(Zone::from_str(&all).unwrap().nic.as_deref(), Some("*"));
         let bad = VAULT.replace("mode = \"none\"", "mode = \"none\"\nnic = \"eth0\"");
         let err = Zone::from_str(&bad).unwrap_err();
         assert!(format!("{err}").contains("only meaningful"), "got: {err}");

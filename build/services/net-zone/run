@@ -3,13 +3,20 @@
 # supervised; it runs the zone's own startup program inside the zone.
 # --passphrase-file is not needed: the net zone is ephemeral.
 #
-# eth0 is the kernel's name: the predictable-name udev rule is masked in the
-# image (s_etc) so the zone file's `nic = "eth0"` names the real interface.
-# A machine with no NIC has nothing to hold; the service idles rather than
-# restarting a launch that cannot succeed.
-if [ ! -e /sys/class/net/eth0 ]; then
-    echo "net-zone: no eth0 on this machine; nothing to hold"
+# The zone file says `nic = "*"`: every interface on a bus device leaves
+# zone 0, wired or wireless (the predictable-name udev rule is masked in the
+# image, s_etc, so the kernel's eth0/wlan0 names are what both sides see).
+# The same rule as kryptikd's netzone::physical_interfaces, applied here
+# first: a machine with no such interface has nothing to hold, and the
+# service idles rather than restarting a launch that cannot succeed.
+have=0
+for d in /sys/class/net/*; do
+    case "${d##*/}" in lo) continue ;; esac
+    [ -e "$d/device" ] && { have=1; break; }
+done
+if [ "$have" = 0 ]; then
+    echo "net-zone: no physical network interface on this machine; nothing to hold"
     exec sleep infinity
 fi
 exec /usr/bin/kryptikd run net --zones /usr/lib/kryptik/zones --rootfs /var/lib/kryptik/zones \
-     -- /usr/libexec/kryptik/netzone-init.sh eth0
+     -- /usr/libexec/kryptik/netzone-init.sh
