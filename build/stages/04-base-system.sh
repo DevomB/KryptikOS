@@ -2260,7 +2260,57 @@ s_lynx() {
     lynx -version | head -1
 }
 
+# Every function the target compiler emits must begin with its landing pad.
+#
+# Kryptik compiles everything with -fcf-protection=full. Under indirect branch
+# tracking an indirect call or jump may only land on an endbr64, so the
+# instruction AT a function's address has to be one. gcc 14.2.0 got this wrong
+# at -O2 (GCC PR target/116174, fixed in 14.3): when a function opens with a
+# loop, the loop's alignment directive is emitted between the function's label
+# and its endbr64. The symbol then points at padding, the landing pad is a few
+# bytes further on, and an indirect call to that function is a call to
+# something that is not a landing pad. Nothing fails today, because no shipped
+# kernel enforces user-space IBT yet; the protection is simply not there for
+# those functions, which is the kind of defect no test of behaviour finds.
+#
+# So this does not ask which version the compiler is. It compiles the bug's
+# own test case, and a second function with no loop as a control, with the
+# flags every package is built with, and reads the assembly: after each
+# function label, the first thing that is not a label or a CFI note must be
+# endbr64. A compiler that regresses fails here, before it builds anything.
+s_compiler_check() {
+    local d; d="$(mktemp -d)"
+    cat > "$d/t.c" <<'EOF'
+char *copy_until_nul(char *dest, const char *src)
+{
+    while ((*dest++ = *src++) != '\0')
+        ;
+    return --dest;
+}
+int plain(int a) { return a + 1; }
+EOF
+    gcc --version | head -1
+    echo "flags: ${CFLAGS:?the hardening flags are not loaded; this step proves nothing without them}"
+    # shellcheck disable=SC2086  # CFLAGS is a list of words, on purpose
+    gcc ${CFLAGS} -S -o "$d/t.s" "$d/t.c" || { echo "FAIL: the test case does not compile"; rm -rf "$d"; return 1; }
+    grep -q 'endbr64' "$d/t.s" || { echo "FAIL: no endbr64 at all: -fcf-protection is not in effect"; rm -rf "$d"; return 1; }
+    local verdict
+    verdict="$(awk '
+        /^[A-Za-z_][A-Za-z0-9_]*:[ \t]*$/ { fn = $1; sub(/:.*/, "", fn); if (fn in isfunc) { want = fn } ; next }
+        /^[ \t]*\.type[ \t]+[A-Za-z_][A-Za-z0-9_]*,[ \t]*@function/ { n = $2; sub(/,.*/, "", n); isfunc[n] = 1; next }
+        want != "" {
+            if ($0 ~ /^\.L[A-Za-z0-9_.$]*:/ || $0 ~ /^[ \t]*\.cfi_/ || $0 ~ /^[ \t]*$/) next
+            if ($0 ~ /^[ \t]*endbr64/) { print "ok   " want; want = ""; next }
+            gsub(/^[ \t]+/, ""); print "FAIL " want ": entry is \"" $0 "\", not endbr64"; want = ""
+        }' "$d/t.s")"
+    printf '%s\n' "$verdict" | sed 's/^/  /'
+    rm -rf "$d"
+    [[ "$(grep -c '^ok ' <<<"$verdict")" -eq 2 ]] || { echo "FAIL: expected two functions, each opening with endbr64"; return 1; }
+    ! grep -q '^FAIL' <<<"$verdict" || { echo "FAIL: a function entry is not a landing pad (GCC PR target/116174)"; return 1; }
+}
+
 PACKAGES=(
+    "compiler-check" "s_compiler_check"
     "locales"     "s_locales"
     "gettext"     "native_build gettext-${V_GETTEXT}.tar.xz gettext-${V_GETTEXT} --disable-shared"
     "bison"       "native_build bison-${V_BISON}.tar.xz bison-${V_BISON} --docdir=/usr/share/doc/bison-${V_BISON}"
