@@ -311,9 +311,9 @@ head_ "H. The zone dies with its launcher"
 MARK="kryptik-probe-sleep-$$"
 zone_up()   { for _ in $(seq 1 300); do pgrep -f "^$MARK" >/dev/null && return 0; kill -0 "$1" 2>/dev/null || return 1; sleep 0.1; done; return 1; }
 zone_gone() { for _ in $(seq 1 100); do pgrep -f "^$MARK" >/dev/null || return 0; sleep 0.1; done; return 1; }
-# dies_with SIG NAME: launch, wait for the zone, signal the launcher, wait.
+# dies_with SIG: launch, wait for the zone, signal the launcher, wait.
 dies_with() {
-    local sig="$1" name="$2" p
+    local sig="$1" p
     # argv[0] is the marker, set by python's execvp and not by `exec -a`,
     # which is bash's: where /bin/sh is dash (an Ubuntu runner) the shell
     # said "exec: -a: not found", the zone's command ended at once, and
@@ -321,19 +321,19 @@ dies_with() {
     "$K" run probe "${IDFLAGS[@]}" --zones "$F/zones" --rootfs "$F/roots" -- /usr/bin/python3 -c "import os; os.execvp('sleep', ['$MARK', '300'])" > "$F/h.out" 2>&1 &
     p=$!
     if ! zone_up "$p"; then
-        fail "$name  the zone never came up, so there was no launcher to signal" "$(denoise < "$F/h.out" | tail -3)"
+        fail "the zone never came up, so there was no launcher to SIG${sig}" "$(denoise < "$F/h.out" | tail -3)"
     else
         kill "-$sig" "$p" 2>/dev/null
         if zone_gone; then
-            pass "$name  the zone dies when its launcher is SIG${sig}ed"
+            pass "the zone dies when its launcher is SIG${sig}ed"
         else
-            fail "$name  a zone process outlived a SIG${sig}ed launcher"; pkill -9 -f "^$MARK"
+            fail "a zone process outlived a SIG${sig}ed launcher"; pkill -9 -f "^$MARK"
         fi
     fi
     wait "$p" 2>/dev/null
 }
-dies_with KILL H1
-dies_with TERM H2
+dies_with KILL
+dies_with TERM
 
 # ---------------------------------------------------------------------------
 head_ "I. What only a privileged run on the target kernel can show"
