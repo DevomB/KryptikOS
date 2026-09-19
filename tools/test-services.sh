@@ -212,12 +212,12 @@ for s in "${SCRIPTS}"/*.sh; do
     # weight installed into every image. A helper that another installed
     # script sources (`. /usr/libexec/kryptik/x.sh`) is referenced through
     # that script, provided the sourcing script is itself run by a service.
-    if grep -rqF "/usr/libexec/kryptik/${n}" "$SRC"/*/up 2>/dev/null; then
+    if grep -rqF "/usr/libexec/kryptik/${n}" "$SRC"/*/up "$SRC"/*/run 2>/dev/null; then
         green "${n}: referenced by a service"
     elif grep -lqE "^\s*\. +/usr/libexec/kryptik/${n}" "${SCRIPTS}"/*.sh 2>/dev/null \
          && grep -lE "^\s*\. +/usr/libexec/kryptik/${n}" "${SCRIPTS}"/*.sh \
             | xargs -r -n1 basename | while read -r u; do
-                  grep -rqF "/usr/libexec/kryptik/${u}" "$SRC"/*/up && exit 0; done; then
+                  grep -rqF "/usr/libexec/kryptik/${u}" "$SRC"/*/up "$SRC"/*/run 2>/dev/null && exit 0; done; then
         green "${n}: sourced by a script a service runs"
     else
         red "${n}: installed by the stage but no service runs it"

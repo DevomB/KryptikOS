@@ -65,7 +65,7 @@ say "state_marker=$(cat /var/.kryptik-state 2>/dev/null || echo none)"
 # --- did the service manager actually bring things up? ---------------------
 if [ -d /run/service ]; then
     say "scandir=/run/service"
-    for svc in eudev getty-tty1 seatd; do
+    for svc in eudev getty-tty1 seatd watchdog; do
         if s6-svstat "/run/service/$svc" >/dev/null 2>&1; then
             up=$(s6-svstat -o up "/run/service/$svc" 2>/dev/null)
             [ "$up" = "true" ] && say "svc_$svc=up" || say "svc_$svc=down"
@@ -74,6 +74,16 @@ if [ -d /run/service ]; then
         fi
     done
 fi
+# A watchdog nobody feeds resets a healthy machine, and one that is not
+# there protects nothing; both are worth a line. nowayout=1 is the kernel
+# saying that closing the device will not stop it.
+wd_n=0
+for wd in /sys/class/watchdog/watchdog[0-9]*; do
+    [ -d "$wd" ] || continue
+    wd_n=$((wd_n + 1))
+    say "watchdog ${wd##*/}: $(cat "$wd/identity" 2>/dev/null || echo unknown) state=$(cat "$wd/state" 2>/dev/null || echo ?) timeout=$(cat "$wd/timeout" 2>/dev/null || echo ?)s nowayout=$(cat "$wd/nowayout" 2>/dev/null || echo ?)"
+done
+say "watchdog_devices=${wd_n}"
 if [ -x /usr/bin/s6-rc ]; then
     say "s6rc_up_begin"
     s6-rc -a list 2>/dev/null | sed 's/^/KRYPTIK_SMOKE: up: /'
