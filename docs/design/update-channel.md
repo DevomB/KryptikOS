@@ -65,8 +65,15 @@ latest        KRYPTIK-LATEST-1
 latest.sig    an OpenSSH signature over those bytes, namespace kryptik-latest
 ```
 
-It is signed by the release key, in a namespace of its own, so a manifest's
-signature can never be replayed as a pointer nor a pointer's as a manifest.
+`base` may be absolute or relative. A relative one is resolved against the
+channel address on the verified root, never against anything the net zone
+reports, so a mirror can move without the pointer being signed again; and
+since the pointer carries the manifest's hash, where the bytes come from
+decides nothing about what they must be.
+
+It is signed in a namespace of its own, so a manifest's signature can never
+be replayed as a pointer nor a pointer's as a manifest. Which key signs it
+is an open decision (below).
 The channel's address is on the verified root (`/etc/kryptik/update.conf`,
 visible read-only in zones like the time sources), so the net zone is not
 told where to look by anything it could have written.
@@ -196,6 +203,31 @@ The rules about pointers and offsets are pure functions and unit-tested; the
 verbs' refusals run in the boundary suite against a real zone; the fetcher
 runs against a local server in an offline suite, with the interrupted and
 the hostile cases; the last row joins the update suite.
+
+## A decision for the owner: which key signs the pointer
+
+Detecting a withheld update needs the pointer re-issued on a schedule, and a
+schedule needs a key that is available on a timer. The roadmap's production
+release key is meant to live offline. Those two pull against each other, and
+the choice is about how the keys are held, which is the owner's:
+
+- **The release key signs pointers too.** One key, one trust anchor, and it
+  has to come online every time the pointer is refreshed. The freshness
+  check costs the offline key its offline-ness.
+- **A separate freshness key**, certified by the release key and honoured
+  only in the `kryptik-latest` namespace. It lives online and re-signs on
+  the timer; the release key stays offline and signs releases. If the
+  freshness key is stolen, the thief can keep asserting that an old release
+  is current - the same freeze a hostile net zone can already cause by
+  withholding, made to look fresh - and nothing more: it cannot sign a
+  manifest, so it cannot install anything, and zone 0 still refuses a
+  pointer older than one it has accepted. Revoking it is a release.
+- **No schedule.** The pointer is signed by the offline key only when a
+  release is made, and a withheld update is simply not detectable. Honest,
+  and weaker.
+
+The design above works with any of the three; only who holds which key, and
+whether `status` can say "stale", changes.
 
 ## Open points
 
