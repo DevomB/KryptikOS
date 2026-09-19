@@ -26,9 +26,13 @@
 # launch service (`kryptikd serve`, root, one socket per session) through
 # kryptik-launch, which also asks for an encrypted zone's passphrase on the
 # terminal and never puts it on a command line. So when this runs as an
-# ordinary user and the session's launch service answers, `shell`, `run` and
-# `stop` go through kryptik-launch. As root (a developer host, a test as
-# root) they drive kryptikd directly, the way they always did.
+# ordinary user and the session's launch service answers, `shell`, `run`,
+# `stop` and `wifi` go through kryptik-launch. As root (a developer host, a
+# test as root) they drive kryptikd directly, the way they always did.
+#
+# `wifi add` reads the passphrase on the terminal with echo off (or one line
+# from a pipe) and hands it to kryptik-launch, or to kryptikd, on standard
+# input: it is never an argument, so it is never in a process listing.
 #
 # A zone with `storage.mode = "ephemeral"` starts, and kryptikd prints the
 # caveat every single time - the tmpfs can reach swap, so this is not secure
@@ -51,6 +55,7 @@ CONF="${KRYPTIK_CONF:-/etc/kryptik/kryptik.conf}"
 # kryptikd's own defaults so that the wrapper changes nothing but the typing.
 ZONES_DIR=/usr/lib/kryptik/zones
 ROOTFS=/var/lib/kryptik/zones
+WIFI_DIR=/var/lib/kryptik/wifi
 UID_BASE=100000
 KRYPTIKD="${KRYPTIKD:-kryptikd}"
 
@@ -75,14 +80,21 @@ USAGE:
     $PROG stop NAME [--now]         stop it (--now skips the polite request)
     $PROG gc                        clean up after zones whose manager died
     $PROG doctor                    check this system can run zones at all
+    $PROG wifi list                 the Wi-Fi networks the net zone knows
+    $PROG wifi add SSID             add one, or change its passphrase (asked
+                                    for on the terminal; never an argument)
+    $PROG wifi forget SSID          remove one
 
 OPTIONS:
     --zones DIR           override the zone directory (default: $ZONES_DIR)
     --rootfs DIR          override the zone data directory (default: $ROOTFS)
+    --wifi-dir DIR        override where the net zone's Wi-Fi credentials are
+                          kept (default: $WIFI_DIR)
 
 CONFIGURATION: $CONF
     zones_dir = /usr/lib/kryptik/zones
     rootfs    = /var/lib/kryptik/zones
+    wifi_dir  = /var/lib/kryptik/wifi
     uid_base  = 100000
 
 Every zone runs as an unprivileged host user, in its own user, pid, mount, ipc,
@@ -123,6 +135,7 @@ load_conf() {
         case "$key" in
             zones_dir) ZONES_DIR="$val" ;;
             rootfs)    ROOTFS="$val" ;;
+            wifi_dir)  WIFI_DIR="$val" ;;
             uid_base)  UID_BASE="$val" ;;
             "")        ;;
             *) printf '%s: %s: ignoring unknown setting %s\n' "$PROG" "$CONF" "$key" >&2 ;;
@@ -347,6 +360,52 @@ cmd_run() {
     start_zone "$name" "$@"
 }
 
+# --- the net zone's Wi-Fi networks ------------------------------------------
+# Credentials live in zone 0, in one file kryptikd writes for the net zone
+# (docs/design/net-zone.md); the net zone is restarted so it reads the new
+# one. Through the launch service as an ordinary user, through kryptikd as
+# root. Either way the passphrase goes on standard input.
+
+# One line, into PASSPHRASE: from the terminal with echo off when standard
+# input is one, otherwise from whatever is piped in.
+PASSPHRASE=""
+read_passphrase() { # ssid
+    if [[ -t 0 ]]; then
+        IFS= read -rs -p "passphrase for $1: " PASSPHRASE
+        printf '\n' >&2
+    else
+        IFS= read -r PASSPHRASE
+    fi
+    [[ -n "$PASSPHRASE" ]] || die "no passphrase given"
+}
+
+cmd_wifi() {
+    local sub="${1:-}"; [[ $# -gt 0 ]] && shift
+    case "$sub" in
+        list)   [[ $# -eq 0 ]] || die "$PROG wifi list takes no argument" 2 ;;
+        add|forget) [[ $# -eq 1 ]] || die "$PROG wifi $sub SSID: exactly one SSID" 2 ;;
+        *) usage >&2; die "wifi needs a subcommand: list, add SSID or forget SSID" 2 ;;
+    esac
+    if via_launch; then
+        case "$sub" in
+            list)   "$LAUNCH" --wifi-list ;;
+            add)    read_passphrase "$1"
+                    # printf is a builtin: the passphrase reaches the pipe
+                    # without ever being a process's argument.
+                    printf '%s\n' "$PASSPHRASE" | "$LAUNCH" --wifi-add "$1" ;;
+            forget) "$LAUNCH" --wifi-forget "$1" ;;
+        esac
+        return
+    fi
+    have_kryptikd
+    case "$sub" in
+        list)   "$KRYPTIKD" wifi list --wifi-dir "$WIFI_DIR" ;;
+        add)    read_passphrase "$1"
+                printf '%s\n' "$PASSPHRASE" | "$KRYPTIKD" wifi add "$1" --wifi-dir "$WIFI_DIR" --zones "$ZONES_DIR" ;;
+        forget) "$KRYPTIKD" wifi forget "$1" --wifi-dir "$WIFI_DIR" --zones "$ZONES_DIR" ;;
+    esac
+}
+
 # --- argument parsing -------------------------------------------------------
 load_conf
 
@@ -355,6 +414,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --zones)  ZONES_DIR="${2:?--zones needs a directory}"; shift 2 ;;
         --rootfs) ROOTFS="${2:?--rootfs needs a directory}"; shift 2 ;;
+        --wifi-dir) WIFI_DIR="${2:?--wifi-dir needs a directory}"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         --) ARGS+=("$@"); break ;;
         *)  ARGS+=("$1"); shift ;;
@@ -372,6 +432,7 @@ case "$cmd" in
     stop)    [[ $# -ge 1 ]] || die "stop needs a zone name"; cmd_stop "$@" ;;
     gc)      cmd_gc ;;
     doctor)  cmd_doctor ;;
+    wifi)    cmd_wifi "$@" ;;
     ""|help) usage ;;
     # Named explicitly rather than falling into "unknown command", because
     # these are the things people will reasonably expect to exist.

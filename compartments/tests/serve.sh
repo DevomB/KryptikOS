@@ -164,7 +164,10 @@ PY
 head_ "daemon"
 # --group: a root instance authorises a group; the suite's own suffices
 # (root is authorised regardless, and a developer instance ignores it).
-"$KRYPTIKD" serve --zones "$ZONES" --rootfs "$ROOTFS" --socket "$SOCK" --proxy-exe "$WLPROXY" --group "$(id -gn)" > "$WORK/serve.log" 2>&1 &
+# --wifi-dir: the net zone's credentials file goes under the work directory,
+# so nothing here touches an installed system's, and the daemon says it did
+# not restart the net zone rather than restarting a real one.
+"$KRYPTIKD" serve --zones "$ZONES" --rootfs "$ROOTFS" --socket "$SOCK" --proxy-exe "$WLPROXY" --group "$(id -gn)" --wifi-dir "$WORK/wifi" > "$WORK/serve.log" 2>&1 &
 DAEMON=$!; BG_PIDS+=("$DAEMON")
 for _ in $(seq 1 100); do [[ -S "$SOCK" ]] && break; sleep 0.05; done
 if [[ -S "$SOCK" ]] && kill -0 "$DAEMON" 2>/dev/null; then
@@ -339,6 +342,90 @@ else
     rm -f "$RT_DIR/alpha"; mv "$RT_DIR/alpha.real" "$RT_DIR/alpha"
     kill "$PA" 2>/dev/null; wait "$PA" 2>/dev/null
 fi
+
+# --- the net zone's Wi-Fi credentials --------------------------------------------------
+# The daemon writes one file for the net zone (kryptikd's wifi.rs) and the
+# session never sees a passphrase again: `wifi-list` names networks, the
+# passphrase travels in the request body, and every refusal names its rule
+# and leaves the file exactly as it was.
+
+head_ "wi-fi credentials"
+WIFI="$WORK/wifi"; WCONF="$WIFI/wpa_supplicant.conf"
+r="$(ask 'wifi-list\n')"
+if [[ "$r" == "end" ]]; then pass "S9a wifi-list with no file is an empty list"; else fail "S9a: $r"; fi
+r="$(ask 'wifi-add\nssid Home\npsk correct horse battery\nend\n')"
+if [[ "$r" == "ok added network \"Home\"; the net zone was not restarted"* && -f "$WCONF" ]]; then
+    pass "S9b wifi-add writes the file and says why the net zone was not restarted here"
+else
+    fail "S9b wifi-add: $r"
+fi
+if [[ "$(stat -c %a "$WCONF" 2>/dev/null)" == 400 ]]; then pass "S9c the file is mode 0400"; else fail "S9c mode $(stat -c %a "$WCONF" 2>&1)"; fi
+if grep -qxF $'\tssid="Home"' "$WCONF" && grep -qxF $'\tpsk="correct horse battery"' "$WCONF"; then
+    pass "S9d ... holding the ssid= and psk= lines, quoted and tab-indented"
+else
+    fail "S9d file:"; sed 's/^/        /' "$WCONF"
+fi
+if [[ "$(stat -c %a "$WIFI")" == 711 ]]; then pass "S9e the directory is 0711: traversable, not listable"; else fail "S9e directory mode $(stat -c %a "$WIFI")"; fi
+if (( PRIVILEGED == 1 )); then
+    # carrier is the nic zone, uid_base 262144: inside it, root is that host
+    # uid, and it is the one party that must read the file.
+    if [[ "$(stat -c %u:%g "$WCONF")" == "262144:262144" ]]; then pass "S9f the file is owned by the nic zone's identity (carrier, uid_base 262144)"; else fail "S9f owned by $(stat -c %u:%g "$WCONF"), not 262144:262144"; fi
+else
+    if [[ "$(stat -c %u "$WCONF")" == "$EUID" ]]; then pass "S9f an unprivileged daemon leaves the file owned by its writer"; else fail "S9f owned by $(stat -c %u "$WCONF")"; fi
+fi
+r="$(ask 'wifi-list\n')"
+if [[ "$r" == $'network Home\nend' ]]; then pass "S9g wifi-list names the network and nothing else"; else fail "S9g: $r"; fi
+if [[ "$r" != *"correct horse"* ]]; then pass "S9h ... and never the passphrase"; else fail "S9h the passphrase is in the listing"; fi
+ino1="$(stat -c %i "$WCONF")"
+r="$(ask 'wifi-add\nssid Cafe Wifi\npsk 0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789abcdef\nend\n')"
+if [[ "$r" == "ok added network \"Cafe Wifi\";"* && "$(grep -c '^network={' "$WCONF")" == 2 ]]; then pass "S9i a second add appends a second block"; else fail "S9i: $r"; fi
+if grep -qxF $'\tpsk=0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789abcdef' "$WCONF"; then pass "S9j 64 hex digits are written unquoted: the raw PSK, underived"; else fail "S9j no unquoted psk line"; fi
+ino2="$(stat -c %i "$WCONF")"
+if [[ "$ino1" != "$ino2" && ! -e "$WCONF.tmp" ]]; then
+    pass "S9k the write is a rename: a new inode, and no .tmp left behind"
+else
+    fail "S9k inode $ino1 -> $ino2, .tmp $([[ -e "$WCONF.tmp" ]] && echo present || echo absent)"
+fi
+r="$(ask 'wifi-add\nssid Home\npsk a different one\nend\n')"
+if [[ "$r" == "ok replaced the passphrase of network \"Home\";"* && "$(grep -c '^network={' "$WCONF")" == 2 ]] && grep -qxF $'\tpsk="a different one"' "$WCONF" && ! grep -qF "correct horse" "$WCONF"; then
+    pass "S9l adding an SSID again replaces its block and says so"
+else
+    fail "S9l: $r"
+fi
+r="$(ask 'wifi-forget\nssid Home\nend\n')"
+if [[ "$r" == "ok forgot network \"Home\";"* ]] && ! grep -qF Home "$WCONF" && grep -qxF $'\tssid="Cafe Wifi"' "$WCONF" \
+   && grep -qxF 'ctrl_interface=/run/wpa_supplicant' "$WCONF" && grep -qxF 'update_config=0' "$WCONF"; then
+    pass "S9m wifi-forget removes only its block; the header and the other network stay"
+else
+    fail "S9m: $r"; sed 's/^/        /' "$WCONF"
+fi
+r="$(ask 'wifi-forget\nssid Home\nend\n')"
+if [[ "$r" == "error: no network named \"Home\""* ]]; then pass "S9n forgetting a network that is not there is an error"; else fail "S9n: $r"; fi
+
+# Refusals: each names its rule, and the file is byte-identical afterwards.
+cp "$WCONF" "$WORK/wifi-before"
+long33="$(printf 'x%.0s' $(seq 1 33))"
+nothex="$(printf 'g%.0s' $(seq 1 64))"
+while IFS='|' read -r id label req rule; do
+    r="$(ask "$req")"
+    if [[ "$r" == "error: "*"$rule"* ]] && cmp -s "$WCONF" "$WORK/wifi-before"; then
+        pass "$id $label is refused naming the rule, and the file is untouched"
+    else
+        fail "$id $label: $r"
+    fi
+done <<REFUSALS
+S9o|an SSID with a double quote|wifi-add\nssid say "hi"\npsk long enough\nend\n|printable ASCII
+S9p|an SSID of 33 bytes|wifi-add\nssid $long33\npsk long enough\nend\n|1 to 32 bytes
+S9q|a passphrase of 7 characters|wifi-add\nssid Home\npsk seven c\nend\n|8 to 63
+S9r|64 characters that are not all hex|wifi-add\nssid Home\npsk $nothex\nend\n|8 to 63
+S9s|a passphrase holding a newline|wifi-add\nssid Home\npsk long\nenough\nend\n|newline
+REFUSALS
+if ! grep -qF -e "correct horse" -e "a different one" -e "0123456789abcdef" "$WORK/serve.log"; then
+    pass "S9t no passphrase reached the daemon's log"
+else
+    fail "S9t a passphrase is in $WORK/serve.log"
+fi
+if [[ "$(ask 'status\n')" == "end" ]]; then pass "S9u the daemon still answers"; else fail "S9u daemon wedged"; fi
 
 # --- summary ---------------------------------------------------------------------------
 

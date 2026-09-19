@@ -74,6 +74,11 @@ pub struct RunOptions {
     pub zone_gid: Option<u32>,
     /// The zone directory, against which `[policy]` paths resolve.
     pub zones_dir: std::path::PathBuf,
+    /// Where the net zone's Wi-Fi credentials live (wifi.rs). A nic zone
+    /// gets `<wifi_dir>/wpa_supplicant.conf` bound read-only at
+    /// /etc/wpa_supplicant.conf when the file exists; other zones never
+    /// see it. Empty means the default directory.
+    pub wifi_dir: std::path::PathBuf,
     /// Development stand-in for the zone 0 prompt: approve every transfer
     /// this zone offers. Prints a warning at launch.
     pub auto_approve_transfers: bool,
@@ -849,6 +854,21 @@ pub fn run_in_zone(
         }
     };
 
+    // The Wi-Fi credentials file, for the nic zone alone: the path in the
+    // host namespace, which the child's own copy of the mounts still
+    // resolves when it builds the root. Whether the file exists is decided
+    // there, at the bind, not here: absent means unconfigured and silent.
+    let wifi_conf: Option<String> = if zone.network == crate::zone::NetworkMode::Nic {
+        let dir = if opts.wifi_dir.as_os_str().is_empty() {
+            std::path::PathBuf::from(crate::wifi::DEFAULT_DIR)
+        } else {
+            opts.wifi_dir.clone()
+        };
+        Some(crate::wifi::conf_path(&dir).display().to_string())
+    } else {
+        None
+    };
+
     let placed = SyncPipe::new()?;
     let ready = SyncPipe::new()?;
     let mapped = SyncPipe::new()?;
@@ -882,6 +902,7 @@ pub fn run_in_zone(
         let rc = intermediate_main(
             zone, rootfs, argv, &id, parent_pid, &placed, &ready, &mapped, &initpid,
             zone_policy.as_ref(), &fs_rules, &broker_path_str, wayland_path_str.as_deref(), opts.wayland_inode,
+            wifi_conf.as_deref(),
         );
         // Never return: this process must not run the parent's cleanup.
         unsafe { libc::_exit(rc) };
@@ -1112,6 +1133,7 @@ fn intermediate_main(
     broker_path: &str,
     wayland_path: Option<&str>,
     wayland_inode: Option<crate::serve::InodeId>,
+    wifi_conf: Option<&str>,
 ) -> i32 {
     macro_rules! bail {
         ($($arg:tt)*) => {{
@@ -1379,7 +1401,7 @@ fn intermediate_main(
     }
 
     if inner == 0 {
-        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, fs_rules, plumbed, &broker_in_zone, wayland_in_zone.as_deref());
+        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, fs_rules, plumbed, &broker_in_zone, wayland_in_zone.as_deref(), wifi_conf);
         unsafe { libc::_exit(rc) };
     }
 
@@ -1413,6 +1435,7 @@ fn zone_init(
     plumbed: bool,
     broker_path: &str,
     wayland_path: Option<&str>,
+    wifi_conf: Option<&str>,
 ) -> i32 {
     macro_rules! bail {
         ($($arg:tt)*) => {{
@@ -1451,7 +1474,7 @@ fn zone_init(
         (crate::zone::NetworkMode::Routed, true) => rootfs::Resolver::Bridge,
         _ => rootfs::Resolver::None,
     };
-    let home = match rootfs::pivot_into(rootfs, &zone.name, ephemeral, resolver, Some(broker_path), wayland_path) {
+    let home = match rootfs::pivot_into(rootfs, &zone.name, ephemeral, resolver, Some(broker_path), wayland_path, wifi_conf) {
         Ok(h) => h,
         Err(e) => bail!("could not build the zone root: {e}"),
     };

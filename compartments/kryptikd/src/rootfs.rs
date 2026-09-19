@@ -413,7 +413,9 @@ pub fn check_data_dir(path: &str, expected_uid: u32) -> Result<(), RootfsError> 
 /// doing this afterwards would kill the zone during its own construction.
 /// `ephemeral` carries the tmpfs size for a `storage.mode = "ephemeral"` zone.
 /// `None` means the persistent directory is bound at the zone's home, as
-/// before.
+/// before. `wifi_conf` is the host path of the net zone's Wi-Fi credentials
+/// file (wifi.rs), given for the nic zone only; it is bound read-only at
+/// /etc/wpa_supplicant.conf when it exists and ignored when it does not.
 pub fn pivot_into(
     data_dir: &str,
     zone: &str,
@@ -421,6 +423,7 @@ pub fn pivot_into(
     resolver: Resolver,
     broker: Option<&str>,
     wayland: Option<&str>,
+    wifi_conf: Option<&str>,
 ) -> Result<String, RootfsError> {
     let home = zone_home(zone);
 
@@ -555,6 +558,19 @@ pub fn pivot_into(
                 Some("mode=0755,size=8m"),
                 call,
             )?;
+        }
+    }
+
+    // --- the net zone's Wi-Fi credentials, at /etc/wpa_supplicant.conf ------
+    // Written in zone 0 by kryptikd (wifi.rs), 0400 and owned by this zone's
+    // identity, which is what lets the supplicant the zone runs read it
+    // while nothing else on the host can. Bound read-only, on a mount point
+    // kryptikd creates on the root tmpfs like every other bound file. No
+    // file means no networks are configured: nothing is mounted and nothing
+    // is said here; the zone's own program reports that it is unconfigured.
+    if let Some(conf) = wifi_conf {
+        if fs::metadata(conf).map(|m| m.is_file()).unwrap_or(false) {
+            bind_ro_file(conf, &format!("{root}{}", crate::wifi::IN_ZONE))?;
         }
     }
 

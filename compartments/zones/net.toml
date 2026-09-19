@@ -13,9 +13,13 @@ description = "Sole holder of a physical network route."
 mode = "nic"
 # Zones with mode = "routed" get a veth into this bridge.
 bridge = "kryptik0"
-# The physical interface this zone takes out of zone 0 when it starts. Named
-# explicitly: kryptikd never guesses which NIC to move.
-nic = "eth0"
+# What this zone takes out of zone 0 when it starts: every interface that
+# sits on a bus device (PCI, USB, a platform device) - a server's wired
+# ports, a laptop's wireless radio, a dock's USB adapter - wired ones by the
+# netdev, wireless ones by their wiphy. Software devices (loopback, bridges,
+# veth ends, tunnels) never qualify. A single name such as "eth0" is also
+# accepted, for a machine where only one interface should leave zone 0.
+nic = "*"
 
 [storage]
 mode = "ephemeral"
