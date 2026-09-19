@@ -684,7 +684,9 @@ pub fn serve_connection(fd: RawFd, s: &Served) -> io::Result<Option<String>> {
         Ok(Request::Version) => reply(fd, &format!("kryptik-broker 1 zone={zone}\n")),
         Ok(Request::Transfer { dest, name }) => match handle_transfer(s, &dest, &name, &fds) {
             Ok((final_name, bytes)) => {
-                eprintln!("kryptikd[zone {zone}]: transfer: {name} ({bytes} bytes) -> {dest} as incoming/{final_name}");
+                crate::spawn::log_line(&format!(
+                    "kryptikd[zone {zone}]: transfer: {name} ({bytes} bytes) -> {dest} as incoming/{final_name}"
+                ));
                 reply(fd, &format!("ok {final_name}\n"));
             }
             Err(why) => reply(fd, &format!("error: {why}\n")),

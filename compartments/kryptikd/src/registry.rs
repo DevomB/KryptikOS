@@ -637,8 +637,14 @@ mod tests {
         if unsafe { libc::geteuid() } == 0 {
             assert_eq!(b, Path::new("/run/kryptik/zones"));
         } else {
+            // As text, not as a Path: Path::starts_with compares whole
+            // components, so "/tmp/kryptik-1000/zones" does not start with
+            // "/tmp/kryptik-" by its rules, and this test failed on every
+            // host without a session's XDG_RUNTIME_DIR - the very fallback
+            // it was written to accept.
+            let s = b.to_string_lossy();
             assert!(
-                b.starts_with("/run/user") || b.starts_with("/tmp/kryptik-"),
+                s.starts_with("/run/user/") || s.starts_with("/tmp/kryptik-"),
                 "unprivileged registry must not be a shared path: {b:?}"
             );
         }

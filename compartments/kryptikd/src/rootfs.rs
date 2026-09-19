@@ -1106,6 +1106,13 @@ mod tests {
     /// Needs an unprivileged user namespace; skips (not passes) without one.
     #[test]
     fn read_only_bind_is_read_only_all_the_way_down() {
+        // Named BEFORE the fork. temp_dir() reads the environment, which is
+        // behind a process-wide lock in std, and other tests in this binary
+        // set variables: a child forked while one of them held that lock
+        // waited for it forever, and the whole suite with it, about one run
+        // in eight. A forked child of a threaded process may not take a lock
+        // another thread could have been holding.
+        let base = std::env::temp_dir().join(format!("kryptik-ro-test-{}", std::process::id()));
         let rc = in_child(|| {
             let uid = unsafe { libc::getuid() };
             let gid = unsafe { libc::getgid() };
@@ -1121,7 +1128,6 @@ mod tests {
             if mount_raw("none", "/", None, libc::MS_REC | libc::MS_PRIVATE, None, "private").is_err() {
                 return SKIP;
             }
-            let base = std::env::temp_dir().join(format!("kryptik-ro-test-{}", std::process::id()));
             let src = base.join("src");
             let sub = src.join("sub");
             let dst = base.join("dst");

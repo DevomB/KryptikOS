@@ -240,6 +240,39 @@ fn install_forwarding(target: libc::pid_t, arm_kill: bool) {
     }
 }
 
+/// One log line in one write(2). `eprintln!` hands stderr a formatted line
+/// in pieces - the literal text, each argument, the newline - and while a
+/// zone runs, the launcher shares that descriptor with it: whatever the
+/// zone prints can land between two pieces. The installed system's boundary
+/// suite caught exactly that: a broker reply read back as
+/// `kryptikd[zone error: unknown verb` / `probe]: broker served "steal"`,
+/// and a check anchored on the reply's own line failed on a system that had
+/// answered correctly. A single write of less than PIPE_BUF bytes is atomic
+/// on a pipe, and a log is a pipe or a file opened for append, so every line
+/// written this way arrives whole. For anything the launcher says while the
+/// zone is alive.
+///
+/// write(2) on descriptor 2 directly, not through `io::stderr()`: that
+/// handle is behind a process-wide lock, and this process forks. A child
+/// forked while another thread held the lock would wait for it forever (the
+/// first version of this function's own test hung exactly that way).
+pub(crate) fn log_line(line: &str) {
+    let mut bytes = Vec::with_capacity(line.len() + 1);
+    bytes.extend_from_slice(line.as_bytes());
+    bytes.push(b'\n');
+    let mut off = 0;
+    while off < bytes.len() {
+        let n = unsafe { libc::write(2, bytes[off..].as_ptr() as *const libc::c_void, bytes.len() - off) };
+        if n < 0 {
+            if errno() == libc::EINTR {
+                continue;
+            }
+            return;
+        }
+        off += n as usize;
+    }
+}
+
 /// Supervise the child while answering the zone broker requests: poll the
 /// listening socket with a short timeout, serve what arrives, and reap the
 /// child when it exits. Signals forwarded by the handlers interrupt the
@@ -259,9 +292,9 @@ fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, s: &broker::Served) -> R
         let n = unsafe { libc::poll(&mut pfd, 1, 200) };
         if n > 0 && pfd.revents & libc::POLLIN != 0 {
             match broker::serve_one(listen_fd, s) {
-                Ok(Some(verb)) => eprintln!("kryptikd[zone {zone}]: broker served {verb:?}"),
+                Ok(Some(verb)) => log_line(&format!("kryptikd[zone {zone}]: broker served {verb:?}")),
                 Ok(None) => {}
-                Err(e) => eprintln!("kryptikd[zone {zone}]: broker: {e}"),
+                Err(e) => log_line(&format!("kryptikd[zone {zone}]: broker: {e}")),
             }
         }
     }
@@ -1796,6 +1829,65 @@ mod tests {
              [identity]\nuid_base = {base}\n[ui]\nborder_color = \"#123456\"\n"
         ))
         .unwrap()
+    }
+
+    /// A line written with `log_line` arrives whole even while something
+    /// else writes to the same pipe: the launcher and the zone it supervises
+    /// share one, and the installed system once read a broker reply out of
+    /// the middle of the launcher's line. Kernel-backed: two forked writers
+    /// on one pipe, one through `log_line` on its stderr, one with plain
+    /// single writes, a few thousand lines between them; every line the
+    /// reader gets must be exactly one writer's.
+    #[test]
+    fn a_log_line_is_never_split_by_another_writer() {
+        use std::io::Read;
+        use std::os::unix::io::FromRawFd;
+        const N: usize = 1500;
+        let a_line = format!("kryptikd[zone probe]: broker served {:?} {}", "steal", "x".repeat(160));
+        let b_line = "error: unknown verb";
+        let mut p = [0 as libc::c_int; 2];
+        assert_eq!(unsafe { libc::pipe(p.as_mut_ptr()) }, 0, "pipe failed");
+        let mut kids = Vec::new();
+        for which in 0..2 {
+            let pid = unsafe { libc::fork() };
+            assert!(pid >= 0, "fork failed");
+            if pid == 0 {
+                unsafe {
+                    libc::close(p[0]);
+                    if which == 0 {
+                        libc::dup2(p[1], 2);
+                        for _ in 0..N {
+                            log_line(&a_line);
+                        }
+                    } else {
+                        let line = format!("{b_line}\n");
+                        for _ in 0..N {
+                            libc::write(p[1], line.as_ptr() as *const libc::c_void, line.len());
+                        }
+                    }
+                    libc::_exit(0);
+                }
+            }
+            kids.push(pid);
+        }
+        unsafe { libc::close(p[1]) };
+        let mut all = String::new();
+        unsafe { std::fs::File::from_raw_fd(p[0]) }.read_to_string(&mut all).expect("read the pipe");
+        for k in kids {
+            let mut st = 0;
+            unsafe { libc::waitpid(k, &mut st, 0) };
+        }
+        let (mut a, mut b) = (0, 0);
+        for line in all.lines() {
+            if line == a_line {
+                a += 1;
+            } else if line == b_line {
+                b += 1;
+            } else {
+                panic!("a line arrived that neither writer wrote whole: {line:?}");
+            }
+        }
+        assert_eq!((a, b), (N, N), "lines were lost or merged");
     }
 
     #[test]
