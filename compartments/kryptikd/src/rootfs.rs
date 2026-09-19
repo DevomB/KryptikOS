@@ -278,6 +278,9 @@ pub const ETC_RO_FILES: &[&str] = &[
     // The DHCP client's shipped defaults (require the server identifier,
     // which options to ask for): the nic zone's dhcpcd reads them; no secret.
     "/etc/dhcpcd.conf",
+    // The time sources the nic zone asks (docs/design/time.md): a list of
+    // server names, no secret, and absent on a system that keeps the default.
+    "/etc/kryptik/time.conf",
 ];
 pub const ETC_RO_DIRS: &[&str] = &["/etc/alternatives", "/etc/ssl/certs", "/etc/pki/tls/certs"];
 

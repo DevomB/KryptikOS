@@ -216,7 +216,7 @@ run_confirm() { # ID
         echo
         printf 'The network says it is   %s\n' "$proposed"
         printf 'This machine says it is  %s\n' "$now"
-        printf '    (%s time server(s) agreed, asked by the net zone, which is not trusted)\n' "$sources"
+        printf '    (asked of %s configured time source(s) by the net zone, which is not trusted)\n' "$sources"
         echo
         echo "Check a watch or a phone. A wrong clock makes expired certificates"
         echo "look valid and old updates look new. Cancelling leaves the clock alone."

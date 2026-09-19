@@ -24,6 +24,9 @@
 #            gets its lease once it has associated
 #   dnsmasq  the resolver at 10.19.0.1 / fd19::1 that routed zones' resolv.conf
 #            already names, forwarding to the uplink's servers
+#   time     `chronyd -Q` measures how far the machine's clock is from the
+#            time servers and sets nothing (this zone could not); the offset
+#            goes to zone 0 through the broker, as a claim zone 0 judges
 #
 # FAIL CLOSED. The first version logged a failed nftables load and enabled
 # forwarding anyway, which is a router with no firewall. Now: forwarding is
@@ -31,7 +34,8 @@
 # retried without ever opening the path, and the readiness line says what is
 # actually true. Readiness has four parts and each is reported on its own:
 #
-#   netzone: READY uplink=<addr|none> nat=yes dns=<yes|no> wifi=<ssid|connecting|unconfigured|none> ...
+#   netzone: READY uplink=<addr|none> nat=yes dns=<yes|no> wifi=<ssid|connecting|unconfigured|none>
+#                  time=<offset|no-answer|no-uplink|...> ...
 #   netzone: NOT READY <reason>            (forwarding is off)
 #
 # A missing uplink address (no DHCP answer, nothing carried over) is reported
@@ -251,13 +255,77 @@ start_dns() {
 dns_ok=0
 start_dns && dns_ok=1
 
+# --- the time: measured here, decided in zone 0 (docs/design/time.md) --------
+# The wall clock is one clock for the whole machine and only zone 0 may set
+# it; this zone is the only one that can ask a time server and cannot set
+# anything (no CAP_SYS_TIME). So it measures how far the shared clock is from
+# what the servers say - `chronyd -Q` measures and prints, and touches
+# nothing - and tells zone 0 the OFFSET through its broker. Zone 0 treats
+# that as a claim from a zone it does not trust: it has a floor and a bound
+# of its own, and asks the person past the bound. What this zone learns back
+# is one line saying what zone 0 did.
+#
+# The sources are zone 0's to name (/etc/kryptik/time.conf on the verified
+# root, `server HOST` or `pool HOST` per line); without the file, the pool.
+TIME_CONF=/etc/kryptik/time.conf
+TIME_STATE=not-asked
+time_sources() {
+    if [ -r "$TIME_CONF" ]; then
+        sed -n 's/^[[:space:]]*\(server\|pool\)[[:space:]][[:space:]]*\([A-Za-z0-9._:-][A-Za-z0-9._:-]*\)[[:space:]]*$/\1 \2/p' "$TIME_CONF" | head -16
+    else
+        echo "pool pool.ntp.org"
+    fi
+}
+ask_time() {   # ask_time <uplink>...: sets TIME_STATE
+    command -v chronyd >/dev/null 2>&1 || { TIME_STATE=no-chronyd; return; }
+    [ -n "$(uplink_addr "$@")" ] || { TIME_STATE=no-uplink; return; }
+    # The directives become this function's own positional parameters: one
+    # argument each, which is how chronyd takes them with no config file.
+    set --
+    while read -r kind host; do
+        [ -n "$host" ] || continue
+        case "$kind" in
+            pool) set -- "$@" "pool $host iburst maxsources 4" ;;
+            server) set -- "$@" "server $host iburst" ;;
+        esac
+    done <<EOF
+$(time_sources)
+EOF
+    [ $# -gt 0 ] || { TIME_STATE=unconfigured; say "time: ${TIME_CONF} names no server or pool"; return; }
+    nsrc=$#
+    out="$(chronyd -Q -t 10 "$@" 2>&1)"; rc=$?
+    # "System clock wrong by N seconds": N is what would be ADDED to the
+    # clock to make it right, which is the offset zone 0 is told. No such
+    # line is no answer; the exit status says nothing either way - except
+    # 159, which is SIGSYS: the zone's seccomp policy killed it, and that is
+    # a defect in the policy or the client to be read here, not a quiet
+    # network.
+    off="$(printf '%s\n' "$out" | sed -n 's/.*System clock wrong by \(-\{0,1\}[0-9][0-9]*\.[0-9]\{1,6\}\)[0-9]* seconds.*/\1/p' | tail -1)"
+    if [ -z "$off" ]; then
+        TIME_STATE=no-answer
+        [ "$rc" = 159 ] && { TIME_STATE=killed-by-seccomp; say "time: chronyd was killed by this zone's seccomp policy (SIGSYS)"; }
+        return
+    fi
+    TIME_STATE="$off"
+    if ! command -v python3 >/dev/null 2>&1; then say "time: measured ${off} s, and no client here to tell zone 0"; return; fi
+    # The wait is long because zone 0 may be asking the person.
+    told="$(python3 -c 'import socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(90)
+s.connect("/run/kryptik/broker")
+s.sendall(("time-offset %s %s\n" % (sys.argv[1], sys.argv[2])).encode()); s.shutdown(socket.SHUT_WR)
+print(s.recv(4096).decode("utf-8", "replace").strip())' "$off" "$nsrc" 2>&1 | head -1)"
+    say "time: the clock is off by ${off} s (asked of ${nsrc} source(s)); zone 0: ${told:-no reply}"
+}
+ask_time "$@"
+time_ticks=0
+
 status_line() {
     a="$(uplink_addr "$@")"
     w="$(wifi_state)"
     if [ "$policy_ok" = 1 ]; then
-        report "READY uplink=${a:-none} nat=yes dns=$([ "$dns_ok" = 1 ] && echo yes || echo no) wifi=${w} bridge=${BR} uplinks=$*"
+        report "READY uplink=${a:-none} nat=yes dns=$([ "$dns_ok" = 1 ] && echo yes || echo no) wifi=${w} time=${TIME_STATE} bridge=${BR} uplinks=$*"
     else
-        report "NOT READY firewall policy not loaded; forwarding off; uplink=${a:-none} dns=$([ "$dns_ok" = 1 ] && echo yes || echo no) wifi=${w}"
+        report "NOT READY firewall policy not loaded; forwarding off; uplink=${a:-none} dns=$([ "$dns_ok" = 1 ] && echo yes || echo no) wifi=${w} time=${TIME_STATE}"
     fi
 }
 status_line "$@"
@@ -295,7 +363,25 @@ while :; do
         fi
     done
     wifi_now="$(wifi_state)"
-    if [ "$wifi_now" != "$wifi_last" ]; then wifi_last="$wifi_now"; changed=1; say "wifi: ${wifi_now}"; fi
+    if [ "$wifi_now" != "$wifi_last" ]; then
+        wifi_last="$wifi_now"; changed=1; say "wifi: ${wifi_now}"
+        # A radio that has just associated is the first moment there is
+        # anybody to ask.
+        case "$wifi_now" in none|unconfigured|connecting) ;; *) time_ticks=999999 ;; esac
+    fi
+    # The time again: hourly once it has been measured, every five minutes
+    # while it has not (zone 0 considers one claim per ten minutes whatever
+    # this zone does, so asking more often buys nothing).
+    time_ticks=$((time_ticks + 1))
+    case "$TIME_STATE" in
+        -*|+*|[0-9]*) time_every=360 ;;
+        *) time_every=30 ;;
+    esac
+    if [ "$time_ticks" -ge "$time_every" ]; then
+        time_ticks=0; time_was="$TIME_STATE"
+        ask_time "$@"
+        [ "$TIME_STATE" != "$time_was" ] && changed=1
+    fi
     [ "$changed" = 1 ] && status_line "$@"
     sleep 10 &
     wait $!

@@ -74,7 +74,9 @@ One new verb, accepted only from the zone whose file says `mode = "nic"`
 ```text
 time-offset <seconds> <sources>
     seconds  a signed decimal, at most 10 integer digits and 6 fractional
-    sources  how many servers chrony combined, 1-16
+    sources  how many time sources the zone was configured to ask, 1-16
+             (chrony's -Q does not say how many agreed, so this does not
+             pretend to)
 ```
 
 Anything else is refused at parse time. One claim is considered per

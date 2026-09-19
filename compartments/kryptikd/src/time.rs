@@ -23,8 +23,9 @@ pub const DEFAULT_BOUND_SECS: i64 = 3600;
 /// hostile zone cannot turn the consent prompt into a flood.
 pub const CLAIM_INTERVAL_SECS: u64 = 600;
 
-/// What the net zone says: add `offset` seconds to the clock; `sources`
-/// servers agreed on it.
+/// What the net zone says: add `offset` seconds to the clock. `sources` is
+/// how many time sources it was configured to ask - not how many agreed,
+/// which its client does not say - and is shown to the person as that.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Claim {
     pub offset: f64,
