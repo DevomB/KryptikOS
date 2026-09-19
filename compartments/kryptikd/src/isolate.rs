@@ -62,8 +62,8 @@ fn check(call: &'static str, ret: libc::c_int) -> Result<(), IsolateError> {
 ///
 /// Every zone gets its own network namespace, the nic zone included: it
 /// OWNS the physical interface, which the parent moves into its namespace
-/// (netzone), so zone 0 is left with loopback. Until security increment 15
-/// the nic zone stayed in zone 0's namespace - a compartment-layer rule from before
+/// (netzone), so zone 0 is left with loopback. At first the nic zone stayed
+/// in zone 0's namespace - a compartment-layer rule from before
 /// the topology existed - which made "move the NIC into the nic zone" a
 /// no-op and built the bridge in zone 0. Nothing measured it: the launcher
 /// suite's routed-zone check only confirmed that the zone started, and the VM
@@ -337,7 +337,7 @@ mod tests {
         assert_ne!(namespace_flags(&zone("routed")) & libc::CLONE_NEWNET, 0);
         // The nic zone owns the real interface: the parent moves it INTO the
         // zone's namespace, which has to exist. Sharing zone 0's namespace
-        // (the rule until increment 15) made the move a no-op and left the
+        // (the rule at first) made the move a no-op and left the
         // NIC, the bridge and the forwarding in zone 0.
         assert_ne!(namespace_flags(&zone("nic")) & libc::CLONE_NEWNET, 0);
     }
