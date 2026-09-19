@@ -83,10 +83,16 @@ jobs:
         with:
           path: /mnt/kryptik/sources
           key: sources-${{ hashFiles('sources.lock') }}
+          # A changed lock restores the most recent earlier set and fetches
+          # only what is new; every file is still hashed against the lock.
+          restore-keys: |
+            sources-
 
       - name: Fetch and verify the sources
         if: steps.sources.outputs.cache-hit != 'true'
-        run: make sources
+        run: |
+          make sources
+          ./tools/prune-sources.sh
 
       # The sysroot and the stamps after stage 02, keyed on everything those
       # stages read. A hit skips both stages (their stamps still verify their
@@ -175,10 +181,16 @@ jobs:
         with:
           path: /mnt/kryptik/sources
           key: sources-${{ hashFiles('sources.lock') }}
+          # A changed lock restores the most recent earlier set and fetches
+          # only what is new; every file is still hashed against the lock.
+          restore-keys: |
+            sources-
 
       - name: Fetch and verify the sources
         if: steps.sources.outputs.cache-hit != 'true'
-        run: make sources
+        run: |
+          make sources
+          ./tools/prune-sources.sh
 
       - uses: actions/download-artifact@v7
         with:
