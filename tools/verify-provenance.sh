@@ -555,6 +555,16 @@ verify_published_sha256 "${SKARNET_BASE}/s6-rc/s6-rc-${V_S6_RC}.tar.gz" "s6-rc" 
 verify_published_sha256 "${SKARNET_BASE}/s6-linux-init/s6-linux-init-${V_S6_LINUX_INIT}.tar.gz" \
     "s6-linux-init" "s6-linux-init"
 
+# The CA bundle is one PEM file that nobody signs; curl.se states its SHA-256
+# beside it, by the same convention. Only where the tree pins one: a tree that
+# does not (this tool's own fixture) has nothing to check.
+if [[ -n "${V_CA_BUNDLE:-}" ]]; then
+    echo
+    log "curl.se: publisher-published checksum"
+    verify_published_sha256 "${MIRROR_CURL_CA:-https://curl.se/ca}/cacert-${V_CA_BUNDLE}.pem" \
+        "CA bundle (Mozilla's set, as curl.se publishes it)" "ca-bundle"
+fi
+
 echo
 log "Summary"
 ok "established:  ${PASS_N}"

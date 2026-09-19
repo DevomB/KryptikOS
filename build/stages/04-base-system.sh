@@ -1542,6 +1542,8 @@ s_boot_check() {
     chk "wpa_supplicant"    /usr/sbin/wpa_supplicant x
     chk "wpa_cli"           /usr/sbin/wpa_cli x
     chk "iw"                /usr/sbin/iw x
+    chk "chronyd"           /usr/sbin/chronyd x
+    chk "CA bundle"         /etc/ssl/certs/ca-certificates.crt
     chk "regulatory.db"     /lib/firmware/regulatory.db.zst
     chk "regulatory.db.p7s" /lib/firmware/regulatory.db.p7s.zst
 
@@ -1877,6 +1879,47 @@ s_iw() {
     make PREFIX=/usr SBINDIR=/usr/sbin install
     [[ -x /usr/sbin/iw ]] || { echo "FAIL: /usr/sbin/iw was not installed"; return 1; }
     iw --version
+}
+
+# chrony, for one thing: `chronyd -Q` in the net zone measures how wrong the
+# clock is and prints it. It cannot set a clock there and is not asked to;
+# zone 0 decides what to do with the answer. Built without NTS (the image
+# carries no gnutls or nettle, and zone 0 never trusts the answer beyond its
+# own bounds), without editline, and without chrony's own seccomp filter,
+# which the zone's replaces. -Q needs no root, no pid file and no runtime
+# directory; on a server that does not answer it says "Timeout reached" and
+# prints no offset, so the offset line is the result, not the exit status.
+s_chrony() {
+    local src; src="$(unpack "chrony-${V_CHRONY}.tar.gz" "chrony-${V_CHRONY}")"
+    cd "$src"
+    ./configure --prefix=/usr --sysconfdir=/etc \
+        --chronyrundir=/run/chrony --chronyvardir=/var/lib/chrony \
+        --disable-nts --without-nettle --without-gnutls --without-nss --without-tomcrypt \
+        --without-editline --without-seccomp
+    make
+    make install
+    [[ -x /usr/sbin/chronyd ]] || { echo "FAIL: /usr/sbin/chronyd was not installed"; return 1; }
+    chronyd -v
+}
+
+# The CA bundle: Mozilla's set as curl.se publishes it, one PEM file, where
+# OpenSSL 3 and python's ssl look by default. It sits on the verified root,
+# and zones see /etc/ssl/certs read-only. TLS is never what a release's
+# authenticity rests on (zone 0 verifies the signature, every file and the
+# root hash), but a downloader that cannot verify a server at all is not
+# something to ship.
+s_ca_bundle() {
+    local pem="${KRYPTIK_SOURCES}/cacert-${V_CA_BUNDLE}.pem"
+    [[ -f "$pem" ]] || { echo "FAIL: ${pem} was not fetched"; return 1; }
+    local n; n="$(grep -c 'BEGIN CERTIFICATE' "$pem")"
+    [[ "$n" -ge 100 ]] || { echo "FAIL: ${pem} holds ${n} certificates; expected Mozilla's set"; return 1; }
+    install -D -m 0644 "$pem" "${KRYPTIK_DESTDIR}/etc/ssl/certs/ca-certificates.crt"
+    ln -sfn certs/ca-certificates.crt "${KRYPTIK_DESTDIR}/etc/ssl/cert.pem"
+    echo "installed ${n} certificates as /etc/ssl/certs/ca-certificates.crt"
+    # The default lookup must find it, from both places the image speaks TLS.
+    openssl version -d
+    python3 -c 'import ssl; n = len(ssl.create_default_context().get_ca_certs()); print("python ssl default context:", n, "CAs"); raise SystemExit(0 if n >= 100 else 1)' \
+        || { echo "FAIL: python's default TLS context does not find the bundle"; return 1; }
 }
 
 # --- device firmware (ADR-012) -----------------------------------------------
@@ -2390,6 +2433,9 @@ PACKAGES=(
     "libnl"       "native_build libnl-${V_LIBNL}.tar.gz libnl-${V_LIBNL} --sysconfdir=/etc --disable-static"
     "wpa-supplicant" "s_wpa_supplicant"
     "iw"          "s_iw"
+    # --- what the net zone asks the time with, and verifies a server by.
+    "chrony"      "s_chrony"
+    "ca-bundle"   "s_ca_bundle"
     # --- device firmware (ADR-012): the files build/config/firmware.list names
     #     out of the pinned linux-firmware release, onto /lib/firmware.
     "linux-firmware" "s_firmware $(sha256_of "${KRYPTIK_ROOT}/build/config/firmware.list" 2>/dev/null || echo none)"

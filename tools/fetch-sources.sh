@@ -145,6 +145,8 @@ dhcpcd|${V_DHCPCD}|${MIRROR_GITHUB}/NetworkConfiguration/dhcpcd/releases/downloa
 libnl|${V_LIBNL}|${MIRROR_GITHUB}/thom311/libnl/releases/download/libnl${V_LIBNL//./_}/libnl-${V_LIBNL}.tar.gz
 wpa-supplicant|${V_WPA_SUPPLICANT}|${MIRROR_W1FI}/wpa_supplicant-${V_WPA_SUPPLICANT}.tar.gz
 iw|${V_IW}|${MIRROR_KERNEL_SOFTWARE}/network/iw/iw-${V_IW}.tar.xz
+chrony|${V_CHRONY}|${MIRROR_CHRONY}/chrony-${V_CHRONY}.tar.gz
+ca-bundle|${V_CA_BUNDLE}|${MIRROR_CURL_CA}/cacert-${V_CA_BUNDLE}.pem
 linux-firmware|${V_LINUX_FIRMWARE}|${MIRROR_KERNEL}/firmware/linux-firmware-${V_LINUX_FIRMWARE}.tar.xz
 wireless-regdb|${V_WIRELESS_REGDB}|${MIRROR_KERNEL_SOFTWARE}/network/wireless-regdb/wireless-regdb-${V_WIRELESS_REGDB}.tar.xz
 intel-microcode|${V_INTEL_MICROCODE}|${MIRROR_GITHUB}/intel/Intel-Linux-Processor-Microcode-Data-Files/archive/refs/tags/microcode-${V_INTEL_MICROCODE}.tar.gz
