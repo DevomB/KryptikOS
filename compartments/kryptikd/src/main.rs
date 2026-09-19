@@ -27,7 +27,6 @@ mod rootfs;
 mod seccomp;
 mod serve;
 mod spawn;
-#[allow(dead_code)] // the decision lands first; the broker verb and the clamp that call it follow
 mod time;
 mod volume;
 mod wifi;
@@ -70,6 +69,9 @@ USAGE:
                    [--wifi-dir DIR]   (the session does this through `kryptik
                                       wifi` and the launch daemon; this is root's
                                       path and the tests')
+    kryptikd time floor               at boot: a clock that reads earlier than this
+                                      system was built is set to the build date
+    kryptikd time status              the clock, the floor, and what was last done to it
 
     --rootfs DIR   base directory for zone data (default: /var/lib/kryptik/zones);
                    the zone sees its own directory as /home/NAME
@@ -246,6 +248,7 @@ fn main() -> ExitCode {
         "volume" => cmd_volume(&zone_dir, &args),
         "serve" => serve::cmd_serve(&zone_dir, &args),
         "wifi" => cmd_wifi(&zone_dir, &args),
+        "time" => cmd_time(&args),
         "clipboard" => cmd_clipboard(&args),
         "transfer" => {
             eprintln!(
@@ -1070,6 +1073,46 @@ fn wifi_dir_from(args: &[String]) -> PathBuf {
         .and_then(|i| args.get(i + 1))
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(wifi::DEFAULT_DIR))
+}
+
+
+/// `kryptikd time floor | status` (docs/design/time.md). The clock is set in
+/// two places only: here, from the floor and with no network involved, and
+/// in the broker, from a claim the net zone made and zone 0 judged.
+fn cmd_time(args: &[String]) -> ExitCode {
+    let dir = Path::new(time::STATE_DIR);
+    match args.get(1).map(String::as_str) {
+        Some("floor") => match time::clamp(&mut time::SystemClock, dir, time::floor_of_this_system()) {
+            Ok(said) => {
+                println!("kryptikd: time: {said}");
+                ExitCode::SUCCESS
+            }
+            Err(why) => {
+                eprintln!("kryptikd: time: {why}");
+                ExitCode::FAILURE
+            }
+        },
+        Some("status") => {
+            use time::Clock;
+            println!("clock    {}", time::format_utc(time::SystemClock.now()));
+            match time::floor_of_this_system() {
+                Some(f) => println!("floor    {} (this system's build date; nothing earlier is believed)", time::format_utc(f as f64)),
+                None => println!("floor    unknown: {} is missing or unreadable, so every claim is refused", time::IMAGE_JSON),
+            }
+            match std::fs::read_to_string(dir.join("history")) {
+                Ok(h) => match h.lines().last() {
+                    Some(l) => println!("last     {l}"),
+                    None => println!("last     nothing has been done to the clock"),
+                },
+                Err(_) => println!("last     nothing has been done to the clock"),
+            }
+            ExitCode::SUCCESS
+        }
+        _ => {
+            eprintln!("usage: kryptikd time floor | status");
+            ExitCode::from(2)
+        }
+    }
 }
 
 /// `kryptikd wifi`: the net zone's Wi-Fi credentials, from zone 0 (wifi.rs).

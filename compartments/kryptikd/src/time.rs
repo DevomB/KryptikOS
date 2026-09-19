@@ -208,11 +208,410 @@ pub fn format_utc(t: f64) -> String {
     format!("{y:04}-{m:02}-{d:02} {:02}:{:02} UTC", rem / 3600, rem % 3600 / 60)
 }
 
+// --- carrying a decision out ------------------------------------------------
+
+use std::io::{self, Write};
+use std::path::Path;
+
+/// The image record whose `built_at` is the floor.
+pub const IMAGE_JSON: &str = "/etc/kryptik-image.json";
+/// What zone 0 remembers about the clock between claims and across boots.
+pub const STATE_DIR: &str = "/var/lib/kryptik/time";
+
+/// The machine's wall clock, as the glue below needs it. The real one is
+/// `SystemClock`; the tests use one that records what was asked of it,
+/// because nothing unprivileged may set a clock and no test should.
+pub trait Clock {
+    fn now(&self) -> f64;
+    fn step(&mut self, to: f64) -> io::Result<()>;
+    fn slew(&mut self, offset: f64) -> io::Result<()>;
+    /// Copy the system clock to the hardware clock, where there is one.
+    fn sync_rtc(&mut self) -> io::Result<()>;
+}
+
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now(&self) -> f64 {
+        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts) };
+        ts.tv_sec as f64 + ts.tv_nsec as f64 / 1e9
+    }
+
+    fn step(&mut self, to: f64) -> io::Result<()> {
+        let ts = libc::timespec { tv_sec: to.floor() as libc::time_t, tv_nsec: ((to - to.floor()) * 1e9) as _ };
+        if unsafe { libc::clock_settime(libc::CLOCK_REALTIME, &ts) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    fn slew(&mut self, offset: f64) -> io::Result<()> {
+        let whole = offset.trunc();
+        let tv = libc::timeval { tv_sec: whole as libc::time_t, tv_usec: ((offset - whole) * 1e6) as _ };
+        if unsafe { libc::adjtime(&tv, std::ptr::null_mut()) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    fn sync_rtc(&mut self) -> io::Result<()> {
+        // struct rtc_time is nine ints; RTC_SET_TIME is _IOW('p', 0x0a, it).
+        // The kernel ignores wday, yday and isdst. The RTC is kept in UTC.
+        const RTC_SET_TIME: libc::c_ulong = 0x4024_700a;
+        let f = match std::fs::OpenOptions::new().write(true).open("/dev/rtc0") {
+            Ok(f) => f,
+            // A machine without one (most VMs have one; some boards do not).
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        let secs = self.now().floor() as i64;
+        let (days, rem) = (secs.div_euclid(86400), secs.rem_euclid(86400));
+        let (y, m, d) = civil_from_days(days);
+        let tm: [libc::c_int; 9] =
+            [(rem % 60) as _, (rem % 3600 / 60) as _, (rem / 3600) as _, d as _, (m - 1) as _, (y - 1900) as _, 0, 0, 0];
+        use std::os::unix::io::AsRawFd;
+        if unsafe { libc::ioctl(f.as_raw_fd(), RTC_SET_TIME as _, tm.as_ptr()) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+/// The floor of the running system, or None when the image record is
+/// missing or does not parse: "no floor known", on which every claim is
+/// refused. Never zero.
+pub fn floor_of_this_system() -> Option<i64> {
+    floor_from_image_json(&std::fs::read_to_string(IMAGE_JSON).ok()?)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+struct State {
+    moved_unasked: f64,
+    /// When the last claim was CONSIDERED, whatever came of it: a "no" from
+    /// the person buys quiet for the interval too.
+    last_claim: Option<f64>,
+}
+
+fn load_state(dir: &Path) -> State {
+    let mut s = State::default();
+    let Ok(text) = std::fs::read_to_string(dir.join("state")) else { return s };
+    for line in text.lines() {
+        match line.split_once('=') {
+            Some(("moved_unasked", v)) => s.moved_unasked = v.parse().ok().filter(|x: &f64| x.is_finite() && *x >= 0.0).unwrap_or(0.0),
+            Some(("last_claim", v)) => s.last_claim = v.parse().ok().filter(|x: &f64| x.is_finite()),
+            _ => {}
+        }
+    }
+    s
+}
+
+fn ensure_dir(dir: &Path) -> io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    match std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Written whole and renamed into place: a power cut leaves the old state
+/// or the new one, never half of either.
+fn save_state(dir: &Path, s: &State) -> io::Result<()> {
+    ensure_dir(dir)?;
+    let tmp = dir.join("state.tmp");
+    let mut text = format!("moved_unasked={}\n", s.moved_unasked);
+    if let Some(t) = s.last_claim {
+        text.push_str(&format!("last_claim={t}\n"));
+    }
+    let mut f = std::fs::File::create(&tmp)?;
+    f.write_all(text.as_bytes())?;
+    f.sync_all()?;
+    std::fs::rename(&tmp, dir.join("state"))
+}
+
+/// One line per thing done to the clock, which is what `kryptik doctor`
+/// reads and what a person reads after a clock they did not expect.
+fn record(dir: &Path, at: f64, what: &str) {
+    if ensure_dir(dir).is_err() {
+        return;
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("history")) {
+        let _ = writeln!(f, "{} {what}", format_utc(at));
+    }
+}
+
+/// What became of a claim, in the words the broker sends back to the zone.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Outcome {
+    Ignored,
+    Slewed,
+    Stepped,
+    SteppedAfterConsent,
+    Refused(String),
+}
+
+impl Outcome {
+    pub fn reply(&self) -> String {
+        match self {
+            Outcome::Ignored => "ok ignored".into(),
+            Outcome::Slewed => "ok slewed".into(),
+            Outcome::Stepped => "ok stepped".into(),
+            Outcome::SteppedAfterConsent => "ok stepped after consent".into(),
+            Outcome::Refused(why) => format!("refused: {why}"),
+        }
+    }
+}
+
+/// A claim has arrived: decide, ask if it comes to that, and carry it out.
+/// `ask(now, proposed, sources)` is the person; it is only ever called with
+/// a proposal at or above the floor.
+pub fn consider(
+    clock: &mut dyn Clock,
+    dir: &Path,
+    floor: Option<i64>,
+    bound: i64,
+    claim: &Claim,
+    ask: &mut dyn FnMut(&str, &str, u8) -> Result<(), String>,
+) -> Outcome {
+    let Some(floor) = floor else {
+        return Outcome::Refused(format!("no floor is known ({IMAGE_JSON} is missing or unreadable), so no claim can be judged"));
+    };
+    let now = clock.now();
+    let mut state = load_state(dir);
+    if let Some(last) = state.last_claim {
+        // Either way round: a clock that has since been stepped back must
+        // not reopen the window.
+        if (now - last).abs() < CLAIM_INTERVAL_SECS as f64 {
+            return Outcome::Refused(format!("one claim is considered every {} minutes", CLAIM_INTERVAL_SECS / 60));
+        }
+    }
+    state.last_claim = Some(now);
+    let know = Knowledge { now, floor, bound, moved_unasked: state.moved_unasked };
+    let decision = decide(&know, claim);
+    let mut consented = false;
+    let outcome = match &decision {
+        Decision::Ignore => Outcome::Ignored,
+        Decision::Refuse(why) => Outcome::Refused(why.clone()),
+        Decision::Slew { offset } => match clock.slew(*offset) {
+            Ok(()) => Outcome::Slewed,
+            Err(e) => Outcome::Refused(format!("the clock could not be slewed: {e}")),
+        },
+        Decision::Step { to } => match clock.step(*to) {
+            Ok(()) => Outcome::Stepped,
+            Err(e) => Outcome::Refused(format!("the clock could not be set: {e}")),
+        },
+        Decision::Ask { to } => match ask(&format_utc(now), &format_utc(*to), claim.sources) {
+            Err(why) => Outcome::Refused(format!("not set without the person's consent: {why}")),
+            // The offset is applied to the clock as it is NOW: the person
+            // may have taken a minute to answer.
+            Ok(()) => match clock.step(clock.now() + claim.offset) {
+                Ok(()) => {
+                    consented = true;
+                    Outcome::SteppedAfterConsent
+                }
+                Err(e) => Outcome::Refused(format!("the clock could not be set: {e}")),
+            },
+        },
+    };
+    let applied = matches!(outcome, Outcome::Slewed | Outcome::Stepped | Outcome::SteppedAfterConsent);
+    if applied {
+        state.moved_unasked = moved_after(&know, claim, &decision, consented);
+        if !matches!(outcome, Outcome::Slewed) {
+            if let Err(e) = clock.sync_rtc() {
+                record(dir, clock.now(), &format!("the hardware clock was not updated: {e}"));
+            }
+        }
+        // The window is measured from the clock as it now reads.
+        state.last_claim = Some(clock.now());
+    }
+    record(dir, clock.now(), &format!("{} offset={:+.6} sources={}", outcome.reply(), claim.offset, claim.sources));
+    if let Err(e) = save_state(dir, &state) {
+        record(dir, clock.now(), &format!("the clock's state could not be saved: {e}"));
+    }
+    outcome
+}
+
+/// At boot, before anything asks the network: a clock below the floor is
+/// set to the floor. Returns what was done, in a sentence.
+pub fn clamp(clock: &mut dyn Clock, dir: &Path, floor: Option<i64>) -> Result<String, String> {
+    let floor = floor.ok_or_else(|| format!("no floor is known: {IMAGE_JSON} is missing or unreadable"))?;
+    let now = clock.now();
+    let Some(to) = clamp_to_floor(now, floor) else {
+        return Ok(format!("the clock ({}) is not before this system was built ({}); left alone", format_utc(now), format_utc(floor as f64)));
+    };
+    clock.step(to).map_err(|e| format!("the clock could not be set to the floor: {e}"))?;
+    let _ = clock.sync_rtc();
+    let mut state = load_state(dir);
+    // The floor is a time this system is known to have existed at: an anchor.
+    state.moved_unasked = 0.0;
+    let _ = save_state(dir, &state);
+    record(dir, to, &format!("set to the floor: the clock read {}, before this system was built", format_utc(now)));
+    Ok(format!("the clock read {}, before this system was built; set to {}", format_utc(now), format_utc(to)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const BUILT: i64 = 1_789_841_488; // 2026-09-19 18:11:28 UTC
+
+    /// A clock that does what it is told and remembers it.
+    struct FakeClock {
+        t: f64,
+        steps: Vec<f64>,
+        slews: Vec<f64>,
+        rtc_syncs: usize,
+        refuse: bool,
+    }
+    impl FakeClock {
+        fn at(t: f64) -> Self {
+            FakeClock { t, steps: vec![], slews: vec![], rtc_syncs: 0, refuse: false }
+        }
+    }
+    impl Clock for FakeClock {
+        fn now(&self) -> f64 {
+            self.t
+        }
+        fn step(&mut self, to: f64) -> io::Result<()> {
+            if self.refuse {
+                return Err(io::Error::from_raw_os_error(libc::EPERM));
+            }
+            self.t = to;
+            self.steps.push(to);
+            Ok(())
+        }
+        fn slew(&mut self, offset: f64) -> io::Result<()> {
+            self.slews.push(offset);
+            Ok(())
+        }
+        fn sync_rtc(&mut self) -> io::Result<()> {
+            self.rtc_syncs += 1;
+            Ok(())
+        }
+    }
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("kryptik-time-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+    fn nobody(_: &str, _: &str, _: u8) -> Result<(), String> {
+        Err("nobody is there to ask".into())
+    }
+
+    #[test]
+    fn a_claim_inside_the_bound_sets_the_clock_the_rtc_and_the_record() {
+        let dir = scratch("step");
+        let mut clock = FakeClock::at(BUILT as f64 + 1e6);
+        let out = consider(&mut clock, &dir, Some(BUILT), 3600, &Claim { offset: 42.5, sources: 3 }, &mut nobody);
+        assert_eq!(out, Outcome::Stepped);
+        assert_eq!(clock.steps, vec![BUILT as f64 + 1e6 + 42.5]);
+        assert_eq!(clock.rtc_syncs, 1);
+        let history = std::fs::read_to_string(dir.join("history")).unwrap();
+        assert!(history.contains("ok stepped offset=+42.500000 sources=3"), "{history}");
+        assert_eq!(load_state(&dir).moved_unasked, 42.5);
+        // A slew touches neither the RTC nor the step list.
+        let dir2 = scratch("slew");
+        let mut clock = FakeClock::at(BUILT as f64 + 1e6);
+        assert_eq!(consider(&mut clock, &dir2, Some(BUILT), 3600, &Claim { offset: -0.25, sources: 1 }, &mut nobody), Outcome::Slewed);
+        assert_eq!((clock.slews.clone(), clock.steps.len(), clock.rtc_syncs), (vec![-0.25], 0, 0));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn past_the_bound_nothing_moves_without_the_person_and_both_times_are_shown() {
+        let dir = scratch("ask");
+        let start = BUILT as f64;
+        let months = 200.0 * 86400.0;
+        let claim = Claim { offset: months, sources: 4 };
+        // Nobody to ask: refused, clock untouched.
+        let mut clock = FakeClock::at(start);
+        let out = consider(&mut clock, &dir, Some(BUILT), 3600, &claim, &mut nobody);
+        assert!(matches!(&out, Outcome::Refused(w) if w.contains("consent")), "{out:?}");
+        assert!(clock.steps.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+        // The person says yes, a minute later: the offset is applied to the
+        // clock as it reads then, and the unasked sum starts again.
+        let mut clock = FakeClock::at(start);
+        let mut shown = None;
+        let out = consider(&mut clock, &dir, Some(BUILT), 3600, &claim, &mut |now: &str, to: &str, n: u8| {
+            shown = Some((now.to_string(), to.to_string(), n));
+            Ok(())
+        });
+        assert_eq!(out, Outcome::SteppedAfterConsent);
+        assert_eq!(shown, Some(("2026-09-19 18:11 UTC".into(), "2027-04-07 18:11 UTC".into(), 4)));
+        assert_eq!(clock.steps, vec![start + months]);
+        assert_eq!(load_state(&dir).moved_unasked, 0.0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn one_claim_is_considered_per_interval_whatever_came_of_the_last() {
+        let dir = scratch("rate");
+        let mut clock = FakeClock::at(BUILT as f64 + 5e6);
+        let far = Claim { offset: 9e6, sources: 2 };
+        assert!(matches!(consider(&mut clock, &dir, Some(BUILT), 3600, &far, &mut nobody), Outcome::Refused(_)));
+        // A second one at once is refused unread: the person is not asked
+        // again, whatever it says.
+        let mut asked = 0;
+        let out = consider(&mut clock, &dir, Some(BUILT), 3600, &Claim { offset: 5.0, sources: 2 }, &mut |_: &str, _: &str, _: u8| {
+            asked += 1;
+            Ok(())
+        });
+        assert!(matches!(&out, Outcome::Refused(w) if w.contains("every 10 minutes")), "{out:?}");
+        assert_eq!(asked, 0);
+        assert!(clock.steps.is_empty());
+        // A clock stepped BACK since must not reopen the window either.
+        clock.t -= 300.0;
+        assert!(matches!(consider(&mut clock, &dir, Some(BUILT), 3600, &Claim { offset: 5.0, sources: 2 }, &mut nobody), Outcome::Refused(_)));
+        // After the interval the next one is considered.
+        clock.t += 300.0 + CLAIM_INTERVAL_SECS as f64;
+        assert_eq!(consider(&mut clock, &dir, Some(BUILT), 3600, &Claim { offset: 5.0, sources: 2 }, &mut nobody), Outcome::Stepped);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn without_a_floor_every_claim_is_refused_and_a_refused_clock_is_reported() {
+        let dir = scratch("nofloor");
+        let mut clock = FakeClock::at(BUILT as f64 + 1e6);
+        let out = consider(&mut clock, &dir, None, 3600, &Claim { offset: 2.0, sources: 1 }, &mut nobody);
+        assert!(matches!(&out, Outcome::Refused(w) if w.contains("no floor is known")), "{out:?}");
+        assert!(clamp(&mut clock, &dir, None).is_err());
+        // The kernel saying no (this process is not zone 0's root) is a
+        // refusal with the reason, not a silent success.
+        clock.refuse = true;
+        let out = consider(&mut clock, &dir, Some(BUILT), 3600, &Claim { offset: 2.0, sources: 1 }, &mut nobody);
+        assert!(matches!(&out, Outcome::Refused(w) if w.contains("could not be set")), "{out:?}");
+        assert_eq!(load_state(&dir).moved_unasked, 0.0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_clamp_sets_a_dead_clock_to_the_floor_and_leaves_a_live_one_alone() {
+        let dir = scratch("clamp");
+        let mut dead = FakeClock::at(946_684_800.0);
+        let said = clamp(&mut dead, &dir, Some(BUILT)).unwrap();
+        assert!(said.contains("2000-01-01 00:00 UTC") && said.contains("2026-09-19 18:11 UTC"), "{said}");
+        assert_eq!((dead.steps.clone(), dead.rtc_syncs), (vec![BUILT as f64], 1));
+        assert!(std::fs::read_to_string(dir.join("history")).unwrap().contains("set to the floor"));
+        let mut live = FakeClock::at(BUILT as f64 + 10.0);
+        assert!(clamp(&mut live, &dir, Some(BUILT)).unwrap().contains("left alone"));
+        assert!(live.steps.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_real_clock_reads_and_an_unprivileged_process_may_not_set_it() {
+        let mut c = SystemClock;
+        let now = c.now();
+        assert!(now > 1_600_000_000.0, "the system clock reads {now}");
+        if unsafe { libc::geteuid() } != 0 {
+            let e = c.step(now).expect_err("an unprivileged process set the clock");
+            assert_eq!(e.raw_os_error(), Some(libc::EPERM));
+        }
+    }
 
     fn k(now: f64) -> Knowledge {
         Knowledge { now, floor: BUILT, bound: DEFAULT_BOUND_SECS, moved_unasked: 0.0 }
