@@ -273,13 +273,12 @@ passes, not when its code is written.
       revoking them, a build that signs with a key it is handed and refuses to
       invent one for a release, and an installed system that accepts the next
       release and refuses a development build.
-- [ ] **No known-vulnerable pins.** glibc 2.40 carries Kryptik's two loader
-      fixes and not the release branch's security backports (CVE-2025-0395,
-      CVE-2025-4802 and others): move to a maintained glibc or carry the
-      backports, with the unwind test still passing. Then every pin checked
-      against its upstream's security releases, and
-      `tools/check-support-status.sh` extended so CI fails when a pin falls
-      behind one.
+- [ ] **No known-vulnerable pins.** glibc now carries upstream's maintained
+      2.40 branch (its security fixes through 2026-09-10) with the unwind
+      test as its gate. What remains: every other pin checked against its
+      upstream's security releases, `tools/check-support-status.sh`
+      extended so CI fails when a pin falls behind one, and a check that
+      says when the glibc branch has moved past the commit pinned here.
 - [ ] **An update channel.** `kryptik-update` applies a payload from a
       mounted disk and nothing fetches one. The net zone downloads a release
       by URL into a transfer area; zone 0 verifies the manifest signature,

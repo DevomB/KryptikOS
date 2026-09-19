@@ -228,10 +228,11 @@ s_glibc() {
     # The loader defect recorded in docs/glibc-loader-defect.md - pthread_exit(),
     # pthread_cancel() and backtrace() aborting because _dl_find_object
     # attributed every object loaded after startup to ld.so itself - and
-    # what fixes it. build/patches/glibc-2.40/ carries four upstream loader
-    # fixes, with provenance in its README: the release/2.40/master fixes
-    # for bug 31943 (a loader mapped with gaps, plus two prerequisites) and
-    # the one that turned out to be Kryptik's actual defect, bug 33088: GCC
+    # what fixes it. build/patches/glibc-2.40/ carries upstream's maintained
+    # release/2.40/master branch as one patch, with provenance in its
+    # README (the security fixes since July 2024, and the fix for bug 31943,
+    # a loader mapped with gaps), and beside it the one that turned out to
+    # be Kryptik's actual defect and was never backported, bug 33088: GCC
     # 14 at -O2 took the address of __ehdr_start for the loader's own map
     # bounds from a constant that is only right after self-relocation, so
     # ld.so recorded itself as starting at address 0. The two checks below

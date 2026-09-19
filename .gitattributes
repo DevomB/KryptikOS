@@ -19,3 +19,7 @@ Makefile    text eol=lf
 *.gz     binary
 *.xz     binary
 *.sqfs   binary
+
+# A patch is applied by its bytes and checked by its hash (SHA256SUMS beside
+# it); git must never rewrite a line ending inside one.
+*.patch     -text

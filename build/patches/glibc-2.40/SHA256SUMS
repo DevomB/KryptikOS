@@ -1,4 +1,2 @@
-285e18505a90bd2317444094045dce186e397d639eaee5cef1b8a542793b2acf  0001-elf-handle-addition-overflow-in-_dl_find_object_update_1-BZ-32245.patch
-8f4b66bd5b65c2b90ed90f577cbf53028977df9333d75990f96aa031ba763e3d  0002-elf-Do-not-add-a-copy-of-_dl_find_object-to-libc.so.patch
-118efcf145cd89167da8372a67c8540aefa0916fc555ba7cf6004c8e749abe6e  0003-elf-Handle-ld.so-with-LOAD-segment-gaps-in-_dl_find_object-bug-31943.patch
+0d097631a0d553d665801af1676393cd33b4cf2b52f6cbf7af171ce87ffc1953  0001-release-2.40-master-cdaa5d6db08e.patch
 05c8cc69e3c7edd6e6c8621e942a907429f213ae1672c817857f7c796d440dd9  0004-elf-Add-optimization-barrier-for-__ehdr_start-and-_end.patch
