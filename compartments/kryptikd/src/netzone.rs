@@ -638,8 +638,12 @@ mod tests {
     fn only_bus_devices_count_as_physical() {
         use crate::netlink::tests::{in_userns_netns, step};
         use std::ffi::CString;
+        // Named before the fork: temp_dir() reads the environment, which std
+        // keeps behind a process-wide lock, and a child forked while another
+        // test held it would wait forever (the read-only bind test in
+        // rootfs.rs hung the whole suite that way).
+        let dir = std::env::temp_dir().join(format!("kryptik-sysfs-{}", std::process::id()));
         let rc = in_userns_netns(|| {
-            let dir = std::env::temp_dir().join(format!("kryptik-sysfs-{}", unsafe { libc::getpid() }));
             if std::fs::create_dir_all(&dir).is_err() {
                 return 70;
             }
