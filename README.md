@@ -36,22 +36,32 @@ what exists and how it is tested, not that a particular build passed.
 ## Hardware
 
 x86-64 with UEFI firmware. Because the root is verified from the signed
-kernel with no initramfs, a machine's devices must be among the drivers
-compiled in (`build/config/kernel/boot.fragment`):
+kernel with no initramfs, the controller the root sits on must be among the
+drivers compiled in, and every other device among those or the signed
+modules the image carries (`build/config/kernel/boot.fragment`). Drivers
+that need vendor firmware are modules, so they load once the verified root
+supplies it: the firmware ships from the pinned linux-firmware release, on
+the same verified root, selected by `build/config/firmware.list` (ADR-012).
 
 - **Storage:** NVMe, including NVMe behind Intel VMD ("RAID"/RST mode);
   AHCI SATA, legacy PIIX SATA; eMMC and SD on SDHCI; LSI MegaRAID and MPT3
   SAS, HPE Smart Array (hpsa, smartpqi); USB mass storage and UAS; virtio,
   VMware PVSCSI, Hyper-V storage.
-- **Network, wired only:** Intel e1000/e1000e, igb, igc, ixgbe, i40e;
-  Broadcom tg3 and bnxt; Realtek r8169; Aquantia AQtion; Mellanox
-  ConnectX-4 and later; USB adapters (AX88179, RTL8152); virtio, VMware
-  vmxnet3, Hyper-V. Wireless is not included: it needs firmware the image
-  does not ship.
-- **Display:** the firmware framebuffer (simpledrm) on any UEFI machine, the
-  ASPEED and Matrox framebuffers of server BMCs, virtio-gpu, VMware SVGA,
-  Hyper-V. No GPU acceleration is needed; the compositor renders with
-  pixman.
+- **Wired network:** Intel e1000/e1000e, igb, igc, ixgbe, i40e; Broadcom
+  tg3 and bnxt; Realtek r8169; Aquantia AQtion; Mellanox ConnectX-4 and
+  later; USB adapters (AX88179, RTL8152); virtio, VMware vmxnet3, Hyper-V.
+- **Wi-Fi** (modules, with firmware): Intel from the 7260 on, including the
+  Wi-Fi 7 parts; Qualcomm QCA6174, QCA9377, QCA6390, WCN6855 and WCN7850;
+  MediaTek MT7921, MT7922 and MT7925; Realtek's rtw88 and rtw89 families
+  and the rtl8xxxu USB sticks; Broadcom over PCIe. The net zone owns the
+  radio like any other uplink (`docs/design/net-zone.md`). Bluetooth is not
+  included.
+- **Display:** the firmware framebuffer (simpledrm) on any UEFI machine,
+  then Intel (i915; xe from Lunar Lake and Battlemage) and AMD (amdgpu) as
+  modules with their firmware; the ASPEED and Matrox framebuffers of server
+  BMCs; virtio-gpu, VMware SVGA, Hyper-V. NVIDIA machines stay on the
+  firmware framebuffer. No GPU acceleration is needed; the compositor
+  renders with pixman.
 - **Input:** USB HID (on xHCI, EHCI and the UHCI/OHCI companions of older
   boards), PS/2, laptop I2C touchpads and touchscreens on Intel and AMD
   (DesignWare I2C, the SoC pin controllers, HID multitouch), VMware and
@@ -61,9 +71,10 @@ Hyper-V's firmware trusts only Microsoft's keys, so Kryptik runs there with
 Secure Boot turned off in the VM's settings.
 
 A machine outside that list boots into a kernel that cannot find its disk or
-its network. Adding a driver is one line in the fragment and a rebuild. No
-build has yet been booted on physical hardware; every suite passes under
-QEMU with OVMF firmware, and the first real machine will say what is missing.
+its network. Adding a driver is one line in the fragment, a firmware file one
+line in the list, and a rebuild. No build has yet been booted on physical
+hardware; every suite passes under QEMU with OVMF firmware, and the first
+real machine will say what is missing.
 
 ## How this document describes status
 

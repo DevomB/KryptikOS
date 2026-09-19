@@ -1536,6 +1536,14 @@ s_boot_check() {
     chk "havoc font"        /usr/share/fonts/TTF/DejaVuSansMono.ttf
     chk "kryptik-wlproxy"   /usr/bin/kryptik-wlproxy x
     chk "kryptikd"          /usr/bin/kryptikd x
+    # The net zone's wireless uplink, and the regulatory database every
+    # radio needs before it may transmit: the first firmware file the kernel
+    # asks for, stored compressed like every file under /lib/firmware.
+    chk "wpa_supplicant"    /usr/sbin/wpa_supplicant x
+    chk "wpa_cli"           /usr/sbin/wpa_cli x
+    chk "iw"                /usr/sbin/iw x
+    chk "regulatory.db"     /lib/firmware/regulatory.db.zst
+    chk "regulatory.db.p7s" /lib/firmware/regulatory.db.p7s.zst
 
     # /sbin/init must be reachable by the exact path the kernel uses.
     if [[ -x /sbin/init ]]; then
@@ -1820,6 +1828,154 @@ s_dhcpcd() {
     make
     make install
     dhcpcd --version | head -1
+}
+
+# --- the net zone's wireless uplink ------------------------------------------
+# wpa_supplicant from its own .config rather than the shipped defconfig: the
+# nl80211 driver through libnl, the unix control interface (wpa_cli reaches
+# it under /run/wpa_supplicant; no D-Bus, no readline), OpenSSL for WPA3-SAE,
+# OWE, DPP and the EAP methods an enterprise network needs, roaming (802.11r)
+# and protected management frames. The Makefile takes CFLAGS from the
+# environment when they are set and adds none of its own, so the hardening
+# flags apply to it as to everything else.
+s_wpa_supplicant() {
+    local src; src="$(unpack "wpa_supplicant-${V_WPA_SUPPLICANT}.tar.gz" "wpa_supplicant-${V_WPA_SUPPLICANT}")"
+    cd "$src/wpa_supplicant"
+    cat > .config <<'EOF'
+CONFIG_DRIVER_NL80211=y
+CONFIG_LIBNL32=y
+CONFIG_CTRL_IFACE=y
+CONFIG_BACKEND=file
+CONFIG_TLS=openssl
+CONFIG_IEEE80211W=y
+CONFIG_IEEE80211R=y
+CONFIG_SAE=y
+CONFIG_OWE=y
+CONFIG_DPP=y
+CONFIG_EAP_TLS=y
+CONFIG_EAP_PEAP=y
+CONFIG_EAP_TTLS=y
+CONFIG_EAP_MSCHAPV2=y
+CONFIG_PKCS12=y
+CONFIG_DEBUG_FILE=y
+EOF
+    make BINDIR=/usr/sbin LIBDIR=/usr/lib
+    make BINDIR=/usr/sbin LIBDIR=/usr/lib install
+    local b
+    for b in wpa_supplicant wpa_cli wpa_passphrase; do
+        [[ -x "/usr/sbin/$b" ]] || { echo "FAIL: /usr/sbin/$b was not installed"; return 1; }
+    done
+    wpa_supplicant -v 2>&1 | head -1
+}
+
+# iw: the operator's view of a radio (scan, link, reg), and the reference for
+# what kryptikd does with nl80211 itself.
+s_iw() {
+    local src; src="$(unpack "iw-${V_IW}.tar.xz" "iw-${V_IW}")"
+    cd "$src"
+    make PREFIX=/usr SBINDIR=/usr/sbin
+    make PREFIX=/usr SBINDIR=/usr/sbin install
+    [[ -x /usr/sbin/iw ]] || { echo "FAIL: /usr/sbin/iw was not installed"; return 1; }
+    iw --version
+}
+
+# --- device firmware (ADR-012) -----------------------------------------------
+# The pinned linux-firmware release, unpacked once into the build tree; its
+# own copy-firmware.sh lays the files out as the kernel names them (the
+# WHENCE file's Link: entries become symlinks), and build/config/firmware.list
+# says which of them ship: each line is a path pattern relative to that tree,
+# as `find -path` matches it, or `newest N PATTERN` to keep only the N
+# highest-numbered files per device among the pattern's matches (a driver
+# asks for its newest supported firmware API and falls back a few versions).
+# A selected symlink brings its target along. The regulatory database every
+# radio needs before it transmits is a second, smaller pinned release,
+# wireless-regdb. What ships is compressed with zstd on the way in (the
+# kernel asks for name.zst when name is absent, CONFIG_FW_LOADER_COMPRESS_ZSTD)
+# and a selected symlink is rewritten to point at the compressed target.
+# Nothing outside the list reaches the image: that is how two gigabytes of
+# vendor files become the couple of hundred megabytes the hardware list needs.
+s_firmware() {
+    echo "list digest: ${1:-none}"
+    local list="${KRYPTIK_ROOT}/build/config/firmware.list"
+    [[ -f "$list" ]] || { echo "FAIL: ${list} is missing"; return 1; }
+    local src; src="$(unpack "linux-firmware-${V_LINUX_FIRMWARE}.tar.xz" "linux-firmware-${V_LINUX_FIRMWARE}")"
+    cd "$src"
+    [[ -x ./copy-firmware.sh ]] || chmod +x ./copy-firmware.sh
+    local tree="${src}/.installed"
+    rm -rf "$tree"; mkdir -p "$tree"
+    ./copy-firmware.sh -j"${KRYPTIK_JOBS:-$(nproc)}" "$tree" > /dev/null
+
+    local dest="${KRYPTIK_DESTDIR}/lib/firmware"
+    rm -rf "$dest"; mkdir -p "$dest"
+    local line keep pattern matches n total=0 missing=0
+    local selected="${src}/.selected"
+    : > "$selected"
+    while IFS= read -r line; do
+        line="${line%%#*}"
+        line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"
+        [[ -n "$line" ]] || continue
+        keep=0; pattern="$line"
+        if [[ "$line" =~ ^newest[[:space:]]+([0-9]+)[[:space:]]+(.+)$ ]]; then
+            keep="${BASH_REMATCH[1]}"; pattern="${BASH_REMATCH[2]}"
+        fi
+        matches="$(find "$tree" -path "${tree}/${pattern}" \( -type f -o -type l \) -print | sort)"
+        if [[ "$keep" -gt 0 && -n "$matches" ]]; then
+            # Group by the name with its trailing -NUMBER removed, keep the
+            # highest NUMBERs of each group; a name without one is kept as is.
+            matches="$(printf '%s\n' "$matches" | while IFS= read -r f; do
+                b="${f##*/}"; stem="${b%.*}"; ext="${b##*.}"; ver="${stem##*-}"
+                if [[ "$ver" =~ ^[0-9]+$ ]]; then
+                    printf '%s\t%s\t%s\n' "${stem%-*}.${ext}" "$ver" "$f"
+                else
+                    printf '%s\t%s\t%s\n' "$b" 0 "$f"
+                fi
+            done | sort -t "$(printf '\t')" -k1,1 -k2,2nr | awk -F '\t' -v k="$keep" '{ if (++c[$1] <= k) print $3 }')"
+        fi
+        n="$(printf '%s\n' "$matches" | grep -c .)"
+        if [[ "$n" -eq 0 ]]; then
+            echo "  MISSING  ${pattern}: matches nothing in linux-firmware-${V_LINUX_FIRMWARE}"
+            missing=$((missing + 1))
+        else
+            printf '%s\n' "$matches" >> "$selected"
+            printf '  %5d  %s\n' "$n" "$line"
+        fi
+        total=$((total + n))
+    done < "$list"
+    if [[ "$missing" -gt 0 ]]; then
+        echo "FAIL: ${missing} pattern(s) in firmware.list match nothing; the list must name what this release has"
+        return 1
+    fi
+    # A symlink's target comes too, wherever it points inside the tree.
+    local f t
+    while IFS= read -r f; do
+        [[ -L "$f" ]] || continue
+        t="$(readlink -f "$f")"
+        [[ "$t" == "${tree}/"* && -f "$t" ]] || { echo "FAIL: ${f#"${tree}/"} points outside the tree or at nothing (${t})"; return 1; }
+        printf '%s\n' "$t"
+    done < "$selected" >> "${selected}.targets"
+    cat "${selected}.targets" >> "$selected"
+    sort -u "$selected" | sed "s#^${tree}/##" > "${selected}.rel"
+    echo "  $(wc -l < "${selected}.rel") files and links selected by ${total} matches"
+    ( cd "$tree" && tr '\n' '\0' < "${selected}.rel" | xargs -0 cp -a --parents -t "$dest" )
+
+    # The regulatory database: regulatory.db and its detached signature, which
+    # cfg80211 checks against the key built into the kernel before it uses it.
+    local regdb; regdb="$(unpack "wireless-regdb-${V_WIRELESS_REGDB}.tar.xz" "wireless-regdb-${V_WIRELESS_REGDB}")"
+    install -m 0644 "${regdb}/regulatory.db" "${regdb}/regulatory.db.p7s" "$dest/"
+
+    # Compress the regular files, then repoint every symlink at the .zst.
+    find "$dest" -type f ! -name '*.zst' -print0 | xargs -0 -r zstd -T0 -19 -q --rm
+    while IFS= read -r -d '' f; do
+        t="$(readlink "$f")"
+        ln -sfn "${t}.zst" "${f}.zst"
+        rm -f "$f"
+    done < <(find "$dest" -type l -print0)
+    if find "$dest" -type l ! -exec test -e {} \; -print | grep .; then
+        echo "FAIL: dangling links under /lib/firmware (above)"; return 1
+    fi
+    chmod -R u=rwX,go=rX "$dest"
+    echo "  /lib/firmware: $(find "$dest" -type f | wc -l) files, $(find "$dest" -type l | wc -l) links, $(du -sh "$dest" | cut -f1)"
+    [[ -f "$dest/regulatory.db.zst" && -f "$dest/regulatory.db.p7s.zst" ]] || { echo "FAIL: the regulatory database did not land"; return 1; }
 }
 
 # --- the desktop -------------------------------------------------------------
@@ -2229,6 +2385,14 @@ PACKAGES=(
     "nftables"    "native_build nftables-${V_NFTABLES}.tar.xz nftables-${V_NFTABLES} --without-cli --disable-man-doc --disable-python --with-json=no --disable-static"
     "dnsmasq"     "s_dnsmasq"
     "dhcpcd"      "s_dhcpcd"
+    # --- the net zone's wireless uplink: libnl (nl80211), wpa_supplicant with
+    #     wpa_cli, iw. docs/design/net-zone.md.
+    "libnl"       "native_build libnl-${V_LIBNL}.tar.gz libnl-${V_LIBNL} --sysconfdir=/etc --disable-static"
+    "wpa-supplicant" "s_wpa_supplicant"
+    "iw"          "s_iw"
+    # --- device firmware (ADR-012): the files build/config/firmware.list names
+    #     out of the pinned linux-firmware release, onto /lib/firmware.
+    "linux-firmware" "s_firmware $(sha256_of "${KRYPTIK_ROOT}/build/config/firmware.list" 2>/dev/null || echo none)"
     # --- the desktop. meson and ninja first (build tools), then
     #     the Wayland stack in dependency order, then the compositor and the
     #     applications.

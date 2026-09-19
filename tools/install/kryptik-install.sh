@@ -190,7 +190,17 @@ size_bytes="$(blockdev --getsize64 "$TARGET_REAL" 2>/dev/null || echo 0)"
 [ "$size_bytes" -gt 0 ] || die "could not read the size of ${TARGET}"
 MIB=1048576
 esp_mib=$(( (ESP_BYTES + MIB - 1) / MIB ))
-slot_mib=$(( (ROOT_BYTES + MIB - 1) / MIB + 16 ))
+# A slot holds a whole root image and every update is a whole new image, so
+# a slot sized to the first image (it used to be the image plus 16 MiB)
+# refuses every larger release: kryptik-update says "slot is N bytes; the
+# root image needs M" and there is no way forward but repartitioning. Each
+# slot gets the image plus half again, at least 512 MiB of room, rounded up
+# to 64 MiB: a release can grow by half before an installed machine has to
+# be reinstalled.
+slot_mib=$(( (ROOT_BYTES + MIB - 1) / MIB ))
+room_mib=$(( slot_mib / 2 ))
+[ "$room_mib" -ge 512 ] || room_mib=512
+slot_mib=$(( (slot_mib + room_mib + 63) / 64 * 64 ))
 state_min_mib=512
 need_mib=$(( 1 + esp_mib + 2 * slot_mib + state_min_mib + 1 ))
 have_mib=$(( size_bytes / MIB ))
