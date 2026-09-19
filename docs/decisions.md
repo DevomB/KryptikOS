@@ -268,6 +268,13 @@ machines without SMT lose nothing.
 Core scheduling is wired to zones, so that SMT can stay on and two trust
 domains still never share a core.
 
+That condition is now met: every zone takes a core-scheduling cookie of its
+own at launch, and `kryptikd status` reports it
+([the privileged launch design](design/privileged-launch.md#core-scheduling)).
+What is still missing is the measurement this decision asked for: what
+`nosmt` costs on the machines Kryptik runs on, and whether the cookies hold
+under load there. Until that is written down, `nosmt` stays.
+
 ## ADR-012: Device firmware ships from linux-firmware, on the verified root
 
 **Decision.** The image carries the firmware files that laptop graphics and
