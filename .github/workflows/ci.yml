@@ -147,16 +147,29 @@ jobs:
       # assertions unverified and failed (which was the honest answer, and the
       # reason this step exists). Cached by sources.lock, so a run downloads
       # them only when the manifest changes.
+      #
+      # And then only what changed. The key was the lock's hash and nothing
+      # else, so one new tarball meant fetching all eighty-odd again, from
+      # every upstream at once, and the job failed on whichever of them was
+      # throttling that minute (freedesktop.org answering 418 for libevdev
+      # failed a change that had added Intel's microcode and nothing else).
+      # restore-keys brings back the most recent earlier set; `make sources`
+      # then hashes EVERY file against the lock, cached or not, downloads what
+      # is missing, and the prune drops what the manifest no longer names.
       - name: Upstream sources (cached by sources.lock)
         id: sources
         uses: actions/cache@v5
         with:
           path: sources
           key: sources-${{ hashFiles('sources.lock') }}
+          restore-keys: |
+            sources-
 
       - name: Fetch and verify the sources
         if: steps.sources.outputs.cache-hit != 'true'
-        run: make sources
+        run: |
+          make sources
+          ./tools/prune-sources.sh
 
       # Informational, deliberately non-blocking.
       #
