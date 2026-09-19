@@ -336,18 +336,26 @@ fn plumb_nic_zone_bridge(zone: &Zone, zone_ns: i32) -> Result<(), NetError> {
         if let Err(e) = netlink::add_addr6(BRIDGE, netlink::BRIDGE_V6, 64) {
             eprintln!("kryptikd: zone {:?}: IPv6 on {BRIDGE} not configured ({e}); IPv4 is", zone.name);
         }
-        // Forward between the bridge and the uplink. Without NAT this only
-        // reaches the world behind something that accepts any source address
-        // (QEMU user networking does); behind a real NIC the routed zones'
-        // addresses are not routable and NAT (nftables) is still required.
-        // Said in `plan` so nobody reads a VM result as more than it is.
+        // Forwarding stays OFF here. What a new namespace starts with depends
+        // on the kernel's devconf inheritance and on zone 0's own setting, so
+        // it is written rather than assumed. The nic zone's own program
+        // (tools/net/netzone-init.sh) turns it on once its nftables policy
+        // has loaded and been read back, and off again if the policy ever
+        // goes. The parent must not open the path first: on a nic zone
+        // restart every routed zone still running is reattached during this
+        // same handshake (plumb_nic_zone), and with forwarding on and no
+        // policy loaded yet, anything on the uplink that routes 10.19.0.0/24
+        // at this machine could reach those zones unsolicited until the
+        // zone's program got as far as its first lines.
         //
         // Forwarding also opens an L3 path between two routed zones through
         // the bridge address itself, which the port isolation does not cover
         // - but only for a zone that can install a host route, and a routed
         // zone can never keep CAP_NET_ADMIN (policy::check_for_zone).
-        sysctl("/proc/sys/net/ipv4/ip_forward", "1")?;
-        sysctl("/proc/sys/net/ipv6/conf/all/forwarding", "1")?;
+        sysctl("/proc/sys/net/ipv4/ip_forward", "0")?;
+        if Path::new("/proc/sys/net/ipv6").exists() {
+            sysctl("/proc/sys/net/ipv6/conf/all/forwarding", "0")?;
+        }
         match nic {
             Some(n) => netlink::set_up(n),
             None => Ok(()),
@@ -478,15 +486,16 @@ fn plan_line(zone: &Zone, privileged: bool) -> String {
         (NetworkMode::None, _) => "network    none: loopback only, nothing created".into(),
         (_, false) => "network    (unprivileged launch: no topology; loopback only)".into(),
         (NetworkMode::Nic, true) => format!(
-            "network    nic: {} moves into this zone; bridge {} 10.19.0.1/24 fd19::1/64",
+            "network    nic: {} moves into this zone; bridge {} 10.19.0.1/24 fd19::1/64; \
+             forwarding off until the zone's program enables it behind its firewall",
             zone.nic.as_deref().unwrap_or("?"),
             BRIDGE
         ),
         (NetworkMode::Routed, true) => match host_number(zone) {
             Some(k) => format!(
                 "network    routed: eth0 = 10.19.0.{k}/24 fd19::{k:x}/64 via the nic zone's {BRIDGE}, \
-                 isolated port {}; forwarded without NAT (reaches the world only behind a \
-                 gateway that accepts any source, e.g. QEMU user networking)",
+                 isolated port {}; forwarding and NAT are the nic zone's program's to enable \
+                 once its firewall is loaded (kryptikd leaves forwarding off)",
                 port_name(&zone.name)
             ),
             None => "network    routed: needs [identity] uid_base to derive an address".into(),
@@ -507,6 +516,52 @@ mod tests {
              [storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n{ident}[ui]\nborder_color = \"#123456\"\n"
         ))
         .unwrap()
+    }
+
+    /// The parent hands the nic zone a namespace with forwarding OFF, and
+    /// writes it rather than trusting whatever the namespace inherited: the
+    /// path opens only once the zone's own program has its policy loaded.
+    /// Kernel-backed: this namespace plays the nic zone with forwarding
+    /// already on, the way an inherited setting would leave it; the bridge
+    /// half runs with no NIC to move; both knobs must read 0 afterwards.
+    #[test]
+    fn the_bridge_half_leaves_forwarding_off() {
+        use crate::netlink::tests::in_userns_netns;
+        let rc = in_userns_netns(|| {
+            let ns = match netlink::open_netns_of(unsafe { libc::getpid() }) {
+                Ok(fd) => fd,
+                Err(_) => return 40,
+            };
+            if std::fs::write("/proc/sys/net/ipv4/ip_forward", "1").is_err() {
+                eprintln!("cannot write ip_forward in this namespace; skipping");
+                unsafe { libc::close(ns) };
+                return 77;
+            }
+            let _ = std::fs::write("/proc/sys/net/ipv6/conf/all/forwarding", "1");
+            let r = plumb_nic_zone_bridge(&z("nic", Some(196608), None), ns);
+            unsafe { libc::close(ns) };
+            if let Err(e) = r {
+                eprintln!("plumb_nic_zone_bridge: {e}");
+                return 1;
+            }
+            let v4 = std::fs::read_to_string("/proc/sys/net/ipv4/ip_forward").unwrap_or_default();
+            if v4.trim() != "0" {
+                eprintln!("ip_forward reads {v4:?} after the bridge half; expected 0");
+                return 2;
+            }
+            if let Ok(v6) = std::fs::read_to_string("/proc/sys/net/ipv6/conf/all/forwarding") {
+                if v6.trim() != "0" {
+                    eprintln!("IPv6 forwarding reads {v6:?} after the bridge half; expected 0");
+                    return 3;
+                }
+            }
+            0
+        });
+        match rc {
+            0 => {}
+            77 => eprintln!("no unprivileged user namespace; skipping"),
+            other => panic!("forwarding-off test failed at step {other}"),
+        }
     }
 
     #[test]

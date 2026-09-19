@@ -161,7 +161,7 @@ Where it differs from the design above, it is the current truth.
 | reconnection | a starting nic zone reattaches every running routed zone; a dead nic zone takes the peers with it (kernel), so routed zones fail closed until then | `netzone::replumb_routed_zones` |
 | DNS file | routed zones started with a path get `nameserver 10.19.0.1` / `fd19::1`; the nic zone gets a writable `/etc/resolv.conf` (symlink into its `/tmp`) for its DHCP client; unplumbed and offline zones have none | `rootfs.rs` |
 | nic zone state paths | the nic zone alone gets private tmpfs mounts at `/run` and `/var/lib` (empty at start, freed with the zone, Landlock write there and nowhere new), because its DHCP client keeps its pid file, control socket and lease database at the paths it was built with; every other zone's `/run` stays read-only with only the broker and proxy sockets in it. `dhcpcd` runs unseparated inside the zone (the synthesized passwd has no `dhcpcd` user); the zone is the sandbox. Found on the first installed system: `dhcpcd` died on `/run/dhcpcd` and no routed zone had a path | `rootfs::pivot_into`, `landlock::nic_zone_rules` |
-| forwarding | kryptikd sets IPv4/IPv6 forwarding in the nic zone's namespace when it builds the bridge; `netzone-init.sh` turns forwarding off as its first act and on again only once the nftables ruleset has loaded and been read back, and off again if the ruleset ever disappears | `netzone.rs`, `tools/net/netzone-init.sh` |
+| forwarding | kryptikd leaves IPv4/IPv6 forwarding **off** in the nic zone's namespace when it builds the bridge (written, not assumed: a new namespace may inherit zone 0's setting); `netzone-init.sh` turns it off again as its first act, on only once the nftables ruleset has loaded and been read back, and off if the ruleset ever disappears. The parent never opens the path itself: on a restart it reattaches every running routed zone during the same handshake, and with forwarding on before the policy loaded, those zones would be reachable from the uplink unfiltered | `netzone.rs`, `tools/net/netzone-init.sh` |
 | NAT and forward policy | one atomic `nft -f` load of `table inet kryptik`: forward policy drop; established/related accepted; bridge to uplink accepted; bridge to bridge dropped; `10.19.0.0/24` and `fd19::/64` masqueraded out of the uplink; new DNS connections arriving on the uplink dropped. The readiness line is `netzone: READY uplink=<addr> nat=yes dns=<yes/no>` or `netzone: NOT READY <reason>` (forwarding off) | `tools/net/netzone-init.sh` |
 | stub resolver | `dnsmasq` listening on 10.19.0.1, fd19::1 and 127.0.0.1, forwarding to the uplink's servers, restarted if it dies | `tools/net/netzone-init.sh` |
 | uplink configuration | the parent reads the NIC's IPv4 addresses (`getifaddrs`) and default gateway (`/proc/self/net/route`) before the move and re-applies them inside the nic zone, then brings the interface up; `dhcpcd` then takes over the lease if a DHCP server answers. Kernel-backed test: `the_uplink_configuration_travels_with_the_nic` | `netzone.rs` |
@@ -170,9 +170,10 @@ Where it differs from the design above, it is the current truth.
 | IPv6 | ULA `fd19::/64` on the bridge and zone ends; `accept_ra = 0` in routed zones; no global address ever reaches a routed zone | `netzone.rs` |
 | empty namespaces | every zone's namespace starts with loopback only: the launcher raises `net.core.fb_tunnels_only_for_init_net` to 1 before the namespace exists (the target kernel builds SIT in, and its first boot put `sit0` into an airgapped zone), and the child refuses, on a privileged launch, to start in a namespace that holds anything besides loopback | `netzone::suppress_fallback_tunnels` |
 
-`kryptikd explain` still describes a routed zone's path as "forwarded
-without NAT": NAT lives in the program the net zone runs, which kryptikd
-does not inspect, so the plan line states only what kryptikd itself sets up.
+`kryptikd explain` says the same: a routed zone's path is an isolated port
+on the bridge, and forwarding and NAT are the net zone's program's to enable
+once its firewall is loaded. kryptikd does not inspect that program, so the
+plan line states only what kryptikd itself sets up.
 
 ### Not built, and why it is not a gap in the boundary
 
