@@ -180,6 +180,31 @@ process must move the arming after it, and the comment at the arming site
 must name the step it follows. The `getppid()` re-check closes the window in
 which the parent died between the credential change and the re-arming.
 
+## Core scheduling
+
+After the id switch and before it forks the zone's pid 1, the intermediate
+takes a core-scheduling cookie of its own (`prctl(PR_SCHED_CORE,
+PR_SCHED_CORE_CREATE)` on itself; no privilege is needed to cut oneself
+off). Every task forked below inherits it, so the whole zone shares one
+cookie, and on a core with SMT the kernel runs on the sibling hardware
+threads only tasks with that cookie: this zone's, or nothing. Another zone,
+the session, the kernel's own threads never share a core with it.
+
+What that buys is exactly the sibling position: the one the cross-thread
+side channels (the L1TF, MDS and later families) need. What it does not buy
+is a substitute for the mitigations. The kernel's own mitigations stay on;
+ADR-011 takes the siblings away altogether with `mitigations=auto,nosmt`,
+and the cookies are what makes revisiting that possible, not a reason to
+revisit it here. A kernel without `CONFIG_SCHED_CORE` answers `EINVAL`; the
+launcher notes it in the zone's log and `kryptikd explain` says "core sched
+not available on this kernel", because the developer VM and most hosts are
+such kernels and none of the zone's other boundaries depends on it.
+Nothing in `/proc` shows a cookie; `kryptikd status` asks the kernel for
+the zone's pid 1's with `PR_SCHED_CORE_GET` (allowed with ptrace-read
+access, which root has and a user has over the zones it launched) and
+prints `core-sched own`, `none` or `unavailable`. The launcher suite reads
+that word and expects `own` wherever the kernel has the feature.
+
 ## Tests
 
 Where: the developer VM as root. Until a Kryptik kernel boots there, the

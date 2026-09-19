@@ -215,6 +215,66 @@ pub fn die_with_parent() -> Result<(), IsolateError> {
     )
 }
 
+// prctl(PR_SCHED_CORE) and its operations, from <linux/prctl.h>; the libc
+// crate this tree pins does not name them.
+const PR_SCHED_CORE: libc::c_int = 62;
+const PR_SCHED_CORE_GET: libc::c_ulong = 0;
+const PR_SCHED_CORE_CREATE: libc::c_ulong = 1;
+const PIDTYPE_PID: libc::c_ulong = 0;
+
+/// Give the calling task a core-scheduling cookie of its own. From then on
+/// the kernel runs, on the sibling hardware threads of a core, only tasks
+/// with the same cookie - every task this one forks inherits it - so a zone
+/// that takes one shares a core with itself or with nothing, never with
+/// another zone or the kernel's own threads. Needs no privilege: a task may
+/// always cut itself off. EINVAL is a kernel built without
+/// CONFIG_SCHED_CORE, which the caller treats as "nothing to isolate with".
+pub fn take_core_cookie() -> io::Result<()> {
+    if unsafe { libc::prctl(PR_SCHED_CORE, PR_SCHED_CORE_CREATE, 0, PIDTYPE_PID, 0) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Whether this kernel has core scheduling at all: asking for the calling
+/// task's cookie (zero when it has none) succeeds only where the feature is
+/// built in. Harmless, so `explain` may ask.
+pub fn core_scheduling_available() -> bool {
+    let mut cookie: libc::c_ulong = 0;
+    let rc = unsafe {
+        libc::prctl(PR_SCHED_CORE, PR_SCHED_CORE_GET, 0, PIDTYPE_PID, &mut cookie as *mut libc::c_ulong as libc::c_ulong)
+    };
+    rc == 0
+}
+
+/// A task's core-scheduling cookie, asked of the kernel: 0 for a task that
+/// has none. Nothing in /proc shows it (no kernel prints `core_cookie` in
+/// /proc/<pid>/sched), so this prctl is the one readout. Another task's
+/// cookie needs ptrace-read access to it, which root has everywhere and a
+/// user has over the zones it launched (it owns their user namespace).
+/// EINVAL is a kernel without CONFIG_SCHED_CORE.
+pub fn core_cookie_of(pid: libc::pid_t) -> io::Result<u64> {
+    let mut cookie: libc::c_ulong = 0;
+    let rc = unsafe {
+        libc::prctl(PR_SCHED_CORE, PR_SCHED_CORE_GET, pid as libc::c_ulong, PIDTYPE_PID, &mut cookie as *mut libc::c_ulong as libc::c_ulong)
+    };
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(cookie as u64)
+}
+
+/// One word for `kryptikd status`: whether a zone's pid 1 is cut off from
+/// every other cookie on the machine.
+pub fn core_cookie_word(pid: libc::pid_t) -> &'static str {
+    match core_cookie_of(pid) {
+        Ok(0) => "none",
+        Ok(_) => "own",
+        Err(e) if e.raw_os_error() == Some(libc::EINVAL) => "unavailable",
+        Err(_) => "unreadable",
+    }
+}
+
 /// Set the hostname in the current UTS namespace. Needs CAP_SYS_ADMIN in
 /// the user namespace that owns it - which the zone's root has once the id
 /// maps are written.
@@ -329,6 +389,54 @@ mod tests {
              [storage]\nmode = \"ephemeral\"\nsize = \"256M\"\n[ui]\nborder_color = \"#123456\"\n"
         ))
         .unwrap()
+    }
+
+    /// A task can cut itself off, and its parent can see that it did: after
+    /// PR_SCHED_CORE_CREATE the child's cookie, read from the parent by
+    /// PR_SCHED_CORE_GET, is non-zero and differs from the parent's own,
+    /// which stays zero. Read from outside on purpose - that is how
+    /// `kryptikd status` and the launcher suite look at a zone - in a forked
+    /// child that pauses until it is read, so the test process keeps
+    /// sharing cores with the rest of the suite. On a kernel without
+    /// CONFIG_SCHED_CORE there is nothing to take and the test says so.
+    #[test]
+    fn a_task_can_take_a_core_cookie_of_its_own() {
+        if !core_scheduling_available() {
+            eprintln!("no core scheduling on this kernel; skipping");
+            return;
+        }
+        let mut p = [0 as libc::c_int; 2];
+        assert_eq!(unsafe { libc::pipe(p.as_mut_ptr()) }, 0, "pipe failed");
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            unsafe {
+                libc::close(p[0]);
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0);
+                let b: u8 = if take_core_cookie().is_ok() { 1 } else { 0 };
+                libc::write(p[1], &b as *const u8 as *const libc::c_void, 1);
+                libc::close(p[1]);
+                loop {
+                    libc::pause();
+                }
+            }
+        }
+        unsafe { libc::close(p[1]) };
+        let mut b = 0u8;
+        let n = unsafe { libc::read(p[0], &mut b as *mut u8 as *mut libc::c_void, 1) };
+        unsafe { libc::close(p[0]) };
+        let child = core_cookie_of(pid);
+        let mine = core_cookie_of(unsafe { libc::getpid() });
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+            let mut st = 0;
+            libc::waitpid(pid, &mut st, 0);
+        }
+        assert_eq!((n, b), (1, 1), "the child could not take a cookie");
+        let child = child.expect("the parent may read its child's cookie");
+        assert_ne!(child, 0, "the child's cookie reads as zero after PR_SCHED_CORE_CREATE");
+        assert_eq!(mine.expect("a task may read its own cookie"), 0, "the parent took no cookie and must have none");
+        assert_eq!(core_cookie_word(unsafe { libc::getpid() }), "none");
     }
 
     #[test]

@@ -2375,6 +2375,20 @@ if [[ -n "$initpid" ]] && [[ -r "/proc/$initpid/status" ]]; then
     else
         fail "LC10 init.pid $initpid: ns=$zns (ours $ourns) NSpid=$nspid"
     fi
+    # LC17: the zone carries a core-scheduling cookie of its own, so a core's
+    # sibling threads run this zone's tasks or nothing (the launcher takes it
+    # after the id switch; every task below inherits it). Nothing in /proc
+    # shows a cookie; `kryptikd status` asks the kernel for the zone's pid
+    # 1's (PR_SCHED_CORE_GET, which this uid may do for a zone it launched)
+    # and prints one word. "unavailable" is a kernel without
+    # CONFIG_SCHED_CORE: nothing to measure, and this says so rather than
+    # passing.
+    cs="$("$KRYPTIKD" status lczone 2>/dev/null | grep -o 'core-sched [a-z]*' | head -1)"
+    case "$cs" in
+        "core-sched own")   pass "LC17 the zone's pid 1 has a core-scheduling cookie of its own" ;;
+        "core-sched unavailable") skip "LC17 core-scheduling cookie: this kernel has no CONFIG_SCHED_CORE" ;;
+        *)                  fail "LC17 the zone's pid 1 has no cookie of its own (status says: ${cs:-nothing about core-sched})" ;;
+    esac
 else
     fail "LC10 no usable init.pid in the registry entry"
 fi

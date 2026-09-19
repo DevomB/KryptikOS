@@ -1385,6 +1385,26 @@ fn intermediate_main(
         return 125;
     }
 
+    // 5c. A core-scheduling cookie of this zone's own. Every task forked from
+    //     here - pid 1, everything it runs - inherits it, so a core's sibling
+    //     hardware threads run this zone's tasks or nothing: not another
+    //     zone's, not the kernel's. Sitting on a sibling of the victim is
+    //     the position the CPU side channels need; ADR-011 takes the
+    //     siblings away altogether (mitigations=auto,nosmt) until every zone
+    //     has this, and this is what lets SMT come back later. A kernel
+    //     without CONFIG_SCHED_CORE answers EINVAL: a note in the zone's log,
+    //     not a refusal, because the developer VM and most hosts are such
+    //     kernels and the zone's other boundaries do not depend on it.
+    match isolate::take_core_cookie() {
+        Ok(()) => {}
+        Err(e) if matches!(e.raw_os_error(), Some(libc::EINVAL) | Some(libc::ENOSYS)) => eprintln!(
+            "kryptikd[zone {}]: note: core scheduling: not available on this kernel ({e}); \
+             this zone shares a core's sibling threads with whatever else runs",
+            zone.name
+        ),
+        Err(e) => bail!("prctl(PR_SCHED_CORE_CREATE): {e}"),
+    }
+
     // 6. The zone's hostname is the zone's name. The UTS namespace is new,
     //    but a new UTS namespace starts with the HOST's hostname in it.
     if let Err(e) = isolate::set_hostname(&zone.name) {
@@ -1669,6 +1689,13 @@ pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String
             zone.transfer_to.join(", ")
         )
     };
+    // Asked of this kernel, not assumed: the launch takes the cookie where
+    // the feature exists and notes its absence where it does not.
+    let core_line = if isolate::core_scheduling_available() {
+        "core sched own cookie: a core's sibling threads run this zone's tasks or nothing"
+    } else {
+        "core sched not available on this kernel (no CONFIG_SCHED_CORE): siblings are shared"
+    };
     let loaded = zone
         .seccomp
         .as_ref()
@@ -1803,6 +1830,7 @@ pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String
          seccomp    default-deny, {} syscalls allowed, argument rules on {:?}\n\
          {}\n\
          {}\n\
+         {}\n\
          {}",
         zone.name,
         ns.join(", "),
@@ -1828,6 +1856,7 @@ pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String
         policy_line,
         network_line,
         transfer_line,
+        core_line,
     )
 }
 
@@ -1852,6 +1881,20 @@ mod tests {
              [identity]\nuid_base = {base}\n[ui]\nborder_color = \"#123456\"\n"
         ))
         .unwrap()
+    }
+
+    /// The plan says what core scheduling will do for this zone on this
+    /// kernel, in one of exactly two ways, and the way it picks is the one
+    /// the launch will take.
+    #[test]
+    fn explain_names_the_core_scheduling_state() {
+        let e = explain(&z("none"), "/tmp/t", std::path::Path::new("/nonexistent"));
+        let line = e.lines().find(|l| l.starts_with("core sched")).unwrap_or_else(|| panic!("no core sched line in:\n{e}"));
+        if isolate::core_scheduling_available() {
+            assert!(line.contains("own cookie"), "{line}");
+        } else {
+            assert!(line.contains("not available on this kernel"), "{line}");
+        }
     }
 
     /// A line written with `log_line` arrives whole even while something

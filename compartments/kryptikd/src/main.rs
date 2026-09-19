@@ -428,12 +428,17 @@ fn cmd_status(name: &str) -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(registry::State::Running { launcher, init, cgroup, started }) => {
+            // The last word is asked of the kernel, not recorded: whether the
+            // zone's pid 1 runs under a core-scheduling cookie of its own
+            // (own), under none (none), or on a kernel that has no such
+            // thing (unavailable). Nothing in /proc shows it.
             println!(
-                "{name}  running  launcher {}  init {}  since {}{}",
+                "{name}  running  launcher {}  init {}  since {}{}{}",
                 launcher.map(|l| l.pid.to_string()).unwrap_or_else(|| "starting".into()),
                 init.map(|i| i.pid.to_string()).unwrap_or_else(|| "-".into()),
                 started,
-                cgroup.map(|c| format!("  cgroup {c}")).unwrap_or_default()
+                cgroup.map(|c| format!("  cgroup {c}")).unwrap_or_default(),
+                init.map(|i| format!("  core-sched {}", isolate::core_cookie_word(i.pid))).unwrap_or_default()
             );
             ExitCode::SUCCESS
         }
