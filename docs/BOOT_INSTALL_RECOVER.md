@@ -74,7 +74,11 @@ kryptik-install --target /dev/sdY      # add --dry-run to see the plan and write
 
 The installer refuses the disk the medium itself is on, anything with a
 mounted partition or active swap, anything that is not a whole block
-device, and a disk too small for the layout. It writes, in order: GPT
+device, and a disk too small for the layout. Too small means it cannot
+hold the boot partition, two root slots of the image plus half again, and
+a state partition with room for one update and a gigabyte of your own
+data: about 14 GB for this release, and the refusal names the number. A
+disk that could be installed and never updated is refused. It writes, in order: GPT
 partition 1 `kryptik-esp` (the medium's ESP, with the slot A kernel as the
 boot file), 2 `kryptik-a` (the verified root image, read back and hashed
 against the medium's record), 3 `kryptik-b` (empty; the first update fills

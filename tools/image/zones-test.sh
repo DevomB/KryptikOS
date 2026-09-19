@@ -65,7 +65,9 @@ txt() { tr -d '\r' < "$LOG"; }
 
 # ----------------------------------------------------------------- step 1 --
 step "step 1: install and boot alone with a NIC"
-rm -f "$DISK"; truncate -s 12G "$DISK"
+# Sized from the medium, not a constant: see test-disk-size.sh.
+DISK_SIZE="$("${SELF}/test-disk-size.sh" --medium "$USB" --extra-mib 2048)" || die "could not size the test disk from the medium"
+rm -f "$DISK"; truncate -s "$DISK_SIZE" "$DISK"
 CTL="${VMDIR}/testctl-zones.img"
 "${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
     "preseed_user=${TUSER}" "preseed_password_hash=${TUSER_HASH}" "preseed_root_hash=${ROOT_HASH}" > /dev/null

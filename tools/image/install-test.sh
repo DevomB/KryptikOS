@@ -27,7 +27,7 @@ SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SELF}/../../build/lib/common.sh"
 trap - ERR; set +e
 
-USB=""; DISK=""; SIZE="12G"; VARS="clean"; TIMEOUT=600; QUICK=0
+USB=""; DISK=""; SIZE=""; VARS="clean"; TIMEOUT=600; QUICK=0
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
         --usb) USB="${2:?}"; shift 2 ;;
@@ -63,6 +63,8 @@ TUSER_HASH="$(hash_of "$TPASS")"; ROOT_HASH="$(hash_of "$RPASS")"
 
 # ----------------------------------------------------------------- step 1 --
 step "step 1: install from the medium onto a blank ${SIZE} disk"
+# --size wins; without it the disk is sized from the medium (test-disk-size.sh).
+if [[ -z "$SIZE" ]]; then SIZE="$("${SELF}/test-disk-size.sh" --medium "$USB")" || die "could not size the test disk from the medium"; fi
 rm -f "$DISK"; truncate -s "$SIZE" "$DISK"
 CTL="${VMDIR}/testctl-install.img"
 "${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
