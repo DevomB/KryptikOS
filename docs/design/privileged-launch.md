@@ -198,10 +198,12 @@ and the cookies are what makes revisiting that possible, not a reason to
 revisit it here. A kernel without `CONFIG_SCHED_CORE` answers `EINVAL`; the
 launcher notes it in the zone's log and `kryptikd explain` says "core sched
 not available on this kernel", because the developer VM and most hosts are
-such kernels and none of the zone's other boundaries depends on it. The
-launcher suite reads the zone's pid 1's `core_cookie` from `/proc` and
-expects it non-zero and different from the suite's own, where the field
-exists.
+such kernels and none of the zone's other boundaries depends on it.
+Nothing in `/proc` shows a cookie; `kryptikd status` asks the kernel for
+the zone's pid 1's with `PR_SCHED_CORE_GET` (allowed with ptrace-read
+access, which root has and a user has over the zones it launched) and
+prints `core-sched own`, `none` or `unavailable`. The launcher suite reads
+that word and expects `own` wherever the kernel has the feature.
 
 ## Tests
 

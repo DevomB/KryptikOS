@@ -2377,20 +2377,18 @@ if [[ -n "$initpid" ]] && [[ -r "/proc/$initpid/status" ]]; then
     fi
     # LC17: the zone carries a core-scheduling cookie of its own, so a core's
     # sibling threads run this zone's tasks or nothing (the launcher takes it
-    # after the id switch; every task below inherits it). The field is in
-    # /proc/<pid>/sched only on a kernel with CONFIG_SCHED_CORE; elsewhere
-    # there is nothing to measure and this says so rather than passing.
-    if grep -q '^core_cookie' /proc/self/sched 2>/dev/null; then
-        cookie="$(awk -F: '/^core_cookie/{gsub(/ /,"",$2); print $2}' "/proc/$initpid/sched" 2>/dev/null)"
-        mine="$(awk -F: '/^core_cookie/{gsub(/ /,"",$2); print $2}' /proc/self/sched 2>/dev/null)"
-        if [[ -n "$cookie" && "$cookie" != "0" && "$cookie" != "$mine" ]]; then
-            pass "LC17 the zone's pid 1 has a core-scheduling cookie of its own ($cookie, the suite's is ${mine:-0})"
-        else
-            fail "LC17 the zone's pid 1 has no cookie of its own (core_cookie=${cookie:-<none>}, the suite's is ${mine:-0})"
-        fi
-    else
-        skip "LC17 core-scheduling cookie: this kernel has no CONFIG_SCHED_CORE (no core_cookie in /proc/self/sched)"
-    fi
+    # after the id switch; every task below inherits it). Nothing in /proc
+    # shows a cookie; `kryptikd status` asks the kernel for the zone's pid
+    # 1's (PR_SCHED_CORE_GET, which this uid may do for a zone it launched)
+    # and prints one word. "unavailable" is a kernel without
+    # CONFIG_SCHED_CORE: nothing to measure, and this says so rather than
+    # passing.
+    cs="$("$KRYPTIKD" status lczone 2>/dev/null | grep -o 'core-sched [a-z]*' | head -1)"
+    case "$cs" in
+        "core-sched own")   pass "LC17 the zone's pid 1 has a core-scheduling cookie of its own" ;;
+        "core-sched unavailable") skip "LC17 core-scheduling cookie: this kernel has no CONFIG_SCHED_CORE" ;;
+        *)                  fail "LC17 the zone's pid 1 has no cookie of its own (status says: ${cs:-nothing about core-sched})" ;;
+    esac
 else
     fail "LC10 no usable init.pid in the registry entry"
 fi
