@@ -267,3 +267,39 @@ machines without SMT lose nothing.
 
 Core scheduling is wired to zones, so that SMT can stay on and two trust
 domains still never share a core.
+
+## ADR-012: Device firmware ships from linux-firmware, on the verified root
+
+**Decision.** The image carries the firmware files that laptop graphics and
+Wi-Fi need, taken from the pinned `linux-firmware` release and selected by
+`build/config/firmware.list`, under `/lib/firmware` on the dm-verity root,
+compressed with zstd. The drivers that load them are modules signed by the
+build, so they probe after the root is mounted and can find them.
+
+**Why.** Every Intel, AMD and Qualcomm wireless part and every AMD GPU refuses
+to run without a vendor firmware file, and Intel graphics runs degraded
+without its own. A hardened desktop that cannot bring up the Wi-Fi of any
+laptop made in the last decade is not usable, and "firmware the image does
+not ship" was the one line in the hardware list that excluded most machines.
+
+**What this is not.** These files are not built from source, which
+docs/supply-chain.md otherwise requires of every shipped byte. They are
+opaque vendor binaries executed by the device's own processor, not by the
+CPU, under the kernel's control of the bus (IOMMU on and strict, ADR-011's
+company in the hardening fragment). What Kryptik can establish about them is
+what it establishes: the tarball is the one kernel.org signed, its hash is
+pinned, each file's licence is the one `WHENCE` records, and the copy the
+kernel loads is on the verified root, so it cannot be replaced without
+re-signing the kernel.
+
+**What is left out, and why.** NVIDIA: nouveau needs tens of megabytes of
+GSP firmware per generation and the firmware framebuffer already gives those
+machines a display; the compositor needs no acceleration. Bluetooth and
+sound: no zone has a use for them yet. Anything not on the list is not
+shipped; the list is the decision.
+
+### Costs
+
+About 135 MB, compressed, on a root image of 2.7 GB (385 MB of files, of
+which Intel Wi-Fi is 56 MB and amdgpu 38 after zstd), and one more input
+whose contents nobody here can read.

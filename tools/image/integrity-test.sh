@@ -77,10 +77,25 @@ python3 "$DRV" --serial "$SER" --timeout 300 \
     "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "run:test \"\$(od -An -tu1 -j4 -N1 /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c | tr -d ' ')\" = 1" \
     "run:echo integrity-marker > /home/${TUSER}/marker && sync" \
+    "$(printf 'su:%s:%s' "$RPASS" 'grep -q "\[confidentiality\]" /sys/kernel/security/lockdown && echo LOCKDOWN=confidentiality')" "expect:LOCKDOWN=confidentiality" \
+    "$(printf 'su:%s:%s' "$RPASS" 'insmod /usr/lib/kryptik/kernel/mac80211_hwsim-unsigned.ko 2>&1; echo UNSIGNED-RC=$?; test ! -d /sys/module/mac80211_hwsim && echo UNSIGNED=refused')" "expect:UNSIGNED=refused" \
+    "$(printf 'su:%s:%s' "$RPASS" 'modprobe mac80211_hwsim radios=0 && test -d /sys/module/mac80211_hwsim && echo SIGNED=loaded')" "expect:SIGNED=loaded" \
     "su:${RPASS}:poweroff" "expect:Power down" "wait-exit"
 rc=$?; sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
 [[ "$rc" -eq 0 ]] && green "installed system boots with Secure Boot enforced (SecureBoot=1 inside the guest)" || red "step 1 drive failed"
-tr -d '\r' < "$LOG1" | grep -q 'KRYPTIK_SMOKE: verity_root=0 [0-9]* verity V' && green "dm-verity reports the root valid" || red "no valid verity root reported"
+T1="$(tr -d '\r' < "$LOG1")"
+grep -q 'KRYPTIK_SMOKE: verity_root=0 [0-9]* verity V' <<<"$T1" && green "dm-verity reports the root valid" || red "no valid verity root reported"
+# The kernel's own promises, read from inside the booted system: lockdown in
+# confidentiality mode, and module signing enforced both ways with one
+# driver: the unsigned copy stage 05 ships beside the suites is refused with
+# the kernel's reason, the signed copy loads.
+grep -q 'LOCKDOWN=confidentiality' <<<"$T1" && green "lockdown reports confidentiality" || red "lockdown is not in confidentiality mode"
+if grep -q 'UNSIGNED=refused' <<<"$T1" && grep -q 'Key was rejected by service\|Required key not available' <<<"$T1"; then
+    green "an unsigned module is refused (Key was rejected by service)"
+else
+    red "an unsigned module was not refused for its missing signature"
+fi
+grep -q 'SIGNED=loaded' <<<"$T1" && green "the module signed by the build loads" || red "the build's own signed module did not load"
 
 # ----------------------------------------------------------------- step 2 --
 step "step 2: an untrusted boot artifact is refused by the firmware"

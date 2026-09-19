@@ -23,6 +23,16 @@ hash is the whole of its provenance, as hardened_malloc's was before
 `tools/verify-provenance.sh`; the tool refuses to run from a tarball that does
 not match the lock.
 
+The one class of shipped bytes that is not built from source is device
+firmware (ADR-012): the files `build/config/firmware.list` selects from the
+pinned `linux-firmware` release, on the verified root under `/lib/firmware`.
+The tarball is signed by its kernel.org maintainer and verified like the
+kernel's; the hash is in `sources.lock`; every file's licence is the one the
+release's `WHENCE` records for it. What that establishes is where the bytes
+came from, not what they do: they run on the device's own processor, and the
+kernel's control of the bus (the IOMMU on and strict by default) is the
+boundary around them.
+
 ## Source integrity
 
 `sources.lock` pins a SHA-256 for every upstream tarball.

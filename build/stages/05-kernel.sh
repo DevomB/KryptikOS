@@ -331,6 +331,20 @@ s_install() {
     cp -v arch/x86/boot/bzImage "${BOOTDIR}/kryptik-${V_LINUX}"
     cp -v System.map "${BOOTDIR}/System.map-${V_LINUX}"
     cp -v .config "${BOOTDIR}/config-${V_LINUX}"
+
+    # An UNSIGNED copy of one module, for the integrity suite. modules_install
+    # signs what it installs (MODULE_SIG_ALL); the build tree's .ko is the
+    # same object without the signature, and a kernel that enforces signing
+    # has to refuse it. mac80211_hwsim is the module whose signed copy the
+    # same suite loads, so one driver proves both directions.
+    local hwsim="drivers/net/wireless/virtual/mac80211_hwsim.ko"
+    [[ -f "$hwsim" ]] || { echo "FAIL: ${hwsim} was not built (CONFIG_MAC80211_HWSIM=m, boot.fragment)"; return 1; }
+    if grep -q '~Module signature appended~' "$hwsim"; then
+        echo "FAIL: the build tree's ${hwsim} carries a signature; the unsigned control needs one without"; return 1
+    fi
+    install -d -m 0755 "${KRYPTIK_DESTDIR}/usr/lib/kryptik/kernel"
+    install -m 0644 "$hwsim" "${KRYPTIK_DESTDIR}/usr/lib/kryptik/kernel/mac80211_hwsim-unsigned.ko"
+    echo "unsigned control module: /usr/lib/kryptik/kernel/mac80211_hwsim-unsigned.ko"
 }
 
 # Prove the kernel landed where a bootloader will look for it, and nowhere

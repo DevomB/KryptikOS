@@ -142,6 +142,11 @@ libnftnl|${V_LIBNFTNL}|${MIRROR_NETFILTER}/libnftnl/libnftnl-${V_LIBNFTNL}.tar.x
 nftables|${V_NFTABLES}|${MIRROR_NETFILTER}/nftables/nftables-${V_NFTABLES}.tar.xz
 dnsmasq|${V_DNSMASQ}|${MIRROR_KELLEYS}/dnsmasq-${V_DNSMASQ}.tar.xz
 dhcpcd|${V_DHCPCD}|${MIRROR_GITHUB}/NetworkConfiguration/dhcpcd/releases/download/v${V_DHCPCD}/dhcpcd-${V_DHCPCD}.tar.xz
+libnl|${V_LIBNL}|${MIRROR_GITHUB}/thom311/libnl/releases/download/libnl${V_LIBNL//./_}/libnl-${V_LIBNL}.tar.gz
+wpa-supplicant|${V_WPA_SUPPLICANT}|${MIRROR_W1FI}/wpa_supplicant-${V_WPA_SUPPLICANT}.tar.gz
+iw|${V_IW}|${MIRROR_KERNEL_SOFTWARE}/network/iw/iw-${V_IW}.tar.xz
+linux-firmware|${V_LINUX_FIRMWARE}|${MIRROR_KERNEL}/firmware/linux-firmware-${V_LINUX_FIRMWARE}.tar.xz
+wireless-regdb|${V_WIRELESS_REGDB}|${MIRROR_KERNEL_SOFTWARE}/network/wireless-regdb/wireless-regdb-${V_WIRELESS_REGDB}.tar.xz
 meson|${V_MESON}|${MIRROR_GITHUB}/mesonbuild/meson/releases/download/${V_MESON}/meson-${V_MESON}.tar.gz
 ninja|${V_NINJA}|${MIRROR_GITHUB}/ninja-build/ninja/archive/v${V_NINJA}/ninja-${V_NINJA}.tar.gz
 wayland|${V_WAYLAND}|${MIRROR_FDO_GITLAB}/wayland/wayland/-/releases/${V_WAYLAND}/downloads/wayland-${V_WAYLAND}.tar.xz

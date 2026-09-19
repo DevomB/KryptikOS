@@ -106,10 +106,9 @@ CONFIG_E1000E=y
 # module for the keyboard. The set below is what a download is expected to
 # meet: NVMe and SAS controllers, the Intel, Broadcom and Realtek wired
 # adapters of servers, desktops and docks, the two BMC framebuffers, and
-# USB 2 as well as 3. Wireless is deliberately absent: it needs firmware
-# files this image does not carry. None of this has been booted on
-# physical hardware yet; the first machine that does will say what is
-# missing. Stage 05 fails if any =y line here does not survive olddefconfig.
+# USB 2 as well as 3. None of this has been booted on physical hardware
+# yet; the first machine that does will say what is missing. Stage 05 fails
+# if any line here does not survive olddefconfig.
 CONFIG_BLK_DEV_NVME=y
 CONFIG_MEGARAID_SAS=y
 CONFIG_SCSI_MPT3SAS=y
@@ -193,3 +192,60 @@ CONFIG_HYPERV_NET=y
 CONFIG_HYPERV_KEYBOARD=y
 CONFIG_HID_HYPERV_MOUSE=y
 CONFIG_DRM_HYPERV=y
+
+# --- drivers that need firmware: modules, so the verified root can supply it
+# A built-in driver probes while the bus is enumerated, before root is
+# mounted, and a request_firmware() then finds nothing: an amdgpu or
+# iwlwifi compiled in would fail once and stay failed. As modules they are
+# loaded by eudev after sysinit, when /lib/firmware is there, and only
+# with the signature this build put on them (MODULE_SIG_FORCE). The files
+# they load come from the pinned linux-firmware release, selected by
+# build/config/firmware.list, and live on the dm-verity root like every
+# other byte the kernel executes. Firmware is compressed with zstd there;
+# the loader knows to look for name.zst.
+CONFIG_FW_LOADER_COMPRESS=y
+CONFIG_FW_LOADER_COMPRESS_XZ=y
+CONFIG_FW_LOADER_COMPRESS_ZSTD=y
+# Display: Intel (i915 for Gen 9 to Meteor Lake, xe from Lunar Lake and
+# Battlemage) and AMD. i915 was built in by the x86_64 defconfig; it is a
+# module now for the same reason as the others, and simpledrm carries the
+# console until it loads. NVIDIA stays on simpledrm: nouveau's GSP firmware
+# is tens of megabytes per generation and the compositor needs no
+# acceleration.
+CONFIG_DRM_I915=m
+CONFIG_DRM_XE=m
+CONFIG_DRM_AMDGPU=m
+# Wireless. cfg80211 and mac80211 are built in (defconfig); the drivers are
+# modules: Intel (every generation since 7260, including the recent
+# Wi-Fi 7 parts under iwlmld), Qualcomm Atheros (QCA6174 and QCA9377 on
+# ath10k, QCA6390 and WCN6855 on ath11k, WCN7850 on ath12k), MediaTek
+# (MT7921, MT7922, MT7925), Realtek (the 8822/8821/8723 family on rtw88,
+# the 8852/8851/8922 family on rtw89), Broadcom (brcmfmac over PCIe: Dell
+# and Apple machines) and the Realtek USB sticks (rtl8xxxu). mac80211_hwsim
+# is a virtual radio: the integrity suite loads its signed copy and refuses
+# an unsigned one, and the net zone's wiphy move is tested against it.
+CONFIG_IWLWIFI=m
+CONFIG_IWLMVM=m
+CONFIG_IWLMLD=m
+CONFIG_ATH10K=m
+CONFIG_ATH10K_PCI=m
+CONFIG_ATH11K=m
+CONFIG_ATH11K_PCI=m
+CONFIG_ATH12K=m
+CONFIG_MT7921E=m
+CONFIG_MT7925E=m
+CONFIG_RTW88=m
+CONFIG_RTW88_8822BE=m
+CONFIG_RTW88_8822CE=m
+CONFIG_RTW88_8821CE=m
+CONFIG_RTW88_8723DE=m
+CONFIG_RTW89=m
+CONFIG_RTW89_8851BE=m
+CONFIG_RTW89_8852AE=m
+CONFIG_RTW89_8852BE=m
+CONFIG_RTW89_8852CE=m
+CONFIG_RTW89_8922AE=m
+CONFIG_BRCMFMAC=m
+CONFIG_BRCMFMAC_PCIE=y
+CONFIG_RTL8XXXU=m
+CONFIG_MAC80211_HWSIM=m
