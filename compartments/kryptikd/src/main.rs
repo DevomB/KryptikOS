@@ -28,6 +28,7 @@ mod seccomp;
 mod serve;
 mod spawn;
 mod volume;
+mod wifi;
 mod zone;
 
 use std::path::{Path, PathBuf};
@@ -59,10 +60,20 @@ USAGE:
     kryptikd serve [--rootfs DIR]     the launch daemon the desktop session talks
                    [--socket PATH]    to (root; --socket PATH runs a developer
                    [--group G]        instance that serves only your own uid)
-                   [--proxy-exe P]
+                   [--proxy-exe P] [--wifi-dir DIR]
+    kryptikd wifi list                the net zone's Wi-Fi networks, SSIDs only
+    kryptikd wifi add SSID            add one, or replace its passphrase; the
+                                      passphrase is read from stdin, never argv
+    kryptikd wifi forget SSID         remove one
+                   [--wifi-dir DIR]   (the session does this through `kryptik
+                                      wifi` and the launch daemon; this is root's
+                                      path and the tests')
 
     --rootfs DIR   base directory for zone data (default: /var/lib/kryptik/zones);
                    the zone sees its own directory as /home/NAME
+    --wifi-dir DIR the directory holding the net zone's wpa_supplicant.conf
+                   (default: /var/lib/kryptik/wifi); a nic zone gets the file
+                   read-only at /etc/wpa_supplicant.conf when it exists
     --zone-uid N   host uid/gid the zone's root maps to. Required, and only
     --zone-gid N   accepted, when kryptikd itself runs as root.
     --auto-approve-transfers
@@ -232,6 +243,7 @@ fn main() -> ExitCode {
         "gc" => cmd_gc(),
         "volume" => cmd_volume(&zone_dir, &args),
         "serve" => serve::cmd_serve(&zone_dir, &args),
+        "wifi" => cmd_wifi(&zone_dir, &args),
         "clipboard" => cmd_clipboard(&args),
         "transfer" => {
             eprintln!(
@@ -884,6 +896,7 @@ fn run_options_from(args: &[String]) -> Result<spawn::RunOptions, String> {
         zone_uid: num("--zone-uid")?,
         zone_gid: num("--zone-gid")?,
         zones_dir: std::path::PathBuf::new(),
+        wifi_dir: wifi_dir_from(args),
         auto_approve_transfers: args.iter().any(|a| a == "--auto-approve-transfers"),
         passphrase_file: args
             .iter()
@@ -1041,6 +1054,84 @@ fn cmd_volume(dir: &Path, args: &[String]) -> ExitCode {
             eprintln!("volume: unknown subcommand {other:?}");
             ExitCode::from(2)
         }
+    }
+}
+
+fn wifi_dir_from(args: &[String]) -> PathBuf {
+    args.iter()
+        .position(|a| a == "--wifi-dir")
+        .and_then(|i| args.get(i + 1))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(wifi::DEFAULT_DIR))
+}
+
+/// `kryptikd wifi`: the net zone's Wi-Fi credentials, from zone 0 (wifi.rs).
+/// The session's path is `kryptik wifi` through the launch daemon; this is
+/// the same file for root at a terminal and for the tests. The passphrase
+/// is one line on stdin, never an argument.
+///
+///   wifi list                [--wifi-dir DIR]
+///   wifi add SSID            [--wifi-dir DIR] [--zones DIR]
+///   wifi forget SSID         [--wifi-dir DIR] [--zones DIR]
+fn cmd_wifi(zones_dir: &Path, args: &[String]) -> ExitCode {
+    let dir = wifi_dir_from(args);
+    let sub = args.get(1).map(String::as_str).unwrap_or("");
+    let ssid = args.get(2).filter(|a| !a.starts_with("--"));
+    let usage = || {
+        eprintln!("usage: kryptikd wifi list | add SSID | forget SSID   [--wifi-dir DIR]");
+        ExitCode::from(2)
+    };
+    let refused = |e: String| {
+        eprintln!("kryptikd: wifi: {e}");
+        ExitCode::FAILURE
+    };
+    match (sub, ssid) {
+        ("list", None) => match wifi::list(&dir) {
+            Ok(names) => {
+                for n in names {
+                    println!("{n}");
+                }
+                ExitCode::SUCCESS
+            }
+            Err(e) => refused(e),
+        },
+        ("add", Some(ssid)) => {
+            // The rules first, so a bad SSID is refused before anyone types
+            // a passphrase for it.
+            if let Err(e) = wifi::check_ssid(ssid) {
+                return refused(e);
+            }
+            let pass = match wifi::read_passphrase(&format!("passphrase for {ssid}: ")) {
+                Ok(p) => p,
+                Err(e) => return refused(e),
+            };
+            let owner = match wifi::owner_for(zones_dir) {
+                Ok(o) => o,
+                Err(e) => return refused(e),
+            };
+            match wifi::add(&dir, owner, ssid, &pass) {
+                Ok(wifi::Added::New) => println!("added network {ssid:?}; {}", wifi::restart_net_zone(&dir)),
+                Ok(wifi::Added::Replaced) => {
+                    println!("replaced the passphrase of network {ssid:?}; {}", wifi::restart_net_zone(&dir))
+                }
+                Err(e) => return refused(e),
+            }
+            ExitCode::SUCCESS
+        }
+        ("forget", Some(ssid)) => {
+            let owner = match wifi::owner_for(zones_dir) {
+                Ok(o) => o,
+                Err(e) => return refused(e),
+            };
+            match wifi::forget(&dir, owner, ssid) {
+                Ok(()) => {
+                    println!("forgot network {ssid:?}; {}", wifi::restart_net_zone(&dir));
+                    ExitCode::SUCCESS
+                }
+                Err(e) => refused(e),
+            }
+        }
+        _ => usage(),
     }
 }
 

@@ -21,6 +21,15 @@
 //!            status\n
 //!            info <zone>\n                 encrypted yes|no, running yes|no
 //!            runtime\n                     the session's runtime directory
+//!            wifi-list\n                   the net zone's Wi-Fi networks, as
+//!                                          `network <ssid>` lines (wifi.rs)
+//!            wifi-add\n                    add a network, or replace its passphrase
+//!              ssid <ssid>\n
+//!              psk <passphrase>\n          in the body: never on a command line,
+//!              end\n                       never in a log line
+//!            wifi-forget\n                 remove a network
+//!              ssid <ssid>\n
+//!              end\n
 //!   reply    ok <launcher pid>\n  |  error: <why>\n  |  lines ... end\n
 //!
 //! # What `ok` means
@@ -196,12 +205,13 @@ fn peer_of(fd: RawFd) -> Option<Peer> {
 // --- the request -------------------------------------------------------------
 
 /// Whether the bytes so far are a whole request. Single-line verbs end at
-/// their newline; `run` ends at its `end` line.
+/// their newline; `run`, `wifi-add` and `wifi-forget` end at their `end`
+/// line.
 fn request_complete(text: &[u8]) -> bool {
     if !text.ends_with(b"\n") {
         return false;
     }
-    if text.starts_with(b"run ") {
+    if text.starts_with(b"run ") || text.starts_with(b"wifi-add\n") || text.starts_with(b"wifi-forget\n") {
         text.ends_with(b"\nend\n")
     } else {
         true
@@ -343,6 +353,61 @@ fn parse_run(text: &str) -> Result<Request, String> {
         return Err("run: no command".into());
     }
     Ok(req)
+}
+
+/// Debug prints the SSID only: the passphrase is never formatted.
+struct WifiRequest {
+    ssid: String,
+    psk: Option<String>,
+}
+
+impl std::fmt::Debug for WifiRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "WifiRequest {{ ssid: {:?}, psk: {} }}", self.ssid, if self.psk.is_some() { "<set>" } else { "None" })
+    }
+}
+
+/// `wifi-add` and `wifi-forget`: the verb alone on its line, then
+/// `ssid <ssid>`, for wifi-add `psk <passphrase>`, then `end`. A value is
+/// everything after the one space, so an SSID may hold spaces. A refusal
+/// describes the shape and never repeats a line, because the passphrase
+/// may be in it.
+fn parse_wifi(text: &str) -> Result<WifiRequest, String> {
+    let mut lines = text.lines();
+    let verb = lines.next().unwrap_or("");
+    if verb != "wifi-add" && verb != "wifi-forget" {
+        let word = verb.split_whitespace().next().unwrap_or("wifi");
+        return Err(format!("{word}: the verb stands alone on its line"));
+    }
+    let shape = if verb == "wifi-add" { "`ssid <SSID>`, `psk <PASSPHRASE>`, `end`" } else { "`ssid <SSID>`, `end`" };
+    let (mut ssid, mut psk, mut ended) = (None, None, false);
+    for l in lines {
+        if l == "end" {
+            ended = true;
+            break;
+        }
+        if let Some(v) = l.strip_prefix("ssid ") {
+            if ssid.replace(v.to_string()).is_some() {
+                return Err(format!("{verb}: two ssid lines"));
+            }
+        } else if let Some(v) = l.strip_prefix("psk ").filter(|_| verb == "wifi-add") {
+            if psk.replace(v.to_string()).is_some() {
+                return Err(format!("{verb}: two psk lines"));
+            }
+        } else {
+            return Err(format!(
+                "{verb}: unexpected line; the request is {shape}, one per line, and neither value may hold a newline"
+            ));
+        }
+    }
+    if !ended {
+        return Err(format!("{verb}: request not terminated by `end`"));
+    }
+    let ssid = ssid.ok_or_else(|| format!("{verb}: no ssid line"))?;
+    if verb == "wifi-add" && psk.is_none() {
+        return Err("wifi-add: no psk line".into());
+    }
+    Ok(WifiRequest { ssid, psk })
 }
 
 // --- the proxy socket ----------------------------------------------------------
@@ -566,6 +631,8 @@ fn spawn_launcher(
         cfg.zones_dir.display().to_string(),
         "--rootfs".into(),
         cfg.rootfs.clone(),
+        "--wifi-dir".into(),
+        cfg.wifi_dir.display().to_string(),
         "--ready-fd".into(),
         ready_w.raw().to_string(),
     ];
@@ -751,6 +818,10 @@ pub struct ServeConfig {
     pub log_dir: PathBuf,
     /// The program that must be listening on a session's proxy socket.
     pub proxy_exe: PathBuf,
+    /// Where the net zone's Wi-Fi credentials live (wifi.rs): what the
+    /// wifi verbs read and write, and what the launcher binds into the nic
+    /// zone.
+    pub wifi_dir: PathBuf,
     /// Unprivileged instance: serves its own uid only.
     pub developer: bool,
 }
@@ -777,6 +848,7 @@ fn config_from(zones_dir: &Path, args: &[String]) -> Result<ServeConfig, String>
         rootfs: opt("--rootfs").unwrap_or_else(|| crate::DEFAULT_ROOTFS_BASE.to_string()),
         log_dir,
         proxy_exe: PathBuf::from(opt("--proxy-exe").unwrap_or_else(|| PROXY_EXE.to_string())),
+        wifi_dir: PathBuf::from(opt("--wifi-dir").unwrap_or_else(|| crate::wifi::DEFAULT_DIR.to_string())),
         developer,
     })
 }
@@ -968,6 +1040,59 @@ fn handle(cfg: &ServeConfig, conn: UnixStream) -> Option<Pending> {
             }
             eprintln!("kryptikd serve: uid {uid} stopped zone {zone:?}");
         }
+        "wifi-list" => match crate::wifi::list(&cfg.wifi_dir) {
+            Ok(names) => {
+                let mut out = String::new();
+                for n in names {
+                    out.push_str(&format!("network {n}\n"));
+                }
+                out.push_str("end\n");
+                reply(&conn, &out);
+            }
+            Err(e) => reply(&conn, &format!("error: {e}\n")),
+        },
+        "wifi-add" | "wifi-forget" => {
+            // The passphrase is in the body. Nothing below prints the
+            // request or the value: a refusal names a rule (wifi.rs), and
+            // the log line carries the SSID and the outcome.
+            let req = match parse_wifi(&text) {
+                Ok(r) => r,
+                Err(e) => {
+                    reply(&conn, &format!("error: {e}\n"));
+                    return None;
+                }
+            };
+            let owner = match crate::wifi::owner_for(&cfg.zones_dir) {
+                Ok(o) => o,
+                Err(e) => {
+                    reply(&conn, &format!("error: {e}\n"));
+                    return None;
+                }
+            };
+            let done = if verb == "wifi-add" {
+                crate::wifi::add(&cfg.wifi_dir, owner, &req.ssid, req.psk.as_deref().unwrap_or("")).map(|a| match a {
+                    crate::wifi::Added::New => "added network",
+                    crate::wifi::Added::Replaced => "replaced the passphrase of network",
+                })
+            } else {
+                crate::wifi::forget(&cfg.wifi_dir, owner, &req.ssid).map(|()| "forgot network")
+            };
+            match done {
+                Ok(what) => {
+                    // The zone is ephemeral and the file is bound in at its
+                    // start; a restart is how the change reaches it. Not a
+                    // failure of the request when it cannot happen: the reply
+                    // says so.
+                    let restart = crate::wifi::restart_net_zone(&cfg.wifi_dir);
+                    eprintln!("kryptikd serve: uid {uid} {what} {:?}; {restart}", req.ssid);
+                    reply(&conn, &format!("ok {what} {:?}; {restart}\n", req.ssid));
+                }
+                Err(e) => {
+                    eprintln!("kryptikd serve: uid {uid} {verb} {:?} refused: {e}", req.ssid);
+                    reply(&conn, &format!("error: {e}\n"));
+                }
+            }
+        }
         "run" => {
             let req = match parse_run(&text) {
                 Ok(r) => r,
@@ -1052,11 +1177,12 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
     };
     let _ = listener.set_nonblocking(true);
     eprintln!(
-        "kryptikd serve: listening on {} for {}; zones {}, data {}, logs {}",
+        "kryptikd serve: listening on {} for {}; zones {}, data {}, wifi {}, logs {}",
         cfg.socket.display(),
         if cfg.developer { format!("uid {} (developer instance)", unsafe { libc::geteuid() }) } else { format!("group {}", cfg.group) },
         cfg.zones_dir.display(),
         cfg.rootfs,
+        cfg.wifi_dir.display(),
         cfg.log_dir.display()
     );
 
@@ -1237,6 +1363,33 @@ mod tests {
         assert!(!request_complete(b"run work\narg x\n"));
         assert!(request_complete(b"run work\narg x\nend\n"));
         assert!(!request_complete(b"run work\narg x\nend"));
+        assert!(request_complete(b"wifi-list\n"));
+        assert!(!request_complete(b"wifi-add\n"));
+        assert!(!request_complete(b"wifi-add\nssid x\npsk y\n"));
+        assert!(request_complete(b"wifi-add\nssid x\npsk y\nend\n"));
+        assert!(!request_complete(b"wifi-forget\nssid x\n"));
+        assert!(request_complete(b"wifi-forget\nssid x\nend\n"));
+    }
+
+    #[test]
+    fn wifi_requests_carry_the_values_whole_and_refuse_the_rest() {
+        let r = parse_wifi("wifi-add\nssid Cafe Wifi \npsk pass word\nend\n").unwrap();
+        assert_eq!(r.ssid, "Cafe Wifi ");
+        assert_eq!(r.psk.as_deref(), Some("pass word"));
+        let r = parse_wifi("wifi-forget\nssid Home\nend\n").unwrap();
+        assert_eq!((r.ssid.as_str(), r.psk), ("Home", None));
+        for bad in [
+            "wifi-add\nssid a\nend\n",                    // no psk
+            "wifi-add\npsk secret\nend\n",                // no ssid
+            "wifi-add\nssid a\npsk se\ncret\nend\n",      // a newline in the psk
+            "wifi-add\nssid a\npsk secret\n",             // no end
+            "wifi-add x\nssid a\npsk secret\nend\n",      // the verb stands alone
+            "wifi-forget\nssid a\npsk secret\nend\n",     // forget takes no psk
+            "wifi-add\nssid a\nssid b\npsk secret\nend\n", // one ssid
+        ] {
+            let e = parse_wifi(bad).unwrap_err();
+            assert!(!e.contains("secret") && !e.contains("cret"), "{bad:?}: the refusal repeats a value: {e}");
+        }
     }
 
     /// The path rule, without a filesystem: only the session's own
