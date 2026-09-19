@@ -236,6 +236,14 @@ MATCH="^kryptik-broker 1 zone=probe$" check "a zone reaches its own broker and i
 "
 MATCH="^error: unknown verb$" check "an unknown verb is refused"        0 /usr/bin/python3 -c "$BRK" "steal
 "
+# The clock (docs/design/time.md): only the zone that holds the network may
+# say what time the network thinks it is, and even its word is a claim. From
+# this zone the verb is refused by who is asking, and a claim no person
+# would have written is refused before anybody looks at who sent it.
+MATCH="does not hold the network" check "the clock's verb is refused from a zone that does not hold the network" 0 /usr/bin/python3 -c "$BRK" "time-offset 5 4
+"
+MATCH="is not an offset in seconds" check "a time claim outside the grammar is refused at parse time" 0 /usr/bin/python3 -c "$BRK" "time-offset 1e9 4
+"
 MATCH="^ok text/plain 5 hello$" check "clipboard-set then clipboard-get round-trips" 0 /bin/sh -c "python3 -c '$BRK' 'clipboard-set text/plain 5
 hello' >/dev/null && python3 -c '$BRK' 'clipboard-get
 '"

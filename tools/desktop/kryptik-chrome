@@ -202,18 +202,40 @@ run_confirm() { # ID
     id="$1"
     ask="$CONSENT/$id.ask"
     [ -r "$ask" ] || { echo "kryptik-chrome: no question $id (withdrawn?)"; sleep 2; exit 1; }
-    from="$(sed -n 's/^from=//p' "$ask")"; to="$(sed -n 's/^to=//p' "$ask")"
-    name="$(sed -n 's/^name=//p' "$ask")"; bytes="$(sed -n 's/^bytes=//p' "$ask")"
-    echo "================ KRYPTIK - transfer request (zone 0) ================"
-    echo "This window is drawn by the compositor with the unzoned border."
-    echo
-    printf 'Zone %s (%s) wants to send a file to zone %s (%s):\n' "$from" "$(zone_field "$from" label)" "$to" "$(zone_field "$to" label)"
-    printf '    %s   (%s bytes)\n' "$name" "$bytes"
-    echo
-    echo "It will land in the receiving zone's incoming/ directory. Nothing else"
-    echo "is shared. Cancelling leaves both zones as they are."
-    echo
-    printf 'Allow this transfer? [y/N] '
+    # A question with no kind is a transfer, as every question once was.
+    kind="$(sed -n 's/^kind=//p' "$ask")"
+    if [ "$kind" = clock ]; then
+        # The clock (docs/design/time.md): the network's answer is further
+        # from this machine's clock than zone 0 believes without asking.
+        # Both times are shown, because a person with a watch can answer
+        # and nothing on this system can.
+        now="$(sed -n 's/^now=//p' "$ask")"; proposed="$(sed -n 's/^proposed=//p' "$ask")"
+        sources="$(sed -n 's/^sources=//p' "$ask")"
+        echo "================ KRYPTIK - set the clock? (zone 0) ================"
+        echo "This window is drawn by the compositor with the unzoned border."
+        echo
+        printf 'The network says it is   %s\n' "$proposed"
+        printf 'This machine says it is  %s\n' "$now"
+        printf '    (%s time server(s) agreed, asked by the net zone, which is not trusted)\n' "$sources"
+        echo
+        echo "Check a watch or a phone. A wrong clock makes expired certificates"
+        echo "look valid and old updates look new. Cancelling leaves the clock alone."
+        echo
+        printf 'Set the clock to the network'"'"'s time? [y/N] '
+    else
+        from="$(sed -n 's/^from=//p' "$ask")"; to="$(sed -n 's/^to=//p' "$ask")"
+        name="$(sed -n 's/^name=//p' "$ask")"; bytes="$(sed -n 's/^bytes=//p' "$ask")"
+        echo "================ KRYPTIK - transfer request (zone 0) ================"
+        echo "This window is drawn by the compositor with the unzoned border."
+        echo
+        printf 'Zone %s (%s) wants to send a file to zone %s (%s):\n' "$from" "$(zone_field "$from" label)" "$to" "$(zone_field "$to" label)"
+        printf '    %s   (%s bytes)\n' "$name" "$bytes"
+        echo
+        echo "It will land in the receiving zone's incoming/ directory. Nothing else"
+        echo "is shared. Cancelling leaves both zones as they are."
+        echo
+        printf 'Allow this transfer? [y/N] '
+    fi
     answer=no
     if read -r reply; then
         case "$reply" in y|Y|yes|YES) answer=yes ;; esac

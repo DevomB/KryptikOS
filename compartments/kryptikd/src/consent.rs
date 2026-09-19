@@ -220,8 +220,23 @@ fn read_answer(dfd: RawFd, name: &str) -> Result<Option<String>, String> {
     Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
 }
 
-/// Ask, and wait for the answer. `Ok(())` only on an explicit `yes`.
+/// May this file cross? `Ok(())` only on an explicit `yes`.
 pub fn ask(from: &str, to: &str, name: &str, bytes: u64) -> Result<(), String> {
+    ask_text(&format!("from={from}\nto={to}\nname={name}\nbytes={bytes}\n"))
+}
+
+/// May the clock be set? Asked when the network's claim is further from
+/// this machine's clock than zone 0 believes without asking
+/// (docs/design/time.md). The person is shown both times, because someone
+/// with a watch can answer and nothing on this system can. `kind=clock`
+/// tells the chrome which question to draw; a question with no kind is a
+/// transfer, as every question was before this one existed.
+pub fn ask_clock(now: &str, proposed: &str, sources: u8) -> Result<(), String> {
+    ask_text(&format!("kind=clock\nnow={now}\nproposed={proposed}\nsources={sources}\n"))
+}
+
+/// Ask, and wait for the answer. `Ok(())` only on an explicit `yes`.
+fn ask_text(text: &str) -> Result<(), String> {
     let d = dir();
     let channel = open_channel(&d)?;
     let dfd = channel.as_raw_fd();
@@ -232,8 +247,7 @@ pub fn ask(from: &str, to: &str, name: &str, bytes: u64) -> Result<(), String> {
             d.display()
         ));
     }
-    let text = format!("from={from}\nto={to}\nname={name}\nbytes={bytes}\n");
-    let id = place_question(dfd, &text)?;
+    let id = place_question(dfd, text)?;
     let ask = format!("{id}.ask");
     let answer = format!("{id}.answer");
     let deadline = Instant::now() + timeout();
