@@ -36,19 +36,29 @@ what exists and how it is tested, not that a particular build passed.
 ## Hardware
 
 x86-64 with UEFI firmware. Because the root is verified from the signed
-kernel with no initramfs and no loadable modules, a machine's devices must
-be among the drivers compiled in (`build/config/kernel/boot.fragment`):
+kernel with no initramfs, a machine's devices must be among the drivers
+compiled in (`build/config/kernel/boot.fragment`):
 
-- **Storage:** NVMe, AHCI SATA, legacy PIIX SATA, LSI MegaRAID and MPT3 SAS,
-  USB mass storage, virtio.
+- **Storage:** NVMe, including NVMe behind Intel VMD ("RAID"/RST mode);
+  AHCI SATA, legacy PIIX SATA; eMMC and SD on SDHCI; LSI MegaRAID and MPT3
+  SAS, HPE Smart Array (hpsa, smartpqi); USB mass storage and UAS; virtio,
+  VMware PVSCSI, Hyper-V storage.
 - **Network, wired only:** Intel e1000/e1000e, igb, igc, ixgbe, i40e;
-  Broadcom tg3 and bnxt; Realtek r8169; USB adapters (AX88179, RTL8152);
-  virtio. Wireless is not included: it needs firmware the image does not
-  ship.
+  Broadcom tg3 and bnxt; Realtek r8169; Aquantia AQtion; Mellanox
+  ConnectX-4 and later; USB adapters (AX88179, RTL8152); virtio, VMware
+  vmxnet3, Hyper-V. Wireless is not included: it needs firmware the image
+  does not ship.
 - **Display:** the firmware framebuffer (simpledrm) on any UEFI machine, the
-  ASPEED and Matrox framebuffers of server BMCs, virtio-gpu. No GPU
-  acceleration is needed; the compositor renders with pixman.
-- **Input:** USB HID, PS/2.
+  ASPEED and Matrox framebuffers of server BMCs, virtio-gpu, VMware SVGA,
+  Hyper-V. No GPU acceleration is needed; the compositor renders with
+  pixman.
+- **Input:** USB HID (on xHCI, EHCI and the UHCI/OHCI companions of older
+  boards), PS/2, laptop I2C touchpads and touchscreens on Intel and AMD
+  (DesignWare I2C, the SoC pin controllers, HID multitouch), VMware and
+  Hyper-V input.
+
+Hyper-V's firmware trusts only Microsoft's keys, so Kryptik runs there with
+Secure Boot turned off in the VM's settings.
 
 A machine outside that list boots into a kernel that cannot find its disk or
 its network. Adding a driver is one line in the fragment and a rebuild. No
