@@ -375,6 +375,35 @@ jobs:
           # single green tick over both would hide which one failed.
           ./compartments/tests/cli.sh
 
+      - name: The launch daemon, over its socket
+        run: |
+          # `kryptikd serve` is what the desktop talks to; launcher.sh never
+          # goes near it. This suite was absent here, and its absence hid a
+          # daemon and its launchers disagreeing about the registry directory
+          # wherever XDG_RUNTIME_DIR is set: a runner sets none, so nothing on
+          # a runner could see it, and nothing on a runner ran the suite that
+          # would have. So the runner gets a runtime directory like a session
+          # has, which is also what the proxy-socket checks need: without one
+          # they are NOT RUN, and this suite counts a skipped check as a
+          # failure, rightly.
+          uid="$(id -u)"
+          sudo install -d -m 0700 -o "$uid" -g "$(id -g)" "/run/user/$uid"
+          export XDG_RUNTIME_DIR="/run/user/$uid"
+          cd compartments/kryptikd && cargo build --quiet
+          cd ../.. && ./compartments/tests/serve.sh
+
+      - name: The zone boundary's regression probes
+        run: |
+          # Every row is a property some defect once violated, driven through
+          # the real launcher. Until now its only automated run was inside
+          # zones-test, in the VM, at the end of a three-hour Distro run, and
+          # a probe whose reply was split by the daemon's own log line failed
+          # one there on a tree where nothing was wrong. Here it costs a
+          # minute. The exit status is the number of failures; what needs root
+          # and the target kernel says NOT RUN and is measured by zones-test.
+          cd compartments/kryptikd && cargo build --quiet
+          cd ../.. && ./compartments/kryptikd/probes/boundary-checks.sh
+
       - name: Update, rollback and recovery (end to end)
         run: |
           # tools/test-apply-update.sh already proves the byte-level property:

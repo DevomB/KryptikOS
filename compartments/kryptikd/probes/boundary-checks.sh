@@ -63,10 +63,18 @@ zrun() {
     # The rc must be the LAUNCHER's, so the filter runs afterwards: a
     # pipeline reports the LAST command's status, and an earlier draft of
     # this file graded every refusal against grep's exit code instead.
-    local raw
-    raw="$(timeout 60 "$K" run "$zone" "${ZFLAGS[@]}" "${IDFLAGS[@]}" --zones "$F/zones" --rootfs "$F/roots" -- "$@" 2>&1)"
+    #
+    # What the zone printed and what the launcher logged are captured APART
+    # and joined afterwards, the zone's output first. On one pipe they
+    # interleave in mid-line: the installed system once read a broker reply
+    # back as `kryptikd[zone error: unknown verb` / `probe]: broker served
+    # "steal"`, and a check anchored on the reply's own line failed on a
+    # system that had answered correctly. The launcher's log must never
+    # decide a probe's verdict by where its bytes happened to land.
+    local out="$F/zrun.out" err="$F/zrun.err"
+    timeout 60 "$K" run "$zone" "${ZFLAGS[@]}" "${IDFLAGS[@]}" --zones "$F/zones" --rootfs "$F/roots" -- "$@" > "$out" 2> "$err"
     ZRC=$?
-    ZOUT="$(denoise <<<"$raw")"
+    ZOUT="$(cat "$out" "$err" | denoise)"
     return 0
 }
 ZFLAGS=()
@@ -123,7 +131,9 @@ head_ "B. The filesystem boundary"
 
 MATCH="Read-only\|denied" check "writing at / is denied"                1 /bin/sh -c "touch /x"
 MATCH="Read-only\|denied" check "writing under /usr is denied"          1 /bin/sh -c "touch /usr/x"
-MATCH="Read-only\|denied" check "appending to /etc/passwd is denied"    1 /bin/sh -c "echo x >> /etc/passwd"
+# A failed redirection is status 1 in bash and 2 in dash; the row is about
+# the denial, so the status is normalised rather than left to the shell.
+MATCH="Read-only\|denied" check "appending to /etc/passwd is denied"    1 /bin/sh -c "(echo x >> /etc/passwd) || exit 1"
 MATCH="denied\|Read-only" check "mkdir under /dev is denied"            1 /bin/sh -c "mkdir /dev/evil"
 MATCH="^ok$"              check "mkdir at / is denied even though the zone is root" 0 /bin/sh -c "mkdir /newdir 2>/dev/null && echo bad || echo ok"
 MATCH="^0$"  check "no host identity in /etc: machine-id, ssh, shadow, fstab absent" 0 /bin/sh -c "ls /etc/machine-id /etc/ssh /etc/shadow /etc/fstab 2>/dev/null | wc -l"
@@ -301,25 +311,29 @@ head_ "H. The zone dies with its launcher"
 MARK="kryptik-probe-sleep-$$"
 zone_up()   { for _ in $(seq 1 300); do pgrep -f "^$MARK" >/dev/null && return 0; kill -0 "$1" 2>/dev/null || return 1; sleep 0.1; done; return 1; }
 zone_gone() { for _ in $(seq 1 100); do pgrep -f "^$MARK" >/dev/null || return 0; sleep 0.1; done; return 1; }
-# dies_with SIG NAME: launch, wait for the zone, signal the launcher, wait.
+# dies_with SIG: launch, wait for the zone, signal the launcher, wait.
 dies_with() {
-    local sig="$1" name="$2" p
-    "$K" run probe "${IDFLAGS[@]}" --zones "$F/zones" --rootfs "$F/roots" -- /bin/sh -c "exec -a $MARK sleep 300" > "$F/h.out" 2>&1 &
+    local sig="$1" p
+    # argv[0] is the marker, set by python's execvp and not by `exec -a`,
+    # which is bash's: where /bin/sh is dash (an Ubuntu runner) the shell
+    # said "exec: -a: not found", the zone's command ended at once, and
+    # both rows reported a zone that never came up.
+    "$K" run probe "${IDFLAGS[@]}" --zones "$F/zones" --rootfs "$F/roots" -- /usr/bin/python3 -c "import os; os.execvp('sleep', ['$MARK', '300'])" > "$F/h.out" 2>&1 &
     p=$!
     if ! zone_up "$p"; then
-        fail "$name  the zone never came up, so there was no launcher to signal" "$(denoise < "$F/h.out" | tail -3)"
+        fail "the zone never came up, so there was no launcher to SIG${sig}" "$(denoise < "$F/h.out" | tail -3)"
     else
         kill "-$sig" "$p" 2>/dev/null
         if zone_gone; then
-            pass "$name  the zone dies when its launcher is SIG${sig}ed"
+            pass "the zone dies when its launcher is SIG${sig}ed"
         else
-            fail "$name  a zone process outlived a SIG${sig}ed launcher"; pkill -9 -f "^$MARK"
+            fail "a zone process outlived a SIG${sig}ed launcher"; pkill -9 -f "^$MARK"
         fi
     fi
     wait "$p" 2>/dev/null
 }
-dies_with KILL H1
-dies_with TERM H2
+dies_with KILL
+dies_with TERM
 
 # ---------------------------------------------------------------------------
 head_ "I. What only a privileged run on the target kernel can show"
