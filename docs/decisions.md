@@ -318,3 +318,39 @@ older than a few years means known CPU vulnerabilities with no fix.
 About 135 MB, compressed, on a root image of 2.7 GB (385 MB of files, of
 which Intel Wi-Fi is 56 MB and amdgpu 38 after zstd), and one more input
 whose contents nobody here can read.
+
+## ADR-013: A driver is built into the kernel only when the boot needs it
+
+**Decision.** With no initramfs, a driver is compiled into the signed kernel
+only if it is needed to find, verify and mount the root; or gives a console
+and a keyboard before the root is mounted; or cannot do its job as a module
+(netfilter for the net zone, CPU microcode, the watchdog, and a few platform
+drivers that misbehave when they arrive late). Everything else is a signed
+module that eudev loads by modalias at coldplug, from the verified root. That
+includes every network card, every GPU and every pointing device, and it
+includes the virtual machine's. What Kryptik has no use for at all, such as
+sound, network filesystems, CardBus, AGP, software RAID and the
+connection-tracking helpers, is not built. The rule is written at the top of
+`build/config/kernel/boot.fragment`, and stage 05 prints what the image is made
+of and refuses one over `build/config/kernel/size-budget`.
+
+**Why.** Until the image carried modules (ADR-012) the rule was "everything is
+built in", because there was nowhere else for a driver to go. Hardware support
+was then widened under that rule, and the signed kernel went from 17.8 MB to
+31.6 MB without anyone deciding it should. A built-in driver is in the kernel
+on every machine, whether or not the device is there. A module is there only
+where it is used, and the path that loads it is the one real hardware depends
+on for Wi-Fi and graphics anyway.
+
+**Why the virtual machine gets no exception.** The acceptance suite boots
+under QEMU. With virtio-net and virtio-gpu built in, it never exercised module
+autoload at all, and the first proof that a network card loads as a module
+would have been a laptop. As modules, every acceptance run proves it.
+
+**What this does not shrink.** About 17 MB of the image is microcode, which is
+encrypted and does not compress. Pre-2011 CPUs that cannot boot this system
+account for 0.4 MB of that and are not worth a rule. Four server-only Xeon
+families account for 6.8 MB; they stay while the README names servers as
+supported hardware, because a machine whose microcode is left out still boots
+and runs with whatever its firmware loaded, and nobody would see the
+downgrade. Dropping them is a decision about supported hardware.
