@@ -833,6 +833,18 @@ while read -r name _ver url; do
         *astron.com*)
             verify_detached "$name" "$url" "$file" ".asc"
             ;;
+        *chrony-project.org*)
+            # chrony names its signature chrony-VERSION-tar-gz-asc.txt, beside
+            # chrony-VERSION.tar.gz: the suffix replaces the extension.
+            verify_detached "$name" "${url%.tar.gz}" "$file" "-tar-gz-asc.txt"
+            ;;
+        *curl.se/ca/*)
+            # One PEM file with no OpenPGP signature; curl.se states its
+            # SHA-256 beside it, which tools/verify-provenance.sh checks.
+            warn "${name}: no OpenPGP signature upstream; the publisher's checksum is verify-provenance's"
+            mark_unverifiable "${name} (publisher checksum, see verify-provenance)"
+            report "$name" no-signature-upstream "curl.se publishes a .sha256 beside the bundle, checked by tools/verify-provenance.sh"
+            ;;
         *linuxfromscratch.org*)
             # LFS publishes md5sums for its patch set, not per-patch signatures.
             warn "${name}: LFS patches are not individually signed upstream"
