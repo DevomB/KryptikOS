@@ -193,6 +193,17 @@ CONFIG_HYPERV_KEYBOARD=y
 CONFIG_HID_HYPERV_MOUSE=y
 CONFIG_DRM_HYPERV=y
 
+# --- CPU microcode ---
+# The early loader applies an update before anything else runs, and with no
+# initramfs the only place it can find one is inside the kernel. Stage 05
+# builds every file of Intel's release and AMD's containers in
+# (CONFIG_EXTRA_FIRMWARE; the stage sets it, because its value is a list of
+# files that changes with each release, and checks it survived like a line
+# here). Late loading stays off: an update applied under running zones is
+# not something to allow for convenience.
+CONFIG_MICROCODE=y
+# CONFIG_MICROCODE_LATE_LOADING is not set
+
 # --- drivers that need firmware: modules, so the verified root can supply it
 # A built-in driver probes while the bus is enumerated, before root is
 # mounted, and a request_firmware() then finds nothing: an amdgpu or
