@@ -1,8 +1,16 @@
 # A clock that is right
 
-Status: design. Nothing here is built yet; the roadmap's "A clock that is
-right" is the item it finishes. Builds on [the net zone](net-zone.md), which
-asks, and [the broker](broker.md), which carries the answer.
+Status: implemented, and proven so far on a developer host only: the
+decision and everything that carries it out are unit-tested
+(`compartments/kryptikd/src/time.rs`), the net zone's asking runs under
+every shell in `tools/test-netzone-time.sh`, the verb's refusals run against
+a real zone in the boundary suite. What needs the installed system - the
+clamp and a step on a real clock, a claim made with the net zone's identity,
+and the sign of chrony's number - is in `build/guest-tests/zones-check.sh`
+and is unproven until an acceptance run has passed with it; the roadmap's
+"A clock that is right" stays open until then. Builds on
+[the net zone](net-zone.md), which asks, and [the broker](broker.md), which
+carries the answer.
 
 ## The problem
 
@@ -117,7 +125,8 @@ the floor, the bound.
    process that holds `CAP_SYS_TIME`, then the RTC (`RTC_SET_TIME` on
    `/dev/rtc0`, where there is one). What was done - when, the offset, how
    many sources, stepped or slewed or asked - is one line appended to
-   `/var/lib/kryptik/time/history`, which `kryptik doctor` reads.
+   `/var/lib/kryptik/time/history`; `kryptikd time status` prints the clock,
+   the floor and the last of those lines.
 
 ### What this does not defend against
 
@@ -154,17 +163,27 @@ reads it back.
 - Whether `chronyd -Q` makes a call the base seccomp policy denies outright
   (`adjtimex` and `clock_adjtime` are on the list no zone policy may
   re-allow). If it does even to read, the answer is a smaller client, not a
-  wider policy.
-- The interval and the bound are configuration with defaults, in
-  `/etc/kryptik/time.conf`; the floor is not configurable.
-- The clamp at boot belongs in kryptikd (`kryptikd time floor`), called once
-  by a boot service, so the rule lives in one place with its tests.
+  wider policy. The net zone's script reports exactly that case
+  (`time=killed-by-seccomp`) instead of a quiet network, so the first
+  installed system says which it is.
+- Which way chrony's number points. The script takes "System clock wrong by
+  N seconds" as what would be added to the clock; only a clock set wrong on
+  purpose against a real server can confirm it, and the guest check does
+  that wherever a server answers.
+- The bound and the interval are constants today (`DEFAULT_BOUND_SECS`,
+  `CLAIM_INTERVAL_SECS`); `/etc/kryptik/time.conf` names the sources and
+  nothing else yet. The floor is not configurable and will not be.
+- The floor is the image's build date. The date of the newest release the
+  machine has committed to is a better one after an update, and joins it
+  with the update channel.
 
 ## Files
 
-`compartments/kryptikd/src/time.rs` (the decision, the clamp, applying it),
-`broker.rs` (the verb), `consent.rs` (a second kind of question),
-`tools/desktop/kryptik-chrome` (drawing it), `tools/net/netzone-init.sh`
-(asking), `rootfs.rs` (`/etc/kryptik/time.conf` into the nic zone),
-`compartments/zones/policy/net.seccomp` if chrony needs anything, a boot
-service for the clamp, and the rows above in the suites.
+`compartments/kryptikd/src/time.rs` (the decision, the clamp, applying it;
+`kryptikd time floor | status`), `broker.rs` (the verb), `consent.rs` (a
+second kind of question), `tools/desktop/kryptik-chrome` (drawing it),
+`tools/net/netzone-init.sh` (asking), `rootfs.rs` (`/etc/kryptik/time.conf`
+into a zone's `/etc`), `build/services/time-floor` with
+`build/service-scripts/time-floor.sh` (the clamp at boot, ahead of the net
+zone), and the rows above in `tools/test-netzone-time.sh`, the boundary
+suite and `build/guest-tests/zones-check.sh`.
