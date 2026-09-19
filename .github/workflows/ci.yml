@@ -453,6 +453,30 @@ jobs:
       - name: Pinned series are supported upstream
         run: ./tools/check-support-status.sh --strict
 
+      # A pin that is behind its upstream needs a written review, and the
+      # review stops covering it when upstream releases again. 51 of 113 pins
+      # were behind on the day this was written and no file said which of
+      # those gaps held a security fix; eight did.
+      #
+      # Two tools on purpose: the survey asks the network and judges nothing,
+      # the gate reads the survey and tools/pin-reviews.tsv and never the
+      # network. On a push and on the weekly schedule the gate's verdict
+      # stands. On a pull request it is printed and does not fail the check:
+      # an upstream that released this morning is not the fault of whoever
+      # opened a pull request this afternoon, and the weekly run is what makes
+      # sure somebody reads it.
+      - name: Pins behind upstream are reviewed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ./tools/check-source-currency.sh --tsv > pin-survey.tsv
+          echo "survey: $(wc -l < pin-survey.tsv) sources"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            ./tools/check-pin-reviews.sh --survey pin-survey.tsv || echo "pull request: informational"
+          else
+            ./tools/check-pin-reviews.sh --survey pin-survey.tsv
+          fi
+
       - name: Pinned kernel is longterm and not EOL
         run: ./tools/check-kernel-eol.sh
 

@@ -277,9 +277,14 @@ passes, not when its code is written.
       fixes and not the release branch's security backports (CVE-2025-0395,
       CVE-2025-4802 and others): move to a maintained glibc or carry the
       backports, with the unwind test still passing. Then every pin checked
-      against its upstream's security releases, and
-      `tools/check-support-status.sh` extended so CI fails when a pin falls
-      behind one.
+      against its upstream's security releases, and CI failing when a pin
+      falls behind one. Written: every pin that was behind has been read
+      against its upstream (2026-09-19), 22 moved, six are held with their
+      reasons in `tools/pin-reviews.tsv`, and `tools/check-pin-reviews.sh`
+      fails CI when a behind pin has no current review or upstream has
+      released past the one it has. Ticked when the rebuilt image has passed
+      acceptance and the six held pins are moved or patched: a release asks
+      the gate with `--no-held`, and it refuses them.
 - [ ] **An update channel.** `kryptik-update` applies a payload from a
       mounted disk and nothing fetches one. The net zone downloads a release
       by URL into a transfer area; zone 0 verifies the manifest signature,
