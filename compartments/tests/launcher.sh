@@ -2380,12 +2380,16 @@ if [[ -n "$initpid" ]] && [[ -r "/proc/$initpid/status" ]]; then
     # after the id switch; every task below inherits it). Nothing in /proc
     # shows a cookie; `kryptikd status` asks the kernel for the zone's pid
     # 1's (PR_SCHED_CORE_GET, which this uid may do for a zone it launched)
-    # and prints one word. "unavailable" is a kernel without
-    # CONFIG_SCHED_CORE: nothing to measure, and this says so rather than
-    # passing.
-    cs="$("$KRYPTIKD" status lczone 2>/dev/null | grep -o 'core-sched [a-z]*' | head -1)"
+    # and prints one word. "no-smt" is the kernel saying no core has a
+    # second thread online (ENODEV), which under nosmt is every installed
+    # Kryptik: the property holds with nothing to take, and the zone must
+    # have launched all the same (it once did not). "unavailable" is a
+    # kernel without CONFIG_SCHED_CORE: nothing to measure, and this says so
+    # rather than passing.
+    cs="$("$KRYPTIKD" status lczone 2>/dev/null | grep -o 'core-sched [a-z-]*' | head -1)"
     case "$cs" in
         "core-sched own")   pass "LC17 the zone's pid 1 has a core-scheduling cookie of its own" ;;
+        "core-sched no-smt") pass "LC17 no sibling threads online: the zone shares a core with nothing, and launched without a cookie" ;;
         "core-sched unavailable") skip "LC17 core-scheduling cookie: this kernel has no CONFIG_SCHED_CORE" ;;
         *)                  fail "LC17 the zone's pid 1 has no cookie of its own (status says: ${cs:-nothing about core-sched})" ;;
     esac

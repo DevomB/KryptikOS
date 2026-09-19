@@ -1391,18 +1391,25 @@ fn intermediate_main(
     //     zone's, not the kernel's. Sitting on a sibling of the victim is
     //     the position the CPU side channels need; ADR-011 takes the
     //     siblings away altogether (mitigations=auto,nosmt) until every zone
-    //     has this, and this is what lets SMT come back later. A kernel
-    //     without CONFIG_SCHED_CORE answers EINVAL: a note in the zone's log,
-    //     not a refusal, because the developer VM and most hosts are such
-    //     kernels and the zone's other boundaries do not depend on it.
+    //     has this, and this is what lets SMT come back later.
+    //
+    //     Never a reason not to launch: none of the zone's other boundaries
+    //     depends on it. The kernel answers ENODEV while no core has a second
+    //     thread online, which under nosmt is every installed Kryptik - there
+    //     is no sibling to share, so nothing is missing and nothing is said.
+    //     (Treating that answer as fatal once stopped every zone on the
+    //     installed system, and only there: the machines the suites run on
+    //     have SMT or no CONFIG_SCHED_CORE.) Anything else - EINVAL from a
+    //     kernel without the feature, as on the developer VM and most hosts -
+    //     is a note in the zone's log.
     match isolate::take_core_cookie() {
         Ok(()) => {}
-        Err(e) if matches!(e.raw_os_error(), Some(libc::EINVAL) | Some(libc::ENOSYS)) => eprintln!(
-            "kryptikd[zone {}]: note: core scheduling: not available on this kernel ({e}); \
+        Err(e) if e.raw_os_error() == Some(libc::ENODEV) => {}
+        Err(e) => eprintln!(
+            "kryptikd[zone {}]: note: core scheduling: no cookie ({e}); \
              this zone shares a core's sibling threads with whatever else runs",
             zone.name
         ),
-        Err(e) => bail!("prctl(PR_SCHED_CORE_CREATE): {e}"),
     }
 
     // 6. The zone's hostname is the zone's name. The UTS namespace is new,
@@ -1691,10 +1698,10 @@ pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String
     };
     // Asked of this kernel, not assumed: the launch takes the cookie where
     // the feature exists and notes its absence where it does not.
-    let core_line = if isolate::core_scheduling_available() {
-        "core sched own cookie: a core's sibling threads run this zone's tasks or nothing"
-    } else {
-        "core sched not available on this kernel (no CONFIG_SCHED_CORE): siblings are shared"
+    let core_line = match isolate::core_scheduling() {
+        isolate::CoreSched::Cookies => "core sched own cookie: a core's sibling threads run this zone's tasks or nothing",
+        isolate::CoreSched::NoSmt => "core sched no sibling threads online (nosmt): no core is shared with anything",
+        isolate::CoreSched::Unavailable => "core sched not available on this kernel (no CONFIG_SCHED_CORE): siblings are shared",
     };
     let loaded = zone
         .seccomp
@@ -1884,17 +1891,18 @@ mod tests {
     }
 
     /// The plan says what core scheduling will do for this zone on this
-    /// kernel, in one of exactly two ways, and the way it picks is the one
+    /// kernel, in one of exactly three ways, and the way it picks is the one
     /// the launch will take.
     #[test]
     fn explain_names_the_core_scheduling_state() {
         let e = explain(&z("none"), "/tmp/t", std::path::Path::new("/nonexistent"));
         let line = e.lines().find(|l| l.starts_with("core sched")).unwrap_or_else(|| panic!("no core sched line in:\n{e}"));
-        if isolate::core_scheduling_available() {
-            assert!(line.contains("own cookie"), "{line}");
-        } else {
-            assert!(line.contains("not available on this kernel"), "{line}");
-        }
+        let want = match isolate::core_scheduling() {
+            isolate::CoreSched::Cookies => "own cookie",
+            isolate::CoreSched::NoSmt => "no sibling threads online",
+            isolate::CoreSched::Unavailable => "not available on this kernel",
+        };
+        assert!(line.contains(want), "{line}");
     }
 
     /// A line written with `log_line` arrives whole even while something

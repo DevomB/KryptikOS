@@ -430,7 +430,8 @@ fn cmd_status(name: &str) -> ExitCode {
         Ok(registry::State::Running { launcher, init, cgroup, started }) => {
             // The last word is asked of the kernel, not recorded: whether the
             // zone's pid 1 runs under a core-scheduling cookie of its own
-            // (own), under none (none), or on a kernel that has no such
+            // (own), under none (none), with no sibling thread online to
+            // share a core with (no-smt), or on a kernel that has no such
             // thing (unavailable). Nothing in /proc shows it.
             println!(
                 "{name}  running  launcher {}  init {}  since {}{}{}",
