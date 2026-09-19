@@ -119,6 +119,83 @@ zrun untrusted 30 -- sh -c 'python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10
 ppid="$(cat /run/kryptik/zones/personal/init.pid 2>/dev/null | cut -d' ' -f1)"
 if [[ -n "$ppid" ]] && nsenter -t "$ppid" -n ping -c1 -W3 10.0.2.2 >/dev/null 2>&1; then pass "reattach-after-restart" "the zone that was running has egress again"; else fail "reattach-after-restart" "personal (init $ppid) has no egress after the net restart"; fi
 
+# --- the clock: zone 0 decides, the net zone only claims ----------------------------
+# (docs/design/time.md) Everything here is done to the real clock of a
+# disposable machine, and the clock is put back afterwards from the boot
+# clock, which nothing here touches.
+up_s() { cut -d' ' -f1 /proc/uptime | cut -d. -f1; }
+T_WALL0="$(date +%s)"; T_UP0="$(up_s)"
+true_now() { echo $(( T_WALL0 + $(up_s) - T_UP0 )); }
+put_clock_back() { date -u -s "@$(true_now)" >/dev/null 2>&1; command -v hwclock >/dev/null 2>&1 && hwclock --systohc -u >/dev/null 2>&1; rm -f /var/lib/kryptik/time/state; }
+FLOOR="$("$KD" time status 2>/dev/null | sed -n 's/^floor  *\([0-9-]* [0-9:]*\) UTC.*/\1/p')"
+# An unknown floor must stay unknown: `date -d " UTC"` is today's midnight.
+FLOOR_S=0; [[ -n "$FLOOR" ]] && FLOOR_S="$(date -u -d "${FLOOR} UTC" +%s 2>/dev/null || echo 0)"
+# a claim made with the net zone's own identity, through its own broker
+# socket: a process in the running zone's user and mount namespaces is host
+# uid <net's uid_base>, which is the one peer that broker accepts.
+net_init="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
+claim() {   # claim SECONDS -> the broker's one-line reply
+    rm -f /var/lib/kryptik/time/state      # each row is judged on its own, not against the last one's window
+    nsenter -t "$net_init" -U -m /usr/bin/python3 -c 'import socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(20); s.connect("/run/kryptik/broker")
+s.sendall(("time-offset %s 1\n" % sys.argv[1]).encode()); s.shutdown(socket.SHUT_WR)
+print(s.recv(4096).decode("utf-8", "replace").strip())' "$1" 2>&1 | head -1
+}
+
+if grep -q 'time floor' /var/log/kryptik/time.log 2>/dev/null; then pass "time-floor-ran" "$(tail -1 /var/log/kryptik/time.log | cut -c1-160)"; else fail "time-floor-ran" "the boot service left no line in /var/log/kryptik/time.log"; fi
+ready_time="$(grep -h 'netzone: READY' /run/uncaught-logs/current 2>/dev/null | tail -1 | grep -o 'time=[^ ]*')"
+info "time-reported ${ready_time:-the readiness line has no time= field} (no answer through this network is reported as that, never as a pass)"
+
+if [[ "$FLOOR_S" -gt 0 ]]; then
+    # a dead RTC's clock: the year 2000
+    date -u -s "@946684800" >/dev/null 2>&1
+    said="$("$KD" time floor 2>&1)"
+    got="$(date +%s)"
+    # `time status` prints the floor to the minute; the clamp sets it to the second.
+    if (( got >= FLOOR_S && got <= FLOOR_S + 90 )); then pass "time-clamp" "a clock set to 2000-01-01 came back at the build date: ${said}"; else fail "time-clamp" "clock reads $(date -u -d "@$got" +%F) after the clamp, floor is ${FLOOR}: ${said}"; fi
+    put_clock_back
+
+    if [[ -n "$net_init" ]]; then
+        before="$(date +%s)"; r="$(claim 120)"; after="$(date +%s)"
+        moved=$(( after - before ))
+        if [[ "$r" == "ok stepped" ]] && (( moved >= 118 && moved <= 140 )); then pass "time-claim-stepped" "the net zone's claim of +120 s moved the clock by ${moved} s (${r})"; else fail "time-claim-stepped" "reply '${r}', clock moved ${moved} s"; fi
+        put_clock_back
+
+        before="$(date +%s)"; r="$(claim -999999999)"; after="$(date +%s)"
+        if [[ "$r" == error:*"before this system was built"* ]] && (( after - before < 30 )); then pass "time-claim-floor" "a claim below the build date is refused and the clock is untouched"; else fail "time-claim-floor" "reply '${r}', clock moved $(( after - before )) s"; fi
+
+        # past the bound with nobody at a trusted window: refused, not applied
+        before="$(date +%s)"; r="$(claim 90000)"; after="$(date +%s)"
+        if [[ "$r" == error:*consent* ]] && (( after - before < 90 )); then pass "time-claim-consent" "a day's jump is not applied without the person (${r#error: })"; else fail "time-claim-consent" "reply '${r}', clock moved $(( after - before )) s"; fi
+        put_clock_back
+
+        # The sign of chrony's number, which no fixture can settle: only where a
+        # time server really answers. The clock is set five minutes fast; the
+        # net zone, restarted, must measure about -300 and zone 0 must then put
+        # the clock right by itself.
+        case "$ready_time" in
+            time=-[0-9]*|time=[0-9]*)
+                date -u -s "@$(( $(true_now) + 300 ))" >/dev/null 2>&1; rm -f /var/lib/kryptik/time/state
+                n0="$(grep -hc 'netzone: READY' /run/uncaught-logs/current 2>/dev/null)"; n0="${n0:-0}"
+                s6-svc -r /run/service/net-zone
+                for _ in $(seq 1 90); do n1="$(grep -hc 'netzone: READY' /run/uncaught-logs/current 2>/dev/null)"; [[ "${n1:-0}" -gt "$n0" ]] && break; sleep 1; done
+                m="$(grep -h 'netzone: READY' /run/uncaught-logs/current | tail -1 | grep -o 'time=[^ ]*' | cut -d= -f2)"
+                err=$(( $(date +%s) - $(true_now) ))
+                if [[ "$m" == -29[0-9]* || "$m" == -30[0-9]* || "$m" == -31[0-9]* ]] && (( err > -10 && err < 10 )); then
+                    pass "time-sign" "a clock 300 s fast was measured as ${m} s and zone 0 put it right (now ${err} s from true)"
+                else
+                    fail "time-sign" "a clock 300 s fast was measured as '${m}', and the clock is now ${err} s from true"
+                fi
+                put_clock_back ;;
+            *) info "time-sign not measured: no time server answered through this network (${ready_time:-no time= field})" ;;
+        esac
+    else
+        fail "time-claim-stepped" "the net zone is not running, so nothing can make a claim"
+    fi
+else
+    fail "time-clamp" "kryptikd time status names no floor (no /etc/kryptik-image.json built_at?)"
+fi
+
 # --- zones: resource limits and lifecycle ------------------------------------------
 # The storm is python, not the shell: bash answers a failed fork with four
 # retries and sleeps that add up to fifteen seconds, so a shell loop that
