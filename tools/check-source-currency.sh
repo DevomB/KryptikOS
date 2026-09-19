@@ -2,7 +2,7 @@
 # Compare every pinned version against what upstream currently publishes.
 #
 #   ./tools/check-source-currency.sh                 report everything
-#   ./tools/check-source-currency.sh --only NAME     one package
+#   ./tools/check-source-currency.sh --only=NAME     one package
 #   ./tools/check-source-currency.sh --fail-on-behind
 #   ./tools/check-source-currency.sh --strict        also fail on UNKNOWN
 #   ./tools/check-source-currency.sh --tsv           machine-readable
@@ -171,6 +171,25 @@ for line in sys.stdin:
 print(out[-1] if out else '')"
 }
 
+# The values of one string key in a JSON API response, a leading "v" dropped.
+# grep and sed, not a JSON parser, on purpose: the answer wanted is "every
+# tag_name" and the key is anchored on its opening quote, so "author_name"
+# does not match "name". A tags endpoint's objects start with their name, and
+# the brace is part of the match there so a nested "name" is not taken.
+api_values() {  # api_values URL KEY
+    local open='"'
+    [[ "$2" == name ]] && open='\{"'
+    fetch "$1" | grep -oE "${open}$2\":\"[^\"]*\"" \
+        | sed -E "s/.*\"$2\":\"v?([^\"]*)\"/\1/" || true
+}
+
+# Versions made only of numbers and dots, the highest of them. Drops every
+# spelling of a pre-release that has letters in it (0.8-dev, 4.0.7rc1).
+numeric_newest() { grep -E '^[0-9]+(\.[0-9]+)+$' | sort -V -u | tail -1 || true; }
+
+# freedesktop projects number a release candidate X.Y.9N or X.Y.90N.
+drop_ninety() { grep -vE '\.9[0-9]+$' || true; }
+
 # --- per-source strategy ----------------------------------------------------
 #
 # Returns "<newest>|<source consulted>", either field possibly empty.
@@ -190,6 +209,89 @@ upstream_for() {
             return
             ;;
     esac
+
+    # --- hosts with no directory listing to read ---------------------------
+    #
+    # Sixteen pins were UNKNOWN until these were written, which is a third of
+    # what the image exposes to untrusted input: the compositor's libraries,
+    # less, lynx, openssh. Each rule below was run against the real host
+    # before it was written down, and each encodes a trap that produces a
+    # confidently wrong number rather than none:
+    #
+    #   * wayland and libinput number a release candidate X.Y.9N or X.Y.90N,
+    #     with no "rc" in it (1.25.91, 1.31.901). Dropping rc/alpha/beta keeps
+    #     them, and reports a candidate as the newest release.
+    #   * a GitLab release list is ordered by date, not version: libinput
+    #     1.30.4 sits above 1.31.3. Taking the first entry is wrong; sort.
+    #   * psmisc's release list is missing a release its tag list has, and
+    #     kernel-hardening-checker publishes tags and no releases at all.
+    #   * less marks a version "released for general use" on its front page;
+    #     a newer tarball in the directory is a beta.
+    #   * lynx's directory is full of 2.9.3dev.N snapshots.
+    #   * https://curl.se/ca/ answers 200 with a meta refresh, which curl -L
+    #     does not follow; the list is on caextract.html.
+    local fd="https://gitlab.freedesktop.org/api/v4/projects"
+    case "$name" in
+        glibc-fhs-patch)
+            # Not a release of anything: it is the LFS book's patch for the
+            # pinned glibc and moves only when glibc does.
+            printf '%s|%s' "" "tools/check-source-currency.sh, the glibc row (the patch follows glibc's pin)"
+            return ;;
+        less)
+            consulted="https://www.greenwoodsoftware.com/less/ (released for general use)"
+            newest="$(fetch "https://www.greenwoodsoftware.com/less/" \
+                | grep -oE 'less-[0-9]+ has been released for general use' \
+                | sed -E 's/less-([0-9]+) .*/\1/' | sort -V -u | tail -1 || true)" ;;
+        procps-ng)
+            consulted="gitlab.com procps-ng/procps releases"
+            newest="$(api_values "https://gitlab.com/api/v4/projects/procps-ng%2Fprocps/releases?per_page=50" tag_name | numeric_newest)" ;;
+        psmisc)
+            consulted="gitlab.com psmisc/psmisc tags"
+            newest="$(api_values "https://gitlab.com/api/v4/projects/psmisc%2Fpsmisc/repository/tags?per_page=100" name | numeric_newest)" ;;
+        lvm2)
+            consulted="https://sourceware.org/pub/lvm2/"
+            newest="$(newest_in_listing "$consulted" 'LVM2\.([0-9]+(\.[0-9]+)+)\.tgz')" ;;
+        openssh)
+            consulted="https://ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable/"
+            newest="$(newest_in_listing "$consulted" 'openssh-([0-9]+\.[0-9]+p[0-9]+)\.tar\.gz')" ;;
+        ca-bundle)
+            consulted="https://curl.se/docs/caextract.html"
+            newest="$(newest_in_listing "$consulted" 'cacert-([0-9]{4}-[0-9]{2}-[0-9]{2})\.pem')" ;;
+        wayland|libinput)
+            consulted="gitlab.freedesktop.org ${name}/${name} releases"
+            newest="$(api_values "${fd}/${name}%2F${name}/releases?per_page=50" tag_name | drop_ninety | numeric_newest)" ;;
+        wayland-protocols)
+            consulted="gitlab.freedesktop.org wayland/wayland-protocols releases"
+            newest="$(api_values "${fd}/wayland%2Fwayland-protocols/releases?per_page=50" tag_name | numeric_newest)" ;;
+        libdisplay-info)
+            consulted="gitlab.freedesktop.org emersion/libdisplay-info releases"
+            newest="$(api_values "${fd}/emersion%2Flibdisplay-info/releases?per_page=50" tag_name | numeric_newest)" ;;
+        wlroots)
+            # The pinned series only: dwl is written against one wlroots
+            # series, and the next one is an API change, not a drop-in.
+            local wseries="${V_WLROOTS%.*}"
+            consulted="gitlab.freedesktop.org wlroots/wlroots tags (series ${wseries})"
+            newest="$(api_values "${fd}/wlroots%2Fwlroots/repository/tags?per_page=100" name \
+                | grep -E "^${wseries//./\\.}\.[0-9]+$" | numeric_newest || true)" ;;
+        seatd)
+            consulted="https://git.sr.ht/~kennylevinsen/seatd/refs/rss.xml"
+            newest="$(fetch "$consulted" | grep -oE '<title>[0-9]+(\.[0-9]+)+</title>' \
+                | sed -E 's/<[^>]*>//g' | sort -V -u | tail -1 || true)" ;;
+        dwl)
+            consulted="codeberg.org dwl/dwl tags"
+            newest="$(api_values "https://codeberg.org/api/v1/repos/dwl/dwl/tags?limit=50" name | numeric_newest)" ;;
+        lynx)
+            consulted="https://invisible-mirror.net/archives/lynx/tarballs/"
+            newest="$(newest_in_listing "$consulted" 'lynx([0-9]+(\.[0-9]+)+)\.tar\.gz')" ;;
+        kernel-hardening-checker)
+            consulted="https://github.com/a13xp0p0v/kernel-hardening-checker/tags.atom"
+            newest="$(fetch "$consulted" | grep -oE '<title>v[0-9]+(\.[0-9]+)+</title>' \
+                | sed -E 's/<title>v//; s/<.*//' | sort -V -u | tail -1 || true)" ;;
+    esac
+    if [[ -n "$consulted" ]]; then
+        printf '%s|%s' "$newest" "$consulted"
+        return
+    fi
 
     case "$url" in
         # kernel.org and others put releases in per-series subdirectories, so
