@@ -227,8 +227,9 @@ const PIDTYPE_PID: libc::c_ulong = 0;
 /// with the same cookie - every task this one forks inherits it - so a zone
 /// that takes one shares a core with itself or with nothing, never with
 /// another zone or the kernel's own threads. Needs no privilege: a task may
-/// always cut itself off. EINVAL is a kernel built without
-/// CONFIG_SCHED_CORE, which the caller treats as "nothing to isolate with".
+/// always cut itself off. The two refusals that are not failures are the
+/// ones `CoreSched` names; the caller treats neither as a reason not to
+/// launch.
 pub fn take_core_cookie() -> io::Result<()> {
     if unsafe { libc::prctl(PR_SCHED_CORE, PR_SCHED_CORE_CREATE, 0, PIDTYPE_PID, 0) } < 0 {
         return Err(io::Error::last_os_error());
@@ -236,15 +237,30 @@ pub fn take_core_cookie() -> io::Result<()> {
     Ok(())
 }
 
-/// Whether this kernel has core scheduling at all: asking for the calling
-/// task's cookie (zero when it has none) succeeds only where the feature is
-/// built in. Harmless, so `explain` may ask.
-pub fn core_scheduling_available() -> bool {
-    let mut cookie: libc::c_ulong = 0;
-    let rc = unsafe {
-        libc::prctl(PR_SCHED_CORE, PR_SCHED_CORE_GET, 0, PIDTYPE_PID, &mut cookie as *mut libc::c_ulong as libc::c_ulong)
-    };
-    rc == 0
+/// What core scheduling can do for a zone on this machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreSched {
+    /// Cores have sibling threads online and the kernel schedules them by
+    /// cookie.
+    Cookies,
+    /// ENODEV: no core has a second hardware thread online - `nosmt` on the
+    /// command line (ADR-011, so every installed Kryptik), SMT off in the
+    /// firmware, a processor or a VM without it. Nothing shares a core with
+    /// anything, which is the property the cookie is for.
+    NoSmt,
+    /// EINVAL: a kernel built without CONFIG_SCHED_CORE.
+    Unavailable,
+}
+
+/// Asked of the kernel, harmlessly: the calling task's own cookie (zero when
+/// it has none). Every PR_SCHED_CORE operation answers ENODEV before it looks
+/// at anything else while no sibling thread is online.
+pub fn core_scheduling() -> CoreSched {
+    match core_cookie_of(0) {
+        Ok(_) => CoreSched::Cookies,
+        Err(e) if e.raw_os_error() == Some(libc::ENODEV) => CoreSched::NoSmt,
+        Err(_) => CoreSched::Unavailable,
+    }
 }
 
 /// A task's core-scheduling cookie, asked of the kernel: 0 for a task that
@@ -252,7 +268,8 @@ pub fn core_scheduling_available() -> bool {
 /// /proc/<pid>/sched), so this prctl is the one readout. Another task's
 /// cookie needs ptrace-read access to it, which root has everywhere and a
 /// user has over the zones it launched (it owns their user namespace).
-/// EINVAL is a kernel without CONFIG_SCHED_CORE.
+/// EINVAL is a kernel without CONFIG_SCHED_CORE, ENODEV a machine with no
+/// sibling threads online. A pid of 0 is the calling task.
 pub fn core_cookie_of(pid: libc::pid_t) -> io::Result<u64> {
     let mut cookie: libc::c_ulong = 0;
     let rc = unsafe {
@@ -265,11 +282,13 @@ pub fn core_cookie_of(pid: libc::pid_t) -> io::Result<u64> {
 }
 
 /// One word for `kryptikd status`: whether a zone's pid 1 is cut off from
-/// every other cookie on the machine.
+/// every other cookie on the machine. `no-smt` is cut off by there being no
+/// sibling thread to share.
 pub fn core_cookie_word(pid: libc::pid_t) -> &'static str {
     match core_cookie_of(pid) {
         Ok(0) => "none",
         Ok(_) => "own",
+        Err(e) if e.raw_os_error() == Some(libc::ENODEV) => "no-smt",
         Err(e) if e.raw_os_error() == Some(libc::EINVAL) => "unavailable",
         Err(_) => "unreadable",
     }
@@ -397,13 +416,25 @@ mod tests {
     /// which stays zero. Read from outside on purpose - that is how
     /// `kryptikd status` and the launcher suite look at a zone - in a forked
     /// child that pauses until it is read, so the test process keeps
-    /// sharing cores with the rest of the suite. On a kernel without
-    /// CONFIG_SCHED_CORE there is nothing to take and the test says so.
+    /// sharing cores with the rest of the suite. Where there is nothing to
+    /// take - no CONFIG_SCHED_CORE, or no sibling thread online - the word
+    /// for `status` must say which, and the test says so.
     #[test]
     fn a_task_can_take_a_core_cookie_of_its_own() {
-        if !core_scheduling_available() {
-            eprintln!("no core scheduling on this kernel; skipping");
-            return;
+        let me = unsafe { libc::getpid() };
+        match core_scheduling() {
+            CoreSched::Cookies => {}
+            CoreSched::NoSmt => {
+                assert_eq!(core_cookie_word(me), "no-smt");
+                assert_eq!(take_core_cookie().unwrap_err().raw_os_error(), Some(libc::ENODEV));
+                eprintln!("no sibling threads online; no cookie to take; skipping the rest");
+                return;
+            }
+            CoreSched::Unavailable => {
+                assert_eq!(core_cookie_word(me), "unavailable");
+                eprintln!("no core scheduling on this kernel; skipping the rest");
+                return;
+            }
         }
         let mut p = [0 as libc::c_int; 2];
         assert_eq!(unsafe { libc::pipe(p.as_mut_ptr()) }, 0, "pipe failed");
