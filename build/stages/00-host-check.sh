@@ -75,7 +75,7 @@ done
 
 for t in qemu-system-x86_64 cryptsetup veritysetup sbsign; do
     if have "$t"; then ok "$t"
-    else warn "$t: not found (needed from Phase 4 on, not now)"; WARN=$((WARN + 1)); fi
+    else warn "$t: not found (needed from the kernel stage on, not now)"; WARN=$((WARN + 1)); fi
 done
 
 log "Environment sanity"
@@ -149,5 +149,5 @@ echo
 if [[ "$FAIL" -gt 0 ]]; then
     die "${FAIL} blocking problem(s), ${WARN} warning(s). Fix the failures above."
 fi
-[[ "$WARN" -gt 0 ]] && warn "${WARN} warning(s) — not blocking for the current phase."
+[[ "$WARN" -gt 0 ]] && warn "${WARN} warning(s) — not blocking for the current stage."
 ok "Host is ready. Next: make sources"

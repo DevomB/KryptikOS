@@ -1,4 +1,4 @@
-/* Kryptik's dwl configuration (Design 05/06).
+/* Kryptik's dwl configuration.
  *
  * Two things differ from dwl's defaults on purpose:
  *  - windows are identified by zone: the border colour is chosen per client

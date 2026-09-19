@@ -1,2 +1,2 @@
 # personal: the shared base policy only. Directives: allow-syscall NAME, allow-socket AF_X,
-# allow-netlink NETLINK_X, keep-capability CAP_X (see docs/design/07-zone-policy-files.md).
+# allow-netlink NETLINK_X, keep-capability CAP_X (see docs/design/zone-policy-files.md).

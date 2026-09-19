@@ -223,6 +223,6 @@ echo "passed ${pass}, failed ${fail}"
     echo "This system cannot unwind through a library loaded after startup."
     echo "Programs affected: anything calling pthread_exit, pthread_cancel or"
     echo "backtrace() that does not already link libgcc_s.so.1. They die on"
-    echo "SIGABRT with no message. See build/BLOCKER.md."
+    echo "SIGABRT with no message. See docs/glibc-loader-defect.md."
     exit 1
 }

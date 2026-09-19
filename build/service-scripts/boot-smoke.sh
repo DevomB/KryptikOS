@@ -2,7 +2,7 @@
 # Report what this machine actually is. Every boot, on the console.
 #
 # The report used to be armed by kryptik.smoke=1 on the kernel command line.
-# The command line is now part of the signed kernel (Design 08) and cannot be
+# The command line is now part of the signed kernel and cannot be
 # changed per boot, so the REPORT runs unconditionally - it is harmless and
 # useful - and only the POWEROFF at the end is armed: on install media by the
 # kryptik-testctl control disk (see testctl.sh), and on an installed system

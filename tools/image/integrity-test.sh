@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Boot integrity on an installed disk (Design 08, gate G5): enforced Secure
+# Boot integrity on an installed disk (the integrity suite): enforced Secure
 # Boot with the developer key, an untrusted boot file refused by the firmware,
 # root tampering refused by dm-verity before any userspace runs, and recovery
 # from the medium afterwards.
@@ -49,7 +49,7 @@ ENROLLED="${KRYPTIK_WORK}/keys/sb/vars/enrolled.fd"
 PASS=0; FAIL=0
 green() { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
 red()   { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
-phase() { printf '\n==> %s\n' "$*"; }
+step() { printf '\n==> %s\n' "$*"; }
 TUSER=tester; TPASS=tester-pw; RPASS=root-pw
 TUSER_HASH="$(openssl passwd -6 "$TPASS")"; ROOT_HASH="$(openssl passwd -6 "$RPASS")"
 DRV="${SELF}/vm-drive.py"
@@ -61,8 +61,8 @@ txt_latest() { tr -d '\r' < "$LATEST"; }
 # ESP with mtools and flip bytes in slot a without mounting anything.
 part_start() { sfdisk -d "$DISK" 2>/dev/null | awk -v n="$1" -F'[ ,]+' '$1 ~ n"$" {for(i=1;i<=NF;i++) if($i=="start=") print $(i+1)}'; }
 
-# ---------------------------------------------------------------- phase 1 --
-phase "phase 1: install, then boot alone with the developer key enrolled (Secure Boot on)"
+# ----------------------------------------------------------------- step 1 --
+step "step 1: install, then boot alone with the developer key enrolled (Secure Boot on)"
 rm -f "$DISK"; truncate -s 12G "$DISK"
 CTL="${VMDIR}/testctl-integrity.img"
 "${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
@@ -79,11 +79,11 @@ python3 "$DRV" --serial "$SER" --timeout 300 \
     "run:echo integrity-marker > /home/${TUSER}/marker && sync" \
     "su:${RPASS}:poweroff" "expect:Power down" "wait-exit"
 rc=$?; sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
-[[ "$rc" -eq 0 ]] && green "installed system boots with Secure Boot enforced (SecureBoot=1 inside the guest)" || red "phase 1 drive failed"
+[[ "$rc" -eq 0 ]] && green "installed system boots with Secure Boot enforced (SecureBoot=1 inside the guest)" || red "step 1 drive failed"
 tr -d '\r' < "$LOG1" | grep -q 'KRYPTIK_SMOKE: verity_root=0 [0-9]* verity V' && green "dm-verity reports the root valid" || red "no valid verity root reported"
 
-# ---------------------------------------------------------------- phase 2 --
-phase "phase 2: an untrusted boot artifact is refused by the firmware"
+# ----------------------------------------------------------------- step 2 --
+step "step 2: an untrusted boot artifact is refused by the firmware"
 ESP_OFF=$(( $(part_start 1) * 512 ))
 ESPIMG="${VMDIR}/integrity-esp.img"
 # lift the ESP out, keep a pristine copy, swap in a foreign-signed kernel
@@ -112,8 +112,8 @@ txt_latest | grep -q 'Linux version' && green "control: the developer-signed med
 dd if="${ESPIMG}.pristine" of="$DISK" bs=1M oflag=seek_bytes seek="$ESP_OFF" conv=notrunc status=none
 rm -rf "$TMPK"
 
-# ---------------------------------------------------------------- phase 3 --
-phase "phase 3: a tampered root is refused by dm-verity before userspace"
+# ----------------------------------------------------------------- step 3 --
+step "step 3: a tampered root is refused by dm-verity before userspace"
 A_OFF=$(( $(part_start 2) * 512 ))
 # Flip a byte in the ext4 superblock (byte 1024 of the image, the volume
 # name field at +0x78): the first thing a root mount reads, so dm-verity
@@ -134,8 +134,8 @@ grep -q 'Kernel panic' <<<"$T3" && green "the kernel panicked on the verity fail
 grep -q 'KRYPTIK_SMOKE: BEGIN' <<<"$T3" && red "userspace ran on a tampered root" || green "no userspace ran on the tampered root"
 grep -q 'login:' <<<"$T3" && red "a login prompt appeared on a tampered root" || green "no login prompt on the tampered root"
 
-# ---------------------------------------------------------------- phase 4 --
-phase "phase 4: recovery from the medium restores slot a; state survives"
+# ----------------------------------------------------------------- step 4 --
+step "step 4: recovery from the medium restores slot a; state survives"
 CTLR="${VMDIR}/testctl-recover.img"
 "${SELF}/mk-testctl.sh" --out "$CTLR" recover_disk=/dev/vda recover_slot=a recover_mode=restore smoke_poweroff=1 install_wait=5 > /dev/null
 "${SELF}/run-ovmf.sh" --usb "$USB" --disk "$DISK" --testctl "$CTLR" --vars enrolled --mode smoke --timeout "$TIMEOUT" --name integ-p4 > /dev/null
@@ -148,12 +148,12 @@ python3 "$DRV" --serial "$SER" --timeout 300 \
     "run:test \"\$(cat /home/${TUSER}/marker)\" = integrity-marker" \
     "su:${RPASS}:poweroff" "expect:Power down" "wait-exit"
 rc=$?; sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
-[[ "$rc" -eq 0 ]] && green "the recovered disk boots alone under Secure Boot; the user and the home file survived" || red "phase 4 drive failed"
+[[ "$rc" -eq 0 ]] && green "the recovered disk boots alone under Secure Boot; the user and the home file survived" || red "step 4 drive failed"
 tr -d '\r' < "$LOG4" | grep -q 'KRYPTIK_SMOKE: verity_root=0 [0-9]* verity V' && green "dm-verity reports the restored root valid" || red "restored root not reported valid"
 tr -d '\r' < "$LOG4" | grep -q 'kryptik-firstboot: created user' && red "first-boot setup ran again (state was lost)" || green "first-boot setup did not run again"
 
-# ---------------------------------------------------------------- phase 5 --
-phase "phase 5: offline tampering of the state partition does not reach privileged startup"
+# ----------------------------------------------------------------- step 5 --
+step "step 5: offline tampering of the state partition does not reach privileged startup"
 # The state partition is mutable and unauthenticated by design (sysinit.sh,
 # "the trust boundary"). Someone with the disk in hand can put anything
 # under /etc through the overlay's upper layer. What they must NOT gain:
@@ -195,7 +195,7 @@ EOF
     sync; umount "$MNT"
     green "planted a trust anchor, a zone definition, a sysctl fragment, a preload library and a udev rule under the state's /etc upper layer, and one allowed change"
 else
-    red "could not mount the state partition from the host (loop/offset); phase 5 not performed"
+    red "could not mount the state partition from the host (loop/offset); step 5 not performed"
 fi
 # A payload signed with the attacker's key: valid against the planted anchor,
 # not against the image's.
@@ -241,13 +241,13 @@ python3 "$DRV" --serial "$SER" --timeout 300 \
     "$(printf 'su:%s:%s' "$RPASS" 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
 T5="$(tr -d '\r' < "$LOG5")"
-[[ "$rc" -eq 0 ]] && green "the planted /etc content was quarantined before the overlay was mounted (preload, udev rule, zone, anchor, sysctl), the allowed change is in effect, and nothing planted ran" || red "phase 5 drive failed"
+[[ "$rc" -eq 0 ]] && green "the planted /etc content was quarantined before the overlay was mounted (preload, udev rule, zone, anchor, sysctl), the allowed change is in effect, and nothing planted ran" || red "step 5 drive failed"
 grep -q 'no zone named "evil"' <<<"$T5" && green "the launch daemon does not know the planted zone (it reads /usr/lib/kryptik/zones)" || red "the daemon honoured a planted zone"
 if [[ -n "${EXTRA[*]:-}" ]]; then
     grep -q 'not enrolled' <<<"$T5" && green "an update signed by the planted anchor's key is refused (the anchor is read from the verified root)" || red "an attacker-signed update was not refused"
 fi
 grep -q 'KRYPTIK_SMOKE: sysctl kernel.kptr_restrict=2' <<<"$T5" && green "the planted sysctl fragment was not applied" || red "the planted sysctl was applied"
-grep -q 'KRYPTIK_SMOKE: var_source=/dev/vda4' <<<"$T5" && green "state stayed persistent through the tamper (this is a repairable machine, not a bricked one)" || red "state not persistent in phase 5"
+grep -q 'KRYPTIK_SMOKE: var_source=/dev/vda4' <<<"$T5" && green "state stayed persistent through the tamper (this is a repairable machine, not a bricked one)" || red "state not persistent in step 5"
 # undo the planting so later runs start clean
 if mount -o loop,offset="$S_OFF" "$DISK" "$MNT" 2>/dev/null; then
     rm -rf "$MNT/lib/kryptik/etc/upper/kryptik/trust" "$MNT/lib/kryptik/etc/upper/kryptik/zones" "$MNT/lib/kryptik/etc/upper/sysctl.d" \

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage 05 — Hardened kernel (Phase 4 of docs/roadmap.md)
+# Stage 05 — Hardened kernel (docs/roadmap.md, Hardened kernel)
 #
 # Applies the linux-hardened patchset to the pinned LTS kernel (ADR-009), then
 # builds it with Kryptik's two config fragments:
@@ -75,7 +75,8 @@ MODDIR="${KRYPTIK_DESTDIR}/lib/modules"
 CONFIG_DIR="${KRYPTIK_ROOT}/build/config/kernel"
 FRAG_BASE="${CONFIG_DIR}/hardening.fragment"
 FRAG_HARDENED="${CONFIG_DIR}/hardened.fragment"
-# What firmware boot, the verified root and the desktop need (Design 08).
+# What firmware boot, the verified root and the desktop need
+# (docs/design/boot-and-updates.md).
 FRAG_BOOT="${CONFIG_DIR}/boot.fragment"
 
 REDO=""
@@ -241,6 +242,22 @@ s_config() {
             missing=$((missing + 1))
         fi
     done
+
+    # Every =y line in boot.fragment, not just the ones listed above. The
+    # hardware drivers there are what a real machine's disk, network and
+    # keyboard need, and one that kconfig drops for an unmet dependency is a
+    # machine that boots into nothing, found only when someone tries.
+    echo
+    echo "--- verifying every boot.fragment option survived ---"
+    local boot_opt boot_dropped=0
+    while read -r boot_opt; do
+        if ! grep -q "^${boot_opt}=y" .config; then
+            echo "  DROPPED ${boot_opt} ($(grep -E "^${boot_opt}=|^# ${boot_opt} is not set" .config || echo absent))"
+            boot_dropped=$((boot_dropped + 1))
+        fi
+    done < <(grep -oE '^CONFIG_[A-Z0-9_]+=y$' "$FRAG_BOOT" | cut -d= -f1)
+    echo "  $(grep -cE '^CONFIG_[A-Z0-9_]+=y$' "$FRAG_BOOT") options, ${boot_dropped} dropped"
+    missing=$((missing + boot_dropped))
 
     # Everything the fragments say must be OFF.
     #
@@ -432,8 +449,8 @@ echo
 # Until 2026-09-13 this exported HOSTLDFLAGS="-Wl,--no-as-needed -lgcc_s" so
 # that sorttable - which ends its sorter threads with pthread_exit() - did not
 # abort on a loader that could not unwind through a dlopen()ed libgcc_s
-# (build/BLOCKER.md, glibc bug 33088). The loader is fixed at its source
-# (build/patches/glibc-2.40/0004-*.patch) and the workaround is gone on
+# (docs/glibc-loader-defect.md, glibc bug 33088). The loader is fixed at its
+# source (build/patches/glibc-2.40/0004-*.patch) and the workaround is gone on
 # purpose: a kernel link that sorts its tables is now part of the proof.
 # HOSTLDFLAGS is still an input to the build step below, so setting it in
 # the environment still rebuilds rather than being silently ignored.

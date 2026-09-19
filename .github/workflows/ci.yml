@@ -288,7 +288,7 @@ jobs:
           cargo build --release --target x86_64-unknown-linux-musl
           cargo test --target x86_64-unknown-linux-musl
 
-      - name: Phase 5 adversarial exit test (isolation primitives)
+      - name: Isolation exit test (the primitives)
         run: |
           cd compartments/kryptikd && cargo build --quiet
           cd ../.. && ./compartments/tests/adversarial.sh
@@ -432,3 +432,7 @@ jobs:
               done
           ./tools/validate-kernel-config.sh
           ./tools/validate-kernel-config.sh --hardened
+          # The boot fragment too. It went unchecked here, and a misspelt
+          # driver symbol (CONFIG_TG3 for CONFIG_TIGON3) was caught only by
+          # acceptance, hours into a Distro run.
+          ./tools/validate-kernel-config.sh --boot

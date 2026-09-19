@@ -213,9 +213,9 @@ if [[ -n "$SYSROOT" ]]; then
     # 04 finished: the final bash is built natively INSIDE the sysroot, where
     # config.guess correctly reports x86_64-pc-linux-gnu, because that is the
     # build system now. So this check refused the first real, complete Kryptik
-    # userspace the build tab produced.
+    # userspace the build produced.
     #
-    # The build tab hit the identical bug in their own chroot check and wrote
+    # The build's own chroot check hit the identical bug, and its fix wrote
     # the lesson down: "the triple was never evidence of whose bash this is. It
     # recorded which stage built it last."
     #
@@ -776,10 +776,10 @@ fi
 echo "KRYPTIK_VM_LANDLOCK_ABI=$(/usr/bin/kryptikd check --zones /etc/kryptik/zones 2>/dev/null | sed -n 's/.*landlock *yes (ABI v\([0-9]*\)).*/\1/p' | head -1)"
 echo "KRYPTIK_VM_USERNS_MAX=$(cat /proc/sys/user/max_user_namespaces 2>/dev/null)"
 
-# The privileged launch contract (security Design 01 P1/P2/P7). On this stock
+# The privileged launch contract (docs/design/privileged-launch.md). On this stock
 # kernel the restriction on unprivileged user namespaces is EMULATED with the
 # AppArmor sysctl; the probe reports which knob it used, and the distinction
-# must survive into the morning report - an emulated result is not target-kernel
+# must survive into the report - an emulated result is not target-kernel
 # evidence.
 if [ -x /usr/lib/kryptik/security/probes/vm-privileged-contract.sh ]; then
     echo "KRYPTIK_VM_PRIVCONTRACT_BEGIN"
@@ -860,7 +860,9 @@ fi
 
 # The same suite again, with the restriction on.
 #
-# This is the evidence R-7a asks for and the reason the P5 repair exists. The
+# This is the evidence the security review asked for, and the reason the
+# privileged launch creates the user namespace as root and lets the id map do
+# the privilege drop. The
 # run above is on the stock default, where unprivileged user namespaces are
 # allowed - which is NOT the kernel Kryptik intends to ship, so on its own it
 # says nothing about the privileged path on the target. With the AppArmor knob
@@ -945,7 +947,7 @@ mkdir -p "$ROOT/usr/lib/kryptik/compartments/kryptikd/target/debug"
 ln -sf /usr/bin/kryptikd \
    "$ROOT/usr/lib/kryptik/compartments/kryptikd/target/debug/kryptikd" 2>/dev/null || true
 
-# The security tab's own probes, when present. They are written to run in the
+# The security review's own probes, when present. They are written to run in the
 # VM as root and to print NOT RUN with a reason rather than passing when they
 # cannot measure something - so shipping them costs nothing and closes the gap
 # where a security-owned check existed but only ever ran on a developer host.

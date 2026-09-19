@@ -12,7 +12,7 @@
 # line carries the verity root hash, which exists only after the root image
 # is built from the very sysroot that holds this kernel's modules. Binding
 # the hash into the kernel is what makes the root and the kernel one signed
-# unit (Design 08).
+# unit.
 set -Eeuo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
 load_config

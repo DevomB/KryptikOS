@@ -262,8 +262,8 @@ fi
 # an x86 GPF in particular need not be followed by "Oops:" or "BUG: " in the
 # same line, so a run could fault and still be reported as a clean boot.
 #
-# Note what is deliberately NOT here: "Call Trace" on its own. M5 asks the
-# kernel to OOM-kill a zone on purpose, and the OOM report carries a stack
+# Note what is deliberately NOT here: "Call Trace" on its own. The launcher
+# suite's memory-limit check asks the kernel to OOM-kill a zone on purpose, and the OOM report carries a stack
 # trace. Matching that would turn a test doing exactly what it was written to
 # do into a kernel bug.
 KPANIC='Kernel panic|BUG: |Oops: |general protection fault|kernel NULL pointer'
@@ -320,7 +320,7 @@ if [[ "$origin" == "kryptik-sysroot" ]]; then
     fi
     # The kernel is a separate question, and it is not answered by looking for
     # the word "kryptik" in a version string. That test called
-    # 6.18.50-hardened1 - built by the build tab, carrying Kryptik's LSM set,
+    # 6.18.50-hardened1 - built by Kryptik's own build, carrying Kryptik's LSM set,
     # refusing unprivileged user namespaces by its own configuration - "NOT
     # Kryptik's kernel", which understated the strongest result this harness
     # has produced. Understating a result is the same defect as overstating

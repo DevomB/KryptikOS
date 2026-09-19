@@ -18,7 +18,7 @@
 #     built by stage 04, so the image boots with QEMU's -kernel rather than
 #     from itself. Everything else about the layout is real, and the ESP slot
 #     is left in the partition table for when it is.
-#   * No dm-verity, no signing. See docs/roadmap.md Phase 7.
+#   * No dm-verity, no signing. See docs/roadmap.md, Bootable signed image.
 set -Eeuo pipefail
 
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

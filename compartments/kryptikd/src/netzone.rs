@@ -1,4 +1,4 @@
-//! The zone network topology (docs/design/03): who owns the NIC, and how a
+//! The zone network topology (docs/design/net-zone.md): who owns the NIC, and how a
 //! routed zone reaches it.
 //!
 //! ```text
@@ -20,8 +20,8 @@
 //!
 //! What is deliberately not here yet: NAT and a resolver in the net zone
 //! (they need nftables and a stub resolver in the image), so a routed zone
-//! today reaches the bridge and the net zone, not the world. Design 03 lists
-//! the rest; this is the ownership and isolation half, which is the security
+//! today reaches the bridge and the net zone, not the world.
+//! docs/design/net-zone.md lists the rest; this is the ownership and isolation half, which is the security
 //! boundary.
 
 use std::ffi::CStr;
@@ -38,7 +38,7 @@ pub const BRIDGE: &str = "kryptik0";
 /// new network namespace when the tunnel modules are built in or loaded,
 /// unless this sysctl says otherwise: 0 = every namespace, 1 = only the
 /// initial one, 2 = none (since 4.16). The Kryptik kernel builds SIT in, and
-/// its first boot found sit0 inside an airgapped zone (R-13).
+/// its first boot found sit0 inside an airgapped zone.
 pub const FB_TUNNELS_SYSCTL: &str = "/proc/sys/net/core/fb_tunnels_only_for_init_net";
 
 /// The fallback devices the kernel's tunnel modules register per namespace.
@@ -256,7 +256,7 @@ pub fn plumb_nic_zone(zone: &Zone, zone_ns: i32, zones_dir: &Path) -> Result<(),
     plumb_nic_zone_bridge(zone, zone_ns)?;
     // Routed zones that are already running - started before this gateway,
     // or stranded when a previous gateway died and took their peers with it
-    // - are attached now (Design 03 N8, reconnection). Each failure is
+    // - are attached now. Each failure is
     // reported and does not stop the others or the nic zone.
     for (name, r) in replumb_routed_zones(zones_dir, zone_ns) {
         match r {
@@ -392,12 +392,12 @@ fn attach_routed(name: &str, k: u8, nic_ns: i32, zone_ns: i32, host_gid: Option<
     netlink::with_netns(zone_ns, || {
         up_lo()?;
         // No router advertisements are ever accepted in a routed zone: its
-        // addresses come from here and nowhere else (Design 03, IPv6).
+        // addresses come from here and nowhere else.
         let _ = sysctl("/proc/sys/net/ipv6/conf/eth0/accept_ra", "0");
         // IPv4 first and completely - address, link up, default route - so
         // that nothing on the IPv6 side can cost the zone its path. The
         // target kernel's first boot delivered a routed zone with an
-        // interface and no routes (R-13): one failure in this sequence lost
+        // interface and no routes: one failure in this sequence lost
         // every step after it, the IPv4 route included, and left the zone a
         // device it could not use.
         netlink::add_addr4("eth0", netlink::zone_v4(k), 24)?;
@@ -568,7 +568,7 @@ mod tests {
         }
     }
 
-    /// R-13: the target kernel's first boot delivered a routed zone with an
+    /// The target kernel's first boot delivered a routed zone with an
     /// interface and no routes. Whatever fails on the IPv6 side must not cost
     /// the zone its IPv4 path. Kernel-backed: this namespace plays the nic
     /// zone (bridge and all), a holder plays the zone with IPv6 disabled the

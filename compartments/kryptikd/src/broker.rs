@@ -1,5 +1,5 @@
 //! Broker identity: who is on the other end of a Unix socket, and which zone
-//! that is (docs/design/05-broker-and-desktop-boundary.md).
+//! that is (docs/design/broker.md).
 //!
 //! THE ONE MECHANISM
 //!
@@ -12,7 +12,7 @@
 //! peer gid is checked only for consistency.
 //!
 //! This module is the primitive. The verbs (file transfer, clipboard) and
-//! the serving loop come later and are specified in Design 05; what they
+//! the serving loop come later and are specified in docs/design/broker.md; what they
 //! all start with is `peer_identity` followed by `zone_for_uid`.
 //!
 //! Unprivileged developer launches map every zone to the launching user's
@@ -141,7 +141,7 @@ pub fn listen_at(path: &std::path::Path, uid: u32, gid: u32) -> io::Result<RawFd
     Ok(fd)
 }
 
-/// THE CLIPBOARD (Design 05)
+/// THE CLIPBOARD
 ///
 /// One payload per zone, held by zone 0 in the zone's registry entry (0700,
 /// root-owned on the target) as the file `clipboard`: first line the MIME
@@ -149,7 +149,7 @@ pub fn listen_at(path: &std::path::Path, uid: u32, gid: u32) -> io::Result<RawFd
 /// its broker. Moving a payload between zones is a zone 0 act - the
 /// operator's gesture, `kryptikd clipboard move FROM TO` - and never a zone
 /// verb: no zone can ask for another zone's payload because the verb does
-/// not exist on the zone-facing socket (B9, B10). After a move the source
+/// not exist on the zone-facing socket. After a move the source
 /// keeps its payload (copy semantics for the user) and the destination's
 /// previous one is replaced.
 pub const CLIPBOARD_FILE: &str = "clipboard";
@@ -186,7 +186,7 @@ pub enum Request {
     Version,
     ClipboardSet { mime: String, len: usize },
     ClipboardGet,
-    /// A verb that exists, but not on the zone-facing socket (B10).
+    /// A verb that exists, but not on the zone-facing socket.
     NotAZoneVerb(String),
     /// `transfer <zone> <name>` with the file as one SCM_RIGHTS descriptor.
     Transfer { dest: String, name: String },
@@ -201,7 +201,7 @@ fn check_zone_name(s: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The name a transferred file lands under (Design 05 B8): one path
+/// The name a transferred file lands under: one path
 /// component, printable ASCII, no leading dot so a zone cannot plant
 /// dotfiles, at most 255 bytes.
 pub fn check_transfer_name(n: &str) -> Result<(), String> {
@@ -255,7 +255,7 @@ pub fn parse_request(line: &str) -> Result<Request, String> {
     }
 }
 
-/// TRANSFER (Design 05, B1-B8, B12)
+/// TRANSFER
 ///
 /// A zone hands its broker an O_RDONLY descriptor to a regular file on its
 /// own data mount and names a destination zone and a file name. Zone 0
@@ -273,8 +273,8 @@ pub fn parse_request(line: &str) -> Result<Request, String> {
 /// with RESOLVE_IN_ROOT and RESOLVE_NO_SYMLINKS: a symlink the destination
 /// plants anywhere on the way - `incoming` itself, or the name - is refused
 /// or skipped, never followed, so nothing zone 0 writes can leave the
-/// destination's tree. That replaces the uid-switching helper Design 05
-/// sketched: the resolution cannot escape, whoever runs it.
+/// destination's tree. That replaces the uid-switching helper the broker
+/// design first sketched: the resolution cannot escape, whoever runs it.
 pub const TRANSFER_MAX: u64 = 1 << 30;
 pub const INCOMING: &str = "incoming";
 
@@ -544,7 +544,7 @@ fn fill(out: RawFd, src: RawFd, cap: u64, target: &Target) -> Result<u64, String
 /// Copy `src` to `out` with a running byte cap. st_size was checked, but a
 /// file can grow under a copy - a racing writer, or a sparse file that was
 /// small on paper - and the cap is the bound the operator was promised, so
-/// it is enforced on bytes actually copied (Design 05 B6).
+/// it is enforced on bytes actually copied.
 pub fn copy_capped(src: RawFd, out: RawFd, cap: u64) -> Result<u64, String> {
     let mut total: u64 = 0;
     let mut fallback = false;
@@ -844,7 +844,7 @@ fn send_all(fd: RawFd, mut data: &[u8]) {
 }
 
 /// The zone's payload, if any: (mime, bytes). O_NOFOLLOW like every other
-/// registry read (R-7b F1); a planted symlink is refused, not followed.
+/// registry read; a planted symlink is refused, not followed.
 pub fn clipboard_read(entry: &Path) -> io::Result<Option<(String, Vec<u8>)>> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
@@ -1310,7 +1310,7 @@ mod tests {
         assert_eq!(ask_with(&sv, "transfer b report.pdf\n", &[src2], false).1, b"ok report.pdf-2\n");
         unsafe { libc::close(src2) };
         assert_eq!(std::fs::read(incoming.join("report.pdf-2")).unwrap(), b"hello transfer");
-        // B7: the destination planted a symlink where the next name would
+        // The destination planted a symlink where the next name would
         // land. O_EXCL reports it as existing, the copy moves on to -4, and
         // the symlink's target is untouched.
         let victim = lab.dir.join("victim");
@@ -1320,7 +1320,7 @@ mod tests {
         assert_eq!(ask_with(&sv, "transfer b report.pdf\n", &[src3], false).1, b"ok report.pdf-4\n");
         unsafe { libc::close(src3) };
         assert_eq!(std::fs::read(&victim).unwrap(), b"untouched");
-        // B7, the other way: `incoming` itself replaced by a symlink to a
+        // The other way round: `incoming` itself replaced by a symlink to a
         // directory elsewhere. Resolution refuses to follow it; nothing lands.
         let elsewhere = lab.dir.join("elsewhere");
         std::fs::create_dir_all(&elsewhere).unwrap();
@@ -1394,7 +1394,7 @@ mod tests {
         // descriptors up front.)
         let left = fds_pointing_at(&file) + fds_pointing_at(&lab.dir) + fds_pointing_at(&big);
         assert_eq!(left, 0, "a refusal leaked a descriptor in the broker");
-        // B5: a file on another filesystem than the zone's data mount.
+        // A file on another filesystem than the zone's data mount.
         let shm = Path::new("/dev/shm");
         if std::fs::metadata(shm).map(|m| m.dev() != lab.dev).unwrap_or(false) {
             let p = shm.join(format!("kryptik-transfer-{}", std::process::id()));
@@ -1465,7 +1465,8 @@ mod tests {
     #[test]
     fn a_zone_with_no_identity_can_never_be_identified() {
         // "legacy" has no uid_base: nothing maps to it, so the broker can
-        // never attribute a request to it - which is the point of P3.
+        // never attribute a request to it - which is the point of giving
+        // each zone its own fixed host uid range.
         let zs = zones();
         for uid in 0..300_000u32 {
             if let Some(z) = zone_for_uid(&zs, uid) {

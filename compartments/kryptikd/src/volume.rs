@@ -1,4 +1,4 @@
-//! Per-zone LUKS2 volumes (Design 04): unlocked in zone 0 before the zone
+//! Per-zone LUKS2 volumes (docs/design/encrypted-volumes.md): unlocked in zone 0 before the zone
 //! exists, closed after it is gone.
 //!
 //! The volume is a LUKS2 container - a regular file under

@@ -1,6 +1,7 @@
 #!/bin/sh
 #
-# Install Kryptik from a booted install medium onto a whole disk (Design 08).
+# Install Kryptik from a booted install medium onto a whole disk
+# (docs/design/boot-and-updates.md).
 #
 # This runs INSIDE a booted Kryptik medium, with a blank disk attached. It
 # never runs on the build host and it has no business doing so: the host's

@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# kryptik-recover: the dedicated recovery path (Design 08). Runs from a booted
+# kryptik-recover: the dedicated recovery path. Runs from a booted
 # install medium - itself a signed kernel over a verified root - against an
 # installed disk that no longer boots.
 #
@@ -45,7 +45,7 @@ part_dev() { case "$1" in *[0-9]) printf "%sp%s" "$1" "$2" ;; *) printf "%s%s" "
 lbl() { blkid -s PARTLABEL -o value "$1" 2>/dev/null; }
 ESP="$(part_dev "$DISK" 1)"; SA="$(part_dev "$DISK" 2)"; SB="$(part_dev "$DISK" 3)"; ST="$(part_dev "$DISK" 4)"
 [ "$(lbl "$ESP")" = kryptik-esp ] || die "${ESP} is not labelled kryptik-esp; is ${DISK} a Kryptik installation?"
-[ "$(lbl "$SA")" = kryptik-a ] && [ "$(lbl "$SB")" = kryptik-b ] && [ "$(lbl "$ST")" = kryptik-state ] || die "${DISK} does not carry the Design 08 layout"
+[ "$(lbl "$SA")" = kryptik-a ] && [ "$(lbl "$SB")" = kryptik-b ] && [ "$(lbl "$ST")" = kryptik-state ] || die "${DISK} does not carry Kryptik's partition layout"
 for lblname in kryptik-state kryptik-media; do
     for d in $(blkid -t PARTLABEL="$lblname" -o device 2>/dev/null); do
         case "$(readlink -f "$d")" in "$DISK"*) [ "$lblname" = kryptik-state ] && [ "$d" = "$ST" ] && continue; die "${DISK} is the medium; refusing" ;; esac

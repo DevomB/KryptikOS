@@ -1,6 +1,6 @@
 //! Zone isolation primitives: namespaces, seccomp, Landlock, cgroups.
 //!
-//! This is the code the Phase 5 exit test attacks. Everything here is a direct
+//! This is the code the isolation exit test attacks. Everything here is a direct
 //! syscall via `libc` rather than a helper crate, because these calls are the
 //! security boundary and their exact arguments matter (ADR-010).
 //!
@@ -16,7 +16,7 @@ use crate::zone::{NetworkMode, Zone};
 ///
 /// CLONE_NEWUSER is first in the constant but NOT optional: it is what allows
 /// the remaining namespaces to be created and what makes "root inside the zone"
-/// mean something weaker than root outside it. The Phase 5 exit test runs as
+/// mean something weaker than root outside it. The isolation exit test runs as
 /// root *inside* a zone precisely to prove that distinction holds.
 pub const ZONE_NAMESPACES: libc::c_int = libc::CLONE_NEWUSER
     | libc::CLONE_NEWNS
@@ -63,11 +63,11 @@ fn check(call: &'static str, ret: libc::c_int) -> Result<(), IsolateError> {
 /// Every zone gets its own network namespace, the nic zone included: it
 /// OWNS the physical interface, which the parent moves into its namespace
 /// (netzone), so zone 0 is left with loopback. Until security increment 15
-/// the nic zone stayed in zone 0's namespace - a Phase 5 rule from before
+/// the nic zone stayed in zone 0's namespace - a compartment-layer rule from before
 /// the topology existed - which made "move the NIC into the nic zone" a
-/// no-op and built the bridge in zone 0. Nothing measured it: the suite's
-/// NETR1 only checked that the zone started, and the VM topology probe that
-/// asks whether eth0 left zone 0 (T1) had not run yet.
+/// no-op and built the bridge in zone 0. Nothing measured it: the launcher
+/// suite's routed-zone check only confirmed that the zone started, and the VM
+/// topology probe that asks whether eth0 left zone 0 had not run yet.
 pub fn namespace_flags(zone: &Zone) -> libc::c_int {
     match zone.network {
         NetworkMode::None | NetworkMode::Routed | NetworkMode::Nic => ZONE_NAMESPACES | NS_NET,
@@ -150,8 +150,8 @@ pub fn userns_restriction_sysctl() -> Option<(bool, &'static str)> {
 /// Returns `Ok(true)` when the kernel refused with EPERM (restricted),
 /// `Ok(false)` when the namespace was created (not restricted), and an error
 /// when the probe itself could not run. A sysctl says what is configured; this
-/// says what the kernel does, which is what the contract (Design 01, P2) is
-/// about.
+/// says what the kernel does, which is what the privileged launch contract
+/// (unprivileged user namespaces are off on the target) is about.
 pub fn probe_userns_restriction() -> Result<bool, IsolateError> {
     let pid = unsafe { libc::fork() };
     if pid < 0 {
@@ -164,7 +164,7 @@ pub fn probe_userns_restriction() -> Result<bool, IsolateError> {
         unsafe {
             if libc::geteuid() == 0 {
                 // Become nobody with no supplementary groups: an ordinary
-                // unprivileged process, which is what P2 constrains.
+                // unprivileged process, which is what the rule constrains.
                 if libc::setgroups(0, std::ptr::null()) < 0
                     || libc::setresgid(65534, 65534, 65534) < 0
                     || libc::setresuid(65534, 65534, 65534) < 0

@@ -1,8 +1,8 @@
 # net: the only zone that touches a real interface. It runs the DHCP client
-# and the bridge/NAT rules for routed zones (docs/design/03), which need raw
+# and the bridge/NAT rules for routed zones (docs/design/net-zone.md), which need raw
 # frames, the netfilter netlink family, and the two network capabilities
 # over the interfaces it owns. Nothing here reaches outside its own network
-# namespace. See docs/design/07-zone-policy-files.md for the directives.
+# namespace. See docs/design/zone-policy-files.md for the directives.
 allow-socket AF_PACKET
 allow-netlink NETLINK_NETFILTER
 keep-capability CAP_NET_ADMIN

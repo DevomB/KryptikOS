@@ -371,7 +371,7 @@ mod tests {
         let src = r##"
 # untrusted - for opening things you do not trust.
 #
-# This is the zone the Phase 5 adversarial test attacks FROM.
+# This is the zone the isolation exit test attacks FROM.
 
 [zone]
 name        = "untrusted"

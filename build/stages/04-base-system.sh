@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage 04 — Hardened base system (Phase 3 of docs/roadmap.md)
+# Stage 04 — Hardened base system (docs/roadmap.md, Base system)
 #
 # Builds the base system INSIDE the chroot prepared by stage 03. This is the
 # first stage where Kryptik's hardening flags are applied: every package here is
@@ -225,7 +225,7 @@ s_glibc() {
     local fhs="${KRYPTIK_SOURCES}/glibc-${V_GLIBC}-fhs-1.patch"
     [[ -f "$fhs" ]] && patch -Np1 -i "$fhs"
 
-    # The loader defect recorded in build/BLOCKER.md - pthread_exit(),
+    # The loader defect recorded in docs/glibc-loader-defect.md - pthread_exit(),
     # pthread_cancel() and backtrace() aborting because _dl_find_object
     # attributed every object loaded after startup to ld.so itself - and
     # what fixes it. build/patches/glibc-2.40/ carries four upstream loader
@@ -709,7 +709,7 @@ s_bc() {
     cd "$src"
 
     # Upstream's fix-libmath_h is an `ed` script in 1.07.1, and Kryptik pins no
-    # ed - so the build tab replaced it with a sed equivalent. 1.08.2, which is
+    # ed - so an earlier build replaced it with a sed equivalent. 1.08.2, which is
     # the version provenance audited and this tree pins, ships
     # bc/fix-libmath.sed and needs no shim at all.
     #
@@ -909,7 +909,7 @@ EOF
     grep -E '^(seat|kryptik|wheel|dhcpcd):' /etc/group
 }
 
-# The trust anchor for OS updates (Design 08). The release signing key is an
+# The trust anchor for OS updates (docs/design/boot-and-updates.md). The release signing key is an
 # OpenSSH key under ${KRYPTIK_WORK}/keys/release, generated once, never in
 # Git and never in an image; only the allowed-signers line (its public half,
 # principal kryptik-release) is installed. Stage 06 signs update manifests
@@ -959,7 +959,7 @@ s_release_trust() {
     rm -rf "$t"
 }
 
-# The net zone's own startup program (Design 03a): dhcpcd, nftables NAT and
+# The net zone's own startup program (docs/design/net-zone.md): dhcpcd, nftables NAT and
 # dnsmasq inside the zone that holds the NIC. Installed beside the boot
 # scripts; run by the net-zone service through kryptikd.
 s_netzone() {
@@ -1109,7 +1109,7 @@ chmod 0755 /run/kryptik
 # The service manager, IF a compiled database exists.
 #
 # It deliberately does not exist yet: building an s6-rc source tree and
-# compiling it is Phase 6 work. Saying so on the console is the point - a
+# compiling it belongs to the compositor and GUI isolation work. Saying so on the console is the point - a
 # system that silently boots with no services and no explanation is
 # indistinguishable from one whose service manager crashed.
 if [ -d /usr/lib/kryptik/s6-rc/compiled ]; then
@@ -1118,7 +1118,7 @@ if [ -d /usr/lib/kryptik/s6-rc/compiled ]; then
 else
     echo "kryptik: no compiled s6-rc database at /usr/lib/kryptik/s6-rc/compiled."
     echo "kryptik: booting with the early console only; no services will start."
-    echo "kryptik: this is expected in a pre-alpha image - see docs/roadmap.md Phase 6."
+    echo "kryptik: this is expected in a pre-alpha image - see docs/roadmap.md, compositor and GUI isolation."
 fi
 EOF
 
@@ -1500,7 +1500,7 @@ s_tests() {
 # Everything a boot needs, checked from the target's own point of view.
 #
 # "make system finished" is not the same statement as "this tree can boot", and
-# the gap between them is where an overnight build quietly wastes a morning.
+# the gap between them is where a build left running quietly wastes a morning.
 s_boot_check() {
     local n=0
     chk() {  # chk <description> <path> [x]
@@ -1525,7 +1525,7 @@ s_boot_check() {
     chk "fstab"             /etc/fstab
     chk "C library"         /usr/lib/libc.so.6
     chk "dynamic loader"    /usr/lib/ld-linux-x86-64.so.2
-    # The desktop (Design 05/06): the compositor, the terminal, the launch
+    # The desktop: the compositor, the terminal, the launch
     # client, the session, the chrome, the per-zone proxy and the daemon.
     chk "compositor"        /usr/bin/dwl x
     chk "terminal"          /usr/bin/havoc x
@@ -1624,7 +1624,7 @@ meson_build() {
     ninja -C build install
 }
 
-# --- encrypted zone volumes (Design 04) ------------------------------------
+# --- encrypted zone volumes -------------------------------------------------
 
 # cmake is here only because json-c has no other build system, and json-c
 # is here only because LUKS2 headers are JSON and cryptsetup requires it.
@@ -1761,7 +1761,7 @@ s_cryptsetup() {
     echo "--- what shipped ---"
     cryptsetup --version
     veritysetup --version
-    # LUKS2 with argon2id is the contract in Design 04; prove the binary
+    # LUKS2 with argon2id is the contract in docs/design/encrypted-volumes.md; prove the binary
     # offers it rather than trusting configure. The help text is captured,
     # not piped into grep -q: grep -q exits at its first match, cryptsetup
     # then dies of SIGPIPE, and under pipefail a successful match read as a
@@ -1775,7 +1775,7 @@ s_cryptsetup() {
     esac
 }
 
-# --- release manifests are verified by the installed system (Design 08) ---
+# --- release manifests are verified by the installed system ---
 # ssh-keygen -Y is the verification primitive tools/release-manifest.sh uses;
 # only that program is installed. No sshd, no ssh, no host keys.
 s_openssh() {
@@ -1799,7 +1799,7 @@ s_openssh() {
     esac
 }
 
-# --- the net zone (Design 03): NAT, resolver, DHCP client -------------------
+# --- the net zone: NAT, resolver, DHCP client ------------------------------
 s_dnsmasq() {
     local src; src="$(unpack "dnsmasq-${V_DNSMASQ}.tar.xz" "dnsmasq-${V_DNSMASQ}")"
     cd "$src"
@@ -1822,7 +1822,7 @@ s_dhcpcd() {
     dhcpcd --version | head -1
 }
 
-# --- the desktop (Design 05/06) ---------------------------------------------
+# --- the desktop -------------------------------------------------------------
 # meson runs from its own tree: python3 meson.py works uninstalled, and that
 # avoids pip, wheel and setuptools - none of which this image pins.
 s_meson() {
@@ -1975,7 +1975,7 @@ s_fonts() {
     echo "havoc's font: ${want} ($(stat -c %s "$want") bytes)"
 }
 
-# --- the desktop's own pieces (Design 05/06) --------------------------------
+# --- the desktop's own pieces ------------------------------------------------
 #
 # kryptik-launch (C: the session's client of the launch daemon), the session
 # and the chrome (shell, tools/desktop/), and the per-zone Wayland proxy,
@@ -2186,7 +2186,7 @@ PACKAGES=(
     # library/header found" when it finds none. Kryptik pins none of them,
     # and glibc does not provide ndbm (gdbm-ndbm.h ships with gdbm).
     #
-    # Adding gdbm is an integration change: it needs a version in
+    # Adding gdbm is a change of pinned inputs: it needs a version in
     # versions.env, an entry in tools/fetch-sources.sh and an audited line
     # in sources.lock. Until then this package cannot build, and blocking
     # the kernel on a documentation tool would be the wrong trade - so it
@@ -2211,7 +2211,7 @@ PACKAGES=(
     # and fingerprinted like any other - because "configure the init
     # system" fails in exactly the same ways as "build a package", and
     # deserves the same machinery rather than a hand-rolled tail.
-    # --- Design 04: LUKS2 zone volumes need cryptsetup, and cryptsetup needs
+    # --- encrypted volumes: LUKS2 zone volumes need cryptsetup, and cryptsetup needs
     #     libdevmapper (LVM2), json-c (cmake) and popt. libaio is LVM2's
     #     own hard requirement at configure time.
     "cmake"       "s_cmake"
@@ -2220,16 +2220,16 @@ PACKAGES=(
     "libaio"      "s_libaio"
     "lvm2"        "s_lvm2"
     "cryptsetup"  "s_cryptsetup"
-    # --- Design 08: the installed system verifies update manifests itself.
+    # --- updates: the installed system verifies update manifests itself.
     "openssh"     "s_openssh"
-    # --- Design 03: NAT and a resolver in the net zone, a DHCP client for
+    # --- the net zone: NAT and a resolver in the net zone, a DHCP client for
     #     the uplink.
     "libmnl"      "native_build libmnl-${V_LIBMNL}.tar.bz2 libmnl-${V_LIBMNL} --disable-static"
     "libnftnl"    "native_build libnftnl-${V_LIBNFTNL}.tar.xz libnftnl-${V_LIBNFTNL} --disable-static"
     "nftables"    "native_build nftables-${V_NFTABLES}.tar.xz nftables-${V_NFTABLES} --without-cli --disable-man-doc --disable-python --with-json=no --disable-static"
     "dnsmasq"     "s_dnsmasq"
     "dhcpcd"      "s_dhcpcd"
-    # --- Design 05/06: the desktop. meson and ninja first (build tools), then
+    # --- the desktop. meson and ninja first (build tools), then
     #     the Wayland stack in dependency order, then the compositor and the
     #     applications.
     "meson"       "s_meson"

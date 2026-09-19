@@ -124,11 +124,11 @@ help:
 	@echo "  make check       verify the host can build Kryptik"
 	@echo "  make sources     fetch upstream tarballs, verify against sources.lock"
 	@echo "  make lock        fetch and regenerate sources.lock (audit before committing)"
-	@echo "  make toolchain   stage 01: cross toolchain            [Phase 1]"
-	@echo "  make temp-tools  stage 02: temporary tools            [Phase 2]"
+	@echo "  make toolchain   stage 01: cross toolchain"
+	@echo "  make temp-tools  stage 02: temporary tools"
 	@echo "                   (stages 01 and 02 are UNPRIVILEGED - run them as you)"
-	@echo "  make system      stage 04: hardened base system       [Phase 3]"
-	@echo "  make kernel      stage 05: hardened kernel            [Phase 4]"
+	@echo "  make system      stage 04: hardened base system"
+	@echo "  make kernel      stage 05: hardened kernel"
 	@echo "  make iso         stage 06: verified root image, signed kernels, USB image + ISO"
 	@echo "  make media       stage 06 only (sysroot and kernel already built)"
 	@echo "  make media-smoke-usb | media-smoke-iso   boot the media under OVMF, assert"
@@ -153,7 +153,7 @@ help:
 	@echo "  make check-kernel-eol  fail if the pinned kernel is EOL or not LTS"
 	@echo "  make validate-kernel-hardened  check the linux-hardened fragment"
 	@echo "  make zones       validate zone definitions + kernel support"
-	@echo "  make zone-test   run the Phase 5 adversarial exit test (primitives)"
+	@echo "  make zone-test   run the isolation exit test (the primitives)"
 	@echo "  make launcher-test  attack \`kryptikd run\` itself (the launch path)"
 	@echo "  make zone-tests  both of the above; what a zone change must pass"
 	@echo "  make cli-test    test \`kryptik\`, the command a person types"
@@ -304,7 +304,7 @@ sysroot-ready:
 	    exit 1; \
 	fi
 
-# --- install media (Design 08) ----------------------------------------------
+# --- install media (docs/design/boot-and-updates.md) -------------------------
 #
 # Stage 06 builds the verity root image, relinks and signs a kernel per boot
 # variant, and assembles the USB image and the ISO. It runs as root (the
@@ -368,14 +368,14 @@ state-test:
 	@"$(TOOLS)"/image/state-test.sh --usb "$(MEDIA_USB)"
 
 # Zones, the network and encrypted storage on the installed system, on the
-# Kryptik kernel (gates G6 and G7). Not to be confused with zone-test, the
+# Kryptik kernel (the zones suite). Not to be confused with zone-test, the
 # host-side adversarial suite for the isolation primitives.
 zones-test:
 	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
 	@"$(TOOLS)"/image/zones-test.sh --usb "$(MEDIA_USB)"
 
 # The zoned desktop on the installed system, driven by keystrokes and
-# screenshots through QMP (gate G8).
+# screenshots through QMP (the desktop suite).
 gui-test:
 	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
 	@"$(TOOLS)"/image/gui-test.sh --usb "$(MEDIA_USB)"
@@ -384,7 +384,7 @@ gui-test:
 compositor-test:
 	@"$(TOOLS)"/test-compositor.sh
 
-# Every gate, G1 to G10, on the media named (the newest under images/ by
+# Every acceptance suite, on the media named (the newest under images/ by
 # default), in one run with one verdict and a report. Needs root: the chroot
 # proofs and the VM drivers. EXPORT=DIR copies the tested media, hashes,
 # trust material, revision, report and instructions there and verifies the

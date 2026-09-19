@@ -45,7 +45,7 @@ fi
 #
 # `${V_BC:-1.08.2}` exists so that this row and the `V_BC` pin in
 # build/config/versions.env can land in either order without breaking a build
-# in flight - versions.env belongs to the build tab, this file to provenance.
+# in flight - versions.env is the build's, this file is provenance's.
 # The default cannot smuggle in an unaudited source: sources.lock pins the
 # BYTES by filename, so any other value for V_BC produces a filename with no
 # lock entry and fetch-sources.sh refuses it by name. Remove the default once

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Stage 06 — install media: a verified root image, signed boot kernels, a
-# USB disk image and an ISO. Design 08 is the layout; this is its builder.
+# USB disk image and an ISO. docs/design/boot-and-updates.md is the layout;
+# this is its builder.
 #
 #   make iso            (runs this; KRYPTIK_VERSION=... names the release)
 #   ./06-iso.sh --redo rootfs

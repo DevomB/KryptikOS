@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 5 exit test — adversarial.
+# The isolation exit test — adversarial.
 #
 # docs/architecture.md states the requirement plainly: from inside `untrusted`,
 # WITH ROOT IN THAT ZONE, each of the following must be demonstrably impossible.
@@ -11,7 +11,8 @@
 #
 # Requirement 5 is added here rather than taken from that document: the four
 # above are about reaching another ZONE, and none of them says anything about
-# reaching the KERNEL. threat-model.md concedes as L1 that a kernel LPE
+# reaching the KERNEL. threat-model.md concedes, under kernel local privilege
+# escalation, that a kernel LPE
 # compromises every zone at once, so the syscall surface a zone can touch is
 # part of the boundary whether the original list said so or not.
 #
@@ -24,7 +25,7 @@
 # kryptikd applies (see compartments/kryptikd/src/isolate.rs).
 #
 # Exit status is the point: 0 only when all four requirements hold. While
-# Phase 5 is incomplete this script is EXPECTED to fail, and the failures name
+# the compartment layer is incomplete this script is EXPECTED to fail, and the failures name
 # precisely what is left to build.
 
 set -uo pipefail
@@ -53,7 +54,7 @@ trap cleanup EXIT
 # isolate.rs::namespace_flags; the mismatch test below checks that.
 ZONE_UNSHARE=(--user --map-root-user --pid --mount --ipc --uts --net --fork)
 
-printf '%sKryptik Phase 5 exit test — adversarial%s\n' "$C_BLU" "$C_RST"
+printf '%sKryptik isolation exit test — adversarial%s\n' "$C_BLU" "$C_RST"
 printf '%sAttacking from `untrusted`, as root inside the zone.%s\n' "$C_DIM" "$C_RST"
 
 # --- preconditions ----------------------------------------------------------
@@ -210,7 +211,7 @@ for d in $adv_fallback; do
     delmsg="$(unshare "${ZONE_UNSHARE[@]}" bash -c "ip link del $d 2>&1 | head -1" 2>/dev/null)"
     after="$(unshare "${ZONE_UNSHARE[@]}" bash -c "ip link del $d >/dev/null 2>&1; ip -o link show 2>/dev/null | sed 's/^[0-9]*: //; s/[:@].*//'" 2>/dev/null | tr '\n' ' ' | xargs)"
     if [[ " $after " == *" $d "* ]]; then
-        pass "$d survives deletion in its own netns, so removing it is a kernel config item (B-6)"
+        pass "$d survives deletion in its own netns, so removing it is a kernel config item"
         info "ip link del $d said: ${delmsg:-<nothing>}"
     else
         fail "$d CAN be deleted inside a zone netns - kryptikd should delete it, not wait for a kernel rebuild"
@@ -320,8 +321,8 @@ fi
 # --- requirement 5: kernel attack surface -----------------------------------
 #
 # Not one of the original four, which were about reaching ANOTHER zone. This one
-# is about reaching the KERNEL. docs/threat-model.md concedes as L1 that a
-# kernel LPE compromises every zone at once, because they share one kernel.
+# is about reaching the KERNEL. docs/threat-model.md concedes, under kernel
+# local privilege escalation, that a kernel LPE compromises every zone at once, because they share one kernel.
 # seccomp is what raises the cost of finding one from inside a zone.
 
 head_ "Requirement 5 — cannot reach the kernel's dangerous syscalls"
@@ -411,10 +412,10 @@ printf '  failed: %d\n' "$FAIL"
 if [[ "$FAIL" -gt 0 ]]; then
     printf '\n%sUnmet requirements:%s\n' "$C_YEL" "$C_RST"
     printf '  - %s\n' "${FAILED[@]}"
-    printf '\n%sPhase 5 is NOT complete.%s\n' "$C_YEL" "$C_RST"
+    printf '\n%sThe compartment layer is NOT complete.%s\n' "$C_YEL" "$C_RST"
     printf 'This is the expected result while the compartment layer is being\n'
     printf 'built. The failures above are the specification for what remains.\n'
     exit 1
 fi
 
-printf '\n%sAll Phase 5 exit requirements hold.%s\n' "$C_GRN" "$C_RST"
+printf '\n%sEvery isolation exit requirement holds.%s\n' "$C_GRN" "$C_RST"

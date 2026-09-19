@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage 03 — Chroot preparation (Phase 3 of docs/roadmap.md)
+# Stage 03 — Chroot preparation (docs/roadmap.md, Base system)
 #
 # Turns the stage 02 sysroot into something that can be chrooted into: the full
 # FHS directory layout, the essential device nodes, /etc/passwd and /etc/group,

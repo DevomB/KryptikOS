@@ -407,7 +407,7 @@ if [[ "$hard_fail" -gt 0 ]]; then
     err "pinned series no longer supported upstream: ${n_eol}"
     for l in "${EOL_LINES[@]}"; do err "  ${l}"; done
     die "An end-of-life series is a false claim of support, so this fails in
-both modes. Propose the upgrade to the build tab; do not edit a pin under a
+both modes. Propose the upgrade as its own change; do not edit a pin under a
 running build."
 fi
 

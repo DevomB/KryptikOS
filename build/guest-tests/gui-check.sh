@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The zoned desktop, measured on the installed system (gate G8). Runs as root
+# The zoned desktop, measured on the installed system (the desktop suite). Runs as root
 # inside the guest; tools/image/gui-test.sh boots the disk with a virtual GPU
 # and keyboard, drives this over the serial login, takes screenshots and
 # presses keys where this script says "GT ..." lines ask it to.

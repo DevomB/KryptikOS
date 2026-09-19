@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # kryptik-update: apply a signed release to the inactive root slot, arm one
-# trial boot of it, and roll back (Design 08). Runs in zone 0 as root, with
+# trial boot of it, and roll back (docs/design/boot-and-updates.md). Runs in zone 0 as root, with
 # no network: the payload arrives as files (the net zone fetches, this
 # verifies) in a directory on the state partition.
 #

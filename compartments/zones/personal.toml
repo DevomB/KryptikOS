@@ -22,7 +22,7 @@ pids_max   = 1024
 
 [identity]
 # Fixed host uid/gid range for this zone: root inside maps to 262144,
-# nobody to 327678. Never derived from zone order; see docs/design/01.
+# nobody to 327678. Never derived from zone order; see docs/design/privileged-launch.md.
 uid_base = 262144
 
 [ui]

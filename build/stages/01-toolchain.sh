@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage 01 — Cross toolchain (Phase 1 of docs/roadmap.md)
+# Stage 01 — Cross toolchain (docs/roadmap.md, Cross toolchain)
 #
 # Builds a cross toolchain targeting $LFS_TGT against an isolated sysroot, so
 # the host toolchain never contaminates the target. Follows the LFS chapter 5

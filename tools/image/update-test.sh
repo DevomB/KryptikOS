@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# OS updates on an installed system (Design 08, gate G9): install release A,
+# OS updates on an installed system (the update suite): install release A,
 # update to release B, reboot into it, roll back, and prove the refusals.
 #
 #   tools/image/update-test.sh --usb-a IMG_A --payload-a DIR_A --payload-b DIR_B
@@ -58,7 +58,7 @@ DISK="${DISK:-${VMDIR}/updated.img}"
 PASS=0; FAIL=0
 green() { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
 red()   { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
-phase() { printf '\n==> %s\n' "$*"; }
+step() { printf '\n==> %s\n' "$*"; }
 TUSER=tester; TPASS=tester-pw; RPASS=root-pw
 TUSER_HASH="$(openssl passwd -6 "$TPASS")"; ROOT_HASH="$(openssl passwd -6 "$RPASS")"
 DRV="${SELF}/vm-drive.py"
@@ -89,7 +89,7 @@ ssh-keygen -Y sign -f "$BAD/otherkey" -n kryptik-release "$BAD/wrongkey/manifest
 mk_variant modified; printf '\xff' | dd of="$BAD/modified/kryptik-root.img" bs=1 seek=$((4096*200+3)) conv=notrunc status=none
 mk_variant truncated; truncate -s -1 "$BAD/truncated/kryptik-a.efi"
 mk_variant extra; echo "ride along" > "$BAD/extra/extra.bin"
-# An empty lost+found is the medium's own and is passed over (phase 2 applies
+# An empty lost+found is the medium's own and is passed over (step 2 applies
 # a payload that is the root of an ext4 disk); one with something in it is not.
 mk_variant hidden; mkdir -p "$BAD/hidden/lost+found"; echo "ride along" > "$BAD/hidden/lost+found/ride"
 BADIMG="${VMDIR}/payload-bad.img"; payload_disk "$BADIMG" "$BAD"
@@ -107,8 +107,8 @@ drive() { python3 "$DRV" --serial "$SER" --timeout 420 "$@"; }
 txt() { tr -d '\r' < "$LOG"; }
 part_start_disk() { sfdisk -d "$1" 2>/dev/null | awk -v n="$2" -F'[ ,]+' '$1 ~ n"$" {for(i=1;i<=NF;i++) if($i=="start=") print $(i+1)}'; }
 
-# ---------------------------------------------------------------- phase 1 --
-phase "phase 1: install ${VA}, boot it, create zone data"
+# ----------------------------------------------------------------- step 1 --
+step "step 1: install ${VA}, boot it, create zone data"
 rm -f "$DISK"; truncate -s 12G "$DISK"
 CTL="${VMDIR}/testctl-update.img"
 "${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
@@ -124,11 +124,11 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "expect:VOL-OK" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
-[[ "$rc" -eq 0 ]] && green "A boots, zone volume created (${VA})" || red "phase 1 drive failed"
+[[ "$rc" -eq 0 ]] && green "A boots, zone volume created (${VA})" || red "step 1 drive failed"
 txt | grep -q "version_id=${VA}" && green "guest reports version ${VA}" || red "guest did not report version ${VA}"
 
-# ---------------------------------------------------------------- phase 2 --
-phase "phase 2: apply ${VB}, reboot into slot b"
+# ----------------------------------------------------------------- step 2 --
+step "step 2: apply ${VB}, reboot into slot b"
 start_vm update-p2 --disk "$PB"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'mkdir -p /run/upd/p /var/lib/kryptik/updates/b && mount -o ro /dev/vdb /run/upd/p && cp -a /run/upd/p/. /var/lib/kryptik/updates/b/ && umount /run/upd/p && kryptik-update apply /var/lib/kryptik/updates/b && echo APPLY-OK')" \
@@ -141,14 +141,14 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'sha256sum -c /root/work.sha && kryptik-update status && echo B-OK')" "expect:B-OK" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
-[[ "$rc" -eq 0 ]] && green "B applied, rebooted into slot b, home file and zone volume intact" || red "phase 2 drive failed"
+[[ "$rc" -eq 0 ]] && green "B applied, rebooted into slot b, home file and zone volume intact" || red "step 2 drive failed"
 txt | grep -q "KRYPTIK_SMOKE: boot_identity=slot=b" && green "booted slot b" || red "did not boot slot b"
 txt | grep -q "version_id=${VB}" && green "guest reports version ${VB}" || red "guest did not report ${VB}"
 txt | grep -q "boot-success: committed: BOOTX64.EFI is now slot b" && green "boot-success committed slot b" || red "no commit of slot b"
 txt | grep -q "committed slot:   b" && green "status shows committed slot b" || red "committed slot is not b"
 
-# ---------------------------------------------------------------- phase 3 --
-phase "phase 3: refusals on the running ${VB}"
+# ----------------------------------------------------------------- step 3 --
+step "step 3: refusals on the running ${VB}"
 start_vm update-p3 --disk "$BADIMG" --disk "$PA"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'mkdir -p /run/upd/p /run/upd/a && mount -o ro /dev/vdb /run/upd/p && mount -o ro /dev/vdc /run/upd/a && echo MNT-OK')" "expect:MNT-OK" \
@@ -163,10 +163,10 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'kryptik-update status')" "expect:trial pending:    none" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
-[[ "$rc" -eq 0 ]] && green "wrong key, modified image, truncated kernel, extra file, downgrade, concurrent run and full disk were all refused; no trial armed" || red "phase 3 drive failed"
+[[ "$rc" -eq 0 ]] && green "wrong key, modified image, truncated kernel, extra file, downgrade, concurrent run and full disk were all refused; no trial armed" || red "step 3 drive failed"
 
-# ---------------------------------------------------------------- phase 4 --
-phase "phase 4: authenticated recovery to ${VA} with --recovery"
+# ----------------------------------------------------------------- step 4 --
+step "step 4: authenticated recovery to ${VA} with --recovery"
 start_vm update-p4 --disk "$PA"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'mkdir -p /run/upd/a /var/lib/kryptik/updates/a && mount -o ro /dev/vdb /run/upd/a && cp -a /run/upd/a/. /var/lib/kryptik/updates/a/ && umount /run/upd/a && kryptik-update apply /var/lib/kryptik/updates/a --recovery && echo REC-OK')" \
@@ -177,11 +177,11 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'sha256sum -c /root/work.sha && cat /var/lib/kryptik/boot/last-result && echo A-OK')" "expect:commit a" "expect:A-OK" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
-[[ "$rc" -eq 0 ]] && green "recovery to ${VA}: slot a booted and committed, data intact" || red "phase 4 drive failed"
+[[ "$rc" -eq 0 ]] && green "recovery to ${VA}: slot a booted and committed, data intact" || red "step 4 drive failed"
 txt | grep -q "version_id=${VA}" && green "guest reports ${VA} again" || red "guest did not report ${VA}"
 
-# ---------------------------------------------------------------- phase 5 --
-phase "phase 5: rollback arms the other slot (b) and it boots"
+# ----------------------------------------------------------------- step 5 --
+step "step 5: rollback arms the other slot (b) and it boots"
 start_vm update-p5
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'kryptik-update rollback && echo RB-OK')" "expect:armed: the next boot tries slot b" "expect:RB-OK" \
@@ -190,11 +190,11 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'cat /run/kryptik/boot-identity; cat /var/lib/kryptik/boot/last-result; echo RB2-OK')" "expect:slot=b" "expect:commit b" "expect:RB2-OK" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
-[[ "$rc" -eq 0 ]] && green "rollback: slot b armed, booted and committed" || red "phase 5 drive failed"
+[[ "$rc" -eq 0 ]] && green "rollback: slot b armed, booted and committed" || red "step 5 drive failed"
 txt | grep -q "version_id=${VB}" && green "guest reports ${VB} after rollback" || red "guest did not report ${VB}"
 
-# ---------------------------------------------------------------- phase 6 --
-phase "phase 6: interruption during the slot write, then after arming"
+# ----------------------------------------------------------------- step 6 --
+step "step 6: interruption during the slot write, then after arming"
 # The copy is synced before the updater starts. The kill below discards the
 # guest's page cache, and on 55904d05 the copy had reached the disk only in
 # part (kryptik-root.img 1666211840 of 2754519040 bytes), so the re-apply
@@ -217,7 +217,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'cat /run/kryptik/boot-identity; kryptik-update status; echo P6-OK')" "expect:slot=b" "expect:trial pending:    none" "expect:P6-OK" \
     "$(ROOTSH 'kryptik-update apply /var/lib/kryptik/updates/a --recovery && echo ARMED-OK')" "expect:ARMED-OK"
 rc=$?
-[[ "$rc" -eq 0 ]] && green "after the interrupted write: still slot b, no trial; the apply succeeds again" || red "phase 6a drive failed"
+[[ "$rc" -eq 0 ]] && green "after the interrupted write: still slot b, no trial; the apply succeeds again" || red "step 6a drive failed"
 # armed, now kill again before the reboot: the firmware consumes BootNext at the next boot
 python3 - "$QMP" <<'PY'
 import socket, sys
@@ -230,11 +230,11 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'cat /run/kryptik/boot-identity; cat /var/lib/kryptik/boot/last-result; echo P6C-OK')" "expect:slot=a" "expect:commit a" "expect:P6C-OK" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
-[[ "$rc" -eq 0 ]] && green "after a kill between arming and reboot: the trial boot happened and slot a was committed" || red "phase 6c drive failed"
+[[ "$rc" -eq 0 ]] && green "after a kill between arming and reboot: the trial boot happened and slot a was committed" || red "step 6c drive failed"
 
-# ---------------------------------------------------------------- phase 7 --
-phase "phase 7: a deliberately broken trial falls back, is recorded, and is refused until retried"
-# On slot a (committed in phase 6). Arm B, power off, corrupt slot b's root
+# ----------------------------------------------------------------- step 7 --
+step "step 7: a deliberately broken trial falls back, is recorded, and is refused until retried"
+# On slot a (committed in step 6). Arm B, power off, corrupt slot b's root
 # image from the host, boot: the firmware tries b (BootNext), dm-verity
 # panics on the first bad block, panic=10 reboots, BootNext is spent, so the
 # firmware loads BOOTX64.EFI - slot a - and boot-success records the failed
@@ -250,7 +250,7 @@ phase "phase 7: a deliberately broken trial falls back, is recorded, and is refu
 # verity error and the panic - so that boot is read by those, and the
 # session's boots are counted by the firmware's "BdsDxe: starting Boot"
 # lines, one per boot, rather than by a banner only a booted userspace prints.
-# The payload copies of phases 2 and 6 are still on the state partition,
+# The payload copies of steps 2 and 6 are still on the state partition,
 # and a third one does not fit beside them (cp: No space left on device,
 # on bae1de53); they have served, so they go before B is copied again.
 start_vm update-p7 --disk "$PB"
@@ -259,7 +259,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "expect:slot=a" "expect:ARM7-OK" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
-[[ "$rc" -eq 0 ]] && green "B armed from slot a" || red "phase 7 arming failed"
+[[ "$rc" -eq 0 ]] && green "B armed from slot a" || red "step 7 arming failed"
 B_OFF=$(( $(part_start_disk "$DISK" 3) * 512 ))
 # The ext4 superblock's volume name: the first block a root mount reads, so
 # the trial boot meets the corruption at once (a byte deep in the data area
@@ -282,7 +282,7 @@ drive "expect:BdsDxe: starting Boot" \
     "run:test \"\$(cat /home/${TUSER}/marker)\" = before-update" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
-[[ "$rc" -eq 0 ]] && green "broken trial: verity panic, fallback to a, trial-failed recorded, refused without --retry, rewritten and committed with it; data intact" || red "phase 7 drive failed"
+[[ "$rc" -eq 0 ]] && green "broken trial: verity panic, fallback to a, trial-failed recorded, refused without --retry, rewritten and committed with it; data intact" || red "step 7 drive failed"
 txt | grep -q 'boot-success: trial slot b did NOT boot' && green "boot-success named the failed trial" || red "boot-success did not record the failed trial"
 starts="$(txt | grep -c 'BdsDxe: starting Boot')"; ups="$(txt | grep -c 'KRYPTIK_SMOKE: END')"; panics="$(txt | grep -c 'Kernel panic')"
 if [[ "$starts" -ge 3 && "$ups" -ge 2 && "$panics" -ge 1 ]]; then green "three boots in one session: the corrupt trial (panicked), the fallback and the retried trial (both reached userspace)"; else red "expected three boots: firmware starts=${starts}, userspace ends=${ups}, panics=${panics}"; fi

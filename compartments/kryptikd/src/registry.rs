@@ -5,7 +5,8 @@
 //! `kryptikd run` supervises its own zone and always has. What it could not do
 //! is let a *second* kryptikd process find that zone — so there was no `stop`,
 //! no `status`, and no way for a routed zone to attach to a running `net` zone.
-//! That is what blocks M3, and this is the registry Design 06 specifies.
+//! That is what blocked the net zone, and this is the registry
+//! docs/design/zone-registry.md specifies.
 //!
 //! There is no daemon. The launcher is still the supervisor; the registry is
 //! only how something else finds it.
@@ -131,7 +132,7 @@ pub fn base_for(uid: u32, euid: u32, xdg_runtime_dir: Option<&str>) -> PathBuf {
 /// parent is enough to rename a freshly created entry away and substitute one
 /// whose `launcher.pid` is a symlink into the victim's home; `fs::write`
 /// follows symlinks and truncates, so the victim's own kryptikd would then
-/// overwrite whatever it pointed at. Found by the security tab (R-7b F1).
+/// overwrite whatever it pointed at. Found by the security review.
 ///
 /// The check refuses rather than repairs. Making a planted directory fit by
 /// chowning or chmod'ing it would adopt it, which is the attacker's goal; the
@@ -197,12 +198,13 @@ fn check_or_create(p: &Path) -> Result<(), RegistryError> {
             // information leak (the registry is an inventory of what this user
             // is running), not a foothold, and it can be closed here.
             //
-            // This is a deliberate narrowing of what R-7b F1 asked for, which
+            // This is a deliberate narrowing of what the security review asked
+            // for, which
             // was to refuse any mode other than 0700. The reasoning for
             // refusing was that chmod'ing a directory into shape would adopt a
             // planted one - but planting requires creating the directory, and
             // the uid check above has already excluded anything this process
-            // did not create. Raised with security in the reply to R-7.
+            // did not create. The narrowing was raised with the reviewers.
             if mode != 0o700 {
                 eprintln!(
                     "kryptikd: tightening {} from {mode:04o} to 0700; the zone registry \
@@ -389,7 +391,8 @@ pub fn reclaim(zone: &str) -> Result<(), RegistryError> {
     }
     if let Some(path) = read_field(&dir, "cgroup") {
         let p = Path::new(&path);
-        // Only ever inside kryptikd's own cgroup tree. With F1 fixed nothing
+        // Only ever inside kryptikd's own cgroup tree. With planted registry
+        // directories refused nothing
         // hostile can reach this field, but `cgroup.kill` is a loaded weapon
         // and one starts_with is a cheap safety catch: a malformed or planted
         // entry must not be able to aim it at, say, /sys/fs/cgroup/user.slice.
@@ -446,7 +449,7 @@ impl Handle {
     /// follows symlinks and truncates, so if anything ever managed to plant a
     /// symlink here it would be kryptikd that did the damage, to a file of the
     /// attacker's choosing. ensure_base should make that unreachable; this is
-    /// the second lock on the same door (R-7b F1).
+    /// the second lock on the same door.
     fn write(&self, name: &str, contents: &str) -> Result<(), RegistryError> {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
@@ -525,7 +528,7 @@ pub fn claim(zone: &str) -> Result<Handle, RegistryError> {
                     // state() itself takes and releases the entry lock to test
                     // liveness, so a `status` running concurrently with this
                     // call produces the same reading for an entry that is
-                    // merely stale (R-7b F2). One retry after 50ms tells them
+                    // merely stale. One retry after 50ms tells them
                     // apart: a real starting launcher still holds the lock,
                     // and a passing status has let go by then.
                     State::Running { launcher: None, .. } if attempt == 0 => {
@@ -663,7 +666,7 @@ mod tests {
 
     #[test]
     fn a_registry_directory_someone_else_could_control_is_refused() {
-        // R-7b F1. Each case is a directory an attacker could have left in
+        // Each case is a directory an attacker could have left in
         // /tmp before the victim's first `kryptikd run`.
         use std::os::unix::fs::MetadataExt;
         let root = std::env::temp_dir().join(format!("kryptik-f1-{}", std::process::id()));

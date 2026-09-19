@@ -1,8 +1,8 @@
 name: Distro
 
 # The whole distribution, built and tested on GitHub's runners and nowhere
-# else: the from-source stages, the signed media, and `make acceptance` (gates
-# G1-G10) on the exact images that come out, under KVM. Three jobs, because a
+# else: the from-source stages, the signed media, and `make acceptance`
+# (every suite) on the exact images that come out, under KVM. Three jobs, because a
 # standard runner gives a job six hours and the build alone can take most of
 # that: what each job produces travels to the next as an artifact.
 #
@@ -320,7 +320,7 @@ jobs:
           if-no-files-found: ignore
 
   acceptance:
-    name: make acceptance (gates G1-G10, under KVM)
+    name: make acceptance (every suite, under KVM)
     needs: system
     runs-on: ubuntu-24.04
     timeout-minutes: 360
@@ -404,7 +404,7 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
-      # Only a run in which every gate passed publishes images: the driver
+      # Only a run in which every suite passed publishes images: the driver
       # writes an export for a failed run too (its RELEASE.txt says FAIL), and
       # the first version of this job uploaded that under the release name.
       - name: Tested images

@@ -22,13 +22,13 @@ pids_max   = 1024
 
 [identity]
 # Fixed host uid/gid range for this zone: root inside maps to 131072,
-# nobody to 196606. Never derived from zone order; see docs/design/01.
+# nobody to 196606. Never derived from zone order; see docs/design/privileged-launch.md.
 uid_base = 131072
 
 [transfer]
 # The one shipped transfer policy: what dev builds may be handed to work,
 # through the broker and a confirmation in zone 0 - never the other way,
-# never to vault or net (Design 05). Every other zone sends nothing.
+# never to vault or net (docs/design/broker.md). Every other zone sends nothing.
 to = "work"
 
 [ui]

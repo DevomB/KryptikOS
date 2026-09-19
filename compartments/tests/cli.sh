@@ -96,9 +96,9 @@ echo "=== kryptik, the user-facing command ==="
 # --- it works at all --------------------------------------------------------
 out="$(K --help 2>&1)"; rc=$?
 if (( rc == 0 )) && [[ "$out" == *"run and manage Kryptik zones"* ]]; then
-    pass "A1  --help works and exits 0"
+    pass "--help works and exits 0"
 else
-    fail "A1  --help exited $rc"
+    fail "--help exited $rc"
 fi
 
 out="$(K list 2>&1)"
@@ -107,16 +107,16 @@ out="$(K list 2>&1)"
 # "description  text" - and a list of names beside a blank column reads as
 # zones that have no description rather than a wrapper that cannot read them.
 if [[ "$out" == *"cli.sh fixture plain"* ]]; then
-    pass "A2b list shows each zone's description, not just its name"
+    pass "list shows each zone's description, not just its name"
 else
-    fail "A2b list printed no description for 'plain'"
+    fail "list printed no description for 'plain'"
     info "output: $(printf '%s' "$out" | tr '
 ' '|' | cut -c1-200)"
 fi
 if [[ "$out" == *plain* && "$out" == *sealed* && "$out" == *carrier* ]]; then
-    pass "A2  list shows the configured zones, read from the config file"
+    pass "list shows the configured zones, read from the config file"
 else
-    fail "A2  list did not show all three zones"
+    fail "list did not show all three zones"
     info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
 fi
 
@@ -125,9 +125,9 @@ CANARY="$WORK/config-was-executed"
 printf 'evil = $(touch "%s")\n' "$CANARY" >> "$CONF"
 K list >/dev/null 2>&1
 if [[ -e "$CANARY" ]]; then
-    fail "A3  the config file was EXECUTED — a line in it ran a command"
+    fail "the config file was EXECUTED — a line in it ran a command"
 else
-    pass "A3  the config file is data, not code: a \$(...) in it did not run"
+    pass "the config file is data, not code: a \$(...) in it did not run"
 fi
 # Put the config back the way the rest of the run expects.
 sed -i '/^evil =/d' "$CONF"
@@ -135,9 +135,9 @@ sed -i '/^evil =/d' "$CONF"
 # --- a wrong zone name is answered with the right ones -----------------------
 out="$(K status nosuchzone 2>&1)"; rc=$?
 if (( rc != 0 )) && [[ "$out" == *nosuchzone* && "$out" == *plain* ]]; then
-    pass "B1  an unknown zone is refused, and the message lists the known ones"
+    pass "an unknown zone is refused, and the message lists the known ones"
 else
-    fail "B1  unknown zone: exit $rc, and the message did not list the real zones"
+    fail "unknown zone: exit $rc, and the message did not list the real zones"
     info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
 fi
 
@@ -150,36 +150,36 @@ fi
 # never reach a user.
 out="$(K run sealed -- /bin/sh -c 'echo CLI_STARTED' 2>&1)"; rc=$?
 if [[ "$out" == *CLI_STARTED* ]]; then
-    fail "C1  a zone claiming ENCRYPTED storage ran without its passphrase"
+    fail "a zone claiming ENCRYPTED storage ran without its passphrase"
 elif (( rc != 0 )) && [[ "$out" == *"encrypted"* && ( "$out" == *"passphrase"* || "$out" == *"root"* ) ]]; then
-    pass "C1  an encrypted zone without its passphrase is refused, saying what it needs"
+    pass "an encrypted zone without its passphrase is refused, saying what it needs"
 else
-    fail "C1  refused (exit $rc) without saying that the zone is encrypted and needs a passphrase"
+    fail "refused (exit $rc) without saying that the zone is encrypted and needs a passphrase"
     info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-240)"
 fi
 
 # And there must be no documented way to override it from here.
 if "$KRYPTIK" --help 2>&1 | grep -qi 'accept-incomplete\|experimental'; then
-    fail "C2  the help text offers a way past the refusal"
+    fail "the help text offers a way past the refusal"
 else
-    pass "C2  no flag is offered for starting a zone whose guarantees are unmet"
+    pass "no flag is offered for starting a zone whose guarantees are unmet"
 fi
 
 # The caveat on ephemeral storage must reach the person, not be summarised away.
 out="$(K run plain -- /bin/sh -c 'echo CLI_STARTED' 2>&1)"
 if [[ "$out" == *"not secure erasure"* ]]; then
-    pass "C3  the ephemeral swap caveat is passed through verbatim on every start"
+    pass "the ephemeral swap caveat is passed through verbatim on every start"
 else
-    fail "C3  the ephemeral caveat did not reach the user"
+    fail "the ephemeral caveat did not reach the user"
     info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-240)"
 fi
 
 # --- running a command -------------------------------------------------------
 out="$(K run plain -- /bin/sh -c 'echo CLI_RAN_INSIDE; id -u' 2>&1)"; rc=$?
 if [[ "$out" == *CLI_RAN_INSIDE* ]]; then
-    pass "D1  run executes a command inside the zone"
+    pass "run executes a command inside the zone"
 else
-    fail "D1  run did not execute the command (exit $rc)"
+    fail "run did not execute the command (exit $rc)"
     info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-240)"
 fi
 
@@ -193,38 +193,38 @@ fi
 out="$(K run plain -- /bin/sh -c 'echo "D2HOST=$(hostname)"' 2>&1)"
 got="$(printf '%s' "$out" | sed -n 's/^D2HOST=//p' | head -1)"
 if [[ "$got" == "plain" ]]; then
-    pass "D2  the command really ran in the zone (it reported hostname 'plain')"
+    pass "the command really ran in the zone (it reported hostname 'plain')"
 elif [[ -z "$got" ]]; then
-    fail "D2  no hostname line came back at all — the command did not run"
+    fail "no hostname line came back at all — the command did not run"
     info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
 else
-    fail "D2  the command ran somewhere else: hostname was '$got', not 'plain'"
+    fail "the command ran somewhere else: hostname was '$got', not 'plain'"
 fi
 if [[ "$got" == "$(hostname)" ]]; then
-    fail "D2b it ran on the HOST: the zone reported the host's own hostname"
+    fail "it ran on the HOST: the zone reported the host's own hostname"
 else
-    pass "D2b positive control: the host's hostname is '$(hostname)', which is not the zone's"
+    pass "positive control: the host's hostname is '$(hostname)', which is not the zone's"
 fi
 
 # --- state is a word, not a colour -------------------------------------------
 out="$(K list 2>&1 | cat)"
 if [[ "$out" == *stopped* ]]; then
-    pass "E1  state is reported as a word, and survives being piped into a file"
+    pass "state is reported as a word, and survives being piped into a file"
 else
-    fail "E1  no state word in piped output"
+    fail "no state word in piped output"
 fi
 if printf '%s' "$out" | grep -q $'\033'; then
-    fail "E2  escape sequences in non-terminal output"
+    fail "escape sequences in non-terminal output"
 else
-    pass "E2  no escape sequences when the output is not a terminal"
+    pass "no escape sequences when the output is not a terminal"
 fi
 
 # --- stop --------------------------------------------------------------------
 out="$(K stop plain 2>&1)"; rc=$?
 if (( rc == 0 )) && [[ "$out" == *"not running"* ]]; then
-    pass "F1  stopping a zone that is not running says so and succeeds"
+    pass "stopping a zone that is not running says so and succeeds"
 else
-    fail "F1  stop on a stopped zone: exit $rc"
+    fail "stop on a stopped zone: exit $rc"
     info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
 fi
 
@@ -236,9 +236,9 @@ fi
 for c in transfer clipboard; do
     out="$(K "$c" 2>&1)"; rc=$?
     if (( rc != 0 )) && [[ "$out" == *"not a"*"command"* && "$out" == *"broker"* && "$out" == *"chrome"* ]]; then
-        pass "G1  \`$c\` is refused, and the refusal names the broker and the chrome"
+        pass "\`$c\` is refused, and the refusal names the broker and the chrome"
     else
-        fail "G1  \`$c\` exited $rc without explaining itself"
+        fail "\`$c\` exited $rc without explaining itself"
         info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
     fi
 done
@@ -246,9 +246,9 @@ done
 # --- doctor ------------------------------------------------------------------
 out="$(K doctor 2>&1)"; rc=$?
 if [[ "$out" == *"$ZONES"* ]]; then
-    pass "H1  doctor reports the paths it would use"
+    pass "doctor reports the paths it would use"
 else
-    fail "H1  doctor did not report its configuration"
+    fail "doctor did not report its configuration"
 fi
 
 printf '\n  %s%d passed, %d failed, %d not run%s\n' \

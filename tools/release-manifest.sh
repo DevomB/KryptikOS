@@ -11,7 +11,7 @@
 #                                      [--no-downgrade VERSION] MANIFEST
 #
 # This is the verification primitive the signed-image and recoverable-update
-# work needs (roadmap M6): a record of exactly which bytes a release consists
+# work needs: a record of exactly which bytes a release consists
 # of, signed, and a check that refuses anything that does not match it.
 #
 # WHAT IT IS FOR, AND THE MISTAKE IT IS BUILT TO AVOID

@@ -2,55 +2,64 @@
 
 Zone definitions and the compartment manager (`kryptikd`).
 
-**Nothing here is implemented.** This is Phase 5 in [../docs/roadmap.md](../docs/roadmap.md)
-— the phase where Kryptik stops being "LFS with good compiler flags" and becomes
-Kryptik. The model it implements is specified in
+The compartment manager `kryptikd`, the zone definitions it loads and the
+suites that attack it live here; in [../docs/roadmap.md](../docs/roadmap.md)
+this is the compartment layer. The model it implements is specified in
 [../docs/architecture.md](../docs/architecture.md).
 
-## Planned layout
+## Layout
 
 ```
 compartments/
-  zones/          One TOML definition per zone (vault, net, work, …)
-  policy/         Per-zone seccomp filters and Landlock rulesets
-  kryptikd/       The compartment manager
+  zones/          One TOML definition per shipped zone (vault, net, work, …)
+    policy/       Per-zone seccomp additions, named by each definition
+  kryptikd/       The compartment manager (Rust)
+  tests/          The suites that run it as root: adversarial, launcher, cli, serve, update
 ```
 
-## Zone definition sketch
+## A zone definition
 
-Not a stable format — recorded so the design discussion has something concrete
-to argue with.
+The shipped `vault`, abridged (the full file is `zones/vault.toml`):
 
 ```toml
 [zone]
 name        = "vault"
-description = "Long-term secrets. No network stack."
+description = "Keys, password store, secrets. No network stack."
 
 [network]
-mode = "none"          # none | routed | nic
-                       # "none" means no net namespace at all, not a firewall rule
+mode = "none"          # a namespace with only loopback, not a firewall rule
 
 [storage]
-mode       = "encrypted"   # encrypted | ephemeral
-volume     = "/dev/kryptik/vault"
-unlock     = "on-start"
-wipe_keys  = "on-stop"
+mode      = "encrypted"
+volume    = "/var/lib/kryptik/volumes/vault.luks"
+unlock    = "on-start"
+wipe_keys = "on-stop"
 
 [policy]
-seccomp  = "policy/vault.seccomp"     # default-deny allowlist
-landlock = "policy/vault.landlock"
+seccomp  = "policy/vault.seccomp"
 
 [limits]
 memory_max = "2G"
 pids_max   = 128
 
+[identity]
+uid_base = 393216      # fixed host uid range, never derived from zone order
+
 [ui]
-border_color = "#c9a227"   # load-bearing: the user must be able to tell zones apart
+border_color   = "#9e80ac"
+border_pattern = "double"
+glyph          = "★"
+label          = "VAULT"
 ```
+
+The seccomp policy files are described in the
+[zone policy files design](../docs/design/zone-policy-files.md). A
+`[policy] landlock` entry is refused, not ignored: per-zone Landlock rules
+are not implemented.
 
 ## Test requirement
 
-Phase 5's exit test is adversarial, not descriptive. From inside `untrusted`,
+The isolation exit test is adversarial, not descriptive. From inside `untrusted`,
 **with root in that zone**, each of the following must be demonstrably
 impossible, each proven by a committed test:
 

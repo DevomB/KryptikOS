@@ -240,7 +240,8 @@ fn abandoned_leaves(base: &Path) -> Vec<PathBuf> {
         // gives a cgroup directory the time it was FIRST LOOKED AT, not the
         // time it was made (6.18: stat 7 s after mkdir reported the stat's
         // own second), so the age rule alone never swept a leaf nobody had
-        // stat'ed, and the launcher suite's M9 found one surviving. A
+        // stat'ed, and the launcher suite's check for leftover cgroup leaves
+        // found one surviving. A
         // launcher still alive - or a reused pid, treated the same - keeps
         // its leaf. The age rule remains for a leaf whose name carries no
         // pid.
@@ -358,8 +359,8 @@ impl Cgroup {
         // memory.oom.group makes the whole zone die together rather than
         // leaving a half-dead process tree when one allocation loses.
         //
-        // Both of these were `let _ = fs::write(...)` until security's
-        // REVIEW-R5 required follow-up 1, which is to say this module's own
+        // Both of these were `let _ = fs::write(...)` until the security
+        // review pointed out that this module's own
         // header - "every path in this file either establishes the limit or
         // reports that it could not" - was false in its last four lines. A
         // zone capped without oom.group dies one process at a time and the
@@ -436,7 +437,7 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
-    /// R-12: "available" must mean this process can create a leaf, not that
+    /// "Available" must mean this process can create a leaf, not that
     /// the directory exists with the right controllers. A root-owned kryptik/
     /// left by a privileged run read fine and then failed at mkdir, and the
     /// refusal stopped naming [limits].
@@ -558,7 +559,7 @@ mod tests {
 
     #[test]
     fn a_limit_that_cannot_be_written_is_an_error_not_a_shrug() {
-        // REVIEW-R5 required 1. The regression this locks in: set_limits used
+        // Required by the security review. The regression this locks in: set_limits used
         // to discard the result of the memory.oom.group write, so a zone whose
         // limit was only half applied started anyway and reported success.
         //

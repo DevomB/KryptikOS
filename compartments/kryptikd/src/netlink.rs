@@ -1,5 +1,5 @@
 //! A minimal rtnetlink client: the handful of link, address and route
-//! operations the zone topology needs (docs/design/03-net-zone-boundary.md).
+//! operations the zone topology needs (docs/design/net-zone.md).
 //!
 //! WHY NOT ip(8)
 //!
@@ -401,7 +401,7 @@ pub fn with_netns<T>(ns_fd: RawFd, f: impl FnOnce() -> io::Result<T>) -> io::Res
     result
 }
 
-/// The routed-zone address plan (docs/design/03): the bridge is
+/// The routed-zone address plan (docs/design/net-zone.md): the bridge is
 /// 10.19.0.1/24 and fd19::1/64; routed zone `k` is 10.19.0.(k+1) / fd19::(k+1).
 pub const BRIDGE_V4: [u8; 4] = [10, 19, 0, 1];
 pub const BRIDGE_V6: [u8; 16] = [0xfd, 0x19, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
@@ -677,7 +677,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// Design 03 N5, against the kernel: two "zones" (namespaces) bridged
+    /// Zone-to-zone isolation on the bridge, against the kernel: two "zones" (namespaces) bridged
     /// through isolated ports cannot reach each other, the same sender does
     /// reach the bridge's own address (the uplink side), and clearing the
     /// flag restores zone-to-zone delivery - so the denial is the flag's

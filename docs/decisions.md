@@ -1,7 +1,7 @@
 # Architecture Decision Records
 
 Each record states the decision, the reasoning, and what it costs. Records
-marked **OPEN** are unresolved and block the phase noted.
+marked **OPEN** are unresolved and block the roadmap section noted.
 
 ---
 
@@ -27,8 +27,8 @@ Qubes' hypervisor boundary is stronger. It also demands VT-d, punishes battery
 life, and makes GPU acceleration painful. Kryptik targets the user who would run
 Qubes but won't tolerate the hardware tax.
 
-**Cost:** A kernel LPE compromises every zone. Documented as L1 in the threat
-model. Non-negotiable consequence of this ADR.
+**Cost:** A kernel LPE compromises every zone. Documented in the threat model under
+"Kernel local privilege escalation". Non-negotiable consequence of this ADR.
 
 ---
 
@@ -73,7 +73,7 @@ systemd has the better sandboxing primitives, but Kryptik does not need them:
 zones already provide namespace, cgroup, seccomp and Landlock confinement, and
 `kryptikd` owns zone lifecycle regardless. That reduces systemd's advantage to
 socket activation and journald, neither of which justifies a very large,
-privileged PID 1 in a system whose threat model (L1) already assumes a hostile
+privileged PID 1 in a system whose threat model already assumes a hostile
 local attacker hunting for privileged surface.
 
 **Cost — real and worth stating:**
@@ -86,7 +86,7 @@ local attacker hunting for privileged surface.
   building log aggregation if it is ever wanted.
 
 **Revisit if:** service definition authoring becomes the dominant cost in
-Phase 3.
+the base system.
 
 ---
 
@@ -119,7 +119,7 @@ covered.
 **Cost:** Less defense-in-depth. A Landlock bypass is not backstopped by a
 second MAC layer.
 
-**Revisit at Phase 6**, once zone semantics are stable and a policy would be
+**Revisit with the compositor and GUI isolation work**, once zone semantics are stable and a policy would be
 written against a fixed target rather than a moving one.
 
 ---
@@ -130,9 +130,9 @@ written against a fixed target rather than a moving one.
 musl is smaller, cleaner, and easier to audit — genuinely the better fit for
 Kryptik's stated values. It is still the wrong choice right now.
 
-Phase 1's goal is "does it boot". Choosing musl means spending that phase
+The cross toolchain's goal is "does it boot". Choosing musl means spending that stage
 debugging glibc-assuming software instead, and every hour spent on a
-compatibility shim is an hour not spent on the compartment layer in Phase 5 —
+compatibility shim is an hour not spent on the compartment layer —
 which is the part of Kryptik that is actually novel. The libc is not what makes
 this project interesting.
 
@@ -140,7 +140,7 @@ this project interesting.
 revisited later — the toolchain is built around this choice, so changing it
 means rebuilding from stage 01.
 
-**Revisit after Phase 5**, when the interesting work is done and a libc swap is
+**Revisit after the compartment layer**, when the interesting work is done and a libc swap is
 a contained experiment rather than a bootstrap risk.
 
 ---
@@ -192,7 +192,7 @@ to repeat.
 
 - **Mainline stable + kconfig only** — what Kryptik was doing. Insufficient for
   the claim the project makes about itself.
-- **Own patchset from scratch** — Phase 5 may still require kernel work if the
+- **Own patchset from scratch** — the compartment layer may still require kernel work if the
   zone model needs hooks Landlock cannot express (see ADR-002). That would be
   carried *on top of* linux-hardened, not instead of it.
 
@@ -220,7 +220,7 @@ process that mediates every boundary would contradict that.
   building it from source requires an existing rustc. The honest options are a
   downloaded stage0 binary (a trust anchor Kryptik does not control, which cuts
   against docs/supply-chain.md) or mrustc, which is a project of its own.
-  Unresolved; tracked as a Phase 5 blocker rather than pretended away.
+  Unresolved; tracked as a compartment-layer blocker rather than pretended away.
 - **Large dependency surface if unmanaged.** kryptikd uses `libc` and direct
   syscalls, not a broad crate tree. Every added dependency is a supply-chain
   decision and needs justifying in review.

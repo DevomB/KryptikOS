@@ -3,12 +3,15 @@
 //! Owns zone lifecycle. Runs privileged in zone 0 (ADR-003) and is the only
 //! process permitted to create zones or move data between them.
 //!
-//! STATUS: Phase 5 in progress. Implemented today are zone definition parsing
-//! and validation, kernel capability probing, and the namespace/isolation
-//! primitives the exit test exercises. NOT implemented: per-zone LUKS volumes,
-//! the Wayland proxy, and the brokered file/clipboard channels. Those are
-//! stubbed with explicit errors rather than silent no-ops - a compartment
-//! manager that pretends to isolate is worse than one that refuses to start.
+//! STATUS: implemented here are zone definition parsing and validation, kernel
+//! capability probing, the namespace, Landlock, seccomp and cgroup primitives
+//! the isolation exit test attacks, the launch path (`run`, `stop`, the
+//! registry, `gc`), the net zone's topology, per-zone LUKS2 volumes, the
+//! brokered clipboard and file-transfer channels with their consent path, and
+//! `serve`, the launch daemon. The per-zone Wayland proxy is the separate
+//! compositor workspace. Anything not built is refused with an explicit error
+//! rather than a silent no-op - a compartment manager that pretends to isolate
+//! is worse than one that refuses to start.
 
 mod broker;
 mod caps;
@@ -82,7 +85,7 @@ an allowlist (see `kryptikd explain NAME`).
                                       the terminal, never on a command line)
 
 Transfers are a zone verb on the broker socket, sent by the zone that offers
-the file (docs/design/05a), not a zone 0 command; the person answers through
+the file (docs/design/broker.md), not a zone 0 command; the person answers through
 the chrome."
 }
 
@@ -109,7 +112,7 @@ fn main() -> ExitCode {
         // kryptikd confine-test ROOTFS TARGET
         //
         // Confines this process to ROOTFS with Landlock, then attempts to read
-        // TARGET. Used by the Phase 5 adversarial test to prove requirements 2
+        // TARGET. Used by the isolation exit test to prove requirements 2
         // and 4 rather than assert them.
         //
         //   exit 0  -> the read SUCCEEDED (confinement failed)
@@ -233,7 +236,7 @@ fn main() -> ExitCode {
         "transfer" => {
             eprintln!(
                 "kryptikd: 'transfer' is a zone verb on the broker socket, sent by the zone\n\
-                 that offers the file (docs/design/05a); zone 0 has no transfer command."
+                 that offers the file (docs/design/broker.md); zone 0 has no transfer command."
             );
             ExitCode::from(2)
         }
@@ -271,7 +274,7 @@ fn cmd_stop(name: &str, now: bool) -> ExitCode {
     // "Still starting" is a window of a few milliseconds between claim() and
     // the fork that records the launcher pid. A script that does `run &` then
     // `stop` lands in it often enough to be annoying, and the answer is not to
-    // report failure but to look again (R-7b F3).
+    // report failure but to look again.
     if matches!(st, registry::State::Running { launcher: None, .. }) {
         std::thread::sleep(std::time::Duration::from_millis(100));
         st = match registry::state(name) {
@@ -352,7 +355,7 @@ fn cmd_stop(name: &str, now: bool) -> ExitCode {
     }
 }
 
-/// The cross-zone paste is a zone 0 gesture (Design 05): no zone can ask for
+/// The cross-zone paste is a zone 0 gesture: no zone can ask for
 /// another zone's payload - the verb does not exist on a zone's socket - so
 /// the only way a payload moves is this command, run by the operator (or the
 /// compositor on their behalf) in zone 0. Both zones must be running: the
@@ -461,7 +464,7 @@ fn cmd_gc() -> ExitCode {
         }
     }
     let swept = cgroup::sweep_now();
-    // Volumes whose launcher died without closing them (Design 04, V5): a
+    // Volumes whose launcher died without closing them: a
     // mapping with no running zone is plaintext nobody is using. Unmount
     // and close it; the ext4 gets fsck -p at the next open.
     let mut closed = 0usize;
@@ -561,7 +564,7 @@ fn cmd_check(dir: &Path, target: bool) -> ExitCode {
         }
     }
 
-    // Design 01, P2: on the target, only a process with CAP_SYS_ADMIN in the
+    // The privileged launch contract: on the target, only a process with CAP_SYS_ADMIN in the
     // initial namespace may create a user namespace. Read the knob, then
     // PROVE it by trying as uid 65534 (or as ourselves when unprivileged).
     let knob = isolate::userns_restriction_sysctl();
@@ -588,7 +591,7 @@ fn cmd_check(dir: &Path, target: bool) -> ExitCode {
         }
     }
     if target {
-        // The controllers M1 needs must be delegable from the root; the actual
+        // The controllers cgroup supervision needs must be delegable from the root; the actual
         // creation is tried by every launch, this only names a missing one.
         let ctl = std::fs::read_to_string("/sys/fs/cgroup/cgroup.controllers").unwrap_or_default();
         for c in ["memory", "pids"] {
@@ -931,7 +934,8 @@ fn run_options_from(args: &[String]) -> Result<spawn::RunOptions, String> {
 }
 
 /// `kryptikd volume` - the encrypted zone's container, outside any launch
-/// (Design 04). Root only: cryptsetup, dm-crypt and loop devices are.
+/// (docs/design/encrypted-volumes.md). Root only: cryptsetup, dm-crypt and
+/// loop devices are.
 ///
 ///   volume init NAME [--size 512M] --passphrase-file F [--zone-uid N --zone-gid N]
 ///   volume passwd NAME --passphrase-file OLD --new-passphrase-file NEW

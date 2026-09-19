@@ -10,7 +10,7 @@ a hunk with fuzz to code that has moved.
 What it changes:
   * Client gains two colour pointers, chosen when the window maps from the
     `kryptik.<zone>.` app_id prefix the per-zone proxy stamps on every
-    client it forwards (Design 05a). The compositor is the only party that
+    client it forwards (docs/design/broker.md). The compositor is the only party that
     draws the border, and the proxy is the only party that sets the prefix,
     so a window cannot claim another zone's colour.
   * focusclient and mapnotify draw those colours instead of the two global

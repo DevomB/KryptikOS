@@ -1,10 +1,9 @@
-# Pending security fixes
+# Security fixes, September 2026
 
-Base reviewed: `44d2b1e`. Keep this work uncommitted for the combined review.
-The user's latest instruction is **source review only: no WSL builds or test
-runs**. Do not run the commands below without a later change to that instruction.
+A source review of the tree at `44d2b1e` found the defects below. Each fix
+landed with a regression test except where the table says otherwise.
 
-## Changes in the working tree
+## Fixes
 
 | Area | Defect and change | Evidence |
 | --- | --- | --- |
@@ -13,10 +12,10 @@ runs**. Do not run the commands below without a later change to that instruction
 | Passphrase descriptors | A pipe writer could withhold EOF indefinitely. The reader now has a five-second deadline and private nonblocking file description; sender changes to shared flags/offsets do not control subsequent reads. | Stalled-pipe regression failed before and passed after. Positive tests cover memfds, the initial file offset, closed pipes, and size limits. |
 | Passphrase files | Permissions were checked by pathname before reopening it; reads were unbounded and CR/LF-only input became an accepted empty secret. The reader checks the opened inode, refuses final symlinks and non-files, bounds input to 4096 bytes, and rejects empty normalized secrets. Partial reads/errors use the existing secret-zeroing Drop path. | Boundary regression failed before and passed after. The pathname race is addressed by source inspection of open-before-fstat, not a separately timed race experiment. |
 | Wayland protocol | Global IDs could be bound with a mismatched interface or version; live object IDs could be overwritten; negotiated versions were discarded after binding. Bindings now match advertisements, duplicate IDs are refused, and request/event versions are enforced for objects and inherited by their children. | Negative regressions failed before; valid ID reuse after delete_id remains covered. |
-| Launcher diagnostics | The root daemon loaded the entire zone log into memory; any invalid UTF-8 discarded the entire error summary. It now reads at most an 8 KiB tail of a regular file and decodes malformed bytes lossily. | The added binary-prefix/large-log regression failed before. **The final fix has only been source-reviewed; it was not run after the user's stop instruction.** |
+| Launcher diagnostics | The root daemon loaded the entire zone log into memory; any invalid UTF-8 discarded the entire error summary. It now reads at most an 8 KiB tail of a regular file and decodes malformed bytes lossily. | The added binary-prefix/large-log regression failed before. **The final fix was checked by source review only; its regression was not run.** |
 | Tree-update verifier log | `tee` opened a predictable temporary filename and could follow a planted symlink where filesystem protections permit it. The log now uses `mktemp`. | Source review; regression added to the existing updater suite but **not run**. This is not a claim that the target's default sticky-directory symlink protections were bypassed. |
 
-## Verification already performed before the stop instruction
+## Verification
 
 - 48 Wayland proxy unit tests and four proxy process/socket tests passed.
 - 157 kryptikd tests passed; the real LUKS lifecycle test was explicitly
@@ -30,13 +29,12 @@ runs**. Do not run the commands below without a later change to that instruction
   with only the fixed proxy executable and daemon socket paths redirected
   to temporary stand-ins.
 - Existing compiler warnings remain. No distro image was rebuilt and no
-  G1-G10 media-acceptance claim is made.
+  media-acceptance claim is made.
 
-The final diagnostic-tail and verifier-log changes postdate those runs.
-Keep them marked unexecuted until testing is authorized again. The temporary
-build directories checked after the stop instruction were already absent.
+The final diagnostic-tail and verifier-log changes postdate those runs and
+have not been executed.
 
-## Review constraints and remaining leads
+## Limits and open leads
 
 - A timeout around regular-file reads cannot promise to interrupt blocked
   filesystem/device I/O: Linux O_NONBLOCK does not provide that guarantee.
@@ -46,20 +44,20 @@ build directories checked after the stop instruction were already absent.
   [Wayland protocol model](https://wayland.freedesktop.org/docs/book/Protocol.html)
   and [delete_id contract](https://wayland.freedesktop.org/docs/html/apa.html).
   Validation gaps are not proof of a compositor escape.
-- **Continue reviewing host log storage.** Zone stdout/stderr still reach a
+- **Host log storage.** Zone stdout/stderr still reach a
   host log file through inherited stdio. Bounding the diagnostic reader does
-  not bound log growth or establish disk-exhaustion resistance. Trace
-  `spawn_launcher` in `serve.rs` and the stdio exception in `rootfs.rs`.
-- **Continue reviewing the separate tree updater.** `apply-update.sh` verifies
+  not bound log growth or establish disk-exhaustion resistance. The
+  relevant code is `spawn_launcher` in `serve.rs` and the stdio exception in
+  `rootfs.rs`.
+- **The separate tree updater.** `apply-update.sh` verifies
   a mutable payload and subsequently copies it. `release-manifest.sh` rereads
   the manifest after signature verification, and its exact-file enumeration
-  uses `find -type f`. Investigate mutation races and unsigned symlink/special
-  entries as a single end-to-end installation boundary. The on-media updater
-  already snapshots its manifest; do not mistake that for a fix in these
-  separate tools.
+  uses `find -type f`. Mutation races and unsigned symlink or special
+  entries have not yet been examined as one end-to-end installation
+  boundary. The on-media updater already snapshots its manifest; that is not
+  a fix in these separate tools.
 - Boot-state authentication, upstream advisory coverage, actual image
-  privilege bits, and production signing continuity still require the wider
-  review described in `CLAUDE_SECURITY_REVIEW.md`. That older handoff contains
-  leads which subsequent commits have addressed; recheck the current code.
-
-No commits or pushes have been made for this bundle.
+  privilege bits, and production signing continuity still need a wider
+  review. An earlier adversarial review listed leads in these areas, some of
+  which later commits addressed; each needs rechecking against the current
+  code.

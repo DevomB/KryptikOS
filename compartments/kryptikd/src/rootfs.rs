@@ -327,7 +327,7 @@ pub fn hosts_for(zone: &str) -> String {
     format!("127.0.0.1 localhost {zone}\n::1 localhost {zone}\n")
 }
 
-/// What a zone finds at /etc/resolv.conf (docs/design/03, DNS).
+/// What a zone finds at /etc/resolv.conf (docs/design/net-zone.md, DNS).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resolver {
     /// No file at all: offline zones, and routed zones that got no path.
@@ -572,7 +572,7 @@ pub fn pivot_into(
         bind_ro_file(sock, &target)?;
     }
     // --- the Wayland proxy socket, at /run/kryptik/wayland-0 ---------------
-    // The second and last thing under /run a zone sees (Design 05a): the
+    // The second and last thing under /run a zone sees: the
     // per-zone kryptik-wlproxy endpoint, bound in the same way. The
     // compositor's own socket is never reachable from a zone.
     if let Some(sock) = wayland {

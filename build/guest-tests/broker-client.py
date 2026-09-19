@@ -13,7 +13,7 @@ on installed media handed every clipboard and transfer probe a multi-line
 `python3 -c` program - and a clipboard payload that itself needs a newline
 before it in the wire format - so none of them ever reached a zone
 ("kryptik-launch: argument 2 contains a newline"). The wire format is
-Design 05a's: `clipboard-set MIME LEN\\n<LEN bytes>`, `clipboard-get\\n`,
+the one in docs/design/broker.md: `clipboard-set MIME LEN\\n<LEN bytes>`, `clipboard-get\\n`,
 `transfer DEST NAME\\n` with the file's descriptor over SCM_RIGHTS.
 """
 import array

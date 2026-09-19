@@ -9,8 +9,8 @@
 # produces.
 #
 # The case worth reading first is the tree-stability one. The setuid check once
-# reported "no unjustified setuid/setgid binaries" over a sysroot the build tab
-# was mid-rebuild on, because /usr/bin had not been installed at that instant;
+# reported "no unjustified setuid/setgid binaries" over a sysroot that
+# was mid-rebuild, because /usr/bin had not been installed at that instant;
 # a minute later the same check found sixteen. A gate whose answer depends on
 # when you run it is worse than no gate, so the tool fingerprints the tree and
 # refuses a run during which it changed - and that refusal is tested by

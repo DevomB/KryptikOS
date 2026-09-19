@@ -39,7 +39,8 @@
 //! as it runs, and a broker that can take the lock shared knows nobody is
 //! watching and refuses at once. Without that, a transfer offered while no
 //! desktop session is up waited the whole minute for a window that could
-//! never open - the boundary suite measured exactly that (G12, rc 124).
+//! never open - the boundary suite's no-consent transfer check measured
+//! exactly that (it timed out, rc 124).
 //!
 //! Tests point the directory and the timeout elsewhere through the
 //! environment; nothing else reads those variables.
