@@ -169,10 +169,11 @@ if [[ "$FLOOR_S" -gt 0 ]]; then
         if [[ "$r" == error:*consent* ]] && (( after - before < 90 )); then pass "time-claim-consent" "a day's jump is not applied without the person (${r#error: })"; else fail "time-claim-consent" "reply '${r}', clock moved $(( after - before )) s"; fi
         put_clock_back
 
-        # The sign of chrony's number, which no fixture can settle: only where a
-        # time server really answers. The clock is set five minutes fast; the
-        # net zone, restarted, must measure about -300 and zone 0 must then put
-        # the clock right by itself.
+        # The whole path against a real time server, only where one answers
+        # through this network: the clock is set five minutes fast; the net
+        # zone, restarted, must measure about -300 and zone 0 must then put the
+        # clock right by itself. (The sign itself is settled offline, against a
+        # server on loopback, in tools/test-netzone-time.sh.)
         case "$ready_time" in
             time=-[0-9]*|time=[0-9]*)
                 date -u -s "@$(( $(true_now) + 300 ))" >/dev/null 2>&1; rm -f /var/lib/kryptik/time/state

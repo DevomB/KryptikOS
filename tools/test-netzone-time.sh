@@ -1,59 +1,84 @@
 #!/usr/bin/env bash
-# The net zone's half of the clock (docs/design/time.md), offline and in a
-# second: the part of tools/net/netzone-init.sh that measures the time and
-# tells zone 0, run for real under every POSIX shell on this host with a
-# stand-in for chronyd and one for the broker client.
+# The net zone's half of the clock (docs/design/time.md), offline: the part of
+# tools/net/netzone-init.sh that measures the time and tells zone 0, and the
+# SNTP query it runs (tools/net/sntp-offset.py), against real sockets on
+# loopback - a time server whose clock and manners this suite chooses, and a
+# unix socket standing where the zone's broker would be, which writes down
+# what it was told.
 #
 # The zone that runs this code is the one Kryptik trusts least, and the image
-# runs it under whatever /bin/sh is. So what is checked is what it does with
-# what it is given: which lines of zone 0's source list it accepts, that each
-# directive reaches chronyd as ONE argument, which number it takes for the
-# offset, what it calls silence, a timeout and a seccomp kill, that it never
-# asks without an uplink, and that the function's own `set --` leaves the
-# script's list of uplinks alone (the whole script hangs off "$@").
-#
-# It cannot say whether chronyd's sign means what the script says it means;
-# the installed system's check sets the clock wrong on purpose for that.
+# runs it under whatever /bin/sh is, so it runs here under every POSIX shell
+# on this host. What is checked is what it does with what it is given: which
+# lines of zone 0's source list it accepts and how they reach the query; that
+# a clock five minutes behind the server is reported as +300 and one ahead as
+# -300 (the sign is arithmetic here, not a guess about another program's log);
+# that one lying server among three is outvoted; that a kiss-of-death, an
+# unsynchronised server, a reply that does not echo what was sent and silence
+# are all "no answer" and never a zero; that nothing is asked without an
+# uplink; and that the function's own `set --` leaves the script's list of
+# uplinks alone, which the whole script hangs off.
 
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="${ROOT}/tools/net/netzone-init.sh"
+SNTP="${ROOT}/tools/net/sntp-offset.py"
 PASS=0
 FAIL=0
 green() { printf '\033[32m  PASS\033[0m  %s\n' "$1"; PASS=$((PASS + 1)); }
 red()   { printf '\033[31m  FAIL\033[0m  %s\n' "$1"; FAIL=$((FAIL + 1)); [[ $# -gt 1 ]] && printf '        %s\n' "$2"; }
 
-[[ -r "$SCRIPT" ]] || { echo "no ${SCRIPT}"; exit 1; }
-T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
-mkdir -p "$T/bin"
+command -v python3 >/dev/null 2>&1 || { echo "no python3: the query and its stand-in servers need it"; exit 77; }
+[[ -r "$SCRIPT" && -r "$SNTP" ]] || { echo "missing ${SCRIPT} or ${SNTP}"; exit 1; }
+T="$(mktemp -d)"
+PIDS=()
+# Only the main shell cleans up: a $(...) is a subshell that inherits this
+# trap, and the first one to exit would take the servers and $T with it.
+MAIN=$BASHPID
+cleanup() { [[ "$BASHPID" == "$MAIN" ]] || return 0; for p in "${PIDS[@]:-}"; do [[ -n "$p" ]] && kill "$p" 2>/dev/null; done; rm -rf "$T"; }
+trap cleanup EXIT
 
 # The block under test: from TIME_CONF= up to, not including, its first call.
 sed -n '/^TIME_CONF=/,/^ask_time "\$@"$/p' "$SCRIPT" | sed '$d' > "$T/block.sh"
-if ! grep -q '^ask_time()' "$T/block.sh"; then
-    echo "could not find the time block in ${SCRIPT#"$ROOT"/} (did its markers move?)"; exit 1
-fi
+grep -q '^ask_time()' "$T/block.sh" || { echo "could not find the time block in ${SCRIPT#"$ROOT"/} (did its markers move?)"; exit 1; }
 
-cat > "$T/bin/chronyd" <<'EOF'
-#!/bin/sh
-printf 'ARGC=%s\n' "$#" >> "$FAKE_LOG"; for a in "$@"; do printf 'ARG=%s\n' "$a" >> "$FAKE_LOG"; done
-case "$FAKE_MODE" in
-  behind)  echo "chronyd version 4.9 starting"; echo "System clock wrong by -1.234567 seconds (ignored)"; echo "chronyd exiting" ;;
-  ahead)   echo "System clock wrong by 86400.500000 seconds (ignored)" ;;
-  twice)   echo "System clock wrong by 9.000000 seconds (ignored)"; echo "System clock wrong by 0.250000 seconds (ignored)" ;;
-  junk)    echo "System clock wrong by 1e9 seconds"; echo "System clock wrong by ; rm -rf / seconds" ;;
-  timeout) echo "Timeout reached"; echo "chronyd exiting"; exit 1 ;;
-  sigsys)  exit 159 ;;
-esac
-EOF
-cat > "$T/bin/python3" <<'EOF'
-#!/bin/sh
-shift 2
-printf 'TOLD=%s %s\n' "$1" "$2" >> "$FAKE_LOG"
-echo "ok stepped"
-EOF
-chmod +x "$T/bin/chronyd" "$T/bin/python3"
-
+# A time server on loopback: its clock is ours plus SKEW, and MODE is its manners.
+cat > "$T/ntpd.py" <<'PY'
+import socket, struct, sys, time
+mode, skew, portfile = sys.argv[1], float(sys.argv[2]), sys.argv[3]
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("127.0.0.1", 0))
+open(portfile, "w").write(str(s.getsockname()[1]))
+def ts(t): return struct.pack("!II", (int(t) + 2208988800) % 2**32, int((t - int(t)) * 2**32) % 2**32)
+while True:
+    data, addr = s.recvfrom(512)
+    if mode == "silent": continue
+    now = time.time() + skew
+    first = ((3 if mode == "unsync" else 0) << 6) | (4 << 3) | 4
+    stratum = 0 if mode == "kod" else 2
+    origin = bytes(8) if mode == "badorigin" else data[40:48]
+    s.sendto(bytes([first, stratum, 0, 0xEC]) + bytes(12) + ts(now) + origin + ts(now) + ts(now), addr)
+PY
+# Where the zone's broker would be: writes down the request, answers like zone 0.
+cat > "$T/broker.py" <<'PY'
+import os, socket, sys
+path, log = sys.argv[1], sys.argv[2]
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.bind(path); s.listen(4)
+open(path + ".ready", "w").close()
+while True:
+    c, _ = s.accept(); data = b""
+    while True:
+        b = c.recv(4096)
+        if not b: break
+        data += b
+    open(log, "ab").write(data); c.sendall(b"ok stepped\n"); c.close()
+PY
+# The query, with its arguments written down first; NOQUERY stops there.
+cat > "$T/sntp-logged.py" <<PY
+import os, runpy, sys
+open(os.environ["ARGLOG"], "a").write(" ".join(sys.argv[1:]) + "\n")
+if os.environ.get("NOQUERY") == "1": sys.exit(1)
+sys.argv[0] = "$SNTP"; runpy.run_path("$SNTP", run_name="__main__")
+PY
 cat > "$T/harness.sh" <<EOF
 say() { echo "SAY: \$*"; }
 uplink_addr() { echo "\$FAKE_ADDR"; }
@@ -65,10 +90,29 @@ echo "STATE=\$TIME_STATE"
 echo "UPLINKS=\$*"
 EOF
 
-printf 'server time.example.org\n# a comment\npool   pool.example.net  \nserver bad host\nserver evil;rm\nserver\npeer other.example\n  server  spaced.example  \n' > "$T/time.conf"
-: > "$T/empty.conf"
+# serve VAR MODE SKEW: start a server and put its port in VAR. Not through
+# $(...): a command substitution is a subshell, where the pid would be
+# recorded and lost, and whose exit runs this script's cleanup trap.
+NSERVED=0
+serve() {
+    NSERVED=$((NSERVED + 1))
+    local pf="$T/port.$NSERVED"; : > "$pf"
+    python3 "$T/ntpd.py" "$2" "$3" "$pf" & PIDS+=("$!")
+    for _ in $(seq 1 50); do [[ -s "$pf" ]] && break; sleep 0.1; done
+    [[ -s "$pf" ]] || { echo "a stand-in time server did not start"; exit 1; }
+    printf -v "$1" '%s' "$(< "$pf")"
+}
+python3 "$T/broker.py" "$T/broker.sock" "$T/told" & PIDS+=("$!")
+for _ in $(seq 1 50); do [[ -e "$T/broker.sock.ready" ]] && break; sleep 0.1; done
+[[ -S "$T/broker.sock" ]] || { echo "the stand-in broker did not start"; exit 1; }
 
+serve P_BEHIND ok 300; serve P_AHEAD ok -300; serve P_AHEAD2 ok -300; serve P_LIAR ok 90000
+serve P_KOD kod 0; serve P_UNSYNC unsync 0; serve P_BADORIGIN badorigin 0; serve P_SILENT silent 0
+# conf LINE...: a source list; its path in CONF (a function, not $(...), for the reason above).
+NCONF=0
+conf() { NCONF=$((NCONF + 1)); CONF="$T/conf.$NCONF"; printf '%s\n' "$@" > "$CONF"; }
 has() { [[ "$1" == *"$2"* ]]; }
+near() { python3 -c "import sys; sys.exit(0 if abs(float(sys.argv[1]) - float(sys.argv[2])) < 2 else 1)" "$1" "$2" 2>/dev/null; }
 
 SHELLS=()
 for s in dash bash busybox; do command -v "$s" >/dev/null 2>&1 && SHELLS+=("$s"); done
@@ -78,53 +122,65 @@ for s in "${SHELLS[@]}"; do
     sh_cmd="$s"; [[ "$s" == busybox ]] && sh_cmd="busybox sh"
     echo "under ${sh_cmd}:"
     # shellcheck disable=SC2086  # "busybox sh" is two words on purpose
-    r() { : > "$T/log"; OUT="$(PATH="$T/bin:$PATH" FAKE_LOG="$T/log" FAKE_MODE="$1" FAKE_ADDR="$2" FAKE_CONF="$3" $sh_cmd "$T/harness.sh" 2>&1)"; LOG="$(cat "$T/log")"; }
+    r() {   # r ADDR CONF [NOQUERY] -> OUT, ARGS (what reached the query), TOLD (what reached the broker)
+        : > "$T/args"; : > "$T/told"
+        OUT="$(ARGLOG="$T/args" NOQUERY="${3:-0}" KRYPTIK_SNTP="$T/sntp-logged.py" KRYPTIK_SNTP_TIMEOUT=2 KRYPTIK_BROKER="$T/broker.sock" \
+               FAKE_ADDR="$1" FAKE_CONF="$2" $sh_cmd "$T/harness.sh" 2>&1)"
+        ARGS="$(cat "$T/args")"; TOLD="$(cat "$T/told")"
+        STATE="$(sed -n 's/^STATE=//p' <<<"$OUT")"
+    }
 
-    r behind 10.0.2.15/24 "$T/time.conf"
-    if has "$LOG" "ARGC=6" && has "$LOG" "ARG=server time.example.org iburst" && has "$LOG" "ARG=pool pool.example.net iburst maxsources 4" && has "$LOG" "ARG=server spaced.example iburst"; then
-        green "each accepted source reaches chronyd as one argument, after -Q -t 10"
-    else red "the directives did not reach chronyd as written" "$LOG"; fi
-    if ! has "$LOG" "bad host" && ! has "$LOG" "evil" && ! has "$LOG" "peer"; then
-        green "a line that is not 'server HOST' or 'pool HOST' is not passed on (spaces, ';', other directives)"
-    else red "a malformed source line reached chronyd" "$LOG"; fi
-    if has "$OUT" "STATE=-1.234567" && has "$LOG" "TOLD=-1.234567 3"; then
-        green "a clock that is ahead: the negative offset is what zone 0 is told, with the source count"
-    else red "wrong offset or count for a clock that is ahead" "$OUT | $LOG"; fi
+    conf 'server time.example.org' '# a comment' 'pool   pool.example.net  ' 'server bad host' 'server evil;rm' 'server' 'peer other.example' '  server  spaced.example  '
+    r 10.0.2.15/24 "$CONF" 1
+    if [[ "$ARGS" == "--timeout 2 --server time.example.org --pool pool.example.net --server spaced.example" ]]; then
+        green "zone 0's source list reaches the query as a flag and a name each; spaces, ';' and other directives do not"
+    else red "the source list was not passed on as written" "$ARGS"; fi
     if has "$OUT" "UPLINKS=eth0 wlan0"; then green "the script's list of uplinks survives the function's own set --"
     else red "ask_time clobbered the script's positional parameters" "$OUT"; fi
 
-    r ahead 10.0.2.15/24 "$T/time.conf"
-    if has "$LOG" "TOLD=86400.500000 3"; then green "a clock a day behind: the positive offset is passed on unchanged (zone 0 decides, not this zone)"
-    else red "wrong offset for a clock that is behind" "$LOG"; fi
+    conf "server 127.0.0.1:${P_BEHIND}"
+    r 10.0.2.15/24 "$CONF"
+    off="${TOLD#time-offset }"; off="${off%% *}"
+    if near "$STATE" 300 && has "$TOLD" "time-offset +" && [[ "$TOLD" == *" 1" ]] && near "$off" 300; then
+        green "a clock five minutes behind the server: zone 0 is told about +300 s, from 1 server (${TOLD})"
+    else red "wrong claim for a clock that is behind" "state=${STATE} told=${TOLD}"; fi
 
-    r twice 10.0.2.15/24 "$T/time.conf"
-    if has "$LOG" "TOLD=0.250000 3" && ! has "$LOG" "TOLD=9.000000"; then green "the last measurement is the one reported"
-    else red "did not report the last measurement" "$LOG"; fi
+    conf "server 127.0.0.1:${P_AHEAD}"
+    r 10.0.2.15/24 "$CONF"
+    if near "$STATE" -300 && has "$TOLD" "time-offset -"; then green "a clock five minutes ahead: about -300 s (${TOLD})"
+    else red "wrong claim for a clock that is ahead" "state=${STATE} told=${TOLD}"; fi
 
-    r junk 10.0.2.15/24 "$T/time.conf"
-    if has "$OUT" "STATE=no-answer" && ! has "$LOG" "TOLD="; then green "a line that is not a plain decimal is no answer, and nothing is sent"
-    else red "junk from the client was treated as an offset" "$OUT | $LOG"; fi
+    conf "server 127.0.0.1:${P_AHEAD}" "server 127.0.0.1:${P_LIAR}" "server 127.0.0.1:${P_AHEAD2}"
+    r 10.0.2.15/24 "$CONF"
+    if near "$STATE" -300 && [[ "$TOLD" == *" 3" ]]; then green "one server a day out among three is outvoted: the median, from 3 servers (${TOLD})"
+    else red "a lying server moved the answer" "state=${STATE} told=${TOLD}"; fi
 
-    r timeout 10.0.2.15/24 "$T/time.conf"
-    if has "$OUT" "STATE=no-answer" && ! has "$LOG" "TOLD="; then green "a server that does not answer is 'no-answer', not a pass and not a zero offset"
-    else red "a timeout was not reported as no answer" "$OUT | $LOG"; fi
+    for bad in "kod:${P_KOD}:a kiss-of-death" "unsync:${P_UNSYNC}:an unsynchronised server" "badorigin:${P_BADORIGIN}:a reply that does not echo what was sent" "silent:${P_SILENT}:a server that does not answer"; do
+        IFS=: read -r _ port what <<<"$bad"
+        conf "server 127.0.0.1:${port}"
+        r 10.0.2.15/24 "$CONF"
+        if [[ "$STATE" == no-answer && -z "$TOLD" ]]; then green "${what} is 'no-answer': not a pass, not a zero, and zone 0 is told nothing"
+        else red "${what} was not reported as no answer" "state=${STATE} told=${TOLD}"; fi
+    done
 
-    r sigsys 10.0.2.15/24 "$T/time.conf"
-    if has "$OUT" "STATE=killed-by-seccomp" && has "$OUT" "seccomp"; then green "a client killed by the zone's seccomp policy is said to be, not mistaken for a quiet network"
-    else red "SIGSYS was not reported" "$OUT"; fi
+    conf "server 127.0.0.1:${P_SILENT}" "server 127.0.0.1:${P_BEHIND}"
+    r 10.0.2.15/24 "$CONF"
+    if near "$STATE" 300 && [[ "$TOLD" == *" 1" ]]; then green "a silent server beside a good one costs nothing but the count (${TOLD})"
+    else red "a silent server spoiled a good answer" "state=${STATE} told=${TOLD}"; fi
 
-    r behind "" "$T/time.conf"
-    if has "$OUT" "STATE=no-uplink" && [[ -z "$LOG" ]]; then green "with no uplink address nothing is asked at all"
-    else red "asked the network with no uplink" "$OUT | $LOG"; fi
+    conf "server 127.0.0.1:${P_BEHIND}"
+    r "" "$CONF"
+    if [[ "$STATE" == no-uplink && -z "$ARGS" && -z "$TOLD" ]]; then green "with no uplink address nothing is asked at all"
+    else red "asked the network with no uplink" "state=${STATE} args=${ARGS}"; fi
 
-    r behind 10.0.2.15/24 /nonexistent
-    if has "$LOG" "ARGC=4" && has "$LOG" "ARG=pool pool.ntp.org iburst maxsources 4" && has "$LOG" "TOLD=-1.234567 1"; then
-        green "without zone 0's source list the default pool is asked, and counted as one source"
-    else red "the default source is wrong" "$LOG"; fi
+    r 10.0.2.15/24 /nonexistent 1
+    if [[ "$ARGS" == "--timeout 2 --pool pool.ntp.org" ]]; then green "without zone 0's source list the public pool is what is asked"
+    else red "the default source is wrong" "$ARGS"; fi
 
-    r behind 10.0.2.15/24 "$T/empty.conf"
-    if has "$OUT" "STATE=unconfigured" && [[ -z "$LOG" ]]; then green "a source list that names nothing asks nothing and says so"
-    else red "an empty source list was not reported" "$OUT | $LOG"; fi
+    conf '# nothing here'
+    r 10.0.2.15/24 "$CONF"
+    if [[ "$STATE" == unconfigured && -z "$ARGS" ]]; then green "a source list that names nothing asks nothing and says so"
+    else red "an empty source list was not reported" "state=${STATE} args=${ARGS}"; fi
 done
 
 echo

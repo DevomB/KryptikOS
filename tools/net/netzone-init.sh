@@ -24,9 +24,10 @@
 #            gets its lease once it has associated
 #   dnsmasq  the resolver at 10.19.0.1 / fd19::1 that routed zones' resolv.conf
 #            already names, forwarding to the uplink's servers
-#   time     `chronyd -Q` measures how far the machine's clock is from the
-#            time servers and sets nothing (this zone could not); the offset
-#            goes to zone 0 through the broker, as a claim zone 0 judges
+#   time     a plain SNTP query (sntp-offset.py) measures how far the
+#            machine's clock is from the time servers and sets nothing (this
+#            zone could not); the offset goes to zone 0 through the broker,
+#            as a claim zone 0 judges
 #
 # FAIL CLOSED. The first version logged a failed nftables load and enabled
 # forwarding anyway, which is a router with no firewall. Now: forwarding is
@@ -259,8 +260,8 @@ start_dns && dns_ok=1
 # The wall clock is one clock for the whole machine and only zone 0 may set
 # it; this zone is the only one that can ask a time server and cannot set
 # anything (no CAP_SYS_TIME). So it measures how far the shared clock is from
-# what the servers say - `chronyd -Q` measures and prints, and touches
-# nothing - and tells zone 0 the OFFSET through its broker. Zone 0 treats
+# what the servers say - sntp-offset.py, a plain SNTP query that prints one
+# number and touches nothing - and tells zone 0 the OFFSET through its broker. Zone 0 treats
 # that as a claim from a zone it does not trust: it has a floor and a bound
 # of its own, and asks the person past the bound. What this zone learns back
 # is one line saying what zone 0 did.
@@ -268,6 +269,9 @@ start_dns && dns_ok=1
 # The sources are zone 0's to name (/etc/kryptik/time.conf on the verified
 # root, `server HOST` or `pool HOST` per line); without the file, the pool.
 TIME_CONF=/etc/kryptik/time.conf
+SNTP="${KRYPTIK_SNTP:-/usr/libexec/kryptik/sntp-offset.py}"
+# The zone's broker socket; named so that the offline suite can stand one up.
+BROKER="${KRYPTIK_BROKER:-/run/kryptik/broker}"
 TIME_STATE=not-asked
 time_sources() {
     if [ -r "$TIME_CONF" ]; then
@@ -277,44 +281,37 @@ time_sources() {
     fi
 }
 ask_time() {   # ask_time <uplink>...: sets TIME_STATE
-    command -v chronyd >/dev/null 2>&1 || { TIME_STATE=no-chronyd; return; }
+    { command -v python3 >/dev/null 2>&1 && [ -r "$SNTP" ]; } || { TIME_STATE=no-client; return; }
     [ -n "$(uplink_addr "$@")" ] || { TIME_STATE=no-uplink; return; }
-    # The directives become this function's own positional parameters: one
-    # argument each, which is how chronyd takes them with no config file.
+    # The sources become this function's own positional parameters, a flag
+    # and a name each, so nothing in a name is ever split or expanded.
     set --
     while read -r kind host; do
         [ -n "$host" ] || continue
         case "$kind" in
-            pool) set -- "$@" "pool $host iburst maxsources 4" ;;
-            server) set -- "$@" "server $host iburst" ;;
+            pool|server) set -- "$@" "--$kind" "$host" ;;
         esac
     done <<EOF
 $(time_sources)
 EOF
     [ $# -gt 0 ] || { TIME_STATE=unconfigured; say "time: ${TIME_CONF} names no server or pool"; return; }
-    nsrc=$#
-    out="$(chronyd -Q -t 10 "$@" 2>&1)"; rc=$?
-    # "System clock wrong by N seconds": N is what would be ADDED to the
-    # clock to make it right, which is the offset zone 0 is told. No such
-    # line is no answer; the exit status says nothing either way - except
-    # 159, which is SIGSYS: the zone's seccomp policy killed it, and that is
-    # a defect in the policy or the client to be read here, not a quiet
-    # network.
-    off="$(printf '%s\n' "$out" | sed -n 's/.*System clock wrong by \(-\{0,1\}[0-9][0-9]*\.[0-9]\{1,6\}\)[0-9]* seconds.*/\1/p' | tail -1)"
-    if [ -z "$off" ]; then
-        TIME_STATE=no-answer
-        [ "$rc" = 159 ] && { TIME_STATE=killed-by-seccomp; say "time: chronyd was killed by this zone's seccomp policy (SIGSYS)"; }
-        return
-    fi
+    # One line back: the seconds to ADD to the clock, and how many servers
+    # that is the median of. Nothing printed is no answer, never a zero.
+    out="$(python3 "$SNTP" --timeout "${KRYPTIK_SNTP_TIMEOUT:-8}" "$@" 2>/dev/null)"
+    off="${out%% *}"; nsrc="${out##* }"
+    case "$off" in
+        [+-][0-9]*.[0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+        *) TIME_STATE=no-answer; return ;;
+    esac
+    case "$nsrc" in [1-9]|1[0-6]) ;; *) TIME_STATE=no-answer; return ;; esac
     TIME_STATE="$off"
-    if ! command -v python3 >/dev/null 2>&1; then say "time: measured ${off} s, and no client here to tell zone 0"; return; fi
     # The wait is long because zone 0 may be asking the person.
     told="$(python3 -c 'import socket, sys
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(90)
-s.connect("/run/kryptik/broker")
+s.connect(sys.argv[3])
 s.sendall(("time-offset %s %s\n" % (sys.argv[1], sys.argv[2])).encode()); s.shutdown(socket.SHUT_WR)
-print(s.recv(4096).decode("utf-8", "replace").strip())' "$off" "$nsrc" 2>&1 | head -1)"
-    say "time: the clock is off by ${off} s (asked of ${nsrc} source(s)); zone 0: ${told:-no reply}"
+print(s.recv(4096).decode("utf-8", "replace").strip())' "$off" "$nsrc" "$BROKER" 2>&1 | head -1)"
+    say "time: the clock is off by ${off} s (the median of ${nsrc} server(s)); zone 0: ${told:-no reply}"
 }
 ask_time "$@"
 time_ticks=0

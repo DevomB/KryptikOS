@@ -968,6 +968,10 @@ s_netzone() {
     echo "source sha256: ${1:-unknown}"
     install -D -m 0755 "$src" /usr/libexec/kryptik/netzone-init.sh
     sh -n /usr/libexec/kryptik/netzone-init.sh || { echo "netzone-init does not parse under the target sh"; return 1; }
+    # The SNTP query the net zone measures the clock with (docs/design/time.md).
+    install -D -m 0755 "${KRYPTIK_ROOT}/tools/net/sntp-offset.py" /usr/libexec/kryptik/sntp-offset.py
+    python3 -m py_compile /usr/libexec/kryptik/sntp-offset.py || { echo "sntp-offset.py does not compile under the target python"; return 1; }
+    rm -rf /usr/libexec/kryptik/__pycache__
     for t in dhcpcd nft dnsmasq ip; do
         command -v "$t" >/dev/null 2>&1 && echo "  ok $t" || { echo "  MISSING $t"; return 1; }
     done
@@ -2494,7 +2498,7 @@ PACKAGES=(
     # kryptik-update, which refuses to start without kryptik-efiboot.
     "efiboot"     "s_efiboot $(sha256_of "${KRYPTIK_ROOT}/tools/efi/kryptik-efiboot.c" 2>/dev/null || echo none)"
     "updater"     "s_updater $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-update" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-recover" 2>/dev/null || echo none)"
-    "netzone"     "s_netzone $(sha256_of "${KRYPTIK_ROOT}/tools/net/netzone-init.sh" 2>/dev/null || echo none)"
+    "netzone"     "s_netzone $(sha256_of "${KRYPTIK_ROOT}/tools/net/netzone-init.sh" 2>/dev/null || echo none)-$(sha256_of "${KRYPTIK_ROOT}/tools/net/sntp-offset.py" 2>/dev/null || echo none)"
     "installer"   "s_installer $(sha256_of "${KRYPTIK_ROOT}/tools/install/kryptik-install.sh" 2>/dev/null || echo none)"
     # The path and the binary's content hash are arguments so that both are
     # part of this step's fingerprint; see s_kryptikd.
