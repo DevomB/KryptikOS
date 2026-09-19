@@ -215,6 +215,46 @@ pub fn die_with_parent() -> Result<(), IsolateError> {
     )
 }
 
+// prctl(PR_SCHED_CORE) and its operations, from <linux/prctl.h>; the libc
+// crate this tree pins does not name them.
+const PR_SCHED_CORE: libc::c_int = 62;
+const PR_SCHED_CORE_GET: libc::c_ulong = 0;
+const PR_SCHED_CORE_CREATE: libc::c_ulong = 1;
+const PIDTYPE_PID: libc::c_ulong = 0;
+
+/// Give the calling task a core-scheduling cookie of its own. From then on
+/// the kernel runs, on the sibling hardware threads of a core, only tasks
+/// with the same cookie - every task this one forks inherits it - so a zone
+/// that takes one shares a core with itself or with nothing, never with
+/// another zone or the kernel's own threads. Needs no privilege: a task may
+/// always cut itself off. EINVAL is a kernel built without
+/// CONFIG_SCHED_CORE, which the caller treats as "nothing to isolate with".
+pub fn take_core_cookie() -> io::Result<()> {
+    if unsafe { libc::prctl(PR_SCHED_CORE, PR_SCHED_CORE_CREATE, 0, PIDTYPE_PID, 0) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Whether this kernel has core scheduling at all: asking for the calling
+/// task's cookie (zero when it has none) succeeds only where the feature is
+/// built in. Harmless, so `explain` may ask.
+pub fn core_scheduling_available() -> bool {
+    let mut cookie: libc::c_ulong = 0;
+    let rc = unsafe {
+        libc::prctl(PR_SCHED_CORE, PR_SCHED_CORE_GET, 0, PIDTYPE_PID, &mut cookie as *mut libc::c_ulong as libc::c_ulong)
+    };
+    rc == 0
+}
+
+/// The calling task's core-scheduling cookie as /proc reports it: None on a
+/// kernel without the feature, Some(0) for a task that has none.
+pub fn core_cookie_of(pid: libc::pid_t) -> Option<u64> {
+    let s = std::fs::read_to_string(format!("/proc/{pid}/sched")).ok()?;
+    let line = s.lines().find(|l| l.starts_with("core_cookie"))?;
+    line.rsplit(':').next()?.trim().parse().ok()
+}
+
 /// Set the hostname in the current UTS namespace. Needs CAP_SYS_ADMIN in
 /// the user namespace that owns it - which the zone's root has once the id
 /// maps are written.
@@ -329,6 +369,39 @@ mod tests {
              [storage]\nmode = \"ephemeral\"\nsize = \"256M\"\n[ui]\nborder_color = \"#123456\"\n"
         ))
         .unwrap()
+    }
+
+    /// A task can cut itself off: after PR_SCHED_CORE_CREATE its cookie in
+    /// /proc/<pid>/sched is non-zero and differs from its parent's, which
+    /// still has none. Kernel-backed, in a forked child so the test process
+    /// keeps sharing cores with the rest of the suite; on a kernel without
+    /// CONFIG_SCHED_CORE there is nothing to take and the test says so.
+    #[test]
+    fn a_task_can_take_a_core_cookie_of_its_own() {
+        if !core_scheduling_available() {
+            eprintln!("no core scheduling on this kernel; skipping");
+            return;
+        }
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            let rc = match take_core_cookie() {
+                Err(_) => 1,
+                Ok(()) => match core_cookie_of(unsafe { libc::getpid() }) {
+                    Some(0) => 2,
+                    None => 3,
+                    Some(_) => 0,
+                },
+            };
+            unsafe { libc::_exit(rc) };
+        }
+        let mut st = 0;
+        unsafe { libc::waitpid(pid, &mut st, 0) };
+        assert!(libc::WIFEXITED(st), "child did not exit normally: {st}");
+        let code = libc::WEXITSTATUS(st);
+        assert_eq!(code, 0, "child failed at step {code} (1 = prctl refused, 2 = cookie still zero, 3 = no core_cookie in /proc)");
+        // The parent took nothing: still cookie 0 (or the field absent).
+        assert!(matches!(core_cookie_of(unsafe { libc::getpid() }), Some(0) | None));
     }
 
     #[test]
