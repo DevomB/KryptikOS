@@ -99,7 +99,7 @@ CHROOT_ENV := KRYPTIK_ROOT="$(ROOT)" \
 
 CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
 
-.PHONY: test help check check-kernel-eol sources lock verify verify-provenance \
+.PHONY: test help check check-kernel-eol check-pins test-pin-reviews sources lock verify verify-provenance \
 	vm-disk vm-disk-boot vm-restart vm-measure cli-test update-tree-test identity-test serve-test \
         test-harness test-hardening test-artifacts audit-artifacts test-boot-success \
         audit-artifacts-strict manifest verify-manifest test-manifest \
@@ -152,6 +152,9 @@ help:
 	@echo "  make verify-provenance  signed tags + publisher checksums for the rest"
 	@echo "  make validate-kernel   check kernel fragment against pinned source"
 	@echo "  make check-kernel-eol  fail if the pinned kernel is EOL or not LTS"
+	@echo "  make check-pins        survey every pin against its upstream (network), then"
+	@echo "                   fail on one that is behind without a current review in"
+	@echo "                   tools/pin-reviews.tsv. PINS_FLAGS=--no-held is what a release asks"
 	@echo "  make validate-kernel-hardened  check the linux-hardened fragment"
 	@echo "  make check-kernel-hardening  resolve the config against the pinned source as"
 	@echo "                   stage 05 does, refuse a dropped fragment line, then run"
@@ -245,6 +248,16 @@ validate-kernel:
 
 check-kernel-eol:
 	@"$(TOOLS)"/check-kernel-eol.sh
+
+# Two tools on purpose. The survey asks the network what upstream has released
+# and judges nothing; the gate reads that survey and tools/pin-reviews.tsv and
+# never the network, so its verdict can be tested and reproduced. A survey that
+# could not be written is a failure here, not an empty file that passes.
+PINS_SURVEY ?= $(KRYPTIK_WORK)/pin-survey.tsv
+check-pins:
+	@mkdir -p "$(dir $(PINS_SURVEY))"
+	@"$(TOOLS)"/check-source-currency.sh --tsv > "$(PINS_SURVEY)"
+	@"$(TOOLS)"/check-pin-reviews.sh --survey "$(PINS_SURVEY)" $(PINS_FLAGS)
 
 validate-kernel-hardened:
 	@"$(TOOLS)"/validate-kernel-config.sh --hardened
@@ -556,6 +569,9 @@ test-hardening:
 
 test-kernel-hardening:
 	@"$(TOOLS)"/test-check-kernel-hardening.sh
+
+test-pin-reviews:
+	@"$(TOOLS)"/test-check-pin-reviews.sh
 
 test-artifacts:
 	@"$(TOOLS)"/test-artifact-hardening.sh
