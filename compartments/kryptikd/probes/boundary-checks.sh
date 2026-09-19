@@ -63,10 +63,18 @@ zrun() {
     # The rc must be the LAUNCHER's, so the filter runs afterwards: a
     # pipeline reports the LAST command's status, and an earlier draft of
     # this file graded every refusal against grep's exit code instead.
-    local raw
-    raw="$(timeout 60 "$K" run "$zone" "${ZFLAGS[@]}" "${IDFLAGS[@]}" --zones "$F/zones" --rootfs "$F/roots" -- "$@" 2>&1)"
+    #
+    # What the zone printed and what the launcher logged are captured APART
+    # and joined afterwards, the zone's output first. On one pipe they
+    # interleave in mid-line: the installed system once read a broker reply
+    # back as `kryptikd[zone error: unknown verb` / `probe]: broker served
+    # "steal"`, and a check anchored on the reply's own line failed on a
+    # system that had answered correctly. The launcher's log must never
+    # decide a probe's verdict by where its bytes happened to land.
+    local out="$F/zrun.out" err="$F/zrun.err"
+    timeout 60 "$K" run "$zone" "${ZFLAGS[@]}" "${IDFLAGS[@]}" --zones "$F/zones" --rootfs "$F/roots" -- "$@" > "$out" 2> "$err"
     ZRC=$?
-    ZOUT="$(denoise <<<"$raw")"
+    ZOUT="$(cat "$out" "$err" | denoise)"
     return 0
 }
 ZFLAGS=()
