@@ -24,6 +24,10 @@
 #            gets its lease once it has associated
 #   dnsmasq  the resolver at 10.19.0.1 / fd19::1 that routed zones' resolv.conf
 #            already names, forwarding to the uplink's servers
+#   time     a plain SNTP query (sntp-offset.py) measures how far the
+#            machine's clock is from the time servers and sets nothing (this
+#            zone could not); the offset goes to zone 0 through the broker,
+#            as a claim zone 0 judges
 #
 # FAIL CLOSED. The first version logged a failed nftables load and enabled
 # forwarding anyway, which is a router with no firewall. Now: forwarding is
@@ -31,7 +35,8 @@
 # retried without ever opening the path, and the readiness line says what is
 # actually true. Readiness has four parts and each is reported on its own:
 #
-#   netzone: READY uplink=<addr|none> nat=yes dns=<yes|no> wifi=<ssid|connecting|unconfigured|none> ...
+#   netzone: READY uplink=<addr|none> nat=yes dns=<yes|no> wifi=<ssid|connecting|unconfigured|none>
+#                  time=<offset|no-answer|no-uplink|...> ...
 #   netzone: NOT READY <reason>            (forwarding is off)
 #
 # A missing uplink address (no DHCP answer, nothing carried over) is reported
@@ -251,13 +256,73 @@ start_dns() {
 dns_ok=0
 start_dns && dns_ok=1
 
+# --- the time: measured here, decided in zone 0 (docs/design/time.md) --------
+# The wall clock is one clock for the whole machine and only zone 0 may set
+# it; this zone is the only one that can ask a time server and cannot set
+# anything (no CAP_SYS_TIME). So it measures how far the shared clock is from
+# what the servers say - sntp-offset.py, a plain SNTP query that prints one
+# number and touches nothing - and tells zone 0 the OFFSET through its broker. Zone 0 treats
+# that as a claim from a zone it does not trust: it has a floor and a bound
+# of its own, and asks the person past the bound. What this zone learns back
+# is one line saying what zone 0 did.
+#
+# The sources are zone 0's to name (/etc/kryptik/time.conf on the verified
+# root, `server HOST` or `pool HOST` per line); without the file, the pool.
+TIME_CONF=/etc/kryptik/time.conf
+SNTP="${KRYPTIK_SNTP:-/usr/libexec/kryptik/sntp-offset.py}"
+# The zone's broker socket; named so that the offline suite can stand one up.
+BROKER="${KRYPTIK_BROKER:-/run/kryptik/broker}"
+TIME_STATE=not-asked
+time_sources() {
+    if [ -r "$TIME_CONF" ]; then
+        sed -n 's/^[[:space:]]*\(server\|pool\)[[:space:]][[:space:]]*\([A-Za-z0-9._:-][A-Za-z0-9._:-]*\)[[:space:]]*$/\1 \2/p' "$TIME_CONF" | head -16
+    else
+        echo "pool pool.ntp.org"
+    fi
+}
+ask_time() {   # ask_time <uplink>...: sets TIME_STATE
+    { command -v python3 >/dev/null 2>&1 && [ -r "$SNTP" ]; } || { TIME_STATE=no-client; return; }
+    [ -n "$(uplink_addr "$@")" ] || { TIME_STATE=no-uplink; return; }
+    # The sources become this function's own positional parameters, a flag
+    # and a name each, so nothing in a name is ever split or expanded.
+    set --
+    while read -r kind host; do
+        [ -n "$host" ] || continue
+        case "$kind" in
+            pool|server) set -- "$@" "--$kind" "$host" ;;
+        esac
+    done <<EOF
+$(time_sources)
+EOF
+    [ $# -gt 0 ] || { TIME_STATE=unconfigured; say "time: ${TIME_CONF} names no server or pool"; return; }
+    # One line back: the seconds to ADD to the clock, and how many servers
+    # that is the median of. Nothing printed is no answer, never a zero.
+    out="$(python3 "$SNTP" --timeout "${KRYPTIK_SNTP_TIMEOUT:-8}" "$@" 2>/dev/null)"
+    off="${out%% *}"; nsrc="${out##* }"
+    case "$off" in
+        [+-][0-9]*.[0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+        *) TIME_STATE=no-answer; return ;;
+    esac
+    case "$nsrc" in [1-9]|1[0-6]) ;; *) TIME_STATE=no-answer; return ;; esac
+    TIME_STATE="$off"
+    # The wait is long because zone 0 may be asking the person.
+    told="$(python3 -c 'import socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(90)
+s.connect(sys.argv[3])
+s.sendall(("time-offset %s %s\n" % (sys.argv[1], sys.argv[2])).encode()); s.shutdown(socket.SHUT_WR)
+print(s.recv(4096).decode("utf-8", "replace").strip())' "$off" "$nsrc" "$BROKER" 2>&1 | head -1)"
+    say "time: the clock is off by ${off} s (the median of ${nsrc} server(s)); zone 0: ${told:-no reply}"
+}
+ask_time "$@"
+time_ticks=0
+
 status_line() {
     a="$(uplink_addr "$@")"
     w="$(wifi_state)"
     if [ "$policy_ok" = 1 ]; then
-        report "READY uplink=${a:-none} nat=yes dns=$([ "$dns_ok" = 1 ] && echo yes || echo no) wifi=${w} bridge=${BR} uplinks=$*"
+        report "READY uplink=${a:-none} nat=yes dns=$([ "$dns_ok" = 1 ] && echo yes || echo no) wifi=${w} time=${TIME_STATE} bridge=${BR} uplinks=$*"
     else
-        report "NOT READY firewall policy not loaded; forwarding off; uplink=${a:-none} dns=$([ "$dns_ok" = 1 ] && echo yes || echo no) wifi=${w}"
+        report "NOT READY firewall policy not loaded; forwarding off; uplink=${a:-none} dns=$([ "$dns_ok" = 1 ] && echo yes || echo no) wifi=${w} time=${TIME_STATE}"
     fi
 }
 status_line "$@"
@@ -295,7 +360,25 @@ while :; do
         fi
     done
     wifi_now="$(wifi_state)"
-    if [ "$wifi_now" != "$wifi_last" ]; then wifi_last="$wifi_now"; changed=1; say "wifi: ${wifi_now}"; fi
+    if [ "$wifi_now" != "$wifi_last" ]; then
+        wifi_last="$wifi_now"; changed=1; say "wifi: ${wifi_now}"
+        # A radio that has just associated is the first moment there is
+        # anybody to ask.
+        case "$wifi_now" in none|unconfigured|connecting) ;; *) time_ticks=999999 ;; esac
+    fi
+    # The time again: hourly once it has been measured, every five minutes
+    # while it has not (zone 0 considers one claim per ten minutes whatever
+    # this zone does, so asking more often buys nothing).
+    time_ticks=$((time_ticks + 1))
+    case "$TIME_STATE" in
+        -*|+*|[0-9]*) time_every=360 ;;
+        *) time_every=30 ;;
+    esac
+    if [ "$time_ticks" -ge "$time_every" ]; then
+        time_ticks=0; time_was="$TIME_STATE"
+        ask_time "$@"
+        [ "$TIME_STATE" != "$time_was" ] && changed=1
+    fi
     [ "$changed" = 1 ] && status_line "$@"
     sleep 10 &
     wait $!

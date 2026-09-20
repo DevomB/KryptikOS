@@ -179,9 +179,11 @@ const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
 /// version\n                              -> kryptik-broker 1 zone=NAME\n
 /// clipboard-set <mime> <len>\n<bytes>    -> ok\n
 /// clipboard-get\n                        -> ok <mime> <len>\n<bytes>  |  empty\n
+/// time-offset <seconds> <sources>\n        -> ok ignored | slewed | stepped | stepped after consent\n
+///                                           (from the zone that holds the network, and no other)
 /// anything else                          -> error: <reason>\n
 /// ```
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub enum Request {
     Version,
     ClipboardSet { mime: String, len: usize },
@@ -190,6 +192,9 @@ pub enum Request {
     NotAZoneVerb(String),
     /// `transfer <zone> <name>` with the file as one SCM_RIGHTS descriptor.
     Transfer { dest: String, name: String },
+    /// `time-offset <seconds> <sources>`: the net zone's claim about how far
+    /// the machine's clock is from the network's (docs/design/time.md).
+    TimeOffset(crate::time::Claim),
     Unknown(String),
 }
 
@@ -250,9 +255,50 @@ pub fn parse_request(line: &str) -> Result<Request, String> {
             Ok(Request::Transfer { dest: dest.to_string(), name: name.to_string() })
         }
         ("transfer", _) => Err("usage: transfer <zone> <name>, with the file as one SCM_RIGHTS descriptor".into()),
+        ("time-offset", [secs, sources]) => crate::time::parse_claim(&format!("{secs} {sources}")).map(Request::TimeOffset),
+        ("time-offset", _) => Err("usage: time-offset <seconds> <sources>".into()),
         ("", _) => Err("empty request".into()),
         _ => Ok(Request::Unknown(verb.to_string())),
     }
+}
+
+/// TIME
+///
+/// The zone that holds the network says how far the machine's clock is from
+/// what time servers told it. It is a claim: that zone is treated as
+/// hostile, the protocol it asked with is unauthenticated, and only zone 0
+/// may set the clock. So the verb is taken from that one zone and no other
+/// (a zone with no network has nothing to measure with, and a routed zone's
+/// answer would be the net zone's at one remove), and what becomes of it is
+/// `time::consider`'s decision: the floor, the bound, the person.
+fn handle_time_offset(zone: &Zone, claim: &crate::time::Claim) -> crate::time::Outcome {
+    time_offset_in(
+        zone,
+        claim,
+        &mut crate::time::SystemClock,
+        Path::new(crate::time::STATE_DIR),
+        crate::time::floor_of_this_system(),
+    )
+}
+
+/// The same with the clock, the state directory and the floor named, which
+/// is what the tests do.
+fn time_offset_in(
+    zone: &Zone,
+    claim: &crate::time::Claim,
+    clock: &mut dyn crate::time::Clock,
+    dir: &Path,
+    floor: Option<i64>,
+) -> crate::time::Outcome {
+    if zone.network != NetworkMode::Nic {
+        return crate::time::Outcome::Refused(format!(
+            "zone {:?} does not hold the network; only the zone that does may report the time",
+            zone.name
+        ));
+    }
+    crate::time::consider(clock, dir, floor, crate::time::DEFAULT_BOUND_SECS, claim, &mut |now, proposed, sources| {
+        crate::consent::ask_clock(now, proposed, sources)
+    })
 }
 
 /// TRANSFER
@@ -691,6 +737,19 @@ pub fn serve_connection(fd: RawFd, s: &Served) -> io::Result<Option<String>> {
             }
             Err(why) => reply(fd, &format!("error: {why}\n")),
         },
+        Ok(Request::TimeOffset(claim)) => {
+            let outcome = handle_time_offset(s.zone, &claim);
+            crate::spawn::log_line(&format!(
+                "kryptikd[zone {zone}]: time-offset {:+.6} s from {} source(s): {}",
+                claim.offset,
+                claim.sources,
+                outcome.reply()
+            ));
+            match outcome {
+                crate::time::Outcome::Refused(why) => reply(fd, &format!("error: {why}\n")),
+                done => reply(fd, &format!("{}\n", done.reply())),
+            }
+        }
         Ok(Request::ClipboardGet) => match clipboard_read(entry) {
             Ok(Some((mime, bytes))) => {
                 reply(fd, &format!("ok {mime} {}\n", bytes.len()));
@@ -1462,6 +1521,38 @@ mod tests {
         assert!(parse_request("clipboard-set text/plain 1 extra").is_err());
         assert!(parse_request("VERSION").is_ok_and(|r| matches!(r, Request::Unknown(_))));
         assert!(parse_request("version now").is_ok_and(|r| matches!(r, Request::Unknown(_))));
+        assert_eq!(
+            parse_request("time-offset -0.25 4"),
+            Ok(Request::TimeOffset(crate::time::Claim { offset: -0.25, sources: 4 }))
+        );
+        for bad in ["time-offset", "time-offset 1", "time-offset 1 2 3", "time-offset 1e9 4", "time-offset inf 4", "time-offset 1 0"] {
+            assert!(parse_request(bad).is_err(), "{bad:?} was accepted");
+        }
+    }
+
+    /// The clock's verb is the net zone's and nobody else's, and from the
+    /// net zone it reaches the decision - here with no floor known, which
+    /// refuses for THAT reason and shows the identity gate was passed. No
+    /// clock is touched either way.
+    #[test]
+    fn only_the_zone_that_holds_the_network_may_report_the_time() {
+        let claim = crate::time::Claim { offset: 2.0, sources: 3 };
+        let dir = std::env::temp_dir().join(format!("kryptik-broker-time-{}", std::process::id()));
+        let zone_of = |mode: &str, extra: &str| {
+            Zone::from_str(&format!(
+                "[zone]\nname = \"t\"\n[network]\nmode = \"{mode}\"\n{extra}[storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n[ui]\nborder_color = \"#123456\"\n"
+            ))
+            .unwrap()
+        };
+        for mode in ["none", "routed"] {
+            let out = time_offset_in(&zone_of(mode, ""), &claim, &mut crate::time::SystemClock, &dir, Some(0));
+            assert!(matches!(&out, crate::time::Outcome::Refused(w) if w.contains("does not hold the network")), "{mode}: {out:?}");
+        }
+        let nic = zone_of("nic", "bridge = \"kryptik0\"\n");
+        let out = time_offset_in(&nic, &claim, &mut crate::time::SystemClock, &dir, None);
+        assert!(matches!(&out, crate::time::Outcome::Refused(w) if w.contains("no floor is known")), "{out:?}");
+        assert!(!dir.join("state").exists(), "a refused claim left state behind");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

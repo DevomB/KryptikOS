@@ -1,4 +1,5 @@
 sysinit
+watchdog
 eudev-trigger
 kryptikd-check
 getty-tty1
