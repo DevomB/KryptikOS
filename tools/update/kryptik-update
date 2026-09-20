@@ -113,27 +113,37 @@ cmd_status() {
     kryptik-efiboot list 2>/dev/null | sed 's/^/  efi: /' || echo "  efi: (efivarfs unavailable)"
 }
 
+# The four files a release is made of are opened once, and from then on they
+# are read through those descriptors: hashing a name and opening the name
+# again later is two files if the directory changed in between, and a payload
+# directory can change (the net zone staged it; a medium can be swapped).
+# What is hashed is then what is written. A link is refused, and so is a name
+# that stopped being the opened file while it was being opened.
+pin() {   # pin FD NAME
+    f="$dir/$2"
+    { [ -f "$f" ] && [ ! -L "$f" ]; } || die "payload lacks $2, or it is not a regular file"
+    eval "exec $1< \"\$f\"" || die "cannot open $2"
+    [ "$(stat -c %d:%i "$f")" = "$(stat -L -c %d:%i "/proc/self/fd/$1")" ] || die "$2 changed while it was being opened"
+}
+payload_path() {   # NAME -> where to read it
+    case "$1" in
+        kryptik-root.img) echo /proc/self/fd/3 ;; kryptik-a.efi) echo /proc/self/fd/4 ;;
+        kryptik-b.efi)    echo /proc/self/fd/5 ;; root.json)     echo /proc/self/fd/6 ;;
+        *) echo "$dir/$1" ;;
+    esac
+}
+
 # --- verification, all of it before any write ------------------------------
 verify_payload() {   # verify_payload DIR RECOVERY -> sets VERSION ROOT_HASH
     verify_manifest "$1" "$2"
+    pin 3 kryptik-root.img; pin 4 kryptik-a.efi; pin 5 kryptik-b.efi; pin 6 root.json
 
-    # 3. Every listed file, hash and size; and nothing unlisted.
-    listed=0
-    while read -r want_hash want_size rel; do
-        [ -n "$rel" ] || continue
-        case "$rel" in */*|..*) die "manifest lists a path with a directory component: $rel" ;; esac
-        f="$dir/$rel"
-        [ -f "$f" ] || die "listed file missing: $rel"
-        got_size="$(stat -c %s "$f")"
-        [ "$got_size" = "$want_size" ] || die "$rel: size $got_size, manifest says $want_size (truncated or altered)"
-        got_hash="$(sha256sum "$f" | cut -c1-64)"
-        [ "$got_hash" = "$want_hash" ] || die "$rel: sha256 does not match the manifest"
-        listed=$((listed + 1))
-    done <<EOF
-$(sed -n '/^--$/,$p' "$m" | sed '1d')
-EOF
-    [ "$listed" = "$count" ] || die "manifest says $count files, $listed listed"
-    for f in "$dir"/*; do
+    # 3. Nothing unlisted, which costs a directory listing, before every
+    #    listed file's hash, which costs a pass over gigabytes. Names are
+    #    compared whole, as text, and a name that begins with a dot is a name.
+    names="$(sed -n '/^--$/,$p' "$m" | sed '1d' | awk '{print $3}')"
+    for f in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do
+        [ -e "$f" ] || [ -L "$f" ] || continue
         n="$(basename "$f")"
         case "$n" in manifest|manifest.sig) continue ;; esac
         # A payload that is the root of an ext4 medium carries the
@@ -143,11 +153,24 @@ EOF
             [ -z "$(ls -A "$f")" ] || die "unlisted file in the payload: lost+found is not empty"
             continue
         fi
-        grep -q "  $n\$" "$m" || die "unlisted file in the payload: $n"
+        printf '%s\n' "$names" | grep -Fxq -- "$n" || die "unlisted file in the payload: $n"
     done
-    for need in kryptik-root.img kryptik-a.efi kryptik-b.efi root.json; do
-        [ -f "$dir/$need" ] || die "payload lacks $need"
-    done
+
+    listed=0
+    while read -r want_hash want_size rel; do
+        [ -n "$rel" ] || continue
+        case "$rel" in */*|..*) die "manifest lists a path with a directory component: $rel" ;; esac
+        f="$(payload_path "$rel")"
+        [ -f "$f" ] || die "listed file missing: $rel"
+        got_size="$(stat -L -c %s "$f")"
+        [ "$got_size" = "$want_size" ] || die "$rel: size $got_size, manifest says $want_size (truncated or altered)"
+        got_hash="$(sha256sum "$f" | cut -c1-64)"
+        [ "$got_hash" = "$want_hash" ] || die "$rel: sha256 does not match the manifest"
+        listed=$((listed + 1))
+    done <<EOF
+$(sed -n '/^--$/,$p' "$m" | sed '1d')
+EOF
+    [ "$listed" = "$count" ] || die "manifest says $count files, $listed listed"
     say "$listed file(s) match the manifest, nothing unlisted"
 
     # 4. The manifest's hashes, kept: every check after the first write
@@ -159,14 +182,14 @@ EOF
     [ "${#H_ROOT}" = 64 ] && [ "${#H_KA}" = 64 ] && [ "${#H_KB}" = 64 ] || die "the manifest does not list the root image and both kernels"
 
     # 5. The root hash the kernels carry is the image's.
-    ROOT_HASH="$(sed -n 's/^  "root_hash": "\([0-9a-f]*\)".*/\1/p' "$dir/root.json" | head -1)"
+    ROOT_HASH="$(sed -n 's/^  "root_hash": "\([0-9a-f]*\)".*/\1/p' /proc/self/fd/6 | head -1)"
     [ "${#ROOT_HASH}" = 64 ] || die "root.json has no root hash"
-    ROOT_BYTES="$(sed -n 's/^  "total_bytes": \([0-9]*\).*/\1/p' "$dir/root.json" | head -1)"
-    ROOT_SHA="$(sed -n 's/^  "sha256": "\([0-9a-f]*\)".*/\1/p' "$dir/root.json" | head -1)"
-    [ "$(stat -c %s "$dir/kryptik-root.img")" = "$ROOT_BYTES" ] || die "root.json total_bytes does not match kryptik-root.img"
+    ROOT_BYTES="$(sed -n 's/^  "total_bytes": \([0-9]*\).*/\1/p' /proc/self/fd/6 | head -1)"
+    ROOT_SHA="$(sed -n 's/^  "sha256": "\([0-9a-f]*\)".*/\1/p' /proc/self/fd/6 | head -1)"
+    [ "$(stat -L -c %s /proc/self/fd/3)" = "$ROOT_BYTES" ] || die "root.json total_bytes does not match kryptik-root.img"
     [ "$ROOT_SHA" = "$H_ROOT" ] || die "root.json's sha256 disagrees with the signed manifest's for kryptik-root.img"
     for s in a b; do
-        [ "$(grep -a -c -F "$ROOT_HASH" "$dir/kryptik-$s.efi")" -ge 1 ] \
+        [ "$(grep -a -c -F "$ROOT_HASH" "$(payload_path "kryptik-$s.efi")")" -ge 1 ] \
             || die "kryptik-$s.efi does not embed the root hash $ROOT_HASH; kernel and root are not one release"
     done
     say "both kernels embed root hash $ROOT_HASH"
@@ -311,7 +334,7 @@ cmd_apply() {
 
     # --- writes begin: the inactive slot only -------------------------------
     say "writing kryptik-$target ($ROOT_BYTES bytes)"
-    dd if="$dir/kryptik-root.img" of="$tdev" bs=4M conv=fsync status=none || die "writing slot $target failed"
+    dd if=/proc/self/fd/3 of="$tdev" bs=4M conv=fsync status=none || die "writing slot $target failed"
     blockdev --flushbufs "$tdev"   # so the read-back is of the device, not of the page cache
     got="$(dd if="$tdev" bs=4M iflag=count_bytes count="$ROOT_BYTES" status=none | sha256sum | cut -c1-64)"
     [ "$got" = "$H_ROOT" ] || die "slot $target read back as $got; the manifest says $H_ROOT"
@@ -319,7 +342,7 @@ cmd_apply() {
 
     mount_esp
     mkdir -p "$ESP_MNT/EFI/kryptik" "$ESP_MNT/kryptik"
-    cp "$dir/kryptik-$target.efi" "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new" || die "staging the kernel on the ESP failed"
+    cp "$(payload_path "kryptik-$target.efi")" "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new" || die "staging the kernel on the ESP failed"
     sync -f "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new"
     # Judged before it gets the name rollback and recovery look for: the
     # payload directory may have changed since it was verified.

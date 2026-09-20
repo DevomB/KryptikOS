@@ -88,9 +88,11 @@ printf 'development\n' > role
     echo 'die() { printf "REFUSED: %s\n" "$*"; exit 1; }'
     echo 'hdr() { awk -F": " -v k="$2" '"'"'$1==k {print $2; exit}'"'"' "$1"; }'
     echo 'running_version() { echo 1; }'
-    sed -n '/^verify_payload() {/,/^cmd_apply() {/p' "$TOOL" | sed '$d'
+    sed -n '/^pin() {/,/^cmd_apply() {/p' "$TOOL" | sed '$d'
 } > verify.sh
 grep -q '^verify_payload() {' verify.sh || { echo "could not extract verify_payload from $TOOL"; exit 1; }
+
+grep -q '^pin() {' verify.sh || { echo "could not extract pin from $TOOL"; exit 1; }
 
 # run_case NAME WHAT-THE-WRITER-REPLACES: a fresh copy of the signed payload,
 # the tool's verify_payload over it, and a writer that lands the moment the
@@ -108,6 +110,14 @@ ssh-keygen() {
         case "$what" in
             manifest) cp $T/replacement/manifest $T/payload/manifest ;;
             all)      cp $T/replacement/* $T/payload/ ;;
+        esac
+    fi
+    # Before anything is judged: what a payload directory may simply contain.
+    if [ "\${2:-}" = verify ]; then
+        case "$what" in
+            link)     mv $T/payload/kryptik-root.img $T/payload-root.img; ln -s $T/payload-root.img $T/payload/kryptik-root.img ;;
+            dotfile)  echo "ride along" > $T/payload/.hidden ;;
+            lookalike) echo "ride along" > $T/payload/kryptik-rootXimg ;;
         esac
     fi
     return "\$rc"
@@ -150,6 +160,14 @@ elif [[ "$out" == *"REFUSED:"*"does not match"* ]]; then
 else
     bad "unexpected outcome for a replaced payload: $(tail -2 <<<"$out" | tr '\n' ' ')"
 fi
+
+# Cases 4 to 6: what the listing and the opening must refuse.
+out="$(run_case link link)"
+if [[ "$out" == *"REFUSED:"*"not a regular file"* ]]; then ok "a root image that is a link is refused, not followed"; else bad "a linked root image: $(tail -2 <<<"$out" | tr '\n' ' ')"; fi
+out="$(run_case dotfile dotfile)"
+if [[ "$out" == *"REFUSED:"*"unlisted file in the payload: .hidden"* ]]; then ok "an unlisted file whose name begins with a dot is seen and refused"; else bad "a dotfile stowaway: $(tail -2 <<<"$out" | tr '\n' ' ')"; fi
+out="$(run_case lookalike lookalike)"
+if [[ "$out" == *"REFUSED:"*"unlisted file in the payload: kryptik-rootXimg"* ]]; then ok "a name that only matches a listed one as a pattern is refused"; else bad "a look-alike name: $(tail -2 <<<"$out" | tr '\n' ' ')"; fi
 
 if command ssh-keygen -Y verify -f signers -I kryptik-release -n kryptik-release -s "$T/payload/manifest.sig" < "$T/replacement/manifest" >/dev/null 2>&1; then
     bad "control: the replacement manifest has a valid signature, which it must not"
