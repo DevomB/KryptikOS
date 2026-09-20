@@ -261,11 +261,13 @@ passes, not when its code is written.
       itself is proven only when a physical machine boots.
 - [x] **A clock that is right.** Zone 0 has no network, so the net zone
       measures the offset with an SNTP query and zone 0 decides: never
-      before the build date, small corrections applied, anything past a
-      bound only with the person's consent, one claim an hour. A boot
-      service sets a clock that reads before the build date to the build
-      date. Five guest checks prove it on the installed system (acceptance
-      on 55e1652, 2026-09-20). NTS is not used.
+      before the build date; a correction of up to an hour is applied, and
+      so is a run of them until together they reach an hour; past that only
+      with the person's consent, asked in the trusted chrome with both
+      times shown; one claim every ten minutes. A boot service sets a
+      clock that reads before the build date to the build date. Five guest
+      checks prove it on the installed system (acceptance on 55e1652,
+      2026-09-20). NTS is not used.
 
 ### It can be trusted by someone who did not build it
 
