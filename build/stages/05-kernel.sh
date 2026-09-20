@@ -221,7 +221,12 @@ s_patch() {
 # stays out: those updates need a BIOS that expects them.
 s_microcode() {
     echo "inputs: intel ${1:-none}, amd from linux-firmware ${2:-none}"
-    local dir="${BUILDDIR}/microcode"
+    # Inside the kernel tree, not beside it. Stage 06 links the kernel again
+    # for each slot, from a tree that may have come out of a cache or an
+    # artifact; both carry the tree and nothing next to it. Staged beside it,
+    # the blobs were gone while this step's stamp said done, and the link
+    # failed with "no rule to make target .../microcode_amd.bin".
+    local dir="${KSRC}/kryptik-microcode"
     rm -rf "$dir"; mkdir -p "$dir"
     tar -xf "${KRYPTIK_SOURCES}/microcode-${V_INTEL_MICROCODE}.tar.gz" -C "$dir" \
         --strip-components=1 --wildcards '*/intel-ucode/*' '*/license'
@@ -262,7 +267,7 @@ s_config() {
     # The microcode s_microcode staged goes in by name. It is not a fragment
     # line because its value is a list of some 160 files that changes with
     # every release of either vendor; it is checked below like one.
-    local ucode="${BUILDDIR}/microcode"
+    local ucode="${KSRC}/kryptik-microcode"
     [[ -s "${ucode}/list" ]] || { echo "no ${ucode}/list: the microcode step has not run"; return 1; }
     scripts/config --set-str EXTRA_FIRMWARE "$(cat "${ucode}/list")" \
                    --set-str EXTRA_FIRMWARE_DIR "$ucode"
@@ -364,7 +369,7 @@ s_build() {
     # firmware table names each blob, so one name per vendor must be there.
     echo "--- built-in microcode ---"
     local blob
-    for blob in "$(tr ' ' '\n' < "${BUILDDIR}/microcode/list" | grep -m1 '^intel-ucode/')" \
+    for blob in "$(tr ' ' '\n' < "${KSRC}/kryptik-microcode/list" | grep -m1 '^intel-ucode/')" \
                 amd-ucode/microcode_amd_fam19h.bin; do
         grep -a -q -F "$blob" vmlinux || { echo "FAIL: ${blob} is not built into vmlinux"; return 1; }
         echo "  ok   ${blob}"
