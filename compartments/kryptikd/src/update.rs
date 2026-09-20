@@ -23,6 +23,11 @@ pub const MANIFEST_MAX: u64 = 64 * 1024;
 /// A pointer older than this is reported as stale: the release process
 /// re-issues it on a schedule, so its age is the only sign of a withheld one.
 pub const STALE_AFTER_SECS: i64 = 30 * 86400;
+/// How far ahead of this machine's clock a statement may be dated. One that
+/// is dated further ahead is refused: accepted, it would make every honest
+/// statement after it a replay until its date arrived, and would never read
+/// as stale. A day covers a release host's clock and this one disagreeing.
+pub const MAX_AHEAD_SECS: i64 = 86400;
 /// One pointer is considered per hour; the rest are refused unread.
 pub const POINTER_INTERVAL_SECS: u64 = 3600;
 
@@ -144,10 +149,14 @@ pub enum Standing {
 /// Whether zone 0 accepts a verified pointer. The signature said who wrote
 /// it; this says whether it is for this image and whether it is a replay:
 /// an `issued` earlier than the newest one already accepted is refused
-/// however valid its signature.
-pub fn accept_pointer(p: &Pointer, required_role: &str, running: &str, newest_issued: Option<i64>) -> Result<Standing, String> {
+/// however valid its signature, and so is one dated more than
+/// `MAX_AHEAD_SECS` after `now`.
+pub fn accept_pointer(p: &Pointer, required_role: &str, running: &str, newest_issued: Option<i64>, now: i64) -> Result<Standing, String> {
     if p.role != required_role {
         return Err(format!("the pointer's role is '{}'; this image requires '{required_role}'", p.role));
+    }
+    if p.issued > now.saturating_add(MAX_AHEAD_SECS) {
+        return Err("dated more than a day after this machine's clock: refused, or set the clock".into());
     }
     if let Some(seen) = newest_issued {
         if p.issued < seen {
@@ -367,7 +376,7 @@ pub fn latest(dir: &Path, checks: &Checks, now: i64, role: &str, running: &str, 
     let _ = std::fs::remove_dir_all(&scratch);
     verdict?;
     let p = parse_pointer(text)?;
-    let standing = accept_pointer(&p, role, running, stored_pointer(dir).map(|q| q.issued))?;
+    let standing = accept_pointer(&p, role, running, stored_pointer(dir).map(|q| q.issued), now)?;
     put_file(&dir.join("pointer"), pointer)?;
     Ok(standing)
 }
@@ -574,15 +583,19 @@ mod tests {
     #[test]
     fn a_pointer_is_accepted_for_this_role_and_never_backwards() {
         let p = parse_pointer(&pointer_text("1.0.3", "2027-03-02T14:05:00Z")).unwrap();
-        assert_eq!(accept_pointer(&p, "production", "1.0.2", None), Ok(Standing::Available("1.0.3".into())));
-        assert_eq!(accept_pointer(&p, "production", "1.0.3", None), Ok(Standing::Current));
+        assert_eq!(accept_pointer(&p, "production", "1.0.2", None, p.issued), Ok(Standing::Available("1.0.3".into())));
+        assert_eq!(accept_pointer(&p, "production", "1.0.3", None, p.issued), Ok(Standing::Current));
         // An older release named by a newer statement is not an update.
-        assert_eq!(accept_pointer(&p, "production", "1.1.0", None), Ok(Standing::Current));
-        assert!(accept_pointer(&p, "development", "1.0.2", None).unwrap_err().contains("role"));
+        assert_eq!(accept_pointer(&p, "production", "1.1.0", None, p.issued), Ok(Standing::Current));
+        assert!(accept_pointer(&p, "development", "1.0.2", None, p.issued).unwrap_err().contains("role"));
         // The same statement again is fine: that is what a re-issue looks
         // like to a machine that polls more often than the schedule.
-        assert!(accept_pointer(&p, "production", "1.0.2", Some(p.issued)).is_ok());
-        assert!(accept_pointer(&p, "production", "1.0.2", Some(p.issued + 1)).unwrap_err().contains("replay"));
+        assert!(accept_pointer(&p, "production", "1.0.2", Some(p.issued), p.issued).is_ok());
+        assert!(accept_pointer(&p, "production", "1.0.2", Some(p.issued + 1), p.issued).unwrap_err().contains("replay"));
+        // Dated ahead of the clock: a day is tolerated, more is refused, so
+        // one bad date cannot make every later statement a replay.
+        assert!(accept_pointer(&p, "production", "1.0.2", None, p.issued - MAX_AHEAD_SECS).is_ok());
+        assert!(accept_pointer(&p, "production", "1.0.2", None, p.issued - MAX_AHEAD_SECS - 1).unwrap_err().contains("clock"));
     }
 
     #[test]
@@ -666,7 +679,8 @@ mod tests {
         Checks { pointer: &|_, _| Ok(()), manifest: &|_| Ok(LISTING.to_string()) }
     }
 
-    const T0: i64 = 1_800_000_000;
+    /// An hour after the statements these tests use were issued.
+    const T0: i64 = 1_804_000_000;
     const CH: &str = "https://updates.example/stable";
 
     #[test]
@@ -686,6 +700,12 @@ mod tests {
         let old = pointer_text("1.0.1", "2026-03-02T14:05:00Z");
         let t2 = t1 + POINTER_INTERVAL_SECS as i64;
         assert!(latest(&d, &yes(), t2, "production", "1.0.2", old.as_bytes(), b"sig").unwrap_err().contains("replay"));
+        assert_eq!(stored_pointer(&d).unwrap().version, "1.0.3");
+        // Next year's, validly signed: stored, it would make every honest
+        // statement until then a replay. It is refused and nothing changes.
+        let ahead = pointer_text("9.9.9", "2028-03-02T14:05:00Z");
+        let t3 = t2 + POINTER_INTERVAL_SECS as i64;
+        assert!(latest(&d, &yes(), t3, "production", "1.0.2", ahead.as_bytes(), b"sig").unwrap_err().contains("clock"));
         assert_eq!(stored_pointer(&d).unwrap().version, "1.0.3");
         let _ = std::fs::remove_dir_all(&d);
     }
