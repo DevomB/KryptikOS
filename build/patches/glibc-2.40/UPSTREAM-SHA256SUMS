@@ -1,5 +1,8 @@
-# sha256 of sourceware.org's `?p=glibc.git;a=patch;h=<commit>` output, as fetched 2026-09-13
-64d71b3245f0a2b108a1c5641288977e0b8609e9ec3a81f3905639e302b49544  0001-elf-handle-addition-overflow-in-_dl_find_object_update_1-BZ-32245.patch
-a5767f9f87f927072475ac3c835cc473e2007c835c4efe2e5313021c20aaf559  0002-elf-Do-not-add-a-copy-of-_dl_find_object-to-libc.so.patch
-2d38d93ab71bd7662358e6989713a6a137a102ea31a50acf7a01f6e26ed8834f  0003-elf-Handle-ld.so-with-LOAD-segment-gaps-in-_dl_find_object-bug-31943.patch
+# What upstream's own output hashed to, for each patch here. README.md says how each was obtained.
+#
+# 0001: sha256 of `git diff --full-index --no-renames glibc-2.40..cdaa5d6db08ee6d7cdcb008ae83b6fe7856291c4 -- . ':!NEWS' ':!advisories'`
+#       (the exact command is in README.md), generated 2026-09-19 from a clone of sourceware.org/git/glibc.git whose
+#       branch head gitlab.com/gnutools/glibc also reported. Nothing was edited afterwards, so it equals SHA256SUMS.
+0d097631a0d553d665801af1676393cd33b4cf2b52f6cbf7af171ce87ffc1953  0001-release-2.40-master-cdaa5d6db08e.patch
+# 0004: sha256 of sourceware.org's `?p=glibc.git;a=patch;h=81467d4b6168c7ce40d951d6b32e387109c0e5ae` output, as fetched 2026-09-13
 c0edc8532664681b34b27236b7f2888ebc6cc4623e3debaaa057c7a44348c656  0004-elf-Add-optimization-barrier-for-__ehdr_start-and-_end.patch
