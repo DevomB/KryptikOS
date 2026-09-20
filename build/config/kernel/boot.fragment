@@ -2,6 +2,17 @@
 # update mechanism and the desktop need from the kernel
 # (docs/design/boot-and-updates.md). Merged after hardening.fragment;
 # validated by make validate-kernel-boot.
+#
+# WHAT MAY BE BUILT IN (ADR-013). There is no initramfs, so a driver is =y only if
+#   1. it finds, verifies or mounts the root (EFI, dm-verity, storage, filesystems);
+#   2. it gives a console and a keyboard before the root is mounted; or
+#   3. it cannot work as a module: netfilter (a module request from inside the net
+#      zone's user namespace is refused), microcode, the watchdog, and a few
+#      platform drivers every distribution keeps built in.
+# Everything else is =m: signed by this build, loaded by eudev at coldplug from
+# the verified root. That includes the test VM's network and display, so every
+# acceptance run loads modules the way hardware will. Stage 05 prints the image
+# size and fails over build/config/kernel/size-budget.
 
 # --- the kernel is the UEFI application ---
 # The EFI stub boots the kernel with no bootloader. EFI_MIXED (32-bit
@@ -61,12 +72,16 @@ CONFIG_CRYPTO_AES_NI_INTEL=y
 CONFIG_CRYPTO_USER_API_SKCIPHER=y
 CONFIG_CRYPTO_USER_API_HASH=y
 
-# --- the desktop: a display, a keyboard and a mouse in the test VM ---
-# virtio-gpu is what the QEMU tests use; simpledrm takes over the firmware
-# framebuffer on real hardware until a native driver does. The compositor
-# renders with pixman, so no GPU acceleration is needed or assumed.
+# --- a console and a keyboard before the root; the desktop after it ---
+# simpledrm takes over the firmware framebuffer on every UEFI machine, the
+# test VM included, and fbcon draws on it: that is the console a failed
+# boot is read on. A native driver (virtio-gpu in the QEMU tests; i915, xe
+# or amdgpu on hardware) is a module and replaces it at coldplug, before
+# anyone can log in. The compositor renders with pixman, so no GPU
+# acceleration is needed or assumed. Keyboards are built in; pointing
+# devices are modules.
 CONFIG_DRM=y
-CONFIG_DRM_VIRTIO_GPU=y
+CONFIG_DRM_VIRTIO_GPU=m
 CONFIG_DRM_SIMPLEDRM=y
 CONFIG_DRM_FBDEV_EMULATION=y
 CONFIG_SYSFB_SIMPLEFB=y
@@ -76,7 +91,7 @@ CONFIG_VIRTIO_INPUT=y
 CONFIG_INPUT_KEYBOARD=y
 CONFIG_INPUT_MOUSE=y
 CONFIG_KEYBOARD_ATKBD=y
-CONFIG_MOUSE_PS2=y
+CONFIG_MOUSE_PS2=m
 CONFIG_HID=y
 CONFIG_HID_GENERIC=y
 CONFIG_USB_HID=y
@@ -84,6 +99,11 @@ CONFIG_VT=y
 CONFIG_VT_CONSOLE=y
 
 # --- the net zone: NAT and a resolver for routed zones ---
+# Netfilter is built in because the net zone loads its ruleset from inside a
+# user namespace, and the kernel refuses to autoload a module on behalf of
+# one: as modules these would simply be missing the first time they were
+# asked for. The network cards are modules; the net zone starts after
+# coldplug has loaded them.
 CONFIG_NF_TABLES=y
 CONFIG_NF_TABLES_INET=y
 CONFIG_NF_TABLES_IPV4=y
@@ -95,38 +115,38 @@ CONFIG_NFT_REJECT=y
 CONFIG_NF_NAT=y
 CONFIG_NF_CONNTRACK=y
 CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y
-CONFIG_VIRTIO_NET=y
-CONFIG_E1000=y
-CONFIG_E1000E=y
+CONFIG_VIRTIO_NET=m
+CONFIG_E1000=m
+CONFIG_E1000E=m
 
 # --- real hardware ---
 # There is no initramfs, so the controller the verified root sits on has to
-# be built in or the kernel waits for a disk it cannot see. The rest is
-# built in too: a first boot should not depend on eudev finding a signed
-# module for the keyboard. The set below is what a download is expected to
-# meet: NVMe and SAS controllers, the Intel, Broadcom and Realtek wired
-# adapters of servers, desktops and docks, the two BMC framebuffers, and
-# USB 2 as well as 3. None of this has been booted on physical hardware
-# yet; the first machine that does will say what is missing. Stage 05 fails
-# if any line here does not survive olddefconfig.
+# be built in or the kernel waits for a disk it cannot see; so are the USB
+# host controllers, for a root on a stick and for the keyboard. The rest are
+# modules. The set below is what a download is expected to meet: NVMe and
+# SAS controllers, the Intel, Broadcom and Realtek wired adapters of
+# servers, desktops and docks, the two BMC framebuffers, and USB 2 as well
+# as 3. None of this has been booted on physical hardware yet; the first
+# machine that does will say what is missing. Stage 05 fails if any line
+# here does not survive olddefconfig.
 CONFIG_BLK_DEV_NVME=y
 CONFIG_MEGARAID_SAS=y
 CONFIG_SCSI_MPT3SAS=y
 CONFIG_ATA_PIIX=y
 CONFIG_USB_PCI=y
 CONFIG_USB_EHCI_HCD=y
-CONFIG_IGB=y
-CONFIG_IGC=y
-CONFIG_IXGBE=y
-CONFIG_I40E=y
-CONFIG_TIGON3=y
-CONFIG_BNXT=y
-CONFIG_R8169=y
-CONFIG_USB_USBNET=y
-CONFIG_USB_NET_AX88179_178A=y
-CONFIG_USB_RTL8152=y
-CONFIG_DRM_AST=y
-CONFIG_DRM_MGAG200=y
+CONFIG_IGB=m
+CONFIG_IGC=m
+CONFIG_IXGBE=m
+CONFIG_I40E=m
+CONFIG_TIGON3=m
+CONFIG_BNXT=m
+CONFIG_R8169=m
+CONFIG_USB_USBNET=m
+CONFIG_USB_NET_AX88179_178A=m
+CONFIG_USB_RTL8152=m
+CONFIG_DRM_AST=m
+CONFIG_DRM_MGAG200=m
 # Intel laptops and desktops from the 11th generation on ship with the NVMe
 # drive behind VMD ("RAID" or "Intel RST" in the firmware setup); without
 # the VMD driver the drive does not exist. Cheap laptops and mini PCs boot
@@ -150,48 +170,52 @@ CONFIG_USB_OHCI_HCD_PCI=y
 # Laptop touchpads and touchscreens are HID devices on an I2C bus: the
 # DesignWare I2C controller, reached through Intel LPSS or the AMD
 # platform device, its GPIO interrupt through the SoC's pin controller.
+# Modules, with three exceptions that other distributions also keep built
+# in: AMD's pin controller, and the DesignWare core and its platform glue,
+# because ACPI methods on some laptops talk to devices behind them during
+# boot and fail for good if the controller is not there yet.
 CONFIG_X86_INTEL_LPSS=y
 CONFIG_X86_AMD_PLATFORM_DEVICE=y
-CONFIG_MFD_INTEL_LPSS_PCI=y
-CONFIG_MFD_INTEL_LPSS_ACPI=y
+CONFIG_MFD_INTEL_LPSS_PCI=m
+CONFIG_MFD_INTEL_LPSS_ACPI=m
 CONFIG_I2C_DESIGNWARE_CORE=y
 CONFIG_I2C_DESIGNWARE_PLATFORM=y
-CONFIG_I2C_DESIGNWARE_PCI=y
+CONFIG_I2C_DESIGNWARE_PCI=m
 CONFIG_PINCTRL_AMD=y
-CONFIG_PINCTRL_SUNRISEPOINT=y
-CONFIG_PINCTRL_CANNONLAKE=y
-CONFIG_PINCTRL_ICELAKE=y
-CONFIG_PINCTRL_JASPERLAKE=y
-CONFIG_PINCTRL_ELKHARTLAKE=y
-CONFIG_PINCTRL_LAKEFIELD=y
-CONFIG_PINCTRL_TIGERLAKE=y
-CONFIG_PINCTRL_ALDERLAKE=y
-CONFIG_PINCTRL_METEORLAKE=y
-CONFIG_PINCTRL_METEORPOINT=y
-CONFIG_PINCTRL_INTEL_PLATFORM=y
-CONFIG_I2C_HID_ACPI=y
-CONFIG_HID_MULTITOUCH=y
+CONFIG_PINCTRL_SUNRISEPOINT=m
+CONFIG_PINCTRL_CANNONLAKE=m
+CONFIG_PINCTRL_ICELAKE=m
+CONFIG_PINCTRL_JASPERLAKE=m
+CONFIG_PINCTRL_ELKHARTLAKE=m
+CONFIG_PINCTRL_LAKEFIELD=m
+CONFIG_PINCTRL_TIGERLAKE=m
+CONFIG_PINCTRL_ALDERLAKE=m
+CONFIG_PINCTRL_METEORLAKE=m
+CONFIG_PINCTRL_METEORPOINT=m
+CONFIG_PINCTRL_INTEL_PLATFORM=m
+CONFIG_I2C_HID_ACPI=m
+CONFIG_HID_MULTITOUCH=m
 # Wired adapters beyond the above: Aquantia/Marvell AQtion (the 5 and 10
 # gigabit ports on desktop boards and Thunderbolt docks) and Mellanox
 # ConnectX-4 onward in servers. Neither needs a firmware file.
-CONFIG_AQTION=y
-CONFIG_MLX5_CORE=y
+CONFIG_AQTION=m
+CONFIG_MLX5_CORE=m
 CONFIG_MLX5_CORE_EN=y
 # Virtual machines other than QEMU/KVM. VMware: paravirtual SCSI and
 # network, its display and its mouse. Hyper-V: the VMBus devices a
 # generation 2 VM has. Hyper-V's firmware trusts only Microsoft's keys, so
 # Kryptik boots there with Secure Boot turned off in the VM's settings.
 CONFIG_VMWARE_PVSCSI=y
-CONFIG_VMXNET3=y
-CONFIG_DRM_VMWGFX=y
+CONFIG_VMXNET3=m
+CONFIG_DRM_VMWGFX=m
 CONFIG_MOUSE_PS2_VMMOUSE=y
 CONFIG_HYPERV=y
 CONFIG_HYPERV_VMBUS=y
 CONFIG_HYPERV_STORAGE=y
-CONFIG_HYPERV_NET=y
+CONFIG_HYPERV_NET=m
 CONFIG_HYPERV_KEYBOARD=y
-CONFIG_HID_HYPERV_MOUSE=y
-CONFIG_DRM_HYPERV=y
+CONFIG_HID_HYPERV_MOUSE=m
+CONFIG_DRM_HYPERV=m
 
 # --- CPU microcode ---
 # The early loader applies an update before anything else runs, and with no
@@ -261,6 +285,49 @@ CONFIG_BRCMFMAC_PCIE=y
 CONFIG_RTL8XXXU=m
 CONFIG_MAC80211_HWSIM=m
 
+# --- built in by the upstream default configuration, and not needed there ---
+# x86_64_defconfig predates this fragment's rule and builds these in. The
+# wireless stack is only ever used by the radio modules above, and as a
+# module cfg80211 reads the regulatory database from the verified root
+# instead of asking for it before there is one. The older wired adapters
+# and the vendor HID quirks load by modalias like everything else.
+CONFIG_CFG80211=m
+CONFIG_MAC80211=m
+CONFIG_RFKILL=m
+CONFIG_E100=m
+CONFIG_SKY2=m
+CONFIG_FORCEDETH=m
+CONFIG_8139TOO=m
+CONFIG_PHYLIB=m
+CONFIG_REALTEK_PHY=m
+CONFIG_HID_A4TECH=m
+CONFIG_HID_APPLE=m
+CONFIG_HID_BELKIN=m
+CONFIG_HID_CHERRY=m
+CONFIG_HID_CHICONY=m
+CONFIG_HID_CYPRESS=m
+CONFIG_HID_EZKEY=m
+CONFIG_HID_GYRATION=m
+CONFIG_HID_ITE=m
+CONFIG_HID_KENSINGTON=m
+CONFIG_HID_REDRAGON=m
+CONFIG_HID_MICROSOFT=m
+CONFIG_HID_MONTEREY=m
+CONFIG_HID_NTRIG=m
+CONFIG_HID_PANTHERLORD=m
+CONFIG_HID_PETALYNX=m
+CONFIG_HID_SAMSUNG=m
+CONFIG_HID_SONY=m
+CONFIG_HID_SUNPLUS=m
+CONFIG_HID_TOPSEED=m
+
+# --- how the image is compressed ---
+# The default is gzip. zstd at the level the kernel build uses is smaller
+# and decompresses faster, and the build already has zstd for the firmware.
+# It does nothing for the microcode, which is encrypted and does not
+# compress; that half of the image is the size it is.
+CONFIG_KERNEL_ZSTD=y
+# CONFIG_KERNEL_GZIP is not set
 # --- A machine that has stopped reboots itself -------------------------------
 # The watchdog service (build/services/watchdog) feeds every device below. If
 # userspace stops being scheduled nothing feeds them and the machine resets;

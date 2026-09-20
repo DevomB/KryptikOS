@@ -273,13 +273,12 @@ passes, not when its code is written.
       revoking them, a build that signs with a key it is handed and refuses to
       invent one for a release, and an installed system that accepts the next
       release and refuses a development build.
-- [ ] **No known-vulnerable pins.** glibc 2.40 carries Kryptik's two loader
-      fixes and not the release branch's security backports (CVE-2025-0395,
-      CVE-2025-4802 and others): move to a maintained glibc or carry the
-      backports, with the unwind test still passing. Then every pin checked
-      against its upstream's security releases, and
-      `tools/check-support-status.sh` extended so CI fails when a pin falls
-      behind one.
+- [ ] **No known-vulnerable pins.** glibc now carries upstream's maintained
+      2.40 branch (its security fixes through 2026-09-10) with the unwind
+      test as its gate. What remains: every other pin checked against its
+      upstream's security releases, `tools/check-support-status.sh`
+      extended so CI fails when a pin falls behind one, and a check that
+      says when the glibc branch has moved past the commit pinned here.
 - [ ] **An update channel.** `kryptik-update` applies a payload from a
       mounted disk and nothing fetches one. The net zone downloads a release
       by URL into a transfer area; zone 0 verifies the manifest signature,
@@ -306,12 +305,14 @@ passes, not when its code is written.
 
 ### It fails safe and says what it is
 
-- [ ] **A watchdog for a hung userspace.** `boot-success` judges a trial boot
-      once; a system that hangs after that stays hung. The hardware watchdog
-      (or softdog) fed by a supervised service, and a hang test in the state
-      suite. Written: the kernel options, the `watchdog` service, and the
-      test that stops the feeder and expects a second boot. Ticked when that
-      test has passed in an acceptance run.
+- [x] **A watchdog for a hung userspace.** A supervised service feeds every
+      watchdog device, the kernel will not let one be switched off, and the
+      state suite proves it: it stops the feeder and the machine resets
+      itself and comes back with its data (acceptance on 55e1652,
+      2026-09-20). It catches a machine that has stopped, not a crashed
+      service or a frozen desktop; a hung kernel is reset only by a hardware
+      timer or the hard-lockup panic, and no physical timer has been
+      exercised yet.
 - [ ] **Every status row is tested.** Stage 05, stage 06 and `make
       acceptance` read *implemented* in the README: each gets the check that
       can fail, or the row says why it cannot.
@@ -323,13 +324,19 @@ passes, not when its code is written.
 - [ ] **Core scheduling per zone, and the SMT decision.** Zones carry their
       own cookie; ADR-011 is revisited with a measurement, and the command
       line says `nosmt` or does not for a written reason.
-- [ ] **The net zone's remaining hardening.** Bridge ports pinned to their
-      assigned MAC and address (`docs/design/net-zone.md`, not built), and
-      dhcpcd with privilege separation inside the zone or a recorded reason
-      it cannot have it.
+- [x] **The net zone's remaining hardening.** Both halves are decided, with
+      the reasons in [the net zone design](design/net-zone.md#not-built-and-why-it-is-not-a-gap-in-the-boundary).
+      Bridge ports are not pinned: a routed zone has neither network
+      capability and no packet sockets, which the suites check, and pinning
+      would put two more netfilter subsystems into the kernel to make the
+      same check again inside the zone treated as hostile. dhcpcd cannot
+      have its own privilege separation there: it would need `setgroups`
+      and three capabilities the net zone does not have and should not get.
 - [ ] **Someone else has attacked it.** The two hand-written trust boundaries,
       the broker's protocol and `kryptik-wlproxy`'s wire parser, fuzzed in CI
-      with a corpus kept in the tree; and one review of kryptikd's launch path
+      with a corpus kept in the tree (written: seeded mutation in both unit
+      suites, [how and its limit](design/broker.md#the-two-parsers-attacked);
+      neither parser broke); and one review of kryptikd's launch path
       by a person who did not write it, with the findings and their fixes in
       `docs/`.
 - [ ] **A release, as an object.** Version numbering, release notes generated

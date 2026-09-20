@@ -302,3 +302,45 @@ CONFIG_LSM="landlock,lockdown,yama"
 # CONFIG_COREDUMP is not set
 # /proc/pid/{pagemap,smaps,clear_refs}: physical layout leaks, unused here.
 # CONFIG_PROC_PAGE_MONITOR is not set
+
+# --- built in by the upstream default configuration, used by nothing here ---
+# Not modules: off. Each of these is kernel code reachable from a device, a
+# packet or a mount that Kryptik never asks for. There is no audio stack in
+# the image, so no sound driver has a user. Nothing mounts a network
+# filesystem, and the NFS client brings SUNRPC and a root-over-NFS path
+# with it. CardBus, AGP and the Macintosh drivers are buses no UEFI x86-64
+# machine has. The slots are plain GPT partitions under dm-verity, so
+# software RAID and the old device-mapper targets have no job. No printer
+# spooler, no USB sniffer, no quota, no automounter; the ESP is vfat, and
+# msdos is the same code with shorter names.
+# CONFIG_SOUND is not set
+# CONFIG_NETWORK_FILESYSTEMS is not set
+# CONFIG_NET_9P is not set
+# CONFIG_PCCARD is not set
+# CONFIG_AGP is not set
+# CONFIG_MACINTOSH_DRIVERS is not set
+# (Not CONFIG_MD itself: that is the whole "multiple devices" menu, and
+# device-mapper, which is dm-verity, lives under it. Stage 05 refuses the
+# configuration if that is ever tried again.)
+# CONFIG_BLK_DEV_MD is not set
+# CONFIG_DM_MIRROR is not set
+# CONFIG_DM_ZERO is not set
+# CONFIG_USB_PRINTER is not set
+# CONFIG_USB_MON is not set
+# CONFIG_PROFILING is not set
+# CONFIG_SERIAL_NONSTANDARD is not set
+# CONFIG_HW_RANDOM_VIA is not set
+# CONFIG_EEEPC_LAPTOP is not set
+# CONFIG_QUOTA is not set
+# CONFIG_AUTOFS_FS is not set
+# CONFIG_MSDOS_FS is not set
+# The connection-tracking helpers parse FTP, IRC and SIP payloads inside the
+# kernel to open ports on a client's behalf: a parser fed by whoever the
+# machine talks to, for protocols the net zone does not forward specially.
+# netconsole sends the kernel log to a UDP address; nothing here configures
+# it, and a kernel log is not something to be one module parameter away
+# from leaving the machine.
+# CONFIG_NF_CONNTRACK_FTP is not set
+# CONFIG_NF_CONNTRACK_IRC is not set
+# CONFIG_NF_CONNTRACK_SIP is not set
+# CONFIG_NETCONSOLE is not set

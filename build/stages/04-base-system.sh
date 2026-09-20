@@ -228,10 +228,11 @@ s_glibc() {
     # The loader defect recorded in docs/glibc-loader-defect.md - pthread_exit(),
     # pthread_cancel() and backtrace() aborting because _dl_find_object
     # attributed every object loaded after startup to ld.so itself - and
-    # what fixes it. build/patches/glibc-2.40/ carries four upstream loader
-    # fixes, with provenance in its README: the release/2.40/master fixes
-    # for bug 31943 (a loader mapped with gaps, plus two prerequisites) and
-    # the one that turned out to be Kryptik's actual defect, bug 33088: GCC
+    # what fixes it. build/patches/glibc-2.40/ carries upstream's maintained
+    # release/2.40/master branch as one patch, with provenance in its
+    # README (the security fixes since July 2024, and the fix for bug 31943,
+    # a loader mapped with gaps), and beside it the one that turned out to
+    # be Kryptik's actual defect and was never backported, bug 33088: GCC
     # 14 at -O2 took the address of __ehdr_start for the loader's own map
     # bounds from a constant that is only right after self-relocation, so
     # ld.so recorded itself as starting at address 0. The two checks below
@@ -1581,7 +1582,6 @@ s_boot_check() {
     chk "wpa_supplicant"    /usr/sbin/wpa_supplicant x
     chk "wpa_cli"           /usr/sbin/wpa_cli x
     chk "iw"                /usr/sbin/iw x
-    chk "chronyd"           /usr/sbin/chronyd x
     chk "CA bundle"         /etc/ssl/certs/ca-certificates.crt
     chk "regulatory.db"     /lib/firmware/regulatory.db.zst
     chk "regulatory.db.p7s" /lib/firmware/regulatory.db.p7s.zst
@@ -1919,27 +1919,6 @@ s_iw() {
     make PREFIX=/usr SBINDIR=/usr/sbin install
     [[ -x /usr/sbin/iw ]] || { echo "FAIL: /usr/sbin/iw was not installed"; return 1; }
     iw --version
-}
-
-# chrony, for one thing: `chronyd -Q` in the net zone measures how wrong the
-# clock is and prints it. It cannot set a clock there and is not asked to;
-# zone 0 decides what to do with the answer. Built without NTS (the image
-# carries no gnutls or nettle, and zone 0 never trusts the answer beyond its
-# own bounds), without editline, and without chrony's own seccomp filter,
-# which the zone's replaces. -Q needs no root, no pid file and no runtime
-# directory; on a server that does not answer it says "Timeout reached" and
-# prints no offset, so the offset line is the result, not the exit status.
-s_chrony() {
-    local src; src="$(unpack "chrony-${V_CHRONY}.tar.gz" "chrony-${V_CHRONY}")"
-    cd "$src"
-    ./configure --prefix=/usr --sysconfdir=/etc \
-        --chronyrundir=/run/chrony --chronyvardir=/var/lib/chrony \
-        --disable-nts --without-nettle --without-gnutls --without-nss --without-tomcrypt \
-        --without-editline --without-seccomp
-    make
-    make install
-    [[ -x /usr/sbin/chronyd ]] || { echo "FAIL: /usr/sbin/chronyd was not installed"; return 1; }
-    chronyd -v
 }
 
 # The CA bundle: Mozilla's set as curl.se publishes it, one PEM file, where
@@ -2300,7 +2279,29 @@ s_lynx() {
     lynx -version | head -1
 }
 
+# Everything is built with -fcf-protection=full, so the instruction AT a
+# function's address must be endbr64. gcc 14.2.0 put a loop's .p2align between
+# the label and the endbr64 (GCC PR target/116174, fixed in 14.3). This asks
+# the compiler that will build the image, with the flags it will use, using
+# the bug's own test case; "plain" is the control.
+s_compiler_check() {
+    local d; d="$(mktemp -d)"
+    printf '%s\n' 'char *f(char *d, const char *s) { while ((*d++ = *s++)) ; return --d; }' \
+                  'int plain(int a) { return a + 1; }' > "$d/t.c"
+    # shellcheck disable=SC2086  # CFLAGS is a list of words
+    gcc ${CFLAGS:?hardening flags not loaded} -S -o "$d/t.s" "$d/t.c" || return 1
+    local bad
+    bad="$(awk '/^(f|plain):/ {fn=$1; next}
+                fn && /endbr64/ {fn=""; n++; next}
+                fn && !/^\.L|\.cfi_|^[ \t]*$/ {print fn, $0; fn=""}
+                END {if (n != 2) print "landing pads found:", n+0}' "$d/t.s")"
+    rm -rf "$d"
+    [[ -z "$bad" ]] || { echo "FAIL: a function entry is not endbr64: ${bad}"; return 1; }
+    echo "ok   $(gcc --version | head -1): function entries are landing pads"
+}
+
 PACKAGES=(
+    "compiler-check" "s_compiler_check"
     "locales"     "s_locales"
     "gettext"     "native_build gettext-${V_GETTEXT}.tar.xz gettext-${V_GETTEXT} --disable-shared"
     "bison"       "native_build bison-${V_BISON}.tar.xz bison-${V_BISON} --docdir=/usr/share/doc/bison-${V_BISON}"
@@ -2384,10 +2385,23 @@ PACKAGES=(
     "libtool"     "native_build libtool-${V_LIBTOOL}.tar.xz libtool-${V_LIBTOOL}"
     "gperf"       "native_build gperf-${V_GPERF}.tar.gz gperf-${V_GPERF} --docdir=/usr/share/doc/gperf-${V_GPERF}"
     "expat"       "native_build expat-${V_EXPAT}.tar.xz expat-${V_EXPAT} --disable-static --docdir=/usr/share/doc/expat-${V_EXPAT}"
-    "inetutils"   "native_build inetutils-${V_INETUTILS}.tar.xz inetutils-${V_INETUTILS} --bindir=/usr/bin --localstatedir=/var --disable-logger --disable-whois --disable-rlogin --disable-rsh --disable-rcp --disable-rexec --disable-rexecd --disable-rlogind --disable-rshd"
+    # --disable-servers: without it inetutils builds and installs telnetd,
+    # ftpd, tftpd, talkd, rexecd, rlogind, rshd, syslogd and inetd. Nothing in
+    # Kryptik starts any of them, and three of the fixes in 2.8 are in
+    # telnetd alone (an authentication bypass among them). What is wanted
+    # from this package is hostname, ping, traceroute, ifconfig and the
+    # clients; a daemon nobody runs is still a setuid-adjacent binary on the
+    # root image and a line in every vulnerability report.
+    "inetutils"   "native_build inetutils-${V_INETUTILS}.tar.gz inetutils-${V_INETUTILS} --bindir=/usr/bin --localstatedir=/var --disable-servers --disable-logger --disable-whois --disable-rlogin --disable-rsh --disable-rcp --disable-rexec"
     "less"        "native_build less-${V_LESS}.tar.gz less-${V_LESS} --sysconfdir=/etc"
     "openssl"     "s_openssl"
-    "libffi"      "native_build libffi-${V_LIBFFI}.tar.gz libffi-${V_LIBFFI} --disable-static --with-gcc-arch=native"
+    # --with-gcc-arch=x86-64, not the book's "native". libffi only tunes for an
+    # architecture when the caller set no CFLAGS, and this build always sets
+    # them, so "native" was inert: no line of the real build log names -march.
+    # But a flag that would compile the image for the build machine's CPU the
+    # day someone runs this step without CFLAGS is the hardened_malloc defect
+    # waiting to happen, so it says what the image is for.
+    "libffi"      "native_build libffi-${V_LIBFFI}.tar.gz libffi-${V_LIBFFI} --disable-static --with-gcc-arch=x86-64"
     "python-final" "s_python_final"
     "coreutils"   "native_build coreutils-${V_COREUTILS}.tar.xz coreutils-${V_COREUTILS} --enable-no-install-program=kill,uptime"
     "diffutils"   "native_build diffutils-${V_DIFFUTILS}.tar.xz diffutils-${V_DIFFUTILS}"
@@ -2473,8 +2487,7 @@ PACKAGES=(
     "libnl"       "native_build libnl-${V_LIBNL}.tar.gz libnl-${V_LIBNL} --sysconfdir=/etc --disable-static"
     "wpa-supplicant" "s_wpa_supplicant"
     "iw"          "s_iw"
-    # --- what the net zone asks the time with, and verifies a server by.
-    "chrony"      "s_chrony"
+    # --- what the net zone verifies a release server by.
     "ca-bundle"   "s_ca_bundle"
     # --- device firmware (ADR-012): the files build/config/firmware.list names
     #     out of the pinned linux-firmware release, onto /lib/firmware.

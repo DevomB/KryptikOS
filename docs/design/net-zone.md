@@ -253,10 +253,34 @@ plan line states only what kryptikd itself sets up.
 
 ### Not built, and why it is not a gap in the boundary
 
-- **MAC/IP port pinning.** Designed for nftables `bridge` rules. Its
-  purpose was to contain a zone that could re-address its end; that zone no
-  longer exists (no `CAP_NET_ADMIN`/`CAP_NET_RAW` in routed zones), so
-  pinning is defence in depth, not the boundary.
+- **MAC/IP port pinning. Decided: not built.** Designed for nftables
+  `bridge` rules. Its purpose was to contain a zone that could re-address
+  its end or forge a frame; that zone no longer exists. A routed zone's
+  bounding set is `CAP_NET_BIND_SERVICE` alone, a zone policy that would
+  keep `CAP_NET_ADMIN` or `CAP_NET_RAW` for a routed zone is refused, and
+  packet sockets are refused by family: it cannot change its address or its
+  MAC, cannot send from an address that is not its own, and cannot put a
+  frame on the wire that the kernel did not build for it. The launcher
+  suite reads the bounding set (exactly `0x400`) and the boundary suite
+  asks for an `AF_PACKET` socket. Pinning would enforce the same thing a
+  second time, in the net zone, which is the zone treated as hostile, and
+  to do it the kernel would have to carry `NF_TABLES_BRIDGE` and
+  `BRIDGE_NETFILTER` built in (netfilter cannot be a module here: the net
+  zone loads its rules from inside a user namespace). That is more kernel
+  reachable from a hostile zone in exchange for a check the capability
+  drop already makes, so it is not built. It comes back on the table if a
+  routed zone is ever allowed either network capability.
+- **dhcpcd's own privilege separation. Decided: it cannot have it.**
+  dhcpcd is built with a privilege-separation user and runs without it in
+  the net zone, saying so once. To separate, it must `setgroups`,
+  `setgid`, `setuid` and `chroot`: the zone's `setgroups` is `deny` for
+  good, its passwd is synthesized (root and nobody), and its bounding set
+  is `CAP_NET_BIND_SERVICE`, `CAP_NET_ADMIN` and `CAP_NET_RAW`, with none
+  of `CAP_SETUID`, `CAP_SETGID` or `CAP_SYS_CHROOT`. Giving the hostile
+  zone three more capabilities so that one of its programs can build a
+  smaller sandbox inside it is a net loss. The zone is the sandbox: its
+  own user, mount, network and pid namespaces, seccomp and Landlock, and
+  nothing dhcpcd could do as the zone's root reaches past them.
 - **Refusing direct traffic to the uplink's own addresses from routed
   zones.** The forward chain accepts anything from the bridge to the
   uplink, so a routed zone can address the VM gateway or the slirp resolver
