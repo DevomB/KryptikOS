@@ -89,7 +89,6 @@ SYSROOT="${KRYPTIK_WORK}/sysroot"
 # medium instead would have tested and exported the previous release.)
 # Explicit --media-*/--payload-* win. A lone release is B with no A, and
 # the update test says so rather than running.
-newest() { ls -t "$@" 2>/dev/null | head -1; }
 version_of_medium()  { local b; b="$(basename "$1")"; b="${b#kryptik-}"; printf '%s' "${b%-usb.img}"; }
 version_of_payload() { local b; b="$(basename "$1")"; printf '%s' "${b#payload-}"; }
 if [[ -z "$MEDIA_USB" ]]; then
@@ -102,7 +101,8 @@ if [[ -z "$MEDIA_USB" ]]; then
 fi
 VER=""; [[ -n "$MEDIA_USB" ]] && VER="$(version_of_medium "$MEDIA_USB")"
 [[ -z "$MEDIA_ISO" && -n "$VER" && -f "${IMGDIR}/kryptik-${VER}.iso" ]] && MEDIA_ISO="${IMGDIR}/kryptik-${VER}.iso"
-[[ -z "$MEDIA_ISO" ]] && MEDIA_ISO="$(newest "${IMGDIR}"/kryptik-*.iso)"
+# Never the newest ISO of some other release: without this release's own, the
+# ISO items are INCOMPLETE, which is never a pass.
 [[ -z "$PAYLOAD_B" && -n "$VER" && -d "${IMGDIR}/payload-${VER}" ]] && PAYLOAD_B="${IMGDIR}/payload-${VER}"
 VER_B=""; [[ -n "$PAYLOAD_B" ]] && VER_B="$(version_of_payload "$PAYLOAD_B")"
 if [[ -z "$PAYLOAD_A" && -n "$VER_B" ]]; then
@@ -177,11 +177,11 @@ item() {
     elif [[ "$rc" -ne 0 ]]; then res=FAIL; note="exit ${rc}"
     else
         res=PASS
-        if [[ "$minp" -gt 0 ]]; then
-            local p="${checks%%/*}"
-            if [[ "$checks" == "-" || "$p" -lt "$minp" ]]; then
-                res=FAIL; note="exit 0 but only ${p:-no} checks reported passed (minimum ${minp}): the driver did not exercise what it claims"
-            fi
+        local p="${checks%%/*}" f="${checks##*/}"
+        if [[ "$checks" != "-" && "$f" -gt 0 ]]; then
+            res=FAIL; note="exit 0 but its own summary counts ${f} failed"
+        elif [[ "$minp" -gt 0 && ( "$checks" == "-" || "$p" -lt "$minp" ) ]]; then
+            res=FAIL; note="exit 0 but only ${p:-no} checks reported passed (minimum ${minp}): the driver did not exercise what it claims"
         fi
     fi
     printf -- '-- %s: %s (exit %s, %ss, checks %s)%s\n' "$name" "$res" "$rc" "$((SECONDS - t0))" "$checks" "${note:+ - $note}"
@@ -189,6 +189,7 @@ item() {
 }
 
 # ------------------------------------------------------------- prereqs --
+need_host()    { if [[ "$NOHOST" -eq 1 ]]; then echo "not run (--no-host)"; else need_cargo; fi; }
 need_root()    { [[ "$EUID" -eq 0 ]] || echo "needs root (the chroot and the VM disks)"; }
 need_sysroot() { [[ -x "${SYSROOT}/usr/bin/gcc" ]] || echo "no built sysroot at ${SYSROOT} (make system)"; }
 need_usb()     { [[ -f "$MEDIA_USB" ]] || echo "no USB image (make media)"; }
@@ -313,9 +314,7 @@ item inputs    revision                   M host  0 it_revision
 item inputs    compositor-sources         M host  0 it_compositor_sources
 item inputs    sources-lock               M host  0 it_sources_lock need_sources
 item inputs    media-hashes               M host  0 it_media_hashes need_usb
-if [[ "$NOHOST" -eq 0 ]]; then
-item build     host-suites                M host  0 it_host_suites need_cargo
-fi
+item build     host-suites                M host  0 it_host_suites need_host
 item build     libc-unwind                M host  0 it_libc_unwind need_sysroot
 item build     userspace-smoke            M host  0 it_userspace need_sysroot
 item build     artifact-hardening         M host  0 it_artifacts need_sysroot
@@ -426,14 +425,22 @@ it_export() {
     cp "${OUT}/REVISION.txt" "${d}/" 2>/dev/null
     mkdir -p "${d}/acceptance-logs" && cp "${OUT}"/*.log "${OUT}/results.tsv" "${d}/acceptance-logs/" 2>/dev/null
     echo "-- the copies hash the same as what was tested"
+    # Against the hashes taken when the run began: a medium that changed
+    # while it was being tested is a mismatch too.
+    : > "${d}/SHA256SUMS"
     for f in "$MEDIA_USB" "$MEDIA_ISO"; do
         [[ -f "$f" ]] || continue
-        want="$(sha_of "$f")"; got="$(sha_of "${d}/$(basename "$f")")"
+        want="$H_ISO"; [[ "$f" == "$MEDIA_USB" ]] && want="$H_USB"
+        got="$(sha_of "${d}/$(basename "$f")")"
         if [[ "$want" == "$got" ]]; then echo "  ok  $(basename "$f") ${got}"; else echo "  MISMATCH $(basename "$f"): tested ${want}, exported ${got}"; ok=1; fi
+        printf '%s  ./%s\n' "$got" "$(basename "$f")" >> "${d}/SHA256SUMS"
     done
-    ( cd "$d" && sha256sum ./*.img ./*.iso ./*.crt ./*.der ./root.json 2>/dev/null ) > "${d}/SHA256SUMS"
-    echo "  wrote ${d}/SHA256SUMS"
     return "$ok"
+}
+# Every other file of the export, listed last so that the report, the results
+# and RELEASE.txt are the final ones. The media lines are it_export's.
+seal_export() {   # seal_export DIR
+    ( cd "$1" && find . -type f ! -name SHA256SUMS ! -name '*.img' ! -name '*.iso' -print0 | sort -z | xargs -0 sha256sum ) >> "$1/SHA256SUMS"
 }
 V="$(verdict_of)"
 write_report "$V"
@@ -454,6 +461,9 @@ if [[ -n "$EXPORT" ]] || wanted release; then
             echo "trust      : kryptik-sb.crt / kryptik-sb.der (the developer Secure Boot key, a test anchor)"
             echo "read       : INSTRUCTIONS.md"
         } > "${EXPORT}/RELEASE.txt"
+        # Again, now that the export's own row and log exist.
+        cp "${OUT}"/*.log "${OUT}/results.tsv" "${EXPORT}/acceptance-logs/" 2>/dev/null
+        seal_export "$EXPORT"
     fi
 fi
 
