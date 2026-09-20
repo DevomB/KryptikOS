@@ -74,31 +74,10 @@ part_dev() {
     esac
 }
 
-# The whole disk a block device belongs to (a partition -> its disk).
-disk_of() {
-    n="$(basename "$1")"
-    if [ -e "/sys/class/block/$n/partition" ]; then
-        printf '/dev/%s' "$(basename "$(readlink -f "/sys/class/block/$n/..")")"
-    else
-        printf '/dev/%s' "$n"
-    fi
-}
-
-# Every physical disk under a device, through dm and loop stacks.
-# Prints one /dev/X per line.
-disks_under() {
-    n="$(basename "$1")"
-    if [ -d "/sys/class/block/$n/slaves" ] && [ -n "$(ls "/sys/class/block/$n/slaves" 2>/dev/null)" ]; then
-        for s in /sys/class/block/"$n"/slaves/*; do disks_under "/dev/$(basename "$s")"; done
-    elif [ -r "/sys/class/block/$n/loop/backing_file" ]; then
-        # a loop device: the disk holding its backing file
-        bf="$(cat "/sys/class/block/$n/loop/backing_file")"
-        src="$(awk -v f="$bf" 'BEGIN{best=""} {if (index(f, $2)==1 && length($2)>length(best)) {best=$2; dev=$1}} END{print dev}' /proc/mounts)"
-        [ -n "$src" ] && disks_under "$src"
-    else
-        disk_of "/dev/$n"
-    fi
-}
+# Which disk a device is on, and which partitions are this system's own
+# (the medium it booted from): the same answers the boot services use. This
+# file had copies of two of these functions, and they had drifted.
+. /usr/libexec/kryptik/devices.sh
 
 # --- refuse anything that is not a disposable whole disk -------------------
 [ -b "$TARGET" ] || die "${TARGET} is not a block device.
@@ -115,7 +94,9 @@ tname="$(basename "$TARGET_REAL")"
 # IS that disk, refuse - installing over the system you are running from is
 # not a supported outcome, it is a crash with extra steps.
 root_src="$(awk '$2 == "/" { print $1; exit }' /proc/mounts)"
-root_disks="$(disks_under "$root_src" 2>/dev/null | sort -u)"
+# kryptik_root_disk, not this name: with no initramfs the kernel calls the root
+# /dev/root, which names no device, and the guard below compared against that.
+root_disks="$(kryptik_root_disk 2>/dev/null || true)"
 for d in $root_disks; do
     [ "$(readlink -f "$d")" = "$TARGET_REAL" ] && die "${TARGET} is the disk this system is running from (root ${root_src} sits on ${d}).
 Refusing."
@@ -123,11 +104,11 @@ done
 # Likewise the state partition, the medium's ESP and the test-control disk.
 for lbl in kryptik-state kryptik-testctl; do
     for dev in $(blkid -t PARTLABEL="$lbl" -o device 2>/dev/null); do
-        [ "$(readlink -f "$(disk_of "$dev")")" = "$TARGET_REAL" ] && die "${TARGET} holds the ${lbl} partition in use by this system. Refusing."
+        [ "$(readlink -f "$(_kd_disk_of "$dev")")" = "$TARGET_REAL" ] && die "${TARGET} holds the ${lbl} partition in use by this system. Refusing."
     done
 done
 for dev in $(blkid -t PARTLABEL=kryptik-media -o device 2>/dev/null); do
-    [ "$(readlink -f "$(disk_of "$dev")")" = "$TARGET_REAL" ] && die "${TARGET} is the install medium. Refusing."
+    [ "$(readlink -f "$(_kd_disk_of "$dev")")" = "$TARGET_REAL" ] && die "${TARGET} is the install medium. Refusing."
 done
 
 # Anything mounted from the target, or any of its partitions, is a hard stop.
@@ -161,11 +142,13 @@ ROOT_SRC=""     # block device holding the root image at ROOT_OFF
 ROOT_OFF=0
 case "$media" in
     usb)
-        ROOT_SRC="$(blkid -t PARTLABEL=kryptik-media -o device 2>/dev/null | head -1)"
-        [ -b "$ROOT_SRC" ] || die "no partition labelled kryptik-media on this medium"
-        mdisk="$(disk_of "$ROOT_SRC")"
-        ESP_SRC="$(blkid -t PARTLABEL=kryptik-esp -o device 2>/dev/null | grep "^${mdisk}" | head -1)"
-        [ -b "$ESP_SRC" ] || die "no kryptik-esp partition on the medium ${mdisk}"
+        # The medium this system booted from, not the first disk that carries
+        # the label: a second stick, or a disk labelled to look like one, is
+        # not what gets installed.
+        ROOT_SRC="$(kryptik_part kryptik-media)" || true
+        [ -b "$ROOT_SRC" ] || die "no single kryptik-media partition on the medium this system booted from"
+        ESP_SRC="$(kryptik_part kryptik-esp)" || true
+        [ -b "$ESP_SRC" ] || die "no single kryptik-esp partition on the medium this system booted from"
         mount -o ro "$ESP_SRC" "$MNT_BASE/esp" || die "could not mount the medium's ESP"
         ROOT_JSON="$MNT_BASE/esp/kryptik/root.json"
         ;;

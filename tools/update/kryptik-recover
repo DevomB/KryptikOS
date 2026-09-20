@@ -109,9 +109,11 @@ if [ -n "$RESTORE" ]; then
     mkdir -p /run/kryptik-recover-media
     case "$media" in
         usb)
-            src="$(blkid -t PARTLABEL=kryptik-media -o device 2>/dev/null | head -1)"; off=0
-            mdisk="$(printf '%s' "$src" | sed 's/p\{0,1\}[0-9]*$//')"
-            mesp="$(blkid -t PARTLABEL=kryptik-esp -o device 2>/dev/null | grep "^${mdisk}" | head -1)"
+            # This medium's own partitions (devices.sh), never the first
+            # disk that carries the label.
+            . /usr/libexec/kryptik/devices.sh
+            src="$(kryptik_part kryptik-media)" || die "no single kryptik-media partition on this medium"; off=0
+            mesp="$(kryptik_part kryptik-esp)" || die "no single kryptik-esp partition on this medium"
             mount -o ro "$mesp" /run/kryptik-recover-media || die "cannot mount the medium's ESP"
             rj=/run/kryptik-recover-media/kryptik/root.json; kdir=/run/kryptik-recover-media/EFI/kryptik ;;
         iso)
