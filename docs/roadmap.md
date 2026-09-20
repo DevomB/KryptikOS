@@ -317,10 +317,14 @@ passes, not when its code is written.
 - [ ] **Core scheduling per zone, and the SMT decision.** Zones carry their
       own cookie; ADR-011 is revisited with a measurement, and the command
       line says `nosmt` or does not for a written reason.
-- [ ] **The net zone's remaining hardening.** Bridge ports pinned to their
-      assigned MAC and address (`docs/design/net-zone.md`, not built), and
-      dhcpcd with privilege separation inside the zone or a recorded reason
-      it cannot have it.
+- [x] **The net zone's remaining hardening.** Both halves are decided, with
+      the reasons in [the net zone design](design/net-zone.md#not-built-and-why-it-is-not-a-gap-in-the-boundary).
+      Bridge ports are not pinned: a routed zone has neither network
+      capability and no packet sockets, which the suites check, and pinning
+      would put two more netfilter subsystems into the kernel to make the
+      same check again inside the zone treated as hostile. dhcpcd cannot
+      have its own privilege separation there: it would need `setgroups`
+      and three capabilities the net zone does not have and should not get.
 - [ ] **Someone else has attacked it.** The two hand-written trust boundaries,
       the broker's protocol and `kryptik-wlproxy`'s wire parser, fuzzed in CI
       with a corpus kept in the tree; and one review of kryptikd's launch path
