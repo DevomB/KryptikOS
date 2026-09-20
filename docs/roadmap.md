@@ -253,16 +253,21 @@ passes, not when its code is written.
       each machine lacked becomes a line in `boot.fragment` or
       `firmware.list`, and the machines become the first rows of a hardware
       list in the README.
-- [ ] **CPU microcode.** Nothing loads it. With no initramfs it is built into
-      the signed kernel from the pinned firmware release (AMD) and Intel's
-      microcode release, and the boot smoke test reports the revision it
-      found and the one it loaded.
-- [ ] **A clock that is right.** The image has no time synchronisation, and
-      certificate validation and update freshness both assume the time.
-      Zone 0 has no network, so the net zone asks (NTS or NTP) and zone 0
-      decides: the broker carries the answer, zone 0 refuses one that moves
-      the clock backwards past the last release's date or forwards by more
-      than a bound without consent.
+- [x] **CPU microcode.** With no initramfs it is built into the signed kernel
+      from Intel's microcode release and AMD's containers in the pinned
+      firmware release; stage 05 refuses a kernel that does not contain the
+      blobs, and the boot report prints the revision and what the early
+      loader said. Under a hypervisor the loader does nothing, so the load
+      itself is proven only when a physical machine boots.
+- [x] **A clock that is right.** Zone 0 has no network, so the net zone
+      measures the offset with an SNTP query and zone 0 decides: never
+      before the build date; a correction of up to an hour is applied, and
+      so is a run of them until together they reach an hour; past that only
+      with the person's consent, asked in the trusted chrome with both
+      times shown; one claim every ten minutes. A boot service sets a
+      clock that reads before the build date to the build date. Five guest
+      checks prove it on the installed system (acceptance on 55e1652,
+      2026-09-20). NTS is not used.
 
 ### It can be trusted by someone who did not build it
 
