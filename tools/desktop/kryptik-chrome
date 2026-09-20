@@ -135,7 +135,6 @@ menu_zones() {
         [ -z "$info" ] && state="(daemon not answering)"
         printf '  %d) %-10s %-3s %-10s %s\n' "$n" "$z" "$(zone_field "$z" glyph)" "$(zone_field "$z" label)" "$state"
     done
-    NZONES=$n
 }
 
 run_menu() {

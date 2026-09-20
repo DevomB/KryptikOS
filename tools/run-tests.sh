@@ -25,25 +25,17 @@ cd "$ROOT" || exit 1
 STRICT=0
 [[ "${1:-}" == "--strict" ]] && STRICT=1
 
-# name|script. The name is the make target of the same suite, so a failure
-# here is reproduced with `make <name>`.
-SUITES=(
-    "test-harness|tools/test-step-errexit.sh"
-    "test-toolchain-identity|tools/test-toolchain-identity.sh"
-    "test-hardening|tools/test-hardening-flags.sh"
-    "test-kernel-hardening|tools/test-check-kernel-hardening.sh"
-    "test-pin-reviews|tools/test-check-pin-reviews.sh"
-    "test-services|tools/test-services.sh"
-    "test-netzone-time|tools/test-netzone-time.sh"
-    "test-update-verify|tools/test-update-manifest-snapshot.sh"
-    "test-update-fetch|tools/test-update-fetch.sh"
-    "test-boot-success|tools/test-boot-success.sh"
-    "test-manifest|tools/test-artifact-manifest.sh"
-    "test-s6-init|tools/test-s6-init-config.sh"
-    "test-image-signing|tools/test-image-signing.sh"
-    "test-installer|tools/test-installer.sh"
-    "test-mkdisk-guards|tools/test-mkdisk-guards.sh"
-)
+# Every tools/test-* file is a suite: a new one runs here, and in CI, without
+# being listed anywhere (this was a list, and eighteen suites were not on it).
+# Named are only the ones that run somewhere else: the first two chroot into
+# the built system and are acceptance items of their own, the last two need
+# the compositor workspace and run with the compartment suites below.
+ELSEWHERE=" test-libc-unwind.sh test-userspace-smoke.sh test-desktop-identity.sh test-compositor.sh "
+SUITES=()
+for t in tools/test-*.sh tools/test-*.py; do
+    [[ "$ELSEWHERE" == *" ${t##*/} "* ]] && continue
+    n="${t##*/}"; SUITES+=("${n%.*}|$t")
+done
 
 # The compartment suites need a kryptikd, which needs cargo. They are always
 # COUNTED - the total is the total - and where there is no cargo they are

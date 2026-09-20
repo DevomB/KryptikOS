@@ -104,13 +104,14 @@ jobs:
           exit $fail
 
       - name: Shellcheck
-        # tools/vm/ and the launcher suite were outside this list until now,
-        # which left the two largest scripts in the tree ungated - including the
-        # one that decides whether a boot passed. Three real warnings came out
-        # of adding them.
+        # Every tracked file that begins with a shell's name, not a list of
+        # places. The list left out the boot services, the installer, the
+        # updater, the net zone and every installed-system suite.
         run: |
-          shellcheck -S warning -x build/lib/common.sh build/stages/*.sh \
-            tools/*.sh tools/vm/*.sh compartments/tests/*.sh
+          mapfile -t scripts < <(git ls-files | xargs awk 'FNR==1 { if ($0 ~ /^#! ?\/(usr\/)?bin\/(env +)?(ba|da)?sh/) print FILENAME; nextfile }')
+          echo "${#scripts[@]} shell scripts"
+          [ "${#scripts[@]}" -ge 100 ] || { echo "the search for scripts found too few: it is broken"; exit 1; }
+          shellcheck -S warning -x "${scripts[@]}"
 
       - name: Executable bits are recorded
         run: |
@@ -121,7 +122,8 @@ jobs:
           # was committed 100644 - so git skipped it silently on every commit
           # and the hook has never once run.
           fail=0
-          for f in build/stages/*.sh tools/*.sh tools/vm/*.sh \
+          for f in build/stages/*.sh tools/*.sh tools/test-*.py tools/vm/*.sh \
+                   tools/image/*.sh tools/image/*.py \
                    compartments/tests/*.sh tools/git-hooks/*; do
             mode=$(git ls-files -s "$f" | awk '{print $1}')
             if [ "$mode" != "100755" ]; then
