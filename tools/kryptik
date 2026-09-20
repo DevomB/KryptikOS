@@ -89,6 +89,8 @@ USAGE:
     $PROG update fetch              ask for the newest release to be fetched
     $PROG update apply              install what has arrived; the next boot
                                     tries it once and falls back if it fails
+    $PROG state passphrase          change the passphrase the state partition
+                                    asks for at boot (root; the old one first)
 
 OPTIONS:
     --zones DIR           override the zone directory (default: $ZONES_DIR)
@@ -422,6 +424,16 @@ cmd_update() {
     "$LAUNCH" --update "$1"
 }
 
+# The state partition's passphrase. cryptsetup asks on the terminal, the old
+# one first and the new one twice; nothing of it passes through here.
+cmd_state() {
+    [[ "${1:-}" == passphrase && $# -eq 1 ]] || { usage >&2; die "state needs a subcommand: passphrase" 2; }
+    [[ $EUID -eq 0 ]] || die "the state passphrase is root's to change"
+    local dev; dev="$(sed -n 's/^state_dev=//p' /run/kryptik/boot-identity 2>/dev/null)"
+    [[ -b "$dev" ]] || die "this system has no state partition in use"
+    exec cryptsetup luksChangeKey "$dev"
+}
+
 # --- argument parsing -------------------------------------------------------
 load_conf
 
@@ -450,6 +462,7 @@ case "$cmd" in
     doctor)  cmd_doctor ;;
     wifi)    cmd_wifi "$@" ;;
     update)  cmd_update "$@" ;;
+    state)   cmd_state "$@" ;;
     ""|help) usage ;;
     # Named explicitly rather than falling into "unknown command", because
     # these are the things people will reasonably expect to exist.

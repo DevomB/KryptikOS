@@ -1083,6 +1083,13 @@ s_console() {
 
 dev="$1"
 
+# sysinit may be asking for the state passphrase on this console. It gets 30 s
+# to start (a broken service database must still end in a console); once it
+# has, the console is its own until it ends.
+n=0
+until [ -e /run/kryptik-sysinit ] || [ "$n" -ge 150 ]; do sleep 0.2; n=$((n + 1)); done
+while [ "$(cat /run/kryptik-sysinit 2>/dev/null)" = running ]; do sleep 0.2; done
+
 if [ -z "$dev" ]; then
     # /sys/class/tty/console/active lists the kernel-preferred console last.
     # With both video and serial consoles that is "tty0 ttyS0", so taking the

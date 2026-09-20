@@ -118,7 +118,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "boots with a clone attached; login and the file work" || red "step 2 drive failed"
-txt | grep -q 'KRYPTIK_SMOKE: var_source=/dev/vda4 ext4' && green "/var is this disk's partition (vda4), not the clone's" || red "/var is not vda4"
+txt | grep -q 'KRYPTIK_SMOKE: var_source=/dev/mapper/kryptik-state ext4' && green "/var is the unlocked state partition" || red "/var is not the unlocked state partition"
 txt | grep -q 'state_dev=/dev/vda4' && green "boot identity names /dev/vda4" || red "boot identity does not name vda4"
 txt | grep -q 'sysinit: kryptik-state on other disks ignored: /dev/vdb4' && green "the clone's state partition was seen and ignored" || red "the clone's partition was not reported as ignored"
 txt | grep -q 'STATE DEGRADED' && red "degraded with a clone attached (ambiguity wrongly detected)" || green "not degraded: the clone is not this installation"
@@ -143,10 +143,10 @@ normal_boot state-p3b
 step "step 4: a corrupt state partition"
 S4_OFF=$(( $(part_start "$DISK" 4) * 512 ))
 SAVE="${VMDIR}/state-super.bin"
-# the ext4 superblock and group descriptors: the first 64 KiB of the partition
+# both copies of the LUKS2 header: the first 64 KiB of the partition
 dd if="$DISK" of="$SAVE" bs=1 skip="$S4_OFF" count=65536 status=none
 dd if=/dev/zero of="$DISK" bs=1 seek="$S4_OFF" count=65536 conv=notrunc status=none
-degraded_boot state-p4 'mount of /dev/vda4 failed'
+degraded_boot state-p4 '/dev/vda4 carries no LUKS2 header'
 dd if="$SAVE" of="$DISK" bs=1 seek="$S4_OFF" conv=notrunc status=none
 normal_boot state-p4b
 
@@ -181,6 +181,12 @@ if txt | grep -q 'softdog: Initiating system reboot'; then green "state-p6: the 
 else echo "      note: no softdog line; the reset came from an emulated hardware timer"; fi
 txt | grep -q 'Kernel panic' && red "state-p6: kernel panic" || green "state-p6: no panic"
 txt | grep -q 'STATE DEGRADED' && red "state-p6: degraded after the reset" || green "state-p6: state is intact after the reset"
+
+# ----------------------------------------------------------------- step 7 --
+step "step 7: three wrong passphrases, then the right one"
+KRYPTIK_STATE_PASSPHRASE=not-the-passphrase degraded_boot state-p7 '/dev/vda4 was not unlocked in three tries'
+[[ "$(tr -d '\r' < "$LATEST" | grep -c 'passphrase for the state partition')" -eq 3 ]] && green "state-p7: asked three times and no more" || red "state-p7: not asked exactly three times"
+normal_boot state-p7b
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]] || exit 1

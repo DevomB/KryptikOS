@@ -305,7 +305,9 @@ passes, not when its code is written.
       the Wi-Fi passphrases and the zone volumes' headers. LUKS2 on
       `kryptik-state`, unlocked at boot by a passphrase (and later a TPM, see
       version 2), created by the installer, with the state test's degraded
-      paths still honest.
+      paths still honest. Written
+      ([the design](design/state-encryption.md)). Ticked when the install,
+      state and integrity suites pass with it on the installed system.
 - [ ] **kryptikd is built from pinned source by a pinned compiler.** Today the
       runner's rustc compiles it and the result is copied in (ADR-010's
       unresolved cost). A pinned rustc in the build (its published binary,

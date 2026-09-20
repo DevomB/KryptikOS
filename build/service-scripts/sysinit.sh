@@ -1,6 +1,12 @@
 #!/bin/sh -e
 # Idempotent on purpose: s6-rc may run this again after a runlevel change.
 
+# The console is this script's while it runs, because it may ask for the state
+# passphrase there and two readers on one terminal lose keystrokes:
+# kryptik-console holds the getty back until this has finished, however it ends.
+echo running > /run/kryptik-sysinit
+trap 'echo finished > /run/kryptik-sysinit' EXIT
+
 [ -r /etc/hostname ] && hostname "$(cat /etc/hostname)" || true
 
 # The names under /etc the overlay's upper layer may carry: the account
@@ -36,6 +42,25 @@ prune_etc_upper() {   # prune_etc_upper UPPER QUARANTINE
     done
     [ "$moved" -gt 0 ] && echo "sysinit: /etc overlay: $moved entr(y/ies) moved to lib/kryptik/etc/quarantine on the state partition" >&2
     return 0
+}
+
+# Ask for the state passphrase on the console, three times at most. Echo goes
+# off before the prompt is printed and stty never discards input, so an answer
+# that arrives the moment the prompt appears is not lost. printf is a builtin:
+# the passphrase reaches cryptsetup on a descriptor, never as an argument.
+unlock_state() {   # unlock_state DEVICE -> /dev/mapper/kryptik-state
+    try=1
+    while [ "$try" -le 3 ] && [ ! -b /dev/mapper/kryptik-state ]; do
+        stty -echo < /dev/console 2>/dev/null || true
+        printf 'sysinit: passphrase for the state partition (try %s of 3): ' "$try" > /dev/console
+        IFS= read -r pass < /dev/console || pass=""
+        stty echo < /dev/console 2>/dev/null || true
+        echo > /dev/console
+        printf '%s' "$pass" | cryptsetup open --type luks2 --key-file=- "$1" kryptik-state 2>/dev/null || true
+        try=$((try + 1))
+    done
+    pass=""
+    [ -b /dev/mapper/kryptik-state ]
 }
 
 # The kernel mounts devtmpfs itself (CONFIG_DEVTMPFS_MOUNT=y); these are the
@@ -140,9 +165,15 @@ if ! mountpoint -q /var; then
         state_dev="$(kryptik_part kryptik-state)"
         if [ ! -b "$state_dev" ]; then
             STATE=degraded; STATE_REASON="${state_dev} is not a block device"
-        elif mount -t ext4 -o nosuid,nodev,noatime "$state_dev" "$state_mnt" 2>/run/kryptik/state-mount.err; then
+        elif ! cryptsetup isLuks --type luks2 "$state_dev" 2>/dev/null; then
+            # Never mounted as found: a plain filesystem put in the encrypted
+            # one's place would otherwise be believed without a question.
+            STATE=degraded; STATE_REASON="${state_dev} carries no LUKS2 header"
+        elif ! unlock_state "$state_dev"; then
+            STATE=degraded; STATE_REASON="${state_dev} was not unlocked in three tries; reboot to try again"
+        elif mount -t ext4 -o nosuid,nodev,noatime /dev/mapper/kryptik-state "$state_mnt" 2>/run/kryptik/state-mount.err; then
             STATE=persistent
-            echo "sysinit: state partition ${state_dev} mounted (disk ${root_disk})"
+            echo "sysinit: state partition ${state_dev} unlocked and mounted (disk ${root_disk})"
         else
             STATE=degraded; STATE_REASON="mount of ${state_dev} failed: $(tr '\n' ' ' < /run/kryptik/state-mount.err)"
         fi
@@ -212,9 +243,9 @@ rmdir "$state_mnt" 2>/dev/null || true
 #   the release trust anchor (kryptik-update)   /usr/share/kryptik/trust
 # all of which sit on the verified root. What remains under /etc is what
 # must be mutable: accounts and passwords, hostname, the local user's
-# session hooks. Their protection is the state partition's, and that
-# partition is not encrypted in this developer tier - a stated limitation,
-# not tamper protection.
+# session hooks. Their protection is the state partition's: encrypted, so an
+# offline reader learns nothing, and not authenticated, so an offline writer
+# can still damage it. That is why the list above stays.
 if ! mountpoint -q /etc; then
     mkdir -p /var/lib/kryptik/etc/upper /var/lib/kryptik/etc/work
     if mount -t overlay overlay \

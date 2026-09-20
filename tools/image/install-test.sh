@@ -71,7 +71,7 @@ want "$P1" 'KRYPTIK_INSTALL: rc=0'                       "the installer exited 0
 want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-esp=/dev/vda1 type=vfat'   "partition 1 is the ESP"
 want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-a=/dev/vda2'  "partition 2 is kryptik-a"
 want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-b=/dev/vda3'  "partition 3 is kryptik-b"
-want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-state=/dev/vda4 type=ext4' "partition 4 is the state partition"
+want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-state=/dev/vda4 type=crypto_LUKS' "partition 4 is the state partition, and it is LUKS"
 want "$P1" 'KRYPTIK_INSTALL: verify: esp_files=.*EFI/BOOT/BOOTX64.EFI' "the ESP has the removable-media boot file"
 want "$P1" 'KRYPTIK_INSTALL: verify: install_json=yes'   "install.json was written"
 want "$P1" 'KRYPTIK_INSTALL: verify: preseed=present'    "the first-boot preseed was written"
@@ -104,7 +104,8 @@ python3 "$DRV" --serial "$SER" --timeout 300 --record "$REC" \
     "grab:mounts:awk '\$2==\"/\"||\$2==\"/var\"||\$2==\"/etc\"||\$2==\"/home\" {print \$2, \$1, \$3, \$4}' /proc/mounts" \
     "grab:secureboot:od -An -tu1 -j4 -N1 /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c 2>/dev/null || echo none" \
     "grab:bootresult:cat /var/lib/kryptik/boot/last-result" \
-    "run:touch /home/${TUSER}/persisted-p2 && sync" \
+    "run:echo KRYPTIK-CLEAR-MARKER-7f3a91 > /home/${TUSER}/persisted-p2 && sync" \
+    "$(ROOTSH "grep -rqa state[-]pw /proc/[0-9]*/cmdline /run /etc 2>/dev/null && echo PW-LEAK || echo PW-NOLEAK")" "expect:PW-NOLEAK" \
     "su:${RPASS}:reboot" \
     "expect:Linux version" \
     "expect:KRYPTIK_SMOKE: END" \
@@ -121,7 +122,16 @@ echo "  transcript: ${LOG2}"
 [[ "$drc" -eq 0 ]] && green "first boot, login, reboot, second login and clean poweroff all happened" || red "the serial drive failed (see above)"
 want "$P2" 'KRYPTIK_SMOKE: root_source=/dev/dm-0 ext4 ro'   "installed root is the verity device"
 want "$P2" 'KRYPTIK_SMOKE: boot_identity=slot=a media='      "booted slot a"
-want "$P2" 'KRYPTIK_SMOKE: var_source=/dev/vda4 ext4'       "state partition mounted on /var"
+want "$P2" 'KRYPTIK_SMOKE: var_source=/dev/mapper/kryptik-state ext4' "the unlocked state partition is mounted on /var"
+want "$P2" 'passphrase for the state partition \(try 1 of 3\)' "sysinit asked for the state passphrase on the console"
+deny "$P2" "$KRYPTIK_STATE_PASSPHRASE"                       "the passphrase is nowhere in the transcript"
+# From the host: partition 4 is a LUKS header and ciphertext.
+S4=$(( $(part_start "$DISK" 4) * 512 ))
+magic() { dd if="$DISK" bs=1 skip="$1" count="$2" status=none | od -An -tx1 | tr -d ' \n'; }
+[[ "$(magic "$S4" 6)" == 4c554b53babe ]] && green "partition 4 starts with a LUKS header" || red "partition 4 does not start with a LUKS header"
+[[ "$(magic $(( S4 + 1080 )) 2)" != 53ef ]] && green "no ext4 superblock in the clear" || red "an ext4 superblock is readable on partition 4"
+if tail -c +$(( S4 + 1 )) "$DISK" | LC_ALL=C grep -aq 'KRYPTIK-CLEAR-MARKER-7f3a91'; then red "a file written under /home is readable from the raw partition"
+else green "a file written under /home is not readable from the raw partition"; fi
 want "$P2" 'KRYPTIK_SMOKE: etc_source=overlay'               "/etc is an overlay"
 want "$P2" 'KRYPTIK_SMOKE: root_writable=no'                 "the verified root is not writable"
 want "$P2" 'boot-success: slot a up'                         "boot-success recorded slot a"

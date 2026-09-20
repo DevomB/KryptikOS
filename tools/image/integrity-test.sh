@@ -39,7 +39,7 @@ while [[ "$#" -gt 0 ]]; do
     esac
 done
 [[ -f "$USB" ]] || die "--usb IMG is required"
-for t in python3 sbsign sbverify openssl mcopy mdel mdir sfdisk; do have "$t" || die "required tool not found: $t"; done
+for t in python3 sbsign sbverify openssl mcopy mdel mdir sfdisk cryptsetup losetup; do have "$t" || die "required tool not found: $t"; done
 VMDIR="${KRYPTIK_WORK}/vm"; mkdir -p "$VMDIR"
 DISK="${DISK:-${VMDIR}/integrity.img}"
 [[ -e "$DISK" && ! -f "$DISK" ]] && die "refusing: ${DISK} is not a regular file"
@@ -170,10 +170,9 @@ step "step 5: offline tampering of the state partition does not reach privileged
 # a trust anchor of their own for updates, a zone definition the launch
 # daemon will honour, a kernel tunable applied at boot. Plant all three from
 # the host, boot, and measure each from inside the guest.
-S_OFF=$(( $(part_start "$DISK" 4) * 512 ))
 TMPK="$(mktemp -d)"; MNT="$TMPK/state"; mkdir -p "$MNT"
 ssh-keygen -q -t ed25519 -N "" -f "$TMPK/attacker" >/dev/null
-if mount -o loop,offset="$S_OFF" "$DISK" "$MNT" 2>/dev/null; then
+if open_state "$DISK" "$MNT" 2>/dev/null; then
     up="$MNT/lib/kryptik/etc/upper"
     mkdir -p "$up/kryptik/trust" "$up/kryptik/zones" "$up/sysctl.d"
     printf 'kryptik-release namespaces="kryptik-release" %s\n' "$(cut -d' ' -f1,2 "$TMPK/attacker.pub")" > "$up/kryptik/trust/release-signers"
@@ -202,7 +201,7 @@ EOF
     printf 'ACTION=="add", RUN+="/var/lib/kryptik/evil.sh"\n' > "$up/udev/rules.d/99-evil.rules"
     printf '#!/bin/sh\ntouch /var/lib/kryptik/evil-ran\n' > "$MNT/lib/kryptik/evil.sh"; chmod 0755 "$MNT/lib/kryptik/evil.sh"
     printf 'planted:1310720:65536\n' > "$up/subuid"
-    sync; umount "$MNT"
+    close_state "$MNT"
     green "planted a trust anchor, a zone definition, a sysctl fragment, a preload library and a udev rule under the state's /etc upper layer, and one allowed change"
 else
     red "could not mount the state partition from the host (loop/offset); step 5 not performed"
@@ -257,13 +256,13 @@ if [[ -n "${EXTRA[*]:-}" ]]; then
     grep -q 'not enrolled' <<<"$T5" && green "an update signed by the planted anchor's key is refused (the anchor is read from the verified root)" || red "an attacker-signed update was not refused"
 fi
 grep -q 'KRYPTIK_SMOKE: sysctl kernel.kptr_restrict=2' <<<"$T5" && green "the planted sysctl fragment was not applied" || red "the planted sysctl was applied"
-grep -q 'KRYPTIK_SMOKE: var_source=/dev/vda4' <<<"$T5" && green "state stayed persistent through the tamper (this is a repairable machine, not a bricked one)" || red "state not persistent in step 5"
+grep -q 'KRYPTIK_SMOKE: var_source=/dev/mapper/kryptik-state' <<<"$T5" && green "state stayed persistent through the tamper (this is a repairable machine, not a bricked one)" || red "state not persistent in step 5"
 # undo the planting so later runs start clean
-if mount -o loop,offset="$S_OFF" "$DISK" "$MNT" 2>/dev/null; then
+if open_state "$DISK" "$MNT" 2>/dev/null; then
     rm -rf "$MNT/lib/kryptik/etc/upper/kryptik/trust" "$MNT/lib/kryptik/etc/upper/kryptik/zones" "$MNT/lib/kryptik/etc/upper/sysctl.d" \
            "$MNT/lib/kryptik/etc/upper/ld.so.preload" "$MNT/lib/kryptik/etc/upper/udev" "$MNT/lib/kryptik/etc/upper/subuid" \
            "$MNT/lib/kryptik/etc/quarantine" "$MNT/lib/kryptik/evil.sh" "$MNT/lib/kryptik/evil-ran"
-    sync; umount "$MNT"
+    close_state "$MNT"
 fi
 rm -rf "$TMPK"
 

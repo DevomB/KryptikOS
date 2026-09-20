@@ -13,7 +13,8 @@
 #        2 kryptik-a      the medium's verity root image, byte for byte,
 #                         read back and hashed against the medium's record
 #        3 kryptik-b      empty (the first update fills it)
-#        4 kryptik-state  ext4, with install.json and the first-boot preseed
+#        4 kryptik-state  LUKS2 (docs/design/state-encryption.md), ext4 inside
+#                         it, with install.json and the first-boot preseed
 #
 # It refuses to touch:
 #   - the device the running root is on, through any dm/loop stack
@@ -55,7 +56,7 @@ done
 
 # --- every external tool, checked before the first write -------------------
 missing=""
-for tool in sfdisk partx blockdev blkid mkfs.ext4 dd sha256sum mount umount sync awk sed \
+for tool in sfdisk partx blockdev blkid cryptsetup stty mkfs.ext4 dd sha256sum mount umount sync awk sed \
             readlink lsblk head cmp cp mkdir stat tr; do
     command -v "$tool" >/dev/null 2>&1 || missing="${missing} ${tool}"
 done
@@ -143,11 +144,14 @@ fi
 media="$(sed -n 's/^media=//p' /run/kryptik/boot-identity 2>/dev/null)"
 [ -n "$media" ] || die "this is not an install medium (no kryptik.media= on the signed command line)"
 mkdir -p "$MNT_BASE/media" "$MNT_BASE/esp" "$MNT_BASE/state" "$MNT_BASE/tesp"
+MAPPING=kryptik-install-state
 cleanup() {
+    [ -t 0 ] && stty echo 2>/dev/null || true
     for m in "$MNT_BASE/tesp" "$MNT_BASE/state" "$MNT_BASE/esp" "$MNT_BASE/media"; do
         mountpoint -q "$m" 2>/dev/null && umount "$m" 2>/dev/null || true
         rmdir "$m" 2>/dev/null || true
     done
+    [ -b "/dev/mapper/$MAPPING" ] && cryptsetup close "$MAPPING" 2>/dev/null || true
     rmdir "$MNT_BASE" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
@@ -232,6 +236,24 @@ if [ "$ASSUME_YES" -ne 1 ]; then
     [ "$answer" = "ERASE" ] || die "not confirmed; nothing was written"
 fi
 
+# The state passphrase, before the first write: from the terminal twice, or
+# one line of standard input when that is not a terminal (the unattended
+# path). It reaches cryptsetup on a descriptor (printf is a builtin), never
+# on a command line and never in a file.
+if [ -t 0 ]; then
+    stty -echo
+    printf '%s: a passphrase for the state partition, asked at every boot: ' "$PROG"
+    IFS= read -r STATE_PASS || STATE_PASS=""
+    printf '\n%s: again: ' "$PROG"
+    IFS= read -r again || again=""
+    stty echo; echo
+    [ "$STATE_PASS" = "$again" ] || die "the two passphrases differ; nothing was written"
+    again=""
+else
+    IFS= read -r STATE_PASS || STATE_PASS=""
+fi
+[ -n "$STATE_PASS" ] || die "no state passphrase given; nothing was written"
+
 # --- partition -------------------------------------------------------------
 say "partitioning (sfdisk, GPT: kryptik-esp, kryptik-a, kryptik-b, kryptik-state)"
 P1="$(part_dev "$TARGET_REAL" 1)"; P2="$(part_dev "$TARGET_REAL" 2)"
@@ -268,8 +290,13 @@ got="$(dd if="$P2" bs=4M iflag=count_bytes count="$ROOT_BYTES" status=none | sha
 say "kryptik-a verifies (${got})"
 say "clearing kryptik-b"
 dd if=/dev/zero of="$P3" bs=1M count=4 conv=fsync status=none || die "clearing kryptik-b failed"
-say "creating kryptik-state (ext4)"
-mkfs.ext4 -q -F -L kryptik-state "$P4" || die "mkfs.ext4 on ${P4} failed"
+say "creating kryptik-state (LUKS2, ext4 inside it)"
+printf '%s' "$STATE_PASS" | cryptsetup -q luksFormat --type luks2 --cipher aes-xts-plain64 \
+    --key-size 512 --pbkdf argon2id --key-file=- "$P4" || die "luksFormat on ${P4} failed"
+printf '%s' "$STATE_PASS" | cryptsetup open --type luks2 --key-file=- "$P4" "$MAPPING" \
+    || die "could not open the new state partition"
+STATE_PASS=""
+mkfs.ext4 -q -F -L kryptik-state "/dev/mapper/$MAPPING" || die "mkfs.ext4 inside ${P4} failed"
 
 # --- the target ESP: slot A is the committed boot file ----------------------
 mount -o rw "$P1" "$MNT_BASE/tesp" || die "could not mount the new ESP"
@@ -284,7 +311,7 @@ sync
 umount "$MNT_BASE/tesp" || die "could not unmount the new ESP"
 
 # --- the state partition: what installed this, and the first-boot preseed --
-mount -o rw "$P4" "$MNT_BASE/state" || die "could not mount kryptik-state"
+mount -o rw "/dev/mapper/$MAPPING" "$MNT_BASE/state" || die "could not mount kryptik-state"
 mkdir -p "$MNT_BASE/state/lib/kryptik"
 cat > "$MNT_BASE/state/lib/kryptik/install.json" <<EOF
 {
@@ -307,8 +334,11 @@ if [ -n "$PRESEED" ] && [ -r "$PRESEED" ]; then
 fi
 sync
 umount "$MNT_BASE/state" || die "could not unmount kryptik-state"
+cryptsetup close "$MAPPING" || die "could not close the new state partition"
 blockdev --flushbufs "$TARGET_REAL" 2>/dev/null || true
 sync
 
 say "installed ${VERSION} to ${TARGET_REAL}: boot it from firmware with the medium removed."
 say "  slot a: ${P2}   slot b: ${P3} (empty)   state: ${P4}   esp: ${P1}"
+say "The state partition opens with that passphrase and nothing else: there is no"
+say "escrow. Keep a copy of its header (kryptik-recover --backup-state-header)."
