@@ -206,18 +206,24 @@ echo "-- the scripts the services name"
 for s in "${SCRIPTS}"/*.sh; do
     [[ -f "$s" ]] || continue
     n="$(basename "$s")"
-    check "${n}: valid sh"    "$(sh -n "$s" 2>/dev/null && echo ok)"
+    # Parsed by the interpreter its first line names. A bash script that
+    # happens to parse under the host's sh proves nothing, and one that does
+    # not (arrays, {fd} redirections) is not broken: the image runs it under
+    # bash. Which sh the host has must not decide this check either way.
+    interp="sh"
+    case "$(head -1 "$s")" in "#!/bin/bash"*|"#!/usr/bin/bash"*) interp="bash" ;; esac
+    check "${n}: valid ${interp}"    "$("$interp" -n "$s" 2>/dev/null && echo ok)"
     check "${n}: executable"  "$([[ -x "$s" ]] && echo ok)"
     # An orphan script is either a service someone forgot to declare or dead
     # weight installed into every image. A helper that another installed
     # script sources (`. /usr/libexec/kryptik/x.sh`) is referenced through
     # that script, provided the sourcing script is itself run by a service.
-    if grep -rqF "/usr/libexec/kryptik/${n}" "$SRC"/*/up 2>/dev/null; then
+    if grep -rqF "/usr/libexec/kryptik/${n}" "$SRC"/*/up "$SRC"/*/run 2>/dev/null; then
         green "${n}: referenced by a service"
     elif grep -lqE "^\s*\. +/usr/libexec/kryptik/${n}" "${SCRIPTS}"/*.sh 2>/dev/null \
          && grep -lE "^\s*\. +/usr/libexec/kryptik/${n}" "${SCRIPTS}"/*.sh \
             | xargs -r -n1 basename | while read -r u; do
-                  grep -rqF "/usr/libexec/kryptik/${u}" "$SRC"/*/up && exit 0; done; then
+                  grep -rqF "/usr/libexec/kryptik/${u}" "$SRC"/*/up "$SRC"/*/run 2>/dev/null && exit 0; done; then
         green "${n}: sourced by a script a service runs"
     else
         red "${n}: installed by the stage but no service runs it"

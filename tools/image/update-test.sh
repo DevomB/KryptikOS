@@ -107,9 +107,27 @@ drive() { python3 "$DRV" --serial "$SER" --timeout 420 "$@"; }
 txt() { tr -d '\r' < "$LOG"; }
 part_start_disk() { sfdisk -d "$1" 2>/dev/null | awk -v n="$2" -F'[ ,]+' '$1 ~ n"$" {for(i=1;i<=NF;i++) if($i=="start=") print $(i+1)}'; }
 
+# Each step starts from the state the one before it leaves. When the copy in
+# step 4 failed for want of disk space, steps 5 to 7 went on to roll back a
+# slot that was never written and to arm a payload that was not there, and
+# the last of them sat in a boot loop for fifty minutes to report eight
+# failures that were all the first one. A step that fails ends the run, and
+# the report then says the one thing that went wrong.
+stop_unless_ok() {   # stop_unless_ok RC WHAT
+    [[ "$1" -eq 0 ]] && return 0
+    printf '\n  stopping: %s failed, and every later step starts from the state it leaves.\n' "$2"
+    printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
+    exit 1
+}
+
 # ----------------------------------------------------------------- step 1 --
 step "step 1: install ${VA}, boot it, create zone data"
-rm -f "$DISK"; truncate -s 12G "$DISK"
+# Sized from the medium, with room on kryptik-state for the two payloads this
+# suite keeps there at once: b from step 2 is still there when a arrives in
+# step 4. On a fixed 12 GiB disk that stopped fitting when the image grew, and
+# every later step failed for that reason and no other.
+DISK_SIZE="$("${SELF}/test-disk-size.sh" --medium "$USB_A" --payloads 2)" || die "could not size the test disk from the medium"
+rm -f "$DISK"; truncate -s "$DISK_SIZE" "$DISK"
 CTL="${VMDIR}/testctl-update.img"
 "${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
     "preseed_user=${TUSER}" "preseed_password_hash=${TUSER_HASH}" "preseed_root_hash=${ROOT_HASH}" > /dev/null
@@ -125,6 +143,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "A boots, zone volume created (${VA})" || red "step 1 drive failed"
+stop_unless_ok "$rc" "step 1"
 txt | grep -q "version_id=${VA}" && green "guest reports version ${VA}" || red "guest did not report version ${VA}"
 
 # ----------------------------------------------------------------- step 2 --
@@ -142,6 +161,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "B applied, rebooted into slot b, home file and zone volume intact" || red "step 2 drive failed"
+stop_unless_ok "$rc" "step 2"
 txt | grep -q "KRYPTIK_SMOKE: boot_identity=slot=b" && green "booted slot b" || red "did not boot slot b"
 txt | grep -q "version_id=${VB}" && green "guest reports version ${VB}" || red "guest did not report ${VB}"
 txt | grep -q "boot-success: committed: BOOTX64.EFI is now slot b" && green "boot-success committed slot b" || red "no commit of slot b"
@@ -178,6 +198,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "recovery to ${VA}: slot a booted and committed, data intact" || red "step 4 drive failed"
+stop_unless_ok "$rc" "step 4"
 txt | grep -q "version_id=${VA}" && green "guest reports ${VA} again" || red "guest did not report ${VA}"
 
 # ----------------------------------------------------------------- step 5 --
@@ -191,6 +212,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "rollback: slot b armed, booted and committed" || red "step 5 drive failed"
+stop_unless_ok "$rc" "step 5"
 txt | grep -q "version_id=${VB}" && green "guest reports ${VB} after rollback" || red "guest did not report ${VB}"
 
 # ----------------------------------------------------------------- step 6 --
@@ -218,6 +240,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'kryptik-update apply /var/lib/kryptik/updates/a --recovery && echo ARMED-OK')" "expect:ARMED-OK"
 rc=$?
 [[ "$rc" -eq 0 ]] && green "after the interrupted write: still slot b, no trial; the apply succeeds again" || red "step 6a drive failed"
+stop_unless_ok "$rc" "step 6a"
 # armed, now kill again before the reboot: the firmware consumes BootNext at the next boot
 python3 - "$QMP" <<'PY'
 import socket, sys
@@ -231,6 +254,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "after a kill between arming and reboot: the trial boot happened and slot a was committed" || red "step 6c drive failed"
+stop_unless_ok "$rc" "step 6c"
 
 # ----------------------------------------------------------------- step 7 --
 step "step 7: a deliberately broken trial falls back, is recorded, and is refused until retried"
@@ -260,6 +284,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "B armed from slot a" || red "step 7 arming failed"
+stop_unless_ok "$rc" "step 7 arming"
 B_OFF=$(( $(part_start_disk "$DISK" 3) * 512 ))
 # The ext4 superblock's volume name: the first block a root mount reads, so
 # the trial boot meets the corruption at once (a byte deep in the data area

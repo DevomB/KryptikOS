@@ -33,6 +33,7 @@ SUITES=(
     "test-kernel-hardening|tools/test-check-kernel-hardening.sh"
     "test-pin-reviews|tools/test-check-pin-reviews.sh"
     "test-services|tools/test-services.sh"
+    "test-netzone-time|tools/test-netzone-time.sh"
     "test-boot-success|tools/test-boot-success.sh"
     "test-manifest|tools/test-artifact-manifest.sh"
     "test-s6-init|tools/test-s6-init-config.sh"

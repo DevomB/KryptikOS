@@ -195,15 +195,35 @@ side channels (the L1TF, MDS and later families) need. What it does not buy
 is a substitute for the mitigations. The kernel's own mitigations stay on;
 ADR-011 takes the siblings away altogether with `mitigations=auto,nosmt`,
 and the cookies are what makes revisiting that possible, not a reason to
-revisit it here. A kernel without `CONFIG_SCHED_CORE` answers `EINVAL`; the
-launcher notes it in the zone's log and `kryptikd explain` says "core sched
-not available on this kernel", because the developer VM and most hosts are
-such kernels and none of the zone's other boundaries depends on it.
+revisit it here.
+
+What a refusal of that call means is decided by what the machine is, which
+the launcher asks the kernel (`PR_SCHED_CORE_GET` on itself), not by the
+error. Where sibling threads are online and the kernel schedules them by
+cookie, the cookie is the one thing between two zones on a core, and a zone
+that cannot have one does not start. The two other states are expected, and
+neither stops a launch, because none of the zone's other boundaries depends
+on the cookie:
+
+- `ENODEV`: no core has a second hardware thread online. Under `nosmt` that
+  is every installed Kryptik, as it is a processor or a VM without SMT.
+  There is no sibling to share, so the property holds with nothing to take;
+  the launcher says nothing and `kryptikd explain` says "no sibling threads
+  online". The first version treated only `EINVAL` as expected and anything
+  else as fatal, and no zone started on the installed system; the suites
+  had passed, because their machines have SMT or no core scheduling at all.
+  The installed system is the only place this answer is seen.
+- `EINVAL`: a kernel without `CONFIG_SCHED_CORE`, as on the developer VM and
+  most hosts. A note in the zone's log, and `explain` says "not available on
+  this kernel".
+
 Nothing in `/proc` shows a cookie; `kryptikd status` asks the kernel for
 the zone's pid 1's with `PR_SCHED_CORE_GET` (allowed with ptrace-read
 access, which root has and a user has over the zones it launched) and
-prints `core-sched own`, `none` or `unavailable`. The launcher suite reads
-that word and expects `own` wherever the kernel has the feature.
+prints `core-sched own`, `no-smt`, `none` or `unavailable`. The launcher
+suite reads that word: `own` and `no-smt` pass, `unavailable` is a skip, and
+`none` - a kernel that could have given a cookie to a zone that has none -
+fails.
 
 ## Tests
 

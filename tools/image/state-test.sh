@@ -104,7 +104,9 @@ normal_boot() {   # normal_boot NAME
 
 # ----------------------------------------------------------------- step 1 --
 step "step 1: install, first boot, a file on the state partition"
-rm -f "$DISK"; truncate -s 12G "$DISK"
+# Sized from the medium, not a constant: see test-disk-size.sh.
+DISK_SIZE="$("${SELF}/test-disk-size.sh" --medium "$USB")" || die "could not size the test disk from the medium"
+rm -f "$DISK"; truncate -s "$DISK_SIZE" "$DISK"
 CTL="${VMDIR}/testctl-state.img"
 "${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
     "preseed_user=${TUSER}" "preseed_password_hash=${TUSER_HASH}" "preseed_root_hash=${ROOT_HASH}" > /dev/null
@@ -171,6 +173,31 @@ sfdisk --part-label "$DISK" 4 not-kryptik >/dev/null 2>&1 || die "relabel"
 degraded_boot state-p5 'no partition labelled kryptik-state on /dev/vda'
 sfdisk --part-label "$DISK" 4 kryptik-state >/dev/null 2>&1 || die "relabel back"
 normal_boot state-p5b
+
+# ----------------------------------------------------------------- step 6 --
+# The feeder is stopped, not killed: a killed feeder is restarted by its
+# supervisor inside the timeout, which is the design and proves nothing. A
+# stopped one is what a hung userspace looks like from the timer's side: the
+# process exists and never runs. Nothing else is touched, so the only thing
+# that can bring the second boot report is the watchdog's reset.
+step "step 6: nothing feeds the watchdog: the machine resets itself and comes back with its data"
+start_vm state-p6
+p6=( "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}"
+     "$(ROOTSH 's6-svc -p /run/service/watchdog && echo FEEDER-STOPPED')" "expect:FEEDER-STOPPED"
+     "expect:KRYPTIK_SMOKE: BEGIN" "expect:KRYPTIK_SMOKE: END"
+     "login:${TUSER}:${TPASS}" "run:test -f /home/${TUSER}/state-marker"
+     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit" )
+drive "${p6[@]}"
+rc=$?; stop_vm
+[[ "$rc" -eq 0 ]] && green "state-p6: reset without being asked, booted again, login, persisted file present, clean poweroff" || red "state-p6: drive failed"
+boots="$(txt | grep -c 'KRYPTIK_SMOKE: BEGIN')"
+[[ "$boots" -eq 2 ]] && green "state-p6: two boots in one transcript" || red "state-p6: ${boots} boot(s) in the transcript, wanted 2"
+txt | grep -q 'KRYPTIK_SMOKE: svc_watchdog=up' && green "state-p6: the feeder is supervised and up" || red "state-p6: the feeder is not up"
+txt | grep -qE 'KRYPTIK_SMOKE: watchdog watchdog[0-9]+: .* state=active .* nowayout=1' && green "state-p6: a watchdog is armed and cannot be closed off" || red "state-p6: no armed watchdog in the boot report"
+if txt | grep -q 'softdog: Initiating system reboot'; then green "state-p6: the software watchdog named itself as the cause"
+else echo "      note: no softdog line; the reset came from an emulated hardware timer"; fi
+txt | grep -q 'Kernel panic' && red "state-p6: kernel panic" || green "state-p6: no panic"
+txt | grep -q 'STATE DEGRADED' && red "state-p6: degraded after the reset" || green "state-p6: state is intact after the reset"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]] || exit 1

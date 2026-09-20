@@ -201,7 +201,15 @@ slot_mib=$(( (ROOT_BYTES + MIB - 1) / MIB ))
 room_mib=$(( slot_mib / 2 ))
 [ "$room_mib" -ge 512 ] || room_mib=512
 slot_mib=$(( (slot_mib + room_mib + 63) / 64 * 64 ))
-state_min_mib=512
+# The state partition gets whatever is left, and the least it may be left
+# with is room for one update payload and a gigabyte of the person's own
+# data. It was a flat 512 MiB, which admitted a disk on which the installed
+# system could never be updated: a payload is the root image plus two
+# kernels, and it has to sit on this partition while it is verified and
+# written into the other slot. An installer that accepts a disk has accepted
+# updating it.
+image_mib=$(( (ROOT_BYTES + MIB - 1) / MIB ))
+state_min_mib=$(( image_mib + 128 + 1024 ))
 need_mib=$(( 1 + esp_mib + 2 * slot_mib + state_min_mib + 1 ))
 have_mib=$(( size_bytes / MIB ))
 [ "$have_mib" -ge "$need_mib" ] || die "${TARGET} is ${have_mib} MiB; this layout needs at least ${need_mib} MiB
