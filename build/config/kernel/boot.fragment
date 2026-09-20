@@ -3,36 +3,16 @@
 # (docs/design/boot-and-updates.md). Merged after hardening.fragment;
 # validated by make validate-kernel-boot.
 #
-# WHAT MAY BE BUILT IN
-#
-# There is no initramfs, so a driver is built in (=y) only when one of these
-# is true, and the line or its section says which:
-#
-#   1. it is needed to find, verify and mount the root: EFI, dm-verity, the
-#      storage controllers and the buses they sit on, the filesystems;
-#   2. it gives a console and a keyboard before the root is mounted, so a
-#      boot that fails can be read and answered: the firmware framebuffer,
-#      fbcon, the PS/2, USB and paravirtual keyboards;
-#   3. it cannot do its job as a module: netfilter for the net zone (a
-#      request for a module from inside a user namespace is refused), CPU
-#      microcode (it must load before anything runs), the watchdog (the
-#      path that recovers a hung machine must not depend on module
-#      loading), and a few platform drivers every distribution keeps built
-#      in because devices behind them misbehave when they arrive late.
-#
-# Everything else is a module (=m). Modules are signed by this build and an
-# unsigned one does not load (MODULE_SIG_FORCE); eudev loads them by
-# modalias at coldplug, from the verified root, before any service that
-# wants the device starts. A network card, a GPU, a touchpad or a radio is
-# never needed before the root is mounted, so none of them is built in -
-# including the virtual machine's, on purpose: the acceptance suite then
-# boots through the same autoload path real hardware depends on, instead of
-# a shortcut only the test machine has.
-#
-# Until the image carried modules the rule was "everything is =y", and the
-# signed kernel went from 17.8 MB to 31.6 MB when hardware support was
-# widened under it. Stage 05 now prints what the image is made of and
-# refuses one larger than build/config/kernel/size-budget says.
+# WHAT MAY BE BUILT IN (ADR-013). There is no initramfs, so a driver is =y only if
+#   1. it finds, verifies or mounts the root (EFI, dm-verity, storage, filesystems);
+#   2. it gives a console and a keyboard before the root is mounted; or
+#   3. it cannot work as a module: netfilter (a module request from inside the net
+#      zone's user namespace is refused), microcode, the watchdog, and a few
+#      platform drivers every distribution keeps built in.
+# Everything else is =m: signed by this build, loaded by eudev at coldplug from
+# the verified root. That includes the test VM's network and display, so every
+# acceptance run loads modules the way hardware will. Stage 05 prints the image
+# size and fails over build/config/kernel/size-budget.
 
 # --- the kernel is the UEFI application ---
 # The EFI stub boots the kernel with no bootloader. EFI_MIXED (32-bit

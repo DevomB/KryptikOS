@@ -372,46 +372,17 @@ s_build() {
 }
 
 s_size() {
-    # $1 is the digest of .config and $2 the budget file's, so the step runs
-    # again when either moves; see the step list.
-    #
-    # What the image is made of, in every build log, and a ceiling on it. The
-    # signed kernel went from 17.8 MB to 31.6 MB across one set of merges and
-    # nothing said so: it was found by someone comparing two artifacts. Most
-    # of that was built-in microcode, which is encrypted and does not
-    # compress; the rest was drivers built in because, before the image
-    # carried modules, there was nowhere else to put them. The ceiling is not
-    # a target. It is there so the next doubling is a line somebody has to
-    # edit, with a reason, instead of something nobody decided.
+    # $1 is .config's digest and $2 the budget's, so this runs when either moves.
+    # The signed kernel once grew from 17.8 MB to 31.6 MB and nothing said so.
     cd "$KSRC"
-    local img=arch/x86/boot/bzImage budget_file="${CONFIG_DIR}/size-budget"
-    [[ -s "$img" ]] || { echo "no ${img}: the build step has not run"; return 1; }
-    local img_bytes ucode_bytes=0 f
-    img_bytes="$(stat -c %s "$img")"
-    for f in $(cat "${BUILDDIR}/microcode/list"); do
-        ucode_bytes=$(( ucode_bytes + $(stat -c %s "${BUILDDIR}/microcode/${f}") ))
-    done
-    echo "--- vmlinux, before compression ---"
-    size vmlinux | sed 's/^/  /'
-    echo "--- the image the firmware loads ---"
-    printf '  %-28s %11d bytes\n' "bzImage" "$img_bytes"
-    printf '  %-28s %11d bytes  (does not compress)\n' "of which built-in microcode" "$ucode_bytes"
-    printf '  %-28s %11d bytes\n' "everything else, compressed" "$(( img_bytes - ucode_bytes ))"
-    printf '  %-28s %s\n' "compression" "$(grep -oE '^CONFIG_KERNEL_(GZIP|BZIP2|LZMA|XZ|LZO|LZ4|ZSTD)=y' .config | sed -E 's/CONFIG_KERNEL_(.*)=y/\1/')"
-    printf '  %-28s %11d\n' "options built in" "$(grep -c '=y$' .config)"
-    printf '  %-28s %11d\n' "options built as modules" "$(grep -c '=m$' .config)"
-
-    local budget
-    budget="$(awk '$1 == "bzimage_max_bytes" {print $2}' "$budget_file" 2>/dev/null)"
-    [[ "$budget" =~ ^[0-9]+$ ]] || { echo "FAIL: ${budget_file} names no bzimage_max_bytes"; return 1; }
-    printf '  %-28s %11d bytes\n' "budget" "$budget"
-    if [[ "$img_bytes" -gt "$budget" ]]; then
-        echo "FAIL: the kernel image is $(( img_bytes - budget )) bytes over its budget."
-        echo "      Find what grew (the lines above, against the last build's), make it a"
-        echo "      module or leave it out; raise ${budget_file##*/} only with the reason written in it."
-        return 1
-    fi
-    echo "  ok   $(( budget - img_bytes )) bytes under budget"
+    local img_bytes ucode_bytes budget
+    img_bytes="$(stat -c %s arch/x86/boot/bzImage)" || return 1
+    ucode_bytes="$(du -sb kryptik-microcode 2>/dev/null | cut -f1)"
+    budget="$(awk '$1 == "bzimage_max_bytes" {print $2}' "${CONFIG_DIR}/size-budget")"
+    [[ "$budget" =~ ^[0-9]+$ ]] || { echo "FAIL: ${CONFIG_DIR}/size-budget names no bzimage_max_bytes"; return 1; }
+    echo "bzImage ${img_bytes} bytes (microcode, which does not compress: ${ucode_bytes:-0}); budget ${budget}"
+    echo "built in: $(grep -c '=y$' .config) options, modules: $(grep -c '=m$' .config)"
+    [[ "$img_bytes" -le "$budget" ]] || { echo "FAIL: over budget by $(( img_bytes - budget )) bytes; make it a module or leave it out"; return 1; }
 }
 
 s_modules() {

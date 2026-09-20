@@ -1,28 +1,6 @@
-# The most the kernel image may weigh. Read by stage 05's size step, which
-# prints what the image is made of and fails the build over this number.
-#
-# One key, whitespace, a number of bytes.
-#
-#   bzimage_max_bytes   arch/x86/boot/bzImage, which is what gets signed and
-#                       what the firmware loads from the ESP, twice over (one
-#                       per slot)
-#
-# History, because a ceiling with no history is a number somebody made up:
-#
-#   17,816,528   before the image carried modules or microcode
-#   31,648,720   after hardware support was widened with every driver built
-#                in, gzip compression, and 16.9 MB of Intel microcode
-#
-# About 17 MB of any image is microcode: every Intel CPU Intel still
-# publishes for, and AMD's from the pinned linux-firmware. It is encrypted, so
-# it does not compress, and with no initramfs it has nowhere else to live.
-# Four server-only Xeon families are 6.8 MB of it. They stay because the
-# README names servers as supported hardware, and a machine whose microcode
-# is left out still boots and runs with whatever its firmware loaded, which
-# is a security downgrade nobody would see. Dropping them is a decision about
-# what hardware Kryptik supports, not a build detail.
-#
-# The value below is the last measured image rounded up, so the first build
-# after the drivers moved to modules cannot fail on a guess. Once that build
-# has printed the real size, set this to that size plus five percent.
+# The most arch/x86/boot/bzImage may weigh, in bytes. Stage 05 fails over it.
+# It was 17,816,528 before the image carried modules and microcode and
+# 31,648,720 after; about 17 MB of any image is microcode, which does not
+# compress. This is the last measured size rounded up: once a build has
+# printed the size after the drivers moved to modules, set it to that plus 5%.
 bzimage_max_bytes 33554432
