@@ -28,6 +28,7 @@ mod seccomp;
 mod serve;
 mod spawn;
 mod time;
+mod update;
 mod volume;
 mod wifi;
 mod zone;
