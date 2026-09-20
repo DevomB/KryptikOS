@@ -1393,23 +1393,30 @@ fn intermediate_main(
     //     siblings away altogether (mitigations=auto,nosmt) until every zone
     //     has this, and this is what lets SMT come back later.
     //
-    //     Never a reason not to launch: none of the zone's other boundaries
-    //     depends on it. The kernel answers ENODEV while no core has a second
-    //     thread online, which under nosmt is every installed Kryptik - there
-    //     is no sibling to share, so nothing is missing and nothing is said.
-    //     (Treating that answer as fatal once stopped every zone on the
-    //     installed system, and only there: the machines the suites run on
-    //     have SMT or no CONFIG_SCHED_CORE.) Anything else - EINVAL from a
-    //     kernel without the feature, as on the developer VM and most hosts -
-    //     is a note in the zone's log.
-    match isolate::take_core_cookie() {
-        Ok(()) => {}
-        Err(e) if e.raw_os_error() == Some(libc::ENODEV) => {}
-        Err(e) => eprintln!(
-            "kryptikd[zone {}]: note: core scheduling: no cookie ({e}); \
-             this zone shares a core's sibling threads with whatever else runs",
-            zone.name
-        ),
+    //     What a refusal means is decided by what the machine is, asked of
+    //     the kernel, not by the errno:
+    //     - no core has a second thread online (ENODEV), which under nosmt is
+    //       every installed Kryptik: there is no sibling to share, so nothing
+    //       is missing and nothing is said. (Treating that answer as fatal
+    //       once stopped every zone on the installed system, and only there:
+    //       the machines the suites run on have SMT or no CONFIG_SCHED_CORE.)
+    //     - a kernel without the feature (EINVAL), as on the developer VM and
+    //       most hosts: a note in the zone's log, since none of the zone's
+    //       other boundaries depends on it.
+    //     - sibling threads are online and the kernel schedules them by
+    //       cookie: the cookie is then the one thing between this zone and
+    //       another on the same core, and a zone that cannot have one (out of
+    //       memory, in practice) does not start.
+    if let Err(e) = isolate::take_core_cookie() {
+        match isolate::core_scheduling() {
+            isolate::CoreSched::NoSmt => {}
+            isolate::CoreSched::Unavailable => eprintln!(
+                "kryptikd[zone {}]: note: core scheduling: not available on this kernel ({e}); \
+                 this zone shares a core's sibling threads with whatever else runs",
+                zone.name
+            ),
+            isolate::CoreSched::Cookies => bail!("prctl(PR_SCHED_CORE_CREATE) on a machine with sibling threads online: {e}"),
+        }
     }
 
     // 6. The zone's hostname is the zone's name. The UTS namespace is new,
