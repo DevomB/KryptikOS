@@ -355,7 +355,9 @@ preflight
 # is cleared, with every stamp, before the first step. The record lives with
 # the stamps, not in the sysroot: the root image is a copy of the sysroot.
 toolchain_id="$({ printf '%s\n' "$V_BINUTILS" "$V_GCC" "$V_GLIBC" "$V_LINUX" "$V_MPFR" "$V_GMP" "$V_MPC"
-                  cat "${KRYPTIK_ROOT}"/build/patches/{glibc,gcc,binutils}-*/SHA256SUMS 2>/dev/null; } | sha256_of_stdin)"
+                  # Only glibc has a patch set today; cat fails on the two that do not
+                  # exist, and under errexit and pipefail that failure ended the stage.
+                  cat "${KRYPTIK_ROOT}"/build/patches/{glibc,gcc,binutils}-*/SHA256SUMS 2>/dev/null || true; } | sha256_of_stdin)"
 toolchain_marker="${STAMPS}/toolchain-id"
 
 # Anything mounted under DIR? Stage 03 binds /dev, /proc and THIS REPOSITORY

@@ -29,6 +29,7 @@ STRICT=0
 # here is reproduced with `make <name>`.
 SUITES=(
     "test-harness|tools/test-step-errexit.sh"
+    "test-toolchain-identity|tools/test-toolchain-identity.sh"
     "test-hardening|tools/test-hardening-flags.sh"
     "test-kernel-hardening|tools/test-check-kernel-hardening.sh"
     "test-services|tools/test-services.sh"

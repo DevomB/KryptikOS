@@ -552,6 +552,9 @@ test:
 test-harness:
 	@"$(TOOLS)"/test-step-errexit.sh
 
+test-toolchain-identity:
+	@"$(TOOLS)"/test-toolchain-identity.sh
+
 test-hardening:
 	@"$(TOOLS)"/test-hardening-flags.sh
 
