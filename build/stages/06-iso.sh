@@ -465,7 +465,7 @@ s_payload() {
     local chan="${IMG}/channel-${KRYPTIK_VERSION}"
     rm -rf "$chan"; mkdir -p "$chan"
     "${KRYPTIK_ROOT}/tools/release-manifest.sh" pointer --key "$keydir/kryptik-latest" \
-        --manifest "$out/manifest" --base "${KRYPTIK_VERSION}/" --out "$chan/latest"
+        --manifest "$out/manifest" --signers "$signers" --base "${KRYPTIK_VERSION}/" --out "$chan/latest"
     cp "$chan/latest" "$chan/not-a-pointer"
     ssh-keygen -Y sign -f "$keydir/kryptik-release" -n kryptik-release "$chan/not-a-pointer" < /dev/null >/dev/null 2>&1 \
         || { echo "could not sign the control statement"; return 1; }

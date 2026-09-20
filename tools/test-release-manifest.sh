@@ -486,7 +486,7 @@ ANCHOR="${W}/keys/anchor"
     printf 'kryptik-latest namespaces="kryptik-latest" %s\n' "$(cut -d' ' -f1,2 < "${W}/keys/latest.pub")"
 } > "$ANCHOR"
 PTR="${W}/latest"
-NO_COLOR=1 bash "$TOOL" pointer --key "${W}/keys/latest" --manifest "$MAN" --base 1.0.3/ --out "$PTR" \
+NO_COLOR=1 bash "$TOOL" pointer --key "${W}/keys/latest" --signers "$ANCHOR" --manifest "$MAN" --base 1.0.3/ --out "$PTR" \
     --issued 2027-03-02T14:05:00+00:00 > "$OUT" 2>&1; RC=$?
 want="$(printf 'KRYPTIK-LATEST-1\nrole: development\nversion: 1.0.3\nissued: 2027-03-02T14:05:00+00:00\nmanifest-sha256: %s\nbase: 1.0.3/\n' "$(sha256sum "$MAN" | cut -c1-64)")"
 if [[ "$RC" -eq 0 && "$(cat "$PTR")" == "$want" && -s "${PTR}.sig" ]]; then
@@ -519,7 +519,7 @@ else
     red "pointer: kryptik-update refuses what this tool wrote: $(bash "${W}/check-pointer.sh" "$PTR" "${PTR}.sig" 2>&1 | tail -1)"
 fi
 # Signed by the release key instead: a statement the anchor does not honour.
-NO_COLOR=1 bash "$TOOL" pointer --key "${W}/keys/rel" --manifest "$MAN" --base 1.0.3/ --out "${W}/latest-by-rel" > /dev/null 2>&1
+NO_COLOR=1 bash "$TOOL" pointer --key "${W}/keys/rel" --signers "$ANCHOR" --manifest "$MAN" --base 1.0.3/ --out "${W}/latest-by-rel" > /dev/null 2>&1
 # Into a variable first: the refusal exits 1, and under pipefail that would
 # fail the pipeline whatever grep found.
 said="$(bash "${W}/check-pointer.sh" "${W}/latest-by-rel" "${W}/latest-by-rel.sig" 2>&1)"
@@ -530,7 +530,7 @@ else
 fi
 
 # Re-issued later for the same release: only the date moves.
-NO_COLOR=1 bash "$TOOL" pointer --key "${W}/keys/latest" --manifest "$MAN" --base 1.0.3/ --out "${W}/latest-2" \
+NO_COLOR=1 bash "$TOOL" pointer --key "${W}/keys/latest" --signers "$ANCHOR" --manifest "$MAN" --base 1.0.3/ --out "${W}/latest-2" \
     --issued 2027-04-01T00:00:00+00:00 > /dev/null 2>&1
 if [[ "$(diff <(cat "$PTR") <(cat "${W}/latest-2") | grep -c '^[<>]')" -eq 2 ]] && grep -qx 'issued: 2027-04-01T00:00:00+00:00' "${W}/latest-2"; then
     green "pointer: re-issued for an unchanged release, only the date differs"
@@ -538,8 +538,19 @@ else
     red "pointer: a re-issue changed more than the date"
 fi
 
+# A signature file that is there and is not the manifest's signature.
+cp "${MAN}.sig" "${W}/man.sig.good"; ssh-keygen -q -t ed25519 -N "" -f "${W}/keys/stranger" > /dev/null
+rm -f "${MAN}.sig"; ssh-keygen -Y sign -f "${W}/keys/stranger" -n kryptik-release "$MAN" < /dev/null > /dev/null 2>&1
+NO_COLOR=1 bash "$TOOL" pointer --key "${W}/keys/latest" --signers "$ANCHOR" --manifest "$MAN" --base 1.0.3/ --out "${W}/latest-stranger" > "$OUT" 2>&1; RC=$?
+if [[ "$RC" -ne 0 && ! -e "${W}/latest-stranger" ]] && grep -q 'does not verify' "$OUT"; then
+    green "pointer: no statement is written about a manifest signed by a key the image does not carry"
+else
+    red "pointer: wrote a statement for a manifest a stranger signed (exit ${RC})"; show
+fi
+cp "${W}/man.sig.good" "${MAN}.sig"
+
 rm -f "${MAN}.sig"
-NO_COLOR=1 bash "$TOOL" pointer --key "${W}/keys/latest" --manifest "$MAN" --base 1.0.3/ --out "${W}/latest-unsigned" > "$OUT" 2>&1; RC=$?
+NO_COLOR=1 bash "$TOOL" pointer --key "${W}/keys/latest" --signers "$ANCHOR" --manifest "$MAN" --base 1.0.3/ --out "${W}/latest-unsigned" > "$OUT" 2>&1; RC=$?
 if [[ "$RC" -ne 0 && ! -e "${W}/latest-unsigned" ]] && grep -q 'is not signed yet' "$OUT"; then
     green "pointer: no statement is written about a manifest nobody has signed"
 else

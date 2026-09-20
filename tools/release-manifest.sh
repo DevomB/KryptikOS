@@ -10,7 +10,8 @@
 #                                      [--require-role production]
 #                                      [--no-downgrade VERSION] MANIFEST
 #   ./tools/release-manifest.sh pointer --key PRIVKEY --manifest MANIFEST
-#                                      --base BASE --out FILE [--issued DATE]
+#                                      --signers SIGNERS --base BASE --out FILE
+#                                      [--issued DATE]
 #
 # `pointer` writes the update channel's statement of what is current
 # (docs/design/update-channel.md) for a manifest that is already signed, and
@@ -411,12 +412,20 @@ signed manifest; do not install or boot it."
 POINTER_MAGIC="KRYPTIK-LATEST-1"
 POINTER_NAMESPACE="kryptik-latest"
 
+# Does MANIFEST's signature verify against SIGNERS, by a principal enrolled there?
+manifest_signed_by() {   # MANIFEST SIGNERS
+    local who
+    who="$(ssh-keygen -Y find-principals -s "$1.sig" -f "$2" 2>/dev/null | head -1 || true)"
+    [[ -n "$who" ]] && ssh-keygen -Y verify -f "$2" -I "$who" -n "$NAMESPACE" -s "$1.sig" < "$1" >/dev/null 2>&1
+}
+
 do_pointer() {
-    local key="" manifest="" base="" out="" issued=""
+    local key="" manifest="" signers="" base="" out="" issued=""
     while [[ "$#" -gt 0 ]]; do
         case "$1" in
             --key)      key="${2:?--key needs a file}"; shift 2 ;;
             --manifest) manifest="${2:?--manifest needs a file}"; shift 2 ;;
+            --signers)  signers="${2:?--signers needs a file}"; shift 2 ;;
             --base)     base="${2:?--base needs an address}"; shift 2 ;;
             --out)      out="${2:?--out needs a file}"; shift 2 ;;
             --issued)   issued="${2:?--issued needs a date}"; shift 2 ;;
@@ -430,6 +439,11 @@ do_pointer() {
     # A statement about a release nobody has signed would announce a manifest
     # no machine will accept.
     [[ -s "${manifest}.sig" ]] || die "pointer: ${manifest} is not signed yet (no ${manifest}.sig)"
+    # That a signature file exists says nothing: it has to be the signature
+    # the machines will check, by a key they have.
+    [[ -f "$signers" ]] || die "pointer: --signers is required and must exist (the anchor the image carries)"
+    manifest_signed_by "$manifest" "$signers" \
+        || die "pointer: ${manifest}.sig does not verify against ${signers}; no statement is written about it"
     case "$base" in *[[:space:]]*) die "pointer: --base must not contain spaces" ;; esac
     local version role
     version="$(awk -F': ' '$1=="version"{print $2; exit}' "$manifest")"
