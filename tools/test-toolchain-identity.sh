@@ -19,6 +19,7 @@ run() {
     ( set -Eeuo pipefail; trap 'echo "ERR trap at line $LINENO"; exit 8' ERR
       warn() { echo "warn: $*"; }; die() { echo "die: $*"; exit 9; }
       sha256_of_stdin() { sha256sum | cut -d' ' -f1; }
+      # shellcheck disable=SC2034  # read by the block, through eval
       KRYPTIK_ROOT="$ROOT" V_BINUTILS=1 V_GCC="$1" V_GLIBC=2.40 V_LINUX=1 V_MPFR=1 V_GMP=1 V_MPC=1
       eval "$BLOCK" ) > "$W/out" 2>&1
 }
