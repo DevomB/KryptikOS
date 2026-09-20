@@ -1314,7 +1314,7 @@ s_services() {
     printf '%s\n' "$all" | sed 's/^/  /'
 
     local svc missing=0
-    for svc in sysinit watchdog eudev eudev-trigger kryptikd-check kryptikd-serve firstboot seatd net-zone getty-tty1 boot-success boot-smoke default; do
+    for svc in sysinit watchdog eudev eudev-trigger kryptikd-check time-floor kryptikd-serve firstboot seatd net-zone getty-tty1 boot-success boot-smoke default; do
         if ! printf '%s\n' "$all" | grep -qx "$svc"; then
             echo "MISSING from the database: ${svc}"; missing=$((missing + 1))
         fi
