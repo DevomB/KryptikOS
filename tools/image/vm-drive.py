@@ -87,11 +87,14 @@ class Drive:
                 raise RuntimeError(f"timeout ({timeout}s) waiting for {regex!r}; last output:\n{tail}")
             self._read()
 
-    def send(self, text, enter=True):
+    def send(self, text, enter=True, secret=False):
         data = text.encode() + (b"\r" if enter else b"")
         self.s.sendall(data)
         if self.log:
-            self.log.write(b"\n<<< " + text.encode() + b"\n"); self.log.flush()
+            # A password goes to the guest and not into the transcript, which
+            # is uploaded with every acceptance report.
+            shown = b"(a password)" if secret else text.encode()
+            self.log.write(b"\n<<< " + shown + b"\n"); self.log.flush()
 
     def drain(self, seconds):
         end = time.time() + seconds
@@ -142,7 +145,7 @@ class Drive:
         self.knock(r"login: ?$", self.timeout)
         self.send(user)
         self.expect(r"Password: ?", 60)
-        self.send(password)
+        self.send(password, secret=True)
         # a fresh shell prompt: bash prints "user@host:dir$ " or "$ "
         self.expect(r"[$#] ?$", 60)
         # make the prompt unambiguous for run()
@@ -184,7 +187,7 @@ class Drive:
         tag = f"KRC{self.marker}"
         self.send(f"su - root -c '{cmd}; echo {tag}=$?'")
         self.expect(r"Password: ?", 60)
-        self.send(password)
+        self.send(password, secret=True)
         # Wait for the exit marker, but keep what the command printed: the
         # steps that follow expect lines of that output ("running slot: a",
         # "ZT END"), and a plain expect() would have consumed them with the
