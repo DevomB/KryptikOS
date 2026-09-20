@@ -353,4 +353,6 @@ account for 0.4 MB of that and are not worth a rule. Four server-only Xeon
 families account for 6.8 MB; they stay while the README names servers as
 supported hardware, because a machine whose microcode is left out still boots
 and runs with whatever its firmware loaded, and nobody would see the
-downgrade. Dropping them is a decision about supported hardware.
+downgrade. Dropping them is a decision about supported hardware, and on
+2026-09-20 it was decided: they stay. 6.8 MB on a 3 GB image is not worth a
+server that silently runs old microcode.
