@@ -284,6 +284,7 @@ if [ "$ROOT_OFF" -gt 0 ]; then
 else
     dd if="$ROOT_SRC" of="$P2" bs=4M iflag=count_bytes count="$ROOT_BYTES" conv=fsync status=none || die "writing the root image failed"
 fi
+blockdev --flushbufs "$P2"   # so the read-back is of the disk, not of the page cache
 say "reading kryptik-a back"
 got="$(dd if="$P2" bs=4M iflag=count_bytes count="$ROOT_BYTES" status=none | sha256sum | cut -c1-64)"
 [ "$got" = "$ROOT_SHA" ] || die "kryptik-a does not verify: wrote ${got}, the medium says ${ROOT_SHA}"

@@ -126,6 +126,7 @@ if [ -n "$RESTORE" ]; then
     say "restoring slot $RESTORE from this medium (${ver}, ${bytes} bytes); the state partition is untouched"
     if [ "$off" -gt 0 ]; then dd if="$src" of="$sd" bs=4M iflag=skip_bytes,count_bytes skip="$off" count="$bytes" conv=fsync status=none
     else dd if="$src" of="$sd" bs=4M iflag=count_bytes count="$bytes" conv=fsync status=none; fi
+    blockdev --flushbufs "$sd"   # so the read-back is of the disk, not of the page cache
     got="$(dd if="$sd" bs=4M iflag=count_bytes count="$bytes" status=none | sha256sum | cut -c1-64)"
     [ "$got" = "$sha" ] || die "slot $RESTORE reads back as $got, expected $sha"
     say "slot $RESTORE verifies"

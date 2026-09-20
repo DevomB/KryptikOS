@@ -312,6 +312,7 @@ cmd_apply() {
     # --- writes begin: the inactive slot only -------------------------------
     say "writing kryptik-$target ($ROOT_BYTES bytes)"
     dd if="$dir/kryptik-root.img" of="$tdev" bs=4M conv=fsync status=none || die "writing slot $target failed"
+    blockdev --flushbufs "$tdev"   # so the read-back is of the device, not of the page cache
     got="$(dd if="$tdev" bs=4M iflag=count_bytes count="$ROOT_BYTES" status=none | sha256sum | cut -c1-64)"
     [ "$got" = "$H_ROOT" ] || die "slot $target read back as $got; the manifest says $H_ROOT"
     say "slot $target verifies after write"
@@ -320,10 +321,14 @@ cmd_apply() {
     mkdir -p "$ESP_MNT/EFI/kryptik" "$ESP_MNT/kryptik"
     cp "$dir/kryptik-$target.efi" "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new" || die "staging the kernel on the ESP failed"
     sync -f "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new"
-    mv -f "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new" "$ESP_MNT/EFI/kryptik/kryptik-$target.efi"
+    # Judged before it gets the name rollback and recovery look for: the
+    # payload directory may have changed since it was verified.
     want_k="$H_KA"; [ "$target" = b ] && want_k="$H_KB"
-    [ "$(sha256sum "$ESP_MNT/EFI/kryptik/kryptik-$target.efi" | cut -c1-64)" = "$want_k" ] \
-        || die "the kernel on the ESP does not hash to the manifest's kryptik-$target.efi"
+    if [ "$(sha256sum "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new" | cut -c1-64)" != "$want_k" ]; then
+        rm -f "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new"
+        die "the kernel staged on the ESP does not hash to the manifest's kryptik-$target.efi"
+    fi
+    mv -f "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new" "$ESP_MNT/EFI/kryptik/kryptik-$target.efi"
     printf '%s\n' "$VERSION" > "$ESP_MNT/kryptik/version-$target.new"
     mv -f "$ESP_MNT/kryptik/version-$target.new" "$ESP_MNT/kryptik/version-$target"
     sync
