@@ -8,9 +8,10 @@
 #
 # A and B are two stage 06 releases of this tree (make media KRYPTIK_VERSION=...
 # twice); B's VERSION_ID is the observable change, reported by the guest's
-# own boot report and os-release. The payload reaches the guest as files on
-# a plain ext4 disk image (fetching is out of scope here and out of zone 0
-# by design). Guest-side mounts go under /run: the installed root is a
+# own boot report and os-release. In steps 2 to 7 the payload reaches the
+# guest as files on a plain ext4 disk image, the offline path; step 8 has the
+# net zone fetch it (docs/design/update-channel.md). Guest-side mounts go
+# under /run: the installed root is a
 # read-only verity image, so /mnt cannot take a directory, which is how the
 # first run of this driver failed at its first mkdir.
 #
@@ -24,6 +25,9 @@
 #      a full state partition, a concurrent run; none arms a trial
 #   4  authenticated recovery: apply A --recovery, reboot -> slot a, version A
 #   5  rollback: arms b again, reboot -> slot b
+#   8  (last) the same update over the network: back to slot a, then the net
+#      zone fetches B from a release host on this side of the user network,
+#      zone 0 stages it, `kryptik update apply` installs it, slot b commits
 #   6  interruption: apply A --recovery, kill the VM mid-write, boot: still
 #      slot b, no trial; apply again succeeds; kill after arming: the
 #      firmware consumes BootNext and boot-success commits a
@@ -51,6 +55,14 @@ done
 for t in python3 mkfs.ext4 truncate ssh-keygen sfdisk; do have "$t" || die "required tool not found: $t"; done
 VA="$(awk -F': ' '$1=="version"{print $2}' "$PAY_A/manifest")"; VB="$(awk -F': ' '$1=="version"{print $2}' "$PAY_B/manifest")"
 [[ "$VA" != "$VB" ]] || die "A and B are the same version (${VA})"
+# The signed statement that B is current, which stage 06 writes beside B's
+# payload. It is made there and not here because this job is never given a
+# private key. `not-a-pointer` is its control: the same text signed by the
+# release key in the manifest's namespace.
+CHAN_B="$(dirname "$PAY_B")/channel-${VB}"
+for f in latest latest.sig not-a-pointer not-a-pointer.sig; do
+    [[ -s "$CHAN_B/$f" ]] || die "no ${CHAN_B}/${f}: stage 06's payload step writes it beside the payload"
+done
 VMDIR="${KRYPTIK_WORK}/vm"; mkdir -p "$VMDIR"
 DISK="${DISK:-${VMDIR}/updated.img}"
 [[ -e "$DISK" && ! -f "$DISK" ]] && die "refusing: ${DISK} is not a regular file"
@@ -92,6 +104,9 @@ mk_variant extra; echo "ride along" > "$BAD/extra/extra.bin"
 # An empty lost+found is the medium's own and is passed over (step 2 applies
 # a payload that is the root of an ext4 disk); one with something in it is not.
 mk_variant hidden; mkdir -p "$BAD/hidden/lost+found"; echo "ride along" > "$BAD/hidden/lost+found/ride"
+# The statement and its control ride on the same disk: step 3 has the real
+# updater judge both against the real anchor, with no network involved.
+mkdir -p "$BAD/statement"; cp "$CHAN_B/latest" "$CHAN_B/latest.sig" "$CHAN_B/not-a-pointer" "$CHAN_B/not-a-pointer.sig" "$BAD/statement/"
 BADIMG="${VMDIR}/payload-bad.img"; payload_disk "$BADIMG" "$BAD"
 
 # The guest side, as root through su.
@@ -178,12 +193,14 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'kryptik-update apply /run/upd/p/extra --recovery; echo RC=$?')" "expect:unlisted file" \
     "$(ROOTSH 'kryptik-update apply /run/upd/p/hidden --recovery; echo RC=$?')" "expect:lost\\+found is not empty" \
     "$(ROOTSH 'kryptik-update apply /run/upd/a; echo RC=$?')" "expect:older than the running" \
+    "$(ROOTSH 'kryptik-update check-pointer /run/upd/p/statement/latest /run/upd/p/statement/latest.sig && echo STATEMENT-OK')" "expect:signed by kryptik-latest" "expect:STATEMENT-OK" \
+    "$(ROOTSH 'kryptik-update check-pointer /run/upd/p/statement/not-a-pointer /run/upd/p/statement/not-a-pointer.sig; echo RC=$?')" "expect:does NOT verify" "expect:RC=1" \
     "$(ROOTSH 'flock /run/kryptik/update.lock sleep 20 & sleep 1; kryptik-update apply /run/upd/a --recovery; echo RC=$?')" "expect:another update is in progress" \
     "$(ROOTSH 'fallocate -l 100G /var/filler 2>/dev/null || dd if=/dev/zero of=/var/filler bs=1M 2>/dev/null; cp -a /run/upd/a /var/lib/kryptik/updates/a-full 2>&1 | tail -1; kryptik-update apply /var/lib/kryptik/updates/a-full --recovery; echo RC=$?; rm -rf /var/filler /var/lib/kryptik/updates/a-full')" "expect:RC=1" \
     "$(ROOTSH 'kryptik-update status')" "expect:trial pending:    none" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
-[[ "$rc" -eq 0 ]] && green "wrong key, modified image, truncated kernel, extra file, downgrade, concurrent run and full disk were all refused; no trial armed" || red "step 3 drive failed"
+[[ "$rc" -eq 0 ]] && green "wrong key, modified image, truncated kernel, extra file, downgrade, concurrent run and full disk were all refused; no trial armed; the statement of what is current verifies against the image's anchor and one signed by the release key does not" || red "step 3 drive failed"
 
 # ----------------------------------------------------------------- step 4 --
 step "step 4: authenticated recovery to ${VA} with --recovery"
@@ -311,6 +328,76 @@ rc=$?; stop_vm
 txt | grep -q 'boot-success: trial slot b did NOT boot' && green "boot-success named the failed trial" || red "boot-success did not record the failed trial"
 starts="$(txt | grep -c 'BdsDxe: starting Boot')"; ups="$(txt | grep -c 'KRYPTIK_SMOKE: END')"; panics="$(txt | grep -c 'Kernel panic')"
 if [[ "$starts" -ge 3 && "$ups" -ge 2 && "$panics" -ge 1 ]]; then green "three boots in one session: the corrupt trial (panicked), the fallback and the retried trial (both reached userspace)"; else red "expected three boots: firmware starts=${starts}, userspace ends=${ups}, panics=${panics}"; fi
+
+# ----------------------------------------------------------------- step 8 --
+step "step 8: ${VB} once more, fetched by the net zone and staged by zone 0"
+# Step 7 leaves slot b running ${VB}, committed, and there is nothing newer to
+# fetch. So first back to slot a by rollback (what step 5 proves, the other
+# way round); from ${VA} the channel has a release to offer. The copy step 7
+# applied from goes first: the staged release is then the second payload's
+# worth on kryptik-state, not the third, which is what the disk was sized
+# for (--payloads 2 above).
+start_vm update-p8
+drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
+    "$(ROOTSH 'rm -rf /var/lib/kryptik/updates/b2; kryptik-update rollback && echo RB8-OK')" "expect:armed: the next boot tries slot a" "expect:RB8-OK" \
+    "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
+    "login:${TUSER}:${TPASS}" \
+    "$(ROOTSH 'cat /run/kryptik/boot-identity | head -1; cat /var/lib/kryptik/boot/last-result; echo P8A-OK')" "expect:slot=a" "expect:commit a" "expect:P8A-OK" \
+    "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
+rc=$?; stop_vm
+[[ "$rc" -eq 0 ]] && green "back on slot a (${VA}) by rollback, with room for one staged release" || red "step 8: the rollback to slot a failed"
+stop_unless_ok "$rc" "step 8 rollback"
+
+# The release host: B's statement and B's payload, served from this side of
+# QEMU's user network. Bound to loopback, which is what the guest reaches as
+# 10.0.2.2; never to an address another machine on the runner's network could
+# ask. http is what a development image may be pointed at and a production
+# one may not. The files are links: nothing here copies three gigabytes.
+SERVE="${VMDIR}/channel"; rm -rf "$SERVE"; mkdir -p "$SERVE/${VB}"
+cp "$CHAN_B/latest" "$CHAN_B/latest.sig" "$SERVE/"
+for f in "$PAY_B"/*; do [[ -f "$f" ]] && ln -s "$(readlink -f "$f")" "$SERVE/${VB}/$(basename "$f")"; done
+CHAN_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+python3 -m http.server "$CHAN_PORT" --bind 127.0.0.1 --directory "$SERVE" > "${VMDIR}/channel-httpd.log" 2>&1 &
+CHAN_PID=$!
+sleep 1
+kill -0 "$CHAN_PID" 2>/dev/null || die "the release host did not start: $(cat "${VMDIR}/channel-httpd.log")"
+
+# The guest, with a network for this step and no other. Zone 0 names the
+# channel; the net zone sees that file only from its next launch, so its
+# service is restarted. Then, in order: the net zone brings the statement
+# and zone 0 accepts it (status names ${VB}); nothing is fetched until the
+# person asks; the person asks; the release arrives and is complete; apply
+# is the offline path's apply, and the trial boot and the commit are the
+# ones steps 2 and 7 judge. Each wait is a loop in the guest that gives up
+# before the driver would.
+# In a subshell, so that giving up is not the login shell's exit; and giving
+# up is a failed command, because the driver's `run:` judges the exit status
+# and the word it then expects is also in the command line the console echoes.
+wait_status() { printf '(i=0; until kryptik update status | grep -q "%s"; do i=$((i+1)); [ $i -lt 72 ] || exit 1; sleep 5; done) && echo %s || { kryptik update status; false; }' "$1" "$2"; }
+start_vm update-p8b --net user
+drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
+    "$(ROOTSH "mkdir -p /etc/kryptik && printf 'channel = http://10.0.2.2:${CHAN_PORT}/\\n' > /etc/kryptik/update.conf && s6-svc -r /run/service/net-zone && echo CONF-OK")" "expect:CONF-OK" \
+    "run:kryptik update status | grep -q 'nothing asked for'" \
+    "run:$(wait_status "newest     ${VB} " STATED-OK)" "expect:STATED-OK" \
+    "$(ROOTSH 'sleep 70; echo STAGED-UNASKED=$(ls /var/lib/kryptik/update/incoming 2>/dev/null | wc -l)')" "expect:STAGED-UNASKED=0" \
+    "run:kryptik update fetch" "expect:${VB} will be fetched" \
+    "run:$(wait_status "${VB}: .* bytes, " ARRIVING-OK)" "expect:ARRIVING-OK" \
+    "run:$(wait_status "bytes, complete" COMPLETE-OK)" "expect:COMPLETE-OK" \
+    "$(ROOTSH "ls /var/lib/kryptik/update/incoming/${VB} | sort | tr '\\n' ' '; echo LISTED")" "expect:kryptik-a.efi kryptik-b.efi kryptik-root.img manifest manifest.sig root.json LISTED" \
+    "run:kryptik update apply" "expect:armed: the next boot tries slot b" \
+    "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
+    "login:${TUSER}:${TPASS}" \
+    "$(ROOTSH 'cat /run/kryptik/boot-identity | head -1; cat /var/lib/kryptik/boot/last-result; echo P8C-OK')" "expect:slot=b" "expect:commit b" "expect:P8C-OK" \
+    "run:test \"\$(cat /home/${TUSER}/marker)\" = before-update" \
+    "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
+rc=$?; stop_vm
+kill "$CHAN_PID" 2>/dev/null
+[[ "$rc" -eq 0 ]] && green "the net zone brought the statement, nothing was fetched until it was asked for, ${VB} arrived whole, and it was applied, trial-booted and committed; data intact" || red "step 8 drive failed"
+txt | grep -q "version_id=${VB}" && green "guest reports version ${VB} after the fetched update" || red "guest did not report ${VB}"
+# What the release host was asked for: the statement, then the manifest and
+# its signature before anything large.
+first="$(grep -o 'GET /[^ ]*' "${VMDIR}/channel-httpd.log" | sed 's|GET /||' | awk '!seen[$0]++' | head -5 | tr '\n' ' ')"
+if [[ "$first" == "latest latest.sig ${VB}/manifest ${VB}/manifest.sig "* ]]; then green "the release host was asked for the statement, then the manifest and its signature, before any image"; else red "the release host was asked in another order: ${first}"; fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 echo "Limits: the interruptions are QEMU process kills with cache=writeback and explicit fsyncs;"
