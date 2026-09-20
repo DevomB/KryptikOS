@@ -1056,6 +1056,44 @@ fn handle(cfg: &ServeConfig, conn: UnixStream) -> Option<Pending> {
             }
             eprintln!("kryptikd serve: uid {uid} stopped zone {zone:?}");
         }
+        // The update channel, from the person's side (update.rs). `fetch` is
+        // the asking without which the net zone is told `idle`; `apply` hands
+        // the staged directory to kryptik-update, which verifies all of it
+        // again before it writes a slot, and takes as long as that takes.
+        "update-status" | "update-fetch" | "update-apply" => {
+            use crate::update as up;
+            let dir = std::path::Path::new(up::STATE_DIR);
+            let running = up::running_version();
+            let done = match verb {
+                "update-status" => {
+                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+                    Ok(up::status(dir, now, &running))
+                }
+                "update-fetch" => up::want(dir, &running).map(|v| format!("{v} will be fetched when the net zone next asks; `kryptik update status` shows it arriving\n")),
+                _ => up::complete_stage(dir).and_then(|stage| {
+                    let out = std::process::Command::new(up::TOOL)
+                        .arg("apply")
+                        .arg(&stage)
+                        .env_clear()
+                        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+                        .stdin(std::process::Stdio::null())
+                        .output()
+                        .map_err(|e| format!("{}: {e}", up::TOOL))?;
+                    if out.status.success() {
+                        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+                    } else {
+                        Err(String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("kryptik-update apply failed").to_string())
+                    }
+                }),
+            };
+            match done {
+                Ok(text) => {
+                    eprintln!("kryptikd serve: uid {uid}: {verb}");
+                    reply(&conn, &format!("ok\n{text}"));
+                }
+                Err(e) => reply(&conn, &format!("error: {e}\n")),
+            }
+        }
         "wifi-list" => match crate::wifi::list(&cfg.wifi_dir) {
             Ok(names) => {
                 let mut out = String::new();
