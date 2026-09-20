@@ -2350,10 +2350,23 @@ PACKAGES=(
     "libtool"     "native_build libtool-${V_LIBTOOL}.tar.xz libtool-${V_LIBTOOL}"
     "gperf"       "native_build gperf-${V_GPERF}.tar.gz gperf-${V_GPERF} --docdir=/usr/share/doc/gperf-${V_GPERF}"
     "expat"       "native_build expat-${V_EXPAT}.tar.xz expat-${V_EXPAT} --disable-static --docdir=/usr/share/doc/expat-${V_EXPAT}"
-    "inetutils"   "native_build inetutils-${V_INETUTILS}.tar.xz inetutils-${V_INETUTILS} --bindir=/usr/bin --localstatedir=/var --disable-logger --disable-whois --disable-rlogin --disable-rsh --disable-rcp --disable-rexec --disable-rexecd --disable-rlogind --disable-rshd"
+    # --disable-servers: without it inetutils builds and installs telnetd,
+    # ftpd, tftpd, talkd, rexecd, rlogind, rshd, syslogd and inetd. Nothing in
+    # Kryptik starts any of them, and three of the fixes in 2.8 are in
+    # telnetd alone (an authentication bypass among them). What is wanted
+    # from this package is hostname, ping, traceroute, ifconfig and the
+    # clients; a daemon nobody runs is still a setuid-adjacent binary on the
+    # root image and a line in every vulnerability report.
+    "inetutils"   "native_build inetutils-${V_INETUTILS}.tar.gz inetutils-${V_INETUTILS} --bindir=/usr/bin --localstatedir=/var --disable-servers --disable-logger --disable-whois --disable-rlogin --disable-rsh --disable-rcp --disable-rexec"
     "less"        "native_build less-${V_LESS}.tar.gz less-${V_LESS} --sysconfdir=/etc"
     "openssl"     "s_openssl"
-    "libffi"      "native_build libffi-${V_LIBFFI}.tar.gz libffi-${V_LIBFFI} --disable-static --with-gcc-arch=native"
+    # --with-gcc-arch=x86-64, not the book's "native". libffi only tunes for an
+    # architecture when the caller set no CFLAGS, and this build always sets
+    # them, so "native" was inert: no line of the real build log names -march.
+    # But a flag that would compile the image for the build machine's CPU the
+    # day someone runs this step without CFLAGS is the hardened_malloc defect
+    # waiting to happen, so it says what the image is for.
+    "libffi"      "native_build libffi-${V_LIBFFI}.tar.gz libffi-${V_LIBFFI} --disable-static --with-gcc-arch=x86-64"
     "python-final" "s_python_final"
     "coreutils"   "native_build coreutils-${V_COREUTILS}.tar.xz coreutils-${V_COREUTILS} --enable-no-install-program=kill,uptime"
     "diffutils"   "native_build diffutils-${V_DIFFUTILS}.tar.xz diffutils-${V_DIFFUTILS}"
