@@ -563,6 +563,9 @@ test:
 test-harness:
 	@"$(TOOLS)"/test-step-errexit.sh
 
+test-toolchain-identity:
+	@"$(TOOLS)"/test-toolchain-identity.sh
+
 test-hardening:
 	@"$(TOOLS)"/test-hardening-flags.sh
 
@@ -606,7 +609,8 @@ test-services:
 
 # The net zone's half of the clock (docs/design/time.md): which sources it
 # asks, what it takes for an answer and what it tells zone 0, run under every
-# POSIX shell on this host with stand-ins for chronyd and the broker client.
+# POSIX shell on this host with a real NTP server on loopback and a stand-in
+# for the broker client.
 test-netzone-time:
 	@"$(TOOLS)"/test-netzone-time.sh
 

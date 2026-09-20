@@ -54,9 +54,10 @@ Documented rather than closed:
   panic first; no physical timer has been exercised yet.
 - Releases are signed by a developer key the build generates.
 - Nothing has run on physical hardware.
-- glibc 2.40 carries the loader fixes Kryptik needs (upstream bugs 31943 and
-  33088, see `build/patches/glibc-2.40/`) but not the release branch's later
-  security backports (CVE-2025-0395, CVE-2025-4802 and others).
+- glibc is 2.40 with upstream's maintained release branch applied as of
+  2026-09-10 (`build/patches/glibc-2.40/`), so it carries that branch's
+  security fixes; nothing moves the pin along the branch automatically, and
+  2.40 is three releases old.
 - The artifact audit still reports soft findings: binaries without CET or
   BIND_NOW, some non-PIE objects, some RPATHs. The audit's log in each run
   has the current counts.

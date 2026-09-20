@@ -1567,4 +1567,86 @@ mod tests {
             }
         }
     }
+
+    /// The zone-facing socket, attacked. Every byte on it is written by a
+    /// zone, so the header parser and the connection that feeds it are the
+    /// boundary. The seeds are real requests, one per line, kept in the tree
+    /// (fuzz-corpus/broker-requests: a request that ever breaks the broker
+    /// goes there, and stays). Each is damaged a hundred-odd ways by a
+    /// generator with a fixed seed, so a failure is the same failure on every
+    /// machine, and sent down a real connection with a payload that may or
+    /// may not be what the header promised. Not coverage-guided; it is what
+    /// runs on every push with no tool but cargo. What it holds the broker
+    /// to: never a panic, never a hang past the request deadline, always one
+    /// well-formed reply, and nothing accepted that the grammar does not allow.
+    #[test]
+    fn no_request_a_zone_can_send_breaks_the_broker() {
+        const CORPUS: &str = include_str!("../fuzz-corpus/broker-requests");
+        // xorshift64*: small, seeded, the same sequence everywhere.
+        let mut state: u64 = 0x4252_4F4B_4552_3031;
+        let mut next = move || {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        };
+        let dir = entry("fuzz");
+        let z = zone_t();
+        let s = served(&z, &dir, unsafe { libc::geteuid() });
+        let (mut sent, mut accepted) = (0u32, 0u32);
+        for seed in CORPUS.lines().filter(|l| !l.is_empty()) {
+            // The clock's verb is refused by who is asking here, and says so
+            // in the log each time: fewer rounds, the same coverage.
+            let rounds = if seed.starts_with("time-offset") { 30 } else { 150 };
+            for round in 0..rounds {
+                let mut req = seed.as_bytes().to_vec();
+                req.push(b'\n');
+                let payload = (next() % 65) as usize;
+                req.extend(std::iter::repeat(b'x').take(payload));
+                if round > 0 {
+                    for _ in 0..1 + next() % 3 {
+                        let at = (next() % req.len().max(1) as u64) as usize;
+                        match next() % 6 {
+                            0 if !req.is_empty() => req[at] ^= 1 << (next() % 8),
+                            1 => req.truncate(at),
+                            2 => req.insert(at, [b' ', b'\n', 0, 0xff, b'-', b'9'][(next() % 6) as usize]),
+                            3 => req.splice(at..at, b"18446744073709551616".iter().copied()).for_each(drop),
+                            4 => req.splice(at..at, std::iter::repeat(b'A').take(600)).for_each(drop),
+                            _ if !req.is_empty() => { req.remove(at); }
+                            _ => {}
+                        }
+                    }
+                }
+                let line_end = req.iter().position(|b| *b == b'\n').unwrap_or(req.len());
+                let header = String::from_utf8_lossy(&req[..line_end]).into_owned();
+                if let Ok(Request::ClipboardSet { len, .. }) = parse_request(&header) {
+                    assert!(len <= CLIPBOARD_MAX, "{header:?}: a length past the limit parsed");
+                }
+
+                let (server, client) = pair();
+                send_all(client, &req);
+                unsafe { libc::shutdown(client, libc::SHUT_WR) };
+                let started = Instant::now();
+                let served_it = serve_connection(server, &s);
+                unsafe { libc::close(server) };
+                let reply = recv_reply(client);
+                unsafe { libc::close(client) };
+                sent += 1;
+                assert!(served_it.is_ok(), "{header:?}: the connection failed: {served_it:?}");
+                assert!(started.elapsed() < REQUEST_DEADLINE + Duration::from_secs(1), "{header:?}: held the launcher past the deadline");
+                let text = String::from_utf8_lossy(&reply);
+                let first = text.lines().next().unwrap_or("");
+                assert!(
+                    ["ok", "error: ", "empty", "kryptik-broker 1 zone=t"].iter().any(|p| first.starts_with(p)) && text.contains('\n'),
+                    "{header:?}: replied {text:?}"
+                );
+                if first.starts_with("ok") || first.starts_with("empty") || first.starts_with("kryptik-broker") {
+                    accepted += 1;
+                }
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+        // The generator must reach both sides of the grammar.
+        assert!(sent > 2000 && accepted > 50 && accepted < sent, "sent {sent}, accepted {accepted}");
+    }
 }

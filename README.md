@@ -42,6 +42,10 @@ modules the image carries (`build/config/kernel/boot.fragment`). Drivers
 that need vendor firmware are modules, so they load once the verified root
 supplies it: the firmware ships from the pinned linux-firmware release, on
 the same verified root, selected by `build/config/firmware.list` (ADR-012).
+Only what the boot needs is compiled in: storage, the firmware framebuffer
+and keyboards. Network cards, GPUs and touchpads are modules, in the test
+virtual machine too, so every acceptance run loads them the way hardware
+will (ADR-013).
 
 - **Storage:** NVMe, including NVMe behind Intel VMD ("RAID"/RST mode);
   AHCI SATA, legacy PIIX SATA; eMMC and SD on SDHCI; LSI MegaRAID and MPT3
