@@ -299,12 +299,14 @@ passes, not when its code is written.
 
 ### It fails safe and says what it is
 
-- [ ] **A watchdog for a hung userspace.** `boot-success` judges a trial boot
-      once; a system that hangs after that stays hung. The hardware watchdog
-      (or softdog) fed by a supervised service, and a hang test in the state
-      suite. Written: the kernel options, the `watchdog` service, and the
-      test that stops the feeder and expects a second boot. Ticked when that
-      test has passed in an acceptance run.
+- [x] **A watchdog for a hung userspace.** A supervised service feeds every
+      watchdog device, the kernel will not let one be switched off, and the
+      state suite proves it: it stops the feeder and the machine resets
+      itself and comes back with its data (acceptance on 55e1652,
+      2026-09-20). It catches a machine that has stopped, not a crashed
+      service or a frozen desktop; a hung kernel is reset only by a hardware
+      timer or the hard-lockup panic, and no physical timer has been
+      exercised yet.
 - [ ] **Every status row is tested.** Stage 05, stage 06 and `make
       acceptance` read *implemented* in the README: each gets the check that
       can fail, or the row says why it cannot.
