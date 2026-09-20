@@ -456,13 +456,24 @@ int main(int argc, char **argv)
 	char *req = malloc(cap);
 	if (!req)
 		die("out of memory");
-	int len = snprintf(req, cap, "run %s%s%s%s\n", zone, wl ? " wayland=" : "", wl ? wl : "", pass_fd >= 0 ? " pass=fd" : "");
+	/* snprintf returns what it WANTED to write. Adding that to an offset
+	 * without looking is how a short buffer becomes a write past its end,
+	 * so every piece is checked to have fitted before the next is placed. */
+	size_t len = 0;
+	#define PUT(...) do { \
+		int n_ = snprintf(req + len, cap - len, __VA_ARGS__); \
+		if (n_ < 0 || (size_t)n_ >= cap - len) \
+			die("request too long"); \
+		len += (size_t)n_; \
+	} while (0)
+	PUT("run %s%s%s%s\n", zone, wl ? " wayland=" : "", wl ? wl : "", pass_fd >= 0 ? " pass=fd" : "");
 	for (i = 0; i < ncmd; i++) {
 		if (strchr(cmd[i], '\n'))
 			die("argument %d contains a newline", i);
-		len += snprintf(req + len, cap - (size_t)len, "arg %s\n", cmd[i]);
+		PUT("arg %s\n", cmd[i]);
 	}
-	len += snprintf(req + len, cap - (size_t)len, "end\n");
+	PUT("end\n");
+	#undef PUT
 
 	char *r = talk(req, pass_fd);
 	if (pass_fd >= 0)
