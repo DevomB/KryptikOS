@@ -101,6 +101,18 @@ s_binutils_pass1() {
 }
 
 s_gcc_pass1() {
+    # Pass 1 is built before any C library exists, and must be even when the
+    # sysroot came out of a cache with the last toolchain's headers in it.
+    # gcc's fixincludes keeps a private copy of every header it "fixes", and
+    # pthread.h is one. Built over an old sysroot, pass 1 kept glibc 2.40's
+    # pthread.h; glibc was then rebuilt with a changed pthread_cond_t, and
+    # pass 2 compiled libstdc++ with the old initializer against the new
+    # struct. This step only runs when the toolchain is being rebuilt, and
+    # linux-headers and glibc put the headers back right after it.
+    if [[ -e "${LFS}/usr/include/features.h" ]]; then
+        echo "removing the previous toolchain's headers from ${LFS}/usr/include"
+        rm -rf "${LFS}/usr/include"
+    fi
     local src
     src="$(unpack "gcc-${V_GCC}.tar.xz" "gcc-${V_GCC}")"
     cd "$src"
