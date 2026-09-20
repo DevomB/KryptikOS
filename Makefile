@@ -249,10 +249,8 @@ validate-kernel:
 check-kernel-eol:
 	@"$(TOOLS)"/check-kernel-eol.sh
 
-# Two tools on purpose. The survey asks the network what upstream has released
-# and judges nothing; the gate reads that survey and tools/pin-reviews.tsv and
-# never the network, so its verdict can be tested and reproduced. A survey that
-# could not be written is a failure here, not an empty file that passes.
+# The survey asks the network and judges nothing; the gate reads the survey
+# and tools/pin-reviews.tsv and never the network.
 PINS_SURVEY ?= $(KRYPTIK_WORK)/pin-survey.tsv
 check-pins:
 	@mkdir -p "$(dir $(PINS_SURVEY))"

@@ -1,31 +1,10 @@
-# Reviews of pins that are behind their upstream.
+# Reviews of pins that are behind their upstream. Read by tools/check-pin-reviews.sh.
 #
-# Read by tools/check-pin-reviews.sh, against a survey made by
-# tools/check-source-currency.sh --tsv.
+#   package  pinned  reviewed_up_to  fine|held  date  what was read, and why
 #
-# Columns are whitespace separated; the note runs to the end of the line.
-#
-#   package         source name, as in the survey and sources.lock
-#   pinned          the version this review is of; a row whose pinned version
-#                   is no longer the pin is stale, and fails
-#   reviewed_up_to  the newest upstream release that was read. When upstream
-#                   releases past it the row fails until that release has been
-#                   read too, which is the whole point of the file
-#   verdict         fine | held
-#   reviewed        the date it was read; a review expires (180 days by
-#                   default) because a vulnerability is often published long
-#                   after the release that fixed it
-#   note            what was read and what it said. Required.
-#
-#   fine   nothing released after the pin, up to reviewed_up_to, is a security
-#          fix that reaches Kryptik. Say what was read: NEWS, a changelog, the
-#          project's security page. "No CVEs" with no source is not a review.
-#   held   there IS such a fix, and the pin stays anyway for the reason given.
-#          Printed on every run. check-pin-reviews.sh --no-held, which is what
-#          a release asks, refuses it.
-#
-# A pin that has caught up has no row: a row for a current pin is stale, and
-# fails, so this file shrinks when the work is done instead of accumulating.
+# fine: nothing released after the pin, up to reviewed_up_to, is a security fix
+# that reaches Kryptik. held: something is, and the note says why the pin stays.
+# A pin that has caught up has no row; a row for it fails, so this file shrinks.
 
 # Reviewed 2026-09-19 from upstream NEWS and changelogs, project security
 # pages, the Debian security tracker and NVD records. "Survey" below is
