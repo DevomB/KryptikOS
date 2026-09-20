@@ -982,6 +982,8 @@ s_release_trust() {
             || { echo "FAIL: the $who key does not verify in its own namespace"; rm -rf "$t"; return 1; }
         rm -f "$t/$who.sig"
         ssh-keygen -Y sign -f "$keydir/$who" -n "$other" "$t/$who" < /dev/null >/dev/null 2>&1
+        # A refusal only counts when there was a signature to refuse.
+        [[ -s "$t/$who.sig" ]] || { echo "FAIL: could not sign the probe of $who in $other"; rm -rf "$t"; return 1; }
         if ssh-keygen -Y verify -f /usr/share/kryptik/trust/release-signers -I "$who" -n "$other" -s "$t/$who.sig" < "$t/$who" >/dev/null 2>&1; then
             echo "FAIL: the $who key verified in the $other namespace"; rm -rf "$t"; return 1
         fi
@@ -2584,6 +2586,18 @@ require_inside_chroot "stage 04" "system"
 # this stage carries the fingerprint stage 02 finished on: rebuild the
 # temporary tools and nothing built with them can claim to be unchanged.
 stage_depends_on "tt-" verify
+
+# The signing keys live under ${KRYPTIK_WORK}/keys, outside the sysroot and
+# outside any cache of it, on purpose. A work tree restored from such a cache
+# has release-trust stamped as built and no keys; the anchor in the restored
+# sysroot then names keys that no longer exist, and stage 06 would sign with
+# ones the image does not trust, or find none. So, as for the kernel tree:
+# no keys, no stamp. The step then makes both and writes the anchor again.
+if [[ -f "${STAMPS}/${STAMP_PREFIX}release-trust" ]] && \
+   [[ ! -f "${KRYPTIK_WORK}/keys/release/kryptik-release" || ! -f "${KRYPTIK_WORK}/keys/release/kryptik-latest" ]]; then
+    warn "release-trust is stamped as built but a signing key under ${KRYPTIK_WORK}/keys/release is gone; the step runs again."
+    rm -f "${STAMPS}/${STAMP_PREFIX}release-trust"
+fi
 
 unwired=0
 for ((i = 0; i < ${#PACKAGES[@]}; i += 2)); do
