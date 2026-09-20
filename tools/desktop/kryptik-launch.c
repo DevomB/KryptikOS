@@ -465,7 +465,13 @@ int main(int argc, char **argv)
 	const char *wl = no_display ? NULL : ensure_proxy(zone);
 
 	/* Build the request. */
-	size_t cap = 1024;
+	/* Every string that goes into the request is counted: the zone name and
+	 * the proxy socket here, each argument below; the 1024 covers the fixed
+	 * words. The socket path was not counted before. It is as long as
+	 * XDG_RUNTIME_DIR makes it, up to PATH_MAX, so a long one made the first
+	 * snprintf return more than cap, and the next wrote at req + len with a
+	 * size that had wrapped around. */
+	size_t cap = 1024 + strlen(zone) + (wl ? strlen(wl) : 0);
 	for (i = 0; i < ncmd; i++)
 		cap += strlen(cmd[i]) + 8;
 	char *req = malloc(cap);

@@ -260,3 +260,51 @@ CONFIG_BRCMFMAC=m
 CONFIG_BRCMFMAC_PCIE=y
 CONFIG_RTL8XXXU=m
 CONFIG_MAC80211_HWSIM=m
+
+# --- A machine that has stopped reboots itself -------------------------------
+# The watchdog service (build/services/watchdog) feeds every device below. If
+# userspace stops being scheduled nothing feeds them and the machine resets;
+# during an A/B trial that reset lands on the committed slot, because BootNext
+# is already spent. Built in, not modules: the feeder starts before anything
+# would ask for a module, and a watchdog that depends on module loading is one
+# more thing that has to work for the recovery path to work.
+#
+# NOWAYOUT: once the feeder has opened a device, closing it does not stop the
+# timer. Killing the feeder must not be a way to switch the watchdog off.
+CONFIG_WATCHDOG=y
+CONFIG_WATCHDOG_CORE=y
+CONFIG_WATCHDOG_NOWAYOUT=y
+CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED=y
+CONFIG_WATCHDOG_SYSFS=y
+# Always present, so a virtual machine and a board with no usable timer are
+# still covered for a hung userspace. It cannot catch a hung kernel: it is the
+# kernel. The hard lockup detector below is what turns that case into a panic,
+# and panic=10 on the command line turns the panic into a reboot.
+CONFIG_SOFT_WATCHDOG=y
+# The hardware timers, which do catch a hung kernel. Intel's TCO sits behind
+# the LPC bridge or, on newer chipsets, the SMBus controller; both parents are
+# named because EXPERT turns off the selects that would bring them in. AMD's
+# is the SP5100 family's. The last is the emulated one QEMU offers, so the
+# reset path is testable with a device that is not the kernel itself.
+CONFIG_LPC_ICH=y
+CONFIG_I2C_I801=y
+CONFIG_ITCO_WDT=y
+CONFIG_ITCO_VENDOR_SUPPORT=y
+CONFIG_SP5100_TCO=y
+CONFIG_I6300ESB_WDT=y
+# A CPU stuck in the kernel with interrupts OFF for ten seconds does not come
+# back: that is a panic, not a frozen screen. The other two detectors report
+# and do not panic, by the rule the feeder follows: a false reboot is worse
+# than the hang. A CPU in the kernel with interrupts ON for twenty seconds is
+# often a stall that ends (a GPU reset, a slow storage path, compaction), and
+# in a virtual machine on a busy host it is a vCPU that was not scheduled;
+# a panic there would reboot a laptop out from under every zone's unsaved
+# work, and an acceptance run at random. A task in uninterruptible sleep is
+# what a slow USB stick looks like.
+CONFIG_LOCKUP_DETECTOR=y
+CONFIG_SOFTLOCKUP_DETECTOR=y
+# CONFIG_BOOTPARAM_SOFTLOCKUP_PANIC is not set
+CONFIG_HARDLOCKUP_DETECTOR=y
+CONFIG_BOOTPARAM_HARDLOCKUP_PANIC=y
+CONFIG_DETECT_HUNG_TASK=y
+# CONFIG_BOOTPARAM_HUNG_TASK_PANIC is not set

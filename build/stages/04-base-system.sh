@@ -1242,7 +1242,7 @@ EOF
 #   copied into a target. Every tunable in it was inert.
 #
 #   build/services/       - the s6-rc source tree: service definitions ONLY
-#   build/service-scripts/ - the shell the oneshots run, kept out of the
+#   build/service-scripts/ - the shell the services run, kept out of the
 #                            source tree because s6-rc-compile reads every
 #                            directory there as a service
 #   rc.init looks for.
@@ -1316,7 +1316,7 @@ s_services() {
     printf '%s\n' "$all" | sed 's/^/  /'
 
     local svc missing=0
-    for svc in sysinit eudev eudev-trigger kryptikd-check kryptikd-serve firstboot seatd net-zone getty-tty1 boot-success boot-smoke default; do
+    for svc in sysinit watchdog eudev eudev-trigger kryptikd-check time-floor kryptikd-serve firstboot seatd net-zone getty-tty1 boot-success boot-smoke default; do
         if ! printf '%s\n' "$all" | grep -qx "$svc"; then
             echo "MISSING from the database: ${svc}"; missing=$((missing + 1))
         fi
@@ -1600,6 +1600,7 @@ s_boot_check() {
     chk "boot scripts"      /usr/libexec/kryptik/sysinit.sh x
     chk "test control helper" /usr/libexec/kryptik/testctl.sh
     chk "boot-success"      /usr/libexec/kryptik/boot-success.sh x
+    chk "watchdog feeder"   /usr/libexec/kryptik/watchdog.sh x
     chk "first-boot setup"  /usr/libexec/kryptik/firstboot.sh x
     chk "login"             /usr/bin/login x
     chk "efiboot"           /usr/sbin/kryptik-efiboot x

@@ -308,8 +308,10 @@ passes, not when its code is written.
 
 - [ ] **A watchdog for a hung userspace.** `boot-success` judges a trial boot
       once; a system that hangs after that stays hung. The hardware watchdog
-      (or softdog) fed by a supervised service, and a hang test in the update
-      suite.
+      (or softdog) fed by a supervised service, and a hang test in the state
+      suite. Written: the kernel options, the `watchdog` service, and the
+      test that stops the feeder and expects a second boot. Ticked when that
+      test has passed in an acceptance run.
 - [ ] **Every status row is tested.** Stage 05, stage 06 and `make
       acceptance` read *implemented* in the README: each gets the check that
       can fail, or the row says why it cannot.

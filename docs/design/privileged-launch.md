@@ -197,8 +197,13 @@ ADR-011 takes the siblings away altogether with `mitigations=auto,nosmt`,
 and the cookies are what makes revisiting that possible, not a reason to
 revisit it here.
 
-No answer to that call stops a launch, because none of the zone's other
-boundaries depends on it. Two answers are expected:
+What a refusal of that call means is decided by what the machine is, which
+the launcher asks the kernel (`PR_SCHED_CORE_GET` on itself), not by the
+error. Where sibling threads are online and the kernel schedules them by
+cookie, the cookie is the one thing between two zones on a core, and a zone
+that cannot have one does not start. The two other states are expected, and
+neither stops a launch, because none of the zone's other boundaries depends
+on the cookie:
 
 - `ENODEV`: no core has a second hardware thread online. Under `nosmt` that
   is every installed Kryptik, as it is a processor or a VM without SMT.
