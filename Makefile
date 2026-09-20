@@ -103,7 +103,7 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
 	vm-disk vm-disk-boot vm-restart vm-measure cli-test update-tree-test identity-test serve-test \
         test-harness test-hardening test-artifacts audit-artifacts test-boot-success \
         audit-artifacts-strict manifest verify-manifest test-manifest \
-        test-s6-init smoke-userspace test-services test-netzone-time test-update-verify test-libc-unwind \
+        test-s6-init smoke-userspace test-services test-netzone-time test-update-verify test-update-fetch test-libc-unwind \
         sign-image verify-image test-image-signing test-installer test-mkdisk-guards \
         install-test \
         image image-boot \
@@ -186,6 +186,7 @@ help:
 	@echo "  make test-services     validate the s6-rc service tree"
 	@echo "  make test-netzone-time the net zone's time measurement, under every shell here"
 	@echo "  make test-update-verify what kryptik-update believes: a payload, a manifest, a pointer"
+	@echo "  make test-update-fetch the net zone's update fetcher, against a local server and broker"
 	@echo "  make identity-test     zone files, compositor colour table and zoneid audit agree"
 	@echo "  make test-libc-unwind  prove the target libc can unwind (needs root)"
 	@echo "  make sign-image        sign the disk image with a developer key"
@@ -602,6 +603,11 @@ test-netzone-time:
 # channel runs on a manifest and on a statement of what is current.
 test-update-verify:
 	@"$(TOOLS)"/test-update-manifest-snapshot.sh
+
+# The net zone's half of the update channel: a faithful pipe, from the offsets
+# zone 0 names, in pieces zone 0 takes, that stops when zone 0 says no.
+test-update-fetch:
+	@"$(TOOLS)"/test-update-fetch.sh
 
 # boot-success.sh's decision table (commit, refuse, fall back), driven on
 # the host with stand-ins for the services, the ESP and the firmware.
