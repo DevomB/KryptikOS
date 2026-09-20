@@ -1088,7 +1088,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream) -> Option<Pending> {
             };
             match done {
                 Ok(text) => {
-                    eprintln!("kryptikd serve: uid {uid}: {verb}");
+                    eprintln!("kryptikd serve: {verb}");
                     reply(&conn, &format!("ok\n{text}"));
                 }
                 Err(e) => reply(&conn, &format!("error: {e}\n")),
