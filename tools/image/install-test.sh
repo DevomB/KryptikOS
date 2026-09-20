@@ -47,19 +47,12 @@ case "$DISK" in /dev/*|/sys/*|/proc/*) die "refusing to use ${DISK} as a target 
 [[ -e "$DISK" && ! -f "$DISK" ]] && die "refusing: ${DISK} exists and is not a regular file"
 for t in python3 sfdisk blkid truncate; do have "$t" || die "required tool not found: $t"; done
 
-PASS=0; FAIL=0
-green() { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
-red()   { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
+# shellcheck source=tools/image/suite-lib.sh
+source "${SELF}/suite-lib.sh"
 want()  { if grep -qE "$2" "$1"; then green "$3"; else red "$3"; fi; }
 deny()  { if grep -qE "$2" "$1"; then red "$3"; else green "$3"; fi; }
-step() { printf '\n==> %s\n' "$*"; }
 txt_of() { tr -d '\r' < "$1"; }
 
-# The test account and root password the preseed creates. The hashes are
-# what lands on disk; the plaintext exists only in this harness.
-TUSER=tester; TPASS=tester-pw; RPASS=root-pw
-hash_of() { openssl passwd -6 "$1"; }
-TUSER_HASH="$(hash_of "$TPASS")"; ROOT_HASH="$(hash_of "$RPASS")"
 
 # ----------------------------------------------------------------- step 1 --
 step "step 1: install from the medium onto a blank ${SIZE} disk"
@@ -68,7 +61,7 @@ if [[ -z "$SIZE" ]]; then SIZE="$("${SELF}/test-disk-size.sh" --medium "$USB")" 
 rm -f "$DISK"; truncate -s "$SIZE" "$DISK"
 CTL="${VMDIR}/testctl-install.img"
 "${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
-    "preseed_user=${TUSER}" "preseed_password_hash=${TUSER_HASH}" "preseed_root_hash=${ROOT_HASH}" > /dev/null || die "control disk"
+    "${PRESEED[@]}" > /dev/null || die "control disk"
 "${SELF}/run-ovmf.sh" --usb "$USB" --disk "$DISK" --testctl "$CTL" --vars "$VARS" --mode smoke --timeout "$TIMEOUT" --name install-p1
 qrc=$?
 P1="${VMDIR}/install-p1.txt"; txt_of "${KRYPTIK_WORK}/logs/ovmf-serial.latest.log" > "$P1"
@@ -102,7 +95,6 @@ cp "/usr/share/OVMF/OVMF_VARS_4M.fd" "$VARSF"
 SERVE="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --name install-p2)"
 SER="$(sed -n 's/^serial=//p' <<<"$SERVE")"; PIDF="$(sed -n 's/^pid=//p' <<<"$SERVE")"; LOG2="$(sed -n 's/^log=//p' <<<"$SERVE")"
 [[ -S "$SER" ]] || die "no serial socket from run-ovmf: ${SERVE}"
-DRV="${SELF}/vm-drive.py"
 REC="${VMDIR}/install-p2.json"
 python3 "$DRV" --serial "$SER" --timeout 300 --record "$REC" \
     "expect:KRYPTIK_SMOKE: END" \

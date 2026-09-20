@@ -51,27 +51,10 @@ DISK="${DISK:-${VMDIR}/state.img}"
 [[ -e "$DISK" && ! -f "$DISK" ]] && die "refusing: ${DISK} is not a regular file"
 CLONE="${VMDIR}/state-clone.img"
 
-PASS=0; FAIL=0
-green() { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
-red()   { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
-step() { printf '\n==> %s\n' "$*"; }
-TUSER=tester; TPASS=tester-pw; RPASS=root-pw
-TUSER_HASH="$(openssl passwd -6 "$TPASS")"; ROOT_HASH="$(openssl passwd -6 "$RPASS")"
-DRV="${SELF}/vm-drive.py"
+# shellcheck source=tools/image/suite-lib.sh
+source "${SELF}/suite-lib.sh"
 VARSF="${VMDIR}/state-vars.fd"; cp /usr/share/OVMF/OVMF_VARS_4M.fd "$VARSF"
-LATEST="${KRYPTIK_WORK}/logs/ovmf-serial.latest.log"
 
-start_vm() {   # start_vm NAME [extra args] -> SER PIDF LOG
-    local name="$1"; shift
-    local out; out="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --name "$name" "$@")"
-    SER="$(sed -n 's/^serial=//p' <<<"$out")"; PIDF="$(sed -n 's/^pid=//p' <<<"$out")"; LOG="$(sed -n 's/^log=//p' <<<"$out")"
-    [[ -S "$SER" ]] || die "no serial socket: ${out}"
-}
-stop_vm() { sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null; sleep 1; }
-drive() { python3 "$DRV" --serial "$SER" --timeout 300 "$@"; }
-txt() { tr -d '\r' < "$LOG"; }
-ROOTSH() { printf 'su:%s:%s' "$RPASS" "$1"; }
-part_start() { sfdisk -d "$1" 2>/dev/null | awk -v n="$2" -F'[ ,]+' '$1 ~ n"$" {for(i=1;i<=NF;i++) if($i=="start=") print $(i+1)}'; }
 
 # A boot that must come up degraded: smoke mode, transcript only, and the
 # guest cannot power itself off (no user to log in as), so it is killed at
@@ -109,7 +92,7 @@ DISK_SIZE="$("${SELF}/test-disk-size.sh" --medium "$USB")" || die "could not siz
 rm -f "$DISK"; truncate -s "$DISK_SIZE" "$DISK"
 CTL="${VMDIR}/testctl-state.img"
 "${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
-    "preseed_user=${TUSER}" "preseed_password_hash=${TUSER_HASH}" "preseed_root_hash=${ROOT_HASH}" > /dev/null
+    "${PRESEED[@]}" > /dev/null
 "${SELF}/run-ovmf.sh" --usb "$USB" --disk "$DISK" --testctl "$CTL" --vars clean --mode smoke --timeout "$TIMEOUT" --name state-install > /dev/null
 tr -d '\r' < "$LATEST" | grep -q 'KRYPTIK_INSTALL: rc=0' && green "installed" || { red "install failed"; exit 1; }
 start_vm state-p1

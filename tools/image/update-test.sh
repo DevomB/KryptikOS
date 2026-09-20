@@ -67,13 +67,8 @@ VMDIR="${KRYPTIK_WORK}/vm"; mkdir -p "$VMDIR"
 DISK="${DISK:-${VMDIR}/updated.img}"
 [[ -e "$DISK" && ! -f "$DISK" ]] && die "refusing: ${DISK} is not a regular file"
 
-PASS=0; FAIL=0
-green() { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
-red()   { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
-step() { printf '\n==> %s\n' "$*"; }
-TUSER=tester; TPASS=tester-pw; RPASS=root-pw
-TUSER_HASH="$(openssl passwd -6 "$TPASS")"; ROOT_HASH="$(openssl passwd -6 "$RPASS")"
-DRV="${SELF}/vm-drive.py"
+# shellcheck source=tools/image/suite-lib.sh
+source "${SELF}/suite-lib.sh"
 VARSF="${VMDIR}/updated-vars.fd"
 [[ "$VARS" == "enrolled" ]] && cp "${KRYPTIK_WORK}/keys/sb/vars/enrolled.fd" "$VARSF" || cp /usr/share/OVMF/OVMF_VARS_4M.fd "$VARSF"
 
@@ -109,18 +104,7 @@ mk_variant hidden; mkdir -p "$BAD/hidden/lost+found"; echo "ride along" > "$BAD/
 mkdir -p "$BAD/statement"; cp "$CHAN_B/latest" "$CHAN_B/latest.sig" "$CHAN_B/not-a-pointer" "$CHAN_B/not-a-pointer.sig" "$BAD/statement/"
 BADIMG="${VMDIR}/payload-bad.img"; payload_disk "$BADIMG" "$BAD"
 
-# The guest side, as root through su.
-ROOTSH() { printf 'su:%s:%s' "$RPASS" "$1"; }
-start_vm() {   # start_vm NAME [extra run-ovmf args] -> sets SER PIDF LOG
-    local name="$1"; shift
-    local out; out="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --name "$name" "$@")"
-    SER="$(sed -n 's/^serial=//p' <<<"$out")"; PIDF="$(sed -n 's/^pid=//p' <<<"$out")"; LOG="$(sed -n 's/^log=//p' <<<"$out")"; QMP="$(sed -n 's/^qmp=//p' <<<"$out")"
-    [[ -S "$SER" ]] || die "no serial socket: ${out}"
-}
-stop_vm() { sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null; sleep 1; }
-drive() { python3 "$DRV" --serial "$SER" --timeout 420 "$@"; }
-txt() { tr -d '\r' < "$LOG"; }
-part_start_disk() { sfdisk -d "$1" 2>/dev/null | awk -v n="$2" -F'[ ,]+' '$1 ~ n"$" {for(i=1;i<=NF;i++) if($i=="start=") print $(i+1)}'; }
+DRIVE_TIMEOUT=420
 
 # Each step starts from the state the one before it leaves. When the copy in
 # step 4 failed for want of disk space, steps 5 to 7 went on to roll back a
@@ -145,7 +129,7 @@ DISK_SIZE="$("${SELF}/test-disk-size.sh" --medium "$USB_A" --payloads 2)" || die
 rm -f "$DISK"; truncate -s "$DISK_SIZE" "$DISK"
 CTL="${VMDIR}/testctl-update.img"
 "${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
-    "preseed_user=${TUSER}" "preseed_password_hash=${TUSER_HASH}" "preseed_root_hash=${ROOT_HASH}" > /dev/null
+    "${PRESEED[@]}" > /dev/null
 "${SELF}/run-ovmf.sh" --usb "$USB_A" --disk "$DISK" --testctl "$CTL" --vars "$VARS" --mode smoke --timeout "$TIMEOUT" --name update-install > /dev/null
 tr -d '\r' < "${KRYPTIK_WORK}/logs/ovmf-serial.latest.log" | grep -q 'KRYPTIK_INSTALL: rc=0' && green "A installed" || { red "A did not install"; exit 1; }
 
@@ -302,7 +286,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
 rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "B armed from slot a" || red "step 7 arming failed"
 stop_unless_ok "$rc" "step 7 arming"
-B_OFF=$(( $(part_start_disk "$DISK" 3) * 512 ))
+B_OFF=$(( $(part_start "$DISK" 3) * 512 ))
 # The ext4 superblock's volume name: the first block a root mount reads, so
 # the trial boot meets the corruption at once (a byte deep in the data area
 # can sit in a block nothing reads at boot, and the trial would succeed).
