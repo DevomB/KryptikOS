@@ -1,6 +1,6 @@
 # The state partition, encrypted
 
-Status: design. Nothing here is built. It is the "state partition is
+Status: built, waiting for its first acceptance run. It is the "state partition is
 encrypted" item of [version 1.0](../roadmap.md#version-10), written down
 before the code because three of its choices were a person's to make. They
 were decided on 2026-09-20, each as recommended (marked **Decided**). Builds on
@@ -49,6 +49,28 @@ machine, and verified.
   a lost state partition: there is no escrow and no back door.
 - **The passphrase can be changed** (`kryptik state passphrase`, zone 0,
   root): `cryptsetup luksChangeKey` on a descriptor, the old one asked first.
+
+## Where the code departs from the text above
+
+- **The prompt is `sysinit`'s own, not cryptsetup's.** cryptsetup prints its
+  prompt and then changes the terminal with a call that discards pending
+  input, so an answer sent the instant the prompt appears can be lost.
+  `sysinit` turns echo off first (`stty`, which discards nothing), prints
+  the prompt, reads one line and hands it to cryptsetup on a descriptor.
+- **The console is `sysinit`'s while it runs.** The early getty is
+  supervised from the first moment and would read the same terminal, so
+  `kryptik-console` waits until `sysinit` has finished, however it ends, and
+  gives up waiting for it to start after 30 s.
+- **A plain filesystem in the partition's place is refused, not mounted.**
+  Otherwise swapping the encrypted partition for an unencrypted one would
+  be believed without a question.
+- **The suites did not gain a step each.** `vm-drive.py` answers the prompt
+  wherever it appears, from `KRYPTIK_STATE_PASSPHRASE`, and `run-ovmf.sh`'s
+  smoke mode attaches the driver too, so an undriven boot of an installed
+  disk is answered the same way. One unlock path, the one a person uses.
+- Not yet checked by a suite: `kryptik state passphrase` and the two header
+  commands of `kryptik-recover` (the state suite damages and restores the
+  header from the host).
 
 ## What it does and does not give
 

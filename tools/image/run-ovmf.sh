@@ -179,9 +179,17 @@ smoke)
     { printf '%q ' "$QEMU" "${ARGS[@]}"; echo; } > "${LOG}.cmd"
     ln -sfn "$LOG" "${KRYPTIK_WORK}/logs/ovmf-serial.latest.log"
     echo "serial log: ${LOG}"
+    # The console is a socket the driver watches, not a file: an installed
+    # disk asks for its state passphrase there and the driver answers it.
+    # wait=on holds the guest until the driver is connected, so it sees all.
+    SER="${VMDIR}/${RUN_ID}.serial"
     set +e; trap - ERR
-    timeout --foreground "$TIMEOUT" "$QEMU" "${ARGS[@]}" -serial "file:${LOG}" -monitor none < /dev/null > "${LOG}.qemu" 2>&1
-    rc=$?
+    "$QEMU" "${ARGS[@]}" -chardev "socket,id=ser0,path=${SER},server=on,wait=on,logfile=${LOG}" -serial chardev:ser0 \
+        -monitor none < /dev/null > "${LOG}.qemu" 2>&1 &
+    qpid=$!
+    for _ in $(seq 1 50); do [[ -S "$SER" ]] && break; sleep 0.2; done
+    python3 "${SELF}/vm-drive.py" --serial "$SER" --timeout "$TIMEOUT" wait-exit > /dev/null
+    if kill -0 "$qpid" 2>/dev/null; then kill "$qpid"; wait "$qpid"; rc=124; else wait "$qpid"; rc=$?; fi
     set -e
     [[ "$rc" -eq 124 ]] && warn "QEMU hit the ${TIMEOUT}s timeout"
     [[ "$rc" -ne 0 && "$rc" -ne 124 ]] && { warn "QEMU exited ${rc}:"; sed 's/^/  /' "${LOG}.qemu" | tail -5; }

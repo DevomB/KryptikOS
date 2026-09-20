@@ -22,10 +22,16 @@ Steps (each one argument):
                             (qcodes, e.g. key:y  key:ret  key:alt+e)
     wait-exit               wait for the serial socket to close (guest gone)
 
+An installed disk asks for its state passphrase on this console at every boot.
+With KRYPTIK_STATE_PASSPHRASE set, the driver answers wherever that is asked,
+as a person would; no step names it.
+
 Exit status 0 when every step succeeded; the failing step is named otherwise.
 The whole transcript goes to --log. stdlib only; no pexpect.
 """
 import json, os, re, socket, sys, time
+
+UNLOCK = re.compile(rb"passphrase for the state partition \(try \d of 3\): ")
 
 class Drive:
     def __init__(self, path, log, timeout):
@@ -37,8 +43,9 @@ class Drive:
         self.log = open(log, "ab") if log else None
         self.timeout = timeout
         self.closed = False
-        self.records = {}
         self.marker = 0
+        self.passphrase = os.environ.get("KRYPTIK_STATE_PASSPHRASE")
+        self.answered = 0   # how far into the transcript the prompts are answered
 
     def _read(self):
         try:
@@ -52,6 +59,12 @@ class Drive:
         self.all += d
         if self.log:
             self.log.write(d); self.log.flush()
+        if self.passphrase:
+            # From the last answer, or just before this read: a prompt may
+            # straddle two reads, and none is answered twice.
+            for m in UNLOCK.finditer(self.all, max(self.answered, len(self.all) - len(d) - 80)):
+                self.answered = m.end()
+                self.send_secret(self.passphrase)
         return True
 
     def seen(self, regex, timeout=None):
@@ -92,6 +105,14 @@ class Drive:
         self.s.sendall(data)
         if self.log:
             self.log.write(b"\n<<< " + text.encode() + b"\n"); self.log.flush()
+
+    def send_secret(self, text):
+        # To the guest and never to the transcript, which is uploaded with every
+        # acceptance report. A method of its own, so that no path leads from a
+        # password to the log.
+        self.s.sendall(text.encode() + b"\r")
+        if self.log:
+            self.log.write(b"\n<<< (a password)\n"); self.log.flush()
 
     def drain(self, seconds):
         end = time.time() + seconds
@@ -142,7 +163,7 @@ class Drive:
         self.knock(r"login: ?$", self.timeout)
         self.send(user)
         self.expect(r"Password: ?", 60)
-        self.send(password)
+        self.send_secret(password)
         # a fresh shell prompt: bash prints "user@host:dir$ " or "$ "
         self.expect(r"[$#] ?$", 60)
         # make the prompt unambiguous for run()
@@ -150,31 +171,16 @@ class Drive:
         self.expect(r"READY-\d+", 30)
         self.expect(r"KDRV\$ ?$", 30)
 
-    def run(self, cmd, require_zero=True, record=None):
+    def run(self, cmd, require_zero=True):
         self.marker += 1
         tag = f"KRC{self.marker}"
         self.send(f"{cmd}; echo {tag}=$?")
         m = self.expect(rf"{tag}=(\d+)", self.timeout)
         rc = int(m.group(1))
-        # output between the echoed command and the tag is what we captured;
-        # keep whatever preceded the match for records
-        if record is not None:
-            self.records[record] = self.last_output.decode("utf-8", "replace") if hasattr(self, "last_output") else ""
         self.expect(r"KDRV\$ ?$", 30)
         if require_zero and rc != 0:
             raise RuntimeError(f"command failed ({rc}): {cmd}")
         return rc
-
-    def grab(self, name, cmd):
-        self.marker += 1
-        tag = f"KRC{self.marker}"
-        self.send(f"echo BEGIN-{tag}; {cmd}; echo END-{tag}=$?")
-        self.expect(rf"BEGIN-{tag}\r?\n", self.timeout)
-        m = self.expect(rf"END-{tag}=(\d+)", self.timeout)
-        # everything consumed up to the END marker is in the discarded prefix;
-        # re-search the log-less buffer: simpler to capture during expect
-        self.expect(r"KDRV\$ ?$", 30)
-        return int(m.group(1))
 
     def su(self, password, cmd):
         # A login shell for root: the image strips the sbin directories from
@@ -184,7 +190,7 @@ class Drive:
         tag = f"KRC{self.marker}"
         self.send(f"su - root -c '{cmd}; echo {tag}=$?'")
         self.expect(r"Password: ?", 60)
-        self.send(password)
+        self.send_secret(password)
         # Wait for the exit marker, but keep what the command printed: the
         # steps that follow expect lines of that output ("running slot: a",
         # "ZT END"), and a plain expect() would have consumed them with the

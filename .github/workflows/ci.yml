@@ -459,6 +459,21 @@ jobs:
       - name: Pinned series are supported upstream
         run: ./tools/check-support-status.sh --strict
 
+      # Survey (network) then gate (no network). On a pull request the verdict
+      # is printed and does not fail the check: an upstream that released this
+      # morning is not the pull request's fault. The weekly run is the alarm.
+      - name: Pins behind upstream are reviewed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ./tools/check-source-currency.sh --tsv > pin-survey.tsv
+          echo "survey: $(wc -l < pin-survey.tsv) sources"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            ./tools/check-pin-reviews.sh --survey pin-survey.tsv || echo "pull request: informational"
+          else
+            ./tools/check-pin-reviews.sh --survey pin-survey.tsv
+          fi
+
       - name: Pinned kernel is longterm and not EOL
         run: ./tools/check-kernel-eol.sh
 

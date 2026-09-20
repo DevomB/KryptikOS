@@ -316,8 +316,8 @@ jobs:
           # Never the private halves of the keys: the acceptance job needs the
           # certificate, its DER form and the variable stores, nothing that
           # signs. An artifact of a public repository is public.
-          sudo tar --zstd -cf work-after-media.tar.zst -C work --exclude='images/kryptik-root.img' --exclude='images/esp-*.img' --exclude='keys/sb/kryptik-sb.key' --exclude='keys/release/kryptik-release' .
-          if sudo tar --zstd -tf work-after-media.tar.zst | grep -E 'kryptik-sb\.key$|keys/release/kryptik-release$'; then echo "a private key is in the artifact"; exit 1; fi
+          sudo tar --zstd -cf work-after-media.tar.zst -C work --exclude='images/kryptik-root.img' --exclude='images/esp-*.img' --exclude='keys/sb/kryptik-sb.key' --exclude='keys/release/kryptik-release' --exclude='keys/release/kryptik-latest' .
+          if sudo tar --zstd -tf work-after-media.tar.zst | grep -E 'kryptik-sb\.key$|keys/release/kryptik-(release|latest)$'; then echo "a private key is in the artifact"; exit 1; fi
           sudo chown "$(id -u):$(id -g)" work-after-media.tar.zst
           ls -la work-after-media.tar.zst; df -h /mnt | tail -1
 

@@ -33,6 +33,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define EFIVARS "/sys/firmware/efi/efivars/"
@@ -90,21 +91,43 @@ static int delete_var(const char *name) {
 /* --- the ESP partition, by label ------------------------------------------ */
 struct part { char dev[128]; char uuid[40]; uint64_t start, size; uint32_t number; };
 
-static int run_read(const char *cmd, char *out, size_t cap) {
-    FILE *p = popen(cmd, "r"); if (!p) return -1;
-    if (!fgets(out, (int)cap, p)) { pclose(p); return -1; }
-    pclose(p);
+/* The first line a program prints. No shell: the arguments are an array, so
+ * nothing in them is ever parsed as a command. The device name handed to
+ * blkid comes from devices.sh on the verified root, but a root tool that
+ * builds a command line out of any string is one edit away from trusting
+ * the wrong one. */
+static int run_read(char *const argv[], char *out, size_t cap) {
+    int fd[2];
+    if (pipe(fd)) return -1;
+    pid_t pid = fork();
+    if (pid < 0) { close(fd[0]); close(fd[1]); return -1; }
+    if (pid == 0) {
+        int nul = open("/dev/null", O_WRONLY);
+        dup2(fd[1], 1);
+        if (nul >= 0) dup2(nul, 2);
+        close(fd[0]); close(fd[1]);
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+    close(fd[1]);
+    FILE *p = fdopen(fd[0], "r");
+    int got = p && fgets(out, (int)cap, p) != NULL;
+    if (p) fclose(p); else close(fd[0]);
+    int st;
+    while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+    if (!got) return -1;
     out[strcspn(out, "\n")] = 0;
     return 0;
 }
 
 static int find_esp(struct part *p) {
     char dev[128];
-    if (run_read("/usr/libexec/kryptik/devices.sh part kryptik-esp 2>/dev/null", dev, sizeof dev) || !dev[0]) return -1;
+    char *find[] = { "/usr/libexec/kryptik/devices.sh", "part", "kryptik-esp", NULL };
+    if (run_read(find, dev, sizeof dev) || !dev[0]) return -1;
     snprintf(p->dev, sizeof p->dev, "%s", dev);
-    char cmd[256], out[128];
-    snprintf(cmd, sizeof cmd, "blkid -s PARTUUID -o value %s 2>/dev/null", dev);
-    if (run_read(cmd, out, sizeof out) || strlen(out) != 36) return -1;
+    char out[128];
+    char *uuid[] = { "blkid", "-s", "PARTUUID", "-o", "value", dev, NULL };
+    if (run_read(uuid, out, sizeof out) || strlen(out) != 36) return -1;
     snprintf(p->uuid, sizeof p->uuid, "%s", out);
     const char *base = strrchr(dev, '/'); base = base ? base + 1 : dev;
     char path[256];

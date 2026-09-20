@@ -7,6 +7,8 @@
 #   kryptik-recover --disk DEV --commit-slot a|b       make that slot the boot file
 #   kryptik-recover --disk DEV --restore-slot a|b      rewrite that slot from this medium's root image
 #   kryptik-recover --disk DEV --status
+#   kryptik-recover --disk DEV --backup-state-header FILE
+#   kryptik-recover --disk DEV --restore-state-header FILE
 #
 # --commit-slot: the other slot is intact (an update went wrong after the
 # commit, or the committed kernel file was damaged): copy that slot's kernel
@@ -19,20 +21,26 @@
 # an older version than what was there is what "recover from the medium"
 # means, and it is said.
 #
+# The state partition is LUKS2 (docs/design/state-encryption.md) and its
+# header is the state: without it, or without the passphrase, the partition
+# is lost, and there is no escrow. A backup belongs off this disk.
+#
 # Nothing here depends on the damaged system: every byte written comes from
 # the medium, which the firmware verified.
 set -eu
 PROG=kryptik-recover
 say() { printf '%s: %s\n' "$PROG" "$*"; }
 die() { printf '%s: FAILED: %s\n' "$PROG" "$*" >&2; exit 1; }
-DISK=""; COMMIT=""; RESTORE=""; STATUS=0
+DISK=""; COMMIT=""; RESTORE=""; STATUS=0; HDR_OUT=""; HDR_IN=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --disk) DISK="${2:-}"; shift 2 ;;
         --commit-slot) COMMIT="${2:-}"; shift 2 ;;
         --restore-slot) RESTORE="${2:-}"; shift 2 ;;
         --status) STATUS=1; shift ;;
-        -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --backup-state-header) HDR_OUT="${2:-}"; shift 2 ;;
+        --restore-state-header) HDR_IN="${2:-}"; shift 2 ;;
+        -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -72,6 +80,17 @@ if [ "$STATUS" = 1 ]; then
     exit 0
 fi
 
+if [ -n "$HDR_OUT" ]; then   # cryptsetup refuses to overwrite an existing file
+    cryptsetup luksHeaderBackup "$ST" --header-backup-file "$HDR_OUT" || die "could not back up the header of ${ST}"
+    say "the header of ${ST} is in ${HDR_OUT}"
+    exit 0
+fi
+if [ -n "$HDR_IN" ]; then
+    cryptsetup -q luksHeaderRestore "$ST" --header-backup-file "$HDR_IN" || die "could not restore the header of ${ST} from ${HDR_IN}"
+    say "the header of ${ST} is restored from ${HDR_IN}"
+    exit 0
+fi
+
 commit_slot() {   # commit_slot SLOT (ESP mounted rw at /run/kryptik-recover)
     s="$1"; k="/run/kryptik-recover/EFI/kryptik/kryptik-$s.efi"
     [ -f "$k" ] || die "no kernel for slot $s on the ESP"
@@ -107,6 +126,7 @@ if [ -n "$RESTORE" ]; then
     say "restoring slot $RESTORE from this medium (${ver}, ${bytes} bytes); the state partition is untouched"
     if [ "$off" -gt 0 ]; then dd if="$src" of="$sd" bs=4M iflag=skip_bytes,count_bytes skip="$off" count="$bytes" conv=fsync status=none
     else dd if="$src" of="$sd" bs=4M iflag=count_bytes count="$bytes" conv=fsync status=none; fi
+    blockdev --flushbufs "$sd"   # so the read-back is of the disk, not of the page cache
     got="$(dd if="$sd" bs=4M iflag=count_bytes count="$bytes" status=none | sha256sum | cut -c1-64)"
     [ "$got" = "$sha" ] || die "slot $RESTORE reads back as $got, expected $sha"
     say "slot $RESTORE verifies"
@@ -129,4 +149,4 @@ if [ -n "$COMMIT" ]; then
     umount /run/kryptik-recover
     exit 0
 fi
-die "one of --status, --commit-slot or --restore-slot is required"
+die "one of --status, --commit-slot, --restore-slot, --backup-state-header or --restore-state-header is required"

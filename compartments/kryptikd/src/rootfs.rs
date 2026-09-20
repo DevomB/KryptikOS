@@ -281,6 +281,9 @@ pub const ETC_RO_FILES: &[&str] = &[
     // The time sources the nic zone asks (docs/design/time.md): a list of
     // server names, no secret, and absent on a system that keeps the default.
     "/etc/kryptik/time.conf",
+    // Where the nic zone looks for releases (docs/design/update-channel.md):
+    // one address, no secret, and absent on a system with no channel.
+    "/etc/kryptik/update.conf",
 ];
 pub const ETC_RO_DIRS: &[&str] = &["/etc/alternatives", "/etc/ssl/certs", "/etc/pki/tls/certs"];
 
