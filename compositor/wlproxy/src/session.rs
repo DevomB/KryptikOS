@@ -43,7 +43,6 @@ pub enum SessionError {
     TooMuchPending(Dir),
     TooManyFds,
     Io(io::Error),
-    PeerClosed(Dir),
 }
 
 impl std::fmt::Display for SessionError {
@@ -53,14 +52,13 @@ impl std::fmt::Display for SessionError {
             SessionError::UnknownObject(id) => write!(f, "message for unknown object {id}"),
             SessionError::DuplicateObject(id) => write!(f, "object id {id} is already live"),
             SessionError::UnknownOpcode { interface, opcode } => write!(f, "{interface} has no opcode {opcode}"),
-            SessionError::HiddenInterface(i) => write!(f, "bind of an interface not advertised to this zone: {i}"),
+            SessionError::HiddenInterface(i) => write!(f, "bind of an interface not advertised to this zone: {i:?}"),
             SessionError::VersionTooHigh { interface, asked, max } => write!(f, "{interface} version {asked} asked, {max} allowed"),
             SessionError::IdOutOfRange { id, dir } => write!(f, "object id {id} is not in the {dir:?} range"),
             SessionError::TooManyObjects => write!(f, "too many live objects"),
             SessionError::TooMuchPending(d) => write!(f, "too much unsent data ({d:?})"),
             SessionError::TooManyFds => write!(f, "too many queued descriptors"),
             SessionError::Io(e) => write!(f, "{e}"),
-            SessionError::PeerClosed(d) => write!(f, "peer closed ({d:?})"),
         }
     }
 }
@@ -460,9 +458,10 @@ impl Session {
                     if iface.name == "wl_registry" && h.opcode == WL_REGISTRY_GLOBAL_REMOVE {
                         let mut r = ArgReader::new(&msg[HEADER_LEN..]);
                         let gname = r.u32()?;
-                        if self.globals.remove(&gname).is_none() {
-                            forward = false; // was hidden; the client never saw it
-                        }
+                        // Once per registry the client holds, so the entry
+                        // stays: every one of them is told, and a bind that
+                        // races the removal is the compositor's to answer.
+                        forward = self.globals.contains_key(&gname); // hidden: never seen
                     }
                     if h.object == WL_DISPLAY && h.opcode == WL_DISPLAY_DELETE_ID {
                         let mut r = ArgReader::new(&msg[HEADER_LEN..]);
@@ -515,9 +514,6 @@ impl Session {
         self.server.close_all();
     }
 
-    pub fn object_count(&self) -> usize {
-        self.objects.len()
-    }
     pub fn has_object(&self, id: u32) -> bool {
         self.objects.contains_key(&id)
     }
@@ -608,6 +604,29 @@ mod tests {
         let bind = MessageWriter::new(2, WL_REGISTRY_BIND).u32(1).string("wl_compositor").u32(99).u32(4).finish().unwrap();
         c.write_all(&bind).unwrap();
         assert!(matches!(pump_all(&mut s), Err(SessionError::VersionTooHigh { .. })));
+    }
+
+    #[test]
+    fn a_removed_global_is_told_to_every_registry_and_a_hidden_one_to_none() {
+        let (mut s, mut c, mut sv) = make();
+        c.write_all(&get_registry(2)).unwrap();
+        c.write_all(&get_registry(3)).unwrap();
+        pump_all(&mut s).unwrap();
+        for reg in [2, 3] {
+            sv.write_all(&global(reg, 1, "wl_shm", 2)).unwrap();
+            sv.write_all(&global(reg, 2, "zwlr_screencopy_manager_v1", 3)).unwrap();
+        }
+        pump_all(&mut s).unwrap();
+        read_all(&mut c);
+        let remove = |reg: u32, name: u32| MessageWriter::new(reg, WL_REGISTRY_GLOBAL_REMOVE).u32(name).finish().unwrap();
+        // The compositor sends one event per registry. The first used to
+        // consume the entry, so the second registry was never told.
+        for reg in [2, 3] {
+            sv.write_all(&remove(reg, 1)).unwrap();
+            sv.write_all(&remove(reg, 2)).unwrap();
+        }
+        pump_all(&mut s).unwrap();
+        assert_eq!(read_all(&mut c), [remove(2, 1), remove(3, 1)].concat());
     }
 
     #[test]
