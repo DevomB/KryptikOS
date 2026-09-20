@@ -7,16 +7,28 @@
 # zone 0, wired or wireless (the predictable-name udev rule is masked in the
 # image, s_etc, so the kernel's eth0/wlan0 names are what both sides see).
 # The same rule as kryptikd's netzone::physical_interfaces, applied here
-# first: a machine with no such interface has nothing to hold, and the
-# service idles rather than restarting a launch that cannot succeed.
-have=0
-for d in /sys/class/net/*; do
-    case "${d##*/}" in lo) continue ;; esac
-    [ -e "$d/device" ] && { have=1; break; }
-done
-if [ "$have" = 0 ]; then
-    echo "net-zone: no physical network interface on this machine; nothing to hold"
-    exec sleep infinity
+# first: with no such interface there is nothing to hold, and a launch that
+# cannot succeed is not retried in a loop.
+#
+# It WAITS for one rather than giving up. Network drivers are modules: an
+# interface exists once its driver has loaded and probed, which for a radio
+# waiting on its firmware, or an adapter on a dock plugged in after boot, is
+# after this service starts. A check made once, followed by `sleep infinity`,
+# left such a machine without a net zone until someone restarted the service.
+have_nic() {
+    for d in /sys/class/net/*; do
+        case "${d##*/}" in lo) continue ;; esac
+        [ -e "$d/device" ] && return 0
+    done
+    return 1
+}
+if ! have_nic; then
+    echo "net-zone: no physical network interface yet; waiting for one"
+    while ! have_nic; do sleep 5; done
+    # Its siblings may still be probing; one more beat so they leave zone 0
+    # with it instead of being stranded there until the next restart.
+    sleep 3
+    echo "net-zone: an interface has appeared"
 fi
 exec /usr/bin/kryptikd run net --zones /usr/lib/kryptik/zones --rootfs /var/lib/kryptik/zones \
      -- /usr/libexec/kryptik/netzone-init.sh

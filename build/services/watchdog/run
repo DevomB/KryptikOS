@@ -1,0 +1,7 @@
+#!/bin/sh
+# The watchdog feeder. Supervised: if it dies it is restarted well inside the
+# timeout; if it stops being scheduled - a hung userspace, a wedged kernel -
+# nothing feeds the timer and the machine reboots. During an A/B trial that is
+# the fallback doing its job: BootNext is spent, so the reboot lands on the
+# committed slot.
+exec /usr/libexec/kryptik/watchdog.sh

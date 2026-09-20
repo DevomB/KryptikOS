@@ -968,6 +968,10 @@ s_netzone() {
     echo "source sha256: ${1:-unknown}"
     install -D -m 0755 "$src" /usr/libexec/kryptik/netzone-init.sh
     sh -n /usr/libexec/kryptik/netzone-init.sh || { echo "netzone-init does not parse under the target sh"; return 1; }
+    # The SNTP query the net zone measures the clock with (docs/design/time.md).
+    install -D -m 0755 "${KRYPTIK_ROOT}/tools/net/sntp-offset.py" /usr/libexec/kryptik/sntp-offset.py
+    python3 -m py_compile /usr/libexec/kryptik/sntp-offset.py || { echo "sntp-offset.py does not compile under the target python"; return 1; }
+    rm -rf /usr/libexec/kryptik/__pycache__
     for t in dhcpcd nft dnsmasq ip; do
         command -v "$t" >/dev/null 2>&1 && echo "  ok $t" || { echo "  MISSING $t"; return 1; }
     done
@@ -1236,7 +1240,7 @@ EOF
 #   copied into a target. Every tunable in it was inert.
 #
 #   build/services/       - the s6-rc source tree: service definitions ONLY
-#   build/service-scripts/ - the shell the oneshots run, kept out of the
+#   build/service-scripts/ - the shell the services run, kept out of the
 #                            source tree because s6-rc-compile reads every
 #                            directory there as a service
 #   rc.init looks for.
@@ -1310,7 +1314,7 @@ s_services() {
     printf '%s\n' "$all" | sed 's/^/  /'
 
     local svc missing=0
-    for svc in sysinit eudev eudev-trigger kryptikd-check kryptikd-serve firstboot seatd net-zone getty-tty1 boot-success boot-smoke default; do
+    for svc in sysinit watchdog eudev eudev-trigger kryptikd-check time-floor kryptikd-serve firstboot seatd net-zone getty-tty1 boot-success boot-smoke default; do
         if ! printf '%s\n' "$all" | grep -qx "$svc"; then
             echo "MISSING from the database: ${svc}"; missing=$((missing + 1))
         fi
@@ -1594,6 +1598,7 @@ s_boot_check() {
     chk "boot scripts"      /usr/libexec/kryptik/sysinit.sh x
     chk "test control helper" /usr/libexec/kryptik/testctl.sh
     chk "boot-success"      /usr/libexec/kryptik/boot-success.sh x
+    chk "watchdog feeder"   /usr/libexec/kryptik/watchdog.sh x
     chk "first-boot setup"  /usr/libexec/kryptik/firstboot.sh x
     chk "login"             /usr/bin/login x
     chk "efiboot"           /usr/sbin/kryptik-efiboot x
@@ -2494,7 +2499,7 @@ PACKAGES=(
     # kryptik-update, which refuses to start without kryptik-efiboot.
     "efiboot"     "s_efiboot $(sha256_of "${KRYPTIK_ROOT}/tools/efi/kryptik-efiboot.c" 2>/dev/null || echo none)"
     "updater"     "s_updater $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-update" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-recover" 2>/dev/null || echo none)"
-    "netzone"     "s_netzone $(sha256_of "${KRYPTIK_ROOT}/tools/net/netzone-init.sh" 2>/dev/null || echo none)"
+    "netzone"     "s_netzone $(sha256_of "${KRYPTIK_ROOT}/tools/net/netzone-init.sh" 2>/dev/null || echo none)-$(sha256_of "${KRYPTIK_ROOT}/tools/net/sntp-offset.py" 2>/dev/null || echo none)"
     "installer"   "s_installer $(sha256_of "${KRYPTIK_ROOT}/tools/install/kryptik-install.sh" 2>/dev/null || echo none)"
     # The path and the binary's content hash are arguments so that both are
     # part of this step's fingerprint; see s_kryptikd.

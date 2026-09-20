@@ -11,6 +11,12 @@ on:
     # that a caught error rather than a discovered one.
     - cron: '0 6 * * 1'
 
+# Nothing here writes to the repository, so the token is told so in the file
+# that is reviewed, not left to a repository setting someone can flip. The
+# cache and the artifact uploads use the runner's own credential, not this.
+permissions:
+  contents: read
+
 jobs:
   identity:
     name: Commit identity
