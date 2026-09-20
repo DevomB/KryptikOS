@@ -15,6 +15,8 @@
  *   kryptik-launch --wifi-add SSID      add one, or replace its passphrase; the passphrase
  *                                       is one line on standard input, never an argument
  *   kryptik-launch --wifi-forget SSID   remove one
+ *   kryptik-launch --update status|fetch|apply   what release is current and staged; ask for
+ *                                       it to be fetched; install what has arrived
  *
  * With a display, the zone's Wayland proxy (kryptik-wlproxy) is started
  * first if it is not already running, listening at
@@ -275,7 +277,8 @@ static void usage(void)
 	      "       kryptik-launch --runtime-dir\n"
 	      "       kryptik-launch --clipboard-move FROM TO\n"
 	      "       kryptik-launch --wifi-list | --wifi-add SSID | --wifi-forget SSID\n"
-	      "                      (--wifi-add reads the passphrase from standard input)\n", stderr);
+	      "                      (--wifi-add reads the passphrase from standard input)\n"
+	      "       kryptik-launch --update status|fetch|apply\n", stderr);
 	exit(2);
 }
 
@@ -362,6 +365,22 @@ static int wifi_main(int argc, char **argv)
 	return ok ? 0 : 1;
 }
 
+/* The update channel from the person's side: the daemon's update verbs
+ * (kryptikd's update.rs). The reply is `ok` on a line of its own and then
+ * text for the person, or one `error:` line. `apply` answers when
+ * kryptik-update has finished, which is as long as writing a slot takes. */
+static int update_main(int argc, char **argv)
+{
+	if (argc != 3 || (strcmp(argv[2], "status") != 0 && strcmp(argv[2], "fetch") != 0 && strcmp(argv[2], "apply") != 0))
+		usage();
+	char req[32];
+	snprintf(req, sizeof req, "update-%s\n", argv[2]);
+	char *r = talk(req, -1);
+	int ok = strncmp(r, "ok\n", 3) == 0;
+	fputs(ok ? r + 3 : r, ok ? stdout : stderr);
+	return ok ? 0 : 1;
+}
+
 int main(int argc, char **argv)
 {
 	int ask = 0, no_display = 0, pass_fd = -1, sep = -1;
@@ -369,6 +388,8 @@ int main(int argc, char **argv)
 	int i;
 	if (argc >= 2 && strncmp(argv[1], "--wifi-", 7) == 0)
 		return wifi_main(argc, argv);
+	if (argc >= 2 && strcmp(argv[1], "--update") == 0)
+		return update_main(argc, argv);
 	if (argc == 4 && strcmp(argv[1], "--clipboard-move") == 0) {
 		if (!ident_ok(argv[2]) || !ident_ok(argv[3]))
 			usage();

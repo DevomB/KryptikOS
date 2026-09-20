@@ -244,6 +244,20 @@ MATCH="does not hold the network" check "the clock's verb is refused from a zone
 "
 MATCH="is not an offset in seconds" check "a time claim outside the grammar is refused at parse time" 0 /usr/bin/python3 -c "$BRK" "time-offset 1e9 4
 "
+# The update channel (docs/design/update-channel.md): a release is brought by
+# the zone that holds the network and by no other. From this zone all three
+# verbs are refused by who is asking, the two that carry bytes before a byte
+# of them is read, and a request outside the grammar before that.
+MATCH="does not hold the network" check "a statement of what is current is refused from a zone that does not hold the network" 0 /usr/bin/python3 -c "$BRK" "update-latest 5 3
+helloabc"
+MATCH="does not hold the network" check "asking whether a release is wanted is refused from a zone that does not hold the network" 0 /usr/bin/python3 -c "$BRK" "update-poll
+"
+MATCH="does not hold the network" check "a piece of a release is refused from a zone that does not hold the network" 0 /usr/bin/python3 -c "$BRK" "update-put kryptik-root.img 0 5
+hello"
+MATCH="must be a single path component" check "a piece of a release named with a path is refused at parse time" 0 /usr/bin/python3 -c "$BRK" "update-put ../kryptik-root.img 0 5
+hello"
+MATCH="is not 1 to 1048576 bytes" check "a piece of a release larger than one piece is refused at parse time" 0 /usr/bin/python3 -c "$BRK" "update-put kryptik-root.img 0 1048577
+"
 MATCH="^ok text/plain 5 hello$" check "clipboard-set then clipboard-get round-trips" 0 /bin/sh -c "python3 -c '$BRK' 'clipboard-set text/plain 5
 hello' >/dev/null && python3 -c '$BRK' 'clipboard-get
 '"

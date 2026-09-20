@@ -16,3 +16,9 @@ time-offset +3599.999999 16
 time-offset 1e9 4
 time-offset nan 4
 steal
+update-poll
+update-latest 300 120
+update-latest 8193 1
+update-put manifest 0 64
+update-put kryptik-root.img 1048576 1048576
+update-put ../kryptik-root.img 0 5
