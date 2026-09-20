@@ -376,6 +376,20 @@ s_build() {
     done
 }
 
+s_size() {
+    # $1 is .config's digest and $2 the budget's, so this runs when either moves.
+    # The signed kernel once grew from 17.8 MB to 31.6 MB and nothing said so.
+    cd "$KSRC"
+    local img_bytes ucode_bytes budget
+    img_bytes="$(stat -c %s arch/x86/boot/bzImage)" || return 1
+    ucode_bytes="$(du -sb kryptik-microcode 2>/dev/null | cut -f1)"
+    budget="$(awk '$1 == "bzimage_max_bytes" {print $2}' "${CONFIG_DIR}/size-budget")"
+    [[ "$budget" =~ ^[0-9]+$ ]] || { echo "FAIL: ${CONFIG_DIR}/size-budget names no bzimage_max_bytes"; return 1; }
+    echo "bzImage ${img_bytes} bytes (microcode, which does not compress: ${ucode_bytes:-0}); budget ${budget}"
+    echo "built in: $(grep -c '=y$' .config) options, modules: $(grep -c '=m$' .config)"
+    [[ "$img_bytes" -le "$budget" ]] || { echo "FAIL: over budget by $(( img_bytes - budget )) bytes; make it a module or leave it out"; return 1; }
+}
+
 s_modules() {
     echo "config digest: ${1:-none}"
     cd "$KSRC"
@@ -542,7 +556,7 @@ step compiler-check  s_compiler_check
 if [[ ! -d "$KSRC" && -f "${STAMPS}/${STAMP_PREFIX}unpack" ]]; then
     gone="${STAMPS}/legacy/kernel-tree-gone-$(date +%Y%m%dT%H%M%S)"
     mkdir -p "$gone"
-    for s in unpack patch microcode config hardening-check build modules install verify-install; do
+    for s in unpack patch microcode config hardening-check build size modules install verify-install; do
         [[ -f "${STAMPS}/${STAMP_PREFIX}${s}" ]] && mv -f "${STAMPS}/${STAMP_PREFIX}${s}" "$gone/"
     done
     warn "the kernel tree ${KSRC} is gone but its steps were stamped as built;"
@@ -589,6 +603,7 @@ step hardening-check s_hardening_check \
 CFG_DIGEST="$(sha256_of "${KSRC}/.config" 2>/dev/null || echo noconfig)"
 
 step build           s_build "${HOSTLDFLAGS:-}" "$CFG_DIGEST"
+step size            s_size "$CFG_DIGEST" "$(sha256_of "${CONFIG_DIR}/size-budget")"
 step modules         s_modules "$CFG_DIGEST"
 step install         s_install "$CFG_DIGEST"
 step verify-install  s_verify_install "$CFG_DIGEST"
