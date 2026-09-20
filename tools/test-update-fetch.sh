@@ -39,34 +39,9 @@ printf 'and its signature\n' > "$T/www/chan/latest.sig"
 # What the stand-in "verified manifest" lists: name and size.
 for f in kryptik-root.img kryptik-a.efi root.json; do printf '%s %s\n' "$f" "$(stat -c %s "$REL/$f")"; done > "$T/listed"
 
-# --- the HTTP server: Range honoured unless $T/norange exists ---------------------
-cat > "$T/httpd.py" <<'EOF'
-import http.server, os, sys
-root, portfile, flag, log = sys.argv[1:5]
-class H(http.server.BaseHTTPRequestHandler):
-    def log_message(self, *a): pass
-    def do_GET(self):
-        path = os.path.normpath(os.path.join(root, self.path.lstrip("/")))
-        if not path.startswith(root) or not os.path.isfile(path):
-            self.send_error(404); return
-        data = open(path, "rb").read()
-        rng = self.headers.get("Range")
-        open(log, "a").write("%s %s\n" % (self.path, rng or "-"))
-        if rng and not os.path.exists(flag):
-            start = int(rng.split("=")[1].split("-")[0])
-            body = data[start:]
-            self.send_response(206)
-            self.send_header("Content-Range", "bytes %d-%d/%d" % (start, len(data) - 1, len(data)))
-        else:
-            body = data
-            self.send_response(200)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-srv = http.server.HTTPServer(("127.0.0.1", 0), H)
-open(portfile, "w").write(str(srv.server_address[1]))
-srv.serve_forever()
-EOF
+# --- the release host: tools/image/release-host.py, the one the update suite
+# serves a real release from. Range honoured unless $T/norange exists.
+HOST="$ROOT/tools/image/release-host.py"
 
 # --- zone 0's broker, as far as the fetcher can tell ------------------------------
 cat > "$T/broker.py" <<'EOF'
@@ -121,7 +96,7 @@ while True:
     c.sendall((reply + "\n").encode()); c.close()
 EOF
 
-python3 "$T/httpd.py" "$T/www" "$T/port" "$T/norange" "$T/http.log" & PIDS+=($!)
+python3 "$HOST" "$T/www" "$T/port" "$T/http.log" "$T/norange" & PIDS+=($!)
 for _ in $(seq 50); do [[ -s "$T/port" ]] && break; sleep 0.1; done
 PORT="$(cat "$T/port" 2>/dev/null)"
 [[ -n "$PORT" ]] || { echo "the HTTP server did not start"; exit 1; }

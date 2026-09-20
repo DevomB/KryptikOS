@@ -356,11 +356,18 @@ stop_unless_ok "$rc" "step 8 rollback"
 SERVE="${VMDIR}/channel"; rm -rf "$SERVE"; mkdir -p "$SERVE/${VB}"
 cp "$CHAN_B/latest" "$CHAN_B/latest.sig" "$SERVE/"
 for f in "$PAY_B"/*; do [[ -f "$f" ]] && ln -s "$(readlink -f "$f")" "$SERVE/${VB}/$(basename "$f")"; done
-CHAN_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
-python3 -m http.server "$CHAN_PORT" --bind 127.0.0.1 --directory "$SERVE" > "${VMDIR}/channel-httpd.log" 2>&1 &
+# release-host.py honours Range with a 206, as the design asks of a release
+# host, so a fetch that is cut resumes from its byte instead of re-reading
+# gigabytes through the user network; it streams, binds loopback and a port
+# the kernel picks, and logs one line per request. It must not outlive this
+# suite whichever way the suite ends, hence the trap.
+CHAN_LOG="${VMDIR}/channel-requests.log"; : > "$CHAN_LOG"; rm -f "${VMDIR}/channel.port"
+python3 "${SELF}/release-host.py" "$SERVE" "${VMDIR}/channel.port" "$CHAN_LOG" > "${VMDIR}/channel-host.err" 2>&1 &
 CHAN_PID=$!
-sleep 1
-kill -0 "$CHAN_PID" 2>/dev/null || die "the release host did not start: $(cat "${VMDIR}/channel-httpd.log")"
+trap '[[ -n "${CHAN_PID:-}" ]] && kill "$CHAN_PID" 2>/dev/null' EXIT
+for _ in $(seq 50); do [[ -s "${VMDIR}/channel.port" ]] && break; sleep 0.1; done
+CHAN_PORT="$(cat "${VMDIR}/channel.port" 2>/dev/null)"
+[[ -n "$CHAN_PORT" ]] || die "the release host did not start: $(cat "${VMDIR}/channel-host.err")"
 
 # The guest, with a network for this step and no other. Zone 0 names the
 # channel; the net zone sees that file only from its next launch, so its
@@ -370,20 +377,38 @@ kill -0 "$CHAN_PID" 2>/dev/null || die "the release host did not start: $(cat "$
 # is the offline path's apply, and the trial boot and the commit are the
 # ones steps 2 and 7 judge. Each wait is a loop in the guest that gives up
 # before the driver would.
+# The net zone is restarted the way build/guest-tests/zones-check.sh does it,
+# the one restart the suites have proven: down, a pause, up, then a NEW
+# "netzone: READY" line in the catch-all log. Before that line, `status`
+# would be read while the old zone is still there.
+# (No single quote may appear in a command given to ROOTSH: the driver
+# wraps it in them for `su -c`. And it must not `exit`, or the driver's own
+# marker after it is never printed; hence the subshell.)
+RESTART_NET='before=$(grep -hc "netzone: READY" /run/uncaught-logs/current 2>/dev/null); before=${before:-0}; s6-svc -d /run/service/net-zone; sleep 3; s6-svc -u /run/service/net-zone; (i=0; until [ "$(grep -hc "netzone: READY" /run/uncaught-logs/current 2>/dev/null || true)" -gt "$before" ]; do i=$((i+1)); [ $i -lt 90 ] || exit 1; sleep 1; done) && echo NET-RESTARTED || echo NET-NOT-READY'
+# The release is gigabytes through the user network on a nested-KVM runner,
+# so the wait for it is not a clock: it fails when the staged line has not
+# changed for 100 seconds (a stall; the net zone asks once a minute, so less
+# would call the quiet before the first piece a stall), it succeeds at
+# "complete", and at the end of its six minutes it succeeds too if bytes
+# were still arriving, for the next wait to take over. A slow link costs
+# waits, not the run.
+wait_arrival() { printf '%s' '(prev=; same=0; i=0; while [ $i -lt 72 ]; do s="$(kryptik update status | sed -n "s/^staged *//p")"; case "$s" in *"bytes, complete"*) echo ARRIVED-WHOLE; exit 0 ;; esac; if [ "$s" = "$prev" ]; then same=$((same+1)); else same=0; prev="$s"; fi; [ $same -lt 20 ] || { echo "STALLED at: $s"; exit 1; }; i=$((i+1)); sleep 5; done; echo "still arriving: $s")'; }
 # In a subshell, so that giving up is not the login shell's exit; and giving
 # up is a failed command, because the driver's `run:` judges the exit status
 # and the word it then expects is also in the command line the console echoes.
 wait_status() { printf '(i=0; until kryptik update status | grep -q "%s"; do i=$((i+1)); [ $i -lt 72 ] || exit 1; sleep 5; done) && echo %s || { kryptik update status; false; }' "$1" "$2"; }
 start_vm update-p8b --net user
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
-    "$(ROOTSH "mkdir -p /etc/kryptik && printf 'channel = http://10.0.2.2:${CHAN_PORT}/\\n' > /etc/kryptik/update.conf && s6-svc -r /run/service/net-zone && echo CONF-OK")" "expect:CONF-OK" \
+    "$(ROOTSH "mkdir -p /etc/kryptik && printf \"channel = http://10.0.2.2:${CHAN_PORT}/\\n\" > /etc/kryptik/update.conf && echo CONF-OK")" "expect:CONF-OK" \
+    "$(ROOTSH "$RESTART_NET")" "expect:NET-RESTARTED" \
     "run:kryptik update status | grep -q 'nothing asked for'" \
     "run:$(wait_status "newest     ${VB} " STATED-OK)" "expect:STATED-OK" \
     "$(ROOTSH 'sleep 70; echo STAGED-UNASKED=$(ls /var/lib/kryptik/update/incoming 2>/dev/null | wc -l)')" "expect:STAGED-UNASKED=0" \
     "run:kryptik update fetch" "expect:${VB} will be fetched" \
     "run:$(wait_status "${VB}: .* bytes, " ARRIVING-OK)" "expect:ARRIVING-OK" \
-    "run:$(wait_status "bytes, complete" COMPLETE-OK)" "expect:COMPLETE-OK" \
-    "$(ROOTSH "ls /var/lib/kryptik/update/incoming/${VB} | sort | tr '\\n' ' '; echo LISTED")" "expect:kryptik-a.efi kryptik-b.efi kryptik-root.img manifest manifest.sig root.json LISTED" \
+    "run:$(wait_arrival)" "run:$(wait_arrival)" "run:$(wait_arrival)" "run:$(wait_arrival)" \
+    "run:kryptik update status | grep -q 'bytes, complete'" \
+    "$(ROOTSH "ls /var/lib/kryptik/update/incoming/${VB} | sort | tr \"\\n\" \" \"; echo LISTED")" "expect:kryptik-a.efi kryptik-b.efi kryptik-root.img manifest manifest.sig root.json LISTED" \
     "run:kryptik update apply" "expect:armed: the next boot tries slot b" \
     "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
     "login:${TUSER}:${TPASS}" \
@@ -391,12 +416,12 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "run:test \"\$(cat /home/${TUSER}/marker)\" = before-update" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
-kill "$CHAN_PID" 2>/dev/null
+kill "$CHAN_PID" 2>/dev/null; CHAN_PID=""
 [[ "$rc" -eq 0 ]] && green "the net zone brought the statement, nothing was fetched until it was asked for, ${VB} arrived whole, and it was applied, trial-booted and committed; data intact" || red "step 8 drive failed"
 txt | grep -q "version_id=${VB}" && green "guest reports version ${VB} after the fetched update" || red "guest did not report ${VB}"
 # What the release host was asked for: the statement, then the manifest and
 # its signature before anything large.
-first="$(grep -o 'GET /[^ ]*' "${VMDIR}/channel-httpd.log" | sed 's|GET /||' | awk '!seen[$0]++' | head -5 | tr '\n' ' ')"
+first="$(awk '{sub("^/", "", $1); if (!seen[$1]++) print $1}' "$CHAN_LOG" | head -5 | tr '\n' ' ')"
 if [[ "$first" == "latest latest.sig ${VB}/manifest ${VB}/manifest.sig "* ]]; then green "the release host was asked for the statement, then the manifest and its signature, before any image"; else red "the release host was asked in another order: ${first}"; fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
