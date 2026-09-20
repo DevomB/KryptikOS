@@ -2,8 +2,8 @@
 
 Status: design. Nothing here is built. It is the "state partition is
 encrypted" item of [version 1.0](../roadmap.md#version-10), written down
-before the code because three of its choices are a person's to make (they
-are marked **Decision**). Builds on
+before the code because three of its choices were a person's to make. They
+were decided on 2026-09-20, each as recommended (marked **Decided**). Builds on
 [boot, slots and updates](boot-and-updates.md) and
 [encrypted volumes](encrypted-volumes.md).
 
@@ -69,30 +69,33 @@ in the clear by design.
 
 ## The decisions
 
-**Decision 1: a passphrase at every boot.** This is what 1.0 can honestly
+The owner left these to the engineer's judgement on 2026-09-20. Any of them
+can be reopened; none is expensive to change before the code exists.
+
+**Decided: a passphrase at every boot.** This is what 1.0 can honestly
 offer: the machine asks before it has any state, so the secret cannot be
 the login password (the shadow file is inside). The alternative, unlocking
 from the TPM against a measured boot with the passphrase as the fallback,
-is in version 2 and needs measured boot first. *Recommended: yes, a separate
-disk passphrase, asked once per boot on the console.*
+is in version 2 and needs measured boot first. A separate
+disk passphrase, asked once per boot on the console.
 
-**Decision 2: authenticated encryption now or later.** LUKS2 can put
+**Decided: authenticated encryption later, not in 1.0.** LUKS2 can put
 dm-integrity under dm-crypt (`--integrity hmac-sha256`), which turns the
 "no" above into a "yes": a modified block is an I/O error, not garbage. It
 costs a journal (roughly a third of write throughput on a laptop SSD),
 about 10% of the partition, a much slower first format, and
-`CONFIG_DM_INTEGRITY` in the kernel. *Recommended: not in 1.0. Ship
+`CONFIG_DM_INTEGRITY` in the kernel. Ship
 confidentiality with the allow-list, measure the cost on real hardware once
-there is some, and decide with numbers.*
+there is some, and decide with numbers.
 
-**Decision 3: what the unattended tests do.** An installed system ignores
+**Decided: the unattended tests answer the prompt on the serial console.** An installed system ignores
 the control disk on purpose (`testctl.sh`), so nothing can hand it a
 passphrase; the suites reach it through the serial console. They will
 answer the prompt there, as a person would, which means every suite that
 boots an installed disk gains one `expect`/`send` pair and the prompt's
 text becomes part of what the suites depend on. The alternative, a key on
 an attached disk, is a second unlock path that exists only to be tested.
-*Recommended: the serial console, one path.*
+One unlock path, the one a person uses.
 
 ## What proves it
 
