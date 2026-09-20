@@ -1547,7 +1547,6 @@ s_boot_check() {
     chk "wpa_supplicant"    /usr/sbin/wpa_supplicant x
     chk "wpa_cli"           /usr/sbin/wpa_cli x
     chk "iw"                /usr/sbin/iw x
-    chk "chronyd"           /usr/sbin/chronyd x
     chk "CA bundle"         /etc/ssl/certs/ca-certificates.crt
     chk "regulatory.db"     /lib/firmware/regulatory.db.zst
     chk "regulatory.db.p7s" /lib/firmware/regulatory.db.p7s.zst
@@ -1885,27 +1884,6 @@ s_iw() {
     make PREFIX=/usr SBINDIR=/usr/sbin install
     [[ -x /usr/sbin/iw ]] || { echo "FAIL: /usr/sbin/iw was not installed"; return 1; }
     iw --version
-}
-
-# chrony, for one thing: `chronyd -Q` in the net zone measures how wrong the
-# clock is and prints it. It cannot set a clock there and is not asked to;
-# zone 0 decides what to do with the answer. Built without NTS (the image
-# carries no gnutls or nettle, and zone 0 never trusts the answer beyond its
-# own bounds), without editline, and without chrony's own seccomp filter,
-# which the zone's replaces. -Q needs no root, no pid file and no runtime
-# directory; on a server that does not answer it says "Timeout reached" and
-# prints no offset, so the offset line is the result, not the exit status.
-s_chrony() {
-    local src; src="$(unpack "chrony-${V_CHRONY}.tar.gz" "chrony-${V_CHRONY}")"
-    cd "$src"
-    ./configure --prefix=/usr --sysconfdir=/etc \
-        --chronyrundir=/run/chrony --chronyvardir=/var/lib/chrony \
-        --disable-nts --without-nettle --without-gnutls --without-nss --without-tomcrypt \
-        --without-editline --without-seccomp
-    make
-    make install
-    [[ -x /usr/sbin/chronyd ]] || { echo "FAIL: /usr/sbin/chronyd was not installed"; return 1; }
-    chronyd -v
 }
 
 # The CA bundle: Mozilla's set as curl.se publishes it, one PEM file, where
@@ -2461,8 +2439,7 @@ PACKAGES=(
     "libnl"       "native_build libnl-${V_LIBNL}.tar.gz libnl-${V_LIBNL} --sysconfdir=/etc --disable-static"
     "wpa-supplicant" "s_wpa_supplicant"
     "iw"          "s_iw"
-    # --- what the net zone asks the time with, and verifies a server by.
-    "chrony"      "s_chrony"
+    # --- what the net zone verifies a release server by.
     "ca-bundle"   "s_ca_bundle"
     # --- device firmware (ADR-012): the files build/config/firmware.list names
     #     out of the pinned linux-firmware release, onto /lib/firmware.
