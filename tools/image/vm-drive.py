@@ -87,14 +87,19 @@ class Drive:
                 raise RuntimeError(f"timeout ({timeout}s) waiting for {regex!r}; last output:\n{tail}")
             self._read()
 
-    def send(self, text, enter=True, secret=False):
+    def send(self, text, enter=True):
         data = text.encode() + (b"\r" if enter else b"")
         self.s.sendall(data)
         if self.log:
-            # A password goes to the guest and not into the transcript, which
-            # is uploaded with every acceptance report.
-            shown = b"(a password)" if secret else text.encode()
-            self.log.write(b"\n<<< " + shown + b"\n"); self.log.flush()
+            self.log.write(b"\n<<< " + text.encode() + b"\n"); self.log.flush()
+
+    def send_secret(self, text):
+        # To the guest and never to the transcript, which is uploaded with every
+        # acceptance report. A method of its own, so that no path leads from a
+        # password to the log.
+        self.s.sendall(text.encode() + b"\r")
+        if self.log:
+            self.log.write(b"\n<<< (a password)\n"); self.log.flush()
 
     def drain(self, seconds):
         end = time.time() + seconds
@@ -145,7 +150,7 @@ class Drive:
         self.knock(r"login: ?$", self.timeout)
         self.send(user)
         self.expect(r"Password: ?", 60)
-        self.send(password, secret=True)
+        self.send_secret(password)
         # a fresh shell prompt: bash prints "user@host:dir$ " or "$ "
         self.expect(r"[$#] ?$", 60)
         # make the prompt unambiguous for run()
@@ -187,7 +192,7 @@ class Drive:
         tag = f"KRC{self.marker}"
         self.send(f"su - root -c '{cmd}; echo {tag}=$?'")
         self.expect(r"Password: ?", 60)
-        self.send(password, secret=True)
+        self.send_secret(password)
         # Wait for the exit marker, but keep what the command printed: the
         # steps that follow expect lines of that output ("running slot: a",
         # "ZT END"), and a plain expect() would have consumed them with the
