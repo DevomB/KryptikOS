@@ -245,13 +245,20 @@ if [[ "$(ask 'status\n')" == "end" ]]; then pass "S5e the daemon still answers a
 # --- launches -------------------------------------------------------------------------------
 
 head_ "launches"
-r="$(ask "run alpha\narg /bin/sh\narg -c\narg echo $MARK; sleep 15\nend\n")"
+# Between its two lines the command truncates its own stdout. That was the
+# launcher's log once, O_APPEND does not stop ftruncate, and the first line
+# and everything the launcher had written went with it.
+r="$(ask "run alpha\narg /bin/sh\narg -c\narg echo $MARK; python3 -c 'import os; os.ftruncate(1, 0)' 2>/dev/null; echo after-$MARK; sleep 15\nend\n")"
 if [[ "$r" == ok\ [0-9]* ]]; then
     pass "S6a run alpha replies ok <pid> once the zone is up"
     s="$(ask 'status\n')"
     if [[ "$s" == *"running alpha"* ]]; then pass "S6b status shows alpha running after ok"; else fail "S6b status after ok: $s"; fi
     ok=0; for _ in $(seq 1 40); do grep -q "$MARK" "$ZLOG" 2>/dev/null && { ok=1; break; }; sleep 0.1; done
     if [[ "$ok" -eq 1 ]]; then pass "S6c the zone ran the command (its log shows $MARK)"; else fail "S6c no $MARK in $ZLOG"; fi
+    for _ in $(seq 1 40); do grep -q "after-$MARK" "$ZLOG" 2>/dev/null && break; sleep 0.1; done
+    if grep -q "^zone alpha| $MARK\$" "$ZLOG" && grep -q "^zone alpha| after-$MARK\$" "$ZLOG"; then
+        pass "S6c2 what the zone printed is in the log under its mark, and its attempt to empty the log emptied nothing"
+    else fail "S6c2 the log after the zone tried to empty it:"; sed 's/^/        /' "$ZLOG" | tail -6; fi
     r2="$(ask 'run alpha\narg /bin/true\nend\n')"
     if [[ "$r2" == "error:"* ]]; then pass "S6d a second launch of a running zone is refused: ${r2%$'\n'}"; else fail "S6d second launch: $r2"; fi
     r3="$(ask 'stop alpha\n')"
