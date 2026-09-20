@@ -1046,4 +1046,74 @@ mod tests {
         std::mem::forget(ep); // the test owns `sock`; do not close it here
         (bytes, fds)
     }
+
+    /// The whole path a zone's bytes take, attacked: a real opening
+    /// conversation (get_registry, bind the compositor, create a surface,
+    /// commit, destroy), damaged by the seeded generator the decoder's test
+    /// uses and delivered in fragments of arbitrary size. The session may
+    /// refuse - that is what it is for - but it must never panic, and what
+    /// it has forwarded to the compositor by then must be whole, well-formed
+    /// messages and nothing else: the compositor's parser is not the place
+    /// where a zone's malformed frame is found out.
+    #[test]
+    fn whatever_a_client_sends_the_compositor_receives_only_whole_messages() {
+        use crate::protocol::tests::Rng;
+        let mut rng = Rng(0x5345_5353_494F_4E31);
+        let bind = MessageWriter::new(2, 0).u32(1).string("wl_compositor").u32(4).u32(3).finish().unwrap();
+        let conversation: Vec<u8> = [
+            get_registry(2),
+            bind,
+            MessageWriter::new(3, 0).u32(4).finish().unwrap(), // wl_compositor.create_surface
+            MessageWriter::new(4, 6).finish().unwrap(),        // wl_surface.commit
+            MessageWriter::new(4, 0).finish().unwrap(),        // wl_surface.destroy
+        ]
+        .concat();
+        let (mut refused, mut through) = (0u32, 0u32);
+        for round in 0..400 {
+            let (mut s, mut c, mut sv) = make();
+            // The registry object exists once get_registry has crossed; the
+            // compositor then advertises the global the client binds.
+            let mut bytes = conversation.clone();
+            if round > 0 {
+                for _ in 0..1 + rng.below(3) {
+                    let at = rng.below(bytes.len());
+                    match rng.below(4) {
+                        0 => bytes[at] ^= 1 << rng.below(8),
+                        1 => bytes.truncate(at.max(1)),
+                        2 => bytes.insert(at, rng.next() as u8),
+                        _ => { let w = (at / 4) * 4; if w + 4 <= bytes.len() { bytes[w..w + 4].copy_from_slice(&[0u32, 4, 8, 0xffff_ffff, 0xfffc_0000][rng.below(5)].to_ne_bytes()); } }
+                    }
+                }
+            }
+            let mut advertised = false;
+            let mut outcome = Ok(());
+            let mut rest: &[u8] = &bytes;
+            while !rest.is_empty() && outcome.is_ok() {
+                let n = (1 + rng.below(24)).min(rest.len());
+                c.write_all(&rest[..n]).unwrap();
+                rest = &rest[n..];
+                outcome = pump_all(&mut s);
+                if outcome.is_ok() && !advertised && s.has_object(2) {
+                    sv.write_all(&global(2, 1, "wl_compositor", 4)).unwrap();
+                    advertised = true;
+                    outcome = pump_all(&mut s);
+                }
+            }
+            if outcome.is_ok() { through += 1 } else { refused += 1 }
+            // Everything the compositor was given, refused session or not.
+            let mut got: &[u8] = &read_all(&mut sv);
+            while !got.is_empty() {
+                let h = Header::parse(got).unwrap_or_else(|e| panic!("round {round}: the compositor was sent a bad header: {e}"));
+                assert!(h.size as usize <= got.len(), "round {round}: the compositor was sent {} bytes of a {}-byte message", got.len(), h.size);
+                got = &got[h.size as usize..];
+            }
+            if round == 0 {
+                assert!(outcome.is_ok(), "the undamaged conversation was refused: {:?}", outcome.err().map(|e| e.to_string()));
+                assert!(s.has_object(2) && s.has_object(3), "the undamaged conversation did not do what it says");
+            }
+            s.client.close_all();
+            s.server.close_all();
+        }
+        assert!(refused > 50 && through > 5, "the generator reached one side only: {refused} refused, {through} through");
+    }
 }

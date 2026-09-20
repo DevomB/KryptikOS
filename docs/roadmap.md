@@ -326,7 +326,9 @@ passes, not when its code is written.
       and three capabilities the net zone does not have and should not get.
 - [ ] **Someone else has attacked it.** The two hand-written trust boundaries,
       the broker's protocol and `kryptik-wlproxy`'s wire parser, fuzzed in CI
-      with a corpus kept in the tree; and one review of kryptikd's launch path
+      with a corpus kept in the tree (written: seeded mutation in both unit
+      suites, [how and its limit](design/broker.md#the-two-parsers-attacked);
+      neither parser broke); and one review of kryptikd's launch path
       by a person who did not write it, with the findings and their fixes in
       `docs/`.
 - [ ] **A release, as an object.** Version numbering, release notes generated
