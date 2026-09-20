@@ -263,6 +263,10 @@ Half the logical CPUs on a machine with SMT: roughly 15 to 30 percent of
 throughput on parallel work. Single-threaded performance is unchanged, and
 machines without SMT lose nothing.
 
+**Reviewed 2026-09-20.** The owner was asked whether to veto this and left it to
+the engineer's judgement. It stands: SMT stays off until there is a measurement
+of what it costs on real hardware and core scheduling has been proven there.
+
 ### Revisit when
 
 Core scheduling is wired to zones, so that SMT can stay on and two trust
