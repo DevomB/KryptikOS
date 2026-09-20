@@ -237,6 +237,21 @@ the choice is about how the keys are held, which is the owner's:
 The design above works with any of the three; only who holds which key, and
 whether `status` can say "stale", changes.
 
+**What the build does meanwhile.** The trust anchor is an OpenSSH
+allowed-signers file, and each line of it names the namespaces its key is
+honoured in. The release key's line has always said
+`namespaces="kryptik-release"`, so that key cannot sign a pointer whatever
+the updater asks for: the first option is not the default, it is a line
+someone would have to widen. The development build therefore makes a second
+key beside the release key and enrols it as
+`kryptik-latest namespaces="kryptik-latest"`: the second option, enforced by
+the anchor rather than by convention. Stage 04 proves it both ways round on
+every build (each key verifies in its own namespace and is refused in the
+other's), and `make test-update-verify` runs the updater against an anchor
+of that shape. An owner who chooses one key lists the release key on the
+second line; one who chooses no schedule changes nothing here and simply
+signs a pointer only when there is a release.
+
 ## Open points
 
 - The release process that publishes `latest`, its signature and the

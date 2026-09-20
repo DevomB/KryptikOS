@@ -220,14 +220,22 @@ an older signed release can reintroduce a fixed defect. --recovery accepts it de
 
 # A signature by an enrolled key, in one namespace, over one file's bytes. A
 # manifest is signed in kryptik-release and a statement of what is current in
-# kryptik-latest, so neither signature can be presented as the other.
+# kryptik-latest, so neither signature can be presented as the other - and
+# the trust anchor says so too: each line of it names the namespaces its key
+# is honoured in (`namespaces="..."`), so a key enrolled for one kind of
+# statement cannot sign the other whatever namespace it claims. A key may be
+# enrolled under more than one principal; each is tried.
 verify_signed() {   # verify_signed FILE SIG NAMESPACE WHAT
     [ -f "$SIGNERS" ] || die "no trust anchor at $SIGNERS in this image"
-    principal="$(ssh-keygen -Y find-principals -s "$2" -f "$SIGNERS" 2>/dev/null | head -1 || true)"
-    [ -n "$principal" ] || die "the $4's signing key is not enrolled in $SIGNERS"
-    ssh-keygen -Y verify -f "$SIGNERS" -I "$principal" -n "$3" -s "$2" < "$1" >/dev/null 2>&1 \
-        || die "the $4 signature does NOT verify (principal $principal)"
-    say "signature verifies (signed by $principal)"
+    principals="$(ssh-keygen -Y find-principals -s "$2" -f "$SIGNERS" 2>/dev/null || true)"
+    [ -n "$principals" ] || die "the $4's signing key is not enrolled in $SIGNERS"
+    for principal in $principals; do
+        if ssh-keygen -Y verify -f "$SIGNERS" -I "$principal" -n "$3" -s "$2" < "$1" >/dev/null 2>&1; then
+            say "signature verifies (signed by $principal)"
+            return 0
+        fi
+    done
+    die "the $4 signature does NOT verify (its key is enrolled as: $(echo $principals), and not for $3)"
 }
 
 # For the update channel (docs/design/update-channel.md). DIR holds a manifest

@@ -927,9 +927,23 @@ s_release_trust() {
         chmod 0600 "$keydir/kryptik-release"
         echo "generated a new developer release signing key"
     fi
+    # A second key, for one thing: signing the update channel's statement of
+    # what is current (docs/design/update-channel.md). It is honoured in the
+    # kryptik-latest namespace and nowhere else, and the release key is
+    # honoured in kryptik-release and nowhere else, so the key that has to be
+    # at hand on a schedule can never sign a release, and the key that signs
+    # releases never has to be. An owner who wants one key for both lists
+    # the release key on the second line instead; nothing else changes.
+    if [[ ! -f "$keydir/kryptik-latest" ]]; then
+        ssh-keygen -q -t ed25519 -N "" -C "kryptik-latest (developer)" -f "$keydir/kryptik-latest"
+        chmod 0600 "$keydir/kryptik-latest"
+        echo "generated a new developer key for statements of what is current"
+    fi
     install -d -m 0755 /usr/share/kryptik/trust
-    printf 'kryptik-release namespaces="kryptik-release" %s\n' "$(cut -d' ' -f1,2 "$keydir/kryptik-release.pub")" \
-        > /usr/share/kryptik/trust/release-signers
+    {
+        printf 'kryptik-release namespaces="kryptik-release" %s\n' "$(cut -d' ' -f1,2 "$keydir/kryptik-release.pub")"
+        printf 'kryptik-latest namespaces="kryptik-latest" %s\n' "$(cut -d' ' -f1,2 "$keydir/kryptik-latest.pub")"
+    } > /usr/share/kryptik/trust/release-signers
     chmod 0644 /usr/share/kryptik/trust/release-signers
     # Developer tier: the updater accepts development-role manifests. A
     # production image changes this file (and its key), deliberately.
@@ -956,6 +970,23 @@ s_release_trust() {
         echo "FAIL: a foreign key verified against the anchor"; rm -rf "$t"; return 1
     fi
     echo "ok: a foreign key is refused"
+    # The two keys, each in its own namespace and refused in the other's:
+    # what makes the statement key safe to keep where a timer can reach it.
+    local who ns other
+    for who in kryptik-release kryptik-latest; do
+        ns="$who"; [[ "$who" == kryptik-release ]] && other=kryptik-latest || other=kryptik-release
+        rm -f "$t/$who.sig"
+        printf 'probe of %s\n' "$who" > "$t/$who"
+        ssh-keygen -Y sign -f "$keydir/$who" -n "$ns" "$t/$who" < /dev/null >/dev/null 2>&1 \
+            && ssh-keygen -Y verify -f /usr/share/kryptik/trust/release-signers -I "$who" -n "$ns" -s "$t/$who.sig" < "$t/$who" >/dev/null 2>&1 \
+            || { echo "FAIL: the $who key does not verify in its own namespace"; rm -rf "$t"; return 1; }
+        rm -f "$t/$who.sig"
+        ssh-keygen -Y sign -f "$keydir/$who" -n "$other" "$t/$who" < /dev/null >/dev/null 2>&1
+        if ssh-keygen -Y verify -f /usr/share/kryptik/trust/release-signers -I "$who" -n "$other" -s "$t/$who.sig" < "$t/$who" >/dev/null 2>&1; then
+            echo "FAIL: the $who key verified in the $other namespace"; rm -rf "$t"; return 1
+        fi
+    done
+    echo "ok: each key verifies in its own namespace and is refused in the other's"
     rm -rf "$t"
 }
 

@@ -63,7 +63,15 @@ mkpayload signed 2
 mkpayload replacement 3
 
 ssh-keygen -q -t ed25519 -N '' -f key >/dev/null 2>&1 || { echo "cannot make a key"; exit 77; }
-printf 'review %s\n' "$(cat key.pub)" > signers
+ssh-keygen -q -t ed25519 -N '' -f latestkey >/dev/null 2>&1 || { echo "cannot make a key"; exit 77; }
+# The trust anchor as stage 04 installs it: the release key honoured for
+# manifests and nothing else, a second key honoured for statements of what
+# is current and nothing else. An anchor without the namespaces would let
+# this suite pass things the installed system refuses.
+{
+    printf 'kryptik-release namespaces="kryptik-release" %s\n' "$(cut -d' ' -f1,2 key.pub)"
+    printf 'kryptik-latest namespaces="kryptik-latest" %s\n' "$(cut -d' ' -f1,2 latestkey.pub)"
+} > signers
 ssh-keygen -Y sign -f key -n kryptik-release signed/manifest >/dev/null 2>&1 || { echo "cannot sign"; exit 77; }
 printf 'development\n' > role
 
@@ -143,7 +151,7 @@ else
     bad "unexpected outcome for a replaced payload: $(tail -2 <<<"$out" | tr '\n' ' ')"
 fi
 
-if command ssh-keygen -Y verify -f signers -I review -n kryptik-release -s "$T/payload/manifest.sig" < "$T/replacement/manifest" >/dev/null 2>&1; then
+if command ssh-keygen -Y verify -f signers -I kryptik-release -n kryptik-release -s "$T/payload/manifest.sig" < "$T/replacement/manifest" >/dev/null 2>&1; then
     bad "control: the replacement manifest has a valid signature, which it must not"
 else
     ok "control: the real verifier rejects the replacement manifest"
@@ -215,14 +223,14 @@ out="$(check cmd_check_manifest "$T/climbs")"
 # The pointer.
 mkdir -p "$T/ptr"
 printf 'KRYPTIK-LATEST-1\nrole: development\nversion: 2\nissued: 2027-03-02T14:05:00+00:00\nmanifest-sha256: %s\nbase: 2/\n' "$want_sha" > "$T/ptr/latest"
-ssh-keygen -Y sign -f key -n kryptik-latest "$T/ptr/latest" >/dev/null 2>&1
+ssh-keygen -Y sign -f latestkey -n kryptik-latest "$T/ptr/latest" >/dev/null 2>&1
 out="$(check cmd_check_pointer "$T/ptr/latest" "$T/ptr/latest.sig")"; rc=$?
 [[ "$rc" = 0 && "$out" == *"signature verifies"* ]] \
     && ok "check-pointer: a pointer signed by an enrolled key in its own namespace verifies" \
     || bad "check-pointer refused a good pointer: $(tail -2 <<<"$out" | tr '\n' ' ')"
 
 cp "$T/ptr/latest" "$T/ptr/replayed-ns"
-ssh-keygen -Y sign -f key -n kryptik-release "$T/ptr/replayed-ns" >/dev/null 2>&1
+ssh-keygen -Y sign -f latestkey -n kryptik-release "$T/ptr/replayed-ns" >/dev/null 2>&1
 out="$(check cmd_check_pointer "$T/ptr/replayed-ns" "$T/ptr/replayed-ns.sig")"
 [[ "$out" == *"REFUSED:"*"does NOT verify"* ]] \
     && ok "check-pointer: a pointer signed in the manifest's namespace is refused" \
@@ -235,6 +243,24 @@ out="$(check cmd_check_pointer "$T/ptr/stranger" "$T/ptr/stranger.sig")"
     && ok "check-pointer: a pointer signed by a key that is not enrolled is refused" \
     || bad "check-pointer accepted a stranger's key: $(tail -2 <<<"$out" | tr '\n' ' ')"
 
+# The anchor's own rule, both ways round. The release key signing a pointer
+# in the pointer's namespace is a well-formed signature by an enrolled key,
+# and is refused because that key is not enrolled for that namespace; so is
+# the statement key signing a manifest. This is what lets the statement key
+# live where a timer can reach it.
+cp "$T/ptr/latest" "$T/ptr/by-release-key"
+ssh-keygen -Y sign -f key -n kryptik-latest "$T/ptr/by-release-key" >/dev/null 2>&1
+out="$(check cmd_check_pointer "$T/ptr/by-release-key" "$T/ptr/by-release-key.sig")"
+[[ "$out" == *"REFUSED:"*"does NOT verify"*"not for kryptik-latest"* ]] \
+    && ok "check-pointer: the release key is not honoured for a pointer, whatever namespace it signs in" \
+    || bad "check-pointer accepted a pointer signed by the release key: $(tail -2 <<<"$out" | tr '\n' ' ')"
+staged by-latest-key; rm -f "$T/by-latest-key/manifest.sig"
+ssh-keygen -Y sign -f latestkey -n kryptik-release "$T/by-latest-key/manifest" >/dev/null 2>&1
+out="$(check cmd_check_manifest "$T/by-latest-key")"
+[[ "$out" == *"REFUSED:"*"does NOT verify"* && "$out" != *"version:"* ]] \
+    && ok "check-manifest: the statement key cannot sign a release, whatever namespace it signs in" \
+    || bad "check-manifest accepted a manifest signed by the statement key: $(tail -2 <<<"$out" | tr '\n' ' ')"
+
 sed 's/^version: 2/version: 1/' "$T/ptr/latest" > "$T/ptr/edited"
 out="$(check cmd_check_pointer "$T/ptr/edited" "$T/ptr/latest.sig")"
 [[ "$out" == *"REFUSED:"*"does NOT verify"* ]] \
@@ -243,7 +269,7 @@ out="$(check cmd_check_pointer "$T/ptr/edited" "$T/ptr/latest.sig")"
 
 # A manifest is not a pointer even when someone signs it as one.
 cp "$T/signed/manifest" "$T/ptr/manifest-as-pointer"
-ssh-keygen -Y sign -f key -n kryptik-latest "$T/ptr/manifest-as-pointer" >/dev/null 2>&1
+ssh-keygen -Y sign -f latestkey -n kryptik-latest "$T/ptr/manifest-as-pointer" >/dev/null 2>&1
 out="$(check cmd_check_pointer "$T/ptr/manifest-as-pointer" "$T/ptr/manifest-as-pointer.sig")"
 [[ "$out" == *"REFUSED:"*"not a KRYPTIK-LATEST-1"* ]] \
     && ok "check-pointer: a manifest presented as a pointer is refused by its first line" \
