@@ -44,8 +44,14 @@ hardware yet.
 
 Documented rather than closed:
 
-- No watchdog for a userspace that hangs after boot-success has judged a
-  trial boot healthy.
+- The watchdog catches a machine that has stopped, not one that is merely
+  broken. A supervised service feeds every watchdog device; if userspace
+  stops being scheduled the machine resets, and the state suite proves it
+  by stopping the feeder. A crashed service or a frozen desktop on a
+  machine that is otherwise running is not detected, on purpose: a false
+  reboot is worse than the hang. A hung kernel is reset only where there
+  is a hardware timer (Intel TCO, AMD SP5100) or the lockup detectors
+  panic first; no physical timer has been exercised yet.
 - Releases are signed by a developer key the build generates.
 - Nothing has run on physical hardware.
 - glibc 2.40 carries the loader fixes Kryptik needs (upstream bugs 31943 and
