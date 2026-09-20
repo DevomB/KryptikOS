@@ -289,7 +289,13 @@ passes, not when its code is written.
       by URL into a transfer area; zone 0 verifies the manifest signature,
       every file and the embedded root hash exactly as it does today, and
       refuses a downgrade. A release process that publishes the payload, its
-      signature and the corresponding source.
+      signature and the corresponding source. Written
+      ([the design](design/update-channel.md)): the rules and the staging in
+      `kryptikd`, the broker's three verbs, `kryptik update`, the two checks
+      in `kryptik-update` and the net zone's fetcher, each with its offline
+      suite. Ticked when the update suite has fetched a release over the
+      test network, staged, applied and committed it on the installed
+      system, and the release tooling publishes a signed pointer.
 - [ ] **The state partition is encrypted.** `/home`, `/var` and the `/etc`
       overlay sit on plain ext4, so a stolen laptop gives up zone 0's home,
       the Wi-Fi passphrases and the zone volumes' headers. LUKS2 on

@@ -9,6 +9,18 @@
 #                                      [--principal NAME] [--exact]
 #                                      [--require-role production]
 #                                      [--no-downgrade VERSION] MANIFEST
+#   ./tools/release-manifest.sh pointer --key PRIVKEY --manifest MANIFEST
+#                                      --base BASE --out FILE [--issued DATE]
+#
+# `pointer` writes the update channel's statement of what is current
+# (docs/design/update-channel.md) for a manifest that is already signed, and
+# signs it in a namespace of its own with a key of its own: FILE and FILE.sig
+# are what a release host serves as `latest` and `latest.sig`. It says which
+# release is current (the manifest's version and role), which manifest that
+# is (its SHA-256, so where the files come from decides nothing), where the
+# files are (BASE, absolute or relative to the channel address) and when it
+# was issued. Re-running it for an unchanged release with a later date is how
+# a channel shows that nothing is being withheld.
 #
 # This is the verification primitive the signed-image and recoverable-update
 # work needs: a record of exactly which bytes a release consists
@@ -52,7 +64,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 NAMESPACE="kryptik-release"
 MAGIC="KRYPTIK-MANIFEST-1"
 
-usage() { sed -n '2,10p' "${BASH_SOURCE[0]}"; }
+usage() { sed -n '2,13p' "${BASH_SOURCE[0]}"; }
 
 [[ "$#" -gt 0 ]] || { usage; exit 1; }
 MODE="$1"; shift
@@ -396,10 +408,53 @@ signed manifest; do not install or boot it."
     ok "manifest verified: signature, role, and every listed file."
 }
 
+POINTER_MAGIC="KRYPTIK-LATEST-1"
+POINTER_NAMESPACE="kryptik-latest"
+
+do_pointer() {
+    local key="" manifest="" base="" out="" issued=""
+    while [[ "$#" -gt 0 ]]; do
+        case "$1" in
+            --key)      key="${2:?--key needs a file}"; shift 2 ;;
+            --manifest) manifest="${2:?--manifest needs a file}"; shift 2 ;;
+            --base)     base="${2:?--base needs an address}"; shift 2 ;;
+            --out)      out="${2:?--out needs a file}"; shift 2 ;;
+            --issued)   issued="${2:?--issued needs a date}"; shift 2 ;;
+            *) die "pointer: unknown argument: $1" ;;
+        esac
+    done
+    [[ -f "$key" ]]      || die "pointer: --key is required and must exist"
+    [[ -f "$manifest" ]] || die "pointer: --manifest is required and must exist"
+    [[ -n "$base" && -n "$out" ]] || die "pointer: --base and --out are required"
+    head -1 "$manifest" | grep -qxF "$MAGIC" || die "pointer: ${manifest} is not a ${MAGIC}"
+    # A statement about a release nobody has signed would announce a manifest
+    # no machine will accept.
+    [[ -s "${manifest}.sig" ]] || die "pointer: ${manifest} is not signed yet (no ${manifest}.sig)"
+    case "$base" in *[[:space:]]*) die "pointer: --base must not contain spaces" ;; esac
+    local version role
+    version="$(awk -F': ' '$1=="version"{print $2; exit}' "$manifest")"
+    role="$(awk -F': ' '$1=="role"{print $2; exit}' "$manifest")"
+    [[ -n "$version" && -n "$role" ]] || die "pointer: the manifest has no version or no role"
+    issued="${issued:-$(date -u +%Y-%m-%dT%H:%M:%S+00:00)}"
+    {
+        printf '%s\n' "$POINTER_MAGIC"
+        printf 'role: %s\n' "$role"
+        printf 'version: %s\n' "$version"
+        printf 'issued: %s\n' "$issued"
+        printf 'manifest-sha256: %s\n' "$(sha256sum "$manifest" | cut -c1-64)"
+        printf 'base: %s\n' "$base"
+    } > "$out"
+    rm -f "${out}.sig"
+    ssh-keygen -Y sign -f "$key" -n "$POINTER_NAMESPACE" "$out" < /dev/null >/dev/null 2>&1 \
+        || die "pointer: ssh-keygen could not sign with ${key}"
+    ok "pointer: ${out} names ${version} (${role}), issued ${issued}; signed as ${out}.sig"
+}
+
 case "$MODE" in
     create) do_create "$@" ;;
     sign)   do_sign   "$@" ;;
     verify) do_verify "$@" ;;
+    pointer) do_pointer "$@" ;;
     -h|--help|help) usage ;;
-    *) die "unknown mode '${MODE}' (expected create, sign or verify)" ;;
+    *) die "unknown mode '${MODE}' (expected create, sign, verify or pointer)" ;;
 esac
