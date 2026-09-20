@@ -272,6 +272,9 @@ jobs:
           # 05 had both succeeded, over a directory nothing writes.
           members=(sysroot .stamps)
           [ -n "$kernel_tree" ] && members+=("$kernel_tree")
+          # The kernel is linked against the staged microcode again in stage
+          # 06, by path; a tree without it cannot build the media.
+          [ -d work/build/microcode ] && members+=(build/microcode)
           sudo tar --zstd -cf work-after-05.tar.zst -C work "${members[@]}"
           sudo chown "$(id -u):$(id -g)" work-after-05.tar.zst
           ls -la work-after-05.tar.zst; df -h /mnt | tail -1

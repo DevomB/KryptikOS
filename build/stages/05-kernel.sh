@@ -544,6 +544,19 @@ if [[ ! -d "$KSRC" && -f "${STAMPS}/${STAMP_PREFIX}unpack" ]]; then
     warn "those stamps are archived under ${gone}/ and the tree is unpacked, patched, configured and built again."
 fi
 
+# The microcode is staged beside the kernel tree, not in it, and the image is
+# linked against it twice more after this stage: stage 06 builds bzImage again
+# for each slot's command line, and CONFIG_EXTRA_FIRMWARE names these files by
+# path. A work tree restored from a cache that carried the stamps and the
+# kernel tree but not this directory skipped every step here as built, and
+# then stage 06 stopped at "No rule to make target .../microcode_amd.bin". So
+# the same rule as for the tree: no files, no stamp. The step's fingerprint is
+# its inputs, so staging the same files again leaves every later step built.
+if [[ ! -s "${BUILDDIR}/microcode/list" && -f "${STAMPS}/${STAMP_PREFIX}microcode" ]]; then
+    warn "the microcode under ${BUILDDIR}/microcode is gone but its step was stamped as built; staging it again."
+    rm -f "${STAMPS}/${STAMP_PREFIX}microcode"
+fi
+
 step unpack          s_unpack
 step patch           s_patch
 step microcode       s_microcode "$V_INTEL_MICROCODE" "$V_LINUX_FIRMWARE"
