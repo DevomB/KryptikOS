@@ -180,6 +180,39 @@ reach a zone.
 | the NIC zone and `vault` receive nothing by default | transfers to the NIC zone refused regardless of policy; `vault` only with explicit policy **and** consent | — |
 | consent | a transfer the person approves lands; one the person refuses is refused; with no watcher running the transfer is refused at once; no question file is left behind | — |
 
+## The two parsers, attacked
+
+The broker's request line and `kryptik-wlproxy`'s wire decoder are the two
+parsers in Kryptik that were written by hand and read bytes a zone wrote.
+Both are attacked by their own unit suites, on every push, with no tool but
+cargo:
+
+- **The broker** (`broker.rs`,
+  `no_request_a_zone_can_send_breaks_the_broker`). The seeds are real
+  requests, one per line, in `compartments/kryptikd/fuzz-corpus/broker-requests`.
+  Each is damaged in a hundred-odd ways (a flipped bit, a cut, a NUL, a
+  number past 64 bits, six hundred bytes of padding) and sent down a real
+  connection with a payload that may or may not be what the header
+  promised. The broker must not panic, must not hold the launcher past the
+  request deadline, and must answer every one with a single well-formed
+  reply.
+- **The proxy** (`protocol.rs` and `session.rs` in `compositor/wlproxy`).
+  The corpus is the protocol: one well-formed body for every message in
+  the generated tables, built from its signature, then damaged with the
+  lengths steered at their edges. The decoder must not panic or read past
+  the body, and accepts only a body that parses exactly to its end. A
+  second test sends a damaged opening conversation through a live session
+  in fragments of arbitrary size: the session may refuse, and whatever it
+  forwarded to the compositor by then must be whole, well-formed messages.
+
+The generators are seeded, so a failure is the same failure on every
+machine. That is also the limit: this is mutation from a fixed seed, not
+coverage-guided fuzzing, and it finds what a few thousand damaged inputs
+find. A request or a message that ever breaks either parser is added to
+the corpus (a line in the file; a case in the test) and stays there.
+Coverage-guided runs with libFuzzer need a nightly toolchain and belong in
+a scheduled job, not in the build.
+
 ## As built
 
 This section records what exists, in the words of the wire. Where it

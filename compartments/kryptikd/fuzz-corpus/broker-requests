@@ -1,0 +1,18 @@
+version
+clipboard-get
+clipboard-set text/plain 5
+clipboard-set text/plain;charset=utf-8 12
+clipboard-set image/png 1048576
+clipboard-set application/x-evil 5
+clipboard-set text/plain 1048577
+clipboard-move a b
+transfer work report.pdf
+transfer net report.pdf
+transfer work ../report.pdf
+transfer work .hidden
+time-offset 5 4
+time-offset -0.250000 1
+time-offset +3599.999999 16
+time-offset 1e9 4
+time-offset nan 4
+steal
