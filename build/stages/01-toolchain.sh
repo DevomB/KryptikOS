@@ -346,22 +346,44 @@ preflight
 
 # --- a cross toolchain is never rebuilt over another one's sysroot -------------
 #
-# Pass 1 is built before any C library exists. Over a sysroot that came out of
-# a cache it is not: gcc's fixincludes kept a private copy of the OLD glibc's
+# Pass 1 is built before any header exists. Over a sysroot that came out of a
+# cache it is not: gcc's fixincludes kept a private copy of the OLD glibc's
 # pthread.h, glibc was then rebuilt with a changed pthread_cond_t, and pass 2
 # compiled libstdc++ with the old initializer against the new struct (run
 # 35492373903). Stamps cannot see this: the header is not an input of any
-# step. So the sysroot records which toolchain built it, and one that was
-# built by another is cleared, with every stamp, before the first step.
+# step. So the tree records which toolchain built it, and one built by another
+# is cleared, with every stamp, before the first step. The record lives with
+# the stamps, not in the sysroot: the root image is a copy of the sysroot.
 toolchain_id="$({ printf '%s\n' "$V_BINUTILS" "$V_GCC" "$V_GLIBC" "$V_LINUX" "$V_MPFR" "$V_GMP" "$V_MPC"
-                  cat "${KRYPTIK_ROOT}/build/patches/glibc-${V_GLIBC}/SHA256SUMS" 2>/dev/null; } | sha256_of_stdin)"
-toolchain_marker="${LFS}/.kryptik-toolchain"
+                  cat "${KRYPTIK_ROOT}"/build/patches/{glibc,gcc,binutils}-*/SHA256SUMS 2>/dev/null; } | sha256_of_stdin)"
+toolchain_marker="${STAMPS}/toolchain-id"
+
+# Anything mounted under DIR? Stage 03 binds /dev, /proc and THIS REPOSITORY
+# into the sysroot, and a bind mount from the same filesystem is not stopped
+# by rm --one-file-system, so this test is what stands between a stale record
+# and the source tree. /proc/mounts names the resolved path and writes a
+# space as \040; the mountpoint is compared as a fixed string from its start
+# (ENVIRON, because awk -v would turn \040 back into a space). Unreadable
+# means yes.
+mounted_under() {
+    local real esc
+    real="$(realpath -m -- "$1")" || return 0
+    [[ -r /proc/mounts ]] || return 0
+    esc="$(printf '%s' "$real" | sed -e 's/\\/\\134/g' -e 's/ /\\040/g' -e 's/\t/\\011/g')"
+    P="${esc}/" awk 'index($2, ENVIRON["P"]) == 1 { found = 1 } END { exit !found }' /proc/mounts
+}
+
 if [[ -d "${LFS}/usr/include" && "$(cat "$toolchain_marker" 2>/dev/null)" != "$toolchain_id" ]]; then
     warn "the sysroot was built by a different toolchain (or by none this script recorded)."
-    # Never across a mount: stage 03 binds /dev, /proc and this repository in.
-    if grep -q " ${LFS}/" /proc/mounts; then
+    if mounted_under "$LFS"; then
         die "something is mounted under ${LFS}; unmount it (make chroot-umount), then run this again"
     fi
+    # The same question asked a second way, of the four places stage 03 binds
+    # the repository, the sources and the work tree: unmounted, they are empty.
+    for d in kryptik kryptik-sources kryptik-work kryptik-kryptikd; do
+        [[ -z "$(ls -A "${LFS}/${d}" 2>/dev/null)" ]] \
+            || die "${LFS}/${d} is not empty: it looks mounted. Refusing to remove the sysroot"
+    done
     old="${STAMPS}/legacy/toolchain-changed-$(date +%Y%m%dT%H%M%S)"
     mkdir -p "$old"
     find "$STAMPS" -maxdepth 1 -type f -exec mv -f {} "$old/" \;
@@ -370,8 +392,8 @@ if [[ -d "${LFS}/usr/include" && "$(cat "$toolchain_marker" 2>/dev/null)" != "$t
     warn "cleared ${LFS}; the stamps are archived under ${old}/. Everything is built again."
 fi
 
-# A sysroot with no headers in it is about to be built by this toolchain.
-[[ -d "${LFS}/usr/include" ]] || { mkdir -p "$LFS"; printf '%s\n' "$toolchain_id" > "$toolchain_marker"; }
+# A tree with no headers in it is about to be built by this toolchain.
+[[ -d "${LFS}/usr/include" ]] || { mkdir -p "$STAMPS"; printf '%s\n' "$toolchain_id" > "$toolchain_marker"; }
 
 step layout          s_layout
 step binutils-pass1  s_binutils_pass1
