@@ -30,9 +30,14 @@ class Host(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         # Links inside ROOT may point anywhere (the suites link to a payload
-        # rather than copy it); the requested NAME may not leave ROOT.
+        # rather than copy it); the requested NAME may not leave ROOT. The
+        # name is normalised and held to ROOT before anything touches the
+        # filesystem with it.
         path = os.path.normpath(os.path.join(root, self.path.split("?", 1)[0].lstrip("/")))
-        if not (path == root or path.startswith(root + os.sep)) or not os.path.isfile(path):
+        if not path.startswith(root + os.sep):
+            self.send_error(404)
+            return
+        if not os.path.isfile(path):
             self.send_error(404)
             return
         rng = self.headers.get("Range")
