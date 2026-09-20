@@ -103,7 +103,7 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
 	vm-disk vm-disk-boot vm-restart vm-measure cli-test update-tree-test identity-test serve-test \
         test-harness test-hardening test-artifacts audit-artifacts test-boot-success \
         audit-artifacts-strict manifest verify-manifest test-manifest \
-        test-s6-init smoke-userspace test-services test-libc-unwind \
+        test-s6-init smoke-userspace test-services test-netzone-time test-libc-unwind \
         sign-image verify-image test-image-signing test-installer test-mkdisk-guards \
         install-test \
         image image-boot \
@@ -184,6 +184,7 @@ help:
 	@echo "  make test-s6-init      check stage 04 produces a bootable s6 image"
 	@echo "  make smoke-userspace   RUN the built userland in the chroot (needs root)"
 	@echo "  make test-services     validate the s6-rc service tree"
+	@echo "  make test-netzone-time the net zone's time measurement, under every shell here"
 	@echo "  make identity-test     zone files, compositor colour table and zoneid audit agree"
 	@echo "  make test-libc-unwind  prove the target libc can unwind (needs root)"
 	@echo "  make sign-image        sign the disk image with a developer key"
@@ -588,6 +589,12 @@ test-manifest:
 # execline `up`, a script installed into every image that nothing runs.
 test-services:
 	@"$(TOOLS)"/test-services.sh
+
+# The net zone's half of the clock (docs/design/time.md): which sources it
+# asks, what it takes for an answer and what it tells zone 0, run under every
+# POSIX shell on this host with stand-ins for chronyd and the broker client.
+test-netzone-time:
+	@"$(TOOLS)"/test-netzone-time.sh
 
 # boot-success.sh's decision table (commit, refuse, fall back), driven on
 # the host with stand-ins for the services, the ESP and the firmware.
