@@ -256,6 +256,13 @@ if [[ "$(id -u)" != 0 ]]; then
     [[ "$out" != *"must run as root"* && "$out" == *"no trust anchor at /usr/share/kryptik/trust/release-signers"* ]] \
         && ok "check-pointer runs without root and stops at the image's trust anchor, which this host does not have" \
         || bad "the tool's own check-pointer, unprivileged: $(tail -2 <<<"$out" | tr '\n' ' ')"
+    # The directory the tool copies into is removed by its exit trap, so it
+    # must never be one the caller's environment named.
+    mkdir -p "$T/precious"; echo keep > "$T/precious/marker"
+    SNAP="$T/precious" sh "$TOOL" check-pointer "$T/ptr/latest" "$T/ptr/latest.sig" >/dev/null 2>&1
+    [[ -f "$T/precious/marker" && -z "$(find "$T/precious" -name 'latest*')" ]] \
+        && ok "a SNAP in the environment is not where the tool copies, and is not what its exit trap removes" \
+        || bad "the tool used, or removed, the directory the environment named as SNAP"
     out="$(sh "$TOOL" apply "$T/signed" 2>&1)"
     [[ "$out" == *"must run as root"* ]] \
         && ok "control: apply still refuses to run without root" \

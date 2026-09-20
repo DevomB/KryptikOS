@@ -46,6 +46,11 @@ B=/var/lib/kryptik/boot
 ESP_MNT=/run/kryptik/update-esp
 LOCK=/run/kryptik/update.lock
 LOG=/var/log/kryptik/update.log
+# The directory the manifest is copied into is this script's to make, never
+# the caller's to name: the exit trap removes it, whatever it is. (It is a
+# variable at all so that the suite, which runs the functions below in a
+# shell of its own, can say where to look.)
+SNAP=""
 
 # The two checks the update channel calls read what they are given and write
 # nothing outside a directory of their own: no root, no devices, and only the
