@@ -1,7 +1,11 @@
 # An update channel
 
-Status: design. Nothing here is built yet; it finishes the roadmap's "An
-update channel". Builds on [boot and updates](boot-and-updates.md), whose
+Status: implemented in `kryptikd` (`update.rs`, the broker's three verbs,
+`kryptik update`), in `kryptik-update` (`check-manifest`, `check-pointer`)
+and in the net zone (`update-fetch.py`), with the rules, the verbs' refusals
+and the fetcher tested offline. Not yet exercised on the installed system:
+the last row of the test table, and the release tooling that publishes a
+pointer, are open. Builds on [boot and updates](boot-and-updates.md), whose
 verification it does not change, on [the broker](broker.md), which carries
 the bytes, and on [the clock](time.md), without which freshness means
 nothing.
@@ -74,9 +78,11 @@ decides nothing about what they must be.
 It is signed in a namespace of its own, so a manifest's signature can never
 be replayed as a pointer nor a pointer's as a manifest. Which key signs it
 is an open decision (below).
-The channel's address is on the verified root (`/etc/kryptik/update.conf`,
-visible read-only in zones like the time sources), so the net zone is not
-told where to look by anything it could have written.
+The channel's address is zone 0's to give (`channel = <address>` in
+`/etc/kryptik/update.conf`, visible read-only in the nic zone like the time
+sources), so the net zone is not told where to look by anything it could
+have written. With no such file there is no channel: the net zone asks
+nobody and `update-poll` answers `idle`.
 
 Zone 0 accepts a pointer when its signature verifies against the same trust
 anchor releases are verified against, its role is the one this image
@@ -150,10 +156,12 @@ authenticity rests on it. A `development` image may name an `http://`
 address, which is what the test network serves; a `production` one may not.
 
 A release is hundreds of megabytes through a socket the launcher also
-supervises its zone with. The copy is handed to a child of the launcher,
-which holds the connection and the staging file and nothing else, so
-supervision, the zone's other verbs and its death are all noticed as
-promptly as they are today.
+supervises its zone with. It crosses in pieces of at most 1 MiB, each one
+request that the launcher answers between two looks at its zone, under the
+same five-second deadline as every other request. Supervision, the zone's
+other verbs and its death are therefore never further away than one piece,
+and there is no second process, no long-lived connection and no state
+between pieces other than the staged file's length.
 
 ### The person, and what they see
 
@@ -242,9 +250,12 @@ whether `status` can say "stale", changes.
 
 ## Files
 
-`compartments/kryptikd/src/update.rs` (pointer and staging rules),
-`broker.rs` (the verbs), `serve.rs` and `tools/kryptik` (`kryptik update`),
-`tools/update/kryptik-update` (`check-manifest`), a fetcher shipped for the
-net zone beside `tools/net/netzone-init.sh`, `rootfs.rs`
-(`/etc/kryptik/update.conf` and `/etc/ssl/cert.pem` into a zone's `/etc`),
-and the rows above in the suites.
+`compartments/kryptikd/src/update.rs` (the pointer and staging rules, and
+what zone 0 keeps under `/var/lib/kryptik/update`), `broker.rs` (the verbs),
+`serve.rs`, `tools/desktop/kryptik-launch.c` and `tools/kryptik` (`kryptik
+update`), `tools/update/kryptik-update` (`check-manifest`, `check-pointer`),
+`tools/net/update-fetch.py` and `tools/net/netzone-init.sh` (the net zone's
+half), `rootfs.rs` (`/etc/kryptik/update.conf` into the nic zone's `/etc`;
+the CA bundle under `/etc/ssl/certs` was already there), and the suites:
+the `update.rs` and `broker.rs` unit tests, `make test-update-verify`, `make
+test-update-fetch`, and the update rows of the boundary suite.
