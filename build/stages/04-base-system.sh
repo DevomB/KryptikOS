@@ -2266,7 +2266,29 @@ s_lynx() {
     lynx -version | head -1
 }
 
+# Everything is built with -fcf-protection=full, so the instruction AT a
+# function's address must be endbr64. gcc 14.2.0 put a loop's .p2align between
+# the label and the endbr64 (GCC PR target/116174, fixed in 14.3). This asks
+# the compiler that will build the image, with the flags it will use, using
+# the bug's own test case; "plain" is the control.
+s_compiler_check() {
+    local d; d="$(mktemp -d)"
+    printf '%s\n' 'char *f(char *d, const char *s) { while ((*d++ = *s++)) ; return --d; }' \
+                  'int plain(int a) { return a + 1; }' > "$d/t.c"
+    # shellcheck disable=SC2086  # CFLAGS is a list of words
+    gcc ${CFLAGS:?hardening flags not loaded} -S -o "$d/t.s" "$d/t.c" || return 1
+    local bad
+    bad="$(awk '/^(f|plain):/ {fn=$1; next}
+                fn && /endbr64/ {fn=""; n++; next}
+                fn && !/^\.L|\.cfi_|^[ \t]*$/ {print fn, $0; fn=""}
+                END {if (n != 2) print "landing pads found:", n+0}' "$d/t.s")"
+    rm -rf "$d"
+    [[ -z "$bad" ]] || { echo "FAIL: a function entry is not endbr64: ${bad}"; return 1; }
+    echo "ok   $(gcc --version | head -1): function entries are landing pads"
+}
+
 PACKAGES=(
+    "compiler-check" "s_compiler_check"
     "locales"     "s_locales"
     "gettext"     "native_build gettext-${V_GETTEXT}.tar.xz gettext-${V_GETTEXT} --disable-shared"
     "bison"       "native_build bison-${V_BISON}.tar.xz bison-${V_BISON} --docdir=/usr/share/doc/bison-${V_BISON}"
