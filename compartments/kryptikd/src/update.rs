@@ -11,6 +11,9 @@
 //! signed manifest provides for, at the place it belongs.
 
 use std::cmp::Ordering;
+use std::io::Write as _;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::path::{Path, PathBuf};
 
 pub const POINTER_MAGIC: &str = "KRYPTIK-LATEST-1";
 /// The pointer and its signature, each.
@@ -190,7 +193,7 @@ pub fn parse_file_list(text: &str) -> Result<Vec<Entry>, String> {
 }
 
 pub fn total_bytes(files: &[Entry]) -> u64 {
-    files.iter().map(|e| e.size).sum()
+    files.iter().fold(0, |sum, e| sum.saturating_add(e.size))
 }
 
 /// Whether `len` bytes offered for `name` at `offset` may be written, given
@@ -227,6 +230,304 @@ pub fn may_put(files: Option<&[Entry]>, name: &str, offset: u64, len: u64, held:
 /// What is still missing and from which byte: the answer to `update-poll`.
 pub fn still_needed(files: &[Entry], held: impl Fn(&str) -> u64) -> Vec<(String, u64)> {
     files.iter().filter_map(|e| { let h = held(&e.name); (h < e.size).then(|| (e.name.clone(), h)) }).collect()
+}
+
+// --- what zone 0 keeps, and what the broker's three verbs do with it -------
+//
+// Under `STATE_DIR`, root's and nobody else's:
+//
+//   pointer             the newest statement accepted, as it was signed
+//   considered          when a statement was last looked at (the rate limit)
+//   wanted              the version the person asked for (`kryptik update fetch`)
+//   files               `check-manifest`'s output for it, once it has verified
+//   incoming/<version>/ the staged release: the directory `apply` is given
+//
+// Every function takes the directory and the two checks, so the tests run
+// them against a temporary directory with checks of their own.
+
+
+pub const STATE_DIR: &str = "/var/lib/kryptik/update";
+pub const TOOL: &str = "/usr/sbin/kryptik-update";
+pub const ROLE_FILE: &str = "/usr/share/kryptik/trust/required-role";
+pub const CONF: &str = "/etc/kryptik/update.conf";
+/// The most one `update-put` carries. A release crosses in pieces this size,
+/// each one request the launcher answers between two looks at its zone, so
+/// the zone's supervision is never further away than one piece.
+pub const PUT_MAX: usize = 1 << 20;
+
+/// The two things only a signature can say, as functions so that a test can
+/// stand in for `kryptik-update`. `pointer` verifies a statement and its
+/// signature; `manifest` verifies the manifest and signature in a directory
+/// and returns what `check-manifest` printed.
+pub struct Checks<'a> {
+    pub pointer: &'a dyn Fn(&Path, &Path) -> Result<(), String>,
+    pub manifest: &'a dyn Fn(&Path) -> Result<String, String>,
+}
+
+fn run_tool(args: &[&std::ffi::OsStr]) -> Result<String, String> {
+    let out = std::process::Command::new(TOOL)
+        .args(args)
+        .env_clear()
+        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("{TOOL}: {e}"))?;
+    if out.status.success() {
+        return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
+    }
+    let err = String::from_utf8_lossy(&out.stderr);
+    Err(err.lines().last().unwrap_or("refused").trim_start_matches("kryptik-update: ").to_string())
+}
+
+/// The checks the installed system uses: `kryptik-update`, with the trust
+/// anchor on the verified root and nothing from this process's environment.
+pub fn tool_checks() -> Checks<'static> {
+    Checks {
+        pointer: &|p, s| run_tool(&["check-pointer".as_ref(), p.as_os_str(), s.as_os_str()]).map(|_| ()),
+        manifest: &|d| run_tool(&["check-manifest".as_ref(), d.as_os_str()]),
+    }
+}
+
+pub fn required_role() -> String {
+    std::fs::read_to_string(ROLE_FILE).map(|s| s.trim().to_string()).unwrap_or_else(|_| "development".into())
+}
+
+pub fn running_version() -> String {
+    let text = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
+    text.lines().find_map(|l| l.strip_prefix("VERSION_ID=")).map(|v| v.trim_matches('"').to_string()).unwrap_or_default()
+}
+
+/// `channel = <address>` from the configuration on the verified root.
+pub fn channel_from(conf: &str) -> Option<String> {
+    conf.lines().find_map(|l| {
+        let (k, v) = l.split_once('=')?;
+        (k.trim() == "channel" && !v.trim().is_empty()).then(|| v.trim().to_string())
+    })
+}
+
+fn private_dir(p: &Path) -> Result<(), String> {
+    match std::fs::DirBuilder::new().recursive(true).mode(0o700).create(p) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(format!("{}: {e}", p.display())),
+    }
+}
+
+/// Written whole and renamed into place, readable by root alone.
+fn put_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let tmp = path.with_extension("tmp");
+    let _ = std::fs::remove_file(&tmp);
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&tmp)
+        .map_err(|e| format!("{}: {e}", tmp.display()))?;
+    f.write_all(bytes).and_then(|_| f.sync_all()).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn stored_pointer(dir: &Path) -> Option<Pointer> {
+    parse_pointer(&std::fs::read_to_string(dir.join("pointer")).ok()?).ok()
+}
+
+fn wanted(dir: &Path) -> Option<String> {
+    let v = std::fs::read_to_string(dir.join("wanted")).ok()?.trim().to_string();
+    is_version(&v).then_some(v)
+}
+
+fn staging(dir: &Path, version: &str) -> PathBuf {
+    dir.join("incoming").join(version)
+}
+
+fn held(stage: &Path, name: &str) -> u64 {
+    std::fs::symlink_metadata(stage.join(name)).ok().filter(|m| m.is_file()).map_or(0, |m| m.len())
+}
+
+fn verified_files(dir: &Path, version: &str) -> Option<Vec<Entry>> {
+    let text = std::fs::read_to_string(dir.join("files")).ok()?;
+    (text.lines().next() == Some(&format!("version: {version}"))).then(|| parse_file_list(&text).ok()).flatten()
+}
+
+/// `update-latest`: a statement of what is current and its signature, from
+/// the net zone. One is looked at per interval, whatever becomes of it, so a
+/// hostile zone cannot make zone 0 verify signatures all day.
+pub fn latest(dir: &Path, checks: &Checks, now: i64, role: &str, running: &str, pointer: &[u8], sig: &[u8]) -> Result<Standing, String> {
+    private_dir(dir)?;
+    let last: Option<i64> = std::fs::read_to_string(dir.join("considered")).ok().and_then(|s| s.trim().parse().ok());
+    if last.is_some_and(|t| (now - t).unsigned_abs() < POINTER_INTERVAL_SECS) {
+        return Err(format!("one statement is considered every {} minutes", POINTER_INTERVAL_SECS / 60));
+    }
+    put_file(&dir.join("considered"), now.to_string().as_bytes())?;
+    let text = std::str::from_utf8(pointer).map_err(|_| "the pointer is not text".to_string())?;
+    // What it says is judged only after who said it: a parse error must not
+    // tell an unsigned sender anything a signed one would not also see.
+    let scratch = dir.join("checking");
+    let _ = std::fs::remove_dir_all(&scratch);
+    private_dir(&scratch)?;
+    let verdict = put_file(&scratch.join("latest"), pointer)
+        .and_then(|_| put_file(&scratch.join("latest.sig"), sig))
+        .and_then(|_| (checks.pointer)(&scratch.join("latest"), &scratch.join("latest.sig")));
+    let _ = std::fs::remove_dir_all(&scratch);
+    verdict?;
+    let p = parse_pointer(text)?;
+    let standing = accept_pointer(&p, role, running, stored_pointer(dir).map(|q| q.issued))?;
+    put_file(&dir.join("pointer"), pointer)?;
+    Ok(standing)
+}
+
+/// `kryptik update fetch`: the person asks for the release the newest
+/// accepted statement names. Nothing is fetched that was not asked for.
+pub fn want(dir: &Path, running: &str) -> Result<String, String> {
+    let p = stored_pointer(dir).ok_or("no statement of what is current has been accepted yet")?;
+    if version_cmp(&p.version, running) != Ordering::Greater {
+        return Err(format!("{} is the newest release known, and this machine runs {running}", p.version));
+    }
+    if wanted(dir).as_deref() != Some(p.version.as_str()) {
+        let _ = std::fs::remove_file(dir.join("files"));
+        let _ = std::fs::remove_dir_all(dir.join("incoming"));
+    }
+    put_file(&dir.join("wanted"), p.version.as_bytes())?;
+    Ok(p.version)
+}
+
+/// What is wanted, where from, and what of it is still missing: `None` when
+/// nothing is, which the broker says as `idle`.
+fn outstanding(dir: &Path, channel: &str, role: &str, running: &str) -> Option<(Pointer, String, Vec<(String, u64)>)> {
+    let version = wanted(dir)?;
+    let p = stored_pointer(dir).filter(|p| p.version == version)?;
+    if version_cmp(&version, running) != Ordering::Greater {
+        return None;
+    }
+    let base = resolve_base(channel, &p.base, role).ok()?;
+    let stage = staging(dir, &version);
+    let need = match verified_files(dir, &version) {
+        Some(files) => still_needed(&files, |n| held(&stage, n)),
+        None => ["manifest", "manifest.sig"].iter().filter(|n| held(&stage, n) == 0).map(|n| (n.to_string(), 0)).collect(),
+    };
+    Some((p, base, need))
+}
+
+/// `update-poll`: the net zone asks, because nothing can call it.
+pub fn poll(dir: &Path, channel: &str, role: &str, running: &str) -> String {
+    match outstanding(dir, channel, role, running) {
+        Some((p, base, need)) if !need.is_empty() => {
+            let list: Vec<String> = need.iter().map(|(n, o)| format!("{n} {o}")).collect();
+            format!("fetch {} {base} need {}", p.version, list.join(" "))
+        }
+        _ => "idle".into(),
+    }
+}
+
+fn free_bytes(path: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    (unsafe { libc::statvfs(c.as_ptr(), &mut st) } == 0).then(|| st.f_bavail as u64 * st.f_frsize as u64)
+}
+
+/// `update-put`: bytes for the release that is wanted, under `may_put`'s
+/// rule. When the manifest and its signature are both there they are
+/// verified, held to the hash the accepted pointer announced, and measured
+/// against the room there is; only then is anything they list accepted.
+pub fn put(dir: &Path, checks: &Checks, name: &str, offset: u64, bytes: &[u8]) -> Result<String, String> {
+    let version = wanted(dir).ok_or("no release has been asked for")?;
+    let p = stored_pointer(dir).filter(|p| p.version == version).ok_or("the release asked for is not the one the newest statement names")?;
+    let stage = staging(dir, &version);
+    let files = verified_files(dir, &version);
+    may_put(files.as_deref(), name, offset, bytes.len() as u64, held(&stage, name))?;
+    private_dir(&stage)?;
+    let path = stage.join(name);
+    if files.is_none() {
+        let _ = std::fs::remove_file(&path);
+    }
+    let mut f = std::fs::OpenOptions::new().append(true).create(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&path)
+        .map_err(|e| format!("{name}: {e}"))?;
+    f.write_all(bytes).map_err(|e| format!("{name}: {e}"))?;
+    drop(f);
+    if let Some(files) = files {
+        let size = files.iter().find(|e| e.name == name).map_or(0, |e| e.size);
+        let have = held(&stage, name);
+        return Ok(if have == size { format!("{name} complete") } else { format!("{name} {have}/{size}") });
+    }
+    if held(&stage, "manifest") == 0 || held(&stage, "manifest.sig") == 0 {
+        return Ok(format!("{name} complete"));
+    }
+    let refuse = |why: String| -> Result<String, String> {
+        let _ = std::fs::remove_dir_all(&stage);
+        Err(why)
+    };
+    let listing = match (checks.manifest)(&stage) {
+        Ok(l) => l,
+        Err(why) => return refuse(why),
+    };
+    if listing.lines().next() != Some(&format!("version: {version}")) {
+        return refuse(format!("the manifest is not for {version}"));
+    }
+    if !listing.lines().any(|l| l.strip_prefix("sha256: ") == Some(p.manifest_sha256.as_str())) {
+        return refuse("the manifest is not the one the statement of what is current announced".into());
+    }
+    let files = match parse_file_list(&listing) {
+        Ok(f) => f,
+        Err(why) => return refuse(why),
+    };
+    let (need, free) = (total_bytes(&files), free_bytes(&stage).unwrap_or(0));
+    if need > free {
+        return refuse(format!("the release is {need} bytes and there is room for {free}"));
+    }
+    put_file(&dir.join("files"), listing.as_bytes())?;
+    Ok(format!("{name} complete; the manifest verifies, {} file(s), {need} bytes", files.len()))
+}
+
+/// `kryptik update status`, as lines for a person.
+pub fn status(dir: &Path, now: i64, running: &str) -> String {
+    let mut out = format!("running    {running}\n");
+    match stored_pointer(dir) {
+        None => out.push_str("newest     unknown: no statement of what is current has been accepted\n"),
+        Some(p) => {
+            let (days, stale) = staleness(now, p.issued);
+            out.push_str(&format!("newest     {} (stated {days} day(s) ago)\n", p.version));
+            if stale {
+                out.push_str(&format!(
+                    "           no statement from the release key for {days} days: either nothing has been published,\n           or something is keeping it from this machine\n"
+                ));
+            }
+        }
+    }
+    match wanted(dir) {
+        None => out.push_str("staged     nothing asked for\n"),
+        Some(v) => {
+            let stage = staging(dir, &v);
+            match verified_files(dir, &v) {
+                None => out.push_str(&format!("staged     {v}: waiting for its manifest\n")),
+                Some(files) => {
+                    let have: u64 = files.iter().map(|e| held(&stage, &e.name).min(e.size)).sum();
+                    let total = total_bytes(&files);
+                    let word = if have == total { "complete; `kryptik update apply` installs it" } else { "arriving" };
+                    out.push_str(&format!("staged     {v}: {have} of {total} bytes, {word}\n"));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The staged release's directory when every byte of it has arrived: what
+/// `kryptik update apply` hands to `kryptik-update apply`.
+pub fn complete_stage(dir: &Path) -> Result<PathBuf, String> {
+    let v = wanted(dir).ok_or("no release has been asked for")?;
+    let files = verified_files(dir, &v).ok_or_else(|| format!("{v}: its manifest has not arrived"))?;
+    let stage = staging(dir, &v);
+    match still_needed(&files, |n| held(&stage, n)).first() {
+        None => Ok(stage),
+        Some((name, at)) => Err(format!("{v}: {name} has {at} bytes so far; the release is still arriving")),
+    }
+}
+
+/// Once the machine runs what was staged, the staging area has no job.
+pub fn forget_if_installed(dir: &Path, running: &str) {
+    if wanted(dir).is_some_and(|v| version_cmp(&v, running) != Ordering::Greater) {
+        for f in ["wanted", "files"] {
+            let _ = std::fs::remove_file(dir.join(f));
+        }
+        let _ = std::fs::remove_dir_all(dir.join("incoming"));
+    }
 }
 
 #[cfg(test)]
@@ -349,5 +650,127 @@ mod tests {
             vec![("kryptik-root.img".to_string(), 600), ("kryptik-b.efi".to_string(), 0), ("root.json".to_string(), 0)]
         );
         assert!(still_needed(&files(), |_| u64::MAX).is_empty());
+    }
+
+    // --- the state, against a directory of the test's own ---
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("kryptik-update-test-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
+    const LISTING: &str = "version: 1.0.3\nsha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\nfile 10 kryptik-root.img\nfile 4 root.json\n";
+
+    fn yes() -> Checks<'static> {
+        Checks { pointer: &|_, _| Ok(()), manifest: &|_| Ok(LISTING.to_string()) }
+    }
+
+    const T0: i64 = 1_800_000_000;
+    const CH: &str = "https://updates.example/stable";
+
+    #[test]
+    fn a_statement_is_stored_only_when_it_verifies_is_new_and_is_due() {
+        let d = scratch("latest");
+        let p = pointer_text("1.0.3", "2027-03-02T14:05:00Z");
+        let no = Checks { pointer: &|_, _| Err("the pointer signature does NOT verify".into()), manifest: &|_| Err("unused".into()) };
+        assert!(latest(&d, &no, T0, "production", "1.0.2", p.as_bytes(), b"sig").unwrap_err().contains("does NOT verify"));
+        assert!(stored_pointer(&d).is_none(), "an unverified statement was stored");
+        // Looking at that one used the interval up, whoever sent it.
+        assert!(latest(&d, &yes(), T0 + 60, "production", "1.0.2", p.as_bytes(), b"sig").unwrap_err().contains("every 60 minutes"));
+        let t1 = T0 + POINTER_INTERVAL_SECS as i64;
+        assert_eq!(latest(&d, &yes(), t1, "production", "1.0.2", p.as_bytes(), b"sig"), Ok(Standing::Available("1.0.3".into())));
+        assert_eq!(stored_pointer(&d).unwrap().version, "1.0.3");
+        assert!(!d.join("checking").exists(), "the scratch copy outlived the check");
+        // Last year's statement, validly signed, an interval later: a replay.
+        let old = pointer_text("1.0.1", "2026-03-02T14:05:00Z");
+        let t2 = t1 + POINTER_INTERVAL_SECS as i64;
+        assert!(latest(&d, &yes(), t2, "production", "1.0.2", old.as_bytes(), b"sig").unwrap_err().contains("replay"));
+        assert_eq!(stored_pointer(&d).unwrap().version, "1.0.3");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_release_is_staged_in_the_order_that_bounds_it() {
+        let d = scratch("stage");
+        let p = pointer_text("1.0.3", "2027-03-02T14:05:00Z");
+        // Nothing asked for: nothing polled for, nothing taken.
+        assert_eq!(poll(&d, CH, "production", "1.0.2"), "idle");
+        assert!(want(&d, "1.0.2").unwrap_err().contains("no statement"));
+        latest(&d, &yes(), T0, "production", "1.0.2", p.as_bytes(), b"sig").unwrap();
+        assert_eq!(poll(&d, CH, "production", "1.0.2"), "idle", "fetching began before the person asked");
+        assert!(put(&d, &yes(), "manifest", 0, b"m").unwrap_err().contains("no release has been asked for"));
+        assert_eq!(want(&d, "1.0.2").unwrap(), "1.0.3");
+        assert!(want(&d, "1.0.3").unwrap_err().contains("newest release known"));
+
+        assert_eq!(poll(&d, CH, "production", "1.0.2"), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need manifest 0 manifest.sig 0");
+        assert!(put(&d, &yes(), "kryptik-root.img", 0, b"0123456789").unwrap_err().contains("before the manifest"));
+        assert_eq!(put(&d, &yes(), "manifest", 0, b"the manifest").unwrap(), "manifest complete");
+        assert_eq!(poll(&d, CH, "production", "1.0.2"), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need manifest.sig 0");
+        assert!(put(&d, &yes(), "manifest.sig", 0, b"its signature").unwrap().contains("the manifest verifies, 2 file(s), 14 bytes"));
+
+        assert_eq!(poll(&d, CH, "production", "1.0.2"), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need kryptik-root.img 0 root.json 0");
+        assert!(put(&d, &yes(), "manifest", 0, b"another").unwrap_err().contains("not replaced"));
+        assert!(put(&d, &yes(), "stowaway", 0, b"x").unwrap_err().contains("does not list"));
+        assert_eq!(put(&d, &yes(), "kryptik-root.img", 0, b"01234").unwrap(), "kryptik-root.img 5/10");
+        // The connection dropped; the net zone is told where to resume, and
+        // anything else is refused without a byte being written.
+        assert_eq!(poll(&d, CH, "production", "1.0.2"), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need kryptik-root.img 5 root.json 0");
+        assert!(put(&d, &yes(), "kryptik-root.img", 0, b"01234").unwrap_err().contains("5 bytes are held"));
+        assert!(put(&d, &yes(), "kryptik-root.img", 5, b"567890").unwrap_err().contains("past that"));
+        assert!(complete_stage(&d).unwrap_err().contains("still arriving"));
+        assert_eq!(put(&d, &yes(), "kryptik-root.img", 5, b"56789").unwrap(), "kryptik-root.img complete");
+        assert_eq!(put(&d, &yes(), "root.json", 0, b"{  }").unwrap(), "root.json complete");
+        assert_eq!(poll(&d, CH, "production", "1.0.2"), "idle");
+        let stage = complete_stage(&d).unwrap();
+        assert_eq!(std::fs::read(stage.join("kryptik-root.img")).unwrap(), b"0123456789");
+        let mut names: Vec<String> = std::fs::read_dir(&stage).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        names.sort();
+        assert_eq!(names, ["kryptik-root.img", "manifest", "manifest.sig", "root.json"], "apply refuses a directory holding anything else");
+        assert!(status(&d, T0, "1.0.2").contains("1.0.3: 14 of 14 bytes, complete"));
+
+        // Once the machine runs it, the staging area is gone.
+        forget_if_installed(&d, "1.0.2");
+        assert!(stage.exists());
+        forget_if_installed(&d, "1.0.3");
+        assert!(!stage.exists() && wanted(&d).is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_manifest_that_is_not_the_one_announced_is_thrown_away() {
+        for (tag, listing, why) in [
+            ("hash", LISTING.replace("sha256: 0", "sha256: f"), "announced"),
+            ("version", LISTING.replace("version: 1.0.3", "version: 1.0.4"), "not for 1.0.3"),
+            ("room", LISTING.replace("file 10 ", "file 18446744073709551000 "), "there is room for"),
+        ] {
+            let d = scratch(tag);
+            let p = pointer_text("1.0.3", "2027-03-02T14:05:00Z");
+            latest(&d, &yes(), T0, "production", "1.0.2", p.as_bytes(), b"sig").unwrap();
+            want(&d, "1.0.2").unwrap();
+            let listing_for = move |_: &Path| Ok::<String, String>(listing.clone());
+            let checks = Checks { pointer: &|_, _| Ok(()), manifest: &listing_for };
+            put(&d, &checks, "manifest", 0, b"m").unwrap();
+            assert!(put(&d, &checks, "manifest.sig", 0, b"s").unwrap_err().contains(why), "{tag}");
+            assert!(!staging(&d, "1.0.3").exists(), "{tag}: the refused manifest was kept");
+            assert_eq!(poll(&d, CH, "production", "1.0.2"), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need manifest 0 manifest.sig 0", "{tag}");
+            let _ = std::fs::remove_dir_all(&d);
+        }
+        let d = scratch("unsigned");
+        let p = pointer_text("1.0.3", "2027-03-02T14:05:00Z");
+        latest(&d, &yes(), T0, "production", "1.0.2", p.as_bytes(), b"sig").unwrap();
+        want(&d, "1.0.2").unwrap();
+        let no = Checks { pointer: &|_, _| Ok(()), manifest: &|_| Err("the manifest signature does NOT verify".into()) };
+        put(&d, &no, "manifest", 0, b"m").unwrap();
+        assert!(put(&d, &no, "manifest.sig", 0, b"s").unwrap_err().contains("does NOT verify"));
+        assert!(put(&d, &no, "kryptik-root.img", 0, b"x").unwrap_err().contains("before the manifest"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_channel_address_is_read_from_the_configuration() {
+        assert_eq!(channel_from("# where releases are\nchannel = https://updates.example/stable\n").as_deref(), Some(CH));
+        assert_eq!(channel_from("channel =\n"), None);
+        assert_eq!(channel_from("interval = 1\n"), None);
     }
 }
