@@ -1606,7 +1606,7 @@ s_boot_check() {
     chk "sysctl fragments"  /usr/lib/kryptik/sysctl.d
     chk "zone definitions"  /usr/lib/kryptik/zones/work.toml
     chk "zone policies"     /usr/lib/kryptik/zones/policy/work.seccomp
-    chk "device helper"     /usr/libexec/kryptik/devices.sh
+    chk "device helper"     /usr/libexec/kryptik/devices.sh x
     chk "boot scripts"      /usr/libexec/kryptik/sysinit.sh x
     chk "test control helper" /usr/libexec/kryptik/testctl.sh
     chk "boot-success"      /usr/libexec/kryptik/boot-success.sh x
