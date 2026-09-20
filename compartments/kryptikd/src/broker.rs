@@ -329,10 +329,12 @@ fn update_refusal(zone: &Zone) -> Option<String> {
 fn handle_update(req: &Request, payload: &[u8]) -> Result<String, String> {
     use crate::update as up;
     let dir = Path::new(up::STATE_DIR);
-    let (role, running) = (up::required_role(), up::running_version());
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
     match req {
         Request::UpdateLatest { plen, .. } => {
-            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+            // Read here and not above the match: a release arrives as some
+            // three thousand update-put requests, which need neither.
+            let (role, running) = (up::required_role(), up::running_version());
             let (pointer, sig) = payload.split_at(*plen);
             up::latest(dir, &up::tool_checks(), now, &role, &running, pointer, sig).map(|s| match s {
                 up::Standing::Current => "ok current".to_string(),
@@ -340,11 +342,12 @@ fn handle_update(req: &Request, payload: &[u8]) -> Result<String, String> {
             })
         }
         Request::UpdatePoll => {
+            let (role, running) = (up::required_role(), up::running_version());
             up::forget_if_installed(dir, &running);
             let conf = std::fs::read_to_string(up::CONF).unwrap_or_default();
             Ok(up::channel_from(&conf).map_or("idle".to_string(), |channel| up::poll(dir, &channel, &role, &running)))
         }
-        Request::UpdatePut { name, offset, .. } => up::put(dir, &up::tool_checks(), name, *offset, payload).map(|r| format!("ok {r}")),
+        Request::UpdatePut { name, offset, .. } => up::put(dir, &up::tool_checks(), now, name, *offset, payload).map(|r| format!("ok {r}")),
         _ => Err("not an update verb".into()),
     }
 }

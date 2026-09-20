@@ -314,12 +314,21 @@ pub fn channel_from(conf: &str) -> Option<String> {
     })
 }
 
+/// A directory that is this process's own and nobody else's, made or found.
+/// One that was already there is looked at, not believed: a link, another
+/// owner or a mode that lets anyone else in is refused.
 fn private_dir(p: &Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
     match std::fs::DirBuilder::new().recursive(true).mode(0o700).create(p) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-        Err(e) => Err(format!("{}: {e}", p.display())),
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(format!("{}: {e}", p.display())),
     }
+    let m = std::fs::symlink_metadata(p).map_err(|e| format!("{}: {e}", p.display()))?;
+    if !m.is_dir() || m.uid() != unsafe { libc::geteuid() } || m.mode() & 0o077 != 0 {
+        return Err(format!("{}: not a directory of this user's alone", p.display()));
+    }
+    Ok(())
 }
 
 /// Written whole and renamed into place, readable by root alone.
@@ -329,7 +338,11 @@ fn put_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&tmp)
         .map_err(|e| format!("{}: {e}", tmp.display()))?;
     f.write_all(bytes).and_then(|_| f.sync_all()).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))?;
+    // The name is the directory's to remember: without this the rename can be
+    // lost to a power cut although the file's own bytes were synced.
+    let parent = path.parent().unwrap_or(Path::new("."));
+    std::fs::File::open(parent).and_then(|d| d.sync_all()).map_err(|e| format!("{}: {e}", parent.display()))
 }
 
 fn stored_pointer(dir: &Path) -> Option<Pointer> {
@@ -435,7 +448,7 @@ fn free_bytes(path: &Path) -> Option<u64> {
 /// rule. When the manifest and its signature are both there they are
 /// verified, held to the hash the accepted pointer announced, and measured
 /// against the room there is; only then is anything they list accepted.
-pub fn put(dir: &Path, checks: &Checks, name: &str, offset: u64, bytes: &[u8]) -> Result<String, String> {
+pub fn put(dir: &Path, checks: &Checks, now: i64, name: &str, offset: u64, bytes: &[u8]) -> Result<String, String> {
     let version = wanted(dir).ok_or("no release has been asked for")?;
     let p = stored_pointer(dir).filter(|p| p.version == version).ok_or("the release asked for is not the one the newest statement names")?;
     let stage = staging(dir, &version);
@@ -462,9 +475,19 @@ pub fn put(dir: &Path, checks: &Checks, name: &str, offset: u64, bytes: &[u8]) -
         let _ = std::fs::remove_dir_all(&stage);
         Err(why)
     };
+    // One refused manifest per interval, as one statement is looked at per
+    // interval: a refusal clears the stage, so without this a hostile zone
+    // could feed the verifier's parser a new pair as fast as it could send.
+    let refused: Option<i64> = std::fs::read_to_string(dir.join("refused")).ok().and_then(|s| s.trim().parse().ok());
+    if refused.is_some_and(|t| (now - t).unsigned_abs() < POINTER_INTERVAL_SECS) {
+        return refuse(format!("a manifest was refused less than {} minutes ago", POINTER_INTERVAL_SECS / 60));
+    }
     let listing = match (checks.manifest)(&stage) {
         Ok(l) => l,
-        Err(why) => return refuse(why),
+        Err(why) => {
+            put_file(&dir.join("refused"), now.to_string().as_bytes())?;
+            return refuse(why);
+        }
     };
     if listing.lines().next() != Some(&format!("version: {version}")) {
         return refuse(format!("the manifest is not for {version}"));
@@ -719,28 +742,28 @@ mod tests {
         assert!(want(&d, "1.0.2").unwrap_err().contains("no statement"));
         latest(&d, &yes(), T0, "production", "1.0.2", p.as_bytes(), b"sig").unwrap();
         assert_eq!(poll(&d, CH, "production", "1.0.2"), "idle", "fetching began before the person asked");
-        assert!(put(&d, &yes(), "manifest", 0, b"m").unwrap_err().contains("no release has been asked for"));
+        assert!(put(&d, &yes(), T0, "manifest", 0, b"m").unwrap_err().contains("no release has been asked for"));
         assert_eq!(want(&d, "1.0.2").unwrap(), "1.0.3");
         assert!(want(&d, "1.0.3").unwrap_err().contains("newest release known"));
 
         assert_eq!(poll(&d, CH, "production", "1.0.2"), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need manifest 0 manifest.sig 0");
-        assert!(put(&d, &yes(), "kryptik-root.img", 0, b"0123456789").unwrap_err().contains("before the manifest"));
-        assert_eq!(put(&d, &yes(), "manifest", 0, b"the manifest").unwrap(), "manifest complete");
+        assert!(put(&d, &yes(), T0, "kryptik-root.img", 0, b"0123456789").unwrap_err().contains("before the manifest"));
+        assert_eq!(put(&d, &yes(), T0, "manifest", 0, b"the manifest").unwrap(), "manifest complete");
         assert_eq!(poll(&d, CH, "production", "1.0.2"), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need manifest.sig 0");
-        assert!(put(&d, &yes(), "manifest.sig", 0, b"its signature").unwrap().contains("the manifest verifies, 2 file(s), 14 bytes"));
+        assert!(put(&d, &yes(), T0, "manifest.sig", 0, b"its signature").unwrap().contains("the manifest verifies, 2 file(s), 14 bytes"));
 
         assert_eq!(poll(&d, CH, "production", "1.0.2"), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need kryptik-root.img 0 root.json 0");
-        assert!(put(&d, &yes(), "manifest", 0, b"another").unwrap_err().contains("not replaced"));
-        assert!(put(&d, &yes(), "stowaway", 0, b"x").unwrap_err().contains("does not list"));
-        assert_eq!(put(&d, &yes(), "kryptik-root.img", 0, b"01234").unwrap(), "kryptik-root.img 5/10");
+        assert!(put(&d, &yes(), T0, "manifest", 0, b"another").unwrap_err().contains("not replaced"));
+        assert!(put(&d, &yes(), T0, "stowaway", 0, b"x").unwrap_err().contains("does not list"));
+        assert_eq!(put(&d, &yes(), T0, "kryptik-root.img", 0, b"01234").unwrap(), "kryptik-root.img 5/10");
         // The connection dropped; the net zone is told where to resume, and
         // anything else is refused without a byte being written.
         assert_eq!(poll(&d, CH, "production", "1.0.2"), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need kryptik-root.img 5 root.json 0");
-        assert!(put(&d, &yes(), "kryptik-root.img", 0, b"01234").unwrap_err().contains("5 bytes are held"));
-        assert!(put(&d, &yes(), "kryptik-root.img", 5, b"567890").unwrap_err().contains("past that"));
+        assert!(put(&d, &yes(), T0, "kryptik-root.img", 0, b"01234").unwrap_err().contains("5 bytes are held"));
+        assert!(put(&d, &yes(), T0, "kryptik-root.img", 5, b"567890").unwrap_err().contains("past that"));
         assert!(complete_stage(&d).unwrap_err().contains("still arriving"));
-        assert_eq!(put(&d, &yes(), "kryptik-root.img", 5, b"56789").unwrap(), "kryptik-root.img complete");
-        assert_eq!(put(&d, &yes(), "root.json", 0, b"{  }").unwrap(), "root.json complete");
+        assert_eq!(put(&d, &yes(), T0, "kryptik-root.img", 5, b"56789").unwrap(), "kryptik-root.img complete");
+        assert_eq!(put(&d, &yes(), T0, "root.json", 0, b"{  }").unwrap(), "root.json complete");
         assert_eq!(poll(&d, CH, "production", "1.0.2"), "idle");
         let stage = complete_stage(&d).unwrap();
         assert_eq!(std::fs::read(stage.join("kryptik-root.img")).unwrap(), b"0123456789");
@@ -770,8 +793,8 @@ mod tests {
             want(&d, "1.0.2").unwrap();
             let listing_for = move |_: &Path| Ok::<String, String>(listing.clone());
             let checks = Checks { pointer: &|_, _| Ok(()), manifest: &listing_for };
-            put(&d, &checks, "manifest", 0, b"m").unwrap();
-            assert!(put(&d, &checks, "manifest.sig", 0, b"s").unwrap_err().contains(why), "{tag}");
+            put(&d, &checks, T0, "manifest", 0, b"m").unwrap();
+            assert!(put(&d, &checks, T0, "manifest.sig", 0, b"s").unwrap_err().contains(why), "{tag}");
             assert!(!staging(&d, "1.0.3").exists(), "{tag}: the refused manifest was kept");
             assert_eq!(poll(&d, CH, "production", "1.0.2"), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need manifest 0 manifest.sig 0", "{tag}");
             let _ = std::fs::remove_dir_all(&d);
@@ -781,9 +804,16 @@ mod tests {
         latest(&d, &yes(), T0, "production", "1.0.2", p.as_bytes(), b"sig").unwrap();
         want(&d, "1.0.2").unwrap();
         let no = Checks { pointer: &|_, _| Ok(()), manifest: &|_| Err("the manifest signature does NOT verify".into()) };
-        put(&d, &no, "manifest", 0, b"m").unwrap();
-        assert!(put(&d, &no, "manifest.sig", 0, b"s").unwrap_err().contains("does NOT verify"));
-        assert!(put(&d, &no, "kryptik-root.img", 0, b"x").unwrap_err().contains("before the manifest"));
+        put(&d, &no, T0, "manifest", 0, b"m").unwrap();
+        assert!(put(&d, &no, T0, "manifest.sig", 0, b"s").unwrap_err().contains("does NOT verify"));
+        // The next pair is not even looked at until the interval has passed,
+        // whatever it is; after it, a manifest that verifies is taken.
+        put(&d, &yes(), T0 + 60, "manifest", 0, b"m").unwrap();
+        assert!(put(&d, &yes(), T0 + 60, "manifest.sig", 0, b"s").unwrap_err().contains("minutes ago"));
+        let later = T0 + POINTER_INTERVAL_SECS as i64;
+        put(&d, &no, later, "manifest", 0, b"m").unwrap();
+        assert!(put(&d, &no, later, "manifest.sig", 0, b"s").unwrap_err().contains("does NOT verify"));
+        assert!(put(&d, &no, T0, "kryptik-root.img", 0, b"x").unwrap_err().contains("before the manifest"));
         let _ = std::fs::remove_dir_all(&d);
     }
 
