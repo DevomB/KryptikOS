@@ -285,7 +285,10 @@ jobs:
           # 05 had both succeeded, over a directory nothing writes.
           members=(sysroot .stamps)
           [ -n "$kernel_tree" ] && members+=("$kernel_tree")
-          sudo tar --zstd -cf work-after-05.tar.zst -C work "${members[@]}"
+          # Never the module signing key: a pull request's run can restore this
+          # cache, and stage 05 makes a new key when a built tree has none.
+          sudo tar --zstd -cf work-after-05.tar.zst -C work --exclude='build/linux-*/certs/signing_key.pem' "${members[@]}"
+          if sudo tar --zstd -tf work-after-05.tar.zst | grep -E 'certs/signing_key\.pem$|keys/release/'; then echo "a private key is in the cache tarball"; exit 1; fi
           sudo chown "$(id -u):$(id -g)" work-after-05.tar.zst
           ls -la work-after-05.tar.zst; df -h /mnt | tail -1
 

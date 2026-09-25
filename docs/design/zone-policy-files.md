@@ -20,7 +20,9 @@ keep-capability   CAP_NET_RAW         # left in the bounding set
 
 - `allow-syscall`: a name from `seccomp::SYSCALL_NAMES`. A syscall on the
   base denied list (`DENIED_RATIONALE`: `ptrace`, `mount`, `setns`, `bpf`,
-  ...) cannot be re-allowed.
+  ...) cannot be re-allowed. Two denied calls fail with EPERM instead of
+  killing, `setfsuid` and `setfsgid`, because ncurses makes them around every
+  terminfo open.
 - `allow-socket`: `AF_PACKET`, `AF_KEY`, `AF_ALG`, `AF_VSOCK`, `AF_BLUETOOTH`,
   `AF_CAN`, `AF_RDS`, `AF_TIPC` or `AF_XDP`; `AF_NETLINK` drops the netlink
   protocol check.

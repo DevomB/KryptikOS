@@ -75,9 +75,19 @@ hdr() { awk -F': ' -v k="$2" '$1==k {print $2; exit}' "$1"; }
 mount_esp() {
     dev="$(esp_dev)" || exit 1
     mkdir -p "$ESP_MNT"
-    mountpoint -q "$ESP_MNT" || mount -o rw,nosuid,nodev,noexec "$dev" "$ESP_MNT" || die "cannot mount the ESP"
+    if ! mountpoint -q "$ESP_MNT"; then
+        mount -o rw,nosuid,nodev,noexec "$dev" "$ESP_MNT" || die "cannot mount the ESP"
+        ESP_MINE=1
+    fi
 }
-umount_esp() { mountpoint -q "$ESP_MNT" 2>/dev/null && { sync; umount "$ESP_MNT"; } || true; }
+# Only a mount this process made: every subcommand exits through the trap,
+# the checks the broker runs during an apply among them.
+umount_esp() {
+    [ "$ESP_MINE" = 1 ] || return 0
+    if mountpoint -q "$ESP_MNT" 2>/dev/null; then sync; umount "$ESP_MNT"; fi
+    ESP_MINE=0
+}
+ESP_MINE=0
 trap 'umount_esp; [ -n "${SNAP:-}" ] && rm -rf -- "$SNAP"' EXIT
 
 cmd_status() {
@@ -85,13 +95,19 @@ cmd_status() {
     echo "trial pending:    $(sed -n 1p "$B/trial" 2>/dev/null || true)$([ -r "$B/trial" ] && printf ' (%s)' "$(sed -n 's/^armed=//p' "$B/trial" | sed 's/1/BootNext armed/;s/0/not yet armed/')" || echo none)"
     echo "last boot result: $(cat "$B/last-result" 2>/dev/null || echo none)"
     echo "failed trial:     $(cat "$B/trial.failed" 2>/dev/null || echo none)"
-    mount_esp
-    echo "committed slot:   $(cat "$ESP_MNT/kryptik/committed-slot" 2>/dev/null || echo unknown)"
-    for s in a b; do
-        printf 'slot %s:           version %s, kernel %s\n' "$s" "$(cat "$ESP_MNT/kryptik/version-$s" 2>/dev/null || echo none)" \
-            "$([ -f "$ESP_MNT/EFI/kryptik/kryptik-$s.efi" ] && echo present || echo absent)"
-    done
-    umount_esp
+    # The ESP is an apply's or a rollback's while one holds the lock.
+    exec 9>"$LOCK"
+    if flock -s -n 9; then
+        mount_esp
+        echo "committed slot:   $(cat "$ESP_MNT/kryptik/committed-slot" 2>/dev/null || echo unknown)"
+        for s in a b; do
+            printf 'slot %s:           version %s, kernel %s\n' "$s" "$(cat "$ESP_MNT/kryptik/version-$s" 2>/dev/null || echo none)" \
+                "$([ -f "$ESP_MNT/EFI/kryptik/kryptik-$s.efi" ] && echo present || echo absent)"
+        done
+        umount_esp
+    else
+        echo "committed slot:   (an update is being applied; ask again when it has ended)"
+    fi
     kryptik-efiboot list 2>/dev/null | sed 's/^/  efi: /' || echo "  efi: (efivarfs unavailable)"
 }
 
