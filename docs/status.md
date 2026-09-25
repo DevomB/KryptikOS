@@ -74,11 +74,14 @@ state partition.
 - dhcpcd runs without its own privilege separation; the net zone is its
   sandbox.
 - The builds are not reproducible bit for bit.
-- A tree restored from the Actions cache is resumed by its step stamps, and a
-  step whose inputs changed builds again over what its old version installed.
-  Nothing records what a step installed, so a file the new version no longer
-  installs stays in the image. Recording it safely means a list per step kept
-  until the step succeeds, NUL-separated, with removals held to the end of the
-  stage and never of a shared object something still links.
+- A resumed tree builds a changed step again over what its old version
+  installed, and nothing records what a step installed. In CI a new package
+  version, or a package dropped from `sources.lock`, starts stage 04 again
+  from the stage 02 tree, but a recipe change does not: a file its new
+  version no longer installs stays in the image, as it does in a local work
+  directory rebuilt with `KRYPTIK_STALE=rebuild`. Removing such files safely
+  needs a record of what each rebuild wrote, not a before and after listing,
+  with removals held to the end of the stage and never of a shared object
+  something still links.
 - The setuid audit does not look at file capabilities (`security.capability`),
   the other way a file is given privilege.

@@ -89,8 +89,8 @@ choose
 
 # --- item(), its summary parser and the verdict ------------------------------
 sed -n '/^R_SUITE=()/,/^# -* prereqs --$/p' "$ACC" > "$T/item.sh"
-sed -n '/^need_host() /p; /^verdict_of() {/,/^}/p; /^seal_export() {/,/^}/p; /^tested() {/,/^}/p; /^parts_disagree() {/,/^}/p' "$ACC" >> "$T/item.sh"
-for fn in item checks_in need_host verdict_of seal_export tested parts_disagree; do
+sed -n '/^need_host() /p; /^verdict_of() {/,/^}/p; /^seal_export() {/,/^}/p; /^tested() /p; /^ran_on() /p; /^parts_disagree() {/,/^}/p' "$ACC" >> "$T/item.sh"
+for fn in item checks_in need_host verdict_of seal_export tested ran_on parts_disagree; do
     grep -q "^${fn}() " "$T/item.sh" || { echo "could not extract ${fn} from $ACC"; exit 1; }
 done
 # shellcheck disable=SC2034  # read by the sourced functions
@@ -153,15 +153,21 @@ item boot record M post 0 runs > /dev/null
 R_RES[0]=SKIPPED; R_RES[1]=PASS
 [[ "$(verdict_of)" == INCOMPLETE ]] && ok "a result the verdict does not know keeps it from PASS" || bad "verdict over an unknown result: $(verdict_of)"
 
-# Every part must have tested this revision on these media and firmware.
-# shellcheck disable=SC2034  # read by tested
-{ REV=abc; H_USB=u1; H_ISO=i1; H_FW=f1; FW_PKG="ovmf 1"; QEMU_VER="QEMU 9"; KVM=yes; }
-tested > "$T/parts/a/identity"; tested > "$T/parts/b/identity"
+# Every part must have tested this revision on these media, and all of them
+# on one firmware and one QEMU; the merging machine's own may differ.
+# shellcheck disable=SC2034  # read by tested and ran_on
+{ REV=abc; REV_DESC=abc; H_USB=u1; H_ISO=i1; H_FW=f1; FW_PKG="ovmf 1"; QEMU_VER="QEMU 9"; KVM=yes; }
+part() { { tested; ran_on; } > "$T/parts/$1/identity"; }
+part a; part b
 [[ -z "$(parts_disagree)" ]] && ok "parts that tested one revision on one medium are one run" || bad "parts disagree: $(parts_disagree)"
 sed -i 's/^usb .*/usb u2/' "$T/parts/b/identity"
 [[ "$(parts_disagree)" == "$T/parts/b/results.tsv tested"*"usb u2"* ]] && ok "a part that tested another medium is refused, by name" || bad "another medium: '$(parts_disagree)'"
-tested > "$T/parts/b/identity"; sed -i 's/^qemu .*/qemu QEMU 8 kvm=yes/' "$T/parts/a/identity"
-[[ -n "$(parts_disagree)" ]] && ok "so is a part on other QEMU than the report names" || bad "another QEMU was accepted"
+part b
+# shellcheck disable=SC2034  # read by ran_on
+{ H_FW=f2; QEMU_VER="QEMU 10"; }
+[[ -z "$(parts_disagree)" ]] && ok "a merging machine with newer firmware and QEMU than the parts takes them" || bad "the merger's own firmware refused the parts: $(parts_disagree)"
+part a
+[[ "$(parts_disagree)" == "$T/parts/b/results.tsv ran on "*"QEMU 9;"*" but "*"QEMU 10;"* ]] && ok "parts that ran on different QEMU are refused" || bad "parts on two QEMUs: '$(parts_disagree)'"
 rm "$T/parts/a/identity"
 [[ "$(parts_disagree)" == *"no identity"* ]] && ok "a results.tsv with no identity beside it is refused" || bad "no identity: '$(parts_disagree)'"
 # shellcheck disable=SC2034  # back to a run of its own

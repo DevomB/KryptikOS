@@ -276,9 +276,10 @@ test_helpers() {
     check "helpers: \"step\" in a recipe's message does not bring in the step runner" "$([[ -z "$out" ]] && echo ok)"
 
     # The runner is in no fingerprint, so the line every recipe runs under
-    # changes only with a stamp format bump, and this test with it.
+    # changes only with a stamp format bump, and this test with it. A whole
+    # line, so a comment quoting the old one cannot stand in for it.
     check "helpers: the line every recipe runs under changes only with the stamp format" \
-          "$(grep -qF '( set -Eeuo pipefail; trap _kryptik_trap ERR; "$@" ) > "$logfile" 2>&1' "$ROOT/build/lib/common.sh" \
+          "$(grep -qxF '    ( set -Eeuo pipefail; trap _kryptik_trap ERR; "$@" ) > "$logfile" 2>&1' "$ROOT/build/lib/common.sh" \
              && grep -qx 'KRYPTIK_STAMP_FORMAT=4' "$ROOT/build/lib/common.sh" && echo ok)"
     rm -rf "$work"
 }
