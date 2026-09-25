@@ -27,7 +27,8 @@ const BPF_RET: u16 = 0x06;
 // Filter return actions.
 const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
 const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
-// Fail the call instead of killing: for probes such as clone3.
+/* Fail the call instead of killing, for programs that probe for a feature and
+ * must hear "no": clone3, unwanted socket families, `REFUSED_SOFTLY`. */
 const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
 
 // Offsets into struct seccomp_data.

@@ -25,6 +25,11 @@ wait_for() {   # wait_for SECONDS CMD...
     return 1
 }
 zone_log() { cat "/var/log/kryptik/zone-$1.log" 2>/dev/null; }
+# A process the zone filter kills below the zone's pid 1 leaves nothing in the
+# zone log; the kernel's audit line (type=1326) names it and the syscall.
+zone_why() {   # zone_why ZONE: the registry's view, the zone's log, what runs, the filter's last kills
+    echo "entries: $(ls /run/kryptik/zones 2>&1 | tr '\n' ' ')| $1: $(ls /run/kryptik/zones/"$1" 2>&1 | tr '\n' ' ')| running: $("$KD" list --running 2>&1 | tr '\n' ' ')| log: $(zone_log "$1" | tail -6 | tr '\n' ' ')| procs: $(pgrep -af "havoc|kryptikd run $1" 2>/dev/null | cut -c1-90 | tr '\n' ';')| seccomp: $(dmesg 2>/dev/null | grep -a 'type=1326' | tail -3 | tr '\n' ' ')"
+}
 mark() { echo "--- $1 ---" >> "/var/log/kryptik/zone-$2.log" 2>/dev/null; }
 since_mark() {   # since_mark MARK ZONE: the zone's log after the marker line
     awk -v m="--- $1 ---" '$0==m {p=1; next} p' "/var/log/kryptik/zone-$2.log" 2>/dev/null
@@ -45,9 +50,14 @@ done
 # Exactly one DRM device, the native driver's: the GPU module must replace the
 # built-in simpledrm at coldplug, as two cards put wlroots on a multi-GPU path
 # the pixman renderer cannot serve. The card left is not card0 (simpledrm's).
+# virtio-gpu hangs its card on the PCI function, whose driver is the transport
+# (virtio-pci); the GPU driver is the virtio device's, under it.
 cards=()
 for c in /sys/class/drm/card[0-9]*; do
-    [[ -e "$c" && "${c##*/}" != *-* ]] && cards+=("${c##*/}=$(basename "$(readlink -f "$c/device/driver" 2>/dev/null)" 2>/dev/null)")
+    [[ -e "$c" && "${c##*/}" != *-* ]] || continue
+    d="$(readlink -f "$c/device")"
+    drv="$(readlink -f "$d"/virtio*/driver 2>/dev/null | head -1)"
+    cards+=("${c##*/}=$(basename "${drv:-$(readlink -f "$d/driver")}" 2>/dev/null)")
 done
 [[ "${#cards[@]}" -eq 1 && "${cards[0]}" == *=virtio_gpu ]] && pass "gpu-device" "${cards[0]}" || fail "gpu-device" "${#cards[@]} DRM device(s): ${cards[*]:-none} (the firmware framebuffer not replaced?)"
 [[ "$(s6-svstat -o up /run/service/seatd 2>/dev/null)" = true ]] && pass "seatd-up" || fail "seatd-up"
@@ -91,7 +101,7 @@ launch_plain untrusted "havoc" > "$LOG/launch-havoc-untrusted.out" 2>&1
 if wait_for 20 grep -q '^zone=untrusted' "$RT/kryptik/focus"; then
     pass "focus-shows-zone" "$(tr '\n' ' ' < "$RT/kryptik/focus")"
 else
-    fail "focus-shows-zone" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); launch: $(cat "$LOG/launch-havoc-untrusted.out" | tr '\n' ' ')"
+    fail "focus-shows-zone" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); launch: $(cat "$LOG/launch-havoc-untrusted.out" | tr '\n' ' '); $(zone_why untrusted)"
 fi
 grep -q '^label=UNTRUSTED' "$RT/kryptik/focus" 2>/dev/null && pass "focus-shows-label" "the text identity is the zone file's label" || fail "focus-shows-label"
 grep -q '^title=\[untrusted\]' "$RT/kryptik/focus" 2>/dev/null && pass "title-prefixed" "$(grep '^title=' "$RT/kryptik/focus")" || fail "title-prefixed" "$(grep '^title=' "$RT/kryptik/focus" 2>/dev/null)"
@@ -125,7 +135,7 @@ wait_for 30 test ! -e /run/kryptik/zones/personal/init.pid; sleep 1
 out="$(since_mark probe personal)"
 if [[ "$out" == *"global "* && "$out" != *"virtual_keyboard"* && "$out" != *"virtual_pointer"* && "$out" != *"input_method"* ]]; then pass "no-virtual-input" "no virtual keyboard/pointer or input-method global in personal either"; else fail "no-virtual-input" "$(echo "$out" | grep -c global) globals; virtual input: $(echo "$out" | grep -o 'virtual_[a-z]*' | tr '\n' ' '); $(tr '\n' ' ' < "$LOG/launch-probe-personal.out")"; fi
 launch personal "havoc" > "$LOG/launch-havoc-personal.out" 2>&1
-wait_for 20 grep -q '^zone=personal' "$RT/kryptik/focus" && pass "second-zone-window" "$(tr '\n' ' ' < "$RT/kryptik/focus")" || fail "second-zone-window" "$(cat "$LOG/launch-havoc-personal.out" | tr '\n' ' ')"
+wait_for 20 grep -q '^zone=personal' "$RT/kryptik/focus" && pass "second-zone-window" "$(tr '\n' ' ' < "$RT/kryptik/focus")" || fail "second-zone-window" "$(cat "$LOG/launch-havoc-personal.out" | tr '\n' ' '); $(zone_why personal)"
 stop_zone personal
 
 # --- clipboards: per zone, until the zone 0 gesture -----------------------
@@ -150,7 +160,7 @@ stop_zone untrusted; stop_zone personal
 
 # --- transfers: the user decides --------------------------------------------------------
 launch work "havoc" > /dev/null 2>&1   # work must be running to receive
-wait_for 20 grep -q '^zone=work' "$RT/kryptik/focus" || info "work window not focused yet: $(tr '\n' ' ' < "$RT/kryptik/focus")"
+wait_for 20 grep -q '^zone=work' "$RT/kryptik/focus" || info "work window not focused yet: $(tr '\n' ' ' < "$RT/kryptik/focus"); $(zone_why work)"
 # policy first: untrusted names no destination
 mark trf0 untrusted
 launch_plain untrusted "sh -c 'echo nope > \$HOME/x.txt; python3 $BC transfer work x.txt \$HOME/x.txt'" > /dev/null 2>&1; sleep 3
@@ -172,7 +182,7 @@ echo "GT CONSENT-WAIT 1"
 launch dev "sh -c 'echo report-body > \$HOME/report.txt; python3 $BC transfer work report.txt \$HOME/report.txt'" > "$LOG/trf1.out" 2>&1
 n=40; while [[ "$n" -gt 0 ]] && [[ "$(since_mark trf1 dev)" != *ok* && "$(since_mark trf1 dev)" != *error* ]]; do n=$((n - 1)); sleep 1; done
 out="$(since_mark trf1 dev)"
-[[ "$out" == *"ok report.txt"* ]] && pass "transfer-approved" "after the person said yes: $(echo "$out" | grep -o 'ok .*' | head -1)" || fail "transfer-approved" "$(echo "$out" | tail -2 | tr '\n' ' ')"
+[[ "$out" == *"ok report.txt"* ]] && pass "transfer-approved" "after the person said yes: $(echo "$out" | grep -o 'ok .*' | head -1)" || fail "transfer-approved" "$(echo "$out" | tail -2 | tr '\n' ' '); $(zone_why work)"
 if [[ -f "$R/work/incoming/report.txt" ]] && [[ "$(cat "$R/work/incoming/report.txt")" = report-body ]]; then pass "transfer-landed" "the file is in work's incoming/, byte-identical"; else fail "transfer-landed" "$(ls -la "$R/work/incoming" 2>&1 | tail -2 | tr '\n' ' ')"; fi
 # As for personal above: wait for dev's volume to close before the next launch.
 wait_for 30 test ! -e /run/kryptik/zones/dev/init.pid; sleep 1
