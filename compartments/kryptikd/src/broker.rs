@@ -545,17 +545,16 @@ fn handle_transfer(s: &Served, dest: &str, name: &str, fds: &[RawFd]) -> Result<
         return Err(format!("file is {} bytes; the transfer limit is {}", st.st_size, s.max_bytes));
     }
     // Everything a machine can decide has been decided, the destination's
-    // being there included; the last word is the user's, through the
-    // trusted chrome (consent.rs). Asked only now, after every check, so a
-    // request that would be refused anyway never becomes a question. The
-    // destination was looked up after the question once, and a person was
-    // asked to approve a transfer to a zone that was not running, then
-    // told so: a question whose answer changes nothing teaches people to
-    // say yes.
-    let target = (s.resolve_dest)(dest)?;
+    // being there included, before the person is asked (consent.rs): a
+    // question whose answer changes nothing teaches people to say yes. The
+    // destination is looked up again after the answer. Its root, held
+    // through a wait of up to a minute, pinned the zone's mounts, and the
+    // zone could have stopped or started again meanwhile.
     if !s.auto_approve {
+        drop((s.resolve_dest)(dest)?);
         crate::consent::ask(sender, dest, name, st.st_size as u64, s.asking)?;
     }
+    let target = (s.resolve_dest)(dest)?;
     deliver(&target, name, src, s.max_bytes)
 }
 
@@ -1605,6 +1604,76 @@ mod tests {
         assert!(String::from_utf8_lossy(&r).contains("data mount is unknown"), "{}", String::from_utf8_lossy(&r));
         // Through all of that nothing was created on the destination side.
         assert!(!lab.root.join("home/b/incoming").exists());
+        let _ = std::fs::remove_dir_all(&lab.dir);
+    }
+
+    #[test]
+    fn the_destination_is_looked_up_again_after_the_answer() {
+        use std::os::unix::io::AsRawFd;
+        // The first lookup finds the zone under `before`; by the answer it
+        // runs under the lab root, as a zone restarted during the wait would.
+        let lab = lab("again", "b");
+        let entry_dir = lab.dir.join("entry");
+        let before = lab.dir.join("before");
+        std::fs::create_dir_all(&entry_dir).unwrap();
+        std::fs::create_dir_all(before.join("home/b")).unwrap();
+        let (first, after) = (resolver(before.clone()), resolver(lab.root.clone()));
+        let calls = std::cell::Cell::new(0);
+        let resolve = |d: &str| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 1 { first(d) } else { after(d) }
+        };
+        let held = std::cell::Cell::new(0);
+        let asking = || {
+            held.set(held.get().max(fds_pointing_at(&before)));
+            true
+        };
+        let dev = lab.dev;
+        let home_dev = move || Some(dev);
+        let sv = Served {
+            zone: &lab.sender,
+            uid: unsafe { libc::geteuid() },
+            entry: &entry_dir,
+            zones_dir: &lab.zones,
+            home_dev: &home_dev,
+            auto_approve: false,
+            max_bytes: 64,
+            resolve_dest: &resolve,
+            asking: &asking,
+        };
+        let file = lab.dir.join("f.txt");
+        std::fs::write(&file, b"moved").unwrap();
+        let src = open_flags(&file, libc::O_RDONLY);
+        let consent = lab.dir.join("consent");
+        std::fs::create_dir_all(&consent).unwrap();
+        let watch = std::fs::File::create(consent.join(crate::consent::WATCHER_LOCK)).unwrap();
+        assert_eq!(unsafe { libc::flock(watch.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+        let r = {
+            let _env = crate::consent::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var("KRYPTIK_CONSENT_DIR", &consent);
+            let d = consent.clone();
+            let person = std::thread::spawn(move || {
+                for _ in 0..250 {
+                    let q = std::fs::read_dir(&d).unwrap().flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "ask"));
+                    if let Some(q) = q {
+                        std::thread::sleep(std::time::Duration::from_millis(300));
+                        let id = q.file_stem().unwrap().to_string_lossy().into_owned();
+                        std::fs::write(d.join(format!("{id}.answer")), "yes\n").unwrap();
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            });
+            let (_, r) = ask_with(&sv, "transfer b f.txt\n", &[src], false);
+            person.join().unwrap();
+            std::env::remove_var("KRYPTIK_CONSENT_DIR");
+            r
+        };
+        unsafe { libc::close(src) };
+        assert_eq!(String::from_utf8_lossy(&r), "ok f.txt\n");
+        assert_eq!(held.get(), 0, "the destination's root was held through the question");
+        assert_eq!(std::fs::read(lab.root.join("home/b/incoming/f.txt")).unwrap(), b"moved");
+        assert!(!before.join("home/b/incoming").exists(), "the transfer went into the tree the zone had left");
         let _ = std::fs::remove_dir_all(&lab.dir);
     }
 
