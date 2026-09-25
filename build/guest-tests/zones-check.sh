@@ -93,7 +93,7 @@ setsid "$KD" run personal --zones "$Z" --rootfs "$R" --passphrase-file /root/zt/
 PBG=$!
 for _ in $(seq 1 60); do grep -q PERSONAL-UP "$LOG/personal-bg.out" 2>/dev/null && break; sleep 0.5; done
 grep -q PERSONAL-UP "$LOG/personal-bg.out" && pass "encrypted-zone-start" "personal up on its LUKS2 volume" || fail "encrypted-zone-start" "$(tail -3 "$LOG/personal-bg.out" | tr '\n' ' ')"
-[[ -e /dev/mapper/kryptik-personal ]] && pass "mapping-while-running" "/dev/mapper/kryptik-personal exists while the zone runs" || fail "mapping-while-running"
+[[ -e /dev/mapper/kryptik-zone-personal ]] && pass "mapping-while-running" "/dev/mapper/kryptik-zone-personal exists while the zone runs" || fail "mapping-while-running"
 zrun untrusted 30 -- sh -c "python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.19.0.$PER 2 >/dev/null 2>&1 && echo CROSS-ZONE-REACHED || echo CROSS-ZONE-BLOCKED; ls /var/lib/kryptik/volumes 2>&1 | head -1; ls /home 2>&1 | tr '\n' ' '"
 [[ "$ZOUT" == *CROSS-ZONE-BLOCKED* ]] && pass "zone-separation" "untrusted cannot reach personal (10.19.0.$PER) on the bridge" || fail "zone-separation" "$ZOUT"
 [[ "$ZOUT" == *"volumes"* && "$ZOUT" != *"No such"* ]] && fail "volume-hidden" "the volume directory is visible from untrusted" || pass "volume-hidden" "no /var/lib/kryptik/volumes inside untrusted"
@@ -233,19 +233,19 @@ for i in 1 2 3; do zrun untrusted 20 -- true; [[ "$ZRC" = 0 ]] || fail "lifecycl
 [[ "$ZRC" = 0 ]] && pass "lifecycle-repeat" "untrusted started and exited three times"
 "$KD" status untrusted 2>&1 | grep -qi 'running' && fail "lifecycle-registry" "untrusted still registered as running" || pass "lifecycle-registry" "$("$KD" status untrusted 2>&1 | head -1)"
 "$KD" stop personal >/dev/null 2>&1; wait "$PBG" 2>/dev/null
-for _ in $(seq 1 20); do [[ -e /dev/mapper/kryptik-personal ]] || break; sleep 0.5; done
-[[ -e /dev/mapper/kryptik-personal ]] && fail "stop-closes-volume" "mapping still present after stop" || pass "stop-closes-volume" "the LUKS mapping is gone after stop"
+for _ in $(seq 1 20); do [[ -e /dev/mapper/kryptik-zone-personal ]] || break; sleep 0.5; done
+[[ -e /dev/mapper/kryptik-zone-personal ]] && fail "stop-closes-volume" "mapping still present after stop" || pass "stop-closes-volume" "the LUKS mapping is gone after stop"
 mountpoint -q "$R/personal" && fail "stop-unmounts" "plaintext still mounted" || pass "stop-unmounts" "nothing mounted at $R/personal after stop"
 
 # --- storage: encrypted storage lifecycle ----------------------------------------
 printf 'wrong-pass\n' > /root/zt/wrong.pass; chmod 600 /root/zt/wrong.pass
 zrun personal 30 --passphrase-file /root/zt/wrong.pass -- sh -c 'echo SHOULD-NOT-RUN'
-if [[ "$ZRC" != 0 && "$ZOUT" != *SHOULD-NOT-RUN* && ! -e /dev/mapper/kryptik-personal ]]; then pass "wrong-passphrase" "refused, no mapping left"; else fail "wrong-passphrase" "rc=$ZRC out=$ZOUT"; fi
+if [[ "$ZRC" != 0 && "$ZOUT" != *SHOULD-NOT-RUN* && ! -e /dev/mapper/kryptik-zone-personal ]]; then pass "wrong-passphrase" "refused, no mapping left"; else fail "wrong-passphrase" "rc=$ZRC out=$ZOUT"; fi
 zrun personal 30 --passphrase-file /root/zt/personal.pass -- sh -c 'echo secret-data-1 > "$HOME/keep" && sync && echo WROTE'
 [[ "$ZOUT" == *WROTE* ]] && pass "persist-write" || fail "persist-write" "$(tail -2 "$LOG/personal.err" | tr '\n' ' ')"
 zrun personal 30 --passphrase-file /root/zt/personal.pass -- sh -c 'cat "$HOME/keep"'
 [[ "$ZOUT" == *secret-data-1* ]] && pass "persist-reopen" "data survives stop and restart" || fail "persist-reopen" "$ZOUT"
-[[ -e /dev/mapper/kryptik-personal ]] && fail "no-mapping-after" || pass "no-mapping-after" "no mapping after the zone exited"
+[[ -e /dev/mapper/kryptik-zone-personal ]] && fail "no-mapping-after" || pass "no-mapping-after" "no mapping after the zone exited"
 [[ -z "$(ls -A "$R/personal" 2>/dev/null)" ]] && pass "no-plaintext-after" "the mount point is empty after the zone exited" || fail "no-plaintext-after" "$(ls -A "$R/personal" | head -3 | tr '\n' ' ')"
 zrun untrusted 30 -- sh -c 'echo ephemeral-1 > "$HOME/eph" && echo EPH-WROTE'
 zrun untrusted 30 -- sh -c 'test -f "$HOME/eph" && echo EPH-STILL-THERE || echo EPH-GONE'

@@ -2307,7 +2307,7 @@ mod tests {
         // explain names the container, the mapping and the close, and says
         // that an unprivileged launch cannot open it.
         let enc = explain(&z_encrypted(), "/tmp/t", std::path::Path::new("/nonexistent"));
-        assert!(enc.contains("LUKS2") && enc.contains("/dev/mapper/kryptik-t"), "{enc}");
+        assert!(enc.contains("LUKS2") && enc.contains("/dev/mapper/kryptik-zone-t"), "{enc}");
         assert!(enc.contains("Unprivileged launches are refused"), "{enc}");
     }
 
