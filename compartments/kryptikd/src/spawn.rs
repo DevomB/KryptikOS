@@ -333,10 +333,9 @@ fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, s: &broker::Served, out:
         !exited_unreaped(pid)
     };
     let s = &broker::Served { asking: &asking, ..*s };
-    // The zone's exit wakes the poll: a pidfd is readable once the process
-    // has ended. Without one (only if the kernel refuses a descriptor) the
-    // poll wakes every 200 ms to look; failing here instead would skip the
-    // caller's closing of the zone's volume.
+    /* A pidfd is readable once the zone has ended, so the poll needs no
+     * timeout. Without one it wakes every 200 ms: failing here would skip
+     * the caller's closing of the zone's volume. */
     let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as RawFd;
     let _pidfd = (pidfd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(pidfd) });
     let timeout = if pidfd >= 0 { -1 } else { 200 };

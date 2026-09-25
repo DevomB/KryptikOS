@@ -418,8 +418,7 @@ impl Zone {
             landlock: get("policy.landlock"),
             memory_max: get("limits.memory_max"),
             pids_max,
-            // One spelling per colour, so the duplicate check below sees
-            // #AA3333 and #aa3333 as the one colour they are.
+            // One spelling, so the duplicate check sees #AA3333 and #aa3333 as one colour.
             border_color: need("ui.border_color")?.to_ascii_lowercase(),
             border_pattern: get("ui.border_pattern"),
             glyph: get("ui.glyph"),
@@ -541,9 +540,8 @@ pub fn load_all(dir: &Path) -> Result<Vec<Zone>, ZoneError> {
             continue;
         }
         let zone = Zone::from_file(&path)?;
-        // Everything else finds a zone by opening <name>.toml (the broker, the
-        // net zone), so a file named otherwise would launch and then be
-        // unreachable as a transfer's destination.
+        /* The broker and the net zone open a zone as <name>.toml, so a file
+         * named otherwise would launch but never receive a transfer. */
         if path.file_stem().and_then(|s| s.to_str()) != Some(zone.name.as_str()) {
             return Err(ZoneError::Invalid(format!(
                 "{}: holds zone {:?}; a zone's file is named {}.toml",
@@ -870,7 +868,6 @@ border_color = "#000000"
 
     #[test]
     fn rejects_unknown_keys() {
-        // Including three that once were keys and were never read.
         for extra in ["[limits]\ncpu_max = 2", "[storage]\nunlock = \"on-start\"", "[network]\nbridge = \"kryptik0\""] {
             let err = Zone::from_str(&format!("{VAULT}\n{extra}\n")).unwrap_err();
             assert!(format!("{err}").contains("unknown key"), "{extra}: {err}");
@@ -878,7 +875,7 @@ border_color = "#000000"
     }
 
     #[test]
-    fn a_file_is_named_for_its_zone() {
+    fn file_named_for_zone() {
         let dir = std::env::temp_dir().join(format!("kryptik-stem-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         // A set needs one zone holding the NIC.
@@ -894,7 +891,7 @@ border_color = "#000000"
     }
 
     #[test]
-    fn colours_differing_in_case_are_one_colour() {
+    fn colour_case_ignored() {
         let a = zone_with("a", "none", "#AA3333");
         let b = zone_with("b", "none", "#aa3333");
         assert!(check_invariants(&[a, b]).is_err());

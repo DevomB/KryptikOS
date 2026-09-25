@@ -454,8 +454,7 @@ fn cmd_gc() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// kryptikd's own arguments: everything before `--`. What follows is a
-/// zone's command and is never read as kryptikd's options.
+/// kryptikd's own arguments: those before `--`. The rest is the zone's command.
 fn own(args: &[String]) -> &[String] {
     &args[..args.iter().position(|a| a == "--").unwrap_or(args.len())]
 }
@@ -466,8 +465,7 @@ fn value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
     own.iter().position(|a| a == flag).and_then(|i| own.get(i + 1)).map(String::as_str)
 }
 
-/// A flag whose value must parse: None when it is absent, an error when it
-/// has no value or one that does not parse.
+/// None when `flag` is absent; an error when its value is missing or does not parse.
 fn parsed<T: std::str::FromStr>(args: &[String], flag: &str, what: &str) -> Result<Option<T>, String> {
     let own = own(args);
     match own.iter().position(|a| a == flag) {
@@ -622,8 +620,8 @@ fn cmd_check(dir: &Path, target: bool) -> ExitCode {
                         }
                     }
                 }
-                // Read and parsed as the launcher reads it (spawn.rs), so a file
-                // that would stop a launch fails the check instead.
+                /* Parsed as the launcher parses it (spawn.rs), so a file that
+                 * would stop a launch fails the check. */
                 if let Some(rel) = &z.landlock {
                     let path = policy::resolve(dir, rel);
                     match std::fs::read_to_string(&path)
@@ -1279,7 +1277,7 @@ mod tests {
     }
 
     #[test]
-    fn flags_after_the_separator_are_the_commands() {
+    fn flags_stop_at_separator() {
         let a = args(&["run", "work", "--rootfs", "/r", "--", "tool", "--zones", "/x", "--rootfs", "/y"]);
         assert_eq!(zone_dir_from(&a), PathBuf::from(DEFAULT_ZONE_DIR));
         assert_eq!(rootfs_base_from(&a), "/r");
@@ -1287,7 +1285,7 @@ mod tests {
     }
 
     #[test]
-    fn a_parsed_flag_needs_a_value_that_parses() {
+    fn parsed_flag_needs_value() {
         assert_eq!(parsed::<u32>(&args(&["run", "w"]), "--zone-uid", "an id"), Ok(None));
         assert_eq!(parsed::<u32>(&args(&["--zone-uid", "7"]), "--zone-uid", "an id"), Ok(Some(7)));
         assert!(parsed::<u32>(&args(&["--zone-uid"]), "--zone-uid", "an id").is_err());

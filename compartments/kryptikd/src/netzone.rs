@@ -372,9 +372,8 @@ pub fn plumb_routed_zone(zone: &Zone, zone_ns: i32, zones_dir: &Path, host_gid: 
 }
 
 /// Create the veth from inside the nic zone with its peer born in the routed
-/// zone as eth0, isolate the bridge port, then address and route eth0. Half
-/// an attachment is removed, so a zone that is told it has no network path
-/// holds no eth0 either; deleting the port takes the pair.
+/// zone as eth0, isolate the bridge port, then address and route eth0. On
+/// failure the port is deleted, which takes the pair.
 fn attach_routed(name: &str, k: u8, nic_ns: i32, zone_ns: i32, host_gid: Option<u32>) -> Result<(), NetError> {
     let port = port_name(name);
     let r = attach_v4(&port, k, nic_ns, zone_ns, host_gid);
@@ -419,9 +418,8 @@ fn attach_v4(port: &str, k: u8, nic_ns: i32, zone_ns: i32, host_gid: Option<u32>
     .map_err(|e| io("address the zone's eth0", e))
 }
 
-/// A zone's network namespace, opened before its pid is believed: callers
-/// check `still_alive` after this, so a pid that ended and was reused in
-/// between cannot hand over another process's namespace.
+/// A zone's network namespace, opened before its pid is trusted: callers check
+/// `still_alive` after, so a reused pid cannot hand over another namespace.
 fn open_ns(st: &registry::PidStamp) -> io::Result<OwnedFd> {
     netlink::open_netns_of(st.pid).map(|fd| unsafe { OwnedFd::from_raw_fd(fd) })
 }
