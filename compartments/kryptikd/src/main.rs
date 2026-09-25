@@ -45,7 +45,8 @@ USAGE:
     kryptikd show  NAME [--zones DIR]
     kryptikd explain NAME             what starting this zone would do
     kryptikd seccomp-trace -- CMD     run CMD under the base seccomp filter; every
-                                      call it refuses is named and fails with ENOSYS
+                   [--zone NAME]      call it refuses is named and fails with ENOSYS
+                                      (--zone: NAME's filter, with its policy file)
     kryptikd run NAME -- CMD [ARGS]   create the zone and run CMD inside it
     kryptikd stop NAME [--now]        stop a running zone (--now = SIGKILL)
     kryptikd status NAME              running, stale or absent
@@ -183,8 +184,9 @@ fn main() -> ExitCode {
             }
         },
         "run" => cmd_run(&zone_dir, &args),
-        /* seccomp-trace -- CMD: run CMD under the base filter and name every call
-         * it refuses (cmd_seccomp_trace). For writing a policy file. */
+        /* seccomp-trace [--zone NAME] -- CMD: run CMD under the base filter, or
+         * NAME's widened by its policy file, and name every call it refuses
+         * (cmd_seccomp_trace). For writing a policy file. */
         "seccomp-trace" => {
             let Some(sep) = args.iter().position(|a| a == "--") else {
                 eprintln!("seccomp-trace: expected `-- COMMAND`");
@@ -195,7 +197,17 @@ fn main() -> ExitCode {
                 eprintln!("seccomp-trace: no command after `--`");
                 return ExitCode::from(2);
             }
-            cmd_seccomp_trace(&cmd)
+            let (allow, sockets) = match value(&args, "--zone") {
+                None => (seccomp::BASE_ALLOWLIST.to_vec(), seccomp::SocketPolicy::default()),
+                Some(name) => match trace_filter(&zone_dir, name) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        eprintln!("seccomp-trace: {e}");
+                        return ExitCode::from(2);
+                    }
+                },
+            };
+            cmd_seccomp_trace(&cmd, &allow, &sockets)
         }
         "stop" => match args.get(1) {
             Some(name) if !name.starts_with("--") => {
@@ -1130,13 +1142,26 @@ const fn seccomp_iowr(nr: u32, size: usize) -> libc::c_ulong {
 const NOTIF_RECV: libc::c_ulong = seccomp_iowr(0, std::mem::size_of::<libc::seccomp_notif>());
 const NOTIF_SEND: libc::c_ulong = seccomp_iowr(1, std::mem::size_of::<libc::seccomp_notif_resp>());
 
-/* Run CMD under the zone filter and name every call it refuses. A refused
+/// The filter zone `name` runs under: the base, widened by its policy file.
+fn trace_filter(dir: &Path, name: &str) -> Result<(Vec<libc::c_long>, seccomp::SocketPolicy), String> {
+    let zones = zone::load_all(dir).map_err(|e| e.to_string())?;
+    let z = zones.iter().find(|z| z.name == name).ok_or_else(|| format!("no zone named {name:?}"))?;
+    let Some(rel) = &z.seccomp else {
+        return Ok((seccomp::BASE_ALLOWLIST.to_vec(), seccomp::SocketPolicy::default()));
+    };
+    let p = policy::load(&policy::resolve(dir, rel))
+        .and_then(|p| p.check_for_zone(z).map(|_| p))
+        .map_err(|e| format!("{rel}: {e}"))?;
+    Ok((seccomp::widened(&p.extra_syscalls).map_err(|e| e.to_string())?, p.sockets))
+}
+
+/* Run CMD under a zone filter and name every call it refuses. A refused
  * call goes to this process (seccomp user notification: no ptrace, which
  * Kryptik forbids), is printed, and fails with ENOSYS, so one run lists all
  * the program was denied. The child shares this process's descriptor table
  * until its exec: that is how the listener it creates reaches us, since the
  * zone filter has no sendmsg to pass it with. */
-fn cmd_seccomp_trace(cmd: &[String]) -> ExitCode {
+fn cmd_seccomp_trace(cmd: &[String], allow: &[libc::c_long], sockets: &seccomp::SocketPolicy) -> ExitCode {
     use std::ffi::CString;
 
     let args: Vec<CString> = match cmd.iter().map(|a| CString::new(a.as_str())).collect() {
@@ -1162,7 +1187,7 @@ fn cmd_seccomp_trace(cmd: &[String]) -> ExitCode {
     }
     if pid == 0 {
         // Only calls the zone filter allows from here: write, execve, exit.
-        let fd: libc::c_int = seccomp::install_notifying(seccomp::BASE_ALLOWLIST).unwrap_or(-1);
+        let fd: libc::c_int = seccomp::install_notifying(allow, sockets).unwrap_or(-1);
         unsafe {
             libc::write(pipe[1], fd.to_ne_bytes().as_ptr() as *const libc::c_void, 4);
             if fd >= 0 {

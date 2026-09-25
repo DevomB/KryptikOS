@@ -27,7 +27,8 @@ const BPF_RET: u16 = 0x06;
 // Filter return actions.
 const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
 const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
-// Fail the call instead of killing: for probes such as clone3.
+/* Fail the call instead of killing, for programs that probe for a feature and
+ * must hear "no": clone3, unwanted socket families, `REFUSED_SOFTLY`. */
 const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
 
 // Offsets into struct seccomp_data.
@@ -396,16 +397,25 @@ impl ArgRule {
     }
 }
 
-/// Refused with an errno, not killed, since programs carry on when these fail.
-/// inotify: a watch on the /usr the zones share with zone 0 sees every program
-/// any of them starts; a zone policy may allow it. setfsuid, setfsgid: ncurses
-/// brackets every terminfo open with them, dropping to the real ids and back,
-/// so a kill took every terminal program with it; they stay denied.
+/// Refused with an errno, not killed, since programs carry on or say why when
+/// these fail. inotify: a watch on the /usr the zones share with zone 0 sees
+/// every program any of them starts; a zone policy may allow it. The id and
+/// capability calls stay denied: ncurses brackets every terminfo open with
+/// setfsuid and setfsgid, and sudo, su and daemons dropping privilege as root
+/// call the rest, so a kill would take them down unexplained. No id changes.
 pub const REFUSED_SOFTLY: &[(libc::c_long, u32)] = &[
     (libc::SYS_inotify_init, ENOSYS),
     (libc::SYS_inotify_init1, ENOSYS),
     (libc::SYS_setfsuid, EPERM),
     (libc::SYS_setfsgid, EPERM),
+    (libc::SYS_setuid, EPERM),
+    (libc::SYS_setgid, EPERM),
+    (libc::SYS_setreuid, EPERM),
+    (libc::SYS_setregid, EPERM),
+    (libc::SYS_setresuid, EPERM),
+    (libc::SYS_setresgid, EPERM),
+    (libc::SYS_setgroups, EPERM),
+    (libc::SYS_capset, EPERM),
 ];
 
 const fn errno_action(e: u32) -> u32 {
@@ -579,8 +589,8 @@ pub fn install(allow: &[libc::c_long]) -> Result<(), SeccompError> {
 /// As `install` for a single-threaded caller, but a refused call waits for a
 /// supervisor instead of killing: returns the listener descriptor, which is
 /// close-on-exec (`kryptikd seccomp-trace`).
-pub fn install_notifying(allow: &[libc::c_long]) -> Result<RawFd, SeccompError> {
-    let fd = install_with(allow, libc::SECCOMP_RET_USER_NOTIF, &SocketPolicy::default(), libc::SECCOMP_FILTER_FLAG_NEW_LISTENER)?;
+pub fn install_notifying(allow: &[libc::c_long], sockets: &SocketPolicy) -> Result<RawFd, SeccompError> {
+    let fd = install_with(allow, libc::SECCOMP_RET_USER_NOTIF, sockets, libc::SECCOMP_FILTER_FLAG_NEW_LISTENER)?;
     Ok(fd as RawFd)
 }
 
@@ -633,9 +643,15 @@ pub fn confine_zone() -> Result<(), SeccompError> {
     install(BASE_ALLOWLIST)
 }
 
-/// Install the zone filter widened by a policy: `extra` syscalls, checked again
-/// against the denied list here, and the socket rule widened by `sockets`.
+/// Install the zone filter widened by a policy: `extra` syscalls and the
+/// socket rule widened by `sockets`.
 pub fn confine_zone_with(extra: &[libc::c_long], sockets: &SocketPolicy) -> Result<(), SeccompError> {
+    install_with(&widened(extra)?, SECCOMP_RET_KILL_PROCESS, sockets, SECCOMP_FILTER_FLAG_TSYNC).map(|_| ())
+}
+
+/// The base allowlist and a policy's `extra` syscalls, each checked again
+/// against the denied list.
+pub fn widened(extra: &[libc::c_long]) -> Result<Vec<libc::c_long>, SeccompError> {
     let mut allow: Vec<libc::c_long> = BASE_ALLOWLIST.to_vec();
     for &nr in extra {
         if is_denied(nr) {
@@ -645,7 +661,7 @@ pub fn confine_zone_with(extra: &[libc::c_long], sockets: &SocketPolicy) -> Resu
             allow.push(nr);
         }
     }
-    install_with(&allow, SECCOMP_RET_KILL_PROCESS, sockets, SECCOMP_FILTER_FLAG_TSYNC).map(|_| ())
+    Ok(allow)
 }
 
 /// Calls in neither list that a policy file may add with `allow-syscall`.
@@ -807,11 +823,15 @@ mod tests {
     }
 
     #[test]
-    fn setfsuid_fails_not_kills() {
-        // Denied all the same: no policy may allow it.
+    fn id_changes_fail_not_kill() {
+        // Denied all the same: no policy may allow them.
         let p = build_program(BASE_ALLOWLIST).unwrap();
-        for nr in [libc::SYS_setfsuid, libc::SYS_setfsgid] {
-            assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, nr as u32), errno_action(EPERM));
+        for nr in [
+            libc::SYS_setfsuid, libc::SYS_setfsgid, libc::SYS_setuid, libc::SYS_setgid,
+            libc::SYS_setreuid, libc::SYS_setregid, libc::SYS_setresuid, libc::SYS_setresgid,
+            libc::SYS_setgroups, libc::SYS_capset,
+        ] {
+            assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, nr as u32), errno_action(EPERM), "syscall {nr}");
             assert!(is_denied(nr));
         }
     }
@@ -1036,6 +1056,14 @@ mod tests {
                 "syscall {nr} was affected by an argument rule"
             );
         }
+    }
+
+    #[test]
+    fn widened_refuses_denied() {
+        assert!(widened(&[libc::SYS_ptrace]).is_err());
+        let w = widened(&[libc::SYS_sched_setscheduler, libc::SYS_read]).unwrap();
+        assert_eq!(w.len(), BASE_ALLOWLIST.len() + 1, "a base call is not added twice");
+        assert!(w.contains(&libc::SYS_sched_setscheduler));
     }
 
     #[test]

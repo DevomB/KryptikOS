@@ -76,6 +76,8 @@ if unshare -rm mount --rbind / "$T/slash" 2>/dev/null; then
     out="$(PATH="$T/bin:$PATH" NO_COLOR=1 unshare -rm bash -c 'mount --rbind / "$1" && bash "$2" --strip "$1"' _ "$T/slash" "$T/repo/tools/audit-setuid.sh" 2>&1)"; rc=$?
     [[ "$rc" -ne 0 && "$out" == *"never this machine"* && ! -e "$T/chmod-called" ]] \
         && ok "--strip refuses a bind mount of /" || bad "bind mount of /: rc=$rc: $out"
+else
+    printf '  SKIP  --strip refuses a bind mount of / (no mount namespace here)\n'
 fi
 
 # A directory the audit cannot read could hide a binary: that is a failure.

@@ -1095,8 +1095,10 @@ head_ "L. Supervision, termination and the filter probes  [unpriv]"
 
 # --- nothing outlives the launcher -------------------------------------------
 # A unique sleep duration is the marker: it appears in the zone process's argv
-# and in nothing else this suite runs.
-MARK_KILL=2911
+# and in nothing else. It comes from this run's pid, since pgrep and pkill see
+# every process of the user, another run of this suite included.
+MARK_BASE=$(( 3000000 + ($$ % 100000) * 10 ))
+MARK_KILL=$(( MARK_BASE + 1 ))
 KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run alpha "${ZARGS[@]}" -- /bin/sleep "$MARK_KILL" >/dev/null 2>&1 &
 kpid=$!
 BG_PIDS+=("$kpid")
@@ -1121,7 +1123,7 @@ fi
 # The check is that no zone process survives, not timeout(1)'s exit code: 124
 # from coreutils, the child's status (137) from busybox. The zone's pid 1
 # ignores SIGTERM, so the launcher's SIGKILL 5 s later is what ends it.
-MARK_TERM=2912
+MARK_TERM=$(( MARK_BASE + 2 ))
 KRYPTIK_EXPERIMENTAL=1 timeout 2 "$KRYPTIKD" run alpha "${ZARGS[@]}" -- /bin/sleep "$MARK_TERM" >/dev/null 2>&1
 trc=$?
 # The escalation is 5s after the signal, so wait past it before judging.
@@ -1188,7 +1190,7 @@ zrun alpha -- /bin/sh -c "$PRO cd /tmp && echo x > o && cp -a o o2 && gzip -k o 
 probe "L11 cp -a and gzip keep an owner in a zone and live" "kept"
 
 # install(1) resets a file's ACL through its xattrs, and Python's asyncio
-# watches a child through a pidfd; both were killed.
+# watches a child through a pidfd.
 zrun alpha -- /bin/sh -c "$PRO echo x > /tmp/src && install -D -m 644 /tmp/src /tmp/i/x && echo PROBE=installed"
 probe "L12 install(1) sets a mode in a zone and lives" "installed"
 if command -v python3 > /dev/null 2>&1; then
@@ -1199,13 +1201,21 @@ async def m():
     print(\"PROBE=spawned\")
 asyncio.run(m())'"
     probe "L13 an asyncio program runs a child in a zone and lives" "spawned"
-    # timeout(1) arms a POSIX timer and mmap.flush is msync; both were killed.
+    # timeout(1) arms a POSIX timer, and mmap.flush is msync.
     zrun alpha -- /bin/sh -c "$PRO timeout 20 python3 -c 'import mmap
 f = open(\"/tmp/m\", \"w+b\"); f.write(bytes(4096)); f.flush()
 m = mmap.mmap(f.fileno(), 4096); m[0:1] = b\"y\"; m.flush(); print(\"PROBE=flushed\")'"
     probe "L14 timeout(1) and a flushed mapping live in a zone" "flushed"
+    # sudo, su and daemons dropping privilege call the set*id family as root:
+    # refused with EPERM, they can say so instead of dying of SIGSYS.
+    zrun alpha -- /bin/sh -c "$PRO python3 -c 'import os
+try:
+    os.setgroups([]); os.setgid(65534); os.setuid(65534); print(\"PROBE=CHANGED\")
+except PermissionError:
+    print(\"PROBE=refused\")'"
+    probe "L15 a privilege drop in a zone is refused, not killed" "refused"
 else
-    info "L13, L14 not run: this host has no python3"
+    info "L13 to L15 not run: this host has no python3"
 fi
 
 # ============================================================================
@@ -1466,7 +1476,7 @@ else
     fi
 
     # --- cleanup after a killed launcher ------------------------------------
-    MARK_CG=2913
+    MARK_CG=$(( MARK_BASE + 3 ))
     KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run pidcapped "${ZARGS[@]}" -- /bin/sleep "$MARK_CG" >/dev/null 2>&1 &
     cgpid=$!
     BG_PIDS+=("$cgpid")
@@ -1577,7 +1587,7 @@ ephrun alpha -- /bin/sh -c "$PRO if [ -e \$HOME/secret ]; then echo PROBE=RECOVE
 probe "EPH3 a later launch cannot recover the previous run's data" "gone"
 
 # EPH4: the same after the launcher is SIGKILLed.
-MARK_EPH=2914
+MARK_EPH=$(( MARK_BASE + 4 ))
 KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run beta "${EPHARGS[@]}" -- \
     /bin/sh -c "printf '%s' '$CANARY' > \$HOME/crashfile; sleep $MARK_EPH" >/dev/null 2>&1 &
 ephpid=$!
@@ -1910,6 +1920,25 @@ if [[ -n "$lp" ]]; then
     pass "POL5 explain reports what the policy file adds ($lp)"
 else
     fail "POL5 explain does not report the policy file's additions"
+fi
+
+# seccomp-trace --zone traces under that zone's filter, so a call its policy
+# file allows is not reported, and the program gets it.
+cat > "$ZONES/policy/tracer.seccomp" <<'POLICY'
+allow-syscall sched_setscheduler
+POLICY
+mkzone_policy tracer "#1b1b1b" "policy/tracer.seccomp"
+if command -v python3 > /dev/null 2>&1; then
+    prog='import os; os.sched_setscheduler(0, os.SCHED_OTHER, os.sched_param(0)); print("set")'
+    base="$(timeout "$TIMEOUT" "$KRYPTIKD" seccomp-trace -- python3 -c "$prog" 2>&1)"
+    own="$(timeout "$TIMEOUT" "$KRYPTIKD" seccomp-trace --zones "$ZONES" --zone tracer -- python3 -c "$prog" 2>&1)"
+    if [[ "$base" == *"DENIED 144 sched_setscheduler"* && "$own" != *sched_setscheduler* && "$own" == *set* ]]; then
+        pass "POL6 seccomp-trace --zone traces under the zone's own filter"
+    else
+        fail "POL6 --zone did not widen the trace [base: $(tr '\n' ' ' <<<"$base") | zone: $(tr '\n' ' ' <<<"$own")]"
+    fi
+else
+    info "POL6 not run: this host has no python3"
 fi
 
 # ============================================================================

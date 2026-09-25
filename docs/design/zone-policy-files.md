@@ -21,7 +21,9 @@ keep-capability   CAP_NET_RAW         # left in the bounding set
 - `allow-syscall`: a name from `seccomp::ADDABLE`. A syscall on the base
   denied list (`DENIED_RATIONALE`: `ptrace`, `mount`, `setns`, `bpf`, ...)
   cannot be re-allowed, one on the base allowlist is reported as already
-  allowed, and any other name is an error.
+  allowed, and any other name is an error. The id and capability calls on
+  the denied list fail with EPERM instead of killing the caller; the trace
+  paragraph below says why.
 - `allow-socket`: `AF_PACKET`, `AF_KEY`, `AF_ALG`, `AF_VSOCK`, `AF_BLUETOOTH`,
   `AF_CAN`, `AF_RDS`, `AF_TIPC` or `AF_XDP`; `AF_NETLINK` drops the netlink
   protocol check.
@@ -47,13 +49,17 @@ after its name and gets the same errno here:
 - `inotify_init` and `inotify_init1` fail with ENOSYS: a watch on the `/usr`
   every zone shares would see each program started anywhere, and programs
   fall back to polling.
-- `setfsuid` and `setfsgid` fail with EPERM: ncurses brackets every terminfo
-  open with them, so a kill took each shell, editor and browser down at its
-  first prompt. They stay on the denied list, and no id changes either way.
+- The id and capability calls (the `set*id` family, `setgroups`, `capset`)
+  fail with EPERM: ncurses brackets every terminfo open with `setfsuid` and
+  `setfsgid`, and `sudo`, `su` and daemons that drop privilege as root call
+  the rest, so a kill took them down unexplained. They stay on the denied
+  list, and no id or capability changes either way.
 
 A printed name can go on an `allow-syscall` line unless it is on the denied
 list; a call refused for its arguments (namespace flags to `clone`,
-`TIOCSTI`) is printed under its syscall's name and stays refused.
+`TIOCSTI`) is printed under its syscall's name and stays refused. With
+`--zone NAME` the trace runs under that zone's filter, its policy file
+included, so a second run shows what is still refused.
 
 An unknown directive or name, a denied syscall, a capability outside
 `KEEPABLE`, a duplicate line or an unreadable file is an error that names the

@@ -130,15 +130,18 @@ DIRTY="$(git -c safe.directory='*' -C "$ROOT" status --porcelain 2>/dev/null)"
 tested() { printf 'revision %s (%s)\nusb %s\niso %s\n' "$REV" "$REV_DESC" "$H_USB" "$H_ISO"; }
 ran_on() { printf 'firmware-sha256 %s\nfirmware-package %s\nqemu %s\nkvm %s\n' "$H_FW" "$FW_PKG" "$QEMU_VER" "$KVM"; }
 parts_disagree() {   # the first part that tested or ran on something else, and what
-    local f id first=""
+    local f d id first="" k
     for f in "${PARTS[@]}"; do
-        id="$(dirname "$f")/identity"
-        if [[ ! -f "$id" ]]; then echo "${f} has no identity beside it"; return; fi
-        if [[ "$(sed -n 1,3p "$id")" != "$(tested)" ]]; then echo "${f} tested $(sed -n 1,3p "$id" | tr '\n' ';')"; return; fi
+        d="$(dirname "$f")"; id="${d}/identity"
+        if [[ ! -f "$id" ]]; then echo "the part in ${d} has no identity"; return; fi
+        if [[ "$(sed -n 1,3p "$id")" != "$(tested)" ]]; then echo "the part in ${d} tested $(sed -n 1,3p "$id" | tr '\n' ';')"; return; fi
+        for k in firmware-sha256 firmware-package qemu kvm; do
+            grep -q "^${k} " "$id" || { echo "the part in ${d} does not say its ${k}"; return; }
+        done
         if [[ -z "$first" ]]; then
-            first="$id"
-        elif [[ "$(sed -n '4,$p' "$id")" != "$(sed -n '4,$p' "$first")" ]]; then
-            echo "${f} ran on $(sed -n '4,$p' "$id" | tr '\n' ';') but ${first} on $(sed -n '4,$p' "$first" | tr '\n' ';')"; return
+            first="$d"
+        elif [[ "$(sed -n '4,$p' "$id")" != "$(sed -n '4,$p' "${first}/identity")" ]]; then
+            echo "the part in ${d} ran on $(sed -n '4,$p' "$id" | tr '\n' ';') but the part in ${first} on $(sed -n '4,$p' "${first}/identity" | tr '\n' ';')"; return
         fi
     done
 }

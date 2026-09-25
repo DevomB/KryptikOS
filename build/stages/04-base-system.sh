@@ -40,6 +40,15 @@ esac
 
 mkdir -p "$STAMPS" "$LOGS" "$BUILDDIR"
 
+# tree_digest FILE...: one digest over each file's content and its path under
+# the tree, so a renamed file changes it as an edited one does. For a step
+# argument that stands for files the step reads by path.
+tree_digest() {
+    local f
+    for f in "$@"; do [[ -f "$f" ]] && printf '%s\0' "$f"; done \
+        | xargs -0r sha256sum | sed "s|  ${KRYPTIK_ROOT}/|  |" | sha256_of_stdin
+}
+
 # --- hardening exceptions ---------------------------------------------------
 
 # The flags to drop for a package, from hardening-exceptions.txt.
@@ -336,10 +345,16 @@ s_bzip2() {
     # bzip2 has no configure; its docs path and shared-lib build need patching.
     sed -i 's@\(ln -s -f \)$(PREFIX)/bin/@\1@' Makefile
     sed -i "s@(PREFIX)/man@(PREFIX)/share/man@g" Makefile
-    make -f Makefile-libbz2_so
+    # Both Makefiles assign CFLAGS, which beats the environment, and link the
+    # library with neither CFLAGS nor LDFLAGS: the flags go on the command
+    # line, with the -fPIC and large-file define theirs carried.
+    sed -i -e 's/-shared -Wl,-soname/-shared $(LDFLAGS) -Wl,-soname/' \
+        -e 's/$(CFLAGS) -o bzip2-shared/$(CFLAGS) $(LDFLAGS) -o bzip2-shared/' Makefile-libbz2_so
+    [[ "$(grep -c 'LDFLAGS' Makefile-libbz2_so)" -eq 2 ]] || { echo "FAIL: Makefile-libbz2_so did not take LDFLAGS"; return 1; }
+    make -f Makefile-libbz2_so CFLAGS="$CFLAGS -fPIC -D_FILE_OFFSET_BITS=64" LDFLAGS="$LDFLAGS"
     make clean
-    make
-    make PREFIX=/usr install
+    make CFLAGS="$CFLAGS -D_FILE_OFFSET_BITS=64" LDFLAGS="$LDFLAGS"
+    make PREFIX=/usr CFLAGS="$CFLAGS -D_FILE_OFFSET_BITS=64" LDFLAGS="$LDFLAGS" install
     cp -av libbz2.so.* /usr/lib
     ln -sfv libbz2.so.1.0.8 /usr/lib/libbz2.so
     cp -v bzip2-shared /usr/bin/bzip2
@@ -594,7 +609,13 @@ s_binutils_native() {
     local src; src="$(unpack "binutils-${V_BINUTILS}.tar.xz" "binutils-${V_BINUTILS}")"
     cd "$src"
     mkdir -p build && cd build
-    ../configure --prefix=/usr --sysconfdir=/etc --enable-gold         --enable-ld=default --enable-plugins --enable-shared --disable-werror         --enable-64-bit-bfd --enable-new-dtags --with-system-zlib         --enable-default-hash-style=gnu
+    # --with-stage1-ldflags= : the shared top-level configure would link the
+    # programs with -static-libgcc -static-libstdc++, whose objects (stage
+    # 02's) carry no CET note, and ld would drop it from ld, as and the rest.
+    ../configure --prefix=/usr --sysconfdir=/etc --enable-gold \
+        --enable-ld=default --enable-plugins --enable-shared --disable-werror \
+        --enable-64-bit-bfd --enable-new-dtags --with-system-zlib \
+        --enable-default-hash-style=gnu --with-stage1-ldflags=
     make tooldir=/usr
     make tooldir=/usr install
     rm -fv /usr/lib/lib{bfd,ctf,ctf-nobfd,gprofng,opcodes,sframe}.a
@@ -624,16 +645,14 @@ s_s6_stack() {
 
 # --- system identity and boot configuration ---------------------------------
 
-# /etc/os-release and friends. BUILD_ID names the commit that built the image;
-# it is an argument so the stamp covers it.
+# /etc/os-release and friends. BUILD_ID, the commit that built the image, is
+# added after the steps (at the end of this file): as this step's input it
+# would re-fingerprint this step, and every step after it, on each commit.
 s_etc() {
-    local commit="${1:-${KRYPTIK_BUILD_COMMIT:-unknown}}"
-
-    cat > /etc/os-release <<EOF
+    cat > /etc/os-release <<'EOF'
 NAME="Kryptik"
 PRETTY_NAME="Kryptik (pre-alpha)"
 ID=kryptik
-BUILD_ID=${commit}
 ANSI_COLOR="0;36"
 EOF
 
@@ -1518,9 +1537,12 @@ s_openssh() {
 s_dnsmasq() {
     local src; src="$(unpack "dnsmasq-${V_DNSMASQ}.tar.xz" "dnsmasq-${V_DNSMASQ}")"
     cd "$src"
-    make PREFIX=/usr COPTS="-DNO_DBUS -DNO_ID"
+    # Its Makefile assigns CFLAGS and LDFLAGS, which beat the environment, so
+    # the hardening goes on the command line.
+    local mk=(PREFIX=/usr COPTS="-DNO_DBUS -DNO_ID" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS")
+    make "${mk[@]}"
     # `install`, not `install-common`, which installs nothing with PREFIX set.
-    make PREFIX=/usr install
+    make "${mk[@]}" install
     [[ -x /usr/sbin/dnsmasq ]] || { echo "FAIL: /usr/sbin/dnsmasq was not installed"; return 1; }
     /usr/sbin/dnsmasq --version | sed -n 1p
 }
@@ -1977,7 +1999,8 @@ PACKAGES=(
     "python-final" "s_python_final"
     "coreutils"   "native_build coreutils-${V_COREUTILS}.tar.xz coreutils-${V_COREUTILS} --enable-no-install-program=kill,uptime"
     "diffutils"   "native_build diffutils-${V_DIFFUTILS}.tar.xz diffutils-${V_DIFFUTILS}"
-    "gawk"        "native_build gawk-${V_GAWK}.tar.xz gawk-${V_GAWK}"
+    # No persistent-memory allocator: it needs a fixed-address, non-PIE gawk.
+    "gawk"        "native_build gawk-${V_GAWK}.tar.xz gawk-${V_GAWK} --disable-pma"
     "findutils"   "native_build findutils-${V_FINDUTILS}.tar.xz findutils-${V_FINDUTILS} --localstatedir=/var/lib/locate"
     "grep"        "native_build grep-${V_GREP}.tar.xz grep-${V_GREP}"
     "gzip"        "native_build gzip-${V_GZIP}.tar.xz gzip-${V_GZIP}"
@@ -2056,13 +2079,13 @@ PACKAGES=(
     "desktop"     "s_desktop ${KRYPTIK_WLPROXY_BIN:-none} $([[ -f "${KRYPTIK_WLPROXY_BIN:-}" ]] && sha256_of "${KRYPTIK_WLPROXY_BIN}" || echo absent) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-launch.c" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-session" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-chrome" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/wlprobe.c" 2>/dev/null || echo none)"
 
     # From here the steps configure the system rather than build packages.
-    "etc"         "s_etc ${KRYPTIK_BUILD_COMMIT:-unknown}"
+    "etc"         "s_etc"
     "console"     "s_console"
     "init"        "s_init"
     # After init, whose stage 2 scripts look for the database; before the
     # updater and efiboot, whose checks source the devices.sh it installs. The
     # digest covers the files the recipe reads by path, which declare -f cannot.
-    "services" "s_services $(cat "${KRYPTIK_ROOT}"/build/services/*/* "${KRYPTIK_ROOT}"/build/service-scripts/*.sh "${KRYPTIK_ROOT}"/build/config/sysctl.d/*.conf 2>/dev/null | sha256_of_stdin || echo nosvc)"
+    "services" "s_services $(tree_digest "${KRYPTIK_ROOT}"/build/services/*/* "${KRYPTIK_ROOT}"/build/service-scripts/*.sh "${KRYPTIK_ROOT}"/build/config/sysctl.d/*.conf)"
     "release-trust" "s_release_trust"
     # Before the updater, whose check runs kryptik-update, which needs efiboot.
     "efiboot"     "s_efiboot $(sha256_of "${KRYPTIK_ROOT}/tools/efi/kryptik-efiboot.c" 2>/dev/null || echo none)"
@@ -2071,9 +2094,9 @@ PACKAGES=(
     "installer"   "s_installer $(sha256_of "${KRYPTIK_ROOT}/tools/install/kryptik-install.sh" 2>/dev/null || echo none)"
     # The binary's path and hash, and a digest of the zone files: kryptikd
     # validates them at install time, so the two must move together.
-    "kryptikd"    "s_kryptikd ${KRYPTIK_KRYPTIKD_BIN:-none} $([[ -f "${KRYPTIK_KRYPTIKD_BIN:-}" ]] && sha256_of "${KRYPTIK_KRYPTIKD_BIN}" || echo absent) $(cat "${KRYPTIK_ROOT}"/compartments/zones/*.toml "${KRYPTIK_ROOT}"/compartments/zones/policy/* 2>/dev/null | sha256_of_stdin || echo nozones) $(sha256_of "${KRYPTIK_ROOT}/tools/kryptik" 2>/dev/null || echo none)"
+    "kryptikd"    "s_kryptikd ${KRYPTIK_KRYPTIKD_BIN:-none} $([[ -f "${KRYPTIK_KRYPTIKD_BIN:-}" ]] && sha256_of "${KRYPTIK_KRYPTIKD_BIN}" || echo absent) $(tree_digest "${KRYPTIK_ROOT}"/compartments/zones/*.toml "${KRYPTIK_ROOT}"/compartments/zones/policy/*) $(sha256_of "${KRYPTIK_ROOT}/tools/kryptik" 2>/dev/null || echo none)"
     # The suites and guest checks the VM drivers run; every file is an input.
-    "tests"       "s_tests $(cat "${KRYPTIK_ROOT}"/compartments/tests/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/probes/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/src/isolate.rs "${KRYPTIK_ROOT}"/compartments/kryptikd/src/rootfs.rs "${KRYPTIK_ROOT}"/build/guest-tests/*.sh "${KRYPTIK_ROOT}"/build/guest-tests/*.py 2>/dev/null | sha256_of_stdin || echo none)"
+    "tests"       "s_tests $(tree_digest "${KRYPTIK_ROOT}"/compartments/tests/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/probes/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/src/isolate.rs "${KRYPTIK_ROOT}"/compartments/kryptikd/src/rootfs.rs "${KRYPTIK_ROOT}"/build/guest-tests/*.sh "${KRYPTIK_ROOT}"/build/guest-tests/*.py)"
     "boot-check"  "s_boot_check"
 )
 
@@ -2146,6 +2169,10 @@ for ((i = 0; i < ${#PACKAGES[@]}; i += 2)); do
     # shellcheck disable=SC2086  # recipe is a deliberately word-split command
     step "$name" $recipe
 done
+
+# Written on every run and by no step (see s_etc).
+sed -i '/^BUILD_ID=/d' /etc/os-release
+printf 'BUILD_ID=%s\n' "$KRYPTIK_BUILD_COMMIT" >> /etc/os-release
 
 echo
 if [[ "$unwired" -gt 0 ]]; then
