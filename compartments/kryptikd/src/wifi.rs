@@ -7,7 +7,6 @@
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
-use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use crate::zone::NetworkMode;
@@ -250,53 +249,11 @@ fn ensure_dir(dir: &Path) -> Result<(), String> {
     }
 }
 
-/// Write a 0400 `.tmp` owned as asked, fsync it and rename it over the file,
-/// so a reader sees the old file or the new one, never part of one.
+/// The file, 0400 and owned as asked, replaced whole.
 fn write_atomic(dir: &Path, contents: &str, owner: Option<(u32, u32)>) -> Result<(), String> {
     ensure_dir(dir)?;
     let path = conf_path(dir);
-    let tmp = dir.join(format!("{FILE_NAME}.tmp"));
-    // A leftover from an interrupted write would make create_new fail.
-    match fs::remove_file(&tmp) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(format!("{}: {e}", tmp.display())),
-    }
-    let mut f = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o400)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(&tmp)
-        .map_err(|e| format!("{}: {e}", tmp.display()))?;
-    let finish = |r: Result<(), String>| -> Result<(), String> {
-        if r.is_err() {
-            let _ = fs::remove_file(&tmp);
-        }
-        r
-    };
-    finish(f.write_all(contents.as_bytes()).map_err(|e| format!("{}: {e}", tmp.display())))?;
-    finish(f.sync_all().map_err(|e| format!("{}: fsync: {e}", tmp.display())))?;
-    finish(
-        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o400))
-            .map_err(|e| format!("{}: chmod: {e}", tmp.display())),
-    )?;
-    if let Some((uid, gid)) = owner {
-        if unsafe { libc::fchown(f.as_raw_fd(), uid, gid) } < 0 {
-            return finish(Err(format!(
-                "{}: chown to {uid}:{gid}: {}",
-                tmp.display(),
-                io::Error::last_os_error()
-            )));
-        }
-    }
-    drop(f);
-    finish(fs::rename(&tmp, &path).map_err(|e| format!("rename {} over {}: {e}", tmp.display(), path.display())))?;
-    // Fsync the directory so the rename is durable; best effort.
-    if let Ok(d) = fs::File::open(dir) {
-        let _ = d.sync_all();
-    }
-    Ok(())
+    crate::files::write_atomic(&path, &[contents.as_bytes()], 0o400, owner).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Restart the net zone so it reads the new file; returns what happened and
@@ -481,8 +438,8 @@ mod tests {
         let dir = tmpdir("atomic");
         add(&dir, None, "Home", "long enough").unwrap();
         let ino = fs::metadata(conf_path(&dir)).unwrap().ino();
-        // A stale .tmp from an interrupted write is replaced.
-        fs::write(dir.join(format!("{FILE_NAME}.tmp")), "junk").unwrap();
+        // The temporary of a writer that died before its rename goes.
+        fs::write(dir.join(format!(".{FILE_NAME}.4294967295")), "psk=\"secret\"").unwrap();
         add(&dir, None, "Other", "long enough").unwrap();
         assert_ne!(fs::metadata(conf_path(&dir)).unwrap().ino(), ino, "a new inode replaced the old file");
         let names: Vec<String> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
