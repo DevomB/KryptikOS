@@ -334,28 +334,44 @@ impl ZoneOutput {
         }
     }
 
-    /// Read what is there. False once every writer has gone.
-    fn pump(&mut self, emit: &mut dyn FnMut(&str)) -> bool {
+    /// Read what is there, at most `reads` pipe-sized pieces of it. False
+    /// once every writer has gone. It read until the pipe was empty, and a
+    /// zone that writes without pause keeps a pipe from ever being empty:
+    /// the launcher stayed here, and neither reaped its zone nor served a
+    /// request. Bounded, the rest waits for the next poll, which wakes at
+    /// once while there is more.
+    fn pump_at_most(&mut self, reads: usize, emit: &mut dyn FnMut(&str)) -> bool {
         let mut buf = [0u8; 4096];
-        loop {
+        let mut done = 0;
+        while done < reads {
             let n = unsafe { libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
             if n > 0 {
                 self.take(&buf[..n as usize], emit);
+                done += 1;
             } else if n == 0 {
                 return false;
             } else if errno() != libc::EINTR {
                 return true; // EAGAIN: nothing more for now
             }
         }
+        true
+    }
+
+    fn pump(&mut self, emit: &mut dyn FnMut(&str)) -> bool {
+        self.pump_at_most(ZONE_READS_PER_PUMP, emit)
     }
 }
 
+/// A pass of the relay reads at most this many pieces (64 KiB).
+const ZONE_READS_PER_PUMP: usize = 16;
+
 /// However the launcher stops listening (the zone ended, or the launch failed
-/// before it began), what the zone's side already said is not lost.
+/// before it began), what the zone's side already said is not lost: as much
+/// as the log would take, and then the launcher moves on.
 impl Drop for ZoneOutput {
     fn drop(&mut self) {
         let mut emit = |line: &str| log_line(line);
-        self.pump(&mut emit);
+        self.pump_at_most(ZONE_OUTPUT_MAX / 4096 + 1, &mut emit);
         self.flush(&mut emit);
         unsafe { libc::close(self.fd) };
     }
@@ -2056,6 +2072,34 @@ mod tests {
         assert_eq!(logged, ZONE_OUTPUT_MAX);
         assert_eq!(got.iter().filter(|l| l.contains("is not logged")).count(), 1);
         assert!(!got.iter().any(|l| l.contains("more")));
+    }
+
+    #[test]
+    fn a_pass_of_the_relay_reads_a_bounded_amount() {
+        // A zone that never stops writing keeps its pipe from ever being
+        // empty, and a pass that reads until empty never returns to the
+        // launcher's loop. Deterministically: a pipe holding more than one
+        // pass's worth, one pass, and the rest must still be there.
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) }, 0);
+        let (r, w) = (fds[0], fds[1]);
+        let size = unsafe { libc::fcntl(w, libc::F_SETPIPE_SZ, 1 << 20) };
+        let size = if size > 0 { size as usize } else { 65536 };
+        let chunk = [b'y'; 4096];
+        let mut written = 0usize;
+        while written + chunk.len() <= size {
+            let n = unsafe { libc::write(w, chunk.as_ptr() as *const libc::c_void, chunk.len()) };
+            if n <= 0 { break; }
+            written += n as usize;
+        }
+        let one_pass = ZONE_READS_PER_PUMP * 4096;
+        assert!(written > one_pass, "the pipe took {written} bytes, not more than one pass ({one_pass})");
+        let mut o = std::mem::ManuallyDrop::new(ZoneOutput::new(r, "work"));
+        assert!(o.pump(&mut |_: &str| {}), "the writer is still there");
+        let mut left: libc::c_int = 0;
+        assert_eq!(unsafe { libc::ioctl(r, libc::FIONREAD, &mut left) }, 0);
+        assert_eq!(left as usize, written - one_pass, "one pass read {} bytes, not {one_pass}", written - left as usize);
+        unsafe { libc::close(w); libc::close(r) };
     }
 
     fn z(mode: &str) -> Zone {
