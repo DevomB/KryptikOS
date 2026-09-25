@@ -328,6 +328,17 @@ pub const ARG_RULES: &[ArgRule] = &[
     ArgRule::SocketFamilies,
 ];
 
+impl ArgRule {
+    fn nr(self) -> libc::c_long {
+        match self {
+            ArgRule::CloneNoNamespaces => libc::SYS_clone,
+            ArgRule::Clone3Enosys => libc::SYS_clone3,
+            ArgRule::IoctlNoTtyInject => libc::SYS_ioctl,
+            ArgRule::SocketFamilies => libc::SYS_socket,
+        }
+    }
+}
+
 const fn errno_action(e: u32) -> u32 {
     SECCOMP_RET_ERRNO | (e & 0xffff)
 }
@@ -411,14 +422,8 @@ fn emit_arg_rule(p: &mut Vec<SockFilter>, rule: ArgRule, deny_action: u32, socke
             body
         }
     };
-    let nr = match rule {
-        ArgRule::CloneNoNamespaces => libc::SYS_clone,
-        ArgRule::Clone3Enosys => libc::SYS_clone3,
-        ArgRule::IoctlNoTtyInject => libc::SYS_ioctl,
-        ArgRule::SocketFamilies => libc::SYS_socket,
-    };
     // Offsets count from the next instruction; every body is far below 255.
-    p.push(jump(BPF_JMP | BPF_JEQ | BPF_K, nr as u32, 0, body.len() as u8));
+    p.push(jump(BPF_JMP | BPF_JEQ | BPF_K, rule.nr() as u32, 0, body.len() as u8));
     p.extend(body);
 }
 
@@ -454,15 +459,22 @@ fn build_program_full(
     p.push(jump(BPF_JMP | BPF_JGE | BPF_K, X32_SYSCALL_BIT, 0, 1));
     p.push(stmt(BPF_RET | BPF_K, deny_action));
 
-    // Argument rules first, before the plain allowlist can allow those syscalls.
+    // Argument rules first, before the plain allowlist can allow those
+    // syscalls, and only for syscalls the list allows: a rule's block can end
+    // in ALLOW, so one emitted for a syscall the list left out allowed it.
     for &rule in ARG_RULES {
-        emit_arg_rule(&mut p, rule, deny_action, sockets);
+        if allow.contains(&rule.nr()) {
+            emit_arg_rule(&mut p, rule, deny_action, sockets);
+        }
     }
 
     for &nr in allow {
         // seccomp_data.nr is 32 bits: a truncated number would allow another syscall.
         if nr < 0 || nr > u32::MAX as libc::c_long {
             return Err(SeccompError::BadSyscallNumber(nr));
+        }
+        if ARG_RULES.iter().any(|r| r.nr() == nr) {
+            continue; // decided by its rule above
         }
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         let nr_u32 = nr as u32; // bounds-checked immediately above
@@ -625,12 +637,8 @@ mod tests {
     #[test]
     fn program_has_expected_shape() {
         let p = build_program(&[libc::SYS_read, libc::SYS_write]).unwrap();
-        // 4 prologue + 2 x32 + arg rules + 2 per syscall + 1 default deny
-        let mut rules = Vec::new();
-        for &r in ARG_RULES {
-            emit_arg_rule(&mut rules, r, SECCOMP_RET_KILL_PROCESS, &SocketPolicy::default());
-        }
-        assert_eq!(p.len(), 3 + 1 + 2 + rules.len() + 4 + 1);
+        // 4 prologue + 2 x32 + 2 per syscall + 1 default deny; neither has an arg rule
+        assert_eq!(p.len(), 3 + 1 + 2 + 4 + 1);
         assert_eq!(p[0].code, BPF_LD | BPF_W | BPF_ABS);
         assert_eq!(p[0].k, OFF_ARCH);
         let last = p.last().unwrap();
@@ -727,6 +735,17 @@ mod tests {
             evaluate(&p, AUDIT_ARCH_X86_64, libc::SYS_ptrace as u32),
             SECCOMP_RET_KILL_PROCESS
         );
+    }
+
+    #[test]
+    fn arg_rules_follow_the_list() {
+        // A rule allows on some path, so it exists only for a listed syscall.
+        let p = build_program(&[libc::SYS_read]).unwrap();
+        for nr in ARG_RULES.iter().map(|r| r.nr()) {
+            assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, nr as u32), SECCOMP_RET_KILL_PROCESS, "syscall {nr} is not on the list");
+        }
+        let p = build_program(&[libc::SYS_read, libc::SYS_clone3]).unwrap();
+        assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, libc::SYS_clone3 as u32), errno_action(ENOSYS));
     }
 
     #[test]
