@@ -942,38 +942,55 @@ fn recv_first(fd: RawFd, buf: &mut Vec<u8>, started: Instant) -> io::Result<(boo
     }
 }
 
-/// Read until the buffer holds at least `want` bytes, within the deadline.
-/// EOF ends the read early; the caller sees the short count.
+/// Read until the buffer holds at least `want` bytes, within the deadline,
+/// straight into it: a release is thousands of 1 MiB pieces, and a 4 KiB
+/// bounce buffer made each one 256 receives and a copy. `want` is a length
+/// the header was checked against. EOF ends the read early; the caller sees
+/// the short count.
 fn read_more(fd: RawFd, buf: &mut Vec<u8>, want: usize, started: Instant) -> io::Result<()> {
-    while buf.len() < want {
-        if !recv_some(fd, buf, started)? {
-            break;
-        }
+    let mut filled = buf.len();
+    if filled >= want {
+        return Ok(());
     }
-    Ok(())
+    buf.resize(want, 0);
+    let r = loop {
+        match recv_into(fd, &mut buf[filled..], started) {
+            Ok(0) => break Ok(()),
+            Ok(n) => filled += n,
+            Err(e) => break Err(e),
+        }
+        if filled == want {
+            break Ok(());
+        }
+    };
+    buf.truncate(filled);
+    r
 }
 
-/// One recv into `buf`. Ok(false) at EOF. SO_RCVTIMEO ticks (EAGAIN) are
-/// retried until the request deadline, which is the bound that matters.
+/// One recv appended to `buf`. Ok(false) at EOF.
 fn recv_some(fd: RawFd, buf: &mut Vec<u8>, started: Instant) -> io::Result<bool> {
     let mut chunk = [0u8; 4096];
+    let n = recv_into(fd, &mut chunk, started)?;
+    buf.extend_from_slice(&chunk[..n]);
+    Ok(n > 0)
+}
+
+/// One recv into `out`: the count, 0 at EOF. SO_RCVTIMEO ticks (EAGAIN) are
+/// retried until the request deadline, which is the bound that matters.
+fn recv_into(fd: RawFd, out: &mut [u8], started: Instant) -> io::Result<usize> {
     loop {
         if started.elapsed() > REQUEST_DEADLINE {
             return Err(io::Error::new(io::ErrorKind::TimedOut, "request took longer than the deadline"));
         }
-        let n = unsafe { libc::recv(fd, chunk.as_mut_ptr() as *mut libc::c_void, chunk.len(), 0) };
-        if n < 0 {
-            let e = io::Error::last_os_error();
-            match e.raw_os_error() {
-                Some(libc::EINTR) | Some(libc::EAGAIN) => continue,
-                _ => return Err(e),
-            }
+        let n = unsafe { libc::recv(fd, out.as_mut_ptr() as *mut libc::c_void, out.len(), 0) };
+        if n >= 0 {
+            return Ok(n as usize);
         }
-        if n == 0 {
-            return Ok(false);
+        let e = io::Error::last_os_error();
+        match e.raw_os_error() {
+            Some(libc::EINTR) | Some(libc::EAGAIN) => continue,
+            _ => return Err(e),
         }
-        buf.extend_from_slice(&chunk[..n as usize]);
-        return Ok(true);
     }
 }
 
@@ -1608,7 +1625,7 @@ mod tests {
     }
 
     #[test]
-    fn the_destination_is_looked_up_again_after_the_answer() {
+    fn dest_resolved_after_consent() {
         use std::os::unix::io::AsRawFd;
         // The first lookup finds the zone under `before`; by the answer it
         // runs under the lab root, as a zone restarted during the wait would.
@@ -1675,6 +1692,40 @@ mod tests {
         assert_eq!(std::fs::read(lab.root.join("home/b/incoming/f.txt")).unwrap(), b"moved");
         assert!(!before.join("home/b/incoming").exists(), "the transfer went into the tree the zone had left");
         let _ = std::fs::remove_dir_all(&lab.dir);
+    }
+
+    #[test]
+    fn read_more_fills_then_stops_at_eof() {
+        // More than a socket buffer, in uneven pieces, after what the header
+        // read already took; then a peer that stops short of what it announced.
+        let pair = || {
+            let mut sv = [0; 2];
+            assert_eq!(unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0, sv.as_mut_ptr()) }, 0);
+            (sv[0], sv[1])
+        };
+        let send = |w: RawFd, bytes: Vec<u8>| {
+            std::thread::spawn(move || {
+                for piece in bytes.chunks(6007) {
+                    assert_eq!(unsafe { libc::write(w, piece.as_ptr() as *const libc::c_void, piece.len()) }, piece.len() as isize);
+                }
+                unsafe { libc::close(w) };
+            })
+        };
+        let data: Vec<u8> = (0..(1usize << 20) + 777).map(|i| (i % 251) as u8).collect();
+        let (r, w) = pair();
+        let t = send(w, data[10..].to_vec());
+        let mut buf = data[..10].to_vec();
+        read_more(r, &mut buf, data.len(), Instant::now()).unwrap();
+        t.join().unwrap();
+        unsafe { libc::close(r) };
+        assert!(buf == data, "the payload came back different");
+        let (r, w) = pair();
+        let t = send(w, vec![7u8; 30]);
+        let mut buf = Vec::new();
+        read_more(r, &mut buf, 100, Instant::now()).unwrap();
+        t.join().unwrap();
+        unsafe { libc::close(r) };
+        assert_eq!(buf, vec![7u8; 30], "EOF leaves what arrived, and no more");
     }
 
     #[test]
