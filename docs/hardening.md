@@ -81,7 +81,11 @@ ADR-009) and `boot.fragment` (ADR-013).
   `/dev/mem`, kprobes or unsigned modules, which is what makes root in a zone
   weaker than kernel access.
 - `RANDOMIZE_BASE`, `RANDOMIZE_MEMORY`: KASLR.
-- `MODULE_SIG_FORCE`: only modules signed by the build load.
+- `MODULE_SIG_FORCE`: only modules signed by the build load. The key is the
+  kernel build's own (`certs/signing_key.pem`), made with the kernel tree and
+  kept with it in the Actions cache between runs, so it is a developer key
+  like the others: anyone who can restore that cache can sign a module. A
+  release has to sign with a key it is handed (roadmap, production keys).
 - `KSTACK_ERASE`, `RANDSTRUCT_FULL`: stack erasing and structure layout
   randomization (the 6.18 names; the old `GCC_PLUGIN_*` symbols are derived
   and cannot be set).
