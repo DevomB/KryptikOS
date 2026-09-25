@@ -819,7 +819,7 @@ fn wait_exit(p: &mut Pending) -> Option<i32> {
 fn finish(p: &mut Pending, outcome: Result<(), String>) {
     match outcome {
         Ok(()) => {
-            // A command that ended at once with 0 succeeded; a terminal that did so never showed.
+            // A command that ends at once with 0 succeeded; a terminal that does so never shows.
             match p.exited {
                 Some(st) => eprintln!("kryptikd serve: uid {} zone {:?}: started, and its command has already ended (launcher {} {})", p.uid, p.zone, p.launch.pid, exit_text(st)),
                 None => eprintln!("kryptikd serve: uid {} zone {:?}: ready (launcher {})", p.uid, p.zone, p.launch.pid),
