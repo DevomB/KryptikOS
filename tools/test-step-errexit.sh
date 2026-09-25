@@ -86,13 +86,6 @@ set_flags_for() {
     fi
 }
 
-# step() calls this after printing the tail of a failed log. Its output is
-# how the test tells that step() survived the failure far enough to report
-# it, rather than being killed on the subshell line by the ERR trap.
-step_failure_hint() {
-    echo "HINT-RAN:\$1"
-}
-
 # A recipe that names its tarball from a version variable instead, the way
 # s_glibc and the stage 05 steps do.
 recipe_ver() {
@@ -208,13 +201,6 @@ test_negative() {
 
     # The checks above also pass if step() died with the recipe: `set +e` does
     # not disable common.sh's exiting ERR trap. These show it lived to report.
-    check "failing recipe: step() reports which step failed and where" \
-          "$(grep -q 'bad failed. Last .* lines of' <<<"$out" && echo ok)"
-    check "failing recipe: step_failure_hint ran" \
-          "$(grep -q 'HINT-RAN:bad' <<<"$out" && echo ok)"
-    check "failing recipe: the log tail reached the caller" \
-          "$(grep -q 'recipe: step 1' <<<"$out" && echo ok)"
-
     check "failing recipe: step() reports which step failed and where" \
           "$(grep -q 'bad failed. Last .* lines of' <<<"$out" && echo ok)"
     check "failing recipe: step_failure_hint ran" \

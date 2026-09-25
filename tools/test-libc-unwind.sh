@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Check that the C library can unwind. glibc dlopens libgcc_s.so.1 for
 # pthread_exit, pthread_cancel and backtrace, and if the loader misattributes
-# addresses the unwinder abort()s silently (docs/glibc-loader-defect.md).
+# addresses the unwinder abort()s silently (build/patches/glibc-2.40/README.md).
 # Run in the chroot or on a booted system; exit 77 without a compiler.
 set -uo pipefail
 
@@ -205,6 +205,6 @@ echo "passed ${pass}, failed ${fail}"
     echo "This system cannot unwind through a library loaded after startup."
     echo "Programs affected: anything calling pthread_exit, pthread_cancel or"
     echo "backtrace() that does not already link libgcc_s.so.1. They die on"
-    echo "SIGABRT with no message. See docs/glibc-loader-defect.md."
+    echo "SIGABRT with no message. See build/patches/glibc-2.40/README.md."
     exit 1
 }
