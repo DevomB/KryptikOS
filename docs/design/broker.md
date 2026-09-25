@@ -63,10 +63,11 @@ may be reused), and the gid is checked only for consistency.
      `/home/<zone>`, read through the zone's pid 1 root at request time);
      `st_size` is within the 1 GiB cap. `/proc/self/fd/N` is not consulted
      for anything.
-  5. Consent: the person is asked through the trusted chrome (below). It is
-     asked only now, after every check a machine can decide, so a request
-     that would be refused anyway never becomes a question.
-  6. The destination is running.
+  5. The destination is running.
+  6. Consent: the person is asked through the trusted chrome (below). It is
+     asked only now, after every check a machine can decide, the
+     destination's being there included, so a request that would be
+     refused anyway never becomes a question.
 - Copy: the file lands in `<destination home>/incoming/`, resolved with
   `openat2` from the destination's root (`/proc/<pid 1>/root`, an `O_PATH`
   descriptor into its mount namespace) with

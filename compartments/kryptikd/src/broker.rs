@@ -537,14 +537,18 @@ fn handle_transfer(s: &Served, dest: &str, name: &str, fds: &[RawFd]) -> Result<
     if st.st_size as u64 > s.max_bytes {
         return Err(format!("file is {} bytes; the transfer limit is {}", st.st_size, s.max_bytes));
     }
-    // Everything a machine can decide has been decided; the last word is
-    // the user's, through the trusted chrome (consent.rs). Asked only now,
-    // after the descriptor checks, so a request that would be refused
-    // anyway never becomes a question.
+    // Everything a machine can decide has been decided, the destination's
+    // being there included; the last word is the user's, through the
+    // trusted chrome (consent.rs). Asked only now, after every check, so a
+    // request that would be refused anyway never becomes a question. The
+    // destination was looked up after the question once, and a person was
+    // asked to approve a transfer to a zone that was not running, then
+    // told so: a question whose answer changes nothing teaches people to
+    // say yes.
+    let target = (s.resolve_dest)(dest)?;
     if !s.auto_approve {
         crate::consent::ask(sender, dest, name, st.st_size as u64)?;
     }
-    let target = (s.resolve_dest)(dest)?;
     deliver(&target, name, src, s.max_bytes)
 }
 
@@ -1501,6 +1505,7 @@ mod tests {
         let entry_dir = lab.dir.join("entry");
         std::fs::create_dir_all(&entry_dir).unwrap();
         let resolve = resolver(lab.root.clone());
+        let not_running = |d: &str| -> Result<Target, String> { Err(format!("destination zone {d:?} is not running")) };
         let dev = lab.dev;
         let home_dev = move || Some(dev);
         let mut sv = Served {
@@ -1573,6 +1578,15 @@ mod tests {
             std::env::set_var("KRYPTIK_CONSENT_DIR", "/nonexistent/kryptik-consent");
             let (_, r) = ask_with(&sv, "transfer b f.txt\n", &[ro()], false);
             assert!(String::from_utf8_lossy(&r).contains("no consent channel"), "{}", String::from_utf8_lossy(&r));
+            // A destination that is not running is a refusal the machine can
+            // give, so it is given before the person is asked: with no
+            // consent channel at all, the answer is still about the
+            // destination, and no question was attempted.
+            sv.resolve_dest = &not_running;
+            let (_, r) = ask_with(&sv, "transfer b f.txt\n", &[ro()], false);
+            let text = String::from_utf8_lossy(&r);
+            assert!(text.contains("is not running") && !text.contains("consent"), "a transfer to a zone that is not running must be refused before any question: {text}");
+            sv.resolve_dest = &resolve;
             std::env::remove_var("KRYPTIK_CONSENT_DIR");
         }
         sv.auto_approve = true;
