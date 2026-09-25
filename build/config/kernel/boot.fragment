@@ -95,7 +95,13 @@ CONFIG_NFT_CT=y
 CONFIG_NFT_REJECT=y
 CONFIG_NF_NAT=y
 CONFIG_NF_CONNTRACK=y
-CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y
+# No xtables: the ruleset is nft's alone, and NFT_COMPAT is off, so nothing
+# reaches them. No ctnetlink: the nic zone could reach it through its netfilter
+# netlink socket, and nothing uses it. The iptables options select xtables.
+# CONFIG_IP_NF_IPTABLES is not set
+# CONFIG_IP6_NF_IPTABLES is not set
+# CONFIG_NETFILTER_XTABLES is not set
+# CONFIG_NF_CT_NETLINK is not set
 CONFIG_VIRTIO_NET=m
 CONFIG_E1000=m
 CONFIG_E1000E=m
