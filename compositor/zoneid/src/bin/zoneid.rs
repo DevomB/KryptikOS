@@ -1,24 +1,14 @@
-//! zoneid — audit and design Kryptik zone visual identity.
+//! zoneid: audit zone border colours, propose palettes, simulate vision models.
 //!
-//! Three jobs, deliberately in one binary so the numbers in a report and the
-//! numbers behind a proposal can never drift apart:
-//!
-//!   audit     evaluate the zone set on disk against the invariant
-//!   propose   search for a palette that passes it
-//!   simulate  show what given colours look like under each vision model
-//!
-//! Exit codes follow the house convention of meaning something:
-//!   0  clean, or informational output
-//!   1  the zone set FAILS the invariant
-//!   2  usage error
-//!   3  could not read or parse the zone files
+//! Exit codes: 0 clean or informational, 1 the zone set fails the invariant,
+//! 2 usage error, 3 the zone files could not be read.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use zoneid::color::Srgb;
 use zoneid::cvd::{simulate, Vision};
-use zoneid::distinct::{analyze, Thresholds, BACKGROUNDS};
+use zoneid::distinct::{analyze, Thresholds, BACKGROUNDS, COMPOSITOR_COLOURS, MIN_DELTA_E};
 use zoneid::palette::{propose_with, SearchOptions};
 use zoneid::zones::load_zones;
 
@@ -27,10 +17,11 @@ const DEFAULT_ZONE_DIR: &str = "compartments/zones";
 fn usage() -> &'static str {
     "zoneid - Kryptik zone visual identity
 
-USAGE:
+Usage:
     zoneid audit [--zones DIR] [--min-delta-e N]
         Evaluate the zone set against the distinctness invariant.
-        Exits 1 if any pair of zones is indistinguishable.
+        Exits 1 if any two border colours the compositor draws are
+        indistinguishable.
 
     zoneid propose [-n N] [--min-contrast R] [--step S] [--refine F]
         Search for N maximally distinguishable border colours: a coarse
@@ -71,16 +62,41 @@ fn main() -> ExitCode {
     }
 }
 
-fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-    let i = args.iter().position(|a| a == name)?;
-    args.get(i + 1).map(|s| s.as_str())
+/// Parse `flag value` pairs, each known flag at most once. Anything else is a
+/// usage error, so a misspelt `--zone X` cannot audit the default set and pass.
+fn options<'a>(args: &'a [String], known: &[&str]) -> Result<Vec<(&'a str, &'a str)>, String> {
+    let mut out: Vec<(&str, &str)> = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if !known.contains(&a.as_str()) {
+            return Err(format!("unknown argument '{a}'"));
+        }
+        if out.iter().any(|(k, _)| k == a) {
+            return Err(format!("{a} is given twice"));
+        }
+        let Some(v) = it.next() else {
+            return Err(format!("{a} needs a value"));
+        };
+        out.push((a, v));
+    }
+    Ok(out)
+}
+
+fn flag<'a>(opts: &[(&'a str, &'a str)], name: &str) -> Option<&'a str> {
+    opts.iter().find(|(k, _)| *k == name).map(|(_, v)| *v)
 }
 
 fn cmd_audit(args: &[String]) -> ExitCode {
-    // --zones, else compartments/zones under the working directory, else the
-    // shipped set relative to this crate's source (cargo run from anywhere
-    // in the tree). Never a silent empty audit.
-    let dir = match flag(args, "--zones") {
+    let args = match options(args, &["--zones", "--min-delta-e"]) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("audit: {e}\n\n{}", usage());
+            return ExitCode::from(2);
+        }
+    };
+    /* --zones, else compartments/zones here, else the set shipped beside this
+     * crate, so cargo run works from anywhere in the tree. */
+    let dir = match flag(&args, "--zones") {
         Some(d) => PathBuf::from(d),
         None => {
             let cwd = PathBuf::from(DEFAULT_ZONE_DIR);
@@ -88,7 +104,7 @@ fn cmd_audit(args: &[String]) -> ExitCode {
         }
     };
     let mut t = Thresholds::default();
-    if let Some(v) = flag(args, "--min-delta-e") {
+    if let Some(v) = flag(&args, "--min-delta-e") {
         match v.parse::<f64>() {
             Ok(n) if n >= 0.0 => t.min_delta_e_millis = (n * 1000.0) as u32,
             _ => {
@@ -130,6 +146,9 @@ fn cmd_audit(args: &[String]) -> ExitCode {
             z.color.to_hex(),
             channels.join(", ")
         );
+    }
+    for (name, hex) in COMPOSITOR_COLOURS {
+        println!("  {name:<12} {hex}  (the compositor's own)");
     }
     println!();
 
@@ -180,40 +199,44 @@ fn cmd_audit(args: &[String]) -> ExitCode {
     }
 
     if !r.missing.is_empty() {
-        println!("Zones with no channel that survives colour-vision deficiency");
+        println!("Zones the chrome can only show by colour");
         for m in &r.missing {
-            println!("  [warning] {} - colour only", m.zone);
+            println!("  [warning] {} - no glyph or label", m.zone);
         }
-        println!(
-            "      A zone identified by colour alone is unidentified for any user\n\
-             \x20     who cannot see that colour. Add border_pattern, glyph and label.\n"
-        );
+        println!();
     }
 
     let crit = r.critical().count();
     if r.is_fatal() {
         println!(
-            "FAIL: {crit} critical collision(s). At least one pair of zones presents\n\
-             the same window edge to some users, so a window cannot be attributed to\n\
-             its zone by looking at it."
+            "FAIL: {crit} critical collision(s). Two border colours the compositor draws\n\
+             are the same window edge to some users, so a window cannot be attributed\n\
+             by looking at it."
         );
         ExitCode::from(1)
     } else {
-        println!("PASS: every pair of zones is separable in a global channel under every vision model.");
+        println!("PASS: every two border colours the compositor draws are separable under every vision model.");
         ExitCode::SUCCESS
     }
 }
 
 fn cmd_propose(args: &[String]) -> ExitCode {
-    let n = match flag(args, "-n").unwrap_or("6").parse::<usize>() {
-        Ok(n) if n > 0 && n <= 16 => n,
+    let args = match options(args, &["-n", "--min-contrast", "--step", "--refine"]) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("propose: {e}\n\n{}", usage());
+            return ExitCode::from(2);
+        }
+    };
+    let n = match flag(&args, "-n").unwrap_or("6").parse::<usize>() {
+        Ok(n) if (1..=16).contains(&n) => n,
         _ => {
             eprintln!("propose: -n expects 1..=16");
             return ExitCode::from(2);
         }
     };
     let mut opts = SearchOptions::default();
-    if let Some(v) = flag(args, "--min-contrast") {
+    if let Some(v) = flag(&args, "--min-contrast") {
         match v.parse::<f64>() {
             Ok(r) if r >= 1.0 => opts.min_contrast = r,
             _ => {
@@ -222,16 +245,16 @@ fn cmd_propose(args: &[String]) -> ExitCode {
             }
         }
     }
-    if let Some(v) = flag(args, "--step") {
+    if let Some(v) = flag(&args, "--step") {
         match v.parse::<u32>() {
-            Ok(s) if s >= 1 && s <= 64 => opts.step = s,
+            Ok(s) if (1..=64).contains(&s) => opts.step = s,
             _ => {
                 eprintln!("propose: --step expects 1..=64");
                 return ExitCode::from(2);
             }
         }
     }
-    if let Some(v) = flag(args, "--refine") {
+    if let Some(v) = flag(&args, "--refine") {
         match v.parse::<u32>() {
             Ok(s) if s <= 17 => opts.refine = s,
             _ => {
@@ -325,7 +348,7 @@ fn cmd_simulate(args: &[String]) -> ExitCode {
                         colors[i].0,
                         colors[j].0,
                         d,
-                        if d < 15.0 { "  <-- below the floor" } else { "" }
+                        if d < MIN_DELTA_E { "  <-- below the floor" } else { "" }
                     );
                 }
             }
@@ -335,76 +358,55 @@ fn cmd_simulate(args: &[String]) -> ExitCode {
 }
 
 const EXPLAIN: &str = "\
-The zone distinctness invariant
-===============================
+Zone distinctness
 
-docs/architecture.md says the per-zone window border is \"load-bearing, not
-decoration\": if a user cannot tell at a glance which zone a password prompt
-belongs to, compartmentalization has failed at the only layer that matters.
+A window's border colour is how the user tells which zone it belongs to
+(docs/architecture.md). If they cannot tell at a glance which zone a password
+prompt belongs to, the zones have failed them. That is a question of
+perception, so it is checked against a model of it, not by comparing strings.
 
-That is a claim about human perception, so it has to be checked against a model
-of human perception. Comparing colour strings for equality is not one.
+The rule: every two border colours the compositor draws (each zone's, and its
+own for a window from no zone, from an unknown zone, or asking for attention)
+differ by the floor under every vision model. Zones have distinct glyphs and
+distinct labels.
 
-THE RULE
+Channels:
+  color     the whole window border        seen without looking for it
+  glyph     the chrome, focused window     seen if you look
+  label     the chrome, focused window     seen if you read
+  pattern   not drawn                      validated, given no weight
 
-Every pair of zones must be separable in at least one GLOBAL channel under
-every vision model, and must have distinct glyphs and distinct labels.
+Focus is shown by border width, never by colour, so the window taking your
+keystrokes carries exactly its zone's audited colour.
 
-CHANNELS
-
-  color     global   the whole window edge      trichromatic vision only
-  pattern   global   the whole window edge      survives CVD and monochrome
-  glyph     point    the titlebar tag           survives everything, if you look
-  label     point    the titlebar tag           survives everything, if you read
-
-Global channels are perceived without looking directly at them. Point channels
-require attention. A design with only point channels identifies every window
-correctly and still fails the \"at a glance\" standard, because the user has to
-stop and read a tag before typing a password.
-
-WHY PATTERN UNIQUENESS IS CONDITIONAL
-
-Colour, glyph and label must always be distinct - their alphabets are
-unbounded, so sharing one is never necessary. Border pattern has six legible
-values, so requiring all patterns distinct would cap the system at six zones.
-Instead it is required to differ only for a pair whose colours have collided,
-which is exactly what the channel is for: pattern backs up colour, so it must
-differ where colour has failed.
-
-WHAT THIS IS NOT
-
-A collision is a statement about two configured identities, under a stated
-vision model, by a stated metric. It is not a claim that a particular person in
-a particular room would be confused - that also involves habit, calibration,
-ambient light and haste. This is a floor, not a guarantee.
+A pass is a floor, not a guarantee: it says two identities differ under a
+stated vision model by a stated metric, not that nobody in a hurry, in poor
+light, on a badly calibrated screen could confuse them.
 ";
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zoneid::distinct::{Severity, MIN_BORDER_CONTRAST};
+    use zoneid::distinct::Severity;
 
-    #[test]
-    fn flag_reads_the_following_argument() {
-        let a: Vec<String> = ["--zones", "x", "--min-delta-e", "12"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        assert_eq!(flag(&a, "--zones"), Some("x"));
-        assert_eq!(flag(&a, "--min-delta-e"), Some("12"));
-        assert_eq!(flag(&a, "--nope"), None);
+    fn strings(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
     }
 
     #[test]
-    fn a_trailing_flag_with_no_value_is_none_not_a_panic() {
-        let a: Vec<String> = vec!["--zones".to_string()];
-        assert_eq!(flag(&a, "--zones"), None);
+    fn options_read_flag_values() {
+        let a = strings(&["--zones", "x", "--min-delta-e", "12"]);
+        let o = options(&a, &["--zones", "--min-delta-e"]).unwrap();
+        assert_eq!(flag(&o, "--zones"), Some("x"));
+        assert_eq!(flag(&o, "--min-delta-e"), Some("12"));
+        assert_eq!(flag(&o, "--nope"), None);
     }
 
     #[test]
-    fn min_border_contrast_is_referenced() {
-        // Keeps the import honest if the default ever stops being used here.
-        assert!(MIN_BORDER_CONTRAST > 1.0);
+    fn options_refuse_unknown() {
+        for bad in [&["--zone", "x"][..], &["--zones"], &["--zones", "x", "--zones", "y"], &["x"]] {
+            assert!(options(&strings(bad), &["--zones"]).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

@@ -1,88 +1,37 @@
-//! The Wayland wire format, parsed defensively.
+//! The Wayland wire format, parsed defensively: every length comes from a zone,
+//! so none is used unchecked, and no input can make this panic.
 //!
-//! This module reads bytes that arrive from inside a zone. A zone is assumed
-//! compromised - that is the entire premise of the system - so every length in
-//! here is attacker-controlled and is treated that way. There is no `unwrap`
-//! on input-derived data anywhere in this file, and no arithmetic on a length
-//! that has not been bounds-checked first.
-//!
-//! # The format
-//!
-//! A message is an 8-byte header followed by arguments, all 32-bit aligned,
-//! all in HOST byte order (Wayland is a local-only protocol and does not
-//! convert):
-//!
-//! ```text
-//!   word 0:  object id                        u32
-//!   word 1:  (size << 16) | opcode            u16 size, u16 opcode
-//!   then:    arguments, each padded to 4 bytes
-//! ```
-//!
-//! `size` counts the header, so the minimum legal message is 8 bytes and a
-//! message claiming less than that is malformed rather than empty.
-//!
-//! Argument encodings:
-//!
-//! | type | encoding |
-//! |---|---|
-//! | `int`, `uint` | one 32-bit word |
-//! | `fixed` | one word, signed 24.8 fixed point |
-//! | `object`, `new_id` | one word; 0 means null |
-//! | `string` | u32 length INCLUDING the trailing NUL, then bytes, padded to 4. Length 0 is a null string |
-//! | `array` | u32 byte count, then bytes, padded to 4 |
-//! | `fd` | **nothing in the byte stream** - sent out of band via SCM_RIGHTS |
-//!
-//! # The trap in that table
-//!
-//! `fd` occupies no bytes. A proxy that frames messages correctly but does not
-//! know how many descriptors each message consumes will desynchronise the
-//! descriptor queue from the byte stream, and then hand a client a descriptor
-//! belonging to a different message. That is not a crash, it is a
-//! confidentiality failure, and it is invisible until it matters. Which
-//! messages carry descriptors is therefore not a detail of this module but the
-//! reason `protocol.rs` exists.
+//! A message is a header (object id; `size << 16 | opcode`, `size` counting the
+//! header) and arguments padded to 4 bytes, all in host byte order. A string's
+//! length includes its NUL, and 0 means null. An fd takes no bytes: it travels
+//! by SCM_RIGHTS, so only the tables (protocol.rs) say how many a message
+//! carries, and a miscount hands a client another message's descriptor.
 
 use std::fmt;
 
 pub const HEADER_LEN: usize = 8;
 
-/// Upper bound on a single message.
-///
-/// libwayland's connection buffer is 4096 bytes, so no conforming client emits
-/// more than that in one message even though the size field could express
-/// 65535. Enforcing the real limit rather than the expressible one means a
-/// hostile client cannot make the proxy buffer 64KiB per connection by writing
-/// a large size field it never intends to fill.
+/// Largest message. libwayland never sends more than its 4096-byte buffer; the
+/// 16-bit size field could claim 64 KiB for the proxy to buffer.
 pub const MAX_MESSAGE_LEN: usize = 4096;
 
-/// Object ids at or above this are the server's to allocate; below it are the
-/// client's. A client that creates an id in the server's range is either
-/// broken or probing, and either way is refused.
+/// Ids from here up are the server's; a client creating one is refused.
 pub const SERVER_ID_BASE: u32 = 0xFF00_0000;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum WireError {
     /// Fewer bytes than a header.
     Truncated,
-    /// `size` field is below the header length, or not 32-bit aligned, or
-    /// beyond `MAX_MESSAGE_LEN`.
+    /// `size` below the header length, unaligned, or over `MAX_MESSAGE_LEN`.
     BadSize(u16),
     /// An argument ran past the end of the message body.
     ArgOverrun,
     /// A string whose declared length does not end in NUL.
     UnterminatedString,
-    /// A string containing bytes that are not valid UTF-8.
-    ///
-    /// Wayland interface names are ASCII, so this only ever fires on hostile
-    /// or corrupt input. It is a distinct error from `UnterminatedString`
-    /// because the two say different things about the peer.
+    /// A string that is not valid UTF-8, which every Wayland string must be.
     NotUtf8,
-    /// An interior NUL inside a string body.
-    ///
-    /// Refused because `"wl_shm\0_evil"` and `"wl_shm"` compare differently
-    /// depending on whether the comparison is length-aware, and a policy
-    /// decision that depends on that is a policy decision waiting to be
-    /// bypassed.
+    /// A NUL inside a string: `"wl_shm\0_evil"` equals `"wl_shm"` only to a
+    /// C-string comparison, and policy must not depend on which kind runs.
     InteriorNul,
 }
 
@@ -112,10 +61,8 @@ pub struct Header {
 }
 
 impl Header {
-    /// Parse a header from the first 8 bytes of `buf`.
-    ///
-    /// Validates `size` here rather than at use, so that no caller can obtain
-    /// a `Header` carrying a length it then trusts.
+    /// Parse a header from the first 8 bytes of `buf`. `size` is validated
+    /// here, so no `Header` can carry a bad length.
     pub fn parse(buf: &[u8]) -> Result<Header, WireError> {
         if buf.len() < HEADER_LEN {
             return Err(WireError::Truncated);
@@ -145,17 +92,9 @@ impl Header {
         out[4..].copy_from_slice(&word1.to_ne_bytes());
         out
     }
-
-    /// Length of the argument body, excluding the header.
-    pub fn body_len(&self) -> usize {
-        self.size as usize - HEADER_LEN
-    }
 }
 
-/// Sequential reader over a message body.
-///
-/// Every method returns `Result`; none of them panic on malformed input. The
-/// reader never advances past `body.len()`.
+/// Sequential reader over a message body; it never panics or passes the end.
 pub struct ArgReader<'a> {
     body: &'a [u8],
     pos: usize,
@@ -175,8 +114,7 @@ impl<'a> ArgReader<'a> {
     }
 
     fn take(&mut self, n: usize) -> Result<&'a [u8], WireError> {
-        // Checked addition: `n` derives from attacker-controlled lengths and
-        // `pos + n` could otherwise wrap on a 32-bit target.
+        // `n` comes from the client, and `pos + n` could wrap on a 32-bit target.
         let end = self.pos.checked_add(n).ok_or(WireError::ArgOverrun)?;
         if end > self.body.len() {
             return Err(WireError::ArgOverrun);
@@ -189,10 +127,6 @@ impl<'a> ArgReader<'a> {
     pub fn u32(&mut self) -> Result<u32, WireError> {
         let w = self.take(4)?;
         Ok(u32::from_ne_bytes([w[0], w[1], w[2], w[3]]))
-    }
-
-    pub fn i32(&mut self) -> Result<i32, WireError> {
-        Ok(self.u32()? as i32)
     }
 
     /// Read a string. `None` is the protocol's null string (declared length 0).
@@ -229,11 +163,7 @@ pub fn pad4(n: usize) -> Option<usize> {
     n.checked_add(3).map(|x| x & !3)
 }
 
-/// Builder for a message the proxy emits itself.
-///
-/// The proxy synthesises `wl_display.error` to reject a client, and could
-/// rewrite registry events. Both need encoding, and hand-assembling byte
-/// arrays at each call site is how padding bugs happen.
+/// Builder for the messages the proxy writes itself: errors and rewrites.
 pub struct MessageWriter {
     object: u32,
     opcode: u16,
@@ -254,6 +184,7 @@ impl MessageWriter {
         self
     }
 
+    #[cfg(test)]
     pub fn i32(self, v: i32) -> Self {
         self.u32(v as u32)
     }
@@ -270,11 +201,7 @@ impl MessageWriter {
         self
     }
 
-    /// Finish the message.
-    ///
-    /// Returns `None` if the result would exceed `MAX_MESSAGE_LEN` - which can
-    /// only happen for an over-long error string, and is better reported than
-    /// truncated into a malformed message.
+    /// Finish the message; None if it would exceed `MAX_MESSAGE_LEN`.
     pub fn finish(self) -> Option<Vec<u8>> {
         let size = HEADER_LEN + self.body.len();
         if size > MAX_MESSAGE_LEN || size > u16::MAX as usize {
@@ -322,10 +249,8 @@ mod tests {
     }
 
     #[test]
-    fn a_size_below_the_header_is_refused() {
-        // The message that claims to be shorter than its own header. A proxy
-        // that subtracts without checking gets an underflow here, and on a
-        // release build with overflow-checks off that becomes a huge length.
+    fn size_below_header_is_refused() {
+        // Unchecked, `size - 8` would underflow into a huge length.
         for bad in [0u16, 1, 4, 7] {
             assert_eq!(
                 Header::parse(&hdr(1, 0, bad)),
@@ -336,14 +261,14 @@ mod tests {
     }
 
     #[test]
-    fn an_unaligned_size_is_refused() {
+    fn unaligned_size_is_refused() {
         for bad in [9u16, 10, 11, 13] {
             assert_eq!(Header::parse(&hdr(1, 0, bad)), Err(WireError::BadSize(bad)));
         }
     }
 
     #[test]
-    fn an_oversized_message_is_refused() {
+    fn oversized_message_is_refused() {
         let too_big = (MAX_MESSAGE_LEN + 4) as u16;
         assert_eq!(
             Header::parse(&hdr(1, 0, too_big)),
@@ -351,12 +276,6 @@ mod tests {
         );
         // The boundary itself is legal.
         assert!(Header::parse(&hdr(1, 0, MAX_MESSAGE_LEN as u16)).is_ok());
-    }
-
-    #[test]
-    fn body_len_is_consistent_with_size() {
-        let h = Header::parse(&hdr(1, 0, 24)).unwrap();
-        assert_eq!(h.body_len(), 16);
     }
 
     #[test]
@@ -376,13 +295,13 @@ mod tests {
             .collect::<Vec<u8>>();
         let mut r = ArgReader::new(&body);
         assert_eq!(r.u32().unwrap(), 1);
-        assert_eq!(r.i32().unwrap(), -1);
+        assert_eq!(r.u32().unwrap(), 0xFFFF_FFFF);
         assert!(r.is_empty());
         assert_eq!(r.u32(), Err(WireError::ArgOverrun));
     }
 
     #[test]
-    fn reads_a_string_with_its_padding() {
+    fn reads_padded_string() {
         // "wl_shm" is 6 bytes + NUL = 7 declared, padded to 8.
         let mut body = 7u32.to_ne_bytes().to_vec();
         body.extend_from_slice(b"wl_shm\0\0");
@@ -392,14 +311,14 @@ mod tests {
     }
 
     #[test]
-    fn a_null_string_is_none_not_empty() {
+    fn null_string_is_none() {
         let body = 0u32.to_ne_bytes().to_vec();
         let mut r = ArgReader::new(&body);
         assert_eq!(r.string().unwrap(), None);
     }
 
     #[test]
-    fn an_unterminated_string_is_refused() {
+    fn unterminated_string_is_refused() {
         // Declares 4 bytes but the fourth is not a NUL.
         let mut body = 4u32.to_ne_bytes().to_vec();
         body.extend_from_slice(b"abcd");
@@ -408,10 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn an_interior_nul_is_refused() {
-        // "wl\0shm" - compares equal to "wl" under a NUL-terminated read and
-        // unequal under a length-aware one. Refusing removes the ambiguity
-        // before any policy code can depend on which one it got.
+    fn interior_nul_is_refused() {
         let mut body = 7u32.to_ne_bytes().to_vec();
         body.extend_from_slice(b"wl\0shm\0\0");
         let mut r = ArgReader::new(&body);
@@ -427,22 +343,22 @@ mod tests {
     }
 
     #[test]
-    fn a_string_longer_than_the_body_is_refused_not_panicked() {
-        // The classic: declared length far beyond what was actually sent.
+    fn overlong_string_is_refused() {
+        // Declared length far beyond what was sent.
         let body = 0xFFFF_FF00u32.to_ne_bytes().to_vec();
         let mut r = ArgReader::new(&body);
         assert_eq!(r.string(), Err(WireError::ArgOverrun));
     }
 
     #[test]
-    fn an_array_longer_than_the_body_is_refused() {
+    fn overlong_array_is_refused() {
         let body = 0xFFFF_FF00u32.to_ne_bytes().to_vec();
         let mut r = ArgReader::new(&body);
         assert_eq!(r.array(), Err(WireError::ArgOverrun));
     }
 
     #[test]
-    fn reads_an_array_with_padding() {
+    fn reads_padded_array() {
         let mut body = 5u32.to_ne_bytes().to_vec();
         body.extend_from_slice(&[1, 2, 3, 4, 5, 0, 0, 0]);
         let mut r = ArgReader::new(&body);
@@ -451,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn writer_produces_something_the_reader_accepts() {
+    fn writer_output_reads_back() {
         // wl_display.error(object_id, code, message)
         let msg = MessageWriter::new(1, 0)
             .u32(7)
@@ -472,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    fn writer_output_is_always_aligned() {
+    fn writer_output_is_aligned() {
         for s in ["", "a", "ab", "abc", "abcd", "abcde"] {
             let msg = MessageWriter::new(1, 0).string(s).finish().unwrap();
             assert_eq!(msg.len() % 4, 0, "string {s:?} produced {} bytes", msg.len());
@@ -482,13 +398,13 @@ mod tests {
     }
 
     #[test]
-    fn writer_refuses_to_emit_an_oversized_message() {
+    fn writer_refuses_oversized_message() {
         let huge = "x".repeat(MAX_MESSAGE_LEN);
         assert!(MessageWriter::new(1, 0).string(&huge).finish().is_none());
     }
 
     #[test]
-    fn server_id_base_splits_the_ranges_as_documented() {
+    fn server_id_base_splits_ranges() {
         assert_eq!(SERVER_ID_BASE, 0xFF00_0000);
         assert!(1 < SERVER_ID_BASE);
         assert!(0xFEFF_FFFF < SERVER_ID_BASE);
