@@ -46,22 +46,10 @@ VMDIR="${KRYPTIK_WORK}/vm"; mkdir -p "$VMDIR"
 DISK="${DISK:-${VMDIR}/zones.img}"
 [[ -e "$DISK" && ! -f "$DISK" ]] && die "refusing: ${DISK} is not a regular file"
 
-PASS=0; FAIL=0
-green() { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
-red()   { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
-step() { printf '\n==> %s\n' "$*"; }
-TUSER=tester; TPASS=tester-pw; RPASS=root-pw
-TUSER_HASH="$(openssl passwd -6 "$TPASS")"; ROOT_HASH="$(openssl passwd -6 "$RPASS")"
-DRV="${SELF}/vm-drive.py"
+# shellcheck source=tools/image/suite-lib.sh
+source "${SELF}/suite-lib.sh"
 VARSF="${VMDIR}/zones-vars.fd"; cp /usr/share/OVMF/OVMF_VARS_4M.fd "$VARSF"
-LATEST="${KRYPTIK_WORK}/logs/ovmf-serial.latest.log"
-ROOTSH() { printf 'su:%s:%s' "$RPASS" "$1"; }
-start_vm() { local name="$1"; shift; local out; out="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --net user --name "$name" "$@")"
-    SER="$(sed -n 's/^serial=//p' <<<"$out")"; PIDF="$(sed -n 's/^pid=//p' <<<"$out")"; LOG="$(sed -n 's/^log=//p' <<<"$out")"
-    [[ -S "$SER" ]] || die "no serial socket: ${out}"; }
-stop_vm() { sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null; sleep 1; }
 drive() { python3 "$DRV" --serial "$SER" --timeout "$1" "${@:2}"; }
-txt() { tr -d '\r' < "$LOG"; }
 
 # ----------------------------------------------------------------- step 1 --
 step "step 1: install and boot alone with a NIC"
@@ -70,7 +58,7 @@ DISK_SIZE="$("${SELF}/test-disk-size.sh" --medium "$USB" --extra-mib 2048)" || d
 rm -f "$DISK"; truncate -s "$DISK_SIZE" "$DISK"
 CTL="${VMDIR}/testctl-zones.img"
 "${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
-    "preseed_user=${TUSER}" "preseed_password_hash=${TUSER_HASH}" "preseed_root_hash=${ROOT_HASH}" > /dev/null
+    "${PRESEED[@]}" > /dev/null
 "${SELF}/run-ovmf.sh" --usb "$USB" --disk "$DISK" --testctl "$CTL" --vars clean --mode smoke --timeout "$TIMEOUT" --name zones-install > /dev/null
 tr -d '\r' < "$LATEST" | grep -q 'KRYPTIK_INSTALL: rc=0' && green "installed" || { red "install failed"; exit 1; }
 
@@ -79,7 +67,7 @@ step "step 2: the guest-side zone, network and storage checks (as root)"
 # 3 GB, not the 2 GB default: the ephemeral-size-bound check fills untrusted's
 # 2G tmpfs to its limit, and those pages are RAM. In a 2 GB guest the fill
 # ran the machine out of memory before ENOSPC could be reached.
-start_vm zones-p2 --mem 3072
+start_vm zones-p2 --net user --mem 3072
 drive 900 "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'bash /usr/lib/kryptik/guest-tests/zones-check.sh 2>&1 | tee /var/log/kryptik/zones-check.log; echo ZCHECK-DONE')" \
     "expect:ZT END" "expect:ZCHECK-DONE"

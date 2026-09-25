@@ -278,23 +278,154 @@ pub(crate) fn log_line(line: &str) {
     }
 }
 
+/// The most one launch may add to the launcher's log from what its zone prints,
+/// and the longest single line. Past the first the output is read and dropped,
+/// so a program that prints for ever neither blocks nor fills the state
+/// partition.
+const ZONE_OUTPUT_MAX: usize = 1 << 20;
+const ZONE_LINE_MAX: usize = 1024;
+
+/// What a daemon-launched zone prints, on its way into the launcher's log.
+///
+/// The zone used to hold the log itself as its stdout and stderr. O_APPEND
+/// stops neither ftruncate nor fallocate, both of which the zone's seccomp
+/// filter allows, so a zone could erase the launcher's record of what crossed
+/// its boundary, write lines that read as the launcher's, and fill the state
+/// partition in one call. It holds a pipe now, and the launcher is its log's
+/// only writer: every line carries the zone's mark, control bytes (terminal
+/// escapes among them) are replaced, and the total is bounded.
+struct ZoneOutput {
+    fd: RawFd,
+    mark: String,
+    line: Vec<u8>,
+    left: usize,
+}
+
+impl ZoneOutput {
+    fn new(fd: RawFd, zone: &str) -> Self {
+        ZoneOutput { fd, mark: format!("zone {zone}| "), line: Vec::new(), left: ZONE_OUTPUT_MAX }
+    }
+
+    fn flush(&mut self, emit: &mut dyn FnMut(&str)) {
+        if !self.line.is_empty() {
+            emit(&format!("{}{}", self.mark, String::from_utf8_lossy(&self.line)));
+            self.line.clear();
+        }
+    }
+
+    fn take(&mut self, data: &[u8], emit: &mut dyn FnMut(&str)) {
+        for &b in data {
+            if self.left == 0 {
+                return;
+            }
+            self.left -= 1;
+            match b {
+                b'\n' => self.flush(emit),
+                b'\t' | 0x20..=0x7e | 0x80..=0xff => self.line.push(b),
+                _ => self.line.push(b'?'),
+            }
+            if self.line.len() >= ZONE_LINE_MAX {
+                self.flush(emit);
+            }
+            if self.left == 0 {
+                self.flush(emit);
+                emit(&format!("{}(output past {ZONE_OUTPUT_MAX} bytes is not logged)", self.mark));
+            }
+        }
+    }
+
+    /// Read what is there, at most `reads` pipe-sized pieces of it. False
+    /// once every writer has gone. It read until the pipe was empty, and a
+    /// zone that writes without pause keeps a pipe from ever being empty:
+    /// the launcher stayed here, and neither reaped its zone nor served a
+    /// request. Bounded, the rest waits for the next poll, which wakes at
+    /// once while there is more.
+    fn pump_at_most(&mut self, reads: usize, emit: &mut dyn FnMut(&str)) -> bool {
+        let mut buf = [0u8; 4096];
+        let mut done = 0;
+        while done < reads {
+            let n = unsafe { libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+            if n > 0 {
+                self.take(&buf[..n as usize], emit);
+                done += 1;
+            } else if n == 0 {
+                return false;
+            } else if errno() != libc::EINTR {
+                return true; // EAGAIN: nothing more for now
+            }
+        }
+        true
+    }
+
+    fn pump(&mut self, emit: &mut dyn FnMut(&str)) -> bool {
+        self.pump_at_most(ZONE_READS_PER_PUMP, emit)
+    }
+}
+
+/// A pass of the relay reads at most this many pieces (64 KiB).
+const ZONE_READS_PER_PUMP: usize = 16;
+
+/// However the launcher stops listening (the zone ended, or the launch failed
+/// before it began), what the zone's side already said is not lost: as much
+/// as the log would take, and then the launcher moves on.
+impl Drop for ZoneOutput {
+    fn drop(&mut self) {
+        let mut emit = |line: &str| log_line(line);
+        self.pump_at_most(ZONE_OUTPUT_MAX / 4096 + 1, &mut emit);
+        self.flush(&mut emit);
+        unsafe { libc::close(self.fd) };
+    }
+}
+
+/// Whether the child has exited, without reaping it: WNOWAIT leaves it for
+/// the waitpid that decides the launcher's status.
+fn exited_unreaped(pid: libc::pid_t) -> bool {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let r = unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) };
+    r == 0 && unsafe { info.si_pid() } != 0
+}
+
 /// Supervise the child while answering the zone broker requests: poll the
-/// listening socket with a short timeout, serve what arrives, and reap the
-/// child when it exits. Signals forwarded by the handlers interrupt the
-/// poll, which just loops.
-fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, s: &broker::Served) -> Result<libc::c_int, SpawnError> {
+/// listening socket (and the zone's output, when the launcher relays it) with
+/// a short timeout, serve what arrives, and reap the child when it exits.
+/// Signals forwarded by the handlers interrupt the poll, which just loops.
+fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, s: &broker::Served, out: Option<ZoneOutput>) -> Result<libc::c_int, SpawnError> {
     let zone = s.zone.name.as_str();
+    let out = std::cell::RefCell::new(out);
+    let pump = || {
+        let mut o = out.borrow_mut();
+        if o.as_mut().is_some_and(|o| !o.pump(&mut |line: &str| log_line(line))) {
+            *o = None; // every writer has gone
+        }
+    };
+    // While a question of the person is open, the broker's wait gives the
+    // launcher its turn here, ten times a second: the zone's output keeps
+    // flowing, and a zone that ended withdraws its question rather than
+    // leaving one in the chrome that nobody can act on. The child is looked
+    // at, not reaped; the loop below reaps it.
+    let asking = || {
+        pump();
+        !exited_unreaped(pid)
+    };
+    let s = &broker::Served { asking: &asking, ..*s };
     loop {
         let mut status: libc::c_int = 0;
         let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
         if r == pid {
-            return Ok(status);
+            return Ok(status); // dropping `out` relays what is left in the pipe
         }
         if r < 0 && errno() != libc::EINTR {
             return Err(SpawnError::Syscall { call: "waitpid", errno: errno() });
         }
-        let mut pfd = libc::pollfd { fd: listen_fd, events: libc::POLLIN, revents: 0 };
-        let n = unsafe { libc::poll(&mut pfd, 1, 200) };
+        let mut pfds = [
+            libc::pollfd { fd: listen_fd, events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: out.borrow().as_ref().map_or(-1, |o| o.fd), events: libc::POLLIN, revents: 0 },
+        ];
+        let n = unsafe { libc::poll(pfds.as_mut_ptr(), 2, 200) };
+        if n > 0 && pfds[1].revents & (libc::POLLIN | libc::POLLHUP) != 0 {
+            pump();
+        }
+        let pfd = pfds[0];
         if n > 0 && pfd.revents & libc::POLLIN != 0 {
             match broker::serve_one(listen_fd, s) {
                 Ok(Some(verb)) => log_line(&format!("kryptikd[zone {zone}]: broker served {verb:?}")),
@@ -882,6 +1013,20 @@ pub fn run_in_zone(
     // Same outcome, and only the parent ever writes the registry.
     let initpid = SyncPipe::new()?;
 
+    // Launched by the daemon, this process's stdout and stderr are its log.
+    // The zone's side of the fork gets a pipe in their place (ZoneOutput). At
+    // a terminal (kryptik shell) the zone keeps the terminal, as it must.
+    let mut zone_out: Option<(RawFd, RawFd)> = None;
+    if opts.ready_fd.is_some() {
+        let mut p = [0 as RawFd; 2];
+        if unsafe { libc::pipe2(p.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+            return Err(SpawnError::Syscall { call: "pipe2", errno: errno() });
+        }
+        // The read end only: a zone's stdout must block like anyone's.
+        unsafe { libc::fcntl(p[0], libc::F_SETFL, libc::O_NONBLOCK) };
+        zone_out = Some((p[0], p[1]));
+    }
+
     let parent_pid = unsafe { libc::getpid() };
     let pid = unsafe { libc::fork() };
     if pid < 0 {
@@ -890,6 +1035,16 @@ pub fn run_in_zone(
 
     if pid == 0 {
         // --- intermediate ------------------------------------------------------
+        // First, before anything on this side can print: nothing from here
+        // down holds the log. dup2 clears close-on-exec on 1 and 2 only.
+        if let Some((r, w)) = zone_out {
+            unsafe {
+                libc::dup2(w, 1);
+                libc::dup2(w, 2);
+                libc::close(w);
+                libc::close(r);
+            }
+        }
         placed.close_write();
         ready.close_read();
         mapped.close_write();
@@ -909,6 +1064,10 @@ pub fn run_in_zone(
     }
 
     // --- parent --------------------------------------------------------------
+    let zone_out = zone_out.map(|(r, w)| {
+        unsafe { libc::close(w) };
+        ZoneOutput::new(r, &zone.name)
+    });
     placed.close_read();
     ready.close_write();
     mapped.close_read();
@@ -1065,8 +1224,10 @@ pub fn run_in_zone(
         auto_approve: opts.auto_approve_transfers,
         max_bytes: broker::TRANSFER_MAX,
         resolve_dest: &broker::registry_target,
+        // Replaced by serve_until_exit with the launcher's own turn.
+        asking: &crate::consent::keep,
     };
-    let status = serve_until_exit(pid, broker_fd, &served)?;
+    let status = serve_until_exit(pid, broker_fd, &served, zone_out)?;
     unsafe { libc::close(broker_fd) };
     let _ = std::fs::remove_file(&broker_path);
     // The zone is gone (its pid namespace with it): unmount its data and
@@ -1879,6 +2040,68 @@ mod tests {
     use super::*;
     use crate::zone::Zone;
 
+    /// A relay with no descriptor behind it: only `take` and `flush` are used.
+    fn relayed(chunks: &[&[u8]]) -> Vec<String> {
+        let mut lines = Vec::new();
+        let mut o = std::mem::ManuallyDrop::new(ZoneOutput::new(-1, "work"));
+        for c in chunks {
+            o.take(c, &mut |l| lines.push(l.to_string()));
+        }
+        o.flush(&mut |l| lines.push(l.to_string()));
+        lines
+    }
+
+    #[test]
+    fn what_a_zone_prints_is_marked_made_harmless_and_bounded() {
+        // Every line carries the mark, so none reads as the launcher's own,
+        // and a line split across reads is still one line.
+        assert_eq!(
+            relayed(&[b"kryptikd[zone work]: broker served \"steal\"\nhal", b"f\n"]),
+            ["zone work| kryptikd[zone work]: broker served \"steal\"", "zone work| half"]
+        );
+        // Terminal escapes and carriage returns do not reach whoever reads the log.
+        assert_eq!(relayed(&[b"\x1b[2Jgone\rtab\there\n"]), ["zone work| ?[2Jgone?tab\there"]);
+        // A line with no end is cut, not held in memory for ever.
+        let long = vec![b'a'; ZONE_LINE_MAX * 2 + 5];
+        let got = relayed(&[&long]);
+        assert_eq!(got.iter().map(|l| l.len() - "zone work| ".len()).collect::<Vec<_>>(), [ZONE_LINE_MAX, ZONE_LINE_MAX, 5]);
+        // Past the bound nothing more is logged, and it says so once.
+        let flood = vec![b'x'; ZONE_OUTPUT_MAX + 4096];
+        let got = relayed(&[&flood, b"more\n"]);
+        let logged: usize = got.iter().filter(|l| !l.contains("is not logged")).map(|l| l.len() - "zone work| ".len()).sum();
+        assert_eq!(logged, ZONE_OUTPUT_MAX);
+        assert_eq!(got.iter().filter(|l| l.contains("is not logged")).count(), 1);
+        assert!(!got.iter().any(|l| l.contains("more")));
+    }
+
+    #[test]
+    fn a_pass_of_the_relay_reads_a_bounded_amount() {
+        // A zone that never stops writing keeps its pipe from ever being
+        // empty, and a pass that reads until empty never returns to the
+        // launcher's loop. Deterministically: a pipe holding more than one
+        // pass's worth, one pass, and the rest must still be there.
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) }, 0);
+        let (r, w) = (fds[0], fds[1]);
+        let size = unsafe { libc::fcntl(w, libc::F_SETPIPE_SZ, 1 << 20) };
+        let size = if size > 0 { size as usize } else { 65536 };
+        let chunk = [b'y'; 4096];
+        let mut written = 0usize;
+        while written + chunk.len() <= size {
+            let n = unsafe { libc::write(w, chunk.as_ptr() as *const libc::c_void, chunk.len()) };
+            if n <= 0 { break; }
+            written += n as usize;
+        }
+        let one_pass = ZONE_READS_PER_PUMP * 4096;
+        assert!(written > one_pass, "the pipe took {written} bytes, not more than one pass ({one_pass})");
+        let mut o = std::mem::ManuallyDrop::new(ZoneOutput::new(r, "work"));
+        assert!(o.pump(&mut |_: &str| {}), "the writer is still there");
+        let mut left: libc::c_int = 0;
+        assert_eq!(unsafe { libc::ioctl(r, libc::FIONREAD, &mut left) }, 0);
+        assert_eq!(left as usize, written - one_pass, "one pass read {} bytes, not {one_pass}", written - left as usize);
+        unsafe { libc::close(w); libc::close(r) };
+    }
+
     fn z(mode: &str) -> Zone {
         let bridge = if mode == "nic" { "bridge = \"kryptik0\"\n" } else { "" };
         Zone::from_str(&format!(
@@ -2084,7 +2307,7 @@ mod tests {
         // explain names the container, the mapping and the close, and says
         // that an unprivileged launch cannot open it.
         let enc = explain(&z_encrypted(), "/tmp/t", std::path::Path::new("/nonexistent"));
-        assert!(enc.contains("LUKS2") && enc.contains("/dev/mapper/kryptik-t"), "{enc}");
+        assert!(enc.contains("LUKS2") && enc.contains("/dev/mapper/kryptik-zone-t"), "{enc}");
         assert!(enc.contains("Unprivileged launches are refused"), "{enc}");
     }
 

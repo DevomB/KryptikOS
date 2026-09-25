@@ -1,0 +1,43 @@
+libmount: RESOLVE_NO_SYMLINKS is 0x04, and hook_idmap.c includes its definition
+
+Carried by Kryptik against util-linux 2.42.3; not upstream at the time of
+writing. Two defects in the restricted-mount hardening, both visible only
+where the C library's <fcntl.h> does not bring <linux/openat2.h> in (glibc
+before 2.43):
+
+  * libmount/src/hook_idmap.c uses RESOLVE_NO_SYMLINKS and includes nothing
+    that defines it, so it does not compile.
+  * include/fileutils.h defines a fallback for it, 0x02. In the kernel's ABI
+    0x02 is RESOLVE_NO_MAGICLINKS; RESOLVE_NO_SYMLINKS is 0x04. context.c and
+    hook_mount.c compile with the fallback, so a restricted mount asks the
+    kernel to block magic links and not symlinks.
+
+fileutils.h now includes <linux/openat2.h> where configure found it, and its
+fallback is the kernel's value; hook_idmap.c includes fileutils.h as the
+other two do.
+
+--- a/include/fileutils.h
++++ b/include/fileutils.h
+@@ -65,8 +65,11 @@
+ extern int ul_openat_resolve(int dirfd, const char *path, int flags,
+ 			     mode_t mode, unsigned long long resolve);
+ 
++#ifdef HAVE_LINUX_OPENAT2_H
++# include <linux/openat2.h>
++#endif
+ #ifndef RESOLVE_NO_SYMLINKS
+-# define RESOLVE_NO_SYMLINKS	0x02
++# define RESOLVE_NO_SYMLINKS	0x04
+ #endif
+ #ifndef RESOLVE_BENEATH
+ # define RESOLVE_BENEATH	0x08
+--- a/libmount/src/hook_idmap.c
++++ b/libmount/src/hook_idmap.c
+@@ -26,6 +26,7 @@
+ #include "namespace.h"
+ 
+ #include "mountP.h"
++#include "fileutils.h"
+ 
+ #ifdef HAVE_LINUX_NSFS_H
+ # include <linux/nsfs.h>

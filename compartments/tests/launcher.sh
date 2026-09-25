@@ -817,7 +817,7 @@ if (( PRIVILEGED == 1 )) && command -v cryptsetup >/dev/null 2>&1 && [[ -e /dev/
                 info "output: $(printf '%s' "$ZOUT" | tr '\n' '|' | cut -c1-220)"
             fi
         fi
-        if [[ -e /dev/mapper/kryptik-sealed ]]; then
+        if [[ -e /dev/mapper/kryptik-zone-sealed ]]; then
             fail "F4b the mapping is still open after the zone exited"
             "$KRYPTIKD" stop sealed --now >/dev/null 2>&1 || true
         else
@@ -1438,6 +1438,16 @@ filter_probe "L5  socket(AF_VSOCK) is refused with an errno" socket-vsock 7
 filter_probe "L6  socket(AF_NETLINK/NETFILTER) is refused with an errno" socket-netlink-nf 7
 filter_probe "L7  ioctl(TIOCSTI) is killed (terminal input injection)" ioctl-tiocsti 5
 filter_probe "L8  positive control: socket(AF_INET) still works" socket-inet 0
+
+# ncurses brackets each terminfo open with setfsuid and setfsgid. The filter
+# answers them with EPERM; a kill would take every terminal program with it
+# (tput would end with 159, SIGSYS).
+if command -v tput > /dev/null 2>&1; then
+    zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(tput -T xterm cols 2>/dev/null || echo exit-\$?)"
+    probe "L10 a terminal program opens terminfo in a zone and lives" "80"
+else
+    info "L10 not run: this host has no tput"
+fi
 
 # ============================================================================
 head_ "M. cgroup resource limits  [unpriv where delegated, otherwise vm]"

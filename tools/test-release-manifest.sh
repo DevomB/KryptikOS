@@ -472,6 +472,91 @@ else
 fi
 rm -f "${REL}/usr/share/.kryptik-update" "${REL}/.kryptik-update"
 
+# --- the update channel's statement of what is current -----------------------
+# `pointer` writes and signs it; the machine's side is kryptik-update's
+# check-pointer. The rows that matter are the ones where the two meet: what
+# this tool emits is accepted by the updater's own function, under an anchor
+# shaped like the image's (each key honoured in one namespace only).
+build_release
+make_signed 1.0.3 development
+ssh-keygen -q -t ed25519 -N '' -C latest -f "${W}/keys/latest" </dev/null
+ANCHOR="${W}/keys/anchor"
+{
+    printf 'kryptik-release namespaces="kryptik-release" %s\n' "$(cut -d' ' -f1,2 < "${W}/keys/rel.pub")"
+    printf 'kryptik-latest namespaces="kryptik-latest" %s\n' "$(cut -d' ' -f1,2 < "${W}/keys/latest.pub")"
+} > "$ANCHOR"
+PTR="${W}/latest"
+NO_COLOR=1 bash "$TOOL" pointer --key "${W}/keys/latest" --signers "$ANCHOR" --manifest "$MAN" --base 1.0.3/ --out "$PTR" \
+    --issued 2027-03-02T14:05:00+00:00 > "$OUT" 2>&1; RC=$?
+want="$(printf 'KRYPTIK-LATEST-1\nrole: development\nversion: 1.0.3\nissued: 2027-03-02T14:05:00+00:00\nmanifest-sha256: %s\nbase: 1.0.3/\n' "$(sha256sum "$MAN" | cut -c1-64)")"
+if [[ "$RC" -eq 0 && "$(cat "$PTR")" == "$want" && -s "${PTR}.sig" ]]; then
+    green "pointer: names the manifest's version and role, its hash, the base and the date, and nothing else"
+else
+    red "pointer: wrote something else (exit ${RC})"; show; cat "$PTR" 2>/dev/null
+fi
+if ssh-keygen -Y verify -f "$ANCHOR" -I kryptik-latest -n kryptik-latest -s "${PTR}.sig" < "$PTR" >/dev/null 2>&1 \
+   && ! ssh-keygen -Y verify -f "$ANCHOR" -I kryptik-latest -n kryptik-release -s "${PTR}.sig" < "$PTR" >/dev/null 2>&1; then
+    green "pointer: signed in its own namespace, and not a signature a manifest could borrow"
+else
+    red "pointer: the signature is not in kryptik-latest alone"
+fi
+
+# The updater's own check, lifted out of the tool as its suite does.
+UPD="${ROOT}/tools/update/kryptik-update"
+{
+    echo 'LATEST_NAMESPACE=kryptik-latest'; echo 'LATEST_MAGIC=KRYPTIK-LATEST-1'
+    echo "SIGNERS=${ANCHOR}"
+    echo 'say() { printf "%s\n" "$*"; }'
+    echo 'die() { printf "REFUSED: %s\n" "$*"; exit 1; }'
+    sed -n '/^verify_signed() {/,/^}/p' "$UPD"
+    sed -n '/^cmd_check_pointer() {/,/^}/p' "$UPD"
+    printf 'SNAP=%q\n' "${W}/snap"; echo 'mkdir -p "$SNAP"'
+    echo 'cmd_check_pointer "$1" "$2" && echo ACCEPTED'
+} > "${W}/check-pointer.sh"
+if bash "${W}/check-pointer.sh" "$PTR" "${PTR}.sig" 2>&1 | grep -qx ACCEPTED; then
+    green "pointer: what this tool writes is what kryptik-update's check-pointer accepts"
+else
+    red "pointer: kryptik-update refuses what this tool wrote: $(bash "${W}/check-pointer.sh" "$PTR" "${PTR}.sig" 2>&1 | tail -1)"
+fi
+# Signed by the release key instead: a statement the anchor does not honour.
+NO_COLOR=1 bash "$TOOL" pointer --key "${W}/keys/rel" --signers "$ANCHOR" --manifest "$MAN" --base 1.0.3/ --out "${W}/latest-by-rel" > /dev/null 2>&1
+# Into a variable first: the refusal exits 1, and under pipefail that would
+# fail the pipeline whatever grep found.
+said="$(bash "${W}/check-pointer.sh" "${W}/latest-by-rel" "${W}/latest-by-rel.sig" 2>&1)"
+if [[ "$said" == *"REFUSED:"*"does NOT verify"* && "$said" != *ACCEPTED* ]]; then
+    green "pointer: one signed with the release key is refused by the updater, because the anchor honours that key for releases only"
+else
+    red "pointer: the updater accepted a statement signed by the release key"
+fi
+
+# Re-issued later for the same release: only the date moves.
+NO_COLOR=1 bash "$TOOL" pointer --key "${W}/keys/latest" --signers "$ANCHOR" --manifest "$MAN" --base 1.0.3/ --out "${W}/latest-2" \
+    --issued 2027-04-01T00:00:00+00:00 > /dev/null 2>&1
+if [[ "$(diff <(cat "$PTR") <(cat "${W}/latest-2") | grep -c '^[<>]')" -eq 2 ]] && grep -qx 'issued: 2027-04-01T00:00:00+00:00' "${W}/latest-2"; then
+    green "pointer: re-issued for an unchanged release, only the date differs"
+else
+    red "pointer: a re-issue changed more than the date"
+fi
+
+# A signature file that is there and is not the manifest's signature.
+cp "${MAN}.sig" "${W}/man.sig.good"; ssh-keygen -q -t ed25519 -N "" -f "${W}/keys/stranger" > /dev/null
+rm -f "${MAN}.sig"; ssh-keygen -Y sign -f "${W}/keys/stranger" -n kryptik-release "$MAN" < /dev/null > /dev/null 2>&1
+NO_COLOR=1 bash "$TOOL" pointer --key "${W}/keys/latest" --signers "$ANCHOR" --manifest "$MAN" --base 1.0.3/ --out "${W}/latest-stranger" > "$OUT" 2>&1; RC=$?
+if [[ "$RC" -ne 0 && ! -e "${W}/latest-stranger" ]] && grep -q 'does not verify' "$OUT"; then
+    green "pointer: no statement is written about a manifest signed by a key the image does not carry"
+else
+    red "pointer: wrote a statement for a manifest a stranger signed (exit ${RC})"; show
+fi
+cp "${W}/man.sig.good" "${MAN}.sig"
+
+rm -f "${MAN}.sig"
+NO_COLOR=1 bash "$TOOL" pointer --key "${W}/keys/latest" --signers "$ANCHOR" --manifest "$MAN" --base 1.0.3/ --out "${W}/latest-unsigned" > "$OUT" 2>&1; RC=$?
+if [[ "$RC" -ne 0 && ! -e "${W}/latest-unsigned" ]] && grep -q 'is not signed yet' "$OUT"; then
+    green "pointer: no statement is written about a manifest nobody has signed"
+else
+    red "pointer: wrote a statement for an unsigned manifest (exit ${RC})"; show
+fi
+
 echo
 if [[ "$FAIL" -gt 0 ]]; then
     echo "${FAIL} of $((PASS + FAIL)) checks failed."

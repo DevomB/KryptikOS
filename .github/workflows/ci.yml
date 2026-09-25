@@ -22,7 +22,7 @@ jobs:
     name: Commit identity
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           # The whole history, because the check is over the whole history.
           fetch-depth: 0
@@ -50,7 +50,7 @@ jobs:
     name: Shell lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Install shellcheck
         run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
@@ -82,7 +82,7 @@ jobs:
           # nothing here reports more than it has established.
           fail=0
           skipped=""
-          for t in tools/test-*.sh; do
+          for t in tools/test-*.sh tools/test-*.py; do
             echo "=== $t"
             # The step's shell is `bash -e`: a bare non-zero exit ends the
             # step before rc is read, so the first suite that answered 77 took
@@ -104,13 +104,14 @@ jobs:
           exit $fail
 
       - name: Shellcheck
-        # tools/vm/ and the launcher suite were outside this list until now,
-        # which left the two largest scripts in the tree ungated - including the
-        # one that decides whether a boot passed. Three real warnings came out
-        # of adding them.
+        # Every tracked file that begins with a shell's name, not a list of
+        # places. The list left out the boot services, the installer, the
+        # updater, the net zone and every installed-system suite.
         run: |
-          shellcheck -S warning -x build/lib/common.sh build/stages/*.sh \
-            tools/*.sh tools/vm/*.sh compartments/tests/*.sh
+          mapfile -t scripts < <(git ls-files | xargs awk 'FNR==1 { if ($0 ~ /^#! ?\/(usr\/)?bin\/(env +)?(ba|da)?sh/) print FILENAME; nextfile }')
+          echo "${#scripts[@]} shell scripts"
+          [ "${#scripts[@]}" -ge 100 ] || { echo "the search for scripts found too few: it is broken"; exit 1; }
+          shellcheck -S warning -x "${scripts[@]}"
 
       - name: Executable bits are recorded
         run: |
@@ -121,7 +122,8 @@ jobs:
           # was committed 100644 - so git skipped it silently on every commit
           # and the hook has never once run.
           fail=0
-          for f in build/stages/*.sh tools/*.sh tools/vm/*.sh \
+          for f in build/stages/*.sh tools/*.sh tools/test-*.py tools/vm/*.sh \
+                   tools/image/*.sh tools/image/*.py \
                    compartments/tests/*.sh tools/git-hooks/*; do
             mode=$(git ls-files -s "$f" | awk '{print $1}')
             if [ "$mode" != "100755" ]; then
@@ -142,11 +144,18 @@ jobs:
   manifest:
     name: Source manifest
     runs-on: ubuntu-latest
+    # The Distro workflow's path: a cache's version is a hash of its path, so
+    # under any other one a pull request misses main's copy and saves a whole
+    # second one of its own, and those evicted the build trees.
+    env:
+      KRYPTIK_SOURCES: /mnt/kryptik/sources
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Manifest resolves
-        run: ./tools/fetch-sources.sh --list
+        run: |
+          sudo mkdir -p /mnt/kryptik && sudo chown "$(id -u):$(id -g)" /mnt/kryptik
+          ./tools/fetch-sources.sh --list
 
       # The strict provenance gate below hashes the downloaded tarballs
       # against what upstream publishes; without them it reported seven
@@ -164,9 +173,9 @@ jobs:
       # is missing, and the prune drops what the manifest no longer names.
       - name: Upstream sources (cached by sources.lock)
         id: sources
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
-          path: sources
+          path: /mnt/kryptik/sources
           key: sources-${{ hashFiles('sources.lock') }}
           restore-keys: |
             sources-
@@ -271,7 +280,7 @@ jobs:
     name: Compartment layer
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: kryptikd unit tests
         run: cd compartments/kryptikd && cargo test
@@ -451,13 +460,28 @@ jobs:
     name: Kernel currency
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       # Every pinned series with a published support window must still be
       # inside it. OpenSSL 3.3 went out of support on 2026-04-09 and Kryptik
       # shipped 3.3.1 for five months after; the tool knew and nothing ran it.
       - name: Pinned series are supported upstream
         run: ./tools/check-support-status.sh --strict
+
+      # Survey (network) then gate (no network). On a pull request the verdict
+      # is printed and does not fail the check: an upstream that released this
+      # morning is not the pull request's fault. The weekly run is the alarm.
+      - name: Pins behind upstream are reviewed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ./tools/check-source-currency.sh --tsv > pin-survey.tsv
+          echo "survey: $(wc -l < pin-survey.tsv) sources"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            ./tools/check-pin-reviews.sh --survey pin-survey.tsv || echo "pull request: informational"
+          else
+            ./tools/check-pin-reviews.sh --survey pin-survey.tsv
+          fi
 
       - name: Pinned kernel is longterm and not EOL
         run: ./tools/check-kernel-eol.sh

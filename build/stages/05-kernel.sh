@@ -281,38 +281,15 @@ s_config() {
     echo "  ok   CONFIG_EXTRA_FIRMWARE names $(wc -w <<<"$fw") microcode files under ${ucode}"
 
     # merge_config.sh silently drops symbols whose dependencies are unmet, so
-    # verify the ones that carry Kryptik's actual guarantees actually survived.
+    # the ones that carry Kryptik's guarantees are asked for by name. The list
+    # and the rule are in build/lib/kconfig-check.sh, where the host resolver
+    # asks the same: this was a private list that took only =y, and it failed
+    # the first kernel whose GPU driver the built-in rule had made a module,
+    # two and a half hours into a build CI's config check had passed.
     echo
     echo "--- verifying critical options survived ---"
-    local missing=0 opt
-    for opt in CONFIG_SECURITY_LANDLOCK \
-               CONFIG_SECCOMP_FILTER \
-               CONFIG_USER_NS \
-               CONFIG_NET_NS \
-               CONFIG_EFI_STUB \
-               CONFIG_CMDLINE_BOOL \
-               CONFIG_CMDLINE_OVERRIDE \
-               CONFIG_DM_INIT \
-               CONFIG_EFIVAR_FS \
-               CONFIG_OVERLAY_FS \
-               CONFIG_DRM_VIRTIO_GPU \
-               CONFIG_NFT_MASQ \
-               CONFIG_DM_VERITY \
-               CONFIG_DM_CRYPT \
-               CONFIG_CRYPTO_XTS \
-               CONFIG_FS_ENCRYPTION \
-               CONFIG_MODULE_SIG_FORCE \
-               CONFIG_SECURITY_LOCKDOWN_LSM \
-               CONFIG_INIT_ON_ALLOC_DEFAULT_ON \
-               CONFIG_SLAB_CANARY \
-               CONFIG_MITIGATION_PAGE_TABLE_ISOLATION; do
-        if grep -q "^${opt}=y" .config; then
-            echo "  ok   ${opt}"
-        else
-            echo "  MISSING ${opt}"
-            missing=$((missing + 1))
-        fi
-    done
+    local missing=0
+    kconfig_critical_check .config || missing=1
 
     # Every line of every fragment, not just the ones listed above: an =value
     # line must come out with that value, an "is not set" line must come out
@@ -346,7 +323,7 @@ s_config() {
 
     if [[ "$missing" -gt 0 ]]; then
         echo
-        echo "${missing} critical option(s) did not survive config resolution."
+        echo "Critical option(s) did not survive config resolution (MISSING, above)."
         echo "These are not optional - the zone model and boot integrity"
         echo "depend on them. Investigate before building."
         return 1
@@ -561,6 +538,16 @@ if [[ ! -d "$KSRC" && -f "${STAMPS}/${STAMP_PREFIX}unpack" ]]; then
     done
     warn "the kernel tree ${KSRC} is gone but its steps were stamped as built;"
     warn "those stamps are archived under ${gone}/ and the tree is unpacked, patched, configured and built again."
+fi
+# The module signing key never goes into the cache, which a pull request's run
+# can restore. A tree without it builds again from `build`: kbuild makes a new
+# key, and the kernel and its modules are signed as one pair. Every restore
+# comes here, so the stamps are dropped, not archived.
+if [[ -d "$KSRC" && ! -f "$KSRC/certs/signing_key.pem" && -f "${STAMPS}/${STAMP_PREFIX}build" ]]; then
+    for s in build size modules install verify-install; do
+        rm -f "${STAMPS}/${STAMP_PREFIX}${s}"
+    done
+    warn "the kernel tree has no module signing key; it is built and installed again with a new one"
 fi
 
 step unpack          s_unpack

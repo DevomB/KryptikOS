@@ -453,6 +453,28 @@ s_payload() {
     "${KRYPTIK_ROOT}/tools/release-manifest.sh" verify --signers "$signers" --principal kryptik-release \
         --root "$out" --exact --strict "$out/manifest"
     ls -la "$out"
+
+    # What a release host serves beside the payload (docs/design/update-channel.md):
+    # the signed statement that this release is current. Outside the payload
+    # directory, because `apply` refuses a payload that holds anything its
+    # manifest does not list. `base` is relative, so the same two files serve
+    # from wherever the channel is. `not-a-pointer` is the same statement
+    # signed by the release key in the manifest's namespace, which the image
+    # must refuse; the update suite serves it to prove that on the real chain.
+    [[ -f "$keydir/kryptik-latest" ]] || { echo "no statement key at ${keydir}; stage 04 (release-trust) makes it"; return 1; }
+    local chan="${IMG}/channel-${KRYPTIK_VERSION}"
+    rm -rf "$chan"; mkdir -p "$chan"
+    "${KRYPTIK_ROOT}/tools/release-manifest.sh" pointer --key "$keydir/kryptik-latest" \
+        --manifest "$out/manifest" --signers "$signers" --base "${KRYPTIK_VERSION}/" --out "$chan/latest"
+    cp "$chan/latest" "$chan/not-a-pointer"
+    ssh-keygen -Y sign -f "$keydir/kryptik-release" -n kryptik-release "$chan/not-a-pointer" < /dev/null >/dev/null 2>&1 \
+        || { echo "could not sign the control statement"; return 1; }
+    ssh-keygen -Y verify -f "$signers" -I kryptik-latest -n kryptik-latest -s "$chan/latest.sig" < "$chan/latest" >/dev/null \
+        || { echo "FAIL: the image's anchor does not verify the statement this build just signed"; return 1; }
+    if ssh-keygen -Y verify -f "$signers" -I kryptik-release -n kryptik-latest -s "$chan/not-a-pointer.sig" < "$chan/not-a-pointer" >/dev/null 2>&1; then
+        echo "FAIL: the image's anchor accepts a statement signed by the release key"; return 1
+    fi
+    ls -la "$chan"
 }
 
 # The release record under ${KRYPTIK_OUT}: the small things (hashes, root

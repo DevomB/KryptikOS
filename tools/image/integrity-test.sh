@@ -39,27 +39,20 @@ while [[ "$#" -gt 0 ]]; do
     esac
 done
 [[ -f "$USB" ]] || die "--usb IMG is required"
-for t in python3 sbsign sbverify openssl mcopy mdel mdir sfdisk; do have "$t" || die "required tool not found: $t"; done
+for t in python3 sbsign sbverify openssl mcopy mdel mdir sfdisk cryptsetup losetup; do have "$t" || die "required tool not found: $t"; done
 VMDIR="${KRYPTIK_WORK}/vm"; mkdir -p "$VMDIR"
 DISK="${DISK:-${VMDIR}/integrity.img}"
 [[ -e "$DISK" && ! -f "$DISK" ]] && die "refusing: ${DISK} is not a regular file"
 ENROLLED="${KRYPTIK_WORK}/keys/sb/vars/enrolled.fd"
 [[ -f "$ENROLLED" ]] || die "no enrolled variable store; run tools/image/ovmf-vars.sh"
 
-PASS=0; FAIL=0
-green() { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
-red()   { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
-step() { printf '\n==> %s\n' "$*"; }
-TUSER=tester; TPASS=tester-pw; RPASS=root-pw
-TUSER_HASH="$(openssl passwd -6 "$TPASS")"; ROOT_HASH="$(openssl passwd -6 "$RPASS")"
-DRV="${SELF}/vm-drive.py"
+# shellcheck source=tools/image/suite-lib.sh
+source "${SELF}/suite-lib.sh"
 VARSF="${VMDIR}/integrity-vars.fd"; cp "$ENROLLED" "$VARSF"
-LATEST="${KRYPTIK_WORK}/logs/ovmf-serial.latest.log"
 txt_latest() { tr -d '\r' < "$LATEST"; }
 
 # Partition offsets on the disk file, from its GPT, so the host can edit the
 # ESP with mtools and flip bytes in slot a without mounting anything.
-part_start() { sfdisk -d "$DISK" 2>/dev/null | awk -v n="$1" -F'[ ,]+' '$1 ~ n"$" {for(i=1;i<=NF;i++) if($i=="start=") print $(i+1)}'; }
 
 # ----------------------------------------------------------------- step 1 --
 step "step 1: install, then boot alone with the developer key enrolled (Secure Boot on)"
@@ -68,7 +61,7 @@ DISK_SIZE="$("${SELF}/test-disk-size.sh" --medium "$USB")" || die "could not siz
 rm -f "$DISK"; truncate -s "$DISK_SIZE" "$DISK"
 CTL="${VMDIR}/testctl-integrity.img"
 "${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
-    "preseed_user=${TUSER}" "preseed_password_hash=${TUSER_HASH}" "preseed_root_hash=${ROOT_HASH}" > /dev/null
+    "${PRESEED[@]}" > /dev/null
 "${SELF}/run-ovmf.sh" --usb "$USB" --disk "$DISK" --testctl "$CTL" --vars enrolled --mode smoke --timeout "$TIMEOUT" --name integ-install > /dev/null
 txt_latest | grep -q 'KRYPTIK_INSTALL: rc=0' && green "installed from the medium under Secure Boot" || { red "install failed"; exit 1; }
 txt_latest | grep -q 'KRYPTIK_SMOKE: secureboot=1' && green "the medium itself booted with Secure Boot enforced" || red "medium did not report secureboot=1"
@@ -101,7 +94,7 @@ grep -q 'SIGNED=loaded' <<<"$T1" && green "the module signed by the build loads"
 
 # ----------------------------------------------------------------- step 2 --
 step "step 2: an untrusted boot artifact is refused by the firmware"
-ESP_OFF=$(( $(part_start 1) * 512 ))
+ESP_OFF=$(( $(part_start "$DISK" 1) * 512 ))
 ESPIMG="${VMDIR}/integrity-esp.img"
 # lift the ESP out, keep a pristine copy, swap in a foreign-signed kernel
 dd if="$DISK" of="$ESPIMG" bs=1M iflag=skip_bytes,count_bytes skip="$ESP_OFF" count=$((512*1024*1024)) status=none
@@ -131,7 +124,7 @@ rm -rf "$TMPK"
 
 # ----------------------------------------------------------------- step 3 --
 step "step 3: a tampered root is refused by dm-verity before userspace"
-A_OFF=$(( $(part_start 2) * 512 ))
+A_OFF=$(( $(part_start "$DISK" 2) * 512 ))
 # Flip a byte in the ext4 superblock (byte 1024 of the image, the volume
 # name field at +0x78): the first thing a root mount reads, so dm-verity
 # sees a block whose hash does not match before any userspace exists. A
@@ -177,10 +170,9 @@ step "step 5: offline tampering of the state partition does not reach privileged
 # a trust anchor of their own for updates, a zone definition the launch
 # daemon will honour, a kernel tunable applied at boot. Plant all three from
 # the host, boot, and measure each from inside the guest.
-S_OFF=$(( $(part_start 4) * 512 ))
 TMPK="$(mktemp -d)"; MNT="$TMPK/state"; mkdir -p "$MNT"
 ssh-keygen -q -t ed25519 -N "" -f "$TMPK/attacker" >/dev/null
-if mount -o loop,offset="$S_OFF" "$DISK" "$MNT" 2>/dev/null; then
+if open_state "$DISK" "$MNT" 2>/dev/null; then
     up="$MNT/lib/kryptik/etc/upper"
     mkdir -p "$up/kryptik/trust" "$up/kryptik/zones" "$up/sysctl.d"
     printf 'kryptik-release namespaces="kryptik-release" %s\n' "$(cut -d' ' -f1,2 "$TMPK/attacker.pub")" > "$up/kryptik/trust/release-signers"
@@ -209,7 +201,7 @@ EOF
     printf 'ACTION=="add", RUN+="/var/lib/kryptik/evil.sh"\n' > "$up/udev/rules.d/99-evil.rules"
     printf '#!/bin/sh\ntouch /var/lib/kryptik/evil-ran\n' > "$MNT/lib/kryptik/evil.sh"; chmod 0755 "$MNT/lib/kryptik/evil.sh"
     printf 'planted:1310720:65536\n' > "$up/subuid"
-    sync; umount "$MNT"
+    close_state "$MNT"
     green "planted a trust anchor, a zone definition, a sysctl fragment, a preload library and a udev rule under the state's /etc upper layer, and one allowed change"
 else
     red "could not mount the state partition from the host (loop/offset); step 5 not performed"
@@ -264,13 +256,13 @@ if [[ -n "${EXTRA[*]:-}" ]]; then
     grep -q 'not enrolled' <<<"$T5" && green "an update signed by the planted anchor's key is refused (the anchor is read from the verified root)" || red "an attacker-signed update was not refused"
 fi
 grep -q 'KRYPTIK_SMOKE: sysctl kernel.kptr_restrict=2' <<<"$T5" && green "the planted sysctl fragment was not applied" || red "the planted sysctl was applied"
-grep -q 'KRYPTIK_SMOKE: var_source=/dev/vda4' <<<"$T5" && green "state stayed persistent through the tamper (this is a repairable machine, not a bricked one)" || red "state not persistent in step 5"
+grep -q 'KRYPTIK_SMOKE: var_source=/dev/mapper/kryptik-state' <<<"$T5" && green "state stayed persistent through the tamper (this is a repairable machine, not a bricked one)" || red "state not persistent in step 5"
 # undo the planting so later runs start clean
-if mount -o loop,offset="$S_OFF" "$DISK" "$MNT" 2>/dev/null; then
+if open_state "$DISK" "$MNT" 2>/dev/null; then
     rm -rf "$MNT/lib/kryptik/etc/upper/kryptik/trust" "$MNT/lib/kryptik/etc/upper/kryptik/zones" "$MNT/lib/kryptik/etc/upper/sysctl.d" \
            "$MNT/lib/kryptik/etc/upper/ld.so.preload" "$MNT/lib/kryptik/etc/upper/udev" "$MNT/lib/kryptik/etc/upper/subuid" \
            "$MNT/lib/kryptik/etc/quarantine" "$MNT/lib/kryptik/evil.sh" "$MNT/lib/kryptik/evil-ran"
-    sync; umount "$MNT"
+    close_state "$MNT"
 fi
 rm -rf "$TMPK"
 

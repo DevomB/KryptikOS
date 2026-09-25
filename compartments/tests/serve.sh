@@ -245,13 +245,20 @@ if [[ "$(ask 'status\n')" == "end" ]]; then pass "S5e the daemon still answers a
 # --- launches -------------------------------------------------------------------------------
 
 head_ "launches"
-r="$(ask "run alpha\narg /bin/sh\narg -c\narg echo $MARK; sleep 15\nend\n")"
+# Between its two lines the command truncates its own stdout. That was the
+# launcher's log once, O_APPEND does not stop ftruncate, and the first line
+# and everything the launcher had written went with it.
+r="$(ask "run alpha\narg /bin/sh\narg -c\narg echo $MARK; python3 -c 'import os; os.ftruncate(1, 0)' 2>/dev/null; echo after-$MARK; sleep 15\nend\n")"
 if [[ "$r" == ok\ [0-9]* ]]; then
     pass "S6a run alpha replies ok <pid> once the zone is up"
     s="$(ask 'status\n')"
     if [[ "$s" == *"running alpha"* ]]; then pass "S6b status shows alpha running after ok"; else fail "S6b status after ok: $s"; fi
     ok=0; for _ in $(seq 1 40); do grep -q "$MARK" "$ZLOG" 2>/dev/null && { ok=1; break; }; sleep 0.1; done
     if [[ "$ok" -eq 1 ]]; then pass "S6c the zone ran the command (its log shows $MARK)"; else fail "S6c no $MARK in $ZLOG"; fi
+    for _ in $(seq 1 40); do grep -q "after-$MARK" "$ZLOG" 2>/dev/null && break; sleep 0.1; done
+    if grep -q "^zone alpha| $MARK\$" "$ZLOG" && grep -q "^zone alpha| after-$MARK\$" "$ZLOG"; then
+        pass "S6c2 what the zone printed is in the log under its mark, and its attempt to empty the log emptied nothing"
+    else fail "S6c2 the log after the zone tried to empty it:"; sed 's/^/        /' "$ZLOG" | tail -6; fi
     r2="$(ask 'run alpha\narg /bin/true\nend\n')"
     if [[ "$r2" == "error:"* ]]; then pass "S6d a second launch of a running zone is refused: ${r2%$'\n'}"; else fail "S6d second launch: $r2"; fi
     r3="$(ask 'stop alpha\n')"
@@ -260,6 +267,31 @@ if [[ "$r" == ok\ [0-9]* ]]; then
     if [[ "$(ask 'status\n')" == "end" ]]; then pass "S6f status is empty once the zone is gone"; else fail "S6f alpha still listed"; fi
 else
     fail "S6a run alpha: $r"; sed 's/^/        /' "$ZLOG" 2>/dev/null | tail -5
+fi
+
+# A slow stop does not stop the daemon. A zone that ignores SIGTERM is only
+# gone at stop's SIGKILL, seconds later; the daemon ran stop inside its
+# request handler and answered nobody else meanwhile. Another client's
+# status, asked in the middle of it, must be answered at once.
+ms() { date +%s%3N; }
+r="$(ask "run alpha\narg /bin/sh\narg -c\narg trap '' TERM; while :; do sleep 1; done\nend\n")"
+if [[ "$r" == ok\ [0-9]* ]]; then
+    t0="$(ms)"; ( ask 'stop alpha\n' > "$WORK/slow-stop.out"; ms > "$WORK/slow-stop.end" ) &
+    stopper=$!
+    sleep 0.5
+    s0="$(ms)"; s="$(ask 'status\n')"; s1="$(ms)"
+    wait "$stopper"
+    took=$(( $(cat "$WORK/slow-stop.end") - t0 )); asked=$(( s1 - s0 ))
+    if [[ "$took" -lt 2000 ]]; then
+        fail "S6g the stop took ${took} ms, too quick to show anything (the zone did not ignore SIGTERM)"
+    elif [[ "$asked" -lt 1000 && "$s" == *"alpha"* ]]; then
+        pass "S6g status was answered in ${asked} ms while a ${took} ms stop was under way"
+    else
+        fail "S6g status took ${asked} ms during a ${took} ms stop (answer: ${s%$'\n'})"
+    fi
+    [[ "$(cat "$WORK/slow-stop.out")" == "ok" ]] && pass "S6h the slow stop still replies ok when it ends" || fail "S6h slow stop: $(cat "$WORK/slow-stop.out")"
+else
+    fail "S6g run alpha (ignoring SIGTERM): $r"
 fi
 
 r="$(ask 'run broken\narg /bin/true\nend\n')"
@@ -279,6 +311,16 @@ else
     fail "S7c: $r"
 fi
 for _ in $(seq 1 60); do [[ "$(ask 'status\n')" == "end" ]] && break; sleep 0.1; done
+
+# A command that ends at once with 0 is ok, and its end is in the log however
+# quickly it came: a zone terminal whose shell died unseen was a silent "ok".
+r="$(ask 'run alpha\narg /bin/true\nend\n')"
+for _ in $(seq 1 60); do [[ "$(ask 'status\n')" == "end" ]] && break; sleep 0.1; done
+if [[ "$r" == ok\ [0-9]* ]] && grep -q "launcher ${r#ok } exited 0" "$WORK/serve.log"; then
+    pass "S7d a command that ends at once is ok, and the log says it ended"
+else
+    fail "S7d ${r%$'\n'}: $(grep -F "${r#ok }" "$WORK/serve.log" | tr '\n' '|')"
+fi
 
 # --- the proxy socket ------------------------------------------------------------------------
 

@@ -220,9 +220,17 @@ fn read_answer(dfd: RawFd, name: &str) -> Result<Option<String>, String> {
     Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
 }
 
-/// May this file cross? `Ok(())` only on an explicit `yes`.
-pub fn ask(from: &str, to: &str, name: &str, bytes: u64) -> Result<(), String> {
-    ask_text(&format!("from={from}\nto={to}\nname={name}\nbytes={bytes}\n"))
+/// May this file cross? `Ok(())` only on an explicit `yes`. `asking` is
+/// called while the question is open, ten times a second: the launcher that
+/// serves the question pumps its zone's output there and says whether the
+/// zone is still there, and a `false` withdraws the question.
+pub fn ask(from: &str, to: &str, name: &str, bytes: u64, asking: &dyn Fn() -> bool) -> Result<(), String> {
+    ask_text(&format!("from={from}\nto={to}\nname={name}\nbytes={bytes}\n"), asking)
+}
+
+/// For a caller with nothing to do while its question is open.
+pub fn keep() -> bool {
+    true
 }
 
 /// May the clock be set? Asked when the network's claim is further from
@@ -231,12 +239,12 @@ pub fn ask(from: &str, to: &str, name: &str, bytes: u64) -> Result<(), String> {
 /// with a watch can answer and nothing on this system can. `kind=clock`
 /// tells the chrome which question to draw; a question with no kind is a
 /// transfer, as every question was before this one existed.
-pub fn ask_clock(now: &str, proposed: &str, sources: u8) -> Result<(), String> {
-    ask_text(&format!("kind=clock\nnow={now}\nproposed={proposed}\nsources={sources}\n"))
+pub fn ask_clock(now: &str, proposed: &str, sources: u8, asking: &dyn Fn() -> bool) -> Result<(), String> {
+    ask_text(&format!("kind=clock\nnow={now}\nproposed={proposed}\nsources={sources}\n"), asking)
 }
 
 /// Ask, and wait for the answer. `Ok(())` only on an explicit `yes`.
-fn ask_text(text: &str) -> Result<(), String> {
+fn ask_text(text: &str, asking: &dyn Fn() -> bool) -> Result<(), String> {
     let d = dir();
     let channel = open_channel(&d)?;
     let dfd = channel.as_raw_fd();
@@ -266,6 +274,13 @@ fn ask_text(text: &str) -> Result<(), String> {
         }
         if Instant::now() >= deadline {
             break Err(format!("no answer from zone 0 within {} s; treated as a refusal", timeout().as_secs()));
+        }
+        // The asker's turn. The launcher that serves this question reaps
+        // its zone and relays its output in the loop this wait holds up,
+        // for up to a minute; and a zone that ended while its question was
+        // open left a question in the chrome that nobody could act on.
+        if !asking() {
+            break Err("the asking zone went away while the question was open; withdrawn".to_string());
         }
         std::thread::sleep(Duration::from_millis(100));
     };
@@ -335,15 +350,15 @@ mod tests {
             std::env::set_var("KRYPTIK_CONSENT_TIMEOUT", "5");
             let _w = hold_watch(d);
             let h = answer_when_asked(d, "yes\n");
-            assert!(ask("dev", "work", "report.pdf", 4096).is_ok());
+            assert!(ask("dev", "work", "report.pdf", 4096, &keep).is_ok());
             let q = h.join().unwrap();
             assert_eq!(q, "from=dev\nto=work\nname=report.pdf\nbytes=4096\n");
             let h = answer_when_asked(d, "no\n");
-            let e = ask("dev", "work", "x", 1).unwrap_err();
+            let e = ask("dev", "work", "x", 1, &keep).unwrap_err();
             h.join().unwrap();
             assert!(e.contains("refused by the user"), "{e}");
             let h = answer_when_asked(d, "maybe\n");
-            let e = ask("dev", "work", "x", 1).unwrap_err();
+            let e = ask("dev", "work", "x", 1, &keep).unwrap_err();
             h.join().unwrap();
             assert!(e.contains("malformed"), "{e}");
             let left: Vec<_> = std::fs::read_dir(d).unwrap().flatten().map(|e| e.file_name()).collect();
@@ -365,7 +380,7 @@ mod tests {
                     std::fs::File::create(d.join(WATCHER_LOCK)).unwrap();
                 }
                 let t = Instant::now();
-                let e = ask("dev", "work", "x", 1).unwrap_err();
+                let e = ask("dev", "work", "x", 1, &keep).unwrap_err();
                 assert!(e.contains("no consent channel") && e.contains("watching"), "{e}");
                 assert!(t.elapsed() < Duration::from_millis(500), "refused without waiting for the deadline");
                 let placed = std::fs::read_dir(d).unwrap().flatten().filter(|e| e.file_name() != WATCHER_LOCK).count();
@@ -373,13 +388,38 @@ mod tests {
             }
             // Someone watching, nobody answering: the deadline, then a refusal.
             let _w = hold_watch(d);
-            let e = ask("dev", "work", "x", 1).unwrap_err();
+            let e = ask("dev", "work", "x", 1, &keep).unwrap_err();
             assert!(e.contains("no answer"), "{e}");
             let left: Vec<_> = std::fs::read_dir(d).unwrap().flatten().map(|e| e.file_name()).collect();
             assert_eq!(left, vec![std::ffi::OsString::from(WATCHER_LOCK)], "the unanswered question is withdrawn");
             std::env::set_var("KRYPTIK_CONSENT_DIR", d.join("absent"));
-            let e = ask("dev", "work", "x", 1).unwrap_err();
+            let e = ask("dev", "work", "x", 1, &keep).unwrap_err();
             assert!(e.contains("no consent channel"), "{e}");
+        });
+    }
+
+    /// A question whose asker is gone is withdrawn on the asker's turn: the
+    /// launcher reports its zone ended, and the chrome is not left with a
+    /// question nobody can act on, nor the launcher with a minute's wait.
+    #[test]
+    fn a_sender_that_goes_away_withdraws_its_question() {
+        let _g = env_lock();
+        with_dir(|d| {
+            std::env::set_var("KRYPTIK_CONSENT_DIR", d);
+            std::env::set_var("KRYPTIK_CONSENT_TIMEOUT", "10");
+            let _w = hold_watch(d);
+            // There for the first two turns, then gone; no answer ever comes.
+            let turns = std::cell::Cell::new(0u32);
+            let gone_soon = || {
+                turns.set(turns.get() + 1);
+                turns.get() <= 2
+            };
+            let t = Instant::now();
+            let e = ask("dev", "work", "x", 1, &gone_soon).unwrap_err();
+            assert!(e.contains("went away") && e.contains("withdrawn"), "{e}");
+            assert!(t.elapsed() < Duration::from_secs(5), "withdrawn on the asker's turn, not at the deadline");
+            let left: Vec<_> = std::fs::read_dir(d).unwrap().flatten().map(|e| e.file_name()).collect();
+            assert_eq!(left, vec![std::ffi::OsString::from(WATCHER_LOCK)], "the withdrawn question is gone from the chrome");
         });
     }
 
@@ -405,7 +445,7 @@ mod tests {
             symlink(&victim, d.join(format!("{guess}.tmp"))).unwrap();
             symlink(&victim, d.join(format!("{guess}.ask"))).unwrap();
             std::fs::write(d.join(format!("{guess}.answer")), "yes\n").unwrap();
-            let r = ask("dev", "work", "x", 1);
+            let r = ask("dev", "work", "x", 1, &keep);
             let victim_now = std::fs::read_to_string(&victim).unwrap();
             let _ = std::fs::remove_file(&victim);
             assert_eq!(victim_now, "precious\n", "the question was written through a planted symlink");
@@ -442,7 +482,7 @@ mod tests {
                 });
                 let (tx, rx) = std::sync::mpsc::channel();
                 std::thread::spawn(move || {
-                    let _ = tx.send(ask("dev", "work", "x", 1));
+                    let _ = tx.send(ask("dev", "work", "x", 1, &keep));
                 });
                 let r = rx.recv_timeout(Duration::from_secs(5)).unwrap_or_else(|_| panic!("{kind}: the broker never came back - a {kind} at the answer's name held it"));
                 planter.join().unwrap();

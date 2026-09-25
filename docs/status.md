@@ -15,17 +15,18 @@ documentation starts a run; a newer push cancels one in flight.
 
 ## Last full pass
 
-Revision `9749cd8` on `main`, 2026-09-16, release `0.1.20260916.9749cd84`.
-Every suite passed:
+Revision `55e1652` on `main`, 2026-09-20, release `0.1.20260920.55e16523.1`
+(Distro run 35482105602). Every suite passed, and no suite's own summary
+counts a failure:
 
 | Suite | Result | What ran |
 | --- | --- | --- |
 | inputs | PASS | revision, compositor sources, `sources.lock`, media hashes |
-| build | PASS | host suites 16/0, libc unwinding 7/0, userspace smoke, artifact hardening audit, kernel config validation, upstream support status |
-| boot | PASS | USB image 36/0, ISO 36/0, firmware-only boot attested from the recorded QEMU commands |
-| install | PASS | install-test 43/0, state-test 47/0 |
-| integrity | PASS | Secure Boot 36/0, foreign keys refused 6/0, integrity-test 23/0 |
-| zones | PASS | zones-test 37/0 (network and encrypted storage on the Kryptik kernel) |
+| build | PASS | host suites 18/0, libc unwinding 7/0, userspace smoke, artifact hardening audit, kernel config validation, upstream support status |
+| boot | PASS | USB image 38/0, ISO 38/0, firmware-only boot attested from the recorded QEMU commands |
+| install | PASS | install-test 43/0, state-test 54/0 (with the watchdog reset) |
+| integrity | PASS | Secure Boot 38/0, foreign keys refused 6/0, integrity-test 26/0 |
+| zones | PASS | zones-test 42/0 (network, encrypted storage and the clock on the Kryptik kernel) |
 | desktop | PASS | gui-test 30/0 |
 | update | PASS | update-test 21/0 |
 | release | PASS | export |
@@ -33,12 +34,28 @@ Every suite passed:
 All of this ran under QEMU with OVMF firmware. Nothing has run on physical
 hardware yet.
 
+That second sentence is there for a reason. Until 2026-09-20 the aggregator
+recorded PASS for any driver that exited 0, whatever its summary counted as
+failed. This run's `results.tsv` was read back against the corrected rule.
+
 ## Since then
 
-- `5c88a65` renamed the acceptance suites. Its Distro run failed one item,
-  `build / kernel-config`: `5a3d77d` had added `CONFIG_TG3`, which is not a
-  kernel symbol, so the Broadcom tg3 driver would silently have been left
-  out. The fragment now says `CONFIG_TIGON3`. Unverified until the next run.
+`main` has not passed since. It carries the glibc release branch, gcc 14.4.0,
+the kernel's built-in rule (drivers as modules), chrony's removal and
+twenty-two version bumps, none of which a build had reached when they were
+merged, and two defects stopped every build of it:
+
+- util-linux 2.42.3 does not compile against a glibc older than 2.43 (a
+  missing include, and a wrong fallback value for `RESOLVE_NO_SYMLINKS`).
+  Patched in `build/patches/util-linux-2.42.3/`.
+- Stage 05 kept a private list of options that must survive config
+  resolution and accepted only `=y`; the built-in rule had made the virtio
+  GPU driver `=m`. The list is shared with CI's config check now.
+
+With the first fixed, stage 04 built every bumped package natively for the
+first time. Not yet proven by any run: the kernel with drivers as modules,
+its size against the budget, the update channel's fetch on the installed
+system, and the encrypted state partition.
 
 ## Known gaps
 
