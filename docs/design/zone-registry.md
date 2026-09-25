@@ -71,8 +71,12 @@ anything but its supervisor. The 5 s window is the whole policy; make it
 ```
 
 The [broker](broker.md) adds its own files to a running zone's entry (the
-broker and clipboard state, and the staged Wayland proxy socket); reclaim
-removes those too.
+broker and clipboard state, its temporary files, and the staged Wayland
+proxy socket); a sweep removes whatever the entry lists, not a set of names
+it knows. A probe (`status`, `stop` polling for the entry to go) takes a
+shared lock and creates nothing: a directory with no lock file is one
+between its `mkdir` and its lock, or between a reclaim's unlink and its
+`rmdir`, and reads as not held.
 
 Entries are written with `O_CREAT|O_EXCL` into a fresh directory; the
 directory itself is created with `mkdir` (atomic), and **`EEXIST` on `mkdir`
