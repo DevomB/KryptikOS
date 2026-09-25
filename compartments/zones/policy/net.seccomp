@@ -6,9 +6,6 @@ allow-socket AF_PACKET
 allow-netlink NETLINK_NETFILTER
 keep-capability CAP_NET_ADMIN
 keep-capability CAP_NET_RAW
-# dhcpcd chowns its control socket to its own gid and dies of SIGSYS without
-# this. With CAP_CHOWN dropped, that is all chown can do here.
-allow-syscall chown
 # dhcpcd opens a NETLINK_GENERIC socket at start (nl80211 events) and exits
 # if refused, leaving routed zones without an uplink.
 allow-netlink NETLINK_GENERIC
