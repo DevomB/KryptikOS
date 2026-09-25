@@ -88,13 +88,19 @@ payload_disk "$PA" "$PAY_A"; payload_disk "$PB" "$PAY_B"
 # bae1de53 showed that with variants of B), which proves nothing about the
 # check the variant was made for.
 BAD="${VMDIR}/bad"; rm -rf "$BAD"; mkdir -p "$BAD"
-mk_variant() {   # mk_variant NAME  -> $BAD/NAME is a copy of payload A
-    rm -rf "${BAD:?}/$1"; cp -a --sparse=always "$PAY_A" "$BAD/$1"
+# Payload A hard-linked, and a real copy of each FILE the variant changes in
+# place: a root image is gigabytes, and mkfs -d stores a link once.
+mk_variant() {   # mk_variant NAME [FILE...]
+    rm -rf "${BAD:?}/$1"
+    cp -al "$PAY_A" "$BAD/$1" 2>/dev/null || cp -a --sparse=always "$PAY_A" "$BAD/$1"
+    local f; for f in "${@:2}"; do
+        rm -f "$BAD/$1/$f"; cp --sparse=always "$PAY_A/$f" "$BAD/$1/$f"
+    done
 }
 mk_variant wrongkey; ssh-keygen -q -t ed25519 -N "" -f "$BAD/otherkey" >/dev/null; rm -f "$BAD/wrongkey/manifest.sig"
 ssh-keygen -Y sign -f "$BAD/otherkey" -n kryptik-release "$BAD/wrongkey/manifest" >/dev/null 2>&1
-mk_variant modified; printf '\xff' | dd of="$BAD/modified/kryptik-root.img" bs=1 seek=$((4096*200+3)) conv=notrunc status=none
-mk_variant truncated; truncate -s -1 "$BAD/truncated/kryptik-a.efi"
+mk_variant modified kryptik-root.img; printf '\xff' | dd of="$BAD/modified/kryptik-root.img" bs=1 seek=$((4096*200+3)) conv=notrunc status=none
+mk_variant truncated kryptik-a.efi; truncate -s -1 "$BAD/truncated/kryptik-a.efi"
 mk_variant extra; echo "ride along" > "$BAD/extra/extra.bin"
 # An empty lost+found is the medium's own and is passed over (step 2 applies
 # a payload that is the root of an ext4 disk); one with something in it is not.
