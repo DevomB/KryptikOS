@@ -195,8 +195,29 @@ smoke)
         -monitor none < /dev/null > "${LOG}.qemu" 2>&1 &
     qpid=$!
     for _ in $(seq 1 50); do [[ -S "$SER" ]] && break; sleep 0.2; done
-    python3 "${SELF}/vm-drive.py" --serial "$SER" --timeout "$TIMEOUT" wait-exit > /dev/null
-    if kill -0 "$qpid" 2>/dev/null; then kill "$qpid"; wait "$qpid"; rc=124; else wait "$qpid"; rc=$?; fi
+    # The driver's word decides. It returns 0 when the socket closed under
+    # it: the guest is gone and QEMU on its way out, so QEMU is waited for
+    # and its own status is the result. It returns 1 at its timeout, and
+    # QEMU is killed. A `kill -0` of QEMU's pid told the two apart before,
+    # and it could not: QEMU closes its console in its shutdown, a moment
+    # before the process is gone, so the driver saw the close, the check
+    # found QEMU still there, and every clean poweroff was reported as the
+    # timeout, twelve seconds in.
+    if [[ ! -S "$SER" ]]; then
+        kill "$qpid" 2>/dev/null; wait "$qpid"; rc=$?; [[ "$rc" -eq 0 ]] && rc=1
+        warn "QEMU did not open its console socket ${SER}"
+    elif python3 "${SELF}/vm-drive.py" --serial "$SER" --timeout "$TIMEOUT" wait-exit > /dev/null; then
+        # That moment is given, and no more than half a minute of it.
+        for _ in $(seq 1 300); do kill -0 "$qpid" 2>/dev/null || break; sleep 0.1; done
+        if kill -0 "$qpid" 2>/dev/null; then
+            kill "$qpid" 2>/dev/null; wait "$qpid"; rc=1
+            warn "QEMU did not exit after the guest was gone"
+        else
+            wait "$qpid"; rc=$?
+        fi
+    else
+        kill "$qpid" 2>/dev/null; wait "$qpid"; rc=124
+    fi
     set -e
     [[ "$rc" -eq 124 ]] && warn "QEMU hit the ${TIMEOUT}s timeout"
     [[ "$rc" -ne 0 && "$rc" -ne 124 ]] && { warn "QEMU exited ${rc}:"; sed 's/^/  /' "${LOG}.qemu" | tail -5; }
