@@ -12,14 +12,15 @@
 # passed to ssh-keygen by path and never read here; SIGNERS is the anchor the
 # image carries, and every statement is checked against it as a client would.
 # DATE defaults to now, as YYYY-MM-DDTHH:MM:SS+00:00. The payload's files are
-# hard-linked where the filesystem allows, so DIR is left as it is.
+# hard-linked where the filesystem allows, so a file in DIR must never be
+# rewritten in place afterwards; replace DIR whole, as stage 06 does.
 set -Eeuo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 
 MANIFEST_TOOL="$(dirname "${BASH_SOURCE[0]}")/release-manifest.sh"
 POINTER_NAMESPACE="kryptik-latest"
 
-usage() { sed -n '2,15p' "${BASH_SOURCE[0]}"; }
+usage() { sed -n '2,16p' "${BASH_SOURCE[0]}"; }
 [[ "$#" -gt 0 ]] || { usage; exit 1; }
 MODE="$1"; shift
 for t in ssh-keygen flock sha256sum; do have "$t" || die "${t} not found"; done
