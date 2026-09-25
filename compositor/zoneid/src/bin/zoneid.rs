@@ -27,7 +27,7 @@ const DEFAULT_ZONE_DIR: &str = "compartments/zones";
 fn usage() -> &'static str {
     "zoneid - Kryptik zone visual identity
 
-USAGE:
+Usage:
     zoneid audit [--zones DIR] [--min-delta-e N]
         Evaluate the zone set against the distinctness invariant.
         Exits 1 if any two border colours the compositor draws are
@@ -370,39 +370,30 @@ fn cmd_simulate(args: &[String]) -> ExitCode {
 }
 
 const EXPLAIN: &str = "\
-The zone distinctness invariant
-===============================
+Zone distinctness
 
-A window's border colour is how a person tells which zone it belongs to
+A window's border colour is how the user tells which zone it belongs to
 (docs/architecture.md). If they cannot tell at a glance which zone a password
-prompt belongs to, the zones have failed them.
+prompt belongs to, the zones have failed them. That is a question of
+perception, so it is checked against a model of it, not by comparing strings.
 
-That is a claim about human perception, so it has to be checked against a model
-of human perception. Comparing colour strings for equality is not one.
+The rule: every two border colours the compositor draws (each zone's, and its
+own for a window from no zone, from an unknown zone, or asking for attention)
+differ by the floor under every vision model. Zones have distinct glyphs and
+distinct labels.
 
-THE RULE
-
-Every two border colours the compositor draws - each zone's, and its own for a
-window from no zone, from an unknown zone, or asking for attention - must
-differ by the floor under every vision model. Zones must have distinct glyphs
-and distinct labels.
-
-CHANNELS
-
+Channels:
   color     the whole window border        seen without looking for it
   glyph     the chrome, focused window     seen if you look
   label     the chrome, focused window     seen if you read
   pattern   not drawn                      validated, given no weight
 
-Focus is shown by border width, never by colour, so the colour of the window
-taking your keystrokes is exactly its zone's audited colour.
+Focus is shown by border width, never by colour, so the window taking your
+keystrokes carries exactly its zone's audited colour.
 
-WHAT THIS IS NOT
-
-A collision is a statement about two configured identities, under a stated
-vision model, by a stated metric. It is not a claim that a particular person in
-a particular room would be confused - that also involves habit, calibration,
-ambient light and haste. This is a floor, not a guarantee.
+A pass is a floor, not a guarantee: it says two identities differ under a
+stated vision model by a stated metric, not that nobody in a hurry, in poor
+light, on a badly calibrated screen could confuse them.
 ";
 
 #[cfg(test)]
