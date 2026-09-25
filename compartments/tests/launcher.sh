@@ -1199,8 +1199,13 @@ async def m():
     print(\"PROBE=spawned\")
 asyncio.run(m())'"
     probe "L13 an asyncio program runs a child in a zone and lives" "spawned"
+    # timeout(1) arms a POSIX timer and mmap.flush is msync; both were killed.
+    zrun alpha -- /bin/sh -c "$PRO timeout 20 python3 -c 'import mmap
+f = open(\"/tmp/m\", \"w+b\"); f.write(bytes(4096)); f.flush()
+m = mmap.mmap(f.fileno(), 4096); m[0:1] = b\"y\"; m.flush(); print(\"PROBE=flushed\")'"
+    probe "L14 timeout(1) and a flushed mapping live in a zone" "flushed"
 else
-    info "L13 not run: this host has no python3"
+    info "L13, L14 not run: this host has no python3"
 fi
 
 # ============================================================================
