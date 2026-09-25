@@ -31,15 +31,21 @@
 
 use crate::color::{contrast_ratio, ciede2000, Lab, Srgb};
 use crate::cvd::{simulate, Vision};
-use crate::distinct::{BACKGROUNDS, MIN_BORDER_CONTRAST};
+use crate::distinct::{BACKGROUNDS, COMPOSITOR_COLOURS, MIN_BORDER_CONTRAST};
+
+/// A colour in Lab as seen under each of `Vision::ALL`.
+type Labs = [Lab; Vision::ALL.len()];
+
+fn labs_of(c: Srgb) -> Labs {
+    Vision::ALL.map(|v| simulate(c, v).to_lab())
+}
 
 /// A candidate colour with its appearance under every vision model
 /// precomputed, because the search evaluates each pair many times.
 #[derive(Clone)]
 struct Candidate {
     srgb: Srgb,
-    /// Lab of this colour as seen under `Vision::ALL[i]`.
-    lab: [Lab; Vision::ALL.len()],
+    lab: Labs,
 }
 
 /// Knobs the search exposes, so that "what is actually binding here?" is a
@@ -60,10 +66,11 @@ pub struct SearchOptions {
     /// this resolution while the minimum improves. 0 disables refinement.
     ///
     /// The coarse grid alone is not enough. Measured on the default
-    /// constraints (2026-09-13, release build): step 17 reaches a floor of
-    /// 14.08 in 3 s, step 12 14.66, step 9 15.00 in 15 s, and step 6 15.87
-    /// in 2 min 18 s. Sampling finely is what finds a passing palette, and
-    /// refining around the coarse optimum is what makes that affordable.
+    /// constraints with the compositor's colours fixed (2026-09-25, release
+    /// build): step 17 alone reaches a floor of 13.98, step 12 14.49, step 9
+    /// 15.05 in 1.2 s, step 6 15.42 in 3.1 s; step 17 refined every 3
+    /// reaches 15.70 in 1.8 s. Refining around the coarse optimum is what
+    /// makes a passing palette cheap.
     pub refine: u32,
 }
 
@@ -99,11 +106,7 @@ impl Candidate {
         if !backgrounds.iter().all(|&bg| contrast_ratio(c, bg) >= min_contrast) {
             return None;
         }
-        let mut lab = [Lab { l: 0.0, a: 0.0, b: 0.0 }; Vision::ALL.len()];
-        for (i, v) in Vision::ALL.into_iter().enumerate() {
-            lab[i] = simulate(c, v).to_lab();
-        }
-        Some(Candidate { srgb: c, lab })
+        Some(Candidate { srgb: c, lab: labs_of(c) })
     }
 
     fn rgb8(&self) -> (i32, i32, i32) {
@@ -114,6 +117,12 @@ impl Candidate {
 
 fn backgrounds() -> Vec<Srgb> {
     BACKGROUNDS.iter().filter_map(|(_, hex)| Srgb::from_hex(hex).ok()).collect()
+}
+
+/// The compositor's own colours. Every palette is drawn beside them, so
+/// every member is held to the floor against them as well.
+fn fixed() -> Vec<Labs> {
+    COMPOSITOR_COLOURS.iter().filter_map(|(_, hex)| Srgb::from_hex(hex).ok()).map(labs_of).collect()
 }
 
 fn build_candidates(min_contrast: f64, step: u32) -> Vec<Candidate> {
@@ -138,47 +147,47 @@ fn build_candidates(min_contrast: f64, step: u32) -> Vec<Candidate> {
     out
 }
 
-/// The worst colour difference between two candidates across all vision
+/// The worst colour difference between two colours across all vision
 /// models. This is the quantity the whole search is about.
-fn worst_pair_distance(a: &Candidate, b: &Candidate) -> f64 {
+fn distance(a: &Labs, b: &Labs) -> f64 {
     let mut worst = f64::INFINITY;
-    for i in 0..Vision::ALL.len() {
-        let d = ciede2000(a.lab[i], b.lab[i]);
-        if d < worst {
-            worst = d;
-        }
+    for i in 0..a.len() {
+        worst = worst.min(ciede2000(a[i], b[i]));
     }
     worst
 }
 
-/// The score of a palette: its smallest pairwise difference.
-fn score_of(pal: &[Candidate]) -> f64 {
-    let mut worst = f64::INFINITY;
-    for i in 0..pal.len() {
-        for j in (i + 1)..pal.len() {
-            let d = worst_pair_distance(&pal[i], &pal[j]);
-            if d < worst {
-                worst = d;
-            }
+/// `start` lowered to `c`'s distance from each of `others`, stopping once it
+/// is no more than `floor`: the search only asks whether a colour beats the
+/// best score so far, and most colours are out of the running early.
+fn nearest<'a>(c: &Labs, others: impl IntoIterator<Item = &'a Labs>, start: f64, floor: f64) -> f64 {
+    let mut near = start;
+    for o in others {
+        if near <= floor {
+            break;
         }
+        near = near.min(distance(c, o));
     }
-    worst
+    near
 }
 
-/// The score of the palette `chosen` indexes into `cands`. Same quantity as
-/// `score_of`, without materialising the palette: this is evaluated once per
-/// candidate per slot in the ascent below, tens of thousands of times a run.
-fn score(cands: &[Candidate], chosen: &[usize]) -> f64 {
-    let mut worst = f64::INFINITY;
-    for i in 0..chosen.len() {
-        for j in (i + 1)..chosen.len() {
-            let d = worst_pair_distance(&cands[chosen[i]], &cands[chosen[j]]);
-            if d < worst {
-                worst = d;
-            }
-        }
+/// A palette's score: its smallest difference, between two members or
+/// between a member and a compositor colour.
+fn score(pal: &[Labs], fixed: &[Labs]) -> f64 {
+    let mut s = f64::INFINITY;
+    for (i, a) in pal.iter().enumerate() {
+        s = nearest(a, pal[i + 1..].iter().chain(fixed), s, f64::NEG_INFINITY);
     }
-    worst
+    s
+}
+
+/// The palette without member `slot`, and that palette's score. Any
+/// colour in the slot then scores `nearest(colour, others, rest, ..)`, so a
+/// replacement costs one distance per member instead of a whole rescoring.
+fn without(pal: &[Labs], slot: usize, fixed: &[Labs]) -> (Vec<Labs>, f64) {
+    let others: Vec<Labs> = pal.iter().enumerate().filter(|&(i, _)| i != slot).map(|(_, l)| *l).collect();
+    let rest = score(&others, fixed);
+    (others, rest)
 }
 
 /// Coarse-to-fine: move each colour through the cube of radius
@@ -187,8 +196,8 @@ fn score(cands: &[Candidate], chosen: &[usize]) -> f64 {
 /// does. Candidates are made on demand, so the fine grid never exists in
 /// full. Deterministic for the same reason the coarse search is: fixed
 /// iteration order, strict improvement only.
-fn refine(pal: &mut [Candidate], min_contrast: f64, fine: u32) {
-    if fine == 0 || pal.len() < 2 {
+fn refine(pal: &mut [Candidate], fixed: &[Labs], min_contrast: f64, fine: u32) {
+    if fine == 0 {
         return;
     }
     let fine = fine as i32;
@@ -196,10 +205,11 @@ fn refine(pal: &mut [Candidate], min_contrast: f64, fine: u32) {
     loop {
         let mut improved = false;
         for slot in 0..pal.len() {
-            let current = score_of(pal);
-            let (r0, g0, b0) = pal[slot].rgb8();
+            let labs: Vec<Labs> = pal.iter().map(|c| c.lab).collect();
+            let (others, rest) = without(&labs, slot, fixed);
             let mut best: Option<Candidate> = None;
-            let mut best_score = current;
+            let mut best_score = nearest(&labs[slot], others.iter().chain(fixed), rest, f64::NEG_INFINITY);
+            let (r0, g0, b0) = pal[slot].rgb8();
             let mut r = r0 - REFINE_RADIUS;
             while r <= r0 + REFINE_RADIUS {
                 let mut g = g0 - REFINE_RADIUS;
@@ -207,12 +217,10 @@ fn refine(pal: &mut [Candidate], min_contrast: f64, fine: u32) {
                     let mut b = b0 - REFINE_RADIUS;
                     while b <= b0 + REFINE_RADIUS {
                         if let Some(c) = Candidate::from_rgb8(r, g, b, &bgs, min_contrast) {
-                            let saved = std::mem::replace(&mut pal[slot], c);
-                            let s = score_of(pal);
-                            let moved = std::mem::replace(&mut pal[slot], saved);
+                            let s = nearest(&c.lab, others.iter().chain(fixed), rest, best_score);
                             if s > best_score {
                                 best_score = s;
-                                best = Some(moved);
+                                best = Some(c);
                             }
                         }
                         b += fine;
@@ -234,7 +242,8 @@ fn refine(pal: &mut [Candidate], min_contrast: f64, fine: u32) {
 
 pub struct Proposal {
     pub colors: Vec<Srgb>,
-    /// Smallest pairwise difference under any vision model.
+    /// Smallest difference under any vision model, between two colours or
+    /// between a colour and a compositor colour.
     pub score: f64,
     /// How many colours the search had to choose from.
     pub candidates_considered: usize,
@@ -256,6 +265,10 @@ pub fn propose_with(n: usize, opts: SearchOptions) -> Option<Proposal> {
     if cands.len() < n || n == 0 {
         return None;
     }
+    let fixed = fixed();
+    // Each candidate's distance to the compositor's colours, which no move
+    // changes.
+    let to_fixed: Vec<f64> = cands.iter().map(|c| nearest(&c.lab, &fixed, f64::INFINITY, f64::NEG_INFINITY)).collect();
 
     // Fixed restart points spread through the candidate list. Deterministic by
     // construction - see the module comment on why that matters.
@@ -272,65 +285,53 @@ pub fn propose_with(n: usize, opts: SearchOptions) -> Option<Proposal> {
         let mut in_set = vec![false; cands.len()];
         in_set[seed] = true;
         // Farthest-point traversal: repeatedly take the candidate furthest
-        // from everything already picked. `nearest[c]` is c's distance to
-        // the set so far; one pass against the newest pick keeps it current
-        // (min is exact, so the result is bit-identical to recomputing).
-        let mut nearest: Vec<f64> = cands.iter().map(|c| worst_pair_distance(c, &cands[seed])).collect();
+        // from everything already picked and from the compositor's colours.
+        // `near[c]` is that distance; one pass against the newest pick
+        // keeps it current.
+        let mut near: Vec<f64> =
+            cands.iter().zip(&to_fixed).map(|(c, &f)| f.min(distance(&c.lab, &cands[seed].lab))).collect();
         while chosen.len() < n {
             let mut best_c = None;
             let mut best_d = f64::NEG_INFINITY;
             for c in 0..cands.len() {
-                if in_set[c] {
-                    continue;
-                }
-                let d = nearest[c];
-                if d > best_d {
-                    best_d = d;
+                if !in_set[c] && near[c] > best_d {
+                    best_d = near[c];
                     best_c = Some(c);
                 }
             }
-            match best_c {
-                Some(c) => {
-                    chosen.push(c);
-                    in_set[c] = true;
-                    for (i, near) in nearest.iter_mut().enumerate() {
-                        let d = worst_pair_distance(&cands[i], &cands[c]);
-                        if d < *near {
-                            *near = d;
-                        }
-                    }
-                }
-                None => break,
+            let Some(c) = best_c else { break };
+            chosen.push(c);
+            in_set[c] = true;
+            for (i, d) in near.iter_mut().enumerate() {
+                *d = d.min(distance(&cands[i].lab, &cands[c].lab));
             }
         }
 
-        // Steepest ascent on the coarse grid: swap out whichever member most
-        // improves the minimum, until no single swap helps.
+        // Ascent on the coarse grid: in each slot in turn, the replacement
+        // that most improves the palette's score, until no slot improves.
         loop {
-            let current = score(&cands, &chosen);
             let mut improved = false;
             for slot in 0..chosen.len() {
+                let labs: Vec<Labs> = chosen.iter().map(|&i| cands[i].lab).collect();
+                let (others, rest) = without(&labs, slot, &fixed);
                 let original = chosen[slot];
-                let mut best_repl = original;
-                let mut best_repl_score = current;
+                let mut best_c = original;
+                let mut best_s = nearest(&labs[slot], &others, rest.min(to_fixed[original]), f64::NEG_INFINITY);
                 for c in 0..cands.len() {
-                    // Members of the set are skipped, the slot's own colour
-                    // included: putting it back scores `current`, which is
-                    // never a strict improvement.
+                    // Members are skipped, the slot's own colour included.
                     if in_set[c] {
                         continue;
                     }
-                    chosen[slot] = c;
-                    let s = score(&cands, &chosen);
-                    if s > best_repl_score {
-                        best_repl_score = s;
-                        best_repl = c;
+                    let s = nearest(&cands[c].lab, &others, rest.min(to_fixed[c]), best_s);
+                    if s > best_s {
+                        best_s = s;
+                        best_c = c;
                     }
                 }
-                chosen[slot] = best_repl;
-                if best_repl != original {
+                if best_c != original {
+                    chosen[slot] = best_c;
                     in_set[original] = false;
-                    in_set[best_repl] = true;
+                    in_set[best_c] = true;
                     improved = true;
                 }
             }
@@ -341,9 +342,10 @@ pub fn propose_with(n: usize, opts: SearchOptions) -> Option<Proposal> {
 
         // Then off the grid, around what the grid found.
         let mut pal: Vec<Candidate> = chosen.iter().map(|&i| cands[i].clone()).collect();
-        refine(&mut pal, opts.min_contrast, opts.refine);
+        refine(&mut pal, &fixed, opts.min_contrast, opts.refine);
 
-        let s = score_of(&pal);
+        let labs: Vec<Labs> = pal.iter().map(|c| c.lab).collect();
+        let s = score(&labs, &fixed);
         if s > best_score {
             best_score = s;
             best = Some(pal);
@@ -352,19 +354,19 @@ pub fn propose_with(n: usize, opts: SearchOptions) -> Option<Proposal> {
 
     let pal = best?;
 
-    let mut worst_per_vision = Vec::new();
-    for (i, v) in Vision::ALL.into_iter().enumerate() {
-        let mut worst = f64::INFINITY;
-        for a in 0..pal.len() {
-            for b in (a + 1)..pal.len() {
-                let d = ciede2000(pal[a].lab[i], pal[b].lab[i]);
-                if d < worst {
-                    worst = d;
+    let worst_per_vision = Vision::ALL
+        .into_iter()
+        .enumerate()
+        .map(|(k, v)| {
+            let mut worst = f64::INFINITY;
+            for (i, a) in pal.iter().enumerate() {
+                for b in pal[i + 1..].iter().map(|c| &c.lab).chain(&fixed) {
+                    worst = worst.min(ciede2000(a.lab[k], b[k]));
                 }
             }
-        }
-        worst_per_vision.push((v, worst));
-    }
+            (v, worst)
+        })
+        .collect();
 
     // Sort the output by lightness so the palette reads as a palette rather
     // than in search order, which is meaningless to a human.
@@ -377,7 +379,7 @@ pub fn propose_with(n: usize, opts: SearchOptions) -> Option<Proposal> {
 
     Some(Proposal {
         colors,
-        score: if pal.len() < 2 { f64::INFINITY } else { best_score },
+        score: best_score,
         candidates_considered: cands.len(),
         worst_per_vision,
     })
@@ -456,7 +458,7 @@ mod tests {
         assert!(p.score >= MIN_DELTA_E + 0.5, "default search reached only {:.2}", p.score);
     }
 
-    /// The coarse grid alone does not reach the floor (14.08 at step 17);
+    /// The coarse grid alone does not reach the floor (13.98 at step 17);
     /// refinement is what does. Pinned so that removing it cannot look like
     /// a harmless cleanup.
     #[test]
@@ -468,10 +470,11 @@ mod tests {
     }
 
     #[test]
-    fn asking_for_one_colour_is_not_a_division_by_zero() {
+    fn one_colour() {
+        // Scored against the compositor's colours alone.
         let p = propose(1).unwrap();
         assert_eq!(p.colors.len(), 1);
-        assert!(p.score.is_infinite());
+        assert!(p.score.is_finite() && p.score >= MIN_DELTA_E, "{}", p.score);
     }
 
     #[test]

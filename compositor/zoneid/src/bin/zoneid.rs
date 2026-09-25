@@ -241,7 +241,7 @@ fn cmd_propose(args: &[String]) -> ExitCode {
         }
     };
     let n = match flag(&args, "-n").unwrap_or("6").parse::<usize>() {
-        Ok(n) if n > 0 && n <= 16 => n,
+        Ok(n) if (1..=16).contains(&n) => n,
         _ => {
             eprintln!("propose: -n expects 1..=16");
             return ExitCode::from(2);
@@ -259,7 +259,7 @@ fn cmd_propose(args: &[String]) -> ExitCode {
     }
     if let Some(v) = flag(&args, "--step") {
         match v.parse::<u32>() {
-            Ok(s) if s >= 1 && s <= 64 => opts.step = s,
+            Ok(s) if (1..=64).contains(&s) => opts.step = s,
             _ => {
                 eprintln!("propose: --step expects 1..=64");
                 return ExitCode::from(2);

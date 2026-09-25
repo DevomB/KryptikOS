@@ -34,10 +34,10 @@ use crate::identity::{Channel, ZoneIdentity};
 ///
 /// 15.0 is chosen as a floor that keeps a pair separable under those
 /// conditions while remaining achievable: `zoneid propose` searches the sRGB
-/// gamut for six-colour palettes under the 3:1 contrast constraint and its
-/// coarse-to-fine search reaches 15.88 (measured 2026-09-13; a finer grid
-/// reaches 16.2), so the floor is achievable but not by much: it is the
-/// binding constraint, and the shipped colours are the search's result.
+/// gamut for six-colour palettes under the 3:1 contrast constraint, clear of
+/// the compositor's own colours, and reaches 15.70 (measured 2026-09-25), so
+/// the floor is achievable but not by much: it is the binding constraint.
+/// The shipped colours reach 15.88.
 /// The original six colours reached 1.48.
 pub const MIN_DELTA_E: f64 = 15.0;
 
