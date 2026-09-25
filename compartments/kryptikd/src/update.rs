@@ -86,8 +86,8 @@ pub fn parse_pointer(text: &str) -> Result<Pointer, String> {
 }
 
 /// Where a release's files are fetched from. An absolute base is taken as it
-/// is; a relative one is resolved against the channel address from the
-/// verified root, never against anything the net zone reports. Only a
+/// is; a relative one is resolved against the channel address zone 0 was
+/// given (`CONF`), never against anything the net zone reports. Only a
 /// development image may be pointed at plain http. Where the bytes come from
 /// decides nothing about what they must be - the pointer carries the
 /// manifest's hash - so this is about not leaking the request, not trust.
@@ -306,7 +306,10 @@ pub fn running_version() -> String {
     text.lines().find_map(|l| l.strip_prefix("VERSION_ID=")).map(|v| v.trim_matches('"').to_string()).unwrap_or_default()
 }
 
-/// `channel = <address>` from the configuration on the verified root.
+/// `channel = <address>` from `CONF`. Only the verified root's copy lasts: one
+/// root writes under /etc is moved out of the overlay at the next boot
+/// (sysinit.sh, `prune_etc_upper`). The address says where to ask, nothing
+/// more; what comes back is believed only on the trust anchor's signature.
 pub fn channel_from(conf: &str) -> Option<String> {
     conf.lines().find_map(|l| {
         let (k, v) = l.split_once('=')?;

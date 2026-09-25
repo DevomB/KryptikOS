@@ -216,7 +216,7 @@ static int ensure_entry(const char *slot) {
     }
     /* keep it in BootOrder (appended) so a firmware that ignores BootNext
        still offers it, without displacing the entry the machine came with;
-       forget takes it out again at commit */
+       forget takes it out again when the trial ends */
     unsigned char order[512]; size_t ol = 0; uint16_t num = (uint16_t)strtol(var + 4, NULL, 16);
     int present = 0;
     if (read_var("BootOrder", order, sizeof order, &ol) == 0) {
@@ -238,8 +238,8 @@ static int cmd_set_next(const char *slot) {
 /* forget: both slots' entries and BootNext are deleted and BootOrder no
  * longer names them; the machine's other entries keep their order. The
  * firmware then boots the disk's own entry, which is BOOTX64.EFI, the
- * committed slot. boot-success runs this at commit and the recovery tool
- * after its commit: the entries exist for the trial alone. Left behind,
+ * committed slot. boot-success runs this whenever a trial ends and the
+ * recovery tool after its commit: the entries exist for the trial alone. Left behind,
  * they outlived it. A firmware regenerates its own disk entry at the end
  * of BootOrder whenever the devices change, and the first Kryptik entry
  * ever armed then won over the committed slot at every cold boot after

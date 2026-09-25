@@ -70,8 +70,8 @@ latest.sig    an OpenSSH signature over those bytes, namespace kryptik-latest
 ```
 
 `base` may be absolute or relative. A relative one is resolved against the
-channel address on the verified root, never against anything the net zone
-reports, so a mirror can move without the pointer being signed again; and
+channel address zone 0 was given (below), never against anything the net
+zone reports, so a mirror can move without the pointer being signed again; and
 since the pointer carries the manifest's hash, where the bytes come from
 decides nothing about what they must be.
 
@@ -81,8 +81,12 @@ is an open decision (below).
 The channel's address is zone 0's to give (`channel = <address>` in
 `/etc/kryptik/update.conf`, visible read-only in the nic zone like the time
 sources), so the net zone is not told where to look by anything it could
-have written. With no such file there is no channel: the net zone asks
-nobody and `update-poll` answers `idle`.
+have written. Only the verified root's copy lasts: one root writes under
+`/etc` is moved out of the overlay at the next boot (`prune_etc_upper` in
+`sysinit.sh`), and no build writes one yet. The address is not a trust
+anchor; nothing fetched from it is believed without the trust anchor's
+signature. With no such file there is no channel: the net zone asks nobody
+and `update-poll` answers `idle`.
 
 Zone 0 accepts a pointer when its signature verifies against the same trust
 anchor releases are verified against, its role is the one this image

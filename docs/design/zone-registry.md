@@ -76,7 +76,9 @@ proxy socket); a sweep removes whatever the entry lists, not a set of names
 it knows. A probe (`status`, `stop` polling for the entry to go) takes a
 shared lock and creates nothing: a directory with no lock file is one
 between its `mkdir` and its lock, or between a reclaim's unlink and its
-`rmdir`, and reads as not held.
+`rmdir`, and reads as not held. An owner (a claim, a reclaim) that finds
+the lock taken tries again for 100 ms before it calls the entry live, since
+a probe holds it only for an instant.
 
 Entries are written with `O_CREAT|O_EXCL` into a fresh directory; the
 directory itself is created with `mkdir` (atomic), and **`EEXIST` on `mkdir`

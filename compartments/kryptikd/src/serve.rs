@@ -833,25 +833,31 @@ fn read_back(f: &mut std::fs::File) -> String {
 /// synchronous versions sent.
 fn finish_job(j: &mut Job, st: i32) {
     let ok = libc::WIFEXITED(st) && libc::WEXITSTATUS(st) == 0;
-    match &j.what {
-        JobKind::Stop { uid, zone } => {
-            if ok {
-                reply(&j.conn, "ok\n");
-            } else {
-                let code = if libc::WIFEXITED(st) { libc::WEXITSTATUS(st) } else { -1 };
-                reply(&j.conn, &format!("error: stop exited {code}\n"));
-            }
+    // A failure's reason is the command's last line on stderr, which went to
+    // this log before the command ran as a job.
+    let why = |j: &mut Job, or: &str| {
+        let err = read_back(&mut j.err);
+        err.lines().rev().map(str::trim).find(|l| !l.is_empty()).unwrap_or(or).to_string()
+    };
+    match j.what.clone() {
+        JobKind::Stop { uid, zone } if ok => {
             eprintln!("kryptikd serve: uid {uid} stopped zone {zone:?}");
+            reply(&j.conn, "ok\n");
+        }
+        JobKind::Stop { uid, zone } => {
+            let code = if libc::WIFEXITED(st) { libc::WEXITSTATUS(st) } else { -1 };
+            let why = why(j, "no reason given");
+            eprintln!("kryptikd serve: uid {uid} could not stop zone {zone:?}: exit {code}: {why}");
+            reply(&j.conn, &format!("error: stop exited {code}: {why}\n"));
+        }
+        JobKind::UpdateApply if ok => {
+            eprintln!("kryptikd serve: update-apply");
+            reply(&j.conn, &format!("ok\n{}", read_back(&mut j.out)));
         }
         JobKind::UpdateApply => {
-            if ok {
-                eprintln!("kryptikd serve: update-apply");
-                reply(&j.conn, &format!("ok\n{}", read_back(&mut j.out)));
-            } else {
-                let err = read_back(&mut j.err);
-                let last = err.lines().last().unwrap_or("kryptik-update apply failed").to_string();
-                reply(&j.conn, &format!("error: {last}\n"));
-            }
+            let why = why(j, "kryptik-update apply failed");
+            eprintln!("kryptikd serve: update-apply failed: {why}");
+            reply(&j.conn, &format!("error: {why}\n"));
         }
     }
 }
@@ -1653,4 +1659,18 @@ mod tests {
         assert!(unsafe { libc::fstat(raw, &mut st) } < 0);
     }
 
+    #[test]
+    fn failed_job_says_why() {
+        use std::io::Read;
+        let (conn, mut client) = UnixStream::pair().unwrap();
+        let mut err = memfile("t-err").unwrap();
+        err.write_all(b"kryptikd: stopping\nzone \"alpha\" did not stop\n\n").unwrap();
+        let what = JobKind::Stop { uid: 1000, zone: "alpha".into() };
+        let mut j = Job { conn, pid: 0, what, out: memfile("t-out").unwrap(), err, exited: None };
+        finish_job(&mut j, 3 << 8);
+        drop(j);
+        let mut got = String::new();
+        client.read_to_string(&mut got).unwrap();
+        assert_eq!(got, "error: stop exited 3: zone \"alpha\" did not stop\n");
+    }
 }

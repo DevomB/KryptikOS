@@ -18,7 +18,7 @@ real device.
   either a regular file under `/var/lib/kryptik/volumes/` on the state
   partition (`<zone>.luks`, what the shipped zones use) or a block device.
   kryptikd (root) opens it with `cryptsetup open --type luks2` to
-  `/dev/mapper/kryptik-<zone>`, runs `e2fsck -p`, and mounts the ext4 inside
+  `/dev/mapper/kryptik-zone-<zone>`, runs `e2fsck -p`, and mounts the ext4 inside
   `nosuid,nodev,noatime` at the zone's data directory under
   `/var/lib/kryptik/zones/<zone>`, owned by the zone's identity (see
   [the privileged launch design](privileged-launch.md)). Exec stays allowed
@@ -49,7 +49,7 @@ real device.
   the zone's mount namespace is released asynchronously after its pid 1
   exits; still `EBUSY` after that means a process escaped, which is
   reported as an invariant failure, not something to force with
-  `MNT_DETACH` -> `cryptsetup close kryptik-<zone>`. dm-crypt frees the
+  `MNT_DETACH` -> `cryptsetup close kryptik-zone-<zone>`. dm-crypt frees the
   key in kernel memory on close; that is what `wipe_keys = "on-stop"`
   means in the zone file, and it means *that*, not a memory-scrubbing
   guarantee. A launch that fails after the volume was opened closes it on
@@ -89,10 +89,10 @@ real device.
 - Wrong passphrase: `cryptsetup` exit 2 -> kryptikd prints
   `zone "work": volume did not unlock (wrong passphrase)` and the zone does
   not start. No retry loop inside kryptikd (the UI does that).
-- Crash recovery: if a mapping `kryptik-<zone>` already exists when a zone
+- Crash recovery: if a mapping `kryptik-zone-<zone>` already exists when a zone
   starts, the start is refused with a message naming the mapping and
   pointing at `kryptikd gc`. `kryptikd gc` unmounts and closes every
-  `/dev/mapper/kryptik-*` whose zone has no running launcher. An unclean
+  `/dev/mapper/kryptik-zone-*` whose zone has no running launcher. An unclean
   ext4 gets `e2fsck -p` at the next open; if `e2fsck` wants manual
   intervention the zone refuses to start and names the device.
 
@@ -101,7 +101,7 @@ real device.
 | invariant | test | positive control |
 | --- | --- | --- |
 | unlock/start | `kryptikd run work --passphrase-file /run/dev-pass` -> `$HOME` writable, file persists across a stop/start | — |
-| wrong key | wrong passphrase -> exit 1, message names the zone, **no** `/dev/mapper/kryptik-work`, no mount, command did not run | unlock/start |
+| wrong key | wrong passphrase -> exit 1, message names the zone, **no** `/dev/mapper/kryptik-zone-work`, no mount, command did not run | unlock/start |
 | locked data is unreachable | while `work` is stopped: `ls /dev/mapper/` has no `kryptik-work`; `mount` has no `zones/work`; the raw container has no ext4 signature (`blkid` shows `crypto_LUKS`); a byte pattern written while running is not found by `grep -a` over the raw container | the pattern *is* found on the plaintext mount while running |
 | stop closes | after normal exit: dm device gone, mount gone | — |
 | crash | `kill -9` kryptikd while `work` runs -> within 2 s no zone process; the next start is refused while the mapping exists, and `kryptikd gc` tears the mount and dm device down; the file written before the crash is intact after unlocking again | — |

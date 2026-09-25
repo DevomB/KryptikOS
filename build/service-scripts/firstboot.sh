@@ -67,13 +67,28 @@ fi
 
 # Interactive: ask on tty1 for whatever is still missing. Every question is
 # bounded, so a headless machine still reaches a login prompt, and boot-success
-# (which waits for this service) still judges an update's trial boot. The
-# password questions were not: a machine whose root was left locked waited at
-# `passwd root` at every boot for someone at the console, and an update trial
-# on it could never be committed.
+# (which waits for this service) still judges an update's trial boot.
 PROMPT_SECS=600
 tty=/dev/tty1
 [ -c "$tty" ] || tty=/dev/console
+# Not passwd: without PAM it reads from /dev/tty, and a boot service has no
+# controlling terminal, so it failed before asking anything.
+set_password() {   # set_password USER: two matching answers on $tty, through chpasswd
+    local p1 p2
+    for _ in 1 2 3; do
+        printf 'New password for %s: ' "$1" > "$tty"
+        read -r -s -t "$PROMPT_SECS" p1 < "$tty" || return 1
+        printf '\nAgain: ' > "$tty"
+        read -r -s -t "$PROMPT_SECS" p2 < "$tty" || return 1
+        echo > "$tty"
+        if [ -n "$p1" ] && [ "$p1" = "$p2" ]; then
+            printf '%s:%s\n' "$1" "$p1" | chpasswd
+            return
+        fi
+        echo "The two answers differ, or are empty." > "$tty"
+    done
+    return 1
+}
 name="$(regular_user)"
 if [ -z "$name" ]; then
     {
@@ -91,10 +106,10 @@ if [ -z "$name" ]; then
 fi
 if ! has_password "$name"; then
     echo "Set a password for $name:" > "$tty"
-    timeout "$PROMPT_SECS" passwd "$name" < "$tty" > "$tty" 2>&1 || say "passwd failed or was not answered; the next boot asks again"
+    set_password "$name" 2> "$tty" || say "no password set for $name; the next boot asks again"
 fi
 if ! has_password root; then
     echo "Set the administrator (root) password, used by su:" > "$tty"
-    timeout "$PROMPT_SECS" passwd root < "$tty" > "$tty" 2>&1 || say "root passwd failed or was not answered; the next boot asks again"
+    set_password root 2> "$tty" || say "no root password set; the next boot asks again"
 fi
 exit 0
