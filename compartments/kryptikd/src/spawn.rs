@@ -1670,7 +1670,7 @@ mod tests {
     }
 
     #[test]
-    fn peer_gone_once_the_write_end_closes() {
+    fn peer_gone_after_close() {
         let p = SyncPipe::new().unwrap();
         assert!(!p.peer_gone(), "an open write end reads as a hang-up");
         p.close_write();
