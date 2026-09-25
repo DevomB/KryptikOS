@@ -22,13 +22,16 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -s "$SURVEY" && -f "$REVIEWS" ]] || { echo "FAIL: need a non-empty --survey and a reviews file" >&2; exit 1; }
 
+# A short commit ID and its full form are the same commit.
+same() {
+    [[ "$1" == "$2" ]] && return 0
+    [[ "$1" =~ ^[0-9a-f]{12,40}$ && "$2" =~ ^[0-9a-f]{12,40}$ && ( "$1" == "$2"* || "$2" == "$1"* ) ]]
+}
 # Versions have an order; two commit IDs have none, so any other commit than
-# the one reviewed is new (a short ID and its full form are the same commit).
+# the one reviewed is new.
 newer() {
-    [[ "$1" != "$2" ]] || return 1
-    if [[ "$1" =~ ^[0-9a-f]{12,40}$ && "$2" =~ ^[0-9a-f]{12,40}$ ]]; then
-        [[ "$1" != "$2"* && "$2" != "$1"* ]]; return
-    fi
+    ! same "$1" "$2" || return 1
+    [[ "$1" =~ ^[0-9a-f]{12,40}$ && "$2" =~ ^[0-9a-f]{12,40}$ ]] && return 0
     [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" == "$1" ]]
 }
 bad=0
@@ -56,7 +59,7 @@ while IFS=$'\037' read -r name pinned newest status _; do
     elif [[ "$status" != BEHIND ]]; then
         [[ -n "$row" ]] && fail "STALE: ${name} is ${status} now; remove its row"
     elif [[ -z "$row" ]]; then            fail "NOT REVIEWED: ${name} ${pinned} -> ${newest}"
-    elif [[ "$row" != "$pinned" ]]; then  fail "STALE: ${name}: the row reviews ${row}, the pin is ${pinned}"
+    elif ! same "$row" "$pinned"; then    fail "STALE: ${name}: the row reviews ${row}, the pin is ${pinned}"
     elif newer "$newest" "${UPTO[$name]}"; then fail "NEW RELEASE: ${name}: reviewed up to ${UPTO[$name]}, upstream is at ${newest}"
     elif [[ "${VERDICT[$name]}" == held ]]; then
         echo "  HELD: ${name} ${pinned}: ${NOTE[$name]}"

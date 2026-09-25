@@ -51,6 +51,8 @@ reviews "glibc-branch cdaa5d6db08e aaaaaaaaaaaa fine 2026-09-25 read the branch 
 expect "a branch head that sorts first is still new"  1 'NEW RELEASE: glibc-branch: reviewed up to aaaaaaaaaaaa'
 reviews "glibc-branch cdaa5d6db08e 111111111111bbbbbbbbbbbbbbbbbbbbbbbbbbbb fine 2026-09-25 read the branch log"
 expect "and a review of that head, written in full, covers it"  0 '^ok:'
+reviews "glibc-branch cdaa5d6db08ee6d7cdcb008ae83b6fe7856291c4 111111111111 fine 2026-09-25 read the branch log"
+expect "so does a row naming the pinned commit in full"  0 '^ok:'
 
 : > "$W/s"; expect "an empty survey has not passed"      1 'need a non-empty --survey'
 
