@@ -38,8 +38,7 @@ reviews "zlib 1.3.1 1.3.2 maybe 2026-09-19 looked";  expect "nor is an unknown v
 reviews "$ROW" "$ROW";                               expect "nor a second row for one package"    1 'MALFORMED: zlib'
 reviews "$ROW" "zlibb 1 2 fine 2026-09-19 a typo";   expect "a row for no source is stale"        1 'STALE: zlibb is not a source'
 
-# The bug this suite found: an empty "newest" column shifted the fields, and
-# every undetermined pin was counted as none.
+# An empty "newest" column must not shift the fields after it.
 survey less 661 "" UNKNOWN; reviews "# none"
 expect "an undetermined pin is reported, not swallowed"  0 'not determined.*less 661'
 

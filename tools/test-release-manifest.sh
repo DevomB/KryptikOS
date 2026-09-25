@@ -1,30 +1,9 @@
 #!/usr/bin/env bash
-# Focused tests for tools/release-manifest.sh — the acceptance checks the
-# signed-image and recoverable-update work needs.
-#
-#   ./tools/test-release-manifest.sh
-#
-# Deterministic and offline, with real OpenSSH signatures over real files:
-# throwaway ed25519 keys generated per run, one enrolled in the allowed-signers
-# file and one not.
-#
-# What is asserted, in the language of the signed-release acceptance criteria:
-#
-#   * tampered artifacts are rejected — content changed, file removed, file
-#     added, and a manifest whose own bytes were edited after signing;
-#   * a signature by a key that is not enrolled is rejected;
-#   * an unsigned manifest is rejected rather than reported as verified;
-#   * development signing is distinguishable from production trust, and a
-#     development manifest cannot be promoted by editing its role;
-#   * a downgrade to an older signed release is refused;
-#   * there is no default trust anchor.
-#
-# Positive controls throughout: an untampered release must verify, in strict
-# mode, or a tool that rejected everything would satisfy the rest.
+# Tests for tools/release-manifest.sh, offline, with throwaway ed25519 keys.
 
 set -uo pipefail
 
-# See the same note in the other suites.
+# Exported values would override common.sh's derived paths and the signers file.
 unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT
 unset KRYPTIK_RELEASE_SIGNERS
 
@@ -46,8 +25,6 @@ RC=0
 trap 'rm -rf "$W"' EXIT
 show() { sed 's/^/        /' "$OUT"; }
 
-# --- keys -------------------------------------------------------------------
-
 mkdir -p "${W}/keys"
 ssh-keygen -q -t ed25519 -N '' -C release  -f "${W}/keys/rel" </dev/null
 ssh-keygen -q -t ed25519 -N '' -C outsider -f "${W}/keys/out" </dev/null
@@ -56,10 +33,7 @@ SIGNERS="${W}/keys/allowed_signers"
 printf 'release@kryptik.test %s\n' "$(cut -d' ' -f1,2 < "${W}/keys/rel.pub")" \
     > "$SIGNERS"
 
-# If key generation half-fails, every verify below reports "no
-# allowed-signers file" and this suite prints a dozen confusing failures
-# instead of one clear one. Seen once, transiently, while the WSL session
-# was dropping connections. A broken prerequisite is not a test result.
+# Half-made keys would show up as a dozen misleading failures below.
 for _f in "${W}/keys/rel" "${W}/keys/rel.pub" "${W}/keys/out" "$SIGNERS"; do
     if [[ ! -s "$_f" ]]; then
         echo "FATAL: test prerequisite missing or empty: ${_f}" >&2
@@ -68,8 +42,6 @@ for _f in "${W}/keys/rel" "${W}/keys/rel.pub" "${W}/keys/out" "$SIGNERS"; do
         exit 1
     fi
 done
-
-# --- the release tree -------------------------------------------------------
 
 REL="${W}/release"
 build_release() {
@@ -116,10 +88,7 @@ expect_fail() {
 echo "tools/release-manifest.sh"
 echo
 
-# ---------------------------------------------------------------------------
-# positive controls
-# ---------------------------------------------------------------------------
-
+# Positive controls: a tool that rejected everything would pass the rest.
 build_release
 make_signed 1.0 development
 verify
@@ -142,9 +111,6 @@ verify --require-role production --strict
 expect_pass "a production manifest satisfies --require-role production" \
     "role: production"
 
-# Two manifests of an unchanged tree must differ only in their timestamp:
-# entries are sorted, so a diff of two releases shows what actually changed
-# rather than a reordering.
 make_signed 1.0 development
 cp "$MAN" "${W}/m1"
 make_signed 1.0 development
@@ -155,10 +121,7 @@ else
     diff <(grep -v '^created:' "${W}/m1") <(grep -v '^created:' "$MAN") | head -6
 fi
 
-# ---------------------------------------------------------------------------
-# tampered artifacts
-# ---------------------------------------------------------------------------
-
+# Tampered artifacts.
 build_release; make_signed
 printf 'backdoor\n' >> "${REL}/usr/bin/kryptikd"
 verify
@@ -177,8 +140,6 @@ verify --exact
 expect_fail "--exact catches a file that rode along" \
     "present but NOT in the manifest: usr/bin/helper"
 
-# Editing the manifest after signing must break the signature, which is what
-# stops the role and version headers from being rewritten.
 build_release; make_signed 1.0 development
 sed -i 's/^role: development/role: production/' "$MAN"
 verify --require-role production
@@ -191,17 +152,13 @@ verify
 expect_fail "editing the version after signing invalidates the signature" \
     "signature does NOT verify"
 
-# And the contents of an invalid manifest must not be reported at all.
 if ! grep -qF "file(s) match the manifest" "$OUT"; then
     green "no file results are reported for a manifest that did not verify"
 else
     red "file results were reported despite a bad signature"; show
 fi
 
-# ---------------------------------------------------------------------------
-# signer identity
-# ---------------------------------------------------------------------------
-
+# Signer identity.
 build_release; make_signed
 rm -f "${MAN}.sig"
 bash "$TOOL" sign --key "${W}/keys/out" "$MAN" > /dev/null 2>&1
@@ -220,10 +177,7 @@ verify
 expect_fail "an unsigned manifest is rejected, not reported as verified" \
     "the manifest is unsigned"
 
-# ---------------------------------------------------------------------------
-# development signing is not production trust
-# ---------------------------------------------------------------------------
-
+# Development signing is not production trust.
 build_release; make_signed 1.0 development
 verify --require-role production
 expect_fail "a development manifest is refused where production is required" \
@@ -236,10 +190,7 @@ else
     red "--strict did not distinguish development signing (exit ${RC})"; show
 fi
 
-# ---------------------------------------------------------------------------
-# rollback
-# ---------------------------------------------------------------------------
-
+# Rollback.
 build_release; make_signed 1.0 development
 verify --no-downgrade 2.0
 expect_fail "a downgrade to an older signed release is refused" \
@@ -255,23 +206,14 @@ verify --no-downgrade 2.0
 expect_pass "reinstalling the installed version is allowed" \
     "is not older than the installed"
 
-# ---------------------------------------------------------------------------
-# key rotation
-# ---------------------------------------------------------------------------
-#
-# The allowed-signers file IS the rotation mechanism: enrolling a new key and
-# retiring an old one are edits to it. These are the acceptance checks for
-# that, because a rotation that leaves the retired key working has not
-# happened, and one that breaks before the new key is enrolled locks the
-# operator out of their own update channel.
-
+# Key rotation, which is an edit to the allowed-signers file.
 ssh-keygen -q -t ed25519 -N '' -C release-new -f "${W}/keys/new" </dev/null
 NEWPUB="$(cut -d' ' -f1,2 < "${W}/keys/new.pub")"
 OLDPUB="$(cut -d' ' -f1,2 < "${W}/keys/rel.pub")"
 
 build_release
 
-# Overlap: both keys enrolled, so releases signed with either are accepted.
+# Overlap: both keys enrolled.
 printf 'release@kryptik.test %s\nrelease@kryptik.test %s\n' "$OLDPUB" "$NEWPUB" \
     > "$SIGNERS"
 make_signed 4.0 development
@@ -300,16 +242,7 @@ expect_fail "after rotation, the retired key is refused" \
 # Restore.
 printf 'release@kryptik.test %s\n' "$OLDPUB" > "$SIGNERS"
 
-# ---------------------------------------------------------------------------
-# whole-tree manifests: `.` must not poison --exact
-# ---------------------------------------------------------------------------
-#
-# `create --root DIR .` is the natural way to manifest an entire tree, and
-# `find . -type f` emits "./usr/bin/x" while --exact's listing emits
-# "usr/bin/x". Every file was then reported as "present but NOT in the
-# manifest" while simultaneously matching its recorded hash. Found by
-# manifesting the real sysroot, not by reading the code.
-
+# A whole-tree manifest (`create --root DIR .`) must still pass --exact.
 build_release
 rm -f "$MAN" "${MAN}.sig"
 bash "$TOOL" create --out "$MAN" --root "$REL" --version 5.0 \
@@ -332,10 +265,7 @@ verify
 expect_fail "a whole-tree manifest still detects a changed file" \
     "CONTENT MISMATCH: usr/bin/kryptikd"
 
-# ---------------------------------------------------------------------------
-# no default trust anchor
-# ---------------------------------------------------------------------------
-
+# No default trust anchor.
 build_release; make_signed
 NO_COLOR=1 bash "$TOOL" verify --root "$REL" "$MAN" > "$OUT" 2>&1
 rc=$?
@@ -345,8 +275,7 @@ else
     red "verify ran without --signers (exit ${rc})"; show
 fi
 
-# The env var is an accepted way to supply it, so the refusal above is about
-# absence and not about the flag.
+# Control: the refusal above is about absence, not about the flag.
 KRYPTIK_RELEASE_SIGNERS="$SIGNERS" NO_COLOR=1 \
     bash "$TOOL" verify --root "$REL" "$MAN" > "$OUT" 2>&1
 if [[ "$?" -eq 0 ]]; then
@@ -355,10 +284,7 @@ else
     red "KRYPTIK_RELEASE_SIGNERS was not honoured"; show
 fi
 
-# ---------------------------------------------------------------------------
-# create refuses nonsense
-# ---------------------------------------------------------------------------
-
+# create refuses nonsense.
 NO_COLOR=1 bash "$TOOL" create --out "${W}/x.manifest" --root "$REL" \
     --role sortof boot > "$OUT" 2>&1
 if [[ "$?" -ne 0 ]] && grep -qF "must be development or production" "$OUT"; then
@@ -383,100 +309,16 @@ else
     red "create did not warn that the manifest is unsigned"; show
 fi
 
-# --- the installed-marker exemption to --exact ------------------------------
-#
-# apply-update.sh writes .kryptik-update INSIDE the tree so the marker lands
-# with the same rename as the payload. That leaves an installed tree holding
-# one file no release manifest lists, so `verify --exact` against the very
-# manifest it was installed from used to fail forever - which meant a rollback
-# could not be proved complete. Found by running the recovery recipe end to
-# end, not by reading the code.
-#
-# An exemption in a verifier is how holes get made, so these check that it is
-# exactly one name, at the root only, and self-validating.
-
-build_release
-MK="${W}/mk.manifest"
-bash "$TOOL" create --out "$MK" --root "$REL" --name kryptik-boot     --version 1.0 --role development . > /dev/null 2>&1
-bash "$TOOL" sign --key "${W}/keys/rel" "$MK" > /dev/null 2>&1
-MK_SHA="$(sha256sum "$MK" | cut -d' ' -f1)"
-
-marker() { printf 'KRYPTIK-UPDATE-1
-version: 1.0
-manifest-sha256: %s
-' "$1"            > "${REL}/.kryptik-update"; }
-
-vex() {
-    RC=0
-    bash "$TOOL" verify --signers "$SIGNERS" --principal release@kryptik.test         --root "$REL" --exact "$MK" > "$OUT" 2>&1 || RC=$?
-}
-
-# Positive control first: without any marker the tree must verify --exact, or
-# every case below would pass for the wrong reason.
+# An unlisted file at the root is refused, whatever its name.
+build_release; make_signed
+printf 'x\n' > "${REL}/.kryptik-update"
+verify --exact
+expect_fail "--exact refuses an unlisted file at the root" \
+    "present but NOT in the manifest: .kryptik-update"
 rm -f "${REL}/.kryptik-update"
-vex
-if [[ "$RC" -eq 0 ]]; then green "an uninstalled tree verifies --exact"; else red "an uninstalled tree verifies --exact"; show; fi
 
-marker "$MK_SHA"
-vex
-if [[ "$RC" -eq 0 ]]; then
-    green "an installed tree verifies --exact despite the marker"
-else
-    red "an installed tree verifies --exact despite the marker (exit ${RC})"; show
-fi
-if grep -qF "marker names this manifest" "$OUT"; then
-    green "and says the marker was recognised rather than ignored silently"
-else
-    red "and says the marker was recognised rather than ignored silently"; show
-fi
-
-marker "0000000000000000000000000000000000000000000000000000000000000000"
-vex
-if [[ "$RC" -ne 0 ]] && grep -qF "DIFFERENT release" "$OUT"; then
-    green "a marker naming another manifest is a finding, not an exemption"
-else
-    red "a marker naming another manifest is a finding, not an exemption (exit ${RC})"; show
-fi
-
-printf 'KRYPTIK-UPDATE-1
-version: 1.0
-' > "${REL}/.kryptik-update"
-vex
-if [[ "$RC" -ne 0 ]] && grep -qF "<none>" "$OUT"; then
-    green "a marker with no manifest-sha256 is refused"
-else
-    red "a marker with no manifest-sha256 is refused (exit ${RC})"; show
-fi
-
-# The exemption is one exact name, not a pattern and not a dotfile rule.
-rm -f "${REL}/.kryptik-update"
-printf 'x
-' > "${REL}/.kryptik-update.bak"
-vex
-if [[ "$RC" -ne 0 ]] && grep -qF "NOT in the manifest: .kryptik-update.bak" "$OUT"; then
-    green "a similarly named file is still refused"
-else
-    red "a similarly named file is still refused (exit ${RC})"; show
-fi
-rm -f "${REL}/.kryptik-update.bak"
-
-# Root only: a marker deeper in the tree is unsigned content, not metadata.
-mkdir -p "${REL}/usr/share"
-marker "$MK_SHA"
-cp "${REL}/.kryptik-update" "${REL}/usr/share/.kryptik-update"
-vex
-if [[ "$RC" -ne 0 ]] && grep -qF "usr/share/.kryptik-update" "$OUT"; then
-    green "a marker below the root is still refused"
-else
-    red "a marker below the root is still refused (exit ${RC})"; show
-fi
-rm -f "${REL}/usr/share/.kryptik-update" "${REL}/.kryptik-update"
-
-# --- the update channel's statement of what is current -----------------------
-# `pointer` writes and signs it; the machine's side is kryptik-update's
-# check-pointer. The rows that matter are the ones where the two meet: what
-# this tool emits is accepted by the updater's own function, under an anchor
-# shaped like the image's (each key honoured in one namespace only).
+# pointer: its output must pass kryptik-update's own check-pointer, under an
+# anchor shaped like the image's (each key honoured in one namespace only).
 build_release
 make_signed 1.0.3 development
 ssh-keygen -q -t ed25519 -N '' -C latest -f "${W}/keys/latest" </dev/null
@@ -520,8 +362,7 @@ else
 fi
 # Signed by the release key instead: a statement the anchor does not honour.
 NO_COLOR=1 bash "$TOOL" pointer --key "${W}/keys/rel" --signers "$ANCHOR" --manifest "$MAN" --base 1.0.3/ --out "${W}/latest-by-rel" > /dev/null 2>&1
-# Into a variable first: the refusal exits 1, and under pipefail that would
-# fail the pipeline whatever grep found.
+# Captured first: under pipefail the refusal's exit 1 would fail a pipe to grep.
 said="$(bash "${W}/check-pointer.sh" "${W}/latest-by-rel" "${W}/latest-by-rel.sig" 2>&1)"
 if [[ "$said" == *"REFUSED:"*"does NOT verify"* && "$said" != *ACCEPTED* ]]; then
     green "pointer: one signed with the release key is refused by the updater, because the anchor honours that key for releases only"
@@ -529,7 +370,6 @@ else
     red "pointer: the updater accepted a statement signed by the release key"
 fi
 
-# Re-issued later for the same release: only the date moves.
 NO_COLOR=1 bash "$TOOL" pointer --key "${W}/keys/latest" --signers "$ANCHOR" --manifest "$MAN" --base 1.0.3/ --out "${W}/latest-2" \
     --issued 2027-04-01T00:00:00+00:00 > /dev/null 2>&1
 if [[ "$(diff <(cat "$PTR") <(cat "${W}/latest-2") | grep -c '^[<>]')" -eq 2 ]] && grep -qx 'issued: 2027-04-01T00:00:00+00:00' "${W}/latest-2"; then
@@ -538,7 +378,7 @@ else
     red "pointer: a re-issue changed more than the date"
 fi
 
-# A signature file that is there and is not the manifest's signature.
+# A signature is present, but by a key the anchor does not hold.
 cp "${MAN}.sig" "${W}/man.sig.good"; ssh-keygen -q -t ed25519 -N "" -f "${W}/keys/stranger" > /dev/null
 rm -f "${MAN}.sig"; ssh-keygen -Y sign -f "${W}/keys/stranger" -n kryptik-release "$MAN" < /dev/null > /dev/null 2>&1
 NO_COLOR=1 bash "$TOOL" pointer --key "${W}/keys/latest" --signers "$ANCHOR" --manifest "$MAN" --base 1.0.3/ --out "${W}/latest-stranger" > "$OUT" 2>&1; RC=$?

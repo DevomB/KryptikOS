@@ -1,20 +1,8 @@
 #!/usr/bin/env bash
-#
-# Does this system's C library actually unwind?
-#
-# glibc implements pthread_exit(), pthread_cancel() and backtrace() by dlopening
-# libgcc_s.so.1 at the moment it needs them and forcing a stack unwind through
-# it. If the loader cannot then tell the unwinder which object an address
-# belongs to, libgcc gives up with a bare abort() - no message, no diagnostic,
-# just SIGABRT. A whole class of ordinary programs dies that way.
-#
-# That is not hypothetical. It is why the Kryptik kernel build failed at the
-# final link: scripts/sorttable ends its sorter threads with pthread_exit(),
-# and the only thing the log said was "Failed to sort kernel tables".
-#
-# Run this inside the chroot, or on a booted Kryptik system. It needs a
-# compiler; without one it skips (77) rather than claiming a pass.
-#
+# Check that the C library can unwind. glibc dlopens libgcc_s.so.1 for
+# pthread_exit, pthread_cancel and backtrace, and if the loader misattributes
+# addresses the unwinder abort()s silently (docs/glibc-loader-defect.md).
+# Run in the chroot or on a booted system; exit 77 without a compiler.
 set -uo pipefail
 
 CC="${CC:-cc}"
@@ -36,13 +24,9 @@ command -v "$CC" >/dev/null 2>&1 || {
 work="$(mktemp -d)" || { echo "mktemp failed"; exit 1; }
 cd "$work" || exit 1
 
-# Every probe runs with no controlling terminal and with glibc's fatal messages
-# forced to stderr. Without both, a glibc diagnostic goes to /dev/tty and never
-# reaches the log - which is exactly how this defect stayed invisible.
-# `setsid` without -w forks and exits 0 when it is already a process-group
-# leader, which would throw away the child's exit status and make every probe
-# look like it passed. Prefer -w; the abort() control below catches it either
-# way, but a harness should not depend on a control to notice it is lying.
+# Probes run without a controlling terminal and with glibc's fatal messages on
+# stderr, or glibc writes them to /dev/tty. setsid without -w may fork and exit
+# 0, losing the probe's status.
 SETSID=(setsid)
 if setsid -w true >/dev/null 2>&1; then
     SETSID=(setsid -w)
@@ -147,11 +131,9 @@ probe "backtrace() returns frames"    bt.c
 echo
 echo "=== the loader knows where it is ==="
 
-# LD_TRACE_LOADED_OBJECTS (what ldd runs) prints each object's map start. A
-# loader with glibc bug 33088 records its own as 0, and _dl_find_object then
-# hands ld.so every address below libc that belongs to nothing else - which
-# is where every later dlopen lands. That was Kryptik's defect; the "why"
-# section below shows its consequence.
+# LD_TRACE_LOADED_OBJECTS (as ldd uses it) prints each object's map start. With
+# glibc bug 33088 the loader's own is 0, and _dl_find_object then blames ld.so
+# for unclaimed addresses below libc, which is where later dlopens land.
 if [[ -x ./ctl_ok ]]; then
     trace="$(LD_TRACE_LOADED_OBJECTS=1 ./ctl_ok 2>&1 || true)"
     ldso_start="$(printf '%s\n' "$trace" | sed -n 's/.*ld-linux[^ ]* (0x\([0-9a-f]*\)).*/\1/p' | head -1)"

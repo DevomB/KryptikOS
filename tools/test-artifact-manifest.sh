@@ -1,15 +1,5 @@
 #!/usr/bin/env bash
-# Regression test for tools/artifact-manifest.sh.
-#
-# The manifest's whole value is that `--verify` says no when something moved.
-# So every case here is a positive control: change one property of one entry,
-# and verification must fail. The negative control - an untouched tree
-# verifying clean - is first, because without it a verifier that always fails
-# would pass every other case.
-#
-# Determinism gets its own case. A manifest that is not byte-stable makes the
-# digest meaningless and `diff` useless, and the usual cause is a timestamp or
-# an absolute path that crept into the body.
+# Tests for tools/artifact-manifest.sh.
 
 set -uo pipefail
 
@@ -50,20 +40,15 @@ ver()  { "$MAN" --root "$TREE" --verify "$1" 2>&1; }
 M1="$W/m1.txt"
 gen "$M1" || { echo "manifest generation failed"; exit 1; }
 
-# ---------------------------------------------------------------------------
-# 1. Negative control.
-# ---------------------------------------------------------------------------
+# Control: a verifier that always failed would pass every case below.
 out="$(ver "$M1")"; rc=$?
 check "untouched tree verifies clean" "$([[ $rc -eq 0 ]] && echo ok)"
 check "verification reports the digest" "$(grep -q 'digest matches' <<<"$out" && echo ok)"
 
-# ---------------------------------------------------------------------------
-# 2. Determinism: a second manifest of the same tree is byte-identical below
-#    the comment block, and carries the same digest.
-# ---------------------------------------------------------------------------
+# Determinism: the same tree gives the same body and digest.
 M2="$W/m2.txt"
-sleep 1                      # a different generation second, deliberately
-touch "$TREE/usr/bin/prog"   # a different mtime, deliberately
+sleep 1                      # a different generation second
+touch "$TREE/usr/bin/prog"   # a different mtime
 gen "$M2"
 d1="$(sed -n 's/^# digest: //p' "$M1")"
 d2="$(sed -n 's/^# digest: //p' "$M2")"
@@ -72,14 +57,11 @@ check "body is byte-identical across runs" \
       "$(diff <(grep -v '^#' "$M1") <(grep -v '^#' "$M2") >/dev/null && echo ok)"
 check "mtime is deliberately not part of identity" "$([[ "$d1" == "$d2" ]] && echo ok)"
 
-# The body must not contain the tree's absolute path, or the manifest stops
-# being comparable between machines.
+# An absolute path would make manifests incomparable between machines.
 check "body carries no absolute root path" \
       "$(grep -v '^#' "$M1" | grep -qF "$TREE" && echo "" || echo ok)"
 
-# ---------------------------------------------------------------------------
-# 3. Positive controls: one property at a time.
-# ---------------------------------------------------------------------------
+# Change one property at a time; each must be detected.
 echo "tampered" > "$TREE/usr/bin/prog"
 out="$(ver "$M1")"; rc=$?
 check "changed file content: detected" "$([[ $rc -ne 0 ]] && echo ok)"
@@ -111,8 +93,7 @@ out="$(ver "$M1")"; rc=$?
 check "retargeted symlink: detected" "$([[ $rc -ne 0 ]] && echo ok)"
 ln -sfn /usr/bin/prog "$TREE/usr/bin/link"
 
-# Same content, different name: a swap that a naive content-only manifest
-# would miss entirely.
+# Same content under a new name: a content-only manifest would miss it.
 mv "$TREE/etc/conf" "$TREE/etc/conf2"
 out="$(ver "$M1")"; rc=$?
 check "renamed file with identical content: detected" "$([[ $rc -ne 0 ]] && echo ok)"
@@ -120,9 +101,6 @@ mv "$TREE/etc/conf2" "$TREE/etc/conf"
 
 check "tree restored: verifies clean again" "$(ver "$M1" >/dev/null 2>&1 && echo ok)"
 
-# ---------------------------------------------------------------------------
-# 4. Paths with spaces survive the round trip.
-# ---------------------------------------------------------------------------
 check "spaced path is recorded" \
       "$(grep -qF 'a dir with spaces/file name.txt' "$M1" && echo ok)"
 echo "changed" > "$TREE/a dir with spaces/file name.txt"
@@ -130,18 +108,14 @@ out="$(ver "$M1")"; rc=$?
 check "spaced path: change detected" "$([[ $rc -ne 0 ]] && echo ok)"
 echo "spaced" > "$TREE/a dir with spaces/file name.txt"
 
-# ---------------------------------------------------------------------------
-# 5. Inputs are recorded, not just the tree.
-# ---------------------------------------------------------------------------
+# Inputs are recorded, not just the tree.
 echo "fake tarball" > "$KRYPTIK_SOURCES/thing-1.0.tar.gz"
 mkdir -p "$KRYPTIK_WORK/.stamps"
 printf '# kryptik build stamp v2\nfingerprint: %064d\nstep: thing\n' 7 \
     > "$KRYPTIK_WORK/.stamps/thing"
 M3="$W/m3.txt"
 gen "$M3"
-# Tabs must be real tabs: GNU grep -E reads "\t" as a literal 't', so a
-# pattern written that way silently matches nothing and reports a failure that
-# is not there.
+# Real tabs: grep -E reads "\t" as a plain 't'.
 T=$'\t'
 check "records source tarballs by content" \
       "$(grep -qE "^input${T}source${T}thing-1.0.tar.gz${T}[0-9a-f]{64}$" "$M3" && echo ok)"
@@ -152,15 +126,11 @@ check "records the recipes by content" \
 check "records the repository commit" \
       "$(grep -qE "^input${T}repo-commit${T}" "$M3" && echo ok)"
 
-# Changing a recorded INPUT must change the digest, even with the tree untouched.
 echo "different tarball" > "$KRYPTIK_SOURCES/thing-1.0.tar.gz"
 out="$(ver "$M3")"; rc=$?
 check "changed input tarball: digest differs though the tree did not" \
       "$([[ $rc -ne 0 ]] && echo ok)"
 
-# ---------------------------------------------------------------------------
-# 6. A manifest this tool did not write is refused, not misread.
-# ---------------------------------------------------------------------------
 echo "not a manifest" > "$W/junk.txt"
 out="$("$MAN" --root "$TREE" --verify "$W/junk.txt" 2>&1)"; rc=$?
 check "manifest with no digest line is refused" \
