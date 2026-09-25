@@ -20,10 +20,8 @@ commit ids is exactly a diff against the tarball.
 
 ## Why the whole branch
 
-Until 2026-09-19 this directory carried three commits picked from the branch
-(the `_dl_find_object` fixes for bugs 32245 and 31943 and their prerequisite)
-and the 33088 fix. The tarball was otherwise 2.40 as released in July 2024,
-and the branch has since fixed, among much else:
+The 2.40 tarball is the release of July 2024. The branch has since fixed,
+among much else:
 
 | | |
 |---|---|
@@ -38,29 +36,22 @@ and the branch has since fixed, among much else:
 (CVE-2025-4802 appears on the branch only as a test; its fix predates 2.40.
 CVE-2025-5702 and CVE-2025-5745 are ppc64le string functions.)
 
-Picking those out one by one would mean choosing, for each, which of the 230
-commits it silently depends on, and being wrong would be invisible until it
-mattered. The branch is what upstream maintains and tests as 2.40; carrying
-all of it is the smaller claim. The three commits carried before are on it
-(`626c048f`, `e8ac8a98`, `2193f426`), which is why they are no longer files
-here.
+Picking fixes one by one would mean guessing which of the 230 commits each
+depends on. The branch is what upstream maintains and tests as 2.40.
 
 `NEWS` is left out because the branch's has a 2.40.1 section the tarball's
 lacks, so its hunks cannot apply; it changes no code. `advisories/` is
 upstream's own record of its security advisories, text only, which the
 branch reorganises; nothing builds from it.
 
-## Why 0004 is still here
+## 0004: the loader's own map bounds (bug 33088)
 
-[docs/glibc-loader-defect.md](../../../docs/glibc-loader-defect.md) records
-the defect: on Kryptik, `pthread_exit()`, `pthread_cancel()` and
-`backtrace()` abort with no message, because `_dl_find_object` attributes
-every object loaded after startup to `ld-linux-x86-64.so.2` itself, so
-libgcc's unwinder reads ld.so's `.eh_frame`, finds no FDE, and calls
-`abort()`. Two upstream loader bugs produce that symptom. Bug 31943 (an
-ld.so mapped with gaps between its LOAD segments) is fixed on the branch and
-so is in 0001; it is correct and it was not what was wrong here. Kryptik's
-loader had the other one.
+Without it, `pthread_exit()`, `pthread_cancel()` and `backtrace()` abort
+with no message: `_dl_find_object` attributes every object loaded after
+startup to `ld-linux-x86-64.so.2` itself, so libgcc's unwinder reads ld.so's
+`.eh_frame`, finds no FDE and calls `abort()`. Bug 31943 (an ld.so mapped
+with gaps between its LOAD segments) gives the same symptom; its fix is on
+the branch, in 0001, but it was not the cause here.
 
 **Bug 33088**: the loader stores its own map bounds -
 `l_map_start = &__ehdr_start`, `l_map_end = _end` - in `_dl_start`, before
@@ -152,23 +143,10 @@ confirm `patch -p1 -F0` still applies 0001 and then 0004 to the unpacked
 tarball after the FHS patch; repeat the `diff -r` check. The toolchain
 rebuilds from stage 01, because its glibc is this glibc.
 
-## The evidence
+## Tests
 
-`make test-libc-unwind` (tools/test-libc-unwind.sh, run against the TARGET
-glibc inside the chroot) probes the three unwinding entry points, asks
-`_dl_find_object` directly which object it blames for a dlopen()ed address,
-and reads the loader's own map start back through `LD_TRACE_LOADED_OBJECTS`.
-With the branch's loader fixes alone it failed (2 passed, 4 failed; the
-loader blamed itself); see docs/status.md for the run with 0004 that closed
-the defect.
-
-For the move to the whole branch, before it reached a Kryptik build: both
-patches applied with no fuzz and no rejects to the unpacked tarball; the
-patched tree compiled on a development host (gcc 13) with no error and the
-33088 relocation check found none; the library it produced ran and refused
-`aligned_alloc` with an overflowing alignment (CVE-2026-0861). On that host
-the pristine tarball does not build at all, for a reason that is the host's
-(its gcc forces `_FORTIFY_SOURCE` on, and `misc/syslog.c` fails to inline),
-so the comparison build used `CC="gcc -U_FORTIFY_SOURCE"`; Kryptik's own
-toolchain does not have that default. The Kryptik evidence is stages 01 and
-04 building with it, `make test-libc-unwind`, and the acceptance run.
+`make test-libc-unwind` (tools/test-libc-unwind.sh, against the target glibc
+inside the chroot) probes the three unwinding entry points, asks
+`_dl_find_object` which object it blames for a dlopened address, and reads
+the loader's map start back through `LD_TRACE_LOADED_OBJECTS`. Without 0004
+it fails, with the loader blaming itself.
