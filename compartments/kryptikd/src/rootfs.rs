@@ -223,13 +223,11 @@ pub const ETC_RO_FILES: &[&str] = &["/etc/ld.so.cache", "/etc/services", "/etc/p
 pub const NIC_ETC_FILES: &[&str] = &["/etc/dhcpcd.conf", "/etc/kryptik/time.conf", "/etc/kryptik/update.conf"];
 
 /// Files of a zone's /proc about the whole machine, hidden behind /dev/null:
-/// the interrupt counts (interrupts, softirqs, the intr line of stat) time
-/// every keystroke typed anywhere, and timer_list names other zones' tasks.
-/// The CPU counters in stat go with the intr line, so top shows no CPU use,
-/// vmstat will not start, and libuv's os.cpus() and Java's load figures read
-/// nothing in a zone. That
-/// is the price of the keystroke channel; ps takes its boot time from
-/// CLOCK_BOOTTIME and is unaffected.
+/// the interrupt counts (interrupts, softirqs, stat's intr line) time every
+/// keystroke typed anywhere, and timer_list names other zones' tasks. Masking
+/// stat hides its CPU counters too, so top shows no CPU use, vmstat will not
+/// start, and libuv's os.cpus() and Java's load figures read nothing; ps takes
+/// its boot time from CLOCK_BOOTTIME and is unaffected.
 pub const PROC_MASKED: &[&str] = &["interrupts", "softirqs", "stat", "timer_list", "sched_debug"];
 
 /// What a zone other than the nic zone sees of sysfs: its own interfaces and
