@@ -237,18 +237,9 @@ s_glibc() {
     local fhs="${KRYPTIK_SOURCES}/glibc-${V_GLIBC}-fhs-1.patch"
     [[ -f "$fhs" ]] && patch -Np1 -i "$fhs"
 
-    # The loader defect recorded in docs/glibc-loader-defect.md - pthread_exit(),
-    # pthread_cancel() and backtrace() aborting because _dl_find_object
-    # attributed every object loaded after startup to ld.so itself - and
-    # what fixes it. build/patches/glibc-2.40/ carries upstream's maintained
-    # release/2.40/master branch as one patch, with provenance in its
-    # README (the security fixes since July 2024, and the fix for bug 31943,
-    # a loader mapped with gaps), and beside it the one that turned out to
-    # be Kryptik's actual defect and was never backported, bug 33088: GCC
-    # 14 at -O2 took the address of __ehdr_start for the loader's own map
-    # bounds from a constant that is only right after self-relocation, so
-    # ld.so recorded itself as starting at address 0. The two checks below
-    # (rtld.os relocations, ldd's map start) fail this step if it returns.
+    # build/patches/glibc-2.40 (see its README): upstream's release/2.40/master
+    # branch plus the bug 33088 fix, without which ld.so records its own map at
+    # address 0 and unwinding aborts. The two checks below catch its return.
     apply_repo_patches "glibc-${V_GLIBC}"
 
     mkdir -p build
@@ -1519,12 +1510,9 @@ s_kryptikd() {
     echo "installed /usr/bin/kryptik (sha256 ${4:-unknown})"
 }
 
-# The suites and the guest-side checks, in the image, so the VM drivers can
-# run the SAME isolation, launcher and CLI suites on the installed kernel as
-# root - the [vm] rows those suites declare NOT RUN on a developer host.
-# The layout matters: the suites locate their tree as $HERE/../.., so they
-# sit at /usr/lib/kryptik/compartments/tests, next to a kryptikd symlink at
-# the path they default to (see tools/vm/mkinitramfs.sh for the same rule).
+# The suites and guest checks, in the image, so the VM drivers run them as root
+# on the installed kernel. They find their tree as $HERE/../.., hence
+# /usr/lib/kryptik/compartments/tests beside a kryptikd link at their default.
 s_tests() {
     echo "inputs digest: ${1:-none}"
     local base=/usr/lib/kryptik
