@@ -50,14 +50,21 @@ which rustc does not mark), 107 lacked `BIND_NOW`, 28 were not PIE (mostly
 gcc's drivers) and 42 had an RPATH (perl and python modules naming their own
 directories). The shell, coreutils and the libraries the desktop and zones use
 carry the full set. The fix is per package (or `-Z cf-protection` for the
-Rust binaries), not a weaker check.
+Rust binaries), not a weaker check. Part of the CET count was not the
+packages: everything stage 04 builds before its glibc, the first with
+`--enable-cet`, linked stage 01's crt files, which carry no CET note, so each
+of those packages is now built a second time right after glibc.
 
 ## Allocator
 
 ADR-005 makes hardened_malloc the system allocator. Stage 04 builds it without
-`-march=native` and installs `/usr/lib/libhardened_malloc.so`, but nothing
-preloads it yet (the image has no `/etc/ld.so.preload`), so programs still use
-glibc's malloc. No benchmark numbers are claimed.
+`-march=native` and installs `/usr/lib/libhardened_malloc.so`. Stage 06 writes
+`/etc/ld.so.preload` into the image's root, so every process of the running
+system uses it, and kryptikd writes each zone its own preload naming only that
+library (a zone never sees the host's). The build chroot never has the file.
+Its guard pages are separate mappings, so `vm.max_map_count` is 1048576. The
+booted medium and the zones suite check that a process has it mapped. No
+benchmark numbers are claimed.
 
 ## Kernel
 
@@ -124,9 +131,12 @@ sysctls because there is no `bpf()`; seccomp's classic filters do not need it.
 Privilege transitions go through kryptikd, where they can be audited, not
 through setuid binaries. A binary that needs privilege should use a file
 capability (such as `CAP_NET_RAW` for ping) or a brokered service; a setuid
-binary needs a justified entry in `build/config/setuid-allowlist.txt`, which
-is empty. `tools/audit-setuid.sh ROOT` fails on any setuid or setgid binary
-not on that list. The build and CI do not run it yet.
+binary needs a justified entry in `build/config/setuid-allowlist.txt`: today
+`su`, the one way from a login to root, and `passwd`, which nothing brokers
+yet. Stage 06 runs `tools/audit-setuid.sh --strip` over the image's root, so
+the bit comes off every other file (shadow and util-linux install eleven
+more); without `--strip` the script fails on any unlisted setuid or setgid
+binary.
 
 ## Zone syscall filter
 

@@ -39,8 +39,8 @@ leak only that zone.
 ## ADR-005: hardened_malloc as the system allocator
 
 It adds slab quarantines, guard slabs, randomized allocation and
-heap-overflow canaries. Built and installed, not yet preloaded
-([hardening](hardening.md#allocator)).
+heap-overflow canaries. Preloaded for every process of the running system and
+of every zone ([hardening](hardening.md#allocator)).
 
 **Cost:** slower on allocation-heavy workloads.
 
@@ -118,8 +118,9 @@ process would contradict that.
 **Cost:**
 
 - rustc is not built from source: that needs an existing rustc, or mrustc, a
-  project of its own. The shipped kryptikd and kryptik-wlproxy are built by an
-  upstream toolchain pinned in the Distro workflow, a trust anchor
+  project of its own. The shipped kryptikd and kryptik-wlproxy are built by
+  Rust's release tarballs, held to the hashes in `build/config/rust.lock`
+  (checked against the Rust release key when pinned): a trust anchor
   [supply-chain.md](supply-chain.md) otherwise avoids.
 - kryptikd depends on `libc` only; every new crate is a supply-chain decision
   justified in review.
