@@ -1473,21 +1473,7 @@ pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String
         ),
         _ => "caps       bounding set dropped to CAP_NET_BIND_SERVICE only".to_string(),
     };
-    let flags = isolate::namespace_flags(zone);
-    let mut ns = Vec::new();
-    for (f, n) in [
-        (libc::CLONE_NEWUSER, "user"),
-        (libc::CLONE_NEWNS, "mount"),
-        (libc::CLONE_NEWPID, "pid"),
-        (libc::CLONE_NEWIPC, "ipc"),
-        (libc::CLONE_NEWUTS, "uts"),
-        (libc::CLONE_NEWCGROUP, "cgroup"),
-        (libc::CLONE_NEWNET, "net"),
-    ] {
-        if flags & f != 0 {
-            ns.push(n);
-        }
-    }
+    let ns = isolate::namespace_names(isolate::namespace_flags(zone));
 
     let storage = match zone.storage {
         StorageMode::Encrypted => format!(

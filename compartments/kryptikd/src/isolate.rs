@@ -49,6 +49,21 @@ fn check(call: &'static str, ret: libc::c_int) -> Result<(), IsolateError> {
 /// Namespace flags for a zone. Every zone gets its own network namespace; the
 /// nic zone's is where the parent moves the physical NIC (netzone), leaving
 /// zone 0 with loopback.
+/// The namespaces a zone can be given, by name, in the order reports list them.
+pub const NAMESPACES: [(libc::c_int, &str); 7] = [
+    (libc::CLONE_NEWUSER, "user"),
+    (libc::CLONE_NEWNS, "mount"),
+    (libc::CLONE_NEWPID, "pid"),
+    (libc::CLONE_NEWIPC, "ipc"),
+    (libc::CLONE_NEWUTS, "uts"),
+    (libc::CLONE_NEWCGROUP, "cgroup"),
+    (libc::CLONE_NEWNET, "net"),
+];
+
+pub fn namespace_names(flags: libc::c_int) -> Vec<&'static str> {
+    NAMESPACES.iter().filter(|(f, _)| flags & f != 0).map(|(_, n)| *n).collect()
+}
+
 pub fn namespace_flags(zone: &Zone) -> libc::c_int {
     match zone.network {
         NetworkMode::None | NetworkMode::Routed | NetworkMode::Nic => ZONE_NAMESPACES | NS_NET,
@@ -397,13 +412,7 @@ mod tests {
     fn every_zone_gets_core_namespaces() {
         for m in ["none", "routed", "nic"] {
             let f = namespace_flags(&zone(m));
-            for (flag, name) in [
-                (libc::CLONE_NEWUSER, "user"),
-                (libc::CLONE_NEWNS, "mount"),
-                (libc::CLONE_NEWPID, "pid"),
-                (libc::CLONE_NEWIPC, "ipc"),
-                (libc::CLONE_NEWUTS, "uts"),
-            ] {
+            for (flag, name) in &NAMESPACES[..5] {
                 assert_ne!(f & flag, 0, "zone mode {m} is missing the {name} namespace");
             }
         }

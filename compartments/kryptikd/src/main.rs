@@ -725,22 +725,7 @@ fn cmd_show(dir: &Path, name: &str) -> ExitCode {
         println!("pids_max     {p}");
     }
 
-    let flags = isolate::namespace_flags(&z);
-    let mut ns = Vec::new();
-    for (f, n) in [
-        (libc::CLONE_NEWUSER, "user"),
-        (libc::CLONE_NEWNS, "mount"),
-        (libc::CLONE_NEWPID, "pid"),
-        (libc::CLONE_NEWIPC, "ipc"),
-        (libc::CLONE_NEWUTS, "uts"),
-        (libc::CLONE_NEWCGROUP, "cgroup"),
-        (libc::CLONE_NEWNET, "net"),
-    ] {
-        if flags & f != 0 {
-            ns.push(n);
-        }
-    }
-    println!("namespaces   {}", ns.join(", "));
+    println!("namespaces   {}", isolate::namespace_names(isolate::namespace_flags(&z)).join(", "));
     println!("seccomp      default-deny, {} syscalls allowed", seccomp::BASE_ALLOWLIST.len());
 
     println!();
@@ -833,38 +818,7 @@ fn cmd_seccomp_probe(name: &str) -> Option<ExitCode> {
         _ => return None,
     };
 
-    let pid = unsafe { libc::fork() };
-    if pid < 0 {
-        eprintln!("seccomp-test: fork failed");
-        return Some(ExitCode::FAILURE);
-    }
-    if pid == 0 {
-        if seccomp::confine_zone().is_err() {
-            unsafe { libc::_exit(1) };
-        }
-        let rc = probe();
-        unsafe { libc::_exit(rc) };
-    }
-    let mut status: libc::c_int = 0;
-    unsafe { libc::waitpid(pid, &mut status, 0) };
-    let termsig = spawn::signalled_by(status);
-    let exitcode = (status >> 8) & 0xff;
-    Some(if termsig == Some(libc::SIGSYS) {
-        eprintln!("seccomp-test: {name} killed by SIGSYS (blocked)");
-        ExitCode::from(5)
-    } else if let Some(sig) = termsig {
-        eprintln!("seccomp-test: {name} killed by signal {sig}");
-        ExitCode::from(6)
-    } else if exitcode == 7 {
-        eprintln!("seccomp-test: {name} refused with the intended errno");
-        ExitCode::from(7)
-    } else if exitcode == 1 {
-        eprintln!("seccomp-test: could not install filter");
-        ExitCode::FAILURE
-    } else {
-        eprintln!("seccomp-test: {name} COMPLETED - not blocked");
-        ExitCode::SUCCESS
-    })
+    Some(under_zone_filter(name, probe))
 }
 
 fn run_options_from(args: &[String]) -> Result<spawn::RunOptions, String> {
@@ -1264,37 +1218,43 @@ fn cmd_seccomp_trace(cmd: &[String]) -> ExitCode {
 }
 
 fn cmd_seccomp_test(name: &str, nr: libc::c_long) -> ExitCode {
+    // The filter acts before the kernel reads the arguments; a blocked call never returns.
+    under_zone_filter(name, || {
+        unsafe { libc::syscall(nr, 0, 0, 0, 0, 0, 0) };
+        0
+    })
+}
+
+/// Run `probe` in a child under the zone filter and say how it ended. Exit 5:
+/// killed by SIGSYS; 6: another signal; 7: refused with the intended errno;
+/// 1: no filter; 0: completed.
+fn under_zone_filter(name: &str, probe: impl FnOnce() -> i32) -> ExitCode {
     // SAFETY: fork in a program that does no threading before this point.
     let pid = unsafe { libc::fork() };
     if pid < 0 {
         eprintln!("seccomp-test: fork failed");
         return ExitCode::FAILURE;
     }
-
     if pid == 0 {
-        // Past the filter anything else may be blocked: make the call, report by exit code.
         if seccomp::confine_zone().is_err() {
             unsafe { libc::_exit(1) };
         }
-        // The filter acts before the kernel reads the arguments; a blocked call never returns.
-        unsafe {
-            libc::syscall(nr, 0, 0, 0, 0, 0, 0);
-            libc::_exit(0)
-        }
+        let rc = probe();
+        unsafe { libc::_exit(rc) };
     }
-
     let mut status: libc::c_int = 0;
     unsafe { libc::waitpid(pid, &mut status, 0) };
-
     let termsig = spawn::signalled_by(status);
     let exitcode = (status >> 8) & 0xff;
-
     if termsig == Some(libc::SIGSYS) {
         eprintln!("seccomp-test: {name} killed by SIGSYS (blocked)");
         ExitCode::from(5)
     } else if let Some(sig) = termsig {
         eprintln!("seccomp-test: {name} killed by signal {sig}");
         ExitCode::from(6)
+    } else if exitcode == 7 {
+        eprintln!("seccomp-test: {name} refused with the intended errno");
+        ExitCode::from(7)
     } else if exitcode == 1 {
         eprintln!("seccomp-test: could not install filter");
         ExitCode::FAILURE
