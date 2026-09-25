@@ -112,6 +112,34 @@ mod tests {
         }
     }
 
+    /// The proxy forgets an object only on wl_display.delete_id, which names
+    /// client-created ids. An object the compositor created would stay in the
+    /// map until the session hit its object bound, so nothing a zone can
+    /// reach may be created by an event.
+    #[test]
+    fn nothing_a_zone_reaches_is_created_by_the_compositor() {
+        use crate::protocol::{find, Arg};
+        let mut reach: Vec<&str> = ALLOWED.iter().map(|(n, _)| *n).chain(["wl_display", "wl_registry"]).collect();
+        let mut i = 0;
+        while i < reach.len() {
+            let iface = find(reach[i]).unwrap();
+            for m in iface.requests {
+                for a in m.args() {
+                    if let Arg::NewId { iface: Some(n) } = a {
+                        if !reach.contains(&n) {
+                            reach.push(n);
+                        }
+                    }
+                }
+            }
+            for m in iface.events {
+                assert!(m.args().all(|a| !matches!(a, Arg::NewId { .. })), "{}.{} creates an object", iface.name, m.name);
+            }
+            i += 1;
+        }
+        assert!(reach.len() > ALLOWED.len() + 2, "the walk reached the objects the globals create");
+    }
+
     #[test]
     fn every_allowed_interface_is_in_the_tables() {
         for (n, v) in ALLOWED {
