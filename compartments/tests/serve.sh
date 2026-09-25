@@ -312,6 +312,16 @@ else
 fi
 for _ in $(seq 1 60); do [[ "$(ask 'status\n')" == "end" ]] && break; sleep 0.1; done
 
+# A command that ends at once with 0 is ok, and its end is in the log however
+# quickly it came: a zone terminal whose shell died unseen was a silent "ok".
+r="$(ask 'run alpha\narg /bin/true\nend\n')"
+for _ in $(seq 1 60); do [[ "$(ask 'status\n')" == "end" ]] && break; sleep 0.1; done
+if [[ "$r" == ok\ [0-9]* ]] && grep -q "launcher ${r#ok } exited 0" "$WORK/serve.log"; then
+    pass "S7d a command that ends at once is ok, and the log says it ended"
+else
+    fail "S7d ${r%$'\n'}: $(grep -F "${r#ok }" "$WORK/serve.log" | tr '\n' '|')"
+fi
+
 # --- the proxy socket ------------------------------------------------------------------------
 
 head_ "the proxy socket"
