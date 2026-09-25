@@ -267,7 +267,7 @@ stamp_compiler_id() {
 _helpers_of() {
     local -A seen=(["$1"]=1)
     local -a todo=("$1")
-    local f w runner=" step stage_contract stage_depends_on stamp_fingerprint recipe_fingerprint _helpers_of _stamp_read _stamp_write _stamp_stale _tree_paths _forget_outputs "
+    local f w runner=" step stage_contract stage_depends_on stamp_fingerprint recipe_fingerprint _helpers_of _stamp_read _stamp_write _stamp_stale "
     while [[ "${#todo[@]}" -gt 0 ]]; do
         f="${todo[-1]}"; unset 'todo[-1]'
         for w in $(declare -f "$f" | grep -oE '[A-Za-z_][A-Za-z0-9_]*' | sort -u); do
@@ -418,31 +418,6 @@ Stamp: ${stamp}"
     esac
 }
 
-# What a step installs, for the stages that set STAMP_TREE: the paths it created
-# under the sysroot, kept as ${stamp}.files and removed before the step is built
-# again, so a file a package stops installing does not outlive it in a cached
-# tree. Created only: a file a step merely changed is not its to remove. The
-# chroot's mounts are left out by name; -xdev does not stop at a bind mount.
-_tree_paths() {
-    local root="${KRYPTIK_SYSROOT%/}"
-    { find "${root:-/}" -xdev \( -path "${root}/proc" -o -path "${root}/sys" -o -path "${root}/dev" \
-          -o -path "${root}/run" -o -path "${root}/tmp" -o -path "${root}/kryptik*" \) -prune \
-          -o \( -type f -o -type l \) -print 2>/dev/null || true; } | LC_ALL=C sort
-}
-_forget_outputs() {   # _forget_outputs LIST
-    local root="${KRYPTIK_SYSROOT%/}" p n=0
-    while IFS= read -r p; do
-        case "$p" in
-            "${root}"/proc/*|"${root}"/sys/*|"${root}"/dev/*|"${root}"/run/*|"${root}"/tmp/*|"${root}"/kryptik*) continue ;;
-            "${root}"/*) ;;
-            *) continue ;;
-        esac
-        if [[ -f "$p" || -L "$p" ]]; then rm -f -- "$p"; n=$((n + 1)); fi
-    done < "$1"
-    rm -f -- "$1"
-    dim "  removed ${n} file(s) the step's previous build installed"
-}
-
 #   step <name> <recipe> [args...]
 # Stages provide STAMPS, LOGS, STAMP_PREFIX and STAGE_FILE, and optionally
 # REDO, set_flags_for() (per-package hardening) and step_failure_hint().
@@ -475,11 +450,6 @@ step() {
 
     local logfile="${LOGS}/${STAMP_PREFIX}${name}.log"
     local start=$SECONDS
-    local before=""
-    if [[ -n "${STAMP_TREE:-}" ]]; then
-        if [[ -f "${stamp}.files" ]]; then _forget_outputs "${stamp}.files"; fi
-        before="$(mktemp)"; _tree_paths > "$before"
-    fi
 
     # A bare subshell, never a condition: `( ... ) || rc=$?` or `if ! ( ... )`
     # turns errexit off inside the recipe too. The ERR trap fires even without
@@ -493,10 +463,6 @@ step() {
     rc=$?
     trap _kryptik_trap ERR
     set -e
-    if [[ -n "$before" ]]; then
-        if [[ "$rc" -eq 0 ]]; then _tree_paths | comm -13 "$before" - > "${stamp}.files"; fi
-        rm -f "$before"
-    fi
 
     STAMP_DEPS="${STAMP_DEPS}${name}=${want};"
 

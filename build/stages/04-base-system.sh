@@ -2637,11 +2637,6 @@ require_inside_chroot "stage 04" "system"
 # temporary tools and nothing built with them can claim to be unchanged.
 stage_depends_on "tt-" verify
 
-# Each package's installed files are recorded, so a package rebuilt in a tree
-# from a cache leaves none of its old ones behind (step() in common.sh).
-# shellcheck disable=SC2034  # read by step()
-STAMP_TREE=1
-
 # The signing keys live under ${KRYPTIK_WORK}/keys, outside the sysroot and
 # outside any cache of it, on purpose. A work tree restored from such a cache
 # has release-trust stamped as built and no keys; the anchor in the restored
