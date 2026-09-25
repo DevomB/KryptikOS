@@ -209,6 +209,8 @@ SERVE="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --
 SER="$(sed -n 's/^serial=//p' <<<"$SERVE")"; PIDF="$(sed -n 's/^pid=//p' <<<"$SERVE")"; LOG5="$(sed -n 's/^log=//p' <<<"$SERVE")"
 # The planted kryptik/ directory must be quarantined and gone from /etc, and
 # the updater's anchor on the verified root must still name the release key.
+# The root has an ld.so.preload of its own (the allocator), so the planted
+# library is looked for by name.
 python3 "$DRV" --serial "$SER" --timeout 300 \
     "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "grab:overlay:ls /etc/kryptik/ /var/lib/kryptik/etc/quarantine/ 2>&1 | head -12" \
@@ -216,7 +218,7 @@ python3 "$DRV" --serial "$SER" --timeout 300 \
     "run:grep -q '^kryptik-release ' /usr/share/kryptik/trust/release-signers" \
     "run:ls /var/lib/kryptik/etc/quarantine/ | grep -q '^kryptik'" \
     "run:test ! -e /etc/kryptik/zones/evil.toml" \
-    "run:test ! -e /etc/ld.so.preload" \
+    "run:! grep -q evil /etc/ld.so.preload" \
     "run:test ! -e /etc/udev/rules.d/99-evil.rules" \
     "run:test ! -e /var/lib/kryptik/evil-ran" \
     "run:ls /var/lib/kryptik/etc/quarantine/ | grep -q '^ld.so.preload'" \
