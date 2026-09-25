@@ -1,18 +1,12 @@
 #!/usr/bin/env bash
-# Tests for `kryptik`, the user-facing command.
-#
-# The wrapper's whole job is to be convenient, and convenience is exactly how a
-# safety property gets lost - so most of what is checked here is that it did
-# NOT become convenient in the wrong place: it must not start a zone whose
-# guarantees are unmet without the person saying so, must not execute its own
-# config file, and must not offer commands for things that do not work.
+# Tests for `kryptik`, the user-facing command: mostly that convenience has not
+# cost safety. No zone starts with its guarantees unmet, the config file is
+# never executed, and nothing is offered that does not work.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-# In a checkout this is tools/kryptik next to the suite. In an image the suite
-# lives under /usr/lib/kryptik and the command is installed on PATH, which is
-# where a user would meet it - so look there too rather than reporting a
-# missing file about a system where it is present.
+# tools/kryptik in a checkout; on PATH in an image, where this suite lives
+# under /usr/lib/kryptik.
 KRYPTIK="${KRYPTIK:-}"
 if [[ -z "$KRYPTIK" ]]; then
     if   [[ -x "$REPO/tools/kryptik" ]]; then KRYPTIK="$REPO/tools/kryptik"
@@ -49,13 +43,9 @@ trap cleanup EXIT
 
 ZONES="$WORK/zones"; ROOTFS="$WORK/data"; mkdir -p "$ZONES" "$ROOTFS"
 
-# Running as root, a zone maps to host uid 100000, and it has to be able to
-# reach its own data directory - `mktemp -d` makes one 0700 and root-owned, so
-# the zone could not even traverse into it and every launch failed with
-#     could not build the zone root: mount(root tmpfs)(...): Permission denied
-# which reads like a mount problem and is a path-resolution one. The launcher
-# suite has done this from the start; this suite had not, so it passed on the
-# developer host and failed in the VM.
+# As root a zone maps to host uid 100000 and must traverse into its data
+# directory, which `mktemp -d` makes 0700 and root-owned. Otherwise every
+# launch fails with a misleading "mount(root tmpfs)...: Permission denied".
 if [[ "$(id -u)" -eq 0 ]]; then
     chmod 0755 "$WORK" "$ZONES" "$ROOTFS"
     chown -R 100000:100000 "$ROOTFS"
@@ -80,13 +70,8 @@ mkzone() { # name storage-mode colour [network-mode]
         printf '[ui]\nborder_color = "%s"\n' "$3"
     } > "$ZONES/$1.toml"
 }
-# The valid storage modes are `ephemeral` and `encrypted`, and only those -
-# there is no "persistent", which the first version of this file assumed and
-# which made kryptikd reject the whole directory.
-#
-# `carrier` is not decoration: kryptikd validates the zone SET, and refuses one
-# in which no zone holds the physical NIC, because a routed zone would then
-# have no path out. Every fixture directory needs one.
+# kryptikd refuses a zone set in which no zone holds the physical NIC, hence
+# `carrier`.
 mkzone plain     ephemeral "#101010"
 mkzone sealed    encrypted "#202020"
 mkzone carrier   ephemeral "#303030" nic
@@ -104,10 +89,6 @@ else
 fi
 
 out="$(K list 2>&1)"
-# The DESCRIPTION column too, not just the names. It was empty for every zone
-# for a while - the wrapper matched "description:" against output that says
-# "description  text" - and a list of names beside a blank column reads as
-# zones that have no description rather than a wrapper that cannot read them.
 if [[ "$out" == *"cli.sh fixture plain"* ]]; then
     pass "list shows each zone's description, not just its name"
 else
@@ -122,7 +103,7 @@ else
     info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
 fi
 
-# The config file must be DATA. If it were sourced, this line would run.
+# The config file is data; if it were sourced, this line would run.
 CANARY="$WORK/config-was-executed"
 printf 'evil = $(touch "%s")\n' "$CANARY" >> "$CONF"
 K list >/dev/null 2>&1
@@ -131,7 +112,6 @@ if [[ -e "$CANARY" ]]; then
 else
     pass "the config file is data, not code: a \$(...) in it did not run"
 fi
-# Put the config back the way the rest of the run expects.
 sed -i '/^evil =/d' "$CONF"
 
 # --- a wrong zone name is answered with the right ones -----------------------
@@ -144,12 +124,9 @@ else
 fi
 
 # --- an encrypted zone needs its passphrase; there is no way to skip that ----
-# The check that matters most. An encrypted zone lives on a LUKS2 volume and
-# starts only with its passphrase (on a descriptor from the launch daemon, or
-# a root-owned file). Without one it must be refused and the command must
-# never run; this command must not offer any flag that turns that into a
-# plain directory: "encrypted, except not really" is the one claim that must
-# never reach a user.
+# It starts only with its passphrase (a descriptor from the launch daemon, or a
+# root-owned file). Without one the command never runs, and no flag may fall
+# back to a plain directory.
 out="$(K run sealed -- /bin/sh -c 'echo CLI_STARTED' 2>&1)"; rc=$?
 if [[ "$out" == *CLI_STARTED* ]]; then
     fail "a zone claiming ENCRYPTED storage ran without its passphrase"
@@ -160,14 +137,14 @@ else
     info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-240)"
 fi
 
-# And there must be no documented way to override it from here.
+# The help must offer no way around the refusal.
 if "$KRYPTIK" --help 2>&1 | grep -qi 'accept-incomplete\|experimental'; then
     fail "the help text offers a way past the refusal"
 else
     pass "no flag is offered for starting a zone whose guarantees are unmet"
 fi
 
-# The caveat on ephemeral storage must reach the person, not be summarised away.
+# The ephemeral storage caveat must reach the user verbatim.
 out="$(K run plain -- /bin/sh -c 'echo CLI_STARTED' 2>&1)"
 if [[ "$out" == *"not secure erasure"* ]]; then
     pass "the ephemeral swap caveat is passed through verbatim on every start"
@@ -185,13 +162,9 @@ else
     info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-240)"
 fi
 
-# It must be a ZONE, not a shell on the host. The zone's hostname is its own
-# name, and the host's is not.
-#
-# Read from a SENTINEL LINE rather than by searching the whole output for the
-# zone's name: the first version of this check looked for "plain" anywhere in
-# the output, and passed on the error message "no zone named plain" - reporting
-# that a command had run in a zone that did not exist.
+# It must run in the zone, not on the host: the zone's hostname is its name.
+# Read from a sentinel line, since an error such as "no zone named plain" also
+# contains the name.
 out="$(K run plain -- /bin/sh -c 'echo "D2HOST=$(hostname)"' 2>&1)"
 got="$(printf '%s' "$out" | sed -n 's/^D2HOST=//p' | head -1)"
 if [[ "$got" == "plain" ]]; then
@@ -230,11 +203,10 @@ else
     info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
 fi
 
-# --- commands that do not exist, on purpose, say where the thing happens -----
-# A file crosses zones only through the broker inside the sending zone and
-# after the person's yes; the clipboard moves only by the chrome's gesture.
-# `kryptik transfer` or `kryptik clipboard` from zone 0 would be a way around
-# the person, so they are refused - and the refusal names the real path.
+# --- no transfer or clipboard commands ---------------------------------------
+# Files cross zones only through the sending zone's broker after the user's yes,
+# and the clipboard only by the chrome's gesture. From zone 0 either command
+# would go around the user, so both are refused, naming the real path.
 for c in transfer clipboard; do
     out="$(K "$c" 2>&1)"; rc=$?
     if (( rc != 0 )) && [[ "$out" == *"not a"*"command"* && "$out" == *"broker"* && "$out" == *"chrome"* ]]; then
@@ -254,11 +226,9 @@ else
 fi
 
 # --- wifi: the net zone's credentials ----------------------------------------
-# `kryptik wifi add` must never put a passphrase on a command line, where
-# every process on the host could read it. It reads the passphrase itself
-# (from the terminal with echo off, or from a pipe) and hands it on standard
-# input to whichever program does the writing: kryptik-launch through the
-# session's launch service, or kryptikd directly, as here.
+# A passphrase never goes on a command line, where any process could read it:
+# `kryptik wifi add` reads it (terminal with echo off, or a pipe) and passes it
+# on stdin to kryptik-launch or, as here, to kryptikd.
 out="$(K wifi 2>&1)"; rc=$?
 if (( rc != 0 )) && [[ "$out" == *"list, add SSID or forget SSID"* ]]; then
     pass "wifi without a subcommand fails and names the subcommands"
@@ -305,11 +275,9 @@ else
     fail "wifi forget: exit $rc, output '$out'"
 fi
 
-# Through the launch service, the way an ordinary user in a session gets
-# there. kryptik-launch's socket path is fixed (/run/kryptik-launch), so a
-# stand-in with the same command line forwards the requests to this suite's
-# own daemon; what is under test is the wrapper's side: the arguments it
-# forms, the passphrase on standard input, and the reply it shows.
+# Through the launch service, as a user in a session gets there. Its socket
+# path is fixed, so a stand-in for kryptik-launch with the same command line
+# forwards to this suite's daemon; under test is the wrapper's side.
 if [[ "$(id -u)" -eq 0 ]]; then
     skip "the launch-service path: as root the wrapper drives kryptikd directly, so there is nothing to stand in for"
 elif ! command -v python3 >/dev/null 2>&1; then
@@ -348,8 +316,7 @@ case "\${1:-}" in
 esac
 SHIM
     chmod +x "$WORK/launch-shim"
-    # What serve.sh's checks leave in the daemon's file: the header and one
-    # block, exactly as kryptikd writes them.
+    # The daemon's file as kryptikd writes it: the header and one block.
     mkdir -p "$WDAEMON"
     printf 'ctrl_interface=/run/wpa_supplicant\nupdate_config=0\n\nnetwork={\n\tssid="Fixture"\n\tpsk="fixture passphrase"\n}\n' > "$WDAEMON/wpa_supplicant.conf"
     if [[ -S "$SOCK" ]] && kill -0 "$DAEMON" 2>/dev/null; then

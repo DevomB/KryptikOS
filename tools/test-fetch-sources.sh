@@ -1,28 +1,11 @@
 #!/usr/bin/env bash
-# Focused tests for tools/fetch-sources.sh.
-#
-#   ./tools/test-fetch-sources.sh
-#
-# Deterministic and offline: a small substituted manifest of file:// URLs, so
-# the download path, the hashing and the refusal all run exactly as they do in
-# production against a real curl and a real sha256.
-#
-# WHY THIS EXISTS.
-#
-# fetch-sources.sh is the tool that gives sources.lock its force. The claim in
-# docs/supply-chain.md is that it "refuses to proceed on a mismatch — it does
-# not warn and continue", and until now that claim had no regression check
-# anywhere. Every other assertion in this tree got one tonight; the one that
-# stops a tampered tarball from being built should not be the exception.
-#
-# The cases are the ones where "continue anyway" would be a plausible bug:
-# a hash that does not match, a file with no lock entry at all, and a download
-# that failed. Each must exit non-zero, and each must say which file.
+# Tests for tools/fetch-sources.sh. Offline: a substituted manifest of file://
+# URLs, fetched and hashed by the real curl and sha256sum.
 
 set -uo pipefail
 
-# See the same note in the other suites: common.sh prefers these over anything
-# derived from KRYPTIK_ROOT.
+# common.sh prefers these over paths derived from KRYPTIK_ROOT, so an exported
+# one would point the tool at the real tree.
 unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -47,10 +30,7 @@ UPSTREAM="${W}/upstream"      # what the "mirror" serves
 FAKE="${W}/root"              # KRYPTIK_ROOT for the run
 mkdir -p "$UPSTREAM"
 
-# 4KB each, deliberately. A "same length, wrong bytes" partial needs a file
-# long enough for a prefix to exist; a 30-byte payload made every partial
-# longer than the file it was supposedly a partial of, which is a different
-# case entirely.
+# About 4KB each, so the 1500-byte partials below are shorter than the file.
 for f in alpha-1.0 beta-2.0 gamma-3.0; do
     { printf 'upstream payload for %s\n' "$f"
       head -c 4096 /dev/urandom | base64 | head -c 4000
@@ -122,9 +102,7 @@ expect_fail() {
 echo "tools/fetch-sources.sh"
 echo
 
-# ---------------------------------------------------------------------------
-# positive controls
-# ---------------------------------------------------------------------------
+# --- positive controls ------------------------------------------------------
 
 build_root alpha-1.0:good beta-2.0:good gamma-3.0:good
 place alpha-1.0; place beta-2.0; place gamma-3.0
@@ -144,9 +122,7 @@ fi
 run
 expect_pass "a second run uses the cached copies" "3 cached"
 
-# ---------------------------------------------------------------------------
-# the refusal that sources.lock exists for
-# ---------------------------------------------------------------------------
+# --- checksum refusal -------------------------------------------------------
 
 build_root alpha-1.0:good beta-2.0:good gamma-3.0:good
 place alpha-1.0; place beta-2.0 tampered; place gamma-3.0
@@ -163,29 +139,24 @@ else
     green "no verified summary is printed after a mismatch"
 fi
 
-# The mismatching file must still be there for a human to look at, and the
-# message must name it.
 if [[ -f "${FAKE}/sources/beta-2.0.tar.gz" ]] && grep -qF "beta-2.0.tar.gz" "$OUT"; then
     green "the offending file is named and left in place for inspection"
 else
     red "the offending file was removed or not named"; show
 fi
 
-# A lock entry that does not exist at all is not a pass either.
 build_root alpha-1.0:good beta-2.0:absent gamma-3.0:good
 place alpha-1.0; place beta-2.0; place gamma-3.0
 run
 expect_fail "a file with no lock entry is refused" \
     "no entry for beta-2.0.tar.gz in sources.lock"
 
-# An entirely missing lock file must not read as "nothing to check".
 build_root alpha-1.0:absent beta-2.0:absent gamma-3.0:absent
 rm -f "${FAKE}/sources.lock"
 place alpha-1.0
 run
 expect_fail "a missing sources.lock is refused" "no entry for"
 
-# A download that cannot happen is a failure, not an empty success.
 cat > "${W}/dead-manifest" <<EOF
 alpha|1.0|file://${UPSTREAM}/alpha-1.0.tar.gz
 missing|9.9|file://${UPSTREAM}/does-not-exist.tar.gz
@@ -200,17 +171,12 @@ KRYPTIK_ROOT="$FAKE" KRYPTIK_FETCH_SELFTEST=1 \
 RC=$?
 expect_fail "an unfetchable source is refused" "download failed"
 
-# ---------------------------------------------------------------------------
-# interrupted downloads
-# ---------------------------------------------------------------------------
-#
-# `-C -` asks the server to continue from the size of the local .part. Three
-# states of that file behave differently and all three used to be untested.
+# --- interrupted downloads --------------------------------------------------
 
+# Three kinds of leftover .part, which `-C -` resumes from.
 part() { printf '%s' "${FAKE}/sources/$1.tar.gz.part"; }
 
-# A genuine interruption: a prefix of the real file. Resuming is the point of
-# keeping it, so this must complete and verify.
+# A genuine interruption: a prefix of the real file.
 build_root alpha-1.0:good beta-2.0:good gamma-3.0:good
 place beta-2.0; place gamma-3.0
 head -c 1500 "${UPSTREAM}/alpha-1.0.tar.gz" > "$(part alpha-1.0)"
@@ -222,10 +188,8 @@ else
     red "a .part survived a successful download"
 fi
 
-# A partial LONGER than the upstream file makes the range unsatisfiable: curl
-# exits 36 on file:// and 33/416 over HTTP. This used to be reported as a dead
-# mirror and then reproduced itself on every retry, because the file keeping it
-# broken was the one the error message promised to keep.
+# Longer than the upstream file, so the range is unsatisfiable (curl exits 36
+# on file://, 33/416 over HTTP).
 build_root alpha-1.0:good beta-2.0:good gamma-3.0:good
 place beta-2.0; place gamma-3.0
 head -c 100000 /dev/zero > "$(part alpha-1.0)"
@@ -243,14 +207,10 @@ else
     red "the restarted download produced wrong bytes"
 fi
 
-# A partial that is the right length but the wrong bytes cannot be detected by
-# resuming - the range is satisfiable and the result is a corrupt file. The
-# checksum is what catches it, and the message must say the DOWNLOAD is wrong
-# rather than implying the disk changed under them.
+# Wrong bytes, shorter than upstream: the resume succeeds into a corrupt file
+# that only the checksum catches, and the message must blame the download.
 build_root alpha-1.0:good beta-2.0:good gamma-3.0:good
 place beta-2.0; place gamma-3.0
-# Shorter than upstream, so the range IS satisfiable and the resume succeeds
-# into a corrupt file. Only the checksum can catch this one.
 head -c 1500 /dev/zero > "$(part alpha-1.0)"
 run
 expect_fail "a poisoned partial is caught by the checksum, not by the resume" \
@@ -261,9 +221,7 @@ else
     red "the fresh-download mismatch did not diagnose itself"; show
 fi
 
-# The same mismatch on a file that was ALREADY on disk is a different fact and
-# must read differently: nothing was fetched, so the file changed after it was
-# locked.
+# The same mismatch on a file already on disk: it changed after locking.
 build_root alpha-1.0:good beta-2.0:good gamma-3.0:good
 place alpha-1.0 tampered; place beta-2.0; place gamma-3.0
 run
@@ -275,16 +233,13 @@ else
     red "the cached mismatch used the fresh-download wording"; show
 fi
 
-# Neither diagnosis deletes anything: a hash that does not match is evidence.
 if [[ -f "${FAKE}/sources/alpha-1.0.tar.gz" ]]; then
     green "the mismatching file is preserved for inspection"
 else
     red "the mismatching file was deleted"
 fi
 
-# ---------------------------------------------------------------------------
-# --lock
-# ---------------------------------------------------------------------------
+# --- --lock -----------------------------------------------------------------
 
 build_root alpha-1.0:absent
 place alpha-1.0; place beta-2.0; place gamma-3.0
@@ -297,8 +252,7 @@ else
     red "--lock did not warn that the lock is unaudited"; show
 fi
 
-# The written lock must actually verify afterwards, and be sorted so a diff of
-# two locks is readable.
+# The written lock must verify, and be sorted so lock diffs are readable.
 run
 expect_pass "the lock --lock wrote then verifies" "3 package(s) verified"
 
@@ -310,8 +264,7 @@ else
     sed 's/^/        /' "${FAKE}/sources.lock"
 fi
 
-# --lock records whatever is on disk, tampered or not. That is by design and
-# documented; the test pins it so nobody mistakes --lock for verification.
+# By design, --lock records whatever is on disk, tampered or not.
 build_root alpha-1.0:absent
 place alpha-1.0 tampered; place beta-2.0; place gamma-3.0
 run --lock
@@ -322,9 +275,7 @@ else
     red "--lock did not state that it records whatever is present"; show
 fi
 
-# ---------------------------------------------------------------------------
-# arguments and the selftest gate
-# ---------------------------------------------------------------------------
+# --- arguments and the selftest gate ----------------------------------------
 
 run --list
 expect_pass "--list prints the manifest without downloading" "alpha"
@@ -343,15 +294,9 @@ else
 fi
 
 # --- the shipped manifest and the shipped lockfile must agree ---------------
-#
-# Nothing asserted this before, and both directions have a real failure mode. A
-# row added without its audited lock line is a source `make sources` refuses at
-# fetch time; a lock line left behind after a row is removed is a hash nobody
-# checks any more. Measured 71 = 71 when this was written.
-#
-# This also covers the rows carrying a documented default (bc, gdbm): --list
-# expands them, so a default naming an unlocked file fails right here.
 
+# A row with no lock line is refused at fetch time; a lock line with no row is
+# a hash nobody checks. --list expands version defaults (gdbm's) as well.
 bash "$TOOL" --list > "${W}/live-manifest" 2>/dev/null
 awk '{n = $3; sub(/.*\//, "", n); print n}' "${W}/live-manifest" | sort -u > "${W}/mf"
 awk '{print $2}' "${ROOT}/sources.lock" | sort -u > "${W}/lk"
@@ -372,8 +317,7 @@ else
     red "lock entries with no manifest row: ${stale}"
 fi
 
-# An unset version with no documented default would emit a two-column row and
-# a URL like gdbm-.tar.gz, which fetches a 404 rather than failing loudly.
+# An unset version with no default gives a URL like gdbm-.tar.gz: a quiet 404.
 blank="$(awk 'NF < 3 || $2 == "" {print $1}' "${W}/live-manifest" | tr '
 ' ' ')"
 if [[ -z "${blank// /}" ]]; then

@@ -19,16 +19,14 @@ memory_max = "8G"
 pids_max   = 1024
 
 [identity]
-# Fixed host uid/gid range for this zone: root inside maps to 458752,
-# nobody to 524286. Never derived from zone order; see docs/design/privileged-launch.md.
+# Host uid/gid range: root inside maps to 458752, nobody to 524286. Fixed,
+# never derived from zone order (docs/design/privileged-launch.md).
 uid_base = 458752
 
 [ui]
-# Identity in four channels (compositor/zoneid, `zoneid explain`): the
-# colour is from `zoneid propose` (every pair of shipped zones differs by
-# dE00 >= 15 under every vision model, 3:1 against both backgrounds);
-# the pattern, glyph and label are what remain for a user who cannot see
-# the colour difference. Every zone has a distinct value in each.
+# Colour, glyph and label must differ from every other zone's; the pattern
+# backs up colour for users who cannot tell colours apart. Pick colours with
+# `zoneid propose`; `zoneid audit` checks the set, `zoneid explain` the rule.
 border_color   = "#2d60d1"
 border_pattern = "solid"
 glyph          = "■"

@@ -6,20 +6,10 @@
     update-fetch.py poll      ask zone 0 whether a release is wanted and, if
                               one is, stream what it says is still missing
 
-This zone is treated as hostile, so nothing here is trusted and nothing here
-decides anything: zone 0 verifies every signature, names the address the
-files come from (out of the statement it verified), says which file it wants
-from which byte, and refuses any piece that is not exactly that. This script
-is a pipe with a Range header. It holds nothing: a release is larger than
-this zone's storage, so each piece goes from the connection to the broker
-and is forgotten.
-
-Where to look is zone 0's to say: `channel = <address>` in
-/etc/kryptik/update.conf, on the verified root and read-only here. TLS
-authenticates the host and keeps the request private; nothing about the
-release's authenticity rests on it.
-
-Exit 0: done, or nothing to do. Exit 1: said why on standard error.
+Decides nothing and is trusted for nothing, TLS included: zone 0 names the
+channel (`channel = <address>` in update.conf), verifies every signature and
+refuses any piece it did not ask for. Keeps nothing: a release is larger than
+this zone's storage.
 """
 import argparse
 import socket
@@ -50,9 +40,7 @@ def ask(broker, header, payload=b""):
 
 
 def fetch(url, ca, offset=0):
-    """An open response positioned at `offset`, whether or not the server
-    honours a Range: one that ignores it sends the file from the start, and
-    the bytes before the offset are read and dropped."""
+    """An open response at `offset`; if the server ignores Range, skip to it."""
     headers = {"Range": "bytes=%d-" % offset} if offset else {}
     context = ssl.create_default_context(cafile=ca) if url.startswith("https://") else None
     r = urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=30, context=context)
@@ -107,8 +95,7 @@ def poll(args):
                     break
                 reply = ask(args.broker, "update-put %s %d %d" % (name, offset, len(piece)), piece)
                 if not reply.startswith("ok"):
-                    # Zone 0 has the last word: what it refuses is not sent
-                    # again, and the next poll says what it wants instead.
+                    # Zone 0 has the last word: a refused piece is not resent.
                     print("%s %s at byte %d: %s" % (version, name, offset, reply), file=sys.stderr)
                     return 1
                 offset += len(piece)

@@ -1,33 +1,15 @@
 #!/usr/bin/env bash
-# A source-by-source provenance inventory. One row per source, one assurance
-# class per row, and deliberately no single coverage number.
+# Per-source provenance inventory: one assurance class per source, no total.
 #
-#   ./tools/provenance-inventory.sh                 full inventory
-#   ./tools/provenance-inventory.sh --offline       lock integrity only
-#   ./tools/provenance-inventory.sh --identity      also check signer identity
-#                                                   against kernel.org's
-#                                                   published developer keys
-#   ./tools/provenance-inventory.sh --md            markdown table
-#   ./tools/provenance-inventory.sh --notes=FILE    caveats from FILE rather
-#                                                   than tools/source-notes.tsv
-#
-# WHY THIS EXISTS, AND WHY IT REFUSES TO PRINT A TOTAL.
-#
-# docs/supply-chain.md has at various points said "54 of 69 sources verify" and
-# "60 of 69 with some independent confirmation". Those numbers were arrived at
-# by adding together things that are not the same thing. Of that 54, twenty
-# were signatures checked against a key imported because the signature itself
-# named it - which establishes that a file was signed by whoever signed it, and
-# nothing whatever about who that is.
-#
-# A number like that is worse than no number, because it invites a reader to
-# treat the weakest link as if it were the average. So this tool prints the
-# class of every source and a count PER CLASS, and prints no total. The classes
-# are ordered strongest first, and what each one is worth is stated next to it.
-#
-# It computes nothing itself. It runs the two verification tools with
-# --report=FILE and aggregates what they found, so there is exactly one
-# implementation of each check and this cannot drift away from it.
+#   ./tools/provenance-inventory.sh [options]
+#     --offline        lock integrity only
+#     --identity       also check signer identity against kernel.org's
+#                      published developer keys
+#     --md             markdown table
+#     --json           JSON document
+#     --licences       also collect licence evidence (slow)
+#     --artifacts=DIR  also record the identity of a built tree
+#     --notes=FILE     caveats from FILE, not tools/source-notes.tsv
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 load_config
@@ -47,7 +29,7 @@ for a in "$@"; do
         --licences|--licenses) LICENCES=1 ;;
         --artifacts=*) ARTIFACTS="${a#--artifacts=}" ;;
         --notes=*)  NOTES_ARG="${a#--notes=}" ;;
-        -h|--help)  sed -n '2,15p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help)  sed -n '2,12p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $a" ;;
     esac
 done
@@ -62,13 +44,9 @@ SIGREP="${WORK}/signatures.tsv"
 PROVREP="${WORK}/provenance.tsv"
 : > "$SIGREP"; : > "$PROVREP"
 
-# ---------------------------------------------------------------------------
-# 1. gather
-# ---------------------------------------------------------------------------
+# --- gather -----------------------------------------------------------------
 
-# Under --md the output is an artifact that gets committed, so progress has to
-# stay out of it. Park stdout on fd 3 and send everything up to the table to
-# stderr, then put it back.
+# With --md or --json stdout is the document: park it on fd 3 until the table.
 if [[ "$MD" -eq 1 || "$JSON" -eq 1 ]]; then exec 3>&1 1>&2; fi
 
 log "Collecting per-source evidence"
@@ -77,36 +55,17 @@ MANIFEST="${WORK}/manifest.tsv"
 "${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list \
     | awk '{printf "%s\t%s\t%s\n", $1, $2, $3}' > "$MANIFEST"
 dim "  manifest: $(wc -l < "$MANIFEST") sources"
-# The manifest's package names, for the membership test the caveat loop
-# below makes once per row; it was an awk over the whole manifest per row.
+# Manifest package names, for the caveat loop's membership test.
 declare -A MANIFEST_HAS=()
 while IFS=$'\t' read -r m_pkg _; do
     [[ -n "$m_pkg" ]] && MANIFEST_HAS["$m_pkg"]=1
 done < "$MANIFEST"
 
-# ---------------------------------------------------------------------------
-# 1b. recorded provenance caveats
-# ---------------------------------------------------------------------------
-#
-# Some facts about a source are true, material, and invisible to every check:
-# a build recipe that rewrites upstream's own files, or a signature verifying
-# against a key upstream never designated. Those go in tools/source-notes.tsv.
-#
-# A NOTE IS A CAVEAT AND NEVER AN ASSURANCE CLASS. Notes are not added to the
-# per-class counts and do not raise or lower any source's class.
-#
-# Resolved through KRYPTIK_ROOT, unlike scan-licenses.sh which is resolved
-# through BASH_SOURCE. The difference is deliberate and it is the difference
-# between a helper and data: the licence scanner is a tool this script needs
-# wherever it runs, while caveats describe THE TREE BEING INVENTORIED. Pointing
-# the inventory at another tree must pick up that tree's caveats, or their
-# absence -- not carry this repository's caveats across and then reject them as
-# naming sources the other tree does not ship.
-#
-# --notes=FILE names a different caveat file. The default is OPTIONAL: a tree
-# without one simply has no recorded caveats. A file named explicitly and then
-# missing is an error, because the caller asked for caveats that are not there
-# and continuing would drop them silently.
+# --- recorded provenance caveats --------------------------------------------
+
+# Facts no check can see (a recipe that rewrites upstream files, a signer
+# upstream never designated): caveats, never classes. They describe the tree
+# being inventoried, so they come from KRYPTIK_ROOT. Optional unless --notes.
 NOTESF="${KRYPTIK_ROOT}/tools/source-notes.tsv"
 if [[ -n "${NOTES_ARG:-}" ]]; then
     NOTESF="$NOTES_ARG"
@@ -132,9 +91,7 @@ if [[ -f "$NOTESF" ]]; then
                 *) nb="unknown kind '${n_kind}'" ;;
             esac
         fi
-        # A note about a source that is not in the manifest is a stale note,
-        # and a stale caveat is worse than none: it describes something that
-        # is not being shipped.
+        # A note for a source not in the manifest is stale.
         if [[ -z "$nb" && -z "${MANIFEST_HAS[$n_pkg]:-}" ]]; then
             nb="'${n_pkg}' is not a source in the manifest"
         fi
@@ -152,10 +109,7 @@ result: reporting the inventory without it would drop recorded facts silently."
     dim "  notes: $(grep -c . "$NOTES_TSV" || true) recorded caveat(s)"
 fi
 
-# Self-test hook. tools/test-provenance-inventory.sh supplies pre-made report
-# files so the classification and the per-class accounting - which is all this
-# tool actually does - can be driven through every class offline. Gated, so an
-# inventory cannot be quietly produced from hand-written evidence.
+# Test hook: pre-made reports from tools/test-provenance-inventory.sh.
 if [[ -n "${KRYPTIK_INVENTORY_REPORTS:-}" ]]; then
     [[ "${KRYPTIK_INVENTORY_SELFTEST:-0}" == "1" ]] || die \
 "KRYPTIK_INVENTORY_REPORTS is set but KRYPTIK_INVENTORY_SELFTEST is not.
@@ -170,9 +124,8 @@ elif [[ "$OFFLINE" -eq 1 ]]; then
     warn "--offline: signature and publisher evidence will not be collected."
     warn "Every source will therefore show only what sources.lock establishes."
 else
-    # Both tools are run informationally on purpose: this is an inventory, not
-    # a gate. Their exit status is recorded rather than propagated, and the row
-    # for each source says what was established either way.
+    # The evidence is the verifiers' --report output. This is not a gate, so
+    # their exit status is ignored.
     dim "  running tools/verify-signatures.sh"
     "${KRYPTIK_ROOT}/tools/verify-signatures.sh" --report="$SIGREP" \
         > "${WORK}/signatures.log" 2>&1 || true
@@ -181,31 +134,13 @@ else
         > "${WORK}/provenance.log" 2>&1 || true
 fi
 
-# ---------------------------------------------------------------------------
-# 2. signer identity, against a primary upstream source
-# ---------------------------------------------------------------------------
-#
-# keys.manifest records keys accepted because a signature named them. The
-# question that ledger exists to ask is "is this key really the maintainer's",
-# and there is a primary source that can answer part of it:
-#
-#   https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git
-#
-# whose README.rst states its purpose as distributing "Linux kernel developer
-# PGP keys that have valid trust paths to Linus Torvalds", one ascii-armoured
-# key per long key id under keys/.
-#
-# Every source in keys.manifest is hosted on kernel.org, so that repository is
-# the right place to look. What a match there establishes, precisely: kernel.org
-# publishes this exact key for a developer of that name. What it does not
-# establish: anything confirmed out-of-band by a human, and nothing beyond the
-# TLS/CA trust root for git.kernel.org.
-#
-# The repository's own HEAD commit is signed, which is a better anchor than the
-# fetch, and this checks that too when the signing key is available.
+# --- signer identity --------------------------------------------------------
 
+# Looks up each keys.manifest key in kernel.org's pgpkeys.git (developer keys
+# with trust paths to Torvalds, one per long key id under keys/). A match means
+# kernel.org publishes that key; its trust root is TLS to git.kernel.org.
 IDREP="${WORK}/identity.tsv"
-# Do not truncate what the self-test hook has already copied in.
+# Keep what the test hook copied in.
 [[ -n "${IDREP_PRESET:-}" ]] || : > "$IDREP"
 
 KORG_KEYS="https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git/plain/keys"
@@ -219,9 +154,8 @@ collect_identity() {
     local home="${WORK}/gnupg"
     mkdir -p "$home"; chmod 700 "$home"
 
-    # Reference identities. Kryptik ALREADY relies on the stable key to verify
-    # the kernel tarball, so a certification made by it is not a new trust
-    # decision - it is the one already taken, reused.
+    # Reference keys. The kernel tarball is already verified against the stable
+    # key, so a certification by it is no new trust decision.
     local ref rid
     for ref in "79BE3E4300411886:Torvalds" "38DBBDC86092693E:Kroah-Hartman" \
                "E63EDCA9329DD07E:Ryabitsev"; do
@@ -253,9 +187,7 @@ collect_identity() {
             continue
         fi
 
-        # Certifications present on the key material kernel.org distributes.
-        # An absence here is not proof that no certification exists: a key
-        # exported with export-minimal carries none.
+        # No certification here proves nothing: an export-minimal key has none.
         certs="$(GNUPGHOME="$home" gpg --batch --list-sigs --with-colons "$fpr" 2>/dev/null \
                  | awk -F: '$1=="sig"{print $5}' | sort -u)"
         hop=""
@@ -284,36 +216,22 @@ elif [[ "$IDENTITY" -eq 1 ]]; then
     warn "--identity needs the network; ignored under --offline"
 fi
 
-# ---------------------------------------------------------------------------
-# 2b. licence evidence and built artefacts
-# ---------------------------------------------------------------------------
-#
-# Licence detection is delegated to tools/scan-licenses.sh, which caches by
-# tarball sha256 because listing a 154MB xz tarball means decompressing all of
-# it. Off by default for that reason, and the field then reads `not-collected`
-# rather than `unknown`, so "nobody looked" and "looked and could not tell"
-# stay distinguishable.
+# --- licence evidence and built artefacts -----------------------------------
 
+# Off by default: listing a tarball means decompressing all of it. Uncollected
+# licences read not-collected, never unknown.
 LICREP="${WORK}/licences.tsv"
 : > "$LICREP"
 if [[ "$LICENCES" -eq 1 ]]; then
     log "Collecting licence evidence"
-    # Resolved next to THIS script, not through KRYPTIK_ROOT. The manifest is a
-    # property of the tree being inventoried, so fetch-sources.sh is found
-    # through KRYPTIK_ROOT above; the licence scanner is an implementation
-    # detail of this tool and travels with it. Going through KRYPTIK_ROOT meant
-    # that pointing the inventory at any tree without a full tools/ directory
-    # silently produced `not-collected` for every source.
+    # Part of this tool, so found beside it rather than under KRYPTIK_ROOT.
     "$(dirname "${BASH_SOURCE[0]}")/scan-licenses.sh" > "$LICREP" 2>/dev/null || true
     dim "  $(grep -c . "$LICREP" || true) source(s) scanned"
 fi
 
-# A source inventory that cannot say what was produced from those sources is
-# half an answer. This records the IDENTITY of a built tree when one is named -
-# path, file count, size, the os-release BUILD_ID it carries, and the sha256 of
-# the build's own artifact manifest if it sits beside it. It does not
-# re-hash 30,000 files: that is `make verify-manifest` in the build worktree,
-# and a second implementation of one check is how two answers start disagreeing.
+# A built tree's identity: path, file count, size, BUILD_ID and the sha256 of
+# the artifact-manifest.txt beside it. Re-hashing the files is left to
+# `make verify-manifest`.
 ARTREP="${WORK}/artifacts.tsv"
 : > "$ARTREP"
 if [[ -n "$ARTIFACTS" ]]; then
@@ -322,12 +240,9 @@ if [[ -n "$ARTIFACTS" ]]; then
         printf 'sysroot\t%s\tabsent\t-\t-\t-\t-\n' "$ARTIFACTS" >> "$ARTREP"
     else
         log "Recording built artefact identity"
-        # `|| true` throughout: a sysroot built through a chroot contains
-        # root-owned directories this process cannot descend, so find and du
-        # exit non-zero while still producing a usable count. Under pipefail
-        # that status reaches common.sh's ERR trap and aborts the inventory -
-        # which is how an unreadable directory took the whole document down.
-        # A partial count is recorded as partial below rather than as fact.
+        # `|| true`: find and du fail on a chroot-built tree's root-owned
+        # directories yet still count, and under pipefail common.sh's ERR trap
+        # would abort. Such counts are recorded as partial.
         art_files="$(find "$ARTIFACTS" -type f 2>/dev/null | wc -l || true)"
         art_readable=yes
         find "$ARTIFACTS" -type d >/dev/null 2>&1 || art_readable=partial
@@ -343,24 +258,12 @@ if [[ -n "$ARTIFACTS" ]]; then
     fi
 fi
 
-# ---------------------------------------------------------------------------
-# 3. aggregate and print
-# ---------------------------------------------------------------------------
+# --- aggregate and print ----------------------------------------------------
 
 if [[ "$MD" -eq 1 || "$JSON" -eq 1 ]]; then exec 1>&3 3>&-; fi
 
-# WHICH KEYRING THIS WAS MEASURED AGAINST.
-#
-# The counts below depend on it, and not by a little. A keyring that a previous
-# --fetch-unknown-keys run warmed up holds keys taken from the signatures
-# themselves, which moves sources out of lock-only and into the unaudited and
-# kernel.org classes. Measured on this tree: 31 keyring-verified and 30
-# lock-only with the GNU keyring and the pinned keys alone, versus 47 and 9
-# once sixteen signature-named keys are also present.
-#
-# An inventory that does not say which of those two runs produced it is the
-# same kind of number as the "54 of 69" this tool exists to replace. So it
-# says.
+# The keyring the counts were measured against: one warmed by an earlier
+# --fetch-unknown-keys run moves many sources out of lock-only.
 KEYSTATE="unknown"
 if [[ -f "${WORK}/signatures.log" ]]; then
     KEYSTATE="$(grep -oE '(keyring ready \([0-9]+ public keys\)|using cached keyring \([0-9]+ keys\))' \
@@ -368,8 +271,7 @@ if [[ -f "${WORK}/signatures.log" ]]; then
     [[ -n "$KEYSTATE" ]] || KEYSTATE="no keyring line in the signature log"
 fi
 if [[ "$JSON" -eq 1 ]]; then
-    : # carried as the keyring_state field; printing it here would corrupt the
-      # document, which is what happened the first time this was wired.
+    : # carried in the document as keyring_state
 elif [[ "$MD" -eq 1 ]]; then
     printf '**Keyring state for this run:** %s.\n' "$KEYSTATE"
     printf 'A keyring warmed by a previous `--fetch-unknown-keys` run holds keys taken\n'

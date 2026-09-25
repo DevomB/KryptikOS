@@ -1,9 +1,6 @@
-# net — the ONLY zone holding a route to the physical NIC.
-#
-# Every other zone reaches the network through this one. That makes it a
-# chokepoint and a high-value target; it is documented as such in
-# docs/architecture.md under "Known weaknesses". Its storage is ephemeral
-# precisely because it is the most exposed zone.
+# net — the only zone with a route to the physical NIC; every other zone
+# reaches the network through it. It is the most exposed zone, so its storage
+# is ephemeral (docs/architecture.md, "Known weaknesses").
 
 [zone]
 name        = "net"
@@ -12,19 +9,16 @@ description = "Sole holder of a physical network route."
 [network]
 mode = "nic"
 # Zones with mode = "routed" get a veth into kryptik0, the bridge in this zone.
-# What this zone takes out of zone 0 when it starts: every interface that
-# sits on a bus device (PCI, USB, a platform device) - a server's wired
-# ports, a laptop's wireless radio, a dock's USB adapter - wired ones by the
-# netdev, wireless ones by their wiphy. Software devices (loopback, bridges,
-# veth ends, tunnels) never qualify. A single name such as "eth0" is also
-# accepted, for a machine where only one interface should leave zone 0.
+# Interfaces taken out of zone 0 when this zone starts. "*" is every one on a
+# bus device (PCI, USB, platform), wireless ones moved by their wiphy; software
+# devices (loopback, bridges, veth, tunnels) never qualify. A single name such
+# as "eth0" takes only that one.
 nic = "*"
 
 [storage]
 mode = "ephemeral"
-# Required for ephemeral: $HOME is a tmpfs, and an unbounded tmpfs lets the
-# zone consume host memory by writing files - which the cgroup memory limit
-# does NOT catch, because those pages outlive the process that wrote them.
+# Required for ephemeral: $HOME is a tmpfs, and its pages outlive the process
+# that wrote them, so the cgroup memory limit does not bound them.
 size = "512M"
 
 [policy]
@@ -35,16 +29,14 @@ memory_max = "1G"
 pids_max   = 256
 
 [identity]
-# Fixed host uid/gid range for this zone: root inside maps to 196608,
-# nobody to 262142. Never derived from zone order; see docs/design/privileged-launch.md.
+# Host uid/gid range: root inside maps to 196608, nobody to 262142. Fixed,
+# never derived from zone order (docs/design/privileged-launch.md).
 uid_base = 196608
 
 [ui]
-# Identity in four channels (compositor/zoneid, `zoneid explain`): the
-# colour is from `zoneid propose` (every pair of shipped zones differs by
-# dE00 >= 15 under every vision model, 3:1 against both backgrounds);
-# the pattern, glyph and label are what remain for a user who cannot see
-# the colour difference. Every zone has a distinct value in each.
+# Colour, glyph and label must differ from every other zone's; the pattern
+# backs up colour for users who cannot tell colours apart. Pick colours with
+# `zoneid propose`; `zoneid audit` checks the set, `zoneid explain` the rule.
 border_color   = "#686573"
 border_pattern = "notched"
 glyph          = "◐"

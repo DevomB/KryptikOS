@@ -3,18 +3,10 @@
 
     sntp-offset.py [--timeout SECONDS] (--server HOST | --pool HOST)...
 
-Prints one line, "<offset> <answers>": the seconds to ADD to this clock to
-agree with the servers (six decimals, signed), and how many servers that is
-the median of. Exits 1, printing nothing, when none answered.
-
-It runs in the net zone, which may not set a clock and is not trusted by the
-one zone that may; zone 0 treats the number as a claim. So this is a plain
-SNTP query (RFC 4330) and nothing more: no state, no slewing, no daemon. What
-it does take care over is whose answer it counts: a reply must echo the
-timestamp that was sent to that server (which a sender who cannot see the
-request cannot forge), come from a synchronised server (stratum 1-15, leap
-indicator not 3) and not be a kiss-of-death. The median of the answers
-means one lying server among three is outvoted.
+Prints "<offset> <answers>": the seconds to add to this clock (signed, six
+decimals) and how many servers that is the median of. Exits 1, printing
+nothing, if none answered. A plain SNTP query (RFC 4330) that sets nothing;
+zone 0 treats the result as an untrusted claim.
 """
 import select
 import socket
@@ -87,7 +79,7 @@ def measure(targets, timeout):
             if mode != 4 or leap == 3 or not 1 <= stratum <= 15:
                 continue            # not a server, not synchronised, or a kiss-of-death
             if data[24:32] != sent or data[40:48] == bytes(8):
-                continue            # not an answer to what we sent
+                continue            # not an answer to what we sent (off-path senders cannot see it)
             t1, t2 = from_ntp(data[32:40], t0), from_ntp(data[40:48], t0)
             offsets.append(((t1 - t0) + (t2 - t3)) / 2)
     for s in pending:
@@ -109,6 +101,7 @@ def main(argv):
     if not offsets:
         return 1
     n = len(offsets)
+    # The median, so one lying server among three is outvoted.
     median = offsets[n // 2] if n % 2 else (offsets[n // 2 - 1] + offsets[n // 2]) / 2
     print("%+.6f %d" % (median, n))
     return 0

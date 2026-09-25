@@ -1,43 +1,12 @@
 #!/usr/bin/env bash
-# Focused tests for tools/verify-signatures.sh.
-#
-#   ./tools/test-verify-signatures.sh
-#
-# Deterministic and offline, with real GnuPG rather than stubbed status output.
-# Four throwaway ed25519 keys are generated per run and used to produce every
-# state the classifier distinguishes:
-#
-#   GOODSIG     a valid signature by a held key
-#   EXPKEYSIG   a signature made while the key was valid, verified after it
-#               expired (the key is created with a one-second lifetime)
-#   REVKEYSIG   a valid signature by a key whose revocation certificate has
-#               been imported
-#   BADSIG      a signature whose file was modified afterwards
-#   NO_PUBKEY   a signature by a key the keyring does not hold
-#
-# and one source with no detached signature at all, plus one named in the
-# manifest but never downloaded.
-#
-# Only three things are substituted: which manifest is verified, where the
-# keyring comes from, and where --fetch-unknown-keys imports from. check_sig()
-# and the summary accounting - what these tests are about - run exactly as in
-# production. The repository's keys.manifest, sources.lock and versions.env are
-# never read or written; each case builds a throwaway KRYPTIK_ROOT.
-#
-# The two cases worth reading first are the warm-cache pair. An earlier version
-# of this tool labelled --fetch-unknown-keys imports "unaudited" correctly and
-# then lost the label on the very next run, because the key was by then in the
-# cached keyring and looked like any other GOODSIG. That regression is cheap to
-# reintroduce and invisible in a single run, so it is pinned here.
+# Tests for tools/verify-signatures.sh. Offline, with real GnuPG: per-run keys
+# produce GOODSIG, EXPKEYSIG, REVKEYSIG, BADSIG and NO_PUBKEY. Each case runs
+# the tool against a throwaway KRYPTIK_ROOT.
 
 set -uo pipefail
 
-# The tool under test reads KRYPTIK_SOURCES, KRYPTIK_WORK, KRYPTIK_LOCK and
-# KRYPTIK_OUT from the environment when they are set, in preference to deriving
-# them from KRYPTIK_ROOT. A developer who has any of those exported - pointing
-# at the real downloads, say - would otherwise see this suite verify the wrong
-# tree and report failures that are nothing to do with the code. Each case sets
-# what it needs explicitly, so clear all of them here rather than inheriting.
+# common.sh prefers these over paths derived from KRYPTIK_ROOT, so an exported
+# one would point the tool at the real tree.
 unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -56,8 +25,7 @@ W="$(mktemp -d)"
 OUT="${W}/out"
 RC=0
 cleanup() {
-    # gpg-agent holds the fixture GNUPGHOMEs open; ask it to stop before the
-    # directory goes away, or the temp tree survives the test.
+    # gpg-agent holds these open; stop it or the temp tree survives.
     for h in "${W}/gnupg-fixture" "${W}/gnupg-build"; do
         [[ -d "$h" ]] || continue
         GNUPGHOME="$h" gpgconf --kill all >/dev/null 2>&1
@@ -89,9 +57,7 @@ echo "  building fixtures (four keys, five signature states)"
 
 for k in good expired revoked unknown; do
     expire=never
-    # One second, so that the signature below is made while the key is valid
-    # and verified after it is not. That is EXPKEYSIG, which is a valid
-    # signature and a stale keyring - not tampering.
+    # Signs while valid, verified after expiry: EXPKEYSIG.
     [[ "$k" == expired ]] && expire="seconds=1"
     fixgpg --quick-generate-key "${k} fixture <${k}@example.test>" \
            ed25519 sign "$expire" >/dev/null 2>&1
@@ -106,17 +72,14 @@ for k in good expired revoked unknown bad; do
         >/dev/null 2>&1
 done
 
-# Modified after signing. The lock file would catch this too; the point here is
-# that gpg reports BADSIG and the tool treats it as fatal.
+# Modified after signing: BADSIG.
 printf 'TAMPERED AFTER SIGNING\n' >> "${SRC}/bad.tar.gz"
 
 # Upstream publishes nothing alongside this one.
 printf 'no signature is published for this\n' > "${SRC}/nosig.tar.gz"
 
-# Keyring handed to the tool: good + expired + revoked, with the revocation
-# applied. GnuPG writes a revocation certificate for every generated key, armoured
-# with a leading colon on each line so it cannot be imported by accident;
-# stripping that is the documented way to use it.
+# The tool's keyring: good, expired and revoked (revocation applied). GnuPG
+# prefixes its revocation certificates with ':' against accidental import.
 REVFPR="$(GNUPGHOME="$FIXG" gpg --batch --list-keys --with-colons revoked@example.test \
           | awk -F: '$1=="fpr"{print $10; exit}')"
 GNUPGHOME="$FIXG" gpg --batch --quiet \
@@ -127,9 +90,8 @@ sed 's/^://' "${FIXG}/openpgp-revocs.d/${REVFPR}.rev" \
     | GNUPGHOME="$BUILDG" gpg --batch --quiet --import >/dev/null 2>&1
 GNUPGHOME="$BUILDG" gpg --batch --quiet --export > "${W}/keyring.gpg"
 
-# The "unknown" key, reachable only the way --fetch-unknown-keys reaches one:
-# by the id the signature itself names. Both the long key id and the
-# fingerprint are provided, because that is what gpg may report.
+# The unknown key is reachable only by the id its signature names, as a long
+# key id or a fingerprint (gpg may report either).
 UNKFPR="$(GNUPGHOME="$FIXG" gpg --batch --list-keys --with-colons unknown@example.test \
           | awk -F: '$1=="fpr"{print $10; exit}')"
 UNKID="${UNKFPR: -16}"
@@ -139,15 +101,12 @@ cp "${KEYSOURCE}/${UNKID}.gpg" "${KEYSOURCE}/${UNKFPR}.gpg"
 
 : > "${W}/empty-keyring.gpg"
 
-# The expired key needs to actually be expired before anything is verified.
+# Let the one-second key expire.
 sleep 3
 
-# --- fixture sanity: the states must be what this suite believes ------------
-#
-# A positive control on the fixtures themselves. If key generation or the
-# revocation import silently failed, every assertion below would still "pass"
-# for the wrong reason, so the raw gpg classification is checked first.
+# --- fixture sanity ---------------------------------------------------------
 
+# gpg's own verdict on each fixture, so no case passes for the wrong reason.
 VERIFYG="${W}/gnupg-check"
 mkdir -p "$VERIFYG"; chmod 700 "$VERIFYG"
 GNUPGHOME="$VERIFYG" gpg --batch --quiet --import "${W}/keyring.gpg" >/dev/null 2>&1
@@ -180,10 +139,8 @@ echo
 
 # --- harness ----------------------------------------------------------------
 
-# write_manifest <name>...
-# Rows are `name version url`, the shape fetch-sources.sh --list emits. A
-# file:// URL keeps signature discovery on the generic .sig/.asc/.sign path,
-# which is the one most sources use.
+# write_manifest <name>...: rows shaped like fetch-sources.sh --list. file://
+# URLs take the generic .sig/.asc/.sign path.
 write_manifest() {
     : > "${W}/manifest"
     local n
@@ -193,8 +150,7 @@ write_manifest() {
     done
 }
 
-# fresh_root discards the key cache and the ledger; warm_root keeps both, which
-# is the state the warm-cache cases are about.
+# A new KRYPTIK_ROOT: no cached keys, no keys.manifest.
 fresh_root() {
     rm -rf "$FAKE"
     mkdir -p "${FAKE}/build/config"
@@ -238,9 +194,7 @@ expect_fail() {
     fi
 }
 
-# ---------------------------------------------------------------------------
-# positive controls
-# ---------------------------------------------------------------------------
+# --- positive controls ------------------------------------------------------
 
 write_manifest good expired
 fresh_root; run
@@ -260,9 +214,7 @@ fresh_root; run
 expect_pass "expired keys are listed separately" \
     "signed with a key the keyring believes expired"
 
-# ---------------------------------------------------------------------------
-# hard failures: fatal in both modes
-# ---------------------------------------------------------------------------
+# --- fatal in both modes ----------------------------------------------------
 
 write_manifest revoked
 fresh_root; run
@@ -286,9 +238,7 @@ fresh_root; run
 expect_fail "a signature that does not match its file is fatal" \
     "BAD SIGNATURE"
 
-# ---------------------------------------------------------------------------
-# unverifiable: not a failure, not a pass
-# ---------------------------------------------------------------------------
+# --- unverifiable -----------------------------------------------------------
 
 write_manifest nosig
 fresh_root; run
@@ -308,9 +258,7 @@ write_manifest unknown
 fresh_root; run --strict
 expect_fail "an unheld signing key fails --strict" "unverifiable"
 
-# A manifest row whose file was never downloaded. This used to warn and
-# `continue` without touching a counter, so a run with nothing fetched
-# reported no problems at all.
+# A manifest row whose file was never downloaded.
 write_manifest good notfetched
 rm -f "${SRC}/notfetched.tar.gz"
 fresh_root; run
@@ -321,16 +269,9 @@ write_manifest good notfetched
 fresh_root; run --strict
 expect_fail "a source that was never downloaded fails --strict" "unverifiable"
 
-# ---------------------------------------------------------------------------
-# a suffix is not a format
-# ---------------------------------------------------------------------------
-#
-# python.org publishes both a Sigstore `.sig` (a base64 ECDSA blob) and an
-# OpenPGP `.asc`. The probe tried `.sig` first, handed the blob to gpg, got "no
-# valid OpenPGP data found" and reported the source as inconclusive — with the
-# real signature one suffix away. These cases pin that.
+# --- non-OpenPGP signature files --------------------------------------------
 
-# `shadowed` has a non-OpenPGP .sig and a good .asc.
+# Like python.org: `shadowed` has a Sigstore-style .sig and a good .asc.
 printf 'fixture payload for shadowed\n' > "${SRC}/shadowed.tar.gz"
 printf 'MGUCMBOJQYFWjEHjcb7SgCw+RRyHV+y1vbKshHpSSo/jK85X2kajmKLKf3hhR2LT\n' \
     > "${SRC}/shadowed.tar.gz.sig"
@@ -346,8 +287,6 @@ write_manifest shadowed
 fresh_root; run --strict
 expect_pass "and that source passes --strict" "verified:     1"
 
-# The wrong-format file must not be left in the signature cache, or it would
-# shadow the real one on every later run.
 if [[ ! -e "${SRC}/.signatures/shadowed.tar.gz.sig" ]]; then
     green "the non-OpenPGP candidate is not left cached"
 else
@@ -369,9 +308,7 @@ fresh_root; run --strict
 expect_fail "and it fails --strict rather than being called inconclusive" \
     "unverifiable"
 
-# ---------------------------------------------------------------------------
-# unaudited imported keys
-# ---------------------------------------------------------------------------
+# --- unaudited imported keys ------------------------------------------------
 
 write_manifest unknown
 fresh_root; run --fetch-unknown-keys
@@ -399,9 +336,7 @@ write_manifest unknown
 fresh_root; run --fetch-unknown-keys --strict
 expect_fail "an unaudited key fails --strict" "signed by unaudited keys"
 
-# ---------------------------------------------------------------------------
-# warm cache: the label has to outlive the run that created it
-# ---------------------------------------------------------------------------
+# --- warm cache: the unaudited label outlives its run -----------------------
 
 write_manifest unknown
 fresh_root
@@ -417,8 +352,7 @@ run --strict
 expect_fail "a cached unaudited key still fails --strict" \
     "signed by unaudited keys"
 
-# keys.manifest is the ledger; --fetch-unknown-keys used to truncate it at the
-# start of every run, so a second run that fetched nothing erased it.
+# Re-running --fetch-unknown-keys must neither truncate nor duplicate the ledger.
 before="$(wc -l < "${FAKE}/keys.manifest")"
 run --fetch-unknown-keys
 after="$(wc -l < "${FAKE}/keys.manifest")"
@@ -430,10 +364,8 @@ else
     sed 's/^/        /' "${FAKE}/keys.manifest"
 fi
 
-# The documented limit, pinned so that a change to it is visible: the ledger is
-# the only record of how a cached key got there. Remove the ledger and the key
-# counts as verified - which is why --refresh is the documented remedy, and why
-# that remedy is asserted immediately below rather than just described.
+# Known limit: keys.manifest is the only record of how a cached key got there,
+# so without it the key counts as verified. The remedy, --refresh, is next.
 rm -f "${FAKE}/keys.manifest"
 run
 if grep -qF "verified:     1" "$OUT"; then
@@ -446,9 +378,7 @@ run --refresh --strict
 expect_fail "--refresh discards the cache and the key is unheld again" \
     "unverifiable"
 
-# ---------------------------------------------------------------------------
-# the keyring itself
-# ---------------------------------------------------------------------------
+# --- keyring ----------------------------------------------------------------
 
 KEYRING="${W}/empty-keyring.gpg"
 write_manifest good
@@ -461,9 +391,7 @@ fresh_root; run
 expect_pass "an empty keyring warns informationally" "will be mostly unverifiable"
 KEYRING="${W}/keyring.gpg"
 
-# ---------------------------------------------------------------------------
-# the buckets must not be merged
-# ---------------------------------------------------------------------------
+# --- counts kept apart ------------------------------------------------------
 
 write_manifest good expired revoked bad nosig unknown
 fresh_root; run --fetch-unknown-keys
@@ -483,14 +411,9 @@ else
     red "a mixed manifest containing failures exited 0"; show
 fi
 
-# ---------------------------------------------------------------------------
-# missing prerequisites
-# ---------------------------------------------------------------------------
-#
-# A real pruned PATH, not a flag: `have gpg` is what the tool calls, so this
-# exercises the code that runs. Without gpg NOTHING can be authenticated, and
-# the one outcome that must not happen is a run that reports no problems.
+# --- missing prerequisites --------------------------------------------------
 
+# mkbin <dir> [tool...]: a PATH directory of the usual tools minus those named.
 mkbin() {
     local dir="$1"; shift
     mkdir -p "$dir"
@@ -507,8 +430,7 @@ mkbin() {
 mkbin "${W}/bin-full"
 mkbin "${W}/bin-nogpg" gpg gpg2
 
-# Control first: the pruned-PATH harness itself must not break a good run, or
-# the two cases below would prove nothing.
+# Control: the pruned PATH alone must not break a good run.
 write_manifest good
 fresh_root
 PATH="${W}/bin-full" KRYPTIK_ROOT="$FAKE" KRYPTIK_SOURCES="$SRC" \
@@ -550,9 +472,7 @@ else
     red "missing gpg passed --strict"; show
 fi
 
-# ---------------------------------------------------------------------------
-# the selftest hooks cannot be used by accident
-# ---------------------------------------------------------------------------
+# --- selftest hooks ---------------------------------------------------------
 
 write_manifest good
 fresh_root
@@ -566,14 +486,10 @@ else
     red "a substituted manifest was accepted without KRYPTIK_SIGCHECK_SELFTEST"; show
 fi
 
-# --- the pinned fingerprints themselves -------------------------------------
-#
-# A pin is the strongest thing this tool can say about a signer, so the pins
-# have to be the thing they claim to be. Pinning a short or long KEY ID instead
-# of a full fingerprint silently weakens the pin to an identifier that can be
-# collided, while still reading as "signature-pinned-key" in every report.
-# Nothing checked the shape of these before.
+# --- pinned fingerprints ----------------------------------------------------
 
+# A key id in place of a full fingerprint could be collided, yet would still
+# report as signature-pinned-key.
 PINS="$(awk '/^PINNED_FPRS=\(/{f=1;next} f&&/^\)/{f=0} f' "${ROOT}/tools/verify-signatures.sh"         | grep -oE '"[0-9A-Fa-f]+"' | tr -d '"')"
 
 if [[ -n "$PINS" ]]; then
@@ -600,8 +516,7 @@ else
     red "duplicated pins: ${dupes}"
 fi
 
-# Each pin should be justified where it sits: an unexplained 40-hex string is
-# indistinguishable from one pasted in by mistake.
+# Each pin needs a comment saying whose key it is.
 uncommented="$(awk '/^PINNED_FPRS=\(/{f=1;next} f&&/^\)/{f=0} f && /"[0-9A-Fa-f]{40}"/ && $0 !~ /#/'                "${ROOT}/tools/verify-signatures.sh" | tr -d ' "' | tr '
 ' ' ')"
 if [[ -z "${uncommented// /}" ]]; then
@@ -611,17 +526,8 @@ else
 fi
 
 # --- published key provenance -----------------------------------------------
-#
-# tools/key-provenance.tsv lets a key be fetched from a place the PUBLISHER
-# states it, rather than from a keyserver by the id the signature itself names.
-# Twelve sources moved from "key not held" to a verified signature because of
-# it, so the cases that matter most here are the ones that keep it honest: the
-# recorded fingerprint is the anchor, and a locator that starts serving a
-# different key is a finding rather than an update.
-#
-# The korg locators are file:// URLs, which the tool accepts only under
-# KRYPTIK_SIGCHECK_SELFTEST - the same gate as every other substituted input.
 
+# file:// locators are accepted only under KRYPTIK_SIGCHECK_SELFTEST.
 PROV="${W}/prov"
 mkdir -p "$PROV"
 GNUPGHOME="$FIXG" gpg --batch --quiet --armor --export unknown@example.test \
@@ -654,9 +560,7 @@ klass_of() {  # klass_of REPORT NAME
     awk -F'\t' -v N="$2" '$1==N{print $2; exit}' "$1"
 }
 
-# Positive control: the same key, with no row, must still be unheld. Without
-# this every assertion below could be satisfied by a tool that verified
-# everything.
+# Control: with no provenance row the key is not held.
 fresh_root
 write_manifest unknown
 run --report="${W}/r0.tsv"
@@ -681,9 +585,7 @@ else
     red "and the import says where the key came from"; show
 fi
 
-# THE CASE THIS TABLE EXISTS TO BE ABLE TO NOTICE. The row records one
-# fingerprint; the locator serves a different key. That is a rotated or
-# substituted key, and the recorded fingerprint must win.
+# The locator serves a different key than the row records: the row must win.
 fresh_root
 write_manifest unknown
 prov_table "${UNKFPR}  korg  file://${PROV}/good.asc  2026-09-11  unknown  deliberately the wrong key"
@@ -699,8 +601,6 @@ else
     red "and the source stays unverified (got $(klass_of "${W}/r2.tsv" unknown))"; show
 fi
 
-# A published fingerprint is no longer a key accepted because a signature named
-# it, so the published class must supersede the unaudited ledger.
 fresh_root
 write_manifest unknown
 printf '%-18s %-42s %s\n' unknown "$UNKFPR" 'unknown fixture' > "${FAKE}/keys.manifest"
@@ -713,8 +613,7 @@ else
 fi
 rm -f "${FAKE}/keys.manifest"
 
-# A wkd row whose address resolves to nothing must warn and leave the source
-# unverified - never silently pass, and never abort the run.
+# An unresolvable WKD address must warn, stay unverified and not abort the run.
 fresh_root
 write_manifest unknown
 prov_table "${UNKFPR}  wkd  nobody@wkd-does-not-exist.invalid  2026-09-11  unknown  unresolvable on purpose"
@@ -726,7 +625,7 @@ else
     red "an unresolvable wkd locator warns and leaves the source unverified (exit ${RC})"; show
 fi
 
-# --- malformed rows are a tooling fault, not a verification result ----------
+# --- malformed provenance rows ----------------------------------------------
 
 bad_prov() {  # bad_prov ROW NAME
     fresh_root
@@ -758,13 +657,9 @@ bad_prov "${UNKFPR}  korg  file://${PROV}/unknown.asc  2026-09-11  unknown" \
          "a row with no published uid recorded is refused"
 
 # --- the platform-published kind --------------------------------------------
-#
-# kind github means: GitHub publishes this key for an account, AND that account
-# published the release we pin. It applies only where GitHub already serves the
-# tarball, so it adds no single point of failure the download did not have -
-# but holding that account breaks both halves at once, which is why it is its
-# own class and not folded in with the others.
 
+# github: GitHub publishes the key of the account that published the pinned
+# release. Its own class, since holding that account defeats both at once.
 fresh_root
 write_manifest unknown
 prov_table "${UNKFPR}  github  file://${PROV}/unknown.asc  2026-09-11  unknown  unknown fixture; fixture/repo v1.0 was published by nobody"
@@ -775,19 +670,17 @@ else
     red "expected signature-platform-published-key, got $(klass_of "${W}/g1.tsv" unknown)"; show
 fi
 
-# The locator is pinned to one endpoint shape, so a row cannot point "github"
-# at some other host and inherit the class.
+# One endpoint shape, so "github" cannot point at another host.
 bad_prov "${UNKFPR}  github  https://not-github.example/x.gpg  2026-09-11  unknown  x published by someone" \
          "a github locator on another host is refused"
 bad_prov "${UNKFPR}  github  https://github.com/acct/extra.gpg  2026-09-11  unknown  x published by someone" \
          "a github locator that is not <account>.gpg is refused"
 
-# Without the release-author tie the row says only "GitHub hosts this key",
-# which is not the claim the class makes.
+# Without the release-author tie the row says only "GitHub hosts this key".
 bad_prov "${UNKFPR}  github  https://github.com/acct.gpg  2026-09-11  unknown  just a uid, no tie recorded" \
          "a github row with no recorded release author is refused"
 
-# And the shipped rows must each carry both halves.
+# Shipped github rows need both the endpoint shape and the release-author tie.
 gh_bad=0
 while read -r _fpr kind loc _ret _signs rest; do
     [[ "$kind" == "github" ]] || continue
@@ -800,7 +693,7 @@ else
     red "${gh_bad} shipped github row(s) are missing the endpoint shape or the tie"
 fi
 
-# --- the shipped table, and the hook that must not be usable by accident ----
+# --- shipped table, selftest gate -------------------------------------------
 
 fresh_root
 write_manifest good

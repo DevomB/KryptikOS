@@ -19,22 +19,19 @@ memory_max = "12G"
 pids_max   = 1024
 
 [identity]
-# Fixed host uid/gid range for this zone: root inside maps to 131072,
-# nobody to 196606. Never derived from zone order; see docs/design/privileged-launch.md.
+# Host uid/gid range: root inside maps to 131072, nobody to 196606. Fixed,
+# never derived from zone order (docs/design/privileged-launch.md).
 uid_base = 131072
 
 [transfer]
-# The one shipped transfer policy: what dev builds may be handed to work,
-# through the broker and a confirmation in zone 0 - never the other way,
-# never to vault or net (docs/design/broker.md). Every other zone sends nothing.
+# dev may hand files to work, one way, through the broker and a confirmation
+# in zone 0 (docs/design/broker.md). No other shipped zone sends anything.
 to = "work"
 
 [ui]
-# Identity in four channels (compositor/zoneid, `zoneid explain`): the
-# colour is from `zoneid propose` (every pair of shipped zones differs by
-# dE00 >= 15 under every vision model, 3:1 against both backgrounds);
-# the pattern, glyph and label are what remain for a user who cannot see
-# the colour difference. Every zone has a distinct value in each.
+# Colour, glyph and label must differ from every other zone's; the pattern
+# backs up colour for users who cannot tell colours apart. Pick colours with
+# `zoneid propose`; `zoneid audit` checks the set, `zoneid explain` the rule.
 border_color   = "#7f623d"
 border_pattern = "dotted"
 glyph          = "◆"
