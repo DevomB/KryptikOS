@@ -1,11 +1,6 @@
-# Kryptik kernel hardening fragment
-# Merge with: scripts/kconfig/merge_config.sh .config hardening.fragment
-# Rationale: docs/hardening.md
-# Checked by: tools/check-kernel-hardening.sh, which runs kernel-hardening-checker
-#   on the resolved .config and the shipped command line in stage 05 and in CI;
-#   every failure it reports is either fixed here or accepted, with its reason,
-#   in checker-accepted.txt.
-# Validate symbols exist in the pinned kernel: make validate-kernel
+# Kernel hardening in vanilla Linux symbols (docs/hardening.md). Check the
+# symbols with `make validate-kernel`; kernel-hardening-checker findings are
+# fixed here or accepted, with a reason, in checker-accepted.txt.
 
 # --- memory ---
 CONFIG_INIT_ON_ALLOC_DEFAULT_ON=y
@@ -25,16 +20,9 @@ CONFIG_STACKPROTECTOR_STRONG=y
 CONFIG_FORTIFY_SOURCE=y
 CONFIG_ZERO_CALL_USED_REGS=y
 
-# NOT SET: CONFIG_CFI / CONFIG_CFI_CLANG.
-# Kernel Control Flow Integrity requires the kernel to be built with Clang
-# (it depends on CC_IS_CLANG). Kryptik's toolchain is GCC, so setting it here
-# would be dropped for an unmet dependency and the fragment would be claiming
-# a mitigation the kernel does not have. In 6.18 CONFIG_CFI_CLANG is also
-# marked 'transitional' - the live symbol is CONFIG_CFI.
-#
-# Building the kernel with Clang while userspace stays GCC is a legitimate
-# split (Android does exactly this) and would buy CFI plus better sanitizer
-# coverage. Left for a later evaluation rather than decided here.
+# No kernel CFI: it needs a Clang-built kernel (CC_IS_CLANG) and the toolchain
+# is GCC. A Clang kernel with GCC userspace, as Android builds, is not
+# evaluated yet.
 
 # --- kernel memory protection ---
 CONFIG_STRICT_KERNEL_RWX=y
@@ -63,8 +51,7 @@ CONFIG_NET_NS=y
 CONFIG_IPC_NS=y
 CONFIG_UTS_NS=y
 CONFIG_CGROUPS=y
-# (CONFIG_CGROUP_BPF is not listed: it needs the bpf() syscall, which is off;
-# see the BPF section below.)
+# (No CGROUP_BPF: it needs bpf(), which is off; see BPF below.)
 CONFIG_MEMCG=y
 CONFIG_BLK_CGROUP=y
 CONFIG_DM_CRYPT=y
@@ -79,7 +66,7 @@ CONFIG_SECURITY_YAMA=y
 
 # --- attack surface removal ---
 # CONFIG_DEVMEM is not set
-# (CONFIG_DEVKMEM removed upstream in 5.13 - /dev/kmem support is gone)
+# (DEVKMEM is gone upstream since 5.13.)
 # CONFIG_LEGACY_PTYS is not set
 # CONFIG_BINFMT_MISC is not set
 # CONFIG_COMPAT_BRK is not set
@@ -89,40 +76,24 @@ CONFIG_SECURITY_YAMA=y
 # CONFIG_IA32_EMULATION is not set
 
 # --- debug interfaces that leak kernel state ---
+# debugfs exposes kernel internals that lockdown does not fully close off.
 # CONFIG_DEBUG_FS is not set
-#
-# ... and the option that was quietly turning it back on. x86_64 defconfig sets
-# CONFIG_BLK_DEV_IO_TRACE=y, which `select`s DEBUG_FS - and a Kconfig select is
-# unconditional, so it overrode the line above without a word. The first kernel
-# built from this fragment had DEBUG_FS=y and nothing noticed, because s_config
-# only ever verified the options that must be ON.
-#
-# blktrace is block-layer tracing. Kryptik has no use for it, and debugfs is a
-# broad window into kernel internals that lockdown does not fully close.
+# defconfig's blktrace selects DEBUG_FS back on, and nothing here uses it.
 # CONFIG_BLK_DEV_IO_TRACE is not set
-# (CONFIG_DEBUG_CREDENTIALS removed upstream in 6.5)
+# (DEBUG_CREDENTIALS is gone upstream since 6.5.)
 CONFIG_DEBUG_NOTIFIERS=y
 CONFIG_DEBUG_LIST=y
 CONFIG_DEBUG_SG=y
 CONFIG_BUG_ON_DATA_CORRUPTION=y
 
-# --- BPF: a well-worn LPE path, and not built ---
-# Until 2026-09-18 the two lines here were CONFIG_BPF_UNPRIV_DEFAULT_OFF=y and
-# CONFIG_BPF_JIT_ALWAYS_ON=y: a hardened bpf(). Both depend on BPF_SYSCALL,
-# which the x86_64 defconfig never enables, so kconfig dropped both without a
-# word and every kernel built from this fragment had no bpf() at all. That is
-# the right kernel: nothing in Kryptik loads a BPF program (seccomp filters are
-# classic BPF handed to the seccomp syscall and need no bpf()), and the
-# verifier is where the privilege escalations come from. Off on purpose now,
-# so the fragment says what the kernel is. Found by the fragment-survival
-# check the first time it covered this file.
+# --- BPF: not built ---
+# Nothing loads a BPF program (seccomp filters are classic BPF and need no
+# bpf()), and the verifier is a common source of privilege escalations.
 # CONFIG_BPF_SYSCALL is not set
 
 # --- speculative execution mitigations ---
-# These moved under a MITIGATION_ prefix in 6.9. The pre-6.9 spellings
-# (CONFIG_RETPOLINE, CONFIG_SLS) are silently ignored by merge_config.sh,
-# which would leave the kernel without them while the fragment still claimed
-# otherwise. Validated by tools/validate-kernel-config.sh.
+# The MITIGATION_ names date from 6.9; the old spellings (RETPOLINE, SLS) would
+# be dropped silently.
 CONFIG_MITIGATION_RETPOLINE=y
 CONFIG_MITIGATION_SLS=y
 CONFIG_MITIGATION_RETHUNK=y
@@ -138,84 +109,38 @@ CONFIG_MITIGATION_UNRET_ENTRY=y
 CONFIG_HARDENED_USERCOPY=y
 CONFIG_GCC_PLUGIN_LATENT_ENTROPY=y
 
-# Stack erasing and structure layout randomization.
-#
-# Until 2026-09-18 these two lines read CONFIG_GCC_PLUGIN_STACKLEAK=y and
-# CONFIG_GCC_PLUGIN_RANDSTRUCT=y. Both symbols still exist in 6.18, which is
-# why the symbol validator passed them, but both are now derived (`def_bool`)
-# from the options below and cannot be set from a fragment: the kernel built
-# from this file had no stack erasing and RANDSTRUCT_NONE. Found by
-# kernel-hardening-checker, the first time it was run on the resolved config.
-# KSTACK_ERASE is the 6.17 name of STACKLEAK.
+# Stack erasing (KSTACK_ERASE, STACKLEAK before 6.17) and structure layout
+# randomization. GCC_PLUGIN_STACKLEAK and GCC_PLUGIN_RANDSTRUCT still exist but
+# are derived from these, so a fragment cannot set them.
 CONFIG_KSTACK_ERASE=y
 # CONFIG_KSTACK_ERASE_METRICS is not set
 # CONFIG_KSTACK_ERASE_RUNTIME_DISABLE is not set
 CONFIG_RANDSTRUCT_FULL=y
 
-# Stack variable initialization. The GCC_PLUGIN_STRUCTLEAK_* options were
-# removed upstream once compilers gained -ftrivial-auto-var-init; INIT_STACK_
-# ALL_ZERO is the current spelling and matches the -ftrivial-auto-var-init=zero
-# Kryptik already applies to userspace (build/config/hardening.env).
+# Zero-initialized stack variables, like -ftrivial-auto-var-init=zero in
+# userspace (build/config/hardening.env). Replaces GCC_PLUGIN_STRUCTLEAK_*.
 CONFIG_INIT_STACK_ALL_ZERO=y
 
-# securityfs, for /sys/kernel/security/lsm.
-#
-# Landlock, lockdown and Yama all work without it - they are syscall and LSM
-# hooks, not files. What needs it is being able to SEE which LSMs a running
-# kernel has active. The first boot of a Kryptik image reported
-# "lsm=unreadable" while kryptikd, asking the kernel directly, reported
-# landlock ABI v7: the mitigation was there and unobservable. A security
-# distribution that cannot show which LSMs are loaded is asking to be taken on
-# faith.
+# securityfs, so /sys/kernel/security/lsm shows which LSMs are active. The LSMs
+# themselves work without it.
 CONFIG_SECURITYFS=y
 
-# --- found by the security review, measured on this kernel ------------------
+# --- zones and encrypted storage --------------------------------------------
 
-# An airgapped zone is not alone in its namespace.
-#
-# The SIT driver registers a fallback tunnel device per network namespace, so
-# every netns the kernel creates gets a sit0 - including one for a zone
-# declared network.mode = "none", whose whole promise is loopback and nothing
-# else. Measured in the guest: expected PROBE=lo, got PROBE=lo,sit0.
-#
-# It comes up DOWN with no addresses and no routes, so this is not a claim that
-# it is reachable. It is that `explain` tells an operator "loopback only" and
-# that is not what they get, and a guarantee that is narrower than its wording
-# is the kind of thing this distribution exists to not do.
-#
-# CONFIG_IPV6_SIT_6RD and CONFIG_IPV6_TUNNEL are already off; this is the same
-# direction, one symbol further.
+# SIT gives every network namespace a sit0 tunnel device, so a zone with
+# network.mode = "none" would have more than the loopback it promises.
 # CONFIG_IPV6_SIT is not set
 
-# dm-crypt could not open a single standard volume.
-#
-# CONFIG_DM_CRYPT and CONFIG_BLK_DEV_DM were already on, which reads as "we
-# have encrypted storage". CONFIG_CRYPTO_XTS was not, so aes-xts-plain64 - the
-# cipher named in every LUKS2 header in the world - had no implementation
-# behind it. The feature was present in the config and absent in fact, which is
-# exactly the shape of defect this build keeps finding.
+# aes-xts-plain64, the cipher of standard LUKS2 volumes, for dm-crypt.
 CONFIG_CRYPTO_XTS=y
 
-# Per-directory ext4 encryption, so "keys wiped on zone stop" can be true.
-#
-# Preferred over the dm-crypt route for zones: no cryptsetup, no loop device,
-# no LVM, no new pinned source. kryptikd adds and removes keys with ioctls it
-# can issue itself, and dropping a zone's key on stop is then an actual erasure
-# of access rather than a comment describing one.
-#
-# The filesystem needs the feature too - see tools/image/mkdisk.sh, which now
-# creates the root with -O encrypt.
-CONFIG_FS_ENCRYPTION=y
+# No fscrypt: zone volumes and the state partition are dm-crypt (LUKS2).
+# CONFIG_FS_ENCRYPTION is not set
 
-# --- found by kernel-hardening-checker, applied where the product allows ------
-#
-# The checker's remaining findings, and why each stays, are in
-# checker-accepted.txt. Everything below is what could simply be done.
+# --- kernel-hardening-checker recommendations (see checker-accepted.txt) -----
 
-# Several options below are prompted only `if EXPERT`. Without EXPERT the
-# prompt is invisible and an "is not set" line for it is ignored: kconfig keeps
-# the default, which is y for every one of them. EXPERT changes no value by
-# itself; it makes these settable.
+# Several options below have prompts only `if EXPERT`; without it their
+# "is not set" lines are ignored and they stay y. EXPERT itself changes nothing.
 CONFIG_EXPERT=y
 
 # Self-protection.
@@ -225,11 +150,8 @@ CONFIG_KFENCE_SAMPLE_INTERVAL=100
 CONFIG_UBSAN=y
 CONFIG_UBSAN_BOUNDS=y
 CONFIG_UBSAN_TRAP=y
-# With TRAP on, a sanitizer finding is a panic, so only the array bounds check
-# stays armed: the other sanitizers (a shift too wide, a division by zero, an
-# integer that wraps, an enum or bool out of range, an unaligned access) fire
-# on conditions the kernel tolerates and would make an oops of a warning. The
-# checker asks for exactly this set beside UBSAN_TRAP.
+# With UBSAN_TRAP a finding is a panic, so only the bounds check stays on; the
+# others fire on conditions the kernel tolerates. The checker asks for this set.
 # CONFIG_UBSAN_SHIFT is not set
 # CONFIG_UBSAN_DIV_ZERO is not set
 # CONFIG_UBSAN_UNREACHABLE is not set
@@ -241,43 +163,34 @@ CONFIG_SCHED_CORE=y
 CONFIG_PAGE_TABLE_CHECK=y
 CONFIG_PAGE_TABLE_CHECK_ENFORCED=y
 CONFIG_TRIM_UNUSED_KSYMS=y
-# The EFI stub disables PCI bus mastering before ExitBootServices, so a device
-# the firmware left DMA-capable cannot write over the kernel while it starts;
-# and it asks the firmware to overwrite RAM on the next reset
-# (MemoryOverwriteRequestControl), against a reboot into another OS that
-# reads the previous one's memory. A clean shutdown leaves the request armed,
-# so every reboot pays for the wipe in POST time; the zone volumes' keys live
-# in that RAM, and Fedora ships the same option.
+# The EFI stub stops PCI bus mastering before ExitBootServices, so no device can
+# DMA over the kernel as it starts. The firmware wipes RAM, which holds the zone
+# volume keys, on the next reset (MemoryOverwriteRequestControl); every reboot
+# pays for that in POST time.
 CONFIG_EFI_DISABLE_PCI_DMA=y
 CONFIG_RESET_ATTACK_MITIGATION=y
-# The IOMMU on, strict, by default: a Thunderbolt or PCIe device gets the
-# mappings a driver asked for and nothing else, from boot, without a command
-# line parameter. Intel's SVM is what the checker asks for beside it.
+# IOMMU on and strict from boot: a Thunderbolt or PCIe device gets only the
+# mappings its driver asked for. The checker also asks for Intel SVM.
 CONFIG_IOMMU_DEFAULT_DMA_STRICT=y
 CONFIG_INTEL_IOMMU_DEFAULT_ON=y
 CONFIG_INTEL_IOMMU_SVM=y
-# The TPM as an entropy source (and, later, for measured boot).
+# The TPM, as an entropy source.
 CONFIG_TCG_TPM=y
 CONFIG_TCG_TIS=y
 CONFIG_TCG_CRB=y
 CONFIG_HW_RANDOM_TPM=y
 
-# Userspace hardening: /proc/pid/mem cannot be written through read-only
-# mappings even by a ptracer; shadow stacks for userspace built with CET
-# (build/config/hardening.env passes -fcf-protection, and glibc 2.40 enables
-# them per binary).
+# /proc/pid/mem cannot write through read-only mappings, even for a ptracer;
+# shadow stacks for userspace built with -fcf-protection (hardening.env).
 CONFIG_PROC_MEM_NO_FORCE=y
 CONFIG_X86_USER_SHADOW_STACK=y
 
-# The running kernel's config, readable at /proc/config.gz, so a booted
-# system can be checked against what it was meant to be built with.
+# /proc/config.gz, to check a running kernel against its intended config.
 CONFIG_IKCONFIG=y
 CONFIG_IKCONFIG_PROC=y
 
-# Attack surface Kryptik has no use for. The x86_64 defconfig compiles SELinux
-# in and lists every LSM in the boot order; ADR-007 chose Landlock and seccomp,
-# and a MAC framework with no policy loaded is code with no purpose. The LSM
-# list is the three that are actually built.
+# Attack surface with no use here. No SELinux (ADR-007 chose Landlock and
+# seccomp), and the LSM list is the three that are built.
 # CONFIG_SECURITY_SELINUX is not set
 CONFIG_LSM="landlock,lockdown,yama"
 # CONFIG_X86_MSR is not set
@@ -294,34 +207,25 @@ CONFIG_LSM="landlock,lockdown,yama"
 # CONFIG_EFI_CUSTOM_SSDT_OVERLAYS is not set
 # CONFIG_MAGIC_SYSRQ is not set
 # CONFIG_KALLSYMS_ALL is not set
-# Nothing writes to a mounted block device from userspace: the updater writes
-# the slot that is not mounted, the installer writes a disk nothing is mounted
-# from, and the zone volumes are written through dm-crypt.
+# Nothing writes a mounted block device: the updater writes the unmounted slot,
+# the installer an unmounted disk, and zone volumes go through dm-crypt.
 # CONFIG_BLK_DEV_WRITE_MOUNTED is not set
 # kernel.core_pattern is already |/bin/false; no core dump support at all.
 # CONFIG_COREDUMP is not set
 # /proc/pid/{pagemap,smaps,clear_refs}: physical layout leaks, unused here.
 # CONFIG_PROC_PAGE_MONITOR is not set
 
-# --- built in by the upstream default configuration, used by nothing here ---
-# Not modules: off. Each of these is kernel code reachable from a device, a
-# packet or a mount that Kryptik never asks for. There is no audio stack in
-# the image, so no sound driver has a user. Nothing mounts a network
-# filesystem, and the NFS client brings SUNRPC and a root-over-NFS path
-# with it. CardBus, AGP and the Macintosh drivers are buses no UEFI x86-64
-# machine has. The slots are plain GPT partitions under dm-verity, so
-# software RAID and the old device-mapper targets have no job. No printer
-# spooler, no USB sniffer, no quota, no automounter; the ESP is vfat, and
-# msdos is the same code with shorter names.
+# --- built in by defconfig, used by nothing here: off, not modules ----------
+# Each is reachable from a device, a packet or a mount: no audio stack, no
+# network filesystem, buses no UEFI x86-64 machine has (CardBus, AGP, Mac), no
+# RAID under the dm-verity slots, and msdos is vfat with shorter names.
 # CONFIG_SOUND is not set
 # CONFIG_NETWORK_FILESYSTEMS is not set
 # CONFIG_NET_9P is not set
 # CONFIG_PCCARD is not set
 # CONFIG_AGP is not set
 # CONFIG_MACINTOSH_DRIVERS is not set
-# (Not CONFIG_MD itself: that is the whole "multiple devices" menu, and
-# device-mapper, which is dm-verity, lives under it. Stage 05 refuses the
-# configuration if that is ever tried again.)
+# (Not MD itself: device-mapper, and so dm-verity, lives under it.)
 # CONFIG_BLK_DEV_MD is not set
 # CONFIG_DM_MIRROR is not set
 # CONFIG_DM_ZERO is not set
@@ -334,12 +238,9 @@ CONFIG_LSM="landlock,lockdown,yama"
 # CONFIG_QUOTA is not set
 # CONFIG_AUTOFS_FS is not set
 # CONFIG_MSDOS_FS is not set
-# The connection-tracking helpers parse FTP, IRC and SIP payloads inside the
-# kernel to open ports on a client's behalf: a parser fed by whoever the
-# machine talks to, for protocols the net zone does not forward specially.
-# netconsole sends the kernel log to a UDP address; nothing here configures
-# it, and a kernel log is not something to be one module parameter away
-# from leaving the machine.
+# Conntrack helpers parse FTP, IRC and SIP payloads in the kernel, fed by any
+# peer, for protocols the net zone does not need. netconsole would put the
+# kernel log one module parameter away from leaving the machine.
 # CONFIG_NF_CONNTRACK_FTP is not set
 # CONFIG_NF_CONNTRACK_IRC is not set
 # CONFIG_NF_CONNTRACK_SIP is not set

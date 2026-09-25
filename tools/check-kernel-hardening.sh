@@ -5,29 +5,17 @@
 #   ./tools/check-kernel-hardening.sh --config FILE [--cmdline FILE]
 #                                     [--accepted FILE] [--checker-dir DIR]
 #
-#   --config FILE      the resolved .config (stage 05's, or
-#                      tools/resolve-kernel-config.sh's)
-#   --cmdline FILE     a one-line kernel command line; when absent, the
-#                      COMMON_ARGS line of build/stages/06-iso.sh is read and a
-#                      command line of the shipped shape is built from it
+#   --config FILE      the resolved .config (from stage 05 or
+#                      tools/resolve-kernel-config.sh)
+#   --cmdline FILE     a one-line kernel command line; default: the shipped
+#                      shape, built from COMMON_ARGS in build/stages/06-iso.sh
 #   --accepted FILE    default build/config/kernel/checker-accepted.txt
-#   --checker-dir DIR  an unpacked kernel-hardening-checker tree; default: the
-#                      pinned release, unpacked from KRYPTIK_SOURCES on demand
+#   --checker-dir DIR  an unpacked checker tree; default: the pinned release,
+#                      unpacked from KRYPTIK_SOURCES on demand
 #
-# kernel-hardening-checker (a13xp0p0v) is the KSPP's reference list of what a
-# hardened kernel configuration looks like. It reports every option it knows
-# as OK or FAIL. This script's contract is that a FAIL is never silent: each
-# one is either fixed in the fragments or written down in checker-accepted.txt
-# with the reason it stays, and an entry there without a reason is itself a
-# failure. An accepted entry whose option has started to pass is reported as
-# stale so the list shrinks rather than accumulates.
-#
-# The checker itself is pinned like every other input (build/config/
-# versions.env, sources.lock) and runs from that tarball: a hardening report
-# from an unpinned tool is one more unverified input.
-#
-# Exit status: 0 when every failure is accepted; 1 when one is not, when the
-# accepted list is malformed, or when the checker could not run.
+# Each FAIL must be fixed or listed, with its reason, in the accepted file; an
+# accepted option that passes now is reported stale. Exit 1 on an unaccepted
+# failure, a malformed accepted list, or a checker that could not run.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 load_config
@@ -42,7 +30,7 @@ while [[ $# -gt 0 ]]; do
         --cmdline)     CMDLINE="${2:?--cmdline needs a file}"; shift 2 ;;
         --accepted)    ACCEPTED="${2:?--accepted needs a file}"; shift 2 ;;
         --checker-dir) CHECKER_DIR="${2:?--checker-dir needs a directory}"; shift 2 ;;
-        -h|--help)     sed -n '2,32p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help)     sed -n '2,18p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -51,17 +39,14 @@ done
 [[ -f "$ACCEPTED" ]] || die "accepted list not found: ${ACCEPTED}"
 have python3 || die "python3 required (the checker is Python)"
 
-# --- the checker, from the pinned tarball ---------------------------------
+# The checker runs from its pinned tarball.
 if [[ -z "$CHECKER_DIR" ]]; then
     ver="${V_KERNEL_HARDENING_CHECKER:?V_KERNEL_HARDENING_CHECKER is not pinned in versions.env}"
     tarball="${KRYPTIK_SOURCES}/v${ver}.tar.gz"
     CHECKER_DIR="${KRYPTIK_WORK}/kernel-hardening-checker-${ver}"
     if [[ ! -f "${CHECKER_DIR}/bin/kernel-hardening-checker" ]]; then
         [[ -f "$tarball" ]] || die "kernel-hardening-checker ${ver} not fetched (${tarball}). Run: make sources"
-        # The tarball was verified against sources.lock when it was fetched;
-        # a copy that has changed since is refused here too, because a
-        # hardening verdict from a tool that is not the pinned one is worth
-        # nothing.
+        # Re-verified: the copy may have changed since the fetch checked it.
         if [[ -f "${KRYPTIK_LOCK:-}" ]]; then
             want="$(awk -v f="v${ver}.tar.gz" '$2 == f { print $1 }' "$KRYPTIK_LOCK")"
             [[ -n "$want" ]] || die "sources.lock has no entry for v${ver}.tar.gz"
@@ -77,10 +62,8 @@ KHC="${CHECKER_DIR}/bin/kernel-hardening-checker"
 run_khc() { PYTHONPATH="$CHECKER_DIR" python3 "$KHC" "$@"; }
 log "kernel-hardening-checker $(run_khc --version 2>&1 | awk '{print $NF}')"
 
-# --- the command line, when none was given --------------------------------
-# The shipped command lines are written by stage 06, once the verity root
-# hash is known. Their hardening-relevant part is COMMON_ARGS, one line in
-# 06-iso.sh; the rest names the root device. Build a line of that shape.
+# Without --cmdline, build one of the shipped shape. Stage 06 writes the real
+# ones; their hardening-relevant part is COMMON_ARGS, the rest names the root.
 CMDLINE_TMP=""
 JSON_TMP=""
 # shellcheck disable=SC2317  # reached through the EXIT trap below
@@ -102,18 +85,15 @@ else
     [[ -f "$CMDLINE" ]] || die "no such cmdline file: ${CMDLINE}"
 fi
 
-# --- run it, twice: once for the reader, once for the machine -------------
+# Twice: once for the reader, once as JSON for the check below.
 echo
 run_khc -c "$CONFIG" -l "$CMDLINE" -m show_fail 2>&1 | grep -v '^\[!\] WARNING: cmdline option' || true
 echo
 JSON="$(run_khc -c "$CONFIG" -l "$CMDLINE" -m json 2>/dev/null)" \
     || die "the checker failed on ${CONFIG}"
 
-# --- hold the failures to the accepted list ---------------------------------
-# One python process reads the JSON and the accepted list and decides; the
-# shell reads back the counts from its last line. The JSON goes through a
-# file: a here-document and a here-string on one command both redirect stdin,
-# and the first version of this line handed python the JSON as its program.
+# Hold the failures to the accepted list; counts come back on the last line.
+# The JSON goes through a file because the heredoc already takes stdin.
 JSON_TMP="$(mktemp)"
 printf '%s' "$JSON" > "$JSON_TMP"
 result="$(python3 - "$ACCEPTED" "$JSON_TMP" <<'PY'

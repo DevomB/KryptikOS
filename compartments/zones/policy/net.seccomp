@@ -1,18 +1,14 @@
-# net: the only zone that touches a real interface. It runs the DHCP client
-# and the bridge/NAT rules for routed zones (docs/design/net-zone.md), which need raw
-# frames, the netfilter netlink family, and the two network capabilities
-# over the interfaces it owns. Nothing here reaches outside its own network
-# namespace. See docs/design/zone-policy-files.md for the directives.
+# net: the only zone on a real interface. Its DHCP client and the bridge/NAT
+# rules for routed zones (docs/design/net-zone.md) need raw frames, netfilter
+# netlink and both network capabilities, all within its own network namespace.
+# Directives: docs/design/zone-policy-files.md.
 allow-socket AF_PACKET
 allow-netlink NETLINK_NETFILTER
 keep-capability CAP_NET_ADMIN
 keep-capability CAP_NET_RAW
-# dhcpcd chowns its control socket to its own gid (control.c) and dies of
-# SIGSYS without this; with CAP_CHOWN dropped, that is all a chown can do here.
+# dhcpcd chowns its control socket to its own gid and dies of SIGSYS without
+# this. With CAP_CHOWN dropped, that is all chown can do here.
 allow-syscall chown
-# dhcpcd opens a NETLINK_GENERIC socket as it starts (if-linux.c, for
-# nl80211 wireless events; it is built with nl80211.h) and exits on the
-# refusal - "if_opensockets: Address family not supported by protocol" - so
-# no lease was ever asked for and routed zones had no uplink. With it, on
-# the installed system, eth0 leased 10.0.2.15 and took its default route.
+# dhcpcd opens a NETLINK_GENERIC socket at start (nl80211 events) and exits
+# if refused, leaving routed zones without an uplink.
 allow-netlink NETLINK_GENERIC

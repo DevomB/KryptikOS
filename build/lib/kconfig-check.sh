@@ -1,28 +1,10 @@
 # shellcheck shell=bash
-# Does a resolved .config carry every line of a fragment? Shared by stage 05,
-# which asks it inside the chroot about the .config it is about to build, and
-# by tools/resolve-kernel-config.sh, which asks it on a host about the same
-# fragments resolved against the same source, so CI can answer in minutes
-# what a Distro run answers in hours.
-#
-# merge_config.sh and olddefconfig drop a fragment line without a word in
-# three ways, and this build has met all three:
-#
-#   * an unmet dependency: CONFIG_KSTACK_ERASE needs GCC plugins the compiler
-#     may not have, CONFIG_TIGON3 needs PTP_1588_CLOCK_OPTIONAL
-#   * a `select` from an enabled symbol, which overrides an explicit
-#     "is not set": CONFIG_BLK_DEV_IO_TRACE selected DEBUG_FS back on
-#   * a prompt that is invisible, so the line is not even a choice: every
-#     `if EXPERT` option keeps its default until EXPERT is set
-#
-# Each of those leaves a fragment that claims a mitigation or a driver the
-# kernel does not have, which is worse than a fragment that never claimed it.
-# So: every =value line must come out with that value, and every "is not set"
-# line must come out unset (or absent, which is the same thing).
+# Does a resolved .config honour every line of the kernel config fragments?
+# Used by stage 05 and tools/resolve-kernel-config.sh. merge_config.sh and
+# olddefconfig drop a line silently on an unmet dependency, on a `select` that
+# overrides "is not set", or when its prompt is hidden (e.g. behind EXPERT).
 
-# The .config, read once into KCONFIG_HAVE[option]=value. Both checks below ask
-# it; asking the file instead cost two processes and a pass over the whole
-# .config for every fragment line, some 750 forks a run.
+# The .config as KCONFIG_HAVE[option]=value, read once for both checks.
 declare -gA KCONFIG_HAVE=()
 _kconfig_load() {   # <.config>
     local line
@@ -33,16 +15,13 @@ _kconfig_load() {   # <.config>
     done < "$1"
 }
 
-# What Kryptik's guarantees, and the suites that prove them, rest on. The
-# fragment check holds a line that IS in a fragment to its value; this holds
-# the lines that must be in one at all, so that deleting one is noticed.
-# Built in or a module is the fragment's to say: a bool cannot come out =m,
-# and a driver the built-in rule made a module is still there.
+# Options Kryptik's guarantees rest on. They must be present at all, so that
+# deleting one from a fragment is noticed; =y or =m is the fragment's choice.
 KCONFIG_CRITICAL="CONFIG_SECURITY_LANDLOCK CONFIG_SECCOMP_FILTER CONFIG_USER_NS
 CONFIG_NET_NS CONFIG_EFI_STUB CONFIG_CMDLINE_BOOL CONFIG_CMDLINE_OVERRIDE
 CONFIG_DM_INIT CONFIG_EFIVAR_FS CONFIG_OVERLAY_FS CONFIG_DRM_VIRTIO_GPU
 CONFIG_NFT_MASQ CONFIG_DM_VERITY CONFIG_DM_CRYPT CONFIG_CRYPTO_XTS
-CONFIG_FS_ENCRYPTION CONFIG_MODULE_SIG_FORCE CONFIG_SECURITY_LOCKDOWN_LSM
+CONFIG_MODULE_SIG_FORCE CONFIG_SECURITY_LOCKDOWN_LSM
 CONFIG_INIT_ON_ALLOC_DEFAULT_ON CONFIG_SLAB_CANARY
 CONFIG_MITIGATION_PAGE_TABLE_ISOLATION"
 
@@ -61,9 +40,8 @@ kconfig_critical_check() {
 }
 
 # kconfig_fragment_check <.config> <fragment>...
-#
-# Prints one line per fragment line that was not honoured and a summary line;
-# returns 0 when every line was honoured, 1 otherwise.
+# Each =value line must come out with that value and each "is not set" line
+# unset or absent. Prints the lines that did not; 0 when there are none.
 kconfig_fragment_check() {
     local config="$1"; shift
     local frag line opt want got total=0 bad=0

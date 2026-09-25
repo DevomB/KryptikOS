@@ -1,49 +1,12 @@
-//! Zone 0's answer to "may this file cross?": the person, asked by the
-//! trusted chrome.
-//!
-//! The broker runs inside the launcher, as root, in zone 0. When a zone
-//! offers a file to another zone and every policy and descriptor check has
-//! passed, the last word is the user's, and the user is reached through the
-//! desktop session - an ordinary user in group kryptik - which cannot be
-//! called into from here. So the question is a file and the answer is a
-//! file, in a directory only zone 0 and that group can see:
+//! Questions for the user in zone 0, drawn by the trusted chrome: may a file
+//! cross between zones (docs/design/broker.md), may the clock be set.
 //!
 //!   /run/kryptik-consent/<id>.ask      from=ZONE to=ZONE name=NAME bytes=N
 //!   /run/kryptik-consent/<id>.answer   yes | no        (written by the chrome)
 //!
-//! sysinit creates the directory (root:kryptik, 2770; beside
-//! /run/kryptik-launch rather than under /run/kryptik, which the registry
-//! keeps 0700): no zone has a path to it (a zone's /run holds its broker
-//! socket and nothing else), so nothing a zone controls can answer for the
-//! user. The chrome watches for `.ask`
-//! files, draws the question in its own window (unzoned border, the one
-//! colour no zone can be given), and writes the answer; the broker waits a
-//! bounded time and treats no answer, a malformed answer or a missing
-//! directory as a refusal. `--auto-approve-transfers` (development) bypasses
-//! this and says so at launch.
-//!
-//! The directory is shared with the session's group, and nothing found in
-//! it is trusted. The broker is root: a root that wrote its question through
-//! a symlink a group member had planted under the name it was about to use
-//! would overwrite whatever the link points at, anywhere - the authority to
-//! answer a question is not the authority to write root's files. So the
-//! directory is opened once and every name is used relative to it, never
-//! following a link; the question's temporary file is created O_EXCL under
-//! a name that carries a random nonce, and the nonce is in the question's
-//! id too, so no answer can be lying ready under a name nobody could have
-//! known; and an answer that is not a plain file - a link, a FIFO that
-//! would never end - is a refusal, not something to read.
-//!
-//! Whether anyone is there to ask is a lock, not a guess: the chrome's
-//! watcher holds `watcher.lock` in that directory exclusively for as long
-//! as it runs, and a broker that can take the lock shared knows nobody is
-//! watching and refuses at once. Without that, a transfer offered while no
-//! desktop session is up waited the whole minute for a window that could
-//! never open - the boundary suite's no-consent transfer check measured
-//! exactly that (it timed out, rc 124).
-//!
-//! Tests point the directory and the timeout elsewhere through the
-//! environment; nothing else reads those variables.
+//! No zone can reach the directory (root:kryptik 2770, made by sysinit), but
+//! the session's group can write to it, so nothing found there is trusted.
+//! Anything but a plain-file `yes` before the deadline is a refusal.
 
 use std::ffi::CString;
 use std::io::{self, Read, Write};
@@ -56,20 +19,16 @@ pub const DIR: &str = "/run/kryptik-consent";
 pub const TIMEOUT_SECS: u64 = 60;
 /// Held exclusively by the chrome's consent watcher while it runs.
 pub const WATCHER_LOCK: &str = "watcher.lock";
-/// An answer is one word on one line; more than this is not one the
-/// chrome wrote, and is not read.
+/// Most bytes of an answer read; the chrome writes one word.
 const ANSWER_MAX: u64 = 64;
 
 static COUNTER: AtomicU64 = AtomicU64::new(1);
 
-/// The tests here and the broker's set the environment this module reads,
-/// and a process has one environment: they take turns on this. (The full
-/// suite runs tests in parallel; without it a consent test could read the
-/// broker test's "/nonexistent" channel and fail for a reason that is not
-/// in the code under test.)
+/// Serializes the tests, here and in broker.rs, that set this module's environment.
 #[cfg(test)]
 pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+// Only tests set KRYPTIK_CONSENT_DIR and KRYPTIK_CONSENT_TIMEOUT.
 fn dir() -> PathBuf {
     std::env::var("KRYPTIK_CONSENT_DIR").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(DIR))
 }
@@ -82,10 +41,8 @@ fn timeout() -> Duration {
         .unwrap_or(Duration::from_secs(TIMEOUT_SECS))
 }
 
-/// The channel directory, opened once; everything after goes through this
-/// descriptor. Its name is not followed if it is a link, and it must be
-/// root's (or, for a developer instance and the tests, this process's own)
-/// and not writable by the world.
+/// Open the channel directory without following a link; every later access
+/// is relative to it. It must be root's (or ours) and not world-writable.
 fn open_channel(d: &Path) -> Result<OwnedFd, String> {
     use std::os::unix::ffi::OsStrExt;
     let c = CString::new(d.as_os_str().as_bytes())
@@ -110,8 +67,7 @@ fn open_channel(d: &Path) -> Result<OwnedFd, String> {
     Ok(fd)
 }
 
-/// One name in the channel, opened relative to the directory and never
-/// through a symlink. `mode` matters only with O_CREAT.
+/// Open `name` relative to the channel, never through a symlink.
 fn open_entry(dfd: RawFd, name: &str, flags: libc::c_int, mode: libc::c_uint) -> io::Result<OwnedFd> {
     let c = CString::new(name).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
     let fd = unsafe { libc::openat(dfd, c.as_ptr(), flags | libc::O_NOFOLLOW | libc::O_CLOEXEC, mode) };
@@ -148,11 +104,8 @@ fn nonce() -> Result<u64, String> {
     Ok(u64::from_ne_bytes(b))
 }
 
-/// Is something in zone 0 watching the channel? True only when the watcher
-/// lock is a plain file held exclusively by someone else; a lock that can
-/// be taken shared, no lock file at all, or something at its name that is
-/// not a file (a FIFO would hold this process at open) means nothing would
-/// ever answer.
+/// Whether the chrome is watching: its lock is a plain file that someone
+/// holds exclusively. O_NONBLOCK keeps a FIFO at that name from hanging us.
 fn watched(dfd: RawFd) -> bool {
     let Ok(f) = open_entry(dfd, WATCHER_LOCK, libc::O_RDONLY | libc::O_NONBLOCK, 0) else { return false };
     let Ok(st) = stat_of(f.as_raw_fd()) else { return false };
@@ -165,10 +118,9 @@ fn watched(dfd: RawFd) -> bool {
     io::Error::last_os_error().raw_os_error() == Some(libc::EWOULDBLOCK)
 }
 
-/// Write the question under a fresh id and place it as `<id>.ask`. The
-/// temporary file is created exclusively - a name already taken, whatever
-/// took it, is passed over for another - and made readable by the group,
-/// which is how the chrome reads it, whatever this process's umask says.
+/// Write the question to a fresh O_EXCL temporary, skipping taken names, make
+/// it group-readable for the chrome, and rename it to `<id>.ask`. The id's
+/// random nonce means no answer can be waiting under it in advance.
 fn place_question(dfd: RawFd, text: &str) -> Result<String, String> {
     for _ in 0..8 {
         let id = format!("{}-{}-{:016x}", std::process::id(), COUNTER.fetch_add(1, Ordering::SeqCst), nonce()?);
@@ -201,9 +153,7 @@ fn place_question(dfd: RawFd, text: &str) -> Result<String, String> {
     Err("consent: cannot place the question: every name tried was already taken".into())
 }
 
-/// The answer, if one is there yet. `Err` is an entry at the answer's name
-/// that is not a plain file - a link, a FIFO, a directory - which nobody
-/// honest wrote: it is a refusal, and it is not read.
+/// The answer, if there is one yet; `Err` if its name holds anything but a plain file.
 fn read_answer(dfd: RawFd, name: &str) -> Result<Option<String>, String> {
     let f = match open_entry(dfd, name, libc::O_RDONLY | libc::O_NONBLOCK, 0) {
         Ok(f) => f,
@@ -220,10 +170,8 @@ fn read_answer(dfd: RawFd, name: &str) -> Result<Option<String>, String> {
     Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
 }
 
-/// May this file cross? `Ok(())` only on an explicit `yes`. `asking` is
-/// called while the question is open, ten times a second: the launcher that
-/// serves the question pumps its zone's output there and says whether the
-/// zone is still there, and a `false` withdraws the question.
+/// May this file cross? `Ok(())` only on an explicit `yes`. `asking` runs ten
+/// times a second while the question is open; `false` withdraws it.
 pub fn ask(from: &str, to: &str, name: &str, bytes: u64, asking: &dyn Fn() -> bool) -> Result<(), String> {
     ask_text(&format!("from={from}\nto={to}\nname={name}\nbytes={bytes}\n"), asking)
 }
@@ -233,12 +181,8 @@ pub fn keep() -> bool {
     true
 }
 
-/// May the clock be set? Asked when the network's claim is further from
-/// this machine's clock than zone 0 believes without asking
-/// (docs/design/time.md). The person is shown both times, because someone
-/// with a watch can answer and nothing on this system can. `kind=clock`
-/// tells the chrome which question to draw; a question with no kind is a
-/// transfer, as every question was before this one existed.
+/// May the clock be set? Asked past the unasked bound (docs/design/time.md).
+/// `kind=clock` tells the chrome which question to draw; no kind is a transfer.
 pub fn ask_clock(now: &str, proposed: &str, sources: u8, asking: &dyn Fn() -> bool) -> Result<(), String> {
     ask_text(&format!("kind=clock\nnow={now}\nproposed={proposed}\nsources={sources}\n"), asking)
 }
@@ -275,10 +219,8 @@ fn ask_text(text: &str, asking: &dyn Fn() -> bool) -> Result<(), String> {
         if Instant::now() >= deadline {
             break Err(format!("no answer from zone 0 within {} s; treated as a refusal", timeout().as_secs()));
         }
-        // The asker's turn. The launcher that serves this question reaps
-        // its zone and relays its output in the loop this wait holds up,
-        // for up to a minute; and a zone that ended while its question was
-        // open left a question in the chrome that nobody could act on.
+        /* The asker's turn: this wait holds up its launcher's loop, which
+         * relays the zone's output and notices the zone ending. */
         if !asking() {
             break Err("the asking zone went away while the question was open; withdrawn".to_string());
         }
@@ -306,12 +248,8 @@ mod tests {
         ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Stand in for the chrome's watcher: hold the lock for as long as the
-    /// returned file lives. A flock travels with the open file into any
-    /// child forked while it is held, and tests elsewhere in this binary
-    /// fork helpers that outlive them - so no test here relies on the lock
-    /// being RELEASED while this process runs: the "nobody watching" cases
-    /// come before the lock is ever taken.
+    /// Hold the watcher lock while the returned file lives. Children forked by
+    /// other tests inherit the flock, so no test may rely on its release.
     fn hold_watch(d: &std::path::Path) -> std::fs::File {
         use std::os::unix::io::AsRawFd;
         let f = std::fs::File::create(d.join(WATCHER_LOCK)).unwrap();
@@ -343,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn yes_approves_no_refuses_and_the_question_names_everything() {
+    fn yes_approves_no_refuses() {
         let _g = env_lock();
         with_dir(|d| {
             std::env::set_var("KRYPTIK_CONSENT_DIR", d);
@@ -367,14 +305,13 @@ mod tests {
     }
 
     #[test]
-    fn silence_and_a_missing_channel_refuse() {
+    fn silence_and_missing_channel_refuse() {
         let _g = env_lock();
         with_dir(|d| {
             std::env::set_var("KRYPTIK_CONSENT_DIR", d);
             std::env::set_var("KRYPTIK_CONSENT_TIMEOUT", "1");
-            // Nobody watching: refused at once, with no question left behind
-            // for a window that will never open - first with no lock file at
-            // all, then with one nothing holds (a watcher that went away).
+            /* Nobody watching (no lock file, then one nobody holds): refused at
+             * once, and no question is left behind. */
             for lock_file in [false, true] {
                 if lock_file {
                     std::fs::File::create(d.join(WATCHER_LOCK)).unwrap();
@@ -398,11 +335,8 @@ mod tests {
         });
     }
 
-    /// A question whose asker is gone is withdrawn on the asker's turn: the
-    /// launcher reports its zone ended, and the chrome is not left with a
-    /// question nobody can act on, nor the launcher with a minute's wait.
     #[test]
-    fn a_sender_that_goes_away_withdraws_its_question() {
+    fn vanished_sender_withdraws_question() {
         let _g = env_lock();
         with_dir(|d| {
             std::env::set_var("KRYPTIK_CONSENT_DIR", d);
@@ -423,15 +357,10 @@ mod tests {
         });
     }
 
-    /// The question's names used to be guessable - this process's pid and a
-    /// counter - and the directory is writable by the session's group. A
-    /// member of that group could plant a symlink where the question's
-    /// temporary file would be written, and root wrote through it; or plant
-    /// a ready "yes" where the answer would be read, and no window ever
-    /// opened. Under the guessable names, both are planted here; neither
-    /// may have any effect.
+    /// A group member plants symlinks and a ready "yes" under the pid-counter
+    /// names: root must not write through them or believe the answer.
     #[test]
-    fn what_a_group_member_plants_under_a_guessable_name_is_neither_written_through_nor_believed() {
+    fn planted_names_are_ignored() {
         use std::os::unix::fs::symlink;
         let _g = env_lock();
         with_dir(|d| {
@@ -454,12 +383,10 @@ mod tests {
         });
     }
 
-    /// What answers is not always the chrome. A FIFO nobody will ever write
-    /// at the answer's name would hold the broker at open, past every
-    /// deadline; a symlink to a file that says yes would be followed. Each
-    /// is a refusal, and a prompt one.
+    /// A FIFO at the answer's name must not hang the broker, and a symlink to
+    /// a "yes" must not be followed.
     #[test]
-    fn an_answer_that_is_not_a_plain_file_is_a_prompt_refusal() {
+    fn non_file_answer_refused_promptly() {
         use std::os::unix::fs::symlink;
         let _g = env_lock();
         with_dir(|d| {

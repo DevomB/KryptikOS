@@ -1,32 +1,9 @@
 #!/usr/bin/env bash
-# Focused tests for tools/scan-licenses.sh.
-#
-#   ./tools/test-scan-licenses.sh
-#
-# Deterministic and offline. Fixture tarballs are built here, each carrying a
-# real excerpt of the licence it is meant to be identified as, and the tool is
-# run against a substituted manifest of file:// URLs.
-#
-# The cases worth having are the ones where a classifier is confidently wrong:
-#
-#   * a dual licence in ONE file - libcap offers BSD-3-Clause or GPL-2.0, and
-#     a scanner that returns on the first match reports one and hides the
-#     other;
-#   * two licence files - bc ships COPYING and COPYING.LIB;
-#   * LGPL-3.0, whose text incorporates GPL-3.0 by reference, so a naive
-#     scanner reports a dual licence that is not one;
-#   * case - zlib's condition reads "2. Altered source versions must be
-#     plainly marked as such", and a case-sensitive pattern reported zlib's
-#     own licence as unknown;
-#   * no licence file, and a .patch that is not an archive at all, which are
-#     different facts from "unknown".
-#
-# Positive controls throughout: the recognisable licences must be recognised,
-# or a scanner that answered `unknown` to everything would satisfy the rest.
+# Tests for tools/scan-licenses.sh, on fixture tarballs of real licence excerpts.
 
 set -uo pipefail
 
-# See the same note in the other suites.
+# common.sh prefers these, when exported, to paths derived from KRYPTIK_ROOT.
 unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -45,8 +22,7 @@ SRC="${W}/sources"
 FAKE="${W}/root"
 mkdir -p "$SRC"
 
-# --- licence texts, as upstream writes them ---------------------------------
-
+# Licence excerpts, as upstream writes them.
 mkdir -p "${W}/texts"
 t() { cat > "${W}/texts/$1"; }
 
@@ -66,8 +42,6 @@ t gpl2 <<'EOF'
  Copyright (C) 1989, 1991 Free Software Foundation, Inc.
 EOF
 
-# The LGPL v3 is short and says it incorporates the GPL v3 by reference. A
-# scanner that adds both reports a dual licence where there is one.
 t lgpl3 <<'EOF'
                    GNU LESSER GENERAL PUBLIC LICENSE
                        Version 3, 29 June 2007
@@ -124,7 +98,7 @@ t apache2 <<'EOF'
                         http://www.apache.org/licenses/
 EOF
 
-# One file, two licences - this is libcap's shape.
+# One file, two licences: libcap's shape.
 t dual_in_one <<'EOF'
 Redistribution and use in source and binary forms of libcap, with or without
 modification, are permitted provided that the following conditions are met:
@@ -135,8 +109,6 @@ Alternatively, this product may be distributed under the terms of the
                     GNU GENERAL PUBLIC LICENSE
                        Version 2, June 1991
 EOF
-
-# --- fixture tarballs -------------------------------------------------------
 
 # pkg <name> <licence-filename>=<text> ...
 pkg() {
@@ -164,8 +136,6 @@ pkg dualfiles COPYING=gpl3 COPYING.LIB=lgpl3
 pkg dualinone License=dual_in_one
 pkg nolicence
 printf 'diff --git a/x b/x\n' > "${SRC}/patchy-1.0.patch"
-
-# --- harness ----------------------------------------------------------------
 
 MANIFEST="${W}/manifest"
 {
@@ -214,8 +184,7 @@ echo
 build_root
 run --refresh
 
-# --- positive controls: the recognisable ones must be recognised ------------
-
+# Positive controls: `unknown` for everything would pass the rest.
 expect gplpkg    GPL-3.0    no
 expect gpl2pkg   GPL-2.0    no
 expect mitpkg    MIT        no
@@ -226,19 +195,15 @@ expect bsdpkg    BSD-3-Clause no
 # Case-insensitivity: zlib's condition is capitalised mid-sentence.
 expect zlibpkg   Zlib       no
 
-# --- the traps --------------------------------------------------------------
-
 # LGPL-3.0 incorporates GPL-3.0 by reference; that is one licence, not two.
 expect lgplpkg   LGPL-3.0   no
 expect lgpl21pkg LGPL-2.1   no
 
-# Two licence FILES is genuinely two licences.
+# Two licence files are two licences.
 expect dualfiles GPL-3.0,LGPL-3.0 yes
 
-# One file offering a choice is also genuinely two.
+# So is one file offering a choice.
 expect dualinone BSD-3-Clause,GPL-2.0 yes
-
-# --- absence is not unknown -------------------------------------------------
 
 expect nolicence unknown no
 if [[ "$(field nolicence 6)" == "no-top-level-licence-file" ]]; then
@@ -261,16 +226,12 @@ else
     red "missingpkg: method was [$(field missingpkg 6)]"
 fi
 
-# The three above must be distinguishable from each other, or "unknown" would
-# be doing three jobs.
 a="$(field nolicence 6)"; b="$(field patchy 6)"; c="$(field missingpkg 6)"
 if [[ "$a" != "$b" && "$b" != "$c" && "$a" != "$c" ]]; then
     green "the three kinds of 'no answer' are distinct in the method column"
 else
     red "the no-answer methods collide: ${a} / ${b} / ${c}"
 fi
-
-# --- every row carries the tarball digest it was derived from ---------------
 
 digest="$(field gplpkg 2)"
 real="$(sha256sum "${SRC}/gplpkg-1.0.tar.gz" | cut -d' ' -f1)"
@@ -280,14 +241,11 @@ else
     red "digest mismatch: row ${digest}, file ${real}"
 fi
 
-# --- the cache is keyed by content, not by name -----------------------------
-
+# The cache is keyed by content, not by name.
 run   # second run, cache warm
 expect gplpkg GPL-3.0 no
 before="$(grep -c . "${FAKE}/build/work/licences.cache" || true)"
 
-# Change the bytes; the cache key changes with them, so the answer is re-derived
-# rather than served stale.
 pkg gplpkg COPYING=mit
 run
 if [[ "$(field gplpkg 3)" == "MIT" ]]; then
@@ -301,8 +259,6 @@ if [[ "$after" -gt "$before" ]]; then
 else
     red "cache did not grow: ${before} -> ${after}"
 fi
-
-# --- --only ------------------------------------------------------------------
 
 run --only=mitpkg
 if [[ "$(grep -c . "$OUT")" -eq 1 && "$(field mitpkg 3)" == "MIT" ]]; then

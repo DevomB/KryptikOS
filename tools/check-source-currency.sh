@@ -1,44 +1,15 @@
 #!/usr/bin/env bash
 # Compare every pinned version against what upstream currently publishes.
+# Informational: exits 0 unless --fail-on-behind or --strict is given.
 #
 #   ./tools/check-source-currency.sh                 report everything
 #   ./tools/check-source-currency.sh --only=NAME     one package
 #   ./tools/check-source-currency.sh --fail-on-behind
 #   ./tools/check-source-currency.sh --strict        also fail on UNKNOWN
 #   ./tools/check-source-currency.sh --tsv           machine-readable
-#
-# THIS IS INFORMATIONAL BY DESIGN, AND THAT IS NOT A COP-OUT.
-#
-# "A newer version exists" is not a security verdict. Some pins are old on
-# purpose - xz is pinned well clear of the CVE-2024-3094 window and the
-# versions.env comment explains why - and some newer versions are major moves
-# that change build behaviour. So the default reports and exits 0, and the gate
-# is opt-in: --fail-on-behind for a currency policy, --strict to additionally
-# refuse a run in which some pins could not be determined.
-#
-# tools/check-kernel-eol.sh is the opposite and stays that way: kernel.org
-# publishes machine-readable support status, so an EOL kernel is a verdict and
-# it fails. Nothing else upstream publishes support status, only version
-# numbers, which is exactly the difference between the two tools.
-#
-# WHAT IT REFUSES TO DO
-#
-# Guess. Every "newest" below comes from a directory listing on the project's
-# own host or from the project's own "latest release" designation. Where the
-# shape of a URL is not recognised, or a listing yields nothing that parses as
-# a version, the answer is UNKNOWN and the row says which URL was consulted.
-# An inventory of pins is only useful if a blank means "not checked" rather
-# than "fine" - the same rule as everywhere else in these tools.
-#
-# Known traps, encoded below rather than rediscovered:
-#
-#   * Perl's odd minor versions are DEVELOPMENT releases. A naive "highest
-#     version wins" recommends 5.45.2 over the stable 5.44.0.
-#   * GitHub tag lists contain CVS-era imports and fuzz-corpus tags. Asking
-#     /releases/latest gets the project's own designation instead of the
-#     numerically largest string, which is how a tag max produced "V20000512"
-#     for expat.
-#   * A release-candidate is not a release.
+
+# Every "newest" comes from the project's own host: a listing or its designated
+# latest release. Anything that does not parse is UNKNOWN, never "current".
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 load_config
@@ -64,9 +35,7 @@ have python3 || die "python3 required"
 WORK="${KRYPTIK_WORK}/currency"
 rm -rf "$WORK"; mkdir -p "$WORK"
 
-# Self-test hook: tools/test-check-source-currency.sh serves fixture listings
-# from 127.0.0.1 and rewrites upstream hosts onto it, so the parsing runs for
-# real offline.
+# Test hook: tools/test-check-source-currency.sh serves listings on 127.0.0.1.
 if [[ -n "${KRYPTIK_CURRENCY_BASE:-}" ]]; then
     [[ "${KRYPTIK_CURRENCY_SELFTEST:-0}" == "1" ]] || die \
 "KRYPTIK_CURRENCY_BASE is set but KRYPTIK_CURRENCY_SELFTEST is not.
@@ -74,8 +43,7 @@ Refusing to compare pinned versions against a substituted upstream."
     warn "SELF-TEST MODE: upstream listings come from ${KRYPTIK_CURRENCY_BASE}"
 fi
 
-# Rewrite an upstream URL onto the fixture server, preserving the path so the
-# fixtures are laid out the way the real hosts are.
+# Under the test hook, move an upstream URL onto the fixture server, path kept.
 resolve() {
     local url="$1"
     if [[ -n "${KRYPTIK_CURRENCY_BASE:-}" ]]; then
@@ -85,21 +53,13 @@ resolve() {
     fi
 }
 
-# `|| true`: a 404, a 403 or a refused connection must produce an empty answer
-# so the caller can report UNKNOWN. Without it curl's exit 22 propagates
-# through the command substitution into common.sh's ERR trap and aborts the
-# whole run with a line number, which is how one unreachable host used to take
-# the entire report down.
+# `|| true`: a failed fetch must give an empty answer (UNKNOWN), not trip
+# common.sh's ERR trap and abort the run.
 fetch() { curl -fsSL --max-time 25 "$(resolve "$1")" 2>/dev/null || true; }
 
-# versions_in_listing <listing-url> <extended-regex with ONE capture group>
-#
-# Every version the listing offers, pre-releases dropped, in version order.
-# Empty output means "nothing parsed", never "0".
-# The regex is interpolated into sed, so it must not contain the delimiter.
-# "@" is used rather than "/" because several of the patterns below match a
-# trailing slash - a directory listing entry - and "/" ended the s command
-# early, which sed reports as "unknown option to `s'".
+# versions_in_listing <listing-url> <ERE with one capture group>
+# Every version offered, pre-releases dropped, in version order. The ERE goes
+# into sed with "@" as the delimiter (patterns match a trailing "/"), so no "@".
 versions_in_listing() {
     fetch "$1" \
       | grep -oE "$2" \
@@ -108,32 +68,13 @@ versions_in_listing() {
       | sort -V -u || true
 }
 
-# The highest of them. Kept separate from versions_in_listing because a
-# per-package rule - Perl's odd-minor development series - has to filter the
-# whole list before the maximum is taken, not afterwards.
+# Separate from versions_in_listing so Perl's filter can run before the maximum.
 newest_in_listing() { versions_in_listing "$@" | tail -1; }
 
-# The project's own designation of its latest release, which is a different and
-# better question than "which tag sorts highest" - that question answered
-# "V20000512" for expat, from a CVS-era import tag.
-#
-# ONLY the API's /releases/latest, deliberately, with no fallback.
-#
-# The obvious fallback is https://github.com/<repo>/releases.atom, which needs
-# no token and is not rate limited. It was tried and removed: for a repository
-# that publishes no GitHub Releases the feed serves TAG entries instead, and
-# the first of those is whatever was tagged last. Asked about shadow-maint,
-# that produced "3.3.1" - a plausible-looking version that is not shadow's at
-# all.
-#
-# A wrong number is worse than no number here. The whole argument of this
-# branch is that an unavailable check must report unavailable rather than
-# produce something that looks like an answer, and a currency tool that
-# occasionally invents a version would be the same defect wearing a different
-# hat. So: rate limited or unreachable means UNKNOWN, and the row says so.
-#
-# The unauthenticated API allows 60 requests an hour, which a 69-source report
-# can exhaust by itself. Set GH_TOKEN for a complete GitHub picture.
+# The project's designated latest release, not the highest tag (expat has a
+# CVS-era "V20000512"). No releases.atom fallback: without Releases it lists
+# tags, newest first, which gave shadow a "3.3.1" that is not shadow's.
+# Unauthenticated, the API allows 60 requests an hour; set GH_TOKEN.
 newest_github_release() {
     local auth=()
     [[ -n "${GH_TOKEN:-}" ]] && auth=(-H "Authorization: Bearer ${GH_TOKEN}")
@@ -154,8 +95,7 @@ m = re.search(r'(\d+[\d._]*\d)', tag.replace('_', '.'))
 print(m.group(1) if m else '')" || true
 }
 
-# Drop Perl-style development releases: an odd minor version is a development
-# series and must never be recommended.
+# Newest version with an even minor: odd minors are Perl development series.
 drop_odd_minor() {
     python3 -c "
 import sys
@@ -171,11 +111,9 @@ for line in sys.stdin:
 print(out[-1] if out else '')"
 }
 
-# The values of one string key in a JSON API response, a leading "v" dropped.
-# grep and sed, not a JSON parser, on purpose: the answer wanted is "every
-# tag_name" and the key is anchored on its opening quote, so "author_name"
-# does not match "name". A tags endpoint's objects start with their name, and
-# the brace is part of the match there so a nested "name" is not taken.
+# Every value of one string key in a JSON response, leading "v" dropped. The key
+# is matched with its opening quote ("name" is not "author_name") and, for
+# "name", the object's opening brace, so a nested "name" is skipped.
 api_values() {  # api_values URL KEY
     local open='"'
     [[ "$2" == name ]] && open='\{"'
@@ -183,27 +121,24 @@ api_values() {  # api_values URL KEY
         | sed -E "s/.*\"$2\":\"v?([^\"]*)\"/\1/" || true
 }
 
-# Versions made only of numbers and dots, the highest of them. Drops every
-# spelling of a pre-release that has letters in it (0.8-dev, 4.0.7rc1).
+# The highest all-numeric version (0.8-dev and 4.0.7rc1 are dropped). Sorted,
+# since GitLab lists releases by date, not version.
 numeric_newest() { grep -E '^[0-9]+(\.[0-9]+)+$' | sort -V -u | tail -1 || true; }
 
 # freedesktop projects number a release candidate X.Y.9N or X.Y.90N.
 drop_ninety() { grep -vE '\.9[0-9]+$' || true; }
 
 # --- per-source strategy ----------------------------------------------------
-#
-# Returns "<newest>|<source consulted>", either field possibly empty.
 
+# upstream_for <name> <url> prints "<newest>|<consulted>"; either may be empty.
 upstream_for() {
     local name="$1" url="$2"
     local dir="${url%/*}" base="${url##*/}"
     local newest="" consulted=""
 
     case "$name" in
-        # The kernel is the one package upstream publishes SUPPORT STATUS for,
-        # and a pin in a longterm series is not "behind" because a newer series
-        # exists - which is exactly what a version comparison would say. Defer
-        # to the tool that asks the right question.
+        # A longterm kernel is not "behind" a newer series; check-kernel-eol.sh
+        # checks its support status instead.
         linux|linux-hardened)
             printf '%s|%s' "" "tools/check-kernel-eol.sh (support status, not version)"
             return
@@ -211,33 +146,14 @@ upstream_for() {
     esac
 
     # --- hosts with no directory listing to read ---------------------------
-    #
-    # Sixteen pins were UNKNOWN until these were written, which is a third of
-    # what the image exposes to untrusted input: the compositor's libraries,
-    # less, lynx, openssh. Each rule below was run against the real host
-    # before it was written down, and each encodes a trap that produces a
-    # confidently wrong number rather than none:
-    #
-    #   * wayland and libinput number a release candidate X.Y.9N or X.Y.90N,
-    #     with no "rc" in it (1.25.91, 1.31.901). Dropping rc/alpha/beta keeps
-    #     them, and reports a candidate as the newest release.
-    #   * a GitLab release list is ordered by date, not version: libinput
-    #     1.30.4 sits above 1.31.3. Taking the first entry is wrong; sort.
-    #   * psmisc's release list is missing a release its tag list has, and
-    #     kernel-hardening-checker publishes tags and no releases at all.
-    #   * less marks a version "released for general use" on its front page;
-    #     a newer tarball in the directory is a beta.
-    #   * lynx's directory is full of 2.9.3dev.N snapshots.
-    #   * https://curl.se/ca/ answers 200 with a meta refresh, which curl -L
-    #     does not follow; the list is on caextract.html.
     local fd="https://gitlab.freedesktop.org/api/v4/projects"
     case "$name" in
         glibc-fhs-patch)
-            # Not a release of anything: it is the LFS book's patch for the
-            # pinned glibc and moves only when glibc does.
+            # The LFS patch for the pinned glibc; it moves only when glibc does.
             printf '%s|%s' "" "tools/check-source-currency.sh, the glibc row (the patch follows glibc's pin)"
             return ;;
         less)
+            # The front page names the current release; newer tarballs are betas.
             consulted="https://www.greenwoodsoftware.com/less/ (released for general use)"
             newest="$(fetch "https://www.greenwoodsoftware.com/less/" \
                 | grep -oE 'less-[0-9]+ has been released for general use' \
@@ -246,6 +162,7 @@ upstream_for() {
             consulted="gitlab.com procps-ng/procps releases"
             newest="$(api_values "https://gitlab.com/api/v4/projects/procps-ng%2Fprocps/releases?per_page=50" tag_name | numeric_newest)" ;;
         psmisc)
+            # Tags: the release list misses a release.
             consulted="gitlab.com psmisc/psmisc tags"
             newest="$(api_values "https://gitlab.com/api/v4/projects/psmisc%2Fpsmisc/repository/tags?per_page=100" name | numeric_newest)" ;;
         lvm2)
@@ -255,6 +172,7 @@ upstream_for() {
             consulted="https://ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable/"
             newest="$(newest_in_listing "$consulted" 'openssh-([0-9]+\.[0-9]+p[0-9]+)\.tar\.gz')" ;;
         ca-bundle)
+            # curl.se/ca/ is a meta refresh, which curl -L does not follow.
             consulted="https://curl.se/docs/caextract.html"
             newest="$(newest_in_listing "$consulted" 'cacert-([0-9]{4}-[0-9]{2}-[0-9]{2})\.pem')" ;;
         wayland|libinput)
@@ -267,8 +185,7 @@ upstream_for() {
             consulted="gitlab.freedesktop.org emersion/libdisplay-info releases"
             newest="$(api_values "${fd}/emersion%2Flibdisplay-info/releases?per_page=50" tag_name | numeric_newest)" ;;
         wlroots)
-            # The pinned series only: dwl is written against one wlroots
-            # series, and the next one is an API change, not a drop-in.
+            # The pinned series only: each series changes the API dwl uses.
             local wseries="${V_WLROOTS%.*}"
             consulted="gitlab.freedesktop.org wlroots/wlroots tags (series ${wseries})"
             newest="$(api_values "${fd}/wlroots%2Fwlroots/repository/tags?per_page=100" name \
@@ -284,6 +201,7 @@ upstream_for() {
             consulted="https://invisible-mirror.net/archives/lynx/tarballs/"
             newest="$(newest_in_listing "$consulted" 'lynx([0-9]+(\.[0-9]+)+)\.tar\.gz')" ;;
         kernel-hardening-checker)
+            # Tags only: it publishes no releases.
             consulted="https://github.com/a13xp0p0v/kernel-hardening-checker/tags.atom"
             newest="$(fetch "$consulted" | grep -oE '<title>v[0-9]+(\.[0-9]+)+</title>' \
                 | sed -E 's/<title>v//; s/<.*//' | sort -V -u | tail -1 || true)" ;;
@@ -294,18 +212,13 @@ upstream_for() {
     fi
 
     case "$url" in
-        # kernel.org and others put releases in per-series subdirectories, so
-        # the file's own directory only ever offers that series. Look in the
-        # parent for a newer series first, then list the newest one found.
-        # Restricted to kernel.org: a GitHub release-asset URL also has the tag
-        # as a path element (.../releases/download/v1.3.1/zlib-1.3.1.tar.gz)
-        # and would match a bare */v[0-9]*/* first, sending the check off to
-        # look for a directory listing GitHub does not serve.
+        # Per-series subdirectories only offer their own series, so find the
+        # newest series in the parent first. kernel.org only: GitHub asset URLs
+        # have a /v1.2.3/ element too.
         *kernel.org/*/v[0-9]*/*)
             local parent="${dir%/*}"
             local vdir
-            # `|| true` for the same reason as versions_in_listing: no match is
-            # an answer, not an error.
+            # `|| true`: no match is an answer, not an error.
             vdir="$(fetch "${parent}/" | grep -oE 'v[0-9]+(\.[0-9]+)*/' \
                     | sed -E 's@v(.*)/@\1@' | sort -V -u | tail -1 || true)"
             if [[ -n "$vdir" ]]; then
@@ -328,8 +241,7 @@ upstream_for() {
             rel="${rel#gnu/}"
             local pkgdir="https://ftp.gnu.org/gnu/${rel%/*}"
             consulted="$pkgdir/"
-            # gcc lives in per-version subdirectories; its listing is the
-            # parent, not the file's own directory.
+            # gcc has per-version subdirectories, listed in the parent.
             [[ "$name" == gcc ]] && { consulted="https://ftp.gnu.org/gnu/gcc/"; \
                 newest="$(newest_in_listing "$consulted" 'gcc-([0-9]+\.[0-9]+\.[0-9]+)/')"; }
             [[ -z "$newest" ]] && newest="$(newest_in_listing "$consulted" \
@@ -360,9 +272,7 @@ upstream_for() {
 
         *cpan.org/src/*)
             consulted="${dir}/"
-            # The whole list, then the odd-minor filter, then the maximum:
-            # filtering after taking the maximum would just discard 5.45.2 and
-            # report nothing.
+            # Filter the whole list, then take the maximum.
             newest="$(versions_in_listing "$consulted" \
                       'perl-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.xz' | drop_odd_minor)"
             ;;
@@ -375,8 +285,7 @@ upstream_for() {
                       "openssl-(${major}\.[0-9]+\.[0-9]+)\.tar\.gz")"
             ;;
 
-        # Everything else with a plain directory listing, which covers
-        # kernel.org, savannah, sourceware, astron and the rest.
+        # Everything else: a plain directory listing.
         *)
             consulted="${dir}/"
             local stem="${base%%-[0-9]*}"
@@ -410,7 +319,7 @@ while read -r name pinned url; do
     consulted="${res#*|}"
 
     if [[ -z "$newest" && "$consulted" == tools/* ]]; then
-        # Deliberately not checked here, and the row says where it IS checked.
+        # Checked elsewhere; the row names where.
         status=deferred
     elif [[ -z "$newest" ]]; then
         status=UNKNOWN

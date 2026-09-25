@@ -1,8 +1,6 @@
 #!/bin/sh
-#
-# kryptik-recover: the dedicated recovery path. Runs from a booted
-# install medium - itself a signed kernel over a verified root - against an
-# installed disk that no longer boots.
+# kryptik-recover: repair an installed disk that no longer boots, from a booted
+# install medium; every byte written comes from the medium.
 #
 #   kryptik-recover --disk DEV --commit-slot a|b       make that slot the boot file
 #   kryptik-recover --disk DEV --restore-slot a|b      rewrite that slot from this medium's root image
@@ -10,23 +8,10 @@
 #   kryptik-recover --disk DEV --backup-state-header FILE
 #   kryptik-recover --disk DEV --restore-state-header FILE
 #
-# --commit-slot: the other slot is intact (an update went wrong after the
-# commit, or the committed kernel file was damaged): copy that slot's kernel
-# over BOOTX64.EFI and record it. Refuses a slot with no filesystem.
-#
-# --restore-slot: the slot's root image is damaged (dm-verity refuses it):
-# write the medium's own root image and its kernel into that slot, exactly
-# as the installer does, then commit it. The state partition - users, zone
-# volumes, updates - is not touched. The result is the medium's version;
-# an older version than what was there is what "recover from the medium"
-# means, and it is said.
-#
-# The state partition is LUKS2 (docs/design/state-encryption.md) and its
-# header is the state: without it, or without the passphrase, the partition
-# is lost, and there is no escrow. A backup belongs off this disk.
-#
-# Nothing here depends on the damaged system: every byte written comes from
-# the medium, which the firmware verified.
+# --restore-slot also commits the slot, at the medium's version (which may be
+# older), and leaves the state partition alone. That partition is lost without
+# its LUKS2 header (no escrow; docs/design/state-encryption.md): keep a backup
+# off this disk.
 set -eu
 PROG=kryptik-recover
 say() { printf '%s: %s\n' "$PROG" "$*"; }
@@ -40,7 +25,7 @@ while [ $# -gt 0 ]; do
         --status) STATUS=1; shift ;;
         --backup-state-header) HDR_OUT="${2:-}"; shift 2 ;;
         --restore-state-header) HDR_IN="${2:-}"; shift 2 ;;
-        -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -101,10 +86,9 @@ commit_slot() {   # commit_slot SLOT (ESP mounted rw at /run/kryptik-recover)
     printf '%s\n' "$s" > /run/kryptik-recover/kryptik/committed-slot
     sync
     say "committed: BOOTX64.EFI is now slot $s ($(cat "/run/kryptik-recover/kryptik/version-$s" 2>/dev/null || echo unknown))"
-    # The firmware's own order must not outvote that: Kryptik's slot entries
-    # and BootNext go, and the firmware boots the disk's BOOTX64.EFI. From
-    # the medium the tool cannot name the installed ESP, so removing is all
-    # it can do here; boot-success does the same at every commit.
+    # Remove Kryptik's firmware entries and BootNext, as boot-success does at
+    # each commit, so the firmware boots BOOTX64.EFI. (From the medium the
+    # installed ESP cannot be named, so they cannot be rewritten.)
     if [ -d /sys/firmware/efi/efivars ]; then
         kryptik-efiboot forget >/dev/null 2>&1 || say "the firmware's Kryptik entries could not be removed; its own order may still name the other slot"
     fi
@@ -112,12 +96,11 @@ commit_slot() {   # commit_slot SLOT (ESP mounted rw at /run/kryptik-recover)
 
 if [ -n "$RESTORE" ]; then
     sd="$(slot_dev "$RESTORE")"
-    # The medium's own root image and kernel, exactly as kryptik-install finds them.
+    # The medium's own root image and kernel, found as kryptik-install finds them.
     mkdir -p /run/kryptik-recover-media
     case "$media" in
         usb)
-            # This medium's own partitions (devices.sh), never the first
-            # disk that carries the label.
+            # This medium's own partitions (devices.sh), not any disk with the label.
             . /usr/libexec/kryptik/devices.sh
             src="$(kryptik_part kryptik-media)" || die "no single kryptik-media partition on this medium"; off=0
             mesp="$(kryptik_part kryptik-esp)" || die "no single kryptik-esp partition on this medium"

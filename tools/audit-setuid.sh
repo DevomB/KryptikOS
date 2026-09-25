@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Fail the build on any setuid/setgid binary not explicitly justified.
-# Rationale: docs/hardening.md ("setuid elimination")
+# Fail the build on any setuid/setgid binary not explicitly justified
+# (docs/hardening.md, "setuid elimination").
+#
+#   ./tools/audit-setuid.sh [ROOTFS]
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 
@@ -25,11 +27,7 @@ while IFS= read -r -d '' bin; do
         err "unjustified setuid/setgid binary: ${rel} ($(stat -c '%A %U:%G' "$bin"))"
         violations=$((violations + 1))
     fi
-# `|| true`: find exits non-zero on directories it cannot read, which a
-# chroot-built tree always has. Without it common.sh's ERR trap prints
-# "aborted at audit-setuid.sh:NN" above the real findings, and an
-# operator reasonably reads that as the audit having crashed rather than
-# having found 16 things.
+# find fails on unreadable directories; `|| true` keeps the ERR trap out of it.
 done < <(find "$TARGET" -type f -perm /6000 -print0 2>/dev/null || true)
 
 echo

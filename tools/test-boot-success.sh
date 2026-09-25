@@ -1,19 +1,7 @@
 #!/usr/bin/env bash
-#
-# boot-success.sh's decisions, driven on a host with stand-ins.
-#
-# The script judges a booted slot from a handful of facts: the boot identity
-# sysinit wrote, the trial record the updater wrote, whether the essential
-# services are up, whether kryptikd finds kernel support and the zones, and
-# whether the ESP is unambiguous. Every one of those is a file or a program
-# on PATH, so every decision can be exercised here, in seconds, with a fake
-# /run/kryptik, a fake service scan directory and fake s6-svstat / kryptikd /
-# kryptik-efiboot / reboot / mount commands that record what they were asked.
-# The real thing runs in the VM drivers; this is where the decision table is
-# pinned so a change to it cannot slip through a VM run that only sees one
-# path.
-#
-# Exit 0 when every case passes.
+# Test boot-success.sh's decision table with stand-ins: a fake /run/kryptik,
+# service directory and ESP, and fake s6-svstat, kryptikd, kryptik-efiboot,
+# reboot and mount that record what they were asked.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$ROOT/build/service-scripts/boot-success.sh"
@@ -25,8 +13,7 @@ check() { if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1 (got '$2', want '$3'
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/run" "$T/boot" "$T/svc"
 # --- stand-ins ---------------------------------------------------------------
-# devices.sh is sourced by the script; a stand-in answers with what the
-# case declares.
+# The script sources devices.sh; this one answers from the case's files.
 cat > "$T/devices.sh" <<'EOF'
 kryptik_root_disk() { cat "$KTEST/root_disk" 2>/dev/null; }
 kryptik_part() { p="$(cat "$KTEST/part_$1" 2>/dev/null)"; [ -n "$p" ] && { echo "$p"; return 0; }; echo ""; return 1; }
@@ -82,7 +69,7 @@ exit 0
 EOF
 chmod +x "$T"/bin/*
 
-run_case() {   # run_case NAME slot media state trial-content services... ; sets RESULT (the script's output is discarded: the cases read what it wrote)
+run_case() {   # run_case NAME SLOT MEDIA STATE TRIAL-CONTENT SERVICES...: stage a case
     local name="$1" slot="$2" media="$3" state="$4" trial="$5"; shift 5
     export KTEST="$T/case-$name"; rm -rf "$KTEST"; mkdir -p "$KTEST/svc" "$KTEST/run" "$KTEST/boot" "$KTEST/esp/EFI/BOOT" "$KTEST/esp/EFI/kryptik" "$KTEST/esp/kryptik"
     printf 'slot=%s\nmedia=%s\nstate=%s\n' "$slot" "$media" "$state" > "$KTEST/run/boot-identity"
@@ -95,7 +82,7 @@ run_case() {   # run_case NAME slot media state trial-content services... ; sets
     printf 'kernel-a' > "$KTEST/esp/EFI/BOOT/BOOTX64.EFI"; printf 'a\n' > "$KTEST/esp/kryptik/committed-slot"
     printf '1.0\n' > "$KTEST/esp/kryptik/version-a"; printf '2.0\n' > "$KTEST/esp/kryptik/version-b"
 }
-go() {   # go: run the script for the current case
+go() {   # go: run the script on the current case; RESULT and CALLS are what it wrote
     _="$(PATH="$T/bin:$PATH" KRYPTIK_RUN="$KTEST/run" KRYPTIK_BOOT_STATE="$KTEST/boot" KRYPTIK_SERVICE_DIR="$KTEST/svc" \
            KRYPTIK_ZONES="$KTEST/zones" KRYPTIK_DEVICES="$T/devices.sh" sh "$SCRIPT" 2>&1)"
     RESULT="$(cut -d' ' -f1-2 "$KTEST/boot/last-result" 2>/dev/null | sed 's/ *$//')"

@@ -1,199 +1,147 @@
-# Firmware boot, verified root slots, persistent state and updates
+# Boot and updates
 
-Status: decided 2026-09-13 and implemented by stage 06
-(`build/stages/06-iso.sh`), `tools/install/kryptik-install.sh`,
-`tools/image/*`, `build/service-scripts/` (`sysinit.sh`, `boot-success.sh`)
-and the `kryptik-update` / `kryptik-efiboot` tools (`tools/update/`,
-`tools/efi/`). Read with [encrypted volumes](encrypted-volumes.md) (zone
-volumes) and `docs/hardening.md`.
+The firmware is the only loader. Each bootable kernel is a UEFI application
+(the EFI stub) signed with the developer Secure Boot key, with its command
+line compiled in. The command line names the root slot and carries its
+dm-verity root hash, and the kernel's `dm-mod.create=` (`CONFIG_DM_INIT`)
+builds the verity device before mounting root: no initramfs, bootloader or
+editable file lies between the firmware's signature check and the read-only
+verified root. Mutable state is on a separate
+[encrypted partition](state-encryption.md). Two root slots and a firmware
+`BootNext` trial give A/B updates with a bounded fallback.
 
-## The chain, in one paragraph
+## Layout
 
-The firmware is the only loader. Each bootable Kryptik kernel is a UEFI
-application (the kernel's own EFI stub) whose command line is compiled in
-(`CONFIG_CMDLINE_BOOL` + `CONFIG_CMDLINE_OVERRIDE`: load options from the
-firmware or an edited boot entry are ignored) and which is signed with the
-developer Secure Boot key. That command line names the root slot by GPT
-partition label and carries the dm-verity root hash and salt; the kernel's
-own `dm-mod.create=` (`CONFIG_DM_INIT`) builds the verity device before it
-mounts root, so there is no initramfs, no bootloader, no unsigned file and
-no editable text between the firmware's signature check and the read-only
-verified root. Mutable state lives on a separate partition. Two root slots
-and a firmware `BootNext` trial give A/B updates with a bounded fallback.
+Partitions are found by GPT label, never by device name.
 
-## Partition layout (one layout for media, installer, updater)
-
-Every partition is found by its GPT partition label; nothing depends on
-`/dev/vdX` vs `/dev/sdX` vs `/dev/nvme0n1pX`.
-
-| # | label | type | content |
-| --- | --- | --- | --- |
-| 1 | `kryptik-esp` | EFI System, FAT32, 512 MiB | `EFI/BOOT/BOOTX64.EFI` (the committed slot's kernel), `EFI/kryptik/kryptik-a.efi`, `EFI/kryptik/kryptik-b.efi`, `kryptik/version-a`, `kryptik/version-b` |
-| 2 | `kryptik-a` | Linux root (x86-64) | verity root image, slot A: ext4 (no journal, read-only) followed by its hash tree |
-| 3 | `kryptik-b` | Linux root (x86-64) | the same for slot B (empty on a fresh install) |
-| 4 | `kryptik-state` | Linux filesystem, ext4, rest of disk | `/var`, the `/etc` overlay, zone volumes (LUKS2 files under `/var/lib/kryptik/volumes/`), update staging |
-
-Install media:
-
-| medium | partitions | root device on the kernel command line |
+| # | label | content |
 | --- | --- | --- |
-| USB image (`kryptik-<ver>-usb.img`) | `kryptik-esp` + `kryptik-media` (a verity root image) | `PARTLABEL=kryptik-media` |
-| ISO (`kryptik-<ver>.iso`) | ISO9660 with an El Torito EFI image (the ESP) and the verity root image appended at a known sector offset | a `linear` dm target over `/dev/sr0` at that offset, then verity on top |
+| 1 | `kryptik-esp` | FAT32, 512 MiB: `EFI/BOOT/BOOTX64.EFI` (the committed slot's kernel), `EFI/kryptik/kryptik-{a,b}.efi`, `kryptik/version-{a,b}`, `kryptik/committed-slot` |
+| 2 | `kryptik-a` | slot A: read-only ext4 without a journal, then its verity hash tree |
+| 3 | `kryptik-b` | slot B, empty after install |
+| 4 | `kryptik-state` | LUKS2 with ext4 inside, rest of disk: `/var`, the `/etc` upper layer, `/home`, zone volumes, update staging |
 
-The root image bytes are identical on the USB medium, in slot A after an
-install, and in a later update payload; only the kernel command line
-(`kryptik.slot=`, `kryptik.media=`, the device) differs, so the media
-carries all the signed kernel variants it needs to install
-(`EFI/kryptik/kryptik-a.efi`, `kryptik-b.efi`) and the installer copies
-bytes; it never re-signs and holds no key.
+The USB image holds `kryptik-esp` and `kryptik-media`; the ISO holds the ESP
+as its El Torito image and the root image at a sector offset (a `linear` dm
+target over `/dev/sr0`, verity on top). The root image is byte-identical on
+the medium, in slot A and in a payload, so the installer copies bytes and
+signs nothing.
 
-## The kernel command line, and why it is inside the signature
+## The command line
 
 ```text
-dm-mod.create="kroot,,0,ro,0 <data_sectors> verity 1 PARTLABEL=kryptik-a PARTLABEL=kryptik-a 4096 4096 <data_blocks> <hash_start_block> sha256 <root_hash> <salt> 1 panic_on_corruption"
-root=/dev/dm-0 ro rootwait console=tty0 console=ttyS0,115200 panic=10 kryptik.slot=a
+dm-mod.waitfor=PARTLABEL=kryptik-a dm-mod.create="kroot,,0,ro,0 <data_sectors> verity 1 PARTLABEL=kryptik-a PARTLABEL=kryptik-a 4096 4096 <data_blocks> <hash_start_block> sha256 <root_hash> <salt> 1 panic_on_corruption"
+root=/dev/dm-0 ro rootwait console=tty0 console=ttyS0,115200 panic=10 loglevel=4 mitigations=auto,nosmt pti=on page_alloc.shuffle=1 hash_pointers=always nosmt kryptik.slot=a
 ```
 
-- The root hash is the identity of the root filesystem. Putting it in the
-  signed PE binds the userland to the kernel that boots it: replacing either
-  alone fails at the firmware (kernel) or at the first read of a modified
-  block (root). `panic_on_corruption` turns a modified block into a kernel
-  panic and, with `panic=10`, a reboot, which is what the A/B fallback below
-  relies on; a serial log shows exactly which layer refused.
-- `CONFIG_CMDLINE_OVERRIDE` is what makes this real. Without it, a boot
-  entry's optional data (writable by anyone who can write EFI variables, i.e.
-  root) or a hostile bootloader could append `init=/bin/sh` or a different
-  `dm-mod.create=`. The EFI stub honours the same option: load options are
-  neither parsed nor appended.
-- `CONFIG_DM_VERITY_VERIFY_ROOTHASH_SIG` stays on but is not the mechanism:
-  the hash is authenticated by the kernel signature, not by a separate
-  signature in a keyring.
+- The root hash in the signed kernel binds userland to kernel: replacing
+  either fails at the firmware or at the first read of a modified block,
+  which `panic_on_corruption` and `panic=10` turn into the reboot the A/B
+  fallback relies on.
+- `CONFIG_CMDLINE_OVERRIDE` stops a boot entry's load options (writable by
+  root through EFI variables) from appending `init=/bin/sh` or another
+  `dm-mod.create=`.
+- `dm-mod.waitfor=` makes dm-init, which does not retry, wait for a slowly
+  probed disk or USB stick.
+- `CONFIG_DM_VERITY_VERIFY_ROOTHASH_SIG` is on but not the mechanism; the
+  kernel's signature authenticates the hash.
+- `tools/check-kernel-hardening.sh` checks the parameters after `loglevel`.
 
-Stage 05 builds the kernel once (`kryptik-6.18.50`, unbound: its command
-line names no root and it is not shipped as a boot file). Stage 06 builds
-the verity image, learns the hash, and relinks the kernel once per variant
-(`media-usb`, `media-iso`, `slot-a`, `slot-b`) with only `CONFIG_CMDLINE`
-changed; modules are untouched and their signatures stay valid. Each
-variant is then signed with `sbsign`.
-
-## Secure Boot with a developer key
-
-- A developer key pair (RSA-3072, self-signed X.509) is generated on first
-  use under `${KRYPTIK_WORK}/keys/sb/` (0600, never in Git, never in an
-  image); `kryptik-sb.crt` is exported with the images.
-- OVMF test variable stores are built from the clean `OVMF_VARS_4M.fd` with
-  the developer certificate enrolled as PK, KEK and db (`tools/image/
-  ovmf-vars.sh`). Nothing is enrolled in any physical firmware. A test
-  that needs "no keys" uses the clean store; a test that needs "Microsoft
-  keys only" uses `OVMF_VARS_4M.ms.fd`, in which our kernels must be refused.
-- This proves that the chain enforces *a* key and that our artifacts are
-  bound to it. It is not production certification, and the documentation
-  says so.
+Stage 06 relinks stage 05's unbound kernel per variant (`media-usb`,
+`media-iso`, `slot-a`, `slot-b`; `06-kernel-bind.sh`), changing only
+`CONFIG_CMDLINE` so module signatures stay valid, and signs each with
+`sbsign`. The developer key (RSA-3072) is made on first use under
+`${KRYPTIK_WORK}/keys/sb/`, never enters Git or an image, and is enrolled
+only in disposable OVMF variable stores (`tools/image/ovmf-vars.sh`). That
+shows the chain enforces a key; it is not production certification.
 
 ## Mutable state
 
-`sysinit` mounts `PARTLABEL=kryptik-state` at `/var` (ext4, `nosuid,nodev`),
-falling back to a tmpfs with a loud message on media without one; then an
-overlay for `/etc` (`lower=/etc` from the verified root, `upper=/var/lib/
-kryptik/etc/upper`; only the account database, the machine's identity and
-clock may live in that upper layer - anything else found there, a preload
-library or a udev rule say, is moved to `lib/kryptik/etc/quarantine` before
-the overlay is mounted, since the state partition is not authenticated),
-`/home` from `/var/home`, tmpfs on `/run`, `/tmp`.
-The verified root stays read-only; a write to it is an error, not a
-persistence bug. There is no swap: zone confidentiality is argued for the
-LUKS2 volumes ([encrypted volumes](encrypted-volumes.md)), and an
-unencrypted swap would undercut it.
-Creating encrypted swap is a later, explicit change.
+`sysinit` unlocks `kryptik-state` on the disk the root came from (a label
+alone is not an identity) and mounts it at `/var`. An install medium uses a
+tmpfs. An installed system without a usable state partition boots degraded:
+`/var` is a tmpfs, and first boot, the desktop, the update commit and the
+updater refuse to run.
+
+`/etc` overlays `/var/lib/kryptik/etc/upper` on the verified `/etc`. The
+state partition is not authenticated, so the upper layer may hold only the
+account database, the machine's identity and clock, and `resolv.conf`;
+anything else is quarantined before mounting. Nothing that decides privilege
+(init, services, sysctls, zone definitions, the release trust anchor) is read
+from `/etc`. There is no swap.
 
 ## Installer
 
-`kryptik-install --target /dev/X --yes` runs from the booted medium:
+`kryptik-install --target DISK [--yes] [--dry-run]` checks everything first:
+a whole, writable disk that is not the running root's (through any dm or loop
+layer), the state or test-control disk or the medium, with nothing mounted,
+no swap and enough room. Then it asks for the state passphrase, partitions,
+copies the ESP and root image from the medium, reads slot A back against the
+medium's `root.json`, creates the LUKS2 state partition and makes
+`BOOTX64.EFI` the slot A kernel. Every failure names its step.
 
-1. Preflight every tool, the target's identity (block device, whole disk,
-   not the medium, not the running root's underlying disk through any dm or
-   loop stack, nothing mounted from it, no active swap on it, larger than
-   ESP + 2 × root image + 512 MiB), and the sizes of what it will copy.
-2. Partition with `sfdisk` (GPT, the four labelled partitions), re-read.
-3. `dd` the ESP image and the root image from the medium's own partitions
-   (or, on the ISO, from the appended offsets) into partitions 1 and 2;
-   verify each copy by `sha256sum` against the values recorded in
-   `/etc/kryptik-image.json`; `mkfs.ext4` partition 4.
-4. On the target ESP, make `EFI/BOOT/BOOTX64.EFI` the slot A kernel and
-   write `kryptik/version-a`. Write `/etc/kryptik-install.json` into the
-   state partition. `sync`, `fsync` the device.
-5. Report; every failure exits non-zero and says which step; the runner
-   records the installer's own status, not sed's.
+The installed disk boots `BOOTX64.EFI` through the removable-media path with
+no firmware variables. `kryptik-efiboot` adds a `Kryptik <slot>` Boot####
+entry only for a trial, and `forget` removes the entries and `BootNext` when
+the trial ends, committed or not: firmware re-adds its own disk entry at the
+end of `BootOrder`, and a Kryptik entry left in front of it would boot the
+other slot.
 
-The installed disk boots with no firmware variables at all through the
-removable-media path (`BOOTX64.EFI`). `kryptik-efiboot` creates a
-`Kryptik slot` Boot#### entry for a trial, and removes both slots' entries
-again when the trial ends, committed or not (`forget`): a firmware regenerates its own disk entry at
-the end of `BootOrder` whenever the devices change, and a Kryptik entry
-left in front of it booted the other slot. The entries serve the trial;
-`BOOTX64.EFI` is the dependency.
+## Updates
 
-## Updates (A/B, bounded fallback, authenticated recovery)
+A payload directory holds exactly `kryptik-root.img`, `kryptik-a.efi`,
+`kryptik-b.efi`, `root.json`, `manifest` and `manifest.sig`. The manifest
+lists each file's sha256 and size, the version and the role, and is signed by
+the release key (Ed25519, `ssh-keygen -Y`, namespace `kryptik-release`). The
+trust anchor and required role are on the verified root in
+`/usr/share/kryptik/trust/`, never in `/etc`, which the state partition can
+shadow. `kryptik-update apply DIR` runs in zone 0 without network; payloads
+come from [the update channel](update-channel.md) or by hand.
 
-A payload is a directory holding exactly `{kryptik-root.img, kryptik-a.efi,
-kryptik-b.efi, root.json, manifest, manifest.sig}` and nothing else. The
-manifest lists every file's sha256 and size, the version and the role
-(`development` or `production`); `root.json`, one of the listed files,
-carries the root hash. The manifest is signed with the
-release key (an Ed25519 key, OpenSSH signatures via `ssh-keygen -Y` in the
-namespace `kryptik-release`; `tools/release-manifest.sh`). The trust anchor
-ships on the verified root as an allowed-signers file,
-`/usr/share/kryptik/trust/release-signers`, with the required role beside
-it; never under `/etc`, which the state partition can shadow. The updater
-(`kryptik-update apply DIR`) runs in zone 0 with no network; fetching is the
-net zone's job and the payload arrives as files in a directory on the state
-partition.
+1. Verify everything before writing, from a root-only copy of the manifest
+   and signature: the signature; the role; a newer version unless
+   `--recovery` (still signed: an authorised downgrade); every file's hash and
+   size, with nothing unlisted; and `root.json`'s root hash embedded in both
+   kernels (`grep -a -F`). Refuse while the state is degraded, another update
+   runs or a trial is armed.
+2. Write the inactive slot (`dd conv=fsync`) and read it back.
+3. Put its kernel on the ESP as `.efi.new`, fsync, check it, rename; write
+   its version file.
+4. Record the trial (`armed=0`), run `kryptik-efiboot set-next <inactive>`,
+   record `armed=1`, reboot.
+5. `boot-success` judges the trial slot: state persistent; eudev, seatd, the
+   launch daemon, the net zone and the login getty up; kryptikd finding kernel
+   support and the zones; an unambiguous ESP. Healthy: it copies the kernel
+   over `BOOTX64.EFI` (`.new`, fsync, rename), updates `committed-slot`,
+   clears the trial and forgets the entries. Unhealthy: it records that,
+   forgets the entries and reboots into the committed slot, `BootNext` being
+   spent. On a degraded state the trial record is out of reach, so
+   `committed-slot` says whether the boot is a trial. A trial that never comes
+   up also lands on the committed slot; the fallback records `trial.failed`
+   and forgets the entries, and the updater will not re-arm that payload
+   without `--retry`. Only a trial reboots; an unhealthy committed slot is
+   reported and left running.
+6. `kryptik-update rollback` arms the other slot the same way.
 
-1. **Verify before touching anything**: signature over the manifest with
-   the shipped anchor; every file's hash and size; the role; the version
-   is newer than the running one unless `--recovery` is given explicitly
-   (which still requires a valid signature: recovery is authorised
-   downgrade, not unsigned boot); both kernels in the payload embed the
-   root hash from `root.json` (a plain byte search, `grep -a -F`, not
-   `strings`), so kernel and root are one release.
-2. Write the root image to the inactive slot with `dd conv=fsync`, read it
-   back and hash it.
-3. Copy the inactive slot's kernel to `EFI/kryptik/kryptik-<inactive>.efi.new`,
-   `fsync`, rename into place, write `kryptik/version-<inactive>`.
-4. Arm the trial: `kryptik-efiboot set-next <inactive>` sets a Boot#### entry
-   for that file and `BootNext`. The trial is recorded in
-   `/var/lib/kryptik/boot/trial` (the slot, then `armed=0` before
-   `BootNext` is set and `armed=1` after). Reboot.
-5. On boot, `boot-success` (an s6 oneshot late in the default bundle)
-   reads `kryptik.slot=`. If it is the trial slot and the essential
-   services are up (the persistent state mounted and not degraded; eudev,
-   seatd, the launch daemon, the net zone and the login getty supervised
-   and up; kryptikd finding kernel support and reading the shipped zones;
-   an unambiguous ESP carrying the slot's kernel), it commits: copies the
-   slot's kernel to `EFI/BOOT/BOOTX64.EFI.new`, `fsync`, renames it over
-   `BOOTX64.EFI`, clears the trial record, and forgets Kryptik's firmware
-   entries and `BootNext` (`kryptik-efiboot forget`), so the next boot is
-   the disk's own entry, `BOOTX64.EFI`. A trial that boots but fails
-   any of these is recorded as unhealthy, its entries are forgotten and the
-   machine reboots. On a degraded state the trial record is out of reach;
-   the ESP's `committed-slot` then says the boot is a trial. If the
-   trial slot did not come up (panic, verity failure, hang without
-   success), the firmware has consumed `BootNext` and the next boot falls
-   back to `BOOTX64.EFI`, still the old slot; `boot-success` sees the trial
-   record with `kryptik.slot=` the old one, records the failure
-   (`trial.failed`) and forgets the entries; the updater refuses to re-arm the same payload
-   without `--retry`. Only a trial boot ever reboots from here; a committed
-   slot that is unhealthy is reported and left running.
-6. Rollback: `kryptik-update rollback` arms the other slot the same way
-   (its kernel and version file are still on the ESP); the slot's root
-   image is untouched by the update.
+Zone data is never written. On the FAT ESP the two renames are the only
+non-atomic steps; each follows a complete, fsynced copy and leaves a system
+that boots either way. From the medium, `kryptik-recover` commits or rewrites
+a slot and restores the state header ([user guide](../user-guide.md)).
 
-Zone data is on `kryptik-state` and is never written by any of the above.
+## Tests
 
-Limits, stated: the ESP is FAT, so the two renames are the only
-non-atomic points; each is preceded by a complete, fsynced copy and
-followed by a state that boots either way (`BootNext` is consumed exactly
-once; `BOOTX64.EFI` is replaced only after a successful boot of the new
-slot). Power-loss tests in a VM are QEMU process kills at those points with
-`cache=writeback` and explicit fsyncs; they show the recovery logic, not
-storage-controller behaviour.
+`make acceptance` runs the OVMF suites in `tools/image/`: `media-smoke.sh`
+(firmware boot, Secure Boot enforced, Microsoft-only keys refused),
+`install-test.sh`, `integrity-test.sh` (a foreign-signed boot file refused, a
+flipped root block stopping the boot, recovery), `update-test.sh` (apply,
+refusals, recovery, rollback, a broken trial, interruptions, the network
+path) and `state-test.sh` (cloned, ambiguous, corrupt and missing state).
+Host-side: `tools/test-boot-success.sh`, `test-efiboot.sh`,
+`test-installer.sh`, `test-sysinit-etc-upper.sh`, `test-release-manifest.sh`.
+
+## Files
+
+`build/stages/06-iso.sh`, `06-kernel-bind.sh`,
+`tools/install/kryptik-install.sh`, `build/service-scripts/sysinit.sh`,
+`boot-success.sh`, `tools/update/kryptik-update`, `kryptik-recover`,
+`tools/efi/kryptik-efiboot.c`, `tools/release-manifest.sh`.

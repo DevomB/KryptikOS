@@ -3,17 +3,12 @@
 
     release-host.py ROOT PORTFILE LOG [NORANGE]
 
-Serves ROOT on 127.0.0.1 and a port the kernel picks, written to PORTFILE
-once the socket is listening. Honours `Range: bytes=N-` with a 206, which is
-what the update channel asks a release host for (docs/design/update-channel.md)
-and what python's own http.server does not do; while the file NORANGE exists
-it ignores Range and sends the whole file, which is the server the fetcher
-must also survive. Files are streamed, never read whole: a root image is
-gigabytes. Every request is one line in LOG: the path, then the Range header
-or `-`.
-
-Loopback only, on purpose: under QEMU's user network the guest reaches this
-as 10.0.2.2, and nothing else on the runner's network can ask it anything.
+Serves ROOT on 127.0.0.1 (10.0.2.2 to a guest on QEMU's user network; nothing
+else on the runner's network can reach it) and writes the port to PORTFILE
+once listening. Honours `Range: bytes=N-` (docs/design/update-channel.md),
+which http.server does not, except while the file NORANGE exists. Streams
+files, as a root image is gigabytes. Logs each request as the path and the
+Range header or `-`.
 """
 import http.server
 import os
@@ -29,10 +24,8 @@ class Host(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        # Links inside ROOT may point anywhere (the suites link to a payload
-        # rather than copy it); the requested NAME may not leave ROOT. The
-        # name is normalised and held to ROOT before anything touches the
-        # filesystem with it.
+        # Links inside ROOT may point anywhere (suites link payloads in), but the
+        # requested name is normalised and held to ROOT before it is used.
         path = os.path.normpath(os.path.join(root, self.path.split("?", 1)[0].lstrip("/")))
         if not path.startswith(root + os.sep):
             self.send_error(404)

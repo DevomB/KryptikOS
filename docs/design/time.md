@@ -1,50 +1,27 @@
-# A clock that is right
+# Clock
 
-Status: implemented, and proven so far on a developer host only: the
-decision and everything that carries it out are unit-tested
-(`compartments/kryptikd/src/time.rs`), the net zone's asking runs under
-every shell in `tools/test-netzone-time.sh`, the verb's refusals run against
-a real zone in the boundary suite. What needs the installed system - the
-clamp and a step on a real clock, and a claim made with the net zone's
-identity - is in `build/guest-tests/zones-check.sh`
-and is unproven until an acceptance run has passed with it; the roadmap's
-"A clock that is right" stays open until then. Builds on
-[the net zone](net-zone.md), which asks, and [the broker](broker.md), which
-carries the answer.
+Only zone 0 may set the wall clock, and zone 0 has no network. The net zone
+can reach time servers but is treated as hostile. So the net zone measures
+how far the clock is off, the [broker](broker.md) carries that as a claim,
+and zone 0 decides by rules that do not depend on the claim being true.
 
-## The problem
+## Why
 
-The image has no time synchronisation. Two things assume the time anyway:
-certificate validation in every zone that speaks TLS, and the freshness of an
-update (a signed "latest release" statement is only worth something against
-a clock). A machine whose RTC battery is dead boots in 1970 or 2000, every
-certificate is "not yet valid", and nothing on the system can fix it.
+TLS in every zone and the freshness of an update
+([update channel](update-channel.md)) depend on the clock, and a machine with
+a dead RTC battery boots in 1970 or 2000. `CLOCK_REALTIME` is one clock for
+the whole machine (time namespaces cover only the monotonic and boot clocks),
+settable only with `CAP_SYS_TIME` in the initial user namespace.
 
-The obvious fix does not fit. `CLOCK_REALTIME` is one clock for the whole
-machine: a time namespace covers the monotonic and boot clocks, not the wall
-clock, so no zone can have a private one, and only a process with
-`CAP_SYS_TIME` in the initial user namespace may set it. That is zone 0, and
-zone 0 has no network. The one zone that can reach a time server is the net
-zone, which is treated as hostile and could not set the clock if it wanted
-to.
+NTP without NTS is unauthenticated and the net zone may be compromised. A
+clock set backwards revives expired or revoked certificates and makes an old
+signed "latest release" statement look fresh, holding the machine on a
+release with a known hole; that direction matters most. Forwards, every
+certificate expires. Either way logs, file times and the update history lie.
+The defence is what zone 0 knows without the network, the image's build
+date, and bounds on what it believes.
 
-## The threat
-
-NTP without NTS is unauthenticated: anything on the path can answer, and the
-net zone itself may be compromised. So the answer that reaches zone 0 is a
-claim, never a fact. What a wrong clock buys an attacker:
-
-- **Backwards:** an expired or revoked certificate is valid again, and an old
-  signed "latest release" statement is fresh again, which holds a machine on a
-  release with a known hole. This is the direction that matters most.
-- **Forwards:** every certificate has expired (denial of service), and
-  anything the system refuses for being "from the future" is accepted.
-- **Either way:** logs, file times and the update history lie.
-
-The defence is not a better protocol. It is that zone 0 knows things the
-network does not, and bounds what it will believe.
-
-## The design
+## Design
 
 ```text
  net zone                       broker (zone 0, in net's launcher)         zone 0
@@ -53,143 +30,83 @@ network does not, and bounds what it will believe.
  clock, and cannot set it                                                   clock_settime + RTC
 ```
 
-### The net zone measures an offset
+**Measuring.** `netzone-init.sh` runs `tools/net/sntp-offset.py`, a plain
+SNTP query (RFC 4330) with no state and no clock to set, once an uplink has
+an address, then hourly (every 5 minutes until something answers) and when a
+radio associates. A reply counts only if it echoes the timestamp sent to that
+server (an off-path sender cannot forge that), comes from a synchronised
+server and is not a kiss-of-death. The offset is `((t1 - t0) + (t2 - t3)) / 2`,
+positive when this clock is behind, and the median over the servers is
+reported, so one liar among three is outvoted. The servers come from
+`/etc/kryptik/time.conf` on the verified root (`server HOST` or `pool HOST`,
+a pool giving up to four addresses; the public pool without the file). The
+zone reports an offset, not a time: it reads the same `CLOCK_REALTIME` as
+zone 0, so nothing is lost to the delay before zone 0 acts. It is a script
+rather than an NTP daemon because a daemon is a whole package for one number,
+and the script can be tested against a real server on loopback. NTS is not
+used: the image has no gnutls, and it would not authenticate a compromised
+net zone.
 
-`netzone-init.sh` runs `tools/net/sntp-offset.py` once an uplink has an
-address, and again on a long interval and when a radio associates. It is a
-plain SNTP query (RFC 4330) in about seventy lines and nothing more: no
-state, no daemon, no clock to set. It asks each configured server (up to
-four addresses of a pool), and counts a reply only if it echoes the
-timestamp that was sent to that server - which a sender who cannot see the
-request cannot forge - and comes from a synchronised server that is not
-sending a kiss-of-death. The offset is the arithmetic the protocol defines,
-`((t1 - t0) + (t2 - t3)) / 2`, so its sign is not in doubt: positive means
-this clock is behind. The median of the answers is what is reported, so one
-lying server among three is outvoted. Nothing printed means no answer.
+**The claim.** `time-offset <seconds> <sources>`: a signed decimal with at
+most 10 integer and 6 fractional digits, and the number of servers (1 to 16)
+whose median it is. It is accepted only from the zone whose file says
+`mode = "nic"`, and only one claim per 10 minutes is considered, so a hostile
+zone cannot flood the user with questions. The reply is `ok ignored`,
+`ok slewed`, `ok stepped`, `ok stepped after consent` or `error: <reason>`,
+and the net zone prints `time=<offset|no-answer|...>` in its readiness line.
 
-An NTP daemon was the first choice and was dropped: a whole package in the
-image to be run once with its log line parsed, with two questions attached
-that only an installed system could answer (would the zone's seccomp policy
-kill it, and which way does its number point). The net zone already needs
-python for its broker client, and the query is small enough to test against
-a real server on loopback.
+**The decision** (`time::decide`, a pure function):
 
-What the zone reports is the **offset**, not a time. The zone reads the same
-`CLOCK_REALTIME` zone 0 does, so an offset measured against it applies to
-zone 0's clock exactly, and nothing is lost to the delay between measuring
-and reporting. It sends `time-offset <seconds> <sources>` to its broker and
-prints `time=<offset|no-answer>` in its readiness line. The sources come
-from `/etc/kryptik/time.conf` on the verified root, bound read-only into the
-nic zone.
+1. Nothing is applied or offered that puts the clock before the floor, the
+   running image's build date (`built_at` in `/etc/kryptik-image.json`). With
+   no floor known, every claim is refused.
+2. At boot, before the net zone starts, the `time-floor` service raises a
+   clock below the floor to it, with no network. A dead RTC starts at the
+   build date.
+3. Under 5 ms nothing happens; under 1 s the clock is slewed (`adjtime`), so
+   it never runs backwards; up to the bound it is stepped.
+4. Beyond the bound, one hour either way, the user decides: an RTC drifts
+   seconds a day, so a genuine correction that large means a dead battery or
+   years unused. The chrome asks through the broker's consent path and shows
+   both the network's time and the machine's, so a user with a watch can
+   answer. No session, no answer or "no" leaves the clock alone.
+5. The bound also caps the total moved without asking since the clock was
+   last anchored (by consent or by the floor), so small lies cannot add up.
+6. kryptikd, the only process with `CAP_SYS_TIME`, applies it with
+   `clock_settime(CLOCK_REALTIME)` and after a step sets the RTC
+   (`RTC_SET_TIME` on `/dev/rtc0` if present). Each claim considered adds a
+   line to `/var/lib/kryptik/time/history`; `kryptikd time status` prints the
+   clock, the floor and the last line.
 
-NTS is not used: the image has no gnutls, and authenticating the server
-would not authenticate a compromised net zone. It is a version 2 refinement,
-not a substitute for the bounds below.
-
-### The broker carries the claim
-
-One new verb, accepted only from the zone whose file says `mode = "nic"`
-(the peer's uid is in that zone's identity range, as for every verb):
-
-```text
-time-offset <seconds> <sources>
-    seconds  a signed decimal, at most 10 integer digits and 6 fractional
-    sources  how many time servers answered, whose median the offset is, 1-16
-```
-
-Anything else is refused at parse time. One claim is considered per
-interval (the rest are refused unread), so a hostile zone cannot turn the
-consent prompt into a flood. The reply says what zone 0 did: `ok stepped`,
-`ok slewed`, `ok ignored`, `refused: <reason>`, `asked`.
-
-### Zone 0 decides
-
-A pure function of what zone 0 already knows: the current clock, the offset,
-the floor, the bound.
-
-1. **The floor is not negotiable.** No proposal is accepted that puts the
-   clock before the running image's build date (`built_at` in
-   `/etc/kryptik-image.json`, on the verified root), or before the date of
-   the newest release this machine has committed to. The OS cannot have been
-   built in the future of the present, and no consent prompt offers a time
-   below the floor.
-2. **Zone 0 repairs a clock below the floor by itself, with no network.**
-   At boot, before anything asks the net zone, a clock that reads earlier
-   than the floor is set to the floor. A dead RTC therefore starts at the
-   build date rather than in 1970, and every later proposal is judged from
-   there by the same rule as on any other machine.
-3. **Small corrections are applied silently.** Under one second the clock is
-   slewed (`adjtime`), so time never runs backwards for a running program;
-   up to the bound it is stepped.
-4. **Beyond the bound, the person decides.** The bound defaults to one hour
-   in either direction: an RTC drifts seconds a day, so an honest correction
-   larger than that means a dead battery or a machine unused for years, and
-   a dishonest one is exactly what this is for. The question goes through
-   the consent path the broker already uses for file transfers
-   ([broker](broker.md)): the trusted chrome draws, in the one colour no zone
-   can have, *"The network says it is 2027-03-02 14:05. This machine says
-   2026-09-19 08:12. Set the clock?"* - both times, so a person with a watch
-   can answer. No session to ask, no answer, or "no" is a refusal, and the
-   clock stays where it was.
-5. **Applying it** is `clock_settime(CLOCK_REALTIME)` in kryptikd, the only
-   process that holds `CAP_SYS_TIME`, then the RTC (`RTC_SET_TIME` on
-   `/dev/rtc0`, where there is one). What was done - when, the offset, how
-   many sources, stepped or slewed or asked - is one line appended to
-   `/var/lib/kryptik/time/history`; `kryptikd time status` prints the clock,
-   the floor and the last of those lines.
-
-### What this does not defend against
-
-A hostile net zone can lie by up to the bound per interval, in either
-direction, and keep lying: over a day of accepted claims it can walk the
-clock a long way. So the bound is on the **total** movement too: the sum of
-corrections accepted without consent since the last consented or
-floor-derived time may not exceed the bound, after which the next one asks.
-It can also refuse to answer at all, which leaves the clock to the RTC; that
-is reported (`time=no-answer`), not repaired.
+A net zone that never answers leaves the clock to the RTC; that is reported
+(`time=no-answer`), not repaired.
 
 ## Tests
 
-| check | expected |
-|---|---|
-| a proposal below the image's build date | refused, never offered for consent |
-| a clock below the floor at boot | set to the floor with no network involved |
-| an offset under one second | slewed; the clock never steps backwards |
-| an offset under the bound | stepped; one history line |
-| an offset over the bound with nobody to ask | refused; clock unchanged |
-| over the bound, consent given through the chrome | stepped; the question showed both times |
-| many small offsets that sum past the bound | the one that crosses it asks |
-| `time-offset` from a zone that is not the nic zone | refused by identity |
-| a malformed or oversized claim; a second claim inside the interval | refused at parse time; refused unread |
-| a server five minutes ahead, and one five minutes behind | about +300 and about -300 reach zone 0, with how many servers answered |
-| one server a day out among three | outvoted: the median |
-| a kiss-of-death, an unsynchronised server, a reply that does not echo what was sent, silence | no answer: not a pass, not a zero, and zone 0 is told nothing |
-| the net zone behind QEMU user networking | `time=` in the readiness line says what happened; no answer is reported as that, not as a pass |
-
-The decision is a pure function and is unit-tested exhaustively; the verb's
-refusals run in the serve and boundary suites; the query and the script
-around it run in `tools/test-netzone-time.sh` against a time server on
-loopback whose clock and manners the suite chooses, under every shell on
-the host; the clamp and the step run as root in the VM, where the guest
-check sets the clock wrong on purpose and reads it back.
+`time.rs` unit tests cover every rule above: the floor, the clamp, slew and
+step, the bound per claim and in total, consent, the interval and the claim
+grammar. The boundary suite checks that the verb is refused from a zone
+without the network and that a malformed claim is refused.
+`tools/test-netzone-time.sh` runs the query and its
+caller against loopback servers five minutes ahead or behind, a day out among
+three, unsynchronised, sending kiss-of-death, not echoing, or silent, under
+every POSIX shell on the host. On the installed system,
+`build/guest-tests/zones-check.sh` sets the clock to 2000 and checks the
+clamp, then that a claim steps the clock, one below the floor is refused, a
+day's jump waits for consent, and a clock 300 s fast is put right.
 
 ## Open points
 
-- The bound and the interval are constants today (`DEFAULT_BOUND_SECS`,
-  `CLAIM_INTERVAL_SECS`); `/etc/kryptik/time.conf` names the sources and
-  nothing else yet. The floor is not configurable and will not be.
-- The floor is the image's build date. The date of the newest release the
-  machine has committed to is a better one after an update, and joins it
-  with the update channel.
+- The bound and the interval are constants (`DEFAULT_BOUND_SECS`,
+  `CLAIM_INTERVAL_SECS`); `time.conf` names only servers. The floor is not
+  configurable.
+- The date of the newest release the machine has committed to would be a
+  better floor after an update than the running image's; it is not used yet.
 
 ## Files
 
-`compartments/kryptikd/src/time.rs` (the decision, the clamp, applying it;
-`kryptikd time floor | status`), `broker.rs` (the verb), `consent.rs` (a
-second kind of question), `tools/desktop/kryptik-chrome` (drawing it),
-`tools/net/sntp-offset.py` (the query) and `tools/net/netzone-init.sh`
-(asking, and telling zone 0), `rootfs.rs` (`/etc/kryptik/time.conf`
-into a zone's `/etc`), `build/services/time-floor` with
-`build/service-scripts/time-floor.sh` (the clamp at boot, ahead of the net
-zone), and the rows above in `tools/test-netzone-time.sh`, the boundary
-suite and `build/guest-tests/zones-check.sh`.
+`compartments/kryptikd/src/time.rs` (`kryptikd time floor | status`),
+`broker.rs`, `consent.rs`, `tools/desktop/kryptik-chrome`,
+`tools/net/sntp-offset.py`, `tools/net/netzone-init.sh`, `rootfs.rs`
+(`time.conf` into the zones' `/etc`), `build/services/time-floor` and
+`build/service-scripts/time-floor.sh`.

@@ -1,21 +1,14 @@
 #!/bin/bash
-# First-boot setup: the one deliberate step between "installed" and "usable".
-#
-# An installed Kryptik ships no usable account: root has no password and
-# cannot log in at a terminal (/etc/securetty is empty), and the desktop is
-# an ordinary authenticated user session. This runs before the login prompt
-# on tty1. If an installer preseed exists on the state partition it is
-# consumed (once): the user is created and root's password set from it;
-# otherwise, when no regular user exists yet, it asks on the console for
-# both. Administration afterwards is `su` from the wheel group with root's
-# password - explicit, and protected by a password that only exists on the
-# installed machine. On an install medium this does nothing.
+# First-boot setup, before the tty1 login prompt. An installed system ships no
+# usable account (root has no password, /etc/securetty is empty), so this
+# creates the desktop user and sets root's password (for `su` from wheel), from
+# the installer's preseed if there is one, else by asking on the console.
+# Does nothing on an install medium.
 set -u
 say() { echo "kryptik-firstboot: $*"; }
 media="$(sed -n 's/^media=//p' /run/kryptik/boot-identity 2>/dev/null)"
 [ -n "$media" ] && { say "install medium; no setup"; exit 0; }
-# A degraded state (sysinit.sh) is a tmpfs: an account created now would be
-# gone at the next boot, and asking for a password for it would be a lie.
+# A degraded state is a tmpfs (sysinit.sh); an account made now would not last.
 if [ -r /run/kryptik/state-degraded ]; then
     say "state is DEGRADED ($(cat /run/kryptik/state-degraded)); not creating accounts that would not persist"
     exit 0
@@ -24,11 +17,9 @@ fi
 PRESEED=/var/lib/kryptik/firstboot.preseed
 regular_user() { awk -F: '$3>=1000 && $3<65534 {print $1; exit}' /etc/passwd; }
 has_password() { awk -F: -v u="$1" '$1==u && $2 ~ /^\$/ {ok=1} END {exit !ok}' /etc/shadow; }
-# Done means a regular user and root can both authenticate, read from the
-# account database and not from a marker: a setup cut short anywhere (the
-# power, a failed passwd) is finished by the next boot instead of skipped.
-# It used to stop at the first uid of 1000 or more, and root cannot log in,
-# so a user made a moment before the power went was a machine nobody could use.
+# Done when a regular user and root can both authenticate, judged from the
+# account database rather than a marker, so the next boot finishes a setup
+# that was cut short.
 complete() { u="$(regular_user)"; [ -n "$u" ] && has_password "$u" && has_password root; }
 
 create_user() {   # create_user NAME
@@ -65,14 +56,12 @@ if [ -r "$PRESEED" ]; then
     if complete; then rm -f "$PRESEED"; exit 0; fi
 fi
 
-# Interactive: ask on tty1 for whatever is still missing. Every question is
-# bounded, so a headless machine still reaches a login prompt, and boot-success
-# (which waits for this service) still judges an update's trial boot.
+# Ask on tty1 for whatever is missing. Every question has a time limit, so a
+# headless machine still reaches a login prompt and boot-success still runs.
 PROMPT_SECS=600
 tty=/dev/tty1
 [ -c "$tty" ] || tty=/dev/console
-# Not passwd: without PAM it reads from /dev/tty, and a boot service has no
-# controlling terminal, so it failed before asking anything.
+# Not passwd: without PAM it reads /dev/tty, which a boot service does not have.
 set_password() {   # set_password USER: two matching answers on $tty, through chpasswd
     local p1 p2
     for _ in 1 2 3; do

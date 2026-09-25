@@ -1,46 +1,27 @@
 #!/usr/bin/env bash
-# Stage 01 — Cross toolchain (docs/roadmap.md, Cross toolchain)
-#
-# Builds a cross toolchain targeting $LFS_TGT against an isolated sysroot, so
-# the host toolchain never contaminates the target. Follows the LFS chapter 5
-# sequence with Kryptik's own configuration choices.
-#
-# Resumable: each step writes a stamp. Re-running skips completed steps.
-# Force one step to rebuild with:  ./01-toolchain.sh --redo glibc
+# Stage 01: cross toolchain for $LFS_TGT in an isolated sysroot (LFS chapter 5).
+# usage: 01-toolchain.sh [--redo <step>]
 
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
 load_config
 
-# ---------------------------------------------------------------------------
-# Hardening flags are deliberately NOT loaded here.
-#
-# Pass-1 GCC is the thing that *implements* -fstack-protector and friends; it
-# cannot be built with them. Worse, an exported CFLAGS leaks host assumptions
-# into a cross build and yields a toolchain that miscompiles in ways which do
-# not surface until stage 04. LFS is explicit about this.
-#
-# Hardening is introduced at stage 04, where the target compiler builds target
-# packages. See docs/hardening.md.
-# ---------------------------------------------------------------------------
+# No hardening flags: pass-1 GCC implements -fstack-protector and cannot be
+# built with it, and host CFLAGS leak into a cross build. Hardening starts at
+# stage 04 (docs/hardening.md).
 unset CFLAGS CXXFLAGS LDFLAGS CPPFLAGS LD_LIBRARY_PATH
 
 require_outside_chroot "stage 01"
 
-# The sysroot is resolved by common.sh, which knows which side of the
-# chroot boundary we are on. Stage 01 only ever runs outside it.
 export LFS="${KRYPTIK_SYSROOT}"
 LFS_TGT="$(uname -m)-kryptik-linux-gnu"
 export LFS_TGT
 export PATH="${LFS}/tools/bin:${PATH}"
 export CONFIG_SITE="${LFS}/usr/share/config.site"
-# Parallelism. GCC is memory-hungry; on a host with less than ~2GB per job,
-# -j$(nproc) invites the OOM killer partway through a 40-minute build. Override
-# with KRYPTIK_JOBS when RAM is tight.
 KRYPTIK_JOBS="${KRYPTIK_JOBS:-$(kryptik_default_jobs)}"
 export MAKEFLAGS="-j${KRYPTIK_JOBS}"
 umask 022
 
-# Stage 01 builds the cross toolchain WITH THE HOST COMPILER.
+# The host gcc builds this stage.
 stage_contract "${BASH_SOURCE[0]}" "" gcc
 
 STAMPS="${KRYPTIK_WORK}/.stamps"
@@ -55,7 +36,7 @@ mkdir -p "$STAMPS" "$LOGS" "$BUILDDIR" "$LFS"
 
 
 
-# Extract a tarball into $BUILDDIR under a caller-chosen directory name.
+# unpack TARBALL TOPDIR [NAME]: extract into $BUILDDIR as NAME; print the path.
 unpack() {
     local tarball="$1" srcdir="$2" destname="${3:-}"
     local dir="${BUILDDIR}/${destname:-$srcdir}"
@@ -117,9 +98,8 @@ s_gcc_pass1() {
 
     mkdir -p build
     cd build
-    # --enable-default-pie and --enable-default-ssp bake two of Kryptik's
-    # hardening guarantees into the compiler itself, so a package that forgets
-    # the flags still gets them. See docs/hardening.md.
+    # Default PIE and SSP are built into the compiler, so a package that
+    # forgets the flags still gets them (docs/hardening.md).
     ../configure \
         --target="$LFS_TGT" \
         --prefix="${LFS}/tools" \
@@ -158,15 +138,11 @@ s_linux_headers() {
     make headers
     find usr/include -type f ! -name "*.h" -delete
 
-    # Remove any previously installed headers first. Without this, bumping
-    # V_LINUX leaves headers from the old kernel behind wherever the new one
-    # dropped a file - glibc then compiles against a mix of two kernel
-    # versions, which is exactly the kind of failure that surfaces much later
-    # as something unrelated.
+    # Clear old headers first, or a V_LINUX bump leaves behind files the new
+    # kernel dropped and glibc builds against a mix of two versions.
     rm -rf "${LFS}/usr/include"
     cp -rv usr/include "${LFS}/usr"
 
-    # Record what was installed so drift is visible.
     if [[ -f "${LFS}/usr/include/linux/version.h" ]]; then
         echo "installed kernel headers:"
         grep -E "LINUX_VERSION_(MAJOR|PATCHLEVEL|SUBLEVEL)"             "${LFS}/usr/include/linux/version.h" || true
@@ -189,8 +165,7 @@ s_glibc() {
             ;;
     esac
 
-    # The LFS FHS patch relocates a few directories glibc still puts in legacy
-    # places. Optional for chapter 5 — applied only when present.
+    # LFS's FHS patch moves a few legacy glibc paths; optional in chapter 5.
     local fhs="${KRYPTIK_SOURCES}/glibc-${V_GLIBC}-fhs-1.patch"
     if [[ -f "$fhs" ]]; then
         patch -Np1 -i "$fhs"
@@ -198,13 +173,9 @@ s_glibc() {
         echo "note: FHS patch absent, continuing without it"
     fi
 
-    # What the 2.40 tarball shipped without (build/patches/glibc-2.40/,
-    # provenance in its README): upstream's maintained release/2.40/master
-    # branch as one patch - its security fixes and the _dl_find_object
-    # loader fixes among them - and the bug 33088 barrier the branch never
-    # got, without which GCC 14 makes ld.so record its own map as starting
-    # at address 0. Applied to the toolchain glibc as well as the final one
-    # in stage 04, so both are built from the same source.
+    # Upstream's release/2.40/master branch plus the bug 33088 fix, without
+    # which GCC 14 makes ld.so record its own map at address 0 (see the patch
+    # set's README). Stage 04 applies the same set to the final glibc.
     apply_repo_patches "glibc-${V_GLIBC}"
 
     mkdir -p build
@@ -220,11 +191,8 @@ s_glibc() {
         libc_cv_slibdir=/usr/lib
     make
 
-    # Upstream's make-check rule for glibc bug 33088 (see the patch set's
-    # README): the loader's startup code must not reach __ehdr_start or
-    # _end through a run-time relocation, because it stores their addresses
-    # before it has relocated itself. Stage 04 repeats this on the final
-    # loader and adds the runtime form (ldd's map start).
+    # Upstream's check for bug 33088: rtld must not reach __ehdr_start or _end
+    # through a run-time relocation, as it stores them before relocating itself.
     echo "--- run-time relocations against __ehdr_start or _end in rtld.os ---"
     local rtld_relocs
     rtld_relocs="$(readelf -rW elf/rtld.os | grep -E 'R_X86_64_64.*(__ehdr_start|_end)' || true)"
@@ -242,9 +210,8 @@ s_glibc() {
     sed "/RTLDLIST=/s@/usr@@g" -i "${LFS}/usr/bin/ldd"
 }
 
-# The most important check in this stage: proves the cross compiler produces
-# binaries linked against the TARGET loader, not the host's. If this passes
-# for the wrong reason, everything downstream is silently host-contaminated.
+# Cross-compiled binaries must request the target's loader, not the host's;
+# otherwise everything downstream is silently host-contaminated.
 s_sanity_check() {
     cd "$BUILDDIR"
     echo "int main(void){return 0;}" > sanity.c
@@ -263,15 +230,8 @@ s_sanity_check() {
     fi
     echo "PASS: binaries link against the target loader."
 
-    # Verifies --enable-default-pie actually took effect.
-    #
-    # Read the header into a variable first. `readelf -h x | grep -q y` looks
-    # harmless and is not: grep -q exits the instant it matches, readelf takes
-    # SIGPIPE, and `set -o pipefail` makes the pipeline return 141 - so a
-    # SUCCESSFUL match reads as a failed condition and this branch reports a
-    # PIE binary as non-PIE. It happens to work here only because `readelf -h`
-    # writes little enough to finish first, which is a coincidence, not a
-    # design.
+    # --enable-default-pie took effect. No `readelf | grep -q`: under
+    # pipefail, grep exiting on a match can fail the pipeline with SIGPIPE.
     local hdr
     hdr="$(readelf -h sanity 2>/dev/null || true)"
     if [[ "$hdr" == *"DYN (Position-Independent"* ]]; then
@@ -314,9 +274,7 @@ echo
 
 [[ -d "$KRYPTIK_SOURCES" ]] || die "no sources found. Run: make sources"
 
-# Preflight: confirm every tarball this stage needs is present BEFORE starting.
-# A 40-minute build that dies at minute 35 on a missing file is a bad trade for
-# the two seconds this costs.
+# Check every tarball and host tool is there before a long build starts.
 preflight() {
     local missing=0 f
     for f in "binutils-${V_BINUTILS}.tar.xz" \
@@ -333,8 +291,7 @@ preflight() {
     done
     [[ "$missing" -eq 0 ]] || die "${missing} source tarball(s) missing. Run: make sources"
 
-    # Host tools this stage invokes directly. The host checker covers these too,
-    # but stage 01 can be run on its own.
+    # The host check covers these too, but this stage can run on its own.
     local t
     for t in tar make gcc g++ bison flex makeinfo patch readelf find sed; do
         have "$t" || die "required host tool not found: ${t}
@@ -345,28 +302,19 @@ Run 'make check' for the full host requirement list."
 preflight
 
 # --- a cross toolchain is never rebuilt over another one's sysroot -------------
-#
-# Pass 1 is built before any header exists. Over a sysroot that came out of a
-# cache it is not: gcc's fixincludes kept a private copy of the OLD glibc's
-# pthread.h, glibc was then rebuilt with a changed pthread_cond_t, and pass 2
-# compiled libstdc++ with the old initializer against the new struct (run
-# 35492373903). Stamps cannot see this: the header is not an input of any
-# step. So the tree records which toolchain built it, and one built by another
-# is cleared, with every stamp, before the first step. The record lives with
-# the stamps, not in the sysroot: the root image is a copy of the sysroot.
+# Pass 1 expects a sysroot with no headers; over an older tree, fixincludes
+# keeps copies of the old glibc headers, which no stamp hashes. So a tree built
+# by another toolchain is cleared, stamps included. The record of which one
+# built it stays out of the sysroot, which becomes the root image.
 toolchain_id="$({ printf '%s\n' "$V_BINUTILS" "$V_GCC" "$V_GLIBC" "$V_LINUX" "$V_MPFR" "$V_GMP" "$V_MPC"
-                  # Only glibc has a patch set today; cat fails on the two that do not
-                  # exist, and under errexit and pipefail that failure ended the stage.
+                  # `|| true`: not every package here has a patch set.
                   cat "${KRYPTIK_ROOT}"/build/patches/{glibc,gcc,binutils}-*/SHA256SUMS 2>/dev/null || true; } | sha256_of_stdin)"
 toolchain_marker="${STAMPS}/toolchain-id"
 
-# Anything mounted under DIR? Stage 03 binds /dev, /proc and THIS REPOSITORY
-# into the sysroot, and a bind mount from the same filesystem is not stopped
-# by rm --one-file-system, so this test is what stands between a stale record
-# and the source tree. /proc/mounts names the resolved path and writes a
-# space as \040; the mountpoint is compared as a fixed string from its start
-# (ENVIRON, because awk -v would turn \040 back into a space). Unreadable
-# means yes.
+# Anything mounted under DIR? Stage 03 binds this repository into the sysroot,
+# and rm --one-file-system does not stop at a bind mount of the same filesystem.
+# /proc/mounts has resolved paths with a space as \040 (ENVIRON, since awk -v
+# would unescape it). Unreadable means yes.
 mounted_under() {
     local real esc
     real="$(realpath -m -- "$1")" || return 0
@@ -380,8 +328,7 @@ if [[ -d "${LFS}/usr/include" && "$(cat "$toolchain_marker" 2>/dev/null)" != "$t
     if mounted_under "$LFS"; then
         die "something is mounted under ${LFS}; unmount it (make chroot-umount), then run this again"
     fi
-    # The same question asked a second way, of the four places stage 03 binds
-    # the repository, the sources and the work tree: unmounted, they are empty.
+    # Stage 03's bind points are empty when unmounted.
     for d in kryptik kryptik-sources kryptik-work kryptik-kryptikd; do
         [[ -z "$(ls -A "${LFS}/${d}" 2>/dev/null)" ]] \
             || die "${LFS}/${d} is not empty: it looks mounted. Refusing to remove the sysroot"
@@ -394,7 +341,7 @@ if [[ -d "${LFS}/usr/include" && "$(cat "$toolchain_marker" 2>/dev/null)" != "$t
     warn "cleared ${LFS}; the stamps are archived under ${old}/. Everything is built again."
 fi
 
-# A tree with no headers in it is about to be built by this toolchain.
+# A tree with no headers is about to be built by this toolchain.
 [[ -d "${LFS}/usr/include" ]] || { mkdir -p "$STAMPS"; printf '%s\n' "$toolchain_id" > "$toolchain_marker"; }
 
 step layout          s_layout
@@ -407,4 +354,4 @@ step libstdcxx       s_libstdcxx
 
 echo
 ok "Stage 01 complete. Cross toolchain is in ${LFS}/tools"
-dim "Next: make temp-tools  (stage 02 — not yet implemented)"
+dim "Next: make temp-tools"

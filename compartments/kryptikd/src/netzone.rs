@@ -1,5 +1,5 @@
-//! The zone network topology (docs/design/net-zone.md): who owns the NIC, and how a
-//! routed zone reaches it.
+//! Zone network topology (docs/design/net-zone.md): who owns the NIC, and how
+//! a routed zone reaches it.
 //!
 //! ```text
 //!  physical NIC  --moved into-->  net zone's netns   (mode = "nic")
@@ -11,18 +11,10 @@
 //!  mode = "none":  nothing is ever created
 //! ```
 //!
-//! Everything here runs in the PARENT `kryptikd run` process, as root, while
-//! the new zone is paused at its handshake: its network namespace exists,
-//! nothing runs in it yet, and it has no capabilities over anything. The
-//! parent needs CAP_SYS_ADMIN over the initial namespace (to move the NIC and
-//! to setns), which is why this is the privileged path only: an unprivileged
-//! developer launch gets a note and a zone with loopback, as before.
-//!
-//! What is deliberately not here yet: NAT and a resolver in the net zone
-//! (they need nftables and a stub resolver in the image), so a routed zone
-//! today reaches the bridge and the net zone, not the world.
-//! docs/design/net-zone.md lists the rest; this is the ownership and isolation half, which is the security
-//! boundary.
+//! Runs in the root parent while the new zone waits at its handshake. It needs
+//! CAP_SYS_ADMIN over the initial namespace, so an unprivileged launch gets
+//! loopback only. NAT, the forward policy and the resolver belong to the nic
+//! zone's own program, tools/net/netzone-init.sh.
 
 use std::ffi::CStr;
 use std::io;
@@ -34,23 +26,17 @@ use crate::zone::{NetworkMode, Zone};
 
 pub const BRIDGE: &str = "kryptik0";
 
-/// The kernel creates its fallback tunnel devices (sit0, tunl0, ...) in EVERY
-/// new network namespace when the tunnel modules are built in or loaded,
-/// unless this sysctl says otherwise: 0 = every namespace, 1 = only the
-/// initial one, 2 = none (since 4.16). The Kryptik kernel builds SIT in, and
-/// its first boot found sit0 inside an airgapped zone.
+/// Where fallback tunnel devices (sit0, ...; our kernel builds SIT in) appear:
+/// 0 = every new namespace, 1 = the initial one only, 2 = none.
 pub const FB_TUNNELS_SYSCTL: &str = "/proc/sys/net/core/fb_tunnels_only_for_init_net";
 
-/// The fallback devices the kernel's tunnel modules register per namespace.
+/// Fallback devices the tunnel modules create per namespace.
 pub const FALLBACK_DEVICES: &[&str] =
     &["sit0", "tunl0", "ip6tnl0", "gre0", "gretap0", "erspan0", "ip6gre0", "ip_vti0", "ip6_vti0"];
 
-/// Every interface in the calling process's network namespace except
-/// loopback, as the kernel lists them.
+/// Every interface in this network namespace except loopback.
 pub fn devices_besides_lo() -> io::Result<Vec<String>> {
-    // SAFETY: if_nameindex returns an array terminated by a zero index that
-    // we free with if_freenameindex; every entry before the terminator has a
-    // NUL-terminated if_name.
+    // SAFETY: the array ends at a zero index; each entry before it has a C-string name.
     let list = unsafe { libc::if_nameindex() };
     if list.is_null() {
         return Err(io::Error::last_os_error());
@@ -70,9 +56,8 @@ pub fn devices_besides_lo() -> io::Result<Vec<String>> {
     Ok(out)
 }
 
-/// What a new network namespace would start with on this host, if not
-/// nothing: the fallback devices present here, when the sysctl says every
-/// namespace gets them. None when a new namespace would be loopback-only.
+/// The fallback devices a new network namespace would start with here, or
+/// None if it would hold loopback only.
 pub fn fallback_tunnels_expected() -> Option<Vec<String>> {
     let v = std::fs::read_to_string(FB_TUNNELS_SYSCTL).ok()?;
     if v.trim() != "0" {
@@ -87,11 +72,8 @@ pub fn fallback_tunnels_expected() -> Option<Vec<String>> {
     }
 }
 
-/// Make sure a zone's new network namespace will be empty. Ok(None): it will
-/// be, nothing to do. Ok(Some(note)): the sysctl was raised to 1 - the
-/// initial namespace keeps its devices, new ones get none - and the note
-/// says so. Err(why): a zone would get devices and this process cannot
-/// prevent it (an unprivileged launcher, or a read-only /proc/sys).
+/// Make sure new network namespaces start empty: Ok(Some(note)) if the sysctl
+/// had to be raised to 1, Err if it could not be and a zone would get devices.
 pub fn suppress_fallback_tunnels() -> Result<Option<String>, String> {
     let Some(devs) = fallback_tunnels_expected() else { return Ok(None) };
     match std::fs::write(FB_TUNNELS_SYSCTL, "1") {
@@ -133,10 +115,8 @@ fn io(what: &str, e: io::Error) -> NetError {
     NetError::Io(format!("{what}: {e}"))
 }
 
-/// The routed zone's host number on the bridge subnet, from its declared
-/// identity: base 131072 -> 2, 196608 -> 3, ... Stable across zone additions
-/// (it is declared, not positional) and disjoint by construction, because
-/// bases are unique multiples of 65536.
+/// A routed zone's host number on the bridge subnet, from its declared uid
+/// base: 131072 -> 2, 196608 -> 3, ... Bases are unique, so numbers are too.
 pub fn host_number(zone: &Zone) -> Option<u8> {
     let base = zone.uid_base?;
     let k = (base - crate::zone::IDENTITY_MIN) / crate::zone::IDENTITY_STRIDE + 2;
@@ -151,16 +131,12 @@ pub fn port_name(zone: &str) -> String {
     format!("kv-{zone}")
 }
 
-/// Bring up loopback and, for a routed zone, nothing else here: the parent
-/// plumbs eth0 from outside.
 fn up_lo() -> io::Result<()> {
     netlink::set_up("lo")
 }
 
-/// The IPv4 configuration an uplink carries: what DHCP or an installer left
-/// on it, read back from the kernel so it can be re-applied where the
-/// interface is going. Moving an interface between namespaces flushes its
-/// addresses and routes.
+/// An uplink's IPv4 configuration, read back so it can be re-applied after a
+/// namespace move, which flushes addresses and routes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Uplink {
     pub addrs: Vec<([u8; 4], u8)>,
@@ -185,14 +161,11 @@ impl std::fmt::Display for Uplink {
     }
 }
 
-/// The IPv4 addresses (getifaddrs) and default gateway (/proc/self/net/route)
-/// of `nic` in the calling process's network namespace.
+/// IPv4 addresses (getifaddrs) and default gateway (/proc/self/net/route) of `nic`.
 pub fn uplink_config(nic: &str) -> io::Result<Uplink> {
     let mut addrs = Vec::new();
     let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
-    // SAFETY: getifaddrs fills a list we walk and free with freeifaddrs;
-    // ifa_addr/ifa_netmask may be null and are checked; an AF_INET entry's
-    // sockaddr is a sockaddr_in.
+    // SAFETY: null ifa_addr/ifa_netmask are checked; an AF_INET sockaddr is a sockaddr_in.
     if unsafe { libc::getifaddrs(&mut list) } < 0 {
         return Err(io::Error::last_os_error());
     }
@@ -216,8 +189,7 @@ pub fn uplink_config(nic: &str) -> io::Result<Uplink> {
         .skip(1)
         .filter_map(|l| {
             let f: Vec<&str> = l.split_whitespace().collect();
-            // Iface Destination Gateway Flags ... Mask: a default route is
-            // destination and mask both zero on this interface.
+            // A default route: Destination (field 1) and Mask (field 7) both zero.
             if f.len() > 7 && f[0] == nic && f[1] == "00000000" && f[7] == "00000000" {
                 u32::from_str_radix(f[2], 16).ok().map(|g| g.to_ne_bytes())
             } else {
@@ -228,17 +200,11 @@ pub fn uplink_config(nic: &str) -> io::Result<Uplink> {
     Ok(Uplink { addrs, gateway })
 }
 
-/// Move `nic` into `zone_ns` and give it back the IPv4 configuration it had
-/// here: the kernel flushes addresses and routes on a namespace move, and a
-/// nic zone with a bare interface would route every zone to nothing. What
-/// travels is what was there - no DHCP is spoken here; a client in the nic
-/// zone can take over the lease later. Returns what was carried.
+/// Move `nic` into `zone_ns` and re-apply the IPv4 configuration the move
+/// flushes (no DHCP here; a client in the nic zone can take over). Returns it.
 fn carry_nic(nic: &str, zone_ns: i32) -> Result<Uplink, NetError> {
     let cfg = uplink_config(nic).map_err(|e| io(&format!("read the configuration of {nic}"), e))?;
-    // A wireless interface cannot be moved on its own: the kernel marks it
-    // namespace-local and RTM_SETLINK answers EINVAL. Its wiphy moves, and
-    // every interface on it goes along with its name (what `iw phy set
-    // netns` does). A wired interface moves by RTM_SETLINK as before.
+    // A wireless netdev is namespace-local; move its wiphy instead.
     match netlink::wiphy_index_of(nic).map_err(|e| io(&format!("read the wiphy of {nic}"), e))? {
         Some(phy) => netlink::set_wiphy_netns(phy, zone_ns)
             .map_err(|e| io(&format!("move {nic} (wiphy {phy}) into the nic zone"), e))?,
@@ -250,9 +216,8 @@ fn carry_nic(nic: &str, zone_ns: i32) -> Result<Uplink, NetError> {
         }
         netlink::set_up(nic)?;
         if let Some(gw) = cfg.gateway {
-            // A second uplink that also carried a default route: the first
-            // one's stands (the kernel refuses a duplicate), and the DHCP
-            // client inside the zone sorts the routes out by metric later.
+            /* With a second uplink the first default route stands (the kernel
+             * refuses a duplicate); the zone's DHCP client sorts them later. */
             match netlink::add_default_route4(gw, nic) {
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                     eprintln!("kryptikd: {nic}: the nic zone already has a default route; keeping the first")
@@ -266,17 +231,13 @@ fn carry_nic(nic: &str, zone_ns: i32) -> Result<Uplink, NetError> {
     Ok(cfg)
 }
 
-/// The interfaces of this namespace that sit on a bus device - PCI, USB, a
-/// platform device - which is what `/sys/class/net/<n>/device` existing
-/// means. Loopback, bridges, veth ends, tunnels and every other software
-/// device have no such link. This is the rule `[network] nic = "*"` uses to
-/// decide what leaves zone 0.
+/// Interfaces here that sit on a bus device (`/sys/class/net/<n>/device`
+/// exists); software devices never do. `[network] nic = "*"` moves these.
 pub fn physical_interfaces() -> io::Result<Vec<String>> {
     physical_interfaces_under(Path::new("/sys/class/net"))
 }
 
-/// The rule itself, over any sysfs `class/net` directory: the tests mount a
-/// sysfs of their own namespace somewhere else and ask about that.
+/// `physical_interfaces` over any sysfs `class/net` directory, for tests.
 fn physical_interfaces_under(class_net: &Path) -> io::Result<Vec<String>> {
     let mut out = Vec::new();
     for e in std::fs::read_dir(class_net)? {
@@ -293,14 +254,10 @@ fn physical_interfaces_under(class_net: &Path) -> io::Result<Vec<String>> {
     Ok(out)
 }
 
-/// The nic zone: create the bridge in its namespace and move the physical
-/// interface into it. Called by the root parent with the zone's netns fd.
+/// Plumb the nic zone (uplinks and bridge), then reattach running routed zones.
 pub fn plumb_nic_zone(zone: &Zone, zone_ns: i32, zones_dir: &Path) -> Result<(), NetError> {
     plumb_nic_zone_bridge(zone, zone_ns)?;
-    // Routed zones that are already running - started before this gateway,
-    // or stranded when a previous gateway died and took their peers with it
-    // - are attached now. Each failure is
-    // reported and does not stop the others or the nic zone.
+    // One zone failing to reattach stops neither the others nor the nic zone.
     for (name, r) in replumb_routed_zones(zones_dir, zone_ns) {
         match r {
             Ok(()) => eprintln!("kryptikd: zone {name:?} reattached to the new nic zone"),
@@ -310,14 +267,9 @@ pub fn plumb_nic_zone(zone: &Zone, zone_ns: i32, zones_dir: &Path) -> Result<(),
     Ok(())
 }
 
-/// Attach every running routed zone (per the zone directory and the
-/// registry) to the nic zone whose namespace is `nic_ns`. Returns one result
-/// per zone attempted; an empty registry attempts nothing.
-///
-/// A routed zone keeps the resolv.conf it was started with: a zone that
-/// started before any gateway has none, and gets a path here but no
-/// resolver until it is restarted. Its root is sealed; kryptikd does not
-/// reach into a running zone to change its files.
+/// Attach every running routed zone to the nic zone in `nic_ns`; one result
+/// per zone tried. A zone keeps the resolv.conf it started with, so one that
+/// started before any gateway has no resolver until it restarts.
 pub fn replumb_routed_zones(zones_dir: &Path, nic_ns: i32) -> Vec<(String, Result<(), NetError>)> {
     let mut out = Vec::new();
     for name in registry::names() {
@@ -334,8 +286,7 @@ pub fn replumb_routed_zones(zones_dir: &Path, nic_ns: i32) -> Vec<(String, Resul
                 NetError::Refused("no [identity] uid_base to derive an address".into())
             })?;
             let zone_ns = netlink::open_netns_of(st.pid).map_err(|e| io("open the zone netns", e))?;
-            // The zone's namespace is the one it started with; its ICMP
-            // group range was written at that first plumbing and stays.
+            // None: the ICMP group range set at first plumbing is still there.
             let r = attach_routed(&z.name, k, nic_ns, zone_ns, None);
             unsafe { libc::close(zone_ns) };
             r
@@ -345,23 +296,16 @@ pub fn replumb_routed_zones(zones_dir: &Path, nic_ns: i32) -> Vec<(String, Resul
     out
 }
 
-/// The bridge half of the nic zone: create kryptik0 in its namespace and
-/// move the physical interface into it.
+/// Move the uplinks into the nic zone and create kryptik0 there.
 fn plumb_nic_zone_bridge(zone: &Zone, zone_ns: i32) -> Result<(), NetError> {
-    // A nic zone without `[network] nic` gets the bridge and no interface:
-    // routed zones can attach and reach it, nothing reaches the world. Said
-    // out loud rather than guessed - kryptikd never picks a NIC to move out
-    // of zone 0 on its own.
+    /* Without `[network] nic` the zone gets the bridge and no uplink: kryptikd
+     * never picks a NIC to take out of zone 0 on its own. */
     let nics: Vec<String> = match zone.nic.as_deref() {
         None => Vec::new(),
-        // Every physical interface, wired or wireless, whatever the machine
-        // has: a laptop's wlan0 and its dock's USB adapter both leave zone
-        // 0. None at all is not an error - the zone gets its bridge and no
-        // uplink, and says so - because the machine may have none.
+        // Every physical interface, wired or wireless; finding none is not an error.
         Some("*") => physical_interfaces().map_err(|e| io("list the physical interfaces of zone 0", e))?,
         Some(n) => {
-            // The NIC must exist here (zone 0) before we hand it over; a name
-            // that is not an interface is a configuration error, not a retry.
+            // A named NIC missing from zone 0 is a configuration error.
             if unsafe { libc::if_nametoindex(std::ffi::CString::new(n).unwrap().as_ptr()) } == 0 {
                 return Err(NetError::Refused(format!(
                     "[network] nic = {n:?} is not an interface in this namespace"
@@ -390,27 +334,17 @@ fn plumb_nic_zone_bridge(zone: &Zone, zone_ns: i32) -> Result<(), NetError> {
         netlink::create_bridge(BRIDGE)?;
         netlink::add_addr4(BRIDGE, netlink::BRIDGE_V4, 24)?;
         netlink::set_up(BRIDGE)?;
-        // IPv6 is additive here as on the routed side: a nic zone that
-        // cannot have it still starts, with IPv4, and says so.
+        // IPv6 is optional: without it the zone starts with IPv4 and says so.
         if let Err(e) = netlink::add_addr6(BRIDGE, netlink::BRIDGE_V6, 64) {
             eprintln!("kryptikd: zone {:?}: IPv6 on {BRIDGE} not configured ({e}); IPv4 is", zone.name);
         }
-        // Forwarding stays OFF here. What a new namespace starts with depends
-        // on the kernel's devconf inheritance and on zone 0's own setting, so
-        // it is written rather than assumed. The nic zone's own program
-        // (tools/net/netzone-init.sh) turns it on once its nftables policy
-        // has loaded and been read back, and off again if the policy ever
-        // goes. The parent must not open the path first: on a nic zone
-        // restart every routed zone still running is reattached during this
-        // same handshake (plumb_nic_zone), and with forwarding on and no
-        // policy loaded yet, anything on the uplink that routes 10.19.0.0/24
-        // at this machine could reach those zones unsolicited until the
-        // zone's program got as far as its first lines.
-        //
-        // Forwarding also opens an L3 path between two routed zones through
-        // the bridge address itself, which the port isolation does not cover
-        // - but only for a zone that can install a host route, and a routed
-        // zone can never keep CAP_NET_ADMIN (policy::check_for_zone).
+        /* Forwarding is set to 0 here, never inherited. tools/net/netzone-init.sh
+         * turns it on once its nftables policy is loaded; before that, the
+         * uplink could reach the routed zones this handshake reattaches.
+         * Forwarding also joins routed zones via the bridge address, past port
+         * isolation, but only with a host route, and so CAP_NET_ADMIN, which
+         * no routed zone keeps (policy::check_for_zone).
+         */
         sysctl("/proc/sys/net/ipv4/ip_forward", "0")?;
         if Path::new("/proc/sys/net/ipv6").exists() {
             sysctl("/proc/sys/net/ipv6/conf/all/forwarding", "0")?;
@@ -423,15 +357,12 @@ fn plumb_nic_zone_bridge(zone: &Zone, zone_ns: i32) -> Result<(), NetError> {
     .map_err(|e| io("configure the nic zone", e))
 }
 
-/// Write a network sysctl of the CURRENT network namespace (procfs resolves
-/// /proc/sys/net against the namespace of the process that opens it).
+/// Write a sysctl; /proc/sys/net resolves to the opener's network namespace.
 fn sysctl(path: &str, value: &str) -> io::Result<()> {
     std::fs::write(path, value).map_err(|e| io::Error::new(e.kind(), format!("{path} = {value}: {e}")))
 }
 
-/// A routed zone: a veth pair whose bridge end lives in the running net
-/// zone's namespace (isolated port on kryptik0) and whose other end is
-/// created directly in the new zone as eth0, addressed from its identity.
+/// Attach a new routed zone to the running nic zone's bridge.
 pub fn plumb_routed_zone(zone: &Zone, zone_ns: i32, zones_dir: &Path, host_gid: u32) -> Result<(), NetError> {
     let k = host_number(zone).ok_or_else(|| {
         NetError::Refused("a routed zone needs [identity] uid_base to derive its address".into())
@@ -443,10 +374,8 @@ pub fn plumb_routed_zone(zone: &Zone, zone_ns: i32, zones_dir: &Path, host_gid: 
     r
 }
 
-/// One routed zone onto the bridge: the pair is created from inside the nic
-/// zone's namespace with the peer landing directly in the routed zone as
-/// eth0; the port is enslaved, isolated and brought up; then the routed end
-/// is addressed from its host number with default routes to the bridge.
+/// Create the veth from inside the nic zone with its peer born in the routed
+/// zone as eth0, isolate the bridge port, then address and route eth0.
 fn attach_routed(name: &str, k: u8, nic_ns: i32, zone_ns: i32, host_gid: Option<u32>) -> Result<(), NetError> {
     let port = port_name(name);
     netlink::with_netns(nic_ns, || {
@@ -458,37 +387,22 @@ fn attach_routed(name: &str, k: u8, nic_ns: i32, zone_ns: i32, host_gid: Option<
     .map_err(|e| io("attach the zone to the bridge", e))?;
     netlink::with_netns(zone_ns, || {
         up_lo()?;
-        // No router advertisements are ever accepted in a routed zone: its
-        // addresses come from here and nowhere else.
+        // Addresses come only from here: no router advertisements.
         let _ = sysctl("/proc/sys/net/ipv6/conf/eth0/accept_ra", "0");
-        // IPv4 first and completely - address, link up, default route - so
-        // that nothing on the IPv6 side can cost the zone its path. The
-        // target kernel's first boot delivered a routed zone with an
-        // interface and no routes: one failure in this sequence lost
-        // every step after it, the IPv4 route included, and left the zone a
-        // device it could not use.
+        // IPv4 first and complete, so no IPv6 failure can cost the zone its route.
         netlink::add_addr4("eth0", netlink::zone_v4(k), 24)?;
         netlink::set_up("eth0")?;
         netlink::add_default_route4(netlink::BRIDGE_V4, "eth0")?;
-        // ping without CAP_NET_RAW: unprivileged ICMP echo sockets for the
-        // zone's own group. A routed zone cannot keep CAP_NET_RAW, so this
-        // is the only way it gets to ping, and it cannot forge anything
-        // with it. The range is in HOST gids (the sysctl belongs to the
-        // namespace, the parent writes it from outside), and the zone's root
-        // is host gid `host_gid`: the first installed system wrote "0 65534"
-        // here, which held no gid the zone's user namespace mapped, so
-        // inside the zone the range read as nobody-to-nobody and every
-        // echo socket was refused.
+        /* Unprivileged ICMP echo for the zone's group, since a routed zone
+         * cannot keep CAP_NET_RAW. The range takes host gids: the parent
+         * writes it from outside the zone's user namespace. */
         if let Some(g) = host_gid {
             let _ = sysctl("/proc/sys/net/ipv4/ping_group_range", &format!("{g} {g}"));
         }
         Ok(())
     })
     .map_err(|e| io("address the zone's eth0", e))?;
-    // IPv6 is additive. A kernel or sysctl profile that disables it (a
-    // hardened image may well set disable_ipv6) refuses the address with
-    // EACCES; the zone then has IPv4 only - less connectivity, not less
-    // isolation - and that is reported rather than fatal.
+    // With IPv6 disabled the address gets EACCES; IPv4 only is reported, not fatal.
     if let Err(e) = netlink::with_netns(zone_ns, || {
         netlink::add_addr6("eth0", netlink::zone_v6(k), 64)?;
         netlink::add_default_route6(netlink::BRIDGE_V6, "eth0")
@@ -498,15 +412,8 @@ fn attach_routed(name: &str, k: u8, nic_ns: i32, zone_ns: i32, host_gid: Option<
     Ok(())
 }
 
-/// pid 1 of the running nic zone.
-///
-/// WHICH zone is the nic zone comes from the zone directory - the operator's
-/// files, root-owned, the same source `run` itself trusts - never from what
-/// a namespace happens to contain. An earlier draft recognised the nic zone
-/// by finding a bridge called kryptik0 in its namespace; a routed zone whose
-/// policy keeps CAP_NET_ADMIN could have created one and been chosen as the
-/// gateway for every zone started after it. The registry says who is
-/// running; the zone file says who is allowed to be the gateway.
+/// pid 1 of the running nic zone. The root-owned zone files say which zone
+/// that is, never what a namespace holds: a zone could create its own kryptik0.
 fn running_nic_zone_init(zones_dir: &Path) -> Result<libc::pid_t, NetError> {
     for name in registry::names() {
         let file = zones_dir.join(format!("{name}.toml"));
@@ -581,14 +488,10 @@ mod tests {
         .unwrap()
     }
 
-    /// The parent hands the nic zone a namespace with forwarding OFF, and
-    /// writes it rather than trusting whatever the namespace inherited: the
-    /// path opens only once the zone's own program has its policy loaded.
-    /// Kernel-backed: this namespace plays the nic zone with forwarding
-    /// already on, the way an inherited setting would leave it; the bridge
-    /// half runs with no NIC to move; both knobs must read 0 afterwards.
+    /// This namespace plays a nic zone that inherited forwarding on; after the
+    /// bridge half both forwarding knobs must read 0.
     #[test]
-    fn the_bridge_half_leaves_forwarding_off() {
+    fn bridge_half_turns_forwarding_off() {
         use crate::netlink::tests::in_userns_netns;
         let rc = in_userns_netns(|| {
             let ns = match netlink::open_netns_of(unsafe { libc::getpid() }) {
@@ -627,21 +530,14 @@ mod tests {
         }
     }
 
-    /// `nic = "*"` moves what sits on a bus device and nothing else. In a
-    /// fresh namespace there is loopback, and after a veth pair and a bridge
-    /// there is still nothing with a device link: software devices never
-    /// leave zone 0 by that rule. Kernel-backed: sysfs shows the network
-    /// namespace of whoever mounted it, so the child mounts one of its own
-    /// on a directory of its own (its mount namespace is private to it) and
-    /// asks the rule about that.
+    /// A veth pair and a bridge must not count. Sysfs shows the network
+    /// namespace of whoever mounted it, so the child mounts its own.
     #[test]
     fn only_bus_devices_count_as_physical() {
         use crate::netlink::tests::{in_userns_netns, step};
         use std::ffi::CString;
-        // Named before the fork: temp_dir() reads the environment, which std
-        // keeps behind a process-wide lock, and a child forked while another
-        // test held it would wait forever (the read-only bind test in
-        // rootfs.rs hung the whole suite that way).
+        /* Before the fork: temp_dir() takes std's environment lock, and a child
+         * forked while another thread holds it waits forever. */
         let dir = std::env::temp_dir().join(format!("kryptik-sysfs-{}", std::process::id()));
         let rc = in_userns_netns(|| {
             if std::fs::create_dir_all(&dir).is_err() {
@@ -671,13 +567,10 @@ mod tests {
                 }
                 step(3, netlink::create_veth("pa", "pb", None))?;
                 step(4, netlink::create_bridge("br-t"))?;
-                // The mount shows them (so the emptiness below is the rule's
-                // doing, not a stale view)...
                 if !class_net.join("pa").exists() || !class_net.join("br-t").exists() {
                     eprintln!("the mounted sysfs does not show this namespace's devices; this proved nothing");
                     return Err(5);
                 }
-                // ...and none of them counts.
                 let after = physical_interfaces_under(&class_net).map_err(|_| 6)?;
                 if !after.is_empty() {
                     eprintln!("software devices counted as physical: {after:?}");
@@ -699,12 +592,12 @@ mod tests {
     }
 
     #[test]
-    fn host_numbers_follow_the_declared_identity() {
+    fn host_number_from_uid_base() {
         assert_eq!(host_number(&z("routed", Some(131072), None)), Some(2));
         assert_eq!(host_number(&z("routed", Some(196608), None)), Some(3));
         assert_eq!(host_number(&z("routed", Some(458752), None)), Some(7));
         assert_eq!(host_number(&z("routed", None, None)), None);
-        // 248 zones fit; the 249th would collide with the bridge's reserved end.
+        // 248 zones fit: hosts 2 to 249.
         assert_eq!(host_number(&z("routed", Some(131072 + 247 * 65536), None)), Some(249));
         assert_eq!(host_number(&z("routed", Some(131072 + 248 * 65536), None)), None);
     }
@@ -716,7 +609,7 @@ mod tests {
     }
 
     #[test]
-    fn the_plan_is_honest_about_what_happens() {
+    fn plan_describes_each_mode() {
         assert!(plan(&z("none", None, None), true).contains("nothing created"));
         assert!(plan(&z("routed", Some(131072), None), false).contains("unprivileged"));
         assert!(plan(&z("routed", Some(131072), None), true).contains("10.19.0.2/24"));
@@ -726,13 +619,9 @@ mod tests {
         assert!(plan(&z("nic", None, None), true).contains("no interface moves"));
     }
 
-    /// A fresh namespace holds exactly what `fallback_tunnels_expected`
-    /// predicts from the sysctl and the initial namespace: nothing on a host
-    /// without the tunnel modules, the fallback devices on one with them and
-    /// the sysctl at 0. Kernel-backed; the predictor is what the launcher
-    /// acts on before the zone's namespace exists.
+    /// The launcher acts on `fallback_tunnels_expected` before a zone's namespace exists.
     #[test]
-    fn a_fresh_namespace_holds_exactly_what_the_predictor_says() {
+    fn fresh_namespace_matches_prediction() {
         use crate::netlink::tests::in_userns_netns;
         let mut predicted = fallback_tunnels_expected().unwrap_or_default();
         predicted.sort();
@@ -759,14 +648,10 @@ mod tests {
         }
     }
 
-    /// The target kernel's first boot delivered a routed zone with an
-    /// interface and no routes. Whatever fails on the IPv6 side must not cost
-    /// the zone its IPv4 path. Kernel-backed: this namespace plays the nic
-    /// zone (bridge and all), a holder plays the zone with IPv6 disabled the
-    /// way a hardened sysctl profile would, and the zone end must still come
-    /// out addressed, up and routed - counted the way the suite counts it.
+    /// This namespace plays the nic zone and a holder a zone with IPv6
+    /// disabled; eth0 must still come out addressed, up and routed.
     #[test]
-    fn ipv4_survives_a_zone_whose_ipv6_is_disabled() {
+    fn ipv4_survives_disabled_ipv6() {
         use crate::netlink::tests::{in_userns_netns, spawn_netns_holder, step};
         let rc = in_userns_netns(|| {
             let (holder, zone_ns) = match spawn_netns_holder() {
@@ -812,8 +697,7 @@ mod tests {
                     eprintln!("zone routes:\n{routes}");
                     return Err(8);
                 }
-                // The premise: IPv6 really was refused, so the IPv4 path
-                // above was built in spite of a failure, not beside a success.
+                // Premise: IPv6 really was refused.
                 if v6.lines().any(|l| l.contains("eth0")) {
                     eprintln!("IPv6 was not disabled in the zone namespace; this proved nothing:\n{v6}");
                     return Err(9);
@@ -837,13 +721,10 @@ mod tests {
         }
     }
 
-    /// Moving an interface between namespaces flushes what was configured on
-    /// it. Kernel-backed: a veth end plays the uplink with the configuration
-    /// DHCP leaves (address, prefix, default gateway); after `carry_nic` it
-    /// is gone from here and up, addressed and routed inside the holder's
-    /// namespace, read back through the same code the launcher uses.
+    /// A veth end with an address and default route plays the uplink; after
+    /// `carry_nic` it must be up with the same configuration in the holder.
     #[test]
-    fn the_uplink_configuration_travels_with_the_nic() {
+    fn uplink_config_travels_with_nic() {
         use crate::netlink::tests::{in_userns_netns, spawn_netns_holder, step};
         let rc = in_userns_netns(|| {
             let (holder, zone_ns) = match spawn_netns_holder() {
@@ -871,11 +752,9 @@ mod tests {
                 if carried != before {
                     return Err(9);
                 }
-                // Gone from here...
                 if netlink::is_up("up0").is_ok() {
                     return Err(10);
                 }
-                // ...and present, up and configured there.
                 let (after, up) = netlink::with_netns(zone_ns, || Ok((uplink_config("up0")?, netlink::is_up("up0")?)))
                     .map_err(|e| {
                         eprintln!("inside the zone: {e}");
@@ -907,9 +786,8 @@ mod tests {
     }
 
     #[test]
-    fn the_gateway_is_chosen_from_the_zone_directory_not_from_a_namespace() {
-        // No running nic zone in this (empty) zone directory: the lookup must
-        // say so rather than pick any running zone.
+    fn gateway_comes_from_zone_directory() {
+        // An empty zone directory names no nic zone, whatever else is running.
         let dir = std::env::temp_dir().join(format!("kryptik-nz-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let e = running_nic_zone_init(&dir).unwrap_err();
@@ -918,15 +796,15 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_nic_is_refused_before_anything_moves() {
-        // Needs no privilege: the check happens before any netlink call.
+    fn unknown_nic_refused_before_move() {
+        // Unprivileged: the check comes before any netlink call.
         let dir = std::env::temp_dir();
         let e = plumb_nic_zone(&z("nic", None, Some("nosuchnic99")), -1, &dir).unwrap_err();
         assert!(e.to_string().contains("not an interface"), "{e}");
     }
 
     #[test]
-    fn replumb_with_no_routed_zones_in_the_directory_attempts_nothing() {
+    fn replumb_empty_directory_attempts_nothing() {
         let dir = std::env::temp_dir().join(format!("kryptik-rp-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert!(replumb_routed_zones(&dir, -1).is_empty());

@@ -1,58 +1,17 @@
 #!/usr/bin/env bash
-# kryptik — the command people actually type.
+# kryptik: the user's command for zones. Fills in kryptikd's paths from
+# kryptik.conf and never offers a way past kryptikd's refusals.
 #
-# WHY THIS EXISTS SEPARATELY FROM kryptikd
-#
-# kryptikd is the compartment manager, and its interface is shaped by what it
-# has to be exact about: which zone directory, which data directory, which host
-# uid the zone maps to, and an explicit acknowledgement before it will start a
-# zone whose storage guarantees are not yet delivered. That is right for a
-# daemon and wrong for a person. Typing
-#
-#     KRYPTIK_EXPERIMENTAL=1 kryptikd run work --zones /etc/kryptik/zones \
-#         --rootfs /var/lib/kryptik/zones --zone-uid 100000 --zone-gid 100000 \
-#         -- /bin/bash
-#
-# every time is how people end up writing their own wrapper with the
-# acknowledgement hard-coded, which is exactly the outcome the acknowledgement
-# exists to prevent.
-#
-# So this fills in the paths from a config file. What it does NOT do is give
-# anyone a way past kryptikd's refusals.
-#
-# TWO WAYS IN, AND WHICH ONE YOU GET
-#
-# On an installed system a person is not root, and zones are started by the
-# launch service (`kryptikd serve`, root, one socket per session) through
-# kryptik-launch, which also asks for an encrypted zone's passphrase on the
-# terminal and never puts it on a command line. So when this runs as an
-# ordinary user and the session's launch service answers, `shell`, `run`,
-# `stop` and `wifi` go through kryptik-launch. As root (a developer host, a
-# test as root) they drive kryptikd directly, the way they always did.
-#
-# `wifi add` reads the passphrase on the terminal with echo off (or one line
-# from a pipe) and hands it to kryptik-launch, or to kryptikd, on standard
-# input: it is never an argument, so it is never in a process listing.
-#
-# A zone with `storage.mode = "ephemeral"` starts, and kryptikd prints the
-# caveat every single time - the tmpfs can reach swap, so this is not secure
-# erasure. That warning is passed through untouched rather than summarised.
-#
-# WHAT THIS DELIBERATELY DOES NOT DO
-#
-# It has no `transfer`, `clipboard` or `mount`. Files cross zones only
-# through the broker, from inside the sending zone, and only after the person
-# answers the chrome's question; the clipboard moves only by the zone 0
-# gesture in the chrome's menu. A shell command that did either from zone 0
-# would be a way around the person, and that is the one thing this must not
-# be.
+# When not root and the session's launch service (kryptik-launch) answers,
+# zones start through it; otherwise kryptikd runs them directly. There is no
+# transfer, clipboard or mount command: from zone 0 those would bypass the
+# chrome, where the user approves each move.
 set -uo pipefail
 
 PROG="${0##*/}"
 CONF="${KRYPTIK_CONF:-/etc/kryptik/kryptik.conf}"
 
-# Defaults, overridable from the config file and then from flags. These match
-# kryptikd's own defaults so that the wrapper changes nothing but the typing.
+# kryptikd's own defaults; kryptik.conf overrides them, then flags.
 ZONES_DIR=/usr/lib/kryptik/zones
 ROOTFS=/var/lib/kryptik/zones
 WIFI_DIR=/var/lib/kryptik/wifi
@@ -117,9 +76,8 @@ $PROG has no commands for either, on purpose.
 USAGE
 }
 
-# The session's launch service, when this is not root and it answers. The
-# runtime request is the cheapest one it has, and it fails fast (no socket,
-# not a session member, a dead daemon) rather than hanging.
+# True when not root and the session's launch service answers. --runtime-dir
+# is its cheapest request and fails fast rather than hanging.
 LAUNCH="${KRYPTIK_LAUNCH:-kryptik-launch}"
 via_launch() {
     [[ "$(id -u)" -ne 0 ]] || return 1
@@ -128,8 +86,7 @@ via_launch() {
 }
 
 # --- configuration ----------------------------------------------------------
-# Deliberately not `source`d: a config file is data, and sourcing it would let a
-# stray line in /etc run as whoever typed the command.
+# Parsed, not sourced: a stray line in the file must not run as the caller.
 load_conf() {
     [[ -r "$CONF" ]] || return 0
     local line key val
@@ -157,42 +114,24 @@ have_kryptikd() {
     arguments. Install it, or set KRYPTIKD=/path/to/kryptikd."
 }
 
-# The identity flags, which kryptikd accepts ONLY when it is running as root,
-# and REQUIRES when it is. Getting this wrong is the difference between a zone
-# mapped to an unprivileged host user and a zone whose root is the real root.
-#
-# Sets an array directly rather than printing lines for the caller to read back
-# through `< <(...)`. Process substitution needs /dev/fd, a minimal system does
-# not necessarily have it, and the Kryptik VM did not: every `kryptik run` there
-# failed with "/dev/fd/63: No such file or directory" while the same command
-# worked on the developer host. A wrapper whose job is to be the easy interface
-# should not be the thing that needs a richer /dev than the daemon does.
+# The flags that map a zone to an unprivileged host user. kryptikd takes them
+# only as root, and then requires them unless the zone declares its own.
+# Sets an array rather than printing for `< <(...)`: process substitution
+# needs /dev/fd, which a minimal system may lack.
 IDENTITY_ARGS=()
 set_identity_args() { # zone name
     IDENTITY_ARGS=()
     [[ "$(id -u)" -eq 0 ]] || return 0
 
-    # A zone may declare its own range with [identity] uid_base. kryptikd then
-    # REFUSES --zone-uid/--zone-gid:
-    #
-    #   zone "untrusted" declares [identity] uid_base = 327680;
-    #   --zone-uid/--zone-gid are not accepted for a zone with a declared identity
-    #
-    # and it is right to - two sources for the same fact is how they end up
-    # disagreeing. Every shipped zone declares one, so passing the flags
-    # unconditionally meant `kryptik run` could not start any of them as root.
-    #
-    # A presence test on the zone file rather than a TOML parse: kryptikd is
-    # the authority on the value and refuses clearly either way, so all this
-    # has to get right is "does this zone bring its own".
+    # kryptikd refuses the flags for a zone with [identity] uid_base. A
+    # presence test is enough: kryptikd checks the value itself.
     if grep -qE '^[[:space:]]*uid_base[[:space:]]*=' "$ZONES_DIR/$1.toml" 2>/dev/null; then
         return 0
     fi
     IDENTITY_ARGS=(--zone-uid "$UID_BASE" --zone-gid "$UID_BASE")
 }
 
-# Both the list and whether reading it worked at all. These are different
-# answers and the wrapper used to give the same one for both.
+# The zone list, and separately whether reading it failed.
 ZONE_LIST=""
 ZONE_LIST_ERR=""
 ZONE_LIST_RC=0
@@ -207,18 +146,11 @@ zone_exists() {
     printf '%s\n' "$ZONE_LIST" | grep -qx "$1"
 }
 
-# One place decides what to say when a zone name is wrong, because "unknown
-# zone" without the list is how people end up running `ls /etc/kryptik/zones`.
+# Exit unless NAME is a zone, listing the zones there or why they are unreadable.
 require_zone() {
     local name="$1"
     zone_exists "$name" && return 0
-    # THREE different situations, which this used to report as one.
-    #
-    # "There are no zones in /etc/kryptik/zones" was printed whenever the list
-    # came back empty - including when the directory was full of zones that
-    # kryptikd had refused to read. A restart check in the VM reported exactly
-    # that about an image whose zone directory had six files in it, and the
-    # actual error was never shown to anyone.
+    # A failed read is not an empty directory: show kryptikd's error.
     if (( ZONE_LIST_RC != 0 )) || [[ -n "$ZONE_LIST_ERR" ]]; then
         printf '%s: could not read the zones in %s\n\n' "$PROG" "$ZONES_DIR" >&2
         [[ -n "$ZONE_LIST_ERR" ]] && printf '%s\n' "$ZONE_LIST_ERR" | sed 's/^/    /' >&2
@@ -237,9 +169,8 @@ require_zone() {
 }
 
 # --- running state ----------------------------------------------------------
-# Reported as a WORD, never as a colour: this is the one piece of information
-# that decides whether a command will affect something already running, and it
-# has to survive a monochrome terminal, a pipe into a file, and a screen reader.
+# A word, not a colour: it must survive a pipe, a monochrome terminal and a
+# screen reader.
 running_state() {
     local out
     out="$("$KRYPTIKD" status "$1" 2>/dev/null)" || { printf 'unknown'; return; }
@@ -315,15 +246,13 @@ cmd_stop() {
 
 # --- starting ---------------------------------------------------------------
 
-# The one place that runs a zone. `shell` and `run` are the same operation with
-# a different command, and keeping them one function is what stops them from
-# drifting into two different sets of arguments.
+# The one place that runs a zone, for both shell and run.
 start_zone() {
     local name="$1"; shift
     if via_launch; then
         [[ -f "$ZONES_DIR/$name.toml" ]] || die "no zone named $name in $ZONES_DIR"
-        # --ask: an encrypted zone's passphrase is read on this terminal and
-        # handed over on a descriptor; it never appears in a command line.
+        # --ask reads an encrypted zone's passphrase on this terminal and passes
+        # it on a descriptor, never as an argument.
         "$LAUNCH" --ask --no-display "$name" -- "$@"
         local rc=$?
         (( rc == 0 )) || printf '\n%s: %s did not start through the launch service (exit %d).\n' "$PROG" "$name" "$rc" >&2
@@ -337,16 +266,13 @@ start_zone() {
     local rc
     set_identity_args "$name"
 
-    # Not captured and re-printed: an interactive shell needs the terminal, and
-    # a command whose output this swallowed until it exited would be unusable
-    # for the one thing people will do most. kryptikd's own messages - the
-    # ephemeral swap caveat, the refusals - reach the person directly.
+    # Not captured: a shell needs the terminal, and kryptikd's warnings and
+    # refusals must reach the user unchanged.
     "$KRYPTIKD" run "$name" --zones "$ZONES_DIR" \
         --rootfs "$ROOTFS" "${IDENTITY_ARGS[@]}" -- "$@"
     rc=$?
     if (( rc != 0 )); then
-        # kryptikd has already said what was wrong and this must not restate it
-        # in weaker words. The one thing worth adding is where to look next.
+        # kryptikd has said what was wrong; add only where to look next.
         printf '\n%s: %s did not start (kryptikd exited %d).\n' "$PROG" "$name" "$rc" >&2
         printf '    %s explain %s    what this zone asks for, and what this build provides\n' \
             "$PROG" "$name" >&2
@@ -368,13 +294,10 @@ cmd_run() {
 }
 
 # --- the net zone's Wi-Fi networks ------------------------------------------
-# Credentials live in zone 0, in one file kryptikd writes for the net zone
-# (docs/design/net-zone.md); the net zone is restarted so it reads the new
-# one. Through the launch service as an ordinary user, through kryptikd as
-# root. Either way the passphrase goes on standard input.
+# kryptikd keeps the credentials in zone 0 and restarts the net zone after a
+# change (docs/design/net-zone.md). The passphrase always goes on stdin.
 
-# One line, into PASSPHRASE: from the terminal with echo off when standard
-# input is one, otherwise from whatever is piped in.
+# Read one line into PASSPHRASE: from the terminal with echo off, or a pipe.
 PASSPHRASE=""
 read_passphrase() { # ssid
     if [[ -t 0 ]]; then
@@ -397,8 +320,7 @@ cmd_wifi() {
         case "$sub" in
             list)   "$LAUNCH" --wifi-list ;;
             add)    read_passphrase "$1"
-                    # printf is a builtin: the passphrase reaches the pipe
-                    # without ever being a process's argument.
+                    # printf is a builtin, so the passphrase is never in argv.
                     printf '%s\n' "$PASSPHRASE" | "$LAUNCH" --wifi-add "$1" ;;
             forget) "$LAUNCH" --wifi-forget "$1" ;;
         esac
@@ -413,8 +335,8 @@ cmd_wifi() {
     esac
 }
 
-# The update channel from the person's side. It exists on an installed system
-# only: the state is zone 0's and the launch service is what reaches it.
+# Installed systems only: the update state is zone 0's, reached through the
+# launch service.
 cmd_update() {
     case "${1:-}" in
         status|fetch|apply) [[ $# -eq 1 ]] || die "$PROG update $1 takes no argument" 2 ;;
@@ -424,8 +346,7 @@ cmd_update() {
     "$LAUNCH" --update "$1"
 }
 
-# The state partition's passphrase. cryptsetup asks on the terminal, the old
-# one first and the new one twice; nothing of it passes through here.
+# cryptsetup asks for the passphrases on the terminal; none pass through here.
 cmd_state() {
     [[ "${1:-}" == passphrase && $# -eq 1 ]] || { usage >&2; die "state needs a subcommand: passphrase" 2; }
     [[ $EUID -eq 0 ]] || die "the state passphrase is root's to change"
@@ -464,8 +385,7 @@ case "$cmd" in
     update)  cmd_update "$@" ;;
     state)   cmd_state "$@" ;;
     ""|help) usage ;;
-    # Named explicitly rather than falling into "unknown command", because
-    # these are the things people will reasonably expect to exist.
+    # Commands users will expect, answered with why they do not exist.
     transfer|copy|clipboard|paste|mount)
         die "\`$cmd\` is not a $PROG command, on purpose.
     A file crosses zones only through the broker socket INSIDE the sending zone

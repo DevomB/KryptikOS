@@ -1,18 +1,10 @@
-# Failures that kernel-hardening-checker reports on Kryptik's resolved kernel
-# config and shipped command line, and why each one stays.
-#
-# Format:  <kconfig|cmdline|sysctl>  <option>   # <why it stays>
-#
-# tools/check-kernel-hardening.sh, in stage 05 and in CI, fails on a reported
-# failure that is not listed here and on a line here without a reason, and
-# names a listed option that has started to pass so the line can go. The list
-# is reviewed and shrunk, never accumulated: an entry is a decision, not a
-# postponement.
-#
-# The checker's decision column says who recommends a setting: kspp is the
-# Kernel Self-Protection Project, clipos and grsec are those projects'
-# configurations, maintainer is a subsystem maintainer, a13xp0p0v is the
-# checker's author.
+# kernel-hardening-checker failures on the resolved config and the shipped
+# command line that Kryptik accepts, each with its reason:
+#   <kconfig|cmdline|sysctl>  <option>   # <why it stays>
+# tools/check-kernel-hardening.sh fails on an unlisted failure or an entry
+# without a reason, and reports an entry that now passes so it can go.
+# The checker's decision column names who recommends a setting: kspp (Kernel
+# Self-Protection Project), clipos, grsec, maintainer, a13xp0p0v (its author).
 
 # --- the toolchain is GCC (ADR-001) --------------------------------------------
 kconfig  CONFIG_CFI_CLANG         # kernel control-flow integrity needs Clang; hardening.fragment records why that split is not adopted yet

@@ -1,196 +1,129 @@
-# Supply Chain
+# Supply chain
 
-Kryptik builds every shipped binary from source, which moves the trust question
-from "do I trust this distro's build servers" to "do I trust these tarballs".
+Kryptik builds what it ships from source, which turns "do I trust this
+distribution's build servers" into "do I trust these tarballs". The
+exceptions:
 
-One build tool is the exception, and it is not shipped: the cmake that
-generates json-c's build files inside the stage 04 chroot runs from Kitware's
-published Linux binary (the `cmake-bin` manifest row), because compiling cmake
-cost a quarter of stage 04 on the runner for one package's Makefiles. It is
-pinned in `sources.lock` like every tarball, its hash was checked against
-Kitware's published SHA-256 list when the entry was written, it is unpacked
-under the build tree and never installed, and json-c itself is compiled by the
-stage's own toolchain. Stage 06 excludes cmake from the image in any case. The
-source tarball stays in the manifest as the fallback for a chroot the binary
-cannot run in.
+- **Device firmware and CPU microcode** (ADR-012), selected by
+  `build/config/firmware.list` from the pinned `linux-firmware` release. The
+  tarball is signed by its kernel.org maintainer and verified like the
+  kernel's, and each file's licence is the one its `WHENCE` records. That
+  shows where the bytes came from, not what they do: they run on the device's
+  own processor, behind the IOMMU (strict by default).
+- **The Rust compiler**: kryptikd and kryptik-wlproxy are built from source
+  by an upstream toolchain pinned by version, not one built here (ADR-010).
 
-The other build-time tool that is not shipped is `kernel-hardening-checker`
-(the `kernel-hardening-checker` manifest row), which stage 05 and CI run on the
-resolved kernel configuration (`tools/check-kernel-hardening.sh`). It is pure
-Python and runs from its tarball. Its upstream tags are lightweight and carry no
-signature, so its GitHub archive is pinned by hash in `sources.lock` and that
-hash is the whole of its provenance, as hardened_malloc's was before
-`tools/verify-provenance.sh`; the tool refuses to run from a tarball that does
-not match the lock.
+Two build tools that do not ship are special cases:
 
-The one class of shipped bytes that is not built from source is device
-firmware (ADR-012): the files `build/config/firmware.list` selects from the
-pinned `linux-firmware` release, on the verified root under `/lib/firmware`.
-The tarball is signed by its kernel.org maintainer and verified like the
-kernel's; the hash is in `sources.lock`; every file's licence is the one the
-release's `WHENCE` records for it. What that establishes is where the bytes
-came from, not what they do: they run on the device's own processor, and the
-kernel's control of the bus (the IOMMU on and strict by default) is the
-boundary around them.
+- **cmake** (the `cmake-bin` manifest row): Kitware's Linux binary generates
+  json-c's build files in the stage 04 chroot, since compiling cmake cost a
+  quarter of stage 04 for one package. Its hash in `sources.lock` was checked
+  against Kitware's published SHA-256 list; it is unpacked under the build
+  tree, never installed, and excluded from the image by stage 06. The source
+  tarball stays in the manifest as the fallback.
+- **kernel-hardening-checker** runs in stage 05 and CI on the resolved kernel
+  configuration. Its upstream tags are lightweight and unsigned, so the hash
+  of its GitHub archive in `sources.lock` is its only provenance, and
+  `tools/check-kernel-hardening.sh` refuses a tarball that does not match.
 
 ## Source integrity
 
-`sources.lock` pins a SHA-256 for every upstream tarball.
-`tools/fetch-sources.sh` refuses to proceed on a mismatch — it does not warn and
-continue.
+`sources.lock` pins a SHA-256 for every upstream tarball, and
+`tools/fetch-sources.sh` refuses to proceed on a mismatch.
 
-**The lock file alone is trust-on-first-use.** `--lock` records the hash of
-whatever downloaded; it does not prove the download was authentic. That is what
-`tools/verify-signatures.sh` is for — run it before committing a lock file or
-changing an entry:
+The lock alone is trust on first use: `--lock` records the hash of whatever
+was downloaded. Before committing a lock file or changing an entry, run
+`make verify` (`tools/verify-signatures.sh`), which checks detached GPG
+signatures against the GNU keyring (Nick Clifton for binutils, Jakub Jelinek
+for GCC, and so on) and against keys pinned by fingerprint in the script
+(Greg Kroah-Hartman for the kernel, among others). LFS patches are the
+exception: LFS publishes md5sums for the patch set, not per-patch signatures.
+A lock file generated on an untrusted network and committed unaudited looks
+like integrity without being it.
 
-```sh
-make verify
-```
+Hashes live in `sources.lock`, not `versions.env`, so a hash change shows up
+as its own diff in review instead of riding along with a version bump.
 
-It verifies detached GPG signatures against the GNU keyring and kernel.org
-maintainer keys — Nick Clifton for binutils, Jakub Jelinek for GCC, Greg
-Kroah-Hartman for the kernel, and so on. The LFS FHS patch is the known
-exception: upstream does not sign it individually.
+`tools/scan-licenses.sh` records the top-level licence files each tarball
+carries, with an SPDX identifier only where the text is unambiguous. It is not
+a compliance scanner.
 
-**No coverage count is quoted in this document.** Three different ones used to
-appear in it and a fourth in the README, and the tool producing them was
-miscounting: imported keys are cached under `build/work/keys`, so a second run
-found fetched keys already held, read an ordinary `GOODSIG`, and promoted them
-to verified. Identical inputs gave 34 verified / 20 unaudited on the first run
-and 54 / 0 on the second. The caching bug is fixed; quoting the number in prose
-is not, and will not be. Run `make verify` and read its summary.
+### Expired keys are not tampering
 
-A lock file generated on an untrusted network and committed unaudited provides
-the appearance of integrity without the substance. That is worse than no lock
-file, because it stops people from looking.
+Some sources (glibc, gmp, mpc, patch and ncurses among them) are signed with
+keys the keyring believes expired. The signatures are valid; the keyring's
+copy predates the maintainer extending the key. `verify-signatures.sh` counts
+them as verified and lists them separately, because a tool that cries
+tampering at routine expiry gets ignored. `BADSIG` (the file does not match
+its signature) and `REVKEYSIG` (the key was revoked, possibly compromised)
+always fail; `--strict`, the release gate, also fails on anything unverified
+or unaudited.
 
-## Checksums are not in versions.env
+### Signature strength varies
 
-Deliberately. Keeping versions and hashes in separate files means a version bump
-cannot silently carry a hash change through review — the lock diff is visible on
-its own.
+| Source | Key | Strength |
+| --- | --- | --- |
+| Linux kernel | RSA-4096, Kroah-Hartman | strong |
+| binutils, gcc, glibc, bash, coreutils | RSA-4096 GNU maintainer keys | strong |
+| linux-hardened | RSA-4096, Levente Polyak | strong |
+| xz | RSA, Lasse Collin | strong |
+| file | DSA-1024, SHA-1 digest, expired 2026-08-15 | weak |
 
-## Expired signing keys are not tampering
+DSA-1024 over SHA-1 is below what should be relied on, so the signature on
+`file` is weaker evidence than the rest.
 
-Five sources verify with keys the GNU keyring believes expired — glibc, gmp,
-mpc, patch, ncurses. The signatures are cryptographically valid; the keyring
-snapshot simply predates the maintainer extending their key.
+### xz
 
-`verify-signatures.sh` reports these as verified and lists them separately. It
-does **not** fail the build on them, deliberately: a tool that cries tampering
-at routine key expiry gets ignored, and an ignored tool protects nothing. Only
-`BADSIG` (the file does not match its signature) and `REVKEYSIG` (the key was
-revoked, which can mean compromise) stop a build.
+xz is pinned at 5.8.4. 5.6.0 and 5.6.1 carried the CVE-2024-3094 backdoor,
+planted through the release process by a co-maintainer over years, so Kryptik
+stays well past the releases made while that process was being audited, not
+one patch past the fix.
 
-## Not all valid signatures are equally strong
+## Sources without a detached signature
 
-`verify-signatures.sh` reports a binary verified/unverified, but the strength
-behind a "verified" varies and the difference is worth knowing:
+`make verify-provenance` (`tools/verify-provenance.sh`) covers the two that
+matter most:
 
-| Source | Key | Assessment |
-|---|---|---|
-| Linux kernel | RSA-4096, Kroah-Hartman | Strong |
-| binutils, gcc, glibc, bash, coreutils | RSA-4096 GNU maintainer keys | Strong |
-| linux-hardened | RSA-4096, Levente Polyak | Strong |
-| xz | RSA, Lasse Collin | Strong |
-| **file** | **DSA-1024, SHA-1 digest, expired 2026-08-15** | **Weak** |
+- **hardened_malloc** (ADR-005). GrapheneOS signs the release tag, with an
+  ssh-ed25519 key, not the archive. The tool fetches the tag, verifies it
+  against the key pinned in the script (from grapheneos.org's
+  `allowed_signers`) and requires the downloaded archive to reproduce the
+  signed tree. The pin rests on TLS to grapheneos.org; its fingerprint has
+  not been confirmed out of band.
+- **The s6 stack** (ADR-006). skarnet publishes a `.sha256` beside each
+  release: the publisher's statement of the bytes, though from the same host
+  as the tarball. skarnet keeps it for the current release only, so an old pin
+  cannot be checked, and `versions.env` keeps the s6 stack current for that
+  reason.
 
-A DSA-1024 key signing with a SHA-1 digest is below what should be relied on in
-2026. The signature on `file` is evidence, but not the same kind of evidence as
-the others. It is recorded here rather than hidden behind a green checkmark.
+Neither is a signature over the artifact, and the tool says so. Under
+`--strict`, which CI uses on pushes, a check that could not run fails.
 
-## On xz specifically
+## Assurance per source
 
-Kryptik pins **xz 5.8.4**, not the 5.6.x line. xz 5.6.0 and 5.6.1 shipped the
-CVE-2024-3094 backdoor; 5.6.2 removed it.
+`tools/provenance-inventory.sh`, run in CI, prints each source's assurance
+class, strongest first, from a key pinned in the tree down to `sources.lock`
+alone. It counts per class and prints no total: a maintainer signature, a
+signed tag and a publisher checksum are different strengths of evidence, and
+one fraction would hide the weakest links. For the same reason this document
+quotes no coverage figure.
 
-Pinning one patch past a build-system compromise is not the same as being clear
-of it. The xz incident was an attack on the release process itself, carried out
-over years by a co-maintainer, and the versions immediately following it were
-produced while that process was still being audited. Kryptik pins well past
-that window.
-
-## Current verification coverage
-
-Run `make verify` and `make verify-provenance`. Both print a per-source result.
-
-Totals are deliberately absent here, and not only because the old ones were
-wrong. A detached GPG signature from a maintainer key, a signed git tag bound
-to an archive hash, and a publisher-published checksum are three different
-strengths of evidence, and a single "60 of 69" figure adds them together as if
-they were one. Sources resting on `sources.lock` alone are not failures, but
-they are the weakest links and must be readable as such rather than averaged
-into a reassuring fraction.
-
-A source-by-source inventory that keeps the assurance levels separate is
-tracked as a task rather than written here from memory.
-
-The two that mattered most are now covered by `tools/verify-provenance.sh`,
-which handles sources that publish no detached signature:
-
-- **hardened_malloc** — the system allocator (ADR-005). The GitHub source
-  archive is unsigned and GrapheneOS signs the release *tag*.
-
-  Two corrections to what this section used to say. First, the tag is **not
-  GPG-signed**: GrapheneOS signs it with `ssh-ed25519`. Second, and worse, the
-  old check asked the GitHub API whether the tag was signed, printed
-  `.tagger.name`, and called that verified — **nothing compared the tag to the
-  tarball on this disk**. GitHub generates the source archive on request, so
-  any substituted tarball whose hash was already in `sources.lock` passed. The
-  check also passed when it could not check at all: a missing `gh`, an
-  unresolvable tag or an unreachable API each counted as "skipped" and exited
-  0. On the CI runner `gh` **is** installed — GitHub CLI ships in
-  `actions/runner-images` for the Ubuntu that `ubuntu-latest` resolves to — but
-  it is **not authenticated**: `GITHUB_TOKEN` is a secret rather than an
-  exported variable, and `.github/workflows/ci.yml` sets no `GH_TOKEN` for that
-  step, so `gh api` exits 4 asking for `gh auth login` even against a public
-  repository. Either way the call failed, the check counted it as skipped and
-  exited 0, and the CI step named "Provenance of unsigned sources" had been
-  passing without ever making the assertion this document described as
-  verified.
-
-  (An earlier revision of this paragraph said `gh` was not installed. It is.
-  The conclusion did not change but the reason did, and the wrong reason was
-  published here before it was checked.)
-
-  `tools/verify-provenance.sh` now binds the archive to the signed tree and
-  fails rather than skipping. What it establishes is that the bytes on disk
-  match the tree the signed tag covers. What it does **not** yet establish is
-  that the signing key is one Kryptik chose in advance; the remaining signer
-  identity work is tracked separately.
-- **The s6 stack** — PID 1 and the service supervisor (ADR-006). skarnet ships
-  a `.tar.gz.sha256` beside each release, which is an independent confirmation
-  of the bytes: `sources.lock` records what Kryptik downloaded, the published
-  checksum records what the publisher intended. All five match.
-
-skarnet keeps a checksum only for the **current** release, which means an
-outdated pin is also an unverifiable pin. That is why `versions.env` now
-requires current versions for the s6 stack — the same reasoning as ADR-009
-applied to PID 1 instead of the kernel. The pins were three to five releases
-behind before this was noticed.
-
-Neither mechanism is a GPG signature over the artifact itself, and the tool
-says so in its own output rather than reporting a green tick.
-
-Running `tools/verify-signatures.sh --fetch-unknown-keys` raises coverage by
-importing the key each signature names. Be clear about what that establishes:
-trusting a key because the signature it checks told you its id is circular. It
-proves the file was signed by whoever signed it. Every key imported that way is
-written to `keys.manifest` precisely so the fingerprints can be confirmed
-out-of-band, and until they are, those entries are weaker than the rest.
+`verify-signatures.sh --fetch-unknown-keys` imports whatever key a signature
+names. That is circular: it proves the file was signed by whoever signed it.
+Each such key is recorded in `keys.manifest` and counts as unaudited until its
+fingerprint is confirmed out of band; `provenance-inventory.sh --identity`
+checks them against kernel.org's published developer keys.
 
 ## Open problems
 
-- **The GNU keyring is fetched over the network.** This establishes "signed by
-  whoever the keyring says" rather than "signed by the person you believe
-  maintains this package". Verifying those keys out-of-band is still manual.
-- **The kernel signing key comes from a keyserver**, pinned by fingerprint.
-  Fingerprints are in `tools/verify-signatures.sh` and should be confirmed
+- The GNU keyring is fetched over the network, so a signature checked against
+  it means "signed by whoever the keyring says". Checking those keys out of
+  band is manual.
+- The kernel.org signing keys are pinned by fingerprint in
+  `tools/verify-signatures.sh`, and those fingerprints still need confirming
   against kernel.org independently.
-- **No reproducible builds.** Deferred past the compartment layer (docs/roadmap.md). Until
-  then, "built from source" means trusting the machine that built it.
-- **No bootstrappable-builds story.** The initial compiler comes from the host
-  distro, so Thompson's "Reflections on Trusting Trust" applies in full.
-  Mitigating it properly means something like `live-bootstrap`, which is a
-  project of its own.
+- Builds are not reproducible, so "built from source" still means trusting the
+  machine that built it.
+- The first compiler comes from the host, so Thompson's "Reflections on
+  Trusting Trust" applies in full. Fixing that means something like
+  `live-bootstrap`, a project of its own.
