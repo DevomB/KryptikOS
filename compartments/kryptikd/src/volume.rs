@@ -1,7 +1,9 @@
 //! Per-zone LUKS2 volumes (docs/design/encrypted-volumes.md), opened in zone 0
 //! before the zone exists and closed after it is gone.
 //!
-//! The ext4 inside is mounted `nosuid,nodev` as the zone's data directory; the
+//! The container opens as `/dev/mapper/kryptik-zone-<zone>`, a prefix only zone
+//! volumes use, which is how `gc` tells them from the state partition. The
+//! ext4 inside is mounted `nosuid,nodev` as the zone's data directory; the
 //! zone never sees the container or the mapping. Passphrases reach cryptsetup
 //! on stdin or a memfd, never argv, and no tool runs through a shell.
 
@@ -13,7 +15,8 @@ use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-pub const MAPPER_PREFIX: &str = "kryptik-";
+/// Only zone volumes map under this prefix; `gc` closes whatever it finds there.
+pub const MAPPER_PREFIX: &str = "kryptik-zone-";
 pub const DEFAULT_VOLUME_DIR: &str = "/var/lib/kryptik/volumes";
 
 #[derive(Debug)]
@@ -409,15 +412,14 @@ pub fn restore_header(volume: &str, from: &str) -> Result<(), VolumeError> {
 
 /// Zones with a mapping under /dev/mapper, for `gc`.
 pub fn mappings() -> Vec<String> {
-    let mut v = Vec::new();
-    if let Ok(rd) = fs::read_dir("/dev/mapper") {
-        for e in rd.flatten() {
-            let n = e.file_name().to_string_lossy().to_string();
-            if let Some(z) = n.strip_prefix(MAPPER_PREFIX) {
-                v.push(z.to_string());
-            }
-        }
-    }
+    let names = fs::read_dir("/dev/mapper")
+        .map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+        .unwrap_or_default();
+    zones_mapped(names)
+}
+
+fn zones_mapped(names: Vec<String>) -> Vec<String> {
+    let mut v: Vec<String> = names.iter().filter_map(|n| n.strip_prefix(MAPPER_PREFIX).map(str::to_string)).collect();
     v.sort();
     v
 }
@@ -521,10 +523,17 @@ mod tests {
 
     #[test]
     fn names_derive_from_zone() {
-        assert_eq!(mapper_name("work"), "kryptik-work");
-        assert_eq!(mapper_path("work"), "/dev/mapper/kryptik-work");
+        assert_eq!(mapper_name("work"), "kryptik-zone-work");
+        assert_eq!(mapper_path("work"), "/dev/mapper/kryptik-zone-work");
         assert_eq!(default_volume_path("vault"), "/var/lib/kryptik/volumes/vault.luks");
         assert_eq!(mountpoint_for(Path::new("/var/lib/kryptik/zones"), "work"), PathBuf::from("/var/lib/kryptik/zones/work"));
+    }
+
+    #[test]
+    fn gc_sees_only_zone_mappings() {
+        // The state partition's mappings are not zones; a zone named state is.
+        let names = ["kryptik-state", "kryptik-verify-state", "kroot", "control", "kryptik-zone-work", "kryptik-zone-state"];
+        assert_eq!(zones_mapped(names.iter().map(|s| s.to_string()).collect()), ["state", "work"]);
     }
 
     /// Needs root, cryptsetup and dm-crypt; returns early without them.

@@ -162,8 +162,8 @@ if ! mountpoint -q /var; then
             echo "sysinit: *  This is an installed system (slot ${slot}) and its persistent"
             echo "sysinit: *  state could not be used. /var is a TEMPORARY filesystem now:"
             echo "sysinit: *  nothing changed in this session will survive a reboot."
-            echo "sysinit: *  The desktop will not start; log in on the console to repair,"
-            echo "sysinit: *  or boot the install medium and run kryptik-recover --status."
+            echo "sysinit: *  There are no accounts and no desktop in this state: boot the"
+            echo "sysinit: *  install medium and run kryptik-recover --status to repair it."
             echo "sysinit: ******************************************************************"
             echo
         } > /dev/console 2>&1 || true

@@ -1,17 +1,5 @@
 #!/usr/bin/env python3
-"""vm-drive.py against a stand-in guest: a socket that answers like the shell.
-
-Every VM suite is written in the driver's steps, and what one step consumes
-from the serial stream decides whether the step after it can see what it
-needs. That contract is pinned here in a second, with no QEMU: a thread
-plays the guest, answering each command line with the command's output, the
-exit marker the driver appended and a prompt, and answering su with a
-password prompt first. It was first broken by run:, which consumed a
-command's output with its marker; the update suite's eighth step then waited
-420 s for a word its own command had printed.
-
-Exit 0 when every case passes.
-"""
+"""Test what vm-drive.py's steps consume from the serial stream, against a stand-in shell."""
 import importlib.util, os, socket, sys, tempfile, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -27,11 +15,7 @@ def check(name, got, want):
         FAIL += 1; print(f"  FAIL  {name} (got {got!r}, want {want!r})")
 
 class Guest(threading.Thread):
-    """Answers each line the way the login shell would. A command line is
-    answered with the output the script names for it, its status behind the
-    driver's marker, and a prompt. `su - root -c '...'` is answered with a
-    password prompt, and the next line (the password) runs what was quoted.
-    poweroff ends with the kernel's last words and the socket closing."""
+    """A stand-in login shell: each command's scripted output and status, su, and poweroff."""
     def __init__(self, path, script):
         super().__init__(daemon=True)
         self.srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

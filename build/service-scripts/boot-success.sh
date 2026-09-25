@@ -1,31 +1,13 @@
 #!/bin/sh
-# A/B boot-success tracking (docs/design/boot-and-updates.md). Runs late in the default bundle,
-# after the services a usable system needs, and decides whether the slot
-# that booted is one to keep.
-#
-# State: /var/lib/kryptik/boot/trial (the slot armed by kryptik-update:
-# line 1 the slot, line 2 armed=0 before BootNext was set and armed=1
-# after) and /var/lib/kryptik/boot/last-result (what happened at the last
-# boot, for the report and for the updater's refusal to re-arm a failed
-# payload).
-#
-# WHAT "SUCCESS" MEANS HERE
-#
-# Reaching this script proves that sysinit and a few oneshots ran. That is
-# not a usable system. A trial slot is committed - its kernel copied over
-# BOOTX64.EFI, so the machine boots it from now on - only when the essential
-# services are up: the persistent state is mounted (not degraded), eudev,
-# seatd, the launch daemon, the net zone and the login getty are supervised
-# and up, kryptikd finds kernel support and reads the shipped zones, and the
-# ESP this installation boots from is unambiguous and carries the slot's
-# kernel. A trial that boots but fails any of these is recorded as unhealthy
-# and the machine reboots: the firmware consumed BootNext on the way in, so
-# that reboot lands on the committed slot, which is the bounded fallback.
-# Only a trial boot ever reboots from here; a committed slot that is
-# unhealthy is reported and left running for whoever can log in.
-#
-# The paths are overridable for tools/test-boot-success.sh, which drives
-# every decision here on a host with stand-ins; nothing else sets them.
+# A/B boot-success tracking (docs/design/boot-and-updates.md): decides, late in
+# boot, whether the slot that booted is one to keep.
+# /var/lib/kryptik/boot/trial holds the slot kryptik-update armed, then armed=0
+# (before BootNext was set) or armed=1; last-result holds the last boot's
+# outcome, which also stops the updater re-arming a failed payload.
+# A trial slot that passes health() is committed (its kernel becomes
+# BOOTX64.EFI). One that fails reboots, and with BootNext spent that lands on
+# the committed slot. A committed slot is only reported on, never rebooted.
+# The paths are overridable for tools/test-boot-success.sh only.
 set -u
 say() { echo "boot-success: $*"; }
 RUN="${KRYPTIK_RUN:-/run/kryptik}"
@@ -94,9 +76,7 @@ commit_slot() {   # commit_slot <slot>: make BOOTX64.EFI this slot's kernel
         if cmp -s "$src" "$dst"; then
             say "BOOTX64.EFI already is slot $1"; rc=0
         else
-            # Complete copy, fsync, then one rename: the only non-atomic step
-            # on FAT is the rename, and BOOTX64.EFI is replaced only after
-            # this slot has demonstrably booted and passed the checks above.
+            # Copy, fsync, then rename: on FAT only the rename is not atomic.
             cp "$src" "$dst.new" && sync -f "$dst.new" && mv -f "$dst.new" "$dst" && sync -f "$dst" && rc=0
             [ "$rc" -eq 0 ] && say "committed: BOOTX64.EFI is now slot $1"
         fi
@@ -111,20 +91,18 @@ commit_slot() {   # commit_slot <slot>: make BOOTX64.EFI this slot's kernel
     return "$rc"
 }
 
-# The trial's firmware entries go when the trial ends, however it ends:
-# BootNext and both slots' entries, so the firmware boots the disk's own
-# entry, BOOTX64.EFI, the committed slot. An entry left behind outlived its
-# trial: a firmware regenerates its own disk entry at the end of BootOrder
-# whenever the devices change, and the Kryptik entry, a failed slot's among
-# them, then won every cold boot.
+# However a trial ends, remove BootNext and both slots' entries, so the
+# firmware boots the disk's own entry (BOOTX64.EFI, the committed slot). A
+# firmware re-adds that entry at the end of BootOrder when devices change, so a
+# leftover Kryptik entry would win every cold boot.
 forget_entries() {
     kryptik-efiboot forget >/dev/null 2>&1 && return 0
     say "the firmware's Kryptik entries could not be removed; its own boot order may not name the committed slot"
     return 1
 }
 
-# A trial on a degraded state cannot read its record, which is on the state
-# partition. The ESP still names the committed slot, and any other is on trial.
+# On a degraded state the trial record is unreadable; the ESP still names the
+# committed slot, and any other slot is on trial.
 esp_committed() {
     e="$(kryptik_part kryptik-esp 2>/dev/null)" && [ -n "$e" ] || return 0
     mkdir -p "$ESP_MNT"
@@ -161,8 +139,8 @@ if [ -n "$trial" ]; then
             [ ! -f "$B/trial" ] || mv -f "$B/trial" "$B/trial.failed"
             sync
             if ! forget_entries && [ -n "$unrecorded" ]; then
-                # No record says this was tried, so only the entries' going
-                # keeps the next boot from being this one again.
+                # With no record of this trial, only removing its entries
+                # stops the next boot from repeating it.
                 say "not rebooting: with its entries still there the firmware could boot this trial again"
             elif [ "${KRYPTIK_NO_REBOOT:-0}" = 1 ]; then
                 say "not rebooting (KRYPTIK_NO_REBOOT=1)"
@@ -175,16 +153,14 @@ if [ -n "$trial" ]; then
         fi
     else
         if [ "$armed" = 1 ]; then
-            # The firmware consumed BootNext and we are back on the old slot:
-            # the trial did not come up. Record it; the updater will not re-arm
-            # the same payload without --retry.
+            # BootNext is spent and the old slot is running: the trial did not
+            # come up. The updater will not re-arm this payload without --retry.
             say "trial slot $trial did NOT boot; running slot $slot again"
             result "trial-failed $trial"
             mv -f "$B/trial" "$B/trial.failed"
             forget_entries
         else
-            # The record was written but BootNext never was: the updater was
-            # interrupted between the two. Nothing was tried, so nothing failed.
+            # The updater stopped before setting BootNext: nothing was tried.
             say "the arming of slot $trial was interrupted before BootNext was set; nothing was tried"
             result "arming-interrupted $trial"
             rm -f "$B/trial"

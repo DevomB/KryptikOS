@@ -1,33 +1,10 @@
-//! The running-zone registry.
+//! The running-zone registry (docs/design/zone-registry.md): how another
+//! kryptikd finds a running zone. There is no daemon; the launcher supervises.
 //!
-//! WHAT IT IS FOR
-//!
-//! `kryptikd run` supervises its own zone and always has. What it could not do
-//! is let a *second* kryptikd process find that zone — so there was no `stop`,
-//! no `status`, and no way for a routed zone to attach to a running `net` zone.
-//! That is what blocked the net zone, and this is the registry
-//! docs/design/zone-registry.md specifies.
-//!
-//! There is no daemon. The launcher is still the supervisor; the registry is
-//! only how something else finds it.
-//!
-//! WHY LIVENESS IS A LOCK AND NOT A PID
-//!
-//! The obvious implementation records the launcher's pid and asks whether that
-//! pid is alive. That is wrong twice over: pids are reused, so a stale entry
-//! can name a process that now belongs to someone else entirely, and a
-//! launcher killed with SIGKILL leaves its pid file behind with no way to tell
-//! it apart from a live one.
-//!
-//! So the launcher holds `flock(LOCK_EX)` on `<entry>/lock` for its whole life.
-//! A live entry is one whose lock cannot be taken. A crash releases the lock -
-//! the kernel does it when the fd closes - which is precisely what makes
-//! "lock free means stale" true rather than hopeful.
-//!
-//! The pid is still recorded, because `stop` has to signal something. It is
-//! recorded WITH the process start time (field 22 of `/proc/<pid>/stat`), and
-//! never signalled unless both match. That closes the reuse window between
-//! checking the lock and calling `kill`.
+//! Liveness is a lock, not a pid: a launcher holds `flock(LOCK_EX)` on
+//! `<entry>/lock` for its whole life, and the kernel releases it when the
+//! launcher dies. The recorded pid carries its start time (field 22 of
+//! `/proc/<pid>/stat`) and is never signalled unless both match.
 
 use crate::cgroup;
 use std::fs;
@@ -73,13 +50,9 @@ fn io_err(p: &Path, e: io::Error) -> RegistryError {
     RegistryError::Io { path: p.display().to_string(), err: e }
 }
 
-/// Where the registry lives.
-///
-/// Root uses `/run/kryptik/zones`. An unprivileged developer launch uses
-/// `$XDG_RUNTIME_DIR/kryptik/zones` so that the same code and the same tests
-/// run on a developer host - a registry that only exists under root would mean
-/// the lifecycle path is first exercised in the VM, which is where bugs are
-/// most expensive to find.
+/// Where the registry lives: `/run/kryptik/zones` for root, otherwise under the
+/// user's runtime directory (`base_for`), so the same code and tests run
+/// unprivileged on a developer host.
 pub fn base() -> PathBuf {
     base_for(
         unsafe { libc::getuid() },
@@ -88,26 +61,15 @@ pub fn base() -> PathBuf {
     )
 }
 
-/// `base()` as a function of its inputs, so the fallback rules can be tested
-/// without mutating the process environment (which raced other tests that
-/// resolve the registry concurrently).
+/// `base()` as a function of its inputs, testable without touching the environment.
 pub fn base_for(uid: u32, euid: u32, xdg_runtime_dir: Option<&str>) -> PathBuf {
     if euid == 0 {
         return PathBuf::from("/run/kryptik/zones");
     }
 
-    // XDG_RUNTIME_DIR is the right place, but it is an environment variable
-    // and callers set it to whatever they like. Trusting it blindly meant a
-    // caller with a bogus one - a test harness, a container, a stale session -
-    // could not start a zone AT ALL: `claim` failed on an uncreatable path and
-    // the launch died before doing anything. That is a spectacular failure
-    // mode for a variable that has nothing to do with isolation.
-    //
-    // So it is used only when it is real: an existing directory that this user
-    // owns. Anything else falls back to a per-uid path under /tmp. Checking
-    // ownership matters as much as existence - a registry in someone else's
-    // directory would let them see which zones are running and, worse, create
-    // entries that look live.
+    /* XDG_RUNTIME_DIR only if it is an existing directory this user owns: a
+     * bogus one must not stop every launch, and one owned by someone else
+     * would let them read and forge entries. Otherwise a per-uid /tmp path. */
     if let Some(x) = xdg_runtime_dir {
         if !x.is_empty() {
             let p = Path::new(x);
@@ -122,25 +84,11 @@ pub fn base_for(uid: u32, euid: u32, xdg_runtime_dir: Option<&str>) -> PathBuf {
     PathBuf::from(format!("/tmp/kryptik-{uid}/zones"))
 }
 
-/// Create the registry base, or satisfy ourselves that the one already there
-/// is ours.
-///
-/// This used to return `Ok` the moment the path existed, which is a hole on the
-/// developer path: `base()` falls back to `/tmp/kryptik-<uid>/zones`, and /tmp
-/// is world-writable, so any local user can create that directory - or make it
-/// a symlink - before the victim first runs kryptikd. Owning the registry's
-/// parent is enough to rename a freshly created entry away and substitute one
-/// whose `launcher.pid` is a symlink into the victim's home; `fs::write`
-/// follows symlinks and truncates, so the victim's own kryptikd would then
-/// overwrite whatever it pointed at. Found by the security review.
-///
-/// The check refuses rather than repairs. Making a planted directory fit by
-/// chowning or chmod'ing it would adopt it, which is the attacker's goal; the
-/// only safe response to "this is not the directory I would have created" is
-/// to stop and say so.
+/// Create the registry base, or check that the one already there is ours. Any
+/// local user can plant the /tmp fallback first, so a directory we would not
+/// have created is refused, never adopted by chown or chmod.
 fn ensure_base(b: &Path) -> Result<(), RegistryError> {
-    // Both levels matter: owning `/tmp/kryptik-<uid>` is enough to replace
-    // `zones` underneath it, so the parent is checked as well as the leaf.
+    // The parent too: owning `/tmp/kryptik-<uid>` is enough to replace `zones`.
     if let Some(parent) = b.parent() {
         if parent != Path::new("/") && !parent.as_os_str().is_empty() {
             check_or_create(parent)?;
@@ -149,26 +97,20 @@ fn ensure_base(b: &Path) -> Result<(), RegistryError> {
     check_or_create(b)
 }
 
-/// One directory: create it 0700, or verify the existing one is a directory
-/// (not a symlink to one), owned by us, and 0700.
+/// Create one directory 0700, or vet the one already there (`check_existing`).
 fn check_or_create(p: &Path) -> Result<(), RegistryError> {
     use std::os::unix::fs::DirBuilderExt;
 
-    // symlink_metadata, not metadata: a symlink pointing at a directory we do
-    // own would otherwise pass every test below while the attacker keeps the
-    // ability to re-aim it.
+    /* symlink_metadata, not metadata: a symlink to a directory we own would
+     * pass every check below and could still be re-aimed. */
     match fs::symlink_metadata(p) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             let mut db = fs::DirBuilder::new();
             db.mode(0o700);
-            // Not recursive: each level is created with 0700 by its own call,
-            // so no intermediate is briefly world-writable.
+            // Not recursive: each level gets 0700 from its own call.
             match db.create(p) {
                 Ok(()) => Ok(()),
-                // Another kryptikd made it between the look and this: the
-                // first two launches after a boot, say (four tests on a fresh
-                // runtime directory found it). It is judged like a directory
-                // that was there, ours or refused.
+                // Another kryptikd created it since the lookup: vet it as existing.
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => match fs::symlink_metadata(p) {
                     Ok(md) => check_existing(p, &md),
                     Err(e) => Err(io_err(p, e)),
@@ -181,15 +123,13 @@ fn check_or_create(p: &Path) -> Result<(), RegistryError> {
     }
 }
 
-/// The directory that is there: refused unless it is a directory (not a
-/// symlink to one), ours, and not writable by others; tightened to 0700 when
-/// it is only too readable.
+/// Refuse an existing path unless it is a real directory, ours, and writable by
+/// no one else; tighten it to 0700 if it is only too readable.
 fn check_existing(p: &Path, md: &fs::Metadata) -> Result<(), RegistryError> {
     use std::os::unix::fs::MetadataExt;
     let me = unsafe { libc::getuid() };
     let mode = md.mode() & 0o777;
 
-    // Refuse: someone else can still influence what this directory is.
     let refuse = if md.file_type().is_symlink() {
         Some("it is a symlink, and a symlink can be re-aimed after this check".to_string())
     } else if !md.is_dir() {
@@ -197,9 +137,7 @@ fn check_existing(p: &Path, md: &fs::Metadata) -> Result<(), RegistryError> {
     } else if md.uid() != me {
         Some(format!("it is owned by uid {}, not by uid {me}", md.uid()))
     } else if mode & 0o022 != 0 {
-        // Ours, but group- or world-WRITABLE. Tightening it now would
-        // not undo anything already placed inside it while it was
-        // open, so this one stops rather than repairs.
+        // Tightening it would not undo what was placed inside while it was open.
         Some(format!(
             "its mode is {mode:04o}: it is writable by others, so its contents \
              cannot be trusted even though it belongs to uid {me}"
@@ -211,19 +149,9 @@ fn check_existing(p: &Path, md: &fs::Metadata) -> Result<(), RegistryError> {
         return Err(RegistryError::UnsafeBase { path: p.display().to_string(), why });
     }
 
-    // Ours, not writable by anyone else, but readable or searchable by
-    // them - 0755, say, which is what kryptikd's own earlier
-    // create_dir_all left behind under a default umask. That is an
-    // information leak (the registry is an inventory of what this user
-    // is running), not a foothold, and it can be closed here.
-    //
-    // This is a deliberate narrowing of what the security review asked
-    // for, which
-    // was to refuse any mode other than 0700. The reasoning for
-    // refusing was that chmod'ing a directory into shape would adopt a
-    // planted one - but planting requires creating the directory, and
-    // the uid check above has already excluded anything this process
-    // did not create. The narrowing was raised with the reviewers.
+    /* Only too readable (0755, say): it leaks what this user runs but is no
+     * foothold. Safe to repair, since the uid check has already excluded a
+     * directory someone else planted. */
     if mode != 0o700 {
         eprintln!(
             "kryptikd: tightening {} from {mode:04o} to 0700; the zone registry \
@@ -247,16 +175,12 @@ pub struct PidStamp {
     pub start: u64,
 }
 
-/// Field 22 of `/proc/<pid>/stat`, the process start time in clock ticks.
-///
-/// Parsed from the LAST `)` rather than by splitting on spaces: field 2 is the
-/// executable name in parentheses and may itself contain spaces and brackets,
-/// which is a classic way to misparse this file.
+/// Field 22 of `/proc/<pid>/stat`, the start time in clock ticks. Parsed after
+/// the last `)`, since field 2 (the name) may contain spaces and parentheses.
 pub fn start_time(pid: i32) -> Option<u64> {
     let s = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let rest = &s[s.rfind(')')? + 1..];
-    // After the ')' the fields are: state(3) ppid(4) ... so field 22 is the
-    // 20th whitespace-separated token here.
+    // After the ')' come state (3), ppid (4), ...: field 22 is token 20.
     rest.split_whitespace().nth(19)?.parse().ok()
 }
 
@@ -265,10 +189,7 @@ impl PidStamp {
         start_time(pid).map(|start| PidStamp { pid, start })
     }
 
-    /// Is this still the same process it was when recorded?
-    ///
-    /// Both halves are required. The pid alone would be satisfied by any
-    /// process that happened to reuse the number.
+    /// Is this still the recorded process? The pid alone may have been reused.
     pub fn still_alive(&self) -> bool {
         match start_time(self.pid) {
             Some(now) => now == self.start,
@@ -299,14 +220,8 @@ impl PidStamp {
 pub enum State {
     /// No entry.
     Absent,
-    /// An entry whose lock is held: a launcher is alive.
-    ///
-    /// `launcher` is optional because the lock is taken by `claim()` BEFORE
-    /// the fork that produces the pid to record - so there is a real window,
-    /// however short, in which a zone is genuinely live and has no pid on
-    /// disk. Calling that malformed would make `status` lie about a zone that
-    /// is merely starting, and would make `stop` fail on a race rather than
-    /// wait for it.
+    /// An entry whose lock is held: a launcher is alive. `launcher` is `None`
+    /// while it starts, since `claim()` locks before the fork that makes the pid.
     Running {
         launcher: Option<PidStamp>,
         init: Option<PidStamp>,
@@ -317,20 +232,12 @@ pub enum State {
     Stale { launcher: Option<PidStamp>, cgroup: Option<String> },
 }
 
-/// Remove an entry and whatever it holds, whatever that is: the files this
-/// module writes, the broker's, and the broker's temporary ones. This was a
-/// list of names, kept in one place for the two sweeps, and one file short:
-/// a broker killed between creating `.clipboard.<pid>` and renaming it left
-/// a file no sweep knew, `remove_dir` failed on it, and the zone could not
-/// start again until someone removed the file by hand. The directory is
-/// listed instead. The caller holds the entry's lock.
+/// Remove an entry and everything in it, found by listing the directory, so a
+/// broker's stranded temporary file goes too. The caller holds the entry's lock.
 fn sweep(dir: &Path) -> Result<(), RegistryError> {
-    // A privileged launch stages the zone's Wayland proxy socket in its
-    // entry as a bind mount (spawn.rs, StagedSocket). A launcher that died
-    // without its Drop leaves the mount behind, and a mountpoint is a file
-    // remove_dir cannot get past: detach it first, and again until the
-    // path is no mountpoint (each detach takes only the topmost; EINVAL
-    // then is the answer wanted).
+    /* A privileged launch bind-mounts the Wayland proxy socket into the entry
+     * (spawn.rs, StagedSocket), and a dead launcher can leave the mount. Detach
+     * until the path is no mountpoint: each detach removes only the topmost. */
     let wl = dir.join(crate::rootfs::WAYLAND_SOCKET_NAME);
     if let Ok(c) = std::ffi::CString::new(wl.display().to_string()) {
         while unsafe { libc::umount2(c.as_ptr(), libc::MNT_DETACH) } == 0 {}
@@ -355,9 +262,7 @@ fn sweep(dir: &Path) -> Result<(), RegistryError> {
 }
 
 fn read_field(dir: &Path, name: &str) -> Option<String> {
-    // Trimmed in place. `state` reads two to four fields per call and is
-    // polled - up to 160 times per `stop` - so the second String per field
-    // that trim().to_string() cost was the bulk of that loop's allocation.
+    // Trimmed in place, without a second String: `stop` polls `state` up to 160 times.
     fs::read_to_string(dir.join(name)).ok().map(|mut s| {
         let end = s.trim_end().len();
         s.truncate(end);
@@ -369,9 +274,8 @@ fn read_field(dir: &Path, name: &str) -> Option<String> {
     })
 }
 
-/// Open the entry's lock file: created by the two owners (`claim`, `reclaim`),
-/// never by a probe. `None` when there is none to open: no file (a probe), or
-/// no directory any more (an owner).
+/// Open the entry's lock file, creating it only for an owner (`claim`,
+/// `reclaim`), never for a probe. `None` if there is no file or no directory.
 fn open_lock(dir: &Path, create: bool) -> Result<Option<RawFd>, RegistryError> {
     let lock = dir.join("lock");
     let c = std::ffi::CString::new(lock.as_os_str().as_encoded_bytes())
@@ -391,9 +295,8 @@ fn open_lock(dir: &Path, create: bool) -> Result<Option<RawFd>, RegistryError> {
     Ok(Some(fd))
 }
 
-/// The lock file the fd holds is the one the path names. A reclaim unlinks the
-/// lock file it holds and then releases it; an open that raced it can come out
-/// with that released lock, on an inode nothing names any more.
+/// Whether `fd` is still the lock file `path` names. A reclaim unlinks the lock
+/// it holds before releasing it, so a racing open can lock an orphaned inode.
 fn same_inode(fd: RawFd, path: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
     let Ok(md) = fs::symlink_metadata(path) else { return false };
@@ -403,9 +306,7 @@ fn same_inode(fd: RawFd, path: &Path) -> bool {
 }
 
 enum Lock {
-    /// The fd. The owner keeps it open for as long as the entry is to count as
-    /// live - closing it, including by exiting, releases the lock, and that
-    /// is the mechanism.
+    /// Held while the fd stays open; closing it, or exiting, releases the lock.
     Held(RawFd),
     /// A launcher holds it, or a probe is passing through.
     Busy,
@@ -427,8 +328,7 @@ fn try_lock(dir: &Path) -> Result<Lock, RegistryError> {
     Ok(Lock::Held(fd))
 }
 
-/// `try_lock`, waiting out a probe: `held` takes the shared lock for an
-/// instant, and an owner that met it took a stale entry for a live one. A
+/// `try_lock`, waiting out a probe's instant on the shared lock (`held`). A
 /// launcher holds its lock for its whole life, so Busy after 100 ms is one.
 fn lock_owner(dir: &Path) -> Result<Lock, RegistryError> {
     let mut lock = try_lock(dir)?;
@@ -442,14 +342,9 @@ fn lock_owner(dir: &Path) -> Result<Lock, RegistryError> {
     Ok(lock)
 }
 
-/// Whether a launcher holds the entry's lock: a shared, non-blocking lock is
-/// refused exactly when one does. Nothing is created and nothing exclusive is
-/// taken: a probe (`status`, a `stop` polling for the entry to go) used to
-/// open the lock file with O_CREAT and take it exclusively for an instant,
-/// so it could leave a lock file in a directory a claimer was about to lock
-/// and a reclaimer was about to judge. No lock file at all is an entry
-/// between its mkdir and its lock, or between a reclaim's unlink and its
-/// rmdir: not held, either way.
+/// Whether a launcher holds the entry's lock: a shared non-blocking lock is
+/// refused exactly when one does. A probe creates nothing and takes nothing
+/// exclusive. No lock file (mid-claim or mid-reclaim) means not held.
 fn held(dir: &Path) -> Result<bool, RegistryError> {
     let Some(fd) = open_lock(dir, false)? else { return Ok(false) };
     let rc = unsafe { libc::flock(fd, libc::LOCK_SH | libc::LOCK_NB) };
@@ -457,14 +352,14 @@ fn held(dir: &Path) -> Result<bool, RegistryError> {
     Ok(rc != 0)
 }
 
-/// Where a zone's entry lives. For zone 0 acts on a running zone's entry
-/// (the clipboard move); the entry itself is owned by its launcher.
+/// A zone's entry directory, for zone 0 acting on a running zone (the
+/// clipboard move). The entry belongs to its launcher.
 pub fn entry_dir(zone: &str) -> PathBuf {
     base().join(zone)
 }
 
-/// Read a zone's state. Probes the lock to decide liveness, creating and
-/// holding nothing, so it is safe to call from any process at any moment.
+/// Read a zone's state. The lock probe creates and holds nothing, so any
+/// process may call this at any time.
 pub fn state(zone: &str) -> Result<State, RegistryError> {
     let dir = base().join(zone);
     if !dir.exists() {
@@ -482,27 +377,20 @@ pub fn state(zone: &str) -> Result<State, RegistryError> {
             started: read_field(&dir, "started").unwrap_or_default(),
         })
     } else {
-        // Nobody holds it: stale.
         Ok(State::Stale { launcher, cgroup })
     }
 }
 
-/// Remove a stale entry, and whatever its cgroup still holds.
-///
-/// The recorded pid is NEVER signalled. It may have been reused by an
-/// unrelated process, and killing that would be far worse than leaving a
-/// directory behind. The cgroup is the safe handle: `cgroup.kill` can only
-/// reach processes that are *in* it.
+/// Remove a stale entry, and kill whatever its cgroup still holds. The recorded
+/// pid is never signalled, since it may have been reused; `cgroup.kill` reaches
+/// only processes in the cgroup.
 pub fn reclaim(zone: &str) -> Result<(), RegistryError> {
     let dir = base().join(zone);
     if !dir.exists() {
         return Ok(());
     }
-    // The lock is held for the sweep, as docs/design/zone-registry.md has
-    // it ("reclaim = take the lock"). It was not: a launcher that claimed the
-    // name between the caller's liveness reading and this had its fresh entry
-    // swept from under it and its cgroup killed, and the name was claimed
-    // twice.
+    /* Hold the lock for the sweep (docs/design/zone-registry.md): a launcher
+     * that claimed the name since the caller looked keeps its entry. */
     let fd = match lock_owner(&dir)? {
         Lock::Held(fd) => fd,
         Lock::Busy => return Err(RegistryError::AlreadyRunning { zone: zone.to_string(), pid: -1 }),
@@ -516,11 +404,8 @@ pub fn reclaim(zone: &str) -> Result<(), RegistryError> {
 fn reclaim_locked(dir: &Path, zone: &str) -> Result<(), RegistryError> {
     if let Some(path) = read_field(dir, "cgroup") {
         let p = Path::new(&path);
-        // Only ever inside kryptikd's own cgroup tree. With planted registry
-        // directories refused nothing
-        // hostile can reach this field, but `cgroup.kill` is a loaded weapon
-        // and one starts_with is a cheap safety catch: a malformed or planted
-        // entry must not be able to aim it at, say, /sys/fs/cgroup/user.slice.
+        /* Only inside kryptikd's own cgroup tree: a malformed or planted entry
+         * must not aim cgroup.kill at, say, /sys/fs/cgroup/user.slice. */
         if !p.starts_with(cgroup::kryptik_root()) {
             eprintln!(
                 "kryptikd: ignoring a registry entry for zone {zone:?} that names a cgroup \
@@ -554,13 +439,8 @@ impl Handle {
         &self.dir
     }
 
-    /// Write one entry field.
-    ///
-    /// O_NOFOLLOW, and 0600 at creation rather than afterwards. `fs::write`
-    /// follows symlinks and truncates, so if anything ever managed to plant a
-    /// symlink here it would be kryptikd that did the damage, to a file of the
-    /// attacker's choosing. ensure_base should make that unreachable; this is
-    /// the second lock on the same door.
+    /// Write one entry field: O_NOFOLLOW, so a planted symlink cannot aim the
+    /// truncating write, and 0600 from creation. Backs up `ensure_base`.
     fn write(&self, name: &str, contents: &str) -> Result<(), RegistryError> {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
@@ -575,8 +455,7 @@ impl Handle {
             .open(&p)
             .map_err(|e| io_err(&p, e))?;
         f.write_all(contents.as_bytes()).map_err(|e| io_err(&p, e))?;
-        // .mode() only applies when the file is created, so an entry that
-        // already existed still gets its permissions asserted.
+        // .mode() applies only at creation; set it on an existing file too.
         set_mode(&p, 0o600)
     }
 
@@ -591,8 +470,7 @@ impl Handle {
     pub fn set_init(&self, pid: i32) -> Result<(), RegistryError> {
         match PidStamp::of(pid) {
             Some(st) => self.write("init.pid", &st.encode()),
-            // The zone died between fork and here. Not an error: the launcher
-            // is about to report the real failure.
+            // The zone already died; the launcher reports the real failure.
             None => Ok(()),
         }
     }
@@ -615,12 +493,9 @@ impl Drop for Handle {
     }
 }
 
-/// Claim a zone name, reclaiming a stale entry if there is one.
-///
-/// `mkdir` is the atomic operation: two launchers racing cannot both create
-/// the directory. `EEXIST` means "already running OR stale", and the lock
-/// decides which - the retry happens exactly once, because a second EEXIST
-/// after a successful reclaim means another launcher won the race fairly.
+/// Claim a zone name, reclaiming a stale entry if there is one. `mkdir` is the
+/// atomic step; on EEXIST the lock tells running from stale, and a stale entry
+/// is reclaimed once: EEXIST after that means another launcher won.
 pub fn claim(zone: &str) -> Result<Handle, RegistryError> {
     let b = base();
     ensure_base(&b)?;
@@ -631,9 +506,8 @@ pub fn claim(zone: &str) -> Result<Handle, RegistryError> {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                 match state(zone)? {
-                    // No launcher pid recorded: another launcher is mid-start,
-                    // between its lock and its fork, and refusing is right.
-                    // One retry after 50ms, for the moment that is.
+                    /* Another launcher is between its lock and its fork: give
+                     * it 50 ms once, then refuse. */
                     State::Running { launcher: None, .. } if attempt == 0 => {
                         std::thread::sleep(std::time::Duration::from_millis(50));
                         continue;
@@ -641,9 +515,7 @@ pub fn claim(zone: &str) -> Result<Handle, RegistryError> {
                     State::Running { launcher, .. } => {
                         return Err(RegistryError::AlreadyRunning {
                             zone: zone.to_string(),
-                            // -1 when the other launcher has the lock but has
-                            // not recorded its pid yet: it is starting, and
-                            // refusing is still the right answer.
+                            // -1: locked, but no pid recorded yet.
                             pid: launcher.map(|l| l.pid).unwrap_or(-1),
                         })
                     }
@@ -663,13 +535,11 @@ pub fn claim(zone: &str) -> Result<Handle, RegistryError> {
         }
 
         set_mode(&dir, 0o700)?;
-        // A reclaim may have judged the fresh, unlocked directory stale and
-        // taken it: then it is gone, or about to be, and the claim starts
-        // over from mkdir.
+        // A reclaim may have taken the fresh, unlocked directory: start over.
         match lock_owner(&dir)? {
             Lock::Held(fd) => {
                 let h = Handle { dir: dir.clone(), fd };
-                h.write("started", &format!("{}\n", now_iso8601()))?;
+                h.write("started", &format!("{}\n", epoch_stamp()))?;
                 return Ok(h);
             }
             Lock::Busy => return Err(RegistryError::AlreadyRunning { zone: zone.to_string(), pid: -1 }),
@@ -679,7 +549,7 @@ pub fn claim(zone: &str) -> Result<Handle, RegistryError> {
     Err(RegistryError::AlreadyRunning { zone: zone.to_string(), pid: -1 })
 }
 
-fn now_iso8601() -> String {
+fn epoch_stamp() -> String {
     // No chrono (ADR-010). Seconds since the epoch is unambiguous and sorts.
     let secs = unsafe { libc::time(std::ptr::null_mut()) };
     format!("@{secs}")
@@ -703,7 +573,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_pid_stamp_round_trips() {
+    fn pid_stamp_round_trips() {
         let me = unsafe { libc::getpid() };
         let st = PidStamp::of(me).expect("our own start time must be readable");
         let enc = st.encode();
@@ -713,8 +583,8 @@ mod tests {
     }
 
     #[test]
-    fn a_wrong_start_time_is_not_alive() {
-        // The whole point: same pid, different process.
+    fn wrong_start_time_is_not_alive() {
+        // Same pid, different process.
         let me = unsafe { libc::getpid() };
         let real = PidStamp::of(me).unwrap();
         let impostor = PidStamp { pid: me, start: real.start.wrapping_add(1) };
@@ -726,10 +596,8 @@ mod tests {
     }
 
     #[test]
-    fn stat_is_parsed_from_the_last_paren() {
-        // /proc/<pid>/stat field 2 is the comm in parentheses and can contain
-        // spaces and brackets. Splitting on whitespace from the start is the
-        // classic bug; we parse after the LAST ')'.
+    fn stat_parsed_after_last_paren() {
+        // The comm (field 2) may contain spaces and parentheses.
         let fake = "123 (weird )( name) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 4242 rest";
         let rest = &fake[fake.rfind(')').unwrap() + 1..];
         let f22: u64 = rest.split_whitespace().nth(19).unwrap().parse().unwrap();
@@ -737,16 +605,13 @@ mod tests {
     }
 
     #[test]
-    fn the_registry_base_is_per_user_when_unprivileged() {
+    fn registry_base_is_per_user() {
         let b = base();
         if unsafe { libc::geteuid() } == 0 {
             assert_eq!(b, Path::new("/run/kryptik/zones"));
         } else {
-            // As text, not as a Path: Path::starts_with compares whole
-            // components, so "/tmp/kryptik-1000/zones" does not start with
-            // "/tmp/kryptik-" by its rules, and this test failed on every
-            // host without a session's XDG_RUNTIME_DIR - the very fallback
-            // it was written to accept.
+            /* As text: Path::starts_with compares whole components, and
+             * "/tmp/kryptik-" is not one. */
             let s = b.to_string_lossy();
             assert!(
                 s.starts_with("/run/user/") || s.starts_with("/tmp/kryptik-"),
@@ -756,10 +621,8 @@ mod tests {
     }
 
     #[test]
-    fn a_bogus_runtime_dir_falls_back_instead_of_breaking_every_launch() {
-        // D3 in the launcher suite sets XDG_RUNTIME_DIR=/run/user/9999 to
-        // check that host session variables do not reach a zone. Trusting it
-        // meant no zone could start at all while it was set.
+    fn bogus_runtime_dir_falls_back() {
+        // The launcher suite sets XDG_RUNTIME_DIR=/run/user/9999.
         if unsafe { libc::geteuid() } == 0 {
             return; // root uses /run/kryptik regardless
         }
@@ -768,17 +631,15 @@ mod tests {
         assert_eq!(base_for(uid, uid, Some("/run/user/9999-does-not-exist")), fallback);
         assert_eq!(base_for(uid, uid, Some("")), fallback);
         assert_eq!(base_for(uid, uid, None), fallback);
-        // A directory that exists but belongs to someone else is refused too:
-        // /run is root-owned.
+        // An existing directory owned by someone else (/run is root's) is refused.
         assert_eq!(base_for(uid, uid, Some("/run")), fallback);
         // Root never consults the variable.
         assert_eq!(base_for(0, 0, Some("/run/user/0")), PathBuf::from("/run/kryptik/zones"));
     }
 
     #[test]
-    fn a_registry_directory_someone_else_could_control_is_refused() {
-        // Each case is a directory an attacker could have left in
-        // /tmp before the victim's first `kryptikd run`.
+    fn unsafe_registry_dir_is_refused() {
+        // What an attacker could leave in /tmp before the user's first run.
         use std::os::unix::fs::MetadataExt;
         let root = std::env::temp_dir().join(format!("kryptik-f1-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -786,16 +647,14 @@ mod tests {
         let mode_of = |p: &Path| fs::metadata(p).unwrap().mode() & 0o777;
         let refused = |p: &Path| matches!(check_or_create(p), Err(RegistryError::UnsafeBase { .. }));
 
-        // A symlink, even one aimed at a directory we do own: the attacker
-        // keeps the ability to re-aim it after the check and before the write.
+        // A symlink, even to a directory we own: it can be re-aimed after the check.
         let target = root.join("real");
         fs::create_dir(&target).unwrap();
         let link = root.join("link");
         std::os::unix::fs::symlink(&target, &link).unwrap();
         assert!(refused(&link), "a symlink must be refused");
 
-        // Ours, but world-writable: tightening it now would not undo whatever
-        // was put inside while it was open.
+        // Ours but world-writable: tightening would not undo what was put inside.
         let loose = root.join("loose");
         fs::create_dir(&loose).unwrap();
         set_mode(&loose, 0o777).unwrap();
@@ -806,9 +665,7 @@ mod tests {
         fs::write(&file, "").unwrap();
         assert!(refused(&file), "a plain file must be refused");
 
-        // Ours and not writable by anyone else, just too readable - which is
-        // what kryptikd's own earlier create_dir_all left behind. Repairable,
-        // so it is repaired rather than refused.
+        // Ours and only too readable: repaired, not refused.
         let readable = root.join("readable");
         fs::create_dir(&readable).unwrap();
         set_mode(&readable, 0o755).unwrap();
@@ -824,13 +681,11 @@ mod tests {
     }
 
     #[test]
-    fn claim_refuses_a_second_claim_and_releases_on_drop() {
+    fn second_claim_refused_until_drop() {
         let zone = format!("regtest-{}", unsafe { libc::getpid() });
         let h = claim(&zone).expect("first claim");
         match state(&zone).unwrap() {
-            // No launcher.pid yet: claim() holds the lock but nothing has
-            // forked. That is exactly the "starting" window, and it must read
-            // as Running rather than as an error.
+            // Locked but no launcher.pid yet: starting, which reads as Running.
             State::Running { launcher: None, .. } => {}
             other => panic!("expected Running with no pid yet, got {other:?}"),
         }
@@ -843,9 +698,8 @@ mod tests {
             }
             other => panic!("expected Running with our pid, got {other:?}"),
         }
-        // flock is per open file description, so a second open in this same
-        // process is refused by the first one's lock, exactly as another
-        // launcher's would be.
+        /* flock is per open file description, so a second claim from this
+         * process is refused like another launcher's. */
         match claim(&zone) {
             Err(RegistryError::AlreadyRunning { .. }) => {}
             other => panic!("a second claim must be refused, got {other:?}"),
@@ -858,11 +712,8 @@ mod tests {
     }
 
     #[test]
-    fn the_sweep_removes_whatever_the_entry_holds() {
-        // A broker killed between creating `.clipboard.<pid>` and renaming
-        // it leaves a file neither the launcher nor a reclaim wrote. Both
-        // sweeps knew a list of names, and this was not on it, so the
-        // directory stayed, and with it the zone's name.
+    fn sweep_removes_everything_in_entry() {
+        // A broker killed before its rename strands a `.clipboard.<pid>` file.
         let zone = format!("regsweep-{}", unsafe { libc::getpid() });
         let h = claim(&zone).expect("claim");
         fs::write(h.dir().join(".clipboard.4242"), "stranded").unwrap();
@@ -881,9 +732,7 @@ mod tests {
     }
 
     #[test]
-    fn reclaim_refuses_a_live_entry() {
-        // Reclaim holds the lock for its sweep, so the entry a launcher took
-        // between a caller's liveness reading and the sweep is not swept.
+    fn reclaim_refuses_live_entry() {
         let zone = format!("reglive-{}", unsafe { libc::getpid() });
         let h = claim(&zone).expect("claim");
         match reclaim(&zone) {
@@ -895,9 +744,8 @@ mod tests {
     }
 
     #[test]
-    fn reclaim_waits_out_a_probe() {
-        // A probe (status, a stop polling) holding the shared lock for its
-        // instant made a reclaim call a stale entry live.
+    fn reclaim_waits_out_probe() {
+        // A probe holds the shared lock for an instant; reclaim must wait it out.
         let zone = format!("regwait-{}", unsafe { libc::getpid() });
         let dir = base().join(&zone);
         ensure_base(&base()).unwrap();
@@ -914,9 +762,8 @@ mod tests {
     }
 
     #[test]
-    fn a_probe_creates_no_lock_file() {
-        // An entry between its mkdir and its lock: a probe must read it as
-        // not held and leave no lock file behind for the claimer to find.
+    fn probe_creates_no_lock_file() {
+        // An entry between its mkdir and its lock reads as not held.
         let zone = format!("regprobe-{}", unsafe { libc::getpid() });
         let dir = base().join(&zone);
         ensure_base(&base()).unwrap();

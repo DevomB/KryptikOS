@@ -43,6 +43,8 @@ USAGE:
     kryptikd list  [--zones DIR]      list configured zones
     kryptikd show  NAME [--zones DIR]
     kryptikd explain NAME             what starting this zone would do
+    kryptikd seccomp-trace -- CMD     run CMD under the base seccomp filter; every
+                                      call it refuses is named and fails with ENOSYS
     kryptikd run NAME -- CMD [ARGS]   create the zone and run CMD inside it
     kryptikd stop NAME [--now]        stop a running zone (--now = SIGKILL)
     kryptikd status NAME              running, stale or absent
@@ -180,8 +182,8 @@ fn main() -> ExitCode {
             }
         },
         "run" => cmd_run(&zone_dir, &args),
-        /* seccomp-trace -- CMD: run CMD under the zone filter with TRAP in place
-         * of KILL, so the refused syscall is reported. For debugging a policy. */
+        /* seccomp-trace -- CMD: run CMD under the base filter and name every call
+         * it refuses (cmd_seccomp_trace). For writing a policy file. */
         "seccomp-trace" => {
             let Some(sep) = args.iter().position(|a| a == "--") else {
                 eprintln!("seccomp-trace: expected `-- COMMAND`");
@@ -776,7 +778,8 @@ fn cmd_explain(dir: &Path, name: &str, args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Argument-rule probes for `seccomp-test`; None when `name` is not a probe.
+/// Argument-rule and soft-refusal probes for `seccomp-test`; None when `name`
+/// is not a probe.
 fn cmd_seccomp_probe(name: &str) -> Option<ExitCode> {
     // Runs in the filtered child: 7 if refused with the intended errno, else 0.
     let probe: fn() -> i32 = match name {
@@ -796,6 +799,10 @@ fn cmd_seccomp_probe(name: &str) -> Option<ExitCode> {
         },
         "clone3" => || unsafe {
             let r = libc::syscall(libc::SYS_clone3, std::ptr::null::<u8>(), 0usize);
+            if r < 0 && *libc::__errno_location() == libc::ENOSYS { 7 } else { 0 }
+        },
+        "inotify" => || unsafe {
+            let r = libc::inotify_init1(0);
             if r < 0 && *libc::__errno_location() == libc::ENOSYS { 7 } else { 0 }
         },
         "socket-vsock" => || unsafe {
@@ -1194,11 +1201,13 @@ fn cmd_seccomp_trace(cmd: &[String]) -> ExitCode {
             }
             let nr = libc::c_long::from(req.data.nr);
             let name = seccomp::SYSCALL_NAMES.iter().find(|(_, n)| *n == nr).map_or("", |(s, _)| *s);
-            eprintln!("KRYPTIK_SECCOMP_DENIED {nr} {name}");
+            // A soft refusal gets the errno a zone gets, and is marked.
+            let soft = seccomp::REFUSED_SOFTLY.iter().find(|(n, _)| *n == nr).map(|&(_, e)| e as libc::c_int);
+            eprintln!("KRYPTIK_SECCOMP_DENIED {nr} {name}{}", if soft.is_some() { " soft" } else { "" });
             refused += 1;
             let mut resp: libc::seccomp_notif_resp = unsafe { std::mem::zeroed() };
             resp.id = req.id;
-            resp.error = -libc::ENOSYS;
+            resp.error = -soft.unwrap_or(libc::ENOSYS);
             unsafe { libc::ioctl(listener, NOTIF_SEND as _, &mut resp) };
         }
     } else {
