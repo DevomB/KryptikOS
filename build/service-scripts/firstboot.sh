@@ -65,8 +65,13 @@ if [ -r "$PRESEED" ]; then
     if complete; then rm -f "$PRESEED"; exit 0; fi
 fi
 
-# Interactive: ask on tty1 for whatever is still missing. Bounded by a timeout
-# so a headless machine still reaches a login prompt.
+# Interactive: ask on tty1 for whatever is still missing. Every question is
+# bounded, so a headless machine still reaches a login prompt, and boot-success
+# (which waits for this service) still judges an update's trial boot. The
+# password questions were not: a machine whose root was left locked waited at
+# `passwd root` at every boot for someone at the console, and an update trial
+# on it could never be committed.
+PROMPT_SECS=600
 tty=/dev/tty1
 [ -c "$tty" ] || tty=/dev/console
 name="$(regular_user)"
@@ -77,7 +82,7 @@ if [ -z "$name" ]; then
         echo "No user account exists yet. Create the desktop user now."
         printf 'User name: '
     } > "$tty" 2>&1
-    if ! read -r -t 600 name < "$tty"; then
+    if ! read -r -t "$PROMPT_SECS" name < "$tty"; then
         say "no answer within 10 minutes; the next boot asks again"
         exit 0
     fi
@@ -86,10 +91,10 @@ if [ -z "$name" ]; then
 fi
 if ! has_password "$name"; then
     echo "Set a password for $name:" > "$tty"
-    passwd "$name" < "$tty" > "$tty" 2>&1 || say "passwd failed; the next boot asks again"
+    timeout "$PROMPT_SECS" passwd "$name" < "$tty" > "$tty" 2>&1 || say "passwd failed or was not answered; the next boot asks again"
 fi
 if ! has_password root; then
     echo "Set the administrator (root) password, used by su:" > "$tty"
-    passwd root < "$tty" > "$tty" 2>&1 || say "root passwd failed; the next boot asks again"
+    timeout "$PROMPT_SECS" passwd root < "$tty" > "$tty" 2>&1 || say "root passwd failed or was not answered; the next boot asks again"
 fi
 exit 0

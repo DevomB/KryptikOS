@@ -39,5 +39,11 @@ is "a user and root who can both authenticate: done"
 state "svc:x:999:999::/:/bin/false" "root:${HASH}:1:::::: svc:${HASH}:1::::::"
 not "a system account is not the desktop user"
 
+# Every question on the console is bounded. The service holds up the login
+# prompt and boot-success, so one unbounded prompt (passwd was) hangs a
+# headless boot and leaves an update trial uncommitted forever.
+unbounded="$(grep -nE '<[[:space:]]*"\$tty"' "$SRC" | grep -vE 'timeout "\$PROMPT_SECS"|read -r -t "\$PROMPT_SECS"')"
+[[ -z "$unbounded" ]] && ok "every question on the console has a time limit" || bad "a question on the console waits forever: ${unbounded}"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
