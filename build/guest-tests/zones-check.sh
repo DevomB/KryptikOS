@@ -287,6 +287,11 @@ zrun vault 30 --passphrase-file /root/zt/vault.pass -- sh -c 'echo LINKS=$(ip -o
 # pattern is spelled so that this grep's own command line does not match it.
 if grep -rqs 'personal-pas[s]\|vault-pas[s]' /run/kryptik /proc/*/cmdline 2>/dev/null; then fail "no-passphrase-leak" "a passphrase appeared in the registry or a command line"; else pass "no-passphrase-leak" "no passphrase in /run/kryptik or any command line"; fi
 
+# --- the system allocator (ADR-005), in zone 0 and in a zone -----------------------
+grep -q /usr/lib/libhardened_malloc.so /proc/self/maps && pass "allocator-zone0" "zone 0 runs on hardened_malloc" || fail "allocator-zone0" "libhardened_malloc.so is not mapped in zone 0"
+zrun untrusted 30 -- grep -c /usr/lib/libhardened_malloc.so /proc/self/maps
+[[ "$ZRC" = 0 ]] && pass "allocator-zone" "a process in untrusted runs on it too" || fail "allocator-zone" "rc=$ZRC $(tail -1 "$LOG/untrusted.err")"
+
 echo "ZT SUMMARY passed=$PASS failed=$FAIL"
 echo "ZT END"
 [[ "$FAIL" -eq 0 ]]

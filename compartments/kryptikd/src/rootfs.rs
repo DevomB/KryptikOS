@@ -265,7 +265,8 @@ pub const SYSTEM_PATHS: &[&str] = &["/usr", "/lib", "/lib64", "/bin", "/sbin"];
 /// Host files under /etc that a zone gets a read-only view of. Each is
 /// public, machine-independent data that programs need at runtime.
 ///
-/// NOT here, on purpose: ld.so.preload (the LD_PRELOAD of files), machine-id
+/// NOT here, on purpose: ld.so.preload (the LD_PRELOAD of files; a zone gets
+/// its own, naming only ALLOCATOR), machine-id
 /// (links zones to each other and to the host), hostname, hosts, passwd and
 /// group (name the host's users; the zone gets synthesized ones), resolv.conf
 /// (the zone's resolver will come from kryptikd with its network path),
@@ -286,6 +287,10 @@ pub const ETC_RO_FILES: &[&str] = &[
     "/etc/kryptik/update.conf",
 ];
 pub const ETC_RO_DIRS: &[&str] = &["/etc/alternatives", "/etc/ssl/certs", "/etc/pki/tls/certs"];
+
+/// The system allocator (ADR-005). A zone preloads it when the system has it,
+/// from the read-only /usr it shares with zone 0.
+pub const ALLOCATOR: &str = "/usr/lib/libhardened_malloc.so";
 
 /// Device nodes a zone is allowed. Anything not listed does not exist for it.
 ///
@@ -718,6 +723,11 @@ fn populate_etc(root: &str, zone: &str, home: &str, resolver: Resolver) -> Resul
     write("nsswitch.conf", nsswitch())?;
     write("hosts", hosts_for(zone))?;
     write("hostname", format!("{zone}\n"))?;
+    // Written here, not bound from the host's /etc: no host file decides what
+    // a zone preloads.
+    if Path::new(ALLOCATOR).is_file() {
+        write("ld.so.preload", format!("{ALLOCATOR}\n"))?;
+    }
     match resolver {
         Resolver::None => {}
         Resolver::Bridge => write("resolv.conf", resolv_conf_for_bridge())?,
