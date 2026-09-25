@@ -742,8 +742,7 @@ fn read_back(f: &mut std::fs::File) -> String {
 /// Send a job's reply once its command has ended.
 fn finish_job(j: &mut Job, st: i32) {
     let ok = libc::WIFEXITED(st) && libc::WEXITSTATUS(st) == 0;
-    // A failure's reason is the command's last line on stderr, which went to
-    // this log before the command ran as a job.
+    // A failure's reason is the last line the command wrote to stderr.
     let why = |j: &mut Job, or: &str| {
         let err = read_back(&mut j.err);
         err.lines().rev().map(str::trim).find(|l| !l.is_empty()).unwrap_or(or).to_string()
