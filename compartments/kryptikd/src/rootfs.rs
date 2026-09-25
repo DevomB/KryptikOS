@@ -226,7 +226,8 @@ pub const NIC_ETC_FILES: &[&str] = &["/etc/dhcpcd.conf", "/etc/kryptik/time.conf
 /// the interrupt counts (interrupts, softirqs, stat's intr line) time every
 /// keystroke typed anywhere, and timer_list names other zones' tasks. Masking
 /// stat hides its CPU counters too, so top shows no CPU use, vmstat will not
-/// start, and libuv's os.cpus() and Java's load figures read nothing; ps takes
+/// start, and libuv's os.cpus() and Java's load figures read nothing: the
+/// price of closing the keystroke channel, not something to unmask. ps takes
 /// its boot time from CLOCK_BOOTTIME and is unaffected.
 pub const PROC_MASKED: &[&str] = &["interrupts", "softirqs", "stat", "timer_list", "sched_debug"];
 
