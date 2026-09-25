@@ -1,21 +1,12 @@
 name: Distro
 
-# The whole distribution, built and tested on GitHub's runners and nowhere
-# else: the from-source stages, the signed media, and `make acceptance`
-# (every suite) on the exact images that come out, under KVM. Three jobs, because a
-# standard runner gives a job six hours and the build alone can take most of
-# that: what each job produces travels to the next as an artifact.
-#
-# Sizes and times that shaped this: stage 01 took about three and a half
-# hours and stage 02 an hour and a quarter on an 8-core laptop; stage 04 an
-# hour and a quarter; a full acceptance about two hours and up to 50 GB of
-# VM disks. The runner's / has ~14 GB free and /mnt about 65 GB, so
-# everything the build writes lives under /mnt/kryptik.
-#
-# Two caches carry built output between runs, keyed on the inputs of the
-# stages that produced it: the sysroot after stage 02, and the sysroot and
-# kernel after stage 05. A push that changes only tests or tools skips
-# straight to the media and the acceptance.
+# The whole distribution, built and tested on GitHub's runners: the stages from
+# source, the signed media, and every acceptance suite on the exact images that
+# come out, under KVM. A job gets at most six hours, so the build is split into
+# jobs that hand their output on as artifacts, and two caches (the sysroot after
+# stage 02; the sysroot and kernel after stage 05) carry built work from one run
+# to the next. Everything the build writes lives under /mnt/kryptik: / has
+# about 14 GB free and /mnt about 65 GB.
 
 on:
   push:
@@ -23,13 +14,11 @@ on:
     paths-ignore:
       - 'docs/**'
       - '*.md'
-      # A change to the CI workflow alone does not restart a six-hour build.
       - '.github/workflows/ci.yml'
   workflow_dispatch:
 
-# Nothing here writes to the repository, so the token is told so in the file
-# that is reviewed, not left to a repository setting someone can flip. The
-# cache and the artifact uploads use the runner's own credential, not this.
+# Said in the reviewed file rather than left to a repository setting. The cache
+# and the artifacts use the runner's own credential, not this token.
 permissions:
   contents: read
 
@@ -41,48 +30,33 @@ env:
   KRYPTIK_WORK: /mnt/kryptik/work
   KRYPTIK_SOURCES: /mnt/kryptik/sources
   KRYPTIK_OUT: /mnt/kryptik/out
-  # A stamped step whose inputs moved rebuilds instead of stopping the build:
-  # the cache below may hold a sysroot from an earlier version of a stage.
+  # A restored sysroot may come from an earlier version of a stage: a stamp
+  # whose inputs moved rebuilds that step instead of stopping the build.
   KRYPTIK_STALE: rebuild
   NO_COLOR: "1"
   RUST_TOOLCHAIN: "1.98.1"
-  # What 00-host-check and the stages need on the host, every job alike.
   HOST_PACKAGES: >-
     build-essential bison flex texinfo gawk m4 patch perl python3 python3-pip
     xz-utils bzip2 zstd cpio rsync bc curl git openssl libssl-dev libelf-dev
     e2fsprogs dosfstools mtools xorriso util-linux cryptsetup-bin sbsigntool
     qemu-system-x86 ovmf musl-tools file
 
+# The caches are saved when a stage fails too, keyed on a digest of the stamps:
+# a failed step leaves no stamp, so the next run resumes where this one
+# stopped, and a run that built nothing new saves nothing. Both keys start with
+# the hash of what stages 01-02 read, so a restored stage 05 tree was built on
+# the same toolchain inputs as the stage 02 sysroot it replaces.
+
 jobs:
   toolchain:
     name: Stages 01-02 (cross toolchain, temporary tools)
     runs-on: ubuntu-24.04
     timeout-minutes: 360
+    outputs:
+      tt: ${{ steps.keys.outputs.tt }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-
-      - name: Working directories on the large disk
-        run: |
-          sudo mkdir -p /mnt/kryptik
-          sudo chown "$(id -u):$(id -g)" /mnt/kryptik
-          mkdir -p "$KRYPTIK_WORK" "$KRYPTIK_SOURCES" "$KRYPTIK_OUT" /mnt/kryptik/tmp /mnt/kryptik/cargo
-          # Everything that writes somewhere temporary or builds Rust goes
-          # to /mnt too: the first acceptance run filled the runner's root
-          # disk (the drivers' mktemp copies of a 3 GB payload, the host
-          # suites' cargo targets) and the runner died with "No space left
-          # on device" before it could write a report.
-          echo "TMPDIR=/mnt/kryptik/tmp" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_DIR=/mnt/kryptik/cargo" >> "$GITHUB_ENV"
-          # And the runner image's own bloat, which this build never uses.
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL 2>/dev/null || true
-          df -h / /mnt | tail -2
-          df -h /mnt | tail -1
-
-      - name: Host packages
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq $HOST_PACKAGES
-          # LFS requires /bin/sh to be bash (00-host-check refuses dash).
-          sudo ln -sf /usr/bin/bash /bin/sh
+      - uses: ./.github/actions/prepare
 
       - name: Upstream sources (cached by sources.lock)
         id: sources
@@ -90,8 +64,8 @@ jobs:
         with:
           path: /mnt/kryptik/sources
           key: sources-${{ hashFiles('sources.lock') }}
-          # A changed lock restores the most recent earlier set and fetches
-          # only what is new; every file is still hashed against the lock.
+          # A changed lock restores the previous set and fetches only what is
+          # new; every file is still hashed against the lock.
           restore-keys: |
             sources-
 
@@ -101,39 +75,57 @@ jobs:
           make sources
           ./tools/prune-sources.sh
 
-      # The sysroot and the stamps after stage 02, keyed on everything those
-      # stages read. A hit skips both stages (their stamps still verify their
-      # own fingerprints); a partial hit on the prefix resumes where an
-      # earlier run stopped, which is what makes a six-hour limit survivable.
+      - name: Cache keys
+        id: keys
+        run: echo "tt=${{ hashFiles('build/stages/00-host-check.sh', 'build/stages/01-toolchain.sh', 'build/stages/02-temp-tools.sh', 'build/lib/**', 'build/patches/**', 'build/config/**', 'sources.lock') }}" >> "$GITHUB_OUTPUT"
+
+      # The bare prefix restores a sysroot of other inputs too; its stamps
+      # decide what rebuilds, and 01-toolchain.sh clears one that another
+      # toolchain built.
       - name: Stage 01-02 sysroot (cached)
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        id: work02
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: |
             /mnt/kryptik/work/sysroot
             /mnt/kryptik/work/.stamps
-          key: work02-${{ hashFiles('build/stages/00-host-check.sh', 'build/stages/01-toolchain.sh', 'build/stages/02-temp-tools.sh', 'build/lib/**', 'build/patches/**', 'build/config/**', 'sources.lock') }}-${{ github.run_id }}
+          key: work02-${{ steps.keys.outputs.tt }}-
           restore-keys: |
-            work02-${{ hashFiles('build/stages/00-host-check.sh', 'build/stages/01-toolchain.sh', 'build/stages/02-temp-tools.sh', 'build/lib/**', 'build/patches/**', 'build/config/**', 'sources.lock') }}-
+            work02-${{ steps.keys.outputs.tt }}-
             work02-
 
       - name: Stage 01, the cross toolchain (unprivileged)
+        timeout-minutes: 200
         run: make toolchain
 
       - name: Stage 02, the temporary tools (unprivileged)
+        timeout-minutes: 120
         run: make temp-tools
+
+      - name: Progress of stages 01-02
+        id: progress02
+        if: always()
+        run: |
+          d="$( { cd "$KRYPTIK_WORK/.stamps" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0r sha256sum | sha256sum | cut -c1-16; } 2>/dev/null || true)"
+          if [ -n "$d" ]; then echo "key=work02-${{ steps.keys.outputs.tt }}-$d" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Save the stage 01-02 sysroot
+        if: always() && steps.progress02.outputs.key != '' && steps.progress02.outputs.key != steps.work02.outputs.cache-matched-key
+        continue-on-error: true
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: |
+            /mnt/kryptik/work/sysroot
+            /mnt/kryptik/work/.stamps
+          key: ${{ steps.progress02.outputs.key }}
 
       - name: Pack the sysroot for the next job
         run: |
           cd /mnt/kryptik
           rm -rf work/build
-          # The logs travel when there are any; the tree's members are the
-          # ones the stages write (build/lib/common.sh: sysroot, .stamps,
-          # logs, build). There is no work/kconfig: the kernel's .config
-          # lives inside its source tree, and naming a directory that does
-          # not exist is how the stage 04-05 pack step below failed once.
           members=(sysroot .stamps)
           [ -d work/logs ] && members+=(logs)
-          tar --zstd -cf work-after-02.tar.zst -C work "${members[@]}"
+          tar -I 'zstd -T0' -cf work-after-02.tar.zst -C work "${members[@]}"
           ls -la work-after-02.tar.zst
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
@@ -159,28 +151,7 @@ jobs:
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-
-      - name: Working directories on the large disk
-        run: |
-          sudo mkdir -p /mnt/kryptik
-          sudo chown "$(id -u):$(id -g)" /mnt/kryptik
-          mkdir -p "$KRYPTIK_WORK" "$KRYPTIK_SOURCES" "$KRYPTIK_OUT" /mnt/kryptik/tmp /mnt/kryptik/cargo
-          # Everything that writes somewhere temporary or builds Rust goes
-          # to /mnt too: the first acceptance run filled the runner's root
-          # disk (the drivers' mktemp copies of a 3 GB payload, the host
-          # suites' cargo targets) and the runner died with "No space left
-          # on device" before it could write a report.
-          echo "TMPDIR=/mnt/kryptik/tmp" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_DIR=/mnt/kryptik/cargo" >> "$GITHUB_ENV"
-          # And the runner image's own bloat, which this build never uses.
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL 2>/dev/null || true
-          df -h / /mnt | tail -2
-
-      - name: Host packages
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq $HOST_PACKAGES
-          # LFS requires /bin/sh to be bash (00-host-check refuses dash).
-          sudo ln -sf /usr/bin/bash /bin/sh
+      - uses: ./.github/actions/prepare
 
       - name: Upstream sources (cached by sources.lock)
         id: sources
@@ -188,8 +159,6 @@ jobs:
         with:
           path: /mnt/kryptik/sources
           key: sources-${{ hashFiles('sources.lock') }}
-          # A changed lock restores the most recent earlier set and fetches
-          # only what is new; every file is still hashed against the lock.
           restore-keys: |
             sources-
 
@@ -199,57 +168,46 @@ jobs:
           make sources
           ./tools/prune-sources.sh
 
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        with:
-          name: work-after-02
-          path: /mnt/kryptik
-
-      - name: Unpack the sysroot
-        run: |
-          cd /mnt/kryptik
-          tar --zstd -xf work-after-02.tar.zst -C work
-          rm -f work-after-02.tar.zst
-          ls work; du -sh work/sysroot
-
-      # The sysroot, the stamps and the kernel tree after stage 05, as one
-      # tarball that root made. Not the directories themselves: stage 04 runs
-      # as root and leaves files the runner user cannot read (the sysroot's
-      # /etc/shadow), and the cache action tars as the runner user. A hit
-      # replaces the stage 02 sysroot unpacked above with the later tree,
-      # which contains it. The key carries the toolchain inputs' hash first,
-      # so any hit was built on the same toolchain inputs and the tarball's
-      # own tt- stamps agree with its sysroot; the second hash is everything
-      # stages 04 and 05 read from the tree. A prefix hit (one of those inputs
-      # changed) restores the nearest earlier tree and the stamps decide what
-      # rebuilds: each verifies its own fingerprint (KRYPTIK_STALE=rebuild
-      # above), so the changed package and the steps after it rebuild and the
-      # rest are skipped. On 51500b01 stages 04 and 05 spent 70 minutes
-      # producing the same sysroot as the run before them.
+      # One tarball that root made: stage 04 runs as root and leaves files the
+      # runner user cannot read (the sysroot's /etc/shadow), and the cache
+      # action tars as the runner user. A hit contains the stage 02 sysroot of
+      # the same toolchain inputs, so the one from the job before is not needed.
       - name: Stage 04-05 sysroot and kernel (cached)
         id: work05
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: /mnt/kryptik/work-after-05.tar.zst
-          key: work05-${{ hashFiles('build/stages/00-host-check.sh', 'build/stages/01-toolchain.sh', 'build/stages/02-temp-tools.sh', 'build/lib/**', 'build/patches/**', 'build/config/**', 'sources.lock') }}-${{ hashFiles('build/**', 'tools/**', 'compartments/**', 'compositor/**', 'sources.lock', 'Makefile') }}
+          key: work05-${{ needs.toolchain.outputs.tt }}-
           restore-keys: |
-            work05-${{ hashFiles('build/stages/00-host-check.sh', 'build/stages/01-toolchain.sh', 'build/stages/02-temp-tools.sh', 'build/lib/**', 'build/patches/**', 'build/config/**', 'sources.lock') }}-
+            work05-${{ needs.toolchain.outputs.tt }}-
 
       - name: Unpack the stage 04-05 tree
         if: steps.work05.outputs.cache-matched-key != ''
         run: |
           cd /mnt/kryptik
           echo "restored ${{ steps.work05.outputs.cache-matched-key }}"
-          sudo rm -rf work/sysroot work/.stamps work/build
           sudo tar --zstd -xf work-after-05.tar.zst -C work
           rm -f work-after-05.tar.zst
-          ls work work/build; sudo du -sh work/sysroot
+          ls work; sudo du -sh work/sysroot
 
-      # The two static binaries stage 04 installs are built outside the
-      # chroot, for musl, exactly as the build host did.
-      # The compiler of the two binaries that ship is named, not 'stable', and
-      # the build step below refuses any other. rustup checks what it downloads
-      # against the channel's own manifest; a hash pinned in this repository,
-      # as cmake's is, is what the roadmap still asks for.
+      - if: steps.work05.outputs.cache-matched-key == ''
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: work-after-02
+          path: /mnt/kryptik
+
+      - name: Unpack the stage 02 sysroot
+        if: steps.work05.outputs.cache-matched-key == ''
+        run: |
+          cd /mnt/kryptik
+          tar --zstd -xf work-after-02.tar.zst -C work
+          rm -f work-after-02.tar.zst
+          ls work; du -sh work/sysroot
+
+      # The two static binaries stage 04 installs are built outside the chroot,
+      # for musl, by the compiler named above; the step refuses any other.
+      # rustup checks the download against the channel's manifest; a hash
+      # pinned here, as cmake's is, is what the roadmap still asks for.
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # the stable branch, 2026-09-20
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -265,65 +223,69 @@ jobs:
           file /mnt/kryptik/kryptikd-musl /mnt/kryptik/kryptik-wlproxy-musl
 
       - name: Stage 04, the base system (in the chroot, as root)
+        id: stage04
+        timeout-minutes: 180
         run: make system KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
 
       - name: Stage 05, the hardened kernel
+        timeout-minutes: 90
         run: make kernel KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
 
-      # Saved before stage 06, so the keys, the images and the media stay out
-      # of the cache, and only when the exact key missed: a prefix hit rebuilt
-      # something, and the result belongs under the new key. The kernel tree
-      # travels with the sysroot because stage 05 treats a stamped kernel
-      # whose tree is gone as unbuilt.
+      # Before stage 06, so the keys, the images and the media stay out of the
+      # cache. The kernel tree goes with the stamps: stage 05 treats a stamped
+      # kernel whose tree is gone as unbuilt.
+      - name: Progress of stages 04-05
+        id: progress05
+        if: always() && steps.stage04.outcome != '' && steps.stage04.outcome != 'skipped'
+        run: |
+          d="$( { cd "$KRYPTIK_WORK/.stamps" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0r sha256sum | sha256sum | cut -c1-16; } 2>/dev/null || true)"
+          if [ -n "$d" ]; then echo "key=work05-${{ needs.toolchain.outputs.tt }}-$d" >> "$GITHUB_OUTPUT"; fi
+
       - name: Pack the stage 04-05 tree for the cache
-        if: steps.work05.outputs.cache-hit != 'true'
+        id: pack05
+        if: always() && steps.progress05.outputs.key != '' && steps.progress05.outputs.key != steps.work05.outputs.cache-matched-key
         run: |
           cd /mnt/kryptik
-          kernel_tree="$(cd work && ls -d build/linux-* 2>/dev/null | head -1 || true)"
-          # Only members that exist: tar exits 2 for a name it cannot stat,
-          # and that failed this step on its first run, after stages 04 and
-          # 05 had both succeeded, over a directory nothing writes.
           members=(sysroot .stamps)
-          [ -n "$kernel_tree" ] && members+=("$kernel_tree")
-          sudo tar --zstd -cf work-after-05.tar.zst -C work "${members[@]}"
+          kernel_tree="build/linux-$(sed -n 's/^V_LINUX=//p' "$GITHUB_WORKSPACE/build/config/versions.env")"
+          [ -d "work/$kernel_tree" ] && members+=("$kernel_tree")
+          sudo tar -I 'zstd -T0' -cf work-after-05.tar.zst -C work "${members[@]}"
           sudo chown "$(id -u):$(id -g)" work-after-05.tar.zst
           ls -la work-after-05.tar.zst; df -h /mnt | tail -1
 
-      # A cache that could not be saved (the repository's 10 GB is full, or
-      # the service is having a day) costs the next run an hour, not this one
-      # its verdict.
-      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
-        if: steps.work05.outputs.cache-hit != 'true'
+      # A cache that cannot be saved (the repository's 10 GB is full, or the
+      # service is down) costs the next run time, not this one its verdict.
+      - name: Save the stage 04-05 tree
+        if: always() && steps.pack05.outcome == 'success'
         continue-on-error: true
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: /mnt/kryptik/work-after-05.tar.zst
-          key: ${{ steps.work05.outputs.cache-primary-key }}
+          key: ${{ steps.progress05.outputs.key }}
 
       - name: Drop the cache tarball before the media are built
-        if: steps.work05.outputs.cache-hit != 'true'
+        if: always()
         run: rm -f /mnt/kryptik/work-after-05.tar.zst
 
-      # Two releases: A, and B = A's version with .1 (sorts after A), which
-      # the update test applies over A.
+      # Release A, and B = A's version with .1 (sorts after A), which the update
+      # test applies over A.
       - name: Stage 06, the media (release A and the update B)
+        timeout-minutes: 60
         run: |
           VER_A="0.1.$(date -u +%Y%m%d).${GITHUB_SHA::8}"
-          echo "VER_A=$VER_A" >> "$GITHUB_ENV"
           make media KRYPTIK_VERSION="$VER_A" KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
           make media KRYPTIK_VERSION="${VER_A}.1" KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
           ls -la "$KRYPTIK_WORK/images" | grep -E 'usb.img|\.iso|payload'
 
-      # Stage 04 ran as root: the sysroot and the build trees are root's, so
-      # the packing is too (the first run failed here with "Permission
-      # denied" on the build trees, after every stage had passed).
-      - name: Pack the work tree for the acceptance job
+      # Never the private halves of the keys: the acceptance needs the
+      # certificate, its DER form and the variable stores, nothing that signs,
+      # and an artifact of a public repository is public. Root packs, because
+      # stage 04 ran as root.
+      - name: Pack the work tree for the acceptance
         run: |
           cd /mnt/kryptik
           sudo rm -rf work/build work/vm
-          # Never the private halves of the keys: the acceptance job needs the
-          # certificate, its DER form and the variable stores, nothing that
-          # signs. An artifact of a public repository is public.
-          sudo tar --zstd -cf work-after-media.tar.zst -C work --exclude='images/kryptik-root.img' --exclude='images/esp-*.img' --exclude='keys/sb/kryptik-sb.key' --exclude='keys/release/kryptik-release' --exclude='keys/release/kryptik-latest' .
+          sudo tar -I 'zstd -T0' -cf work-after-media.tar.zst -C work --exclude='images/kryptik-root.img' --exclude='images/esp-*.img' --exclude='keys/sb/kryptik-sb.key' --exclude='keys/release/kryptik-release' --exclude='keys/release/kryptik-latest' .
           if sudo tar --zstd -tf work-after-media.tar.zst | grep -E 'kryptik-sb\.key$|keys/release/kryptik-(release|latest)$'; then echo "a private key is in the artifact"; exit 1; fi
           sudo chown "$(id -u):$(id -g)" work-after-media.tar.zst
           ls -la work-after-media.tar.zst; df -h /mnt | tail -1
@@ -344,50 +306,27 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # The suites are independent VMs, so they run side by side, one part per
+  # machine, and the verdict job below judges the whole run.
   acceptance:
-    name: make acceptance (every suite, under KVM)
+    name: Acceptance (${{ matrix.suites }})
     needs: system
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        # tools/acceptance.sh's suites, in parts of about 18, 16, 12 and 11
+        # minutes. A suite no part runs is INCOMPLETE in the verdict, never a pass.
+        suites: [update, install, 'integrity,zones', 'inputs,build,boot,desktop']
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-
-      - name: Working directories on the large disk
-        run: |
-          sudo mkdir -p /mnt/kryptik
-          sudo chown "$(id -u):$(id -g)" /mnt/kryptik
-          mkdir -p "$KRYPTIK_WORK" "$KRYPTIK_SOURCES" "$KRYPTIK_OUT" /mnt/kryptik/tmp /mnt/kryptik/cargo
-          # Everything that writes somewhere temporary or builds Rust goes
-          # to /mnt too: the first acceptance run filled the runner's root
-          # disk (the drivers' mktemp copies of a 3 GB payload, the host
-          # suites' cargo targets) and the runner died with "No space left
-          # on device" before it could write a report.
-          echo "TMPDIR=/mnt/kryptik/tmp" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_DIR=/mnt/kryptik/cargo" >> "$GITHUB_ENV"
-          # And the runner image's own bloat, which this build never uses.
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL 2>/dev/null || true
-          df -h / /mnt | tail -2
-
-      - name: Host packages
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq $HOST_PACKAGES
-          sudo ln -sf /usr/bin/bash /bin/sh
-          # virt-fw-vars, for the disposable Secure Boot variable stores.
-          sudo pip install --break-system-packages virt-firmware==26.9
-          virt-fw-vars --help > /dev/null
-
-      # KVM on a hosted runner: the device exists; it is the permissions that
-      # keep an unprivileged process out. Without it run-ovmf.sh falls back to
-      # TCG and every VM gate runs into its timeout.
-      - name: Let the runner use /dev/kvm
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          ls -la /dev/kvm
+      - uses: ./.github/actions/prepare
+        with:
+          vm: 'true'
 
       - name: Upstream sources (cached by sources.lock)
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: /mnt/kryptik/sources
           key: sources-${{ hashFiles('sources.lock') }}
@@ -397,8 +336,7 @@ jobs:
           name: work-after-media
           path: /mnt/kryptik
 
-      # Unpacked as root so the sysroot keeps its ownership and modes; the
-      # acceptance itself runs through sudo.
+      # As root, so the sysroot keeps its owners and modes.
       - name: Unpack the work tree
         run: |
           cd /mnt/kryptik
@@ -406,17 +344,70 @@ jobs:
           rm -f work-after-media.tar.zst
           ls work/images; df -h /mnt | tail -1
 
-      - name: make acceptance
+      # Exit 2 is a part's normal answer: the other parts' items are "not run"
+      # here. The part is red for a failure; the verdict job judges the rest.
+      - name: make acceptance ONLY=${{ matrix.suites }}
+        run: |
+          rc=0
+          make acceptance ONLY="${{ matrix.suites }}" || rc=$?
+          [ "$rc" -ne 1 ]
+
+      - name: Hand the results to the runner user
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" /mnt/kryptik/work/acceptance /mnt/kryptik/work/logs 2>/dev/null || true
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: always()
+        with:
+          name: acceptance-part-${{ strategy.job-index }}
+          path: |
+            /mnt/kryptik/work/acceptance
+            /mnt/kryptik/work/logs
+          retention-days: 14
+          if-no-files-found: ignore
+
+  verdict:
+    name: make acceptance (the verdict over every suite)
+    needs: [system, acceptance]
+    if: always() && needs.system.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      # The same packages and KVM as the parts, so the report's firmware and
+      # QEMU lines describe the machines the suites ran on.
+      - uses: ./.github/actions/prepare
+        with:
+          vm: 'true'
+
+      # The media, for the export and the hashes the report names.
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: work-after-media
+          path: /mnt/kryptik
+
+      - name: Unpack the work tree
+        run: |
+          cd /mnt/kryptik
+          sudo tar --zstd -xf work-after-media.tar.zst -C work
+          rm -f work-after-media.tar.zst
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: acceptance-part-*
+          path: /mnt/kryptik/parts
+
+      - name: make acceptance, merged
         id: acceptance
         continue-on-error: true
         run: |
           mkdir -p /mnt/kryptik/export
-          make acceptance EXPORT=/mnt/kryptik/export
+          sudo env KRYPTIK_WORK="$KRYPTIK_WORK" KRYPTIK_SOURCES="$KRYPTIK_SOURCES" NO_COLOR=1 TMPDIR="$TMPDIR" \
+            tools/acceptance.sh --merge /mnt/kryptik/parts --export /mnt/kryptik/export
 
-      # What root wrote, the runner uploads.
       - name: Hand the results to the runner user
         if: always()
-        run: sudo chown -R "$(id -u):$(id -g)" /mnt/kryptik/export /mnt/kryptik/work/acceptance /mnt/kryptik/work/logs 2>/dev/null || true
+        run: sudo chown -R "$(id -u):$(id -g)" /mnt/kryptik/export /mnt/kryptik/work/acceptance 2>/dev/null || true
 
       - name: Acceptance report and per-item logs
         if: always()
@@ -425,13 +416,12 @@ jobs:
           name: acceptance-report
           path: |
             /mnt/kryptik/work/acceptance
-            /mnt/kryptik/work/logs
+            /mnt/kryptik/parts
           retention-days: 14
           if-no-files-found: ignore
 
-      # Only a run in which every suite passed publishes images: the driver
-      # writes an export for a failed run too (its RELEASE.txt says FAIL), and
-      # the first version of this job uploaded that under the release name.
+      # Only a run in which every suite passed publishes images: the export of
+      # a failed run exists too, and its RELEASE.txt says FAIL.
       - name: Tested images
         if: steps.acceptance.outcome == 'success'
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
