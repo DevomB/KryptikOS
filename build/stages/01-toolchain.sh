@@ -105,10 +105,7 @@ s_gcc_pass1() {
     src="$(unpack "gcc-${V_GCC}.tar.xz" "gcc-${V_GCC}")"
     cd "$src"
 
-    # GCC expects its math prerequisites unpacked in-tree under fixed names.
-    tar -xf "${KRYPTIK_SOURCES}/mpfr-${V_MPFR}.tar.xz" && mv "mpfr-${V_MPFR}" mpfr
-    tar -xf "${KRYPTIK_SOURCES}/gmp-${V_GMP}.tar.xz"   && mv "gmp-${V_GMP}"   gmp
-    tar -xf "${KRYPTIK_SOURCES}/mpc-${V_MPC}.tar.gz"   && mv "mpc-${V_MPC}"   mpc
+    gcc_prereqs
 
     # Kryptik uses /usr/lib, not /usr/lib64, on x86_64.
     case "$(uname -m)" in

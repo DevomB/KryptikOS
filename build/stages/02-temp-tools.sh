@@ -209,9 +209,7 @@ s_gcc_pass2() {
     local src; src="$(unpack "gcc-${V_GCC}.tar.xz" "gcc-${V_GCC}")"
     cd "$src"
 
-    tar -xf "${KRYPTIK_SOURCES}/mpfr-${V_MPFR}.tar.xz" && mv "mpfr-${V_MPFR}" mpfr
-    tar -xf "${KRYPTIK_SOURCES}/gmp-${V_GMP}.tar.xz"   && mv "gmp-${V_GMP}"   gmp
-    tar -xf "${KRYPTIK_SOURCES}/mpc-${V_MPC}.tar.gz"   && mv "mpc-${V_MPC}"   mpc
+    gcc_prereqs
 
     case "$(uname -m)" in
         x86_64) sed -e "/m64=/s/lib64/lib/" -i.orig gcc/config/i386/t-linux64 ;;
