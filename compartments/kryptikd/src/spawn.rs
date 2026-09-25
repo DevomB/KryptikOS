@@ -1402,8 +1402,8 @@ pub fn env_value_is_sane(v: &str) -> bool {
 }
 
 /// The complete environment the zone's command starts with. With a display,
-/// WAYLAND_DISPLAY is the socket's absolute path (libwayland
-/// needs no XDG_RUNTIME_DIR then) and XDG_RUNTIME_DIR is the zone's /tmp.
+/// WAYLAND_DISPLAY is the socket's absolute path (libwayland needs no
+/// XDG_RUNTIME_DIR then) and XDG_RUNTIME_DIR is the zone's /tmp.
 pub fn zone_environment_with(zone: &Zone, home: &str, caller: &[(String, String)], wayland: bool) -> Vec<(String, String)> {
     let mut env = zone_environment_base(zone, home, caller);
     if wayland {
