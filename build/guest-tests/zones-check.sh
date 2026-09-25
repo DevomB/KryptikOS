@@ -219,6 +219,20 @@ for _ in $(seq 1 20); do [[ -e /dev/mapper/kryptik-zone-personal ]] || break; sl
 [[ -e /dev/mapper/kryptik-zone-personal ]] && fail "stop-closes-volume" "mapping still present after stop" || pass "stop-closes-volume" "the LUKS mapping is gone after stop"
 mountpoint -q "$R/personal" && fail "stop-unmounts" "plaintext still mounted" || pass "stop-unmounts" "nothing mounted at $R/personal after stop"
 
+# --- zones: a terminal and a text browser work in a zone --------------------------
+# ncurses opens terminfo with setfsuid around it (a soft refusal in the zone
+# filter), and man and lynx read their configuration from the zone's /etc
+# (rootfs::ETC_RO_FILES and ETC_RO_DIRS).
+zrun untrusted 20 -- tput -T xterm cols
+[[ "$ZOUT" == 80 ]] && pass "terminal-terminfo" "tput opened terminfo in untrusted" || fail "terminal-terminfo" "rc=$ZRC out=$ZOUT $(tail -2 "$LOG/untrusted.err" | tr '\n' ' ')"
+zrun untrusted 30 -- sh -c 'man -P cat ls 2>&1 | head -3'
+grep -qi 'ls(1)' <<<"$ZOUT" && pass "man-page" "man read ls(1) in untrusted" || fail "man-page" "$(tr '\n' ' ' <<<"$ZOUT" | cut -c1-200)"
+zrun untrusted 60 -- sh -c 'mkdir -p "$HOME/www" && echo "<h1>text-browser-ok</h1>" > "$HOME/www/index.html"
+python3 -m http.server 8765 --bind 127.0.0.1 --directory "$HOME/www" > /dev/null 2>&1 & srv=$!
+for i in 1 2 3 4 5 6 7 8 9 10; do python3 -c "import socket; socket.create_connection((\"127.0.0.1\", 8765), 1)" 2>/dev/null && break; sleep 0.3; done
+lynx -dump http://127.0.0.1:8765/ 2>&1 | head -5; kill $srv'
+[[ "$ZOUT" == *text-browser-ok* ]] && pass "text-browser" "lynx in untrusted read a page from a server in the zone" || fail "text-browser" "$(tr '\n' ' ' <<<"$ZOUT" | cut -c1-200) $(tail -2 "$LOG/untrusted.err" | tr '\n' ' ')"
+
 # --- storage: encrypted storage lifecycle ----------------------------------------
 printf 'wrong-pass\n' > /root/zt/wrong.pass; chmod 600 /root/zt/wrong.pass
 zrun personal 30 --passphrase-file /root/zt/wrong.pass -- sh -c 'echo SHOULD-NOT-RUN'
