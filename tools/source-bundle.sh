@@ -41,6 +41,14 @@ while read -r name _ver url; do
         if [[ -f "$s" ]]; then cp -f "$s" "$OUT/signatures/"; fi
     done
 done < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list)
+# Every file the lock names, so a list that came back short cannot pass for
+# a whole bundle.
+missing=()
+while read -r hash f; do
+    [[ -z "$hash" || "$hash" == \#* ]] && continue
+    [[ -f "$OUT/sources/${f}" ]] || missing+=("$f")
+done < "$LOCK"
+[[ "${#missing[@]}" -eq 0 ]] || die "sources.lock names what the bundle lacks: ${missing[*]}"
 cp "$LOCK" "$OUT/"
 ok "${n} tarballs, $(find "$OUT/signatures" -type f | wc -l) signatures"
 

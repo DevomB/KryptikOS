@@ -34,8 +34,12 @@ cat > "$T/bin/cargo" <<'EOF'
 mkdir -p "${@: -1}/demo-crate-0.1.0" && echo crate > "${@: -1}/demo-crate-0.1.0/lib.rs"
 EOF
 chmod 755 "$T/bin/cargo"
-git -C "$R" init -q && git -C "$R" add -A \
-    && git -C "$R" -c user.name=test -c user.email=test@example.invalid commit -q -m fixture
+# The fixture commits as the one identity this repository allows.
+CHECKER="$ROOT/tools/check-commit-identity.sh"
+git -C "$R" init -q
+git -C "$R" config user.name "$(sed -n 's/^ALLOWED_NAME="\(.*\)"$/\1/p' "$CHECKER")"
+git -C "$R" config user.email "$(sed -n 's/^ALLOWED_EMAIL="\(.*\)"$/\1/p' "$CHECKER")"
+git -C "$R" add -A && git -C "$R" commit -q -m fixture
 commit="$(git -C "$R" rev-parse HEAD)"
 
 bundle() {   # bundle OUT: run the tool on the fixture
@@ -54,6 +58,12 @@ out="$(bundle "$T/b1")"; rc=$?
 { head -1 "$T/b1/MANIFEST" | grep -q "$commit" && (cd "$T/b1" && tail -n +2 MANIFEST | sha256sum --quiet -c); } \
     && ok "its MANIFEST names the commit and every file verifies" || bad "MANIFEST does not verify"
 [[ -f "$T/b1.tar" ]] && ok "and the whole is one tar" || bad "no ${T}/b1.tar"
+
+cp "$R/tools/fetch-sources.sh" "$T/fetch-sources.sh"
+printf '#!/usr/bin/env bash\ntrue\n' > "$R/tools/fetch-sources.sh"; git -C "$R" commit -qam "an empty list"
+out="$(bundle "$T/b5")"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *"lacks: demo-1.0.tar.gz"* ]] && ok "a source list that comes back empty cannot make a bundle" || bad "empty list: rc=$rc: $out"
+cp "$T/fetch-sources.sh" "$R/tools/fetch-sources.sh"; git -C "$R" commit -qam "the list again"
 
 echo tampered >> "$S/demo-1.0.tar.gz"
 out="$(bundle "$T/b2")"; rc=$?
