@@ -4,6 +4,9 @@
 # file and leaves the named ones alone. Run against a copy of the script beside
 # a test allowlist. No root: a user may set these bits on their own files.
 set -uo pipefail
+# An exported KRYPTIK_ROOT, as acceptance sets, would point the copy at the
+# repository's own allowlist.
+unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PASS=0; FAIL=0
 ok()  { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
