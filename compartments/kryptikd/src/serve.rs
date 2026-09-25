@@ -372,12 +372,12 @@ fn openat_component(dir: RawFd, name: &str, flags: libc::c_int) -> Result<Fd, St
     Ok(Fd(fd))
 }
 
-/// A verified proxy socket. `fd` pins the inode while the launch is set up;
+/// A verified proxy socket. `_fd` pins the inode while the launch is set up;
 /// the launcher gets the path and inode, reopens the path and refuses any
 /// other inode (spawn.rs, StagedSocket).
 #[derive(Debug)]
 pub struct ProxySocket {
-    pub fd: Fd,
+    pub _fd: Fd,
     pub path: PathBuf,
     pub inode: InodeId,
 }
@@ -482,7 +482,7 @@ fn verify_proxy_socket(p: &Path, uid: u32, zone: &str, proxy_exe: Option<&Path>)
         return Err(format!("wayland socket is owned by uid {}, not the session", st.st_uid));
     }
     verify_proxy_listener(&sock, uid, zone, proxy_exe)?;
-    Ok(ProxySocket { fd: sock, path: want, inode: InodeId::of(&st) })
+    Ok(ProxySocket { _fd: sock, path: want, inode: InodeId::of(&st) })
 }
 
 /// Ask the kernel who listens on the socket's inode: it must be the session's
@@ -1337,43 +1337,6 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
             }
         }
     }
-}
-
-/// Client side: send one request, with at most one descriptor, and read the reply.
-pub fn request(text: &str, fd: Option<RawFd>) -> Result<String, String> {
-    request_at(Path::new(SOCKET_PATH), text, fd)
-}
-
-pub fn request_at(socket: &Path, text: &str, fd: Option<RawFd>) -> Result<String, String> {
-    let mut s = UnixStream::connect(socket).map_err(|e| format!("{}: {e}", socket.display()))?;
-    match fd {
-        None => s.write_all(text.as_bytes()).map_err(|e| e.to_string())?,
-        Some(fd) => {
-            let bytes = text.as_bytes();
-            let mut iov = libc::iovec { iov_base: bytes.as_ptr() as *mut libc::c_void, iov_len: bytes.len() };
-            let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
-            msg.msg_iov = &mut iov;
-            msg.msg_iovlen = 1;
-            let mut cbuf = [0u8; 64];
-            let space = unsafe { libc::CMSG_SPACE(4) } as usize;
-            msg.msg_control = cbuf.as_mut_ptr() as *mut libc::c_void;
-            msg.msg_controllen = space as _;
-            unsafe {
-                let c = libc::CMSG_FIRSTHDR(&msg);
-                (*c).cmsg_level = libc::SOL_SOCKET;
-                (*c).cmsg_type = libc::SCM_RIGHTS;
-                (*c).cmsg_len = libc::CMSG_LEN(4) as _;
-                *(libc::CMSG_DATA(c) as *mut RawFd) = fd;
-                if libc::sendmsg(s.as_raw_fd(), &msg, 0) < 0 {
-                    return Err(format!("sendmsg: {}", std::io::Error::last_os_error()));
-                }
-            }
-        }
-    }
-    let _ = s.shutdown(std::net::Shutdown::Write);
-    let mut out = String::new();
-    s.read_to_string(&mut out).map_err(|e| e.to_string())?;
-    Ok(out)
 }
 
 #[cfg(test)]

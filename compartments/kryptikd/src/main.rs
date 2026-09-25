@@ -696,15 +696,21 @@ fn cmd_show(dir: &Path, name: &str) -> ExitCode {
     println!("namespaces   {}", ns.join(", "));
     println!("seccomp      default-deny, {} syscalls allowed", seccomp::BASE_ALLOWLIST.len());
 
-    if z.is_airgapped() {
-        println!();
-        println!("This zone has no network stack: its net namespace contains only");
-        println!("loopback. That is not a firewall rule - there is no interface.");
-    } else {
-        println!();
-        println!("network.mode is {:?}, and routed networking is NOT IMPLEMENTED.", z.network);
-        println!("This zone gets an empty net namespace: loopback only, no routes,");
-        println!("no path out. It is isolated, and it is not connected.");
+    println!();
+    match z.network {
+        zone::NetworkMode::None => {
+            println!("This zone has no network stack: its net namespace contains only");
+            println!("loopback. That is not a firewall rule - there is no interface.");
+        }
+        zone::NetworkMode::Routed => {
+            println!("A root launch attaches this zone to the kryptik0 bridge, and it");
+            println!("reaches the network through the nic zone. Launched without");
+            println!("privilege it gets loopback only.");
+        }
+        zone::NetworkMode::Nic => {
+            println!("This zone holds the physical network interface and routes the");
+            println!("other zones' traffic (docs/design/net-zone.md).");
+        }
     }
 
     ExitCode::SUCCESS
@@ -1155,7 +1161,7 @@ extern "C" fn sigsys_handler(
      * 4 bytes of padding, then the 8-byte si_call_addr. */
     let nr: i32 = unsafe {
         let base = info as *const u8;
-        let off = 3 * std::mem::size_of::<i32>() + std::mem::size_of::<usize>();
+        let off = 4 * std::mem::size_of::<i32>() + std::mem::size_of::<usize>();
         *(base.add(off) as *const i32)
     };
 
@@ -1203,7 +1209,7 @@ fn cmd_seccomp_trace(cmd: &[String]) -> ExitCode {
     if pid == 0 {
         unsafe {
             let mut sa: libc::sigaction = std::mem::zeroed();
-            sa.sa_sigaction = sigsys_handler as usize;
+            sa.sa_sigaction = sigsys_handler as *const () as usize;
             sa.sa_flags = libc::SA_SIGINFO;
             libc::sigaction(libc::SIGSYS, &sa, std::ptr::null_mut());
         }
@@ -1227,9 +1233,7 @@ fn cmd_seccomp_trace(cmd: &[String]) -> ExitCode {
     unsafe { libc::waitpid(pid, &mut status, 0) };
     let code = spawn::decode_status(status);
     if code == 159 {
-        eprintln!(
-            "seccomp-trace: the command was denied a syscall (see              KRYPTIK_SECCOMP_DENIED above for the number)"
-        );
+        eprintln!("seccomp-trace: the command was denied a syscall");
     }
     ExitCode::from(u8::try_from(code).unwrap_or(1))
 }

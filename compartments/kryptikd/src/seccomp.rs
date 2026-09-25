@@ -145,7 +145,8 @@ impl std::fmt::Display for SeccompError {
             }
             SeccompError::BadSyscallNumber(nr) => write!(
                 f,
-                "syscall number {nr} is out of range for a 32-bit comparison;                  refusing to build a filter that would compare a truncated value"
+                "syscall number {nr} is out of range for a 32-bit comparison; \
+                 refusing to build a filter that would compare a truncated value"
             ),
             SeccompError::Syscall { call, errno } => {
                 write!(f, "{call}: {}", io::Error::from_raw_os_error(*errno))
@@ -614,43 +615,6 @@ pub const SYSCALL_NAMES: &[(&str, libc::c_long)] = &[
 /// Look up a syscall number by name, for policy files and the test harness.
 pub fn syscall_by_name(name: &str) -> Option<libc::c_long> {
     SYSCALL_NAMES.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
-}
-
-/// Best-effort name for a syscall number, for diagnostics.
-pub fn name_of(nr: i32) -> String {
-    let known: &[(libc::c_long, &str)] = &[
-        (libc::SYS_read, "read"), (libc::SYS_write, "write"),
-        (libc::SYS_openat, "openat"), (libc::SYS_close, "close"),
-        (libc::SYS_fstat, "fstat"), (libc::SYS_newfstatat, "newfstatat"),
-        (libc::SYS_statx, "statx"), (libc::SYS_mmap, "mmap"),
-        (libc::SYS_mprotect, "mprotect"), (libc::SYS_munmap, "munmap"),
-        (libc::SYS_brk, "brk"), (libc::SYS_ioctl, "ioctl"),
-        (libc::SYS_lseek, "lseek"), (libc::SYS_execve, "execve"),
-        (libc::SYS_exit_group, "exit_group"), (libc::SYS_getdents64, "getdents64"),
-        (libc::SYS_fadvise64, "fadvise64"), (libc::SYS_pread64, "pread64"),
-        (libc::SYS_prlimit64, "prlimit64"), (libc::SYS_getrandom, "getrandom"),
-        (libc::SYS_rseq, "rseq"), (libc::SYS_set_robust_list, "set_robust_list"),
-        (libc::SYS_futex, "futex"), (libc::SYS_sysinfo, "sysinfo"),
-        (libc::SYS_uname, "uname"), (libc::SYS_readlink, "readlink"),
-        (libc::SYS_access, "access"), (libc::SYS_arch_prctl, "arch_prctl"),
-        (libc::SYS_set_tid_address, "set_tid_address"),
-        (libc::SYS_rt_sigaction, "rt_sigaction"),
-        (libc::SYS_rt_sigprocmask, "rt_sigprocmask"),
-        (libc::SYS_getpid, "getpid"), (libc::SYS_dup2, "dup2"),
-        (libc::SYS_dup3, "dup3"), (libc::SYS_pipe2, "pipe2"),
-        (libc::SYS_wait4, "wait4"), (libc::SYS_clone, "clone"),
-        (libc::SYS_fcntl, "fcntl"), (libc::SYS_umask, "umask"),
-        (libc::SYS_getcwd, "getcwd"), (libc::SYS_chdir, "chdir"),
-        (libc::SYS_setpgid, "setpgid"), (libc::SYS_getpgrp, "getpgrp"),
-        (libc::SYS_geteuid, "geteuid"), (libc::SYS_getuid, "getuid"),
-        (libc::SYS_getgid, "getgid"), (libc::SYS_getegid, "getegid"),
-    ];
-    for (n, name) in known {
-        if *n as i32 == nr {
-            return (*name).to_string();
-        }
-    }
-    format!("syscall #{nr}")
 }
 
 #[cfg(test)]

@@ -989,7 +989,8 @@ pub fn run_in_zone(
     if let Some(cg) = &zone_cgroup {
         if let Err(e) = cg.destroy() {
             eprintln!(
-                "kryptikd[zone {}]: the zone's cgroup could not be removed ({e});                  something in the zone may have outlived the launcher",
+                "kryptikd[zone {}]: the zone's cgroup could not be removed ({e}); \
+                 something in the zone may have outlived the launcher",
                 zone.name
             );
         }
