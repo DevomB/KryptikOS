@@ -69,9 +69,9 @@ work in zones from a terminal and a text browser, and keep it up to date.
 
 - [x] **A watchdog for a hung userspace.** The state suite stops the feeder
       and the machine resets and comes back with its data.
-- [ ] **Every status row is tested.** Stage 05, stage 06 and `make
-      acceptance` read *implemented*: each gets a check that can fail, or the
-      row says why it cannot.
+- [x] **Every status row is tested.** Each row of the status table names
+      the check that can fail it; stage 05, stage 06 and `make acceptance`
+      were the last to read *implemented*.
 - [ ] **The accepted lists are reviewed.** `checker-accepted.txt`,
       `hardening-exceptions.txt`, the setuid allowlist and the artifact
       audit's soft findings: each entry closed or re-justified, with the
