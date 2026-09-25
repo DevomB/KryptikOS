@@ -264,9 +264,9 @@ pub fn resolv_conf_for_bridge() -> String {
 pub fn check_data_dir_empty(path: &str, zone: &str) -> Result<(), RootfsError> {
     let entries = fs::read_dir(path)
         .map_err(|e| RootfsError::Setup(format!("{path}: {e}")))?;
+    // The zone chose these names, and they reach a terminal: quoted and escaped.
     let leftovers: Vec<String> = entries
-        .filter_map(|e| e.ok())
-        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .map(|e| e.map_or_else(|err| format!("<{err}>"), |e| format!("{:?}", e.file_name())))
         .take(6)
         .collect();
     if leftovers.is_empty() {
@@ -836,6 +836,23 @@ mod tests {
         fs::write(&file, "x").unwrap();
         assert!(check_data_dir(file.to_str().unwrap(), me).is_err());
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn leftover_names_are_escaped() {
+        use std::os::unix::ffi::OsStrExt;
+        let base = std::env::temp_dir().join(format!("kryptik-leftovers-{}", std::process::id()));
+        fs::create_dir_all(&base).unwrap();
+        let dir = base.to_str().unwrap();
+        assert!(check_data_dir_empty(dir, "z").is_ok());
+        // A name that is not UTF-8 still counts as data.
+        fs::write(base.join(std::ffi::OsStr::from_bytes(b"\xff")), "x").unwrap();
+        let only_raw = check_data_dir_empty(dir, "z").map_err(|e| e.to_string());
+        fs::write(base.join("a\x1b[2Jb"), "x").unwrap();
+        let err = check_data_dir_empty(dir, "z").unwrap_err().to_string();
+        let _ = fs::remove_dir_all(&base);
+        assert!(only_raw.as_ref().is_err_and(|e| e.contains("\\xFF")), "{only_raw:?}");
+        assert!(!err.contains('\x1b') && err.contains("\\u{1b}"), "{err}");
     }
 
     #[test]
