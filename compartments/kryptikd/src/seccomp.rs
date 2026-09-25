@@ -431,13 +431,12 @@ fn emit_arg_rule(p: &mut Vec<SockFilter>, rule: ArgRule, deny_action: u32, socke
     p.extend(body);
 }
 
-/// Build the BPF program: arch check, x32 check, argument rules, then a
-/// `jeq nr; ret ALLOW` pair per syscall, so no jump offset (one byte) grows
-/// with the list, then default deny.
+#[cfg(test)]
 fn build_program(allow: &[libc::c_long]) -> Result<Vec<SockFilter>, SeccompError> {
     build_program_with(allow, SECCOMP_RET_KILL_PROCESS)
 }
 
+#[cfg(test)]
 fn build_program_with(
     allow: &[libc::c_long],
     deny_action: u32,
@@ -445,6 +444,9 @@ fn build_program_with(
     build_program_full(allow, deny_action, &SocketPolicy::default())
 }
 
+/// Build the BPF program: arch check, x32 check, argument rules, then a
+/// `jeq nr; ret ALLOW` pair per syscall, so no jump offset (one byte) grows
+/// with the list, then default deny.
 fn build_program_full(
     allow: &[libc::c_long],
     deny_action: u32,

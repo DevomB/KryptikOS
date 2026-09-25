@@ -190,10 +190,6 @@ impl Ruleset {
         Ok(Ruleset { fd: fd as RawFd, abi })
     }
 
-    pub fn abi(&self) -> i32 {
-        self.abi
-    }
-
     /// Allow `access` on everything beneath `path`. A missing path is an error,
     /// so a typo cannot silently change confinement.
     pub fn allow(&mut self, path: &str, access: u64) -> Result<(), LandlockError> {
@@ -598,7 +594,7 @@ mod tests {
         match abi_version() {
             Some(v) if v >= MIN_ABI => {
                 let rs = Ruleset::new().expect("ruleset creation should succeed");
-                assert_eq!(rs.abi(), v);
+                assert_eq!(rs.abi, v);
             }
             Some(v) => {
                 assert!(matches!(Ruleset::new(), Err(LandlockError::TooOld { .. })), "ABI {v}");

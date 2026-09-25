@@ -423,6 +423,7 @@ fn fmt4(a: [u8; 4]) -> String {
 }
 
 /// Is `dev` administratively up?
+#[cfg(test)]
 pub fn is_up(dev: &str) -> io::Result<bool> {
     let c = CString::new(dev).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL"))?;
     let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };

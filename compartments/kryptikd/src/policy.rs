@@ -183,6 +183,7 @@ impl Policy {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.extra_syscalls.is_empty()
             && self.sockets == seccomp::SocketPolicy::default()
