@@ -126,7 +126,14 @@ ARGS=(
     -boot menu=off
 )
 if [[ "$GPU" -eq 1 ]]; then
-    ARGS+=( -display none -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci )
+    # A VGA-class virtio GPU, not the plain virtio-gpu-pci. The firmware
+    # framebuffer is then in the card's own BAR, so the virtio-gpu module
+    # replaces simpledrm when it loads, the way i915 or amdgpu do on a
+    # laptop, and the compositor finds one DRM device. With virtio-gpu-pci
+    # the guest kept two, simpledrm on a framebuffer nothing replaced and
+    # virtio-gpu beside it, and wlroots took its multi-GPU path, which the
+    # pixman renderer cannot serve: the compositor died at start.
+    ARGS+=( -display none -vga none -device virtio-vga -device virtio-keyboard-pci -device virtio-mouse-pci )
 else
     ARGS+=( -display none -vga none )
 fi
