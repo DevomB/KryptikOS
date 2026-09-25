@@ -43,6 +43,8 @@ USAGE:
     kryptikd list  [--zones DIR]      list configured zones
     kryptikd show  NAME [--zones DIR]
     kryptikd explain NAME             what starting this zone would do
+    kryptikd seccomp-trace -- CMD     run CMD under the base seccomp filter; every
+                                      call it refuses is named and fails with ENOSYS
     kryptikd run NAME -- CMD [ARGS]   create the zone and run CMD inside it
     kryptikd stop NAME [--now]        stop a running zone (--now = SIGKILL)
     kryptikd status NAME              running, stale or absent
@@ -180,8 +182,8 @@ fn main() -> ExitCode {
             }
         },
         "run" => cmd_run(&zone_dir, &args),
-        /* seccomp-trace -- CMD: run CMD under the zone filter with TRAP in place
-         * of KILL, so the refused syscall is reported. For debugging a policy. */
+        /* seccomp-trace -- CMD: run CMD under the base filter and name every call
+         * it refuses (cmd_seccomp_trace). For writing a policy file. */
         "seccomp-trace" => {
             let Some(sep) = args.iter().position(|a| a == "--") else {
                 eprintln!("seccomp-trace: expected `-- COMMAND`");
