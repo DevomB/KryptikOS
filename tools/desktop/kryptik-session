@@ -48,6 +48,10 @@ export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 # and exports WAYLAND_DISPLAY to the startup command, which is how the
 # chrome finds it.
 unset WAYLAND_DISPLAY WAYLAND_SOCKET DISPLAY
+# pixman is the only renderer built (s_wlroots). Left to choose, wlroots takes
+# it only for a GPU without a render node, and virtio-gpu, i915 and amdgpu all
+# have one: the compositor found no renderer and died at start.
+export WLR_RENDERER=pixman
 mkdir -p "$rt/kryptik" && chmod 0700 "$rt/kryptik"
 log="$rt/kryptik/session.log"
 
