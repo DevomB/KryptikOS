@@ -144,11 +144,18 @@ jobs:
   manifest:
     name: Source manifest
     runs-on: ubuntu-latest
+    # The Distro workflow's path: a cache's version is a hash of its path, so
+    # under any other one a pull request misses main's copy and saves a whole
+    # second one of its own, and those evicted the build trees.
+    env:
+      KRYPTIK_SOURCES: /mnt/kryptik/sources
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Manifest resolves
-        run: ./tools/fetch-sources.sh --list
+        run: |
+          sudo mkdir -p /mnt/kryptik && sudo chown "$(id -u):$(id -g)" /mnt/kryptik
+          ./tools/fetch-sources.sh --list
 
       # The strict provenance gate below hashes the downloaded tarballs
       # against what upstream publishes; without them it reported seven
@@ -168,7 +175,7 @@ jobs:
         id: sources
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
-          path: sources
+          path: /mnt/kryptik/sources
           key: sources-${{ hashFiles('sources.lock') }}
           restore-keys: |
             sources-
