@@ -90,7 +90,10 @@ Refused: a relative path or one containing `..`; a path named twice; a file
 that grants nothing (omit `[policy] landlock` to keep the base rules); a path
 that does not exist when the layer is applied, since the zone would run
 narrower than its file says (so an ephemeral zone should name only paths
-that exist at launch). `explain` prints the base rules, then
+that exist at launch); a path that is or passes through a symbolic link,
+since a zone that can write a granted directory's parent could swap it for
+a link to something wider and widen its own rule at its next start.
+`explain` prints the base rules, then
 `-- and then narrowed by <file>, which grants only:` and the file's rules.
 No shipped zone has a Landlock policy yet.
 
@@ -103,7 +106,8 @@ but never add it. The launcher suite's policy section checks kept
 capabilities, the NIC-only rule, refusals and `explain`. The boundary suite
 checks an allowed socket family against a zone without the policy, and that
 a zone narrowed to `/tmp` and `/dev` cannot write its `$HOME` while a control
-zone can.
+zone can, and that a zone which swaps a granted directory for a link to its
+`$HOME` is refused at its next start.
 
 ## Files
 

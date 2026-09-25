@@ -79,7 +79,8 @@ pub enum LandlockError {
     Unsupported,
     TooOld { abi: i32, need: i32 },
     Syscall { call: &'static str, errno: i32 },
-    BadPath(String),
+    BadPath { path: String, errno: i32 },
+    Symlink(String),
 }
 
 impl std::fmt::Display for LandlockError {
@@ -99,7 +100,12 @@ impl std::fmt::Display for LandlockError {
             LandlockError::Syscall { call, errno } => {
                 write!(f, "{call}: {}", io::Error::from_raw_os_error(*errno))
             }
-            LandlockError::BadPath(p) => write!(f, "cannot open {p}"),
+            LandlockError::BadPath { path, errno } => {
+                write!(f, "cannot open {path}: {}", io::Error::from_raw_os_error(*errno))
+            }
+            LandlockError::Symlink(p) => {
+                write!(f, "{p} is or passes through a symbolic link, which a rule never follows")
+            }
         }
     }
 }
@@ -199,13 +205,11 @@ impl Ruleset {
     }
 
     /// Allow `access` on everything beneath `path`. A missing path is an error,
-    /// so a typo cannot silently change confinement.
+    /// so a typo cannot silently change confinement. So is a symbolic link
+    /// anywhere in it: a zone that swapped a granted directory for a link to a
+    /// wider one would otherwise widen its own rule at its next start.
     pub fn allow(&mut self, path: &str, access: u64) -> Result<(), LandlockError> {
-        let c = CString::new(path).map_err(|_| LandlockError::BadPath(path.into()))?;
-        let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
-        if fd < 0 {
-            return Err(LandlockError::BadPath(path.into()));
-        }
+        let fd = open_exact(path)?;
 
         // Trim to what this kernel handles, or add_rule returns EINVAL.
         let attr = PathBeneathAttr {
@@ -255,6 +259,35 @@ impl Ruleset {
         }
         Ok(())
     }
+}
+
+/// An O_PATH descriptor for `path` as named: openat2 refuses a symbolic link
+/// in any component (ELOOP). It is older (Linux 5.6) than any kernel with the
+/// ABI a ruleset needs.
+fn open_exact(path: &str) -> Result<RawFd, LandlockError> {
+    let c = CString::new(path).map_err(|_| LandlockError::BadPath { path: path.into(), errno: libc::EINVAL })?;
+    // Filled in, not built: libc marks open_how non_exhaustive.
+    let mut how: libc::open_how = unsafe { std::mem::zeroed() };
+    how.flags = (libc::O_PATH | libc::O_CLOEXEC) as u64;
+    how.resolve = libc::RESOLVE_NO_SYMLINKS;
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            libc::AT_FDCWD,
+            c.as_ptr(),
+            &how as *const libc::open_how,
+            std::mem::size_of::<libc::open_how>(),
+        )
+    };
+    if fd < 0 {
+        let errno = io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        return Err(if errno == libc::ELOOP {
+            LandlockError::Symlink(path.into())
+        } else {
+            LandlockError::BadPath { path: path.into(), errno }
+        });
+    }
+    Ok(fd as RawFd)
 }
 
 /// Directives of a zone's Landlock policy file (`[policy] landlock`): one
@@ -327,7 +360,8 @@ pub fn confine_to_zone(rootfs: &str, extra_ro: &[&str]) -> Result<(), LandlockEr
     let mut rs = Ruleset::new()?;
     rs.allow(rootfs, ACCESS_READ | ACCESS_WRITE | ACCESS_EXEC)?;
     for p in extra_ro {
-        // Missing optional read-only paths are tolerated; the zone rootfs is not.
+        /* Optional: one that is missing, or a link as /lib is on a merged-usr
+         * host (the /usr rule covers it), is skipped. The zone rootfs is not. */
         let _ = rs.allow(p, ACCESS_READ | ACCESS_EXEC);
     }
     rs.restrict_self()
@@ -623,6 +657,29 @@ mod tests {
         }
         let mut rs = Ruleset::new().unwrap();
         assert!(rs.allow("/definitely/not/a/real/path", ACCESS_READ).is_err());
+    }
+
+    #[test]
+    fn symlinked_path_refused() {
+        if abi_version().is_none_or(|a| a < MIN_ABI) {
+            return;
+        }
+        // Canonical, so a linked TMPDIR does not refuse the exact path too.
+        let dir = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("kryptik-ll-link-{}", std::process::id()));
+        let real = dir.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        std::os::unix::fs::symlink(&dir, dir.join("link")).unwrap();
+        let mut rs = Ruleset::new().unwrap();
+        let name = |p: std::path::PathBuf| p.to_str().unwrap().to_string();
+        let last = rs.allow(&name(dir.join("link")), ACCESS_READ);
+        let through = rs.allow(&name(dir.join("link/real")), ACCESS_READ);
+        let exact = rs.allow(&name(real), ACCESS_READ);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(matches!(last, Err(LandlockError::Symlink(_))), "{last:?}");
+        assert!(matches!(through, Err(LandlockError::Symlink(_))), "{through:?}");
+        assert!(exact.is_ok(), "{exact:?}");
     }
 
     #[test]

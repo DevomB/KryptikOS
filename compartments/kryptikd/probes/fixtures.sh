@@ -108,6 +108,24 @@ printf '%s\n' \
     'read-write /tmp' \
     'read-write /dev' > "$F/zones/policy/narrowed.landlock"
 
+# swapped: persistent, and its policy keeps HOME read-only but for work, with
+# exec only in work/bin. Write in work lets it swap work/bin for a link to
+# HOME, which a rule must refuse at the next start, not follow.
+zone swapped \
+    '[zone]' 'name = "swapped"' \
+    '[network]' 'mode = "none"' \
+    '[storage]' 'mode = "persistent"' \
+    '[policy]' 'landlock = "policy/swapped.landlock"' \
+    '[ui]' 'border_color = "#556677"'
+mkdir -p "$F/roots/swapped/work/bin"
+printf '%s\n' \
+    '# Synthetic: HOME read-only but for work; exec only in work/bin.' \
+    'read-exec       /' \
+    'read-write      /tmp' \
+    'read-write      /dev' \
+    'read-write      /home/swapped/work' \
+    'read-write-exec /home/swapped/work/bin' > "$F/zones/policy/swapped.landlock"
+
 # badfs: Landlock only grants, so there is no deny directive to parse.
 zone badfs \
     '[zone]' 'name = "badfs"' \

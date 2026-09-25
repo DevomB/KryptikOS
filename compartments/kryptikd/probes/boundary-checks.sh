@@ -162,6 +162,9 @@ MATCH="^denied$" checkz narrowed "... but NOT its own HOME, which the base rules
 MATCH="^ok$"   check "control: the same write succeeds in a zone with no Landlock policy" 0 /bin/sh -c "echo x > \$HOME/f && echo ok"
 MATCH="deny"   checkz badfs "a Landlock policy using a directive that cannot exist is refused" 1 /bin/sh -c "echo RAN-ANYWAY"
 MATCH="absolute" checkz relfs "a Landlock policy naming a relative path is refused" 1 /bin/sh -c "echo RAN-ANYWAY"
+MATCH="^denied$"  checkz swapped "a policy that keeps HOME read-only but for work holds" 0 /bin/sh -c "echo x > \$HOME/f 2>/dev/null && echo WROTE || echo denied"
+MATCH="^swapped$" checkz swapped "... and the zone can swap work/bin for a link to its HOME" 0 /bin/sh -c "rmdir \$HOME/work/bin && ln -s \$HOME \$HOME/work/bin && echo swapped"
+MATCH="symbolic link" checkz swapped "... which its next start refuses rather than grant exec on all of HOME" 125 /bin/sh -c "echo x > \$HOME/f && echo WROTE-HOME"
 
 # ---------------------------------------------------------------------------
 head_ "F. Guarantees a build cannot give are refused, not implied"
