@@ -1204,8 +1204,16 @@ asyncio.run(m())'"
 f = open(\"/tmp/m\", \"w+b\"); f.write(bytes(4096)); f.flush()
 m = mmap.mmap(f.fileno(), 4096); m[0:1] = b\"y\"; m.flush(); print(\"PROBE=flushed\")'"
     probe "L14 timeout(1) and a flushed mapping live in a zone" "flushed"
+    # sudo, su and daemons dropping privilege call the set*id family as root:
+    # refused with EPERM, they can say so instead of dying of SIGSYS.
+    zrun alpha -- /bin/sh -c "$PRO python3 -c 'import os
+try:
+    os.setgroups([]); os.setgid(65534); os.setuid(65534); print(\"PROBE=CHANGED\")
+except PermissionError:
+    print(\"PROBE=refused\")'"
+    probe "L15 a privilege drop in a zone is refused, not killed" "refused"
 else
-    info "L13, L14 not run: this host has no python3"
+    info "L13 to L15 not run: this host has no python3"
 fi
 
 # ============================================================================
