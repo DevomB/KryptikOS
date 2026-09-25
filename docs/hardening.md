@@ -125,8 +125,8 @@ Privilege transitions go through kryptikd, where they can be audited, not
 through setuid binaries. A binary that needs privilege should use a file
 capability (such as `CAP_NET_RAW` for ping) or a brokered service; a setuid
 binary needs a justified entry in `build/config/setuid-allowlist.txt`, which
-is empty. `tools/audit-setuid.sh ROOT` (`make audit`) fails on any setuid or
-setgid binary not on that list. The build and CI do not run it yet.
+is empty. `tools/audit-setuid.sh ROOT` fails on any setuid or setgid binary
+not on that list. The build and CI do not run it yet.
 
 ## Zone syscall filter
 
