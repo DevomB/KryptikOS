@@ -17,7 +17,8 @@ EDITS = [
 """,
      """	struct wlr_scene_rect *border[4]; /* top, bottom, left, right */
 	const float *zoneborder; /* Kryptik: chosen by zone from the app_id */
-	struct wlr_scene_rect *band; /* Kryptik: over the border's inner edge while unfocused */
+	struct wlr_scene_tree *band; /* Kryptik: over the border's inner edge while unfocused */
+	struct wlr_scene_rect *bands[4]; /* top, bottom, left, right */
 """),
     # (2) The ZoneColor type, beside Rule so config.h can define the table.
     ("""typedef struct {
@@ -78,8 +79,10 @@ void
 applyrules(Client *c)
 {
 """),
-    # (4) mapnotify: zone-coloured borders, then the band over them and under
-    # the surface, enabled because a new window starts unfocused.
+    # (4) mapnotify: zone-coloured borders, then the band over them as four
+    # strips. The surface stays below both, or a buffer larger than its
+    # configure would paint over the right and bottom borders. A new window
+    # starts unfocused, so the band starts enabled.
     ("""	for (i = 0; i < 4; i++) {
 		c->border[i] = wlr_scene_rect_create(c->scene, 0, 0,
 				c->isurgent ? urgentcolor : bordercolor);
@@ -92,17 +95,24 @@ applyrules(Client *c)
 				c->isurgent ? urgentcolor : c->zoneborder);
 		c->border[i]->node.data = c;
 	}
-	c->band = wlr_scene_rect_create(c->scene, 0, 0, rootcolor);
-	c->band->node.data = c;
-	wlr_scene_node_raise_to_top(&c->scene_surface->node);
+	c->band = wlr_scene_tree_create(c->scene);
+	for (i = 0; i < 4; i++) {
+		c->bands[i] = wlr_scene_rect_create(c->band, 0, 0, rootcolor);
+		c->bands[i]->node.data = c;
+	}
 """),
     # (5) resize: the band is the ring of the border nearest the surface.
     ("""	wlr_scene_node_set_position(&c->border[3]->node, c->geom.width - c->bw, c->bw);
 """,
      """	wlr_scene_node_set_position(&c->border[3]->node, c->geom.width - c->bw, c->bw);
-	wlr_scene_node_set_position(&c->band->node, c->bw - bandpx, c->bw - bandpx);
-	wlr_scene_rect_set_size(c->band, c->geom.width - 2 * (c->bw - bandpx),
-			c->geom.height - 2 * (c->bw - bandpx));
+	wlr_scene_rect_set_size(c->bands[0], c->geom.width - 2 * (c->bw - bandpx), bandpx);
+	wlr_scene_rect_set_size(c->bands[1], c->geom.width - 2 * (c->bw - bandpx), bandpx);
+	wlr_scene_rect_set_size(c->bands[2], bandpx, c->geom.height - 2 * c->bw);
+	wlr_scene_rect_set_size(c->bands[3], bandpx, c->geom.height - 2 * c->bw);
+	wlr_scene_node_set_position(&c->bands[0]->node, c->bw - bandpx, c->bw - bandpx);
+	wlr_scene_node_set_position(&c->bands[1]->node, c->bw - bandpx, c->geom.height - c->bw);
+	wlr_scene_node_set_position(&c->bands[2]->node, c->bw - bandpx, c->bw);
+	wlr_scene_node_set_position(&c->bands[3]->node, c->geom.width - c->bw, c->bw);
 """),
     # (6) focusclient: the colour is the zone's either way; focus hides the band.
     ("""		if (!exclusive_focus && !seat->drag)

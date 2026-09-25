@@ -115,7 +115,6 @@ impl LinearRgb {
         }
     }
 
-
     pub fn to_xyz(self) -> Xyz {
         Xyz {
             x: RGB_TO_XYZ[0][0] * self.r + RGB_TO_XYZ[0][1] * self.g + RGB_TO_XYZ[0][2] * self.b,

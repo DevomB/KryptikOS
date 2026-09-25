@@ -128,7 +128,7 @@ else
 fi
 }
 check_shot "$SHOT" "windowed"
-# dwl keeps the zone border in fullscreen (dwl-zone-borders.py edit 6), so a
+# dwl keeps the zone border in fullscreen (dwl-zone-borders.py edit 8), so a
 # window cannot hide which zone it belongs to by going fullscreen.
 check_shot "$SHOT_FS" "fullscreen"
 
