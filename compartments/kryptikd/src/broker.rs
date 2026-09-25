@@ -414,12 +414,13 @@ fn handle_transfer(s: &Served, dest: &str, name: &str, fds: &[OwnedFd]) -> Resul
         crate::consent::ask(sender, dest, name, st.st_size as u64, s.asking)?;
     }
     let target = (s.resolve_dest)(dest)?;
-    deliver(&target, name, src, s.max_bytes)
+    // The size checked, and shown if asked, is the size carried.
+    deliver(&target, name, src, st.st_size as u64)
 }
 
 /// Copy into the destination's `incoming/`. Every path is resolved from its
 /// root with openat2 and no symlinks, so nothing written leaves its tree.
-fn deliver(target: &Target, name: &str, src: RawFd, cap: u64) -> Result<(String, u64), String> {
+fn deliver(target: &Target, name: &str, src: RawFd, size: u64) -> Result<(String, u64), String> {
     let home = openat2(
         target.root_fd.as_raw_fd(),
         &target.home_rel,
@@ -439,7 +440,7 @@ fn deliver(target: &Target, name: &str, src: RawFd, cap: u64) -> Result<(String,
             libc::setfsuid(target.uid);
         }
     }
-    let r = deliver_into(home.as_raw_fd(), target, name, src, cap);
+    let r = deliver_into(home.as_raw_fd(), target, name, src, size);
     if switched {
         unsafe {
             libc::setfsuid(0);
@@ -449,7 +450,7 @@ fn deliver(target: &Target, name: &str, src: RawFd, cap: u64) -> Result<(String,
     r
 }
 
-fn deliver_into(home: RawFd, target: &Target, name: &str, src: RawFd, cap: u64) -> Result<(String, u64), String> {
+fn deliver_into(home: RawFd, target: &Target, name: &str, src: RawFd, size: u64) -> Result<(String, u64), String> {
     let inc = CString::new(INCOMING).unwrap();
     let made = unsafe { libc::mkdirat(home, inc.as_ptr(), 0o700) } == 0;
     if !made {
@@ -490,7 +491,7 @@ fn deliver_into(home: RawFd, target: &Target, name: &str, src: RawFd, cap: u64) 
             RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS,
         ) {
             Ok(out) => {
-                return match fill(out.as_raw_fd(), src, cap, target) {
+                return match fill(out.as_raw_fd(), src, size, target) {
                     Ok(n) => Ok((cand, n)),
                     Err(e) => {
                         let c = CString::new(cand.as_str()).unwrap();
@@ -506,19 +507,25 @@ fn deliver_into(home: RawFd, target: &Target, name: &str, src: RawFd, cap: u64) 
     Err(format!("incoming/ already holds {name} and 99 numbered variants of it"))
 }
 
-fn fill(out: RawFd, src: RawFd, cap: u64, target: &Target) -> Result<u64, String> {
+/// Copy the file as it was checked: `size` bytes, no more and no fewer.
+fn fill(out: RawFd, src: RawFd, size: u64, target: &Target) -> Result<u64, String> {
     if unsafe { libc::geteuid() } == 0 && unsafe { libc::fchown(out, target.uid, target.gid) } < 0 {
         return Err(format!("ownership: {}", io::Error::last_os_error()));
     }
-    let total = copy_capped(src, out, cap)?;
+    let total = copy_capped(src, out, size)?;
+    if total != size {
+        return Err(format!("the file shrank to {total} of the {size} bytes checked; aborted"));
+    }
     if unsafe { libc::fsync(out) } < 0 {
         return Err(format!("fsync: {}", io::Error::last_os_error()));
     }
     Ok(total)
 }
 
-/// Copy `src` to `out`, enforcing `cap` on the bytes actually copied: a file
-/// can grow after its st_size was checked.
+/// Copy `src` from its first byte to `out`, enforcing `cap` on the bytes
+/// actually copied: a file can grow after its st_size was checked. The read
+/// offset is the copy's own, so a sender moving the shared descriptor's
+/// position changes nothing.
 pub fn copy_capped(src: RawFd, out: RawFd, cap: u64) -> Result<u64, String> {
     let mut total: u64 = 0;
     let mut fallback = false;
@@ -528,9 +535,8 @@ pub fn copy_capped(src: RawFd, out: RawFd, cap: u64) -> Result<u64, String> {
         // One byte past the cap is enough to know the file is over it.
         let want = std::cmp::min(1u64 << 20, cap + 1 - total) as usize;
         let n = if !fallback {
-            let n = unsafe {
-                libc::copy_file_range(src, std::ptr::null_mut(), out, std::ptr::null_mut(), want, 0)
-            };
+            let mut at = total as libc::loff_t;
+            let n = unsafe { libc::copy_file_range(src, &mut at, out, std::ptr::null_mut(), want, 0) };
             if n < 0 {
                 let e = io::Error::last_os_error();
                 match e.raw_os_error() {
@@ -549,7 +555,7 @@ pub fn copy_capped(src: RawFd, out: RawFd, cap: u64) -> Result<u64, String> {
             n as u64
         } else {
             let take = std::cmp::min(buf.len(), want);
-            let n = unsafe { libc::read(src, buf.as_mut_ptr() as *mut libc::c_void, take) };
+            let n = unsafe { libc::pread(src, buf.as_mut_ptr() as *mut libc::c_void, take, total as libc::off_t) };
             if n < 0 {
                 let e = io::Error::last_os_error();
                 if e.raw_os_error() == Some(libc::EINTR) {
@@ -567,7 +573,7 @@ pub fn copy_capped(src: RawFd, out: RawFd, cap: u64) -> Result<u64, String> {
         }
         total += n;
         if total > cap {
-            return Err(format!("file grew past the {cap}-byte limit during the copy; aborted"));
+            return Err(format!("the file is longer than the {cap} bytes checked; aborted"));
         }
     }
 }
@@ -1199,8 +1205,7 @@ mod tests {
         assert_eq!(std::fs::read(incoming.join("report.pdf")).unwrap(), b"hello transfer");
         assert_eq!(std::fs::metadata(incoming.join("report.pdf")).unwrap().mode() & 0o777, 0o600);
         assert_eq!(std::fs::metadata(&incoming).unwrap().mode() & 0o777, 0o700);
-        /* The same name again gets -2 (a fresh descriptor, since the copy
-         * consumed the first one's offset). */
+        // The same name again gets -2.
         let src2 = open_flags(&file, libc::O_RDONLY);
         assert_eq!(ask_with(&sv, "transfer b report.pdf\n", &[src2], false).1, b"ok report.pdf-2\n");
         unsafe { libc::close(src2) };
@@ -1224,6 +1229,61 @@ mod tests {
         assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
         // Refusals close what they were handed, too.
         assert_eq!(fds_pointing_at(&file), 0, "the broker leaked a descriptor on a refusal");
+        let _ = std::fs::remove_dir_all(&lab.dir);
+    }
+
+    /// One transfer of notes.txt ("hello transfer", 14 bytes) from a descriptor
+    /// the sender left at byte 6; returns the reply.
+    fn send_notes(sv: &Served, file: &Path) -> String {
+        std::fs::write(file, b"hello transfer").unwrap();
+        let src = open_flags(file, libc::O_RDONLY);
+        unsafe { libc::lseek(src, 6, libc::SEEK_SET) };
+        let r = ask_with(sv, "transfer b notes.txt\n", &[src], false).1;
+        unsafe { libc::close(src) };
+        String::from_utf8_lossy(&r).into_owned()
+    }
+
+    #[test]
+    fn transfer_carries_the_size_checked() {
+        use std::io::Write;
+        let lab = lab("size", "b");
+        let entry_dir = lab.dir.join("entry");
+        std::fs::create_dir_all(&entry_dir).unwrap();
+        let file = lab.dir.join("notes.txt");
+        let resolve = resolver(lab.root.clone());
+        // Called after the checks (and the question), before the copy.
+        let grow = |d: &str| {
+            std::fs::OpenOptions::new().append(true).open(&file).unwrap().write_all(b" and more").unwrap();
+            resolve(d)
+        };
+        let shrink = |d: &str| {
+            std::fs::OpenOptions::new().write(true).open(&file).unwrap().set_len(5).unwrap();
+            resolve(d)
+        };
+        let dev = lab.dev;
+        let home_dev = move || Some(dev);
+        let mut sv = Served {
+            zone: &lab.sender,
+            uid: unsafe { libc::geteuid() },
+            entry: &entry_dir,
+            zones_dir: &lab.zones,
+            home_dev: &home_dev,
+            auto_approve: true,
+            max_bytes: 64,
+            resolve_dest: &grow,
+            asking: &crate::consent::keep,
+        };
+        let incoming = lab.root.join("home/b/incoming");
+        let r = send_notes(&sv, &file);
+        assert!(r.contains("longer than the 14 bytes checked"), "{r}");
+        sv.resolve_dest = &shrink;
+        let r = send_notes(&sv, &file);
+        assert!(r.contains("shrank to 5 of the 14 bytes checked"), "{r}");
+        assert!(std::fs::read_dir(&incoming).map_or(true, |d| d.count() == 0), "a refused copy was left behind");
+        // The whole file, whatever the descriptor's position.
+        sv.resolve_dest = &resolve;
+        assert_eq!(send_notes(&sv, &file), "ok notes.txt\n");
+        assert_eq!(std::fs::read(incoming.join("notes.txt")).unwrap(), b"hello transfer");
         let _ = std::fs::remove_dir_all(&lab.dir);
     }
 
@@ -1436,7 +1496,7 @@ mod tests {
         let src = open_flags(&src_p, libc::O_RDONLY);
         let out = open_flags(&out_p, libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC);
         let e = copy_capped(src, out, 10).unwrap_err();
-        assert!(e.contains("grew past the 10-byte limit"), "{e}");
+        assert!(e.contains("longer than the 10 bytes checked"), "{e}");
         assert!(std::fs::metadata(&out_p).unwrap().len() <= 11);
         // And a file within the cap copies whole.
         let src2 = open_flags(&src_p, libc::O_RDONLY);
