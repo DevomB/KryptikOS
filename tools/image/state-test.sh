@@ -45,10 +45,13 @@ VARSF="${VMDIR}/state-vars.fd"; cp /usr/share/OVMF/OVMF_VARS_4M.fd "$VARSF"
 
 
 # A boot that must come up degraded. Nobody can log in to power it off, so it
-# runs into the smoke timeout and only its transcript is checked.
+# is stopped once its report ends, and only its transcript is checked: every
+# line below comes before the report's END.
 degraded_boot() {   # degraded_boot NAME REASON-REGEX
-    "${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode smoke --timeout 150 --name "$1" > /dev/null
-    local t; t="$(tr -d '\r' < "$LATEST")"
+    start_vm "$1"
+    DRIVE_TIMEOUT=150 drive "expect:KRYPTIK_SMOKE: END" > /dev/null
+    stop_vm
+    local t; t="$(txt)"
     grep -q 'sysinit: \*  STATE DEGRADED' <<<"$t" && green "$1: the console banner says STATE DEGRADED" || red "$1: no degraded banner"
     grep -qE "STATE DEGRADED: $2" <<<"$t" && green "$1: the reason is named ($2)" || { red "$1: reason not as expected"; grep 'STATE DEGRADED' <<<"$t" | head -2 | sed 's/^/        /'; }
     grep -q 'KRYPTIK_SMOKE: boot_identity=.*state=degraded' <<<"$t" && green "$1: boot identity records state=degraded" || red "$1: boot identity does not say degraded"
@@ -169,7 +172,7 @@ txt | grep -q 'STATE DEGRADED' && red "state-p6: degraded after the reset" || gr
 # ----------------------------------------------------------------- step 7 --
 step "step 7: three wrong passphrases, then the right one"
 KRYPTIK_STATE_PASSPHRASE=not-the-passphrase degraded_boot state-p7 '/dev/vda4 was not unlocked in three tries'
-[[ "$(tr -d '\r' < "$LATEST" | grep -c 'passphrase for the state partition')" -eq 3 ]] && green "state-p7: asked three times and no more" || red "state-p7: not asked exactly three times"
+[[ "$(txt | grep -c 'passphrase for the state partition')" -eq 3 ]] && green "state-p7: asked three times and no more" || red "state-p7: not asked exactly three times"
 normal_boot state-p7b
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
