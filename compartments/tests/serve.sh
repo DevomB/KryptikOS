@@ -269,6 +269,31 @@ else
     fail "S6a run alpha: $r"; sed 's/^/        /' "$ZLOG" 2>/dev/null | tail -5
 fi
 
+# A slow stop does not stop the daemon. A zone that ignores SIGTERM is only
+# gone at stop's SIGKILL, seconds later; the daemon ran stop inside its
+# request handler and answered nobody else meanwhile. Another client's
+# status, asked in the middle of it, must be answered at once.
+ms() { date +%s%3N; }
+r="$(ask "run alpha\narg /bin/sh\narg -c\narg trap '' TERM; while :; do sleep 1; done\nend\n")"
+if [[ "$r" == ok\ [0-9]* ]]; then
+    t0="$(ms)"; ( ask 'stop alpha\n' > "$WORK/slow-stop.out"; ms > "$WORK/slow-stop.end" ) &
+    stopper=$!
+    sleep 0.5
+    s0="$(ms)"; s="$(ask 'status\n')"; s1="$(ms)"
+    wait "$stopper"
+    took=$(( $(cat "$WORK/slow-stop.end") - t0 )); asked=$(( s1 - s0 ))
+    if [[ "$took" -lt 2000 ]]; then
+        fail "S6g the stop took ${took} ms, too quick to show anything (the zone did not ignore SIGTERM)"
+    elif [[ "$asked" -lt 1000 && "$s" == *"alpha"* ]]; then
+        pass "S6g status was answered in ${asked} ms while a ${took} ms stop was under way"
+    else
+        fail "S6g status took ${asked} ms during a ${took} ms stop (answer: ${s%$'\n'})"
+    fi
+    [[ "$(cat "$WORK/slow-stop.out")" == "ok" ]] && pass "S6h the slow stop still replies ok when it ends" || fail "S6h slow stop: $(cat "$WORK/slow-stop.out")"
+else
+    fail "S6g run alpha (ignoring SIGTERM): $r"
+fi
+
 r="$(ask 'run broken\narg /bin/true\nend\n')"
 if [[ "$r" == "error: zone \"broken\" did not start: launcher exited"* ]]; then
     pass "S7a a zone that cannot start is reported with the launcher's exit"
