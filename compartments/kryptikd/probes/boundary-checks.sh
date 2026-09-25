@@ -297,11 +297,14 @@ if os.path.isdir(d):
 else:
     print('ARRIVED none')" > "$F/dest.out" 2>&1 &
 DEST=$!
-for _ in $(seq 1 300); do
-    grep -q '^PACKET-UP' "$F/dest.out" 2>/dev/null && break
-    kill -0 "$DEST" 2>/dev/null || break
-    sleep 0.1
-done
+packet_up() {
+    for _ in $(seq 1 300); do
+        grep -q '^PACKET-UP' "$F/dest.out" 2>/dev/null && return
+        kill -0 "$DEST" 2>/dev/null || return
+        sleep 0.1
+    done
+}
+packet_up
 ZFLAGS=(--auto-approve-transfers)
 MATCH="^ok report.txt$" check "a zone offers a file from its data mount and learns the name it landed under" 0 /bin/sh -c "echo payload-42 > /home/probe/report.txt && python3 -c '$TX' packet report.txt /home/probe/report.txt 0"
 wait $DEST
@@ -314,10 +317,17 @@ MATCH="not a regular file" check "a descriptor to a directory is refused" 0 /bin
 MATCH="not on the zone" check "a file from the zone's tmpfs, not its data mount, is refused" 0 /bin/sh -c "echo x > /tmp/f && python3 -c '$TX' packet f /tmp/f 0"
 MATCH="not running" check "a destination that is not running is refused"  0 /bin/sh -c "echo x > /home/probe/f && python3 -c '$TX' packet f /home/probe/f 0"
 ZFLAGS=()
-# On a system with a consent channel the question is asked and nobody
-# answers; a short deadline keeps that a refusal rather than a timeout of
-# the check itself.
+# The person is asked only about a destination that is running. On a system
+# with a consent channel nobody answers; a short deadline keeps that a
+# refusal rather than a timeout of the check itself.
+"$K" run packet "${IDFLAGS[@]}" --zones "$F/zones" --rootfs "$F/roots" -- /usr/bin/python3 -u -c "
+import time
+print('PACKET-UP')
+time.sleep(60)" > "$F/dest.out" 2>&1 &
+DEST=$!
+packet_up
 KRYPTIK_CONSENT_TIMEOUT=3 MATCH="approv\|consent\|refusal" check "without the approval flag every transfer is refused for want of consent" 0 /bin/sh -c "echo x > /home/probe/f && python3 -c '$TX' packet f /home/probe/f 0"
+kill "$DEST" 2>/dev/null; wait "$DEST" 2>/dev/null
 MATCH="does not name" check "a destination outside the sender's [transfer] to is refused before consent" 0 /bin/sh -c "echo x > /home/probe/f && python3 -c '$TX' capped f /home/probe/f 0"
 MATCH="single path component" check "a name carrying a path separator is refused at parse time" 0 /bin/sh -c "echo x > /home/probe/f && python3 -c '$TX' packet ../f /home/probe/f 0"
 

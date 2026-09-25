@@ -427,6 +427,21 @@ fn try_lock(dir: &Path) -> Result<Lock, RegistryError> {
     Ok(Lock::Held(fd))
 }
 
+/// `try_lock`, waiting out a probe: `held` takes the shared lock for an
+/// instant, and an owner that met it took a stale entry for a live one. A
+/// launcher holds its lock for its whole life, so Busy after 100 ms is one.
+fn lock_owner(dir: &Path) -> Result<Lock, RegistryError> {
+    let mut lock = try_lock(dir)?;
+    for _ in 0..20 {
+        if !matches!(lock, Lock::Busy) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        lock = try_lock(dir)?;
+    }
+    Ok(lock)
+}
+
 /// Whether a launcher holds the entry's lock: a shared, non-blocking lock is
 /// refused exactly when one does. Nothing is created and nothing exclusive is
 /// taken: a probe (`status`, a `stop` polling for the entry to go) used to
@@ -488,7 +503,7 @@ pub fn reclaim(zone: &str) -> Result<(), RegistryError> {
     // name between the caller's liveness reading and this had its fresh entry
     // swept from under it and its cgroup killed, and the name was claimed
     // twice.
-    let fd = match try_lock(&dir)? {
+    let fd = match lock_owner(&dir)? {
         Lock::Held(fd) => fd,
         Lock::Busy => return Err(RegistryError::AlreadyRunning { zone: zone.to_string(), pid: -1 }),
         Lock::Gone => return Ok(()),
@@ -648,19 +663,10 @@ pub fn claim(zone: &str) -> Result<Handle, RegistryError> {
         }
 
         set_mode(&dir, 0o700)?;
-        // Between our mkdir and our lock, a probe may hold the shared lock
-        // for an instant; that is waited out. A reclaim may have judged the
-        // fresh, unlocked directory stale and taken it: then it is gone, or
-        // about to be, and the claim starts over from mkdir.
-        let mut lock = try_lock(&dir)?;
-        for _ in 0..20 {
-            if !matches!(lock, Lock::Busy) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-            lock = try_lock(&dir)?;
-        }
-        match lock {
+        // A reclaim may have judged the fresh, unlocked directory stale and
+        // taken it: then it is gone, or about to be, and the claim starts
+        // over from mkdir.
+        match lock_owner(&dir)? {
             Lock::Held(fd) => {
                 let h = Handle { dir: dir.clone(), fd };
                 h.write("started", &format!("{}\n", now_iso8601()))?;
@@ -886,6 +892,25 @@ mod tests {
         }
         assert!(h.dir().join("started").exists(), "the live entry must be untouched");
         drop(h);
+    }
+
+    #[test]
+    fn reclaim_waits_out_a_probe() {
+        // A probe (status, a stop polling) holding the shared lock for its
+        // instant made a reclaim call a stale entry live.
+        let zone = format!("regwait-{}", unsafe { libc::getpid() });
+        let dir = base().join(&zone);
+        ensure_base(&base()).unwrap();
+        fs::create_dir(&dir).unwrap();
+        let fd = open_lock(&dir, true).unwrap().unwrap();
+        assert_eq!(unsafe { libc::flock(fd, libc::LOCK_SH) }, 0);
+        let probe = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            unsafe { libc::close(fd) };
+        });
+        reclaim(&zone).expect("a probe's instant must not make a stale entry live");
+        probe.join().unwrap();
+        assert!(!dir.exists());
     }
 
     #[test]
