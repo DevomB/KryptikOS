@@ -468,9 +468,9 @@ fn verify_proxy_socket(p: &Path, uid: u32, zone: &str, proxy_exe: Option<&Path>)
 
 /// Ask the kernel who listens on the socket's inode. SO_PEERCRED names the
 /// caller of listen(), which must be the session's uid running kryptik-wlproxy
-/// for this zone (it logs a client disconnect). A process handed the listening
-/// socket later would go unseen, but only the session's uid can hand it over,
-/// and that uid reaches the compositor directly anyway.
+/// for this zone (the probe shows in its log as a client disconnect). A process
+/// handed the socket later goes unseen, but only that uid could hand it over,
+/// and it reaches the compositor directly anyway.
 fn verify_proxy_listener(sock: &OwnedFd, uid: u32, zone: &str, proxy_exe: Option<&Path>) -> Result<(), String> {
     /* Non-blocking: the listener is the session's and may never accept; a
      * full backlog must refuse at once, not block the root daemon. */

@@ -541,8 +541,7 @@ fn populate_etc(root: &str, zone: &str, home: &str, resolver: Resolver) -> Resul
     write("nsswitch.conf", nsswitch())?;
     write("hosts", hosts_for(zone))?;
     write("hostname", format!("{zone}\n"))?;
-    // Written here, not bound from the host's /etc: no host file decides what
-    // a zone preloads.
+    // Written here, not bound from the host's /etc: no host file picks a zone's preload.
     if Path::new(ALLOCATOR).is_file() {
         write("ld.so.preload", format!("{ALLOCATOR}\n"))?;
     }
