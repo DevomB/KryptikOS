@@ -1160,13 +1160,16 @@ filter_probe "L7  ioctl(TIOCSTI) is killed (terminal input injection)" ioctl-tio
 filter_probe "L8  positive control: socket(AF_INET) still works" socket-inet 0
 
 # seccomp-trace names each refused call and lets the program carry on:
-# reboot(2) is refused by the zone filter and fails with ENOSYS (38).
+# reboot(2) is refused by the zone filter and fails with ENOSYS (38), and so
+# does inotify_init1(2), marked soft since a zone gets ENOSYS for it too.
 out="$(timeout "$TIMEOUT" "$KRYPTIKD" seccomp-trace -- python3 -c \
-    'import ctypes; c = ctypes.CDLL(None, use_errno=True); print(c.syscall(169, 0, 0, 0, 0), ctypes.get_errno())' 2>&1)"
-if [[ "$out" == *"KRYPTIK_SECCOMP_DENIED 169"* && "$out" == *"-1 38"* ]]; then
-    pass "L9  seccomp-trace names a refused call and the program goes on"
+    'import ctypes; c = ctypes.CDLL(None, use_errno=True); [print(c.syscall(nr, 0, 0, 0, 0), ctypes.get_errno()) for nr in (169, 294)]' 2>&1)"
+if grep -qx 'KRYPTIK_SECCOMP_DENIED 169 reboot' <<<"$out" \
+    && grep -qx 'KRYPTIK_SECCOMP_DENIED 294 inotify_init1 soft' <<<"$out" \
+    && [[ "$(grep -cx -e '-1 38' <<<"$out")" == 2 ]]; then
+    pass "L9  seccomp-trace names refused calls, soft ones marked, and the program goes on"
 else
-    fail "L9  seccomp-trace did not report reboot(2) [$(tr '\n' ' ' <<<"$out")]"
+    fail "L9  seccomp-trace did not report reboot(2) and inotify_init1(2) [$(tr '\n' ' ' <<<"$out")]"
 fi
 
 # ============================================================================

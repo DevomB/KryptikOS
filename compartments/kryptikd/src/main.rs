@@ -1201,11 +1201,13 @@ fn cmd_seccomp_trace(cmd: &[String]) -> ExitCode {
             }
             let nr = libc::c_long::from(req.data.nr);
             let name = seccomp::SYSCALL_NAMES.iter().find(|(_, n)| *n == nr).map_or("", |(s, _)| *s);
-            eprintln!("KRYPTIK_SECCOMP_DENIED {nr} {name}");
+            // A soft refusal gets the errno a zone gets, and is marked.
+            let soft = seccomp::REFUSED_SOFTLY.iter().find(|(n, _)| *n == nr).map(|&(_, e)| e as libc::c_int);
+            eprintln!("KRYPTIK_SECCOMP_DENIED {nr} {name}{}", if soft.is_some() { " soft" } else { "" });
             refused += 1;
             let mut resp: libc::seccomp_notif_resp = unsafe { std::mem::zeroed() };
             resp.id = req.id;
-            resp.error = -libc::ENOSYS;
+            resp.error = -soft.unwrap_or(libc::ENOSYS);
             unsafe { libc::ioctl(listener, NOTIF_SEND as _, &mut resp) };
         }
     } else {

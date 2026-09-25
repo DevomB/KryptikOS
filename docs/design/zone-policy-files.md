@@ -35,10 +35,14 @@ keep-capability   CAP_NET_RAW         # left in the bounding set
 To find what a program needs, run it under the base filter with `kryptikd
 seccomp-trace -- CMD [ARGS]`. Each call the filter would kill the program for
 is printed as `KRYPTIK_SECCOMP_DENIED <nr> <name>` and fails with ENOSYS
-instead, so one run lists them all rather than stopping at the first. A
-printed name can go on an `allow-syscall` line unless it is on the denied
-list; a call refused for its arguments (namespace flags to `clone`,
-`TIOCSTI`) is printed under its syscall's name and stays refused.
+instead, so one run lists them all rather than stopping at the first. A call
+a zone gets ENOSYS for rather than being killed, `inotify_init` and
+`inotify_init1` (a watch on the `/usr` every zone shares would see each
+program started anywhere; programs fall back to polling), is printed with
+`soft` after its name. A printed name can go on an `allow-syscall` line
+unless it is on the denied list; a call refused for its arguments (namespace
+flags to `clone`, `TIOCSTI`) is printed under its syscall's name and stays
+refused.
 
 An unknown directive or name, a denied syscall, a capability outside
 `KEEPABLE`, a duplicate line or an unreadable file is an error that names the

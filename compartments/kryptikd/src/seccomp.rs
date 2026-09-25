@@ -473,8 +473,11 @@ fn build_program_full(
     for &(nr, e) in REFUSED_SOFTLY {
         // Allowed by the list, it is allowed below like any other.
         if !allow.contains(&nr) {
+            /* seccomp-trace answers these with the same errno, so the program
+             * runs as it would in a zone and the call is still named. */
+            let refuse = if deny_action == libc::SECCOMP_RET_USER_NOTIF { deny_action } else { errno_action(e) };
             p.push(jump(BPF_JMP | BPF_JEQ | BPF_K, nr as u32, 0, 1));
-            p.push(stmt(BPF_RET | BPF_K, errno_action(e)));
+            p.push(stmt(BPF_RET | BPF_K, refuse));
         }
     }
 
@@ -775,6 +778,14 @@ mod tests {
         allow.push(libc::SYS_inotify_init1);
         let p = build_program(&allow).unwrap();
         assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, libc::SYS_inotify_init1 as u32), SECCOMP_RET_ALLOW, "a policy opens it");
+    }
+
+    #[test]
+    fn trace_names_soft_refusals() {
+        // clone3 keeps its errno: no policy opens it, so naming it would mislead.
+        let p = build_program_with(BASE_ALLOWLIST, libc::SECCOMP_RET_USER_NOTIF).unwrap();
+        assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, libc::SYS_inotify_init1 as u32), libc::SECCOMP_RET_USER_NOTIF);
+        assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, libc::SYS_clone3 as u32), errno_action(ENOSYS));
     }
 
     #[test]
