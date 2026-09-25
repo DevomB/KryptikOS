@@ -59,6 +59,7 @@ pub const AF_NETLINK: u32 = 16;
 pub const NETLINK_ROUTE: u32 = 0;
 const EAFNOSUPPORT: u32 = 97;
 const ENOSYS: u32 = 38;
+const EPERM: u32 = 1;
 
 /// Families the base policy allows (AF_NETLINK only as NETLINK_ROUTE).
 pub const BASE_SOCKET_FAMILIES: &[u32] = &[AF_UNIX, AF_INET, AF_INET6, AF_NETLINK];
@@ -338,10 +339,17 @@ impl ArgRule {
     }
 }
 
-/// Refused with an errno, not killed, since programs fall back when these
-/// fail; a zone policy may allow them. inotify: a watch on the /usr the zones
-/// share with zone 0 sees every program any of them starts.
-pub const REFUSED_SOFTLY: &[(libc::c_long, u32)] = &[(libc::SYS_inotify_init, ENOSYS), (libc::SYS_inotify_init1, ENOSYS)];
+/// Refused with an errno, not killed, since programs carry on when these fail.
+/// inotify: a watch on the /usr the zones share with zone 0 sees every program
+/// any of them starts; a zone policy may allow it. setfsuid, setfsgid: ncurses
+/// brackets every terminfo open with them, dropping to the real ids and back,
+/// so a kill took every terminal program with it; they stay denied.
+pub const REFUSED_SOFTLY: &[(libc::c_long, u32)] = &[
+    (libc::SYS_inotify_init, ENOSYS),
+    (libc::SYS_inotify_init1, ENOSYS),
+    (libc::SYS_setfsuid, EPERM),
+    (libc::SYS_setfsgid, EPERM),
+];
 
 const fn errno_action(e: u32) -> u32 {
     SECCOMP_RET_ERRNO | (e & 0xffff)
@@ -781,6 +789,16 @@ mod tests {
     }
 
     #[test]
+    fn setfsuid_fails_not_kills() {
+        // Denied all the same: no policy may allow it.
+        let p = build_program(BASE_ALLOWLIST).unwrap();
+        for nr in [libc::SYS_setfsuid, libc::SYS_setfsgid] {
+            assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, nr as u32), errno_action(EPERM));
+            assert!(is_denied(nr));
+        }
+    }
+
+    #[test]
     fn trace_names_soft_refusals() {
         // clone3 keeps its errno: no policy opens it, so naming it would mislead.
         let p = build_program_with(BASE_ALLOWLIST, libc::SECCOMP_RET_USER_NOTIF).unwrap();
@@ -837,11 +855,8 @@ mod tests {
             }
         }
         for (nr, why) in DENIED_RATIONALE {
-            assert_eq!(
-                evaluate(&p, AUDIT_ARCH_X86_64, *nr as u32),
-                SECCOMP_RET_KILL_PROCESS,
-                "denied syscall {nr} ({why}) was not killed"
-            );
+            let want = REFUSED_SOFTLY.iter().find(|(n, _)| n == nr).map_or(SECCOMP_RET_KILL_PROCESS, |&(_, e)| errno_action(e));
+            assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, *nr as u32), want, "denied syscall {nr} ({why}) was not refused");
         }
     }
 
