@@ -1,17 +1,7 @@
 #!/usr/bin/env python3
 """Generate compositor/wlproxy/src/protocol_tables.rs from Wayland protocol XML.
 
-    tools/desktop/gen-wl-protocol.py OUT.rs wayland.xml xdg-shell.xml ...
-
-The proxy needs, for every interface it lets through, the exact signature of
-every request and event: which arguments are new_id (and of which interface),
-which are file descriptors (they occupy no bytes on the wire), and the
-version each interface was defined at. Getting a single fd count wrong
-desynchronises the descriptor queue from the byte stream, so this is
-generated from upstream's XML rather than typed.
-
-Signature letters follow libwayland: i u f s o n a h, with '?' before a
-nullable o/s, and n carries its interface name after a colon in the table.
+usage: tools/desktop/gen-wl-protocol.py OUT.rs wayland.xml xdg-shell.xml ...
 """
 import hashlib, sys, xml.etree.ElementTree as ET
 
@@ -23,8 +13,7 @@ def sig_of(msg):
              "new_id": "n", "array": "a", "fd": "h"}[t]
         if t == "new_id":
             iface = a.get("interface")
-            # wl_registry.bind's new_id has no interface: the client names it
-            # (string, uint version) before the id on the wire.
+            # No interface (wl_registry.bind): the id follows the interface name and version on the wire.
             parts.append("n:" + (iface or "*"))
         else:
             parts.append(("?" if nullable else "") + c)

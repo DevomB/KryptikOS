@@ -1,11 +1,6 @@
-//! Protocol knowledge: which messages exist, what they carry, and in
-//! particular which ones carry descriptors and which create objects.
-//!
-//! The tables are generated from upstream's XML (protocol_tables.rs); this
-//! module gives them a shape and answers the two questions the proxy asks
-//! on every message: how many descriptors ride with it, and which new
-//! objects it creates (and of which interface), so the object map stays in
-//! step with both peers.
+//! Message signatures from the generated tables (protocol_tables.rs): how many
+//! descriptors ride with each message and which object it creates, so the
+//! object map stays in step with both peers.
 
 use crate::wire::{ArgReader, WireError};
 
@@ -27,12 +22,8 @@ pub struct Interface {
     pub events: &'static [Message],
 }
 
-/// The interface of that name, or None: an unknown name is a refusal in
-/// every caller, never a default.
-///
-/// Indexed once, on first use. This is asked for every object either peer
-/// creates and every global the server advertises, and the generated table
-/// is neither sorted nor small enough for a scan to be free.
+/// The interface of that name; None is a refusal in every caller. Indexed on
+/// first use, since this runs for every new object and every advertised global.
 pub fn find(name: &str) -> Option<&'static Interface> {
     use std::collections::HashMap;
     use std::sync::OnceLock;
@@ -51,9 +42,8 @@ pub enum Arg {
     Fixed,
     String { nullable: bool },
     Object { nullable: bool },
-    /// A new object created by this message. `iface` is `None` for
-    /// wl_registry.bind, whose new_id is preceded on the wire by the
-    /// interface name and version the client chose.
+    /// A new object. `iface` is None for wl_registry.bind, whose new_id follows
+    /// the interface name and version the client chose.
     NewId { iface: Option<&'static str> },
     Array,
     Fd,
@@ -90,14 +80,12 @@ impl Message {
     }
 }
 
-/// What a decoded message tells the proxy: the object it creates, and the
-/// strings it carries (for rewriting), in argument order. Borrowed from the
-/// body, so decoding a message allocates nothing unless it carries a string.
+/// The object a message creates and the strings it carries (for rewriting),
+/// borrowed from the body: decoding allocates only for a message with strings.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Decoded<'a> {
-    /// (new object id, interface name). For wl_registry.bind the interface
-    /// comes from the request itself. No message creates two objects (a test
-    /// holds the tables to that), and a body that tries is refused.
+    /// (new object id, interface name). No message creates two (the tables are
+    /// tested for it), and a body that tries is refused.
     pub new_object: Option<(u32, &'a str)>,
     /// (byte offset of the string's length word within the body, value)
     pub strings: Vec<(usize, &'a str)>,
@@ -115,10 +103,8 @@ impl<'a> Decoded<'a> {
     }
 }
 
-/// Walk a message body against its signature, validating every argument
-/// and collecting what the proxy needs. Refuses anything that does not
-/// parse exactly to the signature's end: a trailing byte is as suspect as a
-/// missing one.
+/// Validate a body against its signature and collect what the proxy needs. It
+/// must parse exactly to its end: a trailing byte is as suspect as a missing one.
 pub fn decode<'a>(msg: &Message, body: &'a [u8]) -> Result<Decoded<'a>, WireError> {
     let mut r = ArgReader::new(body);
     let mut d = Decoded::default();
@@ -174,9 +160,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn find_answers_for_every_table_entry_and_nothing_else() {
-        // The index must be the table: every name resolves to its own
-        // entry, and a name that is not in the table stays a refusal.
+    fn find_matches_table_exactly() {
         for i in crate::protocol_tables::INTERFACES {
             let found = find(i.name).expect("every generated interface is findable");
             assert!(std::ptr::eq(found, i), "{} resolved to a different entry", i.name);
@@ -185,8 +169,7 @@ pub(crate) mod tests {
         assert!(find("wl_compositor_").is_none());
     }
 
-    /// What decode and the outbound batches rely on: one new object at most
-    /// per message, and never more descriptors than one sendmsg may carry.
+    /// At most one new object per message, and no more descriptors than one sendmsg carries.
     #[test]
     fn tables_fit_one_send() {
         for i in crate::protocol_tables::INTERFACES {
@@ -199,7 +182,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn descriptor_counts_come_from_the_tables() {
+    fn descriptor_counts_from_tables() {
         let shm = find("wl_shm").unwrap();
         let create_pool = shm.requests.iter().find(|m| m.name == "create_pool").unwrap();
         assert_eq!(create_pool.fd_count(), 1);
@@ -211,7 +194,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn bind_is_decoded_with_the_interface_the_client_named() {
+    fn bind_uses_client_named_interface() {
         let reg = find("wl_registry").unwrap();
         let bind = &reg.requests[0];
         let msg = MessageWriter::new(2, 0).u32(4).string("wl_compositor").u32(5).u32(3).finish().unwrap();
@@ -221,7 +204,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_trailing_byte_is_refused() {
+    fn trailing_byte_is_refused() {
         let comp = find("wl_compositor").unwrap();
         let create_surface = &comp.requests[0]; // n:wl_surface
         let mut msg = MessageWriter::new(3, 0).u32(9).finish().unwrap();
@@ -241,16 +224,10 @@ pub(crate) mod tests {
     }
 
     // --- the decoder, attacked ---------------------------------------------
-    //
-    // Everything a zone's client sends reaches `Header::parse` and `decode`
-    // before the proxy decides anything, so these two are the boundary. The
-    // corpus is the protocol itself: one well-formed body for every message
-    // in the generated tables, built from its signature. Each is then
-    // damaged a few thousand ways by a generator with a fixed seed, so a
-    // failure here is the same failure on every machine and every run. It is
-    // not coverage-guided; it is what runs on every push with no tool but
-    // cargo. What it holds the decoder to: never a panic, never an index past
-    // the body, and an `Ok` only for a body that parses exactly to its end.
+    /* `Header::parse` and `decode` see every byte a client sends. A well-formed
+     * body for each message in the tables is damaged by a fixed-seed generator,
+     * so a failure repeats on every machine. The decoder must never panic or
+     * read past the body, and returns Ok only for an exact parse. */
 
     /// xorshift64*: small, seeded, the same sequence everywhere.
     pub(crate) struct Rng(pub u64);
@@ -321,7 +298,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn no_body_a_client_can_send_makes_the_decoder_panic_or_overread() {
+    fn decoder_survives_any_body() {
         let mut rng = Rng(0x4B52_5950_5449_4B31);
         let (mut tried, mut accepted) = (0u32, 0u32);
         for i in crate::protocol_tables::INTERFACES {
@@ -334,7 +311,7 @@ pub(crate) mod tests {
                         damage(&mut body, &mut rng);
                     }
                     tried += 1;
-                    // Reaching the next line at all is the first property.
+                    // Not panicking is the first property.
                     if let Ok(d) = decode(m, &body) {
                         accepted += 1;
                         assert_eq!(body.len() % 4, 0, "{}.{}: accepted a body that is not word-aligned", i.name, m.name);
@@ -351,13 +328,13 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn no_eight_bytes_make_a_header_that_lies_about_its_length() {
+    fn header_parse_survives_any_bytes() {
         use crate::wire::{Header, HEADER_LEN, MAX_MESSAGE_LEN};
         let mut rng = Rng(0x5749_5245_4844_5231);
         for n in 0..200_000u32 {
             let mut buf = rng.next().to_ne_bytes().to_vec();
             if n % 3 == 0 {
-                // The size field is where the edges are: steer half the runs there.
+                // The size field is where the edges are: steer a third of the runs there.
                 let size = [0u16, 4, 7, 8, 9, 12, 4092, 4096, 4097, 4100, 0xfffc, 0xffff][rng.below(12)];
                 let word1 = (u32::from(size) << 16) | (rng.next() as u32 & 0xffff);
                 buf[4..].copy_from_slice(&word1.to_ne_bytes());

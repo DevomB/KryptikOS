@@ -1,22 +1,13 @@
-//! What a zone's client may reach through the proxy, and what the proxy
-//! changes on the way.
+//! What a zone's client may reach through the proxy, and what it rewrites.
 //!
-//! The allowlist is the boundary. Globals not on it are never advertised
-//! to the client, so they cannot be bound: no screen capture, no global
-//! input, no layer shell (nothing from a zone may draw over the trusted
-//! chrome), no data-device or primary-selection clipboard (the broker is
-//! the only cross-zone channel), no virtual keyboard, no output management,
-//! no activation. A client that binds something it was not told about is
-//! either broken or probing, and is disconnected.
-//!
-//! Identity is text the client cannot control: every xdg_toplevel title and
-//! app_id passes through here and comes out prefixed with the zone name, so
-//! the compositor and the trusted chrome know whose window it is whatever
-//! the application claims.
+//! Globals off the allowlist are never advertised, so they cannot be bound: no
+//! capture, global input, layer shell (nothing may draw over the chrome),
+//! clipboard (the broker is the only cross-zone channel), virtual keyboard,
+//! output management or activation; binding one anyway disconnects the client.
+//! Every toplevel title and app_id comes out carrying the zone's name.
 
-/// Interfaces a zone client may bind, with the highest version the proxy
-/// will forward. The version cap is what the generated tables know; a
-/// newer compositor's extra requests would otherwise be unparseable here.
+/// Interfaces a zone client may bind, capped at the version the generated
+/// tables know: requests of a newer version could not be parsed here.
 pub const ALLOWED: &[(&str, u32)] = &[
     ("wl_compositor", 6),
     ("wl_subcompositor", 1),
@@ -32,18 +23,14 @@ pub fn allowed_version(interface: &str) -> Option<u32> {
     ALLOWED.iter().find(|(n, _)| *n == interface).map(|(_, v)| *v)
 }
 
-/// The most bytes a rewritten title may carry. A title is not a channel
-/// for megabytes; the compositor and the chrome only ever show one line.
+/// The most bytes a rewritten title may carry; only one line is ever shown.
 pub const MAX_TITLE_BYTES: usize = 256;
 
-/// The identity prefix for titles: `[zone] `.
-///
-/// The claimed title follows the prefix whatever it contains: a client that
-/// writes its own `[vault] ` merely becomes `[work] [vault] ...`, visibly,
-/// after the real one.
+/// Prefix a title with `[zone] `. A claimed `[vault] ` just follows the real
+/// prefix: `[work] [vault] ...`.
 pub fn title_for(zone: &str, title: &str) -> String {
-    // Titles enter dwl's line-based status stream and terminal chrome.
-    // Controls must not inject records, terminal escapes, or bidi overrides.
+    /* Titles reach dwl's line-based status stream and terminal chrome: no
+     * control may inject records, terminal escapes or bidi overrides. */
     let title: String = title.chars().map(|c| {
         if c.is_control() || matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}') { ' ' } else { c }
     }).collect();
@@ -52,11 +39,8 @@ pub fn title_for(zone: &str, title: &str) -> String {
     out
 }
 
-/// Cut `s` down to at most `max` bytes, ending in `...` when anything was
-/// cut. The cut lands on a character boundary: a byte count is not a
-/// character count, and `String::truncate` panics inside a multi-byte
-/// sequence - which, with `panic = "abort"` in release, took the whole
-/// proxy down for a title of accented text.
+/// Cut `s` to at most `max` bytes, ending in `...` if anything was cut. The
+/// cut lands on a character boundary: `String::truncate` panics inside one.
 fn bound_utf8(s: &mut String, max: usize) {
     if s.len() <= max {
         return;
@@ -69,9 +53,8 @@ fn bound_utf8(s: &mut String, max: usize) {
     s.push_str("...");
 }
 
-/// The app_id the compositor sees: `kryptik.<zone>.<claimed>`, with the
-/// claimed part restricted to a safe alphabet so a zone name inside it
-/// cannot be confused with the real one.
+/// `kryptik.<zone>.<claimed>`, the claimed part cut to a safe alphabet so a
+/// zone name inside it cannot pass for the real one.
 pub fn app_id_for(zone: &str, claimed: &str) -> String {
     let cleaned: String = claimed
         .chars()
@@ -91,7 +74,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_capture_and_clipboard_interfaces_are_not_advertised() {
+    fn capture_and_clipboard_are_hidden() {
         for hidden in [
             "zwlr_screencopy_manager_v1",
             "wl_data_device_manager",
@@ -112,10 +95,8 @@ mod tests {
         }
     }
 
-    /// The proxy forgets an object only on wl_display.delete_id, which names
-    /// client-created ids. An object the compositor created would stay in the
-    /// map until the session hit its object bound, so nothing a zone can
-    /// reach may be created by an event.
+    /// Objects are forgotten only on delete_id, which names client-created ids,
+    /// so no event a zone can reach may create one.
     #[test]
     fn no_compositor_created_objects() {
         use crate::protocol::{find, Arg};
@@ -141,7 +122,7 @@ mod tests {
     }
 
     #[test]
-    fn every_allowed_interface_is_in_the_tables() {
+    fn allowed_interfaces_are_in_tables() {
         for (n, v) in ALLOWED {
             let i = crate::protocol::find(n).unwrap_or_else(|| panic!("{n} missing from the generated tables"));
             assert!(i.version >= *v, "{n}: tables know v{}, policy allows v{v}", i.version);
@@ -149,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn titles_and_app_ids_carry_the_zone_and_only_the_zone() {
+    fn titles_and_app_ids_carry_zone() {
         assert_eq!(title_for("work", "Editor"), "[work] Editor");
         assert_eq!(title_for("work", "[vault] Editor"), "[work] [vault] Editor");
         assert_eq!(app_id_for("work", "foot"), "kryptik.work.foot");
@@ -160,16 +141,15 @@ mod tests {
     }
 
     #[test]
-    fn title_controls_cannot_inject_status_lines_or_reorder_identity() {
+    fn title_controls_are_replaced() {
         let title = title_for("untrusted", "notes\nmonitor appid trusted\r\u{1b}[2J\u{202e}VAULT\u{2069}\u{2028}é");
         assert_eq!(title, "[untrusted] notes monitor appid trusted  [2J VAULT  é");
         assert_eq!(title.lines().count(), 1);
     }
 
-    /// The bound is in bytes; the cut must still be a character boundary.
-    /// Each case is one the byte-index truncation got wrong or would have.
+    /// The bound is in bytes; the cut must still land on a character boundary.
     #[test]
-    fn long_multibyte_titles_are_bounded_on_a_character_boundary() {
+    fn multibyte_title_cut_on_char_boundary() {
         // 200 x U+00E9 is 400 bytes; byte 253 is inside a character.
         let t = title_for("vault", &"\u{00e9}".repeat(200));
         assert!(t.len() <= MAX_TITLE_BYTES, "{}", t.len());
@@ -179,8 +159,7 @@ mod tests {
         assert!(body.chars().all(|c| c == '\u{00e9}'), "every kept character is intact: {body:?}");
         assert!(!body.is_empty());
 
-        // Four-byte characters, with the prefix chosen so that byte 253 is
-        // the second byte of an emoji.
+        // Four-byte characters, with byte 253 the second byte of an emoji.
         let t = title_for("w", &"\u{1F600}".repeat(120));
         assert!(t.len() <= MAX_TITLE_BYTES);
         assert!(t.ends_with("..."));
@@ -204,14 +183,13 @@ mod tests {
         assert_eq!(t.len(), MAX_TITLE_BYTES);
         assert!(t.ends_with("..."));
 
-        // A long zone name is bounded like everything else, and the
-        // multi-byte rule still holds when the prefix itself is what gets cut.
+        // A long zone name: the prefix itself is cut, still on a boundary.
         let t = title_for(&"\u{00e9}".repeat(300), "Editor");
         assert!(t.len() <= MAX_TITLE_BYTES);
         assert!(t.starts_with("[\u{00e9}"));
         assert!(t.ends_with("..."));
 
-        // Nothing multi-byte in the input, nothing changes from before.
+        // Plain ASCII is untouched.
         assert_eq!(title_for("work", "Editor"), "[work] Editor");
     }
 }

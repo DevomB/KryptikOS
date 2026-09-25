@@ -2,16 +2,11 @@
 //!
 //!   kryptik-wlproxy --zone NAME --listen PATH --upstream PATH [--max-clients N] [--once]
 //!
-//! Listens on PATH (a socket the launcher binds into the zone as
-//! /run/kryptik/wayland-0), connects each accepted client to the
-//! compositor at --upstream, and runs one Session per client: framing,
-//! object tracking, descriptor accounting, the global allowlist, identity
-//! rewriting and bounds (session.rs, policy.rs). A client that breaks the
-//! protocol or reaches for something hidden gets a wl_display.error and is
-//! disconnected; nothing it sent after that is forwarded.
-//!
-//! Single-threaded, poll(2)-driven, no allocations the client controls
-//! beyond the bounded buffers. Runs unprivileged, as the desktop user.
+//! Each client on PATH (bound into the zone as /run/kryptik/wayland-0) gets a
+//! Session to the compositor at --upstream (session.rs, policy.rs). A client
+//! that breaks the protocol or reaches for something hidden gets a
+//! wl_display.error and nothing more is forwarded. Single-threaded and
+//! unprivileged; what a client can make it allocate is bounded.
 
 mod policy;
 mod protocol;
@@ -26,8 +21,7 @@ use std::time::{Duration, Instant};
 
 use session::{Dir, Session};
 
-/// The lines a zone's clients can cause, held to a rate: the log is a file in
-/// the session's runtime directory, and connecting in a loop would fill it.
+/// Rate-limited logging, so a client connecting in a loop cannot fill the log file.
 struct Log { zone: String, since: Instant, lines: u32, dropped: u32 }
 impl Log {
     const PER_SECOND: u32 = 20;
@@ -114,8 +108,8 @@ fn main() {
             std::process::exit(1);
         }
     };
-    // The zone's uid must be able to connect through the bind mount; the
-    // directory on this side is what keeps everyone else out.
+    /* The zone's uid must be able to connect through the bind mount; the
+     * directory on this side keeps everyone else out. */
     let _ = std::fs::set_permissions(&o.listen, std::os::unix::fs::PermissionsExt::from_mode(0o666));
     listener.set_nonblocking(true).expect("nonblocking listener");
     eprintln!("kryptik-wlproxy[{}]: listening on {} -> {}", o.zone, o.listen.display(), o.upstream.display());
@@ -124,22 +118,15 @@ fn main() {
     let mut next_id = 1u64;
     let mut served = 0u64;
     let mut log = Log { zone: o.zone.clone(), since: Instant::now(), lines: 0, dropped: 0 };
-    // After a failed accept the listener is left alone until this passes: the
-    // connection that failed is still pending, so polling it again at once
-    // is a loop at full speed (a client can exhaust descriptors to get there).
+    /* After a failed accept the listener rests until this passes: the failed
+     * connection is still pending, so polling again at once would spin (and a
+     * client can exhaust descriptors to cause that). */
     let mut accept_after = Instant::now();
     let mut fds: Vec<libc::pollfd> = Vec::new();
     loop {
-        // Build the poll set: the listener, then each session's two sockets.
-        //
-        // The set is a snapshot of `sessions` as it stands here, indexed by
-        // position: session i owns entries 1+2i and 2+2i. Everything that
-        // reads those entries runs before `sessions` changes shape, which
-        // is why accepting a new client is the LAST thing an iteration does
-        // and why the service loop is bounded by `polled`, not by the
-        // vector's current length. The first version accepted first and
-        // then indexed the old array for the new session too: index out of
-        // bounds on the very first client.
+        /* The poll set snapshots `sessions`: the listener, then session i at
+         * 1+2i and 2+2i. `sessions` must not change while entries are read, so
+         * accepting comes last and the service loop stops at `polled`. */
         let polled = sessions.len();
         fds.clear();
         let pause = accept_after.saturating_duration_since(Instant::now());
@@ -211,8 +198,7 @@ fn main() {
                 return;
             }
         }
-        // Accept, now that nothing indexes the snapshot any more. The new
-        // session's sockets join the poll set on the next iteration.
+        // Accept last, when nothing indexes the snapshot any more.
         if fds[0].revents & libc::POLLIN != 0 {
             match listener.accept() {
                 Ok((client, _)) => match UnixStream::connect(&o.upstream) {
