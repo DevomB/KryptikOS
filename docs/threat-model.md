@@ -18,8 +18,10 @@ contradicts this document changes the document first.
 *Capability: arbitrary code execution as the user, inside one zone.*
 
 **Defended.** The application sees only its own zone's files and processes, has no route to the physical NIC, and runs under a
-default-deny seccomp filter and a Landlock ruleset. Escaping needs a kernel bug
-([kernel local privilege escalation](#kernel-local-privilege-escalation)).
+default-deny seccomp filter and a Landlock ruleset. Its `/proc` hides the
+machine-wide interrupt and scheduling counters, which would time keystrokes
+typed in any zone, and gives it a boot ID of its own. Escaping needs a kernel
+bug ([kernel local privilege escalation](#kernel-local-privilege-escalation)).
 
 ### Malicious document or link
 
