@@ -368,7 +368,7 @@ static int update_main(int argc, char **argv)
 int main(int argc, char **argv)
 {
 	int ask = 0, no_display = 0, pass_fd = -1, sep = -1;
-	const char *zone = NULL, *zone2 = NULL, *mode = "run";
+	const char *zone = NULL, *mode = "run";
 	int i;
 	if (argc >= 2 && strncmp(argv[1], "--wifi-", 7) == 0)
 		return wifi_main(argc, argv);
@@ -383,7 +383,6 @@ int main(int argc, char **argv)
 		fputs(r, strncmp(r, "ok", 2) == 0 ? stdout : stderr);
 		return strncmp(r, "ok", 2) == 0 ? 0 : 1;
 	}
-	(void)zone2;
 	for (i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--") == 0) { sep = i; break; }
 		else if (strcmp(argv[i], "--ask") == 0) ask = 1;
@@ -476,10 +475,6 @@ int main(int argc, char **argv)
 	char *r = talk(req, pass_fd);
 	if (pass_fd >= 0)
 		close(pass_fd);
-	if (strncmp(r, "ok ", 3) == 0) {
-		fprintf(stderr, "kryptik-launch: zone %s: %s", zone, r);
-		return 0;
-	}
 	fprintf(stderr, "kryptik-launch: zone %s: %s", zone, r);
-	return 1;
+	return strncmp(r, "ok ", 3) == 0 ? 0 : 1;
 }
