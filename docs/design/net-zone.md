@@ -218,11 +218,14 @@ refusal of `wpa_supplicant` would show as `SIGSYS` in the zone's log and a
 
 `VETH` and `BRIDGE` (`hardening.fragment`). Built in (`boot.fragment`):
 `NF_TABLES`, `NF_TABLES_INET`, `NF_TABLES_IPV4`, `NF_TABLES_IPV6`, `NFT_NAT`,
-`NFT_MASQ`, `NFT_CT`, `NFT_REJECT`, `NF_NAT`, `NF_CONNTRACK` and
-`NETFILTER_XT_MATCH_CONNTRACK`; netfilter cannot be modular because the net
-zone loads its ruleset from inside a user namespace, for which the kernel
-does not autoload modules. `NF_TABLES_BRIDGE` and `BRIDGE_NETFILTER` are off;
-`NFT_COMPAT` is not wanted. For radios, `CFG80211`, `MAC80211`, `RFKILL` and
+`NFT_MASQ`, `NFT_CT`, `NFT_REJECT`, `NF_NAT` and `NF_CONNTRACK`; netfilter
+cannot be modular because the net zone loads its ruleset from inside a user
+namespace, for which the kernel does not autoload modules.
+`NF_TABLES_BRIDGE` and `BRIDGE_NETFILTER` are off; `NFT_COMPAT` is not
+wanted. xtables (`IP_NF_IPTABLES`, `IP6_NF_IPTABLES`, `NETFILTER_XTABLES`) and
+ctnetlink (`NF_CT_NETLINK`) are off: the ruleset is nft's alone, and
+ctnetlink would be kernel code the nic zone reaches through its netfilter
+netlink socket for no use. For radios, `CFG80211`, `MAC80211`, `RFKILL` and
 the drivers are signed modules that eudev loads, with firmware under
 `/lib/firmware` (see `build/config/kernel/`).
 
