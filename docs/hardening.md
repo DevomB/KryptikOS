@@ -142,7 +142,8 @@ binary needs a justified entry in `build/config/setuid-allowlist.txt`: today
 yet. Stage 06 runs `tools/audit-setuid.sh --strip` over the image's root, so
 the bit comes off every other file (shadow and util-linux install eleven
 more); without `--strip` the script fails on any unlisted setuid or setgid
-binary.
+binary. Either way it fails when it cannot read a directory, and a strip that
+would take the bit off a listed binary through a hard link fails instead.
 
 ## Zone syscall filter
 
