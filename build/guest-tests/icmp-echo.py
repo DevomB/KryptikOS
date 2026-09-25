@@ -1,24 +1,10 @@
 #!/usr/bin/env python3
-"""One ICMP echo without privilege: exit 0 on a reply, 1 otherwise.
+"""One ICMP echo without privilege: PONG and exit 0, or NOPONG, why, and 1.
 
     icmp-echo.py HOST [TIMEOUT]
-
-A zone keeps no CAP_NET_RAW, and inetutils ping wants a raw socket, so
-inside a zone it says "Lacking privilege for icmp socket" whether or not the
-host is reachable - which made the guest zone checks' bridge and egress
-verdicts unable to pass and their isolation verdicts pass for the wrong
-reason. This uses the kernel's unprivileged ICMP datagram socket instead
-(net.ipv4.ping_group_range, set by kryptikd in the zone's namespace); the
-kernel fills in the identifier and the checksum. Prints PONG or NOPONG and
-the reason, so a verdict can quote it.
-
-It keeps trying until TIMEOUT has elapsed, one attempt per second: a zone's
-IPv6 address is "tentative" for the first second or two of its life
-(duplicate address detection), and an echo sent from a tentative address
-goes nowhere - the very first probe of a fresh zone said NOPONG for fd19::1
-while the same probe four seconds later answered. The verdict wants to
-know whether the path exists, not whether it existed at millisecond zero.
 """
+# Zones lack CAP_NET_RAW, which ping needs; the ICMP datagram socket does not
+# (net.ipv4.ping_group_range, set by kryptikd in the zone).
 import socket
 import struct
 import sys
@@ -33,6 +19,7 @@ echo_request = 128 if v6 else 8
 deadline = time.monotonic() + timeout
 seq = 0
 last = "no attempt"
+# Retry until TIMEOUT; a fresh zone's IPv6 address is tentative at first.
 while True:
     seq += 1
     try:

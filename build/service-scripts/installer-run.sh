@@ -1,8 +1,6 @@
 #!/bin/sh
-# Run the installer, but only on an install medium and only when a test
-# control disk asks for it (see testctl.sh). A person installs by logging in
-# on the medium's console and running kryptik-install; this is the unattended
-# path the VM tests use, and it is a no-op on an installed system.
+# Unattended install (or recovery) for the VM tests: only on an install medium
+# whose test control disk asks for it (testctl.sh). Users run kryptik-install.
 set -u
 . /usr/libexec/kryptik/testctl.sh
 
@@ -16,8 +14,7 @@ if ! testctl_load; then
     echo "installer: no kryptik-testctl control disk; nothing to do (run kryptik-install by hand)"
     exit 0
 fi
-# Recovery of an installed disk from this medium (kryptik-recover), armed
-# the same way as an install and reported on its own prefix.
+# Recovery of an installed disk (kryptik-recover), armed the same way.
 rdisk="$(testctl_get recover_disk)"
 if [ -n "$rdisk" ]; then
     rslot="$(testctl_get recover_slot)"; rmode="$(testctl_get recover_mode)"
@@ -51,9 +48,8 @@ if [ ! -x /usr/sbin/kryptik-install ]; then
     exit 0
 fi
 
-# Preseed for the installed system's first boot: an account the test driver
-# can log in as. Written by the installer into the new state partition and
-# consumed once by kryptik-firstboot there.
+# An account for the test driver: the installer writes it to the new state
+# partition, for kryptik-firstboot to consume once.
 preseed_args=""
 pu="$(testctl_get preseed_user)"; ph="$(testctl_get preseed_password_hash)"
 rh="$(testctl_get preseed_root_hash)"
@@ -63,12 +59,9 @@ if [ -n "$pu" ] && [ -n "$ph" ]; then
     preseed_args="--preseed /run/kryptik/firstboot.preseed"
 fi
 
-# Capture the status of the INSTALLER, not of the thing prefixing its output:
-# `... | sed` followed by rc=$? reads sed's status, which is how a missing
-# partitioner was once reported as rc=0.
+# No pipe into sed: rc must be the installer's status, not sed's.
 logf=/run/kryptik-install.log
-# The state passphrase goes in on standard input (printf is a builtin), the
-# one place it is ever written down being the control disk.
+# The state passphrase goes in on stdin (printf is a builtin: no argv).
 sp="$(testctl_get state_passphrase)"
 # shellcheck disable=SC2086  # preseed_args is deliberately word-split
 printf '%s\n' "$sp" | /usr/sbin/kryptik-install --target "$target" --yes $preseed_args > "$logf" 2>&1
@@ -77,9 +70,8 @@ sed 's/^/KRYPTIK_INSTALL: /' "$logf"
 say "rc=${rc}"
 
 if [ "$rc" -eq 0 ]; then
-    # Say what is actually on the disk now, from outside the installer, so the
-    # claim does not rest on the installer's own report. Every partition by
-    # label, as the boot chain will look for them.
+    # Check the disk independently of the installer's report, finding each
+    # partition by label as the boot chain will.
     say "verify: table=$(sfdisk -l "$target" 2>/dev/null | grep -c "^${target}")"
     for lbl in kryptik-esp kryptik-a kryptik-b kryptik-state; do
         dev="$(blkid -t PARTLABEL="$lbl" -o device 2>/dev/null | grep "^${target}" | head -1)"

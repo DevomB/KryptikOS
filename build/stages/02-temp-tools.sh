@@ -1,21 +1,11 @@
 #!/usr/bin/env bash
-# Stage 02 — Temporary tools (docs/roadmap.md, Temporary tools and chroot)
-#
-# Cross-compiles enough userland into the sysroot to enter a chroot and build
-# the rest of the system from inside it. Everything here is built with the
-# stage 01 cross toolchain and installed with DESTDIR=$LFS.
-#
-# Resumable via per-step stamps.
-#   ./02-temp-tools.sh --redo ncurses
-#
-# STATUS: 16 of 17 packages verified building on 2026-09-10; gcc pass 2 was
-# still running at time of writing. Per-step logs land in build/work/logs.
+# Stage 02: cross-compile enough userland into the sysroot to chroot into it.
+# usage: 02-temp-tools.sh [--redo <step>]
 
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
 load_config
 
-# Same reasoning as stage 01: no hardening flags on a cross build. They go on
-# at stage 04. See docs/hardening.md.
+# No hardening flags on a cross build (see stage 01).
 unset CFLAGS CXXFLAGS LDFLAGS CPPFLAGS LD_LIBRARY_PATH
 
 require_outside_chroot "stage 02"
@@ -29,7 +19,7 @@ KRYPTIK_JOBS="${KRYPTIK_JOBS:-$(kryptik_default_jobs)}"
 export MAKEFLAGS="-j${KRYPTIK_JOBS}"
 umask 022
 
-# Stage 02 drives the cross compiler stage 01 just built.
+# Built with stage 01's cross compiler.
 stage_contract "${BASH_SOURCE[0]}" "tt-" "${LFS_TGT}-gcc"
 
 STAMPS="${KRYPTIK_WORK}/.stamps"
@@ -59,7 +49,6 @@ guess() {
              build-aux/config.sub/config.guess; do
         [[ -f "$d" ]] && { sh "$d"; return; }
     done
-    # Fall back to the toolchain's own idea of the build system.
     gcc -dumpmachine
 }
 
@@ -79,8 +68,7 @@ s_ncurses() {
     local src; src="$(unpack "ncurses-${V_NCURSES}.tar.gz" "ncurses-${V_NCURSES}")"
     cd "$src"
 
-    # `tic` runs on the BUILD machine during install, so a native one is needed
-    # before the cross build starts.
+    # Install runs `tic` on the build machine, so build a native one first.
     mkdir -p build
     pushd build >/dev/null
     ../configure AWK=gawk
@@ -160,19 +148,9 @@ s_binutils_pass2() {
     local src; src="$(unpack "binutils-${V_BINUTILS}.tar.xz" "binutils-${V_BINUTILS}")"
     cd "$src"
 
-    # libtool accumulates an install-prefix -L path into the link line during
-    # relink, which poisons a cross build. LFS patches this with a bare line
-    # number (sed '6009s/$add_dir//'), which silently does nothing useful the
-    # moment binutils shifts a line.
-    #
-    # The target line appears TWICE in ltmain.sh - once in each of two
-    # branches - and only the second is the one LFS patches. So: locate both by
-    # content, assert there are exactly two, and patch the second.
-    #
-    # If the count ever changes, FAIL rather than continue. An earlier version
-    # of this matched a pattern that does not exist in binutils 2.43.1 at all
-    # and fell through to a printed notice, which is how a silent no-op looks
-    # right up until it matters.
+    # libtool adds an install-prefix -L path when relinking, which poisons a
+    # cross build. LFS removes it by line number; find the line by content
+    # instead. It occurs twice and LFS patches the second, so require two.
     local -a lines
     mapfile -t lines < <(grep -n -F 'add_dir="$add_dir -L$inst_prefix_dir$libdir"' ltmain.sh | cut -d: -f1)
 
@@ -247,7 +225,7 @@ s_gcc_pass2() {
     ln -sfv gcc "${LFS}/usr/bin/cc"
 }
 
-# Confirms the sysroot can actually host a chroot before stage 04 tries.
+# Can the sysroot host a chroot?
 s_verify() {
     local missing=0 f
     for f in usr/bin/bash usr/bin/ls usr/bin/sed usr/bin/grep usr/bin/tar \
@@ -261,8 +239,7 @@ s_verify() {
     done
     [[ "$missing" -eq 0 ]] || { echo "${missing} required file(s) missing"; return 1; }
 
-    # A binary that still points at the host loader means the cross toolchain
-    # leaked, and stage 04 would build a system that only runs on this host.
+    # A binary using the host loader means the host toolchain leaked in.
     local interp
     interp="$(readelf -l "${LFS}/usr/bin/bash" 2>/dev/null \
               | grep 'Requesting program interpreter' || true)"
@@ -287,8 +264,7 @@ echo
     || die "stage 01 has not completed - no cross compiler at ${LFS}/tools/bin
 Run: make toolchain"
 
-# Built by the stage 01 cross compiler against its glibc: seed the chain from
-# stage 01's last step so a toolchain rebuild invalidates all of this.
+# A toolchain rebuild invalidates this whole stage.
 stage_depends_on "" libstdcxx
 
 step m4         cross_build "m4-${V_M4}.tar.xz"               "m4-${V_M4}"

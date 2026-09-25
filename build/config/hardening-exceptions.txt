@@ -1,17 +1,6 @@
-# Packages exempted from the full hardening flag set.
-#
-# Format:  <package>  <flag-to-drop>  # justification
-#
-# An entry without a justification comment is a BUILD FAILURE, not a warning.
-# Exceptions are reviewed and removed, never accumulated. If you add one, say
-# what breaks and what you tried.
-#
-# Example (not active):
-# glibc  -pie  # glibc builds its own PIE handling; -pie breaks ld.so startup
+# Packages exempted from part of the hardening flag set:
+#   <package>  <flag-to-drop>  # justification
+# An entry without a justification fails the build. Say what breaks and what
+# you tried; exceptions are meant to be removed, not accumulated.
 
-# NOTE: the two glibc entries for -fPIE and -pie were removed when those flags
-# were dropped from hardening.env entirely. They are handled by GCC's
-# --enable-default-pie now, so there is nothing per-package to except.
-
-# --- active exceptions below this line ---
 glibc  -D_FORTIFY_SOURCE=3  # glibc DEFINES the fortify machinery; fortifying it against itself fails to build

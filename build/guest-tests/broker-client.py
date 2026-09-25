@@ -6,16 +6,9 @@
     broker-client.py clipboard-get
     broker-client.py transfer DEST NAME PATH      (offers PATH to DEST as NAME)
 
-Prints the broker's answer, verbatim, on one line. It exists because the
-launch protocol (kryptik-launch, kryptikd serve) carries a command as
-lines and refuses an argument with a newline in it, and the first GUI run
-on installed media handed every clipboard and transfer probe a multi-line
-`python3 -c` program - and a clipboard payload that itself needs a newline
-before it in the wire format - so none of them ever reached a zone
-("kryptik-launch: argument 2 contains a newline"). The wire format is
-the one in docs/design/broker.md: `clipboard-set MIME LEN\\n<LEN bytes>`, `clipboard-get\\n`,
-`transfer DEST NAME\\n` with the file's descriptor over SCM_RIGHTS.
+Prints the broker's answer on one line. Wire format: docs/design/broker.md.
 """
+# A script, not `python3 -c`: kryptik-launch refuses arguments with newlines.
 import array
 import os
 import socket

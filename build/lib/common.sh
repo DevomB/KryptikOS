@@ -33,15 +33,8 @@ _kryptik_trap() {
 }
 trap _kryptik_trap ERR
 
-# Parallelism.
-#
-# GCC's bootstrap and glibc's build are memory-hungry: on a host with less than
-# roughly 1.5GB of RAM per job, -j$(nproc) meets the OOM killer partway through
-# a forty-minute link, and the failure looks like a compiler crash rather than
-# what it is. So the default is capped by memory as well as by CPU count.
-#
-# KRYPTIK_JOBS overrides it. Raise it when you have the RAM; lower it when a
-# build dies with "internal compiler error: Killed".
+# nproc, capped at one job per 1.5 GB of RAM, or GCC and glibc builds meet the
+# OOM killer ("internal compiler error: Killed"). KRYPTIK_JOBS overrides it.
 kryptik_default_jobs() {
     local cpus mem_kb mem_gb by_mem
     cpus="$(nproc 2>/dev/null || echo 1)"
@@ -69,33 +62,10 @@ sha256_of_stdin() {
     fi
 }
 
-# ---------------------------------------------------------------------------
-# Where things get installed
-#
-# Stages 01, 02 and 03 run on the host and install into a sysroot DIRECTORY.
-# Stages 04 and 05 run INSIDE that sysroot, after stage 03 chroots into it,
-# and there the sysroot is simply "/".
-#
-# Deriving "${KRYPTIK_WORK}/sysroot" unconditionally is what stage 05 used to
-# do, and it is wrong inside the chroot in two separate ways:
-#
-#   * With the default KRYPTIK_WORK the path resolves, through the /kryptik
-#     bind mount, back to the chroot's own root - so it happened to work by
-#     coincidence, and nobody noticed the reasoning was broken.
-#
-#   * With KRYPTIK_WORK pointed anywhere else - which a real build needs,
-#     because the work tree belongs on native storage - the path does not
-#     exist inside the chroot, and `cp` and `modules_install` cheerfully
-#     CREATE it. The result is a second, nested, half-populated target tree
-#     inside the real one: /boot looks empty while the kernel sits several
-#     levels down, and nothing reports an error.
-#
-# So the sysroot is resolved once, here, from which side of the chroot
-# boundary we are on. KRYPTIK_DESTDIR is the DESTDIR= value - empty inside the
-# chroot, which is what "install into the live root" means to every build
-# system there is.
-# ---------------------------------------------------------------------------
-
+# Stages 01-03 run on the host and install into ${KRYPTIK_WORK}/sysroot; stages
+# 04 and 05 run inside the chroot, where the sysroot is /. A KRYPTIK_WORK path
+# may not exist in there, and installing to it would build a nested tree.
+# KRYPTIK_DESTDIR is the DESTDIR= value: empty inside the chroot.
 KRYPTIK_CHROOT_MARKER="/etc/kryptik/inside-chroot"
 
 kryptik_in_chroot() { [[ -f "$KRYPTIK_CHROOT_MARKER" ]]; }
@@ -111,7 +81,6 @@ else
     KRYPTIK_DESTDIR="${KRYPTIK_SYSROOT}"
 fi
 
-# Stages that only make sense on one side of the boundary say so.
 require_outside_chroot() {
     [[ "$KRYPTIK_CHROOT" -eq 0 ]] || die \
 "${1:-this stage} populates the sysroot and must run OUTSIDE the chroot.
@@ -140,7 +109,7 @@ require_linux() {
 On Windows, use WSL2:  wsl --install -d Debian"
 }
 
-# Refuse to build as root. A stray 'rm -rf $LFS/' as root removes your host.
+# As root, a stray 'rm -rf $LFS/' removes the host.
 refuse_root() {
     [[ "${EUID}" -ne 0 ]] || die \
 "Do not run the Kryptik build as root.
@@ -172,35 +141,10 @@ validate_hardening_exceptions() {
     [[ "$n" -eq 0 ]] || die "${n} undocumented hardening exception(s). See docs/hardening.md."
 }
 
-# ---------------------------------------------------------------------------
-# Build stamps
-#
-# A stamp used to be an empty file meaning "this step ran once". That is not
-# enough to resume a build safely, for two separate reasons.
-#
-#   1. It cannot distinguish a completed step from one whose INPUTS have since
-#      moved. Edit a recipe, bump a version, change a hardening flag - the
-#      stamp still says "built", and the sysroot quietly contains something
-#      nobody asked for.
-#
-#   2. Stamps written before tools/test-step-errexit.sh caught the errexit bug
-#      came from a step() that recorded FAILED builds as successful. An empty
-#      file from that harness is not weak evidence of a good build; it is no
-#      evidence at all.
-#
-# So a stamp now carries a fingerprint of what the step was built from, and a
-# stamp whose fingerprint does not match current inputs is REFUSED rather than
-# trusted. The refusal is deliberately conservative: rebuilding one step in the
-# middle of an otherwise finished sysroot produces a tree built from two
-# different configurations, which is worse than stopping and saying so.
-#
-#   KRYPTIK_STALE=refuse    (default) stop and explain
-#   KRYPTIK_STALE=rebuild   rebuild the affected steps in place
-#
-# Fingerprint-less stamps are ARCHIVED under .stamps/legacy/ rather than
-# deleted - evidence of what an earlier run did is preserved, it is just not
-# trusted.
-# ---------------------------------------------------------------------------
+# Build stamps carry a fingerprint of the step's inputs. A mismatch stops the
+# build (KRYPTIK_STALE=refuse, the default), since one rebuilt step leaves a
+# sysroot built from two configurations; KRYPTIK_STALE=rebuild rebuilds the
+# affected steps. Stamps without a fingerprint are moved to .stamps/legacy/.
 
 # Bump when the set of fingerprint inputs changes.
 KRYPTIK_STAMP_FORMAT=3
@@ -209,45 +153,23 @@ STAMP_PREFIX=""
 STAGE_FILE=""
 STAMP_CC=""
 
-# Declared by each stage before its first step() call:
-#
 #   stage_contract <this-file> <stamp-prefix> <compiler>
-#
-# The compiler is the one the STAGE DRIVES, which is not always the
-# obvious one: stage 01 builds the cross toolchain with the HOST gcc, so
-# the host gcc is what its stamps are fingerprinted against - the cross
-# compiler does not exist until halfway through that stage, and naming it
-# would invalidate every early stamp the moment it appeared.
+# Called before a stage's first step(). <compiler> is the one the stage drives:
+# the host gcc for stage 01, whose cross gcc exists only halfway through.
 stage_contract() {
     STAGE_FILE="${1:?stage_contract needs the stage file}"
     STAMP_PREFIX="${2-}"
     STAMP_CC="${3:?stage_contract needs the compiler this stage drives}"
 }
 
-# Accumulated by step(): "name=fingerprint;" for every step declared so far
-# in this stage, seeded by stage_depends_on() with the fingerprint an earlier
-# stage finished on.
-#
-# It used to hold the ordered NAMES only. That catches a reordered or inserted
-# package and misses the case that matters more: a step whose recipe, source
-# or flags changed and was rebuilt in place, followed by steps whose stamps
-# still matched because nothing THEY hashed had moved. A glibc rebuilt with a
-# fix would have left sixty packages linked against the old one, every one of
-# them reporting "inputs unchanged". With the fingerprint in the chain, a
-# change to step k invalidates k and everything after it in this stage, and
-# every stage that seeds from it - and nothing before it, so an unchanged
-# prefix still resumes without rebuilding.
+# "name=fingerprint;" for every step so far, seeded by stage_depends_on(). Each
+# stamp hashes it, so a changed step invalidates every later step and every
+# stage built on it, while an unchanged prefix still resumes.
 STAMP_DEPS=""
 
-# Seed this stage's dependency chain from a step of an earlier stage.
-#
 #   stage_depends_on <stamp-prefix> <step-name>
-#
-# Stage 02 is built by stage 01's compiler, stage 04 by stage 02's, and the
-# kernel by stage 04's toolchain closure, so their stamps have to carry the
-# fingerprint of what they were built WITH, not only what they were built
-# FROM. The named stamp must exist: a stage that starts on top of an
-# unfinished predecessor is building on nothing, and says so.
+# Seed the chain from an earlier stage's step, so stamps also record the
+# toolchain a stage was built with. That stamp must exist.
 stage_depends_on() {
     local prefix="$1" name="$2"
     local stamp="${STAMPS}/${prefix}${name}" fp
@@ -264,9 +186,7 @@ _hash_file() {
     if [[ -n "$f" && -f "$f" ]]; then sha256_of "$f"; else printf 'absent'; fi
 }
 
-# One digest over every regular file in a directory: relative path and
-# content, in a fixed order, so the same set of files hashes the same
-# anywhere.
+# One digest over a directory's files: relative path and content, sorted.
 _hash_dir() {
     local d="${1:-}"
     if [[ -n "$d" && -d "$d" ]]; then
@@ -277,8 +197,7 @@ _hash_dir() {
     fi
 }
 
-# Expand ${V_*} references in a token lifted from a recipe's own text, without
-# eval: a version variable is the only substitution a patch-set name may use.
+# Expand ${V_*}, the only substitution a patch-set name may use, without eval.
 _expand_v() {
     local t="$1" v pat
     while [[ "$t" =~ \$\{(V_[A-Z0-9_]+)\} ]]; do
@@ -289,16 +208,11 @@ _expand_v() {
     printf '%s' "$t"
 }
 
-# Where in-repository patch sets live. Overridable so the harness test can
-# supply its own; the build never sets it.
+# In-repository patch sets; only the harness test overrides the location.
 KRYPTIK_PATCHES="${KRYPTIK_PATCHES:-${KRYPTIK_ROOT}/build/patches}"
 
-# Apply the in-repository patch set build/patches/<set>/ to the current
-# directory: every *.patch in name order, -p1, no fuzz, stopping at the first
-# reject. SHA256SUMS is verified first and every patch must be listed in it,
-# so a patch cannot be added or altered without the record beside it moving.
-# recipe_fingerprint() hashes the whole set for any recipe that names it, so a
-# changed patch invalidates the step that applies it.
+# Apply build/patches/<set>/*.patch here in name order (-p1, no fuzz). Every
+# patch must be listed in the set's SHA256SUMS and match it.
 apply_repo_patches() {
     local set="${1:?apply_repo_patches needs a patch-set name}"
     local pdir="${KRYPTIK_PATCHES}/${set}"
@@ -320,17 +234,11 @@ apply_repo_patches() {
     echo "applied ${n} patch(es) from ${set}"
 }
 
-# The compiler a stage actually drives. Stage 01 builds the cross toolchain
-# with the HOST gcc, so that is its compiler; stage 02 drives the cross gcc;
-# stages 04 and 05 drive the native target gcc inside the chroot. Getting this
-# wrong in either direction makes stamps churn on every run or never at all.
+# Triple and version of the compiler the stage drives (see stage_contract).
 stamp_compiler_id() {
     local cc="${STAMP_CC:-${CC:-gcc}}"
     if have "$cc"; then
-        # No pipe. `"$cc" --version | head -1` can hand the compiler a SIGPIPE
-        # and, with the `|| echo unknown` below it, silently substitute a
-        # DIFFERENT fingerprint input depending on a race. A fingerprint input
-        # that can vary between two identical runs is not a fingerprint.
+        # No pipe: `| head -1` can SIGPIPE the compiler and make this racy.
         local ver
         ver="$("$cc" --version 2>/dev/null || echo unknown)"
         printf '%s %s' \
@@ -341,18 +249,9 @@ stamp_compiler_id() {
     fi
 }
 
-# What a single step was built from.
-#
-# Deliberately NOT the whole stage file. Hashing that meant a one-line fix to
-# one package's recipe invalidated all fifty-eight stamps in stage 04 - which
-# is conservative to the point of being unusable, and is the pressure that
-# makes people delete the check rather than answer it.
-#
-# So: the recipe function's own text, the arguments it was called with, the
-# content of any tarball or patch those arguments name, and the values of any
-# V_* version variables the recipe interpolates (s_glibc names no tarball in
-# its arguments - it builds the name from ${V_GLIBC} inside the function, and a
-# version bump has to invalidate it all the same).
+# What one step was built from: the recipe's text and arguments, the tarballs,
+# patches and patch sets they name, and every V_* the recipe reads. Not the
+# whole stage file, so a fix to one recipe does not invalidate every stamp.
 recipe_fingerprint() {
     local fn="${1:-}"; shift || true
     local body
@@ -372,14 +271,13 @@ recipe_fingerprint() {
                     printf 'src:%s=%s\n' "$a" "$(_hash_file "${KRYPTIK_SOURCES}/${a}")"
                     ;;
             esac
-            # An argument naming an in-repository patch set is an input too.
+            # A patch set named as an argument.
             if [[ -d "${KRYPTIK_PATCHES}/${a}" && -f "${KRYPTIK_PATCHES}/${a}/SHA256SUMS" ]]; then
                 printf 'patchset:%s=%s\n' "$a" "$(_hash_dir "${KRYPTIK_PATCHES}/${a}")"
             fi
         done
 
-        # And so is any patch set the recipe's own text applies, with a
-        # ${V_*} in the name expanded the way the recipe would.
+        # A patch set the recipe's text applies.
         local ps
         while IFS= read -r ps; do
             [[ -z "$ps" ]] && continue
@@ -393,10 +291,8 @@ recipe_fingerprint() {
         while IFS= read -r v; do
             [[ -z "$v" ]] && continue
             printf 'ver:%s=%s\n' "$v" "${!v-unset}"
-        # `|| true`: a recipe with no V_* variables is normal, and grep
-        # exits 1 when it matches nothing. Without this the ERR trap fires
-        # inside the process substitution and prints a failure line for a
-        # step that is about to succeed.
+        # `|| true`: grep exits 1 for a recipe with no V_*, which would fire
+        # the ERR trap inside the process substitution.
         done < <(printf '%s
 %s
 ' "$body" "$*" \
@@ -404,14 +300,9 @@ recipe_fingerprint() {
     } | sha256_of_stdin
 }
 
-# The full fingerprint: the step's own inputs, plus the things that legitimately
-# affect every step in the build.
-#
-# versions.env and hardening.env are NOT hashed wholesale. Their effect is
-# already here, precisely: a version reaches a step through a tarball name or a
-# V_* value, and a hardening flag reaches it through CFLAGS/LDFLAGS below.
-# Hashing the files instead would invalidate every stamp in the build whenever
-# any unrelated line in them moved.
+# The step's inputs plus what affects every step. versions.env and
+# hardening.env are not hashed whole: they reach a step through tarball names,
+# V_* values and the flags below, so an unrelated edit invalidates nothing.
 stamp_fingerprint() {
     local name="$1"; shift
     {
@@ -453,7 +344,7 @@ _stamp_stale() {
     local name="$1" stamp="$2" got="$3"
 
     if [[ -z "$got" ]]; then
-        # Fingerprint-less: preserve the evidence, do not trust it.
+        # No fingerprint: keep the stamp for reference, but rebuild.
         local archive="${STAMPS}/legacy"
         mkdir -p "$archive"
         mv -f "$stamp" "${archive}/$(basename "$stamp")"
@@ -494,33 +385,14 @@ Stamp: ${stamp}"
     esac
 }
 
-# The step runner.
-#
-# ONE implementation, used by every stage. Four near-identical copies is how
-# the errexit bug below shipped twice in two different disguises: a fix landed
-# in one copy and not the others, and the regression test had to re-derive the
-# code it was testing from each file in turn.
-#
-# Stages provide: STAMPS, LOGS, STAMP_PREFIX, STAGE_FILE, and optionally REDO,
-# a set_flags_for() hook (stage 04's per-package hardening) and a
-# step_failure_hint() hook.
+#   step <name> <recipe> [args...]
+# Stages provide STAMPS, LOGS, STAMP_PREFIX and STAGE_FILE, and optionally
+# REDO, set_flags_for() (per-package hardening) and step_failure_hint().
 step() {
     local name="$1"; shift
     local stamp="${STAMPS}/${STAMP_PREFIX}${name}"
 
-    # Narrow the flags BEFORE fingerprinting, not after.
-    #
-    # This used to happen further down, just before running the recipe, with
-    # the fingerprint recomputed afterwards and that second value written into
-    # the stamp. The comparison above it still used the first value - computed
-    # with whatever flags the PREVIOUS package had left in the environment.
-    #
-    # For 63 of stage 04's 64 packages those are the same string, because
-    # set_flags_for changes nothing. glibc is the exception - literally: it is
-    # the one package with an entry in hardening-exceptions.txt - so glibc's
-    # stamp was written with -D_FORTIFY_SOURCE=3 dropped and compared with it
-    # present. It could never match. It went stale on every resume, and the
-    # "inputs unchanged" the other packages reported was not true of it.
+    # Before fingerprinting, so the stamp hashes the flags the recipe uses.
     if declare -F set_flags_for >/dev/null; then set_flags_for "$name"; fi
 
     local want; want="$(stamp_fingerprint "$name" "$@")"
@@ -546,26 +418,11 @@ step() {
     local logfile="${LOGS}/${STAMP_PREFIX}${name}.log"
     local start=$SECONDS
 
-    # Capture the subshell's status WITHOUT putting it in a condition.
-    #
-    # `( set -e; "$@" ) || rc=$?` looks like it fixes this and does not: the
-    # trailing || still suppresses errexit inside the subshell, even though the
-    # subshell sets it explicitly. Verified - a recipe of `false` followed by a
-    # succeeding command runs to completion and returns 0.
-    #
-    # `if ! ( ... ); then` is broken the same way. Only disabling errexit
-    # around a bare subshell, then reading $?, actually works.
-    #
-    # tools/test-step-errexit.sh is the regression test for this. It has caught
-    # the bug twice now: once as `if "$@"; then`, once as the || form above.
-    #
-    # AND `set +e` is not enough on its own. An ERR trap fires whether or not
-    # errexit is enabled, and _kryptik_trap calls exit - so without the
-    # `trap - ERR` below, this shell died on the next line and everything
-    # after it (the log tail, step_failure_hint, die) was unreachable code.
-    # The stamp logic still held, so failures were still failures; they just
-    # arrived with no diagnosis at all. Re-armed inside the subshell so the
-    # recipe's own abort line still lands in its log.
+    # A bare subshell, never a condition: `( ... ) || rc=$?` or `if ! ( ... )`
+    # turns errexit off inside the recipe too. The ERR trap fires even without
+    # errexit and would exit this shell, so it is lifted here and re-armed in
+    # the subshell, where the recipe's abort line lands in its log.
+    # Tested by tools/test-step-errexit.sh.
     local rc=0
     set +e
     trap - ERR
