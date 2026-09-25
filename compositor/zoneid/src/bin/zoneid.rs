@@ -424,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn options_refuse_what_they_do_not_know() {
+    fn options_refuse_unknown() {
         for bad in [&["--zone", "x"][..], &["--zones"], &["--zones", "x", "--zones", "y"], &["x"]] {
             assert!(options(&strings(bad), &["--zones"]).is_err(), "{bad:?}");
         }

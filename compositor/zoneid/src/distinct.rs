@@ -35,9 +35,9 @@ use crate::identity::{Channel, ZoneIdentity};
 /// 15.0 is chosen as a floor that keeps a pair separable under those
 /// conditions while remaining achievable: `zoneid propose` searches the sRGB
 /// gamut for six-colour palettes under the 3:1 contrast constraint, clear of
-/// the compositor's own colours, and reaches 15.70 (measured 2026-09-25), so
-/// the floor is achievable but not by much: it is the binding constraint.
-/// The shipped colours reach 15.88.
+/// the compositor's own colours, and reaches 15.70, so the floor is
+/// achievable but not by much: it is the binding constraint. The shipped
+/// colours reach 15.88.
 /// The original six colours reached 1.48.
 pub const MIN_DELTA_E: f64 = 15.0;
 
@@ -201,8 +201,7 @@ pub fn analyze(zones: &[ZoneIdentity], t: Thresholds) -> Report {
         .map(|&v| (v, f64::INFINITY, String::new(), String::new()))
         .collect();
 
-    // Every border colour on screen, each converted to Lab once per vision
-    // model rather than once per pair.
+    // Every border colour on screen, in Lab once per vision model.
     let mut drawn: Vec<(&str, Srgb)> = zones.iter().map(|z| (z.zone.as_str(), z.color)).collect();
     drawn.extend(
         COMPOSITOR_COLOURS
