@@ -46,6 +46,10 @@ fi
 # worktree -- the CRLF and syntax guards below were not running at all. The tool
 # whose job is to fix missing executable bits could not fix its own, because it
 # was not looking at itself.
+#
+# A test suite in Python (tools/test-*.py) is run the way the shell ones are,
+# by name, by tools/run-tests.sh and by CI, so it is swept by name as well:
+# the first one committed from Windows reached CI as 100644.
 while IFS= read -r f; do
     [[ -z "$f" ]] && continue
     mode="$(git ls-files -s -- "$f" | awk '{print $1}')"
@@ -54,7 +58,7 @@ while IFS= read -r f; do
         git update-index --chmod=+x -- "$f"
     fi
 done < <(git diff --cached --name-only --diff-filter=ACM \
-         | grep -E '^(build/stages/|tools/|compartments/tests/).*\.sh$|^tools/git-hooks/[A-Za-z][A-Za-z0-9_-]*$' \
+         | grep -E '^(build/stages/|tools/|compartments/tests/).*\.sh$|^tools/test-[A-Za-z0-9_-]+\.py$|^tools/git-hooks/[A-Za-z][A-Za-z0-9_-]*$' \
          || true)
 
 # build/lib/common.sh is sourced, not executed, and stays 644 deliberately.

@@ -378,11 +378,18 @@ RESTART_NET='before=$(grep -hc "netzone: READY" /run/uncaught-logs/current 2>/de
 # waits, not the run.
 wait_arrival() { printf '%s' '(prev=; same=0; i=0; while [ $i -lt 72 ]; do s="$(kryptik update status | sed -n "s/^staged *//p")"; case "$s" in *"bytes, complete"*) echo ARRIVED-WHOLE; exit 0 ;; esac; if [ "$s" = "$prev" ]; then same=$((same+1)); else same=0; prev="$s"; fi; [ $same -lt 20 ] || { echo "STALLED at: $s"; exit 1; }; i=$((i+1)); sleep 5; done; echo "still arriving: $s")'; }
 # In a subshell, so that giving up is not the login shell's exit; and giving
-# up is a failed command, because the driver's `run:` judges the exit status
-# and the word it then expects is also in the command line the console echoes.
+# up is a failed command, because the driver's `run:` judges the exit status.
+# The word the driver then expects is what the command prints on success,
+# which `run:` leaves in the stream; the login shell has echo off, so the
+# command line itself never shows it.
 wait_status() { printf '(i=0; until kryptik update status | grep -q "%s"; do i=$((i+1)); [ $i -lt 72 ] || exit 1; sleep 5; done) && echo %s || { kryptik update status; false; }' "$1" "$2"; }
 start_vm update-p8b --net user
+# This is the cold boot after the rollback's commit, and the rest of the
+# step rests on it being slot a. It was slot b once: the firmware's own
+# order named the last slot ever tried ahead of its regenerated disk entry,
+# and the step went on as if it were on a. So the slot is asked first.
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
+    "$(ROOTSH 'echo P8B-BOOTED-$(sed -n "s/^slot=//p" /run/kryptik/boot-identity | head -1)')" "expect:P8B-BOOTED-a" \
     "$(ROOTSH "mkdir -p /etc/kryptik && printf \"channel = http://10.0.2.2:${CHAN_PORT}/\\n\" > /etc/kryptik/update.conf && echo CONF-OK")" "expect:CONF-OK" \
     "$(ROOTSH "$RESTART_NET")" "expect:NET-RESTARTED" \
     "run:kryptik update status | grep -q 'nothing asked for'" \
@@ -402,7 +409,13 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
 rc=$?; stop_vm
 kill "$CHAN_PID" 2>/dev/null; CHAN_PID=""
 [[ "$rc" -eq 0 ]] && green "the net zone brought the statement, nothing was fetched until it was asked for, ${VB} arrived whole, and it was applied, trial-booted and committed; data intact" || red "step 8 drive failed"
-txt | grep -q "version_id=${VB}" && green "guest reports version ${VB} after the fetched update" || red "guest did not report ${VB}"
+# The boots in this step's transcript: the first is the rolled-back slot a,
+# the last is slot b after the fetched update. A grep for ${VB} anywhere
+# passed on a transcript whose first boot was slot b already.
+first_boot="$(txt | sed -n 's/^KRYPTIK_SMOKE: os_id=.* version_id=//p' | head -1)"
+last_boot="$(txt | sed -n 's/^KRYPTIK_SMOKE: os_id=.* version_id=//p' | tail -1)"
+[[ "$first_boot" == "$VA" && "$last_boot" == "$VB" ]] && green "the guest booted ${VA} and, after the fetched update, reports ${VB}" \
+    || red "the guest's boots in this step: first ${first_boot:-none}, last ${last_boot:-none}; wanted ${VA} then ${VB}"
 # What the release host was asked for: the statement, then the manifest and
 # its signature before anything large.
 first="$(awk '{sub("^/", "", $1); if (!seen[$1]++) print $1}' "$CHAN_LOG" | head -5 | tr '\n' ' ')"

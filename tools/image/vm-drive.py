@@ -12,9 +12,11 @@ Steps (each one argument):
     absent:REGEX            assert REGEX has NOT appeared so far
     send:TEXT               send TEXT followed by Enter
     login:USER:PASSWORD     wait for "login:", authenticate, wait for a prompt
-    run:CMD                 run CMD at the shell, require exit status 0
+    run:CMD                 run CMD at the shell, require exit status 0; what
+                            it printed stays for the steps that follow
     run!:CMD                run CMD, any exit status
-    su:PASSWORD:CMD         run CMD as root through su (root's password)
+    su:PASSWORD:CMD         run CMD as root through su (root's password);
+                            its output stays too
     grab:NAME:CMD           run CMD and record its output under NAME in --record
     sleep:SECONDS
     screendump:FILE         ask QEMU (QMP) for a PPM screenshot
@@ -175,9 +177,10 @@ class Drive:
         self.marker += 1
         tag = f"KRC{self.marker}"
         self.send(f"{cmd}; echo {tag}=$?")
-        m = self.expect(rf"{tag}=(\d+)", self.timeout)
+        m = self.finish(tag, cmd)
+        if m.group(1) is None:
+            return 0   # the guest is going down on this command; no status follows
         rc = int(m.group(1))
-        self.expect(r"KDRV\$ ?$", 30)
         if require_zero and rc != 0:
             raise RuntimeError(f"command failed ({rc}): {cmd}")
         return rc
@@ -191,11 +194,18 @@ class Drive:
         self.send(f"su - root -c '{cmd}; echo {tag}=$?'")
         self.expect(r"Password: ?", 60)
         self.send_secret(password)
-        # Wait for the exit marker, but keep what the command printed: the
-        # steps that follow expect lines of that output ("running slot: a",
-        # "ZT END"), and a plain expect() would have consumed them with the
-        # marker. Only the marker itself is dropped; a shutdown message that
-        # matched instead stays for the driver's own expect of it.
+        return self.finish(tag, cmd)
+
+    def finish(self, tag, cmd):
+        # Wait for the command's exit marker, but keep what the command
+        # printed: the steps that follow expect lines of that output
+        # ("STATED-OK", "running slot: a", "ZT END"). Only the marker itself
+        # is dropped; a shutdown message that matched instead stays for the
+        # driver's own expect of it, and is returned in place of a status.
+        # su() always did this; run() used a plain expect(), which consumed
+        # the output with the marker, and the update suite's eighth step
+        # then waited 420 s for a word its own command had printed. The
+        # login shell has echo off, so nothing else ever shows that word.
         rx = re.compile(rf"{tag}=(\d+)|Power down|reboot: Restarting|Restarting system".encode(), re.M)
         deadline = time.time() + self.timeout
         while True:

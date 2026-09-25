@@ -58,7 +58,14 @@ echo "GT BEGIN $(date -Iseconds 2>/dev/null)"
 for z in work dev personal; do
     "$KD" volume init "$z" --size 64M --passphrase-file "$PP" > "$LOG/vol-$z.out" 2>&1 || fail "volume-$z" "$(tail -1 "$LOG/vol-$z.out")"
 done
-[[ -c /dev/dri/card0 ]] && pass "gpu-device" "/dev/dri/card0 present" || fail "gpu-device" "no /dev/dri/card0 (virtio-gpu?)"
+# One DRM device, and it is the native driver's. The firmware framebuffer
+# (simpledrm) is built in and the GPU driver is a module (boot.fragment), so
+# the module must have replaced it at coldplug: two cards put wlroots on its
+# multi-GPU path, which the pixman renderer cannot serve, and the compositor
+# died at start without a screen to fail on.
+cards="$(find /sys/class/drm -maxdepth 1 -name 'card[0-9]*' ! -name '*-*' 2>/dev/null | wc -l)"
+gpu_driver="$(basename "$(readlink -f /sys/class/drm/card0/device/driver 2>/dev/null)" 2>/dev/null)"
+[[ "$cards" -eq 1 && "$gpu_driver" == virtio_gpu ]] && pass "gpu-device" "one DRM device, driven by virtio_gpu" || fail "gpu-device" "$cards DRM device(s); card0 is ${gpu_driver:-nobody}'s (the firmware framebuffer not replaced?)"
 [[ "$(s6-svstat -o up /run/service/seatd 2>/dev/null)" = true ]] && pass "seatd-up" || fail "seatd-up"
 [[ "$(s6-svstat -o up /run/service/kryptikd-serve 2>/dev/null)" = true ]] && pass "launch-daemon-up" || fail "launch-daemon-up"
 

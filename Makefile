@@ -101,7 +101,7 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
 
 .PHONY: test help check check-kernel-eol check-pins test-pin-reviews sources lock verify verify-provenance \
 	vm-disk vm-disk-boot vm-restart vm-measure cli-test update-tree-test identity-test serve-test \
-        test-harness test-hardening test-artifacts audit-artifacts test-boot-success \
+        test-harness test-hardening test-artifacts audit-artifacts test-boot-success test-efiboot \
         audit-artifacts-strict manifest verify-manifest test-manifest \
         test-s6-init smoke-userspace test-services test-netzone-time test-update-verify test-update-fetch test-libc-unwind \
         sign-image verify-image test-image-signing test-installer test-mkdisk-guards \
@@ -631,6 +631,10 @@ test-update-fetch:
 # the host with stand-ins for the services, the ESP and the firmware.
 test-boot-success:
 	@"$(TOOLS)"/test-boot-success.sh
+
+# kryptik-efiboot's forget, what a commit runs, against stand-in variables.
+test-efiboot:
+	@"$(TOOLS)"/test-efiboot.sh
 
 # The zone identity contract: the zone files, the compositor's colour table
 # (generated from them) and the distinctness invariant, checked together.

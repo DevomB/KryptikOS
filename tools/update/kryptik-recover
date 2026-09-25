@@ -101,6 +101,13 @@ commit_slot() {   # commit_slot SLOT (ESP mounted rw at /run/kryptik-recover)
     printf '%s\n' "$s" > /run/kryptik-recover/kryptik/committed-slot
     sync
     say "committed: BOOTX64.EFI is now slot $s ($(cat "/run/kryptik-recover/kryptik/version-$s" 2>/dev/null || echo unknown))"
+    # The firmware's own order must not outvote that: Kryptik's slot entries
+    # and BootNext go, and the firmware boots the disk's BOOTX64.EFI. From
+    # the medium the tool cannot name the installed ESP, so removing is all
+    # it can do here; boot-success does the same at every commit.
+    if [ -d /sys/firmware/efi/efivars ]; then
+        kryptik-efiboot forget >/dev/null 2>&1 || say "the firmware's Kryptik entries could not be removed; its own order may still name the other slot"
+    fi
 }
 
 if [ -n "$RESTORE" ]; then
