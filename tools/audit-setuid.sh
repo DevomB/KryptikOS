@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
-# Fail the build on any setuid/setgid binary not explicitly justified.
+# Fail on any setuid/setgid binary not justified in the allowlist; with
+# --strip, take the bit off each one instead. Stage 06 strips the image's root.
 # Rationale: docs/hardening.md ("setuid elimination")
+#
+#   tools/audit-setuid.sh [--strip] ROOT
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 
-TARGET="${1:-${KRYPTIK_OUT}/rootfs}"
+STRIP=0
+[[ "${1:-}" == --strip ]] && { STRIP=1; shift; }
+TARGET="${1:?usage: audit-setuid.sh [--strip] ROOT}"
 ALLOWLIST="${KRYPTIK_ROOT}/build/config/setuid-allowlist.txt"
 
-[[ -d "$TARGET" ]] || die "no rootfs at ${TARGET}
-Build a system first, or pass a path: ./tools/audit-setuid.sh /path/to/rootfs"
+[[ -d "$TARGET" ]] || die "no directory at ${TARGET}"
 
 allowed() {
     [[ -f "$ALLOWLIST" ]] || return 1
@@ -21,15 +25,16 @@ while IFS= read -r -d '' bin; do
     rel="/${bin#"$TARGET"/}"
     if allowed "$rel"; then
         ok "allowed: ${rel}"
+    elif [[ "$STRIP" -eq 1 ]]; then
+        chmod ug-s "$bin"
+        warn "setuid/setgid removed: ${rel}"
     else
         err "unjustified setuid/setgid binary: ${rel} ($(stat -c '%A %U:%G' "$bin"))"
         violations=$((violations + 1))
     fi
 # `|| true`: find exits non-zero on directories it cannot read, which a
-# chroot-built tree always has. Without it common.sh's ERR trap prints
-# "aborted at audit-setuid.sh:NN" above the real findings, and an
-# operator reasonably reads that as the audit having crashed rather than
-# having found 16 things.
+# chroot-built tree always has; the ERR trap would otherwise make the audit
+# look as if it had crashed rather than found something.
 done < <(find "$TARGET" -type f -perm /6000 -print0 2>/dev/null || true)
 
 echo
