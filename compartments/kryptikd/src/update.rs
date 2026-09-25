@@ -482,26 +482,31 @@ pub fn put(dir: &Path, checks: &Checks, now: i64, name: &str, offset: u64, bytes
     if refused.is_some_and(|t| (now - t).unsigned_abs() < POINTER_INTERVAL_SECS) {
         return refuse(format!("a manifest was refused less than {} minutes ago", POINTER_INTERVAL_SECS / 60));
     }
+    // Every refusal from here on starts the interval, whichever check made
+    // it: a manifest that verifies but is for another version, or is not the
+    // one announced, or does not fit, costs a download and a verification
+    // as much as one that does not verify, and was retried every minute.
+    let refuse_checked = |why: String| -> Result<String, String> {
+        put_file(&dir.join("refused"), now.to_string().as_bytes())?;
+        refuse(why)
+    };
     let listing = match (checks.manifest)(&stage) {
         Ok(l) => l,
-        Err(why) => {
-            put_file(&dir.join("refused"), now.to_string().as_bytes())?;
-            return refuse(why);
-        }
+        Err(why) => return refuse_checked(why),
     };
     if listing.lines().next() != Some(&format!("version: {version}")) {
-        return refuse(format!("the manifest is not for {version}"));
+        return refuse_checked(format!("the manifest is not for {version}"));
     }
     if !listing.lines().any(|l| l.strip_prefix("sha256: ") == Some(p.manifest_sha256.as_str())) {
-        return refuse("the manifest is not the one the statement of what is current announced".into());
+        return refuse_checked("the manifest is not the one the statement of what is current announced".into());
     }
     let files = match parse_file_list(&listing) {
         Ok(f) => f,
-        Err(why) => return refuse(why),
+        Err(why) => return refuse_checked(why),
     };
     let (need, free) = (total_bytes(&files), free_bytes(&stage).unwrap_or(0));
     if need > free {
-        return refuse(format!("the release is {need} bytes and there is room for {free}"));
+        return refuse_checked(format!("the release is {need} bytes and there is room for {free}"));
     }
     put_file(&dir.join("files"), listing.as_bytes())?;
     Ok(format!("{name} complete; the manifest verifies, {} file(s), {need} bytes", files.len()))
@@ -797,6 +802,10 @@ mod tests {
             assert!(put(&d, &checks, T0, "manifest.sig", 0, b"s").unwrap_err().contains(why), "{tag}");
             assert!(!staging(&d, "1.0.3").exists(), "{tag}: the refused manifest was kept");
             assert_eq!(poll(&d, CH, "production", "1.0.2"), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need manifest 0 manifest.sig 0", "{tag}");
+            // A manifest that verified and was refused anyway starts the
+            // interval too: the next pair is not looked at a minute later.
+            put(&d, &checks, T0 + 60, "manifest", 0, b"m").unwrap();
+            assert!(put(&d, &checks, T0 + 60, "manifest.sig", 0, b"s").unwrap_err().contains("minutes ago"), "{tag}: retried within the interval");
             let _ = std::fs::remove_dir_all(&d);
         }
         let d = scratch("unsigned");

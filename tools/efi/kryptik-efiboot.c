@@ -254,8 +254,13 @@ static int cmd_forget(void) {
     if (kl != ol) {
         if (kl == 0 ? delete_var("BootOrder") : write_var("BootOrder", kept, kl)) return die("updating BootOrder failed");
     }
-    if (delete_var("Boot00A0") || delete_var("Boot00B0")) return die("deleting a Boot#### entry failed");
-    if (delete_var("BootNext")) return die("deleting BootNext failed");
+    /* Each one is tried whatever became of the one before: a failure on
+       slot a's entry must not leave slot b's behind. */
+    int bad = 0;
+    if (delete_var("Boot00A0")) { die("deleting Boot00A0 failed"); bad = 1; }
+    if (delete_var("Boot00B0")) { die("deleting Boot00B0 failed"); bad = 1; }
+    if (delete_var("BootNext")) { die("deleting BootNext failed"); bad = 1; }
+    if (bad) return 1;
     printf("forgotten: Kryptik's entries and BootNext; the firmware boots BOOTX64.EFI\n");
     return 0;
 }

@@ -197,6 +197,16 @@ if [[ "$out" == *"version: 2"* && "$out" == *"sha256: $want_sha"* && "$(grep -c 
 else
     bad "check-manifest on a signed manifest: $(tail -3 <<<"$out" | tr '\n' ' ')"
 fi
+# Zone 0 reads the tool's standard output alone and wants the version on its
+# first line (compartments/kryptikd/src/update.rs, put). The case above looks
+# anywhere in both streams, and passed while "signature verifies" came first
+# on stdout, which refused every release the network ever delivered.
+staged stage
+check cmd_check_manifest "$T/stage" > /dev/null
+first="$(bash "$T/check.sh" 2>/dev/null | head -1)"
+[[ "$first" == "version: 2" ]] \
+    && ok "check-manifest: the first line of its standard output is the version, as zone 0 reads it" \
+    || bad "check-manifest: the first line zone 0 reads is '${first}', not 'version: 2'"
 
 # Signed by the right key in the pointer's namespace: a pointer's signature
 # must never pass for a manifest's.

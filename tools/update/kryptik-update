@@ -269,7 +269,9 @@ verify_signed() {   # verify_signed FILE SIG NAMESPACE WHAT
 # `apply`: nothing that arrives over the network is a recovery.
 cmd_check_manifest() {
     [ $# = 1 ] && [ -d "$1" ] || die "check-manifest needs the directory holding manifest and manifest.sig"
-    verify_manifest "$1" 0
+    # Zone 0 reads this command's standard output and wants the version on
+    # its first line; what verifying says about itself goes to stderr.
+    verify_manifest "$1" 0 >&2
     n=0
     while read -r _hash size rel; do
         [ -n "$rel" ] || continue
