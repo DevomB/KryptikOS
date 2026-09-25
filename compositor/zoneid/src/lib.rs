@@ -1,12 +1,12 @@
 //! zoneid — Kryptik zone visual identity and the perceptual distinctness
 //! invariant.
 //!
-//! A window's border colour is how a person tells which zone it belongs to
+//! A window's border colour is how the user tells which zone it belongs to
 //! (docs/architecture.md). If they cannot tell at a glance which zone a
 //! password prompt belongs to, the zones have failed them. This crate makes
 //! that checkable instead of merely asserted.
 //!
-//! It answers one question - *can a person tell these two border colours
+//! It answers one question - *can the user tell these two border colours
 //! apart?* - for every colour the compositor draws, under four vision models.
 //! The `zoneid` binary asks it of the zone files in CI and searches for
 //! palettes that pass. kryptikd checks only the shape of a zone's `[ui]`
