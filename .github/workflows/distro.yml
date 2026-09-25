@@ -114,22 +114,22 @@ jobs:
         # Progress is which steps are built from which inputs: the stamps'
         # fingerprint lines, not the times they record or the archived ones.
         run: |
-          d="$( { cd "$KRYPTIK_WORK/.stamps" && find . -path ./legacy -prune -o -type f -print0 | LC_ALL=C sort -z | xargs -0r grep -H '^fingerprint: ' | sha256sum | cut -c1-16; } 2>/dev/null || true)"
-          if [ -n "$d" ]; then echo "key=work02-$d" >> "$GITHUB_OUTPUT"; fi
+          d="$( { cd "$KRYPTIK_WORK/.stamps" && find . -path ./legacy -prune -o -type f ! -name '*.tmp.*' -print0 | LC_ALL=C sort -z | xargs -0r grep -H '^fingerprint: ' | sha256sum | cut -c1-16; } 2>/dev/null || true)"
+          if [ -n "$d" ]; then echo "prefix=work02-$d-" >> "$GITHUB_OUTPUT"; fi
           ttfp="$(awk '$1 == "fingerprint:" { print $2; exit }' "$KRYPTIK_WORK/.stamps/tt-verify" 2>/dev/null || true)"
           # Without it every toolchain's stage 05 tree would share one key.
           if [ "$STAGE02" = success ] && [ -z "$ttfp" ]; then echo "stage 02 passed and tt-verify has no fingerprint"; exit 1; fi
           echo "ttfp=$ttfp" >> "$GITHUB_OUTPUT"
 
       - name: Save the stage 01-02 sysroot
-        if: ${{ !cancelled() && steps.progress02.outputs.key != '' && steps.progress02.outputs.key != steps.work02.outputs.cache-matched-key }}
+        if: ${{ !cancelled() && steps.progress02.outputs.prefix != '' && !startsWith(steps.work02.outputs.cache-matched-key, steps.progress02.outputs.prefix) }}
         continue-on-error: true
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: |
             /mnt/kryptik/work/sysroot
             /mnt/kryptik/work/.stamps
-          key: ${{ steps.progress02.outputs.key }}
+          key: ${{ steps.progress02.outputs.prefix }}${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Pack the sysroot for the next job
         run: |
@@ -186,14 +186,18 @@ jobs:
       # the same toolchain inputs, so the one from the job before is not needed.
       # The package versions are part of the key: a new version is built into
       # the stage 02 tree, never over the old one, whose files would ship too.
+      # So is stage 03, which writes the chroot's accounts once. Any edit to
+      # those files restarts stage 04, pins only stage 05 reads included (the
+      # microcode, the kernel patches, the checker): about 45 minutes. Each
+      # save has a key of its own, since an existing key is never overwritten.
       - name: Stage 04-05 sysroot and kernel (cached)
         id: work05
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: /mnt/kryptik/work-after-05.tar.zst
-          key: work05-${{ needs.toolchain.outputs.ttfp }}-${{ hashFiles('build/config/versions.env', 'sources.lock') }}-
+          key: work05-${{ needs.toolchain.outputs.ttfp }}-${{ hashFiles('build/config/versions.env', 'sources.lock', 'build/stages/03-chroot-prep.sh') }}-
           restore-keys: |
-            work05-${{ needs.toolchain.outputs.ttfp }}-${{ hashFiles('build/config/versions.env', 'sources.lock') }}-
+            work05-${{ needs.toolchain.outputs.ttfp }}-${{ hashFiles('build/config/versions.env', 'sources.lock', 'build/stages/03-chroot-prep.sh') }}-
 
       - name: Unpack the stage 04-05 tree
         if: steps.work05.outputs.cache-matched-key != ''
@@ -264,7 +268,7 @@ jobs:
           # one pass reads /proc.
           inside() {
             for p in /proc/[0-9]*; do
-              if [ "$(sudo readlink "$p/root" 2>/dev/null)" = "$KRYPTIK_WORK/sysroot" ]; then echo "${p#/proc/}"; fi
+              case "$(sudo readlink "$p/root" 2>/dev/null)" in "$KRYPTIK_WORK/sysroot"|"$KRYPTIK_WORK/sysroot"/*) echo "${p#/proc/}" ;; esac
             done
           }
           for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -285,8 +289,8 @@ jobs:
         id: progress05
         if: ${{ !cancelled() && steps.quiesce.outcome == 'success' }}
         run: |
-          d="$( { cd "$KRYPTIK_WORK/.stamps" && find . -path ./legacy -prune -o -type f -print0 | LC_ALL=C sort -z | xargs -0r grep -H '^fingerprint: ' | sha256sum | cut -c1-16; } 2>/dev/null || true)"
-          if [ -n "$d" ]; then echo "key=work05-${{ needs.toolchain.outputs.ttfp }}-${{ hashFiles('build/config/versions.env', 'sources.lock') }}-$d" >> "$GITHUB_OUTPUT"; fi
+          d="$( { cd "$KRYPTIK_WORK/.stamps" && find . -path ./legacy -prune -o -type f ! -name '*.tmp.*' -print0 | LC_ALL=C sort -z | xargs -0r grep -H '^fingerprint: ' | sha256sum | cut -c1-16; } 2>/dev/null || true)"
+          if [ -n "$d" ]; then echo "prefix=work05-${{ needs.toolchain.outputs.ttfp }}-${{ hashFiles('build/config/versions.env', 'sources.lock', 'build/stages/03-chroot-prep.sh') }}-$d-" >> "$GITHUB_OUTPUT"; fi
 
       # The stamps first, so none is packed without its files. Never what is
       # under the chroot's mount points, and never the module signing key: a
@@ -294,7 +298,7 @@ jobs:
       # when it finds none.
       - name: Pack the stage 04-05 tree for the cache
         id: pack05
-        if: ${{ !cancelled() && steps.progress05.outputs.key != '' && steps.progress05.outputs.key != steps.work05.outputs.cache-matched-key }}
+        if: ${{ !cancelled() && steps.progress05.outputs.prefix != '' && !startsWith(steps.work05.outputs.cache-matched-key, steps.progress05.outputs.prefix) }}
         run: |
           cd /mnt/kryptik
           members=(.stamps sysroot)
@@ -316,7 +320,7 @@ jobs:
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: /mnt/kryptik/work-after-05.tar.zst
-          key: ${{ steps.progress05.outputs.key }}
+          key: ${{ steps.progress05.outputs.prefix }}${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Drop the cache tarball before the media are built
         if: always()
@@ -434,8 +438,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      # The same packages and KVM as the parts, so the report's firmware and
-      # QEMU lines describe the machines the suites ran on.
+      # The same packages as the parts. The report names the firmware and QEMU
+      # the parts ran on, from their identity files; this job boots nothing.
       - uses: ./.github/actions/prepare
         with:
           vm: 'true'
