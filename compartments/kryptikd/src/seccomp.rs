@@ -235,8 +235,7 @@ pub const BASE_ALLOWLIST: &[libc::c_long] = &[
     libc::SYS_timerfd_create, libc::SYS_timerfd_settime, libc::SYS_timerfd_gettime,
     libc::SYS_inotify_init1, libc::SYS_inotify_add_watch, libc::SYS_inotify_rm_watch,
 
-    // --- sockets ---
-    // socket(2) is argument-filtered too: see `ARG_RULES`.
+    // --- sockets (socket(2) is filtered further by `ARG_RULES`) ---
     libc::SYS_socket, libc::SYS_socketpair, libc::SYS_bind, libc::SYS_listen,
     libc::SYS_accept, libc::SYS_accept4, libc::SYS_connect, libc::SYS_shutdown,
     libc::SYS_getsockname, libc::SYS_getpeername, libc::SYS_setsockopt,
