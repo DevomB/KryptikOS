@@ -1,35 +1,16 @@
-//! zoneid — Kryptik zone visual identity and the perceptual distinctness
-//! invariant.
+//! Zone visual identity: can the user tell every two border colours the
+//! compositor draws apart, under each of four vision models?
 //!
-//! A window's border colour is how a person tells which zone it belongs to
-//! (docs/architecture.md). If they cannot tell at a glance which zone a
-//! password prompt belongs to, the zones have failed them. This crate makes
-//! that checkable instead of merely asserted.
-//!
-//! It answers one question - *can a person tell these two border colours
-//! apart?* - for every colour the compositor draws, under four vision models.
-//! The `zoneid` binary asks it of the zone files in CI and searches for
-//! palettes that pass. kryptikd checks only the shape of a zone's `[ui]`
-//! keys; neither it nor the proxy depends on this crate.
-//!
-//! # The channels
+//! The `zoneid` binary audits the zone files in CI and searches for palettes
+//! that pass (docs/architecture.md). kryptikd only checks the shape of the
+//! `[ui]` keys; neither it nor the proxy uses this crate. The check is a floor
+//! on a colour-difference metric, not a guarantee against confusion.
 //!
 //! | Channel | Shown by |
 //! |---|---|
 //! | `color` | the whole window border, drawn by dwl |
 //! | `glyph`, `label` | the chrome, for the focused window |
 //! | `pattern` | nothing yet: validated, given no weight |
-//!
-//! Colour is the channel seen without looking for it, which is why its floor
-//! holds under colour-vision deficiency and not only normal vision.
-//!
-//! # What this crate does NOT do
-//!
-//! It does not decide whether a *user* is confused - it decides whether two
-//! identities are distinguishable in principle, under a stated vision model,
-//! by a colour-difference metric. Real confusion also involves habit, screen
-//! calibration, ambient light and haste. The invariant here is a floor, not a
-//! guarantee.
 
 pub mod color;
 pub mod cvd;

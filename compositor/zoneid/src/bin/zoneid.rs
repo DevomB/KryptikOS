@@ -1,17 +1,7 @@
-//! zoneid — audit and design Kryptik zone visual identity.
+//! zoneid: audit zone border colours, propose palettes, simulate vision models.
 //!
-//! Three jobs, deliberately in one binary so the numbers in a report and the
-//! numbers behind a proposal can never drift apart:
-//!
-//!   audit     evaluate the zone set on disk against the invariant
-//!   propose   search for a palette that passes it
-//!   simulate  show what given colours look like under each vision model
-//!
-//! Exit codes follow the house convention of meaning something:
-//!   0  clean, or informational output
-//!   1  the zone set FAILS the invariant
-//!   2  usage error
-//!   3  could not read or parse the zone files
+//! Exit codes: 0 clean or informational, 1 the zone set fails the invariant,
+//! 2 usage error, 3 the zone files could not be read.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -72,9 +62,8 @@ fn main() -> ExitCode {
     }
 }
 
-/// Every argument is a known flag and its value, each flag at most once.
-/// Anything else is a usage error, so `audit --zone X` cannot audit the
-/// default set and pass.
+/// Parse `flag value` pairs, each known flag at most once. Anything else is a
+/// usage error, so a misspelt `--zone X` cannot audit the default set and pass.
 fn options<'a>(args: &'a [String], known: &[&str]) -> Result<Vec<(&'a str, &'a str)>, String> {
     let mut out: Vec<(&str, &str)> = Vec::new();
     let mut it = args.iter();
@@ -105,9 +94,8 @@ fn cmd_audit(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    // --zones, else compartments/zones under the working directory, else the
-    // shipped set relative to this crate's source (cargo run from anywhere
-    // in the tree). Never a silent empty audit.
+    /* --zones, else compartments/zones here, else the set shipped beside this
+     * crate, so cargo run works from anywhere in the tree. */
     let dir = match flag(&args, "--zones") {
         Some(d) => PathBuf::from(d),
         None => {

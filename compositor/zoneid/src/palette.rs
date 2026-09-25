@@ -1,33 +1,9 @@
-//! Searching for a palette that actually passes the invariant.
+//! Palette search, which shows the floor can be met.
 //!
-//! Reporting that the shipped palette fails is half a finding. The other half
-//! is whether a palette exists that does not, because if none does then the
-//! invariant is too strict and the honest fix is to loosen it rather than to
-//! demand the impossible. This module answers that by construction.
-//!
-//! # What is being maximised
-//!
-//! The score of a candidate palette is the SMALLEST colour difference between
-//! any two of its members under any vision model. Maximising a minimum, not an
-//! average: an average rewards a palette with four beautifully separated
-//! colours and one pair that collides, which is precisely the palette that is
-//! already shipping.
-//!
-//! # Method, and why it is deterministic
-//!
-//! Farthest-point traversal for an initial set, then steepest-ascent local
-//! search - repeatedly replace whichever member most improves the minimum -
-//! from several fixed starting points, keeping the best result.
-//!
-//! No randomness anywhere. A palette search that returns a different answer
-//! each run cannot be used to justify a threshold, cannot be checked in CI,
-//! and cannot be reproduced by whoever next asks why these six colours. The
-//! restarts are at fixed indices for the same reason.
-//!
-//! This is a heuristic, not an optimum, and the report says so. It establishes
-//! a lower bound on what is achievable, which is all the threshold argument
-//! needs: if the search finds a palette scoring well above the floor, the
-//! floor is not the binding constraint.
+//! A palette scores its smallest difference between any two colours under any
+//! vision model (a minimum, as an average hides one colliding pair). The
+//! search is farthest-point traversal, then steepest ascent from fixed
+//! restarts: reproducible, and a lower bound rather than an optimum.
 
 use crate::color::{contrast_ratio, ciede2000, Lab, Srgb};
 use crate::cvd::{simulate, Vision};
@@ -40,36 +16,26 @@ fn labs_of(c: Srgb) -> Labs {
     Vision::ALL.map(|v| simulate(c, v).to_lab())
 }
 
-/// A candidate colour with its appearance under every vision model
-/// precomputed, because the search evaluates each pair many times.
+/// A candidate colour, with its Lab under every vision model precomputed.
 #[derive(Clone)]
 struct Candidate {
     srgb: Srgb,
     lab: Labs,
 }
 
-/// Knobs the search exposes, so that "what is actually binding here?" is a
-/// question that can be answered by measurement rather than argued about.
+/// Search parameters, for measuring which constraint binds.
 #[derive(Clone, Copy, Debug)]
 pub struct SearchOptions {
-    /// Minimum contrast a border must have against BOTH backgrounds.
-    ///
-    /// Set this to 1.0 to drop the constraint entirely, which is the right
-    /// model for a border drawn with a contrasting keyline. It is a much
-    /// bigger lever than it looks.
+    /// Minimum contrast against both backgrounds. 1.0 drops the constraint,
+    /// which models a border drawn with a contrasting keyline.
     pub min_contrast: f64,
     /// Sampling step through each sRGB axis for the coarse search. 17 gives
     /// 16 levels per channel.
     pub step: u32,
-    /// Sampling step for the refinement pass that follows the coarse
-    /// search: each chosen colour is moved through its neighbourhood at
-    /// this resolution while the minimum improves. 0 disables refinement.
-    ///
-    /// The coarse grid alone is not enough. On the default constraints, with
-    /// the compositor's colours fixed, a release build reaches: step 17 alone
-    /// 13.98, step 12 14.49, step 9 15.05 in 1.2 s, step 6 15.42 in 3.1 s;
-    /// step 17 refined every 3, 15.70 in 1.8 s. Refining around the coarse
-    /// optimum is what makes a passing palette cheap.
+    /// Sampling step for refining each colour around the coarse result; 0
+    /// disables it. In a release build the coarse grid alone reaches 13.98 at
+    /// step 17 (15.42 at step 6, in 3.1 s); step 17 refined every 3 reaches
+    /// 15.70 in 1.8 s.
     pub refine: u32,
 }
 
@@ -83,9 +49,7 @@ impl Default for SearchOptions {
     }
 }
 
-/// How far, in sRGB levels per channel, refinement looks around a colour.
-/// One coarse cell in each direction: the coarse optimum is somewhere in the
-/// cell it was sampled in, and its true neighbours are in the cells around.
+/// How far refinement looks around a colour, in sRGB levels: one coarse cell each way.
 const REFINE_RADIUS: i32 = 17;
 
 impl Candidate {
@@ -100,8 +64,6 @@ impl Candidate {
             g: g as f64 / 255.0,
             b: b as f64 / 255.0,
         };
-        // A border has to be visible against every background the desktop
-        // might use, not just the one the designer had open.
         if !backgrounds.iter().all(|&bg| contrast_ratio(c, bg) >= min_contrast) {
             return None;
         }
@@ -118,8 +80,7 @@ fn backgrounds() -> Vec<Srgb> {
     BACKGROUNDS.iter().filter_map(|(_, hex)| Srgb::from_hex(hex).ok()).collect()
 }
 
-/// The compositor's own colours. Every palette is drawn beside them, so
-/// every member is held to the floor against them as well.
+/// The compositor's own colours, which every member must also clear.
 fn fixed() -> Vec<Labs> {
     COMPOSITOR_COLOURS.iter().filter_map(|(_, hex)| Srgb::from_hex(hex).ok()).map(labs_of).collect()
 }
@@ -146,8 +107,7 @@ fn build_candidates(min_contrast: f64, step: u32) -> Vec<Candidate> {
     out
 }
 
-/// The worst colour difference between two colours across all vision
-/// models. This is the quantity the whole search is about.
+/// The smallest difference between two colours across all vision models.
 fn distance(a: &Labs, b: &Labs) -> f64 {
     let mut worst = f64::INFINITY;
     for i in 0..a.len() {
@@ -156,9 +116,8 @@ fn distance(a: &Labs, b: &Labs) -> f64 {
     worst
 }
 
-/// `start` lowered to `c`'s distance from each of `others`, stopping once it
-/// is no more than `floor`: the search only asks whether a colour beats the
-/// best score so far, and most colours are out of the running early.
+/// `start` lowered to `c`'s distance from each of `others`, stopping early
+/// once it is at or below `floor` (the best score so far).
 fn nearest<'a>(c: &Labs, others: impl IntoIterator<Item = &'a Labs>, start: f64, floor: f64) -> f64 {
     let mut near = start;
     for o in others {
@@ -180,21 +139,17 @@ fn score(pal: &[Labs], fixed: &[Labs]) -> f64 {
     s
 }
 
-/// The palette without member `slot`, and that palette's score. Any
-/// colour in the slot then scores `nearest(colour, others, rest, ..)`, so a
-/// replacement costs one distance per member instead of a whole rescoring.
+/// The palette without member `slot`, and its score, so scoring a replacement
+/// is `nearest(colour, others, rest, ..)`: one distance per member.
 fn without(pal: &[Labs], slot: usize, fixed: &[Labs]) -> (Vec<Labs>, f64) {
     let others: Vec<Labs> = pal.iter().enumerate().filter(|&(i, _)| i != slot).map(|(_, l)| *l).collect();
     let rest = score(&others, fixed);
     (others, rest)
 }
 
-/// Coarse-to-fine: move each colour through the cube of radius
-/// `REFINE_RADIUS` around it, sampled every `fine` levels, taking the
-/// single move that most improves the palette's minimum, until no move
-/// does. Candidates are made on demand, so the fine grid never exists in
-/// full. Deterministic for the same reason the coarse search is: fixed
-/// iteration order, strict improvement only.
+/// Move each colour to the best point within `REFINE_RADIUS`, sampled every
+/// `fine` levels, until nothing improves. Candidates are made on demand; fixed
+/// order and strict improvement keep it deterministic.
 fn refine(pal: &mut [Candidate], fixed: &[Labs], min_contrast: f64, fine: u32) {
     if fine == 0 {
         return;
@@ -241,8 +196,7 @@ fn refine(pal: &mut [Candidate], fixed: &[Labs], min_contrast: f64, fine: u32) {
 
 pub struct Proposal {
     pub colors: Vec<Srgb>,
-    /// Smallest difference under any vision model, between two colours or
-    /// between a colour and a compositor colour.
+    /// Smallest difference under any vision model, compositor colours included.
     pub score: f64,
     /// How many colours the search had to choose from.
     pub candidates_considered: usize,
@@ -250,10 +204,8 @@ pub struct Proposal {
     pub worst_per_vision: Vec<(Vision, f64)>,
 }
 
-/// Search for `n` maximally distinguishable colours.
-///
-/// Returns `None` only if the contrast filter left fewer than `n` candidates,
-/// which would mean the contrast requirement itself is unsatisfiable.
+/// Search for `n` maximally distinguishable colours. `None` if `n` is 0 or
+/// fewer than `n` colours meet the contrast requirement.
 pub fn propose(n: usize) -> Option<Proposal> {
     propose_with(n, SearchOptions::default())
 }
@@ -268,8 +220,7 @@ pub fn propose_with(n: usize, opts: SearchOptions) -> Option<Proposal> {
     // Each candidate's distance to the compositor's colours, which no move changes.
     let to_fixed: Vec<f64> = cands.iter().map(|c| nearest(&c.lab, &fixed, f64::INFINITY, f64::NEG_INFINITY)).collect();
 
-    // Fixed restart points spread through the candidate list. Deterministic by
-    // construction - see the module comment on why that matters.
+    // Fixed restart points, spread through the candidates.
     let restarts: Vec<usize> = (0..7).map(|k| k * cands.len() / 7).collect();
 
     let mut best: Option<Vec<Candidate>> = None;
@@ -277,9 +228,7 @@ pub fn propose_with(n: usize, opts: SearchOptions) -> Option<Proposal> {
 
     for &seed in &restarts {
         let mut chosen = vec![seed];
-        // Membership of `chosen`, by candidate index: the loops below ask
-        // it once per candidate, and a scan of `chosen` for each of tens of
-        // thousands of candidates was most of the coarse search's time.
+        // Membership of `chosen` by candidate index, asked once per candidate below.
         let mut in_set = vec![false; cands.len()];
         in_set[seed] = true;
         /* Farthest-point traversal: take the candidate furthest from
@@ -364,8 +313,7 @@ pub fn propose_with(n: usize, opts: SearchOptions) -> Option<Proposal> {
         })
         .collect();
 
-    // Sort the output by lightness so the palette reads as a palette rather
-    // than in search order, which is meaningless to a human.
+    // Report in order of lightness, not search order.
     let mut colors: Vec<Srgb> = pal.iter().map(|c| c.srgb).collect();
     colors.sort_by(|a, b| {
         a.relative_luminance()
@@ -388,15 +336,14 @@ mod tests {
     use crate::identity::ZoneIdentity;
     use std::sync::OnceLock;
 
-    /// One default search, shared: it is deterministic (checked below), and
-    /// a coarse-to-fine search is seconds of work per call.
+    /// The default search, run once: it is deterministic and takes seconds.
     fn default_six() -> &'static Proposal {
         static P: OnceLock<Proposal> = OnceLock::new();
         P.get_or_init(|| propose(6).unwrap())
     }
 
     #[test]
-    fn candidates_all_meet_the_contrast_floor() {
+    fn candidates_meet_contrast_floor() {
         let cands = build_candidates(MIN_BORDER_CONTRAST, 17);
         assert!(!cands.is_empty());
         for (_, hex) in BACKGROUNDS {
@@ -427,13 +374,9 @@ mod tests {
         }
     }
 
-    /// The claim the floor rests on: a palette exists that passes.
-    ///
-    /// Without this, the invariant might simply be unsatisfiable, and
-    /// reporting the shipped palette as broken would be reporting that the
-    /// standard is wrong rather than that the palette is.
+    /// The floor must be achievable: some six-colour palette passes.
     #[test]
-    fn a_passing_six_colour_palette_exists() {
+    fn six_colour_palette_passes() {
         let p = default_six();
         let zones: Vec<ZoneIdentity> = p
             .colors
@@ -449,16 +392,14 @@ mod tests {
             "proposed palette scored {:.2} yet still failed the invariant",
             p.score
         );
-        // The number the search reaches is part of the claim: a change that
-        // makes it worse must be seen, not absorbed by the floor.
+        // A worse search result must show, not hide under the floor.
         assert!(p.score >= MIN_DELTA_E + 0.5, "default search reached only {:.2}", p.score);
     }
 
     /// The coarse grid alone does not reach the floor (13.98 at step 17);
-    /// refinement is what does. Pinned so that removing it cannot look like
-    /// a harmless cleanup.
+    /// refinement does.
     #[test]
-    fn refinement_is_what_reaches_the_floor() {
+    fn refinement_reaches_floor() {
         let coarse = propose_with(6, SearchOptions { refine: 0, ..SearchOptions::default() }).unwrap();
         let refined = default_six();
         assert!(coarse.score < refined.score, "coarse {:.2} vs refined {:.2}", coarse.score, refined.score);
@@ -474,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn asking_for_zero_colours_returns_none() {
+    fn zero_colours_returns_none() {
         assert!(propose(0).is_none());
     }
 }

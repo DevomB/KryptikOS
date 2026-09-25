@@ -1,25 +1,5 @@
 #!/usr/bin/env python3
-"""Kryptik's change to dwl: border colours by zone.
-
-Applied to dwl's dwl.c at build time (stage 04, s_dwl). It is a patch
-written as exact-string replacements rather than a unified diff so that it
-fails loudly - with the text it could not find - if the pinned dwl ever
-differs from the one it was written against (dwl v0.8), instead of applying
-a hunk with fuzz to code that has moved.
-
-What it changes:
-  * Client gains its zone's colour, chosen from the `kryptik.<zone>.` app_id
-    prefix the per-zone proxy stamps on every client it forwards
-    (docs/design/broker.md). The compositor is the only party that draws
-    the border, and the proxy is the only party that sets the prefix, so a
-    window cannot claim another zone's colour.
-  * The border is always that colour, focused or not, so every colour on
-    screen is one zoneid audits. Focus is shown by width: an unfocused
-    window has a band of the root colour over the inner `bandpx` of its
-    border. Urgent stays global.
-  * setfullscreen keeps the border: a fullscreen window is framed by its
-    zone's colour like any other, so going fullscreen cannot remove the
-    compositor's statement of which zone it belongs to.
+"""Patch dwl.c (dwl v0.8) so every window's border is its zone's colour.
 
 Usage: dwl-zone-borders.py DWL_SOURCE_DIR           (edits dwl.c in place)
        dwl-zone-borders.py --check DWL_SOURCE_DIR   (exit 0 if it would apply)
@@ -27,6 +7,10 @@ Usage: dwl-zone-borders.py DWL_SOURCE_DIR           (edits dwl.c in place)
 import os
 import sys
 
+# Exact-string edits rather than a diff, so a different dwl fails with the text
+# not found instead of patching with fuzz. The colour comes from the app_id
+# prefix only the zone's proxy sets; focus is shown by width (a band of the
+# root colour when unfocused), and fullscreen keeps the border.
 EDITS = [
     # (1) Client: the zone's colour and the band that marks it unfocused.
     ("""	struct wlr_scene_rect *border[4]; /* top, bottom, left, right */
@@ -94,9 +78,8 @@ void
 applyrules(Client *c)
 {
 """),
-    # (4) mapnotify: the borders in the zone's colour, then the band over
-    # them and under the surface. It starts enabled: a new window is
-    # unfocused until focusclient says otherwise.
+    # (4) mapnotify: zone-coloured borders, then the band over them and under
+    # the surface, enabled because a new window starts unfocused.
     ("""	for (i = 0; i < 4; i++) {
 		c->border[i] = wlr_scene_rect_create(c->scene, 0, 0,
 				c->isurgent ? urgentcolor : bordercolor);
@@ -131,6 +114,7 @@ applyrules(Client *c)
 			wlr_scene_node_set_enabled(&c->band->node, 0);
 		}
 """),
+    # (7) focusclient, the window losing focus: its band comes back.
     ("""		} else if (old_c && !client_is_unmanaged(old_c) && (!c || !client_wants_focus(c))) {
 			client_set_border_color(old_c, bordercolor);
 """,
@@ -138,8 +122,7 @@ applyrules(Client *c)
 			client_set_border_color(old_c, old_c->zoneborder);
 			wlr_scene_node_set_enabled(&old_c->band->node, 1);
 """),
-    # (7) setfullscreen: the border stays. dwl drops it to 0 in fullscreen,
-    # which would let a window hide its zone by going fullscreen.
+    # (8) setfullscreen: keep the border; dwl's 0 would let a window hide its zone.
     ("""	c->bw = fullscreen ? 0 : borderpx;
 	client_set_fullscreen(c, fullscreen);
 """,

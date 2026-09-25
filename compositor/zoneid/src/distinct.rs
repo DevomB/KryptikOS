@@ -1,67 +1,29 @@
-//! The distinctness invariant: can a human tell these two zones apart?
-//!
-//! # The rule
-//!
-//! Every pair of border colours the compositor draws - each zone's, and its
-//! own for a window from no zone, from an unknown zone, or asking for
-//! attention - must differ by the floor under every vision model. Zones must
-//! also have distinct glyphs and distinct labels, which the chrome shows for
-//! the focused window. The border pattern is validated but nothing draws it,
-//! so it separates nothing.
-//!
-//! # What a "collision" is and is not
-//!
-//! A collision is a statement about two configured identities under a stated
-//! vision model and a stated metric. It is not a claim about whether a
-//! particular person, in a particular room, in a hurry, would be confused.
-//! Real confusion also involves habit, screen calibration, ambient light and
-//! haste, none of which are modelled here. This is a floor, and treating it as
-//! a guarantee would be the same overreach as treating a passing test suite as
-//! proof of correctness.
+//! The distinctness invariant. Every two border colours the compositor draws
+//! (each zone's, and its own for unzoned, unknown and urgent windows) must
+//! differ by the floor under every vision model, and zones must have distinct
+//! glyphs and labels. Patterns are not drawn, so they separate nothing.
 
 use crate::color::{ciede2000, contrast_ratio, Lab, Srgb};
 use crate::cvd::{simulate, Vision};
 use crate::identity::{Channel, ZoneIdentity};
 
-/// The colour-difference floor, in CIEDE2000 units.
-///
-/// For scale: ~1.0 is the classic just-noticeable difference under laboratory
-/// conditions and ~2.3 is a difference a person reliably notices when the two
-/// samples are adjacent and they are looking for it. Neither is the situation
-/// here. A zone border is seen peripherally, on an uncalibrated screen, at
-/// arbitrary ambient brightness, by someone whose attention is on their work -
-/// and the consequence of a mistake is typing a password into the wrong zone.
-///
-/// 15.0 is chosen as a floor that keeps a pair separable under those
-/// conditions while remaining achievable: `zoneid propose` searches the sRGB
-/// gamut for six-colour palettes under the 3:1 contrast constraint, clear of
-/// the compositor's own colours, and reaches 15.70, so the floor is
-/// achievable but not by much: it is the binding constraint. The shipped
-/// colours reach 15.88.
-/// The original six colours reached 1.48.
+/// The colour-difference floor, in CIEDE2000 units. About 1 is just noticeable
+/// side by side in a lab, but a border is seen at the edge of vision on an
+/// uncalibrated screen. `zoneid propose` reaches 15.70 for six colours under
+/// the contrast rule, so 15.0 binds; the shipped colours reach 15.88.
 pub const MIN_DELTA_E: f64 = 15.0;
 
-/// Minimum contrast between a zone border and the background behind it.
-///
-/// WCAG 2.1 SC 1.4.11 (Non-text Contrast) requires 3:1 for user interface
-/// components whose perception is necessary. A zone border is the canonical
-/// example of one: if it vanishes into the desktop the window is unattributed,
-/// which is the same failure as two zones sharing a colour and is easy to miss
-/// because it only happens on one of the two backgrounds.
+/// Minimum contrast of a zone border against the background: 3:1, as WCAG 2.1
+/// SC 1.4.11 requires for user interface components.
 pub const MIN_BORDER_CONTRAST: f64 = 3.0;
 
-/// The two backgrounds a border is checked against.
-///
-/// Checking one is the trap. A colour tuned for a dark desktop can disappear
-/// on a light one, and Kryptik does not currently forbid either.
+/// Backgrounds a border is checked against: a colour tuned for one can vanish on the other.
 pub const BACKGROUNDS: [(&str, &str); 2] = [("dark", "#1c1c1c"), ("light", "#f0f0f0")];
 
-/// The border colours the compositor draws besides the zones': a window from
-/// no zone (the chrome), from a zone it has no colour for, and one asking for
-/// attention. gen-zone-colours.py writes the same values into the header dwl
-/// is built with, and a test in zones.rs holds the two together. They are
-/// held to the floor against every zone, not to the contrast rule: the
-/// unzoned grey is light by design and the desktop is dark.
+/// The compositor's own border colours: unzoned windows (the chrome), zones it
+/// has no colour for, and urgent windows. gen-zone-colours.py writes the same
+/// values into dwl's header, and a test in zones.rs keeps the two equal. They
+/// are held to the floor but not the contrast rule: the unzoned grey is light.
 pub const COMPOSITOR_COLOURS: [(&str, &str); 3] =
     [("unzoned", "#d8d8d8"), ("unknown", "#a2c9ff"), ("urgent", "#ffd000")];
 
@@ -92,8 +54,7 @@ impl Thresholds {
 /// How badly a finding breaks the model.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Severity {
-    /// Two border colours below the floor under some vision model: for a
-    /// user with that vision, the two are the same window edge.
+    /// Two border colours below the floor under some vision model.
     Critical,
     /// A glyph or label shared by two zones.
     Warning,
@@ -114,8 +75,7 @@ pub struct Collision {
     pub a: String,
     pub b: String,
     pub channel: Channel,
-    /// The vision model under which the collision occurs. `None` for channels
-    /// that do not depend on vision, such as glyph and label.
+    /// The vision model it occurs under; `None` for glyph and label.
     pub vision: Option<Vision>,
     /// The measured difference, for colour collisions.
     pub delta_e: Option<f64>,
@@ -142,9 +102,7 @@ pub struct Report {
     pub collisions: Vec<Collision>,
     pub contrast: Vec<ContrastFinding>,
     pub missing: Vec<MissingChannel>,
-    /// Worst (smallest) colour difference seen, per vision model, with the
-    /// pair responsible. Reported even when nothing failed, because "it
-    /// passed" is much less useful than "it passed with 3.2 to spare".
+    /// Smallest colour difference per vision model and its pair, reported even on a pass.
     pub worst_per_vision: Vec<(Vision, f64, String, String)>,
 }
 
@@ -155,12 +113,8 @@ impl Report {
             .filter(|c| c.severity == Severity::Critical)
     }
 
-    /// Whether a zone set carrying these findings should be refused.
-    ///
-    /// Only critical collisions block. A missing channel or a low-contrast
-    /// border is a genuine finding and is reported loudly, but refusing to
-    /// boot a machine over it would make the invariant unshippable, and an
-    /// invariant nobody can enable protects nobody.
+    /// Whether the zone set should be refused. Only critical collisions refuse;
+    /// missing channels and low contrast are reported.
     pub fn is_fatal(&self) -> bool {
         self.critical().next().is_some()
     }
@@ -177,9 +131,7 @@ pub fn analyze(zones: &[ZoneIdentity], t: Thresholds) -> Report {
             });
         }
         for (bg_name, bg_hex) in BACKGROUNDS {
-            // The backgrounds are compile-time constants checked by a test
-            // below, so a parse failure here is a programming error, not
-            // configuration, and there is nothing useful to report about it.
+            // Constants checked by constants_parse; failure is a programming error.
             let Ok(bg) = Srgb::from_hex(bg_hex) else {
                 continue;
             };
@@ -194,8 +146,7 @@ pub fn analyze(zones: &[ZoneIdentity], t: Thresholds) -> Report {
         }
     }
 
-    // Track the worst pair per vision model even when nothing fails.
-    // Indexed like Vision::ALL, and read that way below.
+    // The worst pair per vision model, indexed like Vision::ALL.
     let mut worst: Vec<(Vision, f64, String, String)> = Vision::ALL
         .iter()
         .map(|&v| (v, f64::INFINITY, String::new(), String::new()))
@@ -280,8 +231,7 @@ pub fn analyze(zones: &[ZoneIdentity], t: Thresholds) -> Report {
         }
     }
 
-    // Sort so the report is stable and the worst thing is first. Critical
-    // before warning, then smallest difference first.
+    // Worst first: critical before warning, then the smallest difference.
     r.collisions.sort_by(|x, y| {
         x.severity.cmp(&y.severity).then_with(|| {
             x.delta_e
@@ -361,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn low_contrast_borders_are_reported_per_background() {
+    fn low_contrast_reported_per_background() {
         // Near-black: invisible on the dark desktop, fine on the light one.
         let z = [id("ink", "#101010")];
         let r = analyze(&z, Thresholds::default());
@@ -370,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_glyphs_and_labels_are_reported() {
+    fn duplicate_glyphs_and_labels_reported() {
         let a = ZoneIdentity::new("a", "#aa3333", None, Some("!"), Some("WORK")).unwrap();
         let b = ZoneIdentity::new("b", "#2f6f9f", None, Some("!"), Some("w-o-r-k")).unwrap();
         let r = analyze(&[a, b], Thresholds::default());
@@ -395,12 +345,9 @@ mod tests {
         assert!(r.collisions.is_empty());
     }
 
-    /// The finding this crate was written for, pinned as a test: the six
-    /// colours Kryptik originally shipped (2026-09-11) fail the invariant.
-    /// The zone files now carry the searched palette; zones.rs checks them.
-    /// This stays so the metric keeps detecting the palette it was built on.
+    /// A known-bad palette must keep failing, worst under deuteranopia.
     #[test]
-    fn the_original_palette_fails_the_invariant() {
+    fn known_bad_palette_fails() {
         let shipped = [
             id("dev", "#b5651d"),
             id("net", "#2f6f9f"),

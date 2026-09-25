@@ -1,18 +1,8 @@
-//! Colour science for the zone distinctness invariant.
+//! Colour science from published formulae, each tested against reference
+//! values (CIEDE2000 against the Sharma, Wu & Dalal 2005 data).
 //!
-//! Everything here is implemented from published formulae rather than pulled
-//! from a crate, for the reason given in Cargo.toml. The consequence is that
-//! every function in this file has to be checkable against reference values,
-//! and the ones with published reference data are tested against it: CIEDE2000
-//! against the Sharma-Wu-Dalal (2005) dataset, the sRGB transfer function
-//! against its own continuity, WCAG contrast against the two ratios the
-//! specification itself states.
-//!
-//! Units, stated once because mixing them silently is the classic bug here:
-//! `Srgb` components are gamma-encoded and in 0..=1, NOT 0..=255. `LinearRgb`
-//! is light-linear and in 0..=1. Colour-vision simulation and luminance both
-//! operate on LINEAR values; blending gamma-encoded values is wrong and this
-//! module never does it.
+//! `Srgb` is gamma-encoded and `LinearRgb` light-linear, both in 0..=1 (not
+//! 0..=255). Vision simulation and luminance work on linear values only.
 
 use std::fmt;
 
@@ -24,10 +14,8 @@ pub struct Srgb {
     pub b: f64,
 }
 
-/// A light-linear RGB colour, components nominally in 0..=1.
-///
-/// Colour-vision simulation can push components outside 0..=1; they are only
-/// clamped on the way back to `Srgb`, where the gamut actually binds.
+/// A light-linear RGB colour, nominally in 0..=1. Vision simulation can leave
+/// that range; values are clamped only on conversion back to `Srgb`.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct LinearRgb {
     pub r: f64,
@@ -61,10 +49,6 @@ pub enum ParseHexError {
 impl fmt::Display for ParseHexError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            // A zone colour is security-relevant configuration, so a malformed
-            // one is refused rather than coerced into something plausible.
-            // Silently reading "#ff" as red is how a zone ends up wearing
-            // another zone's identity.
             ParseHexError::MissingHash => write!(f, "colour must begin with '#'"),
             ParseHexError::BadLength(n) => {
                 write!(f, "colour must be #RRGGBB (7 characters), got {n}")
@@ -75,8 +59,8 @@ impl fmt::Display for ParseHexError {
 }
 
 impl Srgb {
-    /// Parse `#RRGGBB`. Deliberately strict: no 3-digit form, no alpha channel,
-    /// no named colours.
+    /// Parse `#RRGGBB` only: no short form, alpha or names. Coercing a bad zone
+    /// colour could give a zone another zone's identity.
     pub fn from_hex(s: &str) -> Result<Srgb, ParseHexError> {
         let bytes = s.as_bytes();
         if bytes.first() != Some(&b'#') {
@@ -148,19 +132,8 @@ const RGB_TO_XYZ: [[f64; 3]; 3] = [
     [0.019_333_9, 0.119_192_0, 0.950_304_1],
 ];
 
-/// The reference white, derived from `RGB_TO_XYZ` rather than stated
-/// separately.
-///
-/// The published matrix is rounded to seven digits, so its rows do not sum to
-/// the canonical D65 values exactly - the Y row comes to 1.0000001. Quoting
-/// the canonical white point alongside the rounded matrix makes white land at
-/// L* = 100.000004 instead of 100, which is harmless in itself and is exactly
-/// the kind of small inconsistency that later gets absorbed into a loosened
-/// tolerance and hides something real.
-///
-/// Deriving the white from the matrix makes the pair self-consistent by
-/// construction: white is whatever (1,1,1) maps to, so L* = 100 exactly, and
-/// the tolerance in the test stays tight enough to catch an actual error.
+/// The reference white, derived from `RGB_TO_XYZ`: the rounded matrix misses
+/// canonical D65 slightly (Y sums to 1.0000001), and deriving keeps L* = 100.
 const WHITE: (f64, f64, f64) = (
     RGB_TO_XYZ[0][0] + RGB_TO_XYZ[0][1] + RGB_TO_XYZ[0][2],
     RGB_TO_XYZ[1][0] + RGB_TO_XYZ[1][1] + RGB_TO_XYZ[1][2],
@@ -169,7 +142,7 @@ const WHITE: (f64, f64, f64) = (
 
 impl Xyz {
     pub fn to_lab(self) -> Lab {
-        // D65, 2-degree observer, derived from the primaries matrix. See WHITE.
+        // D65, 2-degree observer; see WHITE.
         let (xn, yn, zn) = WHITE;
         let f = |t: f64| -> f64 {
             const DELTA: f64 = 6.0 / 29.0;
@@ -214,26 +187,15 @@ fn linear_to_srgb(c: f64) -> f64 {
     }
 }
 
-/// WCAG 2.x contrast ratio, in 1.0..=21.0.
-///
-/// Used here for border-against-background legibility, not for text. A zone
-/// border nobody can see against the desktop is the same failure as two zones
-/// sharing a colour: the user cannot tell which zone they are typing into.
+/// WCAG 2.x contrast ratio, in 1.0..=21.0; used for a border against its background.
 pub fn contrast_ratio(a: Srgb, b: Srgb) -> f64 {
     let (la, lb) = (a.relative_luminance(), b.relative_luminance());
     let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
     (hi + 0.05) / (lo + 0.05)
 }
 
-/// CIEDE2000 colour difference.
-///
-/// CIE 142-2001 in the corrected formulation of Sharma, Wu & Dalal (2005),
-/// whose published test dataset this is checked against below. The corrections
-/// are not pedantry: a naive implementation disagrees by several units around
-/// the blue hue-rotation term, which is precisely where two of the shipped
-/// zone colours sit.
-///
-/// Parametric weighting factors kL = kC = kH = 1 (reference conditions).
+/// CIEDE2000 colour difference: CIE 142-2001 as corrected by Sharma, Wu &
+/// Dalal (2005), with kL = kC = kH = 1. The corrections matter near blue.
 pub fn ciede2000(p: Lab, q: Lab) -> f64 {
     const POW25_7: f64 = 6_103_515_625.0; // 25^7
 
@@ -252,8 +214,7 @@ pub fn ciede2000(p: Lab, q: Lab) -> f64 {
     let c1p = (a1p * a1p + b1 * b1).sqrt();
     let c2p = (a2p * a2p + b2 * b2).sqrt();
 
-    // IEEE atan2(0, 0) == 0, which is also what the standard requires for a
-    // neutral colour, so no special case is needed here.
+    // atan2(0, 0) == 0, as the standard requires for a neutral colour.
     let h1p = deg(b1.atan2(a1p));
     let h2p = deg(b2.atan2(a2p));
 
@@ -350,9 +311,8 @@ mod tests {
     }
 
     #[test]
-    fn transfer_function_is_continuous_at_the_knee() {
-        // The two branches must meet. If they do not, every number downstream
-        // is quietly wrong near black.
+    fn transfer_function_continuous_at_knee() {
+        // The two branches must meet, or everything near black is off.
         let knee = 0.040_45;
         let below = srgb_to_linear(knee - 1e-12);
         let above = srgb_to_linear(knee + 1e-12);
@@ -392,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn delta_e_is_zero_for_identical_colours() {
+    fn delta_e_zero_when_identical() {
         let c = Srgb::from_hex("#aa3333").unwrap();
         assert!(close(delta_e(c, c), 0.0, 1e-9));
     }
@@ -406,13 +366,8 @@ mod tests {
 
     /// Sharma, Wu & Dalal (2005), "The CIEDE2000 Color-Difference Formula:
     /// Implementation Notes, Supplementary Test Data, and Mathematical
-    /// Observations", Table 1.
-    ///
-    /// These pairs exist specifically to catch the mistakes a plausible-looking
-    /// CIEDE2000 makes: the hue-difference wraparound, the mean-hue wraparound,
-    /// and the RT rotation term near blue. An implementation with the right
-    /// arithmetic and the wrong wraparound survives casual inspection and dies
-    /// here, which is the entire point of keeping this data in the tree.
+    /// Observations", Table 1: pairs that catch the hue wraparounds and the RT
+    /// term near blue.
     #[test]
     fn ciede2000_against_sharma_reference_data() {
         let cases: &[(f64, f64, f64, f64, f64, f64, f64)] = &[

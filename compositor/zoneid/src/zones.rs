@@ -1,19 +1,13 @@
-//! Zone identities from a directory of zone files.
-//!
-//! The same files kryptikd installs under /etc/kryptik/zones: `[zone] name`
-//! and the four `[ui]` channels are all this crate reads from them.
+//! Zone identities from a zone directory (as kryptikd installs under
+//! /etc/kryptik/zones); only `[zone] name` and the `[ui]` channels are read.
 
 use std::path::{Path, PathBuf};
 
 use crate::identity::ZoneIdentity;
 use crate::toml;
 
-/// Read every `*.toml` in `dir` as a zone definition.
-///
-/// A file without a `[ui] border_color` is skipped rather than failing the
-/// run: the directory is a zone directory, not a palette file, and a zone that
-/// does not configure a colour is a separate problem from zones whose colours
-/// collide.
+/// Read every `*.toml` in `dir` as a zone definition, skipping any without a
+/// `[ui] border_color`: a zone with no colour is not a colour collision.
 pub fn load_zones(dir: &Path) -> Result<Vec<ZoneIdentity>, String> {
     let entries = std::fs::read_dir(dir)
         .map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
@@ -38,8 +32,7 @@ pub fn load_zones(dir: &Path) -> Result<Vec<ZoneIdentity>, String> {
         let Some(color) = doc.get("ui", "border_color") else {
             continue;
         };
-        // Fall back to the filename only if the file does not name itself;
-        // the [zone] name is authoritative because that is what kryptikd uses.
+        // kryptikd goes by [zone] name; the file stem is only a fallback.
         let name = doc
             .get("zone", "name")
             .map(|s| s.to_string())
@@ -74,8 +67,7 @@ mod tests {
     use crate::distinct::{analyze, Thresholds, COMPOSITOR_COLOURS, MIN_DELTA_E};
     use crate::identity::Channel;
 
-    /// The header dwl is built with holds exactly the colours zoneid audits:
-    /// it cannot draw one (a focus shade, say) that no check has seen.
+    /// dwl's colour header holds exactly the audited colours, so dwl draws none unchecked.
     #[test]
     fn header_colours_are_audited() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../build/desktop/zone-colours.h");
@@ -97,12 +89,10 @@ mod tests {
         assert_eq!(drawn, audited);
     }
 
-    /// The claim the whole crate exists to make good on: the zone files
-    /// that ship are distinguishable. Every pair differs in colour under
-    /// every vision model by at least the floor, and every zone carries all
-    /// four channels with a distinct value in each.
+    /// Every shipped pair clears the floor under every vision model, with no
+    /// other finding, and every zone carries all four channels.
     #[test]
-    fn the_shipped_zone_files_pass_the_invariant() {
+    fn shipped_zones_pass_invariant() {
         let zones = load_zones(&shipped_zone_dir()).expect("the shipped zone files parse");
         assert!(zones.len() >= 6, "expected the six shipped zones, found {}", zones.len());
         let r = analyze(&zones, Thresholds::default());

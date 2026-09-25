@@ -1,49 +1,16 @@
-//! The zone identity model: four channels, and what a valid value is in each.
+//! The zone identity model: four channels and what a valid value is in each.
 //!
-//! # Deny-by-default, for the same reason the seccomp filter is
-//!
-//! `glyph` is validated against a curated allowlist rather than by rejecting
-//! dangerous Unicode categories. That inverts the usual approach on purpose.
-//!
-//! A denylist has to anticipate every hostile character class: C0 and C1
-//! controls, the Cf format characters (which is where ZWJ, ZWNJ and the bidi
-//! overrides live), combining marks that render on top of their neighbour,
-//! unassigned code points whose rendering is a font's guess, private-use area
-//! characters, and the confusables - Cyrillic small o rendering identically to
-//! Latin o, so that two zones pass a string-equality uniqueness check while
-//! being the same text on screen. Miss one class and the titlebar tag, which
-//! is supposed to be the unforgeable part of the interface, becomes forgeable
-//! by whoever writes the zone file.
-//!
-//! An allowlist has to anticipate nothing. A glyph is rejected unless someone
-//! deliberately put it on the list, which forces a human to consider its font
-//! coverage and its confusability with everything already there. Adding a
-//! glyph is a reviewed change, exactly like adding a syscall to the zone
-//! seccomp allowlist.
-//!
-//! It also removes the need for Unicode category tables, which this crate has
-//! no dependency to provide and should not hand-roll.
-//!
-//! # Why `label` is ASCII-only
-//!
-//! Same attack, different field. U+202E RIGHT-TO-LEFT OVERRIDE in a zone label
-//! makes the compositor render text that reads as another zone's name, and the
-//! compositor is the component whose output is supposed to be trustworthy
-//! precisely because the client cannot influence it. If the zone's own config
-//! supplies the string, the config file is the forgery vector. Restricting to
-//! printable ASCII eliminates bidi control and homograph confusables in one
-//! rule, and costs nothing for zone names that are English words.
+//! Glyphs come from an allowlist, as syscalls do in the seccomp filter: a
+//! denylist must foresee every bidi control, combining mark and confusable,
+//! and missing one lets a zone file forge another zone's tag. Labels are
+//! printable ASCII, which rules out bidi overrides and homographs at once.
 
 use std::fmt;
 
 use crate::color::{ParseHexError, Srgb};
 
-/// The border stroke style a zone asks for. Validated so a typo is caught,
-/// but the compositor draws every border solid, so zoneid gives it no weight.
-///
-/// Six values, which is about what a narrow border can express legibly. A seventh
-/// that nobody can tell from `dashed` at arms length would be worse than
-/// having six.
+/// The border stroke a zone asks for. Validated to catch typos, but every
+/// border is drawn solid, so zoneid gives it no weight.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Pattern {
     Solid,
@@ -75,9 +42,7 @@ impl Pattern {
         }
     }
 
-    /// Parse a pattern name. An unrecognised name is an error and never
-    /// silently becomes `solid`: a typo quietly collapsing two zones onto the
-    /// same backup channel is the exact failure this channel exists to prevent.
+    /// Parse a pattern name; an unknown name is an error, never `solid`.
     pub fn parse(s: &str) -> Result<Pattern, IdentityError> {
         Pattern::ALL
             .into_iter()
@@ -92,24 +57,11 @@ impl fmt::Display for Pattern {
     }
 }
 
-/// Glyphs a zone may use, and nothing else.
-///
-/// Selection criteria, applied to every entry:
-///
-/// * present in the DejaVu and Liberation families, which is what a
-///   from-source desktop actually ships before anyone installs a font;
-/// * text presentation, never emoji presentation - an emoji is a colour
-///   image, and a channel that carries colour is not a non-colour channel;
-/// * distinguishable from every other entry at 12px, which rules out pairs
-///   like U+25CF BLACK CIRCLE against U+2B24 BLACK LARGE CIRCLE;
-/// * not a combining mark, control, format character, or whitespace;
-/// * unambiguous under NFKC, so uniqueness can be checked on normalised form.
-///
-/// The geometric shapes come first because they read fastest at small size;
-/// the ASCII punctuation is there so a system with a genuinely minimal font
-/// still has usable options.
+/// Glyphs a zone may use. Each entry is in DejaVu and Liberation, has text
+/// (not emoji) presentation, differs from every other entry at 12px, is no
+/// mark, control, format character or space, and is unambiguous under NFKC.
 pub const GLYPH_ALLOWLIST: &[char] = &[
-    // Geometric shapes - U+25xx / U+26xx, text presentation.
+    // Geometric shapes, U+25xx and U+26xx.
     '\u{25CF}', // ● BLACK CIRCLE
     '\u{25A0}', // ■ BLACK SQUARE
     '\u{25B2}', // ▲ BLACK UP-POINTING TRIANGLE
@@ -122,7 +74,7 @@ pub const GLYPH_ALLOWLIST: &[char] = &[
     '\u{2663}', // ♣ BLACK CLUB SUIT
     '\u{2666}', // ♦ BLACK DIAMOND SUIT
     '\u{266A}', // ♪ EIGHTH NOTE
-    // ASCII punctuation - universally available, distinct shapes.
+    // ASCII punctuation, for a minimal font.
     '!', '?', '#', '@', '%', '&', '*', '+', '=', '~', '^', '/',
 ];
 
@@ -200,13 +152,8 @@ impl fmt::Display for IdentityError {
     }
 }
 
-/// A zone's visual identity as configured.
-///
-/// The non-colour channels are `Option` because the shipped zone files predate
-/// them. That is deliberately visible in the type rather than defaulted away:
-/// a zone with no non-colour channel is a real finding, and code that silently
-/// substituted `Pattern::Solid` for every zone would report a clean palette
-/// while shipping the exact single-channel design this crate exists to reject.
+/// A zone's visual identity as configured. Missing non-colour channels stay
+/// `None` rather than defaulting, because their absence is a finding.
 #[derive(Clone, Debug)]
 pub struct ZoneIdentity {
     pub zone: String,
@@ -238,13 +185,7 @@ impl ZoneIdentity {
         })
     }
 
-    /// The comparison key for label uniqueness: case-folded with
-    /// non-alphanumerics removed.
-    ///
-    /// So `WORK`, `work` and `W-O-R-K` are one label rather than three. Not a
-    /// model of confusability in general - it is a cheap guard against the
-    /// specific case of two zones whose labels differ only in ways a hurried
-    /// reader does not register.
+    /// Key for label uniqueness: lowercase alphanumerics only, so `WORK` and `W-O-R-K` collide.
     pub fn label_key(&self) -> Option<String> {
         self.label.as_ref().map(|l| {
             l.chars()
@@ -317,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_pattern_is_refused_not_defaulted() {
+    fn unknown_pattern_refused() {
         assert_eq!(
             Pattern::parse("soild"),
             Err(IdentityError::UnknownPattern("soild".into()))
@@ -335,13 +276,12 @@ mod tests {
 
     #[test]
     fn glyph_allowlist_contains_nothing_dangerous() {
-        // The allowlist is the whole defence, so assert its contents rather
-        // than trusting that whoever edits it reads the doc comment above.
+        // The allowlist is the whole defence, so check what is on it.
         for &c in GLYPH_ALLOWLIST {
             assert!(!c.is_control(), "U+{:04X} is a control character", c as u32);
             assert!(!c.is_whitespace(), "U+{:04X} is whitespace", c as u32);
-            // The Cf format block that carries the bidi overrides, plus the
-            // variation selectors that switch a character to emoji rendering.
+            /* Cf format characters (the bidi controls), and the variation
+             * selectors that switch a character to emoji rendering. */
             let n = c as u32;
             assert!(
                 !(0x200B..=0x200F).contains(&n),
@@ -364,10 +304,10 @@ mod tests {
     }
 
     #[test]
-    fn glyph_must_be_on_the_allowlist() {
-        // A perfectly ordinary character that nobody reviewed.
+    fn glyph_must_be_allowlisted() {
+        // An ordinary character nobody reviewed.
         assert_eq!(validate_glyph("Z"), Err(IdentityError::GlyphNotAllowed('Z')));
-        // The attack the allowlist exists to stop, tried directly.
+        // A bidi override and a zero-width space.
         assert_eq!(
             validate_glyph("\u{202E}"),
             Err(IdentityError::GlyphNotAllowed('\u{202E}'))
@@ -380,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn glyph_must_be_exactly_one_char() {
+    fn glyph_is_one_char() {
         assert!(matches!(
             validate_glyph(""),
             Err(IdentityError::GlyphNotSingleChar(_))
@@ -389,8 +329,7 @@ mod tests {
             validate_glyph("!!"),
             Err(IdentityError::GlyphNotSingleChar(_))
         ));
-        // A base character plus a combining mark is two chars, so it is
-        // rejected for length before the allowlist is even consulted.
+        // A base plus a combining mark is two chars, refused before the allowlist.
         assert!(matches!(
             validate_glyph("!\u{0301}"),
             Err(IdentityError::GlyphNotSingleChar(_))
@@ -398,15 +337,13 @@ mod tests {
     }
 
     #[test]
-    fn label_rejects_the_homograph_attack() {
-        // RIGHT-TO-LEFT OVERRIDE: renders the following text reversed, which
-        // is how one zone gets to display as another.
+    fn label_rejects_homographs() {
+        // RIGHT-TO-LEFT OVERRIDE reverses the text after it.
         assert_eq!(
             validate_label("work\u{202E}"),
             Err(IdentityError::LabelNotAscii('\u{202E}'))
         );
-        // Cyrillic small o, visually identical to Latin o, passes any
-        // string-equality uniqueness check against "work".
+        // Cyrillic o looks like Latin o but compares unequal.
         assert_eq!(
             validate_label("w\u{043E}rk"),
             Err(IdentityError::LabelNotAscii('\u{043E}'))
@@ -439,7 +376,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_channels_are_visible_not_defaulted() {
+    fn missing_channels_not_defaulted() {
         let z = ZoneIdentity::new("work", "#3a7d44", None, None, None).unwrap();
         assert!(!z.has_non_color_channel());
         assert_eq!(z.present_channels(), vec![Channel::Color]);

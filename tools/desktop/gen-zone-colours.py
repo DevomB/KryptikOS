@@ -1,31 +1,18 @@
 #!/usr/bin/env python3
-"""zone-colours.h from the zone files: one source for the colour of a zone.
-
-The compositor (dwl, through build/desktop/dwl-config.h) draws a window's
-border in its zone's colour, and kryptikd reads the same colour from the
-zone's `[ui] border_color`. Two copies of that table drift; this generates
-the compositor's copy from the zone files and `--check` refuses a stale
-one, so the build (stage 04, s_dwl) and the test suite both catch a zone
-whose border on screen is not the border in its definition.
+"""Generate dwl's zone-colours.h from the zones' [ui] border_color.
 
     gen-zone-colours.py ZONES_DIR                 write the header to stdout
     gen-zone-colours.py --check HEADER ZONES_DIR  exit 1 if HEADER differs
-
-Focus is shown by border width, not colour, so every colour in the header
-is one `zoneid audit` checks. The fixed colours below are zoneid's
-COMPOSITOR_COLOURS; a zoneid test holds the two to the same values.
 """
 import os
 import sys
 
-FIXED = (("UNZONED", "d8d8d8"), ("UNKNOWN", "a2c9ff"), ("URGENT", "ffd000"))
+# zoneid's COMPOSITOR_COLOURS; its header test keeps the two equal.
+FIXED =(("UNZONED", "d8d8d8"), ("UNKNOWN", "a2c9ff"), ("URGENT", "ffd000"))
 
 
 def parse_flat_toml(text):
-    """The subset kryptikd's own parser accepts: [section] and key = value,
-    where a string value is double-quoted. A `#` inside the quotes is data
-    (every colour starts with one); outside them it starts a comment. A key
-    given twice is refused, as kryptikd and zoneid refuse it."""
+    """Parse [section] / key = value; a quoted `#` is data, a repeated key an error."""
     out = {}
     section = None
     for raw in text.splitlines():

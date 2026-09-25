@@ -5,10 +5,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# No dependencies. This crate decides whether a person can tell two zones
-# apart, and colour science from published formulae, checked against
-# reference values in tests, beats a crate nobody in this project has read.
-# ADR-010 makes the same argument for kryptikd.
+# No dependencies: the colour maths is published formulae checked against
+# reference values in the tests (the ADR-010 argument, as for kryptikd).
 [dependencies]
 
 [[bin]]
