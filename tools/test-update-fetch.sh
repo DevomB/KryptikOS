@@ -1,17 +1,7 @@
 #!/usr/bin/env bash
-# The net zone's half of the update channel, tools/net/update-fetch.py, against
-# a real HTTP server on loopback and a stand-in for zone 0's broker on a unix
-# socket (docs/design/update-channel.md).
-#
-# The fetcher decides nothing, so what is checked is that it is a faithful
-# pipe: the bytes that arrive are the bytes that were served, in the order
-# and from the offsets zone 0 asked for, in pieces zone 0 will take, and that
-# it stops when zone 0 says no. The stand-in keeps zone 0's side of the
-# conversation honest enough for that: it answers a poll from what it holds,
-# and refuses a piece that is not at the offset it holds.
-#
-# Needs bash and python3; no root, no network beyond loopback. Exit 0 when
-# every row passes, 77 when python3 is missing.
+# Test update-fetch.py (docs/design/update-channel.md), which decides nothing:
+# bytes from a loopback HTTP server must reach a stand-in broker unchanged, at
+# the offsets it asks for, and a refusal must stop the run.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FETCH="$ROOT/tools/net/update-fetch.py"
@@ -39,8 +29,7 @@ printf 'and its signature\n' > "$T/www/chan/latest.sig"
 # What the stand-in "verified manifest" lists: name and size.
 for f in kryptik-root.img kryptik-a.efi root.json; do printf '%s %s\n' "$f" "$(stat -c %s "$REL/$f")"; done > "$T/listed"
 
-# --- the release host: tools/image/release-host.py, the one the update suite
-# serves a real release from. Range honoured unless $T/norange exists.
+# --- the update suite's release host; Range is honoured unless $T/norange exists
 HOST="$ROOT/tools/image/release-host.py"
 
 # --- zone 0's broker, as far as the fetcher can tell ------------------------------

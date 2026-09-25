@@ -1,27 +1,14 @@
 #!/usr/bin/env bash
-# Kryptik pre-commit hook.
-#
-# Install with:  ./tools/install-git-hooks.sh
-#
-# Catches the two Windows-authoring mistakes that have each broken a clone in
-# this repository already, before they reach a commit rather than after CI
-# finds them.
+# Kryptik pre-commit hook: commit identity, exec bits, CRLF and shell syntax.
+# Install with ./tools/install-git-hooks.sh.
 
 set -uo pipefail
 
 fail=0
 
 # --- identity -----------------------------------------------------------------
-#
-# Refused outright, before anything else is looked at. The wrong address here
-# does not break the build; it hands the commit to a different GitHub
-# account. tools/check-commit-identity.sh is the one place the permitted
-# identity is written down and says why.
-#
-# Located relative to this file, not to the working tree: core.hooksPath is
-# tools/git-hooks, so the checker is one directory up from here wherever the
-# hooks directory has been copied to. A checker that is missing is a refusal,
-# not a pass; a hook that cannot check has established nothing.
+# Checked first: a wrong address hands the commit to another GitHub account.
+# The checker is found relative to this file; a missing one refuses.
 checker="$(dirname "${BASH_SOURCE[0]}")/../check-commit-identity.sh"
 if [[ ! -f "$checker" ]]; then
     echo "pre-commit: ERROR no identity checker at ${checker}; refusing to commit unchecked" >&2
@@ -32,24 +19,10 @@ if ! bash "$checker" --pending; then
 fi
 
 # --- executable bits --------------------------------------------------------
-#
-# NTFS cannot express the POSIX executable bit, so a script committed from
-# Windows records as 100644 and a Linux clone fails with "Permission denied"
-# before bash is even reached. Fix it in the index rather than refusing the
-# commit: the intent is never "commit a non-executable script".
-#
-# The hook files in tools/git-hooks/ are swept too, and they have to be matched
-# by name because they carry no .sh suffix. This hook was itself recorded 100644
-# from the day it was added. Git silently IGNORES a non-executable hook and
-# mentions it only as an advice line at commit time, so in any checkout where
-# nobody had run install-git-hooks.sh locally -- a fresh clone, or a new
-# worktree -- the CRLF and syntax guards below were not running at all. The tool
-# whose job is to fix missing executable bits could not fix its own, because it
-# was not looking at itself.
-#
-# A test suite in Python (tools/test-*.py) is run the way the shell ones are,
-# by name, by tools/run-tests.sh and by CI, so it is swept by name as well:
-# the first one committed from Windows reached CI as 100644.
+# NTFS has no exec bit, so a script committed from Windows records 100644 and
+# a Linux clone gets "Permission denied": set the bit in the index. Hook files
+# and tools/test-*.py suites have no .sh suffix, so they are matched by name;
+# git silently ignores a non-executable hook.
 while IFS= read -r f; do
     [[ -z "$f" ]] && continue
     mode="$(git ls-files -s -- "$f" | awk '{print $1}')"
@@ -61,12 +34,11 @@ done < <(git diff --cached --name-only --diff-filter=ACM \
          | grep -E '^(build/stages/|tools/|compartments/tests/).*\.sh$|^tools/test-[A-Za-z0-9_-]+\.py$|^tools/git-hooks/[A-Za-z][A-Za-z0-9_-]*$' \
          || true)
 
-# build/lib/common.sh is sourced, not executed, and stays 644 deliberately.
+# build/lib/common.sh is sourced, not executed, and stays 644.
 
 # --- CRLF -------------------------------------------------------------------
-#
-# .gitattributes normalises this, but a file added with -f or an editor writing
-# CRLF into the index would still produce "bad interpreter: bash^M".
+# .gitattributes normalises line endings, but `add -f` or an editor can still
+# stage CRLF, which gives "bad interpreter: bash^M".
 while IFS= read -r f; do
     [[ -z "$f" ]] && continue
     if git show ":${f}" 2>/dev/null | grep -qU $'\r'; then
@@ -77,9 +49,6 @@ done < <(git diff --cached --name-only --diff-filter=ACM \
          | grep -E '\.(sh|rs)$|Makefile' || true)
 
 # --- shell syntax -----------------------------------------------------------
-#
-# Cheap, and a syntax error in a build stage is worth catching before it is
-# committed rather than at minute 35 of a toolchain build.
 while IFS= read -r f; do
     [[ -z "$f" ]] && continue
     [[ -f "$f" ]] || continue

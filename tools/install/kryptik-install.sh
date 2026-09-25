@@ -1,29 +1,10 @@
 #!/bin/sh
+# Install Kryptik from the booted medium onto a whole disk: ESP, root slots A
+# and B, and a LUKS2 state partition (docs/design/boot-and-updates.md,
+# docs/design/state-encryption.md). Runs as root inside a booted medium, never
+# on a build host; every check runs before the first write.
 #
-# Install Kryptik from a booted install medium onto a whole disk
-# (docs/design/boot-and-updates.md).
-#
-# This runs INSIDE a booted Kryptik medium, with a blank disk attached. It
-# never runs on the build host and it has no business doing so: the host's
-# disks are not a thing this project writes to, ever.
-#
-# What it writes, in order, after every check has passed:
-#   GPT  1 kryptik-esp    the medium's ESP, byte for byte, then BOOTX64.EFI
-#                         made the slot A kernel
-#        2 kryptik-a      the medium's verity root image, byte for byte,
-#                         read back and hashed against the medium's record
-#        3 kryptik-b      empty (the first update fills it)
-#        4 kryptik-state  LUKS2 (docs/design/state-encryption.md), ext4 inside
-#                         it, with install.json and the first-boot preseed
-#
-# It refuses to touch:
-#   - the device the running root is on, through any dm/loop stack
-#   - the medium itself, the test-control disk, anything with a mounted
-#     partition or active swap, anything that is not a whole block device
-#   - a disk too small for the layout
-#
-# Those are not politeness. This runs as root with dd and mkfs in hand.
-#
+#   kryptik-install --target DISK [--yes] [--dry-run] [--preseed FILE]
 set -eu
 
 PROG="kryptik-install"
@@ -64,9 +45,7 @@ done
 Refusing to start. Every tool this installer needs has to exist before it
 touches a disk, not at the moment it is first called."
 
-# Partition device naming. A disk whose name ends in a digit takes a "p"
-# separator (nvme0n1 -> nvme0n1p2, mmcblk0 -> mmcblk0p2); one that does not
-# takes the number directly (vdb -> vdb2, sda -> sda2).
+# part_dev DISK N: nvme0n1 -> nvme0n1p2, vdb -> vdb2.
 part_dev() {
     case "$1" in
         *[0-9]) printf "%sp%s" "$1" "$2" ;;
@@ -74,9 +53,8 @@ part_dev() {
     esac
 }
 
-# Which disk a device is on, and which partitions are this system's own
-# (the medium it booted from): the same answers the boot services use. This
-# file had copies of two of these functions, and they had drifted.
+# The boot services' answers to which disk a device is on and which partitions
+# are this system's own.
 . /usr/libexec/kryptik/devices.sh
 
 # --- refuse anything that is not a disposable whole disk -------------------
@@ -90,18 +68,15 @@ tname="$(basename "$TARGET_REAL")"
 [ "$(lsblk -dno TYPE "$TARGET_REAL" 2>/dev/null)" = "disk" ] || die "${TARGET} is not a whole disk (lsblk type: $(lsblk -dno TYPE "$TARGET_REAL" 2>/dev/null || echo unknown))"
 [ "$(cat "/sys/class/block/$tname/ro" 2>/dev/null || echo 0)" = "0" ] || die "${TARGET} is read-only"
 
-# The device the running root lives on, through every layer. If the target
-# IS that disk, refuse - installing over the system you are running from is
-# not a supported outcome, it is a crash with extra steps.
+# Never the disk the running root is on, through any dm/loop layer.
 root_src="$(awk '$2 == "/" { print $1; exit }' /proc/mounts)"
-# kryptik_root_disk, not this name: with no initramfs the kernel calls the root
-# /dev/root, which names no device, and the guard below compared against that.
+# Not root_src: without an initramfs the root is /dev/root, which names no device.
 root_disks="$(kryptik_root_disk 2>/dev/null || true)"
 for d in $root_disks; do
     [ "$(readlink -f "$d")" = "$TARGET_REAL" ] && die "${TARGET} is the disk this system is running from (root ${root_src} sits on ${d}).
 Refusing."
 done
-# Likewise the state partition, the medium's ESP and the test-control disk.
+# Nor the disk of this system's state partition, the test-control disk or the medium.
 for lbl in kryptik-state kryptik-testctl; do
     for dev in $(blkid -t PARTLABEL="$lbl" -o device 2>/dev/null); do
         [ "$(readlink -f "$(_kd_disk_of "$dev")")" = "$TARGET_REAL" ] && die "${TARGET} holds the ${lbl} partition in use by this system. Refusing."
@@ -111,7 +86,7 @@ for dev in $(blkid -t PARTLABEL=kryptik-media -o device 2>/dev/null); do
     [ "$(readlink -f "$(_kd_disk_of "$dev")")" = "$TARGET_REAL" ] && die "${TARGET} is the install medium. Refusing."
 done
 
-# Anything mounted from the target, or any of its partitions, is a hard stop.
+# Nothing on the target may be mounted or used as swap.
 mounted="$(awk -v d="${TARGET_REAL}" '$1 ~ "^" d { print $1 " on " $2 }' /proc/mounts)"
 if [ -n "$mounted" ]; then
     printf '%s\n' "$mounted" | sed 's/^/  /'
@@ -142,9 +117,7 @@ ROOT_SRC=""     # block device holding the root image at ROOT_OFF
 ROOT_OFF=0
 case "$media" in
     usb)
-        # The medium this system booted from, not the first disk that carries
-        # the label: a second stick, or a disk labelled to look like one, is
-        # not what gets installed.
+        # From the medium this system booted from, not any disk with the label.
         ROOT_SRC="$(kryptik_part kryptik-media)" || true
         [ -b "$ROOT_SRC" ] || die "no single kryptik-media partition on the medium this system booted from"
         ESP_SRC="$(kryptik_part kryptik-esp)" || true
@@ -177,24 +150,15 @@ size_bytes="$(blockdev --getsize64 "$TARGET_REAL" 2>/dev/null || echo 0)"
 [ "$size_bytes" -gt 0 ] || die "could not read the size of ${TARGET}"
 MIB=1048576
 esp_mib=$(( (ESP_BYTES + MIB - 1) / MIB ))
-# A slot holds a whole root image and every update is a whole new image, so
-# a slot sized to the first image (it used to be the image plus 16 MiB)
-# refuses every larger release: kryptik-update says "slot is N bytes; the
-# root image needs M" and there is no way forward but repartitioning. Each
-# slot gets the image plus half again, at least 512 MiB of room, rounded up
-# to 64 MiB: a release can grow by half before an installed machine has to
-# be reinstalled.
+# A slot must also hold later, larger images: the image plus half again (at
+# least 512 MiB of room), rounded up to 64 MiB. tools/image/test-disk-size.sh
+# does the same arithmetic.
 slot_mib=$(( (ROOT_BYTES + MIB - 1) / MIB ))
 room_mib=$(( slot_mib / 2 ))
 [ "$room_mib" -ge 512 ] || room_mib=512
 slot_mib=$(( (slot_mib + room_mib + 63) / 64 * 64 ))
-# The state partition gets whatever is left, and the least it may be left
-# with is room for one update payload and a gigabyte of the person's own
-# data. It was a flat 512 MiB, which admitted a disk on which the installed
-# system could never be updated: a payload is the root image plus two
-# kernels, and it has to sit on this partition while it is verified and
-# written into the other slot. An installer that accepts a disk has accepted
-# updating it.
+# State gets the rest: at least one update payload (the image plus two
+# kernels, staged there while it is verified) and 1 GiB of user data.
 image_mib=$(( (ROOT_BYTES + MIB - 1) / MIB ))
 state_min_mib=$(( image_mib + 128 + 1024 ))
 need_mib=$(( 1 + esp_mib + 2 * slot_mib + state_min_mib + 1 ))
@@ -219,10 +183,9 @@ if [ "$ASSUME_YES" -ne 1 ]; then
     [ "$answer" = "ERASE" ] || die "not confirmed; nothing was written"
 fi
 
-# The state passphrase, before the first write: from the terminal twice, or
-# one line of standard input when that is not a terminal (the unattended
-# path). It reaches cryptsetup on a descriptor (printf is a builtin), never
-# on a command line and never in a file.
+# The state passphrase, before the first write: twice on a terminal, else one
+# line of stdin. It reaches cryptsetup through a pipe from the printf builtin,
+# never in argv or a file.
 if [ -t 0 ]; then
     stty -echo
     printf '%s: a passphrase for the state partition, asked at every boot: ' "$PROG"
