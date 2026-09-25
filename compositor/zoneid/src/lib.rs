@@ -1,11 +1,10 @@
 //! zoneid — Kryptik zone visual identity and the perceptual distinctness
 //! invariant.
 //!
-//! docs/architecture.md states that per-zone visual identity is "load-bearing,
-//! not decoration": if a user cannot tell at a glance which zone a password
-//! prompt belongs to, compartmentalization has failed at the only layer that
-//! matters. This crate is what makes that claim checkable instead of merely
-//! asserted.
+//! A window's border colour is how a person tells which zone it belongs to
+//! (docs/architecture.md). If they cannot tell at a glance which zone a
+//! password prompt belongs to, the zones have failed them. This crate makes
+//! that checkable instead of merely asserted.
 //!
 //! It answers one question - *can a person tell these two border colours
 //! apart?* - for every colour the compositor draws, under four vision models.

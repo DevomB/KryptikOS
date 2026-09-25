@@ -373,9 +373,9 @@ const EXPLAIN: &str = "\
 The zone distinctness invariant
 ===============================
 
-docs/architecture.md says the per-zone window border is \"load-bearing, not
-decoration\": if a user cannot tell at a glance which zone a password prompt
-belongs to, compartmentalization has failed at the only layer that matters.
+A window's border colour is how a person tells which zone it belongs to
+(docs/architecture.md). If they cannot tell at a glance which zone a password
+prompt belongs to, the zones have failed them.
 
 That is a claim about human perception, so it has to be checked against a model
 of human perception. Comparing colour strings for equality is not one.
