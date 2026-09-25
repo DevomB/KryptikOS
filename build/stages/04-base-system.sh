@@ -2583,6 +2583,24 @@ PACKAGES=(
     "boot-check"  "s_boot_check"
 )
 
+# Everything above glibc links stage 01's crt files, which carry no CET
+# property, and ld marks a binary only when every input is marked. So each of
+# those rows is built again, by the same recipe, right after glibc, unless it
+# has a final row of its own further down (python, which waits for its
+# libraries).
+rows=()
+for ((i = 0; i < ${#PACKAGES[@]}; i += 2)); do
+    rows+=("${PACKAGES[i]}" "${PACKAGES[i+1]}")
+    [[ "${PACKAGES[i]}" == glibc ]] || continue
+    for ((j = 0; j < i; j += 2)); do
+        for ((k = i; k < ${#PACKAGES[@]}; k += 2)); do
+            if [[ "${PACKAGES[k]}" == "${PACKAGES[j]}-final" ]]; then continue 2; fi
+        done
+        rows+=("${PACKAGES[j]}-final" "${PACKAGES[j+1]}")
+    done
+done
+PACKAGES=("${rows[@]}")
+
 # --- run --------------------------------------------------------------------
 
 if [[ "$MODE" == "list" ]]; then
