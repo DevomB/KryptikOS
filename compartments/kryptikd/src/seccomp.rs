@@ -155,8 +155,43 @@ impl std::fmt::Display for SeccompError {
     }
 }
 
-/// Syscalls a zoned process may make. What is left out: `DENIED_RATIONALE`.
-pub const BASE_ALLOWLIST: &[libc::c_long] = &[
+/// `(name, number)` for each `libc::SYS_` constant given: a name is typed once.
+macro_rules! by_name {
+    ($($sys:ident),* $(,)?) => {
+        &[$((unprefixed(stringify!($sys)), libc::$sys)),*]
+    };
+}
+
+/// A syscall list for the filter, and the same calls by name for policy files.
+macro_rules! syscalls {
+    ($(#[$doc:meta])* $list:ident, $names:ident = [$(libc::$sys:ident),* $(,)?]) => {
+        $(#[$doc])*
+        pub const $list: &[libc::c_long] = &[$(libc::$sys),*];
+        const $names: &[(&str, libc::c_long)] = by_name![$($sys),*];
+    };
+}
+
+/// `syscalls!` for calls listed with the reason they are denied.
+macro_rules! denied {
+    ($(#[$doc:meta])* $list:ident, $names:ident = [$((libc::$sys:ident, $why:literal)),* $(,)?]) => {
+        $(#[$doc])*
+        pub const $list: &[(libc::c_long, &str)] = &[$((libc::$sys, $why)),*];
+        const $names: &[(&str, libc::c_long)] = by_name![$($sys),*];
+    };
+}
+
+const fn unprefixed(sys: &'static str) -> &'static str {
+    let (head, name) = sys.as_bytes().split_at(4);
+    assert!(matches!(head, b"SYS_"));
+    match std::str::from_utf8(name) {
+        Ok(n) => n,
+        Err(_) => unreachable!(),
+    }
+}
+
+syscalls! {
+    /// Syscalls a zoned process may make. What is left out: `DENIED_RATIONALE`.
+    BASE_ALLOWLIST, BASE_NAMES = [
     // --- file I/O ---
     libc::SYS_read, libc::SYS_write, libc::SYS_readv, libc::SYS_writev,
     libc::SYS_pread64, libc::SYS_pwrite64, libc::SYS_preadv, libc::SYS_pwritev,
@@ -266,10 +301,12 @@ pub const BASE_ALLOWLIST: &[libc::c_long] = &[
     // --- misc ---
     libc::SYS_uname, libc::SYS_sysinfo, libc::SYS_getrandom, libc::SYS_prctl,
     libc::SYS_rseq, libc::SYS_statfs, libc::SYS_fstatfs,
-];
+    ]
+}
 
-/// Syscalls left out of the allowlist, and why; a zone policy cannot allow them.
-pub const DENIED_RATIONALE: &[(libc::c_long, &str)] = &[
+denied! {
+    /// Syscalls left out of the allowlist, and why; a zone policy cannot allow them.
+    DENIED_RATIONALE, DENIED_NAMES = [
     (libc::SYS_ptrace, "read/write another process's memory; the classic escape"),
     (libc::SYS_process_vm_readv, "read another process's memory directly"),
     (libc::SYS_process_vm_writev, "write another process's memory directly"),
@@ -324,7 +361,8 @@ pub const DENIED_RATIONALE: &[(libc::c_long, &str)] = &[
     (libc::SYS_setfsgid, "no zoned process should change gid"),
     (libc::SYS_capset, "capabilities are fixed at zone entry"),
     (libc::SYS_personality, "change the execution domain; ASLR-disabling flag"),
-];
+    ]
+}
 
 /// Argument checks on allowlisted syscalls. They run before the plain
 /// allowlist, so a syscall named here is decided here.
@@ -610,51 +648,30 @@ pub fn confine_zone_with(extra: &[libc::c_long], sockets: &SocketPolicy) -> Resu
     install_with(&allow, SECCOMP_RET_KILL_PROCESS, sockets, SECCOMP_FILTER_FLAG_TSYNC).map(|_| ())
 }
 
-/// `(name, number)` for each `libc::SYS_` constant given: a name is typed once.
-macro_rules! by_name {
-    ($($sys:ident),* $(,)?) => {
-        &[$((unprefixed(stringify!($sys)), libc::$sys)),*]
-    };
-}
-
-const fn unprefixed(sys: &'static str) -> &'static str {
-    let (head, name) = sys.as_bytes().split_at(4);
-    assert!(matches!(head, b"SYS_"));
-    match std::str::from_utf8(name) {
-        Ok(n) => n,
-        Err(_) => unreachable!(),
-    }
-}
-
-/// Syscall names a zone policy may use: denied ones (refused by name), base
-/// ones (a redundant line warns) and plausible additions.
-pub const SYSCALL_NAMES: &[(&str, libc::c_long)] = by_name![
-    SYS_acct, SYS_add_key, SYS_adjtimex, SYS_bpf, SYS_capget, SYS_capset, SYS_chmod, SYS_chown, SYS_chroot,
-    SYS_clock_adjtime, SYS_clock_settime, SYS_clone, SYS_clone3, SYS_close, SYS_delete_module, SYS_execve,
-    SYS_fanotify_init, SYS_fanotify_mark, SYS_fchown, SYS_fchownat, SYS_finit_module, SYS_fremovexattr,
-    SYS_fsconfig, SYS_fsetxattr, SYS_fsmount, SYS_fsopen, SYS_fspick, SYS_getpgid, SYS_getpid,
-    SYS_init_module, SYS_inotify_init, SYS_inotify_init1, SYS_io_uring_enter, SYS_io_uring_register,
-    SYS_io_uring_setup, SYS_ioctl, SYS_ioperm, SYS_iopl, SYS_ioprio_get, SYS_ioprio_set, SYS_kcmp,
-    SYS_kexec_load, SYS_keyctl, SYS_landlock_add_rule, SYS_landlock_create_ruleset,
-    SYS_landlock_restrict_self, SYS_lchown, SYS_lremovexattr, SYS_lsetxattr, SYS_memfd_create, SYS_mincore,
-    SYS_mknod, SYS_mlock2, SYS_mlockall, SYS_mount, SYS_mount_setattr, SYS_move_mount, SYS_mq_getsetattr,
-    SYS_mq_notify, SYS_mq_open, SYS_mq_timedreceive, SYS_mq_timedsend, SYS_mq_unlink, SYS_msgctl, SYS_msgget,
-    SYS_msgrcv, SYS_msgsnd, SYS_msync, SYS_munlockall, SYS_name_to_handle_at, SYS_open_by_handle_at,
-    SYS_open_tree, SYS_openat, SYS_perf_event_open, SYS_personality, SYS_pidfd_getfd, SYS_pidfd_open,
-    SYS_pidfd_send_signal, SYS_pivot_root, SYS_prctl, SYS_process_madvise, SYS_process_vm_readv,
-    SYS_process_vm_writev, SYS_ptrace, SYS_quotactl, SYS_read, SYS_reboot, SYS_remap_file_pages,
-    SYS_removexattr, SYS_request_key, SYS_rt_sigqueueinfo, SYS_rt_tgsigqueueinfo, SYS_sched_getattr,
-    SYS_sched_setattr, SYS_sched_setparam, SYS_sched_setscheduler, SYS_seccomp, SYS_semctl, SYS_semget,
-    SYS_semop, SYS_setdomainname, SYS_setfsgid, SYS_setfsuid, SYS_setgid, SYS_setgroups, SYS_sethostname,
-    SYS_setns, SYS_setregid, SYS_setresgid, SYS_setresuid, SYS_setreuid, SYS_settimeofday, SYS_setuid,
-    SYS_setxattr, SYS_shmat, SYS_shmctl, SYS_shmdt, SYS_shmget, SYS_socket, SYS_swapoff, SYS_swapon,
-    SYS_syslog, SYS_timer_create, SYS_timer_delete, SYS_timer_getoverrun, SYS_timer_gettime,
-    SYS_timer_settime, SYS_umount2, SYS_unshare, SYS_userfaultfd, SYS_vhangup, SYS_write,
+/// Calls in neither list that a policy file may add with `allow-syscall`.
+pub const ADDABLE: &[(&str, libc::c_long)] = by_name![
+    SYS_acct, SYS_adjtimex, SYS_clock_adjtime, SYS_clock_settime, SYS_fanotify_init, SYS_fanotify_mark,
+    SYS_inotify_init, SYS_inotify_init1, SYS_ioprio_set, SYS_landlock_add_rule, SYS_landlock_create_ruleset,
+    SYS_landlock_restrict_self, SYS_mincore, SYS_mlock2, SYS_mlockall, SYS_mq_getsetattr, SYS_mq_notify,
+    SYS_mq_open, SYS_mq_timedreceive, SYS_mq_timedsend, SYS_mq_unlink, SYS_msgctl, SYS_msgget, SYS_msgrcv,
+    SYS_msgsnd, SYS_munlockall, SYS_process_madvise, SYS_remap_file_pages, SYS_rt_sigqueueinfo,
+    SYS_rt_tgsigqueueinfo, SYS_sched_setattr, SYS_sched_setparam, SYS_sched_setscheduler, SYS_seccomp,
+    SYS_semctl, SYS_semget, SYS_semop, SYS_settimeofday, SYS_shmat, SYS_shmctl, SYS_shmdt, SYS_shmget,
+    SYS_syslog, SYS_vhangup,
 ];
 
-/// Look up a syscall number by name, for policy files and the test harness.
+/// Every syscall a policy file may name: a denied one is refused, a base one
+/// warns, and an `ADDABLE` one is added.
+pub fn names() -> impl Iterator<Item = &'static (&'static str, libc::c_long)> {
+    DENIED_NAMES.iter().chain(BASE_NAMES).chain(ADDABLE)
+}
+
 pub fn syscall_by_name(name: &str) -> Option<libc::c_long> {
-    SYSCALL_NAMES.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
+    names().find(|(n, _)| *n == name).map(|&(_, nr)| nr)
+}
+
+pub fn name_of(nr: libc::c_long) -> Option<&'static str> {
+    names().find(|&&(_, v)| v == nr).map(|&(n, _)| n)
 }
 
 #[cfg(test)]
@@ -1104,16 +1121,17 @@ mod tests {
     }
 
     #[test]
-    fn syscall_name_table_is_consistent() {
-        for (nr, why) in DENIED_RATIONALE {
-            assert!(SYSCALL_NAMES.iter().any(|(_, n)| n == nr), "denied syscall {nr} ({why}) has no name in SYSCALL_NAMES");
-            assert!(is_denied(*nr));
-        }
+    fn every_listed_call_is_named_once() {
         let mut seen = HashSet::new();
-        for (name, nr) in SYSCALL_NAMES {
-            assert!(seen.insert(*name), "duplicate name {name}");
-            assert_eq!(syscall_by_name(name), Some(*nr));
+        for &(name, nr) in names() {
+            assert!(seen.insert(name), "{name} is named twice");
+            assert_eq!(syscall_by_name(name), Some(nr));
+            assert_eq!(name_of(nr), Some(name));
         }
-        assert!(!is_denied(libc::SYS_read));
+        assert_eq!(seen.len(), DENIED_RATIONALE.len() + BASE_ALLOWLIST.len() + ADDABLE.len());
+        for &(name, nr) in ADDABLE {
+            assert!(!is_denied(nr) && !BASE_ALLOWLIST.contains(&nr), "{name} is on a list already");
+        }
+        assert_eq!(name_of(libc::SYS_futex), Some("futex"));
     }
 }

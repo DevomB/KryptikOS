@@ -18,9 +18,10 @@ allow-netlink     NETLINK_NETFILTER   # added to the AF_NETLINK rule
 keep-capability   CAP_NET_RAW         # left in the bounding set
 ```
 
-- `allow-syscall`: a name from `seccomp::SYSCALL_NAMES`. A syscall on the
-  base denied list (`DENIED_RATIONALE`: `ptrace`, `mount`, `setns`, `bpf`,
-  ...) cannot be re-allowed.
+- `allow-syscall`: a name from `seccomp::ADDABLE`. A syscall on the base
+  denied list (`DENIED_RATIONALE`: `ptrace`, `mount`, `setns`, `bpf`, ...)
+  cannot be re-allowed, one on the base allowlist is reported as already
+  allowed, and any other name is an error.
 - `allow-socket`: `AF_PACKET`, `AF_KEY`, `AF_ALG`, `AF_VSOCK`, `AF_BLUETOOTH`,
   `AF_CAN`, `AF_RDS`, `AF_TIPC` or `AF_XDP`; `AF_NETLINK` drops the netlink
   protocol check.

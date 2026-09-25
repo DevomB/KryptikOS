@@ -1206,7 +1206,7 @@ fn cmd_seccomp_trace(cmd: &[String]) -> ExitCode {
                 continue; // the caller died before we read it
             }
             let nr = libc::c_long::from(req.data.nr);
-            let name = seccomp::SYSCALL_NAMES.iter().find(|(_, n)| *n == nr).map_or("", |(s, _)| *s);
+            let name = seccomp::name_of(nr).unwrap_or("");
             // A soft refusal gets the errno a zone gets, and is marked.
             let soft = seccomp::REFUSED_SOFTLY.iter().find(|(n, _)| *n == nr).map(|&(_, e)| e as libc::c_int);
             eprintln!("KRYPTIK_SECCOMP_DENIED {nr} {name}{}", if soft.is_some() { " soft" } else { "" });
