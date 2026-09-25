@@ -201,6 +201,8 @@ pub const BASE_ALLOWLIST: &[libc::c_long] = &[
     // --- memory ---
     libc::SYS_mmap, libc::SYS_munmap, libc::SYS_mremap, libc::SYS_brk,
     libc::SYS_madvise, libc::SYS_mlock, libc::SYS_munlock, libc::SYS_memfd_create,
+    // Python's mmap.flush and databases that map their files.
+    libc::SYS_msync,
     /* Every dynamic linker needs mprotect, though it can defeat W^X; RELRO and
      * BIND_NOW make the GOT read-only before main() (docs/hardening.md). */
     libc::SYS_mprotect,
@@ -225,6 +227,8 @@ pub const BASE_ALLOWLIST: &[libc::c_long] = &[
     libc::SYS_getpriority, libc::SYS_setpriority,
     libc::SYS_sched_getparam, libc::SYS_sched_getscheduler,
     libc::SYS_sched_get_priority_max, libc::SYS_sched_get_priority_min,
+    // chrt -p and ionice -p only read; setting either stays a policy line.
+    libc::SYS_sched_getattr, libc::SYS_ioprio_get,
     libc::SYS_getresuid, libc::SYS_getresgid,
 
     // --- signals ---
@@ -237,6 +241,10 @@ pub const BASE_ALLOWLIST: &[libc::c_long] = &[
     libc::SYS_clock_gettime, libc::SYS_clock_getres, libc::SYS_clock_nanosleep,
     libc::SYS_gettimeofday, libc::SYS_nanosleep, libc::SYS_times,
     libc::SYS_alarm, libc::SYS_setitimer, libc::SYS_getitimer, libc::SYS_pause,
+    /* POSIX timers, which coreutils timeout(1) and vim arm: like setitimer,
+     * they signal the caller's own process. */
+    libc::SYS_timer_create, libc::SYS_timer_settime, libc::SYS_timer_gettime,
+    libc::SYS_timer_getoverrun, libc::SYS_timer_delete,
 
     // --- polling ---
     libc::SYS_poll, libc::SYS_ppoll, libc::SYS_select, libc::SYS_pselect6,
@@ -1032,8 +1040,9 @@ mod tests {
     }
 
     #[test]
-    fn everyday_file_calls_allowed() {
-        // Each killed a common program in a zone: tar, gzip, cp -a, rsync, install, asyncio.
+    fn everyday_calls_allowed() {
+        /* Each killed a common program in a zone: tar, gzip, cp -a, rsync,
+         * install, asyncio, timeout, mmap.flush, chrt -p. */
         let allowed: HashSet<libc::c_long> = BASE_ALLOWLIST.iter().copied().collect();
         for nr in [
             libc::SYS_chmod, libc::SYS_fchmod, libc::SYS_fchmodat, libc::SYS_fchmodat2,
@@ -1041,6 +1050,9 @@ mod tests {
             libc::SYS_setxattr, libc::SYS_lsetxattr, libc::SYS_fsetxattr,
             libc::SYS_removexattr, libc::SYS_lremovexattr, libc::SYS_fremovexattr,
             libc::SYS_pidfd_open, libc::SYS_pidfd_send_signal,
+            libc::SYS_timer_create, libc::SYS_timer_settime, libc::SYS_timer_gettime,
+            libc::SYS_timer_getoverrun, libc::SYS_timer_delete,
+            libc::SYS_msync, libc::SYS_sched_getattr, libc::SYS_ioprio_get,
         ] {
             assert!(allowed.contains(&nr), "syscall {nr} must be allowed");
         }
