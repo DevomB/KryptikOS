@@ -224,9 +224,9 @@ mount_list() {
         "$IN_SOURCES" \
         "$IN_KRYPTIKD" \
         "$IN_WLPROXY" \
+        "/dev" \
         "/dev/pts" \
         "/dev/shm" \
-        "/dev" \
         "/proc" \
         "/sys" \
         "/run"
