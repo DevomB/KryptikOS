@@ -43,9 +43,10 @@ env:
 
 # The caches are saved when a stage fails too, keyed on a digest of the stamps:
 # a failed step leaves no stamp, so the next run resumes where this one
-# stopped, and a run that built nothing new saves nothing. Both keys start with
-# the hash of what stages 01-02 read, so a restored stage 05 tree was built on
-# the same toolchain inputs as the stage 02 sysroot it replaces.
+# stopped, and a run that built nothing new saves nothing. The stage 05 tree's
+# key starts with the fingerprint of the stamp stage 04 builds on (tt-verify):
+# a tree is never restored over another toolchain, and an edit that leaves the
+# toolchain alone (a kernel fragment, one package) still finds it.
 
 jobs:
   toolchain:
@@ -53,7 +54,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     outputs:
-      tt: ${{ steps.keys.outputs.tt }}
+      ttfp: ${{ steps.progress02.outputs.ttfp }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - uses: ./.github/actions/prepare
@@ -75,13 +76,8 @@ jobs:
           make sources
           ./tools/prune-sources.sh
 
-      - name: Cache keys
-        id: keys
-        run: echo "tt=${{ hashFiles('build/stages/00-host-check.sh', 'build/stages/01-toolchain.sh', 'build/stages/02-temp-tools.sh', 'build/lib/**', 'build/patches/**', 'build/config/**', 'sources.lock') }}" >> "$GITHUB_OUTPUT"
-
-      # The bare prefix restores a sysroot of other inputs too; its stamps
-      # decide what rebuilds, and 01-toolchain.sh clears one that another
-      # toolchain built.
+      # The newest tree, whatever built it: its stamps decide what rebuilds,
+      # and 01-toolchain.sh clears one that another toolchain built.
       - name: Stage 01-02 sysroot (cached)
         id: work02
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
@@ -89,9 +85,8 @@ jobs:
           path: |
             /mnt/kryptik/work/sysroot
             /mnt/kryptik/work/.stamps
-          key: work02-${{ steps.keys.outputs.tt }}-
+          key: work02-
           restore-keys: |
-            work02-${{ steps.keys.outputs.tt }}-
             work02-
 
       - name: Stage 01, the cross toolchain (unprivileged)
@@ -107,7 +102,8 @@ jobs:
         if: always()
         run: |
           d="$( { cd "$KRYPTIK_WORK/.stamps" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0r sha256sum | sha256sum | cut -c1-16; } 2>/dev/null || true)"
-          if [ -n "$d" ]; then echo "key=work02-${{ steps.keys.outputs.tt }}-$d" >> "$GITHUB_OUTPUT"; fi
+          if [ -n "$d" ]; then echo "key=work02-$d" >> "$GITHUB_OUTPUT"; fi
+          echo "ttfp=$(awk '$1 == "fingerprint:" { print $2; exit }' "$KRYPTIK_WORK/.stamps/tt-verify" 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
 
       - name: Save the stage 01-02 sysroot
         if: always() && steps.progress02.outputs.key != '' && steps.progress02.outputs.key != steps.work02.outputs.cache-matched-key
@@ -177,9 +173,9 @@ jobs:
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: /mnt/kryptik/work-after-05.tar.zst
-          key: work05-${{ needs.toolchain.outputs.tt }}-
+          key: work05-${{ needs.toolchain.outputs.ttfp }}-
           restore-keys: |
-            work05-${{ needs.toolchain.outputs.tt }}-
+            work05-${{ needs.toolchain.outputs.ttfp }}-
 
       - name: Unpack the stage 04-05 tree
         if: steps.work05.outputs.cache-matched-key != ''
@@ -239,7 +235,7 @@ jobs:
         if: always() && steps.stage04.outcome != '' && steps.stage04.outcome != 'skipped'
         run: |
           d="$( { cd "$KRYPTIK_WORK/.stamps" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0r sha256sum | sha256sum | cut -c1-16; } 2>/dev/null || true)"
-          if [ -n "$d" ]; then echo "key=work05-${{ needs.toolchain.outputs.tt }}-$d" >> "$GITHUB_OUTPUT"; fi
+          if [ -n "$d" ]; then echo "key=work05-${{ needs.toolchain.outputs.ttfp }}-$d" >> "$GITHUB_OUTPUT"; fi
 
       - name: Pack the stage 04-05 tree for the cache
         id: pack05
