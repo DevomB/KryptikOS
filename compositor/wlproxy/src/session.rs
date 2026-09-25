@@ -236,10 +236,9 @@ impl Endpoint {
 
     /// Queue one message. It joins the last batch while that has room, so a
     /// burst of small messages is one buffer and one sendmsg, and
-    /// `pending_out`, the bound, is close to what the queue really holds (a
-    /// buffer per message cost several times the message). Its descriptors
-    /// go with that batch: they reach the peer no later than the message and
-    /// in the order sent, which is all libwayland asks.
+    /// `pending_out`, the bound, is close to what the queue really holds. Its
+    /// descriptors go with that batch: they reach the peer no later than the
+    /// message and in the order sent, which is all libwayland asks.
     fn queue(&mut self, bytes: &[u8], fds: Vec<RawFd>) {
         self.pending_out += bytes.len();
         self.pending_fds += fds.len();
@@ -352,9 +351,7 @@ impl Session {
     /// Process everything complete in one direction's inbound buffer.
     /// Returns Ok(()) when more input is needed.
     pub fn pump(&mut self, dir: Dir) -> Result<(), SessionError> {
-        // Every message of this pass is copied into this one buffer, checked
-        // there and copied from it into the outbound batch: no allocation
-        // per message.
+        // One buffer holds each message of this pass on its way through.
         let mut msg: Vec<u8> = Vec::new();
         loop {
             let src = match dir {
@@ -496,9 +493,8 @@ impl Session {
                     }
                 }
             }
-            // The new object, whichever side created it. Registry bindings
-            // choose a version; typed children inherit their parent's,
-            // including server-created children.
+            /* The new object, whichever side created it. A registry binding
+             * chooses its version; any other child inherits its parent's. */
             if let Some((id, name)) = decoded.new_object {
                 self.register(id, name, decoded.bind_version.unwrap_or(version), dir)?;
             }
@@ -864,7 +860,7 @@ mod tests {
     }
 
     #[test]
-    fn small_messages_share_a_send_and_no_send_outgrows_libwayland() {
+    fn batches_small_messages() {
         let (a, b) = UnixStream::pair().unwrap();
         b.set_nonblocking(true).unwrap();
         let mut out = Endpoint::new(a.into_raw_fd());

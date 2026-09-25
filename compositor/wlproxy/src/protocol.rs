@@ -188,7 +188,7 @@ pub(crate) mod tests {
     /// What decode and the outbound batches rely on: one new object at most
     /// per message, and never more descriptors than one sendmsg may carry.
     #[test]
-    fn no_message_creates_two_objects_or_outgrows_a_send() {
+    fn tables_fit_one_send() {
         for i in crate::protocol_tables::INTERFACES {
             for m in i.requests.iter().chain(i.events.iter()) {
                 let created = m.args().filter(|a| matches!(a, Arg::NewId { .. })).count();

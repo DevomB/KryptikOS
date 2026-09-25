@@ -117,7 +117,7 @@ mod tests {
     /// map until the session hit its object bound, so nothing a zone can
     /// reach may be created by an event.
     #[test]
-    fn nothing_a_zone_reaches_is_created_by_the_compositor() {
+    fn no_compositor_created_objects() {
         use crate::protocol::{find, Arg};
         let mut reach: Vec<&str> = ALLOWED.iter().map(|(n, _)| *n).chain(["wl_display", "wl_registry"]).collect();
         let mut i = 0;
