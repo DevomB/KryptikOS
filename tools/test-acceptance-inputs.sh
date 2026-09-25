@@ -105,7 +105,7 @@ for fn in item checks_in need_host verdict_of seal_export; do
     grep -q "^${fn}() " "$T/item.sh" || { echo "could not extract ${fn} from $ACC"; exit 1; }
 done
 # shellcheck disable=SC2034  # read by the sourced functions
-{ OUT="$T/out"; ONLY=""; NOHOST=0; }
+{ OUT="$T/out"; ONLY=""; NOHOST=0; PARTS=(); }
 mkdir -p "$OUT"
 need_cargo() { :; }
 # shellcheck source=/dev/null
@@ -132,6 +132,28 @@ try clean2 0 'All 12 checks passed' PASS "a clean item, alone"
 NOHOST=1; item build host-suites M host 0 says need_host > /dev/null
 [[ "$(result_of host-suites)" == INCOMPLETE ]] && ok "--no-host leaves a row, and it reads INCOMPLETE" || bad "--no-host: '$(result_of host-suites)'"
 [[ "$(verdict_of)" == INCOMPLETE ]] && ok "a skipped mandatory item keeps the verdict from PASS" || bad "verdict $(verdict_of)"
+
+# --- a split run, merged: each item's row comes from the part that ran it -----
+# shellcheck disable=SC2034  # the results so far, put away
+{ R_SUITE=(); R_NAME=(); R_MAND=(); R_KIND=(); R_RES=(); R_CHECKS=(); R_RC=(); R_SECS=(); R_LOG=(); R_NOTE=(); }
+mkdir -p "$T/parts/a" "$T/parts/b"
+row() { printf '%s\t%s\tM\tvm\t%s\t%s\t%s\t9\t%s\t%s\n' "$@"; }
+{ echo header; row boot smoke PASS 38/0 0 /elsewhere/boot-smoke.log ""; row update upd INCOMPLETE - - - "not run (--only boot)"; } > "$T/parts/a/results.tsv"
+{ echo header; row boot smoke INCOMPLETE - - - "not run (--only update)"; row update upd FAIL 20/2 1 /elsewhere/update-upd.log "exit 1"; } > "$T/parts/b/results.tsv"
+# shellcheck disable=SC2034  # read by item and merged
+PARTS=("$T/parts/a/results.tsv" "$T/parts/b/results.tsv")
+runs() { : > "$T/ran"; }
+{ item boot smoke M vm 25 runs; item update upd M vm 10 runs; item zones zt M vm 10 runs; } > /dev/null
+[[ ! -e "$T/ran" ]] && ok "merged, an item is read from the parts, not run" || bad "merged: an item was run"
+[[ "$(result_of smoke)/$(result_of upd)/$(result_of zt)" == PASS/FAIL/INCOMPLETE ]] \
+    && ok "each row is the part that ran it; one no part ran is INCOMPLETE" || bad "merged: $(result_of smoke)/$(result_of upd)/$(result_of zt)"
+[[ "${R_LOG[0]}" == "$OUT/boot-smoke.log" && "${R_CHECKS[1]}" == 20/2 ]] \
+    && ok "a merged row keeps its checks, and its log is the copy beside the report" || bad "merged row: log ${R_LOG[0]} checks ${R_CHECKS[1]}"
+item boot record M post 0 runs > /dev/null
+[[ -e "$T/ran" && "$(result_of record)" == PASS ]] && ok "an item done after the suites runs in the merge itself" || bad "post item: $(result_of record)"
+[[ "$(verdict_of)" == FAIL ]] && ok "a part's failure fails the merged verdict" || bad "merged verdict $(verdict_of)"
+# shellcheck disable=SC2034  # back to a run of its own
+PARTS=()
 
 # --- the export's list covers every file in it but itself ---------------------
 E="$T/export"; mkdir -p "$E/acceptance-logs"

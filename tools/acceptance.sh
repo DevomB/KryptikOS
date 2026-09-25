@@ -8,6 +8,12 @@
 #   tools/acceptance.sh [--media-usb IMG] [--media-iso ISO]
 #                       [--payload-a DIR] [--payload-b DIR]
 #                       [--out DIR] [--export DIR] [--only boot,desktop] [--no-host]
+#                       [--merge DIR]...
+#
+# --merge DIR takes the rows from the results.tsv under each DIR (runs with
+# --only, side by side, each on its own machine) instead of running the items,
+# and gives the verdict over all of them. Only the items done after the suites
+# (the firmware-only record, the export) run here.
 #
 # Three results, and only one of them is a pass:
 #   PASS        the item ran and every check inside it passed
@@ -51,7 +57,7 @@ for h in "${HOME:-/root}" "$(getent passwd "${SUDO_USER:-}" 2>/dev/null | cut -d
 done
 export PATH KRYPTIK_ROOT="$ROOT" KRYPTIK_WORK KRYPTIK_SOURCES
 
-MEDIA_USB=""; MEDIA_ISO=""; PAYLOAD_A=""; PAYLOAD_B=""; OUT=""; EXPORT=""; ONLY=""; NOHOST=0
+MEDIA_USB=""; MEDIA_ISO=""; PAYLOAD_A=""; PAYLOAD_B=""; OUT=""; EXPORT=""; ONLY=""; NOHOST=0; MERGE=()
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
         --media-usb) MEDIA_USB="${2:?}"; shift 2 ;;
@@ -62,15 +68,28 @@ while [[ "$#" -gt 0 ]]; do
         --export)    EXPORT="${2:?}"; shift 2 ;;
         --only)      ONLY="${2:?}"; shift 2 ;;
         --no-host)   NOHOST=1; shift ;;
-        -h|--help)   sed -n '2,36p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        --merge)     MERGE+=("${2:?}"); shift 2 ;;
+        -h|--help)   sed -n '2,40p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
+[[ "${#MERGE[@]}" -eq 0 || -z "$ONLY" ]] || die "--merge and --only do not go together"
 
 START_TS="$(date +%Y%m%dT%H%M%S)"
 OUT="${OUT:-${KRYPTIK_WORK}/acceptance/${START_TS}}"
 mkdir -p "$OUT" || die "cannot create ${OUT}"
 MARK="${OUT}/.start"; : > "$MARK"
+
+# The parts' results, and everything beside them (logs, boot records,
+# REVISION.txt) copied here, where the report and the export look.
+PARTS=()
+if [[ "${#MERGE[@]}" -gt 0 ]]; then
+    mapfile -t PARTS < <(find "${MERGE[@]}" -name results.tsv | sort)
+    [[ "${#PARTS[@]}" -gt 0 ]] || die "no results.tsv under ${MERGE[*]}"
+    for f in "${PARTS[@]}"; do
+        find "$(dirname "$f")" -maxdepth 1 -type f ! -name results.tsv ! -name REPORT.md -exec cp -n -t "$OUT" {} +
+    done
+fi
 IMGDIR="${KRYPTIK_WORK}/images"
 IMG="${SELF}/image"
 SYSROOT="${KRYPTIK_WORK}/sysroot"
@@ -163,6 +182,7 @@ item() {
     local suite="$1" name="$2" mand="$3" kind="$4" minp="$5" fn="$6" pre="${7:-}"
     local log="${OUT}/${suite}-${name}.log" rc res checks="-" note="" reason="" t0
     if ! wanted "$suite"; then record "$suite" "$name" "$mand" "$kind" INCOMPLETE "-" "-" 0 "-" "not run (--only ${ONLY})"; return; fi
+    if [[ "${#PARTS[@]}" -gt 0 && "$kind" != post ]]; then merged "$suite" "$name" "$mand" "$kind"; return; fi
     printf '\n==> [%s] %s\n' "$suite" "$name"
     [[ -n "$pre" ]] && reason="$("$pre" 2>&1)"
     if [[ -n "$reason" ]]; then
@@ -186,6 +206,21 @@ item() {
     fi
     printf -- '-- %s: %s (exit %s, %ss, checks %s)%s\n' "$name" "$res" "$rc" "$((SECONDS - t0))" "$checks" "${note:+ - $note}"
     record "$suite" "$name" "$mand" "$kind" "$res" "$checks" "$rc" "$((SECONDS - t0))" "$log" "$note"
+}
+
+# The row of every part that ran the item. A part records what it left to the
+# others as "not run (--only ...)"; an item no part ran is INCOMPLETE.
+merged() {
+    local suite="$1" name="$2" mand="$3" kind="$4" f n=0 s i res checks rc secs log note
+    for f in "${PARTS[@]}"; do
+        while IFS=$'\t' read -r s i _ _ res checks rc secs log note; do
+            [[ "$s" == "$suite" && "$i" == "$name" && "$note" != "not run (--only "* ]] || continue
+            [[ "$log" == - ]] || log="${OUT}/${log##*/}"
+            record "$suite" "$name" "$mand" "$kind" "$res" "$checks" "$rc" "$secs" "$log" "$note"
+            n=$((n + 1))
+        done < <(tail -n +2 "$f")
+    done
+    [[ "$n" -gt 0 ]] || record "$suite" "$name" "$mand" "$kind" INCOMPLETE "-" "-" 0 "-" "no part of the run reported it"
 }
 
 # ------------------------------------------------------------- prereqs --
@@ -289,12 +324,13 @@ it_update()        { "${IMG}/update-test.sh" --usb-a "$MEDIA_USB_A" --payload-a 
 # firmware image, a variable store, disks and a serial line - and none of
 # -kernel, -initrd, -append, a shared host directory or a FAT-from-directory.
 it_firmware_only() {
-    local n=0 bad=0 f
+    local n=0 bad=0 f src=("${KRYPTIK_WORK}/logs" -newer "$MARK")
+    [[ "${#PARTS[@]}" -gt 0 ]] && src=("$OUT")
     while IFS= read -r f; do
         n=$((n + 1))
         if ! grep -q 'if=pflash' "$f" || ! grep -q 'OVMF_CODE_4M.secboot.fd' "$f"; then echo "  no firmware image in: $f"; bad=$((bad + 1)); continue; fi
         if grep -qE -- '(^| )-(kernel|initrd|append|hda|hdb|virtfs|fsdev)( |$)|file=fat:|-nic .*smb=' "$f"; then echo "  host-side boot input in: $f"; bad=$((bad + 1)); continue; fi
-    done < <(find "${KRYPTIK_WORK}/logs" -name 'ovmf-serial.*.log.cmd' -newer "$MARK" 2>/dev/null | sort)
+    done < <(find "${src[@]}" -name 'ovmf-serial.*.log.cmd' 2>/dev/null | sort)
     echo "boots recorded during this run: ${n}; with host-side boot inputs or without firmware: ${bad}"
     [[ "$n" -gt 0 ]] || { echo "no boot was recorded: nothing to attest"; return 1; }
     [[ "$bad" -eq 0 ]]
@@ -332,6 +368,8 @@ item zones     zones-test                 M vm   10 it_zones need_vm
 item desktop   gui-test                   M vm   25 it_gui need_vm
 item update    update-test                M vm   10 it_update need_update
 item boot      firmware-only-boot         M post  0 it_firmware_only
+# A part of a split run leaves its boot records beside its report, for --merge.
+[[ -n "$ONLY" ]] && find "${KRYPTIK_WORK}/logs" -name 'ovmf-serial.*.log.cmd' -newer "$MARK" -exec cp -t "$OUT" {} + 2>/dev/null
 
 # ------------------------------------------------------------- report --
 KERNEL_LINE="$(grep -h -o 'KRYPTIK_SMOKE: kernel=[^ ]*' "${OUT}"/boot-media-smoke-usb.log 2>/dev/null | head -1 | sed 's/KRYPTIK_SMOKE: kernel=//')"
@@ -366,7 +404,7 @@ write_report() {
         echo "| logs | ${OUT} |"
         echo
         echo "Results: PASS, FAIL, or INCOMPLETE (could not run here; never a pass)."
-        echo "Kind: host = a host-side or chroot suite, not installed-system evidence; vm = the installed system or the medium under firmware; post = read from this run's own records."
+        echo "Kind: host = a host-side or chroot suite, not installed-system evidence; vm = the installed system or the medium under firmware; post = done after the suites, from this run's own records and media."
         echo
         echo "| suite | item | mandatory | kind | result | checks passed/failed | exit | seconds | log | note |"
         echo "|---|---|---|---|---|---|---|---|---|---|"
@@ -445,7 +483,7 @@ seal_export() {   # seal_export DIR
 V="$(verdict_of)"
 write_report "$V"
 if [[ -n "$EXPORT" ]] || wanted release; then
-    item release export M host 0 it_export need_export
+    item release export M post 0 it_export need_export
     V="$(verdict_of)"
     write_report "$V"
     if [[ -n "$EXPORT" && -d "$EXPORT" ]]; then
