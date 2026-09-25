@@ -46,6 +46,8 @@ for _ in $(seq 1 30); do
     [[ -n "$ready" ]] && break; sleep 1
 done
 if [[ "$ready" == *"nat=yes"* ]]; then pass "net-ready" "$ready"; else fail "net-ready" "no READY line with nat=yes in the catch-all log (last: $(grep -h 'netzone:' /run/uncaught-logs/current 2>/dev/null | tail -1))"; fi
+# The routed zones' resolver, named on its own: routed-dns only times out.
+if [[ "$ready" == *" dns=yes "* ]]; then pass "net-dns" "dnsmasq is running"; else fail "net-dns" "$(grep -h 'dnsmasq' /run/uncaught-logs/current 2>/dev/null | tail -2 | tr '\n' ' ')"; fi
 if ip link show eth0 >/dev/null 2>&1; then fail "zone0-nic" "eth0 is still in zone 0"; else pass "zone0-nic" "eth0 is not in zone 0 (moved into the net zone)"; fi
 if [[ -z "$(ip route show default 2>/dev/null)" ]]; then pass "zone0-no-route" "zone 0 has no default route"; else fail "zone0-no-route" "$(ip route show default)"; fi
 if ping -c1 -W2 10.0.2.2 >/dev/null 2>&1; then fail "zone0-offline" "zone 0 reached the VM gateway"; else pass "zone0-offline" "zone 0 cannot reach the VM gateway"; fi
