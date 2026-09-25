@@ -413,8 +413,11 @@ pub fn pivot_into(
             if let Err(e) = keep_sysfs(&aside, &sys_dir) {
                 eprintln!("kryptikd: note: the zone gets no /sys: {e}");
             }
+            // Left mounted, the whole of sysfs would stay in the zone at the aside path.
             let c = cs(&aside)?;
-            unsafe { libc::umount2(c.as_ptr(), libc::MNT_DETACH) };
+            if unsafe { libc::umount2(c.as_ptr(), libc::MNT_DETACH) } < 0 {
+                return Err(RootfsError::Syscall { call: "umount2", path: aside, errno: errno() });
+            }
         }
         let _ = fs::remove_dir(&aside);
     }
