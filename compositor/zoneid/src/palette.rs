@@ -65,12 +65,11 @@ pub struct SearchOptions {
     /// search: each chosen colour is moved through its neighbourhood at
     /// this resolution while the minimum improves. 0 disables refinement.
     ///
-    /// The coarse grid alone is not enough. Measured on the default
-    /// constraints with the compositor's colours fixed (2026-09-25, release
-    /// build): step 17 alone reaches a floor of 13.98, step 12 14.49, step 9
-    /// 15.05 in 1.2 s, step 6 15.42 in 3.1 s; step 17 refined every 3
-    /// reaches 15.70 in 1.8 s. Refining around the coarse optimum is what
-    /// makes a passing palette cheap.
+    /// The coarse grid alone is not enough. On the default constraints, with
+    /// the compositor's colours fixed, a release build reaches: step 17 alone
+    /// 13.98, step 12 14.49, step 9 15.05 in 1.2 s, step 6 15.42 in 3.1 s;
+    /// step 17 refined every 3, 15.70 in 1.8 s. Refining around the coarse
+    /// optimum is what makes a passing palette cheap.
     pub refine: u32,
 }
 
@@ -266,8 +265,7 @@ pub fn propose_with(n: usize, opts: SearchOptions) -> Option<Proposal> {
         return None;
     }
     let fixed = fixed();
-    // Each candidate's distance to the compositor's colours, which no move
-    // changes.
+    // Each candidate's distance to the compositor's colours, which no move changes.
     let to_fixed: Vec<f64> = cands.iter().map(|c| nearest(&c.lab, &fixed, f64::INFINITY, f64::NEG_INFINITY)).collect();
 
     // Fixed restart points spread through the candidate list. Deterministic by
@@ -284,10 +282,9 @@ pub fn propose_with(n: usize, opts: SearchOptions) -> Option<Proposal> {
         // thousands of candidates was most of the coarse search's time.
         let mut in_set = vec![false; cands.len()];
         in_set[seed] = true;
-        // Farthest-point traversal: repeatedly take the candidate furthest
-        // from everything already picked and from the compositor's colours.
-        // `near[c]` is that distance; one pass against the newest pick
-        // keeps it current.
+        /* Farthest-point traversal: take the candidate furthest from
+         * everything picked and from the compositor's colours. `near[c]` is
+         * that distance, kept current by one pass against the newest pick. */
         let mut near: Vec<f64> =
             cands.iter().zip(&to_fixed).map(|(c, &f)| f.min(distance(&c.lab, &cands[seed].lab))).collect();
         while chosen.len() < n {
@@ -307,8 +304,7 @@ pub fn propose_with(n: usize, opts: SearchOptions) -> Option<Proposal> {
             }
         }
 
-        // Ascent on the coarse grid: in each slot in turn, the replacement
-        // that most improves the palette's score, until no slot improves.
+        // Coarse ascent: per slot, the replacement that most improves the score.
         loop {
             let mut improved = false;
             for slot in 0..chosen.len() {
