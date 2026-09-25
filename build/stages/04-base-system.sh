@@ -1415,9 +1415,13 @@ s_iputils() {
     meson setup build --prefix=/usr --buildtype=plain --wrap-mode=nodownload \
         -DBUILD_PING=true -DBUILD_ARPING=false -DBUILD_CLOCKDIFF=false -DBUILD_TRACEPATH=false \
         -DUSE_CAP=false -DUSE_IDN=false -DUSE_GETTEXT=false -DNO_SETCAP_OR_SUID=true \
-        -DBUILD_MANS=false -DBUILD_HTML_MANS=false -DSKIP_TESTS=true
+        -DBUILD_MANS=true -DBUILD_HTML_MANS=false -DSKIP_TESTS=true
     ninja -C build
     ninja -C build install
+    # The tarball's prebuilt ping.8, installed without xsltproc, comes with an
+    # HTML copy that nothing reads.
+    rm -rf /usr/share/iputils
+    [[ -f /usr/share/man/man8/ping.8 ]] || { echo "FAIL: ping.8 was not installed"; return 1; }
     local out; out="$(/usr/bin/ping -V)"
     printf '%s\n' "$out"
     [[ "$out" == *"libcap: no"* ]] || { echo "FAIL: ping was built with libcap"; return 1; }
@@ -2028,7 +2032,7 @@ PACKAGES=(
     "gperf"       "native_build gperf-${V_GPERF}.tar.gz gperf-${V_GPERF} --docdir=/usr/share/doc/gperf-${V_GPERF}"
     "expat"       "native_build expat-${V_EXPAT}.tar.xz expat-${V_EXPAT} --disable-static --docdir=/usr/share/doc/expat-${V_EXPAT}"
     # --disable-servers: no telnetd, ftpd, rlogind and the rest, which nothing
-    # starts; only the clients (hostname, ping, traceroute, ifconfig).
+    # starts; only the clients (hostname, traceroute, ifconfig); ping is iputils'.
     "inetutils"   "native_build inetutils-${V_INETUTILS}.tar.gz inetutils-${V_INETUTILS} --bindir=/usr/bin --localstatedir=/var --disable-servers --disable-logger --disable-whois --disable-rlogin --disable-rsh --disable-rcp --disable-rexec --disable-ping --disable-ping6"
     "less"        "native_build less-${V_LESS}.tar.gz less-${V_LESS} --sysconfdir=/etc"
     "openssl"     "s_openssl"

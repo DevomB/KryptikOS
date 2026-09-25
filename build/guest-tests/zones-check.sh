@@ -54,7 +54,7 @@ if ping -c1 -W2 10.0.2.2 >/dev/null 2>&1; then fail "zone0-offline" "zone 0 reac
 # The IPv6 echo waits out duplicate address detection: from a still-tentative
 # address it fails at once with EADDRNOTAVAIL.
 UNT=$(host_of untrusted); PER=$(host_of personal)
-zrun untrusted 40 -- sh -c 'ip -4 -o addr show eth0; python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.19.0.1 3 >/dev/null 2>&1 && echo BRIDGE-OK; if ping -c 1 -W 3 10.19.0.1 > /tmp/ping.out 2>&1; then echo PING-OK; else echo "PING-FAIL rc=$? $(tail -1 /tmp/ping.out)"; fi; python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.0.2.2 3 >/dev/null 2>&1 && echo GATEWAY-OK; ip -6 -o addr show eth0 | grep -q " fd19:" && echo ULA-OK; ip -6 -o addr show eth0 | grep -qE " (2|3)[0-9a-f]{3}:" && echo GLOBAL6-PRESENT; for i in 1 2 3 4 5 6 7 8 9 10 11 12; do ip -6 -o addr show eth0 | grep -q tentative || break; sleep 0.5; done; python3 /usr/lib/kryptik/guest-tests/icmp-echo.py fd19::1 3 >/dev/null 2>&1 && echo BRIDGE6-OK; ping -c 1 -W 3 fd19::1 >/dev/null 2>&1 && echo PING6-OK; python3 - <<"PY"
+zrun untrusted 40 -- sh -c 'ip -4 -o addr show eth0; python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.19.0.1 3 >/dev/null 2>&1 && echo BRIDGE-OK; if ping -c 1 -W 3 10.19.0.1 > /tmp/ping.out 2>&1; then echo PING-OK; else echo "PING-FAIL rc=$? $(tail -1 /tmp/ping.out)"; fi; python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.0.2.2 3 >/dev/null 2>&1 && echo GATEWAY-OK; ip -6 -o addr show eth0 | grep -q " fd19:" && echo ULA-OK; ip -6 -o addr show eth0 | grep -qE " (2|3)[0-9a-f]{3}:" && echo GLOBAL6-PRESENT; for i in 1 2 3 4 5 6 7 8 9 10 11 12; do ip -6 -o addr show eth0 | grep -q tentative || break; sleep 0.5; done; python3 /usr/lib/kryptik/guest-tests/icmp-echo.py fd19::1 3 >/dev/null 2>&1 && echo BRIDGE6-OK; if ping -c 1 -W 3 fd19::1 > /tmp/ping6.out 2>&1; then echo PING6-OK; else echo "PING6-FAIL rc=$? $(tail -1 /tmp/ping6.out)"; fi; python3 - <<"PY"
 import socket, struct
 q = struct.pack(">HHHHHH", 0x1234, 0x0100, 1, 0, 0, 0) + b"\x07kryptik\x04test\x00" + struct.pack(">HH", 1, 1)
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(4)
@@ -72,7 +72,7 @@ PY'
 [[ "$ZOUT" == *ULA-OK* ]] && pass "routed-ipv6-ula" || fail "routed-ipv6-ula"
 [[ "$ZOUT" == *GLOBAL6-PRESENT* ]] && fail "routed-ipv6-noglobal" "a global IPv6 address reached a routed zone" || pass "routed-ipv6-noglobal" "no global IPv6 address in the zone"
 [[ "$ZOUT" == *BRIDGE6-OK* ]] && pass "routed-ipv6-bridge" || fail "routed-ipv6-bridge"
-[[ "$ZOUT" == *PING6-OK* ]] && pass "routed-ping6" "ping reaches the bridge over IPv6" || fail "routed-ping6"
+[[ "$ZOUT" == *PING6-OK* ]] && pass "routed-ping6" "ping reaches the bridge over IPv6" || fail "routed-ping6" "$(grep -o 'PING6-FAIL.*' "$LOG/untrusted.out")"
 [[ "$ZOUT" == *DNS-ANSWERED* ]] && pass "routed-dns" "$(grep -o 'DNS-ANSWERED.*' "$LOG/untrusted.out")" || fail "routed-dns" "$(grep -o 'DNS-.*' "$LOG/untrusted.out")"
 
 # (the vault is probed once its volume exists, under storage below)
@@ -284,7 +284,8 @@ fi
 printf 'vault-pass\n' > /root/zt/vault.pass; chmod 600 /root/zt/vault.pass
 "$KD" volume init vault --size 64M --passphrase-file /root/zt/vault.pass > "$LOG/vol-vault.out" 2>&1 || fail "vault-volume" "$(tail -1 "$LOG/vol-vault.out")"
 zrun vault 30 --passphrase-file /root/zt/vault.pass -- sh -c 'echo LINKS=$(ip -o link | grep -vc " lo:"); python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.19.0.1 1 >/dev/null 2>&1 && echo VAULT-REACHED-BRIDGE || echo VAULT-ISOLATED; ping -c 1 -W 1 10.19.0.1 > /tmp/ping.out 2>&1; echo "VAULT-PING rc=$? $(tail -1 /tmp/ping.out)"; echo vault-secret > "$HOME/v" && echo VAULT-WROTE'
-grep -qE 'VAULT-PING rc=(1|2) ' <<<"$ZOUT" && pass "vault-ping" "ping in an offline zone fails with an error: $(grep -o 'VAULT-PING.*' <<<"$ZOUT")" || fail "vault-ping" "$(grep -o 'VAULT-PING.*' <<<"$ZOUT")"
+# 2 is ping's error exit; 1 would mean a packet went out and no reply came.
+grep -qE 'VAULT-PING rc=2 ' <<<"$ZOUT" && pass "vault-ping" "ping in an offline zone fails without sending: $(grep -o 'VAULT-PING.*' <<<"$ZOUT")" || fail "vault-ping" "$(grep -o 'VAULT-PING.*' <<<"$ZOUT")"
 [[ "$ZOUT" == *VAULT-ISOLATED* && "$ZOUT" == *VAULT-WROTE* && "$ZOUT" == *LINKS=0* ]] && pass "vault-offline" "vault has loopback only, no path to the bridge, and keeps data" || fail "vault-offline" "$(tr '\n' ' ' <<<"$ZOUT") $(tail -1 "$LOG/vault.err")"
 # No passphrase on any command line or in the registry. The [s] keeps this
 # grep's own command line from matching.
