@@ -128,13 +128,11 @@ if [ -n "\${SEED_FROM:-}" ]; then
     stage_depends_on "t-" "\$SEED_FROM"
 fi
 
-# Called BARE, exactly as the stage files call it. Adding \`|| true\` here would
-# create the very condition context under test and make a correct step() look
-# broken - the first version of this test did exactly that and reported all
-# four stages as failing.
+# Called bare, as the stage files call it: \`|| true\` would create the
+# condition context under test and make a correct step() look broken.
 #
-# Several steps separated by -- run in ONE process, the way a stage runs its
-# list: the dependency chain between steps only exists inside a process.
+# Steps separated by -- run in one process, as a stage runs its list: the
+# dependency chain between steps exists only inside a process.
 run_steps() {
     local cur=() a
     for a in "\$@" --; do
