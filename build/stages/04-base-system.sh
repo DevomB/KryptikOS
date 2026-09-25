@@ -612,7 +612,10 @@ s_gcc_native() {
         x86_64) sed -e '/m64=/s/lib64/lib/' -i.orig gcc/config/i386/t-linux64 ;;
     esac
     mkdir -p build && cd build
-    ../configure --build="$(uname -m)-kryptik-linux-gnu" --prefix=/usr LD=ld \
+    # The target libraries take CFLAGS by themselves in a native build, but
+    # not LDFLAGS: named, so libgcc_s and libstdc++ are linked with them too.
+    local want; want="$(uname -m)-kryptik-linux-gnu"
+    ../configure --build="$want" --prefix=/usr LD=ld LDFLAGS_FOR_TARGET="$LDFLAGS" \
         --enable-languages=c,c++ --enable-default-pie --enable-default-ssp \
         --enable-host-pie --enable-host-bind-now --enable-cet \
         --disable-bootstrap --disable-fixincludes --disable-multilib --disable-nls \
@@ -620,21 +623,28 @@ s_gcc_native() {
         --disable-libsanitizer --disable-libssp --disable-libvtv \
         --with-system-zlib
     make
+    # Stage 02's compiler ran fixincludes and this one does not, so its fixed
+    # headers (searched before /usr/include) and its fixincl would stay.
+    rm -rf "/usr/lib/gcc/${want}/${V_GCC}/include-fixed" "/usr/libexec/gcc/${want}/${V_GCC}/install-tools"
     make install
 
-    local triple want t lib
-    triple="$(gcc -dumpmachine)"; want="$(uname -m)-kryptik-linux-gnu"
+    local triple t lib
+    triple="$(gcc -dumpmachine)"
     [[ "$triple" == "$want" ]] || { echo "FAIL: the new gcc targets ${triple}, not ${want}"; return 1; }
     t="$(mktemp -d)"
     printf '#include <stdio.h>\nint main(void) { puts("c ok"); return 0; }\n' > "$t/c.c"
-    printf '#include <iostream>\nint main() { std::cout << "c++ ok" << std::endl; }\n' > "$t/p.cc"
+    # A throw, so the unwinder in libgcc_s runs, which --enable-cet changes.
+    printf '#include <iostream>\nint main() { try { throw 42; } catch (int e) { std::cout << "c++ ok " << e << std::endl; } }\n' > "$t/p.cc"
     # shellcheck disable=SC2086  # the flags are lists of words
     { gcc $CFLAGS $LDFLAGS -o "$t/c" "$t/c.c" && "$t/c" \
         && g++ $CXXFLAGS $LDFLAGS -o "$t/p" "$t/p.cc" && "$t/p"; } \
-        || { rm -rf "$t"; echo "FAIL: the new compiler cannot build and run a C and a C++ program"; return 1; }
+        || { rm -rf "$t"; echo "FAIL: the new compiler cannot build and run a C and a C++ program that throws"; return 1; }
     # Whole outputs, not pipes into grep -q, which can end readelf with SIGPIPE.
-    local out; out="$(readelf -h "$t/c")"; rm -rf "$t"
+    # A program keeps the CET note only if every object it links has it: the
+    # crt files, libc_nonshared and libgcc.a included.
+    local out; out="$(readelf -h -n "$t/c")"; rm -rf "$t"
     [[ "$out" == *"Type:"*"DYN"* ]] || { echo "FAIL: its programs are not PIE"; return 1; }
+    [[ "$out" == *"x86 feature: IBT, SHSTK"* ]] || { echo "FAIL: its programs carry no IBT and SHSTK: an object they link lacks the note"; return 1; }
     for lib in /usr/lib/libgcc_s.so.1 "$(readlink -f /usr/lib/libstdc++.so.6)"; do
         out="$(readelf -n "$lib")"
         [[ "$out" == *"x86 feature: IBT, SHSTK"* ]] || { echo "FAIL: ${lib} carries no IBT and SHSTK"; return 1; }
