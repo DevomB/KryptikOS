@@ -12,7 +12,7 @@ errors ahead of time.
 One additive directive per line, `#` comments:
 
 ```text
-allow-syscall     chown               # added to the allowlist
+allow-syscall     sched_setscheduler  # added to the allowlist
 allow-socket      AF_PACKET           # added to the socket(2) rule
 allow-netlink     NETLINK_NETFILTER   # added to the AF_NETLINK rule
 keep-capability   CAP_NET_RAW         # left in the bounding set
