@@ -40,6 +40,9 @@ TABLE=(
     'https://updates.example/a"b'                   refuse refuse
     'https://updates.example/a\b'                   refuse refuse
     'https://updates.example/a`b'                   refuse refuse
+    'https://updates.example/a|b'                   refuse refuse
+    'https://updates.example/<b>'                   refuse refuse
+    'https://updates.example/{b}^'                  refuse refuse
     "https://updates.example/stable#x"              refuse refuse
     "https://updates.example/stable?token=1"        refuse refuse
     "https://?x"                                    refuse refuse
