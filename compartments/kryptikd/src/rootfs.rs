@@ -187,6 +187,11 @@ fn bind_ro_file(src: &str, target: &str) -> Result<(), RootfsError> {
             .map_err(|e| RootfsError::Setup(format!("{}: {e}", parent.display())))?;
     }
     fs::File::create(target).map_err(|e| RootfsError::Setup(format!("{target}: {e}")))?;
+    bind_over_ro(src, target)
+}
+
+/// Bind `src` over the existing file `target`, read-only.
+fn bind_over_ro(src: &str, target: &str) -> Result<(), RootfsError> {
     mount_raw(src, target, None, libc::MS_BIND, None, "mount(bind file)")?;
     // A file has no submounts; the legacy remount is exact here.
     match set_mount_attr(target, MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV, false) {
@@ -210,17 +215,22 @@ pub const SYSTEM_PATHS: &[&str] = &["/usr", "/lib", "/lib64", "/bin", "/sbin"];
 /// Host files under /etc a zone may read: public, machine-independent data.
 /// Never ld.so.preload, machine-id (links zones to the host), the host's
 /// identity files, resolv.conf, localtime (zones run UTC), or any secret.
-pub const ETC_RO_FILES: &[&str] = &[
-    "/etc/ld.so.cache",
-    "/etc/services",
-    "/etc/protocols",
-    // The nic zone's DHCP client defaults.
-    "/etc/dhcpcd.conf",
-    // Time sources the nic zone asks (docs/design/time.md).
-    "/etc/kryptik/time.conf",
-    // Where the nic zone looks for releases (docs/design/update-channel.md).
-    "/etc/kryptik/update.conf",
-];
+pub const ETC_RO_FILES: &[&str] = &["/etc/ld.so.cache", "/etc/services", "/etc/protocols"];
+
+/// The nic zone's own configuration, bound into that zone alone: its DHCP
+/// client defaults, time sources (docs/design/time.md) and release source
+/// (docs/design/update-channel.md).
+pub const NIC_ETC_FILES: &[&str] = &["/etc/dhcpcd.conf", "/etc/kryptik/time.conf", "/etc/kryptik/update.conf"];
+
+/// Files of a zone's /proc about the whole machine, hidden behind /dev/null:
+/// the interrupt counts (interrupts, softirqs, the intr line of stat) time
+/// every keystroke typed anywhere, and timer_list names other zones' tasks.
+pub const PROC_MASKED: &[&str] = &["interrupts", "softirqs", "stat", "timer_list", "sched_debug"];
+
+/// What a zone other than the nic zone sees of sysfs: its own interfaces and
+/// the CPU layout (glibc counts CPUs there). The rest describes the machine:
+/// disk, USB and monitor serials, and which encrypted zones are running.
+pub const SYSFS_KEPT: &[&str] = &["class/net", "devices/virtual/net", "devices/system/cpu"];
 pub const ETC_RO_DIRS: &[&str] = &["/etc/alternatives", "/etc/ssl/certs", "/etc/pki/tls/certs"];
 
 /// Device nodes a zone gets; no other exists for it.
@@ -414,19 +424,32 @@ pub fn pivot_into(
         None,
         "mount(proc)",
     )?;
+    mask_proc(root, &proc_dir)?;
 
-    /* Read-only sysfs for this zone's network namespace. Best effort: it can
-     * fail in a nested namespace, and it is not a control. */
+    /* Read-only sysfs for this zone's network namespace: the nic zone gets
+     * all of it, any other zone only `SYSFS_KEPT`, bound from a sysfs mounted
+     * aside and then dropped. Best effort: it can fail in a nested namespace. */
     let sys_dir = mkdir("sys")?;
-    let _ = mount_raw(
+    let aside = if resolver == Resolver::Writable { sys_dir.clone() } else { mkdir(".sysfs")? };
+    let mounted = mount_raw(
         "sysfs",
-        &sys_dir,
+        &aside,
         Some("sysfs"),
         (libc::MS_NOSUID | libc::MS_NOEXEC | libc::MS_NODEV | libc::MS_RDONLY)
             as libc::c_ulong,
         None,
         "mount(sysfs)",
     );
+    if aside != sys_dir {
+        if mounted.is_ok() {
+            if let Err(e) = keep_sysfs(&aside, &sys_dir) {
+                eprintln!("kryptikd: note: the zone gets no /sys: {e}");
+            }
+            let c = cs(&aside)?;
+            unsafe { libc::umount2(c.as_ptr(), libc::MNT_DETACH) };
+        }
+        let _ = fs::remove_dir(&aside);
+    }
 
     populate_dev(root)?;
 
@@ -588,7 +611,8 @@ fn populate_etc(root: &str, zone: &str, home: &str, resolver: Resolver) -> Resul
         }
     }
 
-    for f in ETC_RO_FILES {
+    let nic: &[&str] = if resolver == Resolver::Writable { NIC_ETC_FILES } else { &[] };
+    for f in ETC_RO_FILES.iter().chain(nic) {
         // metadata() follows symlinks; the target must be a regular file.
         if fs::metadata(f).map(|m| m.is_file()).unwrap_or(false) {
             bind_ro_file(f, &format!("{root}{f}"))?;
@@ -600,6 +624,40 @@ fn populate_etc(root: &str, zone: &str, home: &str, resolver: Resolver) -> Resul
         }
     }
     Ok(())
+}
+
+/// Hide `PROC_MASKED` behind /dev/null, and give the zone a boot_id of its
+/// own: the host's is the same in every zone, so it would link them.
+fn mask_proc(root: &str, proc_dir: &str) -> Result<(), RootfsError> {
+    for f in PROC_MASKED {
+        let target = format!("{proc_dir}/{f}");
+        if Path::new(&target).exists() {
+            bind_over_ro("/dev/null", &target)?;
+        }
+    }
+    let boot_id = format!("{proc_dir}/sys/kernel/random/boot_id");
+    if Path::new(&boot_id).exists() {
+        let own = format!("{root}/.boot_id");
+        let setup = |e: io::Error| RootfsError::Setup(format!("{own}: {e}"));
+        fs::write(&own, fs::read(format!("{proc_dir}/sys/kernel/random/uuid")).map_err(setup)?).map_err(setup)?;
+        bind_over_ro(&own, &boot_id)?;
+        let _ = fs::remove_file(&own);
+    }
+    Ok(())
+}
+
+/// Bind `SYSFS_KEPT` from the sysfs mounted at `aside` into a read-only
+/// tmpfs at `sys_dir`.
+fn keep_sysfs(aside: &str, sys_dir: &str) -> Result<(), RootfsError> {
+    let flags = (libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC) as libc::c_ulong;
+    mount_raw("tmpfs", sys_dir, Some("tmpfs"), flags, Some("mode=0755,size=64k"), "mount(sys tmpfs)")?;
+    for rel in SYSFS_KEPT {
+        let src = format!("{aside}/{rel}");
+        if Path::new(&src).is_dir() {
+            bind_ro_dir(&src, &format!("{sys_dir}/{rel}"))?;
+        }
+    }
+    mount_raw("none", sys_dir, None, flags | libc::MS_REMOUNT | libc::MS_RDONLY, None, "mount(sys tmpfs, ro)")
 }
 
 /// A minimal /dev on tmpfs: the `DEVICES` nodes bound from the host (mknod would
@@ -647,7 +705,7 @@ fn populate_dev(root: &str) -> Result<(), RootfsError> {
         &pts,
         Some("devpts"),
         (libc::MS_NOSUID | libc::MS_NOEXEC) as libc::c_ulong,
-        Some("newinstance,ptmxmode=0666,mode=0620"),
+        Some("newinstance,ptmxmode=0666,mode=0620,max=256"),
         "mount(devpts)",
     ) {
         Ok(()) => {

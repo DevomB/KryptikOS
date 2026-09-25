@@ -499,6 +499,25 @@ probe "D4  the zone is told its own name via KRYPTIK_ZONE" "alpha"
 zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$PATH"
 probe "D5  PATH is the fixed zone PATH, not the caller's" "/usr/bin:/usr/sbin:/bin:/sbin"
 
+# Machine-wide state that links zones or times keystrokes (rootfs.rs:
+# PROC_MASKED, SYSFS_KEPT, the zone's own boot_id).
+zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(cat /proc/interrupts /proc/softirqs /proc/stat 2>/dev/null | wc -c)"
+probe "D6  the interrupt counts are hidden from the zone" "0"
+
+HOST_BOOT_ID="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
+zrun alpha -- /bin/sh -c "$PRO b=\$(cat /proc/sys/kernel/random/boot_id); if [ -n \"\$b\" ] && [ \"\$b\" != '$HOST_BOOT_ID' ]; then echo PROBE=own; else echo PROBE=HOSTS; fi"
+probe "D7  the zone's boot_id is its own, not the one every zone would share" "own"
+
+zrun alpha -- /bin/sh -c "$PRO x=\$( { ls /sys | grep -vx -e class -e devices; ls /sys/class | grep -vx net; ls /sys/devices | grep -vx -e virtual -e system; } 2>/dev/null ); if [ -z \"\$x\" ]; then echo PROBE=narrow; else echo PROBE=WIDE; fi"
+probe "D8  /sys holds only the zone's interfaces and the CPU layout" "narrow"
+
+if [[ -f /etc/dhcpcd.conf ]]; then
+    zrun alpha -- /bin/sh -c "$PRO if [ -e /etc/dhcpcd.conf ]; then echo PROBE=PRESENT; else echo PROBE=absent; fi"
+    probe "D9  the nic zone's configuration is not bound into another zone" "absent"
+else
+    info "D9  not applicable: this host has no /etc/dhcpcd.conf"
+fi
+
 # ============================================================================
 head_ "E. Old root, system mounts, devices  [unpriv]"
 # ============================================================================
