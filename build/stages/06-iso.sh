@@ -109,6 +109,12 @@ s_rootfs() {
              "$stage/var" "$stage/home" "$stage/root" "$stage/etc/kryptik"
     chmod 1777 "$stage/tmp"
 
+    # The system allocator (ADR-005), for every process of the running system
+    # and none of the build: the chroot never has this file. Zones do not see
+    # the host's (rootfs.rs).
+    [[ -f "$stage/usr/lib/libhardened_malloc.so" ]] || die "no /usr/lib/libhardened_malloc.so to preload"
+    printf '%s\n' /usr/lib/libhardened_malloc.so > "$stage/etc/ld.so.preload"
+
     # Identity, in the image. The root image's own hash cannot be in it; that
     # goes on the ESP and into MANIFEST.
     sed -i "/^VERSION_ID=/d;/^VERSION=/d" "$stage/etc/os-release"

@@ -599,10 +599,8 @@ s_hardened_malloc() {
 
     install -Dm755 out/libhardened_malloc.so /usr/lib/libhardened_malloc.so
 
-    # NOT wired into /etc/ld.so.preload yet. Making it the system allocator is
-    # a separate, reversible step, and doing it mid-build would mean every
-    # remaining package builds against an allocator that has not been smoke
-    # tested on this system.
+    # Not preloaded here, or every remaining package would build on it: stage
+    # 06 writes /etc/ld.so.preload into the image's root, and only there.
     echo "installed to /usr/lib/libhardened_malloc.so (not yet preloaded)"
 }
 

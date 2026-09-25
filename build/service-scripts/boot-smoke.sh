@@ -93,10 +93,12 @@ fi
 # --- the hardening tunables that used never to ship ------------------------
 for k in kernel.kptr_restrict kernel.dmesg_restrict kernel.yama.ptrace_scope \
          kernel.unprivileged_bpf_disabled kernel.kexec_load_disabled \
-         fs.protected_symlinks kernel.randomize_va_space; do
+         fs.protected_symlinks kernel.randomize_va_space vm.max_map_count; do
     v=$(sysctl -n "$k" 2>/dev/null || echo "unreadable")
     say "sysctl $k=$v"
 done
+# The allocator this very process runs on, read from its own mappings.
+say "allocator=$(grep -q /usr/lib/libhardened_malloc.so /proc/self/maps && echo hardened_malloc || echo libc)"
 
 # --- the zone model, on this kernel ---------------------------------------
 say "kryptikd_check_begin"

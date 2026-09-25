@@ -131,6 +131,8 @@ want "a watchdog is armed, no way out"     'KRYPTIK_SMOKE: watchdog watchdog[0-9
 want "landlock is an active LSM"           'KRYPTIK_SMOKE: lsm=.*landlock'
 want "cgroup v2 is mounted"                'KRYPTIK_SMOKE: cgroup2=/'
 want "kryptikd checked the kernel"         'KRYPTIK_SMOKE: kryptikd_check_rc=0'
+want "processes run on hardened_malloc"    'KRYPTIK_SMOKE: allocator=hardened_malloc'
+want "with room for its guard mappings"    'KRYPTIK_SMOKE: sysctl vm.max_map_count=1048576'
 want "the installer was not armed"         'installer: no kryptik-testctl control disk|control disk names no install_target'
 
 echo
