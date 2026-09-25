@@ -481,6 +481,19 @@ impl SyncPipe {
         Some(i32::from_ne_bytes(b))
     }
 
+    /// Whether every write end is closed, without waiting. An error counts as
+    /// closed: the caller must not go on unchecked.
+    fn peer_gone(&self) -> bool {
+        let mut p = libc::pollfd { fd: self.read, events: libc::POLLIN, revents: 0 };
+        loop {
+            let r = unsafe { libc::poll(&mut p, 1, 0) };
+            if r < 0 && errno() == libc::EINTR {
+                continue;
+            }
+            return r < 0 || p.revents & libc::POLLHUP != 0;
+        }
+    }
+
     fn close_read(&self) { unsafe { libc::close(self.read) }; }
     fn close_write(&self) { unsafe { libc::close(self.write) }; }
 }
@@ -1234,6 +1247,14 @@ fn intermediate_main(
         bail!("sethostname: {e}");
     }
 
+    /* pid 1 cannot check its parent as this process checked its own: across
+     * the pid namespace getppid() is 0. It watches this pipe instead, whose
+     * write end only this process holds, and which closes when it dies. */
+    let alive = match SyncPipe::new() {
+        Ok(p) => p,
+        Err(e) => bail!("{e}"),
+    };
+
     // CLONE_NEWPID moves only the caller's children, so fork to get pid 1.
     let inner = unsafe { libc::fork() };
     if inner < 0 {
@@ -1241,9 +1262,11 @@ fn intermediate_main(
     }
 
     if inner == 0 {
-        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, fs_rules, plumbed, &broker_in_zone, wayland_in_zone.as_deref(), wifi_conf);
+        alive.close_write();
+        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, fs_rules, plumbed, &broker_in_zone, wayland_in_zone.as_deref(), wifi_conf, &alive);
         unsafe { libc::_exit(rc) };
     }
+    alive.close_read();
 
     // The parent needs pid 1 for the registry; send it before blocking in wait_for.
     initpid.write_i32(inner);
@@ -1273,6 +1296,7 @@ fn zone_init(
     broker_path: &str,
     wayland_path: Option<&str>,
     wifi_conf: Option<&str>,
+    alive: &SyncPipe,
 ) -> i32 {
     macro_rules! bail {
         ($($arg:tt)*) => {{
@@ -1285,6 +1309,13 @@ fn zone_init(
     if let Err(e) = isolate::die_with_parent() {
         bail!("prctl(PR_SET_PDEATHSIG): {e}");
     }
+    /* An intermediate that died before the prctl never sends the signal. A
+     * dying process closes its files before it signals its children, so no
+     * hang-up here means the signal is still to come. */
+    if alive.peer_gone() {
+        return 125;
+    }
+    alive.close_read();
 
     /* A root holding only what this zone should see: the containment boundary.
      * Everything after it is defense in depth. */
@@ -1636,6 +1667,15 @@ mod tests {
         assert_eq!(logged, ZONE_OUTPUT_MAX);
         assert_eq!(got.iter().filter(|l| l.contains("is not logged")).count(), 1);
         assert!(!got.iter().any(|l| l.contains("more")));
+    }
+
+    #[test]
+    fn peer_gone_once_the_write_end_closes() {
+        let p = SyncPipe::new().unwrap();
+        assert!(!p.peer_gone(), "an open write end reads as a hang-up");
+        p.close_write();
+        assert!(p.peer_gone(), "a closed write end is not seen");
+        p.close_read();
     }
 
     #[test]
