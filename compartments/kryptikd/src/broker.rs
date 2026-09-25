@@ -7,12 +7,12 @@
 
 use std::ffi::CString;
 use std::io;
-use std::os::unix::io::RawFd;
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::registry;
-use crate::serve::{peer_cred, recv_with_fds, Fd};
+use crate::serve::{peer_cred, recv_with_fds};
 use crate::zone::{NetworkMode, Zone};
 
 /// The socket's name in a registry entry, and in the zone's /run/kryptik.
@@ -31,6 +31,7 @@ pub fn listen_at(path: &std::path::Path, uid: u32, gid: u32) -> io::Result<RawFd
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
     let mut sa: libc::sockaddr_un = unsafe { std::mem::zeroed() };
     sa.sun_family = libc::AF_UNIX as libc::sa_family_t;
     for (i, b) in c.as_bytes().iter().enumerate() {
@@ -40,26 +41,20 @@ pub fn listen_at(path: &std::path::Path, uid: u32, gid: u32) -> io::Result<RawFd
     let r = unsafe {
         // Nobody but the owner may connect: 0600 before the bind is visible.
         let old = libc::umask(0o177);
-        let r = libc::bind(fd, &sa as *const _ as *const libc::sockaddr, len);
+        let r = libc::bind(fd.as_raw_fd(), &sa as *const _ as *const libc::sockaddr, len);
         libc::umask(old);
         r
     };
     if r < 0 {
-        let e = io::Error::last_os_error();
-        unsafe { libc::close(fd) };
-        return Err(e);
+        return Err(io::Error::last_os_error());
     }
     if unsafe { libc::geteuid() } == 0 && unsafe { libc::chown(c.as_ptr(), uid, gid) } < 0 {
-        let e = io::Error::last_os_error();
-        unsafe { libc::close(fd) };
-        return Err(e);
+        return Err(io::Error::last_os_error());
     }
-    if unsafe { libc::listen(fd, 8) } < 0 {
-        let e = io::Error::last_os_error();
-        unsafe { libc::close(fd) };
-        return Err(e);
+    if unsafe { libc::listen(fd.as_raw_fd(), 8) } < 0 {
+        return Err(io::Error::last_os_error());
     }
-    Ok(fd)
+    Ok(fd.into_raw_fd())
 }
 
 /// A zone's clipboard, a file in its registry entry: the MIME type on the
@@ -272,17 +267,11 @@ pub const INCOMING: &str = "incoming";
 /// Where a transfer lands.
 pub struct Target {
     /// O_PATH directory descriptor: the destination's root.
-    pub root_fd: RawFd,
+    pub root_fd: OwnedFd,
     /// The destination's home, relative to that root (`home/<zone>`).
     pub home_rel: String,
     pub uid: u32,
     pub gid: u32,
-}
-
-impl Drop for Target {
-    fn drop(&mut self) {
-        unsafe { libc::close(self.root_fd) };
-    }
 }
 
 /// What the broker knows about the zone it serves.
@@ -331,7 +320,7 @@ pub fn registry_target(dest: &str) -> Result<Target, String> {
             io::Error::last_os_error()
         ));
     }
-    Ok(Target { root_fd, home_rel: format!("home/{dest}"), uid, gid })
+    Ok(Target { root_fd: unsafe { OwnedFd::from_raw_fd(root_fd) }, home_rel: format!("home/{dest}"), uid, gid })
 }
 
 #[repr(C)]
@@ -346,7 +335,7 @@ const RESOLVE_BENEATH: u64 = 0x08;
 const RESOLVE_IN_ROOT: u64 = 0x10;
 
 /// openat2(2): open with resolution restrictions the kernel enforces.
-fn openat2(dirfd: RawFd, path: &str, flags: u64, mode: u64, resolve: u64) -> io::Result<RawFd> {
+fn openat2(dirfd: RawFd, path: &str, flags: u64, mode: u64, resolve: u64) -> io::Result<OwnedFd> {
     let c = CString::new(path).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in path"))?;
     let how = OpenHow { flags, mode, resolve };
     let r = unsafe {
@@ -361,7 +350,7 @@ fn openat2(dirfd: RawFd, path: &str, flags: u64, mode: u64, resolve: u64) -> io:
     if r < 0 {
         Err(io::Error::last_os_error())
     } else {
-        Ok(r as RawFd)
+        Ok(unsafe { OwnedFd::from_raw_fd(r as RawFd) })
     }
 }
 
@@ -370,7 +359,7 @@ fn openat2(dirfd: RawFd, path: &str, flags: u64, mode: u64, resolve: u64) -> io:
 /// sender, named in its `[transfer] to`, configured and not the nic zone; a
 /// regular O_RDONLY file on the sender's data mount within the cap. The zone
 /// learns only the name the file landed under.
-fn handle_transfer(s: &Served, dest: &str, name: &str, fds: &[Fd]) -> Result<(String, u64), String> {
+fn handle_transfer(s: &Served, dest: &str, name: &str, fds: &[OwnedFd]) -> Result<(String, u64), String> {
     let sender = &s.zone.name;
     if fds.len() != 1 {
         return Err(format!("transfer needs exactly one descriptor attached (got {})", fds.len()));
@@ -388,7 +377,7 @@ fn handle_transfer(s: &Served, dest: &str, name: &str, fds: &[Fd]) -> Result<(St
     if dz.network == NetworkMode::Nic {
         return Err(format!("zone {dest:?} holds the NIC and receives nothing, ever"));
     }
-    let src = fds[0].raw();
+    let src = fds[0].as_raw_fd();
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
     if unsafe { libc::fstat(src, &mut st) } < 0 {
         return Err(format!("descriptor: {}", io::Error::last_os_error()));
@@ -432,7 +421,7 @@ fn handle_transfer(s: &Served, dest: &str, name: &str, fds: &[Fd]) -> Result<(St
 /// root with openat2 and no symlinks, so nothing written leaves its tree.
 fn deliver(target: &Target, name: &str, src: RawFd, cap: u64) -> Result<(String, u64), String> {
     let home = openat2(
-        target.root_fd,
+        target.root_fd.as_raw_fd(),
         &target.home_rel,
         (libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC) as u64,
         0,
@@ -450,14 +439,13 @@ fn deliver(target: &Target, name: &str, src: RawFd, cap: u64) -> Result<(String,
             libc::setfsuid(target.uid);
         }
     }
-    let r = deliver_into(home, target, name, src, cap);
+    let r = deliver_into(home.as_raw_fd(), target, name, src, cap);
     if switched {
         unsafe {
             libc::setfsuid(0);
             libc::setfsgid(0);
         }
     }
-    unsafe { libc::close(home) };
     r
 }
 
@@ -483,45 +471,39 @@ fn deliver_into(home: RawFd, target: &Target, name: &str, src: RawFd, cap: u64) 
         RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS,
     )
     .map_err(|e| format!("incoming/ is not a plain directory: {e}"))?;
-    let r = (|| {
-        let mut st: libc::stat = unsafe { std::mem::zeroed() };
-        if unsafe { libc::fstat(inc_fd, &mut st) } < 0 {
-            return Err(format!("incoming/: {}", io::Error::last_os_error()));
-        }
-        if st.st_uid != target.uid {
-            return Err("incoming/ is not owned by the destination zone".into());
-        }
-        /* O_EXCL picks the name: a collision, or a planted symlink (also
-         * EEXIST), moves on to the next number. */
-        for i in 1..=100u32 {
-            let cand = if i == 1 { name.to_string() } else { format!("{name}-{i}") };
-            match openat2(
-                inc_fd,
-                &cand,
-                (libc::O_CREAT | libc::O_EXCL | libc::O_WRONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC) as u64,
-                0o600,
-                RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS,
-            ) {
-                Ok(out) => {
-                    let r = fill(out, src, cap, target);
-                    unsafe { libc::close(out) };
-                    return match r {
-                        Ok(n) => Ok((cand, n)),
-                        Err(e) => {
-                            let c = CString::new(cand.as_str()).unwrap();
-                            unsafe { libc::unlinkat(inc_fd, c.as_ptr(), 0) };
-                            Err(e)
-                        }
-                    };
-                }
-                Err(e) if e.raw_os_error() == Some(libc::EEXIST) => continue,
-                Err(e) => return Err(format!("incoming/{cand}: {e}")),
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(inc_fd.as_raw_fd(), &mut st) } < 0 {
+        return Err(format!("incoming/: {}", io::Error::last_os_error()));
+    }
+    if st.st_uid != target.uid {
+        return Err("incoming/ is not owned by the destination zone".into());
+    }
+    /* O_EXCL picks the name: a collision, or a planted symlink (also EEXIST),
+     * moves on to the next number. */
+    for i in 1..=100u32 {
+        let cand = if i == 1 { name.to_string() } else { format!("{name}-{i}") };
+        match openat2(
+            inc_fd.as_raw_fd(),
+            &cand,
+            (libc::O_CREAT | libc::O_EXCL | libc::O_WRONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC) as u64,
+            0o600,
+            RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS,
+        ) {
+            Ok(out) => {
+                return match fill(out.as_raw_fd(), src, cap, target) {
+                    Ok(n) => Ok((cand, n)),
+                    Err(e) => {
+                        let c = CString::new(cand.as_str()).unwrap();
+                        unsafe { libc::unlinkat(inc_fd.as_raw_fd(), c.as_ptr(), 0) };
+                        Err(e)
+                    }
+                };
             }
+            Err(e) if e.raw_os_error() == Some(libc::EEXIST) => continue,
+            Err(e) => return Err(format!("incoming/{cand}: {e}")),
         }
-        Err(format!("incoming/ already holds {name} and 99 numbered variants of it"))
-    })();
-    unsafe { libc::close(inc_fd) };
-    r
+    }
+    Err(format!("incoming/ already holds {name} and 99 numbered variants of it"))
 }
 
 fn fill(out: RawFd, src: RawFd, cap: u64, target: &Target) -> Result<u64, String> {
@@ -617,9 +599,8 @@ pub fn serve_one(listen_fd: RawFd, s: &Served) -> io::Result<Option<String>> {
             Err(e)
         };
     }
-    let result = serve_connection(fd, s);
-    unsafe { libc::close(fd) };
-    result
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    serve_connection(fd.as_raw_fd(), s)
 }
 
 /// Answer one request on an accepted connection. A peer other than the zone
@@ -735,7 +716,7 @@ pub fn serve_connection(fd: RawFd, s: &Served) -> io::Result<Option<String>> {
 }
 
 /// The request's first recvmsg, where descriptors arrive. Ok(false, ..) at EOF.
-fn recv_first(fd: RawFd, buf: &mut Vec<u8>, started: Instant) -> io::Result<(bool, Vec<Fd>)> {
+fn recv_first(fd: RawFd, buf: &mut Vec<u8>, started: Instant) -> io::Result<(bool, Vec<OwnedFd>)> {
     let mut chunk = [0u8; 4096];
     loop {
         if started.elapsed() > REQUEST_DEADLINE {
@@ -1163,7 +1144,8 @@ mod tests {
             let c = CString::new(root.as_os_str().as_encoded_bytes()).unwrap();
             let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC) };
             assert!(fd >= 0);
-            Ok(Target { root_fd: fd, home_rel: format!("home/{dest}"), uid: unsafe { libc::geteuid() }, gid: unsafe { libc::getegid() } })
+            let root_fd = unsafe { OwnedFd::from_raw_fd(fd) };
+            Ok(Target { root_fd, home_rel: format!("home/{dest}"), uid: unsafe { libc::geteuid() }, gid: unsafe { libc::getegid() } })
         }
     }
 
@@ -1344,7 +1326,6 @@ mod tests {
 
     #[test]
     fn dest_resolved_after_consent() {
-        use std::os::unix::io::AsRawFd;
         /* The first lookup finds the zone under `before`; by the answer it runs
          * under the lab root, as a zone restarted during the wait would. */
         let lab = lab("again", "b");
