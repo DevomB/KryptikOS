@@ -84,10 +84,11 @@ impl Vision {
         }
     }
 
-    /// The Machado et al. (2009) severity-1.0 transform, row-major, linear RGB.
-    fn matrix(self) -> [[f64; 3]; 3] {
-        match self {
-            Vision::Normal => [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    /// The Machado et al. (2009) severity-1.0 transform, row-major, linear
+    /// RGB; None for normal vision, which sees the colour as it is.
+    fn matrix(self) -> Option<[[f64; 3]; 3]> {
+        Some(match self {
+            Vision::Normal => return None,
             Vision::Protanopia => [
                 [0.152_286, 1.052_583, -0.204_868],
                 [0.114_503, 0.786_281, 0.099_216],
@@ -103,7 +104,7 @@ impl Vision {
                 [-0.078_411, 0.930_809, 0.147_602],
                 [0.004_733, 0.691_367, 0.303_900],
             ],
-        }
+        })
     }
 }
 
@@ -112,10 +113,9 @@ impl Vision {
 /// Takes and returns gamma-encoded sRGB; the linearisation the model requires
 /// happens inside, so a caller cannot apply the matrix to the wrong values.
 pub fn simulate(c: Srgb, v: Vision) -> Srgb {
-    if v == Vision::Normal {
+    let Some(m) = v.matrix() else {
         return c;
-    }
-    let m = v.matrix();
+    };
     let l = c.to_linear();
     LinearRgb {
         r: m[0][0] * l.r + m[0][1] * l.g + m[0][2] * l.b,

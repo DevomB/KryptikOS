@@ -131,13 +131,6 @@ impl LinearRgb {
         }
     }
 
-    /// Whether this colour is still inside the sRGB gamut. Colour-vision
-    /// simulation routinely leaves it; `to_srgb` clamps, so callers that care
-    /// about fidelity have to ask before converting.
-    pub fn in_gamut(self) -> bool {
-        let ok = |v: f64| (-1e-9..=1.0 + 1e-9).contains(&v);
-        ok(self.r) && ok(self.g) && ok(self.b)
-    }
 
     pub fn to_xyz(self) -> Xyz {
         Xyz {

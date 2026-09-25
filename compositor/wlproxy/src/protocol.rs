@@ -20,6 +20,8 @@ pub struct Message {
 #[derive(Debug, Clone, Copy)]
 pub struct Interface {
     pub name: &'static str,
+    /// Read by a test that holds policy::ALLOWED to what the tables parse.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub version: u32,
     pub requests: &'static [Message],
     pub events: &'static [Message],
@@ -364,7 +366,6 @@ pub(crate) mod tests {
             if let Ok(h) = Header::parse(&buf) {
                 assert!(buf.len() >= HEADER_LEN);
                 assert!((h.size as usize) >= HEADER_LEN && (h.size as usize) <= MAX_MESSAGE_LEN && h.size % 4 == 0, "{h:?}");
-                assert_eq!(h.body_len(), h.size as usize - HEADER_LEN);
                 assert_eq!(Header::parse(&h.encode()), Ok(h), "a header does not survive its own encoding");
             }
         }

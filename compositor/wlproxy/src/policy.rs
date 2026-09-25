@@ -32,11 +32,6 @@ pub fn allowed_version(interface: &str) -> Option<u32> {
     ALLOWED.iter().find(|(n, _)| *n == interface).map(|(_, v)| *v)
 }
 
-/// Is this global advertised to the client at all?
-pub fn advertise(interface: &str) -> bool {
-    allowed_version(interface).is_some()
-}
-
 /// The most bytes a rewritten title may carry. A title is not a channel
 /// for megabytes; the compositor and the chrome only ever show one line.
 pub const MAX_TITLE_BYTES: usize = 256;
@@ -86,17 +81,6 @@ pub fn app_id_for(zone: &str, claimed: &str) -> String {
     format!("kryptik.{zone}.{}", if cleaned.is_empty() { "app".to_string() } else { cleaned })
 }
 
-/// The zone a compositor-side app_id belongs to, if it went through a proxy.
-pub fn zone_of_app_id(app_id: &str) -> Option<&str> {
-    let rest = app_id.strip_prefix("kryptik.")?;
-    let (zone, _) = rest.split_once('.')?;
-    if zone.is_empty() {
-        None
-    } else {
-        Some(zone)
-    }
-}
-
 /// Resource bounds per client connection.
 pub const MAX_OBJECTS: usize = 4096;
 pub const MAX_PENDING_BYTES: usize = 1 << 20; // per direction
@@ -121,10 +105,10 @@ mod tests {
             "zwp_input_inhibit_manager_v1",
             "ext_image_copy_capture_manager_v1",
         ] {
-            assert!(!advertise(hidden), "{hidden} must not reach a zone");
+            assert!(allowed_version(hidden).is_none(), "{hidden} must not reach a zone");
         }
         for shown in ["wl_compositor", "wl_shm", "wl_seat", "xdg_wm_base"] {
-            assert!(advertise(shown), "{shown} is what a window needs");
+            assert!(allowed_version(shown).is_some(), "{shown} is what a window needs");
         }
     }
 
@@ -143,9 +127,6 @@ mod tests {
         assert_eq!(app_id_for("work", "foot"), "kryptik.work.foot");
         assert_eq!(app_id_for("work", "kryptik.vault.x"), "kryptik.work.kryptik_vault_x");
         assert_eq!(app_id_for("work", ""), "kryptik.work.app");
-        assert_eq!(zone_of_app_id("kryptik.work.foot"), Some("work"));
-        assert_eq!(zone_of_app_id("foot"), None);
-        assert_eq!(zone_of_app_id("kryptik..x"), None);
         let long = title_for("w", &"x".repeat(1000));
         assert!(long.len() <= 256);
     }

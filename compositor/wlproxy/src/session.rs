@@ -290,7 +290,6 @@ pub struct Session {
 const WL_DISPLAY: u32 = 1;
 const WL_DISPLAY_ERROR: u16 = 0; // event
 const WL_DISPLAY_DELETE_ID: u16 = 1; // event
-const WL_DISPLAY_GET_REGISTRY: u16 = 1; // request
 const WL_REGISTRY_BIND: u16 = 0; // request
 const WL_REGISTRY_GLOBAL: u16 = 0; // event
 const WL_REGISTRY_GLOBAL_REMOVE: u16 = 1; // event
@@ -542,6 +541,7 @@ impl Session {
         self.server.close_all();
     }
 
+    #[cfg(test)]
     pub fn has_object(&self, id: u32) -> bool {
         self.objects.contains_key(&id)
     }
@@ -590,7 +590,7 @@ mod tests {
         out
     }
     fn get_registry(id: u32) -> Vec<u8> {
-        MessageWriter::new(1, WL_DISPLAY_GET_REGISTRY).u32(id).finish().unwrap()
+        MessageWriter::new(1, 1).u32(id).finish().unwrap() // wl_display.get_registry
     }
     fn global(reg: u32, name: u32, iface: &str, version: u32) -> Vec<u8> {
         MessageWriter::new(reg, WL_REGISTRY_GLOBAL).u32(name).string(iface).u32(version).finish().unwrap()

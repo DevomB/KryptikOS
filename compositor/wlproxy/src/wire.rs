@@ -145,11 +145,6 @@ impl Header {
         out[4..].copy_from_slice(&word1.to_ne_bytes());
         out
     }
-
-    /// Length of the argument body, excluding the header.
-    pub fn body_len(&self) -> usize {
-        self.size as usize - HEADER_LEN
-    }
 }
 
 /// Sequential reader over a message body.
@@ -189,10 +184,6 @@ impl<'a> ArgReader<'a> {
     pub fn u32(&mut self) -> Result<u32, WireError> {
         let w = self.take(4)?;
         Ok(u32::from_ne_bytes([w[0], w[1], w[2], w[3]]))
-    }
-
-    pub fn i32(&mut self) -> Result<i32, WireError> {
-        Ok(self.u32()? as i32)
     }
 
     /// Read a string. `None` is the protocol's null string (declared length 0).
@@ -254,6 +245,7 @@ impl MessageWriter {
         self
     }
 
+    #[cfg(test)]
     pub fn i32(self, v: i32) -> Self {
         self.u32(v as u32)
     }
@@ -354,12 +346,6 @@ mod tests {
     }
 
     #[test]
-    fn body_len_is_consistent_with_size() {
-        let h = Header::parse(&hdr(1, 0, 24)).unwrap();
-        assert_eq!(h.body_len(), 16);
-    }
-
-    #[test]
     fn pad4_rounds_up() {
         assert_eq!(pad4(0), Some(0));
         assert_eq!(pad4(1), Some(4));
@@ -376,7 +362,7 @@ mod tests {
             .collect::<Vec<u8>>();
         let mut r = ArgReader::new(&body);
         assert_eq!(r.u32().unwrap(), 1);
-        assert_eq!(r.i32().unwrap(), -1);
+        assert_eq!(r.u32().unwrap(), 0xFFFF_FFFF);
         assert!(r.is_empty());
         assert_eq!(r.u32(), Err(WireError::ArgOverrun));
     }
