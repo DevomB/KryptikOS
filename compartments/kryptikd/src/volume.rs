@@ -54,12 +54,6 @@ impl std::fmt::Display for VolumeError {
 pub struct Passphrase(Vec<u8>);
 
 impl Passphrase {
-    pub fn from_bytes(mut b: Vec<u8>) -> Self {
-        while b.last() == Some(&b'\n') || b.last() == Some(&b'\r') {
-            b.pop();
-        }
-        Passphrase(b)
-    }
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
@@ -434,17 +428,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn passphrases_are_trimmed_and_zeroed() {
-        let p = Passphrase::from_bytes(b"secret\n".to_vec());
-        assert_eq!(p.as_bytes(), b"secret");
-        let ptr = p.0.as_ptr();
-        let len = p.0.len();
-        drop(p);
-        // The freed allocation may be reused, so only a clean Drop is checked.
-        let _ = (ptr, len);
-    }
-
-    #[test]
     fn readable_passphrase_file_refused() {
         let dir = std::env::temp_dir().join(format!("kryptik-vol-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
@@ -548,8 +531,8 @@ mod tests {
         let vol = dir.join("t.luks").display().to_string();
         let mnt = dir.join("mnt").display().to_string();
         let zone = format!("t{}", std::process::id());
-        let good = Passphrase::from_bytes(b"correct horse".to_vec());
-        let bad = Passphrase::from_bytes(b"wrong".to_vec());
+        let good = Passphrase(b"correct horse".to_vec());
+        let bad = Passphrase(b"wrong".to_vec());
         init(&zone, &vol, 64 * 1024 * 1024, &good, 0, 0).expect("init");
         assert_eq!(signature_of(&vol), "crypto_LUKS");
         assert!(init(&zone, &vol, 64 * 1024 * 1024, &good, 0, 0).is_err(), "double format refused");

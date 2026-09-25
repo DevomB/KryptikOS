@@ -156,8 +156,43 @@ impl std::fmt::Display for SeccompError {
     }
 }
 
-/// Syscalls a zoned process may make. What is left out: `DENIED_RATIONALE`.
-pub const BASE_ALLOWLIST: &[libc::c_long] = &[
+/// `(name, number)` for each `libc::SYS_` constant given: a name is typed once.
+macro_rules! by_name {
+    ($($sys:ident),* $(,)?) => {
+        &[$((unprefixed(stringify!($sys)), libc::$sys)),*]
+    };
+}
+
+/// A syscall list for the filter, and the same calls by name for policy files.
+macro_rules! syscalls {
+    ($(#[$doc:meta])* $list:ident, $names:ident = [$(libc::$sys:ident),* $(,)?]) => {
+        $(#[$doc])*
+        pub const $list: &[libc::c_long] = &[$(libc::$sys),*];
+        const $names: &[(&str, libc::c_long)] = by_name![$($sys),*];
+    };
+}
+
+/// `syscalls!` for calls listed with the reason they are denied.
+macro_rules! denied {
+    ($(#[$doc:meta])* $list:ident, $names:ident = [$((libc::$sys:ident, $why:literal)),* $(,)?]) => {
+        $(#[$doc])*
+        pub const $list: &[(libc::c_long, &str)] = &[$((libc::$sys, $why)),*];
+        const $names: &[(&str, libc::c_long)] = by_name![$($sys),*];
+    };
+}
+
+const fn unprefixed(sys: &'static str) -> &'static str {
+    let (head, name) = sys.as_bytes().split_at(4);
+    assert!(matches!(head, b"SYS_"));
+    match std::str::from_utf8(name) {
+        Ok(n) => n,
+        Err(_) => unreachable!(),
+    }
+}
+
+syscalls! {
+    /// Syscalls a zoned process may make. What is left out: `DENIED_RATIONALE`.
+    BASE_ALLOWLIST, BASE_NAMES = [
     // --- file I/O ---
     libc::SYS_read, libc::SYS_write, libc::SYS_readv, libc::SYS_writev,
     libc::SYS_pread64, libc::SYS_pwrite64, libc::SYS_preadv, libc::SYS_pwritev,
@@ -267,10 +302,12 @@ pub const BASE_ALLOWLIST: &[libc::c_long] = &[
     // --- misc ---
     libc::SYS_uname, libc::SYS_sysinfo, libc::SYS_getrandom, libc::SYS_prctl,
     libc::SYS_rseq, libc::SYS_statfs, libc::SYS_fstatfs,
-];
+    ]
+}
 
-/// Syscalls left out of the allowlist, and why; a zone policy cannot allow them.
-pub const DENIED_RATIONALE: &[(libc::c_long, &str)] = &[
+denied! {
+    /// Syscalls left out of the allowlist, and why; a zone policy cannot allow them.
+    DENIED_RATIONALE, DENIED_NAMES = [
     (libc::SYS_ptrace, "read/write another process's memory; the classic escape"),
     (libc::SYS_process_vm_readv, "read another process's memory directly"),
     (libc::SYS_process_vm_writev, "write another process's memory directly"),
@@ -325,7 +362,8 @@ pub const DENIED_RATIONALE: &[(libc::c_long, &str)] = &[
     (libc::SYS_setfsgid, "no zoned process should change gid"),
     (libc::SYS_capset, "capabilities are fixed at zone entry"),
     (libc::SYS_personality, "change the execution domain; ASLR-disabling flag"),
-];
+    ]
+}
 
 /// Argument checks on allowlisted syscalls. They run before the plain
 /// allowlist, so a syscall named here is decided here.
@@ -468,13 +506,12 @@ fn emit_arg_rule(p: &mut Vec<SockFilter>, rule: ArgRule, deny_action: u32, socke
     p.extend(body);
 }
 
-/// Build the BPF program: arch check, x32 check, argument rules, then a
-/// `jeq nr; ret ALLOW` pair per syscall, so no jump offset (one byte) grows
-/// with the list, then default deny.
+#[cfg(test)]
 fn build_program(allow: &[libc::c_long]) -> Result<Vec<SockFilter>, SeccompError> {
     build_program_with(allow, SECCOMP_RET_KILL_PROCESS)
 }
 
+#[cfg(test)]
 fn build_program_with(
     allow: &[libc::c_long],
     deny_action: u32,
@@ -482,6 +519,9 @@ fn build_program_with(
     build_program_full(allow, deny_action, &SocketPolicy::default())
 }
 
+/// Build the BPF program: arch check, x32 check, argument rules, then a
+/// `jeq nr; ret ALLOW` pair per syscall, so no jump offset (one byte) grows
+/// with the list, then default deny.
 fn build_program_full(
     allow: &[libc::c_long],
     deny_action: u32,
@@ -624,71 +664,30 @@ pub fn widened(extra: &[libc::c_long]) -> Result<Vec<libc::c_long>, SeccompError
     Ok(allow)
 }
 
-/// Syscall names a zone policy may use: denied ones (refused by name), base
-/// ones (a redundant line warns) and plausible additions.
-pub const SYSCALL_NAMES: &[(&str, libc::c_long)] = &[
-    // denied, plus the chown family
-    ("ptrace", libc::SYS_ptrace), ("process_vm_readv", libc::SYS_process_vm_readv),
-    ("process_vm_writev", libc::SYS_process_vm_writev), ("mount", libc::SYS_mount),
-    ("umount2", libc::SYS_umount2), ("pivot_root", libc::SYS_pivot_root), ("chroot", libc::SYS_chroot),
-    ("unshare", libc::SYS_unshare), ("setns", libc::SYS_setns), ("bpf", libc::SYS_bpf),
-    ("perf_event_open", libc::SYS_perf_event_open), ("userfaultfd", libc::SYS_userfaultfd),
-    ("keyctl", libc::SYS_keyctl), ("add_key", libc::SYS_add_key), ("request_key", libc::SYS_request_key),
-    ("init_module", libc::SYS_init_module), ("finit_module", libc::SYS_finit_module),
-    ("delete_module", libc::SYS_delete_module), ("kexec_load", libc::SYS_kexec_load),
-    ("reboot", libc::SYS_reboot), ("swapon", libc::SYS_swapon), ("swapoff", libc::SYS_swapoff),
-    ("setuid", libc::SYS_setuid), ("setgid", libc::SYS_setgid), ("ioperm", libc::SYS_ioperm),
-    ("iopl", libc::SYS_iopl), ("quotactl", libc::SYS_quotactl),
-    ("open_by_handle_at", libc::SYS_open_by_handle_at), ("name_to_handle_at", libc::SYS_name_to_handle_at),
-    ("chown", libc::SYS_chown), ("fchown", libc::SYS_fchown), ("lchown", libc::SYS_lchown),
-    ("fchownat", libc::SYS_fchownat), ("fsopen", libc::SYS_fsopen), ("fsconfig", libc::SYS_fsconfig),
-    ("fsmount", libc::SYS_fsmount), ("fspick", libc::SYS_fspick), ("move_mount", libc::SYS_move_mount),
-    ("open_tree", libc::SYS_open_tree), ("mount_setattr", libc::SYS_mount_setattr),
-    ("io_uring_setup", libc::SYS_io_uring_setup), ("io_uring_enter", libc::SYS_io_uring_enter),
-    ("io_uring_register", libc::SYS_io_uring_register), ("pidfd_getfd", libc::SYS_pidfd_getfd),
-    ("kcmp", libc::SYS_kcmp), ("sethostname", libc::SYS_sethostname), ("setdomainname", libc::SYS_setdomainname),
-    ("setgroups", libc::SYS_setgroups), ("setresuid", libc::SYS_setresuid), ("setresgid", libc::SYS_setresgid),
-    ("setreuid", libc::SYS_setreuid), ("setregid", libc::SYS_setregid), ("setfsuid", libc::SYS_setfsuid),
-    ("setfsgid", libc::SYS_setfsgid), ("capset", libc::SYS_capset), ("personality", libc::SYS_personality),
-    // in the base allowlist
-    ("read", libc::SYS_read), ("write", libc::SYS_write), ("openat", libc::SYS_openat),
-    ("close", libc::SYS_close), ("getpid", libc::SYS_getpid), ("clone", libc::SYS_clone),
-    ("clone3", libc::SYS_clone3), ("execve", libc::SYS_execve), ("socket", libc::SYS_socket),
-    ("ioctl", libc::SYS_ioctl), ("prctl", libc::SYS_prctl), ("mknod", libc::SYS_mknod),
-    ("chmod", libc::SYS_chmod), ("memfd_create", libc::SYS_memfd_create), ("capget", libc::SYS_capget),
-    // plausible additions
-    ("inotify_init", libc::SYS_inotify_init), ("inotify_init1", libc::SYS_inotify_init1),
-    ("adjtimex", libc::SYS_adjtimex), ("clock_adjtime", libc::SYS_clock_adjtime),
-    ("clock_settime", libc::SYS_clock_settime), ("settimeofday", libc::SYS_settimeofday),
-    ("sched_setscheduler", libc::SYS_sched_setscheduler), ("sched_setparam", libc::SYS_sched_setparam),
-    ("ioprio_set", libc::SYS_ioprio_set), ("ioprio_get", libc::SYS_ioprio_get),
-    ("mlockall", libc::SYS_mlockall), ("munlockall", libc::SYS_munlockall), ("mlock2", libc::SYS_mlock2),
-    ("rt_sigqueueinfo", libc::SYS_rt_sigqueueinfo), ("rt_tgsigqueueinfo", libc::SYS_rt_tgsigqueueinfo),
-    ("pidfd_open", libc::SYS_pidfd_open), ("pidfd_send_signal", libc::SYS_pidfd_send_signal),
-    ("process_madvise", libc::SYS_process_madvise), ("msync", libc::SYS_msync),
-    ("mincore", libc::SYS_mincore), ("remap_file_pages", libc::SYS_remap_file_pages),
-    ("timer_create", libc::SYS_timer_create), ("timer_settime", libc::SYS_timer_settime),
-    ("timer_gettime", libc::SYS_timer_gettime), ("timer_delete", libc::SYS_timer_delete),
-    ("timer_getoverrun", libc::SYS_timer_getoverrun), ("semget", libc::SYS_semget),
-    ("semop", libc::SYS_semop), ("semctl", libc::SYS_semctl), ("shmget", libc::SYS_shmget),
-    ("shmat", libc::SYS_shmat), ("shmdt", libc::SYS_shmdt), ("shmctl", libc::SYS_shmctl),
-    ("msgget", libc::SYS_msgget), ("msgsnd", libc::SYS_msgsnd), ("msgrcv", libc::SYS_msgrcv),
-    ("msgctl", libc::SYS_msgctl), ("mq_open", libc::SYS_mq_open), ("mq_unlink", libc::SYS_mq_unlink),
-    ("mq_timedsend", libc::SYS_mq_timedsend), ("mq_timedreceive", libc::SYS_mq_timedreceive),
-    ("mq_notify", libc::SYS_mq_notify), ("mq_getsetattr", libc::SYS_mq_getsetattr),
-    ("setxattr", libc::SYS_setxattr), ("lsetxattr", libc::SYS_lsetxattr), ("fsetxattr", libc::SYS_fsetxattr),
-    ("removexattr", libc::SYS_removexattr), ("lremovexattr", libc::SYS_lremovexattr),
-    ("fremovexattr", libc::SYS_fremovexattr), ("fanotify_init", libc::SYS_fanotify_init),
-    ("fanotify_mark", libc::SYS_fanotify_mark), ("sched_getattr", libc::SYS_sched_getattr),
-    ("sched_setattr", libc::SYS_sched_setattr), ("vhangup", libc::SYS_vhangup),
-    ("syslog", libc::SYS_syslog), ("acct", libc::SYS_acct), ("getpgid", libc::SYS_getpgid),
-    ("seccomp", libc::SYS_seccomp), ("landlock_create_ruleset", libc::SYS_landlock_create_ruleset),
-    ("landlock_add_rule", libc::SYS_landlock_add_rule), ("landlock_restrict_self", libc::SYS_landlock_restrict_self),
+/// Calls in neither list that a policy file may add with `allow-syscall`.
+pub const ADDABLE: &[(&str, libc::c_long)] = by_name![
+    SYS_acct, SYS_adjtimex, SYS_clock_adjtime, SYS_clock_settime, SYS_fanotify_init, SYS_fanotify_mark,
+    SYS_inotify_init, SYS_inotify_init1, SYS_ioprio_set, SYS_landlock_add_rule, SYS_landlock_create_ruleset,
+    SYS_landlock_restrict_self, SYS_mincore, SYS_mlock2, SYS_mlockall, SYS_mq_getsetattr, SYS_mq_notify,
+    SYS_mq_open, SYS_mq_timedreceive, SYS_mq_timedsend, SYS_mq_unlink, SYS_msgctl, SYS_msgget, SYS_msgrcv,
+    SYS_msgsnd, SYS_munlockall, SYS_process_madvise, SYS_remap_file_pages, SYS_rt_sigqueueinfo,
+    SYS_rt_tgsigqueueinfo, SYS_sched_setattr, SYS_sched_setparam, SYS_sched_setscheduler, SYS_seccomp,
+    SYS_semctl, SYS_semget, SYS_semop, SYS_settimeofday, SYS_shmat, SYS_shmctl, SYS_shmdt, SYS_shmget,
+    SYS_syslog, SYS_vhangup,
 ];
 
-/// Look up a syscall number by name, for policy files and the test harness.
+/// Every syscall a policy file may name: a denied one is refused, a base one
+/// warns, and an `ADDABLE` one is added.
+pub fn names() -> impl Iterator<Item = &'static (&'static str, libc::c_long)> {
+    DENIED_NAMES.iter().chain(BASE_NAMES).chain(ADDABLE)
+}
+
 pub fn syscall_by_name(name: &str) -> Option<libc::c_long> {
-    SYSCALL_NAMES.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
+    names().find(|(n, _)| *n == name).map(|&(_, nr)| nr)
+}
+
+pub fn name_of(nr: libc::c_long) -> Option<&'static str> {
+    names().find(|&&(_, v)| v == nr).map(|&(n, _)| n)
 }
 
 #[cfg(test)]
@@ -1150,16 +1149,17 @@ mod tests {
     }
 
     #[test]
-    fn syscall_name_table_is_consistent() {
-        for (nr, why) in DENIED_RATIONALE {
-            assert!(SYSCALL_NAMES.iter().any(|(_, n)| n == nr), "denied syscall {nr} ({why}) has no name in SYSCALL_NAMES");
-            assert!(is_denied(*nr));
-        }
+    fn every_listed_call_is_named_once() {
         let mut seen = HashSet::new();
-        for (name, nr) in SYSCALL_NAMES {
-            assert!(seen.insert(*name), "duplicate name {name}");
-            assert_eq!(syscall_by_name(name), Some(*nr));
+        for &(name, nr) in names() {
+            assert!(seen.insert(name), "{name} is named twice");
+            assert_eq!(syscall_by_name(name), Some(nr));
+            assert_eq!(name_of(nr), Some(name));
         }
-        assert!(!is_denied(libc::SYS_read));
+        assert_eq!(seen.len(), DENIED_RATIONALE.len() + BASE_ALLOWLIST.len() + ADDABLE.len());
+        for &(name, nr) in ADDABLE {
+            assert!(!is_denied(nr) && !BASE_ALLOWLIST.contains(&nr), "{name} is on a list already");
+        }
+        assert_eq!(name_of(libc::SYS_futex), Some("futex"));
     }
 }

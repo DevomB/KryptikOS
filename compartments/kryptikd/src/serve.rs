@@ -22,7 +22,7 @@
 use std::ffi::{CStr, CString};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -43,36 +43,12 @@ const SETTLE: Duration = Duration::from_millis(300);
 
 // --- descriptors -----------------------------------------------------------
 
-/// An owned descriptor, closed when dropped. Every descriptor here is one.
-#[derive(Debug)]
-pub struct Fd(RawFd);
-
-impl Fd {
-    pub fn raw(&self) -> RawFd {
-        self.0
-    }
-    /// Give up ownership: the caller closes it.
-    pub fn into_raw(self) -> RawFd {
-        let fd = self.0;
-        std::mem::forget(self);
-        fd
-    }
-}
-
-impl Drop for Fd {
-    fn drop(&mut self) {
-        if self.0 >= 0 {
-            unsafe { libc::close(self.0) };
-        }
-    }
-}
-
-fn pipe() -> Result<(Fd, Fd), String> {
+fn pipe() -> Result<(OwnedFd, OwnedFd), String> {
     let mut fds = [0i32; 2];
     if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } < 0 {
         return Err(format!("pipe: {}", std::io::Error::last_os_error()));
     }
-    Ok((Fd(fds[0]), Fd(fds[1])))
+    Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
 }
 
 fn clear_cloexec(fd: RawFd) {
@@ -80,6 +56,43 @@ fn clear_cloexec(fd: RawFd) {
         let fl = libc::fcntl(fd, libc::F_GETFD);
         libc::fcntl(fd, libc::F_SETFD, fl & !libc::FD_CLOEXEC);
     }
+}
+
+/// One recvmsg into `buf`, owning the descriptors that came with it. Control
+/// data cut short is refused, and what did arrive is closed.
+pub fn recv_with_fds(fd: RawFd, buf: &mut [u8], flags: libc::c_int) -> std::io::Result<(usize, Vec<OwnedFd>)> {
+    // Aligned for cmsghdr, with room for twelve, so an excess is refused by count.
+    #[repr(C, align(8))]
+    struct Control([u8; 64]);
+    let mut control = Control([0; 64]);
+    let mut iov = libc::iovec { iov_base: buf.as_mut_ptr() as *mut libc::c_void, iov_len: buf.len() };
+    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control.0.as_mut_ptr() as *mut libc::c_void;
+    msg.msg_controllen = control.0.len() as _;
+    let n = unsafe { libc::recvmsg(fd, &mut msg, flags | libc::MSG_CMSG_CLOEXEC) };
+    if n < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut got = Vec::new();
+    unsafe {
+        let mut c = libc::CMSG_FIRSTHDR(&msg);
+        while !c.is_null() {
+            if (*c).cmsg_level == libc::SOL_SOCKET && (*c).cmsg_type == libc::SCM_RIGHTS {
+                let data = libc::CMSG_DATA(c) as *const RawFd;
+                let count = ((*c).cmsg_len as usize - libc::CMSG_LEN(0) as usize) / std::mem::size_of::<RawFd>();
+                for i in 0..count {
+                    got.push(OwnedFd::from_raw_fd(std::ptr::read_unaligned(data.add(i))));
+                }
+            }
+            c = libc::CMSG_NXTHDR(&msg, c);
+        }
+    }
+    if msg.msg_flags & libc::MSG_CTRUNC != 0 {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "more descriptors than a request may carry"));
+    }
+    Ok((n as usize, got))
 }
 
 // --- who is asking ----------------------------------------------------------
@@ -134,20 +147,15 @@ fn in_group(uid: u32, group: &str) -> bool {
     members.iter().any(|m| *m == name)
 }
 
-struct Peer {
-    uid: u32,
-    pid: i32,
-}
-
-fn peer_of(fd: RawFd) -> Option<Peer> {
+/// `SO_PEERCRED` of a connected AF_UNIX socket, which the kernel asserts.
+pub fn peer_cred(fd: RawFd) -> std::io::Result<libc::ucred> {
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     let r = unsafe { libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_PEERCRED, &mut cred as *mut _ as *mut libc::c_void, &mut len) };
-    if r == 0 {
-        Some(Peer { uid: cred.uid, pid: cred.pid })
-    } else {
-        None
+    if r < 0 {
+        return Err(std::io::Error::last_os_error());
     }
+    Ok(cred)
 }
 
 // --- the request -------------------------------------------------------------
@@ -167,9 +175,9 @@ fn request_complete(text: &[u8]) -> bool {
 
 /// Read the request text and any descriptor that came with it, within
 /// `deadline`. At most one descriptor, and only with the first bytes.
-fn recv_request(fd: RawFd, deadline: Instant) -> Result<(Vec<u8>, Option<Fd>), String> {
+fn recv_request(fd: RawFd, deadline: Instant) -> Result<(Vec<u8>, Option<OwnedFd>), String> {
     let mut text = Vec::new();
-    let mut carried: Option<Fd> = None;
+    let mut carried: Option<OwnedFd> = None;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
@@ -188,40 +196,13 @@ fn recv_request(fd: RawFd, deadline: Instant) -> Result<(Vec<u8>, Option<Fd>), S
             continue; // the deadline check above reports it
         }
         let mut buf = [0u8; 4096];
-        // Room for several descriptors, so an excess is refused by count, not by truncation.
-        let mut cmsg = [0u8; 64];
-        let mut iov = libc::iovec { iov_base: buf.as_mut_ptr() as *mut libc::c_void, iov_len: buf.len() };
-        let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
-        msg.msg_iov = &mut iov;
-        msg.msg_iovlen = 1;
-        msg.msg_control = cmsg.as_mut_ptr() as *mut libc::c_void;
-        msg.msg_controllen = cmsg.len() as _;
-        let n = unsafe { libc::recvmsg(fd, &mut msg, libc::MSG_CMSG_CLOEXEC | libc::MSG_DONTWAIT) };
-        if n < 0 {
-            let e = std::io::Error::last_os_error();
-            if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(format!("recvmsg: {e}"));
-        }
-        // Own every received descriptor first, so any refusal below closes them.
-        let mut got: Vec<Fd> = Vec::new();
-        unsafe {
-            let mut c = libc::CMSG_FIRSTHDR(&msg);
-            while !c.is_null() {
-                if (*c).cmsg_level == libc::SOL_SOCKET && (*c).cmsg_type == libc::SCM_RIGHTS {
-                    let data = libc::CMSG_DATA(c) as *const RawFd;
-                    let count = ((*c).cmsg_len as usize - libc::CMSG_LEN(0) as usize) / std::mem::size_of::<RawFd>();
-                    for i in 0..count {
-                        got.push(Fd(*data.add(i)));
-                    }
-                }
-                c = libc::CMSG_NXTHDR(&msg, c);
-            }
-        }
-        if msg.msg_flags & libc::MSG_CTRUNC != 0 {
-            return Err("control data truncated: more descriptors than a request may carry".into());
-        }
+        // The descriptors are owned, so any refusal below closes them.
+        let (n, mut got) = match recv_with_fds(fd, &mut buf, libc::MSG_DONTWAIT) {
+            Ok(x) => x,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => return Err(e.to_string()),
+            Err(e) => return Err(format!("recvmsg: {e}")),
+        };
         if !got.is_empty() {
             if !text.is_empty() {
                 return Err("a descriptor must accompany the first bytes of a request".into());
@@ -234,7 +215,7 @@ fn recv_request(fd: RawFd, deadline: Instant) -> Result<(Vec<u8>, Option<Fd>), S
         if n == 0 {
             break;
         }
-        text.extend_from_slice(&buf[..n as usize]);
+        text.extend_from_slice(&buf[..n]);
         if text.len() > MAX_REQUEST {
             return Err("request too long".into());
         }
@@ -363,13 +344,13 @@ fn fstat(fd: RawFd) -> Result<libc::stat, String> {
 }
 
 /// Open one path component under `dir` without following a symlink.
-fn openat_component(dir: RawFd, name: &str, flags: libc::c_int) -> Result<Fd, String> {
+fn openat_component(dir: RawFd, name: &str, flags: libc::c_int) -> Result<OwnedFd, String> {
     let c = CString::new(name).map_err(|_| "NUL in path".to_string())?;
     let fd = unsafe { libc::openat(dir, c.as_ptr(), flags | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
     if fd < 0 {
         return Err(format!("{name}: {}", std::io::Error::last_os_error()));
     }
-    Ok(Fd(fd))
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
 /// A verified proxy socket. `_fd` pins the inode while the launch is set up;
@@ -377,7 +358,7 @@ fn openat_component(dir: RawFd, name: &str, flags: libc::c_int) -> Result<Fd, St
 /// other inode (spawn.rs, StagedSocket).
 #[derive(Debug)]
 pub struct ProxySocket {
-    pub _fd: Fd,
+    pub _fd: OwnedFd,
     pub path: PathBuf,
     pub inode: InodeId,
 }
@@ -420,7 +401,7 @@ impl std::str::FromStr for InodeId {
 
 /// Open `path` as O_PATH a component at a time, following no symlink. With
 /// `want_socket` the last component must be a socket.
-pub fn open_nofollow(path: &Path, want_socket: bool) -> Result<Fd, String> {
+pub fn open_nofollow(path: &Path, want_socket: bool) -> Result<OwnedFd, String> {
     if !path.is_absolute() {
         return Err(format!("{}: not an absolute path", path.display()));
     }
@@ -436,9 +417,9 @@ pub fn open_nofollow(path: &Path, want_socket: bool) -> Result<Fd, String> {
     for (i, comp) in comps.iter().enumerate() {
         let last = i + 1 == n;
         let flags = if last { libc::O_PATH } else { libc::O_PATH | libc::O_DIRECTORY };
-        let next = openat_component(dir.raw(), comp, flags).map_err(|e| format!("{}: {e}", path.display()))?;
+        let next = openat_component(dir.as_raw_fd(), comp, flags).map_err(|e| format!("{}: {e}", path.display()))?;
         if last && want_socket {
-            let st = fstat(next.raw())?;
+            let st = fstat(next.as_raw_fd())?;
             if st.st_mode & libc::S_IFMT != libc::S_IFSOCK {
                 return Err(format!("{}: not a socket", path.display()));
             }
@@ -460,10 +441,10 @@ fn verify_proxy_socket(p: &Path, uid: u32, zone: &str, proxy_exe: Option<&Path>)
     let mut dir = root;
     let uid_s = uid.to_string();
     for (i, comp) in ["run", "user", uid_s.as_str(), "kryptik", zone].iter().enumerate() {
-        let next = openat_component(dir.raw(), comp, libc::O_PATH | libc::O_DIRECTORY)
+        let next = openat_component(dir.as_raw_fd(), comp, libc::O_PATH | libc::O_DIRECTORY)
             .map_err(|e| format!("wayland socket path: {e}"))?;
         if i >= 2 {
-            let st = fstat(next.raw())?;
+            let st = fstat(next.as_raw_fd())?;
             if st.st_uid != uid {
                 return Err(format!("wayland socket path: {comp}/ is owned by uid {}, not the session", st.st_uid));
             }
@@ -473,8 +454,8 @@ fn verify_proxy_socket(p: &Path, uid: u32, zone: &str, proxy_exe: Option<&Path>)
         }
         dir = next;
     }
-    let sock = openat_component(dir.raw(), "wayland-0", libc::O_PATH).map_err(|e| format!("wayland socket: {e}"))?;
-    let st = fstat(sock.raw())?;
+    let sock = openat_component(dir.as_raw_fd(), "wayland-0", libc::O_PATH).map_err(|e| format!("wayland socket: {e}"))?;
+    let st = fstat(sock.as_raw_fd())?;
     if st.st_mode & libc::S_IFMT != libc::S_IFSOCK {
         return Err("wayland socket is not a socket".into());
     }
@@ -485,27 +466,30 @@ fn verify_proxy_socket(p: &Path, uid: u32, zone: &str, proxy_exe: Option<&Path>)
     Ok(ProxySocket { _fd: sock, path: want, inode: InodeId::of(&st) })
 }
 
-/// Ask the kernel who listens on the socket's inode: it must be the session's
-/// uid running kryptik-wlproxy for this zone (which logs a client disconnect).
-fn verify_proxy_listener(sock: &Fd, uid: u32, zone: &str, proxy_exe: Option<&Path>) -> Result<(), String> {
+/// Ask the kernel who listens on the socket's inode. SO_PEERCRED names the
+/// caller of listen(), which must be the session's uid running kryptik-wlproxy
+/// for this zone (it logs a client disconnect). A process handed the listening
+/// socket later would go unseen, but only the session's uid can hand it over,
+/// and that uid reaches the compositor directly anyway.
+fn verify_proxy_listener(sock: &OwnedFd, uid: u32, zone: &str, proxy_exe: Option<&Path>) -> Result<(), String> {
     /* Non-blocking: the listener is the session's and may never accept; a
      * full backlog must refuse at once, not block the root daemon. */
     let s = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK, 0) };
     if s < 0 {
         return Err(format!("socket: {}", std::io::Error::last_os_error()));
     }
-    let s = Fd(s);
-    let path = format!("/proc/self/fd/{}", sock.raw());
+    let s = unsafe { OwnedFd::from_raw_fd(s) };
+    let path = format!("/proc/self/fd/{}", sock.as_raw_fd());
     let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
     addr.sun_family = libc::AF_UNIX as _;
     for (i, b) in path.bytes().enumerate() {
         addr.sun_path[i] = b as _;
     }
     let len = (std::mem::size_of::<libc::sa_family_t>() + path.len() + 1) as libc::socklen_t;
-    if unsafe { libc::connect(s.raw(), &addr as *const _ as *const libc::sockaddr, len) } < 0 {
+    if unsafe { libc::connect(s.as_raw_fd(), &addr as *const _ as *const libc::sockaddr, len) } < 0 {
         return Err(format!("nothing usable is listening on the wayland socket: {}", std::io::Error::last_os_error()));
     }
-    let peer = peer_of(s.raw()).ok_or("wayland socket: cannot identify the listener")?;
+    let peer = peer_cred(s.as_raw_fd()).map_err(|e| format!("wayland socket: cannot identify the listener: {e}"))?;
     if peer.uid != uid {
         return Err(format!("wayland socket is served by uid {}, not the session", peer.uid));
     }
@@ -535,7 +519,7 @@ fn verify_proxy_listener(sock: &Fd, uid: u32, zone: &str, proxy_exe: Option<&Pat
 
 struct Launch {
     pid: i32,
-    ready: Fd,
+    ready: OwnedFd,
     log: PathBuf,
 }
 
@@ -544,7 +528,7 @@ struct Launch {
 fn spawn_launcher(
     req: &Request,
     cfg: &ServeConfig,
-    pass: Option<Fd>,
+    pass: Option<OwnedFd>,
     wayland: Option<ProxySocket>,
     uid: u32,
 ) -> Result<Launch, String> {
@@ -560,7 +544,7 @@ fn spawn_launcher(
         "--wifi-dir".into(),
         cfg.wifi_dir.display().to_string(),
         "--ready-fd".into(),
-        ready_w.raw().to_string(),
+        ready_w.as_raw_fd().to_string(),
     ];
     /* The path, not a descriptor: one opened in this mount namespace cannot be
      * bind-mounted from the zone's (EINVAL). The launcher reopens the path and
@@ -573,7 +557,7 @@ fn spawn_launcher(
     }
     if let Some(p) = &pass {
         args.push("--passphrase-fd".into());
-        args.push(p.raw().to_string());
+        args.push(p.as_raw_fd().to_string());
     }
     args.push("--".into());
     args.extend(req.argv.iter().cloned());
@@ -612,9 +596,9 @@ fn spawn_launcher(
             libc::dup2(logf.as_raw_fd(), 1);
             libc::dup2(logf.as_raw_fd(), 2);
             // These two cross the exec; everything else is CLOEXEC.
-            clear_cloexec(ready_w.raw());
+            clear_cloexec(ready_w.as_raw_fd());
             if let Some(p) = &pass {
-                clear_cloexec(p.raw());
+                clear_cloexec(p.as_raw_fd());
             }
             let mut ptrs: Vec<*const libc::c_char> = cargs.iter().map(|c| c.as_ptr()).collect();
             ptrs.push(std::ptr::null());
@@ -704,7 +688,6 @@ enum JobKind {
 }
 
 fn memfile(name: &str) -> Result<std::fs::File, String> {
-    use std::os::unix::io::FromRawFd;
     let c = std::ffi::CString::new(name).map_err(|e| e.to_string())?;
     let fd = unsafe { libc::memfd_create(c.as_ptr(), libc::MFD_CLOEXEC) };
     if fd < 0 {
@@ -962,12 +945,9 @@ fn zone_running(name: &str) -> bool {
 /// slow command pushed to `jobs`; anything else is answered here.
 fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pending> {
     let fd = conn.as_raw_fd();
-    let peer = match peer_of(fd) {
-        Some(p) => p,
-        None => {
-            reply(&conn, "error: unidentified peer\n");
-            return None;
-        }
+    let Ok(peer) = peer_cred(fd) else {
+        reply(&conn, "error: unidentified peer\n");
+        return None;
     };
     let uid = peer.uid;
     if !authorised(cfg, uid) {
@@ -1254,7 +1234,7 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
         let mut timeout: i32 = -1;
         for (i, p) in pending.iter().enumerate() {
             if p.ready_at.is_none() {
-                fds.push(libc::pollfd { fd: p.launch.ready.raw(), events: libc::POLLIN, revents: 0 });
+                fds.push(libc::pollfd { fd: p.launch.ready.as_raw_fd(), events: libc::POLLIN, revents: 0 });
                 watched.push(i);
             }
             let left = p.deadline().saturating_duration_since(now).as_millis() as i32;
@@ -1281,7 +1261,7 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
                 continue;
             }
             let mut buf = [0u8; 16];
-            let r = unsafe { libc::read(pending[i].launch.ready.raw(), buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+            let r = unsafe { libc::read(pending[i].launch.ready.as_raw_fd(), buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
             if r > 0 {
                 pending[i].ready_at = Some(Instant::now());
             } else {
@@ -1498,14 +1478,11 @@ mod tests {
     }
 
     #[test]
-    fn descriptors_close_when_dropped() {
-        let (r, w) = pipe().unwrap();
-        let raw = r.raw();
-        drop(r);
-        drop(w);
-        // A closed descriptor cannot be fstat'ed.
-        let mut st: libc::stat = unsafe { std::mem::zeroed() };
-        assert!(unsafe { libc::fstat(raw, &mut st) } < 0);
+    fn socketpair_peer_is_self() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let cred = peer_cred(a.as_raw_fd()).unwrap();
+        assert_eq!((cred.uid, cred.gid), unsafe { (libc::geteuid(), libc::getegid()) });
+        assert_eq!(cred.pid, std::process::id() as i32);
     }
 
     #[test]

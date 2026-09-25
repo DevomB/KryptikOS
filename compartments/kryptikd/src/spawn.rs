@@ -11,7 +11,7 @@
 
 use std::ffi::CString;
 use std::io;
-use std::os::unix::io::{FromRawFd, OwnedFd, RawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use crate::broker;
@@ -98,7 +98,7 @@ impl StagedSocket {
         let fd = crate::serve::open_nofollow(session_path, true)
             .map_err(|e| SpawnError::Setup(format!("wayland socket {e}")))?;
         let mut st: libc::stat = unsafe { std::mem::zeroed() };
-        if unsafe { libc::fstat(fd.raw(), &mut st) } < 0 {
+        if unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } < 0 {
             return Err(SpawnError::Syscall { call: "fstat(wayland socket)", errno: errno() });
         }
         if let Some(want) = inode {
@@ -124,7 +124,7 @@ impl StagedSocket {
             .custom_flags(libc::O_NOFOLLOW)
             .open(&path)
             .map_err(|e| SpawnError::Setup(format!("{}: {e}", path.display())))?;
-        let src = CString::new(format!("/proc/self/fd/{}", fd.raw())).unwrap();
+        let src = CString::new(format!("/proc/self/fd/{}", fd.as_raw_fd())).unwrap();
         if unsafe { libc::mount(src.as_ptr(), cpath.as_ptr(), std::ptr::null(), libc::MS_BIND, std::ptr::null()) } < 0 {
             let e = errno();
             let _ = std::fs::remove_file(&path);
@@ -1170,7 +1170,7 @@ fn intermediate_main(
             };
             if let Some(want) = wayland_inode {
                 let mut st: libc::stat = unsafe { std::mem::zeroed() };
-                if unsafe { libc::fstat(fd.raw(), &mut st) } < 0 {
+                if unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } < 0 {
                     bail!("wayland socket {}: fstat: {}", p, io::Error::last_os_error());
                 }
                 if !want.matches(&st) {
@@ -1178,7 +1178,7 @@ fn intermediate_main(
                 }
             }
             // Like the broker's: pid 1 inherits it and the descriptor sweep closes it.
-            let raw = fd.into_raw();
+            let raw = fd.into_raw_fd();
             unsafe {
                 let fl = libc::fcntl(raw, libc::F_GETFD);
                 libc::fcntl(raw, libc::F_SETFD, fl & !libc::FD_CLOEXEC);
@@ -1401,12 +1401,8 @@ pub fn env_value_is_sane(v: &str) -> bool {
         && v.chars().all(|c| c.is_ascii_alphanumeric() || "._+:@-".contains(c))
 }
 
-/// The complete environment the zone's command starts with.
-pub fn zone_environment(zone: &Zone, home: &str, caller: &[(String, String)]) -> Vec<(String, String)> {
-    zone_environment_with(zone, home, caller, false)
-}
-
-/// With a display, WAYLAND_DISPLAY is the socket's absolute path (libwayland
+/// The complete environment the zone's command starts with. With a display,
+/// WAYLAND_DISPLAY is the socket's absolute path (libwayland
 /// needs no XDG_RUNTIME_DIR then) and XDG_RUNTIME_DIR is the zone's /tmp.
 pub fn zone_environment_with(zone: &Zone, home: &str, caller: &[(String, String)], wayland: bool) -> Vec<(String, String)> {
     let mut env = zone_environment_base(zone, home, caller);
@@ -1877,7 +1873,7 @@ mod tests {
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
-        let env = zone_environment(&z("routed"), "/home/t", &caller);
+        let env = zone_environment_with(&z("routed"), "/home/t", &caller, false);
         let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         for dropped in ["FOO_TOKEN", "SSH_AUTH_SOCK", "LD_PRELOAD", "LD_LIBRARY_PATH", "KRYPTIK_EXPERIMENTAL", "XDG_RUNTIME_DIR"] {
             assert!(get(dropped).is_none(), "{dropped} leaked into the zone");
@@ -1902,7 +1898,7 @@ mod tests {
         assert!(!env_value_is_sane("a b"));
         assert!(!env_value_is_sane(&"x".repeat(65)));
         let caller = vec![("TERM".to_string(), "xterm;rm -rf /".to_string())];
-        let env = zone_environment(&z("routed"), "/home/t", &caller);
+        let env = zone_environment_with(&z("routed"), "/home/t", &caller, false);
         let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         assert_eq!(get("TERM"), Some("dumb"), "a malformed TERM is replaced, not passed");
         assert_eq!(get("LANG"), Some("C.UTF-8"), "no caller LANG means a UTF-8 default");

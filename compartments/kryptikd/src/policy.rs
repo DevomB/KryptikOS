@@ -183,6 +183,7 @@ impl Policy {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.extra_syscalls.is_empty()
             && self.sockets == seccomp::SocketPolicy::default()
@@ -282,6 +283,9 @@ mod tests {
         let p = parse("allow-syscall read\nallow-socket AF_INET\nallow-netlink NETLINK_ROUTE\nkeep-capability CAP_NET_BIND_SERVICE\n", "t").unwrap();
         assert!(p.is_empty());
         assert_eq!(p.warnings.len(), 4, "{:?}", p.warnings);
+        // Any base call is known by name, so naming one warns rather than fails.
+        let p = parse("allow-syscall futex\n", "t").unwrap();
+        assert!(p.is_empty() && p.warnings[0].contains("futex is already allowed"), "{:?}", p.warnings);
     }
 
     #[test]
