@@ -50,7 +50,7 @@ after its name and gets the same errno here:
 - The id and capability calls (the `set*id` family, `setgroups`, `capset`)
   fail with EPERM: ncurses brackets every terminfo open with `setfsuid` and
   `setfsgid`, and `sudo`, `su` and daemons that drop privilege as root call
-  the rest, so a kill took them down unexplained. They stay on the denied
+  the rest, so a kill would take them down unexplained. They stay on the denied
   list, and no id or capability changes either way.
 
 A printed name can go on an `allow-syscall` line unless it is on the denied
