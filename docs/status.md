@@ -67,7 +67,8 @@ state partition.
   detectors; no physical timer has been exercised.
 - glibc is 2.40 with upstream's maintained release branch applied as of
   2026-09-10 (`build/patches/glibc-2.40/`). Nothing moves the pin along the
-  branch automatically, and 2.40 is three releases old.
+  branch automatically, though `tools/check-source-currency.sh` reports when
+  the branch has moved on, and 2.40 is three releases old.
 - The artifact audit still reports soft findings: binaries without CET or
   BIND_NOW, some non-PIE objects, some RPATHs. Each run's audit log has the
   counts.

@@ -345,6 +345,36 @@ while read -r name pinned url; do
     fi
 done < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list)
 
+# glibc is its tarball plus upstream's release branch up to one commit, which
+# the patch set's name records (build/patches/glibc-*/0001-release-*-<commit>).
+# The branch head, from sourceware's own git, says whether the branch moved on.
+glibc_patch=("${KRYPTIK_ROOT}/build/patches/glibc-${V_GLIBC:-none}"/0001-release-*.patch)
+if [[ -f "${glibc_patch[0]}" && ( -z "$ONLY" || "$ONLY" == glibc-branch ) ]]; then
+    name=glibc-branch
+    pinned="${glibc_patch[0]##*-}"; pinned="${pinned%.patch}"
+    ref="refs/heads/release/${V_GLIBC}/master"
+    consulted="https://sourceware.org/git/glibc.git ${ref}"
+    # From /: ls-remote needs no repository, and whatever the current one is
+    # (a worktree git cannot open) must not decide the answer.
+    newest="$(GIT_TERMINAL_PROMPT=0 timeout 30 git -C / ls-remote "$(resolve https://sourceware.org/git/glibc.git)" "$ref" 2>/dev/null \
+        | cut -c1-40 | head -1 || true)"
+    if [[ -z "$newest" ]]; then
+        status=UNKNOWN
+        UNKNOWN=$((UNKNOWN + 1)); UNKNOWN_LIST+=("${name} (consulted ${consulted})")
+    elif [[ "$newest" == "$pinned"* ]]; then
+        status=current; CURRENT=$((CURRENT + 1))
+    else
+        status=BEHIND
+        BEHIND=$((BEHIND + 1)); BEHIND_LIST+=("glibc release/${V_GLIBC}/master ${pinned} -> ${newest:0:12}")
+    fi
+    newest="${newest:0:12}"
+    if [[ "$TSV" -eq 1 ]]; then
+        printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$pinned" "$newest" "$status" "$consulted"
+    else
+        printf '%-16s %-12s %-14s %-9s %s\n' "$name" "$pinned" "${newest:-?}" "$status" "${consulted:0:44}"
+    fi
+fi
+
 [[ "$TSV" -eq 1 ]] && exit 0
 
 echo

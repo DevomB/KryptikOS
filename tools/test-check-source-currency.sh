@@ -115,6 +115,11 @@ page "invisible-mirror.net/archives/lynx/tarballs" \
 page "ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable" \
     "openssh-10.4p1.tar.gz" "openssh-10.5p1.tar.gz" "openssh-10.5p1.tar.gz.asc"
 
+# glibc's release branch, read by git over HTTP from a plain info/refs: the
+# head has moved past the commit the patch set was cut from.
+refs() { mkdir -p "${SERVE}/sourceware.org/git/glibc.git/info"; printf '%s\trefs/heads/release/2.40/master\n' "$1" > "${SERVE}/sourceware.org/git/glibc.git/info/refs"; }
+refs 1111111111111111111111111111111111111111
+
 # A tags feed for a project that publishes no releases.
 mkdir -p "${SERVE}/github.com/a13xp0p0v/kernel-hardening-checker"
 printf '%s\n' '<feed><title>Tags from kernel-hardening-checker</title>' \
@@ -155,7 +160,10 @@ build_root() {
 V_PYTHON=3.12.5
 V_OPENSSL=3.3.1
 V_WLROOTS=0.19.3
+V_GLIBC=2.40
 EOF
+    mkdir -p "${FAKE}/build/patches/glibc-2.40"
+    : > "${FAKE}/build/patches/glibc-2.40/0001-release-2.40-master-cdaa5d6db08e.patch"
     cat > "${FAKE}/tools/fetch-sources.sh" <<'STUB'
 #!/usr/bin/env bash
 # Test stub: the same three columns as `fetch-sources.sh --list`.
@@ -241,12 +249,22 @@ expect_row lynx 2.9.3 current        # 2.9.4dev.2 is a snapshot
 expect_row openssh 10.5p1 current    # the portable suffix is part of the version
 expect_row kernel-hardening-checker 0.6.17.1 current   # tags only, no releases
 expect_row glibc-fhs-patch "" deferred                 # follows the glibc pin
+expect_row glibc-branch 111111111111 BEHIND            # the branch moved past the patch set's commit
 
 if [[ "$(field linux 5)" == *check-kernel-eol* ]]; then
     green "the kernel row names the tool that does answer the question"
 else
     red "the kernel row does not point at check-kernel-eol.sh: $(field linux 5)"
 fi
+
+# The branch head at the patch set's commit is current; no answer is UNKNOWN.
+refs cdaa5d6db08ee6d7cdcb008ae83b6fe7856291c4
+run --tsv --only=glibc-branch
+expect_row glibc-branch cdaa5d6db08e current
+rm "${SERVE}/sourceware.org/git/glibc.git/info/refs"
+run --tsv --only=glibc-branch
+expect_row glibc-branch "" UNKNOWN
+refs 1111111111111111111111111111111111111111
 
 # --- exit status ------------------------------------------------------------
 
