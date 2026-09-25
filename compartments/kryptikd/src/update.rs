@@ -1,14 +1,10 @@
-//! The update channel's rules (docs/design/update-channel.md): what zone 0
-//! believes about a statement of what is current, and which bytes it will
-//! take from the net zone for a release it has been asked to fetch.
+//! The update channel's rules (docs/design/update-channel.md): which pointers
+//! zone 0 accepts, and which bytes it takes from the net zone for a release
+//! the user asked for.
 //!
-//! Nothing here verifies a signature. `kryptik-update check-pointer` and
-//! `check-manifest` do that, with the code that verifies a release handed
-//! over on a disk, and only text they have verified reaches these functions.
-//! What is decided here is everything a signature cannot say: that a
-//! statement is for this image's role, that it is not older than one already
-//! accepted, how stale it is, and that a byte offered for staging is one the
-//! signed manifest provides for, at the place it belongs.
+//! Signatures are checked by `kryptik-update` (`Checks`), and only verified
+//! text reaches the parsers. Decided here: role, replay, staleness, and that
+//! each staged byte is one the signed manifest provides for, at its place.
 
 use std::cmp::Ordering;
 use std::io::Write as _;
@@ -20,13 +16,10 @@ pub const POINTER_MAGIC: &str = "KRYPTIK-LATEST-1";
 pub const POINTER_MAX: usize = 8 * 1024;
 /// The manifest and its signature, each.
 pub const MANIFEST_MAX: u64 = 64 * 1024;
-/// A pointer older than this is reported as stale: the release process
-/// re-issues it on a schedule, so its age is the only sign of a withheld one.
+/// Past this age a pointer is reported stale: it is re-issued on a schedule.
 pub const STALE_AFTER_SECS: i64 = 30 * 86400;
-/// How far ahead of this machine's clock a statement may be dated. One that
-/// is dated further ahead is refused: accepted, it would make every honest
-/// statement after it a replay until its date arrived, and would never read
-/// as stale. A day covers a release host's clock and this one disagreeing.
+/// How far ahead of this machine's clock a statement may be dated, allowing
+/// for skew. One dated later would make every genuine statement a replay.
 pub const MAX_AHEAD_SECS: i64 = 86400;
 /// One pointer is considered per hour; the rest are refused unread.
 pub const POINTER_INTERVAL_SECS: u64 = 3600;
@@ -46,9 +39,8 @@ fn is_version(s: &str) -> bool {
     !s.is_empty() && s.len() <= 32 && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'+' | b'-' | b'~'))
 }
 
-/// The pointer's text: the magic line, then each key exactly once. A key it
-/// does not know is refused rather than skipped, so a newer format cannot be
-/// half-understood by an older system.
+/// The pointer's text: the magic line, then each key exactly once. An unknown
+/// key is refused, so an older system never half-understands a newer format.
 pub fn parse_pointer(text: &str) -> Result<Pointer, String> {
     let mut lines = text.lines();
     if lines.next() != Some(POINTER_MAGIC) {
@@ -85,12 +77,9 @@ pub fn parse_pointer(text: &str) -> Result<Pointer, String> {
     Ok(Pointer { role, version, issued, manifest_sha256: sha, base })
 }
 
-/// Where a release's files are fetched from. An absolute base is taken as it
-/// is; a relative one is resolved against the channel address zone 0 was
-/// given (`CONF`), never against anything the net zone reports. Only a
-/// development image may be pointed at plain http. Where the bytes come from
-/// decides nothing about what they must be - the pointer carries the
-/// manifest's hash - so this is about not leaking the request, not trust.
+/// Where a release's files are fetched from: an absolute base as is, a relative
+/// one under the `CONF` channel address, never under what the net zone reports.
+/// Plain http only for a development image, a privacy matter: the hash is signed.
 pub fn resolve_base(channel: &str, base: &str, role: &str) -> Result<String, String> {
     let mut url = if base.contains("://") {
         base.to_string()
@@ -111,8 +100,7 @@ pub fn resolve_base(channel: &str, base: &str, role: &str) -> Result<String, Str
     }
 }
 
-/// Versions compare the way `sort -V` orders them for the release tool: runs
-/// of digits as numbers, everything else byte by byte.
+/// Orders versions like `sort -V`: digit runs as numbers, the rest byte by byte.
 pub fn version_cmp(a: &str, b: &str) -> Ordering {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     let (mut i, mut j) = (0, 0);
@@ -146,11 +134,9 @@ pub enum Standing {
     Available(String),
 }
 
-/// Whether zone 0 accepts a verified pointer. The signature said who wrote
-/// it; this says whether it is for this image and whether it is a replay:
-/// an `issued` earlier than the newest one already accepted is refused
-/// however valid its signature, and so is one dated more than
-/// `MAX_AHEAD_SECS` after `now`.
+/// Whether zone 0 accepts a verified pointer: it must be for this image's role,
+/// not issued before the newest already accepted (a replay), and not dated more
+/// than `MAX_AHEAD_SECS` after `now`.
 pub fn accept_pointer(p: &Pointer, required_role: &str, running: &str, newest_issued: Option<i64>, now: i64) -> Result<Standing, String> {
     if p.role != required_role {
         return Err(format!("the pointer's role is '{}'; this image requires '{required_role}'", p.role));
@@ -180,9 +166,8 @@ pub struct Entry {
     pub size: u64,
 }
 
-/// The file list `kryptik-update check-manifest` prints for a manifest it
-/// has verified: `file <size> <name>` per line, other lines ignored. Names
-/// are held to the rule for anything that crosses the broker.
+/// Parses `check-manifest`'s output: `file <size> <name>` lines, others
+/// ignored. Names must pass the broker's transfer-name check.
 pub fn parse_file_list(text: &str) -> Result<Vec<Entry>, String> {
     let mut out: Vec<Entry> = Vec::new();
     for line in text.lines() {
@@ -205,12 +190,10 @@ pub fn total_bytes(files: &[Entry]) -> u64 {
     files.iter().fold(0, |sum, e| sum.saturating_add(e.size))
 }
 
-/// Whether `len` bytes offered for `name` at `offset` may be written, given
-/// how many bytes of it are already held. `files` is `None` until the
-/// manifest and its signature have verified, and until then only those two
-/// are taken: whole, from byte zero, small. After that: a listed name, at
-/// exactly the offset held (so a broken download resumes and nothing is
-/// written twice or out of order), never past the signed size.
+/// Whether `len` bytes for `name` at `offset` may be written, `held` being
+/// there already. Until the manifest verifies (`files` is `None`) only it and
+/// its signature are taken, whole and small; then only listed names, at exactly
+/// `held` (resumable, never out of order), never past the signed size.
 pub fn may_put(files: Option<&[Entry]>, name: &str, offset: u64, len: u64, held: u64) -> Result<(), String> {
     if len == 0 {
         return Err("nothing to put".into());
@@ -241,33 +224,29 @@ pub fn still_needed(files: &[Entry], held: impl Fn(&str) -> u64) -> Vec<(String,
     files.iter().filter_map(|e| { let h = held(&e.name); (h < e.size).then(|| (e.name.clone(), h)) }).collect()
 }
 
-// --- what zone 0 keeps, and what the broker's three verbs do with it -------
-//
-// Under `STATE_DIR`, root's and nobody else's:
-//
-//   pointer             the newest statement accepted, as it was signed
-//   considered          when a statement was last looked at (the rate limit)
-//   wanted              the version the person asked for (`kryptik update fetch`)
-//   files               `check-manifest`'s output for it, once it has verified
-//   incoming/<version>/ the staged release: the directory `apply` is given
-//
-// Every function takes the directory and the two checks, so the tests run
-// them against a temporary directory with checks of their own.
+/* State under `STATE_DIR`, root's alone:
+ *
+ *   pointer             the newest statement accepted, as signed
+ *   considered          when a statement was last looked at (rate limit)
+ *   refused             when a manifest was last refused (rate limit)
+ *   wanted              the version the user asked for (`kryptik update fetch`)
+ *   files               `check-manifest`'s output for it, once verified
+ *   incoming/<version>/ the staged release, the directory `apply` is given
+ *
+ * Functions take the directory and the checks, so tests supply their own.
+ */
 
 
 pub const STATE_DIR: &str = "/var/lib/kryptik/update";
 pub const TOOL: &str = "/usr/sbin/kryptik-update";
 pub const ROLE_FILE: &str = "/usr/share/kryptik/trust/required-role";
 pub const CONF: &str = "/etc/kryptik/update.conf";
-/// The most one `update-put` carries. A release crosses in pieces this size,
-/// each one request the launcher answers between two looks at its zone, so
-/// the zone's supervision is never further away than one piece.
+/// The most one `update-put` carries. The launcher answers each between two
+/// looks at its zone, so supervision is never more than one piece away.
 pub const PUT_MAX: usize = 1 << 20;
 
-/// The two things only a signature can say, as functions so that a test can
-/// stand in for `kryptik-update`. `pointer` verifies a statement and its
-/// signature; `manifest` verifies the manifest and signature in a directory
-/// and returns what `check-manifest` printed.
+/// The signature checks, as functions so a test can stand in for
+/// `kryptik-update`. `manifest` returns what `check-manifest` printed.
 pub struct Checks<'a> {
     pub pointer: &'a dyn Fn(&Path, &Path) -> Result<(), String>,
     pub manifest: &'a dyn Fn(&Path) -> Result<String, String>,
@@ -306,10 +285,9 @@ pub fn running_version() -> String {
     text.lines().find_map(|l| l.strip_prefix("VERSION_ID=")).map(|v| v.trim_matches('"').to_string()).unwrap_or_default()
 }
 
-/// `channel = <address>` from `CONF`. Only the verified root's copy lasts: one
-/// root writes under /etc is moved out of the overlay at the next boot
-/// (sysinit.sh, `prune_etc_upper`). The address says where to ask, nothing
-/// more; what comes back is believed only on the trust anchor's signature.
+/// `channel = <address>` from `CONF`. A copy written under /etc does not
+/// survive the next boot (sysinit.sh, `prune_etc_upper`), and the address is
+/// only where to ask: answers are believed on the trust anchor's signature.
 pub fn channel_from(conf: &str) -> Option<String> {
     conf.lines().find_map(|l| {
         let (k, v) = l.split_once('=')?;
@@ -317,9 +295,8 @@ pub fn channel_from(conf: &str) -> Option<String> {
     })
 }
 
-/// A directory that is this process's own and nobody else's, made or found.
-/// One that was already there is looked at, not believed: a link, another
-/// owner or a mode that lets anyone else in is refused.
+/// Make or find a directory of this user's alone; an existing link, another
+/// owner, or a mode that lets anyone else in is refused.
 fn private_dir(p: &Path) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt;
     match std::fs::DirBuilder::new().recursive(true).mode(0o700).create(p) {
@@ -342,8 +319,7 @@ fn put_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", tmp.display()))?;
     f.write_all(bytes).and_then(|_| f.sync_all()).map_err(|e| format!("{}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))?;
-    // The name is the directory's to remember: without this the rename can be
-    // lost to a power cut although the file's own bytes were synced.
+    // Sync the directory too, or a power cut can lose the rename.
     let parent = path.parent().unwrap_or(Path::new("."));
     std::fs::File::open(parent).and_then(|d| d.sync_all()).map_err(|e| format!("{}: {e}", parent.display()))
 }
@@ -370,9 +346,9 @@ fn verified_files(dir: &Path, version: &str) -> Option<Vec<Entry>> {
     (text.lines().next() == Some(&format!("version: {version}"))).then(|| parse_file_list(&text).ok()).flatten()
 }
 
-/// `update-latest`: a statement of what is current and its signature, from
-/// the net zone. One is looked at per interval, whatever becomes of it, so a
-/// hostile zone cannot make zone 0 verify signatures all day.
+/// `update-latest`: a pointer and its signature from the net zone. One is
+/// looked at per interval, whatever its fate, so a hostile zone cannot keep
+/// zone 0 verifying signatures.
 pub fn latest(dir: &Path, checks: &Checks, now: i64, role: &str, running: &str, pointer: &[u8], sig: &[u8]) -> Result<Standing, String> {
     private_dir(dir)?;
     let last: Option<i64> = std::fs::read_to_string(dir.join("considered")).ok().and_then(|s| s.trim().parse().ok());
@@ -381,8 +357,7 @@ pub fn latest(dir: &Path, checks: &Checks, now: i64, role: &str, running: &str, 
     }
     put_file(&dir.join("considered"), now.to_string().as_bytes())?;
     let text = std::str::from_utf8(pointer).map_err(|_| "the pointer is not text".to_string())?;
-    // What it says is judged only after who said it: a parse error must not
-    // tell an unsigned sender anything a signed one would not also see.
+    // Verify before parsing, so a parse error tells an unsigned sender nothing.
     let scratch = dir.join("checking");
     let _ = std::fs::remove_dir_all(&scratch);
     private_dir(&scratch)?;
@@ -397,8 +372,8 @@ pub fn latest(dir: &Path, checks: &Checks, now: i64, role: &str, running: &str, 
     Ok(standing)
 }
 
-/// `kryptik update fetch`: the person asks for the release the newest
-/// accepted statement names. Nothing is fetched that was not asked for.
+/// `kryptik update fetch`: the user asks for the release the newest accepted
+/// statement names. Nothing is fetched that was not asked for.
 pub fn want(dir: &Path, running: &str) -> Result<String, String> {
     let p = stored_pointer(dir).ok_or("no statement of what is current has been accepted yet")?;
     if version_cmp(&p.version, running) != Ordering::Greater {
@@ -447,10 +422,9 @@ fn free_bytes(path: &Path) -> Option<u64> {
     (unsafe { libc::statvfs(c.as_ptr(), &mut st) } == 0).then(|| st.f_bavail as u64 * st.f_frsize as u64)
 }
 
-/// `update-put`: bytes for the release that is wanted, under `may_put`'s
-/// rule. When the manifest and its signature are both there they are
-/// verified, held to the hash the accepted pointer announced, and measured
-/// against the room there is; only then is anything they list accepted.
+/// `update-put`: bytes for the wanted release, under `may_put`'s rule. Once
+/// both manifest and signature are in, they must verify, match the pointer's
+/// hash and fit the free space before any file they list is accepted.
 pub fn put(dir: &Path, checks: &Checks, now: i64, name: &str, offset: u64, bytes: &[u8]) -> Result<String, String> {
     let version = wanted(dir).ok_or("no release has been asked for")?;
     let p = stored_pointer(dir).filter(|p| p.version == version).ok_or("the release asked for is not the one the newest statement names")?;
@@ -478,17 +452,13 @@ pub fn put(dir: &Path, checks: &Checks, now: i64, name: &str, offset: u64, bytes
         let _ = std::fs::remove_dir_all(&stage);
         Err(why)
     };
-    // One refused manifest per interval, as one statement is looked at per
-    // interval: a refusal clears the stage, so without this a hostile zone
-    // could feed the verifier's parser a new pair as fast as it could send.
+    /* One refused manifest per interval: a refusal clears the stage, so a
+     * hostile zone could otherwise feed the verifier pairs as fast as it sends. */
     let refused: Option<i64> = std::fs::read_to_string(dir.join("refused")).ok().and_then(|s| s.trim().parse().ok());
     if refused.is_some_and(|t| (now - t).unsigned_abs() < POINTER_INTERVAL_SECS) {
         return refuse(format!("a manifest was refused less than {} minutes ago", POINTER_INTERVAL_SECS / 60));
     }
-    // Every refusal from here on starts the interval, whichever check made
-    // it: a manifest that verifies but is for another version, or is not the
-    // one announced, or does not fit, costs a download and a verification
-    // as much as one that does not verify, and was retried every minute.
+    // Every refusal below starts the interval: each cost a download and a verification.
     let refuse_checked = |why: String| -> Result<String, String> {
         put_file(&dir.join("refused"), now.to_string().as_bytes())?;
         refuse(why)
@@ -515,7 +485,7 @@ pub fn put(dir: &Path, checks: &Checks, now: i64, name: &str, offset: u64, bytes
     Ok(format!("{name} complete; the manifest verifies, {} file(s), {need} bytes", files.len()))
 }
 
-/// `kryptik update status`, as lines for a person.
+/// `kryptik update status`, as lines for the user.
 pub fn status(dir: &Path, now: i64, running: &str) -> String {
     let mut out = format!("running    {running}\n");
     match stored_pointer(dir) {
@@ -548,8 +518,7 @@ pub fn status(dir: &Path, now: i64, running: &str) -> String {
     out
 }
 
-/// The staged release's directory when every byte of it has arrived: what
-/// `kryptik update apply` hands to `kryptik-update apply`.
+/// The staged release's directory once complete, for `kryptik-update apply`.
 pub fn complete_stage(dir: &Path) -> Result<PathBuf, String> {
     let v = wanted(dir).ok_or("no release has been asked for")?;
     let files = verified_files(dir, &v).ok_or_else(|| format!("{v}: its manifest has not arrived"))?;
@@ -581,7 +550,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pointer_parses_and_anything_else_does_not() {
+    fn parse_pointer_rejects_malformed() {
         let p = parse_pointer(&pointer_text("1.0.3", "2027-03-02T14:05:00+00:00")).unwrap();
         assert_eq!((p.role.as_str(), p.version.as_str(), p.base.as_str()), ("production", "1.0.3", "1.0.3/"));
         assert_eq!(p.issued, crate::time::parse_iso8601("2027-03-02T14:05:00Z").unwrap());
@@ -602,7 +571,7 @@ mod tests {
     }
 
     #[test]
-    fn versions_order_as_the_release_tool_orders_them() {
+    fn versions_order_like_sort_v() {
         for (a, b) in [("1.0.3", "1.0.10"), ("1.9", "1.10"), ("1.0", "1.0.1"), ("0.9.9", "1.0"), ("1.0-rc1", "1.0-rc2"), ("1.02", "1.3")] {
             assert_eq!(version_cmp(a, b), Ordering::Less, "{a} < {b}");
             assert_eq!(version_cmp(b, a), Ordering::Greater, "{b} > {a}");
@@ -612,32 +581,30 @@ mod tests {
     }
 
     #[test]
-    fn a_pointer_is_accepted_for_this_role_and_never_backwards() {
+    fn pointer_accepted_for_role_never_backwards() {
         let p = parse_pointer(&pointer_text("1.0.3", "2027-03-02T14:05:00Z")).unwrap();
         assert_eq!(accept_pointer(&p, "production", "1.0.2", None, p.issued), Ok(Standing::Available("1.0.3".into())));
         assert_eq!(accept_pointer(&p, "production", "1.0.3", None, p.issued), Ok(Standing::Current));
         // An older release named by a newer statement is not an update.
         assert_eq!(accept_pointer(&p, "production", "1.1.0", None, p.issued), Ok(Standing::Current));
         assert!(accept_pointer(&p, "development", "1.0.2", None, p.issued).unwrap_err().contains("role"));
-        // The same statement again is fine: that is what a re-issue looks
-        // like to a machine that polls more often than the schedule.
+        // The same statement again is fine: polled more often than re-issued.
         assert!(accept_pointer(&p, "production", "1.0.2", Some(p.issued), p.issued).is_ok());
         assert!(accept_pointer(&p, "production", "1.0.2", Some(p.issued + 1), p.issued).unwrap_err().contains("replay"));
-        // Dated ahead of the clock: a day is tolerated, more is refused, so
-        // one bad date cannot make every later statement a replay.
+        // Dated ahead of the clock: a day is tolerated, more is refused.
         assert!(accept_pointer(&p, "production", "1.0.2", None, p.issued - MAX_AHEAD_SECS).is_ok());
         assert!(accept_pointer(&p, "production", "1.0.2", None, p.issued - MAX_AHEAD_SECS - 1).unwrap_err().contains("clock"));
     }
 
     #[test]
-    fn a_pointer_goes_stale_after_the_bound_and_not_before() {
+    fn pointer_stale_only_after_bound() {
         assert_eq!(staleness(1000 + STALE_AFTER_SECS, 1000), (30, false));
         assert_eq!(staleness(1001 + STALE_AFTER_SECS, 1000), (30, true));
         assert_eq!(staleness(500, 1000), (0, false));
     }
 
     #[test]
-    fn a_base_resolves_against_the_verified_channel_only() {
+    fn base_resolves_under_channel_only() {
         let ch = "https://updates.example/stable";
         assert_eq!(resolve_base(ch, "1.0.3/", "production").unwrap(), "https://updates.example/stable/1.0.3/");
         assert_eq!(resolve_base(&format!("{ch}/"), "1.0.3", "production").unwrap(), "https://updates.example/stable/1.0.3/");
@@ -654,7 +621,7 @@ mod tests {
     }
 
     #[test]
-    fn the_file_list_is_the_verified_manifests_and_nothing_odd() {
+    fn file_list_rejects_odd_entries() {
         assert_eq!(total_bytes(&files()), 1089);
         for bad in ["file 10 ../x\n", "file 10 .hidden\n", "file ten x\n", "file 10 manifest\n", "file 1 a\nfile 2 a\n", "version: 1\n", "file 10 a b\n"] {
             assert!(parse_file_list(bad).is_err(), "{bad:?} was accepted");
@@ -662,18 +629,18 @@ mod tests {
     }
 
     #[test]
-    fn nothing_large_is_taken_before_the_manifest_has_verified() {
+    fn nothing_large_before_manifest_verifies() {
         assert!(may_put(None, "manifest", 0, 4096, 0).is_ok());
         assert!(may_put(None, "manifest.sig", 0, MANIFEST_MAX, 0).is_ok());
         assert!(may_put(None, "manifest", 0, MANIFEST_MAX + 1, 0).is_err());
         assert!(may_put(None, "manifest", 1, 10, 0).is_err());
         assert!(may_put(None, "kryptik-root.img", 0, 10, 0).unwrap_err().contains("before the manifest"));
-        // And once it has, the manifest is what was verified, for good.
+        // Once verified, the manifest is never replaced.
         assert!(may_put(Some(&files()), "manifest", 0, 10, 0).is_err());
     }
 
     #[test]
-    fn bytes_are_taken_only_where_the_signed_manifest_provides_for_them() {
+    fn bytes_taken_only_where_manifest_allows() {
         let f = files();
         assert!(may_put(Some(&f), "kryptik-root.img", 0, 1000, 0).is_ok());
         assert!(may_put(Some(&f), "kryptik-root.img", 600, 400, 600).is_ok());
@@ -687,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn a_poll_names_what_is_missing_and_from_which_byte() {
+    fn poll_names_missing_files_and_offsets() {
         let held = |n: &str| match n { "kryptik-root.img" => 600, "kryptik-a.efi" => 40, _ => 0 };
         assert_eq!(
             still_needed(&files(), held),
@@ -715,7 +682,7 @@ mod tests {
     const CH: &str = "https://updates.example/stable";
 
     #[test]
-    fn a_statement_is_stored_only_when_it_verifies_is_new_and_is_due() {
+    fn latest_stores_only_valid_statements() {
         let d = scratch("latest");
         let p = pointer_text("1.0.3", "2027-03-02T14:05:00Z");
         let no = Checks { pointer: &|_, _| Err("the pointer signature does NOT verify".into()), manifest: &|_| Err("unused".into()) };
@@ -732,8 +699,7 @@ mod tests {
         let t2 = t1 + POINTER_INTERVAL_SECS as i64;
         assert!(latest(&d, &yes(), t2, "production", "1.0.2", old.as_bytes(), b"sig").unwrap_err().contains("replay"));
         assert_eq!(stored_pointer(&d).unwrap().version, "1.0.3");
-        // Next year's, validly signed: stored, it would make every honest
-        // statement until then a replay. It is refused and nothing changes.
+        // Next year's, validly signed: refused, and nothing changes.
         let ahead = pointer_text("9.9.9", "2028-03-02T14:05:00Z");
         let t3 = t2 + POINTER_INTERVAL_SECS as i64;
         assert!(latest(&d, &yes(), t3, "production", "1.0.2", ahead.as_bytes(), b"sig").unwrap_err().contains("clock"));
@@ -742,7 +708,7 @@ mod tests {
     }
 
     #[test]
-    fn a_release_is_staged_in_the_order_that_bounds_it() {
+    fn release_is_staged_in_order() {
         let d = scratch("stage");
         let p = pointer_text("1.0.3", "2027-03-02T14:05:00Z");
         // Nothing asked for: nothing polled for, nothing taken.
@@ -764,8 +730,8 @@ mod tests {
         assert!(put(&d, &yes(), T0, "manifest", 0, b"another").unwrap_err().contains("not replaced"));
         assert!(put(&d, &yes(), T0, "stowaway", 0, b"x").unwrap_err().contains("does not list"));
         assert_eq!(put(&d, &yes(), T0, "kryptik-root.img", 0, b"01234").unwrap(), "kryptik-root.img 5/10");
-        // The connection dropped; the net zone is told where to resume, and
-        // anything else is refused without a byte being written.
+        /* The connection dropped: the poll says where to resume, and any other
+         * offset is refused without writing. */
         assert_eq!(poll(&d, CH, "production", "1.0.2"), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need kryptik-root.img 5 root.json 0");
         assert!(put(&d, &yes(), T0, "kryptik-root.img", 0, b"01234").unwrap_err().contains("5 bytes are held"));
         assert!(put(&d, &yes(), T0, "kryptik-root.img", 5, b"567890").unwrap_err().contains("past that"));
@@ -789,7 +755,7 @@ mod tests {
     }
 
     #[test]
-    fn a_manifest_that_is_not_the_one_announced_is_thrown_away() {
+    fn wrong_manifest_is_discarded() {
         for (tag, listing, why) in [
             ("hash", LISTING.replace("sha256: 0", "sha256: f"), "announced"),
             ("version", LISTING.replace("version: 1.0.3", "version: 1.0.4"), "not for 1.0.3"),
@@ -805,8 +771,7 @@ mod tests {
             assert!(put(&d, &checks, T0, "manifest.sig", 0, b"s").unwrap_err().contains(why), "{tag}");
             assert!(!staging(&d, "1.0.3").exists(), "{tag}: the refused manifest was kept");
             assert_eq!(poll(&d, CH, "production", "1.0.2"), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need manifest 0 manifest.sig 0", "{tag}");
-            // A manifest that verified and was refused anyway starts the
-            // interval too: the next pair is not looked at a minute later.
+            // A verified but refused manifest starts the interval too.
             put(&d, &checks, T0 + 60, "manifest", 0, b"m").unwrap();
             assert!(put(&d, &checks, T0 + 60, "manifest.sig", 0, b"s").unwrap_err().contains("minutes ago"), "{tag}: retried within the interval");
             let _ = std::fs::remove_dir_all(&d);
@@ -818,8 +783,7 @@ mod tests {
         let no = Checks { pointer: &|_, _| Ok(()), manifest: &|_| Err("the manifest signature does NOT verify".into()) };
         put(&d, &no, T0, "manifest", 0, b"m").unwrap();
         assert!(put(&d, &no, T0, "manifest.sig", 0, b"s").unwrap_err().contains("does NOT verify"));
-        // The next pair is not even looked at until the interval has passed,
-        // whatever it is; after it, a manifest that verifies is taken.
+        // Until the interval passes the next pair is not looked at; after it, it is.
         put(&d, &yes(), T0 + 60, "manifest", 0, b"m").unwrap();
         assert!(put(&d, &yes(), T0 + 60, "manifest.sig", 0, b"s").unwrap_err().contains("minutes ago"));
         let later = T0 + POINTER_INTERVAL_SECS as i64;
@@ -830,7 +794,7 @@ mod tests {
     }
 
     #[test]
-    fn the_channel_address_is_read_from_the_configuration() {
+    fn channel_read_from_config() {
         assert_eq!(channel_from("# where releases are\nchannel = https://updates.example/stable\n").as_deref(), Some(CH));
         assert_eq!(channel_from("channel =\n"), None);
         assert_eq!(channel_from("interval = 1\n"), None);
