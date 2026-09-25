@@ -10,7 +10,7 @@ is [separate](state-encryption.md).
 
 - **Zone 0 owns the container and the mapping.** `storage.volume` names a
   LUKS2 file under `/var/lib/kryptik/volumes/` (`<zone>.luks`) or a block
-  device. kryptikd (root) opens it as `/dev/mapper/kryptik-<zone>`
+  device. kryptikd (root) opens it as `/dev/mapper/kryptik-zone-<zone>`
   (`cryptsetup open --type luks2`), runs `e2fsck -p` (damage it cannot repair
   refuses the launch), and mounts the ext4 `nosuid,nodev,noatime` at the
   zone's data directory, owned by the zone's identity; exec stays allowed,
@@ -60,9 +60,9 @@ a passphrase is a UX choice; kryptikd works either way.
 - A wrong passphrase (`cryptsetup` exit 2) prints `zone "work": volume did not
   unlock (wrong passphrase)` and the zone does not start; the UI retries, not
   kryptikd.
-- If `kryptik-<zone>` already exists at start, the start is refused and
+- If `kryptik-zone-<zone>` already exists at start, the start is refused and
   points at `kryptikd gc`, which unmounts and closes every
-  `/dev/mapper/kryptik-*` whose zone has no running launcher.
+  `/dev/mapper/kryptik-zone-*` whose zone has no running launcher.
 
 Secure erasure of keys is not claimed: nothing here can demonstrate it.
 

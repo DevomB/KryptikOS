@@ -624,7 +624,7 @@ if (( PRIVILEGED == 1 )) && command -v cryptsetup >/dev/null 2>&1 && [[ -e /dev/
                 info "output: $(printf '%s' "$ZOUT" | tr '\n' '|' | cut -c1-220)"
             fi
         fi
-        if [[ -e /dev/mapper/kryptik-sealed ]]; then
+        if [[ -e /dev/mapper/kryptik-zone-sealed ]]; then
             fail "F4b the mapping is still open after the zone exited"
             "$KRYPTIKD" stop sealed --now >/dev/null 2>&1 || true
         else
