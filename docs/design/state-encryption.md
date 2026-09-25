@@ -151,5 +151,5 @@ One unlock path, the one a person uses.
 
 `tools/install/kryptik-install.sh`, `build/service-scripts/sysinit.sh` and
 `devices.sh`, `tools/update/kryptik-recover`, the `kryptik` command,
-`tools/image/*-test.sh` and `vm-drive.py`, `docs/BOOT_INSTALL_RECOVER.md`.
+`tools/image/*-test.sh` and `vm-drive.py`, `docs/user-guide.md`.
 No kernel change for the recommended answers.
