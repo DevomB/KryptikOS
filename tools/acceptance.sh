@@ -123,26 +123,33 @@ REV="$(git -c safe.directory='*' -C "$ROOT" rev-parse HEAD 2>/dev/null || echo u
 REV_DESC="$(git -c safe.directory='*' -C "$ROOT" describe --always --dirty --long 2>/dev/null || echo unknown)"
 DIRTY="$(git -c safe.directory='*' -C "$ROOT" status --porcelain 2>/dev/null)"
 
-# A part of a split run writes down what it tested and on what, and the merge
-# takes only parts that tested this revision on these media, on the firmware
-# and QEMU its report names.
-tested() {
-    printf 'revision %s\nusb %s\niso %s\nfirmware %s %s\nqemu %s kvm=%s\n' \
-        "$REV" "$H_USB" "$H_ISO" "$H_FW" "$FW_PKG" "$QEMU_VER" "$KVM"
-}
-parts_disagree() {   # the first part that tested something else, and what
-    local f id
+# A part of a split run writes down what it tested and what it ran on. The
+# merge takes only parts that tested this revision on these media and ran on
+# one firmware and one QEMU, and its report names theirs: the merging machine
+# boots nothing, and its packages may be newer than the parts' were.
+tested() { printf 'revision %s (%s)\nusb %s\niso %s\n' "$REV" "$REV_DESC" "$H_USB" "$H_ISO"; }
+ran_on() { printf 'firmware-sha256 %s\nfirmware-package %s\nqemu %s\nkvm %s\n' "$H_FW" "$FW_PKG" "$QEMU_VER" "$KVM"; }
+parts_disagree() {   # the first part that tested or ran on something else, and what
+    local f id first=""
     for f in "${PARTS[@]}"; do
         id="$(dirname "$f")/identity"
         if [[ ! -f "$id" ]]; then echo "${f} has no identity beside it"; return; fi
-        if [[ "$(cat "$id")" != "$(tested)" ]]; then echo "${f} tested $(tr '\n' ';' < "$id")"; return; fi
+        if [[ "$(sed -n 1,3p "$id")" != "$(tested)" ]]; then echo "${f} tested $(sed -n 1,3p "$id" | tr '\n' ';')"; return; fi
+        if [[ -z "$first" ]]; then
+            first="$id"
+        elif [[ "$(sed -n '4,$p' "$id")" != "$(sed -n '4,$p' "$first")" ]]; then
+            echo "${f} ran on $(sed -n '4,$p' "$id" | tr '\n' ';') but ${first} on $(sed -n '4,$p' "$first" | tr '\n' ';')"; return
+        fi
     done
 }
 if [[ -n "$ONLY" ]]; then
-    tested > "${OUT}/identity"
+    { tested; ran_on; } > "${OUT}/identity"
 elif [[ "${#PARTS[@]}" -gt 0 ]]; then
     disagree="$(parts_disagree)"
     [[ -z "$disagree" ]] || die "not one run: ${disagree}; this merge tests $(tested | tr '\n' ';')"
+    id="$(dirname "${PARTS[0]}")/identity"
+    H_FW="$(sed -n 's/^firmware-sha256 //p' "$id")"; FW_PKG="$(sed -n 's/^firmware-package //p' "$id")"
+    QEMU_VER="$(sed -n 's/^qemu //p' "$id")"; KVM="$(sed -n 's/^kvm //p' "$id")"
 fi
 
 # --------------------------------------------------------------- results --
