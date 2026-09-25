@@ -120,7 +120,15 @@ if [ -n "$trial" ]; then
             if commit_slot "$slot"; then
                 rm -f "$B/trial"
                 result "commit $slot"
-                kryptik-efiboot clear-next >/dev/null 2>&1 || true
+                # The trial's firmware entries go with the trial: BootNext and
+                # both slots' entries, so the firmware boots the disk's own
+                # entry, BOOTX64.EFI, this slot. An entry left behind outlived
+                # the commit: a firmware regenerates its own disk entry at the
+                # end of BootOrder whenever the devices change, and the first
+                # Kryptik entry ever armed then won over the committed slot at
+                # every cold boot after that.
+                kryptik-efiboot forget >/dev/null 2>&1 \
+                    || say "the firmware's Kryptik entries could not be removed; BOOTX64.EFI names slot $slot, the firmware's own order may not"
                 say "slot $slot is healthy and committed"
             else
                 result "commit-failed $slot"

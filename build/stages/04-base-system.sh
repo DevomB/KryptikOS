@@ -163,6 +163,18 @@ native_build() {
 
 # --- packages that need more than ./configure ------------------------------
 
+# util-linux with the patch set in build/patches (see its README): 2.42.3 does
+# not compile against a glibc older than 2.43, and gets one flag wrong there.
+s_util_linux() {
+    local src; src="$(unpack "util-linux-${V_UTIL_LINUX}.tar.xz" "util-linux-${V_UTIL_LINUX}")"
+    cd "$src"
+    apply_repo_patches "util-linux-${V_UTIL_LINUX}"
+    ./configure --prefix=/usr --libdir=/usr/lib --runstatedir=/run --disable-chfn-chsh --disable-login --disable-nologin --disable-su --disable-setpriv --disable-runuser --disable-pylibmount --disable-liblastlog2 --disable-static --without-python
+    make
+    make install
+}
+
+
 # Locale generation, using the localedef already installed by stage 01/02.
 #
 # Split out from the glibc rebuild and placed FIRST because of a dependency
@@ -2308,7 +2320,7 @@ PACKAGES=(
     "zlib"        "s_zlib"
     "python"      "s_python"
     "texinfo"     "native_build texinfo-${V_TEXINFO}.tar.xz texinfo-${V_TEXINFO}"
-    "util-linux"  "native_build util-linux-${V_UTIL_LINUX}.tar.xz util-linux-${V_UTIL_LINUX} --libdir=/usr/lib --runstatedir=/run --disable-chfn-chsh --disable-login --disable-nologin --disable-su --disable-setpriv --disable-runuser --disable-pylibmount --disable-liblastlog2 --disable-static --without-python"
+    "util-linux"  "s_util_linux"
     "glibc"       "s_glibc"
     "bzip2"       "s_bzip2"
     "xz"          "s_xz_native"

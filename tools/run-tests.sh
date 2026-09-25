@@ -35,6 +35,7 @@ SUITES=(
     "test-services|tools/test-services.sh"
     "test-netzone-time|tools/test-netzone-time.sh"
     "test-boot-success|tools/test-boot-success.sh"
+    "test-efiboot|tools/test-efiboot.sh"
     "test-manifest|tools/test-artifact-manifest.sh"
     "test-s6-init|tools/test-s6-init-config.sh"
     "test-image-signing|tools/test-image-signing.sh"
