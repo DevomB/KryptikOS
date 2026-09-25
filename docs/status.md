@@ -57,7 +57,7 @@ state partition.
 
 - Nothing has run on physical hardware.
 - Releases are signed by a developer key the build generates, and the
-  kernel's modules by one the kernel build makes and the build's cache keeps.
+  kernel's modules by one each kernel build makes for itself.
 - The watchdog catches a machine that has stopped, not one that is merely
   broken. A supervised service feeds every watchdog device, so a machine
   whose userspace stops being scheduled resets (the state suite proves it by

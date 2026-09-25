@@ -395,6 +395,17 @@ if [[ ! -d "$KSRC" && -f "${STAMPS}/${STAMP_PREFIX}unpack" ]]; then
     warn "the kernel tree ${KSRC} is gone but its steps were stamped as built;"
     warn "those stamps are archived under ${gone}/ and the tree is unpacked, patched, configured and built again."
 fi
+# The module signing key never goes into the cache, which a pull request's run
+# can restore. A tree without it builds again from `build`: kbuild makes a new
+# key, and the kernel and its modules are signed as one pair.
+if [[ -d "$KSRC" && ! -f "$KSRC/certs/signing_key.pem" && -f "${STAMPS}/${STAMP_PREFIX}build" ]]; then
+    gone="${STAMPS}/legacy/kernel-key-gone-$(date +%Y%m%dT%H%M%S)"
+    mkdir -p "$gone"
+    for s in build size modules install verify-install; do
+        [[ -f "${STAMPS}/${STAMP_PREFIX}${s}" ]] && mv -f "${STAMPS}/${STAMP_PREFIX}${s}" "$gone/"
+    done
+    warn "the kernel tree has no module signing key; it is built and installed again with a new one"
+fi
 
 step unpack          s_unpack
 step patch           s_patch
