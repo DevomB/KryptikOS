@@ -5,12 +5,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# ZERO dependencies, and not as a badge. This crate decides whether two zones
-# are distinguishable to a human, which is the last line of defence in the
-# whole architecture (docs/architecture.md: "the only layer that matters - the
-# human one"). Colour science implemented from published formulae that can be
-# checked against reference values in tests beats a crate nobody in this
-# project has read. See ADR-010 for the same argument applied to kryptikd.
+# No dependencies. This crate decides whether a person can tell two zones
+# apart, and colour science from published formulae, checked against
+# reference values in tests, beats a crate nobody in this project has read.
+# ADR-010 makes the same argument for kryptikd.
 [dependencies]
 
 [[bin]]

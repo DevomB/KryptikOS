@@ -1,11 +1,9 @@
 //! Colour-vision deficiency simulation.
 //!
-//! Kryptik identifies zones by colour and calls that identification
-//! "load-bearing, not decoration" (compartments/zones/vault.toml). A
-//! load-bearing claim has to hold for the people actually using the system,
-//! and roughly 8% of men of Northern European descent have some form of
-//! red-green colour-vision deficiency. If two zones are the same colour to
-//! them, the claim is false for one user in twelve.
+//! Kryptik identifies zones by colour, and that has to hold for the people
+//! actually using the system: roughly 8% of men of Northern European descent
+//! have some form of red-green colour-vision deficiency. If two zones are the
+//! same colour to them, the identification fails for one user in twelve.
 //!
 //! # Why only severity 1.0
 //!

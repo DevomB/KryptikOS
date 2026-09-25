@@ -431,7 +431,7 @@ mod tests {
         }
     }
 
-    /// The load-bearing claim: a palette exists that passes.
+    /// The claim the floor rests on: a palette exists that passes.
     ///
     /// Without this, the invariant might simply be unsatisfiable, and
     /// reporting the shipped palette as broken would be reporting that the
