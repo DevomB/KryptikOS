@@ -161,13 +161,16 @@ part() { { tested; ran_on; } > "$T/parts/$1/identity"; }
 part a; part b
 [[ -z "$(parts_disagree)" ]] && ok "parts that tested one revision on one medium are one run" || bad "parts disagree: $(parts_disagree)"
 sed -i 's/^usb .*/usb u2/' "$T/parts/b/identity"
-[[ "$(parts_disagree)" == "$T/parts/b/results.tsv tested"*"usb u2"* ]] && ok "a part that tested another medium is refused, by name" || bad "another medium: '$(parts_disagree)'"
+[[ "$(parts_disagree)" == "the part in $T/parts/b tested"*"usb u2"* ]] && ok "a part that tested another medium is refused, by name" || bad "another medium: '$(parts_disagree)'"
+part b
+sed -i '/^qemu /d' "$T/parts/b/identity"
+[[ "$(parts_disagree)" == "the part in $T/parts/b does not say its qemu" ]] && ok "a part that does not say what it ran on is refused" || bad "no qemu line: '$(parts_disagree)'"
 part b
 # shellcheck disable=SC2034  # read by ran_on
 { H_FW=f2; QEMU_VER="QEMU 10"; }
 [[ -z "$(parts_disagree)" ]] && ok "a merging machine with newer firmware and QEMU than the parts takes them" || bad "the merger's own firmware refused the parts: $(parts_disagree)"
 part a
-[[ "$(parts_disagree)" == "$T/parts/b/results.tsv ran on "*"QEMU 9;"*" but "*"QEMU 10;"* ]] && ok "parts that ran on different QEMU are refused" || bad "parts on two QEMUs: '$(parts_disagree)'"
+[[ "$(parts_disagree)" == "the part in $T/parts/b ran on "*"QEMU 9;"*" but the part in $T/parts/a on "*"QEMU 10;"* ]] && ok "parts that ran on different QEMU are refused" || bad "parts on two QEMUs: '$(parts_disagree)'"
 rm "$T/parts/a/identity"
 [[ "$(parts_disagree)" == *"no identity"* ]] && ok "a results.tsv with no identity beside it is refused" || bad "no identity: '$(parts_disagree)'"
 # shellcheck disable=SC2034  # back to a run of its own
