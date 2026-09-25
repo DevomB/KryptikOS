@@ -600,6 +600,51 @@ s_binutils_native() {
     rm -fv /usr/lib/lib{bfd,ctf,ctf-nobfd,gprofng,opcodes,sframe}.a
 }
 
+# GCC again, in place of stage 02's temporary compiler, which set no flags:
+# the same triplet and defaults, so stage 05 and the stamps see the same
+# compiler, but now built with the hardening flags. Its binaries become PIE
+# with BIND_NOW, and libgcc_s and libstdc++, which glibc's unwinder and every
+# C++ program load, carry IBT and SHSTK.
+s_gcc_native() {
+    local src; src="$(unpack "gcc-${V_GCC}.tar.xz" "gcc-${V_GCC}")"
+    cd "$src"
+    case "$(uname -m)" in
+        x86_64) sed -e '/m64=/s/lib64/lib/' -i.orig gcc/config/i386/t-linux64 ;;
+    esac
+    mkdir -p build && cd build
+    ../configure --build="$(uname -m)-kryptik-linux-gnu" --prefix=/usr LD=ld \
+        --enable-languages=c,c++ --enable-default-pie --enable-default-ssp \
+        --enable-host-pie --enable-host-bind-now --enable-cet \
+        --disable-bootstrap --disable-fixincludes --disable-multilib --disable-nls \
+        --disable-libatomic --disable-libgomp --disable-libquadmath \
+        --disable-libsanitizer --disable-libssp --disable-libvtv \
+        --with-system-zlib
+    make
+    make install
+
+    local triple want t lib
+    triple="$(gcc -dumpmachine)"; want="$(uname -m)-kryptik-linux-gnu"
+    [[ "$triple" == "$want" ]] || { echo "FAIL: the new gcc targets ${triple}, not ${want}"; return 1; }
+    t="$(mktemp -d)"
+    printf '#include <stdio.h>\nint main(void) { puts("c ok"); return 0; }\n' > "$t/c.c"
+    printf '#include <iostream>\nint main() { std::cout << "c++ ok" << std::endl; }\n' > "$t/p.cc"
+    # shellcheck disable=SC2086  # the flags are lists of words
+    { gcc $CFLAGS $LDFLAGS -o "$t/c" "$t/c.c" && "$t/c" \
+        && g++ $CXXFLAGS $LDFLAGS -o "$t/p" "$t/p.cc" && "$t/p"; } \
+        || { rm -rf "$t"; echo "FAIL: the new compiler cannot build and run a C and a C++ program"; return 1; }
+    # Whole outputs, not pipes into grep -q, which can end readelf with SIGPIPE.
+    local out; out="$(readelf -h "$t/c")"; rm -rf "$t"
+    [[ "$out" == *"Type:"*"DYN"* ]] || { echo "FAIL: its programs are not PIE"; return 1; }
+    for lib in /usr/lib/libgcc_s.so.1 "$(readlink -f /usr/lib/libstdc++.so.6)"; do
+        out="$(readelf -n "$lib")"
+        [[ "$out" == *"x86 feature: IBT, SHSTK"* ]] || { echo "FAIL: ${lib} carries no IBT and SHSTK"; return 1; }
+    done
+    out="$(readelf -h -d "$(command -v gcc)")"
+    [[ "$out" == *"Type:"*"DYN"* && ( "$out" == *BIND_NOW* || "$out" == *"Flags:"*" NOW"* ) ]] \
+        || { echo "FAIL: gcc itself is not PIE with BIND_NOW"; return 1; }
+    echo "ok: ${triple} gcc ${V_GCC}; libgcc_s and libstdc++ carry IBT and SHSTK; gcc is PIE with BIND_NOW"
+}
+
 s_s6_stack() {
     # ADR-006. skarnet packages use their own configure conventions.
     local p
@@ -1953,6 +1998,8 @@ PACKAGES=(
     "gmp"         "native_build gmp-${V_GMP}.tar.xz gmp-${V_GMP} --enable-cxx --disable-static"
     "mpfr"        "native_build mpfr-${V_MPFR}.tar.xz mpfr-${V_MPFR} --disable-static --enable-thread-safe"
     "mpc"         "native_build mpc-${V_MPC}.tar.gz mpc-${V_MPC} --disable-static"
+    # After its libraries; everything below is built by it.
+    "gcc"         "s_gcc_native"
     "attr"        "native_build attr-${V_ATTR}.tar.gz attr-${V_ATTR} --disable-static --sysconfdir=/etc"
     "acl"         "native_build acl-${V_ACL}.tar.xz acl-${V_ACL} --disable-static"
     "libcap"      "s_libcap"

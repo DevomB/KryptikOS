@@ -53,7 +53,12 @@ carry the full set. The fix is per package (or `-Z cf-protection` for the
 Rust binaries), not a weaker check. Part of the CET count was not the
 packages: everything stage 04 builds before its glibc, the first with
 `--enable-cet`, linked stage 01's crt files, which carry no CET note, so each
-of those packages is now built a second time right after glibc.
+of those packages is now built a second time right after glibc. gcc's
+binaries and its runtime libraries were stage 02's temporary compiler, built
+with no flags at all. Stage 04 now builds GCC again with the flags and
+`--enable-cet`, and the step fails unless `libgcc_s` and `libstdc++` (which
+glibc's unwinder and every C++ program load) carry IBT and SHSTK and `gcc`
+itself is PIE with `BIND_NOW`.
 
 ## Allocator
 
