@@ -99,8 +99,11 @@ mdel -i "$ESPIMG" ::/EFI/BOOT/BOOTX64.EFI
 mcopy -i "$ESPIMG" "$TMPK/foreign.efi" ::/EFI/BOOT/BOOTX64.EFI
 dd if="$ESPIMG" of="$DISK" bs=1M oflag=seek_bytes seek="$ESP_OFF" conv=notrunc status=none
 cp "$ENROLLED" "$VARSF"
-"${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode smoke --timeout 120 --name integ-p2 > /dev/null
+"${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode smoke --timeout 120 \
+    --until 'Access Denied|Security Violation' --name integ-p2 > /dev/null
 T2="$(txt_latest)"
+# A disk the firmware never tried would pass the absences below; the refusal must be seen.
+grep -qE 'Access Denied|Security Violation' <<<"$T2" && green "the firmware refused the boot file for its signature" || red "the firmware reported no refusal"
 grep -q 'Linux version' <<<"$T2" && red "a foreign-signed kernel BOOTED under the enrolled key" || green "the firmware did not start the foreign-signed kernel"
 grep -q 'KRYPTIK_SMOKE: BEGIN' <<<"$T2" && red "Kryptik userspace ran from an untrusted boot file" || green "no userspace ran"
 # positive control: the same firmware and store boot the medium's signed kernel

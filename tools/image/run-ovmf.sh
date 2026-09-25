@@ -6,7 +6,7 @@
 #        [--disk FILE]... [--testctl FILE] [--vars clean|enrolled|ms|FILE]
 #        [--vars-file FILE] [--mode console|smoke|serve] [--timeout N]
 #        [--log FILE] [--net none|user] [--mem MB] [--cpus N] [--gpu]
-#        [--allow-reboot] [--name TAG]
+#        [--allow-reboot] [--until REGEX] [--name TAG]
 #
 #   --usb IMG      the medium as a USB mass-storage device (removable)
 #   --iso ISO      the medium as a SATA CD-ROM (/dev/sr0 in the guest)
@@ -25,6 +25,9 @@
 #                  runs (the A/B trial needs BootNext to survive a reboot)
 #   --mode smoke   run to poweroff (or --timeout), serial to --log, exit code
 #                  0 = guest powered off, 124 = timeout
+#   --until REGEX  smoke mode: stop the guest 10 s after REGEX appears on its
+#                  console, for a boot that never powers itself off (a refused
+#                  kernel); exit code 2 if it was still running
 #   --mode serve   start detached with a serial socket and a QMP socket, print
 #                  their paths; tools/image/vm-drive.py talks to them
 #   --mode console interactive serial console (Ctrl-A X quits)
@@ -36,7 +39,7 @@ source "${SELF}/../../build/lib/common.sh"
 
 USB=""; ISO=""; NOMEDIA=0; DISKS=(); TESTCTL=""; VARS="clean"; VARS_FILE=""
 MODE="smoke"; TIMEOUT=300; LOG=""; NET="none"; MEM=2048; CPUS=2; GPU=0; ALLOW_REBOOT=0; NAME="vm"
-DISK_RO=0; BLKDEBUG=""
+DISK_RO=0; BLKDEBUG=""; UNTIL=""
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
         --usb)       USB="${2:?}"; shift 2 ;;
@@ -56,8 +59,9 @@ while [[ "$#" -gt 0 ]]; do
         --cpus)      CPUS="${2:?}"; shift 2 ;;
         --gpu)       GPU=1; shift ;;
         --allow-reboot) ALLOW_REBOOT=1; shift ;;
+        --until)     UNTIL="${2:?}"; shift 2 ;;
         --name)      NAME="${2:?}"; shift 2 ;;
-        -h|--help)   sed -n '2,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help)   sed -n '2,33p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -65,6 +69,7 @@ done
 [[ -n "$USB" || -n "$ISO" || "$NOMEDIA" -eq 1 ]] || die "one of --usb, --iso or --no-media is required"
 [[ -n "$USB" && -n "$ISO" ]] && die "--usb and --iso are exclusive"
 [[ "$NOMEDIA" -eq 1 && "${#DISKS[@]}" -eq 0 ]] && die "--no-media needs at least one --disk"
+[[ -n "$UNTIL" && "$MODE" != smoke ]] && die "--until is for --mode smoke"
 
 # Files only. This hands paths to a process that writes to them.
 regular_file() {
@@ -192,6 +197,18 @@ smoke)
     if [[ ! -S "$SER" ]]; then
         kill "$qpid" 2>/dev/null; wait "$qpid"; rc=$?; [[ "$rc" -eq 0 ]] && rc=1
         warn "QEMU did not open its console socket ${SER}"
+    elif [[ -n "$UNTIL" ]]; then
+        # The line, then 10 s for anything after it. A guest that powered off
+        # meanwhile keeps QEMU's status; one still running is stopped: 2.
+        python3 "${SELF}/vm-drive.py" --serial "$SER" --timeout "$TIMEOUT" "expect:${UNTIL}" "sleep:10" > /dev/null
+        seen=$?
+        for _ in $(seq 1 30); do kill -0 "$qpid" 2>/dev/null || break; sleep 0.1; done
+        if kill -0 "$qpid" 2>/dev/null; then
+            kill "$qpid" 2>/dev/null; wait "$qpid"
+            if [[ "$seen" -eq 0 ]]; then rc=2; else rc=124; fi
+        else
+            wait "$qpid"; rc=$?
+        fi
     elif python3 "${SELF}/vm-drive.py" --serial "$SER" --timeout "$TIMEOUT" wait-exit > /dev/null; then
         # Up to 30 s for QEMU to exit.
         for _ in $(seq 1 300); do kill -0 "$qpid" 2>/dev/null || break; sleep 0.1; done
@@ -206,7 +223,11 @@ smoke)
     fi
     set -e
     [[ "$rc" -eq 124 ]] && warn "QEMU hit the ${TIMEOUT}s timeout"
-    [[ "$rc" -ne 0 && "$rc" -ne 124 ]] && { warn "QEMU exited ${rc}:"; sed 's/^/  /' "${LOG}.qemu" | tail -5; }
+    if [[ "$rc" -eq 2 && -n "$UNTIL" ]]; then
+        echo "stopped 10 s after the awaited line: ${UNTIL}"
+    elif [[ "$rc" -ne 0 && "$rc" -ne 124 ]]; then
+        warn "QEMU exited ${rc}:"; sed 's/^/  /' "${LOG}.qemu" | tail -5
+    fi
     exit "$rc"
     ;;
 serve)

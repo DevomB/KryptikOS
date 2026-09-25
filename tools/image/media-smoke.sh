@@ -43,9 +43,12 @@ TESTCTL="${VMDIR}/testctl-smoke.img"
 
 log "media smoke: ${KIND} ${MEDIUM##*/} (variables: ${VARS})"
 [[ "$REFUSED" -eq 1 ]] && [[ "$TIMEOUT" -gt 120 ]] && TIMEOUT=120
+# A refused boot never powers off: it is stopped once the firmware says so.
+UNTIL=()
+[[ "$REFUSED" -eq 1 ]] && UNTIL=(--until 'Access Denied|Security Violation')
 # This run's own log, never the shared "latest" symlink (maybe another run's).
 SERIAL="${KRYPTIK_WORK}/logs/ovmf-serial.smoke-${KIND}-${VARS}$([[ "$REFUSED" -eq 1 ]] && echo -refused).$(date +%Y%m%dT%H%M%S).$$.log"
-"${SELF}/run-ovmf.sh" "--${KIND}" "$MEDIUM" --testctl "$TESTCTL" --vars "$VARS" --mode smoke --timeout "$TIMEOUT" --name "smoke-${KIND}" --log "$SERIAL"
+"${SELF}/run-ovmf.sh" "--${KIND}" "$MEDIUM" --testctl "$TESTCTL" --vars "$VARS" --mode smoke --timeout "$TIMEOUT" --name "smoke-${KIND}" --log "$SERIAL" "${UNTIL[@]}"
 qrc=$?
 [[ -f "$SERIAL" ]] || die "no serial log at ${SERIAL}"
 TXT="$(mktemp)"; trap 'rm -f "$TXT"' EXIT
