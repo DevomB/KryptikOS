@@ -516,7 +516,7 @@ s_export() {
 
 # --- run --------------------------------------------------------------------
 step sb-keys        s_sb_keys
-step rootfs         s_rootfs "$KRYPTIK_VERSION" "$(cat "${KRYPTIK_ROOT}/build/config/setuid-allowlist.txt" "${KRYPTIK_ROOT}/tools/audit-setuid.sh" | sha256_of_stdin)" "$KRYPTIK_CHANNEL"
+step rootfs         s_rootfs "$KRYPTIK_VERSION" "$(cat "${KRYPTIK_ROOT}/build/config/setuid-allowlist.txt" "${KRYPTIK_ROOT}/build/config/capability-allowlist.txt" "${KRYPTIK_ROOT}/tools/audit-setuid.sh" | sha256_of_stdin)" "$KRYPTIK_CHANNEL"
 step cmdlines       s_cmdlines "$(_hash_file "${IMG}/root.json")"
 step bind-kernels   s_bind_kernels "$(cat "${IMG}"/cmdlines/{slot-a,slot-b,media-usb}.txt | sha256_of_stdin)"
 step sign-kernels   s_sign_kernels "$(cat "${IMG}"/kernels/{slot-a,slot-b,media-usb}.efi | sha256_of_stdin)$(_hash_file "$KEYS/kryptik-sb.crt")"

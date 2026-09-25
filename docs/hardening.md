@@ -135,15 +135,17 @@ sysctls because there is no `bpf()`; seccomp's classic filters do not need it.
 ## setuid elimination
 
 Privilege transitions go through kryptikd, where they can be audited, not
-through setuid binaries. A binary that needs privilege should use a file
-capability (such as `CAP_NET_RAW` for ping) or a brokered service; a setuid
-binary needs a justified entry in `build/config/setuid-allowlist.txt`: today
-`su`, the one way from a login to root, and `passwd`, which nothing brokers
-yet. Stage 06 runs `tools/audit-setuid.sh --strip` over the image's root, so
-the bit comes off every other file (shadow and util-linux install eleven
-more); without `--strip` the script fails on any unlisted setuid or setgid
-binary. Either way it fails when it cannot read a directory, and a strip that
-would take the bit off a listed binary through a hard link fails instead.
+through setuid binaries or file capabilities. A setuid binary needs a
+justified entry in `build/config/setuid-allowlist.txt`: today `su`, the one
+way from a login to root, and `passwd`, which nothing brokers yet. A file
+carrying capabilities (`security.capability`) needs one in
+`build/config/capability-allowlist.txt`, which is empty. Stage 06 runs
+`tools/audit-setuid.sh --strip` over the image's root, so the bit and the
+capabilities come off every other file (shadow and util-linux install eleven
+more setuid binaries); without `--strip` the script fails on any unlisted
+one. Either way it fails when it cannot read a directory, and a strip that
+would take the bit or the capabilities off a listed file through a hard link
+fails instead.
 
 ## Zone syscall filter
 
