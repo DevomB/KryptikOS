@@ -1401,12 +1401,8 @@ pub fn env_value_is_sane(v: &str) -> bool {
         && v.chars().all(|c| c.is_ascii_alphanumeric() || "._+:@-".contains(c))
 }
 
-/// The complete environment the zone's command starts with.
-pub fn zone_environment(zone: &Zone, home: &str, caller: &[(String, String)]) -> Vec<(String, String)> {
-    zone_environment_with(zone, home, caller, false)
-}
-
-/// With a display, WAYLAND_DISPLAY is the socket's absolute path (libwayland
+/// The complete environment the zone's command starts with. With a display,
+/// WAYLAND_DISPLAY is the socket's absolute path (libwayland
 /// needs no XDG_RUNTIME_DIR then) and XDG_RUNTIME_DIR is the zone's /tmp.
 pub fn zone_environment_with(zone: &Zone, home: &str, caller: &[(String, String)], wayland: bool) -> Vec<(String, String)> {
     let mut env = zone_environment_base(zone, home, caller);
@@ -1877,7 +1873,7 @@ mod tests {
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
-        let env = zone_environment(&z("routed"), "/home/t", &caller);
+        let env = zone_environment_with(&z("routed"), "/home/t", &caller, false);
         let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         for dropped in ["FOO_TOKEN", "SSH_AUTH_SOCK", "LD_PRELOAD", "LD_LIBRARY_PATH", "KRYPTIK_EXPERIMENTAL", "XDG_RUNTIME_DIR"] {
             assert!(get(dropped).is_none(), "{dropped} leaked into the zone");
@@ -1902,7 +1898,7 @@ mod tests {
         assert!(!env_value_is_sane("a b"));
         assert!(!env_value_is_sane(&"x".repeat(65)));
         let caller = vec![("TERM".to_string(), "xterm;rm -rf /".to_string())];
-        let env = zone_environment(&z("routed"), "/home/t", &caller);
+        let env = zone_environment_with(&z("routed"), "/home/t", &caller, false);
         let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         assert_eq!(get("TERM"), Some("dumb"), "a malformed TERM is replaced, not passed");
         assert_eq!(get("LANG"), Some("C.UTF-8"), "no caller LANG means a UTF-8 default");

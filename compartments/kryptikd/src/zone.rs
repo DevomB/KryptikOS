@@ -514,11 +514,6 @@ impl Zone {
 
         Ok(())
     }
-
-    /// True when this zone gets a network namespace with no route out.
-    pub fn is_airgapped(&self) -> bool {
-        self.network == NetworkMode::None
-    }
 }
 
 fn is_hex_colour(s: &str) -> bool {
@@ -676,7 +671,6 @@ border_color = "#c9a227"
         assert_eq!(z.network, NetworkMode::None);
         assert_eq!(z.storage, StorageMode::Encrypted);
         assert_eq!(z.pids_max, Some(128));
-        assert!(z.is_airgapped());
     }
 
     #[test]
