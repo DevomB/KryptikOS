@@ -1190,7 +1190,7 @@ zrun alpha -- /bin/sh -c "$PRO cd /tmp && echo x > o && cp -a o o2 && gzip -k o 
 probe "L11 cp -a and gzip keep an owner in a zone and live" "kept"
 
 # install(1) resets a file's ACL through its xattrs, and Python's asyncio
-# watches a child through a pidfd; both were killed.
+# watches a child through a pidfd.
 zrun alpha -- /bin/sh -c "$PRO echo x > /tmp/src && install -D -m 644 /tmp/src /tmp/i/x && echo PROBE=installed"
 probe "L12 install(1) sets a mode in a zone and lives" "installed"
 if command -v python3 > /dev/null 2>&1; then
@@ -1201,7 +1201,7 @@ async def m():
     print(\"PROBE=spawned\")
 asyncio.run(m())'"
     probe "L13 an asyncio program runs a child in a zone and lives" "spawned"
-    # timeout(1) arms a POSIX timer and mmap.flush is msync; both were killed.
+    # timeout(1) arms a POSIX timer, and mmap.flush is msync.
     zrun alpha -- /bin/sh -c "$PRO timeout 20 python3 -c 'import mmap
 f = open(\"/tmp/m\", \"w+b\"); f.write(bytes(4096)); f.flush()
 m = mmap.mmap(f.fileno(), 4096); m[0:1] = b\"y\"; m.flush(); print(\"PROBE=flushed\")'"
@@ -1923,7 +1923,7 @@ else
 fi
 
 # seccomp-trace --zone traces under that zone's filter, so a call its policy
-# file allows is no longer reported, and the program gets it.
+# file allows is not reported, and the program gets it.
 cat > "$ZONES/policy/tracer.seccomp" <<'POLICY'
 allow-syscall sched_setscheduler
 POLICY

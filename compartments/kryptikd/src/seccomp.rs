@@ -364,7 +364,7 @@ impl ArgRule {
 /// every program any of them starts; a zone policy may allow it. The id and
 /// capability calls stay denied: ncurses brackets every terminfo open with
 /// setfsuid and setfsgid, and sudo, su and daemons dropping privilege as root
-/// call the rest, so a kill took them down unexplained. No id changes.
+/// call the rest, so a kill would take them down unexplained. No id changes.
 pub const REFUSED_SOFTLY: &[(libc::c_long, u32)] = &[
     (libc::SYS_inotify_init, ENOSYS),
     (libc::SYS_inotify_init1, ENOSYS),
