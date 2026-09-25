@@ -3,7 +3,7 @@
 # that every address it takes is one the net zone's fetcher can use: the
 # update.conf stage 06 writes reads back as a request with a host, no query or
 # fragment, and a path that ends in the name asked for. Runs stage 06's own
-# check and writer, and the real fetcher.
+# check, role reader and writer, and the real fetcher.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 S06="$ROOT/build/stages/06-iso.sh"
@@ -12,8 +12,8 @@ ok()  { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
 bad() { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
 
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
-sed -n '/^check_channel() {/,/^}/p; /^channel_conf() {/,/^}/p' "$S06" > "$T/fns.sh"
-for fn in check_channel channel_conf; do
+sed -n '/^check_channel() {/,/^}/p; /^channel_conf() {/,/^}/p; /^image_role() {/,/^}/p' "$S06" > "$T/fns.sh"
+for fn in check_channel channel_conf image_role; do
     grep -q "^${fn}() " "$T/fns.sh" || { echo "could not extract ${fn} from $S06"; exit 1; }
 done
 # shellcheck source=/dev/null
@@ -34,6 +34,12 @@ TABLE=(
     "https://user:pw@updates.example/s"             refuse refuse
     "https://user@updates.example/s"                refuse refuse
     "https://updates.example:notaport/"             refuse refuse
+    "https://updates.example:65535/"                take  take
+    "https://updates.example:99999/"                refuse refuse
+    "https://updates.example:0/"                    refuse refuse
+    'https://updates.example/a"b'                   refuse refuse
+    'https://updates.example/a\b'                   refuse refuse
+    'https://updates.example/a`b'                   refuse refuse
     "https://updates.example/stable#x"              refuse refuse
     "https://updates.example/stable?token=1"        refuse refuse
     "https://?x"                                    refuse refuse
@@ -88,6 +94,16 @@ bads="$(grep -c '^BAD\|Error' <<<"$out")"
 oks="$(grep -c '^ok ' <<<"$out")"
 [[ "$bads" -eq 0 && "$oks" -eq $((2 * ${#taken[@]})) ]] \
     && ok "the fetcher makes a usable request from every address taken (${oks} requests)" || bad "the fetcher on the addresses taken: ${out}"
+
+# The image's role, read as zone 0 reads it: the whole file, trimmed at both
+# ends, so a CR or a blank line around it is dropped and a second line is not.
+role_is() { printf '%s' "$1" > "$T/role"; [[ "$(image_role "$T/role")" == "$2" ]]; }
+if role_is $'development\r\n' development && role_is $'\ndevelopment\n' development \
+    && role_is $'development\v\n' development && role_is $'development\nproduction\n' $'development\nproduction'; then
+    ok "the role file is trimmed at both ends, and only there"
+else
+    bad "image_role reads a role file differently from zone 0"
+fi
 
 channel_conf https://updates.example/stable > "$T/update.conf"
 [[ "$(grep -c '=' "$T/update.conf")" -eq 1 ]] && ok "only the channel line has an '=' for a reader to take" || bad "update.conf has more than one '=' line"

@@ -42,7 +42,7 @@ KRYPTIK_CHANNEL="${KRYPTIK_CHANNEL:-}"
 # the pointer base's printable ASCII of at most 512 bytes; plain http only on
 # a development image.
 check_channel() {
-    local a="$1" role="$2" printable re
+    local a="$1" role="$2" printable re port
     local host='([A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?'
     local path="(/[-A-Za-z0-9._~!\$&'()*+,;=:@%/]*)?"
     re="^https?://${host}${path}\$"
@@ -53,9 +53,18 @@ check_channel() {
         echo "not 1 to 512 printable ASCII characters without spaces"
     elif [[ ! "$a" =~ $re ]]; then
         echo "not http(s)://host[:port][/path]: no user@, query or fragment, since names are appended to it"
+    elif port="${BASH_REMATCH[3]#:}"; [[ -n "$port" ]] && (( 10#$port < 1 || 10#$port > 65535 )); then
+        echo "port ${port} is not 1 to 65535"
     elif [[ "$a" == http://* && "$role" != development ]]; then
         echo "plain http is for a development image, and this one is ${role}"
     fi
+}
+
+# image_role FILE: the role an image requires, read as zone 0 reads it: the
+# whole file, trimmed at both ends.
+image_role() {
+    local r; r="$(<"$1")"
+    r="${r#"${r%%[![:space:]]*}"}"; printf '%s' "${r%"${r##*[![:space:]]}"}"
 }
 
 # channel_conf ADDRESS: /etc/kryptik/update.conf naming ADDRESS.
@@ -76,8 +85,7 @@ done
 if [[ -n "$KRYPTIK_CHANNEL" ]]; then
     role_file="${SYSROOT}/usr/share/kryptik/trust/required-role"
     [[ -f "$role_file" ]] || die "no ${role_file}, so no role to check KRYPTIK_CHANNEL against"
-    # The first line, trimmed at its ends as zone 0 trims it.
-    role=""; read -r role < "$role_file" || :
+    role="$(image_role "$role_file")"
     why="$(check_channel "$KRYPTIK_CHANNEL" "$role")"
     [[ -z "$why" ]] || die "KRYPTIK_CHANNEL=${KRYPTIK_CHANNEL}: ${why}"
     log "update channel: ${KRYPTIK_CHANNEL} (a ${role} image)"
