@@ -126,9 +126,12 @@ Creating encrypted swap is a later, explicit change.
    records the installer's own status, not sed's.
 
 The installed disk boots with no firmware variables at all through the
-removable-media path (`BOOTX64.EFI`). `kryptik-efiboot` additionally
-creates a `Kryptik` Boot#### entry when the firmware allows it; it is a
-convenience, not a dependency.
+removable-media path (`BOOTX64.EFI`). `kryptik-efiboot` creates a
+`Kryptik slot` Boot#### entry for a trial, and removes both slots' entries
+again at commit (`forget`): a firmware regenerates its own disk entry at
+the end of `BootOrder` whenever the devices change, and a Kryptik entry
+left in front of it booted the other slot. The entries serve the trial;
+`BOOTX64.EFI` is the dependency.
 
 ## Updates (A/B, bounded fallback, authenticated recovery)
 
@@ -168,7 +171,9 @@ partition.
    and up; kryptikd finding kernel support and reading the shipped zones;
    an unambiguous ESP carrying the slot's kernel), it commits: copies the
    slot's kernel to `EFI/BOOT/BOOTX64.EFI.new`, `fsync`, renames it over
-   `BOOTX64.EFI`, and clears the trial record. A trial that boots but fails
+   `BOOTX64.EFI`, clears the trial record, and forgets Kryptik's firmware
+   entries and `BootNext` (`kryptik-efiboot forget`), so the next boot is
+   the disk's own entry, `BOOTX64.EFI`. A trial that boots but fails
    any of these is recorded as unhealthy and the machine reboots. If the
    trial slot did not come up (panic, verity failure, hang without
    success), the firmware has consumed `BootNext` and the next boot falls
