@@ -383,12 +383,16 @@ jobs:
           rm -f work-after-media.tar.zst
           ls work/images; df -h /mnt | tail -1
 
-      # Exit 2 is a part's normal answer: the other parts' items are "not run"
-      # here. The part is red for a failure; the verdict job judges the rest.
-      - name: make acceptance ONLY=${{ matrix.suites }}
+      # The script itself, not make, which turns every failure into 2. Exit 2
+      # is a part's normal answer, the other parts' items being "not run"
+      # here; the part is red for a failure, and the verdict job judges it all.
+      - name: Acceptance of these suites
+        env:
+          SUITES: ${{ matrix.suites }}
         run: |
           rc=0
-          make acceptance ONLY="${{ matrix.suites }}" || rc=$?
+          sudo env KRYPTIK_WORK="$KRYPTIK_WORK" KRYPTIK_SOURCES="$KRYPTIK_SOURCES" NO_COLOR=1 \
+            TMPDIR="$TMPDIR" CARGO_TARGET_DIR="$CARGO_TARGET_DIR" tools/acceptance.sh --only "$SUITES" || rc=$?
           [ "$rc" -ne 1 ]
 
       - name: Hand the results to the runner user
