@@ -1291,19 +1291,27 @@ s_tests() {
 # no shipped source is left without one (tools/check-image-licences.sh).
 s_licences() {
     local more_re='^[^/]+/(license|WHENCE|LICENSES/(preferred|exceptions)/[^/]+)$'
-    local name url f m dir n=0
+    local name url f m dir tmp n=0 members
     while read -r name _ url; do
         [[ -n "$name" ]] || continue
         f="${KRYPTIK_SOURCES}/${url##*/}"
         [[ -f "$f" ]] || continue
+        mapfile -t members < <(licence_members "$f" "$more_re")
+        [[ "${#members[@]}" -gt 0 ]] || continue
+        # One extraction for all of them: every tar run reads the whole
+        # compressed stream, and linux-firmware has over a hundred.
+        tmp="$(mktemp -d)"
+        tar -xf "$f" -C "$tmp" -- "${members[@]}"
         dir="/usr/share/licenses/${name}"
-        while IFS= read -r m; do
-            [[ -n "$m" ]] || continue
-            install -d -m 0755 "$dir"
-            tar -xOf "$f" "$m" > "${dir}/${m##*/}"
-            chmod 0644 "${dir}/${m##*/}"
-            n=$((n + 1))
-        done < <({ licence_members "$f"; tar -tf "$f" 2>/dev/null | grep -E "$more_re" || true; } | sort -u)
+        install -d -m 0755 "$dir"
+        for m in "${members[@]}"; do
+            # A link to a file not extracted would dangle: there is nothing to copy.
+            if [[ -f "${tmp}/${m}" ]]; then
+                install -m 0644 "${tmp}/${m}" "${dir}/${m##*/}"
+                n=$((n + 1))
+            fi
+        done
+        rm -rf "$tmp"
     done < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list)
     install -Dm644 "${KRYPTIK_ROOT}/LICENSE" /usr/share/licenses/kryptik/LICENSE
     echo "${n} licence files in $(find /usr/share/licenses -mindepth 1 -maxdepth 1 -type d | wc -l) directories"
