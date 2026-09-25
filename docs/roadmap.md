@@ -91,7 +91,10 @@ work in zones from a terminal and a text browser, and keep it up to date.
       instructions followed by someone other than their author. The source is
       `make source-bundle`: every locked tarball with its signatures, the
       crates the Rust binaries link, and the repository at the build commit,
-      with a manifest.
+      with a manifest. Stage 04 installs each source's licence files under
+      `/usr/share/licenses/`, firmware's `WHENCE` among them, and acceptance
+      fails on a source without any. Still to install: the licences of the
+      crates in kryptikd and kryptik-wlproxy.
 
 ## Version 2
 

@@ -61,6 +61,11 @@ sha256_of_stdin() {
     fi
 }
 
+# A source tarball's top-level licence files: what tools/scan-licenses.sh
+# reads, and what stage 04 installs under /usr/share/licenses.
+LICENCE_RE='^[^/]+/(COPYING[^/]*|COPYRIGHT[^/]*|LICEN[CS]E[^/]*|License)$'
+licence_members() { tar -tf "$1" 2>/dev/null | grep -E "$LICENCE_RE" || true; }
+
 # Stages 01-03 run on the host and install into ${KRYPTIK_WORK}/sysroot; stages
 # 04 and 05 run inside the chroot, where the sysroot is /. A KRYPTIK_WORK path
 # may not exist in there, and installing to it would build a nested tree.

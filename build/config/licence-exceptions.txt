@@ -1,0 +1,6 @@
+# Sources the image carries no licence file for, each with its reason:
+#   name   # why
+# Stage 04 installs every other source's (s_licences), and acceptance fails
+# on a source without them (tools/check-image-licences.sh).
+glibc-fhs-patch   # a patch to glibc, whose licence files cover it
+cmake             # stage 06 leaves cmake out of the root, and its tarball has no top-level licence file
