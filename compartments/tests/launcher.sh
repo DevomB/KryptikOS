@@ -1187,6 +1187,27 @@ fi
 zrun alpha -- /bin/sh -c "$PRO cd /tmp && echo x > o && cp -a o o2 && gzip -k o && echo PROBE=kept"
 probe "L11 cp -a and gzip keep an owner in a zone and live" "kept"
 
+# install(1) resets a file's ACL through its xattrs, and Python's asyncio
+# watches a child through a pidfd; both were killed.
+zrun alpha -- /bin/sh -c "$PRO echo x > /tmp/src && install -D -m 644 /tmp/src /tmp/i/x && echo PROBE=installed"
+probe "L12 install(1) sets a mode in a zone and lives" "installed"
+if command -v python3 > /dev/null 2>&1; then
+    zrun alpha -- /bin/sh -c "$PRO python3 -c 'import asyncio
+async def m():
+    p = await asyncio.create_subprocess_exec(\"true\")
+    await p.wait()
+    print(\"PROBE=spawned\")
+asyncio.run(m())'"
+    probe "L13 an asyncio program runs a child in a zone and lives" "spawned"
+    # timeout(1) arms a POSIX timer and mmap.flush is msync; both were killed.
+    zrun alpha -- /bin/sh -c "$PRO timeout 20 python3 -c 'import mmap
+f = open(\"/tmp/m\", \"w+b\"); f.write(bytes(4096)); f.flush()
+m = mmap.mmap(f.fileno(), 4096); m[0:1] = b\"y\"; m.flush(); print(\"PROBE=flushed\")'"
+    probe "L14 timeout(1) and a flushed mapping live in a zone" "flushed"
+else
+    info "L13, L14 not run: this host has no python3"
+fi
+
 # ============================================================================
 head_ "M. cgroup resource limits  [unpriv where delegated, otherwise vm]"
 # ============================================================================

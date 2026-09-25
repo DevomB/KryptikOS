@@ -1,36 +1,18 @@
 #!/usr/bin/env bash
-# Stage 04 — Hardened base system (docs/roadmap.md, Base system)
-#
-# Builds the base system INSIDE the chroot prepared by stage 03. This is the
-# first stage where Kryptik's hardening flags are applied: every package here is
-# compiled with the full set from build/config/hardening.env.
-#
-#   ./04-base-system.sh              build everything, resumable
-#   ./04-base-system.sh --redo bash  force one package to rebuild
-#   ./04-base-system.sh --list       print the build order and stop
-#
-# MUST be run from inside the chroot:
-#   sudo build/stages/03-chroot-prep.sh mount
-#   sudo chroot ... /usr/bin/bash -c 'build/stages/04-base-system.sh'
-#
-# STATUS: written, not yet executed end to end. Roughly 50 packages; expect
-# first-contact failures, particularly from packages that do not tolerate
-# -D_FORTIFY_SOURCE=3 or -pie. Those get an entry in
-# build/config/hardening-exceptions.txt WITH a justification, not a blanket
-# flag removal.
+# Stage 04: the hardened base system, built in the chroot with the full flag
+# set from build/config/hardening.env.
+# usage: make system   (or, in the chroot, 04-base-system.sh [--redo <step>])
+#        04-base-system.sh --list   print the build order and stop
 
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
 load_config
 
 # --- hardening --------------------------------------------------------------
-#
-# Unlike stages 01 and 02, this stage DOES load the hardening flags. The
-# toolchain exists now, it targets Kryptik, and these packages are the ones
-# that ship. See docs/hardening.md.
+# The first stage with hardening flags: these packages ship (docs/hardening.md).
 load_hardening
 validate_hardening_exceptions
 
-# Stage 04 runs inside the chroot and drives the native target compiler.
+# Built with the native target gcc, in the chroot.
 stage_contract "${BASH_SOURCE[0]}" "bs-" gcc
 # shellcheck disable=SC2034  # consumed by step() in common.sh
 KRYPTIK_FAIL_TAIL=40
@@ -40,24 +22,9 @@ LOGS="${KRYPTIK_WORK}/logs"
 BUILDDIR="${KRYPTIK_WORK}/build"
 KRYPTIK_JOBS="${KRYPTIK_JOBS:-$(kryptik_default_jobs)}"
 
-# Every package in this stage configures and builds as root, and that is a
-# property of the stage rather than a shortcut: stage 04 runs INSIDE the
-# chroot, where root owns the whole filesystem and there is no unprivileged
-# user to drop to. Creating one would mean inventing an account the target
-# does not have.
-#
-# gnulib's configure probes "whether mknod can create a fifo without root
-# privileges" and then refuses to continue, because as root the probe always
-# succeeds and so answers nothing about the machine the binaries will run on.
-# The check is aimed at someone building in their own shell, where running as
-# root is a mistake. FORCE_UNSAFE_CONFIGURE=1 is upstream's own escape hatch,
-# named in upstream's own error message, and it affects nothing but that probe.
-#
-# Set once for the stage rather than per package. coreutils and tar both
-# refuse - and the first attempt to enumerate which packages refuse got tar
-# wrong, because it piped `tar -xO` into `grep -q` with stderr discarded, so
-# "could not read the tarball" and "the tarball is fine" produced the same
-# answer. The condition here is the stage's, so the setting is the stage's.
+# The chroot builds as root, with no other user to drop to, and gnulib's
+# configure (coreutils, tar) refuses to run as root. FORCE_UNSAFE_CONFIGURE=1
+# is upstream's own switch for that check and affects nothing else.
 export FORCE_UNSAFE_CONFIGURE=1
 
 export MAKEFLAGS="-j${KRYPTIK_JOBS}"
@@ -75,16 +42,14 @@ mkdir -p "$STAMPS" "$LOGS" "$BUILDDIR"
 
 # --- hardening exceptions ---------------------------------------------------
 
-# Returns the flags to DROP for a package, if any. Every exception must carry a
-# justification comment; common.sh::validate_hardening_exceptions fails the
-# build otherwise, so an undocumented exception cannot accumulate quietly.
+# The flags to drop for a package, from hardening-exceptions.txt.
 exception_flags_for() {
     local pkg="$1" f="${KRYPTIK_ROOT}/build/config/hardening-exceptions.txt"
     [[ -f "$f" ]] || return 0
     awk -v p="$pkg" '!/^[[:space:]]*#/ && $1 == p { print $2 }' "$f"
 }
 
-# Apply hardening minus any justified exceptions for this package.
+# Hardening minus the package's exceptions; a -final row takes its package's.
 set_flags_for() {
     local pkg="$1" drop
     export CFLAGS="${KRYPTIK_OPT} ${KRYPTIK_CFLAGS_HARDENING}"
@@ -107,20 +72,11 @@ set_flags_for() {
 
 # The shared step() calls this after printing the tail of a failed log.
 step_failure_hint() {
-    # Two locals, not one. An assignment in a `local` list is not visible to
-    # the ones beside it, so ${name} would have been empty and this would
-    # have opened the wrong file - silently, since the guard below just
-    # skips a log it cannot find.
+    # Two locals: one `local` expands all its words before assigning any.
     local name="$1"
     local logfile="${LOGS}/${STAMP_PREFIX}${name}.log"
 
-    # The tail is often the wrong forty lines.
-    #
-    # Python's install failed at line 1659 of a 6060-line log and then kept
-    # going for another 4400 lines of "Compiling ...", so the tail showed
-    # nothing but noise and the actual message - "undefined symbol: crypt" -
-    # was four thousand lines above it. A log that hides its own error is
-    # barely better than no log.
+    # The error can be thousands of lines above the tail; show likely causes.
     if [[ -f "$logfile" ]]; then
         local hits
         hits="$(grep -nE '^(make(\[[0-9]+\])?: \*\*\*|.*: \*\*\* )|\[ERROR\]|undefined (symbol|reference)|No such file or directory|Permission denied|command not found|configure: error|fatal error|cannot find -l|ModuleNotFoundError|ImportError|^[A-Za-z_.]*Error:|Could not build' \
@@ -151,7 +107,7 @@ unpack() {
     printf '%s' "$dir"
 }
 
-# Native build: no --host, because we are running on the target now.
+# Native build: no --host, as this runs on the target.
 native_build() {
     local tarball="$1" dirname="$2"; shift 2
     local src; src="$(unpack "$tarball" "$dirname")"
@@ -163,8 +119,8 @@ native_build() {
 
 # --- packages that need more than ./configure ------------------------------
 
-# util-linux with the patch set in build/patches (see its README): 2.42.3 does
-# not compile against a glibc older than 2.43, and gets one flag wrong there.
+# With the build/patches set (see its README): 2.42.3 does not compile against
+# a glibc older than 2.43, and gets one flag wrong there.
 s_util_linux() {
     local src; src="$(unpack "util-linux-${V_UTIL_LINUX}.tar.xz" "util-linux-${V_UTIL_LINUX}")"
     cd "$src"
@@ -175,21 +131,9 @@ s_util_linux() {
 }
 
 
-# Locale generation, using the localedef already installed by stage 01/02.
-#
-# Split out from the glibc rebuild and placed FIRST because of a dependency
-# cycle that is easy to miss:
-#
-#   perl   needs locales  - without them Configure cannot probe LC_ALL, leaves
-#                           PERL_LC_ALL_CATEGORY_POSITIONS_INIT undefined, and
-#                           locale.c fails to compile with an error that looks
-#                           nothing like its cause
-#   glibc  needs python   - its configure calls python a critical program
-#   python is built between the two
-#
-# So locales cannot wait for the glibc rebuild, and the glibc rebuild cannot
-# come before python. Generating locales needs only localedef, which already
-# exists, so it goes first on its own.
+# Locales, with stage 01's localedef, first and apart from the glibc rebuild:
+# perl needs them (Configure probes LC_ALL), and glibc's rebuild waits for
+# python, which comes after perl.
 s_locales() {
     mkdir -p /usr/lib/locale
     localedef -i C -f UTF-8 C.UTF-8
@@ -199,8 +143,7 @@ s_locales() {
     localedef -i de_DE -f UTF-8 de_DE.UTF-8
     localedef -i ja_JP -f UTF-8 ja_JP.UTF-8
     echo "locales generated:"
-    # Read, then trim. `localedef | head` is small enough not to SIGPIPE
-    # today, and that is a property of the data rather than of the code.
+    # Read, then trim: no pipe into head, which can SIGPIPE under pipefail.
     local archived
     archived="$(localedef --list-archive 2>/dev/null || true)"
     printf '%s\n' "$archived" | sed -n '1,10p'
@@ -219,17 +162,8 @@ rpc: files
 NSS
 }
 
-# glibc, rebuilt natively inside the chroot.
-#
-# Stage 01 built glibc with the cross toolchain and deliberately unsets
-# CFLAGS/LDFLAGS there, because a pass-1 compiler cannot be built with the
-# flags it implements. Nothing since has rebuilt it, so until this step runs
-# the C library every binary links against is UNHARDENED - the single largest
-# hole in the hardening story for a distribution built on the claim that
-# hardening is a toolchain property.
-#
-# Positioned after python: glibc's configure treats python as a critical
-# program and fails outright without it.
+# glibc, rebuilt natively with the hardening flags (stage 01's was built
+# without). After python, which glibc's configure requires.
 s_glibc() {
     local src; src="$(unpack "glibc-${V_GLIBC}.tar.xz" "glibc-${V_GLIBC}")"
     cd "$src"
@@ -237,61 +171,26 @@ s_glibc() {
     local fhs="${KRYPTIK_SOURCES}/glibc-${V_GLIBC}-fhs-1.patch"
     [[ -f "$fhs" ]] && patch -Np1 -i "$fhs"
 
-    # The loader defect recorded in build/patches/glibc-2.40/README.md - pthread_exit(),
-    # pthread_cancel() and backtrace() aborting because _dl_find_object
-    # attributed every object loaded after startup to ld.so itself - and
-    # what fixes it. build/patches/glibc-2.40/ carries upstream's maintained
-    # release/2.40/master branch as one patch, with provenance in its
-    # README (the security fixes since July 2024, and the fix for bug 31943,
-    # a loader mapped with gaps), and beside it the one that turned out to
-    # be Kryptik's actual defect and was never backported, bug 33088: GCC
-    # 14 at -O2 took the address of __ehdr_start for the loader's own map
-    # bounds from a constant that is only right after self-relocation, so
-    # ld.so recorded itself as starting at address 0. The two checks below
-    # (rtld.os relocations, ldd's map start) fail this step if it returns.
+    # build/patches/glibc-2.40 (see its README): upstream's release/2.40/master
+    # branch plus the bug 33088 fix, without which ld.so records its own map at
+    # address 0 and unwinding aborts. The two checks below catch its return.
     apply_repo_patches "glibc-${V_GLIBC}"
 
     mkdir -p build
     cd build
     echo "rootsbindir=/usr/sbin" > configparms
 
-    # glibc supplies its own stack protector rather than taking ours; see the
-    # hardening exception for why external flags are dropped for this package.
-    #
-    # --enable-cet is not optional here, and the reason is a genuine
-    # configure-vs-build mismatch rather than a preference.
-    #
-    # glibc decides whether to COMPILE its CET support from
-    # libc_cv_compiler_default_cet - a test of whether the compiler defines
-    # __CET__ *by default*. Kryptik's GCC is not built --enable-cet-default,
-    # so that test says no and dl-cet.c is left out. The actual build then
-    # runs with Kryptik's CFLAGS, which contain -fcf-protection=full, and that
-    # DOES define __CET__ - so rtld.c and dl-open.c compile the CET code paths
-    # and call into functions nobody compiled:
-    #
-    #   undefined reference to `_dl_cet_open_check'
-    #   undefined reference to `_dl_cet_setup_features'
-    #   undefined reference to `_dl_cet_check'
-    #   hidden symbol `_dl_cet_open_check' isn't defined
-    #   collect2: error: ld returned 1 exit status
-    #
-    # The alternative fix - dropping -fcf-protection for glibc via an
-    # exception - also links, and gives a dynamic loader with no CET at all.
-    # The loader is the single place CET matters most: it is what arms IBT and
-    # the shadow stack for every process on the system. So the flag stays and
-    # glibc is told to build the support that flag implies.
-    #
-    # Enabling it here does not force anything at runtime. Activation still
-    # depends on the CPU and on kernel support; without those, glibc's CET
-    # code detects their absence and stays out of the way.
+    # --enable-stack-protector=strong: glibc builds its own stack protection.
+    # --enable-cet: glibc compiles its CET support only when GCC defines __CET__
+    # by default (Kryptik's does not), yet -fcf-protection=full in CFLAGS makes
+    # rtld call it, so the link fails on _dl_cet_*. Dropping the flag instead
+    # would leave the loader, which arms IBT and shadow stacks for everything,
+    # without CET. Activation still depends on the CPU and kernel.
     ../configure         --prefix=/usr         --disable-werror         --enable-kernel=4.19         --enable-stack-protector=strong         --enable-cet         --disable-nscd         libc_cv_slibdir=/usr/lib
     make
 
-    # Upstream's make-check rule for bug 33088, run here because this build
-    # does not run glibc's test suite: the loader's startup code must take
-    # the addresses of __ehdr_start and _end without a run-time relocation,
-    # or the values it stores before relocating itself are the link-time
-    # ones (0 for __ehdr_start).
+    # Upstream's check for bug 33088 (the test suite is not run): rtld must not
+    # reach __ehdr_start or _end through a run-time relocation.
     echo "--- run-time relocations against __ehdr_start or _end in rtld.os ---"
     local rtld_relocs
     rtld_relocs="$(readelf -rW elf/rtld.os | grep -E 'R_X86_64_64.*(__ehdr_start|_end)' || true)"
@@ -304,34 +203,27 @@ s_glibc() {
     fi
     echo "  ok: none"
 
-    # The install step runs a test-installation perl script that does not exist
-    # yet - perl is built later, and cannot be built before glibc.
+    # Skip glibc's test-installation script, as LFS does: it fails in a partly
+    # built system.
     sed '/test-installation/s@$(PERL)@true@' -i ../Makefile
     touch /etc/ld.so.conf
     make install
 
     sed '/RTLDLIST=/s@/usr@@g' -i /usr/bin/ldd
 
-    # Prove the rebuild actually happened. A configure that dies early leaves
-    # the stage 01 library in place, and the difference is invisible without
-    # checking - which is precisely what happened the first time this ran.
+    # Show the installed libc: a failed rebuild would leave stage 01's in place.
     echo "--- installed libc ---"
     ls -la /usr/lib/libc.so.6
-    # grep reads the file directly. Piping `strings` into `grep -m1` made
-    # grep exit at the first match while strings still had 2.4MB to write,
-    # so strings took SIGPIPE and pipefail reported 141 - failing the step
-    # on a glibc that had just installed correctly.
+    # grep reads the file itself: `strings | grep -m1` can fail on SIGPIPE.
     grep -a -m1 -o "GNU C Library.*" /usr/lib/libc.so.6 || \
         echo "(no GNU C Library banner found - check the install)"
 
-    # And prove the CET support actually landed, rather than trusting that
-    # --enable-cet was accepted. A loader without the property note is a
-    # loader that will not arm IBT or the shadow stack for anything.
+    # Without the CET property note the loader arms IBT and shadow stacks for
+    # nothing.
     echo "--- CET in the dynamic loader ---"
     local ldso=/usr/lib/ld-linux-x86-64.so.2
     if [[ -e "$ldso" ]]; then
-        # Captured once, then matched in the shell. `readelf | grep -q` is the
-        # same SIGPIPE trap as above.
+        # No `readelf | grep -q`: the same SIGPIPE trap.
         local props
         props="$(readelf -n "$ldso" 2>/dev/null || true)"
         if [[ "$props" == *IBT* || "$props" == *SHSTK* ]]; then
@@ -347,11 +239,9 @@ s_glibc() {
         return 1
     fi
 
-    # The runtime form of the rtld.os check above: LD_TRACE_LOADED_OBJECTS
-    # (what ldd runs) prints each object's map start, and a loader with bug
-    # 33088 prints its own as 0. tools/test-libc-unwind.sh then proves the
-    # consequence - unwinding through a dlopen()ed libgcc_s - on the whole
-    # system; this catches the cause at the step that builds it.
+    # The runtime form of that check: LD_TRACE_LOADED_OBJECTS (what ldd runs)
+    # prints each map start, and with bug 33088 the loader's is 0.
+    # tools/test-libc-unwind.sh tests the consequence on the whole system.
     echo "--- the loader's own map start ---"
     local trace ldso_start
     trace="$(LD_TRACE_LOADED_OBJECTS=1 /usr/bin/bash 2>&1 || true)"
@@ -371,10 +261,7 @@ s_glibc() {
 }
 
 s_gdbm() {
-    # Provenance audited this pin and was explicit that it needs no extra
-    # flags: man-db's configure.ac tries the gdbm NATIVE interface first
-    # (gdbm.h plus gdbm_fetch in -lgdbm), so the ndbm compatibility layer that
-    # --enable-libgdbm-compat would add is not what man-db reaches for.
+    # No --enable-libgdbm-compat: man-db uses gdbm's native interface, not ndbm.
     local src; src="$(unpack "gdbm-${V_GDBM}.tar.gz" "gdbm-${V_GDBM}")"
     cd "$src"
     ./configure --prefix=/usr --disable-static
@@ -382,8 +269,7 @@ s_gdbm() {
     make install
     rm -fv /usr/lib/libgdbm.la
 
-    # "make install exited 0" and "this database can store and return a key"
-    # are different claims, and man-db depends on the second.
+    # The installed gdbm must store and return a key.
     echo "--- gdbm round trip ---"
     cat > /tmp/kryptik-gdbm-check.c <<'CEOF'
 #include <gdbm.h>
@@ -412,18 +298,13 @@ s_man_db() {
     local src; src="$(unpack "man-db-${V_MANDB}.tar.xz" "man-db-${V_MANDB}")"
     cd "$src"
 
-    # --disable-setuid: man-db would otherwise install man setuid to a man
-    # user so it can write a shared page cache. A setuid binary that parses
-    # untrusted files is not a trade Kryptik makes for faster man pages.
-    # The browser/vgrind/grap helpers are deliberately absent; naming paths to
-    # programs this system does not have would only bake in dead references.
+    # --disable-setuid: no setuid man parsing untrusted files for a page cache.
+    # No browser/vgrind/grap paths: those programs are not on the system.
     ./configure --prefix=/usr                 --docdir="/usr/share/doc/man-db-${V_MANDB}"                 --sysconfdir=/etc                 --disable-setuid                 --enable-cache-owner=bin
     make
     make install
 
-    # The whole reason gdbm was pinned. If configure quietly fell back to
-    # another database interface then the pin bought nothing, and the failure
-    # would otherwise only show up the first time someone ran mandb.
+    # mandb must link gdbm: configure falls back to another interface silently.
     echo "--- which database interface did man-db link? ---"
     if readelf -dW /usr/bin/mandb 2>/dev/null | grep -q "libgdbm"; then
         echo "  ok: mandb links libgdbm"
@@ -482,9 +363,8 @@ s_zstd() {
 s_openssl() {
     local src; src="$(unpack "openssl-${V_OPENSSL}.tar.gz" "openssl-${V_OPENSSL}")"
     cd "$src"
-    # enable-ktls is deliberately NOT set: it moves crypto into the kernel and
-    # widens the kernel attack surface, which cuts against ADR-002's admission
-    # that a kernel bug compromises every zone at once.
+    # No enable-ktls: crypto in the kernel widens the surface a kernel bug
+    # exposes to every zone at once (ADR-002).
     ./config --prefix=/usr --openssldir=/etc/ssl --libdir=lib \
         shared zlib-dynamic
     make
@@ -513,31 +393,16 @@ s_perl() {
 s_python() {
     local src; src="$(unpack "Python-${V_PYTHON}.tar.xz" "Python-${V_PYTHON}")"
     cd "$src"
-    # Two flags deliberately NOT passed here, both of which were and both of
-    # which were wrong at this point in the build.
-    #
-    # --enable-optimizations turns on PGO, whose instrumented first pass needs
-    # libgcov on the link line and does not get it - the build died with a wall
-    # of "undefined reference to __gcov_indirect_call" and similar. It is also
-    # roughly a 3x build-time cost for a Python whose only job here is to
-    # satisfy glibc's configure, which treats python as a critical program.
-    #
-    # --with-system-expat asks Python to link the system expat, which is built
-    # 25 packages further down this same list. It would have silently fallen
-    # back to the bundled copy, so the flag was describing something untrue -
-    # the harder kind of wrong to notice, because nothing fails.
+    # This python only serves glibc's configure. No --enable-optimizations: its
+    # PGO pass fails to link (libgcov) and triples the build time. No
+    # --with-system-expat: expat is not built yet.
     ./configure --prefix=/usr --enable-shared
     make
     make install
 }
 
-# The full Python, built again after the libraries it wants. The early build
-# above exists to satisfy glibc's configure and is made before libffi,
-# openssl and expat, so it went out without _ctypes and without ssl: the
-# boundary suite's D1 probe died on `import ctypes` inside every zone on the
-# first installed system, and reported a seccomp failure that was nothing of
-# the kind. Same version, same prefix - this install overwrites the early
-# one's files - and the step fails unless the modules it exists for import.
+# The full python, rebuilt over the early one after libffi, openssl and expat.
+# The step fails unless ctypes, ssl and pyexpat import.
 s_python_final() {
     local src; src="$(unpack "Python-${V_PYTHON}.tar.xz" "Python-${V_PYTHON}")"
     cd "$src"
@@ -559,8 +424,7 @@ s_shadow() {
     sed -i 's/groups$(EXEEXT) //' src/Makefile.in
     find man -name Makefile.in -exec sed -i 's/groups\.1 / /' {} \;
 
-    # SHA512 rather than the default, and a high round count. Cheap, and
-    # password hashes are exactly the thing that leaks and gets cracked offline.
+    # SHA512 rather than DES: password hashes leak and get cracked offline.
     sed -e 's:#ENCRYPT_METHOD DES:ENCRYPT_METHOD SHA512:' \
         -e 's:/var/spool/mail:/var/mail:' \
         -e '/PATH=/{s@/sbin:@@;s@/usr/sbin:@@}' \
@@ -577,22 +441,11 @@ s_hardened_malloc() {
     local src; src="$(unpack "${V_HARDENED_MALLOC}.tar.gz" "hardened_malloc-${V_HARDENED_MALLOC}")"
     cd "$src"
 
-    # CONFIG_NATIVE=false, overriding config/default.mk.
-    #
-    # Upstream defaults it to true, which appends -march=native. That is the
-    # right default for someone compiling an allocator for the machine in front
-    # of them, and exactly wrong for a distribution: the .so would carry
-    # whatever instruction set extensions THIS build host happens to have, and
-    # on any older CPU the first hardened_malloc call executes an illegal
-    # instruction.
-    #
-    # This is the system allocator (ADR-005). "Some instruction is unavailable"
-    # in the allocator is not a degraded feature, it is every process on the
-    # machine dying at startup, on hardware the build never saw.
+    # CONFIG_NATIVE=false overrides upstream's -march=native: in the system
+    # allocator, an instruction an older CPU lacks kills every process.
     make VARIANT=default CONFIG_NATIVE=false
 
-    # Prove the override took, rather than trusting that a make variable beat
-    # an included .mk file.
+    # Check the command line beat config/default.mk.
     if grep -qE '^\s*CONFIG_NATIVE\s*:?=\s*true' config/default.mk; then
         echo "note: config/default.mk still says CONFIG_NATIVE := true;"
         echo "      the command line above overrides it."
@@ -606,15 +459,15 @@ s_hardened_malloc() {
 
     install -Dm755 out/libhardened_malloc.so /usr/lib/libhardened_malloc.so
 
-    # Not preloaded here, or every remaining package would build on it: stage
-    # 06 writes /etc/ld.so.preload into the image's root, and only there.
+    # Not preloaded here, or every later package would build on it: stage 06
+    # writes /etc/ld.so.preload into the image's root only.
     echo "installed to /usr/lib/libhardened_malloc.so (not yet preloaded)"
 }
 
 s_libcap() {
     local src; src="$(unpack "libcap-${V_LIBCAP}.tar.xz" "libcap-${V_LIBCAP}")"
     cd "$src"
-    # pam support is not wanted; Kryptik has no PAM stack.
+    # Do not install the static libraries.
     sed -i '/install -m.*STA/d' libcap/Makefile
     make prefix=/usr lib=lib
     make prefix=/usr lib=lib install
@@ -624,8 +477,7 @@ s_e2fsprogs() {
     local src; src="$(unpack "e2fsprogs-${V_E2FSPROGS}.tar.gz" "e2fsprogs-${V_E2FSPROGS}")"
     cd "$src"
     mkdir -p build && cd build
-    # --disable-*-debug drops the debugging metadata utilities Kryptik has no
-    # use for; each is filesystem-manipulation surface running as root.
+    # libblkid, libuuid, uuidd and fsck come from util-linux.
     ../configure --prefix=/usr --sysconfdir=/etc --enable-elf-shlibs         --disable-libblkid --disable-libuuid --disable-uuidd --disable-fsck
     make
     make install
@@ -637,8 +489,7 @@ s_elfutils() {
     cd "$src"
     ./configure --prefix=/usr --disable-debuginfod --enable-libdebuginfod=dummy
     make
-    # Only libelf is wanted; the rest of elfutils is developer tooling that
-    # does not belong in a base system.
+    # Only libelf; the rest of elfutils is developer tooling.
     make -C libelf install
     install -vm644 config/libelf.pc /usr/lib/pkgconfig
     rm -fv /usr/lib/libelf.a
@@ -660,10 +511,8 @@ s_kbd() {
     sed -i '/RESIZECONS_PROGS=/s/yes/no/' configure
     sed -i 's/resizecons.8 //' docs/man/man8/Makefile.in
 
-    # --disable-tests: kbd ships tests/testsuite.at but no generated
-    # tests/testsuite, so `make all` tries to produce one with autom4te and
-    # dies with "command not found" - Kryptik installs no autoconf, and has no
-    # reason to: the suite runs at build time and ships nothing.
+    # --disable-tests: generating the test suite needs autom4te, and there is no
+    # autoconf here.
     ./configure --prefix=/usr --disable-vlock --disable-tests
     make
     make install
@@ -686,17 +535,8 @@ s_iana_etc() {
     cp -v services protocols /etc
 }
 
-# pkgconf installs a binary called "pkgconf". Everything that looks for it
-# looks for "pkg-config".
-#
-# There is no configure option for this - pkgconf offers --with-pkg-config-dir
-# for where .pc files live, and nothing that creates the compatibility name -
-# so the symlink is made by hand, which is what LFS does at this point too.
-#
-# Without it kmod's configure fails with "The pkg-config script could not be
-# found or is too old", and e2fsprogs, elfutils, iproute2 and eudev would each
-# have quietly configured without the dependencies they ask pkg-config about.
-# The package was present and built; only the name everyone uses was missing.
+# pkgconf installs as pkgconf and everything asks for pkg-config, with no
+# configure option for the name: link it by hand, as LFS does.
 s_pkgconf() {
     native_build "pkgconf-${V_PKGCONF}.tar.xz" "pkgconf-${V_PKGCONF}" \
         --disable-static --docdir="/usr/share/doc/pkgconf-${V_PKGCONF}"
@@ -704,38 +544,18 @@ s_pkgconf() {
     ln -sfv pkgconf /usr/bin/pkg-config
     ln -sfv pkgconf.1 /usr/share/man/man1/pkg-config.1
 
-    # Prove the name resolves and answers, rather than just that a link exists.
+    # The name must resolve and answer.
     pkg-config --version
 }
 
-# GNU bc 1.07.1 generates libmath.h with an `ed` script, and Kryptik ships no
-# ed:
-#
-#   ./fix-libmath_h: line 1: ed: command not found
-#   make[2]: *** [Makefile:632: libmath.h] Error 127
-#
-# bc/fix-libmath_h wraps the text of libmath.b into a C string array. It is
-# four line edits, and ed is simply the tool upstream reached for in 1991.
-# Replacing it with the equivalent sed is what LFS does here, and it avoids
-# pinning an entire editor to run four substitutions once.
-#
-# The alternative - adding `ed` to versions.env, fetch-sources.sh and an
-# audited sources.lock line - buys a package that nothing else in the base
-# system uses.
+# bc 1.07.1 builds libmath.h with an `ed` script (bc/fix-libmath_h) and no ed is
+# pinned; as LFS does, the equivalent sed replaces it rather than pin an editor.
 s_bc() {
     local src; src="$(unpack "bc-${V_BC}.tar.gz" "bc-${V_BC}")"
     cd "$src"
 
-    # Upstream's fix-libmath_h is an `ed` script in 1.07.1, and Kryptik pins no
-    # ed - so an earlier build replaced it with a sed equivalent. 1.08.2, which is
-    # the version provenance audited and this tree pins, ships
-    # bc/fix-libmath.sed and needs no shim at all.
-    #
-    # Written only when the ed script is actually there, so the recipe works
-    # for either version instead of being silently specific to the one it was
-    # written against. An unconditional overwrite would put a bash script into
-    # a tree whose build may not call it, which is the kind of inert difference
-    # that is impossible to reason about later.
+    # Only where the ed script is present: 1.08.2, the pinned version, ships
+    # bc/fix-libmath.sed and needs no shim.
     if [[ -f bc/fix-libmath_h ]] && head -1 bc/fix-libmath_h | grep -qv '^#'; then
     cat > bc/fix-libmath_h <<'FIXEOF'
 #! /bin/bash
@@ -755,9 +575,7 @@ FIXEOF
     make
     make install
 
-    # The kernel calls `bc -q` on a real program; prove this bc evaluates it,
-    # not merely that a binary landed. This is the exact shape linux/Kbuild
-    # uses to generate include/generated/timeconst.h.
+    # The shape of linux/Kbuild's timeconst.h computation, which bc must answer.
     echo "--- bc answers ---"
     local got
     got="$(echo 'scale=0; 1000000000 / 250' | bc -q)"
@@ -791,14 +609,8 @@ s_s6_stack() {
         local src; src="$(unpack "${p}.tar.gz" "$p")"
         cd "$src"
 
-        # s6-linux-init needs one extra argument, and it is not optional.
-        #
-        # Its --prefix defaults to "/" - not /usr - and --skeldir defaults to
-        # PREFIX/etc/s6-linux-init/skel. Passing --prefix=/usr, which is right
-        # for every other package here and right for this one's binaries, puts
-        # the skeleton in /usr/etc/s6-linux-init/skel. s6-linux-init-maker then
-        # looks in /etc/s6-linux-init/skel, finds nothing, and produces a boot
-        # image with no stage 2 scripts.
+        # --skeldir: with --prefix=/usr the skeleton would land in /usr/etc,
+        # where s6-linux-init-maker does not look, leaving no stage 2 scripts.
         local extra=()
         case "$p" in
             s6-linux-init-*) extra=(--skeldir=/etc/s6-linux-init/skel) ;;
@@ -812,18 +624,8 @@ s_s6_stack() {
 
 # --- system identity and boot configuration ---------------------------------
 
-# /etc/os-release and friends.
-#
-# This is not cosmetic. Integration has to answer "is the userspace I am
-# looking at inside the VM the one this build produced, or the host's?", and
-# the honest way to answer it is for the artifact to carry its own identity.
-# KRYPTIK_BUILD_ID is the repository commit, so a booted system names the
-# commit that built it.
-#
-# The commit is an argument, not read from the environment here: the step's
-# fingerprint covers its recipe and arguments, and a sysroot restored from
-# the runner's cache would otherwise keep the os-release of the commit that
-# filled the cache, stamped as up to date.
+# /etc/os-release and friends. BUILD_ID names the commit that built the image;
+# it is an argument so the stamp covers it.
 s_etc() {
     local commit="${1:-${KRYPTIK_BUILD_COMMIT:-unknown}}"
 
@@ -837,10 +639,8 @@ EOF
 
     echo "kryptik" > /etc/hostname
 
-    # Minimal and honest: the root filesystem is whatever the bootloader
-    # handed us, and the kernel mounts devtmpfs itself
-    # (CONFIG_DEVTMPFS_MOUNT=y). Nothing here should invent a device name -
-    # a wrong root= line in fstab is worse than no fstab.
+    # No root line: root comes from the kernel, and a wrong device name is
+    # worse than none.
     cat > /etc/fstab <<'EOF'
 # file system  mount point  type     options              dump  fsck
 proc           /proc        proc     nosuid,noexec,nodev  0     0
@@ -856,10 +656,8 @@ EOF
 ::1        localhost ip6-localhost ip6-loopback
 EOF
 
-    # Groups and system accounts the boot-time services and the desktop
-    # need. seat: who may talk to seatd (the compositor's user); kryptik:
-    # who may launch zones through the trusted UI; dhcpcd: the net zone's
-    # DHCP client drops privileges to it.
+    # seat may talk to seatd (the compositor's user); kryptik may launch zones
+    # through the trusted UI; the net zone's DHCP client drops to dhcpcd.
     local g
     for g in seat kryptik wheel; do
         getent group "$g" >/dev/null 2>&1 || groupadd -r "$g"
@@ -869,12 +667,9 @@ EOF
         useradd -r -d /var/lib/dhcpcd -s /usr/bin/false -c "dhcpcd privsep" dhcpcd
     install -d -m 0755 -o dhcpcd /var/lib/dhcpcd 2>/dev/null || install -d -m 0755 /var/lib/dhcpcd
 
-    # root ships WITHOUT a password ("*": nothing hashes to it), so neither
-    # login nor su can reach root until the first boot of an installed system
-    # sets one (kryptik-firstboot). /etc/securetty is present and empty, so
-    # root can never log in at a terminal even then; administration is su
-    # from the wheel group. The install medium's console does not go through
-    # login at all.
+    # root ships with no password ("*" matches nothing) until kryptik-firstboot
+    # sets one, and the empty /etc/securetty keeps root off every terminal:
+    # administration is su from wheel.
     [[ -f /etc/shadow ]] || pwconv
     usermod -p '*' root
     grep -q '^root:\*:' /etc/shadow && echo "root: no password" || { echo "FAIL: root has a password in the image"; return 1; }
@@ -885,9 +680,8 @@ EOF
         printf 'SU_WHEEL_ONLY yes\n' >> /etc/login.defs
     fi
 
-    # Kernel interface names (eth0, not enp0s3): the shipped net zone names
-    # its NIC `eth0`, and a name that depends on the bus slot would make
-    # every machine's zone file different. eudev's slot-naming rule is masked.
+    # Kernel interface names (eth0, wlan0), the same on every machine: eudev's
+    # slot-naming rule is masked.
     install -d -m 0755 /etc/udev/rules.d
     ln -sf /dev/null /etc/udev/rules.d/80-net-name-slot.rules
 
@@ -898,8 +692,7 @@ rootfs    = /var/lib/kryptik/zones
 uid_base  = 100000
 EOF
 
-    # The desktop session: a login on tty1 becomes the compositor session
-    # when kryptik-session is installed. Any other tty stays a shell.
+    # A tty1 login becomes the compositor session; any other tty stays a shell.
     install -d -m 0755 /etc/profile.d /etc/skel
     cat > /etc/profile.d/kryptik-session.sh <<'EOF'
 # Start the zoned desktop from a tty1 login; every other login is a shell.
@@ -927,17 +720,12 @@ EOF
     grep -E '^(seat|kryptik|wheel|dhcpcd):' /etc/group
 }
 
-# The trust anchor for OS updates (docs/design/boot-and-updates.md). The release signing key is an
-# OpenSSH key under ${KRYPTIK_WORK}/keys/release, generated once, never in
-# Git and never in an image; only the allowed-signers line (its public half,
-# principal kryptik-release) is installed. Stage 06 signs update manifests
-# with the private half, so the image built here verifies what the same
-# build signs - and nothing signed by any other key.
+# The update trust anchor (docs/design/boot-and-updates.md). The release key is
+# an OpenSSH key in ${KRYPTIK_WORK}/keys/release, never in Git or an image;
+# only its allowed-signers line is installed. Stage 06 signs with it.
 s_release_trust() {
-    # Under /usr/share, on the verified root: /etc is overlaid with an
-    # unauthenticated upper layer on the state partition (sysinit.sh, "the
-    # trust boundary"), and the key that decides what may be booted next
-    # must not be replaceable by whoever can write that partition.
+    # Under /usr/share, on the verified root: /etc has an unauthenticated
+    # overlay layer on the state partition (sysinit.sh).
     local keydir="${KRYPTIK_WORK}/keys/release"
     mkdir -p "$keydir"; chmod 0700 "$keydir"
     if [[ ! -f "$keydir/kryptik-release" ]]; then
@@ -945,13 +733,9 @@ s_release_trust() {
         chmod 0600 "$keydir/kryptik-release"
         echo "generated a new developer release signing key"
     fi
-    # A second key, for one thing: signing the update channel's statement of
-    # what is current (docs/design/update-channel.md). It is honoured in the
-    # kryptik-latest namespace and nowhere else, and the release key is
-    # honoured in kryptik-release and nowhere else, so the key that has to be
-    # at hand on a schedule can never sign a release, and the key that signs
-    # releases never has to be. An owner who wants one key for both lists
-    # the release key on the second line instead; nothing else changes.
+    # A second key signs only the update channel's statement of what is current
+    # (docs/design/update-channel.md). Each key is honoured in its own namespace
+    # only, so the key kept at hand for a schedule can never sign a release.
     if [[ ! -f "$keydir/kryptik-latest" ]]; then
         ssh-keygen -q -t ed25519 -N "" -C "kryptik-latest (developer)" -f "$keydir/kryptik-latest"
         chmod 0600 "$keydir/kryptik-latest"
@@ -963,22 +747,17 @@ s_release_trust() {
         printf 'kryptik-latest namespaces="kryptik-latest" %s\n' "$(cut -d' ' -f1,2 "$keydir/kryptik-latest.pub")"
     } > /usr/share/kryptik/trust/release-signers
     chmod 0644 /usr/share/kryptik/trust/release-signers
-    # Developer tier: the updater accepts development-role manifests. A
-    # production image changes this file (and its key), deliberately.
+    # Developer tier (development-role manifests); production images change it.
     printf 'development\n' > /usr/share/kryptik/trust/required-role
     echo "--- trust anchor ---"; cat /usr/share/kryptik/trust/release-signers
-    # Prove the anchor works end to end with the key beside it: sign a
-    # scratch file and verify it through the installed signers file.
+    # Sign a scratch file and verify it through the installed anchor.
     local t; t="$(mktemp -d)"
     printf 'probe\n' > "$t/m"
     ssh-keygen -Y sign -f "$keydir/kryptik-release" -n kryptik-release "$t/m" >/dev/null 2>&1
     ssh-keygen -Y verify -f /usr/share/kryptik/trust/release-signers -I kryptik-release -n kryptik-release -s "$t/m.sig" < "$t/m" >/dev/null \
         && echo "ok: the anchor verifies a signature by the release key" || { echo "FAIL: anchor does not verify"; rm -rf "$t"; return 1; }
-    # and refuses one by a different key (control). A SEPARATE file and
-    # signature, and the signing step must succeed: the first version
-    # re-signed m in place with its errors hidden, and when that signing
-    # failed the release key's signature was still in m.sig, so the
-    # "foreign key verified" verdict was about the wrong signature.
+    # ...and refuses one by another key: a separate file, and the signing must
+    # succeed, or a stale signature is what gets checked.
     ssh-keygen -q -t ed25519 -N "" -f "$t/other" >/dev/null 2>&1 || { echo "FAIL: could not generate the control key"; rm -rf "$t"; return 1; }
     printf 'probe by another key\n' > "$t/m2"
     ssh-keygen -Y sign -f "$t/other" -n kryptik-release "$t/m2" < /dev/null >/dev/null 2>"$t/sign.err" \
@@ -988,8 +767,7 @@ s_release_trust() {
         echo "FAIL: a foreign key verified against the anchor"; rm -rf "$t"; return 1
     fi
     echo "ok: a foreign key is refused"
-    # The two keys, each in its own namespace and refused in the other's:
-    # what makes the statement key safe to keep where a timer can reach it.
+    # Each key verifies in its own namespace and is refused in the other's.
     local who ns other
     for who in kryptik-release kryptik-latest; do
         ns="$who"; [[ "$who" == kryptik-release ]] && other=kryptik-latest || other=kryptik-release
@@ -1010,9 +788,8 @@ s_release_trust() {
     rm -rf "$t"
 }
 
-# The net zone's own startup program (docs/design/net-zone.md): dhcpcd, nftables NAT and
-# dnsmasq inside the zone that holds the NIC. Installed beside the boot
-# scripts; run by the net-zone service through kryptikd.
+# The net zone's startup program (docs/design/net-zone.md): dhcpcd, nftables
+# NAT and dnsmasq in the zone that holds the NIC, run by the net-zone service.
 s_netzone() {
     local src="${KRYPTIK_ROOT}/tools/net/netzone-init.sh"
     [[ -f "$src" ]] || { echo "no netzone-init at ${src}"; return 1; }
@@ -1036,8 +813,7 @@ s_updater() {
     echo "source sha256: ${1:-unknown}"
     install -D -m 0755 "$src" /usr/sbin/kryptik-update
     sh -n /usr/sbin/kryptik-update || { echo "the updater does not parse under the target sh"; return 1; }
-    # Captured, not piped into grep -q: the usage text comes with a non-zero
-    # exit, which pipefail would report as this check failing.
+    # Captured, not piped: the usage exits non-zero, which pipefail reports.
     local out
     out="$(/usr/sbin/kryptik-update 2>&1 || true)"
     case "$out" in *"apply DIR"*) echo "ok: kryptik-update runs" ;; *) echo "FAIL: kryptik-update does not run: ${out}"; return 1 ;; esac
@@ -1051,10 +827,8 @@ s_updater() {
     case "$out" in *restore-slot*) echo "ok: kryptik-recover runs" ;; *) echo "FAIL: kryptik-recover does not run: ${out}"; return 1 ;; esac
 }
 
-# The firmware-side half of the A/B trial: a small C program that writes
-# Boot#### and BootNext through efivarfs. Built here with the target
-# toolchain and the hardening flags like everything else; its source hash is
-# an argument so the step re-runs when the source changes.
+# The firmware side of the A/B trial: writes Boot#### and BootNext through
+# efivarfs. Its source hash is an argument, so a source change rebuilds it.
 s_efiboot() {
     local src="${KRYPTIK_ROOT}/tools/efi/kryptik-efiboot.c"
     [[ -f "$src" ]] || { echo "no source at ${src}"; return 1; }
@@ -1066,17 +840,9 @@ s_efiboot() {
     case "$out" in *usage*) echo "ok: kryptik-efiboot runs" ;; *) echo "FAIL: kryptik-efiboot does not run: ${out}"; return 1 ;; esac
 }
 
-# A console that works without login(1).
-#
-# util-linux is configured --disable-login (it is a setuid-adjacent surface
-# Kryptik has no use for yet), so a plain getty would exec a /bin/login that
-# does not exist and the console would be dead. agetty -n -l skips login
-# entirely and execs the program named instead.
-#
-# The console DEVICE is discovered rather than guessed. A developer VM booted
-# with -nographic uses ttyS0; the same image on hardware uses tty1; hardcoding
-# either produces an image that boots to silence on the other. The kernel
-# already knows which it is and publishes it.
+# The console: a root shell on install media (agetty -n -l skips login), a
+# login prompt otherwise. The device is the kernel's active console (ttyS0 on
+# a -nographic VM, tty1 on hardware), not a guess.
 s_console() {
     mkdir -p /usr/libexec
     cat > /usr/libexec/kryptik-console <<'EOF'
@@ -1129,14 +895,10 @@ EOF
     echo "installed /usr/libexec/kryptik-console"
 }
 
-# s6-linux-init: generate /usr/lib/s6-linux-init/current and the /sbin entry
-# points. Under /usr/lib, not /etc: the stage 2 scripts run as root before
-# anything else and must come from the verified root, not the /etc overlay.
-#
-# The upstream skeleton scripts are entirely commented out - they are a menu of
-# "if your services are managed by X" options, not a working configuration. We
-# replace them before running the maker, because the maker copies whatever is
-# in the skeldir.
+# s6-linux-init: /usr/lib/s6-linux-init/current and the /sbin entry points,
+# under /usr/lib because the stage 2 scripts run as root first and must come
+# from the verified root, not the /etc overlay. Upstream's skeleton scripts are
+# all commented out, so ours replace them before the maker copies the skeldir.
 s_init() {
     have() { command -v "$1" >/dev/null 2>&1; }
     have s6-linux-init-maker || { echo "s6-linux-init-maker not installed; s6 stack step failed?"; return 1; }
@@ -1186,9 +948,7 @@ else
 fi
 EOF
 
-    # Shutdown: bring services down, then return. s6-linux-init-shutdownd does
-    # the unmounting and the actual poweroff - rc.shutdown must NOT try to halt
-    # the machine itself.
+    # Shutdown: stop services and return; shutdownd unmounts and powers off.
     cat > "$skel/rc.shutdown" <<'EOF'
 #!/bin/sh -e
 # Kryptik shutdown. Bring services down and return; s6-linux-init-shutdownd
@@ -1237,30 +997,16 @@ EOF
         sh -n "$skel/$s" || { echo "skeleton script $s has a syntax error"; return 1; }
     done
 
-    # The maker refuses to write into an existing directory, so build into a
-    # fresh path and move it into place.
+    # The maker will not write into an existing directory; build, then move.
     local tmp=/tmp/s6-linux-init-build.$$
     rm -rf "$tmp"
 
-    #  -1  stage 2 output also goes to /dev/console. Without it a boot failure
-    #      is only visible in the catch-all log, which you cannot read because
-    #      the machine did not boot.
-    #  -G  the early getty: our console wrapper, supervised for the lifetime
-    #      of the machine.
-    #  -p  PATH for the init scripts. The host is not on it; there is no host.
-    #  -s  kernel command line key=value pairs land in this envdir, so
-    #      services can read them. It MUST be under /run: s6-linux-init-maker
-    #      warns otherwise, and the reason bites Kryptik specifically. The
-    #      store is rewritten at every boot, and Kryptik's kernel fragment
-    #      enables dm-verity - a root filesystem that is read-only by design.
-    #      Pointing this at /etc would mean init trying to write to a verified
-    #      root on every boot.
-    #  -f  our skeleton, not the commented-out upstream one.
-    #
-    # NOT passed: -d /dev. Upstream says to add it when devtmpfs is not
-    # automounted by the kernel; Kryptik's kernel sets
-    # CONFIG_DEVTMPFS_MOUNT=y, so passing it would mount devtmpfs a second
-    # time over the kernel's own.
+    #  -1  stage 2 output on /dev/console too, so a failed boot can be read
+    #  -G  the early getty: our console wrapper
+    #  -s  the envdir for the kernel command line's key=value pairs; under /run,
+    #      since it is rewritten every boot and the root is read-only dm-verity
+    #  -f  our skeleton
+    # No -d /dev: the kernel mounts devtmpfs itself (CONFIG_DEVTMPFS_MOUNT=y).
     s6-linux-init-maker \
         -1 \
         -G "/usr/libexec/kryptik-console" \
@@ -1276,47 +1022,23 @@ EOF
     rm -rf /usr/lib/s6-linux-init/current
     mv "$tmp" /usr/lib/s6-linux-init/current
 
-    # /sbin/init, plus telinit, shutdown, halt, poweroff and reboot. /sbin is a
-    # symlink to usr/sbin in this layout, so these land in /usr/sbin and
-    # /sbin/init resolves - which is the path the kernel looks for.
+    # /sbin/init and the rest; /sbin links to usr/sbin, and /sbin/init is where
+    # the kernel looks.
     cp -a /usr/lib/s6-linux-init/current/bin/. /sbin/
 
     echo "--- /sbin entry points ---"
     ls -la /sbin/init /sbin/telinit /sbin/shutdown /sbin/halt /sbin/poweroff /sbin/reboot
 }
 
-# The service database, and the kernel tunables that were never installed.
-#
-# Until this step existed the image booted to a console and printed "no
-# compiled s6-rc database ... no services will start", which was honest and
-# not a system. s6-svscan was running as pid 1 supervising nothing but its own
-# logger and the early getty.
-#
-# Two things get installed here that the build had been carrying and not
-# shipping:
-#
-#   build/config/sysctl.d/99-kryptik-hardening.conf - present in the
-#   repository since the beginning, referenced by docs/hardening.md, and never
-#   copied into a target. Every tunable in it was inert.
-#
-#   build/services/       - the s6-rc source tree: service definitions ONLY
-#   build/service-scripts/ - the shell the services run, kept out of the
-#                            source tree because s6-rc-compile reads every
-#                            directory there as a service
-#   rc.init looks for.
+# The installer runs inside a booted Kryptik system, onto a second disk; it is
+# never run on the build host.
 s_installer() {
-    # The installer runs INSIDE a booted Kryptik system, onto a second disk, so
-    # it has to be in the image. It is never run on the build host and has no
-    # business there - the host's disks are not something this project writes
-    # to, and the installer's own refusals assume a guest.
     local src="${KRYPTIK_ROOT}/tools/install/kryptik-install.sh"
     [[ -f "$src" ]] || { echo "no installer at ${src}"; return 1; }
 
     install -D -m 0755 "$src" /usr/sbin/kryptik-install
 
-    # It is /bin/sh, and the target's sh is the one that will run it. Parsing it
-    # with the shell that will execute it is worth more than parsing it with the
-    # build host's.
+    # Parsed by the target's sh, which is what runs it.
     sh -n /usr/sbin/kryptik-install || {
         echo "the installer does not parse under the target sh"
         return 1
@@ -1326,24 +1048,21 @@ s_installer() {
     /usr/sbin/kryptik-install --help
 }
 
+# The s6-rc database compiled from build/services, the scripts the services run
+# (build/service-scripts) and the sysctl fragments, all on the verified root.
 s_services() {
     local src="${KRYPTIK_ROOT}/build/services"
     [[ -d "$src" ]] || { echo "no service source tree at ${src}"; return 1; }
 
-    # The scripts the oneshot `up` files name. They live outside the database
-    # so they can be read, checked and run by hand on a machine that is not
-    # booting properly - and outside the s6-rc SOURCE tree, which is the part
-    # that matters here: s6-rc-compile treats every directory under the source
-    # as a service definition, so a scripts/ directory in there made it stop
-    # with "unable to read .../scripts/type: No such file or directory".
+    # The scripts live outside the s6-rc source tree: s6-rc-compile reads every
+    # directory there as a service.
     local scripts="${KRYPTIK_ROOT}/build/service-scripts"
     install -d -m 0755 /usr/libexec/kryptik
     install -m 0755 "$scripts"/*.sh /usr/libexec/kryptik/
     echo "--- boot scripts ---"
     ls -la /usr/libexec/kryptik/
 
-    # Kryptik's kernel tunables, on the verified root: sysinit applies these
-    # and nothing under /etc, which the state partition can shadow.
+    # sysinit applies these, never anything under /etc, which state can shadow.
     install -d -m 0755 /usr/lib/kryptik/sysctl.d
     if compgen -G "${KRYPTIK_ROOT}/build/config/sysctl.d/*.conf" > /dev/null; then
         install -m 0644 "${KRYPTIK_ROOT}"/build/config/sysctl.d/*.conf /usr/lib/kryptik/sysctl.d/
@@ -1353,8 +1072,8 @@ s_services() {
         echo "no sysctl.d fragments to install"
     fi
 
-    # Compile the database. s6-rc-compile refuses to overwrite, so build
-    # beside and swap: a half-written database is a machine that does not boot.
+    # s6-rc-compile will not overwrite: build beside and swap, as a half-written
+    # database does not boot.
     local dbdir=/usr/lib/kryptik/s6-rc
     local tmpdb="$dbdir/compiled.new"
     rm -rf "$tmpdb"
@@ -1365,9 +1084,7 @@ s_services() {
     mv "$tmpdb" "$dbdir/compiled"
     rm -rf "$dbdir/compiled.old"
 
-    # Read the database back. "s6-rc-compile exited 0" and "the database
-    # describes the services we wrote" are different claims, and the second is
-    # the one a boot depends on.
+    # Read the database back: every service must be in it.
     echo "--- compiled database ---"
     local all
     all="$(s6-rc-db -c /usr/lib/kryptik/s6-rc/compiled list all)"
@@ -1381,8 +1098,7 @@ s_services() {
     done
     [[ "$missing" -eq 0 ]] || { echo "${missing} service(s) did not compile in"; return 1; }
 
-    # The dependency graph has to be the one we declared, or services start in
-    # an order nobody chose.
+    # The dependency graph must be the declared one.
     echo "--- what 'default' pulls in, in order ---"
     s6-rc-db -c /usr/lib/kryptik/s6-rc/compiled pipeline default 2>/dev/null || true
     s6-rc-db -c /usr/lib/kryptik/s6-rc/compiled dependencies default | sed 's/^/  /'
@@ -1397,42 +1113,25 @@ s_services() {
     echo "service database compiled and verified"
 }
 
-# kryptikd, the zone supervisor.
-#
-# It is Rust, and the sysroot has no Rust toolchain - bootstrapping one into
-# the target is a much larger piece of work than this stage. So the binary is
-# built outside and installed here, and its ABSENCE is reported loudly rather
-# than passed over: a Kryptik image without kryptikd is a Linux system with
-# Kryptik's name on it.
-# Takes its input as ARGUMENTS rather than reading the environment, and that
-# is deliberate.
-#
-# step() fingerprints a step against its recipe and the arguments it was called
-# with. An environment variable is invisible to that, so pointing
-# KRYPTIK_KRYPTIKD_BIN at a binary after a run that had none would leave the
-# stamp valid and the step skipped - the image would stay without kryptikd and
-# the build would report success. Passing the path AND the binary's content
-# hash makes both part of the step's identity.
+# kryptikd, the zone supervisor: Rust, built outside as the sysroot has no Rust
+# toolchain, and its absence is reported, not passed over. The path and the
+# binary's hash are arguments, so the stamp covers them; an environment
+# variable would not be.
 s_kryptikd() {
     local src="$1" want_sha="${2:-absent}" zones_sha="${3:-nozones}"
     [[ "$src" == "none" ]] && src=""
     echo "requested: ${src:-<none>} (sha256 ${want_sha})"
     echo "zone definitions: ${zones_sha}"
 
-    # The zone definitions and the policy files they name live on the
-    # verified root; every privileged consumer (the services, the launch
-    # daemon, the net zone) reads them there. /etc/kryptik/zones is a symlink
-    # to them for the kryptik command's default, and nothing more: the /etc
-    # overlay could replace that link, and only the unprivileged wrapper
-    # would follow it.
+    # Zone files and their policies live on the verified root, where every
+    # privileged reader looks. /etc/kryptik/zones only links there for the
+    # kryptik command: the /etc overlay could replace that link, and only that
+    # unprivileged wrapper follows it.
     install -d -m 0755 /etc/kryptik /usr/lib/kryptik
     install -d -m 0755 /usr/lib/kryptik/zones /usr/lib/kryptik/zones/policy
     if [[ -d "${KRYPTIK_ROOT}/compartments/zones" ]]; then
         install -m 0644 "${KRYPTIK_ROOT}"/compartments/zones/*.toml /usr/lib/kryptik/zones/
-        # The seccomp/Landlock policies the zone files reference, relative
-        # to the zone directory. The first version installed the .toml files
-        # alone, so every zone would have failed to start on the target with
-        # "policy/<zone>.seccomp: No such file".
+        # The seccomp and Landlock policies the zone files name.
         install -m 0644 "${KRYPTIK_ROOT}"/compartments/zones/policy/* /usr/lib/kryptik/zones/policy/
         echo "installed zone definitions and policies:"
         ls -la /usr/lib/kryptik/zones/ /usr/lib/kryptik/zones/policy/
@@ -1471,9 +1170,8 @@ s_kryptikd() {
 
     [[ -f "$src" ]] || { echo "KRYPTIK_KRYPTIKD_BIN=${src} does not exist"; return 1; }
 
-    # The hash was taken when the build order was built, outside the chroot.
-    # If it no longer matches, the file changed underneath the build and the
-    # stamp about to be written would describe something else.
+    # The hash was taken outside the chroot; a mismatch means the file changed
+    # under the build.
     local got_sha; got_sha="$(sha256_of "$src")"
     if [[ "$want_sha" != "absent" && "$got_sha" != "$want_sha" ]]; then
         echo "kryptikd binary changed during the build:"
@@ -1486,20 +1184,14 @@ s_kryptikd() {
     install -Dm755 "$src" /usr/bin/kryptikd
     rm -f /etc/kryptik/kryptikd-absent
 
-    # It must actually run here. A dynamically linked binary built against the
-    # host's libc installs perfectly and then fails at boot with a missing
-    # loader, which is exactly the kind of failure this stage exists to catch
-    # before a VM does.
+    # It must run here: one linked against the host's libc installs fine and
+    # fails at boot.
     echo "--- installed kryptikd ---"
     ls -la /usr/bin/kryptikd
     readelf -l /usr/bin/kryptikd 2>/dev/null | grep 'Requesting program interpreter' \
         || echo "  (static binary, no interpreter - good)"
-    # It must actually RUN here, and --help is the only subcommand that both
-    # exits 0 and touches nothing. (`--version` is not a kryptikd subcommand
-    # at all: it prints usage and exits 2, which would fail this step on a
-    # perfectly good binary.) `check` is deliberately not used - inside the
-    # build chroot it would probe the BUILD host's kernel for Landlock and
-    # seccomp and report an answer about the wrong machine.
+    # --help is the one subcommand that exits 0 and touches nothing (--version
+    # is not a subcommand); `check` would probe the build host's kernel.
     /usr/bin/kryptikd --help > /dev/null || {
         echo "FAIL: the installed kryptikd does not run inside the target."
         echo "A binary built against the host's libc installs fine and fails here."
@@ -1507,8 +1199,7 @@ s_kryptikd() {
     }
     echo "kryptikd --help: ok"
 
-    # And it must be able to read the zone definitions just installed. A zone
-    # file this binary cannot parse is a boot-time failure discovered at boot.
+    # And it must parse the zone definitions it will boot with.
     if /usr/bin/kryptikd list --zones /usr/lib/kryptik/zones; then
         echo "kryptikd parses the installed zone definitions"
     else
@@ -1516,20 +1207,15 @@ s_kryptikd() {
         return 1
     fi
 
-    # The command a person types (tools/kryptik), beside the daemon it wraps.
-    # It was never installed before: cli.sh in the image looked for it on
-    # PATH and would have reported it missing.
+    # The user's command (tools/kryptik), beside the daemon it wraps.
     install -m 0755 "${KRYPTIK_ROOT}/tools/kryptik" /usr/bin/kryptik
     bash -n /usr/bin/kryptik || { echo "FAIL: /usr/bin/kryptik has a syntax error"; return 1; }
     echo "installed /usr/bin/kryptik (sha256 ${4:-unknown})"
 }
 
-# The suites and the guest-side checks, in the image, so the VM drivers can
-# run the SAME isolation, launcher and CLI suites on the installed kernel as
-# root - the [vm] rows those suites declare NOT RUN on a developer host.
-# The layout matters: the suites locate their tree as $HERE/../.., so they
-# sit at /usr/lib/kryptik/compartments/tests, next to a kryptikd symlink at
-# the path they default to.
+# The suites and guest checks, in the image, so the VM drivers run them as root
+# on the installed kernel. They find their tree as $HERE/../.., hence
+# /usr/lib/kryptik/compartments/tests beside a kryptikd link at their default.
 s_tests() {
     echo "inputs digest: ${1:-none}"
     local base=/usr/lib/kryptik
@@ -1542,10 +1228,8 @@ s_tests() {
     for t in "${KRYPTIK_ROOT}"/compartments/kryptikd/probes/*.sh; do
         install -m 0755 "$t" "$base/compartments/kryptikd/probes/$(basename "$t")"
     done
-    # adversarial.sh cross-checks its namespace set against isolate.rs and
-    # the proc and sysfs mounts against rootfs.rs, where they are made. The
-    # first target run after that check moved reported both mounts missing:
-    # only isolate.rs had been shipped.
+    # adversarial.sh checks its namespace set against isolate.rs and its proc
+    # and sysfs mounts against rootfs.rs.
     for src in isolate.rs rootfs.rs; do
         install -m 0644 "${KRYPTIK_ROOT}/compartments/kryptikd/src/${src}" "$base/compartments/kryptikd/src/${src}"
     done
@@ -1561,10 +1245,7 @@ s_tests() {
     find "$base/compartments" "$base/guest-tests" -type f -o -type l | sort
 }
 
-# Everything a boot needs, checked from the target's own point of view.
-#
-# "make system finished" is not the same statement as "this tree can boot", and
-# the gap between them is where a build left running quietly wastes a morning.
+# Everything a boot needs, checked from the target's point of view.
 s_boot_check() {
     local n=0
     chk() {  # chk <description> <path> [x]
@@ -1589,8 +1270,7 @@ s_boot_check() {
     chk "fstab"             /etc/fstab
     chk "C library"         /usr/lib/libc.so.6
     chk "dynamic loader"    /usr/lib/ld-linux-x86-64.so.2
-    # The desktop: the compositor, the terminal, the launch
-    # client, the session, the chrome, the per-zone proxy and the daemon.
+    # The desktop.
     chk "compositor"        /usr/bin/dwl x
     chk "terminal"          /usr/bin/havoc x
     chk "seatd"             /usr/bin/seatd x
@@ -1600,9 +1280,8 @@ s_boot_check() {
     chk "havoc font"        /usr/share/fonts/TTF/DejaVuSansMono.ttf
     chk "kryptik-wlproxy"   /usr/bin/kryptik-wlproxy x
     chk "kryptikd"          /usr/bin/kryptikd x
-    # The net zone's wireless uplink, and the regulatory database every
-    # radio needs before it may transmit: the first firmware file the kernel
-    # asks for, stored compressed like every file under /lib/firmware.
+    # The net zone's Wi-Fi, and the regulatory database a radio needs before it
+    # may transmit (compressed, like all of /lib/firmware).
     chk "wpa_supplicant"    /usr/sbin/wpa_supplicant x
     chk "wpa_cli"           /usr/sbin/wpa_cli x
     chk "iw"                /usr/sbin/iw x
@@ -1615,8 +1294,7 @@ s_boot_check() {
         printf '  ok      /sbin/init resolves to %s\n' "$(readlink -f /sbin/init)"
     fi
 
-    # The early getty is what turns a booted kernel into something you can
-    # talk to. If the maker did not create it, the machine boots to silence.
+    # Without the early getty the machine boots to silence.
     local svcdir=/usr/lib/s6-linux-init/current/run-image/service
     if [[ -d "$svcdir" ]]; then
         echo "  services in the boot image:"
@@ -1634,8 +1312,7 @@ s_boot_check() {
         echo "  MISSING ${svcdir}"; n=$((n + 1))
     fi
 
-    # The service database. Without it the machine boots to a bare console,
-    # which is a state worth distinguishing from a broken one.
+    # Without the service database the machine boots to a bare console.
     if [[ -d /usr/lib/kryptik/s6-rc/compiled ]]; then
         local nsvc
         nsvc="$(s6-rc-db -c /usr/lib/kryptik/s6-rc/compiled list all 2>/dev/null | grep -c . || echo 0)"
@@ -1676,19 +1353,11 @@ s_boot_check() {
     echo "the sysroot has what a boot needs"
 }
 
-# --- build order ------------------------------------------------------------
-#
-# Ordered by dependency, not alphabetically. Moving an entry earlier because it
-# "seems independent" is how a base system build breaks three packages later.
+# --- meson -------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# meson-built packages. The Wayland stack is meson-only; there is no
-# autotools alternative to reuse. --buildtype=plain so Kryptik's CFLAGS and
-# LDFLAGS are the flags (release would add its own -O3 and -DNDEBUG), and
-# --wrap-mode=nodownload so a subproject can never fetch a dependency the
-# lock file has not seen (the chroot has no network, but the refusal should
-# be the build system's, not the network's).
-# ---------------------------------------------------------------------------
+# meson packages; the Wayland stack is meson-only. --buildtype=plain leaves the
+# flags to the hardening CFLAGS (release adds -O3 and -DNDEBUG), and
+# --wrap-mode=nodownload keeps a subproject from fetching unlocked sources.
 meson_build() {
     local tarball="$1" dirname="$2"; shift 2
     local src; src="$(unpack "$tarball" "$dirname")"
@@ -1700,25 +1369,12 @@ meson_build() {
 
 # --- encrypted zone volumes -------------------------------------------------
 
-# cmake is here only because json-c has no other build system, and json-c
-# is here only because LUKS2 headers are JSON and cryptsetup requires it.
-# Bundled third-party libraries rather than system ones: the alternative is
-# pinning curl, libarchive, libuv and nghttp2 for a tool that exists to run
-# one cmake invocation. It is not part of the image (see the exclusions in
-# stage 06).
-# cmake is here only to generate json-c's build files, and stage 06 leaves it
-# out of the image. Compiling it from source cost 13 of stage 04's 56 minutes
-# on the runner: a large C++ tree plus bundled curl, libarchive and libuv, for
-# one package's Makefiles. So the chroot runs Kitware's published Linux binary
-# instead - pinned by hash in sources.lock like every other input, unpacked
-# under the build tree, never installed. The binary writes Makefiles; json-c
-# itself is still compiled by this stage's toolchain. Should the binary not
-# run in this chroot (a loader or a libc it cannot find), s_cmake builds it
-# from source as before, and the log says which path was taken.
-#
-# Unpacked on demand rather than once: the build tree is cleared between
-# runs, and a resumed json-c step must not depend on a cmake step that was
-# skipped as already built.
+# cmake only generates json-c's build files (cryptsetup needs json-c for LUKS2
+# headers) and stays out of the image. The chroot runs Kitware's binary, pinned
+# in sources.lock and never installed, instead of a long source build; where it
+# cannot run, s_cmake builds from source with its bundled libraries. Unpacked
+# on demand: the build tree is cleared between runs, and a resumed json-c step
+# must not rely on a skipped cmake step.
 prebuilt_cmake() {
     local dir="${BUILDDIR}/cmake-${V_CMAKE}-linux-x86_64"
     if [[ ! -x "${dir}/bin/cmake" ]]; then
@@ -1760,27 +1416,20 @@ s_json_c() {
     # CMAKE_POLICY_VERSION_MINIMUM: cmake 4 refuses projects whose minimum is
     # below 3.5, and json-c's test/app subdirectories still say 2.8/3.9.
     #
-    # CMAKE_INSTALL_LIBDIR=lib: the source-built cmake had lib64 patched out
-    # of GNUInstallDirs.cmake; Kitware's binary has not, and on a 64-bit host
-    # with no /etc/debian_version it chooses lib64. The first run with the
-    # binary put libjson-c.so and json-c.pc under /usr/lib64, where nothing
-    # in this sysroot looks, and cryptsetup's configure then reported
-    # "Package 'json-c' not found" two steps later. Kryptik has one library
-    # directory and it is /usr/lib, so say so rather than trusting either
-    # cmake's guess.
+    # CMAKE_INSTALL_LIBDIR=lib: Kitware's binary, unlike the patched source
+    # build, picks lib64 here, where nothing in this sysroot looks.
     "$cmake" -S . -B build -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_LIBDIR=lib \
         -DBUILD_STATIC_LIBS=OFF -DBUILD_TESTING=OFF -DBUILD_APPS=OFF \
         -DCMAKE_POLICY_VERSION_MINIMUM=3.5
     "$cmake" --build build
     "$cmake" --install build
-    # The check cryptsetup will make, made here where the failure names the
-    # package that caused it. Same shape as the devmapper.pc check in s_lvm2.
+    # cryptsetup's own check, made here where a failure names json-c (as s_lvm2
+    # does for devmapper.pc).
     [[ -f /usr/lib/pkgconfig/json-c.pc ]] || { echo "no /usr/lib/pkgconfig/json-c.pc (installed under lib64?)"; return 1; }
     [[ -e /usr/lib64/libjson-c.so ]] && { echo "json-c installed into /usr/lib64, which this sysroot does not use"; return 1; }
     pkg-config --exists --print-errors json-c || return 1
-    # Prove the library round-trips a document; cryptsetup will parse LUKS2
-    # headers with it.
+    # It must round-trip a document; cryptsetup parses LUKS2 headers with it.
     cat > /tmp/jc.c <<'EOF'
 #include <json.h>
 #include <stdio.h>
@@ -1789,9 +1438,7 @@ int main(void){ struct json_object *o = json_tokener_parse("{\"a\":[1,2],\"b\":\
  if(!o) return 1; const char *s = json_object_to_json_string(o);
  return strcmp(s, "{ \"a\": [ 1, 2 ], \"b\": \"x\" }") == 0 ? 0 : 2; }
 EOF
-    # Through pkg-config, not hand-written flags: the -I and -l that were here
-    # passed on a tree where the .pc file was unfindable, and so proved nothing
-    # about what cryptsetup's configure was about to ask.
+    # Through pkg-config, as cryptsetup's configure will find it.
     # shellcheck disable=SC2046
     gcc -o /tmp/jc /tmp/jc.c $(pkg-config --cflags --libs json-c)
     /tmp/jc || { echo "FAIL: json-c did not round-trip a document"; return 1; }
@@ -1807,9 +1454,8 @@ s_libaio() {
     make prefix=/usr install
 }
 
-# Only device-mapper from LVM2: libdevmapper is what cryptsetup links, and
-# dmsetup is what an operator uses to look at a mapping. No lvm binary, no
-# daemons, no udev rules for volumes Kryptik does not create.
+# Only device-mapper from LVM2: libdevmapper for cryptsetup, dmsetup for an
+# operator. No lvm binary, daemons or volume udev rules.
 s_lvm2() {
     local src; src="$(unpack "LVM2.${V_LVM2}.tgz" "LVM2.${V_LVM2}")"
     cd "$src"
@@ -1817,11 +1463,8 @@ s_lvm2() {
         --disable-readline --disable-selinux --with-default-dm-run-dir=/run \
         --enable-udev_sync --disable-silent-rules
     make device-mapper
-    # The install target recurses into libdm and dm-tools with separate make
-    # processes that both rebuild dmsetup; with the stage's -j4 they ran at
-    # once, one relinking while the other recompiled dmsetup.o, and the link
-    # saw no object at all ("undefined reference to `main'"). Serial here;
-    # the parallel build above is where the time goes.
+    # -j1: the install target's two sub-makes both rebuild dmsetup, and in
+    # parallel one links while the other rewrites dmsetup.o.
     make -j1 install_device-mapper
     # The library line shows the binary runs. The driver line after it needs
     # the build machine's device-mapper, and dmsetup fails without it.
@@ -1840,12 +1483,8 @@ s_cryptsetup() {
     echo "--- what shipped ---"
     cryptsetup --version
     veritysetup --version
-    # LUKS2 with argon2id is the contract in docs/design/encrypted-volumes.md; prove the binary
-    # offers it rather than trusting configure. The help text is captured,
-    # not piped into grep -q: grep -q exits at its first match, cryptsetup
-    # then dies of SIGPIPE, and under pipefail a successful match read as a
-    # failed command (exit 141) - which is what stopped the 13:04 run right
-    # after cryptsetup had installed.
+    # LUKS2 is the contract (docs/design/encrypted-volumes.md). The help text is
+    # captured, not piped into grep -q, which can SIGPIPE cryptsetup.
     cryptsetup benchmark --help >/dev/null 2>&1 || true
     local help; help="$(cryptsetup --help 2>&1 || true)"
     case "$help" in
@@ -1855,8 +1494,7 @@ s_cryptsetup() {
 }
 
 # --- release manifests are verified by the installed system ---
-# ssh-keygen -Y is the verification primitive tools/release-manifest.sh uses;
-# only that program is installed. No sshd, no ssh, no host keys.
+# Only ssh-keygen, whose -Y verifies them; no sshd, ssh or host keys.
 s_openssh() {
     local src; src="$(unpack "openssh-${V_OPENSSH}.tar.gz" "openssh-${V_OPENSSH}")"
     cd "$src"
@@ -1865,10 +1503,8 @@ s_openssh() {
         --with-pid-dir=/run --without-pam
     make ssh-keygen
     install -m 0755 ssh-keygen /usr/bin/ssh-keygen
-    # Captured, not piped into grep -q: ssh-keygen prints its usage and exits
-    # non-zero, and pipefail made that the step's status (the 13:08 stop).
-    # A ssh-keygen that knows -Y complains about the missing namespace or
-    # signature; one that does not says "unknown option -- Y".
+    # Captured, not piped: the usage exits non-zero. Without -Y ssh-keygen says
+    # "unknown option -- Y"; with it, it complains of missing arguments.
     local out
     out="$(ssh-keygen -Y verify 2>&1 || true)"
     case "$out" in
@@ -1883,9 +1519,7 @@ s_dnsmasq() {
     local src; src="$(unpack "dnsmasq-${V_DNSMASQ}.tar.xz" "dnsmasq-${V_DNSMASQ}")"
     cd "$src"
     make PREFIX=/usr COPTS="-DNO_DBUS -DNO_ID"
-    # `install`, not the internal `install-common`, which with PREFIX on the
-    # command line had nothing to do and installed nothing (the 13:17 stop:
-    # "dnsmasq: command not found" right after a successful build).
+    # `install`, not `install-common`, which installs nothing with PREFIX set.
     make PREFIX=/usr install
     [[ -x /usr/sbin/dnsmasq ]] || { echo "FAIL: /usr/sbin/dnsmasq was not installed"; return 1; }
     /usr/sbin/dnsmasq --version | sed -n 1p
@@ -1902,13 +1536,10 @@ s_dhcpcd() {
 }
 
 # --- the net zone's wireless uplink ------------------------------------------
-# wpa_supplicant from its own .config rather than the shipped defconfig: the
-# nl80211 driver through libnl, the unix control interface (wpa_cli reaches
-# it under /run/wpa_supplicant; no D-Bus, no readline), OpenSSL for WPA3-SAE,
-# OWE, DPP and the EAP methods an enterprise network needs, roaming (802.11r)
-# and protected management frames. The Makefile takes CFLAGS from the
-# environment when they are set and adds none of its own, so the hardening
-# flags apply to it as to everything else.
+# wpa_supplicant from its own .config: nl80211 through libnl, the unix control
+# interface for wpa_cli (no D-Bus or readline), OpenSSL for WPA3-SAE, OWE, DPP
+# and enterprise EAP, 802.11r and protected management frames. Its Makefile
+# takes CFLAGS from the environment, so the hardening flags apply.
 s_wpa_supplicant() {
     local src; src="$(unpack "wpa_supplicant-${V_WPA_SUPPLICANT}.tar.gz" "wpa_supplicant-${V_WPA_SUPPLICANT}")"
     cd "$src/wpa_supplicant"
@@ -1950,12 +1581,9 @@ s_iw() {
     iw --version
 }
 
-# The CA bundle: Mozilla's set as curl.se publishes it, one PEM file, where
-# OpenSSL 3 and python's ssl look by default. It sits on the verified root,
-# and zones see /etc/ssl/certs read-only. TLS is never what a release's
-# authenticity rests on (zone 0 verifies the signature, every file and the
-# root hash), but a downloader that cannot verify a server at all is not
-# something to ship.
+# Mozilla's CA bundle, where OpenSSL 3 and python's ssl look by default, on the
+# verified root (zones see /etc/ssl/certs read-only). A release's authenticity
+# rests on its signature, not TLS, but the downloader still verifies servers.
 s_ca_bundle() {
     local pem="${KRYPTIK_SOURCES}/cacert-${V_CA_BUNDLE}.pem"
     [[ -f "$pem" ]] || { echo "FAIL: ${pem} was not fetched"; return 1; }
@@ -1971,20 +1599,10 @@ s_ca_bundle() {
 }
 
 # --- device firmware (ADR-012) -----------------------------------------------
-# The pinned linux-firmware release, unpacked once into the build tree; its
-# own copy-firmware.sh lays the files out as the kernel names them (the
-# WHENCE file's Link: entries become symlinks), and build/config/firmware.list
-# says which of them ship: each line is a path pattern relative to that tree,
-# as `find -path` matches it, or `newest N PATTERN` to keep only the N
-# highest-numbered files per device among the pattern's matches (a driver
-# asks for its newest supported firmware API and falls back a few versions).
-# A selected symlink brings its target along. The regulatory database every
-# radio needs before it transmits is a second, smaller pinned release,
-# wireless-regdb. What ships is compressed with zstd on the way in (the
-# kernel asks for name.zst when name is absent, CONFIG_FW_LOADER_COMPRESS_ZSTD)
-# and a selected symlink is rewritten to point at the compressed target.
-# Nothing outside the list reaches the image: that is how two gigabytes of
-# vendor files become the couple of hundred megabytes the hardware list needs.
+# copy-firmware.sh lays the pinned linux-firmware release out as the kernel
+# names the files; build/config/firmware.list (format in its header) picks what
+# ships, beside wireless-regdb. Files are zstd-compressed, as the kernel looks
+# for name.zst (CONFIG_FW_LOADER_COMPRESS_ZSTD), and links are repointed.
 s_firmware() {
     echo "list digest: ${1:-none}"
     local list="${KRYPTIK_ROOT}/build/config/firmware.list"
@@ -2049,8 +1667,7 @@ s_firmware() {
     echo "  $(wc -l < "${selected}.rel") files and links selected by ${total} matches"
     ( cd "$tree" && tr '\n' '\0' < "${selected}.rel" | xargs -0 cp -a --parents -t "$dest" )
 
-    # The regulatory database: regulatory.db and its detached signature, which
-    # cfg80211 checks against the key built into the kernel before it uses it.
+    # regulatory.db and the signature cfg80211 checks with the kernel's key.
     local regdb; regdb="$(unpack "wireless-regdb-${V_WIRELESS_REGDB}.tar.xz" "wireless-regdb-${V_WIRELESS_REGDB}")"
     install -m 0644 "${regdb}/regulatory.db" "${regdb}/regulatory.db.p7s" "$dest/"
 
@@ -2070,8 +1687,8 @@ s_firmware() {
 }
 
 # --- the desktop -------------------------------------------------------------
-# meson runs from its own tree: python3 meson.py works uninstalled, and that
-# avoids pip, wheel and setuptools - none of which this image pins.
+# meson runs uninstalled from its own tree, avoiding the unpinned pip, wheel
+# and setuptools.
 s_meson() {
     local src; src="$(unpack "meson-${V_MESON}.tar.gz" "meson-${V_MESON}")"
     rm -rf /usr/lib/meson
@@ -2131,10 +1748,8 @@ s_hwdata() {
     make install
 }
 
-# wlroots with the pixman renderer only. No GLES2, no Vulkan, no GBM: those
-# need Mesa, which needs LLVM, which is not what a verified base system
-# should carry for a desktop that renders text and coloured borders. The
-# DRM backend uses dumb buffers; virtio-gpu and simpledrm both provide them.
+# wlroots with the pixman renderer only: GLES2, Vulkan and GBM need Mesa and
+# LLVM. The DRM backend uses dumb buffers, which virtio-gpu and simpledrm have.
 s_wlroots() {
     meson_build "wlroots-${V_WLROOTS}.tar.gz" "wlroots-${V_WLROOTS}" \
         -Dxwayland=disabled -Dexamples=false -Drenderers=[] -Dallocators=[] \
@@ -2142,17 +1757,13 @@ s_wlroots() {
     pkg-config --modversion wlroots-0.19
 }
 
-# dwl: the compositor engine's smallest complete user. config.h is Kryptik's
-# (build/desktop/dwl-config.h): the keybindings are the trusted launcher, and
-# border colours are the compositor-controlled identity channel.
-# Three Kryptik inputs go into dwl, and all three are fingerprints of this
-# step (the dispatch passes their digests as arguments, like s_kryptikd):
+# dwl with Kryptik's config.h: the keybindings are the trusted launcher, and
+# border colours are the compositor-controlled zone identity. Its three inputs
+# are digests in this step's arguments:
 #   build/desktop/dwl-config.h        the configuration; includes the next
 #   build/desktop/zone-colours.h      the zone -> border colour table
 #   tools/desktop/dwl-zone-borders.py the change to dwl.c that draws them
-# config.h uses `ZoneColor`, which only the patch introduces, so copying the
-# config without the header and the patch does not build - the first
-# version did exactly that.
+# config.h uses `ZoneColor`, which only the patch adds: the three go together.
 s_dwl() {
     local cfg_sha="${1:-none}" colours_sha="${2:-none}" patch_sha="${3:-none}"
     local desk="${KRYPTIK_ROOT}/build/desktop"
@@ -2162,9 +1773,7 @@ s_dwl() {
     for f in "$cfg" "$colours" "$patch"; do
         [[ -f "$f" ]] || { echo "desktop input missing: ${f}"; return 1; }
     done
-    # The digests were taken when the build order was built. A mismatch
-    # means the inputs changed under the build and the stamp about to be
-    # written would describe something else.
+    # A digest mismatch means the inputs changed under the build.
     local got
     for f in "$cfg:$cfg_sha" "$colours:$colours_sha" "$patch:$patch_sha"; do
         got="$(sha256_of "${f%%:*}")"
@@ -2179,16 +1788,15 @@ s_dwl() {
 
     local src; src="$(unpack "dwl-v${V_DWL}.tar.gz" "dwl-v${V_DWL}")"
     cd "$src"
-    # The patch is exact-string edits and refuses if the pinned dwl is not
-    # the one it was written for; that refusal is this step failing.
+    # The patch makes exact-string edits and refuses any other dwl version.
     python3 "$patch" .
     grep -q 'zonecolors(Client \*c)' dwl.c || { echo "FAIL: the zone border change is not in dwl.c"; return 1; }
     cp "$colours" zone-colours.h
     cp "$cfg" config.h
     make PREFIX=/usr XWAYLAND= XLIBS=
     make PREFIX=/usr install
-    # The installed compositor must carry the change, not just the source
-    # tree: the app_id prefix the chooser matches on is a literal in it.
+    # The installed binary must carry the change: the chooser's app_id prefix
+    # is a literal in it.
     grep -aq 'kryptik\.' /usr/bin/dwl || { echo "FAIL: /usr/bin/dwl does not contain the zone chooser"; return 1; }
     echo "installed dwl with per-zone borders"
     dwl -v 2>&1 | head -1 || true
@@ -2203,14 +1811,9 @@ s_havoc() {
     [[ -x /usr/bin/havoc ]] || { echo "no havoc binary"; return 1; }
 }
 
-# The terminal's font. havoc renders from ONE TrueType file, the path its
-# config names (/usr/share/fonts/TTF/DejaVuSansMono.ttf, the upstream
-# default), and the image shipped no font at all: the chrome's launcher
-# window and every zone terminal died before drawing a glyph, and the first
-# GUI run on installed media recorded "(no window)" for the whole session.
-# DejaVu Sans Mono is the file that default names; Sans and the bold face
-# come along for anything else that draws text. Licence: Bitstream Vera
-# terms plus the public-domain DejaVu changes (LICENSE, installed).
+# havoc renders from the one TrueType file its config names
+# (/usr/share/fonts/TTF/DejaVuSansMono.ttf); Sans and the bold faces come along.
+# Licence: Bitstream Vera terms plus public-domain changes (LICENSE, installed).
 s_fonts() {
     local src; src="$(unpack "dejavu-fonts-ttf-${V_DEJAVU_FONTS}.tar.bz2" "dejavu-fonts-ttf-${V_DEJAVU_FONTS}")"
     install -d -m 0755 /usr/share/fonts/TTF
@@ -2223,13 +1826,9 @@ s_fonts() {
 }
 
 # --- the desktop's own pieces ------------------------------------------------
-#
-# kryptik-launch (C: the session's client of the launch daemon), the session
-# and the chrome (shell, tools/desktop/), and the per-zone Wayland proxy,
-# which is Rust and built outside the chroot like kryptikd and handed in
-# through KRYPTIK_WLPROXY_BIN. Every input is a digest argument of the step,
-# so a change to any of them re-runs it and a binary that changed under the
-# build is refused (as s_kryptikd does).
+# kryptik-launch (the session's client of the launch daemon), the session and
+# chrome scripts, and the per-zone Wayland proxy, built outside like kryptikd
+# (KRYPTIK_WLPROXY_BIN). Every input is a digest argument of the step.
 s_desktop() {
     local wl="$1" wl_sha="${2:-absent}" launch_sha="${3:-none}" session_sha="${4:-none}" chrome_sha="${5:-none}" probe_sha="${6:-none}"
     [[ "$wl" == "none" ]] && wl=""
@@ -2253,9 +1852,8 @@ s_desktop() {
     [[ "$out" == *usage:* ]] || { echo "FAIL: kryptik-launch does not run here: ${out}"; return 1; }
     echo "kryptik-launch: built and runs"
 
-    # The raw-socket Wayland probe the boundary tests run inside zones and
-    # in zone 0: what globals a client is offered, and what a bind of a
-    # hidden one gets. Measured in the guest, not inferred from unit tests.
+    # The Wayland probe the boundary tests run in zones and in zone 0: which
+    # globals a client is offered, and what binding a hidden one gets.
     # shellcheck disable=SC2086
     gcc ${CFLAGS} ${LDFLAGS} -o /usr/libexec/kryptik/wlprobe "$d/wlprobe.c"
     chmod 0755 /usr/libexec/kryptik/wlprobe
@@ -2289,9 +1887,7 @@ s_desktop() {
     echo "--- installed kryptik-wlproxy (sha256 ${got_sha}) ---"
     readelf -l /usr/bin/kryptik-wlproxy 2>/dev/null | grep 'Requesting program interpreter' \
         || echo "  (static binary, no interpreter - good)"
-    # It must run on the target, not just install; without arguments it
-    # prints its usage and exits 2, which is the one thing it does without
-    # a compositor.
+    # It must run here; with no arguments it prints its usage and exits 2.
     out="$(/usr/bin/kryptik-wlproxy 2>&1 || true)"
     [[ "$out" == *usage:* ]] || { echo "FAIL: the installed kryptik-wlproxy does not run here: ${out}"; return 1; }
     echo "kryptik-wlproxy: runs"
@@ -2308,11 +1904,9 @@ s_lynx() {
     lynx -version | sed -n 1p
 }
 
-# Everything is built with -fcf-protection=full, so the instruction AT a
-# function's address must be endbr64. gcc 14.2.0 put a loop's .p2align between
-# the label and the endbr64 (GCC PR target/116174, fixed in 14.3). This asks
-# the compiler that will build the image, with the flags it will use, using
-# the bug's own test case; "plain" is the control.
+# With -fcf-protection=full a function must start with endbr64; gcc 14.2.0 put
+# a loop's .p2align first (GCC PR target/116174, fixed in 14.3). This runs the
+# bug's own test case with the image's flags; "plain" is the control.
 s_compiler_check() {
     local d; d="$(mktemp -d)"
     printf '%s\n' 'char *f(char *d, const char *s) { while ((*d++ = *s++)) ; return --d; }' \
@@ -2329,46 +1923,17 @@ s_compiler_check() {
     echo "ok   $(gcc --version | sed -n 1p): function entries are landing pads"
 }
 
+# --- build order: by dependency, not alphabetical ----------------------------
 PACKAGES=(
     "compiler-check" "s_compiler_check"
     "locales"     "s_locales"
     "gettext"     "native_build gettext-${V_GETTEXT}.tar.xz gettext-${V_GETTEXT} --disable-shared"
     "bison"       "native_build bison-${V_BISON}.tar.xz bison-${V_BISON} --docdir=/usr/share/doc/bison-${V_BISON}"
     "perl"        "s_perl"
-    # BEFORE python, and the ordering is not cosmetic.
-    #
-    # glibc no longer provides crypt(). It was split out years ago and
-    # removed outright in 2.39; Kryptik pins 2.40, so nothing in this
-    # sysroot defines the symbol until libxcrypt is built.
-    #
-    # Python links a _crypt module against it unconditionally. With
-    # libxcrypt further down the list, that module built, failed to import
-    # with "undefined symbol: crypt", was therefore not produced, and
-    # `make install` died on a missing file:
-    #
-    #   install: cannot stat 'Modules/_crypt.cpython-312-...so'
-    #   make: *** [Makefile:2066: sharedinstall] Error 1
-    #
-    # It has to come after perl, though, not before: libxcrypt generates
-    # part of its own source with perl at build time. So this is the only
-    # position that works - after perl, before python. LFS reaches the same
-    # order for the same reason.
+    # After perl, which generates part of its source; before python, whose
+    # _crypt module needs crypt(), gone from glibc since 2.39.
     "libxcrypt"   "native_build libxcrypt-${V_LIBXCRYPT}.tar.xz libxcrypt-${V_LIBXCRYPT} --enable-hashes=strong,glibc --enable-obsolete-api=no --disable-static --disable-failure-tokens"
-    # BEFORE python, for the same class of reason as libxcrypt above.
-    #
-    # Python's `make install` runs ensurepip, which installs pip from a
-    # bundled .whl - a zip archive - and so needs the zlib module to
-    # decompress it. Without it the install died after twenty minutes of
-    # work with a zipimport traceback:
-    #
-    #   ModuleNotFoundError: No module named 'zlib'
-    #   zipimport.ZipImportError: can't decompress data; zlib not available
-    #   make: *** [Makefile:2035: install] Error 1
-    #
-    # zlib needs nothing but a C compiler, so it can sit this early. It
-    # links against the stage 01 glibc rather than the rebuilt one, which
-    # is true of everything before the glibc step and is the same soname
-    # and ABI - see the note on the dependency cycle above.
+    # Before python, whose install (ensurepip) unzips a bundled wheel.
     "zlib"        "s_zlib"
     "python"      "s_python"
     "texinfo"     "native_build texinfo-${V_TEXINFO}.tar.xz texinfo-${V_TEXINFO}"
@@ -2381,11 +1946,8 @@ PACKAGES=(
     "readline"    "native_build readline-${V_READLINE}.tar.gz readline-${V_READLINE} --disable-static --with-curses"
     "m4"          "native_build m4-${V_M4}.tar.xz m4-${V_M4}"
     "flex"        "native_build flex-${V_FLEX}.tar.gz flex-${V_FLEX} --disable-static"
-    # Before anything that probes for its dependencies. e2fsprogs, iproute2,
-    # kmod and eudev all ask pkg-config where zlib, openssl, zstd and xz are;
-    # without it kmod's --with-openssl --with-zstd --with-zlib --with-xz have
-    # nothing to answer them and configure fails. The tarball was already
-    # pinned in versions.env and fetched - the package simply had no recipe.
+    # Before everything that asks pkg-config for its dependencies (e2fsprogs,
+    # iproute2, kmod, eudev).
     "pkgconf"     "s_pkgconf"
     "binutils"    "s_binutils_native"
     "gmp"         "native_build gmp-${V_GMP}.tar.xz gmp-${V_GMP} --enable-cxx --disable-static"
@@ -2395,18 +1957,8 @@ PACKAGES=(
     "acl"         "native_build acl-${V_ACL}.tar.xz acl-${V_ACL} --disable-static"
     "libcap"      "s_libcap"
     "shadow"      "s_shadow"
-    # --enable-pc-files needs --with-pkg-config-libdir to go with it.
-    #
-    # Without the second flag ncurses has nowhere to put its .pc files and
-    # installs none, silently. Everything that asks pkg-config for ncursesw
-    # then gets "no": procps-ng stopped the stage with "ncurses support
-    # missing/incomplete" while libncursesw.so.6.5 sat in /usr/lib, built
-    # and working, twenty minutes earlier.
-    #
-    # It went unnoticed because ncurses was built BEFORE /usr/bin/pkg-config
-    # existed - pkgconf installs under its own name, and the compatibility
-    # symlink was a separate fix - so ncurses could not have located the
-    # directory even to guess at it. Two absences that each hid the other.
+    # --enable-pc-files needs --with-pkg-config-libdir, or no .pc files are
+    # installed and pkg-config finds no ncursesw.
     "ncurses"     "native_build ncurses-${V_NCURSES}.tar.gz ncurses-${V_NCURSES} --mandir=/usr/share/man --with-shared --without-debug --without-normal --with-cxx-shared --enable-pc-files --with-pkg-config-libdir=/usr/lib/pkgconfig"
     "sed"         "native_build sed-${V_SED}.tar.xz sed-${V_SED}"
     "psmisc"      "native_build psmisc-${V_PSMISC}.tar.xz psmisc-${V_PSMISC}"
@@ -2414,22 +1966,13 @@ PACKAGES=(
     "libtool"     "native_build libtool-${V_LIBTOOL}.tar.xz libtool-${V_LIBTOOL}"
     "gperf"       "native_build gperf-${V_GPERF}.tar.gz gperf-${V_GPERF} --docdir=/usr/share/doc/gperf-${V_GPERF}"
     "expat"       "native_build expat-${V_EXPAT}.tar.xz expat-${V_EXPAT} --disable-static --docdir=/usr/share/doc/expat-${V_EXPAT}"
-    # --disable-servers: without it inetutils builds and installs telnetd,
-    # ftpd, tftpd, talkd, rexecd, rlogind, rshd, syslogd and inetd. Nothing in
-    # Kryptik starts any of them, and three of the fixes in 2.8 are in
-    # telnetd alone (an authentication bypass among them). What is wanted
-    # from this package is hostname, ping, traceroute, ifconfig and the
-    # clients; a daemon nobody runs is still a setuid-adjacent binary on the
-    # root image and a line in every vulnerability report.
+    # --disable-servers: no telnetd, ftpd, rlogind and the rest, which nothing
+    # starts; only the clients (hostname, ping, traceroute, ifconfig).
     "inetutils"   "native_build inetutils-${V_INETUTILS}.tar.gz inetutils-${V_INETUTILS} --bindir=/usr/bin --localstatedir=/var --disable-servers --disable-logger --disable-whois --disable-rlogin --disable-rsh --disable-rcp --disable-rexec"
     "less"        "native_build less-${V_LESS}.tar.gz less-${V_LESS} --sysconfdir=/etc"
     "openssl"     "s_openssl"
-    # --with-gcc-arch=x86-64, not the book's "native". libffi only tunes for an
-    # architecture when the caller set no CFLAGS, and this build always sets
-    # them, so "native" was inert: no line of the real build log names -march.
-    # But a flag that would compile the image for the build machine's CPU the
-    # day someone runs this step without CFLAGS is the hardened_malloc defect
-    # waiting to happen, so it says what the image is for.
+    # --with-gcc-arch=x86-64, not LFS's "native": inert while CFLAGS are set,
+    # but the image must never be tuned to the build machine's CPU.
     "libffi"      "native_build libffi-${V_LIBFFI}.tar.gz libffi-${V_LIBFFI} --disable-static --with-gcc-arch=x86-64"
     "python-final" "s_python_final"
     "coreutils"   "native_build coreutils-${V_COREUTILS}.tar.xz coreutils-${V_COREUTILS} --enable-no-install-program=kill,uptime"
@@ -2442,40 +1985,14 @@ PACKAGES=(
     "patch"       "native_build patch-${V_PATCH}.tar.xz patch-${V_PATCH}"
     "tar"         "native_build tar-${V_TAR}.tar.xz tar-${V_TAR}"
     "groff"       "native_build groff-${V_GROFF}.tar.gz groff-${V_GROFF}"
-    # --disable-manpages: kmod 33 generates its man pages with scdoc, which
-    # Kryptik does not pin and which exists only to produce documentation.
-    # The option is the one kmod's own error message names. man-db is not
-    # built either (it needs gdbm, see the entry below), so this image has
-    # no man infrastructure to read them with in any case.
-    # A build-time requirement of the KERNEL, not a shipped convenience:
-    # linux/Kbuild generates include/generated/timeconst.h with `bc -q`, and
-    # arch/x86 asm-offsets depends on that header. Without it stage 05 dies at
-    # "bc: command not found" - after the config step has already succeeded,
-    # which is what made it look like a kernel problem rather than a missing
-    # tool. Placed after flex and bison, which bc needs and which are earlier.
-    #
-    # --with-readline is deliberately NOT passed: the kernel only ever calls
-    # `bc -q` non-interactively, and it would add a dependency to the one
-    # package here that exists solely to compute two constants.
+    # For the kernel build, which generates timeconst.h with `bc -q`. After flex
+    # and bison, which bc needs.
     "bc"          "s_bc"
+    # --disable-manpages: kmod's man pages need scdoc, which is not pinned.
     "kmod"        "native_build kmod-${V_KMOD}.tar.xz kmod-${V_KMOD} --sysconfdir=/etc --with-openssl --with-xz --with-zstd --with-zlib --disable-manpages"
     "libpipeline" "native_build libpipeline-${V_LIBPIPELINE}.tar.gz libpipeline-${V_LIBPIPELINE}"
-    # man-db has NO RECIPE, deliberately, and the stage reports it as an
-    # unwired package rather than pretending otherwise.
-    #
-    # Its configure requires a database library - gdbm, Berkeley db, or
-    # ndbm - and hard-errors with "Fatal: no supported database
-    # library/header found" when it finds none. Kryptik pins none of them,
-    # and glibc does not provide ndbm (gdbm-ndbm.h ships with gdbm).
-    #
-    # Adding gdbm is a change of pinned inputs: it needs a version in
-    # versions.env, an entry in tools/fetch-sources.sh and an audited line
-    # in sources.lock. Until then this package cannot build, and blocking
-    # the kernel on a documentation tool would be the wrong trade - so it
-    # is listed, unwired, and counted in the "base system is INCOMPLETE"
-    # warning at the end of this stage.
-    # gdbm before man-db: man-db's configure looks for the gdbm native
-    # interface first, and silently picks a different one if it is absent.
+    # gdbm before man-db, whose configure otherwise picks another database
+    # interface silently.
     "gdbm"        "s_gdbm"
     "man-db"      "s_man_db"
     "procps-ng"   "native_build procps-ng-${V_PROCPS}.tar.xz procps-ng-${V_PROCPS} --docdir=/usr/share/doc/procps-ng-${V_PROCPS} --disable-static --disable-kill"
@@ -2488,14 +2005,8 @@ PACKAGES=(
     "hardened-malloc" "s_hardened_malloc"
     "s6"          "s_s6_stack"
 
-    # Past this line the stage stops compiling packages and starts making
-    # the result bootable. These are ordinary steps - stamped, resumable
-    # and fingerprinted like any other - because "configure the init
-    # system" fails in exactly the same ways as "build a package", and
-    # deserves the same machinery rather than a hand-rolled tail.
-    # --- encrypted volumes: LUKS2 zone volumes need cryptsetup, and cryptsetup needs
-    #     libdevmapper (LVM2), json-c (cmake) and popt. libaio is LVM2's
-    #     own hard requirement at configure time.
+    # --- encrypted volumes: cryptsetup, with libdevmapper (LVM2, which needs
+    #     libaio), json-c (built with cmake) and popt.
     "cmake"       "s_cmake"
     "json-c"      "s_json_c"
     "popt"        "native_build popt-${V_POPT}.tar.gz popt-${V_POPT} --disable-static"
@@ -2504,26 +2015,21 @@ PACKAGES=(
     "cryptsetup"  "s_cryptsetup"
     # --- updates: the installed system verifies update manifests itself.
     "openssh"     "s_openssh"
-    # --- the net zone: NAT and a resolver in the net zone, a DHCP client for
-    #     the uplink.
+    # --- the net zone: NAT, a resolver and a DHCP client.
     "libmnl"      "native_build libmnl-${V_LIBMNL}.tar.bz2 libmnl-${V_LIBMNL} --disable-static"
     "libnftnl"    "native_build libnftnl-${V_LIBNFTNL}.tar.xz libnftnl-${V_LIBNFTNL} --disable-static"
     "nftables"    "native_build nftables-${V_NFTABLES}.tar.xz nftables-${V_NFTABLES} --without-cli --disable-man-doc --disable-python --with-json=no --disable-static"
     "dnsmasq"     "s_dnsmasq"
     "dhcpcd"      "s_dhcpcd"
-    # --- the net zone's wireless uplink: libnl (nl80211), wpa_supplicant with
-    #     wpa_cli, iw. docs/design/net-zone.md.
+    # --- the net zone's Wi-Fi (docs/design/net-zone.md).
     "libnl"       "native_build libnl-${V_LIBNL}.tar.gz libnl-${V_LIBNL} --sysconfdir=/etc --disable-static"
     "wpa-supplicant" "s_wpa_supplicant"
     "iw"          "s_iw"
     # --- what the net zone verifies a release server by.
     "ca-bundle"   "s_ca_bundle"
-    # --- device firmware (ADR-012): the files build/config/firmware.list names
-    #     out of the pinned linux-firmware release, onto /lib/firmware.
+    # --- device firmware (ADR-012): what build/config/firmware.list names.
     "linux-firmware" "s_firmware $(sha256_of "${KRYPTIK_ROOT}/build/config/firmware.list" 2>/dev/null || echo none)"
-    # --- the desktop. meson and ninja first (build tools), then
-    #     the Wayland stack in dependency order, then the compositor and the
-    #     applications.
+    # --- the desktop: build tools, the Wayland stack, compositor, applications.
     "meson"       "s_meson"
     "ninja"       "s_ninja"
     "wayland"     "s_wayland"
@@ -2539,65 +2045,42 @@ PACKAGES=(
     "hwdata"      "s_hwdata"
     "libdisplay-info" "meson_build libdisplay-info-${V_LIBDISPLAY_INFO}.tar.xz libdisplay-info-${V_LIBDISPLAY_INFO}"
     "wlroots"     "s_wlroots"
-    # dwl takes its three Kryptik inputs as digests, so editing the config,
-    # the colour table or the patch rebuilds it (see s_dwl).
+    # dwl's three inputs are digests, so editing any of them rebuilds it.
     "dwl"         "s_dwl $(sha256_of "${KRYPTIK_ROOT}/build/desktop/dwl-config.h" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/build/desktop/zone-colours.h" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/dwl-zone-borders.py" 2>/dev/null || echo none)"
     "havoc"       "s_havoc"
     "fonts"       "s_fonts"
     "lynx"        "s_lynx"
     "nano"        "native_build nano-${V_NANO}.tar.xz nano-${V_NANO} --sysconfdir=/etc --enable-utf8"
-    # The desktop's own pieces: the launch client, the session and the
-    # chrome from this tree, and the proxy binary built outside (path and
-    # content hash are the step's identity, as for kryptikd).
+    # The desktop's own pieces; the proxy's path and hash are arguments, as for
+    # kryptikd.
     "desktop"     "s_desktop ${KRYPTIK_WLPROXY_BIN:-none} $([[ -f "${KRYPTIK_WLPROXY_BIN:-}" ]] && sha256_of "${KRYPTIK_WLPROXY_BIN}" || echo absent) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-launch.c" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-session" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-chrome" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/wlprobe.c" 2>/dev/null || echo none)"
 
+    # From here the steps configure the system rather than build packages.
     "etc"         "s_etc ${KRYPTIK_BUILD_COMMIT:-unknown}"
     "console"     "s_console"
     "init"        "s_init"
-    # After init: the database lives beside the stage 2 scripts that look
-    # for it. Before kryptikd: boot-check verifies both together. Before
-    # the updater and the EFI tool: their "does it run" checks source
-    # /usr/libexec/kryptik/devices.sh, which this step installs.
-    # These globs were separated by a literal backslash-n, which inside a
-    # command substitution on one physical line is the FILENAME n, not a line
-    # break. cat failed on it, and under pipefail the substitution would
-    # collapse to nosvc - silently removing the input fingerprint this step
-    # was added to have.
+    # After init, whose stage 2 scripts look for the database; before the
+    # updater and efiboot, whose checks source the devices.sh it installs. The
+    # digest covers the files the recipe reads by path, which declare -f cannot.
     "services" "s_services $(cat "${KRYPTIK_ROOT}"/build/services/*/* "${KRYPTIK_ROOT}"/build/service-scripts/*.sh "${KRYPTIK_ROOT}"/build/config/sysctl.d/*.conf 2>/dev/null | sha256_of_stdin || echo nosvc)"
-    # The service tree, the boot scripts and the sysctl fragments are inputs
-    # to this step, and `declare -f s_services` cannot see a file the recipe
-    # reads by path. Without their digest, editing sysinit.sh left the stamp
-    # looking valid and the old script installed - which is exactly the
-    # stale-stamp defect the kernel fragments had.
-    # Its content is an argument so the step rebuilds when the installer
-    # changes; the recipe reads it by path, which declare -f cannot see.
     "release-trust" "s_release_trust"
-    # efiboot before the updater: the updater's "does it run" check runs
-    # kryptik-update, which refuses to start without kryptik-efiboot.
+    # Before the updater, whose check runs kryptik-update, which needs efiboot.
     "efiboot"     "s_efiboot $(sha256_of "${KRYPTIK_ROOT}/tools/efi/kryptik-efiboot.c" 2>/dev/null || echo none)"
     "updater"     "s_updater $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-update" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-recover" 2>/dev/null || echo none)"
     "netzone"     "s_netzone $(sha256_of "${KRYPTIK_ROOT}/tools/net/netzone-init.sh" 2>/dev/null || echo none)-$(sha256_of "${KRYPTIK_ROOT}/tools/net/sntp-offset.py" 2>/dev/null || echo none)-$(sha256_of "${KRYPTIK_ROOT}/tools/net/update-fetch.py" 2>/dev/null || echo none)"
     "installer"   "s_installer $(sha256_of "${KRYPTIK_ROOT}/tools/install/kryptik-install.sh" 2>/dev/null || echo none)"
-    # The path and the binary's content hash are arguments so that both are
-    # part of this step's fingerprint; see s_kryptikd.
-    # The zone definitions are an input too, not just the binary. kryptikd
-    # validates them at install time, and the pair has to move together: a
-    # newer kryptikd made "storage.size" mandatory for ephemeral zones and
-    # rejected the definitions this branch was carrying. Hashing the directory
-    # means changing a .toml re-runs this step instead of silently shipping a
-    # binary that will not read its own config.
+    # The binary's path and hash, and a digest of the zone files: kryptikd
+    # validates them at install time, so the two must move together.
     "kryptikd"    "s_kryptikd ${KRYPTIK_KRYPTIKD_BIN:-none} $([[ -f "${KRYPTIK_KRYPTIKD_BIN:-}" ]] && sha256_of "${KRYPTIK_KRYPTIKD_BIN}" || echo absent) $(cat "${KRYPTIK_ROOT}"/compartments/zones/*.toml "${KRYPTIK_ROOT}"/compartments/zones/policy/* 2>/dev/null | sha256_of_stdin || echo nozones) $(sha256_of "${KRYPTIK_ROOT}/tools/kryptik" 2>/dev/null || echo none)"
-    # The suites and guest checks the VM drivers run inside the installed
-    # system; every file is an input.
+    # The suites and guest checks the VM drivers run; every file is an input.
     "tests"       "s_tests $(cat "${KRYPTIK_ROOT}"/compartments/tests/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/probes/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/src/isolate.rs "${KRYPTIK_ROOT}"/compartments/kryptikd/src/rootfs.rs "${KRYPTIK_ROOT}"/build/guest-tests/*.sh "${KRYPTIK_ROOT}"/build/guest-tests/*.py 2>/dev/null | sha256_of_stdin || echo none)"
     "boot-check"  "s_boot_check"
 )
 
-# Everything above glibc links stage 01's crt files, which carry no CET
-# property, and ld marks a binary only when every input is marked. So each of
-# those rows is built again, by the same recipe, right after glibc, unless it
-# has a final row of its own further down (python, which waits for its
-# libraries).
+# Rows before glibc link stage 01's crt files, which carry no CET property, and
+# ld marks a binary only when every input is marked. So each is built again by
+# the same recipe right after glibc, unless it has its own -final row further
+# down (python, which waits for its libraries).
 rows=()
 for ((i = 0; i < ${#PACKAGES[@]}; i += 2)); do
     rows+=("${PACKAGES[i]}" "${PACKAGES[i+1]}")
@@ -2625,9 +2108,8 @@ if [[ "$MODE" == "list" ]]; then
     exit 0
 fi
 
-# The commit that produced this image, for /etc/os-release. Resolved out
-# here because the chroot has no git, and passed in rather than guessed:
-# an image that names the wrong commit is worse than one that names none.
+# The commit that built this image, for /etc/os-release, passed in from outside
+# (the chroot has no git): no commit is better than a wrong one.
 KRYPTIK_BUILD_COMMIT="${KRYPTIK_BUILD_COMMIT:-unknown}"
 export KRYPTIK_BUILD_COMMIT
 
@@ -2637,22 +2119,15 @@ dim "  LDFLAGS: ${LDFLAGS}"
 dim "  jobs   : ${KRYPTIK_JOBS}"
 echo
 
-# Refuse to run outside the chroot. Building the base system against the
-# host would produce packages linked to host libraries that then get
-# installed into the sysroot - broken in a way that surfaces much later.
+# Outside the chroot the packages would link against host libraries.
 require_inside_chroot "stage 04" "system"
 
-# Every package here is compiled by stage 02's toolchain, so every stamp in
-# this stage carries the fingerprint stage 02 finished on: rebuild the
-# temporary tools and nothing built with them can claim to be unchanged.
+# Built by stage 02's toolchain: rebuilding it invalidates every stamp here.
 stage_depends_on "tt-" verify
 
-# The signing keys live under ${KRYPTIK_WORK}/keys, outside the sysroot and
-# outside any cache of it, on purpose. A work tree restored from such a cache
-# has release-trust stamped as built and no keys; the anchor in the restored
-# sysroot then names keys that no longer exist, and stage 06 would sign with
-# ones the image does not trust, or find none. So, as for the kernel tree:
-# no keys, no stamp. The step then makes both and writes the anchor again.
+# The signing keys live under ${KRYPTIK_WORK}/keys, outside the sysroot and its
+# cache. A restored tree with release-trust stamped but no keys would trust
+# keys that are gone, so without them the stamp goes and the step runs again.
 if [[ -f "${STAMPS}/${STAMP_PREFIX}release-trust" ]] && \
    [[ ! -f "${KRYPTIK_WORK}/keys/release/kryptik-release" || ! -f "${KRYPTIK_WORK}/keys/release/kryptik-latest" ]]; then
     warn "release-trust is stamped as built but a signing key under ${KRYPTIK_WORK}/keys/release is gone; the step runs again."

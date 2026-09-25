@@ -54,6 +54,30 @@ out="$(audit --strip "$T/root")"; rc=$?
     && ok "stripping a hard link to a listed binary fails, naming it" || bad "hard link: rc=$rc: $out"
 rm -f "$T/root/usr/bin/su2"; chmod 4755 "$T/root/usr/bin/su"
 
+# The last entry counts without a newline after it; a missing list strips
+# nothing, since by it every binary would lose its bit.
+L="$T/repo/build/config/setuid-allowlist.txt"
+printf '# test\n/usr/bin/su   # why' > "$L"
+chmod 4755 "$T/root/usr/bin/mount"
+out="$(audit --strip "$T/root")"; rc=$?
+[[ "$rc" -eq 0 && "$(mode su)/$(mode mount)" == 4755/755 ]] \
+    && ok "a last entry with no newline after it is still listed" || bad "no final newline: rc=$rc su $(mode su): $out"
+mv "$L" "$L.away"; chmod 4755 "$T/root/usr/bin/mount"
+out="$(audit --strip "$T/root")"; rc=$?
+[[ "$rc" -ne 0 && "$(mode su)/$(mode mount)" == 4755/4755 ]] \
+    && ok "--strip without an allowlist refuses, and changes nothing" || bad "no allowlist: rc=$rc su $(mode su) mount $(mode mount): $out"
+mv "$L.away" "$L"; chmod 755 "$T/root/usr/bin/mount"
+
+# A bind mount of / is this machine's / as much as / is. It is made in a mount
+# namespace of the check's own, so it ends with the check and never outlives
+# it under $T, where the cleanup would walk into it.
+mkdir -p "$T/slash"
+if unshare -rm mount --rbind / "$T/slash" 2>/dev/null; then
+    out="$(PATH="$T/bin:$PATH" NO_COLOR=1 unshare -rm bash -c 'mount --rbind / "$1" && bash "$2" --strip "$1"' _ "$T/slash" "$T/repo/tools/audit-setuid.sh" 2>&1)"; rc=$?
+    [[ "$rc" -ne 0 && "$out" == *"never this machine"* && ! -e "$T/chmod-called" ]] \
+        && ok "--strip refuses a bind mount of /" || bad "bind mount of /: rc=$rc: $out"
+fi
+
 # A directory the audit cannot read could hide a binary: that is a failure.
 # Root reads every directory, so this holds only for a user.
 if [[ "$(id -u)" -ne 0 ]]; then

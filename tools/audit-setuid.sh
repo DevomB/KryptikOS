@@ -14,15 +14,20 @@ ARG="${1:?usage: audit-setuid.sh [--strip] ROOT}"
 # allowlist names; otherwise an allowed binary would be stripped as unknown.
 TARGET="$(realpath -e -- "$ARG")" || die "no such path: ${ARG}"
 [[ -d "$TARGET" ]] || die "not a directory: ${TARGET}"
-[[ "$STRIP" -eq 0 || "$TARGET" != / ]] || die "--strip is for a staged image's root, never this machine's /"
+# By device and inode, so a bind mount of / is refused as well as / itself.
+[[ "$STRIP" -eq 0 || "$(stat -c %d:%i "$TARGET")" != "$(stat -c %d:%i /)" ]] \
+    || die "--strip is for a staged image's root, never this machine's /"
 ALLOWLIST="${KRYPTIK_ROOT}/build/config/setuid-allowlist.txt"
 
 declare -A ALLOWED=()
 if [[ -f "$ALLOWLIST" ]]; then
-    while read -r path _; do
+    # The last entry counts even without a newline after it.
+    while read -r path _ || [[ -n "${path:-}" ]]; do
         [[ -z "$path" || "$path" == \#* ]] || ALLOWED["$path"]=1
     done < "$ALLOWLIST"
 fi
+# Stripping by a missing or empty list would take the bit off every binary.
+[[ "$STRIP" -eq 0 || "${#ALLOWED[@]}" -gt 0 ]] || die "--strip needs ${ALLOWLIST} with at least one entry"
 
 # The root's own filesystem only. A directory find cannot read may hold a
 # binary, so an unread one fails the audit instead of passing it.
