@@ -289,4 +289,4 @@ step verify     s_verify
 
 echo
 ok "Stage 02 complete. Sysroot at ${LFS} can host a chroot."
-dim "Next: make system  (stage 04 — not yet implemented)"
+dim "Next: make system"

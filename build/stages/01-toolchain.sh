@@ -354,4 +354,4 @@ step libstdcxx       s_libstdcxx
 
 echo
 ok "Stage 01 complete. Cross toolchain is in ${LFS}/tools"
-dim "Next: make temp-tools  (stage 02 — not yet implemented)"
+dim "Next: make temp-tools"
