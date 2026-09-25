@@ -62,10 +62,13 @@ done
 # (simpledrm) is built in and the GPU driver is a module (boot.fragment), so
 # the module must have replaced it at coldplug: two cards put wlroots on its
 # multi-GPU path, which the pixman renderer cannot serve, and the compositor
-# died at start without a screen to fail on.
-cards="$(find /sys/class/drm -maxdepth 1 -name 'card[0-9]*' ! -name '*-*' 2>/dev/null | wc -l)"
-gpu_driver="$(basename "$(readlink -f /sys/class/drm/card0/device/driver 2>/dev/null)" 2>/dev/null)"
-[[ "$cards" -eq 1 && "$gpu_driver" == virtio_gpu ]] && pass "gpu-device" "one DRM device, driven by virtio_gpu" || fail "gpu-device" "$cards DRM device(s); card0 is ${gpu_driver:-nobody}'s (the firmware framebuffer not replaced?)"
+# died at start without a screen to fail on. The card left is not card0:
+# simpledrm held that number when the driver's card was registered.
+cards=()
+for c in /sys/class/drm/card[0-9]*; do
+    [[ -e "$c" && "${c##*/}" != *-* ]] && cards+=("${c##*/}=$(basename "$(readlink -f "$c/device/driver" 2>/dev/null)" 2>/dev/null)")
+done
+[[ "${#cards[@]}" -eq 1 && "${cards[0]}" == *=virtio_gpu ]] && pass "gpu-device" "${cards[0]}" || fail "gpu-device" "${#cards[@]} DRM device(s): ${cards[*]:-none} (the firmware framebuffer not replaced?)"
 [[ "$(s6-svstat -o up /run/service/seatd 2>/dev/null)" = true ]] && pass "seatd-up" || fail "seatd-up"
 [[ "$(s6-svstat -o up /run/service/kryptikd-serve 2>/dev/null)" = true ]] && pass "launch-daemon-up" || fail "launch-daemon-up"
 
