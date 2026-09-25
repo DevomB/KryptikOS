@@ -23,6 +23,7 @@ const NL80211_ATTR_NETNS_FD: u16 = 219;
 const NLA_TYPE_MASK: u16 = 0x3fff;
 
 const RTM_NEWLINK: u16 = 16;
+const RTM_DELLINK: u16 = 17;
 const RTM_SETLINK: u16 = 19;
 const RTM_NEWADDR: u16 = 20;
 const RTM_NEWROUTE: u16 = 24;
@@ -305,6 +306,14 @@ pub fn set_port_isolated(dev: &str, on: bool) -> io::Result<()> {
     m.attr(IFLA_BRPORT_ISOLATED, &[u8::from(on)]);
     m.end_nested(pi);
     transact(m.finish(), &format!("set isolation of bridge port {dev} to {on}"))
+}
+
+/// Delete `dev`. Deleting either end of a veth pair deletes both.
+pub fn delete_link(dev: &str) -> io::Result<()> {
+    let idx = index_of(dev)?;
+    let mut m = Msg::new(RTM_DELLINK, 0, 1);
+    m.ifinfomsg(libc::AF_UNSPEC as u8, idx as i32, 0, 0);
+    transact(m.finish(), &format!("delete {dev}"))
 }
 
 pub fn set_up(dev: &str) -> io::Result<()> {
