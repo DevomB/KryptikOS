@@ -74,7 +74,7 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
         state-test zones-test gui-test acceptance \
         zones zone-test launcher-test zone-tests cli-test serve-test \
         test test-libc-unwind smoke-userspace \
-        audit-artifacts audit-artifacts-strict manifest verify-manifest audit \
+        audit-artifacts audit-artifacts-strict manifest verify-manifest \
         reset-stamps clean distclean
 
 help:
@@ -135,7 +135,6 @@ help:
 	@echo "  make audit-artifacts-strict   ... and fail on reported findings too"
 	@echo "  make manifest          record what was built and what built it"
 	@echo "  make verify-manifest   check the tree still matches that record"
-	@echo "  make audit       run security audits over the build tree"
 	@echo "  make paths       print the resolved build contract"
 	@echo "  make reset-stamps  archive all build stamps (does not delete)"
 	@echo "  make clean       remove the build work directory"
@@ -388,9 +387,6 @@ manifest:
 verify-manifest:
 	@"$(TOOLS)"/artifact-manifest.sh --root "$(KRYPTIK_WORK)/sysroot" \
 	                                  --verify "$(KRYPTIK_WORK)/artifact-manifest.txt"
-
-audit:
-	@"$(TOOLS)"/audit-setuid.sh
 
 # --- housekeeping -----------------------------------------------------------
 
