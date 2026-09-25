@@ -1,15 +1,5 @@
 #!/usr/bin/env bash
-#
-# The compositor layer's own tests: kryptik-wlproxy (wire format, policy,
-# the live proxy against a real upstream socket) and zoneid (the colour
-# identity invariant, the palette search, the shipped zone files). These are
-# the regressions behind two of the four failures this run repaired - the
-# proxy's pollfd crash and the palette floor - so `make acceptance` runs them
-# by name rather than trusting a green unit run from another day.
-#
-#   tools/test-compositor.sh
-#
-# Exit 77 when there is no cargo: a suite that cannot run is not a pass.
+# Run the compositor workspace tests and audit the shipped zone files; exit 77 (skip) without cargo.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT/compositor" || { echo "no compositor/ workspace"; exit 1; }

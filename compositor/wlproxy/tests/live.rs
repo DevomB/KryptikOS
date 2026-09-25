@@ -1,12 +1,6 @@
-//! The proxy as a process: a real listening socket, a real upstream, real
-//! clients. The unit tests in session.rs drive one `Session` over socket
-//! pairs and cannot see `main`'s event loop, which is where the first
-//! version crashed on its first accepted client (an index into a pollfd
-//! snapshot taken before the session was appended). These tests can.
-//!
-//! No Wayland compositor is involved: the "upstream" is a Unix listener the
-//! test owns, and the bytes exchanged are hand-encoded wire messages, so
-//! the tests run anywhere the binary does.
+//! The proxy as a process, including the event loop that session.rs's unit
+//! tests cannot reach. The "upstream" is a Unix listener the test owns,
+//! speaking hand-encoded wire messages, so no compositor is needed.
 
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -19,15 +13,15 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 
 // --- wire encoding ---------------------------------------------------------
 
-fn u32le(v: u32) -> [u8; 4] {
+fn u32ne(v: u32) -> [u8; 4] {
     v.to_ne_bytes()
 }
 
 fn msg(object: u32, opcode: u16, body: &[u8]) -> Vec<u8> {
     let size = (8 + body.len()) as u32;
     let mut out = Vec::with_capacity(8 + body.len());
-    out.extend_from_slice(&u32le(object));
-    out.extend_from_slice(&u32le((size << 16) | opcode as u32));
+    out.extend_from_slice(&u32ne(object));
+    out.extend_from_slice(&u32ne((size << 16) | opcode as u32));
     out.extend_from_slice(body);
     out
 }
@@ -35,7 +29,7 @@ fn msg(object: u32, opcode: u16, body: &[u8]) -> Vec<u8> {
 fn wl_string(s: &str) -> Vec<u8> {
     let mut out = Vec::new();
     let len = s.len() + 1;
-    out.extend_from_slice(&u32le(len as u32));
+    out.extend_from_slice(&u32ne(len as u32));
     out.extend_from_slice(s.as_bytes());
     out.push(0);
     while out.len() % 4 != 0 {
@@ -45,27 +39,27 @@ fn wl_string(s: &str) -> Vec<u8> {
 }
 
 fn get_registry(id: u32) -> Vec<u8> {
-    msg(1, 1, &u32le(id))
+    msg(1, 1, &u32ne(id))
 }
 
 fn sync(callback: u32) -> Vec<u8> {
-    msg(1, 0, &u32le(callback))
+    msg(1, 0, &u32ne(callback))
 }
 
 fn global(registry: u32, name: u32, iface: &str, version: u32) -> Vec<u8> {
     let mut body = Vec::new();
-    body.extend_from_slice(&u32le(name));
+    body.extend_from_slice(&u32ne(name));
     body.extend_from_slice(&wl_string(iface));
-    body.extend_from_slice(&u32le(version));
+    body.extend_from_slice(&u32ne(version));
     msg(registry, 0, &body)
 }
 
 fn bind(registry: u32, name: u32, iface: &str, version: u32, new_id: u32) -> Vec<u8> {
     let mut body = Vec::new();
-    body.extend_from_slice(&u32le(name));
+    body.extend_from_slice(&u32ne(name));
     body.extend_from_slice(&wl_string(iface));
-    body.extend_from_slice(&u32le(version));
-    body.extend_from_slice(&u32le(new_id));
+    body.extend_from_slice(&u32ne(version));
+    body.extend_from_slice(&u32ne(new_id));
     msg(registry, 0, &body)
 }
 
@@ -106,7 +100,7 @@ struct Proxy {
 impl Proxy {
     fn start(zone: &str, extra: &[&str]) -> Proxy {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        // Unix socket paths are short (108 bytes); the system temp dir is.
+        // Unix socket paths are limited to 108 bytes; the system temp dir is short.
         let dir = std::env::temp_dir().join(format!("kwlp-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let upstream_path = dir.join("upstream");
@@ -147,9 +141,7 @@ impl Proxy {
         s
     }
 
-    /// Connect a client and take the upstream connection the proxy opens
-    /// for it. The two are returned together so a test never confuses
-    /// which upstream belongs to which client.
+    /// Connect a client; returns it with the upstream connection the proxy opened for it.
     fn connect(&mut self) -> (UnixStream, UnixStream) {
         let client = UnixStream::connect(&self.listen).expect("connect to the proxy");
         client.set_read_timeout(Some(TIMEOUT)).unwrap();
@@ -238,21 +230,19 @@ fn assert_no_stale_socket(p: &Path) {
 
 // --- tests -----------------------------------------------------------------
 
-/// The reproduced crash: the first client, serviced. Then more clients,
-/// a disconnect, a reconnect, and the proxy still serving after all of it.
+/// First client, more clients, disconnects and a reconnect: the proxy keeps serving.
 #[test]
-fn first_connection_then_many_then_disconnect_and_reconnect() {
+fn serves_clients_through_churn() {
     let mut p = Proxy::start("work", &[]);
 
-    // Client 1: its first request must reach the upstream through the
-    // proxy. This is the exact point the old loop panicked.
+    // Client 1's first request must reach the upstream.
     let (mut c1, mut u1) = p.connect();
     c1.write_all(&get_registry(2)).unwrap();
     assert_eq!(read_exact_or_panic(&mut u1, 12, "client 1's get_registry at the upstream"), get_registry(2));
     p.assert_alive("after its first client's first request");
 
-    // Events flow back, filtered: an allowed global arrives, a hidden one
-    // does not, and the next allowed one arrives right after it.
+    /* Events flow back filtered: an allowed global arrives, a hidden one does
+     * not, and the next allowed one arrives right after it. */
     u1.write_all(&global(2, 1, "wl_compositor", 6)).unwrap();
     let want = global(2, 1, "wl_compositor", 6);
     assert_eq!(read_exact_or_panic(&mut c1, want.len(), "wl_compositor global at client 1"), want);
@@ -306,11 +296,9 @@ fn first_connection_then_many_then_disconnect_and_reconnect() {
     assert!(p.alive());
 }
 
-/// The protocol checks survive the move of the accept: a client that binds
-/// a hidden global is refused with a wl_display.error and disconnected,
-/// and the next client is unaffected.
+/// A client binding a hidden global is refused and cut off; its neighbour is unaffected.
 #[test]
-fn a_refused_client_does_not_take_the_proxy_or_its_neighbours_down() {
+fn refused_client_leaves_others_running() {
     let mut p = Proxy::start("work", &[]);
     let (mut good, mut ugood) = p.connect();
     good.write_all(&get_registry(2)).unwrap();
@@ -333,9 +321,9 @@ fn a_refused_client_does_not_take_the_proxy_or_its_neighbours_down() {
     assert_eq!(read_exact_or_panic(&mut ugood, 12, "the good client's sync after the refusal"), sync(3));
 }
 
-/// `--once` still means one session, and the listener is removed on exit.
+/// `--once` serves one session and removes the listener on exit.
 #[test]
-fn once_serves_one_client_and_removes_its_socket() {
+fn once_serves_one_client() {
     let mut p = Proxy::start("work", &["--once"]);
     let listen = p.listen.clone();
     let (mut c, mut u) = p.connect();
@@ -350,13 +338,10 @@ fn once_serves_one_client_and_removes_its_socket() {
     assert_no_stale_socket(&listen);
 }
 
-/// The whole title path, through the real binary: bind, create a toplevel,
-/// set a long accented title, and see it arrive at the upstream bounded,
-/// prefixed and valid - with the proxy still standing. This is the second
-/// reproduced failure (a byte-index truncation inside a multi-byte
-/// character; `panic = "abort"` made it a process exit).
+/// Long multi-byte titles reach the upstream bounded, prefixed and valid, and
+/// the proxy survives them.
 #[test]
-fn long_unicode_titles_are_rewritten_not_fatal() {
+fn long_unicode_titles_are_rewritten() {
     let mut p = Proxy::start("work", &[]);
     let (mut c, mut u) = p.connect();
     c.write_all(&get_registry(2)).unwrap();
@@ -367,14 +352,13 @@ fn long_unicode_titles_are_rewritten_not_fatal() {
 
     c.write_all(&bind(2, 1, "wl_compositor", 6, 3)).unwrap();
     c.write_all(&bind(2, 2, "xdg_wm_base", 6, 4)).unwrap();
-    c.write_all(&msg(3, 0, &u32le(5))).unwrap(); // wl_compositor.create_surface -> 5
+    c.write_all(&msg(3, 0, &u32ne(5))).unwrap(); // wl_compositor.create_surface -> 5
     let mut body = Vec::new();
-    body.extend_from_slice(&u32le(6));
-    body.extend_from_slice(&u32le(5));
+    body.extend_from_slice(&u32ne(6));
+    body.extend_from_slice(&u32ne(5));
     c.write_all(&msg(4, 2, &body)).unwrap(); // xdg_wm_base.get_xdg_surface -> 6
-    c.write_all(&msg(6, 1, &u32le(7))).unwrap(); // xdg_surface.get_toplevel -> 7
-    // Six, not five: the proxy stamps the new toplevel's app_id right behind
-    // get_toplevel, so the compositor never sees a nameless toplevel.
+    c.write_all(&msg(6, 1, &u32ne(7))).unwrap(); // xdg_surface.get_toplevel -> 7
+    // Six: the proxy's app_id stamp follows get_toplevel.
     let _ = read_until(&mut u, |b| split_messages_ok(b, 6), "the five setup requests and the stamped app_id at the upstream");
 
     for (label, title) in [

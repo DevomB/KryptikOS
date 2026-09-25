@@ -1,23 +1,7 @@
 #!/usr/bin/env bash
-#
-# The zone identity contract, checked from the files that ship.
-#
-# Three things have to agree: the zone files (what kryptikd installs and
-# enforces), the compositor's colour table (what dwl draws), and the
-# distinctness invariant (what a person can tell apart). Each is checked
-# against the real inputs, not a copy:
-#
-#   1. build/desktop/zone-colours.h is exactly what the generator produces
-#      from compartments/zones/*.toml (gen-zone-colours.py --check).
-#   2. `zoneid audit` over compartments/zones passes: every pair of zones is
-#      separable under every vision model, every border clears the contrast
-#      floor on both backgrounds, every zone carries a non-colour channel.
-#   3. The dwl border patch applies to the pinned dwl, when the tarball is
-#      present (KRYPTIK_SOURCES); reported, not required, since fetching
-#      sources is not this suite's job.
-#
-# Exit 0 on pass, 1 on failure, 77 if cargo is missing (zoneid is Rust): a
-# suite that cannot run says so rather than passing.
+# Check the shipped zone colours agree: zone-colours.h matches the zone files,
+# the dwl border patch applies to the pinned dwl (if its tarball is in
+# KRYPTIK_SOURCES), and `zoneid audit` passes. Exit 0 pass, 1 fail, 77 no cargo.
 
 set -uo pipefail
 

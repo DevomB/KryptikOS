@@ -50,8 +50,8 @@ work in zones from a terminal and a text browser, and keep it up to date.
       in `tools/pin-reviews.tsv`, and `tools/check-pin-reviews.sh` fails CI
       without one. Done when the rebuilt image passes acceptance and the held
       pins are moved or patched (a release runs the gate with `--no-held`).
-      Still to write: a check that the glibc branch has moved past the pinned
-      commit.
+      `tools/check-source-currency.sh` also says when glibc's release branch
+      has moved past the commit its patch set was cut from.
 - [ ] **An update channel** ([design](design/update-channel.md)). The net zone
       fetches a release; zone 0 verifies it as it does a payload from disk.
       Done when the update suite fetches, stages, applies and commits a

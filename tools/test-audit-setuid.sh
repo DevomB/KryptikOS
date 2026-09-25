@@ -80,6 +80,31 @@ else
     printf '  SKIP  --strip refuses a bind mount of / (no mount namespace here)\n'
 fi
 
+# File capabilities, the other way a file is given privilege. Setting or
+# removing one needs CAP_SETFCAP, which a user has in a namespace of its own.
+printf '# test\n/usr/bin/capok   # why\n' > "$T/repo/build/config/capability-allowlist.txt"
+setcap_ns() {   # setcap_ns FILE: cap_net_raw+ep on FILE, set from a user namespace
+    unshare -r python3 -c 'import os, struct, sys; os.setxattr(sys.argv[1], "security.capability", struct.pack("<5I", 0x02000001, 1 << 13, 0, 0, 0))' "$1" 2>/dev/null
+}
+has_cap() { python3 -c 'import os, sys; os.getxattr(sys.argv[1], "security.capability")' "$1" 2>/dev/null; }
+strip_ns() { NO_COLOR=1 unshare -r bash "$T/repo/tools/audit-setuid.sh" --strip "$T/root" 2>&1; }
+for f in capok capno; do printf '#!/bin/sh\n' > "$T/root/usr/bin/$f"; chmod 755 "$T/root/usr/bin/$f"; done
+if setcap_ns "$T/root/usr/bin/capok" && setcap_ns "$T/root/usr/bin/capno"; then
+    out="$(audit "$T/root")"; rc=$?
+    [[ "$rc" -ne 0 && "$out" == *"unjustified file capabilities: /usr/bin/capno"* && "$out" != *"unjustified file capabilities: /usr/bin/capok"* ]] \
+        && ok "an unlisted file with capabilities fails the audit, a listed one does not" || bad "capability audit: rc=$rc: $out"
+    out="$(strip_ns)"; rc=$?
+    { [[ "$rc" -eq 0 ]] && has_cap "$T/root/usr/bin/capok" && ! has_cap "$T/root/usr/bin/capno"; } \
+        && ok "--strip removes unlisted capabilities and keeps listed ones" || bad "capability strip: rc=$rc: $out"
+    ln "$T/root/usr/bin/capok" "$T/root/usr/bin/capok2"
+    out="$(strip_ns)"; rc=$?
+    [[ "$rc" -ne 0 && "$out" == *"/usr/bin/capok lost its capabilities"* ]] \
+        && ok "stripping a hard link to a listed file fails, naming it" || bad "capability hard link: rc=$rc: $out"
+    rm -f "$T/root/usr/bin/capok2"
+else
+    printf '  SKIP  file capabilities (no user namespace to set one in)\n'
+fi
+
 # A directory the audit cannot read could hide a binary: that is a failure.
 # Root reads every directory, so this holds only for a user.
 if [[ "$(id -u)" -ne 0 ]]; then

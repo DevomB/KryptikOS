@@ -41,6 +41,18 @@ reviews "$ROW" "zlibb 1 2 fine 2026-09-19 a typo";   expect "a row for no source
 # An empty "newest" column must not shift the fields after it.
 survey less 661 "" UNKNOWN; reviews "# none"
 expect "an undetermined pin is reported, not swallowed"  0 'not determined.*less 661'
+reviews "less 661 668 fine 2026-09-19 read the changes"
+expect "and a review is kept while its upstream does not answer"  0 'not determined.*less 661'
+
+# Commit IDs have no order: a branch head that sorts before the one reviewed
+# is as new as one that sorts after it.
+survey glibc-branch cdaa5d6db08e 111111111111 BEHIND
+reviews "glibc-branch cdaa5d6db08e aaaaaaaaaaaa fine 2026-09-25 read the branch log"
+expect "a branch head that sorts first is still new"  1 'NEW RELEASE: glibc-branch: reviewed up to aaaaaaaaaaaa'
+reviews "glibc-branch cdaa5d6db08e 111111111111bbbbbbbbbbbbbbbbbbbbbbbbbbbb fine 2026-09-25 read the branch log"
+expect "and a review of that head, written in full, covers it"  0 '^ok:'
+reviews "glibc-branch cdaa5d6db08ee6d7cdcb008ae83b6fe7856291c4 111111111111 fine 2026-09-25 read the branch log"
+expect "so does a row naming the pinned commit in full"  0 '^ok:'
 
 : > "$W/s"; expect "an empty survey has not passed"      1 'need a non-empty --survey'
 

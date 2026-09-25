@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Desktop suite, run as root in the installed guest by tools/image/gui-test.sh.
 # The host boots it with a virtual GPU and keyboard and acts on these lines:
-#   GT SCREENSHOT-READY, GT SCREENSHOT-FULLSCREEN   take a screenshot
+#   GT SCREENSHOT-READY, GT SCREENSHOT-FULLSCREEN,
+#   GT SCREENSHOT-OVERSIZE                          take a screenshot
 #   GT KEY-FULLSCREEN, GT KEY-FULLSCREEN-AGAIN      press Alt+e (dwl fullscreen)
 #   GT CONSENT-WAIT 1, GT CONSENT-WAIT 2            answer y, then n (and Enter)
 #   GT END
@@ -122,11 +123,27 @@ sleep 6
 echo "GT KEY-FULLSCREEN-AGAIN"
 wait_for 20 grep -q '^fullscreen=0' "$RT/kryptik/focus" && pass "fullscreen-off-again" || fail "fullscreen-off-again"
 
-# --- a second zone with a window; no virtual input for either -------------
-# A zone runs one command at a time, so the untrusted window is stopped first
-# and personal gets its probe before its window.
+# A zone runs one command at a time, so its window is stopped before the next.
 stop_zone() { as_user "kryptik-launch --stop $1" > /dev/null 2>&1; wait_for 15 test ! -e "/run/kryptik/zones/$1/init.pid"; sleep 1; }
 stop_zone untrusted
+
+# --- a window cannot cover its own frame ----------------------------------
+# wlprobe answers every configure with a buffer 40 px larger than asked. dwl
+# clips a surface only to (w - bw) x (h - bw), so the excess lies under the
+# right and bottom borders; the host measures all four in its screenshot.
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe oversize 40 30" > "$LOG/launch-oversize.out" 2>&1
+if wait_for 20 grep -q '^title=\[untrusted\] oversize' "$RT/kryptik/focus"; then
+    pass "oversize-window" "$(tr '\n' ' ' < "$RT/kryptik/focus")"
+else
+    fail "oversize-window" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); launch: $(tr '\n' ' ' < "$LOG/launch-oversize.out"); $(zone_why untrusted)"
+fi
+sleep 2
+echo "GT SCREENSHOT-OVERSIZE"
+sleep 6
+stop_zone untrusted
+
+# --- a second zone with a window; no virtual input for either -------------
+# personal gets its probe before its window.
 mark probe personal
 launch personal "/usr/libexec/kryptik/wlprobe list" > "$LOG/launch-probe-personal.out" 2>&1
 # An encrypted zone can be launched again only once its volume has closed,

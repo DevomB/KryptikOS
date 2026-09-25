@@ -71,6 +71,7 @@ if [[ -n "$summary" && "${zf:-1}" -eq 0 && "${zp:-0}" -ge 30 ]]; then green "eve
 grep 'ZT FAIL' <<<"$T2" | sed 's/^/        /'
 # The key verdicts one by one, so a pass is not a single line.
 for name in kernel-support net-ready zone0-nic zone0-no-route zone0-offline routed-egress routed-dns routed-ipv6-noglobal zone-separation fail-closed net-restart-ready reattach-after-restart time-floor-ran time-clamp time-claim-stepped time-claim-floor time-claim-consent pids-limit ephemeral-size-bound \
+            terminal-terminfo man-page text-browser tls-trust \
             volume-init encrypted-zone-start stop-closes-volume wrong-passphrase persist-reopen no-mapping-after ephemeral-gone concurrent-start-refused full-volume header-restore vault-offline no-passphrase-leak; do
     grep -q "ZT PASS ${name}" <<<"$T2" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
@@ -107,9 +108,9 @@ done
 if grep -q 'LAUNCHER SUITE PASSED$' <<<"$T3"; then
     green "launcher suite passed with no gaps"
 elif grep -q 'LAUNCHER SUITE PASSED WITH GAPS' <<<"$T3"; then
-    other="$(sed -n '/not run (mandatory gaps/,/^$/p' <<<"$T3" | grep -E '^ *- ' | grep -vE 'NETR|POL6|LC15/LC16|H1c')"
+    other="$(sed -n '/not run (mandatory gaps/,/^$/p' <<<"$T3" | grep -E '^ *- ' | grep -vE 'NETR|LC15/LC16|H1c')"
     if [[ -z "$other" ]]; then
-        green "launcher suite passed; its only gaps are the accounted-for ones (NETR: the real net zone is measured by zones-check; POL6: by design; LC15/16: unprivileged-only; H1c: zone 0 has no interface here)"
+        green "launcher suite passed; its only gaps are the accounted-for ones (NETR: the real net zone is measured by zones-check; LC15/16: unprivileged-only; H1c: zone 0 has no interface here)"
     else
         red "launcher suite passed with unaccounted gaps: $(tr '\n' ' ' <<<"$other")"
     fi

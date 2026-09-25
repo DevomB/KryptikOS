@@ -500,9 +500,12 @@ zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$PATH"
 probe "D5  PATH is the fixed zone PATH, not the caller's" "/usr/bin:/usr/sbin:/bin:/sbin"
 
 # Machine-wide state that links zones or times keystrokes (rootfs.rs:
-# PROC_MASKED, SYSFS_KEPT, the zone's own boot_id).
-zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(cat /proc/interrupts /proc/softirqs /proc/stat 2>/dev/null | wc -c)"
-probe "D6  the interrupt counts are hidden from the zone" "0"
+# PROC_MASKED, PROC_EMPTIED, SYSFS_KEPT, the zone's own boot_id).
+zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(cat /proc/interrupts /proc/softirqs /proc/stat /proc/schedstat 2>/dev/null | wc -c)"
+probe "D6  the interrupt and context-switch counts are hidden from the zone" "0"
+
+zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(ls -A /proc/irq 2>/dev/null | wc -l)-\$(cat /proc/irq/*/spurious 2>/dev/null | wc -c)"
+probe "D6b /proc/irq is empty: no interrupt line's count reaches the zone" "0-0"
 
 HOST_BOOT_ID="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
 zrun alpha -- /bin/sh -c "$PRO b=\$(cat /proc/sys/kernel/random/boot_id); if [ -n \"\$b\" ] && [ \"\$b\" != '$HOST_BOOT_ID' ]; then echo PROBE=own; else echo PROBE=HOSTS; fi"

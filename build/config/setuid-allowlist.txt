@@ -1,7 +1,8 @@
 # Binaries allowed to be setuid or setgid in a Kryptik image; stage 06 takes
 # the bit off every other file in its root (tools/audit-setuid.sh --strip).
-#   /absolute/path   # justification
-# Privilege transitions go through kryptikd, where they are auditable. First
-# check whether a file capability or brokered service will do.
-/usr/bin/su       # the one way from a login to root: an administrator's, and the test drivers' (vm-drive.py su:)
-/usr/bin/passwd   # a user changes their own password; nothing brokers that yet
+#   /absolute/path   # why it stays, and what would remove it
+# Privilege transitions go through kryptikd, where they are auditable. A file
+# capability is no way round this list: it needs an entry in
+# capability-allowlist.txt, and nothing has one.
+/usr/bin/su       # the one way from a login to root, for an administrator and for the test drivers (vm-drive.py su:); goes when kryptikd brokers a root session
+/usr/bin/passwd   # a user changes their own password; goes when a kryptikd verb does that, which weighs a new root-side parser of /etc/shadow against this one binary

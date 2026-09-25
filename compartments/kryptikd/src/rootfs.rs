@@ -161,8 +161,12 @@ pub const SYSTEM_PATHS: &[&str] = &["/usr", "/lib", "/lib64", "/bin", "/sbin"];
 /// Host files under /etc a zone may read: public, machine-independent data.
 /// Never ld.so.preload (a zone gets its own, naming only ALLOCATOR),
 /// machine-id (links zones to the host), the host's identity files,
-/// resolv.conf, localtime (zones run UTC), or any secret.
-pub const ETC_RO_FILES: &[&str] = &["/etc/ld.so.cache", "/etc/services", "/etc/protocols"];
+/// resolv.conf, localtime (zones run UTC), or any secret. man refuses to
+/// start without man_db.conf. ssl/cert.pem is OpenSSL's default CA file: the
+/// ssl/certs directory holds the bundle but no hash links, so without
+/// cert.pem no TLS peer verifies in a zone.
+pub const ETC_RO_FILES: &[&str] =
+    &["/etc/ld.so.cache", "/etc/services", "/etc/protocols", "/etc/man_db.conf", "/etc/ssl/cert.pem"];
 
 /// The nic zone's own configuration, bound into that zone alone: its DHCP
 /// client defaults, time sources (docs/design/time.md) and release source
@@ -170,19 +174,28 @@ pub const ETC_RO_FILES: &[&str] = &["/etc/ld.so.cache", "/etc/services", "/etc/p
 pub const NIC_ETC_FILES: &[&str] = &["/etc/dhcpcd.conf", "/etc/kryptik/time.conf", "/etc/kryptik/update.conf"];
 
 /// Files of a zone's /proc about the whole machine, hidden behind /dev/null:
-/// the interrupt counts (interrupts, softirqs, stat's intr line) time every
+/// the interrupt counts (interrupts, softirqs, stat's intr line, pressure/irq)
+/// and the context-switch counts (stat's ctxt line, schedstat) time every
 /// keystroke typed anywhere, and timer_list names other zones' tasks. Masking
 /// stat hides its CPU counters too, so top shows no CPU use, vmstat will not
 /// start, and libuv's os.cpus() and Java's load figures read nothing: the
 /// price of closing the keystroke channel, not something to unmask. ps takes
 /// its boot time from CLOCK_BOOTTIME and is unaffected.
-pub const PROC_MASKED: &[&str] = &["interrupts", "softirqs", "stat", "timer_list", "sched_debug"];
+pub const PROC_MASKED: &[&str] =
+    &["interrupts", "softirqs", "stat", "schedstat", "pressure/irq", "timer_list", "sched_debug"];
+
+/// Directories of a zone's /proc hidden behind an empty read-only tmpfs.
+/// irq/<n>/spurious counts each interrupt of line n, the keyboard's included.
+pub const PROC_EMPTIED: &[&str] = &["irq"];
 
 /// What a zone other than the nic zone sees of sysfs: its own interfaces and
 /// the CPU layout (glibc counts CPUs there). The rest describes the machine:
 /// disk, USB and monitor serials, and which encrypted zones are running.
 pub const SYSFS_KEPT: &[&str] = &["class/net", "devices/virtual/net", "devices/system/cpu"];
-pub const ETC_RO_DIRS: &[&str] = &["/etc/alternatives", "/etc/ssl/certs", "/etc/pki/tls/certs"];
+
+/// Host directories under /etc a zone may read, on the same terms as
+/// `ETC_RO_FILES`. lynx will not start without its lynx.cfg.
+pub const ETC_RO_DIRS: &[&str] = &["/etc/alternatives", "/etc/ssl/certs", "/etc/pki/tls/certs", "/etc/lynx"];
 
 /// The system allocator (ADR-005), which a zone preloads from the /usr it
 /// shares read-only with zone 0.
@@ -251,9 +264,9 @@ pub fn resolv_conf_for_bridge() -> String {
 pub fn check_data_dir_empty(path: &str, zone: &str) -> Result<(), RootfsError> {
     let entries = fs::read_dir(path)
         .map_err(|e| RootfsError::Setup(format!("{path}: {e}")))?;
+    // The zone chose these names, and they reach a terminal: quoted and escaped.
     let leftovers: Vec<String> = entries
-        .filter_map(|e| e.ok())
-        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .map(|e| e.map_or_else(|err| format!("<{err}>"), |e| format!("{:?}", e.file_name())))
         .take(6)
         .collect();
     if leftovers.is_empty() {
@@ -400,8 +413,11 @@ pub fn pivot_into(
             if let Err(e) = keep_sysfs(&aside, &sys_dir) {
                 eprintln!("kryptikd: note: the zone gets no /sys: {e}");
             }
+            // Left mounted, the whole of sysfs would stay in the zone at the aside path.
             let c = cs(&aside)?;
-            unsafe { libc::umount2(c.as_ptr(), libc::MNT_DETACH) };
+            if unsafe { libc::umount2(c.as_ptr(), libc::MNT_DETACH) } < 0 {
+                return Err(RootfsError::Syscall { call: "umount2", path: aside, errno: errno() });
+            }
         }
         let _ = fs::remove_dir(&aside);
     }
@@ -569,13 +585,21 @@ fn populate_etc(root: &str, zone: &str, home: &str, resolver: Resolver) -> Resul
     Ok(())
 }
 
-/// Hide `PROC_MASKED` behind /dev/null, and give the zone a boot_id of its
-/// own: the host's is the same in every zone, so it would link them.
+/// Hide `PROC_MASKED` behind /dev/null and `PROC_EMPTIED` behind an empty
+/// tmpfs, and give the zone a boot_id of its own: the host's is the same in
+/// every zone, so it would link them.
 fn mask_proc(root: &str, proc_dir: &str) -> Result<(), RootfsError> {
     for f in PROC_MASKED {
         let target = format!("{proc_dir}/{f}");
         if Path::new(&target).exists() {
             bind_over_ro("/dev/null", &target)?;
+        }
+    }
+    let flags = libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC;
+    for d in PROC_EMPTIED {
+        let target = format!("{proc_dir}/{d}");
+        if Path::new(&target).is_dir() {
+            mount_raw("tmpfs", &target, Some("tmpfs"), flags as libc::c_ulong, Some("mode=0555,size=4k"), "mount(proc tmpfs)")?;
         }
     }
     let boot_id = format!("{proc_dir}/sys/kernel/random/boot_id");
@@ -812,6 +836,23 @@ mod tests {
         fs::write(&file, "x").unwrap();
         assert!(check_data_dir(file.to_str().unwrap(), me).is_err());
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn leftover_names_are_escaped() {
+        use std::os::unix::ffi::OsStrExt;
+        let base = std::env::temp_dir().join(format!("kryptik-leftovers-{}", std::process::id()));
+        fs::create_dir_all(&base).unwrap();
+        let dir = base.to_str().unwrap();
+        assert!(check_data_dir_empty(dir, "z").is_ok());
+        // A name that is not UTF-8 still counts as data.
+        fs::write(base.join(std::ffi::OsStr::from_bytes(b"\xff")), "x").unwrap();
+        let only_raw = check_data_dir_empty(dir, "z").map_err(|e| e.to_string());
+        fs::write(base.join("a\x1b[2Jb"), "x").unwrap();
+        let err = check_data_dir_empty(dir, "z").unwrap_err().to_string();
+        let _ = fs::remove_dir_all(&base);
+        assert!(only_raw.as_ref().is_err_and(|e| e.contains("\\xFF")), "{only_raw:?}");
+        assert!(!err.contains('\x1b') && err.contains("\\u{1b}"), "{err}");
     }
 
     #[test]
