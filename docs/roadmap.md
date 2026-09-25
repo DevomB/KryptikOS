@@ -88,7 +88,10 @@ work in zones from a terminal and a text browser, and keep it up to date.
 - [ ] **A release, as an object.** Version numbering, release notes from the
       acceptance report, the licences of everything shipped (firmware from
       `WHENCE`), the corresponding source, and install, update and recovery
-      instructions followed by someone other than their author.
+      instructions followed by someone other than their author. The source is
+      `make source-bundle`: every locked tarball with its signatures, the
+      crates the Rust binaries link, and the repository at the build commit,
+      with a manifest.
 
 ## Version 2
 
