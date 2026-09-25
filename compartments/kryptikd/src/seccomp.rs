@@ -581,66 +581,49 @@ pub fn confine_zone_with(extra: &[libc::c_long], sockets: &SocketPolicy) -> Resu
     install_with(&allow, SECCOMP_RET_KILL_PROCESS, sockets, SECCOMP_FILTER_FLAG_TSYNC).map(|_| ())
 }
 
+/// `(name, number)` for each `libc::SYS_` constant given: a name is typed once.
+macro_rules! by_name {
+    ($($sys:ident),* $(,)?) => {
+        &[$((unprefixed(stringify!($sys)), libc::$sys)),*]
+    };
+}
+
+const fn unprefixed(sys: &'static str) -> &'static str {
+    let (head, name) = sys.as_bytes().split_at(4);
+    assert!(matches!(head, b"SYS_"));
+    match std::str::from_utf8(name) {
+        Ok(n) => n,
+        Err(_) => unreachable!(),
+    }
+}
+
 /// Syscall names a zone policy may use: denied ones (refused by name), base
 /// ones (a redundant line warns) and plausible additions.
-pub const SYSCALL_NAMES: &[(&str, libc::c_long)] = &[
+pub const SYSCALL_NAMES: &[(&str, libc::c_long)] = by_name![
     // denied, plus the chown family
-    ("ptrace", libc::SYS_ptrace), ("process_vm_readv", libc::SYS_process_vm_readv),
-    ("process_vm_writev", libc::SYS_process_vm_writev), ("mount", libc::SYS_mount),
-    ("umount2", libc::SYS_umount2), ("pivot_root", libc::SYS_pivot_root), ("chroot", libc::SYS_chroot),
-    ("unshare", libc::SYS_unshare), ("setns", libc::SYS_setns), ("bpf", libc::SYS_bpf),
-    ("perf_event_open", libc::SYS_perf_event_open), ("userfaultfd", libc::SYS_userfaultfd),
-    ("keyctl", libc::SYS_keyctl), ("add_key", libc::SYS_add_key), ("request_key", libc::SYS_request_key),
-    ("init_module", libc::SYS_init_module), ("finit_module", libc::SYS_finit_module),
-    ("delete_module", libc::SYS_delete_module), ("kexec_load", libc::SYS_kexec_load),
-    ("reboot", libc::SYS_reboot), ("swapon", libc::SYS_swapon), ("swapoff", libc::SYS_swapoff),
-    ("setuid", libc::SYS_setuid), ("setgid", libc::SYS_setgid), ("ioperm", libc::SYS_ioperm),
-    ("iopl", libc::SYS_iopl), ("quotactl", libc::SYS_quotactl),
-    ("open_by_handle_at", libc::SYS_open_by_handle_at), ("name_to_handle_at", libc::SYS_name_to_handle_at),
-    ("chown", libc::SYS_chown), ("fchown", libc::SYS_fchown), ("lchown", libc::SYS_lchown),
-    ("fchownat", libc::SYS_fchownat), ("fsopen", libc::SYS_fsopen), ("fsconfig", libc::SYS_fsconfig),
-    ("fsmount", libc::SYS_fsmount), ("fspick", libc::SYS_fspick), ("move_mount", libc::SYS_move_mount),
-    ("open_tree", libc::SYS_open_tree), ("mount_setattr", libc::SYS_mount_setattr),
-    ("io_uring_setup", libc::SYS_io_uring_setup), ("io_uring_enter", libc::SYS_io_uring_enter),
-    ("io_uring_register", libc::SYS_io_uring_register), ("pidfd_getfd", libc::SYS_pidfd_getfd),
-    ("kcmp", libc::SYS_kcmp), ("sethostname", libc::SYS_sethostname), ("setdomainname", libc::SYS_setdomainname),
-    ("setgroups", libc::SYS_setgroups), ("setresuid", libc::SYS_setresuid), ("setresgid", libc::SYS_setresgid),
-    ("setreuid", libc::SYS_setreuid), ("setregid", libc::SYS_setregid), ("setfsuid", libc::SYS_setfsuid),
-    ("setfsgid", libc::SYS_setfsgid), ("capset", libc::SYS_capset), ("personality", libc::SYS_personality),
+    SYS_ptrace, SYS_process_vm_readv, SYS_process_vm_writev, SYS_mount, SYS_umount2, SYS_pivot_root,
+    SYS_chroot, SYS_unshare, SYS_setns, SYS_bpf, SYS_perf_event_open, SYS_userfaultfd, SYS_keyctl,
+    SYS_add_key, SYS_request_key, SYS_init_module, SYS_finit_module, SYS_delete_module, SYS_kexec_load,
+    SYS_reboot, SYS_swapon, SYS_swapoff, SYS_setuid, SYS_setgid, SYS_ioperm, SYS_iopl, SYS_quotactl,
+    SYS_open_by_handle_at, SYS_name_to_handle_at, SYS_chown, SYS_fchown, SYS_lchown, SYS_fchownat, SYS_fsopen,
+    SYS_fsconfig, SYS_fsmount, SYS_fspick, SYS_move_mount, SYS_open_tree, SYS_mount_setattr,
+    SYS_io_uring_setup, SYS_io_uring_enter, SYS_io_uring_register, SYS_pidfd_getfd, SYS_kcmp, SYS_sethostname,
+    SYS_setdomainname, SYS_setgroups, SYS_setresuid, SYS_setresgid, SYS_setreuid, SYS_setregid, SYS_setfsuid,
+    SYS_setfsgid, SYS_capset, SYS_personality,
     // in the base allowlist
-    ("read", libc::SYS_read), ("write", libc::SYS_write), ("openat", libc::SYS_openat),
-    ("close", libc::SYS_close), ("getpid", libc::SYS_getpid), ("clone", libc::SYS_clone),
-    ("clone3", libc::SYS_clone3), ("execve", libc::SYS_execve), ("socket", libc::SYS_socket),
-    ("ioctl", libc::SYS_ioctl), ("prctl", libc::SYS_prctl), ("mknod", libc::SYS_mknod),
-    ("chmod", libc::SYS_chmod), ("memfd_create", libc::SYS_memfd_create), ("capget", libc::SYS_capget),
+    SYS_read, SYS_write, SYS_openat, SYS_close, SYS_getpid, SYS_clone, SYS_clone3, SYS_execve, SYS_socket,
+    SYS_ioctl, SYS_prctl, SYS_mknod, SYS_chmod, SYS_memfd_create, SYS_capget,
     // plausible additions
-    ("inotify_init", libc::SYS_inotify_init), ("inotify_init1", libc::SYS_inotify_init1),
-    ("adjtimex", libc::SYS_adjtimex), ("clock_adjtime", libc::SYS_clock_adjtime),
-    ("clock_settime", libc::SYS_clock_settime), ("settimeofday", libc::SYS_settimeofday),
-    ("sched_setscheduler", libc::SYS_sched_setscheduler), ("sched_setparam", libc::SYS_sched_setparam),
-    ("ioprio_set", libc::SYS_ioprio_set), ("ioprio_get", libc::SYS_ioprio_get),
-    ("mlockall", libc::SYS_mlockall), ("munlockall", libc::SYS_munlockall), ("mlock2", libc::SYS_mlock2),
-    ("rt_sigqueueinfo", libc::SYS_rt_sigqueueinfo), ("rt_tgsigqueueinfo", libc::SYS_rt_tgsigqueueinfo),
-    ("pidfd_open", libc::SYS_pidfd_open), ("pidfd_send_signal", libc::SYS_pidfd_send_signal),
-    ("process_madvise", libc::SYS_process_madvise), ("msync", libc::SYS_msync),
-    ("mincore", libc::SYS_mincore), ("remap_file_pages", libc::SYS_remap_file_pages),
-    ("timer_create", libc::SYS_timer_create), ("timer_settime", libc::SYS_timer_settime),
-    ("timer_gettime", libc::SYS_timer_gettime), ("timer_delete", libc::SYS_timer_delete),
-    ("timer_getoverrun", libc::SYS_timer_getoverrun), ("semget", libc::SYS_semget),
-    ("semop", libc::SYS_semop), ("semctl", libc::SYS_semctl), ("shmget", libc::SYS_shmget),
-    ("shmat", libc::SYS_shmat), ("shmdt", libc::SYS_shmdt), ("shmctl", libc::SYS_shmctl),
-    ("msgget", libc::SYS_msgget), ("msgsnd", libc::SYS_msgsnd), ("msgrcv", libc::SYS_msgrcv),
-    ("msgctl", libc::SYS_msgctl), ("mq_open", libc::SYS_mq_open), ("mq_unlink", libc::SYS_mq_unlink),
-    ("mq_timedsend", libc::SYS_mq_timedsend), ("mq_timedreceive", libc::SYS_mq_timedreceive),
-    ("mq_notify", libc::SYS_mq_notify), ("mq_getsetattr", libc::SYS_mq_getsetattr),
-    ("setxattr", libc::SYS_setxattr), ("lsetxattr", libc::SYS_lsetxattr), ("fsetxattr", libc::SYS_fsetxattr),
-    ("removexattr", libc::SYS_removexattr), ("lremovexattr", libc::SYS_lremovexattr),
-    ("fremovexattr", libc::SYS_fremovexattr), ("fanotify_init", libc::SYS_fanotify_init),
-    ("fanotify_mark", libc::SYS_fanotify_mark), ("sched_getattr", libc::SYS_sched_getattr),
-    ("sched_setattr", libc::SYS_sched_setattr), ("vhangup", libc::SYS_vhangup),
-    ("syslog", libc::SYS_syslog), ("acct", libc::SYS_acct), ("getpgid", libc::SYS_getpgid),
-    ("seccomp", libc::SYS_seccomp), ("landlock_create_ruleset", libc::SYS_landlock_create_ruleset),
-    ("landlock_add_rule", libc::SYS_landlock_add_rule), ("landlock_restrict_self", libc::SYS_landlock_restrict_self),
+    SYS_inotify_init, SYS_inotify_init1, SYS_adjtimex, SYS_clock_adjtime, SYS_clock_settime, SYS_settimeofday,
+    SYS_sched_setscheduler, SYS_sched_setparam, SYS_ioprio_set, SYS_ioprio_get, SYS_mlockall, SYS_munlockall,
+    SYS_mlock2, SYS_rt_sigqueueinfo, SYS_rt_tgsigqueueinfo, SYS_pidfd_open, SYS_pidfd_send_signal,
+    SYS_process_madvise, SYS_msync, SYS_mincore, SYS_remap_file_pages, SYS_timer_create, SYS_timer_settime,
+    SYS_timer_gettime, SYS_timer_delete, SYS_timer_getoverrun, SYS_semget, SYS_semop, SYS_semctl, SYS_shmget,
+    SYS_shmat, SYS_shmdt, SYS_shmctl, SYS_msgget, SYS_msgsnd, SYS_msgrcv, SYS_msgctl, SYS_mq_open,
+    SYS_mq_unlink, SYS_mq_timedsend, SYS_mq_timedreceive, SYS_mq_notify, SYS_mq_getsetattr, SYS_setxattr,
+    SYS_lsetxattr, SYS_fsetxattr, SYS_removexattr, SYS_lremovexattr, SYS_fremovexattr, SYS_fanotify_init,
+    SYS_fanotify_mark, SYS_sched_getattr, SYS_sched_setattr, SYS_vhangup, SYS_syslog, SYS_acct, SYS_getpgid,
+    SYS_seccomp, SYS_landlock_create_ruleset, SYS_landlock_add_rule, SYS_landlock_restrict_self,
 ];
 
 /// Look up a syscall number by name, for policy files and the test harness.
