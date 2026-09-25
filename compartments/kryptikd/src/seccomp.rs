@@ -611,30 +611,27 @@ const fn unprefixed(sys: &'static str) -> &'static str {
 /// Syscall names a zone policy may use: denied ones (refused by name), base
 /// ones (a redundant line warns) and plausible additions.
 pub const SYSCALL_NAMES: &[(&str, libc::c_long)] = by_name![
-    // denied, plus the chown family
-    SYS_ptrace, SYS_process_vm_readv, SYS_process_vm_writev, SYS_mount, SYS_umount2, SYS_pivot_root,
-    SYS_chroot, SYS_unshare, SYS_setns, SYS_bpf, SYS_perf_event_open, SYS_userfaultfd, SYS_keyctl,
-    SYS_add_key, SYS_request_key, SYS_init_module, SYS_finit_module, SYS_delete_module, SYS_kexec_load,
-    SYS_reboot, SYS_swapon, SYS_swapoff, SYS_setuid, SYS_setgid, SYS_ioperm, SYS_iopl, SYS_quotactl,
-    SYS_open_by_handle_at, SYS_name_to_handle_at, SYS_chown, SYS_fchown, SYS_lchown, SYS_fchownat, SYS_fsopen,
-    SYS_fsconfig, SYS_fsmount, SYS_fspick, SYS_move_mount, SYS_open_tree, SYS_mount_setattr,
-    SYS_io_uring_setup, SYS_io_uring_enter, SYS_io_uring_register, SYS_pidfd_getfd, SYS_kcmp, SYS_sethostname,
-    SYS_setdomainname, SYS_setgroups, SYS_setresuid, SYS_setresgid, SYS_setreuid, SYS_setregid, SYS_setfsuid,
-    SYS_setfsgid, SYS_capset, SYS_personality,
-    // in the base allowlist
-    SYS_read, SYS_write, SYS_openat, SYS_close, SYS_getpid, SYS_clone, SYS_clone3, SYS_execve, SYS_socket,
-    SYS_ioctl, SYS_prctl, SYS_mknod, SYS_chmod, SYS_memfd_create, SYS_capget,
-    // plausible additions
-    SYS_inotify_init, SYS_inotify_init1, SYS_adjtimex, SYS_clock_adjtime, SYS_clock_settime, SYS_settimeofday,
-    SYS_sched_setscheduler, SYS_sched_setparam, SYS_ioprio_set, SYS_ioprio_get, SYS_mlockall, SYS_munlockall,
-    SYS_mlock2, SYS_rt_sigqueueinfo, SYS_rt_tgsigqueueinfo, SYS_pidfd_open, SYS_pidfd_send_signal,
-    SYS_process_madvise, SYS_msync, SYS_mincore, SYS_remap_file_pages, SYS_timer_create, SYS_timer_settime,
-    SYS_timer_gettime, SYS_timer_delete, SYS_timer_getoverrun, SYS_semget, SYS_semop, SYS_semctl, SYS_shmget,
-    SYS_shmat, SYS_shmdt, SYS_shmctl, SYS_msgget, SYS_msgsnd, SYS_msgrcv, SYS_msgctl, SYS_mq_open,
-    SYS_mq_unlink, SYS_mq_timedsend, SYS_mq_timedreceive, SYS_mq_notify, SYS_mq_getsetattr, SYS_setxattr,
-    SYS_lsetxattr, SYS_fsetxattr, SYS_removexattr, SYS_lremovexattr, SYS_fremovexattr, SYS_fanotify_init,
-    SYS_fanotify_mark, SYS_sched_getattr, SYS_sched_setattr, SYS_vhangup, SYS_syslog, SYS_acct, SYS_getpgid,
-    SYS_seccomp, SYS_landlock_create_ruleset, SYS_landlock_add_rule, SYS_landlock_restrict_self,
+    SYS_acct, SYS_add_key, SYS_adjtimex, SYS_bpf, SYS_capget, SYS_capset, SYS_chmod, SYS_chown, SYS_chroot,
+    SYS_clock_adjtime, SYS_clock_settime, SYS_clone, SYS_clone3, SYS_close, SYS_delete_module, SYS_execve,
+    SYS_fanotify_init, SYS_fanotify_mark, SYS_fchown, SYS_fchownat, SYS_finit_module, SYS_fremovexattr,
+    SYS_fsconfig, SYS_fsetxattr, SYS_fsmount, SYS_fsopen, SYS_fspick, SYS_getpgid, SYS_getpid,
+    SYS_init_module, SYS_inotify_init, SYS_inotify_init1, SYS_io_uring_enter, SYS_io_uring_register,
+    SYS_io_uring_setup, SYS_ioctl, SYS_ioperm, SYS_iopl, SYS_ioprio_get, SYS_ioprio_set, SYS_kcmp,
+    SYS_kexec_load, SYS_keyctl, SYS_landlock_add_rule, SYS_landlock_create_ruleset,
+    SYS_landlock_restrict_self, SYS_lchown, SYS_lremovexattr, SYS_lsetxattr, SYS_memfd_create, SYS_mincore,
+    SYS_mknod, SYS_mlock2, SYS_mlockall, SYS_mount, SYS_mount_setattr, SYS_move_mount, SYS_mq_getsetattr,
+    SYS_mq_notify, SYS_mq_open, SYS_mq_timedreceive, SYS_mq_timedsend, SYS_mq_unlink, SYS_msgctl, SYS_msgget,
+    SYS_msgrcv, SYS_msgsnd, SYS_msync, SYS_munlockall, SYS_name_to_handle_at, SYS_open_by_handle_at,
+    SYS_open_tree, SYS_openat, SYS_perf_event_open, SYS_personality, SYS_pidfd_getfd, SYS_pidfd_open,
+    SYS_pidfd_send_signal, SYS_pivot_root, SYS_prctl, SYS_process_madvise, SYS_process_vm_readv,
+    SYS_process_vm_writev, SYS_ptrace, SYS_quotactl, SYS_read, SYS_reboot, SYS_remap_file_pages,
+    SYS_removexattr, SYS_request_key, SYS_rt_sigqueueinfo, SYS_rt_tgsigqueueinfo, SYS_sched_getattr,
+    SYS_sched_setattr, SYS_sched_setparam, SYS_sched_setscheduler, SYS_seccomp, SYS_semctl, SYS_semget,
+    SYS_semop, SYS_setdomainname, SYS_setfsgid, SYS_setfsuid, SYS_setgid, SYS_setgroups, SYS_sethostname,
+    SYS_setns, SYS_setregid, SYS_setresgid, SYS_setresuid, SYS_setreuid, SYS_settimeofday, SYS_setuid,
+    SYS_setxattr, SYS_shmat, SYS_shmctl, SYS_shmdt, SYS_shmget, SYS_socket, SYS_swapoff, SYS_swapon,
+    SYS_syslog, SYS_timer_create, SYS_timer_delete, SYS_timer_getoverrun, SYS_timer_gettime,
+    SYS_timer_settime, SYS_umount2, SYS_unshare, SYS_userfaultfd, SYS_vhangup, SYS_write,
 ];
 
 /// Look up a syscall number by name, for policy files and the test harness.
