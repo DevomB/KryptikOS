@@ -34,7 +34,6 @@ env:
   # whose inputs moved rebuilds that step instead of stopping the build.
   KRYPTIK_STALE: rebuild
   NO_COLOR: "1"
-  RUST_TOOLCHAIN: "1.98.1"
   HOST_PACKAGES: >-
     build-essential bison flex texinfo gawk m4 patch perl python3 python3-pip
     xz-utils bzip2 zstd cpio rsync bc curl git openssl libssl-dev libelf-dev
@@ -201,17 +200,23 @@ jobs:
           ls work; du -sh work/sysroot
 
       # The two static binaries stage 04 installs are built outside the chroot,
-      # for musl, by the compiler named above; the step refuses any other.
-      # rustup checks the download against the channel's manifest; a hash
-      # pinned here, as cmake's is, is what the roadmap still asks for.
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # the stable branch, 2026-09-20
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          targets: x86_64-unknown-linux-musl
+      # for musl, by the compiler build/config/rust.lock pins by hash, as
+      # sources.lock pins cmake's: Rust's release tarballs, nothing that picks
+      # a version for us.
+      - name: The pinned Rust compiler
+        run: |
+          d=/mnt/kryptik/rust-dist; mkdir -p "$d"
+          grep -v '^#' build/config/rust.lock > "$d/SHA256SUMS"
+          while read -r _ f; do curl -fsSL --retry 3 -o "$d/$f" "https://static.rust-lang.org/dist/$f"; done < "$d/SHA256SUMS"
+          (cd "$d" && sha256sum --check --strict SHA256SUMS)
+          for t in "$d"/*.tar.xz; do tar -xf "$t" -C "$d"; done
+          for i in "$d"/*/install.sh; do "$i" --prefix=/mnt/kryptik/rust --disable-ldconfig > /dev/null; done
+          echo /mnt/kryptik/rust/bin >> "$GITHUB_PATH"
 
       - name: kryptikd and kryptik-wlproxy, static
         run: |
-          rustc --version | grep -qF "rustc ${RUST_TOOLCHAIN} " || { echo "refusing to build what ships with $(rustc --version); the pin is ${RUST_TOOLCHAIN}"; exit 1; }
+          want="$(sed -n 's/.*  rustc-\([0-9.]*\)-x86_64-unknown-linux-gnu\.tar\.xz$/\1/p' build/config/rust.lock)"
+          rustc --version | grep -qF "rustc ${want} " || { echo "refusing to build what ships with $(rustc --version); the pin is ${want}"; exit 1; }
           (cd compartments/kryptikd && cargo build --locked --release --target x86_64-unknown-linux-musl)
           (cd compositor && cargo build --locked --release --target x86_64-unknown-linux-musl -p wlproxy --bin kryptik-wlproxy)
           cp /mnt/kryptik/cargo/x86_64-unknown-linux-musl/release/kryptikd /mnt/kryptik/kryptikd-musl
