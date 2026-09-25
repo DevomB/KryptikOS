@@ -13,6 +13,9 @@ ok()  { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
 bad() { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
 
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+# The audit's own temporary file goes here too: under unshare -r, a TMPDIR
+# owned by a user the namespace does not map is not writable, even by its root.
+export TMPDIR="$T"
 mkdir -p "$T/repo/tools" "$T/repo/build/lib" "$T/repo/build/config" "$T/root/usr/bin"
 cp "$ROOT/tools/audit-setuid.sh" "$T/repo/tools/"
 cp "$ROOT/build/lib/common.sh" "$T/repo/build/lib/"
