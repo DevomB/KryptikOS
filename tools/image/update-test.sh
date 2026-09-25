@@ -42,12 +42,13 @@ done
 for t in python3 mkfs.ext4 truncate ssh-keygen sfdisk; do have "$t" || die "required tool not found: $t"; done
 VA="$(awk -F': ' '$1=="version"{print $2}' "$PAY_A/manifest")"; VB="$(awk -F': ' '$1=="version"{print $2}' "$PAY_B/manifest")"
 [[ "$VA" != "$VB" ]] || die "A and B are the same version (${VA})"
-# Stage 06 writes the signed statement that B is current beside B's payload
-# (this job has no private key). not-a-pointer, its control, is the same text
-# signed by the release key in the manifest's namespace.
+# Stage 06 publishes B into a channel beside its payload with
+# tools/release-channel.sh (this job has no private key): the signed statement
+# that B is current, and B under ${VB}/. not-a-pointer, its control, is the
+# same text signed by the release key in the manifest's namespace.
 CHAN_B="$(dirname "$PAY_B")/channel-${VB}"
-for f in latest latest.sig not-a-pointer not-a-pointer.sig; do
-    [[ -s "$CHAN_B/$f" ]] || die "no ${CHAN_B}/${f}: stage 06's payload step writes it beside the payload"
+for f in latest latest.sig not-a-pointer not-a-pointer.sig "${VB}/manifest"; do
+    [[ -s "$CHAN_B/$f" ]] || die "no ${CHAN_B}/${f}: stage 06's payload step publishes it beside the payload"
 done
 VMDIR="${KRYPTIK_WORK}/vm"; mkdir -p "$VMDIR"
 DISK="${DISK:-${VMDIR}/updated.img}"
@@ -292,15 +293,11 @@ rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "back on slot a (${VA}) by rollback, with room for one staged release" || red "step 8: the rollback to slot a failed"
 stop_unless_ok "$rc" "step 8 rollback"
 
-# The release host serves B's statement and payload on loopback (10.0.2.2 to
-# the guest); plain http is for development images only. The payload files
-# are links, not copies.
-SERVE="${VMDIR}/channel"; rm -rf "$SERVE"; mkdir -p "$SERVE/${VB}"
-cp "$CHAN_B/latest" "$CHAN_B/latest.sig" "$SERVE/"
-for f in "$PAY_B"/*; do [[ -f "$f" ]] && ln -s "$(readlink -f "$f")" "$SERVE/${VB}/$(basename "$f")"; done
+# The release host serves the channel stage 06 published, as it stands, on
+# loopback (10.0.2.2 to the guest); plain http is for development images only.
 # The trap stops the host however the suite ends.
 CHAN_LOG="${VMDIR}/channel-requests.log"; : > "$CHAN_LOG"; rm -f "${VMDIR}/channel.port"
-python3 "${SELF}/release-host.py" "$SERVE" "${VMDIR}/channel.port" "$CHAN_LOG" > "${VMDIR}/channel-host.err" 2>&1 &
+python3 "${SELF}/release-host.py" "$CHAN_B" "${VMDIR}/channel.port" "$CHAN_LOG" > "${VMDIR}/channel-host.err" 2>&1 &
 CHAN_PID=$!
 trap '[[ -n "${CHAN_PID:-}" ]] && kill "$CHAN_PID" 2>/dev/null' EXIT
 for _ in $(seq 50); do [[ -s "${VMDIR}/channel.port" ]] && break; sleep 0.1; done
