@@ -631,13 +631,58 @@ s_binutils_native() {
     # --with-stage1-ldflags= : the shared top-level configure would link the
     # programs with -static-libgcc -static-libstdc++, whose objects (stage
     # 02's) carry no CET note, and ld would drop it from ld, as and the rest.
+    # No gprofng, a profiler nothing here uses.
     ../configure --prefix=/usr --sysconfdir=/etc --enable-gold \
         --enable-ld=default --enable-plugins --enable-shared --disable-werror \
         --enable-64-bit-bfd --enable-new-dtags --with-system-zlib \
-        --enable-default-hash-style=gnu --with-stage1-ldflags=
+        --enable-default-hash-style=gnu --with-stage1-ldflags= --enable-gprofng=no
     make tooldir=/usr
     make tooldir=/usr install
-    rm -fv /usr/lib/lib{bfd,ctf,ctf-nobfd,gprofng,opcodes,sframe}.a
+    rm -fv /usr/lib/lib{bfd,ctf,ctf-nobfd,opcodes,sframe}.a
+    # Stage 02's binutils went into the target's tool directory, which gcc
+    # searches before PATH; tooldir=/usr put these in /usr/bin instead.
+    local t; t="$(gcc -dumpmachine)"
+    rm -rf "/usr/${t:?}"
+    local p
+    for p in as ld; do
+        [[ "$(gcc -print-prog-name="$p")" == "$p" ]] \
+            || { echo "FAIL: gcc runs $(gcc -print-prog-name="$p"), not the ${p} on PATH"; return 1; }
+    done
+}
+
+# shobj-conf links the libraries with an rpath to /usr/lib, where the loader
+# looks anyway.
+s_readline() {
+    local src; src="$(unpack "readline-${V_READLINE}.tar.gz" "readline-${V_READLINE}")"
+    cd "$src"
+    sed -i 's/-Wl,-rpath,[^ ]*//' support/shobj-conf
+    ./configure --prefix=/usr --disable-static --with-curses
+    make
+    make install
+    if readelf -d "/usr/lib/libreadline.so.${V_READLINE}" | grep -q -E 'R(UN)?PATH'; then
+        echo "FAIL: libreadline still carries an rpath"; return 1
+    fi
+}
+
+# chroot goes to /usr/sbin, over the unhardened copy stage 02 put there.
+s_coreutils() {
+    native_build "coreutils-${V_COREUTILS}.tar.xz" "coreutils-${V_COREUTILS}" \
+        --enable-no-install-program=kill,uptime
+    mv -f /usr/bin/chroot /usr/sbin/chroot
+    mkdir -p /usr/share/man/man8
+    if [[ -f /usr/share/man/man1/chroot.1 ]]; then
+        mv -f /usr/share/man/man1/chroot.1 /usr/share/man/man8/chroot.8
+        sed -i 's/"1"/"8"/' /usr/share/man/man8/chroot.8
+    fi
+}
+
+# gawk's install links gawk-<version> only when the name is free, so stage
+# 02's copy would stay under it.
+s_gawk() {
+    rm -f "/usr/bin/gawk-${V_GAWK}"
+    native_build "gawk-${V_GAWK}.tar.xz" "gawk-${V_GAWK}" --disable-pma
+    cmp -s /usr/bin/gawk "/usr/bin/gawk-${V_GAWK}" \
+        || { echo "FAIL: /usr/bin/gawk-${V_GAWK} is not the gawk just built"; return 1; }
 }
 
 # GCC again, in place of stage 02's temporary compiler, which set no flags:
@@ -2066,14 +2111,16 @@ PACKAGES=(
     # Before python, whose install (ensurepip) unzips a bundled wheel.
     "zlib"        "s_zlib"
     "python"      "s_python"
-    "texinfo"     "native_build texinfo-${V_TEXINFO}.tar.xz texinfo-${V_TEXINFO}"
+    # No XS modules: texinfo links them without the hardening, and texi2any
+    # runs as plain Perl without them.
+    "texinfo"     "native_build texinfo-${V_TEXINFO}.tar.xz texinfo-${V_TEXINFO} --disable-perl-xs"
     "util-linux"  "s_util_linux"
     "glibc"       "s_glibc"
     "bzip2"       "s_bzip2"
     "xz"          "s_xz_native"
     "zstd"        "s_zstd"
     "file"        "native_build file-${V_FILE}.tar.gz file-${V_FILE}"
-    "readline"    "native_build readline-${V_READLINE}.tar.gz readline-${V_READLINE} --disable-static --with-curses"
+    "readline"    "s_readline"
     "m4"          "native_build m4-${V_M4}.tar.xz m4-${V_M4}"
     "flex"        "native_build flex-${V_FLEX}.tar.gz flex-${V_FLEX} --disable-static"
     # Before everything that asks pkg-config for its dependencies (e2fsprogs,
@@ -2107,10 +2154,10 @@ PACKAGES=(
     # but the image must never be tuned to the build machine's CPU.
     "libffi"      "native_build libffi-${V_LIBFFI}.tar.gz libffi-${V_LIBFFI} --disable-static --with-gcc-arch=x86-64"
     "python-final" "s_python_final"
-    "coreutils"   "native_build coreutils-${V_COREUTILS}.tar.xz coreutils-${V_COREUTILS} --enable-no-install-program=kill,uptime"
+    "coreutils"   "s_coreutils"
     "diffutils"   "native_build diffutils-${V_DIFFUTILS}.tar.xz diffutils-${V_DIFFUTILS}"
     # No persistent-memory allocator: it needs a fixed-address, non-PIE gawk.
-    "gawk"        "native_build gawk-${V_GAWK}.tar.xz gawk-${V_GAWK} --disable-pma"
+    "gawk"        "s_gawk"
     "findutils"   "native_build findutils-${V_FINDUTILS}.tar.xz findutils-${V_FINDUTILS} --localstatedir=/var/lib/locate"
     "grep"        "native_build grep-${V_GREP}.tar.xz grep-${V_GREP}"
     "gzip"        "native_build gzip-${V_GZIP}.tar.xz gzip-${V_GZIP}"
