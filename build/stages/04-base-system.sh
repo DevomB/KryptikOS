@@ -40,13 +40,19 @@ esac
 
 mkdir -p "$STAMPS" "$LOGS" "$BUILDDIR"
 
-# tree_digest FILE...: one digest over each file's content and its path under
-# the tree, so a renamed file changes it as an edited one does. For a step
-# argument that stands for files the step reads by path.
+# tree_digest PATH...: one digest over each file's content and its path under
+# the tree, so a renamed file changes it as an edited one does; a directory
+# stands for every file below it, and a path that is neither is left out. For
+# a step argument that stands for files the step reads by path.
 tree_digest() {
     local f
-    for f in "$@"; do [[ -f "$f" ]] && printf '%s\0' "$f"; done \
-        | xargs -0r sha256sum | sed "s|  ${KRYPTIK_ROOT}/|  |" | sha256_of_stdin
+    # if, not &&: a last path that is not there must not fail the loop, and
+    # with it the stage's PACKAGES assignment.
+    for f in "$@"; do
+        if [[ -d "$f" ]]; then find "$f" -type f -print0
+        elif [[ -f "$f" ]]; then printf '%s\0' "$f"
+        fi
+    done | LC_ALL=C sort -z | xargs -0r sha256sum | sed "s|  ${KRYPTIK_ROOT}/|  |" | sha256_of_stdin
 }
 
 # --- hardening exceptions ---------------------------------------------------
