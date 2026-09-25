@@ -11,8 +11,7 @@ description = "Sole holder of a physical network route."
 
 [network]
 mode = "nic"
-# Zones with mode = "routed" get a veth into this bridge.
-bridge = "kryptik0"
+# Zones with mode = "routed" get a veth into kryptik0, the bridge in this zone.
 # What this zone takes out of zone 0 when it starts: every interface that
 # sits on a bus device (PCI, USB, a platform device) - a server's wired
 # ports, a laptop's wireless radio, a dock's USB adapter - wired ones by the

@@ -479,10 +479,9 @@ mod tests {
 
     fn z(mode: &str, base: Option<u32>, nic: Option<&str>) -> Zone {
         let ident = base.map(|b| format!("[identity]\nuid_base = {b}\n")).unwrap_or_default();
-        let bridge = if mode == "nic" { "bridge = \"kryptik0\"\n" } else { "" };
         let nicl = nic.map(|n| format!("nic = \"{n}\"\n")).unwrap_or_default();
         Zone::from_str(&format!(
-            "[zone]\nname = \"t\"\n[network]\nmode = \"{mode}\"\n{bridge}{nicl}\
+            "[zone]\nname = \"t\"\n[network]\nmode = \"{mode}\"\n{nicl}\
              [storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n{ident}[ui]\nborder_color = \"#123456\"\n"
         ))
         .unwrap()

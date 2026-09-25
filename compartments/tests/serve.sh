@@ -97,7 +97,6 @@ mkzone() { # name mode extra-lines uid_base
     {
         printf '[zone]\nname = "%s"\ndescription = "serve-suite fixture"\n' "$name"
         printf '[network]\nmode = "%s"\n' "$mode"
-        [[ "$mode" == nic ]] && printf 'bridge = "kryptik0"\n'
         printf '[storage]\nmode = "ephemeral"\nsize = "64M"\n'
         [[ -n "$extra" ]] && printf '%s\n' "$extra"
         printf '[identity]\nuid_base = %s\n' "$base"

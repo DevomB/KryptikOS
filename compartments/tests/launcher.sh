@@ -168,7 +168,7 @@ mkzone() { # name mode colour [extra-network-lines] [storage-mode]
 # prove nothing while touching the host's netns.
 mkzone alpha    none   "#111111"
 mkzone beta     none   "#222222"
-mkzone carrier  nic    "#333333" 'bridge = "kryptik0"'
+mkzone carrier  nic    "#333333"
 mkzone sealed   none   "#444444" ''                      encrypted
 mkzone wiped    none   "#555555" ''                      ephemeral
 # The zone that keeps things. `sealed` is the encrypted fixture and is used

@@ -1682,9 +1682,8 @@ mod tests {
     }
 
     fn z(mode: &str) -> Zone {
-        let bridge = if mode == "nic" { "bridge = \"kryptik0\"\n" } else { "" };
         Zone::from_str(&format!(
-            "[zone]\nname = \"t\"\n[network]\nmode = \"{mode}\"\n{bridge}\
+            "[zone]\nname = \"t\"\n[network]\nmode = \"{mode}\"\n\
              [storage]\nmode = \"ephemeral\"\nsize = \"256M\"\n[ui]\nborder_color = \"#123456\"\n"
         ))
         .unwrap()
@@ -1772,7 +1771,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("policy")).unwrap();
         std::fs::write(dir.join("policy/n.seccomp"), "keep-capability CAP_NET_RAW\nkeep-capability CAP_NET_ADMIN\n").unwrap();
         let nic = Zone::from_str(
-            "[zone]\nname = \"n\"\n[network]\nmode = \"nic\"\nbridge = \"kryptik0\"\n\
+            "[zone]\nname = \"n\"\n[network]\nmode = \"nic\"\n\
              [storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n[policy]\nseccomp = \"policy/n.seccomp\"\n\
              [ui]\nborder_color = \"#123456\"\n",
         )

@@ -74,7 +74,6 @@ mkzone() { # name storage-mode colour [network-mode]
     {
         printf '[zone]\nname = "%s"\ndescription = "cli.sh fixture %s"\n' "$1" "$1"
         printf '[network]\nmode = "%s"\n' "$net"
-        [[ "$net" == "nic" ]] && printf 'bridge = "kryptik0"\n'
         printf '[storage]\nmode = "%s"\n' "$2"
         [[ "$2" == "ephemeral" ]] && printf 'size = "32M"\n'
         [[ "$2" == "encrypted" ]] && printf 'volume = "/dev/kryptik/%s"\n' "$1"

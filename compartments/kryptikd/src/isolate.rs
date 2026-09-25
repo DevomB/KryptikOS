@@ -325,9 +325,8 @@ mod tests {
     use crate::zone::Zone;
 
     fn zone(mode: &str) -> Zone {
-        let bridge = if mode == "nic" { "bridge = \"kryptik0\"\n" } else { "" };
         Zone::from_str(&format!(
-            "[zone]\nname = \"t\"\n[network]\nmode = \"{mode}\"\n{bridge}\
+            "[zone]\nname = \"t\"\n[network]\nmode = \"{mode}\"\n\
              [storage]\nmode = \"ephemeral\"\nsize = \"256M\"\n[ui]\nborder_color = \"#123456\"\n"
         ))
         .unwrap()

@@ -73,7 +73,7 @@ zone sealed \
 # policy rules that depend on NIC ownership have a zone to apply to.
 zone nicholder \
     '[zone]' 'name = "nicholder"' \
-    '[network]' 'mode = "nic"' 'bridge = "kryptik0"' \
+    '[network]' 'mode = "nic"' \
     '[storage]' 'mode = "ephemeral"' 'size = "64M"' \
     '[policy]' 'seccomp = "policy/nic.seccomp"' \
     '[ui]' 'border_color = "#00ff88"'

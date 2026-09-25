@@ -427,20 +427,6 @@ pub fn mountpoint_for(base: &Path, zone: &str) -> PathBuf {
     base.join(zone)
 }
 
-/// Parse "512M", "2G", "1024" (bytes).
-pub fn parse_size(s: &str) -> Option<u64> {
-    let s = s.trim();
-    let (num, mult) = match s.chars().last()? {
-        'K' | 'k' => (&s[..s.len() - 1], 1024u64),
-        'M' | 'm' => (&s[..s.len() - 1], 1024 * 1024),
-        'G' | 'g' => (&s[..s.len() - 1], 1024 * 1024 * 1024),
-        c if c.is_ascii_digit() => (s, 1),
-        _ => return None,
-    };
-    // checked_mul: release builds keep overflow checks, and panic = "abort".
-    num.parse::<u64>().ok().and_then(|n| n.checked_mul(mult))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -531,18 +517,6 @@ mod tests {
         unsafe { libc::close(pipe[1]) };
         assert_eq!(Passphrase::from_fd(pipe[0]).unwrap().as_bytes(), b"secret");
         assert!(Passphrase::from_fd(-1).is_err());
-    }
-
-    #[test]
-    fn sizes_parse() {
-        assert_eq!(parse_size("512M"), Some(512 * 1024 * 1024));
-        assert_eq!(parse_size("2G"), Some(2 * 1024 * 1024 * 1024));
-        assert_eq!(parse_size("4096"), Some(4096));
-        assert_eq!(parse_size("x"), None);
-        assert_eq!(parse_size(""), None);
-        // Overflowing u64: None, not a wrap or a panic.
-        assert_eq!(parse_size("17179869184G"), None);
-        assert_eq!(parse_size("18446744073709551615K"), None);
     }
 
     #[test]

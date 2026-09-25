@@ -288,9 +288,8 @@ mod tests {
     #[test]
     fn only_nic_zone_keeps_net_caps() {
         let z = |mode: &str| {
-            let bridge = if mode == "nic" { "bridge = \"kryptik0\"\n" } else { "" };
             crate::zone::Zone::from_str(&format!(
-                "[zone]\nname = \"t\"\n[network]\nmode = \"{mode}\"\n{bridge}\
+                "[zone]\nname = \"t\"\n[network]\nmode = \"{mode}\"\n\
                  [storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n[ui]\nborder_color = \"#123456\"\n"
             ))
             .unwrap()

@@ -454,12 +454,30 @@ fn cmd_gc() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// kryptikd's own arguments: everything before `--`. What follows is a
+/// zone's command and is never read as kryptikd's options.
+fn own(args: &[String]) -> &[String] {
+    &args[..args.iter().position(|a| a == "--").unwrap_or(args.len())]
+}
+
+/// The value after `flag`, if the flag is given with one.
+fn value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    let own = own(args);
+    own.iter().position(|a| a == flag).and_then(|i| own.get(i + 1)).map(String::as_str)
+}
+
+/// A flag whose value must parse: None when it is absent, an error when it
+/// has no value or one that does not parse.
+fn parsed<T: std::str::FromStr>(args: &[String], flag: &str, what: &str) -> Result<Option<T>, String> {
+    let own = own(args);
+    match own.iter().position(|a| a == flag) {
+        None => Ok(None),
+        Some(i) => own.get(i + 1).and_then(|v| v.parse().ok()).map(Some).ok_or_else(|| format!("{flag}: expected {what}")),
+    }
+}
+
 fn zone_dir_from(args: &[String]) -> PathBuf {
-    args.iter()
-        .position(|a| a == "--zones")
-        .and_then(|i| args.get(i + 1))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_ZONE_DIR))
+    PathBuf::from(value(args, "--zones").unwrap_or(DEFAULT_ZONE_DIR))
 }
 
 fn cmd_check(dir: &Path, target: bool) -> ExitCode {
@@ -604,8 +622,20 @@ fn cmd_check(dir: &Path, target: bool) -> ExitCode {
                         }
                     }
                 }
-                if z.landlock.is_some() {
-                    println!("             landlock policy file: not applied (unimplemented; refused without the override)");
+                // Read and parsed as the launcher reads it (spawn.rs), so a file
+                // that would stop a launch fails the check instead.
+                if let Some(rel) = &z.landlock {
+                    let path = policy::resolve(dir, rel);
+                    match std::fs::read_to_string(&path)
+                        .map_err(|e| e.to_string())
+                        .and_then(|t| landlock::parse_policy(&t, &path.display().to_string()))
+                    {
+                        Ok(rules) => println!("             landlock {rel}: {} rule(s) narrowing the base", rules.len()),
+                        Err(e) => {
+                            eprintln!("             landlock {rel}: {e}");
+                            failed = true;
+                        }
+                    }
                 }
                 if target && z.uid_base.is_none() {
                     eprintln!(
@@ -663,8 +693,8 @@ fn cmd_show(dir: &Path, name: &str) -> ExitCode {
     println!("zone         {}", z.name);
     println!("description  {}", z.description);
     println!("network      {:?}", z.network);
-    if let Some(b) = &z.bridge {
-        println!("bridge       {b}");
+    if z.network != zone::NetworkMode::None {
+        println!("bridge       {}", netzone::BRIDGE);
     }
     println!("storage      {:?}", z.storage);
     if let Some(v) = &z.volume {
@@ -719,11 +749,7 @@ fn cmd_show(dir: &Path, name: &str) -> ExitCode {
 const DEFAULT_ROOTFS_BASE: &str = "/var/lib/kryptik/zones";
 
 fn rootfs_base_from(args: &[String]) -> String {
-    args.iter()
-        .position(|a| a == "--rootfs")
-        .and_then(|i| args.get(i + 1))
-        .cloned()
-        .unwrap_or_else(|| DEFAULT_ROOTFS_BASE.to_string())
+    value(args, "--rootfs").unwrap_or(DEFAULT_ROOTFS_BASE).to_string()
 }
 
 fn load_zone(dir: &Path, name: &str) -> Result<Zone, ExitCode> {
@@ -825,56 +851,19 @@ fn cmd_seccomp_probe(name: &str) -> Option<ExitCode> {
 }
 
 fn run_options_from(args: &[String]) -> Result<spawn::RunOptions, String> {
-    let num = |flag: &str| -> Result<Option<u32>, String> {
-        match args.iter().position(|a| a == flag) {
-            None => Ok(None),
-            Some(i) => args
-                .get(i + 1)
-                .and_then(|v| v.parse::<u32>().ok())
-                .map(Some)
-                .ok_or_else(|| format!("{flag}: expected a numeric id")),
-        }
-    };
     Ok(spawn::RunOptions {
-        zone_uid: num("--zone-uid")?,
-        zone_gid: num("--zone-gid")?,
+        zone_uid: parsed(args, "--zone-uid", "a numeric id")?,
+        zone_gid: parsed(args, "--zone-gid", "a numeric id")?,
         zones_dir: std::path::PathBuf::new(),
         wifi_dir: wifi_dir_from(args),
-        auto_approve_transfers: args.iter().any(|a| a == "--auto-approve-transfers"),
-        passphrase_file: args
-            .iter()
-            .position(|a| a == "--passphrase-file")
-            .and_then(|i| args.get(i + 1))
-            .map(PathBuf::from),
-        passphrase_fd: match args.iter().position(|a| a == "--passphrase-fd") {
+        auto_approve_transfers: own(args).iter().any(|a| a == "--auto-approve-transfers"),
+        passphrase_file: value(args, "--passphrase-file").map(PathBuf::from),
+        passphrase_fd: parsed(args, "--passphrase-fd", "a descriptor number")?,
+        wayland_socket: value(args, "--wayland-socket").map(PathBuf::from),
+        wayland_inode: parsed::<serve::InodeId>(args, "--wayland-inode", "DEV:INO")?,
+        ready_fd: match parsed::<i32>(args, "--ready-fd", "a descriptor number")? {
             None => None,
-            Some(i) => Some(
-                args.get(i + 1)
-                    .and_then(|v| v.parse::<i32>().ok())
-                    .ok_or_else(|| "--passphrase-fd: expected a descriptor number".to_string())?,
-            ),
-        },
-        wayland_socket: args
-            .iter()
-            .position(|a| a == "--wayland-socket")
-            .and_then(|i| args.get(i + 1))
-            .map(PathBuf::from),
-        wayland_inode: match args.iter().position(|a| a == "--wayland-inode") {
-            None => None,
-            Some(i) => Some(
-                args.get(i + 1)
-                    .ok_or_else(|| "--wayland-inode: expected DEV:INO".to_string())?
-                    .parse::<serve::InodeId>()
-                    .map_err(|e| format!("--wayland-inode: {e}"))?,
-            ),
-        },
-        ready_fd: match args.iter().position(|a| a == "--ready-fd") {
-            None => None,
-            Some(i) => {
-                let fd = args
-                    .get(i + 1)
-                    .and_then(|v| v.parse::<i32>().ok())
-                    .ok_or_else(|| "--ready-fd: expected a descriptor number".to_string())?;
+            Some(fd) => {
                 // The zone's command must not inherit it.
                 unsafe {
                     let fl = libc::fcntl(fd, libc::F_GETFD);
@@ -911,7 +900,7 @@ fn cmd_volume(dir: &Path, args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     }
     let vol = zone.volume.clone().unwrap_or_else(|| volume::default_volume_path(name));
-    let opt = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
+    let opt = |flag: &str| value(args, flag).map(str::to_string);
     let pass_from = |flag: &str| -> Result<volume::Passphrase, ExitCode> {
         let Some(p) = opt(flag) else {
             eprintln!("volume: {flag} FILE is required (a 0600 file holding the passphrase; it never travels in argv)");
@@ -950,7 +939,7 @@ fn cmd_volume(dir: &Path, args: &[String]) -> ExitCode {
                 eprintln!("volume init needs root (cryptsetup, dm-crypt, loop)");
                 return ExitCode::from(2);
             }
-            let size = match opt("--size").as_deref().map(volume::parse_size) {
+            let size = match opt("--size").as_deref().map(zone::parse_size) {
                 None => 512 * 1024 * 1024,
                 Some(Some(n)) => n,
                 Some(None) => {
@@ -1280,3 +1269,29 @@ fn cmd_seccomp_test(name: &str, nr: libc::c_long) -> ExitCode {
 }
 
 pub use zone::ZoneError;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn flags_after_the_separator_are_the_commands() {
+        let a = args(&["run", "work", "--rootfs", "/r", "--", "tool", "--zones", "/x", "--rootfs", "/y"]);
+        assert_eq!(zone_dir_from(&a), PathBuf::from(DEFAULT_ZONE_DIR));
+        assert_eq!(rootfs_base_from(&a), "/r");
+        assert_eq!(value(&a, "--zones"), None);
+    }
+
+    #[test]
+    fn a_parsed_flag_needs_a_value_that_parses() {
+        assert_eq!(parsed::<u32>(&args(&["run", "w"]), "--zone-uid", "an id"), Ok(None));
+        assert_eq!(parsed::<u32>(&args(&["--zone-uid", "7"]), "--zone-uid", "an id"), Ok(Some(7)));
+        assert!(parsed::<u32>(&args(&["--zone-uid"]), "--zone-uid", "an id").is_err());
+        assert!(parsed::<u32>(&args(&["--zone-uid", "x"]), "--zone-uid", "an id").is_err());
+        assert!(parsed::<u32>(&args(&["--zone-uid", "--", "7"]), "--zone-uid", "an id").is_err());
+    }
+}

@@ -8,10 +8,8 @@ description = "Daily productivity."
 mode = "routed"
 
 [storage]
-mode      = "encrypted"
-volume    = "/var/lib/kryptik/volumes/work.luks"
-unlock    = "on-start"
-wipe_keys = "on-stop"
+mode   = "encrypted"
+volume = "/var/lib/kryptik/volumes/work.luks"
 
 [policy]
 seccomp  = "policy/work.seccomp"
