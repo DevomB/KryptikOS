@@ -161,8 +161,12 @@ pub const SYSTEM_PATHS: &[&str] = &["/usr", "/lib", "/lib64", "/bin", "/sbin"];
 /// Host files under /etc a zone may read: public, machine-independent data.
 /// Never ld.so.preload (a zone gets its own, naming only ALLOCATOR),
 /// machine-id (links zones to the host), the host's identity files,
-/// resolv.conf, localtime (zones run UTC), or any secret.
-pub const ETC_RO_FILES: &[&str] = &["/etc/ld.so.cache", "/etc/services", "/etc/protocols"];
+/// resolv.conf, localtime (zones run UTC), or any secret. man refuses to
+/// start without man_db.conf. ssl/cert.pem is OpenSSL's default CA file: the
+/// ssl/certs directory holds the bundle but no hash links, so without
+/// cert.pem no TLS peer verifies in a zone.
+pub const ETC_RO_FILES: &[&str] =
+    &["/etc/ld.so.cache", "/etc/services", "/etc/protocols", "/etc/man_db.conf", "/etc/ssl/cert.pem"];
 
 /// The nic zone's own configuration, bound into that zone alone: its DHCP
 /// client defaults, time sources (docs/design/time.md) and release source
@@ -182,7 +186,10 @@ pub const PROC_MASKED: &[&str] = &["interrupts", "softirqs", "stat", "timer_list
 /// the CPU layout (glibc counts CPUs there). The rest describes the machine:
 /// disk, USB and monitor serials, and which encrypted zones are running.
 pub const SYSFS_KEPT: &[&str] = &["class/net", "devices/virtual/net", "devices/system/cpu"];
-pub const ETC_RO_DIRS: &[&str] = &["/etc/alternatives", "/etc/ssl/certs", "/etc/pki/tls/certs"];
+
+/// Host directories under /etc a zone may read, on the same terms as
+/// `ETC_RO_FILES`. lynx will not start without its lynx.cfg.
+pub const ETC_RO_DIRS: &[&str] = &["/etc/alternatives", "/etc/ssl/certs", "/etc/pki/tls/certs", "/etc/lynx"];
 
 /// The system allocator (ADR-005), which a zone preloads from the /usr it
 /// shares read-only with zone 0.
