@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
 # kryptik-update and the ESP: a subcommand unmounts only a mount it made, and
-# status leaves the ESP alone while an apply holds the lock. Every subcommand
-# exits through one trap, and the checks the broker runs for each piece of an
-# update unmounted the ESP from under an apply writing to it.
-#
-# The functions come from the tool itself, pointed at a scratch mountpoint,
-# with mount stand-ins that keep a record. flock is the real one.
+# status leaves the ESP alone while an apply holds the lock. The functions
+# come from the tool itself, pointed at a scratch mountpoint, with mount
+# stand-ins that keep a record; flock is the real one.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TOOL="$ROOT/tools/update/kryptik-update"

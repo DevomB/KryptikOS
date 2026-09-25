@@ -98,9 +98,8 @@ mount_esp() {
         ESP_MINE=1
     fi
 }
-# Only a mount this process made. Every subcommand exits through the trap,
-# the checks the broker runs for each piece of an update among them, and
-# one of those unmounted the ESP from under an apply writing to it.
+# Only a mount this process made: every subcommand exits through the trap,
+# the checks the broker runs during an apply among them.
 umount_esp() {
     [ "$ESP_MINE" = 1 ] || return 0
     if mountpoint -q "$ESP_MNT" 2>/dev/null; then sync; umount "$ESP_MNT"; fi
