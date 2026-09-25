@@ -1833,6 +1833,7 @@ s_wlroots() {
 #   build/desktop/zone-colours.h      the zone -> border colour table
 #   tools/desktop/dwl-zone-borders.py the change to dwl.c that draws them
 # config.h uses `ZoneColor`, which only the patch adds: the three go together.
+# Upstream fixes come first, from build/patches/dwl-0.8 (see its README).
 s_dwl() {
     local cfg_sha="${1:-none}" colours_sha="${2:-none}" patch_sha="${3:-none}"
     local desk="${KRYPTIK_ROOT}/build/desktop"
@@ -1857,6 +1858,7 @@ s_dwl() {
 
     local src; src="$(unpack "dwl-v${V_DWL}.tar.gz" "dwl-v${V_DWL}")"
     cd "$src"
+    apply_repo_patches "dwl-${V_DWL}"
     # The patch makes exact-string edits and refuses any other dwl version.
     python3 "$patch" .
     grep -q 'zonecolors(Client \*c)' dwl.c || { echo "FAIL: the zone border change is not in dwl.c"; return 1; }

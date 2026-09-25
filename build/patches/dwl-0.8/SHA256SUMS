@@ -1,0 +1,2 @@
+4d335d4ab0f04a55a3381a2fa32ac69c26ba7372aee9279ecc1383c5dbe8964d  0001-NULL-out-decoration-on-destroy.patch
+bea684434eec206626cb02353b3d31edf7e55beebea3b9461caa24df9832305f  0002-Remove-decoration-event-listeners-on-destroynotify.patch
