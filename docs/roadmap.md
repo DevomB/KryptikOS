@@ -52,11 +52,12 @@ work in zones from a terminal and a text browser, and keep it up to date.
       pins are moved or patched (a release runs the gate with `--no-held`).
       `tools/check-source-currency.sh` also says when glibc's release branch
       has moved past the commit its patch set was cut from.
-- [ ] **An update channel** ([design](design/update-channel.md)). The net zone
+- [x] **An update channel** ([design](design/update-channel.md)). The net zone
       fetches a release; zone 0 verifies it as it does a payload from disk.
-      Done when the update suite fetches, stages, applies and commits a
-      release over the test network, and the release tooling publishes a
-      signed pointer.
+      `tools/release-channel.sh` publishes a release with its signed
+      statement and re-signs the statement on a schedule. Stage 06 publishes
+      each build with it, and the update suite fetches, stages, applies and
+      commits the release from that channel over the test network.
 - [ ] **An encrypted state partition** ([design](design/state-encryption.md)).
       Done when the install, state and integrity suites pass with it.
 - [x] **kryptikd built by a pinned compiler.** The Distro workflow installs

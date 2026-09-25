@@ -55,6 +55,20 @@ image's network zone asks for new releases
 ([update channel](design/update-channel.md)). Without it the image fetches
 nothing, and updates come only from a payload on a disk.
 
+To publish a build there, add its payload to the channel's directory, which
+any web server can then serve at that address (`<work>` is `KRYPTIK_WORK`, as
+`make paths` prints it):
+
+```sh
+tools/release-channel.sh publish --key <work>/keys/release/kryptik-latest \
+    --signers <work>/sysroot/usr/share/kryptik/trust/release-signers \
+    --payload <work>/images/payload-<version> --out /srv/<channel>
+```
+
+Re-sign the channel's statement daily, with `reissue` and the same key and
+signers file, from a timer: a machine reports a statement older than 30
+days.
+
 ## Testing without a build
 
 The host suites need no build and no root:

@@ -464,19 +464,19 @@ s_payload() {
         --root "$out" --exact --strict "$out/manifest"
     ls -la "$out"
 
-    # The "this release is current" statement (docs/design/update-channel.md),
-    # outside the payload: `apply` refuses a payload holding anything unlisted.
-    # not-a-pointer, signed by the release key instead, must be refused.
+    # A channel holding this release, published as a release is: its "this
+    # release is current" statement (docs/design/update-channel.md), checked
+    # against the image's anchor, and the payload under <version>/, outside
+    # which `apply` would refuse anything unlisted. not-a-pointer, the same
+    # statement signed by the release key instead, must be refused.
     [[ -f "$keydir/kryptik-latest" ]] || { echo "no statement key at ${keydir}; stage 04 (release-trust) makes it"; return 1; }
     local chan="${IMG}/channel-${KRYPTIK_VERSION}"
-    rm -rf "$chan"; mkdir -p "$chan"
-    "${KRYPTIK_ROOT}/tools/release-manifest.sh" pointer --key "$keydir/kryptik-latest" \
-        --manifest "$out/manifest" --signers "$signers" --base "${KRYPTIK_VERSION}/" --out "$chan/latest"
+    rm -rf "$chan"
+    "${KRYPTIK_ROOT}/tools/release-channel.sh" publish --key "$keydir/kryptik-latest" \
+        --signers "$signers" --payload "$out" --out "$chan"
     cp "$chan/latest" "$chan/not-a-pointer"
     ssh-keygen -Y sign -f "$keydir/kryptik-release" -n kryptik-release "$chan/not-a-pointer" < /dev/null >/dev/null 2>&1 \
         || { echo "could not sign the control statement"; return 1; }
-    ssh-keygen -Y verify -f "$signers" -I kryptik-latest -n kryptik-latest -s "$chan/latest.sig" < "$chan/latest" >/dev/null \
-        || { echo "FAIL: the image's anchor does not verify the statement this build just signed"; return 1; }
     if ssh-keygen -Y verify -f "$signers" -I kryptik-release -n kryptik-latest -s "$chan/not-a-pointer.sig" < "$chan/not-a-pointer" >/dev/null 2>&1; then
         echo "FAIL: the image's anchor accepts a statement signed by the release key"; return 1
     fi
@@ -523,7 +523,7 @@ step sign-kernels   s_sign_kernels "$(cat "${IMG}"/kernels/{slot-a,slot-b,media-
 step esp            s_esp "$(cat "${IMG}"/kernels/{slot-a,slot-b,media-usb}.signed.efi "${IMG}/root.json" | sha256_of_stdin)"
 step usb            s_usb "$(cat "${IMG}/esp-usb.img" | sha256_of_stdin)$(root_json sha256)"
 step iso            s_iso "$(cat "${IMG}"/kernels/{slot-a,slot-b}.signed.efi "${IMG}/root.json" | sha256_of_stdin)"
-step payload        s_payload "$(cat "${IMG}"/kernels/{slot-a,slot-b}.signed.efi "${IMG}/root.json" | sha256_of_stdin)"
+step payload        s_payload "$(cat "${IMG}"/kernels/{slot-a,slot-b}.signed.efi "${IMG}/root.json" "${KRYPTIK_ROOT}"/tools/release-{manifest,channel}.sh | sha256_of_stdin)"
 step export         s_export "$(cat "${IMG}"/kryptik-*.sha256 "${IMG}/payload-${KRYPTIK_VERSION}/manifest" | sha256_of_stdin)"
 echo
 ok "Stage 06 finished: ${KRYPTIK_OUT}/kryptik-${KRYPTIK_VERSION}"

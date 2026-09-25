@@ -146,6 +146,28 @@ wants. It cannot install anything the release key did not sign, install an
 older release, present an old statement as current, or make zone 0 keep a byte
 the signed manifest does not provide for.
 
+## Publishing
+
+A channel is a directory served as it stands: `latest`, `latest.sig`, and one
+directory per version, which the statement's `base` names relative to the
+channel. `tools/release-channel.sh` is the only thing that writes one:
+
+- `publish` verifies a payload as the image will (`--exact --strict`, and not
+  older than the version the channel names), links it in under its version
+  by way of a temporary name, and only then signs a new statement. A
+  published version never changes: a client may be part way through it.
+- `reissue` signs the same statement again with the current date. It runs
+  from a timer, daily, on the machine that holds the statement key, so the
+  30-day report means something went wrong rather than that nobody re-signed.
+
+Each new statement is checked against the image's anchor, as a client checks
+it, before it replaces the old pair, so a failure leaves the channel as it
+was. Both commands build only on a statement that verifies, and refuse a date
+clients would refuse (before the current statement's, or more than a day
+ahead). One run at a time holds the channel. Stage 06 publishes each build
+into `images/channel-<version>/` the same way, and the update suite serves
+that directory.
+
 ## Tests
 
 - `update.rs` unit tests cover every rule above; `broker.rs` unit tests and
@@ -159,17 +181,19 @@ the signed manifest does not provide for.
 - Stage 06 checks that the image's anchor refuses `not-a-pointer`, the
   statement signed by the release key, and the update suite checks that
   `check-pointer` refuses it on the installed system.
-- The update suite's network step (`tools/image/update-test.sh`): nothing is
-  fetched until asked, then the release arrives whole, is applied,
-  trial-booted and committed.
+- The update suite's network step (`tools/image/update-test.sh`), from the
+  channel stage 06 published: nothing is fetched until asked, then the
+  release arrives whole, is applied, trial-booted and committed.
+- `tools/test-release-channel.sh`: `publish` and `reissue` with throwaway
+  keys. A wrong key, an older release, a tampered payload, a replaced
+  manifest, a replayed or far-ahead date, and a second run at once are each
+  refused, and each leaves the old pair.
 - `tools/test-channel-setting.sh`: the addresses stage 06 takes and refuses
   for `KRYPTIK_CHANNEL` for each role, and, for every address it takes, the
   fetcher reading the written `update.conf` into requests it can send.
 
 ## Open points
 
-- Release tooling to publish `latest` and the payloads and re-issue the
-  statement on a schedule; today stage 06 writes one statement per build.
 - Whether fetching should be automatic; an unattended machine would want it.
 - Delta updates: dm-verity's block structure would allow fetching only
   changed blocks instead of the whole image.
@@ -181,6 +205,6 @@ the signed manifest does not provide for.
 `tools/desktop/kryptik-launch.c` (`kryptik update`),
 `tools/update/kryptik-update` (`check-manifest`, `check-pointer`),
 `tools/net/update-fetch.py`, `tools/net/netzone-init.sh`,
-`tools/release-manifest.sh` (`pointer`), `build/stages/04-base-system.sh`
-(the keys) and `06-iso.sh` (the statement per build, and `update.conf` from
-`KRYPTIK_CHANNEL`).
+`tools/release-manifest.sh` (`pointer`), `tools/release-channel.sh`,
+`build/stages/04-base-system.sh` (the keys) and `06-iso.sh` (each build's
+channel, and `update.conf` from `KRYPTIK_CHANNEL`).
