@@ -133,7 +133,7 @@ import socket
 for n,f,t in [('AF_VSOCK',40,1),('AF_ALG',38,5),('AF_PACKET',17,2)]:
     try: socket.socket(f,t); print(n,'OPENED')
     except OSError as e: print(n,'refused',e.errno)"
-for p in "clone-newuser 5" "clone3 7" "socket-vsock 7" "socket-netlink-nf 7" "socket-inet 0" "ioctl-tiocsti 5" "setns 5" "unshare 5" "mount 5" "getpid 0"; do
+for p in "clone-newuser 5" "clone3 7" "inotify 7" "socket-vsock 7" "socket-netlink-nf 7" "socket-inet 0" "ioctl-tiocsti 5" "setns 5" "unshare 5" "mount 5" "getpid 0"; do
     set -- $p
     "$K" seccomp-test "$1" >/dev/null 2>&1; rc=$?
     if [[ "$rc" == "$2" ]]; then pass "seccomp-test $1 -> $rc"; else fail "seccomp-test $1 -> $rc (want $2)"; fi

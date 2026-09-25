@@ -778,7 +778,8 @@ fn cmd_explain(dir: &Path, name: &str, args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Argument-rule probes for `seccomp-test`; None when `name` is not a probe.
+/// Argument-rule and soft-refusal probes for `seccomp-test`; None when `name`
+/// is not a probe.
 fn cmd_seccomp_probe(name: &str) -> Option<ExitCode> {
     // Runs in the filtered child: 7 if refused with the intended errno, else 0.
     let probe: fn() -> i32 = match name {
@@ -798,6 +799,10 @@ fn cmd_seccomp_probe(name: &str) -> Option<ExitCode> {
         },
         "clone3" => || unsafe {
             let r = libc::syscall(libc::SYS_clone3, std::ptr::null::<u8>(), 0usize);
+            if r < 0 && *libc::__errno_location() == libc::ENOSYS { 7 } else { 0 }
+        },
+        "inotify" => || unsafe {
+            let r = libc::inotify_init1(0);
             if r < 0 && *libc::__errno_location() == libc::ENOSYS { 7 } else { 0 }
         },
         "socket-vsock" => || unsafe {
