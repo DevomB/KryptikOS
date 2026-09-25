@@ -133,6 +133,13 @@ import socket
 for n,f,t in [('AF_VSOCK',40,1),('AF_ALG',38,5),('AF_PACKET',17,2)]:
     try: socket.socket(f,t); print(n,'OPENED')
     except OSError as e: print(n,'refused',e.errno)"
+# The kernel runs a family's create code before it refuses a pair (EOPNOTSUPP,
+# 95), so the filter refuses every family but AF_UNIX first (97).
+MATCH="^unix-pair inet 97$" check "socketpair(2) makes AF_UNIX pairs and refuses AF_INET by family" 0 /usr/bin/python3 -c "
+import socket
+a,b=socket.socketpair(); a.close(); b.close()
+try: socket.socketpair(socket.AF_INET); print('unix-pair inet PAIRED')
+except OSError as e: print('unix-pair inet', e.errno)"
 for p in "clone-newuser 5" "clone3 7" "inotify 7" "setfsuid 7" "socket-vsock 7" "socket-netlink-nf 7" "socket-inet 0" "ioctl-tiocsti 5" "setns 5" "unshare 5" "mount 5" "getpid 0"; do
     set -- $p
     "$K" seccomp-test "$1" >/dev/null 2>&1; rc=$?
@@ -162,6 +169,9 @@ MATCH="^denied$" checkz narrowed "... but NOT its own HOME, which the base rules
 MATCH="^ok$"   check "control: the same write succeeds in a zone with no Landlock policy" 0 /bin/sh -c "echo x > \$HOME/f && echo ok"
 MATCH="deny"   checkz badfs "a Landlock policy using a directive that cannot exist is refused" 1 /bin/sh -c "echo RAN-ANYWAY"
 MATCH="absolute" checkz relfs "a Landlock policy naming a relative path is refused" 1 /bin/sh -c "echo RAN-ANYWAY"
+MATCH="^denied$"  checkz swapped "a policy that keeps HOME read-only but for work holds" 0 /bin/sh -c "echo x > \$HOME/f 2>/dev/null && echo WROTE || echo denied"
+MATCH="^swapped$" checkz swapped "... and the zone can swap work/bin for a link to its HOME" 0 /bin/sh -c "rmdir \$HOME/work/bin && ln -s \$HOME \$HOME/work/bin && echo swapped"
+MATCH="symbolic link" checkz swapped "... which its next start refuses rather than grant exec on all of HOME" 125 /bin/sh -c "echo x > \$HOME/f && echo WROTE-HOME"
 
 # ---------------------------------------------------------------------------
 head_ "F. Guarantees a build cannot give are refused, not implied"
