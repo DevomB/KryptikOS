@@ -1,65 +1,39 @@
-# Kryptik build orchestrator
-# Kryptik must be built on Linux. On Windows use WSL2.
+# Kryptik build. Linux only; on Windows use WSL2.
 
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 .DEFAULT_GOAL := help
 
-# $(CURDIR), not $(dir $(abspath $(MAKEFILE_LIST))).
-#
-# GNU make's text functions operate on whitespace-separated LISTS, so abspath
-# and dir silently mangle any path containing a space: this repository lives in
-# ".../Linux Distro" and $(ROOT) came out as ".../Coding-Projects Distro",
-# having dropped a word. Every target then failed with a path that looked
-# almost right. $(CURDIR) is a single value and survives.
-#
-# Recipe uses must still be quoted - see the "$(TOOLS)" below.
+# $(CURDIR) rather than $(dir $(abspath ...)): make's text functions split on
+# spaces, and a checkout path may contain one. Quote paths in recipes too.
 ROOT    := $(CURDIR)
 STAGES  := $(ROOT)/build/stages
 TOOLS   := $(ROOT)/tools
 CHROOTD := $(STAGES)/03-chroot-prep.sh
 
-# --- the build contract -----------------------------------------------------
+# --- build contract ---------------------------------------------------------
 #
-# Three paths and a job count. Everything - the Makefile, the stage scripts and
-# the chroot - agrees on these names, and nothing derives a fourth path from
-# them behind your back.
-#
-#   KRYPTIK_ROOT      the repository. Read-only during a build.
-#   KRYPTIK_SOURCES   upstream tarballs. Read-only during a build.
-#   KRYPTIK_WORK      everything the build writes: sysroot, stamps, logs, trees.
-#
-# `?=` deliberately: GNU make imports the environment, so an exported
-# KRYPTIK_WORK from the caller wins, and
-#
-#   KRYPTIK_WORK=/build/kryptik make toolchain
-#
-# does what it looks like it does. This matters because the work tree must not
-# live on a filesystem that cannot represent POSIX ownership - /mnt/c under
-# WSL2, for instance - while the checkout very often does.
+# Every stage and the chroot agree on these names. `?=` lets the environment
+# win, so `KRYPTIK_WORK=/build/kryptik make toolchain` works; the work tree
+# must be on a filesystem with POSIX ownership (not /mnt/c under WSL2).
 KRYPTIK_WORK    ?= $(ROOT)/build/work
 KRYPTIK_SOURCES ?= $(ROOT)/sources
 KRYPTIK_OUT     ?= $(ROOT)/out
-# Empty means "let build/lib/common.sh choose from CPU count and RAM".
+# Empty: build/lib/common.sh picks a job count from CPUs and RAM.
 KRYPTIK_JOBS    ?=
-# refuse | rebuild. See the stamp notes in build/lib/common.sh.
+# refuse | rebuild (see the stamp notes in build/lib/common.sh).
 KRYPTIK_STALE   ?= refuse
-# Stamped into /etc/os-release so a booted image names the commit that
-# built it. --dirty on purpose: an image claiming a clean commit while the
-# tree had edits is worse than one claiming nothing.
+# Stamped into /etc/os-release; --dirty so an image never claims a clean tree.
 KRYPTIK_BUILD_COMMIT ?= $(shell git -C "$(ROOT)" describe --always --dirty --abbrev=40 2>/dev/null || echo unknown)
-# Path to a kryptikd binary built outside the chroot; see `make help`.
+# kryptikd and kryptik-wlproxy are static Rust binaries built outside the
+# chroot and installed by stage 04.
 KRYPTIK_KRYPTIKD_BIN ?=
-# Same for the per-zone Wayland proxy (compositor/, package wlproxy, binary
-# kryptik-wlproxy): Rust, static, built outside, installed by stage 04's
-# desktop step.
 KRYPTIK_WLPROXY_BIN ?=
 
 export KRYPTIK_ROOT := $(ROOT)
-# Pinned versions the image targets name. Read through the shell so the
-# file stays shell syntax; a literal `include` would misparse its quotes.
+# Read through the shell: versions.env is shell syntax, not make syntax.
 V_LINUX := $(shell . "$(ROOT)/build/config/versions.env" && echo $$V_LINUX)
-# The release name stamped into the media; override to build a "B" release.
+# Release name stamped into the media.
 KRYPTIK_VERSION ?=
 export KRYPTIK_VERSION
 export KRYPTIK_WORK
@@ -70,20 +44,11 @@ export KRYPTIK_STALE
 
 # --- privilege --------------------------------------------------------------
 #
-# Exactly two things in this build need root: creating device nodes and
-# bind-mounting virtual filesystems into the sysroot (stage 03), and the
-# chroot() call itself. Nothing else runs privileged - not the compilers, not
-# make, not the package recipes.
-#
-# So SUDO wraps the chroot driver and nothing else. Override it when you are
-# already root (SUDO=) or when your site uses something other than sudo
-# (SUDO=doas, SUDO="pkexec --keep-cwd").
+# Only stage 03's mounts and the chroot call need root, so SUDO wraps the
+# chroot driver and nothing else. SUDO= when already root; SUDO=doas etc.
 SUDO ?= sudo
 
-# sudo resets the environment, which is why the contract is passed explicitly
-# rather than exported and hoped for. A `make system` that silently dropped
-# KRYPTIK_WORK would build into $(ROOT)/build/work instead - a different tree,
-# on possibly a different filesystem, with no error anywhere.
+# sudo resets the environment, so the contract is passed explicitly.
 CHROOT_ENV := KRYPTIK_ROOT="$(ROOT)" \
               KRYPTIK_WORK="$(KRYPTIK_WORK)" \
               KRYPTIK_SOURCES="$(KRYPTIK_SOURCES)" \
@@ -99,25 +64,18 @@ CHROOT_ENV := KRYPTIK_ROOT="$(ROOT)" \
 
 CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
 
-.PHONY: test help check check-kernel-eol check-pins test-pin-reviews sources lock verify verify-provenance \
-	vm-disk vm-disk-boot vm-restart vm-measure cli-test update-tree-test identity-test serve-test \
-        test-harness test-hardening test-artifacts audit-artifacts test-boot-success test-efiboot \
-        audit-artifacts-strict manifest verify-manifest test-manifest \
-        test-s6-init smoke-userspace test-services test-netzone-time test-update-verify test-update-fetch test-libc-unwind \
-        sign-image verify-image test-image-signing test-installer test-mkdisk-guards \
-        install-test \
-        image image-boot \
-        image-smoke \
-        validate-kernel validate-kernel-hardened validate-kernel-boot \
-        resolve-kernel-config check-kernel-hardening test-kernel-hardening \
-        media ovmf-vars media-smoke-usb media-smoke-iso media-smoke-secureboot \
-        media-refused-foreign-keys integrity-test update-test \
-        state-test zones-test gui-test compositor-test acceptance \
-        toolchain temp-tools chroot chroot-enter chroot-umount chroot-status \
-        system kernel iso audit zones zone-test paths reset-stamps \
-        sysroot-ready \
-        launcher-test zone-tests vm-image vm-boot \
-        clean distclean
+.PHONY: help paths check sources lock verify verify-provenance check-pins \
+        validate-kernel validate-kernel-hardened validate-kernel-boot check-kernel-eol \
+        resolve-kernel-config check-kernel-hardening \
+        toolchain temp-tools sysroot-ready system kernel \
+        chroot chroot-enter chroot-umount chroot-status \
+        iso media ovmf-vars media-smoke-usb media-smoke-iso media-smoke-secureboot \
+        media-refused-foreign-keys install-test integrity-test update-test \
+        state-test zones-test gui-test acceptance \
+        zones zone-test launcher-test zone-tests cli-test serve-test \
+        test test-libc-unwind smoke-userspace \
+        audit-artifacts audit-artifacts-strict manifest verify-manifest audit \
+        reset-stamps clean distclean
 
 help:
 	@echo "Kryptik build targets"
@@ -132,12 +90,6 @@ help:
 	@echo "  make kernel      stage 05: hardened kernel"
 	@echo "  make iso         stage 06: verified root image, signed kernels, USB image + ISO"
 	@echo "  make media       stage 06 only (sysroot and kernel already built)"
-	@echo "  make media-smoke-usb | media-smoke-iso   boot the media under OVMF, assert"
-	@echo "  make media-smoke-secureboot              same with the developer key enrolled"
-	@echo "  make media-refused-foreign-keys          Microsoft keys only: must be refused"
-	@echo "  make install-test  install to a blank virtual disk, boot it alone, refusals"
-	@echo "  make integrity-test  Secure Boot enforced, foreign boot file refused, root tamper refused, recovery"
-	@echo "  make update-test PAYLOAD_A=.. PAYLOAD_B=..  A/B update, rollback, refusals, interruptions"
 	@echo
 	@echo "  'system' and 'kernel' build INSIDE the chroot. They mount it, run"
 	@echo "  the stage, and unmount again. Only the mounts and the chroot call"
@@ -148,56 +100,41 @@ help:
 	@echo "  make chroot-umount   unmount it"
 	@echo "  make chroot-status   what is mounted right now"
 	@echo
+	@echo "  make acceptance  every installed-system suite under KVM, one verdict"
+	@echo "  make media-smoke-usb | media-smoke-iso   boot the media under OVMF, assert"
+	@echo "  make media-smoke-secureboot              same with the developer key enrolled"
+	@echo "  make media-refused-foreign-keys          Microsoft keys only: must be refused"
+	@echo "  make install-test  install to a blank virtual disk, boot it alone, refusals"
+	@echo "  make integrity-test  Secure Boot enforced, foreign boot file refused, root tamper refused, recovery"
+	@echo "  make update-test PAYLOAD_A=.. PAYLOAD_B=..  A/B update, rollback, refusals, interruptions"
+	@echo "  make state-test | zones-test | gui-test    the state partition, zones, the desktop"
+	@echo
 	@echo "  make verify      verify upstream GPG signatures on fetched sources"
 	@echo "  make verify-provenance  signed tags + publisher checksums for the rest"
-	@echo "  make validate-kernel   check kernel fragment against pinned source"
-	@echo "  make check-kernel-eol  fail if the pinned kernel is EOL or not LTS"
 	@echo "  make check-pins        survey every pin against its upstream (network), then"
 	@echo "                   fail on one that is behind without a current review in"
 	@echo "                   tools/pin-reviews.tsv. PINS_FLAGS=--no-held is what a release asks"
-	@echo "  make validate-kernel-hardened  check the linux-hardened fragment"
-	@echo "  make check-kernel-hardening  resolve the config against the pinned source as"
-	@echo "                   stage 05 does, refuse a dropped fragment line, then run"
-	@echo "                   kernel-hardening-checker on it and the shipped command line"
+	@echo "  make validate-kernel | validate-kernel-hardened | validate-kernel-boot"
+	@echo "                   check a kernel fragment's symbols against the pinned source"
+	@echo "  make check-kernel-eol  fail if the pinned kernel is EOL or not LTS"
+	@echo "  make check-kernel-hardening  resolve the config as stage 05 does, refuse a"
+	@echo "                   dropped fragment line, run kernel-hardening-checker on it"
+	@echo
+	@echo "  make test        every unit suite (tools/test-*), then the compartment suites"
+	@echo "  make test-NAME   one suite: tools/test-NAME.sh"
 	@echo "  make zones       validate zone definitions + kernel support"
 	@echo "  make zone-test   run the isolation exit test (the primitives)"
 	@echo "  make launcher-test  attack \`kryptikd run\` itself (the launch path)"
 	@echo "  make zone-tests  both of the above; what a zone change must pass"
 	@echo "  make cli-test    test \`kryptik\`, the command a person types"
 	@echo "  make serve-test  drive \`kryptikd serve\`, the launch daemon, over its socket"
-	@echo "  make update-tree-test  install a signed update into a kryptikd program/config"
-	@echo "                   tree, interrupt it, roll it back (directories, no VM)"
-	@echo "  make vm-image    build the developer VM initramfs (busybox userspace)"
-	@echo "  make vm-boot     boot it under QEMU and check the serial log"
+	@echo "  make test-libc-unwind  prove the target libc can unwind (needs root)"
+	@echo "  make smoke-userspace   RUN the built userland in the chroot (needs root)"
 	@echo
-	@echo "  With a stage 04 sysroot, the image is a real Kryptik userspace and"
-	@echo "  is too big for an initramfs, so it becomes an ext4 disk instead:"
-	@echo "  make vm-disk       SYSROOT=... S6ROOT=...   build the root filesystem"
-	@echo "  make vm-disk-boot  KERNEL=...               boot it as /dev/vda"
-	@echo "  make vm-restart    KERNEL=...               boot, reboot, come back"
-	@echo "  make vm-measure                             what the last boot cost"
-	@echo "  make test-harness      verify failed builds cannot be stamped ok"
-	@echo "  make test-hardening    verify the flag set builds exes AND .so files"
-	@echo "  make test-artifacts    self-test the artifact auditor (positive controls)"
 	@echo "  make audit-artifacts   audit the ELF objects the build actually produced"
 	@echo "  make audit-artifacts-strict   ... and fail on reported findings too"
 	@echo "  make manifest          record what was built and what built it"
 	@echo "  make verify-manifest   check the tree still matches that record"
-	@echo "  make test-manifest     self-test the manifest tool (positive controls)"
-	@echo "  make test-s6-init      check stage 04 produces a bootable s6 image"
-	@echo "  make smoke-userspace   RUN the built userland in the chroot (needs root)"
-	@echo "  make test-services     validate the s6-rc service tree"
-	@echo "  make test-netzone-time the net zone's time measurement, under every shell here"
-	@echo "  make test-update-verify what kryptik-update believes: a payload, a manifest, a pointer"
-	@echo "  make test-update-fetch the net zone's update fetcher, against a local server and broker"
-	@echo "  make identity-test     zone files, compositor colour table and zoneid audit agree"
-	@echo "  make test-libc-unwind  prove the target libc can unwind (needs root)"
-	@echo "  make sign-image        sign the disk image with a developer key"
-	@echo "  make verify-image      verify that signature against the image"
-	@echo "  make test-image-signing  prove the verifier refuses what it should"
-	@echo "  make test-installer    installer checks that need no VM"
-	@echo "  make image KERNEL=...  build a bootable disk image from the sysroot"
-	@echo "  make image-boot KERNEL=...  boot that image on a serial console"
 	@echo "  make audit       run security audits over the build tree"
 	@echo "  make paths       print the resolved build contract"
 	@echo "  make reset-stamps  archive all build stamps (does not delete)"
@@ -230,6 +167,8 @@ paths:
 	@echo "Inside the chroot these appear as /kryptik, /kryptik-sources and"
 	@echo "/kryptik-work; the sysroot is / and there is no second view of it."
 
+# --- host and sources -------------------------------------------------------
+
 check:
 	@"$(STAGES)"/00-host-check.sh
 	@"$(TOOLS)"/check-kernel-eol.sh
@@ -246,12 +185,6 @@ verify:
 verify-provenance:
 	@"$(TOOLS)"/verify-provenance.sh
 
-validate-kernel:
-	@"$(TOOLS)"/validate-kernel-config.sh
-
-check-kernel-eol:
-	@"$(TOOLS)"/check-kernel-eol.sh
-
 # The survey asks the network and judges nothing; the gate reads the survey
 # and tools/pin-reviews.tsv and never the network.
 PINS_SURVEY ?= $(KRYPTIK_WORK)/pin-survey.tsv
@@ -260,22 +193,29 @@ check-pins:
 	@"$(TOOLS)"/check-source-currency.sh --tsv > "$(PINS_SURVEY)"
 	@"$(TOOLS)"/check-pin-reviews.sh --survey "$(PINS_SURVEY)" $(PINS_FLAGS)
 
+# --- kernel configuration ---------------------------------------------------
+
+validate-kernel:
+	@"$(TOOLS)"/validate-kernel-config.sh
+
 validate-kernel-hardened:
 	@"$(TOOLS)"/validate-kernel-config.sh --hardened
 
 validate-kernel-boot:
 	@"$(TOOLS)"/validate-kernel-config.sh --boot
 
-# Existence is half of it (the three targets above); this is the other half:
-# the same fragments resolved by kconfig against the same source, every line
-# checked for survival, then kernel-hardening-checker on the result. Needs the
-# kernel tarball, the linux-hardened patch and the checker from `make sources`,
-# and a host gcc with plugin headers (gcc-N-plugin-dev) for a faithful answer.
+check-kernel-eol:
+	@"$(TOOLS)"/check-kernel-eol.sh
+
+# Needs the kernel tarball, the linux-hardened patch and the checker from
+# `make sources`, and host gcc plugin headers (gcc-N-plugin-dev).
 resolve-kernel-config:
 	@"$(TOOLS)"/resolve-kernel-config.sh
 
 check-kernel-hardening: resolve-kernel-config
 	@"$(TOOLS)"/check-kernel-hardening.sh --config "$(KRYPTIK_WORK)/kconfig-tree/kryptik.config"
+
+# --- stages -----------------------------------------------------------------
 
 toolchain: check sources
 	@"$(STAGES)"/01-toolchain.sh
@@ -283,24 +223,22 @@ toolchain: check sources
 temp-tools: toolchain
 	@"$(STAGES)"/02-temp-tools.sh
 
-# --- the chroot stages ------------------------------------------------------
-#
-# These two targets used to print a wall of instructions and then `false`.
-# That was honest about the constraint - stage 04 runs inside the chroot and
-# needs root to get there - and useless as an entry point: the instructions
-# hardcoded $(ROOT)/build/work, so they were wrong the moment KRYPTIK_WORK was
-# overridden, and one of them had a stray quote that made the command it
-# printed unrunnable.
-#
-# The constraint is real; a target can satisfy it. `03-chroot-prep.sh run`
-# mounts, runs one command inside, and unmounts on every exit path.
+# Checks that stage 02 finished rather than running it: under sudo it would
+# rebuild the cross toolchain as root.
+sysroot-ready:
+	@if [[ ! -x "$(KRYPTIK_WORK)/sysroot/usr/bin/gcc" ]]; then \
+	    echo "Stage 02 has not completed: no target compiler at"; \
+	    echo "  $(KRYPTIK_WORK)/sysroot/usr/bin/gcc"; \
+	    echo; \
+	    echo "Build it first, UNPRIVILEGED:"; \
+	    echo "  make temp-tools"; \
+	    exit 1; \
+	fi
 
 system: sysroot-ready
 	@$(CHROOT_RUN) run /kryptik/build/stages/04-base-system.sh
 
-# The EOL check needs a network, and the chroot deliberately has none, so it
-# runs out here before we go in. Stage 05 repeats it inside, where it degrades
-# to a warning.
+# The EOL check needs the network and the chroot has none, so it runs here first.
 kernel: check-kernel-eol system
 	@$(CHROOT_RUN) run /kryptik/build/stages/05-kernel.sh
 
@@ -316,73 +254,47 @@ chroot-umount:
 chroot-status:
 	@"$(CHROOTD)" status
 
-# Verify that stage 02 finished; do not silently run it.
-#
-# The unprivileged stages and the privileged ones want different uids, and a
-# target that quietly does both under whichever one the caller happens to have
-# is how a cross toolchain ends up owned by root. `make system` as root - the
-# documented SUDO= configuration, and every container - would have rebuilt the
-# whole toolchain as root, which stage 00 exists to refuse.
-sysroot-ready:
-	@if [[ ! -x "$(KRYPTIK_WORK)/sysroot/usr/bin/gcc" ]]; then \
-	    echo "Stage 02 has not completed: no target compiler at"; \
-	    echo "  $(KRYPTIK_WORK)/sysroot/usr/bin/gcc"; \
-	    echo; \
-	    echo "Build it first, UNPRIVILEGED:"; \
-	    echo "  make temp-tools"; \
-	    exit 1; \
-	fi
+# --- install media and acceptance (docs/design/boot-and-updates.md) ----------
 
-# --- install media (docs/design/boot-and-updates.md) -------------------------
-#
-# Stage 06 builds the verity root image, relinks and signs a kernel per boot
-# variant, and assembles the USB image and the ISO. It runs as root (the
-# sysroot has root-only paths; the relink goes through the chroot) - SUDO=
-# when you already are.
+# Stage 06 runs as root: the sysroot has root-only paths and the relink goes
+# through the chroot.
 iso: kernel
 	@$(SUDO) env $(CHROOT_ENV) KRYPTIK_VERSION="$(KRYPTIK_VERSION)" "$(STAGES)"/06-iso.sh
 
-# Same, without rebuilding anything first: for a sysroot and kernel that exist.
 media:
 	@$(SUDO) env $(CHROOT_ENV) KRYPTIK_VERSION="$(KRYPTIK_VERSION)" "$(STAGES)"/06-iso.sh
 
 MEDIA_USB ?= $(shell ls -t "$(KRYPTIK_WORK)"/images/kryptik-*-usb.img 2>/dev/null | head -1)
 MEDIA_ISO ?= $(shell ls -t "$(KRYPTIK_WORK)"/images/kryptik-*.iso 2>/dev/null | head -1)
 
-# The disposable OVMF variable stores: clean (no keys), enrolled (the
-# developer key: Secure Boot on), ms (Microsoft keys only: ours are refused).
+# OVMF variable stores: clean (no keys), enrolled (developer key, Secure Boot
+# on), ms (Microsoft keys only, so ours are refused).
 ovmf-vars:
 	@"$(TOOLS)"/image/ovmf-vars.sh
 
-# Boot the media through firmware alone and assert on the transcript.
 media-smoke-usb:
 	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
 	@"$(TOOLS)"/image/media-smoke.sh --usb "$(MEDIA_USB)" --vars clean
+
 media-smoke-iso:
 	@test -n "$(MEDIA_ISO)" || { echo "no ISO under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
 	@"$(TOOLS)"/image/media-smoke.sh --iso "$(MEDIA_ISO)" --vars clean
-# Under the enrolled developer key Secure Boot must be ON and boot must
-# succeed; under Microsoft's keys the same medium must be refused.
+
 media-smoke-secureboot: ovmf-vars
 	@"$(TOOLS)"/image/media-smoke.sh --usb "$(MEDIA_USB)" --vars enrolled
+
 media-refused-foreign-keys:
 	@"$(TOOLS)"/image/media-smoke.sh --usb "$(MEDIA_USB)" --vars ms --expect-refused
 
-# Install from the USB medium onto a blank virtual disk, then boot that disk
-# alone: medium detached, variable store fresh; reboot and power off from
-# inside; then the refusal cases. Needs KVM for a sane running time.
 install-test:
 	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
 	@"$(TOOLS)"/image/install-test.sh --usb "$(MEDIA_USB)" --vars $(or $(VARS),clean)
 
-# Enforced Secure Boot, a foreign-signed boot file refused, a tampered root
-# refused by dm-verity, recovery from the medium.
 integrity-test: ovmf-vars
 	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
 	@"$(TOOLS)"/image/integrity-test.sh --usb "$(MEDIA_USB)"
 
-# A/B update, reboot, recovery/rollback, refusals, interruptions. Needs two
-# releases: PAYLOAD_A and PAYLOAD_B are stage 06 payload directories and
+# PAYLOAD_A and PAYLOAD_B are the stage 06 payloads of two releases;
 # MEDIA_USB is release A's medium.
 PAYLOAD_A ?=
 PAYLOAD_B ?=
@@ -390,41 +302,22 @@ update-test:
 	@test -n "$(PAYLOAD_A)" -a -n "$(PAYLOAD_B)" || { echo "set PAYLOAD_A=... PAYLOAD_B=... (stage 06 payload dirs of two releases)"; exit 1; }
 	@"$(TOOLS)"/image/update-test.sh --usb-a "$(MEDIA_USB)" --payload-a "$(PAYLOAD_A)" --payload-b "$(PAYLOAD_B)" --vars $(or $(VARS),clean)
 
-# The installed system's state partition: found by identity, degraded and
-# honest when it cannot be used (clone, ambiguous labels, corrupt, missing).
 state-test:
 	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
 	@"$(TOOLS)"/image/state-test.sh --usb "$(MEDIA_USB)"
 
-# Zones, the network and encrypted storage on the installed system, on the
-# Kryptik kernel (the zones suite). Not to be confused with zone-test, the
-# host-side adversarial suite for the isolation primitives.
 zones-test:
 	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
 	@"$(TOOLS)"/image/zones-test.sh --usb "$(MEDIA_USB)"
 
-# The zoned desktop on the installed system, driven by keystrokes and
-# screenshots through QMP (the desktop suite).
 gui-test:
 	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
 	@"$(TOOLS)"/image/gui-test.sh --usb "$(MEDIA_USB)"
 
-# The compositor layer's own tests (wlproxy, zoneid, the shipped zone files).
-compositor-test:
-	@"$(TOOLS)"/test-compositor.sh
-
-# Every acceptance suite, on the media named (the newest under images/ by
-# default), in one run with one verdict and a report. Needs root: the chroot
-# proofs and the VM drivers. EXPORT=DIR copies the tested media, hashes,
-# trust material, revision, report and instructions there and verifies the
-# copies. The release under test is the highest-versioned medium on hand;
-# its payload is release B. PAYLOAD_A defaults to the previous release - the
-# highest version below B with a payload and a USB medium - and the update
-# test installs that from its own medium and applies B over it. The
-# single-medium targets above default MEDIA_USB/MEDIA_ISO to the LAST image
-# written, which is not the same rule, so acceptance is handed a medium only
-# when the caller named one (command line or environment) and chooses by
-# version otherwise. PAYLOAD_A/PAYLOAD_B, when given, are taken as they are.
+# Every acceptance suite, one verdict, as root. MEDIA_USB/MEDIA_ISO are passed
+# on only when named explicitly; otherwise acceptance.sh tests the
+# highest-versioned medium and updates to it from the release before it.
+# EXPORT=DIR copies the tested media, hashes and report there.
 EXPORT ?=
 acceptance:
 	@$(SUDO) env $(CHROOT_ENV) "$(TOOLS)"/acceptance.sh \
@@ -433,272 +326,61 @@ acceptance:
 	    $(if $(PAYLOAD_A),--payload-a "$(PAYLOAD_A)") $(if $(PAYLOAD_B),--payload-b "$(PAYLOAD_B)") \
 	    $(if $(EXPORT),--export "$(EXPORT)") $(if $(ONLY),--only "$(ONLY)")
 
+# --- compartment suites -----------------------------------------------------
+
 zones:
 	@cd compartments/kryptikd && cargo build --quiet
 	@compartments/kryptikd/target/debug/kryptikd check --zones compartments/zones
 
+# adversarial.sh tests the isolation primitives, launcher.sh tests how
+# `kryptikd run` applies them; a zone change must pass both (zone-tests).
 zone-test:
 	@cd compartments/kryptikd && cargo build --quiet
 	@compartments/tests/adversarial.sh
 
-# adversarial.sh drives the isolation PRIMITIVES with unshare(1); launcher.sh
-# drives `kryptikd run`. They are different claims - the primitives can be
-# sound while the launcher applies them in the wrong order - so a change to
-# the zone path has to pass both, and `zone-tests` is the target that says so.
 launcher-test:
 	@cd compartments/kryptikd && cargo build --quiet
 	@compartments/tests/launcher.sh
 
 zone-tests: zone-test launcher-test
 
-# --- the developer VM ------------------------------------------------------
-#
-# KERNEL and SYSROOT are inputs rather than assumptions. Until stage 04 and 05
-# produce them, point KERNEL at any bzImage and leave SYSROOT empty: the image
-# records that its userspace is not Kryptik's and tools/vm/boot-smoke.sh
-# reports "PASSED (HARNESS ONLY)" rather than claiming a Kryptik boot.
-VM_OUT     ?= $(ROOT)/build/work/vm
-VM_INITRD  ?= $(VM_OUT)/initramfs.cpio.gz
-VM_LOG     ?= $(VM_OUT)/serial.log
-VM_KRYPTIKD ?= $(ROOT)/compartments/kryptikd/target/x86_64-unknown-linux-musl/release/kryptikd
-KERNEL     ?=
-SYSROOT    ?=
-S6ROOT     ?=
-
-$(VM_KRYPTIKD):
-	@cd compartments/kryptikd && cargo build --release --target x86_64-unknown-linux-musl
-
-vm-image: $(VM_KRYPTIKD)
-	@test -n "$(S6ROOT)" || { echo "set S6ROOT=<dir with usr/bin/{s6-svscan,busybox}>"; exit 1; }
-	@mkdir -p "$(VM_OUT)"
-	@"$(ROOT)"/tools/vm/mkinitramfs.sh --out "$(VM_INITRD)" \
-	    --kryptikd "$(VM_KRYPTIKD)" --s6root "$(S6ROOT)" \
-	    --zones "$(ROOT)/compartments/zones" \
-	    $(if $(SYSROOT),--sysroot "$(SYSROOT)",)
-
-# VM_NIC=user gives the guest a NIC on QEMU's internal user-mode NAT. The
-# default is none, because a test VM that cannot reach anything is the right
-# default - but with a NIC the launcher suite's H1 positive control becomes a
-# real one: "the zone sees only lo" means nothing when the host sees only lo
-# too, and without a NIC that check reports NOT RUN in the VM, which is the one
-# place it runs as root.
-VM_NIC ?= none
-
-vm-boot: vm-image
-	@test -n "$(KERNEL)" || { echo "set KERNEL=<path to a bzImage>"; exit 1; }
-	@"$(ROOT)"/tools/vm/run-qemu.sh --kernel "$(KERNEL)" --initrd "$(VM_INITRD)" \
-	    --log "$(VM_LOG)" --mode smoke --nic "$(VM_NIC)" || true
-	@"$(ROOT)"/tools/vm/boot-smoke.sh "$(VM_LOG)"
-
-# --- the disk image ---------------------------------------------------------
-#
-# A separate target from vm-image, and not a flag on it, because the two
-# produce different things for different reasons. An initramfs is unpacked into
-# the guest's RAM, which is fine for a busybox harness and impossible for a
-# real userspace: the stage 04 sysroot is 3.6G. This writes an ext4 filesystem
-# with mke2fs -d, which needs no root and no loop device.
-VM_DISK      ?= $(VM_OUT)/kryptik-root.img
-VM_DISK_SIZE ?= 6G
-
-vm-disk: $(VM_KRYPTIKD)
-	@test -n "$(S6ROOT)" || { echo "set S6ROOT=<dir with usr/bin/{s6-svscan,busybox}>"; exit 1; }
-	@test -n "$(SYSROOT)" || { echo "set SYSROOT=<a stage 04 sysroot> — without one this would be a busybox image, and vm-image already builds those"; exit 1; }
-	@mkdir -p "$(VM_OUT)"
-	@"$(ROOT)"/tools/vm/mkinitramfs.sh --out "$(VM_DISK)" --as-disk "$(VM_DISK_SIZE)" \
-	    --kryptikd "$(VM_KRYPTIKD)" --s6root "$(S6ROOT)" \
-	    --zones "$(ROOT)/compartments/zones" --sysroot "$(SYSROOT)"
-
-# Boot that disk AS the root filesystem. No initramfs: this kernel has
-# virtio_blk and ext4 built in, which the guest reports rather than the harness
-# assuming.
-vm-disk-boot: vm-disk
-	@test -n "$(KERNEL)" || { echo "set KERNEL=<path to a bzImage>"; exit 1; }
-	@"$(ROOT)"/tools/vm/run-qemu.sh --kernel "$(KERNEL)" --disk "$(VM_DISK)" --root-disk \
-	    --log "$(VM_LOG)" --mode smoke --nic "$(VM_NIC)" || true
-	@"$(ROOT)"/tools/vm/boot-smoke.sh "$(VM_LOG)"
-
-# Boot it, reboot it from inside, and require the second boot to come back and
-# run a zone. Needs the disk: on an initramfs the boot counter would reset every
-# time and the guest would reboot until the timeout.
-VM_RESTART_LOG ?= $(VM_OUT)/serial-restart.log
-
-vm-restart: vm-disk
-	@test -n "$(KERNEL)" || { echo "set KERNEL=<path to a bzImage>"; exit 1; }
-	@"$(ROOT)"/tools/vm/run-qemu.sh --kernel "$(KERNEL)" --disk "$(VM_DISK)" --root-disk \
-	    --log "$(VM_RESTART_LOG)" --mode restart --nic "$(VM_NIC)" || true
-	@"$(ROOT)"/tools/vm/boot-smoke.sh "$(VM_RESTART_LOG)"
-
-# What the last boot cost. Reads the log that is already there rather than
-# booting again, so it is free to run and says nothing new if nothing was run.
-vm-measure:
-	@test -r "$(VM_LOG)" || { echo "no serial log at $(VM_LOG) — run make vm-boot or vm-disk-boot first"; exit 1; }
-	@"$(ROOT)"/tools/vm/measure.sh "$(VM_LOG)" $(if $(wildcard $(VM_DISK)),"$(VM_DISK)",)
-
-# The user-facing command's own suite.
 cli-test:
 	@cd compartments/kryptikd && cargo build --quiet
 	@compartments/tests/cli.sh
 
-# The launch daemon, driven over its socket as the desktop drives it: who may
-# ask, what a request may carry, the deadline, readiness, the proxy socket.
 serve-test:
 	@cd compartments/kryptikd && cargo build --quiet
 	@compartments/tests/serve.sh
 
-# Update, rollback and recovery of a kryptikd PROGRAM/CONFIG TREE in temporary
-# directories (tools/apply-update.sh): the application-tree suite. It is not
-# the installed-OS update - that is `update-test` above, which boots real A/B
-# media under OVMF. The two used to share one target name, and GNU make took
-# the later recipe, so `make update-test` silently ran this suite and the OS
-# driver was unreachable. Needs ssh-keygen (the release manifests are OpenSSH
-# signatures) and a built kryptikd; without either it exits 77 and says so.
-update-tree-test:
-	@cd compartments/kryptikd && cargo build --quiet
-	@compartments/tests/update.sh
+# --- unit suites ------------------------------------------------------------
 
-# Runs every unprivileged suite and then names the ones it did not run.
-# The shell lives in tools/run-tests.sh rather than inline here: a recipe is
-# a bad place for a loop, and make quoting is a bad place for a report.
+# Runs every suite and names the ones it could not run.
 test:
 	@"$(TOOLS)"/run-tests.sh
 
-test-harness:
-	@"$(TOOLS)"/test-step-errexit.sh
+test-%:
+	@"$(TOOLS)"/test-$*.sh
 
-test-toolchain-identity:
-	@"$(TOOLS)"/test-toolchain-identity.sh
+# Inside the chroot: it is the target's libc that has to unwind.
+test-libc-unwind:
+	@$(CHROOT_RUN) run /kryptik/tools/test-libc-unwind.sh
 
-test-hardening:
-	@"$(TOOLS)"/test-hardening-flags.sh
+# Runs the built userland, compiles with the target compiler and loads
+# hardened_malloc. Needs root and a finished sysroot.
+smoke-userspace:
+	@$(SUDO) "$(TOOLS)"/test-userspace-smoke.sh
 
-test-kernel-hardening:
-	@"$(TOOLS)"/test-check-kernel-hardening.sh
+# --- build output -----------------------------------------------------------
 
-test-pin-reviews:
-	@"$(TOOLS)"/test-check-pin-reviews.sh
-
-test-artifacts:
-	@"$(TOOLS)"/test-artifact-hardening.sh
-
-# What the build PRODUCED, not what it was asked to use.
-#
-# test-hardening compiles two toy files and proves the flag set can build
-# a hardened executable and a hardened shared library. It cannot tell you
-# whether the fifty-eight packages in stage 04 actually received those
-# flags, and the ways they quietly do not - a configure that overwrites
-# CFLAGS, a Makefile with its own hardcoded -O2, libtool relinking at
-# install time - fail nothing and are plainly visible in the ELF.
+# Reads the ELF headers of what stage 04 installed: a package can ignore the
+# hardening flags without failing its build.
 audit-artifacts:
 	@"$(TOOLS)"/check-artifact-hardening.sh "$(KRYPTIK_WORK)/sysroot"
 
 audit-artifacts-strict:
 	@"$(TOOLS)"/check-artifact-hardening.sh "$(KRYPTIK_WORK)/sysroot" --strict
 
-test-manifest:
-	@"$(TOOLS)"/test-artifact-manifest.sh
-
-# The init configuration is the last step of a four-hour stage, and its
-# failure modes are quiet - a boot image with no stage 2 scripts, or an
-# early getty naming a program that does not exist, both leave the maker
-# exiting 0 and the machine booting to silence. The s6 stack builds in
-# about a minute, so it is checked up front instead.
-# Structural checks on build/services/ that cost a second, against
-# mistakes that otherwise surface at the end of a four-hour stage: a
-# dependency naming a service that does not exist, a shebang in an
-# execline `up`, a script installed into every image that nothing runs.
-test-services:
-	@"$(TOOLS)"/test-services.sh
-
-# The net zone's half of the clock (docs/design/time.md): which sources it
-# asks, what it takes for an answer and what it tells zone 0, run under every
-# POSIX shell on this host with a real NTP server on loopback and a stand-in
-# for the broker client.
-test-netzone-time:
-	@"$(TOOLS)"/test-netzone-time.sh
-
-# What kryptik-update believes, with its own functions and a real ssh-keygen:
-# a payload whose manifest is swapped under it, and the two checks the update
-# channel runs on a manifest and on a statement of what is current.
-test-update-verify:
-	@"$(TOOLS)"/test-update-manifest-snapshot.sh
-
-# The net zone's half of the update channel: a faithful pipe, from the offsets
-# zone 0 names, in pieces zone 0 takes, that stops when zone 0 says no.
-test-update-fetch:
-	@"$(TOOLS)"/test-update-fetch.sh
-
-# boot-success.sh's decision table (commit, refuse, fall back), driven on
-# the host with stand-ins for the services, the ESP and the firmware.
-test-boot-success:
-	@"$(TOOLS)"/test-boot-success.sh
-
-# kryptik-efiboot's forget, what a commit runs, against stand-in variables.
-test-efiboot:
-	@"$(TOOLS)"/test-efiboot.sh
-
-# The zone identity contract: the zone files, the compositor's colour table
-# (generated from them) and the distinctness invariant, checked together.
-identity-test:
-	@"$(TOOLS)"/test-desktop-identity.sh
-
-# Runs inside the chroot, because it is the TARGET system's C library that has
-# to be able to unwind - not the build host's.
-# Boot integrity, developer tier. Proves an image is byte-for-byte what this
-# build produced; it is not secure boot and not dm-verity, and the tools refuse
-# to let a developer signature pass for a release one.
-sign-image:
-	@"$(TOOLS)"/image/sign-image.sh --image "$(KRYPTIK_WORK)/images/kryptik-dev.img" 		--kernel "$(KRYPTIK_WORK)/sysroot/boot/kryptik-$(V_LINUX)"
-
-verify-image:
-	@"$(TOOLS)"/image/verify-image.sh --image "$(KRYPTIK_WORK)/images/kryptik-dev.img" 		--key "$(KRYPTIK_WORK)/images/kryptik-dev.img.pub" --expect-kind developer
-
-# mkdisk runs as root and rm -f's its --out. These prove it will only ever
-# aim that at a regular file.
-# Installs onto a blank virtual disk in one VM, then BOOTS that disk in a
-# second one. The second half is the point: "the installer exited 0" and
-# "what it wrote comes up" are different claims.
-
-test-mkdisk-guards:
-	@"$(TOOLS)"/test-mkdisk-guards.sh
-
-test-installer:
-	@"$(TOOLS)"/test-installer.sh
-
-test-image-signing:
-	@"$(TOOLS)"/test-image-signing.sh
-
-test-libc-unwind:
-	@$(CHROOT_RUN) run /kryptik/tools/test-libc-unwind.sh
-
-# Build a bootable disk image from a finished sysroot and a kernel.
-#   make image KERNEL=... IMAGE=...
-IMAGE ?= $(KRYPTIK_OUT)/kryptik-dev.img
-KERNEL ?=
-image:
-	@mkdir -p "$(dir $(IMAGE))"
-	@"$(TOOLS)"/image/mkdisk.sh --sysroot "$(KRYPTIK_WORK)/sysroot" \
-	    $(if $(KERNEL),--kernel "$(KERNEL)",) --out "$(IMAGE)"
-
-image-smoke:
-	@"$(TOOLS)"/image/boot-smoke.sh --image "$(IMAGE)" --kernel "$(KERNEL)"
-
-image-boot:
-	@"$(TOOLS)"/image/run-qemu-disk.sh --image "$(IMAGE)" \
-	    $(if $(KERNEL),--kernel "$(KERNEL)",) --mode $(or $(MODE),console)
-
-test-s6-init:
-	@"$(TOOLS)"/test-s6-init-config.sh
-
-# Runs the built userland instead of listing it. boot-check asserts files
-# exist; this executes them, compiles a program with the target compiler
-# inside the target, and loads hardened_malloc. Needs root and a finished
-# sysroot, so it is not part of the unit suites.
-smoke-userspace:
-	@$(SUDO) "$(TOOLS)"/test-userspace-smoke.sh
-
-# An identity record for the tree, and for what produced it. Answers the
-# three questions you cannot answer by looking at a sysroot: is this the
-# one you tested, what went into it, and has anything touched it since.
+# A record of the tree and of what produced it.
 manifest:
 	@"$(TOOLS)"/artifact-manifest.sh --root "$(KRYPTIK_WORK)/sysroot" \
 	                                  --out  "$(KRYPTIK_WORK)/artifact-manifest.txt"
@@ -710,9 +392,9 @@ verify-manifest:
 audit:
 	@"$(TOOLS)"/audit-setuid.sh
 
-# Archive rather than delete. Stamps are the only record of what a previous
-# run actually completed, and a stamp that can no longer be trusted is still
-# evidence worth keeping.
+# --- housekeeping -----------------------------------------------------------
+
+# Archives the stamps rather than deleting them.
 reset-stamps:
 	@if [[ -d "$(KRYPTIK_WORK)/.stamps" ]]; then \
 	    dest="$(KRYPTIK_WORK)/.stamps/legacy/reset-$$(date +%Y%m%dT%H%M%S)"; \
@@ -726,9 +408,8 @@ reset-stamps:
 	    else rmdir "$$dest" 2>/dev/null || true; echo "no stamps to archive"; fi; \
 	else echo "no stamp directory at $(KRYPTIK_WORK)/.stamps"; fi
 
-# Never remove a tree that still has filesystems mounted inside it. The chroot
-# bind-mounts the host's /dev into the sysroot; rm -rf over that is how a build
-# system eats its host.
+# Refuses while anything is mounted inside the tree: the chroot binds the
+# host's /dev.
 clean:
 	@"$(CHROOTD)" guard-unmounted
 	@rm -rf "$(KRYPTIK_WORK)"
