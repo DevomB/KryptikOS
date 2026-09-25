@@ -34,5 +34,5 @@ run_stage kernel make SUDO= KRYPTIK_KRYPTIKD_BIN="$KD_BIN" KRYPTIK_WLPROXY_BIN="
 VER_A="0.1.$(date +%Y%m%d).$(git rev-parse --short=8 HEAD)"
 run_stage media-a make SUDO= KRYPTIK_KRYPTIKD_BIN="$KD_BIN" KRYPTIK_WLPROXY_BIN="$WL_BIN" media KRYPTIK_VERSION="$VER_A" || { echo "media-a FAILED"; exit 1; }
 run_stage media-b make SUDO= KRYPTIK_KRYPTIKD_BIN="$KD_BIN" KRYPTIK_WLPROXY_BIN="$WL_BIN" media KRYPTIK_VERSION="${VER_A}.1" || { echo "media-b FAILED"; exit 1; }
-ls -la "$KRYPTIK_WORK/images/" | grep -E "usb.img|\.iso|payload"
+ls -lad "$KRYPTIK_WORK"/images/*usb.img "$KRYPTIK_WORK"/images/*.iso "$KRYPTIK_WORK"/images/payload* 2>/dev/null || true
 echo "[$(STAMP)] POST-BUILD DONE: A=${VER_A} B=${VER_A}.1"

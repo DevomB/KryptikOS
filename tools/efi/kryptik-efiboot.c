@@ -9,6 +9,8 @@
  *   kryptik-efiboot set-next SLOT        create/refresh "Kryptik SLOT" -> \EFI\kryptik\kryptik-SLOT.efi, set BootNext
  *   kryptik-efiboot clear-next           delete BootNext
  *   kryptik-efiboot ensure SLOT          create/refresh the entry only (no BootNext)
+ *   kryptik-efiboot forget               delete both slots' entries and BootNext, drop them
+ *                                        from BootOrder: the firmware boots BOOTX64.EFI
  *
  * The ESP is the partition labelled kryptik-esp ON THE DISK THE ROOT CAME
  * FROM, resolved by /usr/libexec/kryptik/devices.sh (a label alone is not an
@@ -33,9 +35,15 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
+/* Overridable at compile time for tools/test-efiboot.sh, which builds this
+ * against a scratch directory of stand-in variables; the installed binary
+ * is built with the default. */
+#ifndef EFIVARS
 #define EFIVARS "/sys/firmware/efi/efivars/"
+#endif
 #define GLOBAL_GUID "8be4df61-93ca-11d2-aa0d-00e098032b8c"
 #define EFI_VARIABLE_NON_VOLATILE 0x1
 #define EFI_VARIABLE_BOOTSERVICE_ACCESS 0x2
@@ -90,21 +98,43 @@ static int delete_var(const char *name) {
 /* --- the ESP partition, by label ------------------------------------------ */
 struct part { char dev[128]; char uuid[40]; uint64_t start, size; uint32_t number; };
 
-static int run_read(const char *cmd, char *out, size_t cap) {
-    FILE *p = popen(cmd, "r"); if (!p) return -1;
-    if (!fgets(out, (int)cap, p)) { pclose(p); return -1; }
-    pclose(p);
+/* The first line a program prints. No shell: the arguments are an array, so
+ * nothing in them is ever parsed as a command. The device name handed to
+ * blkid comes from devices.sh on the verified root, but a root tool that
+ * builds a command line out of any string is one edit away from trusting
+ * the wrong one. */
+static int run_read(char *const argv[], char *out, size_t cap) {
+    int fd[2];
+    if (pipe(fd)) return -1;
+    pid_t pid = fork();
+    if (pid < 0) { close(fd[0]); close(fd[1]); return -1; }
+    if (pid == 0) {
+        int nul = open("/dev/null", O_WRONLY);
+        dup2(fd[1], 1);
+        if (nul >= 0) dup2(nul, 2);
+        close(fd[0]); close(fd[1]);
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+    close(fd[1]);
+    FILE *p = fdopen(fd[0], "r");
+    int got = p && fgets(out, (int)cap, p) != NULL;
+    if (p) fclose(p); else close(fd[0]);
+    int st;
+    while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+    if (!got) return -1;
     out[strcspn(out, "\n")] = 0;
     return 0;
 }
 
 static int find_esp(struct part *p) {
     char dev[128];
-    if (run_read("/usr/libexec/kryptik/devices.sh part kryptik-esp 2>/dev/null", dev, sizeof dev) || !dev[0]) return -1;
+    char *find[] = { "/usr/libexec/kryptik/devices.sh", "part", "kryptik-esp", NULL };
+    if (run_read(find, dev, sizeof dev) || !dev[0]) return -1;
     snprintf(p->dev, sizeof p->dev, "%s", dev);
-    char cmd[256], out[128];
-    snprintf(cmd, sizeof cmd, "blkid -s PARTUUID -o value %s 2>/dev/null", dev);
-    if (run_read(cmd, out, sizeof out) || strlen(out) != 36) return -1;
+    char out[128];
+    char *uuid[] = { "blkid", "-s", "PARTUUID", "-o", "value", dev, NULL };
+    if (run_read(uuid, out, sizeof out) || strlen(out) != 36) return -1;
     snprintf(p->uuid, sizeof p->uuid, "%s", out);
     const char *base = strrchr(dev, '/'); base = base ? base + 1 : dev;
     char path[256];
@@ -185,7 +215,8 @@ static int ensure_entry(const char *slot) {
         printf("%s -> %s on %s (PARTUUID %s)\n", var, file, esp.dev, esp.uuid);
     }
     /* keep it in BootOrder (appended) so a firmware that ignores BootNext
-       still offers it, without displacing the entry the machine came with */
+       still offers it, without displacing the entry the machine came with;
+       forget takes it out again at commit */
     unsigned char order[512]; size_t ol = 0; uint16_t num = (uint16_t)strtol(var + 4, NULL, 16);
     int present = 0;
     if (read_var("BootOrder", order, sizeof order, &ol) == 0) {
@@ -201,6 +232,31 @@ static int cmd_set_next(const char *slot) {
     unsigned char v[2]; put_u16(v, (uint16_t)strtol(var + 4, NULL, 16));
     if (write_var("BootNext", v, 2)) return die("writing BootNext failed");
     printf("BootNext = %s (one boot)\n", var);
+    return 0;
+}
+
+/* forget: both slots' entries and BootNext are deleted and BootOrder no
+ * longer names them; the machine's other entries keep their order. The
+ * firmware then boots the disk's own entry, which is BOOTX64.EFI, the
+ * committed slot. boot-success runs this at commit and the recovery tool
+ * after its commit: the entries exist for the trial alone. Left behind,
+ * they outlived it. A firmware regenerates its own disk entry at the end
+ * of BootOrder whenever the devices change, and the first Kryptik entry
+ * ever armed then won over the committed slot at every cold boot after
+ * that: the update suite committed slot a and the next boot was slot b. */
+static int cmd_forget(void) {
+    unsigned char order[512], kept[512]; size_t ol = 0, kl = 0;
+    if (read_var("BootOrder", order, sizeof order, &ol)) ol = 0;
+    for (size_t i = 0; i + 1 < ol; i += 2) {
+        uint16_t e = (uint16_t)(order[i] | (order[i+1] << 8));
+        if (e != 0x00A0 && e != 0x00B0) kl += put_u16(kept + kl, e);
+    }
+    if (kl != ol) {
+        if (kl == 0 ? delete_var("BootOrder") : write_var("BootOrder", kept, kl)) return die("updating BootOrder failed");
+    }
+    if (delete_var("Boot00A0") || delete_var("Boot00B0")) return die("deleting a Boot#### entry failed");
+    if (delete_var("BootNext")) return die("deleting BootNext failed");
+    printf("forgotten: Kryptik's entries and BootNext; the firmware boots BOOTX64.EFI\n");
     return 0;
 }
 
@@ -238,11 +294,12 @@ static int cmd_list(void) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 2) { fprintf(stderr, "usage: kryptik-efiboot list | set-next a|b | clear-next | ensure a|b\n"); return 2; }
+    if (argc < 2) { fprintf(stderr, "usage: kryptik-efiboot list | set-next a|b | clear-next | ensure a|b | forget\n"); return 2; }
     if (access(EFIVARS, R_OK)) { errno = 0; return die("no efivarfs at " EFIVARS " (not a UEFI boot, or sysinit did not mount it)"); }
     if (!strcmp(argv[1], "list")) return cmd_list();
     if (!strcmp(argv[1], "set-next") && argc == 3) return cmd_set_next(argv[2]);
     if (!strcmp(argv[1], "ensure") && argc == 3) return ensure_entry(argv[2]);
+    if (!strcmp(argv[1], "forget")) return cmd_forget();
     if (!strcmp(argv[1], "clear-next")) { if (delete_var("BootNext")) return die("deleting BootNext failed"); printf("BootNext cleared\n"); return 0; }
     fprintf(stderr, "kryptik-efiboot: unknown command\n"); return 2;
 }

@@ -316,6 +316,33 @@ print(s.recv(4096).decode("utf-8", "replace").strip())' "$off" "$nsrc" "$BROKER"
 ask_time "$@"
 time_ticks=0
 
+# --- updates ---------------------------------------------------------------------
+# Zone 0 has no network and never calls this zone, so this zone asks
+# (docs/design/update-channel.md): it brings the signed statement of what is
+# current, asks whether a release is wanted, and streams what zone 0 says is
+# missing. update-fetch.py decides nothing and holds nothing; zone 0 names
+# the channel (/etc/kryptik/update.conf on the verified root), verifies
+# every signature and refuses any byte it did not ask for. Without that
+# file there is no channel and nothing is asked.
+UPDATE_CONF=/etc/kryptik/update.conf
+UPDATE_FETCH="${KRYPTIK_UPDATE_FETCH:-/usr/libexec/kryptik/update-fetch.py}"
+UPDATE_BROUGHT=/run/kryptik-update-statement-brought
+UPDATE_PID=""
+update_run() {   # update_run latest|poll: in the background, one at a time
+    { command -v python3 >/dev/null 2>&1 && [ -r "$UPDATE_FETCH" ] && [ -r "$UPDATE_CONF" ]; } || return 0
+    [ -n "$UPDATE_PID" ] && kill -0 "$UPDATE_PID" 2>/dev/null && return 0
+    (
+        out="$(python3 "$UPDATE_FETCH" "$1" --broker "$BROKER" 2>&1 | tail -1)"
+        case "$1:$out" in
+            poll:idle|*:) ;;
+            latest:ok*) : > "$UPDATE_BROUGHT"; say "update: zone 0 on the statement of what is current: ${out}" ;;
+            *) say "update $1: ${out}" ;;
+        esac
+    ) &
+    UPDATE_PID=$!
+}
+update_ticks=0; statement_ticks=999999
+
 status_line() {
     a="$(uplink_addr "$@")"
     w="$(wifi_state)"
@@ -335,6 +362,7 @@ cleanup() {
     say "stopping"
     forwarding off
     [ -n "$DNSPID" ] && kill "$DNSPID" 2>/dev/null
+    [ -n "$UPDATE_PID" ] && kill "$UPDATE_PID" 2>/dev/null
     for n in $WIRELESS; do p="$(wpa_pid "$n")"; [ -n "$p" ] && kill "$p" 2>/dev/null; done
     command -v dhcpcd >/dev/null 2>&1 && dhcpcd -x 2>/dev/null
     exit 0
@@ -378,6 +406,20 @@ while :; do
         time_ticks=0; time_was="$TIME_STATE"
         ask_time "$@"
         [ "$TIME_STATE" != "$time_was" ] && changed=1
+    fi
+    # Updates: the statement once a day once zone 0 has taken one, every
+    # half hour until then (zone 0 looks at one an hour whatever this zone
+    # does); the question "is a release wanted?" every minute, which costs
+    # one line on a local socket and is how a person's `kryptik update
+    # fetch` is noticed.
+    update_ticks=$((update_ticks + 1)); statement_ticks=$((statement_ticks + 1))
+    if [ -n "$(uplink_addr "$@")" ]; then
+        if [ -e "$UPDATE_BROUGHT" ]; then statement_every=8640; else statement_every=180; fi
+        if [ "$statement_ticks" -ge "$statement_every" ]; then
+            statement_ticks=0; update_run latest
+        elif [ "$update_ticks" -ge 6 ]; then
+            update_ticks=0; update_run poll
+        fi
     fi
     [ "$changed" = 1 ] && status_line "$@"
     sleep 10 &

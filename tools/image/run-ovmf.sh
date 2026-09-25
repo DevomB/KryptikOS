@@ -126,7 +126,14 @@ ARGS=(
     -boot menu=off
 )
 if [[ "$GPU" -eq 1 ]]; then
-    ARGS+=( -display none -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci )
+    # A VGA-class virtio GPU, not the plain virtio-gpu-pci. The firmware
+    # framebuffer is then in the card's own BAR, so the virtio-gpu module
+    # replaces simpledrm when it loads, the way i915 or amdgpu do on a
+    # laptop, and the compositor finds one DRM device. With virtio-gpu-pci
+    # the guest kept two, simpledrm on a framebuffer nothing replaced and
+    # virtio-gpu beside it, and wlroots took its multi-GPU path, which the
+    # pixman renderer cannot serve: the compositor died at start.
+    ARGS+=( -display none -vga none -device virtio-vga -device virtio-keyboard-pci -device virtio-mouse-pci )
 else
     ARGS+=( -display none -vga none )
 fi
@@ -179,9 +186,38 @@ smoke)
     { printf '%q ' "$QEMU" "${ARGS[@]}"; echo; } > "${LOG}.cmd"
     ln -sfn "$LOG" "${KRYPTIK_WORK}/logs/ovmf-serial.latest.log"
     echo "serial log: ${LOG}"
+    # The console is a socket the driver watches, not a file: an installed
+    # disk asks for its state passphrase there and the driver answers it.
+    # wait=on holds the guest until the driver is connected, so it sees all.
+    SER="${VMDIR}/${RUN_ID}.serial"
     set +e; trap - ERR
-    timeout --foreground "$TIMEOUT" "$QEMU" "${ARGS[@]}" -serial "file:${LOG}" -monitor none < /dev/null > "${LOG}.qemu" 2>&1
-    rc=$?
+    "$QEMU" "${ARGS[@]}" -chardev "socket,id=ser0,path=${SER},server=on,wait=on,logfile=${LOG}" -serial chardev:ser0 \
+        -monitor none < /dev/null > "${LOG}.qemu" 2>&1 &
+    qpid=$!
+    for _ in $(seq 1 50); do [[ -S "$SER" ]] && break; sleep 0.2; done
+    # The driver's word decides. It returns 0 when the socket closed under
+    # it: the guest is gone and QEMU on its way out, so QEMU is waited for
+    # and its own status is the result. It returns 1 at its timeout, and
+    # QEMU is killed. A `kill -0` of QEMU's pid told the two apart before,
+    # and it could not: QEMU closes its console in its shutdown, a moment
+    # before the process is gone, so the driver saw the close, the check
+    # found QEMU still there, and every clean poweroff was reported as the
+    # timeout, twelve seconds in.
+    if [[ ! -S "$SER" ]]; then
+        kill "$qpid" 2>/dev/null; wait "$qpid"; rc=$?; [[ "$rc" -eq 0 ]] && rc=1
+        warn "QEMU did not open its console socket ${SER}"
+    elif python3 "${SELF}/vm-drive.py" --serial "$SER" --timeout "$TIMEOUT" wait-exit > /dev/null; then
+        # That moment is given, and no more than half a minute of it.
+        for _ in $(seq 1 300); do kill -0 "$qpid" 2>/dev/null || break; sleep 0.1; done
+        if kill -0 "$qpid" 2>/dev/null; then
+            kill "$qpid" 2>/dev/null; wait "$qpid"; rc=1
+            warn "QEMU did not exit after the guest was gone"
+        else
+            wait "$qpid"; rc=$?
+        fi
+    else
+        kill "$qpid" 2>/dev/null; wait "$qpid"; rc=124
+    fi
     set -e
     [[ "$rc" -eq 124 ]] && warn "QEMU hit the ${TIMEOUT}s timeout"
     [[ "$rc" -ne 0 && "$rc" -ne 124 ]] && { warn "QEMU exited ${rc}:"; sed 's/^/  /' "${LOG}.qemu" | tail -5; }

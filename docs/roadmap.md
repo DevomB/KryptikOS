@@ -278,24 +278,36 @@ passes, not when its code is written.
       revoking them, a build that signs with a key it is handed and refuses to
       invent one for a release, and an installed system that accepts the next
       release and refuses a development build.
-- [ ] **No known-vulnerable pins.** glibc now carries upstream's maintained
-      2.40 branch (its security fixes through 2026-09-10) with the unwind
-      test as its gate. What remains: every other pin checked against its
-      upstream's security releases, `tools/check-support-status.sh`
-      extended so CI fails when a pin falls behind one, and a check that
-      says when the glibc branch has moved past the commit pinned here.
+- [ ] **No known-vulnerable pins.** glibc carries upstream's maintained 2.40
+      branch (its security fixes through 2026-09-10) with the unwind test as
+      its gate. Every pin that was behind has been read against its upstream
+      (2026-09-19): 22 moved, six are held with their reasons in
+      `tools/pin-reviews.tsv`, and `tools/check-pin-reviews.sh` fails CI when
+      a behind pin has no current review or upstream has released past the
+      one it has. Ticked when the rebuilt image has passed acceptance and the
+      six held pins are moved or patched: a release asks the gate with
+      `--no-held`, and it refuses them. Still to write: a check that says
+      when the glibc branch has moved past the commit pinned here.
 - [ ] **An update channel.** `kryptik-update` applies a payload from a
       mounted disk and nothing fetches one. The net zone downloads a release
       by URL into a transfer area; zone 0 verifies the manifest signature,
       every file and the embedded root hash exactly as it does today, and
       refuses a downgrade. A release process that publishes the payload, its
-      signature and the corresponding source.
+      signature and the corresponding source. Written
+      ([the design](design/update-channel.md)): the rules and the staging in
+      `kryptikd`, the broker's three verbs, `kryptik update`, the two checks
+      in `kryptik-update` and the net zone's fetcher, each with its offline
+      suite. Ticked when the update suite has fetched a release over the
+      test network, staged, applied and committed it on the installed
+      system, and the release tooling publishes a signed pointer.
 - [ ] **The state partition is encrypted.** `/home`, `/var` and the `/etc`
       overlay sit on plain ext4, so a stolen laptop gives up zone 0's home,
       the Wi-Fi passphrases and the zone volumes' headers. LUKS2 on
       `kryptik-state`, unlocked at boot by a passphrase (and later a TPM, see
       version 2), created by the installer, with the state test's degraded
-      paths still honest.
+      paths still honest. Written
+      ([the design](design/state-encryption.md)). Ticked when the install,
+      state and integrity suites pass with it on the installed system.
 - [ ] **kryptikd is built from pinned source by a pinned compiler.** Today the
       runner's rustc compiles it and the result is copied in (ADR-010's
       unresolved cost). A pinned rustc in the build (its published binary,

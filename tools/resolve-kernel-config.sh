@@ -79,6 +79,10 @@ cp .config "$OUT"
 ok "resolved config: ${OUT}"
 
 echo
+log "the options Kryptik's guarantees rest on"
+kconfig_critical_check "$OUT" || die "a critical option did not survive resolution (MISSING, above)"
+
+echo
 log "every fragment line, against the resolved config"
 if kconfig_fragment_check "$OUT" "${FRAGMENTS[@]}"; then
     ok "every fragment line survived resolution"

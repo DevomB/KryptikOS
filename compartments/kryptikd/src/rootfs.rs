@@ -281,6 +281,9 @@ pub const ETC_RO_FILES: &[&str] = &[
     // The time sources the nic zone asks (docs/design/time.md): a list of
     // server names, no secret, and absent on a system that keeps the default.
     "/etc/kryptik/time.conf",
+    // Where the nic zone looks for releases (docs/design/update-channel.md):
+    // one address, no secret, and absent on a system with no channel.
+    "/etc/kryptik/update.conf",
 ];
 pub const ETC_RO_DIRS: &[&str] = &["/etc/alternatives", "/etc/ssl/certs", "/etc/pki/tls/certs"];
 
@@ -528,14 +531,16 @@ pub fn pivot_into(
     populate_dev(root)?;
 
     // Private /tmp. Without this a zone shares the host's, which is a
-    // cross-zone channel and a classic symlink-attack surface.
+    // cross-zone channel and a classic symlink-attack surface. Sized like
+    // every other tmpfs here: unsized, it is bounded by half the host's
+    // memory, and a zone without [limits] has no cgroup to stop it.
     let tmp_dir = mkdir("tmp")?;
     mount_raw(
         "tmpfs",
         &tmp_dir,
         Some("tmpfs"),
         (libc::MS_NOSUID | libc::MS_NODEV) as libc::c_ulong,
-        Some("mode=1777"),
+        Some("mode=1777,size=256m"),
         "mount(tmp)",
     )?;
 

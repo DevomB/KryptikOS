@@ -47,19 +47,12 @@ case "$DISK" in /dev/*|/sys/*|/proc/*) die "refusing to use ${DISK} as a target 
 [[ -e "$DISK" && ! -f "$DISK" ]] && die "refusing: ${DISK} exists and is not a regular file"
 for t in python3 sfdisk blkid truncate; do have "$t" || die "required tool not found: $t"; done
 
-PASS=0; FAIL=0
-green() { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
-red()   { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
+# shellcheck source=tools/image/suite-lib.sh
+source "${SELF}/suite-lib.sh"
 want()  { if grep -qE "$2" "$1"; then green "$3"; else red "$3"; fi; }
 deny()  { if grep -qE "$2" "$1"; then red "$3"; else green "$3"; fi; }
-step() { printf '\n==> %s\n' "$*"; }
 txt_of() { tr -d '\r' < "$1"; }
 
-# The test account and root password the preseed creates. The hashes are
-# what lands on disk; the plaintext exists only in this harness.
-TUSER=tester; TPASS=tester-pw; RPASS=root-pw
-hash_of() { openssl passwd -6 "$1"; }
-TUSER_HASH="$(hash_of "$TPASS")"; ROOT_HASH="$(hash_of "$RPASS")"
 
 # ----------------------------------------------------------------- step 1 --
 step "step 1: install from the medium onto a blank ${SIZE} disk"
@@ -68,7 +61,7 @@ if [[ -z "$SIZE" ]]; then SIZE="$("${SELF}/test-disk-size.sh" --medium "$USB")" 
 rm -f "$DISK"; truncate -s "$SIZE" "$DISK"
 CTL="${VMDIR}/testctl-install.img"
 "${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
-    "preseed_user=${TUSER}" "preseed_password_hash=${TUSER_HASH}" "preseed_root_hash=${ROOT_HASH}" > /dev/null || die "control disk"
+    "${PRESEED[@]}" > /dev/null || die "control disk"
 "${SELF}/run-ovmf.sh" --usb "$USB" --disk "$DISK" --testctl "$CTL" --vars "$VARS" --mode smoke --timeout "$TIMEOUT" --name install-p1
 qrc=$?
 P1="${VMDIR}/install-p1.txt"; txt_of "${KRYPTIK_WORK}/logs/ovmf-serial.latest.log" > "$P1"
@@ -78,7 +71,7 @@ want "$P1" 'KRYPTIK_INSTALL: rc=0'                       "the installer exited 0
 want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-esp=/dev/vda1 type=vfat'   "partition 1 is the ESP"
 want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-a=/dev/vda2'  "partition 2 is kryptik-a"
 want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-b=/dev/vda3'  "partition 3 is kryptik-b"
-want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-state=/dev/vda4 type=ext4' "partition 4 is the state partition"
+want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-state=/dev/vda4 type=crypto_LUKS' "partition 4 is the state partition, and it is LUKS"
 want "$P1" 'KRYPTIK_INSTALL: verify: esp_files=.*EFI/BOOT/BOOTX64.EFI' "the ESP has the removable-media boot file"
 want "$P1" 'KRYPTIK_INSTALL: verify: install_json=yes'   "install.json was written"
 want "$P1" 'KRYPTIK_INSTALL: verify: preseed=present'    "the first-boot preseed was written"
@@ -102,7 +95,6 @@ cp "/usr/share/OVMF/OVMF_VARS_4M.fd" "$VARSF"
 SERVE="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --name install-p2)"
 SER="$(sed -n 's/^serial=//p' <<<"$SERVE")"; PIDF="$(sed -n 's/^pid=//p' <<<"$SERVE")"; LOG2="$(sed -n 's/^log=//p' <<<"$SERVE")"
 [[ -S "$SER" ]] || die "no serial socket from run-ovmf: ${SERVE}"
-DRV="${SELF}/vm-drive.py"
 REC="${VMDIR}/install-p2.json"
 python3 "$DRV" --serial "$SER" --timeout 300 --record "$REC" \
     "expect:KRYPTIK_SMOKE: END" \
@@ -112,7 +104,8 @@ python3 "$DRV" --serial "$SER" --timeout 300 --record "$REC" \
     "grab:mounts:awk '\$2==\"/\"||\$2==\"/var\"||\$2==\"/etc\"||\$2==\"/home\" {print \$2, \$1, \$3, \$4}' /proc/mounts" \
     "grab:secureboot:od -An -tu1 -j4 -N1 /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c 2>/dev/null || echo none" \
     "grab:bootresult:cat /var/lib/kryptik/boot/last-result" \
-    "run:touch /home/${TUSER}/persisted-p2 && sync" \
+    "run:echo KRYPTIK-CLEAR-MARKER-7f3a91 > /home/${TUSER}/persisted-p2 && sync" \
+    "$(ROOTSH "grep -rqa state[-]pw /proc/[0-9]*/cmdline /run /etc 2>/dev/null && echo PW-LEAK || echo PW-NOLEAK")" "expect:PW-NOLEAK" \
     "su:${RPASS}:reboot" \
     "expect:Linux version" \
     "expect:KRYPTIK_SMOKE: END" \
@@ -129,7 +122,16 @@ echo "  transcript: ${LOG2}"
 [[ "$drc" -eq 0 ]] && green "first boot, login, reboot, second login and clean poweroff all happened" || red "the serial drive failed (see above)"
 want "$P2" 'KRYPTIK_SMOKE: root_source=/dev/dm-0 ext4 ro'   "installed root is the verity device"
 want "$P2" 'KRYPTIK_SMOKE: boot_identity=slot=a media='      "booted slot a"
-want "$P2" 'KRYPTIK_SMOKE: var_source=/dev/vda4 ext4'       "state partition mounted on /var"
+want "$P2" 'KRYPTIK_SMOKE: var_source=/dev/mapper/kryptik-state ext4' "the unlocked state partition is mounted on /var"
+want "$P2" 'passphrase for the state partition \(try 1 of 3\)' "sysinit asked for the state passphrase on the console"
+deny "$P2" "$KRYPTIK_STATE_PASSPHRASE"                       "the passphrase is nowhere in the transcript"
+# From the host: partition 4 is a LUKS header and ciphertext.
+S4=$(( $(part_start "$DISK" 4) * 512 ))
+magic() { dd if="$DISK" bs=1 skip="$1" count="$2" status=none | od -An -tx1 | tr -d ' \n'; }
+[[ "$(magic "$S4" 6)" == 4c554b53babe ]] && green "partition 4 starts with a LUKS header" || red "partition 4 does not start with a LUKS header"
+[[ "$(magic $(( S4 + 1080 )) 2)" != 53ef ]] && green "no ext4 superblock in the clear" || red "an ext4 superblock is readable on partition 4"
+if tail -c +$(( S4 + 1 )) "$DISK" | LC_ALL=C grep -aq 'KRYPTIK-CLEAR-MARKER-7f3a91'; then red "a file written under /home is readable from the raw partition"
+else green "a file written under /home is not readable from the raw partition"; fi
 want "$P2" 'KRYPTIK_SMOKE: etc_source=overlay'               "/etc is an overlay"
 want "$P2" 'KRYPTIK_SMOKE: root_writable=no'                 "the verified root is not writable"
 want "$P2" 'boot-success: slot a up'                         "boot-success recorded slot a"

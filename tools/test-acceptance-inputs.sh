@@ -91,5 +91,57 @@ stage; release 0.1.20260915.abcdef01
 choose "" "$IMGDIR/payload-0.1.20260915.abcdef01" "$IMGDIR/payload-0.1.20260915.abcdef01"
 [[ "$NEED" == *"same version"* ]] && ok "need_update refuses A and B being one release" || bad "need_update: '$NEED'"
 
+# 8. The release under test has no ISO and an older release has one: the
+#    older one is not taken in its place.
+stage; release 0.1.20260914.00000000
+: > "$IMGDIR/kryptik-0.1.20260915.abcdef01-usb.img"
+choose
+[[ "$VER" = 0.1.20260915.abcdef01 && -z "$MEDIA_ISO" ]] && ok "another release's ISO is never the ISO under test" || bad "ISO=$(b "$MEDIA_ISO") for VER=$VER"
+
+# --- the verdict: item(), its summary parser and the aggregation, as written --
+sed -n '/^R_SUITE=()/,/^# -* prereqs --$/p' "$ACC" > "$T/item.sh"
+sed -n '/^need_host() /p; /^verdict_of() {/,/^}/p; /^seal_export() {/,/^}/p' "$ACC" >> "$T/item.sh"
+for fn in item checks_in need_host verdict_of seal_export; do
+    grep -q "^${fn}() " "$T/item.sh" || { echo "could not extract ${fn} from $ACC"; exit 1; }
+done
+# shellcheck disable=SC2034  # read by the sourced functions
+{ OUT="$T/out"; ONLY=""; NOHOST=0; }
+mkdir -p "$OUT"
+need_cargo() { :; }
+# shellcheck source=/dev/null
+. "$T/item.sh"
+result_of() { local i; for i in "${!R_NAME[@]}"; do [[ "${R_NAME[$i]}" == "$1" ]] && echo "${R_RES[$i]}"; done; }
+says() { printf '%s\n' "$SAY"; }
+try() {   # try NAME MINPASS SUMMARY WANT WHAT: a driver that exits 0 and prints SUMMARY
+    SAY="$3"; item t "$1" M host "$2" says > /dev/null
+    [[ "$(result_of "$1")" == "$4" ]] && ok "$5" || bad "$5: got $(result_of "$1")"
+}
+try clean      0 '25 passed, 0 failed'                      PASS "exit 0 and no failure counted is a pass"
+try counted    0 '25 passed, 3 failed'                      FAIL "exit 0 with 3 failed in its own summary is a failure"
+try other      0 'passed 9, failed 1'                       FAIL "the same in the installer suite's wording"
+try reversed   0 '2 check(s) failed, 40 passed'             FAIL "the same in the services suite's wording"
+try suites     0 '17 suites: 15 passed, 1 failed, 1 did not run' FAIL "the same in the host suites' wording"
+try thin      10 '5 passed, 0 failed'                       FAIL "fewer checks than the item's minimum is still a failure"
+try silent    10 'nothing countable'                        FAIL "no summary at all, where a minimum is set, is a failure"
+[[ "$(verdict_of)" == FAIL ]] && ok "one failed mandatory item fails the verdict" || bad "verdict $(verdict_of)"
+
+# shellcheck disable=SC2034  # the results so far, put away
+{ R_SUITE=(); R_NAME=(); R_MAND=(); R_KIND=(); R_RES=(); R_CHECKS=(); R_RC=(); R_SECS=(); R_LOG=(); R_NOTE=(); }
+try clean2 0 'All 12 checks passed' PASS "a clean item, alone"
+# shellcheck disable=SC2034  # read by need_host
+NOHOST=1; item build host-suites M host 0 says need_host > /dev/null
+[[ "$(result_of host-suites)" == INCOMPLETE ]] && ok "--no-host leaves a row, and it reads INCOMPLETE" || bad "--no-host: '$(result_of host-suites)'"
+[[ "$(verdict_of)" == INCOMPLETE ]] && ok "a skipped mandatory item keeps the verdict from PASS" || bad "verdict $(verdict_of)"
+
+# --- the export's list covers every file in it but itself ---------------------
+E="$T/export"; mkdir -p "$E/acceptance-logs"
+for f in kryptik-1-usb.img manifest-1 manifest-1.sig INSTRUCTIONS.md RELEASE.txt ACCEPTANCE-REPORT.md acceptance-logs/results.tsv; do echo "$f" > "$E/$f"; done
+( cd "$E" && sha256sum ./kryptik-1-usb.img ) > "$E/SHA256SUMS"   # it_export's line
+seal_export "$E"
+( cd "$E" && sha256sum --quiet -c SHA256SUMS ) && ok "every line of the export's list verifies" || bad "the export's list does not verify"
+missing="$(cd "$E" && find . -type f ! -name SHA256SUMS | while read -r f; do grep -qF "  $f" SHA256SUMS || echo "$f"; done)"
+[[ -z "$missing" ]] && ok "manifests, signatures, the report and the results are all on the list" || bad "not on the list: $missing"
+[[ "$(sort "$E/SHA256SUMS" | uniq -d | wc -l)" -eq 0 ]] && ok "no file is listed twice" || bad "a file is listed twice"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

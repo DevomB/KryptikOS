@@ -99,11 +99,11 @@ CHROOT_ENV := KRYPTIK_ROOT="$(ROOT)" \
 
 CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
 
-.PHONY: test help check check-kernel-eol sources lock verify verify-provenance \
+.PHONY: test help check check-kernel-eol check-pins test-pin-reviews sources lock verify verify-provenance \
 	vm-disk vm-disk-boot vm-restart vm-measure cli-test update-tree-test identity-test serve-test \
-        test-harness test-hardening test-artifacts audit-artifacts test-boot-success \
+        test-harness test-hardening test-artifacts audit-artifacts test-boot-success test-efiboot \
         audit-artifacts-strict manifest verify-manifest test-manifest \
-        test-s6-init smoke-userspace test-services test-netzone-time test-libc-unwind \
+        test-s6-init smoke-userspace test-services test-netzone-time test-update-verify test-update-fetch test-libc-unwind \
         sign-image verify-image test-image-signing test-installer test-mkdisk-guards \
         install-test \
         image image-boot \
@@ -152,6 +152,9 @@ help:
 	@echo "  make verify-provenance  signed tags + publisher checksums for the rest"
 	@echo "  make validate-kernel   check kernel fragment against pinned source"
 	@echo "  make check-kernel-eol  fail if the pinned kernel is EOL or not LTS"
+	@echo "  make check-pins        survey every pin against its upstream (network), then"
+	@echo "                   fail on one that is behind without a current review in"
+	@echo "                   tools/pin-reviews.tsv. PINS_FLAGS=--no-held is what a release asks"
 	@echo "  make validate-kernel-hardened  check the linux-hardened fragment"
 	@echo "  make check-kernel-hardening  resolve the config against the pinned source as"
 	@echo "                   stage 05 does, refuse a dropped fragment line, then run"
@@ -185,6 +188,8 @@ help:
 	@echo "  make smoke-userspace   RUN the built userland in the chroot (needs root)"
 	@echo "  make test-services     validate the s6-rc service tree"
 	@echo "  make test-netzone-time the net zone's time measurement, under every shell here"
+	@echo "  make test-update-verify what kryptik-update believes: a payload, a manifest, a pointer"
+	@echo "  make test-update-fetch the net zone's update fetcher, against a local server and broker"
 	@echo "  make identity-test     zone files, compositor colour table and zoneid audit agree"
 	@echo "  make test-libc-unwind  prove the target libc can unwind (needs root)"
 	@echo "  make sign-image        sign the disk image with a developer key"
@@ -246,6 +251,14 @@ validate-kernel:
 
 check-kernel-eol:
 	@"$(TOOLS)"/check-kernel-eol.sh
+
+# The survey asks the network and judges nothing; the gate reads the survey
+# and tools/pin-reviews.tsv and never the network.
+PINS_SURVEY ?= $(KRYPTIK_WORK)/pin-survey.tsv
+check-pins:
+	@mkdir -p "$(dir $(PINS_SURVEY))"
+	@"$(TOOLS)"/check-source-currency.sh --tsv > "$(PINS_SURVEY)"
+	@"$(TOOLS)"/check-pin-reviews.sh --survey "$(PINS_SURVEY)" $(PINS_FLAGS)
 
 validate-kernel-hardened:
 	@"$(TOOLS)"/validate-kernel-config.sh --hardened
@@ -561,6 +574,9 @@ test-hardening:
 test-kernel-hardening:
 	@"$(TOOLS)"/test-check-kernel-hardening.sh
 
+test-pin-reviews:
+	@"$(TOOLS)"/test-check-pin-reviews.sh
+
 test-artifacts:
 	@"$(TOOLS)"/test-artifact-hardening.sh
 
@@ -600,10 +616,25 @@ test-services:
 test-netzone-time:
 	@"$(TOOLS)"/test-netzone-time.sh
 
+# What kryptik-update believes, with its own functions and a real ssh-keygen:
+# a payload whose manifest is swapped under it, and the two checks the update
+# channel runs on a manifest and on a statement of what is current.
+test-update-verify:
+	@"$(TOOLS)"/test-update-manifest-snapshot.sh
+
+# The net zone's half of the update channel: a faithful pipe, from the offsets
+# zone 0 names, in pieces zone 0 takes, that stops when zone 0 says no.
+test-update-fetch:
+	@"$(TOOLS)"/test-update-fetch.sh
+
 # boot-success.sh's decision table (commit, refuse, fall back), driven on
 # the host with stand-ins for the services, the ESP and the firmware.
 test-boot-success:
 	@"$(TOOLS)"/test-boot-success.sh
+
+# kryptik-efiboot's forget, what a commit runs, against stand-in variables.
+test-efiboot:
+	@"$(TOOLS)"/test-efiboot.sh
 
 # The zone identity contract: the zone files, the compositor's colour table
 # (generated from them) and the distinctness invariant, checked together.

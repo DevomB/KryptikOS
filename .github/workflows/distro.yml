@@ -45,6 +45,7 @@ env:
   # the cache below may hold a sysroot from an earlier version of a stage.
   KRYPTIK_STALE: rebuild
   NO_COLOR: "1"
+  RUST_TOOLCHAIN: "1.98.1"
   # What 00-host-check and the stages need on the host, every job alike.
   HOST_PACKAGES: >-
     build-essential bison flex texinfo gawk m4 patch perl python3 python3-pip
@@ -58,7 +59,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Working directories on the large disk
         run: |
@@ -85,7 +86,7 @@ jobs:
 
       - name: Upstream sources (cached by sources.lock)
         id: sources
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: /mnt/kryptik/sources
           key: sources-${{ hashFiles('sources.lock') }}
@@ -105,7 +106,7 @@ jobs:
       # own fingerprints); a partial hit on the prefix resumes where an
       # earlier run stopped, which is what makes a six-hour limit survivable.
       - name: Stage 01-02 sysroot (cached)
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: |
             /mnt/kryptik/work/sysroot
@@ -135,7 +136,7 @@ jobs:
           tar --zstd -cf work-after-02.tar.zst -C work "${members[@]}"
           ls -la work-after-02.tar.zst
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: work-after-02
           path: /mnt/kryptik/work-after-02.tar.zst
@@ -144,7 +145,7 @@ jobs:
 
       - name: Stage logs
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: logs-toolchain
           path: /mnt/kryptik/work/logs
@@ -157,7 +158,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Working directories on the large disk
         run: |
@@ -183,7 +184,7 @@ jobs:
 
       - name: Upstream sources (cached by sources.lock)
         id: sources
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: /mnt/kryptik/sources
           key: sources-${{ hashFiles('sources.lock') }}
@@ -198,7 +199,7 @@ jobs:
           make sources
           ./tools/prune-sources.sh
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: work-after-02
           path: /mnt/kryptik
@@ -226,7 +227,7 @@ jobs:
       # producing the same sysroot as the run before them.
       - name: Stage 04-05 sysroot and kernel (cached)
         id: work05
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: /mnt/kryptik/work-after-05.tar.zst
           key: work05-${{ hashFiles('build/stages/00-host-check.sh', 'build/stages/01-toolchain.sh', 'build/stages/02-temp-tools.sh', 'build/lib/**', 'build/patches/**', 'build/config/**', 'sources.lock') }}-${{ hashFiles('build/**', 'tools/**', 'compartments/**', 'compositor/**', 'sources.lock', 'Makefile') }}
@@ -245,12 +246,18 @@ jobs:
 
       # The two static binaries stage 04 installs are built outside the
       # chroot, for musl, exactly as the build host did.
-      - uses: dtolnay/rust-toolchain@stable
+      # The compiler of the two binaries that ship is named, not 'stable', and
+      # the build step below refuses any other. rustup checks what it downloads
+      # against the channel's own manifest; a hash pinned in this repository,
+      # as cmake's is, is what the roadmap still asks for.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # the stable branch, 2026-09-20
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: x86_64-unknown-linux-musl
 
       - name: kryptikd and kryptik-wlproxy, static
         run: |
+          rustc --version | grep -qF "rustc ${RUST_TOOLCHAIN} " || { echo "refusing to build what ships with $(rustc --version); the pin is ${RUST_TOOLCHAIN}"; exit 1; }
           (cd compartments/kryptikd && cargo build --locked --release --target x86_64-unknown-linux-musl)
           (cd compositor && cargo build --locked --release --target x86_64-unknown-linux-musl -p wlproxy --bin kryptik-wlproxy)
           cp /mnt/kryptik/cargo/x86_64-unknown-linux-musl/release/kryptikd /mnt/kryptik/kryptikd-musl
@@ -285,7 +292,7 @@ jobs:
       # A cache that could not be saved (the repository's 10 GB is full, or
       # the service is having a day) costs the next run an hour, not this one
       # its verdict.
-      - uses: actions/cache/save@v5
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         if: steps.work05.outputs.cache-hit != 'true'
         continue-on-error: true
         with:
@@ -316,12 +323,12 @@ jobs:
           # Never the private halves of the keys: the acceptance job needs the
           # certificate, its DER form and the variable stores, nothing that
           # signs. An artifact of a public repository is public.
-          sudo tar --zstd -cf work-after-media.tar.zst -C work --exclude='images/kryptik-root.img' --exclude='images/esp-*.img' --exclude='keys/sb/kryptik-sb.key' --exclude='keys/release/kryptik-release' .
-          if sudo tar --zstd -tf work-after-media.tar.zst | grep -E 'kryptik-sb\.key$|keys/release/kryptik-release$'; then echo "a private key is in the artifact"; exit 1; fi
+          sudo tar --zstd -cf work-after-media.tar.zst -C work --exclude='images/kryptik-root.img' --exclude='images/esp-*.img' --exclude='keys/sb/kryptik-sb.key' --exclude='keys/release/kryptik-release' --exclude='keys/release/kryptik-latest' .
+          if sudo tar --zstd -tf work-after-media.tar.zst | grep -E 'kryptik-sb\.key$|keys/release/kryptik-(release|latest)$'; then echo "a private key is in the artifact"; exit 1; fi
           sudo chown "$(id -u):$(id -g)" work-after-media.tar.zst
           ls -la work-after-media.tar.zst; df -h /mnt | tail -1
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: work-after-media
           path: /mnt/kryptik/work-after-media.tar.zst
@@ -330,7 +337,7 @@ jobs:
 
       - name: Stage logs
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: logs-system
           path: /mnt/kryptik/work/logs
@@ -343,7 +350,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Working directories on the large disk
         run: |
@@ -366,7 +373,7 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq $HOST_PACKAGES
           sudo ln -sf /usr/bin/bash /bin/sh
           # virt-fw-vars, for the disposable Secure Boot variable stores.
-          sudo pip install --break-system-packages virt-firmware
+          sudo pip install --break-system-packages virt-firmware==26.9
           virt-fw-vars --help > /dev/null
 
       # KVM on a hosted runner: the device exists; it is the permissions that
@@ -380,12 +387,12 @@ jobs:
           ls -la /dev/kvm
 
       - name: Upstream sources (cached by sources.lock)
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: /mnt/kryptik/sources
           key: sources-${{ hashFiles('sources.lock') }}
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: work-after-media
           path: /mnt/kryptik
@@ -413,7 +420,7 @@ jobs:
 
       - name: Acceptance report and per-item logs
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: acceptance-report
           path: |
@@ -427,7 +434,7 @@ jobs:
       # the first version of this job uploaded that under the release name.
       - name: Tested images
         if: steps.acceptance.outcome == 'success'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: kryptik-release
           path: /mnt/kryptik/export

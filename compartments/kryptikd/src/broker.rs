@@ -181,6 +181,10 @@ const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
 /// clipboard-get\n                        -> ok <mime> <len>\n<bytes>  |  empty\n
 /// time-offset <seconds> <sources>\n        -> ok ignored | slewed | stepped | stepped after consent\n
 ///                                           (from the zone that holds the network, and no other)
+/// update-latest <plen> <slen>\n<pointer><sig> -> ok current | ok available <version>\n
+/// update-poll\n                          -> idle | fetch <version> <base> need <name> <offset> ...\n
+/// update-put <name> <offset> <len>\n<bytes>   -> ok <name> <held>/<size> | ok <name> complete\n
+///                                           (the same zone, and no other)
 /// anything else                          -> error: <reason>\n
 /// ```
 #[derive(Debug, PartialEq)]
@@ -195,6 +199,13 @@ pub enum Request {
     /// `time-offset <seconds> <sources>`: the net zone's claim about how far
     /// the machine's clock is from the network's (docs/design/time.md).
     TimeOffset(crate::time::Claim),
+    /// The update channel's three verbs (docs/design/update-channel.md), from
+    /// the zone that holds the network and no other. `update-latest` is
+    /// followed by the pointer and then its signature, `update-put` by `len`
+    /// bytes of the named file.
+    UpdateLatest { plen: usize, slen: usize },
+    UpdatePoll,
+    UpdatePut { name: String, offset: u64, len: usize },
     Unknown(String),
 }
 
@@ -257,6 +268,25 @@ pub fn parse_request(line: &str) -> Result<Request, String> {
         ("transfer", _) => Err("usage: transfer <zone> <name>, with the file as one SCM_RIGHTS descriptor".into()),
         ("time-offset", [secs, sources]) => crate::time::parse_claim(&format!("{secs} {sources}")).map(Request::TimeOffset),
         ("time-offset", _) => Err("usage: time-offset <seconds> <sources>".into()),
+        ("update-latest", [plen, slen]) => {
+            let size = |w: &str, what: &str| match w.parse::<usize>() {
+                Ok(n) if (1..=crate::update::POINTER_MAX).contains(&n) => Ok(n),
+                _ => Err(format!("{what} length {w:?} is not 1 to {} bytes", crate::update::POINTER_MAX)),
+            };
+            Ok(Request::UpdateLatest { plen: size(plen, "pointer")?, slen: size(slen, "signature")? })
+        }
+        ("update-latest", _) => Err("usage: update-latest <pointer-len> <signature-len>, then the two".into()),
+        ("update-poll", []) => Ok(Request::UpdatePoll),
+        ("update-poll", _) => Err("usage: update-poll".into()),
+        ("update-put", [name, offset, len]) => {
+            check_transfer_name(name)?;
+            let offset: u64 = offset.parse().map_err(|_| format!("bad offset {offset:?}"))?;
+            match len.parse::<usize>() {
+                Ok(len) if (1..=crate::update::PUT_MAX).contains(&len) => Ok(Request::UpdatePut { name: name.to_string(), offset, len }),
+                _ => Err(format!("length {len:?} is not 1 to {} bytes", crate::update::PUT_MAX)),
+            }
+        }
+        ("update-put", _) => Err("usage: update-put <name> <offset> <len>, then the bytes".into()),
         ("", _) => Err("empty request".into()),
         _ => Ok(Request::Unknown(verb.to_string())),
     }
@@ -279,6 +309,44 @@ fn handle_time_offset(zone: &Zone, claim: &crate::time::Claim) -> crate::time::O
         Path::new(crate::time::STATE_DIR),
         crate::time::floor_of_this_system(),
     )
+}
+
+/// UPDATES
+///
+/// The zone that holds the network hands over a statement of what is
+/// current, asks whether a release is wanted, and streams one in pieces
+/// (docs/design/update-channel.md). Everything it sends is a hostile zone's
+/// word: `update.rs` decides what is believed and what is stored, and
+/// `kryptik-update` verifies every signature. What is decided here is only
+/// who may speak: that one zone, like `time-offset`, because no other zone
+/// has anywhere to have fetched a release from.
+fn update_refusal(zone: &Zone) -> Option<String> {
+    (zone.network != NetworkMode::Nic)
+        .then(|| format!("zone {:?} does not hold the network; only the zone that does may bring an update", zone.name))
+}
+
+/// For a zone `update_refusal` has passed, with the request's whole payload.
+fn handle_update(req: &Request, payload: &[u8]) -> Result<String, String> {
+    use crate::update as up;
+    let dir = Path::new(up::STATE_DIR);
+    let (role, running) = (up::required_role(), up::running_version());
+    match req {
+        Request::UpdateLatest { plen, .. } => {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+            let (pointer, sig) = payload.split_at(*plen);
+            up::latest(dir, &up::tool_checks(), now, &role, &running, pointer, sig).map(|s| match s {
+                up::Standing::Current => "ok current".to_string(),
+                up::Standing::Available(v) => format!("ok available {v}"),
+            })
+        }
+        Request::UpdatePoll => {
+            up::forget_if_installed(dir, &running);
+            let conf = std::fs::read_to_string(up::CONF).unwrap_or_default();
+            Ok(up::channel_from(&conf).map_or("idle".to_string(), |channel| up::poll(dir, &channel, &role, &running)))
+        }
+        Request::UpdatePut { name, offset, .. } => up::put(dir, &up::tool_checks(), name, *offset, payload).map(|r| format!("ok {r}")),
+        _ => Err("not an update verb".into()),
+    }
 }
 
 /// The same with the clock, the state directory and the floor named, which
@@ -748,6 +816,33 @@ pub fn serve_connection(fd: RawFd, s: &Served) -> io::Result<Option<String>> {
             match outcome {
                 crate::time::Outcome::Refused(why) => reply(fd, &format!("error: {why}\n")),
                 done => reply(fd, &format!("{}\n", done.reply())),
+            }
+        }
+        Ok(req @ (Request::UpdateLatest { .. } | Request::UpdatePoll | Request::UpdatePut { .. })) => {
+            let len = match &req {
+                Request::UpdateLatest { plen, slen } => plen + slen,
+                Request::UpdatePut { len, .. } => *len,
+                _ => 0,
+            };
+            // Who is asking is settled before a byte of payload is read.
+            let outcome = match update_refusal(s.zone) {
+                Some(why) => Err(why),
+                None => match read_more(fd, &mut rest, len, started) {
+                    Err(e) => Err(format!("payload: {e}")),
+                    Ok(()) if rest.len() < len => Err(format!("payload short: {} of {len} bytes", rest.len())),
+                    Ok(()) => handle_update(&req, &rest[..len]),
+                },
+            };
+            // A release is some thousands of pieces; the log gets a line for
+            // what ends something, not for every piece.
+            match &outcome {
+                Ok(r) if verb == "update-poll" || (verb == "update-put" && !r.contains("complete")) => {}
+                Ok(r) => crate::spawn::log_line(&format!("kryptikd[zone {zone}]: {verb}: {r}")),
+                Err(why) => crate::spawn::log_line(&format!("kryptikd[zone {zone}]: {verb}: refused: {why}")),
+            }
+            match outcome {
+                Ok(r) => reply(fd, &format!("{r}\n")),
+                Err(why) => reply(fd, &format!("error: {why}\n")),
             }
         }
         Ok(Request::ClipboardGet) => match clipboard_read(entry) {
@@ -1553,6 +1648,47 @@ mod tests {
         assert!(matches!(&out, crate::time::Outcome::Refused(w) if w.contains("no floor is known")), "{out:?}");
         assert!(!dir.join("state").exists(), "a refused claim left state behind");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The update channel's verbs on the wire: lengths within their bounds,
+    /// a name that is one path component, and nothing else.
+    #[test]
+    fn the_update_verbs_parse_within_their_bounds() {
+        use crate::update::{POINTER_MAX, PUT_MAX};
+        assert_eq!(parse_request("update-latest 300 120"), Ok(Request::UpdateLatest { plen: 300, slen: 120 }));
+        assert_eq!(parse_request("update-poll"), Ok(Request::UpdatePoll));
+        assert_eq!(
+            parse_request(&format!("update-put kryptik-root.img 1048576 {PUT_MAX}")),
+            Ok(Request::UpdatePut { name: "kryptik-root.img".into(), offset: 1048576, len: PUT_MAX })
+        );
+        assert!(parse_request("update-put manifest.sig 0 120").is_ok());
+        let over_pointer = format!("update-latest {} 120", POINTER_MAX + 1);
+        let over_put = format!("update-put root.json 0 {}", PUT_MAX + 1);
+        for bad in [
+            "update-latest", "update-latest 300", "update-latest 0 120", "update-latest 300 0", "update-latest -1 120", over_pointer.as_str(),
+            "update-poll now",
+            "update-put", "update-put root.json 0", "update-put root.json 0 0", "update-put root.json -1 10", "update-put root.json x 10",
+            "update-put ../root.json 0 10", "update-put a/b 0 10", "update-put .hidden 0 10", over_put.as_str(),
+        ] {
+            assert!(parse_request(bad).is_err(), "{bad:?} was accepted");
+        }
+    }
+
+    /// An update is brought by the zone that holds the network and by no
+    /// other: a zone with no network has nowhere to have fetched one from,
+    /// and a routed zone's would be the net zone's at one remove.
+    #[test]
+    fn only_the_zone_that_holds_the_network_may_bring_an_update() {
+        let zone_of = |mode: &str, extra: &str| {
+            Zone::from_str(&format!(
+                "[zone]\nname = \"t\"\n[network]\nmode = \"{mode}\"\n{extra}[storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n[ui]\nborder_color = \"#123456\"\n"
+            ))
+            .unwrap()
+        };
+        for mode in ["none", "routed"] {
+            assert!(update_refusal(&zone_of(mode, "")).is_some_and(|w| w.contains("does not hold the network")), "{mode}");
+        }
+        assert_eq!(update_refusal(&zone_of("nic", "bridge = \"kryptik0\"\n")), None);
     }
 
     #[test]

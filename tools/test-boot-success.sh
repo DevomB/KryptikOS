@@ -118,7 +118,7 @@ check "healthy trial: committed" "$RESULT" "commit b"
 check "BOOTX64.EFI is now the slot b kernel" "$(cat "$KTEST/esp/EFI/BOOT/BOOTX64.EFI")" "kernel-b"
 check "committed-slot records b" "$(cat "$KTEST/esp/kryptik/committed-slot")" "b"
 check "the trial record is gone" "$([[ -e "$KTEST/boot/trial" ]] && echo present || echo gone)" "gone"
-check "BootNext cleared" "$CALLS" "mount -o rw,nosuid,nodev,noexec /dev/vda1 $KTEST/run/esp umount $KTEST/run/esp efiboot clear-next "
+check "the trial's firmware entries and BootNext are forgotten after the commit" "$CALLS" "mount -o rw,nosuid,nodev,noexec /dev/vda1 $KTEST/run/esp umount $KTEST/run/esp efiboot forget "
 run_case commit0 b "" persistent 'b\narmed=0\n' $ALL; go
 check "a trial that booted before its armed=1 line was written is still a trial: committed" "$RESULT" "commit b"
 

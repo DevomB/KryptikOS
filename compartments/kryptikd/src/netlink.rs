@@ -184,6 +184,10 @@ impl Msg {
     }
 }
 
+/// The most reply payload one request may gather. The largest real one is a
+/// generic-netlink family description, a few hundred bytes.
+const MAX_REPLY: usize = 64 * 1024;
+
 /// One request/ack exchange on a fresh NETLINK_ROUTE socket.
 fn transact(msg: Vec<u8>, what: &str) -> io::Result<()> {
     transact_on(NETLINK_ROUTE, msg, what).map(|_| ())
@@ -200,6 +204,22 @@ fn transact_on(proto: libc::c_int, msg: Vec<u8>, what: &str) -> io::Result<Vec<u
         return Err(io::Error::last_os_error());
     }
     let result = (|| {
+        // Connected to the kernel (port 0), the socket takes replies from the
+        // kernel alone. Unconnected, anything holding CAP_NET_ADMIN over this
+        // namespace may send to it, and these sockets are opened inside the
+        // nic zone's namespace, where the zone holds exactly that.
+        let mut kernel: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
+        kernel.nl_family = libc::AF_NETLINK as libc::sa_family_t;
+        let rc = unsafe {
+            libc::connect(
+                fd,
+                &kernel as *const libc::sockaddr_nl as *const libc::sockaddr,
+                std::mem::size_of::<libc::sockaddr_nl>() as libc::socklen_t,
+            )
+        };
+        if rc < 0 {
+            return Err(io::Error::last_os_error());
+        }
         let sent = unsafe { libc::send(fd, msg.as_ptr() as *const libc::c_void, msg.len(), 0) };
         if sent < 0 {
             return Err(io::Error::last_os_error());
@@ -225,6 +245,9 @@ fn transact_on(proto: libc::c_int, msg: Vec<u8>, what: &str) -> io::Result<Vec<u
                 }
                 match ty {
                     NLMSG_ERROR => {
+                        if len < 20 {
+                            return Err(io::Error::new(io::ErrorKind::InvalidData, "netlink error without a code"));
+                        }
                         let code = i32::from_ne_bytes(buf[off + 16..off + 20].try_into().unwrap());
                         return if code == 0 {
                             Ok(replies)
@@ -236,6 +259,9 @@ fn transact_on(proto: libc::c_int, msg: Vec<u8>, what: &str) -> io::Result<Vec<u
                         };
                     }
                     NLMSG_DONE => return Ok(replies),
+                    _ if replies.len() + len > MAX_REPLY => {
+                        return Err(io::Error::new(io::ErrorKind::InvalidData, "netlink reply too large"));
+                    }
                     _ => replies.extend_from_slice(&buf[off + 16..off + len]),
                 }
                 off += align4(len);
