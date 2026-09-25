@@ -862,7 +862,7 @@ pub fn run_in_zone(
      * The handle lives for the whole launch, so an early return cannot leak it. */
     let zone_cgroup = match &limits {
         Some(base) => {
-            let cg =cgroup::Cgroup::create(base, &zone.name, parent_pid).map_err(|e| {
+            let cg = cgroup::Cgroup::create(base, &zone.name, parent_pid).map_err(|e| {
                 SpawnError::Setup(format!(
                     "[limits]: the zone's cgroup could not be created, so \
                      limits.memory_max/limits.pids_max would not be in force: {e}"
