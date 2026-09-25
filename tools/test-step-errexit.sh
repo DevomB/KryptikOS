@@ -56,7 +56,7 @@ check() { if [[ "$2" == ok ]]; then green "$1"; else red "$1"; fi; }
 # recipe IS - which is what the fingerprint is supposed to notice.
 # ---------------------------------------------------------------------------
 make_harness() {
-    local work="$1" extra="${2:-}"
+    local work="$1" extra="${2:-}" hcode="${3:-true}" hcomment="${4:-a comment}" ucode="${5:-true}"
     mkdir -p "$work/.stamps" "$work/logs" "$work/src"
     : > "$work/stage-under-test.sh"
     [[ -f "$work/src/probe-1.0.tar.gz" ]] || echo "original tarball" > "$work/src/probe-1.0.tar.gz"
@@ -97,6 +97,16 @@ recipe_fail() {
 recipe_src() {
     echo "recipe: consuming \$1"
 }
+
+# A recipe that does its work through a helper that calls another, the way
+# native_build reaches unpack; and a helper nothing calls.
+helper_inner() {
+    # ${hcomment}
+    ${hcode}
+}
+helper_outer() { helper_inner; }
+recipe_helped() { helper_outer; }
+helper_unused() { ${ucode}; }
 
 # step() calls this after printing the tail of a failed log. Its output is
 # how the test tells that step() survived the failure far enough to report
@@ -318,6 +328,26 @@ test_staleness() {
     check "changed recipe: an unrelated step is NOT invalidated" \
           "$({ [[ $rc -eq 0 ]] && [[ $out == *"skip untouched"* ]]; } && echo ok)"
 
+    rm -rf "$work"
+}
+
+# The helpers a recipe reaches are its inputs, by their code: not a comment in
+# them, not a helper it never calls.
+test_helpers() {
+    local work out rc; work="$(mktemp -d)"
+    make_harness "$work"
+    run_harness "$work" helped recipe_helped >/dev/null
+    [[ -f "$work/.stamps/t-helped" ]] || { red "helpers: setup build did not stamp"; rm -rf "$work"; return; }
+
+    make_harness "$work" "" true "another comment" 'echo changed'
+    out="$(run_harness "$work" helped recipe_helped)"; rc=$?
+    check "helpers: a comment, or a helper the recipe never calls, changes nothing" \
+          "$({ [[ $rc -eq 0 ]] && [[ $out == *"skip helped"* ]]; } && echo ok)"
+
+    make_harness "$work" "" 'echo changed'
+    out="$(run_harness "$work" helped recipe_helped)"; rc=$?
+    check "helpers: a code change two calls down is a changed input" \
+          "$({ [[ $rc -ne 0 ]] && [[ $out == *"Refusing to resume onto changed inputs"* ]]; } && echo ok)"
     rm -rf "$work"
 }
 
@@ -610,6 +640,7 @@ test_negative
 echo
 echo "-- stamps track their own inputs, and only their own"
 test_staleness
+test_helpers
 echo
 echo "-- the sources a step names are part of its inputs"
 test_source_inputs

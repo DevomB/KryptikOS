@@ -3,7 +3,6 @@
 
 set -Eeuo pipefail
 
-KRYPTIK_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 KRYPTIK_ROOT="${KRYPTIK_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 KRYPTIK_SOURCES="${KRYPTIK_SOURCES:-${KRYPTIK_ROOT}/sources}"
 KRYPTIK_WORK="${KRYPTIK_WORK:-${KRYPTIK_ROOT}/build/work}"
@@ -203,7 +202,7 @@ validate_hardening_exceptions() {
 # ---------------------------------------------------------------------------
 
 # Bump when the set of fingerprint inputs changes.
-KRYPTIK_STAMP_FORMAT=3
+KRYPTIK_STAMP_FORMAT=4
 
 STAMP_PREFIX=""
 STAGE_FILE=""
@@ -320,6 +319,17 @@ apply_repo_patches() {
     echo "applied ${n} patch(es) from ${set}"
 }
 
+# GCC's math libraries, unpacked into the GCC tree under the names it builds
+# them from. One command per line: in `tar ... && mv ...` a failed tar did not
+# fail the step, and configure then found the host's copies instead.
+gcc_prereqs() {
+    local t
+    for t in "mpfr-${V_MPFR}.tar.xz" "gmp-${V_GMP}.tar.xz" "mpc-${V_MPC}.tar.gz"; do
+        tar -xf "${KRYPTIK_SOURCES}/${t}"
+        mv "${t%.tar.*}" "${t%%-*}"
+    done
+}
+
 # The compiler a stage actually drives. Stage 01 builds the cross toolchain
 # with the HOST gcc, so that is its compiler; stage 02 drives the cross gcc;
 # stages 04 and 05 drive the native target gcc inside the chroot. Getting this
@@ -348,16 +358,41 @@ stamp_compiler_id() {
 # is conservative to the point of being unusable, and is the pressure that
 # makes people delete the check rather than answer it.
 #
-# So: the recipe function's own text, the arguments it was called with, the
-# content of any tarball or patch those arguments name, and the values of any
-# V_* version variables the recipe interpolates (s_glibc names no tarball in
-# its arguments - it builds the name from ${V_GLIBC} inside the function, and a
-# version bump has to invalidate it all the same).
+# So: the text of the recipe function and of every helper it reaches, the
+# arguments it was called with, the content of any tarball or patch those
+# arguments name, and the values of any V_* version variables that text
+# interpolates (s_glibc names no tarball in its arguments - it builds the name
+# from ${V_GLIBC} inside the function, and a version bump has to invalidate it
+# all the same).
+#
+# Helpers, not the file they live in: hashing all of common.sh made any edit
+# to it, a comment included, rebuild every step of every stage, and an edit to
+# a helper a stage file defines (unpack) rebuild nothing.
+
+# The functions FN names, the ones those name, and so on, as text in name
+# order. declare -f leaves comments out, so only code counts.
+_helpers_of() {
+    local -A seen=(["$1"]=1)
+    local -a todo=("$1")
+    local f w
+    while [[ "${#todo[@]}" -gt 0 ]]; do
+        f="${todo[-1]}"; unset 'todo[-1]'
+        for w in $(declare -f "$f" | grep -oE '[A-Za-z_][A-Za-z0-9_]*' | sort -u); do
+            if [[ -z "${seen[$w]:-}" ]] && declare -F "$w" >/dev/null; then
+                seen[$w]=1; todo+=("$w")
+            fi
+        done
+    done
+    for f in $(printf '%s\n' "${!seen[@]}" | LC_ALL=C sort); do
+        if [[ "$f" != "$1" ]]; then declare -f "$f"; fi
+    done
+}
+
 recipe_fingerprint() {
     local fn="${1:-}"; shift || true
     local body
     if declare -F "$fn" >/dev/null 2>&1; then
-        body="$(declare -f "$fn")"
+        body="$(declare -f "$fn"; _helpers_of "$fn")"
     else
         body="external:${fn}"
     fi
@@ -419,7 +454,6 @@ stamp_fingerprint() {
         printf 'stage=%s\n'    "$(basename "${STAGE_FILE:-unknown}")"
         printf 'step=%s\n'     "$name"
         printf 'recipe=%s\n'   "$(recipe_fingerprint "$@")"
-        printf 'common=%s\n'   "$(_hash_file "${KRYPTIK_LIB:-}")"
         printf 'cc=%s\n'       "$(stamp_compiler_id)"
         printf 'cflags=%s\n'   "${CFLAGS:-}"
         printf 'cxxflags=%s\n' "${CXXFLAGS:-}"
@@ -465,7 +499,7 @@ _stamp_stale() {
     fi
 
     local reason="records a different fingerprint than the current inputs.
-One of: the recipe, an in-repository patch set it applies, build/lib/common.sh,
+One of: the recipe or a helper it calls, an in-repository patch set it applies,
 versions.env, the hardening flags, sources.lock, the compiler in use, an
 earlier step in this stage, or a stage this one builds on has changed since
 ${name} was built."
