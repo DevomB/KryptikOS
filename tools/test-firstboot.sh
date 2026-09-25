@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# First-boot setup knows when it is done from the account database, so a setup
-# cut short anywhere is finished by the next boot. The three predicates are
-# taken from build/service-scripts/firstboot.sh itself and pointed at staged
-# passwd and shadow files. No root.
+# Test firstboot.sh's done-check (from the account database, so an interrupted
+# setup finishes at the next boot) on staged passwd and shadow files, and its
+# time-limited console questions.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="$ROOT/build/service-scripts/firstboot.sh"
@@ -39,9 +38,8 @@ is "a user and root who can both authenticate: done"
 state "svc:x:999:999::/:/bin/false" "root:${HASH}:1:::::: svc:${HASH}:1::::::"
 not "a system account is not the desktop user"
 
-# Every question on the console is bounded. The service holds up the login
-# prompt and boot-success, so one unbounded prompt (passwd was) hangs a
-# headless boot and leaves an update trial uncommitted forever.
+# Every console question has a time limit: the service holds up the login
+# prompt and boot-success, so an unanswered one would hang a headless boot.
 unbounded="$(grep -nE '<[[:space:]]*"\$tty"' "$SRC" | grep -vE 'read -r (-s )?-t "\$PROMPT_SECS"')"
 [[ -z "$unbounded" ]] && ok "every question on the console has a time limit" || bad "a question on the console waits forever: ${unbounded}"
 

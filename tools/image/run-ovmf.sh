@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Boot Kryptik media or an installed disk under OVMF, the way firmware does.
+# Boot Kryptik media or an installed disk under OVMF, as real firmware would:
+# no -kernel, -initrd, -append or host filesystem sharing.
 #
 #   tools/image/run-ovmf.sh (--usb IMG | --iso ISO | --no-media)
 #        [--disk FILE]... [--testctl FILE] [--vars clean|enrolled|ms|FILE]
@@ -7,20 +8,18 @@
 #        [--log FILE] [--net none|user] [--mem MB] [--cpus N] [--gpu]
 #        [--allow-reboot] [--name TAG]
 #
-# NO -kernel, NO -initrd, NO -append and NO host filesystem sharing: the guest
-# gets a firmware image, its own variable store, its disks and a serial line,
-# and everything else - which file to load, which kernel, which root - is the
-# medium's own business. That is what "boots from firmware" means here.
-#
 #   --usb IMG      the medium as a USB mass-storage device (removable)
 #   --iso ISO      the medium as a SATA CD-ROM (/dev/sr0 in the guest)
 #   --no-media     boot only the --disk(s): an installed system
 #   --disk FILE    a virtio disk (repeatable; the first is the install target
 #                  or the installed system's disk). Files only, never devices.
+#   --disk-readonly, --blkdebug CONF
+#                  failure injection for the first --disk: read-only, or I/O
+#                  errors through QEMU's blkdebug driver
 #   --testctl FILE a disk labelled kryptik-testctl (tools/image/mk-testctl.sh)
-#   --vars X       variable store TEMPLATE, copied fresh for this run:
+#   --vars X       variable store template, copied fresh for this run:
 #                  clean    OVMF_VARS_4M.fd, no keys, Secure Boot off
-#                  enrolled the developer key as PK/KEK/db, Secure Boot ON
+#                  enrolled the developer key as PK/KEK/db, Secure Boot on
 #                  ms       Microsoft keys only (our kernels must be refused)
 #   --vars-file F  use F in place and keep it: firmware state persists across
 #                  runs (the A/B trial needs BootNext to survive a reboot)
@@ -44,8 +43,6 @@ while [[ "$#" -gt 0 ]]; do
         --iso)       ISO="${2:?}"; shift 2 ;;
         --no-media)  NOMEDIA=1; shift ;;
         --disk)      DISKS+=("${2:?}"); shift 2 ;;
-        # Failure injection for the first --disk: presented read-only, or
-        # through QEMU's blkdebug driver with the given config (I/O errors).
         --disk-readonly) DISK_RO=1; shift ;;
         --blkdebug)  BLKDEBUG="${2:?}"; shift 2 ;;
         --testctl)   TESTCTL="${2:?}"; shift 2 ;;
@@ -60,7 +57,7 @@ while [[ "$#" -gt 0 ]]; do
         --gpu)       GPU=1; shift ;;
         --allow-reboot) ALLOW_REBOOT=1; shift ;;
         --name)      NAME="${2:?}"; shift 2 ;;
-        -h|--help)   sed -n '2,36p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help)   sed -n '2,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -126,13 +123,9 @@ ARGS=(
     -boot menu=off
 )
 if [[ "$GPU" -eq 1 ]]; then
-    # A VGA-class virtio GPU, not the plain virtio-gpu-pci. The firmware
-    # framebuffer is then in the card's own BAR, so the virtio-gpu module
-    # replaces simpledrm when it loads, the way i915 or amdgpu do on a
-    # laptop, and the compositor finds one DRM device. With virtio-gpu-pci
-    # the guest kept two, simpledrm on a framebuffer nothing replaced and
-    # virtio-gpu beside it, and wlroots took its multi-GPU path, which the
-    # pixman renderer cannot serve: the compositor died at start.
+    # virtio-vga, not virtio-gpu-pci: the firmware framebuffer is in its BAR,
+    # so virtio-gpu replaces simpledrm and wlroots sees one DRM device (with
+    # two it takes a multi-GPU path the pixman renderer cannot serve).
     ARGS+=( -display none -vga none -device virtio-vga -device virtio-keyboard-pci -device virtio-mouse-pci )
 else
     ARGS+=( -display none -vga none )
@@ -181,33 +174,26 @@ console)
 smoke)
     LOG="${LOG:-${KRYPTIK_WORK}/logs/ovmf-serial.${RUN_ID}.log}"
     mkdir -p "$(dirname "$LOG")"
-    # The exact command, for the record: acceptance reads it back to prove
-    # that no -kernel, -initrd, -append or host filesystem reached the guest.
+    # The command line, which acceptance checks for host-side boot inputs.
     { printf '%q ' "$QEMU" "${ARGS[@]}"; echo; } > "${LOG}.cmd"
     ln -sfn "$LOG" "${KRYPTIK_WORK}/logs/ovmf-serial.latest.log"
     echo "serial log: ${LOG}"
-    # The console is a socket the driver watches, not a file: an installed
-    # disk asks for its state passphrase there and the driver answers it.
-    # wait=on holds the guest until the driver is connected, so it sees all.
+    # The console is a socket so the driver can answer the state passphrase
+    # prompt; wait=on holds the guest until the driver is connected.
     SER="${VMDIR}/${RUN_ID}.serial"
     set +e; trap - ERR
     "$QEMU" "${ARGS[@]}" -chardev "socket,id=ser0,path=${SER},server=on,wait=on,logfile=${LOG}" -serial chardev:ser0 \
         -monitor none < /dev/null > "${LOG}.qemu" 2>&1 &
     qpid=$!
     for _ in $(seq 1 50); do [[ -S "$SER" ]] && break; sleep 0.2; done
-    # The driver's word decides. It returns 0 when the socket closed under
-    # it: the guest is gone and QEMU on its way out, so QEMU is waited for
-    # and its own status is the result. It returns 1 at its timeout, and
-    # QEMU is killed. A `kill -0` of QEMU's pid told the two apart before,
-    # and it could not: QEMU closes its console in its shutdown, a moment
-    # before the process is gone, so the driver saw the close, the check
-    # found QEMU still there, and every clean poweroff was reported as the
-    # timeout, twelve seconds in.
+    # The driver decides: 0 when the console closed (the guest is gone, and
+    # QEMU's own status is the result), 1 at its timeout (QEMU is killed).
+    # QEMU closes its console just before it exits, so its pid cannot tell.
     if [[ ! -S "$SER" ]]; then
         kill "$qpid" 2>/dev/null; wait "$qpid"; rc=$?; [[ "$rc" -eq 0 ]] && rc=1
         warn "QEMU did not open its console socket ${SER}"
     elif python3 "${SELF}/vm-drive.py" --serial "$SER" --timeout "$TIMEOUT" wait-exit > /dev/null; then
-        # That moment is given, and no more than half a minute of it.
+        # Up to 30 s for QEMU to exit.
         for _ in $(seq 1 300); do kill -0 "$qpid" 2>/dev/null || break; sleep 0.1; done
         if kill -0 "$qpid" 2>/dev/null; then
             kill "$qpid" 2>/dev/null; wait "$qpid"; rc=1

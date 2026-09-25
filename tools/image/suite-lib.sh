@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# What the installed-system suites share: the verdict, the accounts the
-# preseed creates, and the plumbing around run-ovmf.sh and vm-drive.py.
-# Sourced after common.sh with SELF set. start_vm reads DISK and VARSF; drive
-# reads DRIVE_TIMEOUT.
+# Shared by the installed-system suites: the verdict, the preseeded accounts,
+# and wrappers for run-ovmf.sh and vm-drive.py. Source after common.sh with
+# SELF set; start_vm reads DISK and VARSF, drive reads DRIVE_TIMEOUT.
 # shellcheck disable=SC2034  # read by the suite that sources this
 
 PASS=0; FAIL=0
@@ -13,9 +12,8 @@ step()  { printf '\n==> %s\n' "$*"; }
 # The plaintext exists only in the harness; the hashes are what lands on disk.
 TUSER=tester; TPASS=tester-pw; RPASS=root-pw
 TUSER_HASH="$(openssl passwd -6 "$TPASS")"; ROOT_HASH="$(openssl passwd -6 "$RPASS")"
-# The state passphrase: the installer takes it from the control disk, and
-# vm-drive.py answers sysinit with it at every boot of an installed disk,
-# driven or not, which is why it is exported.
+# The state passphrase: the installer reads it from the control disk, and
+# vm-drive.py (hence the export) answers sysinit with it at every boot.
 export KRYPTIK_STATE_PASSPHRASE=state-pw
 PRESEED=( "preseed_user=${TUSER}" "preseed_password_hash=${TUSER_HASH}" "preseed_root_hash=${ROOT_HASH}"
           "state_passphrase=${KRYPTIK_STATE_PASSPHRASE}" )
@@ -36,8 +34,7 @@ txt() { tr -d '\r' < "$LOG"; }
 ROOTSH() { printf 'su:%s:%s' "$RPASS" "$1"; }   # a command as root, through su
 # Where partition N of a disk file starts, in sectors, from its GPT.
 part_start() { sfdisk -d "$1" 2>/dev/null | awk -v n="$2" -F'[ ,]+' '$1 ~ n"$" {for(i=1;i<=NF;i++) if($i=="start=") print $(i+1)}'; }
-# The state partition of a disk file, from the host: opened with the suites'
-# passphrase and mounted at MNT, then put away again.
+# A disk file's state partition, opened and mounted from the host.
 open_state() {   # open_state DISK MNT
     STATE_LOOP="$(losetup --find --show --offset $(( $(part_start "$1" 4) * 512 )) "$1")" || return 1
     printf '%s' "$KRYPTIK_STATE_PASSPHRASE" | cryptsetup open --type luks2 --key-file=- "$STATE_LOOP" kryptik-suite-state \

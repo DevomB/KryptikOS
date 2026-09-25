@@ -1,33 +1,21 @@
 #!/usr/bin/env bash
-#
-# The installed system's state partition: found by identity, and a system
-# that tells the truth when it cannot be used (docs/design/boot-and-updates.md; sysinit.sh).
+# The installed system's state partition: found on the system's own disk, and
+# a boot that says so when it cannot use it (docs/design/boot-and-updates.md,
+# sysinit.sh).
 #
 #   tools/image/state-test.sh --usb IMG [--disk FILE] [--timeout N]
 #
-#   1  install (control disk, preseeded user), boot alone once so the first
-#      boot has happened and the user exists on the state partition
-#   2  a CLONE of the whole disk attached as a second disk: same four
-#      labels twice. The system must use its own partitions (var on
-#      /dev/vda4, root disk /dev/vda), report the clone's as ignored, and
-#      not be degraded. Then the clone booted alone still works (the labels
-#      are not tied to a device name).
-#   3  AMBIGUOUS on the same disk: partition 3 (kryptik-b) relabelled
-#      kryptik-state from the host. Two candidates on the root disk: the
-#      system boots DEGRADED, says why, creates no account, starts no
-#      desktop; the label restored, it boots normally with the user intact.
-#   4  CORRUPT: the state partition's superblock zeroed (bytes saved first).
-#      Degraded again, with the mount failure as the reason; the bytes
-#      restored, normal again, the user's file still there.
-#   5  MISSING: the partition type/label of partition 4 changed to
-#      something else. Degraded ("no partition labelled kryptik-state");
-#      restored, normal.
+#   step 1  install, first boot, a file on the state partition
+#   step 2  a clone of the disk attached: its partitions are ignored; then
+#           the clone boots alone
+#   step 3  two kryptik-state partitions on the root disk: degraded
+#   step 4  the LUKS2 header zeroed: degraded
+#   step 5  no kryptik-state partition: degraded
+#   step 6  the watchdog feeder stopped: the machine resets and comes back
+#   step 7  three wrong passphrases: degraded; then the right one
 #
-# Every disk is a file made here. Degraded boots cannot be logged into (the
-# accounts live on the state that is unusable), so those steps assert on
-# the console transcript alone, and every restored step logs in and
-# checks the persisted file - the positive control that the damage was
-# real and the repair complete.
+# A degraded boot has no accounts, so only its console is checked; after each
+# repair a login must find the user's file. Every disk is a file made here.
 set -uo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -40,7 +28,7 @@ while [[ "$#" -gt 0 ]]; do
         --usb) USB="${2:?}"; shift 2 ;;
         --disk) DISK="${2:?}"; shift 2 ;;
         --timeout) TIMEOUT="${2:?}"; shift 2 ;;
-        -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,18p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -56,9 +44,8 @@ source "${SELF}/suite-lib.sh"
 VARSF="${VMDIR}/state-vars.fd"; cp /usr/share/OVMF/OVMF_VARS_4M.fd "$VARSF"
 
 
-# A boot that must come up degraded: smoke mode, transcript only, and the
-# guest cannot power itself off (no user to log in as), so it is killed at
-# the timeout by design after the report has appeared.
+# A boot that must come up degraded. Nobody can log in to power it off, so it
+# runs into the smoke timeout and only its transcript is checked.
 degraded_boot() {   # degraded_boot NAME REASON-REGEX
     "${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode smoke --timeout 150 --name "$1" > /dev/null
     local t; t="$(tr -d '\r' < "$LATEST")"
@@ -158,11 +145,8 @@ sfdisk --part-label "$DISK" 4 kryptik-state >/dev/null 2>&1 || die "relabel back
 normal_boot state-p5b
 
 # ----------------------------------------------------------------- step 6 --
-# The feeder is stopped, not killed: a killed feeder is restarted by its
-# supervisor inside the timeout, which is the design and proves nothing. A
-# stopped one is what a hung userspace looks like from the timer's side: the
-# process exists and never runs. Nothing else is touched, so the only thing
-# that can bring the second boot report is the watchdog's reset.
+# Stop the feeder rather than kill it (s6 would restart it): to the timer that
+# is a hung userspace, and only the watchdog's reset can bring a second boot.
 step "step 6: nothing feeds the watchdog: the machine resets itself and comes back with its data"
 start_vm state-p6
 p6=( "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}"
