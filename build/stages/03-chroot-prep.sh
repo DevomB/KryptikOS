@@ -342,6 +342,9 @@ umount_virtual() {
         mount_status >&2
         return 1
     fi
+    # The files the two binaries were bound onto. Left behind, they end up in
+    # the root image, and stage 01 takes a file there for a mount.
+    rm -f "${LFS}${IN_KRYPTIKD}" "${LFS}${IN_WLPROXY}"
     ok "unmounted"
 }
 

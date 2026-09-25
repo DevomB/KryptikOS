@@ -100,7 +100,7 @@ s_rootfs() {
     # chroot marker.
     rsync -aHAX --numeric-ids \
         --exclude=/tools --exclude=/kryptik --exclude=/kryptik-sources \
-        --exclude=/kryptik-work --exclude=/kryptik-kryptikd --exclude=/usr/src \
+        --exclude=/kryptik-work --exclude=/kryptik-kryptikd --exclude=/kryptik-wlproxy --exclude=/usr/src \
         --exclude=/lost+found --exclude=/boot/'*' --exclude=/etc/kryptik/inside-chroot \
         --exclude=/usr/bin/cmake --exclude=/usr/bin/ccmake --exclude=/usr/bin/cpack --exclude=/usr/bin/ctest \
         --exclude=/usr/share/cmake* --exclude=/tmp/'*' --exclude=/run/'*' \
