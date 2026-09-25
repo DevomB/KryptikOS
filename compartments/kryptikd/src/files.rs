@@ -1,8 +1,5 @@
-//! Files zone 0 keeps state in, written whole. The update channel, the Wi-Fi
-//! file, the clipboard and the clock each had a copy of write-then-rename,
-//! and the copies had drifted: one followed symlinks, took its mode from the
-//! umask and never synced its directory, and three shared one temporary name
-//! between any two writers.
+//! Zone 0's state files, written whole: the update channel's, the Wi-Fi
+//! file, the clipboard and the clock's.
 
 use std::fs;
 use std::io::{self, Write};
@@ -10,17 +7,16 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsE
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 
-/// Replace `path` with `parts`, whole. The new file is made beside it under a
-/// name of this process's own, O_EXCL and O_NOFOLLOW, with exactly `mode`,
-/// owned as asked, and synced before the rename; the directory is synced
-/// after it, as far as the filesystem allows. A reader sees the old file or
-/// the new one, and a failure leaves the old one and no temporary.
+/// Replace `path` with `parts`, whole: a temporary named for this process,
+/// O_EXCL|O_NOFOLLOW with exactly `mode` and owned as asked, synced, renamed
+/// over the file, then the directory synced where the filesystem allows. A
+/// failure leaves the old file and no temporary.
 pub fn write_atomic(path: &Path, parts: &[&[u8]], mode: u32, owner: Option<(u32, u32)>) -> io::Result<()> {
     let name = path.file_name().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file name"))?;
     let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let stem = format!(".{}.", name.to_string_lossy());
-    // A writer that died before its rename left its temporary, perhaps with
-    // a secret in it (the Wi-Fi file); one whose process is gone goes now.
+    /* A writer that died before its rename leaves its temporary, perhaps
+     * with a secret in it (the Wi-Fi file). */
     for e in fs::read_dir(dir)?.flatten() {
         let n = e.file_name();
         let pid = n.to_str().and_then(|s| s.strip_prefix(stem.as_str())).and_then(|p| p.parse::<u32>().ok());
@@ -93,7 +89,7 @@ mod tests {
     }
 
     #[test]
-    fn write_atomic_replaces_whole() {
+    fn replaces_whole() {
         let d = scratch("replace");
         let p = d.join("state");
         write_atomic(&p, &[b"old"], 0o600, None).unwrap();
@@ -105,7 +101,7 @@ mod tests {
     }
 
     #[test]
-    fn write_atomic_clears_dead_writers_temporaries() {
+    fn clears_dead_temps() {
         let d = scratch("dead");
         fs::write(d.join(".state.4294967295"), b"secret").unwrap(); // no such process
         fs::write(d.join(".state.1"), b"init's").unwrap(); // a live one
@@ -115,7 +111,7 @@ mod tests {
     }
 
     #[test]
-    fn write_atomic_replaces_a_link_without_following_it() {
+    fn replaces_link_unfollowed() {
         let d = scratch("link");
         let victim = d.join("victim");
         fs::write(&victim, b"untouched").unwrap();
@@ -127,7 +123,7 @@ mod tests {
     }
 
     #[test]
-    fn write_atomic_failure_keeps_old_file() {
+    fn failure_keeps_old_file() {
         if unsafe { libc::geteuid() } == 0 {
             return; // root may chown to anyone; the refusal below needs a user
         }
@@ -141,7 +137,7 @@ mod tests {
     }
 
     #[test]
-    fn private_dir_refuses_what_others_can_reach() {
+    fn private_dir_refuses_shared() {
         let d = scratch("private");
         let open = d.join("open");
         fs::create_dir(&open).unwrap();
