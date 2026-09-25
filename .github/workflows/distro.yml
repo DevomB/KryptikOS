@@ -111,8 +111,10 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           STAGE02: ${{ steps.stage02.outcome }}
+        # Progress is which steps are built from which inputs: the stamps'
+        # fingerprint lines, not the times they record or the archived ones.
         run: |
-          d="$( { cd "$KRYPTIK_WORK/.stamps" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0r sha256sum | sha256sum | cut -c1-16; } 2>/dev/null || true)"
+          d="$( { cd "$KRYPTIK_WORK/.stamps" && find . -path ./legacy -prune -o -type f -print0 | LC_ALL=C sort -z | xargs -0r grep -H '^fingerprint: ' | sha256sum | cut -c1-16; } 2>/dev/null || true)"
           if [ -n "$d" ]; then echo "key=work02-$d" >> "$GITHUB_OUTPUT"; fi
           ttfp="$(awk '$1 == "fingerprint:" { print $2; exit }' "$KRYPTIK_WORK/.stamps/tt-verify" 2>/dev/null || true)"
           # Without it every toolchain's stage 05 tree would share one key.
@@ -182,14 +184,16 @@ jobs:
       # runner user cannot read (the sysroot's /etc/shadow), and the cache
       # action tars as the runner user. A hit contains the stage 02 sysroot of
       # the same toolchain inputs, so the one from the job before is not needed.
+      # The package versions are part of the key: a new version is built into
+      # the stage 02 tree, never over the old one, whose files would ship too.
       - name: Stage 04-05 sysroot and kernel (cached)
         id: work05
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: /mnt/kryptik/work-after-05.tar.zst
-          key: work05-${{ needs.toolchain.outputs.ttfp }}-
+          key: work05-${{ needs.toolchain.outputs.ttfp }}-${{ hashFiles('build/config/versions.env', 'sources.lock') }}-
           restore-keys: |
-            work05-${{ needs.toolchain.outputs.ttfp }}-
+            work05-${{ needs.toolchain.outputs.ttfp }}-${{ hashFiles('build/config/versions.env', 'sources.lock') }}-
 
       - name: Unpack the stage 04-05 tree
         if: steps.work05.outputs.cache-matched-key != ''
@@ -256,9 +260,21 @@ jobs:
         if: ${{ !cancelled() && steps.stage04.outcome != '' && steps.stage04.outcome != 'skipped' }}
         run: |
           sudo pkill -KILL -f 'build/stages/0[345]-' || true
-          for p in /proc/[0-9]*; do
-            if [ "$(sudo readlink "$p/root" 2>/dev/null)" = "$KRYPTIK_WORK/sysroot" ]; then sudo kill -KILL "${p#/proc/}" 2>/dev/null || true; fi
+          # Pass after pass: a process not yet killed can start another while
+          # one pass reads /proc.
+          inside() {
+            for p in /proc/[0-9]*; do
+              if [ "$(sudo readlink "$p/root" 2>/dev/null)" = "$KRYPTIK_WORK/sysroot" ]; then echo "${p#/proc/}"; fi
+            done
+          }
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            mapfile -t left < <(inside)
+            [ "${#left[@]}" -eq 0 ] && break
+            sudo kill -KILL "${left[@]}" 2>/dev/null || true
+            sleep 1
           done
+          mapfile -t left < <(inside)
+          if [ "${#left[@]}" -gt 0 ]; then echo "still running in the sysroot: ${left[*]}"; exit 1; fi
           make chroot-umount || true
           if findmnt -rn -o TARGET | grep -F "$KRYPTIK_WORK/sysroot/"; then echo "still mounted in the sysroot"; exit 1; fi
 
@@ -269,8 +285,8 @@ jobs:
         id: progress05
         if: ${{ !cancelled() && steps.quiesce.outcome == 'success' }}
         run: |
-          d="$( { cd "$KRYPTIK_WORK/.stamps" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0r sha256sum | sha256sum | cut -c1-16; } 2>/dev/null || true)"
-          if [ -n "$d" ]; then echo "key=work05-${{ needs.toolchain.outputs.ttfp }}-$d" >> "$GITHUB_OUTPUT"; fi
+          d="$( { cd "$KRYPTIK_WORK/.stamps" && find . -path ./legacy -prune -o -type f -print0 | LC_ALL=C sort -z | xargs -0r grep -H '^fingerprint: ' | sha256sum | cut -c1-16; } 2>/dev/null || true)"
+          if [ -n "$d" ]; then echo "key=work05-${{ needs.toolchain.outputs.ttfp }}-${{ hashFiles('build/config/versions.env', 'sources.lock') }}-$d" >> "$GITHUB_OUTPUT"; fi
 
       # The stamps first, so none is packed without its files. Never what is
       # under the chroot's mount points, and never the module signing key: a
@@ -284,7 +300,7 @@ jobs:
           members=(.stamps sysroot)
           kernel_tree="build/linux-$(sed -n 's/^V_LINUX=//p' "$GITHUB_WORKSPACE/build/config/versions.env")"
           [ -d "work/$kernel_tree" ] && members+=("$kernel_tree")
-          sudo tar -I 'zstd -T0' -cf work-after-05.tar.zst -C work \
+          sudo tar -I 'zstd -T0' -cf work-after-05.tar.zst -C work --anchored \
             --exclude='sysroot/proc/*' --exclude='sysroot/sys/*' --exclude='sysroot/dev/*' \
             --exclude='sysroot/run/*' --exclude='sysroot/kryptik*/*' \
             --exclude="$kernel_tree/certs/signing_key.pem" "${members[@]}"
@@ -385,7 +401,8 @@ jobs:
 
       # The script itself, not make, which turns every failure into 2. Exit 2
       # is a part's normal answer, the other parts' items being "not run"
-      # here; the part is red for a failure, and the verdict job judges it all.
+      # here; the part is red for a failure or a crash, and the verdict job
+      # judges it all.
       - name: Acceptance of these suites
         env:
           SUITES: ${{ matrix.suites }}
@@ -393,7 +410,7 @@ jobs:
           rc=0
           sudo env KRYPTIK_WORK="$KRYPTIK_WORK" KRYPTIK_SOURCES="$KRYPTIK_SOURCES" NO_COLOR=1 \
             TMPDIR="$TMPDIR" CARGO_TARGET_DIR="$CARGO_TARGET_DIR" tools/acceptance.sh --only "$SUITES" || rc=$?
-          [ "$rc" -ne 1 ]
+          [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]
 
       - name: Hand the results to the runner user
         if: always()
