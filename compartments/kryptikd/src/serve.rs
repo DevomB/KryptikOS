@@ -82,6 +82,43 @@ fn clear_cloexec(fd: RawFd) {
     }
 }
 
+/// One recvmsg into `buf`, owning the descriptors that came with it. Control
+/// data cut short is refused, and what did arrive is closed.
+pub fn recv_with_fds(fd: RawFd, buf: &mut [u8], flags: libc::c_int) -> std::io::Result<(usize, Vec<Fd>)> {
+    // Aligned for cmsghdr, with room for twelve, so an excess is refused by count.
+    #[repr(C, align(8))]
+    struct Control([u8; 64]);
+    let mut control = Control([0; 64]);
+    let mut iov = libc::iovec { iov_base: buf.as_mut_ptr() as *mut libc::c_void, iov_len: buf.len() };
+    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control.0.as_mut_ptr() as *mut libc::c_void;
+    msg.msg_controllen = control.0.len() as _;
+    let n = unsafe { libc::recvmsg(fd, &mut msg, flags | libc::MSG_CMSG_CLOEXEC) };
+    if n < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut got = Vec::new();
+    unsafe {
+        let mut c = libc::CMSG_FIRSTHDR(&msg);
+        while !c.is_null() {
+            if (*c).cmsg_level == libc::SOL_SOCKET && (*c).cmsg_type == libc::SCM_RIGHTS {
+                let data = libc::CMSG_DATA(c) as *const RawFd;
+                let count = ((*c).cmsg_len as usize - libc::CMSG_LEN(0) as usize) / std::mem::size_of::<RawFd>();
+                for i in 0..count {
+                    got.push(Fd(std::ptr::read_unaligned(data.add(i))));
+                }
+            }
+            c = libc::CMSG_NXTHDR(&msg, c);
+        }
+    }
+    if msg.msg_flags & libc::MSG_CTRUNC != 0 {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "more descriptors than a request may carry"));
+    }
+    Ok((n as usize, got))
+}
+
 // --- who is asking ----------------------------------------------------------
 
 fn gid_of_group(name: &str) -> Option<u32> {
@@ -134,20 +171,15 @@ fn in_group(uid: u32, group: &str) -> bool {
     members.iter().any(|m| *m == name)
 }
 
-struct Peer {
-    uid: u32,
-    pid: i32,
-}
-
-fn peer_of(fd: RawFd) -> Option<Peer> {
+/// `SO_PEERCRED` of a connected AF_UNIX socket, which the kernel asserts.
+pub fn peer_cred(fd: RawFd) -> std::io::Result<libc::ucred> {
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     let r = unsafe { libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_PEERCRED, &mut cred as *mut _ as *mut libc::c_void, &mut len) };
-    if r == 0 {
-        Some(Peer { uid: cred.uid, pid: cred.pid })
-    } else {
-        None
+    if r < 0 {
+        return Err(std::io::Error::last_os_error());
     }
+    Ok(cred)
 }
 
 // --- the request -------------------------------------------------------------
@@ -188,40 +220,13 @@ fn recv_request(fd: RawFd, deadline: Instant) -> Result<(Vec<u8>, Option<Fd>), S
             continue; // the deadline check above reports it
         }
         let mut buf = [0u8; 4096];
-        // Room for several descriptors, so an excess is refused by count, not by truncation.
-        let mut cmsg = [0u8; 64];
-        let mut iov = libc::iovec { iov_base: buf.as_mut_ptr() as *mut libc::c_void, iov_len: buf.len() };
-        let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
-        msg.msg_iov = &mut iov;
-        msg.msg_iovlen = 1;
-        msg.msg_control = cmsg.as_mut_ptr() as *mut libc::c_void;
-        msg.msg_controllen = cmsg.len() as _;
-        let n = unsafe { libc::recvmsg(fd, &mut msg, libc::MSG_CMSG_CLOEXEC | libc::MSG_DONTWAIT) };
-        if n < 0 {
-            let e = std::io::Error::last_os_error();
-            if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(format!("recvmsg: {e}"));
-        }
-        // Own every received descriptor first, so any refusal below closes them.
-        let mut got: Vec<Fd> = Vec::new();
-        unsafe {
-            let mut c = libc::CMSG_FIRSTHDR(&msg);
-            while !c.is_null() {
-                if (*c).cmsg_level == libc::SOL_SOCKET && (*c).cmsg_type == libc::SCM_RIGHTS {
-                    let data = libc::CMSG_DATA(c) as *const RawFd;
-                    let count = ((*c).cmsg_len as usize - libc::CMSG_LEN(0) as usize) / std::mem::size_of::<RawFd>();
-                    for i in 0..count {
-                        got.push(Fd(*data.add(i)));
-                    }
-                }
-                c = libc::CMSG_NXTHDR(&msg, c);
-            }
-        }
-        if msg.msg_flags & libc::MSG_CTRUNC != 0 {
-            return Err("control data truncated: more descriptors than a request may carry".into());
-        }
+        // The descriptors are owned, so any refusal below closes them.
+        let (n, mut got) = match recv_with_fds(fd, &mut buf, libc::MSG_DONTWAIT) {
+            Ok(x) => x,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => return Err(e.to_string()),
+            Err(e) => return Err(format!("recvmsg: {e}")),
+        };
         if !got.is_empty() {
             if !text.is_empty() {
                 return Err("a descriptor must accompany the first bytes of a request".into());
@@ -234,7 +239,7 @@ fn recv_request(fd: RawFd, deadline: Instant) -> Result<(Vec<u8>, Option<Fd>), S
         if n == 0 {
             break;
         }
-        text.extend_from_slice(&buf[..n as usize]);
+        text.extend_from_slice(&buf[..n]);
         if text.len() > MAX_REQUEST {
             return Err("request too long".into());
         }
@@ -505,7 +510,7 @@ fn verify_proxy_listener(sock: &Fd, uid: u32, zone: &str, proxy_exe: Option<&Pat
     if unsafe { libc::connect(s.raw(), &addr as *const _ as *const libc::sockaddr, len) } < 0 {
         return Err(format!("nothing usable is listening on the wayland socket: {}", std::io::Error::last_os_error()));
     }
-    let peer = peer_of(s.raw()).ok_or("wayland socket: cannot identify the listener")?;
+    let peer = peer_cred(s.raw()).map_err(|e| format!("wayland socket: cannot identify the listener: {e}"))?;
     if peer.uid != uid {
         return Err(format!("wayland socket is served by uid {}, not the session", peer.uid));
     }
@@ -958,12 +963,9 @@ fn zone_running(name: &str) -> bool {
 /// slow command pushed to `jobs`; anything else is answered here.
 fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pending> {
     let fd = conn.as_raw_fd();
-    let peer = match peer_of(fd) {
-        Some(p) => p,
-        None => {
-            reply(&conn, "error: unidentified peer\n");
-            return None;
-        }
+    let Ok(peer) = peer_cred(fd) else {
+        reply(&conn, "error: unidentified peer\n");
+        return None;
     };
     let uid = peer.uid;
     if !authorised(cfg, uid) {
@@ -1502,6 +1504,14 @@ mod tests {
         // A closed descriptor cannot be fstat'ed.
         let mut st: libc::stat = unsafe { std::mem::zeroed() };
         assert!(unsafe { libc::fstat(raw, &mut st) } < 0);
+    }
+
+    #[test]
+    fn socketpair_peer_is_self() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let cred = peer_cred(a.as_raw_fd()).unwrap();
+        assert_eq!((cred.uid, cred.gid), unsafe { (libc::geteuid(), libc::getegid()) });
+        assert_eq!(cred.pid, std::process::id() as i32);
     }
 
     #[test]

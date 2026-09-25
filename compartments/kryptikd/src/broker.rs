@@ -12,65 +12,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::registry;
-use crate::zone::{NetworkMode, Zone, IDENTITY_STRIDE};
-
-/// Kernel-asserted credentials of a Unix-socket peer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PeerCred {
-    pub uid: u32,
-    pub gid: u32,
-}
-
-/// `SO_PEERCRED` of a connected AF_UNIX socket.
-pub fn peer_identity(fd: RawFd) -> io::Result<PeerCred> {
-    let mut uc: libc::ucred = unsafe { std::mem::zeroed() };
-    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-    let r = unsafe {
-        libc::getsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            &mut uc as *mut _ as *mut libc::c_void,
-            &mut len,
-        )
-    };
-    if r < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(PeerCred { uid: uc.uid, gid: uc.gid })
-}
-
-/// The zone whose identity range holds `uid`, if exactly one does (ranges are
-/// disjoint, `zone::check_invariants`). Root, host users and unprivileged
-/// launches match none.
-pub fn zone_for_uid<'a>(zones: &'a [Zone], uid: u32) -> Option<&'a Zone> {
-    let mut found: Option<&Zone> = None;
-    for z in zones {
-        let Some(base) = z.uid_base else { continue };
-        if uid >= base && uid - base < IDENTITY_STRIDE {
-            if found.is_some() {
-                return None; // overlapping ranges: refuse rather than guess
-            }
-            found = Some(z);
-        }
-    }
-    found
-}
-
-/// Identify the zone behind a connection, or say why not. The gid must fall
-/// in the same zone's range as the uid.
-pub fn identify<'a>(zones: &'a [Zone], fd: RawFd) -> Result<&'a Zone, String> {
-    let cred = peer_identity(fd).map_err(|e| format!("SO_PEERCRED: {e}"))?;
-    let z = zone_for_uid(zones, cred.uid)
-        .ok_or_else(|| format!("peer uid {} is not in any zone's identity range", cred.uid))?;
-    match zone_for_uid(zones, cred.gid) {
-        Some(g) if g.name == z.name => Ok(z),
-        _ => Err(format!(
-            "peer uid {} is zone {:?} but gid {} is not in that zone's range",
-            cred.uid, z.name, cred.gid
-        )),
-    }
-}
+use crate::serve::{peer_cred, recv_with_fds, Fd};
+use crate::zone::{NetworkMode, Zone};
 
 /// The socket's name in a registry entry, and in the zone's /run/kryptik.
 pub const SOCKET_NAME: &str = "broker";
@@ -427,7 +370,7 @@ fn openat2(dirfd: RawFd, path: &str, flags: u64, mode: u64, resolve: u64) -> io:
 /// sender, named in its `[transfer] to`, configured and not the nic zone; a
 /// regular O_RDONLY file on the sender's data mount within the cap. The zone
 /// learns only the name the file landed under.
-fn handle_transfer(s: &Served, dest: &str, name: &str, fds: &[RawFd]) -> Result<(String, u64), String> {
+fn handle_transfer(s: &Served, dest: &str, name: &str, fds: &[Fd]) -> Result<(String, u64), String> {
     let sender = &s.zone.name;
     if fds.len() != 1 {
         return Err(format!("transfer needs exactly one descriptor attached (got {})", fds.len()));
@@ -445,7 +388,7 @@ fn handle_transfer(s: &Served, dest: &str, name: &str, fds: &[RawFd]) -> Result<
     if dz.network == NetworkMode::Nic {
         return Err(format!("zone {dest:?} holds the NIC and receives nothing, ever"));
     }
-    let src = fds[0];
+    let src = fds[0].raw();
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
     if unsafe { libc::fstat(src, &mut st) } < 0 {
         return Err(format!("descriptor: {}", io::Error::last_os_error()));
@@ -680,12 +623,11 @@ pub fn serve_one(listen_fd: RawFd, s: &Served) -> io::Result<Option<String>> {
 }
 
 /// Answer one request on an accepted connection. A peer other than the zone
-/// (`s.uid`) learns nothing. Refusals come before any payload is read, and
-/// every attached descriptor is closed here.
+/// (`s.uid`) learns nothing. Refusals come before any payload is read.
 pub fn serve_connection(fd: RawFd, s: &Served) -> io::Result<Option<String>> {
     let zone = s.zone.name.as_str();
     let entry = s.entry;
-    let cred = peer_identity(fd)?;
+    let cred = peer_cred(fd)?;
     if cred.uid != s.uid {
         reply(fd, "error: unidentified peer\n");
         return Ok(None);
@@ -703,22 +645,10 @@ pub fn serve_connection(fd: RawFd, s: &Served) -> io::Result<Option<String>> {
             return Ok(None);
         }
     };
-    let close_fds = |fds: &[RawFd]| {
-        for f in fds {
-            unsafe { libc::close(*f) };
-        }
-    };
     while more && !buf.contains(&b'\n') && buf.len() < 512 {
-        more = match recv_some(fd, &mut buf, started) {
-            Ok(m) => m,
-            Err(e) => {
-                close_fds(&fds);
-                return Err(e);
-            }
-        };
+        more = recv_some(fd, &mut buf, started)?;
     }
     let Some(nl) = buf.iter().position(|b| *b == b'\n') else {
-        close_fds(&fds);
         reply(fd, "error: header line missing or too long\n");
         return Ok(None);
     };
@@ -786,12 +716,10 @@ pub fn serve_connection(fd: RawFd, s: &Served) -> io::Result<Option<String>> {
         },
         Ok(Request::ClipboardSet { mime, len }) => {
             if let Err(e) = read_more(fd, &mut rest, len, started) {
-                close_fds(&fds);
                 reply(fd, &format!("error: payload: {e}\n"));
                 return Ok(Some(verb));
             }
             if rest.len() < len {
-                close_fds(&fds);
                 reply(fd, &format!("error: payload short: {} of {len} bytes\n", rest.len()));
                 return Ok(Some(verb));
             }
@@ -803,58 +731,24 @@ pub fn serve_connection(fd: RawFd, s: &Served) -> io::Result<Option<String>> {
         Ok(Request::NotAZoneVerb(v)) => reply(fd, &format!("error: {v} is a zone 0 act, not a zone verb\n")),
         Ok(Request::Unknown(_)) => reply(fd, "error: unknown verb\n"),
     }
-    close_fds(&fds);
     Ok(Some(verb))
 }
 
-/// The request's first recvmsg, where descriptors arrive (CLOEXEC, for the
-/// caller to close). Ok(false, ..) at EOF.
-fn recv_first(fd: RawFd, buf: &mut Vec<u8>, started: Instant) -> io::Result<(bool, Vec<RawFd>)> {
+/// The request's first recvmsg, where descriptors arrive. Ok(false, ..) at EOF.
+fn recv_first(fd: RawFd, buf: &mut Vec<u8>, started: Instant) -> io::Result<(bool, Vec<Fd>)> {
     let mut chunk = [0u8; 4096];
-    let mut cbuf = [0u8; 64];
     loop {
         if started.elapsed() > REQUEST_DEADLINE {
             return Err(io::Error::new(io::ErrorKind::TimedOut, "request took longer than the deadline"));
         }
-        let mut iov = libc::iovec { iov_base: chunk.as_mut_ptr() as *mut libc::c_void, iov_len: chunk.len() };
-        let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
-        msg.msg_iov = &mut iov;
-        msg.msg_iovlen = 1;
-        msg.msg_control = cbuf.as_mut_ptr() as *mut libc::c_void;
-        msg.msg_controllen = cbuf.len() as _;
-        let n = unsafe { libc::recvmsg(fd, &mut msg, libc::MSG_CMSG_CLOEXEC) };
-        if n < 0 {
-            let e = io::Error::last_os_error();
-            match e.raw_os_error() {
-                Some(libc::EINTR) | Some(libc::EAGAIN) => continue,
-                _ => return Err(e),
+        match recv_with_fds(fd, &mut chunk, 0) {
+            Ok((n, fds)) => {
+                buf.extend_from_slice(&chunk[..n]);
+                return Ok((n > 0, fds));
             }
+            Err(e) if matches!(e.raw_os_error(), Some(libc::EINTR) | Some(libc::EAGAIN)) => continue,
+            Err(e) => return Err(e),
         }
-        let mut fds = Vec::new();
-        unsafe {
-            let mut c = libc::CMSG_FIRSTHDR(&msg);
-            while !c.is_null() {
-                if (*c).cmsg_level == libc::SOL_SOCKET && (*c).cmsg_type == libc::SCM_RIGHTS {
-                    let data = libc::CMSG_DATA(c) as *const RawFd;
-                    let bytes = (*c).cmsg_len as usize - libc::CMSG_LEN(0) as usize;
-                    for i in 0..bytes / std::mem::size_of::<RawFd>() {
-                        fds.push(std::ptr::read_unaligned(data.add(i)));
-                    }
-                }
-                c = libc::CMSG_NXTHDR(&msg, c);
-            }
-        }
-        if msg.msg_flags & libc::MSG_CTRUNC != 0 {
-            for f in &fds {
-                unsafe { libc::close(*f) };
-            }
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "too many descriptors attached"));
-        }
-        if n == 0 {
-            return Ok((false, fds));
-        }
-        buf.extend_from_slice(&chunk[..n as usize]);
-        return Ok((true, fds));
     }
 }
 
@@ -990,51 +884,6 @@ pub fn clipboard_move(from: &Path, to: &Path) -> io::Result<(String, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn zones() -> Vec<Zone> {
-        let mk = |name: &str, base: Option<u32>, colour: &str| {
-            let ident = base.map(|b| format!("[identity]\nuid_base = {b}\n")).unwrap_or_default();
-            Zone::from_str(&format!(
-                "[zone]\nname = \"{name}\"\n[network]\nmode = \"routed\"\n\
-                 [storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n{ident}[ui]\nborder_color = \"{colour}\"\n"
-            ))
-            .unwrap()
-        };
-        vec![
-            mk("work", Some(131072), "#111111"),
-            mk("personal", Some(196608), "#222222"),
-            mk("legacy", None, "#333333"),
-        ]
-    }
-
-    #[test]
-    fn uid_maps_to_its_zone() {
-        let zs = zones();
-        assert_eq!(zone_for_uid(&zs, 131072).map(|z| z.name.as_str()), Some("work"));
-        assert_eq!(zone_for_uid(&zs, 131072 + 65534).map(|z| z.name.as_str()), Some("work"));
-        assert_eq!(zone_for_uid(&zs, 131072 + 65535).map(|z| z.name.as_str()), Some("work"));
-        assert_eq!(zone_for_uid(&zs, 196608).map(|z| z.name.as_str()), Some("personal"));
-        // Host users, root, and the range just past the last zone match nothing.
-        for uid in [0u32, 1000, 131071, 196608 + 65536, u32::MAX] {
-            assert!(zone_for_uid(&zs, uid).is_none(), "uid {uid} must not identify a zone");
-        }
-    }
-
-    #[test]
-    fn socketpair_peer_is_self() {
-        let mut sv = [0 as RawFd; 2];
-        assert_eq!(unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0, sv.as_mut_ptr()) }, 0);
-        let cred = peer_identity(sv[0]).unwrap();
-        assert_eq!(cred.uid, unsafe { libc::geteuid() });
-        assert_eq!(cred.gid, unsafe { libc::getegid() });
-        // Our own uid is a host user's: identify refuses, naming it.
-        let err = identify(&zones(), sv[0]).unwrap_err();
-        assert!(err.contains("not in any zone"), "{err}");
-        unsafe {
-            libc::close(sv[0]);
-            libc::close(sv[1]);
-        }
-    }
 
     fn pair() -> (RawFd, RawFd) {
         let mut sv = [0 as RawFd; 2];
@@ -1426,6 +1275,7 @@ mod tests {
         let cases: Vec<(String, Vec<RawFd>, &str)> = vec![
             ("transfer b f.txt\n".into(), vec![], "exactly one descriptor"),
             ("transfer b f.txt\n".into(), vec![ro(), ro()], "exactly one descriptor"),
+            ("transfer b f.txt\n".into(), (0..20).map(|_| ro()).collect(), "more descriptors than a request may carry"),
             ("transfer a f.txt\n".into(), vec![ro()], "cannot transfer to itself"),
             ("transfer c f.txt\n".into(), vec![ro()], "does not name \"c\""),
             ("transfer zzz f.txt\n".into(), vec![ro()], "does not name \"zzz\""),
@@ -1698,17 +1548,6 @@ mod tests {
             assert!(update_refusal(&zone_of(mode, "")).is_some_and(|w| w.contains("does not hold the network")), "{mode}");
         }
         assert_eq!(update_refusal(&zone_of("nic", "")), None);
-    }
-
-    #[test]
-    fn zone_without_identity_never_matches() {
-        // "legacy" has no uid_base, so no uid may map to it.
-        let zs = zones();
-        for uid in 0..300_000u32 {
-            if let Some(z) = zone_for_uid(&zs, uid) {
-                assert_ne!(z.name, "legacy");
-            }
-        }
     }
 
     /// Requests from fuzz-corpus/broker-requests (add any that ever breaks the
