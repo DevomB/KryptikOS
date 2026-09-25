@@ -125,51 +125,9 @@ fn set_mount_attr(target: &str, attrs: u64, recursive: bool) -> Result<(), Rootf
     Ok(())
 }
 
-/// Mount points strictly beneath `target` in this mount namespace.
-fn submounts_under(target: &str) -> Vec<String> {
-    let prefix = format!("{}/", target.trim_end_matches('/'));
-    fs::read_to_string("/proc/self/mountinfo")
-        .unwrap_or_default()
-        .lines()
-        .filter_map(|l| l.split(' ').nth(4).map(str::to_string))
-        .filter(|mp| mp.starts_with(&prefix))
-        .collect()
-}
-
-/// Make a bind tree read-only, nosuid, nodev all the way down. Without
-/// mount_setattr only the top mount can be fixed, so submounts are refused.
+/// Make a bind tree read-only, nosuid, nodev all the way down.
 fn make_ro_recursive(target: &str) -> Result<(), RootfsError> {
-    match set_mount_attr(
-        target,
-        MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV,
-        true,
-    ) {
-        Ok(()) => Ok(()),
-        Err(RootfsError::Syscall { errno, .. }) if errno == libc::ENOSYS => {
-            // The initial bind ignores MS_RDONLY; only a remount applies it.
-            mount_raw(
-                "none",
-                target,
-                None,
-                libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY | libc::MS_NOSUID
-                    | libc::MS_NODEV,
-                None,
-                "mount(remount,ro)",
-            )?;
-            let subs = submounts_under(target);
-            if !subs.is_empty() {
-                return Err(RootfsError::Setup(format!(
-                    "{target} has {} submount(s) ({}) that this kernel cannot make \
-                     read-only recursively (mount_setattr needs Linux 5.12+); \
-                     refusing to expose them read-write",
-                    subs.len(),
-                    subs.join(", ")
-                )));
-            }
-            Ok(())
-        }
-        Err(e) => Err(e),
-    }
+    set_mount_attr(target, MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV, true)
 }
 
 /// Bind `src` at `target` recursively, read-only, nosuid, nodev all the way down.
@@ -193,19 +151,7 @@ fn bind_ro_file(src: &str, target: &str) -> Result<(), RootfsError> {
 /// Bind `src` over the existing file `target`, read-only.
 fn bind_over_ro(src: &str, target: &str) -> Result<(), RootfsError> {
     mount_raw(src, target, None, libc::MS_BIND, None, "mount(bind file)")?;
-    // A file has no submounts; the legacy remount is exact here.
-    match set_mount_attr(target, MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV, false) {
-        Ok(()) => Ok(()),
-        Err(RootfsError::Syscall { errno, .. }) if errno == libc::ENOSYS => mount_raw(
-            "none",
-            target,
-            None,
-            libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV,
-            None,
-            "mount(remount,ro)",
-        ),
-        Err(e) => Err(e),
-    }
+    set_mount_attr(target, MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV, false)
 }
 
 /// System directories a zone gets, read-only, nosuid, nodev. Not /etc: see
@@ -573,23 +519,7 @@ pub fn pivot_into(
     let _ = fs::remove_dir("/.oldroot");
 
     // Seal the root: nothing may add to it now, not even the zone's root.
-    match set_mount_attr(
-        "/",
-        MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC,
-        false,
-    ) {
-        Ok(()) => {}
-        Err(RootfsError::Syscall { errno, .. }) if errno == libc::ENOSYS => mount_raw(
-            "none",
-            "/",
-            None,
-            libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY | libc::MS_NOSUID
-                | libc::MS_NODEV | libc::MS_NOEXEC,
-            None,
-            "mount(seal root)",
-        )?,
-        Err(e) => return Err(e),
-    }
+    set_mount_attr("/", MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC, false)?;
 
     Ok(home)
 }
@@ -754,69 +684,9 @@ pub fn ensure_stdio() {
 /// Close every descriptor above stderr before handing control to the zone.
 /// Neither Landlock nor pivot_root affects a descriptor already open, so only
 /// 0, 1 and 2 are inherited; even one passed with `3<file` is closed.
-pub fn close_inherited_fds() {
-    if close_via_close_range() {
-        return;
-    }
-    if close_via_proc() {
-        return;
-    }
-    close_by_sweep(highest_possible_fd());
-}
-
-/// close_range(2), Linux 5.9+: one call, any number, no /proc.
-fn close_via_close_range() -> bool {
-    unsafe {
-        libc::syscall(
-            libc::SYS_close_range,
-            3 as libc::c_uint,
-            libc::c_uint::MAX,
-            0 as libc::c_uint,
-        ) == 0
-    }
-}
-
-/// Enumerate /proc/self/fd. Authoritative when readable.
-fn close_via_proc() -> bool {
-    let entries = match fs::read_dir("/proc/self/fd") {
-        Ok(e) => e,
-        Err(_) => return false,
-    };
-    let fds: Vec<i32> = entries
-        .filter_map(|e| e.ok())
-        .filter_map(|e| e.file_name().to_str().and_then(|s| s.parse().ok()))
-        .collect();
-    // The read_dir handle is listed but already closed: a harmless EBADF.
-    for fd in fds {
-        if fd > 2 {
-            unsafe { libc::close(fd) };
-        }
-    }
-    true
-}
-
-/// Sweep bound: nr_open, which no RLIMIT_NOFILE exceeds (an inherited fd can
-/// sit above a lowered soft limit). Capped so a hostile value cannot make the
-/// sweep take minutes.
-pub(crate) fn highest_possible_fd() -> i32 {
-    let nr_open: i32 = fs::read_to_string("/proc/sys/fs/nr_open")
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(0);
-    let mut rl = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
-    let hard: i32 = if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rl) } == 0 {
-        i32::try_from(rl.rlim_max).unwrap_or(i32::MAX)
-    } else {
-        0
-    };
-    nr_open.max(hard).max(1 << 20).min(1 << 22)
-}
-
-/// Last resort: close every number from 3 up to `max`.
-pub(crate) fn close_by_sweep(max: i32) {
-    for fd in 3..max {
-        unsafe { libc::close(fd) };
-    }
+pub fn close_inherited_fds() -> std::io::Result<()> {
+    let r = unsafe { libc::syscall(libc::SYS_close_range, 3 as libc::c_uint, libc::c_uint::MAX, 0 as libc::c_uint) };
+    if r == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
 }
 
 #[cfg(test)]
@@ -950,7 +820,9 @@ mod tests {
             if !(is_open(3) && is_open(4095) && is_open(5000)) {
                 return 10;
             }
-            close_inherited_fds();
+            if close_inherited_fds().is_err() {
+                return 11;
+            }
             for fd in 0..=2 {
                 if !is_open(fd) {
                     return 20 + fd;
@@ -964,43 +836,6 @@ mod tests {
             0
         });
         assert_eq!(rc, 0, "child reported failure code {rc}");
-    }
-
-    #[test]
-    fn every_close_strategy_reaches_high_fds() {
-        // Each in its own child, so the fallbacks this kernel skips are tested too.
-        for strategy in 0..3 {
-            let rc = in_child(move || {
-                open_at(5000);
-                open_at(3);
-                let done = match strategy {
-                    0 => close_via_close_range(),
-                    1 => close_via_proc(),
-                    _ => {
-                        close_by_sweep(highest_possible_fd());
-                        true
-                    }
-                };
-                if !done {
-                    return SKIP;
-                }
-                if is_open(5000) || is_open(3) {
-                    return 1;
-                }
-                if !(is_open(0) && is_open(1) && is_open(2)) {
-                    return 2;
-                }
-                0
-            });
-            assert!(rc == 0 || rc == SKIP, "strategy {strategy} left descriptors open (rc {rc})");
-        }
-    }
-
-    #[test]
-    fn highest_possible_fd_covers_nr_open() {
-        let h = highest_possible_fd();
-        assert!(h >= 1 << 20, "sweep bound {h} is below the kernel default nr_open");
-        assert!(h <= 1 << 22);
     }
 
     #[test]

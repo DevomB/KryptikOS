@@ -1325,7 +1325,9 @@ fn zone_init(
     }
 
     // Close every descriptor above stderr: an open descriptor still works after pivot_root.
-    rootfs::close_inherited_fds();
+    if let Err(e) = rootfs::close_inherited_fds() {
+        bail!("close_range: {e}");
+    }
 
     /* Rebuild the environment from the allowlist. Every variable is removed;
      * walked as OsStrings because std::env::vars() panics on non-UTF-8. */
