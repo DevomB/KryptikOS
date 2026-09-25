@@ -614,8 +614,12 @@ s_gcc_native() {
     mkdir -p build && cd build
     # The target libraries take CFLAGS by themselves in a native build, but
     # not LDFLAGS: named, so libgcc_s and libstdc++ are linked with them too.
+    # Without a bootstrap, cc1 and the drivers would link stage 02's static
+    # libstdc++ and libgcc, which carry no CET note, and lose theirs; the
+    # empty stage1 flags link the shared ones instead.
     local want; want="$(uname -m)-kryptik-linux-gnu"
     ../configure --build="$want" --prefix=/usr LD=ld LDFLAGS_FOR_TARGET="$LDFLAGS" \
+        --with-stage1-ldflags= \
         --enable-languages=c,c++ --enable-default-pie --enable-default-ssp \
         --enable-host-pie --enable-host-bind-now --enable-cet \
         --disable-bootstrap --disable-fixincludes --disable-multilib --disable-nls \
@@ -652,7 +656,9 @@ s_gcc_native() {
     out="$(readelf -h -d "$(command -v gcc)")"
     [[ "$out" == *"Type:"*"DYN"* && ( "$out" == *BIND_NOW* || "$out" == *"Flags:"*" NOW"* ) ]] \
         || { echo "FAIL: gcc itself is not PIE with BIND_NOW"; return 1; }
-    echo "ok: ${triple} gcc ${V_GCC}; libgcc_s and libstdc++ carry IBT and SHSTK; gcc is PIE with BIND_NOW"
+    out="$(readelf -n "$(gcc -print-prog-name=cc1)")"
+    [[ "$out" == *"x86 feature: IBT, SHSTK"* ]] || { echo "FAIL: cc1 carries no IBT and SHSTK"; return 1; }
+    echo "ok: ${triple} gcc ${V_GCC}; libgcc_s, libstdc++ and cc1 carry IBT and SHSTK; gcc is PIE with BIND_NOW"
 }
 
 s_s6_stack() {
