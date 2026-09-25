@@ -1137,92 +1137,111 @@ fn cmd_run(dir: &Path, args: &[String]) -> ExitCode {
     }
 }
 
-/// SIGSYS handler: print the denied syscall number and exit 159.
-/// Must stay async-signal-safe: no allocation, only a stack buffer and write(2).
-extern "C" fn sigsys_handler(
-    _sig: libc::c_int,
-    info: *mut libc::siginfo_t,
-    _ctx: *mut libc::c_void,
-) {
-    /* si_syscall has no libc field. On x86_64 it is at offset 24: three i32s,
-     * 4 bytes of padding, then the 8-byte si_call_addr. */
-    let nr: i32 = unsafe {
-        let base = info as *const u8;
-        let off = 4 * std::mem::size_of::<i32>() + std::mem::size_of::<usize>();
-        *(base.add(off) as *const i32)
-    };
-
-    const PREFIX: &[u8] = b"KRYPTIK_SECCOMP_DENIED ";
-    let mut buf = [0u8; 48];
-    let mut len = 0;
-    for &b in PREFIX {
-        buf[len] = b;
-        len += 1;
-    }
-    let mut n = if nr < 0 { 0u32 } else { nr as u32 };
-    let mut digits = [0u8; 10];
-    let mut d = 0;
-    loop {
-        digits[d] = b'0' + (n % 10) as u8;
-        n /= 10;
-        d += 1;
-        if n == 0 {
-            break;
-        }
-    }
-    while d > 0 {
-        d -= 1;
-        buf[len] = digits[d];
-        len += 1;
-    }
-    buf[len] = b'\n';
-    len += 1;
-
-    unsafe {
-        libc::write(2, buf.as_ptr() as *const libc::c_void, len);
-        libc::_exit(159);
-    }
+/// `_IOWR('!', nr, size)`, the seccomp notification ioctls.
+const fn seccomp_iowr(nr: u32, size: usize) -> libc::c_ulong {
+    ((3 << 30) | ((size as u32) << 16) | ((b'!' as u32) << 8) | nr) as libc::c_ulong
 }
+const NOTIF_RECV: libc::c_ulong = seccomp_iowr(0, std::mem::size_of::<libc::seccomp_notif>());
+const NOTIF_SEND: libc::c_ulong = seccomp_iowr(1, std::mem::size_of::<libc::seccomp_notif_resp>());
 
+/* Run CMD under the zone filter and name every call it refuses. A refused
+ * call goes to this process (seccomp user notification: no ptrace, which
+ * Kryptik forbids), is printed, and fails with ENOSYS, so one run lists all
+ * the program was denied. The child shares this process's descriptor table
+ * until its exec: that is how the listener it creates reaches us, since the
+ * zone filter has no sendmsg to pass it with. */
 fn cmd_seccomp_trace(cmd: &[String]) -> ExitCode {
     use std::ffi::CString;
 
-    let pid = unsafe { libc::fork() };
-    if pid < 0 {
-        eprintln!("seccomp-trace: fork failed");
+    let args: Vec<CString> = match cmd.iter().map(|a| CString::new(a.as_str())).collect() {
+        Ok(a) => a,
+        Err(_) => {
+            eprintln!("seccomp-trace: an argument contains NUL");
+            return ExitCode::from(2);
+        }
+    };
+    let mut ptrs: Vec<*const libc::c_char> = args.iter().map(|a| a.as_ptr()).collect();
+    ptrs.push(std::ptr::null());
+    let mut pipe = [0 as libc::c_int; 2];
+    if unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) } < 0 {
+        eprintln!("seccomp-trace: pipe: {}", std::io::Error::last_os_error());
         return ExitCode::FAILURE;
     }
 
+    // A fork that shares the descriptor table; the child's exec unshares it.
+    let pid = unsafe { libc::syscall(libc::SYS_clone, libc::CLONE_FILES | libc::SIGCHLD, 0, 0, 0, 0) } as libc::pid_t;
+    if pid < 0 {
+        eprintln!("seccomp-trace: clone: {}", std::io::Error::last_os_error());
+        return ExitCode::FAILURE;
+    }
     if pid == 0 {
+        // Only calls the zone filter allows from here: write, execve, exit.
+        let fd: libc::c_int = seccomp::install_notifying(seccomp::BASE_ALLOWLIST).unwrap_or(-1);
         unsafe {
-            let mut sa: libc::sigaction = std::mem::zeroed();
-            sa.sa_sigaction = sigsys_handler as *const () as usize;
-            sa.sa_flags = libc::SA_SIGINFO;
-            libc::sigaction(libc::SIGSYS, &sa, std::ptr::null_mut());
-        }
-        if seccomp::install_tracing(seccomp::BASE_ALLOWLIST).is_err() {
-            unsafe { libc::_exit(1) };
-        }
-        let prog = CString::new(cmd[0].as_str()).unwrap_or_default();
-        let args: Vec<CString> = cmd
-            .iter()
-            .filter_map(|a| CString::new(a.as_str()).ok())
-            .collect();
-        let mut ptrs: Vec<*const libc::c_char> = args.iter().map(|a| a.as_ptr()).collect();
-        ptrs.push(std::ptr::null());
-        unsafe {
-            libc::execvp(prog.as_ptr(), ptrs.as_ptr());
+            libc::write(pipe[1], fd.to_ne_bytes().as_ptr() as *const libc::c_void, 4);
+            if fd >= 0 {
+                libc::execvp(ptrs[0], ptrs.as_ptr());
+            }
             libc::_exit(127)
+        }
+    }
+
+    let mut word = [0u8; 4];
+    let got = unsafe { libc::read(pipe[0], word.as_mut_ptr() as *mut libc::c_void, 4) };
+    unsafe {
+        libc::close(pipe[0]);
+        libc::close(pipe[1]);
+    }
+    let listener = i32::from_ne_bytes(word);
+    /* The program's end is read from a pidfd: the listener hangs up only when
+     * the last filtered task is reaped, and this loop is what would reap it. */
+    let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as libc::c_int;
+    let mut refused = 0u32;
+    if got == 4 && listener >= 0 && pidfd >= 0 {
+        loop {
+            let mut pfds = [
+                libc::pollfd { fd: listener, events: libc::POLLIN, revents: 0 },
+                libc::pollfd { fd: pidfd, events: libc::POLLIN, revents: 0 },
+            ];
+            if unsafe { libc::poll(pfds.as_mut_ptr(), 2, -1) } < 0 {
+                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                break;
+            }
+            if pfds[0].revents & libc::POLLIN == 0 {
+                if pfds[1].revents != 0 || pfds[0].revents != 0 {
+                    break;
+                }
+                continue;
+            }
+            let mut req: libc::seccomp_notif = unsafe { std::mem::zeroed() };
+            if unsafe { libc::ioctl(listener, NOTIF_RECV as _, &mut req) } < 0 {
+                continue; // the caller died before we read it
+            }
+            let nr = libc::c_long::from(req.data.nr);
+            let name = seccomp::SYSCALL_NAMES.iter().find(|(_, n)| *n == nr).map_or("", |(s, _)| *s);
+            eprintln!("KRYPTIK_SECCOMP_DENIED {nr} {name}");
+            refused += 1;
+            let mut resp: libc::seccomp_notif_resp = unsafe { std::mem::zeroed() };
+            resp.id = req.id;
+            resp.error = -libc::ENOSYS;
+            unsafe { libc::ioctl(listener, NOTIF_SEND as _, &mut resp) };
+        }
+    } else {
+        eprintln!("seccomp-trace: the filter could not be installed, or the program watched");
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
+    for fd in [listener, pidfd] {
+        if fd >= 0 {
+            unsafe { libc::close(fd) };
         }
     }
 
     let mut status: libc::c_int = 0;
     unsafe { libc::waitpid(pid, &mut status, 0) };
-    let code = spawn::decode_status(status);
-    if code == 159 {
-        eprintln!("seccomp-trace: the command was denied a syscall");
-    }
-    ExitCode::from(u8::try_from(code).unwrap_or(1))
+    eprintln!("seccomp-trace: {refused} refused call(s)");
+    ExitCode::from(u8::try_from(spawn::decode_status(status)).unwrap_or(1))
 }
 
 fn cmd_seccomp_test(name: &str, nr: libc::c_long) -> ExitCode {
@@ -1274,6 +1293,12 @@ mod tests {
 
     fn args(a: &[&str]) -> Vec<String> {
         a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn seccomp_ioctls() {
+        assert_eq!(NOTIF_RECV, 0xC050_2100);
+        assert_eq!(NOTIF_SEND, 0xC018_2101);
     }
 
     #[test]

@@ -1122,6 +1122,16 @@ filter_probe "L6  socket(AF_NETLINK/NETFILTER) is refused with an errno" socket-
 filter_probe "L7  ioctl(TIOCSTI) is killed (terminal input injection)" ioctl-tiocsti 5
 filter_probe "L8  positive control: socket(AF_INET) still works" socket-inet 0
 
+# seccomp-trace names each refused call and lets the program carry on:
+# reboot(2) is refused by the zone filter and fails with ENOSYS (38).
+out="$(timeout "$TIMEOUT" "$KRYPTIKD" seccomp-trace -- python3 -c \
+    'import ctypes; c = ctypes.CDLL(None, use_errno=True); print(c.syscall(169, 0, 0, 0, 0), ctypes.get_errno())' 2>&1)"
+if [[ "$out" == *"KRYPTIK_SECCOMP_DENIED 169"* && "$out" == *"-1 38"* ]]; then
+    pass "L9  seccomp-trace names a refused call and the program goes on"
+else
+    fail "L9  seccomp-trace did not report reboot(2) [$(tr '\n' ' ' <<<"$out")]"
+fi
+
 # ============================================================================
 head_ "M. cgroup resource limits  [unpriv where delegated, otherwise vm]"
 # ============================================================================

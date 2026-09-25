@@ -3,6 +3,7 @@
 //! libseccomp, a large C dependency (ADR-010).
 
 use std::io;
+use std::os::unix::io::RawFd;
 
 // x86-64 only: `install` refuses to run anywhere else.
 const AUDIT_ARCH_X86_64: u32 = 0xc000_003e;
@@ -26,8 +27,6 @@ const BPF_RET: u16 = 0x06;
 // Filter return actions.
 const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
 const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
-// SIGSYS naming the syscall, for `kryptikd seccomp-trace`.
-const SECCOMP_RET_TRAP: u32 = 0x0003_0000;
 // Fail the call instead of killing: for probes such as clone3.
 const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
 
@@ -481,19 +480,24 @@ fn build_program_full(
 /// Install a default-deny filter on every thread of the process (TSYNC) and
 /// all descendants. Irreversible.
 pub fn install(allow: &[libc::c_long]) -> Result<(), SeccompError> {
-    install_with(allow, SECCOMP_RET_KILL_PROCESS, &SocketPolicy::default())
+    install_with(allow, SECCOMP_RET_KILL_PROCESS, &SocketPolicy::default(), SECCOMP_FILTER_FLAG_TSYNC).map(|_| ())
 }
 
-/// As `install`, but SIGSYS instead of a kill, so the denied syscall can be reported.
-pub fn install_tracing(allow: &[libc::c_long]) -> Result<(), SeccompError> {
-    install_with(allow, SECCOMP_RET_TRAP, &SocketPolicy::default())
+/// As `install` for a single-threaded caller, but a refused call waits for a
+/// supervisor instead of killing: returns the listener descriptor, which is
+/// close-on-exec (`kryptikd seccomp-trace`).
+pub fn install_notifying(allow: &[libc::c_long]) -> Result<RawFd, SeccompError> {
+    let fd = install_with(allow, libc::SECCOMP_RET_USER_NOTIF, &SocketPolicy::default(), libc::SECCOMP_FILTER_FLAG_NEW_LISTENER)?;
+    Ok(fd as RawFd)
 }
 
+/// Returns what seccomp(2) returned: 0, or the listener with NEW_LISTENER.
 fn install_with(
     allow: &[libc::c_long],
     deny_action: u32,
     sockets: &SocketPolicy,
-) -> Result<(), SeccompError> {
+    flags: libc::c_ulong,
+) -> Result<libc::c_long, SeccompError> {
     if !cfg!(target_arch = "x86_64") {
         return Err(SeccompError::UnsupportedArch);
     }
@@ -518,7 +522,7 @@ fn install_with(
         libc::syscall(
             SYS_SECCOMP,
             SECCOMP_SET_MODE_FILTER,
-            SECCOMP_FILTER_FLAG_TSYNC,
+            flags,
             &fprog as *const _ as *const libc::c_void,
         )
     };
@@ -528,7 +532,7 @@ fn install_with(
             errno: io::Error::last_os_error().raw_os_error().unwrap_or(0),
         });
     }
-    Ok(())
+    Ok(ret)
 }
 
 /// Install the standard zone filter.
@@ -548,7 +552,7 @@ pub fn confine_zone_with(extra: &[libc::c_long], sockets: &SocketPolicy) -> Resu
             allow.push(nr);
         }
     }
-    install_with(&allow, SECCOMP_RET_KILL_PROCESS, sockets)
+    install_with(&allow, SECCOMP_RET_KILL_PROCESS, sockets, SECCOMP_FILTER_FLAG_TSYNC).map(|_| ())
 }
 
 /// Syscall names a zone policy may use: denied ones (refused by name), base
