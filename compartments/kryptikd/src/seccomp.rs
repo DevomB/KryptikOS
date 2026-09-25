@@ -459,9 +459,8 @@ fn build_program_full(
     p.push(jump(BPF_JMP | BPF_JGE | BPF_K, X32_SYSCALL_BIT, 0, 1));
     p.push(stmt(BPF_RET | BPF_K, deny_action));
 
-    // Argument rules first, before the plain allowlist can allow those
-    // syscalls, and only for syscalls the list allows: a rule's block can end
-    // in ALLOW, so one emitted for a syscall the list left out allowed it.
+    /* Argument rules first, so the plain allowlist cannot allow their
+     * syscalls, and only for a listed syscall: a rule's block can end in ALLOW. */
     for &rule in ARG_RULES {
         if allow.contains(&rule.nr()) {
             emit_arg_rule(&mut p, rule, deny_action, sockets);
