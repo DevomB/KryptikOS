@@ -49,9 +49,13 @@ latest.sig    an OpenSSH signature over those bytes, namespace kryptik-latest
 - Zone 0 names the channel: `channel = <address>` in
   `/etc/kryptik/update.conf`, bound read-only into the zones' `/etc` like
   `time.conf`. Only the verified root's copy lasts (one root writes at run
-  time is quarantined at the next boot), and no build ships one yet. Without
-  it the net zone asks nobody and `update-poll` answers `idle`. The address
-  is not a trust anchor.
+  time is quarantined at the next boot). A build names it with
+  `KRYPTIK_CHANNEL` (`make media KRYPTIK_CHANNEL=https://<host>/<channel>/`),
+  and stage 06 refuses an address zone 0 would not use (spaces, anything but
+  printable ASCII, more than 512 bytes, plain `http` on an image whose role is
+  not `development`) before it builds anything. Without it the image ships
+  no `update.conf`, the net zone asks nobody and `update-poll` answers
+  `idle`. The address is not a trust anchor.
 - `base` is absolute, or relative to the channel address and staying under
   it, never resolved against anything the net zone says. The pointer carries
   the manifest's hash, so where the bytes come from decides nothing about what
@@ -156,6 +160,9 @@ the signed manifest does not provide for.
 - The update suite's network step (`tools/image/update-test.sh`): nothing is
   fetched until asked, then the release arrives whole, is applied,
   trial-booted and committed.
+- `tools/test-channel-setting.sh`: the addresses stage 06 takes for
+  `KRYPTIK_CHANNEL` for each role, and the fetcher reading back the
+  `update.conf` stage 06 writes.
 
 ## Open points
 
@@ -173,4 +180,5 @@ the signed manifest does not provide for.
 `tools/update/kryptik-update` (`check-manifest`, `check-pointer`),
 `tools/net/update-fetch.py`, `tools/net/netzone-init.sh`,
 `tools/release-manifest.sh` (`pointer`), `build/stages/04-base-system.sh`
-(the keys) and `06-iso.sh` (the statement per build).
+(the keys) and `06-iso.sh` (the statement per build, and `update.conf` from
+`KRYPTIK_CHANNEL`).

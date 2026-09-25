@@ -3,7 +3,8 @@
 # image, signed kernels, USB and ISO images, and the update payload.
 # Runs outside the chroot as root: the root image carries root-only paths, and
 # the kernel relink goes through 03-chroot-prep.sh.
-# usage: make iso   (KRYPTIK_VERSION=... names the release)
+# usage: make iso   (KRYPTIK_VERSION=... names the release, KRYPTIK_CHANNEL=...
+#                    where its net zone asks for the next one)
 #        06-iso.sh [--redo <step>]
 set -Eeuo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
@@ -30,6 +31,31 @@ KRYPTIK_VERSION="${KRYPTIK_VERSION:-0.1.$(date +%Y%m%d).$(git -c safe.directory=
 COMMIT="$(git -c safe.directory='*' -C "$KRYPTIK_ROOT" describe --always --dirty --abbrev=40 2>/dev/null || echo unknown)"
 ESP_MIB=512
 export KRYPTIK_VERSION
+# Where the image's net zone asks for releases (docs/design/update-channel.md).
+# Empty, the image names no channel and fetches nothing.
+KRYPTIK_CHANNEL="${KRYPTIK_CHANNEL:-}"
+
+# check_channel ADDRESS ROLE: why ADDRESS cannot be an image's update channel,
+# or nothing. Zone 0's own rules (update.rs): printable ASCII without spaces,
+# at most 512 bytes, https, and plain http only on a development image.
+check_channel() {
+    local a="$1" role="$2" printable
+    # Only its printable ASCII bytes kept: anything else makes it differ, a
+    # trailing newline included.
+    printable="$(printf '%s' "$a" | LC_ALL=C tr -cd '!-~')"
+    if [[ -z "$a" || "${#a}" -gt 512 || "$printable" != "$a" ]]; then
+        echo "not 1 to 512 printable ASCII characters without spaces"
+    elif [[ "$a" =~ ^http://[^/]+ ]]; then
+        [[ "$role" == development ]] || echo "plain http is for a development image, and this one is ${role}"
+    elif [[ ! "$a" =~ ^https://[^/]+ ]]; then
+        echo "neither https:// nor http:// followed by a host"
+    fi
+}
+
+# channel_conf ADDRESS: /etc/kryptik/update.conf naming ADDRESS.
+channel_conf() {
+    printf '# Where the net zone asks for releases. What comes back is believed on\n# its signature alone (docs/design/update-channel.md).\nchannel = %s\n' "$1"
+}
 
 # --- preflight ----------------------------------------------------------------
 log "Kryptik stage 06 — install media ${KRYPTIK_VERSION}"
@@ -41,6 +67,12 @@ done
 [[ -f "${SYSROOT}/boot/kryptik-${V_LINUX}" ]] || die "no kernel at ${SYSROOT}/boot/kryptik-${V_LINUX}; run make kernel"
 [[ -d "${SYSROOT}/lib/modules/${V_LINUX_HARDENED}" ]] || warn "no modules under lib/modules/${V_LINUX_HARDENED}"
 "$CHROOTD" guard-unmounted 2>/dev/null || die "the chroot is mounted inside ${SYSROOT}; unmount it first"
+if [[ -n "$KRYPTIK_CHANNEL" ]]; then
+    role_file="${SYSROOT}/usr/share/kryptik/trust/required-role"
+    [[ -f "$role_file" ]] || die "no ${role_file}, so no role to check KRYPTIK_CHANNEL against"
+    why="$(check_channel "$KRYPTIK_CHANNEL" "$(tr -d '[:space:]' < "$role_file")")"
+    [[ -z "$why" ]] || die "KRYPTIK_CHANNEL=${KRYPTIK_CHANNEL}: ${why}"
+fi
 mkdir -p "$IMG" "$IMG/cmdlines" "$IMG/kernels" "$KRYPTIK_OUT"
 chmod 0700 "$IMG"
 
@@ -71,7 +103,7 @@ EOF
 }
 
 s_rootfs() {
-    local version="$1"
+    local version="$1" channel="${3:-}"
     local work; work="$(mktemp -d "${IMG}/stage.XXXXXX")"
     trap 'rm -rf "$work"' RETURN
     local stage="$work/root"
@@ -93,11 +125,18 @@ s_rootfs() {
     # The system allocator (ADR-005): the image's processes run on it, the build
     # never does. Zones get their own copy from kryptikd (rootfs.rs).
     [[ -f "$stage/usr/lib/libhardened_malloc.so" ]] || die "no /usr/lib/libhardened_malloc.so to preload"
-    printf '%s
-' /usr/lib/libhardened_malloc.so > "$stage/etc/ld.so.preload"
+    printf '%s\n' /usr/lib/libhardened_malloc.so > "$stage/etc/ld.so.preload"
 
     # setuid/setgid only where build/config/setuid-allowlist.txt says why.
     "${KRYPTIK_ROOT}/tools/audit-setuid.sh" --strip "$stage"
+
+    # The update channel, when the build names one: on the verified root, the
+    # one copy that lasts (a copy written under /etc at run time is gone at the
+    # next boot). Checked against the image's role before any step ran.
+    if [[ -n "$channel" ]]; then
+        channel_conf "$channel" > "$stage/etc/kryptik/update.conf"
+        chmod 0644 "$stage/etc/kryptik/update.conf"
+    fi
 
     # The image cannot hold its own hash; that goes on the ESP and in MANIFEST.
     sed -i "/^VERSION_ID=/d;/^VERSION=/d" "$stage/etc/os-release"
@@ -459,7 +498,7 @@ s_export() {
 
 # --- run --------------------------------------------------------------------
 step sb-keys        s_sb_keys
-step rootfs         s_rootfs "$KRYPTIK_VERSION" "$(cat "${KRYPTIK_ROOT}/build/config/setuid-allowlist.txt" "${KRYPTIK_ROOT}/tools/audit-setuid.sh" | sha256_of_stdin)"
+step rootfs         s_rootfs "$KRYPTIK_VERSION" "$(cat "${KRYPTIK_ROOT}/build/config/setuid-allowlist.txt" "${KRYPTIK_ROOT}/tools/audit-setuid.sh" | sha256_of_stdin)" "$KRYPTIK_CHANNEL"
 step cmdlines       s_cmdlines "$(_hash_file "${IMG}/root.json")"
 step bind-kernels   s_bind_kernels "$(cat "${IMG}"/cmdlines/{slot-a,slot-b,media-usb}.txt | sha256_of_stdin)"
 step sign-kernels   s_sign_kernels "$(cat "${IMG}"/kernels/{slot-a,slot-b,media-usb}.efi | sha256_of_stdin)$(_hash_file "$KEYS/kryptik-sb.crt")"

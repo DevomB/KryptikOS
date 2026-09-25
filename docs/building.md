@@ -50,6 +50,11 @@ make media      # stage 06: USB image, ISO, signed release payload
 Each step is stamped, so a rerun resumes where it stopped and a changed
 recipe rebuilds from that step on.
 
+`make media KRYPTIK_CHANNEL=https://<host>/<channel>/` names where the
+image's network zone asks for new releases
+([update channel](design/update-channel.md)). Without it the image fetches
+nothing, and updates come only from a payload on a disk.
+
 ## Testing without a build
 
 The host suites need no build and no root:
