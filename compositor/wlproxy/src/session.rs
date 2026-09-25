@@ -74,8 +74,14 @@ impl From<io::Error> for SessionError {
     }
 }
 
+/// Bytes gathered into one outbound batch: the largest message.
+const BATCH_BYTES: usize = MAX_MESSAGE_LEN;
+/// Descriptors in one sendmsg: libwayland reads at most 28 per message
+/// (MAX_FDS_OUT) and ends the connection on more.
+pub(crate) const BATCH_FDS: usize = 28;
+
 /// A socket endpoint with its inbound bytes and descriptors, and outbound
-/// bytes with the descriptors that must go with the first message in them.
+/// batches of messages with the descriptors that go with them.
 pub struct Endpoint {
     pub fd: RawFd,
     /// Inbound bytes; those before `in_pos` have been consumed. Compacted
@@ -85,7 +91,8 @@ pub struct Endpoint {
     inbuf: Vec<u8>,
     in_pos: usize,
     in_fds: VecDeque<RawFd>,
-    /// (bytes, fds to send with them) in order; sent from the front.
+    /// Batches of whole messages with the descriptors to send with them, in
+    /// order; sent from the front, one sendmsg each (`queue`).
     outq: VecDeque<(Vec<u8>, Vec<RawFd>)>,
     pub pending_out: usize,
     pending_fds: usize,
@@ -102,16 +109,17 @@ impl Endpoint {
         &self.inbuf[self.in_pos..]
     }
 
-    /// Take the next `n` pending bytes as one message. The caller has
-    /// checked that many are present.
-    fn consume(&mut self, n: usize) -> Vec<u8> {
-        let msg = self.inbuf[self.in_pos..self.in_pos + n].to_vec();
+    /// Move the next `n` pending bytes, one message, into `out`, a buffer the
+    /// caller reuses for every message. The caller has checked that many are
+    /// present.
+    fn take(&mut self, n: usize, out: &mut Vec<u8>) {
+        out.clear();
+        out.extend_from_slice(&self.inbuf[self.in_pos..self.in_pos + n]);
         self.in_pos += n;
         if self.in_pos == self.inbuf.len() {
             self.inbuf.clear();
             self.in_pos = 0;
         }
-        msg
     }
 
     /// Everything pending, leaving the buffer empty (tests).
@@ -226,10 +234,23 @@ impl Endpoint {
         Ok(false)
     }
 
-    fn queue(&mut self, bytes: Vec<u8>, fds: Vec<RawFd>) {
+    /// Queue one message. It joins the last batch while that has room, so a
+    /// burst of small messages is one buffer and one sendmsg, and
+    /// `pending_out`, the bound, is close to what the queue really holds (a
+    /// buffer per message cost several times the message). Its descriptors
+    /// go with that batch: they reach the peer no later than the message and
+    /// in the order sent, which is all libwayland asks.
+    fn queue(&mut self, bytes: &[u8], fds: Vec<RawFd>) {
         self.pending_out += bytes.len();
         self.pending_fds += fds.len();
-        self.outq.push_back((bytes, fds));
+        if let Some((b, f)) = self.outq.back_mut() {
+            if b.len() + bytes.len() <= BATCH_BYTES && f.len() + fds.len() <= BATCH_FDS {
+                b.extend_from_slice(bytes);
+                f.extend(fds);
+                return;
+            }
+        }
+        self.outq.push_back((bytes.to_vec(), fds));
     }
 
     pub fn close_all(&mut self) {
@@ -332,6 +353,10 @@ impl Session {
     /// Process everything complete in one direction's inbound buffer.
     /// Returns Ok(()) when more input is needed.
     pub fn pump(&mut self, dir: Dir) -> Result<(), SessionError> {
+        // Every message of this pass is copied into this one buffer, checked
+        // there and copied from it into the outbound batch: no allocation
+        // per message.
+        let mut msg: Vec<u8> = Vec::new();
         loop {
             let src = match dir {
                 Dir::ClientToServer => &mut self.client,
@@ -360,7 +385,7 @@ impl Session {
                 }
                 return Ok(()); // descriptors still in flight
             }
-            let mut msg: Vec<u8> = src.consume(size);
+            src.take(size, &mut msg);
             // Parsing or policy may reject this message before it is queued.
             // Own the descriptors so every such return closes them.
             let fds: Vec<OwnedFd> = src.in_fds.drain(..needed).map(|fd| unsafe { OwnedFd::from_raw_fd(fd) }).collect();
@@ -369,6 +394,8 @@ impl Session {
 
             // --- policy, per message ---------------------------------------
             let mut forward = true;
+            // What goes out in the message's place, when policy rewrites it.
+            let mut rewritten: Option<Vec<u8>> = None;
             // A message of the proxy's own, sent right behind this one.
             let mut stamp: Option<Vec<u8>> = None;
             match dir {
@@ -377,11 +404,11 @@ impl Session {
                     // registry it creates is tracked by the new-objects loop
                     // below like every other typed child.)
                     if iface.name == "wl_registry" && h.opcode == WL_REGISTRY_BIND {
-                        let (name, version) = match (&decoded.new_objects[..], decoded.bind_version) {
-                            ([(_, n)], Some(v)) => (n.clone(), v),
+                        let (name, version) = match (decoded.new_object, decoded.bind_version) {
+                            (Some((_, n)), Some(v)) => (n, v),
                             _ => return Err(SessionError::Wire(WireError::ArgOverrun)),
                         };
-                        let max = policy::allowed_version(&name).ok_or_else(|| SessionError::HiddenInterface(name.clone()))?;
+                        let max = policy::allowed_version(name).ok_or_else(|| SessionError::HiddenInterface(name.to_string()))?;
                         // The numeric global identifies one advertised interface
                         // and version cap, not any interface on the allowlist.
                         let mut r = ArgReader::new(&msg[HEADER_LEN..]);
@@ -393,7 +420,7 @@ impl Session {
                         }
                         let max = max.min(*cap);
                         if version > max {
-                            return Err(SessionError::VersionTooHigh { interface: name, asked: version, max });
+                            return Err(SessionError::VersionTooHigh { interface: name.to_string(), asked: version, max });
                         }
                     }
                     if iface.name == "xdg_toplevel" && (m.name == "set_title" || m.name == "set_app_id") {
@@ -401,7 +428,7 @@ impl Session {
                             let new = if m.name == "set_title" { policy::title_for(&self.zone, s) } else { policy::app_id_for(&self.zone, s) };
                             match MessageWriter::new(h.object, h.opcode).string(&new).finish() {
                                 Some(rebuilt) => {
-                                    msg = rebuilt;
+                                    rewritten = Some(rebuilt);
                                     self.rewritten += 1;
                                 }
                                 None => return Err(SessionError::Wire(WireError::BadSize(h.size))),
@@ -419,7 +446,7 @@ impl Session {
                     // creates the object; a set_app_id the client sends later
                     // is rewritten as above and simply replaces it.
                     if iface.name == "xdg_surface" && m.name == "get_toplevel" {
-                        if let Some((id, _)) = decoded.new_objects.first() {
+                        if let Some((id, _)) = decoded.new_object {
                             // A constant of the tables, resolved once. The
                             // failure path stays: a table without the request
                             // refuses rather than stamping a guessed opcode.
@@ -431,7 +458,7 @@ impl Session {
                                         .map(|p| p as u16)
                                 })
                                 .ok_or(SessionError::Wire(WireError::ArgOverrun))?;
-                            stamp = MessageWriter::new(*id, opcode).string(&policy::app_id_for(&self.zone, "")).finish();
+                            stamp = MessageWriter::new(id, opcode).string(&policy::app_id_for(&self.zone, "")).finish();
                         }
                     }
                 }
@@ -439,16 +466,16 @@ impl Session {
                     if iface.name == "wl_registry" && h.opcode == WL_REGISTRY_GLOBAL {
                         let mut r = ArgReader::new(&msg[HEADER_LEN..]);
                         let gname = r.u32()?;
-                        let iname = r.string()?.unwrap_or("").to_string();
+                        let iname = r.string()?.unwrap_or("");
                         let version = r.u32()?;
                         // One allowlist lookup: advertise() is allowed_version().is_some().
-                        if let Some(allowed) = policy::allowed_version(&iname) {
+                        if let Some(allowed) = policy::allowed_version(iname) {
                             let cap = allowed.min(version);
                             // advertise at most the version we can parse
                             if cap != version {
-                                msg = MessageWriter::new(h.object, h.opcode).u32(gname).string(&iname).u32(cap).finish().unwrap_or(msg);
+                                rewritten = MessageWriter::new(h.object, h.opcode).u32(gname).string(iname).u32(cap).finish();
                             }
-                            let iface_static: &'static str = protocol::find(&iname).map(|i| i.name).unwrap_or("?");
+                            let iface_static: &'static str = protocol::find(iname).map(|i| i.name).unwrap_or("?");
                             self.globals.insert(gname, (iface_static, cap));
                         } else {
                             self.hidden_count += 1;
@@ -470,12 +497,13 @@ impl Session {
                     }
                 }
             }
-            // New objects, whichever side created them.
-            for (id, name) in &decoded.new_objects {
-                // Registry bindings choose a version; typed children inherit
-                // their parent's version, including server-created children.
-                self.register(*id, name, decoded.bind_version.unwrap_or(version), dir)?;
+            // The new object, whichever side created it. Registry bindings
+            // choose a version; typed children inherit their parent's,
+            // including server-created children.
+            if let Some((id, name)) = decoded.new_object {
+                self.register(id, name, decoded.bind_version.unwrap_or(version), dir)?;
             }
+            let msg: &[u8] = rewritten.as_deref().unwrap_or(&msg);
             let dst = match dir {
                 Dir::ClientToServer => &mut self.server,
                 Dir::ServerToClient => &mut self.client,
@@ -490,7 +518,7 @@ impl Session {
                 }
                 dst.queue(msg, fds.into_iter().map(IntoRawFd::into_raw_fd).collect());
                 if let Some(s) = stamp {
-                    dst.queue(s, Vec::new());
+                    dst.queue(&s, Vec::new());
                     self.rewritten += 1;
                 }
                 match dir {
@@ -507,7 +535,7 @@ impl Session {
     pub fn refuse(&mut self, why: &str) {
         let text = format!("kryptik-wlproxy: {why}");
         if let Some(m) = MessageWriter::new(WL_DISPLAY, WL_DISPLAY_ERROR).u32(WL_DISPLAY).u32(3).string(&text).finish() {
-            self.client.queue(m, Vec::new());
+            self.client.queue(&m, Vec::new());
             let _ = self.client.flush();
         }
         self.client.close_all();
@@ -833,6 +861,35 @@ mod tests {
         let (mut s, mut c, _sv) = make();
         c.write_all(&get_registry(0xFF00_0001)).unwrap();
         assert!(matches!(pump_all(&mut s), Err(SessionError::IdOutOfRange { .. })));
+    }
+
+    #[test]
+    fn small_messages_share_a_send_and_no_send_outgrows_libwayland() {
+        let (a, b) = UnixStream::pair().unwrap();
+        b.set_nonblocking(true).unwrap();
+        let mut out = Endpoint::new(a.into_raw_fd());
+        for i in 0..100u32 {
+            out.queue(&MessageWriter::new(1, 0).u32(i).finish().unwrap(), Vec::new());
+        }
+        assert_eq!(out.outq.len(), 1, "a hundred 12-byte messages are one batch");
+        assert_eq!(out.pending_out, 1200);
+        let (p, _q) = UnixStream::pair().unwrap();
+        for _ in 0..30 {
+            let fd = unsafe { libc::dup(p.as_raw_fd()) };
+            out.queue(&MessageWriter::new(1, 0).u32(0).finish().unwrap(), vec![fd]);
+        }
+        assert!(out.outq.iter().all(|(_, f)| f.len() <= BATCH_FDS));
+        assert!(!out.flush().unwrap(), "everything went");
+        let (bytes, fds) = recv_with_fds(b.as_raw_fd());
+        assert_eq!(bytes.len(), 1200 + 30 * 12);
+        assert_eq!(fds.len(), 30);
+        for (i, m) in bytes.chunks(12).take(100).enumerate() {
+            assert_eq!(u32::from_ne_bytes(m[8..12].try_into().unwrap()), i as u32, "in order");
+        }
+        for fd in fds {
+            unsafe { libc::close(fd) };
+        }
+        out.close_all();
     }
 
     #[test]

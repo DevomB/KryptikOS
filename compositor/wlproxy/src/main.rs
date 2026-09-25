@@ -128,6 +128,7 @@ fn main() {
     // connection that failed is still pending, so polling it again at once
     // is a loop at full speed (a client can exhaust descriptors to get there).
     let mut accept_after = Instant::now();
+    let mut fds: Vec<libc::pollfd> = Vec::new();
     loop {
         // Build the poll set: the listener, then each session's two sockets.
         //
@@ -140,7 +141,7 @@ fn main() {
         // then indexed the old array for the new session too: index out of
         // bounds on the very first client.
         let polled = sessions.len();
-        let mut fds: Vec<libc::pollfd> = Vec::with_capacity(1 + 2 * polled);
+        fds.clear();
         let pause = accept_after.saturating_duration_since(Instant::now());
         let accepting = polled < o.max_clients && pause.is_zero();
         fds.push(libc::pollfd { fd: listener.as_raw_fd(), events: if accepting { libc::POLLIN } else { 0 }, revents: 0 });

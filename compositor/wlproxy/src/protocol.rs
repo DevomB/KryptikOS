@@ -88,24 +88,36 @@ impl Message {
     }
 }
 
-/// What a decoded message tells the proxy: the objects it creates, and the
-/// strings it carries (for rewriting), in argument order.
+/// What a decoded message tells the proxy: the object it creates, and the
+/// strings it carries (for rewriting), in argument order. Borrowed from the
+/// body, so decoding a message allocates nothing unless it carries a string.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct Decoded {
+pub struct Decoded<'a> {
     /// (new object id, interface name). For wl_registry.bind the interface
-    /// comes from the request itself.
-    pub new_objects: Vec<(u32, String)>,
+    /// comes from the request itself. No message creates two objects (a test
+    /// holds the tables to that), and a body that tries is refused.
+    pub new_object: Option<(u32, &'a str)>,
     /// (byte offset of the string's length word within the body, value)
-    pub strings: Vec<(usize, String)>,
+    pub strings: Vec<(usize, &'a str)>,
     /// The version requested by wl_registry.bind, when this is one.
     pub bind_version: Option<u32>,
+}
+
+impl<'a> Decoded<'a> {
+    fn created(&mut self, id: u32, name: &'a str) -> Result<(), WireError> {
+        if self.new_object.is_some() {
+            return Err(WireError::ArgOverrun);
+        }
+        self.new_object = Some((id, name));
+        Ok(())
+    }
 }
 
 /// Walk a message body against its signature, validating every argument
 /// and collecting what the proxy needs. Refuses anything that does not
 /// parse exactly to the signature's end: a trailing byte is as suspect as a
 /// missing one.
-pub fn decode(msg: &Message, body: &[u8]) -> Result<Decoded, WireError> {
+pub fn decode<'a>(msg: &Message, body: &'a [u8]) -> Result<Decoded<'a>, WireError> {
     let mut r = ArgReader::new(body);
     let mut d = Decoded::default();
     for arg in msg.args() {
@@ -116,7 +128,7 @@ pub fn decode(msg: &Message, body: &[u8]) -> Result<Decoded, WireError> {
             Arg::String { nullable } => {
                 let at = body.len() - r.remaining();
                 match r.string()? {
-                    Some(s) => d.strings.push((at, s.to_string())),
+                    Some(s) => d.strings.push((at, s)),
                     None if nullable => {}
                     None => return Err(WireError::UnterminatedString),
                 }
@@ -126,18 +138,15 @@ pub fn decode(msg: &Message, body: &[u8]) -> Result<Decoded, WireError> {
             }
             Arg::NewId { iface: Some(name) } => {
                 let id = r.u32()?;
-                d.new_objects.push((id, name.to_string()));
+                d.created(id, name)?;
             }
             Arg::NewId { iface: None } => {
                 // wl_registry.bind: string interface, uint version, new_id
-                let name = match r.string()? {
-                    Some(s) => s.to_string(),
-                    None => return Err(WireError::UnterminatedString),
-                };
+                let name = r.string()?.ok_or(WireError::UnterminatedString)?;
                 let version = r.u32()?;
                 let id = r.u32()?;
                 d.bind_version = Some(version);
-                d.new_objects.push((id, name));
+                d.created(id, name)?;
             }
             Arg::Fd => {}
         }
@@ -174,6 +183,19 @@ pub(crate) mod tests {
         assert!(find("wl_compositor_").is_none());
     }
 
+    /// What decode and the outbound batches rely on: one new object at most
+    /// per message, and never more descriptors than one sendmsg may carry.
+    #[test]
+    fn no_message_creates_two_objects_or_outgrows_a_send() {
+        for i in crate::protocol_tables::INTERFACES {
+            for m in i.requests.iter().chain(i.events.iter()) {
+                let created = m.args().filter(|a| matches!(a, Arg::NewId { .. })).count();
+                assert!(created <= 1, "{}.{} creates {created} objects", i.name, m.name);
+                assert!(m.fd_count() <= crate::session::BATCH_FDS, "{}.{}", i.name, m.name);
+            }
+        }
+    }
+
     #[test]
     fn descriptor_counts_come_from_the_tables() {
         let shm = find("wl_shm").unwrap();
@@ -192,7 +214,7 @@ pub(crate) mod tests {
         let bind = &reg.requests[0];
         let msg = MessageWriter::new(2, 0).u32(4).string("wl_compositor").u32(5).u32(3).finish().unwrap();
         let d = decode(bind, &msg[8..]).unwrap();
-        assert_eq!(d.new_objects, vec![(3, "wl_compositor".to_string())]);
+        assert_eq!(d.new_object, Some((3, "wl_compositor")));
         assert_eq!(d.bind_version, Some(5));
     }
 
@@ -204,7 +226,7 @@ pub(crate) mod tests {
         msg.extend_from_slice(&[0, 0, 0, 0]);
         assert_eq!(decode(create_surface, &msg[8..]), Err(WireError::ArgOverrun));
         let ok = MessageWriter::new(3, 0).u32(9).finish().unwrap();
-        assert_eq!(decode(create_surface, &ok[8..]).unwrap().new_objects, vec![(9, "wl_surface".into())]);
+        assert_eq!(decode(create_surface, &ok[8..]).unwrap().new_object, Some((9, "wl_surface")));
     }
 
     #[test]
@@ -213,7 +235,7 @@ pub(crate) mod tests {
         let set_title = top.requests.iter().find(|m| m.name == "set_title").unwrap();
         let msg = MessageWriter::new(7, 2).string("hello").finish().unwrap();
         let d = decode(set_title, &msg[8..]).unwrap();
-        assert_eq!(d.strings, vec![(0, "hello".to_string())]);
+        assert_eq!(d.strings, vec![(0, "hello")]);
     }
 
     // --- the decoder, attacked ---------------------------------------------
