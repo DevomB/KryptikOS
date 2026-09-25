@@ -36,19 +36,25 @@ export KRYPTIK_VERSION
 KRYPTIK_CHANNEL="${KRYPTIK_CHANNEL:-}"
 
 # check_channel ADDRESS ROLE: why ADDRESS cannot be an image's update channel,
-# or nothing. Zone 0's own rules (update.rs): printable ASCII without spaces,
-# at most 512 bytes, https, and plain http only on a development image.
+# or nothing. Stricter than zone 0, which checks only the scheme (update.rs,
+# resolve_base): both readers append names to the address as a string, so it
+# must be http(s)://host[:port][/path] with no user@, query or fragment, in
+# the pointer base's printable ASCII of at most 512 bytes; plain http only on
+# a development image.
 check_channel() {
-    local a="$1" role="$2" printable
+    local a="$1" role="$2" printable re
+    local host='([A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?'
+    local path="(/[-A-Za-z0-9._~!\$&'()*+,;=:@%/]*)?"
+    re="^https?://${host}${path}\$"
     # Only its printable ASCII bytes kept: anything else makes it differ, a
     # trailing newline included.
     printable="$(printf '%s' "$a" | LC_ALL=C tr -cd '!-~')"
     if [[ -z "$a" || "${#a}" -gt 512 || "$printable" != "$a" ]]; then
         echo "not 1 to 512 printable ASCII characters without spaces"
-    elif [[ "$a" =~ ^http://[^/]+ ]]; then
-        [[ "$role" == development ]] || echo "plain http is for a development image, and this one is ${role}"
-    elif [[ ! "$a" =~ ^https://[^/]+ ]]; then
-        echo "neither https:// nor http:// followed by a host"
+    elif [[ ! "$a" =~ $re ]]; then
+        echo "not http(s)://host[:port][/path]: no user@, query or fragment, since names are appended to it"
+    elif [[ "$a" == http://* && "$role" != development ]]; then
+        echo "plain http is for a development image, and this one is ${role}"
     fi
 }
 
@@ -70,8 +76,11 @@ done
 if [[ -n "$KRYPTIK_CHANNEL" ]]; then
     role_file="${SYSROOT}/usr/share/kryptik/trust/required-role"
     [[ -f "$role_file" ]] || die "no ${role_file}, so no role to check KRYPTIK_CHANNEL against"
-    why="$(check_channel "$KRYPTIK_CHANNEL" "$(tr -d '[:space:]' < "$role_file")")"
+    # The first line, trimmed at its ends as zone 0 trims it.
+    role=""; read -r role < "$role_file" || :
+    why="$(check_channel "$KRYPTIK_CHANNEL" "$role")"
     [[ -z "$why" ]] || die "KRYPTIK_CHANNEL=${KRYPTIK_CHANNEL}: ${why}"
+    log "update channel: ${KRYPTIK_CHANNEL} (a ${role} image)"
 fi
 mkdir -p "$IMG" "$IMG/cmdlines" "$IMG/kernels" "$KRYPTIK_OUT"
 chmod 0700 "$IMG"
@@ -136,6 +145,7 @@ s_rootfs() {
     if [[ -n "$channel" ]]; then
         channel_conf "$channel" > "$stage/etc/kryptik/update.conf"
         chmod 0644 "$stage/etc/kryptik/update.conf"
+        echo "update channel: ${channel}"
     fi
 
     # The image cannot hold its own hash; that goes on the ESP and in MANIFEST.

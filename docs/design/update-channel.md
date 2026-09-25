@@ -50,12 +50,14 @@ latest.sig    an OpenSSH signature over those bytes, namespace kryptik-latest
   `/etc/kryptik/update.conf`, bound read-only into the zones' `/etc` like
   `time.conf`. Only the verified root's copy lasts (one root writes at run
   time is quarantined at the next boot). A build names it with
-  `KRYPTIK_CHANNEL` (`make media KRYPTIK_CHANNEL=https://<host>/<channel>/`),
-  and stage 06 refuses an address zone 0 would not use (spaces, anything but
-  printable ASCII, more than 512 bytes, plain `http` on an image whose role is
-  not `development`) before it builds anything. Without it the image ships
-  no `update.conf`, the net zone asks nobody and `update-poll` answers
-  `idle`. The address is not a trust anchor.
+  `KRYPTIK_CHANNEL` (`make media KRYPTIK_CHANNEL=https://<host>/<channel>/`).
+  Before it builds anything, stage 06 refuses an address the image could not
+  use. Both readers append names to the address as a string, so it must be
+  `http(s)://host[:port][/path]`, with no `user@`, query or fragment, in
+  printable ASCII of at most 512 bytes, and plain `http` only on an image
+  whose role is `development`. Zone 0 itself checks only the scheme. Without
+  a channel, the image ships no `update.conf`, the net zone asks nobody and
+  `update-poll` answers `idle`. The address is not a trust anchor.
 - `base` is absolute, or relative to the channel address and staying under
   it, never resolved against anything the net zone says. The pointer carries
   the manifest's hash, so where the bytes come from decides nothing about what
@@ -160,9 +162,9 @@ the signed manifest does not provide for.
 - The update suite's network step (`tools/image/update-test.sh`): nothing is
   fetched until asked, then the release arrives whole, is applied,
   trial-booted and committed.
-- `tools/test-channel-setting.sh`: the addresses stage 06 takes for
-  `KRYPTIK_CHANNEL` for each role, and the fetcher reading back the
-  `update.conf` stage 06 writes.
+- `tools/test-channel-setting.sh`: the addresses stage 06 takes and refuses
+  for `KRYPTIK_CHANNEL` for each role, and, for every address it takes, the
+  fetcher reading the written `update.conf` into requests it can send.
 
 ## Open points
 

@@ -37,8 +37,12 @@ V_LINUX := $(shell . "$(ROOT)/build/config/versions.env" && echo $$V_LINUX)
 KRYPTIK_VERSION ?=
 export KRYPTIK_VERSION
 # Where the image's net zone asks for releases (docs/design/update-channel.md);
-# empty, the image names none and fetches nothing.
+# empty, the image names none and fetches nothing. Taken as written, since make
+# would expand a $ in it ($web paths), and read by the recipes from the
+# environment, so nothing in it reaches a shell as syntax.
 KRYPTIK_CHANNEL ?=
+override KRYPTIK_CHANNEL := $(value KRYPTIK_CHANNEL)
+export KRYPTIK_CHANNEL
 export KRYPTIK_WORK
 export KRYPTIK_SOURCES
 export KRYPTIK_OUT
@@ -151,7 +155,7 @@ help:
 	@echo "  KRYPTIK_BUILD_COMMIT = $(KRYPTIK_BUILD_COMMIT)"
 	@echo "  KRYPTIK_KRYPTIKD_BIN = $(if $(KRYPTIK_KRYPTIKD_BIN),$(KRYPTIK_KRYPTIKD_BIN),(not set - the image will have no kryptikd))"
 	@echo "  KRYPTIK_WLPROXY_BIN  = $(if $(KRYPTIK_WLPROXY_BIN),$(KRYPTIK_WLPROXY_BIN),(not set - zones will have no display))"
-	@echo "  KRYPTIK_CHANNEL  = $(if $(KRYPTIK_CHANNEL),$(KRYPTIK_CHANNEL),(not set - the image fetches no updates))"
+	@echo "  KRYPTIK_CHANNEL  = $${KRYPTIK_CHANNEL:-(not set - the image fetches no updates)}"
 	@echo "  SUDO             = $(if $(SUDO),$(SUDO),(none))"
 	@echo
 	@echo "Status: pre-alpha. See docs/roadmap.md for what actually works."
@@ -262,10 +266,10 @@ chroot-status:
 # Stage 06 runs as root: the sysroot has root-only paths and the relink goes
 # through the chroot.
 iso: kernel
-	@$(SUDO) env $(CHROOT_ENV) KRYPTIK_VERSION="$(KRYPTIK_VERSION)" KRYPTIK_CHANNEL="$(KRYPTIK_CHANNEL)" "$(STAGES)"/06-iso.sh
+	@$(SUDO) env $(CHROOT_ENV) KRYPTIK_VERSION="$(KRYPTIK_VERSION)" KRYPTIK_CHANNEL="$$KRYPTIK_CHANNEL" "$(STAGES)"/06-iso.sh
 
 media:
-	@$(SUDO) env $(CHROOT_ENV) KRYPTIK_VERSION="$(KRYPTIK_VERSION)" KRYPTIK_CHANNEL="$(KRYPTIK_CHANNEL)" "$(STAGES)"/06-iso.sh
+	@$(SUDO) env $(CHROOT_ENV) KRYPTIK_VERSION="$(KRYPTIK_VERSION)" KRYPTIK_CHANNEL="$$KRYPTIK_CHANNEL" "$(STAGES)"/06-iso.sh
 
 MEDIA_USB ?= $(shell ls -t "$(KRYPTIK_WORK)"/images/kryptik-*-usb.img 2>/dev/null | head -1)
 MEDIA_ISO ?= $(shell ls -t "$(KRYPTIK_WORK)"/images/kryptik-*.iso 2>/dev/null | head -1)
