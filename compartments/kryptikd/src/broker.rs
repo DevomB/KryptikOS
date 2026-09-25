@@ -301,13 +301,14 @@ pub fn parse_request(line: &str) -> Result<Request, String> {
 /// (a zone with no network has nothing to measure with, and a routed zone's
 /// answer would be the net zone's at one remove), and what becomes of it is
 /// `time::consider`'s decision: the floor, the bound, the person.
-fn handle_time_offset(zone: &Zone, claim: &crate::time::Claim) -> crate::time::Outcome {
+fn handle_time_offset(zone: &Zone, claim: &crate::time::Claim, asking: &dyn Fn() -> bool) -> crate::time::Outcome {
     time_offset_in(
         zone,
         claim,
         &mut crate::time::SystemClock,
         Path::new(crate::time::STATE_DIR),
         crate::time::floor_of_this_system(),
+        asking,
     )
 }
 
@@ -360,6 +361,7 @@ fn time_offset_in(
     clock: &mut dyn crate::time::Clock,
     dir: &Path,
     floor: Option<i64>,
+    asking: &dyn Fn() -> bool,
 ) -> crate::time::Outcome {
     if zone.network != NetworkMode::Nic {
         return crate::time::Outcome::Refused(format!(
@@ -368,7 +370,7 @@ fn time_offset_in(
         ));
     }
     crate::time::consider(clock, dir, floor, crate::time::DEFAULT_BOUND_SECS, claim, &mut |now, proposed, sources| {
-        crate::consent::ask_clock(now, proposed, sources)
+        crate::consent::ask_clock(now, proposed, sources, asking)
     })
 }
 
@@ -431,6 +433,11 @@ pub struct Served<'a> {
     /// How a destination is found: running, its root, its identity. The
     /// launcher asks the registry; tests point at a directory.
     pub resolve_dest: &'a dyn Fn(&str) -> Result<Target, String>,
+    /// Called while a question of the person is open, ten times a second:
+    /// the launcher pumps its zone's output there and says whether the zone
+    /// is still there, and a `false` withdraws the question (consent.rs).
+    /// Tests keep waiting.
+    pub asking: &'a dyn Fn() -> bool,
 }
 
 /// The launcher's destination lookup: the registry says whether the zone
@@ -547,7 +554,7 @@ fn handle_transfer(s: &Served, dest: &str, name: &str, fds: &[RawFd]) -> Result<
     // say yes.
     let target = (s.resolve_dest)(dest)?;
     if !s.auto_approve {
-        crate::consent::ask(sender, dest, name, st.st_size as u64)?;
+        crate::consent::ask(sender, dest, name, st.st_size as u64, s.asking)?;
     }
     deliver(&target, name, src, s.max_bytes)
 }
@@ -813,7 +820,7 @@ pub fn serve_connection(fd: RawFd, s: &Served) -> io::Result<Option<String>> {
             Err(why) => reply(fd, &format!("error: {why}\n")),
         },
         Ok(Request::TimeOffset(claim)) => {
-            let outcome = handle_time_offset(s.zone, &claim);
+            let outcome = handle_time_offset(s.zone, &claim, s.asking);
             crate::spawn::log_line(&format!(
                 "kryptikd[zone {zone}]: time-offset {:+.6} s from {} source(s): {}",
                 claim.offset,
@@ -1226,6 +1233,7 @@ mod tests {
             auto_approve: false,
             max_bytes: TRANSFER_MAX,
             resolve_dest: &no_dest,
+            asking: &crate::consent::keep,
         }
     }
 
@@ -1450,6 +1458,7 @@ mod tests {
             auto_approve: true,
             max_bytes: 64,
             resolve_dest: &resolve,
+            asking: &crate::consent::keep,
         };
         let file = lab.dir.join("report.pdf");
         std::fs::write(&file, b"hello transfer").unwrap();
@@ -1517,6 +1526,7 @@ mod tests {
             auto_approve: true,
             max_bytes: 64,
             resolve_dest: &resolve,
+            asking: &crate::consent::keep,
         };
         let file = lab.dir.join("f.txt");
         std::fs::write(&file, b"0123456789").unwrap();
@@ -1657,11 +1667,11 @@ mod tests {
             .unwrap()
         };
         for mode in ["none", "routed"] {
-            let out = time_offset_in(&zone_of(mode, ""), &claim, &mut crate::time::SystemClock, &dir, Some(0));
+            let out = time_offset_in(&zone_of(mode, ""), &claim, &mut crate::time::SystemClock, &dir, Some(0), &crate::consent::keep);
             assert!(matches!(&out, crate::time::Outcome::Refused(w) if w.contains("does not hold the network")), "{mode}: {out:?}");
         }
         let nic = zone_of("nic", "bridge = \"kryptik0\"\n");
-        let out = time_offset_in(&nic, &claim, &mut crate::time::SystemClock, &dir, None);
+        let out = time_offset_in(&nic, &claim, &mut crate::time::SystemClock, &dir, None, &crate::consent::keep);
         assert!(matches!(&out, crate::time::Outcome::Refused(w) if w.contains("no floor is known")), "{out:?}");
         assert!(!dir.join("state").exists(), "a refused claim left state behind");
         let _ = std::fs::remove_dir_all(&dir);

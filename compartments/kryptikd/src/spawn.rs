@@ -361,13 +361,37 @@ impl Drop for ZoneOutput {
     }
 }
 
+/// Whether the child has exited, without reaping it: WNOWAIT leaves it for
+/// the waitpid that decides the launcher's status.
+fn exited_unreaped(pid: libc::pid_t) -> bool {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let r = unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) };
+    r == 0 && unsafe { info.si_pid() } != 0
+}
+
 /// Supervise the child while answering the zone broker requests: poll the
 /// listening socket (and the zone's output, when the launcher relays it) with
 /// a short timeout, serve what arrives, and reap the child when it exits.
 /// Signals forwarded by the handlers interrupt the poll, which just loops.
-fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, s: &broker::Served, mut out: Option<ZoneOutput>) -> Result<libc::c_int, SpawnError> {
+fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, s: &broker::Served, out: Option<ZoneOutput>) -> Result<libc::c_int, SpawnError> {
     let zone = s.zone.name.as_str();
-    let mut emit = |line: &str| log_line(line);
+    let out = std::cell::RefCell::new(out);
+    let pump = || {
+        let mut o = out.borrow_mut();
+        if o.as_mut().is_some_and(|o| !o.pump(&mut |line: &str| log_line(line))) {
+            *o = None; // every writer has gone
+        }
+    };
+    // While a question of the person is open, the broker's wait gives the
+    // launcher its turn here, ten times a second: the zone's output keeps
+    // flowing, and a zone that ended withdraws its question rather than
+    // leaving one in the chrome that nobody can act on. The child is looked
+    // at, not reaped; the loop below reaps it.
+    let asking = || {
+        pump();
+        !exited_unreaped(pid)
+    };
+    let s = &broker::Served { asking: &asking, ..*s };
     loop {
         let mut status: libc::c_int = 0;
         let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
@@ -379,13 +403,11 @@ fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, s: &broker::Served, mut 
         }
         let mut pfds = [
             libc::pollfd { fd: listen_fd, events: libc::POLLIN, revents: 0 },
-            libc::pollfd { fd: out.as_ref().map_or(-1, |o| o.fd), events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: out.borrow().as_ref().map_or(-1, |o| o.fd), events: libc::POLLIN, revents: 0 },
         ];
         let n = unsafe { libc::poll(pfds.as_mut_ptr(), 2, 200) };
         if n > 0 && pfds[1].revents & (libc::POLLIN | libc::POLLHUP) != 0 {
-            if out.as_mut().is_some_and(|o| !o.pump(&mut emit)) {
-                out = None; // every writer has gone
-            }
+            pump();
         }
         let pfd = pfds[0];
         if n > 0 && pfd.revents & libc::POLLIN != 0 {
@@ -1186,6 +1208,8 @@ pub fn run_in_zone(
         auto_approve: opts.auto_approve_transfers,
         max_bytes: broker::TRANSFER_MAX,
         resolve_dest: &broker::registry_target,
+        // Replaced by serve_until_exit with the launcher's own turn.
+        asking: &crate::consent::keep,
     };
     let status = serve_until_exit(pid, broker_fd, &served, zone_out)?;
     unsafe { libc::close(broker_fd) };
