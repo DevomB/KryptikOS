@@ -45,7 +45,10 @@ query and the [update](update-channel.md) fetcher. Builds on
   and so on), not from DHCP: one less daemon, no broadcast domain.
   `accept_ra = 0` is set first, and `ping_group_range` names the zone's host
   gid so unprivileged ICMP echo works (the sysctl takes host ids, so the
-  parent writes it).
+  parent writes it). The image's `ping` is iputils', built without libcap and
+  given no setuid bit or file capability: it sends over that datagram socket,
+  IPv4 and IPv6, and a patch keeps it from the id calls a zone refuses
+  (`build/patches/iputils-20250605`).
 - **The gateway is chosen by zone file.** Routed zones attach to the running
   zone whose root-owned file says `mode = "nic"`, never to whatever namespace
   holds a bridge: a zone could create its own `kryptik0`.

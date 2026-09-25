@@ -85,7 +85,3 @@ state partition.
   something still links.
 - The setuid audit does not look at file capabilities (`security.capability`),
   the other way a file is given privilege.
-- `ping` does not work in a zone. The image's ping (inetutils) needs a raw
-  socket, which a zone rightly lacks, although kryptikd already opens
-  unprivileged ICMP sockets to routed zones (`ping_group_range`). iputils'
-  ping, built without libcap, would use them.

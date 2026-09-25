@@ -1405,6 +1405,26 @@ meson_build() {
     ninja -C build install
 }
 
+# iputils' ping alone, without libcap, with no setuid bit or file capability:
+# in a routed zone it sends over the ICMP datagram socket ping_group_range opens
+# (netzone.rs), and the patch stops it making the id calls a zone refuses.
+s_iputils() {
+    local src; src="$(unpack "iputils-${V_IPUTILS}.tar.xz" "iputils-${V_IPUTILS}")"
+    cd "$src"
+    apply_repo_patches "iputils-${V_IPUTILS}"
+    meson setup build --prefix=/usr --buildtype=plain --wrap-mode=nodownload \
+        -DBUILD_PING=true -DBUILD_ARPING=false -DBUILD_CLOCKDIFF=false -DBUILD_TRACEPATH=false \
+        -DUSE_CAP=false -DUSE_IDN=false -DUSE_GETTEXT=false -DNO_SETCAP_OR_SUID=true \
+        -DBUILD_MANS=false -DBUILD_HTML_MANS=false -DSKIP_TESTS=true
+    ninja -C build
+    ninja -C build install
+    local out; out="$(/usr/bin/ping -V)"
+    printf '%s\n' "$out"
+    [[ "$out" == *"libcap: no"* ]] || { echo "FAIL: ping was built with libcap"; return 1; }
+    [[ "$(stat -c %a /usr/bin/ping)" == 755 ]] || { echo "FAIL: /usr/bin/ping is mode $(stat -c %a /usr/bin/ping), not 755"; return 1; }
+    [[ ! -e /usr/bin/ping6 ]] || { echo "FAIL: a ping6 is installed beside ping"; return 1; }
+}
+
 # --- encrypted zone volumes -------------------------------------------------
 
 # cmake only generates json-c's build files (cryptsetup needs json-c for LUKS2
@@ -2009,7 +2029,7 @@ PACKAGES=(
     "expat"       "native_build expat-${V_EXPAT}.tar.xz expat-${V_EXPAT} --disable-static --docdir=/usr/share/doc/expat-${V_EXPAT}"
     # --disable-servers: no telnetd, ftpd, rlogind and the rest, which nothing
     # starts; only the clients (hostname, ping, traceroute, ifconfig).
-    "inetutils"   "native_build inetutils-${V_INETUTILS}.tar.gz inetutils-${V_INETUTILS} --bindir=/usr/bin --localstatedir=/var --disable-servers --disable-logger --disable-whois --disable-rlogin --disable-rsh --disable-rcp --disable-rexec"
+    "inetutils"   "native_build inetutils-${V_INETUTILS}.tar.gz inetutils-${V_INETUTILS} --bindir=/usr/bin --localstatedir=/var --disable-servers --disable-logger --disable-whois --disable-rlogin --disable-rsh --disable-rcp --disable-rexec --disable-ping --disable-ping6"
     "less"        "native_build less-${V_LESS}.tar.gz less-${V_LESS} --sysconfdir=/etc"
     "openssl"     "s_openssl"
     # --with-gcc-arch=x86-64, not LFS's "native": inert while CFLAGS are set,
@@ -2074,6 +2094,8 @@ PACKAGES=(
     # --- the desktop: build tools, the Wayland stack, compositor, applications.
     "meson"       "s_meson"
     "ninja"       "s_ninja"
+    # ping, which builds with meson; inetutils ships none.
+    "iputils"     "s_iputils"
     "wayland"     "s_wayland"
     "wayland-protocols" "meson_build wayland-protocols-${V_WAYLAND_PROTOCOLS}.tar.xz wayland-protocols-${V_WAYLAND_PROTOCOLS} -Dtests=false"
     "xkeyboard-config"  "meson_build xkeyboard-config-${V_XKEYBOARD_CONFIG}.tar.xz xkeyboard-config-${V_XKEYBOARD_CONFIG}"
