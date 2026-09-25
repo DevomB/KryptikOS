@@ -244,7 +244,6 @@ mod tests {
 
     #[test]
     fn denied_syscall_cannot_be_allowed() {
-        // Not chown: a zone policy may allow it (the nic zone's DHCP client).
         for name in ["ptrace", "mount", "setns", "unshare", "bpf", "keyctl", "reboot"] {
             let err = parse(&format!("allow-syscall {name}\n"), "t").unwrap_err();
             let s = err.to_string();

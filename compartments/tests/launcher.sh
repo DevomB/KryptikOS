@@ -1172,6 +1172,21 @@ else
     fail "L9  seccomp-trace did not report reboot(2) and inotify_init1(2) [$(tr '\n' ' ' <<<"$out")]"
 fi
 
+# ncurses brackets each terminfo open with setfsuid and setfsgid. The filter
+# answers them with EPERM; a kill would take every terminal program with it
+# (tput would end with 159, SIGSYS).
+if command -v tput > /dev/null 2>&1; then
+    zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(tput -T xterm cols 2>/dev/null || echo exit-\$?)"
+    probe "L10 a terminal program opens terminfo in a zone and lives" "80"
+else
+    info "L10 not run: this host has no tput"
+fi
+
+# cp -a and gzip give what they make its source's owner (tar does too, as
+# root); with chown refused neither would finish.
+zrun alpha -- /bin/sh -c "$PRO cd /tmp && echo x > o && cp -a o o2 && gzip -k o && echo PROBE=kept"
+probe "L11 cp -a and gzip keep an owner in a zone and live" "kept"
+
 # ============================================================================
 head_ "M. cgroup resource limits  [unpriv where delegated, otherwise vm]"
 # ============================================================================

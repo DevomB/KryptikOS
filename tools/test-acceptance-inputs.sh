@@ -89,8 +89,8 @@ choose
 
 # --- item(), its summary parser and the verdict ------------------------------
 sed -n '/^R_SUITE=()/,/^# -* prereqs --$/p' "$ACC" > "$T/item.sh"
-sed -n '/^need_host() /p; /^verdict_of() {/,/^}/p; /^seal_export() {/,/^}/p' "$ACC" >> "$T/item.sh"
-for fn in item checks_in need_host verdict_of seal_export; do
+sed -n '/^need_host() /p; /^verdict_of() {/,/^}/p; /^seal_export() {/,/^}/p; /^tested() {/,/^}/p; /^parts_disagree() {/,/^}/p' "$ACC" >> "$T/item.sh"
+for fn in item checks_in need_host verdict_of seal_export tested parts_disagree; do
     grep -q "^${fn}() " "$T/item.sh" || { echo "could not extract ${fn} from $ACC"; exit 1; }
 done
 # shellcheck disable=SC2034  # read by the sourced functions
@@ -141,6 +141,29 @@ runs() { : > "$T/ran"; }
 item boot record M post 0 runs > /dev/null
 [[ -e "$T/ran" && "$(result_of record)" == PASS ]] && ok "an item done after the suites runs in the merge itself" || bad "post item: $(result_of record)"
 [[ "$(verdict_of)" == FAIL ]] && ok "a part's failure fails the merged verdict" || bad "merged verdict $(verdict_of)"
+
+# A row cut short, or with a word other than the three, is never a pass.
+# shellcheck disable=SC2034  # the results so far, put away
+{ R_SUITE=(); R_NAME=(); R_MAND=(); R_KIND=(); R_RES=(); R_CHECKS=(); R_RC=(); R_SECS=(); R_LOG=(); R_NOTE=(); }
+{ echo header; row boot smoke PASSED 38/0 0 - ""; printf 'update\tupd\tM\tvm\tPASS\n'; } > "$T/parts/a/results.tsv"
+{ echo header; } > "$T/parts/b/results.tsv"
+{ item boot smoke M vm 25 runs; item update upd M vm 10 runs; } > /dev/null
+[[ "$(result_of smoke)/$(result_of upd)" == INCOMPLETE/INCOMPLETE && "${R_NOTE[0]}" == *malformed* ]] \
+    && ok "a malformed row, or one cut short, is INCOMPLETE" || bad "malformed rows: $(result_of smoke)/$(result_of upd) '${R_NOTE[0]}'"
+R_RES[0]=SKIPPED; R_RES[1]=PASS
+[[ "$(verdict_of)" == INCOMPLETE ]] && ok "a result the verdict does not know keeps it from PASS" || bad "verdict over an unknown result: $(verdict_of)"
+
+# Every part must have tested this revision on these media and firmware.
+# shellcheck disable=SC2034  # read by tested
+{ REV=abc; H_USB=u1; H_ISO=i1; H_FW=f1; FW_PKG="ovmf 1"; QEMU_VER="QEMU 9"; KVM=yes; }
+tested > "$T/parts/a/identity"; tested > "$T/parts/b/identity"
+[[ -z "$(parts_disagree)" ]] && ok "parts that tested one revision on one medium are one run" || bad "parts disagree: $(parts_disagree)"
+sed -i 's/^usb .*/usb u2/' "$T/parts/b/identity"
+[[ "$(parts_disagree)" == "$T/parts/b/results.tsv tested"*"usb u2"* ]] && ok "a part that tested another medium is refused, by name" || bad "another medium: '$(parts_disagree)'"
+tested > "$T/parts/b/identity"; sed -i 's/^qemu .*/qemu QEMU 8 kvm=yes/' "$T/parts/a/identity"
+[[ -n "$(parts_disagree)" ]] && ok "so is a part on other QEMU than the report names" || bad "another QEMU was accepted"
+rm "$T/parts/a/identity"
+[[ "$(parts_disagree)" == *"no identity"* ]] && ok "a results.tsv with no identity beside it is refused" || bad "no identity: '$(parts_disagree)'"
 # shellcheck disable=SC2034  # back to a run of its own
 PARTS=()
 

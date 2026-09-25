@@ -65,7 +65,7 @@ if [[ "${#MERGE[@]}" -gt 0 ]]; then
     mapfile -t PARTS < <(find "${MERGE[@]}" -name results.tsv | sort)
     [[ "${#PARTS[@]}" -gt 0 ]] || die "no results.tsv under ${MERGE[*]}"
     for f in "${PARTS[@]}"; do
-        find "$(dirname "$f")" -maxdepth 1 -type f ! -name results.tsv ! -name REPORT.md -exec cp -n -t "$OUT" {} +
+        find "$(dirname "$f")" -maxdepth 1 -type f ! -name results.tsv ! -name REPORT.md ! -name identity -exec cp -n -t "$OUT" {} +
     done
 fi
 IMGDIR="${KRYPTIK_WORK}/images"
@@ -122,6 +122,28 @@ KVM="no"; [[ -r /dev/kvm && -w /dev/kvm ]] && KVM="yes"
 REV="$(git -c safe.directory='*' -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
 REV_DESC="$(git -c safe.directory='*' -C "$ROOT" describe --always --dirty --long 2>/dev/null || echo unknown)"
 DIRTY="$(git -c safe.directory='*' -C "$ROOT" status --porcelain 2>/dev/null)"
+
+# A part of a split run writes down what it tested and on what, and the merge
+# takes only parts that tested this revision on these media, on the firmware
+# and QEMU its report names.
+tested() {
+    printf 'revision %s\nusb %s\niso %s\nfirmware %s %s\nqemu %s kvm=%s\n' \
+        "$REV" "$H_USB" "$H_ISO" "$H_FW" "$FW_PKG" "$QEMU_VER" "$KVM"
+}
+parts_disagree() {   # the first part that tested something else, and what
+    local f id
+    for f in "${PARTS[@]}"; do
+        id="$(dirname "$f")/identity"
+        if [[ ! -f "$id" ]]; then echo "${f} has no identity beside it"; return; fi
+        if [[ "$(cat "$id")" != "$(tested)" ]]; then echo "${f} tested $(tr '\n' ';' < "$id")"; return; fi
+    done
+}
+if [[ -n "$ONLY" ]]; then
+    tested > "${OUT}/identity"
+elif [[ "${#PARTS[@]}" -gt 0 ]]; then
+    disagree="$(parts_disagree)"
+    [[ -z "$disagree" ]] || die "not one run: ${disagree}; this merge tests $(tested | tr '\n' ';')"
+fi
 
 # --------------------------------------------------------------- results --
 R_SUITE=(); R_NAME=(); R_MAND=(); R_KIND=(); R_RES=(); R_CHECKS=(); R_RC=(); R_SECS=(); R_LOG=(); R_NOTE=()
@@ -184,6 +206,10 @@ merged() {
     for f in "${PARTS[@]}"; do
         while IFS=$'\t' read -r s i _ _ res checks rc secs log note; do
             [[ "$s" == "$suite" && "$i" == "$name" && "$note" != "not run (--only "* ]] || continue
+            # A row cut short or carrying another word is never a pass.
+            if [[ ! "$res" =~ ^(PASS|FAIL|INCOMPLETE)$ || ! "$secs" =~ ^[0-9]+$ ]]; then
+                res=INCOMPLETE; secs=0; note="a malformed row in ${f}"
+            fi
             [[ "$log" == - ]] || log="${OUT}/${log##*/}"
             record "$suite" "$name" "$mand" "$kind" "$res" "$checks" "$rc" "$secs" "$log" "$note"
             n=$((n + 1))
@@ -345,7 +371,7 @@ verdict_of() {
     local i fail=0 inc=0
     for i in "${!R_SUITE[@]}"; do
         [[ "${R_MAND[$i]}" == M ]] || continue
-        case "${R_RES[$i]}" in FAIL) fail=1 ;; INCOMPLETE) inc=1 ;; esac
+        case "${R_RES[$i]}" in PASS) ;; FAIL) fail=1 ;; *) inc=1 ;; esac
     done
     if [[ "$fail" -eq 1 ]]; then echo FAIL; elif [[ "$inc" -eq 1 ]]; then echo INCOMPLETE; else echo PASS; fi
 }

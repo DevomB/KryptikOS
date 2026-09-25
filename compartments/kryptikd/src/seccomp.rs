@@ -59,6 +59,7 @@ pub const AF_NETLINK: u32 = 16;
 pub const NETLINK_ROUTE: u32 = 0;
 const EAFNOSUPPORT: u32 = 97;
 const ENOSYS: u32 = 38;
+const EPERM: u32 = 1;
 
 /// Families the base policy allows (AF_NETLINK only as NETLINK_ROUTE).
 pub const BASE_SOCKET_FAMILIES: &[u32] = &[AF_UNIX, AF_INET, AF_INET6, AF_NETLINK];
@@ -177,6 +178,10 @@ pub const BASE_ALLOWLIST: &[libc::c_long] = &[
     /* tar, git, cargo and install(1) set modes. Paths outside the zone are
      * unreachable after pivot_root, and read-only mounts refuse chmod (EROFS). */
     libc::SYS_chmod, libc::SYS_fchmod, libc::SYS_fchmodat,
+    /* gzip, xz and cp -a give a file they make its source's owner, and tar
+     * does as root. Without CAP_CHOWN, and with only the zone's own ids
+     * mapped, a chown is a no-op or fails. */
+    libc::SYS_chown, libc::SYS_fchown, libc::SYS_lchown, libc::SYS_fchownat,
     libc::SYS_copy_file_range, libc::SYS_sendfile, libc::SYS_splice,
     // GNU cat and cp call posix_fadvise() on every file they read.
     libc::SYS_fadvise64, libc::SYS_readahead,
@@ -276,9 +281,6 @@ pub const DENIED_RATIONALE: &[(libc::c_long, &str)] = &[
     (libc::SYS_quotactl, "filesystem quota manipulation"),
     (libc::SYS_open_by_handle_at, "open a file by handle, bypassing path checks"),
     (libc::SYS_name_to_handle_at, "obtain the handle used by the above"),
-    /* chown is in neither list: a zone policy may allow it (the nic zone's
-     * DHCP client chowns its control socket). Without CAP_CHOWN a chown can
-     * only be a no-op or a move between the caller's own groups. */
     // The new mount API: mount(2) through other entry points.
     (libc::SYS_fsopen, "new mount API: open a filesystem context"),
     (libc::SYS_fsconfig, "new mount API: configure a filesystem context"),
@@ -338,10 +340,17 @@ impl ArgRule {
     }
 }
 
-/// Refused with an errno, not killed, since programs fall back when these
-/// fail; a zone policy may allow them. inotify: a watch on the /usr the zones
-/// share with zone 0 sees every program any of them starts.
-pub const REFUSED_SOFTLY: &[(libc::c_long, u32)] = &[(libc::SYS_inotify_init, ENOSYS), (libc::SYS_inotify_init1, ENOSYS)];
+/// Refused with an errno, not killed, since programs carry on when these fail.
+/// inotify: a watch on the /usr the zones share with zone 0 sees every program
+/// any of them starts; a zone policy may allow it. setfsuid, setfsgid: ncurses
+/// brackets every terminfo open with them, dropping to the real ids and back,
+/// so a kill took every terminal program with it; they stay denied.
+pub const REFUSED_SOFTLY: &[(libc::c_long, u32)] = &[
+    (libc::SYS_inotify_init, ENOSYS),
+    (libc::SYS_inotify_init1, ENOSYS),
+    (libc::SYS_setfsuid, EPERM),
+    (libc::SYS_setfsgid, EPERM),
+];
 
 const fn errno_action(e: u32) -> u32 {
     SECCOMP_RET_ERRNO | (e & 0xffff)
@@ -766,6 +775,16 @@ mod tests {
     }
 
     #[test]
+    fn setfsuid_fails_not_kills() {
+        // Denied all the same: no policy may allow it.
+        let p = build_program(BASE_ALLOWLIST).unwrap();
+        for nr in [libc::SYS_setfsuid, libc::SYS_setfsgid] {
+            assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, nr as u32), errno_action(EPERM));
+            assert!(is_denied(nr));
+        }
+    }
+
+    #[test]
     fn trace_names_soft_refusals() {
         // clone3 keeps its errno: no policy opens it, so naming it would mislead.
         let p = build_program_with(BASE_ALLOWLIST, libc::SECCOMP_RET_USER_NOTIF).unwrap();
@@ -822,11 +841,8 @@ mod tests {
             }
         }
         for (nr, why) in DENIED_RATIONALE {
-            assert_eq!(
-                evaluate(&p, AUDIT_ARCH_X86_64, *nr as u32),
-                SECCOMP_RET_KILL_PROCESS,
-                "denied syscall {nr} ({why}) was not killed"
-            );
+            let want = REFUSED_SOFTLY.iter().find(|(n, _)| n == nr).map_or(SECCOMP_RET_KILL_PROCESS, |&(_, e)| errno_action(e));
+            assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, *nr as u32), want, "denied syscall {nr} ({why}) was not refused");
         }
     }
 
@@ -991,15 +1007,13 @@ mod tests {
     }
 
     #[test]
-    fn chmod_is_allowed_and_chown_is_not() {
+    fn chmod_and_chown_allowed() {
         let allowed: HashSet<libc::c_long> = BASE_ALLOWLIST.iter().copied().collect();
         for nr in [libc::SYS_chmod, libc::SYS_fchmod, libc::SYS_fchmodat] {
             assert!(allowed.contains(&nr), "chmod family must be allowed (tar, git, cargo)");
         }
         for nr in [libc::SYS_chown, libc::SYS_fchown, libc::SYS_fchownat, libc::SYS_lchown] {
-            assert!(!allowed.contains(&nr), "chown family must stay out of the base allowlist");
-            // ...but a zone policy may allow it (the nic zone's DHCP client).
-            assert!(!is_denied(nr), "chown family must be allowable by a zone policy");
+            assert!(allowed.contains(&nr), "chown family must be allowed (gzip, xz, cp -a, tar)");
         }
     }
 

@@ -32,5 +32,36 @@ out="$(audit --strip "$T/root")"; rc=$?
 [[ "$(mode su)/$(mode ls)" == 4755/755 ]] && ok "the listed file keeps it, and a plain file is untouched" || bad "after --strip: su $(mode su), ls $(mode ls)"
 audit "$T/root" > /dev/null && ok "the stripped tree passes the audit" || bad "the stripped tree still fails the audit"
 
+# A root named with a trailing slash, or through a symlink, is the same root:
+# the listed file is still recognised, not stripped as unknown.
+chmod 4755 "$T/root/usr/bin/mount"; ln -s root "$T/link"
+out="$(audit --strip "$T/link/")"; rc=$?
+[[ "$rc" -eq 0 && "$(mode su)/$(mode mount)" == 4755/755 ]] \
+    && ok "a trailing slash and a symlinked root keep the listed file's bit" || bad "trailing slash: rc=$rc su $(mode su) mount $(mode mount): $out"
+
+# --strip refuses this machine's root before looking at it. A stand-in chmod
+# records any attempt, so a broken refusal changes nothing here either.
+mkdir -p "$T/bin"; printf '#!/bin/sh\necho "$@" >> "%s/chmod-called"; exit 1\n' "$T" > "$T/bin/chmod"; chmod 755 "$T/bin/chmod"
+out="$(PATH="$T/bin:$PATH" audit --strip /)"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *"never this machine"* && ! -e "$T/chmod-called" ]] \
+    && ok "--strip refuses /" || bad "--strip /: rc=$rc: $out"
+
+# A stripped name that is a hard link to a listed binary took the bit off the
+# listed one too; the strip says so and fails.
+ln "$T/root/usr/bin/su" "$T/root/usr/bin/su2"
+out="$(audit --strip "$T/root")"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *"/usr/bin/su lost its bit"* ]] \
+    && ok "stripping a hard link to a listed binary fails, naming it" || bad "hard link: rc=$rc: $out"
+rm -f "$T/root/usr/bin/su2"; chmod 4755 "$T/root/usr/bin/su"
+
+# A directory the audit cannot read could hide a binary: that is a failure.
+# Root reads every directory, so this holds only for a user.
+if [[ "$(id -u)" -ne 0 ]]; then
+    mkdir "$T/root/locked"; chmod 000 "$T/root/locked"
+    out="$(audit "$T/root")"; rc=$?
+    chmod 755 "$T/root/locked"
+    [[ "$rc" -ne 0 && "$out" == *"could not read"* ]] && ok "an unreadable directory fails the audit" || bad "unreadable directory: rc=$rc: $out"
+fi
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

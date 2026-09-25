@@ -93,19 +93,34 @@ jobs:
         run: make toolchain
 
       - name: Stage 02, the temporary tools (unprivileged)
+        id: stage02
         timeout-minutes: 120
         run: make temp-tools
 
+      # Nothing is saved from a cancelled run. A step past its time limit keeps
+      # building underneath, so the stage scripts (which write the stamps) and
+      # make are stopped before anything is read for the cache.
+      - name: Stop what the stages left running
+        if: ${{ !cancelled() }}
+        run: |
+          pkill -KILL -f 'build/stages/0[12]-' || true
+          pkill -KILL -x make || true
+
       - name: Progress of stages 01-02
         id: progress02
-        if: always()
+        if: ${{ !cancelled() }}
+        env:
+          STAGE02: ${{ steps.stage02.outcome }}
         run: |
           d="$( { cd "$KRYPTIK_WORK/.stamps" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0r sha256sum | sha256sum | cut -c1-16; } 2>/dev/null || true)"
           if [ -n "$d" ]; then echo "key=work02-$d" >> "$GITHUB_OUTPUT"; fi
-          echo "ttfp=$(awk '$1 == "fingerprint:" { print $2; exit }' "$KRYPTIK_WORK/.stamps/tt-verify" 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
+          ttfp="$(awk '$1 == "fingerprint:" { print $2; exit }' "$KRYPTIK_WORK/.stamps/tt-verify" 2>/dev/null || true)"
+          # Without it every toolchain's stage 05 tree would share one key.
+          if [ "$STAGE02" = success ] && [ -z "$ttfp" ]; then echo "stage 02 passed and tt-verify has no fingerprint"; exit 1; fi
+          echo "ttfp=$ttfp" >> "$GITHUB_OUTPUT"
 
       - name: Save the stage 01-02 sysroot
-        if: always() && steps.progress02.outputs.key != '' && steps.progress02.outputs.key != steps.work02.outputs.cache-matched-key
+        if: ${{ !cancelled() && steps.progress02.outputs.key != '' && steps.progress02.outputs.key != steps.work02.outputs.cache-matched-key }}
         continue-on-error: true
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
@@ -232,32 +247,55 @@ jobs:
         timeout-minutes: 90
         run: make kernel KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
 
+      # Nothing is saved from a cancelled run. A step past its time limit leaves
+      # its build running in the chroot, still mounted: everything whose root
+      # is the sysroot is stopped and the chroot unmounted before the tree is
+      # read, and it is not read at all while anything is mounted in it.
+      - name: Stop what the stages left running
+        id: quiesce
+        if: ${{ !cancelled() && steps.stage04.outcome != '' && steps.stage04.outcome != 'skipped' }}
+        run: |
+          sudo pkill -KILL -f 'build/stages/0[345]-' || true
+          for p in /proc/[0-9]*; do
+            if [ "$(sudo readlink "$p/root" 2>/dev/null)" = "$KRYPTIK_WORK/sysroot" ]; then sudo kill -KILL "${p#/proc/}" 2>/dev/null || true; fi
+          done
+          make chroot-umount || true
+          if findmnt -rn -o TARGET | grep -F "$KRYPTIK_WORK/sysroot/"; then echo "still mounted in the sysroot"; exit 1; fi
+
       # Before stage 06, so the keys, the images and the media stay out of the
       # cache. The kernel tree goes with the stamps: stage 05 treats a stamped
       # kernel whose tree is gone as unbuilt.
       - name: Progress of stages 04-05
         id: progress05
-        if: always() && steps.stage04.outcome != '' && steps.stage04.outcome != 'skipped'
+        if: ${{ !cancelled() && steps.quiesce.outcome == 'success' }}
         run: |
           d="$( { cd "$KRYPTIK_WORK/.stamps" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0r sha256sum | sha256sum | cut -c1-16; } 2>/dev/null || true)"
           if [ -n "$d" ]; then echo "key=work05-${{ needs.toolchain.outputs.ttfp }}-$d" >> "$GITHUB_OUTPUT"; fi
 
+      # The stamps first, so none is packed without its files. Never what is
+      # under the chroot's mount points, and never the module signing key: a
+      # pull request's run can restore this cache, and stage 05 makes a new key
+      # when it finds none.
       - name: Pack the stage 04-05 tree for the cache
         id: pack05
-        if: always() && steps.progress05.outputs.key != '' && steps.progress05.outputs.key != steps.work05.outputs.cache-matched-key
+        if: ${{ !cancelled() && steps.progress05.outputs.key != '' && steps.progress05.outputs.key != steps.work05.outputs.cache-matched-key }}
         run: |
           cd /mnt/kryptik
-          members=(sysroot .stamps)
+          members=(.stamps sysroot)
           kernel_tree="build/linux-$(sed -n 's/^V_LINUX=//p' "$GITHUB_WORKSPACE/build/config/versions.env")"
           [ -d "work/$kernel_tree" ] && members+=("$kernel_tree")
-          sudo tar -I 'zstd -T0' -cf work-after-05.tar.zst -C work "${members[@]}"
+          sudo tar -I 'zstd -T0' -cf work-after-05.tar.zst -C work \
+            --exclude='sysroot/proc/*' --exclude='sysroot/sys/*' --exclude='sysroot/dev/*' \
+            --exclude='sysroot/run/*' --exclude='sysroot/kryptik*/*' \
+            --exclude="$kernel_tree/certs/signing_key.pem" "${members[@]}"
+          if sudo tar -I zstd -tf work-after-05.tar.zst | grep -E 'certs/signing_key\.pem$|keys/release/'; then echo "a private key is in the cache tarball"; exit 1; fi
           sudo chown "$(id -u):$(id -g)" work-after-05.tar.zst
           ls -la work-after-05.tar.zst; df -h /mnt | tail -1
 
       # A cache that cannot be saved (the repository's 10 GB is full, or the
       # service is down) costs the next run time, not this one its verdict.
       - name: Save the stage 04-05 tree
-        if: always() && steps.pack05.outcome == 'success'
+        if: ${{ !cancelled() && steps.pack05.outcome == 'success' }}
         continue-on-error: true
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
@@ -345,12 +383,16 @@ jobs:
           rm -f work-after-media.tar.zst
           ls work/images; df -h /mnt | tail -1
 
-      # Exit 2 is a part's normal answer: the other parts' items are "not run"
-      # here. The part is red for a failure; the verdict job judges the rest.
-      - name: make acceptance ONLY=${{ matrix.suites }}
+      # The script itself, not make, which turns every failure into 2. Exit 2
+      # is a part's normal answer, the other parts' items being "not run"
+      # here; the part is red for a failure, and the verdict job judges it all.
+      - name: Acceptance of these suites
+        env:
+          SUITES: ${{ matrix.suites }}
         run: |
           rc=0
-          make acceptance ONLY="${{ matrix.suites }}" || rc=$?
+          sudo env KRYPTIK_WORK="$KRYPTIK_WORK" KRYPTIK_SOURCES="$KRYPTIK_SOURCES" NO_COLOR=1 \
+            TMPDIR="$TMPDIR" CARGO_TARGET_DIR="$CARGO_TARGET_DIR" tools/acceptance.sh --only "$SUITES" || rc=$?
           [ "$rc" -ne 1 ]
 
       - name: Hand the results to the runner user
@@ -370,7 +412,7 @@ jobs:
   verdict:
     name: make acceptance (the verdict over every suite)
     needs: [system, acceptance]
-    if: always() && needs.system.result == 'success'
+    if: ${{ !cancelled() && needs.system.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:

@@ -57,7 +57,7 @@ state partition.
 
 - Nothing has run on physical hardware.
 - Releases are signed by a developer key the build generates, and the
-  kernel's modules by one the kernel build makes and the build's cache keeps.
+  kernel's modules by one each kernel build makes for itself.
 - The watchdog catches a machine that has stopped, not one that is merely
   broken. A supervised service feeds every watchdog device, so a machine
   whose userspace stops being scheduled resets (the state suite proves it by
@@ -74,3 +74,13 @@ state partition.
 - dhcpcd runs without its own privilege separation; the net zone is its
   sandbox.
 - The builds are not reproducible bit for bit.
+- A resumed tree (the Actions cache, or a local work directory rebuilt with
+  `KRYPTIK_STALE=rebuild`) builds a changed step again over what its old
+  version installed, and nothing records what a step installed. A file the
+  new version no longer installs, or every file of a step that was dropped,
+  stays in the image until a toolchain change makes stage 04 start again from
+  the stage 02 tree. Removing them safely needs a record of what each rebuild
+  wrote, not a before and after listing, with removals held to the end of the
+  stage and never of a shared object something still links.
+- The setuid audit does not look at file capabilities (`security.capability`),
+  the other way a file is given privilege.

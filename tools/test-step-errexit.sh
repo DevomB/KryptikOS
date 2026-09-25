@@ -26,7 +26,7 @@ check() { if [[ "$2" == ok ]]; then green "$1"; else red "$1"; fi; }
 # make_harness WORK [EXTRA]: a script that runs the real step() on its
 # arguments. EXTRA goes into recipe_ok's body, to change the recipe.
 make_harness() {
-    local work="$1" extra="${2:-}" hcode="${3:-true}" hcomment="${4:-a comment}" ucode="${5:-true}" textra="${6:-true}"
+    local work="$1" extra="${2:-}" hcode="${3:-true}" hcomment="${4:-a comment}" ucode="${5:-true}"
     mkdir -p "$work/.stamps" "$work/logs" "$work/src"
     : > "$work/stage-under-test.sh"
     [[ -f "$work/src/probe-1.0.tar.gz" ]] || echo "original tarball" > "$work/src/probe-1.0.tar.gz"
@@ -79,15 +79,6 @@ recipe_helped() { helper_outer; }
 helper_unused() { ${ucode}; }
 # A recipe that says "step" in a message, which is not a call to step().
 recipe_says_step() { echo "the step before this one"; }
-
-# A recipe that installs into the sysroot: one file always, one more as the
-# test asks, and a line appended to a file it did not create.
-recipe_tree() {
-    mkdir -p "\$KRYPTIK_SYSROOT/usr/bin"
-    echo a > "\$KRYPTIK_SYSROOT/usr/bin/a"
-    ${textra}
-    echo /bin/sh >> "\$KRYPTIK_SYSROOT/etc/shells"
-}
 
 # step() calls this after printing the tail of a failed log. Its output is
 # how the test tells that step() survived the failure far enough to report
@@ -283,26 +274,13 @@ test_helpers() {
 
     out="$(bash -c 'source "$1"; recipe() { echo "the step before"; }; _helpers_of recipe' _ "$ROOT/build/lib/common.sh" 2>&1)"
     check "helpers: \"step\" in a recipe's message does not bring in the step runner" "$([[ -z "$out" ]] && echo ok)"
-    rm -rf "$work"
-}
 
-# With STAMP_TREE, a step records the files it created, and a rebuild removes
-# the ones it no longer installs; a file it only changed is not its to remove.
-test_outputs() {
-    local work out rc; work="$(mktemp -d)"
-    # shellcheck disable=SC2016  # expanded by the harness, not here
-    make_harness "$work" "" true "a comment" true 'echo b > "$KRYPTIK_SYSROOT/usr/bin/b"'
-    mkdir -p "$work/sysroot/etc"; echo /bin/bash > "$work/sysroot/etc/shells"
-    STAMP_TREE=1 run_harness "$work" tree recipe_tree >/dev/null
-    check "outputs: the files a step created are listed beside its stamp, a file it changed is not" \
-          "$([[ "$(cat "$work/.stamps/t-tree.files" 2>/dev/null)" == "$work/sysroot/usr/bin/a"$'\n'"$work/sysroot/usr/bin/b" ]] && echo ok)"
-
-    make_harness "$work"
-    out="$(STAMP_TREE=1 KRYPTIK_STALE=rebuild run_harness "$work" tree recipe_tree)"; rc=$?
-    check "outputs: rebuilt without it, the step leaves behind no file it stopped installing" \
-          "$([[ $rc -eq 0 && ! -e "$work/sysroot/usr/bin/b" && -f "$work/sysroot/usr/bin/a" ]] && echo ok)"
-    check "outputs: and the file it only changed survives" \
-          "$(grep -q /bin/bash "$work/sysroot/etc/shells" 2>/dev/null && echo ok)"
+    # The runner is in no fingerprint, so the line every recipe runs under
+    # changes only with a stamp format bump, and this test with it. A whole
+    # line, so a comment quoting the old one cannot stand in for it.
+    check "helpers: the line every recipe runs under changes only with the stamp format" \
+          "$(grep -qxF '    ( set -Eeuo pipefail; trap _kryptik_trap ERR; "$@" ) > "$logfile" 2>&1' "$ROOT/build/lib/common.sh" \
+             && grep -qx 'KRYPTIK_STAMP_FORMAT=4' "$ROOT/build/lib/common.sh" && echo ok)"
     rm -rf "$work"
 }
 
@@ -554,7 +532,6 @@ echo
 echo "-- stamps track their own inputs, and only their own"
 test_staleness
 test_helpers
-test_outputs
 echo
 echo "-- the sources a step names are part of its inputs"
 test_source_inputs

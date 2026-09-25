@@ -806,6 +806,11 @@ fn cmd_seccomp_probe(name: &str) -> Option<ExitCode> {
             let r = libc::inotify_init1(0);
             if r < 0 && *libc::__errno_location() == libc::ENOSYS { 7 } else { 0 }
         },
+        // As ncurses calls it around a terminfo open.
+        "setfsuid" => || unsafe {
+            let r = libc::syscall(libc::SYS_setfsuid, libc::getuid() as libc::c_long);
+            if r < 0 && *libc::__errno_location() == libc::EPERM { 7 } else { 0 }
+        },
         "socket-vsock" => || unsafe {
             let r = libc::socket(40, libc::SOCK_STREAM, 0);
             if r < 0 && *libc::__errno_location() == libc::EAFNOSUPPORT { 7 } else { 0 }

@@ -82,10 +82,12 @@ ADR-009) and `boot.fragment` (ADR-013).
   weaker than kernel access.
 - `RANDOMIZE_BASE`, `RANDOMIZE_MEMORY`: KASLR.
 - `MODULE_SIG_FORCE`: only modules signed by the build load. The key is the
-  kernel build's own (`certs/signing_key.pem`), made with the kernel tree and
-  kept with it in the Actions cache between runs, so it is a developer key
-  like the others: anyone who can restore that cache can sign a module. A
-  release has to sign with a key it is handed (roadmap, production keys).
+  kernel build's own (`certs/signing_key.pem`), made with the kernel tree. The
+  Actions cache keeps the tree without it, so a run that restores the tree
+  makes a new key, links the kernel with it and signs the modules again, and
+  no key leaves the machine that used it. It is a developer key like the
+  others: a release has to sign with a key it is handed (roadmap, production
+  keys).
 - `KSTACK_ERASE`, `RANDSTRUCT_FULL`: stack erasing and structure layout
   randomization (the 6.18 names; the old `GCC_PLUGIN_*` symbols are derived
   and cannot be set).
@@ -140,7 +142,8 @@ binary needs a justified entry in `build/config/setuid-allowlist.txt`: today
 yet. Stage 06 runs `tools/audit-setuid.sh --strip` over the image's root, so
 the bit comes off every other file (shadow and util-linux install eleven
 more); without `--strip` the script fails on any unlisted setuid or setgid
-binary.
+binary. Either way it fails when it cannot read a directory, and a strip that
+would take the bit off a listed binary through a hard link fails instead.
 
 ## Zone syscall filter
 
