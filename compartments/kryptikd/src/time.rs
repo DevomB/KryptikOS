@@ -278,35 +278,24 @@ fn load_state(dir: &Path) -> State {
     s
 }
 
-fn ensure_dir(dir: &Path) -> io::Result<()> {
-    use std::os::unix::fs::DirBuilderExt;
-    match std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
-        Err(e) => Err(e),
-    }
-}
-
-/// Written whole and renamed into place, so a power cut leaves old or new state.
+/// Written whole, so a power cut leaves old or new state.
 fn save_state(dir: &Path, s: &State) -> io::Result<()> {
-    ensure_dir(dir)?;
-    let tmp = dir.join("state.tmp");
+    crate::files::private_dir(dir)?;
     let mut text = format!("moved_unasked={}\n", s.moved_unasked);
     if let Some(t) = s.last_claim {
         text.push_str(&format!("last_claim={t}\n"));
     }
-    let mut f = std::fs::File::create(&tmp)?;
-    f.write_all(text.as_bytes())?;
-    f.sync_all()?;
-    std::fs::rename(&tmp, dir.join("state"))
+    crate::files::write_atomic(&dir.join("state"), &[text.as_bytes()], 0o600, None)
 }
 
 /// Append a line to the clock's history (`kryptikd time status` shows the last).
 fn record(dir: &Path, at: f64, what: &str) {
-    if ensure_dir(dir).is_err() {
+    use std::os::unix::fs::OpenOptionsExt;
+    if crate::files::private_dir(dir).is_err() {
         return;
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("history")) {
+    let history = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(dir.join("history"));
+    if let Ok(mut f) = history {
         let _ = writeln!(f, "{} {what}", format_utc(at));
     }
 }

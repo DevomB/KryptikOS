@@ -8,7 +8,7 @@
 
 use std::cmp::Ordering;
 use std::io::Write as _;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 pub const POINTER_MAGIC: &str = "KRYPTIK-LATEST-1";
@@ -295,33 +295,13 @@ pub fn channel_from(conf: &str) -> Option<String> {
     })
 }
 
-/// Make or find a directory of this user's alone; an existing link, another
-/// owner, or a mode that lets anyone else in is refused.
 fn private_dir(p: &Path) -> Result<(), String> {
-    use std::os::unix::fs::MetadataExt;
-    match std::fs::DirBuilder::new().recursive(true).mode(0o700).create(p) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(format!("{}: {e}", p.display())),
-    }
-    let m = std::fs::symlink_metadata(p).map_err(|e| format!("{}: {e}", p.display()))?;
-    if !m.is_dir() || m.uid() != unsafe { libc::geteuid() } || m.mode() & 0o077 != 0 {
-        return Err(format!("{}: not a directory of this user's alone", p.display()));
-    }
-    Ok(())
+    crate::files::private_dir(p).map_err(|e| format!("{}: {e}", p.display()))
 }
 
 /// Written whole and renamed into place, readable by root alone.
 fn put_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let tmp = path.with_extension("tmp");
-    let _ = std::fs::remove_file(&tmp);
-    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&tmp)
-        .map_err(|e| format!("{}: {e}", tmp.display()))?;
-    f.write_all(bytes).and_then(|_| f.sync_all()).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))?;
-    // Sync the directory too, or a power cut can lose the rename.
-    let parent = path.parent().unwrap_or(Path::new("."));
-    std::fs::File::open(parent).and_then(|d| d.sync_all()).map_err(|e| format!("{}: {e}", parent.display()))
+    crate::files::write_atomic(path, &[bytes], 0o600, None).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 fn stored_pointer(dir: &Path) -> Option<Pointer> {

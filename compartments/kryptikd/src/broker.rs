@@ -72,9 +72,8 @@ pub fn identify<'a>(zones: &'a [Zone], fd: RawFd) -> Result<&'a Zone, String> {
     }
 }
 
-/// The socket file name inside a registry entry, and the path a zone sees.
+/// The socket's name in a registry entry, and in the zone's /run/kryptik.
 pub const SOCKET_NAME: &str = "broker";
-pub const ZONE_PATH: &str = "/run/kryptik/broker";
 
 /// Listen on an AF_UNIX socket at `path` that only the zone identity can
 /// connect to. A stale file is removed first: this launcher owns the entry.
@@ -945,7 +944,7 @@ pub fn clipboard_read(entry: &Path) -> io::Result<Option<(String, Vec<u8>)>> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
     let p = entry.join(CLIPBOARD_FILE);
-    let mut f = match std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(&p) {
+    let f = match std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(&p) {
         Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
@@ -966,36 +965,16 @@ pub fn clipboard_read(entry: &Path) -> io::Result<Option<(String, Vec<u8>)>> {
     Ok(Some((mime, bytes)))
 }
 
-/// Replace the zone's payload atomically: write a new 0600 file (O_EXCL,
-/// O_NOFOLLOW) and rename it over `clipboard`, replacing any planted symlink.
+/// Replace the zone's payload whole, 0600; a planted symlink is replaced,
+/// never followed.
 pub fn clipboard_write(entry: &Path, mime: &str, bytes: &[u8]) -> io::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
     if !MIME_TYPES.contains(&mime) {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("unsupported MIME type {mime:?}")));
     }
     if bytes.len() > CLIPBOARD_MAX {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "payload over the clipboard limit"));
     }
-    let tmp = entry.join(format!(".{CLIPBOARD_FILE}.{}", std::process::id()));
-    let _ = std::fs::remove_file(&tmp);
-    let r = (|| {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&tmp)?;
-        f.write_all(mime.as_bytes())?;
-        f.write_all(b"\n")?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
-        std::fs::rename(&tmp, entry.join(CLIPBOARD_FILE))
-    })();
-    if r.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    r
+    crate::files::write_atomic(&entry.join(CLIPBOARD_FILE), &[mime.as_bytes(), b"\n", bytes], 0o600, None)
 }
 
 /// `kryptikd clipboard move`: give `to` a copy of `from`'s payload. Both are
