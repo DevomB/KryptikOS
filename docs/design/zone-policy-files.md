@@ -52,7 +52,9 @@ after its name and gets the same errno here:
 
 A printed name can go on an `allow-syscall` line unless it is on the denied
 list; a call refused for its arguments (namespace flags to `clone`,
-`TIOCSTI`) is printed under its syscall's name and stays refused.
+`TIOCSTI`) is printed under its syscall's name and stays refused. With
+`--zone NAME` the trace runs under that zone's filter, its policy file
+included, so a second run shows what is still refused.
 
 An unknown directive or name, a denied syscall, a capability outside
 `KEEPABLE`, a duplicate line or an unreadable file is an error that names the
