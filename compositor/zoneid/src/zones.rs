@@ -71,8 +71,31 @@ pub fn shipped_zone_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::distinct::{analyze, Thresholds, MIN_DELTA_E};
+    use crate::distinct::{analyze, Thresholds, COMPOSITOR_COLOURS, MIN_DELTA_E};
     use crate::identity::Channel;
+
+    /// The header dwl is built with holds exactly the colours zoneid audits:
+    /// it cannot draw one (a focus shade, say) that no check has seen.
+    #[test]
+    fn header_colours_are_audited() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../build/desktop/zone-colours.h");
+        let header = std::fs::read_to_string(&path).expect("zone-colours.h");
+        let mut drawn: Vec<String> = header
+            .match_indices("0x")
+            .filter_map(|(i, _)| header.get(i + 2..i + 10))
+            .filter(|h| h.ends_with("ff") && h.bytes().all(|b| b.is_ascii_hexdigit()))
+            .map(|h| format!("#{}", h[..6].to_ascii_lowercase()))
+            .collect();
+        let mut audited: Vec<String> = load_zones(&shipped_zone_dir())
+            .expect("the shipped zone files parse")
+            .iter()
+            .map(|z| z.color.to_hex())
+            .chain(COMPOSITOR_COLOURS.iter().map(|(_, hex)| hex.to_string()))
+            .collect();
+        drawn.sort();
+        audited.sort();
+        assert_eq!(drawn, audited);
+    }
 
     /// The claim the whole crate exists to make good on: the zone files
     /// that ship are distinguishable. Every pair differs in colour under

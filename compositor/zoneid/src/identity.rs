@@ -38,10 +38,10 @@ use std::fmt;
 
 use crate::color::{ParseHexError, Srgb};
 
-/// The border stroke style. The global channel that survives colour-vision
-/// deficiency, monochrome output, night-mode dimming, and a photograph.
+/// The border stroke style a zone asks for. Validated so a typo is caught,
+/// but the compositor draws every border solid, so zoneid gives it no weight.
 ///
-/// Six values, which is about what a 4px border can express legibly. A seventh
+/// Six values, which is about what a narrow border can express legibly. A seventh
 /// that nobody can tell from `dashed` at arms length would be worse than
 /// having six.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
@@ -143,15 +143,6 @@ impl Channel {
             Channel::Glyph => "glyph",
             Channel::Label => "label",
         }
-    }
-
-    /// Whether this channel is perceived without looking directly at it.
-    ///
-    /// The distinction the whole design turns on. A zone set whose only
-    /// distinct channels are point channels identifies every window correctly
-    /// and still fails the "at a glance" standard the threat model relies on.
-    pub fn is_global(self) -> bool {
-        matches!(self, Channel::Color | Channel::Pattern)
     }
 }
 
@@ -278,10 +269,10 @@ impl ZoneIdentity {
         v
     }
 
-    /// Whether this zone has any channel that survives colour-vision
-    /// deficiency.
+    /// Whether something other than colour on screen names this zone: the
+    /// glyph or label the chrome shows. A pattern is not drawn.
     pub fn has_non_color_channel(&self) -> bool {
-        self.pattern.is_some() || self.glyph.is_some() || self.label.is_some()
+        self.glyph.is_some() || self.label.is_some()
     }
 }
 
@@ -452,13 +443,7 @@ mod tests {
         let z = ZoneIdentity::new("work", "#3a7d44", None, None, None).unwrap();
         assert!(!z.has_non_color_channel());
         assert_eq!(z.present_channels(), vec![Channel::Color]);
-    }
-
-    #[test]
-    fn global_and_point_channels_are_classified() {
-        assert!(Channel::Color.is_global());
-        assert!(Channel::Pattern.is_global());
-        assert!(!Channel::Glyph.is_global());
-        assert!(!Channel::Label.is_global());
+        let z = ZoneIdentity::new("work", "#3a7d44", Some("dotted"), None, None).unwrap();
+        assert!(!z.has_non_color_channel(), "a pattern is not drawn");
     }
 }

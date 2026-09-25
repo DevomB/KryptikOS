@@ -49,8 +49,8 @@ pub struct SearchOptions {
     /// Minimum contrast a border must have against BOTH backgrounds.
     ///
     /// Set this to 1.0 to drop the constraint entirely, which is the right
-    /// model for a border drawn with a contrasting keyline - see
-    /// docs/gui-isolation.md. It is a much bigger lever than it looks.
+    /// model for a border drawn with a contrasting keyline. It is a much
+    /// bigger lever than it looks.
     pub min_contrast: f64,
     /// Sampling step through each sRGB axis for the coarse search. 17 gives
     /// 16 levels per channel.

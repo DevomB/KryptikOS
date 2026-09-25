@@ -44,6 +44,7 @@ pub enum TomlErrorKind {
     MissingEquals,
     EmptyKey,
     KeyOutsideSection,
+    DuplicateKey(String),
     TrailingGarbage(String),
     Unsupported(&'static str),
     BadEscape(char),
@@ -61,6 +62,7 @@ impl fmt::Display for TomlError {
             TomlErrorKind::KeyOutsideSection => {
                 write!(f, "key appears before any [section] header")
             }
+            TomlErrorKind::DuplicateKey(k) => write!(f, "{k} is given twice"),
             TomlErrorKind::TrailingGarbage(s) => {
                 write!(f, "unexpected text after value: {s:?}")
             }
@@ -77,9 +79,9 @@ impl fmt::Display for TomlError {
 
 /// A parsed document: sections in file order, each a list of key/value pairs.
 ///
-/// A `Vec` rather than a map because zone files have a handful of keys, order
-/// is useful in error messages, and a duplicate key should be visible rather
-/// than silently overwriting.
+/// Read the way kryptikd reads a zone file: a repeated `[section]` header
+/// continues that section, and a key given twice in it is an error. The
+/// colour zoneid audits is then the colour kryptikd enforces and dwl draws.
 #[derive(Debug, Default, Clone)]
 pub struct Document {
     pub sections: Vec<Section>,
@@ -88,12 +90,10 @@ pub struct Document {
 #[derive(Debug, Clone)]
 pub struct Section {
     pub name: String,
-    pub line: usize,
     pub entries: Vec<(String, String)>,
 }
 
 impl Document {
-    /// First value for `key` in the first section named `section`.
     pub fn get(&self, section: &str, key: &str) -> Option<&str> {
         self.sections
             .iter()
@@ -103,14 +103,11 @@ impl Document {
             .find(|(k, _)| k == key)
             .map(|(_, v)| v.as_str())
     }
-
-    pub fn has_section(&self, section: &str) -> bool {
-        self.sections.iter().any(|s| s.name == section)
-    }
 }
 
 pub fn parse(input: &str) -> Result<Document, TomlError> {
     let mut doc = Document::default();
+    let mut current: Option<usize> = None;
 
     for (idx, raw) in input.lines().enumerate() {
         let line = idx + 1;
@@ -136,10 +133,15 @@ pub fn parse(input: &str) -> Result<Document, TomlError> {
             if name.contains('.') {
                 return Err(err(TomlErrorKind::Unsupported("a dotted section name")));
             }
-            doc.sections.push(Section {
-                name: name.to_string(),
-                line,
-                entries: Vec::new(),
+            current = Some(match doc.sections.iter().position(|s| s.name == name) {
+                Some(i) => i,
+                None => {
+                    doc.sections.push(Section {
+                        name: name.to_string(),
+                        entries: Vec::new(),
+                    });
+                    doc.sections.len() - 1
+                }
             });
             continue;
         }
@@ -168,9 +170,13 @@ pub fn parse(input: &str) -> Result<Document, TomlError> {
 
         let value = parse_value(value).map_err(err)?;
 
-        let Some(section) = doc.sections.last_mut() else {
+        let Some(i) = current else {
             return Err(err(TomlErrorKind::KeyOutsideSection));
         };
+        let section = &mut doc.sections[i];
+        if section.entries.iter().any(|(k, _)| k == key) {
+            return Err(err(TomlErrorKind::DuplicateKey(format!("{}.{key}", section.name))));
+        }
         section.entries.push((key.to_string(), value));
     }
 
@@ -398,7 +404,17 @@ border_color = "#aa3333"
         assert_eq!(d.get("zone", "name"), Some("untrusted"));
         assert_eq!(d.get("ui", "border_color"), Some("#aa3333"));
         assert_eq!(d.get("limits", "pids_max"), Some("512"));
-        assert!(d.has_section("policy"));
+        assert_eq!(d.get("policy", "seccomp"), Some("policy/untrusted.seccomp"));
         assert_eq!(d.get("ui", "glyph"), None);
+    }
+
+    #[test]
+    fn duplicate_keys() {
+        let e = parse("[ui]\nborder_color = \"#111111\"\n[zone]\n[ui]\nborder_color = \"#222222\"\n").unwrap_err();
+        assert_eq!(e.kind, TomlErrorKind::DuplicateKey("ui.border_color".into()));
+        assert_eq!(e.line, 5);
+        let d = parse("[ui]\nglyph = \"!\"\n[zone]\nname = \"a\"\n[ui]\nlabel = \"A\"\n").unwrap();
+        assert_eq!(d.get("ui", "glyph"), Some("!"));
+        assert_eq!(d.get("ui", "label"), Some("A"));
     }
 }

@@ -7,33 +7,22 @@
 //! matters. This crate is what makes that claim checkable instead of merely
 //! asserted.
 //!
-//! It answers one question - *can a human distinguish these two zones?* - and
-//! answers it the same way for three different callers:
+//! It answers one question - *can a person tell these two border colours
+//! apart?* - for every colour the compositor draws, under four vision models.
+//! The `zoneid` binary asks it of the zone files in CI and searches for
+//! palettes that pass. kryptikd checks only the shape of a zone's `[ui]`
+//! keys; neither it nor the proxy depends on this crate.
 //!
-//! * `kryptikd`, which refuses to load a zone set that fails (the enforcement
-//!   point that actually matters);
-//! * `kryptik-wlproxy`, which draws the identity and must agree with the
-//!   enforcement about what it is drawing;
-//! * CI, via the `zoneid` binary, which reports rather than refuses.
+//! # The channels
 //!
-//! # The model
+//! | Channel | Shown by |
+//! |---|---|
+//! | `color` | the whole window border, drawn by dwl |
+//! | `glyph`, `label` | the chrome, for the focused window |
+//! | `pattern` | nothing yet: validated, given no weight |
 //!
-//! A zone identity carries four independent channels, because relying on one
-//! is how the shipped palette ended up with two pairs of zones that are the
-//! same colour to a colour-blind user:
-//!
-//! | Channel | Scope | Survives |
-//! |---|---|---|
-//! | `color` | global - the whole window edge | trichromatic vision only |
-//! | `pattern` | global - the whole window edge | CVD, monochrome, a photo of the screen |
-//! | `glyph` | point - the titlebar tag | everything, if you look at it |
-//! | `label` | point - the titlebar tag | everything, if you read it |
-//!
-//! The global/point distinction is the one that matters and the one that is
-//! easy to miss. Colour and pattern are perceived without looking directly at
-//! them; glyph and label require attention. A design with only point channels
-//! technically identifies every window and still fails the "at a glance"
-//! standard, which is the standard the threat model actually relies on.
+//! Colour is the channel seen without looking for it, which is why its floor
+//! holds under colour-vision deficiency and not only normal vision.
 //!
 //! # What this crate does NOT do
 //!
@@ -41,7 +30,7 @@
 //! identities are distinguishable in principle, under a stated vision model,
 //! by a colour-difference metric. Real confusion also involves habit, screen
 //! calibration, ambient light and haste. The invariant here is a floor, not a
-//! guarantee, and docs/gui-isolation.md says so in the same words.
+//! guarantee.
 
 pub mod color;
 pub mod cvd;

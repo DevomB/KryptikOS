@@ -4,7 +4,8 @@
  *  - windows are identified by zone: the border colour is chosen per client
  *    from the `kryptik.<zone>.` app_id prefix the proxy stamps on every zone
  *    client (dwl-zone-borders.py adds that to dwl.c), and the border is wide
- *    enough to be seen;
+ *    enough to be seen. Focus widens the coloured part of the border and
+ *    never changes its colour;
  *  - every keybinding that starts a program goes through kryptik-launch,
  *    which asks zone 0 to run it inside a zone. Nothing here spawns a
  *    program on the session's own display.
@@ -18,20 +19,19 @@
 /* appearance */
 static const int sloppyfocus               = 1;  /* focus follows mouse */
 static const int bypass_surface_visibility = 0;
-static const unsigned int borderpx         = 4;  /* the identity channel: wide */
+static const unsigned int borderpx         = 6;  /* the identity channel: wide */
+static const unsigned int bandpx           = 2;  /* how much narrower an unfocused border's colour is */
 static const float rootcolor[]             = COLOR(0x101418ff);
-static const float bordercolor[]           = COLOR(KRYPTIK_UNZONED_BORDER);
-static const float focuscolor[]            = COLOR(KRYPTIK_UNZONED_FOCUS);
-static const float urgentcolor[]           = COLOR(0xffd000ff);
+static const float urgentcolor[]           = COLOR(KRYPTIK_URGENT_BORDER);
 static const float fullscreen_bg[]         = {0.0f, 0.0f, 0.0f, 1.0f};
 
-/* zone -> border colours; see zone-colours.h */
-#define ZONE_ENTRY(name, border, focus) { name, COLOR(border), COLOR(focus) },
+/* zone -> border colour; see zone-colours.h */
+#define ZONE_ENTRY(name, border) { name, COLOR(border) },
 static const ZoneColor zonecolors_table[] = {
 	KRYPTIK_ZONE_COLOURS(ZONE_ENTRY)
 };
-static const ZoneColor unzonedcolor = { NULL, COLOR(KRYPTIK_UNZONED_BORDER), COLOR(KRYPTIK_UNZONED_FOCUS) };
-static const ZoneColor unknownzonecolor = { NULL, COLOR(KRYPTIK_UNKNOWN_BORDER), COLOR(KRYPTIK_UNKNOWN_FOCUS) };
+static const float unzonedcolor[] = COLOR(KRYPTIK_UNZONED_BORDER);
+static const float unknownzonecolor[] = COLOR(KRYPTIK_UNKNOWN_BORDER);
 
 /* tagging - TAGCOUNT must be no greater than 31 */
 #define TAGCOUNT (9)
