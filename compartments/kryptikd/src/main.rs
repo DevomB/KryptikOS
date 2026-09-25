@@ -1154,12 +1154,10 @@ fn trace_filter(dir: &Path, name: &str) -> Result<(Vec<libc::c_long>, seccomp::S
     Ok((seccomp::widened(&p.extra_syscalls).map_err(|e| e.to_string())?, p.sockets))
 }
 
-/* Run CMD under a zone filter and name every call it refuses. A refused
- * call goes to this process (seccomp user notification: no ptrace, which
- * Kryptik forbids), is printed, and fails with ENOSYS, so one run lists all
- * the program was denied. The child shares this process's descriptor table
- * until its exec: that is how the listener it creates reaches us, since the
- * zone filter has no sendmsg to pass it with. */
+/* Run CMD under a zone filter and name every call it refuses. Refused calls
+ * come here by seccomp user notification (Kryptik forbids ptrace) and fail
+ * with ENOSYS, so one run lists them all. The child shares our descriptor
+ * table until exec: the zone filter has no sendmsg to pass its listener. */
 fn cmd_seccomp_trace(cmd: &[String], allow: &[libc::c_long], sockets: &seccomp::SocketPolicy) -> ExitCode {
     use std::ffi::CString;
 

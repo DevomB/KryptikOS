@@ -359,12 +359,11 @@ impl ArgRule {
     }
 }
 
-/// Refused with an errno, not killed, since programs carry on or say why when
-/// these fail. inotify: a watch on the /usr the zones share with zone 0 sees
-/// every program any of them starts; a zone policy may allow it. The id and
-/// capability calls stay denied: ncurses brackets every terminfo open with
-/// setfsuid and setfsgid, and sudo, su and daemons dropping privilege as root
-/// call the rest, so a kill would take them down unexplained. No id changes.
+/// Refused with an errno instead of killed: programs carry on or say why.
+/// inotify: a watch on the /usr the zones share with zone 0 sees every program
+/// any of them starts; a zone policy may allow it. The id and capability calls
+/// never succeed, but ncurses brackets every terminfo open with setfsuid and
+/// setfsgid, and sudo, su and privilege-dropping daemons call the rest.
 pub const REFUSED_SOFTLY: &[(libc::c_long, u32)] = &[
     (libc::SYS_inotify_init, ENOSYS),
     (libc::SYS_inotify_init1, ENOSYS),
@@ -699,8 +698,7 @@ mod tests {
     #[test]
     fn program_has_expected_shape() {
         let p = build_program(&[libc::SYS_read, libc::SYS_write]).unwrap();
-        // 4 prologue + 2 x32 + 2 per soft refusal + 2 per syscall + 1 default
-        // deny; neither syscall has an arg rule
+        // 4 prologue + 2 x32 + 2 per soft refusal + 2 per syscall (no arg rules) + 1 deny
         assert_eq!(p.len(), 3 + 1 + 2 + 2 * REFUSED_SOFTLY.len() + 4 + 1);
         assert_eq!(p[0].code, BPF_LD | BPF_W | BPF_ABS);
         assert_eq!(p[0].k, OFF_ARCH);
