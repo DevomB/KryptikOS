@@ -275,12 +275,17 @@ test_helpers() {
     out="$(bash -c 'source "$1"; recipe() { echo "the step before"; }; _helpers_of recipe' _ "$ROOT/build/lib/common.sh" 2>&1)"
     check "helpers: \"step\" in a recipe's message does not bring in the step runner" "$([[ -z "$out" ]] && echo ok)"
 
-    # The runner is in no fingerprint, so the line every recipe runs under
-    # changes only with a stamp format bump, and this test with it. A whole
-    # line, so a comment quoting the old one cannot stand in for it.
-    check "helpers: the line every recipe runs under changes only with the stamp format" \
-          "$(grep -qxF '    ( set -Eeuo pipefail; trap _kryptik_trap ERR; "$@" ) > "$logfile" 2>&1' "$ROOT/build/lib/common.sh" \
-             && grep -qx 'KRYPTIK_STAMP_FORMAT=4' "$ROOT/build/lib/common.sh" && echo ok)"
+    # The runner is in no fingerprint, so the lines every recipe runs under
+    # change only with a stamp format bump, and this test with them: the
+    # subshell and what sets it up and takes it down, as whole lines, so a
+    # comment quoting them cannot stand in, nor a line added among them pass.
+    local runner want
+    runner="$(grep -B2 -A3 -xF '    ( set -Eeuo pipefail; trap _kryptik_trap ERR; "$@" ) > "$logfile" 2>&1' "$ROOT/build/lib/common.sh")"
+    want="$(printf '%s\n' '    set +e' '    trap - ERR' \
+        '    ( set -Eeuo pipefail; trap _kryptik_trap ERR; "$@" ) > "$logfile" 2>&1' \
+        '    rc=$?' '    trap _kryptik_trap ERR' '    set -e')"
+    check "helpers: the lines every recipe runs under change only with the stamp format" \
+          "$([[ "$runner" == "$want" ]] && grep -qx 'KRYPTIK_STAMP_FORMAT=4' "$ROOT/build/lib/common.sh" && echo ok)"
     rm -rf "$work"
 }
 
