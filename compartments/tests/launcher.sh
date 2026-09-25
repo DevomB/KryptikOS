@@ -1817,14 +1817,14 @@ else
     pass "POL4 a policy file cannot re-allow a syscall the base policy denies"
 fi
 
-# Per-zone Landlock files are not implemented; POL6 says so.
+# Per-zone Landlock files are applied; the boundary probes (group E) show one
+# narrowing where a zone may write.
 lp="$("$KRYPTIKD" explain widened --zones "$ZONES" 2>&1 | sed -n 's/^policy *//p' | head -1)"
 if [[ -n "$lp" ]]; then
     pass "POL5 explain reports what the policy file adds ($lp)"
 else
     fail "POL5 explain does not report the policy file's additions"
 fi
-skip "POL6 per-zone LANDLOCK policy files are NOT applied (seccomp files are; kryptikd refuses a zone naming a landlock file)"
 
 # ============================================================================
 head_ "LC. Zone lifecycle: registry, stop, concurrency  [unpriv]"
