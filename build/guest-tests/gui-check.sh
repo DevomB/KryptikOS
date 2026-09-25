@@ -41,8 +41,8 @@ wait_for() {   # wait_for SECONDS CMD...
     return 1
 }
 zone_log() { cat "/var/log/kryptik/zone-$1.log" 2>/dev/null; }
-zone_why() {   # zone_why ZONE: the registry's view, the zone's log, what runs
-    echo "entries: $(ls /run/kryptik/zones 2>&1 | tr '\n' ' ')| $1: $(ls /run/kryptik/zones/"$1" 2>&1 | tr '\n' ' ')| running: $("$KD" list --running 2>&1 | tr '\n' ' ')| log: $(zone_log "$1" | tail -6 | tr '\n' ' ')| procs: $(pgrep -af "havoc|kryptikd run $1" 2>/dev/null | cut -c1-90 | tr '\n' ';')"
+zone_why() {   # zone_why ZONE: the registry's view, the zone's and its proxy's logs, what runs
+    echo "entries: $(ls /run/kryptik/zones 2>&1 | tr '\n' ' ')| $1: $(ls -la --time-style=full-iso /run/kryptik/zones/"$1" 2>&1 | tr '\n' ' ')| running: $("$KD" list --running 2>&1 | tr '\n' ' ')| log: $(zone_log "$1" | tail -10 | tr '\n' ' ')| proxy: $(tail -4 "$RT/kryptik/$1/proxy.log" 2>&1 | tr '\n' ' ')| procs: $(pgrep -af "havoc|kryptikd run $1" 2>/dev/null | cut -c1-90 | tr '\n' ';')"
 }
 mark() { echo "--- $1 ---" >> "/var/log/kryptik/zone-$2.log" 2>/dev/null; }
 since_mark() {   # since_mark MARK ZONE: the zone's log after the marker line
