@@ -181,7 +181,7 @@ start_dns() {
     # check resolves kryptik.test here to prove a zone reaches this resolver.
     dnsmasq --keep-in-foreground --no-daemon --no-hosts --bind-interfaces \
             --listen-address=10.19.0.1 --listen-address=fd19::1 --listen-address=127.0.0.1 \
-            --resolv-file="$up" --no-poll --cache-size=1000 --local-service             --local=/test/ \
+            --resolv-file="$up" --no-poll --cache-size=1000 --local-service --local=/test/ \
             --pid-file=/run/dnsmasq.pid --user=root &
     DNSPID=$!
     sleep 1

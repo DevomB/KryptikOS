@@ -545,17 +545,16 @@ fn handle_transfer(s: &Served, dest: &str, name: &str, fds: &[RawFd]) -> Result<
         return Err(format!("file is {} bytes; the transfer limit is {}", st.st_size, s.max_bytes));
     }
     // Everything a machine can decide has been decided, the destination's
-    // being there included; the last word is the user's, through the
-    // trusted chrome (consent.rs). Asked only now, after every check, so a
-    // request that would be refused anyway never becomes a question. The
-    // destination was looked up after the question once, and a person was
-    // asked to approve a transfer to a zone that was not running, then
-    // told so: a question whose answer changes nothing teaches people to
-    // say yes.
-    let target = (s.resolve_dest)(dest)?;
+    // being there included, before the person is asked (consent.rs): a
+    // question whose answer changes nothing teaches people to say yes. The
+    // destination is looked up again after the answer. Its root, held
+    // through a wait of up to a minute, pinned the zone's mounts, and the
+    // zone could have stopped or started again meanwhile.
     if !s.auto_approve {
+        drop((s.resolve_dest)(dest)?);
         crate::consent::ask(sender, dest, name, st.st_size as u64, s.asking)?;
     }
+    let target = (s.resolve_dest)(dest)?;
     deliver(&target, name, src, s.max_bytes)
 }
 
@@ -943,38 +942,55 @@ fn recv_first(fd: RawFd, buf: &mut Vec<u8>, started: Instant) -> io::Result<(boo
     }
 }
 
-/// Read until the buffer holds at least `want` bytes, within the deadline.
-/// EOF ends the read early; the caller sees the short count.
+/// Read until the buffer holds at least `want` bytes, within the deadline,
+/// straight into it: a release is thousands of 1 MiB pieces, and a 4 KiB
+/// bounce buffer made each one 256 receives and a copy. `want` is a length
+/// the header was checked against. EOF ends the read early; the caller sees
+/// the short count.
 fn read_more(fd: RawFd, buf: &mut Vec<u8>, want: usize, started: Instant) -> io::Result<()> {
-    while buf.len() < want {
-        if !recv_some(fd, buf, started)? {
-            break;
-        }
+    let mut filled = buf.len();
+    if filled >= want {
+        return Ok(());
     }
-    Ok(())
+    buf.resize(want, 0);
+    let r = loop {
+        match recv_into(fd, &mut buf[filled..], started) {
+            Ok(0) => break Ok(()),
+            Ok(n) => filled += n,
+            Err(e) => break Err(e),
+        }
+        if filled == want {
+            break Ok(());
+        }
+    };
+    buf.truncate(filled);
+    r
 }
 
-/// One recv into `buf`. Ok(false) at EOF. SO_RCVTIMEO ticks (EAGAIN) are
-/// retried until the request deadline, which is the bound that matters.
+/// One recv appended to `buf`. Ok(false) at EOF.
 fn recv_some(fd: RawFd, buf: &mut Vec<u8>, started: Instant) -> io::Result<bool> {
     let mut chunk = [0u8; 4096];
+    let n = recv_into(fd, &mut chunk, started)?;
+    buf.extend_from_slice(&chunk[..n]);
+    Ok(n > 0)
+}
+
+/// One recv into `out`: the count, 0 at EOF. SO_RCVTIMEO ticks (EAGAIN) are
+/// retried until the request deadline, which is the bound that matters.
+fn recv_into(fd: RawFd, out: &mut [u8], started: Instant) -> io::Result<usize> {
     loop {
         if started.elapsed() > REQUEST_DEADLINE {
             return Err(io::Error::new(io::ErrorKind::TimedOut, "request took longer than the deadline"));
         }
-        let n = unsafe { libc::recv(fd, chunk.as_mut_ptr() as *mut libc::c_void, chunk.len(), 0) };
-        if n < 0 {
-            let e = io::Error::last_os_error();
-            match e.raw_os_error() {
-                Some(libc::EINTR) | Some(libc::EAGAIN) => continue,
-                _ => return Err(e),
-            }
+        let n = unsafe { libc::recv(fd, out.as_mut_ptr() as *mut libc::c_void, out.len(), 0) };
+        if n >= 0 {
+            return Ok(n as usize);
         }
-        if n == 0 {
-            return Ok(false);
+        let e = io::Error::last_os_error();
+        match e.raw_os_error() {
+            Some(libc::EINTR) | Some(libc::EAGAIN) => continue,
+            _ => return Err(e),
         }
-        buf.extend_from_slice(&chunk[..n as usize]);
-        return Ok(true);
     }
 }
 
@@ -1606,6 +1622,110 @@ mod tests {
         // Through all of that nothing was created on the destination side.
         assert!(!lab.root.join("home/b/incoming").exists());
         let _ = std::fs::remove_dir_all(&lab.dir);
+    }
+
+    #[test]
+    fn dest_resolved_after_consent() {
+        use std::os::unix::io::AsRawFd;
+        // The first lookup finds the zone under `before`; by the answer it
+        // runs under the lab root, as a zone restarted during the wait would.
+        let lab = lab("again", "b");
+        let entry_dir = lab.dir.join("entry");
+        let before = lab.dir.join("before");
+        std::fs::create_dir_all(&entry_dir).unwrap();
+        std::fs::create_dir_all(before.join("home/b")).unwrap();
+        let (first, after) = (resolver(before.clone()), resolver(lab.root.clone()));
+        let calls = std::cell::Cell::new(0);
+        let resolve = |d: &str| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 1 { first(d) } else { after(d) }
+        };
+        let held = std::cell::Cell::new(0);
+        let asking = || {
+            held.set(held.get().max(fds_pointing_at(&before)));
+            true
+        };
+        let dev = lab.dev;
+        let home_dev = move || Some(dev);
+        let sv = Served {
+            zone: &lab.sender,
+            uid: unsafe { libc::geteuid() },
+            entry: &entry_dir,
+            zones_dir: &lab.zones,
+            home_dev: &home_dev,
+            auto_approve: false,
+            max_bytes: 64,
+            resolve_dest: &resolve,
+            asking: &asking,
+        };
+        let file = lab.dir.join("f.txt");
+        std::fs::write(&file, b"moved").unwrap();
+        let src = open_flags(&file, libc::O_RDONLY);
+        let consent = lab.dir.join("consent");
+        std::fs::create_dir_all(&consent).unwrap();
+        let watch = std::fs::File::create(consent.join(crate::consent::WATCHER_LOCK)).unwrap();
+        assert_eq!(unsafe { libc::flock(watch.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+        let r = {
+            let _env = crate::consent::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var("KRYPTIK_CONSENT_DIR", &consent);
+            let d = consent.clone();
+            let person = std::thread::spawn(move || {
+                for _ in 0..250 {
+                    let q = std::fs::read_dir(&d).unwrap().flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "ask"));
+                    if let Some(q) = q {
+                        std::thread::sleep(std::time::Duration::from_millis(300));
+                        let id = q.file_stem().unwrap().to_string_lossy().into_owned();
+                        std::fs::write(d.join(format!("{id}.answer")), "yes\n").unwrap();
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            });
+            let (_, r) = ask_with(&sv, "transfer b f.txt\n", &[src], false);
+            person.join().unwrap();
+            std::env::remove_var("KRYPTIK_CONSENT_DIR");
+            r
+        };
+        unsafe { libc::close(src) };
+        assert_eq!(String::from_utf8_lossy(&r), "ok f.txt\n");
+        assert_eq!(held.get(), 0, "the destination's root was held through the question");
+        assert_eq!(std::fs::read(lab.root.join("home/b/incoming/f.txt")).unwrap(), b"moved");
+        assert!(!before.join("home/b/incoming").exists(), "the transfer went into the tree the zone had left");
+        let _ = std::fs::remove_dir_all(&lab.dir);
+    }
+
+    #[test]
+    fn read_more_fills_then_stops_at_eof() {
+        // More than a socket buffer, in uneven pieces, after what the header
+        // read already took; then a peer that stops short of what it announced.
+        let pair = || {
+            let mut sv = [0; 2];
+            assert_eq!(unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0, sv.as_mut_ptr()) }, 0);
+            (sv[0], sv[1])
+        };
+        let send = |w: RawFd, bytes: Vec<u8>| {
+            std::thread::spawn(move || {
+                for piece in bytes.chunks(6007) {
+                    assert_eq!(unsafe { libc::write(w, piece.as_ptr() as *const libc::c_void, piece.len()) }, piece.len() as isize);
+                }
+                unsafe { libc::close(w) };
+            })
+        };
+        let data: Vec<u8> = (0..(1usize << 20) + 777).map(|i| (i % 251) as u8).collect();
+        let (r, w) = pair();
+        let t = send(w, data[10..].to_vec());
+        let mut buf = data[..10].to_vec();
+        read_more(r, &mut buf, data.len(), Instant::now()).unwrap();
+        t.join().unwrap();
+        unsafe { libc::close(r) };
+        assert!(buf == data, "the payload came back different");
+        let (r, w) = pair();
+        let t = send(w, vec![7u8; 30]);
+        let mut buf = Vec::new();
+        read_more(r, &mut buf, 100, Instant::now()).unwrap();
+        t.join().unwrap();
+        unsafe { libc::close(r) };
+        assert_eq!(buf, vec![7u8; 30], "EOF leaves what arrived, and no more");
     }
 
     #[test]

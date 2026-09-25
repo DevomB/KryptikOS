@@ -112,8 +112,8 @@ user exists. If a user exists but a password step failed, run
 
 Log in as the user on tty1. The desktop session starts from the profile:
 dwl with the Kryptik chrome as its startup command. Every application
-window belongs to a zone and carries that zone's border colour, pattern and
-label; the title is prefixed with the zone name. Keys (Alt is the modifier):
+window belongs to a zone: it carries that zone's border colour, and its title
+is prefixed with the zone name. Keys (Alt is the modifier):
 
 | keys | what |
 | --- | --- |

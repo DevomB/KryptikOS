@@ -55,8 +55,9 @@ gets its own `kryptik-wlproxy`, which hides the capture, clipboard,
 input-injection and similar Wayland globals and stamps each window with its
 zone; the compositor draws the zone's border and title prefix from that.
 
-The border is load-bearing, not decoration: if a user cannot tell at a glance
-which zone a password prompt belongs to, compartmentalization has failed.
+A window's border colour is how the user tells which zone it belongs to. If
+they cannot tell at a glance which zone a password prompt belongs to, the
+zones have failed them.
 `zoneid audit` checks that every pair of zones stays distinguishable.
 
 ## Storage

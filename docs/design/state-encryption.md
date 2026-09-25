@@ -110,6 +110,16 @@ about 10% of the partition, a much slower first format, and
 confidentiality with the allow-list, measure the cost on real hardware once
 there is some, and decide with numbers.
 
+**Decided: a plain state partition is not converted; that installation is
+reinstalled, its data copied off first.** One without a LUKS2 header is
+refused at boot and the system comes up degraded (`sysinit.sh`). No such
+installation exists outside the test machines, and a converter would run
+once, on the partition that holds everything, with nothing to test it
+against. Offered as an update, such a machine's trial boot comes up
+degraded, is not committed, and falls back to the slot it came from with
+its data untouched (`boot-success.sh` knows the trial from the ESP when the
+state cannot say); the updater then refuses the release as a failed trial.
+
 **Decided: the unattended tests answer the prompt on the serial console.** An installed system ignores
 the control disk on purpose (`testctl.sh`), so nothing can hand it a
 passphrase; the suites reach it through the serial console. They will
@@ -141,5 +151,5 @@ One unlock path, the one a person uses.
 
 `tools/install/kryptik-install.sh`, `build/service-scripts/sysinit.sh` and
 `devices.sh`, `tools/update/kryptik-recover`, the `kryptik` command,
-`tools/image/*-test.sh` and `vm-drive.py`, `docs/BOOT_INSTALL_RECOVER.md`.
+`tools/image/*-test.sh` and `vm-drive.py`, `docs/user-guide.md`.
 No kernel change for the recommended answers.
