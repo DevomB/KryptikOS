@@ -126,6 +126,13 @@ wait_for 20 grep -q '^fullscreen=0' "$RT/kryptik/focus" && pass "fullscreen-off-
 # A zone runs one command at a time, so its window is stopped before the next.
 stop_zone() { as_user "kryptik-launch --stop $1" > /dev/null 2>&1; wait_for 15 test ! -e "/run/kryptik/zones/$1/init.pid"; sleep 1; }
 stop_zone untrusted
+# A window closing must not take the compositor with it: every later window,
+# in any zone, would find no display behind its proxy.
+if pgrep -u "$USER_NAME" -x dwl > /dev/null; then
+    pass "compositor-survives-close" "dwl still runs after the untrusted window closed"
+else
+    fail "compositor-survives-close" "dwl is gone after the untrusted window closed; session.log: $(tail -4 "$RT/kryptik/session.log" 2>/dev/null | tr '\n' ' ')"
+fi
 
 # --- a window cannot cover its own frame ----------------------------------
 # wlprobe answers every configure with a buffer 40 px larger than asked. dwl

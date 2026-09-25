@@ -1,0 +1,30 @@
+From 04279f28e06f6948acf6d4960834165f6d268080 Mon Sep 17 00:00:00 2001
+From: Alex Denes <caskd@redxen.eu>
+Date: Sun, 6 Sep 2026 13:48:13 +0000
+Subject: [PATCH] Remove decoration event listeners on destroynotify
+
+When destroynotify doesn't clean up these listeners it causes a crash once the cleanup of the decoration is triggered
+
+Thanks to kennylevinsen - https://codeberg.org/dwl/dwl/issues/1205#issuecomment-22424401
+---
+ dwl.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/dwl.c b/dwl.c
+index bf3e58c..df9b2ba 100644
+--- a/dwl.c
++++ b/dwl.c
+@@ -1348,6 +1348,10 @@ destroynotify(struct wl_listener *listener, void *data)
+ 		wl_list_remove(&c->map.link);
+ 		wl_list_remove(&c->unmap.link);
+ 		wl_list_remove(&c->maximize.link);
++		if (c->decoration) {
++			wl_list_remove(&c->set_decoration_mode.link);
++			wl_list_remove(&c->destroy_decoration.link);
++		}
+ 	}
+ 	free(c);
+ }
+-- 
+2.43.0
+

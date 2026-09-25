@@ -1,0 +1,24 @@
+From f4dfdabd0bdd632d0b137ede22ff1beb73122efb Mon Sep 17 00:00:00 2001
+From: Alex Denes <caskd@redxen.eu>
+Date: Fri, 10 Apr 2026 15:34:36 +0000
+Subject: [PATCH] NULL out decoration on destroy
+
+---
+ dwl.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/dwl.c b/dwl.c
+index 101a45f..bf3e58c 100644
+--- a/dwl.c
++++ b/dwl.c
+@@ -1242,6 +1242,7 @@ void
+ destroydecoration(struct wl_listener *listener, void *data)
+ {
+ 	Client *c = wl_container_of(listener, c, destroy_decoration);
++	c->decoration = NULL;
+ 
+ 	wl_list_remove(&c->destroy_decoration.link);
+ 	wl_list_remove(&c->set_decoration_mode.link);
+-- 
+2.43.0
+
