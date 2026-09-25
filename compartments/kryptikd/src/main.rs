@@ -196,7 +196,7 @@ fn main() -> ExitCode {
         }
         "stop" => match args.get(1) {
             Some(name) if !name.starts_with("--") => {
-                cmd_stop(name, args.iter().any(|a| a == "--now"))
+                cmd_stop(name, args.iter().any(|a| a == "--now"), &rootfs_base_from(&args))
             }
             _ => {
                 eprintln!("stop: expected a zone name");
@@ -237,7 +237,7 @@ fn main() -> ExitCode {
 /// Stop a running zone by signalling its launcher, which forwards the signal
 /// to pid 1 and escalates to SIGKILL after 5 s. The launcher is signalled only
 /// while its pid and start time both still match: pids are reused.
-fn cmd_stop(name: &str, now: bool) -> ExitCode {
+fn cmd_stop(name: &str, now: bool, base: &str) -> ExitCode {
     let mut st = match registry::state(name) {
         Ok(s) => s,
         Err(e) => {
@@ -270,6 +270,7 @@ fn cmd_stop(name: &str, now: bool) -> ExitCode {
                 eprintln!("kryptikd: reclaiming {name:?}: {e}");
                 return ExitCode::FAILURE;
             }
+            close_left_volume(name, base);
             println!("zone {name:?} was not running (stale entry from pid {pid} reclaimed)");
             ExitCode::SUCCESS
         }
@@ -280,20 +281,23 @@ fn cmd_stop(name: &str, now: bool) -> ExitCode {
             );
             ExitCode::FAILURE
         }
-        registry::State::Running { launcher: Some(l), .. } => {
+        registry::State::Running { launcher: Some(l), init, .. } => {
             if !l.still_alive() {
                 // The launcher died between the two reads; do not signal a reused pid.
                 let _ = registry::reclaim(name);
+                close_left_volume(name, base);
                 println!("zone {name:?} exited while stopping it");
                 return ExitCode::SUCCESS;
             }
-            let sig = if now { libc::SIGKILL } else { libc::SIGTERM };
-            if unsafe { libc::kill(l.pid, sig) } < 0 {
-                eprintln!(
-                    "kryptikd: signalling launcher {}: {}",
-                    l.pid,
-                    std::io::Error::last_os_error()
-                );
+            /* --now kills the zone's pid 1, which takes the pid namespace with
+             * it, not the launcher: the launcher outlives its zone to unmount
+             * and close the zone's volume. */
+            let (pid, sig) = match init.filter(|i| now && i.still_alive()) {
+                Some(i) => (i.pid, libc::SIGKILL),
+                None => (l.pid, if now { libc::SIGKILL } else { libc::SIGTERM }),
+            };
+            if unsafe { libc::kill(pid, sig) } < 0 {
+                eprintln!("kryptikd: signalling {pid}: {}", std::io::Error::last_os_error());
                 return ExitCode::FAILURE;
             }
 
@@ -306,6 +310,7 @@ fn cmd_stop(name: &str, now: bool) -> ExitCode {
                     }
                     Ok(registry::State::Stale { .. }) => {
                         let _ = registry::reclaim(name);
+                        close_left_volume(name, base);
                         println!("zone {name:?} stopped");
                         return ExitCode::SUCCESS;
                     }
@@ -320,6 +325,20 @@ fn cmd_stop(name: &str, now: bool) -> ExitCode {
             );
             ExitCode::from(2)
         }
+    }
+}
+
+/// Close the volume of a zone whose launcher died without closing it, as
+/// `gc` does for every zone: otherwise the plaintext stays mounted and its
+/// key in the kernel after the zone is reported stopped.
+fn close_left_volume(name: &str, base: &str) {
+    if !volume::mappings().iter().any(|z| z == name) || matches!(registry::state(name), Ok(registry::State::Running { .. })) {
+        return;
+    }
+    let mnt = volume::mountpoint_for(Path::new(base), name).display().to_string();
+    match volume::close_mapping(name, &mnt) {
+        Ok(()) => println!("closed the volume zone {name:?} left open"),
+        Err(e) => eprintln!("kryptikd: closing zone {name:?}'s volume: {e}"),
     }
 }
 

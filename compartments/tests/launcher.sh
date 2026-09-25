@@ -630,6 +630,24 @@ if (( PRIVILEGED == 1 )) && command -v cryptsetup >/dev/null 2>&1 && [[ -e /dev/
         else
             pass "F4b the mapping is closed when the zone exits"
         fi
+        # stop --now kills the zone's pid 1, so the launcher outlives it and
+        # closes the volume; killing the launcher left it open.
+        "$KRYPTIKD" run sealed "${ZARGS[@]}" --passphrase-file "$F4PASS" -- /bin/sleep 60 >/dev/null 2>&1 &
+        BG_PIDS+=("$!")
+        f4c_open=0
+        for _ in $(seq 50); do
+            [[ "$("$KRYPTIKD" volume status sealed --zones "$ZONES" 2>/dev/null)" == *"(OPEN)"* ]] && { f4c_open=1; break; }
+            sleep 0.2
+        done
+        "$KRYPTIKD" stop sealed --now >/dev/null 2>&1
+        if (( f4c_open == 0 )); then
+            fail "F4c the encrypted zone did not open its volume within 10 s"
+        elif [[ "$("$KRYPTIKD" volume status sealed --zones "$ZONES" 2>/dev/null)" == *"(closed)"* ]]; then
+            pass "F4c stop --now leaves the volume closed"
+        else
+            fail "F4c the volume is still open after stop --now"
+            "$KRYPTIKD" gc >/dev/null 2>&1
+        fi
     fi
 else
     skip "F4  an encrypted zone starts on its LUKS2 volume [root + cryptsetup] - the VM runs this as root"
