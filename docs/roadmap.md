@@ -59,9 +59,10 @@ work in zones from a terminal and a text browser, and keep it up to date.
       signed pointer.
 - [ ] **An encrypted state partition** ([design](design/state-encryption.md)).
       Done when the install, state and integrity suites pass with it.
-- [ ] **kryptikd built by a pinned compiler.** Today the runner's rustc builds
-      it (ADR-010's open cost). A pinned rustc in the build, verified like
-      cmake's, and a build that refuses any other.
+- [ ] **kryptikd built by a pinned compiler.** The Distro workflow names rustc
+      1.98.1 and refuses to build the shipped binaries with any other; rustup
+      checks the download against the channel manifest. Still to do: pin the
+      compiler's hash in the repository, as cmake's is (ADR-010's open cost).
 
 ### Fails safe and says what it is
 
