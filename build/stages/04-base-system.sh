@@ -237,7 +237,7 @@ s_glibc() {
     local fhs="${KRYPTIK_SOURCES}/glibc-${V_GLIBC}-fhs-1.patch"
     [[ -f "$fhs" ]] && patch -Np1 -i "$fhs"
 
-    # The loader defect recorded in docs/glibc-loader-defect.md - pthread_exit(),
+    # The loader defect recorded in build/patches/glibc-2.40/README.md - pthread_exit(),
     # pthread_cancel() and backtrace() aborting because _dl_find_object
     # attributed every object loaded after startup to ld.so itself - and
     # what fixes it. build/patches/glibc-2.40/ carries upstream's maintained
@@ -1524,7 +1524,7 @@ s_kryptikd() {
 # root - the [vm] rows those suites declare NOT RUN on a developer host.
 # The layout matters: the suites locate their tree as $HERE/../.., so they
 # sit at /usr/lib/kryptik/compartments/tests, next to a kryptikd symlink at
-# the path they default to (see tools/vm/mkinitramfs.sh for the same rule).
+# the path they default to.
 s_tests() {
     echo "inputs digest: ${1:-none}"
     local base=/usr/lib/kryptik
@@ -1788,8 +1788,10 @@ EOF
     # passed on a tree where the .pc file was unfindable, and so proved nothing
     # about what cryptsetup's configure was about to ask.
     # shellcheck disable=SC2046
-    gcc -o /tmp/jc /tmp/jc.c $(pkg-config --cflags --libs json-c) && /tmp/jc && echo "ok: json-c parses and prints"
+    gcc -o /tmp/jc /tmp/jc.c $(pkg-config --cflags --libs json-c)
+    /tmp/jc || { echo "FAIL: json-c did not round-trip a document"; return 1; }
     rm -f /tmp/jc /tmp/jc.c
+    echo "ok: json-c parses and prints"
 }
 
 s_libaio() {
@@ -1816,7 +1818,7 @@ s_lvm2() {
     # saw no object at all ("undefined reference to `main'"). Serial here;
     # the parallel build above is where the time goes.
     make -j1 install_device-mapper
-    dmsetup --version | head -1
+    dmsetup --version | sed -n 1p
     [[ -f /usr/lib/pkgconfig/devmapper.pc ]] || { echo "no devmapper.pc"; return 1; }
 }
 
@@ -1878,7 +1880,7 @@ s_dnsmasq() {
     # "dnsmasq: command not found" right after a successful build).
     make PREFIX=/usr install
     [[ -x /usr/sbin/dnsmasq ]] || { echo "FAIL: /usr/sbin/dnsmasq was not installed"; return 1; }
-    /usr/sbin/dnsmasq --version | head -1
+    /usr/sbin/dnsmasq --version | sed -n 1p
 }
 
 s_dhcpcd() {
@@ -1888,7 +1890,7 @@ s_dhcpcd() {
         --dbdir=/var/lib/dhcpcd --runstatedir=/run --privsepuser=dhcpcd
     make
     make install
-    dhcpcd --version | head -1
+    dhcpcd --version | sed -n 1p
 }
 
 # --- the net zone's wireless uplink ------------------------------------------
@@ -1926,7 +1928,7 @@ EOF
     for b in wpa_supplicant wpa_cli wpa_passphrase; do
         [[ -x "/usr/sbin/$b" ]] || { echo "FAIL: /usr/sbin/$b was not installed"; return 1; }
     done
-    wpa_supplicant -v 2>&1 | head -1
+    wpa_supplicant -v 2>&1 | sed -n 1p
 }
 
 # iw: the operator's view of a radio (scan, link, reg), and the reference for
@@ -2086,7 +2088,7 @@ s_ninja() {
 s_wayland() {
     meson_build "wayland-${V_WAYLAND}.tar.xz" "wayland-${V_WAYLAND}" \
         -Ddocumentation=false -Dtests=false -Ddtd_validation=false
-    wayland-scanner --version 2>&1 | head -1
+    wayland-scanner --version 2>&1 | sed -n 1p
 }
 
 s_libxkbcommon() {
@@ -2295,7 +2297,7 @@ s_lynx() {
         --datadir=/usr/share/doc/lynx
     make
     make install
-    lynx -version | head -1
+    lynx -version | sed -n 1p
 }
 
 # Everything is built with -fcf-protection=full, so the instruction AT a
@@ -2316,7 +2318,7 @@ s_compiler_check() {
                 END {if (n != 2) print "landing pads found:", n+0}' "$d/t.s")"
     rm -rf "$d"
     [[ -z "$bad" ]] || { echo "FAIL: a function entry is not endbr64: ${bad}"; return 1; }
-    echo "ok   $(gcc --version | head -1): function entries are landing pads"
+    echo "ok   $(gcc --version | sed -n 1p): function entries are landing pads"
 }
 
 PACKAGES=(
