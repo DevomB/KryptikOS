@@ -11,7 +11,7 @@
 
 use std::ffi::CString;
 use std::io;
-use std::os::unix::io::RawFd;
+use std::os::unix::io::{FromRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use crate::broker;
@@ -333,6 +333,13 @@ fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, s: &broker::Served, out:
         !exited_unreaped(pid)
     };
     let s = &broker::Served { asking: &asking, ..*s };
+    // The zone's exit wakes the poll: a pidfd is readable once the process
+    // has ended. Without one (only if the kernel refuses a descriptor) the
+    // poll wakes every 200 ms to look; failing here instead would skip the
+    // caller's closing of the zone's volume.
+    let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as RawFd;
+    let _pidfd = (pidfd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(pidfd) });
+    let timeout = if pidfd >= 0 { -1 } else { 200 };
     loop {
         let mut status: libc::c_int = 0;
         let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
@@ -345,8 +352,9 @@ fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, s: &broker::Served, out:
         let mut pfds = [
             libc::pollfd { fd: listen_fd, events: libc::POLLIN, revents: 0 },
             libc::pollfd { fd: out.borrow().as_ref().map_or(-1, |o| o.fd), events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: pidfd, events: libc::POLLIN, revents: 0 },
         ];
-        let n = unsafe { libc::poll(pfds.as_mut_ptr(), 2, 200) };
+        let n = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, timeout) };
         if n > 0 && pfds[1].revents & (libc::POLLIN | libc::POLLHUP) != 0 {
             pump();
         }
