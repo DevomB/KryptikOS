@@ -40,6 +40,15 @@ esac
 
 mkdir -p "$STAMPS" "$LOGS" "$BUILDDIR"
 
+# tree_digest FILE...: one digest over each file's content and its path under
+# the tree, so a renamed file changes it as an edited one does. For a step
+# argument that stands for files the step reads by path.
+tree_digest() {
+    local f
+    for f in "$@"; do [[ -f "$f" ]] && printf '%s\0' "$f"; done \
+        | xargs -0r sha256sum | sed "s|  ${KRYPTIK_ROOT}/|  |" | sha256_of_stdin
+}
+
 # --- hardening exceptions ---------------------------------------------------
 
 # The flags to drop for a package, from hardening-exceptions.txt.
@@ -624,16 +633,14 @@ s_s6_stack() {
 
 # --- system identity and boot configuration ---------------------------------
 
-# /etc/os-release and friends. BUILD_ID names the commit that built the image;
-# it is an argument so the stamp covers it.
+# /etc/os-release and friends. BUILD_ID, the commit that built the image, is
+# added after the steps (at the end of this file): as this step's input it
+# would re-fingerprint this step, and every step after it, on each commit.
 s_etc() {
-    local commit="${1:-${KRYPTIK_BUILD_COMMIT:-unknown}}"
-
-    cat > /etc/os-release <<EOF
+    cat > /etc/os-release <<'EOF'
 NAME="Kryptik"
 PRETTY_NAME="Kryptik (pre-alpha)"
 ID=kryptik
-BUILD_ID=${commit}
 ANSI_COLOR="0;36"
 EOF
 
@@ -2056,13 +2063,13 @@ PACKAGES=(
     "desktop"     "s_desktop ${KRYPTIK_WLPROXY_BIN:-none} $([[ -f "${KRYPTIK_WLPROXY_BIN:-}" ]] && sha256_of "${KRYPTIK_WLPROXY_BIN}" || echo absent) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-launch.c" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-session" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-chrome" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/wlprobe.c" 2>/dev/null || echo none)"
 
     # From here the steps configure the system rather than build packages.
-    "etc"         "s_etc ${KRYPTIK_BUILD_COMMIT:-unknown}"
+    "etc"         "s_etc"
     "console"     "s_console"
     "init"        "s_init"
     # After init, whose stage 2 scripts look for the database; before the
     # updater and efiboot, whose checks source the devices.sh it installs. The
     # digest covers the files the recipe reads by path, which declare -f cannot.
-    "services" "s_services $(cat "${KRYPTIK_ROOT}"/build/services/*/* "${KRYPTIK_ROOT}"/build/service-scripts/*.sh "${KRYPTIK_ROOT}"/build/config/sysctl.d/*.conf 2>/dev/null | sha256_of_stdin || echo nosvc)"
+    "services" "s_services $(tree_digest "${KRYPTIK_ROOT}"/build/services/*/* "${KRYPTIK_ROOT}"/build/service-scripts/*.sh "${KRYPTIK_ROOT}"/build/config/sysctl.d/*.conf)"
     "release-trust" "s_release_trust"
     # Before the updater, whose check runs kryptik-update, which needs efiboot.
     "efiboot"     "s_efiboot $(sha256_of "${KRYPTIK_ROOT}/tools/efi/kryptik-efiboot.c" 2>/dev/null || echo none)"
@@ -2071,9 +2078,9 @@ PACKAGES=(
     "installer"   "s_installer $(sha256_of "${KRYPTIK_ROOT}/tools/install/kryptik-install.sh" 2>/dev/null || echo none)"
     # The binary's path and hash, and a digest of the zone files: kryptikd
     # validates them at install time, so the two must move together.
-    "kryptikd"    "s_kryptikd ${KRYPTIK_KRYPTIKD_BIN:-none} $([[ -f "${KRYPTIK_KRYPTIKD_BIN:-}" ]] && sha256_of "${KRYPTIK_KRYPTIKD_BIN}" || echo absent) $(cat "${KRYPTIK_ROOT}"/compartments/zones/*.toml "${KRYPTIK_ROOT}"/compartments/zones/policy/* 2>/dev/null | sha256_of_stdin || echo nozones) $(sha256_of "${KRYPTIK_ROOT}/tools/kryptik" 2>/dev/null || echo none)"
+    "kryptikd"    "s_kryptikd ${KRYPTIK_KRYPTIKD_BIN:-none} $([[ -f "${KRYPTIK_KRYPTIKD_BIN:-}" ]] && sha256_of "${KRYPTIK_KRYPTIKD_BIN}" || echo absent) $(tree_digest "${KRYPTIK_ROOT}"/compartments/zones/*.toml "${KRYPTIK_ROOT}"/compartments/zones/policy/*) $(sha256_of "${KRYPTIK_ROOT}/tools/kryptik" 2>/dev/null || echo none)"
     # The suites and guest checks the VM drivers run; every file is an input.
-    "tests"       "s_tests $(cat "${KRYPTIK_ROOT}"/compartments/tests/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/probes/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/src/isolate.rs "${KRYPTIK_ROOT}"/compartments/kryptikd/src/rootfs.rs "${KRYPTIK_ROOT}"/build/guest-tests/*.sh "${KRYPTIK_ROOT}"/build/guest-tests/*.py 2>/dev/null | sha256_of_stdin || echo none)"
+    "tests"       "s_tests $(tree_digest "${KRYPTIK_ROOT}"/compartments/tests/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/probes/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/src/isolate.rs "${KRYPTIK_ROOT}"/compartments/kryptikd/src/rootfs.rs "${KRYPTIK_ROOT}"/build/guest-tests/*.sh "${KRYPTIK_ROOT}"/build/guest-tests/*.py)"
     "boot-check"  "s_boot_check"
 )
 
@@ -2146,6 +2153,10 @@ for ((i = 0; i < ${#PACKAGES[@]}; i += 2)); do
     # shellcheck disable=SC2086  # recipe is a deliberately word-split command
     step "$name" $recipe
 done
+
+# Written on every run and by no step (see s_etc).
+sed -i '/^BUILD_ID=/d' /etc/os-release
+printf 'BUILD_ID=%s\n' "$KRYPTIK_BUILD_COMMIT" >> /etc/os-release
 
 echo
 if [[ "$unwired" -gt 0 ]]; then
