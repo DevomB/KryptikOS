@@ -42,8 +42,28 @@ not "a system account is not the desktop user"
 # Every question on the console is bounded. The service holds up the login
 # prompt and boot-success, so one unbounded prompt (passwd was) hangs a
 # headless boot and leaves an update trial uncommitted forever.
-unbounded="$(grep -nE '<[[:space:]]*"\$tty"' "$SRC" | grep -vE 'timeout "\$PROMPT_SECS"|read -r -t "\$PROMPT_SECS"')"
+unbounded="$(grep -nE '<[[:space:]]*"\$tty"' "$SRC" | grep -vE 'read -r (-s )?-t "\$PROMPT_SECS"')"
 [[ -z "$unbounded" ]] && ok "every question on the console has a time limit" || bad "a question on the console waits forever: ${unbounded}"
+
+# set_password, with a FIFO for tty1 (each question opens it again, as the
+# script does the terminal) and chpasswd recording what it was given.
+sed -n '/^set_password() /,/^}/p' "$SRC" | sed "s|> \"\$tty\"|>> \"$T/screen\"|" > "$T/setpw.sh"
+# shellcheck source=/dev/null
+. "$T/setpw.sh"
+declare -F set_password >/dev/null || { echo "no set_password in $SRC"; exit 1; }
+chpasswd() { cat > "$T/chpasswd.in"; }
+# shellcheck disable=SC2034  # read by set_password
+PROMPT_SECS=1; tty="$T/tty"; mkfifo "$tty"; exec 7<>"$tty"
+answer() { rm -f "$T/chpasswd.in"; printf '%b' "$1" >&7; set_password ana; RC=$?; GOT="$(cat "$T/chpasswd.in" 2>/dev/null)"; }
+answer 'pw one\npw one\n'
+[[ "$RC|$GOT" == "0|ana:pw one" ]] && ok "two matching answers set the password through chpasswd" || bad "matching answers: rc=$RC chpasswd got '$GOT'"
+answer 'a\nb\nc\nc\n'
+[[ "$RC|$GOT" == "0|ana:c" ]] && ok "answers that differ are asked for again" || bad "differing answers: rc=$RC chpasswd got '$GOT'"
+answer '\n\n\n\n\n\n'
+[[ "$RC|$GOT" == "1|" ]] && ok "three empty answers set nothing" || bad "empty answers: rc=$RC chpasswd got '$GOT'"
+start=$SECONDS; answer ''
+[[ "$RC|$GOT" == "1|" && $((SECONDS - start)) -le 3 ]] && ok "no answer: the question gives up at its time limit" || bad "no answer: rc=$RC after $((SECONDS - start)) s"
+exec 7<&-
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
