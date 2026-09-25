@@ -1,0 +1,44 @@
+ping: without libcap, a ping with no privilege makes no id calls
+
+Carried by Kryptik against iputils 20250605; not upstream at the time of
+writing. Built without libcap, ping lowers its effective uid with seteuid()
+at start, raises and lowers it around socket creation, and ends with
+setuid(getuid()), for a setuid-root install. A ping that is neither setuid
+nor given file capabilities starts with its effective uid equal to its real
+one and has nothing to lower, yet each call still reaches the kernel, and
+the first or last one failing ends the program. A sandbox that refuses id
+calls therefore stops ping before its first packet, although the ICMP
+datagram socket it uses there needs no privilege.
+
+When ping starts with equal effective and real uids, the three calls are
+skipped. A setuid install behaves as before.
+
+--- a/ping/ping_common.c
++++ b/ping/ping_common.c
+@@ -134,7 +134,7 @@
+ #endif
+ 	rts->uid = getuid();
+ #ifndef HAVE_LIBCAP
+-	if (seteuid(rts->uid))
++	if (euid != rts->uid && seteuid(rts->uid))
+ 		error(-1, errno, "setuid");
+ #endif
+ }
+@@ -177,6 +177,8 @@
+ #else
+ int modify_capability(int on)
+ {
++	if (euid == getuid())
++		return 0;
+ 	if (seteuid(on ? euid : getuid())) {
+ 		error(0, errno, "seteuid");
+ 		return -1;
+@@ -194,7 +196,7 @@
+ 		error(-1, errno, "cap_set_proc");
+ 	cap_free(cap);
+ #else
+-	if (setuid(getuid()))
++	if (euid != getuid() && setuid(getuid()))
+ 		error(-1, errno, "setuid");
+ #endif
+ }

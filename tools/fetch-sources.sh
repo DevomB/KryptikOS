@@ -87,6 +87,7 @@ procps-ng|${V_PROCPS}|${MIRROR_SOURCEFORGE}/procps-ng/procps-ng-${V_PROCPS}.tar.
 psmisc|${V_PSMISC}|${MIRROR_SOURCEFORGE}/psmisc/psmisc-${V_PSMISC}.tar.xz
 inetutils|${V_INETUTILS}|${gnu}/inetutils/inetutils-${V_INETUTILS}.tar.gz
 iproute2|${V_IPROUTE2}|${MIRROR_KERNEL_UTILS}/net/iproute2/iproute2-${V_IPROUTE2}.tar.xz
+iputils|${V_IPUTILS}|${MIRROR_GITHUB}/iputils/iputils/releases/download/${V_IPUTILS}/iputils-${V_IPUTILS}.tar.xz
 kbd|${V_KBD}|${MIRROR_KERNEL_UTILS}/kbd/kbd-${V_KBD}.tar.xz
 kmod|${V_KMOD}|${MIRROR_KERNEL_UTILS}/kernel/kmod/kmod-${V_KMOD}.tar.xz
 libpipeline|${V_LIBPIPELINE}|${MIRROR_SAVANNAH}/libpipeline/libpipeline-${V_LIBPIPELINE}.tar.gz

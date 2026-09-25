@@ -3,8 +3,9 @@
 
     icmp-echo.py HOST [TIMEOUT]
 """
-# Zones lack CAP_NET_RAW, which ping needs; the ICMP datagram socket does not
-# (net.ipv4.ping_group_range, set by kryptikd in the zone).
+# The ICMP datagram socket needs no privilege (net.ipv4.ping_group_range, set
+# by kryptikd in the zone). ping uses it too; the reachability checks use this
+# instead, so a broken ping fails only the ping checks.
 import socket
 import struct
 import sys

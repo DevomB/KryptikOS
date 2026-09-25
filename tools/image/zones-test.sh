@@ -70,9 +70,9 @@ zp="$(sed -n 's/.*passed=\([0-9]*\).*/\1/p' <<<"$summary")"; zf="$(sed -n 's/.*f
 if [[ -n "$summary" && "${zf:-1}" -eq 0 && "${zp:-0}" -ge 30 ]]; then green "every guest check passed (${zp})"; else red "guest checks: ${zp:-0} passed, ${zf:-?} failed"; fi
 grep 'ZT FAIL' <<<"$T2" | sed 's/^/        /'
 # The key verdicts one by one, so a pass is not a single line.
-for name in kernel-support net-ready zone0-nic zone0-no-route zone0-offline routed-egress routed-dns routed-ipv6-noglobal zone-separation fail-closed net-restart-ready reattach-after-restart time-floor-ran time-clamp time-claim-stepped time-claim-floor time-claim-consent pids-limit ephemeral-size-bound \
+for name in kernel-support net-ready zone0-nic zone0-no-route zone0-offline routed-egress routed-ping routed-ping6 routed-dns routed-ipv6-noglobal zone-separation fail-closed net-restart-ready reattach-after-restart time-floor-ran time-clamp time-claim-stepped time-claim-floor time-claim-consent pids-limit ephemeral-size-bound \
             terminal-terminfo man-page text-browser tls-trust \
-            volume-init encrypted-zone-start stop-closes-volume wrong-passphrase persist-reopen no-mapping-after ephemeral-gone concurrent-start-refused full-volume header-restore vault-offline no-passphrase-leak; do
+            volume-init encrypted-zone-start stop-closes-volume wrong-passphrase persist-reopen no-mapping-after ephemeral-gone concurrent-start-refused full-volume header-restore vault-offline vault-ping no-passphrase-leak; do
     grep -q "ZT PASS ${name}" <<<"$T2" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
 
