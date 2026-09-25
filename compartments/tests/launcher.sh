@@ -1095,8 +1095,10 @@ head_ "L. Supervision, termination and the filter probes  [unpriv]"
 
 # --- nothing outlives the launcher -------------------------------------------
 # A unique sleep duration is the marker: it appears in the zone process's argv
-# and in nothing else this suite runs.
-MARK_KILL=2911
+# and in nothing else. It comes from this run's pid, since pgrep and pkill see
+# every process of the user, another run of this suite included.
+MARK_BASE=$(( 3000000 + ($$ % 100000) * 10 ))
+MARK_KILL=$(( MARK_BASE + 1 ))
 KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run alpha "${ZARGS[@]}" -- /bin/sleep "$MARK_KILL" >/dev/null 2>&1 &
 kpid=$!
 BG_PIDS+=("$kpid")
@@ -1121,7 +1123,7 @@ fi
 # The check is that no zone process survives, not timeout(1)'s exit code: 124
 # from coreutils, the child's status (137) from busybox. The zone's pid 1
 # ignores SIGTERM, so the launcher's SIGKILL 5 s later is what ends it.
-MARK_TERM=2912
+MARK_TERM=$(( MARK_BASE + 2 ))
 KRYPTIK_EXPERIMENTAL=1 timeout 2 "$KRYPTIKD" run alpha "${ZARGS[@]}" -- /bin/sleep "$MARK_TERM" >/dev/null 2>&1
 trc=$?
 # The escalation is 5s after the signal, so wait past it before judging.
@@ -1474,7 +1476,7 @@ else
     fi
 
     # --- cleanup after a killed launcher ------------------------------------
-    MARK_CG=2913
+    MARK_CG=$(( MARK_BASE + 3 ))
     KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run pidcapped "${ZARGS[@]}" -- /bin/sleep "$MARK_CG" >/dev/null 2>&1 &
     cgpid=$!
     BG_PIDS+=("$cgpid")
@@ -1585,7 +1587,7 @@ ephrun alpha -- /bin/sh -c "$PRO if [ -e \$HOME/secret ]; then echo PROBE=RECOVE
 probe "EPH3 a later launch cannot recover the previous run's data" "gone"
 
 # EPH4: the same after the launcher is SIGKILLed.
-MARK_EPH=2914
+MARK_EPH=$(( MARK_BASE + 4 ))
 KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run beta "${EPHARGS[@]}" -- \
     /bin/sh -c "printf '%s' '$CANARY' > \$HOME/crashfile; sleep $MARK_EPH" >/dev/null 2>&1 &
 ephpid=$!
