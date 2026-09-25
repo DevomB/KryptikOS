@@ -77,10 +77,13 @@ tree. As root, the copy runs with the destination's filesystem uid and gid,
 which is also what lets it create files in an ephemeral zone's tmpfs home.
 The name is taken with `O_CREAT|O_EXCL|O_NOFOLLOW`; a collision or planted
 link moves on to `-2`, `-3`, and so on, with no stat-then-create, temporary
-file or `rename`. The file is 0600, owned by the destination. The cap is
-enforced on bytes actually copied (`copy_file_range` with a running count),
-so a file that grows after the `fstat` is stopped, and any failure removes
-the partial file. The sender learns only the outcome and the final name.
+file or `rename`. The file is 0600, owned by the destination. Exactly the
+size the `fstat` found, the size the question showed, is copied, from the
+file's first byte whatever the descriptor's position (`copy_file_range` with
+its own offset and a running count). A file that grew or shrank since is
+refused, and any failure removes the partial file. The sender still owns the
+file, so it can change bytes within that size; only the size is fixed. The
+sender learns only the outcome and the final name.
 
 ## Consent
 
