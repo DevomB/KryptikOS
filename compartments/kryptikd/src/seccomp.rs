@@ -1149,7 +1149,7 @@ mod tests {
     }
 
     #[test]
-    fn every_listed_call_is_named_once() {
+    fn each_call_named_once() {
         let mut seen = HashSet::new();
         for &(name, nr) in names() {
             assert!(seen.insert(name), "{name} is named twice");

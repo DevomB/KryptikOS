@@ -201,7 +201,14 @@ s_glibc() {
     # rtld call it, so the link fails on _dl_cet_*. Dropping the flag instead
     # would leave the loader, which arms IBT and shadow stacks for everything,
     # without CET. Activation still depends on the CPU and kernel.
-    ../configure         --prefix=/usr         --disable-werror         --enable-kernel=4.19         --enable-stack-protector=strong         --enable-cet         --disable-nscd         libc_cv_slibdir=/usr/lib
+    ../configure \
+        --prefix=/usr \
+        --disable-werror \
+        --enable-kernel=4.19 \
+        --enable-stack-protector=strong \
+        --enable-cet \
+        --disable-nscd \
+        libc_cv_slibdir=/usr/lib
     make
 
     # Upstream's check for bug 33088 (the test suite is not run): rtld must not
@@ -315,7 +322,11 @@ s_man_db() {
 
     # --disable-setuid: no setuid man parsing untrusted files for a page cache.
     # No browser/vgrind/grap paths: those programs are not on the system.
-    ./configure --prefix=/usr                 --docdir="/usr/share/doc/man-db-${V_MANDB}"                 --sysconfdir=/etc                 --disable-setuid                 --enable-cache-owner=bin
+    ./configure --prefix=/usr \
+        --docdir="/usr/share/doc/man-db-${V_MANDB}" \
+        --sysconfdir=/etc \
+        --disable-setuid \
+        --enable-cache-owner=bin
     make
     make install
 
@@ -499,7 +510,8 @@ s_e2fsprogs() {
     cd "$src"
     mkdir -p build && cd build
     # libblkid, libuuid, uuidd and fsck come from util-linux.
-    ../configure --prefix=/usr --sysconfdir=/etc --enable-elf-shlibs         --disable-libblkid --disable-libuuid --disable-uuidd --disable-fsck
+    ../configure --prefix=/usr --sysconfdir=/etc --enable-elf-shlibs \
+        --disable-libblkid --disable-libuuid --disable-uuidd --disable-fsck
     make
     make install
     rm -fv /usr/lib/{libcom_err,libe2p,libext2fs,libss}.a
@@ -542,7 +554,8 @@ s_kbd() {
 s_eudev() {
     local src; src="$(unpack "eudev-${V_EUDEV}.tar.gz" "eudev-${V_EUDEV}")"
     cd "$src"
-    ./configure --prefix=/usr --bindir=/usr/sbin --sysconfdir=/etc         --enable-manpages --disable-static
+    ./configure --prefix=/usr --bindir=/usr/sbin --sysconfdir=/etc \
+        --enable-manpages --disable-static
     make
     mkdir -pv /usr/lib/udev/rules.d
     mkdir -pv /etc/udev/rules.d
