@@ -35,7 +35,7 @@ is [separate](state-encryption.md).
   because the zone's mount namespace is released asynchronously, then runs
   `cryptsetup close`. A mount still busy after that means a process escaped:
   an invariant failure, never forced with `MNT_DETACH`. dm-crypt frees the key
-  in kernel memory on close; that is all `wipe_keys = "on-stop"` means. A
+  in kernel memory on close; that is all "keys wiped on stop" means. A
   launch that fails after the volume was opened closes it on the way out.
 - **`vault`'s volume is open only while `vault` runs.** Otherwise its
   plaintext is mounted nowhere and its dm device does not exist, whatever
