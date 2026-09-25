@@ -358,16 +358,25 @@ impl ArgRule {
     }
 }
 
-/// Refused with an errno, not killed, since programs carry on when these fail.
-/// inotify: a watch on the /usr the zones share with zone 0 sees every program
-/// any of them starts; a zone policy may allow it. setfsuid, setfsgid: ncurses
-/// brackets every terminfo open with them, dropping to the real ids and back,
-/// so a kill took every terminal program with it; they stay denied.
+/// Refused with an errno, not killed, since programs carry on or say why when
+/// these fail. inotify: a watch on the /usr the zones share with zone 0 sees
+/// every program any of them starts; a zone policy may allow it. The id and
+/// capability calls stay denied: ncurses brackets every terminfo open with
+/// setfsuid and setfsgid, and sudo, su and daemons dropping privilege as root
+/// call the rest, so a kill took them down unexplained. No id changes.
 pub const REFUSED_SOFTLY: &[(libc::c_long, u32)] = &[
     (libc::SYS_inotify_init, ENOSYS),
     (libc::SYS_inotify_init1, ENOSYS),
     (libc::SYS_setfsuid, EPERM),
     (libc::SYS_setfsgid, EPERM),
+    (libc::SYS_setuid, EPERM),
+    (libc::SYS_setgid, EPERM),
+    (libc::SYS_setreuid, EPERM),
+    (libc::SYS_setregid, EPERM),
+    (libc::SYS_setresuid, EPERM),
+    (libc::SYS_setresgid, EPERM),
+    (libc::SYS_setgroups, EPERM),
+    (libc::SYS_capset, EPERM),
 ];
 
 const fn errno_action(e: u32) -> u32 {
@@ -814,11 +823,15 @@ mod tests {
     }
 
     #[test]
-    fn setfsuid_fails_not_kills() {
-        // Denied all the same: no policy may allow it.
+    fn id_changes_fail_not_kill() {
+        // Denied all the same: no policy may allow them.
         let p = build_program(BASE_ALLOWLIST).unwrap();
-        for nr in [libc::SYS_setfsuid, libc::SYS_setfsgid] {
-            assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, nr as u32), errno_action(EPERM));
+        for nr in [
+            libc::SYS_setfsuid, libc::SYS_setfsgid, libc::SYS_setuid, libc::SYS_setgid,
+            libc::SYS_setreuid, libc::SYS_setregid, libc::SYS_setresuid, libc::SYS_setresgid,
+            libc::SYS_setgroups, libc::SYS_capset,
+        ] {
+            assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, nr as u32), errno_action(EPERM), "syscall {nr}");
             assert!(is_denied(nr));
         }
     }

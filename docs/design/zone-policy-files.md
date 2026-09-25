@@ -46,9 +46,11 @@ after its name and gets the same errno here:
 - `inotify_init` and `inotify_init1` fail with ENOSYS: a watch on the `/usr`
   every zone shares would see each program started anywhere, and programs
   fall back to polling.
-- `setfsuid` and `setfsgid` fail with EPERM: ncurses brackets every terminfo
-  open with them, so a kill took each shell, editor and browser down at its
-  first prompt. They stay on the denied list, and no id changes either way.
+- The id and capability calls (the `set*id` family, `setgroups`, `capset`)
+  fail with EPERM: ncurses brackets every terminfo open with `setfsuid` and
+  `setfsgid`, and `sudo`, `su` and daemons that drop privilege as root call
+  the rest, so a kill took them down unexplained. They stay on the denied
+  list, and no id or capability changes either way.
 
 A printed name can go on an `allow-syscall` line unless it is on the denied
 list; a call refused for its arguments (namespace flags to `clone`,
