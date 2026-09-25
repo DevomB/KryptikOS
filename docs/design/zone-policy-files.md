@@ -24,7 +24,8 @@ keep-capability   CAP_NET_RAW         # left in the bounding set
   EPERM instead of killing the caller; the trace paragraph below says why.
 - `allow-socket`: `AF_PACKET`, `AF_KEY`, `AF_ALG`, `AF_VSOCK`, `AF_BLUETOOTH`,
   `AF_CAN`, `AF_RDS`, `AF_TIPC` or `AF_XDP`; `AF_NETLINK` drops the netlink
-  protocol check.
+  protocol check. `socketpair(2)` stays `AF_UNIX` only whatever the file
+  names: the kernel runs a family's create code before it asks for a pair.
 - `allow-netlink`: `NETLINK_NETFILTER`, `NETLINK_KOBJECT_UEVENT`,
   `NETLINK_GENERIC`, `NETLINK_XFRM` or `NETLINK_AUDIT`.
 - `keep-capability`: one of `caps::KEEPABLE`, kept besides

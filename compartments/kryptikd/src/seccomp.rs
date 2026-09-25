@@ -131,6 +131,7 @@ pub enum SeccompError {
     TooManyRules(usize),
     BadSyscallNumber(libc::c_long),
     Syscall { call: &'static str, errno: i32 },
+    Unsynced(libc::c_long),
 }
 
 impl std::fmt::Display for SeccompError {
@@ -152,6 +153,10 @@ impl std::fmt::Display for SeccompError {
             SeccompError::Syscall { call, errno } => {
                 write!(f, "{call}: {}", io::Error::from_raw_os_error(*errno))
             }
+            SeccompError::Unsynced(tid) => write!(
+                f,
+                "seccomp(SET_MODE_FILTER): thread {tid} could not take the filter, so none was attached"
+            ),
         }
     }
 }
@@ -339,6 +344,9 @@ pub enum ArgRule {
     IoctlNoTtyInject,
     /// socket(2): the base families plus the policy's; others get EAFNOSUPPORT.
     SocketFamilies,
+    /// socketpair(2): AF_UNIX only. The kernel runs a family's create code,
+    /// module autoload included, before it asks for a pair.
+    SocketpairUnix,
 }
 
 pub const ARG_RULES: &[ArgRule] = &[
@@ -346,6 +354,7 @@ pub const ARG_RULES: &[ArgRule] = &[
     ArgRule::Clone3Enosys,
     ArgRule::IoctlNoTtyInject,
     ArgRule::SocketFamilies,
+    ArgRule::SocketpairUnix,
 ];
 
 impl ArgRule {
@@ -355,6 +364,7 @@ impl ArgRule {
             ArgRule::Clone3Enosys => libc::SYS_clone3,
             ArgRule::IoctlNoTtyInject => libc::SYS_ioctl,
             ArgRule::SocketFamilies => libc::SYS_socket,
+            ArgRule::SocketpairUnix => libc::SYS_socketpair,
         }
     }
 }
@@ -461,6 +471,12 @@ fn emit_arg_rule(p: &mut Vec<SockFilter>, rule: ArgRule, deny_action: u32, socke
             body.push(stmt(BPF_RET | BPF_K, errno_action(EAFNOSUPPORT)));
             body
         }
+        ArgRule::SocketpairUnix => vec![
+            stmt(BPF_LD | BPF_W | BPF_ABS, arg_lo(0)),
+            jump(BPF_JMP | BPF_JEQ | BPF_K, AF_UNIX, 0, 1),
+            stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+            stmt(BPF_RET | BPF_K, errno_action(EAFNOSUPPORT)),
+        ],
     };
     // Offsets count from the next instruction; every body is far below 255.
     p.push(jump(BPF_JMP | BPF_JEQ | BPF_K, rule.nr() as u32, 0, body.len() as u8));
@@ -593,6 +609,11 @@ fn install_with(
             call: "seccomp(SET_MODE_FILTER)",
             errno: io::Error::last_os_error().raw_os_error().unwrap_or(0),
         });
+    }
+    /* TSYNC names a thread it could not synchronise by returning its id, and
+     * attaches nothing; only a listener is otherwise positive. */
+    if ret > 0 && flags & libc::SECCOMP_FILTER_FLAG_NEW_LISTENER == 0 {
+        return Err(SeccompError::Unsynced(ret));
     }
     Ok(ret)
 }
@@ -884,10 +905,11 @@ mod tests {
         let p = build_program(BASE_ALLOWLIST).unwrap();
         for &nr in BASE_ALLOWLIST {
             let r = evaluate(&p, AUDIT_ARCH_X86_64, nr as u32);
-            /* With zero arguments clone3 gets ENOSYS and socket family 0 is
-             * refused; nothing listed is killed, and the rest are allowed. */
+            /* With zero arguments clone3 gets ENOSYS and family 0 is refused
+             * to socket and socketpair; nothing listed is killed, and the rest
+             * are allowed. */
             assert_ne!(r, SECCOMP_RET_KILL_PROCESS, "allowlisted syscall {nr} was killed");
-            if ![libc::SYS_clone3, libc::SYS_socket].contains(&nr) {
+            if ![libc::SYS_clone3, libc::SYS_socket, libc::SYS_socketpair].contains(&nr) {
                 assert_eq!(r, SECCOMP_RET_ALLOW, "allowlisted syscall {nr} was not allowed");
             }
         }
@@ -1040,13 +1062,64 @@ mod tests {
     }
 
     #[test]
+    fn socketpair_unix_only() {
+        let p = build_program(BASE_ALLOWLIST).unwrap();
+        assert_eq!(evaluate_args(&p, X86, libc::SYS_socketpair as u32, with_arg(0, AF_UNIX as u64)), SECCOMP_RET_ALLOW);
+        for fam in [AF_INET, AF_INET6, AF_NETLINK, 17 /* PACKET */, 30 /* TIPC */, 40 /* VSOCK */] {
+            let r = evaluate_args(&p, X86, libc::SYS_socketpair as u32, with_arg(0, fam as u64));
+            assert_eq!(r, errno_action(EAFNOSUPPORT), "family {fam} must be refused");
+        }
+        // A policy's families widen socket(2), not this.
+        let sp = SocketPolicy { families: vec![17], netlink_protocols: vec![], netlink_all: true };
+        let p = build_program_full(BASE_ALLOWLIST, SECCOMP_RET_KILL_PROCESS, &sp).unwrap();
+        assert_eq!(evaluate_args(&p, X86, libc::SYS_socketpair as u32, with_arg(0, 17)), errno_action(EAFNOSUPPORT));
+    }
+
+    #[test]
+    fn tsync_failure_is_error() {
+        /* A thread with a filter of its own cannot take another by TSYNC: the
+         * kernel returns its id and attaches nothing. In a forked child, which
+         * exits while that thread still waits. */
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let own = install_with(BASE_ALLOWLIST, SECCOMP_RET_KILL_PROCESS, &SocketPolicy::default(), 0);
+                let _ = tx.send(own.is_ok());
+                loop {
+                    std::thread::park();
+                }
+            });
+            let rc = match rx.recv() {
+                Ok(true) => match install(BASE_ALLOWLIST) {
+                    Err(SeccompError::Unsynced(_)) => 0,
+                    Ok(()) => 1,
+                    Err(_) => 3,
+                },
+                _ => 2,
+            };
+            unsafe { libc::_exit(rc) };
+        }
+        let mut status = 0;
+        unsafe { libc::waitpid(pid, &mut status, 0) };
+        assert!(libc::WIFEXITED(status), "child died: status {status:#x}");
+        match libc::WEXITSTATUS(status) {
+            0 => {}
+            1 => panic!("a filter that reached no thread was reported as installed"),
+            2 => panic!("the thread could not install a filter of its own"),
+            other => panic!("install failed some other way ({other})"),
+        }
+    }
+
+    #[test]
     fn arg_rules_leave_allowlist_alone() {
         /* A non-matching rule block must leave the syscall number in the
          * accumulator; these arguments would trip any rule consulted. */
         let p = build_program(BASE_ALLOWLIST).unwrap();
         let args = [CLONE_NS_MASK as u64, TIOCSTI as u64, 40, 7, 1 << 33, 9];
         for &nr in BASE_ALLOWLIST {
-            if [libc::SYS_clone, libc::SYS_clone3, libc::SYS_ioctl, libc::SYS_socket].contains(&nr) {
+            if ARG_RULES.iter().any(|r| r.nr() == nr) {
                 continue;
             }
             assert_eq!(

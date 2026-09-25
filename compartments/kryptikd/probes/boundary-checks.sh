@@ -133,6 +133,13 @@ import socket
 for n,f,t in [('AF_VSOCK',40,1),('AF_ALG',38,5),('AF_PACKET',17,2)]:
     try: socket.socket(f,t); print(n,'OPENED')
     except OSError as e: print(n,'refused',e.errno)"
+# The kernel runs a family's create code before it refuses a pair (EOPNOTSUPP,
+# 95), so the filter refuses every family but AF_UNIX first (97).
+MATCH="^unix-pair inet 97$" check "socketpair(2) makes AF_UNIX pairs and refuses AF_INET by family" 0 /usr/bin/python3 -c "
+import socket
+a,b=socket.socketpair(); a.close(); b.close()
+try: socket.socketpair(socket.AF_INET); print('unix-pair inet PAIRED')
+except OSError as e: print('unix-pair inet', e.errno)"
 for p in "clone-newuser 5" "clone3 7" "inotify 7" "setfsuid 7" "socket-vsock 7" "socket-netlink-nf 7" "socket-inet 0" "ioctl-tiocsti 5" "setns 5" "unshare 5" "mount 5" "getpid 0"; do
     set -- $p
     "$K" seccomp-test "$1" >/dev/null 2>&1; rc=$?
