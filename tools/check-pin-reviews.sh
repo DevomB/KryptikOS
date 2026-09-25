@@ -22,7 +22,15 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -s "$SURVEY" && -f "$REVIEWS" ]] || { echo "FAIL: need a non-empty --survey and a reviews file" >&2; exit 1; }
 
-newer() { [[ "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" == "$1" ]]; }
+# Versions have an order; two commit IDs have none, so any other commit than
+# the one reviewed is new (a short ID and its full form are the same commit).
+newer() {
+    [[ "$1" != "$2" ]] || return 1
+    if [[ "$1" =~ ^[0-9a-f]{12,40}$ && "$2" =~ ^[0-9a-f]{12,40}$ ]]; then
+        [[ "$1" != "$2"* && "$2" != "$1"* ]]; return
+    fi
+    [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" == "$1" ]]
+}
 bad=0
 fail() { echo "  $*"; bad=$((bad + 1)); }
 
@@ -42,8 +50,10 @@ while IFS=$'\037' read -r name pinned newest status _; do
     [[ -n "$name" ]] || continue
     SEEN[$name]=1
     row="${PIN[$name]:-}"
-    if [[ "$status" != BEHIND ]]; then
-        [[ "$status" == UNKNOWN ]] && echo "  not determined, which is not the same as fine: ${name} ${pinned}"
+    if [[ "$status" == UNKNOWN ]]; then
+        # An upstream that did not answer says nothing about the review: it stays.
+        echo "  not determined, which is not the same as fine: ${name} ${pinned}"
+    elif [[ "$status" != BEHIND ]]; then
         [[ -n "$row" ]] && fail "STALE: ${name} is ${status} now; remove its row"
     elif [[ -z "$row" ]]; then            fail "NOT REVIEWED: ${name} ${pinned} -> ${newest}"
     elif [[ "$row" != "$pinned" ]]; then  fail "STALE: ${name}: the row reviews ${row}, the pin is ${pinned}"
