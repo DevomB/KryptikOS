@@ -261,7 +261,7 @@ pub const BASE_ALLOWLIST: &[libc::c_long] = &[
     // inotify_init is refused softly: see `REFUSED_SOFTLY`.
     libc::SYS_inotify_add_watch, libc::SYS_inotify_rm_watch,
 
-    // --- sockets (socket(2) is filtered further by `ARG_RULES`) ---
+    // --- sockets (socket(2) and socketpair(2) are filtered further by `ARG_RULES`) ---
     libc::SYS_socket, libc::SYS_socketpair, libc::SYS_bind, libc::SYS_listen,
     libc::SYS_accept, libc::SYS_accept4, libc::SYS_connect, libc::SYS_shutdown,
     libc::SYS_getsockname, libc::SYS_getpeername, libc::SYS_setsockopt,
