@@ -460,6 +460,12 @@ test_patchset() {
     check "patch set named through V_*: unchanged, the step skips" \
           "$({ [[ $rc -eq 0 ]] && [[ $out == *"skip patv"* ]]; } && echo ok)"
 
+    # Documentation beside the patches is not something the step applies.
+    echo "what these patches are for" > "$work/patches/probe-set/README.md"
+    out="$(run_harness "$work" pat recipe_patch probe-set)"; rc=$?
+    check "patch set: a README beside the patches changes nothing" \
+          "$({ [[ $rc -eq 0 ]] && [[ $out == *"skip pat"* ]]; } && echo ok)"
+
     # A different patch, with its record updated: both steps are stale.
     make_patchset "$work" probe-set c
     make_patchset "$work" probe-1.0 c

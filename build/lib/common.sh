@@ -185,12 +185,13 @@ _hash_file() {
     if [[ -n "$f" && -f "$f" ]]; then sha256_of "$f"; else printf 'absent'; fi
 }
 
-# One digest over a directory's files: relative path and content, sorted.
-_hash_dir() {
+# One digest over what apply_repo_patches reads of a patch set: its patches
+# and their SHA256SUMS. Not a README, which a documentation edit changes.
+_hash_patchset() {
     local d="${1:-}"
     if [[ -n "$d" && -d "$d" ]]; then
-        ( cd "$d" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum ) \
-            | sha256_of_stdin
+        ( cd "$d" && find . -maxdepth 1 -type f \( -name '*.patch' -o -name SHA256SUMS \) -print0 \
+            | LC_ALL=C sort -z | xargs -0r sha256sum ) | sha256_of_stdin
     else
         printf 'absent'
     fi
@@ -306,7 +307,7 @@ recipe_fingerprint() {
             esac
             # A patch set named as an argument.
             if [[ -d "${KRYPTIK_PATCHES}/${a}" && -f "${KRYPTIK_PATCHES}/${a}/SHA256SUMS" ]]; then
-                printf 'patchset:%s=%s\n' "$a" "$(_hash_dir "${KRYPTIK_PATCHES}/${a}")"
+                printf 'patchset:%s=%s\n' "$a" "$(_hash_patchset "${KRYPTIK_PATCHES}/${a}")"
             fi
         done
 
@@ -315,7 +316,7 @@ recipe_fingerprint() {
         while IFS= read -r ps; do
             [[ -z "$ps" ]] && continue
             ps="$(_expand_v "$ps")"
-            printf 'patchset:%s=%s\n' "$ps" "$(_hash_dir "${KRYPTIK_PATCHES}/${ps}")"
+            printf 'patchset:%s=%s\n' "$ps" "$(_hash_patchset "${KRYPTIK_PATCHES}/${ps}")"
         done < <(printf '%s\n' "$body" \
                  | sed -n 's/.*apply_repo_patches[[:space:]]\{1,\}"\{0,1\}\([^" ;)]*\).*/\1/p' \
                  | sort -u || true)
