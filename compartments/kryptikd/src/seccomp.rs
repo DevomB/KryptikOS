@@ -539,8 +539,8 @@ pub fn install(allow: &[libc::c_long]) -> Result<(), SeccompError> {
 /// As `install` for a single-threaded caller, but a refused call waits for a
 /// supervisor instead of killing: returns the listener descriptor, which is
 /// close-on-exec (`kryptikd seccomp-trace`).
-pub fn install_notifying(allow: &[libc::c_long]) -> Result<RawFd, SeccompError> {
-    let fd = install_with(allow, libc::SECCOMP_RET_USER_NOTIF, &SocketPolicy::default(), libc::SECCOMP_FILTER_FLAG_NEW_LISTENER)?;
+pub fn install_notifying(allow: &[libc::c_long], sockets: &SocketPolicy) -> Result<RawFd, SeccompError> {
+    let fd = install_with(allow, libc::SECCOMP_RET_USER_NOTIF, sockets, libc::SECCOMP_FILTER_FLAG_NEW_LISTENER)?;
     Ok(fd as RawFd)
 }
 
@@ -593,9 +593,15 @@ pub fn confine_zone() -> Result<(), SeccompError> {
     install(BASE_ALLOWLIST)
 }
 
-/// Install the zone filter widened by a policy: `extra` syscalls, checked again
-/// against the denied list here, and the socket rule widened by `sockets`.
+/// Install the zone filter widened by a policy: `extra` syscalls and the
+/// socket rule widened by `sockets`.
 pub fn confine_zone_with(extra: &[libc::c_long], sockets: &SocketPolicy) -> Result<(), SeccompError> {
+    install_with(&widened(extra)?, SECCOMP_RET_KILL_PROCESS, sockets, SECCOMP_FILTER_FLAG_TSYNC).map(|_| ())
+}
+
+/// The base allowlist and a policy's `extra` syscalls, each checked again
+/// against the denied list.
+pub fn widened(extra: &[libc::c_long]) -> Result<Vec<libc::c_long>, SeccompError> {
     let mut allow: Vec<libc::c_long> = BASE_ALLOWLIST.to_vec();
     for &nr in extra {
         if is_denied(nr) {
@@ -605,7 +611,7 @@ pub fn confine_zone_with(extra: &[libc::c_long], sockets: &SocketPolicy) -> Resu
             allow.push(nr);
         }
     }
-    install_with(&allow, SECCOMP_RET_KILL_PROCESS, sockets, SECCOMP_FILTER_FLAG_TSYNC).map(|_| ())
+    Ok(allow)
 }
 
 /// Syscall names a zone policy may use: denied ones (refused by name), base
@@ -1037,6 +1043,14 @@ mod tests {
                 "syscall {nr} was affected by an argument rule"
             );
         }
+    }
+
+    #[test]
+    fn widened_refuses_denied() {
+        assert!(widened(&[libc::SYS_ptrace]).is_err());
+        let w = widened(&[libc::SYS_sched_setscheduler, libc::SYS_read]).unwrap();
+        assert_eq!(w.len(), BASE_ALLOWLIST.len() + 1, "a base call is not added twice");
+        assert!(w.contains(&libc::SYS_sched_setscheduler));
     }
 
     #[test]

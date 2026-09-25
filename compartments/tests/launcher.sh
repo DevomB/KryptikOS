@@ -1912,6 +1912,25 @@ else
     fail "POL5 explain does not report the policy file's additions"
 fi
 
+# seccomp-trace --zone traces under that zone's filter, so a call its policy
+# file allows is no longer reported, and the program gets it.
+cat > "$ZONES/policy/tracer.seccomp" <<'POLICY'
+allow-syscall sched_setscheduler
+POLICY
+mkzone_policy tracer "#1b1b1b" "policy/tracer.seccomp"
+if command -v python3 > /dev/null 2>&1; then
+    prog='import os; os.sched_setscheduler(0, os.SCHED_OTHER, os.sched_param(0)); print("set")'
+    base="$(timeout "$TIMEOUT" "$KRYPTIKD" seccomp-trace -- python3 -c "$prog" 2>&1)"
+    own="$(timeout "$TIMEOUT" "$KRYPTIKD" seccomp-trace --zones "$ZONES" --zone tracer -- python3 -c "$prog" 2>&1)"
+    if [[ "$base" == *"DENIED 144 sched_setscheduler"* && "$own" != *sched_setscheduler* && "$own" == *set* ]]; then
+        pass "POL6 seccomp-trace --zone traces under the zone's own filter"
+    else
+        fail "POL6 --zone did not widen the trace [base: $(tr '\n' ' ' <<<"$base") | zone: $(tr '\n' ' ' <<<"$own")]"
+    fi
+else
+    info "POL6 not run: this host has no python3"
+fi
+
 # ============================================================================
 head_ "LC. Zone lifecycle: registry, stop, concurrency  [unpriv]"
 # ============================================================================
