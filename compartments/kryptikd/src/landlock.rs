@@ -135,13 +135,9 @@ fn access_mask_for(abi: i32) -> u64 {
         | FS_MAKE_SOCK
         | FS_MAKE_FIFO
         | FS_MAKE_BLOCK
-        | FS_MAKE_SYM;
-    if abi >= 2 {
-        mask |= FS_REFER;
-    }
-    if abi >= 3 {
-        mask |= FS_TRUNCATE;
-    }
+        | FS_MAKE_SYM
+        | FS_REFER // ABI 2
+        | FS_TRUNCATE; // ABI 3, the minimum
     if abi >= 5 {
         mask |= FS_IOCTL_DEV;
     }
@@ -527,14 +523,9 @@ mod tests {
 
     #[test]
     fn access_mask_grows_with_abi() {
-        let v1 = access_mask_for(1);
-        let v2 = access_mask_for(2);
-        let v3 = access_mask_for(3);
+        let v3 = access_mask_for(MIN_ABI);
         let v5 = access_mask_for(5);
-        assert_eq!(v1 & FS_REFER, 0, "REFER must not be set on ABI v1");
-        assert_ne!(v2 & FS_REFER, 0, "REFER should appear at ABI v2");
-        assert_eq!(v2 & FS_TRUNCATE, 0, "TRUNCATE must not be set on ABI v2");
-        assert_ne!(v3 & FS_TRUNCATE, 0, "TRUNCATE should appear at ABI v3");
+        assert_eq!(v3 & (FS_REFER | FS_TRUNCATE), FS_REFER | FS_TRUNCATE, "REFER and TRUNCATE at the minimum ABI");
         assert_eq!(v3 & FS_IOCTL_DEV, 0, "IOCTL_DEV must not be set on ABI v3");
         assert_ne!(v5 & FS_IOCTL_DEV, 0, "IOCTL_DEV should appear at ABI v5");
     }
