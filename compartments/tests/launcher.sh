@@ -1182,6 +1182,11 @@ else
     info "L10 not run: this host has no tput"
 fi
 
+# cp -a and gzip give what they make its source's owner (tar does too, as
+# root); with chown refused neither would finish.
+zrun alpha -- /bin/sh -c "$PRO cd /tmp && echo x > o && cp -a o o2 && gzip -k o && echo PROBE=kept"
+probe "L11 cp -a and gzip keep an owner in a zone and live" "kept"
+
 # ============================================================================
 head_ "M. cgroup resource limits  [unpriv where delegated, otherwise vm]"
 # ============================================================================

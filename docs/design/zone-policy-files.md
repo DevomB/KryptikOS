@@ -57,7 +57,7 @@ zone names a policy file, and only `net.seccomp` adds anything. `kryptikd
 explain` prints the additions:
 
 ```text
-policy     policy/net.seccomp: +chown, socket AF_PACKET, netlink NETLINK_NETFILTER, netlink NETLINK_GENERIC, keep CAP_NET_ADMIN, keep CAP_NET_RAW
+policy     policy/net.seccomp: socket AF_PACKET, netlink NETLINK_NETFILTER, netlink NETLINK_GENERIC, keep CAP_NET_ADMIN, keep CAP_NET_RAW
 ```
 
 ## Landlock policy files

@@ -178,6 +178,10 @@ pub const BASE_ALLOWLIST: &[libc::c_long] = &[
     /* tar, git, cargo and install(1) set modes. Paths outside the zone are
      * unreachable after pivot_root, and read-only mounts refuse chmod (EROFS). */
     libc::SYS_chmod, libc::SYS_fchmod, libc::SYS_fchmodat,
+    /* gzip, xz and cp -a give a file they make its source's owner, and tar
+     * does as root. Without CAP_CHOWN, and with only the zone's own ids
+     * mapped, a chown is a no-op or fails. */
+    libc::SYS_chown, libc::SYS_fchown, libc::SYS_lchown, libc::SYS_fchownat,
     libc::SYS_copy_file_range, libc::SYS_sendfile, libc::SYS_splice,
     // GNU cat and cp call posix_fadvise() on every file they read.
     libc::SYS_fadvise64, libc::SYS_readahead,
@@ -277,9 +281,6 @@ pub const DENIED_RATIONALE: &[(libc::c_long, &str)] = &[
     (libc::SYS_quotactl, "filesystem quota manipulation"),
     (libc::SYS_open_by_handle_at, "open a file by handle, bypassing path checks"),
     (libc::SYS_name_to_handle_at, "obtain the handle used by the above"),
-    /* chown is in neither list: a zone policy may allow it (the nic zone's
-     * DHCP client chowns its control socket). Without CAP_CHOWN a chown can
-     * only be a no-op or a move between the caller's own groups. */
     // The new mount API: mount(2) through other entry points.
     (libc::SYS_fsopen, "new mount API: open a filesystem context"),
     (libc::SYS_fsconfig, "new mount API: configure a filesystem context"),
@@ -1021,15 +1022,13 @@ mod tests {
     }
 
     #[test]
-    fn chmod_is_allowed_and_chown_is_not() {
+    fn chmod_and_chown_allowed() {
         let allowed: HashSet<libc::c_long> = BASE_ALLOWLIST.iter().copied().collect();
         for nr in [libc::SYS_chmod, libc::SYS_fchmod, libc::SYS_fchmodat] {
             assert!(allowed.contains(&nr), "chmod family must be allowed (tar, git, cargo)");
         }
         for nr in [libc::SYS_chown, libc::SYS_fchown, libc::SYS_fchownat, libc::SYS_lchown] {
-            assert!(!allowed.contains(&nr), "chown family must stay out of the base allowlist");
-            // ...but a zone policy may allow it (the nic zone's DHCP client).
-            assert!(!is_denied(nr), "chown family must be allowable by a zone policy");
+            assert!(allowed.contains(&nr), "chown family must be allowed (gzip, xz, cp -a, tar)");
         }
     }
 
