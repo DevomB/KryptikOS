@@ -222,7 +222,7 @@ fn handle_update(req: &Request, payload: &[u8]) -> Result<String, String> {
     match req {
         Request::UpdateLatest { plen, .. } => {
             // Not above the match: the thousands of update-put requests need neither.
-            let (role, running) = (up::required_role(), up::running_version());
+            let (role, running) = (up::required_role()?, up::running_version());
             let (pointer, sig) = payload.split_at(*plen);
             up::latest(dir, &up::tool_checks(), now, &role, &running, pointer, sig).map(|s| match s {
                 up::Standing::Current => "ok current".to_string(),
@@ -230,7 +230,7 @@ fn handle_update(req: &Request, payload: &[u8]) -> Result<String, String> {
             })
         }
         Request::UpdatePoll => {
-            let (role, running) = (up::required_role(), up::running_version());
+            let (role, running) = (up::required_role()?, up::running_version());
             up::forget_if_installed(dir, &running);
             let conf = std::fs::read_to_string(up::CONF).unwrap_or_default();
             Ok(up::channel_from(&conf).map_or("idle".to_string(), |channel| up::poll(dir, &channel, &role, &running)))

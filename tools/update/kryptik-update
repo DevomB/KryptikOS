@@ -206,8 +206,10 @@ verify_manifest() {   # verify_manifest DIR RECOVERY -> sets dir m sig VERSION c
     # Headers, from the signed bytes.
     role="$(hdr "$m" role)"; VERSION="$(hdr "$m" version)"; count="$(hdr "$m" files)"
     case "$role" in development|production) ;; *) die "manifest role '$role' is unknown" ;; esac
-    [ "$role" = "$(cat "$ROLE_FILE" 2>/dev/null || echo development)" ] \
-        || die "manifest role is '$role'; this image requires '$(cat "$ROLE_FILE")'"
+    # A missing role file is refused, never read as development: it must not
+    # be what decides which releases a production image takes.
+    [ -r "$ROLE_FILE" ] || die "no $ROLE_FILE: this image names no role, so it accepts no release"
+    [ "$role" = "$(cat "$ROLE_FILE")" ] || die "manifest role is '$role'; this image requires '$(cat "$ROLE_FILE")'"
     [ -n "$VERSION" ] || die "manifest has no version"
     cur="$(running_version)"
     if [ "$VERSION" = "$cur" ]; then

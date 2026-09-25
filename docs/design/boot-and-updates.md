@@ -53,7 +53,11 @@ Stage 06 relinks stage 05's unbound kernel per variant (`media-usb`,
 `sbsign`. The developer key (RSA-3072) is made on first use under
 `${KRYPTIK_WORK}/keys/sb/`, never enters Git or an image, and is enrolled
 only in disposable OVMF variable stores (`tools/image/ovmf-vars.sh`). That
-shows the chain enforces a key; it is not production certification.
+shows the chain enforces a key; it is not production certification. A
+production image (`KRYPTIK_ROLE=production`) is signed with the key on the key
+medium that `KRYPTIK_KEYS` names, and no key is made (`build/lib/release-keys.sh`,
+[building](../building.md)). Stage 06 runs on the host: no key is ever
+inside the chroot, where the upstream build scripts run.
 
 ## Mutable state
 
@@ -95,8 +99,10 @@ lists each file's sha256 and size, the version and the role, and is signed by
 the release key (Ed25519, `ssh-keygen -Y`, namespace `kryptik-release`). The
 trust anchor and required role are on the verified root in
 `/usr/share/kryptik/trust/`, never in `/etc`, which the state partition can
-shadow. `kryptik-update apply DIR` runs in zone 0 without network; payloads
-come from [the update channel](update-channel.md) or by hand.
+shadow; stage 06 writes them from the build's role and keys. An image without
+the role file accepts no release: a missing file is never read as
+`development`. `kryptik-update apply DIR` runs in zone 0 without network;
+payloads come from [the update channel](update-channel.md) or by hand.
 
 1. Verify everything before writing, from a root-only copy of the manifest
    and signature: the signature; the role; a newer version unless

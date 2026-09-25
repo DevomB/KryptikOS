@@ -75,15 +75,17 @@ latest.sig    an OpenSSH signature over those bytes, namespace kryptik-latest
   keeping it from this machine". That needs a clock the net zone cannot set.
 
 **Which key signs it.** Re-signing on a schedule needs a key a timer can
-reach, and the release key is meant to stay offline, so the build uses two:
-stage 04 enrols `kryptik-release namespaces="kryptik-release"` and
-`kryptik-latest namespaces="kryptik-latest"` and checks on every build that
-each verifies only in its own namespace, and `tools/release-manifest.sh
-pointer` signs with the second. A stolen statement key can only keep
-claiming an old release is current, the freeze a withholding net zone causes
-anyway: it cannot sign a manifest, zone 0 still refuses a statement older
-than one it accepted, and replacing the key takes a release. Using one key
-for both means listing the release key on the second line.
+reach, and the release key is meant to stay offline, so the build uses two.
+The anchor stage 06 puts on the image lists `kryptik-release
+namespaces="kryptik-release"` and `kryptik-latest
+namespaces="kryptik-latest"`, two different keys, each honoured in its own
+namespace only. A development build proves that with a probe signed by each
+key in each namespace, and a production build refuses a key medium whose
+anchor says anything else. `tools/release-manifest.sh pointer` signs with the
+second key. A stolen statement key can only keep claiming an old release is
+current, the freeze a withholding net zone causes anyway: it cannot sign a
+manifest, zone 0 still refuses a statement older than one it accepted, and
+replacing the key takes a release.
 
 ## The verbs
 
@@ -178,9 +180,9 @@ that directory.
   another role, a downgrade and a listed path that climbs.
 - `make test-update-fetch`: the fetcher against a loopback server, including
   resuming after a cut, a server that ignores ranges, and a refused piece.
-- Stage 06 checks that the image's anchor refuses `not-a-pointer`, the
-  statement signed by the release key, and the update suite checks that
-  `check-pointer` refuses it on the installed system.
+- A development build's stage 06 checks that the image's anchor refuses
+  `not-a-pointer`, the statement signed by the release key, and the update
+  suite checks that `check-pointer` refuses it on the installed system.
 - The update suite's network step (`tools/image/update-test.sh`), from the
   channel stage 06 published: nothing is fetched until asked, then the
   release arrives whole, is applied, trial-booted and committed.

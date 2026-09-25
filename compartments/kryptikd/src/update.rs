@@ -276,8 +276,16 @@ pub fn tool_checks() -> Checks<'static> {
     }
 }
 
-pub fn required_role() -> String {
-    std::fs::read_to_string(ROLE_FILE).map(|s| s.trim().to_string()).unwrap_or_else(|_| "development".into())
+/// The role this image requires. A missing file is refused, never read as
+/// development: it must not be what decides which releases an image takes.
+pub fn required_role() -> Result<String, String> {
+    role_from(Path::new(ROLE_FILE))
+}
+
+fn role_from(path: &Path) -> Result<String, String> {
+    std::fs::read_to_string(path)
+        .map(|s| s.trim().to_string())
+        .map_err(|e| format!("{}: {e}; this image names no role, so it accepts no release", path.display()))
 }
 
 pub fn running_version() -> String {
@@ -528,6 +536,19 @@ mod tests {
 
     fn pointer_text(version: &str, issued: &str) -> String {
         format!("{POINTER_MAGIC}\nrole: production\nversion: {version}\nissued: {issued}\nmanifest-sha256: {SHA}\nbase: {version}/\n")
+    }
+
+    #[test]
+    fn missing_role_accepts_nothing() {
+        let d = std::env::temp_dir().join(format!("kryptik-role-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("required-role");
+        let missing = role_from(&f);
+        std::fs::write(&f, " production\r\n").unwrap();
+        let written = role_from(&f);
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(missing.as_ref().is_err_and(|e| e.contains("accepts no release")), "{missing:?}");
+        assert_eq!(written.as_deref(), Ok("production"));
     }
 
     #[test]

@@ -27,8 +27,10 @@ IN_WLPROXY="/kryptik-wlproxy"
 
 # Bound one subdirectory at a time: $KRYPTIK_WORK contains sysroot/, and
 # binding all of it would give the chroot a nested view of its own root to
-# install into by mistake. verify_chroot checks there is none.
-WORK_SUBDIRS=(.stamps logs build images keys/release)
+# install into by mistake. verify_chroot checks there is none. Never keys/:
+# every upstream build script runs as root in here, and stage 06 signs on the
+# host.
+WORK_SUBDIRS=(.stamps logs build images)
 
 need_root() {
     [[ "${EUID}" -eq 0 ]] || die "stage 03 '${ACTION}' must run as root.
@@ -349,7 +351,7 @@ verify_chroot() {
         err "the build contract is not satisfied inside the chroot:"
         err "  ${IN_ROOT}                        <- ${KRYPTIK_ROOT}"
         err "  ${IN_SOURCES}                <- ${KRYPTIK_SOURCES}"
-        err "  ${IN_WORK}/{.stamps,logs,build,images,keys/release}  <- ${KRYPTIK_WORK}/"
+        err "  ${IN_WORK}/{.stamps,logs,build,images}  <- ${KRYPTIK_WORK}/"
         return 1
     fi
 
