@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Fail on any setuid/setgid binary not justified in the allowlist; with
-# --strip, take the bit off each one instead. Stage 06 strips the image's root.
-# Rationale: docs/hardening.md ("setuid elimination")
+# Fail on any setuid/setgid binary the allowlist does not justify; with
+# --strip, take the bit off each one instead (docs/hardening.md, "setuid
+# elimination"). Stage 06 strips the image's root.
 #
-#   tools/audit-setuid.sh [--strip] ROOT
+#   ./tools/audit-setuid.sh [--strip] ROOT
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 
@@ -32,9 +32,7 @@ while IFS= read -r -d '' bin; do
         err "unjustified setuid/setgid binary: ${rel} ($(stat -c '%A %U:%G' "$bin"))"
         violations=$((violations + 1))
     fi
-# `|| true`: find exits non-zero on directories it cannot read, which a
-# chroot-built tree always has; the ERR trap would otherwise make the audit
-# look as if it had crashed rather than found something.
+# find fails on unreadable directories; `|| true` keeps the ERR trap out of it.
 done < <(find "$TARGET" -type f -perm /6000 -print0 2>/dev/null || true)
 
 echo

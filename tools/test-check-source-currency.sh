@@ -1,30 +1,11 @@
 #!/usr/bin/env bash
-# Focused tests for tools/check-source-currency.sh.
-#
-#   ./tools/test-check-source-currency.sh
-#
-# Deterministic and offline. Upstream directory listings and a GitHub API
-# response are served from a throwaway http.server on 127.0.0.1, laid out under
-# the same paths the real hosts use, and the tool's host-rewriting hook points
-# it there — so the parsing, the version ordering and the per-host strategies
-# all run for real.
-#
-# The cases that matter are the ones where a naive implementation produces a
-# CONFIDENTLY WRONG number rather than no number:
-#
-#   * Perl's odd minor versions are development releases, so 5.45.2 must not
-#     beat the stable 5.44.0;
-#   * a release candidate is not a release;
-#   * a versioned subdirectory only ever offers its own series, so looking only
-#     in the file's own directory reports a pin as current when a whole newer
-#     series exists;
-#   * the kernel has a real support-status check and must not get a version
-#     verdict here at all;
-#   * a listing that yields nothing is UNKNOWN, never "current".
+# Tests for tools/check-source-currency.sh. Offline: listings and API answers
+# are served on 127.0.0.1 under the real hosts' paths.
 
 set -uo pipefail
 
-# See the same note in the other suites.
+# common.sh prefers these over paths derived from KRYPTIK_ROOT, so an exported
+# one would point the tool at the real tree.
 unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -49,9 +30,8 @@ SERVE="${W}/serve"
 FAKE="${W}/root"
 
 # --- fixture listings -------------------------------------------------------
-#
-# Apache-style index pages, which is what these hosts actually serve.
 
+# Apache-style index pages, as the real hosts serve.
 page() {  # page <path> <entries...>
     local path="$1"; shift
     mkdir -p "${SERVE}/${path}"
@@ -73,9 +53,7 @@ page "ftp.gnu.org/gnu/tar" "tar-1.34.tar.xz" "tar-1.35.tar.xz"
 # GNU with nothing parseable: must be UNKNOWN, not "current".
 page "ftp.gnu.org/gnu/mystery" "README" "index.txt"
 
-# kernel.org with versioned subdirectories. The pin points into v2.40, and
-# v2.42 exists: looking only in v2.40 would report 2.40.4 and call the pin
-# nearly current.
+# kernel.org series subdirectories: the pin is in v2.40, and v2.42 exists.
 page "www.kernel.org/pub/linux/utils/util-linux" "v2.40/" "v2.41/" "v2.42/"
 page "www.kernel.org/pub/linux/utils/util-linux/v2.40" \
     "util-linux-2.40.2.tar.xz" "util-linux-2.40.4.tar.xz"
@@ -88,7 +66,7 @@ page "skarnet.org/software/s6" "s6-2.15.1.0.tar.gz" "s6-2.15.0.0.tar.gz"
 # python.org: only the pinned series is relevant, and a 3.13 exists.
 page "www.python.org/ftp/python" "3.12.5/" "3.12.14/" "3.13.2/"
 
-# cpan: 5.45.x is a DEVELOPMENT series and must lose to 5.44.0.
+# cpan: 5.45.x is a development series and must lose to 5.44.0.
 page "www.cpan.org/src/5.0" \
     "perl-5.40.0.tar.xz" "perl-5.44.0.tar.xz" "perl-5.45.2.tar.xz"
 
@@ -103,21 +81,18 @@ printf '{"tag_name": "v9.9.9", "prerelease": true}\n' \
     > "${SERVE}/api.github.com/repos/acme/preview/releases/latest/index.html"
 
 # --- hosts with an API or a page instead of a listing -----------------------
-#
-# json <path> <body>: what an API endpoint answers. The query string is not
-# part of the path, and the fixture server decodes %2F, so a project path is
-# two directories here.
+
+# json <path> <body>: an API answer. The server ignores the query string and
+# decodes %2F, so a project path is two directories here.
 json() { mkdir -p "${SERVE}/$1"; printf '%s\n' "$2" > "${SERVE}/$1/index.html"; }
 
-# freedesktop: ordered by DATE, so the newest version is not first, and a
-# release candidate is numbered 1.31.901 with no "rc" anywhere in it.
+# freedesktop: listed by date, and a release candidate looks like 1.32.901.
 json "gitlab.freedesktop.org/api/v4/projects/libinput/libinput/releases" \
     '[{"name":"libinput 1.30.4","tag_name":"1.30.4"},{"name":"libinput 1.32.901","tag_name":"1.32.901"},{"name":"libinput 1.32.0","tag_name":"1.32.0"},{"name":"libinput 1.31.3","tag_name":"1.31.3"}]'
 json "gitlab.freedesktop.org/api/v4/projects/wayland/wayland/releases" \
     '[{"name":"1.26.91","tag_name":"1.26.91"},{"name":"1.26.0","tag_name":"1.26.0"},{"name":"1.25.0","tag_name":"1.25.0"}]'
 
-# wlroots: tags, and only the pinned series counts. The commit author's
-# "author_name" must not be read as a tag name.
+# wlroots: tags, pinned series only; "author_name" is not a tag name.
 json "gitlab.freedesktop.org/api/v4/projects/wlroots/wlroots/repository/tags" \
     '[{"name":"0.20.2","commit":{"author_name":"9.9.9"}},{"name":"0.19.3","commit":{"author_name":"x"}},{"name":"0.19.2","commit":{"author_name":"x"}},{"name":"0.19.0-rc1","commit":{"author_name":"x"}}]'
 
@@ -125,8 +100,7 @@ json "gitlab.freedesktop.org/api/v4/projects/wlroots/wlroots/repository/tags" \
 json "codeberg.org/api/v1/repos/dwl/dwl/tags" \
     '[{"name":"v0.9-dev","id":"a"},{"name":"v0.8","id":"b"},{"name":"v0.8-rc1","id":"c"},{"name":"v0.7","id":"d"}]'
 
-# less: the directory has a newer tarball, and it is a beta. The front page
-# says which version is for general use.
+# less: the newer tarball is a beta; the front page names the general release.
 mkdir -p "${SERVE}/www.greenwoodsoftware.com/less"
 printf '%s\n' '<p>less-718 has been released for beta testing.</p>' \
     '<p>less-710 has been released for general use.</p>' \
@@ -257,8 +231,7 @@ expect_row preview "" UNKNOWN        # a prerelease is not a release
 expect_row mystery "" UNKNOWN        # nothing parsed is not "current"
 expect_row linux "" deferred         # support status, not version
 
-# Hosts read through an API or a page. Each of these was UNKNOWN once, and
-# each has a way to be confidently wrong.
+# Hosts read through an API or a page.
 expect_row libinput 1.32.0 BEHIND    # 1.32.901 is a release candidate; the list is by date
 expect_row wayland 1.26.0 current    # 1.26.91 is a release candidate
 expect_row wlroots 0.19.3 current    # the pinned series; 0.20.2 is not a drop-in; author_name is not a tag
@@ -304,7 +277,6 @@ else
     red "--strict did not refuse UNKNOWN rows (exit ${RC})"; show
 fi
 
-# UNKNOWN must be reported, not folded into anything else.
 run
 if grep -qE "^warn UNKNOWN: +2" "$OUT" \
    || grep -qE "UNKNOWN: +2" "$OUT"; then
@@ -313,7 +285,7 @@ else
     red "UNKNOWN rows were not counted separately"; show
 fi
 
-# --- the selftest hook cannot be used by accident ---------------------------
+# --- selftest hook ----------------------------------------------------------
 
 KRYPTIK_ROOT="$FAKE" KRYPTIK_CURRENCY_BASE="$BASE" NO_COLOR=1 \
     bash "$TOOL" --tsv > "$OUT" 2>&1
@@ -325,9 +297,6 @@ else
 fi
 
 # --- one unreachable host must not take the report down ---------------------
-#
-# This is a regression test: curl's exit 22 used to propagate out of a command
-# substitution into common.sh's ERR trap and abort the whole run.
 
 KRYPTIK_ROOT="$FAKE" KRYPTIK_CURRENCY_SELFTEST=1 \
     KRYPTIK_CURRENCY_BASE="http://127.0.0.1:1" NO_COLOR=1 \

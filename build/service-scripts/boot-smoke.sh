@@ -1,13 +1,6 @@
 #!/bin/sh
-# Report what this machine actually is. Every boot, on the console.
-#
-# The report used to be armed by kryptik.smoke=1 on the kernel command line.
-# The command line is now part of the signed kernel and cannot be
-# changed per boot, so the REPORT runs unconditionally - it is harmless and
-# useful - and only the POWEROFF at the end is armed: on install media by the
-# kryptik-testctl control disk (see testctl.sh), and on an installed system
-# not by this script at all; a test driver logs in over the serial console
-# and asks for it, which exercises the login path the product ships.
+# Report what this machine is, on the console, every boot. The poweroff at the
+# end runs only when a test control disk asks (testctl.sh, install media only).
 . /usr/libexec/kryptik/testctl.sh
 
 say() { echo "KRYPTIK_SMOKE: $*"; }
@@ -15,7 +8,7 @@ say() { echo "KRYPTIK_SMOKE: $*"; }
 echo
 say "BEGIN"
 
-# --- identity: what is actually running, measured here rather than assumed --
+# --- identity ---------------------------------------------------------------
 say "pid1=$(cat /proc/1/comm 2>/dev/null)"
 say "kernel=$(uname -r)"
 say "kernel_version_full=$(cat /proc/version 2>/dev/null | head -c 200)"
@@ -37,9 +30,8 @@ say "efi=$([ -d /sys/firmware/efi ] && echo yes || echo no)"
 say "secureboot=$(od -An -tu1 -j4 -N1 /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c 2>/dev/null | tr -d ' ' || echo unreadable)"
 
 # --- the filesystem we booted from ----------------------------------------
-# A root the kernel mounted itself appears in /proc/mounts as "/dev/root",
-# whatever device it is. Name the device: mountinfo carries its
-# major:minor, and sysfs names the block device behind that.
+# A root the kernel mounted shows as /dev/root; name the real device from
+# mountinfo's major:minor.
 root_line="$(awk '$2=="/"{print $1, $3, $4; exit}' /proc/mounts)"
 case "$root_line" in
     /dev/root*)
@@ -62,7 +54,7 @@ say "etc_source=$(awk '$2=="/etc"{print $3; exit}' /proc/mounts)"
 say "root_writable=$(touch /.kryptik-write-probe 2>/dev/null && { rm -f /.kryptik-write-probe; echo YES; } || echo no)"
 say "state_marker=$(cat /var/.kryptik-state 2>/dev/null || echo none)"
 
-# --- did the service manager actually bring things up? ---------------------
+# --- services ---------------------------------------------------------------
 if [ -d /run/service ]; then
     say "scandir=/run/service"
     for svc in eudev getty-tty1 seatd watchdog; do
@@ -74,9 +66,7 @@ if [ -d /run/service ]; then
         fi
     done
 fi
-# A watchdog nobody feeds resets a healthy machine, and one that is not
-# there protects nothing; both are worth a line. nowayout=1 is the kernel
-# saying that closing the device will not stop it.
+# nowayout=1: closing the device will not stop the timer.
 wd_n=0
 for wd in /sys/class/watchdog/watchdog[0-9]*; do
     [ -d "$wd" ] || continue
@@ -90,7 +80,7 @@ if [ -x /usr/bin/s6-rc ]; then
     say "s6rc_up_end"
 fi
 
-# --- the hardening tunables that used never to ship ------------------------
+# --- hardening sysctls ------------------------------------------------------
 for k in kernel.kptr_restrict kernel.dmesg_restrict kernel.yama.ptrace_scope \
          kernel.unprivileged_bpf_disabled kernel.kexec_load_disabled \
          fs.protected_symlinks kernel.randomize_va_space vm.max_map_count; do
@@ -106,10 +96,7 @@ say "kryptikd_check_begin"
 say "kryptikd_check_rc=$?"
 say "kryptikd_check_end"
 say "lsm=$(cat /sys/kernel/security/lsm 2>/dev/null || echo unreadable)"
-# The CPU's microcode revision, and what the kernel's early loader said about
-# the copy built into it. Under a hypervisor the loader is off and there is no
-# message; on a real machine this line is the evidence that the update the
-# signed kernel carries was applied.
+# Microcode revision and the early loader's message (none under a hypervisor).
 say "microcode=$(awk -F': ' '/^microcode/ {print $2; exit}' /proc/cpuinfo 2>/dev/null) loader=$(dmesg 2>/dev/null | grep -m1 -o 'microcode: .*' || echo none)"
 say "cgroup2=$(awk '$3=="cgroup2"{print $2; exit}' /proc/mounts 2>/dev/null || echo none)"
 
@@ -118,11 +105,8 @@ say "users=$(awk -F: '$3>=1000 && $3<65534 {printf "%s ", $1}' /etc/passwd 2>/de
 say "root_password=$(awk -F: '$1=="root"{print ($2 ~ /^[!*]/ || $2=="") ? "none" : "set"}' /etc/shadow 2>/dev/null)"
 say "securetty=$([ -e /etc/securetty ] && echo "present ($(wc -l < /etc/securetty) lines)" || echo absent)"
 say "login_binary=$([ -x /usr/bin/login ] && echo present || echo MISSING)"
-# The serial console's getty, which a test driver logs in at. A boot whose
-# getty is down, restarting or blocked looks identical to a healthy one from
-# the host (this report ends, then silence), and the getty's own stderr goes
-# to the catch-all log, so this is the only record of its state at the moment
-# the driver starts knocking.
+# The serial getty a test driver logs in at. From the host a stuck one looks
+# like a healthy boot, so record its state here.
 for svc in /run/service/*early-getty*; do
     [ -d "$svc" ] || continue
     say "early_getty=$(s6-svstat "$svc" 2>&1 | head -c 160)"
@@ -147,14 +131,13 @@ echo
 
 # --- power off only when a test asked, and only on install media -----------
 if testctl_load && [ "$(testctl_get smoke_poweroff)" = "1" ]; then
-    # If an install was requested too, it runs from its own service; give it
-    # its own say before shutting down (installer-run waits for us otherwise).
+    # An install requested too runs from its own service: give it install_wait.
     wait_s="$(testctl_get install_wait)"
     [ -n "$wait_s" ] && sleep "$wait_s"
     say "POWEROFF"
     say "shutdownd_fifo=$( [ -p /run/service/s6-linux-init-shutdownd/fifo ] && echo present || echo absent )"
-    # Detached watchdog: if the clean path does not take effect, say so loudly
-    # (the host asserts this line is absent) and force it.
+    # If the clean poweroff does not take effect, say so (the host checks for
+    # that line) and force it.
     setsid sh -c 'sleep 90
         echo "KRYPTIK_SMOKE: POWEROFF_DID_NOT_TAKE_EFFECT after 90s" > /dev/console 2>/dev/null
         sync

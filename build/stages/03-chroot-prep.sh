@@ -1,28 +1,13 @@
 #!/usr/bin/env bash
-# Stage 03 — Chroot preparation (docs/roadmap.md, Base system)
-#
-# Turns the stage 02 sysroot into something that can be chrooted into: the full
-# FHS directory layout, the essential device nodes, /etc/passwd and /etc/group,
-# and the virtual filesystem mounts.
-#
-# The privileged actions REQUIRE ROOT. Creating device nodes and bind-mounting
-# /dev needs real privilege; this is the one stage that does, and it escalates
-# explicitly here rather than the whole build running as root.
-#
-#   sudo ./03-chroot-prep.sh mount            prepare layout and mount virtual fs
-#   sudo ./03-chroot-prep.sh umount           unmount cleanly
-#   sudo ./03-chroot-prep.sh enter            drop into the chroot interactively
-#   sudo ./03-chroot-prep.sh run CMD [ARG..]  mount, run CMD inside, unmount
-#
-# and two that do not need privilege, because `make clean` has to be able to
-# ask them:
-#
-#   ./03-chroot-prep.sh status            report what is currently mounted
-#   ./03-chroot-prep.sh guard-unmounted   exit non-zero if anything is mounted
-#
-# `run` is what `make system` and `make kernel` drive. It is the only place in
-# the build where a privileged command executes a build stage, and it always
-# unmounts again - on success, on failure, and on interrupt.
+# Stage 03: make the sysroot chrootable (FHS layout, device nodes, passwd and
+# group, virtual filesystem mounts). The only stage that needs root on the host.
+#   sudo 03-chroot-prep.sh mount            prepare the layout and mount
+#   sudo 03-chroot-prep.sh umount           unmount
+#   sudo 03-chroot-prep.sh enter            shell in the chroot
+#   sudo 03-chroot-prep.sh verify           check the chroot
+#   sudo 03-chroot-prep.sh run CMD [ARG..]  mount, run CMD inside, unmount
+#   03-chroot-prep.sh status                list active mounts
+#   03-chroot-prep.sh guard-unmounted       fail if anything is mounted
 
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
 load_config
@@ -32,32 +17,19 @@ require_outside_chroot "stage 03"
 export LFS="$KRYPTIK_SYSROOT"
 ACTION="${1:-mount}"
 
-# Inside the chroot these are the fixed paths the build contract uses. The
-# repository, the source tarballs and the work tree all live outside the
-# sysroot and are bind-mounted in at these names.
+# Where the repository, the sources and the work tree are bound in the chroot.
 IN_ROOT="/kryptik"
 IN_SOURCES="/kryptik-sources"
 IN_WORK="/kryptik-work"
-# A single file, not a directory: the kryptikd binary built outside.
+# Single files: the kryptikd and wlproxy binaries built outside.
 IN_KRYPTIKD="/kryptik-kryptikd"
 IN_WLPROXY="/kryptik-wlproxy"
 
-# The work tree is bind-mounted SUBDIRECTORY BY SUBDIRECTORY, deliberately.
-#
-# $KRYPTIK_WORK contains sysroot/, and sysroot/ is the chroot's own root. Bind
-# the whole of $KRYPTIK_WORK to /kryptik-work and the chroot gains a complete
-# second view of itself at /kryptik-work/sysroot - so any stage that still
-# computes "${KRYPTIK_WORK}/sysroot" as an install destination silently writes
-# into a nested tree instead of failing. Exposing only the four directories
-# the in-chroot stages actually need (stage 06 binds the kernels to their
-# command lines under images/; stage 04 makes the release signing key under
-# keys/release, which stage 06 signs payloads with) means that path does not exist, and the
-# mistake stops being invisible. verify_chroot asserts it.
+# Bound one subdirectory at a time: $KRYPTIK_WORK contains sysroot/, and
+# binding all of it would give the chroot a nested view of its own root to
+# install into by mistake. verify_chroot checks there is none.
 WORK_SUBDIRS=(.stamps logs build images keys/release)
 
-# common.sh refuses to run as root by default; this stage is the exception for
-# its privileged actions, and says so rather than quietly working around the
-# guard.
 need_root() {
     [[ "${EUID}" -eq 0 ]] || die "stage 03 '${ACTION}' must run as root.
 
@@ -69,8 +41,7 @@ sysroot.
   sudo $0 ${ACTION}"
 }
 
-# Checked lazily: `status` and `guard-unmounted` must work on a half-built or
-# already-cleaned tree, which is exactly when `make clean` asks.
+# Not required by status and guard-unmounted, which must work on a cleaned tree.
 need_sysroot() {
     [[ -d "$LFS" ]] || die "no sysroot at ${LFS}. Run stages 01 and 02 first."
     [[ -x "${LFS}/usr/bin/bash" ]] || die \
@@ -96,27 +67,21 @@ create_layout() {
     mkdir -pv "$LFS"/var/{cache,local,log,mail,opt,spool}
     mkdir -pv "$LFS"/var/lib/{color,misc,locate}
 
-    # Mount points for the virtual filesystems. These must exist before
-    # mount_virtual runs; without them the mounts fail with the distinctly
-    # unhelpful "mount point does not exist".
+    # Mount points for mount_virtual.
     mkdir -pv "$LFS"/{dev,proc,sys,run}
 
     ln -sfv /run "$LFS/var/run"
     ln -sfv /run/lock "$LFS/var/lock"
 
-    # 0750, not 0755: root's home should not be world-readable.
+    # root's home is not world-readable.
     install -dv -m 0750 "$LFS/root"
-    # Sticky bits on the shared writable dirs, or any user can unlink another's
-    # files - a trivially exploitable local issue that is easy to forget.
+    # Sticky, or any user can unlink another's files.
     install -dv -m 1777 "$LFS/tmp" "$LFS/var/tmp"
 
-    # Kryptik-specific. The zone definitions themselves go to the verified
-    # /usr/lib/kryptik/zones (stage 04, s_kryptikd), which links this in.
+    # Stage 04 links the zones here from the verified /usr/lib/kryptik/zones.
     install -dv -m 0755 "$LFS/etc/kryptik"
 
-    # Mount points for the three trees that live outside the sysroot: the
-    # repository (scripts and config), the source tarballs, and the work tree
-    # (stamps, logs, unpacked build trees).
+    # Mount points for the repository, the sources and the work tree.
     install -dv -m 0755 "$LFS$IN_ROOT"
     install -dv -m 0755 "$LFS$IN_SOURCES"
     install -dv -m 0755 "$LFS$IN_WORK"
@@ -127,10 +92,8 @@ create_layout() {
     done
 }
 
-# Stages 04 and 05 refuse to run outside the chroot, and this marker is how
-# they tell. A file rather than an environment variable: env vars survive into
-# a plain shell and would let a stage believe it is chrooted when it is not,
-# which is precisely the mistake the check exists to prevent.
+# How stages 04 and 05 know they are in the chroot. A file, not an env var,
+# which would survive into a plain shell.
 create_chroot_marker() {
     printf 'Created by stage 03 on %s\nsysroot: %s\n' "$(date -Iseconds)" "$LFS" \
         > "$LFS/etc/kryptik/inside-chroot"
@@ -140,23 +103,15 @@ create_chroot_marker() {
 # --- essential files --------------------------------------------------------
 
 create_passwd_group() {
-    # Once. These are the accounts the chroot needs before shadow exists;
-    # after that, stage 04 adds the groups and users the running system needs
-    # (seat, kryptik, dhcpcd, ...) with groupadd and useradd, and every later
-    # entry into the chroot - the kernel stage, the media stage's kernel
-    # bind, a test - must leave them alone. Rewriting the files on every
-    # entry is how the first media shipped a system in which seatd and the
-    # launch daemon could not find their groups.
+    # Written once: stage 04 then adds accounts with useradd and groupadd, and
+    # later entries into the chroot must not overwrite them.
     if [[ -s "$LFS/etc/passwd" && -s "$LFS/etc/group" ]]; then
         log "keeping /etc/passwd and /etc/group (already present)"
         return 0
     fi
     log "creating /etc/passwd and /etc/group"
 
-    # Deliberately minimal. Every account here is one that something in the
-    # base system genuinely needs; extra accounts are extra attack surface,
-    # and a distro that ships unused system users has already lost track of
-    # what runs on it.
+    # Only accounts the base system needs; each extra one is attack surface.
     cat > "$LFS/etc/passwd" <<'PASSWD'
 root:x:0:0:root:/root:/bin/bash
 bin:x:1:1:bin:/dev/null:/usr/bin/false
@@ -197,7 +152,7 @@ GROUP
     touch "$LFS/var/log/"{btmp,lastlog,faillog,wtmp}
     chgrp -v utmp "$LFS/var/log/lastlog" 2>/dev/null || true
     chmod -v 664 "$LFS/var/log/lastlog"
-    # btmp records FAILED logins and can contain mistyped passwords. 600.
+    # btmp logs failed logins, which can hold mistyped passwords.
     chmod -v 600 "$LFS/var/log/btmp"
 }
 
@@ -213,9 +168,8 @@ create_devices() {
 
 # --- virtual filesystems ----------------------------------------------------
 
-# Every path this stage mounts, relative to $LFS, outermost first.
-# umount_virtual walks it in reverse and mounts_active answers "is anything
-# still mounted" from the same list, so the two cannot drift apart.
+# Every path this stage mounts, relative to $LFS. umount_virtual and
+# mounts_active both read this list, so they cannot drift apart.
 mount_list() {
     local d
     for d in "${WORK_SUBDIRS[@]}"; do printf '%s\n' "${IN_WORK}/${d}"; done
@@ -250,10 +204,8 @@ mount_status() {
     [[ "$any" -eq 1 ]] || printf '  nothing mounted under %s\n' "$LFS"
 }
 
-# A bind mount SILENTLY IGNORES -o nodev,nosuid,ro on the initial call - it
-# inherits the source's flags - so passing them there produces a mount that
-# looks hardened on the command line and is not. They only take effect on a
-# subsequent remount, so every bind here is two calls, not one.
+# A bind mount ignores nodev,nosuid,ro on the first call; they take effect
+# only on a remount, hence two calls.
 bind_hardened() {
     local src="$1" dst="$2" opts="$3"
     mountpoint -q "$dst" && return 0
@@ -264,8 +216,7 @@ bind_hardened() {
 mount_virtual() {
     log "mounting virtual filesystems"
 
-    # /dev is bind-mounted from the host: the chroot needs working device nodes
-    # and creating a full set by hand is both tedious and error-prone.
+    # The host's /dev, rather than a hand-made set of nodes.
     mountpoint -q "$LFS/dev" || mount -v --bind /dev "$LFS/dev"
 
     mkdir -pv "$LFS"/dev/{pts,shm}
@@ -275,29 +226,20 @@ mount_virtual() {
     mountpoint -q "$LFS/sys" || mount -vt sysfs sysfs "$LFS/sys"
     mountpoint -q "$LFS/run" || mount -vt tmpfs tmpfs "$LFS/run"
 
-    # The repository itself, so stages 04 and 05 can reach their scripts and
-    # their config. Bind rather than copy, and read-only: nothing in the build
-    # writes to the checkout, and a build that tries to should fail.
+    # The repository, read-only: nothing in the build may write to the checkout.
     bind_hardened "$KRYPTIK_ROOT" "$LFS$IN_ROOT" "nodev,nosuid,ro"
 
-    # The source tarballs, read-only. Separate from the repository because
-    # KRYPTIK_SOURCES can point anywhere - 600MB of tarballs frequently live
-    # on different storage from the checkout, and in this build they must,
-    # because the checkout may be on a filesystem that does not preserve
-    # POSIX ownership.
+    # Separate from the repository: KRYPTIK_SOURCES can be anywhere.
     bind_hardened "$KRYPTIK_SOURCES" "$LFS$IN_SOURCES" "nodev,nosuid,ro"
 
-    # Stamps, logs and unpacked build trees. Writable; see WORK_SUBDIRS above
-    # for why these are bound one at a time rather than as one tree.
+    # The work tree, writable, one subdirectory at a time (see WORK_SUBDIRS).
     local d
     for d in "${WORK_SUBDIRS[@]}"; do
         bind_hardened "${KRYPTIK_WORK}/${d}" "${LFS}${IN_WORK}/${d}" "nodev,nosuid"
     done
 
-    # kryptikd is Rust, built outside the chroot because the sysroot has no
-    # Rust toolchain. Bind the binary in read-only so stage 04 can install
-    # it; copying would put a host path in the build and leave a stale copy
-    # behind on the next run.
+    # kryptikd is Rust, built outside because the sysroot has no Rust
+    # toolchain; bound read-only for stage 04 to install (a copy goes stale).
     if [[ -n "${KRYPTIK_KRYPTIKD_BIN:-}" ]]; then
         if [[ -f "$KRYPTIK_KRYPTIKD_BIN" ]]; then
             : > "${LFS}${IN_KRYPTIKD}"
@@ -306,7 +248,7 @@ mount_virtual() {
             die "KRYPTIK_KRYPTIKD_BIN=${KRYPTIK_KRYPTIKD_BIN} does not exist"
         fi
     fi
-    # The per-zone Wayland proxy, the same way and for the same reason.
+    # The per-zone Wayland proxy, likewise.
     if [[ -n "${KRYPTIK_WLPROXY_BIN:-}" ]]; then
         if [[ -f "$KRYPTIK_WLPROXY_BIN" ]]; then
             : > "${LFS}${IN_WLPROXY}"
@@ -316,8 +258,7 @@ mount_virtual() {
         fi
     fi
 
-    # nosuid,nodev on shm: nothing in a build chroot needs setuid binaries or
-    # device nodes in shared memory, and both are escape primitives.
+    # nosuid,nodev: setuid files and device nodes in shm are escape primitives.
     if [[ -h "$LFS/dev/shm" ]]; then
         install -v -d -m 1777 "$LFS$(readlink "$LFS/dev/shm")"
     else
@@ -350,8 +291,7 @@ umount_virtual() {
 
 # --- chroot -----------------------------------------------------------------
 
-# The environment inside the chroot IS the build contract. Every path a stage
-# needs to locate is named here and nowhere else.
+# The whole environment inside the chroot; every path a stage needs is here.
 chroot_env() {
     local jobs="${KRYPTIK_JOBS:-$(kryptik_default_jobs)}"
     printf '%s\n' \
@@ -372,8 +312,7 @@ chroot_env() {
         "NO_COLOR=${NO_COLOR:-}"
 }
 
-# PATH deliberately excludes the host: if a build reaches a host binary the
-# chroot has failed and we want it to fail loudly, not silently succeed.
+# PATH excludes the host, so reaching for a host binary fails loudly.
 in_chroot() {
     local -a env_args=()
     mapfile -t env_args < <(chroot_env)
@@ -398,8 +337,7 @@ verify_chroot() {
     }
     echo "$out" | sed 's/^/  /'
 
-    # Stages 04 and 05 need the repository, the sources and the work tree
-    # visible from inside, at the paths the contract names.
+    # The repository, sources and work tree must be visible inside.
     local probe
     probe="[ -x ${IN_ROOT}/build/stages/04-base-system.sh ]"
     probe="${probe} && [ -d ${IN_SOURCES} ]"
@@ -415,7 +353,7 @@ verify_chroot() {
         return 1
     fi
 
-    # The work tree must NOT expose a nested sysroot. See WORK_SUBDIRS.
+    # No nested view of the sysroot (see WORK_SUBDIRS).
     if in_chroot /bin/bash -c "[ -e ${IN_WORK}/sysroot ]" 2>/dev/null; then
         err "${IN_WORK}/sysroot exists inside the chroot."
         err "That is the chroot's own root seen a second time, and it is how a"
@@ -424,29 +362,8 @@ verify_chroot() {
     fi
     ok "no nested view of the sysroot inside the chroot"
 
-    # The chroot's bash must be OURS, not the host's.
-    #
-    # Two earlier versions of this check were wrong, in two different ways,
-    # and the second way is worth keeping written down because it only
-    # appeared once the build got far enough to trip it.
-    #
-    # First: $BASH_VERSION carries only "5.2.32(1)-release". The build triple
-    # appears only in `bash --version`, so grepping the former for "kryptik"
-    # always failed and warned on a perfectly good chroot.
-    #
-    # Then: grepping the latter for "kryptik" worked - right up until stage 04
-    # rebuilt bash. Stage 02 cross-compiles it with
-    # --host=x86_64-kryptik-linux-gnu, which stamps that triple into the
-    # version string. Stage 04 rebuilds it natively, and config.guess then
-    # reports x86_64-pc-linux-gnu, correctly, because that IS the build system
-    # now. The triple was never evidence of whose bash this is; it only ever
-    # recorded which stage built it last. The check failed on the correct
-    # chroot it was meant to protect, and would have blocked stage 05 too.
-    #
-    # What actually discriminates is the VERSION. This host runs bash 5.2.21;
-    # Kryptik pins 5.2.32. A chroot reaching a host binary reports the host's
-    # version, and a sysroot that never got its own bash cannot report ours at
-    # all.
+    # The chroot's bash must be ours. Compare the pinned version, not the
+    # triple, which becomes x86_64-pc-linux-gnu once stage 04 rebuilds bash.
     local ver
     ver="$(in_chroot /bin/bash --version 2>/dev/null || true)"
     ver="${ver%%$'\n'*}"
@@ -463,10 +380,7 @@ verify_chroot() {
         return 1
     fi
 
-    # And its compiler must be the NATIVE TARGET compiler - not a cross
-    # compiler, not the host's. Checking here means a broken toolchain
-    # surfaces before four hours of stage 04, not after. Stage 05 checks it
-    # again and refuses, because the kernel is where it matters most.
+    # Should be the native target gcc: a warning here, a refusal in stage 05.
     local triple
     triple="$(in_chroot /bin/bash -c 'gcc -dumpmachine' 2>/dev/null || true)"
     if [[ "$triple" == *"-kryptik-linux-gnu" ]]; then
@@ -477,16 +391,12 @@ verify_chroot() {
     fi
 }
 
-# mount, run one command inside, always unmount. This is what `make system`
-# and `make kernel` drive: the privileged surface is exactly the mounts and
-# this one chroot call, and the build stage itself is ordinary code running in
-# a tree that root owns anyway.
+# Mount, run one command inside, always unmount (`make system`, `make kernel`).
 run_in_chroot() {
     [[ "$#" -ge 1 ]] || die "run needs a command to execute inside the chroot"
 
-    # Unmount on every exit path, including SIGINT and SIGTERM. Without this a
-    # cancelled build leaves /dev bind-mounted inside the sysroot, and the next
-    # thing to rm -rf that tree takes the host's /dev with it.
+    # Unmount on every exit, or a cancelled build leaves the host's /dev bound
+    # in the sysroot for the next rm -rf to delete.
     trap 'umount_virtual || true' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
@@ -500,10 +410,7 @@ run_in_chroot() {
 
     log "running inside chroot: $*"
     echo
-    # Same as step(): `set +e` does not stop the ERR trap, and the trap
-    # exits. Without disarming it, "chroot command failed (exit N)" below was
-    # never printed - the unmount still happened, via the EXIT trap, so the
-    # damage was limited to losing the message.
+    # As in step(): the ERR trap fires even under set +e, and it exits.
     local rc=0
     set +e
     trap - ERR
@@ -560,9 +467,7 @@ case "$ACTION" in
         mount_status
         ;;
     guard-unmounted)
-        # Unprivileged on purpose: `make clean` calls this before removing the
-        # work tree. Deleting a directory that still has /dev bind-mounted
-        # into it is how a build system eats its host.
+        # Unprivileged: `make clean` runs it before deleting the work tree.
         if mounts_active; then
             err "there are still active mounts under ${LFS}:"
             mount_status >&2

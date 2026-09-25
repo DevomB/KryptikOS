@@ -1,20 +1,11 @@
-//! Per-zone LUKS2 volumes (docs/design/encrypted-volumes.md): unlocked in zone 0 before the zone
-//! exists, closed after it is gone.
+//! Per-zone LUKS2 volumes (docs/design/encrypted-volumes.md), opened in zone 0
+//! before the zone exists and closed after it is gone.
 //!
-//! The volume is a LUKS2 container - a regular file under
-//! `/var/lib/kryptik/volumes/` on the state partition, or a block device -
-//! that cryptsetup opens to `/dev/mapper/kryptik-zone-<zone>`. The ext4 inside is
-//! mounted `nosuid,nodev` at the zone's data directory, which the zone then
-//! receives at `/home/<zone>` exactly like a persistent directory. The zone
-//! never sees the container, the mapping or a loop device: nothing under its
-//! `/dev` names one, and `nodev` is on every mount it has.
-//!
-//! Keys: the passphrase reaches cryptsetup on stdin, never in argv or the
-//! environment; the buffer is zeroed when dropped. On close, dm-crypt frees
-//! the volume key in the kernel - "keys wiped on stop" means that and only
-//! that; nothing about RAM afterwards is claimed.
-//!
-//! Every external program is run with a fixed argv and no shell.
+//! The container opens as `/dev/mapper/kryptik-zone-<zone>`, a prefix only zone
+//! volumes use, which is how `gc` tells them from the state partition. The
+//! ext4 inside is mounted `nosuid,nodev` as the zone's data directory; the
+//! zone never sees the container or the mapping. Passphrases reach cryptsetup
+//! on stdin or a memfd, never argv, and no tool runs through a shell.
 
 use std::ffi::CString;
 use std::fs;
@@ -24,8 +15,7 @@ use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// A prefix of the zones' own: `gc` closes every mapping under it, and the
-/// system's mappings (the state partition's `kryptik-state`) sit beside it.
+/// Only zone volumes map under this prefix; `gc` closes whatever it finds there.
 pub const MAPPER_PREFIX: &str = "kryptik-zone-";
 pub const DEFAULT_VOLUME_DIR: &str = "/var/lib/kryptik/volumes";
 
@@ -33,8 +23,7 @@ pub const DEFAULT_VOLUME_DIR: &str = "/var/lib/kryptik/volumes";
 pub enum VolumeError {
     /// cryptsetup exited 2: no keyslot accepted the passphrase.
     WrongPassphrase { zone: String },
-    /// The mapping already exists: a previous launcher died without closing
-    /// it (run `kryptikd gc`), or the zone is running.
+    /// The mapping exists: the zone is running, or a dead launcher left it (`kryptikd gc`).
     AlreadyOpen { zone: String, mapper: String },
     /// The passphrase source is not acceptable (mode, owner, missing).
     Passphrase(String),
@@ -74,14 +63,11 @@ impl Passphrase {
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
-    /// Read a passphrase from a file that only root may read: owner uid 0 (or
-    /// the caller), no group/other bits. A world-readable passphrase file is
-    /// refused rather than used, because using it would teach people that
-    /// such a file is fine.
+    /// Read a passphrase from a regular file owned by root or the caller, with
+    /// no group or other permission bits.
     pub fn from_file(path: &Path) -> Result<Self, VolumeError> {
-        // Validate the inode we read, not a pathname that can be replaced
-        // between metadata() and open(). NONBLOCK also makes a planted FIFO
-        // reach the type check instead of holding the launcher at open().
+        /* Check the opened inode, not the path, which could be swapped. NONBLOCK
+         * keeps a planted FIFO from hanging open() before the type check. */
         let f = fs::OpenOptions::new().read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path)
             .map_err(|e| VolumeError::Passphrase(format!("{}: {e}", path.display())))?;
@@ -105,9 +91,8 @@ impl Passphrase {
 }
 
 impl Passphrase {
-    /// Read a passphrase from an inherited descriptor (a memfd or pipe the
-    /// launch daemon received over SCM_RIGHTS). The descriptor is closed on
-    /// every path; pipes must reach EOF within five seconds.
+    /// Read a passphrase from a memfd or pipe received over SCM_RIGHTS. Always
+    /// closes `fd`; a pipe must reach EOF within 5 s.
     pub fn from_fd(fd: i32) -> Result<Self, VolumeError> {
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
         if flags < 0 {
@@ -121,9 +106,8 @@ impl Passphrase {
         if !md.is_file() && !md.file_type().is_fifo() {
             return Err(VolumeError::Passphrase("descriptor must be a regular file or pipe".into()));
         }
-        // SCM_RIGHTS shares flags and offsets with the sender. Reopen our
-        // pinned inode to get a private NONBLOCK description; dup() would
-        // still let a sender clear NONBLOCK or race the read offset.
+        /* A passed fd shares flags and offset with the sender. Reopening the
+         * inode gives a private NONBLOCK description, which dup() would not. */
         let mut f = fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK)
             .open(format!("/proc/self/fd/{fd}"))
             .map_err(|e| VolumeError::Passphrase(format!("reopening fd {fd}: {e}")))?;
@@ -137,8 +121,8 @@ impl Passphrase {
 
     fn read_bounded(mut f: fs::File) -> Result<Self, VolumeError> {
         use std::time::{Duration, Instant};
-        // One fixed allocation, owned by Passphrase before any secret is
-        // read: errors and partial reads take the same zeroing Drop path.
+        /* One fixed allocation, so no realloc leaves a copy, owned by
+         * Passphrase before the first read so every exit zeroes it. */
         let mut pass = Passphrase(vec![0; 4097]);
         let mut used = 0;
         let until = Instant::now() + Duration::from_secs(5);
@@ -201,7 +185,7 @@ fn run(what: &str, prog: &str, args: &[&str], stdin: Option<&[u8]>) -> Result<St
     if let Some(bytes) = stdin {
         if let Some(mut si) = child.stdin.take() {
             let _ = si.write_all(bytes);
-            // closing stdin here tells cryptsetup the passphrase is complete
+            // Dropping stdin marks the end of the passphrase.
         }
     }
     let out = match child.wait_with_output() {
@@ -231,9 +215,8 @@ pub fn mapping_exists(zone: &str) -> bool {
     Path::new(&mapper_path(zone)).exists()
 }
 
-/// An open, mounted volume. Closed explicitly by `close()`; if it is dropped
-/// unclosed (an error path in the launcher), it closes itself so a failed
-/// launch never leaves plaintext mounted.
+/// An open, mounted volume. Dropping it unclosed closes it, so a failed launch
+/// never leaves plaintext mounted.
 pub struct Opened {
     pub zone: String,
     pub mountpoint: String,
@@ -277,8 +260,7 @@ pub fn open_and_mount(zone: &str, volume: &str, pass: &Passphrase, mountpoint: &
         return Err(VolumeError::Tool { what: "cryptsetup open".into(), detail: format!("{mapper} did not appear") });
     }
     let opened = Opened { zone: zone.into(), mountpoint: mountpoint.into(), closed: false };
-    // An unclean filesystem gets fsck -p; anything it cannot fix alone
-    // refuses the launch and names the device rather than mounting damage.
+    // Damage that fsck -p cannot fix refuses the launch instead of being mounted.
     match run("e2fsck", "e2fsck", &["-p", &mapper], None) {
         Ok(_) => {}
         Err((1, _)) => {} // errors corrected
@@ -289,10 +271,9 @@ pub fn open_and_mount(zone: &str, volume: &str, pass: &Passphrase, mountpoint: &
     Ok(opened)
 }
 
-/// Unmount and close. EBUSY on the unmount is retried briefly - the zone's
-/// mount namespace is released asynchronously after its pid 1 exits - and
-/// then reported as an invariant failure: something is still holding the
-/// zone's data, which means something escaped.
+/// Unmount and close; dm-crypt then frees the volume key. A busy unmount is
+/// retried for 3 s, as a dead zone's mount namespace goes asynchronously;
+/// after that something escaped, which is an invariant failure.
 pub fn close_mapping(zone: &str, mountpoint: &str) -> Result<(), VolumeError> {
     let mapper = mapper_path(zone);
     let mut last = String::new();
@@ -328,9 +309,8 @@ pub fn is_mountpoint(path: &str) -> bool {
     text.lines().any(|l| l.split_whitespace().nth(1) == Some(&esc))
 }
 
-/// Create a volume: a sparse file of `size` bytes (or an existing empty
-/// block device), LUKS2 with argon2id, an ext4 owned by the zone's identity.
-/// Refuses anything that already carries a signature.
+/// Create a volume: LUKS2 (argon2id) on a sparse file or empty block device,
+/// holding an ext4 owned by the zone's identity. Refuses anything with a signature.
 pub fn init(zone: &str, volume: &str, size: u64, pass: &Passphrase, uid: u32, gid: u32) -> Result<(), VolumeError> {
     let p = Path::new(volume);
     if p.exists() {
@@ -376,8 +356,7 @@ pub fn init(zone: &str, volume: &str, size: u64, pass: &Passphrase, uid: u32, gi
     Ok(())
 }
 
-/// Change the passphrase in keyslot 0's place: the old one unlocks, the new
-/// one replaces it. Both travel through memfds, never argv.
+/// Replace passphrase `old` with `new`; both travel through memfds, never argv.
 pub fn change_key(volume: &str, old: &Passphrase, new: &Passphrase) -> Result<(), VolumeError> {
     let oldfd = memfd("old", old.as_bytes())?;
     let newfd = memfd("new", new.as_bytes())?;
@@ -395,8 +374,7 @@ pub fn change_key(volume: &str, old: &Passphrase, new: &Passphrase) -> Result<()
     }
 }
 
-/// A memfd holding `bytes`, inheritable (no CLOEXEC) so a child can read it
-/// through /proc/self/fd/N. Sealed against growth; zeroed by the kernel on close.
+/// A memfd holding `bytes`, without CLOEXEC so a child can read /proc/self/fd/N.
 fn memfd(name: &str, bytes: &[u8]) -> Result<i32, VolumeError> {
     let c = CString::new(name).unwrap();
     let fd = unsafe { libc::memfd_create(c.as_ptr(), 0) };
@@ -432,8 +410,7 @@ pub fn restore_header(volume: &str, from: &str) -> Result<(), VolumeError> {
     Ok(())
 }
 
-/// Mappings under /dev/mapper named like ours: for `gc`, which closes the
-/// ones whose zone has no live registry entry.
+/// Zones with a mapping under /dev/mapper, for `gc`.
 pub fn mappings() -> Vec<String> {
     let names = fs::read_dir("/dev/mapper")
         .map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
@@ -462,8 +439,7 @@ pub fn parse_size(s: &str) -> Option<u64> {
         c if c.is_ascii_digit() => (s, 1),
         _ => return None,
     };
-    // checked_mul, as cgroup::parse_memory_max does: with overflow-checks on
-    // in release, `--size 17179869184G` was a panic, and panic = "abort".
+    // checked_mul: release builds keep overflow checks, and panic = "abort".
     num.parse::<u64>().ok().and_then(|n| n.checked_mul(mult))
 }
 
@@ -478,14 +454,12 @@ mod tests {
         let ptr = p.0.as_ptr();
         let len = p.0.len();
         drop(p);
-        // The allocation may be reused; the point of the test is that Drop
-        // ran the zeroing path without panicking. The bytes were zeroed
-        // before the Vec was freed.
+        // The freed allocation may be reused, so only a clean Drop is checked.
         let _ = (ptr, len);
     }
 
     #[test]
-    fn a_readable_passphrase_file_is_refused() {
+    fn readable_passphrase_file_refused() {
         let dir = std::env::temp_dir().join(format!("kryptik-vol-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let f = dir.join("pass");
@@ -501,7 +475,7 @@ mod tests {
     }
 
     #[test]
-    fn passphrase_files_refuse_links_and_oversized_or_empty_secrets() {
+    fn passphrase_link_and_size_refused() {
         let dir = std::env::temp_dir().join(format!("kryptik-pass-boundary-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("pass");
@@ -519,7 +493,7 @@ mod tests {
     }
 
     #[test]
-    fn a_passphrase_pipe_cannot_wait_forever_for_eof() {
+    fn passphrase_pipe_times_out() {
         let mut pipe = [0; 2];
         assert_eq!(unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
         assert_eq!(unsafe { libc::write(pipe[1], b"partial".as_ptr() as *const libc::c_void, 7) }, 7);
@@ -528,8 +502,7 @@ mod tests {
         let worker = std::thread::spawn(move || {
             let _ = done.send(Passphrase::from_fd(read_fd).is_err());
         });
-        // Closing the writer after this wait releases the old blocking read
-        // too: the negative control fails without leaving a hung test thread.
+        // Closing the writer afterwards frees the worker even if it still blocks.
         let result = completion.recv_timeout(std::time::Duration::from_secs(7));
         unsafe { libc::close(pipe[1]) };
         worker.join().unwrap();
@@ -537,7 +510,7 @@ mod tests {
     }
 
     #[test]
-    fn passphrase_descriptors_accept_files_and_closed_pipes_without_sharing_flags_or_offsets() {
+    fn passphrase_fd_isolated_from_sender() {
         use std::os::unix::io::IntoRawFd;
         let fd = unsafe { libc::memfd_create(b"kryptik-pass-test\0".as_ptr() as _, libc::MFD_CLOEXEC) };
         assert!(fd >= 0);
@@ -569,13 +542,13 @@ mod tests {
         assert_eq!(parse_size("4096"), Some(4096));
         assert_eq!(parse_size("x"), None);
         assert_eq!(parse_size(""), None);
-        // Overflows u64 when multiplied out: refused, not wrapped, not a panic.
+        // Overflowing u64: None, not a wrap or a panic.
         assert_eq!(parse_size("17179869184G"), None);
         assert_eq!(parse_size("18446744073709551615K"), None);
     }
 
     #[test]
-    fn names_are_derived_from_the_zone() {
+    fn names_derive_from_zone() {
         assert_eq!(mapper_name("work"), "kryptik-zone-work");
         assert_eq!(mapper_path("work"), "/dev/mapper/kryptik-zone-work");
         assert_eq!(default_volume_path("vault"), "/var/lib/kryptik/volumes/vault.luks");
@@ -584,14 +557,12 @@ mod tests {
 
     #[test]
     fn gc_sees_only_zone_mappings() {
-        // gc closes every zone mapping without a live zone. The state
-        // partition's mapping is not one, and neither is a zone called state.
+        // The state partition's mappings are not zones; a zone named state is.
         let names = ["kryptik-state", "kryptik-verify-state", "kroot", "control", "kryptik-zone-work", "kryptik-zone-state"];
         assert_eq!(zones_mapped(names.iter().map(|s| s.to_string()).collect()), ["state", "work"]);
     }
 
-    /// The whole lifecycle against a real kernel: needs root, cryptsetup and
-    /// dm-crypt. Skipped (not passed) elsewhere.
+    /// Needs root, cryptsetup and dm-crypt; returns early without them.
     #[test]
     fn luks2_lifecycle_when_root() {
         if unsafe { libc::geteuid() } != 0 || Command::new("cryptsetup").arg("--version").output().is_err() {

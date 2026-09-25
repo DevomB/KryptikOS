@@ -3,10 +3,9 @@
 #
 #   package  pinned  reviewed_up_to  fine|held  date  what was read, and why
 #
-# A row stops covering its pin when the pin moves or upstream releases past
-# reviewed_up_to, so the next release has to be read too. `held` means a known
-# fix is not taken, for the reason in the note; --no-held, which a release
-# asks, refuses it. Reads a survey, never the network:
+# A row lapses when the pin moves or upstream releases past reviewed_up_to.
+# `held` means a known fix is not taken, for the reason in the note; --no-held
+# (for a release) refuses it. Reads a survey, never the network:
 #
 #   tools/check-source-currency.sh --tsv > survey.tsv
 #   tools/check-pin-reviews.sh --survey survey.tsv [--reviews FILE] [--no-held]

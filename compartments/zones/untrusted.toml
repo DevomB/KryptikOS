@@ -1,7 +1,5 @@
-# untrusted — for opening things you do not trust.
-#
-# This is the zone the isolation exit test attacks FROM. Everything it
-# holds is destroyed at teardown, and its network path is assumed hostile.
+# untrusted — for opening things you do not trust. The isolation exit test
+# attacks from this zone; its network path is assumed hostile.
 
 [zone]
 name        = "untrusted"
@@ -12,9 +10,8 @@ mode = "routed"
 
 [storage]
 mode = "ephemeral"
-# Required for ephemeral: $HOME is a tmpfs, and an unbounded tmpfs lets the
-# zone consume host memory by writing files - which the cgroup memory limit
-# does NOT catch, because those pages outlive the process that wrote them.
+# Required for ephemeral: $HOME is a tmpfs, and its pages outlive the process
+# that wrote them, so the cgroup memory limit does not bound them.
 size = "2G"
 
 [policy]
@@ -25,16 +22,14 @@ memory_max = "4G"
 pids_max   = 512
 
 [identity]
-# Fixed host uid/gid range for this zone: root inside maps to 327680,
-# nobody to 393214. Never derived from zone order; see docs/design/privileged-launch.md.
+# Host uid/gid range: root inside maps to 327680, nobody to 393214. Fixed,
+# never derived from zone order (docs/design/privileged-launch.md).
 uid_base = 327680
 
 [ui]
-# Identity in four channels (compositor/zoneid, `zoneid explain`): the
-# colour is from `zoneid propose` (every pair of shipped zones differs by
-# dE00 >= 15 under every vision model, 3:1 against both backgrounds);
-# the pattern, glyph and label are what remain for a user who cannot see
-# the colour difference. Every zone has a distinct value in each.
+# Colour, glyph and label must differ from every other zone's; the pattern
+# backs up colour for users who cannot tell colours apart. Pick colours with
+# `zoneid propose`; `zoneid audit` checks the set, `zoneid explain` the rule.
 border_color   = "#ba7c02"
 border_pattern = "dash-dot"
 glyph          = "▲"

@@ -1,19 +1,7 @@
 #!/usr/bin/env bash
-#
-# run-ovmf.sh's smoke mode, with a stand-in QEMU: the verdict is the
-# driver's, not a look at the process table.
-#
-# Smoke mode starts QEMU with its console on a socket and asks vm-drive.py
-# to wait for the guest to go away. What it then reports depends on how it
-# tells "the guest powered off" from "the timeout struck". A `kill -0` of
-# QEMU's pid told the two apart, and it could not: QEMU closes its console
-# in its shutdown, a moment before the process is gone, so the driver saw
-# the close, the check found QEMU still there, and every clean poweroff was
-# the timeout. The stand-in here closes its console and lingers half a
-# second, the shape of that moment, so the first case fails on that logic
-# in a second and needs no QEMU.
-#
-# Exit 0 when every case passes.
+# Test run-ovmf.sh's smoke mode with a stand-in QEMU that, like QEMU, closes
+# its console just before it exits: a clean poweroff must not be reported as
+# the timeout.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PASS=0; FAIL=0
@@ -24,11 +12,9 @@ check() { if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1 (got '$2', want '$3'
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/ovmf" "$T/work"
 : > "$T/ovmf/OVMF_CODE_4M.secboot.fd"; : > "$T/ovmf/OVMF_VARS_4M.fd"; : > "$T/medium.img"
-# The stand-in: finds the console socket and the log in its arguments,
-# opens the socket, waits for the driver, says what a kernel says last,
-# closes the console, and is a process for half a second more, as QEMU is
-# while it tears down. With STAY=SECONDS it stays that long before any of
-# that, a guest that does not power off.
+# The stand-in serves the console socket, prints a kernel's last line, closes
+# the console and lives half a second more, as QEMU does. STAY=SECONDS first
+# waits that long: a guest that does not power off.
 cat > "$T/qemu" <<'EOF'
 #!/usr/bin/env python3
 import os, socket, sys, time

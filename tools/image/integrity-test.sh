@@ -1,27 +1,21 @@
 #!/usr/bin/env bash
-#
-# Boot integrity on an installed disk (the integrity suite): enforced Secure
-# Boot with the developer key, an untrusted boot file refused by the firmware,
-# root tampering refused by dm-verity before any userspace runs, and recovery
-# from the medium afterwards.
+# Boot integrity on an installed disk: Secure Boot enforced with the developer
+# key, a foreign-signed boot file refused, a tampered root stopped by dm-verity
+# before userspace, recovery from the medium, and offline tampering of the
+# state partition kept away from privileged startup.
 #
 #   tools/image/integrity-test.sh --usb IMG [--disk FILE] [--timeout N]
 #
-#   1  install (fresh disk, control disk) and boot it alone under the
-#      ENROLLED variable store: Secure Boot on, the guest reports it
-#   2  untrusted boot artifact: BOOTX64.EFI on the disk's ESP replaced by the
-#      same kernel signed with a different key -> the firmware refuses it,
-#      no kernel banner (the medium's own signed kernel still boots the same
-#      firmware: positive control)
-#   3  root tampering: the ESP restored, one data block of slot a flipped ->
-#      the kernel panics on the verity mismatch before mounting root; no
-#      "KRYPTIK_SMOKE" line, and the serial log names dm-verity
-#   4  recovery: boot the medium with the disk attached, kryptik-recover
-#      --restore-slot a from the medium; boot the disk alone: it comes up,
-#      the user created at first boot is still there (state untouched)
+#   step 1  install and boot alone under the enrolled store; lockdown and
+#           module signing checked from inside
+#   step 2  BOOTX64.EFI re-signed with a foreign key: the firmware refuses it
+#           (control: the signed medium boots under the same store)
+#   step 3  a byte of slot a's root flipped: dm-verity stops the boot
+#   step 4  kryptik-recover --restore-slot a from the medium; the user's data survives
+#   step 5  an anchor, zone, sysctl, preload library and udev rule planted in
+#           the state's /etc layer: none takes effect
 #
-# Every disk is a file made here. The firmware whose keys are enrolled is a
-# copy of OVMF's variable store; no machine's firmware is touched.
+# Every disk and variable store is a file made here; no firmware is touched.
 set -uo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -34,7 +28,7 @@ while [[ "$#" -gt 0 ]]; do
         --usb) USB="${2:?}"; shift 2 ;;
         --disk) DISK="${2:?}"; shift 2 ;;
         --timeout) TIMEOUT="${2:?}"; shift 2 ;;
-        -h|--help) sed -n '2,24p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,18p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -50,9 +44,6 @@ ENROLLED="${KRYPTIK_WORK}/keys/sb/vars/enrolled.fd"
 source "${SELF}/suite-lib.sh"
 VARSF="${VMDIR}/integrity-vars.fd"; cp "$ENROLLED" "$VARSF"
 txt_latest() { tr -d '\r' < "$LATEST"; }
-
-# Partition offsets on the disk file, from its GPT, so the host can edit the
-# ESP with mtools and flip bytes in slot a without mounting anything.
 
 # ----------------------------------------------------------------- step 1 --
 step "step 1: install, then boot alone with the developer key enrolled (Secure Boot on)"
@@ -80,10 +71,8 @@ rc=$?; sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
 [[ "$rc" -eq 0 ]] && green "installed system boots with Secure Boot enforced (SecureBoot=1 inside the guest)" || red "step 1 drive failed"
 T1="$(tr -d '\r' < "$LOG1")"
 grep -q 'KRYPTIK_SMOKE: verity_root=0 [0-9]* verity V' <<<"$T1" && green "dm-verity reports the root valid" || red "no valid verity root reported"
-# The kernel's own promises, read from inside the booted system: lockdown in
-# confidentiality mode, and module signing enforced both ways with one
-# driver: the unsigned copy stage 05 ships beside the suites is refused with
-# the kernel's reason, the signed copy loads.
+# Lockdown in confidentiality mode, and module signing both ways: stage 05's
+# unsigned copy of a driver is refused with the kernel's reason, the signed one loads.
 grep -q 'LOCKDOWN=confidentiality' <<<"$T1" && green "lockdown reports confidentiality" || red "lockdown is not in confidentiality mode"
 if grep -q 'UNSIGNED=refused' <<<"$T1" && grep -q 'Key was rejected by service\|Required key not available' <<<"$T1"; then
     green "an unsigned module is refused (Key was rejected by service)"
@@ -125,18 +114,15 @@ rm -rf "$TMPK"
 # ----------------------------------------------------------------- step 3 --
 step "step 3: a tampered root is refused by dm-verity before userspace"
 A_OFF=$(( $(part_start "$DISK" 2) * 512 ))
-# Flip a byte in the ext4 superblock (byte 1024 of the image, the volume
-# name field at +0x78): the first thing a root mount reads, so dm-verity
-# sees a block whose hash does not match before any userspace exists. A
-# byte deep in the data area, which this used to flip, sits in a block
-# nothing reads at boot, and the system came up as if untouched.
+# Flip a byte of the ext4 superblock (the volume name, 1024 + 0x78): mounting
+# the root reads it first, so dm-verity fails before userspace. A block that
+# nothing reads at boot would go unnoticed.
 printf '\xa5' | dd of="$DISK" bs=1 seek=$(( A_OFF + 1024 + 0x78 )) conv=notrunc status=none
 cp "$ENROLLED" "$VARSF"
 "${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode smoke --timeout 300 --name integ-p3 > /dev/null
 T3="$(txt_latest)"
-# The kernel's banner is KERN_NOTICE and loglevel=4 keeps it off the console;
-# a boot that panics before userspace prints no smoke report either. Its own
-# timestamped console lines are the proof it started.
+# loglevel=4 hides the KERN_NOTICE banner, so the kernel's timestamped console
+# lines are the proof it started.
 grep -qE '^\[ *[0-9]+\.[0-9]+\] |Linux version' <<<"$T3" && green "the (untampered) kernel still starts" || red "the kernel did not start after the root tamper"
 # The kernel's own message, not the command line's "panic_on_corruption".
 grep -qE 'device-mapper: verity:.*(corrupt|mismatch|error)|dm-verity device corrupted' <<<"$T3" && green "dm-verity named the corruption" || red "no dm-verity corruption report"
@@ -164,12 +150,9 @@ tr -d '\r' < "$LOG4" | grep -q 'kryptik-firstboot: created user' && red "first-b
 
 # ----------------------------------------------------------------- step 5 --
 step "step 5: offline tampering of the state partition does not reach privileged startup"
-# The state partition is mutable and unauthenticated by design (sysinit.sh,
-# "the trust boundary"). Someone with the disk in hand can put anything
-# under /etc through the overlay's upper layer. What they must NOT gain:
-# a trust anchor of their own for updates, a zone definition the launch
-# daemon will honour, a kernel tunable applied at boot. Plant all three from
-# the host, boot, and measure each from inside the guest.
+# The state partition is unauthenticated (sysinit.sh, "the trust boundary"):
+# plant an update anchor, a zone and a sysctl in its /etc layer from the host,
+# and check from inside the guest that none takes effect.
 TMPK="$(mktemp -d)"; MNT="$TMPK/state"; mkdir -p "$MNT"
 ssh-keygen -q -t ed25519 -N "" -f "$TMPK/attacker" >/dev/null
 if open_state "$DISK" "$MNT" 2>/dev/null; then
@@ -192,10 +175,8 @@ uid_base = 1310720
 border_color = "#000001"
 EOF
     printf 'kernel.kptr_restrict = 0\n' > "$up/sysctl.d/99-evil.conf"
-    # And the names root honours without asking: a preload library for every
-    # process, a udev rule that RUNs as root, both pointing at the state
-    # partition. Plus one change the system MAY keep (a subuid line), which
-    # proves the overlay still works for what is allowed.
+    # Also a preload library and a udev rule run as root, both pointing at the
+    # state partition, and one allowed change (a subuid line) as a control.
     mkdir -p "$up/udev/rules.d" "$MNT/lib/kryptik"
     printf '/var/lib/kryptik/evil.so\n' > "$up/ld.so.preload"
     printf 'ACTION=="add", RUN+="/var/lib/kryptik/evil.sh"\n' > "$up/udev/rules.d/99-evil.rules"
@@ -223,11 +204,8 @@ fi
 cp "$ENROLLED" "$VARSF"
 SERVE="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --name integ-p5 "${EXTRA[@]}")"
 SER="$(sed -n 's/^serial=//p' <<<"$SERVE")"; PIDF="$(sed -n 's/^pid=//p' <<<"$SERVE")"; LOG5="$(sed -n 's/^log=//p' <<<"$SERVE")"
-# What the guest must show: the planted kryptik/ directory (anchor and zone)
-# is in the quarantine and gone from /etc, and the anchor the updater reads -
-# /usr/share/kryptik/trust/release-signers, on the verified root - still
-# names the release key. (/etc/kryptik/trust never existed in the lower
-# layer; only the planted copy put it there.)
+# The planted kryptik/ directory must be quarantined and gone from /etc, and
+# the updater's anchor on the verified root must still name the release key.
 python3 "$DRV" --serial "$SER" --timeout 300 \
     "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "grab:overlay:ls /etc/kryptik/ /var/lib/kryptik/etc/quarantine/ 2>&1 | head -12" \

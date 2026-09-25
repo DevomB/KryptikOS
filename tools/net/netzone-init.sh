@@ -1,51 +1,12 @@
 #!/bin/sh
-# The net zone's own startup (docs/design/net-zone.md): the process kryptikd runs as
-# the nic zone's command. Zone 0 moved every physical interface in - wired
-# ones by the netdev, wireless ones by their wiphy - with the uplink's
-# addresses, and created the bridge kryptik0 (10.19.0.1/24, fd19::1/64);
-# this is what runs behind that, inside the zone, with the CAP_NET_ADMIN the
-# nic zone keeps:
-#
-#   uplinks  discovered here, not named: every interface that sits on a bus
-#            device (/sys/class/net/<n>/device exists), which is the rule
-#            kryptikd used to decide what to move. A radio is an uplink with
-#            a wiphy (/sys/class/net/<n>/phy80211), whatever its name
-#   nft      the policy, FIRST and atomically: routed zones (10.19.0.0/24)
-#            masquerade out of the uplinks; forwarding is allowed only
-#            bridge -> uplink and established replies; nothing from the
-#            outside reaches a zone unsolicited; zones cannot reach each other
-#   forward  enabled only once the policy is loaded; disabled before, and
-#            disabled again if the policy ever cannot be loaded
-#   wifi     wpa_supplicant on each radio, from /etc/wpa_supplicant.conf
-#            when kryptikd bound one in (`kryptik wifi add` writes it in
-#            zone 0); a radio with no file is reported, not an error
-#   dhcpcd   takes over the lease on every uplink (or keeps the carried
-#            static configuration when there is no DHCP server); a radio
-#            gets its lease once it has associated
-#   dnsmasq  the resolver at 10.19.0.1 / fd19::1 that routed zones' resolv.conf
-#            already names, forwarding to the uplink's servers
-#   time     a plain SNTP query (sntp-offset.py) measures how far the
-#            machine's clock is from the time servers and sets nothing (this
-#            zone could not); the offset goes to zone 0 through the broker,
-#            as a claim zone 0 judges
-#
-# FAIL CLOSED. The first version logged a failed nftables load and enabled
-# forwarding anyway, which is a router with no firewall. Now: forwarding is
-# off until the ruleset is loaded and checked, a ruleset that fails to load is
-# retried without ever opening the path, and the readiness line says what is
-# actually true. Readiness has four parts and each is reported on its own:
+# The net zone's startup (docs/design/net-zone.md), run by kryptikd as the nic
+# zone's command: firewall and NAT, Wi-Fi, DHCP, the zones' resolver, the clock
+# offset and update fetching. Fails closed: forwarding stays off until the nft
+# policy is loaded and read back. Reports one line:
 #
 #   netzone: READY uplink=<addr|none> nat=yes dns=<yes|no> wifi=<ssid|connecting|unconfigured|none>
 #                  time=<offset|no-answer|no-uplink|...> ...
 #   netzone: NOT READY <reason>            (forwarding is off)
-#
-# A missing uplink address (no DHCP answer, nothing carried over) is reported
-# and retried by dhcpcd itself; the firewall and the resolver do not wait for
-# it, because nothing is exposed without an address anyway. Everything here
-# is in the zone: a compromised net zone owns this script's effects and
-# nothing outside its namespace: the net zone is treated as hostile. That
-# includes the Wi-Fi passphrases: the one party that must know them is the
-# one that associates.
 set -u
 say() { echo "netzone: $*"; }
 BR=kryptik0
@@ -64,16 +25,15 @@ report() {   # report READY|NOT READY ...: on stdout and in a file for the tests
 }
 
 [ -d /proc/sys/net/ipv4 ] || { report "NOT READY no network stack"; exit 1; }
-# Nothing forwards until the policy is in place - whatever zone 0 set.
+# Nothing forwards until the policy is in place, whatever zone 0 set.
 forwarding off
 ip link show "$BR" >/dev/null 2>&1 || { report "NOT READY no bridge ${BR}; zone 0 did not create it"; exit 1; }
 command -v nft >/dev/null 2>&1 || { report "NOT READY no nft in this image; refusing to route without a firewall"; exit 1; }
 
 # --- the uplinks: what zone 0 moved in ---------------------------------------
-# The positional parameters hold them from here on ("$@" is the one list a
-# POSIX sh has). The bridge and the routed zones' veth ports have no bus
-# device and never qualify, so nothing here can mistake a zone's port for
-# the way out.
+# Every interface on a bus device, the rule kryptikd moves them by, so never
+# the bridge or a zone's veth; radios are those with phy80211. From here on
+# they are "$@", a POSIX sh's only list.
 set --
 WIRELESS=""
 for d in /sys/class/net/*; do
@@ -135,11 +95,9 @@ else
 fi
 
 # --- wireless: associate before asking for a lease ---------------------------
-# /etc/wpa_supplicant.conf is zone 0's credentials file, bound in read-only
-# by kryptikd when `kryptik wifi add` has written one; it names the control
-# directory (ctrl_interface=/run/wpa_supplicant) that wpa_cli reads status
-# from. One supplicant per radio; each keeps its pid under /run so the loop
-# below can tell a dead one from a slow one.
+# /etc/wpa_supplicant.conf is bound in read-only from zone 0 (`kryptik wifi
+# add`). One supplicant per radio, each with a pid file so the loop below can
+# tell a dead one from a slow one.
 wpa_pid() { cat "/run/wpa_supplicant.$1.pid" 2>/dev/null; }
 start_wifi() {   # start_wifi <radio>: 0 started or already running, 1 not
     n="$1"
@@ -155,9 +113,8 @@ start_wifi() {   # start_wifi <radio>: 0 started or already running, 1 not
     say "wifi: wpa_supplicant did not start on ${n}: $(tr '\n' ' ' < /tmp/wpa.err)"
     return 1
 }
-# The one word the readiness line carries for Wi-Fi: none (no radio),
-# unconfigured (a radio, no credentials file), connecting (a supplicant
-# running, not yet associated), or the SSID it associated with.
+# The readiness line's wifi=: none (no radio), unconfigured (no credentials),
+# connecting, or the associated SSID.
 wifi_state() {
     [ -n "$WIRELESS" ] || { echo none; return; }
     [ -r "$WPA_CONF" ] || { echo unconfigured; return; }
@@ -177,18 +134,9 @@ for n in $WIRELESS; do start_wifi "$n"; done
 wifi_last="$(wifi_state)"
 
 # --- uplink: DHCP if anyone answers, else what zone 0 carried over ---------
-# /run and /var/lib are this zone's own tmpfs mounts (kryptikd gives the nic
-# zone both; every other zone's /run is read-only): dhcpcd's pid file and
-# control socket, its lease database, and the files below live there. The
-# first version of this zone had neither, and dhcpcd died on its pid file
-# before it ever asked for a lease.
-#
-# dhcpcd runs as this zone's root WITHOUT its own privilege separation: the
-# zone's passwd is synthesized (root and nobody), so the dhcpcd user it was
-# built with does not exist here and it says so once, then carries on
-# unseparated. The zone - its own user, mount, network and pid namespaces,
-# seccomp and Landlock - is the sandbox; nothing dhcpcd could do reaches
-# past it. That one line is filtered; every other error is kept.
+# /run and /var/lib are this zone's own writable tmpfs mounts. dhcpcd runs
+# unseparated as the zone's root (the zone has no dhcpcd user), with the zone
+# as its sandbox; its one complaint about that is filtered out.
 uplink_addr() {   # the first IPv4 address any uplink holds
     for n in "$@"; do
         a="$(ip -4 -o addr show "$n" 2>/dev/null | awk '{print $4}' | head -1)"
@@ -197,16 +145,12 @@ uplink_addr() {   # the first IPv4 address any uplink holds
 }
 if command -v dhcpcd >/dev/null 2>&1; then
     mkdir -p /run/dhcpcd /var/lib/dhcpcd 2>/dev/null
-    # -b: background at once and keep asking for as long as the zone runs;
-    # -q: errors only; --nodev: no device manager in here. Only the uplinks
-    # are named, so the bridge and the zones' ports are never asked for a
-    # lease. The resolv.conf hook stays on: /etc/resolv.conf is this zone's
-    # own file (under /tmp), and what dhcpcd writes there is what the
-    # resolver below forwards to.
+    # -b: background at once and keep trying; --nodev: no device manager here.
+    # Only the uplinks are named. The resolv.conf hook stays on: it writes this
+    # zone's own /etc/resolv.conf, which the resolver below forwards to.
     if dhcpcd -b -q --nodev "$@" 2>/tmp/dhcpcd.err; then
         grep -v 'no such user dhcpcd' /tmp/dhcpcd.err
-        # Give the lease up to 15 s to arrive so the resolver starts with the
-        # uplink's servers; a slower one is picked up by dhcpcd all the same.
+        # Up to 15 s for a lease, so the resolver starts with its servers.
         i=0
         while [ "$i" -lt 30 ] && [ -z "$(uplink_addr "$@")" ]; do sleep 0.5; i=$((i+1)); done
         [ -n "$(uplink_addr "$@")" ] && sleep 1   # let the hook finish resolv.conf
@@ -224,26 +168,20 @@ DNSPID=""
 start_dns() {
     command -v dnsmasq >/dev/null 2>&1 || { say "no dnsmasq; routed zones have no resolver"; return 1; }
     up=/run/uplink-resolv.conf
-    # What the uplink gave us: dhcpcd's hook wrote /etc/resolv.conf from the
-    # lease, or zone 0 carried a static one over. (printf, not ':', creates
-    # the empty file: a redirection that fails on a special builtin ends a
-    # POSIX sh outright, which is how this script once died on a read-only
-    # /run without a word.)
+    # The uplink's servers, from dhcpcd's hook or zone 0's static copy. printf,
+    # not ':': a failed redirection on a special builtin exits a POSIX sh.
     if [ -r /etc/resolv.conf ] && grep -q '^nameserver' /etc/resolv.conf; then
         grep '^nameserver' /etc/resolv.conf > "$up"
     else
         printf '' > "$up"
     fi
-    # --local=/test/: the reserved test TLD (RFC 6761) is answered here, never
-    # forwarded. The guest check asks 10.19.0.1 for kryptik.test to prove a
-    # routed zone reaches this resolver; with the uplink up that query went
-    # upstream and, on a host whose resolver was slow, timed out - a verdict
-    # about the internet, not about the path the check is for.
     # QEMU user networking's resolver, when nothing else is known
     grep -q '^nameserver' "$up" || echo "nameserver 10.0.2.3" >> "$up"
+    # --local=/test/: the test TLD (RFC 6761) is never forwarded; the guest
+    # check resolves kryptik.test here to prove a zone reaches this resolver.
     dnsmasq --keep-in-foreground --no-daemon --no-hosts --bind-interfaces \
             --listen-address=10.19.0.1 --listen-address=fd19::1 --listen-address=127.0.0.1 \
-            --resolv-file="$up" --no-poll --cache-size=1000 --local-service             --local=/test/ \
+            --resolv-file="$up" --no-poll --cache-size=1000 --local-service --local=/test/ \
             --pid-file=/run/dnsmasq.pid --user=root &
     DNSPID=$!
     sleep 1
@@ -257,20 +195,12 @@ dns_ok=0
 start_dns && dns_ok=1
 
 # --- the time: measured here, decided in zone 0 (docs/design/time.md) --------
-# The wall clock is one clock for the whole machine and only zone 0 may set
-# it; this zone is the only one that can ask a time server and cannot set
-# anything (no CAP_SYS_TIME). So it measures how far the shared clock is from
-# what the servers say - sntp-offset.py, a plain SNTP query that prints one
-# number and touches nothing - and tells zone 0 the OFFSET through its broker. Zone 0 treats
-# that as a claim from a zone it does not trust: it has a floor and a bound
-# of its own, and asks the person past the bound. What this zone learns back
-# is one line saying what zone 0 did.
-#
-# The sources are zone 0's to name (/etc/kryptik/time.conf on the verified
-# root, `server HOST` or `pool HOST` per line); without the file, the pool.
+# This zone cannot set the clock (no CAP_SYS_TIME): it measures the offset and
+# sends it to zone 0 as an untrusted claim. Zone 0 names the sources in
+# time.conf (`server HOST` or `pool HOST` per line); without it, the pool.
 TIME_CONF=/etc/kryptik/time.conf
 SNTP="${KRYPTIK_SNTP:-/usr/libexec/kryptik/sntp-offset.py}"
-# The zone's broker socket; named so that the offline suite can stand one up.
+# The zone's broker socket; overridable so the offline suite can stand one up.
 BROKER="${KRYPTIK_BROKER:-/run/kryptik/broker}"
 TIME_STATE=not-asked
 time_sources() {
@@ -283,8 +213,8 @@ time_sources() {
 ask_time() {   # ask_time <uplink>...: sets TIME_STATE
     { command -v python3 >/dev/null 2>&1 && [ -r "$SNTP" ]; } || { TIME_STATE=no-client; return; }
     [ -n "$(uplink_addr "$@")" ] || { TIME_STATE=no-uplink; return; }
-    # The sources become this function's own positional parameters, a flag
-    # and a name each, so nothing in a name is ever split or expanded.
+    # The sources become "$@", a flag and a name each, so no name is ever
+    # split or expanded.
     set --
     while read -r kind host; do
         [ -n "$host" ] || continue
@@ -295,8 +225,8 @@ ask_time() {   # ask_time <uplink>...: sets TIME_STATE
 $(time_sources)
 EOF
     [ $# -gt 0 ] || { TIME_STATE=unconfigured; say "time: ${TIME_CONF} names no server or pool"; return; }
-    # One line back: the seconds to ADD to the clock, and how many servers
-    # that is the median of. Nothing printed is no answer, never a zero.
+    # "OFFSET N": seconds to add to the clock, the median of N servers. No
+    # output means no answer, never a zero offset.
     out="$(python3 "$SNTP" --timeout "${KRYPTIK_SNTP_TIMEOUT:-8}" "$@" 2>/dev/null)"
     off="${out%% *}"; nsrc="${out##* }"
     case "$off" in
@@ -305,7 +235,7 @@ EOF
     esac
     case "$nsrc" in [1-9]|1[0-6]) ;; *) TIME_STATE=no-answer; return ;; esac
     TIME_STATE="$off"
-    # The wait is long because zone 0 may be asking the person.
+    # A long wait: zone 0 may be asking the user.
     told="$(python3 -c 'import socket, sys
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(90)
 s.connect(sys.argv[3])
@@ -317,13 +247,9 @@ ask_time "$@"
 time_ticks=0
 
 # --- updates ---------------------------------------------------------------------
-# Zone 0 has no network and never calls this zone, so this zone asks
-# (docs/design/update-channel.md): it brings the signed statement of what is
-# current, asks whether a release is wanted, and streams what zone 0 says is
-# missing. update-fetch.py decides nothing and holds nothing; zone 0 names
-# the channel (/etc/kryptik/update.conf on the verified root), verifies
-# every signature and refuses any byte it did not ask for. Without that
-# file there is no channel and nothing is asked.
+# Zone 0 has no network, so this zone asks it (docs/design/update-channel.md).
+# update-fetch.py only carries bytes; zone 0 names the channel in update.conf
+# and verifies everything. Without update.conf nothing is fetched.
 UPDATE_CONF=/etc/kryptik/update.conf
 UPDATE_FETCH="${KRYPTIK_UPDATE_FETCH:-/usr/libexec/kryptik/update-fetch.py}"
 UPDATE_BROUGHT=/run/kryptik-update-statement-brought
@@ -354,10 +280,8 @@ status_line() {
 }
 status_line "$@"
 
-# Stay up for as long as the zone runs; kryptikd stops us with SIGTERM. While
-# up: retry a policy that failed to load (never opening the path before it
-# does), restart the resolver or a supplicant that died, and re-report on
-# changes - a radio that associates after the first line is one.
+# Run until kryptikd sends SIGTERM: retry a policy that failed to load, restart
+# a dead resolver or supplicant, and report again on any change.
 cleanup() {
     say "stopping"
     forwarding off
@@ -373,8 +297,7 @@ while :; do
     if [ "$policy_ok" != 1 ]; then
         if load_policy && forwarding on; then policy_ok=1; changed=1; say "nftables: policy loaded on retry; forwarding enabled"; fi
     elif ! nft list table inet kryptik >/dev/null 2>&1; then
-        # The policy vanished from under us (a flush from inside the zone,
-        # say): close the path and start again.
+        # The policy vanished (a flush inside the zone, say): close the path.
         forwarding off; policy_ok=0; changed=1; say "nftables: the policy is gone; forwarding disabled"
     fi
     if [ -n "$DNSPID" ] && ! kill -0 "$DNSPID" 2>/dev/null; then
@@ -390,13 +313,11 @@ while :; do
     wifi_now="$(wifi_state)"
     if [ "$wifi_now" != "$wifi_last" ]; then
         wifi_last="$wifi_now"; changed=1; say "wifi: ${wifi_now}"
-        # A radio that has just associated is the first moment there is
-        # anybody to ask.
+        # A radio that just associated: ask the time now.
         case "$wifi_now" in none|unconfigured|connecting) ;; *) time_ticks=999999 ;; esac
     fi
-    # The time again: hourly once it has been measured, every five minutes
-    # while it has not (zone 0 considers one claim per ten minutes whatever
-    # this zone does, so asking more often buys nothing).
+    # A tick is 10 s. The time: hourly once measured, else every 5 minutes
+    # (zone 0 takes at most one claim per 10 minutes anyway).
     time_ticks=$((time_ticks + 1))
     case "$TIME_STATE" in
         -*|+*|[0-9]*) time_every=360 ;;
@@ -407,11 +328,8 @@ while :; do
         ask_time "$@"
         [ "$TIME_STATE" != "$time_was" ] && changed=1
     fi
-    # Updates: the statement once a day once zone 0 has taken one, every
-    # half hour until then (zone 0 looks at one an hour whatever this zone
-    # does); the question "is a release wanted?" every minute, which costs
-    # one line on a local socket and is how a person's `kryptik update
-    # fetch` is noticed.
+    # Updates: the statement daily once zone 0 has taken one, else every 30
+    # minutes; a poll every minute, which is how `kryptik update fetch` is seen.
     update_ticks=$((update_ticks + 1)); statement_ticks=$((statement_ticks + 1))
     if [ -n "$(uplink_addr "$@")" ]; then
         if [ -e "$UPDATE_BROUGHT" ]; then statement_every=8640; else statement_every=180; fi

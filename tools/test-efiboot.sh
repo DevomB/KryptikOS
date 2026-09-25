@@ -1,17 +1,6 @@
 #!/usr/bin/env bash
-#
-# kryptik-efiboot's forget, driven against a directory of stand-in variables.
-#
-# The tool reads and writes UEFI variables through efivarfs: a directory of
-# files named Variable-GUID whose first four bytes are the attributes. Built
-# here with EFIVARS pointing at a scratch directory, it runs on a host with
-# no firmware at all, in a second. forget is what boot-success and the
-# recovery tool run at commit. It is pinned here because a VM run sees it
-# matter only when the firmware's own order happens to be wrong, which is
-# how the defect stayed hidden until the update suite committed slot a and
-# the next boot was slot b.
-#
-# Exit 0 when every case passes.
+# Test kryptik-efiboot's forget, built with EFIVARS pointing at a directory of
+# stand-in variables (efivarfs files: 4 bytes of attributes, then the data).
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PASS=0; FAIL=0
@@ -28,9 +17,8 @@ else
     bad "the tool compiles with EFIVARS overridden"; exit 1
 fi
 
-# var NAME BYTES: a variable as efivarfs holds it, the attributes
-# (non-volatile, boot and runtime access) then the data. BYTES is a printf
-# format, so \xNN spells a byte.
+# var NAME BYTES: write a variable, attributes 0x7 then BYTES (a printf
+# format, so \xNN is a byte).
 var() { printf '\x07\x00\x00\x00'"$2" > "$V/$1-$G"; }
 # data NAME: the variable's data as hex, or "absent".
 data() { if [[ -f "$V/$1-$G" ]]; then od -An -tx1 -j4 -v "$V/$1-$G" | tr -d ' \n'; else echo absent; fi; }

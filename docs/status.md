@@ -1,23 +1,41 @@
-# Kryptik status
+# Status
 
-What `make acceptance` has proven, and on which images. The suites are
-defined in `tools/acceptance.sh`. Superseded results are replaced here, not
-appended; raw logs stay in the run's artifacts, never in Git.
+What exists, how it is tested, and what `make acceptance` last proved. The
+suites are defined in `tools/acceptance.sh`; per-item logs and serial
+transcripts are in each Distro run's artifacts.
 
-## Where builds run
+## What is tested
 
-The whole distribution is built and tested on GitHub's runners by the
-`Distro` workflow (`.github/workflows/distro.yml`): stages 01–02, then stages
-04–06 and the signed media, then `make acceptance` under KVM on the exact
-images that came out. Each run uploads the acceptance report with per-item
-logs and serial transcripts. A push to `main` that changes more than
-documentation starts a run; a newer push cancels one in flight.
+**implemented**: the code exists and builds. **tested**: an automated check
+exercises it and can fail. Acceptance runs everything on the exact images
+that ship, under QEMU with OVMF firmware.
+
+| Area | State |
+| --- | --- |
+| Host requirement check | **tested**: `build/stages/00-host-check.sh` |
+| Source fetching, checksum locking, signature and provenance verification | **tested**: `make verify`, `make verify-provenance` |
+| Kernel currency, fragment validation and hardening | **tested**: `make validate-kernel-boot` and `validate-kernel-hardened` check that every fragment symbol exists; `make check-kernel-hardening` resolves the config against the pinned source, refuses a dropped fragment line and holds kernel-hardening-checker to `build/config/kernel/checker-accepted.txt` |
+| Stages 01–02: cross toolchain, temporary tools | **tested**: glibc carries two upstream loader fixes the 2.40 tarball lacks (`build/patches/glibc-2.40/`), and each glibc build proves with `readelf` that its loader takes its own map bounds without a run-time relocation |
+| Stage 04: base system | **tested**: every package builds with the hardening set; `make test-libc-unwind` (the target libc unwinds through a dlopened library), `make smoke-userspace`, `make audit-artifacts` (the ELF headers of what shipped) |
+| Stage 05: hardened kernel | **implemented**: EFI stub, compiled-in command line with `CMDLINE_OVERRIDE`, dm-init verity root, Landlock, cgroup v2; the stage refuses a config that drops a fragment line or that kernel-hardening-checker faults beyond the accepted list. The kernel proves itself by booting the media |
+| Stage 06: install media and release payloads | **implemented**: USB image and ISO with kernels signed by a build-generated Secure Boot key, a signed release manifest per payload |
+| Firmware boot of the media | **tested**: `make media-smoke-usb` / `media-smoke-iso`, firmware discovery only (no `-kernel`, `-initrd`, `-append` or host filesystem; acceptance reads the recorded QEMU commands back) |
+| Installation and the state partition | **tested**: `make install-test` (install, boot alone, reboot, cold boot, refusals including an injected I/O error), `make state-test` (a cloned disk, ambiguous labels, a corrupt or missing state partition: the system boots degraded and says so) |
+| Boot integrity | **tested**: `make media-smoke-secureboot`, `make media-refused-foreign-keys` (Microsoft keys refuse the medium), `make integrity-test` (a foreign-signed boot file refused, a tampered root refused by dm-verity, recovery from the medium with state intact) |
+| Zones, network and encrypted storage on the installed kernel | **tested**: `make zones-test`, running `zones-check.sh` and the compartment suites as root on the Kryptik kernel |
+| The zoned desktop | **tested**: `make gui-test`, covering what a zone's client is offered through its proxy, zone borders and title prefixes windowed and fullscreen, per-zone clipboards, the clipboard-move gesture and file transfers answered on the trusted chrome |
+| A/B updates and recovery | **tested**: `make update-test`, covering apply, trial boot, commit, rollback, refusals (wrong key, modified image, truncated kernel, unlisted file, downgrade, concurrent run, full disk), interruptions and a broken trial that falls back |
+| Zone definitions, `kryptikd run`, lifecycle, limits, ephemeral storage | **tested**: kryptikd unit tests, `compartments/tests/` |
+| Per-zone LUKS2 volumes | **tested**: lifecycle as root on a developer host; on the target kernel in `zones-test` |
+| The broker: consented file transfer, per-zone clipboards, the zone 0 clipboard gesture | **tested**: kryptikd unit tests, `compartments/tests/serve.sh`; on the target in `gui-test` |
+| The compositor layer: `kryptik-wlproxy`, `zoneid`, the dwl zone-border patch | **tested**: `make test-compositor` (including the live proxy against a real socket), `make test-desktop-identity` |
+| `kryptik`, the user-facing command | **tested**: `compartments/tests/cli.sh` |
+| `make acceptance` | **implemented**: every suite in one run, PASS / FAIL / INCOMPLETE per item, with a report and an export that re-hashes what it copies |
 
 ## Last full pass
 
-Revision `55e1652` on `main`, 2026-09-20, release `0.1.20260920.55e16523.1`
-(Distro run 35482105602). Every suite passed, and no suite's own summary
-counts a failure:
+Revision `55e1652` on `main`, 2026-09-20, release `0.1.20260920.55e16523.1`.
+Every suite passed, and no suite's own summary counted a failure:
 
 | Suite | Result | What ran |
 | --- | --- | --- |
@@ -31,74 +49,27 @@ counts a failure:
 | update | PASS | update-test 21/0 |
 | release | PASS | export |
 
-All of this ran under QEMU with OVMF firmware. Nothing has run on physical
-hardware yet.
-
-That second sentence is there for a reason. Until 2026-09-20 the aggregator
-recorded PASS for any driver that exited 0, whatever its summary counted as
-failed. This run's `results.tsv` was read back against the corrected rule.
-
-## Since then
-
-`main` has not passed since. It carries the glibc release branch, gcc 14.4.0,
-the kernel's built-in rule (drivers as modules), chrony's removal and
-twenty-two version bumps, none of which a build had reached when they were
-merged, and two defects stopped every build of it:
-
-- util-linux 2.42.3 does not compile against a glibc older than 2.43 (a
-  missing include, and a wrong fallback value for `RESOLVE_NO_SYMLINKS`).
-  Patched in `build/patches/util-linux-2.42.3/`.
-- Stage 05 kept a private list of options that must survive config
-  resolution and accepted only `=y`; the built-in rule had made the virtio
-  GPU driver `=m`. The list is shared with CI's config check now.
-
-With the first fixed, stage 04 built every bumped package natively for the
-first time. Not yet proven by any run: the kernel with drivers as modules,
-its size against the budget, the update channel's fetch on the installed
-system, and the encrypted state partition.
+Not yet proven by a run: the kernel with drivers as modules and its size
+budget, the update channel's fetch on the installed system, and the encrypted
+state partition.
 
 ## Known gaps
 
-Documented rather than closed:
-
-- The watchdog catches a machine that has stopped, not one that is merely
-  broken. A supervised service feeds every watchdog device; if userspace
-  stops being scheduled the machine resets, and the state suite proves it
-  by stopping the feeder. A crashed service or a frozen desktop on a
-  machine that is otherwise running is not detected, on purpose: a false
-  reboot is worse than the hang. A hung kernel is reset only where there
-  is a hardware timer (Intel TCO, AMD SP5100) or the lockup detectors
-  panic first; no physical timer has been exercised yet.
-- Releases are signed by a developer key the build generates.
 - Nothing has run on physical hardware.
+- Releases are signed by a developer key the build generates.
+- The watchdog catches a machine that has stopped, not one that is merely
+  broken. A supervised service feeds every watchdog device, so a machine
+  whose userspace stops being scheduled resets (the state suite proves it by
+  stopping the feeder). A crashed service or a frozen desktop is not
+  detected, because a false reboot is worse than the hang. A hung kernel is
+  reset only by a hardware timer (Intel TCO, AMD SP5100) or the lockup
+  detectors; no physical timer has been exercised.
 - glibc is 2.40 with upstream's maintained release branch applied as of
-  2026-09-10 (`build/patches/glibc-2.40/`), so it carries that branch's
-  security fixes; nothing moves the pin along the branch automatically, and
-  2.40 is three releases old.
+  2026-09-10 (`build/patches/glibc-2.40/`). Nothing moves the pin along the
+  branch automatically, and 2.40 is three releases old.
 - The artifact audit still reports soft findings: binaries without CET or
-  BIND_NOW, some non-PIE objects, some RPATHs. The audit's log in each run
-  has the current counts.
-- dhcpcd runs without its own privilege separation inside the net zone; the
-  zone is its sandbox.
+  BIND_NOW, some non-PIE objects, some RPATHs. Each run's audit log has the
+  counts.
+- dhcpcd runs without its own privilege separation; the net zone is its
+  sandbox.
 - The builds are not reproducible bit for bit.
-
-## Decisions that shaped the current system
-
-- glibc stays at 2.40 with the upstream `_dl_find_object` fixes and the fix
-  for bug 33088, the defect the loader actually had
-  ([docs/glibc-loader-defect.md](glibc-loader-defect.md)). Both glibc builds
-  (stages 01 and 04) apply the same patches, and each proves with `readelf`
-  that the loader takes its own map bounds without a run-time relocation.
-- The boot chain has one loader, the kernel's EFI stub. The command line
-  (root slot by partition label, verity root hash, salt) is compiled in and
-  `CMDLINE_OVERRIDE` ignores load options; dm-init builds the verity root
-  with no initramfs; A/B slots switch by `BootNext` and are committed only
-  after a boot that boot-success judged healthy. See
-  [the boot and update design](design/boot-and-updates.md).
-- Test media honour a `kryptik-testctl` control disk. Installed systems are
-  driven over the serial console as an ordinary user, with `su` for
-  privileged steps; root cannot log in at a terminal.
-- Build stamps chain by fingerprint across stages, so a change to an early
-  package rebuilds everything after it.
-- Transfers between zones ask the person through the trusted chrome, and the
-  clipboard moves between zones only by the zone 0 gesture.

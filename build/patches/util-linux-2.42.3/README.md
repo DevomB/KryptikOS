@@ -9,7 +9,7 @@ does not bring `<linux/openat2.h>` in (glibc before 2.43; Kryptik is on 2.40)
 that has two defects:
 
 - `libmount/src/hook_idmap.c` uses the constant and includes nothing that
-  defines it. It does not compile: this is what stopped the build.
+  defines it, so it does not compile.
 - `include/fileutils.h` defines a fallback of `0x02`. In the kernel's ABI
   `0x02` is `RESOLVE_NO_MAGICLINKS`; `RESOLVE_NO_SYMLINKS` is `0x04`.
   `context.c` compiled with the fallback, so a restricted mount asked the

@@ -1,36 +1,11 @@
 #!/usr/bin/env bash
-# The launch daemon (`kryptikd serve`), driven over its socket.
+# Tests for the launch daemon (`kryptikd serve`), driven over its socket as
+# kryptik-launch drives it; launcher.sh covers `kryptikd run` itself. Runs as a
+# user (a developer instance serving only this uid) or as root. Needs python3
+# (exit 77 without it). Exits 0 only when every check ran and passed.
 #
-# WHY THIS EXISTS, SEPARATELY FROM launcher.sh
-#
-# launcher.sh proves what `kryptikd run` does to a process. The desktop never
-# runs that command: it talks to the daemon, and the daemon runs it. What the
-# daemon adds - who may ask, what a request may carry, how long a client may
-# hold it, what a proxy socket must be, and what `ok` means - is a separate set
-# of claims, and these are the checks for them. Every check goes through the
-# socket, as kryptik-launch does; nothing here calls into the daemon's code.
-#
-# THE CENTRAL RULE OF THIS FILE
-#
-#   A daemon that answers nothing is not a daemon that refused correctly.
-#
-# Every refusal check first shows the daemon answering something else, and
-# every launch check reads the reply and then looks at what the zone did.
-#
-# CLASSIFICATION
-#   [unpriv]  runs as an ordinary user with the kernel features `kryptikd run`
-#             needs (the launcher suite's requirements); the daemon runs as a
-#             developer instance (--socket) serving only this uid.
-#   [root]    the same checks as root, where zones map to their own identity
-#             and the daemon insists on the installed proxy program.
-#   The proxy-socket checks need a runtime directory at /run/user/<uid> that
-#   this user can populate; where there is none they are reported NOT RUN,
-#   which is not a pass.
-#
-# Needs python3 for the client side (raw sendmsg with descriptors, a client
-# that deliberately stalls); exits 77 without it.
-#
-# Exit status: 0 only when every executed check passes AND nothing was skipped.
+# A refusal only counts once the daemon is seen answering something else, and
+# a launch only once the zone is seen doing what it was asked.
 
 set -uo pipefail
 
@@ -71,8 +46,8 @@ fi
 WORK="$(mktemp -d)"
 ZONES="$WORK/zones"; ROOTFS="$WORK/rootfs"; SOCK="$WORK/launch.sock"
 mkdir -p "$ZONES" "$ROOTFS"
-# mktemp -d creates 0700. On a privileged run the zone's setup runs as the
-# zone's own identity, which must be able to reach its data directory.
+# mktemp -d makes 0700, but a privileged zone's setup runs as the zone's own
+# identity and must reach its data directory.
 chmod 0755 "$WORK" "$ROOTFS"
 declare -a BG_PIDS=()
 cleanup() {
@@ -83,15 +58,14 @@ cleanup() {
 trap cleanup EXIT
 
 if (( EUID == 0 )); then PRIVILEGED=1; info "running as root: zones map to their own identity ranges"; else PRIVILEGED=0; info "running unprivileged as uid $EUID"; fi
-# Where the daemon writes a zone's launcher log: a root instance under
-# /var/log/kryptik, a developer instance beside its socket.
+# A root daemon writes zone logs under /var/log/kryptik, a developer one in $WORK.
 if (( PRIVILEGED == 1 )); then ZLOG=/var/log/kryptik/zone-alpha.log; else ZLOG="$WORK/zone-alpha.log"; fi
 MARK="LAUNCH_OK_$$"
 
 # --- fixtures ----------------------------------------------------------------
 
-# uid_base is what a root launch maps the zone to; unprivileged launches map to
-# the caller and ignore it. Aligned to 65536, at or above 131072.
+# uid_base (65536-aligned, >= 131072) is used by root launches only; an
+# unprivileged launch maps to the caller.
 mkzone() { # name mode extra-lines uid_base
     local name="$1" mode="$2" extra="${3:-}" base="$4"
     {
@@ -162,11 +136,9 @@ PY
 # --- the daemon --------------------------------------------------------------------
 
 head_ "daemon"
-# --group: a root instance authorises a group; the suite's own suffices
-# (root is authorised regardless, and a developer instance ignores it).
-# --wifi-dir: the net zone's credentials file goes under the work directory,
-# so nothing here touches an installed system's, and the daemon says it did
-# not restart the net zone rather than restarting a real one.
+# --group: the suite's own; root is authorised anyway and a developer instance
+# ignores it. --wifi-dir keeps the credentials file in $WORK, so no installed
+# one is touched and no real net zone is restarted.
 "$KRYPTIKD" serve --zones "$ZONES" --rootfs "$ROOTFS" --socket "$SOCK" --proxy-exe "$WLPROXY" --group "$(id -gn)" --wifi-dir "$WORK/wifi" > "$WORK/serve.log" 2>&1 &
 DAEMON=$!; BG_PIDS+=("$DAEMON")
 for _ in $(seq 1 100); do [[ -S "$SOCK" ]] && break; sleep 0.05; done
@@ -245,9 +217,8 @@ if [[ "$(ask 'status\n')" == "end" ]]; then pass "S5e the daemon still answers a
 # --- launches -------------------------------------------------------------------------------
 
 head_ "launches"
-# Between its two lines the command truncates its own stdout. That was the
-# launcher's log once, O_APPEND does not stop ftruncate, and the first line
-# and everything the launcher had written went with it.
+# The command truncates its stdout between its two lines. O_APPEND does not
+# stop ftruncate, so that stdout must not be the log file itself.
 r="$(ask "run alpha\narg /bin/sh\narg -c\narg echo $MARK; python3 -c 'import os; os.ftruncate(1, 0)' 2>/dev/null; echo after-$MARK; sleep 15\nend\n")"
 if [[ "$r" == ok\ [0-9]* ]]; then
     pass "S6a run alpha replies ok <pid> once the zone is up"
@@ -269,10 +240,8 @@ else
     fail "S6a run alpha: $r"; sed 's/^/        /' "$ZLOG" 2>/dev/null | tail -5
 fi
 
-# A slow stop does not stop the daemon. A zone that ignores SIGTERM is only
-# gone at stop's SIGKILL, seconds later; the daemon ran stop inside its
-# request handler and answered nobody else meanwhile. Another client's
-# status, asked in the middle of it, must be answered at once.
+# A zone that ignores SIGTERM is only gone at stop's SIGKILL, seconds later.
+# Another client's status, asked meanwhile, must be answered at once.
 ms() { date +%s%3N; }
 r="$(ask "run alpha\narg /bin/sh\narg -c\narg trap '' TERM; while :; do sleep 1; done\nend\n")"
 if [[ "$r" == ok\ [0-9]* ]]; then
@@ -353,7 +322,7 @@ else
     if [[ "$r" == "error: wayland socket is served by a proxy for another zone"* ]]; then pass "S8e a proxy for another zone is refused"; else fail "S8e: $r"; fi
     kill "$PB" 2>/dev/null; wait "$PB" 2>/dev/null; rm -f "$WL"
 
-    # The real thing: the zone sees it at /run/kryptik/wayland-0.
+    # The zone's own proxy; the zone sees it at /run/kryptik/wayland-0.
     "$WLPROXY" --zone alpha --listen "$WL" --upstream "$UP" > "$WORK/proxy-alpha.log" 2>&1 & PA=$!; BG_PIDS+=("$PA")
     for _ in $(seq 1 50); do [[ -S "$WL" ]] && break; sleep 0.05; done
     r="$(ask "run alpha wayland=$WL\narg /bin/sh\narg -c\narg test -S /run/kryptik/wayland-0 && echo WL_$MARK; sleep 1\nend\n")"
@@ -366,8 +335,8 @@ else
     fi
     for _ in $(seq 1 60); do [[ "$(ask 'status\n')" == "end" ]] && break; sleep 0.1; done
 
-    # A symlinked zone directory pointing at that valid socket: refused, the
-    # path is walked without following links.
+    # A symlinked zone directory leading to that valid socket: the path is
+    # walked without following links.
     mv "$RT_DIR/alpha" "$RT_DIR/alpha.real"; ln -s "$RT_DIR/alpha.real" "$RT_DIR/alpha"
     r="$(ask "run alpha wayland=$WL\narg /bin/true\nend\n")"
     if [[ "$r" == "error: wayland socket path:"* ]]; then pass "S8h a symlink on the way to the socket is refused"; else fail "S8h: $r"; fi
@@ -376,10 +345,8 @@ else
 fi
 
 # --- the net zone's Wi-Fi credentials --------------------------------------------------
-# The daemon writes one file for the net zone (kryptikd's wifi.rs) and the
-# session never sees a passphrase again: `wifi-list` names networks, the
-# passphrase travels in the request body, and every refusal names its rule
-# and leaves the file exactly as it was.
+# One file for the net zone (kryptikd's wifi.rs). The passphrase only travels
+# in a request body and never comes back out; a refusal leaves the file as it was.
 
 head_ "wi-fi credentials"
 WIFI="$WORK/wifi"; WCONF="$WIFI/wpa_supplicant.conf"
@@ -399,8 +366,7 @@ else
 fi
 if [[ "$(stat -c %a "$WIFI")" == 711 ]]; then pass "S9e the directory is 0711: traversable, not listable"; else fail "S9e directory mode $(stat -c %a "$WIFI")"; fi
 if (( PRIVILEGED == 1 )); then
-    # carrier is the nic zone, uid_base 262144: inside it, root is that host
-    # uid, and it is the one party that must read the file.
+    # carrier is the nic zone, the only reader of the file.
     if [[ "$(stat -c %u:%g "$WCONF")" == "262144:262144" ]]; then pass "S9f the file is owned by the nic zone's identity (carrier, uid_base 262144)"; else fail "S9f owned by $(stat -c %u:%g "$WCONF"), not 262144:262144"; fi
 else
     if [[ "$(stat -c %u "$WCONF")" == "$EUID" ]]; then pass "S9f an unprivileged daemon leaves the file owned by its writer"; else fail "S9f owned by $(stat -c %u "$WCONF")"; fi

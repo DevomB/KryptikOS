@@ -1,4 +1,4 @@
-# Build output — never commit artifacts
+# Build output
 /out/
 /sources/
 /build/work/
@@ -15,17 +15,14 @@
 *.mod.c
 .config.old
 
+# Rust and Python
+/compartments/kryptikd/target/
+compositor/target/
+__pycache__/
+
 # Editor / OS noise
 .DS_Store
 Thumbs.db
 *.swp
 .idea/
 .vscode/
-
-# Rust build output
-/compartments/kryptikd/target/
-
-# Tectonix session state (tooling, not source)
-.tectonix/
-__pycache__/
-compositor/target/
