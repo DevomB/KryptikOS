@@ -97,7 +97,7 @@ set_flags_for() {
         CFLAGS="${CFLAGS//${drop}/}"
         CXXFLAGS="${CXXFLAGS//${drop}/}"
         LDFLAGS="${LDFLAGS//${drop}/}"
-    done < <(exception_flags_for "$pkg")
+    done < <(exception_flags_for "${pkg%-final}")
 
     export CFLAGS CXXFLAGS LDFLAGS
 }
@@ -494,11 +494,18 @@ s_openssl() {
 s_perl() {
     local src; src="$(unpack "perl-${V_PERL}.tar.xz" "perl-${V_PERL}")"
     cd "$src"
+    # Configure reads neither CFLAGS nor LDFLAGS, so the hardening goes in as
+    # its own settings. lddlflags names -shared because a value given for it
+    # replaces Configure's default instead of adding to it.
     sh Configure -des \
         -Dprefix=/usr \
         -Dvendorprefix=/usr \
         -Duseshrplib \
-        -Dusethreads
+        -Dusethreads \
+        -Doptimize="$KRYPTIK_OPT" \
+        -Accflags="${CFLAGS#"$KRYPTIK_OPT"}" \
+        -Dldflags="$LDFLAGS" \
+        -Dlddlflags="-shared $LDFLAGS"
     make
     make install
 }
@@ -1816,7 +1823,10 @@ s_lvm2() {
     # saw no object at all ("undefined reference to `main'"). Serial here;
     # the parallel build above is where the time goes.
     make -j1 install_device-mapper
-    dmsetup --version | sed -n 1p
+    # The library line shows the binary runs. The driver line after it needs
+    # the build machine's device-mapper, and dmsetup fails without it.
+    local out; out="$(dmsetup --version 2>&1 || true)"
+    grep -m1 '^Library version:' <<<"$out" || { echo "dmsetup does not run: ${out}"; return 1; }
     [[ -f /usr/lib/pkgconfig/devmapper.pc ]] || { echo "no devmapper.pc"; return 1; }
 }
 
