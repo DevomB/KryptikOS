@@ -1,25 +1,9 @@
-//! Broker identity: who is on the other end of a Unix socket, and which zone
-//! that is (docs/design/broker.md).
+//! The zone broker (docs/design/broker.md): each zone's one socket into zone 0,
+//! serving the clipboard, transfer, time and update verbs.
 //!
-//! THE ONE MECHANISM
-//!
-//! Every zone has a fixed host identity range (`[identity] uid_base`, Design
-//! 01). A connection accepted in zone 0 carries `SO_PEERCRED`, whose uid is
-//! kernel-asserted and cannot be chosen by the connecting process. If that
-//! uid falls in exactly one zone's range, the peer IS that zone: no token, no
-//! handshake, nothing a zone could forge. The peer pid is deliberately not
-//! used - it is a pid in zone 0's namespace and may be reused - and the
-//! peer gid is checked only for consistency.
-//!
-//! This module is the primitive. The verbs (file transfer, clipboard) and
-//! the serving loop come later and are specified in docs/design/broker.md; what they
-//! all start with is `peer_identity` followed by `zone_for_uid`.
-//!
-//! Unprivileged developer launches map every zone to the launching user's
-//! own uid, so identity cannot distinguish zones there; `zone_for_uid`
-//! returns `None` for a uid outside every declared range, and the caller
-//! refuses. That is the honest answer on a developer host and the correct
-//! one on the target.
+//! A peer is known by its `SO_PEERCRED` uid, which the kernel asserts and the
+//! zone cannot choose; each zone has its own `[identity]` uid range. The pid
+//! is never used, since it may be reused.
 
 use std::ffi::CString;
 use std::io;
@@ -37,8 +21,7 @@ pub struct PeerCred {
     pub gid: u32,
 }
 
-/// `SO_PEERCRED` of a connected AF_UNIX socket (stream or seqpacket, or one
-/// end of a socketpair).
+/// `SO_PEERCRED` of a connected AF_UNIX socket.
 pub fn peer_identity(fd: RawFd) -> io::Result<PeerCred> {
     let mut uc: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
@@ -57,10 +40,9 @@ pub fn peer_identity(fd: RawFd) -> io::Result<PeerCred> {
     Ok(PeerCred { uid: uc.uid, gid: uc.gid })
 }
 
-/// The zone whose declared identity range contains `uid`, if exactly one
-/// does. Ranges are disjoint by construction (`zone::check_invariants`), so
-/// "exactly one" is a scan for the single match; a uid outside every range
-/// - a host user, an unprivileged developer launch, root - matches nothing.
+/// The zone whose identity range holds `uid`, if exactly one does (ranges are
+/// disjoint, `zone::check_invariants`). Root, host users and unprivileged
+/// launches match none.
 pub fn zone_for_uid<'a>(zones: &'a [Zone], uid: u32) -> Option<&'a Zone> {
     let mut found: Option<&Zone> = None;
     for z in zones {
@@ -75,9 +57,8 @@ pub fn zone_for_uid<'a>(zones: &'a [Zone], uid: u32) -> Option<&'a Zone> {
     found
 }
 
-/// Identify the zone behind a connection, or say why not. The gid must lie
-/// in the same range as the uid: a process that somehow held a uid from one
-/// zone and a gid from another is not any zone.
+/// Identify the zone behind a connection, or say why not. The gid must fall
+/// in the same zone's range as the uid.
 pub fn identify<'a>(zones: &'a [Zone], fd: RawFd) -> Result<&'a Zone, String> {
     let cred = peer_identity(fd).map_err(|e| format!("SO_PEERCRED: {e}"))?;
     let z = zone_for_uid(zones, cred.uid)
@@ -95,10 +76,8 @@ pub fn identify<'a>(zones: &'a [Zone], fd: RawFd) -> Result<&'a Zone, String> {
 pub const SOCKET_NAME: &str = "broker";
 pub const ZONE_PATH: &str = "/run/kryptik/broker";
 
-/// Bind a listening AF_UNIX socket at `path`, owned by the zone identity so
-/// the zone (and nobody else) may connect to it. A stale file is removed
-/// first: the path is inside a registry entry this launcher has just
-/// claimed, so nothing else can own it.
+/// Listen on an AF_UNIX socket at `path` that only the zone identity can
+/// connect to. A stale file is removed first: this launcher owns the entry.
 pub fn listen_at(path: &std::path::Path, uid: u32, gid: u32) -> io::Result<RawFd> {
     let _ = std::fs::remove_file(path);
     let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
@@ -141,22 +120,13 @@ pub fn listen_at(path: &std::path::Path, uid: u32, gid: u32) -> io::Result<RawFd
     Ok(fd)
 }
 
-/// THE CLIPBOARD
-///
-/// One payload per zone, held by zone 0 in the zone's registry entry (0700,
-/// root-owned on the target) as the file `clipboard`: first line the MIME
-/// type, the bytes after it. A zone sets and gets its OWN payload through
-/// its broker. Moving a payload between zones is a zone 0 act - the
-/// operator's gesture, `kryptikd clipboard move FROM TO` - and never a zone
-/// verb: no zone can ask for another zone's payload because the verb does
-/// not exist on the zone-facing socket. After a move the source
-/// keeps its payload (copy semantics for the user) and the destination's
-/// previous one is replaced.
+/// A zone's clipboard, a file in its registry entry: the MIME type on the
+/// first line, then the bytes. A zone reaches only its own; moving one to
+/// another zone is the zone 0 command `kryptikd clipboard move`.
 pub const CLIPBOARD_FILE: &str = "clipboard";
 pub const CLIPBOARD_MAX: usize = 1 << 20;
 
-/// The MIME types a zone may label a payload with. A fixed list: the label
-/// crosses the boundary with the bytes, and a free-form label is a channel.
+/// MIME types a payload may carry: fixed, as a free-form label would be a channel.
 pub const MIME_TYPES: &[&str] = &[
     "text/plain",
     "text/plain;charset=utf-8",
@@ -168,12 +138,10 @@ pub const MIME_TYPES: &[&str] = &[
 ];
 
 /// How long one request may take end to end. The launcher serves its broker
-/// between waitpid polls, so a zone that dribbles bytes stalls its own
-/// supervision and nothing else; the deadline bounds even that.
+/// between waitpid polls, so a slow zone stalls only its own supervision.
 const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
 
-/// One request, parsed from its header line. The wire format is one header
-/// line, and for `clipboard-set` exactly `len` payload bytes after it:
+/// One request: a header line, then the payload its verb announces.
 ///
 /// ```text
 /// version\n                              -> kryptik-broker 1 zone=NAME\n
@@ -196,13 +164,11 @@ pub enum Request {
     NotAZoneVerb(String),
     /// `transfer <zone> <name>` with the file as one SCM_RIGHTS descriptor.
     Transfer { dest: String, name: String },
-    /// `time-offset <seconds> <sources>`: the net zone's claim about how far
-    /// the machine's clock is from the network's (docs/design/time.md).
+    /// The nic zone's claim of the clock's offset from network time (docs/design/time.md).
     TimeOffset(crate::time::Claim),
-    /// The update channel's three verbs (docs/design/update-channel.md), from
-    /// the zone that holds the network and no other. `update-latest` is
-    /// followed by the pointer and then its signature, `update-put` by `len`
-    /// bytes of the named file.
+    /// The update channel (docs/design/update-channel.md), nic zone only.
+    /// `update-latest` is followed by the pointer and its signature,
+    /// `update-put` by `len` bytes of the named file.
     UpdateLatest { plen: usize, slen: usize },
     UpdatePoll,
     UpdatePut { name: String, offset: u64, len: usize },
@@ -217,9 +183,8 @@ fn check_zone_name(s: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The name a transferred file lands under: one path
-/// component, printable ASCII, no leading dot so a zone cannot plant
-/// dotfiles, at most 255 bytes.
+/// A transferred file's name: one path component of 1 to 255 printable ASCII
+/// bytes, with no leading dot, so a zone cannot plant dotfiles.
 pub fn check_transfer_name(n: &str) -> Result<(), String> {
     if n.is_empty() || n.len() > 255 {
         return Err("name must be 1 to 255 bytes".into());
@@ -292,15 +257,8 @@ pub fn parse_request(line: &str) -> Result<Request, String> {
     }
 }
 
-/// TIME
-///
-/// The zone that holds the network says how far the machine's clock is from
-/// what time servers told it. It is a claim: that zone is treated as
-/// hostile, the protocol it asked with is unauthenticated, and only zone 0
-/// may set the clock. So the verb is taken from that one zone and no other
-/// (a zone with no network has nothing to measure with, and a routed zone's
-/// answer would be the net zone's at one remove), and what becomes of it is
-/// `time::consider`'s decision: the floor, the bound, the person.
+/// `time-offset`, taken only from the nic zone: no other zone has a network of
+/// its own to measure with. `time::consider` decides what to believe.
 fn handle_time_offset(zone: &Zone, claim: &crate::time::Claim, asking: &dyn Fn() -> bool) -> crate::time::Outcome {
     time_offset_in(
         zone,
@@ -312,15 +270,8 @@ fn handle_time_offset(zone: &Zone, claim: &crate::time::Claim, asking: &dyn Fn()
     )
 }
 
-/// UPDATES
-///
-/// The zone that holds the network hands over a statement of what is
-/// current, asks whether a release is wanted, and streams one in pieces
-/// (docs/design/update-channel.md). Everything it sends is a hostile zone's
-/// word: `update.rs` decides what is believed and what is stored, and
-/// `kryptik-update` verifies every signature. What is decided here is only
-/// who may speak: that one zone, like `time-offset`, because no other zone
-/// has anywhere to have fetched a release from.
+/// Why `zone` may not bring an update: only the nic zone can have fetched one.
+/// What it sends is still untrusted; `update.rs` judges it.
 fn update_refusal(zone: &Zone) -> Option<String> {
     (zone.network != NetworkMode::Nic)
         .then(|| format!("zone {:?} does not hold the network; only the zone that does may bring an update", zone.name))
@@ -333,8 +284,7 @@ fn handle_update(req: &Request, payload: &[u8]) -> Result<String, String> {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
     match req {
         Request::UpdateLatest { plen, .. } => {
-            // Read here and not above the match: a release arrives as some
-            // three thousand update-put requests, which need neither.
+            // Not above the match: the thousands of update-put requests need neither.
             let (role, running) = (up::required_role(), up::running_version());
             let (pointer, sig) = payload.split_at(*plen);
             up::latest(dir, &up::tool_checks(), now, &role, &running, pointer, sig).map(|s| match s {
@@ -353,8 +303,7 @@ fn handle_update(req: &Request, payload: &[u8]) -> Result<String, String> {
     }
 }
 
-/// The same with the clock, the state directory and the floor named, which
-/// is what the tests do.
+/// `handle_time_offset` with the clock, state directory and floor passed in, for tests.
 fn time_offset_in(
     zone: &Zone,
     claim: &crate::time::Claim,
@@ -374,26 +323,7 @@ fn time_offset_in(
     })
 }
 
-/// TRANSFER
-///
-/// A zone hands its broker an O_RDONLY descriptor to a regular file on its
-/// own data mount and names a destination zone and a file name. Zone 0
-/// checks, in order and refusing on the first failure: the descriptor count,
-/// the destination (not itself; named in the sender's `[transfer] to`; a
-/// configured zone; never the one holding the NIC), consent, then the
-/// descriptor itself (regular file, O_RDONLY, not O_PATH, on the sender's
-/// data mount, within the cap), then finds the running destination and
-/// copies the bytes into its `incoming/`, owned by the destination identity,
-/// under a name chosen by O_EXCL and never by stat-then-create. The zone
-/// learns the final name and nothing else about the destination.
-///
-/// The path into the destination is resolved with openat2 from its root
-/// (`/proc/<pid 1>/root`, an O_PATH descriptor into its mount namespace)
-/// with RESOLVE_IN_ROOT and RESOLVE_NO_SYMLINKS: a symlink the destination
-/// plants anywhere on the way - `incoming` itself, or the name - is refused
-/// or skipped, never followed, so nothing zone 0 writes can leave the
-/// destination's tree. That replaces the uid-switching helper the broker
-/// design first sketched: the resolution cannot escape, whoever runs it.
+/// Largest file a transfer carries, in bytes.
 pub const TRANSFER_MAX: u64 = 1 << 30;
 pub const INCOMING: &str = "incoming";
 
@@ -422,26 +352,21 @@ pub struct Served<'a> {
     pub entry: &'a Path,
     /// The zone directory, to load a destination's zone file.
     pub zones_dir: &'a Path,
-    /// st_dev of the zone's data mount as the zone sees it (/home/<zone>),
-    /// asked for at request time: the zone's root is only built after its
-    /// pid 1 exists, so it cannot be read once at launch. None when unknown,
-    /// which refuses every transfer.
+    /// st_dev of the zone's /home/<zone>, looked up per request because the
+    /// zone's root is built after its pid 1 starts. None refuses every transfer.
     pub home_dev: &'a dyn Fn() -> Option<u64>,
     /// The development stand-in for the zone 0 prompt.
     pub auto_approve: bool,
     pub max_bytes: u64,
-    /// How a destination is found: running, its root, its identity. The
-    /// launcher asks the registry; tests point at a directory.
+    /// Finds a running destination's root and identity: the registry, or a test directory.
     pub resolve_dest: &'a dyn Fn(&str) -> Result<Target, String>,
-    /// Called while a question of the person is open, ten times a second:
-    /// the launcher pumps its zone's output there and says whether the zone
-    /// is still there, and a `false` withdraws the question (consent.rs).
-    /// Tests keep waiting.
+    /// Called ten times a second while the user is being asked; the launcher
+    /// pumps zone output there, and `false` withdraws the question.
     pub asking: &'a dyn Fn() -> bool,
 }
 
-/// The launcher's destination lookup: the registry says whether the zone
-/// runs and as whom; its pid 1's root is the way into its mount namespace.
+/// The launcher's `resolve_dest`: the registry says whether the zone runs and
+/// as whom, and its pid 1's root leads into its mount namespace.
 pub fn registry_target(dest: &str) -> Result<Target, String> {
     let st = match registry::state(dest) {
         Ok(registry::State::Running { init: Some(st), .. }) if st.still_alive() => st,
@@ -498,6 +423,11 @@ fn openat2(dirfd: RawFd, path: &str, flags: u64, mode: u64, resolve: u64) -> io:
     }
 }
 
+/// Check a transfer, ask the user, then deliver it. The checks run in order,
+/// refusing at the first failure: one descriptor; a destination other than the
+/// sender, named in its `[transfer] to`, configured and not the nic zone; a
+/// regular O_RDONLY file on the sender's data mount within the cap. The zone
+/// learns only the name the file landed under.
 fn handle_transfer(s: &Served, dest: &str, name: &str, fds: &[RawFd]) -> Result<(String, u64), String> {
     let sender = &s.zone.name;
     if fds.len() != 1 {
@@ -544,12 +474,10 @@ fn handle_transfer(s: &Served, dest: &str, name: &str, fds: &[RawFd]) -> Result<
     if st.st_size as u64 > s.max_bytes {
         return Err(format!("file is {} bytes; the transfer limit is {}", st.st_size, s.max_bytes));
     }
-    // Everything a machine can decide has been decided, the destination's
-    // being there included, before the person is asked (consent.rs): a
-    // question whose answer changes nothing teaches people to say yes. The
-    // destination is looked up again after the answer. Its root, held
-    // through a wait of up to a minute, pinned the zone's mounts, and the
-    // zone could have stopped or started again meanwhile.
+    /* Ask last, once even the destination is known to be running: a question
+     * whose answer changes nothing teaches people to say yes. Look it up again
+     * afterwards; holding its root through the wait would pin its mounts, and
+     * the zone may have restarted meanwhile. */
     if !s.auto_approve {
         drop((s.resolve_dest)(dest)?);
         crate::consent::ask(sender, dest, name, st.st_size as u64, s.asking)?;
@@ -558,6 +486,8 @@ fn handle_transfer(s: &Served, dest: &str, name: &str, fds: &[RawFd]) -> Result<
     deliver(&target, name, src, s.max_bytes)
 }
 
+/// Copy into the destination's `incoming/`. Every path is resolved from its
+/// root with openat2 and no symlinks, so nothing written leaves its tree.
 fn deliver(target: &Target, name: &str, src: RawFd, cap: u64) -> Result<(String, u64), String> {
     let home = openat2(
         target.root_fd,
@@ -567,15 +497,10 @@ fn deliver(target: &Target, name: &str, src: RawFd, cap: u64) -> Result<(String,
         RESOLVE_IN_ROOT | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS,
     )
     .map_err(|e| format!("destination home is not reachable: {e}"))?;
-    // As root, create AS the destination identity. An ephemeral zone's home
-    // is a tmpfs mounted inside the zone's own user namespace, and the
-    // kernel refuses to create an inode there for a uid that namespace does
-    // not map - host root is exactly such a uid, and the first privileged
-    // transfer into an ephemeral zone died on `incoming/` with EOVERFLOW.
-    // The zone identity IS mapped (to 0 inside), so with the filesystem
-    // uid/gid set to it everything lands owned by the destination without a
-    // chown, and the chowns below become no-ops. Restored on every path out;
-    // the broker serves one request at a time, so nothing else is affected.
+    /* Create as the destination identity: an ephemeral zone's home is a tmpfs
+     * mounted in its user namespace, which refuses (EOVERFLOW) to create an
+     * inode for an unmapped uid such as host root. Restored on every path;
+     * the broker serves one request at a time. */
     let switched = unsafe { libc::geteuid() } == 0;
     if switched {
         unsafe {
@@ -624,8 +549,8 @@ fn deliver_into(home: RawFd, target: &Target, name: &str, src: RawFd, cap: u64) 
         if st.st_uid != target.uid {
             return Err("incoming/ is not owned by the destination zone".into());
         }
-        // O_EXCL chooses the name; a collision - or a planted symlink, which
-        // O_CREAT|O_EXCL also reports as EEXIST - moves to the next number.
+        /* O_EXCL picks the name: a collision, or a planted symlink (also
+         * EEXIST), moves on to the next number. */
         for i in 1..=100u32 {
             let cand = if i == 1 { name.to_string() } else { format!("{name}-{i}") };
             match openat2(
@@ -668,16 +593,12 @@ fn fill(out: RawFd, src: RawFd, cap: u64, target: &Target) -> Result<u64, String
     Ok(total)
 }
 
-/// Copy `src` to `out` with a running byte cap. st_size was checked, but a
-/// file can grow under a copy - a racing writer, or a sparse file that was
-/// small on paper - and the cap is the bound the operator was promised, so
-/// it is enforced on bytes actually copied.
+/// Copy `src` to `out`, enforcing `cap` on the bytes actually copied: a file
+/// can grow after its st_size was checked.
 pub fn copy_capped(src: RawFd, out: RawFd, cap: u64) -> Result<u64, String> {
     let mut total: u64 = 0;
     let mut fallback = false;
-    // Sized only if the read/write fallback is taken: on a kernel with
-    // copy_file_range this was a 64 KiB allocation and memset per transfer
-    // that nothing ever read.
+    // Allocated only if the read/write fallback is needed.
     let mut buf: Vec<u8> = Vec::new();
     loop {
         // One byte past the cap is enough to know the file is over it.
@@ -690,7 +611,7 @@ pub fn copy_capped(src: RawFd, out: RawFd, cap: u64) -> Result<u64, String> {
                 let e = io::Error::last_os_error();
                 match e.raw_os_error() {
                     Some(libc::EINTR) => continue,
-                    // Older kernels refuse cross-filesystem copies; read/write does the same job.
+                    // Older kernels refuse cross-filesystem copy_file_range.
                     Some(libc::EXDEV) | Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EOPNOTSUPP)
                         if total == 0 =>
                     {
@@ -759,10 +680,9 @@ pub fn serve_one(listen_fd: RawFd, s: &Served) -> io::Result<Option<String>> {
     result
 }
 
-/// Answer one request on an accepted connection. The peer must be the zone
-/// this launcher runs (`s.uid` is its mapped host uid); anything else gets a
-/// refusal and no information. Every refusal happens before a payload is
-/// read; every descriptor a request attaches is closed here.
+/// Answer one request on an accepted connection. A peer other than the zone
+/// (`s.uid`) learns nothing. Refusals come before any payload is read, and
+/// every attached descriptor is closed here.
 pub fn serve_connection(fd: RawFd, s: &Served) -> io::Result<Option<String>> {
     let zone = s.zone.name.as_str();
     let entry = s.entry;
@@ -846,8 +766,7 @@ pub fn serve_connection(fd: RawFd, s: &Served) -> io::Result<Option<String>> {
                     Ok(()) => handle_update(&req, &rest[..len]),
                 },
             };
-            // A release is some thousands of pieces; the log gets a line for
-            // what ends something, not for every piece.
+            // A release is thousands of pieces: log completions and refusals only.
             match &outcome {
                 Ok(r) if verb == "update-poll" || (verb == "update-put" && !r.contains("complete")) => {}
                 Ok(r) => crate::spawn::log_line(&format!("kryptikd[zone {zone}]: {verb}: {r}")),
@@ -889,10 +808,8 @@ pub fn serve_connection(fd: RawFd, s: &Served) -> io::Result<Option<String>> {
     Ok(Some(verb))
 }
 
-/// The first recv of a request, which is where a descriptor arrives: one
-/// recvmsg with room for a few SCM_RIGHTS entries. Every descriptor received
-/// is CLOEXEC and handed back; the caller closes what it does not use.
-/// Ok(false, ..) at EOF.
+/// The request's first recvmsg, where descriptors arrive (CLOEXEC, for the
+/// caller to close). Ok(false, ..) at EOF.
 fn recv_first(fd: RawFd, buf: &mut Vec<u8>, started: Instant) -> io::Result<(bool, Vec<RawFd>)> {
     let mut chunk = [0u8; 4096];
     let mut cbuf = [0u8; 64];
@@ -942,11 +859,8 @@ fn recv_first(fd: RawFd, buf: &mut Vec<u8>, started: Instant) -> io::Result<(boo
     }
 }
 
-/// Read until the buffer holds at least `want` bytes, within the deadline,
-/// straight into it: a release is thousands of 1 MiB pieces, and a 4 KiB
-/// bounce buffer made each one 256 receives and a copy. `want` is a length
-/// the header was checked against. EOF ends the read early; the caller sees
-/// the short count.
+/// Receive straight into `buf` until it holds `want` bytes (a length the
+/// header was checked against) or the peer reaches EOF, within the deadline.
 fn read_more(fd: RawFd, buf: &mut Vec<u8>, want: usize, started: Instant) -> io::Result<()> {
     let mut filled = buf.len();
     if filled >= want {
@@ -975,8 +889,7 @@ fn recv_some(fd: RawFd, buf: &mut Vec<u8>, started: Instant) -> io::Result<bool>
     Ok(n > 0)
 }
 
-/// One recv into `out`: the count, 0 at EOF. SO_RCVTIMEO ticks (EAGAIN) are
-/// retried until the request deadline, which is the bound that matters.
+/// One recv into `out`, 0 at EOF. EAGAIN from SO_RCVTIMEO is retried until the deadline.
 fn recv_into(fd: RawFd, out: &mut [u8], started: Instant) -> io::Result<usize> {
     loop {
         if started.elapsed() > REQUEST_DEADLINE {
@@ -999,9 +912,7 @@ fn reply(fd: RawFd, text: &str) {
 }
 
 fn send_all(fd: RawFd, mut data: &[u8]) {
-    // A zone may stop reading, including halfway through a large clipboard.
-    // Bound the entire write, not each retry, so slow readers cannot keep
-    // their launcher out of its supervision loop indefinitely.
+    // Bound the whole write, not each retry: a zone may stop reading midway.
     let started = Instant::now();
     while !data.is_empty() {
         let Some(left) = REQUEST_DEADLINE.checked_sub(started.elapsed()) else { return };
@@ -1023,14 +934,13 @@ fn send_all(fd: RawFd, mut data: &[u8]) {
             return;
         }
         if n <= 0 {
-            return; // the peer is gone; nothing to do about it
+            return; // the peer is gone
         }
         data = &data[n as usize..];
     }
 }
 
-/// The zone's payload, if any: (mime, bytes). O_NOFOLLOW like every other
-/// registry read; a planted symlink is refused, not followed.
+/// The zone's payload, if any: (mime, bytes). O_NOFOLLOW refuses a planted symlink.
 pub fn clipboard_read(entry: &Path) -> io::Result<Option<(String, Vec<u8>)>> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
@@ -1056,10 +966,8 @@ pub fn clipboard_read(entry: &Path) -> io::Result<Option<(String, Vec<u8>)>> {
     Ok(Some((mime, bytes)))
 }
 
-/// Replace the zone's payload atomically: a new 0600 file created with
-/// O_EXCL|O_NOFOLLOW, then renamed over `clipboard` (rename replaces a
-/// planted symlink rather than following it). A failure leaves no partial
-/// file and the previous payload untouched.
+/// Replace the zone's payload atomically: write a new 0600 file (O_EXCL,
+/// O_NOFOLLOW) and rename it over `clipboard`, replacing any planted symlink.
 pub fn clipboard_write(entry: &Path, mime: &str, bytes: &[u8]) -> io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
@@ -1090,9 +998,8 @@ pub fn clipboard_write(entry: &Path, mime: &str, bytes: &[u8]) -> io::Result<()>
     r
 }
 
-/// The zone 0 gesture: give `to` a copy of `from`'s payload. Both are
-/// registry entry directories; the caller has checked both zones are
-/// running. Returns what moved.
+/// `kryptikd clipboard move`: give `to` a copy of `from`'s payload. Both are
+/// registry entries of running zones. Returns what moved.
 pub fn clipboard_move(from: &Path, to: &Path) -> io::Result<(String, usize)> {
     let Some((mime, bytes)) = clipboard_read(from)? else {
         return Err(io::Error::new(io::ErrorKind::NotFound, "nothing on the source zone's clipboard"));
@@ -1122,7 +1029,7 @@ mod tests {
     }
 
     #[test]
-    fn a_uid_maps_to_exactly_the_zone_whose_range_holds_it() {
+    fn uid_maps_to_its_zone() {
         let zs = zones();
         assert_eq!(zone_for_uid(&zs, 131072).map(|z| z.name.as_str()), Some("work"));
         assert_eq!(zone_for_uid(&zs, 131072 + 65534).map(|z| z.name.as_str()), Some("work"));
@@ -1135,13 +1042,13 @@ mod tests {
     }
 
     #[test]
-    fn a_socketpair_peer_is_this_process_and_identifies_by_uid() {
+    fn socketpair_peer_is_self() {
         let mut sv = [0 as RawFd; 2];
         assert_eq!(unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0, sv.as_mut_ptr()) }, 0);
         let cred = peer_identity(sv[0]).unwrap();
         assert_eq!(cred.uid, unsafe { libc::geteuid() });
         assert_eq!(cred.gid, unsafe { libc::getegid() });
-        // Our own uid is a host user, not a zone: identify refuses, naming the uid.
+        // Our own uid is a host user's: identify refuses, naming it.
         let err = identify(&zones(), sv[0]).unwrap_err();
         assert!(err.contains("not in any zone"), "{err}");
         unsafe {
@@ -1181,9 +1088,7 @@ mod tests {
         d
     }
 
-    /// One request against a fresh socketpair: the client side is written
-    /// first (the socket buffers it), the server answers, and the client
-    /// reads the whole reply. Returns (verb the server reported, reply).
+    /// Send one request on a fresh socketpair, serve it, and return (verb, reply).
     fn ask(s: &Served, request: &str, half_close: bool) -> (Option<String>, Vec<u8>) {
         ask_with(s, request, &[], half_close)
     }
@@ -1254,7 +1159,7 @@ mod tests {
     }
 
     #[test]
-    fn a_clipboard_reader_that_stops_reading_cannot_stall_supervision() {
+    fn stalled_reader_cannot_block_supervision() {
         let dir = entry("stalled-reader");
         clipboard_write(&dir, "text/plain", &vec![b'x'; CLIPBOARD_MAX]).unwrap();
         let (server, client) = pair();
@@ -1273,8 +1178,7 @@ mod tests {
             unsafe { libc::close(server) };
             let _ = done.send(result);
         });
-        // Keep the peer open without reading. Closing it after the timeout
-        // also unblocks the old implementation, so a regression cannot hang tests.
+        // Leave the reply unread; closing the peer afterwards frees a stuck worker.
         let result = completion.recv_timeout(REQUEST_DEADLINE + Duration::from_secs(2));
         unsafe { libc::close(client) };
         worker.join().unwrap();
@@ -1284,7 +1188,7 @@ mod tests {
     }
 
     #[test]
-    fn a_zone_sets_and_gets_its_own_clipboard_through_its_broker() {
+    fn clipboard_round_trip() {
         use std::os::unix::fs::MetadataExt;
         let dir = entry("roundtrip");
         let me = unsafe { libc::geteuid() };
@@ -1315,7 +1219,7 @@ mod tests {
     }
 
     #[test]
-    fn every_refusal_happens_before_a_payload_is_read_and_leaves_the_clipboard_alone() {
+    fn refusals_leave_clipboard_alone() {
         let dir = entry("refusals");
         let me = unsafe { libc::geteuid() };
         let z = zone_t();
@@ -1341,7 +1245,7 @@ mod tests {
         // A header with no newline within the limit.
         let (_, r) = ask(&sv, &"x".repeat(600), true);
         assert_eq!(r, b"error: header line missing or too long\n");
-        // Through all of that the payload set first is still there, intact.
+        // The first payload survives all of it.
         assert_eq!(ask(&sv, "clipboard-get\n", false).1, b"ok text/plain 5\nhello");
         let left: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name()).collect();
         assert_eq!(left, vec![std::ffi::OsString::from(CLIPBOARD_FILE)], "no temp files left behind");
@@ -1349,7 +1253,7 @@ mod tests {
     }
 
     #[test]
-    fn a_peer_that_is_not_the_zone_is_refused_without_information() {
+    fn foreign_peer_learns_nothing() {
         let dir = entry("peer");
         let me = unsafe { libc::geteuid() };
         let z = zone_t();
@@ -1361,7 +1265,7 @@ mod tests {
     }
 
     #[test]
-    fn the_zone_zero_move_copies_and_leaves_the_source() {
+    fn clipboard_move_copies() {
         let a = entry("move-a");
         let b = entry("move-b");
         let c = entry("move-c");
@@ -1384,8 +1288,6 @@ mod tests {
         }
     }
 
-    // ---- transfer -----------------------------------------------------------
-
     struct Lab {
         dir: std::path::PathBuf,
         zones: std::path::PathBuf,
@@ -1394,9 +1296,8 @@ mod tests {
         dev: u64,
     }
 
-    /// A zone directory (a = the sender, b and c = plain zones, n = the nic
-    /// zone), a destination "root" with homes for b and c, and the sender's
-    /// data mount = the lab directory's filesystem.
+    /// Zones a (sender), b and c (plain) and n (nic); a destination root with
+    /// homes for b and c; the lab directory's filesystem as the data mount.
     fn lab(tag: &str, to: &str) -> Lab {
         use std::os::unix::fs::MetadataExt;
         let dir = entry(&format!("transfer-{tag}"));
@@ -1438,9 +1339,8 @@ mod tests {
         }
     }
 
-    /// How many of this process's descriptors point at `p`. Tests run in
-    /// parallel threads, so a global descriptor count is noise; a count of
-    /// links to one specific file is not.
+    /// How many of this process's descriptors point at `p`; tests run in
+    /// parallel, so a total count would be noise.
     fn fds_pointing_at(p: &Path) -> usize {
         std::fs::read_dir("/proc/self/fd")
             .unwrap()
@@ -1457,7 +1357,7 @@ mod tests {
     }
 
     #[test]
-    fn a_transfer_lands_in_the_destination_incoming_and_nowhere_else() {
+    fn transfer_lands_in_incoming() {
         use std::os::unix::fs::MetadataExt;
         let lab = lab("ok", "b c");
         let entry_dir = lab.dir.join("entry");
@@ -1483,24 +1383,19 @@ mod tests {
         unsafe { libc::close(src) };
         assert_eq!(verb.as_deref(), Some("transfer"));
         assert_eq!(String::from_utf8_lossy(&r), "ok report.pdf\n");
-        // SCM_RIGHTS duplicated the descriptor into the server, which must
-        // have closed its copy: with the sender's own copy closed, nothing
-        // in this process points at the file any more.
+        // The server must have closed its SCM_RIGHTS copy too.
         assert_eq!(fds_pointing_at(&file), 0, "the broker leaked a descriptor");
         let incoming = lab.root.join("home/b/incoming");
         assert_eq!(std::fs::read(incoming.join("report.pdf")).unwrap(), b"hello transfer");
         assert_eq!(std::fs::metadata(incoming.join("report.pdf")).unwrap().mode() & 0o777, 0o600);
         assert_eq!(std::fs::metadata(&incoming).unwrap().mode() & 0o777, 0o700);
-        // The same name again: O_EXCL picks -2. (A fresh descriptor: the
-        // zone opens the file anew for every transfer, as the copy consumed
-        // this one's offset.)
+        /* The same name again gets -2 (a fresh descriptor, since the copy
+         * consumed the first one's offset). */
         let src2 = open_flags(&file, libc::O_RDONLY);
         assert_eq!(ask_with(&sv, "transfer b report.pdf\n", &[src2], false).1, b"ok report.pdf-2\n");
         unsafe { libc::close(src2) };
         assert_eq!(std::fs::read(incoming.join("report.pdf-2")).unwrap(), b"hello transfer");
-        // The destination planted a symlink where the next name would
-        // land. O_EXCL reports it as existing, the copy moves on to -4, and
-        // the symlink's target is untouched.
+        // A symlink planted at -3 is skipped for -4, and its target is untouched.
         let victim = lab.dir.join("victim");
         std::fs::write(&victim, b"untouched").unwrap();
         std::os::unix::fs::symlink(&victim, incoming.join("report.pdf-3")).unwrap();
@@ -1508,8 +1403,7 @@ mod tests {
         assert_eq!(ask_with(&sv, "transfer b report.pdf\n", &[src3], false).1, b"ok report.pdf-4\n");
         unsafe { libc::close(src3) };
         assert_eq!(std::fs::read(&victim).unwrap(), b"untouched");
-        // The other way round: `incoming` itself replaced by a symlink to a
-        // directory elsewhere. Resolution refuses to follow it; nothing lands.
+        // `incoming` itself a symlink to elsewhere: not followed, nothing lands.
         let elsewhere = lab.dir.join("elsewhere");
         std::fs::create_dir_all(&elsewhere).unwrap();
         std::os::unix::fs::symlink(&elsewhere, lab.root.join("home/c/incoming")).unwrap();
@@ -1524,7 +1418,7 @@ mod tests {
     }
 
     #[test]
-    fn every_transfer_refusal_is_specific_and_happens_before_any_copy() {
+    fn transfer_refusals_precede_copy() {
         use std::os::unix::fs::MetadataExt;
         let lab = lab("refuse", "b n");
         let entry_dir = lab.dir.join("entry");
@@ -1578,10 +1472,8 @@ mod tests {
             let text = String::from_utf8_lossy(&r);
             assert!(text.starts_with("error: ") && text.contains(want), "request {req:?}: got {text:?}, wanted {want:?}");
         }
-        // Every refusal closed what it was handed: with the senders' own
-        // copies closed above, nothing in this process points at the lab's
-        // files any more. (Checked after the loop: the cases open all their
-        // descriptors up front.)
+        /* Every refusal closed what it was handed. Checked after the loop,
+         * since the cases open all their descriptors up front. */
         let left = fds_pointing_at(&file) + fds_pointing_at(&lab.dir) + fds_pointing_at(&big);
         assert_eq!(left, 0, "a refusal leaked a descriptor in the broker");
         // A file on another filesystem than the zone's data mount.
@@ -1595,19 +1487,16 @@ mod tests {
         } else {
             eprintln!("/dev/shm is on the same filesystem as the lab; the st_dev case is not exercised here");
         }
-        // Consent, and an unknown data mount, each refuse on their own.
-        // The environment is the process's: consent's own tests set the
-        // same variable, so this section takes their lock.
+        /* Consent and an unknown data mount each refuse on their own. This sets
+         * the variable consent's tests set, so it takes their lock. */
         sv.auto_approve = false;
         {
             let _env = crate::consent::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             std::env::set_var("KRYPTIK_CONSENT_DIR", "/nonexistent/kryptik-consent");
             let (_, r) = ask_with(&sv, "transfer b f.txt\n", &[ro()], false);
             assert!(String::from_utf8_lossy(&r).contains("no consent channel"), "{}", String::from_utf8_lossy(&r));
-            // A destination that is not running is a refusal the machine can
-            // give, so it is given before the person is asked: with no
-            // consent channel at all, the answer is still about the
-            // destination, and no question was attempted.
+            /* A destination that is not running is refused before any question:
+             * even with no consent channel, the error is about the destination. */
             sv.resolve_dest = &not_running;
             let (_, r) = ask_with(&sv, "transfer b f.txt\n", &[ro()], false);
             let text = String::from_utf8_lossy(&r);
@@ -1619,7 +1508,7 @@ mod tests {
         sv.home_dev = &dev_unknown;
         let (_, r) = ask_with(&sv, "transfer b f.txt\n", &[ro()], false);
         assert!(String::from_utf8_lossy(&r).contains("data mount is unknown"), "{}", String::from_utf8_lossy(&r));
-        // Through all of that nothing was created on the destination side.
+        // Nothing was created on the destination side.
         assert!(!lab.root.join("home/b/incoming").exists());
         let _ = std::fs::remove_dir_all(&lab.dir);
     }
@@ -1627,8 +1516,8 @@ mod tests {
     #[test]
     fn dest_resolved_after_consent() {
         use std::os::unix::io::AsRawFd;
-        // The first lookup finds the zone under `before`; by the answer it
-        // runs under the lab root, as a zone restarted during the wait would.
+        /* The first lookup finds the zone under `before`; by the answer it runs
+         * under the lab root, as a zone restarted during the wait would. */
         let lab = lab("again", "b");
         let entry_dir = lab.dir.join("entry");
         let before = lab.dir.join("before");
@@ -1696,8 +1585,8 @@ mod tests {
 
     #[test]
     fn read_more_fills_then_stops_at_eof() {
-        // More than a socket buffer, in uneven pieces, after what the header
-        // read already took; then a peer that stops short of what it announced.
+        /* More than a socket buffer, in uneven pieces, after what the header
+         * read already took; then a peer that stops short of what it announced. */
         let pair = || {
             let mut sv = [0; 2];
             assert_eq!(unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0, sv.as_mut_ptr()) }, 0);
@@ -1729,7 +1618,7 @@ mod tests {
     }
 
     #[test]
-    fn the_copy_stops_at_the_cap_even_when_the_size_on_paper_was_fine() {
+    fn copy_stops_at_cap() {
         let dir = entry("cap");
         let src_p = dir.join("src");
         std::fs::write(&src_p, vec![b'y'; 20]).unwrap();
@@ -1751,7 +1640,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_request_covers_the_wire_format() {
+    fn parse_request_wire_format() {
         assert_eq!(parse_request("version"), Ok(Request::Version));
         assert_eq!(parse_request("  clipboard-get  "), Ok(Request::ClipboardGet));
         assert_eq!(
@@ -1772,12 +1661,10 @@ mod tests {
         }
     }
 
-    /// The clock's verb is the net zone's and nobody else's, and from the
-    /// net zone it reaches the decision - here with no floor known, which
-    /// refuses for THAT reason and shows the identity gate was passed. No
-    /// clock is touched either way.
+    /// From the nic zone the claim reaches the decision, which refuses for want
+    /// of a floor; no clock is touched either way.
     #[test]
-    fn only_the_zone_that_holds_the_network_may_report_the_time() {
+    fn only_nic_zone_reports_time() {
         let claim = crate::time::Claim { offset: 2.0, sources: 3 };
         let dir = std::env::temp_dir().join(format!("kryptik-broker-time-{}", std::process::id()));
         let zone_of = |mode: &str, extra: &str| {
@@ -1797,10 +1684,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The update channel's verbs on the wire: lengths within their bounds,
-    /// a name that is one path component, and nothing else.
+    /// Lengths within their bounds and a one-component name, nothing else.
     #[test]
-    fn the_update_verbs_parse_within_their_bounds() {
+    fn update_verbs_parse_within_bounds() {
         use crate::update::{POINTER_MAX, PUT_MAX};
         assert_eq!(parse_request("update-latest 300 120"), Ok(Request::UpdateLatest { plen: 300, slen: 120 }));
         assert_eq!(parse_request("update-poll"), Ok(Request::UpdatePoll));
@@ -1821,11 +1707,8 @@ mod tests {
         }
     }
 
-    /// An update is brought by the zone that holds the network and by no
-    /// other: a zone with no network has nowhere to have fetched one from,
-    /// and a routed zone's would be the net zone's at one remove.
     #[test]
-    fn only_the_zone_that_holds_the_network_may_bring_an_update() {
+    fn only_nic_zone_brings_update() {
         let zone_of = |mode: &str, extra: &str| {
             Zone::from_str(&format!(
                 "[zone]\nname = \"t\"\n[network]\nmode = \"{mode}\"\n{extra}[storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n[ui]\nborder_color = \"#123456\"\n"
@@ -1839,10 +1722,8 @@ mod tests {
     }
 
     #[test]
-    fn a_zone_with_no_identity_can_never_be_identified() {
-        // "legacy" has no uid_base: nothing maps to it, so the broker can
-        // never attribute a request to it - which is the point of giving
-        // each zone its own fixed host uid range.
+    fn zone_without_identity_never_matches() {
+        // "legacy" has no uid_base, so no uid may map to it.
         let zs = zones();
         for uid in 0..300_000u32 {
             if let Some(z) = zone_for_uid(&zs, uid) {
@@ -1851,19 +1732,12 @@ mod tests {
         }
     }
 
-    /// The zone-facing socket, attacked. Every byte on it is written by a
-    /// zone, so the header parser and the connection that feeds it are the
-    /// boundary. The seeds are real requests, one per line, kept in the tree
-    /// (fuzz-corpus/broker-requests: a request that ever breaks the broker
-    /// goes there, and stays). Each is damaged a hundred-odd ways by a
-    /// generator with a fixed seed, so a failure is the same failure on every
-    /// machine, and sent down a real connection with a payload that may or
-    /// may not be what the header promised. Not coverage-guided; it is what
-    /// runs on every push with no tool but cargo. What it holds the broker
-    /// to: never a panic, never a hang past the request deadline, always one
-    /// well-formed reply, and nothing accepted that the grammar does not allow.
+    /// Requests from fuzz-corpus/broker-requests (add any that ever breaks the
+    /// broker), damaged by a fixed-seed generator and sent down a real
+    /// connection. No panic, no overrun of the deadline, one well-formed reply,
+    /// and nothing accepted outside the grammar.
     #[test]
-    fn no_request_a_zone_can_send_breaks_the_broker() {
+    fn broker_survives_any_request() {
         const CORPUS: &str = include_str!("../fuzz-corpus/broker-requests");
         // xorshift64*: small, seeded, the same sequence everywhere.
         let mut state: u64 = 0x4252_4F4B_4552_3031;
@@ -1878,8 +1752,7 @@ mod tests {
         let s = served(&z, &dir, unsafe { libc::geteuid() });
         let (mut sent, mut accepted) = (0u32, 0u32);
         for seed in CORPUS.lines().filter(|l| !l.is_empty()) {
-            // The clock's verb is refused by who is asking here, and says so
-            // in the log each time: fewer rounds, the same coverage.
+            // time-offset is refused here and logs every time, so it gets fewer rounds.
             let rounds = if seed.starts_with("time-offset") { 30 } else { 150 };
             for round in 0..rounds {
                 let mut req = seed.as_bytes().to_vec();

@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Drive a guest over its serial console: expect, send, log in, run commands.
 
-    tools/image/vm-drive.py --serial SOCK [--log FILE] [--timeout N] [--qmp SOCK] STEP...
+    tools/image/vm-drive.py --serial SOCK [--log FILE] [--timeout N] [--qmp SOCK]
+                            [--record FILE] STEP...
 
 Steps (each one argument):
     expect:REGEX            wait until REGEX matches the serial stream (and
                             consume the stream up to the match)
-    seen:REGEX              wait until REGEX has appeared ANYWHERE in the
-                            transcript so far, consuming nothing - for a line
-                            whose order relative to other lines is not fixed
-    absent:REGEX            assert REGEX has NOT appeared so far
+    seen:REGEX              wait until REGEX has appeared anywhere in the
+                            transcript so far, consuming nothing (for a line
+                            whose order among the others is not fixed)
+    absent:REGEX            fail if REGEX is in the output not yet consumed
     send:TEXT               send TEXT followed by Enter
     login:USER:PASSWORD     wait for "login:", authenticate, wait for a prompt
     run:CMD                 run CMD at the shell, require exit status 0; what
@@ -24,12 +25,9 @@ Steps (each one argument):
                             (qcodes, e.g. key:y  key:ret  key:alt+e)
     wait-exit               wait for the serial socket to close (guest gone)
 
-An installed disk asks for its state passphrase on this console at every boot.
-With KRYPTIK_STATE_PASSPHRASE set, the driver answers wherever that is asked,
-as a person would; no step names it.
-
-Exit status 0 when every step succeeded; the failing step is named otherwise.
-The whole transcript goes to --log. stdlib only; no pexpect.
+With KRYPTIK_STATE_PASSPHRASE set, the driver answers an installed disk's
+state passphrase prompt at every boot; no step names it. Exits 0 when every
+step succeeded, else names the failing step. Standard library only.
 """
 import json, os, re, socket, sys, time
 
@@ -70,9 +68,7 @@ class Drive:
         return True
 
     def seen(self, regex, timeout=None):
-        """Wait until REGEX has appeared anywhere in the transcript so far.
-        Consumes nothing: a line that was printed before an earlier expect()
-        matched (and was discarded from buf) still counts."""
+        """Wait until REGEX is anywhere in the transcript, consumed output included."""
         timeout = self.timeout if timeout is None else timeout
         rx = re.compile(regex.encode(), re.M)
         deadline = time.time() + timeout
@@ -109,9 +105,7 @@ class Drive:
             self.log.write(b"\n<<< " + text.encode() + b"\n"); self.log.flush()
 
     def send_secret(self, text):
-        # To the guest and never to the transcript, which is uploaded with every
-        # acceptance report. A method of its own, so that no path leads from a
-        # password to the log.
+        # Never logged: the transcript is uploaded with every acceptance report.
         self.s.sendall(text.encode() + b"\r")
         if self.log:
             self.log.write(b"\n<<< (a password)\n"); self.log.flush()
@@ -122,8 +116,7 @@ class Drive:
             self._read()
 
     def knock(self, regex, timeout=None, every=5):
-        """Send an empty line, wait up to EVERY seconds for REGEX, and send
-        another until it matches or TIMEOUT runs out. Consumes like expect()."""
+        """Send an empty line every EVERY seconds until REGEX matches; consumes like expect()."""
         timeout = self.timeout if timeout is None else timeout
         rx = re.compile(regex.encode(), re.M)
         deadline = time.time() + timeout
@@ -147,20 +140,9 @@ class Drive:
             self._read()
 
     def login(self, user, password):
-        # The getty may have printed its prompt long before this step (an
-        # earlier expect() then discarded it). An empty line makes agetty
-        # print a fresh one, so the prompt is waited for, not assumed.
-        #
-        # One empty line is not enough. agetty prints "login:" only once it
-        # sees terminal input (util-linux builds it with AGETTY_RELOAD: the
-        # prompt waits in select() for a keypress, an inotify or a netlink
-        # event), and it flushes whatever arrived during the second after it
-        # started or after such an event woke it. An Enter that lands in that
-        # window is discarded, agetty goes back to waiting, and a driver that
-        # sent one Enter waits with it: 51500b01's update test, step 4, spent 420 s on
-        # a console that had printed agetty's leading newline and nothing
-        # else. Every transcript of that run shows the prompt only after the
-        # driver's Enter. So knock again every few seconds until one answers.
+        # agetty (built with AGETTY_RELOAD) prints "login:" only after input,
+        # and flushes input that arrives within a second of starting or waking,
+        # so one Enter can be lost: knock until the prompt appears.
         self.drain(1)
         self.knock(r"login: ?$", self.timeout)
         self.send(user)
@@ -186,9 +168,7 @@ class Drive:
         return rc
 
     def su(self, password, cmd):
-        # A login shell for root: the image strips the sbin directories from
-        # an ordinary user's PATH, and a plain `su -c` inherits that PATH, so
-        # root's reboot and poweroff were "command not found".
+        # A login shell: plain `su -c` keeps the user's PATH, which has no sbin.
         self.marker += 1
         tag = f"KRC{self.marker}"
         self.send(f"su - root -c '{cmd}; echo {tag}=$?'")
@@ -197,15 +177,9 @@ class Drive:
         return self.finish(tag, cmd)
 
     def finish(self, tag, cmd):
-        # Wait for the command's exit marker, but keep what the command
-        # printed: the steps that follow expect lines of that output
-        # ("STATED-OK", "running slot: a", "ZT END"). Only the marker itself
-        # is dropped; a shutdown message that matched instead stays for the
-        # driver's own expect of it, and is returned in place of a status.
-        # su() always did this; run() used a plain expect(), which consumed
-        # the output with the marker, and the update suite's eighth step
-        # then waited 420 s for a word its own command had printed. The
-        # login shell has echo off, so nothing else ever shows that word.
+        # Wait for the exit marker but leave the command's output for the
+        # steps that follow; only the marker is dropped. A shutdown message
+        # that matches instead stays, and is returned in place of a status.
         rx = re.compile(rf"{tag}=(\d+)|Power down|reboot: Restarting|Restarting system".encode(), re.M)
         deadline = time.time() + self.timeout
         while True:

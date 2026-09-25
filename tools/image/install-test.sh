@@ -1,26 +1,18 @@
 #!/usr/bin/env bash
-#
-# Prove the installer works, by installing from the medium and then BOOTING
-# what it produced - through firmware, with the medium gone and the variable
-# store reset - and by proving its refusals refuse.
+# Install from the medium, boot the result from firmware alone (medium gone,
+# variables reset), and check that the installer's refusals refuse.
 #
 #   tools/image/install-test.sh --usb IMG [--disk FILE] [--size 12G]
 #                               [--vars clean|enrolled] [--timeout N] [--quick]
 #
-# Steps:
-#   1  blank disk + control disk (install_target, preseed): boot the medium,
-#      the installer runs unattended, the guest powers off; assert on its
-#      transcript and on the target's partition table from the host side.
-#   2  boot the disk ALONE with a fresh variable store: first boot creates
-#      the preseeded user; log in over serial, check identity, reboot from
-#      inside, log in again, power off from inside.
-#   3  cold boot the disk again: it comes up, log in, power off.
-#   4  refusals: a disk too small; a read-only disk; a copy that fails with
-#      an I/O error injected under the root image write. Each must report
-#      rc!=0 and "FAILED", and the not-installed disk must have no
-#      kryptik-a partition afterwards.
+#   step 1  install unattended onto a blank disk; check the transcript and,
+#           from the host, the partition table
+#   step 2  boot the disk alone: first boot, login, reboot, login, poweroff
+#   step 3  cold boot it again (not with --quick)
+#   step 4  a disk too small, a read-only disk, and an I/O error in the root
+#           image copy (not with --quick): each must fail, installing nothing
 #
-# Every disk here is a file created by this script. Nothing touches a device.
+# Every disk is a file this script creates; no device is touched.
 set -uo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -36,7 +28,7 @@ while [[ "$#" -gt 0 ]]; do
         --vars) VARS="${2:?}"; shift 2 ;;
         --timeout) TIMEOUT="${2:?}"; shift 2 ;;
         --quick) QUICK=1; shift ;;
-        -h|--help) sed -n '2,24p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,15p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -179,8 +171,8 @@ refusal_case() {   # refusal_case NAME DISK-SIZE EXTRA-RUN-ARGS... ; expects rc!
 }
 refusal_case toosmall 1G
 refusal_case readonly "$SIZE" --disk-readonly
-# An I/O error under the root image copy: the partition table is written,
-# the copy fails, and that failure must be what the runner reports.
+# An I/O error in the root image copy, after the partition table is written;
+# the runner must report that failure.
 if [[ "$QUICK" -eq 0 ]]; then
     cat > "${VMDIR}/blkdebug.conf" <<'EOF'
 [inject-error]

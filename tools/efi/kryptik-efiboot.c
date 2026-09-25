@@ -1,9 +1,6 @@
-/* kryptik-efiboot: the firmware-side half of the A/B trial
- * (docs/design/boot-and-updates.md).
- *
- * Writes and reads the UEFI Boot#### / BootNext / BootOrder variables through
- * efivarfs, with no library: the whole of what is needed is one load option
- * pointing at a file on the ESP, and a one-shot BootNext naming it.
+/* kryptik-efiboot: the firmware side of the A/B trial
+ * (docs/design/boot-and-updates.md). Reads and writes Boot####, BootNext and
+ * BootOrder through efivarfs, with no library.
  *
  *   kryptik-efiboot list                 print Boot####, BootOrder, BootNext, BootCurrent
  *   kryptik-efiboot set-next SLOT        create/refresh "Kryptik SLOT" -> \EFI\kryptik\kryptik-SLOT.efi, set BootNext
@@ -12,16 +9,9 @@
  *   kryptik-efiboot forget               delete both slots' entries and BootNext, drop them
  *                                        from BootOrder: the firmware boots BOOTX64.EFI
  *
- * The ESP is the partition labelled kryptik-esp ON THE DISK THE ROOT CAME
- * FROM, resolved by /usr/libexec/kryptik/devices.sh (a label alone is not an
- * identity; a second disk with the same layout must be ignored, and two
- * candidates on the root disk are refused). The HD() device path node is
- * built from the partition's GPT UUID, start and size read from sysfs and
- * blkid, which is everything a firmware needs to match it.
- *
- * Entry numbers: Kryptik owns Boot00A0 for slot a and Boot00B0 for slot b.
- * Fixed numbers, so a repeated arming updates the same variable rather than
- * accumulating entries, and so `list` can show them by slot.
+ * The ESP is kryptik-esp on the root's own disk, as devices.sh resolves it: a
+ * second disk's is ignored, two on the root disk are refused. Slot a's entry
+ * is always Boot00A0 and slot b's Boot00B0, so re-arming reuses the variable.
  */
 #define _GNU_SOURCE
 #include <ctype.h>
@@ -38,9 +28,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-/* Overridable at compile time for tools/test-efiboot.sh, which builds this
- * against a scratch directory of stand-in variables; the installed binary
- * is built with the default. */
+/* tools/test-efiboot.sh overrides this with a scratch directory. */
 #ifndef EFIVARS
 #define EFIVARS "/sys/firmware/efi/efivars/"
 #endif
@@ -99,10 +87,7 @@ static int delete_var(const char *name) {
 struct part { char dev[128]; char uuid[40]; uint64_t start, size; uint32_t number; };
 
 /* The first line a program prints. No shell: the arguments are an array, so
- * nothing in them is ever parsed as a command. The device name handed to
- * blkid comes from devices.sh on the verified root, but a root tool that
- * builds a command line out of any string is one edit away from trusting
- * the wrong one. */
+ * nothing in them is ever parsed as a command. */
 static int run_read(char *const argv[], char *out, size_t cap) {
     int fd[2];
     if (pipe(fd)) return -1;
@@ -214,9 +199,8 @@ static int ensure_entry(const char *slot) {
         if (write_var(var, buf, n)) return die("writing the Boot#### entry failed");
         printf("%s -> %s on %s (PARTUUID %s)\n", var, file, esp.dev, esp.uuid);
     }
-    /* keep it in BootOrder (appended) so a firmware that ignores BootNext
-       still offers it, without displacing the entry the machine came with;
-       forget takes it out again when the trial ends */
+    /* Appended to BootOrder, so a firmware that ignores BootNext still offers
+     * it without displacing the machine's own entry; forget removes it. */
     unsigned char order[512]; size_t ol = 0; uint16_t num = (uint16_t)strtol(var + 4, NULL, 16);
     int present = 0;
     if (read_var("BootOrder", order, sizeof order, &ol) == 0) {
@@ -235,15 +219,10 @@ static int cmd_set_next(const char *slot) {
     return 0;
 }
 
-/* forget: both slots' entries and BootNext are deleted and BootOrder no
- * longer names them; the machine's other entries keep their order. The
- * firmware then boots the disk's own entry, which is BOOTX64.EFI, the
- * committed slot. boot-success runs this whenever a trial ends and the
- * recovery tool after its commit: the entries exist for the trial alone. Left behind,
- * they outlived it. A firmware regenerates its own disk entry at the end
- * of BootOrder whenever the devices change, and the first Kryptik entry
- * ever armed then won over the committed slot at every cold boot after
- * that: the update suite committed slot a and the next boot was slot b. */
+/* Delete both slot entries and BootNext and drop them from BootOrder, so the
+ * firmware boots BOOTX64.EFI, the committed slot. Run whenever a trial ends: a
+ * firmware re-adds its own disk entry at the end of BootOrder, so a leftover
+ * Kryptik entry would win over the committed slot at every cold boot. */
 static int cmd_forget(void) {
     unsigned char order[512], kept[512]; size_t ol = 0, kl = 0;
     if (read_var("BootOrder", order, sizeof order, &ol)) ol = 0;
@@ -254,8 +233,7 @@ static int cmd_forget(void) {
     if (kl != ol) {
         if (kl == 0 ? delete_var("BootOrder") : write_var("BootOrder", kept, kl)) return die("updating BootOrder failed");
     }
-    /* Each one is tried whatever became of the one before: a failure on
-       slot a's entry must not leave slot b's behind. */
+    /* Each is tried even if the one before failed. */
     int bad = 0;
     if (delete_var("Boot00A0")) { die("deleting Boot00A0 failed"); bad = 1; }
     if (delete_var("Boot00B0")) { die("deleting Boot00B0 failed"); bad = 1; }

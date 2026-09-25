@@ -108,5 +108,5 @@ day's jump waits for consent, and a clock 300 s fast is put right.
 `compartments/kryptikd/src/time.rs` (`kryptikd time floor | status`),
 `broker.rs`, `consent.rs`, `tools/desktop/kryptik-chrome`,
 `tools/net/sntp-offset.py`, `tools/net/netzone-init.sh`, `rootfs.rs`
-(`time.conf` in the nic zone), `build/services/time-floor` and
+(`time.conf` into the zones' `/etc`), `build/services/time-floor` and
 `build/service-scripts/time-floor.sh`.
