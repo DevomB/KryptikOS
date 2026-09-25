@@ -232,6 +232,11 @@ python3 -m http.server 8765 --bind 127.0.0.1 --directory "$HOME/www" > /dev/null
 for i in 1 2 3 4 5 6 7 8 9 10; do python3 -c "import socket; socket.create_connection((\"127.0.0.1\", 8765), 1)" 2>/dev/null && break; sleep 0.3; done
 lynx -dump http://127.0.0.1:8765/ 2>&1 | head -5; kill $srv'
 [[ "$ZOUT" == *text-browser-ok* ]] && pass "text-browser" "lynx in untrusted read a page from a server in the zone" || fail "text-browser" "$(tr '\n' ' ' <<<"$ZOUT" | cut -c1-200) $(tail -2 "$LOG/untrusted.err" | tr '\n' ' ')"
+# TLS verifies against OpenSSL's default CA file, /etc/ssl/cert.pem: the same
+# count stage 04 checks in zone 0.
+zrun untrusted 20 -- python3 -c 'import ssl; print("CAS=%d" % len(ssl.create_default_context().get_ca_certs()))'
+cas="$(grep -o 'CAS=[0-9]*' <<<"$ZOUT" | cut -d= -f2)"
+[[ "${cas:-0}" -ge 100 ]] && pass "tls-trust" "python's default TLS context in untrusted finds $cas CAs" || fail "tls-trust" "found ${cas:-no} CAs: $(tail -2 "$LOG/untrusted.err" | tr '\n' ' ')"
 
 # --- storage: encrypted storage lifecycle ----------------------------------------
 printf 'wrong-pass\n' > /root/zt/wrong.pass; chmod 600 /root/zt/wrong.pass

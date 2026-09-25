@@ -215,8 +215,11 @@ pub const SYSTEM_PATHS: &[&str] = &["/usr", "/lib", "/lib64", "/bin", "/sbin"];
 /// Host files under /etc a zone may read: public, machine-independent data.
 /// Never ld.so.preload, machine-id (links zones to the host), the host's
 /// identity files, resolv.conf, localtime (zones run UTC), or any secret.
-/// man refuses to start without man_db.conf.
-pub const ETC_RO_FILES: &[&str] = &["/etc/ld.so.cache", "/etc/services", "/etc/protocols", "/etc/man_db.conf"];
+/// man refuses to start without man_db.conf. ssl/cert.pem is OpenSSL's
+/// default CA file: the ssl/certs directory holds the bundle but no hash
+/// links, so without cert.pem no TLS peer verifies in a zone.
+pub const ETC_RO_FILES: &[&str] =
+    &["/etc/ld.so.cache", "/etc/services", "/etc/protocols", "/etc/man_db.conf", "/etc/ssl/cert.pem"];
 
 /// The nic zone's own configuration, bound into that zone alone: its DHCP
 /// client defaults, time sources (docs/design/time.md) and release source
