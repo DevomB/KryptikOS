@@ -1439,6 +1439,16 @@ filter_probe "L6  socket(AF_NETLINK/NETFILTER) is refused with an errno" socket-
 filter_probe "L7  ioctl(TIOCSTI) is killed (terminal input injection)" ioctl-tiocsti 5
 filter_probe "L8  positive control: socket(AF_INET) still works" socket-inet 0
 
+# ncurses brackets each terminfo open with setfsuid and setfsgid. The filter
+# answers them with EPERM; a kill would take every terminal program with it
+# (tput would end with 159, SIGSYS).
+if command -v tput > /dev/null 2>&1; then
+    zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(tput -T xterm cols 2>/dev/null || echo exit-\$?)"
+    probe "L10 a terminal program opens terminfo in a zone and lives" "80"
+else
+    info "L10 not run: this host has no tput"
+fi
+
 # ============================================================================
 head_ "M. cgroup resource limits  [unpriv where delegated, otherwise vm]"
 # ============================================================================

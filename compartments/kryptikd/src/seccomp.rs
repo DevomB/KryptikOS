@@ -46,8 +46,8 @@ const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
 const SECCOMP_RET_TRAP: u32 = 0x0003_0000;
 // ERRNO makes the syscall fail with the given errno instead of killing. Used
 // where a program legitimately PROBES for a feature and must be told "no"
-// rather than shot: clone3 (glibc falls back to clone on ENOSYS) and socket
-// families a zone has no business opening.
+// rather than shot: clone3 (glibc falls back to clone on ENOSYS), socket
+// families a zone has no business opening, and `REFUSED_SOFTLY`.
 const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
 
 // Offsets into struct seccomp_data.
@@ -95,6 +95,7 @@ pub const AF_NETLINK: u32 = 16;
 pub const NETLINK_ROUTE: u32 = 0;
 const EAFNOSUPPORT: u32 = 97;
 const ENOSYS: u32 = 38;
+const EPERM: u32 = 1;
 
 /// Families the base policy allows outright (AF_NETLINK only with
 /// NETLINK_ROUTE; see `SocketPolicy`).
@@ -408,6 +409,12 @@ pub const ARG_RULES: &[ArgRule] = &[
     ArgRule::SocketFamilies,
 ];
 
+/// Refused with an errno, not killed, since programs carry on when these fail.
+/// setfsuid, setfsgid: ncurses brackets every terminfo open with them, dropping
+/// to the real ids and back, so a kill took every terminal program with it;
+/// they stay denied.
+pub const REFUSED_SOFTLY: &[(libc::c_long, u32)] = &[(libc::SYS_setfsuid, EPERM), (libc::SYS_setfsgid, EPERM)];
+
 const fn errno_action(e: u32) -> u32 {
     SECCOMP_RET_ERRNO | (e & 0xffff)
 }
@@ -561,6 +568,14 @@ fn build_program_full(
     // allowlist can wave them through.
     for &rule in ARG_RULES {
         emit_arg_rule(&mut p, rule, deny_action, sockets);
+    }
+    // seccomp-trace gets the errno too, so a program runs on as it would in a zone.
+    for &(nr, e) in REFUSED_SOFTLY {
+        // Allowed by the list, it is allowed below like any other.
+        if !allow.contains(&nr) {
+            p.push(jump(BPF_JMP | BPF_JEQ | BPF_K, nr as u32, 0, 1));
+            p.push(stmt(BPF_RET | BPF_K, errno_action(e)));
+        }
     }
 
     for &nr in allow {
@@ -786,7 +801,7 @@ mod tests {
         for &r in ARG_RULES {
             emit_arg_rule(&mut rules, r, SECCOMP_RET_KILL_PROCESS, &SocketPolicy::default());
         }
-        assert_eq!(p.len(), 3 + 1 + 2 + rules.len() + 4 + 1);
+        assert_eq!(p.len(), 3 + 1 + 2 + rules.len() + 2 * REFUSED_SOFTLY.len() + 4 + 1);
         assert_eq!(p[0].code, BPF_LD | BPF_W | BPF_ABS);
         assert_eq!(p[0].k, OFF_ARCH);
         // Must END in a deny, never an allow.
@@ -951,11 +966,18 @@ mod tests {
             }
         }
         for (nr, why) in DENIED_RATIONALE {
-            assert_eq!(
-                evaluate(&p, AUDIT_ARCH_X86_64, *nr as u32),
-                SECCOMP_RET_KILL_PROCESS,
-                "denied syscall {nr} ({why}) was not killed"
-            );
+            let want = REFUSED_SOFTLY.iter().find(|(n, _)| n == nr).map_or(SECCOMP_RET_KILL_PROCESS, |&(_, e)| errno_action(e));
+            assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, *nr as u32), want, "denied syscall {nr} ({why}) was not refused");
+        }
+    }
+
+    #[test]
+    fn setfsuid_fails_not_kills() {
+        // Denied all the same: no policy may allow it.
+        let p = build_program(BASE_ALLOWLIST).unwrap();
+        for nr in [libc::SYS_setfsuid, libc::SYS_setfsgid] {
+            assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, nr as u32), errno_action(EPERM));
+            assert!(is_denied(nr));
         }
     }
 

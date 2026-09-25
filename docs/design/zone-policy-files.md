@@ -29,7 +29,9 @@ keep-capability   CAP_NET_RAW          # a capability left in the bounding set
 - `allow-syscall NAME`: NAME must be in `seccomp::SYSCALL_NAMES` (the table is
   the vocabulary; an unknown name is an error, never ignored). A name that
   appears in `DENIED_RATIONALE` is **refused**: no policy file can re-enable
-  `ptrace`, `mount`, `setns`, `bpf`, … The base denials are absolute.
+  `ptrace`, `mount`, `setns`, `bpf`, … The base denials are absolute. Two of
+  them fail with EPERM rather than killing: `setfsuid` and `setfsgid`, which
+  ncurses makes around every terminfo open.
 - `allow-socket FAMILY`: one of `AF_PACKET`, `AF_NETLINK` (all protocols),
   `AF_KEY`, `AF_ALG`, `AF_VSOCK`, `AF_BLUETOOTH`, `AF_CAN`, `AF_RDS`,
   `AF_TIPC`, `AF_XDP`, named so the widening is visible in review. Any
@@ -76,7 +78,7 @@ the same errors, so a bad file is found before a launch.
 | `allow-socket AF_PACKET` in zone A; zone B has no policy | inside A: `socket(AF_PACKET, SOCK_RAW)` gets past seccomp (it then opens only if the zone also keeps `CAP_NET_RAW`; otherwise the kernel returns EPERM); inside B: errno 97 (positive control) |
 | `allow-netlink NETLINK_NETFILTER` | `socket(AF_NETLINK, SOCK_RAW, 12)` opens in that zone; 97 elsewhere |
 | `allow-syscall sethostname` | `sethostname` inside the zone is no longer killed by seccomp; without the line, SIGSYS (159) |
-| the whole base allowlist still evaluates ALLOW and every `DENIED_RATIONALE` entry KILL under a widened program (unit, interpreter) | as listed |
+| the whole base allowlist still evaluates ALLOW and every `DENIED_RATIONALE` entry KILL under a widened program (unit, interpreter) | as listed; `setfsuid` and `setfsgid` EPERM |
 | `check --zones` with a bad policy file | exit 1, names the file and line |
 | `explain` lists the additions | text present |
 
