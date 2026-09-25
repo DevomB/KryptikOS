@@ -370,15 +370,17 @@ stamp_compiler_id() {
 # a helper a stage file defines (unpack) rebuild nothing.
 
 # The functions FN names, the ones those name, and so on, as text in name
-# order. declare -f leaves comments out, so only code counts.
+# order. declare -f leaves comments out, so only code counts. The step runner
+# and its parts run around a recipe, never inside one: "step" in a recipe's
+# message is not a call, and an edit to the runner is a stamp format change.
 _helpers_of() {
     local -A seen=(["$1"]=1)
     local -a todo=("$1")
-    local f w
+    local f w runner=" step stage_contract stage_depends_on stamp_fingerprint recipe_fingerprint _helpers_of _stamp_read _stamp_write _stamp_stale _tree_paths _forget_outputs "
     while [[ "${#todo[@]}" -gt 0 ]]; do
         f="${todo[-1]}"; unset 'todo[-1]'
         for w in $(declare -f "$f" | grep -oE '[A-Za-z_][A-Za-z0-9_]*' | sort -u); do
-            if [[ -z "${seen[$w]:-}" ]] && declare -F "$w" >/dev/null; then
+            if [[ -z "${seen[$w]:-}" && "$runner" != *" $w "* ]] && declare -F "$w" >/dev/null; then
                 seen[$w]=1; todo+=("$w")
             fi
         done
@@ -528,6 +530,33 @@ Stamp: ${stamp}"
     esac
 }
 
+# What a step installs, for the stages that set STAMP_TREE: the paths it
+# created under the sysroot, kept beside its stamp as ${stamp}.files and
+# removed before the step is built again. A package that stops installing a
+# file (inetutils' servers, an old soname) then leaves nothing behind in a
+# tree that came out of a cache. Created only: a file a step merely changed
+# (an appended /etc/shells) is not its to remove. The chroot's mounts are left
+# out by name, since -xdev does not stop at a bind mount of the same filesystem.
+_tree_paths() {
+    local root="${KRYPTIK_SYSROOT%/}"
+    { find "${root:-/}" -xdev \( -path "${root}/proc" -o -path "${root}/sys" -o -path "${root}/dev" \
+          -o -path "${root}/run" -o -path "${root}/tmp" -o -path "${root}/kryptik*" \) -prune \
+          -o \( -type f -o -type l \) -print 2>/dev/null || true; } | LC_ALL=C sort
+}
+_forget_outputs() {   # _forget_outputs LIST
+    local root="${KRYPTIK_SYSROOT%/}" p n=0
+    while IFS= read -r p; do
+        case "$p" in
+            "${root}"/proc/*|"${root}"/sys/*|"${root}"/dev/*|"${root}"/run/*|"${root}"/tmp/*|"${root}"/kryptik*) continue ;;
+            "${root}"/*) ;;
+            *) continue ;;
+        esac
+        if [[ -f "$p" || -L "$p" ]]; then rm -f -- "$p"; n=$((n + 1)); fi
+    done < "$1"
+    rm -f -- "$1"
+    dim "  removed ${n} file(s) the step's previous build installed"
+}
+
 # The step runner.
 #
 # ONE implementation, used by every stage. Four near-identical copies is how
@@ -579,6 +608,11 @@ step() {
 
     local logfile="${LOGS}/${STAMP_PREFIX}${name}.log"
     local start=$SECONDS
+    local before=""
+    if [[ -n "${STAMP_TREE:-}" ]]; then
+        if [[ -f "${stamp}.files" ]]; then _forget_outputs "${stamp}.files"; fi
+        before="$(mktemp)"; _tree_paths > "$before"
+    fi
 
     # Capture the subshell's status WITHOUT putting it in a condition.
     #
@@ -607,6 +641,10 @@ step() {
     rc=$?
     trap _kryptik_trap ERR
     set -e
+    if [[ -n "$before" ]]; then
+        if [[ "$rc" -eq 0 ]]; then _tree_paths | comm -13 "$before" - > "${stamp}.files"; fi
+        rm -f "$before"
+    fi
 
     STAMP_DEPS="${STAMP_DEPS}${name}=${want};"
 
