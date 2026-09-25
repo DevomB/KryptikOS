@@ -8,7 +8,7 @@ import os
 import sys
 
 # zoneid's COMPOSITOR_COLOURS; its header test keeps the two equal.
-FIXED =(("UNZONED", "d8d8d8"), ("UNKNOWN", "a2c9ff"), ("URGENT", "ffd000"))
+FIXED = (("UNZONED", "d8d8d8"), ("UNKNOWN", "a2c9ff"), ("URGENT", "ffd000"))
 
 
 def parse_flat_toml(text):
