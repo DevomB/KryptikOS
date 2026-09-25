@@ -115,7 +115,7 @@ mkzone() { # name mode colour [extra-network-lines] [storage-mode]
 # in a disposable VM, starts it.
 mkzone alpha    none   "#111111"
 mkzone beta     none   "#222222"
-mkzone carrier  nic    "#333333" 'bridge = "kryptik0"'
+mkzone carrier  nic    "#333333"
 mkzone sealed   none   "#444444" ''                      encrypted
 mkzone wiped    none   "#555555" ''                      ephemeral
 # The persistent fixture. `sealed` needs a volume and a passphrase (group F),
@@ -499,6 +499,25 @@ probe "D4  the zone is told its own name via KRYPTIK_ZONE" "alpha"
 zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$PATH"
 probe "D5  PATH is the fixed zone PATH, not the caller's" "/usr/bin:/usr/sbin:/bin:/sbin"
 
+# Machine-wide state that links zones or times keystrokes (rootfs.rs:
+# PROC_MASKED, SYSFS_KEPT, the zone's own boot_id).
+zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(cat /proc/interrupts /proc/softirqs /proc/stat 2>/dev/null | wc -c)"
+probe "D6  the interrupt counts are hidden from the zone" "0"
+
+HOST_BOOT_ID="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
+zrun alpha -- /bin/sh -c "$PRO b=\$(cat /proc/sys/kernel/random/boot_id); if [ -n \"\$b\" ] && [ \"\$b\" != '$HOST_BOOT_ID' ]; then echo PROBE=own; else echo PROBE=HOSTS; fi"
+probe "D7  the zone's boot_id is its own, not the one every zone would share" "own"
+
+zrun alpha -- /bin/sh -c "$PRO x=\$( { ls /sys | grep -vx -e class -e devices; ls /sys/class | grep -vx net; ls /sys/devices | grep -vx -e virtual -e system; } 2>/dev/null ); if [ -z \"\$x\" ]; then echo PROBE=narrow; else echo PROBE=WIDE; fi"
+probe "D8  /sys holds only the zone's interfaces and the CPU layout" "narrow"
+
+if [[ -f /etc/dhcpcd.conf ]]; then
+    zrun alpha -- /bin/sh -c "$PRO if [ -e /etc/dhcpcd.conf ]; then echo PROBE=PRESENT; else echo PROBE=absent; fi"
+    probe "D9  the nic zone's configuration is not bound into another zone" "absent"
+else
+    info "D9  not applicable: this host has no /etc/dhcpcd.conf"
+fi
+
 # ============================================================================
 head_ "E. Old root, system mounts, devices  [unpriv]"
 # ============================================================================
@@ -629,6 +648,24 @@ if (( PRIVILEGED == 1 )) && command -v cryptsetup >/dev/null 2>&1 && [[ -e /dev/
             "$KRYPTIKD" stop sealed --now >/dev/null 2>&1 || true
         else
             pass "F4b the mapping is closed when the zone exits"
+        fi
+        # stop --now kills the zone's pid 1, so the launcher outlives it and
+        # closes the volume; killing the launcher left it open.
+        "$KRYPTIKD" run sealed "${ZARGS[@]}" --passphrase-file "$F4PASS" -- /bin/sleep 60 >/dev/null 2>&1 &
+        BG_PIDS+=("$!")
+        f4c_open=0
+        for _ in $(seq 50); do
+            [[ "$("$KRYPTIKD" volume status sealed --zones "$ZONES" 2>/dev/null)" == *"(OPEN)"* ]] && { f4c_open=1; break; }
+            sleep 0.2
+        done
+        "$KRYPTIKD" stop sealed --now >/dev/null 2>&1
+        if (( f4c_open == 0 )); then
+            fail "F4c the encrypted zone did not open its volume within 10 s"
+        elif [[ "$("$KRYPTIKD" volume status sealed --zones "$ZONES" 2>/dev/null)" == *"(closed)"* ]]; then
+            pass "F4c stop --now leaves the volume closed"
+        else
+            fail "F4c the volume is still open after stop --now"
+            "$KRYPTIKD" gc >/dev/null 2>&1
         fi
     fi
 else
@@ -1121,6 +1158,19 @@ filter_probe "L5  socket(AF_VSOCK) is refused with an errno" socket-vsock 7
 filter_probe "L6  socket(AF_NETLINK/NETFILTER) is refused with an errno" socket-netlink-nf 7
 filter_probe "L7  ioctl(TIOCSTI) is killed (terminal input injection)" ioctl-tiocsti 5
 filter_probe "L8  positive control: socket(AF_INET) still works" socket-inet 0
+
+# seccomp-trace names each refused call and lets the program carry on:
+# reboot(2) is refused by the zone filter and fails with ENOSYS (38), and so
+# does inotify_init1(2), marked soft since a zone gets ENOSYS for it too.
+out="$(timeout "$TIMEOUT" "$KRYPTIKD" seccomp-trace -- python3 -c \
+    'import ctypes; c = ctypes.CDLL(None, use_errno=True); [print(c.syscall(nr, 0, 0, 0, 0), ctypes.get_errno()) for nr in (169, 294)]' 2>&1)"
+if grep -qx 'KRYPTIK_SECCOMP_DENIED 169 reboot' <<<"$out" \
+    && grep -qx 'KRYPTIK_SECCOMP_DENIED 294 inotify_init1 soft' <<<"$out" \
+    && [[ "$(grep -cx -e '-1 38' <<<"$out")" == 2 ]]; then
+    pass "L9  seccomp-trace names refused calls, soft ones marked, and the program goes on"
+else
+    fail "L9  seccomp-trace did not report reboot(2) and inotify_init1(2) [$(tr '\n' ' ' <<<"$out")]"
+fi
 
 # ============================================================================
 head_ "M. cgroup resource limits  [unpriv where delegated, otherwise vm]"
@@ -1817,14 +1867,14 @@ else
     pass "POL4 a policy file cannot re-allow a syscall the base policy denies"
 fi
 
-# Per-zone Landlock files are not implemented; POL6 says so.
+# Per-zone Landlock files are applied; the boundary probes (group E) show one
+# narrowing where a zone may write.
 lp="$("$KRYPTIKD" explain widened --zones "$ZONES" 2>&1 | sed -n 's/^policy *//p' | head -1)"
 if [[ -n "$lp" ]]; then
     pass "POL5 explain reports what the policy file adds ($lp)"
 else
     fail "POL5 explain does not report the policy file's additions"
 fi
-skip "POL6 per-zone LANDLOCK policy files are NOT applied (seccomp files are; kryptikd refuses a zone naming a landlock file)"
 
 # ============================================================================
 head_ "LC. Zone lifecycle: registry, stop, concurrency  [unpriv]"

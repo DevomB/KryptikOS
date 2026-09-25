@@ -10,10 +10,8 @@ description = "Keys, password store, secrets. No network stack."
 mode = "none"
 
 [storage]
-mode      = "encrypted"
-volume    = "/var/lib/kryptik/volumes/vault.luks"
-unlock    = "on-start"
-wipe_keys = "on-stop"
+mode   = "encrypted"
+volume = "/var/lib/kryptik/volumes/vault.luks"
 
 [policy]
 seccomp  = "policy/vault.seccomp"

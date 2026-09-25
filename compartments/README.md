@@ -27,10 +27,8 @@ description = "Keys, password store, secrets. No network stack."
 mode = "none"          # a namespace with only loopback, not a firewall rule
 
 [storage]
-mode      = "encrypted"
-volume    = "/var/lib/kryptik/volumes/vault.luks"
-unlock    = "on-start"
-wipe_keys = "on-stop"
+mode   = "encrypted"       # opened when the zone starts, closed (key gone) when it stops
+volume = "/var/lib/kryptik/volumes/vault.luks"
 
 [policy]
 seccomp  = "policy/vault.seccomp"

@@ -8,10 +8,8 @@ description = "Toolchains and build environments."
 mode = "routed"
 
 [storage]
-mode      = "encrypted"
-volume    = "/var/lib/kryptik/volumes/dev.luks"
-unlock    = "on-start"
-wipe_keys = "on-stop"
+mode   = "encrypted"
+volume = "/var/lib/kryptik/volumes/dev.luks"
 
 [policy]
 seccomp  = "policy/dev.seccomp"

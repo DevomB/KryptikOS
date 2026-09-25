@@ -8,10 +8,8 @@ description = "Separate identity, separate cookies, separate everything."
 mode = "routed"
 
 [storage]
-mode      = "encrypted"
-volume    = "/var/lib/kryptik/volumes/personal.luks"
-unlock    = "on-start"
-wipe_keys = "on-stop"
+mode   = "encrypted"
+volume = "/var/lib/kryptik/volumes/personal.luks"
 
 [policy]
 seccomp  = "policy/personal.seccomp"

@@ -18,6 +18,7 @@
 
 use std::ffi::CStr;
 use std::io;
+use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::Path;
 
 use crate::netlink;
@@ -278,6 +279,7 @@ pub fn replumb_routed_zones(zones_dir: &Path, nic_ns: i32) -> Vec<(String, Resul
             continue;
         }
         let Ok(registry::State::Running { init: Some(st), .. }) = registry::state(&name) else { continue };
+        let ns = open_ns(&st);
         if !st.still_alive() {
             continue;
         }
@@ -285,11 +287,9 @@ pub fn replumb_routed_zones(zones_dir: &Path, nic_ns: i32) -> Vec<(String, Resul
             let k = host_number(&z).ok_or_else(|| {
                 NetError::Refused("no [identity] uid_base to derive an address".into())
             })?;
-            let zone_ns = netlink::open_netns_of(st.pid).map_err(|e| io("open the zone netns", e))?;
+            let zone_ns = ns.map_err(|e| io("open the zone netns", e))?;
             // None: the ICMP group range set at first plumbing is still there.
-            let r = attach_routed(&z.name, k, nic_ns, zone_ns, None);
-            unsafe { libc::close(zone_ns) };
-            r
+            attach_routed(&z.name, k, nic_ns, zone_ns.as_raw_fd(), None)
         })();
         out.push((name, r));
     }
@@ -367,22 +367,36 @@ pub fn plumb_routed_zone(zone: &Zone, zone_ns: i32, zones_dir: &Path, host_gid: 
     let k = host_number(zone).ok_or_else(|| {
         NetError::Refused("a routed zone needs [identity] uid_base to derive its address".into())
     })?;
-    let net_pid = running_nic_zone_init(zones_dir)?;
-    let net_ns = netlink::open_netns_of(net_pid).map_err(|e| io("open the nic zone's netns", e))?;
-    let r = attach_routed(&zone.name, k, net_ns, zone_ns, Some(host_gid));
-    unsafe { libc::close(net_ns) };
-    r
+    let net_ns = running_nic_zone_ns(zones_dir)?;
+    attach_routed(&zone.name, k, net_ns.as_raw_fd(), zone_ns, Some(host_gid))
 }
 
 /// Create the veth from inside the nic zone with its peer born in the routed
-/// zone as eth0, isolate the bridge port, then address and route eth0.
+/// zone as eth0, isolate the bridge port, then address and route eth0. On
+/// failure the port is deleted, which takes the pair.
 fn attach_routed(name: &str, k: u8, nic_ns: i32, zone_ns: i32, host_gid: Option<u32>) -> Result<(), NetError> {
     let port = port_name(name);
+    let r = attach_v4(&port, k, nic_ns, zone_ns, host_gid);
+    if r.is_err() {
+        let _ = netlink::with_netns(nic_ns, || netlink::delete_link(&port));
+    }
+    r?;
+    // With IPv6 disabled the address gets EACCES; IPv4 only is reported, not fatal.
+    if let Err(e) = netlink::with_netns(zone_ns, || {
+        netlink::add_addr6("eth0", netlink::zone_v6(k), 64)?;
+        netlink::add_default_route6(netlink::BRIDGE_V6, "eth0")
+    }) {
+        eprintln!("kryptikd: zone {name:?}: IPv6 on eth0 not configured ({e}); IPv4 is");
+    }
+    Ok(())
+}
+
+fn attach_v4(port: &str, k: u8, nic_ns: i32, zone_ns: i32, host_gid: Option<u32>) -> Result<(), NetError> {
     netlink::with_netns(nic_ns, || {
-        netlink::create_veth(&port, "eth0", Some(zone_ns))?;
-        netlink::set_master(&port, BRIDGE)?;
-        netlink::set_port_isolated(&port, true)?;
-        netlink::set_up(&port)
+        netlink::create_veth(port, "eth0", Some(zone_ns))?;
+        netlink::set_master(port, BRIDGE)?;
+        netlink::set_port_isolated(port, true)?;
+        netlink::set_up(port)
     })
     .map_err(|e| io("attach the zone to the bridge", e))?;
     netlink::with_netns(zone_ns, || {
@@ -401,20 +415,19 @@ fn attach_routed(name: &str, k: u8, nic_ns: i32, zone_ns: i32, host_gid: Option<
         }
         Ok(())
     })
-    .map_err(|e| io("address the zone's eth0", e))?;
-    // With IPv6 disabled the address gets EACCES; IPv4 only is reported, not fatal.
-    if let Err(e) = netlink::with_netns(zone_ns, || {
-        netlink::add_addr6("eth0", netlink::zone_v6(k), 64)?;
-        netlink::add_default_route6(netlink::BRIDGE_V6, "eth0")
-    }) {
-        eprintln!("kryptikd: zone {name:?}: IPv6 on eth0 not configured ({e}); IPv4 is");
-    }
-    Ok(())
+    .map_err(|e| io("address the zone's eth0", e))
 }
 
-/// pid 1 of the running nic zone. The root-owned zone files say which zone
-/// that is, never what a namespace holds: a zone could create its own kryptik0.
-fn running_nic_zone_init(zones_dir: &Path) -> Result<libc::pid_t, NetError> {
+/// A zone's network namespace, opened before its pid is trusted: callers check
+/// `still_alive` after, so a reused pid cannot hand over another namespace.
+fn open_ns(st: &registry::PidStamp) -> io::Result<OwnedFd> {
+    netlink::open_netns_of(st.pid).map(|fd| unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// The running nic zone's network namespace. The root-owned zone files say
+/// which zone that is, never what a namespace holds: a zone could create its
+/// own kryptik0.
+fn running_nic_zone_ns(zones_dir: &Path) -> Result<OwnedFd, NetError> {
     for name in registry::names() {
         let file = zones_dir.join(format!("{name}.toml"));
         let Ok(z) = Zone::from_file(&file) else { continue };
@@ -422,8 +435,9 @@ fn running_nic_zone_init(zones_dir: &Path) -> Result<libc::pid_t, NetError> {
             continue;
         }
         if let Ok(registry::State::Running { init: Some(st), .. }) = registry::state(&name) {
+            let ns = open_ns(&st);
             if st.still_alive() {
-                return Ok(st.pid);
+                return ns.map_err(|e| io("open the nic zone's netns", e));
             }
         }
     }
@@ -479,10 +493,9 @@ mod tests {
 
     fn z(mode: &str, base: Option<u32>, nic: Option<&str>) -> Zone {
         let ident = base.map(|b| format!("[identity]\nuid_base = {b}\n")).unwrap_or_default();
-        let bridge = if mode == "nic" { "bridge = \"kryptik0\"\n" } else { "" };
         let nicl = nic.map(|n| format!("nic = \"{n}\"\n")).unwrap_or_default();
         Zone::from_str(&format!(
-            "[zone]\nname = \"t\"\n[network]\nmode = \"{mode}\"\n{bridge}{nicl}\
+            "[zone]\nname = \"t\"\n[network]\nmode = \"{mode}\"\n{nicl}\
              [storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n{ident}[ui]\nborder_color = \"#123456\"\n"
         ))
         .unwrap()
@@ -790,7 +803,7 @@ mod tests {
         // An empty zone directory names no nic zone, whatever else is running.
         let dir = std::env::temp_dir().join(format!("kryptik-nz-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let e = running_nic_zone_init(&dir).unwrap_err();
+        let e = running_nic_zone_ns(&dir).unwrap_err();
         assert!(matches!(e, NetError::NoNetZone));
         let _ = std::fs::remove_dir_all(&dir);
     }

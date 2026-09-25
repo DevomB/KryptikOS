@@ -3,6 +3,7 @@
 //! libseccomp, a large C dependency (ADR-010).
 
 use std::io;
+use std::os::unix::io::RawFd;
 
 // x86-64 only: `install` refuses to run anywhere else.
 const AUDIT_ARCH_X86_64: u32 = 0xc000_003e;
@@ -26,8 +27,6 @@ const BPF_RET: u16 = 0x06;
 // Filter return actions.
 const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
 const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
-// SIGSYS naming the syscall, for `kryptikd seccomp-trace`.
-const SECCOMP_RET_TRAP: u32 = 0x0003_0000;
 // Fail the call instead of killing: for probes such as clone3.
 const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
 
@@ -229,9 +228,9 @@ pub const BASE_ALLOWLIST: &[libc::c_long] = &[
     libc::SYS_epoll_create, libc::SYS_epoll_create1, libc::SYS_epoll_ctl,
     libc::SYS_epoll_wait, libc::SYS_epoll_pwait, libc::SYS_epoll_pwait2,
     libc::SYS_eventfd, libc::SYS_eventfd2, libc::SYS_signalfd, libc::SYS_signalfd4,
-    libc::SYS_inotify_init,
     libc::SYS_timerfd_create, libc::SYS_timerfd_settime, libc::SYS_timerfd_gettime,
-    libc::SYS_inotify_init1, libc::SYS_inotify_add_watch, libc::SYS_inotify_rm_watch,
+    // inotify_init is refused softly: see `REFUSED_SOFTLY`.
+    libc::SYS_inotify_add_watch, libc::SYS_inotify_rm_watch,
 
     // --- sockets ---
     // socket(2) is argument-filtered too: see `ARG_RULES`.
@@ -328,6 +327,22 @@ pub const ARG_RULES: &[ArgRule] = &[
     ArgRule::SocketFamilies,
 ];
 
+impl ArgRule {
+    fn nr(self) -> libc::c_long {
+        match self {
+            ArgRule::CloneNoNamespaces => libc::SYS_clone,
+            ArgRule::Clone3Enosys => libc::SYS_clone3,
+            ArgRule::IoctlNoTtyInject => libc::SYS_ioctl,
+            ArgRule::SocketFamilies => libc::SYS_socket,
+        }
+    }
+}
+
+/// Refused with an errno, not killed, since programs fall back when these
+/// fail; a zone policy may allow them. inotify: a watch on the /usr the zones
+/// share with zone 0 sees every program any of them starts.
+pub const REFUSED_SOFTLY: &[(libc::c_long, u32)] = &[(libc::SYS_inotify_init, ENOSYS), (libc::SYS_inotify_init1, ENOSYS)];
+
 const fn errno_action(e: u32) -> u32 {
     SECCOMP_RET_ERRNO | (e & 0xffff)
 }
@@ -411,14 +426,8 @@ fn emit_arg_rule(p: &mut Vec<SockFilter>, rule: ArgRule, deny_action: u32, socke
             body
         }
     };
-    let nr = match rule {
-        ArgRule::CloneNoNamespaces => libc::SYS_clone,
-        ArgRule::Clone3Enosys => libc::SYS_clone3,
-        ArgRule::IoctlNoTtyInject => libc::SYS_ioctl,
-        ArgRule::SocketFamilies => libc::SYS_socket,
-    };
     // Offsets count from the next instruction; every body is far below 255.
-    p.push(jump(BPF_JMP | BPF_JEQ | BPF_K, nr as u32, 0, body.len() as u8));
+    p.push(jump(BPF_JMP | BPF_JEQ | BPF_K, rule.nr() as u32, 0, body.len() as u8));
     p.extend(body);
 }
 
@@ -454,15 +463,31 @@ fn build_program_full(
     p.push(jump(BPF_JMP | BPF_JGE | BPF_K, X32_SYSCALL_BIT, 0, 1));
     p.push(stmt(BPF_RET | BPF_K, deny_action));
 
-    // Argument rules first, before the plain allowlist can allow those syscalls.
+    /* Argument rules first, so the plain allowlist cannot allow their
+     * syscalls, and only for a listed syscall: a rule's block can end in ALLOW. */
     for &rule in ARG_RULES {
-        emit_arg_rule(&mut p, rule, deny_action, sockets);
+        if allow.contains(&rule.nr()) {
+            emit_arg_rule(&mut p, rule, deny_action, sockets);
+        }
+    }
+    for &(nr, e) in REFUSED_SOFTLY {
+        // Allowed by the list, it is allowed below like any other.
+        if !allow.contains(&nr) {
+            /* seccomp-trace answers these with the same errno, so the program
+             * runs as it would in a zone and the call is still named. */
+            let refuse = if deny_action == libc::SECCOMP_RET_USER_NOTIF { deny_action } else { errno_action(e) };
+            p.push(jump(BPF_JMP | BPF_JEQ | BPF_K, nr as u32, 0, 1));
+            p.push(stmt(BPF_RET | BPF_K, refuse));
+        }
     }
 
     for &nr in allow {
         // seccomp_data.nr is 32 bits: a truncated number would allow another syscall.
         if nr < 0 || nr > u32::MAX as libc::c_long {
             return Err(SeccompError::BadSyscallNumber(nr));
+        }
+        if ARG_RULES.iter().any(|r| r.nr() == nr) {
+            continue; // decided by its rule above
         }
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         let nr_u32 = nr as u32; // bounds-checked immediately above
@@ -481,19 +506,24 @@ fn build_program_full(
 /// Install a default-deny filter on every thread of the process (TSYNC) and
 /// all descendants. Irreversible.
 pub fn install(allow: &[libc::c_long]) -> Result<(), SeccompError> {
-    install_with(allow, SECCOMP_RET_KILL_PROCESS, &SocketPolicy::default())
+    install_with(allow, SECCOMP_RET_KILL_PROCESS, &SocketPolicy::default(), SECCOMP_FILTER_FLAG_TSYNC).map(|_| ())
 }
 
-/// As `install`, but SIGSYS instead of a kill, so the denied syscall can be reported.
-pub fn install_tracing(allow: &[libc::c_long]) -> Result<(), SeccompError> {
-    install_with(allow, SECCOMP_RET_TRAP, &SocketPolicy::default())
+/// As `install` for a single-threaded caller, but a refused call waits for a
+/// supervisor instead of killing: returns the listener descriptor, which is
+/// close-on-exec (`kryptikd seccomp-trace`).
+pub fn install_notifying(allow: &[libc::c_long]) -> Result<RawFd, SeccompError> {
+    let fd = install_with(allow, libc::SECCOMP_RET_USER_NOTIF, &SocketPolicy::default(), libc::SECCOMP_FILTER_FLAG_NEW_LISTENER)?;
+    Ok(fd as RawFd)
 }
 
+/// Returns what seccomp(2) returned: 0, or the listener with NEW_LISTENER.
 fn install_with(
     allow: &[libc::c_long],
     deny_action: u32,
     sockets: &SocketPolicy,
-) -> Result<(), SeccompError> {
+    flags: libc::c_ulong,
+) -> Result<libc::c_long, SeccompError> {
     if !cfg!(target_arch = "x86_64") {
         return Err(SeccompError::UnsupportedArch);
     }
@@ -518,7 +548,7 @@ fn install_with(
         libc::syscall(
             SYS_SECCOMP,
             SECCOMP_SET_MODE_FILTER,
-            SECCOMP_FILTER_FLAG_TSYNC,
+            flags,
             &fprog as *const _ as *const libc::c_void,
         )
     };
@@ -528,7 +558,7 @@ fn install_with(
             errno: io::Error::last_os_error().raw_os_error().unwrap_or(0),
         });
     }
-    Ok(())
+    Ok(ret)
 }
 
 /// Install the standard zone filter.
@@ -548,7 +578,7 @@ pub fn confine_zone_with(extra: &[libc::c_long], sockets: &SocketPolicy) -> Resu
             allow.push(nr);
         }
     }
-    install_with(&allow, SECCOMP_RET_KILL_PROCESS, sockets)
+    install_with(&allow, SECCOMP_RET_KILL_PROCESS, sockets, SECCOMP_FILTER_FLAG_TSYNC).map(|_| ())
 }
 
 /// Syscall names a zone policy may use: denied ones (refused by name), base
@@ -584,6 +614,7 @@ pub const SYSCALL_NAMES: &[(&str, libc::c_long)] = &[
     ("ioctl", libc::SYS_ioctl), ("prctl", libc::SYS_prctl), ("mknod", libc::SYS_mknod),
     ("chmod", libc::SYS_chmod), ("memfd_create", libc::SYS_memfd_create), ("capget", libc::SYS_capget),
     // plausible additions
+    ("inotify_init", libc::SYS_inotify_init), ("inotify_init1", libc::SYS_inotify_init1),
     ("adjtimex", libc::SYS_adjtimex), ("clock_adjtime", libc::SYS_clock_adjtime),
     ("clock_settime", libc::SYS_clock_settime), ("settimeofday", libc::SYS_settimeofday),
     ("sched_setscheduler", libc::SYS_sched_setscheduler), ("sched_setparam", libc::SYS_sched_setparam),
@@ -625,12 +656,9 @@ mod tests {
     #[test]
     fn program_has_expected_shape() {
         let p = build_program(&[libc::SYS_read, libc::SYS_write]).unwrap();
-        // 4 prologue + 2 x32 + arg rules + 2 per syscall + 1 default deny
-        let mut rules = Vec::new();
-        for &r in ARG_RULES {
-            emit_arg_rule(&mut rules, r, SECCOMP_RET_KILL_PROCESS, &SocketPolicy::default());
-        }
-        assert_eq!(p.len(), 3 + 1 + 2 + rules.len() + 4 + 1);
+        // 4 prologue + 2 x32 + 2 per soft refusal + 2 per syscall + 1 default
+        // deny; neither syscall has an arg rule
+        assert_eq!(p.len(), 3 + 1 + 2 + 2 * REFUSED_SOFTLY.len() + 4 + 1);
         assert_eq!(p[0].code, BPF_LD | BPF_W | BPF_ABS);
         assert_eq!(p[0].k, OFF_ARCH);
         let last = p.last().unwrap();
@@ -727,6 +755,37 @@ mod tests {
             evaluate(&p, AUDIT_ARCH_X86_64, libc::SYS_ptrace as u32),
             SECCOMP_RET_KILL_PROCESS
         );
+    }
+
+    #[test]
+    fn arg_rules_follow_the_list() {
+        // A rule allows on some path, so it exists only for a listed syscall.
+        let p = build_program(&[libc::SYS_read]).unwrap();
+        for nr in ARG_RULES.iter().map(|r| r.nr()) {
+            assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, nr as u32), SECCOMP_RET_KILL_PROCESS, "syscall {nr} is not on the list");
+        }
+        let p = build_program(&[libc::SYS_read, libc::SYS_clone3]).unwrap();
+        assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, libc::SYS_clone3 as u32), errno_action(ENOSYS));
+    }
+
+    #[test]
+    fn inotify_refused_softly() {
+        let p = build_program(BASE_ALLOWLIST).unwrap();
+        for nr in [libc::SYS_inotify_init, libc::SYS_inotify_init1] {
+            assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, nr as u32), errno_action(ENOSYS));
+        }
+        let mut allow = BASE_ALLOWLIST.to_vec();
+        allow.push(libc::SYS_inotify_init1);
+        let p = build_program(&allow).unwrap();
+        assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, libc::SYS_inotify_init1 as u32), SECCOMP_RET_ALLOW, "a policy opens it");
+    }
+
+    #[test]
+    fn trace_names_soft_refusals() {
+        // clone3 keeps its errno: no policy opens it, so naming it would mislead.
+        let p = build_program_with(BASE_ALLOWLIST, libc::SECCOMP_RET_USER_NOTIF).unwrap();
+        assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, libc::SYS_inotify_init1 as u32), libc::SECCOMP_RET_USER_NOTIF);
+        assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, libc::SYS_clone3 as u32), errno_action(ENOSYS));
     }
 
     #[test]

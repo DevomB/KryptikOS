@@ -1314,7 +1314,7 @@ mod tests {
         std::fs::write(zones.join("c.toml"), plain("c", "")).unwrap();
         std::fs::write(
             zones.join("n.toml"),
-            "[zone]\nname = \"n\"\n[network]\nmode = \"nic\"\nbridge = \"kryptik0\"\n\
+            "[zone]\nname = \"n\"\n[network]\nmode = \"nic\"\n\
              [storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n[ui]\nborder_color = \"#123456\"\n",
         )
         .unwrap();
@@ -1677,7 +1677,7 @@ mod tests {
             let out = time_offset_in(&zone_of(mode, ""), &claim, &mut crate::time::SystemClock, &dir, Some(0), &crate::consent::keep);
             assert!(matches!(&out, crate::time::Outcome::Refused(w) if w.contains("does not hold the network")), "{mode}: {out:?}");
         }
-        let nic = zone_of("nic", "bridge = \"kryptik0\"\n");
+        let nic = zone_of("nic", "");
         let out = time_offset_in(&nic, &claim, &mut crate::time::SystemClock, &dir, None, &crate::consent::keep);
         assert!(matches!(&out, crate::time::Outcome::Refused(w) if w.contains("no floor is known")), "{out:?}");
         assert!(!dir.join("state").exists(), "a refused claim left state behind");
@@ -1718,7 +1718,7 @@ mod tests {
         for mode in ["none", "routed"] {
             assert!(update_refusal(&zone_of(mode, "")).is_some_and(|w| w.contains("does not hold the network")), "{mode}");
         }
-        assert_eq!(update_refusal(&zone_of("nic", "bridge = \"kryptik0\"\n")), None);
+        assert_eq!(update_refusal(&zone_of("nic", "")), None);
     }
 
     #[test]

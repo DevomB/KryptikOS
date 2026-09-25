@@ -8,8 +8,7 @@ description = "Sole holder of a physical network route."
 
 [network]
 mode = "nic"
-# Zones with mode = "routed" get a veth into this bridge.
-bridge = "kryptik0"
+# Zones with mode = "routed" get a veth into kryptik0, the bridge in this zone.
 # Interfaces taken out of zone 0 when this zone starts. "*" is every one on a
 # bus device (PCI, USB, platform), wireless ones moved by their wiphy; software
 # devices (loopback, bridges, veth, tunnels) never qualify. A single name such

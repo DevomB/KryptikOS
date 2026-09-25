@@ -11,7 +11,7 @@
 
 use std::ffi::CString;
 use std::io;
-use std::os::unix::io::RawFd;
+use std::os::unix::io::{FromRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use crate::broker;
@@ -333,6 +333,12 @@ fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, s: &broker::Served, out:
         !exited_unreaped(pid)
     };
     let s = &broker::Served { asking: &asking, ..*s };
+    /* A pidfd is readable once the zone has ended, so the poll needs no
+     * timeout. Without one it wakes every 200 ms: failing here would skip
+     * the caller's closing of the zone's volume. */
+    let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as RawFd;
+    let _pidfd = (pidfd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(pidfd) });
+    let timeout = if pidfd >= 0 { -1 } else { 200 };
     loop {
         let mut status: libc::c_int = 0;
         let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
@@ -345,8 +351,9 @@ fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, s: &broker::Served, out:
         let mut pfds = [
             libc::pollfd { fd: listen_fd, events: libc::POLLIN, revents: 0 },
             libc::pollfd { fd: out.borrow().as_ref().map_or(-1, |o| o.fd), events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: pidfd, events: libc::POLLIN, revents: 0 },
         ];
-        let n = unsafe { libc::poll(pfds.as_mut_ptr(), 2, 200) };
+        let n = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, timeout) };
         if n > 0 && pfds[1].revents & (libc::POLLIN | libc::POLLHUP) != 0 {
             pump();
         }
@@ -1466,21 +1473,7 @@ pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String
         ),
         _ => "caps       bounding set dropped to CAP_NET_BIND_SERVICE only".to_string(),
     };
-    let flags = isolate::namespace_flags(zone);
-    let mut ns = Vec::new();
-    for (f, n) in [
-        (libc::CLONE_NEWUSER, "user"),
-        (libc::CLONE_NEWNS, "mount"),
-        (libc::CLONE_NEWPID, "pid"),
-        (libc::CLONE_NEWIPC, "ipc"),
-        (libc::CLONE_NEWUTS, "uts"),
-        (libc::CLONE_NEWCGROUP, "cgroup"),
-        (libc::CLONE_NEWNET, "net"),
-    ] {
-        if flags & f != 0 {
-            ns.push(n);
-        }
-    }
+    let ns = isolate::namespace_names(isolate::namespace_flags(zone));
 
     let storage = match zone.storage {
         StorageMode::Encrypted => format!(
@@ -1674,9 +1667,8 @@ mod tests {
     }
 
     fn z(mode: &str) -> Zone {
-        let bridge = if mode == "nic" { "bridge = \"kryptik0\"\n" } else { "" };
         Zone::from_str(&format!(
-            "[zone]\nname = \"t\"\n[network]\nmode = \"{mode}\"\n{bridge}\
+            "[zone]\nname = \"t\"\n[network]\nmode = \"{mode}\"\n\
              [storage]\nmode = \"ephemeral\"\nsize = \"256M\"\n[ui]\nborder_color = \"#123456\"\n"
         ))
         .unwrap()
@@ -1764,7 +1756,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("policy")).unwrap();
         std::fs::write(dir.join("policy/n.seccomp"), "keep-capability CAP_NET_RAW\nkeep-capability CAP_NET_ADMIN\n").unwrap();
         let nic = Zone::from_str(
-            "[zone]\nname = \"n\"\n[network]\nmode = \"nic\"\nbridge = \"kryptik0\"\n\
+            "[zone]\nname = \"n\"\n[network]\nmode = \"nic\"\n\
              [storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n[policy]\nseccomp = \"policy/n.seccomp\"\n\
              [ui]\nborder_color = \"#123456\"\n",
         )

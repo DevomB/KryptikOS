@@ -41,18 +41,9 @@ fn io_err(path: &Path, err: io::Error) -> CgroupError {
     CgroupError::Io { path: path.display().to_string(), err }
 }
 
-/// Parse `memory_max` into bytes, refusing a value that overflows a u64.
+/// Parse `memory_max` into bytes (`zone::parse_size`).
 pub fn parse_memory_max(v: &str) -> Result<u64, CgroupError> {
-    let bad = || CgroupError::BadLimit { field: "memory_max", value: v.to_string() };
-    let (digits, mult) = match v.as_bytes().last() {
-        Some(b'K') | Some(b'k') => (&v[..v.len() - 1], 1024u64),
-        Some(b'M') | Some(b'm') => (&v[..v.len() - 1], 1024 * 1024),
-        Some(b'G') | Some(b'g') => (&v[..v.len() - 1], 1024 * 1024 * 1024),
-        Some(b'T') | Some(b't') => (&v[..v.len() - 1], 1024u64 * 1024 * 1024 * 1024),
-        _ => (v, 1),
-    };
-    let n: u64 = digits.parse().map_err(|_| bad())?;
-    n.checked_mul(mult).ok_or_else(bad)
+    crate::zone::parse_size(v).ok_or_else(|| CgroupError::BadLimit { field: "memory_max", value: v.to_string() })
 }
 
 fn read_trim(p: &Path) -> Result<String, CgroupError> {

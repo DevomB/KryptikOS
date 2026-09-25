@@ -65,7 +65,6 @@ pub struct Zone {
     pub name: String,
     pub description: String,
     pub network: NetworkMode,
-    pub bridge: Option<String>,
     /// Interface a `nic` zone takes (`nic = "eth0"`), or `"*"` for every
     /// physical one (`netzone::physical_interfaces`). Refused for other modes.
     pub nic: Option<String>,
@@ -125,8 +124,8 @@ impl fmt::Display for ZoneError {
 /// Every key a zone file may contain; any other is refused, not ignored.
 pub const KNOWN_KEYS: &[&str] = &[
     "zone.name", "zone.description",
-    "network.mode", "network.bridge", "network.nic",
-    "storage.mode", "storage.volume", "storage.size", "storage.unlock", "storage.wipe_keys",
+    "network.mode", "network.nic",
+    "storage.mode", "storage.volume", "storage.size",
     "policy.seccomp", "policy.landlock",
     "limits.memory_max", "limits.pids_max",
     "identity.uid_base",
@@ -134,28 +133,21 @@ pub const KNOWN_KEYS: &[&str] = &[
     "ui.border_color", "ui.border_pattern", "ui.glyph", "ui.label",
 ];
 
-/// A byte size as cgroup memory.max takes it: nonzero digits, optional K, M, G
-/// or T. Not "max"; omit the key instead.
-pub fn is_size(s: &str) -> bool {
-    let (digits, suffix) = match s.char_indices().find(|(_, c)| !c.is_ascii_digit()) {
-        Some((i, _)) => s.split_at(i),
-        None => (s, ""),
+/// A byte size as a zone file, cgroup memory.max and `volume init --size`
+/// take it: digits with an optional K, M, G or T. None for zero, for
+/// anything else (so not "max": omit the key), and on overflow.
+pub fn parse_size(s: &str) -> Option<u64> {
+    let (digits, shift) = match s.as_bytes().last()? {
+        b'K' | b'k' => (&s[..s.len() - 1], 10),
+        b'M' | b'm' => (&s[..s.len() - 1], 20),
+        b'G' | b'g' => (&s[..s.len() - 1], 30),
+        b'T' | b't' => (&s[..s.len() - 1], 40),
+        _ => (s, 0),
     };
-    !digits.is_empty()
-        && digits.chars().any(|c| c != '0')
-        && matches!(suffix, "" | "K" | "M" | "G" | "T" | "k" | "m" | "g" | "t")
-}
-
-/// A size `is_size` accepted, in bytes, for comparing two; None on overflow.
-fn size_bytes(v: &str) -> Option<u64> {
-    let (digits, mult) = match v.as_bytes().last() {
-        Some(b'K') | Some(b'k') => (&v[..v.len() - 1], 1024u64),
-        Some(b'M') | Some(b'm') => (&v[..v.len() - 1], 1024 * 1024),
-        Some(b'G') | Some(b'g') => (&v[..v.len() - 1], 1024 * 1024 * 1024),
-        Some(b'T') | Some(b't') => (&v[..v.len() - 1], 1024u64 * 1024 * 1024 * 1024),
-        _ => (v, 1),
-    };
-    digits.parse::<u64>().ok()?.checked_mul(mult)
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<u64>().ok().filter(|&n| n > 0)?.checked_mul(1 << shift)
 }
 
 /// Minimal TOML reader: `[section]`, `key = value` (quoted string, integer or
@@ -291,7 +283,7 @@ impl Zone {
             ),
         };
         if let Some(v) = kv.get("limits.memory_max") {
-            if !is_size(v) {
+            if parse_size(v).is_none() {
                 return Err(bad("limits.memory_max", v, "a size such as 512M or 2G"));
             }
         }
@@ -307,14 +299,14 @@ impl Zone {
                         name
                     )))
                 }
-                Some(v) if !is_size(v) => {
+                Some(v) if parse_size(v).is_none() => {
                     return Err(bad("storage.size", v, "a size such as 512M or 2G"))
                 }
                 Some(v) => {
                     /* tmpfs pages are charged to the zone's memcg, so a tmpfs
                      * larger than memory_max never fills: the OOM kill comes first. */
                     if let Some(m) = kv.get("limits.memory_max") {
-                        match (size_bytes(v), size_bytes(m)) {
+                        match (parse_size(v), parse_size(m)) {
                             (Some(sz), Some(mm)) if sz > mm => {
                                 return Err(ZoneError::Invalid(format!(
                                     "zone {name:?}: storage.size = {v:?} is larger than \
@@ -349,17 +341,6 @@ impl Zone {
                         name
                     )));
                 }
-            }
-        }
-
-        if let Some(v) = kv.get("storage.unlock") {
-            if v != "on-start" {
-                return Err(bad("storage.unlock", v, "on-start"));
-            }
-        }
-        if let Some(v) = kv.get("storage.wipe_keys") {
-            if v != "on-stop" {
-                return Err(bad("storage.wipe_keys", v, "on-stop"));
             }
         }
 
@@ -431,14 +412,14 @@ impl Zone {
             uid_base,
             transfer_to,
             description: get("zone.description").unwrap_or_default(),
-            bridge: get("network.bridge"),
             volume: get("storage.volume"),
             size: get("storage.size"),
             seccomp: get("policy.seccomp"),
             landlock: get("policy.landlock"),
             memory_max: get("limits.memory_max"),
             pids_max,
-            border_color: need("ui.border_color")?,
+            // One spelling, so the duplicate check sees #AA3333 and #aa3333 as one colour.
+            border_color: need("ui.border_color")?.to_ascii_lowercase(),
             border_pattern: get("ui.border_pattern"),
             glyph: get("ui.glyph"),
             label: get("ui.label"),
@@ -493,14 +474,6 @@ impl Zone {
                  volumes exist, which is the point.",
                 self.name,
                 self.volume.as_deref().unwrap_or("")
-            )));
-        }
-
-        // Without a bridge, routed zones have nothing to attach to.
-        if self.network == NetworkMode::Nic && self.bridge.is_none() {
-            return Err(ZoneError::Invalid(format!(
-                "zone {:?}: network.mode is 'nic' but no network.bridge given",
-                self.name
             )));
         }
 
@@ -566,7 +539,18 @@ pub fn load_all(dir: &Path) -> Result<Vec<Zone>, ZoneError> {
         if path.extension().and_then(|s| s.to_str()) != Some("toml") {
             continue;
         }
-        zones.push(Zone::from_file(&path)?);
+        let zone = Zone::from_file(&path)?;
+        /* The broker and the net zone open a zone as <name>.toml, so a file
+         * named otherwise would launch but never receive a transfer. */
+        if path.file_stem().and_then(|s| s.to_str()) != Some(zone.name.as_str()) {
+            return Err(ZoneError::Invalid(format!(
+                "{}: holds zone {:?}; a zone's file is named {}.toml",
+                path.display(),
+                zone.name,
+                zone.name
+            )));
+        }
+        zones.push(zone);
     }
 
     zones.sort_by(|a, b| a.name.cmp(&b.name));
@@ -729,11 +713,10 @@ border_color = "#000000"
 
     fn with_transfer(name: &str, mode: &str, to: Option<&str>) -> Result<Zone, ZoneError> {
         let t = to.map(|v| format!("[transfer]\nto = \"{v}\"\n")).unwrap_or_default();
-        let bridge = if mode == "nic" { "bridge = \"kryptik0\"\n" } else { "" };
         // Distinct colours, or check_invariants refuses the set.
         let colour = format!("#1234{:02x}", name.bytes().next().unwrap_or(0));
         Zone::from_str(&format!(
-            "[zone]\nname = \"{name}\"\n[network]\nmode = \"{mode}\"\n{bridge}\
+            "[zone]\nname = \"{name}\"\n[network]\nmode = \"{mode}\"\n\
              [storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n{t}[ui]\nborder_color = \"{colour}\"\n"
         ))
     }
@@ -817,23 +800,16 @@ border_color = "#000000"
     }
 
     #[test]
-    fn nic_mode_requires_bridge() {
-        let bad = VAULT.replace("mode = \"none\"", "mode = \"nic\"");
-        let err = Zone::from_str(&bad).unwrap_err();
-        assert!(format!("{err}").contains("network.bridge"), "got: {err}");
-    }
-
-    #[test]
     fn only_nic_zone_names_interface() {
-        let ok = VAULT.replace("mode = \"none\"", "mode = \"nic\"\nbridge = \"kryptik0\"\nnic = \"eth0\"");
+        let ok = VAULT.replace("mode = \"none\"", "mode = \"nic\"\nnic = \"eth0\"");
         assert_eq!(Zone::from_str(&ok).unwrap().nic.as_deref(), Some("eth0"));
         // "*": every physical interface of zone 0, decided at launch.
-        let all = VAULT.replace("mode = \"none\"", "mode = \"nic\"\nbridge = \"kryptik0\"\nnic = \"*\"");
+        let all = VAULT.replace("mode = \"none\"", "mode = \"nic\"\nnic = \"*\"");
         assert_eq!(Zone::from_str(&all).unwrap().nic.as_deref(), Some("*"));
         let bad = VAULT.replace("mode = \"none\"", "mode = \"none\"\nnic = \"eth0\"");
         let err = Zone::from_str(&bad).unwrap_err();
         assert!(format!("{err}").contains("only meaningful"), "got: {err}");
-        let bad = VAULT.replace("mode = \"none\"", "mode = \"nic\"\nbridge = \"kryptik0\"\nnic = \"averylongname123\"");
+        let bad = VAULT.replace("mode = \"none\"", "mode = \"nic\"\nnic = \"averylongname123\"");
         assert!(Zone::from_str(&bad).is_err());
     }
 
@@ -881,21 +857,44 @@ border_color = "#000000"
         assert!(format!("{err}").contains("limits.memory_max"), "got: {err}");
         let ok = VAULT.replace("pids_max = 128", "memory_max = \"2G\"");
         assert_eq!(Zone::from_str(&ok).unwrap().memory_max.as_deref(), Some("2G"));
-        assert_eq!(size_bytes("32M"), Some(32 * 1024 * 1024));
-        assert_eq!(size_bytes("1G"), Some(1024 * 1024 * 1024));
-        assert!(size_bytes("64M").unwrap() > size_bytes("48M").unwrap());
-        assert!(is_size("512M") && is_size("1G") && is_size("4096"));
-        assert!(!is_size("0") && !is_size("") && !is_size("2GB") && !is_size("max"));
+        assert_eq!(parse_size("32M"), Some(32 << 20));
+        assert_eq!(parse_size("1g"), Some(1 << 30));
+        assert_eq!(parse_size("2T"), Some(2 << 40));
+        assert_eq!(parse_size("4096"), Some(4096));
+        for bad in ["0", "0M", "", "M", "2GB", "max", "+5", "-5", "1.5G", "17179869184G", "18446744073709551615K"] {
+            assert_eq!(parse_size(bad), None, "{bad:?}");
+        }
     }
 
     #[test]
     fn rejects_unknown_keys() {
-        let bad = format!("{VAULT}\n[limits]\ncpu_max = 2\n");
-        let err = Zone::from_str(&bad).unwrap_err();
-        assert!(format!("{err}").contains("unknown key"), "got: {err}");
-        let bad = format!("{VAULT}\n[storage]\nunlock = \"never\"\n");
-        let err = Zone::from_str(&bad).unwrap_err();
-        assert!(format!("{err}").contains("storage.unlock"), "got: {err}");
+        for extra in ["[limits]\ncpu_max = 2", "[storage]\nunlock = \"on-start\"", "[network]\nbridge = \"kryptik0\""] {
+            let err = Zone::from_str(&format!("{VAULT}\n{extra}\n")).unwrap_err();
+            assert!(format!("{err}").contains("unknown key"), "{extra}: {err}");
+        }
+    }
+
+    #[test]
+    fn file_named_for_zone() {
+        let dir = std::env::temp_dir().join(format!("kryptik-stem-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        // A set needs one zone holding the NIC.
+        let net = "[zone]\nname = \"net\"\n[network]\nmode = \"nic\"\n\
+                   [storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n[ui]\nborder_color = \"#123456\"\n";
+        fs::write(dir.join("net.toml"), net).unwrap();
+        fs::write(dir.join("10-vault.toml"), VAULT).unwrap();
+        let err = load_all(&dir).unwrap_err();
+        assert!(format!("{err}").contains("named vault.toml"), "got: {err}");
+        fs::rename(dir.join("10-vault.toml"), dir.join("vault.toml")).unwrap();
+        assert_eq!(load_all(&dir).unwrap().len(), 2);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn colour_case_ignored() {
+        let a = zone_with("a", "none", "#AA3333");
+        let b = zone_with("b", "none", "#aa3333");
+        assert!(check_invariants(&[a, b]).is_err());
     }
 
     #[test]
@@ -937,9 +936,8 @@ border_color = "#000000"
     }
 
     fn zone_with(name: &str, mode: &str, colour: &str) -> Zone {
-        let bridge = if mode == "nic" { "bridge = \"kryptik0\"\n" } else { "" };
         let text = format!(
-            "[zone]\nname = \"{name}\"\n[network]\nmode = \"{mode}\"\n{bridge}\
+            "[zone]\nname = \"{name}\"\n[network]\nmode = \"{mode}\"\n\
              [storage]\nmode = \"ephemeral\"\nsize = \"256M\"\n[ui]\nborder_color = \"{colour}\"\n"
         );
         Zone::from_str(&text).unwrap()
