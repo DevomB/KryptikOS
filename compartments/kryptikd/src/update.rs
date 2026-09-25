@@ -422,7 +422,8 @@ pub fn put(dir: &Path, checks: &Checks, now: i64, name: &str, offset: u64, bytes
     drop(f);
     if let Some(files) = files {
         let size = files.iter().find(|e| e.name == name).map_or(0, |e| e.size);
-        let have = held(&stage, name);
+        // may_put required `offset` bytes held, and the append wrote them all.
+        let have = offset + bytes.len() as u64;
         return Ok(if have == size { format!("{name} complete") } else { format!("{name} {have}/{size}") });
     }
     if held(&stage, "manifest") == 0 || held(&stage, "manifest.sig") == 0 {
