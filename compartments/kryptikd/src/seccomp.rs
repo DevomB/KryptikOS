@@ -178,6 +178,8 @@ pub const BASE_ALLOWLIST: &[libc::c_long] = &[
     /* tar, git, cargo and install(1) set modes. Paths outside the zone are
      * unreachable after pivot_root, and read-only mounts refuse chmod (EROFS). */
     libc::SYS_chmod, libc::SYS_fchmod, libc::SYS_fchmodat,
+    // glibc 2.39 and later make fchmodat with flags (rsync -a) this call.
+    libc::SYS_fchmodat2,
     /* gzip, xz and cp -a give a file they make its source's owner, and tar
      * does as root. Without CAP_CHOWN, and with only the zone's own ids
      * mapped, a chown is a no-op or fails. */
@@ -190,6 +192,11 @@ pub const BASE_ALLOWLIST: &[libc::c_long] = &[
     libc::SYS_sync, libc::SYS_syncfs,
     libc::SYS_getxattr, libc::SYS_lgetxattr, libc::SYS_fgetxattr,
     libc::SYS_listxattr, libc::SYS_llistxattr, libc::SYS_flistxattr,
+    /* install(1) resets a file's ACL through them, as do cp and tar keeping
+     * xattrs. A zone reaches only user.* and the ACLs of its own files: the
+     * security., trusted. and capability names need capabilities it lacks. */
+    libc::SYS_setxattr, libc::SYS_lsetxattr, libc::SYS_fsetxattr,
+    libc::SYS_removexattr, libc::SYS_lremovexattr, libc::SYS_fremovexattr,
 
     // --- memory ---
     libc::SYS_mmap, libc::SYS_munmap, libc::SYS_mremap, libc::SYS_brk,
@@ -204,6 +211,9 @@ pub const BASE_ALLOWLIST: &[libc::c_long] = &[
     libc::SYS_clone, libc::SYS_clone3, libc::SYS_fork, libc::SYS_vfork,
     libc::SYS_execve, libc::SYS_execveat, libc::SYS_exit, libc::SYS_exit_group,
     libc::SYS_wait4, libc::SYS_waitid,
+    /* Python's asyncio (3.12) watches its children through a pidfd. It names
+     * a process the zone can already see and kill; pidfd_getfd stays out. */
+    libc::SYS_pidfd_open, libc::SYS_pidfd_send_signal,
     libc::SYS_getpid, libc::SYS_getppid, libc::SYS_gettid,
     libc::SYS_getuid, libc::SYS_geteuid, libc::SYS_getgid, libc::SYS_getegid,
     libc::SYS_getgroups, libc::SYS_getpgrp, libc::SYS_getpgid, libc::SYS_setpgid,
@@ -1022,13 +1032,17 @@ mod tests {
     }
 
     #[test]
-    fn chmod_and_chown_allowed() {
+    fn everyday_file_calls_allowed() {
+        // Each killed a common program in a zone: tar, gzip, cp -a, rsync, install, asyncio.
         let allowed: HashSet<libc::c_long> = BASE_ALLOWLIST.iter().copied().collect();
-        for nr in [libc::SYS_chmod, libc::SYS_fchmod, libc::SYS_fchmodat] {
-            assert!(allowed.contains(&nr), "chmod family must be allowed (tar, git, cargo)");
-        }
-        for nr in [libc::SYS_chown, libc::SYS_fchown, libc::SYS_fchownat, libc::SYS_lchown] {
-            assert!(allowed.contains(&nr), "chown family must be allowed (gzip, xz, cp -a, tar)");
+        for nr in [
+            libc::SYS_chmod, libc::SYS_fchmod, libc::SYS_fchmodat, libc::SYS_fchmodat2,
+            libc::SYS_chown, libc::SYS_fchown, libc::SYS_fchownat, libc::SYS_lchown,
+            libc::SYS_setxattr, libc::SYS_lsetxattr, libc::SYS_fsetxattr,
+            libc::SYS_removexattr, libc::SYS_lremovexattr, libc::SYS_fremovexattr,
+            libc::SYS_pidfd_open, libc::SYS_pidfd_send_signal,
+        ] {
+            assert!(allowed.contains(&nr), "syscall {nr} must be allowed");
         }
     }
 

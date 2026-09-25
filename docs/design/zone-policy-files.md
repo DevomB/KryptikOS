@@ -30,7 +30,11 @@ keep-capability   CAP_NET_RAW         # left in the bounding set
   `CAP_NET_BIND_SERVICE`, which every zone keeps. `CAP_NET_ADMIN` and
   `CAP_NET_RAW` are accepted only for the `network.mode = "nic"` zone
   (`Policy::check_for_zone`): with either, a routed zone could re-address its
-  veth or forge frames.
+  veth or forge frames. The chown, chmod and xattr calls are in the base
+  list, so keeping `CAP_CHOWN`, `CAP_FOWNER` or `CAP_FSETID` takes effect
+  with no `allow-syscall` line. A zone's user namespace maps only its root
+  and nobody, so the most such a zone can do is move its own files between
+  those two.
 
 To find what a program needs, run it under the base filter with `kryptikd
 seccomp-trace -- CMD [ARGS]`. Each call the filter would kill the program for
