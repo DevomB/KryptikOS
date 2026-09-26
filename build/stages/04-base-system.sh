@@ -662,6 +662,9 @@ s_binutils_native() {
 s_readline() {
     local src; src="$(unpack "readline-${V_READLINE}.tar.gz" "readline-${V_READLINE}")"
     cd "$src"
+    # GNU's official patches, which the tarball does not carry (see the README).
+    apply_repo_patches "readline-${V_READLINE}"
+    [[ "$(tail -1 patchlevel)" == 6 ]] || { echo "FAIL: readline is not at patch level 6"; return 1; }
     sed -i 's/-Wl,-rpath,[^ ]*//' support/shobj-conf
     ./configure --prefix=/usr --disable-static --with-curses
     make
