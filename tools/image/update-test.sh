@@ -82,10 +82,24 @@ mk_variant() {   # mk_variant NAME [FILE...]
         rm -f "$BAD/$1/$f"; cp --sparse=always "$PAY_A/$f" "$BAD/$1/$f"
     done
 }
+# The byte at OFFSET, inverted: a fixed value can land on a byte that already
+# holds it, and the "modified" payload is then A itself.
+flip() {   # flip FILE OFFSET
+    local b; b="$(od -An -tu1 -j "$2" -N1 "$1" 2>/dev/null | tr -d ' ')" || b=""
+    [[ -n "$b" ]] || die "flip: ${1} has no byte at offset ${2}"
+    printf '%b' "\\x$(printf '%02x' $(( b ^ 255 )))" | dd of="$1" bs=1 seek="$2" conv=notrunc status=none
+}
+# A variant's FILE must not be the one A's manifest lists, or its refusal
+# check could pass on a genuine payload.
+changed() {   # changed NAME FILE
+    local want; want="$(awk -v f="$2" '$3 == f { print $1; exit }' "$PAY_A/manifest")"
+    [[ -n "$want" && "$(sha256sum "$BAD/$1/$2" | cut -c1-64)" != "$want" ]] \
+        || die "the ${1} variant's ${2} is still A's: its refusal check would pass on a genuine payload"
+}
 mk_variant wrongkey; ssh-keygen -q -t ed25519 -N "" -f "$BAD/otherkey" >/dev/null; rm -f "$BAD/wrongkey/manifest.sig"
 ssh-keygen -Y sign -f "$BAD/otherkey" -n kryptik-release "$BAD/wrongkey/manifest" >/dev/null 2>&1
-mk_variant modified kryptik-root.img; printf '\xff' | dd of="$BAD/modified/kryptik-root.img" bs=1 seek=$((4096*200+3)) conv=notrunc status=none
-mk_variant truncated kryptik-a.efi; truncate -s -1 "$BAD/truncated/kryptik-a.efi"
+mk_variant modified kryptik-root.img; flip "$BAD/modified/kryptik-root.img" $((4096*200+3)); changed modified kryptik-root.img
+mk_variant truncated kryptik-a.efi; truncate -s -1 "$BAD/truncated/kryptik-a.efi"; changed truncated kryptik-a.efi
 mk_variant extra; echo "ride along" > "$BAD/extra/extra.bin"
 # An empty lost+found (an ext4 payload disk's own) is allowed; a full one is not.
 mk_variant hidden; mkdir -p "$BAD/hidden/lost+found"; echo "ride along" > "$BAD/hidden/lost+found/ride"
