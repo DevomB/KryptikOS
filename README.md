@@ -173,6 +173,7 @@ updating and recovering a release: [docs/user-guide.md](docs/user-guide.md).
 - [Status](docs/status.md): what is tested and what the last run proved
 - [Roadmap](docs/roadmap.md): what remains for 1.0 and 2.0
 - [Building](docs/building.md) and the [user guide](docs/user-guide.md)
+- [Release keys](docs/release-keys.md): making, keeping, using and replacing the keys that sign releases
 
 Designs of the individual parts:
 

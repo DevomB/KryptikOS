@@ -71,6 +71,8 @@ Its private keys must be readable by their owner alone, who is root or the
 user running the build, and it must not be inside the work or output tree.
 Stage 06 checks all of that before it signs anything. It makes no key and
 copies none: the keys are read by the tools that sign with them, by path.
+Making the keys, publishing with them, and replacing them are in
+[release keys](release-keys.md).
 
 To publish a build, add its payload to the channel's directory, which any web
 server can then serve at that address:
