@@ -1,6 +1,4 @@
 #!/bin/sh
-# An authenticated login on the first virtual console. login(1) is shadow's.
-# The desktop session starts from the user's profile (see s_etc), so this is
-# the product's normal login path; the passwordless root shell exists only on
-# install media (see /usr/libexec/kryptik-console).
+# Authenticated login on tty1; the desktop session starts from the user's
+# profile. Only install media get a passwordless root shell (kryptik-console).
 exec /usr/sbin/agetty --noclear tty1 linux

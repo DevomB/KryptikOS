@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Stage 00 — verify the host can build Kryptik.
-# Based on the LFS host system requirements, plus Kryptik's own needs.
+# Stage 00: check the host can build Kryptik (LFS host requirements plus ours).
 
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
 
@@ -25,13 +24,8 @@ check_version() {
     fi
 }
 
-# Extract the first dotted version number from a tool's version output.
-#
-# No pipeline. A reader that exits early - `head -1`, `grep -m1`, `grep -q` -
-# hands the writer a SIGPIPE, and under `set -o pipefail` that turns a
-# succeeding command into a failing one. The `|| true` here used to hide that,
-# which is worse: the version came back empty and the host check reported a
-# missing tool that was installed and fine.
+# First dotted version number in a command's output. No pipeline: under
+# pipefail, a reader that exits early (head -1, grep -q) fails the writer.
 ver_of() {
     local out
     out="$("$@" 2>&1 || true)"
@@ -96,17 +90,14 @@ else
     err "awk must be a symlink to gawk"; FAIL=$((FAIL + 1))
 fi
 
-# yacc must be bison
 if have yacc && yacc --version 2>&1 | grep -qi bison; then
     ok "yacc -> bison"
 else
     warn "yacc is not bison — some packages will fail to build"; WARN=$((WARN + 1))
 fi
 
-# The build is disk- and memory-hungry.
-# The space that matters is where the build writes: KRYPTIK_WORK when it is
-# set (a CI runner keeps it on its large second disk while the checkout
-# sits on a small root disk), else the tree's default under the checkout.
+# Measure where the build writes: CI keeps KRYPTIK_WORK on a large second
+# disk, apart from the checkout's small root disk.
 space_dir="${KRYPTIK_WORK:-$KRYPTIK_ROOT/build/work}"
 mkdir -p "$space_dir" 2>/dev/null || space_dir="$KRYPTIK_ROOT"
 avail_gb=$(df -BG --output=avail "$space_dir" 2>/dev/null | tail -1 | tr -dc '0-9' || echo 0)
@@ -122,12 +113,10 @@ mem_gb=$(( $(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0) / 1
 if [[ "$mem_gb" -ge 8 ]]; then ok "memory: ${mem_gb}G"
 else warn "memory: ${mem_gb}G — GCC bootstrap wants 8G+"; WARN=$((WARN + 1)); fi
 
-# Report the number the stages will actually use, not nproc. They cap it
-# by available RAM, and a host check that promises -j8 on a box that will
-# build with -j4 is describing a different build.
+# The job count the stages will use (nproc capped by RAM).
 ok "parallelism: will use -j$(kryptik_default_jobs) ($(nproc) cpus, ${mem_gb}G ram)"
 
-# A C++ toolchain that cannot link is a classic silent failure.
+# A C++ toolchain that cannot link otherwise fails late and quietly.
 log "Compiler link test"
 tmpd="$(mktemp -d)"; trap 'rm -rf "$tmpd"' EXIT
 cat > "$tmpd/t.cpp" <<'CPP'

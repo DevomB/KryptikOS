@@ -1,15 +1,9 @@
 #!/usr/bin/env bash
-# Zones, the network and encrypted storage, measured on the installed system
-# (the zones suite). Runs as root inside the guest; tools/image/zones-test.sh
-# boots the disk, drives this over the serial login and reads the verdicts.
-#
-# Every line that matters starts with "ZT ": PASS/FAIL/INFO, then a name,
-# then what was seen. A check that could not run is a FAIL, never a pass.
-# The shipped zone definitions are used as shipped, from the verified
-# /usr/lib/kryptik/zones; nothing here writes a zone file.
-#
-# Addresses: a routed zone's bridge address is a function of its declared
-# identity (netzone::host_number): 10.19.0.(uid_base-131072)/65536+2.
+# Zones suite, run as root in the installed guest by tools/image/zones-test.sh:
+# zones, networking and encrypted storage, with the shipped zone files.
+# Output: "ZT PASS|FAIL|INFO name - detail"; a check that cannot run fails.
+# A routed zone's bridge address follows from its uid_base
+# (netzone::host_number): 10.19.0.((uid_base - 131072) / 65536 + 2).
 set -u
 Z=/usr/lib/kryptik/zones
 R=/var/lib/kryptik/zones
@@ -20,7 +14,7 @@ PASS=0; FAIL=0
 pass() { echo "ZT PASS $1${2:+ - $2}"; PASS=$((PASS + 1)); }
 fail() { echo "ZT FAIL $1${2:+ - $2}"; FAIL=$((FAIL + 1)); }
 info() { echo "ZT INFO $*"; }
-# run a command inside a zone (foreground) with a bounded time; output kept
+# Run CMD in a zone with a time limit; sets ZRC and ZOUT and keeps the output.
 zrun() {   # zrun ZONE TIMEOUT [--passphrase-file F] -- CMD...
     local zone="$1" t="$2"; shift 2
     local extra=()
@@ -57,12 +51,8 @@ if [[ -z "$(ip route show default 2>/dev/null)" ]]; then pass "zone0-no-route" "
 if ping -c1 -W2 10.0.2.2 >/dev/null 2>&1; then fail "zone0-offline" "zone 0 reached the VM gateway"; else pass "zone0-offline" "zone 0 cannot reach the VM gateway"; fi
 
 # --- zones: a routed zone reaches the world through net; vault reaches nothing --
-# The IPv6 echo waits for Duplicate Address Detection on the zone's fresh ULA
-# address: sent while the address is still tentative it fails at once with
-# EADDRNOTAVAIL. On bae1de53 it passed only because the IPv4 gateway echo
-# before it timed out (no uplink then), which was time enough; on 8333d751
-# the gateway answered at once and the IPv6 echo ran into the tentative
-# address (routed-ipv6-bridge failed with everything else green).
+# The IPv6 echo waits out duplicate address detection: from a still-tentative
+# address it fails at once with EADDRNOTAVAIL.
 UNT=$(host_of untrusted); PER=$(host_of personal)
 zrun untrusted 40 -- sh -c 'ip -4 -o addr show eth0; python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.19.0.1 3 >/dev/null 2>&1 && echo BRIDGE-OK; python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.0.2.2 3 >/dev/null 2>&1 && echo GATEWAY-OK; ip -6 -o addr show eth0 | grep -q " fd19:" && echo ULA-OK; ip -6 -o addr show eth0 | grep -qE " (2|3)[0-9a-f]{3}:" && echo GLOBAL6-PRESENT; for i in 1 2 3 4 5 6 7 8 9 10 11 12; do ip -6 -o addr show eth0 | grep -q tentative || break; sleep 0.5; done; python3 /usr/lib/kryptik/guest-tests/icmp-echo.py fd19::1 3 >/dev/null 2>&1 && echo BRIDGE6-OK; python3 - <<"PY"
 import socket, struct
@@ -82,7 +72,7 @@ PY'
 [[ "$ZOUT" == *BRIDGE6-OK* ]] && pass "routed-ipv6-bridge" || fail "routed-ipv6-bridge"
 [[ "$ZOUT" == *DNS-ANSWERED* ]] && pass "routed-dns" "$(grep -o 'DNS-ANSWERED.*' "$LOG/untrusted.out")" || fail "routed-dns" "$(grep -o 'DNS-.*' "$LOG/untrusted.out")"
 
-# (the vault, which is encrypted, is probed once its volume exists: storage, below)
+# (the vault is probed once its volume exists, under storage below)
 
 # --- zones: separation between routed zones; fail-closed on a net restart -------
 printf 'personal-pass\n' > /root/zt/personal.pass; chmod 600 /root/zt/personal.pass
@@ -93,14 +83,14 @@ setsid "$KD" run personal --zones "$Z" --rootfs "$R" --passphrase-file /root/zt/
 PBG=$!
 for _ in $(seq 1 60); do grep -q PERSONAL-UP "$LOG/personal-bg.out" 2>/dev/null && break; sleep 0.5; done
 grep -q PERSONAL-UP "$LOG/personal-bg.out" && pass "encrypted-zone-start" "personal up on its LUKS2 volume" || fail "encrypted-zone-start" "$(tail -3 "$LOG/personal-bg.out" | tr '\n' ' ')"
-[[ -e /dev/mapper/kryptik-personal ]] && pass "mapping-while-running" "/dev/mapper/kryptik-personal exists while the zone runs" || fail "mapping-while-running"
+[[ -e /dev/mapper/kryptik-zone-personal ]] && pass "mapping-while-running" "/dev/mapper/kryptik-zone-personal exists while the zone runs" || fail "mapping-while-running"
 zrun untrusted 30 -- sh -c "python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.19.0.$PER 2 >/dev/null 2>&1 && echo CROSS-ZONE-REACHED || echo CROSS-ZONE-BLOCKED; ls /var/lib/kryptik/volumes 2>&1 | head -1; ls /home 2>&1 | tr '\n' ' '"
 [[ "$ZOUT" == *CROSS-ZONE-BLOCKED* ]] && pass "zone-separation" "untrusted cannot reach personal (10.19.0.$PER) on the bridge" || fail "zone-separation" "$ZOUT"
 [[ "$ZOUT" == *"volumes"* && "$ZOUT" != *"No such"* ]] && fail "volume-hidden" "the volume directory is visible from untrusted" || pass "volume-hidden" "no /var/lib/kryptik/volumes inside untrusted"
 [[ "$ZOUT" == *"personal"* ]] && fail "home-hidden" "another zone's home is visible" || pass "home-hidden" "no other zone's home under /home"
 
-# the net zone restarted: routed zones fail closed while it is down, come back when it is up
-# grep -c prints its 0 AND exits 1, so "|| echo 0" made this two numbers
+# net zone restart: routed zones fail closed while it is down, recover after
+# Not `|| echo 0`: grep -c prints 0 and also exits 1.
 before="$(grep -hc 'netzone: READY' /run/uncaught-logs/current 2>/dev/null)"; before="${before:-0}"
 s6-svc -d /run/service/net-zone; sleep 3
 zrun untrusted 20 -- sh -c 'python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.0.2.2 2 >/dev/null 2>&1 && echo EGRESS-WHILE-DOWN || echo CLOSED-WHILE-DOWN; ip -o link show eth0 >/dev/null 2>&1 && echo HAS-ETH0 || echo NO-ETH0'
@@ -120,9 +110,8 @@ ppid="$(cat /run/kryptik/zones/personal/init.pid 2>/dev/null | cut -d' ' -f1)"
 if [[ -n "$ppid" ]] && nsenter -t "$ppid" -n ping -c1 -W3 10.0.2.2 >/dev/null 2>&1; then pass "reattach-after-restart" "the zone that was running has egress again"; else fail "reattach-after-restart" "personal (init $ppid) has no egress after the net restart"; fi
 
 # --- the clock: zone 0 decides, the net zone only claims ----------------------------
-# (docs/design/time.md) Everything here is done to the real clock of a
-# disposable machine, and the clock is put back afterwards from the boot
-# clock, which nothing here touches.
+# (docs/design/time.md) This moves the real clock of a disposable machine and
+# puts it back from the boot clock, which nothing here touches.
 up_s() { cut -d' ' -f1 /proc/uptime | cut -d. -f1; }
 T_WALL0="$(date +%s)"; T_UP0="$(up_s)"
 true_now() { echo $(( T_WALL0 + $(up_s) - T_UP0 )); }
@@ -130,9 +119,8 @@ put_clock_back() { date -u -s "@$(true_now)" >/dev/null 2>&1; command -v hwclock
 FLOOR="$("$KD" time status 2>/dev/null | sed -n 's/^floor  *\([0-9-]* [0-9:]*\) UTC.*/\1/p')"
 # An unknown floor must stay unknown: `date -d " UTC"` is today's midnight.
 FLOOR_S=0; [[ -n "$FLOOR" ]] && FLOOR_S="$(date -u -d "${FLOOR} UTC" +%s 2>/dev/null || echo 0)"
-# a claim made with the net zone's own identity, through its own broker
-# socket: a process in the running zone's user and mount namespaces is host
-# uid <net's uid_base>, which is the one peer that broker accepts.
+# Claims go through the net zone's broker socket from inside its user and mount
+# namespaces: host uid = net's uid_base, the only peer that broker accepts.
 net_init="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
 claim() {   # claim SECONDS -> the broker's one-line reply
     rm -f /var/lib/kryptik/time/state      # each row is judged on its own, not against the last one's window
@@ -169,11 +157,9 @@ if [[ "$FLOOR_S" -gt 0 ]]; then
         if [[ "$r" == error:*consent* ]] && (( after - before < 90 )); then pass "time-claim-consent" "a day's jump is not applied without the person (${r#error: })"; else fail "time-claim-consent" "reply '${r}', clock moved $(( after - before )) s"; fi
         put_clock_back
 
-        # The whole path against a real time server, only where one answers
-        # through this network: the clock is set five minutes fast; the net
-        # zone, restarted, must measure about -300 and zone 0 must then put the
-        # clock right by itself. (The sign itself is settled offline, against a
-        # server on loopback, in tools/test-netzone-time.sh.)
+        # End to end, only where a time server answers: with the clock 300 s
+        # fast, the restarted net zone must measure about -300 and zone 0 must
+        # correct it (tools/test-netzone-time.sh checks the sign offline).
         case "$ready_time" in
             time=-[0-9]*|time=[0-9]*)
                 date -u -s "@$(( $(true_now) + 300 ))" >/dev/null 2>&1; rm -f /var/lib/kryptik/time/state
@@ -198,12 +184,9 @@ else
 fi
 
 # --- zones: resource limits and lifecycle ------------------------------------------
-# The storm is python, not the shell: bash answers a failed fork with four
-# retries and sleeps that add up to fifteen seconds, so a shell loop that
-# runs into pids.max never reaches its own end inside the timeout (the first
-# run on installed media timed out here). python's fork raises at once, the
-# loop stops at the limit, and the zone - pid 1 of its namespace - exits and
-# takes the sleepers with it.
+# A python fork storm: bash retries a failed fork for about 15 s, so a shell
+# loop would not reach pids.max within the timeout. When the zone's pid 1
+# exits, the sleepers go with it.
 STORM='import os, time
 n = 0
 for i in range(3000):
@@ -220,8 +203,7 @@ zrun untrusted 60 -- /usr/bin/python3 -c "$STORM"
 if [[ "$ZOUT" == *LIMIT-SURVIVED* ]]; then
     forked="$(grep -o 'FORKED=[0-9]*' "$LOG/untrusted.out" | cut -d= -f2)"
     limit="$(sed -n 's/^pids_max *= *\([0-9]*\).*/\1/p' "$Z/untrusted.toml")"
-    # Under the limit, and near it: a storm the limit never touched would
-    # have forked all 3000, and one that failed early proves nothing.
+    # At most the limit, and at least half of it, or the check proves nothing.
     [[ -n "$forked" && "$forked" -le "${limit:-1024}" && "$forked" -ge $(( ${limit:-1024} / 2 )) ]] && pass "pids-limit" "bounded at pids_max=$limit (forked $forked before EAGAIN), zone survived" || fail "pids-limit" "forked=$forked limit=$limit"
 else
     fail "pids-limit" "the zone did not survive the fork storm: $(tail -2 "$LOG/untrusted.err" | tr '\n' ' ')"
@@ -233,19 +215,19 @@ for i in 1 2 3; do zrun untrusted 20 -- true; [[ "$ZRC" = 0 ]] || fail "lifecycl
 [[ "$ZRC" = 0 ]] && pass "lifecycle-repeat" "untrusted started and exited three times"
 "$KD" status untrusted 2>&1 | grep -qi 'running' && fail "lifecycle-registry" "untrusted still registered as running" || pass "lifecycle-registry" "$("$KD" status untrusted 2>&1 | head -1)"
 "$KD" stop personal >/dev/null 2>&1; wait "$PBG" 2>/dev/null
-for _ in $(seq 1 20); do [[ -e /dev/mapper/kryptik-personal ]] || break; sleep 0.5; done
-[[ -e /dev/mapper/kryptik-personal ]] && fail "stop-closes-volume" "mapping still present after stop" || pass "stop-closes-volume" "the LUKS mapping is gone after stop"
+for _ in $(seq 1 20); do [[ -e /dev/mapper/kryptik-zone-personal ]] || break; sleep 0.5; done
+[[ -e /dev/mapper/kryptik-zone-personal ]] && fail "stop-closes-volume" "mapping still present after stop" || pass "stop-closes-volume" "the LUKS mapping is gone after stop"
 mountpoint -q "$R/personal" && fail "stop-unmounts" "plaintext still mounted" || pass "stop-unmounts" "nothing mounted at $R/personal after stop"
 
 # --- storage: encrypted storage lifecycle ----------------------------------------
 printf 'wrong-pass\n' > /root/zt/wrong.pass; chmod 600 /root/zt/wrong.pass
 zrun personal 30 --passphrase-file /root/zt/wrong.pass -- sh -c 'echo SHOULD-NOT-RUN'
-if [[ "$ZRC" != 0 && "$ZOUT" != *SHOULD-NOT-RUN* && ! -e /dev/mapper/kryptik-personal ]]; then pass "wrong-passphrase" "refused, no mapping left"; else fail "wrong-passphrase" "rc=$ZRC out=$ZOUT"; fi
+if [[ "$ZRC" != 0 && "$ZOUT" != *SHOULD-NOT-RUN* && ! -e /dev/mapper/kryptik-zone-personal ]]; then pass "wrong-passphrase" "refused, no mapping left"; else fail "wrong-passphrase" "rc=$ZRC out=$ZOUT"; fi
 zrun personal 30 --passphrase-file /root/zt/personal.pass -- sh -c 'echo secret-data-1 > "$HOME/keep" && sync && echo WROTE'
 [[ "$ZOUT" == *WROTE* ]] && pass "persist-write" || fail "persist-write" "$(tail -2 "$LOG/personal.err" | tr '\n' ' ')"
 zrun personal 30 --passphrase-file /root/zt/personal.pass -- sh -c 'cat "$HOME/keep"'
 [[ "$ZOUT" == *secret-data-1* ]] && pass "persist-reopen" "data survives stop and restart" || fail "persist-reopen" "$ZOUT"
-[[ -e /dev/mapper/kryptik-personal ]] && fail "no-mapping-after" || pass "no-mapping-after" "no mapping after the zone exited"
+[[ -e /dev/mapper/kryptik-zone-personal ]] && fail "no-mapping-after" || pass "no-mapping-after" "no mapping after the zone exited"
 [[ -z "$(ls -A "$R/personal" 2>/dev/null)" ]] && pass "no-plaintext-after" "the mount point is empty after the zone exited" || fail "no-plaintext-after" "$(ls -A "$R/personal" | head -3 | tr '\n' ' ')"
 zrun untrusted 30 -- sh -c 'echo ephemeral-1 > "$HOME/eph" && echo EPH-WROTE'
 zrun untrusted 30 -- sh -c 'test -f "$HOME/eph" && echo EPH-STILL-THERE || echo EPH-GONE'
@@ -262,10 +244,8 @@ zrun personal 120 --passphrase-file /root/zt/personal.pass -- sh -c 'dd if=/dev/
 [[ "$ZOUT" == *FULL-SURVIVED* && "$ZOUT" == *secret-data-1* ]] && pass "full-volume" "ENOSPC inside the volume; the zone and its data survived" || fail "full-volume" "$(tail -2 "$LOG/personal.err" | tr '\n' ' ')"
 # header backup and restore
 if "$KD" volume backup-header personal /root/zt/personal.hdr > "$LOG/hdr.out" 2>&1; then
-    # Both LUKS2 headers: the primary at 0 and the secondary at the metadata
-    # size (16 KiB by default). Zeroing only the first 16 KiB left the
-    # secondary intact and cryptsetup opened the volume from it, which is
-    # cryptsetup being good, not the volume being refused.
+    # Zero both LUKS2 headers: cryptsetup falls back to the secondary one, at
+    # the metadata size (16 KiB by default).
     dd if=/dev/zero of="$R/../volumes/personal.luks" bs=4096 count=16 conv=notrunc status=none
     zrun personal 30 --passphrase-file /root/zt/personal.pass -- sh -c 'echo OPENED-DAMAGED'
     [[ "$ZRC" != 0 && "$ZOUT" != *OPENED-DAMAGED* ]] && pass "damaged-header-refused" "a volume with both headers zeroed does not open" || fail "damaged-header-refused" "rc=$ZRC"
@@ -283,8 +263,8 @@ printf 'vault-pass\n' > /root/zt/vault.pass; chmod 600 /root/zt/vault.pass
 "$KD" volume init vault --size 64M --passphrase-file /root/zt/vault.pass > "$LOG/vol-vault.out" 2>&1 || fail "vault-volume" "$(tail -1 "$LOG/vol-vault.out")"
 zrun vault 30 --passphrase-file /root/zt/vault.pass -- sh -c 'echo LINKS=$(ip -o link | grep -vc " lo:"); python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.19.0.1 1 >/dev/null 2>&1 && echo VAULT-REACHED-BRIDGE || echo VAULT-ISOLATED; echo vault-secret > "$HOME/v" && echo VAULT-WROTE'
 [[ "$ZOUT" == *VAULT-ISOLATED* && "$ZOUT" == *VAULT-WROTE* && "$ZOUT" == *LINKS=0* ]] && pass "vault-offline" "vault has loopback only, no path to the bridge, and keeps data" || fail "vault-offline" "$(tr '\n' ' ' <<<"$ZOUT") $(tail -1 "$LOG/vault.err")"
-# keys and passphrases: none on any command line or in the registry. The
-# pattern is spelled so that this grep's own command line does not match it.
+# No passphrase on any command line or in the registry. The [s] keeps this
+# grep's own command line from matching.
 if grep -rqs 'personal-pas[s]\|vault-pas[s]' /run/kryptik /proc/*/cmdline 2>/dev/null; then fail "no-passphrase-leak" "a passphrase appeared in the registry or a command line"; else pass "no-passphrase-leak" "no passphrase in /run/kryptik or any command line"; fi
 
 echo "ZT SUMMARY passed=$PASS failed=$FAIL"

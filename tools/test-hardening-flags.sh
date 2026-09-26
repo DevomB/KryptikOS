@@ -1,34 +1,18 @@
 #!/usr/bin/env bash
-# Regression test: the hardening flag set must build BOTH kinds of output.
-#
-# WHY THIS EXISTS
-#
-# build/config/hardening.env once carried -fPIE and -pie. Executables came out
-# fine, so the flags looked correct. Every shared library in the distribution
-# failed to link:
-#
-#   -pie makes the linker pull in Scrt1.o, the executable startup object, which
-#   references main(). A .so has no main, so the link dies with
-#     ld: Scrt1.o: in function `_start`: undefined reference to `main`
-#
-# Python was simply the first package in the stage 04 build order to produce a
-# .so. Every library after it would have failed identically. The flags were
-# removed - Kryptik's GCC is configured --enable-default-pie, so executables
-# are position-independent without them - and this test exists so the removal
-# stays removed and the reasoning stays checked.
-#
-# A flag set is only verified when it has been used to build an executable AND
-# a shared library AND something that links the two together.
+# Check that the hardening flags build an executable, a shared library, and a
+# program linking the two.
 #
 #   tools/test-hardening-flags.sh          test with $CC (default gcc)
 #   CC=x86_64-kryptik-linux-gnu-gcc ...    test the cross compiler
 #
-# Run it inside the chroot to test the flags as stage 04 actually applies them.
+# -pie must stay out of the flags: it links Scrt1.o, whose _start needs main(),
+# so every shared library fails with "undefined reference to `main'". GCC is
+# --enable-default-pie, so executables are PIE anyway. Run inside the chroot to
+# test the flags as stage 04 applies them.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 
-# This script reports failures itself; the ERR trap would abort on the first
-# non-zero probe.
+# Probes fail by design; the ERR trap would abort on the first one.
 trap - ERR
 set +e
 
@@ -59,9 +43,6 @@ echo "  CFLAGS   : ${HCFLAGS}"
 echo "  LDFLAGS  : ${HLDFLAGS}"
 echo
 
-# ---------------------------------------------------------------------------
-# 1. The flag set must not reintroduce forced PIE.
-# ---------------------------------------------------------------------------
 echo "-- the flag set itself"
 if [[ " ${HCFLAGS} ${HLDFLAGS} " == *" -pie "* ]]; then
     red "no globally forced -pie (it breaks every shared library; see header)"
@@ -74,8 +55,7 @@ else
     green "no globally forced -fPIE"
 fi
 
-# A flag the compiler does not understand is a flag that is not applied, and
-# with most of these GCC warns rather than errors.
+# -Werror: for most flags it does not understand, GCC only warns.
 for f in $HCFLAGS; do
     if echo 'int main(void){return 0;}' | \
        "$CC" -Werror -x c - "$f" -o "$WORK/flagprobe" >/dev/null 2>&1; then
@@ -87,9 +67,6 @@ done
 rm -f "$WORK/flagprobe"
 echo
 
-# ---------------------------------------------------------------------------
-# 2. An executable.
-# ---------------------------------------------------------------------------
 echo "-- executable"
 cat > "$WORK/exe.c" <<'C'
 #include <stdio.h>
@@ -119,9 +96,7 @@ else
 fi
 echo
 
-# ---------------------------------------------------------------------------
-# 3. A shared library. THIS is the case -pie broke.
-# ---------------------------------------------------------------------------
+# The case -pie breaks.
 echo "-- shared library"
 cat > "$WORK/lib.c" <<'C'
 #include <string.h>
@@ -156,12 +131,7 @@ else
 fi
 echo
 
-# ---------------------------------------------------------------------------
-# 4. The properties the flags are supposed to produce.
-#
-# A flag that is accepted but produces nothing is the failure mode that looks
-# like success, so each claim is checked against the actual ELF.
-# ---------------------------------------------------------------------------
+# An accepted flag can still produce nothing, so check the ELF.
 echo "-- what landed in the binaries"
 
 if ! have readelf; then
@@ -198,9 +168,7 @@ else
         fi
     done
 
-    # PIE is a property of the COMPILER's configuration, not of these flags -
-    # that is the whole argument for having removed -pie. So assert it only
-    # where the compiler claims default-pie, and say so plainly otherwise.
+    # PIE comes from the compiler's configuration, not from these flags.
     if [[ -e "$WORK/exe" ]]; then
         if "$CC" -v 2>&1 | grep -q -- "--enable-default-pie"; then
             if readelf -h "$WORK/exe" 2>/dev/null | grep -q "DYN (Position-Independent"; then
@@ -215,8 +183,7 @@ else
         fi
     fi
 
-    # Fortify and the stack protector leave symbols behind; their absence
-    # means the flag did not take even though it was accepted.
+    # Fortify and SSP leave symbols behind; none means the flag did not take.
     if have nm; then
         if nm -u "$WORK/exe" 2>/dev/null | grep -q "__strncpy_chk\|__memcpy_chk\|_chk@"; then
             green "exe: _FORTIFY_SOURCE is active (checked libc call emitted)"
@@ -233,13 +200,7 @@ else
 fi
 echo
 
-# ---------------------------------------------------------------------------
-# 5. The per-package exception mechanism.
-#
-# Exceptions drop ONE flag for ONE package. A mechanism that silently drops
-# nothing, or drops everything, is worse than no mechanism: the exception file
-# would then be documentation of something that is not happening.
-# ---------------------------------------------------------------------------
+# Each exception must drop one flag that is really in the set.
 echo "-- hardening exceptions"
 EXC="${KRYPTIK_ROOT}/build/config/hardening-exceptions.txt"
 if [[ ! -f "$EXC" ]]; then

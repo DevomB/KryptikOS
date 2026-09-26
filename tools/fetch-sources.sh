@@ -5,11 +5,8 @@
 #   ./tools/fetch-sources.sh --lock     download and WRITE sources.lock
 #   ./tools/fetch-sources.sh --list     print the resolved URL list, download nothing
 #
-# On checksums: this script never invents them. `--lock` records what it
-# actually downloaded; verification mode refuses anything that does not match a
-# recorded hash. A generated lock is trust-on-first-use and is NOT a substitute
-# for checking upstream signatures — audit it before committing. See
-# docs/supply-chain.md.
+# --lock records whatever downloads (trust on first use): audit it before
+# committing. See docs/supply-chain.md.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 load_config
@@ -22,34 +19,13 @@ case "${1:-}" in
     *)      die "unknown argument: $1 (expected --lock, --list, or nothing)" ;;
 esac
 
-# Self-test hook. tools/test-fetch-sources.sh substitutes a small manifest of
-# file:// URLs so the checksum logic below - which is the part that enforces
-# sources.lock - can be driven offline. Only the manifest is substituted; the
-# download, the hashing and the refusal all run as they do in production.
-#
-# Gated, because a substituted manifest is a substituted definition of what
-# Kryptik is built from.
+# Test hook: tools/test-fetch-sources.sh substitutes a manifest of file:// URLs.
 if [[ -n "${KRYPTIK_FETCH_MANIFEST:-}" ]]; then
     [[ "${KRYPTIK_FETCH_SELFTEST:-0}" == "1" ]] || die \
 "KRYPTIK_FETCH_MANIFEST is set but KRYPTIK_FETCH_SELFTEST is not.
 Refusing to fetch or lock against a substituted manifest."
     warn "SELF-TEST MODE: the manifest is substituted, not the real one"
 fi
-
-# WHY bc CARRIES A DEFAULT VERSION AND NOTHING ELSE DOES.
-#
-# bc is a build-time requirement of the KERNEL, not a shipped convenience:
-# linux/Kbuild generates include/generated/timeconst.h with `bc -q`, and
-# arch/x86 asm-offsets depends on that header, so stage 05 dies at "bc:
-# command not found" after its config step has already succeeded.
-#
-# `${V_BC:-1.08.2}` exists so that this row and the `V_BC` pin in
-# build/config/versions.env can land in either order without breaking a build
-# in flight - versions.env is the build's, this file is provenance's.
-# The default cannot smuggle in an unaudited source: sources.lock pins the
-# BYTES by filename, so any other value for V_BC produces a filename with no
-# lock entry and fetch-sources.sh refuses it by name. Remove the default once
-# versions.env carries the pin; it is redundancy for a handover, not policy.
 
 # name|version|url
 manifest() {
@@ -92,7 +68,7 @@ openssl|${V_OPENSSL}|https://www.openssl.org/source/openssl-${V_OPENSSL}.tar.gz
 bc|${V_BC}|${gnu}/bc/bc-${V_BC}.tar.gz
 bison|${V_BISON}|${gnu}/bison/bison-${V_BISON}.tar.xz
 flex|${V_FLEX}|${MIRROR_GITHUB}/westes/flex/releases/download/v${V_FLEX}/flex-${V_FLEX}.tar.gz
-gdbm|${V_GDBM:-1.26}|${gnu}/gdbm/gdbm-${V_GDBM:-1.26}.tar.gz
+gdbm|${V_GDBM}|${gnu}/gdbm/gdbm-${V_GDBM}.tar.gz
 gettext|${V_GETTEXT}|${gnu}/gettext/gettext-${V_GETTEXT}.tar.xz
 texinfo|${V_TEXINFO}|${gnu}/texinfo/texinfo-${V_TEXINFO}.tar.xz
 libtool|${V_LIBTOOL}|${gnu}/libtool/libtool-${V_LIBTOOL}.tar.xz
@@ -180,15 +156,7 @@ fi
 
 mkdir -p "$KRYPTIK_SOURCES"
 
-# Download one file, trying mirrors in order.
-#
-# Three things learned the hard way from ftp.gnu.org:
-#   --no-progress-meter   the progress bar renders as thousands of lines when
-#                         stdout is not a terminal, burying real errors
-#   --speed-limit/-time   a transfer that stalls at 54% otherwise hangs for
-#                         minutes before curl gives up; fail fast and retry
-#   -C -                  resume a partial file rather than restarting a 140MB
-#                         kernel tarball from zero
+# fetch_one <url> <dest>: try each mirror in order.
 fetch_one() {
     local url="$1" dest="$2"
     local -a urls=("$url")
@@ -198,25 +166,9 @@ fetch_one() {
         urls+=("${MIRROR_GNU_FALLBACK}/${url#"${MIRROR_GNU}/"}")
     fi
 
-    # One place, two attempts per mirror: resume, then - if resuming is what
-    # failed - from the start.
-    #
-    # A STALE PARTIAL USED TO WEDGE A SOURCE FOREVER. `-C -` asks the server to
-    # continue from the size of the local .part. If that partial is LONGER than
-    # the upstream file, the range is unsatisfiable: curl exits 36 ("failed to
-    # resume") for file:// and 33/416 over HTTP. The old loop treated that as a
-    # dead mirror, tried the fallback, failed the same way, and died with
-    # "Tried every mirror. Re-run to resume - partial downloads are kept."
-    #
-    # Every subsequent run then did exactly the same thing, because the thing
-    # keeping it broken was the file the message promised to keep. Measured: a
-    # 90000-byte .part against a 65536-byte upstream file failed identically on
-    # every attempt, blaming the mirrors for a problem on local disk.
-    #
-    # So a failed attempt that had a partial to resume from discards it and
-    # retries the SAME url once from zero before moving on. A genuinely dead
-    # mirror still falls through to the next one; a poisoned partial no longer
-    # survives to poison the retry.
+    # Per mirror: resume, then, if a partial existed, once more from zero. A
+    # .part longer than the upstream file makes every resume fail (curl 36 for
+    # file://, 33 or HTTP 416) and would otherwise fail every mirror on every run.
     local u attempt=0
     for u in "${urls[@]}"; do
         attempt=$((attempt + 1))
@@ -232,12 +184,13 @@ fetch_one() {
         warn "failed from ${u}"
     done
 
-    # Keep any .part: the next run resumes instead of restarting. It is only
-    # kept when it was not itself the reason for the failure.
+    # A .part is kept for the next run unless resuming from it failed.
     return 1
 }
 
 # fetch_attempt <url> <dest> resume|fresh
+# --no-progress-meter: the bar floods logs that are not a terminal.
+# --speed-limit/--speed-time: fail a stalled transfer fast, then retry.
 fetch_attempt() {
     local u="$1" dest="$2" mode="$3"
     local -a resume=()
@@ -300,10 +253,7 @@ Run './tools/fetch-sources.sh --lock' to generate one, then audit it."
             err "CHECKSUM MISMATCH for ${file}"
             err "  expected ${expected}"
             err "  actual   ${actual}"
-            # The same mismatch means two very different things, and the
-            # operator needs to know which one they are looking at. Neither
-            # case deletes anything: a hash that does not match is evidence,
-            # and evidence is not something a tool should destroy on its own.
+            # Nothing is deleted: a mismatching file is evidence.
             if [[ "$was_fetched" == yes ]]; then
                 die "This file was downloaded just now, so the DOWNLOAD is
 wrong rather than the disk: a bad mirror, or a stale partial file that

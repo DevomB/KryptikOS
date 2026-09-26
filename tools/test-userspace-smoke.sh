@@ -1,23 +1,12 @@
 #!/usr/bin/env bash
-# Does the built userspace actually run? Run as root.
-#
-# boot-check asserted that files exist. This runs them. "Present" and "works"
-# are different claims, and the gap between them is where a sysroot that looks
-# finished panics on first boot.
+# Run the built sysroot's programs in a chroot: they must work, not merely
+# exist. Needs root.
 set -uo pipefail
-# The tree this script lives in, and the build contract (the same variables
-# make passes to every stage) - not a path to one machine's checkout, which
-# is what this used to carry and why it reported "no build worktree" on
-# every other machine, including the one that built the system.
+# This checkout, and the variables make passes to every stage.
 WT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${KRYPTIK_WORK:-$WT/build/work}"
 SOURCES="${KRYPTIK_SOURCES:-$WT/sources}"
-# Exit 77, not 1: this suite runs the built sysroot in a chroot, so it needs
-# root AND it needs that sysroot to exist on this machine. Neither is true in
-# CI, and "cannot run here" is a different fact from "failed" - reporting it as
-# a failure made the whole fixture-suite job red for a reason that says nothing
-# about the code. 77 is the autotools convention for skipped, and the CI loop
-# lists what it skipped rather than counting it as a pass.
+# 77 (skipped), not a failure, without root or a built sysroot, as in CI.
 if [[ "$(id -u)" -ne 0 ]]; then
     echo "SKIP (77): needs root - this suite chroots into the built sysroot"
     exit 77
@@ -31,11 +20,8 @@ mkdir -p "$WORK/logs"
 LOG="$WORK/logs/userspace-smoke.$(date +%Y%m%dT%H%M%S).log"
 ln -sfn "$LOG" "$WORK/logs/userspace-smoke.latest.log"
 
-# The versions the checks below expect come from the build contract itself,
-# build/config/versions.env - the one place a pin lives. This file used to
-# carry its own copies, and one fell behind an upgrade (OpenSSL 3.3 to 3.5)
-# while the build was right. They go into the head of the inner script,
-# which runs inside the chroot and cannot read the repository's copy.
+# Expected versions come from build/config/versions.env, written into the head
+# of the inner script, which runs in the chroot and cannot read the repository.
 # shellcheck source=/dev/null
 . "$WT/build/config/versions.env"
 {
@@ -128,10 +114,8 @@ INNER
 chmod 0755 /tmp/kryptik-smoke-inner.sh
 cp /tmp/kryptik-smoke-inner.sh "$WORK/sysroot/run-smoke.sh" 2>/dev/null || true
 
-# The status has to leave the redirection block by hand. `rc=$?` after a
-# `{ ... } >> log` reads the last command INSIDE the block - here an echo,
-# which always succeeds - so the runner would report success for a failed
-# smoke test. Same shape as the bug in this build's own runner scripts.
+# The status leaves the block through a file: $? after `{ ... } >> log` would
+# be the block's last command, an echo.
 RCFILE="$(mktemp)"
 {
     date -Iseconds
@@ -143,8 +127,7 @@ RCFILE="$(mktemp)"
 } >> "$LOG" 2>&1
 rc="$(cat "$RCFILE")"; rm -f "$RCFILE"
 
-# Put the tree back exactly as it was: the copied script is the only thing
-# this added, and the manifest must describe the sysroot, not the test.
+# The sysroot's manifest must not include the test script.
 rm -f "$WORK/sysroot/run-smoke.sh"
 
 sed -n '/== identity ==/,$p' "$LOG"

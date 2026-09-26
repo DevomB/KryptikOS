@@ -1,14 +1,6 @@
 #!/usr/bin/env bash
-# Regression test for tools/check-artifact-hardening.sh.
-#
-# A checker that reports nothing is indistinguishable from a checker that finds
-# nothing, and the second is what you want to believe. So every detection here
-# has a POSITIVE CONTROL: a deliberately broken object is built, the checker
-# must fail on it, and a correct object built the same way must pass.
-#
-# The controls are built, not fixtured, because the thing under test is what a
-# compiler and linker actually emit - a checked-in binary would drift away from
-# the toolchain that produces the real artifacts.
+# Tests for tools/check-artifact-hardening.sh, on objects compiled here (not
+# checked in) so they match the real toolchain.
 
 set -uo pipefail
 
@@ -42,8 +34,7 @@ echo 'int twice(int x) { return x * 2; }' > "$libsrc"
 HARD="-O2 -D_FORTIFY_SOURCE=3 -fstack-protector-strong -fcf-protection=full"
 HLD="-Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack"
 
-# Each case gets its OWN root, so one case's finding cannot be read as
-# another's.
+# One root per case, so findings cannot bleed between cases.
 mkroot() { local d="$W/$1/usr/bin"; mkdir -p "$d"; printf '%s' "$W/$1"; }
 
 run_check() {  # run_check <root> [extra args...] -> prints output, returns rc
@@ -51,12 +42,7 @@ run_check() {  # run_check <root> [extra args...] -> prints output, returns rc
     KRYPTIK_WORK="$W/work" "$CHECK" "$r" "$@" 2>&1
 }
 
-# ---------------------------------------------------------------------------
-# 1. The negative control: a correctly built executable and library pass.
-#
-# Without this, every other case below could be satisfied by a checker that
-# fails on everything.
-# ---------------------------------------------------------------------------
+# Control: a well-built executable and library pass.
 clean_root="$(mkroot clean)"
 # shellcheck disable=SC2086
 $CC $HARD $HLD -o "$clean_root/usr/bin/good" "$src" 2>/dev/null
@@ -72,9 +58,6 @@ check "clean tree: no hard finding" \
 check "clean tree: saw the stack protector in the ELF" \
       "$(grep -qE 'with SSP +[1-9]' <<<"$out" && echo ok)"
 
-# ---------------------------------------------------------------------------
-# 2. Executable stack — positive control.
-# ---------------------------------------------------------------------------
 es_root="$(mkroot execstack)"
 # shellcheck disable=SC2086
 $CC $HARD -Wl,-z,execstack -o "$es_root/usr/bin/bad" "$src" 2>/dev/null
@@ -82,12 +65,7 @@ out="$(run_check "$es_root")"; rc=$?
 check "executable stack: detected" "$(grep -q 'EXEC-STACK' <<<"$out" && echo ok)"
 check "executable stack: exits non-zero" "$([[ $rc -ne 0 ]] && echo ok)"
 
-# ---------------------------------------------------------------------------
-# 3. An RPATH naming the build tree — positive control.
-#
-# This is the one that matters most in practice: the binary runs perfectly on
-# the machine that built it and loads the wrong library, or none, anywhere else.
-# ---------------------------------------------------------------------------
+# An RPATH into the build tree: fine where built, the wrong library elsewhere.
 rp_root="$(mkroot rpath)"
 mkdir -p "$W/work/build/fake-lib"
 # shellcheck disable=SC2086
@@ -97,7 +75,7 @@ out="$(run_check "$rp_root")"; rc=$?
 check "build-tree RPATH: detected" "$(grep -q 'BUILD-RPATH' <<<"$out" && echo ok)"
 check "build-tree RPATH: exits non-zero" "$([[ $rc -ne 0 ]] && echo ok)"
 
-# A system RPATH is reported, not failed - plenty of packages set one legitimately.
+# A system RPATH is reported, not failed: packages set them legitimately.
 sysrp_root="$(mkroot sysrpath)"
 # shellcheck disable=SC2086
 $CC $HARD $HLD -Wl,-rpath,/usr/lib/kryptik -o "$sysrp_root/usr/bin/ok" "$src" 2>/dev/null
@@ -105,9 +83,7 @@ out="$(run_check "$sysrp_root")"; rc=$?
 check "system RPATH: reported, not failed" \
       "$({ [[ $rc -eq 0 ]] && grep -q 'RPATH' <<<"$out"; } && echo ok)"
 
-# ---------------------------------------------------------------------------
-# 4. Soft findings are reported by default and fail under --strict.
-# ---------------------------------------------------------------------------
+# Soft findings: reported, fatal only under --strict.
 np_root="$(mkroot nopie)"
 # shellcheck disable=SC2086
 $CC $HARD $HLD -no-pie -o "$np_root/usr/bin/notpie" "$src" 2>/dev/null
@@ -123,12 +99,7 @@ $CC $HARD -Wl,-z,norelro -o "$norelro_root/usr/bin/nr" "$src" 2>/dev/null
 out="$(run_check "$norelro_root")"
 check "missing RELRO: reported" "$(grep -q 'NO-RELRO' <<<"$out" && echo ok)"
 
-# ---------------------------------------------------------------------------
-# 5. The cross toolchain under /tools is excluded.
-#
-# Stage 01 builds it deliberately without hardening. Auditing it would report
-# a couple of hundred expected failures, which is how a check gets ignored.
-# ---------------------------------------------------------------------------
+# /tools, the cross toolchain built without hardening, is excluded.
 ex_root="$(mkroot excluded)"
 mkdir -p "$ex_root/tools/bin"
 # shellcheck disable=SC2086
@@ -141,20 +112,11 @@ check "/tools is excluded from the audit" \
 check "/tools exclusion does not hide the shipped tree" \
       "$(grep -qE 'objects +1' <<<"$out" && echo ok)"
 
-# ---------------------------------------------------------------------------
-# 6. An empty tree is a failure, not a pass.
-#
-# "Scanned nothing, found nothing, all good" is the single most dangerous
-# thing a checker like this can print.
-# ---------------------------------------------------------------------------
 empty_root="$(mkroot empty)"
 out="$(run_check "$empty_root")"; rc=$?
 check "empty tree: refuses to report success" "$([[ $rc -ne 0 ]] && echo ok)"
 check "empty tree: says why" "$(grep -q 'no ELF objects found' <<<"$out" && echo ok)"
 
-# ---------------------------------------------------------------------------
-# 7. Non-ELF files are skipped without error.
-# ---------------------------------------------------------------------------
 mix_root="$(mkroot mixed)"
 # shellcheck disable=SC2086
 $CC $HARD $HLD -o "$mix_root/usr/bin/real" "$src" 2>/dev/null

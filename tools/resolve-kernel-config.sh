@@ -1,27 +1,15 @@
 #!/usr/bin/env bash
-# Resolve Kryptik's kernel configuration on a host, the way stage 05 does it
-# inside the chroot, and check that every fragment line survived.
+# Resolve the kernel config on the host as stage 05 does in the chroot, and
+# check that every fragment line survived.
 #
 #   ./tools/resolve-kernel-config.sh [OUT]
 #
 #   OUT   where the resolved .config is written;
 #         default ${KRYPTIK_WORK}/kconfig-tree/kryptik.config
 #
-# The steps are stage 05's s_config: unpack the pinned kernel, apply the
-# linux-hardened patch, `make defconfig`, merge the three fragments, `make
-# olddefconfig`. tools/validate-kernel-config.sh proves each fragment symbol
-# EXISTS in the pinned source; this proves each one SURVIVES resolution, which
-# is the other half - kconfig drops a symbol for an unmet dependency, an
-# invisible prompt or an overriding `select` just as quietly as for a typo.
-#
-# The host's compiler is not the chroot's, and kconfig asks the compiler
-# questions: GCC plugin options need the plugin headers (gcc-N-plugin-dev on
-# Debian and Ubuntu), and a handful of CC_HAS_* symbols depend on the exact
-# version. So this is an approximation stage 05 refines; where the two can
-# differ it says so below. It needs make, a C compiler, flex and bison.
-#
-# Exit status: 0 when every fragment line is honoured, 1 otherwise or when a
-# prerequisite is missing.
+# validate-kernel-config.sh shows each symbol exists; this shows it survives
+# resolution, which drops unmet dependencies as silently as typos. The host's
+# gcc stands in for the chroot's, so CC_HAS_* and GCC plugin options can differ.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/kconfig-check.sh"
@@ -41,8 +29,7 @@ done
 [[ -f "$TARBALL" ]] || die "kernel source not fetched: ${TARBALL}. Run: make sources"
 [[ -f "$PATCH" ]]   || die "linux-hardened patch not fetched: ${PATCH}. Run: make sources"
 
-# A tree is unpacked and patched once per pinned version; a later run reuses
-# it. The stamp records which patch went in, so a version bump starts over.
+# Unpacked and patched once per linux-hardened version, which the stamp names.
 stamp="${TREE_DIR}/.patched-${V_LINUX_HARDENED}"
 if [[ ! -f "$stamp" ]]; then
     log "unpacking linux-${V_LINUX} (this is the whole tree, kconfig needs its Makefile and scripts)"
@@ -63,8 +50,7 @@ make -s defconfig >/dev/null
 scripts/kconfig/merge_config.sh -m .config "${FRAGMENTS[@]}" >/dev/null
 make -s olddefconfig >/dev/null
 
-# What the host compiler could and could not answer, stated rather than
-# discovered from a puzzling DROPPED line.
+# Say up front what the host compiler cannot answer.
 plugin_dir="$(gcc -print-file-name=plugin 2>/dev/null || true)"
 if [[ -e "${plugin_dir}/include/plugin-version.h" ]]; then
     dim "  host gcc $(gcc -dumpversion) has plugin headers: GCC plugin options resolve as in the chroot"
@@ -77,6 +63,10 @@ dim "  =y: $(grep -c '=y$' .config)  =m: $(grep -c '=m$' .config)"
 mkdir -p "$(dirname "$OUT")"
 cp .config "$OUT"
 ok "resolved config: ${OUT}"
+
+echo
+log "the options Kryptik's guarantees rest on"
+kconfig_critical_check "$OUT" || die "a critical option did not survive resolution (MISSING, above)"
 
 echo
 log "every fragment line, against the resolved config"

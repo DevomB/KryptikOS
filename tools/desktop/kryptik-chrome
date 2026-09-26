@@ -1,13 +1,11 @@
 #!/bin/sh
 # kryptik-chrome: the trusted desktop chrome, text edition.
 #
-# Runs in zone 0 as the session user, on the compositor directly - no proxy
-# in between - which is what makes it trusted: everything it shows comes
-# from the compositor and the launch daemon, never from a zone, and dwl
-# draws its windows with the UNZONED border (build/desktop/zone-colours.h),
-# the one colour no zone client can be given. A zone cannot draw over it
-# (no layer shell through the proxy), read its input (no global input
-# through the proxy) or capture it (no screencopy through the proxy).
+# Runs in zone 0 on the compositor directly, with no proxy in between: what it
+# shows comes from the compositor and the launch daemon, never from a zone, and
+# dwl gives its windows the UNZONED border (build/desktop/zone-colours.h). No
+# zone can draw over it, read its input or capture it: the proxy passes no
+# layer shell, global input or screencopy.
 #
 #   kryptik-chrome                 dwl's startup command (`dwl -s`): reads
 #                                  dwl's status stream on stdin, records the
@@ -19,23 +17,18 @@
 #                                  window, then launch (kryptik-launch hands
 #                                  over here when it has no terminal)
 #   kryptik-chrome --focus         print the focused zone, from the record
-#   kryptik-chrome --confirm ID    the transfer question ID, asked in a trusted
-#                                  window; the answer goes back to the broker
+#   kryptik-chrome --confirm ID    ask the broker's question ID in a trusted
+#                                  window and write back the answer
 #
-# The launcher and the prompt are terminal windows (havoc) running this
-# script: the passphrase is read by kryptik-launch on that terminal, travels
-# to the daemon as a descriptor, and never touches argv or the environment.
+# Passphrases are read by kryptik-launch on the chrome's own terminal and go
+# to the daemon as a descriptor, never in argv or the environment.
 
-# The zone files on the verified root, not the /etc symlink to them: /etc is
-# an overlay the state partition can shadow, and the text identity this
-# chrome shows must come from the same place as the colours dwl draws.
+# The verified root's zone files, not /etc's: /etc is an overlay the state
+# partition can shadow, and the labels shown must match the colours dwl draws.
 ZONES=/usr/lib/kryptik/zones
 LAUNCH=/usr/bin/kryptik-launch
-# havoc's form is `havoc [option...] [program [args...]]`: the program follows
-# the options directly. It has no -e, and an option it does not know makes it
-# print its usage and exit - which is what every window this chrome opened
-# did on the first installed system, silently, so the session had no
-# launcher window at all ("(no window)" in the focus record).
+# `havoc [option...] [program [args...]]`: no -e, and an unknown option makes
+# it print its usage and exit.
 TERMINAL=/usr/bin/havoc
 RT="${XDG_RUNTIME_DIR:-/tmp}"
 FOCUS="$RT/kryptik/focus"
@@ -43,8 +36,7 @@ CONSENT=/run/kryptik-consent
 
 die() { echo "kryptik-chrome: $*" >&2; exit 1; }
 
-# The zone's label, glyph and description from its definition: text
-# identity, as the zone files declare it (compositor/zoneid audits them).
+# A quoted field of the zone file, such as its label or glyph.
 zone_field() { # zone key
     sed -n "s/^$2[[:space:]]*=[[:space:]]*\"\\(.*\\)\"[[:space:]]*$/\\1/p" "$ZONES/$1.toml" 2>/dev/null | head -1
 }
@@ -52,26 +44,19 @@ zone_is_nic() { grep -q '^mode[[:space:]]*=[[:space:]]*"nic"' "$ZONES/$1.toml" 2
 
 # --- the status stream ---------------------------------------------------------
 
-# dwl writes, per output, `<output> title <t>`, `<output> appid <id>`,
-# `<output> fullscreen <0|1>` ... whenever focus or state changes. The
-# app_id of a zone window is kryptik.<zone>.<claimed>, stamped by the
-# proxy; anything else is zone 0's own (this chrome, say).
+# dwl writes `<output> title <t>`, `<output> appid <id>`, `<output> fullscreen
+# <0|1>` ... on every focus or state change. The proxy stamps a zone window's
+# app_id kryptik.<zone>.<claimed>; any other app_id is zone 0's.
 run_status() {
     mkdir -p "$RT/kryptik" 2>/dev/null
     appid=""; title=""; fs=0
     # The launcher window, so a fresh session shows something usable.
     "$TERMINAL" /usr/bin/kryptik-chrome --menu &
-    # The consent watcher: every question the broker leaves gets one
-    # trusted window, and the answer is that window's alone. A question
-    # nobody answers is withdrawn by the broker after its deadline.
-    #
-    # The lock is how the broker knows someone is here to ask: held
-    # exclusively for as long as this watcher runs (kryptikd consent.rs
-    # takes it shared to test for us, and refuses a transfer at once when
-    # it can). Released by the kernel when this subshell dies, however it
-    # dies, so a session that ended leaves no promise behind. The confirm
-    # windows do not inherit it: a lingering question must not look like a
-    # watcher. One watcher per channel: a second session's exits quietly.
+    # The consent watcher: one trusted window per question the broker leaves.
+    # Holding watcher.lock exclusively tells the broker someone is here to ask
+    # (consent.rs refuses at once if it can take the lock shared); the kernel
+    # drops it when this subshell dies. Confirm windows must not inherit it,
+    # and a second session's watcher exits quietly.
     (
         exec 9> "$CONSENT/watcher.lock" 2>/dev/null || exit 0
         flock -n 9 || exit 0
@@ -135,7 +120,6 @@ menu_zones() {
         [ -z "$info" ] && state="(daemon not answering)"
         printf '  %d) %-10s %-3s %-10s %s\n' "$n" "$z" "$(zone_field "$z" glyph)" "$(zone_field "$z" label)" "$state"
     done
-    NZONES=$n
 }
 
 run_menu() {
@@ -175,8 +159,8 @@ run_menu() {
                           b) set -- "$TERMINAL" /usr/bin/lynx ;;
                       esac
                       echo "launching in zone $z: $*"
-                      # --ask: the passphrase, if the zone needs one, is read on
-                      # THIS terminal - zone 0's window - and never on a zone's.
+                      # --ask: a passphrase is read on this zone 0 terminal,
+                      # never on a zone's.
                       "$LAUNCH" --ask "$z" -- "$@" || sleep 3
                       ;;
             *) echo "?"; sleep 1 ;;
@@ -193,8 +177,8 @@ run_prompt() { # ZONE [--no-display] -- CMD...
     [ "${1:-}" = "--" ] && shift
     [ $# -gt 0 ] || die "--prompt: no command"
     [ -n "${WAYLAND_DISPLAY:-}" ] || die "--prompt: no display to draw the prompt on"
-    # A trusted window whose only content is the question. kryptik-launch
-    # reads the answer from this terminal and sends it as a descriptor.
+    # A trusted window holding only the question; kryptik-launch reads the
+    # answer here and sends it as a descriptor.
     exec "$TERMINAL" /usr/bin/kryptik-launch --ask $nodisp "$zone" -- "$@"
 }
 
@@ -202,13 +186,11 @@ run_confirm() { # ID
     id="$1"
     ask="$CONSENT/$id.ask"
     [ -r "$ask" ] || { echo "kryptik-chrome: no question $id (withdrawn?)"; sleep 2; exit 1; }
-    # A question with no kind is a transfer, as every question once was.
+    # A question with no kind is a transfer.
     kind="$(sed -n 's/^kind=//p' "$ask")"
     if [ "$kind" = clock ]; then
-        # The clock (docs/design/time.md): the network's answer is further
-        # from this machine's clock than zone 0 believes without asking.
-        # Both times are shown, because a person with a watch can answer
-        # and nothing on this system can.
+        # The clock (docs/design/time.md): the network's time is too far from
+        # this machine's to accept unasked. Only the user, with a watch, can say.
         now="$(sed -n 's/^now=//p' "$ask")"; proposed="$(sed -n 's/^proposed=//p' "$ask")"
         sources="$(sed -n 's/^sources=//p' "$ask")"
         echo "================ KRYPTIK - set the clock? (zone 0) ================"

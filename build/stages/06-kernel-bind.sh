@@ -1,18 +1,9 @@
 #!/usr/bin/env bash
-# Stage 06, chroot half: relink the kernel with a compiled-in command line.
-#
+# Stage 06, chroot half: relink bzImage with images/cmdlines/VARIANT.txt as its
+# built-in command line, into images/kernels/VARIANT.efi for the host to sign.
+# Not a fragment setting: the line carries the verity root hash, which exists
+# only once the root image, holding this kernel's modules, is built.
 #   03-chroot-prep.sh run /kryptik/build/stages/06-kernel-bind.sh VARIANT...
-#
-# For each VARIANT, /kryptik-work/images/cmdlines/VARIANT.txt holds the exact
-# command line (one line). CONFIG_CMDLINE is set to it, bzImage is relinked
-# (modules are untouched: nothing they depend on changes), and the result is
-# written to /kryptik-work/images/kernels/VARIANT.efi. The host half signs it.
-#
-# Why this is a relink and not a config change in the fragment: the command
-# line carries the verity root hash, which exists only after the root image
-# is built from the very sysroot that holds this kernel's modules. Binding
-# the hash into the kernel is what makes the root and the kernel one signed
-# unit.
 set -Eeuo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
 load_config
@@ -38,8 +29,7 @@ for variant in "$@"; do
     [[ ${#cmdline} -lt 1900 ]] || die "${variant}: command line is ${#cmdline} bytes; COMMAND_LINE_SIZE is 2048"
     log "binding ${variant}"
     dim "  $(printf '%s' "$cmdline" | sed 's/sha256 [0-9a-f]\{64\} [0-9a-f]*/sha256 <hash> <salt>/')"
-    # scripts/config writes the value verbatim between quotes, so the inner
-    # double quotes around dm-mod.create's value must arrive escaped.
+    # scripts/config writes the value inside quotes, so escape the inner ones.
     esc="${cmdline//\"/\\\"}"
     scripts/config --set-str CONFIG_CMDLINE "$esc"
     scripts/config --enable CONFIG_CMDLINE_BOOL
@@ -52,8 +42,7 @@ for variant in "$@"; do
     make -s -j"$JOBS" bzImage
     out="${KERNELS}/${variant}.efi"
     cp arch/x86/boot/bzImage "$out"
-    # The EFI stub keeps the built-in command line uncompressed; prove the
-    # image carries this one and not the previous variant's.
+    # The command line is stored uncompressed; check it is this variant's.
     marker="${cmdline##* }"   # the last word is the variant tag (kryptik.slot=/kryptik.media=)
     if [[ "$(grep -a -c -F -- "$marker" "$out")" -lt 1 ]]; then
         die "${variant}: ${out} does not contain '${marker}'"

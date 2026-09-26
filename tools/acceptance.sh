@@ -1,37 +1,19 @@
 #!/usr/bin/env bash
-#
-# make acceptance: the acceptance suites, run against
-# named artifacts in one invocation, with one verdict and a report that ties
-# every result to the source revision, the image hashes, the firmware, the
-# command, the exit status and the log.
+# make acceptance: run the acceptance suites against the built media and write
+# REPORT.md, with one verdict.
 #
 #   tools/acceptance.sh [--media-usb IMG] [--media-iso ISO]
 #                       [--payload-a DIR] [--payload-b DIR]
 #                       [--out DIR] [--export DIR] [--only boot,desktop] [--no-host]
 #
-# Three results, and only one of them is a pass:
-#   PASS        the item ran and every check inside it passed
-#   FAIL        the item ran and something in it failed
-#   INCOMPLETE  the item could not run here - a tool, an artifact, a device
-#               or a privilege is missing, or a suite reported 77 - or it
-#               was left out by --only. Never a pass.
+#   --only SUITES  run only these suites
+#   --no-host      skip the host test suites (run-tests.sh)
+#   --export DIR   copy the tested media, hashes, trust material, report and
+#                  instructions to DIR, and check the copies hash as tested
 #
-# The verdict is PASS only when every mandatory item is PASS: exit 0. Any
-# FAIL: exit 1. No FAIL but an INCOMPLETE mandatory item: exit 2.
-#
-# Host-side suites (the unit and fixture suites, the compositor tests, the
-# chroot proofs) are tagged "host" in the report. They are mandatory - they
-# are the regressions this work repaired - but they are not installed-system
-# evidence, and the report keeps the two apart: a suite whose only evidence is
-# host-side says so.
-#
-# Every VM driver carries its own positive controls; this script adds one
-# more at the boundary: a driver must report at least a minimum number of
-# checks passed, so a launcher that starts nothing cannot pass every denial.
-#
-# --export DIR copies the tested media, their hashes, the trust material, the
-# revision, this report and the boot/install/recovery instructions to DIR
-# and verifies that the copies hash the same as what was tested (the release suite).
+# Each item is PASS, FAIL or INCOMPLETE (could not run here, exit 77, or not
+# selected; never a pass). "host" items are not installed-system evidence.
+# Exit 0 when every mandatory item passed, 1 on any FAIL, 2 otherwise.
 set -uo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SELF}/.." && pwd)"
@@ -39,10 +21,8 @@ export NO_COLOR=1
 # shellcheck source=/dev/null
 source "${ROOT}/build/lib/common.sh"
 trap - ERR; set +e
-# cargo is installed per user by rustup, and `sudo make acceptance` resets
-# PATH and HOME: look in root's home, then in the invoking user's, and point
-# rustup's proxies at that user's toolchains. (On the GitHub runner the
-# toolchain is the runner user's; root has none of its own.)
+# sudo resets PATH and HOME, and rustup installs per user: take cargo from
+# $HOME or else the sudo user's home, and point RUSTUP_HOME there too.
 for h in "${HOME:-/root}" "$(getent passwd "${SUDO_USER:-}" 2>/dev/null | cut -d: -f6)"; do
     [[ -n "$h" && -d "$h/.cargo/bin" ]] || continue
     PATH="$h/.cargo/bin:${PATH}"
@@ -62,7 +42,7 @@ while [[ "$#" -gt 0 ]]; do
         --export)    EXPORT="${2:?}"; shift 2 ;;
         --only)      ONLY="${2:?}"; shift 2 ;;
         --no-host)   NOHOST=1; shift ;;
-        -h|--help)   sed -n '2,36p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help)   sed -n '2,16p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -76,20 +56,10 @@ IMG="${SELF}/image"
 SYSROOT="${KRYPTIK_WORK}/sysroot"
 
 # ---------------------------------------------------------------- inputs --
-# The release under test is the highest-versioned medium on hand, or the
-# one named (the version, not the file's age: the build's own order is A
-# then B, and a medium is what it says it is whichever was written last):
-# every suite boots, installs and exports THAT, and its payload is release B,
-# the one the update test arrives at. Release A is the previous release: the
-# highest version below B that has both a payload and a USB medium. The
-# update test installs A from A's own medium and applies B over it.
-# (Taking the medium's release as A and "the other payload" as B chose, on
-# a tree where B was built after A, the newer one as A - and the update test
-# refused its own payload as a downgrade. Pointing every suite at the older
-# medium instead would have tested and exported the previous release.)
-# Explicit --media-*/--payload-* win. A lone release is B with no A, and
-# the update test says so rather than running.
-newest() { ls -t "$@" 2>/dev/null | head -1; }
+# The release under test is the named medium, or the highest version on hand
+# (by version, not mtime); its payload is B. A is the highest lower version
+# with both a payload and a USB medium: the update test installs A, applies B.
+# Explicit --media-*/--payload-* win.
 version_of_medium()  { local b; b="$(basename "$1")"; b="${b#kryptik-}"; printf '%s' "${b%-usb.img}"; }
 version_of_payload() { local b; b="$(basename "$1")"; printf '%s' "${b#payload-}"; }
 if [[ -z "$MEDIA_USB" ]]; then
@@ -101,8 +71,8 @@ if [[ -z "$MEDIA_USB" ]]; then
     fi
 fi
 VER=""; [[ -n "$MEDIA_USB" ]] && VER="$(version_of_medium "$MEDIA_USB")"
+# Only this release's own ISO; without it the ISO items are INCOMPLETE.
 [[ -z "$MEDIA_ISO" && -n "$VER" && -f "${IMGDIR}/kryptik-${VER}.iso" ]] && MEDIA_ISO="${IMGDIR}/kryptik-${VER}.iso"
-[[ -z "$MEDIA_ISO" ]] && MEDIA_ISO="$(newest "${IMGDIR}"/kryptik-*.iso)"
 [[ -z "$PAYLOAD_B" && -n "$VER" && -d "${IMGDIR}/payload-${VER}" ]] && PAYLOAD_B="${IMGDIR}/payload-${VER}"
 VER_B=""; [[ -n "$PAYLOAD_B" ]] && VER_B="$(version_of_payload "$PAYLOAD_B")"
 if [[ -z "$PAYLOAD_A" && -n "$VER_B" ]]; then
@@ -158,7 +128,8 @@ checks_in() {
 }
 
 # item SUITE NAME M|O host|vm|post MINPASS FN [PREREQ-FN]
-#   PREREQ-FN prints a reason when the item cannot run here.
+#   MINPASS: passed checks the driver must report, so a launcher that starts
+#   nothing cannot pass every denial. PREREQ-FN prints why the item cannot run.
 item() {
     local suite="$1" name="$2" mand="$3" kind="$4" minp="$5" fn="$6" pre="${7:-}"
     local log="${OUT}/${suite}-${name}.log" rc res checks="-" note="" reason="" t0
@@ -177,11 +148,11 @@ item() {
     elif [[ "$rc" -ne 0 ]]; then res=FAIL; note="exit ${rc}"
     else
         res=PASS
-        if [[ "$minp" -gt 0 ]]; then
-            local p="${checks%%/*}"
-            if [[ "$checks" == "-" || "$p" -lt "$minp" ]]; then
-                res=FAIL; note="exit 0 but only ${p:-no} checks reported passed (minimum ${minp}): the driver did not exercise what it claims"
-            fi
+        local p="${checks%%/*}" f="${checks##*/}"
+        if [[ "$checks" != "-" && "$f" -gt 0 ]]; then
+            res=FAIL; note="exit 0 but its own summary counts ${f} failed"
+        elif [[ "$minp" -gt 0 && ( "$checks" == "-" || "$p" -lt "$minp" ) ]]; then
+            res=FAIL; note="exit 0 but only ${p:-no} checks reported passed (minimum ${minp}): the driver did not exercise what it claims"
         fi
     fi
     printf -- '-- %s: %s (exit %s, %ss, checks %s)%s\n' "$name" "$res" "$rc" "$((SECONDS - t0))" "$checks" "${note:+ - $note}"
@@ -189,6 +160,7 @@ item() {
 }
 
 # ------------------------------------------------------------- prereqs --
+need_host()    { if [[ "$NOHOST" -eq 1 ]]; then echo "not run (--no-host)"; else need_cargo; fi; }
 need_root()    { [[ "$EUID" -eq 0 ]] || echo "needs root (the chroot and the VM disks)"; }
 need_sysroot() { [[ -x "${SYSROOT}/usr/bin/gcc" ]] || echo "no built sysroot at ${SYSROOT} (make system)"; }
 need_usb()     { [[ -f "$MEDIA_USB" ]] || echo "no USB image (make media)"; }
@@ -284,9 +256,8 @@ it_zones()         { "${IMG}/zones-test.sh" --usb "$MEDIA_USB"; }
 it_gui()           { "${IMG}/gui-test.sh" --usb "$MEDIA_USB"; }
 it_update()        { "${IMG}/update-test.sh" --usb-a "$MEDIA_USB_A" --payload-a "$PAYLOAD_A" --payload-b "$PAYLOAD_B" --vars clean; }
 
-# Every boot this run started, read back from the runner's own record: the
-# firmware image, a variable store, disks and a serial line - and none of
-# -kernel, -initrd, -append, a shared host directory or a FAT-from-directory.
+# Every boot this run recorded went through the firmware, with no host-side
+# boot input (-kernel, -initrd, -append, shared directory, FAT-from-directory).
 it_firmware_only() {
     local n=0 bad=0 f
     while IFS= read -r f; do
@@ -313,9 +284,7 @@ item inputs    revision                   M host  0 it_revision
 item inputs    compositor-sources         M host  0 it_compositor_sources
 item inputs    sources-lock               M host  0 it_sources_lock need_sources
 item inputs    media-hashes               M host  0 it_media_hashes need_usb
-if [[ "$NOHOST" -eq 0 ]]; then
-item build     host-suites                M host  0 it_host_suites need_cargo
-fi
+item build     host-suites                M host  0 it_host_suites need_host
 item build     libc-unwind                M host  0 it_libc_unwind need_sysroot
 item build     userspace-smoke            M host  0 it_userspace need_sysroot
 item build     artifact-hardening         M host  0 it_artifacts need_sysroot
@@ -407,8 +376,7 @@ it_export() {
         cp --sparse=always "$f" "${d}/" || ok=1
         [[ -f "${f}.sha256" ]] && cp "${f}.sha256" "${d}/"
     done
-    # root.json from the payload of the release under test (B), not
-    # images/root.json: whichever release was built last overwrote that.
+    # B's own root.json: images/root.json is whichever release was built last.
     if [[ -n "$PAYLOAD_B" && -f "${PAYLOAD_B}/root.json" ]]; then cp "${PAYLOAD_B}/root.json" "${d}/"
     elif [[ -f "${IMGDIR}/root.json" ]]; then cp "${IMGDIR}/root.json" "${d}/"; fi
     for f in "${KRYPTIK_WORK}/keys/sb/kryptik-sb.crt" "${KRYPTIK_WORK}/keys/sb/kryptik-sb.der"; do
@@ -422,18 +390,25 @@ it_export() {
         cp "${PAYLOAD_B}/manifest" "${d}/manifest-${VER_B}"
         [[ -f "${PAYLOAD_B}/manifest.sig" ]] && cp "${PAYLOAD_B}/manifest.sig" "${d}/manifest-${VER_B}.sig"
     fi
-    if [[ -f "${ROOT}/docs/BOOT_INSTALL_RECOVER.md" ]]; then cp "${ROOT}/docs/BOOT_INSTALL_RECOVER.md" "${d}/INSTRUCTIONS.md"; else echo "  no docs/BOOT_INSTALL_RECOVER.md to ship"; ok=1; fi
+    if [[ -f "${ROOT}/docs/user-guide.md" ]]; then cp "${ROOT}/docs/user-guide.md" "${d}/INSTRUCTIONS.md"; else echo "  no docs/user-guide.md to ship"; ok=1; fi
     cp "${OUT}/REVISION.txt" "${d}/" 2>/dev/null
     mkdir -p "${d}/acceptance-logs" && cp "${OUT}"/*.log "${OUT}/results.tsv" "${d}/acceptance-logs/" 2>/dev/null
     echo "-- the copies hash the same as what was tested"
+    # Against the hashes taken at the start, so a medium changed mid-run fails.
+    : > "${d}/SHA256SUMS"
     for f in "$MEDIA_USB" "$MEDIA_ISO"; do
         [[ -f "$f" ]] || continue
-        want="$(sha_of "$f")"; got="$(sha_of "${d}/$(basename "$f")")"
+        want="$H_ISO"; [[ "$f" == "$MEDIA_USB" ]] && want="$H_USB"
+        got="$(sha_of "${d}/$(basename "$f")")"
         if [[ "$want" == "$got" ]]; then echo "  ok  $(basename "$f") ${got}"; else echo "  MISMATCH $(basename "$f"): tested ${want}, exported ${got}"; ok=1; fi
+        printf '%s  ./%s\n' "$got" "$(basename "$f")" >> "${d}/SHA256SUMS"
     done
-    ( cd "$d" && sha256sum ./*.img ./*.iso ./*.crt ./*.der ./root.json 2>/dev/null ) > "${d}/SHA256SUMS"
-    echo "  wrote ${d}/SHA256SUMS"
     return "$ok"
+}
+# Hash every export file but the media (it_export's lines); run last, once the
+# report, results and RELEASE.txt are final.
+seal_export() {   # seal_export DIR
+    ( cd "$1" && find . -type f ! -name SHA256SUMS ! -name '*.img' ! -name '*.iso' -print0 | sort -z | xargs -0 sha256sum ) >> "$1/SHA256SUMS"
 }
 V="$(verdict_of)"
 write_report "$V"
@@ -454,6 +429,9 @@ if [[ -n "$EXPORT" ]] || wanted release; then
             echo "trust      : kryptik-sb.crt / kryptik-sb.der (the developer Secure Boot key, a test anchor)"
             echo "read       : INSTRUCTIONS.md"
         } > "${EXPORT}/RELEASE.txt"
+        # Again, now that the export's own row and log exist.
+        cp "${OUT}"/*.log "${OUT}/results.tsv" "${EXPORT}/acceptance-logs/" 2>/dev/null
+        seal_export "$EXPORT"
     fi
 fi
 
@@ -461,13 +439,8 @@ echo
 echo "================================================================"
 sed -n '/^| suite/,/^$/p' "${OUT}/REPORT.md"
 echo "Verdict: ${V}   (report: ${OUT}/REPORT.md)"
-# The VM drivers each make 12 GB disks and clones under work/vm. The
-# transcripts carry the evidence; the disks are worth keeping only when an
-# item failed and someone may want to look inside. On a WSL host every byte
-# written into them grows the virtual disk file on the Windows side and never
-# comes back by itself, so a run in which everything passed removes them all
-# here. (Removing after each passing item, as an earlier version did, took
-# the disks of items that had failed EARLIER in the same run with them.)
+# The 12 GB VM disks only help debug a failure, and on WSL they grow the host's
+# virtual disk for good: remove them once the whole run has passed.
 if [[ "$V" == PASS ]]; then
     rm -f "${KRYPTIK_WORK}"/vm/*.img "${KRYPTIK_WORK}"/vm/*.fd "${KRYPTIK_WORK}"/vm/*.pristine 2>/dev/null
     rm -rf "${KRYPTIK_WORK}"/vm/bad 2>/dev/null

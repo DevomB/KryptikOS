@@ -1,35 +1,9 @@
-//! A minimal rtnetlink client: the handful of link, address and route
-//! operations the zone topology needs (docs/design/net-zone.md).
+//! Minimal rtnetlink client for the zone topology (docs/design/net-zone.md).
 //!
-//! WHY NOT ip(8)
-//!
-//! kryptikd keeps its dependencies to `libc` (ADR-010), and the images it
-//! runs in carry busybox's `ip`, which cannot create veth pairs with a peer
-//! in another namespace or set bridge port flags. Shelling out would also put
-//! a path lookup and an argv parser between kryptikd and the kernel on the
-//! one operation - moving a physical interface - that defines the network
-//! boundary. So the messages are built here, in full, and the encoding is
-//! checked by tests against the kernel rather than against a mock.
-//!
-//! WHAT IS HERE
-//!
-//! - `create_veth(a, b, peer_ns)`: a veth pair, with `b` created DIRECTLY in
-//!   another network namespace (IFLA_NET_NS_FD inside VETH_INFO_PEER), so the
-//!   zone end never exists, even briefly, where the zone is not.
-//! - `create_bridge`, `set_master` (enslave), `set_port_isolated`: the bridge
-//!   in the net zone and the per-port isolation flag that stops two routed
-//!   zones from talking to each other over it without any firewall rule.
-//! - `set_up`, `set_netns`: bring a link up; move a link (the physical NIC)
-//!   into a namespace by fd.
-//! - `add_addr4/6`, `add_default_route4/6`: static addressing for zone ends.
-//! - `with_netns(fd, f)`: run `f` inside another network namespace and come
-//!   back. Only a process with CAP_SYS_ADMIN in its own user namespace can do
-//!   this (a root kryptikd in zone 0); netlink sockets belong to the namespace
-//!   they were opened in, so every operation opens its own.
-//!
-//! Every request carries NLM_F_ACK and is not considered done until the
-//! kernel's acknowledgement arrives; a negative errno in the ack becomes an
-//! `io::Error`, so a refused operation is never mistaken for a completed one.
+//! Built here because kryptikd depends on `libc` alone (ADR-010) and busybox
+//! `ip` cannot create a veth peer in another namespace or set bridge port
+//! flags. A netlink socket belongs to the namespace it was opened in, so each
+//! request opens its own, and none succeeds until the kernel acks it.
 
 use std::ffi::CString;
 use std::io;
@@ -38,10 +12,7 @@ use std::os::unix::io::RawFd;
 const NETLINK_ROUTE: libc::c_int = 0;
 const NETLINK_GENERIC: libc::c_int = 16;
 
-// Generic netlink: the controller family that maps a family name to the id
-// the kernel gave it at registration, and the nl80211 family's one command
-// and two attributes kryptikd uses. Numbers from <linux/genetlink.h> and
-// <linux/nl80211.h>.
+// From <linux/genetlink.h> and <linux/nl80211.h>.
 const GENL_ID_CTRL: u16 = 0x10;
 const CTRL_CMD_GETFAMILY: u8 = 3;
 const CTRL_ATTR_FAMILY_ID: u16 = 1;
@@ -66,10 +37,8 @@ const NLA_F_NESTED: u16 = 0x8000;
 
 const IFLA_IFNAME: u16 = 3;
 const IFLA_MASTER: u16 = 10;
-// 12, not 7: 7 is IFLA_STATS. The kernel ignores unknown attributes in a
-// bridge setlink and acknowledges the request anyway, so a wrong number here
-// produced an ACK and an unchanged port - which is why the isolation test
-// checks the flag through sysfs and the behaviour on the wire, not the ACK.
+/* A bridge setlink acks an unknown attribute and ignores it, so a wrong
+ * number here fails silently: the isolation test checks sysfs and the wire. */
 const IFLA_PROTINFO: u16 = 12;
 const IFLA_LINKINFO: u16 = 18;
 const IFLA_NET_NS_FD: u16 = 28;
@@ -184,22 +153,36 @@ impl Msg {
     }
 }
 
+/// Most reply payload one request may gather; real replies are a few hundred bytes.
+const MAX_REPLY: usize = 64 * 1024;
+
 /// One request/ack exchange on a fresh NETLINK_ROUTE socket.
 fn transact(msg: Vec<u8>, what: &str) -> io::Result<()> {
     transact_on(NETLINK_ROUTE, msg, what).map(|_| ())
 }
 
-/// One request on a fresh socket of the given netlink protocol, read until
-/// the kernel's ack (or DONE). Returns the payloads of every reply message
-/// that came before the ack, after their 16-byte netlink headers: empty
-/// for a plain configuration request, the answer for a query such as a
-/// generic-netlink family lookup.
+/// One request on a fresh socket of protocol `proto`, read until the ack or
+/// DONE. Returns the payloads of the replies before it, without their headers.
 fn transact_on(proto: libc::c_int, msg: Vec<u8>, what: &str) -> io::Result<Vec<u8>> {
     let fd = unsafe { libc::socket(libc::AF_NETLINK, libc::SOCK_RAW | libc::SOCK_CLOEXEC, proto) };
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }
     let result = (|| {
+        /* Connect to port 0 so only the kernel can reply. Unconnected, anything
+         * with CAP_NET_ADMIN in this namespace could, and the nic zone has it. */
+        let mut kernel: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
+        kernel.nl_family = libc::AF_NETLINK as libc::sa_family_t;
+        let rc = unsafe {
+            libc::connect(
+                fd,
+                &kernel as *const libc::sockaddr_nl as *const libc::sockaddr,
+                std::mem::size_of::<libc::sockaddr_nl>() as libc::socklen_t,
+            )
+        };
+        if rc < 0 {
+            return Err(io::Error::last_os_error());
+        }
         let sent = unsafe { libc::send(fd, msg.as_ptr() as *const libc::c_void, msg.len(), 0) };
         if sent < 0 {
             return Err(io::Error::last_os_error());
@@ -225,6 +208,9 @@ fn transact_on(proto: libc::c_int, msg: Vec<u8>, what: &str) -> io::Result<Vec<u
                 }
                 match ty {
                     NLMSG_ERROR => {
+                        if len < 20 {
+                            return Err(io::Error::new(io::ErrorKind::InvalidData, "netlink error without a code"));
+                        }
                         let code = i32::from_ne_bytes(buf[off + 16..off + 20].try_into().unwrap());
                         return if code == 0 {
                             Ok(replies)
@@ -236,6 +222,9 @@ fn transact_on(proto: libc::c_int, msg: Vec<u8>, what: &str) -> io::Result<Vec<u
                         };
                     }
                     NLMSG_DONE => return Ok(replies),
+                    _ if replies.len() + len > MAX_REPLY => {
+                        return Err(io::Error::new(io::ErrorKind::InvalidData, "netlink reply too large"));
+                    }
                     _ => replies.extend_from_slice(&buf[off + 16..off + len]),
                 }
                 off += align4(len);
@@ -306,11 +295,8 @@ pub fn set_master(dev: &str, master: &str) -> io::Result<()> {
     transact(m.finish(), &format!("enslave {dev} to {master}"))
 }
 
-/// Mark a bridge port isolated (or not): an isolated port may exchange
-/// frames only with non-isolated ports, never with another isolated one. Two
-/// routed zones on isolated ports cannot reach each other through the bridge
-/// at all - no firewall rule involved, and nothing a zone can undo from its
-/// own side of the veth.
+/// Set a bridge port's isolation flag. Isolated ports never exchange frames
+/// with each other, and a zone cannot clear the flag from its end of the veth.
 pub fn set_port_isolated(dev: &str, on: bool) -> io::Result<()> {
     let idx = index_of(dev)?;
     let mut m = Msg::new(RTM_SETLINK, 0, 1);
@@ -328,9 +314,8 @@ pub fn set_up(dev: &str) -> io::Result<()> {
     transact(m.finish(), &format!("bring up {dev}"))
 }
 
-/// Move `dev` into the network namespace behind `ns_fd`. Not for a wireless
-/// interface: the kernel marks those namespace-local and answers EINVAL;
-/// see `set_wiphy_netns`.
+/// Move `dev` into the namespace behind `ns_fd`. A wireless netdev is
+/// namespace-local and gets EINVAL; move its wiphy with `set_wiphy_netns`.
 pub fn set_netns(dev: &str, ns_fd: RawFd) -> io::Result<()> {
     let idx = index_of(dev)?;
     let mut m = Msg::new(RTM_NEWLINK, 0, 1);
@@ -339,8 +324,7 @@ pub fn set_netns(dev: &str, ns_fd: RawFd) -> io::Result<()> {
     transact(m.finish(), &format!("move {dev} into namespace"))
 }
 
-/// The wiphy index behind a wireless interface (`/sys/class/net/<dev>/
-/// phy80211/index`), or None for a wired one, which has no such link.
+/// Wiphy index of a wireless interface (sysfs `phy80211/index`); None if wired.
 pub fn wiphy_index_of(dev: &str) -> io::Result<Option<u32>> {
     check_name(dev)?;
     match std::fs::read_to_string(format!("/sys/class/net/{dev}/phy80211/index")) {
@@ -354,15 +338,13 @@ pub fn wiphy_index_of(dev: &str) -> io::Result<Option<u32>> {
     }
 }
 
-/// The id the kernel gave a generic-netlink family at registration, asked
-/// of the controller family: the ids are not fixed, only the names are.
+/// Id of a generic-netlink family, asked of the controller: only names are fixed.
 fn genl_family_id(name: &str) -> io::Result<u16> {
     let mut m = Msg::new(GENL_ID_CTRL, 0, 1);
     m.genlmsghdr(CTRL_CMD_GETFAMILY, 1);
     m.attr_str(CTRL_ATTR_FAMILY_NAME, name);
     let reply = transact_on(NETLINK_GENERIC, m.finish(), &format!("look up the {name} family"))?;
-    // The answer is a genlmsghdr and then attributes; the family id is a
-    // u16 among them.
+    // Skip the genlmsghdr; the family id is a u16 attribute.
     let mut off = 4;
     while off + 4 <= reply.len() {
         let len = u16::from_ne_bytes(reply[off..off + 2].try_into().unwrap()) as usize;
@@ -381,11 +363,8 @@ fn genl_family_id(name: &str) -> io::Result<u16> {
     ))
 }
 
-/// Move a whole wiphy - and every wireless interface on it, names intact -
-/// into the network namespace behind `ns_fd`. This is what `iw phy <phy>
-/// set netns` does, and the only way a wireless interface changes
-/// namespace: the netdev alone refuses (`set_netns`). Needs CAP_NET_ADMIN
-/// in the wiphy's current namespace.
+/// Move a wiphy and its interfaces, names intact, into the namespace behind
+/// `ns_fd` (`iw phy <phy> set netns`). Needs CAP_NET_ADMIN where it is now.
 pub fn set_wiphy_netns(phy: u32, ns_fd: RawFd) -> io::Result<()> {
     let family = genl_family_id("nl80211")?;
     let mut m = Msg::new(family, 0, 1);
@@ -434,7 +413,7 @@ fn fmt4(a: [u8; 4]) -> String {
     format!("{}.{}.{}.{}", a[0], a[1], a[2], a[3])
 }
 
-/// Is `dev` administratively up, as the kernel reports it?
+/// Is `dev` administratively up?
 pub fn is_up(dev: &str) -> io::Result<bool> {
     let c = CString::new(dev).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL"))?;
     let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
@@ -465,10 +444,8 @@ pub fn open_netns_of(pid: libc::pid_t) -> io::Result<RawFd> {
     Ok(fd)
 }
 
-/// Run `f` inside the network namespace behind `ns_fd`, then return to the
-/// caller's own. Needs CAP_SYS_ADMIN in the caller's user namespace and over
-/// the target's: the root kryptikd in zone 0 has both. Single-threaded by
-/// construction (setns changes only the calling thread).
+/// Run `f` inside the network namespace behind `ns_fd`, then switch back.
+/// Needs CAP_SYS_ADMIN over both namespaces; setns moves only this thread.
 pub fn with_netns<T>(ns_fd: RawFd, f: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
     let mine = open_netns_of(unsafe { libc::getpid() })?;
     if unsafe { libc::setns(ns_fd, libc::CLONE_NEWNET) } < 0 {
@@ -481,15 +458,14 @@ pub fn with_netns<T>(ns_fd: RawFd, f: impl FnOnce() -> io::Result<T>) -> io::Res
     let back_err = io::Error::last_os_error();
     unsafe { libc::close(mine) };
     if back < 0 {
-        // Being stranded in another namespace is worse than any failure of
-        // `f`; report it first.
+        // Being stranded in another namespace outranks any error from `f`.
         return Err(io::Error::new(back_err.kind(), format!("setns back to own netns: {back_err}")));
     }
     result
 }
 
-/// The routed-zone address plan (docs/design/net-zone.md): the bridge is
-/// 10.19.0.1/24 and fd19::1/64; routed zone `k` is 10.19.0.(k+1) / fd19::(k+1).
+/// Routed-zone address plan (docs/design/net-zone.md): the bridge is
+/// 10.19.0.1/24 and fd19::1/64; host number `k` is 10.19.0.k and fd19::k.
 pub const BRIDGE_V4: [u8; 4] = [10, 19, 0, 1];
 pub const BRIDGE_V6: [u8; 16] = [0xfd, 0x19, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
 
@@ -508,9 +484,8 @@ pub(crate) mod tests {
     use super::*;
     use std::fs;
 
-    /// Run `body` in a forked child inside a fresh user + network namespace
-    /// (unprivileged where the kernel allows it). Returns the exit code, or
-    /// 77 when no user namespace could be created.
+    /// Run `body` in a forked child in a fresh user and network namespace.
+    /// Returns its exit code, or 77 when no user namespace could be created.
     pub(crate) fn in_userns_netns(body: impl FnOnce() -> i32) -> i32 {
         let pid = unsafe { libc::fork() };
         assert!(pid >= 0);
@@ -526,8 +501,7 @@ pub(crate) mod tests {
             {
                 unsafe { libc::_exit(77) };
             }
-            // A fresh sysfs shows THIS namespace's interfaces; the inherited
-            // one shows the host's, which is useless for checking port flags.
+            // A fresh sysfs shows this namespace's interfaces, not the host's.
             unsafe {
                 let none = CString::new("none").unwrap();
                 let root = CString::new("/").unwrap();
@@ -560,8 +534,7 @@ pub(crate) mod tests {
         })
     }
 
-    /// The simulator's wireless netdev, if mac80211_hwsim has one here: a
-    /// netdev with a wiphy whose bus device is the simulator's.
+    /// First wireless netdev whose device belongs to mac80211_hwsim, if any.
     fn hwsim_netdev() -> Option<String> {
         let mut found = Vec::new();
         for e in fs::read_dir("/sys/class/net").ok()?.flatten() {
@@ -578,16 +551,11 @@ pub(crate) mod tests {
         found.into_iter().next()
     }
 
-    /// A wireless interface moves by its wiphy, never on its own: RTM_SETLINK
-    /// answers EINVAL for a netdev the kernel marks namespace-local, and the
-    /// wiphy carries every interface on it, name intact. Kernel-backed and
-    /// root only, on mac80211_hwsim: the simulated radio's netdev leaves
-    /// this namespace, turns up in the holder's under the same name, and
-    /// comes back when the holder dies (cfg80211 returns wiphys to the
-    /// initial namespace when theirs is torn down). Without root or without
-    /// the module there is nothing to measure, and the test says so.
+    /// Root and mac80211_hwsim only. The netdev alone gets EINVAL; the wiphy
+    /// move carries it, same name, into the holder, and cfg80211 returns it
+    /// to the initial namespace when the holder dies.
     #[test]
-    fn a_wireless_interface_moves_by_its_wiphy() {
+    fn wireless_moves_by_wiphy() {
         use std::process::Command;
         if unsafe { libc::geteuid() } != 0 {
             eprintln!("not root; skipping (the wiphy move needs CAP_NET_ADMIN in the initial namespace)");
@@ -615,9 +583,7 @@ pub(crate) mod tests {
                 panic!("{dev}: no wiphy index ({other:?})");
             }
         };
-        // The netdev alone must refuse: that refusal is why the wiphy path
-        // exists, and a kernel that accepted it would make this test prove
-        // less than it claims.
+        // The netdev alone must refuse: that refusal is why the wiphy path exists.
         let (holder, zone_ns) = match spawn_netns_holder() {
             Ok(v) => v,
             Err(c) => {
@@ -647,8 +613,7 @@ pub(crate) mod tests {
             libc::waitpid(holder, &mut st, 0);
             libc::close(zone_ns);
         }
-        // The namespace's teardown runs on a workqueue; give the wiphy a
-        // moment to come home before deciding it did not.
+        // Namespace teardown runs on a workqueue; give the wiphy 5 s to return.
         let mut back = false;
         for _ in 0..50 {
             if index_of(&dev).is_ok() {
@@ -665,9 +630,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn message_encoding_has_the_kernel_layout() {
-        // ifinfomsg is 16 bytes, attributes are 4-aligned, nested lengths
-        // cover their payload, and the header length is the total.
+    fn message_layout_matches_kernel() {
+        /* ifinfomsg is 16 bytes, attributes are 4-aligned, a nested length
+         * covers its payload, and the header length is the total. */
         let mut m = Msg::new(RTM_NEWLINK, NLM_F_CREATE, 7);
         m.ifinfomsg(0, 0, 0, 0);
         m.attr_str(IFLA_IFNAME, "ab"); // 4 + 3 = 7 -> padded to 8
@@ -698,10 +663,8 @@ pub(crate) mod tests {
         assert!(check_name("a/b").is_err());
     }
 
-    /// A grandchild that unshares its own network namespace and then waits
-    /// to be killed. Returns (pid, fd of its netns). The namespace is owned
-    /// by the caller's user namespace, so the caller may create interfaces
-    /// in it and enter it with setns.
+    /// Fork a child that unshares a network namespace and waits to be killed.
+    /// Returns (pid, netns fd); the caller's user namespace owns the namespace.
     pub(crate) fn spawn_netns_holder() -> Result<(libc::pid_t, RawFd), i32> {
         let mut p = [0 as RawFd; 2];
         if unsafe { libc::pipe(p.as_mut_ptr()) } < 0 {
@@ -714,8 +677,7 @@ pub(crate) mod tests {
         if pid == 0 {
             unsafe {
                 libc::close(p[0]);
-                // Die with the test child: a holder left pausing forever
-                // keeps cargo's output pipe open and hangs the whole run.
+                // Die with the parent: an orphaned holder keeps cargo's output pipe open.
                 libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0);
                 if libc::getppid() == 1 {
                     libc::_exit(1);
@@ -750,8 +712,7 @@ pub(crate) mod tests {
         sa
     }
 
-    /// A UDP socket created (and therefore living) inside `ns`, bound to
-    /// `bind` when given, with a 300 ms receive timeout.
+    /// A UDP socket in `ns`, bound to `bind` if given, with a 300 ms receive timeout.
     fn udp_in(ns: RawFd, bind: Option<([u8; 4], u16)>) -> Result<RawFd, i32> {
         with_netns(ns, || {
             let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
@@ -789,12 +750,10 @@ pub(crate) mod tests {
         unsafe { libc::recv(fd, b.as_mut_ptr() as *mut libc::c_void, b.len(), 0) > 0 }
     }
 
-    /// The kernel is the oracle: a veth pair, addresses, a bridge, an
-    /// enslaved port and default routes, all in a private namespace, plus the
-    /// two refusals (duplicate address, duplicate name) that prove a request
-    /// is acked rather than assumed.
+    /// Veth, addresses, bridge, port and routes in a private namespace, plus
+    /// two refusals (duplicate address and name) that show requests are acked.
     #[test]
-    fn veth_bridge_addresses_and_routes_against_the_kernel() {
+    fn veth_bridge_addresses_routes() {
         let rc = in_userns_netns(|| {
             let r: Result<(), i32> = (|| {
                 step(1, create_veth("va", "vb", None))?;
@@ -809,7 +768,7 @@ pub(crate) mod tests {
                 step(6, add_addr4("va", [10, 99, 0, 1], 24))?;
                 step(7, add_addr6("va", zone_v6(1), 64))?;
                 if add_addr4("va", [10, 99, 0, 1], 24).is_ok() {
-                    return Err(9); // EXCL: an existing address is refused, not ignored
+                    return Err(9); // EXCL: a duplicate address is refused
                 }
                 step(10, create_bridge("br0"))?;
                 step(11, set_up("br0"))?;
@@ -835,9 +794,8 @@ pub(crate) mod tests {
         }
     }
 
-    /// The peer of a veth pair is created directly in another namespace.
     #[test]
-    fn veth_peer_lands_in_the_other_namespace() {
+    fn veth_peer_in_other_namespace() {
         let rc = in_userns_netns(|| {
             let (gc, ns) = match spawn_netns_holder() {
                 Ok(v) => v,
@@ -849,14 +807,12 @@ pub(crate) mod tests {
                 unsafe { libc::kill(gc, libc::SIGKILL) };
                 return 34;
             }
-            // The near end is here; the far end is not...
             if index_of("kv-t").is_err() {
                 return 35;
             }
             if index_of("eth0").is_ok() {
                 return 36;
             }
-            // ...and it IS there.
             let there = with_netns(ns, || index_of("eth0").map(|_| ())).is_ok();
             unsafe { libc::kill(gc, libc::SIGKILL) };
             if there { 0 } else { 38 }
@@ -868,13 +824,10 @@ pub(crate) mod tests {
         }
     }
 
-    /// Zone-to-zone isolation on the bridge, against the kernel: two "zones" (namespaces) bridged
-    /// through isolated ports cannot reach each other, the same sender does
-    /// reach the bridge's own address (the uplink side), and clearing the
-    /// flag restores zone-to-zone delivery - so the denial is the flag's
-    /// doing and nothing else's.
+    /// Isolated ports drop zone-to-zone traffic but pass traffic to the bridge
+    /// address; clearing the flag restores zone-to-zone delivery.
     #[test]
-    fn isolated_bridge_ports_block_zone_to_zone_but_not_the_uplink() {
+    fn isolated_ports_block_zone_to_zone() {
         let rc = in_userns_netns(|| {
             let r: Result<(), i32> = (|| {
                 let (gc1, ns1) = spawn_netns_holder()?;
@@ -905,25 +858,22 @@ pub(crate) mod tests {
                 let rx_br = udp_in(open_netns_of(unsafe { libc::getpid() }).map_err(|_| 48)?, Some(([10, 99, 0, 254], 9999)))?;
                 let tx1 = udp_in(ns1, None)?;
 
-                // Isolated: zone 1 -> zone 2 is dropped by the bridge.
+                // Isolated: the bridge drops zone 1 -> zone 2.
                 udp_send(tx1, [10, 99, 0, 2], 9999);
                 let got = udp_received(rx2);
                 eprintln!("isolated: zone1 -> zone2 delivered = {got}");
                 if got {
                     return Err(50);
                 }
-                // Positive control: zone 1 -> the bridge address is delivered.
+                // Control: zone 1 -> the bridge address is delivered.
                 udp_send(tx1, [10, 99, 0, 254], 9999);
                 if !udp_received(rx_br) {
                     return Err(51);
                 }
-                // Clear isolation on both ports: zone 1 -> zone 2 now arrives.
                 step(52, set_port_isolated("kv-z1", false))?;
                 step(53, set_port_isolated("kv-z2", false))?;
-                // The ARP request sent while isolated got no reply, so the
-                // neighbour entry is in its retransmit backoff (about a
-                // second). Keep sending until the kernel retries and the
-                // datagram arrives; 3 s is far beyond the backoff.
+                /* The unanswered ARP request left the neighbour entry in
+                 * retransmit backoff (about 1 s); keep sending for up to 3 s. */
                 let mut delivered = false;
                 for _ in 0..10 {
                     udp_send(tx1, [10, 99, 0, 2], 9999);

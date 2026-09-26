@@ -5,9 +5,8 @@ name        = "vault"
 description = "Keys, password store, secrets. No network stack."
 
 [network]
-# "none" means this zone gets a network namespace containing ONLY loopback.
-# Not a firewall rule that could be misconfigured - there is no interface to
-# route through and no path to one.
+# "none": a network namespace with only loopback; there is no interface to
+# route through.
 mode = "none"
 
 [storage]
@@ -24,16 +23,14 @@ memory_max = "2G"
 pids_max   = 128
 
 [identity]
-# Fixed host uid/gid range for this zone: root inside maps to 393216,
-# nobody to 458750. Never derived from zone order; see docs/design/privileged-launch.md.
+# Host uid/gid range: root inside maps to 393216, nobody to 458750. Fixed,
+# never derived from zone order (docs/design/privileged-launch.md).
 uid_base = 393216
 
 [ui]
-# Identity in four channels (compositor/zoneid, `zoneid explain`): the
-# colour is from `zoneid propose` (every pair of shipped zones differs by
-# dE00 >= 15 under every vision model, 3:1 against both backgrounds);
-# the pattern, glyph and label are what remain for a user who cannot see
-# the colour difference. Every zone has a distinct value in each.
+# Colour, glyph and label must differ from every other zone's; the pattern
+# backs up colour for users who cannot tell colours apart. Pick colours with
+# `zoneid propose`; `zoneid audit` checks the set, `zoneid explain` the rule.
 border_color   = "#9e80ac"
 border_pattern = "double"
 glyph          = "★"

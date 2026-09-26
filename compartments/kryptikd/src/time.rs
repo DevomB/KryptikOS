@@ -1,42 +1,30 @@
-//! The wall clock: what zone 0 will believe about the time
-//! (docs/design/time.md).
+//! Wall-clock policy for zone 0 (docs/design/time.md).
 //!
-//! CLOCK_REALTIME is one clock for the whole machine and only zone 0 may set
-//! it, but zone 0 has no network; the zone that can ask a time server is the
-//! net zone, which is treated as hostile and could not set the clock if it
-//! wanted to. So what arrives here is a CLAIM - an offset the net zone says
-//! it measured - and this module is what zone 0 knows that the network does
-//! not: a floor no claim may cross, a bound on what is believed without
-//! asking, and the person's word for anything past it.
-//!
-//! The decision is a pure function of its inputs. Nothing in it reads a
-//! clock, a file or the environment, so every rule below is a unit test.
+//! Only zone 0 may set the clock and it has no network, so the time arrives
+//! as a claim from the untrusted net zone. A claim may not cross the floor,
+//! and past a bound on what is believed unasked, the user decides.
+//! `decide` is pure: it reads no clock, file or environment.
 
-/// Below this many seconds a correction is slewed rather than stepped, so
-/// the clock never runs backwards under a running program.
+/// Corrections below this many seconds are slewed, so the clock never runs backwards.
 pub const SLEW_BELOW_SECS: f64 = 1.0;
-/// Below this the claim agrees with the clock and nothing is done.
+/// Offsets below this many seconds are ignored.
 pub const IGNORE_BELOW_SECS: f64 = 0.005;
-/// What is believed without asking, per claim and in total, either way.
+/// Seconds believed without asking, per claim and in total, either direction.
 pub const DEFAULT_BOUND_SECS: i64 = 3600;
-/// One claim is considered per interval; the rest are refused unread, so a
-/// hostile zone cannot turn the consent prompt into a flood.
+/// One claim is considered per interval; others are refused unread, so a
+/// hostile zone cannot flood the user with consent prompts.
 pub const CLAIM_INTERVAL_SECS: u64 = 600;
 
-/// What the net zone says: add `offset` seconds to the clock. `sources` is
-/// how many time servers answered it, whose median the offset is; it is
-/// shown to the person as that, from a zone that is not trusted.
+/// The net zone's claim: add `offset` seconds, the median of what `sources`
+/// time servers answered. Untrusted, like the zone.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Claim {
     pub offset: f64,
     pub sources: u8,
 }
 
-/// `<seconds> <sources>` as it arrives after the verb. The grammar is
-/// narrow on purpose: a sign, at most ten integer digits, at most six
-/// fractional ones, and a source count of 1 to 16. No exponent, no
-/// infinity, no NaN, nothing a float parser would accept and a person would
-/// not have written.
+/// Parse `<seconds> <sources>`: optional sign, up to ten integer and six
+/// fractional digits, and 1 to 16 sources. No exponent, infinity or NaN.
 pub fn parse_claim(args: &str) -> Result<Claim, String> {
     let mut it = args.split(' ');
     let (Some(secs), Some(sources), None) = (it.next(), it.next(), it.next()) else {
@@ -61,17 +49,13 @@ pub fn parse_claim(args: &str) -> Result<Claim, String> {
 pub struct Knowledge {
     /// The clock now, in seconds since the epoch.
     pub now: f64,
-    /// No proposal below this is accepted or offered for consent: the
-    /// running image's build date, or a later release this machine has
-    /// committed to. The OS cannot have been built in the future of the
-    /// present.
+    /// Nothing below this is applied or offered: the image's build date, or a
+    /// later release this machine has committed to.
     pub floor: i64,
     /// What is believed without asking.
     pub bound: i64,
-    /// The corrections already applied without asking since the last time
-    /// the clock was anchored (by the person's consent, or by the floor).
-    /// A hostile zone may lie by less than the bound every interval; the
-    /// bound is on the sum, so it cannot walk the clock by many small steps.
+    /// Unasked corrections since the clock was last anchored (by consent or
+    /// the floor). The bound applies to this sum, so small lies cannot add up.
     pub moved_unasked: f64,
 }
 
@@ -83,7 +67,7 @@ pub enum Decision {
     Slew { offset: f64 },
     /// Set the clock to `to`.
     Step { to: f64 },
-    /// Past the bound: the person decides, shown both times.
+    /// Past the bound: the user decides, shown both times.
     Ask { to: f64 },
     Refuse(String),
 }
@@ -93,8 +77,7 @@ pub fn decide(k: &Knowledge, c: &Claim) -> Decision {
         return Decision::Refuse("the offset is not a number".into());
     }
     let to = k.now + c.offset;
-    // The floor first, and before consent: a time the OS cannot have existed
-    // in is never put in front of the person as a choice.
+    // The floor comes before consent: an impossible time is never offered.
     if to < k.floor as f64 {
         return Decision::Refuse(format!(
             "{} is before this system was built ({}); not offered, not applied",
@@ -116,9 +99,8 @@ pub fn decide(k: &Knowledge, c: &Claim) -> Decision {
     }
 }
 
-/// What `moved_unasked` becomes once a decision has been carried out: an
-/// unasked correction adds to the sum, and the person's word (or the floor)
-/// anchors the clock and starts the sum again.
+/// `moved_unasked` once `d` is carried out: an unasked correction adds to it,
+/// and consent resets it.
 pub fn moved_after(k: &Knowledge, c: &Claim, d: &Decision, consented: bool) -> f64 {
     match d {
         Decision::Slew { .. } | Decision::Step { .. } => k.moved_unasked + c.offset.abs(),
@@ -127,19 +109,14 @@ pub fn moved_after(k: &Knowledge, c: &Claim, d: &Decision, consented: bool) -> f
     }
 }
 
-/// A clock that reads earlier than the floor is wrong by definition - a dead
-/// RTC battery starts a machine in 1970 or 2000 - and zone 0 repairs that by
-/// itself, with no network: the floor is a time the system is known to have
-/// existed at. Returns the time to set, or None when the clock is not below
-/// the floor.
+/// The time to set a clock that reads below the floor (say, after a dead RTC
+/// battery), or None. Needs no network: the system cannot predate its build.
 pub fn clamp_to_floor(now: f64, floor: i64) -> Option<f64> {
     (now < floor as f64).then_some(floor as f64)
 }
 
-/// `built_at` from /etc/kryptik-image.json, as seconds since the epoch. The
-/// file is written by the build with `date -Iseconds`
-/// (2026-09-19T18:11:28+00:00); only that shape is read, and anything else
-/// is None, which the caller must treat as "no floor known", never as zero.
+/// `built_at` from the image record, as written by `date -Iseconds`, in epoch
+/// seconds. Anything else is None: no floor known, never zero.
 pub fn floor_from_image_json(text: &str) -> Option<i64> {
     let at = text.find("\"built_at\"")?;
     let rest = &text[at + "\"built_at\"".len()..];
@@ -177,8 +154,7 @@ pub fn parse_iso8601(s: &str) -> Option<i64> {
     Some(days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + se - zone)
 }
 
-/// Days since 1970-01-01 of a proleptic Gregorian date (Howard Hinnant's
-/// algorithm; exact for every date this system will see).
+/// Days since 1970-01-01 of a proleptic Gregorian date (Howard Hinnant's algorithm).
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
@@ -200,8 +176,7 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
     (yoe + era * 400 + i64::from(m <= 2), m, d)
 }
 
-/// A time as the person is shown it and as the history records it: to the
-/// minute, in UTC, because that is what a watch can be checked against.
+/// A time as the user sees it and the history records it: to the minute, in UTC.
 pub fn format_utc(t: f64) -> String {
     let secs = t.floor() as i64;
     let (days, rem) = (secs.div_euclid(86400), secs.rem_euclid(86400));
@@ -209,7 +184,7 @@ pub fn format_utc(t: f64) -> String {
     format!("{y:04}-{m:02}-{d:02} {:02}:{:02} UTC", rem / 3600, rem % 3600 / 60)
 }
 
-// --- carrying a decision out ------------------------------------------------
+// Carrying out a decision.
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -219,9 +194,7 @@ pub const IMAGE_JSON: &str = "/etc/kryptik-image.json";
 /// What zone 0 remembers about the clock between claims and across boots.
 pub const STATE_DIR: &str = "/var/lib/kryptik/time";
 
-/// The machine's wall clock, as the glue below needs it. The real one is
-/// `SystemClock`; the tests use one that records what was asked of it,
-/// because nothing unprivileged may set a clock and no test should.
+/// The wall clock, behind a trait so tests can use a fake: no test should set the real one.
 pub trait Clock {
     fn now(&self) -> f64;
     fn step(&mut self, to: f64) -> io::Result<()>;
@@ -257,12 +230,12 @@ impl Clock for SystemClock {
     }
 
     fn sync_rtc(&mut self) -> io::Result<()> {
-        // struct rtc_time is nine ints; RTC_SET_TIME is _IOW('p', 0x0a, it).
-        // The kernel ignores wday, yday and isdst. The RTC is kept in UTC.
+        /* struct rtc_time is nine ints; RTC_SET_TIME is _IOW('p', 0x0a, it).
+         * The kernel ignores wday, yday and isdst. The RTC is kept in UTC. */
         const RTC_SET_TIME: libc::c_ulong = 0x4024_700a;
         let f = match std::fs::OpenOptions::new().write(true).open("/dev/rtc0") {
             Ok(f) => f,
-            // A machine without one (most VMs have one; some boards do not).
+            // No RTC; some boards have none.
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(e) => return Err(e),
         };
@@ -279,9 +252,8 @@ impl Clock for SystemClock {
     }
 }
 
-/// The floor of the running system, or None when the image record is
-/// missing or does not parse: "no floor known", on which every claim is
-/// refused. Never zero.
+/// This system's floor, or None if the image record is missing or does not
+/// parse; with no floor every claim is refused.
 pub fn floor_of_this_system() -> Option<i64> {
     floor_from_image_json(&std::fs::read_to_string(IMAGE_JSON).ok()?)
 }
@@ -289,8 +261,7 @@ pub fn floor_of_this_system() -> Option<i64> {
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 struct State {
     moved_unasked: f64,
-    /// When the last claim was CONSIDERED, whatever came of it: a "no" from
-    /// the person buys quiet for the interval too.
+    /// When the last claim was considered, whatever came of it: a "no" buys quiet too.
     last_claim: Option<f64>,
 }
 
@@ -307,37 +278,24 @@ fn load_state(dir: &Path) -> State {
     s
 }
 
-fn ensure_dir(dir: &Path) -> io::Result<()> {
-    use std::os::unix::fs::DirBuilderExt;
-    match std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
-        Err(e) => Err(e),
-    }
-}
-
-/// Written whole and renamed into place: a power cut leaves the old state
-/// or the new one, never half of either.
+/// Written whole, so a power cut leaves old or new state.
 fn save_state(dir: &Path, s: &State) -> io::Result<()> {
-    ensure_dir(dir)?;
-    let tmp = dir.join("state.tmp");
+    crate::files::private_dir(dir)?;
     let mut text = format!("moved_unasked={}\n", s.moved_unasked);
     if let Some(t) = s.last_claim {
         text.push_str(&format!("last_claim={t}\n"));
     }
-    let mut f = std::fs::File::create(&tmp)?;
-    f.write_all(text.as_bytes())?;
-    f.sync_all()?;
-    std::fs::rename(&tmp, dir.join("state"))
+    crate::files::write_atomic(&dir.join("state"), &[text.as_bytes()], 0o600, None)
 }
 
-/// One line per thing done to the clock, which is what `kryptik doctor`
-/// reads and what a person reads after a clock they did not expect.
+/// Append a line to the clock's history (`kryptikd time status` shows the last).
 fn record(dir: &Path, at: f64, what: &str) {
-    if ensure_dir(dir).is_err() {
+    use std::os::unix::fs::OpenOptionsExt;
+    if crate::files::private_dir(dir).is_err() {
         return;
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("history")) {
+    let history = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(dir.join("history"));
+    if let Ok(mut f) = history {
         let _ = writeln!(f, "{} {what}", format_utc(at));
     }
 }
@@ -364,9 +322,8 @@ impl Outcome {
     }
 }
 
-/// A claim has arrived: decide, ask if it comes to that, and carry it out.
-/// `ask(now, proposed, sources)` is the person; it is only ever called with
-/// a proposal at or above the floor.
+/// Decide on a claim, ask the user if needed, and carry it out.
+/// `ask(now, proposed, sources)` is only called with a proposal at or above the floor.
 pub fn consider(
     clock: &mut dyn Clock,
     dir: &Path,
@@ -381,8 +338,7 @@ pub fn consider(
     let now = clock.now();
     let mut state = load_state(dir);
     if let Some(last) = state.last_claim {
-        // Either way round: a clock that has since been stepped back must
-        // not reopen the window.
+        // abs(): stepping the clock back must not reopen the window.
         if (now - last).abs() < CLAIM_INTERVAL_SECS as f64 {
             return Outcome::Refused(format!("one claim is considered every {} minutes", CLAIM_INTERVAL_SECS / 60));
         }
@@ -404,8 +360,7 @@ pub fn consider(
         },
         Decision::Ask { to } => match ask(&format_utc(now), &format_utc(*to), claim.sources) {
             Err(why) => Outcome::Refused(format!("not set without the person's consent: {why}")),
-            // The offset is applied to the clock as it is NOW: the person
-            // may have taken a minute to answer.
+            // Apply the offset to the clock as it reads now: answering takes time.
             Ok(()) => match clock.step(clock.now() + claim.offset) {
                 Ok(()) => {
                     consented = true;
@@ -433,8 +388,7 @@ pub fn consider(
     outcome
 }
 
-/// At boot, before anything asks the network: a clock below the floor is
-/// set to the floor. Returns what was done, in a sentence.
+/// At boot, before any network: raise a clock below the floor to it. Returns what was done.
 pub fn clamp(clock: &mut dyn Clock, dir: &Path, floor: Option<i64>) -> Result<String, String> {
     let floor = floor.ok_or_else(|| format!("no floor is known: {IMAGE_JSON} is missing or unreadable"))?;
     let now = clock.now();
@@ -444,7 +398,7 @@ pub fn clamp(clock: &mut dyn Clock, dir: &Path, floor: Option<i64>) -> Result<St
     clock.step(to).map_err(|e| format!("the clock could not be set to the floor: {e}"))?;
     let _ = clock.sync_rtc();
     let mut state = load_state(dir);
-    // The floor is a time this system is known to have existed at: an anchor.
+    // The floor anchors the clock, as consent does.
     state.moved_unasked = 0.0;
     let _ = save_state(dir, &state);
     record(dir, to, &format!("set to the floor: the clock read {}, before this system was built", format_utc(now)));
@@ -457,7 +411,7 @@ mod tests {
 
     const BUILT: i64 = 1_789_841_488; // 2026-09-19 18:11:28 UTC
 
-    /// A clock that does what it is told and remembers it.
+    /// A clock that does what it is told and records it.
     struct FakeClock {
         t: f64,
         steps: Vec<f64>,
@@ -502,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn a_claim_inside_the_bound_sets_the_clock_the_rtc_and_the_record() {
+    fn claim_within_bound_steps_clock() {
         let dir = scratch("step");
         let mut clock = FakeClock::at(BUILT as f64 + 1e6);
         let out = consider(&mut clock, &dir, Some(BUILT), 3600, &Claim { offset: 42.5, sources: 3 }, &mut nobody);
@@ -522,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    fn past_the_bound_nothing_moves_without_the_person_and_both_times_are_shown() {
+    fn past_bound_needs_consent() {
         let dir = scratch("ask");
         let start = BUILT as f64;
         let months = 200.0 * 86400.0;
@@ -533,8 +487,7 @@ mod tests {
         assert!(matches!(&out, Outcome::Refused(w) if w.contains("consent")), "{out:?}");
         assert!(clock.steps.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
-        // The person says yes, a minute later: the offset is applied to the
-        // clock as it reads then, and the unasked sum starts again.
+        // The user says yes: the clock steps and the unasked sum resets.
         let mut clock = FakeClock::at(start);
         let mut shown = None;
         let out = consider(&mut clock, &dir, Some(BUILT), 3600, &claim, &mut |now: &str, to: &str, n: u8| {
@@ -549,13 +502,12 @@ mod tests {
     }
 
     #[test]
-    fn one_claim_is_considered_per_interval_whatever_came_of_the_last() {
+    fn one_claim_per_interval() {
         let dir = scratch("rate");
         let mut clock = FakeClock::at(BUILT as f64 + 5e6);
         let far = Claim { offset: 9e6, sources: 2 };
         assert!(matches!(consider(&mut clock, &dir, Some(BUILT), 3600, &far, &mut nobody), Outcome::Refused(_)));
-        // A second one at once is refused unread: the person is not asked
-        // again, whatever it says.
+        // A second claim at once is refused unread; the user is not asked.
         let mut asked = 0;
         let out = consider(&mut clock, &dir, Some(BUILT), 3600, &Claim { offset: 5.0, sources: 2 }, &mut |_: &str, _: &str, _: u8| {
             asked += 1;
@@ -564,7 +516,7 @@ mod tests {
         assert!(matches!(&out, Outcome::Refused(w) if w.contains("every 10 minutes")), "{out:?}");
         assert_eq!(asked, 0);
         assert!(clock.steps.is_empty());
-        // A clock stepped BACK since must not reopen the window either.
+        // Stepping the clock back must not reopen the window.
         clock.t -= 300.0;
         assert!(matches!(consider(&mut clock, &dir, Some(BUILT), 3600, &Claim { offset: 5.0, sources: 2 }, &mut nobody), Outcome::Refused(_)));
         // After the interval the next one is considered.
@@ -574,14 +526,13 @@ mod tests {
     }
 
     #[test]
-    fn without_a_floor_every_claim_is_refused_and_a_refused_clock_is_reported() {
+    fn refused_without_floor_or_permission() {
         let dir = scratch("nofloor");
         let mut clock = FakeClock::at(BUILT as f64 + 1e6);
         let out = consider(&mut clock, &dir, None, 3600, &Claim { offset: 2.0, sources: 1 }, &mut nobody);
         assert!(matches!(&out, Outcome::Refused(w) if w.contains("no floor is known")), "{out:?}");
         assert!(clamp(&mut clock, &dir, None).is_err());
-        // The kernel saying no (this process is not zone 0's root) is a
-        // refusal with the reason, not a silent success.
+        // EPERM from the kernel is a refusal that gives the reason.
         clock.refuse = true;
         let out = consider(&mut clock, &dir, Some(BUILT), 3600, &Claim { offset: 2.0, sources: 1 }, &mut nobody);
         assert!(matches!(&out, Outcome::Refused(w) if w.contains("could not be set")), "{out:?}");
@@ -590,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn the_clamp_sets_a_dead_clock_to_the_floor_and_leaves_a_live_one_alone() {
+    fn clamp_raises_dead_clock_to_floor() {
         let dir = scratch("clamp");
         let mut dead = FakeClock::at(946_684_800.0);
         let said = clamp(&mut dead, &dir, Some(BUILT)).unwrap();
@@ -604,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn the_real_clock_reads_and_an_unprivileged_process_may_not_set_it() {
+    fn system_clock_denies_unprivileged_step() {
         let mut c = SystemClock;
         let now = c.now();
         assert!(now > 1_600_000_000.0, "the system clock reads {now}");
@@ -622,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn a_claim_is_a_sign_some_digits_and_a_source_count_and_nothing_else() {
+    fn parse_claim_is_strict() {
         assert_eq!(parse_claim("-0.000123 4"), Ok(Claim { offset: -0.000123, sources: 4 }));
         assert_eq!(parse_claim("+12 1"), Ok(Claim { offset: 12.0, sources: 1 }));
         assert_eq!(parse_claim("9999999999.999999 16"), Ok(Claim { offset: 9999999999.999999, sources: 16 }));
@@ -636,22 +587,21 @@ mod tests {
     }
 
     #[test]
-    fn nothing_below_the_floor_is_applied_or_even_offered() {
+    fn below_floor_is_refused() {
         let now = BUILT as f64 + 86400.0;
-        // A day and a second backwards lands below the floor: refused, and
-        // refused rather than asked although it is far past the bound.
+        // Below the floor: refused, not asked, though far past the bound.
         match decide(&k(now), &c(-86401.0)) {
             Decision::Refuse(why) => assert!(why.contains("before this system was built"), "{why}"),
             d => panic!("{d:?}"),
         }
-        // Exactly the floor is the earliest time that may be asked about.
+        // The floor itself is the earliest time that may be asked about.
         assert_eq!(decide(&k(now), &c(-86400.0)), Decision::Ask { to: BUILT as f64 });
-        // A clock already below the floor does not make lower proposals fair.
+        // A clock already below the floor does not lower it.
         assert!(matches!(decide(&k(1000.0), &c(5.0)), Decision::Refuse(_)));
     }
 
     #[test]
-    fn small_corrections_are_slewed_and_larger_ones_inside_the_bound_are_stepped() {
+    fn slew_small_step_within_bound() {
         let now = BUILT as f64 + 1_000_000.0;
         assert_eq!(decide(&k(now), &c(0.001)), Decision::Ignore);
         assert_eq!(decide(&k(now), &c(-0.4)), Decision::Slew { offset: -0.4 });
@@ -662,18 +612,17 @@ mod tests {
     }
 
     #[test]
-    fn past_the_bound_the_person_decides_in_either_direction() {
+    fn past_bound_asks_either_way() {
         let now = BUILT as f64 + 10_000_000.0;
         assert_eq!(decide(&k(now), &c(3600.5)), Decision::Ask { to: now + 3600.5 });
         assert_eq!(decide(&k(now), &c(-7200.0)), Decision::Ask { to: now - 7200.0 });
-        // A machine whose RTC died and was clamped to the build date: the
-        // real time is months ahead, and that is a question, not a refusal.
+        // A dead RTC clamped to the build date, months behind: asked, not refused.
         let months = 200.0 * 86400.0;
         assert_eq!(decide(&k(BUILT as f64), &c(months)), Decision::Ask { to: BUILT as f64 + months });
     }
 
     #[test]
-    fn many_small_lies_are_bounded_by_their_sum() {
+    fn small_lies_bounded_by_sum() {
         let now = BUILT as f64 + 10_000_000.0;
         let mut know = k(now);
         let lie = c(-900.0);
@@ -691,16 +640,16 @@ mod tests {
         }
         // Four quarter-hours fit in the hour; the fifth asks.
         assert_eq!(applied, 4);
-        // The person's word anchors the clock and the sum starts again.
+        // Consent resets the sum.
         let d = decide(&know, &lie);
         assert_eq!(moved_after(&know, &lie, &d, true), 0.0);
-        // Without it nothing moved and the sum stands.
+        // Without consent nothing moved and the sum stands.
         assert_eq!(moved_after(&know, &lie, &d, false), 3600.0);
         assert_eq!(moved_after(&know, &lie, &Decision::Refuse("x".into()), false), 3600.0);
     }
 
     #[test]
-    fn a_clock_below_the_floor_is_set_to_the_floor_with_no_network_involved() {
+    fn clamp_to_floor_only_below() {
         assert_eq!(clamp_to_floor(0.0, BUILT), Some(BUILT as f64));
         assert_eq!(clamp_to_floor(946_684_800.0, BUILT), Some(BUILT as f64)); // a dead RTC's 2000-01-01
         assert_eq!(clamp_to_floor(BUILT as f64, BUILT), None);
@@ -708,10 +657,10 @@ mod tests {
     }
 
     #[test]
-    fn the_floor_is_read_from_the_image_record_as_the_build_wrote_it() {
+    fn floor_from_image_record() {
         let json = "{\n  \"name\": \"kryptik\",\n  \"built_at\": \"2026-09-19T18:11:28+00:00\",\n  \"x\": 1\n}\n";
         assert_eq!(floor_from_image_json(json), Some(BUILT));
-        // A build host in another zone writes its local offset; same instant.
+        // A build host's local UTC offset gives the same instant.
         assert_eq!(floor_from_image_json("{\"built_at\":\"2026-09-19T11:11:28-07:00\"}"), Some(BUILT));
         assert_eq!(parse_iso8601("2026-09-19T18:11:28Z"), Some(BUILT));
         assert_eq!(parse_iso8601("1970-01-01T00:00:00Z"), Some(0));
@@ -724,7 +673,7 @@ mod tests {
     }
 
     #[test]
-    fn times_are_shown_to_the_minute_in_utc() {
+    fn format_utc_to_minute() {
         assert_eq!(format_utc(BUILT as f64), "2026-09-19 18:11 UTC");
         assert_eq!(format_utc(0.0), "1970-01-01 00:00 UTC");
         assert_eq!(format_utc(951_825_600.9), "2000-02-29 12:00 UTC");
