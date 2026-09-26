@@ -1344,8 +1344,10 @@ s_licences() {
         install -d -m 0755 "$dir"
         for m in "${members[@]}"; do
             # A link to a file not extracted would dangle: there is nothing to copy.
+            # By its path below the top directory, so doc/COPYING and COPYING
+            # cannot overwrite each other.
             if [[ -f "${tmp}/${m}" ]]; then
-                install -m 0644 "${tmp}/${m}" "${dir}/${m##*/}"
+                install -D -m 0644 "${tmp}/${m}" "${dir}/${m#*/}"
                 n=$((n + 1))
             fi
         done

@@ -44,7 +44,7 @@ remember() {  # remember ROW DIGEST
     CACHE_ROW["$2"]="$1"
 }
 
-# Top-level licence files come from common.sh's licence_members, the reader
+# Licence files come from common.sh's licence_members, the reader
 # stage 04 installs from too.
 
 # classify <path-to-text> -> comma-separated SPDX ids, or "unknown"

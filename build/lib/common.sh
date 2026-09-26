@@ -61,12 +61,13 @@ sha256_of_stdin() {
     fi
 }
 
-# licence_members TARBALL [ERE]: a source tarball's top-level licence files,
-# what tools/scan-licenses.sh reads and stage 04 installs, and the members
-# matching ERE too, from one listing. The pattern is local, so it is part of
-# the fingerprint of any step that calls this.
+# licence_members TARBALL [ERE]: a source tarball's licence files, at its top
+# or in its doc/ (attr and acl keep them there), which tools/scan-licenses.sh
+# reads and stage 04 installs, and the members matching ERE too, from one
+# listing. The pattern is local, so it is part of the fingerprint of any step
+# that calls this.
 licence_members() {
-    local re='^[^/]+/(COPYING[^/]*|COPYRIGHT[^/]*|LICEN[CS]E[^/]*|License)$'
+    local re='^[^/]+/(doc/)?(COPYING[^/]*|Copying|COPYRIGHT[^/]*|LICEN[CS]E[^/]*|License|Artistic|NOTICE)$'
     [[ -z "${2:-}" ]] || re="${re}|${2}"
     tar -tf "$1" 2>/dev/null | grep -E "$re" || true
 }
