@@ -1,0 +1,25 @@
+From bfa2e4b890a44100a99d26b54af385479528b12e Mon Sep 17 00:00:00 2001
+From: "Arnold D. Robbins" <arnold@skeeve.com>
+Date: Fri, 17 Apr 2026 11:48:19 +0300
+Subject: [PATCH] Small fix in extension/readdir.c.
+
+---
+ extension/readdir.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/extension/readdir.c b/extension/readdir.c
+index 1aba0f722..b94ec6e7e 100644
+--- a/extension/readdir.c
++++ b/extension/readdir.c
+@@ -120,7 +120,7 @@ ftype(struct dirent *entry, const char *dirname)
+ 	int count;
+ 
+ 	count = snprintf(fname, sizeof(fname), "%s/%s", dirname, entry->d_name);
+-	if (count > sizeof(fname))
++	if (count >= sizeof(fname))
+ 		return "u";	// buffer overflow. skip stat() call.
+ 
+ 	if (stat(fname, &sbuf) == 0) {
+-- 
+2.51.0.windows.1
+

@@ -17,9 +17,11 @@ ChangeLog hunk dropped:
   Both are widened as in upstream 062f2f2581b991362c046f7f2e238ffa34e6f8c7,
   "Minor integer overflow fixes."; 5.3.0 declares the escape's value `int`
   where upstream had `long`.
-- `0003`, CVE-2026-40553: `ftype()` in the readdir extension. Upstream
-  cca0366144336b49aaa7d5d949966ce8e2c70843, "Avoid buffer overflow in
-  extension/readdir.c.", unchanged.
+- `0003` and `0004`, CVE-2026-40553: `ftype()` in the readdir extension.
+  Upstream cca0366144336b49aaa7d5d949966ce8e2c70843, "Avoid buffer overflow
+  in extension/readdir.c.", and bfa2e4b890a44100a99d26b54af385479528b12e,
+  "Small fix in extension/readdir.c.", which makes the truncation check
+  `>=`; both unchanged.
 
 Not carried: CVE-2026-40469, upstream
 aa7272a6e1184cdd21ab8f89200219abd8053eda, "Add overflow checking in do_sub
@@ -28,7 +30,7 @@ for 32 bit systems". It guards a product that cannot exceed a 64-bit
 a clearer message. Kryptik builds for x86-64 only.
 
 Checked inside the image's sysroot, with its compiler, stage 04's flags and
-hardened_malloc preloaded: all three apply to the 5.3.0 tarball with no
+hardened_malloc preloaded: all four apply to the 5.3.0 tarball with no
 fuzz, the build gives the same warnings as unpatched 5.3.0, and `make check`
 passes in full either way.
 
