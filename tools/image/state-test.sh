@@ -1,33 +1,21 @@
 #!/usr/bin/env bash
-#
-# The installed system's state partition: found by identity, and a system
-# that tells the truth when it cannot be used (docs/design/boot-and-updates.md; sysinit.sh).
+# The installed system's state partition: found on the system's own disk, and
+# a boot that says so when it cannot use it (docs/design/boot-and-updates.md,
+# sysinit.sh).
 #
 #   tools/image/state-test.sh --usb IMG [--disk FILE] [--timeout N]
 #
-#   1  install (control disk, preseeded user), boot alone once so the first
-#      boot has happened and the user exists on the state partition
-#   2  a CLONE of the whole disk attached as a second disk: same four
-#      labels twice. The system must use its own partitions (var on
-#      /dev/vda4, root disk /dev/vda), report the clone's as ignored, and
-#      not be degraded. Then the clone booted alone still works (the labels
-#      are not tied to a device name).
-#   3  AMBIGUOUS on the same disk: partition 3 (kryptik-b) relabelled
-#      kryptik-state from the host. Two candidates on the root disk: the
-#      system boots DEGRADED, says why, creates no account, starts no
-#      desktop; the label restored, it boots normally with the user intact.
-#   4  CORRUPT: the state partition's superblock zeroed (bytes saved first).
-#      Degraded again, with the mount failure as the reason; the bytes
-#      restored, normal again, the user's file still there.
-#   5  MISSING: the partition type/label of partition 4 changed to
-#      something else. Degraded ("no partition labelled kryptik-state");
-#      restored, normal.
+#   step 1  install, first boot, a file on the state partition
+#   step 2  a clone of the disk attached: its partitions are ignored; then
+#           the clone boots alone
+#   step 3  two kryptik-state partitions on the root disk: degraded
+#   step 4  the LUKS2 header zeroed: degraded
+#   step 5  no kryptik-state partition: degraded
+#   step 6  the watchdog feeder stopped: the machine resets and comes back
+#   step 7  three wrong passphrases: degraded; then the right one
 #
-# Every disk is a file made here. Degraded boots cannot be logged into (the
-# accounts live on the state that is unusable), so those steps assert on
-# the console transcript alone, and every restored step logs in and
-# checks the persisted file - the positive control that the damage was
-# real and the repair complete.
+# A degraded boot has no accounts, so only its console is checked; after each
+# repair a login must find the user's file. Every disk is a file made here.
 set -uo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -40,7 +28,7 @@ while [[ "$#" -gt 0 ]]; do
         --usb) USB="${2:?}"; shift 2 ;;
         --disk) DISK="${2:?}"; shift 2 ;;
         --timeout) TIMEOUT="${2:?}"; shift 2 ;;
-        -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,18p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -51,31 +39,13 @@ DISK="${DISK:-${VMDIR}/state.img}"
 [[ -e "$DISK" && ! -f "$DISK" ]] && die "refusing: ${DISK} is not a regular file"
 CLONE="${VMDIR}/state-clone.img"
 
-PASS=0; FAIL=0
-green() { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
-red()   { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
-step() { printf '\n==> %s\n' "$*"; }
-TUSER=tester; TPASS=tester-pw; RPASS=root-pw
-TUSER_HASH="$(openssl passwd -6 "$TPASS")"; ROOT_HASH="$(openssl passwd -6 "$RPASS")"
-DRV="${SELF}/vm-drive.py"
+# shellcheck source=tools/image/suite-lib.sh
+source "${SELF}/suite-lib.sh"
 VARSF="${VMDIR}/state-vars.fd"; cp /usr/share/OVMF/OVMF_VARS_4M.fd "$VARSF"
-LATEST="${KRYPTIK_WORK}/logs/ovmf-serial.latest.log"
 
-start_vm() {   # start_vm NAME [extra args] -> SER PIDF LOG
-    local name="$1"; shift
-    local out; out="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --name "$name" "$@")"
-    SER="$(sed -n 's/^serial=//p' <<<"$out")"; PIDF="$(sed -n 's/^pid=//p' <<<"$out")"; LOG="$(sed -n 's/^log=//p' <<<"$out")"
-    [[ -S "$SER" ]] || die "no serial socket: ${out}"
-}
-stop_vm() { sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null; sleep 1; }
-drive() { python3 "$DRV" --serial "$SER" --timeout 300 "$@"; }
-txt() { tr -d '\r' < "$LOG"; }
-ROOTSH() { printf 'su:%s:%s' "$RPASS" "$1"; }
-part_start() { sfdisk -d "$1" 2>/dev/null | awk -v n="$2" -F'[ ,]+' '$1 ~ n"$" {for(i=1;i<=NF;i++) if($i=="start=") print $(i+1)}'; }
 
-# A boot that must come up degraded: smoke mode, transcript only, and the
-# guest cannot power itself off (no user to log in as), so it is killed at
-# the timeout by design after the report has appeared.
+# A boot that must come up degraded. Nobody can log in to power it off, so it
+# runs into the smoke timeout and only its transcript is checked.
 degraded_boot() {   # degraded_boot NAME REASON-REGEX
     "${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode smoke --timeout 150 --name "$1" > /dev/null
     local t; t="$(tr -d '\r' < "$LATEST")"
@@ -109,7 +79,7 @@ DISK_SIZE="$("${SELF}/test-disk-size.sh" --medium "$USB")" || die "could not siz
 rm -f "$DISK"; truncate -s "$DISK_SIZE" "$DISK"
 CTL="${VMDIR}/testctl-state.img"
 "${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
-    "preseed_user=${TUSER}" "preseed_password_hash=${TUSER_HASH}" "preseed_root_hash=${ROOT_HASH}" > /dev/null
+    "${PRESEED[@]}" > /dev/null
 "${SELF}/run-ovmf.sh" --usb "$USB" --disk "$DISK" --testctl "$CTL" --vars clean --mode smoke --timeout "$TIMEOUT" --name state-install > /dev/null
 tr -d '\r' < "$LATEST" | grep -q 'KRYPTIK_INSTALL: rc=0' && green "installed" || { red "install failed"; exit 1; }
 start_vm state-p1
@@ -135,7 +105,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "boots with a clone attached; login and the file work" || red "step 2 drive failed"
-txt | grep -q 'KRYPTIK_SMOKE: var_source=/dev/vda4 ext4' && green "/var is this disk's partition (vda4), not the clone's" || red "/var is not vda4"
+txt | grep -q 'KRYPTIK_SMOKE: var_source=/dev/mapper/kryptik-state ext4' && green "/var is the unlocked state partition" || red "/var is not the unlocked state partition"
 txt | grep -q 'state_dev=/dev/vda4' && green "boot identity names /dev/vda4" || red "boot identity does not name vda4"
 txt | grep -q 'sysinit: kryptik-state on other disks ignored: /dev/vdb4' && green "the clone's state partition was seen and ignored" || red "the clone's partition was not reported as ignored"
 txt | grep -q 'STATE DEGRADED' && red "degraded with a clone attached (ambiguity wrongly detected)" || green "not degraded: the clone is not this installation"
@@ -160,10 +130,10 @@ normal_boot state-p3b
 step "step 4: a corrupt state partition"
 S4_OFF=$(( $(part_start "$DISK" 4) * 512 ))
 SAVE="${VMDIR}/state-super.bin"
-# the ext4 superblock and group descriptors: the first 64 KiB of the partition
+# both copies of the LUKS2 header: the first 64 KiB of the partition
 dd if="$DISK" of="$SAVE" bs=1 skip="$S4_OFF" count=65536 status=none
 dd if=/dev/zero of="$DISK" bs=1 seek="$S4_OFF" count=65536 conv=notrunc status=none
-degraded_boot state-p4 'mount of /dev/vda4 failed'
+degraded_boot state-p4 '/dev/vda4 carries no LUKS2 header'
 dd if="$SAVE" of="$DISK" bs=1 seek="$S4_OFF" conv=notrunc status=none
 normal_boot state-p4b
 
@@ -175,11 +145,8 @@ sfdisk --part-label "$DISK" 4 kryptik-state >/dev/null 2>&1 || die "relabel back
 normal_boot state-p5b
 
 # ----------------------------------------------------------------- step 6 --
-# The feeder is stopped, not killed: a killed feeder is restarted by its
-# supervisor inside the timeout, which is the design and proves nothing. A
-# stopped one is what a hung userspace looks like from the timer's side: the
-# process exists and never runs. Nothing else is touched, so the only thing
-# that can bring the second boot report is the watchdog's reset.
+# Stop the feeder rather than kill it (s6 would restart it): to the timer that
+# is a hung userspace, and only the watchdog's reset can bring a second boot.
 step "step 6: nothing feeds the watchdog: the machine resets itself and comes back with its data"
 start_vm state-p6
 p6=( "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}"
@@ -198,6 +165,12 @@ if txt | grep -q 'softdog: Initiating system reboot'; then green "state-p6: the 
 else echo "      note: no softdog line; the reset came from an emulated hardware timer"; fi
 txt | grep -q 'Kernel panic' && red "state-p6: kernel panic" || green "state-p6: no panic"
 txt | grep -q 'STATE DEGRADED' && red "state-p6: degraded after the reset" || green "state-p6: state is intact after the reset"
+
+# ----------------------------------------------------------------- step 7 --
+step "step 7: three wrong passphrases, then the right one"
+KRYPTIK_STATE_PASSPHRASE=not-the-passphrase degraded_boot state-p7 '/dev/vda4 was not unlocked in three tries'
+[[ "$(tr -d '\r' < "$LATEST" | grep -c 'passphrase for the state partition')" -eq 3 ]] && green "state-p7: asked three times and no more" || red "state-p7: not asked exactly three times"
+normal_boot state-p7b
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]] || exit 1

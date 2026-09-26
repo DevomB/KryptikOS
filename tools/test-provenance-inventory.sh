@@ -1,24 +1,11 @@
 #!/usr/bin/env bash
-# Focused tests for tools/provenance-inventory.sh.
-#
-#   ./tools/test-provenance-inventory.sh
-#
-# Deterministic and offline. The inventory computes no verification itself - it
-# runs the two verification tools with --report=FILE and aggregates - so what
-# there is to test is the aggregation: which assurance class each source lands
-# in, that a failure outranks every established assertion, that the lock state
-# is computed from the bytes on disk, and that no single coverage figure is
-# ever printed.
-#
-# The evidence is therefore supplied rather than collected, through a gated
-# self-test hook. Real evidence collection is covered by
-# tools/test-verify-signatures.sh and tools/test-verify-provenance.sh.
+# Tests for tools/provenance-inventory.sh: classification, lock state, and no
+# total. Offline: the verifiers' reports are supplied through the test hook.
 
 set -uo pipefail
 
-# See the same note in the other suites: common.sh prefers these over anything
-# derived from KRYPTIK_ROOT, so an exported one would silently redirect the
-# inventory at the real tree.
+# common.sh prefers these over paths derived from KRYPTIK_ROOT, so an exported
+# one would point the tool at the real tree.
 unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -43,17 +30,13 @@ EV="${W}/evidence"
 mkdir -p "$EV"
 
 # --- fixture tree -----------------------------------------------------------
-#
-# A stand-in manifest of eight sources, one per interesting class, plus the
-# bytes and the lock entries needed to exercise lock-state reporting.
 
+# One source per class or lock state, with the bytes and lock entries to match.
 build_tree() {
     rm -rf "$FAKE"
     mkdir -p "${FAKE}/build/config" "${FAKE}/sources" "${FAKE}/tools"
 
-    # provenance-inventory.sh asks fetch-sources.sh for the manifest. Point it
-    # at a stub rather than reproducing 69 real rows: the inventory's input is
-    # the three columns, and the real manifest is fetch-sources.sh's business.
+    # The inventory reads only the three columns of fetch-sources.sh --list.
     cat > "${FAKE}/tools/fetch-sources.sh" <<'STUB'
 #!/usr/bin/env bash
 # Test stub: emits the same three columns as `fetch-sources.sh --list`.
@@ -91,7 +74,7 @@ STUB
     printf '%s  absentpkg-8.0.tar.gz\n' \
         0000000000000000000000000000000000000000000000000000000000000000 \
         >> "${FAKE}/sources.lock"
-    # nolockpkg-9.0 is deliberately absent from the lock.
+    # nolockpkg-9.0 has no lock entry.
 }
 
 write_evidence() {
@@ -171,9 +154,7 @@ expect_class pubsha       publisher-checksum
 expect_class lockonly     lock-only
 expect_class absentpkg    not-downloaded
 
-# The same signature evidence, three different classes, decided only by what
-# the identity check found. This is the distinction the old coverage figure
-# erased by adding all three together.
+# Same signature evidence; only the identity findings separate these classes.
 if [[ "$(row korgcert | wc -l)" -eq 1 ]] \
    && ! diff <(row korgcert | awk '{print $3}') <(row korgpub | awk '{print $3}') >/dev/null; then
     green "identity evidence separates otherwise identical signature results"
@@ -181,7 +162,7 @@ else
     red "korgcert and korgpub landed in the same class"; show
 fi
 
-# --- lock state is computed from the bytes, not from the evidence -----------
+# --- lock state comes from the bytes on disk --------------------------------
 
 for pair in "pinnedpkg:lock OK" "absentpkg:locked, absent" \
             "nolockpkg:NO LOCK ENTRY"; do
@@ -246,16 +227,13 @@ else
     red "the output does not state that the counts are not a total"; show
 fi
 
-# The counts depend on which keyring produced them, so the report has to say
-# which one did. Under the self-test hook there is no signature log at all, and
-# "unknown" is the honest answer rather than a silent omission.
+# The counts depend on the keyring, so the report must name its state.
 if grep -qiE "keyring state for this run" "$OUT"; then
     green "the report states which keyring state produced the counts"
 else
     red "the report does not say which keyring state it was measured against"; show
 fi
 
-# Strongest first, so a reader cannot mistake the order for arbitrary.
 order="$(grep -oE '^  +[0-9]+  [a-z-]+' "$OUT" | awk '{print $2}' | tr '\n' ' ')"
 case "$order" in
     "signed-tree-pinned-key signature-pinned-key signature-korg-certified-key"*)
@@ -273,13 +251,10 @@ else
     red "--md did not emit a markdown table"; show
 fi
 
-# The markdown is an artifact that gets committed, so progress chatter must not
-# be in it. stdout is checked on its own here; stderr is where progress belongs.
+# stdout alone: the keyring note first, then the table, and no progress lines.
 KRYPTIK_ROOT="$FAKE" KRYPTIK_INVENTORY_SELFTEST=1 \
     KRYPTIK_INVENTORY_REPORTS="$EV" NO_COLOR=1 \
     bash "$TOOL" --md > "${W}/md.out" 2>/dev/null
-# The keyring-state note is part of the artifact and comes first; what must
-# NOT be there is the progress chatter, which belongs on stderr.
 if [[ "$(head -1 "${W}/md.out")" == "**Keyring state for this run:**"* ]] \
    && grep -qF "| source | version | assurance class" "${W}/md.out" \
    && ! grep -qE '^(==>|  ok|warn|  manifest:|  running)' "${W}/md.out"; then
@@ -351,8 +326,6 @@ else
     red "--licences did not populate the licence method"
 fi
 
-# An artefact tree that does not exist is recorded as absent, not omitted:
-# a missing artefact is a fact about the release, not a gap in the document.
 KRYPTIK_ROOT="$FAKE" KRYPTIK_INVENTORY_SELFTEST=1 \
     KRYPTIK_INVENTORY_REPORTS="$EV" NO_COLOR=1 \
     bash "$TOOL" --json --artifacts=/nonexistent/tree > "${W}/inv3.json" 2>/dev/null
@@ -377,7 +350,7 @@ else
     red "--json --md was accepted (exit ${rc})"; show
 fi
 
-# --- the selftest hook cannot be used by accident ---------------------------
+# --- selftest hook ----------------------------------------------------------
 
 KRYPTIK_ROOT="$FAKE" KRYPTIK_INVENTORY_REPORTS="$EV" NO_COLOR=1 \
     bash "$TOOL" > "$OUT" 2>&1
@@ -389,13 +362,8 @@ else
 fi
 
 # --- published-key classes pass through from the verifier -------------------
-#
-# verify-signatures.sh emits these directly when tools/key-provenance.tsv
-# names a publisher for the signing key. Before the passthrough existed they
-# fell off the end of classify() and were reported as "unverified" - a worse
-# answer than the one the verifier had actually given, and one that would have
-# quietly undone twelve sources' worth of evidence.
 
+# verify-signatures.sh emits these when key-provenance.tsv names the publisher.
 cat > "${EV}/signatures.tsv" <<'TSV'
 korgpub	signature-korg-published-key	Karel Zak <kzak@redhat.com> (E4B71D5EEC39C284)
 korgcert	signature-korg-certified-key	Theodore Ts'o (F2F95956950D81A3)
@@ -407,10 +375,7 @@ expect_class korgpub signature-korg-published-key
 expect_class korgcert signature-korg-certified-key
 expect_class lockonly signature-wkd-published-key
 
-# The classes are ranked, and the ranking is the point: a key the signer's own
-# domain publishes is not the same evidence as one in a keyring fetched
-# wholesale from ftp.gnu.org, so the report must not print them in an order
-# that implies otherwise.
+# A key the signer's own domain publishes outranks the bulk GNU keyring.
 wkd_at=$(grep -n 'signature-wkd-published-key' "$OUT" | tail -1 | cut -d: -f1)
 gnu_at=$(grep -n 'signature-keyring-key' "$OUT" | tail -1 | cut -d: -f1)
 if [[ -n "$wkd_at" && -n "$gnu_at" && "$wkd_at" -lt "$gnu_at" ]]; then
@@ -428,12 +393,8 @@ fi
 write_evidence
 
 # --- recorded caveats -------------------------------------------------------
-#
-# A caveat records something true about a source that no assurance class can
-# express: a recipe that rewrites upstream's files, or a signature whose signer
-# upstream never designated. The one thing a caveat must never do is read as
-# assurance, so the kinds are checked to stay out of the class counts.
 
+# A caveat must never read as assurance: its kinds stay out of the class counts.
 NOTES="${W}/notes.tsv"
 write_notes() { printf '%s\n' "$@" > "$NOTES"; }
 
@@ -471,8 +432,7 @@ else
     red "markdown output gets a caveats section"; show
 fi
 
-# The JSON document is on stdout; progress goes to stderr. Capturing both into
-# one file is how an earlier draft of these six cases got ERR for every value.
+# stdout only: progress mixed in from stderr would break the JSON.
 NJSON="${W}/notes.json"
 KRYPTIK_ROOT="$FAKE" KRYPTIK_INVENTORY_SELFTEST=1 \
     KRYPTIK_INVENTORY_REPORTS="$EV" NO_COLOR=1 \
@@ -526,8 +486,7 @@ else
     red "sources with no caveat carry no notes field (got ${got})"
 fi
 
-# Positive control: caveats are optional, and a tree without the file is not an
-# error. The fixture tree has no tools/source-notes.tsv.
+# Control: caveats are optional, and the fixture tree has no source-notes.tsv.
 run --offline
 if [[ "$RC" -eq 0 ]] && ! grep -qF 'RECORDED CAVEATS' "$OUT"; then
     green "a tree with no caveat file inventories cleanly"
@@ -535,7 +494,7 @@ else
     red "a tree with no caveat file inventories cleanly (exit ${RC})"; show
 fi
 
-# --- a malformed caveat file is a tooling fault, not a provenance result -----
+# --- malformed caveat files -------------------------------------------------
 
 bad_note() {  # bad_note ROW NAME
     write_notes "$1"
@@ -577,16 +536,10 @@ else
     red "a caveat file named explicitly but missing is refused (exit ${RC})"; show
 fi
 
-# --- the shipped caveat file is itself valid --------------------------------
-#
-# Guards the real data rather than a fixture: a row added with an undefined
-# kind, or naming a source that has since been dropped, must break here.
-#
-# KRYPTIK_SOURCES and KRYPTIK_WORK are set deliberately here, against this
-# file's own rule, and only for this one invocation: pointing them at empty
-# directories keeps the real KRYPTIK_ROOT (so the real manifest and the real
-# caveat file are used) while skipping the sha256 of every tarball in
-# sources/, which is gigabytes of hashing this check does not need.
+# --- the shipped caveat file is valid ---------------------------------------
+
+# Against the real tree. Empty KRYPTIK_SOURCES and KRYPTIK_WORK keep the real
+# manifest and caveats but skip hashing every tarball in sources/.
 mkdir -p "${W}/empty-sources" "${W}/realwork"
 RC=0
 KRYPTIK_SOURCES="${W}/empty-sources" KRYPTIK_WORK="${W}/realwork" NO_COLOR=1 \

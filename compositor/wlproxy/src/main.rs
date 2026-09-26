@@ -22,8 +22,30 @@ mod wire;
 use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use session::{Dir, Session};
+
+/// The lines a zone's clients can cause, held to a rate: the log is a file in
+/// the session's runtime directory, and connecting in a loop would fill it.
+struct Log { zone: String, since: Instant, lines: u32, dropped: u32 }
+impl Log {
+    const PER_SECOND: u32 = 20;
+    fn line(&mut self, text: std::fmt::Arguments) {
+        if self.since.elapsed() >= Duration::from_secs(1) {
+            if self.dropped > 0 {
+                eprintln!("kryptik-wlproxy[{}]: {} lines not logged", self.zone, self.dropped);
+            }
+            (self.since, self.lines, self.dropped) = (Instant::now(), 0, 0);
+        }
+        if self.lines < Self::PER_SECOND {
+            self.lines += 1;
+            eprintln!("kryptik-wlproxy[{}]: {text}", self.zone);
+        } else {
+            self.dropped += 1;
+        }
+    }
+}
 
 /// Stop reading a side when the other side's unsent queue is this full.
 const HIGH_WATER: usize = policy::MAX_PENDING_BYTES / 2;
@@ -101,6 +123,11 @@ fn main() {
     let mut sessions: Vec<Live> = Vec::new();
     let mut next_id = 1u64;
     let mut served = 0u64;
+    let mut log = Log { zone: o.zone.clone(), since: Instant::now(), lines: 0, dropped: 0 };
+    // After a failed accept the listener is left alone until this passes: the
+    // connection that failed is still pending, so polling it again at once
+    // is a loop at full speed (a client can exhaust descriptors to get there).
+    let mut accept_after = Instant::now();
     loop {
         // Build the poll set: the listener, then each session's two sockets.
         //
@@ -114,7 +141,9 @@ fn main() {
         // bounds on the very first client.
         let polled = sessions.len();
         let mut fds: Vec<libc::pollfd> = Vec::with_capacity(1 + 2 * polled);
-        fds.push(libc::pollfd { fd: listener.as_raw_fd(), events: if polled < o.max_clients { libc::POLLIN } else { 0 }, revents: 0 });
+        let pause = accept_after.saturating_duration_since(Instant::now());
+        let accepting = polled < o.max_clients && pause.is_zero();
+        fds.push(libc::pollfd { fd: listener.as_raw_fd(), events: if accepting { libc::POLLIN } else { 0 }, revents: 0 });
         for l in &sessions {
             let mut ce = 0i16;
             let mut se = 0i16;
@@ -126,7 +155,8 @@ fn main() {
             fds.push(libc::pollfd { fd: l.s.server.fd, events: se, revents: 0 });
         }
         debug_assert_eq!(fds.len(), 1 + 2 * polled);
-        let n = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, -1) };
+        let timeout = if pause.is_zero() { -1 } else { pause.as_millis() as libc::c_int + 1 };
+        let n = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) };
         if n < 0 {
             let e = std::io::Error::last_os_error();
             if e.kind() == std::io::ErrorKind::Interrupted { continue; }
@@ -163,10 +193,10 @@ fn main() {
                 Ok(())
             };
             if let Err(why) = step(&mut l.s, ce, se) {
-                eprintln!(
-                    "kryptik-wlproxy[{}]: client #{} ended: {why} (forwarded {} requests, {} events; hid {} globals; rewrote {} identities)",
-                    o.zone, l.id, l.s.forwarded_c2s, l.s.forwarded_s2c, l.s.hidden_count, l.s.rewritten
-                );
+                log.line(format_args!(
+                    "client #{} ended: {why} (forwarded {} requests, {} events; hid {} globals; rewrote {} identities)",
+                    l.id, l.s.forwarded_c2s, l.s.forwarded_s2c, l.s.hidden_count, l.s.rewritten
+                ));
                 l.s.refuse(&why);
                 closed.push(idx);
             }
@@ -190,17 +220,20 @@ fn main() {
                         let sfd = up.into_raw_fd();
                         set_nonblocking(cfd);
                         set_nonblocking(sfd);
-                        eprintln!("kryptik-wlproxy[{}]: client #{next_id} connected", o.zone);
+                        log.line(format_args!("client #{next_id} connected"));
                         sessions.push(Live { s: Session::new(&o.zone, cfd, sfd), id: next_id });
                         next_id += 1;
                     }
                     Err(e) => {
-                        eprintln!("kryptik-wlproxy[{}]: compositor at {} refused: {e}", o.zone, o.upstream.display());
+                        log.line(format_args!("compositor at {} refused: {e}", o.upstream.display()));
                         drop(client);
                     }
                 },
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(e) => eprintln!("kryptik-wlproxy[{}]: accept: {e}", o.zone),
+                Err(e) => {
+                    log.line(format_args!("accept: {e}"));
+                    accept_after = Instant::now() + Duration::from_secs(1);
+                }
             }
         }
     }

@@ -1,19 +1,6 @@
 #!/usr/bin/env bash
-# Focused tests for tools/check-kernel-hardening.sh: the contract between the
-# checker's findings and build/config/kernel/checker-accepted.txt.
-#
-#   ./tools/test-check-kernel-hardening.sh
-#
-# Deterministic and offline. The checker is replaced by a stand-in that prints
-# canned findings in the checker's own JSON shape (option_name, type, reason,
-# decision, desired_val, check_result, check_result_bool), so what is under
-# test is the decision the tool makes about them: every failure accepted with a
-# reason passes; one failure not accepted fails; an accepted line without a
-# reason fails; an accepted option that now passes is reported stale; the type
-# is part of the key; the command line is built from stage 06's COMMON_ARGS
-# when none is given; and the repository's own accepted list is well-formed.
-#
-# Exit 77 when python3 is missing (the tool needs it too).
+# Tests for tools/check-kernel-hardening.sh, with a stand-in checker that prints
+# canned findings in the real one's JSON shape. Exit 77 without python3.
 
 set -uo pipefail
 
@@ -33,10 +20,8 @@ command -v python3 >/dev/null 2>&1 || { echo "python3 required"; exit 77; }
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-# --- the stand-in checker ---------------------------------------------------
-# Answers --version, prints the file named by FAKE_JSON in json mode and a
-# one-line table otherwise, and records the arguments it was given (the tool's
-# synthesized command line is read back from there).
+# The stand-in prints $FAKE_JSON in json mode and records its arguments, and
+# the command line it was given, in $FAKE_ARGS.
 mkdir -p "$TMP/khc/bin"
 cat > "$TMP/khc/bin/kernel-hardening-checker" <<'PY'
 import os, sys
@@ -56,7 +41,7 @@ PY
 export FAKE_ARGS="$TMP/args.txt" FAKE_JSON="$TMP/findings.json"
 : > "$TMP/config"   # the tool only requires the file to exist
 
-# findings ENTRY...  where ENTRY is type:name:bool  -> FAKE_JSON
+# findings TYPE:NAME:ok|fail...  -> FAKE_JSON
 findings() {
     python3 - "$FAKE_JSON" "$@" <<'PY'
 import json, sys
@@ -78,7 +63,6 @@ run() {   # run ACCEPTED-FILE [extra args] -> OUT, RC
 }
 printf 'root=/dev/dm-0 ro quiet\n' > "$TMP/cmdline"
 
-# --- 1. every failure accepted, with a reason -------------------------------
 findings kconfig:CONFIG_A:ok kconfig:CONFIG_B:fail cmdline:foo:fail
 cat > "$TMP/acc1" <<'EOF'
 # a comment, and a blank line
@@ -94,7 +78,6 @@ else
     red "two failures, both accepted with reasons (rc=${RC})"; printf '%s\n' "$OUT" | tail -12
 fi
 
-# --- 2. one failure not accepted ---------------------------------------------
 findings kconfig:CONFIG_A:ok kconfig:CONFIG_B:fail kconfig:CONFIG_C:fail
 run "$TMP/acc1"
 if [[ "$RC" -ne 0 ]] && grep -q "FAILURES NOT ACCEPTED" <<<"$OUT" && grep -q "CONFIG_C" <<<"$OUT" \
@@ -104,7 +87,6 @@ else
     red "an unaccepted failure fails the run and is named (rc=${RC})"; printf '%s\n' "$OUT" | tail -12
 fi
 
-# --- 3. an accepted line without a reason -------------------------------------
 findings kconfig:CONFIG_B:fail
 cat > "$TMP/acc3" <<'EOF'
 kconfig  CONFIG_B
@@ -116,7 +98,6 @@ else
     red "an accepted line without a reason fails (rc=${RC})"; printf '%s\n' "$OUT" | tail -12
 fi
 
-# A reason-looking comment on the same line but an empty reason after '#'.
 cat > "$TMP/acc3b" <<'EOF'
 kconfig  CONFIG_B  #
 EOF
@@ -127,7 +108,6 @@ else
     red "an empty reason after '#' is malformed too (rc=${RC})"
 fi
 
-# --- 4. a stale accepted entry ------------------------------------------------
 findings kconfig:CONFIG_A:ok kconfig:CONFIG_B:ok
 run "$TMP/acc1"     # accepts CONFIG_B and cmdline foo, neither failing now
 if [[ "$RC" -eq 0 ]] && grep -q "STALE" <<<"$OUT" && grep -q "kconfig CONFIG_B" <<<"$OUT" \
@@ -137,7 +117,6 @@ else
     red "stale accepted entries (rc=${RC})"; printf '%s\n' "$OUT" | tail -12
 fi
 
-# --- 5. the type is part of the key -------------------------------------------
 findings cmdline:nosmt:fail
 cat > "$TMP/acc5" <<'EOF'
 kconfig  nosmt   # wrong type: this does not cover the cmdline finding
@@ -149,7 +128,6 @@ else
     red "type is part of the key (rc=${RC})"; printf '%s\n' "$OUT" | tail -12
 fi
 
-# An unknown type is malformed.
 cat > "$TMP/acc5b" <<'EOF'
 bootarg  nosmt   # not a type the checker has
 EOF
@@ -160,11 +138,10 @@ else
     red "an unknown type is malformed (rc=${RC})"
 fi
 
-# --- 6. the command line comes from stage 06 when none is given ---------------
 findings kconfig:CONFIG_A:ok
 : > "$FAKE_ARGS"
 OUT="$("$TOOL" --config "$TMP/config" --checker-dir "$TMP/khc" --accepted "$TMP/acc3b" 2>&1)"; RC=$?
-# acc3b is malformed, so rc is 1; what matters here is the cmdline handed on.
+# acc3b is malformed, so RC is 1; only the command line handed on matters.
 want="$(sed -n 's/^COMMON_ARGS="\([^"]*\)"$/\1/p' "${ROOT}/build/stages/06-iso.sh" | head -1)"
 if [[ -n "$want" ]] && grep -qF "CMDLINE: root=/dev/dm-0 ${want} kryptik.slot=a" "$FAKE_ARGS"; then
     green "without --cmdline, the line handed to the checker is built from stage 06's COMMON_ARGS"
@@ -177,9 +154,7 @@ else
     red "stage 06's COMMON_ARGS carry the SMT parameters (got: ${want})"
 fi
 
-# --- 7. the repository's own accepted list ------------------------------------
-# Every entry well-formed, and every entry is a real decision the tool would
-# read: feed it findings in which exactly those options fail.
+# The repository's own list, fed findings in which exactly its options fail.
 mapfile -t entries < <(sed -e 's/#.*//' "$REAL_ACCEPTED" | awk 'NF == 2 {print $1":"$2":fail"}')
 if [[ "${#entries[@]}" -gt 0 ]]; then
     findings "${entries[@]}"
@@ -193,7 +168,6 @@ if [[ "${#entries[@]}" -gt 0 ]]; then
 else
     red "the repository's accepted list has no entries the tool can read"
 fi
-# ... and no line in it that is neither a comment, blank, nor a two-field entry.
 bad_lines="$(grep -vE '^[[:space:]]*(#|$)' "$REAL_ACCEPTED" | awk '{ sub(/#.*/, ""); if (NF != 2) print }')"
 if [[ -z "$bad_lines" ]]; then
     green "every non-comment line of the accepted list has exactly a type and a name before its reason"
@@ -201,7 +175,6 @@ else
     red "malformed lines in the accepted list:"; printf '    %s\n' "$bad_lines"
 fi
 
-# --- 8. a missing config is refused -------------------------------------------
 OUT="$("$TOOL" --config "$TMP/does-not-exist" --checker-dir "$TMP/khc" 2>&1)"; RC=$?
 if [[ "$RC" -ne 0 ]] && grep -q "no such config" <<<"$OUT"; then
     green "a missing config is refused"

@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# Tests for the rule at the top of build/stages/01-toolchain.sh that clears a
-# sysroot another toolchain built. The block is lifted out of the stage and run
-# under the stage's own shell options and an ERR trap: run without them, an
-# earlier version of this test passed a block that aborted on its first line.
-# The only substitution is the path of the mounts file.
+# Tests for the rule in build/stages/01-toolchain.sh that clears a sysroot
+# another toolchain built. The block runs under the stage's errexit and ERR
+# trap, as it does there; only the mounts file path is substituted.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT

@@ -1,20 +1,8 @@
 #!/bin/sh
-# The net zone: sole holder of the physical NIC. Started by zone 0 at boot,
-# supervised; it runs the zone's own startup program inside the zone.
-# --passphrase-file is not needed: the net zone is ephemeral.
-#
-# The zone file says `nic = "*"`: every interface on a bus device leaves
-# zone 0, wired or wireless (the predictable-name udev rule is masked in the
-# image, s_etc, so the kernel's eth0/wlan0 names are what both sides see).
-# The same rule as kryptikd's netzone::physical_interfaces, applied here
-# first: with no such interface there is nothing to hold, and a launch that
-# cannot succeed is not retried in a loop.
-#
-# It WAITS for one rather than giving up. Network drivers are modules: an
-# interface exists once its driver has loaded and probed, which for a radio
-# waiting on its firmware, or an adapter on a dock plugged in after boot, is
-# after this service starts. A check made once, followed by `sleep infinity`,
-# left such a machine without a net zone until someone restarted the service.
+# The net zone, sole holder of the physical NICs: every interface on a bus
+# device (`nic = "*"`, kryptikd's netzone::physical_interfaces). Ephemeral, so
+# no --passphrase-file. Waits for such an interface rather than failing in a
+# restart loop: drivers are modules, and a radio or a dock can appear later.
 have_nic() {
     for d in /sys/class/net/*; do
         case "${d##*/}" in lo) continue ;; esac
@@ -25,8 +13,7 @@ have_nic() {
 if ! have_nic; then
     echo "net-zone: no physical network interface yet; waiting for one"
     while ! have_nic; do sleep 5; done
-    # Its siblings may still be probing; one more beat so they leave zone 0
-    # with it instead of being stranded there until the next restart.
+    # Let sibling interfaces finish probing, so they leave zone 0 too.
     sleep 3
     echo "net-zone: an interface has appeared"
 fi

@@ -1,33 +1,12 @@
 #!/usr/bin/env bash
-# Focused tests for tools/verify-provenance.sh.
-#
-#   ./tools/test-verify-provenance.sh
-#
-# Deterministic and offline. The fixtures are real, not stubs:
-#
-#   * a git repository with genuinely SSH-signed annotated tags, signed by
-#     throwaway ed25519 keys generated per run, so git verify-tag does real
-#     cryptography against a real allowed-signers file;
-#   * archives produced by git archive from those tags, and one repacked with
-#     a byte changed, so the tree binding is exercised both ways;
-#   * publisher checksums served by a throwaway http.server on 127.0.0.1, so
-#     200, 404, a malformed body and a refused connection are all real.
-#
-# The repository's own sources.lock, keys.manifest and versions.env are never
-# touched; each case builds a throwaway KRYPTIK_ROOT. Another worker may be
-# compiling those exact inputs.
-#
-# Positive controls come first. If a valid authenticated source did not pass
-# --strict, a tool that failed unconditionally would satisfy everything else.
+# Tests for tools/verify-provenance.sh. Offline, with real fixtures: tags
+# SSH-signed by per-run keys, and a publisher on 127.0.0.1. Each case runs the
+# tool against a throwaway KRYPTIK_ROOT.
 
 set -uo pipefail
 
-# The tool under test reads KRYPTIK_SOURCES, KRYPTIK_WORK, KRYPTIK_LOCK and
-# KRYPTIK_OUT from the environment when they are set, in preference to deriving
-# them from KRYPTIK_ROOT. A developer who has any of those exported - pointing
-# at the real downloads, say - would otherwise see this suite verify the wrong
-# tree and report failures that are nothing to do with the code. Each case sets
-# what it needs explicitly, so clear all of them here rather than inheriting.
+# common.sh prefers these over paths derived from KRYPTIK_ROOT, so an exported
+# one would point the tool at the real tree.
 unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -69,21 +48,12 @@ printf '%s %s\n' "$PRINCIPAL" "$(cut -d' ' -f1,2 < "${TMP}/keys/good.pub")" \
 
 GOOD_FPR="$(ssh-keygen -lf "${TMP}/keys/good.pub" | awk '{print $2}')"
 
-# An allowed-signers file naming the SAME principal for BOTH keys. Used to
-# exercise the fingerprint pin specifically: git is then happy with either
-# key, and only the pinned fingerprint distinguishes them.
 {
     printf '%s %s\n' "$PRINCIPAL" "$(cut -d' ' -f1,2 < "${TMP}/keys/good.pub")"
     printf '%s %s\n' "$PRINCIPAL" "$(cut -d' ' -f1,2 < "${TMP}/keys/bad.pub")"
 } > "${TMP}/keys/both_signers"
 
 # --- fixture upstream repository --------------------------------------------
-#
-# Tags:
-#   14            annotated, signed by the intended key
-#   14-impostor   annotated, signed by the other key
-#   14-unsigned   annotated, unsigned
-#   14-light      lightweight: a bare pointer, so it cannot be signed
 
 FIXREPO="${TMP}/upstream"
 git init -q "$FIXREPO"
@@ -113,15 +83,12 @@ git init -q "$FIXREPO"
 ARCHIVES="${TMP}/archives"
 mkdir -p "$ARCHIVES"
 
-# The authentic archive: exactly what git archive produces from the signed tag,
-# which is what GitHub serves for .../archive/refs/tags/<tag>.tar.gz.
+# What GitHub serves for .../archive/refs/tags/<tag>.tar.gz.
 git -C "$FIXREPO" archive --format=tar.gz --prefix="${PREFIX}/" \
     -o "${ARCHIVES}/authentic.tar.gz" "$TAG"
 
-# The altered archive: same tag, one byte of one file changed, repacked. Its
-# own sha256 goes into that case's lock file, so lockfile integrity PASSES and
-# only the tree binding can catch it. This is the substitution the previous
-# version of the tool could not see.
+# One file changed, repacked. Its own hash goes in the lock, so only the tree
+# binding can catch it.
 (
     cd "$TMP"
     rm -rf alter && mkdir alter && cd alter
@@ -130,7 +97,7 @@ git -C "$FIXREPO" archive --format=tar.gz --prefix="${PREFIX}/" \
     tar czf "${ARCHIVES}/altered.tar.gz" "${PREFIX}"
 ) >/dev/null 2>&1
 
-# An archive with two top-level entries: not the shape a tag archive has.
+# Two top-level entries, unlike a tag archive.
 (
     cd "$TMP"
     rm -rf twotop && mkdir twotop && cd twotop
@@ -140,10 +107,8 @@ git -C "$FIXREPO" archive --format=tar.gz --prefix="${PREFIX}/" \
 ) >/dev/null 2>&1
 
 # --- fixture publisher (skarnet stand-in) -----------------------------------
-#
-# Laid out exactly as skarnet.org/software is: <pkg>/<pkg>-<ver>.tar.gz plus a
-# sibling .sha256.
 
+# Laid out like skarnet.org/software: <pkg>/<pkg>-<ver>.tar.gz and its .sha256.
 SERVE="${TMP}/serve"
 S_VER=2.15.1.0
 E_VER=2.9.9.2
@@ -206,9 +171,6 @@ SKARNET="http://127.0.0.1:${PORT}"
 DEAD_SKARNET="http://127.0.0.1:1"
 
 # --- harness ----------------------------------------------------------------
-#
-# Each case builds a KRYPTIK_ROOT holding versions.env, sources.lock and a
-# sources/ directory, then runs the real tool against it.
 
 FAKE="${TMP}/root"
 
@@ -250,16 +212,14 @@ EOF
 }
 
 # run [--strict] [--offline]
-# Honours FIX_SIGNERS, FIX_FPR, FIX_SKARNET and FIX_PATH, which individual
-# cases reassign and then restore.
+# Uses the FIX_* inputs, which cases reassign and then restore.
 FIX_SIGNERS="${TMP}/keys/allowed_signers"
 FIX_FPR="$GOOD_FPR"
 FIX_SKARNET="$SKARNET"
 FIX_PATH="$PATH"
 
 run() {
-    # The fixture repository is addressed as a local path, which is a real git
-    # remote: the fetch, the tag object and the signature are all genuine.
+    # A local path is a real git remote: the fetch and signature are genuine.
     env PATH="$FIX_PATH" \
         KRYPTIK_ROOT="$FAKE" \
         KRYPTIK_PROVENANCE_SELFTEST=1 \
@@ -272,8 +232,7 @@ run() {
     RC=$?
 }
 
-# The tag the tool looks for comes from V_HARDENED_MALLOC, so pointing a case
-# at a different fixture tag means rewriting that one line.
+# set_tag <tag>: the tool takes its tag from V_HARDENED_MALLOC.
 set_tag() {
     sed -i "s/^V_HARDENED_MALLOC=.*/V_HARDENED_MALLOC=$1/" \
         "${FAKE}/build/config/versions.env"
@@ -304,9 +263,7 @@ expect_fail() {
 echo "tools/verify-provenance.sh"
 echo
 
-# ---------------------------------------------------------------------------
-# positive controls
-# ---------------------------------------------------------------------------
+# --- positive controls ------------------------------------------------------
 
 build_root "${ARCHIVES}/authentic.tar.gz" auto
 run --strict
@@ -328,12 +285,8 @@ run
 expect_pass "informational run reports no unestablished assertions" \
     "No provenance failures"
 
-# ---------------------------------------------------------------------------
-# the binding: a valid tag does not authenticate substituted contents
-# ---------------------------------------------------------------------------
+# --- tree binding -----------------------------------------------------------
 
-# The altered archive's own hash is recorded in the lock, so [lock] passes and
-# the signature is genuine. Only the tree comparison can reject it.
 build_root "${ARCHIVES}/altered.tar.gz" auto
 run --strict
 expect_fail "altered contents are rejected despite a valid tag and lock" \
@@ -352,9 +305,7 @@ run --strict
 expect_fail "an archive without a single top-level directory is rejected" \
     "does not contain exactly one"
 
-# ---------------------------------------------------------------------------
-# signer identity
-# ---------------------------------------------------------------------------
+# --- signer identity --------------------------------------------------------
 
 build_root "${ARCHIVES}/authentic.tar.gz" auto
 set_tag "${TAG}-impostor"
@@ -362,10 +313,7 @@ run --strict
 expect_fail "a tag signed by the wrong key is rejected" \
     "is not signed by the pinned"
 
-# git is satisfied by either key here, because both are listed for the
-# principal. Only the pinned fingerprint separates them - which is the
-# difference between "signed by someone GitHub knows" and "signed by the key
-# Kryptik decided to trust".
+# Both keys are allowed for the principal; only the fingerprint pin rejects this.
 build_root "${ARCHIVES}/authentic.tar.gz" auto
 set_tag "${TAG}-impostor"
 FIX_SIGNERS="${TMP}/keys/both_signers"
@@ -392,9 +340,7 @@ run --strict
 expect_fail "an unresolvable tag fails --strict rather than skipping" \
     "could not fetch"
 
-# ---------------------------------------------------------------------------
-# lockfile integrity, kept distinct
-# ---------------------------------------------------------------------------
+# --- lockfile integrity -----------------------------------------------------
 
 build_root "${ARCHIVES}/authentic.tar.gz" \
     0000000000000000000000000000000000000000000000000000000000000000
@@ -407,7 +353,7 @@ run --strict
 expect_fail "an archive with no lock entry is rejected" \
     "has no entry in sources.lock"
 
-# Nothing downloaded: unverified, not verified.
+# Locked but not downloaded.
 build_root - none
 printf '%s  %s.tar.gz\n' "$(sha256sum "${ARCHIVES}/authentic.tar.gz" | cut -d' ' -f1)" \
     "$TAG" >> "${FAKE}/sources.lock"
@@ -422,9 +368,7 @@ run
 expect_pass "an undownloaded archive is a warning informationally" \
     "--strict fails here"
 
-# ---------------------------------------------------------------------------
-# publisher checksums: 404, malformed, mismatch, network failure
-# ---------------------------------------------------------------------------
+# --- publisher checksums ----------------------------------------------------
 
 rm -f "${SERVE}/s6/s6-${S6_VER}.tar.gz.sha256"
 build_root "${ARCHIVES}/authentic.tar.gz" auto
@@ -469,21 +413,16 @@ expect_pass "an unreachable publisher is a warning informationally" \
     "--strict fails here"
 FIX_SKARNET="$SKARNET"
 
-# Bytes on disk that do not match the lock, while the publisher agrees with the
-# lock: lockfile integrity fails on its own.
+# The download is altered while the publisher still agrees with the lock.
 build_root "${ARCHIVES}/authentic.tar.gz" auto
 printf 'substituted\n' >> "${FAKE}/sources/skalibs-${S_VER}.tar.gz"
 run
 expect_fail "a tampered download is caught by lockfile integrity alone" \
     "skalibs-${S_VER}.tar.gz does not match sources.lock"
 
-# ---------------------------------------------------------------------------
-# missing prerequisites
-# ---------------------------------------------------------------------------
-#
-# A real pruned PATH, not a flag: `have git` is what the tool calls, so this
-# tests the code that runs rather than a stand-in for it.
+# --- missing prerequisites --------------------------------------------------
 
+# mkbin <dir> [tool...]: a PATH directory of the usual tools minus those named.
 mkbin() {
     local dir="$1"; shift
     mkdir -p "$dir"
@@ -501,8 +440,7 @@ mkbin "${TMP}/bin-full"
 mkbin "${TMP}/bin-nogit" git
 mkbin "${TMP}/bin-nossh" ssh-keygen
 
-# Control: the pruned-PATH harness itself must not break a good run, or the
-# two cases below would prove nothing.
+# Control: the pruned PATH alone must not break a good run.
 FIX_PATH="${TMP}/bin-full"
 build_root "${ARCHIVES}/authentic.tar.gz" auto
 run --strict
@@ -524,9 +462,7 @@ expect_fail "missing ssh-keygen fails --strict rather than skipping" \
     "ssh-keygen"
 FIX_PATH="$PATH"
 
-# ---------------------------------------------------------------------------
-# --offline is a skipped check, not a pass
-# ---------------------------------------------------------------------------
+# --- --offline --------------------------------------------------------------
 
 build_root "${ARCHIVES}/authentic.tar.gz" auto
 run --offline --strict
@@ -536,16 +472,10 @@ build_root "${ARCHIVES}/authentic.tar.gz" auto
 run --offline
 expect_pass "--offline reports informationally" "--strict fails here"
 
-# ---------------------------------------------------------------------------
-# --report is keyed by manifest name
-# ---------------------------------------------------------------------------
-#
-# tools/provenance-inventory.sh joins these rows against
-# `fetch-sources.sh --list`, so a row keyed by anything else silently vanishes
-# from its assurance class rather than failing loudly. That is how "s6 (PID 1)"
-# - the display label - was reported as lock-only in the first real inventory
-# while its publisher checksum had in fact been verified.
+# --- --report ---------------------------------------------------------------
 
+# provenance-inventory.sh joins rows on the names fetch-sources.sh --list
+# prints; a row keyed by a display label would silently drop out.
 build_root "${ARCHIVES}/authentic.tar.gz" auto
 REPORT="${TMP}/report.tsv"
 KRYPTIK_ROOT="$FAKE" \
@@ -568,7 +498,6 @@ else
     sed 's/^/        /' "$REPORT"
 fi
 
-# And nothing keyed by a display label.
 if cut -f1 "$REPORT" | grep -q ' '; then
     red "--report contains a key with a space, i.e. a display label"
     cut -f1 "$REPORT" | grep ' ' | sed 's/^/        /'
@@ -576,8 +505,7 @@ else
     green "--report contains no display labels as keys"
 fi
 
-# awk, not grep -E: a backslash-t in an ERE pattern is a literal "t", not a
-# tab, so the obvious grep silently never matches.
+# awk, not grep -E: \t in an ERE is a literal t, not a tab.
 if awk -F'\t' '$1=="hardened-malloc" && $2=="tree:established"{found=1}
                END{exit !found}' "$REPORT"; then
     green "--report records the tree assertion as established"
@@ -586,9 +514,7 @@ else
     sed 's/^/        /' "$REPORT"
 fi
 
-# ---------------------------------------------------------------------------
-# the selftest hook cannot be used by accident
-# ---------------------------------------------------------------------------
+# --- selftest hook ----------------------------------------------------------
 
 build_root "${ARCHIVES}/authentic.tar.gz" auto
 KRYPTIK_ROOT="$FAKE" KRYPTIK_HM_REMOTE="$FIXREPO" NO_COLOR=1 \

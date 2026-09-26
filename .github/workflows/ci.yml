@@ -5,15 +5,10 @@ on:
     branches: [main]
   pull_request:
   schedule:
-    # Weekly. The kernel EOL check is the reason this runs on a timer: a pinned
-    # kernel does not change, but its support status does. Kryptik shipped an
-    # EOL kernel once already (ADR-009) and a scheduled check is what makes
-    # that a caught error rather than a discovered one.
+    # Weekly, for the kernel EOL check: a pinned kernel does not change, but
+    # its support status does (ADR-009).
     - cron: '0 6 * * 1'
 
-# Nothing here writes to the repository, so the token is told so in the file
-# that is reviewed, not left to a repository setting someone can flip. The
-# cache and the artifact uploads use the runner's own credential, not this.
 permissions:
   contents: read
 
@@ -22,24 +17,14 @@ jobs:
     name: Commit identity
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          # The whole history, because the check is over the whole history.
           fetch-depth: 0
 
       - name: Every commit is DevomB <Devom.hb@yahoo.com>
         run: |
-          # GitHub attributes a commit to whichever account registered its
-          # email, and devom.b@yahoo.com is registered to DBs-Server-Service.
-          # A share of this repository displayed as that account's work until
-          # the history was rewritten on 2026-09-15. This goes red the moment
-          # one such commit comes back, anywhere in the history.
-          #
-          # On a pull request the checkout is GitHub's synthetic merge of the
-          # branch into main, authored through a noreply address and
-          # committed by GitHub itself. It is not a commit of this repository
-          # and never reaches main as it is; the branch's own history is what
-          # is checked there.
+          # On a pull request the checkout is GitHub's synthetic merge commit,
+          # which never reaches main; check the branch head instead.
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             ./tools/check-commit-identity.sh "${{ github.event.pull_request.head.sha }}"
           else
@@ -50,7 +35,7 @@ jobs:
     name: Shell lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Install shellcheck
         run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
@@ -70,24 +55,13 @@ jobs:
 
       - name: Tool fixture suites
         run: |
-          # Ten offline suites existed and exactly one of them ran in CI. They
-          # need no network and no build, so there is no reason for any of them
-          # to be absent: each one is the regression net for a tool that was
-          # found reporting more than it had established.
-          # Exit 77 means "cannot run here" - the autotools convention. One of
-          # these suites chroots into a built sysroot and needs root plus that
-          # sysroot, neither of which exists on a CI runner. Skipped is listed
-          # separately and is NOT counted as a pass: a suite that did not run
-          # has established nothing, and the whole point of this job is that
-          # nothing here reports more than it has established.
+          # Exit 77 means "cannot run here" (a suite that needs root and a
+          # built sysroot). Those are listed separately, never counted as passes.
           fail=0
           skipped=""
-          for t in tools/test-*.sh; do
+          for t in tools/test-*.sh tools/test-*.py; do
             echo "=== $t"
-            # The step's shell is `bash -e`: a bare non-zero exit ends the
-            # step before rc is read, so the first suite that answered 77 took
-            # the whole step down with "exit code 77" once nothing before it
-            # failed. Capture the status without letting -e see it.
+            # The step runs under bash -e; capture the status without tripping it.
             "$t" && rc=0 || rc=$?
             if [ "$rc" -eq 77 ]; then
               echo "  SKIPPED: $t"
@@ -104,24 +78,20 @@ jobs:
           exit $fail
 
       - name: Shellcheck
-        # tools/vm/ and the launcher suite were outside this list until now,
-        # which left the two largest scripts in the tree ungated - including the
-        # one that decides whether a boot passed. Three real warnings came out
-        # of adding them.
+        # Every tracked file whose first line names a shell.
         run: |
-          shellcheck -S warning -x build/lib/common.sh build/stages/*.sh \
-            tools/*.sh tools/vm/*.sh compartments/tests/*.sh
+          mapfile -t scripts < <(git ls-files | xargs awk 'FNR==1 { if ($0 ~ /^#! ?\/(usr\/)?bin\/(env +)?(ba|da)?sh/) print FILENAME; nextfile }')
+          echo "${#scripts[@]} shell scripts"
+          [ "${#scripts[@]}" -ge 100 ] || { echo "the search for scripts found too few: it is broken"; exit 1; }
+          shellcheck -S warning -x "${scripts[@]}"
 
       - name: Executable bits are recorded
         run: |
-          # NTFS cannot express the POSIX exec bit, so a commit from Windows
-          # silently records 100644 and a Linux clone fails before bash runs.
-          # Same gap the shellcheck step had: tools/vm/, the test suites and
-          # the git hooks were not in this list, and tools/git-hooks/pre-commit
-          # was committed 100644 - so git skipped it silently on every commit
-          # and the hook has never once run.
+          # A commit from Windows records 100644, and a Linux clone then fails
+          # with "Permission denied".
           fail=0
-          for f in build/stages/*.sh tools/*.sh tools/vm/*.sh \
+          for f in build/stages/*.sh tools/*.sh tools/test-*.py \
+                   tools/image/*.sh tools/image/*.py \
                    compartments/tests/*.sh tools/git-hooks/*; do
             mode=$(git ls-files -s "$f" | awk '{print $1}')
             if [ "$mode" != "100755" ]; then
@@ -142,31 +112,27 @@ jobs:
   manifest:
     name: Source manifest
     runs-on: ubuntu-latest
+    # The Distro workflow's path: a cache's version is a hash of its path, so
+    # under any other one a pull request misses main's copy and saves a whole
+    # second one of its own, and those evicted the build trees.
+    env:
+      KRYPTIK_SOURCES: /mnt/kryptik/sources
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Manifest resolves
-        run: ./tools/fetch-sources.sh --list
+        run: |
+          sudo mkdir -p /mnt/kryptik && sudo chown "$(id -u):$(id -g)" /mnt/kryptik
+          ./tools/fetch-sources.sh --list
 
-      # The strict provenance gate below hashes the downloaded tarballs
-      # against what upstream publishes; without them it reported seven
-      # assertions unverified and failed (which was the honest answer, and the
-      # reason this step exists). Cached by sources.lock, so a run downloads
-      # them only when the manifest changes.
-      #
-      # And then only what changed. The key was the lock's hash and nothing
-      # else, so one new tarball meant fetching all eighty-odd again, from
-      # every upstream at once, and the job failed on whichever of them was
-      # throttling that minute (freedesktop.org answering 418 for libevdev
-      # failed a change that had added Intel's microcode and nothing else).
-      # restore-keys brings back the most recent earlier set; `make sources`
-      # then hashes EVERY file against the lock, cached or not, downloads what
-      # is missing, and the prune drops what the manifest no longer names.
+      # The provenance gate hashes the tarballs, so they are cached. restore-keys
+      # brings back the last set; `make sources` re-hashes every file against
+      # the lock and fetches only what is missing, and the prune drops the rest.
       - name: Upstream sources (cached by sources.lock)
         id: sources
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
-          path: sources
+          path: /mnt/kryptik/sources
           key: sources-${{ hashFiles('sources.lock') }}
           restore-keys: |
             sources-
@@ -177,17 +143,8 @@ jobs:
           make sources
           ./tools/prune-sources.sh
 
-      # Informational, deliberately non-blocking.
-      #
-      # MIRROR_GNU is ftpmirror.gnu.org, which redirects to a nearby mirror
-      # chosen per-request. Individual mirrors go down, rate-limit, or reject
-      # requests, and none of that is a defect in this repository - failing the
-      # build on it would just train people to ignore red CI.
-      #
-      # Uses a one-byte ranged GET rather than HEAD: several GNU mirrors answer
-      # HEAD with 403 while serving GET fine. Checks curl's exit status instead
-      # of parsing %{http_code}, which reports one code per redirect hop and
-      # produced nonsense like "302000".
+      # Informational: a mirror that is down or throttling is not a defect here.
+      # A one-byte ranged GET, because several GNU mirrors refuse HEAD.
       - name: Every source URL is reachable
         continue-on-error: true
         run: |
@@ -202,8 +159,7 @@ jobs:
               echo "  ok        $name $ver"
               continue
             fi
-            # Mirror what fetch-sources.sh actually does: fall back to
-            # mirrors.kernel.org for GNU packages before giving up.
+            # Same fallback as fetch-sources.sh: mirrors.kernel.org for GNU.
             fallback="${url/https:\/\/ftpmirror.gnu.org/https://mirrors.kernel.org/gnu}"
             if [ "$fallback" != "$url" ] && reach "$fallback"; then
               echo "  ok        $name $ver  (via fallback mirror)"
@@ -222,17 +178,9 @@ jobs:
           fi
 
       - name: Provenance of unsigned sources
-        # GH_TOKEN is the whole fix. `gh` IS installed on the runner - it ships
-        # in actions/runner-images - but GITHUB_TOKEN is a secret rather than an
-        # exported variable, and this step set no GH_TOKEN. So `gh api` exited 4
-        # asking for `gh auth login` even against a public repository, the old
-        # script counted that as "skipped", and the step passed green for months
-        # without ever making the assertion docs/supply-chain.md calls verified.
-        #
-        # --strict on push and on the weekly schedule, informational on pull
-        # requests: secrets.GITHUB_TOKEN is not available to a pull request from
-        # a fork, and a gate that cannot run is not a gate. The distinction is
-        # written here rather than left for someone to discover from a red X.
+        # `gh` needs GH_TOKEN even for a public repository. Strict on push and
+        # on the schedule; informational on pull requests, where a fork gets
+        # no token.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -247,11 +195,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # One line per source and one assurance class per line. Deliberately
-          # no total: a detached GPG signature, a signed tag bound to an archive
-          # hash and a publisher checksum are three different strengths of
-          # evidence, and a single fraction adds them together as if they were
-          # one.
+          # One assurance class per source and no total: a signature, a signed
+          # tag and a publisher checksum are different strengths of evidence.
           ./tools/provenance-inventory.sh
 
       - name: sources.lock covers the manifest
@@ -271,7 +216,7 @@ jobs:
     name: Compartment layer
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: kryptikd unit tests
         run: cd compartments/kryptikd && cargo test
@@ -283,25 +228,17 @@ jobs:
 
       - name: Allow unprivileged user namespaces
         run: |
-          # Ubuntu 24.04 ships kernel.apparmor_restrict_unprivileged_userns=1,
-          # which blocks unprivileged userns creation. Kryptik zones are built
-          # on user namespaces, so the test cannot run without this.
-          #
-          # Note the irony worth being explicit about: Ubuntu restricts this
-          # BECAUSE unprivileged userns is a known LPE vector. Kryptik reaches
-          # the same conclusion from the other direction - hardened.fragment
-          # sets CONFIG_USER_NS_UNPRIVILEGED=n, because kryptikd creates zones
-          # with privilege and nothing inside a zone ever needs to.
+          # Ubuntu 24.04 restricts unprivileged user namespaces, which the zone
+          # suites need here. (Kryptik itself disables them: zones are created
+          # with privilege.)
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           echo "userns check:"
           unshare --user --map-root-user id -u
 
       - name: kryptikd builds for musl
         run: |
-          # The developer VM installs a static kryptikd into an initramfs, and
-          # the musl target is where a glibc-only assumption shows up. It has
-          # already caught one: ioctl's request argument is c_ulong in glibc's
-          # binding and c_int in musl's.
+          # The shipped binary is static musl; glibc-only assumptions show up
+          # here (ioctl's request type differs, for one).
           rustup target add x86_64-unknown-linux-musl
           cd compartments/kryptikd
           cargo build --release --target x86_64-unknown-linux-musl
@@ -314,41 +251,19 @@ jobs:
 
       - name: Real-launcher suite (the launch path itself)
         run: |
-          # adversarial.sh drives the primitives with unshare(1); this drives
-          # `kryptikd run`. They are different claims - the seccomp filter is
-          # installed at the last step of the child, and an ordering regression
-          # there would leave zones unfiltered while the primitive test kept
-          # passing. A change to the zone path has to pass both.
-          #
-          # This runs unprivileged here. Group K (the privileged launch path)
-          # and group M (cgroup limits) report NOT RUN on a runner and are
-          # covered by tools/vm/ instead - the suite prints them by name and
-          # exits "PASSED WITH GAPS" rather than "PASSED", so the gap is
-          # visible in the log rather than absent from it.
+          # adversarial.sh tests the primitives; this tests `kryptikd run`
+          # applying them in order. Unprivileged here, so groups K (privileged
+          # launch) and M (cgroup limits) report NOT RUN.
           cd compartments/kryptikd && cargo build --quiet
           cd ../.. && ./compartments/tests/launcher.sh | tee /tmp/launcher.out
           exit "${PIPESTATUS[0]}"
 
       - name: The runner must ADMIT what it could not test
         run: |
-          # THE TIER GUARD.
-          #
-          # Three kinds of evidence exist in this repository and they are not
-          # interchangeable:
-          #
-          #   component    - unit tests and tool fixtures. No kernel features.
-          #   developer    - the launcher suite on THIS runner's kernel, which
-          #                  is a stock Ubuntu one, unprivileged.
-          #   target       - the same suite as root, in a VM, with the userns
-          #                  restriction on. CI CANNOT PRODUCE THIS. It needs
-          #                  a disposable VM and it lives in tools/vm/.
-          #
-          # A green tick here therefore never means the privileged path works.
-          # The suite already prints its own gaps and exits "PASSED WITH GAPS"
-          # rather than "PASSED" - this step fails if it ever stops doing so on
-          # a runner, because a clean pass here would mean the checks that need
-          # root either ran unprivileged (and proved nothing) or stopped
-          # reporting themselves. Both are worse than a red tick.
+          # On a runner the launcher suite must end "PASSED WITH GAPS". A clean
+          # pass would mean the root-only checks ran vacuously or stopped
+          # reporting themselves. They run as root in the Distro workflow's
+          # acceptance (zones-test).
           if ! grep -q 'PASSED WITH GAPS' /tmp/launcher.out; then
             echo "::error::The launcher suite reported a clean pass on a CI runner."
             echo "Group K (privileged launch) and group M (cgroup limits) cannot run"
@@ -370,41 +285,25 @@ jobs:
           |---|---|
           | component (unit tests, tool fixtures) | yes |
           | developer host (this runner's kernel, unprivileged) | yes |
-          | **target kernel (root, VM, userns restricted)** | **no — needs `tools/vm/`** |
+          | **target kernel (root, installed system, userns restricted)** | **no — the Distro workflow's acceptance run** |
 
           The privileged launch path, the cgroup limits, the zone lifecycle
-          under root and the boot itself are validated by `tools/vm/run-qemu.sh`
-          and `tools/vm/boot-smoke.sh` against a disposable VM. Nothing in this
-          workflow can stand in for that, and a green tick here is not evidence
-          about it.
+          under root and the boot itself are tested by `make acceptance` on
+          the built media under KVM. A green tick here is not evidence about
+          them.
           SUMMARY
 
       - name: The user-facing command
         run: |
-          # `kryptik` is what a person types; kryptikd is what it calls. A
-          # wrapper's whole job is convenience, and convenience is how a safety
-          # property gets lost - so this suite mostly checks that it did not
-          # become convenient in the wrong place: it must not start a zone that
-          # claims encryption this build cannot deliver, must not execute its
-          # own config file, and must not offer commands for things that do not
-          # work.
-          #
-          # Named separately from the launcher suite rather than folded into
-          # it: these are different claims about different programs, and a
-          # single green tick over both would hide which one failed.
+          # `kryptik` wraps kryptikd. It must not claim encryption the build
+          # cannot deliver, execute its own config file, or offer commands
+          # that do not work.
           ./compartments/tests/cli.sh
 
       - name: The launch daemon, over its socket
         run: |
-          # `kryptikd serve` is what the desktop talks to; launcher.sh never
-          # goes near it. This suite was absent here, and its absence hid a
-          # daemon and its launchers disagreeing about the registry directory
-          # wherever XDG_RUNTIME_DIR is set: a runner sets none, so nothing on
-          # a runner could see it, and nothing on a runner ran the suite that
-          # would have. So the runner gets a runtime directory like a session
-          # has, which is also what the proxy-socket checks need: without one
-          # they are NOT RUN, and this suite counts a skipped check as a
-          # failure, rightly.
+          # A runner has no XDG_RUNTIME_DIR; give it one as a session would,
+          # or the registry and proxy-socket checks cannot run.
           uid="$(id -u)"
           sudo install -d -m 0700 -o "$uid" -g "$(id -g)" "/run/user/$uid"
           export XDG_RUNTIME_DIR="/run/user/$uid"
@@ -413,65 +312,44 @@ jobs:
 
       - name: The zone boundary's regression probes
         run: |
-          # Every row is a property some defect once violated, driven through
-          # the real launcher. Until now its only automated run was inside
-          # zones-test, in the VM, at the end of a three-hour Distro run, and
-          # a probe whose reply was split by the daemon's own log line failed
-          # one there on a tree where nothing was wrong. Here it costs a
-          # minute. The exit status is the number of failures; what needs root
-          # and the target kernel says NOT RUN and is measured by zones-test.
+          # Exit status is the number of failures; checks that need root and
+          # the target kernel say NOT RUN and are covered by zones-test.
           cd compartments/kryptikd && cargo build --quiet
           cd ../.. && ./compartments/kryptikd/probes/boundary-checks.sh
-
-      - name: Update, rollback and recovery (end to end)
-        run: |
-          # tools/test-apply-update.sh already proves the byte-level property:
-          # a target is never a mixture of two releases. This asks the question
-          # that one cannot - after the update, does the system DO something
-          # different? - by installing a real Kryptik tree and then running the
-          # INSTALLED kryptikd against the INSTALLED zone files.
-          #
-          # It also kills the update at ten points across a padded payload and
-          # requires that every outcome is a complete, signed, working release,
-          # recovered by the command the tool itself documents for that state.
-          #
-          # 77 means a dependency is missing (ssh-keygen, or no built
-          # kryptikd). That is reported as "did not run", never as a pass.
-          set +e
-          ./compartments/tests/update.sh
-          rc=$?
-          set -e
-          if [ "$rc" = 77 ]; then
-            echo "::warning::update.sh did not run (missing dependency); this CI run establishes nothing about updates"
-            exit 0
-          fi
-          exit "$rc"
 
   kernel:
     name: Kernel currency
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      # Every pinned series with a published support window must still be
-      # inside it. OpenSSL 3.3 went out of support on 2026-04-09 and Kryptik
-      # shipped 3.3.1 for five months after; the tool knew and nothing ran it.
+      # Every pinned series with a published support window is still inside it.
       - name: Pinned series are supported upstream
         run: ./tools/check-support-status.sh --strict
+
+      # Survey (network), then gate (no network). Informational on a pull
+      # request: an upstream release this morning is not the PR's fault.
+      - name: Pins behind upstream are reviewed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ./tools/check-source-currency.sh --tsv > pin-survey.tsv
+          echo "survey: $(wc -l < pin-survey.tsv) sources"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            ./tools/check-pin-reviews.sh --survey pin-survey.tsv || echo "pull request: informational"
+          else
+            ./tools/check-pin-reviews.sh --survey pin-survey.tsv
+          fi
 
       - name: Pinned kernel is longterm and not EOL
         run: ./tools/check-kernel-eol.sh
 
       - name: Kernel config fragments validate against pinned source
         run: |
-          # Downloads the pinned kernel (~150MB) and the hardened patch to
-          # check every fragment symbol actually exists. Symbols get renamed
-          # and removed between releases, and merge_config.sh drops unknown
-          # ones silently - so a stale fragment ships a kernel that looks
-          # hardened and is not.
+          # merge_config.sh drops unknown symbols silently, so every fragment
+          # symbol is checked against the pinned source.
           mkdir -p sources
-          # Match the exact package names: a bare '^linux ' would also catch
-          # the linux-hardened row.
+          # Exact names: '^linux ' would also match linux-hardened.
           ./tools/fetch-sources.sh --list \
             | awk '$1 == "linux" || $1 == "linux-hardened" || $1 == "kernel-hardening-checker" {print $3}' \
             | while read -r u; do
@@ -480,30 +358,14 @@ jobs:
               done
           ./tools/validate-kernel-config.sh
           ./tools/validate-kernel-config.sh --hardened
-          # The boot fragment too. It went unchecked here, and a misspelt
-          # driver symbol (CONFIG_TG3 for CONFIG_TIGON3) was caught only by
-          # acceptance, hours into a Distro run.
           ./tools/validate-kernel-config.sh --boot
 
       - name: The resolved config honours every fragment line and kernel-hardening-checker accepts it
         run: |
-          # Existence is half of it. tools/resolve-kernel-config.sh runs
-          # kconfig on the pinned source exactly as stage 05 does (defconfig,
-          # the three fragments, olddefconfig) and refuses a result that drops
-          # a line: kconfig drops one without a word for an unmet dependency,
-          # an overriding `select` or an invisible prompt, and the fragment
-          # then claims a mitigation the kernel lacks. Then
-          # tools/check-kernel-hardening.sh runs the pinned
-          # kernel-hardening-checker on that config and the shipped command
-          # line and holds its failures to build/config/kernel/
-          # checker-accepted.txt. Stage 05 does both inside the chroot; this
-          # is the same answer in minutes instead of hours.
-          #
-          # kconfig asks the compiler questions. The GCC plugin options
-          # (KSTACK_ERASE, RANDSTRUCT_FULL, LATENT_ENTROPY) exist only when
-          # the compiler has plugin headers, which the runner's gcc does not
-          # carry by default; without them this step would report three
-          # dropped lines the chroot's compiler does not drop.
+          # Resolves the config as stage 05 does and refuses a dropped line
+          # (kconfig drops one silently for an unmet dependency), then holds
+          # kernel-hardening-checker's failures to checker-accepted.txt.
+          # The GCC plugin options exist only with plugin headers installed.
           sudo apt-get install -y --no-install-recommends \
             "gcc-$(gcc -dumpversion | cut -d. -f1)-plugin-dev" flex bison
           make check-kernel-hardening

@@ -1,6 +1,5 @@
-# Kryptik is built on Linux. CRLF in a shell script produces
-# "bad interpreter: /usr/bin/env bash^M" — force LF for everything textual,
-# regardless of the contributor's core.autocrlf setting.
+# LF everywhere, whatever core.autocrlf says: a CRLF script fails with
+# "bad interpreter".
 * text=auto eol=lf
 
 *.sh        text eol=lf
@@ -20,6 +19,5 @@ Makefile    text eol=lf
 *.xz     binary
 *.sqfs   binary
 
-# A patch is applied by its bytes and checked by its hash (SHA256SUMS beside
-# it); git must never rewrite a line ending inside one.
+# Patches are checked against SHA256SUMS byte for byte.
 *.patch     -text

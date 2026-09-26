@@ -1,23 +1,15 @@
-/* wlprobe: what a Wayland client can see and reach, from where it runs.
+/* wlprobe: list the Wayland globals a client is offered, and try to bind one.
+ * A raw-socket client without libwayland (wire format: compositor/wlproxy's
+ * wire.rs). In a zone it shows what the zone's proxy lets through; in zone 0,
+ * the compositor's full set.
  *
- * A raw-socket client with no libwayland: it speaks just enough of the wire
- * format (wire.rs documents it) to ask the display for its registry, list
- * the globals it is offered, and optionally try to bind one by name. Run
- * inside a zone it shows what the per-zone proxy lets through - and what
- * happens when a client asks for something hidden - measured in the guest
- * rather than in the proxy's own unit tests. Run in zone 0 it shows the
- * compositor's full set, which is the positive control.
+ *   wlprobe list              print "global <name> <interface> <version>" per global
+ *   wlprobe bind INTERFACE    list, then bind INTERFACE by its offered name
+ *                             (name 1 if not offered) and print what came back
  *
- *   wlprobe list                 print "global <name> <interface> <version>" per global
- *   wlprobe bind INTERFACE       list, then bind INTERFACE by the name the
- *                                registry gave it (or, if it was not offered,
- *                                by guessing name 1): print what came back
- *
- * Exit status: 0 the connection ended normally (list) or the bind was
- * accepted (bind); 3 the bind was refused - the server sent wl_display.error
- * and closed - which is the outcome the boundary tests want to see; 1 any
- * other failure. The socket is $WAYLAND_DISPLAY (absolute, or under
- * $XDG_RUNTIME_DIR).
+ * Exit: 0 listed or bind accepted; 3 refused (wl_display.error, or closed);
+ * 1 any other failure. The socket is $WAYLAND_DISPLAY, absolute or under
+ * $XDG_RUNTIME_DIR.
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -64,7 +56,7 @@ static size_t put_string(unsigned char *p, const char *s)
 	return total;
 }
 
-/* Read until at least one whole message is buffered, or EOF/timeout. */
+/* One read within timeout_ms: 1 read, 0 timed out, -1 EOF or error. */
 static int fill(int timeout_ms)
 {
 	struct pollfd pfd = { sock, POLLIN, 0 };
@@ -162,9 +154,8 @@ int main(int argc, char **argv)
 
 	if (!strcmp(argv[1], "list")) return errored ? 3 : 0;
 
-	/* bind: by the offered name if we saw it, else guess name 1 (a hidden
-	 * global's real name is unknown to a filtered client; guessing is what
-	 * a probing client would do, and the proxy must refuse either way). */
+	/* A filtered client cannot know a hidden global's name, so guess 1; the
+	 * proxy must refuse either way. */
 	const char *want = argv[2];
 	uint32_t name = 1, version = 1;
 	for (int i = 0; i < nglobals; i++) if (!strcmp(globals[i].iface, want)) { name = globals[i].name; version = globals[i].version; }
