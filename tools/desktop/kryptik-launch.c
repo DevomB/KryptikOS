@@ -1,32 +1,24 @@
-/* kryptik-launch: start a program inside a zone from the desktop session.
- *
- * The session runs as an ordinary user and cannot create zones. It can ask
- * zone 0 to: kryptikd's launch daemon listens on a root-owned socket that
- * members of group `kryptik` may connect to (kryptikd serve). This program
- * is the client side of that conversation, and the only thing the
- * compositor's keybindings and the chrome's menu ever run.
+/* kryptik-launch: start a program in a zone from the desktop session. The
+ * client of kryptikd's launch daemon (a root-owned socket open to group
+ * `kryptik`); the compositor's keybindings and the chrome's menu run only this.
  *
  *   kryptik-launch [--ask | --passphrase-fd N] [--no-display] ZONE -- COMMAND [ARG...]
  *   kryptik-launch --stop ZONE
  *   kryptik-launch --info ZONE          encrypted yes|no, running yes|no
  *   kryptik-launch --runtime-dir        print the session's XDG_RUNTIME_DIR, creating it
  *   kryptik-launch --clipboard-move FROM TO   the zone 0 gesture: give TO a copy of FROM's clipboard
- *   kryptik-launch --wifi-list          the net zone's Wi-Fi networks, SSIDs one per line
- *   kryptik-launch --wifi-add SSID      add one, or replace its passphrase; the passphrase
- *                                       is one line on standard input, never an argument
+ *   kryptik-launch --wifi-list          the net zone's Wi-Fi SSIDs, one per line
+ *   kryptik-launch --wifi-add SSID      add one or replace its passphrase (one line on stdin)
  *   kryptik-launch --wifi-forget SSID   remove one
+ *   kryptik-launch --update status|fetch|apply   show, fetch or install a release
  *
- * With a display, the zone's Wayland proxy (kryptik-wlproxy) is started
- * first if it is not already running, listening at
- * $XDG_RUNTIME_DIR/kryptik/ZONE/wayland-0 and connected to the session's
- * compositor; that socket is what the daemon binds into the zone. The zone
- * never sees the compositor's own socket.
+ * With a display, the zone's kryptik-wlproxy is started if needed at
+ * $XDG_RUNTIME_DIR/kryptik/ZONE/wayland-0; the daemon binds that socket into
+ * the zone, which never sees the compositor's own.
  *
- * --ask: if the zone is encrypted, collect the passphrase - on the terminal
- * when there is one, otherwise by handing over to the trusted chrome
- * (kryptik-chrome --prompt), which draws the prompt and calls back here
- * with --passphrase-fd. The passphrase travels as a descriptor over
- * SCM_RIGHTS and is never on a command line or in the environment.
+ * --ask: for an encrypted zone, read the passphrase on the terminal, or hand
+ * over to kryptik-chrome --prompt, which calls back with --passphrase-fd. The
+ * passphrase travels as a descriptor (SCM_RIGHTS), never in argv or environ.
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -73,8 +65,7 @@ static int ident_ok(const char *s)
 	return 1;
 }
 
-/* One request to the daemon: send text (and one descriptor, if fd >= 0),
- * read the whole reply. Returns the reply, malloc'ed. */
+/* Send one request (and fd, if >= 0); return the whole reply, malloc'ed. */
 static char *talk(const char *text, int fd)
 {
 	struct sockaddr_un sa;
@@ -196,8 +187,8 @@ static const char *ensure_proxy(const char *zone)
 		int log = open(logfile, O_WRONLY | O_CREAT | O_APPEND, 0600);
 		if (null < 0 || log < 0 || dup2(null, 0) < 0 || dup2(log, 1) < 0 || dup2(log, 2) < 0)
 			_exit(127);
-		/* The proxy needs only stdio, never the passphrase (including an
-		 * externally supplied --passphrase-fd) or other session descriptors. */
+		/* The proxy gets stdio only, never the passphrase fd or other session
+		 * descriptors. */
 		if (close_range(3, ~0U, 0) < 0)
 			_exit(127);
 		execl(PROXY_BIN, "kryptik-wlproxy", "--zone", zone, "--listen", sock, "--upstream", upstream,
@@ -209,7 +200,7 @@ static const char *ensure_proxy(const char *zone)
 		fprintf(f, "%d\n", (int)pid);
 		fclose(f);
 	}
-	/* Wait for the listener, briefly. */
+	/* Wait up to 3 s for the listener. */
 	for (int i = 0; i < 60; i++) {
 		if (stat(sock, &st) == 0 && S_ISSOCK(st.st_mode))
 			return sock;
@@ -275,13 +266,13 @@ static void usage(void)
 	      "       kryptik-launch --runtime-dir\n"
 	      "       kryptik-launch --clipboard-move FROM TO\n"
 	      "       kryptik-launch --wifi-list | --wifi-add SSID | --wifi-forget SSID\n"
-	      "                      (--wifi-add reads the passphrase from standard input)\n", stderr);
+	      "                      (--wifi-add reads the passphrase from standard input)\n"
+	      "       kryptik-launch --update status|fetch|apply\n", stderr);
 	exit(2);
 }
 
-/* One secret line from standard input: with echo off and a prompt when it
- * is a terminal, silently when it is a pipe (the kryptik command reads the
- * terminal itself and pipes the line). Trailing newlines are dropped. */
+/* One secret line from stdin: prompted with echo off on a terminal, silent
+ * from a pipe (the kryptik command pipes it). Trailing newlines dropped. */
 static void secret_from_stdin(const char *prompt, char *buf, size_t size)
 {
 	struct termios old, raw;
@@ -310,11 +301,8 @@ static void secret_from_stdin(const char *prompt, char *buf, size_t size)
 		die("empty passphrase");
 }
 
-/* The net zone's Wi-Fi networks: the daemon's wifi verbs (kryptikd's
- * wifi.rs), which validate both values, write the file zone 0 keeps for
- * the net zone and restart it. The passphrase travels in the request body
- * the way an encrypted zone's does on a descriptor: never on a command
- * line. The daemon's reply line is printed as the result. */
+/* The daemon's wifi verbs (kryptikd's wifi.rs): it validates, writes the net
+ * zone's file and restarts it. The passphrase goes in the request body. */
 static int wifi_main(int argc, char **argv)
 {
 	const char *mode = argv[1];
@@ -362,13 +350,30 @@ static int wifi_main(int argc, char **argv)
 	return ok ? 0 : 1;
 }
 
+/* The daemon's update verbs (kryptikd's update.rs). The reply is an `ok` line
+ * and text for the user, or one `error:` line; `apply` answers once
+ * kryptik-update has written the slot. */
+static int update_main(int argc, char **argv)
+{
+	if (argc != 3 || (strcmp(argv[2], "status") != 0 && strcmp(argv[2], "fetch") != 0 && strcmp(argv[2], "apply") != 0))
+		usage();
+	char req[32];
+	snprintf(req, sizeof req, "update-%s\n", argv[2]);
+	char *r = talk(req, -1);
+	int ok = strncmp(r, "ok\n", 3) == 0;
+	fputs(ok ? r + 3 : r, ok ? stdout : stderr);
+	return ok ? 0 : 1;
+}
+
 int main(int argc, char **argv)
 {
 	int ask = 0, no_display = 0, pass_fd = -1, sep = -1;
-	const char *zone = NULL, *zone2 = NULL, *mode = "run";
+	const char *zone = NULL, *mode = "run";
 	int i;
 	if (argc >= 2 && strncmp(argv[1], "--wifi-", 7) == 0)
 		return wifi_main(argc, argv);
+	if (argc >= 2 && strcmp(argv[1], "--update") == 0)
+		return update_main(argc, argv);
 	if (argc == 4 && strcmp(argv[1], "--clipboard-move") == 0) {
 		if (!ident_ok(argv[2]) || !ident_ok(argv[3]))
 			usage();
@@ -378,7 +383,6 @@ int main(int argc, char **argv)
 		fputs(r, strncmp(r, "ok", 2) == 0 ? stdout : stderr);
 		return strncmp(r, "ok", 2) == 0 ? 0 : 1;
 	}
-	(void)zone2;
 	for (i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--") == 0) { sep = i; break; }
 		else if (strcmp(argv[i], "--ask") == 0) ask = 1;
@@ -425,8 +429,7 @@ int main(int argc, char **argv)
 		if (isatty(0)) {
 			pass_fd = passphrase_from_tty(zone);
 		} else {
-			/* Hand over to the trusted chrome, which calls back with
-			 * --passphrase-fd. Same zone, same command, same display choice. */
+			/* The trusted chrome prompts and calls back with --passphrase-fd. */
 			char **nargv = calloc((size_t)ncmd + 8, sizeof *nargv);
 			int k = 0;
 			nargv[k++] = CHROME_BIN;
@@ -443,34 +446,35 @@ int main(int argc, char **argv)
 
 	const char *wl = no_display ? NULL : ensure_proxy(zone);
 
-	/* Build the request. */
-	/* Every string that goes into the request is counted: the zone name and
-	 * the proxy socket here, each argument below; the 1024 covers the fixed
-	 * words. The socket path was not counted before. It is as long as
-	 * XDG_RUNTIME_DIR makes it, up to PATH_MAX, so a long one made the first
-	 * snprintf return more than cap, and the next wrote at req + len with a
-	 * size that had wrapped around. */
+	/* Every string in the request is counted, the socket path included (up to
+	 * PATH_MAX); 1024 covers the fixed words. */
 	size_t cap = 1024 + strlen(zone) + (wl ? strlen(wl) : 0);
 	for (i = 0; i < ncmd; i++)
 		cap += strlen(cmd[i]) + 8;
 	char *req = malloc(cap);
 	if (!req)
 		die("out of memory");
-	int len = snprintf(req, cap, "run %s%s%s%s\n", zone, wl ? " wayland=" : "", wl ? wl : "", pass_fd >= 0 ? " pass=fd" : "");
+	/* snprintf returns the length it wanted: check each piece fitted before
+	 * advancing, or a short buffer becomes a write past its end. */
+	size_t len = 0;
+	#define PUT(...) do { \
+		int n_ = snprintf(req + len, cap - len, __VA_ARGS__); \
+		if (n_ < 0 || (size_t)n_ >= cap - len) \
+			die("request too long"); \
+		len += (size_t)n_; \
+	} while (0)
+	PUT("run %s%s%s%s\n", zone, wl ? " wayland=" : "", wl ? wl : "", pass_fd >= 0 ? " pass=fd" : "");
 	for (i = 0; i < ncmd; i++) {
 		if (strchr(cmd[i], '\n'))
 			die("argument %d contains a newline", i);
-		len += snprintf(req + len, cap - (size_t)len, "arg %s\n", cmd[i]);
+		PUT("arg %s\n", cmd[i]);
 	}
-	len += snprintf(req + len, cap - (size_t)len, "end\n");
+	PUT("end\n");
+	#undef PUT
 
 	char *r = talk(req, pass_fd);
 	if (pass_fd >= 0)
 		close(pass_fd);
-	if (strncmp(r, "ok ", 3) == 0) {
-		fprintf(stderr, "kryptik-launch: zone %s: %s", zone, r);
-		return 0;
-	}
 	fprintf(stderr, "kryptik-launch: zone %s: %s", zone, r);
-	return 1;
+	return strncmp(r, "ok ", 3) == 0 ? 0 : 1;
 }

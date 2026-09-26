@@ -1,12 +1,8 @@
-# Binaries permitted to carry setuid/setgid in a Kryptik image.
-#
-# Format:  /absolute/path   # justification
-#
-# The default state of this file is EMPTY. Kryptik's position is that
-# privilege transitions go through kryptikd, where they are auditable, rather
-# than through scattered setuid binaries, where they are not.
-#
-# Before adding an entry, confirm that neither file capabilities
-# (e.g. CAP_NET_RAW for ping) nor a brokered service can do the job.
-
-# --- allowlist below this line ---
+# Binaries allowed to be setuid or setgid in a Kryptik image; stage 06 takes
+# the bit off every other file in its root (tools/audit-setuid.sh --strip).
+#   /absolute/path   # why it stays, and what would remove it
+# Privilege transitions go through kryptikd, where they are auditable. A file
+# capability is no way round this list: it needs an entry in
+# capability-allowlist.txt, and nothing has one.
+/usr/bin/su       # the one way from a login to root, for an administrator and for the test drivers (vm-drive.py su:); goes when kryptikd brokers a root session
+/usr/bin/passwd   # a user changes their own password; goes when a kryptikd verb does that, which weighs a new root-side parser of /etc/shadow against this one binary

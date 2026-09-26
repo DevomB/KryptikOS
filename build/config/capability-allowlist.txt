@@ -1,0 +1,4 @@
+# Files allowed to carry file capabilities (security.capability) in a Kryptik
+# image; stage 06 removes them from every other file in its root
+# (tools/audit-setuid.sh --strip). Nothing in the image needs one yet.
+#   /absolute/path   # justification

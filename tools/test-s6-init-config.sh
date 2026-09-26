@@ -1,29 +1,7 @@
 #!/usr/bin/env bash
-# Regression test: stage 04's s6-linux-init configuration actually produces a
-# boot image.
-#
-# WHY THIS IS NOT JUST PART OF STAGE 04
-#
-# The init configuration is the last step of a four-hour stage. Getting a flag
-# wrong there means finding out at hour four, and the failure modes are quiet:
-# a boot image with no stage 2 scripts, or an early getty that names a program
-# that does not exist, both produce a maker that exits 0 and a machine that
-# boots to silence.
-#
-# The s6 stack is small and builds in about a minute, so all of it can be
-# checked up front.
-#
-# This is a HOST build. It proves nothing about the target toolchain - that is
-# stage 05's compiler-check. What it proves is that the maker's interface, the
-# option set and the skeleton scripts fit together, and that part is identical
-# wherever it runs.
-#
-# ANTI-DRIFT
-#
-# The maker options and the skeleton scripts are extracted from
-# build/stages/04-base-system.sh rather than duplicated here, so this test
-# cannot quietly stop describing the code it is testing. That is the same
-# mistake tools/test-step-errexit.sh used to make.
+# Build the s6 stack on the host and check that stage 04's s6-linux-init options
+# and skeleton scripts, read from the stage file, make a bootable init image.
+# Says nothing about the target toolchain (stage 05 checks that).
 
 set -uo pipefail
 
@@ -70,10 +48,7 @@ mkdir -p "$W/build" "$PREFIX"
 echo "Stage 04 init configuration"
 echo
 
-# ---------------------------------------------------------------------------
-# 1. Build the stack the way stage 04 does, including the --skeldir argument
-#    whose absence is the whole reason that argument exists.
-# ---------------------------------------------------------------------------
+# --- build the stack as stage 04 does, --skeldir included -------------------
 for p in "${PKGS[@]}"; do
     tar -xf "${SRC}/${p}.tar.gz" -C "$W/build" || { red "unpack ${p}"; continue; }
     ( cd "$W/build/$p" || exit 1
@@ -83,10 +58,8 @@ for p in "${PKGS[@]}"; do
           s6-linux-init-*) extra=(--skeldir=/etc/s6-linux-init/skel) ;;
       esac
 
-      # --with-sysdeps is needed HERE and not in stage 04: skalibs installs its
-      # sysdeps to PREFIX/lib/skalibs/sysdeps and later packages look there by
-      # absolute path. Inside the chroot that is where they are; this builds
-      # under a DESTDIR, so the absolute default points at the host's copy.
+      # Unlike stage 04 this installs under a DESTDIR, so point later packages
+      # at skalibs' sysdeps there, not at the host's /usr/lib copy.
       ./configure --prefix=/usr --libdir=/usr/lib \
           --with-sysdeps="$PREFIX/usr/lib/skalibs/sysdeps" \
           --with-include="$PREFIX/usr/include" \
@@ -100,18 +73,15 @@ done
 
 [[ "$FAIL" -eq 0 ]] || { echo; echo "the s6 stack did not build; nothing further can be checked"; exit 1; }
 
-# ---------------------------------------------------------------------------
-# 2. --skeldir. Without it, s6-linux-init's --prefix=/usr puts the skeleton in
-#    /usr/etc/s6-linux-init/skel and the maker never finds it.
-# ---------------------------------------------------------------------------
+# --- --skeldir ---------------------------------------------------------------
+# Without it, --prefix=/usr puts the skeleton under /usr/etc, where the maker
+# never looks.
 check "skeleton installed to /etc/s6-linux-init/skel" \
       "$([[ -d "$PREFIX/etc/s6-linux-init/skel" ]] && echo ok)"
 check "nothing landed in /usr/etc" \
       "$([[ ! -d "$PREFIX/usr/etc" ]] && echo ok)"
 
-# ---------------------------------------------------------------------------
-# 3. Kryptik's own skeleton scripts, taken from the stage file.
-# ---------------------------------------------------------------------------
+# --- Kryptik's skeleton scripts, from the stage file -------------------------
 python3 - "$STAGE" "$PREFIX/etc/s6-linux-init/skel" <<'PY'
 import re, sys, pathlib, os
 src = pathlib.Path(sys.argv[1]).read_text()
@@ -131,13 +101,9 @@ for f in rc.init rc.shutdown rc.shutdown.final runlevel; do
           "$(sh -n "$PREFIX/etc/s6-linux-init/skel/$f" 2>/dev/null && echo ok)"
 done
 
-# ---------------------------------------------------------------------------
-# 4. The maker, with stage 04's exact options.
-#
-# Extracted from the stage file so the two cannot drift apart. Only -f and the
-# output directory are overridden, because those are the only ones that name a
-# path belonging to a real installation.
-# ---------------------------------------------------------------------------
+# --- the maker, with stage 04's options --------------------------------------
+# Read from the stage file; only -f and the output directory, the two that
+# name real installation paths, are overridden.
 mapfile -t OPTS < <(python3 - "$STAGE" <<'PY'
 import re, sys, shlex
 src = open(sys.argv[1]).read()
@@ -163,10 +129,8 @@ PY
 
 echo "  maker options from the stage file: ${OPTS[*]}"
 
-# An extraction that silently produced nothing would run the maker with no
-# options at all, and most of the checks below would still pass - the maker
-# happily builds a default image. So assert the extraction worked before
-# trusting anything that follows.
+# With no options the maker still builds a default image, so check the
+# extraction before anything else.
 check "extracted a non-empty option set" "$([[ "${#OPTS[@]}" -ge 8 ]] && echo ok)"
 check "extracted the early-getty option (-G)" \
       "$(printf '%s\n' "${OPTS[@]}" | grep -qx -- '-G' && echo ok)"
@@ -191,9 +155,8 @@ rc=$?
 check "s6-linux-init-maker succeeds" "$([[ $rc -eq 0 ]] && echo ok)"
 [[ $rc -eq 0 ]] || { sed 's/^/    /' "$makerlog"; echo; echo "${FAIL} failed"; exit 1; }
 
-# A warning here is not cosmetic. The one this caught - an env store outside
-# /run - means init writing to the root filesystem at every boot, on a system
-# whose kernel fragment enables dm-verity.
+# Any maker warning fails: an env store outside /run, for one, means init
+# writes to the read-only verity root at every boot.
 if grep -q 'warning' "$makerlog"; then
     red "s6-linux-init-maker emitted a warning:"
     sed 's/^/        /' "$makerlog"
@@ -201,9 +164,7 @@ else
     green "s6-linux-init-maker emitted no warnings"
 fi
 
-# ---------------------------------------------------------------------------
-# 5. What it produced has to be bootable-shaped.
-# ---------------------------------------------------------------------------
+# --- the output has the shape of a boot image --------------------------------
 for b in init telinit shutdown halt poweroff reboot; do
     check "produced bin/${b}" "$([[ -e "$OUT/bin/$b" ]] && echo ok)"
 done

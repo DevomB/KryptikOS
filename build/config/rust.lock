@@ -1,0 +1,8 @@
+# The compiler that builds the shipped kryptikd and kryptik-wlproxy: Rust's own
+# release tarballs from https://static.rust-lang.org/dist/, held to these
+# hashes by the Distro workflow. Each was checked against the Rust release key
+# (108F 6620 5EAE B0AA A8DD 5E1C 85AB 96E6 FA1B E5FE) when it was pinned.
+e974f036b28565f37c0f3bd92ddefa809bee16c04f9dcf07b9ed96e05aaaf7c4  rustc-1.98.1-x86_64-unknown-linux-gnu.tar.xz
+ea1de9f9e23107d97ee2b41a72c552f34064a593da503789218387aee59f3ba4  cargo-1.98.1-x86_64-unknown-linux-gnu.tar.xz
+fa3ff450172a16c026944030230c5069947af93c728d9179971d44e5e0cfb561  rust-std-1.98.1-x86_64-unknown-linux-gnu.tar.xz
+bd9f35880de21dab0e387e84009c00001ae7836a4ba565cb16823f13f75f325f  rust-std-1.98.1-x86_64-unknown-linux-musl.tar.xz

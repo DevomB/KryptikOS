@@ -1,45 +1,24 @@
-# An update channel
+# Update channel
 
-Status: design. Nothing here is built yet; it finishes the roadmap's "An
-update channel". Builds on [boot and updates](boot-and-updates.md), whose
-verification it does not change, on [the broker](broker.md), which carries
-the bytes, and on [the clock](time.md), without which freshness means
-nothing.
+How a release reaches a machine over the network without changing what
+`kryptik-update apply` verifies. The net zone fetches, the
+[broker](broker.md) carries the bytes, and zone 0 decides what to believe and
+store. Builds on [boot and updates](boot-and-updates.md) and the
+[clock](time.md).
 
-## The problem
+## Constraints
 
-`kryptik-update apply DIR` verifies a release and installs it, and says so
-in its first lines: "the payload arrives as files (the net zone fetches,
-this verifies)". Nothing fetches. A release reaches a machine today on a
-disk someone carries to it.
+Zone 0 has no network and gets none for this. The net zone is hostile.
+Zones call their broker, never the reverse, so zone 0 cannot say "fetch
+this": the net zone has to ask. Its 512 MB tmpfs is smaller than a root
+image, so it can only stream. Zone 0 must not store what it has not
+authenticated, or a hostile net zone could fill the state partition.
 
-The pieces that make fetching hard are the ones that make Kryptik what it
-is:
-
-- **Zone 0 has no network**, and will not get one for this.
-- **The net zone is hostile.** Whatever it hands over is what an attacker
-  on the path, or in that zone, chose to hand over.
-- **Nothing flows into the net zone.** No zone may send it a file, and zone
-  0 has no channel to it at all: zones call their broker, never the
-  reverse. So zone 0 cannot say "fetch this"; the net zone has to ask.
-- **The net zone cannot hold a release.** Its storage is a 512 MB tmpfs that
-  dies with it, and a root image is larger than that. It can only stream.
-- **Zone 0 must not store what it has not authenticated**, or a hostile net
-  zone fills the state partition with a "release" that was never one.
-
-## What is not changed
-
-Everything `kryptik-update apply` checks, in the order it checks it: the
-manifest's signature against the trust anchor on the verified root, the
-role, the version against the running one (a downgrade is refused unless
-`--recovery` asks for it), every file's size and hash, nothing unlisted,
-both kernels embedding the root image's hash - all before the first write.
-A fetched payload is treated exactly as a disk someone handed over. The
-channel's whole job is to get a directory onto the state partition that
-`apply` can be pointed at; if the channel is wrong in every way it can be,
-the result is a directory `apply` refuses.
-
-## The design
+`apply` still checks everything before its first write (the signature, the
+role, the version, every file's hash and size, nothing unlisted, the root
+hash in both kernels), and a fetched payload is treated exactly like one on a
+disk. The channel only puts a directory on the state partition; a channel
+wrong in every possible way yields a directory `apply` refuses.
 
 ```text
  the release host          net zone                     broker (zone 0)                 zone 0
@@ -51,7 +30,7 @@ the result is a directory `apply` refuses.
                                                                                           = kryptik-update apply DIR
 ```
 
-### A signed statement of what is current
+## The statement of what is current
 
 The release host serves two small files beside the payloads:
 
@@ -65,41 +44,53 @@ latest        KRYPTIK-LATEST-1
 latest.sig    an OpenSSH signature over those bytes, namespace kryptik-latest
 ```
 
-`base` may be absolute or relative. A relative one is resolved against the
-channel address on the verified root, never against anything the net zone
-reports, so a mirror can move without the pointer being signed again; and
-since the pointer carries the manifest's hash, where the bytes come from
-decides nothing about what they must be.
+- Its own namespace means a manifest's signature can never pass as a
+  pointer's, or the reverse.
+- Zone 0 names the channel: `channel = <address>` in
+  `/etc/kryptik/update.conf`, bound read-only into the zones' `/etc` like
+  `time.conf`. Only the verified root's copy lasts (one root writes at run
+  time is quarantined at the next boot). A build names it with
+  `KRYPTIK_CHANNEL` (`make media KRYPTIK_CHANNEL=https://<host>/<channel>/`).
+  Before it builds anything, stage 06 refuses an address the image could not
+  use. Both readers append names to the address as a string, so it must be
+  `http(s)://host[:port][/path]`, with no `user@`, query or fragment, in
+  printable ASCII of at most 512 bytes, and plain `http` only on an image
+  whose role is `development`. Zone 0 itself checks only the scheme. Without
+  a channel, the image ships no `update.conf`, the net zone asks nobody and
+  `update-poll` answers `idle`. The address is not a trust anchor.
+- `base` is absolute, or relative to the channel address and staying under
+  it, never resolved against anything the net zone says. The pointer carries
+  the manifest's hash, so where the bytes come from decides nothing about what
+  they must be. Only a `development` image may use plain `http`.
+- Zone 0 accepts a pointer when its signature verifies against the release
+  trust anchor (before anything in it is parsed), its role is this image's,
+  it is dated at most a day ahead of the local clock, and its `issued` is not
+  earlier than the newest accepted (`/var/lib/kryptik/update/pointer`). An
+  older one is a replay, however valid its signature; one dated far ahead
+  would turn every later statement into a replay.
+- A net zone that withholds pointers holds the machine on an old release, and
+  no signature can show an absence. The pointer is therefore re-issued on a
+  schedule, and one older than 30 days is reported: "no statement from the
+  release key for N days: either nothing has been published, or something is
+  keeping it from this machine". That needs a clock the net zone cannot set.
 
-It is signed in a namespace of its own, so a manifest's signature can never
-be replayed as a pointer nor a pointer's as a manifest. Which key signs it
-is an open decision (below).
-The channel's address is on the verified root (`/etc/kryptik/update.conf`,
-visible read-only in zones like the time sources), so the net zone is not
-told where to look by anything it could have written.
+**Which key signs it.** Re-signing on a schedule needs a key a timer can
+reach, and the release key is meant to stay offline, so the build uses two.
+The anchor stage 06 puts on the image lists the release key as
+`kryptik-release namespaces="kryptik-release"` and the statement key as
+`kryptik-latest namespaces="kryptik-latest"`, each honoured in its own
+namespace only, and no key under both. While a key is replaced it lists the
+old one and the new one. A development build proves the split with a probe
+signed by each key in each namespace, and a production build refuses a key
+medium whose anchor says anything else. `tools/release-manifest.sh pointer`
+signs with the statement key. A stolen statement key can only keep claiming an old release is
+current, the freeze a withholding net zone causes anyway: it cannot sign a
+manifest, zone 0 still refuses a statement older than one it accepted, and
+replacing the key takes a release.
 
-Zone 0 accepts a pointer when its signature verifies against the same trust
-anchor releases are verified against, its role is the one this image
-requires, and its `issued` is not earlier than the newest pointer this
-machine has already accepted. That last rule is what stops a hostile zone
-replaying last year's pointer: zone 0 remembers the highest `issued` it has
-seen (`/var/lib/kryptik/update/pointer`), and an older one is refused however
-valid its signature.
+## The verbs
 
-**Freshness needs the clock.** A net zone that simply withholds new pointers
-holds a machine on an old release, and no signature detects an absence. The
-release process re-issues the pointer on a schedule even when nothing has
-changed, and zone 0 reports a pointer older than a bound (30 days) as what
-it is: "no statement from the release key for N days: either nothing has
-been published, or something is keeping it from this machine". It cannot
-tell which, and says both. This is why the clock comes first
-([time](time.md)): with a clock the net zone could set, it could make any
-pointer fresh.
-
-### The net zone asks; zone 0 never calls
-
-Three verbs on the broker, all from the zone that holds the network and no
-other, like `time-offset`:
+Taken only from the zone that holds the network, like `time-offset`:
 
 ```text
 update-latest <plen> <slen>\n<pointer><signature>
@@ -114,137 +105,109 @@ update-put <name> <offset> <len>\n<bytes>
     -> ok <name> <received>/<size> | ok <name> complete | error: <reason>
 ```
 
-The net zone fetches the pointer daily and hands it over. When the person
-has asked for the release (`kryptik update fetch`, or a policy that asks on
-their behalf), `update-poll` answers with what is wanted: the version, the
-base address **from the verified pointer**, and which files are still
-missing and from which byte. The net zone polls because nothing can call it.
+The net zone brings the pointer every 30 minutes until one is accepted, then
+daily, and polls every minute. Once the user has asked (`kryptik update
+fetch`), `update-poll` names the version, the base from the verified pointer,
+and each missing file with the byte to resume from.
 
-### Bytes cross in an order that bounds them
+## Bytes in an order that bounds them
 
-`update-put` takes `manifest` and `manifest.sig` first and nothing else,
-64 KiB at most each. When both are there zone 0 verifies them exactly as
-`kryptik-update` does (the same code: a `kryptik-update check-manifest`
-subcommand that runs the signature, role and version steps and prints the
-file list) and checks the manifest's SHA-256 against the pointer's. Only
-then does it accept anything large, and then only:
+`update-put` first takes only `manifest` and `manifest.sig`, whole, at most
+64 KiB each. Zone 0 runs `kryptik-update check-manifest` (the signature, role
+and version checks of `apply`, with no downgrade: nothing from the network is
+a recovery) and requires the manifest to be for the wanted version, to hash
+to the pointer's `manifest-sha256`, and to fit in the free space. A refused
+manifest clears the stage, and for an hour after a refusal the next one is
+refused without being verified. Then it
+takes only a listed name, at exactly the offset it holds (so a cut download
+resumes and nothing is written twice), never past the signed size.
 
-- a name the signed manifest lists,
-- at an offset equal to what it already holds of that file (so a broken
-  download resumes and nothing is written twice or out of order),
-- never past the size the signed manifest gives for that file,
-- with the whole staging area bounded by the manifest's total, checked
-  against the state partition's free space before the first byte.
+So a hostile net zone can make zone 0 store at most the declared size of a
+release the release key signed, once, in one root-only directory
+(`/var/lib/kryptik/update/incoming/<version>/`); wrong bytes of the right
+length fail `apply`'s hashes. The net zone streams HTTPS straight into the
+broker, resuming with range requests. TLS, with the image's CA bundle, keeps
+the download private; authenticity does not rest on it. Each piece of at
+most 1 MiB is one request the launcher answers between looks at its zone,
+under the 5 s deadline, so supervision is never more than a piece away.
 
-So the most a hostile net zone can make zone 0 store is the declared size
-of a release that the release key signed, once, in one staging directory
-(`/var/lib/kryptik/update/incoming/<version>/`, root only). Wrong bytes of
-the right length are caught where they always were: `apply` hashes every
-file against the manifest before it writes a slot.
+## What the user sees
 
-The net zone holds nothing: it reads from the HTTPS connection and writes
-to the broker socket in the same loop (HTTP range requests give it the
-offset zone 0 asked for). TLS authenticates the host with the image's CA
-bundle and keeps the download private; nothing about the payload's
-authenticity rests on it. A `development` image may name an `http://`
-address, which is what the test network serves; a `production` one may not.
-
-A release is hundreds of megabytes through a socket the launcher also
-supervises its zone with. The copy is handed to a child of the launcher,
-which holds the connection and the staging file and nothing else, so
-supervision, the zone's other verbs and its death are all noticed as
-promptly as they are today.
-
-### The person, and what they see
-
-`kryptik update status | fetch | apply` go through the launch service like
-`kryptik wifi`. `status` says the running version, the version the newest
-accepted pointer names and how old that pointer is, and what is staged and
-how much of it has arrived. `fetch` marks the release wanted. `apply` runs
-`kryptik-update apply` on the staged directory - the trial boot, the
-health-judged commit and the fallback are the existing ones - and the
-staging area is removed once the new release has committed. Nothing is
-downloaded or installed without the person having asked, unless they have
-set the policy that asks for them.
+`kryptik update status | fetch | apply` go through the launch service.
+`status` shows the running version, the newest pointer's version and age,
+and what has arrived. `fetch` asks for the release the newest pointer names.
+`apply` runs `kryptik-update apply` on the complete stage, with the usual
+trial boot and fallback; the stage goes once the machine runs that release.
+Nothing is fetched or installed unless the user asks.
 
 ## What a hostile net zone can still do
 
-- **Withhold.** No pointer, no payload. Reported through the pointer's age,
-  not prevented.
-- **Waste bandwidth and one release's worth of disk**, once per version
-  wanted: bytes of the right length and the wrong content, refused at
-  `apply`, after which the staging directory is discarded and the file is
-  needed again. Bounded, visible in `status`, and the same attacker could
-  have cut the cable.
-- **Learn that this machine runs Kryptik and which release it asked for.**
-  It carries the traffic; it always knew.
+Withhold (reported through the pointer's age, not prevented); waste bandwidth
+and one release's worth of disk per version, with right-sized wrong bytes that
+`apply` refuses; and see that the machine runs Kryptik and which release it
+wants. It cannot install anything the release key did not sign, install an
+older release, present an old statement as current, or make zone 0 keep a byte
+the signed manifest does not provide for.
 
-What it cannot do: install anything the release key did not sign, install
-an older release, present an old statement as current, or make zone 0 keep
-a byte the signed manifest did not provide for.
+## Publishing
+
+A channel is a directory served as it stands: `latest`, `latest.sig`, and one
+directory per version, which the statement's `base` names relative to the
+channel. `tools/release-channel.sh` is the only thing that writes one:
+
+- `publish` verifies a payload as the image will (`--exact --strict`, and not
+  older than the version the channel names), links it in under its version
+  by way of a temporary name, and only then signs a new statement. A
+  published version never changes: a client may be part way through it.
+- `reissue` signs the same statement again with the current date. It runs
+  from a timer, daily, on the machine that holds the statement key, so the
+  30-day report means something went wrong rather than that nobody re-signed.
+
+Each new statement is checked against the image's anchor, as a client checks
+it, before it replaces the old pair, so a failure leaves the channel as it
+was. Both commands build only on a statement that verifies, and refuse a date
+clients would refuse (before the current statement's, or more than a day
+ahead). One run at a time holds the channel. Stage 06 publishes each build
+into `images/channel-<version>/` the same way, and the update suite serves
+that directory.
 
 ## Tests
 
-| check | expected |
-|---|---|
-| a pointer signed by another key, in the manifest's namespace, or for another role | refused |
-| a validly signed pointer older than one already accepted | refused: replay |
-| a pointer older than the bound, against the clock | accepted as the newest known, and reported as stale |
-| `update-put` of anything before the manifest and its signature have verified | refused |
-| a name the manifest does not list; an offset that is not what is held; a byte past the listed size | refused; nothing written |
-| a manifest whose hash is not the pointer's | refused: not the release that was announced |
-| more than the state partition can hold | refused before the first byte |
-| the three verbs from a zone that does not hold the network | refused by identity |
-| a download cut at any byte | resumes from that byte; the staged file is identical |
-| right sizes, wrong bytes | staged, then refused by `apply`; the slot is never written |
-| the whole path on the installed system | the host serves release B over the test network; the net zone fetches it, zone 0 stages and applies it, the machine trial-boots B and commits |
-
-The rules about pointers and offsets are pure functions and unit-tested; the
-verbs' refusals run in the boundary suite against a real zone; the fetcher
-runs against a local server in an offline suite, with the interrupted and
-the hostile cases; the last row joins the update suite.
-
-## A decision for the owner: which key signs the pointer
-
-Detecting a withheld update needs the pointer re-issued on a schedule, and a
-schedule needs a key that is available on a timer. The roadmap's production
-release key is meant to live offline. Those two pull against each other, and
-the choice is about how the keys are held, which is the owner's:
-
-- **The release key signs pointers too.** One key, one trust anchor, and it
-  has to come online every time the pointer is refreshed. The freshness
-  check costs the offline key its offline-ness.
-- **A separate freshness key**, certified by the release key and honoured
-  only in the `kryptik-latest` namespace. It lives online and re-signs on
-  the timer; the release key stays offline and signs releases. If the
-  freshness key is stolen, the thief can keep asserting that an old release
-  is current - the same freeze a hostile net zone can already cause by
-  withholding, made to look fresh - and nothing more: it cannot sign a
-  manifest, so it cannot install anything, and zone 0 still refuses a
-  pointer older than one it has accepted. Revoking it is a release.
-- **No schedule.** The pointer is signed by the offline key only when a
-  release is made, and a withheld update is simply not detectable. Honest,
-  and weaker.
-
-The design above works with any of the three; only who holds which key, and
-whether `status` can say "stale", changes.
+- `update.rs` unit tests cover every rule above; `broker.rs` unit tests and
+  the boundary suite check the verbs' bounds and that only the network zone
+  may use them.
+- `make test-update-manifest-snapshot`: `check-manifest` and `check-pointer`
+  with the real `ssh-keygen` refuse the other namespace, an unenrolled key,
+  another role, a downgrade and a listed path that climbs.
+- `make test-update-fetch`: the fetcher against a loopback server, including
+  resuming after a cut, a server that ignores ranges, and a refused piece.
+- A development build's stage 06 checks that the image's anchor refuses
+  `not-a-pointer`, the statement signed by the release key, and the update
+  suite checks that `check-pointer` refuses it on the installed system.
+- The update suite's network step (`tools/image/update-test.sh`), from the
+  channel stage 06 published: nothing is fetched until asked, then the
+  release arrives whole, is applied, trial-booted and committed.
+- `tools/test-release-channel.sh`: `publish` and `reissue` with throwaway
+  keys. A wrong key, an older release, a tampered payload, a replaced
+  manifest, a replayed or far-ahead date, and a second run at once are each
+  refused, and each leaves the old pair.
+- `tools/test-channel-setting.sh`: the addresses stage 06 takes and refuses
+  for `KRYPTIK_CHANNEL` for each role, and, for every address it takes, the
+  fetcher reading the written `update.conf` into requests it can send.
 
 ## Open points
 
-- The release process that publishes `latest`, its signature and the
-  payload tree, and re-issues the pointer on a schedule, is release tooling
-  (`tools/release-manifest.sh` is where the manifest is made today).
-- Whether `fetch` should be automatic by default. The design asks the
-  person; a machine nobody watches wants the policy.
-- Delta updates. A root image is downloaded whole; dm-verity's block
-  structure would allow fetching only changed blocks, and nothing here
-  prevents it later.
+- Whether fetching should be automatic; an unattended machine would want it.
+- Delta updates: dm-verity's block structure would allow fetching only
+  changed blocks instead of the whole image.
 
 ## Files
 
-`compartments/kryptikd/src/update.rs` (pointer and staging rules),
-`broker.rs` (the verbs), `serve.rs` and `tools/kryptik` (`kryptik update`),
-`tools/update/kryptik-update` (`check-manifest`), a fetcher shipped for the
-net zone beside `tools/net/netzone-init.sh`, `rootfs.rs`
-(`/etc/kryptik/update.conf` and `/etc/ssl/cert.pem` into a zone's `/etc`),
-and the rows above in the suites.
+`compartments/kryptikd/src/update.rs`, `broker.rs`, `serve.rs`,
+`rootfs.rs` (`update.conf`), `tools/kryptik` and
+`tools/desktop/kryptik-launch.c` (`kryptik update`),
+`tools/update/kryptik-update` (`check-manifest`, `check-pointer`),
+`tools/net/update-fetch.py`, `tools/net/netzone-init.sh`,
+`tools/release-manifest.sh` (`pointer`), `tools/release-channel.sh`,
+`build/stages/04-base-system.sh` (the keys) and `06-iso.sh` (each build's
+channel, and `update.conf` from `KRYPTIK_CHANNEL`).

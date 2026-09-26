@@ -1,0 +1,36 @@
+name: Prepare the runner
+description: Work directories on the large disk, and the host packages every Distro job uses.
+inputs:
+  vm:
+    description: Also let the runner start VMs (KVM, and virt-fw-vars for the variable stores).
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        # / has about 14 GB free and /mnt about 65 GB, so everything the build
+        # or a test writes, temporary files and Rust targets included, goes
+        # under /mnt: a full / kills the runner before it writes a report.
+        sudo mkdir -p /mnt/kryptik
+        sudo chown "$(id -u):$(id -g)" /mnt/kryptik
+        mkdir -p "$KRYPTIK_WORK" "$KRYPTIK_SOURCES" "$KRYPTIK_OUT" /mnt/kryptik/tmp /mnt/kryptik/cargo
+        echo "TMPDIR=/mnt/kryptik/tmp" >> "$GITHUB_ENV"
+        echo "CARGO_TARGET_DIR=/mnt/kryptik/cargo" >> "$GITHUB_ENV"
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+        df -h / /mnt | tail -2
+        sudo apt-get update -qq && sudo apt-get install -y -qq $HOST_PACKAGES
+        # 00-host-check refuses dash as /bin/sh.
+        sudo ln -sf /usr/bin/bash /bin/sh
+
+    - if: inputs.vm == 'true'
+      shell: bash
+      run: |
+        sudo pip install --break-system-packages virt-firmware==26.9
+        virt-fw-vars --help > /dev/null
+        # /dev/kvm exists on a hosted runner but only root may open it; without
+        # it every VM falls back to TCG and runs into its timeout.
+        echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+        sudo udevadm control --reload-rules
+        sudo udevadm trigger --name-match=kvm
+        ls -la /dev/kvm

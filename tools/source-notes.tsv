@@ -12,7 +12,7 @@
 #
 #   package   the source name, as in tools/fetch-sources.sh and sources.lock
 #   kind      recipe-transformation | undesignated-signer
-#   location  one token: a path with line numbers, or the URL consulted
+#   location  one token: a path and the function in it, or the URL consulted
 #   note      what was found, and what would remove it
 #
 # The kinds mean:
@@ -32,7 +32,7 @@
 # means.
 
 # package  kind                   location                                note
-bc         recipe-transformation  build/stages/04-base-system.sh:566-580  s_bc() overwrites upstream's bc/fix-libmath_h with a locally authored sed script. Its output, libmath.h, is compiled into the shipped binary, so sources.lock does not fully describe what bc was built from. The recipe documents and justifies this, and verifies the result functionally (bc -l must evaluate s(0)), but the replacement file is in no lockfile. GNU bc 1.08 makes exactly this change upstream as bc/fix-libmath.sed, so moving the pin would remove the transformation rather than merely hide it.
+bc         recipe-transformation  build/stages/04-base-system.sh:s_bc  s_bc() overwrites upstream's bc/fix-libmath_h with a locally authored sed script. Its output, libmath.h, is compiled into the shipped binary, so sources.lock does not fully describe what bc was built from. The recipe documents and justifies this, and verifies the result functionally (bc -l must evaluate s(0)), but the replacement file is in no lockfile. GNU bc 1.08 makes exactly this change upstream as bc/fix-libmath.sed, so moving the pin would remove the transformation rather than merely hide it.
 expat      undesignated-signer    https://libexpat.github.io/             The release signature verifies against primary key 3176EF7DB2367F1FCA4F306B1F9B0E909AF37285, which gentoo.org's Web Key Directory publishes over HTTPS for sping@gentoo.org - a route that does not depend on the signature, so this is NOT circular trust. What is missing is upstream's own statement: libexpat designates no release signer and publishes no fingerprint on its site, in SECURITY.md, or in its release notes. Verified absent on 2026-09-11.
 linux-firmware  recipe-transformation  build/stages/04-base-system.sh:s_firmware  The files build/config/firmware.list selects are stored zstd-compressed under /lib/firmware and the kernel decompresses them on load, so the bytes on the verified root are not the tarball's bytes (their decompressed content is). Shipping them uncompressed would remove this.
 libnl      undesignated-signer    https://github.com/thom311/libnl/releases  The release tarball carries a detached .sig that verifies against 67DA3FAEBAE276BA58FC6CE314F18A98993AECD5, but libnl publishes no statement of who signs its releases: not on the release page, not in the repository, and the key is in no Web Key Directory. Checked 2026-09-19. A published fingerprint from upstream would remove this.

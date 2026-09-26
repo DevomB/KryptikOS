@@ -1,46 +1,33 @@
-# Kryptik kernel boot fragment: what firmware boot, the verified root, the
-# update mechanism and the desktop need from the kernel
-# (docs/design/boot-and-updates.md). Merged after hardening.fragment;
-# validated by make validate-kernel-boot.
-#
-# WHAT MAY BE BUILT IN (ADR-013). There is no initramfs, so a driver is =y only if
-#   1. it finds, verifies or mounts the root (EFI, dm-verity, storage, filesystems);
-#   2. it gives a console and a keyboard before the root is mounted; or
-#   3. it cannot work as a module: netfilter (a module request from inside the net
-#      zone's user namespace is refused), microcode, the watchdog, and a few
-#      platform drivers every distribution keeps built in.
-# Everything else is =m: signed by this build, loaded by eudev at coldplug from
-# the verified root. That includes the test VM's network and display, so every
-# acceptance run loads modules the way hardware will. Stage 05 prints the image
-# size and fails over build/config/kernel/size-budget.
+# What firmware boot, the verified root, updates and the desktop need from the
+# kernel (docs/design/boot-and-updates.md). Merged after hardening.fragment;
+# check with `make validate-kernel-boot`.
+# With no initramfs, a driver is built in (ADR-013) only to find, verify or
+# mount the root, to give a console and keyboard before it, or where a module
+# cannot work (netfilter, microcode, the watchdog, some platform drivers).
+# Everything else is a signed module loaded by eudev at coldplug, the test VM's
+# network and display included. Stage 05 fails an image over size-budget.
 
 # --- the kernel is the UEFI application ---
-# The EFI stub boots the kernel with no bootloader. EFI_MIXED (32-bit
-# firmware) is off: Kryptik is x86_64 only and a smaller stub is a smaller
-# signed surface.
+# The EFI stub boots the kernel without a bootloader. No EFI_MIXED (32-bit
+# firmware): x86_64 only, and a smaller signed stub.
 CONFIG_EFI=y
 CONFIG_EFI_STUB=y
 # CONFIG_EFI_MIXED is not set
 CONFIG_EFI_PARTITION=y
-# The update tool arms a one-shot BootNext and reads/writes Boot#### through
-# efivarfs; without it the A/B trial has no firmware-side state.
+# efivarfs, for the updater's BootNext and Boot#### entries (the A/B trial).
 CONFIG_EFIVAR_FS=y
 
 # --- the command line is part of the signed image ---
-# CMDLINE_OVERRIDE is the load-bearing option: the firmware's load options
-# and any Boot#### optional data are ignored, so root=, init= and
-# dm-mod.create= cannot be changed without re-signing the kernel. The value
-# here is a placeholder; stage 06 relinks the kernel once per boot variant
-# with the real command line (root slot, verity root hash, salt).
+# CMDLINE_OVERRIDE ignores the firmware's load options and Boot#### data, so
+# root=, init= and dm-mod.create= cannot change without re-signing. The value
+# is a placeholder: stage 06 relinks each boot variant with its real line.
 CONFIG_CMDLINE_BOOL=y
 CONFIG_CMDLINE="kryptik.unbound=1"
 CONFIG_CMDLINE_OVERRIDE=y
 
 # --- the verified root, without an initramfs ---
-# dm-init builds the dm-verity (and, for the ISO, dm-linear) device from
-# dm-mod.create= before root is mounted. Devices are named PARTLABEL=...;
-# early_lookup_bdev resolves those. No initramfs means nothing unsigned runs
-# before the verified root.
+# dm-init builds the dm-verity (and for the ISO, dm-linear) device from
+# dm-mod.create= (devices by PARTLABEL=), so no unsigned initramfs is needed.
 CONFIG_BLK_DEV_DM=y
 CONFIG_DM_INIT=y
 CONFIG_DM_VERITY=y
@@ -61,8 +48,7 @@ CONFIG_FAT_DEFAULT_UTF8=y
 CONFIG_NLS_CODEPAGE_437=y
 CONFIG_NLS_ISO8859_1=y
 CONFIG_NLS_UTF8=y
-# /etc is an overlay on the state partition; zone volumes are LUKS2 files
-# opened through loop devices.
+# The /etc overlay, and zone volumes: LUKS2 files on loop devices.
 CONFIG_OVERLAY_FS=y
 CONFIG_BLK_DEV_LOOP=y
 CONFIG_DM_CRYPT=y
@@ -73,13 +59,10 @@ CONFIG_CRYPTO_USER_API_SKCIPHER=y
 CONFIG_CRYPTO_USER_API_HASH=y
 
 # --- a console and a keyboard before the root; the desktop after it ---
-# simpledrm takes over the firmware framebuffer on every UEFI machine, the
-# test VM included, and fbcon draws on it: that is the console a failed
-# boot is read on. A native driver (virtio-gpu in the QEMU tests; i915, xe
-# or amdgpu on hardware) is a module and replaces it at coldplug, before
-# anyone can log in. The compositor renders with pixman, so no GPU
-# acceleration is needed or assumed. Keyboards are built in; pointing
-# devices are modules.
+# simpledrm and fbcon on the firmware framebuffer are the console a failed boot
+# is read on; the native GPU driver, a module, replaces them at coldplug. The
+# compositor renders with pixman, so no acceleration is needed. Keyboards are
+# built in, pointing devices are modules.
 CONFIG_DRM=y
 CONFIG_DRM_VIRTIO_GPU=m
 CONFIG_DRM_SIMPLEDRM=y
@@ -99,11 +82,9 @@ CONFIG_VT=y
 CONFIG_VT_CONSOLE=y
 
 # --- the net zone: NAT and a resolver for routed zones ---
-# Netfilter is built in because the net zone loads its ruleset from inside a
-# user namespace, and the kernel refuses to autoload a module on behalf of
-# one: as modules these would simply be missing the first time they were
-# asked for. The network cards are modules; the net zone starts after
-# coldplug has loaded them.
+# Netfilter is built in: the net zone loads its ruleset from a user namespace,
+# for which the kernel will not autoload modules. Network cards are modules,
+# loaded at coldplug before the net zone starts.
 CONFIG_NF_TABLES=y
 CONFIG_NF_TABLES_INET=y
 CONFIG_NF_TABLES_IPV4=y
@@ -114,21 +95,21 @@ CONFIG_NFT_CT=y
 CONFIG_NFT_REJECT=y
 CONFIG_NF_NAT=y
 CONFIG_NF_CONNTRACK=y
-CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y
+# No xtables: the ruleset is nft's alone, and NFT_COMPAT is off, so nothing
+# reaches them. No ctnetlink: the nic zone could reach it through its netfilter
+# netlink socket, and nothing uses it. The iptables options select xtables.
+# CONFIG_IP_NF_IPTABLES is not set
+# CONFIG_IP6_NF_IPTABLES is not set
+# CONFIG_NETFILTER_XTABLES is not set
+# CONFIG_NF_CT_NETLINK is not set
 CONFIG_VIRTIO_NET=m
 CONFIG_E1000=m
 CONFIG_E1000E=m
 
 # --- real hardware ---
-# There is no initramfs, so the controller the verified root sits on has to
-# be built in or the kernel waits for a disk it cannot see; so are the USB
-# host controllers, for a root on a stick and for the keyboard. The rest are
-# modules. The set below is what a download is expected to meet: NVMe and
-# SAS controllers, the Intel, Broadcom and Realtek wired adapters of
-# servers, desktops and docks, the two BMC framebuffers, and USB 2 as well
-# as 3. None of this has been booted on physical hardware yet; the first
-# machine that does will say what is missing. Stage 05 fails if any line
-# here does not survive olddefconfig.
+# Storage controllers a root can sit on, and USB host controllers (a root on a
+# stick, the keyboard), are built in, or the kernel waits for a disk it cannot
+# see; the rest are modules. Not yet booted on physical hardware.
 CONFIG_BLK_DEV_NVME=y
 CONFIG_MEGARAID_SAS=y
 CONFIG_SCSI_MPT3SAS=y
@@ -147,11 +128,9 @@ CONFIG_USB_NET_AX88179_178A=m
 CONFIG_USB_RTL8152=m
 CONFIG_DRM_AST=m
 CONFIG_DRM_MGAG200=m
-# Intel laptops and desktops from the 11th generation on ship with the NVMe
-# drive behind VMD ("RAID" or "Intel RST" in the firmware setup); without
-# the VMD driver the drive does not exist. Cheap laptops and mini PCs boot
-# from eMMC on an SDHCI controller. USB 3 sticks and enclosures speak UAS.
-# HPE servers put their disks behind Smart Array (hpsa, smartpqi).
+# VMD: from Intel's 11th generation the NVMe drive sits behind it ("RAID" or
+# "Intel RST" in setup). eMMC on SDHCI: cheap laptops and mini PCs. UAS: USB 3
+# sticks. hpsa and smartpqi: HPE Smart Array.
 CONFIG_VMD=y
 CONFIG_MMC=y
 CONFIG_MMC_BLOCK=y
@@ -161,19 +140,14 @@ CONFIG_MMC_SDHCI_ACPI=y
 CONFIG_USB_UAS=y
 CONFIG_SCSI_HPSA=y
 CONFIG_SCSI_SMARTPQI=y
-# USB 1.1 companions: on a machine without xHCI, a USB keyboard or mouse
-# (low and full speed) is handed from EHCI to UHCI or OHCI, and without
-# those drivers the desktop has no keyboard.
+# USB 1.1 companions: without xHCI, EHCI hands a USB keyboard or mouse to them.
 CONFIG_USB_UHCI_HCD=y
 CONFIG_USB_OHCI_HCD=y
 CONFIG_USB_OHCI_HCD_PCI=y
-# Laptop touchpads and touchscreens are HID devices on an I2C bus: the
-# DesignWare I2C controller, reached through Intel LPSS or the AMD
-# platform device, its GPIO interrupt through the SoC's pin controller.
-# Modules, with three exceptions that other distributions also keep built
-# in: AMD's pin controller, and the DesignWare core and its platform glue,
-# because ACPI methods on some laptops talk to devices behind them during
-# boot and fail for good if the controller is not there yet.
+# Touchpads and touchscreens: HID over DesignWare I2C (Intel LPSS or the AMD
+# platform device), interrupts via the pin controller. Modules, except AMD's pin
+# controller and the DesignWare core and platform glue: some laptops' ACPI uses
+# them during boot and fails for good if they are not there yet.
 CONFIG_X86_INTEL_LPSS=y
 CONFIG_X86_AMD_PLATFORM_DEVICE=y
 CONFIG_MFD_INTEL_LPSS_PCI=m
@@ -195,16 +169,13 @@ CONFIG_PINCTRL_METEORPOINT=m
 CONFIG_PINCTRL_INTEL_PLATFORM=m
 CONFIG_I2C_HID_ACPI=m
 CONFIG_HID_MULTITOUCH=m
-# Wired adapters beyond the above: Aquantia/Marvell AQtion (the 5 and 10
-# gigabit ports on desktop boards and Thunderbolt docks) and Mellanox
-# ConnectX-4 onward in servers. Neither needs a firmware file.
+# AQtion (5 and 10 GbE on desktop boards and Thunderbolt docks) and Mellanox
+# ConnectX-4 and later (servers); neither needs firmware.
 CONFIG_AQTION=m
 CONFIG_MLX5_CORE=m
 CONFIG_MLX5_CORE_EN=y
-# Virtual machines other than QEMU/KVM. VMware: paravirtual SCSI and
-# network, its display and its mouse. Hyper-V: the VMBus devices a
-# generation 2 VM has. Hyper-V's firmware trusts only Microsoft's keys, so
-# Kryptik boots there with Secure Boot turned off in the VM's settings.
+# VMware and Hyper-V (generation 2) guests. Hyper-V's firmware trusts only
+# Microsoft's keys, so Secure Boot must be off in the VM's settings.
 CONFIG_VMWARE_PVSCSI=y
 CONFIG_VMXNET3=m
 CONFIG_DRM_VMWGFX=m
@@ -218,47 +189,27 @@ CONFIG_HID_HYPERV_MOUSE=m
 CONFIG_DRM_HYPERV=m
 
 # --- CPU microcode ---
-# The early loader applies an update before anything else runs, and with no
-# initramfs the only place it can find one is inside the kernel. Stage 05
-# builds every file of Intel's release and AMD's containers in
-# (CONFIG_EXTRA_FIRMWARE; the stage sets it, because its value is a list of
-# files that changes with each release, and checks it survived like a line
-# here). Late loading stays off: an update applied under running zones is
-# not something to allow for convenience.
+# With no initramfs the early loader finds microcode only inside the kernel;
+# stage 05 sets CONFIG_EXTRA_FIRMWARE. No late loading under running zones.
 CONFIG_MICROCODE=y
 # CONFIG_MICROCODE_LATE_LOADING is not set
 
 # --- drivers that need firmware: modules, so the verified root can supply it
-# A built-in driver probes while the bus is enumerated, before root is
-# mounted, and a request_firmware() then finds nothing: an amdgpu or
-# iwlwifi compiled in would fail once and stay failed. As modules they are
-# loaded by eudev after sysinit, when /lib/firmware is there, and only
-# with the signature this build put on them (MODULE_SIG_FORCE). The files
-# they load come from the pinned linux-firmware release, selected by
-# build/config/firmware.list, and live on the dm-verity root like every
-# other byte the kernel executes. Firmware is compressed with zstd there;
-# the loader knows to look for name.zst.
+# Built in, they would probe before root is mounted and fail for good in
+# request_firmware(). The files (build/config/firmware.list) are stored zstd
+# compressed on the dm-verity root.
 CONFIG_FW_LOADER_COMPRESS=y
 CONFIG_FW_LOADER_COMPRESS_XZ=y
 CONFIG_FW_LOADER_COMPRESS_ZSTD=y
-# Display: Intel (i915 for Gen 9 to Meteor Lake, xe from Lunar Lake and
-# Battlemage) and AMD. i915 was built in by the x86_64 defconfig; it is a
-# module now for the same reason as the others, and simpledrm carries the
-# console until it loads. NVIDIA stays on simpledrm: nouveau's GSP firmware
-# is tens of megabytes per generation and the compositor needs no
-# acceleration.
+# Display: i915 (Gen 9 to Meteor Lake), xe (Lunar Lake, Battlemage), amdgpu.
+# NVIDIA stays on simpledrm: nouveau's GSP firmware is tens of MB a generation.
 CONFIG_DRM_I915=m
 CONFIG_DRM_XE=m
 CONFIG_DRM_AMDGPU=m
-# Wireless. cfg80211 and mac80211 are built in (defconfig); the drivers are
-# modules: Intel (every generation since 7260, including the recent
-# Wi-Fi 7 parts under iwlmld), Qualcomm Atheros (QCA6174 and QCA9377 on
-# ath10k, QCA6390 and WCN6855 on ath11k, WCN7850 on ath12k), MediaTek
-# (MT7921, MT7922, MT7925), Realtek (the 8822/8821/8723 family on rtw88,
-# the 8852/8851/8922 family on rtw89), Broadcom (brcmfmac over PCIe: Dell
-# and Apple machines) and the Realtek USB sticks (rtl8xxxu). mac80211_hwsim
-# is a virtual radio: the integrity suite loads its signed copy and refuses
-# an unsigned one, and the net zone's wiphy move is tested against it.
+# Wi-Fi drivers: Intel (7260 on, Wi-Fi 7 under iwlmld), Qualcomm Atheros,
+# MediaTek, Realtek (rtw88, rtw89, USB rtl8xxxu) and Broadcom over PCIe.
+# mac80211_hwsim is a virtual radio for the integrity suite (signed copy loads,
+# unsigned refused) and the net zone's wiphy move test.
 CONFIG_IWLWIFI=m
 CONFIG_IWLMVM=m
 CONFIG_IWLMLD=m
@@ -285,12 +236,9 @@ CONFIG_BRCMFMAC_PCIE=y
 CONFIG_RTL8XXXU=m
 CONFIG_MAC80211_HWSIM=m
 
-# --- built in by the upstream default configuration, and not needed there ---
-# x86_64_defconfig predates this fragment's rule and builds these in. The
-# wireless stack is only ever used by the radio modules above, and as a
-# module cfg80211 reads the regulatory database from the verified root
-# instead of asking for it before there is one. The older wired adapters
-# and the vendor HID quirks load by modalias like everything else.
+# --- built in by defconfig, needed only as modules --------------------------
+# As a module, cfg80211 reads the regulatory database from the verified root
+# instead of asking before there is one; the rest load by modalias.
 CONFIG_CFG80211=m
 CONFIG_MAC80211=m
 CONFIG_RFKILL=m
@@ -321,53 +269,33 @@ CONFIG_HID_SONY=m
 CONFIG_HID_SUNPLUS=m
 CONFIG_HID_TOPSEED=m
 
-# --- how the image is compressed ---
-# The default is gzip. zstd at the level the kernel build uses is smaller
-# and decompresses faster, and the build already has zstd for the firmware.
-# It does nothing for the microcode, which is encrypted and does not
-# compress; that half of the image is the size it is.
+# --- image compression ---
+# zstd: smaller than gzip and faster to decompress. The microcode is encrypted
+# and does not compress.
 CONFIG_KERNEL_ZSTD=y
 # CONFIG_KERNEL_GZIP is not set
-# --- A machine that has stopped reboots itself -------------------------------
-# The watchdog service (build/services/watchdog) feeds every device below. If
-# userspace stops being scheduled nothing feeds them and the machine resets;
-# during an A/B trial that reset lands on the committed slot, because BootNext
-# is already spent. Built in, not modules: the feeder starts before anything
-# would ask for a module, and a watchdog that depends on module loading is one
-# more thing that has to work for the recovery path to work.
-#
-# NOWAYOUT: once the feeder has opened a device, closing it does not stop the
-# timer. Killing the feeder must not be a way to switch the watchdog off.
+# --- a machine that has stopped reboots itself -------------------------------
+# build/services/watchdog feeds these. Built in, so recovery does not depend on
+# module loading. NOWAYOUT: killing the feeder does not stop the timer.
 CONFIG_WATCHDOG=y
 CONFIG_WATCHDOG_CORE=y
 CONFIG_WATCHDOG_NOWAYOUT=y
 CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED=y
 CONFIG_WATCHDOG_SYSFS=y
-# Always present, so a virtual machine and a board with no usable timer are
-# still covered for a hung userspace. It cannot catch a hung kernel: it is the
-# kernel. The hard lockup detector below is what turns that case into a panic,
-# and panic=10 on the command line turns the panic into a reboot.
+# The software watchdog covers a hung userspace on any machine, but not a hung
+# kernel: the hard lockup detector panics then, and panic=10 reboots.
 CONFIG_SOFT_WATCHDOG=y
-# The hardware timers, which do catch a hung kernel. Intel's TCO sits behind
-# the LPC bridge or, on newer chipsets, the SMBus controller; both parents are
-# named because EXPERT turns off the selects that would bring them in. AMD's
-# is the SP5100 family's. The last is the emulated one QEMU offers, so the
-# reset path is testable with a device that is not the kernel itself.
+# Hardware timers catch a hung kernel: Intel TCO (behind LPC or SMBus, named as
+# EXPERT drops those selects), AMD SP5100, and QEMU's i6300esb for tests.
 CONFIG_LPC_ICH=y
 CONFIG_I2C_I801=y
 CONFIG_ITCO_WDT=y
 CONFIG_ITCO_VENDOR_SUPPORT=y
 CONFIG_SP5100_TCO=y
 CONFIG_I6300ESB_WDT=y
-# A CPU stuck in the kernel with interrupts OFF for ten seconds does not come
-# back: that is a panic, not a frozen screen. The other two detectors report
-# and do not panic, by the rule the feeder follows: a false reboot is worse
-# than the hang. A CPU in the kernel with interrupts ON for twenty seconds is
-# often a stall that ends (a GPU reset, a slow storage path, compaction), and
-# in a virtual machine on a busy host it is a vCPU that was not scheduled;
-# a panic there would reboot a laptop out from under every zone's unsaved
-# work, and an acceptance run at random. A task in uninterruptible sleep is
-# what a slow USB stick looks like.
+# A hard lockup (interrupts off for 10 s) panics: that CPU does not come back.
+# Soft lockups and hung tasks only report: they are often stalls that end (a
+# GPU reset, slow storage, a descheduled vCPU), and a false reboot is worse.
 CONFIG_LOCKUP_DETECTOR=y
 CONFIG_SOFTLOCKUP_DETECTOR=y
 # CONFIG_BOOTPARAM_SOFTLOCKUP_PANIC is not set

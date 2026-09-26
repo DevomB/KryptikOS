@@ -1,18 +1,14 @@
 #!/usr/bin/env bash
-# Boot an install medium under OVMF and assert on what the guest said.
+# Boot an install medium under OVMF and check what the guest printed.
 #
 #   tools/image/media-smoke.sh (--usb IMG | --iso ISO) [--vars clean|enrolled|ms]
 #                              [--expect-refused] [--timeout N]
 #
-# The medium boots by firmware discovery alone (tools/image/run-ovmf.sh: no
-# -kernel, -initrd or -append). A kryptik-testctl disk arms the poweroff, so
-# the run ends by itself; the transcript is then checked line by line.
-# Every assertion is positive - something had to appear - and the whole
-# transcript has to exist, so an empty run cannot pass vacuously.
+# Boots by firmware discovery alone (run-ovmf.sh); a kryptik-testctl disk arms
+# the poweroff. Every check needs something to appear, so an empty run fails.
 #
-# --expect-refused: the variable store carries keys that did not sign our
-# kernel (--vars ms). The firmware must refuse to start it: no kernel banner
-# may appear. This is the negative control for the enforced chain.
+# --expect-refused: the store's keys did not sign our kernel (--vars ms), and
+# the firmware must refuse it: the negative control for the enforced chain.
 set -uo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -27,7 +23,7 @@ while [[ "$#" -gt 0 ]]; do
         --vars) VARS="${2:?}"; shift 2 ;;
         --expect-refused) REFUSED=1; shift ;;
         --timeout) TIMEOUT="${2:?}"; shift 2 ;;
-        -h|--help) sed -n '2,17p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,11p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -47,10 +43,12 @@ TESTCTL="${VMDIR}/testctl-smoke.img"
 
 log "media smoke: ${KIND} ${MEDIUM##*/} (variables: ${VARS})"
 [[ "$REFUSED" -eq 1 ]] && [[ "$TIMEOUT" -gt 120 ]] && TIMEOUT=120
-# This run's own log, named here and passed down: never the shared "latest"
-# symlink, which could be another run's.
+# A refused boot never powers off: it is stopped once the firmware says so.
+UNTIL=()
+[[ "$REFUSED" -eq 1 ]] && UNTIL=(--until 'Access Denied|Security Violation')
+# This run's own log, never the shared "latest" symlink (maybe another run's).
 SERIAL="${KRYPTIK_WORK}/logs/ovmf-serial.smoke-${KIND}-${VARS}$([[ "$REFUSED" -eq 1 ]] && echo -refused).$(date +%Y%m%dT%H%M%S).$$.log"
-"${SELF}/run-ovmf.sh" "--${KIND}" "$MEDIUM" --testctl "$TESTCTL" --vars "$VARS" --mode smoke --timeout "$TIMEOUT" --name "smoke-${KIND}" --log "$SERIAL"
+"${SELF}/run-ovmf.sh" "--${KIND}" "$MEDIUM" --testctl "$TESTCTL" --vars "$VARS" --mode smoke --timeout "$TIMEOUT" --name "smoke-${KIND}" --log "$SERIAL" "${UNTIL[@]}"
 qrc=$?
 [[ -f "$SERIAL" ]] || die "no serial log at ${SERIAL}"
 TXT="$(mktemp)"; trap 'rm -f "$TXT"' EXIT
@@ -59,18 +57,10 @@ echo "serial log: ${SERIAL} ($(grep -c '' < "$TXT") lines, qemu exit ${qrc})"
 echo
 
 if [[ "$REFUSED" -eq 1 ]]; then
-    # The negative control for the enforced chain. Three things must all be
-    # true, and each is checked on its own: no kernel ran; no userspace ran;
-    # and the firmware said, in its own words, that it REFUSED the image. A
-    # transcript that is merely empty or shows a firmware that never found
-    # the medium, hung, or crashed is NOT a refusal - the previous version
-    # of this check accepted any non-empty log ("|." at the end of its
-    # pattern), so a broken image passed as a refused one.
-    #
-    # OVMF's BDS reports a Secure Boot rejection as "Access Denied" (the
-    # EFI_ACCESS_DENIED status of LoadImage) or, from the DXE core, as
-    # "Security Violation". The image must have been TRIED: the firmware
-    # names the boot option it failed to load.
+    # No kernel or userspace ran, and the firmware itself refused the image:
+    # an empty, hung or crashed boot is not a refusal. OVMF reports a Secure
+    # Boot rejection as "Access Denied" (LoadImage's EFI_ACCESS_DENIED) or
+    # "Security Violation" (DXE core), after naming the option it tried.
     echo "-- the firmware must refuse a kernel its keys did not sign (variables: ${VARS})"
     [[ "$VARS" == "ms" || "$VARS" == "enrolled" ]] || red "--expect-refused needs a store with Secure Boot on (ms or enrolled); '${VARS}' proves nothing"
     deny "no kernel banner appeared"                 'Linux version'
@@ -131,6 +121,8 @@ want "a watchdog is armed, no way out"     'KRYPTIK_SMOKE: watchdog watchdog[0-9
 want "landlock is an active LSM"           'KRYPTIK_SMOKE: lsm=.*landlock'
 want "cgroup v2 is mounted"                'KRYPTIK_SMOKE: cgroup2=/'
 want "kryptikd checked the kernel"         'KRYPTIK_SMOKE: kryptikd_check_rc=0'
+want "processes run on hardened_malloc"    'KRYPTIK_SMOKE: allocator=hardened_malloc'
+want "with room for its guard mappings"    'KRYPTIK_SMOKE: sysctl vm.max_map_count=1048576'
 want "the installer was not armed"         'installer: no kryptik-testctl control disk|control disk names no install_target'
 
 echo

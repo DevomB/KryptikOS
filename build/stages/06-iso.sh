@@ -1,29 +1,16 @@
 #!/usr/bin/env bash
-# Stage 06 — install media: a verified root image, signed boot kernels, a
-# USB disk image and an ISO. docs/design/boot-and-updates.md is the layout;
-# this is its builder.
-#
-#   make iso            (runs this; KRYPTIK_VERSION=... names the release)
-#   ./06-iso.sh --redo rootfs
-#
-# Runs OUTSIDE the chroot, as root: the sysroot has root-only directories
-# that the root image must carry, and the kernel relink goes through
-# 03-chroot-prep.sh. Everything it writes lands under ${KRYPTIK_WORK}/images
-# and, at the end, ${KRYPTIK_OUT}.
-#
-# Steps, each stamped and resumable like a stage 04 package:
-#   sb-keys        developer Secure Boot key pair (once; never in Git)
-#   rootfs         staged tree -> ext4 -> dm-verity hash tree appended
-#   cmdlines       the compiled-in command line for each boot variant
-#   bind-kernels   kernel relinked per variant, inside the chroot
-#   sign-kernels   sbsign, then sbverify
-#   esp            the ESP FAT image used by the USB medium and the installer
-#   usb            GPT: kryptik-esp + kryptik-media
-#   iso            ISO9660 with the ESP as El Torito image and the root image
-#                  as an appended partition; the ISO kernel names its offset
-#   export         copies, checksums, MANIFEST
+# Stage 06: install media (docs/design/boot-and-updates.md): a dm-verity root
+# image, signed kernels, USB and ISO images, and the update payload.
+# Runs outside the chroot as root: the root image carries root-only paths, and
+# the kernel relink goes through 03-chroot-prep.sh.
+# usage: make iso   (KRYPTIK_VERSION=... names the release, KRYPTIK_CHANNEL=...
+#                    where its net zone asks for the next one, KRYPTIK_ROLE=
+#                    production and KRYPTIK_KEYS=... the key medium it is
+#                    signed with)
+#        06-iso.sh [--redo <step>]
 set -Eeuo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/release-keys.sh"
 load_config
 require_outside_chroot "stage 06"
 [[ "$EUID" -eq 0 ]] || die "stage 06 must run as root: the sysroot has root-only paths and the kernel relink needs the chroot.
@@ -41,23 +28,70 @@ REDO=""
 
 SYSROOT="${KRYPTIK_WORK}/sysroot"
 IMG="${KRYPTIK_WORK}/images"
-KEYS="${KRYPTIK_WORK}/keys/sb"
 CHROOTD="${KRYPTIK_ROOT}/build/stages/03-chroot-prep.sh"
-KRYPTIK_VERSION="${KRYPTIK_VERSION:-0.1.$(date +%Y%m%d).$(git -c safe.directory='*' -C "$KRYPTIK_ROOT" rev-parse --short=8 HEAD 2>/dev/null || echo unknown)}"
-COMMIT="$(git -c safe.directory='*' -C "$KRYPTIK_ROOT" describe --always --dirty --abbrev=40 2>/dev/null || echo unknown)"
+# Which releases the image accepts, and so which keys sign it (release-keys.sh).
+ROLE="${KRYPTIK_ROLE:-development}"
+# Checked before the dated default: a production release names its version.
+release_version "$ROLE" "${KRYPTIK_VERSION:-}"
+# Git trusts this checkout alone, run as root over the user's checkout.
+TOP="$(cd "$KRYPTIK_ROOT" && pwd -P)"
+KRYPTIK_VERSION="${KRYPTIK_VERSION:-0.1.$(date +%Y%m%d).$(git -c safe.directory="$TOP" -C "$TOP" rev-parse --short=8 HEAD 2>/dev/null || echo unknown)}"
+COMMIT="$(git -c safe.directory="$TOP" -C "$TOP" describe --always --dirty --abbrev=40 2>/dev/null || echo unknown)"
 ESP_MIB=512
 export KRYPTIK_VERSION
+# Where the image's net zone asks for releases (docs/design/update-channel.md).
+# Empty, the image names no channel and fetches nothing.
+KRYPTIK_CHANNEL="${KRYPTIK_CHANNEL:-}"
+
+# check_channel ADDRESS ROLE: why ADDRESS cannot be an image's update channel,
+# or nothing. Stricter than zone 0, which checks only the scheme (update.rs,
+# resolve_base): both readers append names to the address as a string, so it
+# must be http(s)://host[:port][/path] with no user@, query or fragment, in
+# the pointer base's printable ASCII of at most 512 bytes; plain http only on
+# a development image.
+check_channel() {
+    local a="$1" role="$2" printable re port
+    local host='([A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?'
+    local path="(/[-A-Za-z0-9._~!\$&'()*+,;=:@%/]*)?"
+    re="^https?://${host}${path}\$"
+    # Only its printable ASCII bytes kept: anything else makes it differ, a
+    # trailing newline included.
+    printable="$(printf '%s' "$a" | LC_ALL=C tr -cd '!-~')"
+    if [[ -z "$a" || "${#a}" -gt 512 || "$printable" != "$a" ]]; then
+        echo "not 1 to 512 printable ASCII characters without spaces"
+    elif [[ ! "$a" =~ $re ]]; then
+        echo "not http(s)://host[:port][/path]: no user@, query or fragment, since names are appended to it"
+    elif port="${BASH_REMATCH[3]#:}"; [[ -n "$port" ]] && (( 10#$port < 1 || 10#$port > 65535 )); then
+        echo "port ${port} is not 1 to 65535"
+    elif [[ "$a" == http://* && "$role" != development ]]; then
+        echo "plain http is for a development image, and this one is ${role}"
+    fi
+}
+
+# channel_conf ADDRESS: /etc/kryptik/update.conf naming ADDRESS.
+channel_conf() {
+    printf '# Where the net zone asks for releases. What comes back is believed on\n# its signature alone (docs/design/update-channel.md).\nchannel = %s\n' "$1"
+}
 
 # --- preflight ----------------------------------------------------------------
 log "Kryptik stage 06 — install media ${KRYPTIK_VERSION}"
 for t in mkfs.ext4 tune2fs dumpe2fs veritysetup sbsign sbverify mkfs.vfat mmd mcopy \
-         xorriso sfdisk openssl rsync truncate dd sha256sum blkid; do
+         xorriso sfdisk openssl ssh-keygen rsync truncate dd sha256sum blkid; do
     have "$t" || die "required tool not found: ${t}"
 done
 [[ -d "$SYSROOT" ]] || die "no sysroot at ${SYSROOT}"
 [[ -f "${SYSROOT}/boot/kryptik-${V_LINUX}" ]] || die "no kernel at ${SYSROOT}/boot/kryptik-${V_LINUX}; run make kernel"
 [[ -d "${SYSROOT}/lib/modules/${V_LINUX_HARDENED}" ]] || warn "no modules under lib/modules/${V_LINUX_HARDENED}"
 "$CHROOTD" guard-unmounted 2>/dev/null || die "the chroot is mounted inside ${SYSROOT}; unmount it first"
+# The keys this image is signed with and the anchor it trusts: made here for a
+# development image, handed in on the key medium for a production one.
+release_keys "$ROLE"
+log "a ${ROLE} image, trusting ${ANCHOR}; Secure Boot certificate $(openssl x509 -in "$SB_CERT" -noout -fingerprint -sha256 | cut -d= -f2)"
+if [[ -n "$KRYPTIK_CHANNEL" ]]; then
+    why="$(check_channel "$KRYPTIK_CHANNEL" "$ROLE")"
+    [[ -z "$why" ]] || die "KRYPTIK_CHANNEL=${KRYPTIK_CHANNEL}: ${why}"
+    log "update channel: ${KRYPTIK_CHANNEL} (a ${ROLE} image)"
+fi
 mkdir -p "$IMG" "$IMG/cmdlines" "$IMG/kernels" "$KRYPTIK_OUT"
 chmod 0700 "$IMG"
 
@@ -66,41 +100,18 @@ stage_depends_on "kernel-" verify-install
 
 # --- steps ------------------------------------------------------------------
 
-s_sb_keys() {
-    mkdir -p "$KEYS"; chmod 0700 "$KEYS"
-    if [[ ! -f "$KEYS/kryptik-sb.key" ]]; then
-        openssl req -new -x509 -newkey rsa:3072 -nodes -days 3650 -sha256 \
-            -subj "/CN=Kryptik developer Secure Boot key/" \
-            -keyout "$KEYS/kryptik-sb.key" -out "$KEYS/kryptik-sb.crt"
-        chmod 0600 "$KEYS/kryptik-sb.key"
-        openssl x509 -in "$KEYS/kryptik-sb.crt" -outform DER -out "$KEYS/kryptik-sb.der"
-        cat > "$KEYS/README" <<'EOF'
-DEVELOPER Secure Boot key. Generated on the build host, not escrowed, not
-rotated, enrolled only into disposable OVMF variable stores. It proves the
-boot chain enforces a key and that Kryptik's kernels are bound to one. It is
-not a production certificate and must never be enrolled in real firmware.
-EOF
-        echo "generated a new developer Secure Boot key"
-    else
-        echo "using the existing developer Secure Boot key"
-    fi
-    openssl x509 -in "$KEYS/kryptik-sb.crt" -noout -subject -fingerprint -sha256
-}
-
 s_rootfs() {
-    local version="$1"
+    local version="$1" channel="${3:-}" role="$4"
     local work; work="$(mktemp -d "${IMG}/stage.XXXXXX")"
     trap 'rm -rf "$work"' RETURN
     local stage="$work/root"
     mkdir -p "$stage"
     echo "--- staging the root tree ---"
-    # Out: the stage 01 cross toolchain, the chroot bind mounts, kernel
-    # source headers, the boot directory (kernels live on the ESP, signed),
-    # cmake (a build tool that has no place in a running system), and the
-    # chroot marker.
+    # Left out: the cross toolchain, the chroot bind points, kernel sources,
+    # /boot (signed kernels live on the ESP), cmake, and the chroot marker.
     rsync -aHAX --numeric-ids \
         --exclude=/tools --exclude=/kryptik --exclude=/kryptik-sources \
-        --exclude=/kryptik-work --exclude=/kryptik-kryptikd --exclude=/usr/src \
+        --exclude=/kryptik-work --exclude=/kryptik-kryptikd --exclude=/kryptik-wlproxy --exclude=/usr/src \
         --exclude=/lost+found --exclude=/boot/'*' --exclude=/etc/kryptik/inside-chroot \
         --exclude=/usr/bin/cmake --exclude=/usr/bin/ccmake --exclude=/usr/bin/cpack --exclude=/usr/bin/ctest \
         --exclude=/usr/share/cmake* --exclude=/tmp/'*' --exclude=/run/'*' \
@@ -109,8 +120,33 @@ s_rootfs() {
              "$stage/var" "$stage/home" "$stage/root" "$stage/etc/kryptik"
     chmod 1777 "$stage/tmp"
 
-    # Identity, in the image. The root image's own hash cannot be in it; that
-    # goes on the ESP and into MANIFEST.
+    # The system allocator (ADR-005): the image's processes run on it, the build
+    # never does. Zones get their own copy from kryptikd (rootfs.rs).
+    [[ -f "$stage/usr/lib/libhardened_malloc.so" ]] || die "no /usr/lib/libhardened_malloc.so to preload"
+    printf '%s\n' /usr/lib/libhardened_malloc.so > "$stage/etc/ld.so.preload"
+
+    # setuid/setgid only where build/config/setuid-allowlist.txt says why.
+    "${KRYPTIK_ROOT}/tools/audit-setuid.sh" --strip "$stage"
+
+    # The update trust anchor and the role, on the verified root and never in
+    # /etc, which the state partition can shadow. Only the anchor's public
+    # lines come in; the keys behind it stay where release_keys found them.
+    install -d -m 0755 "$stage/usr/share/kryptik/trust"
+    install -m 0644 "$ANCHOR" "$stage/usr/share/kryptik/trust/release-signers"
+    printf '%s\n' "$role" > "$stage/usr/share/kryptik/trust/required-role"
+    chmod 0644 "$stage/usr/share/kryptik/trust/required-role"
+    echo "--- trust anchor, ${role} ---"; cat "$stage/usr/share/kryptik/trust/release-signers"
+
+    # The update channel, when the build names one: on the verified root, the
+    # one copy that lasts (a copy written under /etc at run time is gone at the
+    # next boot). Checked against the image's role before any step ran.
+    if [[ -n "$channel" ]]; then
+        channel_conf "$channel" > "$stage/etc/kryptik/update.conf"
+        chmod 0644 "$stage/etc/kryptik/update.conf"
+        echo "update channel: ${channel}"
+    fi
+
+    # The image cannot hold its own hash; that goes on the ESP and in MANIFEST.
     sed -i "/^VERSION_ID=/d;/^VERSION=/d" "$stage/etc/os-release"
     printf 'VERSION_ID=%s\nVERSION="%s"\n' "$version" "$version" >> "$stage/etc/os-release"
     local kernel_sha; kernel_sha="$(sha256_of "${SYSROOT}/boot/kryptik-${V_LINUX}")"
@@ -134,14 +170,13 @@ s_rootfs() {
   "root_image_bytes": ${fs_bytes},
   "image_kind": "verified",
   "verity": true,
-  "signed_boot": "developer",
+  "signed_boot": "$([[ "$role" == production ]] && echo production || echo developer)",
   "layout": "design-08",
   "note": "dm-verity root; the root hash is compiled into each signed kernel. Mutable state on PARTLABEL=kryptik-state."
 }
 EOF
     chmod 0644 "$stage/etc/kryptik-image.json"
-    # No fstab entries for what sysinit mounts by label; the kernel finds
-    # root from its own command line.
+    # Nothing for what sysinit mounts; root comes from the kernel command line.
     cat > "$stage/etc/fstab" <<'EOF'
 # Kryptik: root is dm-verity from the signed kernel's command line; /var, /etc
 # (overlay), /home, /tmp are mounted by /usr/libexec/kryptik/sysinit.sh from
@@ -162,18 +197,9 @@ EOF
     echo "--- dm-verity hash tree, appended ---"
     local data_blocks=$(( fs_bytes / 4096 ))
     local salt; salt="$(openssl rand -hex 32)"
-    # Room for the tree: about data/128 plus a superblock's worth, generous -
-    # and a whole number of 4096-byte blocks. The ISO maps this image as a
-    # linear target over the CD, whose logical block is 2048 bytes, and
-    # device-mapper refuses a table whose length is not a multiple of that:
-    #
-    #     device-mapper: table: 252:0: len=5373942 not aligned to h/w
-    #     logical block size 2048 of sr0
-    #
-    # which is how release bae1de53 never booted from its ISO (its image
-    # ended 6 sectors past a multiple of 8) while the release before it, by
-    # the luck of its size, did. The USB medium never noticed: its partition
-    # is sized in MiB and its disk has 512-byte blocks.
+    # Room for the tree (about data/128, generously) in whole 4096-byte blocks:
+    # the ISO maps the image linearly over a CD, and device-mapper refuses a
+    # length that is not a multiple of its 2048-byte block.
     local total_bytes=$(( fs_bytes + fs_bytes / 64 + 4 * 1024 * 1024 ))
     total_bytes=$(( (total_bytes + 4095) / 4096 * 4096 ))
     truncate -s "$total_bytes" "$img"
@@ -218,43 +244,22 @@ EOF
 
 root_json() { sed -n "s/^  \"$1\": \"\{0,1\}\([^\",]*\)\"\{0,1\},\{0,1\}\$/\1/p" "${IMG}/root.json"; }
 
-verity_table() {   # verity_table <dev> -> "0 <sectors> verity 1 dev dev 4096 4096 blocks start sha256 hash salt 1 panic_on_corruption"
+verity_table() {   # verity_table <dev>: the root image's dm-verity table
     printf '0 %s verity 1 %s %s 4096 4096 %s %s sha256 %s %s 1 panic_on_corruption' \
         "$(root_json data_sectors)" "$1" "$1" "$(root_json data_blocks)" \
         "$(root_json hash_start_block)" "$(root_json root_hash)" "$(root_json salt)"
 }
-# The four parameters after loglevel are the ones kernel-hardening-checker
-# asks for on the command line itself (the rest of its recommendations are
-# kconfig defaults, see build/config/kernel/hardening.fragment):
-#   mitigations=auto,nosmt   every CPU vulnerability mitigation the kernel
-#                            knows, and SMT off, because a sibling thread is
-#                            the side channel most of them leak through; a
-#                            zone escaping through the CPU is exactly the
-#                            threat model, and half the logical CPUs is the
-#                            price
-#   pti=on                   page table isolation on every CPU, not only the
-#                            ones the kernel believes vulnerable
-#   page_alloc.shuffle=1     randomize the free page lists (the kconfig
-#                            default is on; the parameter makes it explicit
-#                            and checkable)
-#   hash_pointers=always     %p prints hashed pointers even when a debug
-#                            option would otherwise turn hashing off
-#   nosmt                    the same SMT switch by its own name; the
-#                            checker looks for the word
-# tools/check-kernel-hardening.sh reads this line, so a change here is
-# checked against the same list.
+# After loglevel: what kernel-hardening-checker wants on the command line (the
+# rest is in build/config/kernel/hardening.fragment). SMT off with every CPU
+# mitigation on is ADR-011; nosmt repeats it under the name the checker wants.
+# pti=on covers every CPU; hash_pointers=always keeps %p hashed under debug
+# options. tools/check-kernel-hardening.sh reads this line.
 COMMON_ARGS="ro rootwait console=tty0 console=ttyS0,115200 panic=10 loglevel=4 mitigations=auto,nosmt pti=on page_alloc.shuffle=1 hash_pointers=always nosmt"
 
 s_cmdlines() {
     local h="$1"; echo "root.json sha256: ${h}"
-    # dm-mod.waitfor: dm-init builds the verity table at late init, before
-    # a USB stick (or a disk behind an asynchronously probed controller)
-    # has been enumerated, and it does not retry: the first USB boot ended
-    # with "verity: Data device lookup failed (-ENODEV)" and then rootwait
-    # waiting forever for a device that would never be created. waitfor
-    # makes dm-init wait for the named partition before it creates
-    # anything. The same for the installed slots: real disks are
-    # asynchronous too.
+    # dm-mod.waitfor: dm-init runs at late init, possibly before the USB stick
+    # or disk is enumerated, and never retries; waitfor makes it wait.
     printf 'dm-mod.waitfor=PARTLABEL=kryptik-a dm-mod.create="kroot,,0,ro,%s" root=/dev/dm-0 %s kryptik.slot=a\n' \
         "$(verity_table PARTLABEL=kryptik-a)" "$COMMON_ARGS" > "${IMG}/cmdlines/slot-a.txt"
     printf 'dm-mod.waitfor=PARTLABEL=kryptik-b dm-mod.create="kroot,,0,ro,%s" root=/dev/dm-0 %s kryptik.slot=b\n' \
@@ -280,8 +285,8 @@ s_bind_kernels() {
 
 sign_one() {   # sign_one VARIANT
     local in="${IMG}/kernels/$1.efi" out="${IMG}/kernels/$1.signed.efi"
-    sbsign --key "$KEYS/kryptik-sb.key" --cert "$KEYS/kryptik-sb.crt" --output "$out" "$in" >/dev/null
-    sbverify --cert "$KEYS/kryptik-sb.crt" "$out"
+    sbsign --key "$SB_KEY" --cert "$SB_CERT" --output "$out" "$in" >/dev/null
+    sbverify --cert "$SB_CERT" "$out"
     echo "$1: signed, $(stat -c %s "$out") bytes, sha256 $(sha256_of "$out")"
 }
 
@@ -315,7 +320,7 @@ make_esp() {   # make_esp OUT BOOTX64-VARIANT
     printf 'a\n' > "$t/committed-slot"
     cp "${IMG}/kryptik-root.img.sha256" "$t/root-image.sha256"
     cp "${IMG}/root.json" "$t/root.json"
-    cp "$KEYS/kryptik-sb.crt" "$t/kryptik-sb.crt"
+    cp "$SB_CERT" "$t/kryptik-sb.crt"
     printf '%s\n' "$boot" > "$t/media-kernel"
     mcopy -i "$out" "$t"/* ::/kryptik/
     rm -rf "$t"
@@ -361,7 +366,7 @@ s_usb() {
 make_iso() {   # make_iso OUT ESP-IMG
     local out="$1" esp="$2"
     local t; t="$(mktemp -d)"
-    cp "$KEYS/kryptik-sb.crt" "$t/"
+    cp "$SB_CERT" "$t/kryptik-sb.crt"
     cp "${IMG}/root.json" "$t/"
     cat > "$t/README.txt" <<EOF
 Kryptik ${KRYPTIK_VERSION} install medium (ISO).
@@ -371,9 +376,8 @@ from a USB stick use the USB image instead: this ISO's kernel looks for
 /dev/sr0.
 EOF
     rm -f "$out"
-    # The appended partition's type is a GPT GUID (Linux filesystem data):
-    # xorriso takes a one-byte MBR type or a GUID, and sfdisk's 0x8300
-    # shorthand is neither ("Partition type '0x8300' is out of range").
+    # Linux filesystem data, as a GUID: xorriso takes an MBR type byte or a
+    # GUID, not sfdisk's 0x8300 shorthand.
     local rc
     xorriso -as mkisofs -quiet -o "$out" -iso-level 3 -V KRYPTIK -J -R \
         -e esp.img -no-emul-boot -isohybrid-gpt-basdat \
@@ -398,9 +402,7 @@ s_iso() {
     [[ -n "$start" ]] || { echo "could not read the appended partition's start"; sfdisk -d "${IMG}/layout.iso"; return 1; }
     echo "appended root partition starts at sector ${start}"
     local total_sectors=$(( $(root_json total_bytes) / 512 ))
-    # The linear map's length must be whole 2048-byte CD blocks, or the
-    # kernel refuses the table at boot (see the sizing of the image); a
-    # build that would produce such an ISO stops here instead.
+    # The kernel refuses a linear map that is not whole 2048-byte CD blocks.
     if (( total_sectors % 4 != 0 )); then
         echo "the root image is ${total_sectors} sectors, not a whole number of 2048-byte CD blocks; the ISO would not boot"
         return 1
@@ -429,13 +431,10 @@ s_iso() {
     cat "${iso}.sha256"
 }
 
-# The update payload for this release: the root image, both slot kernels and
-# root.json under a manifest signed with the release key the image trusts
-# (stage 04's release-trust step wrote the matching allowed-signers line).
+# The update payload: root image, slot kernels and root.json under a manifest
+# of the image's role, signed with the release key its anchor lists.
 s_payload() {
     echo "inputs digest: $1"
-    local keydir="${KRYPTIK_WORK}/keys/release"
-    [[ -f "$keydir/kryptik-release" ]] || { echo "no release key at ${keydir}; stage 04 (release-trust) makes it"; return 1; }
     local out="${IMG}/payload-${KRYPTIK_VERSION}"
     rm -rf "$out"; mkdir -p "$out"
     cp --sparse=always "${IMG}/kryptik-root.img" "$out/"
@@ -443,25 +442,43 @@ s_payload() {
     cp "${IMG}/kernels/slot-b.signed.efi" "$out/kryptik-b.efi"
     cp "${IMG}/root.json" "$out/"
     "${KRYPTIK_ROOT}/tools/release-manifest.sh" create --out "$out/manifest" --name kryptik \
-        --version "$KRYPTIK_VERSION" --role development --root "$out" \
+        --version "$KRYPTIK_VERSION" --role "$ROLE" --root "$out" \
         kryptik-root.img kryptik-a.efi kryptik-b.efi root.json
-    "${KRYPTIK_ROOT}/tools/release-manifest.sh" sign --key "$keydir/kryptik-release" "$out/manifest"
-    # Verify it the way the guest will: through the allowed-signers line the
-    # image carries, with --exact.
-    local signers="${SYSROOT}/usr/share/kryptik/trust/release-signers"
-    [[ -f "$signers" ]] || { echo "the sysroot has no ${signers}"; return 1; }
-    "${KRYPTIK_ROOT}/tools/release-manifest.sh" verify --signers "$signers" --principal kryptik-release \
+    "${KRYPTIK_ROOT}/tools/release-manifest.sh" sign --key "$RELEASE_KEY" "$out/manifest"
+    # Verify as the guest will: the image's anchor, --exact.
+    "${KRYPTIK_ROOT}/tools/release-manifest.sh" verify --signers "$ANCHOR" --principal kryptik-release \
         --root "$out" --exact --strict "$out/manifest"
     ls -la "$out"
+
+    # A channel holding this release, published as a release is: its "this
+    # release is current" statement (docs/design/update-channel.md), checked
+    # against the image's anchor, and the payload under <version>/, outside
+    # which `apply` would refuse anything unlisted. A medium without the
+    # statement key leaves that to the release host, which holds it.
+    local chan="${IMG}/channel-${KRYPTIK_VERSION}"
+    rm -rf "$chan"
+    if [[ -z "$LATEST_KEY" ]]; then
+        echo "no statement key on the key medium: the release host publishes ${out} (docs/building.md)"
+        return 0
+    fi
+    "${KRYPTIK_ROOT}/tools/release-channel.sh" publish --key "$LATEST_KEY" \
+        --signers "$ANCHOR" --payload "$out" --out "$chan"
+    # not-a-pointer, the same statement signed by the release key, must be
+    # refused. A production release key signs manifests and nothing else, so
+    # only a development build makes this control.
+    if [[ "$ROLE" == development ]]; then
+        cp "$chan/latest" "$chan/not-a-pointer"
+        ssh-keygen -Y sign -f "$RELEASE_KEY" -n kryptik-release "$chan/not-a-pointer" < /dev/null >/dev/null 2>&1 \
+            || { echo "could not sign the control statement"; return 1; }
+        if ssh-keygen -Y verify -f "$ANCHOR" -I kryptik-release -n kryptik-latest -s "$chan/not-a-pointer.sig" < "$chan/not-a-pointer" >/dev/null 2>&1; then
+            echo "FAIL: the image's anchor accepts a statement signed by the release key"; return 1
+        fi
+    fi
+    ls -la "$chan"
 }
 
-# The release record under ${KRYPTIK_OUT}: the small things (hashes, root
-# record, signed kernels, certificate, manifest) and the PATHS of the
-# images, which stay under ${IMG}. This used to copy the USB image, the ISO,
-# the root image and the payload - some 9 GB per release, a byte-for-byte
-# duplicate of what ${IMG} holds - and on a WSL host four releases of that
-# grew the virtual disk file by 40 GB that never came back by itself.
-# `make acceptance EXPORT=DIR` is what delivers tested images, from ${IMG}.
+# The release record in ${KRYPTIK_OUT}: the small files and the paths of the
+# images, which stay in ${IMG} (`make acceptance EXPORT=DIR` delivers them).
 s_export() {
     echo "inputs digest: $1"
     local out="${KRYPTIK_OUT}/kryptik-${KRYPTIK_VERSION}"
@@ -471,7 +488,8 @@ s_export() {
     cp "${IMG}/kryptik-root.img.sha256" "${IMG}/root.json" "$out/"
     cp "${IMG}/payload-${KRYPTIK_VERSION}/manifest" "${IMG}/payload-${KRYPTIK_VERSION}/manifest.sig" "$out/"
     cp "${IMG}"/kernels/*.signed.efi "$out/kernels/"
-    cp "$KEYS/kryptik-sb.crt" "$KEYS/kryptik-sb.der" "$out/"
+    cp "$SB_CERT" "$out/kryptik-sb.crt"
+    openssl x509 -in "$SB_CERT" -outform DER -out "$out/kryptik-sb.der"
     {
         echo "Kryptik ${KRYPTIK_VERSION}"
         echo "commit: ${COMMIT}"
@@ -492,15 +510,14 @@ s_export() {
 }
 
 # --- run --------------------------------------------------------------------
-step sb-keys        s_sb_keys
-step rootfs         s_rootfs "$KRYPTIK_VERSION"
+step rootfs         s_rootfs "$KRYPTIK_VERSION" "$(cat "${KRYPTIK_ROOT}/build/config/setuid-allowlist.txt" "${KRYPTIK_ROOT}/build/config/capability-allowlist.txt" "${KRYPTIK_ROOT}/tools/audit-setuid.sh" | sha256_of_stdin)" "$KRYPTIK_CHANNEL" "$ROLE" "$(_hash_file "$ANCHOR")"
 step cmdlines       s_cmdlines "$(_hash_file "${IMG}/root.json")"
 step bind-kernels   s_bind_kernels "$(cat "${IMG}"/cmdlines/{slot-a,slot-b,media-usb}.txt | sha256_of_stdin)"
-step sign-kernels   s_sign_kernels "$(cat "${IMG}"/kernels/{slot-a,slot-b,media-usb}.efi | sha256_of_stdin)$(_hash_file "$KEYS/kryptik-sb.crt")"
+step sign-kernels   s_sign_kernels "$(cat "${IMG}"/kernels/{slot-a,slot-b,media-usb}.efi | sha256_of_stdin)$(_hash_file "$SB_CERT")"
 step esp            s_esp "$(cat "${IMG}"/kernels/{slot-a,slot-b,media-usb}.signed.efi "${IMG}/root.json" | sha256_of_stdin)"
 step usb            s_usb "$(cat "${IMG}/esp-usb.img" | sha256_of_stdin)$(root_json sha256)"
 step iso            s_iso "$(cat "${IMG}"/kernels/{slot-a,slot-b}.signed.efi "${IMG}/root.json" | sha256_of_stdin)"
-step payload        s_payload "$(cat "${IMG}"/kernels/{slot-a,slot-b}.signed.efi "${IMG}/root.json" | sha256_of_stdin)"
+step payload        s_payload "$(cat "${IMG}"/kernels/{slot-a,slot-b}.signed.efi "${IMG}/root.json" "${KRYPTIK_ROOT}"/tools/release-{manifest,channel}.sh | sha256_of_stdin)" "${LATEST_KEY:+with a statement key}"
 step export         s_export "$(cat "${IMG}"/kryptik-*.sha256 "${IMG}/payload-${KRYPTIK_VERSION}/manifest" | sha256_of_stdin)"
 echo
 ok "Stage 06 finished: ${KRYPTIK_OUT}/kryptik-${KRYPTIK_VERSION}"

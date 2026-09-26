@@ -1,32 +1,17 @@
-//! Zone spawning: create a zone and run something inside it.
+//! Zone spawning: create a zone and run a command inside it.
 //!
-//! This is what turns kryptikd from a validator into a compartment manager.
-//! Until now the isolation exit test drove the isolation primitives with
-//! `unshare(1)`, which proved the primitives were sound but said nothing about
-//! whether kryptikd applies them correctly. This module is what the test can
-//! attack instead.
+//!   kryptikd (parent)   waits; forwards SIGINT/TERM/HUP/QUIT down
+//!    └─ intermediate    unshares the namespaces, becomes zone root, forks
+//!       │               pid 1, forwards signals to it, and SIGKILLs it if
+//!       │               it ignores them for GRACE_SECS
+//!       └─ zone pid 1   pivots, confines itself, execs the command
 //!
-//! ORDER IS THE WHOLE THING. Each step below depends on the ones before it,
-//! and several of the dependencies are not obvious. They are written down next
-//! to the code rather than left to be rediscovered.
-//!
-//! PROCESS TREE
-//!
-//!   kryptikd (parent)          waits; forwards SIGINT/TERM/HUP/QUIT down
-//!    └─ intermediate           unshares the namespaces, becomes zone root,
-//!       │                      forks pid 1, forwards signals to it, and
-//!       │                      SIGKILLs it if it ignores them for GRACE_SECS
-//!       └─ zone pid 1          pivots, confines itself, execs the command
-//!
-//! Every link carries PR_SET_PDEATHSIG(SIGKILL): if kryptikd dies - killed,
-//! crashed, terminal gone - the intermediate dies, and then pid 1 of the zone
-//! dies, and then the kernel kills everything else in that pid namespace.
-//! Before this, `kill -9` on kryptikd left the zone running detached, owned
-//! by nothing.
+//! Every link carries PR_SET_PDEATHSIG(SIGKILL): if kryptikd dies, so does the
+//! intermediate, then pid 1, and the kernel kills the rest of the pid namespace.
 
 use std::ffi::CString;
 use std::io;
-use std::os::unix::io::RawFd;
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use crate::broker;
@@ -68,48 +53,33 @@ fn errno() -> i32 {
 /// Options from the command line that change how the zone is launched.
 #[derive(Debug, Default, Clone)]
 pub struct RunOptions {
-    /// Host uid the zone's root maps to. Only meaningful, and only accepted,
-    /// when kryptikd itself runs as root.
+    /// Host uid/gid the zone's root maps to; accepted only when kryptikd runs as root.
     pub zone_uid: Option<u32>,
     pub zone_gid: Option<u32>,
     /// The zone directory, against which `[policy]` paths resolve.
     pub zones_dir: std::path::PathBuf,
-    /// Where the net zone's Wi-Fi credentials live (wifi.rs). A nic zone
-    /// gets `<wifi_dir>/wpa_supplicant.conf` bound read-only at
-    /// /etc/wpa_supplicant.conf when the file exists; other zones never
-    /// see it. Empty means the default directory.
+    /// Wi-Fi credentials directory (wifi.rs); empty means the default. Only a
+    /// nic zone gets its wpa_supplicant.conf, read-only at /etc/wpa_supplicant.conf.
     pub wifi_dir: std::path::PathBuf,
-    /// Development stand-in for the zone 0 prompt: approve every transfer
-    /// this zone offers. Prints a warning at launch.
+    /// Development only: approve every transfer this zone offers, unprompted.
     pub auto_approve_transfers: bool,
-    /// Where an encrypted zone's passphrase comes from: a 0600 file (tests
-    /// and root at a terminal). Nothing reads a passphrase from argv or the
-    /// environment.
+    /// An encrypted zone's passphrase, from a 0600 file (tests, root at a
+    /// terminal). A passphrase is never read from argv or the environment.
     pub passphrase_file: Option<std::path::PathBuf>,
-    /// Or from an inherited descriptor (the launch daemon hands over what
-    /// the trusted prompt collected, through SCM_RIGHTS, never argv).
+    /// Or from an inherited descriptor: what the trusted prompt collected.
     pub passphrase_fd: Option<i32>,
-    /// The per-zone Wayland proxy socket to bind into the zone at
-    /// /run/kryptik/wayland-0. None: the zone has no display.
+    /// The zone's Wayland proxy socket, bound at /run/kryptik/wayland-0; None: no display.
     pub wayland_socket: Option<std::path::PathBuf>,
-    /// The (device, inode) the socket must be, as the launch daemon
-    /// verified it: the child opens the path without following symlinks
-    /// and refuses any other inode, so nothing renamed or linked into
-    /// place between the daemon's check and the bind is accepted.
+    /// The inode the launch daemon verified; any other at that path is refused.
     pub wayland_inode: Option<crate::serve::InodeId>,
-    /// A pipe the launch daemon reads (serve.rs): `ready` is written to it
-    /// when the zone's pid 1 exists, and it is closed then. Closed by exit
-    /// before that means the zone did not start. CLOEXEC, so no zone
-    /// command inherits it.
+    /// The launch daemon's readiness pipe (serve.rs): gets `ready` and is closed
+    /// once the zone's pid 1 exists; EOF before that means the launch failed.
     pub ready_fd: Option<i32>,
 }
 
-/// The zone's Wayland proxy socket, staged in its registry entry for the
-/// child to open after unshare: a bind mount of the verified inode at
-/// `<entry>/wayland-0`, in the host mount namespace. Why it is needed is
-/// explained where it is made, in `spawn`. Dropping it undoes the staging:
-/// the bind is detached and the mountpoint file removed, so the registry
-/// entry can be removed after it.
+/// The Wayland proxy socket bind-mounted at `<entry>/wayland-0` in the host
+/// mount namespace, for the child to open after unshare (see run_in_zone).
+/// Drop detaches the bind and removes the mountpoint.
 struct StagedSocket {
     path: std::path::PathBuf,
 }
@@ -123,15 +93,12 @@ impl StagedSocket {
     ) -> Result<Self, SpawnError> {
         use std::os::unix::fs::OpenOptionsExt;
 
-        // Open the session's socket as this process - root in the host
-        // namespace, which walks the session's private directories - one
-        // component at a time without following a symlink, and refuse any
-        // inode but the one the daemon verified: a rename between its check
-        // and this open is not honoured.
+        /* Host root can walk the session's private directories. Only the inode
+         * the daemon verified is accepted, so a rename since its check fails. */
         let fd = crate::serve::open_nofollow(session_path, true)
             .map_err(|e| SpawnError::Setup(format!("wayland socket {e}")))?;
         let mut st: libc::stat = unsafe { std::mem::zeroed() };
-        if unsafe { libc::fstat(fd.raw(), &mut st) } < 0 {
+        if unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } < 0 {
             return Err(SpawnError::Syscall { call: "fstat(wayland socket)", errno: errno() });
         }
         if let Some(want) = inode {
@@ -146,11 +113,8 @@ impl StagedSocket {
         let path = entry_dir.join(rootfs::WAYLAND_SOCKET_NAME);
         let cpath = CString::new(path.display().to_string())
             .map_err(|_| SpawnError::Setup("registry path contains a NUL".into()))?;
-        // A launcher that died between staging and its Drop left a bind
-        // here; the registry's reclaim detaches it, and so does this, so a
-        // stale mount is never bound over - every one of them, since each
-        // detach takes only the topmost. Then the mountpoint: an empty
-        // file, root's, 0600, created new so nothing planted is reused.
+        /* Detach every bind a dead launcher left (each umount takes only the
+         * topmost), then create the mountpoint new, so nothing planted is reused. */
         while unsafe { libc::umount2(cpath.as_ptr(), libc::MNT_DETACH) } == 0 {}
         let _ = std::fs::remove_file(&path);
         std::fs::OpenOptions::new()
@@ -160,7 +124,7 @@ impl StagedSocket {
             .custom_flags(libc::O_NOFOLLOW)
             .open(&path)
             .map_err(|e| SpawnError::Setup(format!("{}: {e}", path.display())))?;
-        let src = CString::new(format!("/proc/self/fd/{}", fd.raw())).unwrap();
+        let src = CString::new(format!("/proc/self/fd/{}", fd.as_raw_fd())).unwrap();
         if unsafe { libc::mount(src.as_ptr(), cpath.as_ptr(), std::ptr::null(), libc::MS_BIND, std::ptr::null()) } < 0 {
             let e = errno();
             let _ = std::fs::remove_file(&path);
@@ -170,8 +134,7 @@ impl StagedSocket {
                 io::Error::from_raw_os_error(e)
             )));
         }
-        // The descriptor has done its work: the mount holds its own
-        // reference to the inode, and nothing else may inherit this one.
+        // The mount holds its own reference to the inode.
         drop(fd);
         Ok(StagedSocket { path })
     }
@@ -186,19 +149,13 @@ impl Drop for StagedSocket {
     }
 }
 
-/// Seconds a zone gets to exit after a forwarded SIGINT/SIGTERM before its
-/// pid 1 is SIGKILLed, which takes the whole pid namespace with it.
+/// Seconds after a forwarded signal before pid 1 is SIGKILLed, and its pid namespace with it.
 pub const GRACE_SECS: u32 = 5;
 
 // --- signal forwarding ------------------------------------------------------
-//
-// Both the parent and the intermediate run this. Each is its own process, so
-// the statics are per-role: FORWARD_TO is the pid to forward to, ARM_KILL is
-// whether a forwarded signal also arms the SIGKILL timer (only the
-// intermediate does that; it is the only process that can SIGKILL pid 1 of
-// the zone, since pid 1 ignores signals from inside its own namespace).
-//
-// Everything in the handlers is async-signal-safe: atomics, kill, alarm.
+/* The parent and the intermediate each run this with their own statics:
+ * FORWARD_TO is the target; ARM_KILL (the intermediate, for pid 1) also arms
+ * the SIGKILL alarm. The handlers are async-signal-safe. */
 
 static FORWARD_TO: AtomicI32 = AtomicI32::new(0);
 static ARM_KILL: AtomicBool = AtomicBool::new(false);
@@ -226,8 +183,7 @@ fn install_handler(sig: libc::c_int, handler: extern "C" fn(libc::c_int)) {
     unsafe {
         let mut sa: libc::sigaction = std::mem::zeroed();
         sa.sa_sigaction = handler as usize;
-        // SA_RESTART: the waits below are restarted rather than failing with
-        // EINTR - and they retry on EINTR anyway.
+        // Interrupted waits restart (and retry on EINTR anyway).
         sa.sa_flags = libc::SA_RESTART;
         libc::sigemptyset(&mut sa.sa_mask);
         libc::sigaction(sig, &sa, std::ptr::null_mut());
@@ -245,22 +201,9 @@ fn install_forwarding(target: libc::pid_t, arm_kill: bool) {
     }
 }
 
-/// One log line in one write(2). `eprintln!` hands stderr a formatted line
-/// in pieces - the literal text, each argument, the newline - and while a
-/// zone runs, the launcher shares that descriptor with it: whatever the
-/// zone prints can land between two pieces. The installed system's boundary
-/// suite caught exactly that: a broker reply read back as
-/// `kryptikd[zone error: unknown verb` / `probe]: broker served "steal"`,
-/// and a check anchored on the reply's own line failed on a system that had
-/// answered correctly. A single write of less than PIPE_BUF bytes is atomic
-/// on a pipe, and a log is a pipe or a file opened for append, so every line
-/// written this way arrives whole. For anything the launcher says while the
-/// zone is alive.
-///
-/// write(2) on descriptor 2 directly, not through `io::stderr()`: that
-/// handle is behind a process-wide lock, and this process forks. A child
-/// forked while another thread held the lock would wait for it forever (the
-/// first version of this function's own test hung exactly that way).
+/// One log line in a single write(2), which another writer on the descriptor
+/// cannot split (a pipe write under PIPE_BUF is atomic; `eprintln!` writes in
+/// pieces). Raw fd 2: `io::stderr()`'s lock can be inherited held across fork.
 pub(crate) fn log_line(line: &str) {
     let mut bytes = Vec::with_capacity(line.len() + 1);
     bytes.extend_from_slice(line.as_bytes());
@@ -278,23 +221,143 @@ pub(crate) fn log_line(line: &str) {
     }
 }
 
-/// Supervise the child while answering the zone broker requests: poll the
-/// listening socket with a short timeout, serve what arrives, and reap the
-/// child when it exits. Signals forwarded by the handlers interrupt the
-/// poll, which just loops.
-fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, s: &broker::Served) -> Result<libc::c_int, SpawnError> {
+/// Most zone output one launch logs (the rest is read and dropped, so an endless
+/// writer neither blocks nor fills the state partition), and the longest line.
+const ZONE_OUTPUT_MAX: usize = 1 << 20;
+const ZONE_LINE_MAX: usize = 1024;
+
+/// Relays a daemon-launched zone's output into the launcher's log. The zone
+/// gets a pipe, never the log: O_APPEND does not stop ftruncate or fallocate.
+/// Lines are marked as the zone's, control bytes replaced, the total bounded.
+struct ZoneOutput {
+    fd: RawFd,
+    mark: String,
+    line: Vec<u8>,
+    left: usize,
+}
+
+impl ZoneOutput {
+    fn new(fd: RawFd, zone: &str) -> Self {
+        ZoneOutput { fd, mark: format!("zone {zone}| "), line: Vec::new(), left: ZONE_OUTPUT_MAX }
+    }
+
+    fn flush(&mut self, emit: &mut dyn FnMut(&str)) {
+        if !self.line.is_empty() {
+            emit(&format!("{}{}", self.mark, String::from_utf8_lossy(&self.line)));
+            self.line.clear();
+        }
+    }
+
+    fn take(&mut self, data: &[u8], emit: &mut dyn FnMut(&str)) {
+        for &b in data {
+            if self.left == 0 {
+                return;
+            }
+            self.left -= 1;
+            match b {
+                b'\n' => self.flush(emit),
+                b'\t' | 0x20..=0x7e | 0x80..=0xff => self.line.push(b),
+                _ => self.line.push(b'?'),
+            }
+            if self.line.len() >= ZONE_LINE_MAX {
+                self.flush(emit);
+            }
+            if self.left == 0 {
+                self.flush(emit);
+                emit(&format!("{}(output past {ZONE_OUTPUT_MAX} bytes is not logged)", self.mark));
+            }
+        }
+    }
+
+    /// Read at most `reads` 4 KiB pieces; false once every writer has gone.
+    /// Bounded, so a zone that never stops writing cannot hold the launcher here.
+    fn pump_at_most(&mut self, reads: usize, emit: &mut dyn FnMut(&str)) -> bool {
+        let mut buf = [0u8; 4096];
+        let mut done = 0;
+        while done < reads {
+            let n = unsafe { libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+            if n > 0 {
+                self.take(&buf[..n as usize], emit);
+                done += 1;
+            } else if n == 0 {
+                return false;
+            } else if errno() != libc::EINTR {
+                return true; // EAGAIN: nothing more for now
+            }
+        }
+        true
+    }
+
+    fn pump(&mut self, emit: &mut dyn FnMut(&str)) -> bool {
+        self.pump_at_most(ZONE_READS_PER_PUMP, emit)
+    }
+}
+
+/// A pass of the relay reads at most this many pieces (64 KiB).
+const ZONE_READS_PER_PUMP: usize = 16;
+
+/// Relays what is left in the pipe, up to the log's bound.
+impl Drop for ZoneOutput {
+    fn drop(&mut self) {
+        let mut emit = |line: &str| log_line(line);
+        self.pump_at_most(ZONE_OUTPUT_MAX / 4096 + 1, &mut emit);
+        self.flush(&mut emit);
+        unsafe { libc::close(self.fd) };
+    }
+}
+
+/// Whether the child has exited, without reaping it: WNOWAIT leaves it for
+/// the waitpid that decides the launcher's status.
+fn exited_unreaped(pid: libc::pid_t) -> bool {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let r = unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) };
+    r == 0 && unsafe { info.si_pid() } != 0
+}
+
+/// Serve the zone's broker socket and relay its output until the child exits.
+/// Forwarded signals interrupt the poll, which just loops.
+fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, s: &broker::Served, out: Option<ZoneOutput>) -> Result<libc::c_int, SpawnError> {
     let zone = s.zone.name.as_str();
+    let out = std::cell::RefCell::new(out);
+    let pump = || {
+        let mut o = out.borrow_mut();
+        if o.as_mut().is_some_and(|o| !o.pump(&mut |line: &str| log_line(line))) {
+            *o = None; // every writer has gone
+        }
+    };
+    /* While a consent question is open the broker calls this ten times a
+     * second: output keeps flowing, and a zone that has exited withdraws its
+     * question. The child is only looked at; the loop below reaps it. */
+    let asking = || {
+        pump();
+        !exited_unreaped(pid)
+    };
+    let s = &broker::Served { asking: &asking, ..*s };
+    /* A pidfd is readable once the zone has ended, so the poll needs no
+     * timeout. Without one it wakes every 200 ms: failing here would skip
+     * the caller's closing of the zone's volume. */
+    let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as RawFd;
+    let _pidfd = (pidfd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(pidfd) });
+    let timeout = if pidfd >= 0 { -1 } else { 200 };
     loop {
         let mut status: libc::c_int = 0;
         let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
         if r == pid {
-            return Ok(status);
+            return Ok(status); // dropping `out` relays what is left in the pipe
         }
         if r < 0 && errno() != libc::EINTR {
             return Err(SpawnError::Syscall { call: "waitpid", errno: errno() });
         }
-        let mut pfd = libc::pollfd { fd: listen_fd, events: libc::POLLIN, revents: 0 };
-        let n = unsafe { libc::poll(&mut pfd, 1, 200) };
+        let mut pfds = [
+            libc::pollfd { fd: listen_fd, events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: out.borrow().as_ref().map_or(-1, |o| o.fd), events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: pidfd, events: libc::POLLIN, revents: 0 },
+        ];
+        let n = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, timeout) };
+        if n > 0 && pfds[1].revents & (libc::POLLIN | libc::POLLHUP) != 0 {
+            pump();
+        }
+        let pfd = pfds[0];
         if n > 0 && pfd.revents & libc::POLLIN != 0 {
             match broker::serve_one(listen_fd, s) {
                 Ok(Some(verb)) => log_line(&format!("kryptikd[zone {zone}]: broker served {verb:?}")),
@@ -320,26 +383,14 @@ fn wait_for(pid: libc::pid_t) -> Result<libc::c_int, SpawnError> {
     }
 }
 
-/// A one-byte pipe used to order the parent and child against each other.
+/// A pipe ordering the parent and the intermediate. The launch handshake:
 ///
-/// TWO of these are needed, in both directions, and the first version of this
-/// code had only one. The handshake is:
+///   parent --placed-->  child   in its cgroup, if any: may unshare
+///   child  --ready-->   parent  unshared: the id maps may be written
+///   parent --mapped-->  child   maps written: may become root
+///   child  --initpid--> parent  the zone's pid 1, as the host sees it
 ///
-///   child   unshare(CLONE_NEWUSER|...)
-///   child  --ready-->  parent      "I am in the new namespace"
-///   parent  writes /proc/PID/{setgroups,uid_map,gid_map}
-///   parent --mapped-->  child      "your maps exist, you may become root"
-///   child   setresuid(0,0,0)
-///
-/// Without the first signal the parent races ahead and writes the maps while
-/// the child is still in the OLD user namespace. That write fails with EPERM
-/// on setgroups, the maps never appear, and setresuid(0,0,0) then fails with
-/// EINVAL because uid 0 was never mapped - two errors, neither of which points
-/// at the missing synchronisation that caused them.
-///
-/// `wait` distinguishes a signal (one byte) from the peer going away (EOF):
-/// the first version ignored the read result, so a parent that died between
-/// fork and the map write left the child believing it had been mapped.
+/// `wait` tells a signal from the peer's death (EOF).
 struct SyncPipe {
     read: RawFd,
     write: RawFd,
@@ -348,8 +399,7 @@ struct SyncPipe {
 impl SyncPipe {
     fn new() -> Result<Self, SpawnError> {
         let mut fds = [0 as RawFd; 2];
-        // CLOEXEC: these must not survive into the zone's command even if
-        // descriptor closing were somehow skipped.
+        // CLOEXEC, in case the zone's descriptor sweep were ever skipped.
         if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } < 0 {
             return Err(SpawnError::Syscall { call: "pipe2", errno: errno() });
         }
@@ -360,8 +410,7 @@ impl SyncPipe {
         self.signal_byte(1)
     }
 
-    /// Like `signal`, with a value the peer can read back. Used on `mapped`
-    /// to tell the intermediate whether the parent built a network path.
+    /// Like `signal`, with a value (on `mapped`: whether a network path was built).
     fn signal_byte(&self, v: u8) {
         let b = [v];
         loop {
@@ -395,8 +444,7 @@ impl SyncPipe {
         }
     }
 
-    /// Send a pid to the other end. Four bytes in native order: both ends are
-    /// the same process image on the same machine.
+    /// Send a pid, 4 bytes in native order (both ends are the same binary).
     fn write_i32(&self, v: i32) {
         let b = v.to_ne_bytes();
         let mut off = 0usize;
@@ -414,9 +462,7 @@ impl SyncPipe {
         }
     }
 
-    /// Read a pid. `None` on EOF or a short read - which means the sender died
-    /// before it could tell us. That is a real outcome, not an error: the
-    /// caller is about to report why the zone failed.
+    /// Read a pid; None if the sender died first (the caller reports why).
     fn read_i32(&self) -> Option<i32> {
         let mut b = [0u8; 4];
         let mut off = 0usize;
@@ -435,6 +481,19 @@ impl SyncPipe {
         Some(i32::from_ne_bytes(b))
     }
 
+    /// Whether every write end is closed, without waiting. An error counts as
+    /// closed: the caller must not go on unchecked.
+    fn peer_gone(&self) -> bool {
+        let mut p = libc::pollfd { fd: self.read, events: libc::POLLIN, revents: 0 };
+        loop {
+            let r = unsafe { libc::poll(&mut p, 1, 0) };
+            if r < 0 && errno() == libc::EINTR {
+                continue;
+            }
+            return r < 0 || p.revents & libc::POLLHUP != 0;
+        }
+    }
+
     fn close_read(&self) { unsafe { libc::close(self.read) }; }
     fn close_write(&self) { unsafe { libc::close(self.write) }; }
 }
@@ -449,18 +508,14 @@ pub fn zone_rootfs(zone: &Zone, base: &str) -> String {
 struct Identity {
     uid: u32,
     gid: u32,
-    /// kryptikd itself runs as root and will switch to `uid`/`gid` before
-    /// creating the user namespace.
+    /// kryptikd runs as root; the id maps it writes put the zone at `uid`/`gid`.
     privileged: bool,
 }
 
 fn launch_identity(opts: &RunOptions, zone: &Zone) -> Result<Identity, SpawnError> {
     let euid = unsafe { libc::geteuid() };
     if euid == 0 {
-        // The zone file is the authority. A declared range is fixed for the
-        // life of the zone's data, so a command-line override of it would
-        // silently change who owns that data; refuse the combination rather
-        // than pick one.
+        // A declared range owns the zone's data for life; an override would silently change that.
         if let Some(base) = zone.uid_base {
             if opts.zone_uid.is_some() || opts.zone_gid.is_some() {
                 return Err(SpawnError::Setup(format!(
@@ -499,11 +554,8 @@ fn launch_identity(opts: &RunOptions, zone: &Zone) -> Result<Identity, SpawnErro
     }
 }
 
-/// Create the zone and execute `argv` inside it. Returns the child's exit code.
-///
-/// The caller must be able to create a user namespace. kryptikd proper runs
-/// privileged in zone 0, but this path works unprivileged too, which is what
-/// lets the adversarial test run it as an ordinary user.
+/// Create the zone and run `argv` inside it; returns the command's exit code.
+/// Also runs unprivileged (as the tests do) where user namespaces are allowed.
 pub fn run_in_zone(
     zone: &Zone,
     rootfs: &str,
@@ -514,10 +566,8 @@ pub fn run_in_zone(
         return Err(SpawnError::Setup("no command given".into()));
     }
 
-    // Landlock is not optional. A zone without filesystem confinement can read
-    // every other zone, which is requirement 2 of the exit test - so refuse to
-    // start rather than start something weaker than a zone. Too old an ABI is
-    // refused for the same reason: the policy would mean less than it says.
+    /* Landlock is required, at MIN_ABI or newer: without it a zone could read
+     * every other zone, and an older ABI enforces less than the policy says. */
     match landlock::abi_version() {
         None => {
             return Err(SpawnError::Confine(
@@ -532,25 +582,6 @@ pub fn run_in_zone(
         Some(_) => {}
     }
 
-    // Refuse to start a zone whose definition promises something this code
-    // does not deliver.
-    //
-    // A zone declaring storage.mode = "encrypted" currently gets an ordinary
-    // directory: per-zone LUKS2 volumes are not implemented. Starting it
-    // anyway would put secrets on plaintext storage while the configuration,
-    // the UI and the operator all believe otherwise - the precise failure this
-    // project exists to avoid. Same for "ephemeral", which is not yet wiped on
-    // stop; for resource limits, which create no cgroup; and for per-zone
-    // policy files, which are not applied. A setting that is parsed and then
-    // ignored is a setting the operator believes is in force.
-    //
-    // KRYPTIK_EXPERIMENTAL=1 allows it for development, loudly. There is
-    // deliberately no config option for this: it must be a conscious act at
-    // the command line, not a setting someone can forget they enabled.
-    // The one thing about ephemeral storage that is not delivered, said every
-    // time rather than buried in a design document: tmpfs pages are swappable.
-    // memory.swap.max=0 keeps the zone's PROCESS pages out of swap, but not
-    // the tmpfs pages it wrote, which outlive the writer.
     if zone.storage == StorageMode::Ephemeral {
         eprintln!(
             "kryptikd: zone {:?}: ephemeral storage is a tmpfs freed on exit; its pages \
@@ -559,9 +590,6 @@ pub fn run_in_zone(
         );
     }
 
-    // Persistent storage is implemented and it keeps data, which is its whole
-    // promise. What it is not is encrypted, and that is said every launch
-    // rather than left to be inferred from the word nobody wrote.
     if zone.storage == StorageMode::Persistent {
         eprintln!(
             "kryptikd: zone {:?}: persistent storage is a PLAIN DIRECTORY on the host \
@@ -578,11 +606,10 @@ pub fn run_in_zone(
         );
     }
 
-    // KRYPTIK_EXPERIMENTAL is a developer override. On a kernel that
-    // restricts unprivileged user namespaces - the target, or its emulation -
-    // a root launch is the real thing, and the override is ignored
-    // (docs/design/privileged-launch.md): a development flag must not be able to start a zone on a
-    // production kernel without the guarantees its file declares.
+    /* KRYPTIK_EXPERIMENTAL=1 starts a zone without guarantees this build cannot
+     * give. Environment only, never a config setting, so it is always a
+     * conscious act. A root launch on a kernel that restricts unprivileged user
+     * namespaces ignores it (docs/design/privileged-launch.md). */
     let mut experimental = std::env::var("KRYPTIK_EXPERIMENTAL").as_deref() == Ok("1");
     if experimental && unsafe { libc::geteuid() } == 0 {
         if let Some((true, knob)) = isolate::userns_restriction_sysctl() {
@@ -595,19 +622,9 @@ pub fn run_in_zone(
     }
     let mut unsupported: Vec<String> = Vec::new();
     match zone.storage {
-        // Encrypted is implemented for a ROOT launch: the LUKS2
-        // volume is opened and mounted below, before the zone exists, and
-        // closed after it is gone. An unprivileged launch cannot run
-        // cryptsetup, so it stays refused: running such a zone on a plain
-        // directory while its file says "encrypted" is the failure this
-        // project exists to avoid.
-        //
-        // Refused outright, not listed as an unimplemented guarantee that
-        // KRYPTIK_EXPERIMENTAL may waive: the override exists for guarantees
-        // this build does not provide, and encryption is provided - by a root
-        // launch. Waiving it here would start the zone on a plain directory,
-        // which the launcher suite's and the cli suite's encrypted-zone checks
-        // both refuse to accept, and which the first CI run after the volumes landed did.
+        /* Only a root launch can open the LUKS2 volume. Refused outright, not
+         * waivable by KRYPTIK_EXPERIMENTAL, which would run the zone on a plain
+         * directory. */
         StorageMode::Encrypted if unsafe { libc::geteuid() } != 0 => {
             return Err(SpawnError::Setup(format!(
                 "zone {:?} is encrypted: its LUKS2 volume is opened by a root launch with the \
@@ -619,23 +636,15 @@ pub fn run_in_zone(
             )));
         }
         StorageMode::Encrypted => {}
-        // Ephemeral is implemented: the zone's home is a per-launch
-        // tmpfs in its own mount namespace, and the persistent directory is
-        // never bound anywhere. The one thing still worth saying out loud is
-        // swap - see the note printed below, and
-        // docs/design/resource-limits-and-ephemeral-zones.md.
+        /* A per-launch tmpfs; the persistent directory is never bound
+         * (docs/design/resource-limits-and-ephemeral-zones.md). */
         StorageMode::Ephemeral => {}
-        // Persistent is implemented, and it promises only what it does: the
-        // zone's own directory, bound at $HOME, still there next launch. It is
-        // NOT on the unsupported list, so it needs no override and it starts
-        // on the target kernel - the only mode that both survives a reboot and
-        // does so honestly until encrypted volumes land.
+        // The zone's own directory, bound at $HOME and kept between launches.
         StorageMode::Persistent => {}
     }
-    // A Landlock policy file is applied as a second layer over the base
-    // rules (docs/design/zone-policy-files.md). Read and parsed HERE, in the parent, because
-    // the zone cannot reach the zone directory once it has pivoted - and a
-    // file that does not parse must stop the launch before anything is built.
+    /* A Landlock policy file narrows the base rules (docs/design/zone-policy-files.md).
+     * Parsed here: the zone cannot reach the zone directory once it has pivoted,
+     * and a bad file must stop the launch before anything is built. */
     let fs_rules: Vec<landlock::ZoneRule> = match &zone.landlock {
         None => Vec::new(),
         Some(rel) => {
@@ -647,14 +656,9 @@ pub fn run_in_zone(
                 .map_err(|e| SpawnError::Setup(format!("zone {:?} landlock policy: {e}", zone.name)))?
         }
     };
-    // [network]: every zone starts from an EMPTY network namespace - loopback
-    // and nothing else - and only the parent adds to it. A kernel with the
-    // tunnel modules built in (the Kryptik kernel builds SIT in) creates its
-    // fallback devices in every new namespace unless
-    // net.core.fb_tunnels_only_for_init_net says otherwise, and the target
-    // kernel's first boot found sit0 inside an airgapped zone. A root
-    // launcher raises the sysctl once; an unprivileged one cannot, and the
-    // zone is then refused like any other guarantee this build cannot give.
+    /* A new network namespace must hold only loopback, but with tunnel drivers
+     * built in (SIT is) the kernel adds fallback devices such as sit0 unless
+     * net.core.fb_tunnels_only_for_init_net is set, which needs root. */
     if isolate::namespace_flags(zone) & libc::CLONE_NEWNET != 0 {
         match netzone::suppress_fallback_tunnels() {
             Ok(Some(note)) => eprintln!("kryptikd: {note}"),
@@ -676,16 +680,9 @@ pub fn run_in_zone(
         }
         None => None,
     };
-    // [limits] is no longer unconditionally unsupported: it is supported when
-    // this process can actually create a cgroup, and refused when it cannot.
-    // The question is answered by TRYING, not by checking uid - a delegated
-    // subtree is writable by an ordinary user, and root inside a container may
-    // still find the hierarchy read-only.
-    //
-    // `limits` holds the base directory when enforcement is possible. When it
-    // is None and the zone asked for limits, the zone is refused exactly as it
-    // was before, because a limit that silently does nothing is worse than no
-    // limit: the operator's belief in it is what causes the damage.
+    /* [limits] need a cgroup, and whether one can be made is found by trying,
+     * not by uid: a delegated subtree is writable by a user, and root in a
+     * container may find the hierarchy read-only. */
     let wants_limits = zone.memory_max.is_some() || zone.pids_max.is_some();
     let mut limits: Option<std::path::PathBuf> = None;
     if wants_limits {
@@ -712,11 +709,8 @@ pub fn run_in_zone(
         }
     }
 
-    // Claim the zone name before doing any work. One instance per zone is the
-    // v1 rule: two launchers of the same zone would share a data directory, a
-    // cgroup name and - for a routed zone - a veth name, and the second would
-    // quietly corrupt the first. `mkdir` is the atomic operation; a stale
-    // entry from a crashed launcher is reclaimed rather than obeyed.
+    /* One instance per zone: two launchers would share a data directory, a
+     * cgroup and a veth name. claim() is an atomic mkdir; a stale entry is reclaimed. */
     let entry = registry::claim(&zone.name).map_err(|e| SpawnError::Setup(e.to_string()))?;
 
     let id = launch_identity(opts, zone)?;
@@ -724,12 +718,9 @@ pub fn run_in_zone(
         .set_identity(id.uid, id.gid)
         .map_err(|e| SpawnError::Setup(e.to_string()))?;
 
-    // Encrypted storage: unlock the zone's LUKS2 container and mount its
-    // filesystem at the data directory BEFORE the directory checks, which
-    // then see the filesystem's own root - owned by the zone identity since
-    // `volume init`. Held in `opened_volume`; dropped on any error path
-    // below, which closes it, so a failed launch never leaves plaintext
-    // mounted, and closed explicitly after the zone has exited.
+    /* Mount the unlocked volume before the directory checks, so they see its
+     * root (the zone identity's since `volume init`). Dropping `opened_volume`
+     * closes it, so a failed launch never leaves plaintext mounted. */
     let mut opened_volume: Option<volume::Opened> = None;
     if zone.storage == StorageMode::Encrypted && id.privileged {
         let vol = zone.volume.clone().unwrap_or_else(|| volume::default_volume_path(&zone.name));
@@ -751,9 +742,8 @@ pub fn run_in_zone(
         opened_volume = Some(o);
     }
 
-    // The persistent directory. Created if missing; when kryptikd is root it
-    // is handed to the zone's identity, but an existing directory is never
-    // re-owned - if it belongs to someone else, check_data_dir refuses it.
+    /* A new data directory is given to the zone identity. An existing one is
+     * never re-owned: check_data_dir refuses one that belongs to someone else. */
     let existed = std::path::Path::new(rootfs).exists();
     std::fs::create_dir_all(rootfs)
         .map_err(|e| SpawnError::Setup(format!("{rootfs}: {e}")))?;
@@ -765,79 +755,28 @@ pub fn run_in_zone(
     }
     rootfs::check_data_dir(rootfs, id.uid).map_err(|e| SpawnError::Setup(e.to_string()))?;
 
-    // An ephemeral zone must not start over data from an earlier run. Nothing
-    // it writes will reach this directory, so anything already there is data
-    // the operator believes is gone and is not.
+    // An ephemeral zone never writes here, so anything present is data the user believes gone.
     if zone.storage == StorageMode::Ephemeral {
         rootfs::check_data_dir_empty(rootfs, &zone.name)
             .map_err(|e| SpawnError::Setup(e.to_string()))?;
     }
 
-    // placed: parent -> child, "you are in your cgroup, you may unshare"
-    // ready:  child -> parent, "I have unshared"
-    // mapped: parent -> child, "your id maps are written"
-    //
-    // `placed` is third and it is ordered FIRST for a reason. The move into
-    // the cgroup has to happen before the child unshares, because
-    // CLONE_NEWCGROUP roots the child's cgroup namespace at whatever cgroup it
-    // is in at that moment. Move it afterwards and enforcement still works,
-    // but the zone's own /proc/self/cgroup describes a path outside its
-    // namespace root - a zone that cannot name its own cgroup correctly is one
-    // that cannot manage sub-cgroups later.
-    // The zone's broker endpoint lives in its registry entry; the zone sees
-    // it at /run/kryptik/broker. Served by this process while it waits.
+    // The broker socket, in the registry entry; the zone sees it at /run/kryptik/broker.
     let broker_path = entry.dir().join(broker::SOCKET_NAME);
     let broker_fd = broker::listen_at(&broker_path, id.uid, id.gid)
         .map_err(|e| SpawnError::Setup(format!("broker socket {}: {e}", broker_path.display())))?;
 
-    // THE ZONE OPENS THIS ITSELF, AFTER IT HAS ITS OWN MOUNT NAMESPACE.
-    //
-    // The child binds this socket into its root, and by then it has dropped to
-    // the zone identity - which cannot walk to it. The registry is 0700 and
-    // root-owned, deliberately (docs/design/zone-registry.md, and the
-    // security review's planted-directory finding):
-    //
-    //     drwx------ root:root  /run/kryptik
-    //     drwx------ root:root  /run/kryptik/zones
-    //
-    // so binding by path failed with EPERM on every privileged launch and took
-    // the VM from 135 passing to 100 failing. It worked unprivileged only
-    // because every zone maps to the launching user, who owns those
-    // directories.
-    //
-    // The fix is a descriptor rather than a path - but it cannot be opened
-    // HERE. A bind whose source mount belongs to a different mount namespace
-    // is refused:
-    //
-    //     fd opened BEFORE unshare(CLONE_NEWNS): Invalid argument
-    //     fd opened AFTER  unshare(CLONE_NEWNS): ok
-    //
-    // measured directly. So the path travels to the child, and the child opens
-    // it in the window after it unshares and before it takes the zone's
-    // identity, when it still has its own mount namespace AND is still root.
+    /* The child opens this path itself, after unshare(CLONE_NEWNS) and before it
+     * takes the zone identity: the registry is root's and 0700
+     * (docs/design/zone-registry.md), and a descriptor opened in another mount
+     * namespace cannot be bind-mounted (EINVAL). */
     let broker_path_str = broker_path.display().to_string();
 
-    // The Wayland proxy socket, if the zone gets a display. The session made
-    // it under its own runtime directory - /run/user/<uid>/kryptik/<zone>/
-    // wayland-0, 0700 and the session's all the way down - and the child
-    // cannot walk that. After unshare(CLONE_NEWUSER) it is host uid 0 with
-    // no capability the host honours, and a directory it does not own that
-    // grants nothing to others refuses it. The first installed system showed
-    // exactly that: every zone with a window died at setup with "kryptik:
-    // Permission denied" on the session's directory. The developer suite
-    // never saw it because there the launcher IS the session's uid, and
-    // owner bits let it through.
-    //
-    // So a privileged launch stages the socket where the child already looks
-    // for the broker: the zone's registry entry, root-owned and 0700, which
-    // host uid 0 walks by ownership alone (the broker design named this very path,
-    // /run/kryptik/zones/<zone>/wayland-0). The staging is a bind mount of
-    // the inode the daemon verified, made HERE - in the host mount
-    // namespace, which the child's unshare copies - and undone when the
-    // launch ends, on every path, by `staged`'s Drop; it is declared after
-    // `entry` so it is dropped before the entry directory is removed. A
-    // developer launch cannot mount and does not need to: it hands the child
-    // the path as given.
+    /* After unshare(CLONE_NEWUSER) the child is host uid 0 with no capability
+     * the host honours, so it cannot walk the session's 0700 runtime directory.
+     * A privileged launch bind-mounts the verified socket into the registry
+     * entry, which uid 0 walks by ownership. Declared after `entry`, so the bind
+     * is undone before the entry is removed. A developer launch passes the path. */
     let staged: Option<StagedSocket> = match (&opts.wayland_socket, id.privileged) {
         (Some(p), true) => Some(StagedSocket::stage(p, opts.wayland_inode, entry.dir(), &zone.name)?),
         _ => None,
@@ -854,10 +793,7 @@ pub fn run_in_zone(
         }
     };
 
-    // The Wi-Fi credentials file, for the nic zone alone: the path in the
-    // host namespace, which the child's own copy of the mounts still
-    // resolves when it builds the root. Whether the file exists is decided
-    // there, at the bind, not here: absent means unconfigured and silent.
+    // Nic zone only. Whether the file exists is decided at the bind: absent means unconfigured.
     let wifi_conf: Option<String> = if zone.network == crate::zone::NetworkMode::Nic {
         let dir = if opts.wifi_dir.as_os_str().is_empty() {
             std::path::PathBuf::from(crate::wifi::DEFAULT_DIR)
@@ -872,15 +808,21 @@ pub fn run_in_zone(
     let placed = SyncPipe::new()?;
     let ready = SyncPipe::new()?;
     let mapped = SyncPipe::new()?;
-    // initpid: child -> parent, carrying the zone's pid 1 as the HOST sees it.
-    //
-    // The registry design suggested widening `ready` to an i32 instead. It cannot be:
-    // `ready` is signalled before the id maps are written, and the grandchild
-    // that becomes pid 1 cannot be forked until after them, because it must be
-    // root in the new user namespace first. So the pid does not exist yet when
-    // `ready` fires, and this is a fourth pipe rather than a wider third one.
-    // Same outcome, and only the parent ever writes the registry.
+    // Not carried on `ready`: pid 1 is forked only after the id maps exist.
     let initpid = SyncPipe::new()?;
+
+    /* Daemon-launched, the zone's side gets a pipe relayed into our log
+     * (ZoneOutput); at a terminal it keeps the terminal. */
+    let mut zone_out: Option<(RawFd, RawFd)> = None;
+    if opts.ready_fd.is_some() {
+        let mut p = [0 as RawFd; 2];
+        if unsafe { libc::pipe2(p.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+            return Err(SpawnError::Syscall { call: "pipe2", errno: errno() });
+        }
+        // The read end only: a zone's stdout must block like anyone's.
+        unsafe { libc::fcntl(p[0], libc::F_SETFL, libc::O_NONBLOCK) };
+        zone_out = Some((p[0], p[1]));
+    }
 
     let parent_pid = unsafe { libc::getpid() };
     let pid = unsafe { libc::fork() };
@@ -890,12 +832,21 @@ pub fn run_in_zone(
 
     if pid == 0 {
         // --- intermediate ------------------------------------------------------
+        /* Before anything on this side prints: nothing from here down holds
+         * the log. dup2 clears close-on-exec on 1 and 2 only. */
+        if let Some((r, w)) = zone_out {
+            unsafe {
+                libc::dup2(w, 1);
+                libc::dup2(w, 2);
+                libc::close(w);
+                libc::close(r);
+            }
+        }
         placed.close_write();
         ready.close_read();
         mapped.close_write();
         initpid.close_read();
-        // The daemon's readiness pipe is the parent's to answer; holding a
-        // copy here would only delay the EOF that reports a failed launch.
+        // The parent answers the readiness pipe; a copy here would delay the EOF of a failed launch.
         if let Some(fd) = opts.ready_fd {
             unsafe { libc::close(fd) };
         }
@@ -909,25 +860,21 @@ pub fn run_in_zone(
     }
 
     // --- parent --------------------------------------------------------------
+    let zone_out = zone_out.map(|(r, w)| {
+        unsafe { libc::close(w) };
+        ZoneOutput::new(r, &zone.name)
+    });
     placed.close_read();
     ready.close_write();
     mapped.close_read();
     initpid.close_write();
     install_forwarding(pid, false);
 
-    // Create the zone's cgroup and put the child in it before releasing it to
-    // unshare. Everything here runs in the PARENT, which still holds whatever
-    // privilege kryptikd started with; the child never writes to the cgroup
-    // filesystem and /sys/fs/cgroup is not bound into the zone.
-    //
-    // The handle is held for the whole launch and dropped at the end, so an
-    // early return cannot leak the directory.
+    /* Put the child in the zone's cgroup before it may unshare. Only the parent
+     * writes to the cgroup filesystem; /sys/fs/cgroup is not bound into the zone.
+     * The handle lives for the whole launch, so an early return cannot leak it. */
     let zone_cgroup = match &limits {
         Some(base) => {
-            // Naming [limits] and not just the syscall: available() proved a
-            // leaf could be made moments ago, so reaching here means something
-            // changed underneath us - and the operator still has to be able to
-            // connect the failure to the setting they wrote in the zone file.
             let cg = cgroup::Cgroup::create(base, &zone.name, parent_pid).map_err(|e| {
                 SpawnError::Setup(format!(
                     "[limits]: the zone's cgroup could not be created, so \
@@ -938,13 +885,8 @@ pub fn run_in_zone(
                 .map_err(|e| SpawnError::Setup(format!("cgroup limits: {e}")))?;
             cg.attach(pid)
                 .map_err(|e| SpawnError::Setup(format!("cgroup attach: {e}")))?;
-            // Recorded so a later `stop` or `gc` can reach whatever is left if
-            // this launcher dies without cleaning up. The cgroup is the only
-            // safe handle to a dead launcher's processes: unlike a pid, it
-            // cannot have been reused.
-            // Not fatal - the zone is up, and killing it over bookkeeping is
-            // worse - but not silent either: without this field, reclaim
-            // skips the cgroup.kill and a dead launcher's processes stay.
+            /* Lets reclaim kill a dead launcher's processes by cgroup.kill; unlike
+             * a pid, a cgroup cannot be reused. A failure is logged, not fatal. */
             if let Err(e) = entry.set_cgroup(&cg.path().display().to_string()) {
                 eprintln!("kryptikd: registry: could not record the cgroup of zone {}: {e}", zone.name);
             }
@@ -953,9 +895,7 @@ pub fn run_in_zone(
         None => None,
     };
 
-    // Release the child to unshare, whether or not it got a cgroup.
-    // The launcher's own pid, with its start time, so `stop` can signal it and
-    // be certain it is signalling the same process.
+    // Recorded with its start time, so `stop` signals this process and no other.
     entry
         .set_launcher(parent_pid)
         .map_err(|e| SpawnError::Setup(format!("registry: {e}")))?;
@@ -963,9 +903,7 @@ pub fn run_in_zone(
     placed.signal();
     placed.close_write();
 
-    // Wait until the child is actually inside the new user namespace. Writing
-    // the maps before this point fails with EPERM. EOF means it died first;
-    // it has already said why on stderr, so report its code and nothing else.
+    // Maps written before the child has unshared fail (EPERM). On EOF the child has said why.
     if ready.wait().is_err() {
         let status = wait_for(pid)?;
         return Err(SpawnError::Setup(format!(
@@ -975,13 +913,9 @@ pub fn run_in_zone(
         )));
     }
 
-    // The zone's network namespace now exists and nothing runs in it. A root
-    // launch builds the topology from OUTSIDE, here, before the zone becomes
-    // anything: the nic zone takes the physical interface and gets the
-    // bridge; a routed zone gets an isolated port on that bridge and an eth0
-    // addressed from its identity. A failure to attach is not fatal - the
-    // zone starts with loopback only, fail-closed - except for the nic zone,
-    // where a NIC that could not be moved must not be left half-configured.
+    /* A root launch plumbs the new, still idle network namespace from outside
+     * (netzone.rs). A routed zone that fails to attach starts with loopback
+     * only; a nic zone that fails is stopped, not left half-configured. */
     let mut plumbed = false;
     if id.privileged && zone.network != crate::zone::NetworkMode::None {
         match crate::netlink::open_netns_of(pid) {
@@ -1009,8 +943,7 @@ pub fn run_in_zone(
         }
     }
 
-    // Map the child's root to the zone identity. This is what makes "root
-    // inside the zone" mean root in a namespace that owns nothing outside it.
+    // Map the child's root to the zone identity: this is the privilege drop.
     if let Err(e) = isolate::write_id_maps(pid, id.uid, id.gid, id.privileged) {
         // Close our end so the child reads EOF and dies rather than blocking.
         mapped.close_write();
@@ -1022,19 +955,14 @@ pub fn run_in_zone(
     mapped.signal_byte(if plumbed { 2 } else { 1 });
     mapped.close_write();
 
-    // The zone's pid 1, as the host sees it. Read before waitpid because the
-    // intermediate sends it as soon as it has forked; EOF means the zone died
-    // during setup and the failure is reported below, not here.
+    // EOF means setup failed, which is reported below.
     let init_pid = initpid.read_i32();
     if let Some(zp) = init_pid {
-        // set_init already treats a pid that vanished as Ok; an Err here is
-        // a registry write that failed, after which every transfer into the
-        // zone reports "still starting" with nothing saying why.
+        // Unrecorded, every transfer into the zone would say "still starting" with no reason.
         if let Err(e) = entry.set_init(zp) {
             eprintln!("kryptikd: registry: could not record pid 1 of zone {}: {e}", zone.name);
         }
-        // Readiness, for the launch daemon: the zone's pid 1 exists, so
-        // every setup step before it succeeded. Written once, then closed.
+        // Readiness for the launch daemon: every setup step before pid 1 succeeded.
         if let Some(fd) = opts.ready_fd {
             unsafe {
                 libc::write(fd, "ready\n".as_ptr() as *const libc::c_void, 6);
@@ -1043,12 +971,9 @@ pub fn run_in_zone(
         }
     }
 
-    // The broker serves this zone until it exits. A transfer must know the
-    // zone's data mount as the zone sees it (/home/<zone>, through its pid
-    // 1's root) so that only files from there are accepted.
-    // Asked at request time, not here: pid 1 exists before its root is
-    // built, and a request can only arrive once the zone runs. Unknown
-    // means every transfer is refused.
+    /* Transfers accept only files on the zone's data mount, looked up through
+     * pid 1's root at request time (the root is built after pid 1 exists).
+     * Unknown means every transfer is refused. */
     let zone_name = zone.name.clone();
     let home_dev = move || -> Option<u64> {
         let zp = init_pid?;
@@ -1065,13 +990,13 @@ pub fn run_in_zone(
         auto_approve: opts.auto_approve_transfers,
         max_bytes: broker::TRANSFER_MAX,
         resolve_dest: &broker::registry_target,
+        // Replaced by serve_until_exit with the launcher's own turn.
+        asking: &crate::consent::keep,
     };
-    let status = serve_until_exit(pid, broker_fd, &served)?;
+    let status = serve_until_exit(pid, broker_fd, &served, zone_out)?;
     unsafe { libc::close(broker_fd) };
     let _ = std::fs::remove_file(&broker_path);
-    // The zone is gone (its pid namespace with it): unmount its data and
-    // close the mapping. dm-crypt frees the volume key in the kernel on
-    // close; that is what "keys wiped on stop" means, and all it means.
+    // dm-crypt frees the volume key on close: that is all "keys wiped on stop" means.
     if let Some(o) = opened_volume.take() {
         match o.close() {
             Ok(()) => eprintln!("kryptikd: zone {:?}: volume closed; its key is gone from the kernel", zone.name),
@@ -1079,16 +1004,13 @@ pub fn run_in_zone(
         }
     }
 
-    // Remove the cgroup here rather than leaving it to Drop. Drop still covers
-    // every early return above, but it has nowhere to report to, and the one
-    // failure that matters is worth reporting: rmdir returns EBUSY while any
-    // process remains, so a cgroup that will not go away means something in
-    // the zone outlived the launcher. Cleaning that up silently is how a
-    // survivor holding the zone's files goes unnoticed.
+    /* Removed here rather than by Drop so a failure is reported: EBUSY means
+     * something in the zone outlived the launcher. */
     if let Some(cg) = &zone_cgroup {
         if let Err(e) = cg.destroy() {
             eprintln!(
-                "kryptikd[zone {}]: the zone's cgroup could not be removed ({e});                  something in the zone may have outlived the launcher",
+                "kryptikd[zone {}]: the zone's cgroup could not be removed ({e}); \
+                 something in the zone may have outlived the launcher",
                 zone.name
             );
         }
@@ -1097,15 +1019,11 @@ pub fn run_in_zone(
     Ok(decode_status(status))
 }
 
-/// The exit code a wait status stands for, the way a shell reports it.
-///
-/// The one decoder in the crate: main.rs's seccomp probes decode the same
-/// status and used to carry their own copies of this arithmetic, untested.
+/// The exit code a wait status stands for, as a shell reports it.
 pub(crate) fn decode_status(status: libc::c_int) -> i32 {
     if (status & 0x7f) == 0 {
         (status >> 8) & 0xff
     } else {
-        // Killed by a signal; report it the way a shell does.
         128 + (status & 0x7f)
     }
 }
@@ -1144,36 +1062,11 @@ fn intermediate_main(
 
     rootfs::ensure_stdio();
 
-    // 1. Identity. THE ID MAP IS THE DROP - see docs/design/privileged-launch.md.
-    //
-    //    This used to call setresuid/setresgid to the zone's host identity
-    //    here, before creating the user namespace, on the reasoning that the
-    //    namespace should not be created by root. Wiring the security
-    //    review's own contract probe into the VM proved that cannot work: a kernel with
-    //    CONFIG_USER_NS_UNPRIVILEGED off (which is the kernel Kryptik intends
-    //    to ship) refuses unshare(CLONE_NEWUSER) from a process without
-    //    CAP_SYS_ADMIN in the initial namespace - so the process this code had
-    //    just made unprivileged was exactly the case the kernel refuses, and
-    //    no zone started at all. The kernel's own audit record named kryptikd.
-    //
-    //    The early switch was also not buying what it looked like it bought.
-    //    What makes the zone's root a harmless host uid N is the uid_map the
-    //    parent writes; the creator's identity only decides who OWNS the
-    //    namespace, and a root-owned user namespace gives root nothing it did
-    //    not already have. So: create the namespace as root, and let the map
-    //    do the dropping.
-    //
-    //    Supplementary groups still go before the unshare, and still fatally:
-    //    they are not covered by the map, and CAP_SETGID is needed to drop
-    //    them, which this process has here and will not have after.
-    //
-    //    The cost, named rather than hidden: between the unshare below and the
-    //    setresuid(0,0,0) at step 5, this process is host euid 0 inside a fresh
-    //    user namespace. It does nothing in that window but wait on a pipe.
-    //
-    //    Unprivileged, the kernel only lets us map our own uid, and setgroups
-    //    needs CAP_SETGID we do not have - so the host groups come along. They
-    //    are named rather than hidden.
+    /* The id map is the privilege drop (docs/design/privileged-launch.md), so
+     * the namespace is created as root: the target kernel refuses
+     * unshare(CLONE_NEWUSER) without CAP_SYS_ADMIN in the initial namespace.
+     * Supplementary groups are outside the map and need CAP_SETGID, so they go
+     * now: fatally when privileged; an unprivileged launch keeps them and says so. */
     if id.privileged {
         if let Err(e) = isolate::drop_supplementary_groups() {
             bail!("setgroups: {e}");
@@ -1189,21 +1082,9 @@ fn intermediate_main(
         }
     }
 
-    // 2. Die with the parent.
-    //
-    //    Armed here AND again at step 5, because the kernel clears
-    //    PR_SET_PDEATHSIG on any credential change (commit_creds drops it when
-    //    the euid or egid moves). That used to be free: the identity switch
-    //    happened above this point, so nothing after it changed credentials.
-    //    Removing that switch so the id map would do the drop silently
-    //    disarmed the whole
-    //    mechanism - SIGKILLing a launcher left its zone running, which the
-    //    suite caught as "2 zone process(es) outlived a SIGKILLed launcher"
-    //    and then as a dozen zones that would not start because the registry
-    //    correctly said they were already running.
-    //
-    //    Checked against the recorded parent pid to close the window in which
-    //    the parent died before the prctl.
+    /* Die with the parent. Armed again after the setresuid below: the kernel
+     * clears PR_SET_PDEATHSIG when euid or egid changes (commit_creds). The
+     * getppid check covers a parent that died before the prctl. */
     if let Err(e) = isolate::die_with_parent() {
         bail!("prctl(PR_SET_PDEATHSIG): {e}");
     }
@@ -1211,17 +1092,9 @@ fn intermediate_main(
         return 125;
     }
 
-    // 2b. Wait until the parent has placed us in the zone's cgroup.
-    //
-    //     This MUST precede the unshare below. CLONE_NEWCGROUP roots our
-    //     cgroup namespace at whichever cgroup we occupy at that instant, so a
-    //     process moved afterwards is still limited - enforcement is by
-    //     membership, not by namespace - but its own /proc/self/cgroup then
-    //     describes a path outside its namespace root, and a zone that cannot
-    //     name its own cgroup cannot manage sub-cgroups later.
-    //
-    //     EOF means the parent failed before it could place us; it has already
-    //     said why.
+    /* Be placed in the zone's cgroup before the unshare: CLONE_NEWCGROUP roots
+     * the cgroup namespace at the current cgroup, and a zone rooted elsewhere
+     * cannot name its own cgroup. */
     if let Err(e) = placed.wait() {
         bail!("parent did not place the zone in its cgroup: {e}");
     }
@@ -1229,15 +1102,8 @@ fn intermediate_main(
 
     let flags = isolate::namespace_flags(zone);
 
-    // 3. Enter the new namespaces.
     if let Err(e) = isolate::unshare_namespaces(flags) {
-        // Refusals are named: when the kernel refuses, say which restriction is refusing,
-        // because "Permission denied" on a machine whose administrator turned
-        // unprivileged user namespaces off is otherwise a half-hour of
-        // guessing. The two cases need different sentences: an unprivileged
-        // caller is hitting the restriction the way it is meant to work, while
-        // a root caller being refused means something is confining kryptikd
-        // itself.
+        // Name the likely cause of EPERM: the userns restriction if unprivileged, an LSM if root.
         if matches!(e, isolate::IsolateError::Syscall { errno, .. } if errno == libc::EPERM) {
             if unsafe { libc::geteuid() } != 0 {
                 eprintln!(
@@ -1258,12 +1124,9 @@ fn intermediate_main(
         bail!("unshare: {e}");
     }
 
-    // 3a. The network namespace must be empty: loopback and nothing else.
-    //     The parent has already dealt with the kernel's fallback tunnel
-    //     devices (net.core.fb_tunnels_only_for_init_net), so anything here
-    //     now is a device this zone was never given. A privileged launch
-    //     will not start a zone in a namespace it did not build; a developer
-    //     launch, which cannot change the sysctl, says what it found.
+    /* The new network namespace must hold only loopback. A privileged launch
+     * refuses anything else; a developer launch, which cannot set the
+     * fallback-tunnel sysctl, says what it found. */
     if flags & libc::CLONE_NEWNET != 0 {
         match netzone::devices_besides_lo() {
             Ok(devs) if !devs.is_empty() => {
@@ -1291,17 +1154,10 @@ fn intermediate_main(
         }
     }
 
-    // 3b. Open the broker socket NOW: this process has its own mount namespace
-    //     (so a bind from /proc/self/fd resolves in it) and is still root (so
-    //     it can traverse the 0700 registry). Neither is true later - the
-    //     identity switch at step 5 is one-way, and the zone must not be given
-    //     a path it could not open for itself.
-    //
-    //     O_PATH because nothing reads or writes the socket here; the fd only
-    //     names the inode for the bind. Not CLOEXEC: it has to survive the
-    //     fork at step 7 into the process that builds the root. It is closed
-    //     by zone_init's descriptor sweep (rootfs::close_inherited_fds), not
-    //     by the exec: the sweep is what keeps it out of the zone.
+    /* Open the broker socket while this process has its own mount namespace (so
+     * a bind from /proc/self/fd works) and is still host root (so it can walk
+     * the 0700 registry). O_PATH names the inode for the bind; pid 1 inherits it
+     * and zone_init's descriptor sweep closes it before the exec. */
     let broker_fd_for_zone = {
         let c = match std::ffi::CString::new(broker_path) {
             Ok(c) => c,
@@ -1314,15 +1170,10 @@ fn intermediate_main(
         fd
     };
     let broker_in_zone = format!("/proc/self/fd/{broker_fd_for_zone}");
-    // Same for the Wayland proxy socket, when there is one - opened HERE,
-    // in the zone's own mount namespace (a descriptor from the daemon's
-    // namespace cannot be bind-mounted from this one), walking the path
-    // without following a single symlink, and refusing any inode but the
-    // one the daemon verified. On a privileged launch the path is the
-    // staging bind in the zone's registry entry (StagedSocket): root's own
-    // directory, which this process - host uid 0 with no capability the
-    // host honours, since the unshare - still walks by ownership. The
-    // session's runtime directory it could not: 0700 and not its own.
+    /* The Wayland socket likewise, walked without following symlinks and
+     * checked against the verified inode. On a privileged launch the path is
+     * the StagedSocket bind in the registry entry, which host uid 0 walks by
+     * ownership. */
     let wayland_in_zone: Option<String> = match wayland_path {
         None => None,
         Some(p) => {
@@ -1332,17 +1183,15 @@ fn intermediate_main(
             };
             if let Some(want) = wayland_inode {
                 let mut st: libc::stat = unsafe { std::mem::zeroed() };
-                if unsafe { libc::fstat(fd.raw(), &mut st) } < 0 {
+                if unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } < 0 {
                     bail!("wayland socket {}: fstat: {}", p, io::Error::last_os_error());
                 }
                 if !want.matches(&st) {
                     bail!("wayland socket {} is not the socket the launch daemon verified (inode changed)", p);
                 }
             }
-            // Not CLOEXEC, for the same reason as the broker's: it must
-            // survive into the process that builds the root, and it is
-            // closed by the descriptor sweep, not the exec.
-            let raw = fd.into_raw();
+            // Like the broker's: pid 1 inherits it and the descriptor sweep closes it.
+            let raw = fd.into_raw_fd();
             unsafe {
                 let fl = libc::fcntl(raw, libc::F_GETFD);
                 libc::fcntl(raw, libc::F_SETFD, fl & !libc::FD_CLOEXEC);
@@ -1351,10 +1200,7 @@ fn intermediate_main(
         }
     };
 
-    // 4. Tell the parent we are in the new namespace, then wait for it to
-    //    write uid_map/gid_map. Until those exist we are nobody (65534) and
-    //    cannot mount anything or become root. EOF here means the parent
-    //    failed or died; either way there is no zone to build.
+    // Until the parent writes our id maps we are nobody (65534) and cannot become root.
     ready.signal();
     ready.close_write();
     let plumbed = match mapped.wait_byte() {
@@ -1363,7 +1209,7 @@ fn intermediate_main(
     };
     mapped.close_read();
 
-    // 5. Become root in the new user namespace.
+    // Become root in the new user namespace.
     if unsafe { libc::setresuid(0, 0, 0) } < 0 {
         bail!("setresuid: {}", io::Error::last_os_error());
     }
@@ -1371,42 +1217,19 @@ fn intermediate_main(
         bail!("setresgid: {}", io::Error::last_os_error());
     }
 
-    // 5b. Re-arm PR_SET_PDEATHSIG: the two calls above just cleared it. This
-    //     is the one that actually matters, because everything the zone does
-    //     from here on is after it - and without it a launcher killed with
-    //     SIGKILL (which it cannot catch, so it can clean up nothing) leaves
-    //     the zone running with nobody supervising it.
+    // Re-arm PR_SET_PDEATHSIG, which the credential change just cleared.
     if let Err(e) = isolate::die_with_parent() {
         bail!("prctl(PR_SET_PDEATHSIG) after the id switch: {e}");
     }
-    // And check again: the parent may have died between step 2's check and
-    // now, in which case the signal we just re-armed will never be delivered.
+    // A parent that died since the first check will never send the signal.
     if unsafe { libc::getppid() } != parent_pid {
         return 125;
     }
 
-    // 5c. A core-scheduling cookie of this zone's own. Every task forked from
-    //     here - pid 1, everything it runs - inherits it, so a core's sibling
-    //     hardware threads run this zone's tasks or nothing: not another
-    //     zone's, not the kernel's. Sitting on a sibling of the victim is
-    //     the position the CPU side channels need; ADR-011 takes the
-    //     siblings away altogether (mitigations=auto,nosmt) until every zone
-    //     has this, and this is what lets SMT come back later.
-    //
-    //     What a refusal means is decided by what the machine is, asked of
-    //     the kernel, not by the errno:
-    //     - no core has a second thread online (ENODEV), which under nosmt is
-    //       every installed Kryptik: there is no sibling to share, so nothing
-    //       is missing and nothing is said. (Treating that answer as fatal
-    //       once stopped every zone on the installed system, and only there:
-    //       the machines the suites run on have SMT or no CONFIG_SCHED_CORE.)
-    //     - a kernel without the feature (EINVAL), as on the developer VM and
-    //       most hosts: a note in the zone's log, since none of the zone's
-    //       other boundaries depends on it.
-    //     - sibling threads are online and the kernel schedules them by
-    //       cookie: the cookie is then the one thing between this zone and
-    //       another on the same core, and a zone that cannot have one (out of
-    //       memory, in practice) does not start.
+    /* A core-scheduling cookie of the zone's own, inherited by everything it
+     * runs, so a core's sibling threads never run another zone's tasks (ADR-011).
+     * A refusal is judged by the machine, not the errno: with no SMT online it
+     * is fine, without kernel support it is noted, with siblings online fatal. */
     if let Err(e) = isolate::take_core_cookie() {
         match isolate::core_scheduling() {
             isolate::CoreSched::NoSmt => {}
@@ -1419,35 +1242,38 @@ fn intermediate_main(
         }
     }
 
-    // 6. The zone's hostname is the zone's name. The UTS namespace is new,
-    //    but a new UTS namespace starts with the HOST's hostname in it.
+    // A new UTS namespace starts with the host's hostname.
     if let Err(e) = isolate::set_hostname(&zone.name) {
         bail!("sethostname: {e}");
     }
 
-    // 7. CLONE_NEWPID does not move the CALLER into the new pid namespace -
-    //    only its children. Fork so the grandchild becomes pid 1 there. Without
-    //    this the zone shares the host pid namespace despite having asked for
-    //    its own, and /proc shows every process on the machine.
+    /* pid 1 cannot check its parent as this process checked its own: across
+     * the pid namespace getppid() is 0. It watches this pipe instead, whose
+     * write end only this process holds, and which closes when it dies. */
+    let alive = match SyncPipe::new() {
+        Ok(p) => p,
+        Err(e) => bail!("{e}"),
+    };
+
+    // CLONE_NEWPID moves only the caller's children, so fork to get pid 1.
     let inner = unsafe { libc::fork() };
     if inner < 0 {
         bail!("fork: {}", io::Error::last_os_error());
     }
 
     if inner == 0 {
-        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, fs_rules, plumbed, &broker_in_zone, wayland_in_zone.as_deref(), wifi_conf);
+        alive.close_write();
+        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, fs_rules, plumbed, &broker_in_zone, wayland_in_zone.as_deref(), wifi_conf, &alive);
         unsafe { libc::_exit(rc) };
     }
+    alive.close_read();
 
-    // Supervise pid 1 of the zone: forward signals, SIGKILL it if it ignores
-    // them (pid 1 of a namespace ignores every signal from inside it that it
-    // has no handler for, so a forwarded SIGTERM alone may do nothing), and
-    // mirror its exit code.
-    // Tell the parent the zone's pid 1 before waiting on it: the parent needs
-    // it for the registry, and once we block in wait_for we cannot.
+    // The parent needs pid 1 for the registry; send it before blocking in wait_for.
     initpid.write_i32(inner);
     initpid.close_write();
 
+    /* Forward signals to pid 1 and SIGKILL it after GRACE_SECS: pid 1 of a pid
+     * namespace ignores signals it has no handler for, but not SIGKILL from here. */
     install_forwarding(inner, true);
     match wait_for(inner) {
         Ok(status) => decode_status(status),
@@ -1470,6 +1296,7 @@ fn zone_init(
     broker_path: &str,
     wayland_path: Option<&str>,
     wifi_conf: Option<&str>,
+    alive: &SyncPipe,
 ) -> i32 {
     macro_rules! bail {
         ($($arg:tt)*) => {{
@@ -1478,31 +1305,26 @@ fn zone_init(
         }};
     }
 
-    // 8. If the intermediate dies, so does the zone - and with pid 1 gone the
-    //    kernel reaps the whole pid namespace.
+    // If the intermediate dies so does pid 1, and with it the whole pid namespace.
     if let Err(e) = isolate::die_with_parent() {
         bail!("prctl(PR_SET_PDEATHSIG): {e}");
     }
+    /* An intermediate that died before the prctl never sends the signal. A
+     * dying process closes its files before it signals its children, so no
+     * hang-up here means the signal is still to come. */
+    if alive.peer_gone() {
+        return 125;
+    }
+    alive.close_read();
 
-    // 9. Replace the root with a tree containing only what this zone should
-    //    see. This is the actual containment boundary; everything below is
-    //    defense in depth over it.
-    //
-    //    Before this existed, zones ran in the caller's mount namespace with
-    //    Landlock as the only filesystem control, and a review escaped it two
-    //    ways without a kernel bug: an inherited descriptor read a file
-    //    outside the zone, and chmod changed the mode of one. Both worked
-    //    because those paths still EXISTED here. A permission layer cannot fix
-    //    reachability.
+    /* A root holding only what this zone should see: the containment boundary.
+     * Everything after it is defense in depth. */
     let ephemeral = match zone.storage {
         StorageMode::Ephemeral => zone.size.as_deref(),
-        // Both of these bind the zone's own directory at $HOME. They differ in
-        // what protects it at rest, which is not this call's business: None
-        // here means "the data directory IS the home", not "unencrypted".
+        // None: the data directory is the home, encrypted or not.
         StorageMode::Encrypted | StorageMode::Persistent => None,
     };
-    // /etc/resolv.conf follows the path the parent built, not the mode the
-    // file declares: a routed zone with no path names no resolver.
+    // resolv.conf follows the path the parent built, not the declared mode.
     let resolver = match (zone.network, plumbed) {
         (crate::zone::NetworkMode::Nic, true) => rootfs::Resolver::Writable,
         (crate::zone::NetworkMode::Routed, true) => rootfs::Resolver::Bridge,
@@ -1513,51 +1335,33 @@ fn zone_init(
         Err(e) => bail!("could not build the zone root: {e}"),
     };
 
-    // 10. Loopback, for zones that have a network namespace at all.
     if flags & libc::CLONE_NEWNET != 0 {
         if let Err(e) = isolate::bring_up_loopback() {
             eprintln!("kryptikd[zone {}]: warning: lo did not come up: {e}", zone.name);
         }
     }
 
-    // 11. Filesystem confinement, now over a tree that contains only the zone.
-    //     Read+exec everywhere, write only in the places named in
-    //     landlock::zone_rules - so the read-only mounts are denied write by
-    //     two independent mechanisms, which is what "defense in depth" has to
-    //     mean if it means anything.
-    //     The nic zone alone also writes the two state mounts pivot_into gave
-    //     it (/run, /var/lib); see landlock::nic_zone_rules. The condition
-    //     is the one pivot_into used: a nic-mode zone that was NOT plumbed
-    //     (unprivileged, nothing moved in) has no such mounts, and a
-    //     required rule on a path that is not there would refuse the zone.
+    /* Landlock over the pivoted tree: writes only where landlock::zone_rules
+     * allow, so read-only mounts are denied twice. A plumbed nic zone also
+     * writes its /run and /var/lib (nic_zone_rules); the condition must match
+     * pivot_into's, or a rule on a missing path would refuse the zone. */
     if let Err(e) = landlock::confine_pivoted_zone(&home, resolver == rootfs::Resolver::Writable) {
         bail!("landlock: {e}");
     }
-    // 11b. The zone's own policy file, as a SECOND layer. Layers intersect,
-    //      so this can only narrow what step 11 allowed - a zone file cannot
-    //      hand itself anything, and the kernel is what guarantees that.
+    // The zone's policy file is a second layer; the kernel intersects layers, so it can only narrow.
     if !fs_rules.is_empty() {
         if let Err(e) = landlock::confine_further(fs_rules) {
             bail!("landlock policy: {e}");
         }
     }
 
-    // 12. Close every descriptor above stderr.
-    //
-    //     The other half of the inherited-descriptor escape. pivot_root does
-    //     NOT fix this on its own: a descriptor that was already open keeps
-    //     working no matter what the mount namespace now looks like.
-    rootfs::close_inherited_fds();
+    // Close every descriptor above stderr: an open descriptor still works after pivot_root.
+    if let Err(e) = rootfs::close_inherited_fds() {
+        bail!("close_range: {e}");
+    }
 
-    // 13. An explicit environment. Nothing from the caller reaches the zone
-    //     unless it is on the allowlist and looks like what it claims to be.
-    //
-    //     One walk of the environment, as OsStrings, and every variable in it
-    //     is removed. Only the UTF-8 subset can be matched against the
-    //     allowlist; the rest is not skipped, it is removed with everything
-    //     else. (std::env::vars() would have panicked on a non-UTF-8 name or
-    //     value, in the zone's pid 1, and a second walk with vars_os() did
-    //     the removal.)
+    /* Rebuild the environment from the allowlist. Every variable is removed;
+     * walked as OsStrings because std::env::vars() panics on non-UTF-8. */
     let all: Vec<(std::ffi::OsString, std::ffi::OsString)> = std::env::vars_os().collect();
     let caller: Vec<(String, String)> = all
         .iter()
@@ -1571,33 +1375,15 @@ fn zone_init(
         std::env::set_var(k, v);
     }
 
-    // 14. Syscall filtering, LAST. It must come after every privileged setup
-    //     step above, because mount() and friends are not in the allowlist -
-    //     installing the filter earlier would kill the zone during its own
-    //     construction.
-    // Drop the capability bounding set, keeping only CAP_NET_BIND_SERVICE.
-    //
-    // AFTER every privileged step - the mounts and pivot_root above need
-    // CAP_SYS_ADMIN - and BEFORE exec, so the payload can never acquire what
-    // this removes, including through a file capability on a binary it can
-    // reach.
-    //
-    // Inside its own user namespace the zone's root has held a full set. Every
-    // capability-gated syscall that reaches outside the namespace is already
-    // denied by the filter installed below, so the set has been inert - but it
-    // stops being inert the moment a zone owns one end of a veth, where
-    // CAP_NET_ADMIN and CAP_NET_RAW let a compromised zone re-address its link
-    // and open a raw socket on the segment it shares with the bridge. The
-    // security review calls this a precondition for routed networking rather
-    // than a follow-up to it.
-    //
-    // Fatal on failure: a zone that starts with a fuller set than the operator
-    // asked for is the failure this project exists to avoid.
+    /* Drop the bounding set after the privileged steps (the mounts and
+     * pivot_root need CAP_SYS_ADMIN) and before exec, so the command cannot
+     * regain a capability, even through a file capability. Fatal on failure. */
     let keep: &[libc::c_int] = zone_policy.map(|p| p.keep_caps.as_slice()).unwrap_or(&[]);
     if let Err(e) = caps::drop_bounding_set_except(keep) {
         bail!("could not drop the capability bounding set: {e}");
     }
 
+    // seccomp last: mount() and the other setup calls are not in its allowlist.
     let installed = match zone_policy {
         Some(p) => seccomp::confine_zone_with(&p.extra_syscalls, &p.sockets),
         None => seccomp::confine_zone(),
@@ -1606,7 +1392,6 @@ fn zone_init(
         bail!("seccomp: {e}");
     }
 
-    // 15. Hand off.
     let prog = match CString::new(argv[0].as_str()) {
         Ok(c) => c,
         Err(_) => bail!("command contains a NUL byte"),
@@ -1632,31 +1417,24 @@ fn zone_init(
 
 // --- environment ------------------------------------------------------------
 
-/// Caller variables a zone may inherit, if their values are well-formed.
-/// Everything else - tokens, agent sockets, LD_*, XDG_*, the caller's HOME
-/// and PATH, KRYPTIK_EXPERIMENTAL - is dropped.
+/// Caller variables a zone may inherit, if well-formed; everything else is dropped.
 pub const ENV_PASSTHROUGH: &[&str] = &[
     "TERM", "COLORTERM", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_COLLATE",
     "LC_MESSAGES", "LC_NUMERIC", "LC_TIME", "LC_MONETARY", "LC_PAPER", "LC_NAME",
     "LC_ADDRESS", "LC_TELEPHONE", "LC_MEASUREMENT", "LC_IDENTIFICATION",
 ];
 
-/// A value fit for a locale or terminal name: short, printable, no shell or
-/// path metacharacters. Anything else is dropped rather than sanitized.
+/// A value fit for a locale or terminal name: short, with no shell or path
+/// metacharacters. Anything else is dropped, not sanitized.
 pub fn env_value_is_sane(v: &str) -> bool {
     !v.is_empty()
         && v.len() <= 64
         && v.chars().all(|c| c.is_ascii_alphanumeric() || "._+:@-".contains(c))
 }
 
-/// The complete environment the zone's command starts with.
-pub fn zone_environment(zone: &Zone, home: &str, caller: &[(String, String)]) -> Vec<(String, String)> {
-    zone_environment_with(zone, home, caller, false)
-}
-
-/// With a display: WAYLAND_DISPLAY names the proxy socket by absolute path
-/// (libwayland accepts that without XDG_RUNTIME_DIR), and XDG_RUNTIME_DIR
-/// is the zone's own tmpfs so clients that insist on one have one.
+/// The complete environment the zone's command starts with. With a display,
+/// WAYLAND_DISPLAY is the socket's absolute path (libwayland needs no
+/// XDG_RUNTIME_DIR then) and XDG_RUNTIME_DIR is the zone's /tmp.
 pub fn zone_environment_with(zone: &Zone, home: &str, caller: &[(String, String)], wayland: bool) -> Vec<(String, String)> {
     let mut env = zone_environment_base(zone, home, caller);
     if wayland {
@@ -1681,8 +1459,7 @@ fn zone_environment_base(zone: &Zone, home: &str, caller: &[(String, String)]) -
             env.push((k.clone(), v.clone()));
         }
     }
-    // A UTF-8 locale by default: without LANG, Python and friends fall back
-    // to ASCII and choke on non-ASCII filenames. C.UTF-8 names no country.
+    // Without LANG, Python and others fall back to ASCII; C.UTF-8 names no country.
     if !env.iter().any(|(k, _)| k == "LANG") {
         env.push(("LANG".into(), "C.UTF-8".into()));
     }
@@ -1703,8 +1480,6 @@ pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String
             zone.transfer_to.join(", ")
         )
     };
-    // Asked of this kernel, not assumed: the launch takes the cookie where
-    // the feature exists and notes its absence where it does not.
     let core_line = match isolate::core_scheduling() {
         isolate::CoreSched::Cookies => "core sched own cookie: a core's sibling threads run this zone's tasks or nothing",
         isolate::CoreSched::NoSmt => "core sched no sibling threads online (nosmt): no core is shared with anything",
@@ -1719,8 +1494,7 @@ pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String
         Some((rel, Ok(p))) => format!("policy     {rel}: {}", p.describe()),
         Some((rel, Err(e))) => format!("policy     {rel}: ERROR - {e} (the zone will not start)"),
     };
-    // The capability line must say what the ZONE gets, which depends on its
-    // policy: a static "NET_BIND_SERVICE only" was wrong for the nic zone.
+    // What the zone keeps depends on its policy (the nic zone keeps more).
     let caps_line = match &loaded {
         Some((_, Ok(p))) if !p.keep_cap_names.is_empty() => format!(
             "caps       bounding set: CAP_NET_BIND_SERVICE + {} (kept by policy)",
@@ -1728,21 +1502,7 @@ pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String
         ),
         _ => "caps       bounding set dropped to CAP_NET_BIND_SERVICE only".to_string(),
     };
-    let flags = isolate::namespace_flags(zone);
-    let mut ns = Vec::new();
-    for (f, n) in [
-        (libc::CLONE_NEWUSER, "user"),
-        (libc::CLONE_NEWNS, "mount"),
-        (libc::CLONE_NEWPID, "pid"),
-        (libc::CLONE_NEWIPC, "ipc"),
-        (libc::CLONE_NEWUTS, "uts"),
-        (libc::CLONE_NEWCGROUP, "cgroup"),
-        (libc::CLONE_NEWNET, "net"),
-    ] {
-        if flags & f != 0 {
-            ns.push(n);
-        }
-    }
+    let ns = isolate::namespace_names(isolate::namespace_flags(zone));
 
     let storage = match zone.storage {
         StorageMode::Encrypted => format!(
@@ -1785,10 +1545,7 @@ pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String
             .to_string(),
     };
 
-    // For an ephemeral zone the persistent directory is NOT visible inside -
-    // that is the whole change - so the line must not keep claiming it is. It
-    // is still worth printing, because it is the directory that must be empty
-    // for the zone to start at all.
+    // An ephemeral zone cannot see its data directory, which must be empty for it to start.
     let data_line = match zone.storage {
         StorageMode::Ephemeral => format!(
             "data dir   {rootfs} (NOT visible inside; must be empty for the zone to start)"
@@ -1879,10 +1636,77 @@ mod tests {
     use super::*;
     use crate::zone::Zone;
 
+    /// A relay with no descriptor behind it: only `take` and `flush` are used.
+    fn relayed(chunks: &[&[u8]]) -> Vec<String> {
+        let mut lines = Vec::new();
+        let mut o = std::mem::ManuallyDrop::new(ZoneOutput::new(-1, "work"));
+        for c in chunks {
+            o.take(c, &mut |l| lines.push(l.to_string()));
+        }
+        o.flush(&mut |l| lines.push(l.to_string()));
+        lines
+    }
+
+    #[test]
+    fn zone_output_is_prefixed_and_sanitized() {
+        // Every line is marked, and a line split across reads stays one line.
+        assert_eq!(
+            relayed(&[b"kryptikd[zone work]: broker served \"steal\"\nhal", b"f\n"]),
+            ["zone work| kryptikd[zone work]: broker served \"steal\"", "zone work| half"]
+        );
+        // Escapes and carriage returns are replaced.
+        assert_eq!(relayed(&[b"\x1b[2Jgone\rtab\there\n"]), ["zone work| ?[2Jgone?tab\there"]);
+        // A line with no end is cut at ZONE_LINE_MAX.
+        let long = vec![b'a'; ZONE_LINE_MAX * 2 + 5];
+        let got = relayed(&[&long]);
+        assert_eq!(got.iter().map(|l| l.len() - "zone work| ".len()).collect::<Vec<_>>(), [ZONE_LINE_MAX, ZONE_LINE_MAX, 5]);
+        // Past the bound nothing more is logged, and it says so once.
+        let flood = vec![b'x'; ZONE_OUTPUT_MAX + 4096];
+        let got = relayed(&[&flood, b"more\n"]);
+        let logged: usize = got.iter().filter(|l| !l.contains("is not logged")).map(|l| l.len() - "zone work| ".len()).sum();
+        assert_eq!(logged, ZONE_OUTPUT_MAX);
+        assert_eq!(got.iter().filter(|l| l.contains("is not logged")).count(), 1);
+        assert!(!got.iter().any(|l| l.contains("more")));
+    }
+
+    #[test]
+    fn peer_gone_after_close() {
+        let p = SyncPipe::new().unwrap();
+        assert!(!p.peer_gone(), "an open write end reads as a hang-up");
+        p.close_write();
+        assert!(p.peer_gone(), "a closed write end is not seen");
+        p.close_read();
+    }
+
+    #[test]
+    fn pump_reads_bounded_amount() {
+        /* A zone that never stops writing must not keep one pump from
+         * returning: fill the pipe past one pass and check the rest is left. */
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) }, 0);
+        let (r, w) = (fds[0], fds[1]);
+        let size = unsafe { libc::fcntl(w, libc::F_SETPIPE_SZ, 1 << 20) };
+        let size = if size > 0 { size as usize } else { 65536 };
+        let chunk = [b'y'; 4096];
+        let mut written = 0usize;
+        while written + chunk.len() <= size {
+            let n = unsafe { libc::write(w, chunk.as_ptr() as *const libc::c_void, chunk.len()) };
+            if n <= 0 { break; }
+            written += n as usize;
+        }
+        let one_pass = ZONE_READS_PER_PUMP * 4096;
+        assert!(written > one_pass, "the pipe took {written} bytes, not more than one pass ({one_pass})");
+        let mut o = std::mem::ManuallyDrop::new(ZoneOutput::new(r, "work"));
+        assert!(o.pump(&mut |_: &str| {}), "the writer is still there");
+        let mut left: libc::c_int = 0;
+        assert_eq!(unsafe { libc::ioctl(r, libc::FIONREAD, &mut left) }, 0);
+        assert_eq!(left as usize, written - one_pass, "one pass read {} bytes, not {one_pass}", written - left as usize);
+        unsafe { libc::close(w); libc::close(r) };
+    }
+
     fn z(mode: &str) -> Zone {
-        let bridge = if mode == "nic" { "bridge = \"kryptik0\"\n" } else { "" };
         Zone::from_str(&format!(
-            "[zone]\nname = \"t\"\n[network]\nmode = \"{mode}\"\n{bridge}\
+            "[zone]\nname = \"t\"\n[network]\nmode = \"{mode}\"\n\
              [storage]\nmode = \"ephemeral\"\nsize = \"256M\"\n[ui]\nborder_color = \"#123456\"\n"
         ))
         .unwrap()
@@ -1897,11 +1721,9 @@ mod tests {
         .unwrap()
     }
 
-    /// The plan says what core scheduling will do for this zone on this
-    /// kernel, in one of exactly three ways, and the way it picks is the one
-    /// the launch will take.
+    /// The line matches what the launch will do on this kernel.
     #[test]
-    fn explain_names_the_core_scheduling_state() {
+    fn explain_names_core_scheduling() {
         let e = explain(&z("none"), "/tmp/t", std::path::Path::new("/nonexistent"));
         let line = e.lines().find(|l| l.starts_with("core sched")).unwrap_or_else(|| panic!("no core sched line in:\n{e}"));
         let want = match isolate::core_scheduling() {
@@ -1912,15 +1734,10 @@ mod tests {
         assert!(line.contains(want), "{line}");
     }
 
-    /// A line written with `log_line` arrives whole even while something
-    /// else writes to the same pipe: the launcher and the zone it supervises
-    /// share one, and the installed system once read a broker reply out of
-    /// the middle of the launcher's line. Kernel-backed: two forked writers
-    /// on one pipe, one through `log_line` on its stderr, one with plain
-    /// single writes, a few thousand lines between them; every line the
-    /// reader gets must be exactly one writer's.
+    /// Two forked writers share one pipe, one of them through `log_line`;
+    /// every line read back must be one writer's, whole.
     #[test]
-    fn a_log_line_is_never_split_by_another_writer() {
+    fn log_line_is_never_split() {
         use std::io::Read;
         use std::os::unix::io::FromRawFd;
         const N: usize = 1500;
@@ -1977,7 +1794,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("policy")).unwrap();
         std::fs::write(dir.join("policy/n.seccomp"), "keep-capability CAP_NET_RAW\nkeep-capability CAP_NET_ADMIN\n").unwrap();
         let nic = Zone::from_str(
-            "[zone]\nname = \"n\"\n[network]\nmode = \"nic\"\nbridge = \"kryptik0\"\n\
+            "[zone]\nname = \"n\"\n[network]\nmode = \"nic\"\n\
              [storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n[policy]\nseccomp = \"policy/n.seccomp\"\n\
              [ui]\nborder_color = \"#123456\"\n",
         )
@@ -1998,15 +1815,13 @@ mod tests {
     }
 
     #[test]
-    fn explain_names_the_identity_range_or_its_absence() {
+    fn explain_names_identity_range() {
         assert!(explain(&z_identity(196608), "/tmp/t", std::path::Path::new("/nonexistent")).contains("uid_base 196608"));
         assert!(explain(&z("routed"), "/tmp/t", std::path::Path::new("/nonexistent")).contains("none declared"));
     }
 
     #[test]
-    fn explain_says_persistent_storage_is_not_encrypted() {
-        // The whole risk of this mode is that its name sounds like a safe
-        // place to put things. explain is where someone checks before they do.
+    fn explain_warns_persistent_unencrypted() {
         let z = Zone::from_str(
             "[zone]\nname = \"t\"\n[network]\nmode = \"none\"\n\
              [storage]\nmode = \"persistent\"\n[ui]\nborder_color = \"#123456\"\n",
@@ -2018,13 +1833,11 @@ mod tests {
             e.contains("kept between launches"),
             "and say what it DOES do, or the line reads as a pure warning: {e}"
         );
-        // The data directory is reachable from inside, unlike an ephemeral
-        // zone where naming it would be misleading.
+        // Unlike an ephemeral zone's, this data directory is visible inside.
         assert!(
             e.contains("/var/lib/kryptik/zones/t (visible inside as"),
             "the data line must place it: {e}"
         );
-        // And it must not borrow the encrypted mode's disclaimer.
         assert!(!e.contains("NOT YET IMPLEMENTED"), "persistent IS implemented: {e}");
     }
 
@@ -2038,34 +1851,23 @@ mod tests {
     }
 
     #[test]
-    fn rootfs_path_is_under_the_base() {
+    fn rootfs_path_is_under_base() {
         assert_eq!(zone_rootfs(&z("routed"), "/var/lib/kryptik/zones"),
                    "/var/lib/kryptik/zones/t");
     }
 
     #[test]
-    fn explain_names_the_namespaces_and_is_honest_about_storage() {
+    fn explain_names_namespaces_and_storage() {
         let e = explain(&z("none"), "/tmp/t", std::path::Path::new("/nonexistent"));
         assert!(e.contains("user"), "{e}");
         assert!(e.contains("net"), "{e}");
-        // Ephemeral storage IS implemented now, so the old assertion - that
-        // explain says NOT YET IMPLEMENTED - would be a lie in the other
-        // direction. What explain must still do is refuse to overclaim: a
-        // tmpfs freed on exit is not secure erasure while its pages can be
-        // swapped, and an operator reading this is deciding what to put in the
-        // zone.
         assert!(e.contains("tmpfs"), "explain must say what ephemeral storage IS: {e}");
     }
 
     #[test]
-    fn explain_does_not_promise_routed_networking_it_cannot_deliver() {
-        // A routed zone gets loopback and no routes today. Someone reading
-        // `explain` is deciding what to put in the zone, and "routed" without
-        // qualification reads as "connected, filtered".
+    fn explain_does_not_overclaim() {
         let e = explain(&z("routed"), "/tmp/t", std::path::Path::new("/tmp"));
-        // Routed networking IS delivered now (docs/design/net-zone.md: a veth into the nic
-        // zone's bridge, forwarded, no NAT yet), so "honest" means the plan
-        // line says what it does and does not do rather than the old refusal.
+        // The plan line must qualify routed networking (docs/design/net-zone.md: no NAT yet).
         let honest = e.contains("NOT IMPLEMENTED")
             || e.contains("not implemented")
             || e.contains("no path out")
@@ -2080,23 +1882,21 @@ mod tests {
             "explain must not let 'ephemeral' be read as secure erasure: {e}"
         );
 
-        // Encrypted storage is implemented for a root launch:
-        // explain names the container, the mapping and the close, and says
-        // that an unprivileged launch cannot open it.
+        // Encrypted: the container and mapping are named, and unprivileged launches refused.
         let enc = explain(&z_encrypted(), "/tmp/t", std::path::Path::new("/nonexistent"));
-        assert!(enc.contains("LUKS2") && enc.contains("/dev/mapper/kryptik-t"), "{enc}");
+        assert!(enc.contains("LUKS2") && enc.contains("/dev/mapper/kryptik-zone-t"), "{enc}");
         assert!(enc.contains("Unprivileged launches are refused"), "{enc}");
     }
 
     #[test]
-    fn exit_status_decoding_matches_shell_convention() {
+    fn decode_status_matches_shell() {
         assert_eq!(decode_status(0), 0);
         assert_eq!(decode_status(3 << 8), 3);
         assert_eq!(decode_status(libc::SIGSYS), 128 + libc::SIGSYS);
     }
 
     #[test]
-    fn environment_is_an_allowlist_not_a_denylist() {
+    fn environment_is_allowlist() {
         let caller: Vec<(String, String)> = [
             ("FOO_TOKEN", "leaked"),
             ("SSH_AUTH_SOCK", "/run/user/1000/keyring/ssh"),
@@ -2113,7 +1913,7 @@ mod tests {
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
-        let env = zone_environment(&z("routed"), "/home/t", &caller);
+        let env = zone_environment_with(&z("routed"), "/home/t", &caller, false);
         let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         for dropped in ["FOO_TOKEN", "SSH_AUTH_SOCK", "LD_PRELOAD", "LD_LIBRARY_PATH", "KRYPTIK_EXPERIMENTAL", "XDG_RUNTIME_DIR"] {
             assert!(get(dropped).is_none(), "{dropped} leaked into the zone");
@@ -2138,17 +1938,16 @@ mod tests {
         assert!(!env_value_is_sane("a b"));
         assert!(!env_value_is_sane(&"x".repeat(65)));
         let caller = vec![("TERM".to_string(), "xterm;rm -rf /".to_string())];
-        let env = zone_environment(&z("routed"), "/home/t", &caller);
+        let env = zone_environment_with(&z("routed"), "/home/t", &caller, false);
         let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         assert_eq!(get("TERM"), Some("dumb"), "a malformed TERM is replaced, not passed");
         assert_eq!(get("LANG"), Some("C.UTF-8"), "no caller LANG means a UTF-8 default");
     }
 
     #[test]
-    fn unprivileged_launch_cannot_pick_an_identity() {
+    fn unprivileged_launch_cannot_pick_identity() {
         if unsafe { libc::geteuid() } == 0 {
-            // As root the rule is the other way round; covered by the message
-            // test below only when not root.
+            // As root the rule is the reverse; see the next test.
             return;
         }
         let err = launch_identity(&RunOptions { zone_uid: Some(1001), zone_gid: Some(1001), ..Default::default() }, &z("routed")).unwrap_err();
@@ -2159,7 +1958,7 @@ mod tests {
     }
 
     #[test]
-    fn root_launch_must_name_an_unprivileged_identity() {
+    fn root_launch_needs_unprivileged_identity() {
         if unsafe { libc::geteuid() } != 0 {
             return;
         }

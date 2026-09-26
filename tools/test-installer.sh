@@ -1,12 +1,5 @@
 #!/usr/bin/env bash
-#
-# Installer checks that need no VM, no root, and no disk.
-#
-# The installer is the one tool here that partitions a disk, so the parts of it
-# that can be checked cheaply should be, every time - not only when someone
-# spends fifteen minutes booting a guest to find out that a device name was
-# built wrong.
-#
+# Installer checks that need no VM, no root and no disk.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -28,9 +21,7 @@ if false; then red "a false condition was seen as passing"; else green "a false 
 
 echo
 echo "-- partition device naming"
-# Pull part_dev out of the installer and exercise it directly. A disk whose name
-# ends in a digit takes a "p" separator; one that does not takes the number.
-# Getting this wrong is how the first install run went looking for /dev/vdbp2.
+# part_dev, taken from the installer: a name ending in a digit takes a "p".
 eval "$(sed -n '/^part_dev()/,/^}/p' "$INSTALLER")"
 if ! declare -F part_dev >/dev/null; then
     red "could not extract part_dev from the installer"
@@ -48,9 +39,7 @@ fi
 
 echo
 echo "-- tools the guest does not have must not be called"
-# The base system has util-linux and e2fsprogs. It does NOT have gptfdisk or
-# parted. Calling one is not a style question - it is the exact failure that made the
-# first install run do nothing while reporting success.
+# The image has util-linux and e2fsprogs, and none of these. Comments are skipped.
 for absent in sgdisk gdisk partprobe parted rsync; do
     hits="$(grep -nE "(^|[^a-z-])${absent}([^a-z-]|$)" "$INSTALLER" "$RUNNER" | grep -v '^\s*#' | grep -vE '#.*'"${absent}" || true)"
     if [[ -z "$hits" ]]; then
@@ -78,12 +67,8 @@ grep -q 'the target has mounted filesystems' "$INSTALLER" \
 
 echo
 echo "-- the runner reports the installer's exit status, not something else's"
-# `cmd | sed ...` followed by `rc=$?` captures sed, which always succeeds. That
-# is how a "command not found" became rc=0.
-# Match the INVOCATION, not the word. The first version of this check searched
-# for "kryptik-install.*|" and flagged two innocent lines: a comment describing
-# the old bug, and the filename kryptik-install.json inside a $(... || ...).
-# A check that fires on a comment about a bug is not checking for the bug.
+# After `cmd | sed`, $? is sed's. Match a call at the start of a line, not the
+# word: comments and kryptik-install.json are not calls.
 piped="$(grep -nE '^[[:space:]]*(/usr/sbin/)?kryptik-install[^|#]*\|' "$RUNNER" || true)"
 if [[ -n "$piped" ]]; then
     red "the installer is still piped; rc would be the pipeline's last element"

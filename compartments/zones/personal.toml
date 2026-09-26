@@ -8,10 +8,8 @@ description = "Separate identity, separate cookies, separate everything."
 mode = "routed"
 
 [storage]
-mode      = "encrypted"
-volume    = "/var/lib/kryptik/volumes/personal.luks"
-unlock    = "on-start"
-wipe_keys = "on-stop"
+mode   = "encrypted"
+volume = "/var/lib/kryptik/volumes/personal.luks"
 
 [policy]
 seccomp  = "policy/personal.seccomp"
@@ -21,16 +19,14 @@ memory_max = "8G"
 pids_max   = 1024
 
 [identity]
-# Fixed host uid/gid range for this zone: root inside maps to 262144,
-# nobody to 327678. Never derived from zone order; see docs/design/privileged-launch.md.
+# Host uid/gid range: root inside maps to 262144, nobody to 327678. Fixed,
+# never derived from zone order (docs/design/privileged-launch.md).
 uid_base = 262144
 
 [ui]
-# Identity in four channels (compositor/zoneid, `zoneid explain`): the
-# colour is from `zoneid propose` (every pair of shipped zones differs by
-# dE00 >= 15 under every vision model, 3:1 against both backgrounds);
-# the pattern, glyph and label are what remain for a user who cannot see
-# the colour difference. Every zone has a distinct value in each.
+# Colour, glyph and label must differ from every other zone's; the pattern
+# backs up colour for users who cannot tell colours apart. Pick colours with
+# `zoneid propose`; `zoneid audit` checks the set, `zoneid explain` the rule.
 border_color   = "#009b79"
 border_pattern = "dashed"
 glyph          = "●"

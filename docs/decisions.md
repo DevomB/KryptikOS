@@ -1,365 +1,213 @@
-# Architecture Decision Records
+# Architecture decision records
 
-Each record states the decision, the reasoning, and what it costs. Records
-marked **OPEN** are unresolved and block the roadmap section noted.
+Each record gives the decision, the reasons and the cost. All are accepted.
 
----
+## ADR-001: Build from Linux From Scratch
 
-## ADR-001: Build from Linux From Scratch, not an existing base
-**Status:** Accepted
+Kryptik's hardening is toolchain-wide and its init path is unusual. A base
+distribution would bring its compiler defaults, package layout and setuid
+binaries, and all three would have to be fought.
 
-Kryptik's hardening is toolchain-wide and its init path is unusual. Inheriting a
-base distro means inheriting its compiler defaults, its package layout, and its
-setuid binaries — then fighting all three.
+**Cost:** months before a bootable image, and permanent ownership of security
+updates for every package shipped. This is the project's largest cost.
 
-**Cost:** Months before a bootable image, and permanent ownership of security
-updates for every package shipped. This is the largest cost in the project and
-it does not go away.
+## ADR-002: Kernel isolation, not a hypervisor
 
----
+Zones are namespaces, cgroup v2, Landlock and seccomp, not Xen. Qubes'
+hypervisor boundary is stronger, but it needs VT-d, costs battery life and
+makes GPU acceleration painful. Kryptik is for users who would run Qubes but
+not pay that hardware cost.
 
-## ADR-002: Kernel-based isolation, not a hypervisor
-**Status:** Accepted
-
-Namespaces + cgroups v2 + Landlock + seccomp, rather than Xen.
-
-Qubes' hypervisor boundary is stronger. It also demands VT-d, punishes battery
-life, and makes GPU acceleration painful. Kryptik targets the user who would run
-Qubes but won't tolerate the hardware tax.
-
-**Cost:** A kernel LPE compromises every zone. Documented in the threat model under
-"Kernel local privilege escalation". Non-negotiable consequence of this ADR.
-
----
+**Cost:** a kernel privilege escalation compromises every zone
+([threat model](threat-model.md#kernel-local-privilege-escalation)).
 
 ## ADR-003: Zone 0 runs no user applications
-**Status:** Accepted
 
-The load-bearing invariant. Once a browser runs in zone 0 "just this once", the
-system is a Linux box with containers, not a compartmentalized OS.
+Once a browser runs in zone 0 "just this once", the system is a Linux box with
+containers.
 
-**Cost:** Real friction. Every convenience request that starts with "can I just
-run this on the host" gets refused.
-
----
+**Cost:** friction. Every "can I just run this on the host" is refused.
 
 ## ADR-004: Wayland only, no X11
-**Status:** Accepted
 
-X11's design lets any client keylog every other client and screenshot the entire
-display. That is directly incompatible with ADR-003.
+X11 lets any client log every other client's keystrokes and capture the whole
+screen, which ADR-003 cannot allow.
 
-**Cost:** X11-only applications need Xwayland inside their own zone, which is
-acceptable — the isolation boundary is the zone, so a per-zone Xwayland leaks
-only to itself.
-
----
+**Cost:** an X11-only application needs Xwayland in its own zone, where it can
+leak only that zone.
 
 ## ADR-005: hardened_malloc as the system allocator
-**Status:** Accepted
 
-See [hardening.md](hardening.md).
+It adds slab quarantines, guard slabs, randomized allocation and
+heap-overflow canaries. Preloaded for every process of the running system and
+of every zone ([hardening](hardening.md#allocator)).
 
-**Cost:** Slower on allocation-heavy workloads.
-
----
+**Cost:** slower on allocation-heavy workloads.
 
 ## ADR-006: s6-rc as init and service supervisor
-**Status:** Accepted (2026-09-10, resolved by maintainer delegation)
 
-PID 1 is s6-svscan; service dependency management is s6-rc.
+PID 1 is s6-svscan; s6-rc manages service dependencies. systemd's sandboxing
+is better, but zones already provide it and kryptikd owns zone lifecycle.
+Socket activation and journald do not justify a large privileged PID 1 in a
+system that assumes a local attacker looking for privileged code.
 
-systemd has the better sandboxing primitives, but Kryptik does not need them:
-zones already provide namespace, cgroup, seccomp and Landlock confinement, and
-`kryptikd` owns zone lifecycle regardless. That reduces systemd's advantage to
-socket activation and journald, neither of which justifies a very large,
-privileged PID 1 in a system whose threat model already assumes a hostile
-local attacker hunting for privileged surface.
+**Cost:** off the LFS path, so every service definition is written from
+scratch; seatd instead of logind; the `net` zone runs its own DHCP client, and
+no other zone touches a real interface; logging is s6-log per service, with no
+aggregation.
 
-**Cost — real and worth stating:**
-- Off the documented LFS path. Both LFS editions ship sysvinit or systemd;
-  s6-rc means writing service definitions from scratch.
-- No `logind`. Wayland seat management needs **seatd** instead.
-- No `networkd`. The `net` zone runs its own DHCP client; other zones never
-  touch a real interface, so this is narrower than it sounds.
-- No journald. Logging is s6-log per service, which is simpler but means
-  building log aggregation if it is ever wanted.
+**Revisit if** writing service definitions becomes the main cost of the base
+system.
 
-**Revisit if:** service definition authoring becomes the dominant cost in
-the base system.
+## ADR-007: Landlock and seccomp only, no SELinux or AppArmor
 
----
+SELinux policy written from zero is plausibly a bigger project than the
+distribution, and a policy too large to audit gives confidence, not security.
+AppArmor is path-based, which composes badly with per-zone mount namespaces,
+where one path means different things in different zones. Isolation rests on
+Landlock for file access, seccomp-bpf for syscalls, cgroup v2 for resources,
+and namespaces for network and IPC: a zone's network is an absent interface,
+not a policy rule, so Landlock's late network support does not matter.
 
-## ADR-007: Landlock + seccomp only for v1; no SELinux or AppArmor
-**Status:** Accepted (2026-09-10, resolved by maintainer delegation)
+**Cost:** a Landlock bypass has no second MAC layer behind it.
 
-No traditional MAC layer ships in v1.
-
-Writing SELinux policy from zero for a from-scratch distribution is plausibly a
-larger project than the distribution itself, and a policy that is too large to
-audit provides confidence rather than security. AppArmor is easier to author but
-path-based, and path-based confinement composes badly with per-zone mount
-namespaces where the same path means different things in different zones.
-
-What actually carries the isolation:
-
-| Concern | Mechanism |
-|---|---|
-| Filesystem access | Landlock ruleset, applied at zone entry, unprivileged and unbypassable |
-| Syscall surface | seccomp-bpf, default-deny allowlist |
-| Network | dedicated netns — not a policy rule, an absent interface |
-| IPC | dedicated ipcns |
-| Resources | cgroup v2 |
-
-Landlock's coverage is narrower than SELinux's, and its network restrictions
-arrived only in later ABI versions. Neither matters here: Kryptik isolates
-networks with namespaces rather than policy, so the gap falls on ground already
-covered.
-
-**Cost:** Less defense-in-depth. A Landlock bypass is not backstopped by a
-second MAC layer.
-
-**Revisit with the compositor and GUI isolation work**, once zone semantics are stable and a policy would be
-written against a fixed target rather than a moving one.
-
----
+**Revisit** once zone semantics are stable enough to write a policy against.
 
 ## ADR-008: glibc
-**Status:** Accepted (2026-09-10, resolved by maintainer delegation)
 
-musl is smaller, cleaner, and easier to audit — genuinely the better fit for
-Kryptik's stated values. It is still the wrong choice right now.
+musl is smaller and easier to audit, and fits Kryptik better. But much
+software assumes glibc, and time on compatibility shims is time not spent on
+the compartment layer, which is the new part of Kryptik.
 
-The cross toolchain's goal is "does it boot". Choosing musl means spending that stage
-debugging glibc-assuming software instead, and every hour spent on a
-compatibility shim is an hour not spent on the compartment layer —
-which is the part of Kryptik that is actually novel. The libc is not what makes
-this project interesting.
+**Cost:** more attack surface than musl, and switching later means rebuilding
+from stage 01.
 
-**Cost:** Larger attack surface than musl, and a real migration cost if this is
-revisited later — the toolchain is built around this choice, so changing it
-means rebuilding from stage 01.
+**Revisit** after the compartment layer, when a libc swap is a contained
+experiment.
 
-**Revisit after the compartment layer**, when the interesting work is done and a libc swap is
-a contained experiment rather than a bootstrap risk.
+## ADR-009: An LTS kernel with linux-hardened
 
----
+Kryptik pins linux 6.18.x (longterm) with the matching linux-hardened patch.
+A kernel that is not longterm reaches end of life within months, so
+`make check-kernel-eol` fails on a pinned kernel that is EOL or not longterm,
+and `make kernel` runs it first.
 
-## ADR-009: Track an LTS kernel and carry the linux-hardened patchset
-**Status:** Accepted (2026-09-10)
+A kconfig fragment can only turn on what mainline has. linux-hardened adds
+what mainline has not merged: stronger ASLR entropy, more slab sanitization,
+tighter usercopy checks, less of the surface mainline keeps for compatibility.
 
-Kryptik pins **linux 6.18.x (longterm)** and applies the matching
-**linux-hardened** patch before building.
+**Cost:** the kernel moves only when a matching linux-hardened release exists,
+so a fix can land days after mainline stable, and Kryptik kernel patches are
+rebased on linux-hardened. linux-hardened is a partial, community-maintained
+descendant of grsecurity, which is commercial and unavailable: do not call
+Kryptik grsecurity-hardened.
 
-### The defect this fixes
-
-The original pin was 6.10.5. That kernel is **not longterm**, was released in
-August 2024, and reached end-of-life within about two months of release. A
-security distribution shipping a kernel with roughly two years of unpatched
-CVEs is not a security distribution — it is the single worst defect the project
-had, and it sat in `versions.env` looking like a normal version number.
-
-Non-LTS kernels are disqualified on principle from here on. `make check-kernel-eol`
-queries kernel.org and fails if the pinned version is EOL or not longterm, so
-this cannot silently recur.
-
-### Why linux-hardened
-
-Until now Kryptik only applied a kconfig fragment. That flips switches Torvalds
-already built — the same thing Fedora and Arch do — and does not justify calling
-the result a hardened kernel. linux-hardened carries mitigations upstream has
-rejected or not merged: stronger ASLR entropy, expanded slab sanitization,
-tighter usercopy checks, and reduced attack surface in areas mainline keeps for
-compatibility.
-
-It also constrains the kernel choice in a useful way: linux-hardened only tracks
-LTS branches, so adopting it makes the EOL mistake above structurally impossible
-to repeat.
-
-### Costs
-
-- **Version coupling.** The kernel can only move when a matching
-  `linux-hardened` release exists. A kernel CVE fix may therefore land days
-  behind mainline stable.
-- **Patch conflicts.** Any Kryptik-local kernel patch must be rebased against
-  linux-hardened rather than mainline.
-- **Not grsecurity.** linux-hardened is a partial, community-maintained
-  descendant of the grsecurity patchset, not the real thing. grsecurity is
-  commercially licensed and unavailable. Do not describe Kryptik as
-  grsecurity-hardened.
-
-### Rejected alternatives
-
-- **Mainline stable + kconfig only** — what Kryptik was doing. Insufficient for
-  the claim the project makes about itself.
-- **Own patchset from scratch** — the compartment layer may still require kernel work if the
-  zone model needs hooks Landlock cannot express (see ADR-002). That would be
-  carried *on top of* linux-hardened, not instead of it.
-
----
+**Rejected:** mainline with kconfig only, which is not enough for what the
+project claims; an own patchset, since any kernel hooks zones need go on top
+of linux-hardened, not instead of it.
 
 ## ADR-010: kryptikd is written in Rust
-**Status:** Accepted (2026-09-10)
 
-`kryptikd` runs privileged in zone 0. It parses zone definitions, creates
-namespaces, applies seccomp and Landlock policy, brokers the only three
-channels that cross a zone boundary, and holds the keys to per-zone volumes. It
-is the single most security-critical piece of userspace in the system: a
-memory-safety bug there does not compromise one zone, it compromises the
-mechanism that separates all of them.
+kryptikd runs privileged in zone 0: it parses zone definitions, builds
+namespaces, applies seccomp and Landlock, runs the broker and holds the keys
+to zone volumes. A memory-safety bug there breaks what separates every zone.
+Kryptik pays for `-D_FORTIFY_SOURCE=3`, hardened_malloc and `INIT_ON_ALLOC`
+because memory-safety bugs are the most exploited class; C for this one
+process would contradict that.
 
-Writing that component in C, in a project whose entire premise is hardening,
-would be difficult to defend. Kryptik spends real performance to get
-`-D_FORTIFY_SOURCE=3`, hardened_malloc, and `INIT_ON_ALLOC` precisely because
-memory-safety bugs are the dominant exploited class. Choosing C for the one
-process that mediates every boundary would contradict that.
+**Cost:**
 
-### Costs, which are not small
+- rustc is not built from source: that needs an existing rustc, or mrustc, a
+  project of its own. The shipped kryptikd and kryptik-wlproxy are built by
+  Rust's release tarballs, held to the hashes in `build/config/rust.lock`
+  (checked against the Rust release key when pinned): a trust anchor
+  [supply-chain.md](supply-chain.md) otherwise avoids.
+- kryptikd depends on `libc` only; every new crate is a supply-chain decision
+  justified in review.
+- A Rust toolchain is a lot to carry for one daemon.
 
-- **rustc must be bootstrapped into the build.** rustc is written in Rust, so
-  building it from source requires an existing rustc. The honest options are a
-  downloaded stage0 binary (a trust anchor Kryptik does not control, which cuts
-  against docs/supply-chain.md) or mrustc, which is a project of its own.
-  Unresolved; tracked as a compartment-layer blocker rather than pretended away.
-- **Large dependency surface if unmanaged.** kryptikd uses `libc` and direct
-  syscalls, not a broad crate tree. Every added dependency is a supply-chain
-  decision and needs justifying in review.
-- **Toolchain size.** A Rust toolchain in the base system is a lot of bytes for
-  one daemon.
+**Rejected:** C (smallest bootstrap, but see above); Go, whose runtime and
+scheduler fight `clone()`, `unshare()` and per-thread namespace state; shell,
+unsuitable for holding privilege and parsing untrusted zone state.
 
-### Rejected
+Rust is for kryptikd and Kryptik's own tools, not a distribution-wide rule:
+coreutils stays coreutils.
 
-- **C** — smallest bootstrap, no new toolchain, but see above.
-- **Go** — memory-safe, but the runtime and goroutine scheduler are awkward
-  around `clone()`, `unshare()`, and per-thread namespace semantics, which is
-  exactly the work kryptikd does.
-- **Shell** — genuinely unsuitable for holding privilege and parsing untrusted
-  zone state.
+## ADR-011: SMT off, every CPU mitigation on
 
-### Boundary
+Every signed kernel's command line carries `mitigations=auto,nosmt`: every
+mitigation the kernel knows for the CPU, and simultaneous multithreading off.
 
-Rust is for `kryptikd` and Kryptik-authored tooling. It is not a general policy
-for the distribution: coreutils stays coreutils.
+**Why:** the threat is a compromised zone reaching the kernel or another zone.
+L1TF, MDS, TAA and their successors leak between the two hardware threads of a
+core, so a zone on one thread can read another zone, or the kernel, on the
+other. KSPP recommends the setting and kernel-hardening-checker fails without
+it.
 
-## ADR-011: SMT is off, and every CPU mitigation is on
+**Cost:** half the logical CPUs on an SMT machine, roughly 15 to 30 percent of
+parallel throughput. Single-threaded performance is unchanged.
 
-**Decision.** The command line compiled into every signed kernel carries
-`mitigations=auto,nosmt`: every CPU vulnerability mitigation the kernel knows
-for the processor it finds, and simultaneous multithreading disabled.
+**Revisit when** SMT can stay on without two trust domains sharing a core.
+Each zone already asks for its own core-scheduling cookie at launch
+([privileged launch](design/privileged-launch.md#core-scheduling)); what is
+missing is a measurement on real hardware of what `nosmt` costs and whether
+the cookies hold under load. Until then `nosmt` stays; with no sibling threads
+online the kernel refuses the cookie (`ENODEV`) and `kryptikd status` says
+`no-smt`.
 
-**Why.** The threat model is a compromised zone trying to reach the kernel or
-another zone. The CPU vulnerabilities of the last decade (L1TF, MDS, TAA and
-their successors) leak across the two hardware threads of one core, and a zone
-scheduled beside another zone, or beside the kernel, is exactly the position
-those attacks need. Core scheduling (`CONFIG_SCHED_CORE`, which the kernel now
-carries) could keep untrusting tasks off sibling threads selectively, but
-nothing in Kryptik assigns the cookies yet, and a mitigation that depends on
-unwritten policy is not one. The Kernel Self-Protection Project recommends the
-same setting and `kernel-hardening-checker` fails without it.
+## ADR-012: Device firmware from linux-firmware, on the verified root
 
-### Costs
+The image ships the firmware laptop graphics and Wi-Fi need, from the pinned
+`linux-firmware` release, as selected by `build/config/firmware.list`,
+zstd-compressed under `/lib/firmware` on the dm-verity root. The drivers that
+load it are signed modules, so they probe after the root is mounted.
 
-Half the logical CPUs on a machine with SMT: roughly 15 to 30 percent of
-throughput on parallel work. Single-threaded performance is unchanged, and
-machines without SMT lose nothing.
+**Why:** Intel, AMD and Qualcomm Wi-Fi and AMD GPUs do not run without vendor
+firmware, and Intel graphics runs degraded. Without it most laptops have no
+Wi-Fi.
 
-**Reviewed 2026-09-20.** The owner was asked whether to veto this and left it to
-the engineer's judgement. It stands: SMT stays off until there is a measurement
-of what it costs on real hardware and core scheduling has been proven there.
-
-### Revisit when
-
-Core scheduling is wired to zones, so that SMT can stay on and two trust
-domains still never share a core.
-
-That condition is now met: every zone takes a core-scheduling cookie of its
-own at launch, and `kryptikd status` reports it
-([the privileged launch design](design/privileged-launch.md#core-scheduling)).
-What is still missing is the measurement this decision asked for: what
-`nosmt` costs on the machines Kryptik runs on, and whether the cookies hold
-under load there. Until that is written down, `nosmt` stays - and while it
-stays the cookies do nothing: with no sibling thread online the kernel
-refuses the call (`ENODEV`), the zone launches without one, and `status`
-says `no-smt`.
-
-## ADR-012: Device firmware ships from linux-firmware, on the verified root
-
-**Decision.** The image carries the firmware files that laptop graphics and
-Wi-Fi need, taken from the pinned `linux-firmware` release and selected by
-`build/config/firmware.list`, under `/lib/firmware` on the dm-verity root,
-compressed with zstd. The drivers that load them are modules signed by the
-build, so they probe after the root is mounted and can find them.
-
-**Why.** Every Intel, AMD and Qualcomm wireless part and every AMD GPU refuses
-to run without a vendor firmware file, and Intel graphics runs degraded
-without its own. A hardened desktop that cannot bring up the Wi-Fi of any
-laptop made in the last decade is not usable, and "firmware the image does
-not ship" was the one line in the hardware list that excluded most machines.
-
-**What this is not.** These files are not built from source, which
-docs/supply-chain.md otherwise requires of every shipped byte. They are
-opaque vendor binaries executed by the device's own processor, not by the
-CPU, under the kernel's control of the bus (IOMMU on and strict, ADR-011's
-company in the hardening fragment). What Kryptik can establish about them is
-what it establishes: the tarball is the one kernel.org signed, its hash is
+These are vendor binaries, not built from source as
+[supply-chain.md](supply-chain.md) otherwise requires, and run by the device's
+own processor under the kernel's control of the bus (IOMMU on and strict).
+Kryptik establishes that the tarball is the one kernel.org signed, its hash is
 pinned, each file's licence is the one `WHENCE` records, and the copy the
-kernel loads is on the verified root, so it cannot be replaced without
-re-signing the kernel.
+kernel loads is on the verified root, so replacing it means re-signing the
+kernel.
 
-**What is left out, and why.** NVIDIA: nouveau needs tens of megabytes of
-GSP firmware per generation and the firmware framebuffer already gives those
-machines a display; the compositor needs no acceleration. Bluetooth and
-sound: no zone has a use for them yet. Anything not on the list is not
-shipped; the list is the decision.
+**Left out:** NVIDIA (nouveau needs tens of megabytes of GSP firmware per
+generation, and the firmware framebuffer gives those machines a display);
+Bluetooth and sound, which no zone uses yet. What is not on the list is not
+shipped.
 
-**CPU microcode is the same decision, in a different place.** It is vendor
-firmware too (Intel's release and AMD's containers from linux-firmware), but the
-early loader runs before any filesystem exists and there is no initramfs, so it
-is built into the signed kernel itself (`CONFIG_EXTRA_FIRMWARE`, stage 05):
-about 18 MB in each of the three signed kernels. Without it a machine runs
-whatever microcode its firmware vendor last shipped, which for most machines
-older than a few years means known CPU vulnerabilities with no fix.
+**CPU microcode** is the same decision. The early loader runs before any
+filesystem and there is no initramfs, so Intel and AMD microcode is built into
+each signed kernel (`CONFIG_EXTRA_FIRMWARE`, stage 05), about 17 MB. Without
+it a machine runs whatever microcode its firmware last shipped, which on older
+machines means known, unfixed CPU vulnerabilities.
 
-### Costs
+**Cost:** about 135 MB after zstd (385 MB of files; Intel Wi-Fi is 56 MB and
+amdgpu 38 MB compressed) on a 2.7 GB root image, and an input nobody here can
+read.
 
-About 135 MB, compressed, on a root image of 2.7 GB (385 MB of files, of
-which Intel Wi-Fi is 56 MB and amdgpu 38 after zstd), and one more input
-whose contents nobody here can read.
+## ADR-013: A driver is built in only when boot needs it
 
-## ADR-013: A driver is built into the kernel only when the boot needs it
+With no initramfs, a driver is built into the signed kernel only if it finds,
+verifies or mounts the root; gives a console and keyboard before the root is
+mounted; or cannot work as a module (netfilter for the `net` zone, microcode,
+the watchdog, a few platform drivers that misbehave when loaded late).
+Everything else, including every network card, GPU and pointing device, is a
+signed module that eudev loads at coldplug. What Kryptik never uses (sound,
+network filesystems, CardBus, AGP, software RAID, conntrack helpers) is not
+built. The rule heads `build/config/kernel/boot.fragment`, and stage 05 fails
+a kernel larger than `build/config/kernel/size-budget`.
 
-**Decision.** With no initramfs, a driver is compiled into the signed kernel
-only if it is needed to find, verify and mount the root; or gives a console
-and a keyboard before the root is mounted; or cannot do its job as a module
-(netfilter for the net zone, CPU microcode, the watchdog, and a few platform
-drivers that misbehave when they arrive late). Everything else is a signed
-module that eudev loads by modalias at coldplug, from the verified root. That
-includes every network card, every GPU and every pointing device, and it
-includes the virtual machine's. What Kryptik has no use for at all, such as
-sound, network filesystems, CardBus, AGP, software RAID and the
-connection-tracking helpers, is not built. The rule is written at the top of
-`build/config/kernel/boot.fragment`, and stage 05 prints what the image is made
-of and refuses one over `build/config/kernel/size-budget`.
+**Why:** a built-in driver is on every machine whether or not its device is. A
+module loads only where it is used, through the path real Wi-Fi and graphics
+need anyway. The VM gets no exception: with virtio-net and virtio-gpu as
+modules, every acceptance run proves module autoload.
 
-**Why.** Until the image carried modules (ADR-012) the rule was "everything is
-built in", because there was nowhere else for a driver to go. Hardware support
-was then widened under that rule, and the signed kernel went from 17.8 MB to
-31.6 MB without anyone deciding it should. A built-in driver is in the kernel
-on every machine, whether or not the device is there. A module is there only
-where it is used, and the path that loads it is the one real hardware depends
-on for Wi-Fi and graphics anyway.
-
-**Why the virtual machine gets no exception.** The acceptance suite boots
-under QEMU. With virtio-net and virtio-gpu built in, it never exercised module
-autoload at all, and the first proof that a network card loads as a module
-would have been a laptop. As modules, every acceptance run proves it.
-
-**What this does not shrink.** About 17 MB of the image is microcode, which is
-encrypted and does not compress. Pre-2011 CPUs that cannot boot this system
-account for 0.4 MB of that and are not worth a rule. Four server-only Xeon
-families account for 6.8 MB; they stay while the README names servers as
-supported hardware, because a machine whose microcode is left out still boots
-and runs with whatever its firmware loaded, and nobody would see the
-downgrade. Dropping them is a decision about supported hardware, and on
-2026-09-20 it was decided: they stay. 6.8 MB on a 3 GB image is not worth a
-server that silently runs old microcode.
+**Not shrunk:** about 17 MB of the kernel is microcode, which is encrypted and
+does not compress. Pre-2011 CPUs, which cannot boot Kryptik, account for 0.4 MB,
+not worth a rule. Four server-only Xeon families take 6.8 MB and stay while the
+README lists server hardware: a server whose microcode is left out still boots
+on old microcode, and nobody would notice.

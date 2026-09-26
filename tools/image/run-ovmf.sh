@@ -1,31 +1,33 @@
 #!/usr/bin/env bash
-# Boot Kryptik media or an installed disk under OVMF, the way firmware does.
+# Boot Kryptik media or an installed disk under OVMF, as real firmware would:
+# no -kernel, -initrd, -append or host filesystem sharing.
 #
 #   tools/image/run-ovmf.sh (--usb IMG | --iso ISO | --no-media)
 #        [--disk FILE]... [--testctl FILE] [--vars clean|enrolled|ms|FILE]
 #        [--vars-file FILE] [--mode console|smoke|serve] [--timeout N]
 #        [--log FILE] [--net none|user] [--mem MB] [--cpus N] [--gpu]
-#        [--allow-reboot] [--name TAG]
-#
-# NO -kernel, NO -initrd, NO -append and NO host filesystem sharing: the guest
-# gets a firmware image, its own variable store, its disks and a serial line,
-# and everything else - which file to load, which kernel, which root - is the
-# medium's own business. That is what "boots from firmware" means here.
+#        [--allow-reboot] [--until REGEX] [--name TAG]
 #
 #   --usb IMG      the medium as a USB mass-storage device (removable)
 #   --iso ISO      the medium as a SATA CD-ROM (/dev/sr0 in the guest)
 #   --no-media     boot only the --disk(s): an installed system
 #   --disk FILE    a virtio disk (repeatable; the first is the install target
 #                  or the installed system's disk). Files only, never devices.
+#   --disk-readonly, --blkdebug CONF
+#                  failure injection for the first --disk: read-only, or I/O
+#                  errors through QEMU's blkdebug driver
 #   --testctl FILE a disk labelled kryptik-testctl (tools/image/mk-testctl.sh)
-#   --vars X       variable store TEMPLATE, copied fresh for this run:
+#   --vars X       variable store template, copied fresh for this run:
 #                  clean    OVMF_VARS_4M.fd, no keys, Secure Boot off
-#                  enrolled the developer key as PK/KEK/db, Secure Boot ON
+#                  enrolled the developer key as PK/KEK/db, Secure Boot on
 #                  ms       Microsoft keys only (our kernels must be refused)
 #   --vars-file F  use F in place and keep it: firmware state persists across
 #                  runs (the A/B trial needs BootNext to survive a reboot)
 #   --mode smoke   run to poweroff (or --timeout), serial to --log, exit code
 #                  0 = guest powered off, 124 = timeout
+#   --until REGEX  smoke mode: stop the guest 10 s after REGEX appears on its
+#                  console, for a boot that never powers itself off (a refused
+#                  kernel); exit code 2 if it was still running
 #   --mode serve   start detached with a serial socket and a QMP socket, print
 #                  their paths; tools/image/vm-drive.py talks to them
 #   --mode console interactive serial console (Ctrl-A X quits)
@@ -37,15 +39,13 @@ source "${SELF}/../../build/lib/common.sh"
 
 USB=""; ISO=""; NOMEDIA=0; DISKS=(); TESTCTL=""; VARS="clean"; VARS_FILE=""
 MODE="smoke"; TIMEOUT=300; LOG=""; NET="none"; MEM=2048; CPUS=2; GPU=0; ALLOW_REBOOT=0; NAME="vm"
-DISK_RO=0; BLKDEBUG=""
+DISK_RO=0; BLKDEBUG=""; UNTIL=""
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
         --usb)       USB="${2:?}"; shift 2 ;;
         --iso)       ISO="${2:?}"; shift 2 ;;
         --no-media)  NOMEDIA=1; shift ;;
         --disk)      DISKS+=("${2:?}"); shift 2 ;;
-        # Failure injection for the first --disk: presented read-only, or
-        # through QEMU's blkdebug driver with the given config (I/O errors).
         --disk-readonly) DISK_RO=1; shift ;;
         --blkdebug)  BLKDEBUG="${2:?}"; shift 2 ;;
         --testctl)   TESTCTL="${2:?}"; shift 2 ;;
@@ -59,8 +59,9 @@ while [[ "$#" -gt 0 ]]; do
         --cpus)      CPUS="${2:?}"; shift 2 ;;
         --gpu)       GPU=1; shift ;;
         --allow-reboot) ALLOW_REBOOT=1; shift ;;
+        --until)     UNTIL="${2:?}"; shift 2 ;;
         --name)      NAME="${2:?}"; shift 2 ;;
-        -h|--help)   sed -n '2,36p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help)   sed -n '2,33p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -68,6 +69,7 @@ done
 [[ -n "$USB" || -n "$ISO" || "$NOMEDIA" -eq 1 ]] || die "one of --usb, --iso or --no-media is required"
 [[ -n "$USB" && -n "$ISO" ]] && die "--usb and --iso are exclusive"
 [[ "$NOMEDIA" -eq 1 && "${#DISKS[@]}" -eq 0 ]] && die "--no-media needs at least one --disk"
+[[ -n "$UNTIL" && "$MODE" != smoke ]] && die "--until is for --mode smoke"
 
 # Files only. This hands paths to a process that writes to them.
 regular_file() {
@@ -126,7 +128,10 @@ ARGS=(
     -boot menu=off
 )
 if [[ "$GPU" -eq 1 ]]; then
-    ARGS+=( -display none -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci )
+    # virtio-vga, not virtio-gpu-pci: the firmware framebuffer is in its BAR,
+    # so virtio-gpu replaces simpledrm and wlroots sees one DRM device (with
+    # two it takes a multi-GPU path the pixman renderer cannot serve).
+    ARGS+=( -display none -vga none -device virtio-vga -device virtio-keyboard-pci -device virtio-mouse-pci )
 else
     ARGS+=( -display none -vga none )
 fi
@@ -174,17 +179,55 @@ console)
 smoke)
     LOG="${LOG:-${KRYPTIK_WORK}/logs/ovmf-serial.${RUN_ID}.log}"
     mkdir -p "$(dirname "$LOG")"
-    # The exact command, for the record: acceptance reads it back to prove
-    # that no -kernel, -initrd, -append or host filesystem reached the guest.
+    # The command line, which acceptance checks for host-side boot inputs.
     { printf '%q ' "$QEMU" "${ARGS[@]}"; echo; } > "${LOG}.cmd"
     ln -sfn "$LOG" "${KRYPTIK_WORK}/logs/ovmf-serial.latest.log"
     echo "serial log: ${LOG}"
+    # The console is a socket so the driver can answer the state passphrase
+    # prompt; wait=on holds the guest until the driver is connected.
+    SER="${VMDIR}/${RUN_ID}.serial"
     set +e; trap - ERR
-    timeout --foreground "$TIMEOUT" "$QEMU" "${ARGS[@]}" -serial "file:${LOG}" -monitor none < /dev/null > "${LOG}.qemu" 2>&1
-    rc=$?
+    "$QEMU" "${ARGS[@]}" -chardev "socket,id=ser0,path=${SER},server=on,wait=on,logfile=${LOG}" -serial chardev:ser0 \
+        -monitor none < /dev/null > "${LOG}.qemu" 2>&1 &
+    qpid=$!
+    for _ in $(seq 1 50); do [[ -S "$SER" ]] && break; sleep 0.2; done
+    # The driver decides: 0 when the console closed (the guest is gone, and
+    # QEMU's own status is the result), 1 at its timeout (QEMU is killed).
+    # QEMU closes its console just before it exits, so its pid cannot tell.
+    if [[ ! -S "$SER" ]]; then
+        kill "$qpid" 2>/dev/null; wait "$qpid"; rc=$?; [[ "$rc" -eq 0 ]] && rc=1
+        warn "QEMU did not open its console socket ${SER}"
+    elif [[ -n "$UNTIL" ]]; then
+        # The line, then 10 s for anything after it. A guest that powered off
+        # meanwhile keeps QEMU's status; one still running is stopped: 2.
+        python3 "${SELF}/vm-drive.py" --serial "$SER" --timeout "$TIMEOUT" "expect:${UNTIL}" "sleep:10" > /dev/null
+        seen=$?
+        for _ in $(seq 1 30); do kill -0 "$qpid" 2>/dev/null || break; sleep 0.1; done
+        if kill -0 "$qpid" 2>/dev/null; then
+            kill "$qpid" 2>/dev/null; wait "$qpid"
+            if [[ "$seen" -eq 0 ]]; then rc=2; else rc=124; fi
+        else
+            wait "$qpid"; rc=$?
+        fi
+    elif python3 "${SELF}/vm-drive.py" --serial "$SER" --timeout "$TIMEOUT" wait-exit > /dev/null; then
+        # Up to 30 s for QEMU to exit.
+        for _ in $(seq 1 300); do kill -0 "$qpid" 2>/dev/null || break; sleep 0.1; done
+        if kill -0 "$qpid" 2>/dev/null; then
+            kill "$qpid" 2>/dev/null; wait "$qpid"; rc=1
+            warn "QEMU did not exit after the guest was gone"
+        else
+            wait "$qpid"; rc=$?
+        fi
+    else
+        kill "$qpid" 2>/dev/null; wait "$qpid"; rc=124
+    fi
     set -e
     [[ "$rc" -eq 124 ]] && warn "QEMU hit the ${TIMEOUT}s timeout"
-    [[ "$rc" -ne 0 && "$rc" -ne 124 ]] && { warn "QEMU exited ${rc}:"; sed 's/^/  /' "${LOG}.qemu" | tail -5; }
+    if [[ "$rc" -eq 2 && -n "$UNTIL" ]]; then
+        echo "stopped 10 s after the awaited line: ${UNTIL}"
+    elif [[ "$rc" -ne 0 && "$rc" -ne 124 ]]; then
+        warn "QEMU exited ${rc}:"; sed 's/^/  /' "${LOG}.qemu" | tail -5
+    fi
     exit "$rc"
     ;;
 serve)

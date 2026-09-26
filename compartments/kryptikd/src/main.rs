@@ -1,22 +1,14 @@
-//! kryptikd — Kryptik compartment manager.
+//! kryptikd, the Kryptik compartment manager.
 //!
 //! Owns zone lifecycle. Runs privileged in zone 0 (ADR-003) and is the only
-//! process permitted to create zones or move data between them.
-//!
-//! STATUS: implemented here are zone definition parsing and validation, kernel
-//! capability probing, the namespace, Landlock, seccomp and cgroup primitives
-//! the isolation exit test attacks, the launch path (`run`, `stop`, the
-//! registry, `gc`), the net zone's topology, per-zone LUKS2 volumes, the
-//! brokered clipboard and file-transfer channels with their consent path, and
-//! `serve`, the launch daemon. The per-zone Wayland proxy is the separate
-//! compositor workspace. Anything not built is refused with an explicit error
-//! rather than a silent no-op - a compartment manager that pretends to isolate
-//! is worse than one that refuses to start.
+//! process that creates zones or moves data between them. Anything not built
+//! is refused with an error, never a silent no-op.
 
 mod broker;
 mod caps;
 mod cgroup;
 mod consent;
+mod files;
 mod isolate;
 mod landlock;
 mod netlink;
@@ -28,6 +20,7 @@ mod seccomp;
 mod serve;
 mod spawn;
 mod time;
+mod update;
 mod volume;
 mod wifi;
 mod zone;
@@ -51,6 +44,9 @@ USAGE:
     kryptikd list  [--zones DIR]      list configured zones
     kryptikd show  NAME [--zones DIR]
     kryptikd explain NAME             what starting this zone would do
+    kryptikd seccomp-trace -- CMD     run CMD under the base seccomp filter; every
+                   [--zone NAME]      call it refuses is named and fails with ENOSYS
+                                      (--zone: NAME's filter, with its policy file)
     kryptikd run NAME -- CMD [ARGS]   create the zone and run CMD inside it
     kryptikd stop NAME [--now]        stop a running zone (--now = SIGKILL)
     kryptikd status NAME              running, stale or absent
@@ -124,15 +120,9 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
-        // kryptikd confine-test ROOTFS TARGET
-        //
-        // Confines this process to ROOTFS with Landlock, then attempts to read
-        // TARGET. Used by the isolation exit test to prove requirements 2
-        // and 4 rather than assert them.
-        //
-        //   exit 0  -> the read SUCCEEDED (confinement failed)
-        //   exit 4  -> the read was BLOCKED (confinement worked)
-        //   exit 1  -> could not confine at all
+        /* confine-test ROOTFS TARGET: Landlock-confine to ROOTFS, then read
+         * TARGET. Exit 0: read succeeded (confinement failed); 4: blocked;
+         * 1: could not confine. Used by the isolation exit test. */
         "confine-test" => {
             let Some(root) = args.get(1) else {
                 eprintln!("confine-test: expected ROOTFS TARGET");
@@ -143,8 +133,7 @@ fn main() -> ExitCode {
                 return ExitCode::from(2);
             };
 
-            // Sanity: the read must succeed BEFORE confinement, or a blocked
-            // read afterwards proves nothing (the file might simply not exist).
+            // Unless the read works before confinement, a blocked read proves nothing.
             if std::fs::read(target).is_err() {
                 eprintln!("confine-test: {target} is unreadable even before confinement");
                 return ExitCode::from(2);
@@ -169,25 +158,10 @@ fn main() -> ExitCode {
                 }
             }
         }
-        // kryptikd seccomp-test SYSCALL
-        //
-        // Forks; the child installs the zone seccomp filter and then makes the
-        // named syscall. The parent reports how the child ended. Used by the
-        // adversarial test to prove syscalls are actually killed rather than
-        // assert that a filter was installed.
-        //
-        //   exit 0 -> syscall completed (NOT blocked)
-        //   exit 5 -> child killed by SIGSYS (blocked, as intended)
-        //   exit 1 -> could not install the filter
-        // kryptikd seccomp-test PROBE
-        //
-        // PROBE may also name an argument-rule probe rather than a syscall:
-        //   clone-newuser      clone(CLONE_NEWUSER)     -> expect SIGSYS   (exit 5)
-        //   clone3             clone3()                 -> expect ENOSYS   (exit 7)
-        //   socket-vsock       socket(AF_VSOCK)         -> expect EAFNOSUPPORT (exit 7)
-        //   socket-netlink-nf  socket(NETLINK_NETFILTER)-> expect EAFNOSUPPORT (exit 7)
-        //   socket-inet        socket(AF_INET)          -> expect success  (exit 0)
-        //   ioctl-tiocsti      ioctl(0, TIOCSTI)        -> expect SIGSYS   (exit 5)
+        /* seccomp-test SYSCALL|PROBE: a forked child installs the zone filter,
+         * then makes the call (probes: cmd_seccomp_probe). Exit 0: completed;
+         * 5: SIGSYS; 6: another signal; 7: refused with the intended errno;
+         * 1: filter not installed. */
         "seccomp-test" => {
             let Some(name) = args.get(1) else {
                 eprintln!("seccomp-test: expected a syscall name");
@@ -210,12 +184,9 @@ fn main() -> ExitCode {
             }
         },
         "run" => cmd_run(&zone_dir, &args),
-        // kryptikd seccomp-trace -- CMD
-        //
-        // Runs CMD under the zone filter with the deny action set to TRAP
-        // rather than KILL, and reports which syscall was refused. This is how
-        // a zone policy gets debugged: a KILL tells you the zone died, a TRAP
-        // tells you what it died on.
+        /* seccomp-trace [--zone NAME] -- CMD: run CMD under the base filter, or
+         * NAME's widened by its policy file, and name every call it refuses
+         * (cmd_seccomp_trace). For writing a policy file. */
         "seccomp-trace" => {
             let Some(sep) = args.iter().position(|a| a == "--") else {
                 eprintln!("seccomp-trace: expected `-- COMMAND`");
@@ -226,11 +197,21 @@ fn main() -> ExitCode {
                 eprintln!("seccomp-trace: no command after `--`");
                 return ExitCode::from(2);
             }
-            cmd_seccomp_trace(&cmd)
+            let (allow, sockets) = match value(&args, "--zone") {
+                None => (seccomp::BASE_ALLOWLIST.to_vec(), seccomp::SocketPolicy::default()),
+                Some(name) => match trace_filter(&zone_dir, name) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        eprintln!("seccomp-trace: {e}");
+                        return ExitCode::from(2);
+                    }
+                },
+            };
+            cmd_seccomp_trace(&cmd, &allow, &sockets)
         }
         "stop" => match args.get(1) {
             Some(name) if !name.starts_with("--") => {
-                cmd_stop(name, args.iter().any(|a| a == "--now"))
+                cmd_stop(name, args.iter().any(|a| a == "--now"), &rootfs_base_from(&args))
             }
             _ => {
                 eprintln!("stop: expected a zone name");
@@ -268,18 +249,10 @@ fn main() -> ExitCode {
     }
 }
 
-/// Stop a running zone.
-///
-/// Signals the LAUNCHER, not the zone. The launcher forwards to the
-/// intermediate, which forwards to pid 1 and escalates to SIGKILL after five
-/// seconds - the supervision path that already exists and is already tested.
-/// A second teardown path would be a second thing to get wrong.
-///
-/// The recorded pid is only signalled when both the pid AND its start time
-/// still match. Pids are reused, and a stale entry's pid may belong to an
-/// unrelated process by now; signalling it would be far worse than leaving a
-/// directory behind.
-fn cmd_stop(name: &str, now: bool) -> ExitCode {
+/// Stop a running zone by signalling its launcher, which forwards the signal
+/// to pid 1 and escalates to SIGKILL after 5 s. The launcher is signalled only
+/// while its pid and start time both still match: pids are reused.
+fn cmd_stop(name: &str, now: bool, base: &str) -> ExitCode {
     let mut st = match registry::state(name) {
         Ok(s) => s,
         Err(e) => {
@@ -288,10 +261,8 @@ fn cmd_stop(name: &str, now: bool) -> ExitCode {
         }
     };
 
-    // "Still starting" is a window of a few milliseconds between claim() and
-    // the fork that records the launcher pid. A script that does `run &` then
-    // `stop` lands in it often enough to be annoying, and the answer is not to
-    // report failure but to look again.
+    /* "Still starting" lasts a few ms, between claim() and the fork that
+     * records the launcher pid; `run &` then `stop` often lands in it. */
     if matches!(st, registry::State::Running { launcher: None, .. }) {
         std::thread::sleep(std::time::Duration::from_millis(100));
         st = match registry::state(name) {
@@ -314,6 +285,7 @@ fn cmd_stop(name: &str, now: bool) -> ExitCode {
                 eprintln!("kryptikd: reclaiming {name:?}: {e}");
                 return ExitCode::FAILURE;
             }
+            close_left_volume(name, base);
             println!("zone {name:?} was not running (stale entry from pid {pid} reclaimed)");
             ExitCode::SUCCESS
         }
@@ -324,29 +296,27 @@ fn cmd_stop(name: &str, now: bool) -> ExitCode {
             );
             ExitCode::FAILURE
         }
-        registry::State::Running { launcher: Some(l), .. } => {
+        registry::State::Running { launcher: Some(l), init, .. } => {
             if !l.still_alive() {
-                // The lock said live and the stamp says otherwise: the
-                // launcher died between the two reads. Reclaim rather than
-                // signal a pid that is no longer the process we meant.
+                // The launcher died between the two reads; do not signal a reused pid.
                 let _ = registry::reclaim(name);
+                close_left_volume(name, base);
                 println!("zone {name:?} exited while stopping it");
                 return ExitCode::SUCCESS;
             }
-            let sig = if now { libc::SIGKILL } else { libc::SIGTERM };
-            if unsafe { libc::kill(l.pid, sig) } < 0 {
-                eprintln!(
-                    "kryptikd: signalling launcher {}: {}",
-                    l.pid,
-                    std::io::Error::last_os_error()
-                );
+            /* --now kills the zone's pid 1, which takes the pid namespace with
+             * it, not the launcher: the launcher outlives its zone to unmount
+             * and close the zone's volume. */
+            let (pid, sig) = match init.filter(|i| now && i.still_alive()) {
+                Some(i) => (i.pid, libc::SIGKILL),
+                None => (l.pid, if now { libc::SIGKILL } else { libc::SIGTERM }),
+            };
+            if unsafe { libc::kill(pid, sig) } < 0 {
+                eprintln!("kryptikd: signalling {pid}: {}", std::io::Error::last_os_error());
                 return ExitCode::FAILURE;
             }
 
-            // Wait for the entry to go. The launcher removes it on the way
-            // out, so its disappearance is the zone actually being gone -
-            // not a timer we hope is long enough. The bound is the 5 s
-            // escalation plus teardown.
+            // The launcher removes its entry on exit. 8 s covers the 5 s escalation plus teardown.
             for _ in 0..160 {
                 match registry::state(name) {
                     Ok(registry::State::Absent) => {
@@ -355,6 +325,7 @@ fn cmd_stop(name: &str, now: bool) -> ExitCode {
                     }
                     Ok(registry::State::Stale { .. }) => {
                         let _ = registry::reclaim(name);
+                        close_left_volume(name, base);
                         println!("zone {name:?} stopped");
                         return ExitCode::SUCCESS;
                     }
@@ -372,11 +343,23 @@ fn cmd_stop(name: &str, now: bool) -> ExitCode {
     }
 }
 
-/// The cross-zone paste is a zone 0 gesture: no zone can ask for
-/// another zone's payload - the verb does not exist on a zone's socket - so
-/// the only way a payload moves is this command, run by the operator (or the
-/// compositor on their behalf) in zone 0. Both zones must be running: the
-/// payload lives in the running zone's registry entry and nowhere else.
+/// Close the volume of a zone whose launcher died without closing it, as
+/// `gc` does for every zone: otherwise the plaintext stays mounted and its
+/// key in the kernel after the zone is reported stopped.
+fn close_left_volume(name: &str, base: &str) {
+    if !volume::mappings().iter().any(|z| z == name) || matches!(registry::state(name), Ok(registry::State::Running { .. })) {
+        return;
+    }
+    let mnt = volume::mountpoint_for(Path::new(base), name).display().to_string();
+    match volume::close_mapping(name, &mnt) {
+        Ok(()) => println!("closed the volume zone {name:?} left open"),
+        Err(e) => eprintln!("kryptikd: closing zone {name:?}'s volume: {e}"),
+    }
+}
+
+/// Cross-zone paste, a zone 0 gesture: no zone's socket has a verb to fetch
+/// another zone's payload. Both zones must be running; the payload lives only
+/// in the source zone's registry entry.
 fn cmd_clipboard(args: &[String]) -> ExitCode {
     let (from, to) = match (args.get(1).map(|s| s.as_str()), args.get(2), args.get(3)) {
         (Some("move"), Some(f), Some(t)) if !f.starts_with("--") && !t.starts_with("--") => (f.as_str(), t.as_str()),
@@ -433,11 +416,8 @@ fn cmd_status(name: &str) -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(registry::State::Running { launcher, init, cgroup, started }) => {
-            // The last word is asked of the kernel, not recorded: whether the
-            // zone's pid 1 runs under a core-scheduling cookie of its own
-            // (own), under none (none), with no sibling thread online to
-            // share a core with (no-smt), or on a kernel that has no such
-            // thing (unavailable). Nothing in /proc shows it.
+            /* core-sched is asked of the kernel (nothing in /proc shows it): own,
+             * none, no-smt (no sibling thread online) or unavailable. */
             println!(
                 "{name}  running  launcher {}  init {}  since {}{}{}",
                 launcher.map(|l| l.pid.to_string()).unwrap_or_else(|| "starting".into()),
@@ -467,12 +447,9 @@ fn cmd_list_running() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Reclaim every stale entry, and every empty per-zone cgroup.
-///
-/// Safe by construction rather than by bookkeeping: an entry is stale only if
-/// its lock can be taken, and `rmdir` on a cgroup with live processes fails
-/// with EBUSY - so the kernel itself refuses to let this remove a live zone's
-/// cgroup, whatever the registry says.
+/// Reclaim stale entries, empty zone cgroups and orphaned volume mappings.
+/// A live zone is safe: an entry is stale only if its lock can be taken, and
+/// the kernel refuses `rmdir` of a populated cgroup (EBUSY).
 fn cmd_gc() -> ExitCode {
     let mut reclaimed = 0usize;
     for n in registry::names() {
@@ -487,9 +464,7 @@ fn cmd_gc() -> ExitCode {
         }
     }
     let swept = cgroup::sweep_now();
-    // Volumes whose launcher died without closing them: a
-    // mapping with no running zone is plaintext nobody is using. Unmount
-    // and close it; the ext4 gets fsck -p at the next open.
+    // A mapping with no running zone is plaintext nobody uses; the next open runs fsck -p.
     let mut closed = 0usize;
     let base = DEFAULT_ROOTFS_BASE.to_string();
     for z in volume::mappings() {
@@ -513,12 +488,28 @@ fn cmd_gc() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// kryptikd's own arguments: those before `--`. The rest is the zone's command.
+fn own(args: &[String]) -> &[String] {
+    &args[..args.iter().position(|a| a == "--").unwrap_or(args.len())]
+}
+
+/// The value after `flag`, if the flag is given with one.
+fn value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    let own = own(args);
+    own.iter().position(|a| a == flag).and_then(|i| own.get(i + 1)).map(String::as_str)
+}
+
+/// None when `flag` is absent; an error when its value is missing or does not parse.
+fn parsed<T: std::str::FromStr>(args: &[String], flag: &str, what: &str) -> Result<Option<T>, String> {
+    let own = own(args);
+    match own.iter().position(|a| a == flag) {
+        None => Ok(None),
+        Some(i) => own.get(i + 1).and_then(|v| v.parse().ok()).map(Some).ok_or_else(|| format!("{flag}: expected {what}")),
+    }
+}
+
 fn zone_dir_from(args: &[String]) -> PathBuf {
-    args.iter()
-        .position(|a| a == "--zones")
-        .and_then(|i| args.get(i + 1))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_ZONE_DIR))
+    PathBuf::from(value(args, "--zones").unwrap_or(DEFAULT_ZONE_DIR))
 }
 
 fn cmd_check(dir: &Path, target: bool) -> ExitCode {
@@ -543,9 +534,7 @@ fn cmd_check(dir: &Path, target: bool) -> ExitCode {
     match s.landlock {
         Some(v) => {
             println!("  landlock         yes (ABI v{v})");
-            // Prove a ruleset can actually be built, not just that the syscall
-            // answers a version query. The struct layouts are size-sensitive
-            // and a mismatch fails here rather than at zone start.
+            // Build a ruleset, so a struct layout mismatch fails here and not at zone start.
             match landlock::Ruleset::new() {
                 Ok(_) => println!("  landlock ruleset creatable"),
                 Err(e) => {
@@ -557,14 +546,8 @@ fn cmd_check(dir: &Path, target: bool) -> ExitCode {
         None => println!("  landlock         NO"),
     }
 
-    // Prove the seccomp program actually builds and installs in a child, not
-    // merely that the kernel reports seccomp support.
-    //
-    // A self-test that could not run is a failure, not a pass: this command
-    // gates a kernel as fit to run zones, and "the filter was not verified"
-    // reported as success is the exact outcome the paragraph below argues
-    // against. (It used to fall through to success, and current_exe()
-    // failing produced Command::new(""), which lands in that same arm.)
+    /* Install the filter in a child and make an allowed call. A self-test that
+     * cannot run is a failure: this command gates a kernel as fit for zones. */
     let self_test = std::env::current_exe()
         .map_err(|e| format!("current_exe: {e}"))
         .and_then(|exe| {
@@ -587,9 +570,8 @@ fn cmd_check(dir: &Path, target: bool) -> ExitCode {
         }
     }
 
-    // The privileged launch contract: on the target, only a process with CAP_SYS_ADMIN in the
-    // initial namespace may create a user namespace. Read the knob, then
-    // PROVE it by trying as uid 65534 (or as ourselves when unprivileged).
+    /* On the target only CAP_SYS_ADMIN in the initial namespace may create a
+     * user namespace. Read the knob, then prove it by trying. */
     let knob = isolate::userns_restriction_sysctl();
     match isolate::probe_userns_restriction() {
         Ok(true) => println!(
@@ -614,8 +596,7 @@ fn cmd_check(dir: &Path, target: bool) -> ExitCode {
         }
     }
     if target {
-        // The controllers cgroup supervision needs must be delegable from the root; the actual
-        // creation is tried by every launch, this only names a missing one.
+        // Only names a missing controller; every launch still tries the real creation.
         let ctl = std::fs::read_to_string("/sys/fs/cgroup/cgroup.controllers").unwrap_or_default();
         for c in ["memory", "pids"] {
             if !ctl.split_whitespace().any(|x| x == c) {
@@ -673,8 +654,20 @@ fn cmd_check(dir: &Path, target: bool) -> ExitCode {
                         }
                     }
                 }
-                if z.landlock.is_some() {
-                    println!("             landlock policy file: not applied (unimplemented; refused without the override)");
+                /* Parsed as the launcher parses it (spawn.rs), so a file that
+                 * would stop a launch fails the check. */
+                if let Some(rel) = &z.landlock {
+                    let path = policy::resolve(dir, rel);
+                    match std::fs::read_to_string(&path)
+                        .map_err(|e| e.to_string())
+                        .and_then(|t| landlock::parse_policy(&t, &path.display().to_string()))
+                    {
+                        Ok(rules) => println!("             landlock {rel}: {} rule(s) narrowing the base", rules.len()),
+                        Err(e) => {
+                            eprintln!("             landlock {rel}: {e}");
+                            failed = true;
+                        }
+                    }
                 }
                 if target && z.uid_base.is_none() {
                     eprintln!(
@@ -732,8 +725,8 @@ fn cmd_show(dir: &Path, name: &str) -> ExitCode {
     println!("zone         {}", z.name);
     println!("description  {}", z.description);
     println!("network      {:?}", z.network);
-    if let Some(b) = &z.bridge {
-        println!("bridge       {b}");
+    if z.network != zone::NetworkMode::None {
+        println!("bridge       {}", netzone::BRIDGE);
     }
     println!("storage      {:?}", z.storage);
     if let Some(v) = &z.volume {
@@ -747,36 +740,24 @@ fn cmd_show(dir: &Path, name: &str) -> ExitCode {
         println!("pids_max     {p}");
     }
 
-    let flags = isolate::namespace_flags(&z);
-    let mut ns = Vec::new();
-    for (f, n) in [
-        (libc::CLONE_NEWUSER, "user"),
-        (libc::CLONE_NEWNS, "mount"),
-        (libc::CLONE_NEWPID, "pid"),
-        (libc::CLONE_NEWIPC, "ipc"),
-        (libc::CLONE_NEWUTS, "uts"),
-        (libc::CLONE_NEWCGROUP, "cgroup"),
-        (libc::CLONE_NEWNET, "net"),
-    ] {
-        if flags & f != 0 {
-            ns.push(n);
-        }
-    }
-    println!("namespaces   {}", ns.join(", "));
+    println!("namespaces   {}", isolate::namespace_names(isolate::namespace_flags(&z)).join(", "));
     println!("seccomp      default-deny, {} syscalls allowed", seccomp::BASE_ALLOWLIST.len());
 
-    if z.is_airgapped() {
-        println!();
-        println!("This zone has no network stack: its net namespace contains only");
-        println!("loopback. That is not a firewall rule - there is no interface.");
-    } else {
-        // The counterpart, which was missing. A reader who sees a paragraph
-        // for an airgapped zone and none for a routed one concludes the routed
-        // one is unremarkable - that is, that it works.
-        println!();
-        println!("network.mode is {:?}, and routed networking is NOT IMPLEMENTED.", z.network);
-        println!("This zone gets an empty net namespace: loopback only, no routes,");
-        println!("no path out. It is isolated, and it is not connected.");
+    println!();
+    match z.network {
+        zone::NetworkMode::None => {
+            println!("This zone has no network stack: its net namespace contains only");
+            println!("loopback. That is not a firewall rule - there is no interface.");
+        }
+        zone::NetworkMode::Routed => {
+            println!("A root launch attaches this zone to the kryptik0 bridge, and it");
+            println!("reaches the network through the nic zone. Launched without");
+            println!("privilege it gets loopback only.");
+        }
+        zone::NetworkMode::Nic => {
+            println!("This zone holds the physical network interface and routes the");
+            println!("other zones' traffic (docs/design/net-zone.md).");
+        }
     }
 
     ExitCode::SUCCESS
@@ -785,11 +766,7 @@ fn cmd_show(dir: &Path, name: &str) -> ExitCode {
 const DEFAULT_ROOTFS_BASE: &str = "/var/lib/kryptik/zones";
 
 fn rootfs_base_from(args: &[String]) -> String {
-    args.iter()
-        .position(|a| a == "--rootfs")
-        .and_then(|i| args.get(i + 1))
-        .cloned()
-        .unwrap_or_else(|| DEFAULT_ROOTFS_BASE.to_string())
+    value(args, "--rootfs").unwrap_or(DEFAULT_ROOTFS_BASE).to_string()
 }
 
 fn load_zone(dir: &Path, name: &str) -> Result<Zone, ExitCode> {
@@ -814,11 +791,10 @@ fn cmd_explain(dir: &Path, name: &str, args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Argument-rule probes for `seccomp-test`. Returns None when `name` is not
-/// a probe (so the plain syscall path runs instead).
+/// Argument-rule and soft-refusal probes for `seccomp-test`; None when `name`
+/// is not a probe.
 fn cmd_seccomp_probe(name: &str) -> Option<ExitCode> {
-    // The probe itself, run in the filtered child. Returns the child's exit
-    // code: 7 = refused with the intended errno, 0 = completed.
+    // Runs in the filtered child: 7 if refused with the intended errno, else 0.
     let probe: fn() -> i32 = match name {
         "clone-newuser" => || unsafe {
             let r = libc::syscall(
@@ -837,6 +813,15 @@ fn cmd_seccomp_probe(name: &str) -> Option<ExitCode> {
         "clone3" => || unsafe {
             let r = libc::syscall(libc::SYS_clone3, std::ptr::null::<u8>(), 0usize);
             if r < 0 && *libc::__errno_location() == libc::ENOSYS { 7 } else { 0 }
+        },
+        "inotify" => || unsafe {
+            let r = libc::inotify_init1(0);
+            if r < 0 && *libc::__errno_location() == libc::ENOSYS { 7 } else { 0 }
+        },
+        // As ncurses calls it around a terminfo open.
+        "setfsuid" => || unsafe {
+            let r = libc::syscall(libc::SYS_setfsuid, libc::getuid() as libc::c_long);
+            if r < 0 && *libc::__errno_location() == libc::EPERM { 7 } else { 0 }
         },
         "socket-vsock" => || unsafe {
             let r = libc::socket(40, libc::SOCK_STREAM, 0);
@@ -858,92 +843,24 @@ fn cmd_seccomp_probe(name: &str) -> Option<ExitCode> {
         _ => return None,
     };
 
-    let pid = unsafe { libc::fork() };
-    if pid < 0 {
-        eprintln!("seccomp-test: fork failed");
-        return Some(ExitCode::FAILURE);
-    }
-    if pid == 0 {
-        if seccomp::confine_zone().is_err() {
-            unsafe { libc::_exit(1) };
-        }
-        let rc = probe();
-        unsafe { libc::_exit(rc) };
-    }
-    let mut status: libc::c_int = 0;
-    unsafe { libc::waitpid(pid, &mut status, 0) };
-    let termsig = spawn::signalled_by(status);
-    let exitcode = (status >> 8) & 0xff;
-    Some(if termsig == Some(libc::SIGSYS) {
-        eprintln!("seccomp-test: {name} killed by SIGSYS (blocked)");
-        ExitCode::from(5)
-    } else if let Some(sig) = termsig {
-        eprintln!("seccomp-test: {name} killed by signal {sig}");
-        ExitCode::from(6)
-    } else if exitcode == 7 {
-        eprintln!("seccomp-test: {name} refused with the intended errno");
-        ExitCode::from(7)
-    } else if exitcode == 1 {
-        eprintln!("seccomp-test: could not install filter");
-        ExitCode::FAILURE
-    } else {
-        eprintln!("seccomp-test: {name} COMPLETED - not blocked");
-        ExitCode::SUCCESS
-    })
+    Some(under_zone_filter(name, probe))
 }
 
 fn run_options_from(args: &[String]) -> Result<spawn::RunOptions, String> {
-    let num = |flag: &str| -> Result<Option<u32>, String> {
-        match args.iter().position(|a| a == flag) {
-            None => Ok(None),
-            Some(i) => args
-                .get(i + 1)
-                .and_then(|v| v.parse::<u32>().ok())
-                .map(Some)
-                .ok_or_else(|| format!("{flag}: expected a numeric id")),
-        }
-    };
     Ok(spawn::RunOptions {
-        zone_uid: num("--zone-uid")?,
-        zone_gid: num("--zone-gid")?,
+        zone_uid: parsed(args, "--zone-uid", "a numeric id")?,
+        zone_gid: parsed(args, "--zone-gid", "a numeric id")?,
         zones_dir: std::path::PathBuf::new(),
         wifi_dir: wifi_dir_from(args),
-        auto_approve_transfers: args.iter().any(|a| a == "--auto-approve-transfers"),
-        passphrase_file: args
-            .iter()
-            .position(|a| a == "--passphrase-file")
-            .and_then(|i| args.get(i + 1))
-            .map(PathBuf::from),
-        passphrase_fd: match args.iter().position(|a| a == "--passphrase-fd") {
+        auto_approve_transfers: own(args).iter().any(|a| a == "--auto-approve-transfers"),
+        passphrase_file: value(args, "--passphrase-file").map(PathBuf::from),
+        passphrase_fd: parsed(args, "--passphrase-fd", "a descriptor number")?,
+        wayland_socket: value(args, "--wayland-socket").map(PathBuf::from),
+        wayland_inode: parsed::<serve::InodeId>(args, "--wayland-inode", "DEV:INO")?,
+        ready_fd: match parsed::<i32>(args, "--ready-fd", "a descriptor number")? {
             None => None,
-            Some(i) => Some(
-                args.get(i + 1)
-                    .and_then(|v| v.parse::<i32>().ok())
-                    .ok_or_else(|| "--passphrase-fd: expected a descriptor number".to_string())?,
-            ),
-        },
-        wayland_socket: args
-            .iter()
-            .position(|a| a == "--wayland-socket")
-            .and_then(|i| args.get(i + 1))
-            .map(PathBuf::from),
-        wayland_inode: match args.iter().position(|a| a == "--wayland-inode") {
-            None => None,
-            Some(i) => Some(
-                args.get(i + 1)
-                    .ok_or_else(|| "--wayland-inode: expected DEV:INO".to_string())?
-                    .parse::<serve::InodeId>()
-                    .map_err(|e| format!("--wayland-inode: {e}"))?,
-            ),
-        },
-        ready_fd: match args.iter().position(|a| a == "--ready-fd") {
-            None => None,
-            Some(i) => {
-                let fd = args
-                    .get(i + 1)
-                    .and_then(|v| v.parse::<i32>().ok())
-                    .ok_or_else(|| "--ready-fd: expected a descriptor number".to_string())?;
-                // Ours alone from here: the zone's command must not inherit it.
+            Some(fd) => {
+                // The zone's command must not inherit it.
                 unsafe {
                     let fl = libc::fcntl(fd, libc::F_GETFD);
                     if fl < 0 {
@@ -957,14 +874,12 @@ fn run_options_from(args: &[String]) -> Result<spawn::RunOptions, String> {
     })
 }
 
-/// `kryptikd volume` - the encrypted zone's container, outside any launch
-/// (docs/design/encrypted-volumes.md). Root only: cryptsetup, dm-crypt and
-/// loop devices are.
+/// An encrypted zone's LUKS2 container, outside any launch
+/// (docs/design/encrypted-volumes.md). init and passwd need root.
 ///
 ///   volume init NAME [--size 512M] --passphrase-file F [--zone-uid N --zone-gid N]
 ///   volume passwd NAME --passphrase-file OLD --new-passphrase-file NEW
-///   volume backup-header NAME FILE
-///   volume restore-header NAME FILE
+///   volume backup-header|restore-header NAME FILE
 ///   volume status NAME
 fn cmd_volume(dir: &Path, args: &[String]) -> ExitCode {
     let sub = args.get(1).map(String::as_str).unwrap_or("");
@@ -981,7 +896,7 @@ fn cmd_volume(dir: &Path, args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     }
     let vol = zone.volume.clone().unwrap_or_else(|| volume::default_volume_path(name));
-    let opt = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
+    let opt = |flag: &str| value(args, flag).map(str::to_string);
     let pass_from = |flag: &str| -> Result<volume::Passphrase, ExitCode> {
         let Some(p) = opt(flag) else {
             eprintln!("volume: {flag} FILE is required (a 0600 file holding the passphrase; it never travels in argv)");
@@ -1020,7 +935,7 @@ fn cmd_volume(dir: &Path, args: &[String]) -> ExitCode {
                 eprintln!("volume init needs root (cryptsetup, dm-crypt, loop)");
                 return ExitCode::from(2);
             }
-            let size = match opt("--size").as_deref().map(volume::parse_size) {
+            let size = match opt("--size").as_deref().map(zone::parse_size) {
                 None => 512 * 1024 * 1024,
                 Some(Some(n)) => n,
                 Some(None) => {
@@ -1077,9 +992,8 @@ fn wifi_dir_from(args: &[String]) -> PathBuf {
 }
 
 
-/// `kryptikd time floor | status` (docs/design/time.md). The clock is set in
-/// two places only: here, from the floor and with no network involved, and
-/// in the broker, from a claim the net zone made and zone 0 judged.
+/// `kryptikd time floor | status` (docs/design/time.md). The clock is set only
+/// here, from the floor, and in the broker, from a net zone claim zone 0 judged.
 fn cmd_time(args: &[String]) -> ExitCode {
     let dir = Path::new(time::STATE_DIR);
     match args.get(1).map(String::as_str) {
@@ -1116,14 +1030,9 @@ fn cmd_time(args: &[String]) -> ExitCode {
     }
 }
 
-/// `kryptikd wifi`: the net zone's Wi-Fi credentials, from zone 0 (wifi.rs).
-/// The session's path is `kryptik wifi` through the launch daemon; this is
-/// the same file for root at a terminal and for the tests. The passphrase
-/// is one line on stdin, never an argument.
-///
-///   wifi list                [--wifi-dir DIR]
-///   wifi add SSID            [--wifi-dir DIR] [--zones DIR]
-///   wifi forget SSID         [--wifi-dir DIR] [--zones DIR]
+/// `kryptikd wifi list | add SSID | forget SSID`: the net zone's Wi-Fi networks,
+/// for root and the tests (the session goes through the launch daemon). The
+/// passphrase is one line on stdin, never an argument.
 fn cmd_wifi(zones_dir: &Path, args: &[String]) -> ExitCode {
     let dir = wifi_dir_from(args);
     let sub = args.get(1).map(String::as_str).unwrap_or("");
@@ -1147,8 +1056,7 @@ fn cmd_wifi(zones_dir: &Path, args: &[String]) -> ExitCode {
             Err(e) => refused(e),
         },
         ("add", Some(ssid)) => {
-            // The rules first, so a bad SSID is refused before anyone types
-            // a passphrase for it.
+            // Refuse a bad SSID before asking for its passphrase.
             if let Err(e) = wifi::check_ssid(ssid) {
                 return refused(e);
             }
@@ -1192,8 +1100,6 @@ fn cmd_run(dir: &Path, args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     };
 
-    // Everything after `--` is the command. Requiring the separator keeps zone
-    // options and the command unambiguous.
     let Some(sep) = args.iter().position(|a| a == "--") else {
         eprintln!("run: expected `-- COMMAND`, e.g. kryptikd run untrusted -- /bin/sh");
         return ExitCode::from(2);
@@ -1229,143 +1135,164 @@ fn cmd_run(dir: &Path, args: &[String]) -> ExitCode {
     }
 }
 
-/// SIGSYS handler: report the denied syscall number, then die.
-///
-/// Everything here must be async-signal-safe. An earlier version used
-/// `format!` and `seccomp::name_of`, both of which allocate - the handler ran
-/// (the process exited 159) but nothing was ever printed, which is exactly the
-/// silent failure mode allocation in a signal handler produces. This version
-/// formats the integer by hand into a stack buffer and uses a raw write(2).
-///
-/// The number is translated to a name by the PARENT, after the child dies,
-/// where allocation is safe.
-extern "C" fn sigsys_handler(
-    _sig: libc::c_int,
-    info: *mut libc::siginfo_t,
-    _ctx: *mut libc::c_void,
-) {
-    // si_syscall sits at a fixed offset in the SIGSYS layout of siginfo_t:
-    // si_signo, si_errno, si_code (3 x i32), si_call_addr (pointer), then
-    // si_syscall. libc does not expose it as a field, so read it positionally.
-    let nr: i32 = unsafe {
-        let base = info as *const u8;
-        let off = 3 * std::mem::size_of::<i32>() + std::mem::size_of::<usize>();
-        *(base.add(off) as *const i32)
+/// `_IOWR('!', nr, size)`, the seccomp notification ioctls.
+const fn seccomp_iowr(nr: u32, size: usize) -> libc::c_ulong {
+    ((3 << 30) | ((size as u32) << 16) | ((b'!' as u32) << 8) | nr) as libc::c_ulong
+}
+const NOTIF_RECV: libc::c_ulong = seccomp_iowr(0, std::mem::size_of::<libc::seccomp_notif>());
+const NOTIF_SEND: libc::c_ulong = seccomp_iowr(1, std::mem::size_of::<libc::seccomp_notif_resp>());
+
+/// The filter zone `name` runs under: the base, widened by its policy file.
+fn trace_filter(dir: &Path, name: &str) -> Result<(Vec<libc::c_long>, seccomp::SocketPolicy), String> {
+    let zones = zone::load_all(dir).map_err(|e| e.to_string())?;
+    let z = zones.iter().find(|z| z.name == name).ok_or_else(|| format!("no zone named {name:?}"))?;
+    let Some(rel) = &z.seccomp else {
+        return Ok((seccomp::BASE_ALLOWLIST.to_vec(), seccomp::SocketPolicy::default()));
     };
-
-    // Emit the line KRYPTIK_SECCOMP_DENIED <nr> without allocating.
-    const PREFIX: &[u8] = b"KRYPTIK_SECCOMP_DENIED ";
-    let mut buf = [0u8; 48];
-    let mut len = 0;
-    for &b in PREFIX {
-        buf[len] = b;
-        len += 1;
-    }
-    let mut n = if nr < 0 { 0u32 } else { nr as u32 };
-    let mut digits = [0u8; 10];
-    let mut d = 0;
-    loop {
-        digits[d] = b'0' + (n % 10) as u8;
-        n /= 10;
-        d += 1;
-        if n == 0 {
-            break;
-        }
-    }
-    while d > 0 {
-        d -= 1;
-        buf[len] = digits[d];
-        len += 1;
-    }
-    buf[len] = b'\n';
-    len += 1;
-
-    unsafe {
-        libc::write(2, buf.as_ptr() as *const libc::c_void, len);
-        libc::_exit(159);
-    }
+    let p = policy::load(&policy::resolve(dir, rel))
+        .and_then(|p| p.check_for_zone(z).map(|_| p))
+        .map_err(|e| format!("{rel}: {e}"))?;
+    Ok((seccomp::widened(&p.extra_syscalls).map_err(|e| e.to_string())?, p.sockets))
 }
 
-fn cmd_seccomp_trace(cmd: &[String]) -> ExitCode {
+/* Run CMD under a zone filter and name every call it refuses. Refused calls
+ * come here by seccomp user notification (Kryptik forbids ptrace) and fail
+ * with ENOSYS, so one run lists them all. The child shares our descriptor
+ * table until exec: the zone filter has no sendmsg to pass its listener. */
+fn cmd_seccomp_trace(cmd: &[String], allow: &[libc::c_long], sockets: &seccomp::SocketPolicy) -> ExitCode {
     use std::ffi::CString;
 
-    let pid = unsafe { libc::fork() };
-    if pid < 0 {
-        eprintln!("seccomp-trace: fork failed");
+    let args: Vec<CString> = match cmd.iter().map(|a| CString::new(a.as_str())).collect() {
+        Ok(a) => a,
+        Err(_) => {
+            eprintln!("seccomp-trace: an argument contains NUL");
+            return ExitCode::from(2);
+        }
+    };
+    let mut ptrs: Vec<*const libc::c_char> = args.iter().map(|a| a.as_ptr()).collect();
+    ptrs.push(std::ptr::null());
+    let mut pipe = [0 as libc::c_int; 2];
+    if unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) } < 0 {
+        eprintln!("seccomp-trace: pipe: {}", std::io::Error::last_os_error());
         return ExitCode::FAILURE;
     }
 
+    // A fork that shares the descriptor table; the child's exec unshares it.
+    let pid = unsafe { libc::syscall(libc::SYS_clone, libc::CLONE_FILES | libc::SIGCHLD, 0, 0, 0, 0) } as libc::pid_t;
+    if pid < 0 {
+        eprintln!("seccomp-trace: clone: {}", std::io::Error::last_os_error());
+        return ExitCode::FAILURE;
+    }
     if pid == 0 {
+        // Only calls the zone filter allows from here: write, execve, exit.
+        let fd: libc::c_int = seccomp::install_notifying(allow, sockets).unwrap_or(-1);
         unsafe {
-            let mut sa: libc::sigaction = std::mem::zeroed();
-            sa.sa_sigaction = sigsys_handler as usize;
-            sa.sa_flags = libc::SA_SIGINFO;
-            libc::sigaction(libc::SIGSYS, &sa, std::ptr::null_mut());
-        }
-        if seccomp::install_tracing(seccomp::BASE_ALLOWLIST).is_err() {
-            unsafe { libc::_exit(1) };
-        }
-        let prog = CString::new(cmd[0].as_str()).unwrap_or_default();
-        let args: Vec<CString> = cmd
-            .iter()
-            .filter_map(|a| CString::new(a.as_str()).ok())
-            .collect();
-        let mut ptrs: Vec<*const libc::c_char> = args.iter().map(|a| a.as_ptr()).collect();
-        ptrs.push(std::ptr::null());
-        unsafe {
-            libc::execvp(prog.as_ptr(), ptrs.as_ptr());
+            libc::write(pipe[1], fd.to_ne_bytes().as_ptr() as *const libc::c_void, 4);
+            if fd >= 0 {
+                libc::execvp(ptrs[0], ptrs.as_ptr());
+            }
             libc::_exit(127)
+        }
+    }
+
+    let mut word = [0u8; 4];
+    let got = unsafe { libc::read(pipe[0], word.as_mut_ptr() as *mut libc::c_void, 4) };
+    unsafe {
+        libc::close(pipe[0]);
+        libc::close(pipe[1]);
+    }
+    let listener = i32::from_ne_bytes(word);
+    /* The program's end is read from a pidfd: the listener hangs up only when
+     * the last filtered task is reaped, and this loop is what would reap it. */
+    let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as libc::c_int;
+    let mut refused = 0u32;
+    if got == 4 && listener >= 0 && pidfd >= 0 {
+        loop {
+            let mut pfds = [
+                libc::pollfd { fd: listener, events: libc::POLLIN, revents: 0 },
+                libc::pollfd { fd: pidfd, events: libc::POLLIN, revents: 0 },
+            ];
+            if unsafe { libc::poll(pfds.as_mut_ptr(), 2, -1) } < 0 {
+                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                break;
+            }
+            if pfds[0].revents & libc::POLLIN == 0 {
+                if pfds[1].revents != 0 || pfds[0].revents != 0 {
+                    break;
+                }
+                continue;
+            }
+            let mut req: libc::seccomp_notif = unsafe { std::mem::zeroed() };
+            if unsafe { libc::ioctl(listener, NOTIF_RECV as _, &mut req) } < 0 {
+                continue; // the caller died before we read it
+            }
+            let nr = libc::c_long::from(req.data.nr);
+            let name = seccomp::name_of(nr).unwrap_or("");
+            // A soft refusal gets the errno a zone gets, and is marked.
+            let soft = seccomp::REFUSED_SOFTLY.iter().find(|(n, _)| *n == nr).map(|&(_, e)| e as libc::c_int);
+            eprintln!("KRYPTIK_SECCOMP_DENIED {nr} {name}{}", if soft.is_some() { " soft" } else { "" });
+            refused += 1;
+            let mut resp: libc::seccomp_notif_resp = unsafe { std::mem::zeroed() };
+            resp.id = req.id;
+            resp.error = -soft.unwrap_or(libc::ENOSYS);
+            unsafe { libc::ioctl(listener, NOTIF_SEND as _, &mut resp) };
+        }
+    } else {
+        eprintln!("seccomp-trace: the filter could not be installed, or the program watched");
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
+    for fd in [listener, pidfd] {
+        if fd >= 0 {
+            unsafe { libc::close(fd) };
         }
     }
 
     let mut status: libc::c_int = 0;
     unsafe { libc::waitpid(pid, &mut status, 0) };
-    let code = spawn::decode_status(status);
-    if code == 159 {
-        eprintln!(
-            "seccomp-trace: the command was denied a syscall (see              KRYPTIK_SECCOMP_DENIED above for the number)"
-        );
-    }
-    ExitCode::from(u8::try_from(code).unwrap_or(1))
+    eprintln!("seccomp-trace: {refused} refused call(s)");
+    ExitCode::from(u8::try_from(spawn::decode_status(status)).unwrap_or(1))
 }
 
 fn cmd_seccomp_test(name: &str, nr: libc::c_long) -> ExitCode {
+    // The filter acts before the kernel reads the arguments; a blocked call never returns.
+    under_zone_filter(name, || {
+        unsafe { libc::syscall(nr, 0, 0, 0, 0, 0, 0) };
+        0
+    })
+}
+
+/// Run `probe` in a child under the zone filter and say how it ended. Exit 5:
+/// killed by SIGSYS; 6: another signal; 7: refused with the intended errno;
+/// 1: no filter; 0: completed.
+fn under_zone_filter(name: &str, probe: impl FnOnce() -> i32) -> ExitCode {
     // SAFETY: fork in a program that does no threading before this point.
     let pid = unsafe { libc::fork() };
     if pid < 0 {
         eprintln!("seccomp-test: fork failed");
         return ExitCode::FAILURE;
     }
-
     if pid == 0 {
-        // Child. Anything past the filter install must itself be permitted, so
-        // the syscall under test is made immediately and the result reported
-        // through the exit code rather than by printing.
         if seccomp::confine_zone().is_err() {
             unsafe { libc::_exit(1) };
         }
-        // Deliberately harmless arguments: the filter decides before the
-        // kernel ever looks at them. A blocked call never returns.
-        unsafe {
-            libc::syscall(nr, 0, 0, 0, 0, 0, 0);
-            libc::_exit(0)
-        }
+        let rc = probe();
+        unsafe { libc::_exit(rc) };
     }
-
     let mut status: libc::c_int = 0;
     unsafe { libc::waitpid(pid, &mut status, 0) };
-
-    // libc::WIFSIGNALED / WTERMSIG are not const fns in all versions; the
-    // status is decoded by spawn.rs, which owns the one tested decoder.
     let termsig = spawn::signalled_by(status);
     let exitcode = (status >> 8) & 0xff;
-
     if termsig == Some(libc::SIGSYS) {
         eprintln!("seccomp-test: {name} killed by SIGSYS (blocked)");
         ExitCode::from(5)
     } else if let Some(sig) = termsig {
         eprintln!("seccomp-test: {name} killed by signal {sig}");
         ExitCode::from(6)
+    } else if exitcode == 7 {
+        eprintln!("seccomp-test: {name} refused with the intended errno");
+        ExitCode::from(7)
     } else if exitcode == 1 {
         eprintln!("seccomp-test: could not install filter");
         ExitCode::FAILURE
@@ -1375,5 +1302,36 @@ fn cmd_seccomp_test(name: &str, nr: libc::c_long) -> ExitCode {
     }
 }
 
-/// Re-export for integration tests.
 pub use zone::ZoneError;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn seccomp_ioctls() {
+        assert_eq!(NOTIF_RECV, 0xC050_2100);
+        assert_eq!(NOTIF_SEND, 0xC018_2101);
+    }
+
+    #[test]
+    fn flags_stop_at_separator() {
+        let a = args(&["run", "work", "--rootfs", "/r", "--", "tool", "--zones", "/x", "--rootfs", "/y"]);
+        assert_eq!(zone_dir_from(&a), PathBuf::from(DEFAULT_ZONE_DIR));
+        assert_eq!(rootfs_base_from(&a), "/r");
+        assert_eq!(value(&a, "--zones"), None);
+    }
+
+    #[test]
+    fn parsed_flag_needs_value() {
+        assert_eq!(parsed::<u32>(&args(&["run", "w"]), "--zone-uid", "an id"), Ok(None));
+        assert_eq!(parsed::<u32>(&args(&["--zone-uid", "7"]), "--zone-uid", "an id"), Ok(Some(7)));
+        assert!(parsed::<u32>(&args(&["--zone-uid"]), "--zone-uid", "an id").is_err());
+        assert!(parsed::<u32>(&args(&["--zone-uid", "x"]), "--zone-uid", "an id").is_err());
+        assert!(parsed::<u32>(&args(&["--zone-uid", "--", "7"]), "--zone-uid", "an id").is_err());
+    }
+}

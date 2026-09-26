@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Linux regression: only the launch daemon receives the passphrase FD.
-
-Build the real launcher with its two fixed executable/socket paths redirected
-to temporary stand-ins. No installed binaries or host services are changed.
-"""
+"""kryptik-launch hands its passphrase fd to the launch daemon, not the display proxy."""
 import array
 import json
 import os
@@ -37,6 +33,8 @@ s.listen(1)
 signal.pause()
 """)
         proxy.chmod(0o700)
+        # The real launcher, its fixed proxy and socket paths pointed at stand-ins;
+        # nothing installed is touched.
         source = (root / "tools/desktop/kryptik-launch.c").read_text()
         for name, old, new in [
             ("PROXY_BIN", "/usr/bin/kryptik-wlproxy", proxy),

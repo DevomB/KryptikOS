@@ -1,219 +1,194 @@
-# Hardening Rationale
+# Hardening
 
-Kryptik's hardening is applied at the toolchain, so it covers every package by
-construction. A package cannot opt out by forgetting to set a flag.
+Hardening is applied in the toolchain, so every package gets it without
+opting in.
 
 ## Toolchain flags
 
-Defined in [`build/config/hardening.env`](../build/config/hardening.env).
+Set in [`build/config/hardening.env`](../build/config/hardening.env) and
+loaded from stage 04, which builds what ships; the cross toolchain and
+temporary tools (stages 01 and 02) are built without them.
 
 | Flag | Defends against | Cost |
 | --- | --- | --- |
-| `-D_FORTIFY_SOURCE=3` | Buffer overflows in libc calls, with dynamic object sizes | Negligible; requires `-O2`+ |
-| `-fstack-protector-strong` | Stack smashing | ~1% CPU |
-| `-fstack-clash-protection` | Stack-clash / guard-page jumping | Negligible |
-| `-fcf-protection=full` | ROP/JOP via Intel CET (shadow stack + IBT) | Negligible on supporting CPUs |
-| *(PIE)* | Defeats fixed-address exploitation; enables full ASLR | ~2% on x86-64 register pressure |
-| `-Wl,-z,relro,-z,now` | GOT/PLT overwrite | Slower startup (eager binding) |
-| `-Wl,-z,noexecstack` | Executable stack payloads | None |
-| `-ftrivial-auto-var-init=zero` | Uninitialized-memory disclosure | ~0.5%, occasionally more |
-| `-fno-delete-null-pointer-checks` | Compiler removing NULL checks it assumes are dead | None |
+| `-D_FORTIFY_SOURCE=3` | overflows in libc calls, with dynamic object sizes | negligible; needs optimization |
+| `-fstack-protector-strong` | stack smashing | ~1% CPU |
+| `-fstack-clash-protection` | stack clash | negligible |
+| `-fcf-protection=full` | ROP/JOP, through Intel CET (shadow stack and IBT) | negligible on supporting CPUs |
+| PIE (compiler default) | fixed-address exploits; enables full ASLR | ~2% on x86-64 |
+| `-Wl,-z,relro,-z,now` | GOT/PLT overwrite | slower startup |
+| `-Wl,-z,noexecstack` | executable stack payloads | none |
+| `-ftrivial-auto-var-init=zero` | uninitialized-memory disclosure | ~0.5% |
+| `-fno-delete-null-pointer-checks` | NULL checks removed as dead code | none |
 
-### PIE comes from the compiler, not from flags
+It also passes `-fno-strict-aliasing`, `-Wl,-z,separate-code` and
+`-Wl,--as-needed`.
 
-`-fPIE` and `-pie` are deliberately **absent** from `hardening.env`. Kryptik's
-GCC is configured `--enable-default-pie`, so executables are position-independent
-without them — confirmed by stage 01's sanity check and directly:
+GCC is configured with `--enable-default-pie` and `--enable-default-ssp`, so a
+package that ignores `CFLAGS` still gets both; stage 01 checks the PIE default
+took. Do not add `-pie` to `hardening.env`: it links `Scrt1.o`, which
+references `main()`, so every shared library fails to link.
 
-```
-$ gcc <hardening flags, no -pie> -o exe exe.c
-$ readelf -h exe   ->  Type: DYN (Position-Independent Executable file)
-$ readelf -d exe   ->  FLAGS_1: NOW PIE
-```
+### Exceptions
 
-Carrying them anyway is not merely redundant, it is destructive. `-pie` makes
-the linker pull in `Scrt1.o`, the executable startup object, which references
-`main()`. A shared library has no `main`, so every `.so` fails to link:
+A package that cannot build with a flag goes in
+`build/config/hardening-exceptions.txt` as `<package> <flag> # reason`;
+`build/lib/common.sh` fails the build on an entry without a reason. The only
+one is glibc's `-D_FORTIFY_SOURCE=3`, since glibc defines the fortify
+machinery.
 
-```
-ld: Scrt1.o: in function `_start`: undefined reference to `main`
-```
+### What the audit finds
 
-This was found when Python — the first package in the build order that produces
-a `.so` — failed on it. Every library after it would have failed identically.
-The tempting fix, a per-package hardening exception, would have meant an
-exception for nearly every package in the distribution; the flags were wrong,
-not the packages.
+`make audit-artifacts` (`tools/check-artifact-hardening.sh`), part of
+`make acceptance`, reads the ELF headers of what the build produced. A
+writable and executable segment, an executable stack, text relocations or an
+RPATH into the build tree fail it. Acceptance also fails on a missing CET
+note, `BIND_NOW` or RELRO, a non-PIE executable and any other RPATH, unless
+[`artifact-accepted.txt`](../build/config/artifact-accepted.txt) names the
+object and the reason: `kryptikd` and `kryptik-wlproxy`, which stable rustc
+does not mark for CET, GMP's assembly, and the rpaths man-db, perl and glibc's
+converters need or that repeat the loader's own directory. An entry that no
+longer matches fails too, so the list holds only what the image still has. A
+new finding is fixed in its package's recipe, not by weakening the check.
 
-### Known-incompatible packages
-
-Some packages genuinely break under `-pie` or `-D_FORTIFY_SOURCE=3` — notably
-early toolchain bootstrap stages, the kernel itself (which manages its own
-hardening), and anything performing custom relocation.
-
-The escape hatch is `build/config/hardening-exceptions.txt`: one package per
-line with a **required justification comment**. An exception without a stated
-reason fails the build. Exceptions are reviewed, not accumulated.
-
-### What shipped, as the audit reads it
-
-The flags above are what the build is asked to use. `make audit-artifacts`
-(`tools/check-artifact-hardening.sh`) reads the ELF headers of what was
-actually produced, and its report is part of `make acceptance`. Its hard
-failures - a writable and executable segment, an executable stack, text
-relocations, an RPATH into the build tree - have no legitimate explanation
-and fail the build. Its reported findings are the honest gap between the
-flag set and the tree, and on the 2026-09-13 sysroot (1288 objects, no hard
-failure) they were:
-
-| finding | count | where it comes from |
-| --- | --- | --- |
-| no CET property (`-fcf-protection`) | 324 | packages whose build systems do not take `CFLAGS` as given or link assembly without the note: gcc's own binaries and runtime libraries (`libgcc_s`, `libstdc++`, `libitm`), binutils, bzip2, gawk, perl and its modules, python and its extension modules, util-linux and its libraries, gettext, bison, texinfo, zlib, gmp, libxcrypt, dnsmasq; and the two static Rust binaries (`kryptikd`, `kryptik-wlproxy`), which rustc does not mark |
-| no `BIND_NOW` | 107 | the same gcc, binutils, bzip2, gawk, perl and python objects, plus dnsmasq and `chroot` |
-| not PIE | 28 | gcc's own drivers, `cc1`, `cc1plus`, `lto1`, `collect2` and `gawk` |
-| an `RPATH` | 42 | perl and python modules naming their own install directories (not the build tree) |
-
-Everything else - the shell, coreutils, the libraries the desktop and the
-zone layer use - carries the full set. Closing the gap means teaching each
-of those build systems to honour the flags (or building the static Rust
-binaries with `-Z cf-protection`), package by package, and re-reading the
-audit; it does not mean weakening the check.
+Everything stage 04 builds before its glibc, the first with `--enable-cet`,
+linked stage 01's crt files, which carry no CET note, so each of those
+packages is built a second time right after glibc. Stage 04 also builds GCC
+again with the flags and `--enable-cet`, and the step fails unless
+`libgcc_s` and `libstdc++` (which glibc's unwinder and every C++ program
+load) carry IBT and SHSTK and `gcc` itself is PIE with `BIND_NOW`. No program
+stage 02 built for the chroot is left in the image.
 
 ## Allocator
 
-Kryptik ships **hardened_malloc** as the system allocator rather than glibc's.
-It provides slab quarantines, guard slabs, randomized allocation, and
-canary-based detection of heap overflow.
-
-Cost: measurably slower than glibc malloc on allocation-heavy workloads. This is
-an accepted tradeoff. Benchmarks belong in `docs/benchmarks.md` once there is a
-bootable system to benchmark — until then, no numbers are claimed.
+ADR-005 makes hardened_malloc the system allocator. Stage 04 builds it without
+`-march=native` and installs `/usr/lib/libhardened_malloc.so`. Stage 06 writes
+`/etc/ld.so.preload` into the image's root, so every process of the running
+system uses it, and kryptikd writes each zone its own preload naming only that
+library (a zone never sees the host's). The build chroot never has the file.
+Its guard pages are separate mappings, so `vm.max_map_count` is 1048576. The
+booted medium and the zones suite check that a process has it mapped. No
+benchmark numbers are claimed.
 
 ## Kernel
 
-Config fragment: [`build/config/kernel/hardening.fragment`](../build/config/kernel/hardening.fragment)
+Three fragments in `build/config/kernel/`:
+[`hardening.fragment`](../build/config/kernel/hardening.fragment) (KSPP's
+recommendations and what zones need: namespaces, cgroup v2, Landlock, seccomp,
+dm-verity, dm-crypt), `hardened.fragment` (options only linux-hardened has,
+ADR-009) and `boot.fragment` (ADR-013).
 
-Kryptik follows the Kernel Self-Protection Project recommendations, plus the
-options the zone model depends on (namespaces, cgroup v2, Landlock, seccomp,
-dm-verity, dm-crypt).
+- `INIT_ON_ALLOC` and `INIT_ON_FREE` by default: zeroed heap memory, against
+  a broad class of info leaks, for a few percent.
+- `SLAB_FREELIST_HARDENED`, `SLAB_FREELIST_RANDOM`: against heap grooming.
+- Lockdown in confidentiality mode: root cannot read kernel memory through
+  `/dev/mem`, kprobes or unsigned modules, which is what makes root in a zone
+  weaker than kernel access.
+- `RANDOMIZE_BASE`, `RANDOMIZE_MEMORY`: KASLR.
+- `MODULE_SIG_FORCE`: only modules signed by the build load. The key is the
+  kernel build's own (`certs/signing_key.pem`), made with the kernel tree. The
+  Actions cache keeps the tree without it, so a run that restores the tree
+  makes a new key, links the kernel with it and signs the modules again, and
+  no key leaves the machine that used it. It is a developer key like the
+  others: a release has to sign with a key it is handed (roadmap, production
+  keys).
+- `KSTACK_ERASE`, `RANDSTRUCT_FULL`: stack erasing and structure layout
+  randomization (the 6.18 names; the old `GCC_PLUGIN_*` symbols are derived
+  and cannot be set).
+- Also on: KFENCE, trapping UBSAN bounds checks, page table checking,
+  `DEBUG_VIRTUAL`, a strict IOMMU by default, the EFI stub's early-DMA and
+  reset-attack protections, the TPM as an entropy source, `/proc/pid/mem`
+  write protection, userspace shadow stacks.
+- Off: `bpf()`, SELinux (LSMs are `landlock,lockdown,yama`), `/dev/mem`,
+  `/proc/kcore`, MSR and CPUID devices, legacy PTYs, `binfmt_misc`, kexec,
+  hibernation, IA-32 emulation, debugfs, ftrace, kprobes, io_uring, sysrq,
+  ACPI table overrides, core dumps, `/proc/pid/pagemap`.
 
-Notable choices:
+Stage 05 refuses a `.config` that lost any fragment line
+(`build/lib/kconfig-check.sh`, shared with `tools/resolve-kernel-config.sh`
+in CI): kconfig silently drops a line for an unmet dependency, an overriding
+`select` or an invisible prompt, leaving a mitigation the fragment claims and
+the kernel lacks.
 
-- `CONFIG_INIT_ON_ALLOC_DEFAULT_ON=y` — zeroes heap allocations, killing a broad
-  class of use-after-free info leaks. Costs a few percent. Worth it.
-- `CONFIG_SLAB_FREELIST_HARDENED=y` and `_RANDOM=y` — frustrates heap grooming.
-- `CONFIG_SECURITY_LOCKDOWN_LSM=y` in confidentiality mode — severs root's
-  ability to read kernel memory via `/dev/mem`, kprobes, or unsigned modules.
-  This is what makes "root in a zone" meaningfully weaker than "kernel access".
-- `CONFIG_RANDOMIZE_BASE=y` / `CONFIG_RANDOMIZE_MEMORY=y` — KASLR.
-- `CONFIG_MODULE_SIG_FORCE=y` — unsigned modules do not load.
-- `CONFIG_DEVMEM=n`, `CONFIG_LEGACY_PTYS=n`, `CONFIG_BINFMT_MISC=n` — attack
-  surface that Kryptik does not need.
-- `CONFIG_SECURITY_LANDLOCK=y` — required by the zone model, not optional.
+`kernel-hardening-checker`, KSPP's reference list, runs on the resolved
+`.config` and the shipped command line in stage 05 and CI
+(`tools/check-kernel-hardening.sh`). Each failure it reports is fixed or
+listed with its reason in
+[`checker-accepted.txt`](../build/config/kernel/checker-accepted.txt), and
+entries that start passing are named so the list shrinks.
 
-### What the reference checker says
+### Command line
 
-`kernel-hardening-checker`, the Kernel Self-Protection Project's reference
-list (pinned in `versions.env` like every other input), runs on the resolved
-`.config` and on the shipped command line in stage 05 and in CI
-(`tools/check-kernel-hardening.sh`; `make check-kernel-hardening`). Every
-failure it reports is either fixed in the fragments or listed in
-[`build/config/kernel/checker-accepted.txt`](../build/config/kernel/checker-accepted.txt)
-with the reason it stays. The tool fails on a failure that is neither, on an
-entry without a reason, and names an entry whose option has started to pass so
-the list shrinks.
+Besides the root device, the command line stage 06 compiles into each signed
+kernel carries `mitigations=auto,nosmt nosmt pti=on page_alloc.shuffle=1
+hash_pointers=always`: every CPU mitigation with SMT off (ADR-011), page table
+isolation even on CPUs the kernel believes unaffected (a few percent on
+syscalls), randomized free page lists, and `%p` pointers hashed even where an
+option would print them raw.
 
-Its first run, on 2026-09-18, found that every kernel built until then had had
-no stack erasing and no structure layout randomization. `CONFIG_GCC_PLUGIN_STACKLEAK`
-and `CONFIG_GCC_PLUGIN_RANDSTRUCT` still exist in 6.18, so the symbol
-validator passed them, but both had become derived symbols a fragment cannot
-set; the live options are `CONFIG_KSTACK_ERASE` and `CONFIG_RANDSTRUCT_FULL`.
-The fragment-survival check that followed found the three lines hardening
-`bpf()` had never applied either, because the defconfig never enables the
-syscall; it is now off by name.
-The same run switched off what the x86-64 defconfig leaves on and nothing here
-uses (SELinux and the rest of the LSM list, `/dev/cpu/*/msr` and `cpuid`,
-ftrace and kprobes, io_uring, sysrq, ACPI table overrides, core dumps,
-`/proc/pid/pagemap`) and switched on KFENCE, UBSAN bounds checks that trap,
-page table checking, `DEBUG_VIRTUAL`, the IOMMU on and strict by default, the
-EFI stub's early-DMA and reset-attack protections, the TPM as an entropy
-source, `/proc/pid/mem` write protection and userspace shadow stacks.
+### Sysctls
 
-Stage 05 also refuses a `.config` that does not carry every line of the three
-fragments (`build/lib/kconfig-check.sh`, shared with the CI-side
-`tools/resolve-kernel-config.sh`). kconfig drops a line without a word for an
-unmet dependency, an overriding `select` or an invisible prompt, and each of
-those is a mitigation the fragment claims and the kernel lacks.
-
-### The command line
-
-Stage 06 compiles the command line into each signed kernel. Beyond the root
-device it carries `mitigations=auto,nosmt nosmt pti=on page_alloc.shuffle=1
-hash_pointers=always`: every CPU vulnerability mitigation the kernel knows,
-with SMT off (ADR-011); page table isolation on every CPU, including the ones
-the kernel believes unaffected, at a few percent on system calls; randomized
-free page lists; and hashed `%p` pointers even under options that would print
-them raw. These are the parameters the checker wants on the command line
-itself; the rest of its recommendations are kconfig defaults.
-
-### Runtime sysctls
-
-Set in `build/config/sysctl.d/`:
-
-- `kernel.kptr_restrict=2`, `kernel.dmesg_restrict=1` — no kernel pointer leaks
-- no BPF sysctls: the kernel has no `bpf()` syscall at all
-  (`CONFIG_BPF_SYSCALL` off), so there is no eBPF to restrict; seccomp's
-  classic filters do not need it
-- `kernel.yama.ptrace_scope=3` — no ptrace at all after boot
-- `vm.mmap_rnd_bits=32` — maximum ASLR entropy on x86-64
-- `net.ipv4.tcp_syncookies=1`, `rp_filter=1` — standard network hygiene
+[`build/config/sysctl.d/`](../build/config/sysctl.d/) sets, among others,
+`kernel.kptr_restrict=2`, `kernel.dmesg_restrict=1`,
+`kernel.yama.ptrace_scope=3` (no ptrace after boot),
+`kernel.perf_event_paranoid=3`, `kernel.kexec_load_disabled=1`,
+`vm.unprivileged_userfaultfd=0`, `vm.mmap_rnd_bits=32`, the `fs.protected_*`
+settings, and core dumps piped to `/bin/false`. There are no BPF
+sysctls because there is no `bpf()`; seccomp's classic filters do not need it.
 
 ## setuid elimination
 
-Kryptik ships no setuid binaries where a capability or a brokered service can do
-the job. `ping` gets `CAP_NET_RAW`, not setuid root. Privilege transitions go
-through `kryptikd`, which is auditable, rather than through a scattered set of
-setuid binaries, which is not.
+Privilege transitions go through kryptikd, where they can be audited, not
+through setuid binaries or file capabilities. A setuid binary needs a
+justified entry in `build/config/setuid-allowlist.txt`: today `su`, the one
+way from a login to root, and `passwd`, which nothing brokers yet. A file
+carrying capabilities (`security.capability`) needs one in
+`build/config/capability-allowlist.txt`, which is empty. Stage 06 runs
+`tools/audit-setuid.sh --strip` over the image's root, so the bit and the
+capabilities come off every other file (shadow and util-linux install eleven
+more setuid binaries); without `--strip` the script fails on any unlisted
+one. Either way it fails when it cannot read a directory, and a strip that
+would take the bit or the capabilities off a listed file through a hard link
+fails instead.
 
-Enforced by `tools/audit-setuid.sh`, which fails the build on any setuid binary
-not present in an explicit, justified allowlist.
-
-## Zone syscall filtering
+## Zone syscall filter
 
 Every zoned process runs under a default-deny seccomp-bpf filter
-(`compartments/kryptikd/src/seccomp.rs`). The allowlist names roughly 150
-syscalls covering file and socket I/O, memory, process lifecycle, signals and
-time; anything unnamed is `SECCOMP_RET_KILL_PROCESS`.
+(`compartments/kryptikd/src/seccomp.rs`) allowing about 200 syscalls; anything
+else is `SECCOMP_RET_KILL_PROCESS`. `clone` with namespace flags is killed,
+`clone3` fails with `ENOSYS` so libc falls back to `clone`, the `TIOCSTI` and
+`TIOCLINUX` ioctls are killed, and `socket` is limited to `AF_UNIX`,
+`AF_INET`, `AF_INET6` and `NETLINK_ROUTE`. A zone policy file can widen this
+in named ways but never re-allow a denied syscall
+([zone policy files](design/zone-policy-files.md)).
 
-Verified blocked, by killing a real process rather than by inspection:
-
-| Syscall | Why it is denied |
-|---|---|
-| `setns` | **enters another zone's namespaces** — defeats requirements 1–4 in one call |
-| `ptrace`, `process_vm_readv/writev` | read or write another process's memory |
-| `mount`, `umount2`, `pivot_root`, `chroot` | remount the filesystem out from under Landlock |
-| `unshare` | nested namespaces; a known LPE surface |
+| Denied | Why |
+| --- | --- |
+| `setns` | enters another zone's namespaces |
+| `ptrace`, `process_vm_readv/writev` | another process's memory |
+| `mount`, `umount2`, `pivot_root`, `chroot`, the new mount API | remount the filesystem out from under Landlock |
+| `unshare` | nested namespaces, a known LPE surface |
 | `bpf`, `perf_event_open` | long histories of privilege escalation |
-| `userfaultfd` | reliable kernel heap-grooming primitive |
+| `userfaultfd` | kernel heap grooming |
 | `keyctl`, `add_key`, `request_key` | kernel keyring, repeated CVEs |
 | `init_module`, `finit_module`, `kexec_load` | load kernel code |
+| `io_uring_*` | does I/O without syscalls, past the filter |
 
-Two details that decide whether such a filter works or merely looks like it
-does. The x32 ABI reuses x86-64 syscall numbers with the high bit set, so a
-filter written against x86-64 numbers is bypassable through x32 unless it is
-explicitly rejected — it is. And every jump in the generated program has an
-offset of 0 or 1, because the obvious "jump to the ALLOW at the end" encoding
-silently breaks once the allowlist passes 255 entries.
+`compartments/tests/adversarial.sh` makes 13 of these calls in a real process
+and expects SIGSYS.
 
-`mprotect` is allowed, which means W^X can be defeated from inside a zone. Every
-dynamic linker needs it, so denying it is not viable; the compensating control
-is that Kryptik builds everything with RELRO and BIND_NOW, so the GOT is
-read-only before `main()` runs.
+Other architectures are refused, and x32 calls (x86-64 numbers with bit 30
+set) are killed before the allowlist. Each allowed syscall is a compare
+followed by its own ALLOW, so no jump spans the list: BPF jump offsets are one
+byte, and a single jump to a shared ALLOW breaks past 255 entries.
 
-## What hardening does not do
+`mprotect` is allowed, since every dynamic linker needs it, so a zone can
+defeat W^X. RELRO and BIND_NOW compensate: the GOT is read-only before
+`main()` runs.
 
-These mitigations raise exploitation cost. They do not make the system
-unexploitable, and stacking more of them has diminishing returns against an
-attacker with a good kernel bug. Hardening is the second line — the
-compartmentalization model in [architecture.md](architecture.md) is the first,
-and the threat model in [threat-model.md](threat-model.md) says where both end.
+## Limits
+
+These mitigations raise the cost of exploitation; they do not make the system
+unexploitable. Compartmentalization ([architecture](architecture.md)) is the
+first line and hardening the second; the [threat model](threat-model.md) says
+where both end.

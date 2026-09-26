@@ -1,32 +1,10 @@
-//! A deliberately small TOML reader for the subset zone files actually use.
+//! A small TOML reader for what zone files use, hand-rolled as ADR-010 argues
+//! for kryptikd: comments, `[section]` headers, and `key = value` with a basic,
+//! literal or bare value, all kept as text.
 //!
-//! Hand-rolled for the reason ADR-010 gives for kryptikd doing the same: this
-//! parser reads the file that decides what colour a zone is, and pulling a
-//! general TOML crate to read four string keys is a supply-chain decision
-//! taken for convenience.
-//!
-//! # What it supports
-//!
-//! Comments, `[section]` headers, and `key = value` where value is a basic
-//! string, a literal string, or a bare token (integers, booleans) kept as
-//! text. That is the entire surface of compartments/zones/*.toml.
-//!
-//! # What it refuses
-//!
-//! Everything else, loudly: arrays, inline tables, dotted keys, array-of-table
-//! headers, multi-line strings. A parser that skips constructs it does not
-//! understand would read a file containing an array-of-tables and silently
-//! return the wrong zone, and "silently returns the wrong zone" is the failure
-//! mode this whole crate exists to prevent. Unsupported syntax is an error, so
-//! the day a zone file needs it, this file is updated deliberately.
-//!
-//! # The bug this was written to avoid
-//!
-//! `border_color = "#aa3333"`. A naive reader strips everything after the
-//! first `#` as a comment and gets an empty colour - or worse, `"` - from a
-//! file that is perfectly valid TOML. Comment stripping here is done by the
-//! same scanner that tracks string state, so a `#` inside quotes is just a
-//! character. There is a test for exactly this.
+//! Anything else (arrays, inline tables, dotted keys, array-of-tables,
+//! multi-line strings) is an error, never skipped. Comments are stripped by the
+//! scanner that tracks quotes, so `"#aa3333"` keeps its `#`.
 
 use std::fmt;
 
@@ -44,6 +22,7 @@ pub enum TomlErrorKind {
     MissingEquals,
     EmptyKey,
     KeyOutsideSection,
+    DuplicateKey(String),
     TrailingGarbage(String),
     Unsupported(&'static str),
     BadEscape(char),
@@ -61,6 +40,7 @@ impl fmt::Display for TomlError {
             TomlErrorKind::KeyOutsideSection => {
                 write!(f, "key appears before any [section] header")
             }
+            TomlErrorKind::DuplicateKey(k) => write!(f, "{k} is given twice"),
             TomlErrorKind::TrailingGarbage(s) => {
                 write!(f, "unexpected text after value: {s:?}")
             }
@@ -75,11 +55,9 @@ impl fmt::Display for TomlError {
     }
 }
 
-/// A parsed document: sections in file order, each a list of key/value pairs.
-///
-/// A `Vec` rather than a map because zone files have a handful of keys, order
-/// is useful in error messages, and a duplicate key should be visible rather
-/// than silently overwriting.
+/// Sections in file order, each a list of key/value pairs. Read as kryptikd
+/// reads it (a repeated `[section]` continues, a repeated key is an error), so
+/// zoneid audits the colour kryptikd enforces.
 #[derive(Debug, Default, Clone)]
 pub struct Document {
     pub sections: Vec<Section>,
@@ -88,12 +66,10 @@ pub struct Document {
 #[derive(Debug, Clone)]
 pub struct Section {
     pub name: String,
-    pub line: usize,
     pub entries: Vec<(String, String)>,
 }
 
 impl Document {
-    /// First value for `key` in the first section named `section`.
     pub fn get(&self, section: &str, key: &str) -> Option<&str> {
         self.sections
             .iter()
@@ -103,14 +79,11 @@ impl Document {
             .find(|(k, _)| k == key)
             .map(|(_, v)| v.as_str())
     }
-
-    pub fn has_section(&self, section: &str) -> bool {
-        self.sections.iter().any(|s| s.name == section)
-    }
 }
 
 pub fn parse(input: &str) -> Result<Document, TomlError> {
     let mut doc = Document::default();
+    let mut current: Option<usize> = None;
 
     for (idx, raw) in input.lines().enumerate() {
         let line = idx + 1;
@@ -136,10 +109,15 @@ pub fn parse(input: &str) -> Result<Document, TomlError> {
             if name.contains('.') {
                 return Err(err(TomlErrorKind::Unsupported("a dotted section name")));
             }
-            doc.sections.push(Section {
-                name: name.to_string(),
-                line,
-                entries: Vec::new(),
+            current = Some(match doc.sections.iter().position(|s| s.name == name) {
+                Some(i) => i,
+                None => {
+                    doc.sections.push(Section {
+                        name: name.to_string(),
+                        entries: Vec::new(),
+                    });
+                    doc.sections.len() - 1
+                }
             });
             continue;
         }
@@ -168,17 +146,20 @@ pub fn parse(input: &str) -> Result<Document, TomlError> {
 
         let value = parse_value(value).map_err(err)?;
 
-        let Some(section) = doc.sections.last_mut() else {
+        let Some(i) = current else {
             return Err(err(TomlErrorKind::KeyOutsideSection));
         };
+        let section = &mut doc.sections[i];
+        if section.entries.iter().any(|(k, _)| k == key) {
+            return Err(err(TomlErrorKind::DuplicateKey(format!("{}.{key}", section.name))));
+        }
         section.entries.push((key.to_string(), value));
     }
 
     Ok(doc)
 }
 
-/// Remove a trailing `# comment`, tracking string state so a `#` inside quotes
-/// survives. This is the function the whole module is arranged around.
+/// Remove a trailing `# comment`, tracking quotes so a `#` in a string survives.
 fn strip_comment(line: &str) -> Result<&str, TomlErrorKind> {
     let bytes = line.as_bytes();
     let mut i = 0;
@@ -194,9 +175,7 @@ fn strip_comment(line: &str) -> Result<&str, TomlErrorKind> {
                 _ => {}
             },
             Some(q) => {
-                // Escapes apply inside basic strings only; a literal string
-                // has no escape character, which is why `'C:\path\'` is not a
-                // thing in TOML and must not be treated as one here.
+                // Only basic strings have escapes: in 'C:\path\' the backslashes are literal.
                 if q == b'"' && c == b'\\' {
                     i += 1;
                 } else if c == q {
@@ -232,9 +211,7 @@ fn parse_value(v: &str) -> Result<String, TomlErrorKind> {
         }
         return Ok(rest[..end].to_string());
     }
-    // A bare token: integer, float, boolean. Kept as text; nothing in a zone
-    // file needs it typed, and typing it would mean deciding what a malformed
-    // integer means.
+    // A bare token (integer, float, boolean), kept as text: nothing needs it typed.
     Ok(v.to_string())
 }
 
@@ -258,11 +235,8 @@ fn read_basic_string(s: &str) -> Result<(String, usize), TomlErrorKind> {
                     '"' => '"',
                     '\\' => '\\',
                     '0' => '\0',
-                    // \u and \U are real TOML and genuinely not supported here.
-                    // Refusing is the point: a zone label is ASCII-only, so an
-                    // escaped code point in one is either a mistake or an
-                    // attempt to smuggle a bidi override past a reader that
-                    // only inspects the literal bytes.
+                    /* \u and \U are refused: labels are ASCII-only, and an escaped
+                     * code point could slip a bidi override past a byte check. */
                     other => return Err(TomlErrorKind::BadEscape(other)),
                 });
             }
@@ -277,14 +251,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hash_inside_a_string_is_not_a_comment() {
-        // The bug this module was written to avoid.
+    fn hash_in_string_is_not_comment() {
         let d = parse("[ui]\nborder_color = \"#aa3333\"\n").unwrap();
         assert_eq!(d.get("ui", "border_color"), Some("#aa3333"));
     }
 
     #[test]
-    fn a_comment_after_a_colour_is_still_a_comment() {
+    fn comment_after_colour() {
         let d = parse("[ui]\nborder_color = \"#aa3333\"  # the untrusted red\n").unwrap();
         assert_eq!(d.get("ui", "border_color"), Some("#aa3333"));
     }
@@ -303,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn literal_strings_do_not_process_escapes() {
+    fn literal_strings_keep_backslashes() {
         let d = parse("[p]\nseccomp = 'policy\\untrusted.seccomp'\n").unwrap();
         assert_eq!(d.get("p", "seccomp"), Some("policy\\untrusted.seccomp"));
     }
@@ -322,7 +295,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_constructs_are_errors_not_silence() {
+    fn unsupported_constructs_are_errors() {
         for (src, what) in [
             ("[a]\nv = [1, 2]\n", "an array value"),
             ("[a]\nv = {x = 1}\n", "an inline table"),
@@ -343,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn key_before_any_section_is_an_error() {
+    fn key_before_section_is_error() {
         let e = parse("v = 1\n").unwrap_err();
         assert_eq!(e.kind, TomlErrorKind::KeyOutsideSection);
         assert_eq!(e.line, 1);
@@ -357,17 +330,15 @@ mod tests {
     }
 
     #[test]
-    fn trailing_garbage_after_a_string_is_refused() {
+    fn trailing_garbage_refused() {
         let e = parse("[a]\nv = \"x\" y\n").unwrap_err();
         assert!(matches!(e.kind, TomlErrorKind::TrailingGarbage(_)));
     }
 
-    /// A real zone file, verbatim, so the parser is tested against the thing
-    /// it actually has to read rather than against invented input.
+    /// A real zone file, verbatim.
     #[test]
-    fn parses_a_real_zone_file() {
-        // r##"..."## rather than r#"..."#, because the file contains `"#`.
-        // The same collision the parser itself is built around, one layer up.
+    fn parses_real_zone_file() {
+        // r##: the file contains `"#`.
         let src = r##"
 # untrusted - for opening things you do not trust.
 #
@@ -398,7 +369,17 @@ border_color = "#aa3333"
         assert_eq!(d.get("zone", "name"), Some("untrusted"));
         assert_eq!(d.get("ui", "border_color"), Some("#aa3333"));
         assert_eq!(d.get("limits", "pids_max"), Some("512"));
-        assert!(d.has_section("policy"));
+        assert_eq!(d.get("policy", "seccomp"), Some("policy/untrusted.seccomp"));
         assert_eq!(d.get("ui", "glyph"), None);
+    }
+
+    #[test]
+    fn duplicate_keys() {
+        let e = parse("[ui]\nborder_color = \"#111111\"\n[zone]\n[ui]\nborder_color = \"#222222\"\n").unwrap_err();
+        assert_eq!(e.kind, TomlErrorKind::DuplicateKey("ui.border_color".into()));
+        assert_eq!(e.line, 5);
+        let d = parse("[ui]\nglyph = \"!\"\n[zone]\nname = \"a\"\n[ui]\nlabel = \"A\"\n").unwrap();
+        assert_eq!(d.get("ui", "glyph"), Some("!"));
+        assert_eq!(d.get("ui", "label"), Some("A"));
     }
 }
