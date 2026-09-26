@@ -1,27 +1,11 @@
 #!/usr/bin/env bash
-# The zoned desktop, measured on the installed system (the desktop suite). Runs as root
-# inside the guest; tools/image/gui-test.sh boots the disk with a virtual GPU
-# and keyboard, drives this over the serial login, takes screenshots and
-# presses keys where this script says "GT ..." lines ask it to.
-#
-# Verdict lines start with "GT ": PASS/FAIL/INFO, a name, what was seen.
-# Coordination lines the host reacts to:
-#   GT SCREENSHOT-READY      a zone window is focused: take a screenshot
-#   GT KEY-FULLSCREEN        press Alt+e (dwl: toggle fullscreen)
-#   GT CONSENT-WAIT n        a transfer question is on screen: answer it
-#                            (the host presses y or n, then Enter)
+# Desktop suite, run as root in the installed guest by tools/image/gui-test.sh.
+# The host boots it with a virtual GPU and keyboard and acts on these lines:
+#   GT SCREENSHOT-READY, GT SCREENSHOT-FULLSCREEN   take a screenshot
+#   GT KEY-FULLSCREEN, GT KEY-FULLSCREEN-AGAIN      press Alt+e (dwl fullscreen)
+#   GT CONSENT-WAIT 1, GT CONSENT-WAIT 2            answer y, then n (and Enter)
 #   GT END
-#
-# What is measured, and how:
-#   the session starts for an ordinary user (dwl on the virtual GPU through
-#   seatd, the chrome as its startup command); zone 0's own client is
-#   offered the capture and clipboard globals (positive control); a zone's
-#   client, through its proxy, is offered neither and is disconnected for
-#   asking; a zone window is recorded by the chrome with its zone and label
-#   and its title carries the zone prefix; fullscreen keeps that record;
-#   clipboards are per zone until the zone 0 gesture moves one payload; a
-#   transfer waits for the person and lands only after yes, is refused
-#   after no, and is refused without a question when policy forbids it.
+# Verdicts: "GT PASS|FAIL|INFO name - detail".
 set -u
 R=/var/lib/kryptik/zones
 KD=/usr/bin/kryptikd
@@ -58,7 +42,14 @@ echo "GT BEGIN $(date -Iseconds 2>/dev/null)"
 for z in work dev personal; do
     "$KD" volume init "$z" --size 64M --passphrase-file "$PP" > "$LOG/vol-$z.out" 2>&1 || fail "volume-$z" "$(tail -1 "$LOG/vol-$z.out")"
 done
-[[ -c /dev/dri/card0 ]] && pass "gpu-device" "/dev/dri/card0 present" || fail "gpu-device" "no /dev/dri/card0 (virtio-gpu?)"
+# Exactly one DRM device, the native driver's: the GPU module must replace the
+# built-in simpledrm at coldplug, as two cards put wlroots on a multi-GPU path
+# the pixman renderer cannot serve. The card left is not card0 (simpledrm's).
+cards=()
+for c in /sys/class/drm/card[0-9]*; do
+    [[ -e "$c" && "${c##*/}" != *-* ]] && cards+=("${c##*/}=$(basename "$(readlink -f "$c/device/driver" 2>/dev/null)" 2>/dev/null)")
+done
+[[ "${#cards[@]}" -eq 1 && "${cards[0]}" == *=virtio_gpu ]] && pass "gpu-device" "${cards[0]}" || fail "gpu-device" "${#cards[@]} DRM device(s): ${cards[*]:-none} (the firmware framebuffer not replaced?)"
 [[ "$(s6-svstat -o up /run/service/seatd 2>/dev/null)" = true ]] && pass "seatd-up" || fail "seatd-up"
 [[ "$(s6-svstat -o up /run/service/kryptikd-serve 2>/dev/null)" = true ]] && pass "launch-daemon-up" || fail "launch-daemon-up"
 
@@ -113,8 +104,8 @@ if wait_for 20 grep -q '^fullscreen=1' "$RT/kryptik/focus"; then
 else
     fail "fullscreen-identity-recorded" "focus after Alt+e: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
 fi
-# the window is fullscreen now: the host takes a screenshot in which the
-# zone's border colour must still be on screen (dwl keeps the frame)
+# Fullscreen now: the host's screenshot must still show the zone's border
+# colour (dwl keeps the frame).
 sleep 2
 echo "GT SCREENSHOT-FULLSCREEN"
 sleep 6
@@ -122,19 +113,14 @@ echo "GT KEY-FULLSCREEN-AGAIN"
 wait_for 20 grep -q '^fullscreen=0' "$RT/kryptik/focus" && pass "fullscreen-off-again" || fail "fullscreen-off-again"
 
 # --- a second zone with a window; no virtual input for either -------------
-# A zone runs ONE supervised command at a time (kryptikd: "One instance per
-# zone"), so the probe goes into personal before its window does, and the
-# untrusted window from above is stopped before anything else is asked of
-# that zone. The first run on installed media handed a second command to a
-# running zone at every step from here on, and each was refused as
-# "already running (launcher pid N)".
+# A zone runs one command at a time, so the untrusted window is stopped first
+# and personal gets its probe before its window.
 stop_zone() { as_user "kryptik-launch --stop $1" > /dev/null 2>&1; wait_for 15 test ! -e "/run/kryptik/zones/$1/init.pid"; sleep 1; }
 stop_zone untrusted
 mark probe personal
 launch personal "/usr/libexec/kryptik/wlprobe list" > "$LOG/launch-probe-personal.out" 2>&1
-# The probe has answered once its launcher exits; an encrypted zone's volume
-# closes after that, and only then may personal be launched again (one
-# instance per zone). Three seconds was not enough on installed media.
+# An encrypted zone can be launched again only once its volume has closed,
+# which follows its launcher's exit.
 wait_for 30 test ! -e /run/kryptik/zones/personal/init.pid; sleep 1
 out="$(since_mark probe personal)"
 if [[ "$out" == *"global "* && "$out" != *"virtual_keyboard"* && "$out" != *"virtual_pointer"* && "$out" != *"input_method"* ]]; then pass "no-virtual-input" "no virtual keyboard/pointer or input-method global in personal either"; else fail "no-virtual-input" "$(echo "$out" | grep -c global) globals; virtual input: $(echo "$out" | grep -o 'virtual_[a-z]*' | tr '\n' ' '); $(tr '\n' ' ' < "$LOG/launch-probe-personal.out")"; fi
@@ -144,11 +130,8 @@ stop_zone personal
 
 # --- clipboards: per zone, until the zone 0 gesture -----------------------
 # A zone's clipboard lives in its launcher, so both zones stay up across the
-# gesture: each runs one resident command that speaks to its broker through
-# broker-client.py - one line per call, because the launch protocol refuses
-# an argument with a newline in it, which is how the first run's multi-line
-# `python3 -c` probes never reached a zone - and prints the broker's answer
-# into the zone's log.
+# gesture, each running one command that talks to its broker through
+# broker-client.py and logs the answers.
 BC=/usr/lib/kryptik/guest-tests/broker-client.py
 mark clip untrusted
 launch_plain untrusted "sh -c 'python3 $BC clipboard-set text/plain from-untrusted; echo SET-DONE; sleep 90'" > "$LOG/clip-set.out" 2>&1
@@ -165,16 +148,14 @@ second="$(since_mark clip1 personal | sed -n '/GET1-DONE/,$p')"
 [[ "$second" == *from-untrusted* ]] && pass "clipboard-moved" "personal now holds the one payload the gesture moved" || fail "clipboard-moved" "$(echo "$second" | tail -2 | tr '\n' ' ')"
 stop_zone untrusted; stop_zone personal
 
-# --- transfers: the person decides ------------------------------------------------------
+# --- transfers: the user decides --------------------------------------------------------
 launch work "havoc" > /dev/null 2>&1   # work must be running to receive
 wait_for 20 grep -q '^zone=work' "$RT/kryptik/focus" || info "work window not focused yet: $(tr '\n' ' ' < "$RT/kryptik/focus")"
 # policy first: untrusted names no destination
 mark trf0 untrusted
 launch_plain untrusted "sh -c 'echo nope > \$HOME/x.txt; python3 $BC transfer work x.txt \$HOME/x.txt'" > /dev/null 2>&1; sleep 3
 [[ "$(since_mark trf0 untrusted)" == *"does not name"* ]] && pass "transfer-policy" "untrusted -> work refused by policy, with no question asked" || fail "transfer-policy" "$(since_mark trf0 untrusted | tail -2 | tr '\n' ' ')"
-# The chrome's watcher holds watcher.lock in the channel for as long as the
-# session runs (kryptikd consent.rs); it is not a question, so it is not
-# counted. Everything else there is.
+# watcher.lock is the chrome's watcher (kryptikd consent.rs), not a question.
 questions() {   # every entry in the consent directory except the watcher lock
     local f
     for f in /run/kryptik-consent/* /run/kryptik-consent/.[!.]*; do
@@ -185,7 +166,7 @@ questions() {   # every entry in the consent directory except the watcher lock
 }
 [[ -z "$(questions)" ]] && pass "no-question-for-policy-refusal" || fail "no-question-for-policy-refusal" "$(questions | tr '
 ' ' ')"
-# dev -> work: allowed by policy, asked of the person
+# dev -> work: allowed by policy, asked of the user
 mark trf1 dev
 echo "GT CONSENT-WAIT 1"
 launch dev "sh -c 'echo report-body > \$HOME/report.txt; python3 $BC transfer work report.txt \$HOME/report.txt'" > "$LOG/trf1.out" 2>&1
@@ -193,10 +174,7 @@ n=40; while [[ "$n" -gt 0 ]] && [[ "$(since_mark trf1 dev)" != *ok* && "$(since_
 out="$(since_mark trf1 dev)"
 [[ "$out" == *"ok report.txt"* ]] && pass "transfer-approved" "after the person said yes: $(echo "$out" | grep -o 'ok .*' | head -1)" || fail "transfer-approved" "$(echo "$out" | tail -2 | tr '\n' ' ')"
 if [[ -f "$R/work/incoming/report.txt" ]] && [[ "$(cat "$R/work/incoming/report.txt")" = report-body ]]; then pass "transfer-landed" "the file is in work's incoming/, byte-identical"; else fail "transfer-landed" "$(ls -la "$R/work/incoming" 2>&1 | tail -2 | tr '\n' ' ')"; fi
-# dev's launcher returns once the transfer command has run, and an encrypted
-# zone then closes its volume; a second launch into dev before that meets
-# "already running (launcher pid N)" (one instance per zone). Wait for the
-# registry to drop it, as for personal above.
+# As for personal above: wait for dev's volume to close before the next launch.
 wait_for 30 test ! -e /run/kryptik/zones/dev/init.pid; sleep 1
 mark trf2 dev
 echo "GT CONSENT-WAIT 2"
@@ -205,20 +183,15 @@ n=40; while [[ "$n" -gt 0 ]] && [[ "$(since_mark trf2 dev)" != *ok* && "$(since_
 out="$(since_mark trf2 dev)"
 [[ "$out" == *"refused by the user"* ]] && pass "transfer-denied" "after the person said no: refused" || fail "transfer-denied" "$(echo "$out" | tail -2 | tr '\n' ' ')"
 [[ -e "$R/work/incoming/report2.txt" ]] && fail "denied-file-absent" "the refused file landed anyway" || pass "denied-file-absent" "nothing landed"
-# The broker withdraws its .ask and .answer as soon as the person answers;
-# the chrome's watcher then removes its own .dialog bookkeeping on its next
-# one-second pass. Give it that moment before asserting the channel is clean,
-# or the just-answered dialog is still there when we look.
+# The broker removes .ask and .answer at once; the chrome's watcher removes its
+# .dialog on its next one-second pass, so wait for that.
 n=20; while [[ "$n" -gt 0 && -n "$(questions)" ]]; do n=$((n - 1)); sleep 1; done
 [[ -z "$(questions)" ]] && pass "consent-cleaned" "no question left behind" || fail "consent-cleaned" "$(questions | tr '
 ' ' ')"
 
 # --- teardown ------------------------------------------------------------------------------
-# The session's own log and the last focus record live on the runtime tmpfs
-# and vanish with the power; keep copies on the state partition, where a
-# post-mortem (loop-mount p4, log/kryptik/) can read what the compositor
-# and the chrome said. Without this the "(no window)" run left nothing to
-# read but the verdict.
+# The runtime tmpfs does not survive power-off: copy the session log and the
+# last focus record to the state partition (p4, log/kryptik/) for a post-mortem.
 cp -f "$RT/kryptik/session.log" /var/log/kryptik/session.log 2>/dev/null
 cp -f "$RT/kryptik/focus" /var/log/kryptik/focus.last 2>/dev/null
 for z in untrusted personal dev work; do "$KD" stop "$z" >/dev/null 2>&1; done

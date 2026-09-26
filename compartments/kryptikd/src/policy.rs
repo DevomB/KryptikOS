@@ -1,38 +1,10 @@
-//! Per-zone policy files: named, additive widenings of the base policy.
+//! Per-zone policy files (docs/design/zone-policy-files.md).
 //!
-//! `[policy] seccomp = "policy/net.seccomp"` used to be parsed and then
-//! ignored, and a zone naming one was refused without the developer
-//! override. This is what makes the file mean something.
-//!
-//! It is deliberately not a language. A policy file is a list of directives,
-//! one per line, each naming ONE thing the zone may do beyond the shared base
-//! policy (docs/design/zone-policy-files.md):
-//!
-//! ```text
-//! allow-syscall    sethostname        # a syscall, by name
-//! allow-socket     AF_PACKET          # a socket family
-//! allow-netlink    NETLINK_NETFILTER  # a netlink protocol
-//! keep-capability  CAP_NET_RAW        # a capability left in the bounding set
-//! ```
-//!
-//! Three rules make it safe to review by reading it:
-//!
-//! 1. It can only ADD. Nothing in a policy file can remove a base allowance,
-//!    and nothing can re-allow a syscall the base policy denies
-//!    (`seccomp::DENIED_RATIONALE`): `allow-syscall ptrace` is an error, not
-//!    a widening.
-//! 2. Every name comes from a fixed vocabulary. An unknown syscall, family,
-//!    protocol or capability is an error with a line number, never a silent
-//!    no-op - a typo must not produce a zone that is quietly narrower or
-//!    wider than its file says.
-//! 3. Capabilities are a short allowlist of their own (`caps::KEEPABLE`):
-//!    the network zone needs `CAP_NET_ADMIN` and `CAP_NET_RAW` over its own
-//!    interfaces; no zone gets to keep `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE`,
-//!    `CAP_DAC_OVERRIDE` or the like by writing a line.
-//!
-//! Any error in the file refuses the launch. `kryptikd check` parses every
-//! zone's file so a bad one is found before a launch, and `explain` prints
-//! what the file adds.
+//! One directive per line, each adding one thing to the base policy:
+//! `allow-syscall NAME`, `allow-socket AF_X`, `allow-netlink NETLINK_X` or
+//! `keep-capability CAP_X`. A file cannot re-allow a syscall the base policy
+//! denies, capabilities come only from `caps::KEEPABLE`, and an unknown name
+//! is an error with a line number. Any error refuses the launch.
 
 use std::collections::HashSet;
 use std::fmt;
@@ -54,8 +26,7 @@ pub struct Policy {
     pub netlink_names: Vec<String>,
     pub keep_caps: Vec<libc::c_int>,
     pub keep_cap_names: Vec<String>,
-    /// Lines that added nothing (already allowed by the base). Reported,
-    /// not fatal: they are harmless, but the author should know.
+    /// Lines the base policy already allows; reported, not fatal.
     pub warnings: Vec<String>,
 }
 
@@ -74,9 +45,7 @@ impl fmt::Display for PolicyError {
     }
 }
 
-/// Where a zone file's `policy.seccomp` value points: absolute as given,
-/// otherwise relative to the zone directory (`--zones DIR`), so a zone set
-/// and its policies move together.
+/// Resolves `policy.seccomp`: absolute as given, otherwise under the zone directory.
 pub fn resolve(zones_dir: &Path, given: &str) -> PathBuf {
     let p = Path::new(given);
     if p.is_absolute() {
@@ -96,8 +65,6 @@ pub fn load(path: &Path) -> Result<Policy, PolicyError> {
 
 pub fn parse(text: &str, source: &str) -> Result<Policy, PolicyError> {
     let mut p = Policy { source: source.to_string(), ..Default::default() };
-    // Borrows from `text`, so a duplicate is detected without allocating a
-    // key per line, and "a b"+"c" cannot collide with "a"+"b c".
     let mut seen: HashSet<(&str, &str)> = HashSet::new();
 
     for (idx, raw) in text.lines().enumerate() {
@@ -194,12 +161,9 @@ pub fn parse(text: &str, source: &str) -> Result<Policy, PolicyError> {
 }
 
 impl Policy {
-    /// Rules that depend on which zone the file is for. A routed zone may
-    /// never keep CAP_NET_ADMIN or CAP_NET_RAW: with either it could
-    /// re-address its end of the veth, install a host route through the
-    /// bridge address (an L3 path around port isolation once the nic zone
-    /// forwards), or forge frames on the segment. Only the nic zone owns
-    /// interfaces; only it may keep those two.
+    /// Only the nic zone may keep `CAP_NET_ADMIN` or `CAP_NET_RAW`. In any other
+    /// zone they would let it re-address its veth, route around port isolation
+    /// through the bridge address, or forge frames.
     pub fn check_for_zone(&self, zone: &crate::zone::Zone) -> Result<(), PolicyError> {
         if zone.network != crate::zone::NetworkMode::Nic {
             for (c, name) in self.keep_caps.iter().zip(&self.keep_cap_names) {
@@ -253,7 +217,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_valid_file_adds_exactly_what_it_names() {
+    fn valid_file_adds_what_it_names() {
         let p = parse(
             "# comment\n\
              allow-syscall sched_setscheduler\n\
@@ -278,10 +242,8 @@ mod tests {
     }
 
     #[test]
-    fn a_denied_syscall_cannot_be_re_allowed() {
-        // chown is not among them any more: it is outside the base allowlist
-        // but a zone policy may name it (the nic zone's DHCP client needs
-        // it on its own control socket) - see seccomp::DENIED_RATIONALE.
+    fn denied_syscall_cannot_be_allowed() {
+        // Not chown: a zone policy may allow it (the nic zone's DHCP client).
         for name in ["ptrace", "mount", "setns", "unshare", "bpf", "keyctl", "reboot"] {
             let err = parse(&format!("allow-syscall {name}\n"), "t").unwrap_err();
             let s = err.to_string();
@@ -290,7 +252,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_names_and_directives_are_errors_with_line_numbers() {
+    fn bad_lines_error_with_line_number() {
         for text in [
             "allow-syscall nosuchcall\n",
             "allow-socket AF_NOPE\n",
@@ -316,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicates_are_errors_and_redundant_lines_are_warnings() {
+    fn duplicates_error_redundant_lines_warn() {
         assert!(parse("allow-socket AF_PACKET\nallow-socket AF_PACKET\n", "t").is_err());
         let p = parse("allow-syscall read\nallow-socket AF_INET\nallow-netlink NETLINK_ROUTE\nkeep-capability CAP_NET_BIND_SERVICE\n", "t").unwrap();
         assert!(p.is_empty());
@@ -324,11 +286,10 @@ mod tests {
     }
 
     #[test]
-    fn only_the_nic_zone_may_keep_the_network_capabilities() {
+    fn only_nic_zone_keeps_net_caps() {
         let z = |mode: &str| {
-            let bridge = if mode == "nic" { "bridge = \"kryptik0\"\n" } else { "" };
             crate::zone::Zone::from_str(&format!(
-                "[zone]\nname = \"t\"\n[network]\nmode = \"{mode}\"\n{bridge}\
+                "[zone]\nname = \"t\"\n[network]\nmode = \"{mode}\"\n\
                  [storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n[ui]\nborder_color = \"#123456\"\n"
             ))
             .unwrap()
@@ -346,14 +307,14 @@ mod tests {
     }
 
     #[test]
-    fn allow_socket_af_netlink_lifts_the_protocol_check() {
+    fn af_netlink_lifts_protocol_check() {
         let p = parse("allow-socket AF_NETLINK\n", "t").unwrap();
         assert!(p.sockets.netlink_all);
         assert!(p.sockets.families.is_empty());
     }
 
     #[test]
-    fn relative_paths_resolve_under_the_zone_directory() {
+    fn relative_path_resolves_under_zones_dir() {
         assert_eq!(resolve(Path::new("/etc/kryptik/zones"), "policy/net.seccomp"), PathBuf::from("/etc/kryptik/zones/policy/net.seccomp"));
         assert_eq!(resolve(Path::new("/etc/kryptik/zones"), "/abs/p.seccomp"), PathBuf::from("/abs/p.seccomp"));
     }

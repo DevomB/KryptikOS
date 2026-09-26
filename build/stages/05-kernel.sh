@@ -1,55 +1,12 @@
 #!/usr/bin/env bash
-# Stage 05 — Hardened kernel (docs/roadmap.md, Hardened kernel)
-#
-# Applies the linux-hardened patchset to the pinned LTS kernel (ADR-009), then
-# builds it with Kryptik's two config fragments:
-#
-#   hardening.fragment   KSPP options that exist in vanilla Linux
-#   hardened.fragment    options that exist ONLY with linux-hardened applied
-#   boot.fragment        firmware boot, the verified root, the desktop, the
-#                        drivers real machines need
-#
-# and refuses to build a config that does not honour every line of them, or
-# one that kernel-hardening-checker faults beyond the accepted list
-# (build/config/kernel/checker-accepted.txt).
-#
-# Runs INSIDE the chroot, like stage 04, and for the same reason: the kernel
-# must be compiled by the native TARGET compiler, and must land in the target's
-# own /boot and /lib/modules.
-#
-#   make kernel                      drives stage 03 to mount, run this, unmount
-#   ./05-kernel.sh --redo patch      force one step to rerun (inside the chroot)
-#
-# ---------------------------------------------------------------------------
-# Two things this stage used to get wrong, both worth keeping written down.
-#
-# 1. INSTALLATION DESTINATION.
-#
-#    It computed  LFS="${KRYPTIK_WORK}/sysroot"  and installed there. Inside
-#    the chroot that is wrong. With the default KRYPTIK_WORK the path happened
-#    to resolve, through the /kryptik bind mount, back to the chroot's own
-#    root - right answer, by coincidence, from broken reasoning. With
-#    KRYPTIK_WORK pointed at native storage (which any real build needs) the
-#    path does not exist inside the chroot at all, and `cp` and
-#    `modules_install` simply CREATE it: a nested, half-populated target tree
-#    with the kernel several levels below the /boot anybody would look in.
-#
-#    The sysroot is now resolved by build/lib/common.sh, which knows which
-#    side of the chroot boundary it is on. Inside, it is "/" and DESTDIR is
-#    empty. Stage 03 additionally refuses to expose ${KRYPTIK_WORK}/sysroot
-#    inside the chroot, so the old calculation cannot silently come back.
-#
-# 2. THE COMPILER.
-#
-#    It prepended ${LFS}/tools/bin to PATH - the stage 01 CROSS toolchain.
-#    Inside the chroot that directory is either absent or, worse, present and
-#    holding a compiler configured against a sysroot that is no longer where
-#    it thinks it is. The kernel must be built by the native target compiler
-#    that stage 02 installed and stage 04 builds against: /usr/bin/gcc,
-#    reporting an x86_64-kryptik-linux-gnu triple.
-#
-#    s_compiler_check below asserts exactly that, before anything is compiled.
-# ---------------------------------------------------------------------------
+# Stage 05: the linux-hardened kernel (ADR-009), built in the chroot by the
+# native target compiler from the fragments in build/config/kernel:
+#   hardening.fragment   KSPP options in vanilla Linux
+#   hardened.fragment    options that exist only with linux-hardened
+#   boot.fragment        firmware boot, the verified root, the desktop, drivers
+# It installs into the chroot's own /boot and /lib/modules. An install under
+# ${KRYPTIK_WORK}/sysroot would be a nested, half-populated target tree.
+# usage: make kernel   (or, inside the chroot, 05-kernel.sh [--redo <step>])
 
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/kconfig-check.sh"
@@ -60,13 +17,11 @@ require_inside_chroot "stage 05" "kernel"
 LFS_TGT="$(uname -m)-kryptik-linux-gnu"
 export LFS_TGT
 
-# No PATH surgery. Inside the chroot /usr/bin:/usr/sbin is the whole world,
-# deliberately - a build that reaches anything else has escaped the chroot.
+# PATH stays the chroot's /usr/bin:/usr/sbin; never the /tools cross toolchain.
 
 KRYPTIK_JOBS="${KRYPTIK_JOBS:-$(nproc)}"
 export MAKEFLAGS="-j${KRYPTIK_JOBS}"
 
-# Stage 05 runs inside the chroot and drives the native target compiler.
 stage_contract "${BASH_SOURCE[0]}" "kernel-" gcc
 
 STAMPS="${KRYPTIK_WORK}/.stamps"
@@ -74,16 +29,14 @@ LOGS="${KRYPTIK_WORK}/logs"
 BUILDDIR="${KRYPTIK_WORK}/build"
 KSRC="${BUILDDIR}/linux-${V_LINUX}"
 
-# Where the kernel lands. Empty DESTDIR inside the chroot means "the live
-# root", which is what every build system already understands.
+# KRYPTIK_DESTDIR is empty inside the chroot: the live root.
 BOOTDIR="${KRYPTIK_DESTDIR}/boot"
 MODDIR="${KRYPTIK_DESTDIR}/lib/modules"
 
 CONFIG_DIR="${KRYPTIK_ROOT}/build/config/kernel"
 FRAG_BASE="${CONFIG_DIR}/hardening.fragment"
 FRAG_HARDENED="${CONFIG_DIR}/hardened.fragment"
-# What firmware boot, the verified root and the desktop need
-# (docs/design/boot-and-updates.md).
+# See docs/design/boot-and-updates.md.
 FRAG_BOOT="${CONFIG_DIR}/boot.fragment"
 
 REDO=""
@@ -94,15 +47,8 @@ mkdir -p "$STAMPS" "$LOGS" "$BUILDDIR"
 
 # --- steps -----------------------------------------------------------------
 
-# The first thing this stage does, before unpacking 1.5GB of kernel source:
-# prove the compiler about to build it is the right one.
-#
-# "Right" means three separate things, and a kernel can be built by the wrong
-# compiler in all three ways without anything failing until it will not boot:
-#
-#   * a NATIVE compiler, not a cross compiler wrapped around a stale sysroot
-#   * targeting Kryptik, not the host distribution
-#   * the one stage 04 built the rest of userspace against
+# Before unpacking the source: gcc must be native (not the /tools cross
+# compiler), target Kryptik, and be the one stage 04 built userspace with.
 s_compiler_check() {
     local cc; cc="$(command -v gcc || true)"
     [[ -n "$cc" ]] || { echo "no gcc on PATH (${PATH})"; return 1; }
@@ -112,9 +58,7 @@ s_compiler_check() {
     echo "ld           : $(command -v ld || echo missing) ($(ld --version | head -1))"
     echo "PATH         : ${PATH}"
 
-    # A compiler under /tools is the stage 01 cross toolchain. It has no
-    # business building the kernel, and its presence here means PATH surgery
-    # crept back in.
+    # /tools holds the stage 01 cross toolchain.
     case "$cc" in
         /tools/*|*/tools/bin/*)
             echo "FAIL: gcc resolves inside the stage 01 cross toolchain (${cc})."
@@ -132,10 +76,8 @@ s_compiler_check() {
     fi
     echo "PASS: native target compiler"
 
-    # GCC plugins. KSTACK_ERASE, RANDSTRUCT_FULL and LATENT_ENTROPY are
-    # compiler plugins the kernel builds against this compiler's plugin
-    # headers; without the headers kconfig drops all three and s_config will
-    # refuse the config. This says why, first.
+    # KSTACK_ERASE, RANDSTRUCT_FULL and LATENT_ENTROPY are GCC plugins; without
+    # the plugin headers kconfig drops them and s_config refuses the config.
     local plugin_dir; plugin_dir="$(gcc -print-file-name=plugin)"
     if [[ -e "${plugin_dir}/include/plugin-version.h" ]]; then
         echo "PASS: gcc plugin headers at ${plugin_dir}/include"
@@ -144,7 +86,7 @@ s_compiler_check() {
         echo "         CONFIG_GCC_PLUGINS resolves to n and the fragment check in s_config will fail."
     fi
 
-    # It must also actually work, and produce target binaries.
+    # And it must link binaries that run.
     local t; t="$(mktemp -d)"
     # shellcheck disable=SC2064  # $t is wanted at trap-definition time
     trap "rm -rf '$t'" RETURN
@@ -154,8 +96,7 @@ s_compiler_check() {
     "$t/probe" || { echo "FAIL: gcc output does not run here"; return 1; }
     echo "PASS: compiler produces working native binaries"
 
-    # The kernel build needs these; missing ones fail deep inside a 40-minute
-    # compile rather than here.
+    # Kernel build prerequisites, checked before a long compile.
     local missing=0 t2
     for t2 in make ld objcopy objdump ar nm perl bison flex openssl python3 \
               gawk tar xz gzip depmod; do
@@ -182,9 +123,7 @@ s_unpack() {
     make mrproper
 }
 
-# The patch is version-specific. A mismatch means a partially-patched tree,
-# which is far worse than an unpatched one - so dry-run first and refuse to
-# touch the tree unless the whole patch applies.
+# Dry-run first: a partly applied patch is worse than none.
 s_patch() {
     local patch="${KRYPTIK_SOURCES}/linux-hardened-v${V_LINUX_HARDENED}.patch"
     [[ -f "$patch" ]] || { echo "linux-hardened patch not fetched"; return 1; }
@@ -202,30 +141,21 @@ s_patch() {
     echo "--- applying ---"
     patch -Np1 -i "$patch"
 
-    # A hardened-only symbol must now exist, or the patch did not do what the
-    # filename claims.
+    # A hardened-only symbol must now exist.
     if ! grep -rq "config SLAB_CANARY" security/ mm/ 2>/dev/null \
     && ! grep -rq "SLAB_CANARY" security/Kconfig.hardening 2>/dev/null; then
         echo "WARNING: SLAB_CANARY not found after patching - verify the patch"
     fi
 }
 
-# CPU microcode, built into the kernel image. The early loader runs before any
-# filesystem exists, and Kryptik has no initramfs to carry an update in, so the
-# only microcode a Kryptik machine can ever load is what the signed kernel
-# holds: CONFIG_EXTRA_FIRMWARE, with every file of Intel's release (the loader
-# picks the one named for the running family-model-stepping) and AMD's
-# containers from the pinned linux-firmware release. About 18 MB the image
-# cannot shed, which is the price of CPU vulnerability fixes on a machine whose
-# firmware vendor has stopped shipping them. Intel's "with caveats" directory
-# stays out: those updates need a BIOS that expects them.
+# CPU microcode, built into the signed kernel (CONFIG_EXTRA_FIRMWARE): with no
+# initramfs, the early loader can find it nowhere else. All of Intel's files
+# (it picks by family-model-stepping) and AMD's containers, about 18 MB. Intel's
+# "with caveats" updates stay out; they need a BIOS that expects them.
 s_microcode() {
     echo "inputs: intel ${1:-none}, amd from linux-firmware ${2:-none}"
-    # Inside the kernel tree, not beside it. Stage 06 links the kernel again
-    # for each slot, from a tree that may have come out of a cache or an
-    # artifact; both carry the tree and nothing next to it. Staged beside it,
-    # the blobs were gone while this step's stamp said done, and the link
-    # failed with "no rule to make target .../microcode_amd.bin".
+    # Inside the kernel tree: stage 06 relinks from a cached or artifact copy
+    # of the tree, which carries nothing beside it.
     local dir="${KSRC}/kryptik-microcode"
     rm -rf "$dir"; mkdir -p "$dir"
     tar -xf "${KRYPTIK_SOURCES}/microcode-${V_INTEL_MICROCODE}.tar.gz" -C "$dir" \
@@ -239,18 +169,15 @@ s_microcode() {
     echo "amd-ucode  : ${n_amd} files, $(du -sh "$dir/amd-ucode" | cut -f1)"
     [[ "$n_intel" -gt 100 && "$n_amd" -ge 4 ]] \
         || { echo "FAIL: the microcode releases did not unpack as expected"; return 1; }
-    # The value of CONFIG_EXTRA_FIRMWARE: every file, relative to the
-    # directory, in a fixed order so the same inputs give the same .config.
+    # The CONFIG_EXTRA_FIRMWARE list, sorted so the .config is stable.
     ( cd "$dir" && find intel-ucode amd-ucode -type f \( -path 'intel-ucode/*' -o -name '*.bin' \) \
         | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//' ) > "$dir/list"
     echo "list       : $(wc -w < "$dir/list") files"
 }
 
 s_config() {
-    # $1 is the digest of the config fragments, $2 and $3 the microcode
-    # releases. They are not used in the body: they exist so this step's
-    # fingerprint covers inputs the recipe reads by path, which `declare -f`
-    # cannot see.
+    # $1 fragment digest, $2 $3 microcode releases: arguments only so the
+    # stamp covers inputs read by path.
     echo "fragment digest: ${1:-none}; microcode: ${2:-none} ${3:-none}"
     cd "$KSRC"
 
@@ -260,13 +187,10 @@ s_config() {
     local merge="scripts/kconfig/merge_config.sh"
     [[ -x "$merge" ]] || { echo "merge_config.sh missing"; return 1; }
 
-    # -m merges without running a config pass, so both fragments land before
-    # dependency resolution happens once, here, at the end.
+    # -m merges without a config pass; olddefconfig resolves once, below.
     "$merge" -m .config "$FRAG_BASE" "$FRAG_HARDENED" "$FRAG_BOOT"
 
-    # The microcode s_microcode staged goes in by name. It is not a fragment
-    # line because its value is a list of some 160 files that changes with
-    # every release of either vendor; it is checked below like one.
+    # Not a fragment line: the file list changes with every vendor release.
     local ucode="${KSRC}/kryptik-microcode"
     [[ -s "${ucode}/list" ]] || { echo "no ${ucode}/list: the microcode step has not run"; return 1; }
     scripts/config --set-str EXTRA_FIRMWARE "$(cat "${ucode}/list")" \
@@ -280,52 +204,13 @@ s_config() {
     fi
     echo "  ok   CONFIG_EXTRA_FIRMWARE names $(wc -w <<<"$fw") microcode files under ${ucode}"
 
-    # merge_config.sh silently drops symbols whose dependencies are unmet, so
-    # verify the ones that carry Kryptik's actual guarantees actually survived.
+    # Options Kryptik's guarantees rest on (build/lib/kconfig-check.sh).
     echo
     echo "--- verifying critical options survived ---"
-    local missing=0 opt
-    for opt in CONFIG_SECURITY_LANDLOCK \
-               CONFIG_SECCOMP_FILTER \
-               CONFIG_USER_NS \
-               CONFIG_NET_NS \
-               CONFIG_EFI_STUB \
-               CONFIG_CMDLINE_BOOL \
-               CONFIG_CMDLINE_OVERRIDE \
-               CONFIG_DM_INIT \
-               CONFIG_EFIVAR_FS \
-               CONFIG_OVERLAY_FS \
-               CONFIG_DRM_VIRTIO_GPU \
-               CONFIG_NFT_MASQ \
-               CONFIG_DM_VERITY \
-               CONFIG_DM_CRYPT \
-               CONFIG_CRYPTO_XTS \
-               CONFIG_FS_ENCRYPTION \
-               CONFIG_MODULE_SIG_FORCE \
-               CONFIG_SECURITY_LOCKDOWN_LSM \
-               CONFIG_INIT_ON_ALLOC_DEFAULT_ON \
-               CONFIG_SLAB_CANARY \
-               CONFIG_MITIGATION_PAGE_TABLE_ISOLATION; do
-        if grep -q "^${opt}=y" .config; then
-            echo "  ok   ${opt}"
-        else
-            echo "  MISSING ${opt}"
-            missing=$((missing + 1))
-        fi
-    done
+    local missing=0
+    kconfig_critical_check .config || missing=1
 
-    # Every line of every fragment, not just the ones listed above: an =value
-    # line must come out with that value, an "is not set" line must come out
-    # unset. kconfig drops a line without a word for an unmet dependency
-    # (CONFIG_TIGON3 without PTP_1588_CLOCK_OPTIONAL), for a `select` from
-    # something enabled (CONFIG_BLK_DEV_IO_TRACE from defconfig selected
-    # DEBUG_FS back on, in a kernel whose fragment asked for it off) and for a
-    # prompt that is invisible (every `if EXPERT` option, until EXPERT was
-    # set). Each is a mitigation or a driver this kernel does not have while
-    # the fragment says it does, which is worse than a fragment that never
-    # claimed it. The check is build/lib/kconfig-check.sh, shared with
-    # tools/resolve-kernel-config.sh so CI asks the same question of the same
-    # fragments in minutes.
+    # Every fragment line, since kconfig drops lines silently.
     echo
     echo "--- verifying every fragment line survived resolution ---"
     if ! kconfig_fragment_check .config "$FRAG_BASE" "$FRAG_HARDENED" "$FRAG_BOOT"; then
@@ -335,8 +220,7 @@ s_config() {
         return 1
     fi
 
-    # Kryptik requires unprivileged user namespaces to be OFF: zones are
-    # created by kryptikd, which is privileged. See hardened.fragment.
+    # Unprivileged user namespaces stay off; kryptikd creates the zones.
     if grep -q "^CONFIG_USER_NS_UNPRIVILEGED=y" .config; then
         echo "  WARNING: CONFIG_USER_NS_UNPRIVILEGED is enabled"
         echo "  Kryptik expects this off - zone creation is privileged."
@@ -346,7 +230,7 @@ s_config() {
 
     if [[ "$missing" -gt 0 ]]; then
         echo
-        echo "${missing} critical option(s) did not survive config resolution."
+        echo "Critical option(s) did not survive config resolution (MISSING, above)."
         echo "These are not optional - the zone model and boot integrity"
         echo "depend on them. Investigate before building."
         return 1
@@ -354,19 +238,15 @@ s_config() {
 }
 
 s_build() {
-    # $1 is HOSTLDFLAGS and $2 the digest of .config, both arguments so this
-    # step's fingerprint covers them; see the step list.
+    # $1 HOSTLDFLAGS, $2 .config digest: arguments so the stamp covers them.
     echo "host link flags: ${1:-none}"
     echo "config digest  : ${2:-none}"
     cd "$KSRC"
     make
-    # Record what actually compiled this kernel, in the kernel. This string is
-    # what ends up in /proc/version, and it is the only durable evidence of
-    # which compiler built a given image.
+    # The banner (/proc/version) records which compiler built the image.
     echo "--- linux_banner ---"
     strings vmlinux 2>/dev/null | grep -m1 "Linux version" || true
-    # The microcode is in the image, not merely in the config: the built-in
-    # firmware table names each blob, so one name per vendor must be there.
+    # The built-in firmware table names each blob; check one per vendor.
     echo "--- built-in microcode ---"
     local blob
     for blob in "$(tr ' ' '\n' < "${KSRC}/kryptik-microcode/list" | grep -m1 '^intel-ucode/')" \
@@ -377,8 +257,7 @@ s_build() {
 }
 
 s_size() {
-    # $1 is .config's digest and $2 the budget's, so this runs when either moves.
-    # The signed kernel once grew from 17.8 MB to 31.6 MB and nothing said so.
+    # $1 .config digest, $2 budget digest: reruns when either changes.
     cd "$KSRC"
     local img_bytes ucode_bytes budget
     img_bytes="$(stat -c %s arch/x86/boot/bzImage)" || return 1
@@ -393,9 +272,7 @@ s_size() {
 s_modules() {
     echo "config digest: ${1:-none}"
     cd "$KSRC"
-    # Empty INSTALL_MOD_PATH: inside the chroot the target IS the root. The
-    # old value here was ${KRYPTIK_WORK}/sysroot, which is the nested-tree bug
-    # described at the top of this file.
+    # KRYPTIK_DESTDIR is empty: inside the chroot the target is the root.
     make INSTALL_MOD_PATH="${KRYPTIK_DESTDIR}" modules_install
 }
 
@@ -407,11 +284,8 @@ s_install() {
     cp -v System.map "${BOOTDIR}/System.map-${V_LINUX}"
     cp -v .config "${BOOTDIR}/config-${V_LINUX}"
 
-    # An UNSIGNED copy of one module, for the integrity suite. modules_install
-    # signs what it installs (MODULE_SIG_ALL); the build tree's .ko is the
-    # same object without the signature, and a kernel that enforces signing
-    # has to refuse it. mac80211_hwsim is the module whose signed copy the
-    # same suite loads, so one driver proves both directions.
+    # The integrity suite loads the signed mac80211_hwsim and must see this
+    # unsigned copy refused. modules_install signs; the build tree's .ko is not.
     local hwsim="drivers/net/wireless/virtual/mac80211_hwsim.ko"
     [[ -f "$hwsim" ]] || { echo "FAIL: ${hwsim} was not built (CONFIG_MAC80211_HWSIM=m, boot.fragment)"; return 1; }
     if grep -q '~Module signature appended~' "$hwsim"; then
@@ -422,8 +296,7 @@ s_install() {
     echo "unsigned control module: /usr/lib/kryptik/kernel/mac80211_hwsim-unsigned.ko"
 }
 
-# Prove the kernel landed where a bootloader will look for it, and nowhere
-# else. This is the check that would have caught the nested-tree bug.
+# The kernel is where a bootloader will look, and nowhere else.
 s_verify_install() {
     local img="${BOOTDIR}/kryptik-${V_LINUX}"
     local n=0
@@ -433,13 +306,8 @@ s_verify_install() {
 
     [[ -s "$img" ]] || { echo "FAIL: ${img} missing or empty"; n=$((n + 1)); }
 
-    # The module tree is named by the kernel RELEASE, not by the source
-    # version - LOCALVERSION makes those differ. Looking under
-    # ${MODDIR}/${V_LINUX} reported "no module tree at /lib/modules/6.18.50"
-    # about a kernel whose modules had installed, signed and depmod'd perfectly
-    # well into /lib/modules/6.18.50-hardened1. include/config/kernel.release
-    # is the name the kernel's own build used, so ask it instead of rebuilding
-    # the name from parts.
+    # Modules live under the kernel release (include/config/kernel.release),
+    # which LOCALVERSION makes differ from V_LINUX.
     local krel
     krel="$(cat "${KSRC}/include/config/kernel.release" 2>/dev/null || true)"
     [[ -n "$krel" ]] || krel="${V_LINUX}"
@@ -452,8 +320,7 @@ s_verify_install() {
         echo "FAIL: no module tree at ${modver}"; n=$((n + 1))
     fi
 
-    # There must be exactly one target tree. A ${KRYPTIK_WORK}/sysroot inside
-    # the chroot is the nested-install signature.
+    # A ${KRYPTIK_WORK}/sysroot here means a nested install.
     if [[ -e "${KRYPTIK_WORK}/sysroot" ]]; then
         echo "FAIL: ${KRYPTIK_WORK}/sysroot exists inside the chroot."
         echo "Something installed into a nested target tree. See the header of"
@@ -464,19 +331,8 @@ s_verify_install() {
     fi
 
     echo "--- compiler recorded in the image ---"
-    # This check was wrong twice over, and both ways said "no compiler here"
-    # about a kernel that records one:
-    #
-    #   1. It searched for "gcc version". The kernel writes the compiler into
-    #      linux_banner as "gcc (GCC) 14.2.0" - that text never appears.
-    #   2. `strings | grep -m1` makes grep exit at the first match while
-    #      strings still has megabytes to write, so strings dies of SIGPIPE and
-    #      the || branch fires regardless. Same trap that once failed a good
-    #      glibc.
-    #
-    # grep reads the file directly, and [ -~] stops at the NUL that ends the
-    # banner. The compiler is the only durable evidence of what built an image,
-    # so an absent banner is a failure, not a remark.
+    # grep reads vmlinux itself: `strings | grep -m1` can fail on SIGPIPE.
+    # [ -~] stops at the NUL ending the banner, which names the compiler.
     local banner
     banner="$(grep -a -m1 -o 'Linux version [ -~]*' "$KSRC/vmlinux" 2>/dev/null || true)"
     if [[ -z "$banner" ]]; then
@@ -511,48 +367,25 @@ echo
 [[ -f "$FRAG_BASE" ]]     || die "missing ${FRAG_BASE}"
 [[ -f "$FRAG_HARDENED" ]] || die "missing ${FRAG_HARDENED}"
 
-# Refuse to build an EOL kernel (ADR-009).
-#
-# `make kernel` runs this on the HOST before entering the chroot, where there
-# is a network and kernel.org is reachable. Running it again here is cheap and
-# covers a direct invocation; it degrades to a warning when offline, which
-# inside the chroot it always is.
+# Refuse an EOL kernel (ADR-009). `make kernel` already ran this online on the
+# host; here it covers a direct run, and offline it only warns.
 "${KRYPTIK_ROOT}/tools/check-kernel-eol.sh" || die "kernel EOL check failed"
 
-# Build-time host tools link libgcc_s.so.1 the ordinary way, when needed.
-#
-# Until 2026-09-13 this exported HOSTLDFLAGS="-Wl,--no-as-needed -lgcc_s" so
-# that sorttable - which ends its sorter threads with pthread_exit() - did not
-# abort on a loader that could not unwind through a dlopen()ed libgcc_s
-# (docs/glibc-loader-defect.md, glibc bug 33088). The loader is fixed at its
-# source (build/patches/glibc-2.40/0004-*.patch) and the workaround is gone on
-# purpose: a kernel link that sorts its tables is now part of the proof.
-# HOSTLDFLAGS is still an input to the build step below, so setting it in
-# the environment still rebuilds rather than being silently ignored.
+# No -lgcc_s workaround for sorttable's pthread_exit(): the patched glibc
+# loader copes with it (build/patches/glibc-2.40/README.md), and this link
+# tests that.
 
-# The fragments and the host link flags are inputs to these steps, and
-# `declare -f` cannot see a file read by path or a variable read from the
-# environment. Passing their digests makes a change to either rebuild rather
-# than silently reusing a stamp written under different inputs.
+# Files read by path and variables from the environment are invisible to
+# `declare -f`, so their digests are passed as step arguments.
 FRAG_DIGEST="$(cat "$FRAG_BASE" "$FRAG_HARDENED" "$FRAG_BOOT" | sha256_of_stdin)"
 
-# The kernel is compiled by the toolchain stage 04 assembled - its glibc,
-# binutils, the libraries its host tools link (openssl, libelf, zlib), and
-# the tools it runs (bc, bison, flex, perl, kmod). elfutils is the last of
-# those in stage 04's order, so seeding from it covers the whole closure
-# without tying a kernel rebuild to eudev, s6 or the service tree, which
-# the kernel never sees.
+# elfutils is the last of the kernel's build dependencies in stage 04's order,
+# so this covers them without tying the kernel to later packages.
 stage_depends_on "bs-" elfutils
 
 step compiler-check  s_compiler_check
-# The stamps record what was built; the tree records what is here. The build
-# tree under work/build is not an output and gets removed to reclaim space,
-# which leaves unpack, patch and config stamped as done for a tree that no
-# longer exists; the next time a later step goes stale (a stage this one
-# builds on changed) it dies in the middle with "cd: linux-...: No such file
-# or directory" - which is how the first post-build after the tree was
-# cleared ended. So: no tree, no tree stamps. They are archived together
-# with the steps that read the tree, and all of them run again.
+# The build tree may be deleted to reclaim space; then every step that reads
+# it must run again, so their stamps are archived.
 if [[ ! -d "$KSRC" && -f "${STAMPS}/${STAMP_PREFIX}unpack" ]]; then
     gone="${STAMPS}/legacy/kernel-tree-gone-$(date +%Y%m%dT%H%M%S)"
     mkdir -p "$gone"
@@ -568,19 +401,9 @@ step patch           s_patch
 step microcode       s_microcode "$V_INTEL_MICROCODE" "$V_LINUX_FIRMWARE"
 step config          s_config "$FRAG_DIGEST" "$V_INTEL_MICROCODE" "$V_LINUX_FIRMWARE"
 
-# kernel-hardening-checker, the Kernel Self-Protection Project's reference
-# list, on the .config that is about to be built and on the command line
-# stage 06 compiles in (its COMMON_ARGS line). Every failure it reports is
-# fixed in a fragment or accepted, with its reason, in
-# build/config/kernel/checker-accepted.txt; tools/check-kernel-hardening.sh
-# holds the result to that list and fails the stage otherwise. Until
-# 2026-09-18 this stage ended with a suggestion to run the checker by hand,
-# and nobody had: its first run found stack erasing and structure layout
-# randomization absent from every kernel built so far, because the two
-# fragment symbols that named them had become derived ones upstream.
-#
-# The inputs are the config, the accepted list and the command line, so a
-# change to any of the three runs the check again.
+# kernel-hardening-checker (KSPP) on this .config and on stage 06's COMMON_ARGS
+# command line. Each finding must be fixed in a fragment or listed, with its
+# reason, in build/config/kernel/checker-accepted.txt.
 s_hardening_check() {
     echo "config digest: ${1:-none}; accepted list digest: ${2:-none}; command line digest: ${3:-none}"
     "${KRYPTIK_ROOT}/tools/check-kernel-hardening.sh" --config "${KSRC}/.config"
@@ -591,15 +414,8 @@ step hardening-check s_hardening_check \
     "$(sha256_of "${KSRC}/.config" 2>/dev/null || echo noconfig)" \
     "$(sha256_of "$ACCEPTED_LIST")" "$COMMON_ARGS_DIGEST"
 
-# .config is an input to every step after this one, and a step's fingerprint
-# covers its own recipe and arguments - not the outputs of the steps before it.
-# So editing a fragment rebuilt the config and then SKIPPED build, modules and
-# install as "already built, inputs unchanged". The kernel in /boot stayed the
-# previous one, and the boot proved it: the guest called securityfs an unknown
-# filesystem type while the .config beside it said CONFIG_SECURITYFS=y.
-#
-# Evaluated here, after s_config has written the file, so it is the digest of
-# the configuration these steps are about to build from.
+# .config is an input of every later step, but a fingerprint covers only a
+# step's recipe and arguments; hence this digest, taken after s_config wrote it.
 CFG_DIGEST="$(sha256_of "${KSRC}/.config" 2>/dev/null || echo noconfig)"
 
 step build           s_build "${HOSTLDFLAGS:-}" "$CFG_DIGEST"
@@ -611,8 +427,6 @@ step verify-install  s_verify_install "$CFG_DIGEST"
 echo
 ok "Stage 05 complete."
 dim "  kernel : ${BOOTDIR}/kryptik-${V_LINUX}"
-# The release, not the source version: they differ whenever LOCALVERSION
-# is set, and a summary naming a directory that does not exist is the
-# same defect the verify step had.
+# The release, not V_LINUX: they differ under LOCALVERSION.
 dim "  modules: ${MODDIR}/$(cat "${KSRC}/include/config/kernel.release" 2>/dev/null || echo "${V_LINUX}")"
 dim "  hardening: kernel-hardening-checker ran in the hardening-check step; what it still reports, and why, is build/config/kernel/checker-accepted.txt"

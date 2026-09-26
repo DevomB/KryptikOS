@@ -1,36 +1,20 @@
 #!/usr/bin/env bash
-# Validate the kernel hardening fragment against the pinned kernel source.
+# Check that a kernel fragment's CONFIG_ symbols all exist in the pinned source.
 #
-#   ./tools/validate-kernel-config.sh
+#   ./tools/validate-kernel-config.sh              hardening.fragment
+#   ./tools/validate-kernel-config.sh --hardened   hardened.fragment
+#   ./tools/validate-kernel-config.sh --boot       boot.fragment
 #
-# Kernel config symbols are renamed and removed between releases. A fragment
-# referencing a symbol that no longer exists does not error at build time - the
-# option is silently dropped and the hardening it was supposed to provide is
-# simply absent. That is the worst possible failure mode for a security
-# feature: it looks configured and is not.
-#
-# This checks every CONFIG_ symbol in the fragment against the `config` entries
-# in the pinned kernel's Kconfig files, so a stale fragment fails loudly here
-# rather than shipping a kernel that quietly lacks its mitigations.
-#
-# KNOWN LIMITATION: this proves a symbol EXISTS, not that its dependencies are
-# satisfiable. CONFIG_CFI_CLANG exists in 6.18 but requires CC_IS_CLANG; set it
-# while building with GCC and kconfig drops it just as silently as an unknown
-# symbol. Catching that class properly means evaluating Kconfig dependency
-# expressions, which is a kconfig-parser-sized job. Until then, verify the
-# generated .config with kernel-hardening-checker after the kernel is built -
-# that reads the real .config and sees what actually survived.
+# kconfig drops an unknown symbol silently. This checks existence only: one with
+# unmet dependencies (CFI_CLANG under GCC) is dropped too, which
+# tools/resolve-kernel-config.sh catches.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 load_config
 
-# --hardened validates the linux-hardened fragment instead. Those symbols do
-# not exist in vanilla source, so the patch's own "+config X" additions are
-# folded into the known-symbol set.
 HARDENED_MODE=0
 BOOT_MODE=0
 [[ "${1:-}" == "--hardened" ]] && HARDENED_MODE=1
-# --boot validates the firmware-boot/verified-root fragment.
 [[ "${1:-}" == "--boot" ]] && BOOT_MODE=1
 
 if [[ "$HARDENED_MODE" -eq 1 ]]; then
@@ -45,7 +29,6 @@ TARBALL="${KRYPTIK_SOURCES}/linux-${V_LINUX}.tar.xz"
 
 [[ -f "$FRAGMENT" ]] || die "fragment not found: ${FRAGMENT}"
 
-# Extract just the Kconfig files if we have not already.
 if [[ ! -d "$KCONFIG_DIR" ]]; then
     [[ -f "$TARBALL" ]] || die "kernel source not fetched. Run: make sources"
     log "extracting Kconfig files from linux-${V_LINUX}"
@@ -57,7 +40,7 @@ count="$(find "$KCONFIG_DIR" -name 'Kconfig*' | wc -l)"
 [[ "$count" -gt 0 ]] || die "no Kconfig files found under ${KCONFIG_DIR}"
 log "validating against linux-${V_LINUX} (${count} Kconfig files)"
 
-# Build the set of every symbol the kernel actually defines.
+# Every symbol the kernel defines.
 SYMBOLS="${KRYPTIK_WORK}/kconfig/.symbols"
 if [[ ! -s "$SYMBOLS" ]]; then
     find "$KCONFIG_DIR" -name 'Kconfig*' -print0 \
@@ -67,7 +50,7 @@ if [[ ! -s "$SYMBOLS" ]]; then
 fi
 dim "  kernel defines $(wc -l < "$SYMBOLS") config symbols"
 
-# Fold in symbols the linux-hardened patch adds.
+# Plus those the linux-hardened patch adds ("+config X").
 EFFECTIVE_SYMBOLS="$SYMBOLS"
 if [[ "$HARDENED_MODE" -eq 1 ]]; then
     PATCH="${KRYPTIK_SOURCES}/linux-hardened-v${V_LINUX_HARDENED}.patch"
@@ -116,7 +99,7 @@ if [[ "$UNKNOWN" -gt 0 ]]; then
     dim "mitigation they name would simply not be present in the built kernel."
     echo
     for sym in "${UNKNOWN_LIST[@]}"; do
-        # Offer likely replacements by fuzzy-matching the symbol name.
+        # Suggest similar names, ignoring any MITIGATION_ prefix.
         local_matches="$(grep -iE "${sym#MITIGATION_}" "$SYMBOLS" 2>/dev/null | head -3 | tr '\n' ' ')"
         if [[ -n "$local_matches" ]]; then
             printf '  CONFIG_%s\n    possible replacements: %s\n' "$sym" "$local_matches"

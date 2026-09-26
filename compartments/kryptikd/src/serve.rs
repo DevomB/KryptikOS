@@ -1,67 +1,23 @@
 //! `kryptikd serve`: the launch daemon the desktop session talks to.
 //!
-//! Zones are created by root. The desktop session is an ordinary user. This
-//! is the one door between them: a root-owned socket, reachable by the
-//! `kryptik` group, that accepts a launch request naming a zone, the
-//! per-zone proxy socket the session started, and the command - plus, over
-//! SCM_RIGHTS, a descriptor carrying the passphrase the trusted prompt
-//! collected. The daemon checks who is asking (SO_PEERCRED), checks what
-//! they ask for, and runs `kryptikd run` for them. It grants nothing the
-//! command line does not: every refusal kryptikd makes still applies.
+//! Zones are created by root and the session is an ordinary user; this socket
+//! is the one door between them. The daemon checks the peer (SO_PEERCRED) and
+//! the request, then runs `kryptikd run`, whose every refusal still applies.
 //!
 //!   socket   /run/kryptik-launch/launch.sock   (root:kryptik 0660)
-//!   request  one connection per request, text lines, NUL-free:
-//!              run <zone> [wayland=<path>] [pass=fd]\n
-//!              arg <word>\n ...            the command, one word per line
-//!              end\n
-//!            with pass=fd, one descriptor rides with the first bytes
-//!            stop <zone>\n
-//!            clipboard-move <from> <to>\n   the zone 0 gesture: give <to> a copy
-//!                                          of <from>'s clipboard payload
-//!            status\n
-//!            info <zone>\n                 encrypted yes|no, running yes|no
-//!            runtime\n                     the session's runtime directory
-//!            wifi-list\n                   the net zone's Wi-Fi networks, as
-//!                                          `network <ssid>` lines (wifi.rs)
-//!            wifi-add\n                    add a network, or replace its passphrase
-//!              ssid <ssid>\n
-//!              psk <passphrase>\n          in the body: never on a command line,
-//!              end\n                       never in a log line
-//!            wifi-forget\n                 remove a network
-//!              ssid <ssid>\n
-//!              end\n
-//!   reply    ok <launcher pid>\n  |  error: <why>\n  |  lines ... end\n
+//!   request  one per connection, NUL-free text lines:
+//!              run <zone> [wayland=<path>] [pass=fd], `arg <word>` lines, `end`
+//!                (with pass=fd, one descriptor rides with the first bytes)
+//!              wifi-add, `ssid <ssid>`, `psk <passphrase>`, `end`
+//!              wifi-forget, `ssid <ssid>`, `end`
+//!              stop <zone> | clipboard-move <from> <to> | info <zone> | status |
+//!              runtime | wifi-list | update-status | update-fetch | update-apply
+//!   reply    ok ...\n  |  error: <why>\n  |  lines ... end\n
 //!
-//! # What `ok` means
-//!
-//! `ok <pid>` is sent when the zone's pid 1 exists: namespaces, identity,
-//! mounts, the volume (unlocked with the passphrase that came over the
-//! socket), policy and cgroup all succeeded. The launcher reports that
-//! through a pipe (`kryptikd run --ready-fd`); a launcher that exits first
-//! is reported with its exit status and the last line it logged. A launch
-//! that reaches neither within LAUNCH_DEADLINE is reported as such. A zone
-//! whose command dies at once (exec failure: 127) is caught by a short
-//! settling period after readiness, so "ok" is not sent for a window that
-//! was never going to appear.
-//!
-//! # What holds the daemon
-//!
-//! One request is read at a time, and a request is read for at most
-//! REQUEST_DEADLINE: a client that connects and stalls holds the daemon
-//! that long and no longer. Launches in flight do not hold it at all -
-//! their readiness pipes are polled beside the listener.
-//!
-//! # Descriptors
-//!
-//! Every descriptor this module receives or creates is an `Fd`, closed when
-//! dropped, on every path. A request may carry at most one, with its first
-//! bytes; truncated control data (MSG_CTRUNC) refuses the request.
-//!
-//! # Developer instances
-//!
-//! `--socket PATH` runs an instance for tests without root: it serves only
-//! its own uid, launches zones the way an unprivileged `kryptikd run`
-//! does, and logs beside its socket. Everything else is the same code.
+//! `run` replies `ok <launcher pid>` once the zone's pid 1 exists and the
+//! launcher has not failed within SETTLE. One request is read at a time, for at
+//! most REQUEST_DEADLINE; launches and jobs in flight do not hold the daemon.
+//! `--socket PATH` runs a developer instance that serves only its own uid.
 
 use std::ffi::{CStr, CString};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -82,15 +38,12 @@ const MAX_REQUEST: usize = 16 * 1024;
 pub const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
 /// A zone must reach its pid 1 within this after its launcher is started.
 pub const LAUNCH_DEADLINE: Duration = Duration::from_secs(30);
-/// After readiness, the launcher is watched this long for an immediate
-/// failure before `ok` is sent.
+/// How long after readiness a launcher is watched for an immediate failure.
 const SETTLE: Duration = Duration::from_millis(300);
 
 // --- descriptors -----------------------------------------------------------
 
-/// A descriptor this module owns. Closed when dropped, which is the one rule
-/// for every descriptor here: received with a request, opened for a check,
-/// or created for a launch.
+/// An owned descriptor, closed when dropped. Every descriptor here is one.
 #[derive(Debug)]
 pub struct Fd(RawFd);
 
@@ -150,13 +103,8 @@ fn gid_of_uid(uid: u32) -> Option<u32> {
     }
 }
 
-/// Is `uid` root, or a member (primary or supplementary) of `group`?
-///
-/// One getgrnam(3), not two: the group entry carries both the gid for the
-/// primary-group comparison and the member list, and every lookup here may
-/// be an NSS round trip on the path each accepted connection takes. The
-/// member names are copied out before getpwuid(3), which is allowed to reuse
-/// the static buffer getgrnam(3) returned.
+/// Is `uid` root, or a member (primary or supplementary) of `group`? Member
+/// names are copied out first in case getpwuid(3) reuses getgrnam(3)'s buffer.
 fn in_group(uid: u32, group: &str) -> bool {
     if uid == 0 {
         return true;
@@ -204,9 +152,8 @@ fn peer_of(fd: RawFd) -> Option<Peer> {
 
 // --- the request -------------------------------------------------------------
 
-/// Whether the bytes so far are a whole request. Single-line verbs end at
-/// their newline; `run`, `wifi-add` and `wifi-forget` end at their `end`
-/// line.
+/// Whether the bytes so far are a whole request. `run`, `wifi-add` and
+/// `wifi-forget` end at an `end` line, other verbs at a newline.
 fn request_complete(text: &[u8]) -> bool {
     if !text.ends_with(b"\n") {
         return false;
@@ -241,8 +188,7 @@ fn recv_request(fd: RawFd, deadline: Instant) -> Result<(Vec<u8>, Option<Fd>), S
             continue; // the deadline check above reports it
         }
         let mut buf = [0u8; 4096];
-        // Room for four descriptors: enough to see an excess and refuse it
-        // by count rather than by truncation.
+        // Room for several descriptors, so an excess is refused by count, not by truncation.
         let mut cmsg = [0u8; 64];
         let mut iov = libc::iovec { iov_base: buf.as_mut_ptr() as *mut libc::c_void, iov_len: buf.len() };
         let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
@@ -258,8 +204,7 @@ fn recv_request(fd: RawFd, deadline: Instant) -> Result<(Vec<u8>, Option<Fd>), S
             }
             return Err(format!("recvmsg: {e}"));
         }
-        // Take ownership of whatever arrived before deciding anything, so a
-        // refusal below closes it.
+        // Own every received descriptor first, so any refusal below closes them.
         let mut got: Vec<Fd> = Vec::new();
         unsafe {
             let mut c = libc::CMSG_FIRSTHDR(&msg);
@@ -367,11 +312,8 @@ impl std::fmt::Debug for WifiRequest {
     }
 }
 
-/// `wifi-add` and `wifi-forget`: the verb alone on its line, then
-/// `ssid <ssid>`, for wifi-add `psk <passphrase>`, then `end`. A value is
-/// everything after the one space, so an SSID may hold spaces. A refusal
-/// describes the shape and never repeats a line, because the passphrase
-/// may be in it.
+/// Parse `wifi-add` or `wifi-forget`. A value is all after the first space; a
+/// refusal never repeats a line, which may hold the passphrase.
 fn parse_wifi(text: &str) -> Result<WifiRequest, String> {
     let mut lines = text.lines();
     let verb = lines.next().unwrap_or("");
@@ -430,31 +372,18 @@ fn openat_component(dir: RawFd, name: &str, flags: libc::c_int) -> Result<Fd, St
     Ok(Fd(fd))
 }
 
-/// The proxy socket a session may hand to a zone: exactly
-/// `/run/user/<uid>/kryptik/<zone>/wayland-0`, reached one component at a
-/// time without following a symlink; the `<uid>` directory owned by the
-/// session, `kryptik/` and `<zone>/` owned by it and private; the socket a
-/// socket owned by it; and the process listening on it a kryptik-wlproxy
-/// started for that zone (its peer credentials and command line).
-///
-/// Returns an O_PATH descriptor to the socket's inode, which is what the
-/// launcher gets: a path can be renamed under a check, an inode cannot.
-/// A verified proxy socket: the descriptor pins the inode for as long as
-/// the launch is being set up; the launcher is told the path and the inode
-/// and opens the path itself, refusing a different inode, then stages it
-/// where its child can reach it after `unshare` (spawn.rs, StagedSocket).
+/// A verified proxy socket. `_fd` pins the inode while the launch is set up;
+/// the launcher gets the path and inode, reopens the path and refuses any
+/// other inode (spawn.rs, StagedSocket).
 #[derive(Debug)]
 pub struct ProxySocket {
-    pub fd: Fd,
+    pub _fd: Fd,
     pub path: PathBuf,
     pub inode: InodeId,
 }
 
-/// A (device, inode) pair naming one filesystem object: what the launch
-/// daemon verified, handed to the launcher as `DEV:INO` on its command line,
-/// and checked again by the launcher and by the zone's setup after their own
-/// opens. One type, one comparison, one wire format, where there were bare
-/// tuples and three copies of each.
+/// (device, inode) of a verified object, passed to the launcher as `DEV:INO`
+/// and checked again after each later open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InodeId {
     pub dev: u64,
@@ -466,8 +395,7 @@ impl InodeId {
         InodeId { dev: st.st_dev as u64, ino: st.st_ino as u64 }
     }
 
-    /// Is `st` this object? A rename or a link into place between the
-    /// daemon's check and the later open shows up here.
+    /// Is `st` this object? Catches a rename or link between check and open.
     pub fn matches(&self, st: &libc::stat) -> bool {
         *self == Self::of(st)
     }
@@ -490,9 +418,8 @@ impl std::str::FromStr for InodeId {
     }
 }
 
-/// Open `path` one component at a time without following any symlink, as
-/// O_PATH. Directories along the way must be directories; the last
-/// component must be a socket when `want_socket`.
+/// Open `path` as O_PATH a component at a time, following no symlink. With
+/// `want_socket` the last component must be a socket.
 pub fn open_nofollow(path: &Path, want_socket: bool) -> Result<Fd, String> {
     if !path.is_absolute() {
         return Err(format!("{}: not an absolute path", path.display()));
@@ -521,6 +448,9 @@ pub fn open_nofollow(path: &Path, want_socket: bool) -> Result<Fd, String> {
     Ok(dir)
 }
 
+/// Accept only `/run/user/<uid>/kryptik/<zone>/wayland-0`, walked without
+/// following symlinks. `<uid>/`, `kryptik/`, `<zone>/` and the socket must be
+/// the session's, the last two directories private, and the listener its proxy.
 fn verify_proxy_socket(p: &Path, uid: u32, zone: &str, proxy_exe: Option<&Path>) -> Result<ProxySocket, String> {
     let want = PathBuf::from(format!("/run/user/{uid}/kryptik/{zone}/wayland-0"));
     if p != want {
@@ -552,16 +482,14 @@ fn verify_proxy_socket(p: &Path, uid: u32, zone: &str, proxy_exe: Option<&Path>)
         return Err(format!("wayland socket is owned by uid {}, not the session", st.st_uid));
     }
     verify_proxy_listener(&sock, uid, zone, proxy_exe)?;
-    Ok(ProxySocket { fd: sock, path: want, inode: InodeId::of(&st) })
+    Ok(ProxySocket { _fd: sock, path: want, inode: InodeId::of(&st) })
 }
 
-/// Connect to the socket through its inode and ask the kernel who is
-/// listening: the same uid as the session, running kryptik-wlproxy for
-/// this zone. The connection is closed at once; the proxy logs it as a
-/// client that disconnected.
+/// Ask the kernel who listens on the socket's inode: it must be the session's
+/// uid running kryptik-wlproxy for this zone (which logs a client disconnect).
 fn verify_proxy_listener(sock: &Fd, uid: u32, zone: &str, proxy_exe: Option<&Path>) -> Result<(), String> {
-    // This listener belongs to the session and may never accept. A full
-    // Unix-socket backlog must refuse promptly, not block the root daemon.
+    /* Non-blocking: the listener is the session's and may never accept; a
+     * full backlog must refuse at once, not block the root daemon. */
     let s = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK, 0) };
     if s < 0 {
         return Err(format!("socket: {}", std::io::Error::last_os_error()));
@@ -592,8 +520,7 @@ fn verify_proxy_listener(sock: &Fd, uid: u32, zone: &str, proxy_exe: Option<&Pat
     if !zone_arg {
         return Err(format!("wayland socket is served by a proxy for another zone, not {zone:?}"));
     }
-    // A developer instance has no installed proxy to insist on; a root one
-    // does, and a same-uid process merely named like the proxy is not it.
+    // A same-uid process named like the proxy is not it (developer instances skip this).
     if let Some(want) = proxy_exe {
         match std::fs::read_link(format!("/proc/{}/exe", peer.pid)) {
             Ok(exe) if exe == want => {}
@@ -612,9 +539,8 @@ struct Launch {
     log: PathBuf,
 }
 
-/// Start `kryptikd run` for the request. The passphrase and proxy
-/// descriptors, if any, are handed to the child and closed here whatever
-/// happens; the readiness pipe's read end is what comes back.
+/// Start `kryptikd run` for the request; returns the readiness pipe's read end.
+/// The passphrase descriptor goes to the child; ours all close on every path.
 fn spawn_launcher(
     req: &Request,
     cfg: &ServeConfig,
@@ -636,11 +562,9 @@ fn spawn_launcher(
         "--ready-fd".into(),
         ready_w.raw().to_string(),
     ];
-    // The path, not a descriptor: a descriptor opened here belongs to this
-    // mount namespace and cannot be bind-mounted from the zone's (EINVAL).
-    // The launcher re-opens the path itself without following symlinks,
-    // refuses anything but this inode, and stages it in the zone's registry
-    // entry for its child to bind after unshare (spawn.rs, StagedSocket).
+    /* The path, not a descriptor: one opened in this mount namespace cannot be
+     * bind-mounted from the zone's (EINVAL). The launcher reopens the path and
+     * refuses any other inode (spawn.rs, StagedSocket). */
     if let Some(w) = &wayland {
         args.push("--wayland-socket".into());
         args.push(w.path.display().to_string());
@@ -667,13 +591,9 @@ fn spawn_launcher(
         .collect();
     let env = CString::new(format!("KRYPTIK_LAUNCHED_BY_UID={uid}")).unwrap();
     let path = CString::new("PATH=/usr/bin:/usr/sbin").unwrap();
-    // The launcher's registry has to be this daemon's registry. Root's is
-    // one fixed path; a developer instance resolves its own from
-    // XDG_RUNTIME_DIR (registry::base), and a launcher that does not see
-    // the same variable falls back to /tmp/kryptik-<uid>: a zone this daemon
-    // started that its own `status` could not see and its `stop` could not
-    // stop, on every host where a session sets the variable. Nothing else
-    // of the environment crosses.
+    /* A developer instance's registry is under XDG_RUNTIME_DIR (registry::base),
+     * and its launcher must use the same one or `status` and `stop` would not
+     * find the zone. Nothing else of the environment crosses. */
     let runtime_dir = if unsafe { libc::geteuid() } != 0 {
         std::env::var("XDG_RUNTIME_DIR").ok().and_then(|v| CString::new(format!("XDG_RUNTIME_DIR={v}")).ok())
     } else {
@@ -707,20 +627,16 @@ fn spawn_launcher(
             libc::_exit(127);
         }
     }
-    // Parent: the child has its copies; ours close here. The proxy socket's
-    // pin is released too: from here the inode check in the launcher is
-    // what holds the identity.
+    // Ours close; from here the launcher's inode check holds the socket's identity.
     drop(ready_w);
     drop(pass);
     drop(wayland);
     Ok(Launch { pid, ready: ready_r, log })
 }
 
-/// The last thing a launcher wrote, for an error reply. One line, printable,
-/// bounded.
+/// The launcher's last log line, printable and bounded, for an error reply.
 fn last_log_line(log: &Path) -> String {
-    // Zone output can make this file arbitrarily large or non-UTF-8. Read
-    // only an 8 KiB tail for the diagnostic; full logs remain on disk.
+    // Zone output can make the log any size and any bytes: read only the last 8 KiB.
     let Ok(mut file) = std::fs::OpenOptions::new().read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(log) else { return String::new() };
     let Ok(md) = file.metadata() else { return String::new() };
@@ -768,19 +684,109 @@ impl Pending {
     }
 }
 
+/// A slow request (`stop`, `update-apply`), answered when `reap` sees its
+/// command end so the daemon keeps serving meanwhile. Not a thread: `reap`
+/// collects every child and would take the status a thread waited for.
+struct Job {
+    conn: UnixStream,
+    pid: libc::pid_t,
+    what: JobKind,
+    /// stdout and stderr, in memfds: a pipe could fill while nobody reads it.
+    out: std::fs::File,
+    err: std::fs::File,
+    exited: Option<i32>,
+}
+
+#[derive(Clone, PartialEq, Debug)]
+enum JobKind {
+    Stop { uid: u32, zone: String },
+    UpdateApply,
+}
+
+fn memfile(name: &str) -> Result<std::fs::File, String> {
+    use std::os::unix::io::FromRawFd;
+    let c = std::ffi::CString::new(name).map_err(|e| e.to_string())?;
+    let fd = unsafe { libc::memfd_create(c.as_ptr(), libc::MFD_CLOEXEC) };
+    if fd < 0 {
+        return Err(format!("memfd_create: {}", std::io::Error::last_os_error()));
+    }
+    Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+}
+
+/// Start a job's command. Its status is left for `reap`.
+fn start_job(conn: UnixStream, what: JobKind, cmd: &mut std::process::Command) -> Result<Job, (UnixStream, String)> {
+    let files = memfile("kryptikd-job-out").and_then(|o| memfile("kryptikd-job-err").map(|e| (o, e)));
+    let (out, err) = match files {
+        Ok(f) => f,
+        Err(e) => return Err((conn, e)),
+    };
+    let (o2, e2) = match (out.try_clone(), err.try_clone()) {
+        (Ok(o), Ok(e)) => (o, e),
+        _ => return Err((conn, "could not hold the command's output".into())),
+    };
+    match cmd.stdin(std::process::Stdio::null()).stdout(o2).stderr(e2).spawn() {
+        // The Child is dropped without a wait: `reap` collects it.
+        Ok(child) => Ok(Job { conn, pid: child.id() as libc::pid_t, what, out, err, exited: None }),
+        Err(e) => Err((conn, e.to_string())),
+    }
+}
+
+fn read_back(f: &mut std::fs::File) -> String {
+    use std::io::{Read, Seek};
+    let mut s = String::new();
+    let _ = f.seek(std::io::SeekFrom::Start(0));
+    let _ = f.take(1 << 20).read_to_string(&mut s);
+    s
+}
+
+/// Send a job's reply once its command has ended.
+fn finish_job(j: &mut Job, st: i32) {
+    let ok = libc::WIFEXITED(st) && libc::WEXITSTATUS(st) == 0;
+    // A failure's reason is the command's last line on stderr, which went to
+    // this log before the command ran as a job.
+    let why = |j: &mut Job, or: &str| {
+        let err = read_back(&mut j.err);
+        err.lines().rev().map(str::trim).find(|l| !l.is_empty()).unwrap_or(or).to_string()
+    };
+    match j.what.clone() {
+        JobKind::Stop { uid, zone } if ok => {
+            eprintln!("kryptikd serve: uid {uid} stopped zone {zone:?}");
+            reply(&j.conn, "ok\n");
+        }
+        JobKind::Stop { uid, zone } => {
+            let code = if libc::WIFEXITED(st) { libc::WEXITSTATUS(st) } else { -1 };
+            let why = why(j, "no reason given");
+            eprintln!("kryptikd serve: uid {uid} could not stop zone {zone:?}: exit {code}: {why}");
+            reply(&j.conn, &format!("error: stop exited {code}: {why}\n"));
+        }
+        JobKind::UpdateApply if ok => {
+            eprintln!("kryptikd serve: update-apply");
+            reply(&j.conn, &format!("ok\n{}", read_back(&mut j.out)));
+        }
+        JobKind::UpdateApply => {
+            let why = why(j, "kryptik-update apply failed");
+            eprintln!("kryptikd serve: update-apply failed: {why}");
+            reply(&j.conn, &format!("error: {why}\n"));
+        }
+    }
+}
+
 fn reply(mut c: &UnixStream, text: &str) {
     let _ = c.write_all(text.as_bytes());
     let _ = c.flush();
 }
 
-/// Reap children. A pending launcher's status is recorded for its reply;
-/// any other launcher's is logged.
-fn reap(pending: &mut [Pending]) {
+/// Reap children: record a pending launcher's or a job's status, log any other.
+fn reap(pending: &mut [Pending], jobs: &mut [Job]) {
     loop {
         let mut st = 0;
         let p = unsafe { libc::waitpid(-1, &mut st, libc::WNOHANG) };
         if p <= 0 {
             break;
+        }
+        if let Some(j) = jobs.iter_mut().find(|j| j.pid == p) {
+            j.exited = Some(st);
+            continue;
         }
         match pending.iter_mut().find(|x| x.launch.pid == p) {
             Some(x) => x.exited = Some(st),
@@ -789,9 +795,8 @@ fn reap(pending: &mut [Pending]) {
     }
 }
 
-/// Wait briefly for a specific launcher's exit status after its pipe closed:
-/// the close and the exit are the same instant from the launcher's side and
-/// two events from ours.
+/// Wait up to 500 ms for a launcher's status once its pipe has closed: the
+/// close can reach us before the exit does.
 fn wait_exit(p: &mut Pending) -> Option<i32> {
     if p.exited.is_some() {
         return p.exited;
@@ -834,9 +839,7 @@ pub struct ServeConfig {
     pub log_dir: PathBuf,
     /// The program that must be listening on a session's proxy socket.
     pub proxy_exe: PathBuf,
-    /// Where the net zone's Wi-Fi credentials live (wifi.rs): what the
-    /// wifi verbs read and write, and what the launcher binds into the nic
-    /// zone.
+    /// The net zone's Wi-Fi credentials (wifi.rs), bound into the nic zone.
     pub wifi_dir: PathBuf,
     /// Unprivileged instance: serves its own uid only.
     pub developer: bool,
@@ -890,12 +893,8 @@ fn bind(cfg: &ServeConfig) -> Result<UnixListener, String> {
     }
     let gid = gid_of_group(&cfg.group).ok_or_else(|| format!("no group {:?}; nobody could connect", cfg.group))?;
     let dir = cfg.socket.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(SOCKET_DIR));
-    // The daemon owns its default directory: root:kryptik, 0750, so the
-    // socket inside is reachable by the group and by nobody else. A
-    // directory named through --socket belongs to whoever named it (a test's
-    // workspace, say) and is left as found: taking it to 0750 root-owned
-    // once made every zone launched from a test fail to traverse its own
-    // data directory.
+    /* Only the default directory is made root:kryptik 0750, so the group alone
+     * reaches the socket; a directory named with --socket is left as found. */
     if dir == Path::new(SOCKET_DIR) {
         let _ = std::fs::create_dir_all(&dir);
         let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o750));
@@ -911,9 +910,8 @@ fn bind(cfg: &ServeConfig) -> Result<UnixListener, String> {
     Ok(l)
 }
 
-/// The session's runtime directory, created for it: /run/user/<uid>, 0700,
-/// owned by the user. There is no logind here to do it; the daemon is the
-/// one root process the session can ask.
+/// Create the session's /run/user/<uid> (0700, the user's). With no logind,
+/// the daemon is the one root process the session can ask.
 fn runtime_dir(cfg: &ServeConfig, uid: u32) -> Result<PathBuf, String> {
     let dir = if cfg.developer {
         cfg.log_dir.join(format!("run-user-{uid}"))
@@ -956,10 +954,9 @@ fn zone_running(name: &str) -> bool {
     matches!(crate::registry::state(name), Ok(crate::registry::State::Running { .. }))
 }
 
-/// One accepted connection: read, check, act. A `run` that starts a
-/// launcher returns it for the caller to watch; everything else is
-/// answered here.
-fn handle(cfg: &ServeConfig, conn: UnixStream) -> Option<Pending> {
+/// Serve one connection. A started launch is returned to be watched and a
+/// slow command pushed to `jobs`; anything else is answered here.
+fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pending> {
     let fd = conn.as_raw_fd();
     let peer = match peer_of(fd) {
         Some(p) => p,
@@ -1029,9 +1026,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream) -> Option<Pending> {
                 reply(&conn, "error: clipboard-move needs two different zone names\n");
                 return None;
             }
-            // The gesture is a trusted-UI act; the daemon performs it as
-            // root through its own clipboard command, which requires both
-            // zones to be running and copies one payload, once.
+            // A trusted-UI gesture, run as root through our own `clipboard move`.
             let out = std::process::Command::new("/proc/self/exe").args(["clipboard", "move", from, to]).output();
             match out {
                 Ok(o) if o.status.success() => {
@@ -1048,13 +1043,52 @@ fn handle(cfg: &ServeConfig, conn: UnixStream) -> Option<Pending> {
                 reply(&conn, "error: bad zone name\n");
                 return None;
             }
-            let r = std::process::Command::new("/proc/self/exe").args(["stop", zone]).status();
-            match r {
-                Ok(s) if s.success() => reply(&conn, "ok\n"),
-                Ok(s) => reply(&conn, &format!("error: stop exited {}\n", s.code().unwrap_or(-1))),
+            let what = JobKind::Stop { uid, zone: zone.to_string() };
+            match start_job(conn, what, std::process::Command::new("/proc/self/exe").args(["stop", zone])) {
+                Ok(j) => jobs.push(j),
+                Err((conn, e)) => reply(&conn, &format!("error: {e}\n")),
+            }
+        }
+        /* The user's side of the update channel (update.rs). Until `fetch` the
+         * net zone is told `idle`; `apply` hands the stage to kryptik-update,
+         * which verifies it all again before writing a slot. */
+        "update-status" | "update-fetch" | "update-apply" => {
+            use crate::update as up;
+            let dir = std::path::Path::new(up::STATE_DIR);
+            let running = up::running_version();
+            let done = match verb {
+                "update-status" => {
+                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+                    Ok(up::status(dir, now, &running))
+                }
+                "update-fetch" => up::want(dir, &running).map(|v| format!("{v} will be fetched when the net zone next asks; `kryptik update status` shows it arriving\n")),
+                _ => {
+                    // Started, not waited for; one at a time.
+                    if jobs.iter().any(|j| j.what == JobKind::UpdateApply) {
+                        reply(&conn, "error: an update is already being applied\n");
+                        return None;
+                    }
+                    match up::complete_stage(dir) {
+                        Ok(stage) => {
+                            let mut cmd = std::process::Command::new(up::TOOL);
+                            cmd.arg("apply").arg(&stage).env_clear().env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin");
+                            match start_job(conn, JobKind::UpdateApply, &mut cmd) {
+                                Ok(j) => jobs.push(j),
+                                Err((conn, e)) => reply(&conn, &format!("error: {}: {e}\n", up::TOOL)),
+                            }
+                        }
+                        Err(e) => reply(&conn, &format!("error: {e}\n")),
+                    }
+                    return None;
+                }
+            };
+            match done {
+                Ok(text) => {
+                    eprintln!("kryptikd serve: {verb}");
+                    reply(&conn, &format!("ok\n{text}"));
+                }
                 Err(e) => reply(&conn, &format!("error: {e}\n")),
             }
-            eprintln!("kryptikd serve: uid {uid} stopped zone {zone:?}");
         }
         "wifi-list" => match crate::wifi::list(&cfg.wifi_dir) {
             Ok(names) => {
@@ -1068,9 +1102,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream) -> Option<Pending> {
             Err(e) => reply(&conn, &format!("error: {e}\n")),
         },
         "wifi-add" | "wifi-forget" => {
-            // The passphrase is in the body. Nothing below prints the
-            // request or the value: a refusal names a rule (wifi.rs), and
-            // the log line carries the SSID and the outcome.
+            // The body holds the passphrase: nothing below prints the request or the psk.
             let req = match parse_wifi(&text) {
                 Ok(r) => r,
                 Err(e) => {
@@ -1095,10 +1127,8 @@ fn handle(cfg: &ServeConfig, conn: UnixStream) -> Option<Pending> {
             };
             match done {
                 Ok(what) => {
-                    // The zone is ephemeral and the file is bound in at its
-                    // start; a restart is how the change reaches it. Not a
-                    // failure of the request when it cannot happen: the reply
-                    // says so.
+                    /* The file is bound in at zone start, so a restart applies it. A
+                     * restart that cannot happen is reported, not a failure. */
                     let restart = crate::wifi::restart_net_zone(&cfg.wifi_dir);
                     eprintln!("kryptikd serve: uid {uid} {what} {:?}; {restart}", req.ssid);
                     reply(&conn, &format!("ok {what} {:?}; {restart}\n", req.ssid));
@@ -1117,8 +1147,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream) -> Option<Pending> {
                     return None;
                 }
             };
-            // The zone must exist before anything is forked for it: a bad
-            // name is an answer now, not a launcher's exit code later.
+            // Check the zone exists before forking, so a bad name is answered now.
             if let Err(e) = zone_named(cfg, &req.zone) {
                 reply(&conn, &format!("error: {e}\n"));
                 return None;
@@ -1203,11 +1232,18 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
     );
 
     let mut pending: Vec<Pending> = Vec::new();
+    let mut jobs: Vec<Job> = Vec::new();
     loop {
-        reap(&mut pending);
+        reap(&mut pending, &mut jobs);
+        jobs.retain_mut(|j| match j.exited {
+            Some(st) => {
+                finish_job(j, st);
+                false
+            }
+            None => true,
+        });
 
-        // The listener, then one entry per launch still waiting for its
-        // readiness pipe. Timeout: the nearest deadline among launches.
+        // fds[0] is the listener, then one per launch awaiting readiness; timeout: nearest deadline.
         let mut fds: Vec<libc::pollfd> = vec![libc::pollfd { fd: listener.as_raw_fd(), events: libc::POLLIN, revents: 0 }];
         let mut watched: Vec<usize> = Vec::new();
         let now = Instant::now();
@@ -1220,6 +1256,10 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
             let left = p.deadline().saturating_duration_since(now).as_millis() as i32;
             timeout = if timeout < 0 { left } else { timeout.min(left) };
         }
+        // `reap` sees a job end only at the top of the loop: wake every 200 ms while jobs run.
+        if !jobs.is_empty() {
+            timeout = if timeout < 0 { 200 } else { timeout.min(200) };
+        }
         let n = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) };
         if n < 0 {
             let e = std::io::Error::last_os_error();
@@ -1229,8 +1269,7 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
             continue;
         }
 
-        // Readiness pipes: a byte means the zone's pid 1 exists; EOF means
-        // the launcher went away first.
+        // A byte on a readiness pipe means the zone's pid 1 exists; EOF, that the launcher died first.
         let mut done: Vec<usize> = Vec::new();
         for (k, &i) in watched.iter().enumerate() {
             let ev = fds[1 + k].revents;
@@ -1259,8 +1298,7 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
                 continue;
             }
             if p.ready_at.is_some() {
-                // One more look: a launcher that exited non-zero in the
-                // settling window started a zone whose command failed.
+                // A launcher that exited non-zero while settling started a zone whose command failed.
                 let mut st = 0;
                 if p.exited.is_none() {
                     let r = unsafe { libc::waitpid(p.launch.pid, &mut st, libc::WNOHANG) };
@@ -1296,7 +1334,7 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
             match listener.accept() {
                 Ok((conn, _)) => {
                     let _ = conn.set_nonblocking(false);
-                    if let Some(p) = handle(&cfg, conn) {
+                    if let Some(p) = handle(&cfg, conn, &mut jobs) {
                         pending.push(p);
                     }
                 }
@@ -1307,49 +1345,12 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
     }
 }
 
-/// Client side, for tests and for the kryptik command: send one request.
-pub fn request(text: &str, fd: Option<RawFd>) -> Result<String, String> {
-    request_at(Path::new(SOCKET_PATH), text, fd)
-}
-
-pub fn request_at(socket: &Path, text: &str, fd: Option<RawFd>) -> Result<String, String> {
-    let mut s = UnixStream::connect(socket).map_err(|e| format!("{}: {e}", socket.display()))?;
-    match fd {
-        None => s.write_all(text.as_bytes()).map_err(|e| e.to_string())?,
-        Some(fd) => {
-            let bytes = text.as_bytes();
-            let mut iov = libc::iovec { iov_base: bytes.as_ptr() as *mut libc::c_void, iov_len: bytes.len() };
-            let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
-            msg.msg_iov = &mut iov;
-            msg.msg_iovlen = 1;
-            let mut cbuf = [0u8; 64];
-            let space = unsafe { libc::CMSG_SPACE(4) } as usize;
-            msg.msg_control = cbuf.as_mut_ptr() as *mut libc::c_void;
-            msg.msg_controllen = space as _;
-            unsafe {
-                let c = libc::CMSG_FIRSTHDR(&msg);
-                (*c).cmsg_level = libc::SOL_SOCKET;
-                (*c).cmsg_type = libc::SCM_RIGHTS;
-                (*c).cmsg_len = libc::CMSG_LEN(4) as _;
-                *(libc::CMSG_DATA(c) as *mut RawFd) = fd;
-                if libc::sendmsg(s.as_raw_fd(), &msg, 0) < 0 {
-                    return Err(format!("sendmsg: {}", std::io::Error::last_os_error()));
-                }
-            }
-        }
-    }
-    let _ = s.shutdown(std::net::Shutdown::Write);
-    let mut out = String::new();
-    s.read_to_string(&mut out).map_err(|e| e.to_string())?;
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn requests_parse_and_bad_ones_are_refused() {
+    fn parse_run_refuses_bad_requests() {
         let r = parse_run("run work wayland=/run/user/1000/kryptik/work/wayland-0 pass=fd\narg havoc\narg -e\narg sh\nend\n").unwrap();
         assert_eq!(r.zone, "work");
         assert_eq!(r.argv, vec!["havoc", "-e", "sh"]);
@@ -1369,7 +1370,7 @@ mod tests {
     }
 
     #[test]
-    fn a_request_is_complete_at_its_terminator_and_not_before() {
+    fn request_complete_at_terminator() {
         assert!(request_complete(b"status\n"));
         assert!(request_complete(b"info work\n"));
         assert!(request_complete(b"runtime\n"));
@@ -1388,7 +1389,7 @@ mod tests {
     }
 
     #[test]
-    fn wifi_requests_carry_the_values_whole_and_refuse_the_rest() {
+    fn parse_wifi_keeps_values_hides_psk() {
         let r = parse_wifi("wifi-add\nssid Cafe Wifi \npsk pass word\nend\n").unwrap();
         assert_eq!(r.ssid, "Cafe Wifi ");
         assert_eq!(r.psk.as_deref(), Some("pass word"));
@@ -1408,10 +1409,9 @@ mod tests {
         }
     }
 
-    /// The path rule, without a filesystem: only the session's own
-    /// `<zone>/wayland-0` under its runtime directory is even considered.
+    /// The path rule: only the session's own `<zone>/wayland-0` is considered.
     #[test]
-    fn only_the_sessions_own_proxy_path_is_considered() {
+    fn proxy_path_must_be_sessions_own() {
         let bad = |p: &str, uid: u32, zone: &str| {
             let e = verify_proxy_socket(Path::new(p), uid, zone, None).unwrap_err();
             assert!(e.contains("must be") || e.contains("path"), "{p}: {e}");
@@ -1424,8 +1424,7 @@ mod tests {
         bad("/run/user/1000/kryptik/work/wayland-0/", 1000, "work");
     }
 
-    /// The remaining checks need a real directory tree and a listener:
-    /// compartments/tests/serve.sh exercises them through the daemon.
+    // The ownership and listener checks run against the daemon in compartments/tests/serve.sh.
 
     #[test]
     fn open_nofollow_refuses_links_and_non_sockets() {
@@ -1445,7 +1444,7 @@ mod tests {
     }
 
     #[test]
-    fn a_full_proxy_backlog_cannot_block_the_launch_daemon() {
+    fn full_proxy_backlog_does_not_block() {
         let dir = std::env::temp_dir().join(format!("kryptik-backlog-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("socket");
@@ -1459,8 +1458,7 @@ mod tests {
             let _ = done.send(result);
         });
         let result = completion.recv_timeout(Duration::from_secs(2));
-        // Closing the listener also releases the old blocking connect,
-        // so the regression fails cleanly rather than hanging the suite.
+        // Closing the listener releases a blocking connect, so a regression fails instead of hanging.
         drop(listener);
         drop(queued);
         worker.join().unwrap();
@@ -1479,15 +1477,14 @@ mod tests {
     }
 
     #[test]
-    fn a_launcher_that_exits_reports_its_status_and_last_line() {
+    fn last_log_line_reads_tail() {
         let dir = std::env::temp_dir().join(format!("kryptik-serve-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let log = dir.join("zone-x.log");
         std::fs::write(&log, "first\nkryptikd: could not start zone \"x\": no such policy\n\n").unwrap();
         assert_eq!(last_log_line(&log), "kryptikd: could not start zone \"x\": no such policy");
         assert_eq!(last_log_line(&dir.join("absent.log")), "");
-        // Zone stdout shares this log and can contain arbitrary bytes. An
-        // invalid byte earlier in the file must not hide the launch error.
+        // Zone output shares the log: an invalid byte or a huge file must not hide the error.
         std::fs::write(&log, b"\xff\n").unwrap();
         let mut large = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
         large.set_len(32 * 1024 * 1024).unwrap(); // sparse: no large allocation or disk write
@@ -1507,4 +1504,18 @@ mod tests {
         assert!(unsafe { libc::fstat(raw, &mut st) } < 0);
     }
 
+    #[test]
+    fn failed_job_says_why() {
+        use std::io::Read;
+        let (conn, mut client) = UnixStream::pair().unwrap();
+        let mut err = memfile("t-err").unwrap();
+        err.write_all(b"kryptikd: stopping\nzone \"alpha\" did not stop\n\n").unwrap();
+        let what = JobKind::Stop { uid: 1000, zone: "alpha".into() };
+        let mut j = Job { conn, pid: 0, what, out: memfile("t-out").unwrap(), err, exited: None };
+        finish_job(&mut j, 3 << 8);
+        drop(j);
+        let mut got = String::new();
+        client.read_to_string(&mut got).unwrap();
+        assert_eq!(got, "error: stop exited 3: zone \"alpha\" did not stop\n");
+    }
 }

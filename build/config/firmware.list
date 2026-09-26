@@ -1,19 +1,11 @@
-# Firmware that ships on the verified root under /lib/firmware (ADR-012).
-#
-# build/stages/04-base-system.sh (s_firmware) takes these out of the pinned
-# linux-firmware release: one pattern per line, matched by `find -path`
-# against the tree the release's own copy-firmware.sh lays out, so the names
-# are the ones the kernel asks for (the top-level iwlwifi-* names are links
-# into intel/iwlwifi/, and a selected link brings its target). A line
-# `newest N PATTERN` keeps, of the files the pattern matches, the N with the
-# highest trailing -NUMBER per device: a driver asks for its newest supported
-# firmware API and falls back a few versions, and every version of every
-# Intel device is three hundred megabytes. A pattern that matches nothing
-# fails the build, so this list can only ever describe what the release has.
-# Everything not listed is not shipped.
+# The only firmware shipped under /lib/firmware on the verified root (ADR-012).
+# One `find -path` pattern per line, matched in the tree linux-firmware's
+# copy-firmware.sh lays out; a selected link brings its target.
+# `newest N PATTERN` keeps the N highest trailing -NUMBERs per device, since a
+# driver falls back only a few firmware API versions. A pattern that matches
+# nothing fails the build.
 
-# Intel Wi-Fi, from the 7260 of 2013 to the current Wi-Fi 7 parts: the newest
-# three API versions per device, and every device's PNVM.
+# Intel Wi-Fi, 7260 to Wi-Fi 7: the newest three API versions, and every PNVM.
 newest 3 iwlwifi-*.ucode
 iwlwifi-*.pnvm
 
@@ -24,8 +16,7 @@ ath11k/QCA6390/hw2.0/*
 ath11k/WCN6855/hw2.0/*
 ath12k/WCN7850/hw2.0/*
 
-# MediaTek MT7921 (the 7961 firmware), MT7922 and MT7925; the Bluetooth
-# halves of those parts are not shipped.
+# MediaTek MT7921 (7961 firmware), MT7922 and MT7925, without their Bluetooth.
 mediatek/WIFI_MT7961_patch_mcu_1_2_hdr.bin
 mediatek/WIFI_MT7961_patch_mcu_1a_2_hdr.bin
 mediatek/WIFI_RAM_CODE_MT7961_1.bin
@@ -45,9 +36,8 @@ rtlwifi/rtl8188eufw.bin
 # Broadcom over PCIe (Dell and Apple machines); the SDIO parts are not.
 brcm/brcmfmac*-pcie*
 
-# Graphics: everything Intel and AMD publish. NVIDIA is not here: nouveau's
-# GSP firmware is tens of megabytes per generation and those machines have
-# a display from the firmware framebuffer (ADR-012).
+# Graphics: all of Intel's and AMD's. Not NVIDIA: nouveau's GSP firmware is tens
+# of MB per generation, and the firmware framebuffer still gives a display.
 i915/*
 xe/*
 amdgpu/*

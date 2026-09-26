@@ -1,47 +1,15 @@
 #!/usr/bin/env bash
-# Inspect the binaries a build PRODUCED, rather than the flags it was asked to
-# use.
+# Audit the hardening of the ELF objects a build actually produced.
 #
 #   tools/check-artifact-hardening.sh [ROOT] [--strict] [--json FILE]
 #
-# ROOT defaults to the sysroot for the current KRYPTIK_WORK.
-#
-# WHY THIS IS NOT tools/test-hardening-flags.sh
-#
-# That script proves the flag set can build a hardened executable and a
-# hardened shared library. It compiles two toy files. It cannot tell you
-# whether the fifty-eight packages in stage 04 actually got those flags -
-# and the ways they silently do not are numerous and boring:
-#
-#   * a configure script that overwrites CFLAGS instead of appending
-#   * a Makefile that hardcodes its own -O2 and drops the environment
-#   * a package built before load_hardening ran
-#   * a hardening exception that was meant for one package and matched three
-#   * libtool relinking at install time without the LDFLAGS it linked with
-#
-# None of those fail the build. All of them are visible in the ELF.
-#
-# So this reads the objects: their program headers, dynamic section, notes and
-# dynamic symbols. What comes out is what actually shipped.
-#
-# HARD FAILURES (exit 1 in every mode) are the ones with no legitimate
-# explanation in a distribution:
-#
-#   RWX          a segment that is writable and executable at once
-#   TEXTREL      relocations against the text segment; implies writable text
-#   EXEC-STACK   an executable stack
-#   BUILD-RPATH  an RPATH or RUNPATH naming the build tree, which makes the
-#                binary load libraries from a directory that will not exist on
-#                the target - or, worse, will
-#
-# Everything else is counted and reported, and --strict promotes it. A sysroot
-# mid-build legitimately contains objects that are not finished being replaced,
-# and a check that cries wolf on those gets switched off.
+# ROOT defaults to the sysroot for the current KRYPTIK_WORK. RWX, TEXTREL,
+# EXEC-STACK and BUILD-RPATH (an rpath into the build tree) always fail. The
+# rest fail only with --strict: a sysroot mid-build holds unfinished objects.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 
-# This script reports its own findings; the ERR trap would abort on the first
-# non-zero readelf.
+# Checks fail routinely here; the ERR trap would abort on the first one.
 trap - ERR
 set +e
 
@@ -65,15 +33,8 @@ Give a root to inspect, or build one first:
 
 have readelf || die "readelf is required (binutils)"
 
-# Directories that are not part of the shipped system.
-#
-#   /tools          the stage 01 cross toolchain. It is deleted before release
-#                   and is built deliberately WITHOUT hardening - see the
-#                   comment at the top of build/stages/01-toolchain.sh. Auditing
-#                   it would report ~200 expected failures and teach everyone to
-#                   ignore this script's output.
-#   /kryptik*       bind-mount points for the repository, sources and work tree.
-#                   Empty outside the chroot; not ours even when they are not.
+# Not shipped: /tools is the stage 01 cross toolchain, built without hardening
+# and deleted before release; /kryptik* are bind-mount points.
 EXCLUDE_RE='^(tools|kryptik|kryptik-work|kryptik-sources|usr/src|usr/share/doc)(/|$)'
 
 log "Artifact hardening audit"
@@ -101,9 +62,7 @@ is_elf() {
 audit_one() {
     local f="$1" rel="${1#"$ROOT"/}"
     local out
-    # One readelf pass for everything: header, program headers, dynamic
-    # section, notes, dynamic symbols. Thousands of files times five processes
-    # each is the difference between a check people run and one they do not.
+    # One readelf run per file covers everything read below.
     out="$(readelf -W -h -l -d -n --dyn-syms "$f" 2>/dev/null)" || return 0
     [[ -n "$out" ]] || return 0
 
@@ -121,8 +80,7 @@ audit_one() {
         kind=lib; LIBS=$((LIBS + 1))
     fi
 
-    # --- hard failures --------------------------------------------------
-    # A LOAD segment carrying all three permission bits.
+    # Hard failures. First, a LOAD segment carrying all three permission bits.
     if awk '/^ +LOAD/ { if ($0 ~ /RWE/) exit 1 } END { exit 0 }' <<<"$out"; then :; else
         hard "RWX" "$rel"
     fi
@@ -135,10 +93,7 @@ audit_one() {
         hard "TEXTREL" "$rel"
     fi
 
-    # An RPATH/RUNPATH that names the build tree. This is how a binary ends up
-    # resolving libraries from a directory that exists only on the machine that
-    # built it - and the failure is not a missing library, it is the WRONG one
-    # loading silently on a host where that path happens to exist.
+    # An rpath into the build tree loads whatever a target has at that path.
     local rpath
     rpath="$(sed -n 's/.*(R\(UN\)\?PATH).*\[\(.*\)\]/\2/p' <<<"$out")"
     if [[ -n "$rpath" ]]; then
@@ -146,9 +101,7 @@ audit_one() {
         case "$rpath" in
             *"$KRYPTIK_WORK"*|*/build/work/*|*/kryptik-work/*|*/tmp/*) leaked=1 ;;
         esac
-        # The sysroot's own absolute path must not appear either - but only
-        # when ROOT is a directory. Inside the chroot ROOT is "/", and matching
-        # that would flag every ordinary rpath in the system.
+        # The sysroot's own path counts too, unless ROOT is "/" (in the chroot).
         if [[ "$leaked" -eq 0 && "$ROOT" != "" && "$ROOT" != "/" && "$rpath" == *"$ROOT"* ]]; then
             leaked=1
         fi
@@ -159,25 +112,21 @@ audit_one() {
         fi
     fi
 
-    # --- reported ------------------------------------------------------
+    # Reported; fatal only with --strict.
     grep -qE '^ +GNU_RELRO' <<<"$out" || soft "NO-RELRO" "$rel"
 
     if ! grep -qE 'BIND_NOW|FLAGS_1.*NOW' <<<"$out"; then
         soft "NO-BIND-NOW" "$rel"
     fi
 
-    # Executables should be PIE. Kryptik's GCC is --enable-default-pie, so a
-    # non-PIE executable means that package's link line overrode it.
+    # GCC is --enable-default-pie: a non-PIE executable overrode it at link time.
     if [[ "$kind" == exe && "$type" == EXEC ]]; then
         soft "NO-PIE" "$rel"
     fi
 
     grep -qE 'IBT|SHSTK' <<<"$out" || soft "NO-CET" "$rel"
 
-    # Anything that references __stack_chk_fail proves the stack protector is
-    # on. Its ABSENCE proves nothing - a function with no arrays needs no
-    # canary - so this is counted, never failed, and read as a population
-    # statistic across the tree.
+    # Counted, never failed: code with no arrays needs no __stack_chk_fail.
     if grep -q '__stack_chk_fail' <<<"$out"; then
         bump "HAS-SSP"
     fi
@@ -238,15 +187,12 @@ if [[ -n "$JSON" ]]; then
         printf '  "findings": {\n'
         sep=""
         for k in "${!COUNT[@]}"; do
-            # A real newline in the separator: through %s, "\n" would be two
-            # literal characters, and the file would not parse.
+            # A real newline: through %s, "\n" would print as two characters.
             printf '%s    "%s": %d' "$sep" "$k" "${COUNT[$k]}"
             sep=$',\n'
         done
         printf '\n  },\n'
-        # The objects behind the counts, so a report can be read without
-        # re-running the scan. One string per finding, as the text mode
-        # prints it.
+        # The objects behind the counts, one string each as text mode prints them.
         json_list() {   # json_list NAME LINE...
             local name="$1"; shift
             local first=1 l

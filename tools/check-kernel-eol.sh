@@ -1,36 +1,8 @@
 #!/usr/bin/env bash
-# Fail if the pinned kernel is end-of-life or not a longterm release.
+# Fail if the pinned kernel is end-of-life or not a longterm release (ADR-009).
 #
 #   ./tools/check-kernel-eol.sh            informational
 #   ./tools/check-kernel-eol.sh --strict   release gate
-#
-# Why this exists (ADR-009): Kryptik originally pinned linux 6.10.5. That is a
-# non-longterm kernel which reached EOL about two months after its August 2024
-# release, meaning the pin carried roughly two years of unpatched CVEs while
-# looking like a perfectly ordinary version number in versions.env.
-#
-# A security distribution cannot ship an EOL kernel. This check makes that
-# failure loud and mechanical rather than something a person has to remember.
-#
-# WHAT THE SAME-SERIES BRANCH IS FOR, AND THE HOLE IT USED TO HAVE.
-# kernel.org's releases.json lists only the CURRENT release of each series, so
-# a pinned point release that is one or two patches behind has no exact entry.
-# That is the normal, healthy case for a pin that is merely a little old.
-#
-# The previous version of this script reported EVERY such pin as "OUTDATED -
-# still longterm, bump when convenient" without ever looking at what the
-# series actually is. A pin in a series that had gone EOL, or that was never
-# longterm in the first place, therefore passed as a supported kernel purely
-# because its exact point release was not listed. The support status of a pin
-# with no exact entry is the status of ITS SERIES, and that is now what is
-# checked.
-#
-# UNAVAILABLE IS NOT SUPPORTED. A pin whose status cannot be established --
-# network failure, malformed response, a series kernel.org does not list, a
-# moniker this script does not recognise -- is not evidence of a supported
-# kernel. Everything except an established "longterm and not EOL" fails, and
-# the one case that is mode-dependent (the network being down) fails under
-# --strict and says so under the informational default.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 load_config
@@ -39,17 +11,15 @@ STRICT=0
 for a in "$@"; do
     case "$a" in
         --strict) STRICT=1 ;;
-        -h|--help) sed -n '2,6p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,5p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $a (expected --strict or nothing)" ;;
     esac
 done
 
 RELEASES_URL="https://www.kernel.org/releases.json"
 
-# Self-test hook. tools/test-check-kernel-eol.sh points this at a local HTTP
-# server so every branch below can be exercised offline against real curl
-# behaviour. Gated so that a stray environment variable cannot quietly
-# redirect the release gate at something other than kernel.org.
+# Test hook for tools/test-check-kernel-eol.sh. It needs a second variable so a
+# stray one cannot point the gate at a feed other than kernel.org.
 if [[ -n "${KRYPTIK_KERNEL_RELEASES_URL:-}" ]]; then
     [[ "${KRYPTIK_KERNEL_EOL_SELFTEST:-0}" == "1" ]] || die \
 "KRYPTIK_KERNEL_RELEASES_URL is set but KRYPTIK_KERNEL_EOL_SELFTEST is not.
@@ -70,10 +40,7 @@ PY_BIN="$(command -v python3 || command -v python)"
 RELEASES="${KRYPTIK_WORK}/releases.json"
 mkdir -p "$KRYPTIK_WORK"
 
-# A failed fetch leaves no usable evidence either way. Under --strict that is a
-# failure: a release gate that passes when it could not reach upstream is not a
-# gate. Informationally it is a warning, because a developer offline on a train
-# has not thereby shipped an EOL kernel.
+# An unreachable feed proves nothing: fatal with --strict, a warning otherwise.
 if ! curl -fsL --max-time 30 -o "$RELEASES" "$RELEASES_URL"; then
     rm -f "$RELEASES"
     if [[ "$STRICT" -eq 1 ]]; then

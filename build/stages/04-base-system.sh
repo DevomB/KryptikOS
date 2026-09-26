@@ -163,6 +163,18 @@ native_build() {
 
 # --- packages that need more than ./configure ------------------------------
 
+# util-linux with the patch set in build/patches (see its README): 2.42.3 does
+# not compile against a glibc older than 2.43, and gets one flag wrong there.
+s_util_linux() {
+    local src; src="$(unpack "util-linux-${V_UTIL_LINUX}.tar.xz" "util-linux-${V_UTIL_LINUX}")"
+    cd "$src"
+    apply_repo_patches "util-linux-${V_UTIL_LINUX}"
+    ./configure --prefix=/usr --libdir=/usr/lib --runstatedir=/run --disable-chfn-chsh --disable-login --disable-nologin --disable-su --disable-setpriv --disable-runuser --disable-pylibmount --disable-liblastlog2 --disable-static --without-python
+    make
+    make install
+}
+
+
 # Locale generation, using the localedef already installed by stage 01/02.
 #
 # Split out from the glibc rebuild and placed FIRST because of a dependency
@@ -928,9 +940,23 @@ s_release_trust() {
         chmod 0600 "$keydir/kryptik-release"
         echo "generated a new developer release signing key"
     fi
+    # A second key, for one thing: signing the update channel's statement of
+    # what is current (docs/design/update-channel.md). It is honoured in the
+    # kryptik-latest namespace and nowhere else, and the release key is
+    # honoured in kryptik-release and nowhere else, so the key that has to be
+    # at hand on a schedule can never sign a release, and the key that signs
+    # releases never has to be. An owner who wants one key for both lists
+    # the release key on the second line instead; nothing else changes.
+    if [[ ! -f "$keydir/kryptik-latest" ]]; then
+        ssh-keygen -q -t ed25519 -N "" -C "kryptik-latest (developer)" -f "$keydir/kryptik-latest"
+        chmod 0600 "$keydir/kryptik-latest"
+        echo "generated a new developer key for statements of what is current"
+    fi
     install -d -m 0755 /usr/share/kryptik/trust
-    printf 'kryptik-release namespaces="kryptik-release" %s\n' "$(cut -d' ' -f1,2 "$keydir/kryptik-release.pub")" \
-        > /usr/share/kryptik/trust/release-signers
+    {
+        printf 'kryptik-release namespaces="kryptik-release" %s\n' "$(cut -d' ' -f1,2 "$keydir/kryptik-release.pub")"
+        printf 'kryptik-latest namespaces="kryptik-latest" %s\n' "$(cut -d' ' -f1,2 "$keydir/kryptik-latest.pub")"
+    } > /usr/share/kryptik/trust/release-signers
     chmod 0644 /usr/share/kryptik/trust/release-signers
     # Developer tier: the updater accepts development-role manifests. A
     # production image changes this file (and its key), deliberately.
@@ -957,6 +983,25 @@ s_release_trust() {
         echo "FAIL: a foreign key verified against the anchor"; rm -rf "$t"; return 1
     fi
     echo "ok: a foreign key is refused"
+    # The two keys, each in its own namespace and refused in the other's:
+    # what makes the statement key safe to keep where a timer can reach it.
+    local who ns other
+    for who in kryptik-release kryptik-latest; do
+        ns="$who"; [[ "$who" == kryptik-release ]] && other=kryptik-latest || other=kryptik-release
+        rm -f "$t/$who.sig"
+        printf 'probe of %s\n' "$who" > "$t/$who"
+        ssh-keygen -Y sign -f "$keydir/$who" -n "$ns" "$t/$who" < /dev/null >/dev/null 2>&1 \
+            && ssh-keygen -Y verify -f /usr/share/kryptik/trust/release-signers -I "$who" -n "$ns" -s "$t/$who.sig" < "$t/$who" >/dev/null 2>&1 \
+            || { echo "FAIL: the $who key does not verify in its own namespace"; rm -rf "$t"; return 1; }
+        rm -f "$t/$who.sig"
+        ssh-keygen -Y sign -f "$keydir/$who" -n "$other" "$t/$who" < /dev/null >/dev/null 2>&1
+        # A refusal only counts when there was a signature to refuse.
+        [[ -s "$t/$who.sig" ]] || { echo "FAIL: could not sign the probe of $who in $other"; rm -rf "$t"; return 1; }
+        if ssh-keygen -Y verify -f /usr/share/kryptik/trust/release-signers -I "$who" -n "$other" -s "$t/$who.sig" < "$t/$who" >/dev/null 2>&1; then
+            echo "FAIL: the $who key verified in the $other namespace"; rm -rf "$t"; return 1
+        fi
+    done
+    echo "ok: each key verifies in its own namespace and is refused in the other's"
     rm -rf "$t"
 }
 
@@ -972,6 +1017,8 @@ s_netzone() {
     # The SNTP query the net zone measures the clock with (docs/design/time.md).
     install -D -m 0755 "${KRYPTIK_ROOT}/tools/net/sntp-offset.py" /usr/libexec/kryptik/sntp-offset.py
     python3 -m py_compile /usr/libexec/kryptik/sntp-offset.py || { echo "sntp-offset.py does not compile under the target python"; return 1; }
+    install -D -m 0755 "${KRYPTIK_ROOT}/tools/net/update-fetch.py" /usr/libexec/kryptik/update-fetch.py
+    python3 -m py_compile /usr/libexec/kryptik/update-fetch.py || { echo "update-fetch.py does not compile under the target python"; return 1; }
     rm -rf /usr/libexec/kryptik/__pycache__
     for t in dhcpcd nft dnsmasq ip; do
         command -v "$t" >/dev/null 2>&1 && echo "  ok $t" || { echo "  MISSING $t"; return 1; }
@@ -1035,6 +1082,13 @@ s_console() {
 # name; otherwise asks the kernel which console it is using.
 
 dev="$1"
+
+# sysinit may be asking for the state passphrase on this console. It gets 30 s
+# to start (a broken service database must still end in a console); once it
+# has, the console is its own until it ends.
+n=0
+until [ -e /run/kryptik-sysinit ] || [ "$n" -ge 150 ]; do sleep 0.2; n=$((n + 1)); done
+while [ "$(cat /run/kryptik-sysinit 2>/dev/null)" = running ]; do sleep 0.2; done
 
 if [ -z "$dev" ]; then
     # /sys/class/tty/console/active lists the kernel-preferred console last.
@@ -1594,7 +1648,7 @@ s_boot_check() {
     chk "sysctl fragments"  /usr/lib/kryptik/sysctl.d
     chk "zone definitions"  /usr/lib/kryptik/zones/work.toml
     chk "zone policies"     /usr/lib/kryptik/zones/policy/work.seccomp
-    chk "device helper"     /usr/libexec/kryptik/devices.sh
+    chk "device helper"     /usr/libexec/kryptik/devices.sh x
     chk "boot scripts"      /usr/libexec/kryptik/sysinit.sh x
     chk "test control helper" /usr/libexec/kryptik/testctl.sh
     chk "boot-success"      /usr/libexec/kryptik/boot-success.sh x
@@ -2308,7 +2362,7 @@ PACKAGES=(
     "zlib"        "s_zlib"
     "python"      "s_python"
     "texinfo"     "native_build texinfo-${V_TEXINFO}.tar.xz texinfo-${V_TEXINFO}"
-    "util-linux"  "native_build util-linux-${V_UTIL_LINUX}.tar.xz util-linux-${V_UTIL_LINUX} --libdir=/usr/lib --runstatedir=/run --disable-chfn-chsh --disable-login --disable-nologin --disable-su --disable-setpriv --disable-runuser --disable-pylibmount --disable-liblastlog2 --disable-static --without-python"
+    "util-linux"  "s_util_linux"
     "glibc"       "s_glibc"
     "bzip2"       "s_bzip2"
     "xz"          "s_xz_native"
@@ -2512,7 +2566,7 @@ PACKAGES=(
     # kryptik-update, which refuses to start without kryptik-efiboot.
     "efiboot"     "s_efiboot $(sha256_of "${KRYPTIK_ROOT}/tools/efi/kryptik-efiboot.c" 2>/dev/null || echo none)"
     "updater"     "s_updater $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-update" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-recover" 2>/dev/null || echo none)"
-    "netzone"     "s_netzone $(sha256_of "${KRYPTIK_ROOT}/tools/net/netzone-init.sh" 2>/dev/null || echo none)-$(sha256_of "${KRYPTIK_ROOT}/tools/net/sntp-offset.py" 2>/dev/null || echo none)"
+    "netzone"     "s_netzone $(sha256_of "${KRYPTIK_ROOT}/tools/net/netzone-init.sh" 2>/dev/null || echo none)-$(sha256_of "${KRYPTIK_ROOT}/tools/net/sntp-offset.py" 2>/dev/null || echo none)-$(sha256_of "${KRYPTIK_ROOT}/tools/net/update-fetch.py" 2>/dev/null || echo none)"
     "installer"   "s_installer $(sha256_of "${KRYPTIK_ROOT}/tools/install/kryptik-install.sh" 2>/dev/null || echo none)"
     # The path and the binary's content hash are arguments so that both are
     # part of this step's fingerprint; see s_kryptikd.
@@ -2564,6 +2618,18 @@ require_inside_chroot "stage 04" "system"
 # this stage carries the fingerprint stage 02 finished on: rebuild the
 # temporary tools and nothing built with them can claim to be unchanged.
 stage_depends_on "tt-" verify
+
+# The signing keys live under ${KRYPTIK_WORK}/keys, outside the sysroot and
+# outside any cache of it, on purpose. A work tree restored from such a cache
+# has release-trust stamped as built and no keys; the anchor in the restored
+# sysroot then names keys that no longer exist, and stage 06 would sign with
+# ones the image does not trust, or find none. So, as for the kernel tree:
+# no keys, no stamp. The step then makes both and writes the anchor again.
+if [[ -f "${STAMPS}/${STAMP_PREFIX}release-trust" ]] && \
+   [[ ! -f "${KRYPTIK_WORK}/keys/release/kryptik-release" || ! -f "${KRYPTIK_WORK}/keys/release/kryptik-latest" ]]; then
+    warn "release-trust is stamped as built but a signing key under ${KRYPTIK_WORK}/keys/release is gone; the step runs again."
+    rm -f "${STAMPS}/${STAMP_PREFIX}release-trust"
+fi
 
 unwired=0
 for ((i = 0; i < ${#PACKAGES[@]}; i += 2)); do

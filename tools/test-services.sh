@@ -1,16 +1,6 @@
 #!/usr/bin/env bash
-# Validate the s6-rc service source tree, offline and in about a second.
-#
-# s6-rc-compile is the authority, and it only runs inside the chroot at the end
-# of a long stage. Everything checked here is a mistake that costs that whole
-# round trip to discover: a dependency naming a service that does not exist, a
-# bundle listing one, a oneshot whose `up` points at a script the stage never
-# installs, a shebang in an `up` file (which is execline, not shell), a
-# dependency cycle.
-#
-# It is deliberately structural. It does not know whether udevd is the right
-# program to run; it knows that if you say a service depends on `eudev`, there
-# had better be an `eudev`.
+# Structural checks on the s6-rc service tree, offline: mistakes s6-rc-compile
+# would find only at the end of stage 04, inside the chroot.
 
 set -uo pipefail
 
@@ -63,8 +53,7 @@ for svc in "${SERVICES[@]}"; do
         else
             lines="$(grep -c '' < "$d/up")"
             first="$(head -1 "$d/up")"
-            # An `up` file is an EXECLINE script. A #! line in it is parsed as
-            # execline and fails in a way that does not name the cause.
+            # `up` is execline: a #! line there fails without naming the cause.
             if [[ "$first" == '#!'* ]]; then
                 red "${svc}: up starts with a shebang - it is execline, not shell"
             elif [[ "$lines" -ne 1 ]]; then
@@ -108,7 +97,6 @@ for svc in "${SERVICES[@]}"; do
         ;;
     esac
 
-    # Dependencies must name real services, whatever the type.
     if [[ -f "$d/dependencies" ]]; then
         bad=0
         while read -r dep; do
@@ -159,13 +147,8 @@ check "no dependency cycle" "$([[ -z "$cycle" ]] && echo ok)"
 
 echo
 echo "-- every longrun bounds its own stop"
-# s6-svc -d sends the down signal and then waits. Forever, unless timeout-kill
-# says otherwise. getty-tty1 is the case that proved this matters: it runs
-# `agetty -n -l /usr/bin/bash`, which execs an INTERACTIVE bash, and an
-# interactive bash ignores SIGTERM by design. `s6-rc change` blocked on it
-# during every shutdown until rc.shutdown's own timeout fired.
-#
-# So: a down-signal the process will actually honour, and a hard bound after it.
+# s6-svc -d waits forever unless timeout-kill bounds it, and some processes
+# ignore SIGTERM (getty-tty1's interactive bash).
 for d in "${SRC}"/*/; do
     svc="$(basename "$d")"
     [[ -f "${d}type" ]] || continue
@@ -186,11 +169,8 @@ done
 
 echo
 echo "-- every directory in the source tree is a service definition"
-# s6-rc-compile reads EVERY directory under the source as a service and wants a
-# `type` file in each. A stray directory stops the compile with
-# "unable to read .../type: No such file or directory". This tree once had a
-# scripts/ directory in it and these tests passed anyway, because they checked
-# the layout this file expected rather than the layout s6-rc-compile demands.
+# s6-rc-compile reads every directory here as a service; one without a type
+# file stops the whole compile.
 for d in "${SRC}"/*/; do
     svc="$(basename "$d")"
     if [[ -f "${d}type" ]]; then
@@ -206,18 +186,12 @@ echo "-- the scripts the services name"
 for s in "${SCRIPTS}"/*.sh; do
     [[ -f "$s" ]] || continue
     n="$(basename "$s")"
-    # Parsed by the interpreter its first line names. A bash script that
-    # happens to parse under the host's sh proves nothing, and one that does
-    # not (arrays, {fd} redirections) is not broken: the image runs it under
-    # bash. Which sh the host has must not decide this check either way.
+    # Parse with the interpreter the shebang names, not the host's sh.
     interp="sh"
     case "$(head -1 "$s")" in "#!/bin/bash"*|"#!/usr/bin/bash"*) interp="bash" ;; esac
     check "${n}: valid ${interp}"    "$("$interp" -n "$s" 2>/dev/null && echo ok)"
     check "${n}: executable"  "$([[ -x "$s" ]] && echo ok)"
-    # An orphan script is either a service someone forgot to declare or dead
-    # weight installed into every image. A helper that another installed
-    # script sources (`. /usr/libexec/kryptik/x.sh`) is referenced through
-    # that script, provided the sourcing script is itself run by a service.
+    # Each script must be run by a service, or sourced by a script that is.
     if grep -rqF "/usr/libexec/kryptik/${n}" "$SRC"/*/up "$SRC"/*/run 2>/dev/null; then
         green "${n}: referenced by a service"
     elif grep -lqE "^\s*\. +/usr/libexec/kryptik/${n}" "${SCRIPTS}"/*.sh 2>/dev/null \

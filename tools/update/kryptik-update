@@ -1,32 +1,19 @@
 #!/bin/sh
-#
-# kryptik-update: apply a signed release to the inactive root slot, arm one
-# trial boot of it, and roll back (docs/design/boot-and-updates.md). Runs in zone 0 as root, with
-# no network: the payload arrives as files (the net zone fetches, this
-# verifies) in a directory on the state partition.
+# kryptik-update: apply a signed release to the inactive root slot and arm one
+# trial boot of it, or roll back (docs/design/boot-and-updates.md). Runs as
+# root in zone 0, which has no network: the payload arrives as a directory.
 #
 #   kryptik-update apply DIR [--retry] [--recovery]
 #   kryptik-update rollback
 #   kryptik-update status
+#   kryptik-update check-manifest DIR       verify only: signature, role, version
+#   kryptik-update check-pointer FILE SIG   verify only: the pointer's signature
 #
-# DIR holds: manifest, manifest.sig, kryptik-root.img, kryptik-a.efi,
-# kryptik-b.efi, root.json - exactly those and nothing else.
+#   --retry     arm again a slot whose last trial failed to boot
+#   --recovery  accept an older signed release (a downgrade)
 #
-# THE ORDER IS THE WHOLE DESIGN. Verify everything before the first write:
-# the signature over the manifest against the trust anchor shipped in this
-# image (/usr/share/kryptik/trust/release-signers, on the verified root -
-# never under /etc, which the state partition can shadow; namespace
-# kryptik-release);
-# every file's hash and size; the role; that the version is newer than the
-# running one (or --recovery, which is authorised downgrade: still signed,
-# still verified, explicitly asked for); that the kernel for the inactive
-# slot embeds the manifest's root hash. Then write the inactive slot, read it
-# back, install its kernel on the ESP under its own name, and arm BootNext.
-# The committed boot file (BOOTX64.EFI) is not touched here: boot-success
-# does that after the new slot has actually come up, and if it does not, the
-# next boot is the old slot again. Persistent zone data on kryptik-state is
-# never written by any of this.
-#
+# DIR holds manifest, manifest.sig, kryptik-root.img, kryptik-a.efi,
+# kryptik-b.efi and root.json, and nothing else.
 set -eu
 
 PROG=kryptik-update
@@ -35,6 +22,9 @@ die() { printf '%s: FAILED: %s\n' "$PROG" "$*" >&2; exit 1; }
 
 NAMESPACE=kryptik-release
 MAGIC=KRYPTIK-MANIFEST-1
+LATEST_NAMESPACE=kryptik-latest
+LATEST_MAGIC=KRYPTIK-LATEST-1
+# On the verified root: never under /etc, which the state partition can shadow.
 SIGNERS=/usr/share/kryptik/trust/release-signers
 ROLE_FILE=/usr/share/kryptik/trust/required-role
 DEGRADED=/run/kryptik/state-degraded
@@ -42,17 +32,31 @@ B=/var/lib/kryptik/boot
 ESP_MNT=/run/kryptik/update-esp
 LOCK=/run/kryptik/update.lock
 LOG=/var/log/kryptik/update.log
+# Where the manifest is copied. Never taken from the environment, since the
+# exit trap removes it; a variable only so the offline suite can set it.
+SNAP=""
 
-[ "$(id -u)" = 0 ] || die "must run as root"
-mkdir -p "$B" /run/kryptik /var/log/kryptik
-for tool in ssh-keygen sha256sum blkid dd cp mv sync flock mount umount cmp kryptik-efiboot awk sed sort head wc stat grep blockdev; do
+# The update channel's two checks need no root and no devices, and write
+# nothing outside their own directory.
+case "${1:-}" in
+    check-manifest|check-pointer)
+        tools="ssh-keygen sha256sum cp awk sed sort head mktemp" ;;
+    *)
+        tools="ssh-keygen sha256sum blkid dd cp mv sync flock mount umount cmp kryptik-efiboot awk sed sort head wc stat grep blockdev"
+        [ "$(id -u)" = 0 ] || die "must run as root"
+        mkdir -p "$B" /run/kryptik /var/log/kryptik ;;
+esac
+for tool in $tools; do
     command -v "$tool" >/dev/null 2>&1 || die "missing tool: $tool"
 done
-# Partitions are this installation's - the ones on the disk the root came
-# from - and nothing else's; an ambiguity is refused, never resolved by
-# taking the first (devices.sh).
-# shellcheck source=/dev/null
-. /usr/libexec/kryptik/devices.sh
+# Only partitions on the root's own disk; an ambiguous label is refused, never
+# resolved by taking the first (devices.sh).
+case "${1:-}" in
+    check-manifest|check-pointer) ;;
+    *)
+        # shellcheck source=/dev/null
+        . /usr/libexec/kryptik/devices.sh ;;
+esac
 
 running_slot() { sed -n 's/^slot=//p' /run/kryptik/boot-identity 2>/dev/null; }
 other_slot() { case "$1" in a) echo b ;; b) echo a ;; *) echo "" ;; esac; }
@@ -91,34 +95,99 @@ cmd_status() {
     kryptik-efiboot list 2>/dev/null | sed 's/^/  efi: /' || echo "  efi: (efivarfs unavailable)"
 }
 
+# The release's four files are opened once and read only through those
+# descriptors, so what is hashed is what is written even if the directory
+# changes. Links are refused, as is a name replaced while being opened.
+pin() {   # pin FD NAME
+    f="$dir/$2"
+    { [ -f "$f" ] && [ ! -L "$f" ]; } || die "payload lacks $2, or it is not a regular file"
+    eval "exec $1< \"\$f\"" || die "cannot open $2"
+    [ "$(stat -c %d:%i "$f")" = "$(stat -L -c %d:%i "/proc/self/fd/$1")" ] || die "$2 changed while it was being opened"
+}
+payload_path() {   # NAME -> where to read it
+    case "$1" in
+        kryptik-root.img) echo /proc/self/fd/3 ;; kryptik-a.efi) echo /proc/self/fd/4 ;;
+        kryptik-b.efi)    echo /proc/self/fd/5 ;; root.json)     echo /proc/self/fd/6 ;;
+        *) echo "$dir/$1" ;;
+    esac
+}
+
 # --- verification, all of it before any write ------------------------------
 verify_payload() {   # verify_payload DIR RECOVERY -> sets VERSION ROOT_HASH
+    verify_manifest "$1" "$2"
+    pin 3 kryptik-root.img; pin 4 kryptik-a.efi; pin 5 kryptik-b.efi; pin 6 root.json
+
+    # Nothing unlisted (a directory listing) before hashing every listed file
+    # (gigabytes). Names are compared whole, as text, dotfiles included.
+    names="$(sed -n '/^--$/,$p' "$m" | sed '1d' | awk '{print $3}')"
+    for f in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do
+        [ -e "$f" ] || [ -L "$f" ] || continue
+        n="$(basename "$f")"
+        case "$n" in manifest|manifest.sig) continue ;; esac
+        # A payload at the root of an ext4 medium has a lost+found; it must be empty.
+        if [ "$n" = "lost+found" ] && [ -d "$f" ] && [ ! -L "$f" ]; then
+            [ -z "$(ls -A "$f")" ] || die "unlisted file in the payload: lost+found is not empty"
+            continue
+        fi
+        printf '%s\n' "$names" | grep -Fxq -- "$n" || die "unlisted file in the payload: $n"
+    done
+
+    listed=0
+    while read -r want_hash want_size rel; do
+        [ -n "$rel" ] || continue
+        case "$rel" in */*|..*) die "manifest lists a path with a directory component: $rel" ;; esac
+        f="$(payload_path "$rel")"
+        [ -f "$f" ] || die "listed file missing: $rel"
+        got_size="$(stat -L -c %s "$f")"
+        [ "$got_size" = "$want_size" ] || die "$rel: size $got_size, manifest says $want_size (truncated or altered)"
+        got_hash="$(sha256sum "$f" | cut -c1-64)"
+        [ "$got_hash" = "$want_hash" ] || die "$rel: sha256 does not match the manifest"
+        listed=$((listed + 1))
+    done <<EOF
+$(sed -n '/^--$/,$p' "$m" | sed '1d')
+EOF
+    [ "$listed" = "$count" ] || die "manifest says $count files, $listed listed"
+    say "$listed file(s) match the manifest, nothing unlisted"
+
+    # Checks after the first write compare against these signed hashes, never
+    # against the payload files again: the payload directory is mutable.
+    manifest_hash() { sed -n '/^--$/,$p' "$m" | sed '1d' | awk -v r="$1" '$3==r {print $1; exit}'; }
+    H_ROOT="$(manifest_hash kryptik-root.img)"; H_KA="$(manifest_hash kryptik-a.efi)"; H_KB="$(manifest_hash kryptik-b.efi)"
+    [ "${#H_ROOT}" = 64 ] && [ "${#H_KA}" = 64 ] && [ "${#H_KB}" = 64 ] || die "the manifest does not list the root image and both kernels"
+
+    # root.json must match the signed image, and both kernels carry its root hash.
+    ROOT_HASH="$(sed -n 's/^  "root_hash": "\([0-9a-f]*\)".*/\1/p' /proc/self/fd/6 | head -1)"
+    [ "${#ROOT_HASH}" = 64 ] || die "root.json has no root hash"
+    ROOT_BYTES="$(sed -n 's/^  "total_bytes": \([0-9]*\).*/\1/p' /proc/self/fd/6 | head -1)"
+    ROOT_SHA="$(sed -n 's/^  "sha256": "\([0-9a-f]*\)".*/\1/p' /proc/self/fd/6 | head -1)"
+    [ "$(stat -L -c %s /proc/self/fd/3)" = "$ROOT_BYTES" ] || die "root.json total_bytes does not match kryptik-root.img"
+    [ "$ROOT_SHA" = "$H_ROOT" ] || die "root.json's sha256 disagrees with the signed manifest's for kryptik-root.img"
+    for s in a b; do
+        [ "$(grep -a -c -F "$ROOT_HASH" "$(payload_path "kryptik-$s.efi")")" -ge 1 ] \
+            || die "kryptik-$s.efi does not embed the root hash $ROOT_HASH; kernel and root are not one release"
+    done
+    say "both kernels embed root hash $ROOT_HASH"
+}
+
+# The manifest's signature and signed headers, one function for apply and
+# check-manifest so the two cannot disagree.
+verify_manifest() {   # verify_manifest DIR RECOVERY -> sets dir m sig VERSION count
     dir="$1"; recovery="$2"
     [ -f "$dir/manifest" ] || die "no manifest in $dir"
     [ -f "$dir/manifest.sig" ] || die "no manifest.sig in $dir: an unsigned manifest verifies nothing"
-    # The manifest and its signature are read ONCE, into a directory only
-    # root can reach, and everything below - the signature check, the
-    # headers, the hash list the slot is verified against after the write -
-    # reads that copy. The payload directory is mutable and may be someone
-    # else's: verifying the file in place and then re-reading it for the
-    # version and the hashes left a window in which a replaced, unsigned
-    # manifest was accepted (reproduced with the real verifier).
+    # Copy the manifest and signature once into a private directory and read
+    # only the copy: the payload directory is mutable, and re-reading it after
+    # the signature check could pick up a swapped-in unsigned manifest.
     SNAP="${SNAP:-$(mktemp -d /run/kryptik/update-manifest.XXXXXX 2>/dev/null || mktemp -d)}"
     chmod 0700 "$SNAP"
     cp -- "$dir/manifest" "$SNAP/manifest" || die "cannot copy the manifest"
     cp -- "$dir/manifest.sig" "$SNAP/manifest.sig" || die "cannot copy the manifest signature"
     m="$SNAP/manifest"; sig="$SNAP/manifest.sig"
-    [ -f "$SIGNERS" ] || die "no trust anchor at $SIGNERS in this image"
     [ "$(head -1 "$m")" = "$MAGIC" ] || die "manifest is not a $MAGIC"
 
-    # 1. Signature, by an enrolled key, over the manifest bytes.
-    principal="$(ssh-keygen -Y find-principals -s "$sig" -f "$SIGNERS" 2>/dev/null | head -1 || true)"
-    [ -n "$principal" ] || die "the manifest's signing key is not enrolled in $SIGNERS"
-    ssh-keygen -Y verify -f "$SIGNERS" -I "$principal" -n "$NAMESPACE" -s "$sig" < "$m" >/dev/null 2>&1 \
-        || die "the manifest signature does NOT verify (principal $principal)"
-    say "signature verifies (signed by $principal)"
+    verify_signed "$m" "$sig" "$NAMESPACE" manifest
 
-    # 2. Headers inside the signed bytes.
+    # Headers, from the signed bytes.
     role="$(hdr "$m" role)"; VERSION="$(hdr "$m" version)"; count="$(hdr "$m" files)"
     case "$role" in development|production) ;; *) die "manifest role '$role' is unknown" ;; esac
     [ "$role" = "$(cat "$ROLE_FILE" 2>/dev/null || echo development)" ] \
@@ -137,62 +206,62 @@ verify_payload() {   # verify_payload DIR RECOVERY -> sets VERSION ROOT_HASH
 an older signed release can reintroduce a fixed defect. --recovery accepts it deliberately."
         fi
     fi
+}
 
-    # 3. Every listed file, hash and size; and nothing unlisted.
-    listed=0
-    while read -r want_hash want_size rel; do
+# FILE signed by an enrolled key in NAMESPACE: kryptik-release for manifests,
+# kryptik-latest for pointers. The trust anchor also limits each key to its
+# namespaces, so neither can pass for the other. Each principal is tried.
+verify_signed() {   # verify_signed FILE SIG NAMESPACE WHAT
+    [ -f "$SIGNERS" ] || die "no trust anchor at $SIGNERS in this image"
+    principals="$(ssh-keygen -Y find-principals -s "$2" -f "$SIGNERS" 2>/dev/null || true)"
+    [ -n "$principals" ] || die "the $4's signing key is not enrolled in $SIGNERS"
+    for principal in $principals; do
+        if ssh-keygen -Y verify -f "$SIGNERS" -I "$principal" -n "$3" -s "$2" < "$1" >/dev/null 2>&1; then
+            say "signature verifies (signed by $principal)"
+            return 0
+        fi
+    done
+    die "the $4 signature does NOT verify (its key is enrolled as: $(echo $principals), and not for $3)"
+}
+
+# For the update channel (docs/design/update-channel.md): verify DIR's manifest
+# and print what zone 0 will then accept, with the hash of the verified copy.
+# Downgrades are refused: nothing from the network is a recovery.
+cmd_check_manifest() {
+    [ $# = 1 ] && [ -d "$1" ] || die "check-manifest needs the directory holding manifest and manifest.sig"
+    # Zone 0 wants the version on stdout's first line; verifying talks on stderr.
+    verify_manifest "$1" 0 >&2
+    n=0
+    while read -r _hash size rel; do
         [ -n "$rel" ] || continue
         case "$rel" in */*|..*) die "manifest lists a path with a directory component: $rel" ;; esac
-        f="$dir/$rel"
-        [ -f "$f" ] || die "listed file missing: $rel"
-        got_size="$(stat -c %s "$f")"
-        [ "$got_size" = "$want_size" ] || die "$rel: size $got_size, manifest says $want_size (truncated or altered)"
-        got_hash="$(sha256sum "$f" | cut -c1-64)"
-        [ "$got_hash" = "$want_hash" ] || die "$rel: sha256 does not match the manifest"
-        listed=$((listed + 1))
+        case "$size" in ''|*[!0-9]*) die "$rel: '$size' is not a size" ;; esac
+        n=$((n + 1))
     done <<EOF
 $(sed -n '/^--$/,$p' "$m" | sed '1d')
 EOF
-    [ "$listed" = "$count" ] || die "manifest says $count files, $listed listed"
-    for f in "$dir"/*; do
-        n="$(basename "$f")"
-        case "$n" in manifest|manifest.sig) continue ;; esac
-        # A payload that is the root of an ext4 medium carries the
-        # filesystem's own lost+found. Empty, it is nothing and is passed
-        # over; anything inside it is a stowaway like any other and refused.
-        if [ "$n" = "lost+found" ] && [ -d "$f" ] && [ ! -L "$f" ]; then
-            [ -z "$(ls -A "$f")" ] || die "unlisted file in the payload: lost+found is not empty"
-            continue
-        fi
-        grep -q "  $n\$" "$m" || die "unlisted file in the payload: $n"
-    done
-    for need in kryptik-root.img kryptik-a.efi kryptik-b.efi root.json; do
-        [ -f "$dir/$need" ] || die "payload lacks $need"
-    done
-    say "$listed file(s) match the manifest, nothing unlisted"
-
-    # 4. The manifest's hashes, kept: every check after the first write
-    #    compares what landed against THESE, never against the payload
-    #    files again - a payload directory is mutable, a signed manifest
-    #    that verified is not.
-    manifest_hash() { sed -n '/^--$/,$p' "$m" | sed '1d' | awk -v r="$1" '$3==r {print $1; exit}'; }
-    H_ROOT="$(manifest_hash kryptik-root.img)"; H_KA="$(manifest_hash kryptik-a.efi)"; H_KB="$(manifest_hash kryptik-b.efi)"
-    [ "${#H_ROOT}" = 64 ] && [ "${#H_KA}" = 64 ] && [ "${#H_KB}" = 64 ] || die "the manifest does not list the root image and both kernels"
-
-    # 5. The root hash the kernels carry is the image's.
-    ROOT_HASH="$(sed -n 's/^  "root_hash": "\([0-9a-f]*\)".*/\1/p' "$dir/root.json" | head -1)"
-    [ "${#ROOT_HASH}" = 64 ] || die "root.json has no root hash"
-    ROOT_BYTES="$(sed -n 's/^  "total_bytes": \([0-9]*\).*/\1/p' "$dir/root.json" | head -1)"
-    ROOT_SHA="$(sed -n 's/^  "sha256": "\([0-9a-f]*\)".*/\1/p' "$dir/root.json" | head -1)"
-    [ "$(stat -c %s "$dir/kryptik-root.img")" = "$ROOT_BYTES" ] || die "root.json total_bytes does not match kryptik-root.img"
-    [ "$ROOT_SHA" = "$H_ROOT" ] || die "root.json's sha256 disagrees with the signed manifest's for kryptik-root.img"
-    for s in a b; do
-        [ "$(grep -a -c -F "$ROOT_HASH" "$dir/kryptik-$s.efi")" -ge 1 ] \
-            || die "kryptik-$s.efi does not embed the root hash $ROOT_HASH; kernel and root are not one release"
-    done
-    say "both kernels embed root hash $ROOT_HASH"
+    [ "$n" = "$count" ] || die "manifest says $count files, $n listed"
+    printf 'version: %s\n' "$VERSION"
+    printf 'sha256: %s\n' "$(sha256sum "$m" | cut -c1-64)"
+    sed -n '/^--$/,$p' "$m" | sed '1d' | awk 'NF == 3 { print "file", $2, $3 }'
 }
 
+# Exit 0 if a copy of FILE is signed by an enrolled key in the pointer
+# namespace. What it says, and whether it is a replay, kryptikd judges
+# (update.rs).
+cmd_check_pointer() {
+    [ $# = 2 ] && [ -f "$1" ] && [ -f "$2" ] || die "check-pointer needs the pointer and its signature"
+    SNAP="${SNAP:-$(mktemp -d /run/kryptik/update-manifest.XXXXXX 2>/dev/null || mktemp -d)}"
+    chmod 0700 "$SNAP"
+    cp -- "$1" "$SNAP/latest" || die "cannot copy the pointer"
+    cp -- "$2" "$SNAP/latest.sig" || die "cannot copy the pointer's signature"
+    [ "$(head -1 "$SNAP/latest")" = "$LATEST_MAGIC" ] || die "the pointer is not a $LATEST_MAGIC"
+    verify_signed "$SNAP/latest" "$SNAP/latest.sig" "$LATEST_NAMESPACE" pointer
+}
+
+# Verify everything, then write only the inactive slot, read it back, install
+# its kernel and arm BootNext. BOOTX64.EFI is left to boot-success, which
+# commits once the new slot has come up. Zone data is never written.
 cmd_apply() {
     dir=""; retry=0; recovery=0
     while [ $# -gt 0 ]; do
@@ -227,19 +296,23 @@ cmd_apply() {
 
     # --- writes begin: the inactive slot only -------------------------------
     say "writing kryptik-$target ($ROOT_BYTES bytes)"
-    dd if="$dir/kryptik-root.img" of="$tdev" bs=4M conv=fsync status=none || die "writing slot $target failed"
+    dd if=/proc/self/fd/3 of="$tdev" bs=4M conv=fsync status=none || die "writing slot $target failed"
+    blockdev --flushbufs "$tdev"   # so the read-back is of the device, not of the page cache
     got="$(dd if="$tdev" bs=4M iflag=count_bytes count="$ROOT_BYTES" status=none | sha256sum | cut -c1-64)"
     [ "$got" = "$H_ROOT" ] || die "slot $target read back as $got; the manifest says $H_ROOT"
     say "slot $target verifies after write"
 
     mount_esp
     mkdir -p "$ESP_MNT/EFI/kryptik" "$ESP_MNT/kryptik"
-    cp "$dir/kryptik-$target.efi" "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new" || die "staging the kernel on the ESP failed"
+    cp "$(payload_path "kryptik-$target.efi")" "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new" || die "staging the kernel on the ESP failed"
     sync -f "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new"
-    mv -f "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new" "$ESP_MNT/EFI/kryptik/kryptik-$target.efi"
+    # Check the staged kernel before it gets the name rollback and recovery use.
     want_k="$H_KA"; [ "$target" = b ] && want_k="$H_KB"
-    [ "$(sha256sum "$ESP_MNT/EFI/kryptik/kryptik-$target.efi" | cut -c1-64)" = "$want_k" ] \
-        || die "the kernel on the ESP does not hash to the manifest's kryptik-$target.efi"
+    if [ "$(sha256sum "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new" | cut -c1-64)" != "$want_k" ]; then
+        rm -f "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new"
+        die "the kernel staged on the ESP does not hash to the manifest's kryptik-$target.efi"
+    fi
+    mv -f "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new" "$ESP_MNT/EFI/kryptik/kryptik-$target.efi"
     printf '%s\n' "$VERSION" > "$ESP_MNT/kryptik/version-$target.new"
     mv -f "$ESP_MNT/kryptik/version-$target.new" "$ESP_MNT/kryptik/version-$target"
     sync
@@ -253,12 +326,9 @@ cmd_apply() {
     say "if it does not come up, the firmware falls back to the committed slot ($slot)."
 }
 
-# The record first (armed=0), then BootNext, then the record again (armed=1):
-# whichever gap an interruption lands in, boot-success can tell what happened.
-# Killed before BootNext: the old slot boots, the record says armed=0, and
-# boot-success clears it as "nothing was tried". Killed after BootNext but
-# before armed=1: the new slot boots, is judged and committed as a trial
-# regardless of the armed line. Killed after both: the normal case.
+# Record armed=0, set BootNext, record armed=1. Interrupted before BootNext,
+# the old slot boots and boot-success clears the record; after it, the new
+# slot boots and is judged as a trial whatever the armed line says.
 arm_trial() {   # arm_trial SLOT
     rm -f "$B/trial.failed"
     printf '%s\narmed=0\n' "$1" > "$B/trial.new" && mv -f "$B/trial.new" "$B/trial" && sync
@@ -293,5 +363,7 @@ case "${1:-}" in
     apply)    shift; cmd_apply "$@" ;;
     rollback) cmd_rollback ;;
     status)   cmd_status ;;
-    *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    check-manifest) shift; cmd_check_manifest "$@" ;;
+    check-pointer)  shift; cmd_check_pointer "$@" ;;
+    *) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
