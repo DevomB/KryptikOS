@@ -214,6 +214,13 @@ out="$(check cmd_check_manifest "$T/prod")"
 [[ "$out" == *"REFUSED:"*"this image requires 'development'"* ]] \
     && ok "check-manifest: a validly signed manifest for another role is refused" \
     || bad "check-manifest accepted another role: $(tail -2 <<<"$out" | tr '\n' ' ')"
+# With no role file, nothing: a production image must not fall back to development.
+staged norole; mv "$T/role" "$T/role.kept"
+out="$(check cmd_check_manifest "$T/norole")"
+mv "$T/role.kept" "$T/role"
+[[ "$out" == *"REFUSED:"*"names no role"* ]] \
+    && ok "check-manifest: an image with no role file accepts nothing" \
+    || bad "check-manifest read a missing role file as a role: $(tail -2 <<<"$out" | tr '\n' ' ')"
 resigned older 's/^version: 2/version: 0.9/'
 out="$(check cmd_check_manifest "$T/older")"
 [[ "$out" == *"REFUSED:"*"older than the running"* ]] \

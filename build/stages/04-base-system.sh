@@ -864,74 +864,6 @@ EOF
     grep -E '^(seat|kryptik|wheel|dhcpcd):' /etc/group
 }
 
-# The update trust anchor (docs/design/boot-and-updates.md). The release key is
-# an OpenSSH key in ${KRYPTIK_WORK}/keys/release, never in Git or an image;
-# only its allowed-signers line is installed. Stage 06 signs with it.
-s_release_trust() {
-    # Under /usr/share, on the verified root: /etc has an unauthenticated
-    # overlay layer on the state partition (sysinit.sh).
-    local keydir="${KRYPTIK_WORK}/keys/release"
-    mkdir -p "$keydir"; chmod 0700 "$keydir"
-    if [[ ! -f "$keydir/kryptik-release" ]]; then
-        ssh-keygen -q -t ed25519 -N "" -C "kryptik-release (developer)" -f "$keydir/kryptik-release"
-        chmod 0600 "$keydir/kryptik-release"
-        echo "generated a new developer release signing key"
-    fi
-    # A second key signs only the update channel's statement of what is current
-    # (docs/design/update-channel.md). Each key is honoured in its own namespace
-    # only, so the key kept at hand for a schedule can never sign a release.
-    if [[ ! -f "$keydir/kryptik-latest" ]]; then
-        ssh-keygen -q -t ed25519 -N "" -C "kryptik-latest (developer)" -f "$keydir/kryptik-latest"
-        chmod 0600 "$keydir/kryptik-latest"
-        echo "generated a new developer key for statements of what is current"
-    fi
-    install -d -m 0755 /usr/share/kryptik/trust
-    {
-        printf 'kryptik-release namespaces="kryptik-release" %s\n' "$(cut -d' ' -f1,2 "$keydir/kryptik-release.pub")"
-        printf 'kryptik-latest namespaces="kryptik-latest" %s\n' "$(cut -d' ' -f1,2 "$keydir/kryptik-latest.pub")"
-    } > /usr/share/kryptik/trust/release-signers
-    chmod 0644 /usr/share/kryptik/trust/release-signers
-    # Developer tier (development-role manifests); production images change it.
-    printf 'development\n' > /usr/share/kryptik/trust/required-role
-    echo "--- trust anchor ---"; cat /usr/share/kryptik/trust/release-signers
-    # Sign a scratch file and verify it through the installed anchor.
-    local t; t="$(mktemp -d)"
-    printf 'probe\n' > "$t/m"
-    ssh-keygen -Y sign -f "$keydir/kryptik-release" -n kryptik-release "$t/m" >/dev/null 2>&1
-    ssh-keygen -Y verify -f /usr/share/kryptik/trust/release-signers -I kryptik-release -n kryptik-release -s "$t/m.sig" < "$t/m" >/dev/null \
-        && echo "ok: the anchor verifies a signature by the release key" || { echo "FAIL: anchor does not verify"; rm -rf "$t"; return 1; }
-    # ...and refuses one by another key: a separate file, and the signing must
-    # succeed, or a stale signature is what gets checked.
-    ssh-keygen -q -t ed25519 -N "" -f "$t/other" >/dev/null 2>&1 || { echo "FAIL: could not generate the control key"; rm -rf "$t"; return 1; }
-    printf 'probe by another key\n' > "$t/m2"
-    ssh-keygen -Y sign -f "$t/other" -n kryptik-release "$t/m2" < /dev/null >/dev/null 2>"$t/sign.err" \
-        || { echo "FAIL: signing with the control key failed: $(cat "$t/sign.err")"; rm -rf "$t"; return 1; }
-    [[ -s "$t/m2.sig" ]] || { echo "FAIL: no m2.sig from the control key"; rm -rf "$t"; return 1; }
-    if ssh-keygen -Y verify -f /usr/share/kryptik/trust/release-signers -I kryptik-release -n kryptik-release -s "$t/m2.sig" < "$t/m2" >/dev/null 2>&1; then
-        echo "FAIL: a foreign key verified against the anchor"; rm -rf "$t"; return 1
-    fi
-    echo "ok: a foreign key is refused"
-    # Each key verifies in its own namespace and is refused in the other's.
-    local who ns other
-    for who in kryptik-release kryptik-latest; do
-        ns="$who"; [[ "$who" == kryptik-release ]] && other=kryptik-latest || other=kryptik-release
-        rm -f "$t/$who.sig"
-        printf 'probe of %s\n' "$who" > "$t/$who"
-        ssh-keygen -Y sign -f "$keydir/$who" -n "$ns" "$t/$who" < /dev/null >/dev/null 2>&1 \
-            && ssh-keygen -Y verify -f /usr/share/kryptik/trust/release-signers -I "$who" -n "$ns" -s "$t/$who.sig" < "$t/$who" >/dev/null 2>&1 \
-            || { echo "FAIL: the $who key does not verify in its own namespace"; rm -rf "$t"; return 1; }
-        rm -f "$t/$who.sig"
-        ssh-keygen -Y sign -f "$keydir/$who" -n "$other" "$t/$who" < /dev/null >/dev/null 2>&1
-        # A refusal only counts when there was a signature to refuse.
-        [[ -s "$t/$who.sig" ]] || { echo "FAIL: could not sign the probe of $who in $other"; rm -rf "$t"; return 1; }
-        if ssh-keygen -Y verify -f /usr/share/kryptik/trust/release-signers -I "$who" -n "$other" -s "$t/$who.sig" < "$t/$who" >/dev/null 2>&1; then
-            echo "FAIL: the $who key verified in the $other namespace"; rm -rf "$t"; return 1
-        fi
-    done
-    echo "ok: each key verifies in its own namespace and is refused in the other's"
-    rm -rf "$t"
-}
-
 # The net zone's startup program (docs/design/net-zone.md): dhcpcd, nftables
 # NAT and dnsmasq in the zone that holds the NIC, run by the net-zone service.
 s_netzone() {
@@ -1518,7 +1450,6 @@ s_boot_check() {
     chk "efiboot"           /usr/sbin/kryptik-efiboot x
     chk "updater"           /usr/sbin/kryptik-update x
     chk "recover"           /usr/sbin/kryptik-recover x
-    chk "release trust"     /usr/share/kryptik/trust/release-signers
     chk "ssh-keygen"        /usr/bin/ssh-keygen x
     chk "cryptsetup"        /usr/sbin/cryptsetup x
     chk "seatd"             /usr/bin/seatd x
@@ -2281,7 +2212,6 @@ PACKAGES=(
     # updater and efiboot, whose checks source the devices.sh it installs. The
     # digest covers the files the recipe reads by path, which declare -f cannot.
     "services" "s_services $(tree_digest "${KRYPTIK_ROOT}"/build/services/*/* "${KRYPTIK_ROOT}"/build/service-scripts/*.sh "${KRYPTIK_ROOT}"/build/config/sysctl.d/*.conf)"
-    "release-trust" "s_release_trust"
     # Before the updater, whose check runs kryptik-update, which needs efiboot.
     "efiboot"     "s_efiboot $(sha256_of "${KRYPTIK_ROOT}/tools/efi/kryptik-efiboot.c" 2>/dev/null || echo none)"
     "updater"     "s_updater $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-update" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-recover" 2>/dev/null || echo none)"
@@ -2344,15 +2274,6 @@ require_inside_chroot "stage 04" "system"
 
 # Built by stage 02's toolchain: rebuilding it invalidates every stamp here.
 stage_depends_on "tt-" verify
-
-# The signing keys live under ${KRYPTIK_WORK}/keys, outside the sysroot and its
-# cache. A restored tree with release-trust stamped but no keys would trust
-# keys that are gone, so without them the stamp goes and the step runs again.
-if [[ -f "${STAMPS}/${STAMP_PREFIX}release-trust" ]] && \
-   [[ ! -f "${KRYPTIK_WORK}/keys/release/kryptik-release" || ! -f "${KRYPTIK_WORK}/keys/release/kryptik-latest" ]]; then
-    warn "release-trust is stamped as built but a signing key under ${KRYPTIK_WORK}/keys/release is gone; the step runs again."
-    rm -f "${STAMPS}/${STAMP_PREFIX}release-trust"
-fi
 
 unwired=0
 for ((i = 0; i < ${#PACKAGES[@]}; i += 2)); do

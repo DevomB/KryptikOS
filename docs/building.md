@@ -55,19 +55,38 @@ image's network zone asks for new releases
 ([update channel](design/update-channel.md)). Without it the image fetches
 nothing, and updates come only from a payload on a disk.
 
-To publish a build there, add its payload to the channel's directory, which
-any web server can then serve at that address (`<work>` is `KRYPTIK_WORK`, as
-`make paths` prints it):
+A development image, the default, is signed with keys the build makes on
+first use under `<work>/keys` (`<work>` is `KRYPTIK_WORK`, as `make paths`
+prints it). A production image is signed only with keys it is handed, from
+the key medium:
+
+```sh
+make media KRYPTIK_ROLE=production KRYPTIK_KEYS=/media/<medium>
+```
+
+The medium holds `release-signers` (the anchor the image will trust),
+`kryptik-release` and `kryptik-release.pub`, `kryptik-sb.key` and
+`kryptik-sb.crt`, and optionally `kryptik-latest` and `kryptik-latest.pub`.
+Its private keys must be readable by their owner alone, who is root or the
+user running the build, and it must not be inside the work or output tree.
+Stage 06 checks all of that before it signs anything. It makes no key and
+copies none: the keys are read by the tools that sign with them, by path.
+
+To publish a build, add its payload to the channel's directory, which any web
+server can then serve at that address:
 
 ```sh
 tools/release-channel.sh publish --key <work>/keys/release/kryptik-latest \
-    --signers <work>/sysroot/usr/share/kryptik/trust/release-signers \
+    --signers <work>/keys/release/release-signers \
     --payload <work>/images/payload-<version> --out /srv/<channel>
 ```
 
-Re-sign the channel's statement daily, with `reissue` and the same key and
-signers file, from a timer: a machine reports a statement older than 30
-days.
+For a production image, the key and the signers file are the medium's
+`kryptik-latest` and `release-signers`. When the medium carries no
+`kryptik-latest`, stage 06 leaves publishing to the release host, which holds
+that key. Re-sign the channel's statement daily, with `reissue` and the same
+key and signers file, from a timer: a machine reports a statement older than
+30 days.
 
 ## Testing without a build
 
