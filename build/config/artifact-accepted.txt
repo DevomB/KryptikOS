@@ -8,8 +8,18 @@ NO-CET  usr/bin/kryptikd                        # stable rustc marks nothing for
 NO-CET  usr/bin/kryptik-wlproxy                 # the same
 NO-CET  usr/lib/libgmp.so.*                     # GMP's hand-written x86-64 assembly carries no CET note
 
-RPATH   usr/*               /usr/lib/man-db     # man-db's programs load its private libraries from there
-RPATH   usr/bin/perl*       /usr/lib/perl5/*/CORE   # libperl.so lives in perl's CORE directory (useshrplib)
-RPATH   usr/lib/gconv/*.so  $ORIGIN             # glibc's converters load the helper libraries beside them
-RPATH   usr/lib/*           /usr/lib/../lib     # libtool names the loader's own directory; it adds nothing
-RPATH   usr/lib/*           /usr/lib            # the same, from skalibs and Time::HiRes
+# man-db's programs load its private libraries from /usr/lib/man-db.
+RPATH   usr/bin/*                    /usr/lib/man-db     # catman, lexgrog, man, man-recode, mandb, manpath, whatis
+RPATH   usr/sbin/accessdb            /usr/lib/man-db     # the same
+RPATH   usr/libexec/man-db/*         /usr/lib/man-db     # the same
+RPATH   usr/lib/man-db/libmandb-*.so /usr/lib/man-db     # the same, for libman beside it
+
+RPATH   usr/bin/perl*                /usr/lib/perl5/*/CORE   # libperl.so lives in perl's CORE directory (useshrplib)
+RPATH   usr/lib/gconv/*.so           $ORIGIN             # glibc's converters load the helper libraries beside them
+
+# The loader's own directory, named again: it adds nothing.
+RPATH   usr/lib/libgmpxx.so.*        /usr/lib/../lib     # libtool, linking libgmp from the build
+RPATH   usr/lib/libcc1.so.*          /usr/lib/../lib     # libtool, in GCC's build
+RPATH   usr/lib/gcc/*/*/plugin/libc[cp]1plugin.so.*  /usr/lib/../lib   # the same
+RPATH   usr/lib/libskarnet.so.*      /usr/lib            # skalibs' own link line
+RPATH   usr/lib/perl5/*/auto/Time/HiRes/HiRes.so  /usr/lib   # Time::HiRes, linking librt
