@@ -1,0 +1,3 @@
+9a65643df78f980981f3d4fd38e009b0b279114c38b9052648dd808cac44a332  0001-Small-memory-management-fix-in-io.c.patch
+f969da0d5448dbf53471823a0f8f17015adad63f2368b4818707fced61bb1067  0002-Minor-integer-overflow-fixes.patch
+93f793d9bd5837796cfaaa23d585c5ffb33c6c15e52c10518dca8b9107f07ff7  0003-Avoid-buffer-overflow-in-extension-readdir.c.patch

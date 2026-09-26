@@ -679,10 +679,16 @@ s_coreutils() {
 }
 
 # gawk's install links gawk-<version> only when the name is free, so stage
-# 02's copy would stay under it.
+# 02's copy would stay under it. build/patches/gawk-5.3.0 (see its README)
+# carries upstream's memory-safety fixes from 5.4.1.
 s_gawk() {
     rm -f "/usr/bin/gawk-${V_GAWK}"
-    native_build "gawk-${V_GAWK}.tar.xz" "gawk-${V_GAWK}" --disable-pma
+    local src; src="$(unpack "gawk-${V_GAWK}.tar.xz" "gawk-${V_GAWK}")"
+    cd "$src"
+    apply_repo_patches "gawk-${V_GAWK}"
+    ./configure --prefix=/usr --disable-pma
+    make
+    make install
     cmp -s /usr/bin/gawk "/usr/bin/gawk-${V_GAWK}" \
         || { echo "FAIL: /usr/bin/gawk-${V_GAWK} is not the gawk just built"; return 1; }
 }
