@@ -42,10 +42,10 @@ work in zones from a terminal and a text browser, and keep it up to date.
 ### Trusted by someone who did not build it
 
 - [ ] **Production keys.** A release key and a Secure Boot key kept offline,
-      a written ceremony for making, using, rotating and revoking them, a
-      build that signs with a key it is handed and refuses to invent one for
-      a release, and an installed system that accepts the next release and
-      refuses a development build.
+      a written ceremony for making, using, rotating and revoking them
+      ([release keys](release-keys.md)), a build that signs with a key it is
+      handed and refuses to invent one for a release, and an installed system
+      that accepts the next release and refuses a development build.
 - [ ] **No known-vulnerable pins.** Every pin behind its upstream has a review
       in `tools/pin-reviews.tsv`, and `tools/check-pin-reviews.sh` fails CI
       without one. Done when the rebuilt image passes acceptance and the held
