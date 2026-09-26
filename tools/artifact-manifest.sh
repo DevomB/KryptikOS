@@ -34,10 +34,12 @@ emit_inputs() {
     printf 'format\t%s\n' "$MANIFEST_FORMAT"
 
     # --dirty: naming a commit for an edited tree is worse than naming none.
-    # safe.directory: run as root, git would refuse the user's checkout.
-    local commit="unknown"
-    if have git && git -c safe.directory='*' -C "$KRYPTIK_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
-        commit="$(git -c safe.directory='*' -C "$KRYPTIK_ROOT" describe --always --dirty --abbrev=40 2>/dev/null || echo unknown)"
+    # safe.directory: run as root, git would refuse the user's checkout; it
+    # trusts this checkout alone.
+    local commit="unknown" top
+    top="$(cd "$KRYPTIK_ROOT" && pwd -P)"
+    if have git && git -c safe.directory="$top" -C "$top" rev-parse --git-dir >/dev/null 2>&1; then
+        commit="$(git -c safe.directory="$top" -C "$top" describe --always --dirty --abbrev=40 2>/dev/null || echo unknown)"
     fi
     printf 'input\trepo-commit\t%s\n' "$commit"
 

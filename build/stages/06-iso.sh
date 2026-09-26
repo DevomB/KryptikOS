@@ -33,8 +33,10 @@ CHROOTD="${KRYPTIK_ROOT}/build/stages/03-chroot-prep.sh"
 ROLE="${KRYPTIK_ROLE:-development}"
 # Checked before the dated default: a production release names its version.
 release_version "$ROLE" "${KRYPTIK_VERSION:-}"
-KRYPTIK_VERSION="${KRYPTIK_VERSION:-0.1.$(date +%Y%m%d).$(git -c safe.directory='*' -C "$KRYPTIK_ROOT" rev-parse --short=8 HEAD 2>/dev/null || echo unknown)}"
-COMMIT="$(git -c safe.directory='*' -C "$KRYPTIK_ROOT" describe --always --dirty --abbrev=40 2>/dev/null || echo unknown)"
+# Git trusts this checkout alone, run as root over the user's checkout.
+TOP="$(cd "$KRYPTIK_ROOT" && pwd -P)"
+KRYPTIK_VERSION="${KRYPTIK_VERSION:-0.1.$(date +%Y%m%d).$(git -c safe.directory="$TOP" -C "$TOP" rev-parse --short=8 HEAD 2>/dev/null || echo unknown)}"
+COMMIT="$(git -c safe.directory="$TOP" -C "$TOP" describe --always --dirty --abbrev=40 2>/dev/null || echo unknown)"
 ESP_MIB=512
 export KRYPTIK_VERSION
 # Where the image's net zone asks for releases (docs/design/update-channel.md).

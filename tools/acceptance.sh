@@ -21,6 +21,10 @@
 set -uo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SELF}/.." && pwd)"
+# Git trusts this checkout alone: acceptance runs as root over a checkout root
+# does not own, and trusting every repository would trust a parent's too.
+TOP="$(cd "$ROOT" && pwd -P)"
+g() { git -c safe.directory="$TOP" -C "$TOP" "$@"; }
 export NO_COLOR=1
 # shellcheck source=/dev/null
 source "${ROOT}/build/lib/common.sh"
@@ -119,9 +123,9 @@ FW_PKG="$(dpkg-query -W -f='${Package} ${Version}' ovmf 2>/dev/null || echo 'ovm
 QEMU_VER="$(qemu-system-x86_64 --version 2>/dev/null | head -1 || echo 'no qemu-system-x86_64')"
 KVM="no"; [[ -r /dev/kvm && -w /dev/kvm ]] && KVM="yes"
 
-REV="$(git -c safe.directory='*' -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
-REV_DESC="$(git -c safe.directory='*' -C "$ROOT" describe --always --dirty --long 2>/dev/null || echo unknown)"
-DIRTY="$(git -c safe.directory='*' -C "$ROOT" status --porcelain 2>/dev/null)"
+REV="$(g rev-parse HEAD 2>/dev/null || echo unknown)"
+REV_DESC="$(g describe --always --dirty --long 2>/dev/null || echo unknown)"
+DIRTY="$(g status --porcelain 2>/dev/null)"
 
 # A part of a split run writes down what it tested and what it ran on. The
 # merge takes only parts that tested this revision on these media and ran on
@@ -270,7 +274,7 @@ need_notes()   { need_export; [[ "$(verdict_of)" == PASS ]] || echo "the run has
 it_revision() {
     echo "revision : ${REV}"
     echo "describe : ${REV_DESC}"
-    echo "branch   : $(git -c safe.directory='*' -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo detached)"
+    echo "branch   : $(g rev-parse --abbrev-ref HEAD 2>/dev/null || echo detached)"
     echo "tree     : ${ROOT}"
     printf 'revision=%s\ndescribe=%s\ntree=%s\ndate=%s\n' "$REV" "$REV_DESC" "$ROOT" "$(date -Iseconds)" > "${OUT}/REVISION.txt"
     if [[ -n "$DIRTY" ]]; then
@@ -484,7 +488,7 @@ it_export() {
 # one. What changed runs from the latest release tag before this revision.
 it_notes() {
     local prev
-    prev="$(git -c safe.directory='*' -C "$ROOT" describe --tags --abbrev=0 --match 'v[0-9]*' HEAD^ 2>/dev/null || true)"
+    prev="$(g describe --tags --abbrev=0 --match 'v[0-9]*' HEAD^ 2>/dev/null || true)"
     "${SELF}/release-notes.sh" --run "$OUT" --payload "$PAYLOAD_B" ${prev:+--since "$prev"} > "${EXPORT}/RELEASE-NOTES.md" \
         || { rm -f "${EXPORT}/RELEASE-NOTES.md"; return 1; }
     echo "wrote ${EXPORT}/RELEASE-NOTES.md${prev:+ (changes since ${prev})}"
