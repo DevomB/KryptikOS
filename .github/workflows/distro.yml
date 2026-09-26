@@ -437,7 +437,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
+      # The whole history and its tags: the release notes list what changed
+      # since the previous release tag.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
       # The same packages as the parts. The report names the firmware and QEMU
       # the parts ran on, from their identity files; this job boots nothing.
       - uses: ./.github/actions/prepare

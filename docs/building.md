@@ -58,10 +58,10 @@ nothing, and updates come only from a payload on a disk.
 A development image, the default, is signed with keys the build makes on
 first use under `<work>/keys` (`<work>` is `KRYPTIK_WORK`, as `make paths`
 prints it). A production image is signed only with keys it is handed, from
-the key medium:
+the key medium, and names its version as MAJOR.MINOR.PATCH:
 
 ```sh
-make media KRYPTIK_ROLE=production KRYPTIK_KEYS=/media/<medium>
+make media KRYPTIK_ROLE=production KRYPTIK_KEYS=/media/<medium> KRYPTIK_VERSION=1.0.3
 ```
 
 The medium holds `release-signers` (the anchor the image will trust),

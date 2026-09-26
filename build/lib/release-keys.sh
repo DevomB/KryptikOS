@@ -3,7 +3,8 @@
 # 06, which runs on the host: no private key is ever inside the chroot, where
 # every upstream build script runs as root.
 #
-#   release_keys ROLE   sets ANCHOR, RELEASE_KEY, LATEST_KEY, SB_KEY, SB_CERT
+#   release_keys ROLE              sets ANCHOR, RELEASE_KEY, LATEST_KEY, SB_KEY, SB_CERT
+#   release_version ROLE VERSION   refuses a production version out of form
 #
 # development: developer keys under ${KRYPTIK_WORK}/keys, made when missing.
 # production: KRYPTIK_KEYS names the key medium, a directory holding
@@ -18,6 +19,16 @@ release_keys() {
         production) medium_keys ;;
         *) die "KRYPTIK_ROLE=$1: an image is development or production" ;;
     esac
+}
+
+# A production release is numbered MAJOR.MINOR.PATCH, digits without leading
+# zeros: the form sort -V, and so zone 0's version_cmp, orders as a reader
+# does (1.0.10 after 1.0.9). It is named by whoever makes the release; a
+# development build keeps its dated default.
+release_version() {   # release_version ROLE VERSION
+    [[ "$1" == production ]] || return 0
+    local re='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+    [[ "$2" =~ $re ]] || die "KRYPTIK_VERSION=${2:-(not set)}: a production release is numbered MAJOR.MINOR.PATCH, such as 1.0.0 (docs/release-keys.md)"
 }
 
 dev_keys() {

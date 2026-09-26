@@ -21,6 +21,10 @@
 set -uo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SELF}/.." && pwd)"
+# Git trusts this checkout alone: acceptance runs as root over a checkout root
+# does not own, and trusting every repository would trust a parent's too.
+TOP="$(cd "$ROOT" && pwd -P)"
+g() { git -c safe.directory="$TOP" -C "$TOP" "$@"; }
 export NO_COLOR=1
 # shellcheck source=/dev/null
 source "${ROOT}/build/lib/common.sh"
@@ -119,9 +123,9 @@ FW_PKG="$(dpkg-query -W -f='${Package} ${Version}' ovmf 2>/dev/null || echo 'ovm
 QEMU_VER="$(qemu-system-x86_64 --version 2>/dev/null | head -1 || echo 'no qemu-system-x86_64')"
 KVM="no"; [[ -r /dev/kvm && -w /dev/kvm ]] && KVM="yes"
 
-REV="$(git -c safe.directory='*' -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
-REV_DESC="$(git -c safe.directory='*' -C "$ROOT" describe --always --dirty --long 2>/dev/null || echo unknown)"
-DIRTY="$(git -c safe.directory='*' -C "$ROOT" status --porcelain 2>/dev/null)"
+REV="$(g rev-parse HEAD 2>/dev/null || echo unknown)"
+REV_DESC="$(g describe --always --dirty --long 2>/dev/null || echo unknown)"
+DIRTY="$(g status --porcelain 2>/dev/null)"
 
 # A part of a split run writes down what it tested and what it ran on. The
 # merge takes only parts that tested this revision on these media and ran on
@@ -264,12 +268,13 @@ need_update() {
 need_cargo()   { have cargo || echo "no cargo on PATH"; }
 need_sources() { [[ -d "$KRYPTIK_SOURCES" && -f "${ROOT}/sources.lock" ]] || echo "no sources directory or sources.lock"; }
 need_export()  { [[ -n "$EXPORT" ]] || echo "no --export DIR given (EXPORT=... for make acceptance)"; }
+need_notes()   { need_export; [[ "$(verdict_of)" == PASS ]] || echo "the run has not passed, and notes come only from one that has"; }
 
 # --------------------------------------------------------------- items --
 it_revision() {
     echo "revision : ${REV}"
     echo "describe : ${REV_DESC}"
-    echo "branch   : $(git -c safe.directory='*' -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo detached)"
+    echo "branch   : $(g rev-parse --abbrev-ref HEAD 2>/dev/null || echo detached)"
     echo "tree     : ${ROOT}"
     printf 'revision=%s\ndescribe=%s\ntree=%s\ndate=%s\n' "$REV" "$REV_DESC" "$ROOT" "$(date -Iseconds)" > "${OUT}/REVISION.txt"
     if [[ -n "$DIRTY" ]]; then
@@ -479,6 +484,15 @@ it_export() {
     done
     return "$ok"
 }
+# The release's notes (tools/release-notes.sh), from every row before this
+# one. What changed runs from the latest release tag before this revision.
+it_notes() {
+    local prev
+    prev="$(g describe --tags --abbrev=0 --match 'v[0-9]*' HEAD^ 2>/dev/null || true)"
+    "${SELF}/release-notes.sh" --run "$OUT" --payload "$PAYLOAD_B" ${prev:+--since "$prev"} > "${EXPORT}/RELEASE-NOTES.md" \
+        || { rm -f "${EXPORT}/RELEASE-NOTES.md"; return 1; }
+    echo "wrote ${EXPORT}/RELEASE-NOTES.md${prev:+ (changes since ${prev})}"
+}
 # Hash every export file but the media (it_export's lines); run last, once the
 # report, results and RELEASE.txt are final.
 seal_export() {   # seal_export DIR
@@ -488,6 +502,10 @@ V="$(verdict_of)"
 write_report "$V"
 if [[ -n "$EXPORT" ]] || wanted release; then
     item release export M post 0 it_export need_export
+    # The notes read the report with the export's row in it.
+    V="$(verdict_of)"
+    write_report "$V"
+    item release notes  M post 0 it_notes need_notes
     V="$(verdict_of)"
     write_report "$V"
     if [[ -n "$EXPORT" && -d "$EXPORT" ]]; then
@@ -501,7 +519,7 @@ if [[ -n "$EXPORT" ]] || wanted release; then
             echo "firmware   : ${FW_PKG} (${FW})"
             echo "kernel     : ${KERNEL_LINE:-not observed}"
             echo "trust      : kryptik-sb.crt / kryptik-sb.der (the developer Secure Boot key, a test anchor)"
-            echo "read       : INSTRUCTIONS.md"
+            echo "read       : INSTRUCTIONS.md$([[ -f "${EXPORT}/RELEASE-NOTES.md" ]] && echo ", RELEASE-NOTES.md")"
         } > "${EXPORT}/RELEASE.txt"
         # Again, now that the export's own row and log exist.
         cp "${OUT}"/*.log "${OUT}/results.tsv" "${EXPORT}/acceptance-logs/" 2>/dev/null

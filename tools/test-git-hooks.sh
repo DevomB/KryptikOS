@@ -176,8 +176,10 @@ fi
 echo
 echo "=== and the real repository, which is where it was actually wrong ==="
 
-# safe.directory: acceptance runs this as root over a checkout root does not own.
-real_mode="$(git -c safe.directory='*' -C "$ROOT" ls-files -s -- tools/git-hooks/pre-commit | awk '{print $1}')"
+# safe.directory: acceptance runs this as root over a checkout root does not
+# own; git trusts this checkout alone.
+top="$(cd "$ROOT" && pwd -P)"
+real_mode="$(git -c safe.directory="$top" -C "$top" ls-files -s -- tools/git-hooks/pre-commit | awk '{print $1}')"
 if [[ "$real_mode" == "100755" ]]; then
     green "tools/git-hooks/pre-commit is 100755 in this repository's index"
 else
