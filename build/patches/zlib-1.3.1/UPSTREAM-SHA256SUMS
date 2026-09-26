@@ -1,0 +1,5 @@
+# What upstream's own output hashed to, for each patch here. README.md says how each was obtained.
+#
+# 0001: sha256 of github.com/madler/zlib's `commit/ba829a458576d1ff0f26fc7230c6de816d1f6a77.patch` output,
+#       as fetched 2026-09-25. Nothing was edited afterwards, so it equals SHA256SUMS.
+4c4a40b7329015fd89070667dd32e9307819e699d3ec4118af0a959f5fe1608c  0001-Check-for-negative-lengths-in-crc32_combine-function.patch
