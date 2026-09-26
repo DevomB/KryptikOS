@@ -129,26 +129,27 @@ private_ok() {
     [[ "$owner" == 0 || "$owner" == "$who" ]] || die "$1 belongs to uid ${owner}, not to root or the user running the build (${who})"
 }
 
-# Exactly kryptik-release and kryptik-latest, each held to its own namespace,
-# with two different Ed25519 keys (a security key's included).
+# kryptik-release and kryptik-latest, each held to its own namespace, with
+# Ed25519 keys (a security key's included). A principal may be listed more
+# than once, as the old key and its replacement are while a key is changed,
+# but a key only once: one that could sign both releases and statements would
+# undo the split.
 anchor_ok() {
     local a="$1" p ns t k seen="" keys=""
     while read -r p ns t k _; do
         case "$p" in ""|"#"*) continue ;; esac
         case "$p" in kryptik-release|kryptik-latest) ;; *) die "${a}: ${p} is neither kryptik-release nor kryptik-latest" ;; esac
-        [[ " $seen " != *" $p "* ]] || die "${a}: ${p} is listed twice"
         [[ "$ns" == "namespaces=\"${p}\"" ]] || die "${a}: ${p} is not held to its own namespace (namespaces=\"${p}\")"
         case "$t" in ssh-ed25519|sk-ssh-ed25519@openssh.com) ;; *) die "${a}: ${p}'s key is ${t}, not Ed25519" ;; esac
-        [[ " $keys " != *" $k "* ]] || die "${a}: kryptik-release and kryptik-latest are the same key"
+        [[ " $keys " != *" $k "* ]] || die "${a}: a key is listed twice, and each key signs one thing"
         seen+=" $p"; keys+=" $k"
     done < "$a"
     [[ "$seen" == *kryptik-release* && "$seen" == *kryptik-latest* ]] || die "${a}: it must list both kryptik-release and kryptik-latest"
 }
 
-# The public half beside a private key is the one the anchor lists for WHO.
+# The public half beside a private key is one the anchor lists for WHO.
 pub_in_anchor() {   # pub_in_anchor PUB WHO ANCHOR
-    local pub line
-    pub="$(cut -d' ' -f1,2 "$1")"
-    line="$(awk -v p="$2" '$1 == p { print $3, $4; exit }' "$3")"
-    [[ -n "$pub" && "$pub" == "$line" ]] || die "$1 is not the key ${3} lists for $2"
+    local pub; pub="$(cut -d' ' -f1,2 "$1")"
+    [[ -n "$pub" ]] && awk -v p="$2" -v k="$pub" '$1 == p && $3 " " $4 == k { found = 1 } END { exit !found }' "$3" \
+        || die "$1 is not a key ${3} lists for $2"
 }

@@ -76,13 +76,14 @@ latest.sig    an OpenSSH signature over those bytes, namespace kryptik-latest
 
 **Which key signs it.** Re-signing on a schedule needs a key a timer can
 reach, and the release key is meant to stay offline, so the build uses two.
-The anchor stage 06 puts on the image lists `kryptik-release
-namespaces="kryptik-release"` and `kryptik-latest
-namespaces="kryptik-latest"`, two different keys, each honoured in its own
-namespace only. A development build proves that with a probe signed by each
-key in each namespace, and a production build refuses a key medium whose
-anchor says anything else. `tools/release-manifest.sh pointer` signs with the
-second key. A stolen statement key can only keep claiming an old release is
+The anchor stage 06 puts on the image lists the release key as
+`kryptik-release namespaces="kryptik-release"` and the statement key as
+`kryptik-latest namespaces="kryptik-latest"`, each honoured in its own
+namespace only, and no key under both. While a key is replaced it lists the
+old one and the new one. A development build proves the split with a probe
+signed by each key in each namespace, and a production build refuses a key
+medium whose anchor says anything else. `tools/release-manifest.sh pointer`
+signs with the statement key. A stolen statement key can only keep claiming an old release is
 current, the freeze a withholding net zone causes anyway: it cannot sign a
 manifest, zone 0 still refuses a statement older than one it accepted, and
 replacing the key takes a release.

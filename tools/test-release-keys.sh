@@ -141,13 +141,25 @@ refused "an anchor without the statement key" "must list both"
 make_medium; sed -i 's/namespaces="kryptik-latest"/namespaces="kryptik-release"/' "$M/release-signers"
 refused "an anchor that lets the statement key sign releases" "not held to its own namespace"
 make_medium; sed -i '1p' "$M/release-signers"
-refused "an anchor listing a principal twice" "listed twice"
+refused "an anchor listing a key twice" "a key is listed twice"
 make_medium; printf 'someone namespaces="someone" %s\n' "$(cut -d' ' -f1,2 < "$M/kryptik-release.pub")" >> "$M/release-signers"
 refused "an anchor with a third principal" "neither kryptik-release nor kryptik-latest"
 make_medium; sed -i "2s|ssh-ed25519 [^ ]*|$(cut -d' ' -f1,2 < "$M/kryptik-release.pub" | sed 's/[\/&|]/\\&/g')|" "$M/release-signers"
-refused "an anchor with one key for both" "are the same key"
+refused "an anchor with one key for both" "a key is listed twice"
 make_medium; cp "$M/kryptik-latest.pub" "$M/kryptik-release.pub"
-refused "a release key the anchor does not list" "kryptik-release.pub is not the key"
+refused "a release key the anchor does not list" "kryptik-release.pub is not a key"
+
+# While a key is replaced, the anchor lists the old one and the new one, and
+# the medium may hold either.
+make_medium; ssh-keygen -q -t ed25519 -N '' -C 'kryptik-release (next)' -f "${W}/next" < /dev/null
+printf 'kryptik-release namespaces="kryptik-release" %s\n' "$(cut -d' ' -f1,2 < "${W}/next.pub")" >> "$M/release-signers"
+rm "$M/kryptik-release" "$M/kryptik-release.pub"; mv "${W}/next" "$M/kryptik-release"; mv "${W}/next.pub" "$M/kryptik-release.pub"
+keys production "$PW" "$M"; rc=$?
+if [[ "$rc" -eq 0 && "$(got RELEASE_KEY)" == "${M}/kryptik-release" ]]; then
+    green "an anchor listing an old and a new release key takes a medium holding the new one"
+else
+    red "an anchor in the middle of a key change (exit ${rc})"; show
+fi
 make_medium; printf 'not a certificate\n' > "$M/kryptik-sb.crt"
 refused "a Secure Boot certificate that is not one" "not a certificate in force"
 
