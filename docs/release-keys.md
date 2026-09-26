@@ -57,8 +57,10 @@ For each release:
 
 1. Build up to the kernel on the build machine as usual (`make kernel`). No
    key is needed for that, and none is ever inside the chroot.
-2. Attach the key medium and make the media. `ssh-keygen` and `sbsign` ask
-   for the passphrases:
+2. Attach the key medium and make the media. `sbsign` asks for the Secure
+   Boot key's passphrase once for each kernel it signs (three: both slots and
+   the USB medium's), and `ssh-keygen` for the release key's once, for the
+   manifest:
 
    ```sh
    make media KRYPTIK_ROLE=production KRYPTIK_KEYS=/media/<medium>/kryptik-keys \
@@ -91,18 +93,23 @@ firmware; most setup screens can enrol a key from a file on a FAT volume.
 
 ## Replacing a key
 
-A machine accepts only what the anchor of the release it runs lists. So a new
-key has to arrive in a release the old key signed, and that release's anchor
-has to list both keys. The build accepts an anchor that lists a name more
-than once, as long as no key is listed twice.
+A machine accepts only what the anchor of the release it runs lists, and the
+channel names one release at a time. So a new key has to arrive in a release
+the old key signed, whose anchor lists both keys, and that release has to
+stay the channel's current one until the machines you care about have
+installed it. The build accepts an anchor that lists a name more than once,
+as long as no key is listed twice.
 
 - **Statement key.** Make the new key offline. Ship a release whose anchor
-  lists both the old and the new `kryptik-latest`. Once machines run it, sign
-  statements with the new key, and drop the old line from a later release's
-  anchor.
+  lists both the old and the new `kryptik-latest`, and keep signing statements
+  with the old key until every machine runs it. Then switch the release host
+  to the new key, and drop the old line from a later release's anchor.
 - **Release key.** Make the new key offline. Ship release N+1, signed by the
-  old key, with an anchor that lists both. Sign N+2 with the new key, and drop
-  the old line from its anchor. A machine still on N passes through N+1.
+  old key, with an anchor that lists both, and keep it the channel's current
+  release until the machines you care about have installed it. Then sign N+2
+  with the new key and drop the old line from its anchor. A machine still on
+  N after that cannot take N+2: install N+1 on it from a payload on a disk,
+  and it updates as usual from there.
 - **Secure Boot key.** Enrol the new certificate on every machine before you
   ship kernels signed by it. Remove the old certificate from db, or add it to
   dbx, once no machine needs it.
@@ -113,8 +120,11 @@ than once, as long as no key is listed twice.
   network can do anyway, and they report it after 30 days. Replace the key as
   above.
 - **Release key.** The thief can sign a release that machines will install.
-  While you still hold the key too, ship a release whose anchor drops it, and
-  tell users to update at once. A machine that installed the thief's release
-  has to be reinstalled from a medium you made.
+  Machines trust no other key yet, so your answer has to be signed with the
+  stolen one too. Make a new release key offline, and ship a release, signed
+  by the stolen key, whose anchor lists only the new one. It is a race, since
+  the thief can ship a competing release until machines install yours:
+  publish it and tell users to update at once. A machine that installed the
+  thief's release has to be reinstalled from a medium you made.
 - **Secure Boot key.** The thief can sign kernels that enrolled machines will
   boot. Add its certificate to each machine's dbx and enrol a new one.
