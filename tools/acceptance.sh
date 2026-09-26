@@ -310,7 +310,7 @@ it_media_hashes() {
 it_host_suites()   { "${SELF}/run-tests.sh" --strict; }
 it_libc_unwind()   { env KRYPTIK_ROOT="$ROOT" KRYPTIK_WORK="$KRYPTIK_WORK" KRYPTIK_SOURCES="$KRYPTIK_SOURCES" "${ROOT}/build/stages/03-chroot-prep.sh" run /kryptik/tools/test-libc-unwind.sh; }
 it_userspace()     { "${SELF}/test-userspace-smoke.sh"; }
-it_artifacts()     { "${SELF}/check-artifact-hardening.sh" "$SYSROOT" --json "${OUT}/artifact-hardening.json"; }
+it_artifacts()     { "${SELF}/check-artifact-hardening.sh" "$SYSROOT" --strict --json "${OUT}/artifact-hardening.json"; }
 it_licences()      { "${SELF}/check-image-licences.sh" "$SYSROOT"; }
 it_kernel_config() { "${SELF}/validate-kernel-config.sh" --boot && "${SELF}/validate-kernel-config.sh" --hardened; }
 it_support_status() { "${SELF}/check-support-status.sh" --strict; }

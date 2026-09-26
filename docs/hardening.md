@@ -42,23 +42,22 @@ machinery.
 `make audit-artifacts` (`tools/check-artifact-hardening.sh`), part of
 `make acceptance`, reads the ELF headers of what the build produced. A
 writable and executable segment, an executable stack, text relocations or an
-RPATH into the build tree fail it. The rest is reported. Of the 1288 objects
-in the 2026-09-13 sysroot, 324 lacked the CET property (build systems that
-ignore `CFLAGS` or link assembly without the note, such as gcc's own
-binaries, binutils, perl and python, plus `kryptikd` and `kryptik-wlproxy`,
-which rustc does not mark), 107 lacked `BIND_NOW`, 28 were not PIE (mostly
-gcc's drivers) and 42 had an RPATH (perl and python modules naming their own
-directories). The shell, coreutils and the libraries the desktop and zones use
-carry the full set. The fix is per package (or `-Z cf-protection` for the
-Rust binaries), not a weaker check. Part of the CET count was not the
-packages: everything stage 04 builds before its glibc, the first with
-`--enable-cet`, linked stage 01's crt files, which carry no CET note, so each
-of those packages is now built a second time right after glibc. gcc's
-binaries and its runtime libraries were stage 02's temporary compiler, built
-with no flags at all. Stage 04 now builds GCC again with the flags and
-`--enable-cet`, and the step fails unless `libgcc_s` and `libstdc++` (which
-glibc's unwinder and every C++ program load) carry IBT and SHSTK and `gcc`
-itself is PIE with `BIND_NOW`.
+RPATH into the build tree fail it. Acceptance also fails on a missing CET
+note, `BIND_NOW` or RELRO, a non-PIE executable and any other RPATH, unless
+[`artifact-accepted.txt`](../build/config/artifact-accepted.txt) names the
+object and the reason: `kryptikd` and `kryptik-wlproxy`, which stable rustc
+does not mark for CET, GMP's assembly, and the rpaths man-db, perl and glibc's
+converters need or that repeat the loader's own directory. An entry that no
+longer matches fails too, so the list holds only what the image still has. A
+new finding is fixed in its package's recipe, not by weakening the check.
+
+Everything stage 04 builds before its glibc, the first with `--enable-cet`,
+linked stage 01's crt files, which carry no CET note, so each of those
+packages is built a second time right after glibc. Stage 04 also builds GCC
+again with the flags and `--enable-cet`, and the step fails unless
+`libgcc_s` and `libstdc++` (which glibc's unwinder and every C++ program
+load) carry IBT and SHSTK and `gcc` itself is PIE with `BIND_NOW`. No program
+stage 02 built for the chroot is left in the image.
 
 ## Allocator
 
