@@ -693,6 +693,17 @@ s_gawk() {
         || { echo "FAIL: /usr/bin/gawk-${V_GAWK} is not the gawk just built"; return 1; }
 }
 
+# tar 1.35 defines private acl_*_at functions that libacl 2.4.0 now declares;
+# build/patches/tar-1.35 (see its README) carries upstream's rename.
+s_tar() {
+    local src; src="$(unpack "tar-${V_TAR}.tar.xz" "tar-${V_TAR}")"
+    cd "$src"
+    apply_repo_patches "tar-${V_TAR}"
+    ./configure --prefix=/usr
+    make
+    make install
+}
+
 # GCC again, in place of stage 02's temporary compiler, which set no flags:
 # the same triplet and defaults, so stage 05 and the stamps see the same
 # compiler, but now built with the hardening flags. Its binaries become PIE
@@ -2138,7 +2149,7 @@ PACKAGES=(
     "gzip"        "native_build gzip-${V_GZIP}.tar.xz gzip-${V_GZIP}"
     "make"        "native_build make-${V_MAKE}.tar.gz make-${V_MAKE}"
     "patch"       "native_build patch-${V_PATCH}.tar.xz patch-${V_PATCH}"
-    "tar"         "native_build tar-${V_TAR}.tar.xz tar-${V_TAR}"
+    "tar"         "s_tar"
     "groff"       "native_build groff-${V_GROFF}.tar.gz groff-${V_GROFF}"
     # For the kernel build, which generates timeconst.h with `bc -q`. After flex
     # and bison, which bc needs.

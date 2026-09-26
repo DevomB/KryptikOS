@@ -60,7 +60,8 @@
 # silently rotated key is the case this file has to be able to notice.
 
 # fingerprint                               kind  locator                                                                                      retrieved   signs             note
-B902B5271325F892AC251AD441633B9FE837F581    korg  https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git/plain/keys/41633B9FE837F581.asc       2026-09-11  acl,attr          Mike Frysinger <vapier@gentoo.org>
+B902B5271325F892AC251AD441633B9FE837F581    korg  https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git/plain/keys/41633B9FE837F581.asc       2026-09-11  attr              Mike Frysinger <vapier@gentoo.org>
+259B3792B3D6D319212CC4DCD5BF9FEB0313653A    korg  https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git/plain/keys/D5BF9FEB0313653A.asc       2026-09-26  acl               Andreas Gruenbacher <agruenba@redhat.com>; signs acl 2.4.0, where Mike Frysinger signed 2.3.2
 9F6FC345B05BE7E766B83C8F80A77F6095CDE47E    korg  https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git/plain/keys/80A77F6095CDE47E.asc       2026-09-11  iproute2          Stephen Hemminger (Microsoft corporate) <sthemmin@microsoft.com>
 7F2A3D07298149A0793C9A4EA45ABA544CFFD434    korg  https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git/plain/keys/A45ABA544CFFD434.asc       2026-09-11  kbd               Alexey Gladkov <legion@kernel.org>
 EAB33C9690013C733916AC839BA2A5A630CBEA53    korg  https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git/plain/keys/9BA2A5A630CBEA53.asc       2026-09-11  kmod              Lucas De Marchi <demarchi@kernel.org>
