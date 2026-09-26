@@ -1,30 +1,8 @@
 //! Wi-Fi credentials for the net zone (docs/design/net-zone.md).
 //!
-//! The net zone owns the wireless interface and runs wpa_supplicant inside
-//! itself. The passphrases the supplicant needs are kept in zone 0, in one
-//! file that kryptikd writes and nothing else touches:
-//!
-//!   /var/lib/kryptik/wifi/wpa_supplicant.conf    0400, owned by the nic zone's identity
-//!
-//! The zone sees it read-only at /etc/wpa_supplicant.conf (rootfs.rs) from
-//! its next start; the zone is ephemeral and the file is bound in at
-//! launch, so a change reaches it through a restart of the net-zone
-//! service. The session changes the file through the launch daemon
-//! (`wifi-add`, `wifi-forget`, `wifi-list` in serve.rs); root at a terminal
-//! and the tests use `kryptikd wifi`. Both come here.
-//!
-//! Ownership, and why it is not root's: inside the zone, root is host uid N
-//! (`[identity] uid_base`), so a root:root 0600 file bound in would be
-//! EACCES to the one party that must read it. Nobody else on the host runs
-//! as N. The directory is root:root 0711: the zone's identity traverses it,
-//! nobody else lists it. On an unprivileged run (a developer instance) the
-//! writer keeps the file, which is the only identity such a zone has.
-//!
-//! kryptikd never derives keys. A passphrase is written quoted and the
-//! supplicant derives the PSK from it; exactly 64 hex digits are written
-//! unquoted, which the supplicant reads as the raw PSK. The file holds the
-//! two header lines below and the blocks kryptikd wrote, nothing else, and
-//! a file with anything else in it is refused rather than rewritten.
+//! kryptikd alone writes the supplicant file in zone 0: 0400, owned by the nic
+//! zone's identity (the zone's root is that host uid). The zone gets it
+//! read-only at `/etc/wpa_supplicant.conf` on its next start.
 
 use std::fs;
 use std::io::{self, Read, Write};
@@ -47,8 +25,7 @@ pub fn conf_path(dir: &Path) -> PathBuf {
     dir.join(FILE_NAME)
 }
 
-/// What the `psk=` line holds: a passphrase the supplicant derives the key
-/// from, or the 64-hex-digit key itself.
+/// A `psk=` value: a passphrase (written quoted) or the raw 64-hex-digit key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Psk {
     Passphrase(String),
@@ -68,15 +45,11 @@ pub enum Added {
     Replaced,
 }
 
-// --- validation ----------------------------------------------------------------
-
 fn is_printable(c: char) -> bool {
     c.is_ascii_graphic() || c == ' '
 }
 
-/// An SSID as this file can hold it: 1 to 32 bytes of printable ASCII,
-/// without the quote and backslash the supplicant would read as syntax and
-/// without a newline or any other control character.
+/// An SSID this file can hold: 1 to 32 printable ASCII bytes, no quote or backslash.
 pub fn check_ssid(ssid: &str) -> Result<(), String> {
     if ssid.is_empty() || ssid.len() > 32 {
         return Err(format!("an SSID is 1 to 32 bytes; this one is {}", ssid.len()));
@@ -89,9 +62,8 @@ pub fn check_ssid(ssid: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// A passphrase as the supplicant accepts it: 8 to 63 printable ASCII
-/// characters without '"', '\\' or a newline, or exactly 64 hex digits for
-/// a raw PSK. The message never repeats any of the passphrase.
+/// 8 to 63 printable ASCII characters without quote or backslash, or 64 hex
+/// digits for a raw PSK. Error messages never repeat the passphrase.
 pub fn check_passphrase(pass: &str) -> Result<Psk, String> {
     if pass.len() == 64 && pass.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Ok(Psk::Hex(pass.to_string()));
@@ -113,10 +85,7 @@ pub fn check_passphrase(pass: &str) -> Result<Psk, String> {
     Ok(Psk::Passphrase(pass.to_string()))
 }
 
-// --- the file's text -------------------------------------------------------------
-
-/// The file, exactly as kryptikd writes it: the header, then one block per
-/// network in order, tab-indented like the supplicant's own examples.
+/// The file's text: the header, then one tab-indented block per network.
 pub fn render(nets: &[Network]) -> String {
     let mut out = String::from(HEADER);
     for n in nets {
@@ -131,11 +100,9 @@ pub fn render(nets: &[Network]) -> String {
     out
 }
 
-/// Read back what `render` wrote, and only that: the two header lines,
-/// blank lines, and blocks of exactly an ssid and a psk. Anything else
-/// means someone edited the file, and rewriting it would lose their change
-/// or carry something kryptikd did not check; both are refused. A value
-/// that fails its own rule is reported by line, never by content.
+/// Read back what `render` writes and refuse anything else: rewriting a
+/// hand-edited file would lose the edit or keep unchecked lines. Errors name
+/// the line, never its content.
 pub fn parse(text: &str) -> Result<Vec<Network>, String> {
     let mut nets = Vec::new();
     let mut block: Option<(Option<String>, Option<Psk>)> = None;
@@ -191,8 +158,6 @@ pub fn parse(text: &str) -> Result<Vec<Network>, String> {
     Ok(nets)
 }
 
-// --- the file on disk ------------------------------------------------------------
-
 /// The configured networks, or none when there is no file yet.
 pub fn load(dir: &Path) -> Result<Vec<Network>, String> {
     let path = conf_path(dir);
@@ -216,10 +181,8 @@ pub fn list(dir: &Path) -> Result<Vec<String>, String> {
     Ok(load(dir)?.into_iter().map(|n| n.ssid).collect())
 }
 
-/// Who owns the file: the nic zone's identity from the zone directory, on a
-/// root run. `None` keeps the writer's ownership: an unprivileged run, or a
-/// zone set whose nic zone declares no identity (a developer host either
-/// way; on the target every zone declares one).
+/// The file's owner on a root run: the nic zone's identity. `None` keeps the
+/// writer's, when unprivileged or when the nic zone declares no identity.
 pub fn owner_for(zones_dir: &Path) -> Result<Option<(u32, u32)>, String> {
     if unsafe { libc::geteuid() } != 0 {
         return Ok(None);
@@ -233,8 +196,7 @@ pub fn owner_for(zones_dir: &Path) -> Result<Option<(u32, u32)>, String> {
         .map(|b| (b, b)))
 }
 
-/// Add a network, or replace the block of one already configured. Nothing
-/// is written unless both values pass their rules.
+/// Add a network or replace its block; nothing is written unless both values pass.
 pub fn add(dir: &Path, owner: Option<(u32, u32)>, ssid: &str, passphrase: &str) -> Result<Added, String> {
     check_ssid(ssid)?;
     let psk = check_passphrase(passphrase)?;
@@ -253,8 +215,7 @@ pub fn add(dir: &Path, owner: Option<(u32, u32)>, ssid: &str, passphrase: &str) 
     Ok(outcome)
 }
 
-/// Remove one network's block. A network that is not there is an error and
-/// the file is not touched.
+/// Remove one network's block; an unknown SSID is an error and writes nothing.
 pub fn forget(dir: &Path, owner: Option<(u32, u32)>, ssid: &str) -> Result<(), String> {
     check_ssid(ssid)?;
     let mut nets = load(dir)?;
@@ -266,9 +227,8 @@ pub fn forget(dir: &Path, owner: Option<(u32, u32)>, ssid: &str) -> Result<(), S
     write_atomic(dir, &render(&nets), owner)
 }
 
-/// The directory, root:root 0711 when it has to be made: search-only for
-/// others, so the zone's identity can reach the file and nobody else can
-/// list what is there.
+/// Create the directory 0711 if missing, so the zone's identity can reach
+/// the file but nobody else can list the directory.
 fn ensure_dir(dir: &Path) -> Result<(), String> {
     match fs::symlink_metadata(dir) {
         Ok(md) if md.is_dir() => Ok(()),
@@ -281,7 +241,7 @@ fn ensure_dir(dir: &Path) -> Result<(), String> {
                 .mode(0o711)
                 .create(dir)
                 .map_err(|e| format!("{}: {e}", dir.display()))?;
-            // The umask applied to the create; the mode is meant literally.
+            // Undo the umask.
             fs::set_permissions(dir, fs::Permissions::from_mode(0o711))
                 .map_err(|e| format!("{}: {e}", dir.display()))?;
             Ok(())
@@ -290,16 +250,13 @@ fn ensure_dir(dir: &Path) -> Result<(), String> {
     }
 }
 
-/// Write the whole file at once: a new `.tmp` beside it, 0400 and owned as
-/// asked before it has a name anyone reads, fsync, then rename over the
-/// old file. A reader sees the old file or the new one, never a partial
-/// one, and a crash leaves at most a `.tmp` that the next write replaces.
+/// Write a 0400 `.tmp` owned as asked, fsync it and rename it over the file,
+/// so a reader sees the old file or the new one, never part of one.
 fn write_atomic(dir: &Path, contents: &str, owner: Option<(u32, u32)>) -> Result<(), String> {
     ensure_dir(dir)?;
     let path = conf_path(dir);
     let tmp = dir.join(format!("{FILE_NAME}.tmp"));
-    // A leftover from an interrupted write is root's and 0400; an
-    // unprivileged writer could not open it for writing, so it goes first.
+    // A leftover from an interrupted write would make create_new fail.
     match fs::remove_file(&tmp) {
         Ok(()) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -320,8 +277,6 @@ fn write_atomic(dir: &Path, contents: &str, owner: Option<(u32, u32)>) -> Result
     };
     finish(f.write_all(contents.as_bytes()).map_err(|e| format!("{}: {e}", tmp.display())))?;
     finish(f.sync_all().map_err(|e| format!("{}: fsync: {e}", tmp.display())))?;
-    // Literal 0400 whatever the umask did (it can only have removed bits,
-    // and there are none to remove, but the intent is stated once).
     finish(
         fs::set_permissions(&tmp, fs::Permissions::from_mode(0o400))
             .map_err(|e| format!("{}: chmod: {e}", tmp.display())),
@@ -337,19 +292,15 @@ fn write_atomic(dir: &Path, contents: &str, owner: Option<(u32, u32)>) -> Result
     }
     drop(f);
     finish(fs::rename(&tmp, &path).map_err(|e| format!("rename {} over {}: {e}", tmp.display(), path.display())))?;
-    // The rename is durable once the directory is. Best effort: a
-    // filesystem that refuses to fsync a directory still renamed atomically.
+    // Fsync the directory so the rename is durable; best effort.
     if let Ok(d) = fs::File::open(dir) {
         let _ = d.sync_all();
     }
     Ok(())
 }
 
-/// Restart the net zone so it comes back with the current file. Reported,
-/// never fatal: the file is written either way, and the reply says whether
-/// the zone will see it now or at its next start. Nothing is restarted for
-/// a directory other than the one the service reads, so a test daemon
-/// working under its own directory leaves an installed net zone alone.
+/// Restart the net zone so it reads the new file; returns what happened and
+/// never fails. Only for the directory the service reads, so tests leave it be.
 pub fn restart_net_zone(dir: &Path) -> String {
     if dir != Path::new(DEFAULT_DIR) {
         return format!(
@@ -373,10 +324,8 @@ pub fn restart_net_zone(dir: &Path) -> String {
     }
 }
 
-/// One line from standard input, for `kryptikd wifi add`: with echo off
-/// and a prompt when that is a terminal, silently when it is a pipe (the
-/// `kryptik` command reads the terminal itself and pipes the line). The
-/// passphrase never comes from argv or the environment.
+/// Read one line from stdin for `kryptikd wifi add`, prompting with echo off
+/// on a terminal. The passphrase never comes from argv or the environment.
 pub fn read_passphrase(prompt: &str) -> Result<String, String> {
     let tty = unsafe { libc::isatty(0) } == 1;
     let mut saved: libc::termios = unsafe { std::mem::zeroed() };
@@ -448,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn a_passphrase_is_quoted_and_a_raw_psk_is_not() {
+    fn passphrase_quoted_raw_psk_bare() {
         assert_eq!(check_passphrase("eight ch").unwrap(), Psk::Passphrase("eight ch".into()));
         let hex = "f".repeat(64);
         assert_eq!(check_passphrase(&hex).unwrap(), Psk::Hex(hex.clone()));
@@ -463,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn every_rule_refuses_what_it_names() {
+    fn ssid_and_passphrase_rules() {
         let long_ssid = "x".repeat(33);
         for (ssid, rule) in [
             ("", "1 to 32 bytes"),
@@ -499,8 +448,7 @@ mod tests {
         assert!(check_passphrase(&"p".repeat(63)).is_ok());
         assert!(check_passphrase(&"0a".repeat(32)).is_ok());
 
-        // A refusal writes nothing, and a refused add on an existing file
-        // leaves it as it was.
+        // A refusal writes nothing and leaves an existing file as it was.
         let dir = tmpdir("refusals");
         assert!(add(&dir, None, "bad\"ssid", "long enough").is_err());
         assert!(!conf_path(&dir).exists(), "nothing written on refusal");
@@ -515,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn adding_an_ssid_again_replaces_its_block_in_place() {
+    fn readd_replaces_block_in_place() {
         let dir = tmpdir("replace");
         add(&dir, None, "First", "first pass").unwrap();
         add(&dir, None, "Second", "second pass").unwrap();
@@ -529,11 +477,11 @@ mod tests {
     }
 
     #[test]
-    fn the_write_is_a_rename_with_nothing_left_behind() {
+    fn write_is_atomic_rename() {
         let dir = tmpdir("atomic");
         add(&dir, None, "Home", "long enough").unwrap();
         let ino = fs::metadata(conf_path(&dir)).unwrap().ino();
-        // A stale temporary from an interrupted earlier write is replaced.
+        // A stale .tmp from an interrupted write is replaced.
         fs::write(dir.join(format!("{FILE_NAME}.tmp")), "junk").unwrap();
         add(&dir, None, "Other", "long enough").unwrap();
         assert_ne!(fs::metadata(conf_path(&dir)).unwrap().ino(), ino, "a new inode replaced the old file");
@@ -543,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_kryptikd_did_not_write_is_refused_not_rewritten() {
+    fn foreign_file_refused() {
         for bad in [
             "network={\n\tssid=\"a\"\n\tpsk=\"long enough\"\n}\nap_scan=1\n",
             "network={\n\tssid=\"a\"\n\tkey_mgmt=NONE\n\tpsk=\"long enough\"\n}\n",
@@ -568,7 +516,7 @@ mod tests {
     }
 
     #[test]
-    fn the_restart_is_reported_not_attempted_for_another_directory() {
+    fn no_restart_for_other_directory() {
         let m = restart_net_zone(Path::new("/nonexistent/wifi"));
         assert!(m.contains("not restarted") && m.contains(DEFAULT_DIR), "{m}");
     }

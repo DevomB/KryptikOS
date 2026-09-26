@@ -1,38 +1,12 @@
 #!/usr/bin/env bash
-# Record exactly what a build produced, and exactly what produced it.
+# Record every entry of a build tree and the inputs that produced it.
 #
 #   tools/artifact-manifest.sh [--root DIR] [--out FILE]
 #   tools/artifact-manifest.sh --verify FILE [--root DIR]
 #
-# WHAT THIS IS FOR
-#
-# Three questions get asked about a build tree and none of them can be answered
-# by looking at it:
-#
-#   "is this the sysroot you tested?"
-#   "what went into it?"
-#   "has anything touched it since?"
-#
-# A manifest answers all three. It lists every entry in the tree - type, mode,
-# owner, size, content hash, symlink target, device numbers - in a stable
-# order, preceded by the inputs that produced it: the repository commit, the
-# recipes, the pinned configuration, the compiler, the source tarballs by
-# content, and the per-step build fingerprints.
-#
-# DETERMINISM
-#
-# The body contains no timestamps, no absolute paths, and no hostnames, and is
-# sorted with LC_ALL=C. Two manifests of the same tree are byte-identical, so
-# `diff` is a meaningful operation and the tree digest is a stable name for the
-# artifact. The generation time goes in a comment, outside the digest.
-#
-# WHAT IT DOES NOT CLAIM
-#
-# This is an identity record, not a reproducibility claim. Identical inputs are
-# NOT expected to yield an identical digest - timestamps, build paths and
-# ordering leak into objects all over an LFS build. Saying "the tree hashed the
-# same" is a strong statement; saying "therefore the build is reproducible"
-# would not be.
+# The body is sorted and free of timestamps, absolute paths and hostnames, so
+# the same tree always gives the same digest. The same inputs need not: this
+# identifies a tree, it does not claim the build is reproducible.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 
@@ -56,26 +30,18 @@ ROOT="${ROOT%/}"
 
 MANIFEST_FORMAT=1
 
-# --- inputs ----------------------------------------------------------------
-
 emit_inputs() {
     printf 'format\t%s\n' "$MANIFEST_FORMAT"
 
-    # The repository state. --dirty matters: a manifest that names a commit
-    # while the tree had uncommitted edits is worse than one that names none.
-    # -c safe.directory='*' because this tool is MEANT to run as root - a
-    # sysroot has directories only root can read, and the refusal in emit_tree
-    # says so. git then rejects a repository owned by someone else with
-    # "detected dubious ownership", the describe fails, and the manifest
-    # records "unknown" for the one field that ties it to a commit.
+    # --dirty: naming a commit for an edited tree is worse than naming none.
+    # safe.directory: run as root, git would refuse the user's checkout.
     local commit="unknown"
     if have git && git -c safe.directory='*' -C "$KRYPTIK_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
         commit="$(git -c safe.directory='*' -C "$KRYPTIK_ROOT" describe --always --dirty --abbrev=40 2>/dev/null || echo unknown)"
     fi
     printf 'input\trepo-commit\t%s\n' "$commit"
 
-    # The recipes, by content. Not the whole repository: these are the files
-    # that decide what gets built and how.
+    # The recipes by content: the files that decide what is built and how.
     local f rel
     for f in "$KRYPTIK_ROOT"/build/lib/common.sh \
              "$KRYPTIK_ROOT"/build/stages/*.sh \
@@ -89,8 +55,7 @@ emit_inputs() {
         printf 'input\trecipe\t%s\t%s\n' "$rel" "$(sha256_of "$f")"
     done
 
-    # The source tarballs, by content - not by the name they were fetched
-    # under. sources.lock records what SHOULD be there; this records what was.
+    # Tarballs by content; sources.lock says what should be there, this what was.
     if [[ -d "$KRYPTIK_SOURCES" ]]; then
         while IFS= read -r -d '' f; do
             printf 'input\tsource\t%s\t%s\n' "$(basename "$f")" "$(sha256_of "$f")"
@@ -99,9 +64,7 @@ emit_inputs() {
                  | LC_ALL=C sort -z)
     fi
 
-    # Every completed step, with the fingerprint of the inputs it was built
-    # from. This is the link between "this file exists in the sysroot" and
-    # "these are the inputs that put it there".
+    # Each completed step, with the fingerprint of the inputs it was built from.
     local stamps="${KRYPTIK_WORK}/.stamps"
     if [[ -d "$stamps" ]]; then
         local s fp
@@ -111,9 +74,7 @@ emit_inputs() {
         done < <(find "$stamps" -maxdepth 1 -type f -print0 | LC_ALL=C sort -z)
     fi
 
-    # The compiler that was in the sysroot when this was taken. Reported by the
-    # target binary itself where one exists, because that is the compiler that
-    # will build anything built next, not whatever the host happens to have.
+    # The sysroot's own gcc where there is one: it builds whatever comes next.
     local ccid="absent"
     if [[ -x "${ROOT}/usr/bin/gcc" ]]; then
         ccid="$("${ROOT}/usr/bin/gcc" --version 2>/dev/null | head -1 || echo unknown)"
@@ -123,40 +84,24 @@ emit_inputs() {
     printf 'input\tcompiler\t%s\n' "$ccid"
 }
 
-# --- the tree --------------------------------------------------------------
-
 emit_tree() {
     local hashes; hashes="$(mktemp)"
     local meta;   meta="$(mktemp)"
     # shellcheck disable=SC2064
     trap "rm -f '$hashes' '$meta'" RETURN
 
-    # One find for metadata. %P is the path relative to ROOT, which keeps the
-    # manifest independent of where the tree happens to live.
-    #
-    # -xdev is not an optimisation. After stage 03 the sysroot has the host's
-    # /dev bind-mounted inside it; without -xdev this would walk the host's
-    # device tree and record it as Kryptik's.
-    #
-    # find's exit status is CHECKED, and its stderr is kept rather than
-    # discarded. A sysroot contains directories this tool may not be able to
-    # read - /root is 0750, /etc/kryptik/zones is 0700 - and find reports
-    # those on stderr and exits 1 while still printing everything else. With
-    # the errors sent to /dev/null that looked like a mysterious failure; with
-    # the exit status ignored it would have been far worse, quietly producing
-    # a manifest that omitted exactly the files nobody could see.
     local ferr; ferr="$(mktemp)"
     local raw;  raw="$(mktemp)"
     # shellcheck disable=SC2064
     trap "rm -f '$ferr' '$raw'" RETURN
 
-    # `trap - ERR` as well as `set +e`: an ERR trap fires whether or not
-    # errexit is on, and common.sh's trap exits. Without this the find below
-    # aborts the script on the very failure this code exists to report - the
-    # same defect step() had, rediscovered here within the hour.
+    # common.sh's ERR trap exits, and it fires even under set +e.
     local frc=0
     set +e
     trap - ERR
+    # -xdev: after stage 03 the host's /dev is bind-mounted in the sysroot.
+    # find exits 1 on directories it cannot read (/root, /etc/kryptik/zones)
+    # but still prints the rest, so a manifest with holes would look complete.
     find "$ROOT" -xdev -mindepth 1 \
          -printf '%y\t%m\t%U\t%G\t%s\t%P\t%l\n' > "$raw" 2>"$ferr"
     frc=$?
@@ -178,14 +123,11 @@ digest and the digest still looks authoritative.
 
     LC_ALL=C sort -t "$(printf '\t')" -k6,6 < "$raw" > "$meta"
 
-    # Content hashes for regular files, batched. Fifty thousand sha256sum
-    # processes is the difference between a manifest people take and one they
-    # do not.
+    # Batched: one sha256sum per file is far too slow on a whole sysroot.
     ( cd "$ROOT" && find . -xdev -mindepth 1 -type f -printf '%P\0' 2>/dev/null \
         | xargs -0 -r sha256sum 2>/dev/null ) > "$hashes"
 
-    # Anything the hash pass could not read is recorded as UNREADABLE by the
-    # awk below; the caller turns that into a refusal for the same reason.
+    # Unreadable files get the hash UNREADABLE, which the caller refuses.
     LC_ALL=C awk -F '\t' -v hashfile="$hashes" '
     BEGIN {
         # sha256sum prints "<hash>  <path>", and escapes a leading backslash
@@ -297,17 +239,12 @@ verify)
     err "  now     : ${now}"
     echo
 
-    # Report what moved, not a wall of diff. Paths are the last field for tree
-    # rows, so compare on the whole line and summarise by kind.
     added="$(LC_ALL=C comm -13 "$old" "$new" | grep -c '' || true)"
     removed="$(LC_ALL=C comm -23 "$old" "$new" | grep -c '' || true)"
     printf '  %s line(s) present now and not in the manifest\n' "$added" >&2
     printf '  %s line(s) in the manifest and not present now\n' "$removed" >&2
     echo >&2
-    # The most common cause of a difference in `input source` lines is not a
-    # changed tree at all - it is verifying with a different KRYPTIK_SOURCES
-    # than the manifest was generated under, so the tarballs enumerate
-    # differently. Say so, because the diff alone looks like tampering.
+    # Differing `input source` lines usually mean another KRYPTIK_SOURCES.
     if LC_ALL=C comm -23 "$old" "$new" | grep -q '^input\tsource\t'; then
         warn "some differences are in 'input source' lines."
         warn "Those enumerate \$KRYPTIK_SOURCES, which is currently:"

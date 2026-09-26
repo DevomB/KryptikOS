@@ -4,7 +4,7 @@
 #
 #   tools/image/mk-testctl.sh --out FILE KEY=VALUE...
 #
-# Honoured by an install medium only (build/service-scripts/testctl.sh):
+# Read only by an install medium; keys include (build/service-scripts/testctl.sh):
 #   install_target=/dev/vdb  smoke_poweroff=1  install_wait=SECONDS
 #   preseed_user=NAME  preseed_password_hash=HASH
 set -Eeuo pipefail

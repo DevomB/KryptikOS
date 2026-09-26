@@ -1,47 +1,14 @@
-//! Colour-vision deficiency simulation.
+//! Colour-vision deficiency simulation, after Machado, Oliveira & Fernandes
+//! (2009), "A Physiologically-based Model for Simulation of Color Vision
+//! Deficiency", IEEE TVCG 15(6).
 //!
-//! Kryptik identifies zones by colour and calls that identification
-//! "load-bearing, not decoration" (compartments/zones/vault.toml). A
-//! load-bearing claim has to hold for the people actually using the system,
-//! and roughly 8% of men of Northern European descent have some form of
-//! red-green colour-vision deficiency. If two zones are the same colour to
-//! them, the claim is false for one user in twelve.
-//!
-//! # Why only severity 1.0
-//!
-//! This module simulates DICHROMACY only - the complete absence of one cone
-//! class - and deliberately offers no severity parameter.
-//!
-//! That is not a simplification, it is the conservative bound. Anomalous
-//! trichromacy (deuteranomaly, protanomaly - the common mild forms) is
-//! strictly less severe than the corresponding dichromacy: the shifted cone
-//! still discriminates, just worse. A palette whose zones remain distinct
-//! under full dichromacy is therefore distinct under every milder form, so
-//! checking the endpoint checks the whole range. Checking at severity 0.6
-//! would pass palettes that fail for people at 0.9, which is precisely the
-//! kind of "mostly works" a security boundary cannot be built on.
-//!
-//! The alternative - interpolating the transform toward identity - is what
-//! most implementations do and it is not the same thing as Machado's
-//! per-severity matrices. Rather than ship an approximation under a name that
-//! implies precision, this module does not offer the parameter at all.
-//!
-//! # Method
-//!
-//! Machado, Oliveira & Fernandes (2009), "A Physiologically-based Model for
-//! Simulation of Color Vision Deficiency", IEEE TVCG 15(6). The published
-//! matrices operate on LINEAR RGB, not gamma-encoded sRGB. Applying them to
-//! gamma-encoded values is the single most common error in implementations of
-//! this paper and produces plausible-looking, wrong colours - so `simulate`
-//! takes and returns `Srgb` and does the conversion itself, leaving no way to
-//! get it wrong from outside.
+//! Only dichromacy (severity 1.0) is modelled: the milder anomalous forms are
+//! strictly less severe, so a palette that passes here passes for them too.
+//! The matrices apply to linear RGB, and `simulate` does the conversion.
 
 use crate::color::{LinearRgb, Srgb};
 
-/// A vision model to evaluate the palette under.
-///
-/// `Normal` is included so callers can iterate one list rather than special-
-/// casing the trichromatic check, and so a report always states the baseline.
+/// A vision model. `Normal` is included so one list covers the baseline too.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Vision {
     Normal,
@@ -71,12 +38,7 @@ impl Vision {
         }
     }
 
-    /// Approximate share of the population affected, for reports.
-    ///
-    /// Deliberately coarse. These are population statistics with wide
-    /// geographic variation, quoted here so a report can say "one user in
-    /// twelve" rather than leaving the reader to guess whether the finding
-    /// matters. They are not used in any computation.
+    /// Rough share of the population affected, for reports only.
     pub fn prevalence_note(self) -> &'static str {
         match self {
             Vision::Normal => "baseline",
@@ -86,10 +48,10 @@ impl Vision {
         }
     }
 
-    /// The Machado et al. (2009) severity-1.0 transform, row-major, linear RGB.
-    fn matrix(self) -> [[f64; 3]; 3] {
-        match self {
-            Vision::Normal => [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    /// The Machado et al. severity-1.0 transform (row-major, linear RGB); None for normal vision.
+    fn matrix(self) -> Option<[[f64; 3]; 3]> {
+        Some(match self {
+            Vision::Normal => return None,
             Vision::Protanopia => [
                 [0.152_286, 1.052_583, -0.204_868],
                 [0.114_503, 0.786_281, 0.099_216],
@@ -105,19 +67,15 @@ impl Vision {
                 [-0.078_411, 0.930_809, 0.147_602],
                 [0.004_733, 0.691_367, 0.303_900],
             ],
-        }
+        })
     }
 }
 
-/// How `c` appears to someone with the given vision.
-///
-/// Takes and returns gamma-encoded sRGB; the linearisation the model requires
-/// happens inside, so a caller cannot apply the matrix to the wrong values.
+/// How `c` appears under vision `v`. Linearises internally, as the model requires.
 pub fn simulate(c: Srgb, v: Vision) -> Srgb {
-    if v == Vision::Normal {
+    let Some(m) = v.matrix() else {
         return c;
-    }
-    let m = v.matrix();
+    };
     let l = c.to_linear();
     LinearRgb {
         r: m[0][0] * l.r + m[0][1] * l.g + m[0][2] * l.b,
@@ -133,7 +91,7 @@ mod tests {
     use crate::color::delta_e;
 
     #[test]
-    fn normal_vision_is_the_identity() {
+    fn normal_vision_is_identity() {
         for hex in ["#000000", "#ffffff", "#b5651d", "#2f6f9f", "#aa3333"] {
             let c = Srgb::from_hex(hex).unwrap();
             assert_eq!(simulate(c, Vision::Normal), c);
@@ -141,11 +99,9 @@ mod tests {
     }
 
     #[test]
-    fn achromatic_colours_are_unchanged_by_any_model() {
-        // Every one of these matrices has rows summing to approximately 1, so
-        // greys must pass through. If a transcription error crept into the
-        // table, greys drift and this catches it without needing reference
-        // colours for the chromatic cases.
+    fn greys_unchanged_by_any_model() {
+        /* Each matrix's rows sum to about 1, so greys pass through; a
+         * transcription error in a matrix makes them drift. */
         for hex in ["#000000", "#404040", "#808080", "#c0c0c0", "#ffffff"] {
             let c = Srgb::from_hex(hex).unwrap();
             for v in Vision::ALL {
@@ -163,9 +119,8 @@ mod tests {
     }
 
     #[test]
-    fn red_and_green_collapse_under_deuteranopia() {
-        // The defining property of the deficiency. If this does not hold, the
-        // matrix is wrong or is being applied to gamma-encoded values.
+    fn red_green_collapse_under_deuteranopia() {
+        // Fails if the matrix is wrong or applied to gamma-encoded values.
         let red = Srgb::from_hex("#ff0000").unwrap();
         let green = Srgb::from_hex("#00ff00").unwrap();
         let normal = delta_e(red, green);
@@ -180,10 +135,8 @@ mod tests {
     }
 
     #[test]
-    fn blue_and_yellow_survive_deuteranopia_but_not_tritanopia() {
-        // The complementary check: deuteranopia must NOT flatten the
-        // blue-yellow axis. A matrix that flattens everything would pass the
-        // red/green test above while being useless.
+    fn blue_yellow_survive_deuteranopia() {
+        // A matrix that flattened everything would pass the red/green test.
         let blue = Srgb::from_hex("#0000ff").unwrap();
         let yellow = Srgb::from_hex("#ffff00").unwrap();
         let deutan = delta_e(

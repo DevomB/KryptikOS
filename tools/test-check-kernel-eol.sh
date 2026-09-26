@@ -1,30 +1,10 @@
 #!/usr/bin/env bash
-# Focused tests for tools/check-kernel-eol.sh.
-#
-#   ./tools/test-check-kernel-eol.sh
-#
-# Deterministic and offline. Release data is served from a throwaway
-# http.server bound to 127.0.0.1, so the real curl-and-parse path runs against
-# real HTTP responses rather than a stubbed fetch.
-#
-# The pinned version is varied by pointing KRYPTIK_ROOT at a temporary tree
-# holding only build/config/versions.env. The repository's own versions.env is
-# never touched: another worker may be compiling it.
-#
-# The cases that matter are the ones a warn-and-continue check used to pass: a
-# pin whose SERIES is EOL or was never longterm, a series upstream no longer
-# lists, a feed that does not parse, and a fetch that did not happen. Both
-# directions are asserted - the supported-LTS cases must PASS, so a script that
-# failed unconditionally could not satisfy this suite.
+# Tests for tools/check-kernel-eol.sh. Feeds come from a local http.server, and
+# the pin from a throwaway KRYPTIK_ROOT, never the repository's versions.env.
 
 set -uo pipefail
 
-# The tool under test reads KRYPTIK_SOURCES, KRYPTIK_WORK, KRYPTIK_LOCK and
-# KRYPTIK_OUT from the environment when they are set, in preference to deriving
-# them from KRYPTIK_ROOT. A developer who has any of those exported - pointing
-# at the real downloads, say - would otherwise see this suite verify the wrong
-# tree and report failures that are nothing to do with the code. Each case sets
-# what it needs explicitly, so clear all of them here rather than inheriting.
+# common.sh prefers these, when exported, to paths derived from KRYPTIK_ROOT.
 unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -48,11 +28,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# --- fixture feeds ----------------------------------------------------------
-#
-# Shapes copied from the real https://www.kernel.org/releases.json: an object
-# with a "releases" list, each entry carrying version, moniker and iseol.
-
+# Fixture feeds, shaped like https://www.kernel.org/releases.json.
 write_feed() { cat > "${SERVE}/$1"; }
 
 # Series 6.18 current and longterm; 6.12 longterm; 7.1 stable and EOL.
@@ -68,8 +44,7 @@ write_feed healthy.json <<'JSON'
 ]}
 JSON
 
-# The case the old same-series branch got wrong: the series is EOL, and the
-# pinned point release is not listed, so only the series can answer.
+# The series is EOL, and the pinned point release is not listed.
 write_feed series-eol.json <<'JSON'
 {"releases": [
   {"version": "6.18.52",  "moniker": "longterm", "iseol": true},
@@ -85,7 +60,7 @@ write_feed series-notlts.json <<'JSON'
 ]}
 JSON
 
-# Exact match, EOL. The old script caught this one.
+# Exact match, EOL.
 write_feed exact-eol.json <<'JSON'
 {"releases": [
   {"version": "6.18.50",  "moniker": "longterm", "iseol": true},
@@ -101,8 +76,7 @@ write_feed absent.json <<'JSON'
 ]}
 JSON
 
-# A moniker this check has never heard of, and a non-boolean iseol. Neither is
-# evidence of support.
+# An unknown moniker, and a non-boolean iseol: neither is evidence of support.
 write_feed unknown-moniker.json <<'JSON'
 {"releases": [
   {"version": "6.18.52",  "moniker": "supported-ish", "iseol": false},
@@ -117,8 +91,7 @@ write_feed unknown-iseol.json <<'JSON'
 ]}
 JSON
 
-# The series exists and is healthy, but the pin is ahead of it - an invented or
-# mistyped version whose support status cannot be checked against anything.
+# The pin is ahead of its healthy series: a typo or an invented version.
 write_feed behind-pin.json <<'JSON'
 {"releases": [
   {"version": "6.18.9",   "moniker": "longterm", "iseol": false},
@@ -126,8 +99,7 @@ write_feed behind-pin.json <<'JSON'
 ]}
 JSON
 
-# An unlisted-series feed where the newest entry is NOT first, to confirm the
-# series authority is chosen by version order and not by feed order.
+# The series' newest entry is not first; it must be found by version order.
 write_feed unsorted-series.json <<'JSON'
 {"releases": [
   {"version": "6.18.7",   "moniker": "longterm", "iseol": false},
@@ -139,8 +111,6 @@ JSON
 printf '%s\n' '<html>503 Service Unavailable</html>' > "${SERVE}/malformed.json"
 printf '%s\n' '[]' > "${SERVE}/wrong-shape.json"
 printf '%s\n' '{"releases": []}' > "${SERVE}/empty-releases.json"
-
-# --- fixture HTTP server ----------------------------------------------------
 
 python3 - "$SERVE" "${TMP}/port" >/dev/null 2>&1 <<'PY' &
 import http.server, os, socketserver, sys
@@ -169,10 +139,7 @@ PORT="$(cat "${TMP}/port" 2>/dev/null)"
 [[ -n "$PORT" ]] || { echo "fixture server did not start"; exit 1; }
 BASE="http://127.0.0.1:${PORT}"
 
-# --- harness ----------------------------------------------------------------
-
-# Build a throwaway KRYPTIK_ROOT so the pinned version can be varied without
-# touching build/config/versions.env.
+# A throwaway KRYPTIK_ROOT holding only versions.env with the given pins.
 fake_root() {
     local pinned="$1" hardened="$2"
     local root="${TMP}/root"
@@ -186,11 +153,7 @@ fake_root() {
 }
 
 # run <pinned> <feed-url> [--strict]
-#
-# Writes the combined output to $OUT and the exit status to $RC. The output
-# deliberately does not come back through a command substitution: run() would
-# then execute in a subshell and $RC would never reach the caller, which is
-# exactly how a suite reports a success it never observed.
+# Output goes to $OUT and status to $RC; called as $(run), RC would be lost.
 OUT="${TMP}/out"
 RC=0
 run() {
@@ -235,10 +198,7 @@ expect_fail() {
 echo "tools/check-kernel-eol.sh"
 echo
 
-# --- positive controls ------------------------------------------------------
-# Without these, a script that failed unconditionally would satisfy every other
-# case below.
-
+# Positive controls: a script that always failed would pass every case below.
 expect_pass "supported LTS, exact match" \
     6.18.52 healthy.json "is longterm and not end-of-life"
 expect_pass "supported LTS, exact match, --strict" \
@@ -252,8 +212,7 @@ expect_pass "stale but supported LTS passes --strict" \
 expect_pass "series authority is the newest entry, not the first" \
     6.18.50 unsorted-series.json "is at 6.18.60 while 6.18.50 is pinned"
 
-# --- the same-series hole ---------------------------------------------------
-
+# A pin with no exact entry takes its series' status.
 expect_fail "EOL series with no exact entry is not merely outdated" \
     6.18.50 series-eol.json "end-of-life"
 expect_fail "non-LTS series with no exact entry is rejected" \
@@ -261,14 +220,13 @@ expect_fail "non-LTS series with no exact entry is rejected" \
 expect_fail "EOL exact match is still rejected" \
     6.18.50 exact-eol.json "end-of-life"
 
-# A non-LTS pin whose exact release IS listed: the case ADR-009 came from.
+# A non-LTS pin whose exact release is listed (the ADR-009 case).
 expect_fail "non-LTS exact match is rejected" \
     7.2.4 healthy.json "not longterm"
 expect_fail "EOL non-LTS exact match is rejected" \
     7.1.13 healthy.json "end-of-life"
 
-# --- absent, unknown, malformed --------------------------------------------
-
+# Absent, unknown, malformed.
 expect_fail "series absent from the feed is not supported" \
     6.18.50 absent.json "not listed by kernel.org"
 expect_fail "unrecognised moniker is not supported status" \
@@ -284,11 +242,7 @@ expect_fail "feed of the wrong shape is a failure, not a pass" \
 expect_fail "feed with no releases is a failure, not a pass" \
     6.18.50 empty-releases.json "no usable"
 
-# --- unavailable: strict versus informational -------------------------------
-#
-# Nothing listens on port 1, so curl reports a refused connection. This is the
-# one case whose verdict depends on the invocation.
-
+# Unreachable feed (nothing listens on port 1): only --strict fails.
 DEAD="http://127.0.0.1:1/releases.json"
 
 run 6.18.50 "$DEAD"
@@ -308,8 +262,6 @@ fi
 expect_fail "HTTP 404 on the feed fails --strict" \
     6.18.50 no-such-file.json "could not be established" --strict
 
-# --- the selftest hook cannot be used by accident ---------------------------
-
 root="$(fake_root 6.18.50 6.18.50-hardened1)"
 KRYPTIK_ROOT="$root" KRYPTIK_KERNEL_RELEASES_URL="${BASE}/healthy.json" \
     NO_COLOR=1 bash "$TOOL" --strict > "$OUT" 2>&1
@@ -320,8 +272,7 @@ else
     red "substituted feed was accepted without KRYPTIK_KERNEL_EOL_SELFTEST"; show
 fi
 
-# --- linux-hardened pin -----------------------------------------------------
-
+# linux-hardened pin.
 root="$(fake_root 6.18.52 "")"
 printf 'V_LINUX_HARDENED=6.12.109-hardened1\n' >> "${root}/build/config/versions.env"
 KRYPTIK_ROOT="$root" KRYPTIK_KERNEL_EOL_SELFTEST=1 \

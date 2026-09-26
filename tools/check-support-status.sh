@@ -5,38 +5,13 @@
 #   ./tools/check-support-status.sh --strict            release gate
 #   ./tools/check-support-status.sh --now=2026-04-10    evaluate as of a date
 #   ./tools/check-support-status.sh --report=FILE
-#
-# WHY THIS IS NOT check-source-currency.sh. Currency asks "is there something
-# newer?", and the answer is almost always yes and almost always uninteresting.
-# This asks a different and much sharper question: does anyone upstream still
-# issue security fixes for the series we ship? A pin can be two patches behind
-# a maintained series and be fine. A pin in a series that went end-of-life five
-# months ago will never receive another fix, no matter how ordinary its version
-# number looks in versions.env.
-#
-# Kryptik shipped exactly that. openssl 3.3.1 looks unremarkable; the OpenSSL
-# release strategy retired the whole 3.3 line on 2026-04-09.
-#
-# WHAT THIS DOES NOT MEASURE. It says nothing about patch-level gaps inside a
-# supported series: openssl 3.5.0 and 3.5.8 both sit on the same row here. Use
-# tools/check-source-currency.sh for that. A green run of this check means
-# "the series is maintained", not "the pin is current", and the summary says so
-# every time so that the two can never be quietly conflated.
-#
-# STRICT VERSUS INFORMATIONAL follows the rule used by the other checks: a
-# FALSE assertion fails in both modes, and only an UNTESTABLE one is mode
-# dependent. A series past its published support date is false support and
-# fails always. A series with no row in the policy file cannot be established
-# either way, so it fails --strict and warns otherwise.
-#
-# The policy data lives in tools/support-policy.tsv, one row per series, each
-# carrying the upstream page it was read from and the date it was read. Read
-# that file's header before adding to it.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 
 TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# One row per series, with the upstream page and the date it was read; the
+# file's header documents the format.
 POLICY="${TOOLS_DIR}/support-policy.tsv"
 VERSIONS="${KRYPTIK_ROOT}/build/config/versions.env"
 STRICT=0
@@ -56,10 +31,6 @@ for a in "$@"; do
     esac
 done
 
-# ---------------------------------------------------------------------------
-# dates
-# ---------------------------------------------------------------------------
-
 valid_day()   { [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && date -u -d "$1" +%F >/dev/null 2>&1; }
 valid_month() { [[ "$1" =~ ^[0-9]{4}-[0-9]{2}$ ]]          && date -u -d "${1}-01" +%F >/dev/null 2>&1; }
 
@@ -70,9 +41,7 @@ else
     NOW="$TODAY"
 fi
 
-# Month precision resolves to the LAST day of that month. Upstream publishing
-# "2028-10" is a claim about October, so treating it as 2028-10-01 would report
-# a supported series as dead for most of a month.
+# A month ("2028-10") resolves to its last day: support runs through October.
 last_supported_day() {
     local e="$1"
     if valid_day "$e"; then
@@ -82,8 +51,7 @@ last_supported_day() {
     fi
 }
 
-# ISO dates compare correctly as YYYYMMDD integers, and doing it numerically
-# keeps the intent unambiguous to a reader and to shellcheck.
+# ISO dates compare correctly as YYYYMMDD integers.
 date_after() { [[ "${1//-/}" -gt "${2//-/}" ]]; }
 
 days_between() {  # $1 earlier, $2 later; negative if $1 is later
@@ -93,13 +61,8 @@ days_between() {  # $1 earlier, $2 later; negative if $1 is later
     printf '%s' "$(( (b - a) / 86400 ))"
 }
 
-# ---------------------------------------------------------------------------
-# report buffer
-# ---------------------------------------------------------------------------
-
 if [[ -n "$REPORT" ]]; then
-    # Checked before any work, so an unwritable path is a clean refusal rather
-    # than a complete run whose output goes nowhere.
+    # Refuse an unwritable path now, not after the whole run.
     mkdir -p "$(dirname "$REPORT")" 2>/dev/null || true
     : > "$REPORT" || die "cannot write the report to ${REPORT}"
 fi
@@ -124,10 +87,6 @@ note() {
     dim "$*"
 }
 
-# ---------------------------------------------------------------------------
-# the policy file
-# ---------------------------------------------------------------------------
-
 [[ -f "$POLICY" ]] || die "no policy file at ${POLICY}
 This check cannot establish anything without it, and reporting nothing as
 though it were a pass is the failure mode this tool exists to prevent."
@@ -141,8 +100,7 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     [[ -z "${line//[[:space:]]/}" ]] && continue
     [[ "$line" =~ ^[[:space:]]*# ]] && continue
 
-    # The last variable takes the remainder of the line, so a note may contain
-    # spaces while every field before it may not.
+    # f_note takes the rest of the line, so only the note may contain spaces.
     read -r f_pkg f_var f_ser f_st f_end f_url f_ret f_note <<< "$line"
 
     bad=""
@@ -160,10 +118,8 @@ while IFS= read -r line || [[ -n "$line" ]]; do
         valid_day "$f_end" || valid_month "$f_end" \
             || bad="support_ends '${f_end}' is neither YYYY-MM-DD, YYYY-MM nor -"
     fi
-    # Some projects publish a tier rather than a date: perlpolicy names the two
-    # most recent stable series and calls everything older end of life, with no
-    # calendar attached to any of them. Such a row is legitimate but it can
-    # never expire on its own, so it has to say which tier it was read from.
+    # Some upstreams publish a tier, not a date (perl supports its two newest
+    # series). Such a row never expires, so its note must name the tier.
     if [[ -z "$bad" && "$f_st" == "supported" && "$f_end" == "-" ]]; then
         case "${f_note// }" in
             ""|"-") bad="a 'supported' row with no support_ends date must record in its note the support tier upstream published" ;;
@@ -176,7 +132,6 @@ while IFS= read -r line || [[ -n "$line" ]]; do
         if ! valid_day "$f_ret"; then
             bad="retrieved '${f_ret}' is not a YYYY-MM-DD date"
         elif [[ "$f_ret" > "$TODAY" ]]; then
-            # A row cannot have been read from upstream tomorrow.
             bad="retrieved '${f_ret}' is in the future"
         fi
     fi
@@ -204,10 +159,6 @@ fi
 
 [[ "${#P_PKG[@]}" -gt 0 ]] || die "${POLICY} contains no rows"
 
-# ---------------------------------------------------------------------------
-# the pins
-# ---------------------------------------------------------------------------
-
 [[ -f "$VERSIONS" ]] || die "no versions file at ${VERSIONS}"
 
 pinned_version() {
@@ -231,10 +182,6 @@ series_of() {
 
 TOTAL_PINS="$(grep -cE '^V_[A-Z0-9_]+=' "$VERSIONS" || true)"
 [[ "$TOTAL_PINS" =~ ^[0-9]+$ ]] || TOTAL_PINS=0
-
-# ---------------------------------------------------------------------------
-# evaluate, one package at a time, in the order the policy file lists them
-# ---------------------------------------------------------------------------
 
 log "Upstream support status of Kryptik's pinned series"
 note "evaluated as of ${NOW} (${NOW_SRC}); policy data from ${POLICY}"
@@ -263,8 +210,7 @@ for i in "${!P_PKG[@]}"; do
 
     ser="$(series_of "$pin")"
 
-    # Exact series row first, then a * row. A specific row must win, or adding
-    # a catch-all to a package would silently mask every dated series it has.
+    # An exact series row wins over a * row, or a catch-all would mask dated ones.
     hit=""
     for j in "${!P_PKG[@]}"; do
         if [[ "${P_PKG[$j]}" == "$pkg" && "${P_SER[$j]}" == "$ser" ]]; then
@@ -294,8 +240,7 @@ for i in "${!P_PKG[@]}"; do
     st="${P_ST[$hit]}"; ends="${P_END[$hit]}"; url="${P_URL[$hit]}"
     ret="${P_RET[$hit]}"; nte="${P_NOTE[$hit]}"
 
-    # The policy data itself can rot. A row read fourteen months ago may be
-    # describing a schedule upstream has since changed.
+    # An old row may describe a schedule upstream has since changed.
     age="$(days_between "$ret" "$NOW")"
     if [[ "$age" -gt 180 ]]; then
         n_stale=$((n_stale + 1))
@@ -326,8 +271,7 @@ for i in "${!P_PKG[@]}"; do
             note "            This is NOT a statement that ${pin} is current."
             ;;
         supported|security-only)
-            # A tier row carries no date; do not hand "-" to date(1), whose
-            # failure the ERR trap would turn into an abort mid-report.
+            # A tier row has no date; date(1) failing on "-" would trip the ERR trap.
             eff="-"
             prec=""
             if [[ "$ends" != "-" ]]; then
@@ -352,8 +296,7 @@ for i in "${!P_PKG[@]}"; do
                     note "            ends ${eff}; plan the move before then"
                 fi
             elif [[ "$eff" == "-" ]]; then
-                # Tier-based support. Reported as ok because upstream does
-                # support it, but a row that cannot expire has to say so.
+                # Tier-based: ok, but say that the row cannot expire.
                 n_ok=$((n_ok + 1))
                 row ok "${pkg} ${pin}: series ${ser} supported - ${nte}"
                 note "            upstream publishes a tier and no end date, so this row"
@@ -365,10 +308,6 @@ for i in "${!P_PKG[@]}"; do
             ;;
     esac
 done
-
-# ---------------------------------------------------------------------------
-# summary
-# ---------------------------------------------------------------------------
 
 covered=0
 seen=""

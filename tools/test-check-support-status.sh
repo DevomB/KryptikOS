@@ -1,20 +1,6 @@
 #!/usr/bin/env bash
-# Focused tests for tools/check-support-status.sh.
-#
-#   ./tools/test-check-support-status.sh
-#
-# Deterministic and offline. Nothing here touches the network: support dates
-# come from fixture policy files, and "now" is supplied with --now, so a test
-# written today still means the same thing in 2030.
-#
-# Positive controls come first. A checker that failed everything would satisfy
-# every denial test in this file, so each refusal is paired with an input that
-# must pass.
-#
-# The case worth reading first is the month-precision pair. Upstream python
-# publishes "2028-10" and no day. Reading that as 2028-10-01 would declare a
-# supported series dead for thirty days; reading it as the end of October is
-# the only interpretation that does not manufacture an end-of-life.
+# Tests for tools/check-support-status.sh, on fixture policies with a fixed
+# --now, so they need no network and do not age.
 
 set -uo pipefail
 
@@ -56,8 +42,6 @@ expect_not() {
     if has "$1"; then red "$2 (unexpected /${1}/)"; show; else green "$2"; fi
 }
 
-# --- fixtures ---------------------------------------------------------------
-
 # A well-formed policy covering the four statuses and both date precisions.
 good_policy() {
     cat > "$POL" <<'EOF'
@@ -91,16 +75,14 @@ expect_has 'no pinned series is known to be out of support' "and says so plainly
 echo
 echo "=== the shipped policy file parses, and the shipped pins are evaluated ==="
 
-# Guards the real data file rather than a fixture: a row added with a bad
-# status or a missing retrieval date must break here, not in a release gate.
+# The real data file: a bad row must break here, not in a release gate.
 : > "${W}/empty.env"
 run --policy="$REAL_POLICY" --versions="${W}/empty.env" --now=2026-09-11
 expect_rc 0 "the shipped support-policy.tsv is well formed"
 expect_not 'malformed' "no malformed rows in the shipped policy"
 
 run --policy="$REAL_POLICY" --versions="${ROOT}/build/config/versions.env" --now=2026-09-11
-# Pin-change proof: this asserts the tool reaches a verdict for each covered
-# package, not what the verdict is, so bumping a pin does not break the suite.
+# That there is a verdict for each package, not which, so pin bumps pass.
 for pkg in openssl python perl expat linux; do
     if grep -qE "(^|[^a-z])${pkg} " "$OUT"; then
         green "the real tree is evaluated for ${pkg}"
@@ -126,9 +108,7 @@ expect_has 'false claim of support' "and explains why it is not mode dependent"
 expect_has '155 days ago' "it counts the days since support ended"
 expect_has 'do not edit a pin under a' "and points at coordination, not a unilateral bump"
 
-# The frozen finding: openssl 3.3.1, the pin Kryptik actually shipped, against
-# the real policy data. Kept as a fixture version so it stays true after the
-# pin moves.
+# A fixed pin, openssl 3.3.1, against the real policy data.
 versions 'V_OPENSSL=3.3.1'
 run --policy="$REAL_POLICY" --versions="$V" --now=2026-09-11 --strict
 expect_rc 1 "the shipped openssl 3.3.1 is unsupported per upstream's own policy"
@@ -160,9 +140,7 @@ expect_has 'last tier before EOL' "with what that means"
 echo
 echo "=== tier-based support, which publishes no date at all ==="
 
-# perlpolicy names the two most recent stable series and attaches no calendar
-# to either. Such a row is supported, and must still admit that it cannot
-# expire by itself.
+# perlpolicy supports the two newest stable series, with no dates.
 versions 'V_PERL=5.42.3'
 run --policy="$REAL_POLICY" --versions="$V" --now=2026-09-11 --strict
 expect_rc 0 "a tier-based supported series passes --strict"

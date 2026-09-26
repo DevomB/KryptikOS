@@ -1,20 +1,11 @@
-//! One proxied connection: a zone client on one side, the compositor on the
-//! other, and this in between reading, checking, rewriting and forwarding.
+//! One proxied connection, zone client to compositor: framed (wire.rs) against
+//! the tables (protocol.rs), checked, rewritten and forwarded.
 //!
-//! Both directions are framed here (wire.rs) against the protocol tables
-//! (protocol.rs). The object map is the state: every object id the client
-//! or the compositor creates is recorded with its interface, so an opcode
-//! can be looked up, its signature walked, its descriptors counted and its
-//! new objects registered. A message on an unknown object, an unknown
-//! opcode, a malformed body, a bind of a hidden global or a resource bound
-//! exceeded ends the session: the client gets one wl_display.error and both
-//! sockets close.
-//!
-//! Descriptors travel in the same sendmsg as the bytes that need them. Each
-//! side keeps a queue of received descriptors in arrival order; a message
-//! whose signature carries `h` arguments takes that many from the front and
-//! sends them along with its own bytes. A message that needs descriptors
-//! that have not arrived yet waits, as libwayland does.
+//! Every live object id is mapped to its interface. A message the map or the
+//! tables cannot account for, a hidden bind or an exceeded bound ends the
+//! session with one wl_display.error. Received descriptors queue in arrival
+//! order; a message takes as many as its signature has `h` arguments, waiting
+//! if they have not arrived, and sends them with its own bytes.
 
 use std::collections::{HashMap, VecDeque};
 use std::io;
@@ -43,7 +34,6 @@ pub enum SessionError {
     TooMuchPending(Dir),
     TooManyFds,
     Io(io::Error),
-    PeerClosed(Dir),
 }
 
 impl std::fmt::Display for SessionError {
@@ -53,14 +43,13 @@ impl std::fmt::Display for SessionError {
             SessionError::UnknownObject(id) => write!(f, "message for unknown object {id}"),
             SessionError::DuplicateObject(id) => write!(f, "object id {id} is already live"),
             SessionError::UnknownOpcode { interface, opcode } => write!(f, "{interface} has no opcode {opcode}"),
-            SessionError::HiddenInterface(i) => write!(f, "bind of an interface not advertised to this zone: {i}"),
+            SessionError::HiddenInterface(i) => write!(f, "bind of an interface not advertised to this zone: {i:?}"),
             SessionError::VersionTooHigh { interface, asked, max } => write!(f, "{interface} version {asked} asked, {max} allowed"),
             SessionError::IdOutOfRange { id, dir } => write!(f, "object id {id} is not in the {dir:?} range"),
             SessionError::TooManyObjects => write!(f, "too many live objects"),
             SessionError::TooMuchPending(d) => write!(f, "too much unsent data ({d:?})"),
             SessionError::TooManyFds => write!(f, "too many queued descriptors"),
             SessionError::Io(e) => write!(f, "{e}"),
-            SessionError::PeerClosed(d) => write!(f, "peer closed ({d:?})"),
         }
     }
 }
@@ -76,18 +65,20 @@ impl From<io::Error> for SessionError {
     }
 }
 
-/// A socket endpoint with its inbound bytes and descriptors, and outbound
-/// bytes with the descriptors that must go with the first message in them.
+/// Bytes gathered into one outbound batch: the largest message.
+const BATCH_BYTES: usize = MAX_MESSAGE_LEN;
+/// Descriptors in one sendmsg: libwayland reads at most 28 per message
+/// (MAX_FDS_OUT) and ends the connection on more.
+pub(crate) const BATCH_FDS: usize = 28;
+
+/// One socket: inbound bytes and descriptors, outbound batches with theirs.
 pub struct Endpoint {
     pub fd: RawFd,
-    /// Inbound bytes; those before `in_pos` have been consumed. Compacted
-    /// once per read rather than once per message: a single 4 KiB read
-    /// carrying dozens of small messages used to memmove the remainder of
-    /// the buffer for each of them.
+    /// Inbound bytes; those before `in_pos` are consumed.
     inbuf: Vec<u8>,
     in_pos: usize,
     in_fds: VecDeque<RawFd>,
-    /// (bytes, fds to send with them) in order; sent from the front.
+    /// Batches of whole messages and their descriptors, one sendmsg each (`queue`).
     outq: VecDeque<(Vec<u8>, Vec<RawFd>)>,
     pub pending_out: usize,
     pending_fds: usize,
@@ -104,16 +95,16 @@ impl Endpoint {
         &self.inbuf[self.in_pos..]
     }
 
-    /// Take the next `n` pending bytes as one message. The caller has
-    /// checked that many are present.
-    fn consume(&mut self, n: usize) -> Vec<u8> {
-        let msg = self.inbuf[self.in_pos..self.in_pos + n].to_vec();
+    /// Move the next `n` pending bytes (one message) into the caller's reused
+    /// buffer; the caller has checked they are present.
+    fn take(&mut self, n: usize, out: &mut Vec<u8>) {
+        out.clear();
+        out.extend_from_slice(&self.inbuf[self.in_pos..self.in_pos + n]);
         self.in_pos += n;
         if self.in_pos == self.inbuf.len() {
             self.inbuf.clear();
             self.in_pos = 0;
         }
-        msg
     }
 
     /// Everything pending, leaving the buffer empty (tests).
@@ -125,7 +116,8 @@ impl Endpoint {
         bytes
     }
 
-    /// One recvmsg with room for descriptors. Returns bytes read (0 = EOF).
+    /// One recvmsg with room for descriptors. Returns bytes read: 0 is EOF,
+    /// usize::MAX that it would block.
     pub fn read(&mut self) -> io::Result<usize> {
         let mut buf = [0u8; 4096];
         let mut cmsg = [0usize; 32]; // cmsghdr needs native alignment
@@ -158,8 +150,8 @@ impl Endpoint {
                 c = libc::CMSG_NXTHDR(&msg, c);
             }
         }
-        // Enforce bounds at ingress, including when pump waits for a missing
-        // descriptor. Surplus descriptors must not accumulate behind it.
+        /* Bounds hold at ingress too, even while pump waits for a missing
+         * descriptor: nothing may accumulate behind it. */
         if msg.msg_flags & libc::MSG_CTRUNC != 0
             || self.in_fds.len() > policy::MAX_PENDING_FDS
             || self.pending_in().len() + n as usize > policy::MAX_PENDING_BYTES
@@ -178,8 +170,7 @@ impl Endpoint {
         Ok(n as usize)
     }
 
-    /// Send as much of the queue as the socket takes. Returns whether
-    /// anything remains (the caller polls for POLLOUT then).
+    /// Send what the socket takes; returns whether anything remains (poll for POLLOUT).
     pub fn flush(&mut self) -> io::Result<bool> {
         while let Some((bytes, fds)) = self.outq.front_mut() {
             let mut iov = libc::iovec { iov_base: bytes.as_ptr() as *mut libc::c_void, iov_len: bytes.len() };
@@ -212,8 +203,8 @@ impl Endpoint {
                 return Err(e);
             }
             let n = n as usize;
-            // The descriptors went with the first byte; they must not be
-            // sent again with the remainder. Close our copies.
+            /* The descriptors went with the first byte and must not go again
+             * with the rest: close our copies. */
             self.pending_fds -= fds.len();
             for fd in fds.drain(..) {
                 unsafe { libc::close(fd) };
@@ -228,10 +219,20 @@ impl Endpoint {
         Ok(false)
     }
 
-    fn queue(&mut self, bytes: Vec<u8>, fds: Vec<RawFd>) {
+    /// Queue one message, joining the last batch while it has room. Its
+    /// descriptors go with that batch, so they arrive in order and no later
+    /// than the message, which is all libwayland asks.
+    fn queue(&mut self, bytes: &[u8], fds: Vec<RawFd>) {
         self.pending_out += bytes.len();
         self.pending_fds += fds.len();
-        self.outq.push_back((bytes, fds));
+        if let Some((b, f)) = self.outq.back_mut() {
+            if b.len() + bytes.len() <= BATCH_BYTES && f.len() + fds.len() <= BATCH_FDS {
+                b.extend_from_slice(bytes);
+                f.extend(fds);
+                return;
+            }
+        }
+        self.outq.push_back((bytes.to_vec(), fds));
     }
 
     pub fn close_all(&mut self) {
@@ -261,7 +262,7 @@ pub struct Session {
     objects: HashMap<u32, (&'static protocol::Interface, u32)>,
     /// Globals the server advertised and we let through: name -> (interface, version)
     globals: HashMap<u32, (&'static str, u32)>,
-    /// Hidden globals: their names are never forwarded; a bind of them is refused.
+    /// How many globals were hidden from the client.
     pub hidden_count: usize,
     pub forwarded_c2s: u64,
     pub forwarded_s2c: u64,
@@ -271,7 +272,6 @@ pub struct Session {
 const WL_DISPLAY: u32 = 1;
 const WL_DISPLAY_ERROR: u16 = 0; // event
 const WL_DISPLAY_DELETE_ID: u16 = 1; // event
-const WL_DISPLAY_GET_REGISTRY: u16 = 1; // request
 const WL_REGISTRY_BIND: u16 = 0; // request
 const WL_REGISTRY_GLOBAL: u16 = 0; // event
 const WL_REGISTRY_GLOBAL_REMOVE: u16 = 1; // event
@@ -323,17 +323,18 @@ impl Session {
         if self.objects.len() >= policy::MAX_OBJECTS {
             return Err(SessionError::TooManyObjects);
         }
-        // Unknown interfaces cannot be tracked; a client cannot create one
-        // (bind is checked against the allowlist) and a server creating one
-        // means the tables are behind the compositor: refuse rather than guess.
+        /* An interface missing from the tables cannot be tracked. Binds are
+         * checked against the allowlist, so only a compositor newer than the
+         * tables can create one: refuse rather than guess. */
         let iface = protocol::find(iface_name).ok_or_else(|| SessionError::HiddenInterface(iface_name.to_string()))?;
         self.objects.insert(id, (iface, version));
         Ok(())
     }
 
-    /// Process everything complete in one direction's inbound buffer.
-    /// Returns Ok(()) when more input is needed.
+    /// Process every complete message in one direction; Ok(()) when more input is needed.
     pub fn pump(&mut self, dir: Dir) -> Result<(), SessionError> {
+        // Reused for every message of this pass.
+        let mut msg: Vec<u8> = Vec::new();
         loop {
             let src = match dir {
                 Dir::ClientToServer => &mut self.client,
@@ -362,30 +363,27 @@ impl Session {
                 }
                 return Ok(()); // descriptors still in flight
             }
-            let mut msg: Vec<u8> = src.consume(size);
-            // Parsing or policy may reject this message before it is queued.
-            // Own the descriptors so every such return closes them.
+            src.take(size, &mut msg);
+            // Owned, so a rejection before queueing closes them.
             let fds: Vec<OwnedFd> = src.in_fds.drain(..needed).map(|fd| unsafe { OwnedFd::from_raw_fd(fd) }).collect();
-            // The body is read in place; it was a second copy of every message.
             let decoded = protocol::decode(m, &msg[HEADER_LEN..])?;
 
             // --- policy, per message ---------------------------------------
             let mut forward = true;
+            // What goes out in the message's place, when policy rewrites it.
+            let mut rewritten: Option<Vec<u8>> = None;
             // A message of the proxy's own, sent right behind this one.
             let mut stamp: Option<Vec<u8>> = None;
             match dir {
                 Dir::ClientToServer => {
-                    // (wl_display.get_registry needs nothing special here: the
-                    // registry it creates is tracked by the new-objects loop
-                    // below like every other typed child.)
+                    // get_registry needs nothing here: its registry is registered below like any child.
                     if iface.name == "wl_registry" && h.opcode == WL_REGISTRY_BIND {
-                        let (name, version) = match (&decoded.new_objects[..], decoded.bind_version) {
-                            ([(_, n)], Some(v)) => (n.clone(), v),
+                        let (name, version) = match (decoded.new_object, decoded.bind_version) {
+                            (Some((_, n)), Some(v)) => (n, v),
                             _ => return Err(SessionError::Wire(WireError::ArgOverrun)),
                         };
-                        let max = policy::allowed_version(&name).ok_or_else(|| SessionError::HiddenInterface(name.clone()))?;
-                        // The numeric global identifies one advertised interface
-                        // and version cap, not any interface on the allowlist.
+                        let max = policy::allowed_version(name).ok_or_else(|| SessionError::HiddenInterface(name.to_string()))?;
+                        // The global's number pins one advertised interface and version cap.
                         let mut r = ArgReader::new(&msg[HEADER_LEN..]);
                         let gname = r.u32()?;
                         let (advertised, cap) = self.globals.get(&gname).ok_or_else(||
@@ -395,7 +393,7 @@ impl Session {
                         }
                         let max = max.min(*cap);
                         if version > max {
-                            return Err(SessionError::VersionTooHigh { interface: name, asked: version, max });
+                            return Err(SessionError::VersionTooHigh { interface: name.to_string(), asked: version, max });
                         }
                     }
                     if iface.name == "xdg_toplevel" && (m.name == "set_title" || m.name == "set_app_id") {
@@ -403,28 +401,20 @@ impl Session {
                             let new = if m.name == "set_title" { policy::title_for(&self.zone, s) } else { policy::app_id_for(&self.zone, s) };
                             match MessageWriter::new(h.object, h.opcode).string(&new).finish() {
                                 Some(rebuilt) => {
-                                    msg = rebuilt;
+                                    rewritten = Some(rebuilt);
                                     self.rewritten += 1;
                                 }
                                 None => return Err(SessionError::Wire(WireError::BadSize(h.size))),
                             }
                         }
                     }
-                    // Identity is stamped on EVERY toplevel, whether or not the
-                    // client ever names itself. Rewriting set_app_id alone left
-                    // a toplevel that never sent one reaching the compositor
-                    // with no app_id at all, and the compositor draws an absent
-                    // id as zone 0's own - the trusted border - so a zone
-                    // window could pass for a trusted one by saying nothing
-                    // (reproduced on the wire, 2026-09-14). The proxy's own
-                    // set_app_id goes out right behind the get_toplevel that
-                    // creates the object; a set_app_id the client sends later
-                    // is rewritten as above and simply replaces it.
+                    /* Every toplevel gets the zone's app_id right behind the
+                     * get_toplevel that creates it: the compositor draws a toplevel
+                     * with no app_id as zone 0's own, with the trusted border. A
+                     * later set_app_id from the client is rewritten and replaces it. */
                     if iface.name == "xdg_surface" && m.name == "get_toplevel" {
-                        if let Some((id, _)) = decoded.new_objects.first() {
-                            // A constant of the tables, resolved once. The
-                            // failure path stays: a table without the request
-                            // refuses rather than stamping a guessed opcode.
+                        if let Some((id, _)) = decoded.new_object {
+                            // Resolved once; tables without set_app_id refuse rather than guess an opcode.
                             static SET_APP_ID: std::sync::OnceLock<Option<u16>> = std::sync::OnceLock::new();
                             let opcode = SET_APP_ID
                                 .get_or_init(|| {
@@ -433,7 +423,7 @@ impl Session {
                                         .map(|p| p as u16)
                                 })
                                 .ok_or(SessionError::Wire(WireError::ArgOverrun))?;
-                            stamp = MessageWriter::new(*id, opcode).string(&policy::app_id_for(&self.zone, "")).finish();
+                            stamp = MessageWriter::new(id, opcode).string(&policy::app_id_for(&self.zone, "")).finish();
                         }
                     }
                 }
@@ -441,16 +431,15 @@ impl Session {
                     if iface.name == "wl_registry" && h.opcode == WL_REGISTRY_GLOBAL {
                         let mut r = ArgReader::new(&msg[HEADER_LEN..]);
                         let gname = r.u32()?;
-                        let iname = r.string()?.unwrap_or("").to_string();
+                        let iname = r.string()?.unwrap_or("");
                         let version = r.u32()?;
-                        // One allowlist lookup: advertise() is allowed_version().is_some().
-                        if let Some(allowed) = policy::allowed_version(&iname) {
+                        if let Some(allowed) = policy::allowed_version(iname) {
                             let cap = allowed.min(version);
                             // advertise at most the version we can parse
                             if cap != version {
-                                msg = MessageWriter::new(h.object, h.opcode).u32(gname).string(&iname).u32(cap).finish().unwrap_or(msg);
+                                rewritten = MessageWriter::new(h.object, h.opcode).u32(gname).string(iname).u32(cap).finish();
                             }
-                            let iface_static: &'static str = protocol::find(&iname).map(|i| i.name).unwrap_or("?");
+                            let iface_static: &'static str = protocol::find(iname).map(|i| i.name).unwrap_or("?");
                             self.globals.insert(gname, (iface_static, cap));
                         } else {
                             self.hidden_count += 1;
@@ -460,9 +449,9 @@ impl Session {
                     if iface.name == "wl_registry" && h.opcode == WL_REGISTRY_GLOBAL_REMOVE {
                         let mut r = ArgReader::new(&msg[HEADER_LEN..]);
                         let gname = r.u32()?;
-                        if self.globals.remove(&gname).is_none() {
-                            forward = false; // was hidden; the client never saw it
-                        }
+                        /* Sent once per registry the client holds, so the entry stays;
+                         * a bind racing the removal is the compositor's to answer. */
+                        forward = self.globals.contains_key(&gname); // hidden: never seen
                     }
                     if h.object == WL_DISPLAY && h.opcode == WL_DISPLAY_DELETE_ID {
                         let mut r = ArgReader::new(&msg[HEADER_LEN..]);
@@ -471,12 +460,12 @@ impl Session {
                     }
                 }
             }
-            // New objects, whichever side created them.
-            for (id, name) in &decoded.new_objects {
-                // Registry bindings choose a version; typed children inherit
-                // their parent's version, including server-created children.
-                self.register(*id, name, decoded.bind_version.unwrap_or(version), dir)?;
+            /* The new object, whichever side created it. A registry binding
+             * chooses its version; any other child inherits its parent's. */
+            if let Some((id, name)) = decoded.new_object {
+                self.register(id, name, decoded.bind_version.unwrap_or(version), dir)?;
             }
+            let msg: &[u8] = rewritten.as_deref().unwrap_or(&msg);
             let dst = match dir {
                 Dir::ClientToServer => &mut self.server,
                 Dir::ServerToClient => &mut self.client,
@@ -491,7 +480,7 @@ impl Session {
                 }
                 dst.queue(msg, fds.into_iter().map(IntoRawFd::into_raw_fd).collect());
                 if let Some(s) = stamp {
-                    dst.queue(s, Vec::new());
+                    dst.queue(&s, Vec::new());
                     self.rewritten += 1;
                 }
                 match dir {
@@ -502,22 +491,19 @@ impl Session {
         }
     }
 
-    /// Tell the client why, then close both sides. The error goes on the
-    /// wl_display object with code 3 (implementation), which every client
-    /// understands as fatal.
+    /// Tell the client why with a fatal wl_display.error (code 3,
+    /// implementation), then close both sides.
     pub fn refuse(&mut self, why: &str) {
         let text = format!("kryptik-wlproxy: {why}");
         if let Some(m) = MessageWriter::new(WL_DISPLAY, WL_DISPLAY_ERROR).u32(WL_DISPLAY).u32(3).string(&text).finish() {
-            self.client.queue(m, Vec::new());
+            self.client.queue(&m, Vec::new());
             let _ = self.client.flush();
         }
         self.client.close_all();
         self.server.close_all();
     }
 
-    pub fn object_count(&self) -> usize {
-        self.objects.len()
-    }
+    #[cfg(test)]
     pub fn has_object(&self, id: u32) -> bool {
         self.objects.contains_key(&id)
     }
@@ -530,8 +516,7 @@ mod tests {
     use std::os::unix::io::{AsRawFd, IntoRawFd};
     use std::io::{Read, Write};
 
-    /// A session over two socketpairs: (client side, server side) handles
-    /// the test drives, and the session holds the other ends.
+    /// A session over two socketpairs, with the test's client and server ends.
     fn make() -> (Session, UnixStream, UnixStream) {
         let (c_test, c_prox) = UnixStream::pair().unwrap();
         let (s_test, s_prox) = UnixStream::pair().unwrap();
@@ -566,14 +551,14 @@ mod tests {
         out
     }
     fn get_registry(id: u32) -> Vec<u8> {
-        MessageWriter::new(1, WL_DISPLAY_GET_REGISTRY).u32(id).finish().unwrap()
+        MessageWriter::new(1, 1).u32(id).finish().unwrap() // wl_display.get_registry
     }
     fn global(reg: u32, name: u32, iface: &str, version: u32) -> Vec<u8> {
         MessageWriter::new(reg, WL_REGISTRY_GLOBAL).u32(name).string(iface).u32(version).finish().unwrap()
     }
 
     #[test]
-    fn hidden_globals_never_reach_the_client_and_cannot_be_bound() {
+    fn hidden_globals_invisible_and_unbindable() {
         let (mut s, mut c, mut sv) = make();
         c.write_all(&get_registry(2)).unwrap();
         pump_all(&mut s).unwrap();
@@ -611,7 +596,29 @@ mod tests {
     }
 
     #[test]
-    fn bindings_must_match_the_advertised_interface_and_version() {
+    fn global_remove_reaches_every_registry() {
+        let (mut s, mut c, mut sv) = make();
+        c.write_all(&get_registry(2)).unwrap();
+        c.write_all(&get_registry(3)).unwrap();
+        pump_all(&mut s).unwrap();
+        for reg in [2, 3] {
+            sv.write_all(&global(reg, 1, "wl_shm", 2)).unwrap();
+            sv.write_all(&global(reg, 2, "zwlr_screencopy_manager_v1", 3)).unwrap();
+        }
+        pump_all(&mut s).unwrap();
+        read_all(&mut c);
+        let remove = |reg: u32, name: u32| MessageWriter::new(reg, WL_REGISTRY_GLOBAL_REMOVE).u32(name).finish().unwrap();
+        // Each registry is told of wl_shm's removal; none of the hidden global's.
+        for reg in [2, 3] {
+            sv.write_all(&remove(reg, 1)).unwrap();
+            sv.write_all(&remove(reg, 2)).unwrap();
+        }
+        pump_all(&mut s).unwrap();
+        assert_eq!(read_all(&mut c), [remove(2, 1), remove(3, 1)].concat());
+    }
+
+    #[test]
+    fn bind_must_match_advertised_global() {
         for (name, version) in [("wl_shm", 1), ("wl_compositor", 2), ("wl_compositor", 0)] {
             let (mut s, mut c, mut sv) = make();
             c.write_all(&get_registry(2)).unwrap();
@@ -628,13 +635,12 @@ mod tests {
     }
 
     #[test]
-    fn creating_an_object_cannot_replace_a_live_object() {
+    fn new_object_cannot_replace_live_one() {
         let (mut s, mut c, mut sv) = make();
         c.write_all(&get_registry(2)).unwrap();
         pump_all(&mut s).unwrap();
         read_all(&mut sv);
-        // sync creates a callback; using the registry's ID must not change
-        // its tracked interface or forward an invalid creation upstream.
+        // wl_display.sync on the registry's id must not retype it or reach the compositor.
         c.write_all(&MessageWriter::new(1, 0).u32(2).finish().unwrap()).unwrap();
         assert!(pump_all(&mut s).is_err(), "replaced a live registry with a callback");
         assert_eq!(s.objects[&2].0.name, "wl_registry");
@@ -642,7 +648,7 @@ mod tests {
     }
 
     #[test]
-    fn an_object_id_can_be_reused_after_the_server_releases_it() {
+    fn id_reusable_after_delete_id() {
         let (mut s, mut c, mut sv) = make();
         c.write_all(&MessageWriter::new(1, 0).u32(2).finish().unwrap()).unwrap();
         pump_all(&mut s).unwrap();
@@ -656,7 +662,7 @@ mod tests {
     }
 
     #[test]
-    fn requests_and_events_respect_the_bound_and_inherited_versions() {
+    fn messages_respect_bound_versions() {
         for (interface, request, dir) in [
             ("wl_shm", MessageWriter::new(3, 1).finish().unwrap(), Dir::ClientToServer), // release requires v2
             ("wl_compositor", MessageWriter::new(4, 9).i32(0).i32(0).i32(1).i32(1).finish().unwrap(), Dir::ClientToServer), // surface.damage_buffer requires v4
@@ -685,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn titles_and_app_ids_are_rewritten_with_the_zone() {
+    fn titles_and_app_ids_are_rewritten() {
         let (mut s, mut c, mut sv) = make();
         c.write_all(&get_registry(2)).unwrap();
         sv.write_all(&global(2, 1, "wl_compositor", 6)).unwrap();
@@ -708,11 +714,9 @@ mod tests {
         assert_eq!(s.rewritten, 3, "the title, the app_id, and the stamp at creation");
     }
 
-    /// A toplevel whose client never sends set_app_id still reaches the
-    /// compositor with the zone's identity: the proxy stamps one at
-    /// creation, and an app_id the client sends later replaces it, rewritten.
+    /// The stamp goes out at creation; a later set_app_id replaces it, rewritten.
     #[test]
-    fn a_toplevel_that_never_names_itself_is_stamped_anyway() {
+    fn unnamed_toplevel_is_stamped() {
         let (mut s, mut c, mut sv) = make();
         c.write_all(&get_registry(2)).unwrap();
         sv.write_all(&global(2, 1, "wl_compositor", 6)).unwrap();
@@ -729,14 +733,13 @@ mod tests {
         pump_all(&mut s).unwrap();
         let got = read_all(&mut sv);
         let msgs = split_messages_for_test(&got);
-        // get_toplevel first, then the proxy's own set_app_id on the new
-        // object, then the commit: the compositor never sees a nameless toplevel.
+        // get_toplevel, then the proxy's set_app_id on the new object, then the commit.
         assert_eq!(msgs[0].0, (6, 1), "get_toplevel is forwarded first: {msgs:?}");
         assert_eq!(msgs[1].0, (7, 3), "the proxy's set_app_id follows on the new toplevel: {msgs:?}");
         assert_eq!(msgs[2].0, (5, 6), "the commit comes after the identity: {msgs:?}");
         assert!(String::from_utf8_lossy(&msgs[1].1).contains("kryptik.work.app"), "{:?}", msgs[1]);
         assert_eq!(s.rewritten, 1);
-        // A name the client sends later is rewritten as before.
+        // A name the client sends later is rewritten.
         c.write_all(&MessageWriter::new(7, 3).string("editor").finish().unwrap()).unwrap();
         pump_all(&mut s).unwrap();
         let got = String::from_utf8_lossy(&read_all(&mut sv)).to_string();
@@ -756,10 +759,9 @@ mod tests {
         out
     }
 
-    /// A long multi-byte title goes through the same rewrite as an ASCII
-    /// one: bounded, prefixed, still valid, and the session survives it.
+    /// Bounded, prefixed, still valid UTF-8, and the session survives it.
     #[test]
-    fn long_multibyte_titles_are_rewritten_and_forwarded() {
+    fn long_multibyte_title_is_forwarded() {
         let (mut s, mut c, mut sv) = make();
         c.write_all(&get_registry(2)).unwrap();
         sv.write_all(&global(2, 1, "wl_compositor", 6)).unwrap();
@@ -817,7 +819,36 @@ mod tests {
     }
 
     #[test]
-    fn descriptors_ride_with_their_message_and_no_other() {
+    fn batches_small_messages() {
+        let (a, b) = UnixStream::pair().unwrap();
+        b.set_nonblocking(true).unwrap();
+        let mut out = Endpoint::new(a.into_raw_fd());
+        for i in 0..100u32 {
+            out.queue(&MessageWriter::new(1, 0).u32(i).finish().unwrap(), Vec::new());
+        }
+        assert_eq!(out.outq.len(), 1, "a hundred 12-byte messages are one batch");
+        assert_eq!(out.pending_out, 1200);
+        let (p, _q) = UnixStream::pair().unwrap();
+        for _ in 0..30 {
+            let fd = unsafe { libc::dup(p.as_raw_fd()) };
+            out.queue(&MessageWriter::new(1, 0).u32(0).finish().unwrap(), vec![fd]);
+        }
+        assert!(out.outq.iter().all(|(_, f)| f.len() <= BATCH_FDS));
+        assert!(!out.flush().unwrap(), "everything went");
+        let (bytes, fds) = recv_with_fds(b.as_raw_fd());
+        assert_eq!(bytes.len(), 1200 + 30 * 12);
+        assert_eq!(fds.len(), 30);
+        for (i, m) in bytes.chunks(12).take(100).enumerate() {
+            assert_eq!(u32::from_ne_bytes(m[8..12].try_into().unwrap()), i as u32, "in order");
+        }
+        for fd in fds {
+            unsafe { libc::close(fd) };
+        }
+        out.close_all();
+    }
+
+    #[test]
+    fn descriptors_ride_with_their_message() {
         let (mut s, mut c, mut sv) = make();
         c.write_all(&get_registry(2)).unwrap();
         sv.write_all(&global(2, 1, "wl_shm", 2)).unwrap();
@@ -842,9 +873,8 @@ mod tests {
         let mut buf = [0u8; 16];
         let n = probe_b.read(&mut buf).unwrap();
         assert_eq!(&buf[..n], b"same file");
-        // a message that carries no fd must not take one: send an fd with a
-        // request whose signature has none, then a create_pool without one -
-        // the queued descriptor goes with the create_pool, in order.
+        /* A message with no fd argument must not take one: an fd sent with
+         * wl_shm.release goes with the create_pool that follows. */
         let (extra_a, _extra_b) = UnixStream::pair().unwrap();
         send_with_fd(c.as_raw_fd(), &MessageWriter::new(3, 1).finish().unwrap(), extra_a.as_raw_fd()); // wl_shm.release (v2), carries no fd
         c.write_all(&MessageWriter::new(3, 0).u32(5).i32(8192).finish().unwrap()).unwrap();
@@ -856,7 +886,7 @@ mod tests {
     }
 
     #[test]
-    fn a_message_waits_for_its_descriptor() {
+    fn message_waits_for_descriptor() {
         let (mut s, mut c, mut sv) = make();
         c.write_all(&get_registry(2)).unwrap();
         sv.write_all(&global(2, 1, "wl_shm", 2)).unwrap();
@@ -870,8 +900,7 @@ mod tests {
         pump_all(&mut s).unwrap();
         assert!(!s.has_object(4));
         assert!(read_all(&mut sv).is_empty());
-        // the last bytes arrive with the fd (Linux carries SCM_RIGHTS only with
-        // data, as libwayland does): now it goes
+        // the rest arrives with the fd (SCM_RIGHTS needs data): now it goes
         let (a, _b) = UnixStream::pair().unwrap();
         send_with_fd(c.as_raw_fd(), &msg[12..], a.as_raw_fd());
         pump_all(&mut s).unwrap();
@@ -883,7 +912,7 @@ mod tests {
     }
 
     #[test]
-    fn rejected_messages_close_descriptors_already_taken_from_the_queue() {
+    fn rejected_message_closes_its_descriptors() {
         for body in [
             MessageWriter::new(3, 0).u32(4).finish().unwrap(), // create_pool: missing size
             MessageWriter::new(3, 0).u32(0).i32(4096).finish().unwrap(), // invalid new object id
@@ -917,7 +946,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_ancillary_data_is_refused_and_received_descriptors_closed() {
+    fn truncated_ancillary_data_is_refused() {
         let (mut s, c, _sv) = make();
         let (a, mut b) = UnixStream::pair().unwrap();
         b.set_nonblocking(true).unwrap();
@@ -929,7 +958,7 @@ mod tests {
     }
 
     #[test]
-    fn blocked_compositor_cannot_accumulate_unbounded_outgoing_descriptors() {
+    fn outgoing_descriptors_are_bounded() {
         let (mut s, c, _sv) = make();
         s.objects.insert(3, (protocol::find("wl_shm").unwrap(), 2));
         let (a, mut b) = UnixStream::pair().unwrap();
@@ -938,7 +967,7 @@ mod tests {
             let msg = MessageWriter::new(3, 0).u32(4 + i as u32).i32(4096).finish().unwrap();
             send_with_fd(c.as_raw_fd(), &msg, a.as_raw_fd());
             s.client.read().unwrap();
-            let result = s.pump(Dir::ClientToServer); // deliberately do not flush the compositor's queue
+            let result = s.pump(Dir::ClientToServer); // the compositor's queue is never flushed
             if i < policy::MAX_PENDING_FDS {
                 result.unwrap();
             } else {
@@ -951,7 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_descriptor_cannot_hold_unbounded_input_bytes() {
+    fn input_bounded_while_waiting_for_fd() {
         let (mut s, mut c, _sv) = make();
         s.objects.insert(3, (protocol::find("wl_shm").unwrap(), 2));
         c.write_all(&MessageWriter::new(3, 0).u32(4).i32(4096).finish().unwrap()).unwrap();
@@ -1047,16 +1076,11 @@ mod tests {
         (bytes, fds)
     }
 
-    /// The whole path a zone's bytes take, attacked: a real opening
-    /// conversation (get_registry, bind the compositor, create a surface,
-    /// commit, destroy), damaged by the seeded generator the decoder's test
-    /// uses and delivered in fragments of arbitrary size. The session may
-    /// refuse - that is what it is for - but it must never panic, and what
-    /// it has forwarded to the compositor by then must be whole, well-formed
-    /// messages and nothing else: the compositor's parser is not the place
-    /// where a zone's malformed frame is found out.
+    /// A real opening conversation, damaged by the seeded generator and sent in
+    /// random fragments. The session may refuse but never panic, and all it
+    /// forwards must be whole, well-formed messages.
     #[test]
-    fn whatever_a_client_sends_the_compositor_receives_only_whole_messages() {
+    fn compositor_gets_only_whole_messages() {
         use crate::protocol::tests::Rng;
         let mut rng = Rng(0x5345_5353_494F_4E31);
         let bind = MessageWriter::new(2, 0).u32(1).string("wl_compositor").u32(4).u32(3).finish().unwrap();
@@ -1071,8 +1095,7 @@ mod tests {
         let (mut refused, mut through) = (0u32, 0u32);
         for round in 0..400 {
             let (mut s, mut c, mut sv) = make();
-            // The registry object exists once get_registry has crossed; the
-            // compositor then advertises the global the client binds.
+            // Once get_registry has crossed, the compositor advertises the global to bind.
             let mut bytes = conversation.clone();
             if round > 0 {
                 for _ in 0..1 + rng.below(3) {

@@ -1,23 +1,7 @@
 #!/usr/bin/env bash
-# Focused tests for tools/git-hooks/pre-commit, tools/git-hooks/pre-push,
-# tools/check-commit-identity.sh and tools/install-git-hooks.sh.
-#
-#   ./tools/test-git-hooks.sh
-#
-# Deterministic and offline. Each case builds a throwaway git repository, points
-# core.hooksPath at the real hook, and commits into it, so the hook is exercised
-# by git rather than called directly.
-#
-# The case worth reading first is "a hook file staged 100644 has its exec bit
-# fixed". tools/git-hooks/pre-commit was itself recorded 100644 from the day it
-# was added. Git silently ignores a hook that is not executable -- it prints an
-# advice line at commit time and carries on -- so in any checkout where nobody
-# had run install-git-hooks.sh locally, every check in this file was inert while
-# install-git-hooks.sh reported "hooks installed". The exec-bit sweep could not
-# have caught it either: it only looked at *.sh, and hook files have no suffix.
-#
-# Positive controls come first. A hook that refused every commit would satisfy
-# all the refusal cases below.
+# Tests for the git hooks, check-commit-identity.sh and install-git-hooks.sh.
+# Each case commits into a throwaway repository whose core.hooksPath is the
+# real hooks, so git itself runs them. Offline.
 
 set -uo pipefail
 
@@ -29,10 +13,7 @@ PUSH_HOOK="${ROOT}/tools/git-hooks/pre-push"
 CHECKER="${ROOT}/tools/check-commit-identity.sh"
 INSTALLER="${ROOT}/tools/install-git-hooks.sh"
 
-# The one identity this repository commits under, and the one address that
-# must never appear. Both are what tools/check-commit-identity.sh says; the
-# suite reads them from there so a change to the checker cannot silently
-# disagree with the tests of it.
+# Read from the checker, so the tests cannot disagree with it.
 ALLOWED_NAME="$(sed -n 's/^ALLOWED_NAME="\(.*\)"$/\1/p' "$CHECKER")"
 ALLOWED_EMAIL="$(sed -n 's/^ALLOWED_EMAIL="\(.*\)"$/\1/p' "$CHECKER")"
 BANNED_EMAIL="$(sed -n 's/^BANNED_EMAIL="\(.*\)"$/\1/p' "$CHECKER")"
@@ -60,14 +41,12 @@ newrepo() {
     FIX="${W}/repo$RANDOM$RANDOM"
     mkdir -p "${FIX}/tools/git-hooks" "${FIX}/build/lib" "${FIX}/build/stages"
     git -C "$FIX" init -q
-    # The permitted identity: every other case in this file is about
-    # something else, and would be refused for the wrong reason otherwise.
+    # The permitted identity, so other cases are not refused for it.
     git -C "$FIX" config user.name "$ALLOWED_NAME"
     git -C "$FIX" config user.email "$ALLOWED_EMAIL"
     git -C "$FIX" config advice.ignoredHook false
-    # The CRLF case stages CR bytes on purpose. A Windows checkout, where Git
-    # for Windows defaults core.autocrlf to true, would normalise them away
-    # on add, and the case would then fail for a reason that is not the hook.
+    # The CRLF case must stage its CR bytes; Git for Windows defaults
+    # core.autocrlf to true, which strips them.
     git -C "$FIX" config core.autocrlf false
     cp "$HOOK" "${FIX}/tools/git-hooks/pre-commit"
     cp "$PUSH_HOOK" "${FIX}/tools/git-hooks/pre-push"
@@ -88,6 +67,8 @@ mode_of() {  # mode_of PATH  (in HEAD)
 
 has() { grep -qE -- "$1" "$OUT"; }
 
+# Positive controls first: a hook that refused everything would pass every
+# refusal case below.
 echo "=== positive controls: the hook must let good commits through ==="
 
 newrepo
@@ -144,6 +125,18 @@ else
     red "build/stages scripts are swept too (got $(mode_of build/stages/99-thing.sh))"
 fi
 
+# tools/test-*.py suites run like the shell ones, so they are swept too.
+newrepo
+printf '#!/usr/bin/env python3\nprint("hi")\n' > "${FIX}/tools/test-thing.py"
+chmod 644 "${FIX}/tools/test-thing.py"
+git -C "$FIX" add tools/test-thing.py
+commit_in "a test suite in python"
+if [[ "$(mode_of tools/test-thing.py)" == "100755" ]]; then
+    green "a tools/test-*.py suite is swept too"
+else
+    red "a tools/test-*.py suite is swept too (got $(mode_of tools/test-thing.py))"
+fi
+
 newrepo
 printf '# sourced, never executed\n' > "${FIX}/build/lib/common.sh"
 chmod 644 "${FIX}/build/lib/common.sh"
@@ -170,7 +163,7 @@ else
     show
 fi
 
-# The whole point: a hook committed 100644 is a hook git will not run.
+# A hook committed 100644 is a hook git will not run.
 newrepo
 git -C "$FIX" add tools/git-hooks/pre-commit
 commit_in "the hook itself"
@@ -183,7 +176,8 @@ fi
 echo
 echo "=== and the real repository, which is where it was actually wrong ==="
 
-real_mode="$(git -C "$ROOT" ls-files -s -- tools/git-hooks/pre-commit | awk '{print $1}')"
+# safe.directory: acceptance runs this as root over a checkout root does not own.
+real_mode="$(git -c safe.directory='*' -C "$ROOT" ls-files -s -- tools/git-hooks/pre-commit | awk '{print $1}')"
 if [[ "$real_mode" == "100755" ]]; then
     green "tools/git-hooks/pre-commit is 100755 in this repository's index"
 else
@@ -196,10 +190,7 @@ echo "=== refusals, each of which must actually refuse ==="
 newrepo
 printf '#!/usr/bin/env bash\r\necho windows\r\n' > "${FIX}/tools/crlf.sh"
 git -C "$FIX" add tools/crlf.sh
-# Prove the fixture is what it claims: the STAGED blob must carry CR, or this
-# case would pass for the wrong reason. (An earlier draft used
-# `git add --renormalize`, which succeeds while staging nothing for an untracked
-# path, so the hook was refusing an empty commit rather than a CRLF file.)
+# The staged blob must carry CR, or the refusal below proves nothing.
 if git -C "$FIX" show :tools/crlf.sh | grep -qU $'\r'; then
     green "the CRLF fixture really is staged with CR bytes"
 else
@@ -236,12 +227,8 @@ if [[ "$RC" -eq 0 ]]; then green "--no-verify still bypasses, as documented"; el
 echo
 echo "=== identity: one permitted, one banned by name, everything else refused ==="
 
-# Why this block exists: GitHub attributes a commit to whichever account has
-# registered its email, and the banned address belongs to a different account.
-# 282 commits of this repository displayed under it before the history was
-# rewritten on 2026-09-15. The hooks are what keep that from recurring, so a
-# hook that let the banned address through would be the worst regression in
-# this file.
+# GitHub shows a commit under the account that registered its email, and the
+# banned address belongs to another account.
 
 newrepo
 printf 'prose\n' > "${FIX}/note.md"
@@ -328,8 +315,7 @@ fi
 echo
 echo "=== pre-push: nothing leaves under the wrong identity ==="
 
-# A bad commit made past the pre-commit hook (--no-verify, exactly the escape
-# hatch documented above) must still be stopped at the push.
+# A bad commit made with --no-verify must still be stopped at the push.
 newrepo
 REMOTE="${W}/remote$RANDOM.git"
 git init -q --bare "$REMOTE"
@@ -377,7 +363,7 @@ run_installer() {
 newrepo
 git -C "$FIX" add tools/git-hooks/pre-commit
 git -C "$FIX" -c core.hooksPath= commit -q --no-verify -m "hook at whatever mode it landed" 2>/dev/null
-# Force the index back to 100644: the state a fresh clone of the old repo saw.
+# Force the index mode back to 100644.
 git -C "$FIX" update-index --chmod=-x -- tools/git-hooks/pre-commit
 run_installer
 if [[ "$RC" -eq 0 ]]; then green "the installer succeeds on a usable hook"; else red "the installer succeeds on a usable hook"; show; fi
@@ -398,8 +384,8 @@ if has 'core.hooksPath = tools/git-hooks'; then green "and reports the path it a
 newrepo
 chmod 644 "${FIX}/tools/git-hooks/pre-commit"
 run_installer
-# The installer chmods +x first, so on a normal filesystem this recovers; what
-# must never happen is a success claim while the file is not executable.
+# The installer chmods +x first, so this normally recovers; it must never
+# claim success while the hook is not executable.
 if [[ "$RC" -eq 0 ]] && [[ -x "${FIX}/tools/git-hooks/pre-commit" ]]; then
     green "a non-executable hook is made executable before success is claimed"
 elif [[ "$RC" -ne 0 ]] && has 'git will IGNORE it'; then

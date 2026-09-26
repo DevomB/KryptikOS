@@ -1,0 +1,49 @@
+# Reviews of pins that are behind their upstream. Read by tools/check-pin-reviews.sh.
+#
+#   package  pinned  reviewed_up_to  fine|held  date  what was read, and why
+#
+# fine: nothing released after the pin, up to reviewed_up_to, is a security fix
+# that reaches Kryptik. held: something is, and the note says why the pin stays.
+# A pin that has caught up has no row; a row for it fails, so this file shrinks.
+
+# Reviewed 2026-09-19 from upstream NEWS and changelogs, project security
+# pages, the Debian security tracker and NVD records. "Survey" below is
+# check-source-currency.sh's newest-upstream column on that day.
+
+# --- toolchain -----------------------------------------------------------------
+binutils      2.43.1   2.47     fine  2026-09-19  NEWS 2.44 to 2.47 and the Debian tracker: every CVE since 2.43 is a crafted-input bug in tools that are only fed the project's own objects, and upstream's SECURITY.txt excludes them; no wrong-code or hardening fix found. 2.44 drops gold, which the recipe enables.
+gcc           14.4.0   16.2.0   fine  2026-09-19  14.4.0 is the newest 14.x. 15 changes the default C standard and 16 the default C++ one; neither is a security release. GCC Bugzilla milestones for 14.3 and 14.4 were read when the pin moved off 14.2.0.
+glibc         2.40     2.44     fine  2026-09-19  The tarball is 2.40 and build/patches/glibc-2.40 carries upstream's maintained release/2.40/master branch to cdaa5d6d (2026-09-10), which is where 2.40's security fixes live. Re-read that branch's head when this row is next reviewed.
+mpc           1.3.1    1.4.1    fine  2026-09-19  NEWS 1.4.0 and 1.4.1: no security or wrong-result fix. 1.4.0 is to be skipped if this ever moves.
+
+# --- held: a fix exists upstream and the pin stays, for the reason given -----------
+zlib          1.3.1    1.3.2    held  2026-09-19  1.3.2 fixes CVE-2026-27171 (a CPU loop in crc32_combine when a caller passes a negative length; local, low). 1.3.2 also INTRODUCES CVE-2026-85091, a heap overflow in gz_vacate that 1.3.1 does not contain (checked: the function is absent). The fix, upstream df84af25dc, is in no release. Move when one carries it.
+gawk          5.3.0    5.4.1    held  2026-09-19  CVE-2026-40467, -40468, -40469 and -40553 (integer overflows in builtin.c) are fixed in 5.4.1 only; 5.3.2 does not have them. 5.4 makes MinRX the default regex engine under every build script that calls awk, glibc's and the kernel's included. Whether the overflows are reachable from data alone is not established. Moves in a build of its own, not in a batch.
+gzip          1.13     1.14     held  2026-09-19  CVE-2026-41992 (out-of-bounds access in the LZH decoder after a crafted .Z file in the same gzip -d run) affects 1.14 and earlier and is fixed only in upstream git, so moving to 1.14 fixes nothing. Carry upstream's patch, or move when 1.15 exists.
+acl           2.3.2    2.4.0    held  2026-09-19  2.4.0 fixes CVE-2026-54370 (a race in setfacl, getfacl and chacl) and CVE-2026-54369 (libacl follows symlinks), and does not build with the pinned tar 1.35: both define acl_*_at. Needs the tar fix the LFS book carries. Bumping libacl does not fix its callers; each has to adopt the new functions.
+readline      8.2      8.3      held  2026-09-19  No CVE, but 8.2 is built without its 13 official patches, which include a use-after-free and an unterminated paste buffer. 8.3 has to move together with bash 5.3, which needs four symbols new in it.
+shadow        4.16.0   4.20.2   held  2026-09-19  No CVE is fixed in the gap (CVE-2024-56433 is unfixed upstream), but 4.17.0 fixes a use-after-free in sgetgrent. 4.19 needs --disable-logind, 4.20 changes the login.defs line the recipe edits, removes PASS_MIN_DAYS and makes su - fail unless TIOCSTI is off. Target 4.19.4, with the recipe.
+
+# --- fine: nothing in the gap is a security fix that reaches Kryptik ---------------
+bash          5.2.32   5.3      fine  2026-09-19  Patches 5.2.33 to 5.2.37 and the 5.3 NEWS: no security fix found. 5.3 needs readline 8.3.
+grep          3.11     3.12     fine  2026-09-19  NEWS 3.12: a failure of grep -r on directories with over 100,000 entries; no security fix.
+diffutils     3.10     3.12     fine  2026-09-19  NEWS 3.11 and 3.12: no security fix in a release. CVE-2026-53910 (diff3, disputed) is fixed only in upstream git, so a bump would not fix it. Never 3.11.
+m4            1.4.19   1.4.21   fine  2026-09-19  NEWS 1.4.20 and 1.4.21: build fixes for newer glibc and compilers.
+file          5.45     5.48     fine  2026-09-19  ChangeLog 5.46 to 5.48: the stack overrun it mentions is a regression that exists only in 5.46 (checked in readelf.c: 5.45 uses a BUFSIZ buffer there). Never pin 5.46.
+zstd          1.5.6    1.5.7    fine  2026-09-19  Release notes 1.5.7: performance and CLI defaults; no security fix.
+libffi        3.5.2    3.8.0    fine  2026-09-19  The x86-64 memory access fixes of 3.4.7 and 3.4.8 are in 3.5.2. 3.6 to 3.8 history read; no upstream security page exists, so this rests on that and an NVD search.
+openssl       3.5.8    3.6.4    fine  2026-09-19  3.5.8 is the newest release of the 3.5 LTS series (supported to 2030-04-08) and came out the same day as 3.6.4. The one extra fix in 3.6.4, CVE-2026-54876, affects 3.6 and 4.0 only. 3.6 reaches end of life on 2026-11-01.
+gettext       0.22.5   1.0      fine  2026-09-19  NEWS 0.23 to 1.0: no security fix. 1.0 changes how po directories are handled.
+texinfo       7.1      7.3      fine  2026-09-19  NEWS 7.1.1 to 7.3: no security fix.
+libtool       2.4.7    2.6.2    fine  2026-09-19  NEWS 2.5.x and 2.6.x: no security fix.
+gperf         3.1      3.3      fine  2026-09-19  NEWS 3.2 and 3.3: no security fix.
+pkgconf       2.3.0    3.0.7    fine  2026-09-19  NEWS to 3.0.7: no security fix. 3.0 breaks the libpkgconf ABI, moves to meson and changed quoting and sysroot handling twice.
+iana-etc      20240806 20260911 fine  2026-09-19  Data only: /etc/services and /etc/protocols.
+groff         1.23.0   1.24.1   fine  2026-09-19  NEWS 1.24.0 and 1.24.1: no security fix. 1.24.0 has incompatible request-syntax changes; never that one.
+e2fsprogs     1.47.1   1.47.4   fine  2026-09-19  Release notes 1.47.2 to 1.47.4: no security fix.
+libpipeline   1.5.7    1.5.8    fine  2026-09-19  NEWS 1.5.8: no security fix.
+man-db        2.12.1   2.13.1   fine  2026-09-19  NEWS 2.13.0 and 2.13.1: no security fix.
+perl          5.40.5   5.44.0   fine  2026-09-19  5.40.5 is the newest 5.40.x and has every fix through CVE-2026-13221. 5.40 is in perlpolicy's security-fix window (tools/support-policy.tsv). 5.42 and 5.44 are new series, not security releases.
+libxkbcommon  1.13.2   1.14.0   fine  2026-09-19  NEWS for 1.14.0: no security fix. Upstream's own tags show 1.14.0 only as betas on the day this was read, so the survey may be early.
+libdrm        2.4.129  2.4.134  fine  2026-09-19  The 27 commits between them: none is a security fix.
+libinput      1.30.4   1.32.0   fine  2026-09-19  CVE-2026-35093, -35094 and -50292 are all fixed in the pinned 1.30.4, the newest 1.30.x. 1.31.3 and 1.32.0 add hardening against malicious uinput devices that was not backported; wlroots 0.19.3 has not been built against 1.32.

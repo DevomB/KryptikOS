@@ -1,7 +1,6 @@
 #!/bin/sh
-# Deliberately not `-e`. A failure here must be reported, not abort the rest
-# of the boot: a machine that cannot start zones should still come up far
-# enough to be logged into and debugged.
+# Log whether kryptikd can read the zones and the kernel supports them. Not -e:
+# a machine that cannot start zones must still boot far enough to debug.
 log=/var/log/kryptik/kryptikd-check.log
 mkdir -p /var/log/kryptik
 {
@@ -14,7 +13,6 @@ mkdir -p /var/log/kryptik
         echo "kryptikd-check: kernel support MISSING - zones will not start"
     fi
 } >> "$log" 2>&1
-# Echo the verdict to the console too, so a serial log shows it without
-# anyone having to go looking in the filesystem.
+# The verdict on the console too, for the serial log.
 tail -3 "$log"
 echo "kryptikd-check: complete (full output in $log)"

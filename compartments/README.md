@@ -1,10 +1,7 @@
 # Compartments
 
-Zone definitions and the compartment manager (`kryptikd`).
-
-The compartment manager `kryptikd`, the zone definitions it loads and the
-suites that attack it live here; in [../docs/roadmap.md](../docs/roadmap.md)
-this is the compartment layer. The model it implements is specified in
+The compartment manager `kryptikd`, the zone definitions it loads, and the
+suites that attack it. The model is described in
 [../docs/architecture.md](../docs/architecture.md).
 
 ## Layout
@@ -14,7 +11,7 @@ compartments/
   zones/          One TOML definition per shipped zone (vault, net, work, …)
     policy/       Per-zone seccomp additions, named by each definition
   kryptikd/       The compartment manager (Rust)
-  tests/          The suites that run it as root: adversarial, launcher, cli, serve, update
+  tests/          The suites that run it: adversarial, launcher, cli, serve
 ```
 
 ## A zone definition
@@ -59,13 +56,10 @@ are not implemented.
 
 ## Test requirement
 
-The isolation exit test is adversarial, not descriptive. From inside `untrusted`,
-**with root in that zone**, each of the following must be demonstrably
-impossible, each proven by a committed test:
+From inside `untrusted`, with root in that zone, each of these must fail, and
+a committed test must show it:
 
 1. Listing processes in another zone
 2. Reading another zone's filesystem
 3. Reaching the physical NIC
 4. Reading anything in `vault`
-
-A zone model that has not been attacked has not been tested.

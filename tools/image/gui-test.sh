@@ -9,7 +9,7 @@
 #   tools/image/gui-test.sh --usb IMG [--disk FILE] [--timeout N]
 #
 # What the host adds to the guest's verdicts: a screenshot while a zone
-# window is focused, in which the zone's focused border colour (from
+# window is focused, in which the zone's border colour (from
 # build/desktop/zone-colours.h, the same table dwl was built with) must
 # actually be on screen; the fullscreen toggle (Alt+e) and the yes/no to
 # the transfer questions, delivered as keystrokes on the guest's keyboard
@@ -27,7 +27,7 @@ while [[ "$#" -gt 0 ]]; do
         --usb) USB="${2:?}"; shift 2 ;;
         --disk) DISK="${2:?}"; shift 2 ;;
         --timeout) TIMEOUT="${2:?}"; shift 2 ;;
-        -h|--help) sed -n '2,18p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,17p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -37,15 +37,9 @@ VMDIR="${KRYPTIK_WORK}/vm"; mkdir -p "$VMDIR"
 DISK="${DISK:-${VMDIR}/gui.img}"
 [[ -e "$DISK" && ! -f "$DISK" ]] && die "refusing: ${DISK} is not a regular file"
 
-PASS=0; FAIL=0
-green() { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
-red()   { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
-step() { printf '\n==> %s\n' "$*"; }
-TUSER=tester; TPASS=tester-pw; RPASS=root-pw
-TUSER_HASH="$(openssl passwd -6 "$TPASS")"; ROOT_HASH="$(openssl passwd -6 "$RPASS")"
-DRV="${SELF}/vm-drive.py"
+# shellcheck source=tools/image/suite-lib.sh
+source "${SELF}/suite-lib.sh"
 VARSF="${VMDIR}/gui-vars.fd"; cp /usr/share/OVMF/OVMF_VARS_4M.fd "$VARSF"
-LATEST="${KRYPTIK_WORK}/logs/ovmf-serial.latest.log"
 SHOT="${VMDIR}/gui-untrusted.ppm"
 SHOT_FS="${VMDIR}/gui-untrusted-fullscreen.ppm"
 
@@ -56,7 +50,7 @@ DISK_SIZE="$("${SELF}/test-disk-size.sh" --medium "$USB")" || die "could not siz
 rm -f "$DISK"; truncate -s "$DISK_SIZE" "$DISK"
 CTL="${VMDIR}/testctl-gui.img"
 "${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
-    "preseed_user=${TUSER}" "preseed_password_hash=${TUSER_HASH}" "preseed_root_hash=${ROOT_HASH}" > /dev/null
+    "${PRESEED[@]}" > /dev/null
 "${SELF}/run-ovmf.sh" --usb "$USB" --disk "$DISK" --testctl "$CTL" --vars clean --mode smoke --timeout "$TIMEOUT" --name gui-install > /dev/null
 tr -d '\r' < "$LATEST" | grep -q 'KRYPTIK_INSTALL: rc=0' && green "installed" || { red "install failed"; exit 1; }
 
@@ -101,12 +95,11 @@ local shot="$1" what="$2" verdict
 if [[ -s "$shot" ]]; then
     # The colours dwl was built with: the header is the single source.
     verdict="$(python3 - "$shot" "${SELF}/../../build/desktop/zone-colours.h" <<'PY'
-import re, sys
+import collections, re, sys
 shot, header = sys.argv[1], sys.argv[2]
 h = open(header).read()
-m = re.search(r'X\("untrusted",\s*0x([0-9a-f]{6})ff,\s*0x([0-9a-f]{6})ff\)', h)
-border, focus = m.group(1), m.group(2)
-def rgb(x): return tuple(int(x[i:i+2], 16) for i in (0, 2, 4))
+border = re.search(r'X\("untrusted",\s*0x([0-9a-f]{6})ff\)', h).group(1)
+unzoned = re.search(r'KRYPTIK_UNZONED_BORDER\s+0x([0-9a-f]{6})ff', h).group(1)
 data = open(shot, "rb").read()
 # P6: magic, width, height, maxval (comments allowed), one whitespace, then pixels
 tokens = []; pos = 0
@@ -121,12 +114,11 @@ while len(tokens) < 4:
 pos += 1
 w, hgt = int(tokens[1]), int(tokens[2])
 px = data[pos:pos + w * hgt * 3]
-counts = {}
-for name, col in (("focused", rgb(focus)), ("unfocused", rgb(border)), ("white", (255, 255, 255))):
-    counts[name] = sum(1 for i in range(0, len(px), 3) if px[i] == col[0] and px[i+1] == col[1] and px[i+2] == col[2])
-print(f"  screenshot {w}x{hgt}: untrusted focused #{focus}: {counts['focused']} px, unfocused #{border}: {counts['unfocused']} px, unzoned white: {counts['white']} px")
-# a 4 px border around even a small window is thousands of pixels; require hundreds
-print("SHOT-OK" if counts["focused"] + counts["unfocused"] >= 400 else "SHOT-NO-BORDER")
+seen = collections.Counter(px[i:i + 3] for i in range(0, len(px), 3))
+n = seen[bytes.fromhex(border)]
+print(f"  screenshot {w}x{hgt}: untrusted #{border}: {n} px, unzoned #{unzoned}: {seen[bytes.fromhex(unzoned)]} px")
+# a border around even a small window is thousands of pixels; require hundreds
+print("SHOT-OK" if n >= 400 else "SHOT-NO-BORDER")
 PY
 )"
     printf '%s\n' "$verdict" | grep -v 'SHOT-'
@@ -136,7 +128,7 @@ else
 fi
 }
 check_shot "$SHOT" "windowed"
-# dwl keeps the zone border in fullscreen (dwl-zone-borders.py edit 6), so a
+# dwl keeps the zone border in fullscreen (dwl-zone-borders.py edit 8), so a
 # window cannot hide which zone it belongs to by going fullscreen.
 check_shot "$SHOT_FS" "fullscreen"
 
