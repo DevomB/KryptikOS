@@ -37,9 +37,12 @@ HLD="-Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack"
 # One root per case, so findings cannot bleed between cases.
 mkroot() { local d="$W/$1/usr/bin"; mkdir -p "$d"; printf '%s' "$W/$1"; }
 
+# An empty accepted list unless a case writes one: the repository's own list
+# names objects no fixture has.
+ACC="$W/accepted.txt"; : > "$ACC"
 run_check() {  # run_check <root> [extra args...] -> prints output, returns rc
     local r="$1"; shift
-    KRYPTIK_WORK="$W/work" "$CHECK" "$r" "$@" 2>&1
+    KRYPTIK_WORK="$W/work" "$CHECK" "$r" --accepted "$ACC" "$@" 2>&1
 }
 
 # Control: a well-built executable and library pass.
@@ -125,6 +128,38 @@ head -c 512 /dev/urandom > "$mix_root/usr/bin/noise"
 out="$(run_check "$mix_root")"; rc=$?
 check "non-ELF files skipped cleanly" \
       "$({ [[ $rc -eq 0 ]] && grep -qE 'objects +1' <<<"$out"; } && echo ok)"
+
+# The accepted list: a listed finding passes --strict, anything else does not.
+printf '# fixture\nNO-PIE  usr/bin/not*  # a test of the list\n' > "$ACC"
+out="$(run_check "$np_root" --strict)"; rc=$?
+check "accepted list: a listed finding passes --strict" \
+      "$({ [[ $rc -eq 0 ]] && grep -qE 'accepted +1' <<<"$out"; } && echo ok)"
+printf 'NO-PIE  usr/bin/elsewhere  # names another object\n' > "$ACC"
+out="$(run_check "$np_root" --strict)"; rc=$?
+check "accepted list: an unlisted finding still fails --strict" "$([[ $rc -ne 0 ]] && echo ok)"
+check "accepted list: an entry that matched nothing is named" \
+      "$(grep -q 'matched nothing' <<<"$out" && grep -q 'usr/bin/elsewhere' <<<"$out" && echo ok)"
+printf 'NO-PIE  usr/bin/not*  # listed\nNO-CET  usr/bin/gone  # stale\n' > "$ACC"
+out="$(run_check "$np_root")"; rc=$?
+check "accepted list: a stale entry only warns without --strict" "$([[ $rc -eq 0 ]] && echo ok)"
+out="$(run_check "$np_root" --strict)"; rc=$?
+check "accepted list: a stale entry fails --strict" \
+      "$({ [[ $rc -ne 0 ]] && grep -q 'matched nothing, and --strict' <<<"$out"; } && echo ok)"
+printf 'NO-PIE  usr/bin/notpie\n' > "$ACC"
+out="$(run_check "$np_root")"; rc=$?
+check "accepted list: an entry without a reason is refused" \
+      "$({ [[ $rc -ne 0 ]] && grep -q 'needs its reason' <<<"$out"; } && echo ok)"
+printf 'EXEC-STACK  usr/bin/bad  # hard findings cannot be accepted\n' > "$ACC"
+out="$(run_check "$es_root")"; rc=$?
+check "accepted list: a hard finding cannot be listed" \
+      "$({ [[ $rc -ne 0 ]] && grep -q 'not a finding that can be accepted' <<<"$out"; } && echo ok)"
+printf 'RPATH  usr/bin/ok  /usr/lib/kryptik  # the rpath it names\n' > "$ACC"
+out="$(run_check "$sysrp_root" --strict)"; rc=$?
+check "accepted list: an RPATH entry accepts its own rpath" "$([[ $rc -eq 0 ]] && echo ok)"
+printf 'RPATH  usr/bin/ok  /usr/lib/other  # another rpath\n' > "$ACC"
+out="$(run_check "$sysrp_root" --strict)"; rc=$?
+check "accepted list: an RPATH entry does not accept another rpath" "$([[ $rc -ne 0 ]] && echo ok)"
+: > "$ACC"
 
 echo
 if [[ "$FAIL" -gt 0 ]]; then

@@ -1,0 +1,15 @@
+# Findings of tools/check-artifact-hardening.sh that the image keeps, each with
+# its reason: `FINDING PATH # why`, or `RPATH PATH RPATH # why`, since an RPATH
+# entry accepts one rpath. PATH and RPATH are globs on the object's path in the
+# image and on its rpath. A finding not listed here fails --strict, and so does
+# an entry that no longer matches anything.
+
+NO-CET  usr/bin/kryptikd                        # stable rustc marks nothing for CET, nor does the std it links
+NO-CET  usr/bin/kryptik-wlproxy                 # the same
+NO-CET  usr/lib/libgmp.so.*                     # GMP's hand-written x86-64 assembly carries no CET note
+
+RPATH   usr/*               /usr/lib/man-db     # man-db's programs load its private libraries from there
+RPATH   usr/bin/perl*       /usr/lib/perl5/*/CORE   # libperl.so lives in perl's CORE directory (useshrplib)
+RPATH   usr/lib/gconv/*.so  $ORIGIN             # glibc's converters load the helper libraries beside them
+RPATH   usr/lib/*           /usr/lib/../lib     # libtool names the loader's own directory; it adds nothing
+RPATH   usr/lib/*           /usr/lib            # the same, from skalibs and Time::HiRes

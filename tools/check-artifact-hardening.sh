@@ -2,10 +2,14 @@
 # Audit the hardening of the ELF objects a build actually produced.
 #
 #   tools/check-artifact-hardening.sh [ROOT] [--strict] [--json FILE]
+#                                     [--accepted FILE]
 #
 # ROOT defaults to the sysroot for the current KRYPTIK_WORK. RWX, TEXTREL,
 # EXEC-STACK and BUILD-RPATH (an rpath into the build tree) always fail. The
-# rest fail only with --strict: a sysroot mid-build holds unfinished objects.
+# rest are reported, except where the accepted list (by default
+# build/config/artifact-accepted.txt) gives the reason. --strict fails on a
+# reported finding and on a list entry that matched nothing; without it, a
+# sysroot mid-build holds unfinished objects.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 
@@ -16,14 +20,20 @@ set +e
 STRICT=0
 JSON=""
 ROOT=""
+ACCEPTED=""
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
-        --strict) STRICT=1; shift ;;
-        --json)   JSON="${2:?--json needs a path}"; shift 2 ;;
-        -*)       die "unknown option: $1" ;;
-        *)        ROOT="$1"; shift ;;
+        --strict)   STRICT=1; shift ;;
+        --json)     JSON="${2:?--json needs a path}"; shift 2 ;;
+        --accepted) ACCEPTED="${2:?--accepted needs a file}"; shift 2
+                    [[ -f "$ACCEPTED" ]] || die "no accepted list at ${ACCEPTED}" ;;
+        -*)         die "unknown option: $1" ;;
+        *)          ROOT="$1"; shift ;;
     esac
 done
+if [[ -z "$ACCEPTED" && -f "${KRYPTIK_ROOT}/build/config/artifact-accepted.txt" ]]; then
+    ACCEPTED="${KRYPTIK_ROOT}/build/config/artifact-accepted.txt"
+fi
 ROOT="${ROOT:-$KRYPTIK_SYSROOT}"
 ROOT="${ROOT%/}"
 [[ -d "$ROOT" ]] || die "no such directory: ${ROOT}
@@ -47,11 +57,52 @@ HARD=0
 declare -A COUNT=()
 declare -a HARD_LINES=()
 declare -a SOFT_LINES=()
+declare -a ACCEPTED_LINES=()
 
 bump() { COUNT["$1"]=$(( ${COUNT["$1"]:-0} + 1 )); }
 
+# The accepted list: `FINDING PATH # why`, or `RPATH PATH RPATH # why`, the
+# paths being globs. An RPATH entry names the rpath too, since that is what
+# it accepts. Only reported findings can be listed, and only with a reason.
+declare -a ACC_KIND=() ACC_PATH=() ACC_RPATH=() ACC_USED=() ACC_LINE=()
+if [[ -n "$ACCEPTED" ]]; then
+    n=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        n=$((n + 1))
+        [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+        [[ "$line" == *"#"* ]] || die "${ACCEPTED}:${n}: an accepted finding needs its reason after '#'"
+        read -r kind path rp extra <<<"${line%%#*}"
+        case "$kind" in
+            NO-RELRO|NO-BIND-NOW|NO-PIE|NO-CET)
+                [[ -n "$path" && -z "$rp" ]] || die "${ACCEPTED}:${n}: ${kind} takes one path" ;;
+            RPATH)
+                [[ -n "$rp" && -z "$extra" ]] || die "${ACCEPTED}:${n}: RPATH takes a path and the rpath it accepts" ;;
+            *)  die "${ACCEPTED}:${n}: '${kind}' is not a finding that can be accepted" ;;
+        esac
+        ACC_KIND+=("$kind"); ACC_PATH+=("$path"); ACC_RPATH+=("$rp"); ACC_USED+=(0); ACC_LINE+=("$n")
+    done < "$ACCEPTED"
+fi
+
+accepted() {   # accepted KIND REL [RPATH]
+    local i
+    for i in "${!ACC_KIND[@]}"; do
+        [[ "${ACC_KIND[$i]}" == "$1" ]] || continue
+        # shellcheck disable=SC2053  # the entries are patterns
+        [[ "$2" == ${ACC_PATH[$i]} ]] || continue
+        # shellcheck disable=SC2053
+        [[ -z "${3:-}" || "$3" == ${ACC_RPATH[$i]} ]] || continue
+        ACC_USED[i]=1
+        return 0
+    done
+    return 1
+}
+
 hard() { HARD=$((HARD + 1)); HARD_LINES+=("  $1  $2"); bump "$1"; }
-soft() { SOFT_LINES+=("  $1  $2"); bump "$1"; }
+soft() {   # soft KIND REL [RPATH]
+    local line="  $1  $2${3:+  [$3]}"
+    bump "$1"
+    if accepted "$1" "$2" "${3:-}"; then ACCEPTED_LINES+=("$line"); else SOFT_LINES+=("$line"); fi
+}
 
 is_elf() {
     local magic
@@ -108,7 +159,7 @@ audit_one() {
         if [[ "$leaked" -eq 1 ]]; then
             hard "BUILD-RPATH" "${rel}  [${rpath}]"
         else
-            soft "RPATH" "${rel}  [${rpath}]"
+            soft "RPATH" "$rel" "$rpath"
         fi
     fi
 
@@ -164,7 +215,20 @@ for k in RWX EXEC-STACK TEXTREL BUILD-RPATH NO-RELRO NO-BIND-NOW NO-PIE NO-CET R
     [[ "$n" -eq 0 ]] && continue
     printf '  %-13s %5d\n' "$k" "$n"
 done
+[[ "${#ACCEPTED_LINES[@]}" -gt 0 ]] && printf '  %-13s %5d  (%s)\n' "accepted" "${#ACCEPTED_LINES[@]}" "${ACCEPTED#"$KRYPTIK_ROOT"/}"
 [[ "${#HARD_LINES[@]}" -eq 0 && "${#SOFT_LINES[@]}" -eq 0 ]] && ok "nothing to report"
+
+# An entry nothing matched: its object was fixed or is gone, so is the reason.
+declare -a STALE=()
+for i in "${!ACC_KIND[@]}"; do
+    [[ "${ACC_USED[$i]}" -eq 1 ]] \
+        || STALE+=("  line ${ACC_LINE[$i]}: ${ACC_KIND[$i]}  ${ACC_PATH[$i]}${ACC_RPATH[$i]:+  ${ACC_RPATH[$i]}}")
+done
+if [[ "${#STALE[@]}" -gt 0 ]]; then
+    echo
+    warn "entries of ${ACCEPTED} that matched nothing (remove them):"
+    printf '%s\n' "${STALE[@]}" >&2
+fi
 
 if [[ "${#HARD_LINES[@]}" -gt 0 ]]; then
     echo
@@ -206,7 +270,9 @@ if [[ -n "$JSON" ]]; then
             printf ']'
         }
         json_list hard "${HARD_LINES[@]}"; printf ',\n'
-        json_list reported "${SOFT_LINES[@]}"; printf '\n}\n'
+        json_list reported "${SOFT_LINES[@]}"; printf ',\n'
+        json_list accepted "${ACCEPTED_LINES[@]}"; printf ',\n'
+        json_list stale "${STALE[@]}"; printf '\n}\n'
     } > "$JSON"
     dim "wrote ${JSON}"
 fi
@@ -221,6 +287,9 @@ takes LDFLAGS or add a justified per-package exception."
 fi
 if [[ "$STRICT" -eq 1 && "${#SOFT_LINES[@]}" -gt 0 ]]; then
     die "${#SOFT_LINES[@]} reported finding(s), and --strict was requested."
+fi
+if [[ "$STRICT" -eq 1 && "${#STALE[@]}" -gt 0 ]]; then
+    die "${#STALE[@]} accepted-list entr$([[ "${#STALE[@]}" -eq 1 ]] && echo y || echo ies) matched nothing, and --strict was requested."
 fi
 ok "no object failed a hard check"
 [[ "${#SOFT_LINES[@]}" -gt 0 ]] && dim "${#SOFT_LINES[@]} reported finding(s); re-run with --strict to fail on them"

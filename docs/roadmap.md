@@ -76,7 +76,8 @@ work in zones from a terminal and a text browser, and keep it up to date.
 - [ ] **The accepted lists are reviewed.** `checker-accepted.txt`,
       `hardening-exceptions.txt`, the setuid allowlist and the artifact
       audit's soft findings: each entry closed or re-justified, with the
-      audit's counts in the release notes.
+      audit's counts in the release notes. Acceptance fails on an artifact
+      finding that `build/config/artifact-accepted.txt` gives no reason for.
 - [ ] **Core scheduling per zone, and the SMT decision.** ADR-011 revisited
       with a measurement; the command line says `nosmt` or not, for a written
       reason.
