@@ -89,8 +89,8 @@ choose
 
 # --- item(), its summary parser and the verdict ------------------------------
 sed -n '/^R_SUITE=()/,/^# -* prereqs --$/p' "$ACC" > "$T/item.sh"
-sed -n '/^need_host() /p; /^verdict_of() {/,/^}/p; /^seal_export() {/,/^}/p; /^tested() /p; /^ran_on() /p; /^parts_disagree() {/,/^}/p' "$ACC" >> "$T/item.sh"
-for fn in item checks_in need_host verdict_of seal_export tested ran_on parts_disagree; do
+sed -n '/^need_host() /p; /^need_export() /p; /^need_notes() /p; /^verdict_of() {/,/^}/p; /^seal_export() {/,/^}/p; /^tested() /p; /^ran_on() /p; /^parts_disagree() {/,/^}/p' "$ACC" >> "$T/item.sh"
+for fn in item checks_in need_host need_export need_notes verdict_of seal_export tested ran_on parts_disagree; do
     grep -q "^${fn}() " "$T/item.sh" || { echo "could not extract ${fn} from $ACC"; exit 1; }
 done
 # shellcheck disable=SC2034  # read by the sourced functions
@@ -113,10 +113,17 @@ try suites     0 '17 suites: 15 passed, 1 failed, 1 did not run' FAIL "the same 
 try thin      10 '5 passed, 0 failed'                       FAIL "fewer checks than the item's minimum is still a failure"
 try silent    10 'nothing countable'                        FAIL "no summary at all, where a minimum is set, is a failure"
 [[ "$(verdict_of)" == FAIL ]] && ok "one failed mandatory item fails the verdict" || bad "verdict $(verdict_of)"
+# shellcheck disable=SC2034  # read by need_export and need_notes
+EXPORT="$T/export-dir"
+[[ "$(need_notes)" == *"has not passed"* ]] && ok "no release notes from a run that has not passed" || bad "need_notes on a failed run: '$(need_notes)'"
 
 # shellcheck disable=SC2034  # the results so far, put away
 { R_SUITE=(); R_NAME=(); R_MAND=(); R_KIND=(); R_RES=(); R_CHECKS=(); R_RC=(); R_SECS=(); R_LOG=(); R_NOTE=(); }
 try clean2 0 'All 12 checks passed' PASS "a clean item, alone"
+[[ -z "$(need_notes)" ]] && ok "a run that has passed, with an export, gets its notes" || bad "need_notes on a passed run: '$(need_notes)'"
+# shellcheck disable=SC2034  # read by need_notes
+EXPORT=""
+[[ "$(need_notes)" == *"no --export"* ]] && ok "no release notes without an export to hold them" || bad "need_notes without an export: '$(need_notes)'"
 # shellcheck disable=SC2034  # read by need_host
 NOHOST=1; item build host-suites M host 0 says need_host > /dev/null
 [[ "$(result_of host-suites)" == INCOMPLETE ]] && ok "--no-host leaves a row, and it reads INCOMPLETE" || bad "--no-host: '$(result_of host-suites)'"

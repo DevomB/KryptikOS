@@ -264,6 +264,7 @@ need_update() {
 need_cargo()   { have cargo || echo "no cargo on PATH"; }
 need_sources() { [[ -d "$KRYPTIK_SOURCES" && -f "${ROOT}/sources.lock" ]] || echo "no sources directory or sources.lock"; }
 need_export()  { [[ -n "$EXPORT" ]] || echo "no --export DIR given (EXPORT=... for make acceptance)"; }
+need_notes()   { need_export; [[ "$(verdict_of)" == PASS ]] || echo "the run has not passed, and notes come only from one that has"; }
 
 # --------------------------------------------------------------- items --
 it_revision() {
@@ -479,6 +480,15 @@ it_export() {
     done
     return "$ok"
 }
+# The release's notes (tools/release-notes.sh), from every row before this
+# one. What changed runs from the latest release tag before this revision.
+it_notes() {
+    local prev
+    prev="$(git -c safe.directory='*' -C "$ROOT" describe --tags --abbrev=0 --match 'v[0-9]*' HEAD^ 2>/dev/null || true)"
+    "${SELF}/release-notes.sh" --run "$OUT" --payload "$PAYLOAD_B" ${prev:+--since "$prev"} > "${EXPORT}/RELEASE-NOTES.md" \
+        || { rm -f "${EXPORT}/RELEASE-NOTES.md"; return 1; }
+    echo "wrote ${EXPORT}/RELEASE-NOTES.md${prev:+ (changes since ${prev})}"
+}
 # Hash every export file but the media (it_export's lines); run last, once the
 # report, results and RELEASE.txt are final.
 seal_export() {   # seal_export DIR
@@ -488,6 +498,10 @@ V="$(verdict_of)"
 write_report "$V"
 if [[ -n "$EXPORT" ]] || wanted release; then
     item release export M post 0 it_export need_export
+    # The notes read the report with the export's row in it.
+    V="$(verdict_of)"
+    write_report "$V"
+    item release notes  M post 0 it_notes need_notes
     V="$(verdict_of)"
     write_report "$V"
     if [[ -n "$EXPORT" && -d "$EXPORT" ]]; then
@@ -501,7 +515,7 @@ if [[ -n "$EXPORT" ]] || wanted release; then
             echo "firmware   : ${FW_PKG} (${FW})"
             echo "kernel     : ${KERNEL_LINE:-not observed}"
             echo "trust      : kryptik-sb.crt / kryptik-sb.der (the developer Secure Boot key, a test anchor)"
-            echo "read       : INSTRUCTIONS.md"
+            echo "read       : INSTRUCTIONS.md$([[ -f "${EXPORT}/RELEASE-NOTES.md" ]] && echo ", RELEASE-NOTES.md")"
         } > "${EXPORT}/RELEASE.txt"
         # Again, now that the export's own row and log exist.
         cp "${OUT}"/*.log "${OUT}/results.tsv" "${EXPORT}/acceptance-logs/" 2>/dev/null
