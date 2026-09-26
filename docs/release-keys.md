@@ -82,6 +82,17 @@ For each release:
 5. Keep the host's daily timer running `tools/release-channel.sh reissue`
    with the same key and signers file. A machine that hears nothing for 30
    days says so.
+6. Tag the revision you built from `v<version>` and push the tag. The next
+   release's notes list what changed since it.
+
+## Numbering a release
+
+A production release is numbered MAJOR.MINOR.PATCH, such as `1.0.3`: digits
+only, with no leading zeros. Raise the patch number for fixes, the minor for
+new features, and the major for a change that needs a reinstall. The build
+refuses any other form for a production image, and a missing version too. A
+machine installs only a release newer than the one it runs, ordered as
+`sort -V` orders them, so `1.0.10` comes after `1.0.9`.
 
 ## Enrolling the Secure Boot certificate
 

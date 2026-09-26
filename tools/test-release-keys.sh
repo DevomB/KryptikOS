@@ -170,5 +170,26 @@ else
     red "an unknown role was taken (exit ${rc})"; show
 fi
 
+# --- the version ------------------------------------------------------------------
+version() {   # version ROLE VERSION: release_version in a fresh bash; its output in $OUT
+    NO_COLOR=1 bash -c 'source "$1/build/lib/common.sh"; source "$1/build/lib/release-keys.sh"; release_version "$2" "$3"' \
+        _ "$ROOT" "$1" "$2" > "$OUT" 2>&1
+}
+taken=() refused_v=()
+for v in 1.0.0 0.1.0 1.0.10 10.20.30; do version production "$v" || refused_v+=("$v"); done
+for v in "" 01.0.0 1.00.0 1.0 1.0.0.1 1.0.0-rc1 v1.0.0 "1.0.0 " 0.1.20260925.abcdef12.1; do
+    if version production "$v"; then taken+=("'${v}'"); elif ! grep -q "MAJOR.MINOR.PATCH" "$OUT"; then taken+=("'${v}' (no reason given)"); fi
+done
+if [[ "${#refused_v[@]}" -eq 0 && "${#taken[@]}" -eq 0 ]]; then
+    green "a production version is MAJOR.MINOR.PATCH, and the development default, a missing one and every other form are refused"
+else
+    red "production versions: refused ${refused_v[*]:-none}, took ${taken[*]:-none}"
+fi
+if version development "" && version development 0.1.20260925.abcdef12.1; then
+    green "a development build keeps its dated default"
+else
+    red "a development version was refused"; show
+fi
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

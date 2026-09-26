@@ -96,8 +96,10 @@ other slot.
 A payload directory holds exactly `kryptik-root.img`, `kryptik-a.efi`,
 `kryptik-b.efi`, `root.json`, `manifest` and `manifest.sig`. The manifest
 lists each file's sha256 and size, the version and the role, and is signed by
-the release key (Ed25519, `ssh-keygen -Y`, namespace `kryptik-release`). The
-trust anchor and required role are on the verified root in
+the release key (Ed25519, `ssh-keygen -Y`, namespace `kryptik-release`).
+Versions are ordered as `sort -V` orders them. A production release is
+numbered MAJOR.MINOR.PATCH, which that order reads as a person does
+([release keys](../release-keys.md)). The trust anchor and required role are on the verified root in
 `/usr/share/kryptik/trust/`, never in `/etc`, which the state partition can
 shadow; stage 06 writes them from the build's role and keys. An image without
 the role file accepts no release: a missing file is never read as
