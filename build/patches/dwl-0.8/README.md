@@ -27,3 +27,11 @@ preloaded: without the patches dwl dies of SIGSEGV when a havoc window's
 client disconnects, with them it carries on. The desktop suite's
 `compositor-survives-close` checks the same on the image. Delete this
 directory when the dwl pin moves to a release that contains both commits.
+
+Reviewed and not carried: upstream 4847f97 ("Clear surface->data on unmap
+to fix idle-inhibitor use-after-free"). No zone can create an idle inhibitor,
+since the proxy does not offer the protocol, and under hardened_malloc the
+freed scene tree `checkidleinhibitor` reads is zeroed, so its parent is NULL
+and the read is harmless; a zone-0 client that inhibits, drops its toplevel
+and keeps the surface does not crash dwl with or without it. Take it with the
+next dwl release rather than as a patch.
