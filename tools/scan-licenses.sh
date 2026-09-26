@@ -44,8 +44,8 @@ remember() {  # remember ROW DIGEST
     CACHE_ROW["$2"]="$1"
 }
 
-# Top-level licence-ish filenames, as a POSIX ERE anchored to depth 1.
-LICENCE_RE='^[^/]+/(COPYING[^/]*|COPYRIGHT[^/]*|LICEN[CS]E[^/]*|License)$'
+# Top-level licence files come from common.sh's licence_members, the reader
+# stage 04 installs from too.
 
 # classify <path-to-text> -> comma-separated SPDX ids, or "unknown"
 # Every marker found is reported: libcap's one file is BSD-3-Clause or GPL-2.0.
@@ -143,7 +143,7 @@ while read -r name _ver url; do
             remember "$row" "$digest"; continue ;;
     esac
 
-    names="$(tar tf "$path" 2>/dev/null | grep -E "$LICENCE_RE" | head -6 || true)"
+    names="$(licence_members "$path" | head -6 || true)"
     if [[ -z "$names" ]]; then
         row="$(emit "$name" "$digest" "unknown" "no" "-" "no-top-level-licence-file")"
         remember "$row" "$digest"; continue

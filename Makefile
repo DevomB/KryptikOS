@@ -81,7 +81,7 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
         state-test zones-test gui-test acceptance \
         zones zone-test launcher-test zone-tests cli-test serve-test \
         test test-libc-unwind smoke-userspace \
-        audit-artifacts audit-artifacts-strict manifest verify-manifest \
+        audit-artifacts audit-artifacts-strict manifest verify-manifest source-bundle \
         reset-stamps clean distclean
 
 help:
@@ -117,6 +117,7 @@ help:
 	@echo "  make state-test | zones-test | gui-test    the state partition, zones, the desktop"
 	@echo
 	@echo "  make verify      verify upstream GPG signatures on fetched sources"
+	@echo "  make source-bundle  the corresponding source of this commit, for a release"
 	@echo "  make verify-provenance  signed tags + publisher checksums for the rest"
 	@echo "  make check-pins        survey every pin against its upstream (network), then"
 	@echo "                   fail on one that is behind without a current review in"
@@ -182,6 +183,11 @@ check:
 
 sources:
 	@"$(TOOLS)"/fetch-sources.sh
+
+# Every locked tarball and its signatures, the crates, and the repository at
+# HEAD, with a manifest: what a release publishes as its source.
+source-bundle:
+	@"$(TOOLS)"/source-bundle.sh
 
 lock:
 	@"$(TOOLS)"/fetch-sources.sh --lock

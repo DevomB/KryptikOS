@@ -61,6 +61,16 @@ sha256_of_stdin() {
     fi
 }
 
+# licence_members TARBALL [ERE]: a source tarball's top-level licence files,
+# what tools/scan-licenses.sh reads and stage 04 installs, and the members
+# matching ERE too, from one listing. The pattern is local, so it is part of
+# the fingerprint of any step that calls this.
+licence_members() {
+    local re='^[^/]+/(COPYING[^/]*|COPYRIGHT[^/]*|LICEN[CS]E[^/]*|License)$'
+    [[ -z "${2:-}" ]] || re="${re}|${2}"
+    tar -tf "$1" 2>/dev/null | grep -E "$re" || true
+}
+
 # Stages 01-03 run on the host and install into ${KRYPTIK_WORK}/sysroot; stages
 # 04 and 05 run inside the chroot, where the sysroot is /. A KRYPTIK_WORK path
 # may not exist in there, and installing to it would build a nested tree.

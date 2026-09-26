@@ -1389,6 +1389,40 @@ s_tests() {
     find "$base/compartments" "$base/guest-tests" -type f -o -type l | sort
 }
 
+# Every source's licence files, from its own tarball, under
+# /usr/share/licenses/<source>/, and Kryptik's own under kryptik/. Beside the
+# top-level files: the kernel's LICENSES/preferred and exceptions, which its
+# COPYING points to, firmware's WHENCE, which says which licence covers which
+# file, and a lowercase licence file (the microcode's). Acceptance checks that
+# no shipped source is left without one (tools/check-image-licences.sh).
+s_licences() {
+    local more_re='^[^/]+/(license|WHENCE|LICENSES/(preferred|exceptions)/[^/]+)$'
+    local name url f m dir tmp n=0 members
+    while read -r name _ url; do
+        [[ -n "$name" ]] || continue
+        f="${KRYPTIK_SOURCES}/${url##*/}"
+        [[ -f "$f" ]] || continue
+        mapfile -t members < <(licence_members "$f" "$more_re")
+        [[ "${#members[@]}" -gt 0 ]] || continue
+        # One extraction for all of them: every tar run reads the whole
+        # compressed stream, and linux-firmware has over a hundred.
+        tmp="$(mktemp -d)"
+        tar -xf "$f" -C "$tmp" -- "${members[@]}"
+        dir="/usr/share/licenses/${name}"
+        install -d -m 0755 "$dir"
+        for m in "${members[@]}"; do
+            # A link to a file not extracted would dangle: there is nothing to copy.
+            if [[ -f "${tmp}/${m}" ]]; then
+                install -m 0644 "${tmp}/${m}" "${dir}/${m##*/}"
+                n=$((n + 1))
+            fi
+        done
+        rm -rf "$tmp"
+    done < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list)
+    install -Dm644 "${KRYPTIK_ROOT}/LICENSE" /usr/share/licenses/kryptik/LICENSE
+    echo "${n} licence files in $(find /usr/share/licenses -mindepth 1 -maxdepth 1 -type d | wc -l) directories"
+}
+
 # Everything a boot needs, checked from the target's point of view.
 s_boot_check() {
     local n=0
@@ -2258,6 +2292,8 @@ PACKAGES=(
     "kryptikd"    "s_kryptikd ${KRYPTIK_KRYPTIKD_BIN:-none} $([[ -f "${KRYPTIK_KRYPTIKD_BIN:-}" ]] && sha256_of "${KRYPTIK_KRYPTIKD_BIN}" || echo absent) $(tree_digest "${KRYPTIK_ROOT}"/compartments/zones/*.toml "${KRYPTIK_ROOT}"/compartments/zones/policy/*) $(sha256_of "${KRYPTIK_ROOT}/tools/kryptik" 2>/dev/null || echo none)"
     # The suites and guest checks the VM drivers run; every file is an input.
     "tests"       "s_tests $(tree_digest "${KRYPTIK_ROOT}"/compartments/tests/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/probes/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/src/isolate.rs "${KRYPTIK_ROOT}"/compartments/kryptikd/src/rootfs.rs "${KRYPTIK_ROOT}"/build/guest-tests/*.sh "${KRYPTIK_ROOT}"/build/guest-tests/*.py)"
+    # The tarballs it reads are pinned by sources.lock and named by fetch-sources.
+    "licences"    "s_licences $(sha256_of "${KRYPTIK_ROOT}/sources.lock") $(sha256_of "${KRYPTIK_ROOT}/tools/fetch-sources.sh") $(sha256_of "${KRYPTIK_ROOT}/LICENSE")"
     "boot-check"  "s_boot_check"
 )
 
