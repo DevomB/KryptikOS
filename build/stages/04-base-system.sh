@@ -451,6 +451,8 @@ s_python_final() {
 s_shadow() {
     local src; src="$(unpack "shadow-${V_SHADOW}.tar.xz" "shadow-${V_SHADOW}")"
     cd "$src"
+    # build/patches/shadow-4.16.0 (see its README): upstream's sgetgrent fix from 4.17.0.
+    apply_repo_patches "shadow-${V_SHADOW}"
     # Kryptik does not ship groups(1) or the *chage man pages that conflict
     # with coreutils/man-pages.
     sed -i 's/groups$(EXEEXT) //' src/Makefile.in
