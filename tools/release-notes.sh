@@ -32,8 +32,11 @@ done
 [[ -f "${PAYLOAD}/manifest" ]] || die "no manifest in ${PAYLOAD}"
 
 field() { awk -F': ' -v k="$2" '$1 == k { print $2; exit }' "$1"; }
-# Git as acceptance.sh runs it: the verdict job is root on the runner's checkout.
-g() { git -c safe.directory='*' -C "$KRYPTIK_ROOT" "$@"; }
+# The verdict job is root on the runner's checkout, which git refuses unless
+# told it is safe: this checkout alone, since git can run commands a
+# repository's own config names.
+TOP="$(cd "$KRYPTIK_ROOT" && pwd -P)"
+g() { git -c safe.directory="$TOP" -C "$TOP" "$@"; }
 row() {   # row LABEL: the value in REPORT.md's header row LABEL
     awk -F' [|] ' -v k="| $1" '$1 == k { v = $2; sub(/ [|]$/, "", v); print v; exit }' "${RUN}/REPORT.md"
 }
