@@ -1,46 +1,12 @@
 #!/usr/bin/env bash
 # Verify upstream GPG signatures for fetched source tarballs.
 #
-#   ./tools/verify-signatures.sh            verify (informational)
-#   ./tools/verify-signatures.sh --strict   release gate
-#   ./tools/verify-signatures.sh --refresh  discard cached keys and re-import
-#
-# This is the check that gives sources.lock its meaning. A SHA-256 recorded by
-# fetch-sources.sh only proves the file has not changed since Kryptik first saw
-# it; it says nothing about whether the file was authentic to begin with.
-# Signature verification is what turns trust-on-first-use into trust in an
-# upstream maintainer's key.
-#
-# Coverage, stated honestly:
-#   GNU packages  - detached .sig verified against the GNU keyring
-#   Linux kernel  - .sign verified against kernel.org maintainer keys, over
-#                   the UNCOMPRESSED tar (which is what kernel.org signs)
-#   LFS patches   - NOT individually signed upstream. Reported as unverifiable
-#                   rather than silently passed.
-#
-# Residual limitation no script removes: the GNU keyring is itself fetched over
-# the network. If you have never verified these keys out-of-band, this
-# establishes "signed by whoever the keyring says" rather than "signed by the
-# person you believe maintains this package". See docs/supply-chain.md.
-#
-# UNVERIFIED IS NOT VERIFIED, AND --strict IS WHERE THAT BITES.
-# An unverifiable source is not a failure - upstream may publish no signature
-# at all - but it is not a pass either, and this script used to exit 0 with any
-# number of them. `--strict` is the release-gate invocation: it refuses to
-# succeed while anything went unverified.
-#
-# Keys imported by --fetch-unknown-keys are counted separately from verified,
-# not added to it. Trusting a key because the signature it checks named it is
-# circular: it establishes that a file was signed by whoever signed it, and
-# nothing about who that is. Counting those into the verified total is how a
-# coverage number grows without any trust being established, so they now have
-# their own bucket that --strict refuses to pass.
-#
-# IMPLEMENTATION NOTE - do not "simplify" this back to --keyring.
-# GnuPG 2.4 with keyboxd enabled SILENTLY IGNORES --keyring, printing only a
-# note, and verifies against the user's default store instead. Every signature
-# then reports as "key not held" no matter what is in the file. This script
-# therefore uses an isolated GNUPGHOME and imports keys into it.
+#   ./tools/verify-signatures.sh [--strict] [--refresh] [--fetch-unknown-keys]
+#                                [--report=FILE]
+#     --strict              release gate: anything unverified or unaudited fails
+#     --refresh             discard cached keys and re-import
+#     --fetch-unknown-keys  import keys the signatures name (unaudited)
+#     --report=FILE         per-source results to FILE
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 load_config
@@ -51,7 +17,8 @@ KEYDIR="${KRYPTIK_ROOT}/build/work/keys"
 SIGDIR="${KRYPTIK_SOURCES}/.signatures"
 GNU_KEYRING="${KEYDIR}/gnu-keyring.gpg"
 
-# Isolated keyring home - never touches the user's own GnuPG configuration.
+# A private GNUPGHOME, not --keyring: GnuPG 2.4 with keyboxd silently ignores
+# --keyring and verifies against the user's own store.
 export GNUPGHOME="${KEYDIR}/gnupg"
 
 FETCH_UNKNOWN=0
@@ -62,30 +29,23 @@ for a in "$@"; do
         --refresh) rm -rf "$GNUPGHOME" "$GNU_KEYRING" ;;
         --fetch-unknown-keys) FETCH_UNKNOWN=1 ;;
         --strict) STRICT=1 ;;
-        # Machine-readable per-source outcome, for tools/provenance-inventory.sh.
-        # `--report=FILE` rather than `--report FILE` so that the simple loop
-        # over "$@" stays a simple loop over "$@".
         --report=*) REPORT="${a#--report=}" ;;
-        -h|--help) sed -n '2,7p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,9p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $a" ;;
     esac
 done
 [[ -n "$REPORT" ]] && : > "$REPORT"
 
 # report <source> <class> <detail>
-#
-# One tab-separated line per source. The class is the ASSURANCE CLASS, not a
-# pass/fail: the whole purpose of writing it out is that an inventory can show
-# "verified against a key we pinned" and "verified against a key the signature
-# named" as the different things they are, instead of adding them up.
+# One tab-separated line per source, for provenance-inventory.sh. The class is
+# an assurance class (which kind of key verified it), not a pass/fail.
 report() {
     [[ -n "$REPORT" ]] || return 0
     printf '%s\t%s\t%s\n' "$1" "$2" "${3//$'\t'/ }" >> "$REPORT"
 }
 
-# The ledger of keys accepted WITHOUT audit, for human confirmation
-# out-of-band. It is read on every run, not only when --fetch-unknown-keys is
-# passed, and that is the whole point: see UNAUDITED_FPRS below.
+# Keys accepted without audit, awaiting out-of-band confirmation. Read on every
+# run, not only with --fetch-unknown-keys (see UNAUDITED_FPRS).
 KEYS_MANIFEST="${KRYPTIK_ROOT}/keys.manifest"
 
 mkdir -p "$KEYDIR" "$SIGDIR" "$GNUPGHOME"
@@ -102,11 +62,7 @@ quiet_fetch() {
 
 CANONICAL_GNU="https://ftp.gnu.org/gnu"
 
-# Self-test hooks, gated together below. tools/test-verify-signatures.sh needs
-# three things substituted to run offline - which manifest is verified, where
-# the keyring comes from, and where an "unknown" key is fetched from - and
-# nothing else. The classification in check_sig(), which is what the tests are
-# actually about, runs exactly as it does in production.
+# Overrides for tools/test-verify-signatures.sh only.
 if [[ -n "${KRYPTIK_SIGCHECK_MANIFEST:-}${KRYPTIK_SIGCHECK_KEYRING:-}${KRYPTIK_SIGCHECK_KEYSOURCE:-}${KRYPTIK_SIGCHECK_PROVENANCE:-}" ]]; then
     [[ "${KRYPTIK_SIGCHECK_SELFTEST:-0}" == "1" ]] || die \
 "A signature-check override is set (KRYPTIK_SIGCHECK_MANIFEST /
@@ -116,8 +72,7 @@ Refusing to verify signatures against a substituted manifest or keyring."
     warn "SELF-TEST MODE: manifest and/or keyring are substituted, not upstream"
 fi
 
-# The list of sources to verify. Production asks fetch-sources.sh, which is
-# the single definition of the manifest.
+# fetch-sources.sh is the one definition of the manifest.
 manifest_source() {
     if [[ -n "${KRYPTIK_SIGCHECK_MANIFEST:-}" ]]; then
         cat "$KRYPTIK_SIGCHECK_MANIFEST"
@@ -126,9 +81,7 @@ manifest_source() {
     "${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list
 }
 
-# Import one public key by id. Production asks a keyserver; the self-test
-# imports from a local directory, because a keyserver round trip is the one
-# part of --fetch-unknown-keys that cannot be exercised offline.
+# recv_key <keyid>: from a keyserver, or KRYPTIK_SIGCHECK_KEYSOURCE in tests.
 recv_key() {
     local keyid="$1" f
     if [[ -n "${KRYPTIK_SIGCHECK_KEYSOURCE:-}" ]]; then
@@ -168,6 +121,8 @@ import_keys() {
         return 0
     fi
 
+    # Fetched over the network, so it gives "signed by whoever the keyring
+    # says" unless its keys are checked out of band (docs/supply-chain.md).
     log "fetching GNU keyring"
     if [[ ! -s "$GNU_KEYRING" ]]; then
         quiet_fetch "${CANONICAL_GNU}/gnu-keyring.gpg" "$GNU_KEYRING" \
@@ -179,11 +134,7 @@ import_keys() {
         gpg --batch --quiet --import "$GNU_KEYRING" 2>/dev/null || true
     fi
 
-    # The pinned maintainer keys, fetched BY FINGERPRINT from the one array
-    # that also classifies them. A keyserver can serve any key it likes and
-    # cannot serve a different key under a given fingerprint, which is what
-    # makes this safe; it is also why the second hardcoded copy of this list
-    # that used to live here is gone.
+    # Safe from a keyserver: it cannot serve another key under a full fingerprint.
     log "fetching pinned maintainer keys (${#PINNED_FPRS[@]})"
     local fpr
     for fpr in "${PINNED_FPRS[@]}"; do
@@ -196,8 +147,6 @@ import_keys() {
     printf '%s' "$count" > "$IMPORTED_MARK"
 
     if [[ "$count" -lt 2 ]]; then
-        # No keys means every signature below reports "key not held", which a
-        # release gate must not read as an absence of problems.
         if [[ "$STRICT" -eq 1 ]]; then
             err "only ${count} key(s) imported"
             die "Without the maintainer keys nothing can be authenticated, and
@@ -229,17 +178,8 @@ mark_unverifiable() {
     UNVERIFIABLE_LIST+=("$1")
 }
 
-# Fingerprints listed in keys.manifest: keys that were accepted because a
-# signature named them, and have not been confirmed against the project.
-#
-# WHY THIS IS READ ON EVERY RUN, NOT JUST WHEN FETCHING.
-# The imported keyring is cached under build/work/keys. Once a
-# --fetch-unknown-keys run has put a key there, every later run finds it
-# already held and reports an ordinary GOODSIG - so the "unaudited" label
-# lasted exactly one invocation and then evaporated, and --strict would have
-# passed those sources on the second run. The durable record of what was never
-# audited is keys.manifest, so that is what decides, independently of whatever
-# happens to be in the key cache.
+# Unaudited keys, from keys.manifest. Once cached, such a key gives a plain
+# GOODSIG, so the manifest (read on every run) is what keeps it marked.
 declare -a UNAUDITED_FPRS=()
 if [[ -f "$KEYS_MANIFEST" ]]; then
     while read -r _pkg fpr _rest; do
@@ -247,86 +187,33 @@ if [[ -f "$KEYS_MANIFEST" ]]; then
     done < <(grep -v '^[[:space:]]*#' "$KEYS_MANIFEST" || true)
 fi
 
-# Keys Kryptik has decided to trust IN THE TREE, by fingerprint, as opposed to
-# whichever keys the fetched GNU keyring happens to contain.
-#
-# A signature checked against one of these is a stronger statement than one
-# checked against the keyring - the keyring is fetched over the network and
-# establishes "signed by whoever the keyring says" - and the inventory reports
-# them as different classes rather than one number.
-#
-# Each entry must be a fingerprint the PROJECT ITSELF publishes on its own
-# origin, with the URL recorded here so the claim can be rechecked. Pinning the
-# fingerprint is what makes fetching the key from a keyserver safe: a keyserver
-# can serve any key it likes, and cannot serve a different key under this
-# fingerprint.
-#
-# One array, used both to fetch and to classify, so the two cannot drift.
+# Keys trusted by fingerprint in the tree, reported as a stronger class than the
+# fetched GNU keyring. Each must be a fingerprint the project publishes on its
+# own origin, with that source noted here so it can be rechecked.
 PINNED_FPRS=(
-    # kernel.org mainline and stable. Pre-existing pins, already relied on to
-    # verify the kernel tarball itself.
+    # kernel.org mainline and stable.
     "ABAF11C65A2970B130ABE3C479BE3E4300411886"   # Linus Torvalds, mainline
     "647F28654894E3BD457199BE38DBBDC86092693E"   # Greg Kroah-Hartman, stable
 
-    # Thomas Wouters, who signs "3.12.x and 3.13.x source files and tags" per
-    # https://www.python.org/downloads/metadata/pgp/ - python.org's own
-    # OpenPGP verification page, retrieved 2026-09-11. V_PYTHON is in 3.12.x.
-    #
-    # Before this pin, python was reported as unverifiable, and for a reason
-    # worth recording: python.org publishes BOTH a Sigstore `.sig` and an
-    # OpenPGP `.asc`, and verify_any() probed `.sig` first, handed a
-    # base64 ECDSA blob to gpg, and reported "inconclusive". See
-    # is_pgp_signature() below.
+    # Signs CPython 3.12.x and 3.13.x, per
+    # https://www.python.org/downloads/metadata/pgp/ (retrieved 2026-09-11).
     "7169605F62C751356D054A26A821E680E5FA6305"   # Thomas Wouters, CPython 3.12/3.13
 
-    # OpenSSL. Before these pins openssl - the most security-critical source in
-    # the tree - was reported "key not held" and fell to lock-only, because its
-    # keys are in no keyring here and --fetch-unknown-keys would have imported
-    # whatever key the signature itself named.
-    #
-    # Two keys are pinned because two are needed. The OMC key signed the
-    # currently pinned 3.3.1 (verified 2026-09-11: EXPKEYSIG, RSA/SHA-256 -
-    # a VALID signature made 2024-06-04 whose key has since EXPIRED, which is
-    # not revocation and which check_sig reports distinctly). The 2026 key
-    # signs 3.5.8, the LTS release proposed in
-    # provenance/PROPOSAL-openssl-expat.md, so the pin is in place before the
-    # bump rather than after it.
-    #
-    # WHERE THESE FINGERPRINTS COME FROM, precisely, because the two differ:
-    # https://openssl-library.org/source/ names B146 647E ... 2D40 in prose as
-    # "the canonical trust anchor for verifying OpenSSL Library release
-    # artifacts", and says it is cross-certified by the retired key
-    # BA5473A2B0587B07FB27CF2D216094DFD0CB81EF - which is not pinned here
-    # because nothing Kryptik pins or proposes is signed by it. The OMC
-    # fingerprint is not printed on that page; it is the fingerprint of a key
-    # in the pubkeys.asc bundle the same page links. Both therefore rest on TLS
-    # to openssl-library.org and neither has been confirmed out of band, the
-    # same standing as the python pin above. Retrieved 2026-09-11.
+    # From https://openssl-library.org/source/ (retrieved 2026-09-11): the page
+    # names the 2026 key as the release trust anchor, and the OMC key is in the
+    # pubkeys.asc it links. Both rest on TLS to that site alone. The OMC key has
+    # expired, so its signature on 3.3.1 verifies as EXPKEYSIG.
     "EFC0A467D613CB83C7ED6D30D894E2CE8B3D79F5"   # OpenSSL OMC, signs 3.3.1
     "B146647E45A7B33947AB226B2A2C87D161692D40"   # OpenSSL 2026 key, signs 3.5.8
 
-    # expat. Verified 2026-09-11: this key GOODSIGs both the currently pinned
-    # 2.6.2 and the 2.8.4 proposed in provenance/PROPOSAL-openssl-expat.md,
-    # RSA/SHA-256, surviving --weak-digest SHA1.
-    #
-    # BE CLEAR WHAT THIS PIN DOES NOT ESTABLISH. The fingerprint comes from
-    # gentoo.org's Web Key Directory, which serves it over HTTPS for
-    # sping@gentoo.org: a THIRD PARTY attesting that the key belongs to that
-    # address. It is not circular - the route does not depend on the signature,
-    # unlike a keyserver lookup by the id the signature names - but libexpat
-    # itself designates NO release signer and publishes no fingerprint on its
-    # site, in SECURITY.md, or in its release notes (checked 2026-09-11). So
-    # this pin means "the key gentoo.org publishes for sping@gentoo.org signed
-    # this", and not "expat's authorised release signer signed this". That gap
-    # is recorded as a machine-readable caveat in tools/source-notes.tsv under
-    # kind undesignated-signer, so the inventory reports it alongside the class
-    # rather than letting the class imply more than it should.
+    # libexpat names no release signer. This is the key gentoo.org's WKD serves
+    # for sping@gentoo.org, and the pin means only that; tools/source-notes.tsv
+    # carries the undesignated-signer caveat.
     "3176EF7DB2367F1FCA4F306B1F9B0E909AF37285"   # Sebastian Pipping, expat
 )
 
-# All fingerprints of the key that made a signature: the primary and every
-# subkey. A GOODSIG names the SIGNING key, while keys.manifest and the pins
-# above record primaries, so both have to be compared.
+# Primary and subkey fingerprints. GOODSIG names the signing subkey, while the
+# pins and keys.manifest record primaries.
 key_fingerprints() {
     gpg --batch --with-colons --fingerprint --fingerprint "$1" 2>/dev/null \
         | awk -F: '$1=="fpr"{print $10}'
@@ -345,7 +232,6 @@ _key_in() {
     return 1
 }
 
-# Does the key that made this signature appear in the unaudited ledger?
 key_is_unaudited() {
     [[ "${#UNAUDITED_FPRS[@]}" -gt 0 ]] || return 1
     _key_in "$1" "${UNAUDITED_FPRS[@]}"
@@ -354,17 +240,9 @@ key_is_unaudited() {
 key_is_pinned() { _key_in "$1" "${PINNED_FPRS[@]}"; }
 
 # --- published key provenance ----------------------------------------------
-#
-# tools/key-provenance.tsv records, per key, a publisher that states its
-# fingerprint BY A ROUTE THAT DOES NOT DEPEND ON THE SIGNATURE: kernel.org's
-# pgpkeys repository, or the Web Key Directory of the signer's own email
-# domain. Before this, a source whose key was in no keyring reported "key not
-# held" and fell to lock-only, and the only route on offer was
-# --fetch-unknown-keys, which imports the key the signature itself named.
-#
-# Resolved through BASH_SOURCE, like the pins above and unlike
-# tools/source-notes.tsv: this is the tool's own knowledge about keys, not data
-# about whichever tree is being inventoried.
+
+# Per key, where a publisher states its fingerprint by a route independent of
+# the signature. Tool data, not tree data, so it is found via BASH_SOURCE.
 KEY_PROVENANCE="${KRYPTIK_SIGCHECK_PROVENANCE:-$(dirname "${BASH_SOURCE[0]}")/key-provenance.tsv}"
 
 declare -a PROV_FPR=() PROV_KIND=() PROV_LOC=() PROV_SIGNS=()
@@ -392,8 +270,7 @@ load_key_provenance() {
                     fi
                     ;;
                 github)
-                    # Pinned to the exact endpoint shape, so a row cannot point
-                    # "github" at some other host and inherit the class.
+                    # Exact shape, so "github" cannot point at another host.
                     if [[ "$l" =~ ^https://github\.com/[A-Za-z0-9-]+\.gpg$ ]]; then
                         :
                     elif [[ "${KRYPTIK_SIGCHECK_SELFTEST:-0}" == "1" && "$l" == file://* ]]; then
@@ -401,8 +278,8 @@ load_key_provenance() {
                     else
                         why="a github locator must be https://github.com/<account>.gpg"
                     fi
-                    # The note has to carry the release-author tie, because
-                    # without it the row says only "GitHub hosts this key".
+                    # Without the release-author tie the row says only
+                    # "GitHub hosts this key".
                     [[ "$rest" == *published\ by* ]] \
                         || why="a github row must record which account published the release"
                     ;;
@@ -429,16 +306,13 @@ A key-provenance table that cannot be parsed is a tooling fault, not a
 verification result: nothing here has been checked."
 }
 
-# Fetch the published key(s) for one source, if any, and only if not already
-# held. The recorded fingerprint is the anchor: if the locator now serves a
-# DIFFERENT key, that is a finding and the key is refused, because a silently
-# rotated key is exactly what this table has to be able to notice.
+# Import one source's published keys unless already held. The recorded
+# fingerprint is the anchor: a locator now serving another key is refused.
 import_provenance_keys_for() {
     local name="$1" i
     for i in "${!PROV_FPR[@]}"; do
         case "${PROV_SIGNS[$i]}" in *",${name},"*) ;; *) continue ;; esac
 
-        # Already held: nothing to fetch, and no reason to touch the network.
         gpg --batch --list-keys "${PROV_FPR[$i]}" >/dev/null 2>&1 && continue
 
         local tmp got
@@ -484,7 +358,7 @@ import_provenance_keys_for() {
     return 0
 }
 
-# korg | wkd | empty, for whichever recorded key made this signature.
+# korg, wkd, github or empty: the provenance of the key that made a signature.
 key_provenance_kind() {
     local keyid="$1" fpr i
     [[ -n "$keyid" ]] || return 0
@@ -502,50 +376,25 @@ key_provenance_kind() {
 
 load_key_provenance
 
-# Run gpg --verify and classify from its machine-readable status output.
-#
-# The distinction that matters, and which a naive implementation gets wrong:
-#
-#   GOODSIG     signature valid, key currently valid            -> verified
-#   EXPKEYSIG   signature CRYPTOGRAPHICALLY VALID, key expired  -> verified*
-#   REVKEYSIG   signature valid, key REVOKED                    -> serious
-#   BADSIG      signature does not match the data               -> tampering
-#   NO_PUBKEY   cannot check, key not held                      -> unverifiable
-#   ERRSIG      cannot check, other reason                      -> unverifiable
-#
-# EXPKEYSIG is NOT tampering and must not be reported as such. Upstream
-# maintainers routinely extend key expiry, while the GNU keyring snapshot
-# carries an older self-signature - so a 2024 release legitimately verifies
-# against a key the keyring believes expired in 2020. The cryptography is
-# sound; only the keyring's freshness is stale. Treating that as a build-
-# stopping failure trains people to ignore the tool, which is worse than the
-# risk it was guarding against.
-#
-# BADSIG is the one that means what people think all of these mean.
+# check_sig <name> <sigfile> <datafile>: classify gpg's status output.
+# EXPKEYSIG counts as verified: the signature is valid and only the keyring's
+# copy of the key has expired (maintainers extend expiry; the keyring lags).
 check_sig() {
     local name="$1" sigfile="$2" datafile="$3"
     local out signer keyid
 
-    # If a publisher states this source's signing key, obtain it from there
-    # FIRST. Doing it before the verification rather than in the NO_PUBKEY
-    # branch means the published route is always preferred over the circular
-    # one, and a key already held costs nothing.
+    # Before verifying, so a published key wins over --fetch-unknown-keys.
     import_provenance_keys_for "$name"
 
     out="$(gpg --batch --status-fd 1 --verify "$sigfile" "$datafile" 2>/dev/null || true)"
 
-    # GOODSIG and EXPKEYSIG are handled together because they differ only in
-    # keyring freshness, and both have to pass through the keys.manifest check
-    # before they can be called verified.
     if printf '%s' "$out" | grep -qE "^\[GNUPG:\] (GOODSIG|EXPKEYSIG)"; then
         local kind
         kind="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] \(GOODSIG\|EXPKEYSIG\) .*/\1/p' | head -1)"
         signer="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] \(GOODSIG\|EXPKEYSIG\) [0-9A-F]* //p' | head -1)"
         keyid="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] \(GOODSIG\|EXPKEYSIG\) \([0-9A-F]*\).*/\2/p' | head -1)"
 
-        # A key that a publisher states is no longer a key accepted merely
-        # because the signature named it, so the published classes are tried
-        # before the unaudited ledger and supersede it.
+        # A published or pinned key is no longer unaudited.
         local pkind
         pkind="$(key_provenance_kind "$keyid")"
 
@@ -584,11 +433,7 @@ check_sig() {
         err "${name}: signature made with a REVOKED key [${signer:-unknown}]"
         REVOKED=$((REVOKED + 1))
         REVOKED_LIST+=("${name} - ${signer:-unknown}")
-        # A revoked key can mean the key was compromised, which is the one
-        # thing here more serious than BADSIG. docs/supply-chain.md has said
-        # since ADR time that REVKEYSIG stops a build; it was counted into a
-        # bucket that nothing ever read, so it stopped nothing. It now lands
-        # in FAILED like a bad signature does.
+        # A revoked key may have been compromised: this fails like BADSIG.
         FAILED=$((FAILED + 1))
         FAILED_LIST+=("${name} (REVOKED signing key)")
         report "$name" signature-revoked-key "${signer:-unknown}"
@@ -598,16 +443,9 @@ check_sig() {
     if printf '%s' "$out" | grep -q "^\[GNUPG:\] NO_PUBKEY"; then
         keyid="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] NO_PUBKEY //p' | head -1)"
 
-        # --fetch-unknown-keys pulls the key the signature NAMES and retries.
-        #
-        # Be clear about what this does and does not establish. Trusting a key
-        # because the signature it is checking told you its id is circular: it
-        # proves the file was signed by whoever signed it. It is still strictly
-        # better than no check at all - it detects later tampering and pins the
-        # signer - but the fingerprint must be confirmed out-of-band against
-        # the project before it means "signed by the maintainer".
-        #
-        # Every key used this way is written to keys.manifest for that audit.
+        # The key the signature names is circular trust: it proves only who
+        # signed. So it goes to keys.manifest for an out-of-band audit and is
+        # never counted as verified.
         if [[ "$FETCH_UNKNOWN" -eq 1 ]]; then
             if recv_key "$keyid"; then
                 out="$(gpg --batch --status-fd 1 --verify "$sigfile" "$datafile" 2>/dev/null || true)"
@@ -620,12 +458,8 @@ check_sig() {
                         printf '%-18s %-42s %s
 ' "$name" "${fpr:-$keyid}" "${signer:-unknown}"                             >> "$KEYS_MANIFEST"
                     fi
-                    # So that a second package signed by the same key in this
-                    # same run is recognised as unaudited too.
+                    # So later sources signed by this key count as unaudited too.
                     [[ -n "$fpr" ]] && UNAUDITED_FPRS+=("${fpr^^}")
-                    # Deliberately NOT counted as verified. The key came from
-                    # the signature it was used to check, so no signer
-                    # identity has been established - only self-consistency.
                     FETCHED=$((FETCHED + 1))
                     FETCHED_LIST+=("${name} - ${signer:-unknown} (${fpr:-$keyid})")
                     return 0
@@ -678,25 +512,13 @@ verify_gnu() {
     check_sig "$name" "$sig" "${KRYPTIK_SOURCES}/${file}" || true
 }
 
-# Try each conventional detached-signature suffix in turn.
-#
-# There is no single convention: GNU and kernel.org use .sig, python.org and
-# many others use .asc, some projects publish .sign. Trying all three turns a
-# vague "unknown source" into either a real verification or a specific,
-# actionable "signing key NNN not held".
-# Is this file actually an OpenPGP signature?
-#
-# A suffix is not a format. python.org publishes BOTH a Sigstore `.sig` - a
-# base64 ECDSA blob, 141 bytes - and an OpenPGP `.asc`, and the probe below
-# used to take the `.sig`, hand it to gpg, get "no valid OpenPGP data found",
-# and report python as inconclusive. The real signature was one suffix away
-# the whole time. So a candidate that gpg cannot parse as a signature is not a
-# result; it is the wrong file, and the next suffix gets a turn.
+# A suffix is not a format: python.org's .sig is Sigstore, its .asc OpenPGP.
 is_pgp_signature() {
     [[ -s "$1" ]] || return 1
     gpg --batch --list-packets "$1" 2>/dev/null | grep -q ':signature packet:'
 }
 
+# Try .sig, .asc and .sign; one that is not OpenPGP passes the turn on.
 verify_any() {
     local name="$1" url="$2" file="$3"
     local suffix sig
@@ -708,8 +530,7 @@ verify_any() {
                 check_sig "$name" "$sig" "${KRYPTIK_SOURCES}/${file}" || true
                 return
             fi
-            # Do not leave it cached: a non-signature in SIGDIR would shadow
-            # the real one on every later run.
+            # Not cached: it would shadow the real signature on later runs.
             wrong_format+=("${suffix}")
             rm -f "$sig"
             continue
@@ -750,10 +571,8 @@ verify_detached() {
     check_sig "$name" "$sig" "${KRYPTIK_SOURCES}/${file}" || true
 }
 
-# kernel.org signs the UNCOMPRESSED tar, not the compressed tarball, and uses
-# this convention for the kernel AND for util-linux, kbd, kmod, iproute2,
-# libcap and e2fsprogs. Looking for "<file>.tar.xz.sig" finds nothing and
-# reports these as unsigned when they are all properly signed.
+# kernel.org signs the uncompressed tar (<name>.tar.sign), for the kernel and
+# for util-linux, kbd, kmod, iproute2, libcap and e2fsprogs.
 verify_kernel() {
     local name="$1" url="$2" file="$3"
     local sign="${SIGDIR}/${file%.xz}.sign"
@@ -768,7 +587,6 @@ verify_kernel() {
         return
     fi
 
-    # kernel.org signs the uncompressed tar, so decompress before verifying.
     local tmptar
     tmptar="${KRYPTIK_WORK}/verify-$(basename "${file%.*}")"
     mkdir -p "$(dirname "$tmptar")"
@@ -793,12 +611,8 @@ if [[ "$FETCH_UNKNOWN" -eq 1 ]]; then
     warn "--fetch-unknown-keys: will import keys named by the signatures themselves."
     warn "That proves a file was signed by whoever signed it, NOT that the signer"
     warn "is the real maintainer. Confirm keys.manifest out-of-band."
-    # Do NOT truncate. This file is the record of which keys were never
-    # audited, and truncating it on every run destroyed that record: a second
-    # --fetch-unknown-keys run finds every key already cached, fetches
-    # nothing, and would have left behind a manifest containing only its own
-    # two header lines. Entries accumulate and are deduplicated by
-    # fingerprint instead.
+    # Never truncate: this is the only record of unaudited keys, and a later
+    # run finds them already cached and would not add them back.
     if [[ ! -s "$KEYS_MANIFEST" ]]; then
         printf '# Keys fetched by --fetch-unknown-keys. AUDIT THESE.
 ' >> "$KEYS_MANIFEST"
@@ -812,11 +626,7 @@ echo
 while read -r name _ver url; do
     [[ -z "$name" ]] && continue
     file="$(basename "$url")"
-    # A source that was never downloaded has no signature to check, and that
-    # is an unchecked assertion rather than a non-event: this used to `warn`
-    # and `continue` without touching any counter, so a run in which nothing
-    # had been fetched reported zero problems and exited 0 - and would have
-    # satisfied --strict.
+    # Not downloaded is unverifiable, so --strict fails on it.
     [[ -f "${KRYPTIK_SOURCES}/${file}" ]] || {
         warn "${name}: not downloaded, so its signature cannot be checked"
         mark_unverifiable "${name} (not downloaded)"
@@ -834,23 +644,17 @@ while read -r name _ver url; do
             verify_detached "$name" "$url" "$file" ".asc"
             ;;
         *curl.se/ca/*)
-            # One PEM file with no OpenPGP signature; curl.se states its
-            # SHA-256 beside it, which tools/verify-provenance.sh checks.
+            # Unsigned; verify-provenance.sh checks curl.se's .sha256 for it.
             warn "${name}: no OpenPGP signature upstream; the publisher's checksum is verify-provenance's"
             mark_unverifiable "${name} (publisher checksum, see verify-provenance)"
             report "$name" no-signature-upstream "curl.se publishes a .sha256 beside the bundle, checked by tools/verify-provenance.sh"
             ;;
         *linuxfromscratch.org*)
-            # LFS publishes md5sums for its patch set, not per-patch signatures.
             warn "${name}: LFS patches are not individually signed upstream"
             mark_unverifiable "${name} (upstream publishes no signature)"
             report "$name" no-signature-upstream "LFS publishes md5sums for the patch set, not per-patch signatures"
             ;;
         *)
-            # Everything else: try the two conventional detached-signature
-            # suffixes before giving up. Reporting "unknown source" for a
-            # package that publishes a perfectly good .sig was hiding real
-            # verifiable sources behind a vague label.
             verify_any "$name" "$url" "$file"
             ;;
     esac
@@ -898,9 +702,6 @@ if [[ "$FAILED" -gt 0 ]]; then
 fi
 
 echo
-# Under --strict, anything not authenticated ends the run. An unverifiable
-# source is not a failure, but a release gate that reports a run with fifteen
-# of them as a pass is not gating anything.
 if [[ "$STRICT" -eq 1 ]] && [[ "$((UNVERIFIABLE + FETCHED))" -gt 0 ]]; then
     err "${UNVERIFIABLE} source(s) unverifiable, ${FETCHED} signed by unaudited keys"
     die "--strict will not pass sources whose signer was never established.

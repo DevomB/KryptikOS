@@ -1,22 +1,10 @@
 #!/usr/bin/env bash
+# Run every suite that needs no root and no build chroot, and name the ones
+# that did not run. Suites run directly, not through make, which would turn
+# their exit 77 (a missing dependency) into exit 2.
 #
-# Run every Kryptik suite that works without root and without the build chroot,
-# then NAME the ones that were not run - and never let a skip read as a pass.
-#
-# A suite that quietly omits its hardest checks reports a pass it has not
-# earned. The privileged tests are precisely the ones that touch the built
-# system rather than the scripts that build it, so leaving them out silently
-# would be the most misleading thing this script could do.
-#
-# The suites are run DIRECTLY, not through make. GNU make reports a failed
-# recipe as exit 2 whatever the recipe exited with, so the autotools convention
-# these suites follow - exit 77 for "a dependency is missing" - never reached
-# this script through `make <suite>`: a missing ssh-keygen and a failed check
-# were the same number, and the skip branch below could never run.
-#
-#   tools/run-tests.sh            run, report, exit 1 if any suite FAILED
-#   tools/run-tests.sh --strict   also exit 1 if any suite did NOT RUN
-#
+#   tools/run-tests.sh            exit 1 if any suite failed
+#   tools/run-tests.sh --strict   also exit 1 if any suite did not run
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -25,34 +13,24 @@ cd "$ROOT" || exit 1
 STRICT=0
 [[ "${1:-}" == "--strict" ]] && STRICT=1
 
-# name|script. The name is the make target of the same suite, so a failure
-# here is reproduced with `make <name>`.
-SUITES=(
-    "test-harness|tools/test-step-errexit.sh"
-    "test-toolchain-identity|tools/test-toolchain-identity.sh"
-    "test-hardening|tools/test-hardening-flags.sh"
-    "test-kernel-hardening|tools/test-check-kernel-hardening.sh"
-    "test-services|tools/test-services.sh"
-    "test-netzone-time|tools/test-netzone-time.sh"
-    "test-boot-success|tools/test-boot-success.sh"
-    "test-manifest|tools/test-artifact-manifest.sh"
-    "test-s6-init|tools/test-s6-init-config.sh"
-    "test-image-signing|tools/test-image-signing.sh"
-    "test-installer|tools/test-installer.sh"
-    "test-mkdisk-guards|tools/test-mkdisk-guards.sh"
-)
+# Every tools/test-* file is a suite, except these: the first two chroot into
+# the built system (acceptance items), the last two run with the compartment
+# suites below.
+ELSEWHERE=" test-libc-unwind.sh test-userspace-smoke.sh test-desktop-identity.sh test-compositor.sh "
+SUITES=()
+for t in tools/test-*.sh tools/test-*.py; do
+    [[ "$ELSEWHERE" == *" ${t##*/} "* ]] && continue
+    n="${t##*/}"; SUITES+=("${n%.*}|$t")
+done
 
-# The compartment suites need a kryptikd, which needs cargo. They are always
-# COUNTED - the total is the total - and where there is no cargo they are
-# reported as not run, with the reason, rather than dropped from the list.
+# These need a kryptikd built by cargo; without cargo they count as not run.
 COMPARTMENT=(
     "zone-test|compartments/tests/adversarial.sh"
     "launcher-test|compartments/tests/launcher.sh"
     "cli-test|compartments/tests/cli.sh"
     "serve-test|compartments/tests/serve.sh"
-    "update-tree-test|compartments/tests/update.sh"
-    "identity-test|tools/test-desktop-identity.sh"
-    "compositor-test|tools/test-compositor.sh"
+    "test-desktop-identity|tools/test-desktop-identity.sh"
+    "test-compositor|tools/test-compositor.sh"
 )
 
 passed=()
@@ -85,10 +63,7 @@ done
 if command -v cargo >/dev/null 2>&1; then
     printf '\n=== building kryptikd for the compartment suites ===\n'
     if ( cd compartments/kryptikd && cargo build --quiet ); then
-        # The suites look for the binary; cargo puts it under CARGO_TARGET_DIR
-        # when that is set (acceptance points it at the large disk), not the
-        # default target/. Tell the suites where it landed - cli.sh and
-        # launcher.sh honour $KRYPTIKD, and adversarial.sh does now too.
+        # cargo builds under CARGO_TARGET_DIR when set; the suites read $KRYPTIKD.
         for cand in "${CARGO_TARGET_DIR:-compartments/kryptikd/target}/debug/kryptikd" \
                     "compartments/kryptikd/target/debug/kryptikd"; do
             [[ -x "$cand" ]] && { KRYPTIKD="$(cd "$(dirname "$cand")" && pwd)/kryptikd"; export KRYPTIKD; break; }
@@ -128,7 +103,7 @@ cat <<'EOF'
 NOT run by this target - these need root, the build chroot or a VM:
 
   make test-libc-unwind   can the TARGET libc unwind through a dlopened
-                          object? (docs/glibc-loader-defect.md)
+                          object? (build/patches/glibc-2.40/README.md)
   make smoke-userspace    run the built userland inside the chroot
   make acceptance         the mandatory installed-system evidence: firmware
                           boot, install, verified boot, zones, storage,

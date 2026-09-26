@@ -1,31 +1,20 @@
 #!/usr/bin/env bash
-# Every commit in this repository is authored and committed by exactly one
-# identity. This script is the single place that identity is written down,
-# and it is what the pre-commit hook, the pre-push hook and CI all run.
+# Check that commits are authored and committed by the one permitted identity.
+# This is the only place it is written; both hooks and CI run this script.
 #
 #   tools/check-commit-identity.sh --pending      what the next commit would record
 #   tools/check-commit-identity.sh <rev-range>    every commit in the range
 #   tools/check-commit-identity.sh                every commit on every ref
 #
-# Why this exists: GitHub attributes a commit to whichever account has
-# registered its email. devom.b@yahoo.com belongs to the account
-# DBs-Server-Service, not to DevomB, so for months a share of this
-# repository's commits displayed as another account's work. The history was
-# rewritten on 2026-09-15 (379 commits, one mailmap) and this check is what
-# keeps it clean: it runs before the commit exists, again before it leaves the
-# machine, and once more over the full history in CI.
-#
-# No subshells in the per-commit path: a $(...) costs a fork, and on the
-# Windows checkout this is written from, 758 forks took longer than the
-# hook's caller was willing to wait. Bash's ${var,,} folds case for free.
+# No $(...) in the per-commit loop: a fork per commit is slow on Windows.
 
 set -uo pipefail
 
 ALLOWED_NAME="DevomB"
 ALLOWED_EMAIL="Devom.hb@yahoo.com"
 
-# Named because it looks right and is wrong: it is the address the tooling
-# around this repository keeps being handed as "the user's email".
+# Registered to another GitHub account, which GitHub would show as the author;
+# tooling offers it as "the user's email".
 BANNED_EMAIL="devom.b@yahoo.com"
 
 allowed_lc="${ALLOWED_EMAIL,,}"
@@ -58,8 +47,7 @@ explain() {
 }
 
 if [[ "${1:-}" == "--pending" ]]; then
-    # git var honours everything the commit itself would: config at every
-    # level, -c overrides, and GIT_AUTHOR_* / GIT_COMMITTER_* in the environment.
+    # git var sees what the commit would: config, -c overrides and GIT_* env.
     for who in AUTHOR COMMITTER; do
         ident="$(git var "GIT_${who}_IDENT")"
         name="${ident%% <*}"

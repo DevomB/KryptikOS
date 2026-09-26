@@ -1,25 +1,12 @@
 #!/bin/sh
-# Which partitions belong to THIS installation. Sourced by the boot-time
-# services and the update tools; POSIX sh.
-#
-# The boot design finds every partition by its GPT label. A label is not an
-# identity: a second disk carrying the same layout - a clone, a previous
-# install, a stick someone left in - carries the same labels, and `blkid
-# -t PARTLABEL=... | head -1` picks whichever the kernel enumerated first.
-# The state partition, the ESP and the two slots this system may use are
-# the ones on the disk the running root came from, and only those.
-#
-#   kryptik_root_disk            /dev/vda: the whole disk under the root
-#                                (through the verity device and, on an ISO,
-#                                the linear device over the CD)
-#   kryptik_part LABEL           the one partition with LABEL on that disk;
-#                                empty and non-zero if there is none, or
-#                                more than one (ambiguity is refused, never
-#                                resolved by picking one)
-#   kryptik_part_count LABEL     how many partitions on the root disk carry
-#                                LABEL (for reports)
-#   kryptik_others LABEL         partitions with LABEL on OTHER disks (for
-#                                reports: what was ignored and why)
+# Which partitions belong to this installation: those with the right GPT label
+# on the disk the running root came from, since another disk (a clone, an old
+# install) can carry the same labels. POSIX sh, sourced by services and tools.
+#   kryptik_root_disk         the disk under the root, via dm and loop devices
+#   kryptik_part LABEL        the one partition with LABEL there; fails on none
+#                             or several, never picks one
+#   kryptik_part_count LABEL  how many carry LABEL there
+#   kryptik_others LABEL      partitions with LABEL on other disks
 
 _kd_disk_of() {   # a partition (or disk) -> its whole disk
     n="$(basename "$1")"
@@ -49,8 +36,7 @@ kryptik_root_disk() {
     root_src="$(awk '$2 == "/" { print $1; exit }' /proc/mounts)"
     case "$root_src" in
         /dev/root)
-            # No initramfs: the kernel names root /dev/root. dm-0 is the
-            # verity device the signed command line built.
+            # No initramfs: root is /dev/root, and dm-0 the verity device.
             [ -e /sys/block/dm-0 ] && root_src=/dev/dm-0 ;;
     esac
     [ -n "$root_src" ] || return 1
@@ -86,8 +72,7 @@ kryptik_others() {   # LABEL -> partitions with LABEL that are NOT on the root d
     done
 }
 
-# Executed rather than sourced (kryptik-efiboot, a shell one-liner): the
-# same answers as a command.
+# Run as a command (by kryptik-efiboot):
 #   devices.sh disk | part LABEL | count LABEL | others LABEL
 case "${0##*/}" in
     devices.sh)

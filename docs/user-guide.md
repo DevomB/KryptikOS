@@ -1,10 +1,9 @@
 # Kryptik: boot, install, update and recover
 
-These are the instructions that ship beside a tested release (see
-`RELEASE.txt` and `ACCEPTANCE-REPORT.md` in the same directory). Everything
-below was exercised by `make acceptance` on the exact images the hashes name,
-under QEMU with OVMF firmware. Nothing here has been run on physical
-hardware; the hardware notes say what should hold, not what was measured.
+These instructions ship beside each tested release, next to `RELEASE.txt`
+and `ACCEPTANCE-REPORT.md`. Everything below was exercised by
+`make acceptance` on the images the hashes name, under QEMU with OVMF
+firmware. Nothing has run on physical hardware yet.
 
 ## What is in the release directory
 
@@ -72,18 +71,20 @@ lsblk                                  # find the target: a whole disk, not a pa
 kryptik-install --target /dev/sdY      # add --dry-run to see the plan and write nothing
 ```
 
-The installer refuses the disk the medium itself is on, anything with a
-mounted partition or active swap, anything that is not a whole block
-device, and a disk too small for the layout. Too small means it cannot
-hold the boot partition, two root slots of the image plus half again, and
-a state partition with room for one update and a gigabyte of your own
-data: about 14 GB for this release, and the refusal names the number. A
-disk that could be installed and never updated is refused. It writes, in order: GPT
-partition 1 `kryptik-esp` (the medium's ESP, with the slot A kernel as the
-boot file), 2 `kryptik-a` (the verified root image, read back and hashed
-against the medium's record), 3 `kryptik-b` (empty; the first update fills
-it), 4 `kryptik-state` (ext4: users, zone volumes, updates). It ends with
-`KRYPTIK_INSTALL: rc=0`. Then:
+The installer refuses the disk the medium is on, anything with a mounted
+partition or active swap, anything that is not a whole block device, and a
+disk too small to hold the boot partition, two root slots with room to grow,
+and a state partition with space for one update and a gigabyte of data
+(about 14 GB for this release; the refusal names the number).
+
+It writes four GPT partitions: `kryptik-esp` (the medium's ESP, with the slot
+A kernel as the boot file), `kryptik-a` (the verified root image, read back
+and hashed against the medium's record), `kryptik-b` (empty until the first
+update), and `kryptik-state` (LUKS2 with ext4 inside: users, zone volumes,
+updates). Before its first write it asks twice for the state partition's
+passphrase, which the system then asks for at every boot. There is no escrow:
+without the passphrase, or without the partition's header, the state is lost.
+It ends with `KRYPTIK_INSTALL: rc=0`. Then:
 
 ```sh
 poweroff
@@ -99,7 +100,9 @@ installed system ignores it.
 
 ## 3. First boot and daily use
 
-On the first boot the system runs `kryptik-firstboot` on the first console:
+Every boot asks for the state passphrase on the console, three times at
+most, before anything else starts; root changes it with `kryptik state
+passphrase`. On the first boot the system runs `kryptik-firstboot` on the first console:
 it asks for a user name and password, and for root's password (root can
 still not log in at a terminal; the password is for `su` from the user's
 session). With a preseed on the control disk it creates that user instead. If the
@@ -109,8 +112,8 @@ user exists. If a user exists but a password step failed, run
 
 Log in as the user on tty1. The desktop session starts from the profile:
 dwl with the Kryptik chrome as its startup command. Every application
-window belongs to a zone and carries that zone's border colour, pattern and
-label; the title is prefixed with the zone name. Keys (Alt is the modifier):
+window belongs to a zone: it carries that zone's border colour, and its title
+is prefixed with the zone name. Keys (Alt is the modifier):
 
 | keys | what |
 | --- | --- |
@@ -132,11 +135,11 @@ when the zone's policy allows the direction and you answer yes to the
 question the chrome shows.
 
 **Degraded boot.** If the system cannot find exactly one `kryptik-state`
-partition on its own disk, or cannot mount it, it boots degraded: it says
+partition on its own disk, or cannot unlock or mount it, it boots degraded: it says
 so on the console, creates no account, starts no desktop and refuses
 updates. Nothing on the disk is written in that state. Fix the cause
-(a cloned disk attached, a relabelled partition, a damaged filesystem) and
-boot again.
+(a cloned disk attached, a relabelled partition, a damaged filesystem or
+header) and boot again; after three wrong passphrases, just boot again.
 
 ## 4. Update
 
@@ -179,24 +182,23 @@ kryptik-recover --disk /dev/sdY --commit-slot a     # the other slot is intact: 
 kryptik-recover --disk /dev/sdY --restore-slot a    # the slot's root is damaged: rewrite it from this medium
 ```
 
+`--backup-state-header FILE` and `--restore-state-header FILE` save and put
+back the state partition's LUKS2 header. Keep a backup somewhere that is not
+this disk: a damaged header with no backup is a lost state partition.
+
 `--restore-slot` writes the medium's own root image and kernel into the
-slot, exactly as the installer does, then commits it. The state partition
-is not touched: users and zone volumes survive. The result is the medium's
-version, which may be older than what was installed; that is what
-recovering from the medium means, and the tool says so.
+slot, as the installer does, then commits it. Every byte comes from the
+medium, which the firmware verified. The state partition is not touched, so
+users and zone volumes survive. The result is the medium's version, which may
+be older than what was installed; the tool says so.
 
-Every byte written by recovery comes from the medium, which the firmware
-verified.
-
-A machine that stops responding entirely resets itself after about a
-minute: a service feeds the watchdog, and nothing else does. The kernel is
-built so that the watchdog cannot be switched off once it is running,
-which also means a shutdown that hangs for a minute ends in a reset
-rather than a machine that stays on. If that reset happens during the
-first boot of an update, the firmware boots the previous slot, because
-the one-time boot entry has been used up. `s6-svstat /run/service/watchdog`
-shows the feeder, and the files under `/sys/class/watchdog/` show each
-timer, its timeout and whether it is running.
+A machine that stops responding resets itself after about a minute: a
+service feeds the watchdog, and the kernel does not let it be switched off.
+A shutdown that hangs for a minute therefore also ends in a reset. If the
+reset happens during the first boot of an update, the firmware boots the
+previous slot, because the one-time boot entry is used up.
+`s6-svstat /run/service/watchdog` shows the feeder; `/sys/class/watchdog/`
+shows each timer, its timeout and whether it is running.
 
 ## Known limitations of this release
 

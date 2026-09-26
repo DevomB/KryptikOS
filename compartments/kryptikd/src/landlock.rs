@@ -1,28 +1,14 @@
-//! Landlock filesystem confinement.
+//! Landlock filesystem confinement (ADR-007): self-applied, irreversible, and
+//! needing no privilege. For a zone it backs up the pivoted root (`rootfs`).
 //!
-//! This is what makes requirements 2 and 4 of the isolation exit test hold. A
-//! mount namespace gives a zone its own mount *table*, not its own view of the
-//! files — the adversarial test proved a zone could still read another zone's
-//! data through the shared filesystem. Landlock closes that.
-//!
-//! Landlock is applied by the process to itself, cannot be removed once set,
-//! and needs no privilege. That is why ADR-007 leans on it instead of a
-//! traditional MAC layer.
-//!
-//! RULES ARE ADDITIVE. A path_beneath rule grants rights on everything under
-//! its path, and a second rule on a sub-path can only ADD rights, never take
-//! them away. An earlier version granted read+write+exec on "/" and then
-//! listed /usr, /etc and friends as "read-only": those rules did nothing, and
-//! the zone had full Landlock rights everywhere, including /dev and /proc. The
-//! rule set in `zone_rules` therefore grants the WIDEST scope the FEWEST
-//! rights and names every writable location explicitly.
-//!
-//! glibc does not wrap these syscalls, so they are invoked directly.
+//! Rules are additive: a rule on a sub-path can only add rights, so `/` gets
+//! the fewest and every writable place is named (`zone_rules`).
 
 use std::ffi::CString;
 use std::io;
 use std::os::unix::io::RawFd;
 
+// glibc has no wrappers for the landlock syscalls.
 const SYS_LANDLOCK_CREATE_RULESET: libc::c_long = 444;
 const SYS_LANDLOCK_ADD_RULE: libc::c_long = 445;
 const SYS_LANDLOCK_RESTRICT_SELF: libc::c_long = 446;
@@ -30,9 +16,6 @@ const SYS_LANDLOCK_RESTRICT_SELF: libc::c_long = 446;
 const LANDLOCK_CREATE_RULESET_VERSION: u32 = 1 << 0;
 const LANDLOCK_RULE_PATH_BENEATH: libc::c_int = 1;
 
-// Filesystem access rights, by the ABI version that introduced them.
-// Passing a bit the running kernel does not know makes create_ruleset return
-// EINVAL, so the mask is trimmed to the reported ABI in `access_mask_for`.
 const FS_EXECUTE: u64 = 1 << 0;
 const FS_WRITE_FILE: u64 = 1 << 1;
 const FS_READ_FILE: u64 = 1 << 2;
@@ -50,20 +33,13 @@ const FS_REFER: u64 = 1 << 13; // ABI v2
 const FS_TRUNCATE: u64 = 1 << 14; // ABI v3
 const FS_IOCTL_DEV: u64 = 1 << 15; // ABI v5
 
-/// Oldest ABI a zone may run on.
-///
-/// Below v3 the kernel cannot express TRUNCATE (v3) or REFER (v2): a ruleset
-/// that names them would have those rights silently dropped, so "write" would
-/// mean less than the policy says. Refuse rather than run with a policy whose
-/// words and effect disagree. ABI 3 is Linux 6.2; Kryptik targets 6.18.
+/// Oldest ABI a zone may run on (Linux 6.2). Below it the kernel cannot handle
+/// REFER (v2) or TRUNCATE (v3), so the policy would not mean what it says.
 pub const MIN_ABI: i32 = 3;
 
-/// Everything a zone may be granted on a path it is allowed to use.
 pub const ACCESS_READ: u64 = FS_READ_FILE | FS_READ_DIR;
-/// Full write: create, remove, rename, truncate. REFER is what lets a file be
-/// renamed or linked into a different directory - without it `mv a dir/`
-/// fails with EXDEV on ABI >= 2, which killed tar, cargo and git inside
-/// zones. TRUNCATE is what `>` needs on an existing file.
+/// Full write. Without REFER, `mv a dir/` fails with EXDEV; without TRUNCATE,
+/// `>` on an existing file fails.
 pub const ACCESS_WRITE: u64 = FS_WRITE_FILE
     | FS_REMOVE_DIR
     | FS_REMOVE_FILE
@@ -74,14 +50,10 @@ pub const ACCESS_WRITE: u64 = FS_WRITE_FILE
     | FS_MAKE_FIFO
     | FS_REFER
     | FS_TRUNCATE;
-/// Write to files that already exist, but create and remove nothing. What
-/// /dev and /proc need: programs write /dev/null and /proc/self/oom_score_adj,
-/// none of them should be able to create entries there.
+/// Write existing files; create or remove nothing (/dev, /proc).
 pub const ACCESS_WRITE_FILE: u64 = FS_WRITE_FILE | FS_TRUNCATE;
 pub const ACCESS_EXEC: u64 = FS_EXECUTE;
-/// ioctl on device files (ABI 5+). Needed on /dev for terminals; not granted
-/// anywhere else, so on a kernel that handles it a zone cannot ioctl a device
-/// it somehow reaches outside /dev.
+/// ioctl on device files (ABI 5+). Granted only on /dev, for terminals.
 pub const ACCESS_IOCTL_DEV: u64 = FS_IOCTL_DEV;
 
 #[repr(C)]
@@ -95,9 +67,7 @@ struct RulesetAttrV4 {
     handled_access_net: u64,
 }
 
-// MUST be packed. The kernel defines landlock_path_beneath_attr with
-// __attribute__((packed)); a naturally-aligned Rust struct is 16 bytes instead
-// of 12 and the kernel rejects it with EINVAL.
+// Matches the kernel's packed landlock_path_beneath_attr (12 bytes).
 #[repr(C, packed)]
 struct PathBeneathAttr {
     allowed_access: u64,
@@ -109,7 +79,8 @@ pub enum LandlockError {
     Unsupported,
     TooOld { abi: i32, need: i32 },
     Syscall { call: &'static str, errno: i32 },
-    BadPath(String),
+    BadPath { path: String, errno: i32 },
+    Symlink(String),
 }
 
 impl std::fmt::Display for LandlockError {
@@ -129,7 +100,12 @@ impl std::fmt::Display for LandlockError {
             LandlockError::Syscall { call, errno } => {
                 write!(f, "{call}: {}", io::Error::from_raw_os_error(*errno))
             }
-            LandlockError::BadPath(p) => write!(f, "cannot open {p}"),
+            LandlockError::BadPath { path, errno } => {
+                write!(f, "cannot open {path}: {}", io::Error::from_raw_os_error(*errno))
+            }
+            LandlockError::Symlink(p) => {
+                write!(f, "{p} is or passes through a symbolic link, which a rule never follows")
+            }
         }
     }
 }
@@ -151,10 +127,7 @@ pub fn abi_version() -> Option<i32> {
     }
 }
 
-/// The set of access rights this kernel understands.
-///
-/// Trimmed to the reported ABI: a bit the kernel does not know is not ignored,
-/// it makes ruleset creation fail outright.
+/// Access rights ABI `abi` knows. The kernel rejects any other bit (EINVAL).
 fn access_mask_for(abi: i32) -> u64 {
     let mut mask = FS_EXECUTE
         | FS_WRITE_FILE
@@ -181,11 +154,8 @@ fn access_mask_for(abi: i32) -> u64 {
     mask
 }
 
-/// A ruleset under construction.
-///
-/// Default-deny: creating the ruleset declares which access types are
-/// *handled*, and anything handled is denied unless a rule allows it. Adding no
-/// rules therefore produces a zone that can read nothing.
+/// A ruleset under construction. Every handled access is denied unless a rule
+/// allows it.
 pub struct Ruleset {
     fd: RawFd,
     abi: i32,
@@ -199,15 +169,8 @@ impl Ruleset {
         }
         let handled = access_mask_for(abi);
 
-        // The attr struct grew in ABI v4. Passing the wrong size is EINVAL.
-        // Later ABIs (v6 adds `scoped`) accept the v4 size and treat the
-        // missing fields as zero.
-        //
-        // Both variants live on the stack. An earlier version used Box::leak,
-        // which leaked one allocation per ruleset - unbounded in a long-running
-        // kryptikd that creates a ruleset per zone start. The kernel copies the
-        // struct during the call and does not retain the pointer, so a stack
-        // local is correct and the borrow ends with the syscall.
+        /* The attr grew handled_access_net in ABI v4; later ABIs take the v4
+         * size and zero the fields it lacks. */
         let v4 = RulesetAttrV4 {
             handled_access_fs: handled,
             handled_access_net: 0,
@@ -241,16 +204,12 @@ impl Ruleset {
         self.abi
     }
 
-    /// Allow `access` on everything beneath `path`.
-    ///
-    /// A path that does not exist is an error rather than a silent skip: a
-    /// typo in a zone policy must not quietly widen or narrow confinement.
+    /// Allow `access` on everything beneath `path`. A missing path is an error,
+    /// so a typo cannot silently change confinement. So is a symbolic link
+    /// anywhere in it: a zone that swapped a granted directory for a link to a
+    /// wider one would otherwise widen its own rule at its next start.
     pub fn allow(&mut self, path: &str, access: u64) -> Result<(), LandlockError> {
-        let c = CString::new(path).map_err(|_| LandlockError::BadPath(path.into()))?;
-        let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
-        if fd < 0 {
-            return Err(LandlockError::BadPath(path.into()));
-        }
+        let fd = open_exact(path)?;
 
         // Trim to what this kernel handles, or add_rule returns EINVAL.
         let attr = PathBeneathAttr {
@@ -279,11 +238,7 @@ impl Ruleset {
     }
 
     /// Apply the ruleset to this process and every descendant. Irreversible.
-    ///
-    /// PR_SET_NO_NEW_PRIVS is required first, and is set here rather than left
-    /// to the caller: without it restrict_self returns EPERM, and a caller who
-    /// ignored that error would run a zone with no filesystem confinement at
-    /// all while believing it was confined.
+    /// Sets `PR_SET_NO_NEW_PRIVS` first; without it restrict_self is EPERM.
     pub fn restrict_self(self) -> Result<(), LandlockError> {
         let nnp = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
         if nnp < 0 {
@@ -306,27 +261,39 @@ impl Ruleset {
     }
 }
 
-/// THE PER-ZONE POLICY FILE (`[policy] landlock = "policy/<name>.landlock"`)
-///
-/// A zone's policy file is applied as a SECOND Landlock layer, on top of the
-/// base rules, and that is the whole of its safety argument. Landlock layers
-/// intersect: an access is permitted only if EVERY layer permits it. So a
-/// zone policy can only ever narrow what the base already allowed, and the
-/// kernel is what enforces that - not this parser, not a review of the file.
-/// A file that asks for more than the base gave gets no more.
-///
-/// That is also why the format has no `deny` directive. Landlock grants
-/// rights on a path and everything beneath it; there is no subtraction, so
-/// "allow /home/w but not /home/w/.ssh" would mean enumerating every sibling
-/// and would silently stop denying the day one was added. Listing what the
-/// zone may reach says the same thing and cannot rot that way.
-///
-/// ```text
-/// # zones/policy/reader.landlock - paths are as the ZONE sees them
-/// read-exec        /
-/// read-write       /tmp
-/// read-write       /dev
-/// ```
+/// An O_PATH descriptor for `path` as named: openat2 refuses a symbolic link
+/// in any component (ELOOP). It is older (Linux 5.6) than any kernel with the
+/// ABI a ruleset needs.
+fn open_exact(path: &str) -> Result<RawFd, LandlockError> {
+    let c = CString::new(path).map_err(|_| LandlockError::BadPath { path: path.into(), errno: libc::EINVAL })?;
+    // Filled in, not built: libc marks open_how non_exhaustive.
+    let mut how: libc::open_how = unsafe { std::mem::zeroed() };
+    how.flags = (libc::O_PATH | libc::O_CLOEXEC) as u64;
+    how.resolve = libc::RESOLVE_NO_SYMLINKS;
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            libc::AT_FDCWD,
+            c.as_ptr(),
+            &how as *const libc::open_how,
+            std::mem::size_of::<libc::open_how>(),
+        )
+    };
+    if fd < 0 {
+        let errno = io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        return Err(if errno == libc::ELOOP {
+            LandlockError::Symlink(path.into())
+        } else {
+            LandlockError::BadPath { path: path.into(), errno }
+        });
+    }
+    Ok(fd as RawFd)
+}
+
+/// Directives of a zone's Landlock policy file (`[policy] landlock`): one
+/// `directive /path` per line, paths as the zone sees them. The file is a second
+/// Landlock layer, and layers intersect, so it can only narrow the base rules.
+/// There is no `deny`: Landlock has no subtraction.
 pub const FS_DIRECTIVES: &[(&str, u64)] = &[
     ("read", ACCESS_READ),
     ("read-exec", ACCESS_READ | ACCESS_EXEC),
@@ -334,11 +301,8 @@ pub const FS_DIRECTIVES: &[(&str, u64)] = &[
     ("read-write-exec", ACCESS_READ | ACCESS_WRITE | ACCESS_EXEC),
 ];
 
-/// Parse a zone's Landlock policy file into rules.
-///
-/// Every path must be absolute and free of `..`: the file names paths inside
-/// the zone's pivoted root, and a relative or climbing path would be read
-/// against whatever the launcher's cwd happened to be.
+/// Parse a zone's Landlock policy file. Paths must be absolute and free of `..`:
+/// they name places in the zone's pivoted root.
 pub fn parse_policy(text: &str, source: &str) -> Result<Vec<ZoneRule>, String> {
     let mut out: Vec<ZoneRule> = Vec::new();
     for (i, raw) in text.lines().enumerate() {
@@ -380,13 +344,8 @@ pub fn parse_policy(text: &str, source: &str) -> Result<Vec<ZoneRule>, String> {
     Ok(out)
 }
 
-/// Apply a zone's policy file as an additional layer over the base rules.
-///
-/// Called after `confine_pivoted_zone`, inside the zone, so the paths resolve
-/// in the pivoted root. A path that does not exist is an error rather than a
-/// skipped rule: it grants nothing either way, so the launch would go on with
-/// the zone quietly narrower than its file says, and a typo is far likelier
-/// than a deliberately absent path.
+/// Apply a zone's policy file as a layer over the base rules. Runs after
+/// `confine_pivoted_zone`, inside the zone; a missing path is an error.
 pub fn confine_further(rules: &[ZoneRule]) -> Result<(), LandlockError> {
     let mut rs = Ruleset::new()?;
     for r in rules {
@@ -395,24 +354,20 @@ pub fn confine_further(rules: &[ZoneRule]) -> Result<(), LandlockError> {
     rs.restrict_self()
 }
 
-/// Confine the current process to a zone's permitted paths.
-///
-/// Used by `kryptikd confine-test`, which confines the test process ITSELF in
-/// the caller's mount namespace. `rootfs` gets read, write and execute;
-/// everything else on the system becomes unreadable, including other zones'
-/// data and the vault — which is exactly requirements 2 and 4.
+/// For `kryptikd confine-test`: confine this process, in the caller's mount
+/// namespace, to `rootfs` (read, write, exec) and `extra_ro`.
 pub fn confine_to_zone(rootfs: &str, extra_ro: &[&str]) -> Result<(), LandlockError> {
     let mut rs = Ruleset::new()?;
     rs.allow(rootfs, ACCESS_READ | ACCESS_WRITE | ACCESS_EXEC)?;
     for p in extra_ro {
-        // Missing optional read-only paths are tolerated; the zone rootfs is not.
+        /* Optional: one that is missing, or a link as /lib is on a merged-usr
+         * host (the /usr rule covers it), is skipped. The zone rootfs is not. */
         let _ = rs.allow(p, ACCESS_READ | ACCESS_EXEC);
     }
     rs.restrict_self()
 }
 
-/// One Landlock rule for a pivoted zone: the path, the rights, and whether a
-/// missing path is fatal.
+/// A Landlock rule for a pivoted zone; `required` makes a missing path fatal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ZoneRule {
     pub path: String,
@@ -420,14 +375,9 @@ pub struct ZoneRule {
     pub required: bool,
 }
 
-/// The rule set for a zone that has already pivoted into its own root
-/// (`rootfs::pivot_into`). Paths are as the ZONE sees them.
-///
-/// The widest rule, "/", grants read and execute only. Every mount that a
-/// zone must not modify - the read-only system paths, the sealed root tmpfs,
-/// /sys - is therefore denied write by Landlock as well as by its mount flags:
-/// two independent controls, which is what the previous version claimed and
-/// did not have. Writable places are named one by one.
+/// Rules for a zone already pivoted into its root (`rootfs::pivot_into`).
+/// "/" gets read and exec only, so what a zone must not modify is denied write
+/// by Landlock as well as by its mount flags. Writable places are named.
 pub fn zone_rules(home: &str) -> Vec<ZoneRule> {
     let rule = |path: &str, access: u64, required: bool| ZoneRule {
         path: path.to_string(),
@@ -436,8 +386,7 @@ pub fn zone_rules(home: &str) -> Vec<ZoneRule> {
     };
     vec![
         rule("/", ACCESS_READ | ACCESS_EXEC, true),
-        // The zone's own data. Exec is allowed so a zone can run what it
-        // builds or downloads; that is what dev and untrusted are for.
+        // Exec, so a zone can run what it builds or downloads.
         rule(home, ACCESS_READ | ACCESS_WRITE | ACCESS_EXEC, true),
         rule("/tmp", ACCESS_READ | ACCESS_WRITE | ACCESS_EXEC, true),
         // Write to the device nodes kryptikd provided; create nothing.
@@ -449,11 +398,8 @@ pub fn zone_rules(home: &str) -> Vec<ZoneRule> {
     ]
 }
 
-/// What the nic zone may write beyond the base rules: the two private tmpfs
-/// mounts `rootfs::pivot_into` gives it for the network stack's state (pid
-/// files, control sockets and the resolver's upstream list under /run, the
-/// DHCP lease database under /var/lib). No exec: nothing runs from there.
-/// Every other zone gets none of this - its /run is on the sealed root.
+/// The nic zone's extra writable places: the private tmpfs mounts on /run and
+/// /var/lib that `rootfs::pivot_into` gives it for network state. No exec.
 pub fn nic_zone_rules() -> Vec<ZoneRule> {
     ["/run", "/var/lib"]
         .iter()
@@ -510,7 +456,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_policy_file_parses_into_rules_and_refuses_what_it_cannot_mean() {
+    fn parse_policy_accepts_and_refuses() {
         let p = parse_policy("# c\nread-exec /\nread-write /tmp\n\nread /usr/share # trailing\n", "t").unwrap();
         assert_eq!(p.len(), 3);
         assert_eq!(p[0].path, "/");
@@ -534,10 +480,9 @@ mod tests {
         assert!(parse_policy("# only a comment\n", "t").unwrap_err().contains("grants nothing"));
     }
 
-    /// The safety argument, against the kernel: layers intersect, so a second
-    /// layer can only take access away. Irreversible, so it runs in a child.
+    /// Against the kernel, in a forked child: restrict_self is irreversible.
     #[test]
-    fn a_second_layer_narrows_and_can_never_widen() {
+    fn second_layer_narrows_never_widens() {
         let dir = std::env::temp_dir().join(format!("kryptik-ll-{}", std::process::id()));
         let keep = dir.join("keep");
         let lose = dir.join("lose");
@@ -565,10 +510,9 @@ mod tests {
                     return 2;
                 }
                 if std::fs::read(keep.join("f")).is_err() || std::fs::read(lose.join("f")).is_err() {
-                    return 3; // the premise: both readable under layer 1 alone
+                    return 3; // both readable under layer 1 alone
                 }
-                // Layer 2 names only `keep`, and asks for WRITE on it - which
-                // layer 1 never granted.
+                // Layer 2: read-write on `keep` only; layer 1 never granted write.
                 let rules = match parse_policy(&format!("read-write {}\n", keep.display()), "t") {
                     Ok(r) => r,
                     Err(_) => return 4,
@@ -576,17 +520,15 @@ mod tests {
                 if confine_further(&rules).is_err() {
                     return 5;
                 }
-                // Narrowed: `lose` is now unreachable, though layer 1 allowed it.
+                // Narrowed: layer 1 allowed `lose`, layer 2 does not.
                 if std::fs::read(lose.join("f")).is_ok() {
                     return 6;
                 }
-                // Kept: `keep` is still readable, because both layers allow it.
+                // Kept: both layers allow reading `keep`.
                 if std::fs::read(keep.join("f")).is_err() {
                     return 7;
                 }
-                // NOT widened: layer 2 asked for write on `keep`, layer 1 did
-                // not grant it, so it is still denied. This is the property the
-                // whole design rests on.
+                // Not widened: write on `keep` is still denied.
                 if std::fs::write(keep.join("g"), b"x").is_ok() {
                     return 8;
                 }
@@ -607,7 +549,7 @@ mod tests {
 
     #[test]
     fn packed_attr_is_twelve_bytes() {
-        // The kernel struct is packed; 16 bytes here means EINVAL at runtime.
+        // Same layout as the kernel's packed struct.
         assert_eq!(std::mem::size_of::<PathBeneathAttr>(), 12);
     }
 
@@ -639,8 +581,6 @@ mod tests {
 
     #[test]
     fn write_access_includes_truncate_and_refer() {
-        // Regression: without TRUNCATE, `echo x > existing` was denied inside
-        // a zone; without REFER, `mv a dir/` failed with EXDEV.
         assert_ne!(ACCESS_WRITE & FS_TRUNCATE, 0);
         assert_ne!(ACCESS_WRITE & FS_REFER, 0);
         assert_ne!(ACCESS_WRITE_FILE & FS_TRUNCATE, 0);
@@ -649,9 +589,7 @@ mod tests {
 
     #[test]
     fn device_node_creation_is_never_granted() {
-        // MAKE_CHAR and MAKE_BLOCK are handled (denied by default) and no rule
-        // grants them, so a zone cannot create device nodes anywhere even
-        // where it can create files.
+        // MAKE_CHAR and MAKE_BLOCK are handled, so denied, and no rule grants them.
         for r in zone_rules("/home/t") {
             assert_eq!(r.access & (FS_MAKE_CHAR | FS_MAKE_BLOCK), 0, "{}", r.path);
         }
@@ -660,22 +598,19 @@ mod tests {
 
     #[test]
     fn root_rule_never_grants_write() {
-        // The regression test for the additive-rules bug: any write right on
-        // "/" is a write right on every mount beneath it, and the read-only
-        // rules for /usr and friends would be decoration.
+        // Rules are additive: write on "/" would be write on every mount under it.
         let rules = zone_rules("/home/t");
         let root = rules.iter().find(|r| r.path == "/").expect("no rule for /");
         assert_eq!(root.access & ACCESS_WRITE, 0, "/ must not be writable");
         assert_eq!(root.access & FS_WRITE_FILE, 0);
         assert!(root.required);
-        // And the writable places are exactly the ones a zone may change.
         let writable: Vec<&str> = rules
             .iter()
             .filter(|r| r.access & (FS_WRITE_FILE | FS_MAKE_REG) != 0)
             .map(|r| r.path.as_str())
             .collect();
         assert_eq!(writable, vec!["/home/t", "/tmp", "/dev", "/dev/shm", "/proc"]);
-        // Only the data dir and /tmp may create files.
+        // Only the data dir, /tmp and /dev/shm may create files.
         for r in &rules {
             if r.access & FS_MAKE_REG != 0 {
                 assert!(
@@ -688,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn the_nic_zone_adds_exactly_its_two_state_directories_and_no_exec() {
+    fn nic_zone_adds_state_dirs_without_exec() {
         let extra = nic_zone_rules();
         let paths: Vec<&str> = extra.iter().map(|r| r.path.as_str()).collect();
         assert_eq!(paths, vec!["/run", "/var/lib"]);
@@ -697,7 +632,7 @@ mod tests {
             assert_ne!(r.access & FS_MAKE_REG, 0, "{} must allow creating files", r.path);
             assert!(r.required, "{} is a mount kryptikd made; its absence is a defect", r.path);
         }
-        // And the base rules are untouched by it: no other zone gains /run.
+        // No other zone gains them.
         assert!(zone_rules("/home/t").iter().all(|r| r.path != "/run" && r.path != "/var/lib"));
     }
 
@@ -716,12 +651,35 @@ mod tests {
     }
 
     #[test]
-    fn allow_rejects_a_nonexistent_path() {
+    fn allow_rejects_nonexistent_path() {
         if abi_version().map_or(true, |v| v < MIN_ABI) {
             return;
         }
         let mut rs = Ruleset::new().unwrap();
         assert!(rs.allow("/definitely/not/a/real/path", ACCESS_READ).is_err());
+    }
+
+    #[test]
+    fn symlinked_path_refused() {
+        if abi_version().is_none_or(|a| a < MIN_ABI) {
+            return;
+        }
+        // Canonical, so a linked TMPDIR does not refuse the exact path too.
+        let dir = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("kryptik-ll-link-{}", std::process::id()));
+        let real = dir.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        std::os::unix::fs::symlink(&dir, dir.join("link")).unwrap();
+        let mut rs = Ruleset::new().unwrap();
+        let name = |p: std::path::PathBuf| p.to_str().unwrap().to_string();
+        let last = rs.allow(&name(dir.join("link")), ACCESS_READ);
+        let through = rs.allow(&name(dir.join("link/real")), ACCESS_READ);
+        let exact = rs.allow(&name(real), ACCESS_READ);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(matches!(last, Err(LandlockError::Symlink(_))), "{last:?}");
+        assert!(matches!(through, Err(LandlockError::Symlink(_))), "{through:?}");
+        assert!(exact.is_ok(), "{exact:?}");
     }
 
     #[test]

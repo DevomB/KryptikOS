@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
-# Install Kryptik's git hooks.
-#
-#   ./tools/install-git-hooks.sh
-#
-# Uses core.hooksPath so the hooks live in the repository and stay under
-# review, rather than being copied into .git/hooks where nobody sees them
-# change.
+# Install the git hooks: point core.hooksPath at tools/git-hooks, so they stay
+# under review, and check that git will run each one.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 
@@ -17,16 +12,8 @@ cd "$KRYPTIK_ROOT" || die "cannot enter ${KRYPTIK_ROOT}"
 git config core.hooksPath "$HOOKS_DIR"
 chmod +x "${HOOKS_DIR}"/* 2>/dev/null || true
 
-# VERIFY, DO NOT ASSERT.
-#
-# This script used to print "hooks installed" after setting one config value,
-# which is not the same thing as git being willing to run anything. Git ignores
-# a hook that is not executable and mentions it only as an advice line at commit
-# time. tools/git-hooks/pre-commit was recorded 100644 in the index from the day
-# it was added, so every fresh clone and every new worktree got a hook git
-# refused to run while this script reported success. The chmod above fixes the
-# working tree only; the INDEX mode is what a new checkout inherits, so that is
-# checked and corrected too.
+# Git silently ignores a non-executable hook. The chmod above fixes only the
+# working tree; a new checkout takes the index mode, so check that too.
 problems=0
 hooks=0
 for h in "${HOOKS_DIR}"/*; do
@@ -52,12 +39,9 @@ for h in "${HOOKS_DIR}"/*; do
         ok "  ${h} is now 100755 in the index - COMMIT THAT CHANGE"
     fi
 
-    # The authoritative answer comes from git itself: a hook git cannot find is
-    # not installed, whatever the config says. A hook that runs and exits
-    # non-zero is fine here, since nothing is staged.
+    # Ask git itself. A hook that runs and fails is fine: nothing is staged.
     name="$(basename "$h")"
-    # stdin is /dev/null: pre-push reads its ref list from stdin, and probed
-    # from a terminal it would wait for one that never comes.
+    # stdin from /dev/null, or pre-push waits for a ref list.
     if git hook run "$name" 2>&1 < /dev/null | grep -q 'cannot find a hook'; then
         err "git cannot find a hook named ${name} even after the above"
         problems=$((problems + 1))

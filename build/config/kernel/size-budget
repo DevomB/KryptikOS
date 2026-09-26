@@ -1,6 +1,3 @@
-# The most arch/x86/boot/bzImage may weigh, in bytes. Stage 05 fails over it.
-# It was 17,816,528 before the image carried modules and microcode and
-# 31,648,720 after; about 17 MB of any image is microcode, which does not
-# compress. This is the last measured size rounded up: once a build has
-# printed the size after the drivers moved to modules, set it to that plus 5%.
-bzimage_max_bytes 33554432
+# Largest arch/x86/boot/bzImage stage 05 accepts, in bytes: the measured
+# 21,988,352 (about 18 MB of it microcode, which does not compress) plus 5%.
+bzimage_max_bytes 23087770

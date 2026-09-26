@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 """Drive a guest over its serial console: expect, send, log in, run commands.
 
-    tools/image/vm-drive.py --serial SOCK [--log FILE] [--timeout N] [--qmp SOCK] STEP...
+    tools/image/vm-drive.py --serial SOCK [--log FILE] [--timeout N] [--qmp SOCK]
+                            [--record FILE] STEP...
 
 Steps (each one argument):
     expect:REGEX            wait until REGEX matches the serial stream (and
                             consume the stream up to the match)
-    seen:REGEX              wait until REGEX has appeared ANYWHERE in the
-                            transcript so far, consuming nothing - for a line
-                            whose order relative to other lines is not fixed
-    absent:REGEX            assert REGEX has NOT appeared so far
+    seen:REGEX              wait until REGEX has appeared anywhere in the
+                            transcript so far, consuming nothing (for a line
+                            whose order among the others is not fixed)
+    absent:REGEX            fail if REGEX is in the output not yet consumed
     send:TEXT               send TEXT followed by Enter
     login:USER:PASSWORD     wait for "login:", authenticate, wait for a prompt
-    run:CMD                 run CMD at the shell, require exit status 0
+    run:CMD                 run CMD at the shell, require exit status 0; what
+                            it printed stays for the steps that follow
     run!:CMD                run CMD, any exit status
-    su:PASSWORD:CMD         run CMD as root through su (root's password)
+    su:PASSWORD:CMD         run CMD as root through su (root's password);
+                            its output stays too
     grab:NAME:CMD           run CMD and record its output under NAME in --record
     sleep:SECONDS
     screendump:FILE         ask QEMU (QMP) for a PPM screenshot
@@ -22,10 +25,13 @@ Steps (each one argument):
                             (qcodes, e.g. key:y  key:ret  key:alt+e)
     wait-exit               wait for the serial socket to close (guest gone)
 
-Exit status 0 when every step succeeded; the failing step is named otherwise.
-The whole transcript goes to --log. stdlib only; no pexpect.
+With KRYPTIK_STATE_PASSPHRASE set, the driver answers an installed disk's
+state passphrase prompt at every boot; no step names it. Exits 0 when every
+step succeeded, else names the failing step. Standard library only.
 """
 import json, os, re, socket, sys, time
+
+UNLOCK = re.compile(rb"passphrase for the state partition \(try \d of 3\): ")
 
 class Drive:
     def __init__(self, path, log, timeout):
@@ -37,8 +43,9 @@ class Drive:
         self.log = open(log, "ab") if log else None
         self.timeout = timeout
         self.closed = False
-        self.records = {}
         self.marker = 0
+        self.passphrase = os.environ.get("KRYPTIK_STATE_PASSPHRASE")
+        self.answered = 0   # how far into the transcript the prompts are answered
 
     def _read(self):
         try:
@@ -52,12 +59,16 @@ class Drive:
         self.all += d
         if self.log:
             self.log.write(d); self.log.flush()
+        if self.passphrase:
+            # From the last answer, or just before this read: a prompt may
+            # straddle two reads, and none is answered twice.
+            for m in UNLOCK.finditer(self.all, max(self.answered, len(self.all) - len(d) - 80)):
+                self.answered = m.end()
+                self.send_secret(self.passphrase)
         return True
 
     def seen(self, regex, timeout=None):
-        """Wait until REGEX has appeared anywhere in the transcript so far.
-        Consumes nothing: a line that was printed before an earlier expect()
-        matched (and was discarded from buf) still counts."""
+        """Wait until REGEX is anywhere in the transcript, consumed output included."""
         timeout = self.timeout if timeout is None else timeout
         rx = re.compile(regex.encode(), re.M)
         deadline = time.time() + timeout
@@ -93,14 +104,19 @@ class Drive:
         if self.log:
             self.log.write(b"\n<<< " + text.encode() + b"\n"); self.log.flush()
 
+    def send_secret(self, text):
+        # Never logged: the transcript is uploaded with every acceptance report.
+        self.s.sendall(text.encode() + b"\r")
+        if self.log:
+            self.log.write(b"\n<<< (a password)\n"); self.log.flush()
+
     def drain(self, seconds):
         end = time.time() + seconds
         while time.time() < end:
             self._read()
 
     def knock(self, regex, timeout=None, every=5):
-        """Send an empty line, wait up to EVERY seconds for REGEX, and send
-        another until it matches or TIMEOUT runs out. Consumes like expect()."""
+        """Send an empty line every EVERY seconds until REGEX matches; consumes like expect()."""
         timeout = self.timeout if timeout is None else timeout
         rx = re.compile(regex.encode(), re.M)
         deadline = time.time() + timeout
@@ -124,25 +140,14 @@ class Drive:
             self._read()
 
     def login(self, user, password):
-        # The getty may have printed its prompt long before this step (an
-        # earlier expect() then discarded it). An empty line makes agetty
-        # print a fresh one, so the prompt is waited for, not assumed.
-        #
-        # One empty line is not enough. agetty prints "login:" only once it
-        # sees terminal input (util-linux builds it with AGETTY_RELOAD: the
-        # prompt waits in select() for a keypress, an inotify or a netlink
-        # event), and it flushes whatever arrived during the second after it
-        # started or after such an event woke it. An Enter that lands in that
-        # window is discarded, agetty goes back to waiting, and a driver that
-        # sent one Enter waits with it: 51500b01's update test, step 4, spent 420 s on
-        # a console that had printed agetty's leading newline and nothing
-        # else. Every transcript of that run shows the prompt only after the
-        # driver's Enter. So knock again every few seconds until one answers.
+        # agetty (built with AGETTY_RELOAD) prints "login:" only after input,
+        # and flushes input that arrives within a second of starting or waking,
+        # so one Enter can be lost: knock until the prompt appears.
         self.drain(1)
         self.knock(r"login: ?$", self.timeout)
         self.send(user)
         self.expect(r"Password: ?", 60)
-        self.send(password)
+        self.send_secret(password)
         # a fresh shell prompt: bash prints "user@host:dir$ " or "$ "
         self.expect(r"[$#] ?$", 60)
         # make the prompt unambiguous for run()
@@ -150,46 +155,31 @@ class Drive:
         self.expect(r"READY-\d+", 30)
         self.expect(r"KDRV\$ ?$", 30)
 
-    def run(self, cmd, require_zero=True, record=None):
+    def run(self, cmd, require_zero=True):
         self.marker += 1
         tag = f"KRC{self.marker}"
         self.send(f"{cmd}; echo {tag}=$?")
-        m = self.expect(rf"{tag}=(\d+)", self.timeout)
+        m = self.finish(tag, cmd)
+        if m.group(1) is None:
+            return 0   # the guest is going down on this command; no status follows
         rc = int(m.group(1))
-        # output between the echoed command and the tag is what we captured;
-        # keep whatever preceded the match for records
-        if record is not None:
-            self.records[record] = self.last_output.decode("utf-8", "replace") if hasattr(self, "last_output") else ""
-        self.expect(r"KDRV\$ ?$", 30)
         if require_zero and rc != 0:
             raise RuntimeError(f"command failed ({rc}): {cmd}")
         return rc
 
-    def grab(self, name, cmd):
-        self.marker += 1
-        tag = f"KRC{self.marker}"
-        self.send(f"echo BEGIN-{tag}; {cmd}; echo END-{tag}=$?")
-        self.expect(rf"BEGIN-{tag}\r?\n", self.timeout)
-        m = self.expect(rf"END-{tag}=(\d+)", self.timeout)
-        # everything consumed up to the END marker is in the discarded prefix;
-        # re-search the log-less buffer: simpler to capture during expect
-        self.expect(r"KDRV\$ ?$", 30)
-        return int(m.group(1))
-
     def su(self, password, cmd):
-        # A login shell for root: the image strips the sbin directories from
-        # an ordinary user's PATH, and a plain `su -c` inherits that PATH, so
-        # root's reboot and poweroff were "command not found".
+        # A login shell: plain `su -c` keeps the user's PATH, which has no sbin.
         self.marker += 1
         tag = f"KRC{self.marker}"
         self.send(f"su - root -c '{cmd}; echo {tag}=$?'")
         self.expect(r"Password: ?", 60)
-        self.send(password)
-        # Wait for the exit marker, but keep what the command printed: the
-        # steps that follow expect lines of that output ("running slot: a",
-        # "ZT END"), and a plain expect() would have consumed them with the
-        # marker. Only the marker itself is dropped; a shutdown message that
-        # matched instead stays for the driver's own expect of it.
+        self.send_secret(password)
+        return self.finish(tag, cmd)
+
+    def finish(self, tag, cmd):
+        # Wait for the exit marker but leave the command's output for the
+        # steps that follow; only the marker is dropped. A shutdown message
+        # that matches instead stays, and is returned in place of a status.
         rx = re.compile(rf"{tag}=(\d+)|Power down|reboot: Restarting|Restarting system".encode(), re.M)
         deadline = time.time() + self.timeout
         while True:

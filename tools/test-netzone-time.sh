@@ -1,22 +1,7 @@
 #!/usr/bin/env bash
-# The net zone's half of the clock (docs/design/time.md), offline: the part of
-# tools/net/netzone-init.sh that measures the time and tells zone 0, and the
-# SNTP query it runs (tools/net/sntp-offset.py), against real sockets on
-# loopback - a time server whose clock and manners this suite chooses, and a
-# unix socket standing where the zone's broker would be, which writes down
-# what it was told.
-#
-# The zone that runs this code is the one Kryptik trusts least, and the image
-# runs it under whatever /bin/sh is, so it runs here under every POSIX shell
-# on this host. What is checked is what it does with what it is given: which
-# lines of zone 0's source list it accepts and how they reach the query; that
-# a clock five minutes behind the server is reported as +300 and one ahead as
-# -300 (the sign is arithmetic here, not a guess about another program's log);
-# that one lying server among three is outvoted; that a kiss-of-death, an
-# unsynchronised server, a reply that does not echo what was sent and silence
-# are all "no answer" and never a zero; that nothing is asked without an
-# uplink; and that the function's own `set --` leaves the script's list of
-# uplinks alone, which the whole script hangs off.
+# Test the net zone's clock query (docs/design/time.md): ask_time from
+# netzone-init.sh and sntp-offset.py, against loopback time servers and a
+# stand-in broker, under each POSIX shell here (the image's /bin/sh may be any).
 
 set -uo pipefail
 
@@ -32,8 +17,7 @@ command -v python3 >/dev/null 2>&1 || { echo "no python3: the query and its stan
 [[ -r "$SCRIPT" && -r "$SNTP" ]] || { echo "missing ${SCRIPT} or ${SNTP}"; exit 1; }
 T="$(mktemp -d)"
 PIDS=()
-# Only the main shell cleans up: a $(...) is a subshell that inherits this
-# trap, and the first one to exit would take the servers and $T with it.
+# Only the main shell cleans up: every $(...) subshell inherits this trap.
 MAIN=$BASHPID
 cleanup() { [[ "$BASHPID" == "$MAIN" ]] || return 0; for p in "${PIDS[@]:-}"; do [[ -n "$p" ]] && kill "$p" 2>/dev/null; done; rm -rf "$T"; }
 trap cleanup EXIT
@@ -42,7 +26,7 @@ trap cleanup EXIT
 sed -n '/^TIME_CONF=/,/^ask_time "\$@"$/p' "$SCRIPT" | sed '$d' > "$T/block.sh"
 grep -q '^ask_time()' "$T/block.sh" || { echo "could not find the time block in ${SCRIPT#"$ROOT"/} (did its markers move?)"; exit 1; }
 
-# A time server on loopback: its clock is ours plus SKEW, and MODE is its manners.
+# A loopback time server: its clock is ours plus SKEW; MODE picks how it misbehaves.
 cat > "$T/ntpd.py" <<'PY'
 import socket, struct, sys, time
 mode, skew, portfile = sys.argv[1], float(sys.argv[2]), sys.argv[3]
@@ -58,7 +42,7 @@ while True:
     origin = bytes(8) if mode == "badorigin" else data[40:48]
     s.sendto(bytes([first, stratum, 0, 0xEC]) + bytes(12) + ts(now) + origin + ts(now) + ts(now), addr)
 PY
-# Where the zone's broker would be: writes down the request, answers like zone 0.
+# A stand-in broker: logs each request and answers as zone 0 does.
 cat > "$T/broker.py" <<'PY'
 import os, socket, sys
 path, log = sys.argv[1], sys.argv[2]
@@ -72,7 +56,7 @@ while True:
         data += b
     open(log, "ab").write(data); c.sendall(b"ok stepped\n"); c.close()
 PY
-# The query, with its arguments written down first; NOQUERY stops there.
+# The query, logging its arguments first; NOQUERY=1 stops there.
 cat > "$T/sntp-logged.py" <<PY
 import os, runpy, sys
 open(os.environ["ARGLOG"], "a").write(" ".join(sys.argv[1:]) + "\n")
@@ -90,9 +74,8 @@ echo "STATE=\$TIME_STATE"
 echo "UPLINKS=\$*"
 EOF
 
-# serve VAR MODE SKEW: start a server and put its port in VAR. Not through
-# $(...): a command substitution is a subshell, where the pid would be
-# recorded and lost, and whose exit runs this script's cleanup trap.
+# serve VAR MODE SKEW: start a server and put its port in VAR. Not via $(...),
+# whose subshell would lose the pid.
 NSERVED=0
 serve() {
     NSERVED=$((NSERVED + 1))
@@ -108,7 +91,7 @@ for _ in $(seq 1 50); do [[ -e "$T/broker.sock.ready" ]] && break; sleep 0.1; do
 
 serve P_BEHIND ok 300; serve P_AHEAD ok -300; serve P_AHEAD2 ok -300; serve P_LIAR ok 90000
 serve P_KOD kod 0; serve P_UNSYNC unsync 0; serve P_BADORIGIN badorigin 0; serve P_SILENT silent 0
-# conf LINE...: a source list; its path in CONF (a function, not $(...), for the reason above).
+# conf LINE...: write a source list; its path goes in CONF.
 NCONF=0
 conf() { NCONF=$((NCONF + 1)); CONF="$T/conf.$NCONF"; printf '%s\n' "$@" > "$CONF"; }
 has() { [[ "$1" == *"$2"* ]]; }

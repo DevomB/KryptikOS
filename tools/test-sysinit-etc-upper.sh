@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
-# sysinit's prune_etc_upper: the /etc overlay's upper layer, on the
-# unauthenticated state partition, may carry the account database, the
-# machine's identity and clock, and nothing else. Everything else that an
-# offline writer put there - a preload library, a udev rule, a zone
-# definition, a profile - is moved to a quarantine directory before the
-# overlay is mounted. Exercised on a staged upper layer with the function
-# taken from the script itself, under `sh -e` as sysinit runs. No root.
+# Test sysinit's prune_etc_upper, taken from the script and run under sh -e:
+# the /etc upper layer (on the unauthenticated state partition) keeps only the
+# account database, machine identity and clock; the rest is quarantined.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SYSINIT="$ROOT/build/service-scripts/sysinit.sh"
@@ -52,7 +48,6 @@ ok "a preload library, a udev rule, a zone definition, a sysctl fragment, a prof
 
 grep -q "quarantined 'ld.so.preload'" <<<"$out" && ok "each quarantined entry is named on stderr" || bad "the preload library was quarantined silently: $(head -3 <<<"$out" | tr '\n' ' ')"
 
-# A second run over what is left changes nothing: idempotent, as sysinit is.
 before="$(ls -A "$T/up" | sort | tr '\n' ' ')"
 sh -e -c ". $T/fn.sh; prune_etc_upper $T/up $T/q" >/dev/null 2>&1
 after="$(ls -A "$T/up" | sort | tr '\n' ' ')"
@@ -64,8 +59,8 @@ sh -e -c ". $T/fn.sh; prune_etc_upper $T/up $T/q" >/dev/null 2>&1 && ok "a missi
 mkdir -p "$T/up"
 sh -e -c ". $T/fn.sh; prune_etc_upper $T/up $T/q" >/dev/null 2>&1 && [[ ! -e "$T/q" ]] && ok "an empty upper layer creates no quarantine directory" || bad "an empty upper layer was not left alone"
 
-# A failed move must propagate even when the caller tests the result (which
-# disables sh -e inside the function). Never mount the unfiltered upper layer.
+# A failed move must fail the call even under `if` (where sh -e is off), so
+# the unfiltered layer is never mounted.
 stage
 if sh -e -c '. "$1"; mv() { return 1; }; if prune_etc_upper "$2" "$3"; then exit 0; else exit 1; fi' sh "$T/fn.sh" "$T/up" "$T/q" >/dev/null 2>&1; then
     bad "a failed quarantine move was reported as success"

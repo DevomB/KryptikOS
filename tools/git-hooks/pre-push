@@ -1,16 +1,11 @@
 #!/usr/bin/env bash
-# Kryptik pre-push hook.
-#
-# Install with:  ./tools/install-git-hooks.sh
-#
-# Nothing leaves this machine under the wrong identity. The pre-commit hook
-# stops a bad commit being made here; this stops one made anywhere else (a
-# second checkout, a rebase that re-stamped the committer, a --no-verify) from
-# reaching GitHub, where the attribution becomes public.
+# Kryptik pre-push hook: refuse to push a commit under any other identity, even
+# one made past pre-commit (another checkout, a rebase, --no-verify).
+# Install with ./tools/install-git-hooks.sh.
 
 set -uo pipefail
 
-# Located relative to this file, as in pre-commit, and missing means refuse.
+# Found relative to this file, as in pre-commit; missing means refuse.
 checker="$(dirname "${BASH_SOURCE[0]}")/../check-commit-identity.sh"
 if [[ ! -f "$checker" ]]; then
     echo "pre-push: ERROR no identity checker at ${checker}; refusing to push unchecked" >&2
@@ -22,9 +17,8 @@ bad=0
 while read -r _local_ref local_sha _remote_ref remote_sha; do
     [[ "$local_sha" == "$zero" ]] && continue            # deleting a ref
 
-    # A new ref, or a force-push whose old tip is not in this repository:
-    # there is no range to speak of, so the whole history behind the new tip
-    # is what gets checked. It is a few hundred commits and takes no time.
+    # A new ref, or a force-push whose old tip is unknown here: check the
+    # whole history behind the new tip.
     if [[ "$remote_sha" == "$zero" ]] || ! git cat-file -e "${remote_sha}^{commit}" 2>/dev/null; then
         range="$local_sha"
     else

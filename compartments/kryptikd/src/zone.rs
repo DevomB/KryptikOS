@@ -1,10 +1,7 @@
 //! Zone definitions: parsing and validation.
 //!
-//! The parser is hand-written rather than pulling in a TOML crate. kryptikd
-//! runs privileged and mediates every boundary in the system (ADR-010), so the
-//! dependency surface is kept to `libc`. Zone files are authored by the system
-//! owner and live in zone 0, but they are still parsed defensively: a malformed
-//! file must produce an error, never a zone with weaker isolation than intended.
+//! A hand-written parser rather than a TOML crate, to keep dependencies to
+//! `libc` (ADR-010). A malformed file is an error, never a weaker zone.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -12,13 +9,9 @@ use std::fs;
 use std::path::Path;
 
 /// How a zone reaches the network.
-///
-/// The distinction between `None` and "firewalled off" is the whole point:
-/// `None` means the zone's network namespace contains only loopback. There is
-/// no interface to misconfigure and no rule that can be dropped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkMode {
-    /// Network namespace with loopback only. No path to any interface.
+    /// Loopback only: no interface to misconfigure, no firewall rule to drop.
     None,
     /// veth into the bridge owned by the `nic` zone.
     Routed,
@@ -47,15 +40,8 @@ pub enum StorageMode {
     Encrypted,
     /// tmpfs overlay, destroyed at teardown.
     Ephemeral,
-    /// A plain directory on the host filesystem, kept between launches.
-    ///
-    /// Persistence and nothing else: the data is NOT encrypted at rest, and
-    /// every place that reports this mode says so. It exists because
-    /// "encrypted" is not implemented and refusing to start is the right
-    /// answer for a zone that asked for encryption - which left no way at all
-    /// to keep a file, and made ephemeral the only working mode. Someone who
-    /// needs their editor to still have the document tomorrow is better served
-    /// by storage they understand than by a mode that lies.
+    /// A plain directory on the host filesystem, kept between launches. Not
+    /// encrypted at rest, and every report of this mode says so.
     Persistent,
 }
 
@@ -79,53 +65,36 @@ pub struct Zone {
     pub name: String,
     pub description: String,
     pub network: NetworkMode,
-    pub bridge: Option<String>,
-    /// The physical interface a `nic` zone takes ownership of (`[network]
-    /// nic = "eth0"`), or `"*"` for every interface of zone 0 that sits on
-    /// a bus device (`netzone::physical_interfaces`). Only meaningful for
-    /// mode = "nic", refused otherwise.
+    /// Interface a `nic` zone takes (`nic = "eth0"`), or `"*"` for every
+    /// physical one (`netzone::physical_interfaces`). Refused for other modes.
     pub nic: Option<String>,
     pub storage: StorageMode,
     pub volume: Option<String>,
     pub seccomp: Option<String>,
     pub landlock: Option<String>,
-    /// Upper bound on an ephemeral zone's tmpfs. Required for ephemeral,
-    /// refused for encrypted and persistent: an unbounded tmpfs is a zone that can exhaust
-    /// host memory by writing files, which the cgroup memory limit does NOT
-    /// catch - tmpfs pages outlive the process that wrote them and are charged
-    /// to whoever touches them next.
+    /// Upper bound on an ephemeral zone's tmpfs: required for ephemeral,
+    /// refused otherwise. Unbounded, a zone could fill host memory with files.
     pub size: Option<String>,
     pub memory_max: Option<String>,
     pub pids_max: Option<u32>,
     pub border_color: String,
-    /// The non-colour identity channels (`[ui] border_pattern`, `glyph`,
-    /// `label`): what tells zones apart for a user who cannot see the colour
-    /// difference. kryptikd carries them for the desktop (the compositor and
-    /// the trusted chrome read the installed zone files) and checks only
-    /// their shape; `zoneid audit` is the authority on whether the set is
-    /// distinguishable, and the build runs it over the shipped zones.
+    /// Non-colour identity (`border_pattern`, `glyph`, `label`) for users who
+    /// cannot tell the colours apart. Only the shape is checked here; `zoneid
+    /// audit` decides whether the set is distinguishable.
     pub border_pattern: Option<String>,
     pub glyph: Option<String>,
     pub label: Option<String>,
-    /// The zone's fixed host identity range: `[identity] uid_base = N`.
-    ///
-    /// A privileged launch maps the zone's root to host uid/gid N and its
-    /// `nobody` to N + 65534; the whole 65536-wide range is reserved to the
-    /// zone. Declared in the zone file, never derived from zone order, so
-    /// adding a zone can never change which host uid owns another zone's
-    /// files. `None` means a root launch must name an identity with
-    /// `--zone-uid/--zone-gid`, and is refused on the target (`check --target`).
+    /// Host identity range, `[identity] uid_base = N`: a privileged launch maps
+    /// root to N and nobody to N + 65534. Declared, not derived from zone order,
+    /// so adding a zone never changes who owns another's files. `None`: a root
+    /// launch needs `--zone-uid/--zone-gid`, and `check --target` refuses it.
     pub uid_base: Option<u32>,
-    /// `[transfer] to = "work personal"`: the zones this zone may send files
-    /// to through the broker. Absent means it sends nothing.
-    /// Every name must be a configured zone and never the one holding the
-    /// NIC, which receives nothing, ever (`check_invariants`).
+    /// `[transfer] to = "work personal"`: zones this one may send files to via
+    /// the broker. Never the nic zone (`check_invariants`).
     pub transfer_to: Vec<String>,
 }
 
-/// Smallest permitted `identity.uid_base`, and the alignment every base must
-/// have. 131072 = 2 * 65536: the first aligned range clear of the host's own
-/// users and of the conventional first subordinate range.
+/// Smallest `identity.uid_base`; every base is a multiple of `IDENTITY_STRIDE`.
 pub const IDENTITY_MIN: u32 = 131072;
 pub const IDENTITY_STRIDE: u32 = 65536;
 
@@ -152,12 +121,11 @@ impl fmt::Display for ZoneError {
     }
 }
 
-/// Every key a zone file may contain. Anything else is refused: a key that is
-/// parsed and ignored is a setting the operator believes is in force.
+/// Every key a zone file may contain; any other is refused, not ignored.
 pub const KNOWN_KEYS: &[&str] = &[
     "zone.name", "zone.description",
-    "network.mode", "network.bridge", "network.nic",
-    "storage.mode", "storage.volume", "storage.size", "storage.unlock", "storage.wipe_keys",
+    "network.mode", "network.nic",
+    "storage.mode", "storage.volume", "storage.size",
     "policy.seccomp", "policy.landlock",
     "limits.memory_max", "limits.pids_max",
     "identity.uid_base",
@@ -165,41 +133,25 @@ pub const KNOWN_KEYS: &[&str] = &[
     "ui.border_color", "ui.border_pattern", "ui.glyph", "ui.label",
 ];
 
-/// A byte size as cgroup v2 memory.max accepts it: digits, optionally
-/// followed by one of K, M, G, T. "max" is not accepted - leave the key out.
-pub fn is_size(s: &str) -> bool {
-    let (digits, suffix) = match s.char_indices().find(|(_, c)| !c.is_ascii_digit()) {
-        Some((i, _)) => s.split_at(i),
-        None => (s, ""),
+/// A byte size as a zone file, cgroup memory.max and `volume init --size`
+/// take it: digits with an optional K, M, G or T. None for zero, for
+/// anything else (so not "max": omit the key), and on overflow.
+pub fn parse_size(s: &str) -> Option<u64> {
+    let (digits, shift) = match s.as_bytes().last()? {
+        b'K' | b'k' => (&s[..s.len() - 1], 10),
+        b'M' | b'm' => (&s[..s.len() - 1], 20),
+        b'G' | b'g' => (&s[..s.len() - 1], 30),
+        b'T' | b't' => (&s[..s.len() - 1], 40),
+        _ => (s, 0),
     };
-    !digits.is_empty()
-        && digits.chars().any(|c| c != '0')
-        && matches!(suffix, "" | "K" | "M" | "G" | "T" | "k" | "m" | "g" | "t")
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<u64>().ok().filter(|&n| n > 0)?.checked_mul(1 << shift)
 }
 
-/// A validated size as bytes, for comparing two of them.
-///
-/// Deliberately separate from cgroup::parse_memory_max: this one is about the
-/// relationship between two values in a zone file, runs during parsing, and
-/// must not pull the cgroup module into zone validation. Returns None rather
-/// than erroring - is_size has already accepted the shape, and a value too
-/// large to compare is caught where it is applied.
-fn size_bytes(v: &str) -> Option<u64> {
-    let (digits, mult) = match v.as_bytes().last() {
-        Some(b'K') | Some(b'k') => (&v[..v.len() - 1], 1024u64),
-        Some(b'M') | Some(b'm') => (&v[..v.len() - 1], 1024 * 1024),
-        Some(b'G') | Some(b'g') => (&v[..v.len() - 1], 1024 * 1024 * 1024),
-        Some(b'T') | Some(b't') => (&v[..v.len() - 1], 1024u64 * 1024 * 1024 * 1024),
-        _ => (v, 1),
-    };
-    digits.parse::<u64>().ok()?.checked_mul(mult)
-}
-
-/// Minimal TOML reader: `[section]` headers and `key = value` pairs, with `#`
-/// comments. Values are strings or bare integers. Anything the zone format does
-/// not use (arrays, nested tables, multi-line strings) is rejected rather than
-/// ignored, so a file using an unsupported construct fails loudly instead of
-/// silently losing the setting it was trying to express.
+/// Minimal TOML reader: `[section]`, `key = value` (quoted string, integer or
+/// boolean) and `#` comments. Arrays and nested tables are errors, not ignored.
 fn parse_flat_toml(text: &str) -> Result<HashMap<String, String>, ZoneError> {
     let mut out = HashMap::new();
     let mut section = String::new();
@@ -276,8 +228,7 @@ fn parse_flat_toml(text: &str) -> Result<HashMap<String, String>, ZoneError> {
     Ok(out)
 }
 
-/// Strip a trailing `#` comment, respecting quoted strings so a colour like
-/// "#c9a227" survives.
+/// Strip a trailing `#` comment outside quotes, so "#c9a227" survives.
 fn strip_comment(line: &str) -> &str {
     let bytes = line.as_bytes();
     let mut in_string = false;
@@ -321,8 +272,7 @@ impl Zone {
             value: value.into(),
             expected: expected.into(),
         };
-        // A limit that does not parse must be an error, not None: the first
-        // version turned `pids_max = "lots"` into "no limit".
+        // An unparseable limit is an error, never "no limit".
         let pids_max = match kv.get("limits.pids_max") {
             None => None,
             Some(v) => Some(
@@ -333,12 +283,11 @@ impl Zone {
             ),
         };
         if let Some(v) = kv.get("limits.memory_max") {
-            if !is_size(v) {
+            if parse_size(v).is_none() {
                 return Err(bad("limits.memory_max", v, "a size such as 512M or 2G"));
             }
         }
-        // storage.size: required for ephemeral, refused for the two modes
-        // whose size kryptikd does not control.
+        // storage.size: required for ephemeral, refused where kryptikd cannot enforce it.
         match storage {
             StorageMode::Ephemeral => match kv.get("storage.size") {
                 None => {
@@ -350,18 +299,14 @@ impl Zone {
                         name
                     )))
                 }
-                Some(v) if !is_size(v) => {
+                Some(v) if parse_size(v).is_none() => {
                     return Err(bad("storage.size", v, "a size such as 512M or 2G"))
                 }
                 Some(v) => {
-                    // A tmpfs bigger than the zone's memory limit cannot ever
-                    // reach its stated size: its pages are charged to the
-                    // zone's memcg, so the OOM group-kill fires first. Two
-                    // limits where only one can bind misleads the operator
-                    // about which one is in force, so say so at parse time
-                    // rather than at the OOM.
+                    /* tmpfs pages are charged to the zone's memcg, so a tmpfs
+                     * larger than memory_max never fills: the OOM kill comes first. */
                     if let Some(m) = kv.get("limits.memory_max") {
-                        match (size_bytes(v), size_bytes(m)) {
+                        match (parse_size(v), parse_size(m)) {
                             (Some(sz), Some(mm)) if sz > mm => {
                                 return Err(ZoneError::Invalid(format!(
                                     "zone {name:?}: storage.size = {v:?} is larger than \
@@ -386,10 +331,7 @@ impl Zone {
                 }
             }
             StorageMode::Persistent => {
-                // A persistent zone writes into a directory on a filesystem
-                // kryptikd did not create and does not control. Accepting a
-                // size here would record a bound nothing enforces, and the
-                // operator would believe the zone could not fill the disk.
+                // Nothing would enforce it: a host directory with no quota.
                 if kv.contains_key("storage.size") {
                     return Err(ZoneError::Invalid(format!(
                         "zone {:?}: storage.size is only meaningful for storage.mode = \
@@ -399,17 +341,6 @@ impl Zone {
                         name
                     )));
                 }
-            }
-        }
-
-        if let Some(v) = kv.get("storage.unlock") {
-            if v != "on-start" {
-                return Err(bad("storage.unlock", v, "on-start"));
-            }
-        }
-        if let Some(v) = kv.get("storage.wipe_keys") {
-            if v != "on-stop" {
-                return Err(bad("storage.wipe_keys", v, "on-stop"));
             }
         }
 
@@ -481,14 +412,14 @@ impl Zone {
             uid_base,
             transfer_to,
             description: get("zone.description").unwrap_or_default(),
-            bridge: get("network.bridge"),
             volume: get("storage.volume"),
             size: get("storage.size"),
             seccomp: get("policy.seccomp"),
             landlock: get("policy.landlock"),
             memory_max: get("limits.memory_max"),
             pids_max,
-            border_color: need("ui.border_color")?,
+            // One spelling, so the duplicate check sees #AA3333 and #aa3333 as one colour.
+            border_color: need("ui.border_color")?.to_ascii_lowercase(),
             border_pattern: get("ui.border_pattern"),
             glyph: get("ui.glyph"),
             label: get("ui.label"),
@@ -502,16 +433,11 @@ impl Zone {
     }
 
     /// Reject configurations that would silently weaken isolation.
-    ///
-    /// These are not style checks. Each one corresponds to a way a zone file
-    /// could look reasonable while producing a zone that does not isolate.
     fn validate(&self) -> Result<(), ZoneError> {
         if self.name.is_empty() {
             return Err(ZoneError::Invalid("zone.name must not be empty".into()));
         }
-        // The name becomes a namespace name, a cgroup path component, and an
-        // interface suffix. Anything outside this set is a path-traversal or
-        // interface-naming hazard.
+        // The name goes into cgroup paths and interface names.
         if !self
             .name
             .chars()
@@ -538,10 +464,7 @@ impl Zone {
                 self.name
             )));
         }
-        // storage.volume names the block device an encrypted zone unlocks. A
-        // persistent zone has no volume - it is a directory - so a volume line
-        // here is either a leftover from the encrypted zone this one was
-        // copied from, or a belief that the data lands somewhere it does not.
+        // A persistent zone is a directory and opens no volume.
         if self.storage == StorageMode::Persistent && self.volume.is_some() {
             return Err(ZoneError::Invalid(format!(
                 "zone {:?}: storage.volume is only meaningful for storage.mode = \
@@ -554,27 +477,15 @@ impl Zone {
             )));
         }
 
-        // A zone that owns the NIC must name the bridge it serves, or routed
-        // zones have nothing to attach to.
-        if self.network == NetworkMode::Nic && self.bridge.is_none() {
-            return Err(ZoneError::Invalid(format!(
-                "zone {:?}: network.mode is 'nic' but no network.bridge given",
-                self.name
-            )));
-        }
-
-        // The colour is how a human tells zones apart. An empty or malformed
-        // one is a real isolation failure at the layer that matters most.
+        // The colour is how the user tells zones apart.
         if !is_hex_colour(&self.border_color) {
             return Err(ZoneError::Invalid(format!(
                 "zone {:?}: ui.border_color {:?} is not #rrggbb",
                 self.name, self.border_color
             )));
         }
-        // Shape only, mirroring zoneid's rules where a wrong value would be a
-        // forgery vector rather than a typo: a pattern name from the fixed
-        // list; a glyph of exactly one character; a label of printable ASCII
-        // (no bidi controls, no homographs), at most 12 characters.
+        /* Shape only, as zoneid checks it. A printable-ASCII label rules out
+         * bidi controls and homographs. */
         if let Some(p) = &self.border_pattern {
             const PATTERNS: [&str; 6] = ["solid", "dashed", "dotted", "double", "dash-dot", "notched"];
             if !PATTERNS.contains(&p.as_str()) {
@@ -628,7 +539,18 @@ pub fn load_all(dir: &Path) -> Result<Vec<Zone>, ZoneError> {
         if path.extension().and_then(|s| s.to_str()) != Some("toml") {
             continue;
         }
-        zones.push(Zone::from_file(&path)?);
+        let zone = Zone::from_file(&path)?;
+        /* The broker and the net zone open a zone as <name>.toml, so a file
+         * named otherwise would launch but never receive a transfer. */
+        if path.file_stem().and_then(|s| s.to_str()) != Some(zone.name.as_str()) {
+            return Err(ZoneError::Invalid(format!(
+                "{}: holds zone {:?}; a zone's file is named {}.toml",
+                path.display(),
+                zone.name,
+                zone.name
+            )));
+        }
+        zones.push(zone);
     }
 
     zones.sort_by(|a, b| a.name.cmp(&b.name));
@@ -638,13 +560,8 @@ pub fn load_all(dir: &Path) -> Result<Vec<Zone>, ZoneError> {
 
 /// Invariants that hold across the whole zone set, not within one file.
 pub fn check_invariants(zones: &[Zone]) -> Result<(), ZoneError> {
-    // [transfer] to must name configured zones, and never the one holding
-    // the NIC: it receives nothing, ever. Checked here, over
-    // the whole directory, because a single zone file cannot know the set.
-    //
-    // One index, built once. The scan it replaces walked the whole zone list
-    // for every destination of every zone. First occurrence wins, as the scan
-    // did, so a duplicate name (refused below) reports the same error here.
+    /* [transfer] to must name configured zones, never the nic zone. First
+     * occurrence wins; duplicate names are refused below. */
     let mut by_name: HashMap<&str, &Zone> = HashMap::with_capacity(zones.len());
     for z in zones {
         by_name.entry(z.name.as_str()).or_insert(z);
@@ -669,9 +586,7 @@ pub fn check_invariants(zones: &[Zone]) -> Result<(), ZoneError> {
             }
         }
     }
-    // Exactly one zone may hold the physical NIC. Two would mean two
-    // independent paths to the network, and the `net` chokepoint that the
-    // architecture depends on would not exist.
+    // Exactly one zone holds the NIC: the single path to the network.
     let nic: Vec<&str> = zones
         .iter()
         .filter(|z| z.network == NetworkMode::Nic)
@@ -704,10 +619,8 @@ pub fn check_invariants(zones: &[Zone]) -> Result<(), ZoneError> {
         }
     }
 
-    // Two zones with the same identity range would own each other's files on
-    // the host and could not be told apart by anything that authenticates by
-    // uid (the broker, the compositor proxy). Bases are aligned to the stride,
-    // so distinct bases are disjoint ranges; equality is the whole check.
+    /* Zones sharing a range could not be told apart by uid (broker, compositor
+     * proxy). Bases are stride-aligned, so distinct bases never overlap. */
     let mut bases: HashMap<u32, &str> = HashMap::new();
     for z in zones {
         if let Some(b) = z.uid_base {
@@ -721,8 +634,7 @@ pub fn check_invariants(zones: &[Zone]) -> Result<(), ZoneError> {
         }
     }
 
-    // Duplicate colours defeat visual attribution, which docs/architecture.md
-    // treats as load-bearing rather than cosmetic.
+    // Duplicate colours defeat visual attribution (docs/architecture.md).
     let mut colours = HashMap::new();
     for z in zones {
         if let Some(prev) = colours.insert(z.border_color.clone(), z.name.clone()) {
@@ -741,10 +653,7 @@ pub fn check_invariants(zones: &[Zone]) -> Result<(), ZoneError> {
 mod tests {
     use super::*;
 
-    // NOTE: r##"..."## deliberately, not r#"..."#. The border colour value
-    // contains the sequence "# which terminates a single-hash raw string
-    // early. This is the same class of quoting bug the colour parser itself
-    // has to handle in strip_comment().
+    // r##: the colour's `"#` would end a single-hash raw string.
     const VAULT: &str = r##"
 [zone]
 name = "vault"
@@ -761,7 +670,7 @@ border_color = "#c9a227"
 "##;
 
     #[test]
-    fn parses_a_valid_zone() {
+    fn parses_valid_zone() {
         let z = Zone::from_str(VAULT).expect("should parse");
         assert_eq!(z.name, "vault");
         assert_eq!(z.network, NetworkMode::None);
@@ -771,17 +680,13 @@ border_color = "#c9a227"
     }
 
     #[test]
-    fn colour_with_hash_is_not_treated_as_a_comment() {
+    fn hash_in_colour_is_not_comment() {
         let z = Zone::from_str(VAULT).unwrap();
         assert_eq!(z.border_color, "#c9a227");
     }
 
     #[test]
-    fn a_tmpfs_larger_than_the_memory_limit_is_refused() {
-        // Both limits are valid on their own; together only one of them
-        // can ever bind, and the operator has no way to tell which.
-        // r##"..."## and not r#"..."#: the border colour contains `"#`, which
-        // is exactly the sequence that would close a single-hash raw string.
+    fn tmpfs_larger_than_memory_max_refused() {
         let toml = r##"
 [zone]
 name = "z"
@@ -801,33 +706,23 @@ border_color = "#000000"
         assert!(msg.contains("storage.size"), "the message must name the key: {msg}");
         assert!(msg.contains("memory_max"), "and the limit it conflicts with: {msg}");
 
-        // The same file with the sizes the other way round is fine.
+        // The other way round is fine.
         let ok = toml.replace("size = \"64M\"", "size = \"32M\"");
         Zone::from_str(&ok).expect("32M under a 48M cap is a sensible pair");
     }
 
-    // ---- storage.mode = "persistent" ------------------------------------
-    //
-    // The mode exists because refusing an "encrypted" zone is right and left
-    // nothing that keeps a file. These check that it keeps its own promise
-    // narrow: persistence, and no claim about what protects it.
-
-    // ---- [transfer] to -----------------------------------------------------
-
     fn with_transfer(name: &str, mode: &str, to: Option<&str>) -> Result<Zone, ZoneError> {
         let t = to.map(|v| format!("[transfer]\nto = \"{v}\"\n")).unwrap_or_default();
-        let bridge = if mode == "nic" { "bridge = \"kryptik0\"\n" } else { "" };
-        // Distinct colours: the directory invariants also refuse two zones a
-        // user could not tell apart.
+        // Distinct colours, or check_invariants refuses the set.
         let colour = format!("#1234{:02x}", name.bytes().next().unwrap_or(0));
         Zone::from_str(&format!(
-            "[zone]\nname = \"{name}\"\n[network]\nmode = \"{mode}\"\n{bridge}\
+            "[zone]\nname = \"{name}\"\n[network]\nmode = \"{mode}\"\n\
              [storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n{t}[ui]\nborder_color = \"{colour}\"\n"
         ))
     }
 
     #[test]
-    fn transfer_to_is_a_validated_list_of_other_zones() {
+    fn transfer_to_validates_names() {
         assert!(with_transfer("a", "none", None).unwrap().transfer_to.is_empty());
         assert_eq!(with_transfer("a", "none", Some("b c")).unwrap().transfer_to, vec!["b", "c"]);
         for bad in ["a", "b b", "", "B", "../x", "b/c"] {
@@ -836,7 +731,7 @@ border_color = "#000000"
     }
 
     #[test]
-    fn transfer_destinations_must_exist_and_never_be_the_nic_zone() {
+    fn transfer_targets_exist_and_are_not_nic() {
         let set = |to: &str| {
             vec![
                 with_transfer("n", "nic", None).unwrap(),
@@ -859,7 +754,7 @@ border_color = "#000000"
     }
 
     #[test]
-    fn a_persistent_zone_parses_and_needs_no_volume() {
+    fn persistent_zone_needs_no_volume() {
         let z = persistent("").expect("persistent should be a valid mode");
         assert_eq!(z.storage, StorageMode::Persistent);
         assert_eq!(z.volume, None);
@@ -868,18 +763,14 @@ border_color = "#000000"
     }
 
     #[test]
-    fn a_persistent_zone_refuses_a_size_it_would_not_enforce() {
-        // The zone writes into a directory on a filesystem kryptikd neither
-        // made nor controls. Accepting a size would record a bound nothing
-        // applies, and the operator would believe the zone was capped.
+    fn persistent_zone_refuses_size() {
         let e = persistent("size = \"512M\"\n").expect_err("size must be refused");
         let m = e.to_string();
         assert!(m.contains("not in force"), "say why, not just no: {m}");
     }
 
     #[test]
-    fn a_persistent_zone_refuses_a_volume_that_would_never_be_opened() {
-        // from_str validates, so the refusal lands here rather than later.
+    fn persistent_zone_refuses_volume() {
         let e = persistent("volume = \"/dev/kryptik/keeper\"\n")
             .expect_err("a persistent zone opens no volume");
         let m = e.to_string();
@@ -892,7 +783,7 @@ border_color = "#000000"
     }
 
     #[test]
-    fn an_unknown_storage_mode_lists_persistent_among_the_choices() {
+    fn unknown_storage_mode_lists_persistent() {
         let e = Zone::from_str(
             "[zone]\nname = \"t\"\n[network]\nmode = \"none\"\n\
              [storage]\nmode = \"durable\"\n[ui]\nborder_color = \"#123456\"\n",
@@ -902,30 +793,23 @@ border_color = "#000000"
     }
 
     #[test]
-    fn encrypted_storage_requires_a_volume() {
+    fn encrypted_storage_requires_volume() {
         let bad = VAULT.replace("volume = \"/dev/kryptik/vault\"\n", "");
         let err = Zone::from_str(&bad).unwrap_err();
         assert!(format!("{err}").contains("storage.volume"), "got: {err}");
     }
 
     #[test]
-    fn nic_mode_requires_a_bridge() {
-        let bad = VAULT.replace("mode = \"none\"", "mode = \"nic\"");
-        let err = Zone::from_str(&bad).unwrap_err();
-        assert!(format!("{err}").contains("network.bridge"), "got: {err}");
-    }
-
-    #[test]
-    fn only_the_nic_zone_may_name_an_interface_and_it_must_be_a_name() {
-        let ok = VAULT.replace("mode = \"none\"", "mode = \"nic\"\nbridge = \"kryptik0\"\nnic = \"eth0\"");
+    fn only_nic_zone_names_interface() {
+        let ok = VAULT.replace("mode = \"none\"", "mode = \"nic\"\nnic = \"eth0\"");
         assert_eq!(Zone::from_str(&ok).unwrap().nic.as_deref(), Some("eth0"));
         // "*": every physical interface of zone 0, decided at launch.
-        let all = VAULT.replace("mode = \"none\"", "mode = \"nic\"\nbridge = \"kryptik0\"\nnic = \"*\"");
+        let all = VAULT.replace("mode = \"none\"", "mode = \"nic\"\nnic = \"*\"");
         assert_eq!(Zone::from_str(&all).unwrap().nic.as_deref(), Some("*"));
         let bad = VAULT.replace("mode = \"none\"", "mode = \"none\"\nnic = \"eth0\"");
         let err = Zone::from_str(&bad).unwrap_err();
         assert!(format!("{err}").contains("only meaningful"), "got: {err}");
-        let bad = VAULT.replace("mode = \"none\"", "mode = \"nic\"\nbridge = \"kryptik0\"\nnic = \"averylongname123\"");
+        let bad = VAULT.replace("mode = \"none\"", "mode = \"nic\"\nnic = \"averylongname123\"");
         assert!(Zone::from_str(&bad).is_err());
     }
 
@@ -962,7 +846,7 @@ border_color = "#000000"
     }
 
     #[test]
-    fn rejects_an_unparseable_limit_rather_than_dropping_it() {
+    fn rejects_unparseable_limit() {
         let bad = VAULT.replace("pids_max = 128", "pids_max = 0");
         let err = Zone::from_str(&bad).unwrap_err();
         assert!(format!("{err}").contains("limits.pids_max"), "got: {err}");
@@ -973,25 +857,48 @@ border_color = "#000000"
         assert!(format!("{err}").contains("limits.memory_max"), "got: {err}");
         let ok = VAULT.replace("pids_max = 128", "memory_max = \"2G\"");
         assert_eq!(Zone::from_str(&ok).unwrap().memory_max.as_deref(), Some("2G"));
-        assert_eq!(size_bytes("32M"), Some(32 * 1024 * 1024));
-        assert_eq!(size_bytes("1G"), Some(1024 * 1024 * 1024));
-        assert!(size_bytes("64M").unwrap() > size_bytes("48M").unwrap());
-        assert!(is_size("512M") && is_size("1G") && is_size("4096"));
-        assert!(!is_size("0") && !is_size("") && !is_size("2GB") && !is_size("max"));
+        assert_eq!(parse_size("32M"), Some(32 << 20));
+        assert_eq!(parse_size("1g"), Some(1 << 30));
+        assert_eq!(parse_size("2T"), Some(2 << 40));
+        assert_eq!(parse_size("4096"), Some(4096));
+        for bad in ["0", "0M", "", "M", "2GB", "max", "+5", "-5", "1.5G", "17179869184G", "18446744073709551615K"] {
+            assert_eq!(parse_size(bad), None, "{bad:?}");
+        }
     }
 
     #[test]
-    fn rejects_unknown_keys_rather_than_ignoring_them() {
-        let bad = format!("{VAULT}\n[limits]\ncpu_max = 2\n");
-        let err = Zone::from_str(&bad).unwrap_err();
-        assert!(format!("{err}").contains("unknown key"), "got: {err}");
-        let bad = format!("{VAULT}\n[storage]\nunlock = \"never\"\n");
-        let err = Zone::from_str(&bad).unwrap_err();
-        assert!(format!("{err}").contains("storage.unlock"), "got: {err}");
+    fn rejects_unknown_keys() {
+        for extra in ["[limits]\ncpu_max = 2", "[storage]\nunlock = \"on-start\"", "[network]\nbridge = \"kryptik0\""] {
+            let err = Zone::from_str(&format!("{VAULT}\n{extra}\n")).unwrap_err();
+            assert!(format!("{err}").contains("unknown key"), "{extra}: {err}");
+        }
     }
 
     #[test]
-    fn identity_base_is_aligned_and_above_the_floor() {
+    fn file_named_for_zone() {
+        let dir = std::env::temp_dir().join(format!("kryptik-stem-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        // A set needs one zone holding the NIC.
+        let net = "[zone]\nname = \"net\"\n[network]\nmode = \"nic\"\n\
+                   [storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n[ui]\nborder_color = \"#123456\"\n";
+        fs::write(dir.join("net.toml"), net).unwrap();
+        fs::write(dir.join("10-vault.toml"), VAULT).unwrap();
+        let err = load_all(&dir).unwrap_err();
+        assert!(format!("{err}").contains("named vault.toml"), "got: {err}");
+        fs::rename(dir.join("10-vault.toml"), dir.join("vault.toml")).unwrap();
+        assert_eq!(load_all(&dir).unwrap().len(), 2);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn colour_case_ignored() {
+        let a = zone_with("a", "none", "#AA3333");
+        let b = zone_with("b", "none", "#aa3333");
+        assert!(check_invariants(&[a, b]).is_err());
+    }
+
+    #[test]
+    fn identity_base_aligned_above_floor() {
         for bad in ["1000", "100000", "131073", "196607", "0", "\"x\""] {
             let t = VAULT.replace("[ui]", &format!("[identity]\nuid_base = {bad}\n[ui]"));
             let err = Zone::from_str(&t).unwrap_err();
@@ -1001,8 +908,7 @@ border_color = "#000000"
             let t = VAULT.replace("[ui]", &format!("[identity]\nuid_base = {ok}\n[ui]"));
             assert_eq!(Zone::from_str(&t).unwrap().uid_base, Some(ok.parse().unwrap()), "{ok}");
         }
-        // 4294967296 - 65536 = 4294901760 is the last base with room; one
-        // stride above it does not fit in a u32.
+        // 4294901760 is the last base with room for a full range.
         assert!(Zone::from_str(&VAULT.replace("[ui]", "[identity]\nuid_base = 4294967295\n[ui]")).is_err());
         assert_eq!(Zone::from_str(VAULT).unwrap().uid_base, None);
     }
@@ -1024,22 +930,21 @@ border_color = "#000000"
     }
 
     #[test]
-    fn rejects_arrays_rather_than_ignoring_them() {
+    fn rejects_arrays() {
         let bad = VAULT.replace("pids_max = 128", "pids_max = [1, 2]");
         assert!(Zone::from_str(&bad).is_err());
     }
 
     fn zone_with(name: &str, mode: &str, colour: &str) -> Zone {
-        let bridge = if mode == "nic" { "bridge = \"kryptik0\"\n" } else { "" };
         let text = format!(
-            "[zone]\nname = \"{name}\"\n[network]\nmode = \"{mode}\"\n{bridge}\
+            "[zone]\nname = \"{name}\"\n[network]\nmode = \"{mode}\"\n\
              [storage]\nmode = \"ephemeral\"\nsize = \"256M\"\n[ui]\nborder_color = \"{colour}\"\n"
         );
         Zone::from_str(&text).unwrap()
     }
 
     #[test]
-    fn exactly_one_zone_may_hold_the_nic() {
+    fn exactly_one_nic_zone() {
         let two = vec![
             zone_with("net", "nic", "#111111"),
             zone_with("net2", "nic", "#222222"),
