@@ -32,6 +32,8 @@ done
 [[ -f "${PAYLOAD}/manifest" ]] || die "no manifest in ${PAYLOAD}"
 
 field() { awk -F': ' -v k="$2" '$1 == k { print $2; exit }' "$1"; }
+# Git as acceptance.sh runs it: the verdict job is root on the runner's checkout.
+g() { git -c safe.directory='*' -C "$KRYPTIK_ROOT" "$@"; }
 row() {   # row LABEL: the value in REPORT.md's header row LABEL
     awk -F' [|] ' -v k="| $1" '$1 == k { v = $2; sub(/ [|]$/, "", v); print v; exit }' "${RUN}/REPORT.md"
 }
@@ -52,9 +54,9 @@ tested="$(row 'release under test' | awk '{ print $1 }')"
     || die "the run tested ${tested:-no release}, and this payload is ${version:-unnamed}: notes come from the run that passed this very release"
 rev="$(row 'source revision' | sed -n 's/^`\([0-9a-f]\{40\}\)`.*/\1/p')"
 [[ -n "$rev" ]] || die "REPORT.md names no source revision"
-head="$(git -C "$KRYPTIK_ROOT" rev-parse HEAD 2>/dev/null)" || die "${KRYPTIK_ROOT} is not a git checkout"
+head="$(g rev-parse HEAD 2>/dev/null)" || die "${KRYPTIK_ROOT} is not a git checkout"
 [[ "$head" == "$rev" ]] || die "this tree is at ${head:0:12}, and the run tested ${rev:0:12}: check out the release's revision"
-git -C "$KRYPTIK_ROOT" diff --quiet HEAD -- docs/status.md build/config \
+g diff --quiet HEAD -- docs/status.md build/config \
     || die "docs/status.md or build/config differs from ${rev:0:12}: the notes quote the release's own"
 
 # --- what goes in them ----------------------------------------------------------
@@ -89,13 +91,13 @@ gaps="$(awk '/^## Known gaps[[:space:]]*$/ { on = 1; next } on && /^## / { exit 
 
 changes="" since_name=""
 if [[ -n "$SINCE" ]]; then
-    git -C "$KRYPTIK_ROOT" merge-base --is-ancestor "$SINCE" "$rev" 2>/dev/null \
+    g merge-base --is-ancestor "$SINCE" "$rev" 2>/dev/null \
         || die "--since ${SINCE} is not an ancestor of ${rev:0:12} here (a shallow clone lacks the history: fetch it)"
-    since_name="$(git -C "$KRYPTIK_ROOT" describe --exact-match --tags "$SINCE" 2>/dev/null \
-                  || git -C "$KRYPTIK_ROOT" rev-parse --short=12 "$SINCE")"
+    since_name="$(g describe --exact-match --tags "$SINCE" 2>/dev/null \
+                  || g rev-parse --short=12 "$SINCE")"
     # First-parent subjects are the merges' own sentences, less their
     # "Merge X into Y (#N): ". A merge with no sentence says nothing to a user.
-    changes="$(git -C "$KRYPTIK_ROOT" log --first-parent --reverse --format='%s' "${SINCE}..${rev}" \
+    changes="$(g log --first-parent --reverse --format='%s' "${SINCE}..${rev}" \
                | sed 's/^Merge [^:]*: //' | grep -v '^Merge ' | sed 's/^./\U&/; s/^/- /' || true)"
 fi
 
