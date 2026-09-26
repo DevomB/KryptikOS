@@ -181,6 +181,10 @@ const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
 /// clipboard-get\n                        -> ok <mime> <len>\n<bytes>  |  empty\n
 /// time-offset <seconds> <sources>\n        -> ok ignored | slewed | stepped | stepped after consent\n
 ///                                           (from the zone that holds the network, and no other)
+/// update-latest <plen> <slen>\n<pointer><sig> -> ok current | ok available <version>\n
+/// update-poll\n                          -> idle | fetch <version> <base> need <name> <offset> ...\n
+/// update-put <name> <offset> <len>\n<bytes>   -> ok <name> <held>/<size> | ok <name> complete\n
+///                                           (the same zone, and no other)
 /// anything else                          -> error: <reason>\n
 /// ```
 #[derive(Debug, PartialEq)]
@@ -195,6 +199,13 @@ pub enum Request {
     /// `time-offset <seconds> <sources>`: the net zone's claim about how far
     /// the machine's clock is from the network's (docs/design/time.md).
     TimeOffset(crate::time::Claim),
+    /// The update channel's three verbs (docs/design/update-channel.md), from
+    /// the zone that holds the network and no other. `update-latest` is
+    /// followed by the pointer and then its signature, `update-put` by `len`
+    /// bytes of the named file.
+    UpdateLatest { plen: usize, slen: usize },
+    UpdatePoll,
+    UpdatePut { name: String, offset: u64, len: usize },
     Unknown(String),
 }
 
@@ -257,6 +268,25 @@ pub fn parse_request(line: &str) -> Result<Request, String> {
         ("transfer", _) => Err("usage: transfer <zone> <name>, with the file as one SCM_RIGHTS descriptor".into()),
         ("time-offset", [secs, sources]) => crate::time::parse_claim(&format!("{secs} {sources}")).map(Request::TimeOffset),
         ("time-offset", _) => Err("usage: time-offset <seconds> <sources>".into()),
+        ("update-latest", [plen, slen]) => {
+            let size = |w: &str, what: &str| match w.parse::<usize>() {
+                Ok(n) if (1..=crate::update::POINTER_MAX).contains(&n) => Ok(n),
+                _ => Err(format!("{what} length {w:?} is not 1 to {} bytes", crate::update::POINTER_MAX)),
+            };
+            Ok(Request::UpdateLatest { plen: size(plen, "pointer")?, slen: size(slen, "signature")? })
+        }
+        ("update-latest", _) => Err("usage: update-latest <pointer-len> <signature-len>, then the two".into()),
+        ("update-poll", []) => Ok(Request::UpdatePoll),
+        ("update-poll", _) => Err("usage: update-poll".into()),
+        ("update-put", [name, offset, len]) => {
+            check_transfer_name(name)?;
+            let offset: u64 = offset.parse().map_err(|_| format!("bad offset {offset:?}"))?;
+            match len.parse::<usize>() {
+                Ok(len) if (1..=crate::update::PUT_MAX).contains(&len) => Ok(Request::UpdatePut { name: name.to_string(), offset, len }),
+                _ => Err(format!("length {len:?} is not 1 to {} bytes", crate::update::PUT_MAX)),
+            }
+        }
+        ("update-put", _) => Err("usage: update-put <name> <offset> <len>, then the bytes".into()),
         ("", _) => Err("empty request".into()),
         _ => Ok(Request::Unknown(verb.to_string())),
     }
@@ -271,14 +301,56 @@ pub fn parse_request(line: &str) -> Result<Request, String> {
 /// (a zone with no network has nothing to measure with, and a routed zone's
 /// answer would be the net zone's at one remove), and what becomes of it is
 /// `time::consider`'s decision: the floor, the bound, the person.
-fn handle_time_offset(zone: &Zone, claim: &crate::time::Claim) -> crate::time::Outcome {
+fn handle_time_offset(zone: &Zone, claim: &crate::time::Claim, asking: &dyn Fn() -> bool) -> crate::time::Outcome {
     time_offset_in(
         zone,
         claim,
         &mut crate::time::SystemClock,
         Path::new(crate::time::STATE_DIR),
         crate::time::floor_of_this_system(),
+        asking,
     )
+}
+
+/// UPDATES
+///
+/// The zone that holds the network hands over a statement of what is
+/// current, asks whether a release is wanted, and streams one in pieces
+/// (docs/design/update-channel.md). Everything it sends is a hostile zone's
+/// word: `update.rs` decides what is believed and what is stored, and
+/// `kryptik-update` verifies every signature. What is decided here is only
+/// who may speak: that one zone, like `time-offset`, because no other zone
+/// has anywhere to have fetched a release from.
+fn update_refusal(zone: &Zone) -> Option<String> {
+    (zone.network != NetworkMode::Nic)
+        .then(|| format!("zone {:?} does not hold the network; only the zone that does may bring an update", zone.name))
+}
+
+/// For a zone `update_refusal` has passed, with the request's whole payload.
+fn handle_update(req: &Request, payload: &[u8]) -> Result<String, String> {
+    use crate::update as up;
+    let dir = Path::new(up::STATE_DIR);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    match req {
+        Request::UpdateLatest { plen, .. } => {
+            // Read here and not above the match: a release arrives as some
+            // three thousand update-put requests, which need neither.
+            let (role, running) = (up::required_role(), up::running_version());
+            let (pointer, sig) = payload.split_at(*plen);
+            up::latest(dir, &up::tool_checks(), now, &role, &running, pointer, sig).map(|s| match s {
+                up::Standing::Current => "ok current".to_string(),
+                up::Standing::Available(v) => format!("ok available {v}"),
+            })
+        }
+        Request::UpdatePoll => {
+            let (role, running) = (up::required_role(), up::running_version());
+            up::forget_if_installed(dir, &running);
+            let conf = std::fs::read_to_string(up::CONF).unwrap_or_default();
+            Ok(up::channel_from(&conf).map_or("idle".to_string(), |channel| up::poll(dir, &channel, &role, &running)))
+        }
+        Request::UpdatePut { name, offset, .. } => up::put(dir, &up::tool_checks(), now, name, *offset, payload).map(|r| format!("ok {r}")),
+        _ => Err("not an update verb".into()),
+    }
 }
 
 /// The same with the clock, the state directory and the floor named, which
@@ -289,6 +361,7 @@ fn time_offset_in(
     clock: &mut dyn crate::time::Clock,
     dir: &Path,
     floor: Option<i64>,
+    asking: &dyn Fn() -> bool,
 ) -> crate::time::Outcome {
     if zone.network != NetworkMode::Nic {
         return crate::time::Outcome::Refused(format!(
@@ -297,7 +370,7 @@ fn time_offset_in(
         ));
     }
     crate::time::consider(clock, dir, floor, crate::time::DEFAULT_BOUND_SECS, claim, &mut |now, proposed, sources| {
-        crate::consent::ask_clock(now, proposed, sources)
+        crate::consent::ask_clock(now, proposed, sources, asking)
     })
 }
 
@@ -360,6 +433,11 @@ pub struct Served<'a> {
     /// How a destination is found: running, its root, its identity. The
     /// launcher asks the registry; tests point at a directory.
     pub resolve_dest: &'a dyn Fn(&str) -> Result<Target, String>,
+    /// Called while a question of the person is open, ten times a second:
+    /// the launcher pumps its zone's output there and says whether the zone
+    /// is still there, and a `false` withdraws the question (consent.rs).
+    /// Tests keep waiting.
+    pub asking: &'a dyn Fn() -> bool,
 }
 
 /// The launcher's destination lookup: the registry says whether the zone
@@ -466,12 +544,15 @@ fn handle_transfer(s: &Served, dest: &str, name: &str, fds: &[RawFd]) -> Result<
     if st.st_size as u64 > s.max_bytes {
         return Err(format!("file is {} bytes; the transfer limit is {}", st.st_size, s.max_bytes));
     }
-    // Everything a machine can decide has been decided; the last word is
-    // the user's, through the trusted chrome (consent.rs). Asked only now,
-    // after the descriptor checks, so a request that would be refused
-    // anyway never becomes a question.
+    // Everything a machine can decide has been decided, the destination's
+    // being there included, before the person is asked (consent.rs): a
+    // question whose answer changes nothing teaches people to say yes. The
+    // destination is looked up again after the answer. Its root, held
+    // through a wait of up to a minute, pinned the zone's mounts, and the
+    // zone could have stopped or started again meanwhile.
     if !s.auto_approve {
-        crate::consent::ask(sender, dest, name, st.st_size as u64)?;
+        drop((s.resolve_dest)(dest)?);
+        crate::consent::ask(sender, dest, name, st.st_size as u64, s.asking)?;
     }
     let target = (s.resolve_dest)(dest)?;
     deliver(&target, name, src, s.max_bytes)
@@ -738,7 +819,7 @@ pub fn serve_connection(fd: RawFd, s: &Served) -> io::Result<Option<String>> {
             Err(why) => reply(fd, &format!("error: {why}\n")),
         },
         Ok(Request::TimeOffset(claim)) => {
-            let outcome = handle_time_offset(s.zone, &claim);
+            let outcome = handle_time_offset(s.zone, &claim, s.asking);
             crate::spawn::log_line(&format!(
                 "kryptikd[zone {zone}]: time-offset {:+.6} s from {} source(s): {}",
                 claim.offset,
@@ -748,6 +829,33 @@ pub fn serve_connection(fd: RawFd, s: &Served) -> io::Result<Option<String>> {
             match outcome {
                 crate::time::Outcome::Refused(why) => reply(fd, &format!("error: {why}\n")),
                 done => reply(fd, &format!("{}\n", done.reply())),
+            }
+        }
+        Ok(req @ (Request::UpdateLatest { .. } | Request::UpdatePoll | Request::UpdatePut { .. })) => {
+            let len = match &req {
+                Request::UpdateLatest { plen, slen } => plen + slen,
+                Request::UpdatePut { len, .. } => *len,
+                _ => 0,
+            };
+            // Who is asking is settled before a byte of payload is read.
+            let outcome = match update_refusal(s.zone) {
+                Some(why) => Err(why),
+                None => match read_more(fd, &mut rest, len, started) {
+                    Err(e) => Err(format!("payload: {e}")),
+                    Ok(()) if rest.len() < len => Err(format!("payload short: {} of {len} bytes", rest.len())),
+                    Ok(()) => handle_update(&req, &rest[..len]),
+                },
+            };
+            // A release is some thousands of pieces; the log gets a line for
+            // what ends something, not for every piece.
+            match &outcome {
+                Ok(r) if verb == "update-poll" || (verb == "update-put" && !r.contains("complete")) => {}
+                Ok(r) => crate::spawn::log_line(&format!("kryptikd[zone {zone}]: {verb}: {r}")),
+                Err(why) => crate::spawn::log_line(&format!("kryptikd[zone {zone}]: {verb}: refused: {why}")),
+            }
+            match outcome {
+                Ok(r) => reply(fd, &format!("{r}\n")),
+                Err(why) => reply(fd, &format!("error: {why}\n")),
             }
         }
         Ok(Request::ClipboardGet) => match clipboard_read(entry) {
@@ -834,38 +942,55 @@ fn recv_first(fd: RawFd, buf: &mut Vec<u8>, started: Instant) -> io::Result<(boo
     }
 }
 
-/// Read until the buffer holds at least `want` bytes, within the deadline.
-/// EOF ends the read early; the caller sees the short count.
+/// Read until the buffer holds at least `want` bytes, within the deadline,
+/// straight into it: a release is thousands of 1 MiB pieces, and a 4 KiB
+/// bounce buffer made each one 256 receives and a copy. `want` is a length
+/// the header was checked against. EOF ends the read early; the caller sees
+/// the short count.
 fn read_more(fd: RawFd, buf: &mut Vec<u8>, want: usize, started: Instant) -> io::Result<()> {
-    while buf.len() < want {
-        if !recv_some(fd, buf, started)? {
-            break;
-        }
+    let mut filled = buf.len();
+    if filled >= want {
+        return Ok(());
     }
-    Ok(())
+    buf.resize(want, 0);
+    let r = loop {
+        match recv_into(fd, &mut buf[filled..], started) {
+            Ok(0) => break Ok(()),
+            Ok(n) => filled += n,
+            Err(e) => break Err(e),
+        }
+        if filled == want {
+            break Ok(());
+        }
+    };
+    buf.truncate(filled);
+    r
 }
 
-/// One recv into `buf`. Ok(false) at EOF. SO_RCVTIMEO ticks (EAGAIN) are
-/// retried until the request deadline, which is the bound that matters.
+/// One recv appended to `buf`. Ok(false) at EOF.
 fn recv_some(fd: RawFd, buf: &mut Vec<u8>, started: Instant) -> io::Result<bool> {
     let mut chunk = [0u8; 4096];
+    let n = recv_into(fd, &mut chunk, started)?;
+    buf.extend_from_slice(&chunk[..n]);
+    Ok(n > 0)
+}
+
+/// One recv into `out`: the count, 0 at EOF. SO_RCVTIMEO ticks (EAGAIN) are
+/// retried until the request deadline, which is the bound that matters.
+fn recv_into(fd: RawFd, out: &mut [u8], started: Instant) -> io::Result<usize> {
     loop {
         if started.elapsed() > REQUEST_DEADLINE {
             return Err(io::Error::new(io::ErrorKind::TimedOut, "request took longer than the deadline"));
         }
-        let n = unsafe { libc::recv(fd, chunk.as_mut_ptr() as *mut libc::c_void, chunk.len(), 0) };
-        if n < 0 {
-            let e = io::Error::last_os_error();
-            match e.raw_os_error() {
-                Some(libc::EINTR) | Some(libc::EAGAIN) => continue,
-                _ => return Err(e),
-            }
+        let n = unsafe { libc::recv(fd, out.as_mut_ptr() as *mut libc::c_void, out.len(), 0) };
+        if n >= 0 {
+            return Ok(n as usize);
         }
-        if n == 0 {
-            return Ok(false);
+        let e = io::Error::last_os_error();
+        match e.raw_os_error() {
+            Some(libc::EINTR) | Some(libc::EAGAIN) => continue,
+            _ => return Err(e),
         }
-        buf.extend_from_slice(&chunk[..n as usize]);
-        return Ok(true);
     }
 }
 
@@ -1124,6 +1249,7 @@ mod tests {
             auto_approve: false,
             max_bytes: TRANSFER_MAX,
             resolve_dest: &no_dest,
+            asking: &crate::consent::keep,
         }
     }
 
@@ -1348,6 +1474,7 @@ mod tests {
             auto_approve: true,
             max_bytes: 64,
             resolve_dest: &resolve,
+            asking: &crate::consent::keep,
         };
         let file = lab.dir.join("report.pdf");
         std::fs::write(&file, b"hello transfer").unwrap();
@@ -1403,6 +1530,7 @@ mod tests {
         let entry_dir = lab.dir.join("entry");
         std::fs::create_dir_all(&entry_dir).unwrap();
         let resolve = resolver(lab.root.clone());
+        let not_running = |d: &str| -> Result<Target, String> { Err(format!("destination zone {d:?} is not running")) };
         let dev = lab.dev;
         let home_dev = move || Some(dev);
         let mut sv = Served {
@@ -1414,6 +1542,7 @@ mod tests {
             auto_approve: true,
             max_bytes: 64,
             resolve_dest: &resolve,
+            asking: &crate::consent::keep,
         };
         let file = lab.dir.join("f.txt");
         std::fs::write(&file, b"0123456789").unwrap();
@@ -1475,6 +1604,15 @@ mod tests {
             std::env::set_var("KRYPTIK_CONSENT_DIR", "/nonexistent/kryptik-consent");
             let (_, r) = ask_with(&sv, "transfer b f.txt\n", &[ro()], false);
             assert!(String::from_utf8_lossy(&r).contains("no consent channel"), "{}", String::from_utf8_lossy(&r));
+            // A destination that is not running is a refusal the machine can
+            // give, so it is given before the person is asked: with no
+            // consent channel at all, the answer is still about the
+            // destination, and no question was attempted.
+            sv.resolve_dest = &not_running;
+            let (_, r) = ask_with(&sv, "transfer b f.txt\n", &[ro()], false);
+            let text = String::from_utf8_lossy(&r);
+            assert!(text.contains("is not running") && !text.contains("consent"), "a transfer to a zone that is not running must be refused before any question: {text}");
+            sv.resolve_dest = &resolve;
             std::env::remove_var("KRYPTIK_CONSENT_DIR");
         }
         sv.auto_approve = true;
@@ -1484,6 +1622,110 @@ mod tests {
         // Through all of that nothing was created on the destination side.
         assert!(!lab.root.join("home/b/incoming").exists());
         let _ = std::fs::remove_dir_all(&lab.dir);
+    }
+
+    #[test]
+    fn dest_resolved_after_consent() {
+        use std::os::unix::io::AsRawFd;
+        // The first lookup finds the zone under `before`; by the answer it
+        // runs under the lab root, as a zone restarted during the wait would.
+        let lab = lab("again", "b");
+        let entry_dir = lab.dir.join("entry");
+        let before = lab.dir.join("before");
+        std::fs::create_dir_all(&entry_dir).unwrap();
+        std::fs::create_dir_all(before.join("home/b")).unwrap();
+        let (first, after) = (resolver(before.clone()), resolver(lab.root.clone()));
+        let calls = std::cell::Cell::new(0);
+        let resolve = |d: &str| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 1 { first(d) } else { after(d) }
+        };
+        let held = std::cell::Cell::new(0);
+        let asking = || {
+            held.set(held.get().max(fds_pointing_at(&before)));
+            true
+        };
+        let dev = lab.dev;
+        let home_dev = move || Some(dev);
+        let sv = Served {
+            zone: &lab.sender,
+            uid: unsafe { libc::geteuid() },
+            entry: &entry_dir,
+            zones_dir: &lab.zones,
+            home_dev: &home_dev,
+            auto_approve: false,
+            max_bytes: 64,
+            resolve_dest: &resolve,
+            asking: &asking,
+        };
+        let file = lab.dir.join("f.txt");
+        std::fs::write(&file, b"moved").unwrap();
+        let src = open_flags(&file, libc::O_RDONLY);
+        let consent = lab.dir.join("consent");
+        std::fs::create_dir_all(&consent).unwrap();
+        let watch = std::fs::File::create(consent.join(crate::consent::WATCHER_LOCK)).unwrap();
+        assert_eq!(unsafe { libc::flock(watch.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+        let r = {
+            let _env = crate::consent::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var("KRYPTIK_CONSENT_DIR", &consent);
+            let d = consent.clone();
+            let person = std::thread::spawn(move || {
+                for _ in 0..250 {
+                    let q = std::fs::read_dir(&d).unwrap().flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "ask"));
+                    if let Some(q) = q {
+                        std::thread::sleep(std::time::Duration::from_millis(300));
+                        let id = q.file_stem().unwrap().to_string_lossy().into_owned();
+                        std::fs::write(d.join(format!("{id}.answer")), "yes\n").unwrap();
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            });
+            let (_, r) = ask_with(&sv, "transfer b f.txt\n", &[src], false);
+            person.join().unwrap();
+            std::env::remove_var("KRYPTIK_CONSENT_DIR");
+            r
+        };
+        unsafe { libc::close(src) };
+        assert_eq!(String::from_utf8_lossy(&r), "ok f.txt\n");
+        assert_eq!(held.get(), 0, "the destination's root was held through the question");
+        assert_eq!(std::fs::read(lab.root.join("home/b/incoming/f.txt")).unwrap(), b"moved");
+        assert!(!before.join("home/b/incoming").exists(), "the transfer went into the tree the zone had left");
+        let _ = std::fs::remove_dir_all(&lab.dir);
+    }
+
+    #[test]
+    fn read_more_fills_then_stops_at_eof() {
+        // More than a socket buffer, in uneven pieces, after what the header
+        // read already took; then a peer that stops short of what it announced.
+        let pair = || {
+            let mut sv = [0; 2];
+            assert_eq!(unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0, sv.as_mut_ptr()) }, 0);
+            (sv[0], sv[1])
+        };
+        let send = |w: RawFd, bytes: Vec<u8>| {
+            std::thread::spawn(move || {
+                for piece in bytes.chunks(6007) {
+                    assert_eq!(unsafe { libc::write(w, piece.as_ptr() as *const libc::c_void, piece.len()) }, piece.len() as isize);
+                }
+                unsafe { libc::close(w) };
+            })
+        };
+        let data: Vec<u8> = (0..(1usize << 20) + 777).map(|i| (i % 251) as u8).collect();
+        let (r, w) = pair();
+        let t = send(w, data[10..].to_vec());
+        let mut buf = data[..10].to_vec();
+        read_more(r, &mut buf, data.len(), Instant::now()).unwrap();
+        t.join().unwrap();
+        unsafe { libc::close(r) };
+        assert!(buf == data, "the payload came back different");
+        let (r, w) = pair();
+        let t = send(w, vec![7u8; 30]);
+        let mut buf = Vec::new();
+        read_more(r, &mut buf, 100, Instant::now()).unwrap();
+        t.join().unwrap();
+        unsafe { libc::close(r) };
+        assert_eq!(buf, vec![7u8; 30], "EOF leaves what arrived, and no more");
     }
 
     #[test]
@@ -1545,14 +1787,55 @@ mod tests {
             .unwrap()
         };
         for mode in ["none", "routed"] {
-            let out = time_offset_in(&zone_of(mode, ""), &claim, &mut crate::time::SystemClock, &dir, Some(0));
+            let out = time_offset_in(&zone_of(mode, ""), &claim, &mut crate::time::SystemClock, &dir, Some(0), &crate::consent::keep);
             assert!(matches!(&out, crate::time::Outcome::Refused(w) if w.contains("does not hold the network")), "{mode}: {out:?}");
         }
         let nic = zone_of("nic", "bridge = \"kryptik0\"\n");
-        let out = time_offset_in(&nic, &claim, &mut crate::time::SystemClock, &dir, None);
+        let out = time_offset_in(&nic, &claim, &mut crate::time::SystemClock, &dir, None, &crate::consent::keep);
         assert!(matches!(&out, crate::time::Outcome::Refused(w) if w.contains("no floor is known")), "{out:?}");
         assert!(!dir.join("state").exists(), "a refused claim left state behind");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The update channel's verbs on the wire: lengths within their bounds,
+    /// a name that is one path component, and nothing else.
+    #[test]
+    fn the_update_verbs_parse_within_their_bounds() {
+        use crate::update::{POINTER_MAX, PUT_MAX};
+        assert_eq!(parse_request("update-latest 300 120"), Ok(Request::UpdateLatest { plen: 300, slen: 120 }));
+        assert_eq!(parse_request("update-poll"), Ok(Request::UpdatePoll));
+        assert_eq!(
+            parse_request(&format!("update-put kryptik-root.img 1048576 {PUT_MAX}")),
+            Ok(Request::UpdatePut { name: "kryptik-root.img".into(), offset: 1048576, len: PUT_MAX })
+        );
+        assert!(parse_request("update-put manifest.sig 0 120").is_ok());
+        let over_pointer = format!("update-latest {} 120", POINTER_MAX + 1);
+        let over_put = format!("update-put root.json 0 {}", PUT_MAX + 1);
+        for bad in [
+            "update-latest", "update-latest 300", "update-latest 0 120", "update-latest 300 0", "update-latest -1 120", over_pointer.as_str(),
+            "update-poll now",
+            "update-put", "update-put root.json 0", "update-put root.json 0 0", "update-put root.json -1 10", "update-put root.json x 10",
+            "update-put ../root.json 0 10", "update-put a/b 0 10", "update-put .hidden 0 10", over_put.as_str(),
+        ] {
+            assert!(parse_request(bad).is_err(), "{bad:?} was accepted");
+        }
+    }
+
+    /// An update is brought by the zone that holds the network and by no
+    /// other: a zone with no network has nowhere to have fetched one from,
+    /// and a routed zone's would be the net zone's at one remove.
+    #[test]
+    fn only_the_zone_that_holds_the_network_may_bring_an_update() {
+        let zone_of = |mode: &str, extra: &str| {
+            Zone::from_str(&format!(
+                "[zone]\nname = \"t\"\n[network]\nmode = \"{mode}\"\n{extra}[storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n[ui]\nborder_color = \"#123456\"\n"
+            ))
+            .unwrap()
+        };
+        for mode in ["none", "routed"] {
+            assert!(update_refusal(&zone_of(mode, "")).is_some_and(|w| w.contains("does not hold the network")), "{mode}");
+        }
+        assert_eq!(update_refusal(&zone_of("nic", "bridge = \"kryptik0\"\n")), None);
     }
 
     #[test]

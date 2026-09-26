@@ -126,9 +126,12 @@ Creating encrypted swap is a later, explicit change.
    records the installer's own status, not sed's.
 
 The installed disk boots with no firmware variables at all through the
-removable-media path (`BOOTX64.EFI`). `kryptik-efiboot` additionally
-creates a `Kryptik` Boot#### entry when the firmware allows it; it is a
-convenience, not a dependency.
+removable-media path (`BOOTX64.EFI`). `kryptik-efiboot` creates a
+`Kryptik slot` Boot#### entry for a trial, and removes both slots' entries
+again when the trial ends, committed or not (`forget`): a firmware regenerates its own disk entry at
+the end of `BootOrder` whenever the devices change, and a Kryptik entry
+left in front of it booted the other slot. The entries serve the trial;
+`BOOTX64.EFI` is the dependency.
 
 ## Updates (A/B, bounded fallback, authenticated recovery)
 
@@ -157,7 +160,7 @@ partition.
    back and hash it.
 3. Copy the inactive slot's kernel to `EFI/kryptik/kryptik-<inactive>.efi.new`,
    `fsync`, rename into place, write `kryptik/version-<inactive>`.
-4. Arm the trial: `kryptik-efiboot next <inactive>` sets a Boot#### entry
+4. Arm the trial: `kryptik-efiboot set-next <inactive>` sets a Boot#### entry
    for that file and `BootNext`. The trial is recorded in
    `/var/lib/kryptik/boot/trial` (the slot, then `armed=0` before
    `BootNext` is set and `armed=1` after). Reboot.
@@ -168,13 +171,17 @@ partition.
    and up; kryptikd finding kernel support and reading the shipped zones;
    an unambiguous ESP carrying the slot's kernel), it commits: copies the
    slot's kernel to `EFI/BOOT/BOOTX64.EFI.new`, `fsync`, renames it over
-   `BOOTX64.EFI`, and clears the trial record. A trial that boots but fails
-   any of these is recorded as unhealthy and the machine reboots. If the
+   `BOOTX64.EFI`, clears the trial record, and forgets Kryptik's firmware
+   entries and `BootNext` (`kryptik-efiboot forget`), so the next boot is
+   the disk's own entry, `BOOTX64.EFI`. A trial that boots but fails
+   any of these is recorded as unhealthy, its entries are forgotten and the
+   machine reboots. On a degraded state the trial record is out of reach;
+   the ESP's `committed-slot` then says the boot is a trial. If the
    trial slot did not come up (panic, verity failure, hang without
    success), the firmware has consumed `BootNext` and the next boot falls
    back to `BOOTX64.EFI`, still the old slot; `boot-success` sees the trial
-   record with `kryptik.slot=` the old one and records the failure
-   (`trial.failed`), so the updater refuses to re-arm the same payload
+   record with `kryptik.slot=` the old one, records the failure
+   (`trial.failed`) and forgets the entries; the updater refuses to re-arm the same payload
    without `--retry`. Only a trial boot ever reboots from here; a committed
    slot that is unhealthy is reported and left running.
 6. Rollback: `kryptik-update rollback` arms the other slot the same way

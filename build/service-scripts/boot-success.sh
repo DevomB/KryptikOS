@@ -111,6 +111,33 @@ commit_slot() {   # commit_slot <slot>: make BOOTX64.EFI this slot's kernel
     return "$rc"
 }
 
+# The trial's firmware entries go when the trial ends, however it ends:
+# BootNext and both slots' entries, so the firmware boots the disk's own
+# entry, BOOTX64.EFI, the committed slot. An entry left behind outlived its
+# trial: a firmware regenerates its own disk entry at the end of BootOrder
+# whenever the devices change, and the Kryptik entry, a failed slot's among
+# them, then won every cold boot.
+forget_entries() {
+    kryptik-efiboot forget >/dev/null 2>&1 && return 0
+    say "the firmware's Kryptik entries could not be removed; its own boot order may not name the committed slot"
+    return 1
+}
+
+# A trial on a degraded state cannot read its record, which is on the state
+# partition. The ESP still names the committed slot, and any other is on trial.
+esp_committed() {
+    e="$(kryptik_part kryptik-esp 2>/dev/null)" && [ -n "$e" ] || return 0
+    mkdir -p "$ESP_MNT"
+    mount -o ro,nosuid,nodev,noexec "$e" "$ESP_MNT" 2>/dev/null || return 0
+    sed -n 1p "$ESP_MNT/kryptik/committed-slot" 2>/dev/null
+    umount "$ESP_MNT"
+}
+unrecorded=""
+if [ -z "$trial" ] && [ "$state" != persistent ]; then
+    c="$(esp_committed)"
+    if [ -n "$c" ] && [ "$c" != "$slot" ]; then trial="$slot"; unrecorded=1; fi
+fi
+
 # --- the decision -------------------------------------------------------------
 if [ -n "$trial" ]; then
     if [ "$trial" = "$slot" ]; then
@@ -120,7 +147,7 @@ if [ -n "$trial" ]; then
             if commit_slot "$slot"; then
                 rm -f "$B/trial"
                 result "commit $slot"
-                kryptik-efiboot clear-next >/dev/null 2>&1 || true
+                forget_entries
                 say "slot $slot is healthy and committed"
             else
                 result "commit-failed $slot"
@@ -131,9 +158,13 @@ if [ -n "$trial" ]; then
             printf '%s\n' "$failures" | sed 's/^/boot-success:   - /'
             printf 'trial-unhealthy %s: %s\n' "$slot" "$(printf '%s' "$failures" | tr '\n' ';')" > "$B/last-result.new" \
                 && mv -f "$B/last-result.new" "$B/last-result"
-            mv -f "$B/trial" "$B/trial.failed"
+            [ ! -f "$B/trial" ] || mv -f "$B/trial" "$B/trial.failed"
             sync
-            if [ "${KRYPTIK_NO_REBOOT:-0}" = 1 ]; then
+            if ! forget_entries && [ -n "$unrecorded" ]; then
+                # No record says this was tried, so only the entries' going
+                # keeps the next boot from being this one again.
+                say "not rebooting: with its entries still there the firmware could boot this trial again"
+            elif [ "${KRYPTIK_NO_REBOOT:-0}" = 1 ]; then
                 say "not rebooting (KRYPTIK_NO_REBOOT=1)"
             else
                 say "BootNext was consumed by this boot; rebooting to the committed slot in 5 s"
@@ -150,12 +181,14 @@ if [ -n "$trial" ]; then
             say "trial slot $trial did NOT boot; running slot $slot again"
             result "trial-failed $trial"
             mv -f "$B/trial" "$B/trial.failed"
+            forget_entries
         else
             # The record was written but BootNext never was: the updater was
             # interrupted between the two. Nothing was tried, so nothing failed.
             say "the arming of slot $trial was interrupted before BootNext was set; nothing was tried"
             result "arming-interrupted $trial"
             rm -f "$B/trial"
+            forget_entries
         fi
     fi
 else

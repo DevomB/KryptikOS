@@ -82,7 +82,11 @@ disk that could be installed and never updated is refused. It writes, in order: 
 partition 1 `kryptik-esp` (the medium's ESP, with the slot A kernel as the
 boot file), 2 `kryptik-a` (the verified root image, read back and hashed
 against the medium's record), 3 `kryptik-b` (empty; the first update fills
-it), 4 `kryptik-state` (ext4: users, zone volumes, updates). It ends with
+it), 4 `kryptik-state` (LUKS2 with ext4 inside: users, zone volumes,
+updates). Before its first write it asks twice for the passphrase of the
+state partition, which the system then asks for at every boot. There is no
+escrow: without the passphrase, or without the partition's header, the
+state is lost. It ends with
 `KRYPTIK_INSTALL: rc=0`. Then:
 
 ```sh
@@ -99,7 +103,9 @@ installed system ignores it.
 
 ## 3. First boot and daily use
 
-On the first boot the system runs `kryptik-firstboot` on the first console:
+Every boot asks for the state passphrase on the console, three times at
+most, before anything else starts; root changes it with `kryptik state
+passphrase`. On the first boot the system runs `kryptik-firstboot` on the first console:
 it asks for a user name and password, and for root's password (root can
 still not log in at a terminal; the password is for `su` from the user's
 session). With a preseed on the control disk it creates that user instead. If the
@@ -132,11 +138,11 @@ when the zone's policy allows the direction and you answer yes to the
 question the chrome shows.
 
 **Degraded boot.** If the system cannot find exactly one `kryptik-state`
-partition on its own disk, or cannot mount it, it boots degraded: it says
+partition on its own disk, or cannot unlock or mount it, it boots degraded: it says
 so on the console, creates no account, starts no desktop and refuses
 updates. Nothing on the disk is written in that state. Fix the cause
-(a cloned disk attached, a relabelled partition, a damaged filesystem) and
-boot again.
+(a cloned disk attached, a relabelled partition, a damaged filesystem or
+header) and boot again; after three wrong passphrases, just boot again.
 
 ## 4. Update
 
@@ -178,6 +184,10 @@ kryptik-recover --disk /dev/sdY --status
 kryptik-recover --disk /dev/sdY --commit-slot a     # the other slot is intact: make it the boot file
 kryptik-recover --disk /dev/sdY --restore-slot a    # the slot's root is damaged: rewrite it from this medium
 ```
+
+`--backup-state-header FILE` and `--restore-state-header FILE` save and put
+back the state partition's LUKS2 header. Keep a backup somewhere that is not
+this disk: a damaged header with no backup is a lost state partition.
 
 `--restore-slot` writes the medium's own root image and kernel into the
 slot, exactly as the installer does, then commits it. The state partition

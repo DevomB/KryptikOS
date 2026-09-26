@@ -45,9 +45,19 @@ Confidentiality on the wire remains the application's responsibility.
 
 *Capability: offline access to the disk; boot from external media.*
 
-**Defended at rest.** Per-zone LUKS2 volumes are meaningless without their
-keys. dm-verity plus Secure Boot means a modified root filesystem or a swapped
-kernel fails to boot rather than silently running.
+**Defended at rest against a reader; not against a writer of the state
+partition.** dm-verity plus Secure Boot means a modified root filesystem or a
+swapped kernel fails to boot rather than silently running. The state partition
+(`/home`, `/var`, the Wi-Fi passphrases, the shadow file, the `/etc` overlay,
+the zone volumes' headers) is LUKS2 and asks for its passphrase at every boot,
+and the zone volumes inside it are encrypted again, so a stolen disk gives up
+none of it. It is encrypted and not authenticated: someone with the disk in
+hand cannot choose what a block decrypts to, but can damage one, and cannot be
+stopped from destroying the header. What the system honours from `/etc` without
+asking is therefore held to a list on the verified root, not to the partition
+([the state partition, encrypted](design/state-encryption.md)). The ESP, the
+root slots and the LUKS header are in the clear by design: the disk says it is
+Kryptik.
 
 **Not defended while running or suspended.** Keys are in RAM. See
 [coercion, and access to a running or suspended machine](#coercion-and-access-to-a-running-or-suspended-machine).
@@ -90,8 +100,13 @@ cryptanalysis, and no software can.
 ### Microarchitectural side channels
 
 Shared caches and shared branch predictors permit cross-zone inference.
-Mitigating this properly requires core scheduling or physical separation;
-neither is implemented today. Treated as a known gap, not a solved problem.
+Two things are done about the sibling-thread half of it: the signed command
+line carries `nosmt`, so no two zones ever share a core's threads, and every
+zone takes a core-scheduling cookie of its own, which is what would keep that
+true if SMT were ever turned back on (ADR-011 in [decisions](decisions.md);
+the cost of `nosmt` has not been measured on real hardware). Caches and
+predictors shared between cores, and between a zone and the kernel, remain.
+Treated as a known gap, not a solved problem.
 
 ### Targeted attack by a well-resourced state actor
 

@@ -144,6 +144,19 @@ else
     red "build/stages scripts are swept too (got $(mode_of build/stages/99-thing.sh))"
 fi
 
+# A test suite in Python is run by name like the shell ones, by
+# tools/run-tests.sh and by CI, so it is swept like them.
+newrepo
+printf '#!/usr/bin/env python3\nprint("hi")\n' > "${FIX}/tools/test-thing.py"
+chmod 644 "${FIX}/tools/test-thing.py"
+git -C "$FIX" add tools/test-thing.py
+commit_in "a test suite in python"
+if [[ "$(mode_of tools/test-thing.py)" == "100755" ]]; then
+    green "a tools/test-*.py suite is swept too"
+else
+    red "a tools/test-*.py suite is swept too (got $(mode_of tools/test-thing.py))"
+fi
+
 newrepo
 printf '# sourced, never executed\n' > "${FIX}/build/lib/common.sh"
 chmod 644 "${FIX}/build/lib/common.sh"
@@ -183,7 +196,9 @@ fi
 echo
 echo "=== and the real repository, which is where it was actually wrong ==="
 
-real_mode="$(git -C "$ROOT" ls-files -s -- tools/git-hooks/pre-commit | awk '{print $1}')"
+# safe.directory: acceptance runs this as root over a checkout that is not
+# root's, where git otherwise refuses to read the repository at all.
+real_mode="$(git -c safe.directory='*' -C "$ROOT" ls-files -s -- tools/git-hooks/pre-commit | awk '{print $1}')"
 if [[ "$real_mode" == "100755" ]]; then
     green "tools/git-hooks/pre-commit is 100755 in this repository's index"
 else

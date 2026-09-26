@@ -67,8 +67,11 @@ fi
 # `... | sed` followed by rc=$? reads sed's status, which is how a missing
 # partitioner was once reported as rc=0.
 logf=/run/kryptik-install.log
+# The state passphrase goes in on standard input (printf is a builtin), the
+# one place it is ever written down being the control disk.
+sp="$(testctl_get state_passphrase)"
 # shellcheck disable=SC2086  # preseed_args is deliberately word-split
-/usr/sbin/kryptik-install --target "$target" --yes $preseed_args > "$logf" 2>&1
+printf '%s\n' "$sp" | /usr/sbin/kryptik-install --target "$target" --yes $preseed_args > "$logf" 2>&1
 rc=$?
 sed 's/^/KRYPTIK_INSTALL: /' "$logf"
 say "rc=${rc}"
@@ -93,12 +96,14 @@ if [ "$rc" -eq 0 ]; then
         say "verify: could not mount the ESP read-only"
     fi
     st="$(blkid -t PARTLABEL=kryptik-state -o device 2>/dev/null | grep "^${target}" | head -1)"
-    if [ -n "$st" ] && mount -o ro "$st" /run/verify 2>/dev/null; then
+    if [ -n "$st" ] && printf '%s' "$sp" | cryptsetup open --readonly --type luks2 --key-file=- "$st" kryptik-verify-state 2>/dev/null \
+            && mount -o ro /dev/mapper/kryptik-verify-state /run/verify 2>/dev/null; then
         say "verify: state_marker=$([ -e /run/verify/.kryptik-state ] && echo yes || echo no)"
         say "verify: install_json=$([ -r /run/verify/lib/kryptik/install.json ] && echo yes || echo no)"
         say "verify: preseed=$([ -r /run/verify/lib/kryptik/firstboot.preseed ] && echo present || echo none)"
         umount /run/verify
     fi
+    cryptsetup close kryptik-verify-state 2>/dev/null || true
     slot_a="$(blkid -t PARTLABEL=kryptik-a -o device 2>/dev/null | grep "^${target}" | head -1)"
     if [ -n "$slot_a" ]; then
         say "verify: slot_a_sha256=$(head -c "$(cat /etc/kryptik/root-image-bytes 2>/dev/null || echo 0)" "$slot_a" | sha256sum | cut -c1-64)"

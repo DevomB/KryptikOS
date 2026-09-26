@@ -1,6 +1,6 @@
 # The state partition, encrypted
 
-Status: design. Nothing here is built. It is the "state partition is
+Status: built, waiting for its first acceptance run. It is the "state partition is
 encrypted" item of [version 1.0](../roadmap.md#version-10), written down
 before the code because three of its choices were a person's to make. They
 were decided on 2026-09-20, each as recommended (marked **Decided**). Builds on
@@ -50,6 +50,28 @@ machine, and verified.
 - **The passphrase can be changed** (`kryptik state passphrase`, zone 0,
   root): `cryptsetup luksChangeKey` on a descriptor, the old one asked first.
 
+## Where the code departs from the text above
+
+- **The prompt is `sysinit`'s own, not cryptsetup's.** cryptsetup prints its
+  prompt and then changes the terminal with a call that discards pending
+  input, so an answer sent the instant the prompt appears can be lost.
+  `sysinit` turns echo off first (`stty`, which discards nothing), prints
+  the prompt, reads one line and hands it to cryptsetup on a descriptor.
+- **The console is `sysinit`'s while it runs.** The early getty is
+  supervised from the first moment and would read the same terminal, so
+  `kryptik-console` waits until `sysinit` has finished, however it ends, and
+  gives up waiting for it to start after 30 s.
+- **A plain filesystem in the partition's place is refused, not mounted.**
+  Otherwise swapping the encrypted partition for an unencrypted one would
+  be believed without a question.
+- **The suites did not gain a step each.** `vm-drive.py` answers the prompt
+  wherever it appears, from `KRYPTIK_STATE_PASSPHRASE`, and `run-ovmf.sh`'s
+  smoke mode attaches the driver too, so an undriven boot of an installed
+  disk is answered the same way. One unlock path, the one a person uses.
+- Not yet checked by a suite: `kryptik state passphrase` and the two header
+  commands of `kryptik-recover` (the state suite damages and restores the
+  header from the host).
+
 ## What it does and does not give
 
 Confidentiality against an offline reader: yes. Authentication: **no**. XTS
@@ -87,6 +109,16 @@ about 10% of the partition, a much slower first format, and
 `CONFIG_DM_INTEGRITY` in the kernel. Ship
 confidentiality with the allow-list, measure the cost on real hardware once
 there is some, and decide with numbers.
+
+**Decided: a plain state partition is not converted; that installation is
+reinstalled, its data copied off first.** One without a LUKS2 header is
+refused at boot and the system comes up degraded (`sysinit.sh`). No such
+installation exists outside the test machines, and a converter would run
+once, on the partition that holds everything, with nothing to test it
+against. Offered as an update, such a machine's trial boot comes up
+degraded, is not committed, and falls back to the slot it came from with
+its data untouched (`boot-success.sh` knows the trial from the ESP when the
+state cannot say); the updater then refuses the release as a failed trial.
 
 **Decided: the unattended tests answer the prompt on the serial console.** An installed system ignores
 the control disk on purpose (`testctl.sh`), so nothing can hand it a

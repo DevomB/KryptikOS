@@ -196,16 +196,9 @@ CONFIG_SECURITYFS=y
 # exactly the shape of defect this build keeps finding.
 CONFIG_CRYPTO_XTS=y
 
-# Per-directory ext4 encryption, so "keys wiped on zone stop" can be true.
-#
-# Preferred over the dm-crypt route for zones: no cryptsetup, no loop device,
-# no LVM, no new pinned source. kryptikd adds and removes keys with ioctls it
-# can issue itself, and dropping a zone's key on stop is then an actual erasure
-# of access rather than a comment describing one.
-#
-# The filesystem needs the feature too - see tools/image/mkdisk.sh, which now
-# creates the root with -O encrypt.
-CONFIG_FS_ENCRYPTION=y
+# No per-directory ext4 encryption: zone volumes and the state partition are
+# dm-crypt (LUKS2), and nothing sets an fscrypt policy.
+# CONFIG_FS_ENCRYPTION is not set
 
 # --- found by kernel-hardening-checker, applied where the product allows ------
 #

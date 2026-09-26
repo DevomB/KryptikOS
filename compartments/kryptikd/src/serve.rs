@@ -768,19 +768,117 @@ impl Pending {
     }
 }
 
+/// A request answered by a command's end: `stop` (seconds, up to its SIGKILL
+/// escalation) and `update-apply` (minutes: it writes a slot and reads it
+/// back). They ran inside handle(), and for that long the daemon accepted
+/// nothing: launches already waiting missed their deadline and were reported
+/// failed although their zones started, and every other client hung. Now the
+/// command is started, the loop goes on, and the reply is sent when `reap`
+/// sees it end. Not a thread: `reap` collects every child, and would take
+/// the status a thread was waiting for.
+struct Job {
+    conn: UnixStream,
+    pid: libc::pid_t,
+    what: JobKind,
+    /// Its standard output and error, in memory: a pipe could fill while
+    /// nobody read it.
+    out: std::fs::File,
+    err: std::fs::File,
+    exited: Option<i32>,
+}
+
+#[derive(Clone, PartialEq, Debug)]
+enum JobKind {
+    Stop { uid: u32, zone: String },
+    UpdateApply,
+}
+
+fn memfile(name: &str) -> Result<std::fs::File, String> {
+    use std::os::unix::io::FromRawFd;
+    let c = std::ffi::CString::new(name).map_err(|e| e.to_string())?;
+    let fd = unsafe { libc::memfd_create(c.as_ptr(), libc::MFD_CLOEXEC) };
+    if fd < 0 {
+        return Err(format!("memfd_create: {}", std::io::Error::last_os_error()));
+    }
+    Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+}
+
+/// Start a job's command. Its status is left for `reap`.
+fn start_job(conn: UnixStream, what: JobKind, cmd: &mut std::process::Command) -> Result<Job, (UnixStream, String)> {
+    let files = memfile("kryptikd-job-out").and_then(|o| memfile("kryptikd-job-err").map(|e| (o, e)));
+    let (out, err) = match files {
+        Ok(f) => f,
+        Err(e) => return Err((conn, e)),
+    };
+    let (o2, e2) = match (out.try_clone(), err.try_clone()) {
+        (Ok(o), Ok(e)) => (o, e),
+        _ => return Err((conn, "could not hold the command's output".into())),
+    };
+    match cmd.stdin(std::process::Stdio::null()).stdout(o2).stderr(e2).spawn() {
+        // The Child is dropped without a wait: `reap` collects it.
+        Ok(child) => Ok(Job { conn, pid: child.id() as libc::pid_t, what, out, err, exited: None }),
+        Err(e) => Err((conn, e.to_string())),
+    }
+}
+
+fn read_back(f: &mut std::fs::File) -> String {
+    use std::io::{Read, Seek};
+    let mut s = String::new();
+    let _ = f.seek(std::io::SeekFrom::Start(0));
+    let _ = f.take(1 << 20).read_to_string(&mut s);
+    s
+}
+
+/// The reply a job owes, once its command has ended: the words the
+/// synchronous versions sent.
+fn finish_job(j: &mut Job, st: i32) {
+    let ok = libc::WIFEXITED(st) && libc::WEXITSTATUS(st) == 0;
+    // A failure's reason is the command's last line on stderr, which went to
+    // this log before the command ran as a job.
+    let why = |j: &mut Job, or: &str| {
+        let err = read_back(&mut j.err);
+        err.lines().rev().map(str::trim).find(|l| !l.is_empty()).unwrap_or(or).to_string()
+    };
+    match j.what.clone() {
+        JobKind::Stop { uid, zone } if ok => {
+            eprintln!("kryptikd serve: uid {uid} stopped zone {zone:?}");
+            reply(&j.conn, "ok\n");
+        }
+        JobKind::Stop { uid, zone } => {
+            let code = if libc::WIFEXITED(st) { libc::WEXITSTATUS(st) } else { -1 };
+            let why = why(j, "no reason given");
+            eprintln!("kryptikd serve: uid {uid} could not stop zone {zone:?}: exit {code}: {why}");
+            reply(&j.conn, &format!("error: stop exited {code}: {why}\n"));
+        }
+        JobKind::UpdateApply if ok => {
+            eprintln!("kryptikd serve: update-apply");
+            reply(&j.conn, &format!("ok\n{}", read_back(&mut j.out)));
+        }
+        JobKind::UpdateApply => {
+            let why = why(j, "kryptik-update apply failed");
+            eprintln!("kryptikd serve: update-apply failed: {why}");
+            reply(&j.conn, &format!("error: {why}\n"));
+        }
+    }
+}
+
 fn reply(mut c: &UnixStream, text: &str) {
     let _ = c.write_all(text.as_bytes());
     let _ = c.flush();
 }
 
-/// Reap children. A pending launcher's status is recorded for its reply;
-/// any other launcher's is logged.
-fn reap(pending: &mut [Pending]) {
+/// Reap children. A pending launcher's status is recorded for its reply, and
+/// a job's; any other launcher's is logged.
+fn reap(pending: &mut [Pending], jobs: &mut [Job]) {
     loop {
         let mut st = 0;
         let p = unsafe { libc::waitpid(-1, &mut st, libc::WNOHANG) };
         if p <= 0 {
             break;
+        }
+        if let Some(j) = jobs.iter_mut().find(|j| j.pid == p) {
+            j.exited = Some(st);
+            continue;
         }
         match pending.iter_mut().find(|x| x.launch.pid == p) {
             Some(x) => x.exited = Some(st),
@@ -959,7 +1057,7 @@ fn zone_running(name: &str) -> bool {
 /// One accepted connection: read, check, act. A `run` that starts a
 /// launcher returns it for the caller to watch; everything else is
 /// answered here.
-fn handle(cfg: &ServeConfig, conn: UnixStream) -> Option<Pending> {
+fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pending> {
     let fd = conn.as_raw_fd();
     let peer = match peer_of(fd) {
         Some(p) => p,
@@ -1048,13 +1146,53 @@ fn handle(cfg: &ServeConfig, conn: UnixStream) -> Option<Pending> {
                 reply(&conn, "error: bad zone name\n");
                 return None;
             }
-            let r = std::process::Command::new("/proc/self/exe").args(["stop", zone]).status();
-            match r {
-                Ok(s) if s.success() => reply(&conn, "ok\n"),
-                Ok(s) => reply(&conn, &format!("error: stop exited {}\n", s.code().unwrap_or(-1))),
+            let what = JobKind::Stop { uid, zone: zone.to_string() };
+            match start_job(conn, what, std::process::Command::new("/proc/self/exe").args(["stop", zone])) {
+                Ok(j) => jobs.push(j),
+                Err((conn, e)) => reply(&conn, &format!("error: {e}\n")),
+            }
+        }
+        // The update channel, from the person's side (update.rs). `fetch` is
+        // the asking without which the net zone is told `idle`; `apply` hands
+        // the staged directory to kryptik-update, which verifies all of it
+        // again before it writes a slot, and takes as long as that takes.
+        "update-status" | "update-fetch" | "update-apply" => {
+            use crate::update as up;
+            let dir = std::path::Path::new(up::STATE_DIR);
+            let running = up::running_version();
+            let done = match verb {
+                "update-status" => {
+                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+                    Ok(up::status(dir, now, &running))
+                }
+                "update-fetch" => up::want(dir, &running).map(|v| format!("{v} will be fetched when the net zone next asks; `kryptik update status` shows it arriving\n")),
+                _ => {
+                    // Started, not waited for; one at a time.
+                    if jobs.iter().any(|j| j.what == JobKind::UpdateApply) {
+                        reply(&conn, "error: an update is already being applied\n");
+                        return None;
+                    }
+                    match up::complete_stage(dir) {
+                        Ok(stage) => {
+                            let mut cmd = std::process::Command::new(up::TOOL);
+                            cmd.arg("apply").arg(&stage).env_clear().env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin");
+                            match start_job(conn, JobKind::UpdateApply, &mut cmd) {
+                                Ok(j) => jobs.push(j),
+                                Err((conn, e)) => reply(&conn, &format!("error: {}: {e}\n", up::TOOL)),
+                            }
+                        }
+                        Err(e) => reply(&conn, &format!("error: {e}\n")),
+                    }
+                    return None;
+                }
+            };
+            match done {
+                Ok(text) => {
+                    eprintln!("kryptikd serve: {verb}");
+                    reply(&conn, &format!("ok\n{text}"));
+                }
                 Err(e) => reply(&conn, &format!("error: {e}\n")),
             }
-            eprintln!("kryptikd serve: uid {uid} stopped zone {zone:?}");
         }
         "wifi-list" => match crate::wifi::list(&cfg.wifi_dir) {
             Ok(names) => {
@@ -1203,8 +1341,17 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
     );
 
     let mut pending: Vec<Pending> = Vec::new();
+    let mut jobs: Vec<Job> = Vec::new();
     loop {
-        reap(&mut pending);
+        reap(&mut pending, &mut jobs);
+        // Jobs whose command has ended get their reply.
+        jobs.retain_mut(|j| match j.exited {
+            Some(st) => {
+                finish_job(j, st);
+                false
+            }
+            None => true,
+        });
 
         // The listener, then one entry per launch still waiting for its
         // readiness pipe. Timeout: the nearest deadline among launches.
@@ -1219,6 +1366,11 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
             }
             let left = p.deadline().saturating_duration_since(now).as_millis() as i32;
             timeout = if timeout < 0 { left } else { timeout.min(left) };
+        }
+        // A job's end is seen by `reap` at the top of the loop, so the loop
+        // comes round a few times a second while one is running.
+        if !jobs.is_empty() {
+            timeout = if timeout < 0 { 200 } else { timeout.min(200) };
         }
         let n = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) };
         if n < 0 {
@@ -1296,7 +1448,7 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
             match listener.accept() {
                 Ok((conn, _)) => {
                     let _ = conn.set_nonblocking(false);
-                    if let Some(p) = handle(&cfg, conn) {
+                    if let Some(p) = handle(&cfg, conn, &mut jobs) {
                         pending.push(p);
                     }
                 }
@@ -1507,4 +1659,18 @@ mod tests {
         assert!(unsafe { libc::fstat(raw, &mut st) } < 0);
     }
 
+    #[test]
+    fn failed_job_says_why() {
+        use std::io::Read;
+        let (conn, mut client) = UnixStream::pair().unwrap();
+        let mut err = memfile("t-err").unwrap();
+        err.write_all(b"kryptikd: stopping\nzone \"alpha\" did not stop\n\n").unwrap();
+        let what = JobKind::Stop { uid: 1000, zone: "alpha".into() };
+        let mut j = Job { conn, pid: 0, what, out: memfile("t-out").unwrap(), err, exited: None };
+        finish_job(&mut j, 3 << 8);
+        drop(j);
+        let mut got = String::new();
+        client.read_to_string(&mut got).unwrap();
+        assert_eq!(got, "error: stop exited 3: zone \"alpha\" did not stop\n");
+    }
 }
