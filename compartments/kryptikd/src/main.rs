@@ -372,30 +372,13 @@ fn cmd_clipboard(args: &[String]) -> ExitCode {
         eprintln!("clipboard: FROM and TO are the same zone");
         return ExitCode::from(2);
     }
-    for z in [from, to] {
-        match registry::state(z) {
-            Ok(registry::State::Running { .. }) => {}
-            Ok(registry::State::Stale { .. }) => {
-                eprintln!("clipboard: zone {z:?} is not running (stale entry)");
-                return ExitCode::from(1);
-            }
-            Ok(registry::State::Absent) => {
-                eprintln!("clipboard: zone {z:?} is not running");
-                return ExitCode::from(1);
-            }
-            Err(e) => {
-                eprintln!("clipboard: {e}");
-                return ExitCode::from(1);
-            }
-        }
-    }
-    match broker::clipboard_move(&registry::entry_dir(from), &registry::entry_dir(to)) {
-        Ok((mime, len)) => {
-            println!("clipboard: moved {len} bytes of {mime} from {from} to {to}");
+    match broker::move_between(from, to) {
+        Ok(line) => {
+            println!("{line}");
             ExitCode::SUCCESS
         }
-        Err(e) => {
-            eprintln!("clipboard: {e}");
+        Err(why) => {
+            eprintln!("{why}");
             ExitCode::from(1)
         }
     }

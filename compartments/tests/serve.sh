@@ -262,6 +262,23 @@ else
     fail "S6g run alpha (ignoring SIGTERM): $r"
 fi
 
+# A launcher that ends is reaped then, not at the daemon's next request. It
+# runs with PATH alone, plus a developer instance's XDG_RUNTIME_DIR.
+r="$(ask "run alpha\narg /bin/sh\narg -c\narg sleep 2\nend\n")"
+if [[ "$r" == ok\ [0-9]* ]]; then
+    lp="${r#ok }"; lp="${lp%%[!0-9]*}"
+    names="$(tr '\0' '\n' < "/proc/$lp/environ" 2>/dev/null | cut -d= -f1 | sort | tr '\n' ' ')"
+    if [[ "$names" == "PATH " || "$names" == "PATH XDG_RUNTIME_DIR " ]]; then pass "S6i the launcher's environment: ${names% }"; else fail "S6i launcher environment: ${names:-unreadable}"; fi
+    for _ in $(seq 1 150); do [[ -e "/proc/$lp" ]] || break; sleep 0.1; done
+    if [[ ! -e "/proc/$lp" ]]; then
+        pass "S6j a launcher that ends is reaped without another request"
+    else
+        fail "S6j launcher $lp is still there, state $(awk '{print $3}' "/proc/$lp/stat" 2>/dev/null), with nothing to wake the daemon"
+    fi
+else
+    fail "S6i run alpha: $r"
+fi
+
 r="$(ask 'run broken\narg /bin/true\nend\n')"
 if [[ "$r" == "error: zone \"broken\" did not start: launcher exited"* ]]; then
     pass "S7a a zone that cannot start is reported with the launcher's exit"

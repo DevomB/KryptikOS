@@ -889,6 +889,24 @@ pub fn clipboard_move(from: &Path, to: &Path) -> io::Result<(String, usize)> {
     Ok((mime, bytes.len()))
 }
 
+/// The zone 0 gesture, for `kryptikd clipboard move` and serve alike: both
+/// zones must be running. Ok is the line to show, Err why it was refused.
+pub fn move_between(from: &str, to: &str) -> Result<String, String> {
+    use crate::registry::{self, State};
+    for z in [from, to] {
+        match registry::state(z) {
+            Ok(State::Running { .. }) => {}
+            Ok(State::Stale { .. }) => return Err(format!("clipboard: zone {z:?} is not running (stale entry)")),
+            Ok(State::Absent) => return Err(format!("clipboard: zone {z:?} is not running")),
+            Err(e) => return Err(format!("clipboard: {e}")),
+        }
+    }
+    match clipboard_move(&registry::entry_dir(from), &registry::entry_dir(to)) {
+        Ok((mime, len)) => Ok(format!("clipboard: moved {len} bytes of {mime} from {from} to {to}")),
+        Err(e) => Err(format!("clipboard: {e}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
