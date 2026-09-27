@@ -277,6 +277,16 @@ cmd_check_pointer() {
     verify_signed "$SNAP/latest" "$SNAP/latest.sig" "$LATEST_NAMESPACE" pointer
 }
 
+# The ESP stops naming SLOT's release: its kernel and version go, so an apply
+# cut short leaves nothing that rollback or kryptik-recover --commit-slot
+# would take. The apply puts both back once the slot verifies.
+unlist_slot() {   # unlist_slot SLOT
+    mount_esp
+    rm -f "$ESP_MNT/EFI/kryptik/kryptik-$1.efi" "$ESP_MNT/kryptik/version-$1"
+    sync
+    umount_esp
+}
+
 # Verify everything, then write only the inactive slot, read it back, install
 # its kernel and arm BootNext. BOOTX64.EFI is left to boot-success, which
 # commits once the new slot has come up. Zone data is never written.
@@ -301,7 +311,7 @@ cmd_apply() {
         die "a trial of slot $(sed -n 1p "$B/trial") is already armed; reboot first, or run rollback"
     fi
     if [ "$retry" != 1 ] && [ -f "$B/trial.failed" ]; then
-        die "the last trial of slot $(cat "$B/trial.failed") failed to boot. Pass --retry to arm it again."
+        die "the last trial of slot $(cat "$B/trial.failed") failed to boot. To try it again, run as root: kryptik-update apply $dir --retry"
     fi
 
     say "running slot $slot ($(running_version)); target slot $target"
@@ -313,6 +323,7 @@ cmd_apply() {
     [ "$tsize" -ge "$ROOT_BYTES" ] || die "slot $target is $tsize bytes; the root image needs $ROOT_BYTES"
 
     # --- writes begin: the inactive slot only -------------------------------
+    unlist_slot "$target"
     say "writing kryptik-$target ($ROOT_BYTES bytes)"
     dd if=/proc/self/fd/3 of="$tdev" bs=4M conv=fsync status=none || die "writing slot $target failed"
     blockdev --flushbufs "$tdev"   # so the read-back is of the device, not of the page cache

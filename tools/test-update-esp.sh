@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# kryptik-update and the ESP: a subcommand unmounts only a mount it made, and
-# status leaves the ESP alone while an apply holds the lock. The functions
+# kryptik-update and the ESP: a subcommand unmounts only a mount it made,
+# status leaves the ESP alone while an apply holds the lock, and a slot being
+# written is named by nothing there, so rollback refuses it. The functions
 # come from the tool itself, pointed at a scratch mountpoint, with mount
 # stand-ins that keep a record; flock is the real one.
 set -uo pipefail
@@ -23,10 +24,11 @@ echo b > "$T/esp/kryptik/committed-slot"
     echo "umount() { rm -f '$T/mounted'; echo umount >> '$T/calls'; }"
     echo 'sync() { :; }'
     echo 'running_slot() { echo a; }; running_version() { echo 1.0; }; kryptik-efiboot() { :; }'
-    echo "ESP_MNT='$T/esp'; LOCK='$T/lock'; B='$T/boot'"
-    sed -n '/^mount_esp() {/,/^}/p; /^umount_esp() {/,/^}/p; /^ESP_MINE=/p; /^trap .*umount_esp/p; /^cmd_status() {/,/^}/p' "$TOOL"
+    echo "ESP_MNT='$T/esp'; LOCK='$T/lock'; B='$T/boot'; DEGRADED='$T/degraded'"
+    sed -n '/^mount_esp() {/,/^}/p; /^umount_esp() {/,/^}/p; /^ESP_MINE=/p; /^trap .*umount_esp/p; /^cmd_status() {/,/^}/p;
+            /^other_slot() /p; /^unlist_slot() {/,/^}/p; /^cmd_rollback() {/,/^}/p' "$TOOL"
 } > "$T/esp.sh"
-for f in mount_esp umount_esp cmd_status; do
+for f in mount_esp umount_esp cmd_status other_slot unlist_slot cmd_rollback; do
     grep -q "^$f() {" "$T/esp.sh" || { echo "could not extract $f from $TOOL"; exit 1; }
 done
 calls() { [[ ! -e "$T/calls" ]] || tr '\n' ' ' < "$T/calls"; }
@@ -46,6 +48,25 @@ sleep 0.5
 out="$(bash -c "source '$T/esp.sh'; cmd_status" 2>&1)"
 wait "$holder"
 [[ "$out" == *"being applied"* && -z "$(calls)" ]] && ok "status leaves the ESP alone while an apply holds the lock" || bad "status under an apply: $(calls) / $out"
+
+echo "-- an apply cut short while it writes a slot"
+mkdir -p "$T/esp/EFI/kryptik"
+for s in a b; do printf 'kernel-%s' "$s" > "$T/esp/EFI/kryptik/kryptik-$s.efi"; echo "1.$s" > "$T/esp/kryptik/version-$s"; done
+fresh; bash -c "source '$T/esp.sh'; unlist_slot b"
+[[ ! -e "$T/esp/EFI/kryptik/kryptik-b.efi" && ! -e "$T/esp/kryptik/version-b" && "$(calls)" == "mount umount " ]] \
+    && ok "the slot about to be written loses its kernel and version on the ESP, which is unmounted after" \
+    || bad "unlisting slot b: $(calls) / $(ls "$T/esp/EFI/kryptik" "$T/esp/kryptik")"
+[[ -e "$T/esp/EFI/kryptik/kryptik-a.efi" && "$(cat "$T/esp/kryptik/version-a")" == 1.a ]] \
+    && ok "the running slot's are left alone" || bad "the running slot's kernel or version went"
+fresh; out="$(bash -c "source '$T/esp.sh'; cmd_rollback" 2>&1)"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *"slot b has no kernel on the ESP"* ]] \
+    && ok "rollback refuses a slot whose write never finished" || bad "rollback: rc=$rc / $out"
+body="$(sed -n '/^cmd_apply() {/,/^}/p' "$TOOL")"
+u="$(grep -n 'unlist_slot "$target"' <<< "$body" | head -1 | cut -d: -f1)"
+w="$(grep -n 'dd if=/proc/self/fd/3 of=' <<< "$body" | head -1 | cut -d: -f1)"
+[[ -n "$u" && -n "$w" && "$u" -lt "$w" ]] \
+    && ok "apply takes the slot off the ESP before it writes a byte of it" \
+    || bad "apply: the slot is taken off the ESP at line '${u}', written at line '${w}'"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

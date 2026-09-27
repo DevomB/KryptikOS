@@ -146,7 +146,10 @@ Nothing is fetched or installed unless the user asks.
 Withhold (reported through the pointer's age, not prevented); waste bandwidth
 and one release's worth of disk per version, with right-sized wrong bytes that
 `apply` refuses; and see that the machine runs Kryptik and which release it
-wants. It cannot install anything the release key did not sign, install an
+wants. Whoever can crash the net zone from the network can also fail a new
+release's trial and hold the machine on its old release, as withholding does
+([boot and updates](boot-and-updates.md) says why the net zone is checked all
+the same). It cannot install anything the release key did not sign, install an
 older release, present an old statement as current, or make zone 0 keep a byte
 the signed manifest does not provide for.
 
