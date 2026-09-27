@@ -845,7 +845,7 @@ pub struct ServeConfig {
 }
 
 fn config_from(zones_dir: &Path, args: &[String]) -> Result<ServeConfig, String> {
-    let opt = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
+    let opt = |flag: &str| crate::value(args, flag).map(str::to_string);
     let developer = unsafe { libc::geteuid() } != 0;
     let socket = match opt("--socket") {
         Some(s) => PathBuf::from(s),
