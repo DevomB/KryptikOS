@@ -372,8 +372,8 @@ distinct labels.
 
 Channels:
   color     the whole window border        seen without looking for it
-  glyph     the chrome, focused window     seen if you look
-  label     the chrome, focused window     seen if you read
+  glyph     the menu and --focus           seen when asked for
+  label     the menu and --focus           seen when asked for
   pattern   not drawn                      validated, given no weight
 
 Focus is shown by border width, never by colour, so the window taking your

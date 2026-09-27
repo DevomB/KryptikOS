@@ -25,8 +25,8 @@ uid_base = 262144
 
 [ui]
 # Colour, glyph and label must differ from every other zone's; the pattern
-# is checked but nothing draws it. Pick colours with
-# `zoneid propose`; `zoneid audit` checks the set, `zoneid explain` the rule.
+# is checked but nothing draws it. Pick colours with `zoneid propose`;
+# `zoneid audit` checks the set, `zoneid explain` the rule.
 border_color   = "#009b79"
 border_pattern = "dashed"
 glyph          = "●"
