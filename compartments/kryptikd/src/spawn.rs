@@ -306,6 +306,36 @@ impl Drop for ZoneOutput {
     }
 }
 
+/// Bounds the broker's lines as ZoneOutput bounds the zone's output: a zone
+/// can send a request every millisecond, and each one is a line.
+struct BrokerLog {
+    zone: String,
+    left: usize,
+}
+
+impl BrokerLog {
+    fn new(zone: &str) -> Self {
+        BrokerLog { zone: zone.to_string(), left: ZONE_OUTPUT_MAX }
+    }
+
+    fn line(&mut self, text: &str, emit: &mut dyn FnMut(&str)) {
+        if self.left == 0 {
+            return;
+        }
+        let mut end = text.len().min(ZONE_LINE_MAX);
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end + 1 > self.left {
+            self.left = 0;
+            emit(&format!("kryptikd[zone {}]: broker lines past {ZONE_OUTPUT_MAX} bytes are not logged", self.zone));
+            return;
+        }
+        self.left -= end + 1;
+        emit(&text[..end]);
+    }
+}
+
 /// Whether the child has exited, without reaping it: WNOWAIT leaves it for
 /// the waitpid that decides the launcher's status.
 fn exited_unreaped(pid: libc::pid_t) -> bool {
@@ -332,7 +362,9 @@ fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, s: &broker::Served, out:
         pump();
         !exited_unreaped(pid)
     };
-    let s = &broker::Served { asking: &asking, ..*s };
+    let blog = std::cell::RefCell::new(BrokerLog::new(zone));
+    let log = |line: &str| blog.borrow_mut().line(line, &mut |l: &str| log_line(l));
+    let s = &broker::Served { asking: &asking, log: &log, ..*s };
     /* A pidfd is readable once the zone has ended, so the poll needs no
      * timeout. Without one it wakes every 200 ms: failing here would skip
      * the caller's closing of the zone's volume. */
@@ -360,9 +392,9 @@ fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, s: &broker::Served, out:
         let pfd = pfds[0];
         if n > 0 && pfd.revents & libc::POLLIN != 0 {
             match broker::serve_one(listen_fd, s) {
-                Ok(Some(verb)) => log_line(&format!("kryptikd[zone {zone}]: broker served {verb:?}")),
+                Ok(Some(verb)) => log(&format!("kryptikd[zone {zone}]: broker request: {verb}")),
                 Ok(None) => {}
-                Err(e) => log_line(&format!("kryptikd[zone {zone}]: broker: {e}")),
+                Err(e) => log(&format!("kryptikd[zone {zone}]: broker: {e}")),
             }
         }
     }
@@ -990,8 +1022,9 @@ pub fn run_in_zone(
         auto_approve: opts.auto_approve_transfers,
         max_bytes: broker::TRANSFER_MAX,
         resolve_dest: &broker::registry_target,
-        // Replaced by serve_until_exit with the launcher's own turn.
+        // Both replaced by serve_until_exit: the launcher's own turn, a bounded log.
         asking: &crate::consent::keep,
+        log: &log_line,
     };
     let status = serve_until_exit(pid, broker_fd, &served, zone_out)?;
     unsafe { libc::close(broker_fd) };
@@ -1667,6 +1700,25 @@ mod tests {
         assert_eq!(logged, ZONE_OUTPUT_MAX);
         assert_eq!(got.iter().filter(|l| l.contains("is not logged")).count(), 1);
         assert!(!got.iter().any(|l| l.contains("more")));
+    }
+
+    #[test]
+    fn broker_log_bounded() {
+        // A zone reconnecting in a loop: every line is cut, and the total stops.
+        let mut b = BrokerLog::new("work");
+        let mut got: Vec<String> = Vec::new();
+        let long = format!("kryptikd[zone work]: {}", "x".repeat(4000));
+        for _ in 0..10_000 {
+            b.line(&long, &mut |l: &str| got.push(l.to_string()));
+        }
+        assert!(got.iter().all(|l| l.len() <= ZONE_LINE_MAX));
+        let total: usize = got.iter().map(|l| l.len() + 1).sum();
+        assert!(total <= ZONE_OUTPUT_MAX + 100, "{total} bytes logged");
+        assert_eq!(got.last().unwrap(), &format!("kryptikd[zone work]: broker lines past {ZONE_OUTPUT_MAX} bytes are not logged"));
+        assert_eq!(got.iter().filter(|l| l.contains("not logged")).count(), 1);
+        // A cut never splits a character.
+        let mut b = BrokerLog::new("work");
+        b.line(&"\u{e9}".repeat(ZONE_LINE_MAX), &mut |l: &str| assert!(l.len() <= ZONE_LINE_MAX));
     }
 
     #[test]
