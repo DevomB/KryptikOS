@@ -4,6 +4,7 @@
 #   GT SCREENSHOT-READY, GT SCREENSHOT-FULLSCREEN,
 #   GT SCREENSHOT-OVERSIZE                          take a screenshot
 #   GT KEY-FULLSCREEN, GT KEY-FULLSCREEN-AGAIN      press Alt+e (dwl fullscreen)
+#   GT KEY-MENU                                     press Alt+p (the chrome menu)
 #   GT CONSENT-WAIT 1, GT CONSENT-WAIT 2            answer y, then n (and Enter)
 #   GT END
 # Verdicts: "GT PASS|FAIL|INFO name - detail".
@@ -123,6 +124,18 @@ echo "GT SCREENSHOT-FULLSCREEN"
 sleep 6
 echo "GT KEY-FULLSCREEN-AGAIN"
 wait_for 20 grep -q '^fullscreen=0' "$RT/kryptik/focus" && pass "fullscreen-off-again" || fail "fullscreen-off-again"
+# Alt+p opens one more menu window: the chrome's text menu in a zone 0
+# terminal of its own, as at login. Closed again once seen.
+menu_windows() { pgrep -u "$USER_NAME" -f 'havoc /usr/bin/kryptik-chrome --menu' | wc -l; }
+menus_before="$(menu_windows)"
+more_menus() { [[ "$(menu_windows)" -gt "$menus_before" ]]; }
+echo "GT KEY-MENU"
+if wait_for 20 more_menus; then
+    pass "menu-opens-on-key" "$(menu_windows) menu windows after Alt+p, ${menus_before} before"
+    pkill -n -u "$USER_NAME" -f 'havoc /usr/bin/kryptik-chrome --menu' 2>/dev/null
+else
+    fail "menu-opens-on-key" "no new menu window after Alt+p: $(pgrep -u "$USER_NAME" -af 'kryptik-chrome --menu' | cut -c1-80 | tr '\n' ';')"
+fi
 # A zone 0 window taking focus, as the menu does when opened, leaves the last
 # zone window's record alone: that record is what the menu's f shows.
 as_user "/usr/libexec/kryptik/wlprobe oversize 0 15 zone-0" > "$LOG/zone0-window.out" 2>&1 &
