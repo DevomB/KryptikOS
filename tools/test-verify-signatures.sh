@@ -625,6 +625,58 @@ else
     red "an unresolvable wkd locator warns and leaves the source unverified (exit ${RC})"; show
 fi
 
+# A key already held is still merged from where it is published: good is in
+# the tool's keyring, and its published copy carries its revocation.
+GOODFPR="$(GNUPGHOME="$FIXG" gpg --batch --list-keys --with-colons good@example.test \
+           | awk -F: '$1=="fpr"{print $10; exit}')"
+REVG="${W}/gnupg-revoke"
+mkdir -p "$REVG"; chmod 700 "$REVG"
+GNUPGHOME="$REVG" gpg --batch --quiet --import "${PROV}/good.asc" >/dev/null 2>&1
+sed 's/^://' "${FIXG}/openpgp-revocs.d/${GOODFPR}.rev" \
+    | GNUPGHOME="$REVG" gpg --batch --quiet --import >/dev/null 2>&1
+GNUPGHOME="$REVG" gpg --batch --quiet --armor --export "$GOODFPR" > "${PROV}/good-revoked.asc"
+GNUPGHOME="$REVG" gpgconf --kill all >/dev/null 2>&1
+
+fresh_root
+write_manifest good
+prov_table "${GOODFPR}  korg  file://${PROV}/good-revoked.asc  2026-09-11  good  good fixture, revoked where it is published"
+runprov
+if [[ "$RC" -ne 0 ]] && grep -qF "REVOKED key" "$OUT"; then
+    green "a held key is merged from its locator, so a revocation published there is seen"
+else
+    red "a held key is merged from its locator, so a revocation published there is seen (exit ${RC})"; show
+fi
+
+# A locator that serves the recorded key and another: only the recorded one is
+# taken, so a source signed by the other stays unverified.
+fixgpg --quick-generate-key "extra fixture <extra@example.test>" ed25519 sign never >/dev/null 2>&1
+printf 'fixture payload for extra\n' > "${SRC}/extra.tar.gz"
+fixgpg --yes --local-user extra@example.test \
+       --detach-sign -o "${SRC}/extra.tar.gz.sig" "${SRC}/extra.tar.gz" >/dev/null 2>&1
+{ GNUPGHOME="$FIXG" gpg --batch --quiet --export unknown@example.test
+  GNUPGHOME="$FIXG" gpg --batch --quiet --export extra@example.test; } > "${PROV}/unknown-and-extra.gpg"
+
+fresh_root
+write_manifest extra
+prov_table "${UNKFPR}  korg  file://${PROV}/unknown-and-extra.gpg  2026-09-11  extra  a locator that also carries another key"
+runprov --report="${W}/r5.tsv"
+if [[ "$(klass_of "${W}/r5.tsv" extra)" == "key-not-held" ]] && ! grep -qF "REFUSING" "$OUT"; then
+    green "only the recorded key is taken from a locator that serves another as well"
+else
+    red "only the recorded key is taken from a locator that serves another (got $(klass_of "${W}/r5.tsv" extra))"; show
+fi
+
+# A key that signs two sources is fetched once.
+fresh_root
+write_manifest unknown extra
+prov_table "${UNKFPR}  korg  file://${PROV}/unknown.asc  2026-09-11  unknown,extra  unknown fixture"
+runprov
+if [[ "$(grep -c "imported the key korg publishes" "$OUT")" -eq 1 ]]; then
+    green "a key that signs two sources is fetched once a run"
+else
+    red "a key that signs two sources is fetched once a run"; show
+fi
+
 # --- malformed provenance rows ----------------------------------------------
 
 bad_prov() {  # bad_prov ROW NAME
