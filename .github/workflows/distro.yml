@@ -95,7 +95,8 @@ jobs:
       - name: Stage 02, the temporary tools (unprivileged)
         id: stage02
         timeout-minutes: 120
-        run: make temp-tools
+        # -o: the step before ran stage 01, which temp-tools would walk again.
+        run: make -o toolchain temp-tools
 
       # Nothing is saved from a cancelled run. A step past its time limit keeps
       # building underneath, so the stage scripts (which write the stamps) and
@@ -255,7 +256,8 @@ jobs:
 
       - name: Stage 05, the hardened kernel
         timeout-minutes: 90
-        run: make kernel KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
+        # -o: the step before ran stage 04, which kernel would walk again.
+        run: make -o system kernel KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
 
       # Nothing is saved from a cancelled run. A step past its time limit leaves
       # its build running in the chroot, still mounted: everything whose root
