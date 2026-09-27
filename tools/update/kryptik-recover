@@ -89,11 +89,12 @@ commit_slot() {   # commit_slot SLOT (ESP mounted rw at /run/kryptik-recover)
     put /run/kryptik-recover/kryptik/committed-slot "$s" || die "cannot record slot $s as committed"
     sync
     say "committed: BOOTX64.EFI is now slot $s ($(cat "/run/kryptik-recover/kryptik/version-$s" 2>/dev/null || echo unknown))"
-    # Remove Kryptik's firmware entries and BootNext, as boot-success does at
-    # each commit, so the firmware boots BOOTX64.EFI. (From the medium the
-    # installed ESP cannot be named, so they cannot be rewritten.)
+    # As boot-success does at each commit: Kryptik's firmware entries and
+    # BootNext go, so the firmware boots BOOTX64.EFI, and the committed slot
+    # gets its own entry on this disk's ESP, a second way to it.
     if [ -d /sys/firmware/efi/efivars ]; then
         kryptik-efiboot forget >/dev/null 2>&1 || say "the firmware's Kryptik entries could not be removed; its own order may still name the other slot"
+        kryptik-efiboot ensure "$s" "$ESP" >/dev/null 2>&1 || say "slot $s has no firmware entry of its own; BOOTX64.EFI is the only way to it"
     fi
 }
 
@@ -118,6 +119,11 @@ if [ -n "$RESTORE" ]; then
     esac
     bytes="$(sed -n 's/^  "total_bytes": \([0-9]*\).*/\1/p' "$rj")"; sha="$(sed -n 's/^  "sha256": "\([0-9a-f]*\)".*/\1/p' "$rj")"; ver="$(sed -n 's/^  "version": "\([^"]*\)".*/\1/p' "$rj")"
     [ "$(blockdev --getsize64 "$sd")" -ge "$bytes" ] || die "slot $RESTORE is smaller than the medium's root image"
+    # As kryptik-update does, the ESP stops naming the slot before it is
+    # rewritten: a restore cut short leaves nothing --commit-slot would take.
+    mount -o rw "$ESP" /run/kryptik-recover || die "cannot mount the target ESP"
+    rm -f "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi" "/run/kryptik-recover/kryptik/version-$RESTORE"
+    sync
     say "restoring slot $RESTORE from this medium (${ver}, ${bytes} bytes); the state partition is untouched"
     if [ "$off" -gt 0 ]; then dd if="$src" of="$sd" bs=4M iflag=skip_bytes,count_bytes skip="$off" count="$bytes" conv=fsync status=none
     else dd if="$src" of="$sd" bs=4M iflag=count_bytes count="$bytes" conv=fsync status=none; fi
@@ -125,7 +131,6 @@ if [ -n "$RESTORE" ]; then
     got="$(dd if="$sd" bs=4M iflag=count_bytes count="$bytes" status=none | sha256sum | cut -c1-64)"
     [ "$got" = "$sha" ] || die "slot $RESTORE reads back as $got, expected $sha"
     say "slot $RESTORE verifies"
-    mount -o rw "$ESP" /run/kryptik-recover || die "cannot mount the target ESP"
     cp "$kdir/kryptik-$RESTORE.efi" "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi.new"
     sync -f "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi.new"
     mv -f "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi.new" "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi"

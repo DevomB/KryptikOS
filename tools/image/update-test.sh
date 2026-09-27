@@ -23,7 +23,8 @@
 #           manifest for the other role, signed by B's own key
 #   step 4  apply A with --recovery, reboot: slot a
 #   step 5  rollback: slot b again
-#   step 6  the VM killed mid-write, then after arming: both recover
+#   step 6  the VM killed mid-write (the slot then named by nothing on the
+#           ESP, so rollback refuses it), then after arming: both recover
 #   step 7  a corrupt trial falls back to slot a, is recorded, needs --retry
 #   step 8  B fetched by the net zone from a loopback release host, applied.
 #           A production image fetches nothing over plain http, and says so
@@ -281,10 +282,12 @@ sleep 2; stop_vm
 green "VM killed while slot a was being written (QMP quit, no clean shutdown)"
 start_vm update-p6b --disk "$PA"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
-    "$(ROOTSH 'cat /run/kryptik/boot-identity; kryptik-update status; echo P6-OK')" "expect:slot=b" "expect:trial pending:    none" "expect:P6-OK" \
+    "$(ROOTSH 'cat /run/kryptik/boot-identity; kryptik-update status; echo P6-OK')" "expect:slot=b" "expect:trial pending:    none" \
+    "expect:slot a: +version none, kernel absent" "expect:P6-OK" \
+    "$(ROOTSH 'kryptik-update rollback; echo RB6=$?')" "expect:slot a has no kernel on the ESP" "expect:RB6=1" \
     "$(ROOTSH 'mkdir -p /run/upd/a && mount -o ro /dev/vdb /run/upd/a && kryptik-update apply /run/upd/a --recovery && echo ARMED-OK')" "expect:ARMED-OK"
 rc=$?
-[[ "$rc" -eq 0 ]] && green "after the interrupted write: still slot b, no trial; the apply succeeds again" || red "step 6a drive failed"
+[[ "$rc" -eq 0 ]] && green "after the interrupted write: still slot b, no trial, slot a named by nothing and refused by rollback; the apply succeeds again" || red "step 6a drive failed"
 stop_unless_ok "$rc" "step 6a"
 # armed, now kill again before the reboot: the firmware consumes BootNext at the next boot
 python3 - "$QMP" <<'PY'

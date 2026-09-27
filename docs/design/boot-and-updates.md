@@ -85,11 +85,16 @@ medium's `root.json`, creates the LUKS2 state partition and makes
 `BOOTX64.EFI` the slot A kernel. Every failure names its step.
 
 The installed disk boots `BOOTX64.EFI` through the removable-media path with
-no firmware variables. `kryptik-efiboot` adds a `Kryptik <slot>` Boot####
-entry only for a trial, and `forget` removes the entries and `BootNext` when
-the trial ends, committed or not: firmware re-adds its own disk entry at the
-end of `BootOrder`, and a Kryptik entry left in front of it would boot the
-other slot.
+no firmware variables. `kryptik-efiboot` adds a `Kryptik slot <x>` Boot####
+entry for a trial. When the trial ends, committed or not, `forget` removes
+Kryptik's entries and `BootNext`, and the committed slot gets its own entry
+back. Firmware re-adds its own disk entry at the end of `BootOrder`, so an
+entry left in front of it must boot what `BOOTX64.EFI` boots; this one does,
+and is a second way to the committed slot should `BOOTX64.EFI` be lost. An
+entry is Kryptik's when its description and its file say so, never by its
+number: slot a's is `Boot00A0` and slot b's `Boot00B0` unless another system
+already uses that number, and then the next free one, the other system's
+entry left alone.
 
 ## Updates
 
@@ -112,7 +117,9 @@ payloads come from [the update channel](update-channel.md) or by hand.
    size, with nothing unlisted; and `root.json`'s root hash embedded in both
    kernels (`grep -a -F`). Refuse while the state is degraded, another update
    runs or a trial is armed.
-2. Write the inactive slot (`dd conv=fsync`) and read it back.
+2. Take the inactive slot's kernel and version file off the ESP, so an apply
+   cut short leaves nothing that `rollback` or `kryptik-recover --commit-slot`
+   would take. Write the slot (`dd conv=fsync`) and read it back.
 3. Put its kernel on the ESP as `.efi.new`, fsync, check it, rename; write
    its version file.
 4. Record the trial (`armed=0`), run `kryptik-efiboot set-next <inactive>`,
@@ -127,8 +134,16 @@ payloads come from [the update channel](update-channel.md) or by hand.
    `committed-slot` says whether the boot is a trial. A trial that never comes
    up also lands on the committed slot; the fallback records `trial.failed`
    and forgets the entries, and the updater will not re-arm that payload
-   without `--retry`. Only a trial reboots; an unhealthy committed slot is
-   reported and left running.
+   without `--retry`, which root gives (`su` from the administration login
+   on tty2; the refusal prints the command). Only a trial reboots; an
+   unhealthy committed slot is reported and left running, and so is a trial
+   on a degraded state whose ESP cannot be read, since nothing then says it
+   is one.
+
+   The net zone is in the check on purpose: a release whose net zone cannot
+   come up could never fetch the release that fixes it. Whoever can crash
+   that net zone at will can hold a machine on its old release this way, but
+   can already do as much by dropping its traffic.
 6. `kryptik-update rollback` arms the other slot the same way.
 
 Zone data is never written. On the FAT ESP the two renames are the only
@@ -145,8 +160,8 @@ flipped root block stopping the boot, recovery), `update-test.sh` (apply,
 refusals, recovery, rollback, a broken trial, interruptions, the network
 path) and `state-test.sh` (cloned, ambiguous, corrupt and missing state).
 Host-side: `tools/test-boot-success.sh`, `test-efiboot.sh`,
-`test-installer.sh`, `test-sysinit-etc-upper.sh`, `test-release-manifest.sh`,
-`test-release-channel.sh`.
+`test-update-esp.sh`, `test-installer.sh`, `test-sysinit-etc-upper.sh`,
+`test-release-manifest.sh`, `test-release-channel.sh`.
 
 ## Files
 

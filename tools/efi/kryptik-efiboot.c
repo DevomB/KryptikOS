@@ -3,15 +3,18 @@
  * BootOrder through efivarfs, with no library.
  *
  *   kryptik-efiboot list                 print Boot####, BootOrder, BootNext, BootCurrent
- *   kryptik-efiboot set-next SLOT        create/refresh "Kryptik SLOT" -> \EFI\kryptik\kryptik-SLOT.efi, set BootNext
+ *   kryptik-efiboot set-next SLOT        create/refresh "Kryptik slot SLOT" -> \EFI\kryptik\kryptik-SLOT.efi, set BootNext
  *   kryptik-efiboot clear-next           delete BootNext
- *   kryptik-efiboot ensure SLOT          create/refresh the entry only (no BootNext)
- *   kryptik-efiboot forget               delete both slots' entries and BootNext, drop them
- *                                        from BootOrder: the firmware boots BOOTX64.EFI
+ *   kryptik-efiboot ensure SLOT [ESP]    create/refresh the entry only (no BootNext); ESP names
+ *                                        the partition when it is not this installation's
+ *   kryptik-efiboot forget               delete Kryptik's entries, and BootNext if it names one,
+ *                                        drop them from BootOrder: the firmware boots BOOTX64.EFI
  *
  * The ESP is kryptik-esp on the root's own disk, as devices.sh resolves it: a
- * second disk's is ignored, two on the root disk are refused. Slot a's entry
- * is always Boot00A0 and slot b's Boot00B0, so re-arming reuses the variable.
+ * second disk's is ignored, two on the root disk are refused. An entry is
+ * Kryptik's when its description and its file say so, never by its number:
+ * slot a's is Boot00A0 and slot b's Boot00B0 unless another system already
+ * uses that number, and then the next free one. Re-arming reuses the entry.
  */
 #define _GNU_SOURCE
 #include <ctype.h>
@@ -28,9 +31,15 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-/* tools/test-efiboot.sh overrides this with a scratch directory. */
+/* tools/test-efiboot.sh overrides these with stand-ins. */
 #ifndef EFIVARS
 #define EFIVARS "/sys/firmware/efi/efivars/"
+#endif
+#ifndef SYSBLOCK
+#define SYSBLOCK "/sys/class/block/"
+#endif
+#ifndef DEVICES
+#define DEVICES "/usr/libexec/kryptik/devices.sh"
 #endif
 #define GLOBAL_GUID "8be4df61-93ca-11d2-aa0d-00e098032b8c"
 #define EFI_VARIABLE_NON_VOLATILE 0x1
@@ -83,6 +92,11 @@ static int delete_var(const char *name) {
     return unlink(path) == 0 || errno == ENOENT ? 0 : -1;
 }
 
+static int var_exists(const char *name) {
+    char path[512]; snprintf(path, sizeof path, EFIVARS "%s-" GLOBAL_GUID, name);
+    return access(path, F_OK) == 0;
+}
+
 /* --- the ESP partition, by label ------------------------------------------ */
 struct part { char dev[128]; char uuid[40]; uint64_t start, size; uint32_t number; };
 
@@ -112,22 +126,31 @@ static int run_read(char *const argv[], char *out, size_t cap) {
     return 0;
 }
 
-static int find_esp(struct part *p) {
+/* NAMED, which must carry the kryptik-esp label (kryptik-recover names an
+ * installed disk's from a medium), or else the one devices.sh finds. */
+static int find_esp(struct part *p, const char *named) {
     char dev[128];
-    char *find[] = { "/usr/libexec/kryptik/devices.sh", "part", "kryptik-esp", NULL };
-    if (run_read(find, dev, sizeof dev) || !dev[0]) return -1;
+    if (named) {
+        char label[64];
+        char *lbl[] = { "blkid", "-s", "PARTLABEL", "-o", "value", (char *)named, NULL };
+        if (strlen(named) >= sizeof dev || run_read(lbl, label, sizeof label) || strcmp(label, "kryptik-esp")) return -1;
+        snprintf(dev, sizeof dev, "%s", named);
+    } else {
+        char *find[] = { DEVICES, "part", "kryptik-esp", NULL };
+        if (run_read(find, dev, sizeof dev) || !dev[0]) return -1;
+    }
     snprintf(p->dev, sizeof p->dev, "%s", dev);
     char out[128];
     char *uuid[] = { "blkid", "-s", "PARTUUID", "-o", "value", dev, NULL };
     if (run_read(uuid, out, sizeof out) || strlen(out) != 36) return -1;
     snprintf(p->uuid, sizeof p->uuid, "%s", out);
     const char *base = strrchr(dev, '/'); base = base ? base + 1 : dev;
-    char path[256];
-    snprintf(path, sizeof path, "/sys/class/block/%s/start", base);
+    char path[512];
+    snprintf(path, sizeof path, SYSBLOCK "%s/start", base);
     FILE *f = fopen(path, "r"); if (!f) return -1; if (fscanf(f, "%" SCNu64, &p->start) != 1) { fclose(f); return -1; } fclose(f);
-    snprintf(path, sizeof path, "/sys/class/block/%s/size", base);
+    snprintf(path, sizeof path, SYSBLOCK "%s/size", base);
     f = fopen(path, "r"); if (!f) return -1; if (fscanf(f, "%" SCNu64, &p->size) != 1) { fclose(f); return -1; } fclose(f);
-    snprintf(path, sizeof path, "/sys/class/block/%s/partition", base);
+    snprintf(path, sizeof path, SYSBLOCK "%s/partition", base);
     f = fopen(path, "r"); if (!f) return -1; if (fscanf(f, "%" SCNu32, &p->number) != 1) { fclose(f); return -1; } fclose(f);
     return 0;
 }
@@ -177,16 +200,97 @@ static size_t build_load_option(unsigned char *buf, const struct part *esp, cons
     return n;
 }
 
-static int slot_num(const char *slot, char out[9]) {
-    if (!strcmp(slot, "a")) { strcpy(out, "Boot00A0"); return 0; }
-    if (!strcmp(slot, "b")) { strcpy(out, "Boot00B0"); return 0; }
+/* --- Kryptik's entries ----------------------------------------------------- */
+
+/* A load option's description and the file its path names, in ASCII ('?' for
+ * anything else); -1 if VAR is not there or is too short to be one. */
+static int option_text(const char *var, char *desc, size_t dcap, char *file, size_t fcap, int *active) {
+    unsigned char buf[2048]; size_t n = 0, d = 0, f = 0;
+    if (read_var(var, buf, sizeof buf, &n) || n < 6) return -1;
+    size_t i = 6;
+    while (i + 1 < n) { uint16_t c = buf[i] | (buf[i+1] << 8); i += 2; if (!c) break; if (d + 1 < dcap) desc[d++] = c < 128 && isprint(c) ? (char)c : '?'; }
+    desc[d] = 0;
+    /* file path node(s): the first names the file */
+    size_t end = i + (size_t)(buf[4] | (buf[5] << 8));
+    while (i + 4 <= end && i + 4 <= n) {
+        unsigned t = buf[i], st = buf[i+1]; size_t l = (size_t)(buf[i+2] | (buf[i+3] << 8));
+        if (l < 4) break;
+        if (t == 4 && st == 4 && !f)
+            for (size_t k = i + 4; k + 1 < i + l && k + 1 < n; k += 2) { uint16_t c = buf[k] | (buf[k+1] << 8); if (!c) break; if (f + 1 < fcap) file[f++] = c < 128 && isprint(c) ? (char)c : '?'; }
+        if (t == 0x7f) break;
+        i += l;
+    }
+    file[f] = 0;
+    if (active) *active = buf[0] & LOAD_OPTION_ACTIVE;
+    return 0;
+}
+
+/* Is VAR Kryptik's entry for SLOT ("a" or "b", NULL for either)? Its
+ * description and its file must both say so: another system may use any
+ * number, Boot00A0 and Boot00B0 among them. */
+static int is_ours(const char *var, const char *slot) {
+    char desc[128], file[256];
+    if (option_text(var, desc, sizeof desc, file, sizeof file, NULL)) return 0;
+    for (const char *s = "ab"; *s; s++) {
+        char want_desc[32], want_file[48];
+        if (slot && *slot != *s) continue;
+        snprintf(want_desc, sizeof want_desc, "Kryptik slot %c", *s);
+        snprintf(want_file, sizeof want_file, "\\EFI\\kryptik\\kryptik-%c.efi", *s);
+        if (!strcmp(desc, want_desc) && !strcmp(file, want_file)) return 1;
+    }
+    return 0;
+}
+
+/* The Boot#### variables there are, by name: at most CAP, -1 without efivarfs. */
+static int boot_vars(char names[][9], int cap) {
+    DIR *d = opendir(EFIVARS); if (!d) return -1;
+    struct dirent *e; int cnt = 0;
+    while ((e = readdir(d)) && cnt < cap) {
+        const char *n = e->d_name;
+        if (strlen(n) != 8 + strlen("-" GLOBAL_GUID) || strncmp(n, "Boot", 4) || strcmp(n + 8, "-" GLOBAL_GUID)) continue;
+        if (!isxdigit((unsigned char)n[4]) || !isxdigit((unsigned char)n[5]) || !isxdigit((unsigned char)n[6]) || !isxdigit((unsigned char)n[7])) continue;
+        memcpy(names[cnt], n, 8); names[cnt][8] = 0; cnt++;
+    }
+    closedir(d);
+    return cnt;
+}
+
+/* Does LIST, little-endian u16s as BootOrder holds them, hold NUM? */
+static int holds(const unsigned char *list, size_t len, uint16_t num) {
+    for (size_t i = 0; i + 1 < len; i += 2) if ((list[i] | (list[i+1] << 8)) == num) return 1;
+    return 0;
+}
+
+/* Where SLOT's entry goes: where Kryptik's entry for it already is, its own
+ * number first; else its own number if that is free; else the next number
+ * that no variable and no place in BootOrder uses. */
+static int slot_var(const char *slot, char var[9]) {
+    unsigned own = !strcmp(slot, "a") ? 0x00A0 : 0x00B0;
+    snprintf(var, 9, "Boot%04X", own);
+    if (is_ours(var, slot)) return 0;
+    char names[256][9]; int cnt = boot_vars(names, 256);
+    for (int i = 0; i < cnt; i++) if (is_ours(names[i], slot)) { memcpy(var, names[i], 9); return 0; }
+    unsigned char order[512]; size_t ol = 0;
+    if (read_var("BootOrder", order, sizeof order, &ol)) ol = 0;
+    for (unsigned k = 0; k < 0x10000; k++) {
+        uint16_t num = (uint16_t)(own + k);
+        snprintf(var, 9, "Boot%04X", (unsigned)num);
+        if (!var_exists(var) && (k == 0 || !holds(order, ol, num))) return 0;
+    }
     return -1;
 }
 
-static int ensure_entry(const char *slot) {
-    char var[9]; if (slot_num(slot, var)) return die("slot must be a or b");
+static int ensure_entry(const char *slot, const char *named, char var[9]) {
+    if (strcmp(slot, "a") && strcmp(slot, "b")) { errno = 0; return die("slot must be a or b"); }
     struct part esp; errno = 0;
-    if (find_esp(&esp)) return die("no unambiguous kryptik-esp partition on this installation's disk (devices.sh)");
+    if (find_esp(&esp, named)) {
+        if (!named) return die("no unambiguous kryptik-esp partition on this installation's disk (devices.sh)");
+        char m[200]; snprintf(m, sizeof m, "%.128s is not a kryptik-esp partition that can be read", named);
+        return die(m);
+    }
+    if (slot_var(slot, var)) { errno = 0; return die("no Boot#### number is free"); }
+    char own[9]; snprintf(own, sizeof own, "Boot%04X", !strcmp(slot, "a") ? 0x00A0u : 0x00B0u);
+    if (strcmp(own, var) && var_exists(own)) printf("%s is another system's entry; slot %s's is %s\n", own, slot, var);
     char desc[64], file[64];
     snprintf(desc, sizeof desc, "Kryptik slot %s", slot);
     snprintf(file, sizeof file, "\\EFI\\kryptik\\kryptik-%s.efi", slot);
@@ -202,65 +306,57 @@ static int ensure_entry(const char *slot) {
     /* Appended to BootOrder, so a firmware that ignores BootNext still offers
      * it without displacing the machine's own entry; forget removes it. */
     unsigned char order[512]; size_t ol = 0; uint16_t num = (uint16_t)strtol(var + 4, NULL, 16);
-    int present = 0;
-    if (read_var("BootOrder", order, sizeof order, &ol) == 0) {
-        for (size_t i = 0; i + 1 < ol; i += 2) if ((order[i] | (order[i+1] << 8)) == num) present = 1;
-    } else ol = 0;
-    if (!present && ol + 2 <= sizeof order) { ol += put_u16(order + ol, num); if (write_var("BootOrder", order, ol)) return die("updating BootOrder failed"); }
+    if (read_var("BootOrder", order, sizeof order, &ol)) ol = 0;
+    if (!holds(order, ol, num) && ol + 2 <= sizeof order) { ol += put_u16(order + ol, num); if (write_var("BootOrder", order, ol)) return die("updating BootOrder failed"); }
     return 0;
 }
 
 static int cmd_set_next(const char *slot) {
-    if (ensure_entry(slot)) return 1;
-    char var[9]; slot_num(slot, var);
+    char var[9];
+    if (ensure_entry(slot, NULL, var)) return 1;
     unsigned char v[2]; put_u16(v, (uint16_t)strtol(var + 4, NULL, 16));
     if (write_var("BootNext", v, 2)) return die("writing BootNext failed");
     printf("BootNext = %s (one boot)\n", var);
     return 0;
 }
 
-/* Delete both slot entries and BootNext and drop them from BootOrder, so the
- * firmware boots BOOTX64.EFI, the committed slot. Run whenever a trial ends: a
- * firmware re-adds its own disk entry at the end of BootOrder, so a leftover
- * Kryptik entry would win over the committed slot at every cold boot. */
+/* Delete Kryptik's entries, and BootNext if it names one of them or nothing,
+ * and drop them from BootOrder, so the firmware boots BOOTX64.EFI, the
+ * committed slot. Run whenever a trial ends: a firmware re-adds its own disk
+ * entry at the end of BootOrder, so a leftover Kryptik entry would win over
+ * the committed slot at every cold boot. */
 static int cmd_forget(void) {
+    char names[256][9], mine[256][9]; int cnt = boot_vars(names, 256), no = 0;
+    unsigned char ours[512]; size_t on = 0;
+    for (int i = 0; i < cnt; i++)
+        if (is_ours(names[i], NULL)) { memcpy(mine[no++], names[i], 9); on += put_u16(ours + on, (uint16_t)strtol(names[i] + 4, NULL, 16)); }
     unsigned char order[512], kept[512]; size_t ol = 0, kl = 0;
     if (read_var("BootOrder", order, sizeof order, &ol)) ol = 0;
     for (size_t i = 0; i + 1 < ol; i += 2) {
         uint16_t e = (uint16_t)(order[i] | (order[i+1] << 8));
-        if (e != 0x00A0 && e != 0x00B0) kl += put_u16(kept + kl, e);
+        if (!holds(ours, on, e)) kl += put_u16(kept + kl, e);
     }
     if (kl != ol) {
         if (kl == 0 ? delete_var("BootOrder") : write_var("BootOrder", kept, kl)) return die("updating BootOrder failed");
     }
     /* Each is tried even if the one before failed. */
     int bad = 0;
-    if (delete_var("Boot00A0")) { die("deleting Boot00A0 failed"); bad = 1; }
-    if (delete_var("Boot00B0")) { die("deleting Boot00B0 failed"); bad = 1; }
-    if (delete_var("BootNext")) { die("deleting BootNext failed"); bad = 1; }
+    unsigned char nx[8]; size_t nl = 0;
+    if (read_var("BootNext", nx, sizeof nx, &nl) == 0 && nl >= 2) {
+        uint16_t e = (uint16_t)(nx[0] | (nx[1] << 8)); char nv[9]; snprintf(nv, sizeof nv, "Boot%04X", (unsigned)e);
+        if ((holds(ours, on, e) || !var_exists(nv)) && delete_var("BootNext")) { die("deleting BootNext failed"); bad = 1; }
+    }
+    for (int i = 0; i < no; i++)
+        if (delete_var(mine[i])) { char m[40]; snprintf(m, sizeof m, "deleting %s failed", mine[i]); die(m); bad = 1; }
     if (bad) return 1;
     printf("forgotten: Kryptik's entries and BootNext; the firmware boots BOOTX64.EFI\n");
     return 0;
 }
 
 static void print_entry(const char *var) {
-    unsigned char buf[2048]; size_t n = 0;
-    if (read_var(var, buf, sizeof buf, &n) || n < 6) return;
-    uint16_t fpl = buf[4] | (buf[5] << 8);
-    printf("  %s: ", var);
-    size_t i = 6;
-    while (i + 1 < n) { uint16_t c = buf[i] | (buf[i+1] << 8); i += 2; if (!c) break; putchar(c < 128 && isprint(c) ? c : '?'); }
-    /* file path node(s) */
-    size_t end = i + fpl; int shown = 0;
-    while (i + 4 <= end && i + 4 <= n) {
-        unsigned t = buf[i], st = buf[i+1]; uint16_t l = buf[i+2] | (buf[i+3] << 8);
-        if (l < 4) break;
-        if (t == 4 && st == 4) { printf("  file="); for (size_t k = i + 4; k + 1 < i + l; k += 2) { uint16_t c = buf[k] | (buf[k+1] << 8); if (!c) break; putchar(c < 128 && isprint(c) ? c : '?'); } shown = 1; }
-        if (t == 0x7f) break;
-        i += l;
-    }
-    if (!shown) printf("  (no file path)");
-    printf("  [%s]\n", (buf[0] & LOAD_OPTION_ACTIVE) ? "active" : "inactive");
+    char desc[128], file[256]; int active = 0;
+    if (option_text(var, desc, sizeof desc, file, sizeof file, &active)) return;
+    printf("  %s: %s  %s%s  [%s]\n", var, desc, file[0] ? "file=" : "(no file path)", file, active ? "active" : "inactive");
 }
 
 static int cmd_list(void) {
@@ -268,20 +364,18 @@ static int cmd_list(void) {
     if (read_var("BootCurrent", buf, sizeof buf, &n) == 0 && n >= 2) printf("BootCurrent: Boot%04X\n", buf[0] | (buf[1] << 8));
     if (read_var("BootNext", buf, sizeof buf, &n) == 0 && n >= 2) printf("BootNext:    Boot%04X\n", buf[0] | (buf[1] << 8)); else printf("BootNext:    (none)\n");
     if (read_var("BootOrder", buf, sizeof buf, &n) == 0) { printf("BootOrder:  "); for (size_t i = 0; i + 1 < n; i += 2) printf(" Boot%04X", buf[i] | (buf[i+1] << 8)); printf("\n"); }
-    DIR *d = opendir(EFIVARS); if (!d) return die("efivarfs is not mounted");
-    struct dirent *e; char names[64][9]; int cnt = 0;
-    while ((e = readdir(d)) && cnt < 64) if (!strncmp(e->d_name, "Boot", 4) && strlen(e->d_name) > 8 && isxdigit(e->d_name[4]) && isxdigit(e->d_name[7]) && !strcmp(e->d_name + 8, "-" GLOBAL_GUID)) { memcpy(names[cnt], e->d_name, 8); names[cnt][8] = 0; cnt++; }
-    closedir(d);
+    char names[256][9]; int cnt = boot_vars(names, 256);
+    if (cnt < 0) return die("efivarfs is not mounted");
     for (int i = 0; i < cnt; i++) print_entry(names[i]);
     return 0;
 }
 
 int main(int argc, char **argv) {
-    if (argc < 2) { fprintf(stderr, "usage: kryptik-efiboot list | set-next a|b | clear-next | ensure a|b | forget\n"); return 2; }
+    if (argc < 2) { fprintf(stderr, "usage: kryptik-efiboot list | set-next a|b | clear-next | ensure a|b [ESP] | forget\n"); return 2; }
     if (access(EFIVARS, R_OK)) { errno = 0; return die("no efivarfs at " EFIVARS " (not a UEFI boot, or sysinit did not mount it)"); }
     if (!strcmp(argv[1], "list")) return cmd_list();
     if (!strcmp(argv[1], "set-next") && argc == 3) return cmd_set_next(argv[2]);
-    if (!strcmp(argv[1], "ensure") && argc == 3) return ensure_entry(argv[2]);
+    if (!strcmp(argv[1], "ensure") && (argc == 3 || argc == 4)) { char var[9]; return ensure_entry(argv[2], argc == 4 ? argv[3] : NULL, var); }
     if (!strcmp(argv[1], "forget")) return cmd_forget();
     if (!strcmp(argv[1], "clear-next")) { if (delete_var("BootNext")) return die("deleting BootNext failed"); printf("BootNext cleared\n"); return 0; }
     fprintf(stderr, "kryptik-efiboot: unknown command\n"); return 2;
