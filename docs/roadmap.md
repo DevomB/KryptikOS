@@ -46,14 +46,16 @@ work in zones from a terminal and a text browser, and keep it up to date.
       ([release keys](release-keys.md)), a build that signs with a key it is
       handed and refuses to invent one for a release, and an installed system
       that accepts the next release and refuses a development build.
-      Acceptance's production part proves the last two with a throwaway key
-      medium; the keys kept offline are still to be made.
-- [ ] **No known-vulnerable pins.** Every pin behind its upstream has a review
+      Acceptance's production part, with a throwaway key medium, proves a
+      build signing with the medium it is handed and the installed system's
+      half; `tools/test-release-keys.sh` proves a production build refuses to
+      make keys of its own. The keys kept offline are still to be made.
+- [x] **No known-vulnerable pins.** Every pin behind its upstream has a review
       in `tools/pin-reviews.tsv`, and `tools/check-pin-reviews.sh` fails CI
-      without one. Done when the rebuilt image passes acceptance and the held
-      pins are moved or patched (a release runs the gate with `--no-held`).
-      `tools/check-source-currency.sh` also says when glibc's release branch
-      has moved past the commit its patch set was cut from.
+      without one. No pin is held, and a release runs the gate with
+      `--no-held`. A CVE that no release fixes yet is recorded in its pin's
+      review. `tools/check-source-currency.sh` also says when glibc's release
+      branch has moved past the commit its patch set was cut from.
 - [x] **An update channel** ([design](design/update-channel.md)). The net zone
       fetches a release; zone 0 verifies it as it does a payload from disk.
       `tools/release-channel.sh` publishes a release with its signed
