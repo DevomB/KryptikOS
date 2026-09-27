@@ -4,12 +4,13 @@
 #   tools/image/ovmf-vars.sh [--cert FILE] [--out DIR]
 #
 #   clean.fd     a copy of OVMF_VARS_4M.fd: no keys, Secure Boot off
-#   enrolled.fd  the developer certificate as PK, KEK and db: Secure Boot on
+#   enrolled.fd  the certificate as PK, KEK and db: Secure Boot on
 #   ms.fd        a copy of OVMF_VARS_4M.ms.fd: Microsoft keys, Secure Boot on
 #                (this one must refuse Kryptik's kernels)
 #
-# Writes files only, never this machine's firmware. The developer key is a
-# test anchor, not a production one.
+# The certificate is the developer one unless --cert names another, such as
+# the one a production image's media carry. Writes files only, never this
+# machine's firmware. The developer key is a test anchor, not a production one.
 set -Eeuo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -43,10 +44,13 @@ GUID="$(tr -d '\n' < "${OUT}/owner.guid")"
 virt-fw-vars --input "${OVMF_DIR}/OVMF_VARS_4M.fd" --output "${OUT}/enrolled.fd" \
     --secure-boot --set-pk "$GUID" "$CERT" --add-kek "$GUID" "$CERT" --add-db "$GUID" "$CERT" >/dev/null
 
+listing="$(virt-fw-vars --input "${OUT}/enrolled.fd" --print --verbose 2>/dev/null || true)"
 echo "--- enrolled.fd ---"
-virt-fw-vars --input "${OUT}/enrolled.fd" --print --verbose 2>/dev/null | grep -E 'SecureBoot|^  (PK|KEK|db|dbx)|Kryptik' | head -20 || true
-# The enrolled store must list the developer certificate.
-virt-fw-vars --input "${OUT}/enrolled.fd" --print --verbose 2>/dev/null | grep -q 'Kryptik developer Secure Boot key' \
-    || die "the enrolled store does not list the developer certificate"
+grep -E 'SecureBoot|^  (PK|KEK|db|dbx)|Kryptik' <<< "$listing" | head -20 || true
+# The enrolled store must list the certificate it was given, found by the
+# common name of its subject.
+cn="$(openssl x509 -in "$CERT" -noout -subject -nameopt multiline | sed -n 's/^ *commonName *= *//p')"
+[[ -n "$cn" ]] || die "${CERT} has no common name to find it by"
+grep -qF -- "$cn" <<< "$listing" || die "the enrolled store does not list ${CERT} (${cn})"
 ok "variable stores under ${OUT}: clean.fd enrolled.fd ms.fd"
 sha256sum "${OUT}"/*.fd | sed 's/^/  /'
