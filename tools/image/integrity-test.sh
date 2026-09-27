@@ -11,7 +11,8 @@
 #   step 2  BOOTX64.EFI re-signed with a foreign key: the firmware refuses it
 #           (control: the signed medium boots under the same store)
 #   step 3  a byte of slot a's root flipped: dm-verity stops the boot
-#   step 4  kryptik-recover --restore-slot a from the medium; the user's data survives
+#   step 4  kryptik-recover --restore-slot a from the medium; its records on
+#           the ESP are whole, and the user's data survives
 #   step 5  an anchor, zone, sysctl, preload library and udev rule planted in
 #           the state's /etc layer: none takes effect
 #
@@ -33,7 +34,7 @@ while [[ "$#" -gt 0 ]]; do
     esac
 done
 [[ -f "$USB" ]] || die "--usb IMG is required"
-for t in python3 sbsign sbverify openssl mcopy mdel mdir sfdisk cryptsetup losetup; do have "$t" || die "required tool not found: $t"; done
+for t in python3 sbsign sbverify openssl mcopy mdel mdir mtype sfdisk cryptsetup losetup; do have "$t" || die "required tool not found: $t"; done
 VMDIR="${KRYPTIK_WORK}/vm"; mkdir -p "$VMDIR"
 DISK="${DISK:-${VMDIR}/integrity.img}"
 [[ -e "$DISK" && ! -f "$DISK" ]] && die "refusing: ${DISK} is not a regular file"
@@ -139,6 +140,15 @@ CTLR="${VMDIR}/testctl-recover.img"
 "${SELF}/mk-testctl.sh" --out "$CTLR" recover_disk=/dev/vda recover_slot=a recover_mode=restore smoke_poweroff=1 install_wait=5 > /dev/null
 "${SELF}/run-ovmf.sh" --usb "$USB" --disk "$DISK" --testctl "$CTLR" --vars enrolled --mode smoke --timeout "$TIMEOUT" --name integ-p4 > /dev/null
 txt_latest | grep -q 'KRYPTIK_RECOVER: rc=0' && green "kryptik-recover --restore-slot a succeeded from the medium" || { red "recovery did not report success"; txt_latest | grep 'KRYPTIK_RECOVER' | tail -5 | sed 's/^/        /'; }
+# The records recovery wrote on the ESP, read from the host: whole, and
+# nothing written through a .new left behind.
+dd if="$DISK" of="$ESPIMG" bs=1M iflag=skip_bytes,count_bytes skip="$ESP_OFF" count=$((512*1024*1024)) status=none
+MVER="$(basename "$USB")"; MVER="${MVER#kryptik-}"; MVER="${MVER%-usb.img}"
+CSLOT="$(mtype -i "$ESPIMG" ::/kryptik/committed-slot 2>/dev/null)"; CVER="$(mtype -i "$ESPIMG" ::/kryptik/version-a 2>/dev/null)"
+[[ "$CSLOT" == a && "$CVER" == "$MVER" ]] && green "the ESP records slot a as committed, at the medium's version" \
+    || red "the ESP records committed slot '${CSLOT}', slot a version '${CVER}' (want a, ${MVER})"
+LEFT="$(mdir -/ -b -i "$ESPIMG" ::/ 2>/dev/null | grep -i '\.new$' | tr '\n' ' ')"
+[[ -z "$LEFT" ]] && green "recovery left no .new file on the ESP" || red "recovery left ${LEFT}on the ESP"
 cp "$ENROLLED" "$VARSF"
 SERVE="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --name integ-p4b)"
 SER="$(sed -n 's/^serial=//p' <<<"$SERVE")"; PIDF="$(sed -n 's/^pid=//p' <<<"$SERVE")"; LOG4="$(sed -n 's/^log=//p' <<<"$SERVE")"
