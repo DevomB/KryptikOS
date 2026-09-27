@@ -39,9 +39,9 @@ done
 
 MANIFEST="${W}/manifest"
 {
-    printf 'alpha|1.0|file://%s/alpha-1.0.tar.gz\n' "$UPSTREAM"
-    printf 'beta|2.0|file://%s/beta-2.0.tar.gz\n'   "$UPSTREAM"
-    printf 'gamma|3.0|file://%s/gamma-3.0.tar.gz\n' "$UPSTREAM"
+    printf 'alpha|1.0|file://%s/alpha-1.0.tar.gz|probe|listing\n' "$UPSTREAM"
+    printf 'beta|2.0|file://%s/beta-2.0.tar.gz|probe|listing\n'   "$UPSTREAM"
+    printf 'gamma|3.0|file://%s/gamma-3.0.tar.gz|probe|listing\n' "$UPSTREAM"
 } > "$MANIFEST"
 
 sha_of() { sha256sum "$1" | cut -d' ' -f1; }
@@ -158,8 +158,8 @@ run
 expect_fail "a missing sources.lock is refused" "no entry for"
 
 cat > "${W}/dead-manifest" <<EOF
-alpha|1.0|file://${UPSTREAM}/alpha-1.0.tar.gz
-missing|9.9|file://${UPSTREAM}/does-not-exist.tar.gz
+alpha|1.0|file://${UPSTREAM}/alpha-1.0.tar.gz|probe|listing
+missing|9.9|file://${UPSTREAM}/does-not-exist.tar.gz|probe|listing
 EOF
 build_root alpha-1.0:good
 printf '%s  missing-9.9.tar.gz\n' \
@@ -318,12 +318,66 @@ else
 fi
 
 # An unset version with no default gives a URL like gdbm-.tar.gz: a quiet 404.
-blank="$(awk 'NF < 3 || $2 == "" {print $1}' "${W}/live-manifest" | tr '
+# An empty field leaves a row short of its five.
+blank="$(awk 'NF != 5 {print $1}' "${W}/live-manifest" | tr '
 ' ' ')"
 if [[ -z "${blank// /}" ]]; then
-    green "no manifest row resolves to an empty version"
+    green "no manifest row resolves to an empty field"
 else
-    red "manifest rows resolving to an empty version: ${blank}"
+    red "manifest rows with an empty field, such as the version: ${blank}"
+fi
+
+# --- the declared columns ---------------------------------------------------
+
+# A value no tool knows fails there too; here it fails before it ships.
+odd="$(awk '
+    $4 !~ /^(gnu|kernel|sig|asc|probe|sha256|tag|none)$/ { print $1 " sig=" $4; next }
+    $5 !~ /^(gnu|vdir|github|listing|rule|eol|follows:.+)$/ { print $1 " new=" $5 }
+' "${W}/live-manifest" | tr '\n' ' ')"
+if [[ -z "${odd// /}" ]]; then
+    green "every row declares a sig and a new that the tools know"
+else
+    red "rows declaring a value no tool knows: ${odd}"
+fi
+
+# gnu, vdir and github work from the URL, so each needs a URL of its shape.
+gnu="$(sed -n 's/^MIRROR_GNU="\(.*\)"$/\1/p' "${ROOT}/build/config/versions.env")"
+misfit="$(awk -v gnu="${gnu}/" '
+    ($4 == "gnu") != (index($3, gnu) == 1) { print $1 " (sig " $4 ")" }
+    $5 == "gnu" && index($3, gnu) != 1 { print $1 " (new gnu)" }
+    $5 == "vdir" && $3 !~ /\/v[0-9][^\/]*\/[^\/]+$/ { print $1 " (new vdir)" }
+    $5 == "github" && $3 !~ /^https:\/\/github\.com\/[^\/]+\/[^\/]+\// { print $1 " (new github)" }
+' "${W}/live-manifest" | tr '\n' ' ')"
+if [[ -n "$gnu" && -z "${misfit// /}" ]]; then
+    green "every gnu, vdir and github row has a URL of that shape"
+else
+    red "rows whose URL does not fit what they declare: ${misfit:-no MIRROR_GNU found}"
+fi
+
+dangling="$(awk 'NR == FNR { row[$1] = 1; next }
+                 $5 ~ /^follows:/ && !(substr($5, 9) in row) { print $1 " -> " substr($5, 9) }' \
+            "${W}/live-manifest" "${W}/live-manifest" | tr '\n' ' ')"
+if [[ -z "${dangling// /}" ]]; then
+    green "every follows: names a row of the manifest"
+else
+    red "rows that follow no row: ${dangling}"
+fi
+
+# A row that declares rule reads UNKNOWN without its rule, and a rule with no
+# such row is read by nothing.
+awk '$5 == "rule" {print $1}' "${W}/live-manifest" | sort > "${W}/ruled"
+grep -v -E '^[[:space:]]*(#|$)' "${ROOT}/tools/currency-rules.tsv" | cut -f1 | sort > "${W}/rules"
+unruled="$(comm -23 "${W}/ruled" "${W}/rules" | tr '\n' ' ')"
+if [[ -s "${W}/ruled" && -z "${unruled// /}" ]]; then
+    green "every row that declares rule has one in tools/currency-rules.tsv"
+else
+    red "rows that declare rule with no rule: ${unruled:-none declare rule}"
+fi
+orphan="$(comm -13 "${W}/ruled" "${W}/rules" | tr '\n' ' ')"
+if [[ -z "${orphan// /}" ]]; then
+    green "every rule in tools/currency-rules.tsv belongs to a row that declares rule"
+else
+    red "rules no row declares: ${orphan}"
 fi
 
 echo

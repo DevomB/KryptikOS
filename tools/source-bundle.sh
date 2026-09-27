@@ -29,7 +29,7 @@ LOCK="${KRYPTIK_ROOT}/sources.lock"
 log "Source bundle for ${commit} in ${OUT}"
 # Each tarball is checked against sources.lock as it is copied.
 n=0
-while read -r name _ver url; do
+while read -r name _ver url _; do
     [[ -n "$name" ]] || continue
     f="${url##*/}"
     want="$(awk -v f="$f" '$2 == f { print $1; exit }' "$LOCK")"

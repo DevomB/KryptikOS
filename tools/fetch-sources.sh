@@ -3,7 +3,7 @@
 #
 #   ./tools/fetch-sources.sh            download and verify against sources.lock
 #   ./tools/fetch-sources.sh --lock     download and WRITE sources.lock
-#   ./tools/fetch-sources.sh --list     print the resolved URL list, download nothing
+#   ./tools/fetch-sources.sh --list     print the resolved manifest, download nothing
 #
 # --lock records whatever downloads (trust on first use): audit it before
 # committing. See docs/supply-chain.md.
@@ -27,7 +27,24 @@ Refusing to fetch or lock against a substituted manifest."
     warn "SELF-TEST MODE: the manifest is substituted, not the real one"
 fi
 
-# name|version|url
+# name|version|url|sig|new
+#
+# sig says how upstream vouches for the file (tools/verify-signatures.sh):
+#   gnu      a .sig on the canonical GNU host
+#   kernel   kernel.org's .tar.sign over the uncompressed tar
+#   sig asc  a detached signature beside the file, with that suffix
+#   probe    whichever of .sig, .asc and .sign is published
+#   sha256   the publisher's .sha256 beside it (tools/verify-provenance.sh)
+#   tag      a signed tag the archive must reproduce (tools/verify-provenance.sh)
+#   none     nothing
+# new says where its newest release is found (tools/check-source-currency.sh):
+#   gnu      the canonical GNU host's listing
+#   vdir     the listing in the newest vN/ directory beside the file's own
+#   github   the project's designated latest release
+#   listing  the listing of the directory the file is in
+#   rule     its row in tools/currency-rules.tsv
+#   eol      nowhere: the kernel's support status is tools/check-kernel-eol.sh's
+#   follows:NAME  nowhere: it moves only when NAME's pin does
 manifest() {
     if [[ -n "${KRYPTIK_FETCH_MANIFEST:-}" ]]; then
         cat "$KRYPTIK_FETCH_MANIFEST"
@@ -35,122 +52,122 @@ manifest() {
     fi
     local gnu="$MIRROR_GNU"
     cat <<MANIFEST
-binutils|${V_BINUTILS}|${gnu}/binutils/binutils-${V_BINUTILS}.tar.xz
-gcc|${V_GCC}|${gnu}/gcc/gcc-${V_GCC}/gcc-${V_GCC}.tar.xz
-glibc|${V_GLIBC}|${gnu}/glibc/glibc-${V_GLIBC}.tar.xz
-linux|${V_LINUX}|${MIRROR_KERNEL}/v${V_LINUX%%.*}.x/linux-${V_LINUX}.tar.xz
-gmp|${V_GMP}|${gnu}/gmp/gmp-${V_GMP}.tar.xz
-mpfr|${V_MPFR}|${gnu}/mpfr/mpfr-${V_MPFR}.tar.xz
-mpc|${V_MPC}|${gnu}/mpc/mpc-${V_MPC}.tar.gz
-bash|${V_BASH}|${gnu}/bash/bash-${V_BASH}.tar.gz
-coreutils|${V_COREUTILS}|${gnu}/coreutils/coreutils-${V_COREUTILS}.tar.xz
-sed|${V_SED}|${gnu}/sed/sed-${V_SED}.tar.xz
-grep|${V_GREP}|${gnu}/grep/grep-${V_GREP}.tar.xz
-gawk|${V_GAWK}|${gnu}/gawk/gawk-${V_GAWK}.tar.xz
-findutils|${V_FINDUTILS}|${gnu}/findutils/findutils-${V_FINDUTILS}.tar.xz
-diffutils|${V_DIFFUTILS}|${gnu}/diffutils/diffutils-${V_DIFFUTILS}.tar.xz
-tar|${V_TAR}|${gnu}/tar/tar-${V_TAR}.tar.xz
-gzip|${V_GZIP}|${gnu}/gzip/gzip-${V_GZIP}.tar.xz
-make|${V_MAKE}|${gnu}/make/make-${V_MAKE}.tar.gz
-patch|${V_PATCH}|${gnu}/patch/patch-${V_PATCH}.tar.xz
-m4|${V_M4}|${gnu}/m4/m4-${V_M4}.tar.xz
-ncurses|${V_NCURSES}|${gnu}/ncurses/ncurses-${V_NCURSES}.tar.gz
-readline|${V_READLINE}|${gnu}/readline/readline-${V_READLINE}.tar.gz
-xz|${V_XZ}|${MIRROR_XZ}/v${V_XZ}/xz-${V_XZ}.tar.xz
-file|${V_FILE}|${MIRROR_FILE}/file-${V_FILE}.tar.gz
-zlib|${V_ZLIB}|${MIRROR_GITHUB}/madler/zlib/releases/download/v${V_ZLIB}/zlib-${V_ZLIB}.tar.gz
-bzip2|${V_BZIP2}|${MIRROR_SOURCEWARE}/bzip2/bzip2-${V_BZIP2}.tar.gz
-zstd|${V_ZSTD}|${MIRROR_GITHUB}/facebook/zstd/releases/download/v${V_ZSTD}/zstd-${V_ZSTD}.tar.gz
-expat|${V_EXPAT}|${MIRROR_GITHUB}/libexpat/libexpat/releases/download/R_${V_EXPAT//./_}/expat-${V_EXPAT}.tar.xz
-libffi|${V_LIBFFI}|${MIRROR_GITHUB}/libffi/libffi/releases/download/v${V_LIBFFI}/libffi-${V_LIBFFI}.tar.gz
-libxcrypt|${V_LIBXCRYPT}|${MIRROR_GITHUB}/besser82/libxcrypt/releases/download/v${V_LIBXCRYPT}/libxcrypt-${V_LIBXCRYPT}.tar.xz
-openssl|${V_OPENSSL}|https://www.openssl.org/source/openssl-${V_OPENSSL}.tar.gz
-bc|${V_BC}|${gnu}/bc/bc-${V_BC}.tar.gz
-bison|${V_BISON}|${gnu}/bison/bison-${V_BISON}.tar.xz
-flex|${V_FLEX}|${MIRROR_GITHUB}/westes/flex/releases/download/v${V_FLEX}/flex-${V_FLEX}.tar.gz
-gdbm|${V_GDBM}|${gnu}/gdbm/gdbm-${V_GDBM}.tar.gz
-gettext|${V_GETTEXT}|${gnu}/gettext/gettext-${V_GETTEXT}.tar.xz
-texinfo|${V_TEXINFO}|${gnu}/texinfo/texinfo-${V_TEXINFO}.tar.xz
-libtool|${V_LIBTOOL}|${gnu}/libtool/libtool-${V_LIBTOOL}.tar.xz
-gperf|${V_GPERF}|${gnu}/gperf/gperf-${V_GPERF}.tar.gz
-attr|${V_ATTR}|${MIRROR_SAVANNAH}/attr/attr-${V_ATTR}.tar.gz
-acl|${V_ACL}|${MIRROR_SAVANNAH}/acl/acl-${V_ACL}.tar.xz
-libcap|${V_LIBCAP}|${MIRROR_LIBCAP}/libcap-${V_LIBCAP}.tar.xz
-shadow|${V_SHADOW}|${MIRROR_GITHUB}/shadow-maint/shadow/releases/download/${V_SHADOW}/shadow-${V_SHADOW}.tar.xz
-pkgconf|${V_PKGCONF}|https://distfiles.ariadne.space/pkgconf/pkgconf-${V_PKGCONF}.tar.xz
-iana-etc|${V_IANA_ETC}|${MIRROR_GITHUB}/Mic92/iana-etc/releases/download/${V_IANA_ETC}/iana-etc-${V_IANA_ETC}.tar.gz
-less|${V_LESS}|https://www.greenwoodsoftware.com/less/less-${V_LESS}.tar.gz
-groff|${V_GROFF}|${gnu}/groff/groff-${V_GROFF}.tar.gz
-util-linux|${V_UTIL_LINUX}|${MIRROR_KERNEL_UTILS}/util-linux/v${V_UTIL_LINUX%.*}/util-linux-${V_UTIL_LINUX}.tar.xz
-e2fsprogs|${V_E2FSPROGS}|${MIRROR_E2FSPROGS}/v${V_E2FSPROGS}/e2fsprogs-${V_E2FSPROGS}.tar.gz
-procps-ng|${V_PROCPS}|${MIRROR_SOURCEFORGE}/procps-ng/procps-ng-${V_PROCPS}.tar.xz
-psmisc|${V_PSMISC}|${MIRROR_SOURCEFORGE}/psmisc/psmisc-${V_PSMISC}.tar.xz
-inetutils|${V_INETUTILS}|${gnu}/inetutils/inetutils-${V_INETUTILS}.tar.gz
-iproute2|${V_IPROUTE2}|${MIRROR_KERNEL_UTILS}/net/iproute2/iproute2-${V_IPROUTE2}.tar.xz
-iputils|${V_IPUTILS}|${MIRROR_GITHUB}/iputils/iputils/releases/download/${V_IPUTILS}/iputils-${V_IPUTILS}.tar.xz
-kbd|${V_KBD}|${MIRROR_KERNEL_UTILS}/kbd/kbd-${V_KBD}.tar.xz
-kmod|${V_KMOD}|${MIRROR_KERNEL_UTILS}/kernel/kmod/kmod-${V_KMOD}.tar.xz
-libpipeline|${V_LIBPIPELINE}|${MIRROR_SAVANNAH}/libpipeline/libpipeline-${V_LIBPIPELINE}.tar.gz
-man-db|${V_MANDB}|${MIRROR_SAVANNAH}/man-db/man-db-${V_MANDB}.tar.xz
-elfutils|${V_ELFUTILS}|${MIRROR_SOURCEWARE}/elfutils/${V_ELFUTILS}/elfutils-${V_ELFUTILS}.tar.bz2
-eudev|${V_EUDEV}|${MIRROR_GITHUB}/eudev-project/eudev/releases/download/v${V_EUDEV}/eudev-${V_EUDEV}.tar.gz
-perl|${V_PERL}|https://www.cpan.org/src/5.0/perl-${V_PERL}.tar.xz
-python|${V_PYTHON}|https://www.python.org/ftp/python/${V_PYTHON}/Python-${V_PYTHON}.tar.xz
-skalibs|${V_SKALIBS}|${MIRROR_SKARNET}/skalibs/skalibs-${V_SKALIBS}.tar.gz
-execline|${V_EXECLINE}|${MIRROR_SKARNET}/execline/execline-${V_EXECLINE}.tar.gz
-s6|${V_S6}|${MIRROR_SKARNET}/s6/s6-${V_S6}.tar.gz
-s6-rc|${V_S6_RC}|${MIRROR_SKARNET}/s6-rc/s6-rc-${V_S6_RC}.tar.gz
-s6-linux-init|${V_S6_LINUX_INIT}|${MIRROR_SKARNET}/s6-linux-init/s6-linux-init-${V_S6_LINUX_INIT}.tar.gz
-hardened-malloc|${V_HARDENED_MALLOC}|${MIRROR_GITHUB}/GrapheneOS/hardened_malloc/archive/refs/tags/${V_HARDENED_MALLOC}.tar.gz
-kernel-hardening-checker|${V_KERNEL_HARDENING_CHECKER}|${MIRROR_GITHUB}/a13xp0p0v/kernel-hardening-checker/archive/refs/tags/v${V_KERNEL_HARDENING_CHECKER}.tar.gz
-cmake|${V_CMAKE}|${MIRROR_CMAKE}/v${V_CMAKE%.*}/cmake-${V_CMAKE}.tar.gz
-cmake-bin|${V_CMAKE}|${MIRROR_CMAKE}/v${V_CMAKE%.*}/cmake-${V_CMAKE}-linux-x86_64.tar.gz
-json-c|${V_JSON_C}|${MIRROR_GITHUB}/json-c/json-c/archive/json-c-${V_JSON_C}/json-c-${V_JSON_C}.tar.gz
-popt|${V_POPT}|${MIRROR_OSUOSL_RPM}/popt/releases/popt-1.x/popt-${V_POPT}.tar.gz
-libaio|${V_LIBAIO}|${MIRROR_PAGURE}/libaio/libaio-${V_LIBAIO}.tar.gz
-lvm2|${V_LVM2}|${MIRROR_SOURCEWARE}/lvm2/LVM2.${V_LVM2}.tgz
-cryptsetup|${V_CRYPTSETUP}|${MIRROR_KERNEL_UTILS}/cryptsetup/v${V_CRYPTSETUP%.*}/cryptsetup-${V_CRYPTSETUP}.tar.xz
-openssh|${V_OPENSSH}|${MIRROR_OPENBSD}/OpenSSH/portable/openssh-${V_OPENSSH}.tar.gz
-libmnl|${V_LIBMNL}|${MIRROR_NETFILTER}/libmnl/libmnl-${V_LIBMNL}.tar.bz2
-libnftnl|${V_LIBNFTNL}|${MIRROR_NETFILTER}/libnftnl/libnftnl-${V_LIBNFTNL}.tar.xz
-nftables|${V_NFTABLES}|${MIRROR_NETFILTER}/nftables/nftables-${V_NFTABLES}.tar.xz
-dnsmasq|${V_DNSMASQ}|${MIRROR_KELLEYS}/dnsmasq-${V_DNSMASQ}.tar.xz
-dhcpcd|${V_DHCPCD}|${MIRROR_GITHUB}/NetworkConfiguration/dhcpcd/releases/download/v${V_DHCPCD}/dhcpcd-${V_DHCPCD}.tar.xz
-libnl|${V_LIBNL}|${MIRROR_GITHUB}/thom311/libnl/releases/download/libnl${V_LIBNL//./_}/libnl-${V_LIBNL}.tar.gz
-wpa-supplicant|${V_WPA_SUPPLICANT}|${MIRROR_W1FI}/wpa_supplicant-${V_WPA_SUPPLICANT}.tar.gz
-iw|${V_IW}|${MIRROR_KERNEL_SOFTWARE}/network/iw/iw-${V_IW}.tar.xz
-ca-bundle|${V_CA_BUNDLE}|${MIRROR_CURL_CA}/cacert-${V_CA_BUNDLE}.pem
-linux-firmware|${V_LINUX_FIRMWARE}|${MIRROR_KERNEL}/firmware/linux-firmware-${V_LINUX_FIRMWARE}.tar.xz
-wireless-regdb|${V_WIRELESS_REGDB}|${MIRROR_KERNEL_SOFTWARE}/network/wireless-regdb/wireless-regdb-${V_WIRELESS_REGDB}.tar.xz
-intel-microcode|${V_INTEL_MICROCODE}|${MIRROR_GITHUB}/intel/Intel-Linux-Processor-Microcode-Data-Files/archive/refs/tags/microcode-${V_INTEL_MICROCODE}.tar.gz
-meson|${V_MESON}|${MIRROR_GITHUB}/mesonbuild/meson/releases/download/${V_MESON}/meson-${V_MESON}.tar.gz
-ninja|${V_NINJA}|${MIRROR_GITHUB}/ninja-build/ninja/archive/v${V_NINJA}/ninja-${V_NINJA}.tar.gz
-wayland|${V_WAYLAND}|${MIRROR_FDO_GITLAB}/wayland/wayland/-/releases/${V_WAYLAND}/downloads/wayland-${V_WAYLAND}.tar.xz
-wayland-protocols|${V_WAYLAND_PROTOCOLS}|${MIRROR_FDO_GITLAB}/wayland/wayland-protocols/-/releases/${V_WAYLAND_PROTOCOLS}/downloads/wayland-protocols-${V_WAYLAND_PROTOCOLS}.tar.xz
-libxkbcommon|${V_LIBXKBCOMMON}|${MIRROR_GITHUB}/xkbcommon/libxkbcommon/archive/xkbcommon-${V_LIBXKBCOMMON}/libxkbcommon-${V_LIBXKBCOMMON}.tar.gz
-xkeyboard-config|${V_XKEYBOARD_CONFIG}|${MIRROR_XORG}/data/xkeyboard-config/xkeyboard-config-${V_XKEYBOARD_CONFIG}.tar.xz
-pixman|${V_PIXMAN}|${MIRROR_CAIRO}/pixman-${V_PIXMAN}.tar.gz
-libdrm|${V_LIBDRM}|${MIRROR_DRI}/libdrm-${V_LIBDRM}.tar.xz
-libevdev|${V_LIBEVDEV}|${MIRROR_FDO_SW}/libevdev/libevdev-${V_LIBEVDEV}.tar.xz
-mtdev|${V_MTDEV}|${MIRROR_BITMATH}/mtdev-${V_MTDEV}.tar.bz2
-libinput|${V_LIBINPUT}|${MIRROR_FDO_GITLAB}/libinput/libinput/-/archive/${V_LIBINPUT}/libinput-${V_LIBINPUT}.tar.gz
-seatd|${V_SEATD}|${MIRROR_SRHT}/~kennylevinsen/seatd/archive/${V_SEATD}.tar.gz
-hwdata|${V_HWDATA}|${MIRROR_GITHUB}/vcrhonek/hwdata/archive/v${V_HWDATA}/hwdata-${V_HWDATA}.tar.gz
-libdisplay-info|${V_LIBDISPLAY_INFO}|${MIRROR_FDO_GITLAB}/emersion/libdisplay-info/-/releases/${V_LIBDISPLAY_INFO}/downloads/libdisplay-info-${V_LIBDISPLAY_INFO}.tar.xz
-wlroots|${V_WLROOTS}|${MIRROR_FDO_GITLAB}/wlroots/wlroots/-/releases/${V_WLROOTS}/downloads/wlroots-${V_WLROOTS}.tar.gz
-dwl|${V_DWL}|${MIRROR_CODEBERG}/dwl/dwl/releases/download/v${V_DWL}/dwl-v${V_DWL}.tar.gz
-havoc|${V_HAVOC}|${MIRROR_GITHUB}/ii8/havoc/archive/${V_HAVOC}/havoc-${V_HAVOC}.tar.gz
-dejavu-fonts|${V_DEJAVU_FONTS}|${MIRROR_GITHUB}/dejavu-fonts/dejavu-fonts/releases/download/version_${V_DEJAVU_FONTS//./_}/dejavu-fonts-ttf-${V_DEJAVU_FONTS}.tar.bz2
-lynx|${V_LYNX}|${MIRROR_DICKEY}/lynx/tarballs/lynx${V_LYNX}.tar.bz2
-nano|${V_NANO}|${MIRROR_NANO}/v${V_NANO%%.*}/nano-${V_NANO}.tar.xz
-glibc-fhs-patch|${V_GLIBC}|${MIRROR_LFS_PATCHES}/glibc-${V_GLIBC}-fhs-1.patch
-linux-hardened|${V_LINUX_HARDENED}|${MIRROR_HARDENED}/v${V_LINUX_HARDENED}/linux-hardened-v${V_LINUX_HARDENED}.patch
+binutils|${V_BINUTILS}|${gnu}/binutils/binutils-${V_BINUTILS}.tar.xz|gnu|gnu
+gcc|${V_GCC}|${gnu}/gcc/gcc-${V_GCC}/gcc-${V_GCC}.tar.xz|gnu|rule
+glibc|${V_GLIBC}|${gnu}/glibc/glibc-${V_GLIBC}.tar.xz|gnu|gnu
+linux|${V_LINUX}|${MIRROR_KERNEL}/v${V_LINUX%%.*}.x/linux-${V_LINUX}.tar.xz|kernel|eol
+gmp|${V_GMP}|${gnu}/gmp/gmp-${V_GMP}.tar.xz|gnu|gnu
+mpfr|${V_MPFR}|${gnu}/mpfr/mpfr-${V_MPFR}.tar.xz|gnu|gnu
+mpc|${V_MPC}|${gnu}/mpc/mpc-${V_MPC}.tar.gz|gnu|gnu
+bash|${V_BASH}|${gnu}/bash/bash-${V_BASH}.tar.gz|gnu|gnu
+coreutils|${V_COREUTILS}|${gnu}/coreutils/coreutils-${V_COREUTILS}.tar.xz|gnu|gnu
+sed|${V_SED}|${gnu}/sed/sed-${V_SED}.tar.xz|gnu|gnu
+grep|${V_GREP}|${gnu}/grep/grep-${V_GREP}.tar.xz|gnu|gnu
+gawk|${V_GAWK}|${gnu}/gawk/gawk-${V_GAWK}.tar.xz|gnu|gnu
+findutils|${V_FINDUTILS}|${gnu}/findutils/findutils-${V_FINDUTILS}.tar.xz|gnu|gnu
+diffutils|${V_DIFFUTILS}|${gnu}/diffutils/diffutils-${V_DIFFUTILS}.tar.xz|gnu|gnu
+tar|${V_TAR}|${gnu}/tar/tar-${V_TAR}.tar.xz|gnu|gnu
+gzip|${V_GZIP}|${gnu}/gzip/gzip-${V_GZIP}.tar.xz|gnu|gnu
+make|${V_MAKE}|${gnu}/make/make-${V_MAKE}.tar.gz|gnu|gnu
+patch|${V_PATCH}|${gnu}/patch/patch-${V_PATCH}.tar.xz|gnu|gnu
+m4|${V_M4}|${gnu}/m4/m4-${V_M4}.tar.xz|gnu|gnu
+ncurses|${V_NCURSES}|${gnu}/ncurses/ncurses-${V_NCURSES}.tar.gz|gnu|gnu
+readline|${V_READLINE}|${gnu}/readline/readline-${V_READLINE}.tar.gz|gnu|gnu
+xz|${V_XZ}|${MIRROR_XZ}/v${V_XZ}/xz-${V_XZ}.tar.xz|sig|github
+file|${V_FILE}|${MIRROR_FILE}/file-${V_FILE}.tar.gz|asc|listing
+zlib|${V_ZLIB}|${MIRROR_GITHUB}/madler/zlib/releases/download/v${V_ZLIB}/zlib-${V_ZLIB}.tar.gz|probe|github
+bzip2|${V_BZIP2}|${MIRROR_SOURCEWARE}/bzip2/bzip2-${V_BZIP2}.tar.gz|probe|listing
+zstd|${V_ZSTD}|${MIRROR_GITHUB}/facebook/zstd/releases/download/v${V_ZSTD}/zstd-${V_ZSTD}.tar.gz|probe|github
+expat|${V_EXPAT}|${MIRROR_GITHUB}/libexpat/libexpat/releases/download/R_${V_EXPAT//./_}/expat-${V_EXPAT}.tar.xz|probe|github
+libffi|${V_LIBFFI}|${MIRROR_GITHUB}/libffi/libffi/releases/download/v${V_LIBFFI}/libffi-${V_LIBFFI}.tar.gz|probe|github
+libxcrypt|${V_LIBXCRYPT}|${MIRROR_GITHUB}/besser82/libxcrypt/releases/download/v${V_LIBXCRYPT}/libxcrypt-${V_LIBXCRYPT}.tar.xz|probe|github
+openssl|${V_OPENSSL}|https://www.openssl.org/source/openssl-${V_OPENSSL}.tar.gz|probe|rule
+bc|${V_BC}|${gnu}/bc/bc-${V_BC}.tar.gz|gnu|gnu
+bison|${V_BISON}|${gnu}/bison/bison-${V_BISON}.tar.xz|gnu|gnu
+flex|${V_FLEX}|${MIRROR_GITHUB}/westes/flex/releases/download/v${V_FLEX}/flex-${V_FLEX}.tar.gz|probe|github
+gdbm|${V_GDBM}|${gnu}/gdbm/gdbm-${V_GDBM}.tar.gz|gnu|gnu
+gettext|${V_GETTEXT}|${gnu}/gettext/gettext-${V_GETTEXT}.tar.xz|gnu|gnu
+texinfo|${V_TEXINFO}|${gnu}/texinfo/texinfo-${V_TEXINFO}.tar.xz|gnu|gnu
+libtool|${V_LIBTOOL}|${gnu}/libtool/libtool-${V_LIBTOOL}.tar.xz|gnu|gnu
+gperf|${V_GPERF}|${gnu}/gperf/gperf-${V_GPERF}.tar.gz|gnu|gnu
+attr|${V_ATTR}|${MIRROR_SAVANNAH}/attr/attr-${V_ATTR}.tar.gz|sig|listing
+acl|${V_ACL}|${MIRROR_SAVANNAH}/acl/acl-${V_ACL}.tar.xz|sig|listing
+libcap|${V_LIBCAP}|${MIRROR_LIBCAP}/libcap-${V_LIBCAP}.tar.xz|kernel|listing
+shadow|${V_SHADOW}|${MIRROR_GITHUB}/shadow-maint/shadow/releases/download/${V_SHADOW}/shadow-${V_SHADOW}.tar.xz|probe|github
+pkgconf|${V_PKGCONF}|https://distfiles.ariadne.space/pkgconf/pkgconf-${V_PKGCONF}.tar.xz|probe|listing
+iana-etc|${V_IANA_ETC}|${MIRROR_GITHUB}/Mic92/iana-etc/releases/download/${V_IANA_ETC}/iana-etc-${V_IANA_ETC}.tar.gz|probe|github
+less|${V_LESS}|https://www.greenwoodsoftware.com/less/less-${V_LESS}.tar.gz|probe|rule
+groff|${V_GROFF}|${gnu}/groff/groff-${V_GROFF}.tar.gz|gnu|gnu
+util-linux|${V_UTIL_LINUX}|${MIRROR_KERNEL_UTILS}/util-linux/v${V_UTIL_LINUX%.*}/util-linux-${V_UTIL_LINUX}.tar.xz|kernel|vdir
+e2fsprogs|${V_E2FSPROGS}|${MIRROR_E2FSPROGS}/v${V_E2FSPROGS}/e2fsprogs-${V_E2FSPROGS}.tar.gz|kernel|vdir
+procps-ng|${V_PROCPS}|${MIRROR_SOURCEFORGE}/procps-ng/procps-ng-${V_PROCPS}.tar.xz|probe|rule
+psmisc|${V_PSMISC}|${MIRROR_SOURCEFORGE}/psmisc/psmisc-${V_PSMISC}.tar.xz|probe|rule
+inetutils|${V_INETUTILS}|${gnu}/inetutils/inetutils-${V_INETUTILS}.tar.gz|gnu|gnu
+iproute2|${V_IPROUTE2}|${MIRROR_KERNEL_UTILS}/net/iproute2/iproute2-${V_IPROUTE2}.tar.xz|kernel|listing
+iputils|${V_IPUTILS}|${MIRROR_GITHUB}/iputils/iputils/releases/download/${V_IPUTILS}/iputils-${V_IPUTILS}.tar.xz|probe|github
+kbd|${V_KBD}|${MIRROR_KERNEL_UTILS}/kbd/kbd-${V_KBD}.tar.xz|kernel|listing
+kmod|${V_KMOD}|${MIRROR_KERNEL_UTILS}/kernel/kmod/kmod-${V_KMOD}.tar.xz|kernel|listing
+libpipeline|${V_LIBPIPELINE}|${MIRROR_SAVANNAH}/libpipeline/libpipeline-${V_LIBPIPELINE}.tar.gz|sig|listing
+man-db|${V_MANDB}|${MIRROR_SAVANNAH}/man-db/man-db-${V_MANDB}.tar.xz|sig|listing
+elfutils|${V_ELFUTILS}|${MIRROR_SOURCEWARE}/elfutils/${V_ELFUTILS}/elfutils-${V_ELFUTILS}.tar.bz2|probe|rule
+eudev|${V_EUDEV}|${MIRROR_GITHUB}/eudev-project/eudev/releases/download/v${V_EUDEV}/eudev-${V_EUDEV}.tar.gz|probe|github
+perl|${V_PERL}|https://www.cpan.org/src/5.0/perl-${V_PERL}.tar.xz|probe|rule
+python|${V_PYTHON}|https://www.python.org/ftp/python/${V_PYTHON}/Python-${V_PYTHON}.tar.xz|probe|rule
+skalibs|${V_SKALIBS}|${MIRROR_SKARNET}/skalibs/skalibs-${V_SKALIBS}.tar.gz|sha256|listing
+execline|${V_EXECLINE}|${MIRROR_SKARNET}/execline/execline-${V_EXECLINE}.tar.gz|sha256|listing
+s6|${V_S6}|${MIRROR_SKARNET}/s6/s6-${V_S6}.tar.gz|sha256|listing
+s6-rc|${V_S6_RC}|${MIRROR_SKARNET}/s6-rc/s6-rc-${V_S6_RC}.tar.gz|sha256|listing
+s6-linux-init|${V_S6_LINUX_INIT}|${MIRROR_SKARNET}/s6-linux-init/s6-linux-init-${V_S6_LINUX_INIT}.tar.gz|sha256|listing
+hardened-malloc|${V_HARDENED_MALLOC}|${MIRROR_GITHUB}/GrapheneOS/hardened_malloc/archive/refs/tags/${V_HARDENED_MALLOC}.tar.gz|tag|github
+kernel-hardening-checker|${V_KERNEL_HARDENING_CHECKER}|${MIRROR_GITHUB}/a13xp0p0v/kernel-hardening-checker/archive/refs/tags/v${V_KERNEL_HARDENING_CHECKER}.tar.gz|probe|rule
+cmake|${V_CMAKE}|${MIRROR_CMAKE}/v${V_CMAKE%.*}/cmake-${V_CMAKE}.tar.gz|probe|vdir
+cmake-bin|${V_CMAKE}|${MIRROR_CMAKE}/v${V_CMAKE%.*}/cmake-${V_CMAKE}-linux-x86_64.tar.gz|probe|vdir
+json-c|${V_JSON_C}|${MIRROR_GITHUB}/json-c/json-c/archive/json-c-${V_JSON_C}/json-c-${V_JSON_C}.tar.gz|probe|github
+popt|${V_POPT}|${MIRROR_OSUOSL_RPM}/popt/releases/popt-1.x/popt-${V_POPT}.tar.gz|probe|listing
+libaio|${V_LIBAIO}|${MIRROR_PAGURE}/libaio/libaio-${V_LIBAIO}.tar.gz|probe|listing
+lvm2|${V_LVM2}|${MIRROR_SOURCEWARE}/lvm2/LVM2.${V_LVM2}.tgz|probe|rule
+cryptsetup|${V_CRYPTSETUP}|${MIRROR_KERNEL_UTILS}/cryptsetup/v${V_CRYPTSETUP%.*}/cryptsetup-${V_CRYPTSETUP}.tar.xz|kernel|vdir
+openssh|${V_OPENSSH}|${MIRROR_OPENBSD}/OpenSSH/portable/openssh-${V_OPENSSH}.tar.gz|probe|rule
+libmnl|${V_LIBMNL}|${MIRROR_NETFILTER}/libmnl/libmnl-${V_LIBMNL}.tar.bz2|probe|listing
+libnftnl|${V_LIBNFTNL}|${MIRROR_NETFILTER}/libnftnl/libnftnl-${V_LIBNFTNL}.tar.xz|probe|listing
+nftables|${V_NFTABLES}|${MIRROR_NETFILTER}/nftables/nftables-${V_NFTABLES}.tar.xz|probe|listing
+dnsmasq|${V_DNSMASQ}|${MIRROR_KELLEYS}/dnsmasq-${V_DNSMASQ}.tar.xz|probe|listing
+dhcpcd|${V_DHCPCD}|${MIRROR_GITHUB}/NetworkConfiguration/dhcpcd/releases/download/v${V_DHCPCD}/dhcpcd-${V_DHCPCD}.tar.xz|probe|github
+libnl|${V_LIBNL}|${MIRROR_GITHUB}/thom311/libnl/releases/download/libnl${V_LIBNL//./_}/libnl-${V_LIBNL}.tar.gz|probe|github
+wpa-supplicant|${V_WPA_SUPPLICANT}|${MIRROR_W1FI}/wpa_supplicant-${V_WPA_SUPPLICANT}.tar.gz|probe|listing
+iw|${V_IW}|${MIRROR_KERNEL_SOFTWARE}/network/iw/iw-${V_IW}.tar.xz|kernel|listing
+ca-bundle|${V_CA_BUNDLE}|${MIRROR_CURL_CA}/cacert-${V_CA_BUNDLE}.pem|sha256|rule
+linux-firmware|${V_LINUX_FIRMWARE}|${MIRROR_KERNEL}/firmware/linux-firmware-${V_LINUX_FIRMWARE}.tar.xz|kernel|listing
+wireless-regdb|${V_WIRELESS_REGDB}|${MIRROR_KERNEL_SOFTWARE}/network/wireless-regdb/wireless-regdb-${V_WIRELESS_REGDB}.tar.xz|kernel|listing
+intel-microcode|${V_INTEL_MICROCODE}|${MIRROR_GITHUB}/intel/Intel-Linux-Processor-Microcode-Data-Files/archive/refs/tags/microcode-${V_INTEL_MICROCODE}.tar.gz|probe|github
+meson|${V_MESON}|${MIRROR_GITHUB}/mesonbuild/meson/releases/download/${V_MESON}/meson-${V_MESON}.tar.gz|probe|github
+ninja|${V_NINJA}|${MIRROR_GITHUB}/ninja-build/ninja/archive/v${V_NINJA}/ninja-${V_NINJA}.tar.gz|probe|github
+wayland|${V_WAYLAND}|${MIRROR_FDO_GITLAB}/wayland/wayland/-/releases/${V_WAYLAND}/downloads/wayland-${V_WAYLAND}.tar.xz|probe|rule
+wayland-protocols|${V_WAYLAND_PROTOCOLS}|${MIRROR_FDO_GITLAB}/wayland/wayland-protocols/-/releases/${V_WAYLAND_PROTOCOLS}/downloads/wayland-protocols-${V_WAYLAND_PROTOCOLS}.tar.xz|probe|rule
+libxkbcommon|${V_LIBXKBCOMMON}|${MIRROR_GITHUB}/xkbcommon/libxkbcommon/archive/xkbcommon-${V_LIBXKBCOMMON}/libxkbcommon-${V_LIBXKBCOMMON}.tar.gz|probe|github
+xkeyboard-config|${V_XKEYBOARD_CONFIG}|${MIRROR_XORG}/data/xkeyboard-config/xkeyboard-config-${V_XKEYBOARD_CONFIG}.tar.xz|probe|listing
+pixman|${V_PIXMAN}|${MIRROR_CAIRO}/pixman-${V_PIXMAN}.tar.gz|probe|listing
+libdrm|${V_LIBDRM}|${MIRROR_DRI}/libdrm-${V_LIBDRM}.tar.xz|probe|listing
+libevdev|${V_LIBEVDEV}|${MIRROR_FDO_SW}/libevdev/libevdev-${V_LIBEVDEV}.tar.xz|probe|listing
+mtdev|${V_MTDEV}|${MIRROR_BITMATH}/mtdev-${V_MTDEV}.tar.bz2|probe|listing
+libinput|${V_LIBINPUT}|${MIRROR_FDO_GITLAB}/libinput/libinput/-/archive/${V_LIBINPUT}/libinput-${V_LIBINPUT}.tar.gz|probe|rule
+seatd|${V_SEATD}|${MIRROR_SRHT}/~kennylevinsen/seatd/archive/${V_SEATD}.tar.gz|probe|rule
+hwdata|${V_HWDATA}|${MIRROR_GITHUB}/vcrhonek/hwdata/archive/v${V_HWDATA}/hwdata-${V_HWDATA}.tar.gz|probe|github
+libdisplay-info|${V_LIBDISPLAY_INFO}|${MIRROR_FDO_GITLAB}/emersion/libdisplay-info/-/releases/${V_LIBDISPLAY_INFO}/downloads/libdisplay-info-${V_LIBDISPLAY_INFO}.tar.xz|probe|rule
+wlroots|${V_WLROOTS}|${MIRROR_FDO_GITLAB}/wlroots/wlroots/-/releases/${V_WLROOTS}/downloads/wlroots-${V_WLROOTS}.tar.gz|probe|rule
+dwl|${V_DWL}|${MIRROR_CODEBERG}/dwl/dwl/releases/download/v${V_DWL}/dwl-v${V_DWL}.tar.gz|probe|rule
+havoc|${V_HAVOC}|${MIRROR_GITHUB}/ii8/havoc/archive/${V_HAVOC}/havoc-${V_HAVOC}.tar.gz|probe|github
+dejavu-fonts|${V_DEJAVU_FONTS}|${MIRROR_GITHUB}/dejavu-fonts/dejavu-fonts/releases/download/version_${V_DEJAVU_FONTS//./_}/dejavu-fonts-ttf-${V_DEJAVU_FONTS}.tar.bz2|probe|github
+lynx|${V_LYNX}|${MIRROR_DICKEY}/lynx/tarballs/lynx${V_LYNX}.tar.bz2|probe|rule
+nano|${V_NANO}|${MIRROR_NANO}/v${V_NANO%%.*}/nano-${V_NANO}.tar.xz|probe|vdir
+glibc-fhs-patch|${V_GLIBC}|${MIRROR_LFS_PATCHES}/glibc-${V_GLIBC}-fhs-1.patch|none|follows:glibc
+linux-hardened|${V_LINUX_HARDENED}|${MIRROR_HARDENED}/v${V_LINUX_HARDENED}/linux-hardened-v${V_LINUX_HARDENED}.patch|sig|eol
 MANIFEST
 }
 
 if [[ "$MODE" == "list" ]]; then
-    manifest | while IFS='|' read -r name ver url; do
-        printf '%-12s %-10s %s\n' "$name" "$ver" "$url"
+    manifest | while IFS='|' read -r name ver url sig new; do
+        printf '%-12s %-10s %s %s %s\n' "$name" "$ver" "$url" "$sig" "$new"
     done
     exit 0
 fi
@@ -220,7 +237,7 @@ if [[ "$MODE" == "lock" ]]; then
 fi
 
 total=0; fetched=0; cached=0
-while IFS='|' read -r name ver url; do
+while IFS='|' read -r name ver url _; do
     [[ -z "$name" ]] && continue
     total=$((total + 1))
     file="$(basename "$url")"

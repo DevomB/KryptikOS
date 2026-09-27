@@ -117,7 +117,7 @@ emit() { printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$6"; }
 
 # One row per source:
 #   name  tarball_sha256  spdx  multi  files  method
-while read -r name _ver url; do
+while read -r name _ver url _; do
     [[ -n "$name" ]] || continue
     [[ -n "$ONLY" && "$name" != "$ONLY" ]] && continue
 

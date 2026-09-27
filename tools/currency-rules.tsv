@@ -1,0 +1,45 @@
+# Where tools/check-source-currency.sh finds the newest release of a source
+# whose manifest row (tools/fetch-sources.sh) declares "rule", and which of
+# upstream's releases the pin may move to. Tab-separated:
+#
+#   name    the source, as in the manifest
+#   shape   listing: a page read for every match of the pattern
+#           api: a JSON answer read for every value of a key
+#   where   the page or API URL, on the project's own host
+#   match   listing: an ERE whose first group is the version (no "@")
+#           api: the key, tag_name or name ("v" is dropped from a value)
+#   keep    -       every release
+#           series  the pin's series only (3.12.x for 3.12.5)
+#           major   the pin's major version only
+#           even    even minors only: an odd minor is a development series
+#           drop90  no X.Y.9N: freedesktop numbers release candidates so
+#
+# name	shape	where	match	keep
+gcc	listing	https://ftp.gnu.org/gnu/gcc/	gcc-([0-9]+\.[0-9]+\.[0-9]+)/	-
+# The pinned series: a 3.13 exists but is not a drop-in.
+python	listing	https://www.python.org/ftp/python/	([0-9]+\.[0-9]+\.[0-9]+)/	series
+perl	listing	https://www.cpan.org/src/5.0/	perl-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.xz	even
+# A major bump is not a currency fix.
+openssl	listing	https://openssl-library.org/source/	openssl-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.gz	major
+# The front page names the current release; newer tarballs are betas.
+less	listing	https://www.greenwoodsoftware.com/less/	less-([0-9]+) has been released for general use	-
+lvm2	listing	https://sourceware.org/pub/lvm2/	LVM2\.([0-9]+(\.[0-9]+)+)\.tgz	-
+# Each release has a directory of its own, which lists only that release.
+elfutils	listing	https://sourceware.org/pub/elfutils/	([0-9]+\.[0-9]+)/	-
+openssh	listing	https://ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable/	openssh-([0-9]+\.[0-9]+p[0-9]+)\.tar\.gz	-
+# curl.se/ca/ is a meta refresh, which curl -L does not follow.
+ca-bundle	listing	https://curl.se/docs/caextract.html	cacert-([0-9]{4}-[0-9]{2}-[0-9]{2})\.pem	-
+lynx	listing	https://invisible-mirror.net/archives/lynx/tarballs/	lynx([0-9]+(\.[0-9]+)+)\.tar\.gz	-
+seatd	listing	https://git.sr.ht/~kennylevinsen/seatd/refs/rss.xml	<title>([0-9]+(\.[0-9]+)+)</title>	-
+# Tags only: it publishes no releases.
+kernel-hardening-checker	listing	https://github.com/a13xp0p0v/kernel-hardening-checker/tags.atom	<title>v([0-9]+(\.[0-9]+)+)</title>	-
+procps-ng	api	https://gitlab.com/api/v4/projects/procps-ng%2Fprocps/releases?per_page=50	tag_name	-
+# Tags: the release list misses a release.
+psmisc	api	https://gitlab.com/api/v4/projects/psmisc%2Fpsmisc/repository/tags?per_page=100	name	-
+wayland	api	https://gitlab.freedesktop.org/api/v4/projects/wayland%2Fwayland/releases?per_page=50	tag_name	drop90
+libinput	api	https://gitlab.freedesktop.org/api/v4/projects/libinput%2Flibinput/releases?per_page=50	tag_name	drop90
+wayland-protocols	api	https://gitlab.freedesktop.org/api/v4/projects/wayland%2Fwayland-protocols/releases?per_page=50	tag_name	-
+libdisplay-info	api	https://gitlab.freedesktop.org/api/v4/projects/emersion%2Flibdisplay-info/releases?per_page=50	tag_name	-
+# Each series changes the API dwl uses.
+wlroots	api	https://gitlab.freedesktop.org/api/v4/projects/wlroots%2Fwlroots/repository/tags?per_page=100	name	series
+dwl	api	https://codeberg.org/api/v1/repos/dwl/dwl/tags?limit=50	name	-

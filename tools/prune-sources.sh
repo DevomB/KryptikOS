@@ -20,7 +20,7 @@ esac
 [[ -d "$KRYPTIK_SOURCES" ]] || { dim "no sources directory at ${KRYPTIK_SOURCES}; nothing to prune"; exit 0; }
 
 declare -A keep=()
-while read -r _ _ url; do
+while read -r _ _ url _; do
     [[ -n "$url" ]] && keep["$(basename "$url")"]=1
 done < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list)
 [[ "${#keep[@]}" -gt 0 ]] || die "the manifest is empty; refusing to prune against it"
