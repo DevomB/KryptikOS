@@ -185,8 +185,8 @@ Files move between zones only through the broker, from inside the sending
 zone, and only when the zone's policy allows the direction and you allow it:
 the chrome opens a question window, and only the two-digit code it shows,
 typed and then Enter, allows the file. Anything else refuses, keys typed
-before the question appeared are dropped, and after a refusal that zone may
-not ask again for a minute.
+before the code appears are dropped, and after a refusal that zone may not
+ask again for a minute.
 
 **Degraded boot.** If the system cannot find exactly one `kryptik-state`
 partition on its own disk, or cannot unlock or mount it, it boots degraded: it says
