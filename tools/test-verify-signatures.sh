@@ -595,10 +595,10 @@ if grep -qF "REFUSING it" "$OUT" && grep -qF "now publishes" "$OUT"; then
 else
     red "a locator serving a different key is refused as a finding"; show
 fi
-if [[ "$(klass_of "${W}/r2.tsv" unknown)" == "key-not-held" ]]; then
-    green "and the source stays unverified rather than borrowing the wrong key"
+if [[ "$RC" -ne 0 && "$(klass_of "${W}/r2.tsv" unknown)" == "published-key-changed" ]]; then
+    green "and the source fails rather than borrowing the wrong key"
 else
-    red "and the source stays unverified (got $(klass_of "${W}/r2.tsv" unknown))"; show
+    red "and the source fails (exit ${RC}, got $(klass_of "${W}/r2.tsv" unknown))"; show
 fi
 
 fresh_root
@@ -645,6 +645,19 @@ if [[ "$RC" -ne 0 ]] && grep -qF "REVOKED key" "$OUT"; then
     green "a held key is merged from its locator, so a revocation published there is seen"
 else
     red "a held key is merged from its locator, so a revocation published there is seen (exit ${RC})"; show
+fi
+
+# A held key whose locator now serves another key: the held copy must not
+# carry the source through.
+fresh_root
+write_manifest good
+prov_table "${GOODFPR}  korg  file://${PROV}/unknown.asc  2026-09-11  good  good fixture, whose locator now serves another key"
+runprov --report="${W}/r6.tsv"
+if [[ "$RC" -ne 0 && "$(klass_of "${W}/r6.tsv" good)" == "published-key-changed" ]] \
+   && grep -qF "good (its published key changed at" "$OUT"; then
+    green "a held key refused at its locator fails the source it signs"
+else
+    red "a held key refused at its locator fails the source it signs (exit ${RC}, got $(klass_of "${W}/r6.tsv" good))"; show
 fi
 
 # A locator that serves the recorded key and another: only the recorded one is
