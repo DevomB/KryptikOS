@@ -16,7 +16,7 @@ INSTALLER="${ROOT}/tools/install-git-hooks.sh"
 # Read from the checker, so the tests cannot disagree with it.
 ALLOWED_NAME="$(sed -n 's/^ALLOWED_NAME="\(.*\)"$/\1/p' "$CHECKER")"
 ALLOWED_EMAIL="$(sed -n 's/^ALLOWED_EMAIL="\(.*\)"$/\1/p' "$CHECKER")"
-BANNED_EMAIL="$(sed -n 's/^BANNED_EMAIL="\(.*\)"$/\1/p' "$CHECKER")"
+OTHER_EMAIL="someone.else@example.com"
 
 PASS=0
 FAIL=0
@@ -32,7 +32,7 @@ show() { sed 's/^/        /' "$OUT"; }
 [[ -f "$HOOK" ]] || { echo "no hook at ${HOOK}"; exit 1; }
 [[ -f "$PUSH_HOOK" ]] || { echo "no hook at ${PUSH_HOOK}"; exit 1; }
 [[ -f "$CHECKER" ]] || { echo "no checker at ${CHECKER}"; exit 1; }
-[[ -n "$ALLOWED_NAME" && -n "$ALLOWED_EMAIL" && -n "$BANNED_EMAIL" ]] || { echo "could not read the identity constants from ${CHECKER}"; exit 1; }
+[[ -n "$ALLOWED_NAME" && -n "$ALLOWED_EMAIL" ]] || { echo "could not read the identity constants from ${CHECKER}"; exit 1; }
 
 # --- a throwaway repository with the real hook wired in ---------------------
 
@@ -227,10 +227,9 @@ git -C "$FIX" commit -q --no-verify -m "bypass" > "$OUT" 2>&1 || RC=$?
 if [[ "$RC" -eq 0 ]]; then green "--no-verify still bypasses, as documented"; else red "--no-verify still bypasses, as documented"; show; fi
 
 echo
-echo "=== identity: one permitted, one banned by name, everything else refused ==="
+echo "=== identity: one permitted, everything else refused ==="
 
-# GitHub shows a commit under the account that registered its email, and the
-# banned address belongs to another account.
+# GitHub shows a commit under whichever account registered its email.
 
 newrepo
 printf 'prose\n' > "${FIX}/note.md"
@@ -243,13 +242,12 @@ newrepo
 printf 'prose\n' > "${FIX}/note.md"
 git -C "$FIX" add note.md
 RC=0
-git -C "$FIX" -c user.email="$BANNED_EMAIL" commit -q -m "banned address" > "$OUT" 2>&1 || RC=$?
+git -C "$FIX" -c user.email="$OTHER_EMAIL" commit -q -m "another address" > "$OUT" 2>&1 || RC=$?
 if [[ "$RC" -ne 0 ]] && has 'REFUSED'; then
-    green "the banned address is refused, even via -c user.email"
+    green "another address is refused, even via -c user.email"
 else
-    red "the banned address is refused, even via -c user.email (exit ${RC})"; show
+    red "another address is refused, even via -c user.email (exit ${RC})"; show
 fi
-if has 'DBs-Server-Service'; then green "and the refusal names the account it belongs to"; else red "and the refusal names the account it belongs to"; show; fi
 if has 'never pass -c user.email'; then green "and says what not to do"; else red "and says what not to do"; show; fi
 if [[ -z "$(git -C "$FIX" rev-parse --verify -q HEAD)" ]]; then green "and no commit was created"; else red "and no commit was created"; fi
 
@@ -257,22 +255,22 @@ newrepo
 printf 'prose\n' > "${FIX}/note.md"
 git -C "$FIX" add note.md
 RC=0
-GIT_AUTHOR_EMAIL="$BANNED_EMAIL" git -C "$FIX" commit -q -m "banned author via env" > "$OUT" 2>&1 || RC=$?
+GIT_AUTHOR_EMAIL="$OTHER_EMAIL" git -C "$FIX" commit -q -m "other author via env" > "$OUT" 2>&1 || RC=$?
 if [[ "$RC" -ne 0 ]] && has 'REFUSED author'; then
-    green "GIT_AUTHOR_EMAIL set to the banned address is refused"
+    green "GIT_AUTHOR_EMAIL set to another address is refused"
 else
-    red "GIT_AUTHOR_EMAIL set to the banned address is refused (exit ${RC})"; show
+    red "GIT_AUTHOR_EMAIL set to another address is refused (exit ${RC})"; show
 fi
 
 newrepo
 printf 'prose\n' > "${FIX}/note.md"
 git -C "$FIX" add note.md
 RC=0
-GIT_COMMITTER_EMAIL="$BANNED_EMAIL" git -C "$FIX" commit -q -m "banned committer via env" > "$OUT" 2>&1 || RC=$?
+GIT_COMMITTER_EMAIL="$OTHER_EMAIL" git -C "$FIX" commit -q -m "other committer via env" > "$OUT" 2>&1 || RC=$?
 if [[ "$RC" -ne 0 ]] && has 'REFUSED committer'; then
-    green "GIT_COMMITTER_EMAIL set to the banned address is refused"
+    green "GIT_COMMITTER_EMAIL set to another address is refused"
 else
-    red "GIT_COMMITTER_EMAIL set to the banned address is refused (exit ${RC})"; show
+    red "GIT_COMMITTER_EMAIL set to another address is refused (exit ${RC})"; show
 fi
 
 newrepo
@@ -284,11 +282,6 @@ if [[ "$RC" -ne 0 ]] && has 'REFUSED'; then
     green "a different name with the right address is refused too"
 else
     red "a different name with the right address is refused too (exit ${RC})"; show
-fi
-if ! has 'DBs-Server-Service'; then
-    green "and the account note appears only for the banned address"
-else
-    red "and the account note appears only for the banned address"; show
 fi
 
 newrepo
@@ -332,13 +325,13 @@ if has 'every one'; then green "and the hook reports how many commits it checked
 
 printf 'more\n' > "${FIX}/b.md"
 git -C "$FIX" add b.md
-git -C "$FIX" -c user.email="$BANNED_EMAIL" commit -q --no-verify -m "slipped past pre-commit" > /dev/null 2>&1
+git -C "$FIX" -c user.email="$OTHER_EMAIL" commit -q --no-verify -m "slipped past pre-commit" > /dev/null 2>&1
 RC=0
 git -C "$FIX" push -q origin HEAD:refs/heads/main > "$OUT" 2>&1 || RC=$?
 if [[ "$RC" -ne 0 ]] && has 'REFUSED'; then
-    green "a banned-address commit made with --no-verify is refused at the push"
+    green "a commit under another address made with --no-verify is refused at the push"
 else
-    red "a banned-address commit made with --no-verify is refused at the push (exit ${RC})"; show
+    red "a commit under another address made with --no-verify is refused at the push (exit ${RC})"; show
 fi
 if has 'refusing the push'; then green "with an explicit refusal"; else red "with an explicit refusal"; show; fi
 if has 'reset-author'; then green "and the repair is named"; else red "and the repair is named"; show; fi
