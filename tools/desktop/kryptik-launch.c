@@ -141,11 +141,19 @@ static int pid_is_proxy(pid_t pid)
 	return strstr(buf, "kryptik-wlproxy") != NULL;
 }
 
+/* dir/name into a PATH_MAX buffer, or die: a cut path names another file. */
+static void join(char *out, const char *dir, const char *name)
+{
+	int n = snprintf(out, PATH_MAX, "%s/%s", dir, name);
+	if (n < 0 || n >= PATH_MAX)
+		die("path too long: %s/%s", dir, name);
+}
+
 /* Make sure the zone's proxy is up; return the socket path (static). */
 static const char *ensure_proxy(const char *zone)
 {
 	static char sock[PATH_MAX];
-	char dir[PATH_MAX], pidfile[PATH_MAX], logfile[PATH_MAX], upstream[PATH_MAX];
+	char dir[PATH_MAX], pidfile[PATH_MAX], logfile[PATH_MAX], oldlog[PATH_MAX], upstream[PATH_MAX];
 	const char *rt = getenv("XDG_RUNTIME_DIR");
 	const char *disp = getenv("WAYLAND_DISPLAY");
 	if (!rt || !*rt)
@@ -161,9 +169,10 @@ static const char *ensure_proxy(const char *zone)
 	snprintf(dir, sizeof dir, "%s/kryptik/%s", rt, zone);
 	if (mkdir(dir, 0700) < 0 && errno != EEXIST)
 		die("%s: %s", dir, strerror(errno));
-	snprintf(sock, sizeof sock, "%s/wayland-0", dir);
-	snprintf(pidfile, sizeof pidfile, "%s/proxy.pid", dir);
-	snprintf(logfile, sizeof logfile, "%s/proxy.log", dir);
+	join(sock, dir, "wayland-0");
+	join(pidfile, dir, "proxy.pid");
+	join(logfile, dir, "proxy.log");
+	join(oldlog, dir, "proxy.log.old");
 
 	FILE *f = fopen(pidfile, "r");
 	if (f) {
@@ -178,13 +187,16 @@ static const char *ensure_proxy(const char *zone)
 	if (stat(upstream, &st) != 0 || !S_ISSOCK(st.st_mode))
 		die("no compositor at %s", upstream);
 
+	/* The log is in /run, which is RAM, and each proxy bounds only its own
+	 * lines: a new proxy starts a new file, and the last one is kept. */
+	(void)rename(logfile, oldlog);
 	pid_t pid = fork();
 	if (pid < 0)
 		die("fork: %s", strerror(errno));
 	if (pid == 0) {
 		setsid();
 		int null = open("/dev/null", O_RDONLY);
-		int log = open(logfile, O_WRONLY | O_CREAT | O_APPEND, 0600);
+		int log = open(logfile, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0600);
 		if (null < 0 || log < 0 || dup2(null, 0) < 0 || dup2(log, 1) < 0 || dup2(log, 2) < 0)
 			_exit(127);
 		/* The proxy gets stdio only, never the passphrase fd or other session

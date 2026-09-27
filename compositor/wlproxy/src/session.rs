@@ -43,7 +43,15 @@ impl std::fmt::Display for SessionError {
             SessionError::UnknownObject(id) => write!(f, "message for unknown object {id}"),
             SessionError::DuplicateObject(id) => write!(f, "object id {id} is already live"),
             SessionError::UnknownOpcode { interface, opcode } => write!(f, "{interface} has no opcode {opcode}"),
-            SessionError::HiddenInterface(i) => write!(f, "bind of an interface not advertised to this zone: {i:?}"),
+            SessionError::HiddenInterface(i) => {
+                // The client's own words, which may be 4 KiB: a prefix and the length.
+                let shown: String = i.chars().take(80).collect();
+                if shown.len() == i.len() {
+                    write!(f, "bind of an interface not advertised to this zone: {i:?}")
+                } else {
+                    write!(f, "bind of an interface not advertised to this zone: {shown:?}... ({} bytes)", i.len())
+                }
+            }
             SessionError::VersionTooHigh { interface, asked, max } => write!(f, "{interface} version {asked} asked, {max} allowed"),
             SessionError::IdOutOfRange { id, dir } => write!(f, "object id {id} is not in the {dir:?} range"),
             SessionError::TooManyObjects => write!(f, "too many live objects"),
@@ -578,6 +586,13 @@ mod tests {
         c.write_all(&bind).unwrap();
         let r = pump_all(&mut s);
         assert!(matches!(r, Err(SessionError::HiddenInterface(_))), "{r:?}");
+        // a name made up to fill the log is shown as a prefix and a length
+        let (mut s, mut c, _sv) = make();
+        c.write_all(&get_registry(2)).unwrap();
+        let junk = "\u{1b}".repeat(4000);
+        c.write_all(&MessageWriter::new(2, WL_REGISTRY_BIND).u32(1).string(&junk).u32(1).u32(3).finish().unwrap()).unwrap();
+        let why = pump_all(&mut s).unwrap_err().to_string();
+        assert!(why.contains("not advertised") && why.ends_with("(4000 bytes)") && why.len() < 600, "{} bytes: {why:.120}", why.len());
         // and an allowed one at an allowed version is forwarded and tracked
         let (mut s, mut c, mut sv) = make();
         c.write_all(&get_registry(2)).unwrap();
