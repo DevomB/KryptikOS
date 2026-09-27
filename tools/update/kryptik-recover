@@ -50,6 +50,9 @@ cleanup() { mountpoint -q /run/kryptik-recover 2>/dev/null && umount /run/krypti
 trap cleanup EXIT INT TERM
 slot_dev() { case "$1" in a) echo "$SA" ;; b) echo "$SB" ;; *) die "slot must be a or b" ;; esac; }
 has_fs() { [ "$(dd if="$1" bs=1 skip=1080 count=2 status=none | od -An -tx1 | tr -d ' \n')" = "53ef" ]; }
+# Written, fsynced, then renamed, as the kernels are: a power cut leaves the
+# old file whole, where a write in place can leave it empty.
+put() { printf '%s\n' "$2" > "$1.new" && sync -f "$1.new" && mv -f "$1.new" "$1"; }   # put FILE LINE
 
 if [ "$STATUS" = 1 ]; then
     mount -o ro "$ESP" /run/kryptik-recover || die "cannot mount the ESP"
@@ -83,7 +86,7 @@ commit_slot() {   # commit_slot SLOT (ESP mounted rw at /run/kryptik-recover)
     cp "$k" /run/kryptik-recover/EFI/BOOT/BOOTX64.EFI.new
     sync -f /run/kryptik-recover/EFI/BOOT/BOOTX64.EFI.new
     mv -f /run/kryptik-recover/EFI/BOOT/BOOTX64.EFI.new /run/kryptik-recover/EFI/BOOT/BOOTX64.EFI
-    printf '%s\n' "$s" > /run/kryptik-recover/kryptik/committed-slot
+    put /run/kryptik-recover/kryptik/committed-slot "$s" || die "cannot record slot $s as committed"
     sync
     say "committed: BOOTX64.EFI is now slot $s ($(cat "/run/kryptik-recover/kryptik/version-$s" 2>/dev/null || echo unknown))"
     # Remove Kryptik's firmware entries and BootNext, as boot-success does at
@@ -126,7 +129,7 @@ if [ -n "$RESTORE" ]; then
     cp "$kdir/kryptik-$RESTORE.efi" "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi.new"
     sync -f "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi.new"
     mv -f "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi.new" "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi"
-    printf '%s\n' "$ver" > "/run/kryptik-recover/kryptik/version-$RESTORE"
+    put "/run/kryptik-recover/kryptik/version-$RESTORE" "$ver" || die "cannot record slot ${RESTORE}'s version"
     commit_slot "$RESTORE"
     umount /run/kryptik-recover
     mountpoint -q /run/kryptik-recover-esp 2>/dev/null && umount /run/kryptik-recover-esp
