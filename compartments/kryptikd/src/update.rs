@@ -378,9 +378,12 @@ pub fn want(dir: &Path, channel: Option<&str>, role: &str, running: &str) -> Res
     Ok(p.version)
 }
 
+/// A wanted release: its pointer, its base, and the files still missing with their sizes.
+type Outstanding = (Pointer, String, Vec<(String, u64)>);
+
 /// What is wanted, where from, and what of it is still missing: `None` when
 /// nothing is, which the broker says as `idle`.
-fn outstanding(dir: &Path, channel: &str, role: &str, running: &str) -> Option<(Pointer, String, Vec<(String, u64)>)> {
+fn outstanding(dir: &Path, channel: &str, role: &str, running: &str) -> Option<Outstanding> {
     let version = wanted(dir)?;
     let p = stored_pointer(dir).filter(|p| p.version == version)?;
     if version_cmp(&version, running) != Ordering::Greater {

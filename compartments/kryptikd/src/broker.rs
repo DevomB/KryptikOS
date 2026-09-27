@@ -163,7 +163,7 @@ pub fn check_transfer_name(n: &str) -> Result<(), String> {
 }
 
 pub fn parse_request(line: &str) -> Result<Request, String> {
-    let mut words = line.trim().split_whitespace();
+    let mut words = line.split_whitespace();
     let verb = words.next().unwrap_or("");
     let rest: Vec<&str> = words.collect();
     match (verb, rest.as_slice()) {
@@ -502,10 +502,11 @@ fn deliver_into(home: RawFd, target: &Target, name: &str, src: RawFd, size: u64)
             return Err(format!("incoming/: {e}"));
         }
     }
-    if made && unsafe { libc::geteuid() } == 0 {
-        if unsafe { libc::fchownat(home, inc.as_ptr(), target.uid, target.gid, libc::AT_SYMLINK_NOFOLLOW) } < 0 {
-            return Err(format!("incoming/ ownership: {}", io::Error::last_os_error()));
-        }
+    if made
+        && unsafe { libc::geteuid() } == 0
+        && unsafe { libc::fchownat(home, inc.as_ptr(), target.uid, target.gid, libc::AT_SYMLINK_NOFOLLOW) } < 0
+    {
+        return Err(format!("incoming/ ownership: {}", io::Error::last_os_error()));
     }
     let inc_fd = openat2(
         home,
@@ -986,7 +987,7 @@ mod tests {
 
     fn send_with_fds(sock: RawFd, data: &[u8], fds: &[RawFd]) {
         let mut iov = libc::iovec { iov_base: data.as_ptr() as *mut libc::c_void, iov_len: data.len() };
-        let space = unsafe { libc::CMSG_SPACE((fds.len() * std::mem::size_of::<RawFd>()) as u32) } as usize;
+        let space = unsafe { libc::CMSG_SPACE(std::mem::size_of_val(fds) as u32) } as usize;
         let mut cbuf = vec![0u8; space.max(1)];
         let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
         msg.msg_iov = &mut iov;
@@ -998,7 +999,7 @@ mod tests {
                 let c = libc::CMSG_FIRSTHDR(&msg);
                 (*c).cmsg_level = libc::SOL_SOCKET;
                 (*c).cmsg_type = libc::SCM_RIGHTS;
-                (*c).cmsg_len = libc::CMSG_LEN((fds.len() * std::mem::size_of::<RawFd>()) as u32) as _;
+                (*c).cmsg_len = libc::CMSG_LEN(std::mem::size_of_val(fds) as u32) as _;
                 std::ptr::copy_nonoverlapping(fds.as_ptr(), libc::CMSG_DATA(c) as *mut RawFd, fds.len());
             }
         }
@@ -1065,7 +1066,7 @@ mod tests {
         worker.join().unwrap();
         std::fs::remove_dir_all(dir).unwrap();
         assert!(result.is_ok(), "an unread clipboard response stalled the zone supervisor");
-        assert_eq!(result.unwrap().unwrap().as_deref(), Some("clipboard-get"));
+        assert_eq!(result.unwrap().unwrap(), Some("clipboard-get"));
     }
 
     #[test]
@@ -1077,7 +1078,7 @@ mod tests {
         let sv = served(&z, &dir, me);
         assert_eq!(ask(&sv, "clipboard-get\n", false).1, b"empty\n");
         let (verb, r) = ask(&sv, "clipboard-set text/plain 5\nhello", false);
-        assert_eq!(verb.as_deref(), Some("clipboard-set"));
+        assert_eq!(verb, Some("clipboard-set"));
         assert_eq!(r, b"ok\n");
         assert_eq!(std::fs::metadata(dir.join(CLIPBOARD_FILE)).unwrap().mode() & 0o777, 0o600);
         assert_eq!(ask(&sv, "clipboard-get\n", false).1, b"ok text/plain 5\nhello");
@@ -1278,7 +1279,7 @@ mod tests {
         let src = open_flags(&file, libc::O_RDONLY);
         let (verb, r) = ask_with(&sv, "transfer b report.pdf\n", &[src], false);
         unsafe { libc::close(src) };
-        assert_eq!(verb.as_deref(), Some("transfer"));
+        assert_eq!(verb, Some("transfer"));
         assert_eq!(String::from_utf8_lossy(&r), "ok report.pdf\n");
         // The server must have closed its SCM_RIGHTS copy too.
         assert_eq!(fds_pointing_at(&file), 0, "the broker leaked a descriptor");
@@ -1784,7 +1785,7 @@ mod tests {
                 let mut req = seed.as_bytes().to_vec();
                 req.push(b'\n');
                 let payload = (next() % 65) as usize;
-                req.extend(std::iter::repeat(b'x').take(payload));
+                req.extend(std::iter::repeat_n(b'x', payload));
                 if round > 0 {
                     for _ in 0..1 + next() % 3 {
                         let at = (next() % req.len().max(1) as u64) as usize;
@@ -1793,7 +1794,7 @@ mod tests {
                             1 => req.truncate(at),
                             2 => req.insert(at, [b' ', b'\n', 0, 0xff, b'-', b'9'][(next() % 6) as usize]),
                             3 => req.splice(at..at, b"18446744073709551616".iter().copied()).for_each(drop),
-                            4 => req.splice(at..at, std::iter::repeat(b'A').take(600)).for_each(drop),
+                            4 => req.splice(at..at, std::iter::repeat_n(b'A', 600)).for_each(drop),
                             _ if !req.is_empty() => { req.remove(at); }
                             _ => {}
                         }
