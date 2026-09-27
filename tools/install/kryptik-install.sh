@@ -5,6 +5,7 @@
 # on a build host; every check runs before the first write.
 #
 #   kryptik-install --target DISK [--yes] [--dry-run] [--preseed FILE]
+#                   [--replace-kryptik]
 set -eu
 
 PROG="kryptik-install"
@@ -13,6 +14,7 @@ die()  { printf '%s: FAILED: %s\n' "$PROG" "$*" >&2; exit 1; }
 
 TARGET=""
 ASSUME_YES=0
+REPLACE=0
 DRY_RUN=0
 PRESEED=""
 MNT_BASE=/run/kryptik-install
@@ -23,10 +25,12 @@ while [ $# -gt 0 ]; do
         --yes)     ASSUME_YES=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         --preseed) PRESEED="${2:-}"; shift 2 ;;
+        --replace-kryptik) REPLACE=1; shift ;;
         -h|--help)
-            printf 'usage: %s --target /dev/vdb [--yes] [--dry-run] [--preseed FILE]\n' "$PROG"
+            printf 'usage: %s --target /dev/vdb [--yes] [--dry-run] [--preseed FILE] [--replace-kryptik]\n' "$PROG"
             printf '\nInstalls the running medium onto --target. Destroys everything on it.\n'
             printf '%s\n' '--dry-run checks everything and writes nothing.'
+            printf '%s\n' '--replace-kryptik allows a disk that holds an old Kryptik installation or medium.'
             exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
@@ -64,11 +68,10 @@ not create devices."
 TARGET_REAL="$(readlink -f "$TARGET")"
 [ -b "$TARGET_REAL" ] || die "${TARGET} resolves to ${TARGET_REAL}, which is not a block device"
 tname="$(basename "$TARGET_REAL")"
-[ -e "/sys/class/block/$tname/partition" ] && die "${TARGET} is a partition, not a whole disk. Name the disk."
-[ "$(lsblk -dno TYPE "$TARGET_REAL" 2>/dev/null)" = "disk" ] || die "${TARGET} is not a whole disk (lsblk type: $(lsblk -dno TYPE "$TARGET_REAL" 2>/dev/null || echo unknown))"
-[ "$(cat "/sys/class/block/$tname/ro" 2>/dev/null || echo 0)" = "0" ] || die "${TARGET} is read-only"
 
-# Never the disk the running root is on, through any dm/loop layer.
+# Never the disk the running root is on, through any dm/loop layer: booted
+# from a medium, that is the medium. First, so no other refusal stands in
+# for it, and no flag overrides it.
 root_src="$(awk '$2 == "/" { print $1; exit }' /proc/mounts)"
 # Not root_src: without an initramfs the root is /dev/root, which names no device.
 root_disks="$(kryptik_root_disk 2>/dev/null || true)"
@@ -76,15 +79,10 @@ for d in $root_disks; do
     [ "$(readlink -f "$d")" = "$TARGET_REAL" ] && die "${TARGET} is the disk this system is running from (root ${root_src} sits on ${d}).
 Refusing."
 done
-# Nor the disk of this system's state partition, the test-control disk or the medium.
-for lbl in kryptik-state kryptik-testctl; do
-    for dev in $(blkid -t PARTLABEL="$lbl" -o device 2>/dev/null); do
-        [ "$(readlink -f "$(_kd_disk_of "$dev")")" = "$TARGET_REAL" ] && die "${TARGET} holds the ${lbl} partition in use by this system. Refusing."
-    done
-done
-for dev in $(blkid -t PARTLABEL=kryptik-media -o device 2>/dev/null); do
-    [ "$(readlink -f "$(_kd_disk_of "$dev")")" = "$TARGET_REAL" ] && die "${TARGET} is the install medium. Refusing."
-done
+
+[ -e "/sys/class/block/$tname/partition" ] && die "${TARGET} is a partition, not a whole disk. Name the disk."
+[ "$(lsblk -dno TYPE "$TARGET_REAL" 2>/dev/null)" = "disk" ] || die "${TARGET} is not a whole disk (lsblk type: $(lsblk -dno TYPE "$TARGET_REAL" 2>/dev/null || echo unknown))"
+[ "$(cat "/sys/class/block/$tname/ro" 2>/dev/null || echo 0)" = "0" ] || die "${TARGET} is read-only"
 
 # Nothing on the target may be mounted or used as swap.
 mounted="$(awk -v d="${TARGET_REAL}" '$1 ~ "^" d { print $1 " on " $2 }' /proc/mounts)"
@@ -94,6 +92,30 @@ if [ -n "$mounted" ]; then
 fi
 if awk -v d="${TARGET_REAL}" 'NR>1 && $1 ~ "^" d { found=1 } END { exit !found }' /proc/swaps 2>/dev/null; then
     die "${TARGET} has active swap on it. Refusing."
+fi
+# Nor held open by device-mapper (an unlocked LUKS partition, LVM) or md.
+held=""
+for h in "/sys/class/block/$tname/holders/"* "/sys/class/block/$tname/$tname"*/holders/*; do
+    [ -e "$h" ] && held="${held} ${h##*/}"
+done
+[ -z "$held" ] || die "${TARGET} is in use: held open by${held}. Close them first, or pick another disk."
+
+# A disk that carries Kryptik (an old installation, a medium, a test-control
+# disk) may hold the only copy of someone's state: it is replaced only when
+# asked for by name.
+labels=""
+for p in "/sys/class/block/$tname/$tname"*; do
+    [ -e "$p/partition" ] || continue
+    l="$(blkid -s PARTLABEL -o value "/dev/${p##*/}" 2>/dev/null || true)"
+    case "$l" in
+        kryptik-*) case " $labels " in *" $l "*) ;; *) labels="${labels:+$labels }$l" ;; esac ;;
+    esac
+done
+if [ -n "$labels" ]; then
+    [ "$REPLACE" -eq 1 ] || die "${TARGET} holds a Kryptik installation or medium (${labels}).
+Nothing on it is in use by this system. To replace it, run again with
+--replace-kryptik: everything on it, including its encrypted state, is destroyed."
+    say "replacing ${labels} on ${TARGET}"
 fi
 
 # --- what we are installing, from the medium ---------------------------------

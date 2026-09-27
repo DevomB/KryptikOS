@@ -64,6 +64,23 @@ grep -q 'is the disk this system is running from' "$INSTALLER" \
 grep -q 'the target has mounted filesystems' "$INSTALLER" \
     && green "a target with mounted filesystems is refused" \
     || red "no mounted-target guard"
+grep -q 'is in use: held open by' "$INSTALLER" \
+    && green "a target held open by device-mapper or md is refused" \
+    || red "no held-open guard: an unlocked LUKS partition on the target would be overwritten"
+grep -qF -- '--replace-kryptik: everything on it' "$INSTALLER" \
+    && green "a disk that carries Kryptik is replaced only with --replace-kryptik" \
+    || red "no --replace-kryptik guard for a disk that carries Kryptik"
+# A read-only medium must be refused as the disk this system runs from.
+if awk '/is the disk this system is running from/ && !r { r = NR }
+        /is read-only/ && !o { o = NR }
+        END { exit !(r && o && r < o) }' "$INSTALLER"; then
+    green "the running-root refusal comes before the read-only one"
+else
+    red "the read-only refusal comes first and would stand in for the running-root one"
+fi
+grep -q 'testctl_get install_replace' "$RUNNER" \
+    && green "the runner passes --replace-kryptik only when the control disk asks" \
+    || red "the runner has no install_replace switch"
 
 echo
 echo "-- the runner reports the installer's exit status, not something else's"
