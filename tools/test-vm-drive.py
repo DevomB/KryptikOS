@@ -107,6 +107,26 @@ with contextlib.redirect_stdout(out):
 sys.argv = argv
 check("absent: is refused as an unknown step", (rc, "unknown step" in out.getvalue()), (1, True))
 
+print("-- type-from's value is read only once its line has ended")
+class Pieces(threading.Thread):
+    """A guest whose line arrives in pieces, as a serial port may send it."""
+    def __init__(self, path, pieces):
+        super().__init__(daemon=True)
+        self.srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.srv.bind(path); self.srv.listen(1)
+        self.pieces = pieces
+
+    def run(self):
+        c, _ = self.srv.accept()
+        for p in self.pieces:
+            c.sendall(p); time.sleep(0.3)
+        time.sleep(2)
+
+sock3 = os.path.join(T, "serial3")
+Pieces(sock3, [b"GT CONSENT-CODE 1 4", b"9\r\n"]).start()
+d3 = vm.Drive(sock3, None, 2)
+check("a code cut across two reads is taken whole", d3.line_value(r"GT CONSENT-CODE 1 ([0-9]+)"), "49")
+
 print()
 print(f"{PASS} passed, {FAIL} failed")
 sys.exit(0 if FAIL == 0 else 1)
