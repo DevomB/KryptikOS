@@ -239,11 +239,13 @@ questions() {   # every entry in the consent directory except the watcher lock
 ' ' ')"
 # dev -> work: allowed by policy, asked of the user, who types the code the
 # question's window shows. Zone 0 finds it beside the question, which no zone sees.
-consent_code() {   # the code the open question's window asks for, once it asks
-    local f n=30
+consent_code() {   # consent_code FROM TO: the code the question FROM asks about TO shows, once it shows one
+    local a n=30
     while [[ "$n" -gt 0 ]]; do
-        for f in /run/kryptik-consent/*.code; do
-            [[ -s "$f" ]] && { cat "$f"; return 0; }
+        for a in /run/kryptik-consent/*.ask; do
+            if grep -qx "from=$1" "$a" 2>/dev/null && grep -qx "to=$2" "$a" && [[ -s "${a%.ask}.code" ]]; then
+                cat "${a%.ask}.code"; return 0
+            fi
         done
         n=$((n - 1)); sleep 1
     done
@@ -251,7 +253,7 @@ consent_code() {   # the code the open question's window asks for, once it asks
 }
 mark trf1 dev
 launch dev "sh -c 'echo report-body > \$HOME/report.txt; python3 $BC transfer work report.txt \$HOME/report.txt'" > "$LOG/trf1.out" 2>&1
-code="$(consent_code)"
+code="$(consent_code dev work)"
 [[ "$code" =~ ^[1-9][0-9]$ ]] && pass "consent-code-shown" "the question's window asks for code $code" || fail "consent-code-shown" "no code beside the question: $(questions | tr '\n' ' ')"
 echo "GT CONSENT-CODE 1 ${code:-00}"
 n=40; while [[ "$n" -gt 0 ]] && [[ "$(since_mark trf1 dev)" != *ok* && "$(since_mark trf1 dev)" != *error* ]]; do n=$((n - 1)); sleep 1; done
@@ -262,7 +264,7 @@ if [[ -f "$R/work/incoming/report.txt" ]] && [[ "$(cat "$R/work/incoming/report.
 wait_for 30 test ! -e /run/kryptik/zones/dev/init.pid; sleep 1
 mark trf2 dev
 launch dev "sh -c 'echo secret2 > \$HOME/report2.txt; python3 $BC transfer work report2.txt \$HOME/report2.txt'" > "$LOG/trf2.out" 2>&1
-consent_code > /dev/null || info "the second question's window asked for no code"
+consent_code dev work > /dev/null || info "the second question's window asked for no code"
 echo "GT CONSENT-WAIT 2"
 n=40; while [[ "$n" -gt 0 ]] && [[ "$(since_mark trf2 dev)" != *ok* && "$(since_mark trf2 dev)" != *error* ]]; do n=$((n - 1)); sleep 1; done
 out="$(since_mark trf2 dev)"

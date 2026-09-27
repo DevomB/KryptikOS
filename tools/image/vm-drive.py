@@ -22,9 +22,10 @@ Steps (each one argument):
     screendump:FILE         ask QEMU (QMP) for a PPM screenshot
     key:NAME[+NAME...]      press keys on the guest's keyboard through QMP
                             (qcodes, e.g. key:y  key:ret  key:alt+e)
-    type-from:REGEX         wait for REGEX, then type what its first group
-                            matched (digits and letters) and Enter through QMP:
-                            for a value only the guest can see
+    type-from:REGEX         wait for REGEX on a line that has ended (REGEX
+                            names no line end), then type what its first
+                            group matched (digits and letters) and Enter
+                            through QMP: for a value only the guest can see
     wait-exit               wait for the serial socket to close (guest gone)
 
 With KRYPTIK_STATE_PASSPHRASE set, the driver answers an installed disk's
@@ -99,6 +100,11 @@ class Drive:
                 tail = self.buf[-600:].decode("utf-8", "replace")
                 raise RuntimeError(f"timeout ({timeout}s) waiting for {regex!r}; last output:\n{tail}")
             self._read()
+
+    def line_value(self, regex, timeout=None):
+        """REGEX's first group, matched only once its line has ended: serial
+        output arrives in pieces, and ([0-9]+) matches a number cut short."""
+        return self.expect(rf"(?:{regex})(?=\r?\n)", timeout).group(1).decode()
 
     def send(self, text, enter=True):
         data = text.encode() + (b"\r" if enter else b"")
@@ -268,12 +274,13 @@ def main():
                 time.sleep(0.3)
             elif kind == "type-from":
                 if not qmpsock: raise RuntimeError("type-from needs --qmp")
-                text = d.expect(rest).group(1).decode()
+                text = d.line_value(rest)
                 if not text.isalnum(): raise RuntimeError(f"type-from: {text!r} is not letters and digits")
                 for k in list(text.lower()) + ["ret"]:
                     r = qmp(qmpsock, "send-key", {"keys": [{"type": "qcode", "data": k}], "hold-time": 80})
                     if "error" in r: raise RuntimeError(f"send-key {k}: {r['error']}")
                     time.sleep(0.15)
+                print(f"     typed {text} and Enter")
             elif kind == "wait-exit":
                 deadline = time.time() + timeout
                 while not d.closed and time.time() < deadline: d._read()

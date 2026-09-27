@@ -258,7 +258,8 @@ run_confirm() { # ID
     # no answer, which the broker takes as a refusal.
     set -C
     code=$(( $(od -An -N1 -tu1 /dev/urandom) % 90 + 10 ))
-    (umask 077; printf '%s\n' "$code" > "$CONSENT/$id.code") 2>/dev/null
+    (umask 077; printf '%s\n' "$code" > "$CONSENT/$id.code") 2>/dev/null \
+        || echo "kryptik-chrome --confirm $id: the code could not be written beside the question" >> "$RT/kryptik/session.log"
     printf 'Type %s and Enter to allow; anything else refuses: ' "$code"
     answer=no
     if read -r reply; then
