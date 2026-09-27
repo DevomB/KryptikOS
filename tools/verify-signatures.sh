@@ -206,6 +206,12 @@ PINNED_FPRS=(
     "EFC0A467D613CB83C7ED6D30D894E2CE8B3D79F5"   # OpenSSL OMC, signs 3.3.1
     "B146647E45A7B33947AB226B2A2C87D161692D40"   # OpenSSL 2026 key, signs 3.5.8
 
+    # From https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/RELEASE_KEY.asc
+    # (retrieved 2026-09-27), the key file beside the releases. Of its five
+    # keys, this one, current since 2021, signs 10.5p1. ssh-keygen checks every
+    # release statement, so openssh is on the update path.
+    "7168B983815A5EEF59A4ADFD2A3F414E736060BA"   # Damien Miller, OpenSSH
+
     # libexpat names no release signer. This is the key gentoo.org's WKD serves
     # for sping@gentoo.org, and the pin means only that; tools/source-notes.tsv
     # carries the undesignated-signer caveat.
