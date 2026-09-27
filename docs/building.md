@@ -102,3 +102,20 @@ make zone-tests   # adversarial.sh (the primitives) and launcher.sh (kryptikd ru
 The compartment suites need a Rust toolchain and a kernel with user
 namespaces, seccomp and Landlock. The privileged launch path and cgroup
 limits run as root only on the installed system, in `make zones-test`.
+
+## Acceptance
+
+`make acceptance` runs every suite against the built media, as root under
+KVM. The update suite installs the release before the newest and updates it
+to the newest, so it needs two. The production suite does the same with a
+production pair, signed with a throwaway key medium that exists only while
+`make production-pair` builds the pair, and kept apart in
+`<work>/images-production`. Build the pair first, since the suites take the
+release built last as the one under test:
+
+```sh
+make production-pair
+make media KRYPTIK_VERSION=0.1.1
+make media KRYPTIK_VERSION=0.1.2
+make acceptance EXPORT=/tmp/kryptik-export
+```

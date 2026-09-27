@@ -328,11 +328,16 @@ jobs:
         if: always()
         run: rm -f /mnt/kryptik/work-after-05.tar.zst
 
-      # Release A, and B = A's version with .1 (sorts after A), which the update
-      # test applies over A.
-      - name: Stage 06, the media (release A and the update B)
-        timeout-minutes: 60
+      # First the production pair, 1.0.0 and 1.0.1, signed with a throwaway key
+      # medium that lives only while they are built, kept apart in
+      # images-production (tools/production-pair.sh). Then release A, and B =
+      # A's version with .1 (sorts after A), which the update test applies over
+      # A: the suites take the release built last as the one under test.
+      - name: Stage 06, the media (production 1.0.0 and 1.0.1, release A and the update B)
+        timeout-minutes: 90
         run: |
+          make production-pair KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
+          ls -la "$KRYPTIK_WORK/images-production"
           VER_A="0.1.$(date -u +%Y%m%d).${GITHUB_SHA::8}"
           make media KRYPTIK_VERSION="$VER_A" KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
           make media KRYPTIK_VERSION="${VER_A}.1" KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
@@ -341,20 +346,34 @@ jobs:
       # Never the private halves of the keys: the acceptance needs the
       # certificate, its DER form and the variable stores, nothing that signs,
       # and an artifact of a public repository is public. Root packs, because
-      # stage 04 ran as root.
+      # stage 04 ran as root. The production pair is an artifact of its own,
+      # without its ISOs, for the production part; the others get its payloads'
+      # manifests alone, which is all the development update suite refuses.
       - name: Pack the work tree for the acceptance
         run: |
           cd /mnt/kryptik
           sudo rm -rf work/build work/vm
-          sudo tar -I 'zstd -T0' -cf work-after-media.tar.zst -C work --exclude='images/kryptik-root.img' --exclude='images/esp-*.img' --exclude='keys/sb/kryptik-sb.key' --exclude='keys/release/kryptik-release' --exclude='keys/release/kryptik-latest' .
-          if sudo tar --zstd -tf work-after-media.tar.zst | grep -E 'kryptik-sb\.key$|keys/release/kryptik-(release|latest)$'; then echo "a private key is in the artifact"; exit 1; fi
-          sudo chown "$(id -u):$(id -g)" work-after-media.tar.zst
-          ls -la work-after-media.tar.zst; df -h /mnt | tail -1
+          sudo tar -I 'zstd -T0' -cf work-after-media.tar.zst -C work --exclude='images/kryptik-root.img' --exclude='images/esp-*.img' \
+            --exclude='images-production/kryptik-*' --exclude='images-production/channel-*' --exclude='images-production/payload-*/kryptik-*' --exclude='images-production/payload-*/root.json' \
+            --exclude='keys/sb/kryptik-sb.key' --exclude='keys/release/kryptik-release' --exclude='keys/release/kryptik-latest' .
+          sudo tar -I 'zstd -T0' -cf production-media.tar.zst -C work --exclude='*.iso' images-production
+          for t in work-after-media.tar.zst production-media.tar.zst; do
+            if sudo tar --zstd -tf "$t" | grep -E 'kryptik-sb\.key$|keys/release/kryptik-(release|latest)$'; then echo "a private key is in ${t}"; exit 1; fi
+          done
+          sudo chown "$(id -u):$(id -g)" work-after-media.tar.zst production-media.tar.zst
+          ls -la work-after-media.tar.zst production-media.tar.zst; df -h /mnt | tail -1
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: work-after-media
           path: /mnt/kryptik/work-after-media.tar.zst
+          retention-days: 3
+          compression-level: 0
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: production-media
+          path: /mnt/kryptik/production-media.tar.zst
           retention-days: 3
           compression-level: 0
 
@@ -378,8 +397,9 @@ jobs:
       fail-fast: false
       matrix:
         # tools/acceptance.sh's suites, in parts of about 18, 16, 12 and 11
-        # minutes. A suite no part runs is INCOMPLETE in the verdict, never a pass.
-        suites: [update, install, 'integrity,zones', 'inputs,build,boot,desktop']
+        # minutes, and the production pair's update suite. A suite no part runs
+        # is INCOMPLETE in the verdict, never a pass.
+        suites: [update, install, 'integrity,zones', 'inputs,build,boot,desktop', production]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - uses: ./.github/actions/prepare
@@ -397,12 +417,20 @@ jobs:
           name: work-after-media
           path: /mnt/kryptik
 
+      # The whole production pair, for its own part.
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        if: matrix.suites == 'production'
+        with:
+          name: production-media
+          path: /mnt/kryptik
+
       # As root, so the sysroot keeps its owners and modes.
       - name: Unpack the work tree
         run: |
           cd /mnt/kryptik
           sudo tar --zstd -xf work-after-media.tar.zst -C work
           rm -f work-after-media.tar.zst
+          if [ -f production-media.tar.zst ]; then sudo tar --zstd -xf production-media.tar.zst -C work; rm -f production-media.tar.zst; fi
           ls work/images; df -h /mnt | tail -1
 
       # The script itself, not make, which turns every failure into 2. Exit 2

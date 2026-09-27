@@ -111,6 +111,20 @@ fi
 VER_A=""; [[ -n "$PAYLOAD_A" ]] && VER_A="$(version_of_payload "$PAYLOAD_A")"
 MEDIA_USB_A=""; [[ -n "$VER_A" && -f "${IMGDIR}/kryptik-${VER_A}-usb.img" ]] && MEDIA_USB_A="${IMGDIR}/kryptik-${VER_A}-usb.img"
 
+# A production pair, built with a throwaway key medium and kept apart, since
+# its versions would sort above A and B here: the two highest payloads, the
+# lower one's USB medium, and the certificate its media carry.
+PRODDIR="${KRYPTIK_WORK}/images-production"
+PROD_A=""; PROD_B=""; PROD_USB_A=""; PROD_DESC="none"
+versions=()
+for d in "${PRODDIR}"/payload-*; do [[ -d "$d" ]] && versions+=("$(version_of_payload "$d")"); done
+if [[ "${#versions[@]}" -ge 2 ]]; then
+    mapfile -t versions < <(printf '%s\n' "${versions[@]}" | sort -V)
+    PROD_A="${PRODDIR}/payload-${versions[-2]}"; PROD_B="${PRODDIR}/payload-${versions[-1]}"
+    PROD_USB_A="${PRODDIR}/kryptik-${versions[-2]}-usb.img"
+    PROD_DESC="from ${versions[-2]} to ${versions[-1]} (${PRODDIR})"
+fi
+
 sha_of() { sha256sum "$1" | cut -c1-64; }
 H_USB=""; H_ISO=""
 [[ -f "$MEDIA_USB" ]] && H_USB="$(sha_of "$MEDIA_USB")"
@@ -265,6 +279,12 @@ need_update() {
     [[ "$(printf '%s\n' "$VER_A" "$VER_B" | sort -V | tail -1)" == "$VER_B" ]] \
         || echo "release A (${VER_A}) is not older than B (${VER_B}); the update test applies a newer release over an older one"
 }
+need_production() {
+    local r; r="$(need_update)"; [[ -n "$r" ]] && { echo "$r"; return; }
+    [[ -n "$PROD_B" && -f "${PROD_A}/manifest" && -f "${PROD_B}/manifest" && -f "$PROD_USB_A" ]] \
+        || { echo "no production pair under ${PRODDIR} (make production-pair builds one)"; return; }
+    [[ -f "${PRODDIR}/kryptik-sb.crt" ]] || echo "no ${PRODDIR}/kryptik-sb.crt, the certificate the production media carry"
+}
 need_cargo()   { have cargo || echo "no cargo on PATH"; }
 need_sources() { [[ -d "$KRYPTIK_SOURCES" && -f "${ROOT}/sources.lock" ]] || echo "no sources directory or sources.lock"; }
 need_export()  {
@@ -333,7 +353,19 @@ it_state()         { "${IMG}/state-test.sh" --usb "$MEDIA_USB"; }
 it_integrity()     { "${IMG}/integrity-test.sh" --usb "$MEDIA_USB"; }
 it_zones()         { "${IMG}/zones-test.sh" --usb "$MEDIA_USB"; }
 it_gui()           { "${IMG}/gui-test.sh" --usb "$MEDIA_USB"; }
-it_update()        { "${IMG}/update-test.sh" --usb-a "$MEDIA_USB_A" --payload-a "$PAYLOAD_A" --payload-b "$PAYLOAD_B" --vars clean; }
+# Each update suite is handed the other role's newest payload too, which the
+# release it installed must refuse.
+it_update() {
+    local foreign=(); [[ -n "$PROD_B" ]] && foreign=(--foreign "$PROD_B")
+    "${IMG}/update-test.sh" --usb-a "$MEDIA_USB_A" --payload-a "$PAYLOAD_A" --payload-b "$PAYLOAD_B" --vars clean "${foreign[@]}"
+}
+it_production() {
+    echo "production pair:"
+    sha256sum "$PROD_USB_A" "${PROD_A}/manifest" "${PROD_B}/manifest" "${PRODDIR}/kryptik-sb.crt" | sed 's/^/  /'
+    "${IMG}/ovmf-vars.sh" --cert "${PRODDIR}/kryptik-sb.crt" --out "${PRODDIR}/vars" || return 1
+    "${IMG}/update-test.sh" --usb-a "$PROD_USB_A" --payload-a "$PROD_A" --payload-b "$PROD_B" \
+        --vars-file "${PRODDIR}/vars/enrolled.fd" --foreign "$PAYLOAD_B"
+}
 
 # Every boot this run recorded went through the firmware, with no host-side
 # boot input (-kernel, -initrd, -append, shared directory, FAT-from-directory).
@@ -357,6 +389,7 @@ echo "  media usb : ${MEDIA_USB:-none}${H_USB:+ sha256 $H_USB}"
 echo "  media iso : ${MEDIA_ISO:-none}${H_ISO:+ sha256 $H_ISO}"
 echo "  release   : ${VER:-none} (its payload is release B: ${PAYLOAD_B:-none})"
 echo "  update    : from A ${VER_A:-none} (${MEDIA_USB_A:-no medium}; ${PAYLOAD_A:-no payload}) to B ${VER_B:-none}"
+echo "  production: ${PROD_DESC}"
 echo "  firmware  : ${FW} ${H_FW:+sha256 $H_FW} (${FW_PKG}); ${QEMU_VER}; kvm=${KVM}"
 echo "  output    : ${OUT}"
 
@@ -382,6 +415,7 @@ item integrity integrity-test             M vm    8 it_integrity need_enrolled
 item zones     zones-test                 M vm   10 it_zones need_vm
 item desktop   gui-test                   M vm   25 it_gui need_vm
 item update    update-test                M vm   10 it_update need_update
+item production update-test-production    M vm   10 it_production need_production
 item boot      firmware-only-boot         M post  0 it_firmware_only
 # A part of a split run leaves its boot records beside its report, for --merge.
 [[ -n "$ONLY" ]] && find "${KRYPTIK_WORK}/logs" -name 'ovmf-serial.*.log.cmd' -newer "$MARK" -exec cp -t "$OUT" {} + 2>/dev/null
