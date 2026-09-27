@@ -171,9 +171,36 @@ fn read_answer(dfd: RawFd, name: &str) -> Result<Option<String>, String> {
     Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
 }
 
+/// Why a question got no `yes`, and whether the user saw it: only a question
+/// placed took focus in zone 0, so only that one pauses the next.
+#[derive(Debug)]
+pub struct Refusal {
+    pub why: String,
+    pub shown: bool,
+}
+
+impl Refusal {
+    fn unseen(why: String) -> Refusal {
+        Refusal { why, shown: false }
+    }
+}
+
+impl std::ops::Deref for Refusal {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.why
+    }
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.why)
+    }
+}
+
 /// May this file cross? `Ok(())` only on an explicit `yes`. `asking` runs ten
 /// times a second while the question is open; `false` withdraws it.
-pub fn ask(from: &str, to: &str, name: &str, bytes: u64, asking: &dyn Fn() -> bool) -> Result<(), String> {
+pub fn ask(from: &str, to: &str, name: &str, bytes: u64, asking: &dyn Fn() -> bool) -> Result<(), Refusal> {
     ask_text(&format!("from={from}\nto={to}\nname={name}\nbytes={bytes}\n"), asking)
 }
 
@@ -185,22 +212,22 @@ pub fn keep() -> bool {
 /// May the clock be set? Asked past the unasked bound (docs/design/time.md).
 /// `kind=clock` tells the chrome which question to draw; no kind is a transfer.
 pub fn ask_clock(now: &str, proposed: &str, sources: u8, asking: &dyn Fn() -> bool) -> Result<(), String> {
-    ask_text(&format!("kind=clock\nnow={now}\nproposed={proposed}\nsources={sources}\n"), asking)
+    ask_text(&format!("kind=clock\nnow={now}\nproposed={proposed}\nsources={sources}\n"), asking).map_err(|r| r.why)
 }
 
 /// Ask, and wait for the answer. `Ok(())` only on an explicit `yes`.
-fn ask_text(text: &str, asking: &dyn Fn() -> bool) -> Result<(), String> {
+fn ask_text(text: &str, asking: &dyn Fn() -> bool) -> Result<(), Refusal> {
     let d = dir();
-    let channel = open_channel(&d)?;
+    let channel = open_channel(&d).map_err(Refusal::unseen)?;
     let dfd = channel.as_raw_fd();
     if !watched(dfd) {
-        return Err(format!(
+        return Err(Refusal::unseen(format!(
             "no consent channel: nothing in zone 0 is watching {} (no trusted window to ask); \
              refused for want of consent",
             d.display()
-        ));
+        )));
     }
-    let id = place_question(dfd, text)?;
+    let id = place_question(dfd, text).map_err(Refusal::unseen)?;
     let ask = format!("{id}.ask");
     let answer = format!("{id}.answer");
     let deadline = Instant::now() + timeout();
@@ -230,7 +257,7 @@ fn ask_text(text: &str, asking: &dyn Fn() -> bool) -> Result<(), String> {
     unlink(dfd, &ask);
     unlink(dfd, &answer);
     unlink(dfd, &format!("{id}.code"));
-    outcome
+    outcome.map_err(|why| Refusal { why, shown: true })
 }
 
 #[cfg(test)]
@@ -296,7 +323,7 @@ mod tests {
             let h = answer_when_asked(d, "no\n");
             let e = ask("dev", "work", "x", 1, &keep).unwrap_err();
             h.join().unwrap();
-            assert!(e.contains("refused by the user"), "{e}");
+            assert!(e.contains("refused by the user") && e.shown, "{e}");
             let h = answer_when_asked(d, "maybe\n");
             let e = ask("dev", "work", "x", 1, &keep).unwrap_err();
             h.join().unwrap();
@@ -320,7 +347,7 @@ mod tests {
                 }
                 let t = Instant::now();
                 let e = ask("dev", "work", "x", 1, &keep).unwrap_err();
-                assert!(e.contains("no consent channel") && e.contains("watching"), "{e}");
+                assert!(e.contains("no consent channel") && e.contains("watching") && !e.shown, "{e}");
                 assert!(t.elapsed() < Duration::from_millis(500), "refused without waiting for the deadline");
                 let placed = std::fs::read_dir(d).unwrap().flatten().filter(|e| e.file_name() != WATCHER_LOCK).count();
                 assert_eq!(placed, 0, "no question was placed");
@@ -328,12 +355,12 @@ mod tests {
             // Someone watching, nobody answering: the deadline, then a refusal.
             let _w = hold_watch(d);
             let e = ask("dev", "work", "x", 1, &keep).unwrap_err();
-            assert!(e.contains("no answer"), "{e}");
+            assert!(e.contains("no answer") && e.shown, "{e}");
             let left: Vec<_> = std::fs::read_dir(d).unwrap().flatten().map(|e| e.file_name()).collect();
             assert_eq!(left, vec![std::ffi::OsString::from(WATCHER_LOCK)], "the unanswered question is withdrawn");
             std::env::set_var("KRYPTIK_CONSENT_DIR", d.join("absent"));
             let e = ask("dev", "work", "x", 1, &keep).unwrap_err();
-            assert!(e.contains("no consent channel"), "{e}");
+            assert!(e.contains("no consent channel") && !e.shown, "{e}");
         });
     }
 

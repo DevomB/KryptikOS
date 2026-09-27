@@ -45,17 +45,20 @@ def main():
         chrome.write_text(source.replace(definition, f"CONSENT={consent}"))
         chrome.chmod(0o700)
 
-        def confirm(kind, early, late):
+        def confirm(kind, early, late, plant=None):
             """One question, with EARLY typed before it shows and LATE after it
-            asks ({code} is the code shown). Returns (answer, what it showed)."""
+            asks ({code} is the code shown), and a link to PLANT at the answer's
+            temporary name if given. Returns (answer or None, what it showed)."""
             ident = f"q-{kind}"
             if kind == "clock":
                 ask = "kind=clock\nnow=2026-09-27 10:00:00\nproposed=2026-09-28 10:00:00\nsources=4\n"
             else:
                 ask = "from=untrusted\nto=work\nname=f.txt\nbytes=3\n"
             (consent / f"{ident}.ask").write_text(ask)
-            for suffix in ("answer", "code"):
+            for suffix in ("answer", "code", "answer.tmp"):
                 (consent / f"{ident}.{suffix}").unlink(missing_ok=True)
+            if plant:
+                os.symlink(plant, consent / f"{ident}.answer.tmp")
             master, slave = os.openpty()
             os.write(master, early)
             proc = subprocess.Popen(
@@ -74,7 +77,8 @@ def main():
                 if proc.poll() is None:
                     proc.kill()
                 os.close(master)
-            return (consent / f"{ident}.answer").read_text().strip(), shown.decode(errors="replace")
+            answer = consent / f"{ident}.answer"
+            return (answer.read_text().strip() if answer.exists() else None), shown.decode(errors="replace")
 
         cases = [
             # what, question, typed before it shows, typed after it asks, answer, says it dropped keys
@@ -89,6 +93,15 @@ def main():
             assert got == want, f"{what}: answered {got!r}, wanted {want!r}\n{shown}"
             assert ("is ignored" in shown) == dropped, f"{what}: the note on early keys {'missing' if dropped else 'shown'}\n{shown}"
             print(f"PASS: {what}: {got}")
+
+        # Any member of group kryptik can plant a link in the directory: the
+        # window's writes must not follow one, and the answer is then a refusal.
+        victim = work / "victim"
+        victim.write_text("untouched\n")
+        got, shown = confirm("transfer", b"", "{code}\n", plant=victim)
+        assert victim.read_text() == "untouched\n", "the window wrote through a link planted at its answer's temporary name"
+        assert got is None, f"an answer was recorded through a planted link: {got!r}"
+        print("PASS: a link planted at the answer's temporary name is not followed, and nothing is recorded")
 
 
 if __name__ == "__main__":

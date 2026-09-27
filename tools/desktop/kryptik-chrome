@@ -65,6 +65,10 @@ run_status() {
     (
         exec 9> "$CONSENT/watcher.lock" 2>/dev/null || exit 0
         flock -n 9 || exit 0
+        # From here a write creates, never follows or clobbers: any member of
+        # group kryptik can plant a link in the directory. That also makes the
+        # .dialog claim one exclusive create.
+        set -C
         while :; do
             for ask in "$CONSENT"/*.ask; do
                 [ -e "$ask" ] || continue
@@ -73,9 +77,11 @@ run_status() {
                 : > "$CONSENT/$id.dialog" 2>/dev/null || continue
                 "$TERMINAL" /usr/bin/kryptik-chrome --confirm "$id" 9>&- &
             done
-            for d in "$CONSENT"/*.dialog; do
-                [ -e "$d" ] || continue
-                [ -e "${d%.dialog}.ask" ] || rm -f "$d" "${d%.dialog}.code"
+            # A window writes its code and answer even for a question
+            # withdrawn meanwhile; whatever outlives its question goes.
+            for f in "$CONSENT"/*.dialog "$CONSENT"/*.code "$CONSENT"/*.answer; do
+                [ -e "$f" ] || continue
+                [ -e "${f%.*}.ask" ] || rm -f "$f"
             done
             sleep 1
         done
@@ -247,15 +253,22 @@ run_confirm() { # ID
     # The answer is a code drawn for this question alone: no zone sees this
     # window, so none can type it. It is kept beside the question for zone 0's
     # tests; whatever can read this directory could write the answer anyway.
+    # Writes here create, never follow or clobber: any member of group kryptik
+    # can plant a link in the directory. An answer that cannot be written is
+    # no answer, which the broker takes as a refusal.
+    set -C
     code=$(( $(od -An -N1 -tu1 /dev/urandom) % 90 + 10 ))
-    (umask 077; printf '%s\n' "$code" > "$CONSENT/$id.code")
+    (umask 077; printf '%s\n' "$code" > "$CONSENT/$id.code") 2>/dev/null
     printf 'Type %s and Enter to allow; anything else refuses: ' "$code"
     answer=no
     if read -r reply; then
         [ "$reply" = "$code" ] && answer=yes
     fi
-    printf '%s\n' "$answer" > "$CONSENT/$id.answer.tmp" && mv -f "$CONSENT/$id.answer.tmp" "$CONSENT/$id.answer"
-    echo "-> $answer"
+    if printf '%s\n' "$answer" > "$CONSENT/$id.answer.tmp" && mv -f "$CONSENT/$id.answer.tmp" "$CONSENT/$id.answer"; then
+        echo "-> $answer"
+    else
+        echo "-> the answer could not be recorded, which is a refusal"
+    fi
     sleep 1
 }
 

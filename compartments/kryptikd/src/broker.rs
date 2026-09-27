@@ -448,9 +448,12 @@ fn handle_transfer(s: &Served, dest: &str, name: &str, fds: &[OwnedFd]) -> Resul
         if s.refused_until.get().is_some_and(|t| Instant::now() < t) {
             return Err("a transfer from this zone was refused less than a minute ago; not asking again yet".into());
         }
-        if let Err(why) = crate::consent::ask(sender, dest, name, st.st_size as u64, s.asking) {
-            s.refused_until.set(Some(Instant::now() + REFUSAL_PAUSE));
-            return Err(why);
+        if let Err(r) = crate::consent::ask(sender, dest, name, st.st_size as u64, s.asking) {
+            // Only a question placed took focus: with no channel or watcher nobody was asked.
+            if r.shown {
+                s.refused_until.set(Some(Instant::now() + REFUSAL_PAUSE));
+            }
+            return Err(r.why);
         }
     }
     let target = (s.resolve_dest)(dest)?;
@@ -1603,11 +1606,15 @@ mod tests {
         let second = send();
         done.store(true, std::sync::atomic::Ordering::SeqCst);
         let asked = person.join().unwrap();
-        // Once the pause is over the next request is asked again; with no channel, it says so.
+        /* Once the pause is over the next request is asked again; with no
+         * channel, it says so. That asked nobody, so the one right after it is
+         * not paused: it reaches the channel check again. */
         refused.set(Some(Instant::now()));
         std::env::set_var("KRYPTIK_CONSENT_DIR", "/nonexistent/kryptik-consent");
         let third = send();
+        let fourth = send();
         std::env::remove_var("KRYPTIK_CONSENT_DIR");
+        assert!(fourth.contains("no consent channel"), "a refusal that asked nobody paused the next request: {fourth}");
         assert!(first.contains("refused by the user"), "{first}");
         assert!(second.contains("less than a minute ago"), "{second}");
         assert_eq!(asked, 1, "the request after a refusal raised a question");

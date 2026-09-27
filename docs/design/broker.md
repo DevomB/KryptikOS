@@ -67,9 +67,10 @@ failure:
    zone its own `[transfer] to` names is running, which timing would tell it
    anyway.
 6. The user consents (below). Asked last, so a request that would be refused
-   anyway never becomes a question. After a refusal the same launch asks
-   nothing for a minute: every question takes focus in zone 0, so a zone may
-   not raise them in a loop.
+   anyway never becomes a question. After a question the user saw and did not
+   allow, the same launch asks nothing for a minute: every question takes
+   focus in zone 0, so a zone may not raise them in a loop. A refusal that
+   showed nothing (no channel, nobody watching) does not pause.
 
 After the user answers, the destination is looked up again, so nothing holds
 its mounts through the wait and a zone that stopped meanwhile gets nothing.
@@ -120,6 +121,9 @@ trusted. The broker opens the directory once and uses names relative to it
 without following links; the question goes to an `O_EXCL` temporary name with
 a random nonce that is also in its id, so no answer can be planted in
 advance; an answer that is not a plain file (a link, a FIFO) is a refusal.
+The chrome's own writes there only create, never follow or clobber
+(`set -C`), and its watcher removes a `.dialog`, `.code` or `.answer` that
+outlived its question.
 The watcher holds `watcher.lock` exclusively while it runs; a broker that can
 take the lock shared knows nobody is watching and refuses at once.
 `--auto-approve-transfers` approves everything for tests without a session,
