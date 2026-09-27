@@ -92,6 +92,20 @@ header_notices() {
     done
 }
 
+# unpack TARBALL TOPDIR [NAME]: extract a source into the stage's BUILDDIR, as
+# NAME if given, replacing any earlier copy; print its path.
+unpack() {
+    local tarball="$1" srcdir="$2" destname="${3:-}"
+    local dir="${BUILDDIR}/${destname:-$srcdir}"
+    rm -rf "$dir"
+    tar -xf "${KRYPTIK_SOURCES}/${tarball}" -C "$BUILDDIR"
+    if [[ -n "$destname" && "$destname" != "$srcdir" ]]; then
+        mv "${BUILDDIR}/${srcdir}" "$dir"
+    fi
+    [[ -d "$dir" ]] || die "expected ${dir} after unpacking ${tarball}"
+    printf '%s' "$dir"
+}
+
 # Stages 01-03 run on the host and install into ${KRYPTIK_WORK}/sysroot; stages
 # 04 and 05 run inside the chroot, where the sysroot is /. A KRYPTIK_WORK path
 # may not exist in there, and installing to it would build a nested tree.

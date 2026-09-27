@@ -113,14 +113,6 @@ step_failure_hint() {
     err "only that flag is dropped and only for that package."
 }
 
-unpack() {
-    local tarball="$1" dirname="$2"
-    local dir="${BUILDDIR}/${dirname}"
-    rm -rf "$dir"
-    tar -xf "${KRYPTIK_SOURCES}/${tarball}" -C "$BUILDDIR"
-    [[ -d "$dir" ]] || die "expected ${dir} after unpacking ${tarball}"
-    printf '%s' "$dir"
-}
 
 # Native build: no --host, as this runs on the target.
 native_build() {

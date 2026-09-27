@@ -33,14 +33,6 @@ REDO=""
 mkdir -p "$STAMPS" "$LOGS" "$BUILDDIR"
 
 
-unpack() {
-    local tarball="$1" dirname="$2"
-    local dir="${BUILDDIR}/${dirname}"
-    rm -rf "$dir"
-    tar -xf "${KRYPTIK_SOURCES}/${tarball}" -C "$BUILDDIR"
-    [[ -d "$dir" ]] || die "expected ${dir} after unpacking ${tarball}"
-    printf '%s' "$dir"
-}
 
 # config.guess lives in a different place in each project.
 guess() {
