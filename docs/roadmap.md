@@ -46,6 +46,8 @@ work in zones from a terminal and a text browser, and keep it up to date.
       ([release keys](release-keys.md)), a build that signs with a key it is
       handed and refuses to invent one for a release, and an installed system
       that accepts the next release and refuses a development build.
+      Acceptance's production part proves the last two with a throwaway key
+      medium; the keys kept offline are still to be made.
 - [ ] **No known-vulnerable pins.** Every pin behind its upstream has a review
       in `tools/pin-reviews.tsv`, and `tools/check-pin-reviews.sh` fails CI
       without one. Done when the rebuilt image passes acceptance and the held
@@ -76,7 +78,7 @@ work in zones from a terminal and a text browser, and keep it up to date.
 - [x] **Every status row is tested.** Each row of the status table names
       the check that can fail it; stage 05, stage 06 and `make acceptance`
       were the last to read *implemented*.
-- [ ] **The accepted lists are reviewed.** `checker-accepted.txt`,
+- [x] **The accepted lists are reviewed.** `checker-accepted.txt`,
       `hardening-exceptions.txt`, the setuid allowlist and the artifact
       audit's soft findings: each entry closed or re-justified, with the
       audit's counts in the release notes. Acceptance fails on an artifact
@@ -98,8 +100,10 @@ work in zones from a terminal and a text browser, and keep it up to date.
       crates the Rust binaries link, and the repository at the build commit,
       with a manifest. Stage 04 installs each source's licence files under
       `/usr/share/licenses/`, firmware's `WHENCE` among them, and acceptance
-      fails on a source without any. Still to install: the licences of the
-      crates in kryptikd and kryptik-wlproxy.
+      fails on a source without any; the build fails on a crate either
+      `Cargo.lock` names without its texts in `build/licences`. Still needed:
+      someone other than their author following the install, update and
+      recovery instructions.
 
 ## Version 2
 
