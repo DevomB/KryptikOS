@@ -33,10 +33,12 @@ fi
 #   gnu      a .sig on the canonical GNU host
 #   kernel   kernel.org's .tar.sign over the uncompressed tar
 #   sig asc  a detached signature beside the file, with that suffix
-#   probe    whichever of .sig, .asc and .sign is published
+#   probe    whichever of .sig, .asc and .sign is published; an uploaded file
+#            with none keeps probe, so a later release's signature is found
 #   sha256   the publisher's .sha256 beside it (tools/verify-provenance.sh)
 #   tag      a signed tag the archive must reproduce (tools/verify-provenance.sh)
-#   none     nothing
+#   none     nothing: a generated archive (GitHub /archive/, GitLab
+#            /-/archive/, sr.ht /archive/) can have nothing beside it
 # new says where its newest release is found (tools/check-source-currency.sh):
 #   gnu      the canonical GNU host's listing
 #   vdir     the listing in the newest vN/ directory beside the file's own
@@ -95,7 +97,7 @@ acl|${V_ACL}|${MIRROR_SAVANNAH}/acl/acl-${V_ACL}.tar.xz|sig|listing
 libcap|${V_LIBCAP}|${MIRROR_LIBCAP}/libcap-${V_LIBCAP}.tar.xz|kernel|listing
 shadow|${V_SHADOW}|${MIRROR_GITHUB}/shadow-maint/shadow/releases/download/${V_SHADOW}/shadow-${V_SHADOW}.tar.xz|probe|github
 pkgconf|${V_PKGCONF}|https://distfiles.ariadne.space/pkgconf/pkgconf-${V_PKGCONF}.tar.xz|probe|listing
-iana-etc|${V_IANA_ETC}|${MIRROR_GITHUB}/Mic92/iana-etc/releases/download/${V_IANA_ETC}/iana-etc-${V_IANA_ETC}.tar.gz|probe|github
+iana-etc|${V_IANA_ETC}|${MIRROR_GITHUB}/Mic92/iana-etc/releases/download/${V_IANA_ETC}/iana-etc-${V_IANA_ETC}.tar.gz|sha256|github
 less|${V_LESS}|https://www.greenwoodsoftware.com/less/less-${V_LESS}.tar.gz|probe|rule
 groff|${V_GROFF}|${gnu}/groff/groff-${V_GROFF}.tar.gz|gnu|gnu
 util-linux|${V_UTIL_LINUX}|${MIRROR_KERNEL_UTILS}/util-linux/v${V_UTIL_LINUX%.*}/util-linux-${V_UTIL_LINUX}.tar.xz|kernel|vdir
@@ -119,10 +121,10 @@ s6|${V_S6}|${MIRROR_SKARNET}/s6/s6-${V_S6}.tar.gz|sha256|listing
 s6-rc|${V_S6_RC}|${MIRROR_SKARNET}/s6-rc/s6-rc-${V_S6_RC}.tar.gz|sha256|listing
 s6-linux-init|${V_S6_LINUX_INIT}|${MIRROR_SKARNET}/s6-linux-init/s6-linux-init-${V_S6_LINUX_INIT}.tar.gz|sha256|listing
 hardened-malloc|${V_HARDENED_MALLOC}|${MIRROR_GITHUB}/GrapheneOS/hardened_malloc/archive/refs/tags/${V_HARDENED_MALLOC}.tar.gz|tag|github
-kernel-hardening-checker|${V_KERNEL_HARDENING_CHECKER}|${MIRROR_GITHUB}/a13xp0p0v/kernel-hardening-checker/archive/refs/tags/v${V_KERNEL_HARDENING_CHECKER}.tar.gz|probe|rule
+kernel-hardening-checker|${V_KERNEL_HARDENING_CHECKER}|${MIRROR_GITHUB}/a13xp0p0v/kernel-hardening-checker/archive/refs/tags/v${V_KERNEL_HARDENING_CHECKER}.tar.gz|none|rule
 cmake|${V_CMAKE}|${MIRROR_CMAKE}/v${V_CMAKE%.*}/cmake-${V_CMAKE}.tar.gz|probe|vdir
 cmake-bin|${V_CMAKE}|${MIRROR_CMAKE}/v${V_CMAKE%.*}/cmake-${V_CMAKE}-linux-x86_64.tar.gz|probe|vdir
-json-c|${V_JSON_C}|${MIRROR_GITHUB}/json-c/json-c/archive/json-c-${V_JSON_C}/json-c-${V_JSON_C}.tar.gz|probe|github
+json-c|${V_JSON_C}|${MIRROR_GITHUB}/json-c/json-c/archive/json-c-${V_JSON_C}/json-c-${V_JSON_C}.tar.gz|none|github
 popt|${V_POPT}|${MIRROR_OSUOSL_RPM}/popt/releases/popt-1.x/popt-${V_POPT}.tar.gz|probe|listing
 libaio|${V_LIBAIO}|${MIRROR_PAGURE}/libaio/libaio-${V_LIBAIO}.tar.gz|probe|listing
 lvm2|${V_LVM2}|${MIRROR_SOURCEWARE}/lvm2/LVM2.${V_LVM2}.tgz|probe|rule
@@ -139,24 +141,24 @@ iw|${V_IW}|${MIRROR_KERNEL_SOFTWARE}/network/iw/iw-${V_IW}.tar.xz|kernel|listing
 ca-bundle|${V_CA_BUNDLE}|${MIRROR_CURL_CA}/cacert-${V_CA_BUNDLE}.pem|sha256|rule
 linux-firmware|${V_LINUX_FIRMWARE}|${MIRROR_KERNEL}/firmware/linux-firmware-${V_LINUX_FIRMWARE}.tar.xz|kernel|listing
 wireless-regdb|${V_WIRELESS_REGDB}|${MIRROR_KERNEL_SOFTWARE}/network/wireless-regdb/wireless-regdb-${V_WIRELESS_REGDB}.tar.xz|kernel|listing
-intel-microcode|${V_INTEL_MICROCODE}|${MIRROR_GITHUB}/intel/Intel-Linux-Processor-Microcode-Data-Files/archive/refs/tags/microcode-${V_INTEL_MICROCODE}.tar.gz|probe|github
+intel-microcode|${V_INTEL_MICROCODE}|${MIRROR_GITHUB}/intel/Intel-Linux-Processor-Microcode-Data-Files/archive/refs/tags/microcode-${V_INTEL_MICROCODE}.tar.gz|none|github
 meson|${V_MESON}|${MIRROR_GITHUB}/mesonbuild/meson/releases/download/${V_MESON}/meson-${V_MESON}.tar.gz|probe|github
-ninja|${V_NINJA}|${MIRROR_GITHUB}/ninja-build/ninja/archive/v${V_NINJA}/ninja-${V_NINJA}.tar.gz|probe|github
+ninja|${V_NINJA}|${MIRROR_GITHUB}/ninja-build/ninja/archive/v${V_NINJA}/ninja-${V_NINJA}.tar.gz|none|github
 wayland|${V_WAYLAND}|${MIRROR_FDO_GITLAB}/wayland/wayland/-/releases/${V_WAYLAND}/downloads/wayland-${V_WAYLAND}.tar.xz|probe|rule
 wayland-protocols|${V_WAYLAND_PROTOCOLS}|${MIRROR_FDO_GITLAB}/wayland/wayland-protocols/-/releases/${V_WAYLAND_PROTOCOLS}/downloads/wayland-protocols-${V_WAYLAND_PROTOCOLS}.tar.xz|probe|rule
-libxkbcommon|${V_LIBXKBCOMMON}|${MIRROR_GITHUB}/xkbcommon/libxkbcommon/archive/xkbcommon-${V_LIBXKBCOMMON}/libxkbcommon-${V_LIBXKBCOMMON}.tar.gz|probe|github
+libxkbcommon|${V_LIBXKBCOMMON}|${MIRROR_GITHUB}/xkbcommon/libxkbcommon/archive/xkbcommon-${V_LIBXKBCOMMON}/libxkbcommon-${V_LIBXKBCOMMON}.tar.gz|none|github
 xkeyboard-config|${V_XKEYBOARD_CONFIG}|${MIRROR_XORG}/data/xkeyboard-config/xkeyboard-config-${V_XKEYBOARD_CONFIG}.tar.xz|probe|listing
 pixman|${V_PIXMAN}|${MIRROR_CAIRO}/pixman-${V_PIXMAN}.tar.gz|probe|listing
 libdrm|${V_LIBDRM}|${MIRROR_DRI}/libdrm-${V_LIBDRM}.tar.xz|probe|listing
 libevdev|${V_LIBEVDEV}|${MIRROR_FDO_SW}/libevdev/libevdev-${V_LIBEVDEV}.tar.xz|probe|listing
 mtdev|${V_MTDEV}|${MIRROR_BITMATH}/mtdev-${V_MTDEV}.tar.bz2|probe|listing
-libinput|${V_LIBINPUT}|${MIRROR_FDO_GITLAB}/libinput/libinput/-/archive/${V_LIBINPUT}/libinput-${V_LIBINPUT}.tar.gz|probe|rule
-seatd|${V_SEATD}|${MIRROR_SRHT}/~kennylevinsen/seatd/archive/${V_SEATD}.tar.gz|probe|rule
-hwdata|${V_HWDATA}|${MIRROR_GITHUB}/vcrhonek/hwdata/archive/v${V_HWDATA}/hwdata-${V_HWDATA}.tar.gz|probe|github
+libinput|${V_LIBINPUT}|${MIRROR_FDO_GITLAB}/libinput/libinput/-/archive/${V_LIBINPUT}/libinput-${V_LIBINPUT}.tar.gz|none|rule
+seatd|${V_SEATD}|${MIRROR_SRHT}/~kennylevinsen/seatd/archive/${V_SEATD}.tar.gz|none|rule
+hwdata|${V_HWDATA}|${MIRROR_GITHUB}/vcrhonek/hwdata/archive/v${V_HWDATA}/hwdata-${V_HWDATA}.tar.gz|none|github
 libdisplay-info|${V_LIBDISPLAY_INFO}|${MIRROR_FDO_GITLAB}/emersion/libdisplay-info/-/releases/${V_LIBDISPLAY_INFO}/downloads/libdisplay-info-${V_LIBDISPLAY_INFO}.tar.xz|probe|rule
 wlroots|${V_WLROOTS}|${MIRROR_FDO_GITLAB}/wlroots/wlroots/-/releases/${V_WLROOTS}/downloads/wlroots-${V_WLROOTS}.tar.gz|probe|rule
 dwl|${V_DWL}|${MIRROR_CODEBERG}/dwl/dwl/releases/download/v${V_DWL}/dwl-v${V_DWL}.tar.gz|probe|rule
-havoc|${V_HAVOC}|${MIRROR_GITHUB}/ii8/havoc/archive/${V_HAVOC}/havoc-${V_HAVOC}.tar.gz|probe|github
+havoc|${V_HAVOC}|${MIRROR_GITHUB}/ii8/havoc/archive/${V_HAVOC}/havoc-${V_HAVOC}.tar.gz|none|github
 dejavu-fonts|${V_DEJAVU_FONTS}|${MIRROR_GITHUB}/dejavu-fonts/dejavu-fonts/releases/download/version_${V_DEJAVU_FONTS//./_}/dejavu-fonts-ttf-${V_DEJAVU_FONTS}.tar.bz2|probe|github
 lynx|${V_LYNX}|${MIRROR_DICKEY}/lynx/tarballs/lynx${V_LYNX}.tar.bz2|probe|rule
 nano|${V_NANO}|${MIRROR_NANO}/v${V_NANO%%.*}/nano-${V_NANO}.tar.xz|probe|vdir

@@ -108,6 +108,8 @@ declare a signed tag or a publisher's `.sha256`:
   reason.
 - **The CA bundle**. curl.se publishes a `.sha256` beside each extraction of
   Mozilla's set, checked the same way.
+- **iana-etc**. GitHub serves a `.sha256` beside the release tarball, from
+  the same platform as the tarball itself.
 
 Neither is a signature over the artifact, and the tool says so. Under
 `--strict`, which CI uses on pushes, a check that could not run fails.
