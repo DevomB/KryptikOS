@@ -1,135 +1,66 @@
 name: CI
 
+# Evidence for the declared-columns change, not for merge: the base branch's
+# tools and this branch's, run side by side on the same sources.
 on:
-  push:
-    branches: [main]
   pull_request:
-  schedule:
-    # Weekly, for the kernel EOL check: a pinned kernel does not change, but
-    # its support status does (ADR-009).
-    - cron: '0 6 * * 1'
 
 permissions:
   contents: read
 
 jobs:
-  identity:
-    name: Commit identity
+  evidence:
+    name: Declared columns against the base branch
     runs-on: ubuntu-latest
+    env:
+      KRYPTIK_SOURCES: /mnt/kryptik/sources
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      NO_COLOR: 1
+      # Rows the second commit changes on purpose.
+      CHANGED: '^(elfutils|cmake|cmake-bin|nano)$'
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
 
-      - name: Every commit is DevomB <Devom.hb@yahoo.com>
-        run: |
-          # On a pull request the checkout is GitHub's synthetic merge commit,
-          # which never reaches main; check the branch head instead.
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            ./tools/check-commit-identity.sh "${{ github.event.pull_request.head.sha }}"
-          else
-            ./tools/check-commit-identity.sh --all
-          fi
-
-  lint:
-    name: Shell lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-
-      - name: Install shellcheck
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-
-      - name: Syntax check every script
-        run: |
-          fail=0
-          while IFS= read -r f; do
-            if bash -n "$f"; then
-              echo "  ok   $f"
-            else
-              echo "  FAIL $f"
-              fail=1
-            fi
-          done < <(find . -name '*.sh' -not -path './build/work/*')
-          exit $fail
-
-      - name: Tool fixture suites
-        run: |
-          # Exit 77 means "cannot run here" (a suite that needs root and a
-          # built sysroot). Those are listed separately, never counted as passes.
-          fail=0
-          skipped=""
-          for t in tools/test-*.sh tools/test-*.py; do
-            echo "=== $t"
-            # The step runs under bash -e; capture the status without tripping it.
-            "$t" && rc=0 || rc=$?
-            if [ "$rc" -eq 77 ]; then
-              echo "  SKIPPED: $t"
-              skipped="$skipped $t"
-            elif [ "$rc" -ne 0 ]; then
-              echo "  FAILED: $t"
-              fail=1
-            fi
-          done
-          if [ -n "$skipped" ]; then
-            echo
-            echo "did not run (not passes):$skipped"
-          fi
-          exit $fail
-
-      - name: Shellcheck
-        # Every tracked file whose first line names a shell.
-        run: |
-          mapfile -t scripts < <(git ls-files | xargs awk 'FNR==1 { if ($0 ~ /^#! ?\/(usr\/)?bin\/(env +)?(ba|da)?sh/) print FILENAME; nextfile }')
-          echo "${#scripts[@]} shell scripts"
-          [ "${#scripts[@]}" -ge 100 ] || { echo "the search for scripts found too few: it is broken"; exit 1; }
-          shellcheck -S warning -x "${scripts[@]}"
-
-      - name: Executable bits are recorded
-        run: |
-          # A commit from Windows records 100644, and a Linux clone then fails
-          # with "Permission denied".
-          fail=0
-          for f in build/stages/*.sh tools/*.sh tools/test-*.py \
-                   tools/image/*.sh tools/image/*.py \
-                   compartments/tests/*.sh tools/git-hooks/*; do
-            mode=$(git ls-files -s "$f" | awk '{print $1}')
-            if [ "$mode" != "100755" ]; then
-              echo "  NOT EXECUTABLE ($mode): $f"
-              fail=1
-            fi
-          done
-          exit $fail
-
-      - name: No CRLF in scripts
-        run: |
-          if grep -rlU $'\r' --include='*.sh' --include='Makefile' . ; then
-            echo "CRLF found - scripts will fail on Linux with 'bad interpreter'"
-            exit 1
-          fi
-          echo "no CRLF"
-
-  manifest:
-    name: Source manifest
-    runs-on: ubuntu-latest
-    # The Distro workflow's path: a cache's version is a hash of its path, so
-    # under any other one a pull request misses main's copy and saves a whole
-    # second one of its own, and those evicted the build trees.
-    env:
-      KRYPTIK_SOURCES: /mnt/kryptik/sources
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-
-      - name: Manifest resolves
+      - name: The base branch beside this one
         run: |
           sudo mkdir -p /mnt/kryptik && sudo chown "$(id -u):$(id -g)" /mnt/kryptik
-          ./tools/fetch-sources.sh --list
+          git worktree add ../before "origin/${{ github.base_ref }}"
+          echo "before: $(git -C ../before log --oneline -1)"
+          echo "after:  $(git log --oneline -1 HEAD^2 2>/dev/null || git log --oneline -1)"
 
-      # The provenance gate hashes the tarballs, so they are cached. restore-keys
-      # brings back the last set; `make sources` re-hashes every file against
-      # the lock and fetches only what is missing, and the prune drops the rest.
+      - name: --list, the first three fields
+        run: |
+          (cd ../before && ./tools/fetch-sources.sh --list) > /tmp/before.list
+          ./tools/fetch-sources.sh --list > /tmp/after.list
+          if diff <(awk '{print $1, $2, $3}' /tmp/before.list) <(awk '{print $1, $2, $3}' /tmp/after.list); then
+            echo "IDENTICAL: name, version and URL of all $(wc -l < /tmp/after.list) rows"
+          else
+            echo "DIFFERENT (above)"
+          fi
+          echo; echo "fields per row after: $(awk '{print NF}' /tmp/after.list | sort -u | tr '\n' ' ')"
+          echo; awk '{print $1, $4, $5}' /tmp/after.list | column -t
+
+      - name: The currency survey, the first four columns
+        run: |
+          (cd ../before && ./tools/check-source-currency.sh --tsv) > /tmp/before.tsv
+          ./tools/check-source-currency.sh --tsv > /tmp/after.tsv
+          echo "rows: before $(wc -l < /tmp/before.tsv), after $(wc -l < /tmp/after.tsv)"
+          keep() { awk -F'\t' -v c="$CHANGED" '$1 !~ c {print $1 "\t" $2 "\t" $3 "\t" $4}' "$1"; }
+          if diff <(keep /tmp/before.tsv) <(keep /tmp/after.tsv); then
+            echo "IDENTICAL: name, pin, newest and status of every row but the four changed on purpose"
+          else
+            echo "DIFFERENT (above)"
+          fi
+          echo; echo "the four changed on purpose, before then after:"
+          awk -F'\t' -v c="$CHANGED" '$1 ~ c' /tmp/before.tsv /tmp/after.tsv
+          echo; echo "consulted, where it changed:"
+          awk -F'\t' 'NR == FNR { c[$1] = $5; next } ($1 in c) && c[$1] != $5 { print $1 "\n    " c[$1] "\n    " $5 }' \
+              /tmp/before.tsv /tmp/after.tsv
+          echo; echo "the survey after:"; column -t -s "$(printf '\t')" /tmp/after.tsv
+
       - name: Upstream sources (cached by sources.lock)
-        id: sources
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: /mnt/kryptik/sources
@@ -138,243 +69,34 @@ jobs:
             sources-
 
       - name: Fetch and verify the sources
-        if: steps.sources.outputs.cache-hit != 'true'
+        run: make sources
+
+      - name: verify-signatures.sh, class by class
         run: |
-          make sources
-          ./tools/prune-sources.sh
-
-      # Not from a pull request: its cache is scoped to its merge ref, so every
-      # one whose lock differs from main's would keep a whole copy of its own.
-      - name: Save the sources
-        if: ${{ github.event_name != 'pull_request' && steps.sources.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
-        with:
-          path: /mnt/kryptik/sources
-          key: ${{ steps.sources.outputs.cache-primary-key }}
-
-      # Informational: a mirror that is down or throttling is not a defect here.
-      # A one-byte ranged GET, because several GNU mirrors refuse HEAD.
-      - name: Every source URL is reachable
-        continue-on-error: true
-        run: |
-          reach() {
-            curl -fsSL --range 0-0 --retry 3 --retry-delay 2 \
-                 --connect-timeout 20 --max-time 60 -o /dev/null "$1"
-          }
-
-          missing=0
-          while read -r name ver url _; do
-            if reach "$url"; then
-              echo "  ok        $name $ver"
-              continue
-            fi
-            # Same fallback as fetch-sources.sh: mirrors.kernel.org for GNU.
-            fallback="${url/https:\/\/ftpmirror.gnu.org/https://mirrors.kernel.org/gnu}"
-            if [ "$fallback" != "$url" ] && reach "$fallback"; then
-              echo "  ok        $name $ver  (via fallback mirror)"
-            else
-              echo "  UNREACHED $name $ver  $url"
-              missing=$((missing + 1))
-            fi
-          done < <(./tools/fetch-sources.sh --list)
-          echo
-          if [ "$missing" -gt 0 ]; then
-            echo "$missing source(s) unreachable this run."
-            echo "Usually a transient mirror problem. Investigate only if the"
-            echo "same package fails across several runs."
+          # Each run fetches its own signatures, so neither reads the other's.
+          rm -rf "${KRYPTIK_SOURCES}/.signatures"
+          (cd ../before && ./tools/verify-signatures.sh --report=/tmp/before-sig.tsv) > /tmp/before-sig.log 2>&1 || true
+          rm -rf "${KRYPTIK_SOURCES}/.signatures"
+          ./tools/verify-signatures.sh --report=/tmp/after-sig.tsv > /tmp/after-sig.log 2>&1 || true
+          echo "rows: before $(wc -l < /tmp/before-sig.tsv), after $(wc -l < /tmp/after-sig.tsv)"
+          if diff <(cut -f1,2 /tmp/before-sig.tsv) <(cut -f1,2 /tmp/after-sig.tsv); then
+            echo "IDENTICAL: every source's class"
           else
-            echo "all sources reachable"
+            echo "DIFFERENT (above)"
           fi
+          echo; echo "details that changed:"
+          awk -F'\t' 'NR == FNR { d[$1] = $3; next } d[$1] != $3 { print $1 "\n    " d[$1] "\n    " $3 }' \
+              /tmp/before-sig.tsv /tmp/after-sig.tsv
+          echo; echo "summary before:"; sed -n '/Summary/,$p' /tmp/before-sig.log | head -8
+          echo; echo "summary after:"; sed -n '/Summary/,$p' /tmp/after-sig.log | head -8
 
-      - name: Provenance of unsigned sources
-        # `gh` needs GH_TOKEN even for a public repository. Strict on push and
-        # on the schedule; informational on pull requests, where a fork gets
-        # no token.
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: verify-provenance.sh, assertion by assertion
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "pull request: informational (no token for fork PRs)"
-            ./tools/verify-provenance.sh
+          (cd ../before && ./tools/verify-provenance.sh --report=/tmp/before-prov.tsv) > /tmp/before-prov.log 2>&1 || true
+          ./tools/verify-provenance.sh --report=/tmp/after-prov.tsv > /tmp/after-prov.log 2>&1 || true
+          if diff <(cut -f1,2 /tmp/before-prov.tsv | sort) <(cut -f1,2 /tmp/after-prov.tsv | sort); then
+            echo "IDENTICAL: every source's assertions and results ($(wc -l < /tmp/after-prov.tsv))"
           else
-            ./tools/verify-provenance.sh --strict
+            echo "DIFFERENT (above)"
           fi
-
-      - name: Provenance inventory
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # One assurance class per source and no total: a signature, a signed
-          # tag and a publisher checksum are different strengths of evidence.
-          ./tools/provenance-inventory.sh
-
-      - name: sources.lock covers the manifest
-        run: |
-          fail=0
-          while read -r name ver url _; do
-            file=$(basename "$url")
-            if ! grep -q "  $file\$" sources.lock; then
-              echo "  MISSING FROM LOCK: $file"
-              fail=1
-            fi
-          done < <(./tools/fetch-sources.sh --list)
-          [ $fail -eq 0 ] && echo "sources.lock covers every manifest entry"
-          exit $fail
-
-  compartments:
-    name: Compartment layer
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-
-      - name: kryptikd unit tests
-        run: cd compartments/kryptikd && cargo test
-
-      - name: Zone definitions validate
-        run: |
-          cd compartments/kryptikd && cargo build --quiet
-          ./target/debug/kryptikd check --zones ../zones
-
-      - name: Allow unprivileged user namespaces
-        run: |
-          # Ubuntu 24.04 restricts unprivileged user namespaces, which the zone
-          # suites need here. (Kryptik itself disables them: zones are created
-          # with privilege.)
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          echo "userns check:"
-          unshare --user --map-root-user id -u
-
-      - name: kryptikd builds for musl
-        run: |
-          # The shipped binary is static musl; glibc-only assumptions show up
-          # here (ioctl's request type differs, for one).
-          rustup target add x86_64-unknown-linux-musl
-          cd compartments/kryptikd
-          cargo build --release --target x86_64-unknown-linux-musl
-          cargo test --target x86_64-unknown-linux-musl
-
-      - name: Isolation exit test (the primitives)
-        run: |
-          cd compartments/kryptikd && cargo build --quiet
-          cd ../.. && ./compartments/tests/adversarial.sh
-
-      - name: Real-launcher suite (the launch path itself)
-        run: |
-          # adversarial.sh tests the primitives; this tests `kryptikd run`
-          # applying them in order. Unprivileged here, so groups K (privileged
-          # launch) and M (cgroup limits) report NOT RUN.
-          cd compartments/kryptikd && cargo build --quiet
-          cd ../.. && ./compartments/tests/launcher.sh | tee /tmp/launcher.out
-          exit "${PIPESTATUS[0]}"
-
-      - name: The runner must ADMIT what it could not test
-        run: |
-          # On a runner the launcher suite must end "PASSED WITH GAPS". A clean
-          # pass would mean the root-only checks ran vacuously or stopped
-          # reporting themselves. They run as root in the Distro workflow's
-          # acceptance (zones-test).
-          if ! grep -q 'PASSED WITH GAPS' /tmp/launcher.out; then
-            echo "::error::The launcher suite reported a clean pass on a CI runner."
-            echo "Group K (privileged launch) and group M (cgroup limits) cannot run"
-            echo "here. If they are no longer reported as NOT RUN, they are either"
-            echo "running vacuously or have been dropped. Neither is a pass."
-            grep -E 'passed,|not run' /tmp/launcher.out || true
-            exit 1
-          fi
-          echo "The suite reported its gaps, as it must on a runner:"
-          sed -n '/not run (mandatory gaps/,/^$/p' /tmp/launcher.out
-
-      - name: What this CI run did and did not establish
-        if: always()
-        run: |
-          cat >> "$GITHUB_STEP_SUMMARY" <<'SUMMARY'
-          ### What a green run here means
-
-          | tier | established here? |
-          |---|---|
-          | component (unit tests, tool fixtures) | yes |
-          | developer host (this runner's kernel, unprivileged) | yes |
-          | **target kernel (root, installed system, userns restricted)** | **no — the Distro workflow's acceptance run** |
-
-          The privileged launch path, the cgroup limits, the zone lifecycle
-          under root and the boot itself are tested by `make acceptance` on
-          the built media under KVM. A green tick here is not evidence about
-          them.
-          SUMMARY
-
-      - name: The user-facing command
-        run: |
-          # `kryptik` wraps kryptikd. It must not claim encryption the build
-          # cannot deliver, execute its own config file, or offer commands
-          # that do not work.
-          ./compartments/tests/cli.sh
-
-      - name: The launch daemon, over its socket
-        run: |
-          # A runner has no XDG_RUNTIME_DIR; give it one as a session would,
-          # or the registry and proxy-socket checks cannot run.
-          uid="$(id -u)"
-          sudo install -d -m 0700 -o "$uid" -g "$(id -g)" "/run/user/$uid"
-          export XDG_RUNTIME_DIR="/run/user/$uid"
-          cd compartments/kryptikd && cargo build --quiet
-          cd ../.. && ./compartments/tests/serve.sh
-
-      - name: The zone boundary's regression probes
-        run: |
-          # Exit status is the number of failures; checks that need root and
-          # the target kernel say NOT RUN and are covered by zones-test.
-          cd compartments/kryptikd && cargo build --quiet
-          cd ../.. && ./compartments/kryptikd/probes/boundary-checks.sh
-
-  kernel:
-    name: Kernel currency
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-
-      # Every pinned series with a published support window is still inside it.
-      - name: Pinned series are supported upstream
-        run: ./tools/check-support-status.sh --strict
-
-      # Survey (network), then gate (no network). Informational on a pull
-      # request: an upstream release this morning is not the PR's fault.
-      - name: Pins behind upstream are reviewed
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          ./tools/check-source-currency.sh --tsv > pin-survey.tsv
-          echo "survey: $(wc -l < pin-survey.tsv) sources"
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            ./tools/check-pin-reviews.sh --survey pin-survey.tsv || echo "pull request: informational"
-          else
-            ./tools/check-pin-reviews.sh --survey pin-survey.tsv
-          fi
-
-      - name: Pinned kernel is longterm and not EOL
-        run: ./tools/check-kernel-eol.sh
-
-      - name: Kernel config fragments validate against pinned source
-        run: |
-          # merge_config.sh drops unknown symbols silently, so every fragment
-          # symbol is checked against the pinned source.
-          mkdir -p sources
-          # Exact names: '^linux ' would also match linux-hardened.
-          ./tools/fetch-sources.sh --list \
-            | awk '$1 == "linux" || $1 == "linux-hardened" || $1 == "kernel-hardening-checker" {print $3}' \
-            | while read -r u; do
-                echo "fetching $(basename "$u")"
-                curl -fL --no-progress-meter -o "sources/$(basename "$u")" "$u"
-              done
-          ./tools/validate-kernel-config.sh
-          ./tools/validate-kernel-config.sh --hardened
-          ./tools/validate-kernel-config.sh --boot
-
-      - name: The resolved config honours every fragment line and kernel-hardening-checker accepts it
-        run: |
-          # Resolves the config as stage 05 does and refuses a dropped line
-          # (kconfig drops one silently for an unmet dependency), then holds
-          # kernel-hardening-checker's failures to checker-accepted.txt.
-          # The GCC plugin options exist only with plugin headers installed.
-          sudo apt-get install -y --no-install-recommends \
-            "gcc-$(gcc -dumpversion | cut -d. -f1)-plugin-dev" flex bison
-          make check-kernel-hardening
+          echo; tail -12 /tmp/after-prov.log
