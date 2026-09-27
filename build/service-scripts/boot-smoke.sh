@@ -57,7 +57,7 @@ say "state_marker=$(cat /var/.kryptik-state 2>/dev/null || echo none)"
 # --- services ---------------------------------------------------------------
 if [ -d /run/service ]; then
     say "scandir=/run/service"
-    for svc in eudev getty-tty1 seatd watchdog; do
+    for svc in eudev getty-tty1 getty-tty2 seatd watchdog; do
         if s6-svstat "/run/service/$svc" >/dev/null 2>&1; then
             up=$(s6-svstat -o up "/run/service/$svc" 2>/dev/null)
             [ "$up" = "true" ] && say "svc_$svc=up" || say "svc_$svc=down"

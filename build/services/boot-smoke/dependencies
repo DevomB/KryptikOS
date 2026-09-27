@@ -3,5 +3,6 @@ watchdog
 eudev-trigger
 kryptikd-check
 getty-tty1
+getty-tty2
 installer-run
 boot-success

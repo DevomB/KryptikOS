@@ -116,6 +116,7 @@ want "the image carries its provenance"    'KRYPTIK_SMOKE: image_json_present=ye
 want "kernel is the hardened build"        'KRYPTIK_SMOKE: kernel=.*hardened'
 want "eudev is supervised"                 'KRYPTIK_SMOKE: svc_eudev=up'
 want "seatd is supervised"                 'KRYPTIK_SMOKE: svc_seatd=up'
+want "the tty2 login is supervised"        'KRYPTIK_SMOKE: svc_getty-tty2=up'
 want "the watchdog feeder is supervised"   'KRYPTIK_SMOKE: svc_watchdog=up'
 want "a watchdog is armed, no way out"     'KRYPTIK_SMOKE: watchdog watchdog[0-9]+: .* state=active .* nowayout=1'
 want "landlock is an active LSM"           'KRYPTIK_SMOKE: lsm=.*landlock'

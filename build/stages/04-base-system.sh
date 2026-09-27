@@ -819,11 +819,18 @@ EOF
     usermod -p '*' root
     grep -q '^root:\*:' /etc/shadow && echo "root: no password" || { echo "FAIL: root has a password in the image"; return 1; }
     : > /etc/securetty
-    if grep -q '^SU_WHEEL_ONLY' /etc/login.defs; then
-        sed -i 's/^SU_WHEEL_ONLY.*/SU_WHEEL_ONLY yes/' /etc/login.defs
-    else
-        printf 'SU_WHEEL_ONLY yes\n' >> /etc/login.defs
-    fi
+    # Both set here, not left to shadow's login.defs, which a release may
+    # change: login reads the terminals root may use from CONSOLE's file.
+    local def
+    for def in "CONSOLE /etc/securetty" "SU_WHEEL_ONLY yes"; do
+        if grep -q "^${def%% *}[[:space:]]" /etc/login.defs; then
+            sed -i "s|^${def%% *}[[:space:]].*|${def}|" /etc/login.defs
+        else
+            printf '%s\n' "$def" >> /etc/login.defs
+        fi
+    done
+    grep -qx 'CONSOLE /etc/securetty' /etc/login.defs && [[ ! -s /etc/securetty ]] \
+        || { echo "FAIL: root is not kept off the terminals"; return 1; }
 
     # Kernel interface names (eth0, wlan0), the same on every machine: eudev's
     # slot-naming rule is masked.

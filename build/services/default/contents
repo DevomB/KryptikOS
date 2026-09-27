@@ -9,6 +9,7 @@ firstboot
 seatd
 net-zone
 getty-tty1
+getty-tty2
 installer-run
 boot-success
 boot-smoke
