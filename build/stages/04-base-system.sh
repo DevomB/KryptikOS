@@ -918,8 +918,9 @@ s_efiboot() {
 }
 
 # The console: a root shell on install media (agetty -n -l skips login), a
-# login prompt otherwise. The device is the kernel's active console (ttyS0 on
-# a -nographic VM, tty1 on hardware), not a guess.
+# login prompt otherwise. The device is the kernel's active console, not a
+# guess: a serial port when there is one; a virtual terminal is left to
+# getty-tty1.
 s_console() {
     mkdir -p /usr/libexec
     cat > /usr/libexec/kryptik-console <<'EOF'
@@ -931,12 +932,15 @@ s_console() {
 
 dev="$1"
 
-# sysinit may be asking for the state passphrase on this console. It gets 30 s
-# to start (a broken service database must still end in a console); once it
-# has, the console is its own until it ends.
-n=0
-until [ -e /run/kryptik-sysinit ] || [ "$n" -ge 150 ]; do sleep 0.2; n=$((n + 1)); done
-while [ "$(cat /run/kryptik-sysinit 2>/dev/null)" = running ]; do sleep 0.2; done
+# sysinit and then firstboot may be asking on this console (ask.sh: the state
+# passphrase, the first account). Each gets 30 s to start (a broken service
+# database must still end in a console); once one has, the console is its own
+# until it ends.
+for held in sysinit firstboot; do
+    n=0
+    until [ -e "/run/kryptik-$held" ] || [ "$n" -ge 150 ]; do sleep 0.2; n=$((n + 1)); done
+    while [ "$(cat "/run/kryptik-$held" 2>/dev/null)" = running ]; do sleep 0.2; done
+done
 
 if [ -z "$dev" ]; then
     # /sys/class/tty/console/active lists the kernel-preferred console last.
@@ -949,6 +953,13 @@ fi
 [ -n "$dev" ] || dev=console
 
 [ -e "/dev/$dev" ] || dev=console
+
+# A virtual terminal is getty-tty1's. With no serial port the kernel's console
+# is tty0, the terminal tty1 is shown on, and a second getty there would split
+# its keystrokes.
+case "$dev" in
+    tty[0-9]*) exec s6-pause ;;
+esac
 
 if [ -x /usr/sbin/agetty ]; then
     # On an install medium (kryptik.media= is on the signed command line) the

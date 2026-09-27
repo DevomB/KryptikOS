@@ -6,6 +6,10 @@
 # Does nothing on an install medium.
 set -u
 say() { echo "kryptik-firstboot: $*"; }
+# kryptik-console holds the serial console's getty back until this finishes,
+# as it does for sysinit: both may be asking there.
+echo running > /run/kryptik-firstboot
+trap 'echo finished > /run/kryptik-firstboot' EXIT
 media="$(sed -n 's/^media=//p' /run/kryptik/boot-identity 2>/dev/null)"
 [ -n "$media" ] && { say "install medium; no setup"; exit 0; }
 # A degraded state is a tmpfs (sysinit.sh); an account made now would not last.
@@ -56,49 +60,45 @@ if [ -r "$PRESEED" ]; then
     if complete; then rm -f "$PRESEED"; exit 0; fi
 fi
 
-# Ask on tty1 for whatever is missing. Every question has a time limit, so a
-# headless machine still reaches a login prompt and boot-success still runs.
+# Ask on every console for whatever is missing (ask.sh). Every question has a
+# time limit, so a headless machine still reaches a login prompt and
+# boot-success still runs.
+. /usr/libexec/kryptik/ask.sh
 PROMPT_SECS=600
-tty=/dev/tty1
-[ -c "$tty" ] || tty=/dev/console
 # Not passwd: without PAM it reads /dev/tty, which a boot service does not have.
-set_password() {   # set_password USER: two matching answers on $tty, through chpasswd
-    local p1 p2
+set_password() {   # set_password USER: two matching answers, through chpasswd
+    local p1 p2 err
     for _ in 1 2 3; do
-        printf 'New password for %s: ' "$1" > "$tty"
-        read -r -s -t "$PROMPT_SECS" p1 < "$tty" || return 1
-        printf '\nAgain: ' > "$tty"
-        read -r -s -t "$PROMPT_SECS" p2 < "$tty" || return 1
-        echo > "$tty"
+        p1=$(ask -s "$PROMPT_SECS" "New password for $1: ") || return 1
+        p2=$(ask -s "$PROMPT_SECS" "Again: ") || return 1
         if [ -n "$p1" ] && [ "$p1" = "$p2" ]; then
-            printf '%s:%s\n' "$1" "$p1" | chpasswd
-            return
+            err=$(printf '%s:%s\n' "$1" "$p1" | chpasswd 2>&1) && return 0
+            tell "$err"
+            return 1
         fi
-        echo "The two answers differ, or are empty." > "$tty"
+        tell "The two answers differ, or are empty."
     done
     return 1
 }
 name="$(regular_user)"
 if [ -z "$name" ]; then
-    {
-        echo
-        echo "===== Kryptik first-boot setup ====="
-        echo "No user account exists yet. Create the desktop user now."
-        printf 'User name: '
-    } > "$tty" 2>&1
-    if ! read -r -t "$PROMPT_SECS" name < "$tty"; then
+    tell "" "===== Kryptik first-boot setup =====" \
+         "No user account exists yet. Create the desktop user now."
+    if ! name=$(ask "$PROMPT_SECS" "User name: "); then
         say "no answer within 10 minutes; the next boot asks again"
         exit 0
     fi
     name="$(printf '%s' "$name" | tr -d '[:space:]')"
-    create_user "$name" > "$tty" 2>&1 || exit 0
+    made=$(create_user "$name" 2>&1) && ok=1 || ok=
+    tell "$made"
+    [ -n "$ok" ] || exit 0
 fi
 if ! has_password "$name"; then
-    echo "Set a password for $name:" > "$tty"
-    set_password "$name" 2> "$tty" || say "no password set for $name; the next boot asks again"
+    tell "Set a password for $name:"
+    set_password "$name" || say "no password set for $name; the next boot asks again"
 fi
 if ! has_password root; then
-    echo "Set the administrator (root) password, used by su:" > "$tty"
-    set_password root 2> "$tty" || say "no root password set; the next boot asks again"
+    tell "Set the administrator (root) password, used by su:"
+    set_password root || say "no root password set; the next boot asks again"
 fi
 exit 0

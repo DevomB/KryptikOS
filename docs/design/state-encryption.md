@@ -18,11 +18,13 @@ every machine, and verified. It uses the dm-crypt and XTS support the
   ever written down. It reaches cryptsetup on stdin, never on a command line
   or in a file on the target.
 - **`sysinit` opens it** once it has chosen the state partition on the root's
-  own disk (`devices.sh`: a label is not an identity), asking on the console
-  three times at most. It uses its own prompt (echo off with `stty`, the line
-  passed to cryptsetup on a descriptor) because cryptsetup's prompt discards
-  input typed as it appears. `kryptik-console`, the early getty, leaves the
-  console to `sysinit` until it finishes, waiting at most 30 s for it to start.
+  own disk (`devices.sh`: a label is not an identity), asking three times at
+  most on every console the kernel writes to, the screen and a serial port
+  alike, and taking the first answer (`ask.sh`). It uses its own prompt (echo
+  off with `stty`, the line passed to cryptsetup on a descriptor) because
+  cryptsetup's prompt discards input typed as it appears. `kryptik-console`,
+  the early getty, leaves the serial console to `sysinit` and then `firstboot`
+  until each finishes, waiting at most 30 s for each to start.
 - **Anything else is the degraded state**: three wrong passphrases, a damaged
   header, a missing partition, or a plain filesystem in its place (refused,
   since an unencrypted partition swapped in would otherwise be believed).

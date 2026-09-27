@@ -41,17 +41,13 @@ prune_etc_upper() {   # prune_etc_upper UPPER QUARANTINE
     return 0
 }
 
-# Up to three passphrase prompts on the console. Echo goes off before the
-# prompt and stty never discards input, so an early answer is not lost.
-# printf is a builtin: the passphrase never appears as an argument.
+# Up to three passphrase prompts, on every console (ask.sh). printf is a
+# builtin: the passphrase never appears as an argument.
+. /usr/libexec/kryptik/ask.sh
 unlock_state() {   # unlock_state DEVICE -> /dev/mapper/kryptik-state
     try=1
     while [ "$try" -le 3 ] && [ ! -b /dev/mapper/kryptik-state ]; do
-        stty -echo < /dev/console 2>/dev/null || true
-        printf 'sysinit: passphrase for the state partition (try %s of 3): ' "$try" > /dev/console
-        IFS= read -r pass < /dev/console || pass=""
-        stty echo < /dev/console 2>/dev/null || true
-        echo > /dev/console
+        pass=$(ask -s 0 "sysinit: passphrase for the state partition (try $try of 3): ") || pass=""
         printf '%s' "$pass" | cryptsetup open --type luks2 --key-file=- "$1" kryptik-state 2>/dev/null || true
         try=$((try + 1))
     done
@@ -155,18 +151,16 @@ if ! mountpoint -q /var; then
     fi
     if [ "$STATE" = degraded ]; then
         printf '%s\n' "$STATE_REASON" > /run/kryptik/state-degraded
-        {
-            echo
-            echo "sysinit: ******************************************************************"
-            echo "sysinit: *  STATE DEGRADED: ${STATE_REASON}"
-            echo "sysinit: *  This is an installed system (slot ${slot}) and its persistent"
-            echo "sysinit: *  state could not be used. /var is a TEMPORARY filesystem now:"
-            echo "sysinit: *  nothing changed in this session will survive a reboot."
-            echo "sysinit: *  There are no accounts and no desktop in this state: boot the"
-            echo "sysinit: *  install medium and run kryptik-recover --status to repair it."
-            echo "sysinit: ******************************************************************"
-            echo
-        } > /dev/console 2>&1 || true
+        tell "" \
+            "sysinit: ******************************************************************" \
+            "sysinit: *  STATE DEGRADED: ${STATE_REASON}" \
+            "sysinit: *  This is an installed system (slot ${slot}) and its persistent" \
+            "sysinit: *  state could not be used. /var is a TEMPORARY filesystem now:" \
+            "sysinit: *  nothing changed in this session will survive a reboot." \
+            "sysinit: *  There are no accounts and no desktop in this state: boot the" \
+            "sysinit: *  install medium and run kryptik-recover --status to repair it." \
+            "sysinit: ******************************************************************" \
+            ""
         echo "sysinit: STATE DEGRADED: ${STATE_REASON}" >&2
     fi
     if [ ! -e "$state_mnt/.kryptik-state" ]; then
