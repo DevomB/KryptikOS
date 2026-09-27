@@ -96,6 +96,17 @@ while not d.closed and time.time() < deadline:
     d._read()
 check("wait-exit sees the socket close", d.closed, True)
 
+print("-- a step no suite uses is unknown, not kept for nothing")
+import contextlib, io
+sock2 = os.path.join(T, "serial2")
+Guest(sock2, {}).start()
+out = io.StringIO()
+argv, sys.argv = sys.argv, ["vm-drive.py", "--serial", sock2, "--timeout", "2", "absent:x"]
+with contextlib.redirect_stdout(out):
+    rc = vm.main()
+sys.argv = argv
+check("absent: is refused as an unknown step", (rc, "unknown step" in out.getvalue()), (1, True))
+
 print()
 print(f"{PASS} passed, {FAIL} failed")
 sys.exit(0 if FAIL == 0 else 1)

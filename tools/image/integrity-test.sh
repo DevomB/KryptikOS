@@ -201,10 +201,11 @@ else
     red "could not mount the state partition from the host (loop/offset); step 5 not performed"
 fi
 # A payload signed with the attacker's key: valid against the planted anchor,
-# not against the image's.
+# not against the image's. Its manifest alone, since the updater checks the
+# signature before it reads a file the manifest lists.
 PAYDIR="${KRYPTIK_WORK}/images/payload-$(sed -n 's/^  "version": "\([^"]*\)".*/\1/p' "${KRYPTIK_WORK}/images/root.json" 2>/dev/null)"
 if [[ -f "$PAYDIR/manifest" ]]; then
-    rm -rf "$TMPK/pay"; cp -a --sparse=always "$PAYDIR" "$TMPK/pay"; rm -f "$TMPK/pay/manifest.sig"
+    rm -rf "$TMPK/pay"; mkdir -p "$TMPK/pay"; cp "$PAYDIR/manifest" "$TMPK/pay/"
     ssh-keygen -Y sign -f "$TMPK/attacker" -n kryptik-release "$TMPK/pay/manifest" >/dev/null 2>&1
     PAYIMG="${VMDIR}/integrity-attacker-payload.img"; rm -f "$PAYIMG"
     bytes="$(du -sb "$TMPK/pay" | cut -f1)"; truncate -s $(( bytes + bytes / 10 + 64 * 1024 * 1024 )) "$PAYIMG"

@@ -10,7 +10,6 @@ Steps (each one argument):
     seen:REGEX              wait until REGEX has appeared anywhere in the
                             transcript so far, consuming nothing (for a line
                             whose order among the others is not fixed)
-    absent:REGEX            fail if REGEX is in the output not yet consumed
     send:TEXT               send TEXT followed by Enter
     login:USER:PASSWORD     wait for "login:", authenticate, wait for a prompt
     run:CMD                 run CMD at the shell, require exit status 0; what
@@ -229,8 +228,6 @@ def main():
         try:
             if kind == "expect": d.expect(rest)
             elif kind == "seen": d.seen(rest)
-            elif kind == "absent":
-                if re.search(rest.encode(), d.buf): raise RuntimeError(f"forbidden output appeared: {rest!r}")
             elif kind == "send": d.send(rest)
             elif kind == "login":
                 u, _, p = rest.partition(":"); d.login(u, p)
