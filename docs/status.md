@@ -34,24 +34,21 @@ that ship, under QEMU with OVMF firmware.
 
 ## Last full pass
 
-Revision `55e1652` on `main`, 2026-09-20, release `0.1.20260920.55e16523.1`.
-Every suite passed, and no suite's own summary counted a failure:
+Revision `3eb22ce`, 2026-09-26, release `0.1.20260926.3eb22cef.1`, Distro
+run 36236312078. Every suite passed, and no suite's own summary counted a
+failure:
 
 | Suite | Result | What ran |
 | --- | --- | --- |
 | inputs | PASS | revision, compositor sources, `sources.lock`, media hashes |
-| build | PASS | host suites 18/0, libc unwinding 7/0, userspace smoke, artifact hardening audit, kernel config validation, upstream support status |
-| boot | PASS | USB image 38/0, ISO 38/0, firmware-only boot attested from the recorded QEMU commands |
-| install | PASS | install-test 43/0, state-test 54/0 (with the watchdog reset) |
-| integrity | PASS | Secure Boot 38/0, foreign keys refused 6/0, integrity-test 26/0 |
-| zones | PASS | zones-test 42/0 (network, encrypted storage and the clock on the Kryptik kernel) |
-| desktop | PASS | gui-test 30/0 |
-| update | PASS | update-test 21/0 |
-| release | PASS | export |
-
-Not yet proven by a run: the kernel with drivers as modules and its size
-budget, the update channel's fetch on the installed system, and the encrypted
-state partition.
+| build | PASS | host suites 46/0, libc unwinding 7/0, userspace smoke, artifact hardening audit (strict), licences, kernel config validation, upstream support status |
+| boot | PASS | USB image 40/0, ISO 40/0, firmware-only boot attested from the recorded QEMU commands |
+| install | PASS | install-test 48/0 (the state partition is LUKS), state-test 67/0 (with the watchdog reset) |
+| integrity | PASS | the firmware's variable stores, Secure Boot 40/0, foreign keys refused 6/0, integrity-test 27/0 |
+| zones | PASS | zones-test 50/0 (network, encrypted storage and the clock on the Kryptik kernel) |
+| desktop | PASS | gui-test 33/0 |
+| update | PASS | update-test 25/0, with a release the net zone fetched from the update channel, then applied, trial-booted and committed |
+| release | PASS | export, release notes |
 
 ## Known gaps
 
@@ -71,9 +68,10 @@ state partition.
   2026-09-10 (`build/patches/glibc-2.40/`). Nothing moves the pin along the
   branch automatically, though `tools/check-source-currency.sh` reports when
   the branch has moved on, and 2.40 is three releases old.
-- The artifact audit still reports soft findings: binaries without CET or
-  BIND_NOW, some non-PIE objects, some RPATHs. Each run's audit log has the
-  counts.
+- The artifact audit still reports soft findings, objects without CET and
+  RPATHs among them. Each has a reason in
+  `build/config/artifact-accepted.txt`, and acceptance fails on any other.
+  Each run's audit log has the counts.
 - dhcpcd runs without its own privilege separation; the net zone is its
   sandbox.
 - The builds are not reproducible bit for bit.

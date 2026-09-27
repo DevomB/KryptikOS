@@ -58,8 +58,11 @@ work in zones from a terminal and a text browser, and keep it up to date.
       statement and re-signs the statement on a schedule. Stage 06 publishes
       each build with it, and the update suite fetches, stages, applies and
       commits the release from that channel over the test network.
-- [ ] **An encrypted state partition** ([design](design/state-encryption.md)).
-      Done when the install, state and integrity suites pass with it.
+- [x] **An encrypted state partition** ([design](design/state-encryption.md)).
+      The install suite finds it is LUKS, asked for at boot and mounted on
+      `/var`; the state suite boots degraded and says why when it is
+      missing or unreadable; the integrity suite recovers a machine with
+      its state intact.
 - [x] **kryptikd built by a pinned compiler.** The Distro workflow installs
       rustc 1.98.1 from Rust's release tarballs, held to the SHA-256 in
       `build/config/rust.lock` as sources.lock holds cmake's (each checked
