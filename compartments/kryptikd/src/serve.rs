@@ -1022,15 +1022,13 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
                 reply(&conn, "error: clipboard-move needs two different zone names\n");
                 return None;
             }
-            // A trusted-UI gesture, run as root through our own `clipboard move`.
-            let out = std::process::Command::new("/proc/self/exe").args(["clipboard", "move", from, to]).output();
-            match out {
-                Ok(o) if o.status.success() => {
+            // A trusted-UI gesture: the same move as `kryptikd clipboard move`.
+            match crate::broker::move_between(from, to) {
+                Ok(line) => {
                     eprintln!("kryptikd serve: uid {uid} moved the clipboard {from:?} -> {to:?}");
-                    reply(&conn, &format!("ok {}\n", String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("moved")));
+                    reply(&conn, &format!("ok {line}\n"));
                 }
-                Ok(o) => reply(&conn, &format!("error: {}\n", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("clipboard move failed"))),
-                Err(e) => reply(&conn, &format!("error: {e}\n")),
+                Err(why) => reply(&conn, &format!("error: {why}\n")),
             }
         }
         "stop" => {
