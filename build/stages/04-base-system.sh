@@ -1858,8 +1858,10 @@ s_firmware() {
     local regdb; regdb="$(unpack "wireless-regdb-${V_WIRELESS_REGDB}.tar.xz" "wireless-regdb-${V_WIRELESS_REGDB}")"
     install -m 0644 "${regdb}/regulatory.db" "${regdb}/regulatory.db.p7s" "$dest/"
 
-    # Compress the regular files, then repoint every symlink at the .zst.
-    find "$dest" -type f ! -name '*.zst' -print0 | xargs -0 -r zstd -T0 -19 -q --rm
+    # Compress the regular files, then repoint every symlink at the .zst. zstd
+    # takes its files one at a time, so several run at once.
+    find "$dest" -type f ! -name '*.zst' -print0 \
+        | xargs -0 -r -P"${KRYPTIK_JOBS:-$(nproc)}" -n 32 zstd -19 -q --rm
     while IFS= read -r -d '' f; do
         t="$(readlink "$f")"
         ln -sfn "${t}.zst" "${f}.zst"
