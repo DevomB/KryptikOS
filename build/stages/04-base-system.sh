@@ -713,7 +713,10 @@ s_gcc_native() {
     # Stage 02's compiler ran fixincludes and this one does not, so its fixed
     # headers (searched before /usr/include) and its fixincl would stay.
     rm -rf "/usr/lib/gcc/${want}/${V_GCC}/include-fixed" "/usr/libexec/gcc/${want}/${V_GCC}/install-tools"
-    make install
+    # -j1: the install replaces /usr/include/c++'s headers one by one, and a
+    # parallel job rebuilding libcc1 against them, which they now postdate,
+    # can find one gone.
+    make -j1 install
 
     local triple t lib
     triple="$(gcc -dumpmachine)"
