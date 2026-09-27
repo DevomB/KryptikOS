@@ -545,6 +545,39 @@ test_single_implementation() {
     done
 }
 
+# A check is stamped and reruns when what came before it changes, but it is no
+# link in the chain: editing it, or losing its stamp, reruns it alone.
+test_checks() {
+    local work; work="$(mktemp -d)"
+    make_harness "$work"
+
+    local out rc
+    run_harness "$work" first recipe_ok -- chk --check recipe_helped -- after recipe_ver >/dev/null
+    check "checks: a check is stamped like a step" "$([[ -f "$work/.stamps/t-chk" ]] && echo ok)"
+
+    make_harness "$work" "" 'echo "check: tightened"'
+    out="$(KRYPTIK_STALE=rebuild run_harness "$work" first recipe_ok -- chk --check recipe_helped -- after recipe_ver)"; rc=$?
+    check "checks: an edited check reruns" \
+          "$({ [[ $rc -eq 0 ]] && [[ $out == *"chk: KRYPTIK_STALE=rebuild"* ]]; } && echo ok)"
+    check "checks: and the step after it still skips" "$([[ $out == *"skip after"* ]] && echo ok)"
+
+    rm -f "$work/.stamps/t-chk"
+    out="$(run_harness "$work" first recipe_ok -- chk --check recipe_helped -- after recipe_ver)"; rc=$?
+    check "checks: a check whose stamp is gone runs, and the step after it still skips" \
+          "$({ [[ $rc -eq 0 ]] && [[ $out == *"skip first"* && $out != *"skip chk"* && $out == *"skip after"* ]]; } && echo ok)"
+
+    make_harness "$work" 'echo "recipe: an extra command"' 'echo "check: tightened"'
+    out="$(KRYPTIK_STALE=rebuild run_harness "$work" first recipe_ok -- chk --check recipe_helped -- after recipe_ver)"; rc=$?
+    check "checks: a change before a check reruns it" \
+          "$({ [[ $rc -eq 0 ]] && [[ $out == *"chk: KRYPTIK_STALE=rebuild"* && $out == *"after: KRYPTIK_STALE=rebuild"* ]]; } && echo ok)"
+
+    out="$(run_harness "$work" first recipe_ok -- bad --check recipe_fail -- after recipe_ver)"; rc=$?
+    check "checks: a failing check stops the stage" \
+          "$({ [[ $rc -ne 0 ]] && [[ $out != *"skip after"* && $out != *"==> after"* ]]; } && echo ok)"
+
+    rm -rf "$work"
+}
+
 echo "Regression test: the build step runner"
 echo
 
@@ -566,6 +599,9 @@ test_per_step_flags
 echo
 echo "-- a step's stamp covers what came before it, by fingerprint"
 test_dependency_chain
+echo
+echo "-- a check is no link in that chain"
+test_checks
 echo
 echo "-- a stage seeds its chain from the stage it builds on"
 test_stage_seed

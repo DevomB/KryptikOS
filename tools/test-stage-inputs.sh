@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # What the later stages' stamps are built from, read from the stage files
-# themselves: stage 06 builds on stage 04's last step as well as on stage 05,
-# and stage 05's config and hardening-check steps pass as arguments what their
-# function text cannot show, so their fingerprints move when it changes.
+# themselves: stage 06 builds on the last build steps of stages 04 and 05, the
+# checks after them being no links in the chain, and stage 05's config and
+# hardening-check steps pass as arguments what their function text cannot
+# show, so their fingerprints move when it changes.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PASS=0; FAIL=0
@@ -11,16 +12,22 @@ bad() { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
 
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 
-# Stage 04's last step, by its own --list, which exits before the chroot check.
-last="$(cd "$ROOT" && NO_COLOR=1 bash build/stages/04-base-system.sh --list 2>/dev/null \
-        | awk '$1 ~ /^[0-9]+\.$/ { n = $2 } END { print n }')"
-[[ -n "$last" ]] && ok "stage 04 lists its steps; the last is ${last}" || bad "stage 04 --list named no steps"
+# Stage 04's last build step, by its own --list, which exits before the chroot
+# check and marks the checks.
+list="$(cd "$ROOT" && NO_COLOR=1 bash build/stages/04-base-system.sh --list 2>/dev/null)"
+last="$(awk '$1 ~ /^[0-9]+\.$/ && $3 != "(check)" { n = $2 } END { print n }' <<< "$list")"
+[[ -n "$last" ]] && ok "stage 04 lists its steps; the last build step is ${last}" || bad "stage 04 --list named no steps"
+grep -qE '^ +[0-9]+\. compiler-check-final +\(check\)$' <<< "$list" \
+    && ok "the copy of a check made after glibc is a check too" || bad "compiler-check-final is not listed as a check"
+# Stage 05's, from its step lines.
+last05="$(grep -E '^step [a-z0-9-]+ ' "$ROOT/build/stages/05-kernel.sh" | grep -v -- ' --check ' | tail -1 | awk '{print $2}')"
 
 # The stamps stage 06 builds on, from its stage_depends_on lines.
 seeds="$(stage_depends_on() { printf '%s%s\n' "$1" "$2"; }
          eval "$(grep -E '^stage_depends_on ' "$ROOT/build/stages/06-iso.sh")")"
-[[ "$seeds" == *"kernel-verify-install"* ]] && ok "stage 06 builds on stage 05's last step" || bad "stage 06 seeds: ${seeds:-none}"
-[[ -n "$last" && "$seeds" == *"bs-${last}"* ]] && ok "stage 06 builds on stage 04's last step too, so a later stage 04 step reaches it" \
+[[ -n "$last05" && "$seeds" == *"kernel-${last05}"* ]] && ok "stage 06 builds on stage 05's last build step, ${last05}" \
+    || bad "stage 06 does not build on kernel-${last05}: ${seeds:-none}"
+[[ -n "$last" && "$seeds" == *"bs-${last}"* ]] && ok "stage 06 builds on stage 04's last build step too, so a later stage 04 step reaches it" \
     || bad "stage 06 does not build on bs-${last}: ${seeds:-none}"
 
 # step_line NAME: stage 05's `step NAME ...` command, joined across lines.
@@ -34,7 +41,7 @@ step_line() {
 args_of() {
     local name="$1" tree="$2"; shift 2
     env "$@" KRYPTIK_ROOT="$tree" bash -c 'source "$1/build/lib/common.sh" || exit 1
-        step() { shift 2; printf "%s\n" "$@"; }
+        step() { shift; [ "$1" != --check ] || shift; shift; printf "%s\n" "$@"; }
         eval "$2"' _ "$ROOT" "$(step_line "$name")" 2>&1
 }
 

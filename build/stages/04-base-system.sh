@@ -2090,7 +2090,7 @@ s_compiler_check() {
 
 # --- build order: by dependency, not alphabetical ----------------------------
 PACKAGES=(
-    "compiler-check" "s_compiler_check"
+    "compiler-check" "--check s_compiler_check"
     "locales"     "s_locales"
     "gettext"     "native_build gettext-${V_GETTEXT}.tar.xz gettext-${V_GETTEXT} --disable-shared"
     "bison"       "native_build bison-${V_BISON}.tar.xz bison-${V_BISON} --docdir=/usr/share/doc/bison-${V_BISON}"
@@ -2247,7 +2247,7 @@ PACKAGES=(
     "tests"       "s_tests $(tree_digest "${KRYPTIK_ROOT}"/compartments/tests/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/probes/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/src/isolate.rs "${KRYPTIK_ROOT}"/compartments/kryptikd/src/rootfs.rs "${KRYPTIK_ROOT}"/build/guest-tests/*.sh "${KRYPTIK_ROOT}"/build/guest-tests/*.py)"
     # The tarballs it reads are pinned by sources.lock and named by fetch-sources.
     "licences"    "s_licences $(sha256_of "${KRYPTIK_ROOT}/sources.lock") $(sha256_of "${KRYPTIK_ROOT}/tools/fetch-sources.sh") $(sha256_of "${KRYPTIK_ROOT}/LICENSE") $(tree_digest "${KRYPTIK_ROOT}/build/licences")"
-    "boot-check"  "s_boot_check"
+    "boot-check"  "--check s_boot_check"
 )
 
 # Rows before glibc link stage 01's crt files, which carry no CET property, and
@@ -2272,7 +2272,11 @@ PACKAGES=("${rows[@]}")
 if [[ "$MODE" == "list" ]]; then
     printf 'Kryptik stage 04 build order (%d entries):\n\n' "$(( ${#PACKAGES[@]} / 2 ))"
     for ((i = 0; i < ${#PACKAGES[@]}; i += 2)); do
-        printf '  %2d. %s\n' "$(( i / 2 + 1 ))" "${PACKAGES[i]}"
+        if [[ "${PACKAGES[i+1]}" == --check* ]]; then
+            printf '  %2d. %-16s  (check)\n' "$(( i / 2 + 1 ))" "${PACKAGES[i]}"
+        else
+            printf '  %2d. %s\n' "$(( i / 2 + 1 ))" "${PACKAGES[i]}"
+        fi
     done
     exit 0
 fi
@@ -2292,7 +2296,8 @@ echo
 require_inside_chroot "stage 04" "system"
 
 # Built by stage 02's toolchain: rebuilding it invalidates every stamp here.
-stage_depends_on "tt-" verify
+# gcc2 is its last build step; verify after it is a check.
+stage_depends_on "tt-" gcc2
 
 for ((i = 0; i < ${#PACKAGES[@]}; i += 2)); do
     name="${PACKAGES[i]}"

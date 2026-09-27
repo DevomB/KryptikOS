@@ -96,9 +96,10 @@ mkdir -p "$IMG" "$IMG/cmdlines" "$IMG/kernels" "$KRYPTIK_OUT"
 chmod 0700 "$IMG"
 
 # The whole of stage 05, and the whole of stage 04: stage 05 builds on stage 04
-# only as far as elfutils, and the root holds every step after it too.
-stage_depends_on "kernel-" verify-install
-stage_depends_on "bs-" boot-check
+# only as far as elfutils, and the root holds every step after it too. Each
+# seed is its stage's last build step, the checks after them being no links.
+stage_depends_on "kernel-" install
+stage_depends_on "bs-" licences
 
 # --- steps ------------------------------------------------------------------
 

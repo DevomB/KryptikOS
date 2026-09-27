@@ -42,7 +42,7 @@ env:
 # The caches are saved when a stage fails too, keyed on a digest of the stamps:
 # a failed step leaves no stamp, so the next run resumes where this one
 # stopped, and a run that built nothing new saves nothing. The stage 05 tree's
-# key starts with the fingerprint of the stamp stage 04 builds on (tt-verify):
+# key starts with the fingerprint of the stamp stage 04 builds on (tt-gcc2):
 # a tree is never restored over another toolchain, and an edit that leaves the
 # toolchain alone (a kernel fragment, one package) still finds it.
 
@@ -101,9 +101,9 @@ jobs:
         run: |
           d="$( { cd "$KRYPTIK_WORK/.stamps" && find . -path ./legacy -prune -o -type f ! -name '*.tmp.*' -print0 | LC_ALL=C sort -z | xargs -0r grep -H '^fingerprint: ' | sha256sum | cut -c1-16; } 2>/dev/null || true)"
           if [ -n "$d" ]; then echo "prefix=work02-$d-" >> "$GITHUB_OUTPUT"; fi
-          ttfp="$(awk '$1 == "fingerprint:" { print $2; exit }' "$KRYPTIK_WORK/.stamps/tt-verify" 2>/dev/null || true)"
+          ttfp="$(awk '$1 == "fingerprint:" { print $2; exit }' "$KRYPTIK_WORK/.stamps/tt-gcc2" 2>/dev/null || true)"
           # Without it every toolchain's stage 05 tree would share one key.
-          if [ "$STAGE02" = success ] && [ -z "$ttfp" ]; then echo "stage 02 passed and tt-verify has no fingerprint"; exit 1; fi
+          if [ "$STAGE02" = success ] && [ -z "$ttfp" ]; then echo "stage 02 passed and tt-gcc2 has no fingerprint"; exit 1; fi
           echo "ttfp=$ttfp" >> "$GITHUB_OUTPUT"
 
       - name: Save the stage 01-02 sysroot
