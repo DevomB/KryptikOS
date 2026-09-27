@@ -12,7 +12,7 @@
 ask_dir=/run/kryptik
 
 consoles() {
-    _c_active=$(cat /sys/class/tty/console/active 2>/dev/null) || _c_active=
+    _c_active=$(cat /sys/class/tty/console/active 2>/dev/null) || _c_active=''
     for _c in ${_c_active:-console}; do
         [ -c "/dev/$_c" ] && echo "/dev/$_c"
     done
@@ -30,7 +30,7 @@ tell() {
 # so an early answer is not lost. printf is a builtin: the answer is never an
 # argument.
 ask() {
-    _a_quiet=
+    _a_quiet=''
     [ "$1" = -s ] && { _a_quiet=1; shift; }
     _a_secs=$1 _a_q=$2
     _a_devs=$(consoles)
@@ -38,7 +38,7 @@ ask() {
     mkfifo -m 0600 "$ask_dir/ask" || return 1
     exec 3<> "$ask_dir/ask"
     rm -f "$ask_dir/ask"
-    _a_pids= _a_n=0
+    _a_pids='' _a_n=0
     for _a_dev in $_a_devs; do
         (
             [ -z "$_a_quiet" ] || stty -echo < "$_a_dev" 2>/dev/null || true
@@ -60,7 +60,7 @@ ask() {
         ) < /dev/null > /dev/null 2>&1 &
         _a_pids="$_a_pids $!"
     fi
-    _a_ans= _a_from= _a_ended=0
+    _a_ans='' _a_from='' _a_ended=0
     while [ "$_a_ended" -lt "$_a_n" ] && IFS= read -r _a_msg <&3; do
         case "$_a_msg" in
             A*) _a_msg=${_a_msg#A}; _a_from=${_a_msg%% *}; _a_ans=${_a_msg#* }; break ;;
