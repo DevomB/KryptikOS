@@ -449,11 +449,16 @@ Stamp: ${stamp}"
     esac
 }
 
-#   step <name> <recipe> [args...]
+#   step <name> [--check] <recipe> [args...]
 # Stages provide STAMPS, LOGS, STAMP_PREFIX and STAGE_FILE, and optionally
 # REDO, set_flags_for() (per-package hardening) and step_failure_hint().
+# A check writes nothing a later step reads. It is stamped like any step and
+# runs again when anything before it changes, but it is no link in the chain:
+# editing one reruns it alone.
 step() {
     local name="$1"; shift
+    local link=1
+    if [[ "${1:-}" == --check ]]; then link=0; shift; fi
     local stamp="${STAMPS}/${STAMP_PREFIX}${name}"
 
     # Before fingerprinting, so the stamp hashes the flags the recipe uses.
@@ -470,7 +475,7 @@ step() {
         local got; got="$(_stamp_read "$stamp")"
         if [[ "$got" == "$want" ]]; then
             dim "  skip ${name} (already built, inputs unchanged)"
-            STAMP_DEPS="${STAMP_DEPS}${name}=${want};"
+            [[ "$link" -eq 0 ]] || STAMP_DEPS="${STAMP_DEPS}${name}=${want};"
             return 0
         fi
         # Dies unless KRYPTIK_STALE=rebuild, or the stamp was fingerprint-less.
@@ -495,7 +500,7 @@ step() {
     trap _kryptik_trap ERR
     set -e
 
-    STAMP_DEPS="${STAMP_DEPS}${name}=${want};"
+    [[ "$link" -eq 0 ]] || STAMP_DEPS="${STAMP_DEPS}${name}=${want};"
 
     if [[ "$rc" -eq 0 ]]; then
         _stamp_write "$stamp" "$name" "$want" "$(( SECONDS - start ))" "$logfile"

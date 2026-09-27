@@ -283,7 +283,7 @@ step tar        cross_build "tar-${V_TAR}.tar.xz"             "tar-${V_TAR}"
 step xz         s_xz
 step binutils2  s_binutils_pass2
 step gcc2       s_gcc_pass2
-step verify     s_verify
+step verify     --check s_verify
 
 echo
 ok "Stage 02 complete. Sysroot at ${LFS} can host a chroot."

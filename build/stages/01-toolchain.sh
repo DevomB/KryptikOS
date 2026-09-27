@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Stage 01: cross toolchain for $LFS_TGT in an isolated sysroot (LFS chapter 5).
-# usage: 01-toolchain.sh [--redo <step>]
+# usage: 01-toolchain.sh [--redo <step> | --toolchain-id]
 
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
 load_config
@@ -262,6 +262,32 @@ s_libstdcxx() {
 
 # --- run -------------------------------------------------------------------
 
+# The steps, in order: walked once for the toolchain's identity, then run.
+STEPS=(
+    "layout s_layout"
+    "binutils-pass1 s_binutils_pass1"
+    "gcc-pass1 s_gcc_pass1"
+    "linux-headers s_linux_headers"
+    "glibc s_glibc"
+    "sanity-check --check s_sanity_check"
+    "libstdcxx s_libstdcxx"
+)
+
+# The toolchain's identity: its build steps' fingerprints, chained as step()
+# chains them, so it changes exactly when one of them would rebuild: a recipe
+# or a helper it calls, a version or patch set it names, the flags, or the host
+# compiler. The walk comes before any step runs, so no step's arguments may
+# read what an earlier one writes (tools/test-toolchain-identity.sh).
+toolchain_id="$(for row in "${STEPS[@]}"; do
+                    read -ra s <<< "$row"
+                    [[ "${s[1]}" != --check ]] || continue
+                    if declare -F set_flags_for > /dev/null; then set_flags_for "${s[0]}"; fi
+                    fp="$(stamp_fingerprint "${s[@]}")"
+                    printf '%s %s\n' "${s[0]}" "$fp"
+                    STAMP_DEPS="${STAMP_DEPS}${s[0]}=${fp};"
+                done | sha256_of_stdin)"
+if [[ "${1:-}" == --toolchain-id ]]; then printf '%s\n' "$toolchain_id"; exit 0; fi
+
 log "Kryptik stage 01 — cross toolchain"
 dim "  sysroot : ${LFS}"
 dim "  target  : ${LFS_TGT}"
@@ -296,16 +322,15 @@ Run 'make check' for the full host requirement list."
     done
     ok "preflight: sources and host tools present"
 }
+
 preflight
 
 # --- a cross toolchain is never rebuilt over another one's sysroot -------------
 # Pass 1 expects a sysroot with no headers; over an older tree, fixincludes
 # keeps copies of the old glibc headers, which no stamp hashes. So a tree built
-# by another toolchain is cleared, stamps included. The record of which one
-# built it stays out of the sysroot, which becomes the root image.
-toolchain_id="$({ printf '%s\n' "$V_BINUTILS" "$V_GCC" "$V_GLIBC" "$V_LINUX" "$V_MPFR" "$V_GMP" "$V_MPC"
-                  # `|| true`: not every package here has a patch set.
-                  cat "${KRYPTIK_ROOT}"/build/patches/{glibc,gcc,binutils}-*/SHA256SUMS 2>/dev/null || true; } | sha256_of_stdin)"
+# by another toolchain, or by a stage 01 step since changed, is cleared, stamps
+# included. The record of which one built it stays out of the sysroot, which
+# becomes the root image.
 toolchain_marker="${STAMPS}/toolchain-id"
 
 # Anything mounted under DIR? Stage 03 binds this repository into the sysroot,
@@ -341,13 +366,10 @@ fi
 # A tree with no headers is about to be built by this toolchain.
 [[ -d "${LFS}/usr/include" ]] || { mkdir -p "$STAMPS"; printf '%s\n' "$toolchain_id" > "$toolchain_marker"; }
 
-step layout          s_layout
-step binutils-pass1  s_binutils_pass1
-step gcc-pass1       s_gcc_pass1
-step linux-headers   s_linux_headers
-step glibc           s_glibc
-step sanity-check    s_sanity_check
-step libstdcxx       s_libstdcxx
+for row in "${STEPS[@]}"; do
+    read -ra s <<< "$row"
+    step "${s[@]}"
+done
 
 echo
 ok "Stage 01 complete. Cross toolchain is in ${LFS}/tools"

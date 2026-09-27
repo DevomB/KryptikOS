@@ -384,7 +384,7 @@ FRAG_DIGEST="$(cat "$FRAG_BASE" "$FRAG_HARDENED" "$FRAG_BOOT" | sha256_of_stdin)
 # so this covers them without tying the kernel to later packages.
 stage_depends_on "bs-" elfutils
 
-step compiler-check  s_compiler_check
+step compiler-check  --check s_compiler_check
 # The build tree may be deleted to reclaim space; then every step that reads
 # it must run again, so their stamps are archived.
 if [[ ! -d "$KSRC" && -f "${STAMPS}/${STAMP_PREFIX}unpack" ]]; then
@@ -423,7 +423,7 @@ s_hardening_check() {
 }
 ACCEPTED_LIST="${CONFIG_DIR}/checker-accepted.txt"
 COMMON_ARGS_DIGEST="$(grep '^COMMON_ARGS=' "${KRYPTIK_ROOT}/build/stages/06-iso.sh" | sha256_of_stdin)"
-step hardening-check s_hardening_check \
+step hardening-check --check s_hardening_check \
     "$(sha256_of "${KSRC}/.config" 2>/dev/null || echo noconfig)" \
     "$(sha256_of "$ACCEPTED_LIST")" "$COMMON_ARGS_DIGEST" \
     "$(sha256_of "${KRYPTIK_ROOT}/tools/check-kernel-hardening.sh")" "$V_KERNEL_HARDENING_CHECKER"
@@ -433,10 +433,10 @@ step hardening-check s_hardening_check \
 CFG_DIGEST="$(sha256_of "${KSRC}/.config" 2>/dev/null || echo noconfig)"
 
 step build           s_build "${HOSTLDFLAGS:-}" "$CFG_DIGEST"
-step size            s_size "$CFG_DIGEST" "$(sha256_of "${CONFIG_DIR}/size-budget")"
+step size            --check s_size "$CFG_DIGEST" "$(sha256_of "${CONFIG_DIR}/size-budget")"
 step modules         s_modules "$CFG_DIGEST"
 step install         s_install "$CFG_DIGEST"
-step verify-install  s_verify_install "$CFG_DIGEST"
+step verify-install  --check s_verify_install "$CFG_DIGEST"
 
 echo
 ok "Stage 05 complete."
