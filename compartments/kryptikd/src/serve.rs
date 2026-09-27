@@ -589,7 +589,7 @@ fn spawn_launcher(
     if pid == 0 {
         unsafe {
             libc::setsid();
-            let null = libc::open(b"/dev/null\0".as_ptr() as *const libc::c_char, libc::O_RDONLY);
+            let null = libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY);
             libc::dup2(null, 0);
             libc::dup2(logf.as_raw_fd(), 1);
             libc::dup2(logf.as_raw_fd(), 2);

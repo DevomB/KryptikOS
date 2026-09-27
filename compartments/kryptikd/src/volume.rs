@@ -481,7 +481,7 @@ mod tests {
     #[test]
     fn passphrase_fd_isolated_from_sender() {
         use std::os::unix::io::IntoRawFd;
-        let fd = unsafe { libc::memfd_create(b"kryptik-pass-test\0".as_ptr() as _, libc::MFD_CLOEXEC) };
+        let fd = unsafe { libc::memfd_create(c"kryptik-pass-test".as_ptr(), libc::MFD_CLOEXEC) };
         assert!(fd >= 0);
         let mut file = unsafe { fs::File::from_raw_fd(fd) };
         file.write_all(b"skipsecret\r\n").unwrap();

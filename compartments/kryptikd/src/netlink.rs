@@ -82,7 +82,7 @@ impl Msg {
 
     fn raw(&mut self, bytes: &[u8]) {
         self.buf.extend_from_slice(bytes);
-        while self.buf.len() % 4 != 0 {
+        while !self.buf.len().is_multiple_of(4) {
             self.buf.push(0);
         }
     }

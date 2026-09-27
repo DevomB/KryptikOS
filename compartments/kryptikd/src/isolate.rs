@@ -137,13 +137,12 @@ pub fn probe_userns_restriction() -> Result<bool, IsolateError> {
     }
     if pid == 0 {
         unsafe {
-            if libc::geteuid() == 0 {
-                if libc::setgroups(0, std::ptr::null()) < 0
+            if libc::geteuid() == 0
+                && (libc::setgroups(0, std::ptr::null()) < 0
                     || libc::setresgid(65534, 65534, 65534) < 0
-                    || libc::setresuid(65534, 65534, 65534) < 0
-                {
-                    libc::_exit(3);
-                }
+                    || libc::setresuid(65534, 65534, 65534) < 0)
+            {
+                libc::_exit(3);
             }
             if libc::unshare(libc::CLONE_NEWUSER) == 0 {
                 libc::_exit(0);

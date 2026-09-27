@@ -229,7 +229,7 @@ pub(crate) mod tests {
         let word = |b: &mut Vec<u8>, v: u32| b.extend_from_slice(&v.to_ne_bytes());
         let bytes = |b: &mut Vec<u8>, data: &[u8]| {
             b.extend_from_slice(data);
-            while b.len() % 4 != 0 {
+            while !b.len().is_multiple_of(4) {
                 b.push(0);
             }
         };

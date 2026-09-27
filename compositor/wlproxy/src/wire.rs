@@ -73,7 +73,7 @@ impl Header {
         let size = (word1 >> 16) as u16;
 
         if (size as usize) < HEADER_LEN
-            || size % 4 != 0
+            || !size.is_multiple_of(4)
             || (size as usize) > MAX_MESSAGE_LEN
         {
             return Err(WireError::BadSize(size));
@@ -195,7 +195,7 @@ impl MessageWriter {
         self.body.extend_from_slice(&(declared as u32).to_ne_bytes());
         self.body.extend_from_slice(s.as_bytes());
         self.body.push(0);
-        while self.body.len() % 4 != 0 {
+        while !self.body.len().is_multiple_of(4) {
             self.body.push(0);
         }
         self
@@ -406,7 +406,6 @@ mod tests {
     #[test]
     fn server_id_base_splits_ranges() {
         assert_eq!(SERVER_ID_BASE, 0xFF00_0000);
-        assert!(1 < SERVER_ID_BASE);
-        assert!(0xFEFF_FFFF < SERVER_ID_BASE);
+        const _: () = assert!(1 < SERVER_ID_BASE && 0xFEFF_FFFF < SERVER_ID_BASE);
     }
 }

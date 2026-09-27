@@ -639,7 +639,7 @@ mod tests {
 
     #[test]
     fn allow_rejects_nonexistent_path() {
-        if abi_version().map_or(true, |v| v < MIN_ABI) {
+        if abi_version().is_none_or(|v| v < MIN_ABI) {
             return;
         }
         let mut rs = Ruleset::new().unwrap();
