@@ -78,11 +78,12 @@ or unaudited.
 | binutils, gcc, glibc, bash, coreutils | RSA-4096 GNU maintainer keys | strong |
 | linux-hardened | RSA-4096, Levente Polyak | strong |
 | xz | RSA, Lasse Collin | strong |
-| file | DSA-1024, SHA-1 digest, expired 2026-08-15 | weak |
 | less | DSA-1024, SHA-1 digest, Mark Nudelman | weak |
 
-DSA-1024 over SHA-1 is below what should be relied on, so the signatures on
-`file` and `less` are weaker evidence than the rest.
+DSA-1024 over SHA-1 is below what should be relied on, so the signature on
+`less` is weaker evidence than the rest. Some sources publish a signature
+that no usable key checks, file's among them; `tools/source-notes.tsv`
+names each, with the routes to a key that were tried.
 
 ### xz
 

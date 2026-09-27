@@ -217,6 +217,12 @@ PINNED_FPRS=(
     # DSA-1024 signing with SHA-1: weak, as docs/supply-chain.md says.
     "AE27252BD6846E7D6EAE1DD6F153A7C833235259"   # Mark Nudelman, less
 
+    # From https://www.netfilter.org/files/coreteam-gpg-key-0xD70D1A666ACF2B21.txt
+    # (retrieved 2026-09-27), the "key" linked beside each release on the
+    # download pages. https://www.netfilter.org/about.html names it the current
+    # key, valid until 2028-10-12, and the older keys revoked.
+    "8C5F7146A1757A65E2422A94D70D1A666ACF2B21"   # Netfilter Core Team, libnftnl and nftables
+
     # libexpat names no release signer. This is the key gentoo.org's WKD serves
     # for sping@gentoo.org, and the pin means only that; tools/source-notes.tsv
     # carries the undesignated-signer caveat.
