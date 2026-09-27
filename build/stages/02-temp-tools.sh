@@ -32,8 +32,6 @@ REDO=""
 
 mkdir -p "$STAMPS" "$LOGS" "$BUILDDIR"
 
-
-
 # config.guess lives in a different place in each project.
 guess() {
     local d

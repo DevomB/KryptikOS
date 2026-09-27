@@ -34,10 +34,6 @@ REDO=""
 
 mkdir -p "$STAMPS" "$LOGS" "$BUILDDIR" "$LFS"
 
-
-
-# unpack TARBALL TOPDIR [NAME]: extract into $BUILDDIR as NAME; print the path.
-
 # --- steps -----------------------------------------------------------------
 
 s_layout() {

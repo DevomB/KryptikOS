@@ -84,7 +84,6 @@ set_flags_for() {
 
 # --- step machinery ---------------------------------------------------------
 
-
 # The shared step() calls this after printing the tail of a failed log.
 step_failure_hint() {
     # Two locals: one `local` expands all its words before assigning any.
@@ -112,7 +111,6 @@ step_failure_hint() {
     err "build/config/hardening-exceptions.txt WITH a justification, so"
     err "only that flag is dropped and only for that package."
 }
-
 
 # Native build: no --host, as this runs on the target.
 native_build() {
