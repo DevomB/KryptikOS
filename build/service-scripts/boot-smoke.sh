@@ -27,7 +27,7 @@ if [ -r /run/kryptik/boot-identity ]; then
     say "boot_identity=$(tr '\n' ' ' < /run/kryptik/boot-identity)"
 fi
 say "efi=$([ -d /sys/firmware/efi ] && echo yes || echo no)"
-say "secureboot=$(od -An -tu1 -j4 -N1 /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c 2>/dev/null | tr -d ' ' || echo unreadable)"
+say "secureboot=$({ od -An -tu1 -j4 -N1 /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c 2>/dev/null || echo unreadable; } | tr -d ' ')"
 
 # --- the filesystem we booted from ----------------------------------------
 # A root the kernel mounted shows as /dev/root; name the real device from
@@ -57,7 +57,7 @@ say "state_marker=$(cat /var/.kryptik-state 2>/dev/null || echo none)"
 # --- services ---------------------------------------------------------------
 if [ -d /run/service ]; then
     say "scandir=/run/service"
-    for svc in eudev getty-tty1 seatd watchdog; do
+    for svc in eudev getty-tty1 getty-tty2 seatd watchdog; do
         if s6-svstat "/run/service/$svc" >/dev/null 2>&1; then
             up=$(s6-svstat -o up "/run/service/$svc" 2>/dev/null)
             [ "$up" = "true" ] && say "svc_$svc=up" || say "svc_$svc=down"

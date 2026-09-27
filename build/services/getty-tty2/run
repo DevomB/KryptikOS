@@ -1,0 +1,5 @@
+#!/bin/sh
+# A text login on tty2 (Ctrl+Alt+F2) for administration: the profile starts
+# the desktop on tty1 only, so a login here is a shell, and root is su from
+# wheel.
+exec /usr/sbin/agetty --noclear tty2 linux

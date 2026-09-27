@@ -1,4 +1,8 @@
 #!/bin/sh
 # Authenticated login on tty1; the desktop session starts from the user's
-# profile. Only install media get a passwordless root shell (kryptik-console).
+# profile. An install medium's passwordless root shell is here as well as on a
+# serial console (kryptik-console), since whoever installs may be at either.
+if grep -qw 'kryptik\.media=[a-z]' /proc/cmdline 2>/dev/null; then
+    exec /usr/sbin/agetty -n -l /usr/bin/bash --noclear tty1 linux
+fi
 exec /usr/sbin/agetty --noclear tty1 linux
