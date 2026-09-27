@@ -1381,10 +1381,11 @@ s_licences() {
         rm -rf "$tmp"
     done < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list)
 
-    # Two sources ship no licence file. The CA bundle is Mozilla's root store,
-    # under the MPL 2.0, whose text is kept in build/licences/ca-bundle/.
-    # libdrm's MIT notice heads each file of its core library, the only part
-    # built.
+    # Licence texts that no source tarball here carries, kept in
+    # build/licences/: the MPL 2.0 of Mozilla's CA bundle, and what kryptikd
+    # and kryptik-wlproxy link statically, which is Rust's standard library,
+    # the libc crate and musl. libdrm ships no licence file either; its MIT
+    # notice heads each file of its core library, the only part built.
     for f in "${KRYPTIK_ROOT}"/build/licences/*/*; do
         install -D -m 0644 "$f" "/usr/share/licenses/$(basename "$(dirname "$f")")/$(basename "$f")"
         n=$((n + 1))
