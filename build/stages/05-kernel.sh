@@ -176,9 +176,10 @@ s_microcode() {
 }
 
 s_config() {
-    # $1 fragment digest, $2 $3 microcode releases: arguments only so the
-    # stamp covers inputs read by path.
-    echo "fragment digest: ${1:-none}; microcode: ${2:-none} ${3:-none}"
+    # $1 fragment digest, $2 $3 microcode releases, $4 the critical option
+    # list's digest: arguments only so the stamp covers inputs read by path or
+    # held in a variable, which a function's text does not show.
+    echo "fragment digest: ${1:-none}; microcode: ${2:-none} ${3:-none}; critical options: ${4:-none}"
     cd "$KSRC"
 
     # Start from the architecture default, then layer Kryptik's fragments.
@@ -409,20 +410,23 @@ fi
 step unpack          s_unpack
 step patch           s_patch
 step microcode       s_microcode "$V_INTEL_MICROCODE" "$V_LINUX_FIRMWARE"
-step config          s_config "$FRAG_DIGEST" "$V_INTEL_MICROCODE" "$V_LINUX_FIRMWARE"
+step config          s_config "$FRAG_DIGEST" "$V_INTEL_MICROCODE" "$V_LINUX_FIRMWARE" \
+    "$(printf '%s' "$KCONFIG_CRITICAL" | sha256_of_stdin)"
 
 # kernel-hardening-checker (KSPP) on this .config and on stage 06's COMMON_ARGS
 # command line. Each finding must be fixed in a fragment or listed, with its
 # reason, in build/config/kernel/checker-accepted.txt.
 s_hardening_check() {
     echo "config digest: ${1:-none}; accepted list digest: ${2:-none}; command line digest: ${3:-none}"
+    echo "checker: ${5:-none}, the script that runs it: ${4:-none}"
     "${KRYPTIK_ROOT}/tools/check-kernel-hardening.sh" --config "${KSRC}/.config"
 }
 ACCEPTED_LIST="${CONFIG_DIR}/checker-accepted.txt"
 COMMON_ARGS_DIGEST="$(grep '^COMMON_ARGS=' "${KRYPTIK_ROOT}/build/stages/06-iso.sh" | sha256_of_stdin)"
 step hardening-check s_hardening_check \
     "$(sha256_of "${KSRC}/.config" 2>/dev/null || echo noconfig)" \
-    "$(sha256_of "$ACCEPTED_LIST")" "$COMMON_ARGS_DIGEST"
+    "$(sha256_of "$ACCEPTED_LIST")" "$COMMON_ARGS_DIGEST" \
+    "$(sha256_of "${KRYPTIK_ROOT}/tools/check-kernel-hardening.sh")" "$V_KERNEL_HARDENING_CHECKER"
 
 # .config is an input of every later step, but a fingerprint covers only a
 # step's recipe and arguments; hence this digest, taken after s_config wrote it.
