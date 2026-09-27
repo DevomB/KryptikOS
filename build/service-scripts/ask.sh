@@ -21,7 +21,7 @@ consoles() {
 
 tell() {
     for _t_dev in $(consoles); do
-        printf '%s\n' "$@" > "$_t_dev" 2>/dev/null || true
+        { printf '%s\n' "$@" > "$_t_dev"; } 2>/dev/null || true
     done
 }
 
@@ -71,10 +71,10 @@ ask() {
     kill $_a_pids 2>/dev/null || true
     exec 3<&-
     for _a_dev in $_a_devs; do
-        [ -z "$_a_quiet" ] || stty echo < "$_a_dev" 2>/dev/null || true
+        [ -z "$_a_quiet" ] || { stty echo < "$_a_dev"; } 2>/dev/null || true
         # The answering terminal echoed its own newline, unless echo was off.
         [ "$_a_dev" = "$_a_from" ] && [ -z "$_a_quiet" ] && continue
-        echo > "$_a_dev" 2>/dev/null || true
+        { echo > "$_a_dev"; } 2>/dev/null || true
     done
     [ -n "$_a_from" ] || return 1
     printf '%s' "$_a_ans"

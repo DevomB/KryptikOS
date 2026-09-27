@@ -38,20 +38,29 @@ is "a user and root who can both authenticate: done"
 state "svc:x:999:999::/:/bin/false" "root:${HASH}:1:::::: svc:${HASH}:1::::::"
 not "a system account is not the desktop user"
 
-# Every console question has a time limit: the service holds up the login
-# prompt and boot-success, so an unanswered one would hang a headless boot.
-unbounded="$(grep -nE '<[[:space:]]*"\$tty"' "$SRC" | grep -vE 'read -r (-s )?-t "\$PROMPT_SECS"')"
-[[ -z "$unbounded" ]] && ok "every question on the console has a time limit" || bad "a question on the console waits forever: ${unbounded}"
+# Every question has a time limit: the service holds up the login prompt and
+# boot-success, so an unanswered one would hang a headless boot.
+unbounded="$(grep -nE '\$\(ask ' "$SRC" | grep -vE '\$\(ask (-s )?"\$PROMPT_SECS" ')"
+[[ -z "$unbounded" ]] && ok "every question has a time limit" || bad "a question waits forever: ${unbounded}"
 
-# set_password, with a FIFO for tty1 (each question opens it again, as the
-# script does the terminal) and chpasswd recording what it was given.
-sed -n '/^set_password() /,/^}/p' "$SRC" | sed "s|> \"\$tty\"|>> \"$T/screen\"|" > "$T/setpw.sh"
+# set_password, with chpasswd recording what it was given, and ask and tell
+# (ask.sh, which test-ask.py covers) reduced to a FIFO of answers and a file
+# for the screen.
+sed -n '/^set_password() /,/^}/p' "$SRC" > "$T/setpw.sh"
 # shellcheck source=/dev/null
 . "$T/setpw.sh"
 declare -F set_password >/dev/null || { echo "no set_password in $SRC"; exit 1; }
 chpasswd() { cat > "$T/chpasswd.in"; }
+tell() { printf '%s\n' "$@" >> "$T/screen"; }
+ask() {
+    [[ "$1" == -s ]] && shift
+    local line
+    printf '%s' "$2" >> "$T/screen"
+    IFS= read -r -t "$1" line <&7 || return 1
+    printf '%s' "$line"
+}
 # shellcheck disable=SC2034  # read by set_password
-PROMPT_SECS=1; tty="$T/tty"; mkfifo "$tty"; exec 7<>"$tty"
+PROMPT_SECS=1; mkfifo "$T/answers"; exec 7<>"$T/answers"
 answer() { rm -f "$T/chpasswd.in"; printf '%b' "$1" >&7; set_password ana; RC=$?; GOT="$(cat "$T/chpasswd.in" 2>/dev/null)"; }
 answer 'pw one\npw one\n'
 [[ "$RC|$GOT" == "0|ana:pw one" ]] && ok "two matching answers set the password through chpasswd" || bad "matching answers: rc=$RC chpasswd got '$GOT'"
