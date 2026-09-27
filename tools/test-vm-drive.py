@@ -127,6 +127,12 @@ Pieces(sock3, [b"GT CONSENT-CODE 1 4", b"9\r\n"]).start()
 d3 = vm.Drive(sock3, None, 2)
 check("a code cut across two reads is taken whole", d3.line_value(r"GT CONSENT-CODE 1 ([0-9]+)"), "49")
 
+print("-- a command's status is read only once its line has ended")
+sock4 = os.path.join(T, "serial4")
+Pieces(sock4, [b"KRC1=1", b"27\r\n"]).start()
+d4 = vm.Drive(sock4, None, 2)
+check("a status cut across two reads is taken whole", d4.finish("KRC1", "cmd").group(1), b"127")
+
 print()
 print(f"{PASS} passed, {FAIL} failed")
 sys.exit(0 if FAIL == 0 else 1)

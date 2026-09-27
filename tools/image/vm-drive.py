@@ -188,7 +188,8 @@ class Drive:
         # Wait for the exit marker but leave the command's output for the
         # steps that follow; only the marker is dropped. A shutdown message
         # that matches instead stays, and is returned in place of a status.
-        rx = re.compile(rf"{tag}=(\d+)|Power down|reboot: Restarting|Restarting system".encode(), re.M)
+        # The status is read once its line has ended, as line_value's is.
+        rx = re.compile(rf"{tag}=(\d+)(?=\r?\n)|Power down|reboot: Restarting|Restarting system".encode(), re.M)
         deadline = time.time() + self.timeout
         while True:
             m = rx.search(self.buf)

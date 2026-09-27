@@ -214,7 +214,7 @@ fi
 if [[ "$B_ROLE" == development ]]; then
     BY_ROLE+=("$(ROOTSH 'kryptik-update apply /run/upd/p/role; echo RC=$?')" "expect:manifest role is 'production'; this image requires 'development'")
     BY_ROLE_SAID+=", a manifest for the other role"
-    NOT_A_POINTER=("$(ROOTSH 'kryptik-update check-pointer /run/upd/p/statement/not-a-pointer /run/upd/p/statement/not-a-pointer.sig; echo RC=$?')" "expect:does NOT verify" "expect:RC=1")
+    NOT_A_POINTER=("$(ROOTSH 'kryptik-update check-pointer /run/upd/p/statement/not-a-pointer /run/upd/p/statement/not-a-pointer.sig; echo RC=$?')" "expect:does NOT verify" "expect:RC=1\r?\n")
     NOT_A_POINTER_SAID=" and one signed by the release key does not"
 fi
 start_vm update-p3 --disk "$BADIMG" --disk "$PA"
@@ -230,7 +230,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'kryptik-update check-pointer /run/upd/p/statement/latest /run/upd/p/statement/latest.sig && echo STATEMENT-OK')" "expect:signed by kryptik-latest" "expect:STATEMENT-OK" \
     "${NOT_A_POINTER[@]}" \
     "$(ROOTSH 'flock /run/kryptik/update.lock sleep 20 & sleep 1; kryptik-update apply /run/upd/a --recovery; echo RC=$?')" "expect:another update is in progress" \
-    "$(ROOTSH 'fallocate -l 100G /var/filler 2>/dev/null || dd if=/dev/zero of=/var/filler bs=1M 2>/dev/null; cp -a /run/upd/a /var/lib/kryptik/updates/a-full 2>&1 | tail -1; kryptik-update apply /var/lib/kryptik/updates/a-full --recovery; echo RC=$?; rm -rf /var/filler /var/lib/kryptik/updates/a-full')" "expect:RC=1" \
+    "$(ROOTSH 'fallocate -l 100G /var/filler 2>/dev/null || dd if=/dev/zero of=/var/filler bs=1M 2>/dev/null; cp -a /run/upd/a /var/lib/kryptik/updates/a-full 2>&1 | tail -1; kryptik-update apply /var/lib/kryptik/updates/a-full --recovery; echo RC=$?; rm -rf /var/filler /var/lib/kryptik/updates/a-full')" "expect:RC=1\r?\n" \
     "$(ROOTSH 'kryptik-update status')" "expect:trial pending:    none" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
@@ -284,7 +284,7 @@ start_vm update-p6b --disk "$PA"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'cat /run/kryptik/boot-identity; kryptik-update status; echo P6-OK')" "expect:slot=b" "expect:trial pending:    none" \
     "expect:slot a: +version none, kernel absent" "expect:P6-OK" \
-    "$(ROOTSH 'kryptik-update rollback; echo RB6=$?')" "expect:slot a has no kernel on the ESP" "expect:RB6=1" \
+    "$(ROOTSH 'kryptik-update rollback; echo RB6=$?')" "expect:slot a has no kernel on the ESP" "expect:RB6=1\r?\n" \
     "$(ROOTSH 'mkdir -p /run/upd/a && mount -o ro /dev/vdb /run/upd/a && kryptik-update apply /run/upd/a --recovery && echo ARMED-OK')" "expect:ARMED-OK"
 rc=$?
 [[ "$rc" -eq 0 ]] && green "after the interrupted write: still slot b, no trial, slot a named by nothing and refused by rollback; the apply succeeds again" || red "step 6a drive failed"
@@ -330,7 +330,7 @@ drive "expect:BdsDxe: starting Boot" \
     "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'cat /run/kryptik/boot-identity | head -1; cat /var/lib/kryptik/boot/last-result; kryptik-update status; echo P7B-OK')" \
     "expect:slot=a" "expect:trial-failed b" "expect:P7B-OK" \
-    "$(ROOTSH 'mkdir -p /run/upd/p && mount -o ro /dev/vdb /run/upd/p; kryptik-update apply /run/upd/p; echo RC=$?')" "expect:failed to boot" "expect:RC=1" \
+    "$(ROOTSH 'mkdir -p /run/upd/p && mount -o ro /dev/vdb /run/upd/p; kryptik-update apply /run/upd/p; echo RC=$?')" "expect:failed to boot" "expect:RC=1\r?\n" \
     "$(ROOTSH 'kryptik-update apply /run/upd/p --retry && echo RETRY-OK')" "expect:slot b verifies after write" "expect:RETRY-OK" \
     "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
     "login:${TUSER}:${TPASS}" \
