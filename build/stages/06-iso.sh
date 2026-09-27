@@ -210,7 +210,7 @@ EOF
         --root-hash-file="${IMG}/root.hash" "$img" "$img" > "${IMG}/veritysetup-format.txt"
     local root_hash; root_hash="$(tr -d '\n' < "${IMG}/root.hash")"
     [[ ${#root_hash} -eq 64 ]] || { echo "bad root hash: ${root_hash}"; return 1; }
-    echo "--- verify the tree we just wrote (positive control) ---"
+    echo "--- verify the tree just written (positive control) ---"
     veritysetup verify --no-superblock --hash=sha256 --data-block-size=4096 --hash-block-size=4096 \
         --data-blocks="$data_blocks" --hash-offset="$fs_bytes" --salt="$salt" "$img" "$img" "$root_hash"
     echo "--- and prove a flipped byte is detected (negative control) ---"

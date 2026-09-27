@@ -163,7 +163,7 @@ pub fn parse(input: &str) -> Result<Document, TomlError> {
 fn strip_comment(line: &str) -> Result<&str, TomlErrorKind> {
     let bytes = line.as_bytes();
     let mut i = 0;
-    // Which quote character, if any, we are currently inside.
+    // The quote character, if any, this position is inside.
     let mut quote: Option<u8> = None;
 
     while i < bytes.len() {
