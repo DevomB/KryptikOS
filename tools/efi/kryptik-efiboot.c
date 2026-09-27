@@ -143,7 +143,7 @@ static int find_esp(struct part *p, const char *named) {
     char out[128];
     char *uuid[] = { "blkid", "-s", "PARTUUID", "-o", "value", dev, NULL };
     if (run_read(uuid, out, sizeof out) || strlen(out) != 36) return -1;
-    snprintf(p->uuid, sizeof p->uuid, "%s", out);
+    snprintf(p->uuid, sizeof p->uuid, "%.36s", out);
     const char *base = strrchr(dev, '/'); base = base ? base + 1 : dev;
     char path[512];
     snprintf(path, sizeof path, SYSBLOCK "%s/start", base);
