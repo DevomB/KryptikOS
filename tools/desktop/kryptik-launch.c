@@ -16,9 +16,10 @@
  * $XDG_RUNTIME_DIR/kryptik/ZONE/wayland-0; the daemon binds that socket into
  * the zone, which never sees the compositor's own.
  *
- * --ask: for an encrypted zone, read the passphrase on the terminal, or hand
- * over to kryptik-chrome --prompt, which calls back with --passphrase-fd. The
- * passphrase travels as a descriptor (SCM_RIGHTS), never in argv or environ.
+ * --ask: for an encrypted zone, read the passphrase on the controlling terminal,
+ * or without one hand over to kryptik-chrome --prompt, which calls back with
+ * --passphrase-fd. The passphrase travels as a descriptor (SCM_RIGHTS), never
+ * in argv or environ.
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -225,12 +226,9 @@ static const char *ensure_proxy(const char *zone)
 	die("kryptik-wlproxy did not start listening on %s (see %s)", sock, logfile);
 }
 
-/* Read a passphrase from the terminal into a memfd; returns the fd. */
-static int passphrase_from_tty(const char *zone)
+/* Read a passphrase from the open terminal into a memfd; returns the fd. */
+static int passphrase_from_tty(int tty, const char *zone)
 {
-	int tty = open("/dev/tty", O_RDWR | O_CLOEXEC);
-	if (tty < 0)
-		die("no terminal to ask on: %s", strerror(errno));
 	struct termios old, raw;
 	tcgetattr(tty, &old);
 	raw = old;
@@ -438,8 +436,11 @@ int main(int argc, char **argv)
 	int ncmd = argc - sep - 1;
 
 	if (ask && pass_fd < 0 && zone_is_encrypted(zone)) {
-		if (isatty(0)) {
-			pass_fd = passphrase_from_tty(zone);
+		/* A terminal on stdin is not enough: dwl's spawn keeps the
+		 * session's stdin but calls setsid(), so /dev/tty will not open. */
+		int tty = isatty(0) ? open("/dev/tty", O_RDWR | O_CLOEXEC) : -1;
+		if (tty >= 0) {
+			pass_fd = passphrase_from_tty(tty, zone);
 		} else {
 			/* The trusted chrome prompts and calls back with --passphrase-fd. */
 			char **nargv = calloc((size_t)ncmd + 8, sizeof *nargv);
