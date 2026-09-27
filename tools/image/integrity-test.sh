@@ -44,22 +44,14 @@ ENROLLED="${KRYPTIK_WORK}/keys/sb/vars/enrolled.fd"
 # shellcheck source=tools/image/suite-lib.sh
 source "${SELF}/suite-lib.sh"
 VARSF="${VMDIR}/integrity-vars.fd"; cp "$ENROLLED" "$VARSF"
-txt_latest() { tr -d '\r' < "$LATEST"; }
 
 # ----------------------------------------------------------------- step 1 --
 step "step 1: install, then boot alone with the developer key enrolled (Secure Boot on)"
-# Sized from the medium, not a constant: see test-disk-size.sh.
-DISK_SIZE="$("${SELF}/test-disk-size.sh" --medium "$USB")" || die "could not size the test disk from the medium"
-rm -f "$DISK"; truncate -s "$DISK_SIZE" "$DISK"
-CTL="${VMDIR}/testctl-integrity.img"
-"${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
-    "${PRESEED[@]}" > /dev/null
-"${SELF}/run-ovmf.sh" --usb "$USB" --disk "$DISK" --testctl "$CTL" --vars enrolled --mode smoke --timeout "$TIMEOUT" --name integ-install > /dev/null
-txt_latest | grep -q 'KRYPTIK_INSTALL: rc=0' && green "installed from the medium under Secure Boot" || { red "install failed"; exit 1; }
-txt_latest | grep -q 'KRYPTIK_SMOKE: secureboot=1' && green "the medium itself booted with Secure Boot enforced" || red "medium did not report secureboot=1"
+fresh_disk "$USB"
+install_disk integ-install "$USB" --vars enrolled && green "installed from the medium under Secure Boot" || { red "install failed"; exit 1; }
+boot_txt | grep -q 'KRYPTIK_SMOKE: secureboot=1' && green "the medium itself booted with Secure Boot enforced" || red "medium did not report secureboot=1"
 
-SERVE="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --name integ-p1)"
-SER="$(sed -n 's/^serial=//p' <<<"$SERVE")"; PIDF="$(sed -n 's/^pid=//p' <<<"$SERVE")"; LOG1="$(sed -n 's/^log=//p' <<<"$SERVE")"
+start_vm integ-p1; LOG1="$LOG"
 python3 "$DRV" --serial "$SER" --timeout 300 \
     "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "run:test \"\$(od -An -tu1 -j4 -N1 /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c | tr -d ' ')\" = 1" \
@@ -100,17 +92,17 @@ mdel -i "$ESPIMG" ::/EFI/BOOT/BOOTX64.EFI
 mcopy -i "$ESPIMG" "$TMPK/foreign.efi" ::/EFI/BOOT/BOOTX64.EFI
 dd if="$ESPIMG" of="$DISK" bs=1M oflag=seek_bytes seek="$ESP_OFF" conv=notrunc status=none
 cp "$ENROLLED" "$VARSF"
-"${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode smoke --timeout 120 \
-    --until 'Access Denied|Security Violation' --name integ-p2 > /dev/null
-T2="$(txt_latest)"
+smoke integ-p2 --no-media --disk "$DISK" --vars-file "$VARSF" --timeout 120 \
+    --until 'Access Denied|Security Violation' > /dev/null
+T2="$(boot_txt)"
 # A disk the firmware never tried would pass the absences below; the refusal must be seen.
 grep -qE 'Access Denied|Security Violation' <<<"$T2" && green "the firmware refused the boot file for its signature" || red "the firmware reported no refusal"
 grep -q 'Linux version' <<<"$T2" && red "a foreign-signed kernel BOOTED under the enrolled key" || green "the firmware did not start the foreign-signed kernel"
 grep -q 'KRYPTIK_SMOKE: BEGIN' <<<"$T2" && red "Kryptik userspace ran from an untrusted boot file" || green "no userspace ran"
 # positive control: the same firmware and store boot the medium's signed kernel
 "${SELF}/mk-testctl.sh" --out "${VMDIR}/testctl-smoke.img" smoke_poweroff=1 > /dev/null
-"${SELF}/run-ovmf.sh" --usb "$USB" --testctl "${VMDIR}/testctl-smoke.img" --vars enrolled --mode smoke --timeout 300 --name integ-p2ctl > /dev/null 2>&1
-txt_latest | grep -q 'Linux version' && green "control: the developer-signed medium boots under the same store" || red "control failed: the signed medium did not boot"
+smoke integ-p2ctl --usb "$USB" --testctl "${VMDIR}/testctl-smoke.img" --vars enrolled --timeout 300 > /dev/null 2>&1
+boot_txt | grep -q 'Linux version' && green "control: the developer-signed medium boots under the same store" || red "control failed: the signed medium did not boot"
 # restore the pristine ESP
 dd if="${ESPIMG}.pristine" of="$DISK" bs=1M oflag=seek_bytes seek="$ESP_OFF" conv=notrunc status=none
 rm -rf "$TMPK"
@@ -123,8 +115,8 @@ A_OFF=$(( $(part_start "$DISK" 2) * 512 ))
 # nothing reads at boot would go unnoticed.
 printf '\xa5' | dd of="$DISK" bs=1 seek=$(( A_OFF + 1024 + 0x78 )) conv=notrunc status=none
 cp "$ENROLLED" "$VARSF"
-"${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode smoke --timeout 300 --name integ-p3 > /dev/null
-T3="$(txt_latest)"
+smoke integ-p3 --no-media --disk "$DISK" --vars-file "$VARSF" --timeout 300 > /dev/null
+T3="$(boot_txt)"
 # loglevel=4 hides the KERN_NOTICE banner, so the kernel's timestamped console
 # lines are the proof it started.
 grep -qE '^\[ *[0-9]+\.[0-9]+\] |Linux version' <<<"$T3" && green "the (untampered) kernel still starts" || red "the kernel did not start after the root tamper"
@@ -138,8 +130,8 @@ grep -q 'login:' <<<"$T3" && red "a login prompt appeared on a tampered root" ||
 step "step 4: recovery from the medium restores slot a; state survives"
 CTLR="${VMDIR}/testctl-recover.img"
 "${SELF}/mk-testctl.sh" --out "$CTLR" recover_disk=/dev/vda recover_slot=a recover_mode=restore smoke_poweroff=1 install_wait=5 > /dev/null
-"${SELF}/run-ovmf.sh" --usb "$USB" --disk "$DISK" --testctl "$CTLR" --vars enrolled --mode smoke --timeout "$TIMEOUT" --name integ-p4 > /dev/null
-txt_latest | grep -q 'KRYPTIK_RECOVER: rc=0' && green "kryptik-recover --restore-slot a succeeded from the medium" || { red "recovery did not report success"; txt_latest | grep 'KRYPTIK_RECOVER' | tail -5 | sed 's/^/        /'; }
+smoke integ-p4 --usb "$USB" --disk "$DISK" --testctl "$CTLR" --vars enrolled --timeout "$TIMEOUT" > /dev/null
+boot_txt | grep -q 'KRYPTIK_RECOVER: rc=0' && green "kryptik-recover --restore-slot a succeeded from the medium" || { red "recovery did not report success"; boot_txt | grep 'KRYPTIK_RECOVER' | tail -5 | sed 's/^/        /'; }
 # The records recovery wrote on the ESP, read from the host: whole, and
 # nothing written through a .new left behind.
 dd if="$DISK" of="$ESPIMG" bs=1M iflag=skip_bytes,count_bytes skip="$ESP_OFF" count=$((512*1024*1024)) status=none
@@ -150,8 +142,7 @@ CSLOT="$(mtype -i "$ESPIMG" ::/kryptik/committed-slot 2>/dev/null)"; CVER="$(mty
 LEFT="$(mdir -/ -b -i "$ESPIMG" ::/ 2>/dev/null | grep -i '\.new$' | tr '\n' ' ')"
 [[ -z "$LEFT" ]] && green "recovery left no .new file on the ESP" || red "recovery left ${LEFT}on the ESP"
 cp "$ENROLLED" "$VARSF"
-SERVE="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --name integ-p4b)"
-SER="$(sed -n 's/^serial=//p' <<<"$SERVE")"; PIDF="$(sed -n 's/^pid=//p' <<<"$SERVE")"; LOG4="$(sed -n 's/^log=//p' <<<"$SERVE")"
+start_vm integ-p4b; LOG4="$LOG"
 python3 "$DRV" --serial "$SER" --timeout 300 \
     "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "run:test \"\$(cat /home/${TUSER}/marker)\" = integrity-marker" \
@@ -216,8 +207,7 @@ else
     EXTRA=()
 fi
 cp "$ENROLLED" "$VARSF"
-SERVE="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --name integ-p5 "${EXTRA[@]}")"
-SER="$(sed -n 's/^serial=//p' <<<"$SERVE")"; PIDF="$(sed -n 's/^pid=//p' <<<"$SERVE")"; LOG5="$(sed -n 's/^log=//p' <<<"$SERVE")"
+start_vm integ-p5 "${EXTRA[@]}"; LOG5="$LOG"
 # The planted kryptik/ directory must be quarantined and gone from /etc, and
 # the updater's anchor on the verified root must still name the release key.
 # The root has an ld.so.preload of its own (the allocator), so the planted

@@ -46,21 +46,13 @@ SHOT_OVER="${VMDIR}/gui-untrusted-oversize.ppm"
 
 # ----------------------------------------------------------------- step 1 --
 step "step 1: install"
-# Sized from the medium, not a constant: see test-disk-size.sh.
-DISK_SIZE="$("${SELF}/test-disk-size.sh" --medium "$USB")" || die "could not size the test disk from the medium"
-rm -f "$DISK"; truncate -s "$DISK_SIZE" "$DISK"
-CTL="${VMDIR}/testctl-gui.img"
-"${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
-    "${PRESEED[@]}" > /dev/null
-"${SELF}/run-ovmf.sh" --usb "$USB" --disk "$DISK" --testctl "$CTL" --vars clean --mode smoke --timeout "$TIMEOUT" --name gui-install > /dev/null
-tr -d '\r' < "$LATEST" | grep -q 'KRYPTIK_INSTALL: rc=0' && green "installed" || { red "install failed"; exit 1; }
+fresh_disk "$USB"
+install_disk gui-install "$USB" --vars clean && green "installed" || { red "install failed"; exit 1; }
 
 # ----------------------------------------------------------------- step 2 --
 step "step 2: the desktop, driven"
 rm -f "$SHOT" "$SHOT_FS" "$SHOT_OVER"
-out="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --net user --gpu --mem 3072 --name gui-p2)"
-SER="$(sed -n 's/^serial=//p' <<<"$out")"; PIDF="$(sed -n 's/^pid=//p' <<<"$out")"; LOG="$(sed -n 's/^log=//p' <<<"$out")"; QMP="$(sed -n 's/^qmp=//p' <<<"$out")"
-[[ -S "$SER" ]] || die "no serial socket: ${out}"
+start_vm gui-p2 --net user --gpu --mem 3072
 python3 "$DRV" --serial "$SER" --qmp "$QMP" --timeout 600 \
     "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
     "send:su - root -c 'bash /usr/lib/kryptik/guest-tests/gui-check.sh ${TUSER} 2>&1 | tee /var/log/kryptik/gui-check.log; echo GCHECK-DONE'" \

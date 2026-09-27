@@ -54,10 +54,10 @@ rm -f "$DISK"; truncate -s "$SIZE" "$DISK"
 CTL="${VMDIR}/testctl-install.img"
 "${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
     "${PRESEED[@]}" > /dev/null || die "control disk"
-"${SELF}/run-ovmf.sh" --usb "$USB" --disk "$DISK" --testctl "$CTL" --vars "$VARS" --mode smoke --timeout "$TIMEOUT" --name install-p1
+smoke install-p1 --usb "$USB" --disk "$DISK" --testctl "$CTL" --vars "$VARS" --timeout "$TIMEOUT"
 qrc=$?
-P1="${VMDIR}/install-p1.txt"; txt_of "${KRYPTIK_WORK}/logs/ovmf-serial.latest.log" > "$P1"
-echo "  transcript: ${KRYPTIK_WORK}/logs/ovmf-serial.latest.log ($(grep -c '' < "$P1") lines, qemu ${qrc})"
+P1="${VMDIR}/install-p1.txt"; boot_txt > "$P1"
+echo "  transcript: ${BOOTLOG} ($(grep -c '' < "$P1") lines, qemu ${qrc})"
 want "$P1" 'KRYPTIK_INSTALL: BEGIN target=/dev/vda'      "the installer was armed and ran"
 want "$P1" 'KRYPTIK_INSTALL: rc=0'                       "the installer exited 0"
 want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-esp=/dev/vda1 type=vfat'   "partition 1 is the ESP"
@@ -84,9 +84,7 @@ step "step 2: boot the installed disk alone, medium detached, variables reset"
 VARSF="${VMDIR}/installed-vars.fd"
 cp "/usr/share/OVMF/OVMF_VARS_4M.fd" "$VARSF"
 [[ "$VARS" == "enrolled" ]] && cp "${KRYPTIK_WORK}/keys/sb/vars/enrolled.fd" "$VARSF"
-SERVE="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --name install-p2)"
-SER="$(sed -n 's/^serial=//p' <<<"$SERVE")"; PIDF="$(sed -n 's/^pid=//p' <<<"$SERVE")"; LOG2="$(sed -n 's/^log=//p' <<<"$SERVE")"
-[[ -S "$SER" ]] || die "no serial socket from run-ovmf: ${SERVE}"
+start_vm install-p2; LOG2="$LOG"
 REC="${VMDIR}/install-p2.json"
 python3 "$DRV" --serial "$SER" --timeout 300 --record "$REC" \
     "expect:KRYPTIK_SMOKE: END" \
@@ -136,8 +134,7 @@ if [[ -f "$REC" ]]; then echo "  recorded:"; sed 's/^/    /' "$REC" | head -30; 
 # ----------------------------------------------------------------- step 3 --
 if [[ "$QUICK" -eq 0 ]]; then
 step "step 3: cold boot the installed disk again"
-SERVE="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --name install-p3)"
-SER="$(sed -n 's/^serial=//p' <<<"$SERVE")"; PIDF="$(sed -n 's/^pid=//p' <<<"$SERVE")"; LOG3="$(sed -n 's/^log=//p' <<<"$SERVE")"
+start_vm install-p3; LOG3="$LOG"
 python3 "$DRV" --serial "$SER" --timeout 300 \
     "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "run:test -f /home/${TUSER}/persisted-p2" \
@@ -156,8 +153,8 @@ refusal_case() {   # refusal_case NAME DISK-SIZE EXTRA-RUN-ARGS... ; expects rc!
     local d="${VMDIR}/refuse-${name}.img"; rm -f "$d"; truncate -s "$size" "$d"
     local ctl="${VMDIR}/testctl-${name}.img"
     "${SELF}/mk-testctl.sh" --out "$ctl" install_target=/dev/vda smoke_poweroff=1 install_wait=5 > /dev/null
-    "${SELF}/run-ovmf.sh" --usb "$USB" --disk "$d" --testctl "$ctl" --vars "$VARS" --mode smoke --timeout "$TIMEOUT" --name "refuse-${name}" "$@" > /dev/null
-    local t="${VMDIR}/refuse-${name}.txt"; txt_of "${KRYPTIK_WORK}/logs/ovmf-serial.latest.log" > "$t"
+    smoke "refuse-${name}" --usb "$USB" --disk "$d" --testctl "$ctl" --vars "$VARS" --timeout "$TIMEOUT" "$@" > /dev/null
+    local t="${VMDIR}/refuse-${name}.txt"; boot_txt > "$t"
     want "$t" 'KRYPTIK_INSTALL: BEGIN'            "${name}: the installer ran"
     want "$t" 'KRYPTIK_INSTALL: rc=[1-9]'         "${name}: reported a non-zero status"
     want "$t" 'KRYPTIK_INSTALL: .*FAILED'         "${name}: said FAILED and why"

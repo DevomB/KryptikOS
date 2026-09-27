@@ -43,14 +43,8 @@ drive() { python3 "$DRV" --serial "$SER" --timeout "$1" "${@:2}"; }
 
 # ----------------------------------------------------------------- step 1 --
 step "step 1: install and boot alone with a NIC"
-# Sized from the medium, not a constant: see test-disk-size.sh.
-DISK_SIZE="$("${SELF}/test-disk-size.sh" --medium "$USB" --extra-mib 2048)" || die "could not size the test disk from the medium"
-rm -f "$DISK"; truncate -s "$DISK_SIZE" "$DISK"
-CTL="${VMDIR}/testctl-zones.img"
-"${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
-    "${PRESEED[@]}" > /dev/null
-"${SELF}/run-ovmf.sh" --usb "$USB" --disk "$DISK" --testctl "$CTL" --vars clean --mode smoke --timeout "$TIMEOUT" --name zones-install > /dev/null
-tr -d '\r' < "$LATEST" | grep -q 'KRYPTIK_INSTALL: rc=0' && green "installed" || { red "install failed"; exit 1; }
+fresh_disk "$USB" --extra-mib 2048
+install_disk zones-install "$USB" --vars clean && green "installed" || { red "install failed"; exit 1; }
 
 # ----------------------------------------------------------------- step 2 --
 step "step 2: the guest-side zone, network and storage checks (as root)"
