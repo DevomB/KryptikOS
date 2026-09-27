@@ -112,6 +112,24 @@ pub enum Request {
     Unknown(String),
 }
 
+impl Request {
+    /// What the launcher's log calls this request: never the zone's own words.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Request::Version => "version",
+            Request::ClipboardSet { .. } => "clipboard-set",
+            Request::ClipboardGet => "clipboard-get",
+            Request::NotAZoneVerb(_) => "zone 0 verb",
+            Request::Transfer { .. } => "transfer",
+            Request::TimeOffset(_) => "time-offset",
+            Request::UpdateLatest { .. } => "update-latest",
+            Request::UpdatePoll => "update-poll",
+            Request::UpdatePut { .. } => "update-put",
+            Request::Unknown(_) => "unknown verb",
+        }
+    }
+}
+
 /// A destination as written in a request: the same alphabet as a zone name.
 fn check_zone_name(s: &str) -> Result<(), String> {
     if s.is_empty() || s.len() > 12 || !s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
@@ -294,6 +312,8 @@ pub struct Served<'a> {
     /// Called ten times a second while the user is being asked; the launcher
     /// pumps zone output there, and `false` withdraws the question.
     pub asking: &'a dyn Fn() -> bool,
+    /// Where the broker's lines go; the launcher bounds them per launch.
+    pub log: &'a dyn Fn(&str),
 }
 
 /// The launcher's `resolve_dest`: the registry says whether the zone runs and
@@ -593,9 +613,9 @@ fn write_all(fd: RawFd, mut data: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-/// Accept one connection and answer one request. Returns the verb handled,
-/// for logging.
-pub fn serve_one(listen_fd: RawFd, s: &Served) -> io::Result<Option<String>> {
+/// Accept one connection and answer one request. Returns the request's name
+/// (Request::name), for logging.
+pub fn serve_one(listen_fd: RawFd, s: &Served) -> io::Result<Option<&'static str>> {
     let fd = unsafe { libc::accept4(listen_fd, std::ptr::null_mut(), std::ptr::null_mut(), libc::SOCK_CLOEXEC) };
     if fd < 0 {
         let e = io::Error::last_os_error();
@@ -611,7 +631,7 @@ pub fn serve_one(listen_fd: RawFd, s: &Served) -> io::Result<Option<String>> {
 
 /// Answer one request on an accepted connection. A peer other than the zone
 /// (`s.uid`) learns nothing. Refusals come before any payload is read.
-pub fn serve_connection(fd: RawFd, s: &Served) -> io::Result<Option<String>> {
+pub fn serve_connection(fd: RawFd, s: &Served) -> io::Result<Option<&'static str>> {
     let zone = s.zone.name.as_str();
     let entry = s.entry;
     let cred = peer_cred(fd)?;
@@ -641,13 +661,14 @@ pub fn serve_connection(fd: RawFd, s: &Served) -> io::Result<Option<String>> {
     };
     let header = String::from_utf8_lossy(&buf[..nl]).into_owned();
     let mut rest: Vec<u8> = buf.split_off(nl + 1);
-    let verb = header.split_whitespace().next().unwrap_or("").to_string();
-    match parse_request(&header) {
+    let req = parse_request(&header);
+    let verb = req.as_ref().map_or("malformed request", Request::name);
+    match req {
         Err(why) => reply(fd, &format!("error: {why}\n")),
         Ok(Request::Version) => reply(fd, &format!("kryptik-broker 1 zone={zone}\n")),
         Ok(Request::Transfer { dest, name }) => match handle_transfer(s, &dest, &name, &fds) {
             Ok((final_name, bytes)) => {
-                crate::spawn::log_line(&format!(
+                (s.log)(&format!(
                     "kryptikd[zone {zone}]: transfer: {name} ({bytes} bytes) -> {dest} as incoming/{final_name}"
                 ));
                 reply(fd, &format!("ok {final_name}\n"));
@@ -656,7 +677,7 @@ pub fn serve_connection(fd: RawFd, s: &Served) -> io::Result<Option<String>> {
         },
         Ok(Request::TimeOffset(claim)) => {
             let outcome = handle_time_offset(s.zone, &claim, s.asking);
-            crate::spawn::log_line(&format!(
+            (s.log)(&format!(
                 "kryptikd[zone {zone}]: time-offset {:+.6} s from {} source(s): {}",
                 claim.offset,
                 claim.sources,
@@ -685,8 +706,8 @@ pub fn serve_connection(fd: RawFd, s: &Served) -> io::Result<Option<String>> {
             // A release is thousands of pieces: log completions and refusals only.
             match &outcome {
                 Ok(r) if verb == "update-poll" || (verb == "update-put" && !r.contains("complete")) => {}
-                Ok(r) => crate::spawn::log_line(&format!("kryptikd[zone {zone}]: {verb}: {r}")),
-                Err(why) => crate::spawn::log_line(&format!("kryptikd[zone {zone}]: {verb}: refused: {why}")),
+                Ok(r) => (s.log)(&format!("kryptikd[zone {zone}]: {verb}: {r}")),
+                Err(why) => (s.log)(&format!("kryptikd[zone {zone}]: {verb}: refused: {why}")),
             }
             match outcome {
                 Ok(r) => reply(fd, &format!("{r}\n")),
@@ -904,12 +925,12 @@ mod tests {
     }
 
     /// Send one request on a fresh socketpair, serve it, and return (verb, reply).
-    fn ask(s: &Served, request: &str, half_close: bool) -> (Option<String>, Vec<u8>) {
+    fn ask(s: &Served, request: &str, half_close: bool) -> (Option<&'static str>, Vec<u8>) {
         ask_with(s, request, &[], half_close)
     }
 
     /// The same, with descriptors attached to the first message.
-    fn ask_with(s: &Served, request: &str, fds: &[RawFd], half_close: bool) -> (Option<String>, Vec<u8>) {
+    fn ask_with(s: &Served, request: &str, fds: &[RawFd], half_close: bool) -> (Option<&'static str>, Vec<u8>) {
         let (server, client) = pair();
         send_with_fds(client, request.as_bytes(), fds);
         if half_close {
@@ -959,6 +980,8 @@ mod tests {
         None
     }
 
+    fn no_log(_: &str) {}
+
     fn served<'a>(zone: &'a Zone, entry: &'a Path, uid: u32) -> Served<'a> {
         Served {
             zone,
@@ -970,6 +993,7 @@ mod tests {
             max_bytes: TRANSFER_MAX,
             resolve_dest: &no_dest,
             asking: &crate::consent::keep,
+            log: &no_log,
         }
     }
 
@@ -1030,6 +1054,19 @@ mod tests {
         unsafe { libc::close(client) };
         assert_eq!(ask(&sv, "clipboard-get\n", false).1, b"ok text/plain;charset=utf-8 11\nhello world");
         assert_eq!(ask(&sv, "version\n", false).1, b"kryptik-broker 1 zone=t\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn requests_named_not_echoed() {
+        let dir = entry("names");
+        let z = zone_t();
+        let sv = served(&z, &dir, unsafe { libc::geteuid() });
+        let bogus = format!("\u{1b}[2J{}\n", "A".repeat(3990));
+        assert_eq!(ask(&sv, &bogus, false), (Some("unknown verb"), b"error: unknown verb\n".to_vec()));
+        assert_eq!(ask(&sv, "transfer x\n", false).0, Some("malformed request"));
+        assert_eq!(ask(&sv, "clipboard-move a b\n", false).0, Some("zone 0 verb"));
+        assert_eq!(ask(&sv, "version\n", false).0, Some("version"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1191,6 +1228,7 @@ mod tests {
             max_bytes: 64,
             resolve_dest: &resolve,
             asking: &crate::consent::keep,
+            log: &no_log,
         };
         let file = lab.dir.join("report.pdf");
         std::fs::write(&file, b"hello transfer").unwrap();
@@ -1272,6 +1310,7 @@ mod tests {
             max_bytes: 64,
             resolve_dest: &grow,
             asking: &crate::consent::keep,
+            log: &no_log,
         };
         let incoming = lab.root.join("home/b/incoming");
         let r = send_notes(&sv, &file);
@@ -1307,6 +1346,7 @@ mod tests {
             max_bytes: 64,
             resolve_dest: &resolve,
             asking: &crate::consent::keep,
+            log: &no_log,
         };
         let file = lab.dir.join("f.txt");
         std::fs::write(&file, b"0123456789").unwrap();
@@ -1416,6 +1456,7 @@ mod tests {
             max_bytes: 64,
             resolve_dest: &resolve,
             asking: &asking,
+            log: &no_log,
         };
         let file = lab.dir.join("f.txt");
         std::fs::write(&file, b"moved").unwrap();
