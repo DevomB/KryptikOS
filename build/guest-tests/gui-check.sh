@@ -4,7 +4,8 @@
 #   GT SCREENSHOT-READY, GT SCREENSHOT-FULLSCREEN,
 #   GT SCREENSHOT-OVERSIZE                          take a screenshot
 #   GT KEY-FULLSCREEN, GT KEY-FULLSCREEN-AGAIN      press Alt+e (dwl fullscreen)
-#   GT CONSENT-WAIT 1, GT CONSENT-WAIT 2            answer y, then n (and Enter)
+#   GT CONSENT-CODE 1 NN                            type NN and Enter (the question's code)
+#   GT CONSENT-WAIT 2                               type y and Enter (not the code: refused)
 #   GT END
 # Verdicts: "GT PASS|FAIL|INFO name - detail".
 set -u
@@ -223,22 +224,36 @@ questions() {   # every entry in the consent directory except the watcher lock
 }
 [[ -z "$(questions)" ]] && pass "no-question-for-policy-refusal" || fail "no-question-for-policy-refusal" "$(questions | tr '
 ' ' ')"
-# dev -> work: allowed by policy, asked of the user
+# dev -> work: allowed by policy, asked of the user, who types the code the
+# question's window shows. Zone 0 finds it beside the question, which no zone sees.
+consent_code() {   # the code the open question's window asks for, once it asks
+    local f n=30
+    while [[ "$n" -gt 0 ]]; do
+        for f in /run/kryptik-consent/*.code; do
+            [[ -s "$f" ]] && { cat "$f"; return 0; }
+        done
+        n=$((n - 1)); sleep 1
+    done
+    return 1
+}
 mark trf1 dev
-echo "GT CONSENT-WAIT 1"
 launch dev "sh -c 'echo report-body > \$HOME/report.txt; python3 $BC transfer work report.txt \$HOME/report.txt'" > "$LOG/trf1.out" 2>&1
+code="$(consent_code)"
+[[ "$code" =~ ^[1-9][0-9]$ ]] && pass "consent-code-shown" "the question's window asks for code $code" || fail "consent-code-shown" "no code beside the question: $(questions | tr '\n' ' ')"
+echo "GT CONSENT-CODE 1 ${code:-00}"
 n=40; while [[ "$n" -gt 0 ]] && [[ "$(since_mark trf1 dev)" != *ok* && "$(since_mark trf1 dev)" != *error* ]]; do n=$((n - 1)); sleep 1; done
 out="$(since_mark trf1 dev)"
-[[ "$out" == *"ok report.txt"* ]] && pass "transfer-approved" "after the person said yes: $(echo "$out" | grep -o 'ok .*' | head -1)" || fail "transfer-approved" "$(echo "$out" | tail -2 | tr '\n' ' '); $(zone_why work)"
+[[ "$out" == *"ok report.txt"* ]] && pass "transfer-approved" "after the person typed the code: $(echo "$out" | grep -o 'ok .*' | head -1)" || fail "transfer-approved" "$(echo "$out" | tail -2 | tr '\n' ' '); $(zone_why work)"
 if [[ -f "$R/work/incoming/report.txt" ]] && [[ "$(cat "$R/work/incoming/report.txt")" = report-body ]]; then pass "transfer-landed" "the file is in work's incoming/, byte-identical"; else fail "transfer-landed" "$(ls -la "$R/work/incoming" 2>&1 | tail -2 | tr '\n' ' ')"; fi
 # As for personal above: wait for dev's volume to close before the next launch.
 wait_for 30 test ! -e /run/kryptik/zones/dev/init.pid; sleep 1
 mark trf2 dev
-echo "GT CONSENT-WAIT 2"
 launch dev "sh -c 'echo secret2 > \$HOME/report2.txt; python3 $BC transfer work report2.txt \$HOME/report2.txt'" > "$LOG/trf2.out" 2>&1
+consent_code > /dev/null || info "the second question's window asked for no code"
+echo "GT CONSENT-WAIT 2"
 n=40; while [[ "$n" -gt 0 ]] && [[ "$(since_mark trf2 dev)" != *ok* && "$(since_mark trf2 dev)" != *error* ]]; do n=$((n - 1)); sleep 1; done
 out="$(since_mark trf2 dev)"
-[[ "$out" == *"refused by the user"* ]] && pass "transfer-denied" "after the person said no: refused" || fail "transfer-denied" "$(echo "$out" | tail -2 | tr '\n' ' ')"
+[[ "$out" == *"refused by the user"* ]] && pass "plain-y-refused" "y without the code is a refusal" || fail "plain-y-refused" "$(echo "$out" | tail -2 | tr '\n' ' ')"
 [[ -e "$R/work/incoming/report2.txt" ]] && fail "denied-file-absent" "the refused file landed anyway" || pass "denied-file-absent" "nothing landed"
 # The broker removes .ask and .answer at once; the chrome's watcher removes its
 # .dialog on its next one-second pass, so wait for that.

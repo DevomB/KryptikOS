@@ -62,8 +62,8 @@ python3 "$DRV" --serial "$SER" --qmp "$QMP" --timeout 600 \
     "expect:GT SCREENSHOT-FULLSCREEN" "sleep:2" "screendump:${SHOT_FS}" \
     "expect:GT KEY-FULLSCREEN-AGAIN" "key:alt+e" \
     "expect:GT SCREENSHOT-OVERSIZE" "sleep:2" "screendump:${SHOT_OVER}" \
-    "expect:GT CONSENT-WAIT 1" "sleep:6" "key:y" "key:ret" \
-    "expect:GT CONSENT-WAIT 2" "sleep:6" "key:n" "key:ret" \
+    "type-from:GT CONSENT-CODE 1 ([0-9]+)" \
+    "expect:GT CONSENT-WAIT 2" "key:y" "key:ret" \
     "expect:GT END" "expect:GCHECK-DONE" \
     "send:su - root -c 'poweroff'" "expect:Password: ?" "send:${RPASS}" \
     "expect:Power down" "wait-exit"
@@ -78,7 +78,7 @@ if [[ -n "$summary" && "${gf:-1}" -eq 0 && "${gp:-0}" -ge 25 ]]; then green "eve
 grep 'GT FAIL' <<<"$T" | sed 's/^/        /'
 for name in session-socket compositor-running chrome-focus-record chrome-window-is-zone0 zone0-sees-capture zone-proxy-path zone-sees-needed zone-hidden-globals zone-bind-refused proxy-logged-refusal \
             focus-shows-zone focus-shows-label title-prefixed last-zone-recorded menu-keeps-last-zone fullscreen-identity-recorded compositor-survives-close oversize-window forged-title-named-by-zone second-zone-window no-virtual-input clipboard-isolated clipboard-move-gesture clipboard-moved \
-            transfer-policy no-question-for-policy-refusal transfer-approved transfer-landed transfer-denied denied-file-absent; do
+            transfer-policy no-question-for-policy-refusal consent-code-shown transfer-approved transfer-landed plain-y-refused denied-file-absent; do
     grep -q "GT PASS ${name}" <<<"$T" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
 

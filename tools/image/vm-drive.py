@@ -22,6 +22,9 @@ Steps (each one argument):
     screendump:FILE         ask QEMU (QMP) for a PPM screenshot
     key:NAME[+NAME...]      press keys on the guest's keyboard through QMP
                             (qcodes, e.g. key:y  key:ret  key:alt+e)
+    type-from:REGEX         wait for REGEX, then type what its first group
+                            matched (digits and letters) and Enter through QMP:
+                            for a value only the guest can see
     wait-exit               wait for the serial socket to close (guest gone)
 
 With KRYPTIK_STATE_PASSPHRASE set, the driver answers an installed disk's
@@ -263,6 +266,14 @@ def main():
                 r = qmp(qmpsock, "send-key", {"keys": keys, "hold-time": 80})
                 if "error" in r: raise RuntimeError(f"send-key {rest}: {r['error']}")
                 time.sleep(0.3)
+            elif kind == "type-from":
+                if not qmpsock: raise RuntimeError("type-from needs --qmp")
+                text = d.expect(rest).group(1).decode()
+                if not text.isalnum(): raise RuntimeError(f"type-from: {text!r} is not letters and digits")
+                for k in list(text.lower()) + ["ret"]:
+                    r = qmp(qmpsock, "send-key", {"keys": [{"type": "qcode", "data": k}], "hold-time": 80})
+                    if "error" in r: raise RuntimeError(f"send-key {k}: {r['error']}")
+                    time.sleep(0.15)
             elif kind == "wait-exit":
                 deadline = time.time() + timeout
                 while not d.closed and time.time() < deadline: d._read()

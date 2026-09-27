@@ -19,7 +19,8 @@
 #                                  over here when it has no terminal)
 #   kryptik-chrome --focus         print the focused zone, from the record
 #   kryptik-chrome --confirm ID    ask the broker's question ID in a trusted
-#                                  window and write back the answer
+#                                  window and write back the answer: yes only
+#                                  for the code it shows, typed after it shows
 #
 # Passphrases are read by kryptik-launch on the chrome's own terminal and go
 # to the daemon as a descriptor, never in argv or the environment.
@@ -74,7 +75,7 @@ run_status() {
             done
             for d in "$CONSENT"/*.dialog; do
                 [ -e "$d" ] || continue
-                [ -e "${d%.dialog}.ask" ] || rm -f "$d"
+                [ -e "${d%.dialog}.ask" ] || rm -f "$d" "${d%.dialog}.code"
             done
             sleep 1
         done
@@ -219,7 +220,7 @@ run_confirm() { # ID
         echo "Check a watch or a phone. A wrong clock makes expired certificates"
         echo "look valid and old updates look new. Cancelling leaves the clock alone."
         echo
-        printf 'Set the clock to the network'"'"'s time? [y/N] '
+        echo "Set the clock to the network's time?"
     else
         from="$(sed -n 's/^from=//p' "$ask")"; to="$(sed -n 's/^to=//p' "$ask")"
         name="$(sed -n 's/^name=//p' "$ask")"; bytes="$(sed -n 's/^bytes=//p' "$ask")"
@@ -232,11 +233,26 @@ run_confirm() { # ID
         echo "It will land in the receiving zone's incoming/ directory. Nothing else"
         echo "is shared. Cancelling leaves both zones as they are."
         echo
-        printf 'Allow this transfer? [y/N] '
+        echo "Allow this transfer?"
     fi
+    # This window takes focus when it maps, so keys typed for another window,
+    # a hostile zone's among them, may be waiting: after a second on screen
+    # they are dropped, half-typed lines too, before any answer is read.
+    sleep 1
+    if [ -t 0 ] && was="$(stty -g)"; then
+        stty -icanon min 0 time 0
+        [ "$(cat | wc -c)" -eq 0 ] || echo "(what was typed before this question showed is ignored)"
+        stty "$was"
+    fi
+    # The answer is a code drawn for this question alone: no zone sees this
+    # window, so none can type it. It is kept beside the question for zone 0's
+    # tests; whatever can read this directory could write the answer anyway.
+    code=$(( $(od -An -N1 -tu1 /dev/urandom) % 90 + 10 ))
+    (umask 077; printf '%s\n' "$code" > "$CONSENT/$id.code")
+    printf 'Type %s and Enter to allow; anything else refuses: ' "$code"
     answer=no
     if read -r reply; then
-        case "$reply" in y|Y|yes|YES) answer=yes ;; esac
+        [ "$reply" = "$code" ] && answer=yes
     fi
     printf '%s\n' "$answer" > "$CONSENT/$id.answer.tmp" && mv -f "$CONSENT/$id.answer.tmp" "$CONSENT/$id.answer"
     echo "-> $answer"

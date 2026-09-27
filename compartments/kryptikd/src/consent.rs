@@ -2,6 +2,7 @@
 //! cross between zones (docs/design/broker.md), may the clock be set.
 //!
 //!   /run/kryptik-consent/<id>.ask      from=ZONE to=ZONE name=NAME bytes=N
+//!   /run/kryptik-consent/<id>.code     the code the window asks for (the chrome's)
 //!   /run/kryptik-consent/<id>.answer   yes | no        (written by the chrome)
 //!
 //! No zone can reach the directory (root:kryptik 2770, made by sysinit), but
@@ -228,6 +229,7 @@ fn ask_text(text: &str, asking: &dyn Fn() -> bool) -> Result<(), String> {
     };
     unlink(dfd, &ask);
     unlink(dfd, &answer);
+    unlink(dfd, &format!("{id}.code"));
     outcome
 }
 
