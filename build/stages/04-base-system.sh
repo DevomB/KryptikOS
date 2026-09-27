@@ -134,18 +134,6 @@ native_build() {
 
 # --- packages that need more than ./configure ------------------------------
 
-# With the build/patches set (see its README): 2.42.3 does not compile against
-# a glibc older than 2.43, and gets one flag wrong there.
-s_util_linux() {
-    local src; src="$(unpack "util-linux-${V_UTIL_LINUX}.tar.xz" "util-linux-${V_UTIL_LINUX}")"
-    cd "$src"
-    apply_repo_patches "util-linux-${V_UTIL_LINUX}"
-    ./configure --prefix=/usr --libdir=/usr/lib --runstatedir=/run --disable-chfn-chsh --disable-login --disable-nologin --disable-su --disable-setpriv --disable-runuser --disable-pylibmount --disable-liblastlog2 --disable-static --without-python
-    make
-    make install
-}
-
-
 # Locales, with stage 01's localedef, first and apart from the glibc rebuild:
 # perl needs them (Configure probes LC_ALL), and glibc's rebuild waits for
 # python, which comes after perl.
@@ -2138,7 +2126,7 @@ PACKAGES=(
     # No XS modules: texinfo links them without the hardening, and texi2any
     # runs as plain Perl without them.
     "texinfo"     "native_build texinfo-${V_TEXINFO}.tar.xz texinfo-${V_TEXINFO} --disable-perl-xs"
-    "util-linux"  "s_util_linux"
+    "util-linux"  "native_build util-linux-${V_UTIL_LINUX}.tar.xz util-linux-${V_UTIL_LINUX} --libdir=/usr/lib --runstatedir=/run --disable-chfn-chsh --disable-login --disable-nologin --disable-su --disable-setpriv --disable-runuser --disable-pylibmount --disable-liblastlog2 --disable-static --without-python"
     "glibc"       "s_glibc"
     "bzip2"       "s_bzip2"
     "xz"          "s_xz_native"
