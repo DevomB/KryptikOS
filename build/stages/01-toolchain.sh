@@ -34,21 +34,6 @@ REDO=""
 
 mkdir -p "$STAMPS" "$LOGS" "$BUILDDIR" "$LFS"
 
-
-
-# unpack TARBALL TOPDIR [NAME]: extract into $BUILDDIR as NAME; print the path.
-unpack() {
-    local tarball="$1" srcdir="$2" destname="${3:-}"
-    local dir="${BUILDDIR}/${destname:-$srcdir}"
-    rm -rf "$dir"
-    tar -xf "${KRYPTIK_SOURCES}/${tarball}" -C "$BUILDDIR"
-    if [[ -n "$destname" && "$destname" != "$srcdir" ]]; then
-        mv "${BUILDDIR}/${srcdir}" "$dir"
-    fi
-    [[ -d "$dir" ]] || die "expected ${dir} after unpacking ${tarball}"
-    printf '%s' "$dir"
-}
-
 # --- steps -----------------------------------------------------------------
 
 s_layout() {

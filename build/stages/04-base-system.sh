@@ -84,7 +84,6 @@ set_flags_for() {
 
 # --- step machinery ---------------------------------------------------------
 
-
 # The shared step() calls this after printing the tail of a failed log.
 step_failure_hint() {
     # Two locals: one `local` expands all its words before assigning any.
@@ -111,15 +110,6 @@ step_failure_hint() {
     err "If it IS a hardening incompatibility, add an entry to"
     err "build/config/hardening-exceptions.txt WITH a justification, so"
     err "only that flag is dropped and only for that package."
-}
-
-unpack() {
-    local tarball="$1" dirname="$2"
-    local dir="${BUILDDIR}/${dirname}"
-    rm -rf "$dir"
-    tar -xf "${KRYPTIK_SOURCES}/${tarball}" -C "$BUILDDIR"
-    [[ -d "$dir" ]] || die "expected ${dir} after unpacking ${tarball}"
-    printf '%s' "$dir"
 }
 
 # Native build: no --host, as this runs on the target.
