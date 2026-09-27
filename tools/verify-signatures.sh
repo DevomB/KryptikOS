@@ -449,12 +449,15 @@ key_provenance_kind() {
 load_key_provenance
 
 # check_sig <name> <sigfile> <datafile> [how]: classify gpg's status output.
+# An empty datafile checks a signed message, which carries its own data.
 # EXPKEYSIG counts as verified: the signature is valid and only the keyring's
 # copy of the key has expired (maintainers extend expiry; the keyring lags).
 # how, when given, ends each report detail.
 check_sig() {
     local name="$1" sigfile="$2" datafile="$3" how="${4:+; $4}"
     local out signer keyid
+    local -a signed=("$sigfile")
+    [[ -n "$datafile" ]] && signed+=("$datafile")
 
     # Before verifying, so a published key wins over --fetch-unknown-keys.
     import_provenance_keys_for "$name"
@@ -468,7 +471,7 @@ check_sig() {
         return 0
     fi
 
-    out="$(gpg --batch --status-fd 1 --verify "$sigfile" "$datafile" 2>/dev/null || true)"
+    out="$(gpg --batch --status-fd 1 --verify "${signed[@]}" 2>/dev/null || true)"
 
     if printf '%s' "$out" | grep -qE "^\[GNUPG:\] (GOODSIG|EXPKEYSIG)"; then
         local kind
@@ -530,7 +533,7 @@ check_sig() {
         # never counted as verified.
         if [[ "$FETCH_UNKNOWN" -eq 1 ]]; then
             if recv_key "$keyid"; then
-                out="$(gpg --batch --status-fd 1 --verify "$sigfile" "$datafile" 2>/dev/null || true)"
+                out="$(gpg --batch --status-fd 1 --verify "${signed[@]}" 2>/dev/null || true)"
                 if printf '%s' "$out" | grep -qE "^\[GNUPG:\] (GOODSIG|EXPKEYSIG)"; then
                     signer="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] \(GOODSIG\|EXPKEYSIG\) [0-9A-F]* //p' | head -1)"
                     local fpr
@@ -595,6 +598,13 @@ verify_gnu() {
 }
 
 # A suffix is not a format: python.org's .sig is Sigstore, its .asc OpenPGP.
+# A signed message carries its data; a detached signature does not.
+is_signed_message() {
+    local packets
+    packets="$(gpg --batch --list-packets "$1" 2>/dev/null || true)"
+    grep -q ':literal data packet:' <<< "$packets"
+}
+
 is_pgp_signature() {
     [[ -s "$1" ]] || return 1
     gpg --batch --list-packets "$1" 2>/dev/null | grep -q ':signature packet:'
@@ -650,6 +660,22 @@ verify_detached() {
         warn "${name}: the published ${suffix} is not an OpenPGP signature"
         mark_unverifiable "${name} (published ${suffix} is not OpenPGP)"
         report "$name" signature-not-openpgp "published ${suffix} is not an OpenPGP signature"
+        return
+    fi
+    # A signed message carries its data: it vouches for this data only if
+    # what it carries is exactly this data.
+    if is_signed_message "$sig"; then
+        local carried="${sig}.carried"
+        gpg --batch --quiet --yes --output "$carried" --decrypt "$sig" >/dev/null 2>&1 || true
+        if ! cmp -s "$carried" "$data"; then
+            rm -f "$carried"
+            err "${name}: ${sigurl##*/} is a signed message carrying other data"
+            FAILED=$((FAILED + 1)); FAILED_LIST+=("${name} (${sigurl##*/} carries other data)")
+            report "$name" signature-bad "${sigurl##*/} carries other data${how:+; ${how}}"
+            return
+        fi
+        rm -f "$carried"
+        check_sig "$name" "$sig" "" "$how" || true
         return
     fi
     check_sig "$name" "$sig" "$data" "$how" || true

@@ -431,6 +431,23 @@ fixgpg --yes --local-user good@example.test --armor \
 fresh_root; run --strict
 expect_pass "a sha512 list verifies the same way" "verified:     1"
 
+# Like pixman's: the .asc is a signed message that carries the list itself.
+printf 'fixture payload for carried\n' > "${SRC}/carried.tar.gz"
+sha512sum "${SRC}/carried.tar.gz" | sed 's#  .*#  carried.tar.gz#' > "${SRC}/carried.tar.gz.sha512"
+fixgpg --yes --local-user good@example.test --armor \
+    --sign -o "${SRC}/carried.tar.gz.sha512.asc" "${SRC}/carried.tar.gz.sha512" >/dev/null 2>&1
+: > "${W}/manifest"; add_row carried sums:carried.tar.gz.sha512.asc
+fresh_root; run --strict
+expect_pass "a signed message carrying the list verifies" "verified:     1"
+
+# Its carried list must be the published one.
+cp "${SRC}/summed512.tar.gz.sha512" "${W}/other.sha512"
+fixgpg --yes --local-user good@example.test --armor \
+    --sign -o "${SRC}/carried.tar.gz.sha512.asc" "${W}/other.sha512" >/dev/null 2>&1
+rm -f "${SRC}/.signatures/carried.tar.gz.sha512.asc"
+fresh_root; run
+expect_fail "a signed message carrying another list fails" "is a signed message carrying other data"
+
 # The digest decides, whatever the signature says.
 printf 'altered\n' >> "${SRC}/summed.tar.gz"
 : > "${W}/manifest"; add_row summed sums:summed-SHA-256.txt.asc
