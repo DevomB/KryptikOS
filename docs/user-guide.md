@@ -122,14 +122,16 @@ user exists. If a user exists but a password step failed, run
 
 Log in as the user on tty1. The desktop session starts from the profile:
 dwl with the Kryptik chrome as its startup command. Every application
-window belongs to a zone: it carries that zone's border colour, and its title
-is prefixed with the zone name. The window with focus has the full-width
-border; the others' borders are narrower, in the same colour. Keys (Alt is
-the modifier):
+window belongs to a zone and carries that zone's border colour. The window
+with focus has the full-width border; the others' borders are narrower, in
+the same colour. Nothing else on screen names a window's zone, since dwl
+draws no titlebar: to name it in words, press Alt+p and then f, and the menu
+shows the zone's glyph and label and the window's title, which carries the
+zone name as a prefix. Keys (Alt is the modifier):
 
 | keys | what |
 | --- | --- |
-| Alt+p | the chrome menu: zones, their applications, stop a zone, move a clipboard between zones |
+| Alt+p | the chrome menu: zones, their applications, stop a zone, move a clipboard between zones, and with f the zone of the window you last had |
 | Alt+Shift+Return | a terminal (havoc) in the work zone |
 | Alt+Shift+p | a terminal in the personal zone |
 | Alt+Shift+u | the browser (lynx) in the untrusted zone |

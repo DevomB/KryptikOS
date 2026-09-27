@@ -79,7 +79,7 @@ pub struct Zone {
     pub pids_max: Option<u32>,
     pub border_color: String,
     /// Identity without colour: `glyph` and `label` name the zone in the
-    /// chrome's menu and in `kryptik-chrome --focus`. Nothing draws
+    /// chrome's menu, whose f names the last zone window's. Nothing draws
     /// `border_pattern`; it is only checked here, and `zoneid audit` gives it
     /// no weight.
     pub border_pattern: Option<String>,

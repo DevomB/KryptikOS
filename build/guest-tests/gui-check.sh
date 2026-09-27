@@ -106,6 +106,7 @@ else
 fi
 grep -q '^label=UNTRUSTED' "$RT/kryptik/focus" 2>/dev/null && pass "focus-shows-label" "the text identity is the zone file's label" || fail "focus-shows-label"
 grep -q '^title=\[untrusted\]' "$RT/kryptik/focus" 2>/dev/null && pass "title-prefixed" "$(grep '^title=' "$RT/kryptik/focus")" || fail "title-prefixed" "$(grep '^title=' "$RT/kryptik/focus" 2>/dev/null)"
+grep -q '^zone=untrusted' "$RT/kryptik/focus.zone" 2>/dev/null && pass "last-zone-recorded" "$(tr '\n' ' ' < "$RT/kryptik/focus.zone")" || fail "last-zone-recorded" "$(tr '\n' ' ' < "$RT/kryptik/focus.zone" 2>/dev/null)"
 sleep 2
 echo "GT SCREENSHOT-READY"
 sleep 6
@@ -122,6 +123,17 @@ echo "GT SCREENSHOT-FULLSCREEN"
 sleep 6
 echo "GT KEY-FULLSCREEN-AGAIN"
 wait_for 20 grep -q '^fullscreen=0' "$RT/kryptik/focus" && pass "fullscreen-off-again" || fail "fullscreen-off-again"
+# A zone 0 window taking focus, as the menu does when opened, leaves the last
+# zone window's record alone: that record is what the menu's f shows.
+as_user "/usr/libexec/kryptik/wlprobe oversize 0 15 zone-0" > "$LOG/zone0-window.out" 2>&1 &
+if wait_for 20 grep -q '^zone=0' "$RT/kryptik/focus"; then
+    grep -q '^zone=untrusted' "$RT/kryptik/focus.zone" 2>/dev/null \
+        && pass "menu-keeps-last-zone" "focus is zone 0; the last zone window: $(tr '\n' ' ' < "$RT/kryptik/focus.zone")" \
+        || fail "menu-keeps-last-zone" "$(tr '\n' ' ' < "$RT/kryptik/focus.zone" 2>/dev/null)"
+else
+    fail "menu-keeps-last-zone" "no zone 0 window took focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); $(tr '\n' ' ' < "$LOG/zone0-window.out")"
+fi
+pkill -u "$USER_NAME" -f 'wlprobe oversize 0 15 zone-0' 2>/dev/null
 
 # A zone runs one command at a time, so its window is stopped before the next.
 stop_zone() { as_user "kryptik-launch --stop $1" > /dev/null 2>&1; wait_for 15 test ! -e "/run/kryptik/zones/$1/init.pid"; sleep 1; }
@@ -147,6 +159,17 @@ fi
 sleep 2
 echo "GT SCREENSHOT-OVERSIZE"
 sleep 6
+stop_zone untrusted
+# A window titled as another zone's is named by its own zone, from the app_id
+# the proxy stamps, never from its title.
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe oversize 0 20 '[vault] forged'" > "$LOG/launch-forged.out" 2>&1
+if wait_for 20 grep -q '^title=\[untrusted\] \[vault\] forged' "$RT/kryptik/focus"; then
+    grep -q '^zone=untrusted' "$RT/kryptik/focus.zone" && grep -q '^label=UNTRUSTED' "$RT/kryptik/focus.zone" \
+        && pass "forged-title-named-by-zone" "$(tr '\n' ' ' < "$RT/kryptik/focus.zone")" \
+        || fail "forged-title-named-by-zone" "$(tr '\n' ' ' < "$RT/kryptik/focus.zone" 2>/dev/null)"
+else
+    fail "forged-title-named-by-zone" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); launch: $(tr '\n' ' ' < "$LOG/launch-forged.out"); $(zone_why untrusted)"
+fi
 stop_zone untrusted
 
 # --- a second zone with a window; no virtual input for either -------------
