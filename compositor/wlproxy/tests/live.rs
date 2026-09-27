@@ -3,7 +3,9 @@
 //! speaking hand-encoded wire messages, so no compositor is needed.
 
 use std::io::{ErrorKind, Read, Write};
+use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -99,6 +101,11 @@ struct Proxy {
 
 impl Proxy {
     fn start(zone: &str, extra: &[&str]) -> Proxy {
+        Proxy::start_with(zone, extra, None)
+    }
+
+    /// Started with RLIMIT_NOFILE set to (soft, hard).
+    fn start_with(zone: &str, extra: &[&str], nofile: Option<(u64, u64)>) -> Proxy {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         // Unix socket paths are limited to 108 bytes; the system temp dir is short.
         let dir = std::env::temp_dir().join(format!("kwlp-{}-{n}", std::process::id()));
@@ -107,7 +114,17 @@ impl Proxy {
         let listen = dir.join("wayland-0");
         let upstream = UnixListener::bind(&upstream_path).unwrap();
         upstream.set_nonblocking(true).unwrap();
-        let child = Command::new(env!("CARGO_BIN_EXE_kryptik-wlproxy"))
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_kryptik-wlproxy"));
+        if let Some((soft, hard)) = nofile {
+            let rl = libc::rlimit { rlim_cur: soft, rlim_max: hard };
+            unsafe {
+                cmd.pre_exec(move || match libc::setrlimit(libc::RLIMIT_NOFILE, &rl) {
+                    0 => Ok(()),
+                    _ => Err(std::io::Error::last_os_error()),
+                });
+            }
+        }
+        let child = cmd
             .arg("--zone")
             .arg(zone)
             .arg("--listen")
@@ -294,6 +311,55 @@ fn serves_clients_through_churn() {
     c4.write_all(&sync(3)).unwrap();
     assert_eq!(read_exact_or_panic(&mut u4, 12, "client 4's sync at the end"), sync(3));
     assert!(p.alive());
+}
+
+/// One sendmsg of `data` with `fds` attached.
+fn send_fds(s: &UnixStream, data: &[u8], fds: &[RawFd]) {
+    let mut iov = libc::iovec { iov_base: data.as_ptr() as *mut libc::c_void, iov_len: data.len() };
+    let space = unsafe { libc::CMSG_SPACE(std::mem::size_of_val(fds) as u32) } as usize;
+    let mut cbuf = vec![0u64; space.div_ceil(8)];
+    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = cbuf.as_mut_ptr() as *mut libc::c_void;
+    msg.msg_controllen = space as _;
+    unsafe {
+        let c = libc::CMSG_FIRSTHDR(&msg);
+        (*c).cmsg_level = libc::SOL_SOCKET;
+        (*c).cmsg_type = libc::SCM_RIGHTS;
+        (*c).cmsg_len = libc::CMSG_LEN(std::mem::size_of_val(fds) as u32) as _;
+        std::ptr::copy_nonoverlapping(fds.as_ptr(), libc::CMSG_DATA(c) as *mut RawFd, fds.len());
+        assert!(libc::sendmsg(s.as_raw_fd(), &msg, libc::MSG_NOSIGNAL) >= 0, "sendmsg: {}", std::io::Error::last_os_error());
+    }
+}
+
+/// The proxy raises its soft descriptor limit to the hard one and serves only
+/// the clients whose queued descriptors fit, so one that parks as many as it
+/// may cannot starve the sessions already open.
+#[test]
+fn clients_fit_descriptor_limit() {
+    // (300 - 8) / 130: two sessions.
+    let mut p = Proxy::start_with("work", &["--max-clients", "32"], Some((100, 300)));
+    let limits = std::fs::read_to_string(format!("/proc/{}/limits", p.child.id())).unwrap();
+    let files = limits.lines().find(|l| l.starts_with("Max open files")).unwrap();
+    assert_eq!(files.split_whitespace().nth(3), Some("300"), "the soft limit was not raised: {files}");
+
+    let (mut good, mut ugood) = p.connect();
+    good.write_all(&get_registry(2)).unwrap();
+    let _ = read_exact_or_panic(&mut ugood, 12, "good client's get_registry");
+    // A second client parks as many descriptors as a session may hold.
+    let (hostile, _uhostile) = p.connect();
+    let null = std::fs::File::open("/dev/null").unwrap();
+    for _ in 0..4 {
+        send_fds(&hostile, b"x", &[null.as_raw_fd(); 16]);
+    }
+    // A third is left waiting: its descriptors would not fit.
+    let _third = UnixStream::connect(&p.listen).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(matches!(p.upstream.accept(), Err(e) if e.kind() == ErrorKind::WouldBlock), "a client past the budget was served");
+    p.assert_alive("with every session's descriptors queued");
+    good.write_all(&sync(3)).unwrap();
+    assert_eq!(read_exact_or_panic(&mut ugood, 12, "the good client's sync"), sync(3));
 }
 
 /// A client binding a hidden global is refused and cut off; its neighbour is unaffected.
