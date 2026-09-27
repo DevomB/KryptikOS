@@ -226,18 +226,19 @@ static const char *ensure_proxy(const char *zone)
 	die("kryptik-wlproxy did not start listening on %s (see %s)", sock, logfile);
 }
 
-/* Read a passphrase from the open terminal into a memfd; returns the fd. */
+/* Read a passphrase from the open terminal into a memfd; returns the fd.
+ * Echo goes off before the prompt, and what was typed ahead is kept. */
 static int passphrase_from_tty(int tty, const char *zone)
 {
 	struct termios old, raw;
 	tcgetattr(tty, &old);
 	raw = old;
 	raw.c_lflag &= ~(tcflag_t)ECHO;
+	tcsetattr(tty, TCSANOW, &raw);
 	dprintf(tty, "passphrase for zone %s: ", zone);
-	tcsetattr(tty, TCSAFLUSH, &raw);
 	char buf[512];
 	ssize_t n = read(tty, buf, sizeof buf - 1);
-	tcsetattr(tty, TCSAFLUSH, &old);
+	tcsetattr(tty, TCSANOW, &old);
 	dprintf(tty, "\n");
 	close(tty);
 	if (n <= 0)
