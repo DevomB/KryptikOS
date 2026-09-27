@@ -21,23 +21,51 @@ use std::time::{Duration, Instant};
 
 use session::{Dir, Session};
 
-/// Rate-limited logging, so a client connecting in a loop cannot fill the log file.
-struct Log { zone: String, since: Instant, lines: u32, dropped: u32 }
+/// The log is a file in /run, which is RAM, and a client can make lines at
+/// will: they are rate-limited and cut, the whole is bounded, and a failed
+/// write is ignored rather than fatal.
+struct Log { zone: String, since: Instant, lines: u32, dropped: u32, left: usize }
 impl Log {
     const PER_SECOND: u32 = 20;
+    const LINE_MAX: usize = 1024;
+    const MAX_BYTES: usize = 1 << 20;
+
+    fn new(zone: &str) -> Self {
+        Log { zone: zone.to_string(), since: Instant::now(), lines: 0, dropped: 0, left: Self::MAX_BYTES }
+    }
+
     fn line(&mut self, text: std::fmt::Arguments) {
         if self.since.elapsed() >= Duration::from_secs(1) {
             if self.dropped > 0 {
-                eprintln!("kryptik-wlproxy[{}]: {} lines not logged", self.zone, self.dropped);
+                let n = self.dropped;
+                self.put(&format!("{n} lines not logged"), &mut std::io::stderr());
             }
             (self.since, self.lines, self.dropped) = (Instant::now(), 0, 0);
         }
         if self.lines < Self::PER_SECOND {
             self.lines += 1;
-            eprintln!("kryptik-wlproxy[{}]: {text}", self.zone);
+            self.put(&text.to_string(), &mut std::io::stderr());
         } else {
             self.dropped += 1;
         }
+    }
+
+    fn put(&mut self, text: &str, out: &mut dyn std::io::Write) {
+        if self.left == 0 {
+            return;
+        }
+        let mut end = text.len().min(Self::LINE_MAX);
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut line = format!("kryptik-wlproxy[{}]: {}\n", self.zone, &text[..end]);
+        if line.len() < self.left {
+            self.left -= line.len();
+        } else {
+            self.left = 0;
+            line = format!("kryptik-wlproxy[{}]: the log is full; nothing more is logged\n", self.zone);
+        }
+        let _ = out.write_all(line.as_bytes());
     }
 }
 
@@ -117,7 +145,7 @@ fn main() {
     let mut sessions: Vec<Live> = Vec::new();
     let mut next_id = 1u64;
     let mut served = 0u64;
-    let mut log = Log { zone: o.zone.clone(), since: Instant::now(), lines: 0, dropped: 0 };
+    let mut log = Log::new(&o.zone);
     /* After a failed accept the listener rests until this passes: the failed
      * connection is still pending, so polling again at once would spin (and a
      * client can exhaust descriptors to cause that). */
@@ -223,5 +251,37 @@ fn main() {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Full;
+    impl std::io::Write for Full {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from_raw_os_error(libc::ENOSPC))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn log_bounded() {
+        let mut log = Log::new("untrusted");
+        let mut out: Vec<u8> = Vec::new();
+        let long = "x".repeat(4000);
+        for _ in 0..10_000 {
+            log.put(&long, &mut out);
+        }
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.len() <= Log::MAX_BYTES + 100, "{} bytes logged", text.len());
+        assert!(text.lines().all(|l| l.len() <= Log::LINE_MAX + 40));
+        assert!(text.ends_with("the log is full; nothing more is logged\n"));
+        assert_eq!(text.matches("log is full").count(), 1);
+        // A full /run is ignored, not fatal.
+        Log::new("untrusted").put("x", &mut Full);
     }
 }
