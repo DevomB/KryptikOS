@@ -332,13 +332,14 @@ s_man_db() {
 
     # mandb must link gdbm: configure falls back to another interface silently.
     echo "--- which database interface did man-db link? ---"
-    if readelf -dW /usr/bin/mandb 2>/dev/null | grep -q "libgdbm"; then
+    local dyn; dyn="$(readelf -dW /usr/bin/mandb 2>/dev/null || true)"
+    if grep -q "libgdbm" <<<"$dyn"; then
         echo "  ok: mandb links libgdbm"
     else
         echo "FAIL: mandb does not link libgdbm."
         echo "      configure fell back to a different database interface, which"
         echo "      is exactly what pinning gdbm was meant to prevent."
-        readelf -dW /usr/bin/mandb 2>/dev/null | grep NEEDED | sed 's/^/      /'
+        grep NEEDED <<<"$dyn" | sed 's/^/      /'
         return 1
     fi
     echo "--- man-db runs ---"
@@ -618,7 +619,8 @@ FIXEOF
     make
     make install
     # --with-readline gives up without a word when -lreadline fails to link.
-    readelf -d /usr/bin/bc | grep -q 'NEEDED.*\[libreadline\.so' \
+    local dyn; dyn="$(readelf -d /usr/bin/bc)"
+    grep -q 'NEEDED.*\[libreadline\.so' <<<"$dyn" \
         || { echo "FAIL: bc was built without readline"; return 1; }
 
     # The shape of linux/Kbuild's timeconst.h computation, which bc must answer.
