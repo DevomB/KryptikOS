@@ -368,9 +368,8 @@ echo
 [[ -f "$FRAG_BASE" ]]     || die "missing ${FRAG_BASE}"
 [[ -f "$FRAG_HARDENED" ]] || die "missing ${FRAG_HARDENED}"
 
-# Refuse an EOL kernel (ADR-009). `make kernel` already ran this online on the
-# host; here it covers a direct run, and offline it only warns.
-"${KRYPTIK_ROOT}/tools/check-kernel-eol.sh" || die "kernel EOL check failed"
+# An EOL kernel is refused (ADR-009) on the host, by `make kernel` before it
+# enters the chroot: in here there is no network to ask kernel.org.
 
 # No -lgcc_s workaround for sorttable's pthread_exit(): the patched glibc
 # loader copes with it (build/patches/glibc-2.40/README.md), and this link
