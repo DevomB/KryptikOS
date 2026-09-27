@@ -369,7 +369,7 @@ s_bzip2() {
     make CFLAGS="$CFLAGS -D_FILE_OFFSET_BITS=64" LDFLAGS="$LDFLAGS"
     make PREFIX=/usr CFLAGS="$CFLAGS -D_FILE_OFFSET_BITS=64" LDFLAGS="$LDFLAGS" install
     cp -av libbz2.so.* /usr/lib
-    ln -sfv libbz2.so.1.0.8 /usr/lib/libbz2.so
+    ln -sfv "libbz2.so.${V_BZIP2}" /usr/lib/libbz2.so
     cp -v bzip2-shared /usr/bin/bzip2
     rm -fv /usr/lib/libbz2.a
 }
@@ -580,28 +580,9 @@ s_pkgconf() {
     pkg-config --version
 }
 
-# bc 1.07.1 builds libmath.h with an `ed` script (bc/fix-libmath_h) and no ed is
-# pinned; as LFS does, the equivalent sed replaces it rather than pin an editor.
 s_bc() {
     local src; src="$(unpack "bc-${V_BC}.tar.gz" "bc-${V_BC}")"
     cd "$src"
-
-    # Only where the ed script is present: 1.08.2, the pinned version, ships
-    # bc/fix-libmath.sed and needs no shim.
-    if [[ -f bc/fix-libmath_h ]] && head -1 bc/fix-libmath_h | grep -qv '^#'; then
-    cat > bc/fix-libmath_h <<'FIXEOF'
-#! /bin/bash
-# Replaces upstream's ed script. Wraps libmath.h into a C string array.
-sed -e '1 s/^/{"/' \
-    -e 's/$/",/' \
-    -e '2,$ s/^/"/' \
-    -e '$ d' \
-    -i libmath.h
-sed -e '$ s/$/0}/' -i libmath.h
-FIXEOF
-    chmod 0755 bc/fix-libmath_h
-    fi
-
     ./configure --prefix=/usr --with-readline --mandir=/usr/share/man \
         --infodir=/usr/share/info
     make
@@ -1940,7 +1921,7 @@ s_wlroots() {
     meson_build "wlroots-${V_WLROOTS}.tar.gz" "wlroots-${V_WLROOTS}" \
         -Dxwayland=disabled -Dexamples=false -Drenderers=[] -Dallocators=[] \
         -Dbackends=drm,libinput -Dsession=enabled -Dxcb-errors=disabled -Dlibliftoff=disabled
-    pkg-config --modversion wlroots-0.19
+    pkg-config --modversion "wlroots-${V_WLROOTS%.*}"
 }
 
 # dwl with Kryptik's config.h: the keybindings are the trusted launcher, and
@@ -2295,11 +2276,7 @@ PACKAGES=("${rows[@]}")
 if [[ "$MODE" == "list" ]]; then
     printf 'Kryptik stage 04 build order (%d entries):\n\n' "$(( ${#PACKAGES[@]} / 2 ))"
     for ((i = 0; i < ${#PACKAGES[@]}; i += 2)); do
-        if [[ -n "${PACKAGES[i+1]}" ]]; then
-            printf '  %2d. %-16s\n' "$(( i / 2 + 1 ))" "${PACKAGES[i]}"
-        else
-            printf '  %2d. %-16s  (NOT YET WIRED UP)\n' "$(( i / 2 + 1 ))" "${PACKAGES[i]}"
-        fi
+        printf '  %2d. %s\n' "$(( i / 2 + 1 ))" "${PACKAGES[i]}"
     done
     exit 0
 fi
@@ -2321,15 +2298,10 @@ require_inside_chroot "stage 04" "system"
 # Built by stage 02's toolchain: rebuilding it invalidates every stamp here.
 stage_depends_on "tt-" verify
 
-unwired=0
 for ((i = 0; i < ${#PACKAGES[@]}; i += 2)); do
     name="${PACKAGES[i]}"
     recipe="${PACKAGES[i+1]}"
-    if [[ -z "$recipe" ]]; then
-        warn "${name}: no recipe yet - skipping"
-        unwired=$((unwired + 1))
-        continue
-    fi
+    [[ -n "$recipe" ]] || die "${name}: a row with no recipe"
     # shellcheck disable=SC2086  # recipe is a deliberately word-split command
     step "$name" $recipe
 done
@@ -2339,9 +2311,5 @@ sed -i '/^BUILD_ID=/d' /etc/os-release
 printf 'BUILD_ID=%s\n' "$KRYPTIK_BUILD_COMMIT" >> /etc/os-release
 
 echo
-if [[ "$unwired" -gt 0 ]]; then
-    warn "${unwired} package(s) have no recipe yet; the base system is INCOMPLETE."
-    warn "Run with --list to see which."
-fi
-ok "Stage 04 finished the packages it has recipes for."
+ok "Stage 04 finished."
 dim "Next: make kernel  (stage 05)"
