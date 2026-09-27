@@ -315,7 +315,7 @@ mv "${SERVE}/txtpkg/txtpkg-${TXT_VER}.tar.gz.sha256.txt" "${SERVE}/txtpkg/txtpkg
 build_root "${ARCHIVES}/authentic.tar.gz" auto
 run --strict
 expect_fail "a sha256.txt row does not fall back to a .sha256" \
-    "the publisher no longer publishes a .sha256.txt"
+    "the publisher no longer serves a .sha256.txt"
 mv "${SERVE}/txtpkg/txtpkg-${TXT_VER}.tar.gz.sha256" "${SERVE}/txtpkg/txtpkg-${TXT_VER}.tar.gz.sha256.txt"
 
 build_root "${ARCHIVES}/authentic.tar.gz" auto
@@ -412,7 +412,7 @@ rm -f "${SERVE}/s6/s6-${S6_VER}.tar.gz.sha256"
 build_root "${ARCHIVES}/authentic.tar.gz" auto
 run --strict
 expect_fail "a publisher that no longer publishes a .sha256 fails --strict" \
-    "no longer publishes a .sha256"
+    "no longer serves a .sha256"
 
 build_root "${ARCHIVES}/authentic.tar.gz" auto
 run

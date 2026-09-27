@@ -21,10 +21,15 @@ cp "$ROOT/build/lib/common.sh" "$R/build/lib/"
 echo patch > "$R/build/patches/demo/0001.patch"
 printf 'demo-1.0\n' > "$T/demo.txt"; tar -C "$T" -czf "$S/demo-1.0.tar.gz" demo.txt
 printf 'sig\n' > "$S/.signatures/demo-1.0.tar.gz.sig"
+# Like less: a signature named for the stem, not the tarball.
+printf 'stemmed-1.0\n' > "$T/stemmed.txt"; tar -C "$T" -czf "$S/stemmed-1.0.tar.gz" stemmed.txt
+printf 'sig\n' > "$S/.signatures/stemmed-1.0.sig"
 printf '%s  demo-1.0.tar.gz\n' "$(sha256sum "$S/demo-1.0.tar.gz" | cut -c1-64)" > "$R/sources.lock"
+printf '%s  stemmed-1.0.tar.gz\n' "$(sha256sum "$S/stemmed-1.0.tar.gz" | cut -c1-64)" >> "$R/sources.lock"
 cat > "$R/tools/fetch-sources.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "demo 1.0 https://example.org/demo-1.0.tar.gz probe listing"
+echo "stemmed 1.0 https://example.org/stemmed-1.0.tar.gz stem.sig listing"
 EOF
 chmod 755 "$R/tools/fetch-sources.sh"
 # A stand-in cargo: vendor writes one crate where it is asked to.
@@ -51,6 +56,7 @@ out="$(bundle "$T/b1")"; rc=$?
 [[ "$rc" -eq 0 ]] && ok "a clean tree with its sources makes a bundle" || bad "bundle: rc=$rc: $out"
 [[ -f "$T/b1/sources/demo-1.0.tar.gz" && -f "$T/b1/signatures/demo-1.0.tar.gz.sig" && -f "$T/b1/sources.lock" ]] \
     && ok "it holds the locked tarball, its signature and sources.lock" || bad "tarball, signature or lock missing"
+[[ -f "$T/b1/signatures/stemmed-1.0.sig" ]] && ok "and a signature named for its stem, as less's is" || bad "the stem-named signature is missing"
 [[ -f "$T/b1/kryptik-${commit:0:12}.tar.gz" ]] && tar -tzf "$T/b1/kryptik-${commit:0:12}.tar.gz" | grep -q 'build/patches/demo/0001.patch' \
     && ok "and the repository at the commit, patches included" || bad "the repository archive is missing or incomplete"
 [[ -f "$T/b1/crates/kryptikd/demo-crate-0.1.0/lib.rs" && -f "$T/b1/crates/compositor/demo-crate-0.1.0/lib.rs" ]] \

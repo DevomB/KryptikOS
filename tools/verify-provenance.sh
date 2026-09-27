@@ -312,9 +312,9 @@ verify_published_sha256() {
     http_get "$sum" "$body" || rc=$?
     if [[ "$rc" -ne 0 ]]; then
         if [[ "${HTTP_CODE:-000}" == "404" ]]; then
-            unavail pub "${name}: the publisher no longer publishes a ${suffix}
-       for this version. skarnet keeps one only for the current release, so
-       this pin is stale AND unverifiable by publisher checksum."
+            unavail pub "${name}: the publisher no longer serves a ${suffix}
+       for this version, so the pin may be stale, and it cannot be checked
+       by publisher checksum."
         else
             unavail pub "${name}: could not fetch ${sum}
        (curl exit ${rc}, HTTP ${HTTP_CODE:-none})"
