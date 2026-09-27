@@ -84,11 +84,12 @@ static const enum libinput_config_tap_button_map button_map = LIBINPUT_CONFIG_TA
 	{ MODKEY|WLR_MODIFIER_CTRL|WLR_MODIFIER_SHIFT,SKEY,toggletag, {.ui = 1 << TAG} }
 
 /* commands: zone launches, where --ask has the chrome prompt for a passphrase
- * if the zone needs one, and the chrome's own menu */
+ * if the zone needs one, and the chrome's own menu, a text program that needs
+ * a zone 0 terminal of its own, as its window at login has */
 static const char *termcmd[]      = { "kryptik-launch", "--ask", "work",      "--", "havoc", NULL };
 static const char *personalcmd[]  = { "kryptik-launch", "--ask", "personal",  "--", "havoc", NULL };
 static const char *untrustedcmd[] = { "kryptik-launch", "--ask", "untrusted", "--", "havoc", "lynx", NULL };
-static const char *menucmd[]      = { "kryptik-chrome", "--menu", NULL };
+static const char *menucmd[]      = { "havoc", "/usr/bin/kryptik-chrome", "--menu", NULL };
 
 static const Key keys[] = {
 	/* modifier                  key                  function          argument */
