@@ -745,12 +745,15 @@ s_gcc_native() {
 }
 
 s_s6_stack() {
-    # ADR-006. skarnet packages use their own configure conventions.
-    local p
-    for p in "skalibs-${V_SKALIBS}" "execline-${V_EXECLINE}" "s6-${V_S6}" \
-             "s6-rc-${V_S6_RC}" "s6-linux-init-${V_S6_LINUX_INIT}"; do
+    # ADR-006. skarnet packages use their own configure conventions. Whole
+    # tarball names, so the step's stamp hashes each one.
+    local tb p
+    for tb in "skalibs-${V_SKALIBS}.tar.gz" "execline-${V_EXECLINE}.tar.gz" \
+              "s6-${V_S6}.tar.gz" "s6-rc-${V_S6_RC}.tar.gz" \
+              "s6-linux-init-${V_S6_LINUX_INIT}.tar.gz"; do
+        p="${tb%.tar.gz}"
         echo "--- ${p} ---"
-        local src; src="$(unpack "${p}.tar.gz" "$p")"
+        local src; src="$(unpack "$tb" "$p")"
         cd "$src"
 
         # --skeldir: with --prefix=/usr the skeleton would land in /usr/etc,
