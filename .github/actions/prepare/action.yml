@@ -1,9 +1,12 @@
 name: Prepare the runner
-description: Work directories on the large disk, and the host packages every Distro job uses.
+description: Work directories on the large disk, the host packages every Distro job uses, and the upstream sources.
 inputs:
   vm:
     description: Also let the runner start VMs (KVM, and virt-fw-vars for the variable stores).
     default: 'false'
+  sources:
+    description: The upstream sources, cached by sources.lock. 'fetch' also fetches what the cache lacks and saves the set; 'restore' only restores it.
+    default: ''
 runs:
   using: composite
   steps:
@@ -34,3 +37,27 @@ runs:
         sudo udevadm control --reload-rules
         sudo udevadm trigger --name-match=kvm
         ls -la /dev/kvm
+
+    - if: inputs.sources != ''
+      id: sources
+      uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      with:
+        path: /mnt/kryptik/sources
+        key: sources-${{ hashFiles('sources.lock') }}
+        # A changed lock restores the previous set and fetches only what is
+        # new; every file is still hashed against the lock.
+        restore-keys: ${{ inputs.sources == 'fetch' && 'sources-' || '' }}
+
+    - if: inputs.sources == 'fetch' && steps.sources.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        make sources
+        ./tools/prune-sources.sh
+
+    # Saved as soon as the set is verified, not when the job ends: a job that
+    # fails later would otherwise fetch the lock's new files again next time.
+    - if: inputs.sources == 'fetch' && steps.sources.outputs.cache-hit != 'true'
+      uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      with:
+        path: /mnt/kryptik/sources
+        key: sources-${{ hashFiles('sources.lock') }}
