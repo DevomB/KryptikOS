@@ -7,8 +7,10 @@ use crate::wire::{ArgReader, WireError};
 #[derive(Debug, Clone, Copy)]
 pub struct Message {
     pub name: &'static str,
-    /// Space-separated argument letters; see gen-wl-protocol.py.
-    pub sig: &'static str,
+    /// The arguments in wire order, as gen-wl-protocol.py wrote them.
+    pub args: &'static [Arg],
+    /// How many of them are descriptors.
+    pub fds: u8,
     pub since: u32,
 }
 
@@ -50,33 +52,8 @@ pub enum Arg {
 }
 
 impl Message {
-    pub fn args(&self) -> impl Iterator<Item = Arg> + '_ {
-        self.sig.split_whitespace().map(|tok| {
-            let (nullable, tok) = match tok.strip_prefix('?') {
-                Some(rest) => (true, rest),
-                None => (false, tok),
-            };
-            match tok {
-                "i" => Arg::Int,
-                "u" => Arg::Uint,
-                "f" => Arg::Fixed,
-                "s" => Arg::String { nullable },
-                "o" => Arg::Object { nullable },
-                "a" => Arg::Array,
-                "h" => Arg::Fd,
-                t if t.starts_with("n:") => Arg::NewId {
-                    iface: match &t[2..] {
-                        "*" => None,
-                        name => Some(name),
-                    },
-                },
-                other => panic!("generated table carries an unknown signature token {other:?}"),
-            }
-        })
-    }
-
     pub fn fd_count(&self) -> usize {
-        self.args().filter(|a| *a == Arg::Fd).count()
+        self.fds as usize
     }
 }
 
@@ -108,7 +85,7 @@ impl<'a> Decoded<'a> {
 pub fn decode<'a>(msg: &Message, body: &'a [u8]) -> Result<Decoded<'a>, WireError> {
     let mut r = ArgReader::new(body);
     let mut d = Decoded::default();
-    for arg in msg.args() {
+    for &arg in msg.args {
         match arg {
             Arg::Int | Arg::Uint | Arg::Fixed | Arg::Object { .. } => {
                 r.u32()?;
@@ -151,10 +128,11 @@ pub(crate) mod tests {
     use crate::wire::MessageWriter;
 
     #[test]
-    fn every_generated_signature_parses() {
+    fn fds_count_descriptor_args() {
         for i in crate::protocol_tables::INTERFACES {
             for m in i.requests.iter().chain(i.events.iter()) {
-                let _ = m.args().count();
+                let fds = m.args.iter().filter(|a| **a == Arg::Fd).count();
+                assert_eq!(m.fd_count(), fds, "{}.{}", i.name, m.name);
             }
         }
     }
@@ -174,7 +152,7 @@ pub(crate) mod tests {
     fn tables_fit_one_send() {
         for i in crate::protocol_tables::INTERFACES {
             for m in i.requests.iter().chain(i.events.iter()) {
-                let created = m.args().filter(|a| matches!(a, Arg::NewId { .. })).count();
+                let created = m.args.iter().filter(|a| matches!(a, Arg::NewId { .. })).count();
                 assert!(created <= 1, "{}.{} creates {created} objects", i.name, m.name);
                 assert!(m.fd_count() <= crate::session::BATCH_FDS, "{}.{}", i.name, m.name);
             }
@@ -255,7 +233,7 @@ pub(crate) mod tests {
                 b.push(0);
             }
         };
-        for arg in m.args() {
+        for &arg in m.args {
             match arg {
                 Arg::Int | Arg::Uint | Arg::Fixed | Arg::Object { .. } => word(&mut b, rng.next() as u32),
                 Arg::String { .. } => {
