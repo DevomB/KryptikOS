@@ -105,7 +105,7 @@ mod tests {
         while i < reach.len() {
             let iface = find(reach[i]).unwrap();
             for m in iface.requests {
-                for a in m.args() {
+                for &a in m.args {
                     if let Arg::NewId { iface: Some(n) } = a {
                         if !reach.contains(&n) {
                             reach.push(n);
@@ -114,7 +114,7 @@ mod tests {
                 }
             }
             for m in iface.events {
-                assert!(m.args().all(|a| !matches!(a, Arg::NewId { .. })), "{}.{} creates an object", iface.name, m.name);
+                assert!(m.args.iter().all(|a| !matches!(a, Arg::NewId { .. })), "{}.{} creates an object", iface.name, m.name);
             }
             i += 1;
         }
