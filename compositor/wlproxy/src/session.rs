@@ -498,7 +498,7 @@ impl Session {
                         let version = r.u32()?;
                         if let Some(allowed) = policy::allowed_version(iname) {
                             let cap = allowed.min(version);
-                            // advertise at most the version we can parse
+                            // advertise at most the version the proxy parses
                             if cap != version {
                                 rewritten = MessageWriter::new(h.object, h.opcode).u32(gname).string(iname).u32(cap).finish();
                             }

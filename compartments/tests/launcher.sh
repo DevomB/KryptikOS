@@ -595,9 +595,9 @@ head_ "F. Encrypted storage: refused without its passphrase, real with it  [unpr
 # mode is not refused.
 zrun_raw wiped -- /bin/sh -c "echo $LAUNCHED; echo PROBE=RAN"
 if [[ "$ZOUT" == *"$LAUNCHED"* ]] && (( ZRC == 0 )); then
-    pass "F1  ephemeral storage no longer needs the override: it is implemented"
+    pass "F1  ephemeral storage is implemented and runs without the override"
 elif [[ "$ZOUT" == *"KRYPTIK_EXPERIMENTAL"* ]]; then
-    fail "F1  ephemeral storage is still being refused although it is implemented"
+    fail "F1  ephemeral storage is refused although it is implemented"
     info "output: $(printf '%s' "$ZOUT" | tr '\n' '|' | cut -c1-220)"
 else
     fail "F1  an ephemeral zone did not start without the override (exit $ZRC)"

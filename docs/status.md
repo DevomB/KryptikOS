@@ -32,23 +32,12 @@ that ship, under QEMU with OVMF firmware.
 | `kryptik`, the user-facing command | **tested**: `compartments/tests/cli.sh` |
 | `make acceptance` | **tested**: `tools/test-acceptance-inputs.sh` covers the release it chooses, the verdict, the merge of a run split across machines and the export's list; every suite runs in one run or in parts, PASS / FAIL / INCOMPLETE per item, with a report and an export that re-hashes what it copies |
 
-## Last full pass
+## The last full pass
 
-Revision `3eb22ce`, 2026-09-26, release `0.1.20260926.3eb22cef.1`, Distro
-run 36236312078. Every suite passed, and no suite's own summary counted a
-failure:
-
-| Suite | Result | What ran |
-| --- | --- | --- |
-| inputs | PASS | revision, compositor sources, `sources.lock`, media hashes |
-| build | PASS | host suites 46/0, libc unwinding 7/0, userspace smoke, artifact hardening audit (strict), licences, kernel config validation, upstream support status |
-| boot | PASS | USB image 40/0, ISO 40/0, firmware-only boot attested from the recorded QEMU commands |
-| install | PASS | install-test 48/0 (the state partition is LUKS), state-test 67/0 (with the watchdog reset) |
-| integrity | PASS | the firmware's variable stores, Secure Boot 40/0, foreign keys refused 6/0, integrity-test 27/0 |
-| zones | PASS | zones-test 50/0 (network, encrypted storage and the clock on the Kryptik kernel) |
-| desktop | PASS | gui-test 33/0 |
-| update | PASS | update-test 25/0, with a release the net zone fetched from the update channel, then applied, trial-booted and committed |
-| release | PASS | export, release notes |
+The newest green Distro run on main is the last full pass. Its acceptance
+report is the run's `acceptance-part-*` artifacts: `REPORT.md` with one row per
+item, `results.tsv`, and each suite's own log and serial transcripts. A local
+`make acceptance EXPORT=DIR` writes the same report for the media it tested.
 
 ## Known gaps
 
@@ -67,7 +56,7 @@ failure:
 - glibc is 2.40 with upstream's maintained release branch applied as of
   2026-09-10 (`build/patches/glibc-2.40/`). Nothing moves the pin along the
   branch automatically, though `tools/check-source-currency.sh` reports when
-  the branch has moved on, and 2.40 is three releases old.
+  the branch has moved on.
 - The artifact audit still reports soft findings, objects without CET and
   RPATHs among them. Each has a reason in
   `build/config/artifact-accepted.txt`, and acceptance fails on any other.

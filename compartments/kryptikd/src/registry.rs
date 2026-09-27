@@ -682,7 +682,7 @@ mod tests {
         let readable = root.join("readable");
         fs::create_dir(&readable).unwrap();
         set_mode(&readable, 0o755).unwrap();
-        check_or_create(&readable).expect("a directory only we can write is repairable");
+        check_or_create(&readable).expect("a directory only this uid can write is repairable");
         assert_eq!(mode_of(&readable), 0o700, "it must be tightened to 0700");
 
         // Absent: created 0700, not 0755-by-umask.
