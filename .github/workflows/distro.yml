@@ -245,6 +245,8 @@ jobs:
           cp /mnt/kryptik/cargo/x86_64-unknown-linux-musl/release/kryptikd /mnt/kryptik/kryptikd-musl
           cp /mnt/kryptik/cargo/x86_64-unknown-linux-musl/release/kryptik-wlproxy /mnt/kryptik/kryptik-wlproxy-musl
           file /mnt/kryptik/kryptikd-musl /mnt/kryptik/kryptik-wlproxy-musl
+          # The licence texts build/licences ships for what they link.
+          tools/check-rust-licences.sh /mnt/kryptik/rust-dist
 
       - name: Stage 04, the base system (in the chroot, as root)
         id: stage04
