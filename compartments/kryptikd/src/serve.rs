@@ -1055,7 +1055,12 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
                     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
                     Ok(up::status(dir, now, &running))
                 }
-                "update-fetch" => up::want(dir, &running).map(|v| format!("{v} will be fetched when the net zone next asks; `kryptik update status` shows it arriving\n")),
+                "update-fetch" => {
+                    let conf = std::fs::read_to_string(up::CONF).unwrap_or_default();
+                    up::required_role()
+                        .and_then(|role| up::want(dir, up::channel_from(&conf).as_deref(), &role, &running))
+                        .map(|v| format!("{v} will be fetched when the net zone next asks; `kryptik update status` shows it arriving\n"))
+                }
                 _ => {
                     // Started, not waited for; one at a time.
                     if jobs.iter().any(|j| j.what == JobKind::UpdateApply) {
