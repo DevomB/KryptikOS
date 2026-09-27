@@ -120,10 +120,11 @@ if [ -n "$RESTORE" ]; then
     bytes="$(sed -n 's/^  "total_bytes": \([0-9]*\).*/\1/p' "$rj")"; sha="$(sed -n 's/^  "sha256": "\([0-9a-f]*\)".*/\1/p' "$rj")"; ver="$(sed -n 's/^  "version": "\([^"]*\)".*/\1/p' "$rj")"
     [ "$(blockdev --getsize64 "$sd")" -ge "$bytes" ] || die "slot $RESTORE is smaller than the medium's root image"
     # As kryptik-update does, the ESP stops naming the slot before it is
-    # rewritten: a restore cut short leaves nothing --commit-slot would take.
+    # rewritten, and is unmounted meanwhile: a restore cut short leaves nothing
+    # --commit-slot would take, on a clean FAT.
     mount -o rw "$ESP" /run/kryptik-recover || die "cannot mount the target ESP"
     rm -f "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi" "/run/kryptik-recover/kryptik/version-$RESTORE"
-    sync
+    umount /run/kryptik-recover || die "cannot unmount the target ESP"
     say "restoring slot $RESTORE from this medium (${ver}, ${bytes} bytes); the state partition is untouched"
     if [ "$off" -gt 0 ]; then dd if="$src" of="$sd" bs=4M iflag=skip_bytes,count_bytes skip="$off" count="$bytes" conv=fsync status=none
     else dd if="$src" of="$sd" bs=4M iflag=count_bytes count="$bytes" conv=fsync status=none; fi
@@ -131,6 +132,7 @@ if [ -n "$RESTORE" ]; then
     got="$(dd if="$sd" bs=4M iflag=count_bytes count="$bytes" status=none | sha256sum | cut -c1-64)"
     [ "$got" = "$sha" ] || die "slot $RESTORE reads back as $got, expected $sha"
     say "slot $RESTORE verifies"
+    mount -o rw "$ESP" /run/kryptik-recover || die "cannot mount the target ESP"
     cp "$kdir/kryptik-$RESTORE.efi" "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi.new"
     sync -f "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi.new"
     mv -f "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi.new" "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi"
