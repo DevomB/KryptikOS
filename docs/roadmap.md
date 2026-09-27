@@ -93,8 +93,11 @@ work in zones from a terminal and a text browser, and keep it up to date.
       the [net zone design](design/net-zone.md).
 - [ ] **Someone else has attacked it.** The broker protocol and
       `kryptik-wlproxy`'s wire parser are fuzzed in the unit suites with a
-      corpus in the tree ([broker design](design/broker.md)); still needed is
-      a review of kryptikd's launch path by someone who did not write it.
+      corpus in the tree ([broker design](design/broker.md)). kryptikd's
+      launch path, the update chain and the broker have each been reviewed by
+      someone who did not write them, and what they found is fixed. Still
+      needed is the same for the desktop boundary: `kryptik-wlproxy` and the
+      compositor.
 - [ ] **A release, as an object.** Version numbering, release notes from the
       acceptance report, the licences of everything shipped (firmware from
       `WHENCE`), the corresponding source, and install, update and recovery
