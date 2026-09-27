@@ -1302,8 +1302,6 @@ fn under_zone_filter(name: &str, probe: impl FnOnce() -> i32) -> ExitCode {
     }
 }
 
-pub use zone::ZoneError;
-
 #[cfg(test)]
 mod tests {
     use super::*;

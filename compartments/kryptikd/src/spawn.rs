@@ -1919,15 +1919,13 @@ mod tests {
     #[test]
     fn explain_does_not_overclaim() {
         let e = explain(&z("routed"), "/tmp/t", std::path::Path::new("/tmp"));
-        // The plan line must qualify routed networking (docs/design/net-zone.md: no NAT yet).
-        let honest = e.contains("NOT IMPLEMENTED")
-            || e.contains("not implemented")
-            || e.contains("no path out")
+        // A routed zone's way out is the nic zone's to open, never kryptikd's.
+        let honest = e.contains("no path out")
             || e.contains("loopback")
             || e.contains("nic zone")
             || e.contains("NAT")
             || e.contains("uid_base");
-        assert!(honest, "explain must not present routed networking as working: {e}");
+        assert!(honest, "explain must say who opens a routed zone's way out: {e}");
         assert!(e.contains("swap"), "explain must name the swap caveat: {e}");
         assert!(
             e.contains("NOT secure erasure"),

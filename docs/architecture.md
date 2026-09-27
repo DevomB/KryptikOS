@@ -12,7 +12,7 @@ A zone is the unit of isolation, and every process belongs to exactly one.
 | Syscalls | seccomp-bpf, default-deny allowlist |
 | File access | Landlock |
 | Resources | cgroup v2 memory and pids limits |
-| Identity | border colour and pattern, titlebar glyph and label |
+| Identity | border colour; the chrome shows the focused window's glyph and label |
 
 ### Zone 0
 
