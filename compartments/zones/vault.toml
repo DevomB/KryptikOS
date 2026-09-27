@@ -27,8 +27,8 @@ uid_base = 393216
 
 [ui]
 # Colour, glyph and label must differ from every other zone's; the pattern
-# backs up colour for users who cannot tell colours apart. Pick colours with
-# `zoneid propose`; `zoneid audit` checks the set, `zoneid explain` the rule.
+# is checked but nothing draws it. Pick colours with `zoneid propose`;
+# `zoneid audit` checks the set, `zoneid explain` the rule.
 border_color   = "#9e80ac"
 border_pattern = "double"
 glyph          = "★"

@@ -78,9 +78,10 @@ pub struct Zone {
     pub memory_max: Option<String>,
     pub pids_max: Option<u32>,
     pub border_color: String,
-    /// Non-colour identity (`border_pattern`, `glyph`, `label`) for users who
-    /// cannot tell the colours apart. Only the shape is checked here; `zoneid
-    /// audit` decides whether the set is distinguishable.
+    /// Identity without colour: `glyph` and `label` name the zone in the
+    /// chrome's menu and in `kryptik-chrome --focus`. Nothing draws
+    /// `border_pattern`; it is only checked here, and `zoneid audit` gives it
+    /// no weight.
     pub border_pattern: Option<String>,
     pub glyph: Option<String>,
     pub label: Option<String>,
@@ -470,8 +471,8 @@ impl Zone {
                 "zone {:?}: storage.volume is only meaningful for storage.mode = \
                  \"encrypted\". A persistent zone keeps its data in a plain directory \
                  under the zone root; it does not open {:?}. If this zone was meant to \
-                 be encrypted, say so - kryptikd will refuse to start it until encrypted \
-                 volumes exist, which is the point.",
+                 be encrypted, say so - kryptikd will refuse to start it until \
+                 `kryptikd volume init` has made its volume, which is the point.",
                 self.name,
                 self.volume.as_deref().unwrap_or("")
             )));
