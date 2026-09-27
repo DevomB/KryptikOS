@@ -3,8 +3,8 @@
 Applied by `s_readline` in stage 04 through `apply_repo_patches`; `SHA256SUMS`
 is verified before anything is applied. readline is meant to be built with
 GNU's official patches, and the tarball carries none of them. bash links this
-readline (`--with-installed-readline`), and so do gawk, for its debugger, and
-gdbm's gdbmtool.
+readline (`--with-installed-readline`), and so do gawk, for its debugger,
+gdbm's gdbmtool, bc and python's `readline` module.
 
 | patch | fixes |
 | --- | --- |
