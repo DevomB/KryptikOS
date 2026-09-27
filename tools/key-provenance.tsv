@@ -16,9 +16,10 @@
 # Columns are whitespace separated; the note runs to the end of the line.
 #
 #   fingerprint  the full 40-character primary key fingerprint, uppercase
-#   kind         korg | wkd
+#   kind         korg | wkd | github
 #   locator      kind korg: the URL the armoured key was fetched from
 #                kind wkd:  the email address whose Web Key Directory serves it
+#                kind github: https://github.com/<account>.gpg
 #   retrieved    the date the confirmation was walked
 #   signs        comma-separated source names this key signs, no spaces
 #   note         the uid as published, and anything a reader needs
@@ -35,7 +36,7 @@
 #         HTTPS by that domain. A match means that domain publishes this key
 #         for that address. It is a third party's statement about the key and
 #         is not upstream designating a release signer.
-
+#
 #   github  the key GitHub publishes for a named account, AND that account is
 #         the one that published the release we pin - checked through the
 #         releases API and recorded in the note. This only ever applies to a
@@ -47,7 +48,7 @@
 #         fingerprint was not learned from the signature under test - it came
 #         from the account that publishes the releases.
 #
-# NEITHER IS OUT-OF-BAND CONFIRMATION. Both rest on TLS and the CA system, and
+# NONE IS OUT-OF-BAND CONFIRMATION. All three rest on TLS and the CA system, and
 # no human here has checked any of these fingerprints through a second channel.
 # They are strictly better than a keyserver lookup by the id under test, and
 # strictly weaker than a fingerprint Kryptik chose in advance - which is what
@@ -56,8 +57,10 @@
 # ADDING A ROW: walk the confirmation yourself and put the route in locator.
 # Do not copy a fingerprint out of a distribution's package metadata or a blog
 # post. If the publisher later serves a DIFFERENT key for the same locator,
-# verify-signatures.sh treats that as a finding and refuses the key, because a
-# silently rotated key is the case this file has to be able to notice.
+# verify-signatures.sh treats that as a finding: it refuses the key and fails
+# every source the row signs, held copy or not, because a silently rotated key
+# is the case this file has to be able to notice. When upstream retires a key
+# on purpose, its row goes, and the new key gets a row of its own.
 
 # fingerprint                               kind  locator                                                                                      retrieved   signs             note
 259B3792B3D6D319212CC4DCD5BF9FEB0313653A    korg  https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git/plain/keys/D5BF9FEB0313653A.asc       2026-09-26  acl,attr          Andreas Gruenbacher <agruenba@redhat.com>; signs acl 2.4.0 and attr 2.6.0; Mike Frysinger signed acl 2.3.2

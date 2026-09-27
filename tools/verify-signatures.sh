@@ -306,16 +306,50 @@ A key-provenance table that cannot be parsed is a tooling fault, not a
 verification result: nothing here has been checked."
 }
 
-# Import one source's published keys unless already held. The recorded
-# fingerprint is the anchor: a locator now serving another key is refused.
+# The primary fingerprints of the keys in FILE, one per line.
+primaries_in() {
+    gpg --batch --with-colons --import-options show-only --import "$1" 2>/dev/null \
+        | awk -F: '$1 == "pub" { p = 1; next } p && $1 == "fpr" { print toupper($10); p = 0 }' || true
+}
+
+# anchored_import FPR FILE: merge the key FPR from FILE into the keyring, with
+# the revocations, subkeys and signatures FILE carries for it, and nothing else
+# FILE holds. A keyring of its own picks it out, and the export is checked to
+# be that key alone. Prints FILE's primary fingerprints. Returns 1 when FILE
+# lacks FPR, and 2 when FPR is there but cannot be taken alone.
+anchored_import() {
+    local fpr="$1" file="$2" home found rc=1
+    found="$(primaries_in "$file" | tr '\n' ' ')"
+    if [[ " ${found} " == *" ${fpr} "* ]]; then
+        rc=2
+        home="$(mktemp -d)"; chmod 700 "$home"
+        if GNUPGHOME="$home" gpg --batch --quiet --import "$file" >/dev/null 2>&1 \
+           && GNUPGHOME="$home" gpg --batch --export "$fpr" > "${home}/key.gpg" 2>/dev/null \
+           && [[ "$(primaries_in "${home}/key.gpg")" == "$fpr" ]] \
+           && gpg --batch --quiet --import "${home}/key.gpg" >/dev/null 2>&1; then
+            rc=0
+        fi
+        GNUPGHOME="$home" gpgconf --kill all >/dev/null 2>&1 || true
+        rm -rf "$home"
+    fi
+    printf '%s' "${found% }"
+    return "$rc"
+}
+
+# Merge one source's published keys from where they are published, held or
+# not, so a revocation or a new subkey published there is seen. The recorded
+# fingerprint is the anchor: only that key is taken from what a locator
+# serves, and a locator no longer serving it is refused, which fails every
+# source the key signs, even with a copy held. Once a run each.
+declare -A PROV_FETCHED=() PROV_REFUSED=()
 import_provenance_keys_for() {
-    local name="$1" i
+    local name="$1" i fpr tmp home got rc
     for i in "${!PROV_FPR[@]}"; do
         case "${PROV_SIGNS[$i]}" in *",${name},"*) ;; *) continue ;; esac
+        fpr="${PROV_FPR[$i]}"
+        [[ -z "${PROV_FETCHED[$fpr]:-}" ]] || continue
+        PROV_FETCHED[$fpr]=1
 
-        gpg --batch --list-keys "${PROV_FPR[$i]}" >/dev/null 2>&1 && continue
-
-        local tmp got
         tmp="$(mktemp)"
         case "${PROV_KIND[$i]}" in
             korg|github)
@@ -323,39 +357,54 @@ import_provenance_keys_for() {
                     warn "${name}: could not fetch the published key from ${PROV_LOC[$i]}"
                     rm -f "$tmp"; continue
                 fi
-                got="$(gpg --batch --with-colons --import-options show-only \
-                         --import "$tmp" 2>/dev/null \
-                       | awk -F: '$1=="fpr"{print $10; exit}')"
-                if [[ "${got^^}" != "${PROV_FPR[$i]}" ]]; then
-                    err "${name}: ${PROV_LOC[$i]} now publishes ${got:-no key},"
-                    err "  not the recorded ${PROV_FPR[$i]}. REFUSING it: a key that"
-                    err "  changed at a published location is a finding, not an update."
-                    rm -f "$tmp"; continue
-                fi
-                gpg --batch --quiet --import "$tmp" >/dev/null 2>&1
                 ;;
             wkd)
-                # --locate-external-key imports on success, so the fingerprint
-                # is checked after the fact and the key dropped if it differs.
-                if ! gpg --batch --quiet --auto-key-locate clear,wkd \
+                # --locate-external-key imports what it finds, so it runs in a
+                # keyring of its own and only its export is read.
+                home="$(mktemp -d)"; chmod 700 "$home"
+                if GNUPGHOME="$home" gpg --batch --quiet --auto-key-locate clear,wkd \
                        --locate-external-key "${PROV_LOC[$i]}" >/dev/null 2>&1; then
-                    warn "${name}: no WKD answer for ${PROV_LOC[$i]}"
-                    rm -f "$tmp"; continue
+                    GNUPGHOME="$home" gpg --batch --export > "$tmp" 2>/dev/null || true
                 fi
-                if ! gpg --batch --list-keys "${PROV_FPR[$i]}" >/dev/null 2>&1; then
-                    err "${name}: the WKD for ${PROV_LOC[$i]} did not serve"
-                    err "  ${PROV_FPR[$i]}. REFUSING: the recorded fingerprint is the anchor."
-                    gpg --batch --quiet --yes --delete-keys \
-                        "$(gpg --batch --with-colons --locate-keys "${PROV_LOC[$i]}" 2>/dev/null \
-                           | awk -F: '$1=="fpr"{print $10; exit}')" >/dev/null 2>&1 || true
+                GNUPGHOME="$home" gpgconf --kill all >/dev/null 2>&1 || true
+                rm -rf "$home"
+                if [[ ! -s "$tmp" ]]; then
+                    warn "${name}: no WKD answer for ${PROV_LOC[$i]}"
                     rm -f "$tmp"; continue
                 fi
                 ;;
         esac
+        rc=0
+        got="$(anchored_import "$fpr" "$tmp")" || rc=$?
         rm -f "$tmp"
-        dim "  ${name}: imported the key ${PROV_KIND[$i]} publishes (${PROV_FPR[$i]})"
+        if [[ "$rc" -eq 0 ]]; then
+            dim "  ${name}: imported the key ${PROV_KIND[$i]} publishes (${fpr})"
+            continue
+        fi
+        if [[ "$rc" -eq 2 ]]; then
+            err "${name}: ${PROV_LOC[$i]} serves ${fpr}, but it could not be taken"
+            err "  alone. REFUSING it: the recorded fingerprint is the anchor."
+        else
+            err "${name}: ${PROV_LOC[$i]} now publishes ${got:-no key},"
+            err "  not the recorded ${fpr}. REFUSING it: a key that"
+            err "  changed at a published location is a finding, not an update."
+        fi
+        PROV_REFUSED[$fpr]="${PROV_LOC[$i]}"
     done
     return 0
+}
+
+# The locator of a refused key that signs NAME; fails if there is none.
+refused_locator_for() {
+    local name="$1" i
+    for i in "${!PROV_FPR[@]}"; do
+        case "${PROV_SIGNS[$i]}" in *",${name},"*) ;; *) continue ;; esac
+        if [[ -n "${PROV_REFUSED[${PROV_FPR[$i]}]:-}" ]]; then
+            printf '%s' "${PROV_REFUSED[${PROV_FPR[$i]}]}"
+            return 0
+        fi
+    done
+    return 1
 }
 
 # korg, wkd, github or empty: the provenance of the key that made a signature.
@@ -385,6 +434,15 @@ check_sig() {
 
     # Before verifying, so a published key wins over --fetch-unknown-keys.
     import_provenance_keys_for "$name"
+
+    local refused
+    if refused="$(refused_locator_for "$name")"; then
+        err "${name}: its signing key's published copy at ${refused} was refused"
+        FAILED=$((FAILED + 1))
+        FAILED_LIST+=("${name} (its published key changed at ${refused})")
+        report "$name" published-key-changed "$refused"
+        return 0
+    fi
 
     out="$(gpg --batch --status-fd 1 --verify "$sigfile" "$datafile" 2>/dev/null || true)"
 

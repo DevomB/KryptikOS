@@ -211,6 +211,19 @@ else
 fi
 write_evidence
 
+# So is one whose signing key's published copy was refused.
+cat > "${EV}/signatures.tsv" <<'TSV'
+pinnedpkg	published-key-changed	https://git.kernel.org/example.asc
+TSV
+run
+expect_class pinnedpkg signature-failed
+if [[ "$RC" -ne 0 ]]; then
+    green "a refused published key fails the inventory"
+else
+    red "a refused published key did not affect the exit status"; show
+fi
+write_evidence
+
 # --- no single coverage figure ---------------------------------------------
 
 run
