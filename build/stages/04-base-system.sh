@@ -332,13 +332,14 @@ s_man_db() {
 
     # mandb must link gdbm: configure falls back to another interface silently.
     echo "--- which database interface did man-db link? ---"
-    if readelf -dW /usr/bin/mandb 2>/dev/null | grep -q "libgdbm"; then
+    local dyn; dyn="$(readelf -dW /usr/bin/mandb 2>/dev/null || true)"
+    if grep -q "libgdbm" <<<"$dyn"; then
         echo "  ok: mandb links libgdbm"
     else
         echo "FAIL: mandb does not link libgdbm."
         echo "      configure fell back to a different database interface, which"
         echo "      is exactly what pinning gdbm was meant to prevent."
-        readelf -dW /usr/bin/mandb 2>/dev/null | grep NEEDED | sed 's/^/      /'
+        grep NEEDED <<<"$dyn" | sed 's/^/      /'
         return 1
     fi
     echo "--- man-db runs ---"
@@ -440,8 +441,8 @@ s_python() {
     make install
 }
 
-# The full python, rebuilt over the early one after libffi, openssl and expat.
-# The step fails unless ctypes, ssl and pyexpat import.
+# The full python, rebuilt over the early one after libffi, openssl, expat and
+# readline. The step fails unless ctypes, ssl, pyexpat and readline import.
 s_python_final() {
     local src; src="$(unpack "Python-${V_PYTHON}.tar.xz" "Python-${V_PYTHON}")"
     cd "$src"
@@ -449,10 +450,10 @@ s_python_final() {
     make
     make install
     local m
-    for m in ctypes ssl pyexpat; do
+    for m in ctypes ssl pyexpat readline; do
         python3 -c "import ${m}" || { echo "FAIL: python3 was built without ${m}"; return 1; }
     done
-    echo "python3 imports ctypes, ssl and pyexpat"
+    echo "python3 imports ctypes, ssl, pyexpat and readline"
 }
 
 s_shadow() {
@@ -617,6 +618,10 @@ FIXEOF
         --infodir=/usr/share/info
     make
     make install
+    # --with-readline gives up without a word when -lreadline fails to link.
+    local dyn; dyn="$(readelf -d /usr/bin/bc)"
+    grep -q 'NEEDED.*\[libreadline\.so' <<<"$dyn" \
+        || { echo "FAIL: bc was built without readline"; return 1; }
 
     # The shape of linux/Kbuild's timeconst.h computation, which bc must answer.
     echo "--- bc answers ---"
@@ -660,7 +665,8 @@ s_binutils_native() {
 }
 
 # shobj-conf links the libraries with an rpath to /usr/lib, where the loader
-# looks anyway.
+# looks anyway. Without --with-shared-termcap-library, libreadline does not
+# name the curses library it calls, and bc and python then build without it.
 s_readline() {
     local src; src="$(unpack "readline-${V_READLINE}.tar.gz" "readline-${V_READLINE}")"
     cd "$src"
@@ -668,12 +674,16 @@ s_readline() {
     apply_repo_patches "readline-${V_READLINE}"
     [[ "$(tail -1 patchlevel)" == 6 ]] || { echo "FAIL: readline is not at patch level 6"; return 1; }
     sed -i 's/-Wl,-rpath,[^ ]*//' support/shobj-conf
-    ./configure --prefix=/usr --disable-static --with-curses
+    ./configure --prefix=/usr --disable-static --with-curses \
+        --with-shared-termcap-library
     make
     make install
-    if readelf -d "/usr/lib/libreadline.so.${V_READLINE}" | grep -q -E 'R(UN)?PATH'; then
+    local dyn; dyn="$(readelf -d "/usr/lib/libreadline.so.${V_READLINE}")"
+    if grep -q -E 'R(UN)?PATH' <<<"$dyn"; then
         echo "FAIL: libreadline still carries an rpath"; return 1
     fi
+    grep -q 'NEEDED.*\[libncursesw\.so' <<<"$dyn" \
+        || { echo "FAIL: libreadline does not name libncursesw"; return 1; }
 }
 
 # chroot goes to /usr/sbin, over the unhardened copy stage 02 put there.
