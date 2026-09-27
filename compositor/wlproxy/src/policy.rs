@@ -66,6 +66,9 @@ pub fn app_id_for(zone: &str, claimed: &str) -> String {
 
 /// Resource bounds per client connection.
 pub const MAX_OBJECTS: usize = 4096;
+/// Id slots per range. libwayland reuses freed ids, so its slots never outnumber
+/// its peak of live objects; a client that never reuses one stops here.
+pub const MAX_ID_SLOTS: usize = 2 * MAX_OBJECTS;
 pub const MAX_PENDING_BYTES: usize = 1 << 20; // per direction
 pub const MAX_PENDING_FDS: usize = 64;
 

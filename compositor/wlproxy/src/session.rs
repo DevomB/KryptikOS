@@ -30,6 +30,7 @@ pub enum SessionError {
     HiddenInterface(String),
     VersionTooHigh { interface: String, asked: u32, max: u32 },
     IdOutOfRange { id: u32, dir: Dir },
+    SparseId(u32),
     TooManyObjects,
     TooMuchPending(Dir),
     TooManyFds,
@@ -54,6 +55,7 @@ impl std::fmt::Display for SessionError {
             }
             SessionError::VersionTooHigh { interface, asked, max } => write!(f, "{interface} version {asked} asked, {max} allowed"),
             SessionError::IdOutOfRange { id, dir } => write!(f, "object id {id} is not in the {dir:?} range"),
+            SessionError::SparseId(id) => write!(f, "object id {id} skips past the ids in use"),
             SessionError::TooManyObjects => write!(f, "too many live objects"),
             SessionError::TooMuchPending(d) => write!(f, "too much unsent data ({d:?})"),
             SessionError::TooManyFds => write!(f, "too many queued descriptors"),
@@ -261,13 +263,80 @@ impl Endpoint {
     }
 }
 
+/// A live object: its interface from the tables and its negotiated version.
+type Obj = (&'static protocol::Interface, u32);
+
+/// Live objects by id. libwayland hands out ids densely, the client's from 1
+/// and the compositor's from SERVER_ID_BASE, and libwayland-server refuses a
+/// new id past the next unused slot. So each range is a vector, and an id that
+/// skips ahead is refused here as the compositor would refuse it.
+struct Objects {
+    client: Vec<Option<Obj>>,
+    server: Vec<Option<Obj>>,
+    live: usize,
+}
+
+impl Objects {
+    fn new(display: Obj) -> Objects {
+        // Slot 0 is never an object.
+        Objects { client: vec![None, Some(display)], server: Vec::new(), live: 1 }
+    }
+
+    fn slots(&mut self, id: u32) -> (&mut Vec<Option<Obj>>, usize) {
+        if id < SERVER_ID_BASE {
+            (&mut self.client, id as usize)
+        } else {
+            (&mut self.server, (id - SERVER_ID_BASE) as usize)
+        }
+    }
+
+    fn get(&self, id: u32) -> Option<Obj> {
+        let (v, i) = if id < SERVER_ID_BASE { (&self.client, id as usize) } else { (&self.server, (id - SERVER_ID_BASE) as usize) };
+        v.get(i).copied().flatten()
+    }
+
+    /// A new object, in a free slot or the next one.
+    fn insert(&mut self, id: u32, o: Obj) -> Result<(), SessionError> {
+        let full = self.live >= policy::MAX_OBJECTS;
+        let (v, i) = self.slots(id);
+        match v.get(i) {
+            Some(Some(_)) => return Err(SessionError::DuplicateObject(id)),
+            _ if full => return Err(SessionError::TooManyObjects),
+            Some(None) => v[i] = Some(o),
+            None if i == v.len() && v.len() < policy::MAX_ID_SLOTS => v.push(Some(o)),
+            None => return Err(SessionError::SparseId(id)),
+        }
+        self.live += 1;
+        Ok(())
+    }
+
+    fn remove(&mut self, id: u32) {
+        let (v, i) = self.slots(id);
+        if let Some(slot @ Some(_)) = v.get_mut(i) {
+            *slot = None;
+            self.live -= 1;
+        }
+    }
+
+    /// A client-range object where a test wants it, gaps and all.
+    #[cfg(test)]
+    fn place(&mut self, id: u32, o: Obj) {
+        let i = id as usize;
+        if self.client.len() <= i {
+            self.client.resize(i + 1, None);
+        }
+        if self.client[i].replace(o).is_none() {
+            self.live += 1;
+        }
+    }
+}
+
 /// The proxied connection.
 pub struct Session {
     pub zone: String,
     pub client: Endpoint,
     pub server: Endpoint,
-    /// object id -> (interface from the tables, negotiated version)
-    objects: HashMap<u32, (&'static protocol::Interface, u32)>,
+    objects: Objects,
     /// Globals the server advertised and we let through: name -> (interface, version)
     globals: HashMap<u32, (&'static str, u32)>,
     /// How many globals were hidden from the client.
@@ -286,13 +355,11 @@ const WL_REGISTRY_GLOBAL_REMOVE: u16 = 1; // event
 
 impl Session {
     pub fn new(zone: &str, client_fd: RawFd, server_fd: RawFd) -> Session {
-        let mut objects = HashMap::new();
-        objects.insert(WL_DISPLAY, (protocol::find("wl_display").expect("wl_display in tables"), 1));
         Session {
             zone: zone.to_string(),
             client: Endpoint::new(client_fd),
             server: Endpoint::new(server_fd),
-            objects,
+            objects: Objects::new((protocol::find("wl_display").expect("wl_display in tables"), 1)),
             globals: HashMap::new(),
             hidden_count: 0,
             forwarded_c2s: 0,
@@ -302,7 +369,7 @@ impl Session {
     }
 
     fn lookup(&self, id: u32, dir: Dir, opcode: u16) -> Result<(&'static protocol::Interface, &'static Message, u32), SessionError> {
-        let (iface, version) = *self.objects.get(&id).ok_or(SessionError::UnknownObject(id))?;
+        let (iface, version) = self.objects.get(id).ok_or(SessionError::UnknownObject(id))?;
         let table = match dir {
             Dir::ClientToServer => iface.requests,
             Dir::ServerToClient => iface.events,
@@ -325,18 +392,11 @@ impl Session {
         if !ok || id == 0 {
             return Err(SessionError::IdOutOfRange { id, dir });
         }
-        if self.objects.contains_key(&id) {
-            return Err(SessionError::DuplicateObject(id));
-        }
-        if self.objects.len() >= policy::MAX_OBJECTS {
-            return Err(SessionError::TooManyObjects);
-        }
         /* An interface missing from the tables cannot be tracked. Binds are
          * checked against the allowlist, so only a compositor newer than the
          * tables can create one: refuse rather than guess. */
         let iface = protocol::find(iface_name).ok_or_else(|| SessionError::HiddenInterface(iface_name.to_string()))?;
-        self.objects.insert(id, (iface, version));
-        Ok(())
+        self.objects.insert(id, (iface, version))
     }
 
     /// Process every complete message in one direction; Ok(()) when more input is needed.
@@ -464,7 +524,7 @@ impl Session {
                     if h.object == WL_DISPLAY && h.opcode == WL_DISPLAY_DELETE_ID {
                         let mut r = ArgReader::new(&msg[HEADER_LEN..]);
                         let id = r.u32()?;
-                        self.objects.remove(&id);
+                        self.objects.remove(id);
                     }
                 }
             }
@@ -513,7 +573,7 @@ impl Session {
 
     #[cfg(test)]
     pub fn has_object(&self, id: u32) -> bool {
-        self.objects.contains_key(&id)
+        self.objects.get(id).is_some()
     }
 }
 
@@ -658,7 +718,7 @@ mod tests {
         // wl_display.sync on the registry's id must not retype it or reach the compositor.
         c.write_all(&MessageWriter::new(1, 0).u32(2).finish().unwrap()).unwrap();
         assert!(pump_all(&mut s).is_err(), "replaced a live registry with a callback");
-        assert_eq!(s.objects[&2].0.name, "wl_registry");
+        assert_eq!(s.objects.get(2).unwrap().0.name, "wl_registry");
         assert!(read_all(&mut sv).is_empty());
     }
 
@@ -673,7 +733,34 @@ mod tests {
         assert!(!s.has_object(2));
         c.write_all(&get_registry(2)).unwrap();
         pump_all(&mut s).unwrap();
-        assert_eq!(s.objects[&2].0.name, "wl_registry");
+        assert_eq!(s.objects.get(2).unwrap().0.name, "wl_registry");
+    }
+
+    #[test]
+    fn ids_stay_dense() {
+        // A new id takes a free slot or the next one, as libwayland-server insists.
+        let (mut s, mut c, _sv) = make();
+        c.write_all(&get_registry(5)).unwrap();
+        assert!(matches!(pump_all(&mut s), Err(SessionError::SparseId(5))));
+        let (mut s, mut c, _sv) = make();
+        c.write_all(&get_registry(2)).unwrap();
+        pump_all(&mut s).unwrap();
+        assert!(s.has_object(2));
+    }
+
+    #[test]
+    fn id_slots_bounded() {
+        // A client that frees every object and never reuses an id runs out of slots, not memory.
+        let mut o = Objects::new((protocol::find("wl_display").unwrap(), 1));
+        let callback = (protocol::find("wl_callback").unwrap(), 1);
+        let mut id = 2;
+        while o.insert(id, callback).is_ok() {
+            o.remove(id);
+            id += 1;
+        }
+        assert!(matches!(o.insert(id, callback), Err(SessionError::SparseId(_))));
+        assert_eq!(id as usize, policy::MAX_ID_SLOTS);
+        assert_eq!((o.client.len(), o.live), (policy::MAX_ID_SLOTS, 1));
     }
 
     #[test]
@@ -933,7 +1020,7 @@ mod tests {
             MessageWriter::new(3, 0).u32(0).i32(4096).finish().unwrap(), // invalid new object id
         ] {
             let (mut s, c, _sv) = make();
-            s.objects.insert(3, (protocol::find("wl_shm").unwrap(), 2));
+            s.objects.place(3, (protocol::find("wl_shm").unwrap(), 2));
             let (a, mut b) = UnixStream::pair().unwrap();
             b.set_nonblocking(true).unwrap();
             send_with_fd(c.as_raw_fd(), &body, a.as_raw_fd());
@@ -975,7 +1062,7 @@ mod tests {
     #[test]
     fn outgoing_descriptors_are_bounded() {
         let (mut s, c, _sv) = make();
-        s.objects.insert(3, (protocol::find("wl_shm").unwrap(), 2));
+        s.objects.place(3, (protocol::find("wl_shm").unwrap(), 2));
         let (a, mut b) = UnixStream::pair().unwrap();
         b.set_nonblocking(true).unwrap();
         for i in 0..=policy::MAX_PENDING_FDS {
@@ -997,7 +1084,7 @@ mod tests {
     #[test]
     fn input_bounded_while_waiting_for_fd() {
         let (mut s, mut c, _sv) = make();
-        s.objects.insert(3, (protocol::find("wl_shm").unwrap(), 2));
+        s.objects.place(3, (protocol::find("wl_shm").unwrap(), 2));
         c.write_all(&MessageWriter::new(3, 0).u32(4).i32(4096).finish().unwrap()).unwrap();
         pump_all(&mut s).unwrap();
         let mut refused = false;
@@ -1040,7 +1127,7 @@ mod tests {
         pump_all(&mut s).unwrap();
         let mut err = None;
         for i in 0..(policy::MAX_OBJECTS as u32 + 5) {
-            c.write_all(&MessageWriter::new(3, 0).u32(10 + i).finish().unwrap()).unwrap();
+            c.write_all(&MessageWriter::new(3, 0).u32(4 + i).finish().unwrap()).unwrap();
             if let Err(e) = pump_all(&mut s) {
                 err = Some(e);
                 break;
