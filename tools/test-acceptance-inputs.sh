@@ -89,7 +89,7 @@ choose
 
 # --- item(), its summary parser and the verdict ------------------------------
 sed -n '/^R_SUITE=()/,/^# -* prereqs --$/p' "$ACC" > "$T/item.sh"
-sed -n '/^need_host() /p; /^need_export() /p; /^need_notes() /p; /^verdict_of() {/,/^}/p; /^seal_export() {/,/^}/p; /^tested() /p; /^ran_on() /p; /^parts_disagree() {/,/^}/p' "$ACC" >> "$T/item.sh"
+sed -n '/^need_host() /p; /^need_export() /,/^}/p; /^need_notes() /p; /^verdict_of() {/,/^}/p; /^seal_export() {/,/^}/p; /^tested() /p; /^ran_on() /p; /^parts_disagree() {/,/^}/p' "$ACC" >> "$T/item.sh"
 for fn in item checks_in need_host need_export need_notes verdict_of seal_export tested ran_on parts_disagree; do
     grep -q "^${fn}() " "$T/item.sh" || { echo "could not extract ${fn} from $ACC"; exit 1; }
 done
@@ -97,6 +97,7 @@ done
 { OUT="$T/out"; ONLY=""; NOHOST=0; PARTS=(); }
 mkdir -p "$OUT"
 need_cargo() { :; }
+have() { :; }   # every tool an item asks for is on this host
 # shellcheck source=/dev/null
 . "$T/item.sh"
 result_of() { local i; for i in "${!R_NAME[@]}"; do [[ "${R_NAME[$i]}" == "$1" ]] && echo "${R_RES[$i]}"; done; }
@@ -121,6 +122,9 @@ EXPORT="$T/export-dir"
 { R_SUITE=(); R_NAME=(); R_MAND=(); R_KIND=(); R_RES=(); R_CHECKS=(); R_RC=(); R_SECS=(); R_LOG=(); R_NOTE=(); }
 try clean2 0 'All 12 checks passed' PASS "a clean item, alone"
 [[ -z "$(need_notes)" ]] && ok "a run that has passed, with an export, gets its notes" || bad "need_notes on a passed run: '$(need_notes)'"
+have() { [[ "$1" != debugfs ]]; }
+[[ "$(need_export)" == *"no debugfs"* ]] && ok "no export where debugfs cannot read the image's anchor" || bad "need_export without debugfs: '$(need_export)'"
+have() { :; }
 # shellcheck disable=SC2034  # read by need_notes
 EXPORT=""
 [[ "$(need_notes)" == *"no --export"* ]] && ok "no release notes without an export to hold them" || bad "need_notes without an export: '$(need_notes)'"

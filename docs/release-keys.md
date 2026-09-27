@@ -8,16 +8,18 @@ makes these keys and never keeps a copy (`build/lib/release-keys.sh`).
 
 | Key | Signs | Where it lives | If it is stolen |
 | --- | --- | --- | --- |
-| `kryptik-release` (Ed25519) | every release's manifest | offline, on the key medium | the thief can sign a release that every machine installs |
+| `kryptik-release` (Ed25519) | every release's manifest, and the checksums of its install media | offline, on the key medium | the thief can sign a release that every machine installs |
 | `kryptik-latest` (Ed25519) | the channel's "this release is current" statement, daily | on the release host, for its timer | machines can be held on an old release; nothing can be installed with it |
 | `kryptik-sb` (RSA, X.509) | the kernels, for Secure Boot | offline, on the key medium | the thief can sign kernels that machines which enrolled it will boot |
 | the module key | the kernel's modules | nowhere: each kernel build makes one and throws it away | nothing to steal |
 
 An image trusts the two Ed25519 keys through its anchor,
 `/usr/share/kryptik/trust/release-signers`. Each key is listed under its own
-name and held to its own namespace, so a statement key cannot sign a release,
-and a release key's signature is not a statement. A machine trusts the Secure
-Boot key once its certificate is enrolled in the machine's firmware.
+name and held to its own namespaces: the release key to `kryptik-release` for
+manifests and `kryptik-media` for the media's checksums, the statement key to
+`kryptik-latest`. So a statement key cannot sign a release or its media, and
+no signature passes for one of another kind. A machine trusts the Secure Boot
+key once its certificate is enrolled in the machine's firmware.
 
 ## Making them
 
@@ -30,7 +32,7 @@ mkdir kryptik-keys && cd kryptik-keys
 ssh-keygen -t ed25519 -C kryptik-release -f kryptik-release     # set a passphrase
 ssh-keygen -t ed25519 -C kryptik-latest -f kryptik-latest       # set a passphrase
 {
-    printf 'kryptik-release namespaces="kryptik-release" %s\n' "$(cut -d' ' -f1,2 kryptik-release.pub)"
+    printf 'kryptik-release namespaces="kryptik-release,kryptik-media" %s\n' "$(cut -d' ' -f1,2 kryptik-release.pub)"
     printf 'kryptik-latest namespaces="kryptik-latest" %s\n' "$(cut -d' ' -f1,2 kryptik-latest.pub)"
 } > release-signers
 openssl req -new -x509 -newkey rsa:3072 -sha256 -days 3650 \
@@ -59,8 +61,8 @@ For each release:
    key is needed for that, and none is ever inside the chroot.
 2. Attach the key medium and make the media. `sbsign` asks for the Secure
    Boot key's passphrase once for each kernel it signs (three: both slots and
-   the USB medium's), and `ssh-keygen` for the release key's once, for the
-   manifest:
+   the USB medium's), and `ssh-keygen` for the release key's twice, for the
+   media's checksums and for the manifest:
 
    ```sh
    make media KRYPTIK_ROLE=production KRYPTIK_KEYS=/media/<medium>/kryptik-keys \
@@ -68,8 +70,10 @@ For each release:
    ```
 
 3. Detach the medium. The signed payload is in
-   `<work>/images/payload-<version>`, and the release record is under
-   `KRYPTIK_OUT`.
+   `<work>/images/payload-<version>`, the media's signed checksums are
+   `kryptik-<version>.SHA256SUMS` and its `.sig` beside the media, and the
+   release record is under `KRYPTIK_OUT`. Publish the checksums and
+   `release-signers` with the media: they are what a download is checked by.
 4. Copy the payload and `release-signers` to the release host. It needs a
    checkout of this repository for `tools/release-channel.sh`. Publish with
    the statement key there:

@@ -431,6 +431,25 @@ s_iso() {
     cat "${iso}.sha256"
 }
 
+# What a download of the media is checked by: their SHA-256, signed by the
+# release key in kryptik-media, a namespace of its own, so this signature never
+# passes for a manifest's, nor a manifest's for this.
+s_sums() {
+    echo "inputs digest: $1"
+    local sums="${IMG}/kryptik-${KRYPTIK_VERSION}.SHA256SUMS"
+    ( cd "$IMG" && sha256sum "kryptik-${KRYPTIK_VERSION}-usb.img" "kryptik-${KRYPTIK_VERSION}.iso" ) > "$sums"
+    rm -f "${sums}.sig"
+    ssh-keygen -Y sign -f "$RELEASE_KEY" -n kryptik-media "$sums" >/dev/null 2>&1 \
+        || { echo "could not sign ${sums}"; return 1; }
+    # As the download is checked: the image's anchor, the release principal.
+    ssh-keygen -Y verify -f "$ANCHOR" -I kryptik-release -n kryptik-media -s "${sums}.sig" < "$sums" \
+        || { echo "FAIL: the image's anchor refuses the media checksums' signature"; return 1; }
+    if ssh-keygen -Y verify -f "$ANCHOR" -I kryptik-release -n kryptik-release -s "${sums}.sig" < "$sums" >/dev/null 2>&1; then
+        echo "FAIL: the media checksums' signature passes for a manifest's"; return 1
+    fi
+    cat "$sums"
+}
+
 # The update payload: root image, slot kernels and root.json under a manifest
 # of the image's role, signed with the release key its anchor lists.
 s_payload() {
@@ -487,9 +506,12 @@ s_export() {
     cp "${IMG}/kryptik-${KRYPTIK_VERSION}.iso.sha256" "$out/"
     cp "${IMG}/kryptik-root.img.sha256" "${IMG}/root.json" "$out/"
     cp "${IMG}/payload-${KRYPTIK_VERSION}/manifest" "${IMG}/payload-${KRYPTIK_VERSION}/manifest.sig" "$out/"
+    cp "${IMG}/kryptik-${KRYPTIK_VERSION}.SHA256SUMS" "${IMG}/kryptik-${KRYPTIK_VERSION}.SHA256SUMS.sig" "$out/"
     cp "${IMG}"/kernels/*.signed.efi "$out/kernels/"
     cp "$SB_CERT" "$out/kryptik-sb.crt"
     openssl x509 -in "$SB_CERT" -outform DER -out "$out/kryptik-sb.der"
+    # The anchor's public lines, which check the manifest and the media's checksums.
+    cp "$ANCHOR" "$out/release-signers"
     {
         echo "Kryptik ${KRYPTIK_VERSION}"
         echo "commit: ${COMMIT}"
@@ -503,7 +525,7 @@ s_export() {
         echo "  ${IMG}/payload-${KRYPTIK_VERSION}/"
         echo
         cat "${IMG}/kryptik-${KRYPTIK_VERSION}-usb.img.sha256" "${IMG}/kryptik-${KRYPTIK_VERSION}.iso.sha256"
-        ( cd "$out" && sha256sum ./kernels/*.efi ./*.crt ./*.der ./root.json ./manifest )
+        ( cd "$out" && sha256sum ./kernels/*.efi ./*.crt ./*.der ./root.json ./manifest ./release-signers ./*.SHA256SUMS* )
     } > "$out/MANIFEST.txt"
     cat "$out/MANIFEST.txt"
     ln -sfn "kryptik-${KRYPTIK_VERSION}" "${KRYPTIK_OUT}/latest"
@@ -517,7 +539,8 @@ step sign-kernels   s_sign_kernels "$(cat "${IMG}"/kernels/{slot-a,slot-b,media-
 step esp            s_esp "$(cat "${IMG}"/kernels/{slot-a,slot-b,media-usb}.signed.efi "${IMG}/root.json" | sha256_of_stdin)"
 step usb            s_usb "$(cat "${IMG}/esp-usb.img" | sha256_of_stdin)$(root_json sha256)"
 step iso            s_iso "$(cat "${IMG}"/kernels/{slot-a,slot-b}.signed.efi "${IMG}/root.json" | sha256_of_stdin)"
+step sums           s_sums "$(cat "${IMG}/kryptik-${KRYPTIK_VERSION}"{-usb.img,.iso}.sha256 | sha256_of_stdin)$(_hash_file "$ANCHOR")"
 step payload        s_payload "$(cat "${IMG}"/kernels/{slot-a,slot-b}.signed.efi "${IMG}/root.json" "${KRYPTIK_ROOT}"/tools/release-{manifest,channel}.sh | sha256_of_stdin)" "${LATEST_KEY:+with a statement key}"
-step export         s_export "$(cat "${IMG}"/kryptik-*.sha256 "${IMG}/payload-${KRYPTIK_VERSION}/manifest" | sha256_of_stdin)"
+step export         s_export "$(cat "${IMG}"/kryptik-*.sha256 "${IMG}/payload-${KRYPTIK_VERSION}/manifest" "${IMG}/kryptik-${KRYPTIK_VERSION}.SHA256SUMS.sig" "$ANCHOR" | sha256_of_stdin)"
 echo
 ok "Stage 06 finished: ${KRYPTIK_OUT}/kryptik-${KRYPTIK_VERSION}"

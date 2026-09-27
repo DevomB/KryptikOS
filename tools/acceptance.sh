@@ -267,7 +267,11 @@ need_update() {
 }
 need_cargo()   { have cargo || echo "no cargo on PATH"; }
 need_sources() { [[ -d "$KRYPTIK_SOURCES" && -f "${ROOT}/sources.lock" ]] || echo "no sources directory or sources.lock"; }
-need_export()  { [[ -n "$EXPORT" ]] || echo "no --export DIR given (EXPORT=... for make acceptance)"; }
+need_export()  {
+    [[ -n "$EXPORT" ]] || { echo "no --export DIR given (EXPORT=... for make acceptance)"; return; }
+    have debugfs || { echo "no debugfs (e2fsprogs), which reads the anchor out of the root image"; return; }
+    have ssh-keygen || echo "no ssh-keygen, which checks the media checksums' signature"
+}
 need_notes()   { need_export; [[ "$(verdict_of)" == PASS ]] || echo "the run has not passed, and notes come only from one that has"; }
 
 # --------------------------------------------------------------- items --
@@ -447,7 +451,7 @@ write_report() {
 
 # ------------------------------------------------------------- export --
 it_export() {
-    local d="$EXPORT" ok=0 f want got
+    local d="$EXPORT" ok=0 f want got sums="kryptik-${VER}.SHA256SUMS"
     mkdir -p "$d" || { echo "cannot create ${d}"; return 1; }
     echo "exporting to ${d}"
     for f in "$MEDIA_USB" "$MEDIA_ISO"; do
@@ -461,6 +465,17 @@ it_export() {
     for f in "${KRYPTIK_WORK}/keys/sb/kryptik-sb.crt" "${KRYPTIK_WORK}/keys/sb/kryptik-sb.der"; do
         if [[ -f "$f" ]]; then cp "$f" "${d}/"; else echo "  missing trust material: $f"; ok=1; fi
     done
+    # The media's checksums as stage 06 signed them, and the anchor the tested
+    # image carries, read out of B's root image: what a download is checked by.
+    if [[ -n "$VER" && -f "${IMGDIR}/${sums}" && -f "${IMGDIR}/${sums}.sig" ]]; then
+        cp "${IMGDIR}/${sums}" "${IMGDIR}/${sums}.sig" "${d}/"
+    else
+        echo "  no signed media checksums: ${IMGDIR}/${sums}"; ok=1
+    fi
+    if ! debugfs -R 'cat /usr/share/kryptik/trust/release-signers' "${PAYLOAD_B}/kryptik-root.img" > "${d}/release-signers" 2>/dev/null \
+       || [[ ! -s "${d}/release-signers" ]]; then
+        echo "  could not read the anchor out of ${PAYLOAD_B:-(no payload B)}/kryptik-root.img"; rm -f "${d}/release-signers"; ok=1
+    fi
     if [[ -n "$PAYLOAD_A" && -f "${PAYLOAD_A}/manifest" ]]; then
         cp "${PAYLOAD_A}/manifest" "${d}/manifest-${VER_A}"
         [[ -f "${PAYLOAD_A}/manifest.sig" ]] && cp "${PAYLOAD_A}/manifest.sig" "${d}/manifest-${VER_A}.sig"
@@ -481,7 +496,14 @@ it_export() {
         got="$(sha_of "${d}/$(basename "$f")")"
         if [[ "$want" == "$got" ]]; then echo "  ok  $(basename "$f") ${got}"; else echo "  MISMATCH $(basename "$f"): tested ${want}, exported ${got}"; ok=1; fi
         printf '%s  ./%s\n' "$got" "$(basename "$f")" >> "${d}/SHA256SUMS"
+        if [[ -f "${d}/${sums}" ]] && ! grep -qxF "${got}  $(basename "$f")" "${d}/${sums}"; then
+            echo "  MISMATCH $(basename "$f"): ${sums} does not list ${got}"; ok=1
+        fi
     done
+    echo "-- ${sums} is signed for the media by a key the image's anchor holds"
+    if [[ -f "${d}/${sums}" && -f "${d}/release-signers" ]]; then
+        ( cd "$d" && ssh-keygen -Y verify -f release-signers -I kryptik-release -n kryptik-media -s "${sums}.sig" < "$sums" ) || ok=1
+    fi
     return "$ok"
 }
 # The release's notes (tools/release-notes.sh), from every row before this
@@ -519,6 +541,7 @@ if [[ -n "$EXPORT" ]] || wanted release; then
             echo "firmware   : ${FW_PKG} (${FW})"
             echo "kernel     : ${KERNEL_LINE:-not observed}"
             echo "trust      : kryptik-sb.crt / kryptik-sb.der (the developer Secure Boot key, a test anchor)"
+            echo "checksums  : kryptik-${VER:-unknown}.SHA256SUMS and .sig, signed by the release key; release-signers checks them"
             echo "read       : INSTRUCTIONS.md$([[ -f "${EXPORT}/RELEASE-NOTES.md" ]] && echo ", RELEASE-NOTES.md")"
         } > "${EXPORT}/RELEASE.txt"
         # Again, now that the export's own row and log exist.

@@ -42,7 +42,7 @@ keys development "$DW"; rc=$?
 if [[ "$rc" -eq 0 && "$(got RELEASE_KEY)" == "${DW}/keys/release/kryptik-release" \
       && "$(got ANCHOR)" == "${DW}/keys/release/release-signers" && "$(got SB_CERT)" == "${DW}/keys/sb/kryptik-sb.crt" \
       && -f "${DW}/keys/sb/kryptik-sb.der" ]]; then
-    green "development: the keys and the anchor are made on first use, and each key verifies in its own namespace alone"
+    green "development: the keys and the anchor are made on first use, and each key verifies in its own namespaces alone"
 else
     red "development on an empty work tree (exit ${rc})"; show
 fi
@@ -72,7 +72,7 @@ make_medium() {   # a complete key medium, as the ceremony leaves it
     ssh-keygen -q -t ed25519 -N '' -C 'kryptik-release (test)' -f "$M/kryptik-release" < /dev/null
     ssh-keygen -q -t ed25519 -N '' -C 'kryptik-latest (test)' -f "$M/kryptik-latest" < /dev/null
     {
-        printf 'kryptik-release namespaces="kryptik-release" %s\n' "$(cut -d' ' -f1,2 < "$M/kryptik-release.pub")"
+        printf 'kryptik-release namespaces="kryptik-release,kryptik-media" %s\n' "$(cut -d' ' -f1,2 < "$M/kryptik-release.pub")"
         printf 'kryptik-latest namespaces="kryptik-latest" %s\n' "$(cut -d' ' -f1,2 < "$M/kryptik-latest.pub")"
     } > "$M/release-signers"
     openssl req -new -x509 -newkey rsa:2048 -nodes -days 30 -sha256 -subj "/CN=test Secure Boot key/" \
@@ -140,6 +140,12 @@ make_medium; sed -i '2d' "$M/release-signers"
 refused "an anchor without the statement key" "must list both"
 make_medium; sed -i 's/namespaces="kryptik-latest"/namespaces="kryptik-release"/' "$M/release-signers"
 refused "an anchor that lets the statement key sign releases" "not held to its own namespace"
+make_medium; sed -i 's/namespaces="kryptik-latest"/namespaces="kryptik-latest,kryptik-media"/' "$M/release-signers"
+refused "an anchor that lets the statement key sign the media's checksums" "kryptik-latest is not held to its own namespaces"
+make_medium; sed -i 's/namespaces="kryptik-release,kryptik-media"/namespaces="kryptik-release"/' "$M/release-signers"
+refused "an anchor that leaves the media's checksums to no key" "kryptik-release is not held to its own namespaces"
+make_medium; sed -i 's/namespaces="kryptik-release,kryptik-media"/namespaces="kryptik-release,kryptik-media,kryptik-latest"/' "$M/release-signers"
+refused "an anchor that lets the release key sign statements" "kryptik-release is not held to its own namespaces"
 make_medium; sed -i '1p' "$M/release-signers"
 refused "an anchor listing a key twice" "a key is listed twice"
 make_medium; printf 'someone namespaces="someone" %s\n' "$(cut -d' ' -f1,2 < "$M/kryptik-release.pub")" >> "$M/release-signers"
@@ -152,13 +158,39 @@ refused "a release key the anchor does not list" "kryptik-release.pub is not a k
 # While a key is replaced, the anchor lists the old one and the new one, and
 # the medium may hold either.
 make_medium; ssh-keygen -q -t ed25519 -N '' -C 'kryptik-release (next)' -f "${W}/next" < /dev/null
-printf 'kryptik-release namespaces="kryptik-release" %s\n' "$(cut -d' ' -f1,2 < "${W}/next.pub")" >> "$M/release-signers"
+printf 'kryptik-release namespaces="kryptik-release,kryptik-media" %s\n' "$(cut -d' ' -f1,2 < "${W}/next.pub")" >> "$M/release-signers"
 rm "$M/kryptik-release" "$M/kryptik-release.pub"; mv "${W}/next" "$M/kryptik-release"; mv "${W}/next.pub" "$M/kryptik-release.pub"
 keys production "$PW" "$M"; rc=$?
 if [[ "$rc" -eq 0 && "$(got RELEASE_KEY)" == "${M}/kryptik-release" ]]; then
     green "an anchor listing an old and a new release key takes a medium holding the new one"
 else
     red "an anchor in the middle of a key change (exit ${rc})"; show
+fi
+
+# Through an anchor the build takes, as the updater and a downloader check: the
+# media's checksums and a manifest are both the release key's, neither
+# signature passes for the other, and the statement key's passes for neither.
+make_medium
+X="${W}/cross"; rm -rf "$X"; mkdir -p "$X/root"; printf 'payload\n' > "$X/root/file"
+rel() { NO_COLOR=1 bash "${ROOT}/tools/release-manifest.sh" "$@" > /dev/null 2>&1; }
+manifest_ok() { rel verify --signers "$M/release-signers" --principal kryptik-release --root "$X/root" "$1"; }
+media_ok() { ssh-keygen -Y verify -f "$M/release-signers" -I kryptik-release -n kryptik-media -s "$1.sig" < "$1" > /dev/null 2>&1; }
+sign_as() { rm -f "$2.sig"; ssh-keygen -Y sign -f "$1" -n "$3" "$2" < /dev/null > /dev/null 2>&1; }   # sign_as KEY FILE NAMESPACE
+said() { if "$@"; then echo taken; else echo refused; fi; }
+rel create --out "$X/manifest" --root "$X/root" file
+cp "$X/manifest" "$X/manifest-for-media"
+printf '%s  kryptik-test-usb.img\n' "$(sha256sum < "$X/root/file" | cut -c1-64)" > "$X/SHA256SUMS"
+cp "$X/SHA256SUMS" "$X/sums-as-manifest"; cp "$X/SHA256SUMS" "$X/sums-by-latest"
+rel sign --key "$M/kryptik-release" "$X/manifest"
+sign_as "$M/kryptik-release" "$X/SHA256SUMS" kryptik-media
+sign_as "$M/kryptik-release" "$X/manifest-for-media" kryptik-media
+sign_as "$M/kryptik-release" "$X/sums-as-manifest" kryptik-release
+sign_as "$M/kryptik-latest" "$X/sums-by-latest" kryptik-media
+if manifest_ok "$X/manifest" && media_ok "$X/SHA256SUMS" && ! manifest_ok "$X/manifest-for-media" \
+      && ! media_ok "$X/sums-as-manifest" && ! media_ok "$X/sums-by-latest"; then
+    green "the media's checksums and a manifest are the release key's, neither signature passes for the other, and the statement key's passes for neither"
+else
+    red "manifest $(said manifest_ok "$X/manifest"), checksums $(said media_ok "$X/SHA256SUMS"), a manifest signed for media $(said manifest_ok "$X/manifest-for-media"), checksums signed as a manifest $(said media_ok "$X/sums-as-manifest"), checksums by the statement key $(said media_ok "$X/sums-by-latest")"
 fi
 make_medium; printf 'not a certificate\n' > "$M/kryptik-sb.crt"
 refused "a Secure Boot certificate that is not one" "not a certificate in force"
