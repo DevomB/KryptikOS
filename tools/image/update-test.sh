@@ -164,9 +164,10 @@ stop_unless_ok() {   # stop_unless_ok RC WHAT
 
 # ----------------------------------------------------------------- step 1 --
 step "step 1: install ${VA}, boot it, create zone data"
-# Sized from the medium, with room for two payloads at once: b from step 2 is
-# still on kryptik-state when a arrives in step 4.
-DISK_SIZE="$("${SELF}/test-disk-size.sh" --medium "$USB_A" --payloads 2)" || die "could not size the test disk from the medium"
+# Sized from the medium, with room for one payload: the release step 8 fetches
+# is staged on kryptik-state, and every other step applies from the payload
+# disk, mounted read-only.
+DISK_SIZE="$("${SELF}/test-disk-size.sh" --medium "$USB_A" --payloads 1)" || die "could not size the test disk from the medium"
 rm -f "$DISK"; truncate -s "$DISK_SIZE" "$DISK"
 CTL="${VMDIR}/testctl-update.img"
 "${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
@@ -190,7 +191,7 @@ txt | grep -q "version_id=${VA}" && green "guest reports version ${VA}" || red "
 step "step 2: apply ${VB}, reboot into slot b"
 start_vm update-p2 --disk "$PB"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
-    "$(ROOTSH 'mkdir -p /run/upd/p /var/lib/kryptik/updates/b && mount -o ro /dev/vdb /run/upd/p && cp -a /run/upd/p/. /var/lib/kryptik/updates/b/ && umount /run/upd/p && kryptik-update apply /var/lib/kryptik/updates/b && echo APPLY-OK')" \
+    "$(ROOTSH 'mkdir -p /run/upd/p && mount -o ro /dev/vdb /run/upd/p && kryptik-update apply /run/upd/p && echo APPLY-OK')" \
     "expect:armed: the next boot tries slot b" "expect:APPLY-OK" \
     "$(ROOTSH 'kryptik-update status')" "expect:trial pending:    b" \
     "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
@@ -243,7 +244,7 @@ rc=$?; stop_vm
 step "step 4: authenticated recovery to ${VA} with --recovery"
 start_vm update-p4 --disk "$PA"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
-    "$(ROOTSH 'mkdir -p /run/upd/a /var/lib/kryptik/updates/a && mount -o ro /dev/vdb /run/upd/a && cp -a /run/upd/a/. /var/lib/kryptik/updates/a/ && umount /run/upd/a && kryptik-update apply /var/lib/kryptik/updates/a --recovery && echo REC-OK')" \
+    "$(ROOTSH 'mkdir -p /run/upd/a && mount -o ro /dev/vdb /run/upd/a && kryptik-update apply /run/upd/a --recovery && echo REC-OK')" \
     "expect:accepted because --recovery" "expect:REC-OK" \
     "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
     "login:${TUSER}:${TPASS}" \
@@ -271,12 +272,10 @@ txt | grep -q "version_id=${VB}" && green "guest reports ${VB} after rollback" |
 
 # ----------------------------------------------------------------- step 6 --
 step "step 6: interruption during the slot write, then after arming"
-# The copy is synced first: the kill drops the guest's page cache, and what is
-# under test is an interrupted slot write, not a half-copied payload.
 start_vm update-p6 --disk "$PA"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
-    "$(ROOTSH 'mkdir -p /run/upd/a /var/lib/kryptik/updates/a && mount -o ro /dev/vdb /run/upd/a && cp -a /run/upd/a/. /var/lib/kryptik/updates/a/ && umount /run/upd/a && sync && echo COPY-OK')" "expect:COPY-OK" \
-    "send:su - root -c 'kryptik-update apply /var/lib/kryptik/updates/a --recovery'" "expect:Password: ?" "send:${RPASS}" \
+    "$(ROOTSH 'mkdir -p /run/upd/a && mount -o ro /dev/vdb /run/upd/a && echo MNT-OK')" "expect:MNT-OK" \
+    "send:su - root -c 'kryptik-update apply /run/upd/a --recovery'" "expect:Password: ?" "send:${RPASS}" \
     "expect:writing kryptik-a"
 python3 - "$QMP" <<'PY'
 import json, socket, sys
@@ -288,7 +287,7 @@ green "VM killed while slot a was being written (QMP quit, no clean shutdown)"
 start_vm update-p6b --disk "$PA"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'cat /run/kryptik/boot-identity; kryptik-update status; echo P6-OK')" "expect:slot=b" "expect:trial pending:    none" "expect:P6-OK" \
-    "$(ROOTSH 'kryptik-update apply /var/lib/kryptik/updates/a --recovery && echo ARMED-OK')" "expect:ARMED-OK"
+    "$(ROOTSH 'mkdir -p /run/upd/a && mount -o ro /dev/vdb /run/upd/a && kryptik-update apply /run/upd/a --recovery && echo ARMED-OK')" "expect:ARMED-OK"
 rc=$?
 [[ "$rc" -eq 0 ]] && green "after the interrupted write: still slot b, no trial; the apply succeeds again" || red "step 6a drive failed"
 stop_unless_ok "$rc" "step 6a"
@@ -311,11 +310,10 @@ stop_unless_ok "$rc" "step 6c"
 step "step 7: a deliberately broken trial falls back, is recorded, and is refused until retried"
 # From slot a: arm B, power off, corrupt slot b from the host, boot. The trial
 # panics in dm-verity, panic=10 reboots with BootNext spent, slot a comes up
-# and boot-success records the failure; apply then needs --retry. The payload
-# copies of steps 2 and 6 go first: a third would not fit beside them.
+# and boot-success records the failure; apply then needs --retry.
 start_vm update-p7 --disk "$PB"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
-    "$(ROOTSH 'cat /run/kryptik/boot-identity | head -1; rm -rf /var/lib/kryptik/updates/a /var/lib/kryptik/updates/b; mkdir -p /run/upd/p /var/lib/kryptik/updates/b2 && mount -o ro /dev/vdb /run/upd/p && cp -a /run/upd/p/. /var/lib/kryptik/updates/b2/ && umount /run/upd/p && kryptik-update apply /var/lib/kryptik/updates/b2 && echo ARM7-OK')" \
+    "$(ROOTSH 'cat /run/kryptik/boot-identity | head -1; mkdir -p /run/upd/p && mount -o ro /dev/vdb /run/upd/p && kryptik-update apply /run/upd/p && echo ARM7-OK')" \
     "expect:slot=a" "expect:ARM7-OK" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
@@ -326,7 +324,7 @@ B_OFF=$(( $(part_start "$DISK" 3) * 512 ))
 # nothing reads at boot would let the trial succeed).
 printf '\xa5' | dd of="$DISK" bs=1 seek=$(( B_OFF + 1024 + 0x78 )) conv=notrunc status=none
 green "slot b's root image corrupted from the host (one byte in the superblock)"
-start_vm update-p7b
+start_vm update-p7b --disk "$PB"
 drive "expect:BdsDxe: starting Boot" \
     "expect:device-mapper: verity:.*(corrupt|mismatch|error)|dm-verity device corrupted" \
     "expect:Kernel panic" \
@@ -334,8 +332,8 @@ drive "expect:BdsDxe: starting Boot" \
     "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'cat /run/kryptik/boot-identity | head -1; cat /var/lib/kryptik/boot/last-result; kryptik-update status; echo P7B-OK')" \
     "expect:slot=a" "expect:trial-failed b" "expect:P7B-OK" \
-    "$(ROOTSH 'kryptik-update apply /var/lib/kryptik/updates/b2; echo RC=$?')" "expect:failed to boot" "expect:RC=1" \
-    "$(ROOTSH 'kryptik-update apply /var/lib/kryptik/updates/b2 --retry && echo RETRY-OK')" "expect:slot b verifies after write" "expect:RETRY-OK" \
+    "$(ROOTSH 'mkdir -p /run/upd/p && mount -o ro /dev/vdb /run/upd/p; kryptik-update apply /run/upd/p; echo RC=$?')" "expect:failed to boot" "expect:RC=1" \
+    "$(ROOTSH 'kryptik-update apply /run/upd/p --retry && echo RETRY-OK')" "expect:slot b verifies after write" "expect:RETRY-OK" \
     "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
     "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'cat /run/kryptik/boot-identity | head -1; cat /var/lib/kryptik/boot/last-result; echo P7C-OK')" "expect:slot=b" "expect:commit b" "expect:P7C-OK" \
@@ -353,10 +351,10 @@ if [[ "$starts" -ge 3 && "$ups" -ge 2 && "$panics" -ge 1 ]]; then green "three b
 if [[ "$B_ROLE" == development ]]; then step "step 8: ${VB} once more, fetched by the net zone and staged by zone 0"
 else step "step 8: ${VB}'s statement over plain http, by which a production image fetches nothing"; fi
 # Step 7 leaves B committed with nothing newer to fetch, so roll back to A
-# first. Step 7's copy goes too: the disk holds two payloads, not three.
+# first.
 start_vm update-p8
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
-    "$(ROOTSH 'rm -rf /var/lib/kryptik/updates/b2; kryptik-update rollback && echo RB8-OK')" "expect:armed: the next boot tries slot a" "expect:RB8-OK" \
+    "$(ROOTSH 'kryptik-update rollback && echo RB8-OK')" "expect:armed: the next boot tries slot a" "expect:RB8-OK" \
     "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
     "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'cat /run/kryptik/boot-identity | head -1; cat /var/lib/kryptik/boot/last-result; echo P8A-OK')" "expect:slot=a" "expect:commit a" "expect:P8A-OK" \
