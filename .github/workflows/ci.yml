@@ -378,3 +378,26 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             "gcc-$(gcc -dumpversion | cut -d. -f1)-plugin-dev" flex bison
           make check-kernel-hardening
+
+  lint-evidence:
+    name: Clippy and pyflakes (evidence only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: clippy over kryptikd and the compositor
+        run: |
+          rustup component add clippy
+          for d in compartments/kryptikd compositor; do
+            n="$(basename "$d")"
+            echo "=== $d"
+            (cd "$d" && cargo clippy --all-targets 2>&1) > "/tmp/clippy-$n.txt" || true
+            grep -E '^(warning|error)(\[|:)' "/tmp/clippy-$n.txt" | grep -vE 'generated [0-9]+ warning|could not compile' | sed 's/^\(warning\|error\)[^:]*: //' | sort | uniq -c | sort -rn | head -40
+            echo "total diagnostics in $d: $(grep -cE '^(warning|error)(\[|:)' "/tmp/clippy-$n.txt")"
+          done
+          echo "=== full output"; cat /tmp/clippy-*.txt
+
+      - name: pyflakes over the Python tools
+        run: |
+          pip install --quiet pyflakes
+          python3 -m pyflakes $(git ls-files '*.py') || true
