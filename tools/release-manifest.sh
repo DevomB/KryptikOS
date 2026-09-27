@@ -114,8 +114,10 @@ do_sign() {
         || die "sign: ${manifest} is not a ${MAGIC}"
 
     rm -f "${manifest}.sig"
-    # Not stderr: a security key asks there to be touched.
-    ssh-keygen -Y sign -f "$key" -n "$NAMESPACE" "$manifest" >/dev/null \
+    # A security key asks on stderr to be touched, which a build step logs:
+    # the terminal, when there is one, gets it.
+    local to=/dev/null; { : > /dev/tty; } 2>/dev/null && to=/dev/tty
+    ssh-keygen -Y sign -f "$key" -n "$NAMESPACE" "$manifest" >/dev/null 2>"$to" \
         || die "sign: ssh-keygen could not sign with ${key}"
     ok "signed: ${manifest}.sig"
 
