@@ -141,6 +141,10 @@ EXECLINE_SHA="$(mk_pkg execline      "$E_VER"    good)"
 S6_SHA="$(mk_pkg s6                  "$S6_VER"   good)"
 S6RC_SHA="$(mk_pkg s6-rc             "$RC_VER"   good)"
 S6INIT_SHA="$(mk_pkg s6-linux-init   "$INIT_VER" good)"
+# Like perl: the publisher names its checksum .sha256.txt.
+TXT_VER=1.0
+TXT_SHA="$(mk_pkg txtpkg            "$TXT_VER"  good)"
+mv "${SERVE}/txtpkg/txtpkg-${TXT_VER}.tar.gz.sha256" "${SERVE}/txtpkg/txtpkg-${TXT_VER}.tar.gz.sha256.txt"
 
 python3 - "$SERVE" "${TMP}/port" >/dev/null 2>&1 <<'PY' &
 import http.server, os, socketserver, sys
@@ -188,6 +192,7 @@ V_EXECLINE=${E_VER}
 V_S6=${S6_VER}
 V_S6_RC=${RC_VER}
 V_S6_LINUX_INIT=${INIT_VER}
+V_TXTPKG=${TXT_VER}
 MIRROR_SKARNET=${FIX_SKARNET}
 EOF
 
@@ -204,6 +209,7 @@ printf '%s %s %s %s %s\n' \
     s6 "$V_S6" "${sk}/s6/s6-${V_S6}.tar.gz" sha256 listing \
     s6-rc "$V_S6_RC" "${sk}/s6-rc/s6-rc-${V_S6_RC}.tar.gz" sha256 listing \
     s6-linux-init "$V_S6_LINUX_INIT" "${sk}/s6-linux-init/s6-linux-init-${V_S6_LINUX_INIT}.tar.gz" sha256 listing \
+    txtpkg "$V_TXTPKG" "${sk}/txtpkg/txtpkg-${V_TXTPKG}.tar.gz" sha256.txt listing \
     zlib 1.3.1 "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz" probe github
 STUB
     chmod 755 "${FAKE}/tools/fetch-sources.sh"
@@ -216,6 +222,7 @@ STUB
         printf '%s  s6-%s.tar.gz\n'            "$S6_SHA"       "$S6_VER"
         printf '%s  s6-rc-%s.tar.gz\n'         "$S6RC_SHA"     "$RC_VER"
         printf '%s  s6-linux-init-%s.tar.gz\n' "$S6INIT_SHA"   "$INIT_VER"
+        printf '%s  txtpkg-%s.tar.gz\n'        "$TXT_SHA"      "$TXT_VER"
     } > "${FAKE}/sources.lock"
 
     if [[ "$hm_archive" != "-" ]]; then
@@ -297,6 +304,19 @@ build_root "${ARCHIVES}/authentic.tar.gz" auto
 run --strict
 expect_pass "publisher checksums agree with the lock" \
     "publisher sha256 agrees with sources.lock"
+
+build_root "${ARCHIVES}/authentic.tar.gz" auto
+run --strict
+expect_pass "a sha256.txt row is checked against the file of that name" \
+    "txtpkg: publisher sha256 agrees with sources.lock"
+
+# It reads only that name, not a .sha256 beside it.
+mv "${SERVE}/txtpkg/txtpkg-${TXT_VER}.tar.gz.sha256.txt" "${SERVE}/txtpkg/txtpkg-${TXT_VER}.tar.gz.sha256"
+build_root "${ARCHIVES}/authentic.tar.gz" auto
+run --strict
+expect_fail "a sha256.txt row does not fall back to a .sha256" \
+    "the publisher no longer publishes a .sha256.txt"
+mv "${SERVE}/txtpkg/txtpkg-${TXT_VER}.tar.gz.sha256" "${SERVE}/txtpkg/txtpkg-${TXT_VER}.tar.gz.sha256.txt"
 
 build_root "${ARCHIVES}/authentic.tar.gz" auto
 run

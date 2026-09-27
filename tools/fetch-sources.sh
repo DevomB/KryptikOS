@@ -33,9 +33,11 @@ fi
 #   gnu      a .sig on the canonical GNU host
 #   kernel   kernel.org's .tar.sign over the uncompressed tar
 #   sig asc  a detached signature beside the file, with that suffix
+#   stem.sig a .sig beside it, named without the .tar.* suffix (less-710.sig)
 #   probe    whichever of .sig, .asc and .sign is published; an uploaded file
 #            with none keeps probe, so a later release's signature is found
 #   sha256   the publisher's .sha256 beside it (tools/verify-provenance.sh)
+#   sha256.txt  the same, named .sha256.txt
 #   tag      a signed tag the archive must reproduce (tools/verify-provenance.sh)
 #   none     nothing: a generated archive (GitHub /archive/, GitLab
 #            /-/archive/, sr.ht /archive/) can have nothing beside it
@@ -98,7 +100,7 @@ libcap|${V_LIBCAP}|${MIRROR_LIBCAP}/libcap-${V_LIBCAP}.tar.xz|kernel|listing
 shadow|${V_SHADOW}|${MIRROR_GITHUB}/shadow-maint/shadow/releases/download/${V_SHADOW}/shadow-${V_SHADOW}.tar.xz|probe|github
 pkgconf|${V_PKGCONF}|https://distfiles.ariadne.space/pkgconf/pkgconf-${V_PKGCONF}.tar.xz|probe|listing
 iana-etc|${V_IANA_ETC}|${MIRROR_GITHUB}/Mic92/iana-etc/releases/download/${V_IANA_ETC}/iana-etc-${V_IANA_ETC}.tar.gz|sha256|github
-less|${V_LESS}|https://www.greenwoodsoftware.com/less/less-${V_LESS}.tar.gz|probe|rule
+less|${V_LESS}|https://www.greenwoodsoftware.com/less/less-${V_LESS}.tar.gz|stem.sig|rule
 groff|${V_GROFF}|${gnu}/groff/groff-${V_GROFF}.tar.gz|gnu|gnu
 util-linux|${V_UTIL_LINUX}|${MIRROR_KERNEL_UTILS}/util-linux/v${V_UTIL_LINUX%.*}/util-linux-${V_UTIL_LINUX}.tar.xz|kernel|vdir
 e2fsprogs|${V_E2FSPROGS}|${MIRROR_E2FSPROGS}/v${V_E2FSPROGS}/e2fsprogs-${V_E2FSPROGS}.tar.gz|kernel|vdir
@@ -113,7 +115,7 @@ libpipeline|${V_LIBPIPELINE}|${MIRROR_SAVANNAH}/libpipeline/libpipeline-${V_LIBP
 man-db|${V_MANDB}|${MIRROR_SAVANNAH}/man-db/man-db-${V_MANDB}.tar.xz|asc|listing
 elfutils|${V_ELFUTILS}|${MIRROR_SOURCEWARE}/elfutils/${V_ELFUTILS}/elfutils-${V_ELFUTILS}.tar.bz2|probe|rule
 eudev|${V_EUDEV}|${MIRROR_GITHUB}/eudev-project/eudev/releases/download/v${V_EUDEV}/eudev-${V_EUDEV}.tar.gz|probe|github
-perl|${V_PERL}|https://www.cpan.org/src/5.0/perl-${V_PERL}.tar.xz|probe|rule
+perl|${V_PERL}|https://www.cpan.org/src/5.0/perl-${V_PERL}.tar.xz|sha256.txt|rule
 python|${V_PYTHON}|https://www.python.org/ftp/python/${V_PYTHON}/Python-${V_PYTHON}.tar.xz|probe|rule
 skalibs|${V_SKALIBS}|${MIRROR_SKARNET}/skalibs/skalibs-${V_SKALIBS}.tar.gz|sha256|listing
 execline|${V_EXECLINE}|${MIRROR_SKARNET}/execline/execline-${V_EXECLINE}.tar.gz|sha256|listing

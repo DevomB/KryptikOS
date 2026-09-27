@@ -79,9 +79,10 @@ or unaudited.
 | linux-hardened | RSA-4096, Levente Polyak | strong |
 | xz | RSA, Lasse Collin | strong |
 | file | DSA-1024, SHA-1 digest, expired 2026-08-15 | weak |
+| less | DSA-1024, SHA-1 digest, Mark Nudelman | weak |
 
-DSA-1024 over SHA-1 is below what should be relied on, so the signature on
-`file` is weaker evidence than the rest.
+DSA-1024 over SHA-1 is below what should be relied on, so the signatures on
+`file` and `less` are weaker evidence than the rest.
 
 ### xz
 

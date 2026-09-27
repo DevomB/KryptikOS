@@ -379,6 +379,31 @@ fresh_root; run
 expect_fail "an unknown signature kind fails rather than being skipped" \
     "no signature kind this script knows ('telepathy')"
 
+# Like less: the signature is named without the archive suffix.
+printf 'fixture payload for stemmed\n' > "${SRC}/stemmed.tar.gz"
+fixgpg --yes --local-user good@example.test \
+    --detach-sign -o "${SRC}/stemmed.sig" "${SRC}/stemmed.tar.gz" >/dev/null 2>&1
+: > "${W}/manifest"; add_row stemmed stem.sig
+fresh_root; run --strict
+expect_pass "a row that declares stem.sig verifies with the .sig named for its stem" \
+    "verified:     1"
+if [[ -s "${SRC}/.signatures/stemmed.sig" && ! -e "${SRC}/.signatures/stemmed.tar.gz.sig" ]]; then
+    green "the stem-named signature is cached under its own name"
+else
+    red "the stem-named signature was cached under the tarball's name"
+fi
+
+# probe does not guess a stem: a stem-named file can be another file's signature.
+write_manifest stemmed
+fresh_root; run
+expect_pass "probe does not find a signature named for the stem" \
+    "no detached signature published"
+
+: > "${W}/manifest"; add_row good sha256.txt
+fresh_root; run
+expect_pass "a sha256.txt row is left to verify-provenance.sh" \
+    "good: no OpenPGP signature upstream; the publisher's .sha256.txt is verify-provenance's"
+
 # --- unaudited imported keys ------------------------------------------------
 
 write_manifest unknown
