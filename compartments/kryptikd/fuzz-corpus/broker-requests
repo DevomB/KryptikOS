@@ -10,6 +10,8 @@ transfer work report.pdf
 transfer net report.pdf
 transfer work ../report.pdf
 transfer work .hidden
+transfer b report.pdf
+transfer b ../report.pdf
 time-offset 5 4
 time-offset -0.250000 1
 time-offset +3599.999999 16

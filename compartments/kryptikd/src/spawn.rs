@@ -1015,6 +1015,7 @@ pub fn run_in_zone(
             .ok()
             .map(|m| std::os::unix::fs::MetadataExt::dev(&m))
     };
+    let refused = std::cell::Cell::new(None);
     let served = broker::Served {
         zone,
         uid: id.uid,
@@ -1027,6 +1028,7 @@ pub fn run_in_zone(
         // Both replaced by serve_until_exit: the launcher's own turn, a bounded log.
         asking: &crate::consent::keep,
         log: &log_line,
+        refused_until: &refused,
     };
     let status = serve_until_exit(pid, broker_fd, &served, zone_out)?;
     unsafe { libc::close(broker_fd) };

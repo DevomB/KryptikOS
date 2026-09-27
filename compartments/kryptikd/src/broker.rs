@@ -5,6 +5,7 @@
 //! zone cannot choose; each zone has its own `[identity]` uid range. The pid
 //! is never used, since it may be reused.
 
+use std::cell::Cell;
 use std::ffi::CString;
 use std::io;
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
@@ -48,7 +49,9 @@ pub fn listen_at(path: &std::path::Path, uid: u32, gid: u32) -> io::Result<RawFd
     if r < 0 {
         return Err(io::Error::last_os_error());
     }
-    if unsafe { libc::geteuid() } == 0 && unsafe { libc::chown(c.as_ptr(), uid, gid) } < 0 {
+    if unsafe { libc::geteuid() } == 0
+        && unsafe { libc::fchownat(libc::AT_FDCWD, c.as_ptr(), uid, gid, libc::AT_SYMLINK_NOFOLLOW) } < 0
+    {
         return Err(io::Error::last_os_error());
     }
     if unsafe { libc::listen(fd.as_raw_fd(), 8) } < 0 {
@@ -314,7 +317,13 @@ pub struct Served<'a> {
     pub asking: &'a dyn Fn() -> bool,
     /// Where the broker's lines go; the launcher bounds them per launch.
     pub log: &'a dyn Fn(&str),
+    /// Until when this launch asks nothing more after a refusal: every
+    /// question takes focus in zone 0, so a zone may not raise them in a loop.
+    pub refused_until: &'a Cell<Option<Instant>>,
 }
+
+/// How long a refused zone waits before it may ask again.
+pub const REFUSAL_PAUSE: Duration = Duration::from_secs(60);
 
 /// The launcher's `resolve_dest`: the registry says whether the zone runs and
 /// as whom, and its pid 1's root leads into its mount namespace.
@@ -340,7 +349,12 @@ pub fn registry_target(dest: &str) -> Result<Target, String> {
             io::Error::last_os_error()
         ));
     }
-    Ok(Target { root_fd: unsafe { OwnedFd::from_raw_fd(root_fd) }, home_rel: format!("home/{dest}"), uid, gid })
+    let root_fd = unsafe { OwnedFd::from_raw_fd(root_fd) };
+    // The pid may have ended, and been reused, since the registry was read.
+    if !st.still_alive() {
+        return Err(format!("destination zone {dest:?} stopped while it was being reached"));
+    }
+    Ok(Target { root_fd, home_rel: format!("home/{dest}"), uid, gid })
 }
 
 #[repr(C)]
@@ -431,7 +445,13 @@ fn handle_transfer(s: &Served, dest: &str, name: &str, fds: &[OwnedFd]) -> Resul
      * the zone may have restarted meanwhile. */
     if !s.auto_approve {
         drop((s.resolve_dest)(dest)?);
-        crate::consent::ask(sender, dest, name, st.st_size as u64, s.asking)?;
+        if s.refused_until.get().is_some_and(|t| Instant::now() < t) {
+            return Err("a transfer from this zone was refused less than a minute ago; not asking again yet".into());
+        }
+        if let Err(why) = crate::consent::ask(sender, dest, name, st.st_size as u64, s.asking) {
+            s.refused_until.set(Some(Instant::now() + REFUSAL_PAUSE));
+            return Err(why);
+        }
     }
     let target = (s.resolve_dest)(dest)?;
     // The size checked, and shown if asked, is the size carried.
@@ -1012,6 +1032,7 @@ mod tests {
             resolve_dest: &no_dest,
             asking: &crate::consent::keep,
             log: &no_log,
+            refused_until: Box::leak(Box::new(Cell::new(None))),
         }
     }
 
@@ -1247,6 +1268,7 @@ mod tests {
             resolve_dest: &resolve,
             asking: &crate::consent::keep,
             log: &no_log,
+            refused_until: &Cell::new(None),
         };
         let file = lab.dir.join("report.pdf");
         std::fs::write(&file, b"hello transfer").unwrap();
@@ -1329,6 +1351,7 @@ mod tests {
             resolve_dest: &grow,
             asking: &crate::consent::keep,
             log: &no_log,
+            refused_until: &Cell::new(None),
         };
         let incoming = lab.root.join("home/b/incoming");
         let r = send_notes(&sv, &file);
@@ -1365,6 +1388,7 @@ mod tests {
             resolve_dest: &resolve,
             asking: &crate::consent::keep,
             log: &no_log,
+            refused_until: &Cell::new(None),
         };
         let file = lab.dir.join("f.txt");
         std::fs::write(&file, b"0123456789").unwrap();
@@ -1475,6 +1499,7 @@ mod tests {
             resolve_dest: &resolve,
             asking: &asking,
             log: &no_log,
+            refused_until: &Cell::new(None),
         };
         let file = lab.dir.join("f.txt");
         std::fs::write(&file, b"moved").unwrap();
@@ -1509,6 +1534,85 @@ mod tests {
         assert_eq!(held.get(), 0, "the destination's root was held through the question");
         assert_eq!(std::fs::read(lab.root.join("home/b/incoming/f.txt")).unwrap(), b"moved");
         assert!(!before.join("home/b/incoming").exists(), "the transfer went into the tree the zone had left");
+        let _ = std::fs::remove_dir_all(&lab.dir);
+    }
+
+    #[test]
+    fn refusal_pauses_questions() {
+        /* Every question takes focus in zone 0: after a refusal the same launch
+         * may raise no other for a minute, and is told so without one. */
+        let lab = lab("pause", "b");
+        let entry_dir = lab.dir.join("entry");
+        std::fs::create_dir_all(&entry_dir).unwrap();
+        let resolve = resolver(lab.root.clone());
+        let dev = lab.dev;
+        let home_dev = move || Some(dev);
+        let refused = Cell::new(None);
+        let sv = Served {
+            zone: &lab.sender,
+            uid: unsafe { libc::geteuid() },
+            entry: &entry_dir,
+            zones_dir: &lab.zones,
+            home_dev: &home_dev,
+            auto_approve: false,
+            max_bytes: 64,
+            resolve_dest: &resolve,
+            asking: &crate::consent::keep,
+            log: &no_log,
+            refused_until: &refused,
+        };
+        let file = lab.dir.join("f.txt");
+        std::fs::write(&file, b"no").unwrap();
+        let consent = lab.dir.join("consent");
+        std::fs::create_dir_all(&consent).unwrap();
+        let watch = std::fs::File::create(consent.join(crate::consent::WATCHER_LOCK)).unwrap();
+        assert_eq!(unsafe { libc::flock(watch.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+        let _env = crate::consent::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("KRYPTIK_CONSENT_DIR", &consent);
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (d, stop) = (consent.clone(), done.clone());
+        // The person says no to every question, and counts them.
+        let person = std::thread::spawn(move || {
+            let mut answered = std::collections::HashSet::new();
+            for _ in 0..500 {
+                for q in std::fs::read_dir(&d).unwrap().flatten().map(|e| e.path()) {
+                    if !q.extension().is_some_and(|x| x == "ask") {
+                        continue;
+                    }
+                    let id = q.file_stem().unwrap().to_string_lossy().into_owned();
+                    if answered.insert(id.clone()) {
+                        let tmp = d.join(format!("{id}.person"));
+                        std::fs::write(&tmp, "no\n").unwrap();
+                        std::fs::rename(&tmp, d.join(format!("{id}.answer"))).unwrap();
+                    }
+                }
+                if stop.load(std::sync::atomic::Ordering::SeqCst) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            answered.len()
+        });
+        let send = || {
+            let src = open_flags(&file, libc::O_RDONLY);
+            let r = ask_with(&sv, "transfer b f.txt\n", &[src], false).1;
+            unsafe { libc::close(src) };
+            String::from_utf8_lossy(&r).into_owned()
+        };
+        let first = send();
+        let second = send();
+        done.store(true, std::sync::atomic::Ordering::SeqCst);
+        let asked = person.join().unwrap();
+        // Once the pause is over the next request is asked again; with no channel, it says so.
+        refused.set(Some(Instant::now()));
+        std::env::set_var("KRYPTIK_CONSENT_DIR", "/nonexistent/kryptik-consent");
+        let third = send();
+        std::env::remove_var("KRYPTIK_CONSENT_DIR");
+        assert!(first.contains("refused by the user"), "{first}");
+        assert!(second.contains("less than a minute ago"), "{second}");
+        assert_eq!(asked, 1, "the request after a refusal raised a question");
+        assert!(third.contains("no consent channel"), "{third}");
+        assert!(!lab.root.join("home/b/incoming/f.txt").exists(), "a refused file landed");
         let _ = std::fs::remove_dir_all(&lab.dir);
     }
 
@@ -1652,10 +1756,10 @@ mod tests {
 
     /// Requests from fuzz-corpus/broker-requests (add any that ever breaks the
     /// broker), damaged by a fixed-seed generator and sent down a real
-    /// connection. No panic, no overrun of the deadline, one well-formed reply,
-    /// and nothing accepted outside the grammar.
-    #[test]
-    fn broker_survives_any_request() {
+    /// connection, each with a fresh descriptor of `attach` when given. No
+    /// panic, no overrun of the deadline, one well-formed reply, and nothing
+    /// accepted outside the grammar. Returns (sent, accepted).
+    fn fuzz_pass(s: &Served, hello: &str, attach: Option<&Path>) -> (u32, u32) {
         const CORPUS: &str = include_str!("../fuzz-corpus/broker-requests");
         // xorshift64*: small, seeded, the same sequence everywhere.
         let mut state: u64 = 0x4252_4F4B_4552_3031;
@@ -1665,9 +1769,6 @@ mod tests {
             state ^= state >> 27;
             state.wrapping_mul(0x2545_F491_4F6C_DD1D)
         };
-        let dir = entry("fuzz");
-        let z = zone_t();
-        let s = served(&z, &dir, unsafe { libc::geteuid() });
         let (mut sent, mut accepted) = (0u32, 0u32);
         for seed in CORPUS.lines().filter(|l| !l.is_empty()) {
             // time-offset is refused here and logs every time, so it gets fewer rounds.
@@ -1698,10 +1799,17 @@ mod tests {
                 }
 
                 let (server, client) = pair();
-                send_all(client, &req);
+                match attach {
+                    Some(p) => {
+                        let fd = open_flags(p, libc::O_RDONLY);
+                        send_with_fds(client, &req, &[fd]);
+                        unsafe { libc::close(fd) };
+                    }
+                    None => send_all(client, &req),
+                }
                 unsafe { libc::shutdown(client, libc::SHUT_WR) };
                 let started = Instant::now();
-                let served_it = serve_connection(server, &s);
+                let served_it = serve_connection(server, s);
                 unsafe { libc::close(server) };
                 let reply = recv_reply(client);
                 unsafe { libc::close(client) };
@@ -1711,7 +1819,7 @@ mod tests {
                 let text = String::from_utf8_lossy(&reply);
                 let first = text.lines().next().unwrap_or("");
                 assert!(
-                    ["ok", "error: ", "empty", "kryptik-broker 1 zone=t"].iter().any(|p| first.starts_with(p)) && text.contains('\n'),
+                    ["ok", "error: ", "empty", hello].iter().any(|p| first.starts_with(p)) && text.contains('\n'),
                     "{header:?}: replied {text:?}"
                 );
                 if first.starts_with("ok") || first.starts_with("empty") || first.starts_with("kryptik-broker") {
@@ -1719,8 +1827,78 @@ mod tests {
                 }
             }
         }
+        (sent, accepted)
+    }
+
+    #[test]
+    fn broker_survives_any_request() {
+        let dir = entry("fuzz");
+        let z = zone_t();
+        let s = served(&z, &dir, unsafe { libc::geteuid() });
+        let (sent, accepted) = fuzz_pass(&s, "kryptik-broker 1 zone=t", None);
         std::fs::remove_dir_all(dir).unwrap();
         // The generator must reach both sides of the grammar.
         assert!(sent > 2000 && accepted > 50 && accepted < sent, "sent {sent}, accepted {accepted}");
+    }
+
+    /// The same damage past the transfer path's descriptor check: a sender
+    /// whose policy names b, its data mount the lab's, b running under the lab
+    /// root, and every request carrying a file of that mount.
+    #[test]
+    fn broker_survives_any_transfer() {
+        let lab = lab("fuzz", "b");
+        let entry_dir = lab.dir.join("entry");
+        std::fs::create_dir_all(&entry_dir).unwrap();
+        let resolve = resolver(lab.root.clone());
+        let dev = lab.dev;
+        let home_dev = move || Some(dev);
+        let sv = Served {
+            zone: &lab.sender,
+            uid: unsafe { libc::geteuid() },
+            entry: &entry_dir,
+            zones_dir: &lab.zones,
+            home_dev: &home_dev,
+            auto_approve: true,
+            max_bytes: 64,
+            resolve_dest: &resolve,
+            asking: &crate::consent::keep,
+            log: &no_log,
+            refused_until: &Cell::new(None),
+        };
+        let file = lab.dir.join("carried.txt");
+        std::fs::write(&file, b"carried").unwrap();
+        // Set up so a clean request lands: the damage below starts from there.
+        let src = open_flags(&file, libc::O_RDONLY);
+        assert_eq!(String::from_utf8_lossy(&ask_with(&sv, "transfer b first.txt\n", &[src], false).1), "ok first.txt\n");
+        unsafe { libc::close(src) };
+        let (sent, _) = fuzz_pass(&sv, "kryptik-broker 1 zone=a", Some(file.as_path()));
+        assert_eq!(fds_pointing_at(&file), 0, "the broker kept a descriptor it was handed");
+        let _ = std::fs::remove_dir_all(&lab.dir);
+        assert!(sent > 2000, "sent {sent}");
+    }
+
+    /// The nic zone reaches time-offset's judgement and the update verbs'
+    /// payloads, and through them this host's clock and update state. As root
+    /// that would be the real thing, so it runs only unprivileged, where every
+    /// such write is refused, and with no consent channel for a question.
+    #[test]
+    fn broker_survives_any_request_from_the_nic_zone() {
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("as root the nic zone's pass would reach this host's clock and update state; skipped");
+            return;
+        }
+        let dir = entry("fuzz-nic");
+        let z = Zone::from_str(
+            "[zone]\nname = \"t\"\n[network]\nmode = \"nic\"\n\
+             [storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n[ui]\nborder_color = \"#123456\"\n",
+        )
+        .unwrap();
+        let s = served(&z, &dir, unsafe { libc::geteuid() });
+        let _env = crate::consent::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("KRYPTIK_CONSENT_DIR", "/nonexistent/kryptik-consent");
+        let (sent, _) = fuzz_pass(&s, "kryptik-broker 1 zone=t", None);
+        std::env::remove_var("KRYPTIK_CONSENT_DIR");
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(sent > 2000, "sent {sent}");
     }
 }

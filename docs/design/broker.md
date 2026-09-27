@@ -63,9 +63,13 @@ failure:
    sender's data mount (`st_dev` of `/home/<zone>`, read through the zone's
    pid 1 root at request time), and within the 1 GiB cap. `/proc/self/fd/N`
    is never consulted.
-5. The destination is running.
+5. The destination is running. A refusal here tells the sender whether a
+   zone its own `[transfer] to` names is running, which timing would tell it
+   anyway.
 6. The user consents (below). Asked last, so a request that would be refused
-   anyway never becomes a question.
+   anyway never becomes a question. After a refusal the same launch asks
+   nothing for a minute: every question takes focus in zone 0, so a zone may
+   not raise them in a loop.
 
 After the user answers, the destination is looked up again, so nothing holds
 its mounts through the wait and a zone that stopped meanwhile gets nothing.
@@ -92,6 +96,7 @@ The user is reached through the desktop session, an ordinary user in group
 
 ```text
 /run/kryptik-consent/<id>.ask      from=ZONE to=ZONE name=NAME bytes=N
+/run/kryptik-consent/<id>.code     the code the window asks for (the chrome's)
 /run/kryptik-consent/<id>.answer   yes | no        (written by the chrome)
 ```
 
@@ -101,6 +106,14 @@ sees each `.ask`, opens a trusted window (`kryptik-chrome --confirm ID`, with
 the unzoned border no zone can have) and writes the answer. The broker waits
 at most 60 s; silence, a malformed answer or a missing directory is a
 refusal, and a question whose sender goes away is withdrawn.
+
+The window takes focus when it maps, so a zone could time a request to land
+under keys the user meant for the zone's own window. So the window drops
+whatever was typed in its first second, half-typed lines too, and then asks
+for a two-digit code drawn for that question alone: only the code, typed
+after it shows, answers yes. No zone sees a zone 0 window, so none can type
+the code. It is kept beside the question for zone 0's tests, which grants
+nothing: whatever can read the directory could write the answer.
 
 The session's group can write in that directory, so nothing found there is
 trusted. The broker opens the directory once and uses names relative to it
@@ -151,21 +164,28 @@ title to `[zone] ...`, from which the compositor draws the zone's border.
   `SCM_RIGHTS`: every refusal above with its exact reply, the transfer
   landing 0600 and byte-identical, numbered names, planted symlinks as the
   name and as `incoming`, a file growing past the cap mid-copy, descriptor
-  leaks. `consent.rs` tests yes, no, silence, a missing channel or watcher, a
-  vanished sender, planted names and a non-file answer.
+  leaks, and no second question within a minute of a refusal. `consent.rs`
+  tests yes, no, silence, a missing channel or watcher, a vanished sender,
+  planted names and a non-file answer.
+- `tools/test-chrome-confirm.py` runs the chrome's real question window on a
+  pty: the code shown allows, a plain `y` refuses, and keys or a half line
+  typed before the question showed are dropped, for the clock question too.
 - The launcher suite's broker section: `version` names the zone, an unknown
   verb is refused, the socket is 0600, a foreign peer is refused on a
   privileged launch.
 - `build/guest-tests/gui-check.sh` on the installed desktop: the proxy hides
   every global outside the list and refuses a screencopy bind; a clipboard
   stays its zone's until the move gesture; a transfer outside policy is
-  refused without a question; "yes" delivers byte-identical, "no" refuses,
-  and no question is left behind.
+  refused without a question; the code typed delivers byte-identical, a plain
+  `y` refuses, and no question is left behind.
 - The two hand-written parsers of zone bytes have seeded mutation tests, so a
   failure repeats on every machine. The broker's damages each request in
   `compartments/kryptikd/fuzz-corpus/broker-requests` a hundred-odd ways and
   sends it over a real connection: no panic, no overrun of the deadline, one
-  well-formed reply. The proxy's (`protocol.rs`, `session.rs`) damages a
+  well-formed reply. It does so for a plain zone, for a sender whose policy
+  and data mount let transfers through with a descriptor on every request,
+  and, unprivileged only, for the nic zone, whose time and update verbs would
+  otherwise reach the host's clock and update state. The proxy's (`protocol.rs`, `session.rs`) damages a
   valid body of every message in the generated tables (no panic, no read past
   the body, only exact parses accepted) and feeds a damaged opening through a
   live session in arbitrary fragments (only whole messages reach the
