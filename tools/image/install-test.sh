@@ -84,9 +84,7 @@ step "step 2: boot the installed disk alone, medium detached, variables reset"
 VARSF="${VMDIR}/installed-vars.fd"
 cp "/usr/share/OVMF/OVMF_VARS_4M.fd" "$VARSF"
 [[ "$VARS" == "enrolled" ]] && cp "${KRYPTIK_WORK}/keys/sb/vars/enrolled.fd" "$VARSF"
-SERVE="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --name install-p2)"
-SER="$(sed -n 's/^serial=//p' <<<"$SERVE")"; PIDF="$(sed -n 's/^pid=//p' <<<"$SERVE")"; LOG2="$(sed -n 's/^log=//p' <<<"$SERVE")"
-[[ -S "$SER" ]] || die "no serial socket from run-ovmf: ${SERVE}"
+start_vm install-p2; LOG2="$LOG"
 REC="${VMDIR}/install-p2.json"
 python3 "$DRV" --serial "$SER" --timeout 300 --record "$REC" \
     "expect:KRYPTIK_SMOKE: END" \
@@ -136,8 +134,7 @@ if [[ -f "$REC" ]]; then echo "  recorded:"; sed 's/^/    /' "$REC" | head -30; 
 # ----------------------------------------------------------------- step 3 --
 if [[ "$QUICK" -eq 0 ]]; then
 step "step 3: cold boot the installed disk again"
-SERVE="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --name install-p3)"
-SER="$(sed -n 's/^serial=//p' <<<"$SERVE")"; PIDF="$(sed -n 's/^pid=//p' <<<"$SERVE")"; LOG3="$(sed -n 's/^log=//p' <<<"$SERVE")"
+start_vm install-p3; LOG3="$LOG"
 python3 "$DRV" --serial "$SER" --timeout 300 \
     "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "run:test -f /home/${TUSER}/persisted-p2" \

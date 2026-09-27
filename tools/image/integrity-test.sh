@@ -57,8 +57,7 @@ smoke integ-install --usb "$USB" --disk "$DISK" --testctl "$CTL" --vars enrolled
 boot_txt | grep -q 'KRYPTIK_INSTALL: rc=0' && green "installed from the medium under Secure Boot" || { red "install failed"; exit 1; }
 boot_txt | grep -q 'KRYPTIK_SMOKE: secureboot=1' && green "the medium itself booted with Secure Boot enforced" || red "medium did not report secureboot=1"
 
-SERVE="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --name integ-p1)"
-SER="$(sed -n 's/^serial=//p' <<<"$SERVE")"; PIDF="$(sed -n 's/^pid=//p' <<<"$SERVE")"; LOG1="$(sed -n 's/^log=//p' <<<"$SERVE")"
+start_vm integ-p1; LOG1="$LOG"
 python3 "$DRV" --serial "$SER" --timeout 300 \
     "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "run:test \"\$(od -An -tu1 -j4 -N1 /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c | tr -d ' ')\" = 1" \
@@ -149,8 +148,7 @@ CSLOT="$(mtype -i "$ESPIMG" ::/kryptik/committed-slot 2>/dev/null)"; CVER="$(mty
 LEFT="$(mdir -/ -b -i "$ESPIMG" ::/ 2>/dev/null | grep -i '\.new$' | tr '\n' ' ')"
 [[ -z "$LEFT" ]] && green "recovery left no .new file on the ESP" || red "recovery left ${LEFT}on the ESP"
 cp "$ENROLLED" "$VARSF"
-SERVE="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --name integ-p4b)"
-SER="$(sed -n 's/^serial=//p' <<<"$SERVE")"; PIDF="$(sed -n 's/^pid=//p' <<<"$SERVE")"; LOG4="$(sed -n 's/^log=//p' <<<"$SERVE")"
+start_vm integ-p4b; LOG4="$LOG"
 python3 "$DRV" --serial "$SER" --timeout 300 \
     "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "run:test \"\$(cat /home/${TUSER}/marker)\" = integrity-marker" \
@@ -214,8 +212,7 @@ else
     EXTRA=()
 fi
 cp "$ENROLLED" "$VARSF"
-SERVE="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --name integ-p5 "${EXTRA[@]}")"
-SER="$(sed -n 's/^serial=//p' <<<"$SERVE")"; PIDF="$(sed -n 's/^pid=//p' <<<"$SERVE")"; LOG5="$(sed -n 's/^log=//p' <<<"$SERVE")"
+start_vm integ-p5 "${EXTRA[@]}"; LOG5="$LOG"
 # The planted kryptik/ directory must be quarantined and gone from /etc, and
 # the updater's anchor on the verified root must still name the release key.
 # The root has an ld.so.preload of its own (the allocator), so the planted

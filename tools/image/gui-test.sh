@@ -58,9 +58,7 @@ boot_txt | grep -q 'KRYPTIK_INSTALL: rc=0' && green "installed" || { red "instal
 # ----------------------------------------------------------------- step 2 --
 step "step 2: the desktop, driven"
 rm -f "$SHOT" "$SHOT_FS" "$SHOT_OVER"
-out="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --net user --gpu --mem 3072 --name gui-p2)"
-SER="$(sed -n 's/^serial=//p' <<<"$out")"; PIDF="$(sed -n 's/^pid=//p' <<<"$out")"; LOG="$(sed -n 's/^log=//p' <<<"$out")"; QMP="$(sed -n 's/^qmp=//p' <<<"$out")"
-[[ -S "$SER" ]] || die "no serial socket: ${out}"
+start_vm gui-p2 --net user --gpu --mem 3072
 python3 "$DRV" --serial "$SER" --qmp "$QMP" --timeout 600 \
     "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
     "send:su - root -c 'bash /usr/lib/kryptik/guest-tests/gui-check.sh ${TUSER} 2>&1 | tee /var/log/kryptik/gui-check.log; echo GCHECK-DONE'" \

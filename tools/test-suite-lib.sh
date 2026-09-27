@@ -25,6 +25,13 @@ while [[ $# -gt 0 ]]; do
         *) shift ;;
     esac
 done
+if [[ "$mode" == serve ]]; then
+    d="$KRYPTIK_WORK/vm"; mkdir -p "$d"; rm -f "$d/$name.serial"
+    python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$d/$name.serial"
+    printf 'serial=%s\nqmp=%s\npid=%s\nlog=%s\nvars=%s\n' \
+        "$d/$name.serial" "$d/$name.qmp" "$d/$name.pid" "$KRYPTIK_WORK/logs/ovmf-serial.$name.log" "$d/vars.fd"
+    exit 0
+fi
 [[ "$mode" == smoke ]] || exit 2
 printf 'boot %s\r\n' "$name" > "$log"
 echo "a stranger's boot" > "$KRYPTIK_WORK/logs/stranger.log"
@@ -61,6 +68,24 @@ check "and the first transcript is still whole" "$(tr -d '\r' < "$first")" "boot
 echo "-- a failed boot's status reaches the suite"
 STUB_RC=124 smoke t2 > /dev/null
 check "the timeout's 124" "$?" "124"
+
+echo "-- start_vm gives each serve boot what its suite parsed by hand"
+command -v python3 >/dev/null 2>&1 || { echo "python3 required"; exit 77; }
+DISK="$T/disk.img"; VARSF="$T/vars.fd"
+sorted() { tr ' ' '\n' <<<"$1" | sort | tr '\n' ' '; }
+# The name and extra arguments of every serve boot the suites made themselves.
+for call in "gui-p2 --net user --gpu --mem 3072" "install-p2" "install-p3" \
+            "integ-p1" "integ-p4b" "integ-p5" "integ-p5 --disk $T/payload.img"; do
+    read -r -a a <<<"$call"
+    out="$("$SELF/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --name "${a[0]}" "${a[@]:1}")"
+    by_hand="$(tail -1 "$STUB_ARGS")"
+    # What each suite wrote out for itself.
+    SER0="$(sed -n 's/^serial=//p' <<<"$out")"; PIDF0="$(sed -n 's/^pid=//p' <<<"$out")"
+    LOG0="$(sed -n 's/^log=//p' <<<"$out")"; QMP0="$(sed -n 's/^qmp=//p' <<<"$out")"
+    start_vm "${a[@]}"
+    check "${call}: the same serial, pid, log and QMP" "$SER|$PIDF|$LOG|$QMP" "$SER0|$PIDF0|$LOG0|$QMP0"
+    check "${call}: run-ovmf.sh got the same arguments" "$(sorted "$(tail -1 "$STUB_ARGS")")" "$(sorted "$by_hand")"
+done
 
 echo
 echo "suite-lib boot wrappers: ${PASS} passed, ${FAIL} failed"
