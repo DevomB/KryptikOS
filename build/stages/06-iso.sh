@@ -95,8 +95,10 @@ fi
 mkdir -p "$IMG" "$IMG/cmdlines" "$IMG/kernels" "$KRYPTIK_OUT"
 chmod 0700 "$IMG"
 
-# The whole of stage 05 is what this stage builds on.
+# The whole of stage 05, and the whole of stage 04: stage 05 builds on stage 04
+# only as far as elfutils, and the root holds every step after it too.
 stage_depends_on "kernel-" verify-install
+stage_depends_on "bs-" boot-check
 
 # --- steps ------------------------------------------------------------------
 
