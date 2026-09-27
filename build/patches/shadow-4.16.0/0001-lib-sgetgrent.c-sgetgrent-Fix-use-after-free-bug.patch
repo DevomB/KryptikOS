@@ -1,0 +1,36 @@
+From 8424d7c49462a6587c773f9b08c1867d7750f5ec Mon Sep 17 00:00:00 2001
+From: Alejandro Colomar <alx@kernel.org>
+Date: Sat, 7 Dec 2024 00:07:27 +0100
+Subject: [PATCH] lib/sgetgrent.c: sgetgrent(): Fix use-after-free bug
+
+We were reusing a leftover from parsing a previous line if
+(i == NFIELDS-1).  A few lines below this check, we use read the element
+in [3] (that is, [NFIELDS-1]), without having written it in this call.
+
+Be stricter, and require that all NFIELDS fields are found.
+
+Fixes: 45c6603cc86c (2007-10-07, "[svn-upgrade] Integrating new upstream version, shadow (19990709)")
+Closes: <https://github.com/shadow-maint/shadow/issues/1144>
+Cc: Serge Hallyn <serge@hallyn.com>
+Cc: Iker Pedrosa <ipedrosa@redhat.com>
+Signed-off-by: Alejandro Colomar <alx@kernel.org>
+---
+ lib/sgetgrent.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/lib/sgetgrent.c b/lib/sgetgrent.c
+index b1202967..42b4efb7 100644
+--- a/lib/sgetgrent.c
++++ b/lib/sgetgrent.c
+@@ -89,7 +89,7 @@ struct group *sgetgrent (const char *buf)
+ 	for (cp = grpbuf, i = 0; (i < NFIELDS) && (NULL != cp); i++)
+ 		grpfields[i] = strsep(&cp, ":");
+ 
+-	if (i < (NFIELDS - 1) || *grpfields[2] == '\0' || cp != NULL) {
++	if (i < NFIELDS || *grpfields[2] == '\0' || cp != NULL) {
+ 		return NULL;
+ 	}
+ 	grent.gr_name = grpfields[0];
+-- 
+2.51.0.windows.1
+

@@ -451,6 +451,8 @@ s_python_final() {
 s_shadow() {
     local src; src="$(unpack "shadow-${V_SHADOW}.tar.xz" "shadow-${V_SHADOW}")"
     cd "$src"
+    # build/patches/shadow-4.16.0 (see its README): upstream's sgetgrent fix from 4.17.0.
+    apply_repo_patches "shadow-${V_SHADOW}"
     # Kryptik does not ship groups(1) or the *chage man pages that conflict
     # with coreutils/man-pages.
     sed -i 's/groups$(EXEEXT) //' src/Makefile.in
@@ -677,12 +679,29 @@ s_coreutils() {
 }
 
 # gawk's install links gawk-<version> only when the name is free, so stage
-# 02's copy would stay under it.
+# 02's copy would stay under it. build/patches/gawk-5.3.0 (see its README)
+# carries upstream's memory-safety fixes from 5.4.1.
 s_gawk() {
     rm -f "/usr/bin/gawk-${V_GAWK}"
-    native_build "gawk-${V_GAWK}.tar.xz" "gawk-${V_GAWK}" --disable-pma
+    local src; src="$(unpack "gawk-${V_GAWK}.tar.xz" "gawk-${V_GAWK}")"
+    cd "$src"
+    apply_repo_patches "gawk-${V_GAWK}"
+    ./configure --prefix=/usr --disable-pma
+    make
+    make install
     cmp -s /usr/bin/gawk "/usr/bin/gawk-${V_GAWK}" \
         || { echo "FAIL: /usr/bin/gawk-${V_GAWK} is not the gawk just built"; return 1; }
+}
+
+# tar 1.35 defines private acl_*_at functions that libacl 2.4.0 now declares;
+# build/patches/tar-1.35 (see its README) carries upstream's rename.
+s_tar() {
+    local src; src="$(unpack "tar-${V_TAR}.tar.xz" "tar-${V_TAR}")"
+    cd "$src"
+    apply_repo_patches "tar-${V_TAR}"
+    ./configure --prefix=/usr
+    make
+    make install
 }
 
 # GCC again, in place of stage 02's temporary compiler, which set no flags:
@@ -2132,7 +2151,7 @@ PACKAGES=(
     "gzip"        "native_build gzip-${V_GZIP}.tar.xz gzip-${V_GZIP}"
     "make"        "native_build make-${V_MAKE}.tar.gz make-${V_MAKE}"
     "patch"       "native_build patch-${V_PATCH}.tar.xz patch-${V_PATCH}"
-    "tar"         "native_build tar-${V_TAR}.tar.xz tar-${V_TAR}"
+    "tar"         "s_tar"
     "groff"       "native_build groff-${V_GROFF}.tar.gz groff-${V_GROFF}"
     # For the kernel build, which generates timeconst.h with `bc -q`. After flex
     # and bison, which bc needs.
