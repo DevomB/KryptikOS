@@ -1392,6 +1392,22 @@ s_licences() {
         done
         rm -rf "$tmp"
     done < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list)
+
+    # Two sources ship no licence file. The CA bundle is Mozilla's root store,
+    # under the MPL 2.0, whose text is kept in build/licences/ca-bundle/.
+    # libdrm's MIT notice heads each file of its core library, the only part
+    # built.
+    for f in "${KRYPTIK_ROOT}"/build/licences/*/*; do
+        install -D -m 0644 "$f" "/usr/share/licenses/$(basename "$(dirname "$f")")/$(basename "$f")"
+        n=$((n + 1))
+    done
+    f="${KRYPTIK_SOURCES}/libdrm-${V_LIBDRM}.tar.xz"
+    mapfile -t members < <(tar -tf "$f" | grep -E '^[^/]+/[^/]+\.c$' || true)
+    [[ "${#members[@]}" -gt 0 ]] || { echo "FAIL: no C files at the top of ${f##*/}"; return 1; }
+    install -d -m 0755 /usr/share/licenses/libdrm
+    header_notices "$f" "${members[@]}" > /usr/share/licenses/libdrm/COPYING
+    n=$((n + 1))
+
     install -Dm644 "${KRYPTIK_ROOT}/LICENSE" /usr/share/licenses/kryptik/LICENSE
     echo "${n} licence files in $(find /usr/share/licenses -mindepth 1 -maxdepth 1 -type d | wc -l) directories"
 }
@@ -2264,7 +2280,7 @@ PACKAGES=(
     # The suites and guest checks the VM drivers run; every file is an input.
     "tests"       "s_tests $(tree_digest "${KRYPTIK_ROOT}"/compartments/tests/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/probes/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/src/isolate.rs "${KRYPTIK_ROOT}"/compartments/kryptikd/src/rootfs.rs "${KRYPTIK_ROOT}"/build/guest-tests/*.sh "${KRYPTIK_ROOT}"/build/guest-tests/*.py)"
     # The tarballs it reads are pinned by sources.lock and named by fetch-sources.
-    "licences"    "s_licences $(sha256_of "${KRYPTIK_ROOT}/sources.lock") $(sha256_of "${KRYPTIK_ROOT}/tools/fetch-sources.sh") $(sha256_of "${KRYPTIK_ROOT}/LICENSE")"
+    "licences"    "s_licences $(sha256_of "${KRYPTIK_ROOT}/sources.lock") $(sha256_of "${KRYPTIK_ROOT}/tools/fetch-sources.sh") $(sha256_of "${KRYPTIK_ROOT}/LICENSE") $(tree_digest "${KRYPTIK_ROOT}/build/licences")"
     "boot-check"  "s_boot_check"
 )
 

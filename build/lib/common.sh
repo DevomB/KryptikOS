@@ -72,6 +72,26 @@ licence_members() {
     tar -tf "$1" 2>/dev/null | grep -E "$re" || true
 }
 
+# header_notices TARBALL MEMBER...: the notice at the head of each member, for
+# a source that ships no licence file. A notice runs from the first Copyright
+# line to the line ending in "SOFTWARE.", where the MIT text ends, and loses
+# its comment marks. awk reads to the end, since stopping early would kill
+# tar with SIGPIPE, and prints nothing for a notice that never ends.
+header_notices() {
+    local tarball="$1" m text
+    shift
+    for m in "$@"; do
+        text="$(tar -xOf "$tarball" "$m" | awk '
+            done { next }
+            /Copyright/ { on = 1 }
+            on { notice = notice $0 "\n" }
+            on && /SOFTWARE\.[[:space:]]*$/ { printf "%s", notice; done = 1 }' |
+            sed -e 's|^ *\* \{0,1\}||')"
+        [[ -n "$text" ]] || { echo "no licence notice at the head of ${m}" >&2; return 1; }
+        printf '%s:\n\n%s\n\n' "${m#*/}" "$text"
+    done
+}
+
 # Stages 01-03 run on the host and install into ${KRYPTIK_WORK}/sysroot; stages
 # 04 and 05 run inside the chroot, where the sysroot is /. A KRYPTIK_WORK path
 # may not exist in there, and installing to it would build a nested tree.
