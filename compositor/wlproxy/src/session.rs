@@ -413,10 +413,8 @@ impl Session {
             }
             let h = Header::parse(src.pending_in())?;
             let size = h.size as usize;
+            // read() caps what may wait here, bytes and descriptors alike.
             if src.pending_in().len() < size {
-                if src.pending_in().len() > MAX_MESSAGE_LEN {
-                    return Err(SessionError::Wire(WireError::BadSize(h.size)));
-                }
                 return Ok(());
             }
             let (iface, m, version) = self.lookup(h.object, dir, h.opcode)?;
@@ -426,9 +424,6 @@ impl Session {
                 Dir::ServerToClient => &mut self.server,
             };
             if src.in_fds.len() < needed {
-                if src.in_fds.len() > policy::MAX_PENDING_FDS {
-                    return Err(SessionError::TooManyFds);
-                }
                 return Ok(()); // descriptors still in flight
             }
             src.take(size, &mut msg);
