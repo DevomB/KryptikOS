@@ -499,6 +499,14 @@ else
     red "sources with no caveat carry no notes field (got ${got})"
 fi
 
+write_notes 'lockonly  no-usable-key  https://example.test/  signed by a key no route leads to; routes tried 2026-09-27'
+run --offline --notes="$NOTES"
+if [[ "$RC" -eq 0 ]] && grep -qF 'no-usable-key' "$OUT"; then
+    green "a no-usable-key caveat is accepted and reported"
+else
+    red "a no-usable-key caveat is accepted and reported (exit ${RC})"; show
+fi
+
 # Control: caveats are optional, and the fixture tree has no source-notes.tsv.
 run --offline
 if [[ "$RC" -eq 0 ]] && ! grep -qF 'RECORDED CAVEATS' "$OUT"; then

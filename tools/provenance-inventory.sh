@@ -87,7 +87,7 @@ if [[ -f "$NOTESF" ]]; then
             || nb="expected a package, a kind, a location and a note"
         if [[ -z "$nb" ]]; then
             case "$n_kind" in
-                recipe-transformation|undesignated-signer) ;;
+                recipe-transformation|undesignated-signer|no-usable-key) ;;
                 *) nb="unknown kind '${n_kind}'" ;;
             esac
         fi
