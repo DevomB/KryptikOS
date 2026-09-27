@@ -113,6 +113,37 @@ fn parse(args: &[String]) -> Opts {
     o
 }
 
+/// Descriptors one session can hold: its two sockets and a full queue each way.
+const FDS_PER_SESSION: usize = 2 + 2 * policy::MAX_PENDING_FDS;
+/// stdio, the listener and room to spare.
+const FDS_RESERVED: usize = 8;
+
+/// Clients whose descriptors fit under `limit`, and never none.
+fn clients_within(limit: u64, wanted: usize) -> usize {
+    let room = usize::try_from(limit).unwrap_or(usize::MAX).saturating_sub(FDS_RESERVED) / FDS_PER_SESSION;
+    wanted.min(room).max(1)
+}
+
+/// Raise the descriptor limit to the hard one and fit max_clients under it:
+/// past the limit, accept and recvmsg fail for every client of the zone.
+fn fit_descriptors(o: &mut Opts) {
+    let mut rl = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rl) } != 0 {
+        return;
+    }
+    if rl.rlim_cur < rl.rlim_max {
+        let raised = libc::rlimit { rlim_cur: rl.rlim_max, rlim_max: rl.rlim_max };
+        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raised) } == 0 {
+            rl = raised;
+        }
+    }
+    let fit = clients_within(rl.rlim_cur, o.max_clients);
+    if fit < o.max_clients {
+        eprintln!("kryptik-wlproxy[{}]: {} descriptors fit {fit} clients, not {}", o.zone, rl.rlim_cur, o.max_clients);
+        o.max_clients = fit;
+    }
+}
+
 fn set_nonblocking(fd: RawFd) {
     unsafe {
         let fl = libc::fcntl(fd, libc::F_GETFL);
@@ -127,7 +158,8 @@ struct Live {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let o = parse(&args);
+    let mut o = parse(&args);
+    fit_descriptors(&mut o);
     let _ = std::fs::remove_file(&o.listen);
     let listener = match UnixListener::bind(&o.listen) {
         Ok(l) => l,
@@ -283,5 +315,15 @@ mod tests {
         assert_eq!(text.matches("log is full").count(), 1);
         // A full /run is ignored, not fatal.
         Log::new("untrusted").put("x", &mut Full);
+    }
+
+    #[test]
+    fn clients_fit_limit() {
+        assert_eq!(FDS_PER_SESSION, 130);
+        assert_eq!(clients_within(1024, 32), 7);
+        assert_eq!(clients_within(4096, 32), 31);
+        assert_eq!(clients_within(1 << 20, 32), 32);
+        assert_eq!(clients_within(64, 32), 1);
+        assert_eq!(clients_within(u64::MAX, 16), 16);
     }
 }
