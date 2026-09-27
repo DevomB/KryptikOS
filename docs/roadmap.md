@@ -46,10 +46,15 @@ work in zones from a terminal and a text browser, and keep it up to date.
       ([release keys](release-keys.md)), a build that signs with a key it is
       handed and refuses to invent one for a release, and an installed system
       that accepts the next release and refuses a development build.
-- [ ] **No known-vulnerable pins.** Every pin behind its upstream has a review
+      Acceptance's production part, with a throwaway key medium, proves a
+      build signing with the medium it is handed and the installed system's
+      half; `tools/test-release-keys.sh` proves a production build refuses to
+      make keys of its own. The keys kept offline are still to be made.
+- [x] **No known-vulnerable pins.** Every pin behind its upstream has a review
       in `tools/pin-reviews.tsv`, and `tools/check-pin-reviews.sh` fails CI
-      without one. Done when the rebuilt image passes acceptance and the held
-      pins are moved or patched (a release runs the gate with `--no-held`).
+      without one. No pin is held, and a release runs the gate with
+      `--no-held`. A CVE that no release fixes yet is recorded in its pin's
+      review, with why it does not reach Kryptik.
       `tools/check-source-currency.sh` also says when glibc's release branch
       has moved past the commit its patch set was cut from.
 - [x] **An update channel** ([design](design/update-channel.md)). The net zone
@@ -76,7 +81,7 @@ work in zones from a terminal and a text browser, and keep it up to date.
 - [x] **Every status row is tested.** Each row of the status table names
       the check that can fail it; stage 05, stage 06 and `make acceptance`
       were the last to read *implemented*.
-- [ ] **The accepted lists are reviewed.** `checker-accepted.txt`,
+- [x] **The accepted lists are reviewed.** `checker-accepted.txt`,
       `hardening-exceptions.txt`, the setuid allowlist and the artifact
       audit's soft findings: each entry closed or re-justified, with the
       audit's counts in the release notes. Acceptance fails on an artifact
@@ -98,8 +103,10 @@ work in zones from a terminal and a text browser, and keep it up to date.
       crates the Rust binaries link, and the repository at the build commit,
       with a manifest. Stage 04 installs each source's licence files under
       `/usr/share/licenses/`, firmware's `WHENCE` among them, and acceptance
-      fails on a source without any. Still to install: the licences of the
-      crates in kryptikd and kryptik-wlproxy.
+      fails on a source without any; the build fails on a crate either
+      `Cargo.lock` names without its texts in `build/licences`. Still needed:
+      someone other than their author following the install, update and
+      recovery instructions.
 
 ## Version 2
 
