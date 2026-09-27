@@ -46,8 +46,9 @@ as its own diff in review instead of riding along with a version bump.
 
 Each manifest row in `tools/fetch-sources.sh` also declares how upstream
 vouches for the file (a GNU `.sig`, kernel.org's `.tar.sign`, a detached
-`.sig` or `.asc`, a probe for whichever of those is published, a publisher's
-`.sha256`, a signed tag, or nothing) and where its newest release is found
+`.sig` or `.asc`, a probe for whichever of those is published, a signature
+over a checksum list that gives the file's digest, a publisher's `.sha256`,
+a signed tag, or nothing) and where its newest release is found
 (the GNU listing, the newest `vN/` directory beside the file's, the project's
 latest GitHub release, the file's own directory, or a rule in
 `tools/currency-rules.tsv`). The verifiers and `tools/check-source-currency.sh`
@@ -124,6 +125,12 @@ alone. It counts per class and prints no total: a maintainer signature, a
 signed tag and a publisher checksum are different strengths of evidence, and
 one fraction would hide the weakest links. For the same reason this document
 quotes no coverage figure.
+
+Some sources end at `sources.lock` alone because upstream signs nothing
+Kryptik could check. One of them is guarded further along the chain:
+intel-microcode's release tags are lightweight and its archive unsigned, but
+the CPU checks Intel's signature on each blob before loading it. That
+protects the processor; it says nothing about which release was fetched.
 
 `verify-signatures.sh --fetch-unknown-keys` imports whatever key a signature
 names. That is circular: it proves the file was signed by whoever signed it.
