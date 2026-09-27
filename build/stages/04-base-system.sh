@@ -1161,15 +1161,16 @@ s_services() {
     mv "$tmpdb" "$dbdir/compiled"
     rm -rf "$dbdir/compiled.old"
 
-    # Read the database back: every service must be in it.
+    # Read the database back: every service of the source tree must be in it.
     echo "--- compiled database ---"
     local all
     all="$(s6-rc-db -c /usr/lib/kryptik/s6-rc/compiled list all)"
     printf '%s\n' "$all" | sed 's/^/  /'
 
-    local svc missing=0
-    for svc in sysinit watchdog eudev eudev-trigger kryptikd-check time-floor kryptikd-serve firstboot seatd net-zone getty-tty1 boot-success boot-smoke default; do
-        if ! printf '%s\n' "$all" | grep -qx "$svc"; then
+    local d svc missing=0
+    for d in "$src"/*/; do
+        svc="${d%/}"; svc="${svc##*/}"
+        if [[ $'\n'"${all}"$'\n' != *$'\n'"${svc}"$'\n'* ]]; then
             echo "MISSING from the database: ${svc}"; missing=$((missing + 1))
         fi
     done
@@ -1831,8 +1832,10 @@ s_firmware() {
     local regdb; regdb="$(unpack "wireless-regdb-${V_WIRELESS_REGDB}.tar.xz" "wireless-regdb-${V_WIRELESS_REGDB}")"
     install -m 0644 "${regdb}/regulatory.db" "${regdb}/regulatory.db.p7s" "$dest/"
 
-    # Compress the regular files, then repoint every symlink at the .zst.
-    find "$dest" -type f ! -name '*.zst' -print0 | xargs -0 -r zstd -T0 -19 -q --rm
+    # Compress the regular files, then repoint every symlink at the .zst. zstd
+    # takes its files one at a time, so several run at once.
+    find "$dest" -type f ! -name '*.zst' -print0 \
+        | xargs -0 -r -P"${KRYPTIK_JOBS:-$(nproc)}" -n 32 zstd -19 -q --rm
     while IFS= read -r -d '' f; do
         t="$(readlink "$f")"
         ln -sfn "${t}.zst" "${f}.zst"
