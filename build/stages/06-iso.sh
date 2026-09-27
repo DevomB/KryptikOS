@@ -173,7 +173,6 @@ s_rootfs() {
   "image_kind": "verified",
   "verity": true,
   "signed_boot": "$([[ "$role" == production ]] && echo production || echo developer)",
-  "layout": "design-08",
   "note": "dm-verity root; the root hash is compiled into each signed kernel. Mutable state on PARTLABEL=kryptik-state."
 }
 EOF

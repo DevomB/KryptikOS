@@ -267,7 +267,6 @@ cat > "$MNT_BASE/state/lib/kryptik/install.json" <<EOF
   "medium": "${media}",
   "version": "${VERSION}",
   "target": "${TARGET_REAL}",
-  "layout": "design-08",
   "root_image_sha256": "${ROOT_SHA}",
   "root_image_bytes": ${ROOT_BYTES},
   "committed_slot": "a"
