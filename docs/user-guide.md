@@ -12,6 +12,8 @@ firmware. Nothing has run on physical hardware yet.
 | `kryptik-VERSION-usb.img` | the install medium as a raw disk image: GPT, an EFI system partition with the signed kernel, and the verified root image |
 | `kryptik-VERSION.iso` | the same medium as an ISO for CD/DVD boot (its kernel looks for `/dev/sr0`; use the USB image for a USB stick) |
 | `*.sha256`, `SHA256SUMS` | the hashes the release was tested under |
+| `kryptik-VERSION.SHA256SUMS`, `.sig` | the media's hashes, signed by the release key |
+| `release-signers` | the keys the release's images trust for updates, which check that signature |
 | `kryptik-sb.crt`, `kryptik-sb.der` | the developer Secure Boot certificate that signed the kernels. A test anchor, not a production key |
 | `root.json` | the verified root image's dm-verity record (root hash, salt, sizes) |
 | `manifest-VERSION`, `.sig` | the signed release manifest of each payload the update test used |
@@ -21,9 +23,17 @@ firmware. Nothing has run on physical hardware yet.
 Verify before use:
 
 ```sh
+ssh-keygen -Y verify -f release-signers -I kryptik-release -n kryptik-media \
+    -s kryptik-VERSION.SHA256SUMS.sig < kryptik-VERSION.SHA256SUMS
+sha256sum -c kryptik-VERSION.SHA256SUMS
 sha256sum -c SHA256SUMS
 openssl x509 -in kryptik-sb.crt -noout -subject -fingerprint -sha256
 ```
+
+The signature is only as good as the `release-signers` it is checked with,
+and whoever could change the download could change that file too. A machine
+that already runs Kryptik holds the same file at
+`/usr/share/kryptik/trust/release-signers`: compare the two.
 
 ## 1. Boot the medium
 

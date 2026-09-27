@@ -40,10 +40,11 @@ dev_keys() {
             echo "generated a new developer key: ${k}"
         fi
     done
-    # Each key honoured in its own namespace only, so the one kept at hand for
-    # re-signing the channel's statement can never sign a release.
+    # Each key honoured in its own namespaces only: the release key's for
+    # manifests and the media's checksums, and the statement key's, kept at hand
+    # for re-signing the channel's statement, for that alone.
     {
-        printf 'kryptik-release namespaces="kryptik-release" %s\n' "$(cut -d' ' -f1,2 "${rel}/kryptik-release.pub")"
+        printf 'kryptik-release namespaces="kryptik-release,kryptik-media" %s\n' "$(cut -d' ' -f1,2 "${rel}/kryptik-release.pub")"
         printf 'kryptik-latest namespaces="kryptik-latest" %s\n' "$(cut -d' ' -f1,2 "${rel}/kryptik-latest.pub")"
     } > "${rel}/release-signers"
     if [[ ! -f "${sb}/kryptik-sb.key" ]]; then
@@ -67,27 +68,29 @@ EOF
 }
 
 # A probe signed by each developer key and by a foreign one, in each namespace,
-# verified through the anchor: only release/kryptik-release and
-# latest/kryptik-latest may pass. The production keys sign nothing but what
-# they are for, so this runs for development alone.
+# verified through the anchor as its readers verify: only the release key, in
+# kryptik-release and kryptik-media, and the statement key, in kryptik-latest,
+# may pass. The production keys sign nothing but what they are for, so this
+# runs for development alone.
 probe_anchor() {
-    local t key ns want got
+    local t key ns who want got
     t="$(mktemp -d)"
     ssh-keygen -q -t ed25519 -N "" -f "$t/foreign" < /dev/null
     printf 'probe\n' > "$t/probe"
     for key in "$RELEASE_KEY" "$LATEST_KEY" "$t/foreign"; do
-        for ns in kryptik-release kryptik-latest; do
+        for ns in kryptik-release kryptik-media kryptik-latest; do
+            who=kryptik-release; [[ "$ns" == kryptik-latest ]] && who=kryptik-latest
             want=refused
-            if [[ "$key:$ns" == "$RELEASE_KEY:kryptik-release" || "$key:$ns" == "$LATEST_KEY:kryptik-latest" ]]; then
-                want=accepted
-            fi
+            case "$key:$ns" in
+                "$RELEASE_KEY:kryptik-release"|"$RELEASE_KEY:kryptik-media"|"$LATEST_KEY:kryptik-latest") want=accepted ;;
+            esac
             rm -f "$t/probe.sig"
             # A refusal counts only when there was a signature to refuse.
             if ! ssh-keygen -Y sign -f "$key" -n "$ns" "$t/probe" < /dev/null > /dev/null 2>&1 || [[ ! -s "$t/probe.sig" ]]; then
                 rm -rf "$t"; die "could not sign a probe with ${key##*/} in ${ns}"
             fi
             got=refused
-            if ssh-keygen -Y verify -f "$ANCHOR" -I "$ns" -n "$ns" -s "$t/probe.sig" < "$t/probe" > /dev/null 2>&1; then
+            if ssh-keygen -Y verify -f "$ANCHOR" -I "$who" -n "$ns" -s "$t/probe.sig" < "$t/probe" > /dev/null 2>&1; then
                 got=accepted
             fi
             [[ "$got" == "$want" ]] || { rm -rf "$t"; die "${ANCHOR} ${got} a probe signed by ${key##*/} in ${ns}"; }
@@ -140,19 +143,24 @@ private_ok() {
     [[ "$owner" == 0 || "$owner" == "$who" ]] || die "$1 belongs to uid ${owner}, not to root or the user running the build (${who})"
 }
 
-# kryptik-release and kryptik-latest, each held to its own namespace, with
+# kryptik-release, held to kryptik-release (manifests) and kryptik-media (the
+# media's checksums), and kryptik-latest, held to kryptik-latest alone, with
 # Ed25519 keys (a security key's included). A principal may be listed more
 # than once, as the old key and its replacement are while a key is changed,
 # but a key only once: one that could sign both releases and statements would
 # undo the split.
 anchor_ok() {
-    local a="$1" p ns t k seen="" keys=""
+    local a="$1" p ns t k want seen="" keys=""
     while read -r p ns t k _; do
         case "$p" in ""|"#"*) continue ;; esac
-        case "$p" in kryptik-release|kryptik-latest) ;; *) die "${a}: ${p} is neither kryptik-release nor kryptik-latest" ;; esac
-        [[ "$ns" == "namespaces=\"${p}\"" ]] || die "${a}: ${p} is not held to its own namespace (namespaces=\"${p}\")"
+        case "$p" in
+            kryptik-release) want='namespaces="kryptik-release,kryptik-media"' ;;
+            kryptik-latest)  want='namespaces="kryptik-latest"' ;;
+            *) die "${a}: ${p} is neither kryptik-release nor kryptik-latest" ;;
+        esac
+        [[ "$ns" == "$want" ]] || die "${a}: ${p} is not held to its own namespaces (${want})"
         case "$t" in ssh-ed25519|sk-ssh-ed25519@openssh.com) ;; *) die "${a}: ${p}'s key is ${t}, not Ed25519" ;; esac
-        [[ " $keys " != *" $k "* ]] || die "${a}: a key is listed twice, and each key signs one thing"
+        [[ " $keys " != *" $k "* ]] || die "${a}: a key is listed twice, and each key belongs to one name"
         seen+=" $p"; keys+=" $k"
     done < "$a"
     [[ "$seen" == *kryptik-release* && "$seen" == *kryptik-latest* ]] || die "${a}: it must list both kryptik-release and kryptik-latest"

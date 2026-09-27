@@ -77,9 +77,10 @@ latest.sig    an OpenSSH signature over those bytes, namespace kryptik-latest
 **Which key signs it.** Re-signing on a schedule needs a key a timer can
 reach, and the release key is meant to stay offline, so the build uses two.
 The anchor stage 06 puts on the image lists the release key as
-`kryptik-release namespaces="kryptik-release"` and the statement key as
+`kryptik-release namespaces="kryptik-release,kryptik-media"` (manifests, and
+the media's checksums) and the statement key as
 `kryptik-latest namespaces="kryptik-latest"`, each honoured in its own
-namespace only, and no key under both. While a key is replaced it lists the
+namespaces only, and no key under both. While a key is replaced it lists the
 old one and the new one. A development build proves the split with a probe
 signed by each key in each namespace, and a production build refuses a key
 medium whose anchor says anything else. `tools/release-manifest.sh pointer`
