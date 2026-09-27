@@ -19,7 +19,17 @@ PRESEED=( "preseed_user=${TUSER}" "preseed_password_hash=${TUSER_HASH}" "preseed
           "state_passphrase=${KRYPTIK_STATE_PASSPHRASE}" )
 
 DRV="${SELF}/vm-drive.py"
-LATEST="${KRYPTIK_WORK}/logs/ovmf-serial.latest.log"
+
+# A smoke boot with a transcript of its own. run-ovmf.sh repoints the
+# ovmf-serial.latest.log link at every boot on this host, another suite's
+# included, so a suite never reads through it.
+BOOTS=0
+smoke() {   # smoke NAME [run-ovmf args] -> BOOTLOG; run-ovmf.sh's status
+    BOOTS=$((BOOTS + 1))
+    BOOTLOG="${KRYPTIK_WORK}/logs/ovmf-serial.$1.$(date +%Y%m%dT%H%M%S).$$.${BOOTS}.log"
+    "${SELF}/run-ovmf.sh" --mode smoke --name "$1" --log "$BOOTLOG" "${@:2}"
+}
+boot_txt() { tr -d '\r' < "$BOOTLOG"; }
 
 start_vm() {   # start_vm NAME [run-ovmf args] -> SER QMP PIDF LOG
     local name="$1"; shift

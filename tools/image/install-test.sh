@@ -54,10 +54,10 @@ rm -f "$DISK"; truncate -s "$SIZE" "$DISK"
 CTL="${VMDIR}/testctl-install.img"
 "${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
     "${PRESEED[@]}" > /dev/null || die "control disk"
-"${SELF}/run-ovmf.sh" --usb "$USB" --disk "$DISK" --testctl "$CTL" --vars "$VARS" --mode smoke --timeout "$TIMEOUT" --name install-p1
+smoke install-p1 --usb "$USB" --disk "$DISK" --testctl "$CTL" --vars "$VARS" --timeout "$TIMEOUT"
 qrc=$?
-P1="${VMDIR}/install-p1.txt"; txt_of "${KRYPTIK_WORK}/logs/ovmf-serial.latest.log" > "$P1"
-echo "  transcript: ${KRYPTIK_WORK}/logs/ovmf-serial.latest.log ($(grep -c '' < "$P1") lines, qemu ${qrc})"
+P1="${VMDIR}/install-p1.txt"; boot_txt > "$P1"
+echo "  transcript: ${BOOTLOG} ($(grep -c '' < "$P1") lines, qemu ${qrc})"
 want "$P1" 'KRYPTIK_INSTALL: BEGIN target=/dev/vda'      "the installer was armed and ran"
 want "$P1" 'KRYPTIK_INSTALL: rc=0'                       "the installer exited 0"
 want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-esp=/dev/vda1 type=vfat'   "partition 1 is the ESP"
@@ -156,8 +156,8 @@ refusal_case() {   # refusal_case NAME DISK-SIZE EXTRA-RUN-ARGS... ; expects rc!
     local d="${VMDIR}/refuse-${name}.img"; rm -f "$d"; truncate -s "$size" "$d"
     local ctl="${VMDIR}/testctl-${name}.img"
     "${SELF}/mk-testctl.sh" --out "$ctl" install_target=/dev/vda smoke_poweroff=1 install_wait=5 > /dev/null
-    "${SELF}/run-ovmf.sh" --usb "$USB" --disk "$d" --testctl "$ctl" --vars "$VARS" --mode smoke --timeout "$TIMEOUT" --name "refuse-${name}" "$@" > /dev/null
-    local t="${VMDIR}/refuse-${name}.txt"; txt_of "${KRYPTIK_WORK}/logs/ovmf-serial.latest.log" > "$t"
+    smoke "refuse-${name}" --usb "$USB" --disk "$d" --testctl "$ctl" --vars "$VARS" --timeout "$TIMEOUT" "$@" > /dev/null
+    local t="${VMDIR}/refuse-${name}.txt"; boot_txt > "$t"
     want "$t" 'KRYPTIK_INSTALL: BEGIN'            "${name}: the installer ran"
     want "$t" 'KRYPTIK_INSTALL: rc=[1-9]'         "${name}: reported a non-zero status"
     want "$t" 'KRYPTIK_INSTALL: .*FAILED'         "${name}: said FAILED and why"

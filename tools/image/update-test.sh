@@ -172,8 +172,8 @@ rm -f "$DISK"; truncate -s "$DISK_SIZE" "$DISK"
 CTL="${VMDIR}/testctl-update.img"
 "${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
     "${PRESEED[@]}" > /dev/null
-"${SELF}/run-ovmf.sh" --usb "$USB_A" --disk "$DISK" --testctl "$CTL" "${INSTALL_VARS[@]}" --mode smoke --timeout "$TIMEOUT" --name update-install > /dev/null
-tr -d '\r' < "${KRYPTIK_WORK}/logs/ovmf-serial.latest.log" | grep -q 'KRYPTIK_INSTALL: rc=0' && green "A installed" || { red "A did not install"; exit 1; }
+smoke update-install --usb "$USB_A" --disk "$DISK" --testctl "$CTL" "${INSTALL_VARS[@]}" --timeout "$TIMEOUT" > /dev/null
+boot_txt | grep -q 'KRYPTIK_INSTALL: rc=0' && green "A installed" || { red "A did not install"; exit 1; }
 
 start_vm update-p1 --disk "$PA"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
