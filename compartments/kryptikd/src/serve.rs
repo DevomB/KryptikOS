@@ -530,7 +530,6 @@ fn spawn_launcher(
     cfg: &ServeConfig,
     pass: Option<OwnedFd>,
     wayland: Option<ProxySocket>,
-    uid: u32,
 ) -> Result<Launch, String> {
     let exe = std::fs::read_link("/proc/self/exe").map_err(|e| format!("/proc/self/exe: {e}"))?;
     let (ready_r, ready_w) = pipe()?;
@@ -573,7 +572,6 @@ fn spawn_launcher(
     let cargs: Vec<CString> = std::iter::once(CString::new("kryptikd").unwrap())
         .chain(args.iter().map(|a| CString::new(a.as_str()).unwrap_or_else(|_| CString::new("?").unwrap())))
         .collect();
-    let env = CString::new(format!("KRYPTIK_LAUNCHED_BY_UID={uid}")).unwrap();
     let path = CString::new("PATH=/usr/bin:/usr/sbin").unwrap();
     /* A developer instance's registry is under XDG_RUNTIME_DIR (registry::base),
      * and its launcher must use the same one or `status` and `stop` would not
@@ -602,7 +600,7 @@ fn spawn_launcher(
             }
             let mut ptrs: Vec<*const libc::c_char> = cargs.iter().map(|c| c.as_ptr()).collect();
             ptrs.push(std::ptr::null());
-            let mut envp: Vec<*const libc::c_char> = vec![env.as_ptr(), path.as_ptr()];
+            let mut envp: Vec<*const libc::c_char> = vec![path.as_ptr()];
             if let Some(r) = &runtime_dir {
                 envp.push(r.as_ptr());
             }
@@ -756,6 +754,21 @@ fn finish_job(j: &mut Job, st: i32) {
 fn reply(mut c: &UnixStream, text: &str) {
     let _ = c.write_all(text.as_bytes());
     let _ = c.flush();
+}
+
+/// The write end of the pipe SIGCHLD writes to, so a launcher or job that
+/// ends is reaped at once rather than at the next request.
+static CHILD_WAKE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+extern "C" fn on_child(_sig: libc::c_int) {
+    let fd = CHILD_WAKE.load(std::sync::atomic::Ordering::Relaxed);
+    if fd >= 0 {
+        unsafe {
+            let saved = *libc::__errno_location();
+            libc::write(fd, b"c".as_ptr() as *const libc::c_void, 1);
+            *libc::__errno_location() = saved;
+        }
+    }
 }
 
 /// Reap children: record a pending launcher's or a job's status, log any other.
@@ -1161,7 +1174,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
                 }
                 None
             };
-            match spawn_launcher(&req, cfg, pass, wayland, uid) {
+            match spawn_launcher(&req, cfg, pass, wayland) {
                 Ok(launch) => {
                     eprintln!(
                         "kryptikd serve: uid {uid} launching zone {:?} ({}) as launcher {}",
@@ -1204,6 +1217,14 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
         }
     };
     let _ = listener.set_nonblocking(true);
+    let mut wake = [0 as RawFd; 2];
+    if unsafe { libc::pipe2(wake.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
+        eprintln!("kryptikd serve: pipe: {}", std::io::Error::last_os_error());
+        return ExitCode::FAILURE;
+    }
+    let child_ended = unsafe { OwnedFd::from_raw_fd(wake[0]) };
+    CHILD_WAKE.store(wake[1], std::sync::atomic::Ordering::Relaxed);
+    crate::spawn::install_handler(libc::SIGCHLD, on_child);
     eprintln!(
         "kryptikd serve: listening on {} for {}; zones {}, data {}, wifi {}, logs {}",
         cfg.socket.display(),
@@ -1239,10 +1260,9 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
             let left = p.deadline().saturating_duration_since(now).as_millis() as i32;
             timeout = if timeout < 0 { left } else { timeout.min(left) };
         }
-        // `reap` sees a job end only at the top of the loop: wake every 200 ms while jobs run.
-        if !jobs.is_empty() {
-            timeout = if timeout < 0 { 200 } else { timeout.min(200) };
-        }
+        // Last: a child that ends wakes the loop, and `reap` at its top collects it.
+        let wake_at = fds.len();
+        fds.push(libc::pollfd { fd: child_ended.as_raw_fd(), events: libc::POLLIN, revents: 0 });
         let n = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) };
         if n < 0 {
             let e = std::io::Error::last_os_error();
@@ -1250,6 +1270,10 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
                 eprintln!("kryptikd serve: poll: {e}");
             }
             continue;
+        }
+        if fds[wake_at].revents & libc::POLLIN != 0 {
+            let mut buf = [0u8; 64];
+            while unsafe { libc::read(child_ended.as_raw_fd(), buf.as_mut_ptr() as *mut libc::c_void, buf.len()) } > 0 {}
         }
 
         // A byte on a readiness pipe means the zone's pid 1 exists; EOF, that the launcher died first.

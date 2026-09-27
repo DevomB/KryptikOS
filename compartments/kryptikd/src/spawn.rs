@@ -179,7 +179,7 @@ extern "C" fn on_alarm(_sig: libc::c_int) {
     }
 }
 
-fn install_handler(sig: libc::c_int, handler: extern "C" fn(libc::c_int)) {
+pub(crate) fn install_handler(sig: libc::c_int, handler: extern "C" fn(libc::c_int)) {
     unsafe {
         let mut sa: libc::sigaction = std::mem::zeroed();
         sa.sa_sigaction = handler as usize;
