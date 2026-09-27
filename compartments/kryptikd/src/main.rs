@@ -967,13 +967,8 @@ fn cmd_volume(dir: &Path, args: &[String]) -> ExitCode {
 }
 
 fn wifi_dir_from(args: &[String]) -> PathBuf {
-    args.iter()
-        .position(|a| a == "--wifi-dir")
-        .and_then(|i| args.get(i + 1))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(wifi::DEFAULT_DIR))
+    PathBuf::from(value(args, "--wifi-dir").unwrap_or(wifi::DEFAULT_DIR))
 }
-
 
 /// `kryptikd time floor | status` (docs/design/time.md). The clock is set only
 /// here, from the floor, and in the broker, from a net zone claim zone 0 judged.
@@ -1301,8 +1296,9 @@ mod tests {
 
     #[test]
     fn flags_stop_at_separator() {
-        let a = args(&["run", "work", "--rootfs", "/r", "--", "tool", "--zones", "/x", "--rootfs", "/y"]);
+        let a = args(&["run", "work", "--rootfs", "/r", "--", "tool", "--zones", "/x", "--rootfs", "/y", "--wifi-dir", "/w"]);
         assert_eq!(zone_dir_from(&a), PathBuf::from(DEFAULT_ZONE_DIR));
+        assert_eq!(wifi_dir_from(&a), PathBuf::from(wifi::DEFAULT_DIR));
         assert_eq!(rootfs_base_from(&a), "/r");
         assert_eq!(value(&a, "--zones"), None);
     }
