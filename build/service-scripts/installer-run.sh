@@ -58,13 +58,16 @@ if [ -n "$pu" ] && [ -n "$ph" ]; then
     printf 'user=%s\npassword_hash=%s\nroot_password_hash=%s\n' "$pu" "$ph" "$rh" > /run/kryptik/firstboot.preseed
     preseed_args="--preseed /run/kryptik/firstboot.preseed"
 fi
+# Replacing an old Kryptik disk is asked for by name, here as by a user.
+replace_arg=""
+[ "$(testctl_get install_replace)" = "1" ] && replace_arg="--replace-kryptik"
 
 # No pipe into sed: rc must be the installer's status, not sed's.
 logf=/run/kryptik-install.log
 # The state passphrase goes in on stdin (printf is a builtin: no argv).
 sp="$(testctl_get state_passphrase)"
-# shellcheck disable=SC2086  # preseed_args is deliberately word-split
-printf '%s\n' "$sp" | /usr/sbin/kryptik-install --target "$target" --yes $preseed_args > "$logf" 2>&1
+# shellcheck disable=SC2086  # replace_arg and preseed_args are deliberately word-split
+printf '%s\n' "$sp" | /usr/sbin/kryptik-install --target "$target" --yes $replace_arg $preseed_args > "$logf" 2>&1
 rc=$?
 sed 's/^/KRYPTIK_INSTALL: /' "$logf"
 say "rc=${rc}"

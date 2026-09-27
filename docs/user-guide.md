@@ -90,14 +90,16 @@ lsblk                                  # find the target: a whole disk, not a pa
 kryptik-install --target /dev/sdY      # add --dry-run to see the plan and write nothing
 ```
 
-The installer refuses the disk the medium is on; any disk that already
-holds a Kryptik installation or medium, that is a partition labelled
-`kryptik-state`, `kryptik-testctl` or `kryptik-media` (to reinstall over an
-old Kryptik disk, clear its partition table first); anything with a mounted
-partition or active swap; anything that is not a whole, writable disk; and a
-disk too small to hold the boot partition, two root slots with room to grow,
-and a state partition with space for one update and a gigabyte of data
-(about 8 GB for the current image; the refusal names the exact minimum).
+The installer refuses the disk the medium is on; anything with a mounted
+partition, active swap, or a partition held open (an unlocked LUKS volume,
+LVM); anything that is not a whole, writable disk; and a disk too small to
+hold the boot partition, two root slots with room to grow, and a state
+partition with space for one update and a gigabyte of data (about 8 GB for
+the current image; the refusal names the exact minimum). A disk that already
+holds a Kryptik installation or medium is refused too, since it may hold the
+only copy of someone's encrypted state. To reinstall over one, add
+`--replace-kryptik`: the installer names the Kryptik partitions it is about
+to destroy and then asks for `ERASE` as usual.
 
 It writes four GPT partitions: `kryptik-esp` (the medium's ESP, with the slot
 A kernel as the boot file), `kryptik-a` (the verified root image, read back

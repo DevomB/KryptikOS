@@ -76,10 +76,14 @@ from `/etc`. There is no swap.
 
 ## Installer
 
-`kryptik-install --target DISK [--yes] [--dry-run]` checks everything first:
-a whole, writable disk that is not the running root's (through any dm or loop
-layer), the state or test-control disk or the medium, with nothing mounted,
-no swap and enough room. Then it asks for the state passphrase, partitions,
+`kryptik-install --target DISK [--yes] [--dry-run] [--replace-kryptik]`
+checks everything first: a whole, writable disk that is not the running
+root's (through any dm or loop layer, so from a medium never the medium),
+with nothing mounted, swapped on or held open by device-mapper or md, and
+enough room. A disk that carries any `kryptik-` partition (an old
+installation, a medium, a test-control disk) is refused unless
+`--replace-kryptik` asks for it; nothing overrides the other refusals. Then it
+asks for the state passphrase, partitions,
 copies the ESP and root image from the medium, reads slot A back against the
 medium's `root.json`, creates the LUKS2 state partition and makes
 `BOOTX64.EFI` the slot A kernel. Every failure names its step.

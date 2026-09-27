@@ -10,7 +10,10 @@
 #   step 2  boot the disk alone: first boot, login, reboot, login, poweroff
 #   step 3  cold boot it again (not with --quick)
 #   step 4  a disk too small, a read-only disk, and an I/O error in the root
-#           image copy (not with --quick): each must fail, installing nothing
+#           image copy (not with --quick): each must fail, installing nothing;
+#           the medium's own disk, even with --replace-kryptik, and a copy of
+#           the installed disk without it: each refused, the copy untouched;
+#           then (not with --quick) that copy replaced with --replace-kryptik
 #
 # Every disk is a file this script creates; no device is touched.
 set -uo pipefail
@@ -179,6 +182,60 @@ sector = "1400000"
 once = "off"
 EOF
     refusal_case ioerror "$SIZE" --blkdebug "${VMDIR}/blkdebug.conf"
+fi
+
+# The runner always passes --yes, so none of these refusals is the ERASE
+# prompt waiting.
+
+# The disk this system runs from: the medium, the one USB disk in the guest.
+# No flag opens it.
+ctl="${VMDIR}/testctl-medium.img"
+"${SELF}/mk-testctl.sh" --out "$ctl" install_target=/dev/sda install_replace=1 smoke_poweroff=1 install_wait=5 > /dev/null
+d="${VMDIR}/refuse-medium.img"; rm -f "$d"; truncate -s "$SIZE" "$d"
+smoke refuse-medium --usb "$USB" --disk "$d" --testctl "$ctl" --vars "$VARS" --timeout "$TIMEOUT" > /dev/null
+t="${VMDIR}/refuse-medium.txt"; boot_txt > "$t"
+want "$t" 'KRYPTIK_INSTALL: BEGIN target=/dev/sda'                     "medium: the installer ran against the medium's own disk"
+want "$t" 'KRYPTIK_INSTALL: .*is the disk this system is running from' "medium: refused as the disk this system runs from, even with --replace-kryptik"
+deny "$t" 'KRYPTIK_INSTALL: rc=0'                                      "medium: never reported success"
+
+# the LUKS UUID of IMG's kryptik-state partition, read from the host
+state_uuid() {
+    local start
+    start="$(sfdisk -d "$1" 2>/dev/null | sed -n 's/.*start= *\([0-9]*\),.*name="kryptik-state".*/\1/p')"
+    [[ -n "$start" ]] && blkid -p -O "$(( start * 512 ))" -s UUID -o value "$1" 2>/dev/null
+}
+
+# An old installation: refused without the flag, and left exactly as it was.
+old="${VMDIR}/old-install.img"; rm -f "$old"; cp --sparse=always "$DISK" "$old"
+ctl="${VMDIR}/testctl-oldinstall.img"
+"${SELF}/mk-testctl.sh" --out "$ctl" install_target=/dev/vda smoke_poweroff=1 install_wait=5 > /dev/null
+smoke refuse-oldinstall --usb "$USB" --disk "$old" --testctl "$ctl" --vars "$VARS" --timeout "$TIMEOUT" > /dev/null
+t="${VMDIR}/refuse-oldinstall.txt"; boot_txt > "$t"
+want "$t" 'KRYPTIK_INSTALL: .*holds a Kryptik installation or medium' "oldinstall: refused without --replace-kryptik, and says why"
+want "$t" 'KRYPTIK_INSTALL: rc=[1-9]'                                  "oldinstall: reported a non-zero status"
+if cmp -s "$DISK" "$old"; then
+    green "oldinstall: the old installation is left as it was"
+else
+    red "oldinstall: the refused disk was changed"
+fi
+
+# With the flag it is replaced: a fresh install, with a new state partition.
+if [[ "$QUICK" -eq 0 ]]; then
+    before="$(state_uuid "$old")"
+    ctl="${VMDIR}/testctl-replace.img"
+    "${SELF}/mk-testctl.sh" --out "$ctl" install_target=/dev/vda install_replace=1 smoke_poweroff=1 install_wait=5 \
+        "${PRESEED[@]}" > /dev/null
+    smoke replace-oldinstall --usb "$USB" --disk "$old" --testctl "$ctl" --vars "$VARS" --timeout "$TIMEOUT" > /dev/null
+    t="${VMDIR}/replace-oldinstall.txt"; boot_txt > "$t"
+    want "$t" 'KRYPTIK_INSTALL: .*replacing kryptik-'   "replace: the installer said what it replaces"
+    want "$t" 'KRYPTIK_INSTALL: rc=0'                   "replace: the reinstall succeeded"
+    want "$t" 'KRYPTIK_INSTALL: verify: kryptik-state=/dev/vda4 type=crypto_LUKS' "replace: a LUKS state partition again"
+    after="$(state_uuid "$old")"
+    if [[ -n "$before" && -n "$after" && "$before" != "$after" ]]; then
+        green "replace: the state partition is new (LUKS ${before:0:8}... became ${after:0:8}...)"
+    else
+        red "replace: the state partition was not replaced (before '${before}', after '${after}')"
+    fi
 fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
