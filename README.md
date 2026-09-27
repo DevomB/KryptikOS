@@ -112,7 +112,7 @@ The tradeoff is spelled out in [docs/threat-model.md](docs/threat-model.md).
 build/
   stages/           Ordered build stages (00-host-check → 06-iso)
   config/           Pinned versions, hardening flags, kernel config fragments
-  patches/          Patch sets with provenance (glibc-2.40/, util-linux-2.42.3/)
+  patches/          Patch sets with provenance (glibc-2.40/, dwl-0.8/)
   services/         The s6-rc service tree
   service-scripts/  What those services run
   desktop/          dwl config and the zone colour table
