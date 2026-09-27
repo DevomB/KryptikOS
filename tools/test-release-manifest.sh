@@ -317,6 +317,24 @@ expect_fail "--exact refuses an unlisted file at the root" \
     "present but NOT in the manifest: .kryptik-update"
 rm -f "${REL}/.kryptik-update"
 
+# Names are compared as the manifest spells them: two spaces are not one, and
+# characters a lookup could treat specially are plain names.
+build_release
+mkdir -p "${REL}/doc"
+for n in "two  spaces" "@" "*" "a]b" "[x]"; do printf '%s\n' "$n" > "${REL}/doc/${n}"; done
+rm -f "$MAN" "${MAN}.sig"
+bash "$TOOL" create --out "$MAN" --root "$REL" --version 6.0 --role development . > /dev/null 2>&1
+bash "$TOOL" sign --key "${W}/keys/rel" "$MAN" > /dev/null 2>&1
+if ! grep -qF "doc/two  spaces" "$MAN"; then
+    red "fixture: the manifest does not list 'doc/two  spaces'"
+fi
+verify --exact
+expect_pass "--exact passes names with runs of spaces and the characters @ * [ ]" "no unlisted files"
+printf 'x\n' > "${REL}/doc/two spaces"
+verify --exact
+expect_fail "--exact refuses an unlisted name that differs from a listed one only by its spaces" \
+    "present but NOT in the manifest: doc/two spaces"
+
 # pointer: its output must pass kryptik-update's own check-pointer, under an
 # anchor shaped like the image's (each key honoured in one namespace only).
 build_release
