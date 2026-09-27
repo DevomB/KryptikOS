@@ -10,7 +10,8 @@
 #   kryptik-chrome                 dwl's startup command (`dwl -s`): reads
 #                                  dwl's status stream on stdin, records the
 #                                  focused zone in $XDG_RUNTIME_DIR/kryptik/
-#                                  focus as text, and opens the launcher
+#                                  focus as text (and the last zone window's
+#                                  in focus.zone), and opens the launcher
 #   kryptik-chrome --menu          the launcher: zones, their state, apps
 #   kryptik-chrome --prompt ZONE [--no-display] -- CMD [ARG...]
 #                                  ask for the zone's passphrase in a trusted
@@ -32,6 +33,9 @@ LAUNCH=/usr/bin/kryptik-launch
 TERMINAL=/usr/bin/havoc
 RT="${XDG_RUNTIME_DIR:-/tmp}"
 FOCUS="$RT/kryptik/focus"
+# The last window from a zone. The menu shows this one: opening the menu
+# focuses the menu, so the plain record would only ever name zone 0.
+FOCUS_ZONE="$RT/kryptik/focus.zone"
 CONSENT=/run/kryptik-consent
 
 die() { echo "kryptik-chrome: $*" >&2; exit 1; }
@@ -97,6 +101,11 @@ run_status() {
         tmp="$FOCUS.tmp.$$"
         printf 'output=%s\nzone=%s\nlabel=%s\nglyph=%s\ntitle=%s\nfullscreen=%s\n' \
             "$out" "$zone" "$label" "$glyph" "$title" "$fs" > "$tmp" && mv -f "$tmp" "$FOCUS"
+        # The zone comes from the app_id the proxy stamps; a title is the zone's own words.
+        case "$zone" in
+            0|-) ;;
+            *) cp -f "$FOCUS" "$FOCUS_ZONE.tmp.$$" && mv -f "$FOCUS_ZONE.tmp.$$" "$FOCUS_ZONE" ;;
+        esac
         echo "focus: zone=$zone label=$label fullscreen=$fs title=$title" >&2
     done
 }
@@ -127,21 +136,28 @@ run_menu() {
         clear 2>/dev/null
         echo "================ KRYPTIK - trusted launcher (zone 0) ================"
         echo "This window is drawn by the compositor with the unzoned border."
-        echo "Zone windows carry their zone's colour and a [zone] title prefix."
+        echo "Zone windows carry their zone's colour; f names the last one you had."
         echo
         echo "Zones:"
         menu_zones
         echo
         echo "Apps:  t terminal   e editor (nano)   b browser (lynx, needs routed network)"
         echo "Also:  s<N> stop zone N   m<N><M> move zone N's clipboard to zone M (one payload, once)"
-        echo "       f focused zone   r refresh   q close this window"
+        echo "       f the last zone window's zone   r refresh   q close this window"
         echo
         printf 'choice (e.g. 1t): '
         if ! read -r choice; then break; fi
         case "$choice" in
             q) break ;;
             r|"") continue ;;
-            f) cat "$FOCUS" 2>/dev/null || echo "no focus record yet"; sleep 2; continue ;;
+            f) if [ -r "$FOCUS_ZONE" ]; then
+                   printf 'The last zone window you had: %s %s (zone %s)\n  %s\n' \
+                       "$(sed -n 's/^glyph=//p' "$FOCUS_ZONE")" "$(sed -n 's/^label=//p' "$FOCUS_ZONE")" \
+                       "$(sed -n 's/^zone=//p' "$FOCUS_ZONE")" "$(sed -n 's/^title=//p' "$FOCUS_ZONE")"
+               else
+                   echo "no zone window yet"
+               fi
+               sleep 3; continue ;;
             m[1-9][1-9]) a="${choice#m}"; b="${a#?}"; a="${a%?}"
                       eval "za=\"\${Z$a:-}\""; eval "zb=\"\${Z$b:-}\""
                       [ -n "$za" ] && [ -n "$zb" ] || { echo "no such zones"; sleep 1; continue; }

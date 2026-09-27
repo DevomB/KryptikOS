@@ -6,10 +6,11 @@
  *   wlprobe list              print "global <name> <interface> <version>" per global
  *   wlprobe bind INTERFACE    list, then bind INTERFACE by its offered name
  *                             (name 1 if not offered) and print what came back
- *   wlprobe oversize EXTRA SECONDS
+ *   wlprobe oversize EXTRA SECONDS [TITLE]
  *                             map a window and answer every configure with a
  *                             buffer EXTRA px wider and taller than asked, in a
- *                             colour no zone has; stay SECONDS
+ *                             colour no zone has; stay SECONDS, titled TITLE
+ *                             ("oversize" by default, at most 255 bytes)
  *
  * Exit: 0 listed, bind accepted or window held; 3 refused (wl_display.error,
  * or closed); 1 any other failure. The socket is $WAYLAND_DISPLAY, absolute
@@ -224,9 +225,9 @@ static int bind_global(const char *iface, uint32_t id)
 
 /* Map one window and answer each configure with an oversized buffer until
  * `seconds` pass or the compositor closes it. */
-static int hold_oversize(int more, int seconds)
+static int hold_oversize(int more, int seconds, const char *title)
 {
-	unsigned char b[64];
+	unsigned char b[280];                      /* a 255-byte title, its length and padding */
 	size_t n;
 	oversize = 1;
 	extra = more;
@@ -238,7 +239,7 @@ static int hold_oversize(int more, int seconds)
 	send_msg(WM_BASE, 2, b, 8);                /* xdg_wm_base.get_xdg_surface */
 	put32(b, TOPLEVEL);
 	send_msg(XDG_SURFACE, 1, b, 4);            /* xdg_surface.get_toplevel */
-	n = put_string(b, "oversize");
+	n = put_string(b, title);
 	send_msg(TOPLEVEL, 2, b, n);               /* xdg_toplevel.set_title */
 	n = put_string(b, "wlprobe");
 	send_msg(TOPLEVEL, 3, b, n);               /* xdg_toplevel.set_app_id */
@@ -253,8 +254,9 @@ static int hold_oversize(int more, int seconds)
 int main(int argc, char **argv)
 {
 	if (argc < 2 || (strcmp(argv[1], "list") && strcmp(argv[1], "bind") && strcmp(argv[1], "oversize"))
-	    || (!strcmp(argv[1], "bind") && argc < 3) || (!strcmp(argv[1], "oversize") && argc < 4)) {
-		fprintf(stderr, "usage: wlprobe list | bind INTERFACE | oversize EXTRA SECONDS\n");
+	    || (!strcmp(argv[1], "bind") && argc < 3) || (!strcmp(argv[1], "oversize") && argc < 4)
+	    || (!strcmp(argv[1], "oversize") && argc > 4 && strlen(argv[4]) > 255)) {
+		fprintf(stderr, "usage: wlprobe list | bind INTERFACE | oversize EXTRA SECONDS [TITLE]\n");
 		return 2;
 	}
 	const char *disp = getenv("WAYLAND_DISPLAY");
@@ -281,7 +283,7 @@ int main(int argc, char **argv)
 	printf("globals %d\n", nglobals);
 
 	if (!strcmp(argv[1], "list")) return errored ? 3 : 0;
-	if (!strcmp(argv[1], "oversize")) return hold_oversize(atoi(argv[2]), atoi(argv[3]));
+	if (!strcmp(argv[1], "oversize")) return hold_oversize(atoi(argv[2]), atoi(argv[3]), argc > 4 ? argv[4] : "oversize");
 
 	/* A filtered client cannot know a hidden global's name, so guess 1; the
 	 * proxy must refuse either way. */
