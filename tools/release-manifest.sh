@@ -114,7 +114,8 @@ do_sign() {
         || die "sign: ${manifest} is not a ${MAGIC}"
 
     rm -f "${manifest}.sig"
-    ssh-keygen -Y sign -f "$key" -n "$NAMESPACE" "$manifest" >/dev/null 2>&1 \
+    # Not stderr: a security key asks there to be touched.
+    ssh-keygen -Y sign -f "$key" -n "$NAMESPACE" "$manifest" >/dev/null \
         || die "sign: ssh-keygen could not sign with ${key}"
     ok "signed: ${manifest}.sig"
 

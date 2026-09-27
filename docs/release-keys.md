@@ -62,7 +62,8 @@ For each release:
 2. Attach the key medium and make the media. `sbsign` asks for the Secure
    Boot key's passphrase once for each kernel it signs (three: both slots and
    the USB medium's), and `ssh-keygen` for the release key's twice, for the
-   media's checksums and for the manifest:
+   media's checksums and for the manifest. A release key on a security key
+   asks to be touched instead, each time:
 
    ```sh
    make media KRYPTIK_ROLE=production KRYPTIK_KEYS=/media/<medium>/kryptik-keys \
