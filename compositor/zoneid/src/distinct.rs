@@ -20,6 +20,11 @@ pub const MIN_BORDER_CONTRAST: f64 = 3.0;
 /// Backgrounds a border is checked against: a colour tuned for one can vanish on the other.
 pub const BACKGROUNDS: [(&str, &str); 2] = [("dark", "#1c1c1c"), ("light", "#f0f0f0")];
 
+/// BACKGROUNDS parsed, in order; constants_parse checks that none is dropped.
+pub fn backgrounds() -> Vec<(&'static str, Srgb)> {
+    BACKGROUNDS.iter().filter_map(|&(name, hex)| Some((name, Srgb::from_hex(hex).ok()?))).collect()
+}
+
 /// The compositor's own border colours: unzoned windows (the chrome), zones it
 /// has no colour for, and urgent windows. gen-zone-colours.py writes the same
 /// values into dwl's header, and a test in zones.rs keeps the two equal. They
@@ -123,6 +128,7 @@ impl Report {
 /// Evaluate a zone set.
 pub fn analyze(zones: &[ZoneIdentity], t: Thresholds) -> Report {
     let mut r = Report::default();
+    let bgs = backgrounds();
 
     for z in zones {
         if !z.has_non_color_channel() {
@@ -130,11 +136,7 @@ pub fn analyze(zones: &[ZoneIdentity], t: Thresholds) -> Report {
                 zone: z.zone.clone(),
             });
         }
-        for (bg_name, bg_hex) in BACKGROUNDS {
-            // Constants checked by constants_parse; failure is a programming error.
-            let Ok(bg) = Srgb::from_hex(bg_hex) else {
-                continue;
-            };
+        for &(bg_name, bg) in &bgs {
             let ratio = contrast_ratio(z.color, bg);
             if ratio < t.min_contrast() {
                 r.contrast.push(ContrastFinding {
@@ -266,6 +268,7 @@ mod tests {
         for (_, hex) in BACKGROUNDS.iter().chain(COMPOSITOR_COLOURS.iter()) {
             assert!(Srgb::from_hex(hex).is_ok(), "{hex}");
         }
+        assert_eq!(backgrounds().len(), BACKGROUNDS.len());
     }
 
     #[test]
