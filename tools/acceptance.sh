@@ -322,11 +322,13 @@ it_sources_lock() {
     ( cd "$KRYPTIK_SOURCES" && sha256sum --check --quiet --strict "${ROOT}/sources.lock" ) || return 1
     echo "  ok: $(grep -c . "${ROOT}/sources.lock") entries verified"
 }
+# Each medium against its sidecar, by the hash the run took of it at the start
+# and names in its identity.
 it_media_hashes() {
     local ok=0 f h
     for f in "$MEDIA_USB" "$MEDIA_ISO"; do
         [[ -f "$f" ]] || continue
-        h="$(sha_of "$f")"
+        h="$H_USB"; [[ "$f" == "$MEDIA_ISO" ]] && h="$H_ISO"
         printf '%s  %s\n' "$h" "$f"
         if [[ -f "${f}.sha256" ]]; then
             if [[ "$(cut -c1-64 "${f}.sha256")" == "$h" ]]; then echo "  matches ${f}.sha256"; else echo "  DOES NOT MATCH ${f}.sha256"; ok=1; fi

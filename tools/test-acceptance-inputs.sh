@@ -197,5 +197,27 @@ missing="$(cd "$E" && find . -type f ! -name SHA256SUMS | while read -r f; do gr
 [[ -z "$missing" ]] && ok "manifests, signatures, the report and the results are all on the list" || bad "not on the list: $missing"
 [[ "$(sort "$E/SHA256SUMS" | uniq -d | wc -l)" -eq 0 ]] && ok "no file is listed twice" || bad "a file is listed twice"
 
+# --- the media are checked against their sidecars with the run's own hashes ---
+sed -n '/^it_media_hashes() {/,/^}/p' "$ACC" > "$T/hashes.sh"
+grep -q '^it_media_hashes()' "$T/hashes.sh" || { echo "could not extract it_media_hashes from $ACC"; exit 1; }
+# shellcheck source=/dev/null
+. "$T/hashes.sh"
+stage; release 1
+# shellcheck disable=SC2034  # read by it_media_hashes
+MEDIA_USB="$IMGDIR/kryptik-1-usb.img" MEDIA_ISO="$IMGDIR/kryptik-1.iso" PAYLOAD_A="" PAYLOAD_B=""
+H_USB="$(sha256sum "$MEDIA_USB" | cut -c1-64)"; H_ISO="$(sha256sum "$MEDIA_ISO" | cut -c1-64)"
+echo "$H_USB  kryptik-1-usb.img" > "$MEDIA_USB.sha256"; echo "$H_ISO  kryptik-1.iso" > "$MEDIA_ISO.sha256"
+# Counted in a file: a call inside $(...) runs in a subshell.
+: > "$T/reads"
+sha_of() { echo "$1" >> "$T/reads"; sha256sum "$1" | cut -c1-64; }
+it_media_hashes > "$T/hashes.out" 2>&1; rc=$?
+reads="$(wc -l < "$T/reads")"
+[[ "$rc" -eq 0 && "$reads" -eq 0 ]] && ok "the media are checked with the hashes the run took, not read again" \
+    || bad "media hashes: rc=$rc, read ${reads} time(s)"
+echo "0000  kryptik-1.iso" > "$MEDIA_ISO.sha256"
+it_media_hashes > "$T/hashes.out" 2>&1; rc=$?
+[[ "$rc" -ne 0 ]] && grep -q "DOES NOT MATCH ${MEDIA_ISO}.sha256" "$T/hashes.out" \
+    && ok "a sidecar that disagrees still fails" || bad "a wrong sidecar passed: rc=$rc"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
