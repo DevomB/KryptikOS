@@ -75,9 +75,10 @@ These need QEMU, OVMF's 4M Secure Boot build (in `/usr/share/OVMF`, or
 wherever `KRYPTIK_OVMF_DIR` names) and, for the enrolled store,
 `virt-fw-vars`.
 
-The medium presents a root shell with no password, on the display and on
-the serial console (the serial line under QEMU). That shell exists only on
-install media; installed systems have root locked at every terminal.
+The medium presents a root shell with no password, on the display and, if
+the machine has one, on the serial console (the serial line under QEMU).
+That shell exists only on install media; installed systems have root locked
+at every terminal.
 
 ## 2. Install
 
@@ -128,8 +129,9 @@ installed system ignores it.
 ## 3. First boot and daily use
 
 Every boot asks for the state passphrase, three times at most, before
-anything else starts: on the display and on the serial console, and the
-first answer counts. Root changes it with `kryptik state passphrase`. On the
+anything else starts: on the display and, if the machine has one, on the
+serial console, and the first answer counts. Root changes it with `kryptik
+state passphrase`. On the
 first boot, before the login prompt, a setup program asks in the same places
 for a user name and that user's password, then for root's password (root still
 cannot log in at a terminal; the password is for `su`, below). After an
