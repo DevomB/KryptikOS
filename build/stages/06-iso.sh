@@ -441,7 +441,10 @@ s_sums() {
     local sums="${IMG}/kryptik-${KRYPTIK_VERSION}.SHA256SUMS"
     ( cd "$IMG" && sha256sum "kryptik-${KRYPTIK_VERSION}-usb.img" "kryptik-${KRYPTIK_VERSION}.iso" ) > "$sums"
     rm -f "${sums}.sig"
-    ssh-keygen -Y sign -f "$RELEASE_KEY" -n kryptik-media "$sums" >/dev/null 2>&1 \
+    # A security key asks on stderr to be touched, and step() logs stderr: the
+    # terminal, when there is one, gets it.
+    local to=/dev/null; { : > /dev/tty; } 2>/dev/null && to=/dev/tty
+    ssh-keygen -Y sign -f "$RELEASE_KEY" -n kryptik-media "$sums" >/dev/null 2>"$to" \
         || { echo "could not sign ${sums}"; return 1; }
     # As the download is checked: the image's anchor, the release principal.
     ssh-keygen -Y verify -f "$ANCHOR" -I kryptik-release -n kryptik-media -s "${sums}.sig" < "$sums" \
