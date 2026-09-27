@@ -34,10 +34,12 @@ that ship, under QEMU with OVMF firmware.
 
 ## The last full pass
 
-The newest green Distro run on main is the last full pass. Its acceptance
-report is the run's `acceptance-part-*` artifacts: `REPORT.md` with one row per
-item, `results.tsv`, and each suite's own log and serial transcripts. A local
-`make acceptance EXPORT=DIR` writes the same report for the media it tested.
+The newest green Distro run on main is the last full pass: its verdict job
+fails unless every suite passed. The run's `acceptance-report` artifact holds
+the merged `REPORT.md`, one row per item, `results.tsv` and each item's log
+under `work/acceptance/`, and each part's logs and serial transcripts under
+`parts/`. A local `make acceptance EXPORT=DIR` writes the same report for the
+media it tested.
 
 ## Known gaps
 

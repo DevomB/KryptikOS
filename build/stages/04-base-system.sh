@@ -289,7 +289,7 @@ int main(void)
 }
 CEOF
     gcc -O0 -o /tmp/kryptik-gdbm-check /tmp/kryptik-gdbm-check.c -lgdbm || {
-        echo "FAIL: could not compile against the gdbm just installed"; return 1; }
+        echo "FAIL: could not compile against the gdbm we just installed"; return 1; }
     /tmp/kryptik-gdbm-check || { echo "FAIL: gdbm cannot round-trip a key"; return 1; }
     rm -f /tmp/kryptik-gdbm-check /tmp/kryptik-gdbm-check.c /tmp/kryptik-gdbm-check.db
 }
