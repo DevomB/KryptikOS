@@ -167,13 +167,8 @@ step "step 1: install ${VA}, boot it, create zone data"
 # Sized from the medium, with room for one payload: the release step 8 fetches
 # is staged on kryptik-state, and every other step applies from the payload
 # disk, mounted read-only.
-DISK_SIZE="$("${SELF}/test-disk-size.sh" --medium "$USB_A" --payloads 1)" || die "could not size the test disk from the medium"
-rm -f "$DISK"; truncate -s "$DISK_SIZE" "$DISK"
-CTL="${VMDIR}/testctl-update.img"
-"${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
-    "${PRESEED[@]}" > /dev/null
-smoke update-install --usb "$USB_A" --disk "$DISK" --testctl "$CTL" "${INSTALL_VARS[@]}" --timeout "$TIMEOUT" > /dev/null
-boot_txt | grep -q 'KRYPTIK_INSTALL: rc=0' && green "A installed" || { red "A did not install"; exit 1; }
+fresh_disk "$USB_A" --payloads 1
+install_disk update-install "$USB_A" "${INSTALL_VARS[@]}" && green "A installed" || { red "A did not install"; exit 1; }
 
 start_vm update-p1 --disk "$PA"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \

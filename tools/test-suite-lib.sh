@@ -34,11 +34,23 @@ if [[ "$mode" == serve ]]; then
 fi
 [[ "$mode" == smoke ]] || exit 2
 printf 'boot %s\r\n' "$name" > "$log"
+[[ -n "${STUB_INSTALLED:-}" ]] && printf 'KRYPTIK_INSTALL: rc=%s\r\n' "$STUB_INSTALLED" >> "$log"
 echo "a stranger's boot" > "$KRYPTIK_WORK/logs/stranger.log"
 ln -sfn "$KRYPTIK_WORK/logs/stranger.log" "$KRYPTIK_WORK/logs/ovmf-serial.latest.log"
 exit "${STUB_RC:-0}"
 EOF
 chmod +x "$T/self/run-ovmf.sh"
+cat > "$T/self/test-disk-size.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'test-disk-size %s\n' "$*" >> "$STUB_ARGS"
+echo 12345678
+EOF
+cat > "$T/self/mk-testctl.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'mk-testctl %s\n' "$*" >> "$STUB_ARGS"
+: > "$2"
+EOF
+chmod +x "$T/self/test-disk-size.sh" "$T/self/mk-testctl.sh"
 
 die() { echo "die: $*"; exit 1; }
 SELF="$T/self"
@@ -68,6 +80,22 @@ check "and the first transcript is still whole" "$(tr -d '\r' < "$first")" "boot
 echo "-- a failed boot's status reaches the suite"
 STUB_RC=124 smoke t2 > /dev/null
 check "the timeout's 124" "$?" "124"
+
+echo "-- a fresh install: the disk sized from the medium, the installer's verdict"
+DISK="$T/disk.img"; VMDIR="$T/vm"; TIMEOUT=900; mkdir -p "$VMDIR"
+fresh_disk /medium.img --extra-mib 2048
+check "the sizing tool got the medium and the suite's arguments" "$(tail -1 "$STUB_ARGS")" "test-disk-size --medium /medium.img --extra-mib 2048"
+check "the disk has the size it gave" "$(stat -c %s "$DISK")" "12345678"
+STUB_INSTALLED=0 install_disk t-install /medium.img --vars clean
+check "an installer that reports rc=0 passes" "$?" "0"
+check "run-ovmf.sh got the medium, disk, control disk and the suite's arguments" "$(tail -1 "$STUB_ARGS")" \
+    "--mode smoke --name t-install --log ${BOOTLOG} --usb /medium.img --disk ${DISK} --testctl ${VMDIR}/testctl-t-install.img --timeout 900 --vars clean"
+check "the control disk arms the install with the preseeded accounts" "$(grep '^mk-testctl' "$STUB_ARGS" | tail -1)" \
+    "mk-testctl --out ${VMDIR}/testctl-t-install.img install_target=/dev/vda smoke_poweroff=1 install_wait=5 ${PRESEED[*]}"
+STUB_INSTALLED=1 install_disk t-install /medium.img --vars clean
+[[ $? -ne 0 ]] && ok "an installer that reports rc=1 fails" || bad "an installer that reports rc=1 fails"
+install_disk t-install /medium.img --vars clean
+[[ $? -ne 0 ]] && ok "an installer that reports nothing fails" || bad "an installer that reports nothing fails"
 
 echo "-- start_vm gives each serve boot what its suite parsed by hand"
 command -v python3 >/dev/null 2>&1 || { echo "python3 required"; exit 77; }

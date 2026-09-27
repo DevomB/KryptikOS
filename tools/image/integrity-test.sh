@@ -47,14 +47,8 @@ VARSF="${VMDIR}/integrity-vars.fd"; cp "$ENROLLED" "$VARSF"
 
 # ----------------------------------------------------------------- step 1 --
 step "step 1: install, then boot alone with the developer key enrolled (Secure Boot on)"
-# Sized from the medium, not a constant: see test-disk-size.sh.
-DISK_SIZE="$("${SELF}/test-disk-size.sh" --medium "$USB")" || die "could not size the test disk from the medium"
-rm -f "$DISK"; truncate -s "$DISK_SIZE" "$DISK"
-CTL="${VMDIR}/testctl-integrity.img"
-"${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
-    "${PRESEED[@]}" > /dev/null
-smoke integ-install --usb "$USB" --disk "$DISK" --testctl "$CTL" --vars enrolled --timeout "$TIMEOUT" > /dev/null
-boot_txt | grep -q 'KRYPTIK_INSTALL: rc=0' && green "installed from the medium under Secure Boot" || { red "install failed"; exit 1; }
+fresh_disk "$USB"
+install_disk integ-install "$USB" --vars enrolled && green "installed from the medium under Secure Boot" || { red "install failed"; exit 1; }
 boot_txt | grep -q 'KRYPTIK_SMOKE: secureboot=1' && green "the medium itself booted with Secure Boot enforced" || red "medium did not report secureboot=1"
 
 start_vm integ-p1; LOG1="$LOG"

@@ -77,14 +77,8 @@ normal_boot() {   # normal_boot NAME
 
 # ----------------------------------------------------------------- step 1 --
 step "step 1: install, first boot, a file on the state partition"
-# Sized from the medium, not a constant: see test-disk-size.sh.
-DISK_SIZE="$("${SELF}/test-disk-size.sh" --medium "$USB")" || die "could not size the test disk from the medium"
-rm -f "$DISK"; truncate -s "$DISK_SIZE" "$DISK"
-CTL="${VMDIR}/testctl-state.img"
-"${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
-    "${PRESEED[@]}" > /dev/null
-smoke state-install --usb "$USB" --disk "$DISK" --testctl "$CTL" --vars clean --timeout "$TIMEOUT" > /dev/null
-boot_txt | grep -q 'KRYPTIK_INSTALL: rc=0' && green "installed" || { red "install failed"; exit 1; }
+fresh_disk "$USB"
+install_disk state-install "$USB" --vars clean && green "installed" || { red "install failed"; exit 1; }
 start_vm state-p1
 drive "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
     "run:echo state-marker > /home/${TUSER}/state-marker && sync" \

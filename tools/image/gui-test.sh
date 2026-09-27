@@ -46,14 +46,8 @@ SHOT_OVER="${VMDIR}/gui-untrusted-oversize.ppm"
 
 # ----------------------------------------------------------------- step 1 --
 step "step 1: install"
-# Sized from the medium, not a constant: see test-disk-size.sh.
-DISK_SIZE="$("${SELF}/test-disk-size.sh" --medium "$USB")" || die "could not size the test disk from the medium"
-rm -f "$DISK"; truncate -s "$DISK_SIZE" "$DISK"
-CTL="${VMDIR}/testctl-gui.img"
-"${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
-    "${PRESEED[@]}" > /dev/null
-smoke gui-install --usb "$USB" --disk "$DISK" --testctl "$CTL" --vars clean --timeout "$TIMEOUT" > /dev/null
-boot_txt | grep -q 'KRYPTIK_INSTALL: rc=0' && green "installed" || { red "install failed"; exit 1; }
+fresh_disk "$USB"
+install_disk gui-install "$USB" --vars clean && green "installed" || { red "install failed"; exit 1; }
 
 # ----------------------------------------------------------------- step 2 --
 step "step 2: the desktop, driven"

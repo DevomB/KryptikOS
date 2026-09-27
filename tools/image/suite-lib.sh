@@ -31,6 +31,21 @@ smoke() {   # smoke NAME [run-ovmf args] -> BOOTLOG; run-ovmf.sh's status
 }
 boot_txt() { tr -d '\r' < "$BOOTLOG"; }
 
+# Every suite starts from a fresh install: a DISK sized from the medium, not a
+# constant (see test-disk-size.sh), then the medium's installer run onto it
+# with the preseeded accounts.
+fresh_disk() {   # fresh_disk MEDIUM [test-disk-size.sh args]
+    local size; size="$("${SELF}/test-disk-size.sh" --medium "$@")" || die "could not size the test disk from the medium"
+    rm -f "$DISK"; truncate -s "$size" "$DISK"
+}
+install_disk() {   # install_disk NAME MEDIUM [run-ovmf args]; 0 when the installer reported success
+    local ctl="${VMDIR}/testctl-$1.img"
+    "${SELF}/mk-testctl.sh" --out "$ctl" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
+        "${PRESEED[@]}" > /dev/null || die "the install control disk"
+    smoke "$1" --usb "$2" --disk "$DISK" --testctl "$ctl" --timeout "$TIMEOUT" "${@:3}" > /dev/null
+    boot_txt | grep -q 'KRYPTIK_INSTALL: rc=0'
+}
+
 start_vm() {   # start_vm NAME [run-ovmf args] -> SER QMP PIDF LOG
     local name="$1"; shift
     local out; out="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --name "$name" "$@")"
