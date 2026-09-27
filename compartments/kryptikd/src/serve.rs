@@ -863,10 +863,10 @@ fn config_from(zones_dir: &Path, args: &[String]) -> Result<ServeConfig, String>
         socket,
         group: opt("--group").unwrap_or_else(|| GROUP.to_string()),
         zones_dir: zones_dir.to_path_buf(),
-        rootfs: opt("--rootfs").unwrap_or_else(|| crate::DEFAULT_ROOTFS_BASE.to_string()),
+        rootfs: crate::rootfs_base_from(args),
         log_dir,
         proxy_exe: PathBuf::from(opt("--proxy-exe").unwrap_or_else(|| PROXY_EXE.to_string())),
-        wifi_dir: PathBuf::from(opt("--wifi-dir").unwrap_or_else(|| crate::wifi::DEFAULT_DIR.to_string())),
+        wifi_dir: crate::wifi_dir_from(args),
         developer,
     })
 }
