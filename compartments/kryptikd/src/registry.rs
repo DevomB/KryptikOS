@@ -235,6 +235,12 @@ pub enum State {
 /// Remove an entry and everything in it, found by listing the directory, so a
 /// broker's stranded temporary file goes too. The caller holds the entry's lock.
 fn sweep(dir: &Path) -> Result<(), RegistryError> {
+    sweep_with(dir, &mut || {})
+}
+
+/// `sweep`, calling `between` after each removal: a test arrives there as a
+/// claimer would.
+fn sweep_with(dir: &Path, between: &mut dyn FnMut()) -> Result<(), RegistryError> {
     /* A privileged launch bind-mounts the Wayland proxy socket into the entry
      * (spawn.rs, StagedSocket), and a dead launcher can leave the mount. Detach
      * until the path is no mountpoint: each detach removes only the topmost. */
@@ -248,11 +254,18 @@ fn sweep(dir: &Path) -> Result<(), RegistryError> {
         Err(e) => return Err(io_err(dir, e)),
     };
     for e in rd.flatten() {
+        /* The lock goes last: while it is there no claimer can take the name,
+         * so none can empty the directory and make it anew under these paths. */
+        if e.file_name() == "lock" {
+            continue;
+        }
         // The entry's own type, not what a symlink would point at.
         let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
         let p = e.path();
         let _ = if is_dir { fs::remove_dir(&p) } else { fs::remove_file(&p) };
+        between();
     }
+    let _ = fs::remove_file(dir.join("lock"));
     match fs::remove_dir(dir) {
         Ok(()) => Ok(()),
         // Another reclaim finished first.
@@ -729,6 +742,23 @@ mod tests {
         fs::write(dir.join("clipboard"), "text/plain\n").unwrap();
         reclaim(&zone).expect("reclaim must remove an entry whatever it holds");
         assert!(!dir.exists(), "the entry must be gone");
+    }
+
+    #[test]
+    fn sweep_keeps_lock_until_last() {
+        // A claimer arriving mid-sweep must find the lock still held.
+        let zone = format!("regorder-{}", unsafe { libc::getpid() });
+        let h = claim(&zone).expect("claim");
+        for f in ["a", "b", "c", "d"] {
+            fs::write(h.dir().join(f), "x").unwrap();
+        }
+        let dir = h.dir().to_path_buf();
+        sweep_with(&dir, &mut || {
+            assert!(matches!(try_lock(&dir).unwrap(), Lock::Busy), "a claimer took the name mid-sweep");
+        })
+        .unwrap();
+        assert!(!dir.exists(), "the entry must be gone");
+        drop(h);
     }
 
     #[test]
