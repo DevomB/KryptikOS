@@ -17,7 +17,7 @@ FAIL=0
 green() { printf '\033[32m  PASS\033[0m  %s\n' "$1"; PASS=$((PASS + 1)); }
 red()   { printf '\033[31m  FAIL\033[0m  %s\n' "$1"; FAIL=$((FAIL + 1)); }
 
-for t in gpg curl awk sed grep; do
+for t in gpg curl awk sed grep gzip; do
     command -v "$t" >/dev/null 2>&1 || { echo "${t} required for this test"; exit 1; }
 done
 
@@ -139,15 +139,21 @@ echo
 
 # --- harness ----------------------------------------------------------------
 
-# write_manifest <name>...: rows shaped like fetch-sources.sh --list. file://
-# URLs take the generic .sig/.asc/.sign path.
+# write_manifest <name>...: rows shaped like fetch-sources.sh --list, each
+# declaring probe: whichever of .sig, .asc and .sign is published.
 write_manifest() {
     : > "${W}/manifest"
     local n
     for n in "$@"; do
-        printf '%-12s %-10s %s\n' "$n" "1.0" "file://${SRC}/${n}.tar.gz" \
+        printf '%-12s %-10s %s probe listing\n' "$n" "1.0" "file://${SRC}/${n}.tar.gz" \
             >> "${W}/manifest"
     done
+}
+
+# add_row <name> <sig>: one more row, declaring how its signature is published.
+add_row() {
+    printf '%-12s %-10s %s %s listing\n' "$1" "1.0" "file://${SRC}/$1.tar.gz" "$2" \
+        >> "${W}/manifest"
 }
 
 # A new KRYPTIK_ROOT: no cached keys, no keys.manifest.
@@ -307,6 +313,71 @@ write_manifest onlyblob
 fresh_root; run --strict
 expect_fail "and it fails --strict rather than being called inconclusive" \
     "unverifiable"
+
+write_manifest good shadowed
+fresh_root; run --report="${W}/probe.tsv"
+if awk -F'\t' '$1 == "good" && $3 ~ /; probe found \.sig$/ { g = 1 }
+               $1 == "shadowed" && $3 ~ /; probe found \.asc$/ { s = 1 }
+               END { exit !(g && s) }' "${W}/probe.tsv"; then
+    green "a probe row's report names the suffix that verified it"
+else
+    red "a probe row's report does not name its suffix"
+    sed 's/^/        /' "${W}/probe.tsv"
+fi
+
+# --- the manifest's sig column ----------------------------------------------
+
+# A declared kind reads only what it names.
+: > "${W}/manifest"; add_row shadowed asc
+fresh_root; run --strict
+expect_pass "a row that declares asc verifies with the .asc" "verified:     1"
+
+: > "${W}/manifest"; add_row shadowed sig
+fresh_root; run
+expect_pass "a row that declares sig does not fall back to the .asc" \
+    "the published .sig is not an OpenPGP signature"
+
+# kernel.org signs the uncompressed tar.
+printf 'fixture payload for kern\n' > "${W}/kern.tar"
+fixgpg --yes --local-user good@example.test \
+    --detach-sign -o "${SRC}/kern.tar.sign" "${W}/kern.tar" >/dev/null 2>&1
+gzip -c "${W}/kern.tar" > "${SRC}/kern.tar.gz"
+: > "${W}/manifest"; add_row kern kernel
+fresh_root; run --strict
+expect_pass "a row that declares kernel verifies the uncompressed tar" \
+    "verified:     1"
+
+printf 'fixture payload for kern, altered\n' | gzip -c > "${SRC}/kern.tar.gz"
+fresh_root; run
+expect_fail "a kernel row whose tar is not the signed one fails" "BAD SIGNATURE"
+
+# verify-provenance.sh checks these, so nothing is fetched for them, even
+# where a signature exists.
+: > "${W}/manifest"; add_row good sha256; add_row expired tag; add_row nosig none
+fresh_root; run --report="${W}/declared.tsv"
+if [[ "$RC" -eq 0 ]] \
+   && grep -qF "good: no OpenPGP signature upstream; the publisher's .sha256 is verify-provenance's" "$OUT" \
+   && grep -qF "expired: no OpenPGP signature upstream; the signed tag is verify-provenance's" "$OUT" \
+   && grep -qF "nosig: upstream publishes no signature for it" "$OUT" \
+   && ! grep -qF "signature valid" "$OUT"; then
+    green "sha256 and tag rows are left to verify-provenance.sh, and none to nothing"
+else
+    red "a sha256, tag or none row was probed or misreported (exit ${RC})"; show
+fi
+if [[ "$(cut -f2 "${W}/declared.tsv" | sort -u)" == no-signature-upstream ]]; then
+    green "sha256, tag and none rows are reported as no signature upstream"
+else
+    red "they were reported as: $(cut -f2 "${W}/declared.tsv" | sort -u | tr '\n' ' ')"
+fi
+
+fresh_root; run --strict
+expect_fail "and --strict still counts them unverifiable" "unverifiable"
+
+# A kind this script does not know fails, even on a file it could verify.
+: > "${W}/manifest"; add_row good telepathy
+fresh_root; run
+expect_fail "an unknown signature kind fails rather than being skipped" \
+    "no signature kind this script knows ('telepathy')"
 
 # --- unaudited imported keys ------------------------------------------------
 

@@ -141,10 +141,10 @@ MANIFEST="${W}/manifest"
 {
     for n in gplpkg gpl2pkg lgplpkg lgpl21pkg mitpkg iscpkg zlibpkg bsdpkg \
              apachepkg dualfiles dualinone nolicence; do
-        printf '%s|1.0|file://%s/%s-1.0.tar.gz\n' "$n" "$SRC" "$n"
+        printf '%s|1.0|file://%s/%s-1.0.tar.gz|probe|listing\n' "$n" "$SRC" "$n"
     done
-    printf 'patchy|1.0|file://%s/patchy-1.0.patch\n' "$SRC"
-    printf 'missingpkg|1.0|file://%s/missingpkg-1.0.tar.gz\n' "$SRC"
+    printf 'patchy|1.0|file://%s/patchy-1.0.patch|none|listing\n' "$SRC"
+    printf 'missingpkg|1.0|file://%s/missingpkg-1.0.tar.gz|probe|listing\n' "$SRC"
 } > "$MANIFEST"
 
 build_root() {
@@ -153,7 +153,7 @@ build_root() {
     : > "${FAKE}/build/config/versions.env"
     cat > "${FAKE}/tools/fetch-sources.sh" <<STUB
 #!/usr/bin/env bash
-# Test stub: the same three columns as \`fetch-sources.sh --list\`.
+# Test stub: the same columns as \`fetch-sources.sh --list\`.
 sed 's/|/ /g' "$MANIFEST"
 STUB
     chmod 755 "${FAKE}/tools/fetch-sources.sh"

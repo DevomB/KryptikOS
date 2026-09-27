@@ -24,7 +24,7 @@ printf 'sig\n' > "$S/.signatures/demo-1.0.tar.gz.sig"
 printf '%s  demo-1.0.tar.gz\n' "$(sha256sum "$S/demo-1.0.tar.gz" | cut -c1-64)" > "$R/sources.lock"
 cat > "$R/tools/fetch-sources.sh" <<'EOF'
 #!/usr/bin/env bash
-echo "demo 1.0 https://example.org/demo-1.0.tar.gz"
+echo "demo 1.0 https://example.org/demo-1.0.tar.gz probe listing"
 EOF
 chmod 755 "$R/tools/fetch-sources.sh"
 # A stand-in cargo: vendor writes one crate where it is asked to.

@@ -425,11 +425,12 @@ key_provenance_kind() {
 
 load_key_provenance
 
-# check_sig <name> <sigfile> <datafile>: classify gpg's status output.
+# check_sig <name> <sigfile> <datafile> [how]: classify gpg's status output.
 # EXPKEYSIG counts as verified: the signature is valid and only the keyring's
 # copy of the key has expired (maintainers extend expiry; the keyring lags).
+# how, when given, ends each report detail.
 check_sig() {
-    local name="$1" sigfile="$2" datafile="$3"
+    local name="$1" sigfile="$2" datafile="$3" how="${4:+; $4}"
     local out signer keyid
 
     # Before verifying, so a published key wins over --fetch-unknown-keys.
@@ -440,7 +441,7 @@ check_sig() {
         err "${name}: its signing key's published copy at ${refused} was refused"
         FAILED=$((FAILED + 1))
         FAILED_LIST+=("${name} (its published key changed at ${refused})")
-        report "$name" published-key-changed "$refused"
+        report "$name" published-key-changed "${refused}${how}"
         return 0
     fi
 
@@ -461,7 +462,7 @@ check_sig() {
             warn "${name}: signature valid  [${signer:-unknown}] but by an UNAUDITED key"
             FETCHED=$((FETCHED + 1))
             FETCHED_LIST+=("${name} - ${signer:-unknown} (key ${keyid})")
-            report "$name" signature-unaudited-key "${signer:-unknown} (${keyid})"
+            report "$name" signature-unaudited-key "${signer:-unknown} (${keyid})${how}"
             return 0
         fi
 
@@ -477,10 +478,10 @@ check_sig() {
             ok "${name}: signature valid, signing key expired  [${signer:-unknown}]"
             EXPIRED=$((EXPIRED + 1))
             EXPIRED_LIST+=("${name} - ${signer:-unknown}")
-            report "$name" "$klass" "${signer:-unknown} (${keyid}; key expired)"
+            report "$name" "$klass" "${signer:-unknown} (${keyid}; key expired)${how}"
         else
             ok "${name}: signature valid  [${signer:-unknown}]"
-            report "$name" "$klass" "${signer:-unknown} (${keyid})"
+            report "$name" "$klass" "${signer:-unknown} (${keyid})${how}"
         fi
         VERIFIED=$((VERIFIED + 1))
         return 0
@@ -494,7 +495,7 @@ check_sig() {
         # A revoked key may have been compromised: this fails like BADSIG.
         FAILED=$((FAILED + 1))
         FAILED_LIST+=("${name} (REVOKED signing key)")
-        report "$name" signature-revoked-key "${signer:-unknown}"
+        report "$name" signature-revoked-key "${signer:-unknown}${how}"
         return 0
     fi
 
@@ -527,27 +528,27 @@ check_sig() {
 
         warn "${name}: signing key ${keyid} not held"
         mark_unverifiable "${name} (signing key ${keyid} not held)"
-        report "$name" key-not-held "$keyid"
+        report "$name" key-not-held "${keyid}${how}"
         return 0
     fi
 
     if printf '%s' "$out" | grep -q "^\[GNUPG:\] BADSIG"; then
         err "${name}: BAD SIGNATURE - the file does not match its signature"
         FAILED=$((FAILED + 1)); FAILED_LIST+=("$name")
-        report "$name" signature-bad "the file does not match its signature"
+        report "$name" signature-bad "the file does not match its signature${how}"
         return 0
     fi
 
     if printf '%s' "$out" | grep -q "^\[GNUPG:\] ERRSIG"; then
         warn "${name}: signature could not be checked"
         mark_unverifiable "${name} (ERRSIG - key unavailable or unsupported algorithm)"
-        report "$name" signature-uncheckable "ERRSIG: key unavailable or unsupported algorithm"
+        report "$name" signature-uncheckable "ERRSIG: key unavailable or unsupported algorithm${how}"
         return 0
     fi
 
     warn "${name}: inconclusive gpg result"
     mark_unverifiable "${name} (inconclusive)"
-    report "$name" inconclusive "gpg produced no status this script recognises"
+    report "$name" inconclusive "gpg produced no status this script recognises${how}"
     return 0
 }
 
@@ -576,7 +577,8 @@ is_pgp_signature() {
     gpg --batch --list-packets "$1" 2>/dev/null | grep -q ':signature packet:'
 }
 
-# Try .sig, .asc and .sign; one that is not OpenPGP passes the turn on.
+# Try .sig, .asc and .sign; one that is not OpenPGP passes the turn on. The
+# report names the suffix found, which the manifest can then declare.
 verify_any() {
     local name="$1" url="$2" file="$3"
     local suffix sig
@@ -585,7 +587,7 @@ verify_any() {
         sig="${SIGDIR}/${file}${suffix}"
         if [[ -s "$sig" ]] || quiet_fetch "${url}${suffix}" "$sig" 2>/dev/null; then
             if is_pgp_signature "$sig"; then
-                check_sig "$name" "$sig" "${KRYPTIK_SOURCES}/${file}" || true
+                check_sig "$name" "$sig" "${KRYPTIK_SOURCES}/${file}" "probe found ${suffix}" || true
                 return
             fi
             # Not cached: it would shadow the real signature on later runs.
@@ -681,9 +683,22 @@ fi
 import_keys
 echo
 
-while read -r name _ver url; do
+# The manifest's sig column says how upstream vouches for each file.
+while read -r name _ver url sig _; do
     [[ -z "$name" ]] && continue
     file="$(basename "$url")"
+
+    # A kind this script does not know fails: skipping it would pass the row.
+    case "$sig" in
+        gnu|kernel|sig|asc|probe|sha256|tag|none) ;;
+        *)
+            err "${name}: the manifest declares no signature kind this script knows ('${sig}')"
+            FAILED=$((FAILED + 1)); FAILED_LIST+=("${name} (unknown signature kind '${sig}')")
+            report "$name" signature-kind-unknown "the manifest declares '${sig}'"
+            continue
+            ;;
+    esac
+
     # Not downloaded is unverifiable, so --strict fails on it.
     [[ -f "${KRYPTIK_SOURCES}/${file}" ]] || {
         warn "${name}: not downloaded, so its signature cannot be checked"
@@ -692,28 +707,23 @@ while read -r name _ver url; do
         continue
     }
 
-    case "$url" in
-        *gnu.org*|*mirrors.kernel.org/gnu*) verify_gnu    "$name" "$url" "$file" ;;
-        *cdn.kernel.org*|*www.kernel.org/pub*) verify_kernel "$name" "$url" "$file" ;;
-        *github.com/anthraxx/linux-hardened*|*github.com/tukaani-project/xz*)
-            verify_detached "$name" "$url" "$file"
+    case "$sig" in
+        gnu)    verify_gnu      "$name" "$url" "$file" ;;
+        kernel) verify_kernel   "$name" "$url" "$file" ;;
+        sig)    verify_detached "$name" "$url" "$file" ;;
+        asc)    verify_detached "$name" "$url" "$file" ".asc" ;;
+        probe)  verify_any      "$name" "$url" "$file" ;;
+        sha256|tag)
+            what="the publisher's .sha256"
+            [[ "$sig" == tag ]] && what="the signed tag"
+            warn "${name}: no OpenPGP signature upstream; ${what} is verify-provenance's"
+            mark_unverifiable "${name} (${what}, see verify-provenance)"
+            report "$name" no-signature-upstream "no OpenPGP signature; tools/verify-provenance.sh checks ${what}"
             ;;
-        *astron.com*)
-            verify_detached "$name" "$url" "$file" ".asc"
-            ;;
-        *curl.se/ca/*)
-            # Unsigned; verify-provenance.sh checks curl.se's .sha256 for it.
-            warn "${name}: no OpenPGP signature upstream; the publisher's checksum is verify-provenance's"
-            mark_unverifiable "${name} (publisher checksum, see verify-provenance)"
-            report "$name" no-signature-upstream "curl.se publishes a .sha256 beside the bundle, checked by tools/verify-provenance.sh"
-            ;;
-        *linuxfromscratch.org*)
-            warn "${name}: LFS patches are not individually signed upstream"
+        none)
+            warn "${name}: upstream publishes no signature for it"
             mark_unverifiable "${name} (upstream publishes no signature)"
-            report "$name" no-signature-upstream "LFS publishes md5sums for the patch set, not per-patch signatures"
-            ;;
-        *)
-            verify_any "$name" "$url" "$file"
+            report "$name" no-signature-upstream "upstream publishes no signature for it"
             ;;
     esac
 done < <(manifest_source)

@@ -14,7 +14,7 @@ R="$T/repo"; I="$T/image"
 mkdir -p "$R/tools" "$R/build/lib" "$R/build/config" "$I/usr/share/licenses"
 cp "$ROOT/tools/check-image-licences.sh" "$R/tools/"
 cp "$ROOT/build/lib/common.sh" "$R/build/lib/"
-printf '#!/usr/bin/env bash\nprintf "%%s\\n" "zlib 1.3 https://x/zlib-1.3.tar.xz" "bash 5.3 https://x/bash-5.3.tar.gz" "glibc-fhs-patch 2.40 https://x/glibc-2.40-fhs-1.patch"\n' > "$R/tools/fetch-sources.sh"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "zlib 1.3 https://x/zlib-1.3.tar.xz probe github" "bash 5.3 https://x/bash-5.3.tar.gz gnu gnu" "glibc-fhs-patch 2.40 https://x/glibc-2.40-fhs-1.patch none follows:glibc"\n' > "$R/tools/fetch-sources.sh"
 chmod 755 "$R/tools/fetch-sources.sh"
 printf '# test\nglibc-fhs-patch   # a patch to glibc\n' > "$R/build/config/licence-exceptions.txt"
 check() { KRYPTIK_ROOT="$R" NO_COLOR=1 bash "$R/tools/check-image-licences.sh" "$I" 2>&1; }

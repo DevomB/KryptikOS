@@ -44,6 +44,17 @@ like integrity without being it.
 Hashes live in `sources.lock`, not `versions.env`, so a hash change shows up
 as its own diff in review instead of riding along with a version bump.
 
+Each manifest row in `tools/fetch-sources.sh` also declares how upstream
+vouches for the file (a GNU `.sig`, kernel.org's `.tar.sign`, a detached
+`.sig` or `.asc`, a probe for whichever of those is published, a publisher's
+`.sha256`, a signed tag, or nothing) and where its newest release is found
+(the GNU listing, the newest `vN/` directory beside the file's, the project's
+latest GitHub release, the file's own directory, or a rule in
+`tools/currency-rules.tsv`). The verifiers and `tools/check-source-currency.sh`
+act on what a row declares and fail on a value they do not know, so a new
+source says how it is checked when it is added, and a change of method is a
+reviewed diff.
+
 `tools/scan-licenses.sh` records the top-level licence files each tarball
 carries, with an SPDX identifier only where the text is unambiguous. It is not
 a compliance scanner.
@@ -81,8 +92,8 @@ one patch past the fix.
 
 ## Sources without a detached signature
 
-`make verify-provenance` (`tools/verify-provenance.sh`) covers the two that
-matter most:
+`make verify-provenance` (`tools/verify-provenance.sh`) checks the rows that
+declare a signed tag or a publisher's `.sha256`:
 
 - **hardened_malloc** (ADR-005). GrapheneOS signs the release tag, with an
   ssh-ed25519 key, not the archive. The tool fetches the tag, verifies it
@@ -95,6 +106,8 @@ matter most:
   as the tarball. skarnet keeps it for the current release only, so an old pin
   cannot be checked, and `versions.env` keeps the s6 stack current for that
   reason.
+- **The CA bundle**. curl.se publishes a `.sha256` beside each extraction of
+  Mozilla's set, checked the same way.
 
 Neither is a signature over the artifact, and the tool says so. Under
 `--strict`, which CI uses on pushes, a check that could not run fails.

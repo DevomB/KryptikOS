@@ -175,10 +175,11 @@ DEAD_SKARNET="http://127.0.0.1:1"
 FAKE="${TMP}/root"
 
 # build_root <hm-archive-path|-> <hm-lock-hash|auto|none>
+# The publisher is FIX_SKARNET at the time of the call.
 build_root() {
     local hm_archive="$1" hm_lock="$2"
     rm -rf "$FAKE"
-    mkdir -p "${FAKE}/build/config" "${FAKE}/sources"
+    mkdir -p "${FAKE}/build/config" "${FAKE}/sources" "${FAKE}/tools"
 
     cat > "${FAKE}/build/config/versions.env" <<EOF
 V_HARDENED_MALLOC=${TAG}
@@ -187,7 +188,25 @@ V_EXECLINE=${E_VER}
 V_S6=${S6_VER}
 V_S6_RC=${RC_VER}
 V_S6_LINUX_INIT=${INIT_VER}
+MIRROR_SKARNET=${FIX_SKARNET}
 EOF
+
+    # The tool reads its rows from the manifest: these, and one it must skip.
+    cat > "${FAKE}/tools/fetch-sources.sh" <<'STUB'
+#!/usr/bin/env bash
+# Test stub: rows as `fetch-sources.sh --list` prints them, from the fixture pins.
+source "$(dirname "${BASH_SOURCE[0]}")/../build/config/versions.env"
+sk="$MIRROR_SKARNET"
+printf '%s %s %s %s %s\n' \
+    hardened-malloc "$V_HARDENED_MALLOC" "https://github.com/GrapheneOS/hardened_malloc/archive/refs/tags/${V_HARDENED_MALLOC}.tar.gz" tag github \
+    skalibs "$V_SKALIBS" "${sk}/skalibs/skalibs-${V_SKALIBS}.tar.gz" sha256 listing \
+    execline "$V_EXECLINE" "${sk}/execline/execline-${V_EXECLINE}.tar.gz" sha256 listing \
+    s6 "$V_S6" "${sk}/s6/s6-${V_S6}.tar.gz" sha256 listing \
+    s6-rc "$V_S6_RC" "${sk}/s6-rc/s6-rc-${V_S6_RC}.tar.gz" sha256 listing \
+    s6-linux-init "$V_S6_LINUX_INIT" "${sk}/s6-linux-init/s6-linux-init-${V_S6_LINUX_INIT}.tar.gz" sha256 listing \
+    zlib 1.3.1 "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz" probe github
+STUB
+    chmod 755 "${FAKE}/tools/fetch-sources.sh"
 
     cp "${TMP}/sources/"*.tar.gz "${FAKE}/sources/" 2>/dev/null || true
 
@@ -226,13 +245,12 @@ run() {
         KRYPTIK_HM_REMOTE="$FIXREPO" \
         KRYPTIK_HM_SIGNERS="$FIX_SIGNERS" \
         KRYPTIK_HM_FPR="$FIX_FPR" \
-        KRYPTIK_SKARNET_BASE="$FIX_SKARNET" \
         NO_COLOR=1 \
         bash "$TOOL" "$@" > "$OUT" 2>&1
     RC=$?
 }
 
-# set_tag <tag>: the tool takes its tag from V_HARDENED_MALLOC.
+# set_tag <tag>: the manifest stub takes its tag from V_HARDENED_MALLOC.
 set_tag() {
     sed -i "s/^V_HARDENED_MALLOC=.*/V_HARDENED_MALLOC=$1/" \
         "${FAKE}/build/config/versions.env"
@@ -420,6 +438,37 @@ run
 expect_fail "a tampered download is caught by lockfile integrity alone" \
     "skalibs-${S_VER}.tar.gz does not match sources.lock"
 
+# --- the manifest's rows ----------------------------------------------------
+
+# Only tag and sha256 rows are this script's: zlib's probe row is not.
+build_root "${ARCHIVES}/authentic.tar.gz" auto
+run --strict
+if [[ "$RC" -eq 0 ]] && ! grep -qF "zlib" "$OUT"; then
+    green "a row that declares neither tag nor sha256 is left alone"
+else
+    red "a probe row was checked here (exit ${RC})"; show
+fi
+
+build_root "${ARCHIVES}/authentic.tar.gz" auto
+printf 'echo "other 1.0 https://example.invalid/other-1.0.tar.gz tag github"\n' \
+    >> "${FAKE}/tools/fetch-sources.sh"
+run
+expect_fail "a tag row with no signer pinned for it fails" \
+    "the manifest says a signed tag vouches for it"
+
+# Its signer is pinned, so the allocator's row may not stop declaring its tag.
+build_root "${ARCHIVES}/authentic.tar.gz" auto
+sed -i 's/\.tar\.gz" tag github/.tar.gz" probe github/' "${FAKE}/tools/fetch-sources.sh"
+run
+expect_fail "an allocator row that stops declaring its tag fails" \
+    "the manifest declares no signed tag for hardened-malloc"
+
+build_root "${ARCHIVES}/authentic.tar.gz" auto
+printf '#!/usr/bin/env bash\nexit 1\n' > "${FAKE}/tools/fetch-sources.sh"
+run
+expect_fail "a manifest that cannot be listed fails rather than checking nothing" \
+    "nothing to check against"
+
 # --- missing prerequisites --------------------------------------------------
 
 # mkbin <dir> [tool...]: a PATH directory of the usual tools minus those named.
@@ -483,7 +532,6 @@ KRYPTIK_PROVENANCE_SELFTEST=1 \
 KRYPTIK_HM_REMOTE="$FIXREPO" \
 KRYPTIK_HM_SIGNERS="$FIX_SIGNERS" \
 KRYPTIK_HM_FPR="$FIX_FPR" \
-KRYPTIK_SKARNET_BASE="$FIX_SKARNET" \
 NO_COLOR=1 bash "$TOOL" --report="$REPORT" > "$OUT" 2>&1
 rc=$?
 

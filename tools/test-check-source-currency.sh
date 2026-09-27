@@ -115,6 +115,10 @@ page "invisible-mirror.net/archives/lynx/tarballs" \
 page "ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable" \
     "openssh-10.4p1.tar.gz" "openssh-10.5p1.tar.gz" "openssh-10.5p1.tar.gz.asc"
 
+# openssl: the pinned major line only; 4.0.0 is a new major.
+page "openssl-library.org/source" \
+    "openssl-3.3.1.tar.gz" "openssl-3.6.2.tar.gz" "openssl-4.0.0.tar.gz"
+
 # glibc's release branch, read by git over HTTP from a plain info/refs: the
 # head has moved past the commit the patch set was cut from.
 refs() { mkdir -p "${SERVE}/sourceware.org/git/glibc.git/info"; printf '%s\trefs/heads/release/2.40/master\n' "$1" > "${SERVE}/sourceware.org/git/glibc.git/info/refs"; }
@@ -157,36 +161,38 @@ build_root() {
     rm -rf "$FAKE"
     mkdir -p "${FAKE}/build/config" "${FAKE}/tools"
     cat > "${FAKE}/build/config/versions.env" <<'EOF'
-V_PYTHON=3.12.5
-V_OPENSSL=3.3.1
-V_WLROOTS=0.19.3
 V_GLIBC=2.40
 EOF
     mkdir -p "${FAKE}/build/patches/glibc-2.40"
     : > "${FAKE}/build/patches/glibc-2.40/0001-release-2.40-master-cdaa5d6db08e.patch"
+    # The real rules, so the fixtures answer at the hosts and paths they name.
+    cp "${ROOT}/tools/currency-rules.tsv" "${FAKE}/tools/"
     cat > "${FAKE}/tools/fetch-sources.sh" <<'STUB'
 #!/usr/bin/env bash
-# Test stub: the same three columns as `fetch-sources.sh --list`.
+# Test stub: the same columns as `fetch-sources.sh --list`.
 cat <<'ROWS'
-grub         2.12       https://ftpmirror.gnu.org/gnu/grub/grub-2.12.tar.xz
-tar          1.35       https://ftpmirror.gnu.org/gnu/tar/tar-1.35.tar.xz
-mystery      1.0        https://ftpmirror.gnu.org/gnu/mystery/mystery-1.0.tar.xz
-util-linux   2.40.2     https://www.kernel.org/pub/linux/utils/util-linux/v2.40/util-linux-2.40.2.tar.xz
-s6           2.15.1.0   https://skarnet.org/software/s6/s6-2.15.1.0.tar.gz
-python       3.12.5     https://www.python.org/ftp/python/3.12.5/Python-3.12.5.tar.xz
-perl         5.40.0     https://www.cpan.org/src/5.0/perl-5.40.0.tar.xz
-zlib         1.3.1      https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz
-preview      1.0        https://github.com/acme/preview/releases/download/v1.0/preview-1.0.tar.gz
-linux        6.18.50    https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.50.tar.xz
-libinput     1.30.4     https://gitlab.freedesktop.org/libinput/libinput/-/archive/1.30.4/libinput-1.30.4.tar.gz
-wayland      1.26.0     https://gitlab.freedesktop.org/wayland/wayland/-/releases/1.26.0/downloads/wayland-1.26.0.tar.xz
-wlroots      0.19.3     https://gitlab.freedesktop.org/wlroots/wlroots/-/releases/0.19.3/downloads/wlroots-0.19.3.tar.gz
-dwl          0.8        https://codeberg.org/dwl/dwl/releases/download/v0.8/dwl-v0.8.tar.gz
-less         661        https://www.greenwoodsoftware.com/less/less-661.tar.gz
-lynx         2.9.3      https://invisible-mirror.net/archives/lynx/tarballs/lynx2.9.3.tar.gz
-openssh      10.5p1     https://ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-10.5p1.tar.gz
-kernel-hardening-checker 0.6.17.1 https://github.com/a13xp0p0v/kernel-hardening-checker/archive/refs/tags/v0.6.17.1.tar.gz
-glibc-fhs-patch 2.40    https://www.linuxfromscratch.org/patches/lfs/12.2/glibc-2.40-fhs-1.patch
+grub         2.12       https://ftpmirror.gnu.org/gnu/grub/grub-2.12.tar.xz gnu gnu
+tar          1.35       https://ftpmirror.gnu.org/gnu/tar/tar-1.35.tar.xz gnu gnu
+mystery      1.0        https://ftpmirror.gnu.org/gnu/mystery/mystery-1.0.tar.xz gnu gnu
+util-linux   2.40.2     https://www.kernel.org/pub/linux/utils/util-linux/v2.40/util-linux-2.40.2.tar.xz kernel vdir
+s6           2.15.1.0   https://skarnet.org/software/s6/s6-2.15.1.0.tar.gz sha256 listing
+python       3.12.5     https://www.python.org/ftp/python/3.12.5/Python-3.12.5.tar.xz probe rule
+perl         5.40.0     https://www.cpan.org/src/5.0/perl-5.40.0.tar.xz probe rule
+zlib         1.3.1      https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz probe github
+preview      1.0        https://github.com/acme/preview/releases/download/v1.0/preview-1.0.tar.gz probe github
+linux        6.18.50    https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.50.tar.xz kernel eol
+libinput     1.30.4     https://gitlab.freedesktop.org/libinput/libinput/-/archive/1.30.4/libinput-1.30.4.tar.gz probe rule
+wayland      1.26.0     https://gitlab.freedesktop.org/wayland/wayland/-/releases/1.26.0/downloads/wayland-1.26.0.tar.xz probe rule
+wlroots      0.19.3     https://gitlab.freedesktop.org/wlroots/wlroots/-/releases/0.19.3/downloads/wlroots-0.19.3.tar.gz probe rule
+dwl          0.8        https://codeberg.org/dwl/dwl/releases/download/v0.8/dwl-v0.8.tar.gz probe rule
+less         661        https://www.greenwoodsoftware.com/less/less-661.tar.gz probe rule
+lynx         2.9.3      https://invisible-mirror.net/archives/lynx/tarballs/lynx2.9.3.tar.gz probe rule
+openssh      10.5p1     https://ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-10.5p1.tar.gz probe rule
+kernel-hardening-checker 0.6.17.1 https://github.com/a13xp0p0v/kernel-hardening-checker/archive/refs/tags/v0.6.17.1.tar.gz probe rule
+glibc-fhs-patch 2.40    https://www.linuxfromscratch.org/patches/lfs/12.2/glibc-2.40-fhs-1.patch none follows:glibc
+openssl      3.3.1      https://www.openssl.org/source/openssl-3.3.1.tar.gz probe rule
+oddity       1.0        https://example.invalid/oddity/oddity-1.0.tar.gz probe telepathy
+norule       1.0        https://example.invalid/norule/norule-1.0.tar.gz probe rule
 ROWS
 STUB
     chmod 755 "${FAKE}/tools/fetch-sources.sh"
@@ -250,6 +256,11 @@ expect_row openssh 10.5p1 current    # the portable suffix is part of the versio
 expect_row kernel-hardening-checker 0.6.17.1 current   # tags only, no releases
 expect_row glibc-fhs-patch "" deferred                 # follows the glibc pin
 expect_row glibc-branch 111111111111 BEHIND            # the branch moved past the patch set's commit
+expect_row openssl 3.6.2 BEHIND      # the pinned major line, not 4.0.0
+
+# A row the script cannot look up is UNKNOWN, never skipped.
+expect_row oddity "" UNKNOWN         # a way to look that the script does not know
+expect_row norule "" UNKNOWN         # a rule the rules file does not have
 
 if [[ "$(field linux 5)" == *check-kernel-eol* ]]; then
     green "the kernel row names the tool that does answer the question"
@@ -296,12 +307,51 @@ else
 fi
 
 run
-if grep -qE "^warn UNKNOWN: +2" "$OUT" \
-   || grep -qE "UNKNOWN: +2" "$OUT"; then
+if grep -qE "UNKNOWN: +4" "$OUT"; then
     green "UNKNOWN rows are counted separately"
 else
     red "UNKNOWN rows were not counted separately"; show
 fi
+
+# --- the rules file ---------------------------------------------------------
+
+# A rule that cannot be read fails the run: its row would only read UNKNOWN.
+printf 'gawk\tlisting\thttps://ftp.gnu.org/gnu/gawk/\tgawk-[0-9.]+\\.tar\\.xz\t-\n' \
+    >> "${FAKE}/tools/currency-rules.tsv"
+bad="$(wc -l < "${FAKE}/tools/currency-rules.tsv")"
+run --tsv
+if [[ "$RC" -ne 0 ]] && grep -qF "currency-rules.tsv:${bad}: a listing's match needs a group" "$OUT"; then
+    green "a listing rule with no version group is refused, by line"
+else
+    red "a listing rule with no version group was not refused (exit ${RC})"; show
+fi
+
+build_root
+{
+    printf 'gawk\tlisting\thttps://ftp.gnu.org/gnu/gawk/\tgawk-([0-9.]+)\\.tar\\.xz\tnewest\n'
+    printf 'dwl\tapi\thttps://codeberg.org/api/v1/repos/dwl/dwl/tags?limit=50\tname\t-\n'
+} >> "${FAKE}/tools/currency-rules.tsv"
+run --tsv
+if [[ "$RC" -ne 0 ]] && grep -qF "keep is -, series, major, even or drop90" "$OUT"; then
+    green "an unknown keep policy is refused"
+else
+    red "an unknown keep policy was not refused (exit ${RC})"; show
+fi
+if grep -qF "a second rule for dwl" "$OUT"; then
+    green "a second rule for one source is refused"
+else
+    red "a second rule for one source was not refused"; show
+fi
+
+build_root
+rm "${FAKE}/tools/currency-rules.tsv"
+run --tsv
+if [[ "$RC" -ne 0 ]] && grep -qF "has nowhere to look" "$OUT"; then
+    green "a missing rules file fails the run"
+else
+    red "a missing rules file did not fail the run (exit ${RC})"; show
+fi
+build_root
 
 # --- selftest hook ----------------------------------------------------------
 

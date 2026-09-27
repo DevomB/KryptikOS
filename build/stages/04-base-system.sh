@@ -1357,7 +1357,7 @@ s_tests() {
 s_licences() {
     local more_re='^[^/]+/(license|WHENCE|LICENSES/(preferred|exceptions)/[^/]+)$'
     local name url f m dir tmp n=0 members
-    while read -r name _ url; do
+    while read -r name _ url _; do
         [[ -n "$name" ]] || continue
         f="${KRYPTIK_SOURCES}/${url##*/}"
         [[ -f "$f" ]] || continue

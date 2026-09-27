@@ -36,21 +36,21 @@ build_tree() {
     rm -rf "$FAKE"
     mkdir -p "${FAKE}/build/config" "${FAKE}/sources" "${FAKE}/tools"
 
-    # The inventory reads only the three columns of fetch-sources.sh --list.
+    # The inventory reads the first three columns of fetch-sources.sh --list.
     cat > "${FAKE}/tools/fetch-sources.sh" <<'STUB'
 #!/usr/bin/env bash
-# Test stub: emits the same three columns as `fetch-sources.sh --list`.
+# Test stub: emits the same columns as `fetch-sources.sh --list`.
 cat <<'ROWS'
-alloc        14         https://example.test/alloc/14.tar.gz
-pinnedpkg    1.0        https://example.test/pinnedpkg-1.0.tar.gz
-korgcert     2.0        https://example.test/korgcert-2.0.tar.gz
-korgpub      3.0        https://example.test/korgpub-3.0.tar.gz
-keyringpkg   4.0        https://example.test/keyringpkg-4.0.tar.gz
-unauditedpkg 5.0        https://example.test/unauditedpkg-5.0.tar.gz
-pubsha       6.0        https://example.test/pubsha-6.0.tar.gz
-lockonly     7.0        https://example.test/lockonly-7.0.tar.gz
-absentpkg    8.0        https://example.test/absentpkg-8.0.tar.gz
-nolockpkg    9.0        https://example.test/nolockpkg-9.0.tar.gz
+alloc        14         https://example.test/alloc/14.tar.gz tag github
+pinnedpkg    1.0        https://example.test/pinnedpkg-1.0.tar.gz probe listing
+korgcert     2.0        https://example.test/korgcert-2.0.tar.gz probe listing
+korgpub      3.0        https://example.test/korgpub-3.0.tar.gz probe listing
+keyringpkg   4.0        https://example.test/keyringpkg-4.0.tar.gz probe listing
+unauditedpkg 5.0        https://example.test/unauditedpkg-5.0.tar.gz probe listing
+pubsha       6.0        https://example.test/pubsha-6.0.tar.gz sha256 listing
+lockonly     7.0        https://example.test/lockonly-7.0.tar.gz probe listing
+absentpkg    8.0        https://example.test/absentpkg-8.0.tar.gz probe listing
+nolockpkg    9.0        https://example.test/nolockpkg-9.0.tar.gz probe listing
 ROWS
 STUB
     chmod 755 "${FAKE}/tools/fetch-sources.sh"

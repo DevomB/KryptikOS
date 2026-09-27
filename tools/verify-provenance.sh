@@ -31,19 +31,17 @@ HM_SIGNER_PRINCIPAL="contact@grapheneos.org"
 HM_SIGNER_ENTRY="contact@grapheneos.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIUg/m5CoP83b0rfSCzYSVA4cw4ir49io5GPoxbgxdJE"
 HM_SIGNER_FPR="SHA256:AhgHif0mei+9aNyKLfMZBh2yptHdw/aN7Tlh/j2eFwM"
 
-SKARNET_BASE="${MIRROR_SKARNET:-https://skarnet.org/software}"
 HM_REMOTE="https://github.com/${HM_REPO}"
 
 # Overrides for tools/test-verify-provenance.sh. They substitute the trust
 # anchor, so they are refused without KRYPTIK_PROVENANCE_SELFTEST=1.
-if [[ -n "${KRYPTIK_HM_REMOTE:-}${KRYPTIK_HM_SIGNERS:-}${KRYPTIK_HM_FPR:-}${KRYPTIK_SKARNET_BASE:-}" ]]; then
+if [[ -n "${KRYPTIK_HM_REMOTE:-}${KRYPTIK_HM_SIGNERS:-}${KRYPTIK_HM_FPR:-}" ]]; then
     [[ "${KRYPTIK_PROVENANCE_SELFTEST:-0}" == "1" ]] || die \
 "A provenance override is set (KRYPTIK_HM_REMOTE / KRYPTIK_HM_SIGNERS /
-KRYPTIK_HM_FPR / KRYPTIK_SKARNET_BASE) but KRYPTIK_PROVENANCE_SELFTEST is not.
+KRYPTIK_HM_FPR) but KRYPTIK_PROVENANCE_SELFTEST is not.
 Refusing to verify provenance against substituted inputs."
     warn "SELF-TEST MODE: provenance inputs are substituted, not upstream"
-    [[ -n "${KRYPTIK_HM_REMOTE:-}" ]]   && HM_REMOTE="$KRYPTIK_HM_REMOTE"
-    [[ -n "${KRYPTIK_SKARNET_BASE:-}" ]] && SKARNET_BASE="$KRYPTIK_SKARNET_BASE"
+    [[ -n "${KRYPTIK_HM_REMOTE:-}" ]] && HM_REMOTE="$KRYPTIK_HM_REMOTE"
 fi
 
 WORK="${KRYPTIK_WORK}/provenance"
@@ -97,10 +95,11 @@ http_get() {
 
 # hardened_malloc: fetch the tag with git, verify its signature against the
 # pinned key, and require the downloaded archive to reproduce the tag's tree.
+# Its manifest row gives the tag and the archive's name.
 
-HM_TAG="${V_HARDENED_MALLOC:-}"
-# The name fetch-sources.sh saves GitHub's tag archive under.
-HM_ARCHIVE="${HM_TAG}.tar.gz"
+HM_NAME="hardened-malloc"
+HM_TAG=""
+HM_ARCHIVE=""
 HM_LABEL="hardened_malloc (system allocator)"
 
 verify_hm_lock() {
@@ -134,8 +133,8 @@ verify_hm_tree() {
     local archive="${KRYPTIK_SOURCES}/${HM_ARCHIVE}"
 
     if [[ -z "$HM_TAG" ]]; then
-        fail id "${HM_LABEL}: V_HARDENED_MALLOC is unset, so there is no tag to
-       authenticate against"
+        fail id "${HM_LABEL}: its manifest row names no tag to authenticate
+       against"
         return
     fi
 
@@ -274,10 +273,9 @@ verify_hm_tree() {
 # host over the same TLS as the tarball, so it is not a signature. skarnet keeps
 # one only for its current release; versions.env keeps the s6 stack current.
 
-# verify_published_sha256 <url> <label> <manifest-name>
-# Reports are keyed by the name fetch-sources.sh --list uses, not the label.
+# verify_published_sha256 <name> <url>
 verify_published_sha256() {
-    local url="$1" label="$2" name="$3"
+    local name="$1" url="$2"
     RSRC="$name"
     local file; file="$(basename "$url")"
     local body="${WORK}/${file}.sha256"
@@ -285,38 +283,38 @@ verify_published_sha256() {
 
     local locked
     if ! locked="$(lock_hash_for "$file")"; then
-        fail lock "${label}: ${file} has no entry in sources.lock"
+        fail lock "${name}: ${file} has no entry in sources.lock"
         return
     fi
 
     if [[ -f "$path" ]]; then
         local actual; actual="$(sha256_of "$path")"
         if [[ "$actual" == "$locked" ]]; then
-            pass lock "${label}: ${file} matches sources.lock"
+            pass lock "${name}: ${file} matches sources.lock"
         else
-            fail lock "${label}: ${file} does not match sources.lock"
+            fail lock "${name}: ${file} does not match sources.lock"
             err  "       sources.lock ${locked}"
             err  "       on disk      ${actual}"
         fi
     else
-        unavail lock "${label}: ${file} is not downloaded. Run 'make sources'."
+        unavail lock "${name}: ${file} is not downloaded. Run 'make sources'."
     fi
 
     if [[ "$OFFLINE" -eq 1 ]]; then
-        unavail pub "${label}: --offline, so the publisher checksum was not fetched"
+        unavail pub "${name}: --offline, so the publisher checksum was not fetched"
         return
     fi
-    have curl || { prereq pub "${label}: curl is not installed"; return; }
+    have curl || { prereq pub "${name}: curl is not installed"; return; }
 
     local rc=0
     http_get "${url}.sha256" "$body" || rc=$?
     if [[ "$rc" -ne 0 ]]; then
         if [[ "${HTTP_CODE:-000}" == "404" ]]; then
-            unavail pub "${label}: the publisher no longer publishes a .sha256
+            unavail pub "${name}: the publisher no longer publishes a .sha256
        for this version. skarnet keeps one only for the current release, so
        this pin is stale AND unverifiable by publisher checksum."
         else
-            unavail pub "${label}: could not fetch ${url}.sha256
+            unavail pub "${name}: could not fetch ${url}.sha256
        (curl exit ${rc}, HTTP ${HTTP_CODE:-none})"
         fi
         return
@@ -325,16 +323,16 @@ verify_published_sha256() {
     local expected
     expected="$(awk 'NF{print $1; exit}' "$body" 2>/dev/null || true)"
     if [[ ! "$expected" =~ ^[0-9a-fA-F]{64}$ ]]; then
-        fail pub "${label}: ${url}.sha256 is not a sha256 digest
+        fail pub "${name}: ${url}.sha256 is not a sha256 digest
        (got $(head -c 80 "$body" | tr -d '\n' || true))"
         return
     fi
     expected="$(printf '%s' "$expected" | tr 'A-F' 'a-f')"
 
     if [[ "$expected" == "$locked" ]]; then
-        pass pub "${label}: publisher sha256 agrees with sources.lock"
+        pass pub "${name}: publisher sha256 agrees with sources.lock"
     else
-        fail pub "${label}: PUBLISHER CHECKSUM MISMATCH"
+        fail pub "${name}: PUBLISHER CHECKSUM MISMATCH"
         err  "       publisher says ${expected}"
         err  "       sources.lock   ${locked}"
     fi
@@ -348,28 +346,42 @@ fi
 [[ "$OFFLINE" -eq 1 ]] && warn "--offline: no network check will be performed"
 echo
 
-log "hardened_malloc: authenticated source tree"
-RSRC="hardened-malloc"
-verify_hm_lock || true
-verify_hm_tree
+# The manifest's sig column hands this script its tag and sha256 rows. Read
+# whole first, so no command a check runs can take the rows as its stdin.
+MANIFEST="${WORK}/manifest"
+"${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list > "$MANIFEST" \
+    || die "tools/fetch-sources.sh --list failed, so there is nothing to check against."
+mapfile -t TAG_ROWS < <(awk '$4 == "tag"' "$MANIFEST")
+mapfile -t SUM_ROWS < <(awk '$4 == "sha256"' "$MANIFEST")
+
+log "Signed tags"
+for row in "${TAG_ROWS[@]}"; do
+    read -r name ver url _ <<< "$row"
+    RSRC="$name"
+    # A key is pinned for one project's tags; any other tag row has none.
+    if [[ "$name" != "$HM_NAME" ]]; then
+        fail id "${name}: the manifest says a signed tag vouches for it, and no
+       signer is pinned here for its tags"
+        continue
+    fi
+    HM_TAG="$ver"
+    HM_ARCHIVE="${url##*/}"
+    verify_hm_lock || true
+    verify_hm_tree
+done
+# Its signer is pinned above, so a row that stops declaring the tag must not
+# quietly end the check.
+if [[ -z "$HM_TAG" ]]; then
+    RSRC="$HM_NAME"
+    fail id "${HM_LABEL}: the manifest declares no signed tag for ${HM_NAME}"
+fi
 
 echo
-log "skarnet: publisher-published checksums"
-verify_published_sha256 "${SKARNET_BASE}/skalibs/skalibs-${V_SKALIBS}.tar.gz" "skalibs" "skalibs"
-verify_published_sha256 "${SKARNET_BASE}/execline/execline-${V_EXECLINE}.tar.gz" "execline" "execline"
-verify_published_sha256 "${SKARNET_BASE}/s6/s6-${V_S6}.tar.gz" "s6 (PID 1)" "s6"
-verify_published_sha256 "${SKARNET_BASE}/s6-rc/s6-rc-${V_S6_RC}.tar.gz" "s6-rc" "s6-rc"
-verify_published_sha256 "${SKARNET_BASE}/s6-linux-init/s6-linux-init-${V_S6_LINUX_INIT}.tar.gz" \
-    "s6-linux-init" "s6-linux-init"
-
-# The CA bundle is unsigned; curl.se publishes a .sha256 beside it. Test
-# fixtures pin none.
-if [[ -n "${V_CA_BUNDLE:-}" ]]; then
-    echo
-    log "curl.se: publisher-published checksum"
-    verify_published_sha256 "${MIRROR_CURL_CA:-https://curl.se/ca}/cacert-${V_CA_BUNDLE}.pem" \
-        "CA bundle (Mozilla's set, as curl.se publishes it)" "ca-bundle"
-fi
+log "Publisher checksums"
+for row in "${SUM_ROWS[@]}"; do
+    read -r name _ url _ <<< "$row"
+    verify_published_sha256 "$name" "$url"
+done
 
 echo
 log "Summary"

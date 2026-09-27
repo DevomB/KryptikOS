@@ -163,7 +163,7 @@ jobs:
           }
 
           missing=0
-          while read -r name ver url; do
+          while read -r name ver url _; do
             if reach "$url"; then
               echo "  ok        $name $ver"
               continue
@@ -211,7 +211,7 @@ jobs:
       - name: sources.lock covers the manifest
         run: |
           fail=0
-          while read -r name ver url; do
+          while read -r name ver url _; do
             file=$(basename "$url")
             if ! grep -q "  $file\$" sources.lock; then
               echo "  MISSING FROM LOCK: $file"

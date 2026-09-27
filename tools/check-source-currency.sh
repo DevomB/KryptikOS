@@ -10,6 +10,7 @@
 
 # Every "newest" comes from the project's own host: a listing or its designated
 # latest release. Anything that does not parse is UNKNOWN, never "current".
+# Each manifest row's new column says where to look (tools/fetch-sources.sh).
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 load_config
@@ -95,22 +96,6 @@ m = re.search(r'(\d+[\d._]*\d)', tag.replace('_', '.'))
 print(m.group(1) if m else '')" || true
 }
 
-# Newest version with an even minor: odd minors are Perl development series.
-drop_odd_minor() {
-    python3 -c "
-import sys
-out = []
-for line in sys.stdin:
-    v = line.strip()
-    if not v:
-        continue
-    parts = v.split('.')
-    if len(parts) >= 2 and parts[1].isdigit() and int(parts[1]) % 2 == 1:
-        continue
-    out.append(v)
-print(out[-1] if out else '')"
-}
-
 # Every value of one string key in a JSON response, leading "v" dropped. The key
 # is matched with its opening quote ("name" is not "author_name") and, for
 # "name", the object's opening brace, so a nested "name" is skipped.
@@ -125,97 +110,119 @@ api_values() {  # api_values URL KEY
 # since GitLab lists releases by date, not version.
 numeric_newest() { grep -E '^[0-9]+(\.[0-9]+)+$' | sort -V -u | tail -1 || true; }
 
-# freedesktop projects number a release candidate X.Y.9N or X.Y.90N.
-drop_ninety() { grep -vE '\.9[0-9]+$' || true; }
+# keep <policy> <pinned>: the versions a rule lets the pin move to, in order.
+keep() {
+    local s
+    case "$1" in
+        -)      cat ;;
+        series) s="${2%.*}"; grep -E "^${s//./\\.}\.[0-9]+$" || true ;;
+        major)  s="${2%%.*}"; grep -E "^${s}\." || true ;;
+        # Odd minors are Perl development series.
+        even)   awk -F. 'NF && ($2 !~ /^[0-9]+$/ || $2 % 2 == 0)' ;;
+        # freedesktop projects number a release candidate X.Y.9N or X.Y.90N.
+        drop90) grep -vE '\.9[0-9]+$' || true ;;
+    esac
+}
+
+# --- rules ------------------------------------------------------------------
+
+# Where a row that declares "rule" looks, beside the manifest it serves.
+RULES="${KRYPTIK_ROOT}/tools/currency-rules.tsv"
+declare -A R_SHAPE=() R_WHERE=() R_MATCH=() R_KEEP=()
+
+load_rules() {
+    [[ -f "$RULES" ]] || die "no ${RULES}, so a row that declares a rule has nowhere to look"
+    local line n=0 bad=0 name shape where match policy rest why
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        n=$((n + 1))
+        [[ -z "${line//[[:space:]]/}" || "$line" =~ ^[[:space:]]*# ]] && continue
+        IFS=$'\t' read -r name shape where match policy rest <<< "$line"
+        why=""
+        case "$shape" in
+            listing) [[ "$match" == *\(* && "$match" != *@* ]] \
+                         || why="a listing's match needs a group, and no @" ;;
+            api)     [[ "$match" == tag_name || "$match" == name ]] \
+                         || why="an api's match is tag_name or name" ;;
+            *)       why="the shape is listing or api" ;;
+        esac
+        if [[ -z "$why" ]]; then
+            case "$policy" in
+                -|series|major|even|drop90) ;;
+                *) why="keep is -, series, major, even or drop90" ;;
+            esac
+        fi
+        [[ -z "$why" && "$where" != https://* ]] && why="where is an https URL"
+        [[ -z "$why" && -n "$rest" ]] && why="more than five columns"
+        [[ -z "$why" && -n "${R_SHAPE[$name]:-}" ]] && why="a second rule for ${name}"
+        if [[ -n "$why" ]]; then
+            err "${RULES}:${n}: ${why}"
+            bad=$((bad + 1))
+            continue
+        fi
+        R_SHAPE[$name]="$shape"; R_WHERE[$name]="$where"
+        R_MATCH[$name]="$match"; R_KEEP[$name]="$policy"
+    done < "$RULES"
+    [[ "$bad" -eq 0 ]] || die "${bad} malformed row(s) in ${RULES}.
+A rule that cannot be read is a tooling fault: its row would read UNKNOWN."
+}
+
+load_rules
+
+# rule_newest <name> <pinned> prints "<newest>|<consulted>".
+rule_newest() {
+    local name="$1" pinned="$2" newest="" consulted
+    if [[ -z "${R_SHAPE[$name]:-}" ]]; then
+        printf '|%s' "no rule for it in tools/currency-rules.tsv"
+        return
+    fi
+    local where="${R_WHERE[$name]}" policy="${R_KEEP[$name]}"
+    consulted="$where"
+    case "$policy" in
+        series) consulted="${where} (series ${pinned%.*})" ;;
+        major)  consulted="${where} (major ${pinned%%.*})" ;;
+    esac
+    if [[ "${R_SHAPE[$name]}" == api ]]; then
+        newest="$(api_values "$where" "${R_MATCH[$name]}" \
+            | keep "$policy" "$pinned" | numeric_newest || true)"
+    else
+        newest="$(versions_in_listing "$where" "${R_MATCH[$name]}" \
+            | keep "$policy" "$pinned" | tail -1 || true)"
+    fi
+    printf '%s|%s' "$newest" "$consulted"
+}
 
 # --- per-source strategy ----------------------------------------------------
 
-# upstream_for <name> <url> prints "<newest>|<consulted>"; either may be empty.
+# upstream_for <name> <pinned> <url> <new> prints "<newest>|<consulted>";
+# either may be empty. new is the manifest's column (tools/fetch-sources.sh).
 upstream_for() {
-    local name="$1" url="$2"
+    local name="$1" pinned="$2" url="$3" new="$4"
     local dir="${url%/*}" base="${url##*/}"
-    local newest="" consulted=""
+    local newest="" consulted="" stem="${base%%-[0-9]*}"
 
-    case "$name" in
+    case "$new" in
         # A longterm kernel is not "behind" a newer series; check-kernel-eol.sh
         # checks its support status instead.
-        linux|linux-hardened)
-            printf '%s|%s' "" "tools/check-kernel-eol.sh (support status, not version)"
-            return
-            ;;
-    esac
-
-    # --- hosts with no directory listing to read ---------------------------
-    local fd="https://gitlab.freedesktop.org/api/v4/projects"
-    case "$name" in
-        glibc-fhs-patch)
-            # The LFS patch for the pinned glibc; it moves only when glibc does.
-            printf '%s|%s' "" "tools/check-source-currency.sh, the glibc row (the patch follows glibc's pin)"
+        eol)
+            consulted="tools/check-kernel-eol.sh (support status, not version)" ;;
+        follows:*)
+            consulted="the ${new#follows:} row (this pin moves only with that one)" ;;
+        rule)
+            rule_newest "$name" "$pinned"
             return ;;
-        less)
-            # The front page names the current release; newer tarballs are betas.
-            consulted="https://www.greenwoodsoftware.com/less/ (released for general use)"
-            newest="$(fetch "https://www.greenwoodsoftware.com/less/" \
-                | grep -oE 'less-[0-9]+ has been released for general use' \
-                | sed -E 's/less-([0-9]+) .*/\1/' | sort -V -u | tail -1 || true)" ;;
-        procps-ng)
-            consulted="gitlab.com procps-ng/procps releases"
-            newest="$(api_values "https://gitlab.com/api/v4/projects/procps-ng%2Fprocps/releases?per_page=50" tag_name | numeric_newest)" ;;
-        psmisc)
-            # Tags: the release list misses a release.
-            consulted="gitlab.com psmisc/psmisc tags"
-            newest="$(api_values "https://gitlab.com/api/v4/projects/psmisc%2Fpsmisc/repository/tags?per_page=100" name | numeric_newest)" ;;
-        lvm2)
-            consulted="https://sourceware.org/pub/lvm2/"
-            newest="$(newest_in_listing "$consulted" 'LVM2\.([0-9]+(\.[0-9]+)+)\.tgz')" ;;
-        openssh)
-            consulted="https://ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable/"
-            newest="$(newest_in_listing "$consulted" 'openssh-([0-9]+\.[0-9]+p[0-9]+)\.tar\.gz')" ;;
-        ca-bundle)
-            # curl.se/ca/ is a meta refresh, which curl -L does not follow.
-            consulted="https://curl.se/docs/caextract.html"
-            newest="$(newest_in_listing "$consulted" 'cacert-([0-9]{4}-[0-9]{2}-[0-9]{2})\.pem')" ;;
-        wayland|libinput)
-            consulted="gitlab.freedesktop.org ${name}/${name} releases"
-            newest="$(api_values "${fd}/${name}%2F${name}/releases?per_page=50" tag_name | drop_ninety | numeric_newest)" ;;
-        wayland-protocols)
-            consulted="gitlab.freedesktop.org wayland/wayland-protocols releases"
-            newest="$(api_values "${fd}/wayland%2Fwayland-protocols/releases?per_page=50" tag_name | numeric_newest)" ;;
-        libdisplay-info)
-            consulted="gitlab.freedesktop.org emersion/libdisplay-info releases"
-            newest="$(api_values "${fd}/emersion%2Flibdisplay-info/releases?per_page=50" tag_name | numeric_newest)" ;;
-        wlroots)
-            # The pinned series only: each series changes the API dwl uses.
-            local wseries="${V_WLROOTS%.*}"
-            consulted="gitlab.freedesktop.org wlroots/wlroots tags (series ${wseries})"
-            newest="$(api_values "${fd}/wlroots%2Fwlroots/repository/tags?per_page=100" name \
-                | grep -E "^${wseries//./\\.}\.[0-9]+$" | numeric_newest || true)" ;;
-        seatd)
-            consulted="https://git.sr.ht/~kennylevinsen/seatd/refs/rss.xml"
-            newest="$(fetch "$consulted" | grep -oE '<title>[0-9]+(\.[0-9]+)+</title>' \
-                | sed -E 's/<[^>]*>//g' | sort -V -u | tail -1 || true)" ;;
-        dwl)
-            consulted="codeberg.org dwl/dwl tags"
-            newest="$(api_values "https://codeberg.org/api/v1/repos/dwl/dwl/tags?limit=50" name | numeric_newest)" ;;
-        lynx)
-            consulted="https://invisible-mirror.net/archives/lynx/tarballs/"
-            newest="$(newest_in_listing "$consulted" 'lynx([0-9]+(\.[0-9]+)+)\.tar\.gz')" ;;
-        kernel-hardening-checker)
-            # Tags only: it publishes no releases.
-            consulted="https://github.com/a13xp0p0v/kernel-hardening-checker/tags.atom"
-            newest="$(fetch "$consulted" | grep -oE '<title>v[0-9]+(\.[0-9]+)+</title>' \
-                | sed -E 's/<title>v//; s/<.*//' | sort -V -u | tail -1 || true)" ;;
-    esac
-    if [[ -n "$consulted" ]]; then
-        printf '%s|%s' "$newest" "$consulted"
-        return
-    fi
 
-    case "$url" in
-        # Per-series subdirectories only offer their own series, so find the
-        # newest series in the parent first. kernel.org only: GitHub asset URLs
-        # have a /v1.2.3/ element too.
-        *kernel.org/*/v[0-9]*/*)
+        # The canonical host, because mirrors lag and 403 on listings.
+        gnu)
+            local rel="${url#*://*/}"          # e.g. gnu/grub/grub-2.12.tar.xz
+            rel="${rel#gnu/}"
+            consulted="https://ftp.gnu.org/gnu/${rel%/*}/"
+            newest="$(newest_in_listing "$consulted" \
+                      "${name}-([0-9]+(\.[0-9]+)+)\.tar\.(xz|gz)")"
+            ;;
+
+        # A vN/ directory offers only its own series, so the parent's newest
+        # vN/ is read first.
+        vdir)
             local parent="${dir%/*}"
             local vdir
             # `|| true`: no match is an answer, not an error.
@@ -223,33 +230,18 @@ upstream_for() {
                     | sed -E 's@v(.*)/@\1@' | sort -V -u | tail -1 || true)"
             if [[ -n "$vdir" ]]; then
                 consulted="${parent}/v${vdir}/"
-                local stem="${base%%-[0-9]*}"
                 newest="$(newest_in_listing "$consulted" \
                           "${stem}-([0-9]+(\.[0-9]+)*)\.tar\.(xz|gz|bz2)")"
             fi
             if [[ -z "$newest" ]]; then
                 consulted="${dir}/"
-                local stem2="${base%%-[0-9]*}"
                 newest="$(newest_in_listing "$consulted" \
-                          "${stem2}-([0-9]+(\.[0-9]+)*)\.tar\.(xz|gz|bz2)")"
+                          "${stem}-([0-9]+(\.[0-9]+)*)\.tar\.(xz|gz|bz2)")"
             fi
             ;;
 
-        # GNU: the canonical host, because mirrors lag and 403 on listings.
-        *ftpmirror.gnu.org/*|*ftp.gnu.org/*|*mirrors.kernel.org/gnu/*)
-            local rel="${url#*://*/}"          # e.g. gnu/grub/grub-2.12.tar.xz
-            rel="${rel#gnu/}"
-            local pkgdir="https://ftp.gnu.org/gnu/${rel%/*}"
-            consulted="$pkgdir/"
-            # gcc has per-version subdirectories, listed in the parent.
-            [[ "$name" == gcc ]] && { consulted="https://ftp.gnu.org/gnu/gcc/"; \
-                newest="$(newest_in_listing "$consulted" 'gcc-([0-9]+\.[0-9]+\.[0-9]+)/')"; }
-            [[ -z "$newest" ]] && newest="$(newest_in_listing "$consulted" \
-                "${name}-([0-9]+(\.[0-9]+)+)\.tar\.(xz|gz)")"
-            ;;
-
         # GitHub release assets and tag archives: ask the project.
-        *github.com/*)
+        github)
             local repo; repo="$(printf '%s' "$url" \
                 | sed -E 's#^https?://github\.com/([^/]+/[^/]+)/.*#\1#')"
             consulted="github ${repo} releases/latest"
@@ -257,42 +249,15 @@ upstream_for() {
             [[ -n "$newest" ]] || consulted="${consulted} (unavailable: rate limit? set GH_TOKEN)"
             ;;
 
-        *skarnet.org/software/*)
+        listing)
             consulted="${dir}/"
-            newest="$(newest_in_listing "$consulted" "${name}-([0-9]+(\.[0-9]+)+)\.tar\.gz")"
-            ;;
-
-        *python.org/ftp/python/*)
-            # The pinned series only: a 3.13 exists but is not a drop-in.
-            local series="${V_PYTHON%.*}"
-            consulted="https://www.python.org/ftp/python/ (series ${series})"
-            newest="$(newest_in_listing "https://www.python.org/ftp/python/" \
-                      "(${series//./\\.}\.[0-9]+)/")"
-            ;;
-
-        *cpan.org/src/*)
-            consulted="${dir}/"
-            # Filter the whole list, then take the maximum.
-            newest="$(versions_in_listing "$consulted" \
-                      'perl-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.xz' | drop_odd_minor)"
-            ;;
-
-        *openssl.org/source/*)
-            consulted="https://openssl-library.org/source/"
-            # Stay on the pinned major line: a major bump is not a currency fix.
-            local major="${V_OPENSSL%%.*}"
-            newest="$(newest_in_listing "$consulted" \
-                      "openssl-(${major}\.[0-9]+\.[0-9]+)\.tar\.gz")"
-            ;;
-
-        # Everything else: a plain directory listing.
-        *)
-            consulted="${dir}/"
-            local stem="${base%%-[0-9]*}"
             [[ -n "$stem" ]] || stem="$name"
             newest="$(newest_in_listing "$consulted" \
                       "${stem}-([0-9]+(\.[0-9]+)*)\.tar\.(xz|gz|bz2)")"
             ;;
+
+        *)
+            consulted="no way this script knows to find it ('${new}')" ;;
     esac
 
     printf '%s|%s' "$newest" "$consulted"
@@ -310,16 +275,16 @@ declare -a BEHIND_LIST=() UNKNOWN_LIST=()
     printf '%s\n' "----------------------------------------------------------------------------------------"
 }
 
-while read -r name pinned url; do
+while read -r name pinned url _ new; do
     [[ -n "$name" ]] || continue
     [[ -n "$ONLY" && "$name" != "$ONLY" ]] && continue
 
-    res="$(upstream_for "$name" "$url")"
+    res="$(upstream_for "$name" "$pinned" "$url" "$new")"
     newest="${res%%|*}"
     consulted="${res#*|}"
 
-    if [[ -z "$newest" && "$consulted" == tools/* ]]; then
-        # Checked elsewhere; the row names where.
+    if [[ "$new" == eol || "$new" == follows:* ]]; then
+        # Answered elsewhere; the row names where.
         status=deferred
     elif [[ -z "$newest" ]]; then
         status=UNKNOWN
@@ -391,8 +356,8 @@ if [[ "$BEHIND" -gt 0 ]]; then
 fi
 if [[ "$UNKNOWN" -gt 0 ]]; then
     echo
-    dim "Could not be determined - the URL shape is not recognised, or the"
-    dim "listing yielded nothing that parses as a version:"
+    dim "Could not be determined - the row names no way to look this script"
+    dim "knows, or upstream's answer held nothing that parses as a version:"
     printf '  - %s\n' "${UNKNOWN_LIST[@]}"
 fi
 
