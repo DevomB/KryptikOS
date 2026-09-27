@@ -24,12 +24,18 @@ printf 'sig\n' > "$S/.signatures/demo-1.0.tar.gz.sig"
 # Like less: a signature named for the stem, not the tarball.
 printf 'stemmed-1.0\n' > "$T/stemmed.txt"; tar -C "$T" -czf "$S/stemmed-1.0.tar.gz" stemmed.txt
 printf 'sig\n' > "$S/.signatures/stemmed-1.0.sig"
+# Like cmake: a signed checksum list, named by the manifest.
+printf 'summed-1.0\n' > "$T/summed.txt"; tar -C "$T" -czf "$S/summed-1.0.tar.gz" summed.txt
+printf 'list\n' > "$S/.signatures/summed-1.0-SHA-256.txt"
+printf 'sig\n' > "$S/.signatures/summed-1.0-SHA-256.txt.asc"
 printf '%s  demo-1.0.tar.gz\n' "$(sha256sum "$S/demo-1.0.tar.gz" | cut -c1-64)" > "$R/sources.lock"
 printf '%s  stemmed-1.0.tar.gz\n' "$(sha256sum "$S/stemmed-1.0.tar.gz" | cut -c1-64)" >> "$R/sources.lock"
+printf '%s  summed-1.0.tar.gz\n' "$(sha256sum "$S/summed-1.0.tar.gz" | cut -c1-64)" >> "$R/sources.lock"
 cat > "$R/tools/fetch-sources.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "demo 1.0 https://example.org/demo-1.0.tar.gz probe listing"
 echo "stemmed 1.0 https://example.org/stemmed-1.0.tar.gz stem.sig listing"
+echo "summed 1.0 https://example.org/summed-1.0.tar.gz sums:summed-1.0-SHA-256.txt.asc listing"
 EOF
 chmod 755 "$R/tools/fetch-sources.sh"
 # A stand-in cargo: vendor writes one crate where it is asked to.
@@ -57,6 +63,8 @@ out="$(bundle "$T/b1")"; rc=$?
 [[ -f "$T/b1/sources/demo-1.0.tar.gz" && -f "$T/b1/signatures/demo-1.0.tar.gz.sig" && -f "$T/b1/sources.lock" ]] \
     && ok "it holds the locked tarball, its signature and sources.lock" || bad "tarball, signature or lock missing"
 [[ -f "$T/b1/signatures/stemmed-1.0.sig" ]] && ok "and a signature named for its stem, as less's is" || bad "the stem-named signature is missing"
+[[ -f "$T/b1/signatures/summed-1.0-SHA-256.txt" && -f "$T/b1/signatures/summed-1.0-SHA-256.txt.asc" ]] \
+    && ok "and a signed checksum list the manifest names, with its signature" || bad "the signed checksum list is missing"
 [[ -f "$T/b1/kryptik-${commit:0:12}.tar.gz" ]] && tar -tzf "$T/b1/kryptik-${commit:0:12}.tar.gz" | grep -q 'build/patches/demo/0001.patch' \
     && ok "and the repository at the commit, patches included" || bad "the repository archive is missing or incomplete"
 [[ -f "$T/b1/crates/kryptikd/demo-crate-0.1.0/lib.rs" && -f "$T/b1/crates/compositor/demo-crate-0.1.0/lib.rs" ]] \

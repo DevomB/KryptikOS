@@ -404,6 +404,46 @@ fresh_root; run
 expect_pass "a sha256.txt row is left to verify-provenance.sh" \
     "good: no OpenPGP signature upstream; the publisher's .sha256.txt is verify-provenance's"
 
+# A signature over a checksum list beside the file, like cmake's (sha256)
+# and pixman's (sha512). The list must give the file's digest.
+printf 'fixture payload for summed\n' > "${SRC}/summed.tar.gz"
+{ printf '%s  other.tar.gz\n' "$(printf other | sha256sum | cut -d' ' -f1)"
+  printf '%s  summed.tar.gz\n' "$(sha256sum "${SRC}/summed.tar.gz" | cut -d' ' -f1)"; } \
+    > "${SRC}/summed-SHA-256.txt"
+fixgpg --yes --local-user good@example.test --armor \
+    --detach-sign -o "${SRC}/summed-SHA-256.txt.asc" "${SRC}/summed-SHA-256.txt" >/dev/null 2>&1
+: > "${W}/manifest"; add_row summed sums:summed-SHA-256.txt.asc
+fresh_root; run --strict --report="${W}/sums.tsv"
+expect_pass "a sums row verifies the signed list and the file's digest in it" \
+    "verified:     1"
+if grep -qF 'signs summed-SHA-256.txt' "${W}/sums.tsv"; then
+    green "the report says the signature is over the list"
+else
+    red "the report does not name the list"; sed 's/^/        /' "${W}/sums.tsv"
+fi
+
+printf 'fixture payload for summed512\n' > "${SRC}/summed512.tar.gz"
+sha512sum "${SRC}/summed512.tar.gz" | sed 's#  .*#  summed512.tar.gz#' \
+    > "${SRC}/summed512.tar.gz.sha512"
+fixgpg --yes --local-user good@example.test --armor \
+    --detach-sign -o "${SRC}/summed512.tar.gz.sha512.asc" "${SRC}/summed512.tar.gz.sha512" >/dev/null 2>&1
+: > "${W}/manifest"; add_row summed512 sums:summed512.tar.gz.sha512.asc
+fresh_root; run --strict
+expect_pass "a sha512 list verifies the same way" "verified:     1"
+
+# The digest decides, whatever the signature says.
+printf 'altered\n' >> "${SRC}/summed.tar.gz"
+: > "${W}/manifest"; add_row summed sums:summed-SHA-256.txt.asc
+fresh_root; run
+expect_fail "a file that does not match its digest in the signed list fails" \
+    "does not match a digest in summed-SHA-256.txt"
+
+printf 'fixture payload for unlisted\n' > "${SRC}/unlisted.tar.gz"
+: > "${W}/manifest"; add_row unlisted sums:summed-SHA-256.txt.asc
+fresh_root; run
+expect_fail "a file the signed list does not name fails" \
+    "does not match a digest in summed-SHA-256.txt"
+
 # --- unaudited imported keys ------------------------------------------------
 
 write_manifest unknown

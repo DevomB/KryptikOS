@@ -29,7 +29,7 @@ LOCK="${KRYPTIK_ROOT}/sources.lock"
 log "Source bundle for ${commit} in ${OUT}"
 # Each tarball is checked against sources.lock as it is copied.
 n=0
-while read -r name _ver url _; do
+while read -r name _ver url sig _; do
     [[ -n "$name" ]] || continue
     f="${url##*/}"
     want="$(awk -v f="$f" '$2 == f { print $1; exit }' "$LOCK")"
@@ -37,8 +37,10 @@ while read -r name _ver url _; do
     [[ -f "${KRYPTIK_SOURCES}/${f}" ]] || die "${name}: ${f} is not downloaded; run make sources"
     [[ "$(sha256_of "${KRYPTIK_SOURCES}/${f}")" == "$want" ]] || die "${name}: ${f} does not match sources.lock"
     [[ -f "$OUT/sources/${f}" ]] || { cp "${KRYPTIK_SOURCES}/${f}" "$OUT/sources/"; n=$((n + 1)); }
+    # A signed checksum list is named by the manifest, not by the tarball.
+    sums=""; [[ "$sig" == sums:* ]] && sums="${KRYPTIK_SOURCES}/.signatures/${sig#sums:}"
     for s in "${KRYPTIK_SOURCES}/.signatures/${f}".* "${KRYPTIK_SOURCES}/.signatures/${f%.*}.sign" \
-             "${KRYPTIK_SOURCES}/.signatures/${f%.tar.*}.sig"; do
+             "${KRYPTIK_SOURCES}/.signatures/${f%.tar.*}.sig" ${sums:+"$sums" "${sums%.*}"}; do
         if [[ -f "$s" ]]; then cp -f "$s" "$OUT/signatures/"; fi
     done
 done < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list)

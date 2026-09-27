@@ -223,6 +223,12 @@ PINNED_FPRS=(
     # key, valid until 2028-10-12, and the older keys revoked.
     "8C5F7146A1757A65E2422A94D70D1A666ACF2B21"   # Netfilter Core Team, libnftnl and nftables
 
+    # From https://cmake.org/download/ (retrieved 2026-09-27): beside each
+    # release's SHA-256.txt.asc the page names the signer 2D2CEF1034921684 and
+    # links it to the keyserver's lookup of this primary, whose signing
+    # subkey that is.
+    "CBA23971357C2E6590D9EFD3EC8FEF3A7BFB4EDA"   # Brad King, cmake checksum lists
+
     # libexpat names no release signer. This is the key gentoo.org's WKD serves
     # for sping@gentoo.org, and the pin means only that; tools/source-notes.tsv
     # carries the undesignated-signer caveat.
@@ -626,10 +632,10 @@ verify_any() {
     report "$name" no-signature-upstream "none of .sig/.asc/.sign is published"
 }
 
-# verify_detached <name> <file> <sigurl>: the detached signature at sigurl,
-# cached under its own name.
+# verify_detached <name> <data> <sigurl> [how]: the detached signature at
+# sigurl over the file data, cached under its own name.
 verify_detached() {
-    local name="$1" file="$2" sigurl="$3"
+    local name="$1" data="$2" sigurl="$3" how="${4:-}"
     local sig="${SIGDIR}/${sigurl##*/}" suffix=".${sigurl##*.}"
 
     if [[ ! -s "$sig" ]] && ! quiet_fetch "$sigurl" "$sig"; then
@@ -646,7 +652,47 @@ verify_detached() {
         report "$name" signature-not-openpgp "published ${suffix} is not an OpenPGP signature"
         return
     fi
-    check_sig "$name" "$sig" "${KRYPTIK_SOURCES}/${file}" || true
+    check_sig "$name" "$sig" "$data" "$how" || true
+}
+
+# The digest LIST gives FILE: the first field of the line naming it (a
+# leading * marks binary mode), or of a list that is one bare digest.
+listed_digest() {  # listed_digest LIST FILE
+    awk -v f="$2" '
+        NF >= 2 { n = $NF; sub(/^\*/, "", n); if (n == f) { print tolower($1); hit = 1; exit } }
+        NF == 1 { bare = tolower($1) }
+        END { if (!hit && NR == 1 && bare != "") print bare }' "$1"
+}
+
+# verify_sums <name> <url> <file> <signature>: a detached signature beside
+# the file over a checksum list, named for the signature without its
+# suffix. The file must match its digest in the list, and the signature the
+# list.
+verify_sums() {
+    local name="$1" url="$2" file="$3" signame="$4"
+    local listname="${signame%.*}"
+    local list="${SIGDIR}/${listname}" want got
+
+    if [[ ! -s "$list" ]] && ! quiet_fetch "${url%/*}/${listname}" "$list"; then
+        rm -f "$list"
+        warn "${name}: no ${listname} published upstream"
+        mark_unverifiable "${name} (no checksum list upstream)"
+        report "$name" no-signature-upstream "no ${listname} published beside the tarball"
+        return
+    fi
+    want="$(listed_digest "$list" "$file")"
+    case "${#want}" in
+        64)  got="$(sha256sum "${KRYPTIK_SOURCES}/${file}" | cut -d' ' -f1)" ;;
+        128) got="$(sha512sum "${KRYPTIK_SOURCES}/${file}" | cut -d' ' -f1)" ;;
+        *)   got="" ;;
+    esac
+    if [[ -z "$got" || "$got" != "$want" ]]; then
+        err "${name}: ${file} does not match a digest in ${listname}"
+        FAILED=$((FAILED + 1)); FAILED_LIST+=("${name} (does not match ${listname})")
+        report "$name" signature-bad "the file does not match a digest in ${listname}"
+        return
+    fi
+    verify_detached "$name" "$list" "${url%/*}/${signame}" "signs ${listname}"
 }
 
 # kernel.org signs the uncompressed tar (<name>.tar.sign), for the kernel and
@@ -708,7 +754,7 @@ while read -r name _ver url sig _; do
 
     # A kind this script does not know fails: skipping it would pass the row.
     case "$sig" in
-        gnu|kernel|sig|asc|stem.sig|probe|sha256|sha256.txt|tag|none) ;;
+        gnu|kernel|sig|asc|stem.sig|sums:?*|probe|sha256|sha256.txt|tag|none) ;;
         *)
             err "${name}: the manifest declares no signature kind this script knows ('${sig}')"
             FAILED=$((FAILED + 1)); FAILED_LIST+=("${name} (unknown signature kind '${sig}')")
@@ -728,9 +774,10 @@ while read -r name _ver url sig _; do
     case "$sig" in
         gnu)    verify_gnu      "$name" "$url" "$file" ;;
         kernel) verify_kernel   "$name" "$url" "$file" ;;
-        sig)      verify_detached "$name" "$file" "${url}.sig" ;;
-        asc)      verify_detached "$name" "$file" "${url}.asc" ;;
-        stem.sig) verify_detached "$name" "$file" "${url%.tar.*}.sig" ;;
+        sig)      verify_detached "$name" "${KRYPTIK_SOURCES}/${file}" "${url}.sig" ;;
+        asc)      verify_detached "$name" "${KRYPTIK_SOURCES}/${file}" "${url}.asc" ;;
+        stem.sig) verify_detached "$name" "${KRYPTIK_SOURCES}/${file}" "${url%.tar.*}.sig" ;;
+        sums:*)   verify_sums     "$name" "$url" "$file" "${sig#sums:}" ;;
         probe)    verify_any      "$name" "$url" "$file" ;;
         sha256|sha256.txt|tag)
             what="the publisher's .${sig}"

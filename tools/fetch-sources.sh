@@ -34,6 +34,8 @@ fi
 #   kernel   kernel.org's .tar.sign over the uncompressed tar
 #   sig asc  a detached signature beside the file, with that suffix
 #   stem.sig a .sig beside it, named without the .tar.* suffix (less-710.sig)
+#   sums:NAME  the signature NAME beside it, over a checksum list named NAME
+#            without its suffix, which must give the file's digest
 #   probe    whichever of .sig, .asc and .sign is published; an uploaded file
 #            with none keeps probe, so a later release's signature is found
 #   sha256   the publisher's .sha256 beside it (tools/verify-provenance.sh)
@@ -124,8 +126,8 @@ s6-rc|${V_S6_RC}|${MIRROR_SKARNET}/s6-rc/s6-rc-${V_S6_RC}.tar.gz|sha256|listing
 s6-linux-init|${V_S6_LINUX_INIT}|${MIRROR_SKARNET}/s6-linux-init/s6-linux-init-${V_S6_LINUX_INIT}.tar.gz|sha256|listing
 hardened-malloc|${V_HARDENED_MALLOC}|${MIRROR_GITHUB}/GrapheneOS/hardened_malloc/archive/refs/tags/${V_HARDENED_MALLOC}.tar.gz|tag|github
 kernel-hardening-checker|${V_KERNEL_HARDENING_CHECKER}|${MIRROR_GITHUB}/a13xp0p0v/kernel-hardening-checker/archive/refs/tags/v${V_KERNEL_HARDENING_CHECKER}.tar.gz|none|rule
-cmake|${V_CMAKE}|${MIRROR_CMAKE}/v${V_CMAKE%.*}/cmake-${V_CMAKE}.tar.gz|probe|vdir
-cmake-bin|${V_CMAKE}|${MIRROR_CMAKE}/v${V_CMAKE%.*}/cmake-${V_CMAKE}-linux-x86_64.tar.gz|probe|vdir
+cmake|${V_CMAKE}|${MIRROR_CMAKE}/v${V_CMAKE%.*}/cmake-${V_CMAKE}.tar.gz|sums:cmake-${V_CMAKE}-SHA-256.txt.asc|vdir
+cmake-bin|${V_CMAKE}|${MIRROR_CMAKE}/v${V_CMAKE%.*}/cmake-${V_CMAKE}-linux-x86_64.tar.gz|sums:cmake-${V_CMAKE}-SHA-256.txt.asc|vdir
 json-c|${V_JSON_C}|${MIRROR_GITHUB}/json-c/json-c/archive/json-c-${V_JSON_C}/json-c-${V_JSON_C}.tar.gz|none|github
 popt|${V_POPT}|${MIRROR_OSUOSL_RPM}/popt/releases/popt-1.x/popt-${V_POPT}.tar.gz|probe|listing
 libaio|${V_LIBAIO}|${MIRROR_PAGURE}/libaio/libaio-${V_LIBAIO}.tar.gz|probe|listing
@@ -150,7 +152,7 @@ wayland|${V_WAYLAND}|${MIRROR_FDO_GITLAB}/wayland/wayland/-/releases/${V_WAYLAND
 wayland-protocols|${V_WAYLAND_PROTOCOLS}|${MIRROR_FDO_GITLAB}/wayland/wayland-protocols/-/releases/${V_WAYLAND_PROTOCOLS}/downloads/wayland-protocols-${V_WAYLAND_PROTOCOLS}.tar.xz|sig|rule
 libxkbcommon|${V_LIBXKBCOMMON}|${MIRROR_GITHUB}/xkbcommon/libxkbcommon/archive/xkbcommon-${V_LIBXKBCOMMON}/libxkbcommon-${V_LIBXKBCOMMON}.tar.gz|none|github
 xkeyboard-config|${V_XKEYBOARD_CONFIG}|${MIRROR_XORG}/data/xkeyboard-config/xkeyboard-config-${V_XKEYBOARD_CONFIG}.tar.xz|sig|listing
-pixman|${V_PIXMAN}|${MIRROR_CAIRO}/pixman-${V_PIXMAN}.tar.gz|probe|listing
+pixman|${V_PIXMAN}|${MIRROR_CAIRO}/pixman-${V_PIXMAN}.tar.gz|sums:pixman-${V_PIXMAN}.tar.gz.sha512.asc|listing
 libdrm|${V_LIBDRM}|${MIRROR_DRI}/libdrm-${V_LIBDRM}.tar.xz|sig|listing
 libevdev|${V_LIBEVDEV}|${MIRROR_FDO_SW}/libevdev/libevdev-${V_LIBEVDEV}.tar.xz|sig|listing
 mtdev|${V_MTDEV}|${MIRROR_BITMATH}/mtdev-${V_MTDEV}.tar.bz2|probe|listing

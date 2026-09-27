@@ -331,7 +331,7 @@ fi
 
 # A value no tool knows fails there too; here it fails before it ships.
 odd="$(awk '
-    $4 !~ /^(gnu|kernel|sig|asc|stem\.sig|probe|sha256|sha256\.txt|tag|none)$/ { print $1 " sig=" $4; next }
+    $4 !~ /^(gnu|kernel|sig|asc|stem\.sig|sums:[^\/]+\.(asc|sig)|probe|sha256|sha256\.txt|tag|none)$/ { print $1 " sig=" $4; next }
     $5 !~ /^(gnu|vdir|github|listing|rule|eol|follows:.+)$/ { print $1 " new=" $5 }
 ' "${W}/live-manifest" | tr '\n' ' ')"
 if [[ -z "${odd// /}" ]]; then
