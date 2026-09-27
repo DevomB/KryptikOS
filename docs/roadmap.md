@@ -54,8 +54,9 @@ work in zones from a terminal and a text browser, and keep it up to date.
       in `tools/pin-reviews.tsv`, and `tools/check-pin-reviews.sh` fails CI
       without one. No pin is held, and a release runs the gate with
       `--no-held`. A CVE that no release fixes yet is recorded in its pin's
-      review. `tools/check-source-currency.sh` also says when glibc's release
-      branch has moved past the commit its patch set was cut from.
+      review, with why it does not reach Kryptik.
+      `tools/check-source-currency.sh` also says when glibc's release branch
+      has moved past the commit its patch set was cut from.
 - [x] **An update channel** ([design](design/update-channel.md)). The net zone
       fetches a release; zone 0 verifies it as it does a payload from disk.
       `tools/release-channel.sh` publishes a release with its signed
