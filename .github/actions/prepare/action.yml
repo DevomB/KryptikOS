@@ -9,15 +9,17 @@ runs:
   steps:
     - shell: bash
       run: |
-        # / has about 14 GB free and /mnt about 65 GB, so everything the build
-        # or a test writes, temporary files and Rust targets included, goes
-        # under /mnt: a full / kills the runner before it writes a report.
+        # Everything the build or a test writes, temporary files and Rust
+        # targets included, goes under /mnt, and the image's SDKs are deleted:
+        # a full disk kills the runner before it writes a report. Deleting them
+        # takes minutes, so it runs on in the background, detached from the
+        # step's output; nothing needs the room that soon.
         sudo mkdir -p /mnt/kryptik
         sudo chown "$(id -u):$(id -g)" /mnt/kryptik
         mkdir -p "$KRYPTIK_WORK" "$KRYPTIK_SOURCES" "$KRYPTIK_OUT" /mnt/kryptik/tmp /mnt/kryptik/cargo
         echo "TMPDIR=/mnt/kryptik/tmp" >> "$GITHUB_ENV"
         echo "CARGO_TARGET_DIR=/mnt/kryptik/cargo" >> "$GITHUB_ENV"
-        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL < /dev/null > /dev/null 2>&1 &
         df -h / /mnt | tail -2
         sudo apt-get update -qq && sudo apt-get install -y -qq $HOST_PACKAGES
         # 00-host-check refuses dash as /bin/sh.

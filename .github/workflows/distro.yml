@@ -5,8 +5,7 @@ name: Distro
 # come out, under KVM. A job gets at most six hours, so the build is split into
 # jobs that hand their output on as artifacts, and two caches (the sysroot after
 # stage 02; the sysroot and kernel after stage 05) carry built work from one run
-# to the next. Everything the build writes lives under /mnt/kryptik: / has
-# about 14 GB free and /mnt about 65 GB.
+# to the next. Everything the build writes lives under /mnt/kryptik.
 
 on:
   push:
