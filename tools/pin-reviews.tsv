@@ -34,11 +34,15 @@ libtool       2.4.7    2.6.2    fine  2026-09-19  NEWS 2.5.x and 2.6.x: no secur
 gperf         3.1      3.3      fine  2026-09-19  NEWS 3.2 and 3.3: no security fix.
 pkgconf       2.3.0    3.0.7    fine  2026-09-19  NEWS to 3.0.7: no security fix. 3.0 breaks the libpkgconf ABI, moves to meson and changed quoting and sysroot handling twice.
 iana-etc      20240806 20260911 fine  2026-09-19  Data only: /etc/services and /etc/protocols.
+intel-microcode 20260812 20260925 fine  2026-09-27  Release notes 20260925: one functional update, Meteor Lake C0 (06-aa-04, 0x28 to 0x2b), and no security advisory.
+ca-bundle     2026-08-13 2026-09-25 fine  2026-09-27  The 2026-09-25 bundle holds the same 121 certificates, byte for byte; only its header's date and certdata.txt digest differ.
 groff         1.23.0   1.24.1   fine  2026-09-19  NEWS 1.24.0 and 1.24.1: no security fix. 1.24.0 has incompatible request-syntax changes; never that one.
 e2fsprogs     1.47.1   1.47.4   fine  2026-09-19  Release notes 1.47.2 to 1.47.4: no security fix.
 libpipeline   1.5.7    1.5.8    fine  2026-09-19  NEWS 1.5.8: no security fix.
 man-db        2.12.1   2.13.1   fine  2026-09-19  NEWS 2.13.0 and 2.13.1: no security fix.
 perl          5.40.5   5.44.0   fine  2026-09-19  5.40.5 is the newest 5.40.x and has every fix through CVE-2026-13221. 5.40 is in perlpolicy's security-fix window (tools/support-policy.tsv). 5.42 and 5.44 are new series, not security releases.
+meson         1.12.0   1.12.1   fine  2026-09-27  The 53 commits of 1.12.1: fixes to compiler sanity checks, dist, cargo, the Java and PyPy probes and the Visual Studio backend; no security fix.
 libxkbcommon  1.13.2   1.14.0   fine  2026-09-19  NEWS for 1.14.0: no security fix. Upstream's own tags show 1.14.0 only as betas on the day this was read, so the survey may be early.
 libdrm        2.4.129  2.4.134  fine  2026-09-19  The 27 commits between them: none is a security fix.
 libinput      1.30.4   1.32.0   fine  2026-09-19  CVE-2026-35093, -35094 and -50292 are all fixed in the pinned 1.30.4, the newest 1.30.x. 1.31.3 and 1.32.0 add hardening against malicious uinput devices that was not backported; wlroots 0.19.3 has not been built against 1.32.
+dwl           0.8      0.9      fine  2026-09-27  v0.8..v0.9, 55 commits. The decoration use-after-free fix (f4dfdab, 04279f2) is carried as build/patches/dwl-0.8, and the idle-inhibitor one (4847f97) needs a protocol the proxy never offers a zone (see that README); 433c325, d16036e and 7ba3350 fix IME and pointer code new in 0.9. The Xwayland fixes do not apply (built with XWAYLAND=). 0.8 holds a monitor's frames while a tiled window's resize is pending only when its client is dwl's own child, and a zone window's client is the proxy, which kryptikd starts. f6800e9 stops a key binding's release from reaching the client focused after it, which learns only which binding key was let go. 0.9 needs wlroots 0.20; its new data-control, image-capture and foreign-toplevel globals are off the proxy's allowlist.
