@@ -238,10 +238,12 @@ role and version headers."
     # A good signature says nothing about files never compared with the manifest.
     local listed=0 missing=0 mismatch=0
     local want_hash want_size rel actual_hash actual_size
+    local -A names=()
     while read -r want_hash want_size rel; do
         [[ -n "$rel" ]] || continue
         # Older signed manifests list "./x" and cannot be rewritten.
         rel="${rel#./}"
+        names["$rel"]=1
         listed=$((listed + 1))
         local path="${root}/${rel}"
         if [[ ! -f "$path" ]]; then
@@ -271,14 +273,13 @@ role and version headers."
         ok "${listed} file(s) match the manifest"
     fi
 
-    # A payload can arrive alongside the listed files; --exact refuses it.
+    # A payload can arrive alongside the listed files; --exact refuses it. Each
+    # file is looked up among the names read above, exactly as they were read.
     if [[ "$exact" -eq 1 ]]; then
         local extra=0 f
         while IFS= read -r f; do
             [[ "${root}/${f}" == "$manifest" || "${root}/${f}" == "${manifest}.sig" ]] && continue
-            if ! sed -n '/^--$/,$p' "$manifest" | tail -n +2 \
-                 | awk '{ $1=""; $2=""; sub(/^  /, ""); print }' \
-                 | grep -qxF "$f"; then
+            if [[ -z "${names["$f"]:-}" ]]; then
                 problem "present but NOT in the manifest: ${f}"
                 extra=$((extra + 1))
             fi
