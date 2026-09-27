@@ -57,23 +57,8 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - uses: ./.github/actions/prepare
-
-      - name: Upstream sources (cached by sources.lock)
-        id: sources
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
-          path: /mnt/kryptik/sources
-          key: sources-${{ hashFiles('sources.lock') }}
-          # A changed lock restores the previous set and fetches only what is
-          # new; every file is still hashed against the lock.
-          restore-keys: |
-            sources-
-
-      - name: Fetch and verify the sources
-        if: steps.sources.outputs.cache-hit != 'true'
-        run: |
-          make sources
-          ./tools/prune-sources.sh
+          sources: fetch
 
       # The newest tree, whatever built it: its stamps decide what rebuilds,
       # and 01-toolchain.sh clears one that another toolchain built.
@@ -165,21 +150,8 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - uses: ./.github/actions/prepare
-
-      - name: Upstream sources (cached by sources.lock)
-        id: sources
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
-          path: /mnt/kryptik/sources
-          key: sources-${{ hashFiles('sources.lock') }}
-          restore-keys: |
-            sources-
-
-      - name: Fetch and verify the sources
-        if: steps.sources.outputs.cache-hit != 'true'
-        run: |
-          make sources
-          ./tools/prune-sources.sh
+          sources: fetch
 
       # One tarball that root made: stage 04 runs as root and leaves files the
       # runner user cannot read (the sysroot's /etc/shadow), and the cache
@@ -407,12 +379,7 @@ jobs:
       - uses: ./.github/actions/prepare
         with:
           vm: 'true'
-
-      - name: Upstream sources (cached by sources.lock)
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
-        with:
-          path: /mnt/kryptik/sources
-          key: sources-${{ hashFiles('sources.lock') }}
+          sources: restore
 
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
