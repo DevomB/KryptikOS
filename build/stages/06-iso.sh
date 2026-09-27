@@ -471,6 +471,21 @@ s_payload() {
         --root "$out" --exact --strict "$out/manifest"
     ls -la "$out"
 
+    # role-control: this manifest for the other role, signed by the same key,
+    # so the files and the signature pass and only the role is wrong; the
+    # update suite applies it with B's files and expects the role refused. A
+    # production release key signs releases and nothing else, so only a
+    # development build makes it.
+    if [[ "$ROLE" == development ]]; then
+        local ctl="${IMG}/role-control-${KRYPTIK_VERSION}"
+        rm -rf "$ctl"; mkdir -p "$ctl"
+        sed 's/^role: development$/role: production/' "$out/manifest" > "$ctl/manifest"
+        grep -qx 'role: production' "$ctl/manifest" || { echo "could not make the role control"; return 1; }
+        "${KRYPTIK_ROOT}/tools/release-manifest.sh" sign --key "$RELEASE_KEY" "$ctl/manifest"
+        "${KRYPTIK_ROOT}/tools/release-manifest.sh" verify --signers "$ANCHOR" --principal kryptik-release \
+            --root "$out" "$ctl/manifest" || { echo "the role control does not verify as a signed manifest"; return 1; }
+    fi
+
     # A channel holding this release, published as a release is: its "this
     # release is current" statement (docs/design/update-channel.md), checked
     # against the image's anchor, and the payload under <version>/, outside

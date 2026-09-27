@@ -361,12 +361,15 @@ pub fn latest(dir: &Path, checks: &Checks, now: i64, role: &str, running: &str, 
 }
 
 /// `kryptik update fetch`: the user asks for the release the newest accepted
-/// statement names. Nothing is fetched that was not asked for.
-pub fn want(dir: &Path, running: &str) -> Result<String, String> {
+/// statement names. Nothing is fetched that was not asked for, and nothing is
+/// asked for that this image would not fetch: the poll would only say `idle`.
+pub fn want(dir: &Path, channel: Option<&str>, role: &str, running: &str) -> Result<String, String> {
     let p = stored_pointer(dir).ok_or("no statement of what is current has been accepted yet")?;
     if version_cmp(&p.version, running) != Ordering::Greater {
         return Err(format!("{} is the newest release known, and this machine runs {running}", p.version));
     }
+    let channel = channel.ok_or_else(|| format!("this image names no update channel ({CONF})"))?;
+    resolve_base(channel, &p.base, role).map_err(|e| format!("{} cannot be fetched: {e}", p.version))?;
     if wanted(dir).as_deref() != Some(p.version.as_str()) {
         let _ = std::fs::remove_file(dir.join("files"));
         let _ = std::fs::remove_dir_all(dir.join("incoming"));
@@ -715,12 +718,12 @@ mod tests {
         let p = pointer_text("1.0.3", "2027-03-02T14:05:00Z");
         // Nothing asked for: nothing polled for, nothing taken.
         assert_eq!(poll(&d, CH, "production", "1.0.2"), "idle");
-        assert!(want(&d, "1.0.2").unwrap_err().contains("no statement"));
+        assert!(want(&d, Some(CH), "production", "1.0.2").unwrap_err().contains("no statement"));
         latest(&d, &yes(), T0, "production", "1.0.2", p.as_bytes(), b"sig").unwrap();
         assert_eq!(poll(&d, CH, "production", "1.0.2"), "idle", "fetching began before the person asked");
         assert!(put(&d, &yes(), T0, "manifest", 0, b"m").unwrap_err().contains("no release has been asked for"));
-        assert_eq!(want(&d, "1.0.2").unwrap(), "1.0.3");
-        assert!(want(&d, "1.0.3").unwrap_err().contains("newest release known"));
+        assert_eq!(want(&d, Some(CH), "production", "1.0.2").unwrap(), "1.0.3");
+        assert!(want(&d, Some(CH), "production", "1.0.3").unwrap_err().contains("newest release known"));
 
         assert_eq!(poll(&d, CH, "production", "1.0.2"), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need manifest 0 manifest.sig 0");
         assert!(put(&d, &yes(), T0, "kryptik-root.img", 0, b"0123456789").unwrap_err().contains("before the manifest"));
@@ -757,6 +760,18 @@ mod tests {
     }
 
     #[test]
+    fn fetch_says_why_this_image_would_not_fetch() {
+        let d = scratch("unfetchable");
+        latest(&d, &yes(), T0, "production", "1.0.2", pointer_text("1.0.3", "2027-03-02T14:05:00Z").as_bytes(), b"sig").unwrap();
+        assert!(want(&d, Some("http://10.0.2.2:8080/"), "production", "1.0.2").unwrap_err().contains("plain http"));
+        assert!(want(&d, None, "production", "1.0.2").unwrap_err().contains("no update channel"));
+        assert!(wanted(&d).is_none(), "a release this image would not fetch was asked for");
+        assert_eq!(poll(&d, "http://10.0.2.2:8080/", "production", "1.0.2"), "idle");
+        assert_eq!(want(&d, Some(CH), "production", "1.0.2").unwrap(), "1.0.3");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn wrong_manifest_is_discarded() {
         for (tag, listing, why) in [
             ("hash", LISTING.replace("sha256: 0", "sha256: f"), "announced"),
@@ -766,7 +781,7 @@ mod tests {
             let d = scratch(tag);
             let p = pointer_text("1.0.3", "2027-03-02T14:05:00Z");
             latest(&d, &yes(), T0, "production", "1.0.2", p.as_bytes(), b"sig").unwrap();
-            want(&d, "1.0.2").unwrap();
+            want(&d, Some(CH), "production", "1.0.2").unwrap();
             let listing_for = move |_: &Path| Ok::<String, String>(listing.clone());
             let checks = Checks { pointer: &|_, _| Ok(()), manifest: &listing_for };
             put(&d, &checks, T0, "manifest", 0, b"m").unwrap();
@@ -781,7 +796,7 @@ mod tests {
         let d = scratch("unsigned");
         let p = pointer_text("1.0.3", "2027-03-02T14:05:00Z");
         latest(&d, &yes(), T0, "production", "1.0.2", p.as_bytes(), b"sig").unwrap();
-        want(&d, "1.0.2").unwrap();
+        want(&d, Some(CH), "production", "1.0.2").unwrap();
         let no = Checks { pointer: &|_, _| Ok(()), manifest: &|_| Err("the manifest signature does NOT verify".into()) };
         put(&d, &no, T0, "manifest", 0, b"m").unwrap();
         assert!(put(&d, &no, T0, "manifest.sig", 0, b"s").unwrap_err().contains("does NOT verify"));
