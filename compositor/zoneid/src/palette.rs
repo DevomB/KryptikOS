@@ -7,7 +7,7 @@
 
 use crate::color::{contrast_ratio, ciede2000, Lab, Srgb};
 use crate::cvd::{simulate, Vision};
-use crate::distinct::{BACKGROUNDS, COMPOSITOR_COLOURS, MIN_BORDER_CONTRAST};
+use crate::distinct::{COMPOSITOR_COLOURS, MIN_BORDER_CONTRAST};
 
 /// A colour in Lab as seen under each of `Vision::ALL`.
 type Labs = [Lab; Vision::ALL.len()];
@@ -77,7 +77,7 @@ impl Candidate {
 }
 
 fn backgrounds() -> Vec<Srgb> {
-    BACKGROUNDS.iter().filter_map(|(_, hex)| Srgb::from_hex(hex).ok()).collect()
+    crate::distinct::backgrounds().into_iter().map(|(_, c)| c).collect()
 }
 
 /// The compositor's own colours, which every member must also clear.
@@ -346,8 +346,7 @@ mod tests {
     fn candidates_meet_contrast_floor() {
         let cands = build_candidates(MIN_BORDER_CONTRAST, 17);
         assert!(!cands.is_empty());
-        for (_, hex) in BACKGROUNDS {
-            let bg = Srgb::from_hex(hex).unwrap();
+        for bg in backgrounds() {
             for c in &cands {
                 assert!(contrast_ratio(c.srgb, bg) >= MIN_BORDER_CONTRAST);
             }

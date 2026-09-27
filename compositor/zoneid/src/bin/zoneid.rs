@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use zoneid::color::Srgb;
 use zoneid::cvd::{simulate, Vision};
-use zoneid::distinct::{analyze, Thresholds, BACKGROUNDS, COMPOSITOR_COLOURS, MIN_DELTA_E};
+use zoneid::distinct::{analyze, backgrounds, Thresholds, COMPOSITOR_COLOURS, MIN_DELTA_E};
 use zoneid::palette::{propose_with, SearchOptions};
 use zoneid::zones::load_zones;
 
@@ -280,14 +280,13 @@ fn cmd_propose(args: &[String]) -> ExitCode {
     );
 
     println!("Palette");
+    let bgs = backgrounds();
     for c in &p.colors {
-        let dark = Srgb::from_hex(BACKGROUNDS[0].1).unwrap();
-        let light = Srgb::from_hex(BACKGROUNDS[1].1).unwrap();
         println!(
             "  {}   contrast {:>5.2}:1 dark  {:>5.2}:1 light",
             c.to_hex(),
-            zoneid::contrast_ratio(*c, dark),
-            zoneid::contrast_ratio(*c, light),
+            zoneid::contrast_ratio(*c, bgs[0].1),
+            zoneid::contrast_ratio(*c, bgs[1].1),
         );
     }
     println!();
