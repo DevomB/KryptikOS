@@ -104,6 +104,19 @@ recipe_ver() {
     echo "recipe: building probe-\${V_PROBE}"
 }
 
+# A recipe that unpacks its tarball by name in its own text, as most stage 04
+# recipes do; the probe is no real tarball, so the call never runs.
+recipe_unpacks() {
+    if [ -n "\${NEVER:-}" ]; then unpack "probe-\${V_PROBE}.tar.gz" probe; fi
+    echo "recipe: unpacked by name"
+}
+
+# And one that reads its source by path, as s_ca_bundle and stage 05 do.
+recipe_reads() {
+    [ -f "\${KRYPTIK_SOURCES}/probe-\${V_PROBE}.tar.gz" ]
+    echo "recipe: read by path"
+}
+
 # Recipes that apply an in-repository patch set: one names it as an
 # argument, one in its own text through a version variable, the way s_glibc
 # does. Each rebuilds its tree from scratch, as unpack() would.
@@ -293,7 +306,10 @@ test_source_inputs() {
 
     run_harness "$work" tar recipe_src probe-1.0.tar.gz >/dev/null
     run_harness "$work" ver recipe_ver >/dev/null
-    if [[ ! -f "$work/.stamps/t-tar" || ! -f "$work/.stamps/t-ver" ]]; then
+    run_harness "$work" named recipe_unpacks >/dev/null
+    run_harness "$work" path recipe_reads >/dev/null
+    if [[ ! -f "$work/.stamps/t-tar" || ! -f "$work/.stamps/t-ver" || ! -f "$work/.stamps/t-named" \
+          || ! -f "$work/.stamps/t-path" ]]; then
         red "source inputs: setup build did not stamp"; rm -rf "$work"; return
     fi
 
@@ -303,6 +319,12 @@ test_source_inputs() {
     local out rc
     out="$(run_harness "$work" tar recipe_src probe-1.0.tar.gz)"; rc=$?
     check "changed tarball: the step that names it is refused" \
+          "$({ [[ $rc -ne 0 ]] && [[ $out == *"Refusing to resume"* ]]; } && echo ok)"
+    out="$(run_harness "$work" named recipe_unpacks)"; rc=$?
+    check "changed tarball: a step whose recipe unpacks it by name is refused" \
+          "$({ [[ $rc -ne 0 ]] && [[ $out == *"Refusing to resume"* ]]; } && echo ok)"
+    out="$(run_harness "$work" path recipe_reads)"; rc=$?
+    check "changed tarball: a step whose recipe reads it by path is refused" \
           "$({ [[ $rc -ne 0 ]] && [[ $out == *"Refusing to resume"* ]]; } && echo ok)"
 
     out="$(run_harness "$work" ver recipe_ver)"; rc=$?

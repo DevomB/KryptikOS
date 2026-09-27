@@ -327,10 +327,10 @@ _helpers_of() {
 }
 
 # What one step was built from: the text of the recipe and of every helper it
-# reaches, its arguments, the tarballs, patches and patch sets they name, and
-# every V_* that text reads. Not the whole stage file, so a fix to one recipe
-# does not invalidate every stamp; not all of common.sh, so a comment changes
-# none.
+# reaches, its arguments, the sources and patch sets they name or that text
+# reads and applies, and every V_* it reads. Not the whole stage file, so a
+# fix to one recipe does not invalidate every stamp; not all of common.sh, so
+# a comment changes none.
 recipe_fingerprint() {
     local fn="${1:-}"; shift || true
     local body
@@ -364,6 +364,19 @@ recipe_fingerprint() {
             printf 'patchset:%s=%s\n' "$ps" "$(_hash_patchset "${KRYPTIK_PATCHES}/${ps}")"
         done < <(printf '%s\n' "$body" \
                  | sed -n 's/.*apply_repo_patches[[:space:]]\{1,\}"\{0,1\}\([^" ;)]*\).*/\1/p' \
+                 | sort -u || true)
+
+        # A source the recipe's text names: a tarball, wherever it is named, or
+        # any file read from the sources directory. A name still holding a
+        # variable is a helper's argument, hashed with the step's arguments.
+        local sf
+        while IFS= read -r sf; do
+            sf="$(_expand_v "$sf")"
+            [[ "$sf" == *'$'* ]] && continue
+            printf 'src:%s=%s\n' "$sf" "$(_hash_file "${KRYPTIK_SOURCES}/${sf}")"
+        done < <(printf '%s\n' "$body" \
+                 | grep -oE '\$\{KRYPTIK_SOURCES\}/[A-Za-z0-9_.+{}$-]+|[A-Za-z0-9_.+{}$-]+\.(tar\.[a-z0-9]+|tgz)' \
+                 | sed 's|^\${KRYPTIK_SOURCES}/||' \
                  | sort -u || true)
 
         local v
