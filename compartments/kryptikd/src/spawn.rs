@@ -77,6 +77,22 @@ pub struct RunOptions {
     pub ready_fd: Option<i32>,
 }
 
+/// Open a Wayland socket without following symlinks, and refuse any inode but
+/// the one the launch daemon verified, so a rename since its check fails.
+fn open_wayland_socket(path: &std::path::Path, inode: Option<crate::serve::InodeId>) -> Result<OwnedFd, String> {
+    let fd = crate::serve::open_nofollow(path, true).map_err(|e| format!("wayland socket {e}"))?;
+    if let Some(want) = inode {
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        if unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } < 0 {
+            return Err(format!("wayland socket {}: fstat: {}", path.display(), io::Error::last_os_error()));
+        }
+        if !want.matches(&st) {
+            return Err(format!("wayland socket {} is not the socket the launch daemon verified (inode changed)", path.display()));
+        }
+    }
+    Ok(fd)
+}
+
 /// The Wayland proxy socket bind-mounted at `<entry>/wayland-0` in the host
 /// mount namespace, for the child to open after unshare (see run_in_zone).
 /// Drop detaches the bind and removes the mountpoint.
@@ -93,22 +109,8 @@ impl StagedSocket {
     ) -> Result<Self, SpawnError> {
         use std::os::unix::fs::OpenOptionsExt;
 
-        /* Host root can walk the session's private directories. Only the inode
-         * the daemon verified is accepted, so a rename since its check fails. */
-        let fd = crate::serve::open_nofollow(session_path, true)
-            .map_err(|e| SpawnError::Setup(format!("wayland socket {e}")))?;
-        let mut st: libc::stat = unsafe { std::mem::zeroed() };
-        if unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } < 0 {
-            return Err(SpawnError::Syscall { call: "fstat(wayland socket)", errno: errno() });
-        }
-        if let Some(want) = inode {
-            if !want.matches(&st) {
-                return Err(SpawnError::Setup(format!(
-                    "wayland socket {} is not the socket the launch daemon verified (inode changed)",
-                    session_path.display()
-                )));
-            }
-        }
+        // Host root can walk the session's private directories.
+        let fd = open_wayland_socket(session_path, inode).map_err(SpawnError::Setup)?;
 
         let path = entry_dir.join(rootfs::WAYLAND_SOCKET_NAME);
         let cpath = CString::new(path.display().to_string())
@@ -1210,19 +1212,10 @@ fn intermediate_main(
     let wayland_in_zone: Option<String> = match wayland_path {
         None => None,
         Some(p) => {
-            let fd = match crate::serve::open_nofollow(std::path::Path::new(p), true) {
+            let fd = match open_wayland_socket(std::path::Path::new(p), wayland_inode) {
                 Ok(fd) => fd,
-                Err(e) => bail!("wayland socket {e}"),
+                Err(e) => bail!("{e}"),
             };
-            if let Some(want) = wayland_inode {
-                let mut st: libc::stat = unsafe { std::mem::zeroed() };
-                if unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } < 0 {
-                    bail!("wayland socket {}: fstat: {}", p, io::Error::last_os_error());
-                }
-                if !want.matches(&st) {
-                    bail!("wayland socket {} is not the socket the launch daemon verified (inode changed)", p);
-                }
-            }
             // Like the broker's: pid 1 inherits it and the descriptor sweep closes it.
             let raw = fd.into_raw_fd();
             unsafe {
@@ -1400,7 +1393,7 @@ fn zone_init(
         .iter()
         .filter_map(|(k, v)| Some((k.to_str()?.to_string(), v.to_str()?.to_string())))
         .collect();
-    let env = zone_environment_with(zone, &home, &caller, wayland_path.is_some());
+    let env = zone_environment(zone, &home, &caller, wayland_path.is_some());
     for (k, _) in &all {
         std::env::remove_var(k);
     }
@@ -1468,16 +1461,7 @@ pub fn env_value_is_sane(v: &str) -> bool {
 /// The complete environment the zone's command starts with. With a display,
 /// WAYLAND_DISPLAY is the socket's absolute path (libwayland needs no
 /// XDG_RUNTIME_DIR then) and XDG_RUNTIME_DIR is the zone's /tmp.
-pub fn zone_environment_with(zone: &Zone, home: &str, caller: &[(String, String)], wayland: bool) -> Vec<(String, String)> {
-    let mut env = zone_environment_base(zone, home, caller);
-    if wayland {
-        env.push(("WAYLAND_DISPLAY".into(), rootfs::WAYLAND_SOCKET_IN_ZONE.into()));
-        env.push(("XDG_RUNTIME_DIR".into(), "/tmp".into()));
-    }
-    env
-}
-
-fn zone_environment_base(zone: &Zone, home: &str, caller: &[(String, String)]) -> Vec<(String, String)> {
+pub fn zone_environment(zone: &Zone, home: &str, caller: &[(String, String)], wayland: bool) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = vec![
         ("PATH".into(), "/usr/bin:/usr/sbin:/bin:/sbin".into()),
         ("HOME".into(), home.into()),
@@ -1498,6 +1482,10 @@ fn zone_environment_base(zone: &Zone, home: &str, caller: &[(String, String)]) -
     }
     if !env.iter().any(|(k, _)| k == "TERM") {
         env.push(("TERM".into(), "dumb".into()));
+    }
+    if wayland {
+        env.push(("WAYLAND_DISPLAY".into(), rootfs::WAYLAND_SOCKET_IN_ZONE.into()));
+        env.push(("XDG_RUNTIME_DIR".into(), "/tmp".into()));
     }
     env
 }
@@ -1719,6 +1707,27 @@ mod tests {
         // A cut never splits a character.
         let mut b = BrokerLog::new("work");
         b.line(&"\u{e9}".repeat(ZONE_LINE_MAX), &mut |l: &str| assert!(l.len() <= ZONE_LINE_MAX));
+    }
+
+    #[test]
+    fn wayland_socket_is_the_verified_one() {
+        let dir = std::env::temp_dir().join(format!("kryptik-wlsock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wayland-0");
+        let _first = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        let c = CString::new(path.display().to_string()).unwrap();
+        assert_eq!(unsafe { libc::stat(c.as_ptr(), &mut st) }, 0);
+        let verified = crate::serve::InodeId::of(&st);
+        assert!(open_wayland_socket(&path, Some(verified)).is_ok());
+        // Another socket put in its place is refused; the first keeps its inode.
+        std::fs::rename(&path, dir.join("wayland-0.old")).unwrap();
+        let _second = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let e = open_wayland_socket(&path, Some(verified)).unwrap_err();
+        assert!(e.contains("inode changed"), "{e}");
+        assert!(open_wayland_socket(&path, None).is_ok(), "without a verified inode any socket there will do");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1963,7 +1972,7 @@ mod tests {
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
-        let env = zone_environment_with(&z("routed"), "/home/t", &caller, false);
+        let env = zone_environment(&z("routed"), "/home/t", &caller, false);
         let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         for dropped in ["FOO_TOKEN", "SSH_AUTH_SOCK", "LD_PRELOAD", "LD_LIBRARY_PATH", "KRYPTIK_EXPERIMENTAL", "XDG_RUNTIME_DIR"] {
             assert!(get(dropped).is_none(), "{dropped} leaked into the zone");
@@ -1988,7 +1997,7 @@ mod tests {
         assert!(!env_value_is_sane("a b"));
         assert!(!env_value_is_sane(&"x".repeat(65)));
         let caller = vec![("TERM".to_string(), "xterm;rm -rf /".to_string())];
-        let env = zone_environment_with(&z("routed"), "/home/t", &caller, false);
+        let env = zone_environment(&z("routed"), "/home/t", &caller, false);
         let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         assert_eq!(get("TERM"), Some("dumb"), "a malformed TERM is replaced, not passed");
         assert_eq!(get("LANG"), Some("C.UTF-8"), "no caller LANG means a UTF-8 default");

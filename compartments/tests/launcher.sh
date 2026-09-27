@@ -470,7 +470,7 @@ probe "C5  a descriptor above the old sweep bound (fd 5000) is closed too" "deni
 # ============================================================================
 head_ "D. Environment and host configuration exposure  [unpriv]"
 # ============================================================================
-# The zone gets a fixed, minimal environment (spawn.rs::zone_environment_with):
+# The zone gets a fixed, minimal environment (spawn.rs::zone_environment):
 # none of the caller's paths, tokens or LD_* variables.
 
 ZOUT="$(KRYPTIK_SYNTHETIC_SECRET="$CANARY" KRYPTIK_EXPERIMENTAL=1 timeout "$TIMEOUT" \
