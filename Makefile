@@ -81,7 +81,7 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
         resolve-kernel-config check-kernel-hardening \
         toolchain temp-tools sysroot-ready system kernel \
         chroot chroot-enter chroot-umount chroot-status \
-        iso media ovmf-vars media-smoke-usb media-smoke-iso media-smoke-secureboot \
+        iso media production-pair ovmf-vars media-smoke-usb media-smoke-iso media-smoke-secureboot \
         media-refused-foreign-keys install-test integrity-test update-test \
         state-test zones-test gui-test acceptance \
         zones zone-test launcher-test zone-tests cli-test serve-test \
@@ -286,6 +286,12 @@ iso: kernel
 media:
 	@$(SUDO) env $(CHROOT_ENV) KRYPTIK_VERSION="$(KRYPTIK_VERSION)" KRYPTIK_CHANNEL="$$KRYPTIK_CHANNEL" \
 	    KRYPTIK_ROLE="$(KRYPTIK_ROLE)" KRYPTIK_KEYS="$(KRYPTIK_KEYS)" "$(STAGES)"/06-iso.sh
+
+# A production pair for acceptance's production suite, signed with a throwaway
+# key medium (tools/production-pair.sh). Before `make media` builds the
+# development releases, since the suites take the release built last.
+production-pair:
+	@env $(CHROOT_ENV) SUDO="$(SUDO)" "$(TOOLS)"/production-pair.sh
 
 MEDIA_USB ?= $(shell ls -t "$(KRYPTIK_WORK)"/images/kryptik-*-usb.img 2>/dev/null | head -1)
 MEDIA_ISO ?= $(shell ls -t "$(KRYPTIK_WORK)"/images/kryptik-*.iso 2>/dev/null | head -1)

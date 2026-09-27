@@ -282,7 +282,7 @@ need_update() {
 need_production() {
     local r; r="$(need_update)"; [[ -n "$r" ]] && { echo "$r"; return; }
     [[ -n "$PROD_B" && -f "${PROD_A}/manifest" && -f "${PROD_B}/manifest" && -f "$PROD_USB_A" ]] \
-        || { echo "no production pair under ${PRODDIR} (the Distro workflow builds one with tools/throwaway-key-medium.sh)"; return; }
+        || { echo "no production pair under ${PRODDIR} (make production-pair builds one)"; return; }
     [[ -f "${PRODDIR}/kryptik-sb.crt" ]] || echo "no ${PRODDIR}/kryptik-sb.crt, the certificate the production media carry"
 }
 need_cargo()   { have cargo || echo "no cargo on PATH"; }

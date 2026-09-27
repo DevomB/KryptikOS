@@ -328,29 +328,16 @@ jobs:
         if: always()
         run: rm -f /mnt/kryptik/work-after-05.tar.zst
 
-      # First a production pair, 1.0.0 and 1.0.1, signed with a throwaway key
-      # medium outside the work tree, which the build checks as it checks any.
-      # It moves to images-production, since 1.0.x would sort above A and B,
-      # which acceptance finds in images/ by version. Before the medium goes,
-      # every file the packs can take is searched for its private keys' lines.
-      # Then release A, and B = A's version with .1 (sorts after A), which the
-      # update test applies over A.
+      # First the production pair, 1.0.0 and 1.0.1, signed with a throwaway key
+      # medium that lives only while they are built, kept apart in
+      # images-production (tools/production-pair.sh). Then release A, and B =
+      # A's version with .1 (sorts after A), which the update test applies over
+      # A: the suites take the release built last as the one under test.
       - name: Stage 06, the media (production 1.0.0 and 1.0.1, release A and the update B)
         timeout-minutes: 90
         run: |
-          m=/mnt/kryptik/key-medium
-          tools/throwaway-key-medium.sh "$m"
-          for v in 1.0.0 1.0.1; do
-            make media KRYPTIK_VERSION="$v" KRYPTIK_ROLE=production KRYPTIK_KEYS="$m" KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
-          done
-          p="$KRYPTIK_WORK/images-production"
-          sudo mkdir -p "$p"
-          sudo mv "$KRYPTIK_WORK"/images/kryptik-1.0.[01][-.]* "$KRYPTIK_WORK"/images/payload-1.0.[01] "$KRYPTIK_WORK"/images/channel-1.0.[01] "$p/"
-          sudo cp "$m/kryptik-sb.crt" "$p/"
-          for k in kryptik-release kryptik-latest kryptik-sb.key; do tail -n 2 "$m/$k" | head -n 1; done > /mnt/kryptik/key-lines
-          if sudo grep -rlF -D skip -f /mnt/kryptik/key-lines "$KRYPTIK_WORK"; then echo "a throwaway private key is in the work tree"; exit 1; fi
-          rm -rf "$m" /mnt/kryptik/key-lines
-          ls -la "$p"
+          make production-pair KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
+          ls -la "$KRYPTIK_WORK/images-production"
           VER_A="0.1.$(date -u +%Y%m%d).${GITHUB_SHA::8}"
           make media KRYPTIK_VERSION="$VER_A" KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
           make media KRYPTIK_VERSION="${VER_A}.1" KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
@@ -360,12 +347,15 @@ jobs:
       # certificate, its DER form and the variable stores, nothing that signs,
       # and an artifact of a public repository is public. Root packs, because
       # stage 04 ran as root. The production pair is an artifact of its own,
-      # without its ISOs, for the two parts that use it.
+      # without its ISOs, for the production part; the others get its payloads'
+      # manifests alone, which is all the development update suite refuses.
       - name: Pack the work tree for the acceptance
         run: |
           cd /mnt/kryptik
           sudo rm -rf work/build work/vm
-          sudo tar -I 'zstd -T0' -cf work-after-media.tar.zst -C work --exclude='images/kryptik-root.img' --exclude='images/esp-*.img' --exclude='images-production' --exclude='keys/sb/kryptik-sb.key' --exclude='keys/release/kryptik-release' --exclude='keys/release/kryptik-latest' .
+          sudo tar -I 'zstd -T0' -cf work-after-media.tar.zst -C work --exclude='images/kryptik-root.img' --exclude='images/esp-*.img' \
+            --exclude='images-production/kryptik-*' --exclude='images-production/channel-*' --exclude='images-production/payload-*/kryptik-*' --exclude='images-production/payload-*/root.json' \
+            --exclude='keys/sb/kryptik-sb.key' --exclude='keys/release/kryptik-release' --exclude='keys/release/kryptik-latest' .
           sudo tar -I 'zstd -T0' -cf production-media.tar.zst -C work --exclude='*.iso' images-production
           for t in work-after-media.tar.zst production-media.tar.zst; do
             if sudo tar --zstd -tf "$t" | grep -E 'kryptik-sb\.key$|keys/release/kryptik-(release|latest)$'; then echo "a private key is in ${t}"; exit 1; fi
@@ -427,9 +417,9 @@ jobs:
           name: work-after-media
           path: /mnt/kryptik
 
-      # Each update suite is handed the other role's payload to refuse.
+      # The whole production pair, for its own part.
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        if: matrix.suites == 'update' || matrix.suites == 'production'
+        if: matrix.suites == 'production'
         with:
           name: production-media
           path: /mnt/kryptik
