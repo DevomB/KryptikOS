@@ -138,7 +138,9 @@ cannot log in at a terminal; the password is for `su`, below). After an
 unattended install with a preseed, it creates those accounts from the preseed
 instead. If setup is interrupted, a question waits unanswered for 10 minutes,
 or a password is not set, boot again: every boot asks for whatever is still
-missing until the user and root both have passwords.
+missing until the user and root both have passwords. Over a serial line,
+answer the setup's questions there: the serial console shows its login
+prompt only once setup has ended.
 
 Log in as the user on tty1. The desktop session starts from the profile:
 dwl with the Kryptik chrome as its startup command. Every application
