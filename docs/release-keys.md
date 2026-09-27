@@ -57,8 +57,11 @@ new anchor. Keep the backup somewhere else.
 
 For each release:
 
-1. Build up to the kernel on the build machine as usual (`make kernel`). No
-   key is needed for that, and none is ever inside the chroot.
+1. Build up to the kernel on the build machine as usual (`make kernel`), in
+   an empty work directory (a new `KRYPTIK_WORK`): a tree resumed from an
+   earlier build can still hold files an older recipe installed (a known gap
+   in [status](status.md)). No key is needed for that, and none is ever
+   inside the chroot.
 2. Attach the key medium and make the media. `sbsign` asks for the Secure
    Boot key's passphrase once for each kernel it signs (three: both slots and
    the USB medium's), and `ssh-keygen` for the release key's twice, for the
