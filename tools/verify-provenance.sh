@@ -269,16 +269,18 @@ verify_hm_tree() {
     fi
 }
 
-# Publisher checksums: a .sha256 beside the release. It comes from the same
-# host over the same TLS as the tarball, so it is not a signature. skarnet keeps
-# one only for its current release; versions.env keeps the s6 stack current.
+# Publisher checksums: a .sha256 or .sha256.txt beside the release. It comes
+# from the same host over the same TLS as the tarball, so it is not a
+# signature. skarnet keeps one only for its current release; versions.env
+# keeps the s6 stack current.
 
-# verify_published_sha256 <name> <url>
+# verify_published_sha256 <name> <url> <suffix>
 verify_published_sha256() {
-    local name="$1" url="$2"
+    local name="$1" url="$2" suffix="$3"
+    local sum="${url}${suffix}"
     RSRC="$name"
     local file; file="$(basename "$url")"
-    local body="${WORK}/${file}.sha256"
+    local body="${WORK}/${file}${suffix}"
     local path="${KRYPTIK_SOURCES}/${file}"
 
     local locked
@@ -307,14 +309,14 @@ verify_published_sha256() {
     have curl || { prereq pub "${name}: curl is not installed"; return; }
 
     local rc=0
-    http_get "${url}.sha256" "$body" || rc=$?
+    http_get "$sum" "$body" || rc=$?
     if [[ "$rc" -ne 0 ]]; then
         if [[ "${HTTP_CODE:-000}" == "404" ]]; then
-            unavail pub "${name}: the publisher no longer publishes a .sha256
-       for this version. skarnet keeps one only for the current release, so
-       this pin is stale AND unverifiable by publisher checksum."
+            unavail pub "${name}: the publisher no longer serves a ${suffix}
+       for this version, so the pin may be stale, and it cannot be checked
+       by publisher checksum."
         else
-            unavail pub "${name}: could not fetch ${url}.sha256
+            unavail pub "${name}: could not fetch ${sum}
        (curl exit ${rc}, HTTP ${HTTP_CODE:-none})"
         fi
         return
@@ -323,7 +325,7 @@ verify_published_sha256() {
     local expected
     expected="$(awk 'NF{print $1; exit}' "$body" 2>/dev/null || true)"
     if [[ ! "$expected" =~ ^[0-9a-fA-F]{64}$ ]]; then
-        fail pub "${name}: ${url}.sha256 is not a sha256 digest
+        fail pub "${name}: ${sum} is not a sha256 digest
        (got $(head -c 80 "$body" | tr -d '\n' || true))"
         return
     fi
@@ -352,7 +354,7 @@ MANIFEST="${WORK}/manifest"
 "${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list > "$MANIFEST" \
     || die "tools/fetch-sources.sh --list failed, so there is nothing to check against."
 mapfile -t TAG_ROWS < <(awk '$4 == "tag"' "$MANIFEST")
-mapfile -t SUM_ROWS < <(awk '$4 == "sha256"' "$MANIFEST")
+mapfile -t SUM_ROWS < <(awk '$4 == "sha256" || $4 == "sha256.txt"' "$MANIFEST")
 
 log "Signed tags"
 for row in "${TAG_ROWS[@]}"; do
@@ -379,8 +381,8 @@ fi
 echo
 log "Publisher checksums"
 for row in "${SUM_ROWS[@]}"; do
-    read -r name _ url _ <<< "$row"
-    verify_published_sha256 "$name" "$url"
+    read -r name _ url sig _ <<< "$row"
+    verify_published_sha256 "$name" "$url" ".${sig}"
 done
 
 echo

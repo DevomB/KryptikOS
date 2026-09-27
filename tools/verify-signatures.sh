@@ -212,6 +212,11 @@ PINNED_FPRS=(
     # release statement, so openssh is on the update path.
     "7168B983815A5EEF59A4ADFD2A3F414E736060BA"   # Damien Miller, OpenSSH
 
+    # From https://www.greenwoodsoftware.com/less/pubkey.asc (retrieved
+    # 2026-09-27), linked from the download page beside each release's .sig.
+    # DSA-1024 signing with SHA-1: weak, as docs/supply-chain.md says.
+    "AE27252BD6846E7D6EAE1DD6F153A7C833235259"   # Mark Nudelman, less
+
     # libexpat names no release signer. This is the key gentoo.org's WKD serves
     # for sping@gentoo.org, and the pin means only that; tools/source-notes.tsv
     # carries the undesignated-signer caveat.
@@ -615,14 +620,15 @@ verify_any() {
     report "$name" no-signature-upstream "none of .sig/.asc/.sign is published"
 }
 
-# Detached signature alongside the file, at the same URL plus a suffix.
+# verify_detached <name> <file> <sigurl>: the detached signature at sigurl,
+# cached under its own name.
 verify_detached() {
-    local name="$1" url="$2" file="$3" suffix="${4:-.sig}"
-    local sig="${SIGDIR}/${file}${suffix}"
+    local name="$1" file="$2" sigurl="$3"
+    local sig="${SIGDIR}/${sigurl##*/}" suffix=".${sigurl##*.}"
 
-    if [[ ! -s "$sig" ]] && ! quiet_fetch "${url}${suffix}" "$sig"; then
+    if [[ ! -s "$sig" ]] && ! quiet_fetch "$sigurl" "$sig"; then
         rm -f "$sig"
-        warn "${name}: no .sig published upstream"
+        warn "${name}: no ${suffix} published upstream"
         mark_unverifiable "${name} (no signature upstream)"
         report "$name" no-signature-upstream "no ${suffix} published beside the tarball"
         return
@@ -696,7 +702,7 @@ while read -r name _ver url sig _; do
 
     # A kind this script does not know fails: skipping it would pass the row.
     case "$sig" in
-        gnu|kernel|sig|asc|probe|sha256|tag|none) ;;
+        gnu|kernel|sig|asc|stem.sig|probe|sha256|sha256.txt|tag|none) ;;
         *)
             err "${name}: the manifest declares no signature kind this script knows ('${sig}')"
             FAILED=$((FAILED + 1)); FAILED_LIST+=("${name} (unknown signature kind '${sig}')")
@@ -716,11 +722,12 @@ while read -r name _ver url sig _; do
     case "$sig" in
         gnu)    verify_gnu      "$name" "$url" "$file" ;;
         kernel) verify_kernel   "$name" "$url" "$file" ;;
-        sig)    verify_detached "$name" "$url" "$file" ;;
-        asc)    verify_detached "$name" "$url" "$file" ".asc" ;;
-        probe)  verify_any      "$name" "$url" "$file" ;;
-        sha256|tag)
-            what="the publisher's .sha256"
+        sig)      verify_detached "$name" "$file" "${url}.sig" ;;
+        asc)      verify_detached "$name" "$file" "${url}.asc" ;;
+        stem.sig) verify_detached "$name" "$file" "${url%.tar.*}.sig" ;;
+        probe)    verify_any      "$name" "$url" "$file" ;;
+        sha256|sha256.txt|tag)
+            what="the publisher's .${sig}"
             [[ "$sig" == tag ]] && what="the signed tag"
             warn "${name}: no OpenPGP signature upstream; ${what} is verify-provenance's"
             mark_unverifiable "${name} (${what}, see verify-provenance)"

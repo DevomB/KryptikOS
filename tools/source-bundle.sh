@@ -37,7 +37,8 @@ while read -r name _ver url _; do
     [[ -f "${KRYPTIK_SOURCES}/${f}" ]] || die "${name}: ${f} is not downloaded; run make sources"
     [[ "$(sha256_of "${KRYPTIK_SOURCES}/${f}")" == "$want" ]] || die "${name}: ${f} does not match sources.lock"
     [[ -f "$OUT/sources/${f}" ]] || { cp "${KRYPTIK_SOURCES}/${f}" "$OUT/sources/"; n=$((n + 1)); }
-    for s in "${KRYPTIK_SOURCES}/.signatures/${f}".* "${KRYPTIK_SOURCES}/.signatures/${f%.*}.sign"; do
+    for s in "${KRYPTIK_SOURCES}/.signatures/${f}".* "${KRYPTIK_SOURCES}/.signatures/${f%.*}.sign" \
+             "${KRYPTIK_SOURCES}/.signatures/${f%.tar.*}.sig"; do
         if [[ -f "$s" ]]; then cp -f "$s" "$OUT/signatures/"; fi
     done
 done < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list)

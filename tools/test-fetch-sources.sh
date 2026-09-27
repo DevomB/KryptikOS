@@ -331,7 +331,7 @@ fi
 
 # A value no tool knows fails there too; here it fails before it ships.
 odd="$(awk '
-    $4 !~ /^(gnu|kernel|sig|asc|probe|sha256|tag|none)$/ { print $1 " sig=" $4; next }
+    $4 !~ /^(gnu|kernel|sig|asc|stem\.sig|probe|sha256|sha256\.txt|tag|none)$/ { print $1 " sig=" $4; next }
     $5 !~ /^(gnu|vdir|github|listing|rule|eol|follows:.+)$/ { print $1 " new=" $5 }
 ' "${W}/live-manifest" | tr '\n' ' ')"
 if [[ -z "${odd// /}" ]]; then
@@ -340,16 +340,18 @@ else
     red "rows declaring a value no tool knows: ${odd}"
 fi
 
-# gnu, vdir and github work from the URL, so each needs a URL of its shape.
+# gnu, stem.sig, vdir and github work from the URL, so each needs a URL of its
+# shape.
 gnu="$(sed -n 's/^MIRROR_GNU="\(.*\)"$/\1/p' "${ROOT}/build/config/versions.env")"
 misfit="$(awk -v gnu="${gnu}/" '
     ($4 == "gnu") != (index($3, gnu) == 1) { print $1 " (sig " $4 ")" }
     $5 == "gnu" && index($3, gnu) != 1 { print $1 " (new gnu)" }
+    $4 == "stem.sig" && $3 !~ /\.tar\.[^\/.]+$/ { print $1 " (sig stem.sig)" }
     $5 == "vdir" && $3 !~ /\/v[0-9][^\/]*\/[^\/]+$/ { print $1 " (new vdir)" }
     $5 == "github" && $3 !~ /^https:\/\/github\.com\/[^\/]+\/[^\/]+\// { print $1 " (new github)" }
 ' "${W}/live-manifest" | tr '\n' ' ')"
 if [[ -n "$gnu" && -z "${misfit// /}" ]]; then
-    green "every gnu, vdir and github row has a URL of that shape"
+    green "every gnu, stem.sig, vdir and github row has a URL of that shape"
 else
     red "rows whose URL does not fit what they declare: ${misfit:-no MIRROR_GNU found}"
 fi
