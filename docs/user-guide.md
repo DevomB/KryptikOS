@@ -130,8 +130,8 @@ installed system ignores it.
 Every boot asks for the state passphrase, three times at most, before
 anything else starts: on the display and on the serial console, and the
 first answer counts. Root changes it with `kryptik state passphrase`. On the
-first boot, before the login prompt, a setup program asks on the display for
-a user name and that user's password, then for root's password (root still
+first boot, before the login prompt, a setup program asks in the same places
+for a user name and that user's password, then for root's password (root still
 cannot log in at a terminal; the password is for `su`, below). After an
 unattended install with a preseed, it creates those accounts from the preseed
 instead. If setup is interrupted, a question waits unanswered for 10 minutes,
