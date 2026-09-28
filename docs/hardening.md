@@ -152,8 +152,9 @@ way from a login to root, and `passwd`, which nothing brokers yet. A file
 carrying capabilities (`security.capability`) needs one in
 `build/config/capability-allowlist.txt`, which is empty. The recipes install
 no other bit: shadow's eight other tools lose theirs after its install,
-util-linux is built with `--disable-makeinstall-setuid`, and inetutils
-without traceroute. Stage 06 then runs `tools/audit-setuid.sh` over the
+util-linux is built with `--disable-makeinstall-setuid` and
+`--disable-makeinstall-chown` (wall's setgid tty is under that hook), and
+inetutils without traceroute. Stage 06 then runs `tools/audit-setuid.sh` over the
 image's root and fails the build on any unlisted bit or capability; `--strip`
 takes them off a root staged by hand instead. Either way the audit fails when
 it cannot read a directory, on a list entry without a justification, and on
