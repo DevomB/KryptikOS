@@ -835,7 +835,7 @@ fn only_nic_zone_brings_update() {
 /// panic, no overrun of the deadline, one well-formed reply, and nothing
 /// accepted outside the grammar. Returns (sent, accepted).
 fn fuzz_pass(s: &Served, hello: &str, attach: Option<&Path>) -> (u32, u32) {
-    const CORPUS: &str = include_str!("../fuzz-corpus/broker-requests");
+    const CORPUS: &str = include_str!("../../fuzz-corpus/broker-requests");
     // xorshift64*: small, seeded, the same sequence everywhere.
     let mut state: u64 = 0x4252_4F4B_4552_3031;
     let mut next = move || {

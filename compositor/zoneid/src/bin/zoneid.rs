@@ -383,5 +383,7 @@ stated vision model by a stated metric, not that nobody in a hurry, in poor
 light, on a badly calibrated screen could confuse them.
 ";
 
+// A binary's root finds a module beside itself; the tests sit under its name.
 #[cfg(test)]
+#[path = "zoneid/tests.rs"]
 mod tests;
