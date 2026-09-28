@@ -460,6 +460,9 @@ s_shadow() {
         --without-libbsd --with-group-name-max-length=32
     make
     make exec_prefix=/usr install
+    # Privilege from a bit is su's and passwd's alone
+    # (build/config/setuid-allowlist.txt); the rest run unprivileged or not at all.
+    chmod ug-s /usr/bin/{chage,chfn,chsh,expiry,gpasswd,newgidmap,newgrp,newuidmap}
 }
 
 s_hardened_malloc() {
@@ -2134,7 +2137,7 @@ PACKAGES=(
     # No XS modules: texinfo links them without the hardening, and texi2any
     # runs as plain Perl without them.
     "texinfo"     "native_build texinfo-${V_TEXINFO}.tar.xz texinfo-${V_TEXINFO} --disable-perl-xs"
-    "util-linux"  "native_build util-linux-${V_UTIL_LINUX}.tar.xz util-linux-${V_UTIL_LINUX} --libdir=/usr/lib --runstatedir=/run --disable-chfn-chsh --disable-login --disable-nologin --disable-su --disable-setpriv --disable-runuser --disable-pylibmount --disable-liblastlog2 --disable-static --without-python"
+    "util-linux"  "native_build util-linux-${V_UTIL_LINUX}.tar.xz util-linux-${V_UTIL_LINUX} --libdir=/usr/lib --runstatedir=/run --disable-chfn-chsh --disable-login --disable-nologin --disable-su --disable-setpriv --disable-runuser --disable-pylibmount --disable-liblastlog2 --disable-makeinstall-setuid --disable-static --without-python"
     "glibc"       "s_glibc"
     "bzip2"       "s_bzip2"
     "xz"          "s_xz_native"
@@ -2167,7 +2170,7 @@ PACKAGES=(
     "expat"       "native_build expat-${V_EXPAT}.tar.xz expat-${V_EXPAT} --disable-static --docdir=/usr/share/doc/expat-${V_EXPAT}"
     # --disable-servers: no telnetd, ftpd, rlogind and the rest, which nothing
     # starts; only the clients (hostname, traceroute, ifconfig); ping is iputils'.
-    "inetutils"   "native_build inetutils-${V_INETUTILS}.tar.gz inetutils-${V_INETUTILS} --bindir=/usr/bin --localstatedir=/var --disable-servers --disable-logger --disable-whois --disable-rlogin --disable-rsh --disable-rcp --disable-rexec --disable-ping --disable-ping6"
+    "inetutils"   "native_build inetutils-${V_INETUTILS}.tar.gz inetutils-${V_INETUTILS} --bindir=/usr/bin --localstatedir=/var --disable-servers --disable-logger --disable-whois --disable-rlogin --disable-rsh --disable-rcp --disable-rexec --disable-ping --disable-ping6 --disable-traceroute"
     "less"        "native_build less-${V_LESS}.tar.gz less-${V_LESS} --sysconfdir=/etc"
     "openssl"     "s_openssl"
     # --with-gcc-arch=x86-64, not LFS's "native": inert while CFLAGS are set,
