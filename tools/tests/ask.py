@@ -13,7 +13,7 @@ import tempfile
 import termios
 import time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ASK = os.path.join(ROOT, "build", "service-scripts", "ask.sh")
 failed = 0
 

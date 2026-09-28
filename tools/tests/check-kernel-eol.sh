@@ -7,7 +7,7 @@ set -uo pipefail
 # common.sh prefers these, when exported, to paths derived from KRYPTIK_ROOT.
 unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TOOL="${ROOT}/tools/check-kernel-eol.sh"
 
 PASS=0

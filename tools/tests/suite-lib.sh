@@ -3,7 +3,7 @@
 # which, like another suite booting on the same host, points the shared
 # ovmf-serial.latest.log link at a stranger's transcript after every boot.
 set -uo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PASS=0; FAIL=0
 ok()   { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
 bad()  { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }

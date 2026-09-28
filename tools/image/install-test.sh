@@ -52,7 +52,7 @@ txt_of() { tr -d '\r' < "$1"; }
 # ----------------------------------------------------------------- step 1 --
 step "step 1: install from the medium onto a blank ${SIZE} disk"
 # --size wins; without it the disk is sized from the medium (test-disk-size.sh).
-if [[ -z "$SIZE" ]]; then SIZE="$("${SELF}/test-disk-size.sh" --medium "$USB")" || die "could not size the test disk from the medium"; fi
+if [[ -z "$SIZE" ]]; then SIZE="$("${SELF}/tests/disk-size.sh" --medium "$USB")" || die "could not size the test disk from the medium"; fi
 rm -f "$DISK"; truncate -s "$SIZE" "$DISK"
 CTL="${VMDIR}/testctl-install.img"
 "${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \

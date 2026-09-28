@@ -7,7 +7,7 @@ set -uo pipefail
 unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT
 unset KRYPTIK_RELEASE_SIGNERS
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TOOL="${ROOT}/tools/release-channel.sh"
 MTOOL="${ROOT}/tools/release-manifest.sh"
 

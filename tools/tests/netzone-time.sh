@@ -5,7 +5,7 @@
 
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT="${ROOT}/tools/net/netzone-init.sh"
 SNTP="${ROOT}/tools/net/sntp-offset.py"
 PASS=0

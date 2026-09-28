@@ -2,7 +2,7 @@
 # Installer checks that need no VM, no root and no disk.
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 INSTALLER="${ROOT}/tools/install/kryptik-install.sh"
 RUNNER="${ROOT}/build/service-scripts/installer-run.sh"
 

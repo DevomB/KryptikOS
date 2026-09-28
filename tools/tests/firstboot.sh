@@ -3,7 +3,7 @@
 # setup finishes at the next boot) on staged passwd and shadow files, and its
 # time-limited console questions.
 set -uo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SRC="$ROOT/build/service-scripts/firstboot.sh"
 PASS=0; FAIL=0
 ok()  { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }

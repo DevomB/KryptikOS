@@ -109,7 +109,7 @@ result: reporting the inventory without it would drop recorded facts silently."
     dim "  notes: $(grep -c . "$NOTES_TSV" || true) recorded caveat(s)"
 fi
 
-# Test hook: pre-made reports from tools/test-provenance-inventory.sh.
+# Test hook: pre-made reports from tools/tests/provenance-inventory.sh.
 if [[ -n "${KRYPTIK_INVENTORY_REPORTS:-}" ]]; then
     [[ "${KRYPTIK_INVENTORY_SELFTEST:-0}" == "1" ]] || die \
 "KRYPTIK_INVENTORY_REPORTS is set but KRYPTIK_INVENTORY_SELFTEST is not.

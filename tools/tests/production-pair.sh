@@ -4,7 +4,7 @@
 # development release stays, the medium is gone afterwards, and a private key
 # in the work tree, whole or only its seed's line, fails it.
 set -uo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PASS=0; FAIL=0
 ok()  { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
 bad() { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }

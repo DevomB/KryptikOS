@@ -6,7 +6,7 @@ set -uo pipefail
 
 unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TOOL="${ROOT}/tools/check-support-status.sh"
 REAL_POLICY="${ROOT}/tools/support-policy.tsv"
 

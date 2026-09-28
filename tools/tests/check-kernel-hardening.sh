@@ -6,7 +6,7 @@ set -uo pipefail
 
 unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT KRYPTIK_KHC_DIR
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TOOL="${ROOT}/tools/check-kernel-hardening.sh"
 REAL_ACCEPTED="${ROOT}/build/config/kernel/checker-accepted.txt"
 

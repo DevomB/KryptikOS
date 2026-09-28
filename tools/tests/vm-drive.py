@@ -3,7 +3,7 @@
 import importlib.util, os, socket, sys, tempfile, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-spec = importlib.util.spec_from_file_location("vm_drive", os.path.join(HERE, "image", "vm-drive.py"))
+spec = importlib.util.spec_from_file_location("vm_drive", os.path.join(HERE, "..", "image", "vm-drive.py"))
 vm = importlib.util.module_from_spec(spec); spec.loader.exec_module(vm)
 
 PASS = 0; FAIL = 0

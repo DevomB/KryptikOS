@@ -3,7 +3,7 @@
 # bytes from a loopback HTTP server must reach a stand-in broker unchanged, at
 # the offsets it asks for, and a refusal must stop the run.
 set -uo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FETCH="$ROOT/tools/net/update-fetch.py"
 command -v python3 >/dev/null 2>&1 || { echo "python3 not found; cannot run"; exit 77; }
 

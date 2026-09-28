@@ -3,7 +3,7 @@
 
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MAN="${ROOT}/tools/artifact-manifest.sh"
 PASS=0
 FAIL=0

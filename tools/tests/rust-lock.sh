@@ -4,7 +4,7 @@
 # report: every line but the comments is a hash and a release tarball, and
 # the four tarballs the build installs are there once each, of one version.
 set -uo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LOCK="$ROOT/build/config/rust.lock"
 PASS=0; FAIL=0
 ok()  { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }

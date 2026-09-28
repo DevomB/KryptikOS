@@ -5,7 +5,7 @@
 # come from the tool itself, pointed at a scratch mountpoint, with mount
 # stand-ins that keep a record; flock is the real one.
 set -uo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TOOL="$ROOT/tools/update/kryptik-update"
 command -v flock >/dev/null 2>&1 || { echo "flock not found; cannot run"; exit 77; }
 PASS=0; FAIL=0

@@ -3,7 +3,7 @@
 # repository: it passes when every text matches, and names each one that does
 # not, a crate with no text or a stale one, and a musl it was not taken from.
 set -uo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PASS=0; FAIL=0
 ok()  { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
 bad() { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }

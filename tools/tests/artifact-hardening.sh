@@ -4,7 +4,7 @@
 
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CHECK="${ROOT}/tools/check-artifact-hardening.sh"
 CC="${CC:-gcc}"
 PASS=0

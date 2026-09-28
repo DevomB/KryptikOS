@@ -7,7 +7,7 @@ set -uo pipefail
 # Exported values would override the paths each case sets.
 unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT KRYPTIK_KEYS KRYPTIK_ROLE
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 PASS=0
 FAIL=0

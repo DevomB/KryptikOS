@@ -2,7 +2,7 @@
 # Check that the hardening flags build an executable, a shared library, and a
 # program linking the two.
 #
-#   tools/test-hardening-flags.sh          test with $CC (default gcc)
+#   tools/tests/hardening-flags.sh          test with $CC (default gcc)
 #   CC=x86_64-kryptik-linux-gnu-gcc ...    test the cross compiler
 #
 # -pie must stay out of the flags: it links Scrt1.o, whose _start needs main(),
@@ -10,7 +10,7 @@
 # --enable-default-pie, so executables are PIE anyway. Run inside the chroot to
 # test the flags as stage 04 applies them.
 
-source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../../build/lib/common.sh"
 
 # Probes fail by design; the ERR trap would abort on the first one.
 trap - ERR

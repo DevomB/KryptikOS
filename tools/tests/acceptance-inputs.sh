@@ -2,7 +2,7 @@
 # Test acceptance.sh's release choice, verdict and export list, running the
 # script's own code on a staged images/ directory of empty files.
 set -uo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ACC="$ROOT/tools/acceptance.sh"
 PASS=0; FAIL=0
 ok()  { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }

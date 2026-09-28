@@ -3,7 +3,7 @@
 # same checks as a release's (build/lib/release-keys.sh's medium_keys), and
 # those checks still refuse it once one of its private keys is loosened.
 set -uo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PASS=0; FAIL=0
 ok()  { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
 bad() { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }

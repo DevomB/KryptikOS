@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run the compositor workspace tests and audit the shipped zone files; exit 77 (skip) without cargo.
 set -uo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT/compositor" || { echo "no compositor/ workspace"; exit 1; }
 [[ -d "$HOME/.cargo/bin" ]] && PATH="$HOME/.cargo/bin:$PATH"
 if ! command -v cargo >/dev/null 2>&1; then

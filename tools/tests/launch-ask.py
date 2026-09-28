@@ -14,7 +14,7 @@ import threading
 
 
 def main():
-    root = Path(__file__).resolve().parent.parent
+    root = Path(__file__).resolve().parent.parent.parent
     with tempfile.TemporaryDirectory(prefix="kryptik-launch-ask-") as tmp:
         work = Path(tmp)
         called = work / "chrome-args"

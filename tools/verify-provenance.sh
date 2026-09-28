@@ -33,7 +33,7 @@ HM_SIGNER_FPR="SHA256:AhgHif0mei+9aNyKLfMZBh2yptHdw/aN7Tlh/j2eFwM"
 
 HM_REMOTE="https://github.com/${HM_REPO}"
 
-# Overrides for tools/test-verify-provenance.sh. They substitute the trust
+# Overrides for tools/tests/verify-provenance.sh. They substitute the trust
 # anchor, so they are refused without KRYPTIK_PROVENANCE_SELFTEST=1.
 if [[ -n "${KRYPTIK_HM_REMOTE:-}${KRYPTIK_HM_SIGNERS:-}${KRYPTIK_HM_FPR:-}" ]]; then
     [[ "${KRYPTIK_PROVENANCE_SELFTEST:-0}" == "1" ]] || die \

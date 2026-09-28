@@ -8,7 +8,7 @@ set -uo pipefail
 # one would point the tool at the real tree.
 unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TOOL="${ROOT}/tools/provenance-inventory.sh"
 
 PASS=0

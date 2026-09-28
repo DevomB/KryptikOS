@@ -95,7 +95,7 @@ key and signers file, from a timer: a machine reports a statement older than
 The host suites need no build and no root:
 
 ```sh
-make test         # every tools/test-* suite, then the compartment suites
+make test         # every tools/tests/* suite, then the compartment suites
 make zone-tests   # adversarial.sh (the primitives) and launcher.sh (kryptikd run)
 ```
 

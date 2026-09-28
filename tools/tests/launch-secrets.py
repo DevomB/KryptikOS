@@ -12,7 +12,7 @@ import threading
 
 
 def main():
-    root = Path(__file__).resolve().parent.parent
+    root = Path(__file__).resolve().parent.parent.parent
     with tempfile.TemporaryDirectory(prefix="kryptik-launch-secret-") as tmp:
         work = Path(tmp)
         proxy = work / "proxy"

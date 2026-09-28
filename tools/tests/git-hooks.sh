@@ -7,7 +7,7 @@ set -uo pipefail
 
 unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HOOK="${ROOT}/tools/git-hooks/pre-commit"
 PUSH_HOOK="${ROOT}/tools/git-hooks/pre-push"
 CHECKER="${ROOT}/tools/check-commit-identity.sh"
@@ -125,16 +125,17 @@ else
     red "build/stages scripts are swept too (got $(mode_of build/stages/99-thing.sh))"
 fi
 
-# tools/test-*.py suites run like the shell ones, so they are swept too.
+# tools/tests/*.py suites run like the shell ones, so they are swept too.
 newrepo
-printf '#!/usr/bin/env python3\nprint("hi")\n' > "${FIX}/tools/test-thing.py"
-chmod 644 "${FIX}/tools/test-thing.py"
-git -C "$FIX" add tools/test-thing.py
+mkdir -p "${FIX}/tools/tests"
+printf '#!/usr/bin/env python3\nprint("hi")\n' > "${FIX}/tools/tests/thing.py"
+chmod 644 "${FIX}/tools/tests/thing.py"
+git -C "$FIX" add tools/tests/thing.py
 commit_in "a test suite in python"
-if [[ "$(mode_of tools/test-thing.py)" == "100755" ]]; then
-    green "a tools/test-*.py suite is swept too"
+if [[ "$(mode_of tools/tests/thing.py)" == "100755" ]]; then
+    green "a tools/tests/*.py suite is swept too"
 else
-    red "a tools/test-*.py suite is swept too (got $(mode_of tools/test-thing.py))"
+    red "a tools/tests/*.py suite is swept too (got $(mode_of tools/tests/thing.py))"
 fi
 
 newrepo

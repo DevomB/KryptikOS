@@ -4,7 +4,7 @@
 # cannot change the version or hashes. Also tests check-manifest and
 # check-pointer. Needs ssh-keygen with -Y (OpenSSH 8.2+).
 set -uo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TOOL="$ROOT/tools/update/kryptik-update"
 command -v ssh-keygen >/dev/null 2>&1 || { echo "ssh-keygen not found; cannot run"; exit 77; }
 # With -Y, this incomplete call complains about find-principals; without, about -Y.

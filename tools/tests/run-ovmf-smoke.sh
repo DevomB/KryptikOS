@@ -3,7 +3,7 @@
 # its console just before it exits: a clean poweroff must not be reported as
 # the timeout.
 set -uo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PASS=0; FAIL=0
 ok()   { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
 bad()  { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }

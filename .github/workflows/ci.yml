@@ -59,7 +59,7 @@ jobs:
           # built sysroot). Those are listed separately, never counted as passes.
           fail=0
           skipped=""
-          for t in tools/test-*.sh tools/test-*.py; do
+          for t in tools/tests/*.sh tools/tests/*.py; do
             echo "=== $t"
             # The step runs under bash -e; capture the status without tripping it.
             "$t" && rc=0 || rc=$?
@@ -90,7 +90,7 @@ jobs:
           # A commit from Windows records 100644, and a Linux clone then fails
           # with "Permission denied".
           fail=0
-          for f in build/stages/*.sh tools/*.sh tools/test-*.py \
+          for f in build/stages/*.sh tools/*.sh tools/tests/*.sh tools/tests/*.py \
                    tools/image/*.sh tools/image/*.py \
                    compartments/tests/*.sh tools/git-hooks/*; do
             mode=$(git ls-files -s "$f" | awk '{print $1}')

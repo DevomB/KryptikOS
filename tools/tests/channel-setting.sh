@@ -5,7 +5,7 @@
 # fragment, and a path that ends in the name asked for. Runs stage 06's own
 # check, role reader and writer, and the real fetcher.
 set -uo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 S06="$ROOT/build/stages/06-iso.sh"
 PASS=0; FAIL=0
 ok()  { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }

@@ -62,7 +62,7 @@ quiet_fetch() {
 
 CANONICAL_GNU="https://ftp.gnu.org/gnu"
 
-# Overrides for tools/test-verify-signatures.sh only.
+# Overrides for tools/tests/verify-signatures.sh only.
 if [[ -n "${KRYPTIK_SIGCHECK_MANIFEST:-}${KRYPTIK_SIGCHECK_KEYRING:-}${KRYPTIK_SIGCHECK_KEYSOURCE:-}${KRYPTIK_SIGCHECK_PROVENANCE:-}" ]]; then
     [[ "${KRYPTIK_SIGCHECK_SELFTEST:-0}" == "1" ]] || die \
 "A signature-check override is set (KRYPTIK_SIGCHECK_MANIFEST /

@@ -3,7 +3,7 @@
 # exist. Needs root.
 set -uo pipefail
 # This checkout, and the variables make passes to every stage.
-WT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORK="${KRYPTIK_WORK:-$WT/build/work}"
 SOURCES="${KRYPTIK_SOURCES:-$WT/sources}"
 # 77 (skipped), not a failure, without root or a built sysroot, as in CI.

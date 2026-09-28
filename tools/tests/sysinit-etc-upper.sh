@@ -3,7 +3,7 @@
 # the /etc upper layer (on the unauthenticated state partition) keeps only the
 # account database, machine identity and clock; the rest is quarantined.
 set -uo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SYSINIT="$ROOT/build/service-scripts/sysinit.sh"
 PASS=0; FAIL=0
 ok()  { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }

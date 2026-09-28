@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests for tools/check-pin-reviews.sh. Offline: it reads two files.
 set -uo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TOOL="${ROOT}/tools/check-pin-reviews.sh"
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 PASS=0; FAIL=0

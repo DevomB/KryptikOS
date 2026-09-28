@@ -518,7 +518,7 @@ step() {
     # turns errexit off inside the recipe too. The ERR trap fires even without
     # errexit and would exit this shell, so it is lifted here and re-armed in
     # the subshell, where the recipe's abort line lands in its log.
-    # Tested by tools/test-step-errexit.sh.
+    # Tested by tools/tests/step-errexit.sh.
     local rc=0
     set +e
     trap - ERR

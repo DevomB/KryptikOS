@@ -9,7 +9,7 @@ set -uo pipefail
 # one would point the tool at the real tree.
 unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TOOL="${ROOT}/tools/verify-provenance.sh"
 
 PASS=0
@@ -200,7 +200,7 @@ EOF
     cat > "${FAKE}/tools/fetch-sources.sh" <<'STUB'
 #!/usr/bin/env bash
 # Test stub: rows as `fetch-sources.sh --list` prints them, from the fixture pins.
-source "$(dirname "${BASH_SOURCE[0]}")/../build/config/versions.env"
+source "$(dirname "${BASH_SOURCE[0]}")/../../build/config/versions.env"
 sk="$MIRROR_SKARNET"
 printf '%s %s %s %s %s\n' \
     hardened-malloc "$V_HARDENED_MALLOC" "https://github.com/GrapheneOS/hardened_malloc/archive/refs/tags/${V_HARDENED_MALLOC}.tar.gz" tag github \

@@ -3,7 +3,7 @@
 # service directory and ESP, and fake s6-svstat, kryptikd, kryptik-efiboot,
 # reboot and mount that record what they were asked.
 set -uo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT="$ROOT/build/service-scripts/boot-success.sh"
 PASS=0; FAIL=0
 ok()   { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }

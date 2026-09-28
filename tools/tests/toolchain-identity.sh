@@ -4,7 +4,7 @@
 # trap, as it does there; only the mounts file path is substituted. Then the
 # toolchain's identity, from the stage's own --toolchain-id.
 set -uo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 MOUNTS="$W/mounts"; : > "$MOUNTS"
 BLOCK="$(awk '/^# --- a cross toolchain is never rebuilt/ {on=1} /^for row in / {on=0} on' "${ROOT}/build/stages/01-toolchain.sh" | sed "s#/proc/mounts#${MOUNTS}#g")"
