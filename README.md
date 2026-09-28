@@ -113,6 +113,7 @@ The tradeoff is spelled out in [docs/threat-model.md](docs/threat-model.md).
 ```
 build/
   stages/           Ordered build stages (00-host-check → 06-iso)
+  recipes/          One file per stage 04 step, sourced by 04-base-system.sh
   config/           Pinned versions, hardening flags, kernel config fragments
   patches/          Patch sets with provenance (glibc-2.40/, dwl-0.8/)
   services/         The s6-rc service tree
@@ -121,7 +122,7 @@ build/
   guest-tests/      Checks that run inside the installed system
   lib/              Shared shell helpers
 compartments/
-  kryptikd/         The compartment manager (Rust): zones, volumes, broker, launch daemon
+  kryptikd/         The compartment manager (Rust): zones, volumes, broker, launch daemon; each module's tests beside it in <module>/tests.rs
   zones/            The shipped zones and their policy
   tests/            adversarial.sh (primitives), launcher.sh, cli.sh, serve.sh
 compositor/
@@ -129,6 +130,7 @@ compositor/
   zoneid/           Zone colour identity
 tools/
   acceptance.sh     Every acceptance suite, one verdict
+  tests/            The tools' own suites, one per tool (make test)
   image/            Stage 06 helpers, the OVMF runner, the VM drivers
   install/          kryptik-install
   update/           kryptik-update and kryptik-recover

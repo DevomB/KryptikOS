@@ -280,7 +280,7 @@ if [[ "$FLOOR_S" -gt 0 ]]; then
 
         # End to end, only where a time server answers: with the clock 300 s
         # fast, the restarted net zone must measure about -300 and zone 0 must
-        # correct it (tools/test-netzone-time.sh checks the sign offline).
+        # correct it (tools/tests/netzone-time.sh checks the sign offline).
         case "$ready_time" in
             time=-[0-9]*|time=[0-9]*)
                 date -u -s "@$(( $(true_now) + 300 ))" >/dev/null 2>&1; rm -f /var/lib/kryptik/time/state

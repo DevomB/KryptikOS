@@ -87,7 +87,7 @@ A net zone that never answers leaves the clock to the RTC; that is reported
 step, the bound per claim and in total, consent, the interval and the claim
 grammar. The boundary suite checks that the verb is refused from a zone
 without the network and that a malformed claim is refused.
-`tools/test-netzone-time.sh` runs the query and its
+`tools/tests/netzone-time.sh` runs the query and its
 caller against loopback servers five minutes ahead or behind, a day out among
 three, unsynchronised, sending kiss-of-death, not echoing, or silent, under
 every POSIX shell on the host. On the installed system,

@@ -19,7 +19,7 @@ case "${1:-}" in
     *)      die "unknown argument: $1 (expected --lock, --list, or nothing)" ;;
 esac
 
-# Test hook: tools/test-fetch-sources.sh substitutes a manifest of file:// URLs.
+# Test hook: tools/tests/fetch-sources.sh substitutes a manifest of file:// URLs.
 if [[ -n "${KRYPTIK_FETCH_MANIFEST:-}" ]]; then
     [[ "${KRYPTIK_FETCH_SELFTEST:-0}" == "1" ]] || die \
 "KRYPTIK_FETCH_MANIFEST is set but KRYPTIK_FETCH_SELFTEST is not.

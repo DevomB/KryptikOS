@@ -163,9 +163,9 @@ a slot and restores the state header ([user guide](../user-guide.md)).
 flipped root block stopping the boot, recovery), `update-test.sh` (apply,
 refusals, recovery, rollback, a broken trial, interruptions, the network
 path) and `state-test.sh` (cloned, ambiguous, corrupt and missing state).
-Host-side: `tools/test-boot-success.sh`, `test-efiboot.sh`,
-`test-update-esp.sh`, `test-installer.sh`, `test-sysinit-etc-upper.sh`,
-`test-release-manifest.sh`, `test-release-channel.sh`.
+Host-side: `tools/tests/boot-success.sh`, `efiboot.sh`,
+`update-esp.sh`, `installer.sh`, `sysinit-etc-upper.sh`,
+`release-manifest.sh`, `release-channel.sh`.
 
 ## Files
 

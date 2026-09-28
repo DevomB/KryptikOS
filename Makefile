@@ -133,8 +133,8 @@ help:
 	@echo "  make check-kernel-hardening  resolve the config as stage 05 does, refuse a"
 	@echo "                   dropped fragment line, run kernel-hardening-checker on it"
 	@echo
-	@echo "  make test        every unit suite (tools/test-*), then the compartment suites"
-	@echo "  make test-NAME   one suite: tools/test-NAME.sh"
+	@echo "  make test        every unit suite (tools/tests/*), then the compartment suites"
+	@echo "  make test-NAME   one suite: tools/tests/NAME.sh"
 	@echo "  make zones       validate zone definitions + kernel support"
 	@echo "  make zone-test   run the isolation exit test (the primitives)"
 	@echo "  make launcher-test  attack \`kryptikd run\` itself (the launch path)"
@@ -388,16 +388,16 @@ test:
 	@"$(TOOLS)"/run-tests.sh
 
 test-%:
-	@"$(TOOLS)"/test-$*.sh
+	@"$(TOOLS)"/tests/$*.sh
 
 # Inside the chroot: it is the target's libc that has to unwind.
 test-libc-unwind:
-	@$(CHROOT_RUN) run /kryptik/tools/test-libc-unwind.sh
+	@$(CHROOT_RUN) run /kryptik/tools/tests/libc-unwind.sh
 
 # Runs the built userland, compiles with the target compiler and loads
 # hardened_malloc. Needs root and a finished sysroot.
 smoke-userspace:
-	@$(SUDO) "$(TOOLS)"/test-userspace-smoke.sh
+	@$(SUDO) "$(TOOLS)"/tests/userspace-smoke.sh
 
 # --- build output -----------------------------------------------------------
 

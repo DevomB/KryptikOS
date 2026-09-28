@@ -18,7 +18,7 @@ done
 
 RELEASES_URL="https://www.kernel.org/releases.json"
 
-# Test hook for tools/test-check-kernel-eol.sh. It needs a second variable so a
+# Test hook for tools/tests/check-kernel-eol.sh. It needs a second variable so a
 # stray one cannot point the gate at a feed other than kernel.org.
 if [[ -n "${KRYPTIK_KERNEL_RELEASES_URL:-}" ]]; then
     [[ "${KRYPTIK_KERNEL_EOL_SELFTEST:-0}" == "1" ]] || die \

@@ -172,7 +172,7 @@ title to `[zone] ...`, from which the compositor draws the zone's border.
   leaks, and no second question within a minute of a refusal. `consent.rs`
   tests yes, no, silence, a missing channel or watcher, a vanished sender,
   planted names and a non-file answer.
-- `tools/test-chrome-confirm.py` runs the chrome's real question window on a
+- `tools/tests/chrome-confirm.py` runs the chrome's real question window on a
   pty: the code shown allows, a plain `y` refuses, and keys or a half line
   typed before the question showed are dropped, for the clock question too.
 - The launcher suite's broker section: `version` names the zone, an unknown

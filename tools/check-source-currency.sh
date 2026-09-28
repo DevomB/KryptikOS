@@ -36,7 +36,7 @@ have python3 || die "python3 required"
 WORK="${KRYPTIK_WORK}/currency"
 rm -rf "$WORK"; mkdir -p "$WORK"
 
-# Test hook: tools/test-check-source-currency.sh serves listings on 127.0.0.1.
+# Test hook: tools/tests/check-source-currency.sh serves listings on 127.0.0.1.
 if [[ -n "${KRYPTIK_CURRENCY_BASE:-}" ]]; then
     [[ "${KRYPTIK_CURRENCY_SELFTEST:-0}" == "1" ]] || die \
 "KRYPTIK_CURRENCY_BASE is set but KRYPTIK_CURRENCY_SELFTEST is not.

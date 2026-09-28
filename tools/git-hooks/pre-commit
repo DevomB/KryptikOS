@@ -21,7 +21,7 @@ fi
 # --- executable bits --------------------------------------------------------
 # NTFS has no exec bit, so a script committed from Windows records 100644 and
 # a Linux clone gets "Permission denied": set the bit in the index. Hook files
-# and tools/test-*.py suites have no .sh suffix, so they are matched by name;
+# and tools/tests/*.py suites have no .sh suffix, so they are matched by name;
 # git silently ignores a non-executable hook.
 while IFS= read -r f; do
     [[ -z "$f" ]] && continue
@@ -31,7 +31,7 @@ while IFS= read -r f; do
         git update-index --chmod=+x -- "$f"
     fi
 done < <(git diff --cached --name-only --diff-filter=ACM \
-         | grep -E '^(build/stages/|tools/|compartments/tests/).*\.sh$|^tools/test-[A-Za-z0-9_-]+\.py$|^tools/git-hooks/[A-Za-z][A-Za-z0-9_-]*$' \
+         | grep -E '^(build/stages/|tools/|compartments/tests/).*\.sh$|^tools/tests/[A-Za-z0-9_-]+\.py$|^tools/git-hooks/[A-Za-z][A-Za-z0-9_-]*$' \
          || true)
 
 # build/lib/common.sh is sourced, not executed, and stays 644.

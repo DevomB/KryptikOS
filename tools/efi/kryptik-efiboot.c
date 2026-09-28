@@ -31,7 +31,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-/* tools/test-efiboot.sh overrides these with stand-ins. */
+/* tools/tests/efiboot.sh overrides these with stand-ins. */
 #ifndef EFIVARS
 #define EFIVARS "/sys/firmware/efi/efivars/"
 #endif

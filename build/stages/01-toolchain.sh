@@ -262,7 +262,7 @@ STEPS=(
 # chains them, so it changes exactly when one of them would rebuild: a recipe
 # or a helper it calls, a version or patch set it names, the flags, or the host
 # compiler. The walk comes before any step runs, so no step's arguments may
-# read what an earlier one writes (tools/test-toolchain-identity.sh).
+# read what an earlier one writes (tools/tests/toolchain-identity.sh).
 toolchain_id="$(for row in "${STEPS[@]}"; do
                     read -ra s <<< "$row"
                     [[ "${s[1]}" != --check ]] || continue

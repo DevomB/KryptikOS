@@ -13,12 +13,12 @@ cd "$ROOT" || exit 1
 STRICT=0
 [[ "${1:-}" == "--strict" ]] && STRICT=1
 
-# Every tools/test-* file is a suite, except these: the first two chroot into
+# Every tools/tests/* file is a suite, except these: the first two chroot into
 # the built system (acceptance items), the last two run with the compartment
 # suites below.
-ELSEWHERE=" test-libc-unwind.sh test-userspace-smoke.sh test-desktop-identity.sh test-compositor.sh "
+ELSEWHERE=" libc-unwind.sh userspace-smoke.sh desktop-identity.sh compositor.sh "
 SUITES=()
-for t in tools/test-*.sh tools/test-*.py; do
+for t in tools/tests/*.sh tools/tests/*.py; do
     [[ "$ELSEWHERE" == *" ${t##*/} "* ]] && continue
     n="${t##*/}"; SUITES+=("${n%.*}|$t")
 done
@@ -29,8 +29,8 @@ COMPARTMENT=(
     "launcher-test|compartments/tests/launcher.sh"
     "cli-test|compartments/tests/cli.sh"
     "serve-test|compartments/tests/serve.sh"
-    "test-desktop-identity|tools/test-desktop-identity.sh"
-    "test-compositor|tools/test-compositor.sh"
+    "desktop-identity|tools/tests/desktop-identity.sh"
+    "compositor|tools/tests/compositor.sh"
 )
 
 passed=()

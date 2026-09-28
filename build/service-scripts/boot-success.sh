@@ -7,7 +7,7 @@
 # A trial slot that passes health() is committed (its kernel becomes
 # BOOTX64.EFI). One that fails reboots, and with BootNext spent that lands on
 # the committed slot. A committed slot is only reported on, never rebooted.
-# The paths are overridable for tools/test-boot-success.sh only.
+# The paths are overridable for tools/tests/boot-success.sh only.
 set -u
 say() { echo "boot-success: $*"; }
 RUN="${KRYPTIK_RUN:-/run/kryptik}"

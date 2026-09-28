@@ -145,7 +145,7 @@ rebuilds from stage 01, because its glibc is this glibc.
 
 ## Tests
 
-`make test-libc-unwind` (tools/test-libc-unwind.sh, against the target glibc
+`make test-libc-unwind` (tools/tests/libc-unwind.sh, against the target glibc
 inside the chroot) probes the three unwinding entry points, asks
 `_dl_find_object` which object it blames for a dlopened address, and reads
 the loader's map start back through `LD_TRACE_LOADED_OBJECTS`. Without 0004
