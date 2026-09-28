@@ -142,8 +142,9 @@ channel.
 A cross-zone paste is a user gesture in zone 0: the chrome's `m<N><M>` (move
 zone N's clipboard to zone M) runs `kryptik-launch --clipboard-move FROM TO`,
 which the launch daemon carries out; as root it is `kryptikd clipboard move
-FROM TO`. Both zones must be running. The source keeps its payload and the
-destination's is replaced. No zone can fetch another's payload or trigger a
+FROM TO`. Both zones must be running. The payload leaves the source and
+replaces the destination's: one payload crosses, once, and a second gesture
+finds nothing to move. No zone can fetch another's payload or trigger a
 move: the verb does not exist on the zone-facing socket. Zone 0 has no
 transfer command either; the `kryptik` tool refuses `transfer`, `clipboard`
 and `mount` and points at the broker.

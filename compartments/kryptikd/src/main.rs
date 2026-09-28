@@ -52,8 +52,8 @@ USAGE:
     kryptikd status NAME              running, stale or absent
     kryptikd list --running           the zones the registry knows about
     kryptikd gc                       reclaim stale entries and empty cgroups
-    kryptikd clipboard move FROM TO   the zone 0 gesture: give TO a copy of FROM's
-                                      clipboard payload (both zones running)
+    kryptikd clipboard move FROM TO   the zone 0 gesture: move FROM's clipboard
+                                      payload to TO, emptying FROM (both running)
     kryptikd serve [--rootfs DIR]     the launch daemon the desktop session talks
                    [--socket PATH]    to (root; --socket PATH runs a developer
                    [--group G]        instance that serves only your own uid)
@@ -358,8 +358,8 @@ fn close_left_volume(name: &str, base: &str) {
 }
 
 /// Cross-zone paste, a zone 0 gesture: no zone's socket has a verb to fetch
-/// another zone's payload. Both zones must be running; the payload lives only
-/// in the source zone's registry entry.
+/// another zone's payload. Both zones must be running; the payload lives in
+/// one zone's registry entry at a time.
 fn cmd_clipboard(args: &[String]) -> ExitCode {
     let (from, to) = match (args.get(1).map(|s| s.as_str()), args.get(2), args.get(3)) {
         (Some("move"), Some(f), Some(t)) if !f.starts_with("--") && !t.starts_with("--") => (f.as_str(), t.as_str()),

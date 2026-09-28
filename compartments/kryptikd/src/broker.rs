@@ -903,13 +903,22 @@ pub fn clipboard_write(entry: &Path, mime: &str, bytes: &[u8]) -> io::Result<()>
     crate::files::write_atomic(&entry.join(CLIPBOARD_FILE), &[mime.as_bytes(), b"\n", bytes], 0o600, None)
 }
 
-/// `kryptikd clipboard move`: give `to` a copy of `from`'s payload. Both are
-/// registry entries of running zones. Returns what moved.
+/// `kryptikd clipboard move`: `to` takes `from`'s payload, which leaves
+/// `from`: one payload crosses, once. Both are registry entries of running
+/// zones. Returns what moved.
 pub fn clipboard_move(from: &Path, to: &Path) -> io::Result<(String, usize)> {
     let Some((mime, bytes)) = clipboard_read(from)? else {
         return Err(io::Error::new(io::ErrorKind::NotFound, "nothing on the source zone's clipboard"));
     };
     clipboard_write(to, &mime, &bytes)?;
+    // The destination first: a failure here leaves the payload in both zones, never in none.
+    match std::fs::remove_file(from.join(CLIPBOARD_FILE)) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(io::Error::new(e.kind(), format!("the payload reached the destination but is still on the source: {e}")));
+        }
+    }
     Ok((mime, bytes.len()))
 }
 
@@ -1160,7 +1169,7 @@ mod tests {
     }
 
     #[test]
-    fn clipboard_move_copies() {
+    fn clipboard_move_takes_the_payload() {
         let a = entry("move-a");
         let b = entry("move-b");
         let c = entry("move-c");
@@ -1168,11 +1177,13 @@ mod tests {
         clipboard_write(&b, "text/plain", b"old").unwrap();
         assert_eq!(clipboard_move(&a, &b).unwrap(), ("image/png".to_string(), 4));
         assert_eq!(clipboard_read(&b).unwrap(), Some(("image/png".to_string(), b"\x89PNG".to_vec())));
-        assert_eq!(clipboard_read(&a).unwrap(), Some(("image/png".to_string(), b"\x89PNG".to_vec())));
-        // Nothing to move from an empty clipboard, and the destination is untouched.
-        let e = clipboard_move(&c, &b).unwrap_err();
+        assert_eq!(clipboard_read(&a).unwrap(), None, "the payload left the source");
+        // A second gesture has nothing to move, and the destination is untouched.
+        let e = clipboard_move(&a, &b).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::NotFound);
         assert_eq!(clipboard_read(&b).unwrap().map(|(m, _)| m), Some("image/png".to_string()));
+        // Nor from a zone that never set one.
+        assert_eq!(clipboard_move(&c, &b).unwrap_err().kind(), io::ErrorKind::NotFound);
         // A planted symlink where the file should be is refused on read and replaced on write.
         std::os::unix::fs::symlink("/etc/hostname", c.join(CLIPBOARD_FILE)).unwrap();
         assert!(clipboard_read(&c).is_err());

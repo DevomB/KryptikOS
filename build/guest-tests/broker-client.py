@@ -4,6 +4,7 @@
     broker-client.py version
     broker-client.py clipboard-set MIME TEXT      (TEXT is the payload, as given)
     broker-client.py clipboard-get
+    broker-client.py clipboard-wait-empty SECONDS (clipboard-get until it answers empty)
     broker-client.py transfer DEST NAME PATH      (offers PATH to DEST as NAME)
 
 Prints the broker's answer on one line. Wire format: docs/design/broker.md.
@@ -13,6 +14,7 @@ import array
 import os
 import socket
 import sys
+import time
 
 BROKER = "/run/kryptik/broker"
 
@@ -46,6 +48,19 @@ def main(argv):
         print(talk(f"clipboard-set {argv[2]} {len(payload)}\n".encode(), payload))
     elif verb == "clipboard-get":
         print(talk(b"clipboard-get\n"))
+    elif verb == "clipboard-wait-empty" and len(argv) == 3:
+        # The zone keeps its payload until the zone 0 gesture takes it.
+        start = time.monotonic()
+        while True:
+            reply = talk(b"clipboard-get\n")
+            waited = time.monotonic() - start
+            if reply == "empty":
+                print(f"clipboard-empty after {waited:.0f} s")
+                break
+            if waited >= float(argv[2]):
+                print(f"clipboard-still-set after {waited:.0f} s: {reply}")
+                return 1
+            time.sleep(1)
     elif verb == "transfer" and len(argv) == 5:
         fd = os.open(argv[4], os.O_RDONLY)
         print(talk(f"transfer {argv[2]} {argv[3]}\n".encode(), fd=fd))
