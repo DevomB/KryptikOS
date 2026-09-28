@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Build the s6 stack on the host and check that stage 04's s6-linux-init options
-# and skeleton scripts, read from the stage file, make a bootable init image.
+# and skeleton scripts, read from its init and console recipes, make a bootable init image.
 # Says nothing about the target toolchain (stage 05 checks that).
 
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STAGE="${ROOT}/build/stages/04-base-system.sh"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+INIT="${ROOT}/build/recipes/init.sh"
+CONSOLE="${ROOT}/build/recipes/console.sh"
 PASS=0
 FAIL=0
 
@@ -81,8 +82,8 @@ check "skeleton installed to /etc/s6-linux-init/skel" \
 check "nothing landed in /usr/etc" \
       "$([[ ! -d "$PREFIX/usr/etc" ]] && echo ok)"
 
-# --- Kryptik's skeleton scripts, from the stage file -------------------------
-python3 - "$STAGE" "$PREFIX/etc/s6-linux-init/skel" <<'PY'
+# --- Kryptik's skeleton scripts, from the init recipe -------------------------
+python3 - "$INIT" "$PREFIX/etc/s6-linux-init/skel" <<'PY'
 import re, sys, pathlib, os
 src = pathlib.Path(sys.argv[1]).read_text()
 dest = pathlib.Path(sys.argv[2]); dest.mkdir(parents=True, exist_ok=True)
@@ -92,7 +93,7 @@ for m in re.finditer(r'cat > "\$skel/([a-z.]+)" <<\'EOF\'\n(.*?)\nEOF\n', src, r
     p.write_text(m.group(2) + "\n")
     os.chmod(p, 0o755)
     n += 1
-sys.exit(0 if n == 4 else "expected 4 skeleton scripts in the stage file, found %d" % n)
+sys.exit(0 if n == 4 else "expected 4 skeleton scripts in the init recipe, found %d" % n)
 PY
 check "stage 04's four skeleton scripts extracted" "$([[ $? -eq 0 ]] && echo ok)"
 
@@ -102,14 +103,14 @@ for f in rc.init rc.shutdown rc.shutdown.final runlevel; do
 done
 
 # --- the maker, with stage 04's options --------------------------------------
-# Read from the stage file; only -f and the output directory, the two that
+# Read from the init recipe; only -f and the output directory, the two that
 # name real installation paths, are overridden.
-mapfile -t OPTS < <(python3 - "$STAGE" <<'PY'
+mapfile -t OPTS < <(python3 - "$INIT" <<'PY'
 import re, sys, shlex
 src = open(sys.argv[1]).read()
 m = re.search(r'\n    s6-linux-init-maker \\\n(.*?)\n        "\$tmp"\n', src, re.S)
 if not m:
-    sys.exit("s6-linux-init-maker invocation not found in the stage file")
+    sys.exit("s6-linux-init-maker invocation not found in the init recipe")
 body = m.group(1).replace("\\\n", " ")
 body = re.sub(r'#[^\n]*', '', body)
 # The last option line still ends in the continuation that joined it to
@@ -125,9 +126,9 @@ for tok in shlex.split(body):
         continue
     print(tok)
 PY
-) || { red "could not extract the maker options from the stage file"; exit 1; }
+) || { red "could not extract the maker options from the init recipe"; exit 1; }
 
-echo "  maker options from the stage file: ${OPTS[*]}"
+echo "  maker options from the init recipe: ${OPTS[*]}"
 
 # With no options the maker still builds a default image, so check the
 # extraction before anything else.
@@ -138,7 +139,7 @@ check "extracted the console-output option (-1)" \
       "$(printf '%s\n' "${OPTS[@]}" | grep -qx -- '-1' && echo ok)"
 if [[ "${#OPTS[@]}" -lt 8 ]]; then
     echo
-    echo "  The maker options could not be read out of ${STAGE##*/}."
+    echo "  The maker options could not be read out of ${INIT##*/}."
     echo "  Everything below this point would be testing a default image, not"
     echo "  Kryptik's, so stopping here rather than reporting a green run."
     exit 1
@@ -181,14 +182,14 @@ check "shutdown script is Kryptik's" \
       "$(grep -q 'handing back to shutdownd' "$OUT/scripts/rc.shutdown" 2>/dev/null && echo ok)"
 
 # The console wrapper is written by a different step; check it the same way.
-python3 - "$STAGE" "$W/kryptik-console" <<'PY'
+python3 - "$CONSOLE" "$W/kryptik-console" <<'PY'
 import re, sys, pathlib
 src = pathlib.Path(sys.argv[1]).read_text()
 m = re.search(r"cat > /usr/libexec/kryptik-console <<'EOF'\n(.*?)\nEOF\n", src, re.S)
-sys.exit("console wrapper not found in the stage file") if not m else None
+sys.exit("console wrapper not found in the console recipe") if not m else None
 pathlib.Path(sys.argv[2]).write_text(m.group(1) + "\n")
 PY
-check "console wrapper extracted from the stage file" "$([[ -s "$W/kryptik-console" ]] && echo ok)"
+check "console wrapper extracted from the console recipe" "$([[ -s "$W/kryptik-console" ]] && echo ok)"
 check "console wrapper is valid sh" "$(sh -n "$W/kryptik-console" 2>/dev/null && echo ok)"
 selected="$(printf '%s\n' 'tty0 ttyS0' | awk '{print $NF}')"
 check "console wrapper selects the kernel-preferred (last) active console" \

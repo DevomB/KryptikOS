@@ -4,7 +4,7 @@
 
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SRC="${ROOT}/build/services"
 SCRIPTS="${ROOT}/build/service-scripts"
 PASS=0
@@ -210,11 +210,11 @@ echo "-- what rc.init will ask for"
 check "a 'default' bundle exists" "$(is_service default && echo ok)"
 check "stage 04 installs the scripts" \
       "$(grep -q 'install -m 0755 "\$scripts"/\*\.sh /usr/libexec/kryptik/' \
-         "$ROOT/build/stages/04-base-system.sh" && echo ok)"
+         "$ROOT/build/recipes/services.sh" && echo ok)"
 check "stage 04 compiles the database" \
-      "$(grep -q 's6-rc-compile' "$ROOT/build/stages/04-base-system.sh" && echo ok)"
+      "$(grep -q 's6-rc-compile' "$ROOT/build/recipes/services.sh" && echo ok)"
 check "rc.init brings up the default bundle" \
-      "$(grep -q 's6-rc .*change' "$ROOT/build/stages/04-base-system.sh" && echo ok)"
+      "$(grep -q 's6-rc .*change' "$ROOT/build/recipes/init.sh" && echo ok)"
 
 echo
 if [[ "$FAIL" -gt 0 ]]; then

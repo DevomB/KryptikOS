@@ -191,11 +191,11 @@ that directory.
 - The update suite's network step (`tools/image/update-test.sh`), from the
   channel stage 06 published: nothing is fetched until asked, then the
   release arrives whole, is applied, trial-booted and committed.
-- `tools/test-release-channel.sh`: `publish` and `reissue` with throwaway
+- `tools/tests/release-channel.sh`: `publish` and `reissue` with throwaway
   keys. A wrong key, an older release, a tampered payload, a replaced
   manifest, a replayed or far-ahead date, and a second run at once are each
   refused, and each leaves the old pair.
-- `tools/test-channel-setting.sh`: the addresses stage 06 takes and refuses
+- `tools/tests/channel-setting.sh`: the addresses stage 06 takes and refuses
   for `KRYPTIK_CHANNEL` for each role, and, for every address it takes, the
   fetcher reading the written `update.conf` into requests it can send.
 
@@ -213,5 +213,5 @@ that directory.
 `tools/update/kryptik-update` (`check-manifest`, `check-pointer`),
 `tools/net/update-fetch.py`, `tools/net/netzone-init.sh`,
 `tools/release-manifest.sh` (`pointer`), `tools/release-channel.sh`,
-`build/stages/04-base-system.sh` (the keys) and `06-iso.sh` (each build's
+`build/recipes/updater.sh` (the keys) and `build/stages/06-iso.sh` (each build's
 channel, and `update.conf` from `KRYPTIK_CHANNEL`).
