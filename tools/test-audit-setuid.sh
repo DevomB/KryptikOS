@@ -74,6 +74,15 @@ out="$(audit --strip "$T/root")"; rc=$?
     && ok "--strip without an allowlist refuses, and changes nothing" || bad "no allowlist: rc=$rc su $(mode su) mount $(mode mount): $out"
 mv "$L.away" "$L"; chmod 755 "$T/root/usr/bin/mount"
 
+# An entry without a justification refuses the audit before it looks at any
+# file, so a list that does not say why strips nothing.
+printf '# test\n/usr/bin/su\n' > "$L"
+chmod 4755 "$T/root/usr/bin/mount"
+out="$(audit --strip "$T/root")"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *"/usr/bin/su has no justification"* && "$(mode su)/$(mode mount)" == 4755/4755 ]] \
+    && ok "an entry without a justification refuses the audit, and nothing is stripped" || bad "no justification: rc=$rc su $(mode su) mount $(mode mount): $out"
+printf '# test\n/usr/bin/su   # why\n' > "$L"; chmod 755 "$T/root/usr/bin/mount"
+
 # A bind mount of / is this machine's / as much as / is. It is made in a mount
 # namespace of the check's own, so it ends with the check and never outlives
 # it under $T, where the cleanup would walk into it.

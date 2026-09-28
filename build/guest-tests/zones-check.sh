@@ -414,6 +414,45 @@ grep -q /usr/lib/libhardened_malloc.so /proc/self/maps && pass "allocator-zone0"
 zrun untrusted 30 -- grep -c /usr/lib/libhardened_malloc.so /proc/self/maps
 [[ "$ZRC" = 0 ]] && pass "allocator-zone" "a process in untrusted runs on it too" || fail "allocator-zone" "rc=$ZRC $(tail -1 "$LOG/untrusted.err")"
 
+# --- the installed root: privilege only where the allowlist says -------------------
+# What stage 06 stripped stays stripped: on the root filesystem a setuid or
+# setgid bit is on the listed binaries alone (build/config/setuid-allowlist.txt)
+# and file capabilities are on none (capability-allowlist.txt is empty).
+setuid_found="$(find / -xdev -type f -perm /6000 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"
+[[ "$setuid_found" == "/usr/bin/passwd /usr/bin/su " ]] && pass "setuid-only-allowed" "on the root filesystem: ${setuid_found}" || fail "setuid-only-allowed" "found: ${setuid_found:-none}"
+capped="$(python3 - <<'PY'
+import os, stat
+dev = os.lstat("/").st_dev
+out = []
+for d, dirs, files in os.walk("/"):
+    dirs[:] = [x for x in dirs if os.lstat(os.path.join(d, x)).st_dev == dev]
+    for name in files:
+        p = os.path.join(d, name)
+        try:
+            if not stat.S_ISREG(os.lstat(p).st_mode):
+                continue
+            os.getxattr(p, "security.capability", follow_symlinks=False)
+        except OSError:
+            continue
+        out.append(p)
+print(" ".join(out))
+PY
+)"
+[[ -z "$capped" ]] && pass "no-file-capabilities" "no file on the root filesystem carries security.capability" || fail "no-file-capabilities" "$capped"
+
+# --- the kernel tunables, as the verified root's file says --------------------------
+# sysinit applies /usr/lib/kryptik/sysctl.d at boot; every key reads back with
+# the file's value, whitespace aside, or the line is named.
+sysctl_bad=""
+while IFS= read -r line; do
+    line="${line%%#*}"; [[ "$line" == *=* ]] || continue
+    key="$(printf '%s' "${line%%=*}" | tr -d '[:space:]')"
+    want="$(printf '%s' "${line#*=}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    got="$(tr -s '[:space:]' ' ' < "/proc/sys/${key//.//}" 2>/dev/null | sed 's/ $//')"
+    [[ "$got" == "$want" ]] || sysctl_bad="${sysctl_bad}${key}=${got:-unreadable} (wanted ${want}); "
+done < /usr/lib/kryptik/sysctl.d/99-kryptik-hardening.conf
+[[ -z "$sysctl_bad" ]] && pass "sysctls-applied" "every key in 99-kryptik-hardening.conf reads back as written" || fail "sysctls-applied" "$sysctl_bad"
+
 echo "ZT SUMMARY passed=$PASS failed=$FAIL"
 echo "ZT END"
 [[ "$FAIL" -eq 0 ]]

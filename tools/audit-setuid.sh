@@ -21,14 +21,19 @@ TARGET="$(realpath -e -- "$ARG")" || die "no such path: ${ARG}"
 ALLOWLIST="${KRYPTIK_ROOT}/build/config/setuid-allowlist.txt"
 CAPLIST="${KRYPTIK_ROOT}/build/config/capability-allowlist.txt"
 
-# listed FILE ARRAY: the paths FILE names into the associative ARRAY. The last
-# entry counts even without a newline after it.
+# listed FILE ARRAY: the paths FILE names into the associative ARRAY, each
+# with a justification after it; an entry without one refuses the audit
+# before any file is looked at. The last entry counts even without a newline
+# after it.
 listed() {
-    local -n into="$2"; local path
+    local -n into="$2"; local line path
     [[ -f "$1" ]] || return 0
     # shellcheck disable=SC2034  # into names the caller's array
-    while read -r path _ || [[ -n "${path:-}" ]]; do
-        [[ -z "$path" || "$path" == \#* ]] || into["$path"]=1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        path="${line%%[[:space:]]*}"
+        [[ -z "$path" || "$path" == \#* ]] && continue
+        [[ "$line" == *[[:space:]]\#* ]] || die "${1}: ${path} has no justification; say after a # why it keeps its privilege"
+        into["$path"]=1
     done < "$1"
 }
 declare -A ALLOWED=() CAP_ALLOWED=()

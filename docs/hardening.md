@@ -131,10 +131,11 @@ option would print them raw.
 [`build/config/sysctl.d/`](../build/config/sysctl.d/) sets, among others,
 `kernel.kptr_restrict=2`, `kernel.dmesg_restrict=1`,
 `kernel.yama.ptrace_scope=3` (no ptrace after boot),
-`kernel.perf_event_paranoid=3`, `kernel.kexec_load_disabled=1`,
-`vm.unprivileged_userfaultfd=0`, `vm.mmap_rnd_bits=32`, the `fs.protected_*`
-settings, and core dumps piped to `/bin/false`. There are no BPF
-sysctls because there is no `bpf()`; seccomp's classic filters do not need it.
+`kernel.perf_event_paranoid=3`, `vm.mmap_rnd_bits=32` and the
+`fs.protected_*` settings. Every key in the file exists on the shipped
+kernel, and `make zones-test` reads each back: what the kernel does not
+build has no sysctl, so there is none for BPF (no `bpf()`; seccomp's classic
+filters do not need it), kexec, userfaultfd, 32-bit mappings or core dumps.
 
 ## setuid elimination
 
@@ -147,9 +148,12 @@ carrying capabilities (`security.capability`) needs one in
 `tools/audit-setuid.sh --strip` over the image's root, so the bit and the
 capabilities come off every other file (shadow and util-linux install eleven
 more setuid binaries); without `--strip` the script fails on any unlisted
-one. Either way it fails when it cannot read a directory, and a strip that
-would take the bit or the capabilities off a listed file through a hard link
-fails instead.
+one. Either way it fails when it cannot read a directory, on a list entry
+without a justification, and on a strip that would take the bit or the
+capabilities off a listed file through a hard link. `make zones-test` audits
+the installed root again: the bits are on the listed binaries alone, no file
+carries capabilities, and every sysctl reads back as `build/config/sysctl.d`
+says.
 
 ## Zone syscall filter
 

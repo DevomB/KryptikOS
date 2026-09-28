@@ -662,12 +662,19 @@ if (( PRIVILEGED == 1 )) && command -v cryptsetup >/dev/null 2>&1 && [[ -e /dev/
             sleep 0.2
         done
         "$KRYPTIKD" stop sealed --now >/dev/null 2>&1
+        # The launcher closes the volume once the zone's pid 1 is gone, not
+        # before stop returns: up to 10 s.
+        f4c_closed=0
+        for _ in $(seq 50); do
+            [[ "$("$KRYPTIKD" volume status sealed --zones "$ZONES" 2>/dev/null)" == *"(closed)"* ]] && { f4c_closed=1; break; }
+            sleep 0.2
+        done
         if (( f4c_open == 0 )); then
             fail "F4c the encrypted zone did not open its volume within 10 s"
-        elif [[ "$("$KRYPTIKD" volume status sealed --zones "$ZONES" 2>/dev/null)" == *"(closed)"* ]]; then
+        elif (( f4c_closed == 1 )); then
             pass "F4c stop --now leaves the volume closed"
         else
-            fail "F4c the volume is still open after stop --now"
+            fail "F4c the volume is still open 10 s after stop --now"
             "$KRYPTIKD" gc >/dev/null 2>&1
         fi
     fi
