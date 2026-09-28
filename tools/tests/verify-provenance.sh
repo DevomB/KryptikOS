@@ -200,7 +200,7 @@ EOF
     cat > "${FAKE}/tools/fetch-sources.sh" <<'STUB'
 #!/usr/bin/env bash
 # Test stub: rows as `fetch-sources.sh --list` prints them, from the fixture pins.
-source "$(dirname "${BASH_SOURCE[0]}")/../../build/config/versions.env"
+source "$(dirname "${BASH_SOURCE[0]}")/../build/config/versions.env"
 sk="$MIRROR_SKARNET"
 printf '%s %s %s %s %s\n' \
     hardened-malloc "$V_HARDENED_MALLOC" "https://github.com/GrapheneOS/hardened_malloc/archive/refs/tags/${V_HARDENED_MALLOC}.tar.gz" tag github \
