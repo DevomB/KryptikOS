@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Tests for tools/release-publish.sh against a fixture export, tree and tags,
-# staged only: GitHub is never called.
+# Tests for tools/release-publish.sh against a fixture export, tree and tags.
+# GitHub is never called: the staged cases stop before it, and the page cases
+# run against a stand-in gh that records what it was asked.
 
 set -uo pipefail
 unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT
@@ -81,6 +82,33 @@ publish() {   # publish EXPORT STAGE [ARGS...]: the tool, staged; stdout in $OUT
     NO_COLOR=1 bash "${T}/tools/release-publish.sh" "$1" --stage "$2" "${@:3}" > "$OUT" 2> "$ERR"
 }
 has() { grep -qF -- "$1" "$OUT"; }
+# The stand-in gh: like the real one it needs a repository, from the git
+# remotes of the directory it runs in unless --repo names one; it counts the
+# arguments that are files at the time of the call, and records the call.
+mkdir -p "${W}/bin"
+cat > "${W}/bin/gh" <<'GH'
+#!/usr/bin/env bash
+set -u
+repo=0; for a in "$@"; do [[ "$a" == --repo ]] && repo=1; done
+if [[ "$repo" -eq 0 ]] && ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    echo 'failed to run git: fatal: not a git repository (or any of the parent directories): .git' >&2
+    exit 1
+fi
+files=0; for a in "$@"; do [[ -e "$a" ]] && files=$((files + 1)); done
+printf 'cwd=%s files=%s args=%s\n' "$PWD" "$files" "$*" >> "$GH_LOG"
+case "$1 $2" in
+    "release view")   [[ -e "${GH_LOG}.created" ]] || exit 1; echo "https://example.invalid/releases/tag/$3" ;;
+    "release create") : > "${GH_LOG}.created" ;;
+esac
+GH
+chmod +x "${W}/bin/gh"
+GH_LOG="${W}/gh.log"
+mkdir -p "${W}/tmp"
+page() {   # page EXPORT [ARGS...]: the tool against the stand-in gh, from outside any repository
+    rm -f "$GH_LOG" "${GH_LOG}.created"
+    ( cd "$W" && PATH="${W}/bin:${PATH}" GH_LOG="$GH_LOG" TMPDIR="${W}/tmp" NO_COLOR=1 \
+        bash "${T}/tools/release-publish.sh" "$@" > "$OUT" 2> "$ERR" )
+}
 refused() { grep -qF -- "$1" "$ERR"; }
 sha() { sha256sum "$1" | cut -c1-64; }
 
@@ -134,6 +162,26 @@ if [[ "$rc" -eq 0 ]] && has "staged v0.1.0, a release, in ${S2}: 17 files and NO
     green "a production release stages as a release, and without a bundle one file fewer"
 else
     red "the production export (exit ${rc}): $(cat "$OUT")"; show
+fi
+
+# --- the page, through gh -----------------------------------------------------------
+TOP="$(cd "$T" && pwd -P)"
+page "$E" --source-bundle "$BUNDLE"; rc=$?
+if [[ "$rc" -eq 0 ]] && has "v0.1.0, a pre-release, drafted: https://example.invalid/releases/tag/v0.1.0" \
+    && grep -qF "cwd=${TOP} files=19 args=release create v0.1.0 --title Kryptik 0.1.0 --notes-file " "$GH_LOG" \
+    && grep -q -- ' --verify-tag --prerelease --draft /' "$GH_LOG"; then
+    green "the page is made from the checkout, wherever the tool runs: a draft pre-release with every file"
+else
+    red "the draft (exit ${rc}): $(cat "$OUT")"; show; sed 's/^/        /' "$GH_LOG" 2>/dev/null
+fi
+page "$E2" --publish --repo octo/kryptik; rc=$?
+if [[ "$rc" -eq 0 ]] && has "v0.1.0, a release, published:" \
+    && grep -qF "files=18 args=release create v0.1.0 --title Kryptik 0.1.0 --notes-file " "$GH_LOG" \
+    && ! grep -qE -- '--draft|--prerelease' "$GH_LOG" \
+    && ! grep -v -- '--repo octo/kryptik$' "$GH_LOG" | grep -q .; then
+    green "--publish makes the release live, and --repo names the repository to every call"
+else
+    red "the published release (exit ${rc}): $(cat "$OUT")"; show; sed 's/^/        /' "$GH_LOG" 2>/dev/null
 fi
 
 # --- refusals -----------------------------------------------------------------------

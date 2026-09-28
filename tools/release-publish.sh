@@ -114,11 +114,15 @@ if [[ -n "$STAGE" ]]; then
 fi
 
 # --- the page -------------------------------------------------------------------
+# gh takes the repository from the git remotes where it runs unless --repo
+# names one, and the staged files are outside the checkout.
 repo=(); [[ -z "$REPO" ]] || repo=(--repo "$REPO")
-! gh release view "$TAG" "${repo[@]}" > /dev/null 2>&1 || die "${TAG} is already on the page; delete it there, or number the next release"
+ghr() { (cd "$TOP" && gh "$@" "${repo[@]}"); }
+! ghr release view "$TAG" > /dev/null 2>&1 || die "${TAG} is already on the page; delete it there, or number the next release"
 args=(--title "Kryptik ${VERSION}" --notes-file "${OUT}/NOTES.md" --verify-tag)
 [[ "$KIND" != pre-release ]] || args+=(--prerelease)
 [[ "$PUBLISH" -eq 1 ]] || args+=(--draft)
+uploads=(); for f in "${ASSETS[@]}"; do uploads+=("${OUT}/${f}"); done
 log "Creating ${TAG} on GitHub"
-(cd "$OUT" && gh release create "$TAG" "${repo[@]}" "${args[@]}" "${ASSETS[@]}")
-ok "${TAG}, a ${KIND}, $([[ "$PUBLISH" -eq 1 ]] && echo published || echo drafted): $(gh release view "$TAG" "${repo[@]}" --json url --jq .url)"
+ghr release create "$TAG" "${args[@]}" "${uploads[@]}"
+ok "${TAG}, a ${KIND}, $([[ "$PUBLISH" -eq 1 ]] && echo published || echo drafted): $(ghr release view "$TAG" --json url --jq .url)"
