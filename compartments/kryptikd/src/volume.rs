@@ -404,6 +404,43 @@ pub fn restore_header(volume: &str, from: &str) -> Result<(), VolumeError> {
     Ok(())
 }
 
+/// Erase a zone's key slots, then delete its container file: the zone is
+/// then as before `volume init`. Refused while the mapping is open (the zone
+/// runs, or `gc` has not closed it), for a block device (it is wiped by hand,
+/// not unlinked) and for a file without a LUKS signature.
+pub fn destroy(zone: &str, volume: &str) -> Result<(), VolumeError> {
+    if mapping_exists(zone) {
+        return Err(VolumeError::Io(format!(
+            "zone {zone:?}: its volume is open at {}; stop the zone first (kryptikd stop {zone})",
+            mapper_path(zone)
+        )));
+    }
+    let p = Path::new(volume);
+    let md = match fs::metadata(p) {
+        Ok(md) => md,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(VolumeError::Io(format!("zone {zone:?}: no volume at {volume}")))
+        }
+        Err(e) => return Err(VolumeError::Io(format!("{volume}: {e}"))),
+    };
+    if !md.is_file() {
+        return Err(VolumeError::Io(format!("{volume} is not a file; a block device is wiped by hand, not deleted")));
+    }
+    let sig = signature_of(volume);
+    if !sig.contains("crypto_LUKS") {
+        return Err(VolumeError::Io(format!(
+            "{volume} carries {} rather than a LUKS signature; refusing to delete what volume init did not make",
+            if sig.is_empty() { "no signature".to_string() } else { format!("a {sig} signature") }
+        )));
+    }
+    // The slots first: an unlinked file's blocks stay on the disk until they
+    // are reused, and without its slots the container is ciphertext under a
+    // key nothing holds.
+    run("cryptsetup luksErase", "cryptsetup", &["luksErase", "--batch-mode", volume], None)
+        .map_err(|e| tool_err("cryptsetup luksErase", e))?;
+    fs::remove_file(p).map_err(|e| VolumeError::Io(format!("{volume}: {e}")))
+}
+
 /// Zones with a mapping under /dev/mapper, for `gc`.
 pub fn mappings() -> Vec<String> {
     let names = fs::read_dir("/dev/mapper")

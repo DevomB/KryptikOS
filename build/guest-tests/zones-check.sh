@@ -408,6 +408,18 @@ if "$KD" volume backup-header personal /root/zt/personal.hdr > "$LOG/hdr.out" 2>
 else
     fail "header-backup" "$(tail -2 "$LOG/hdr.out" | tr '\n' ' ')"
 fi
+# destroy: dev gets a volume, runs, and loses the volume once stopped; while
+# it runs the volume stays.
+printf 'dev-pass\n' > /root/zt/dev.pass; chmod 600 /root/zt/dev.pass
+"$KD" volume init dev --size 64M --passphrase-file /root/zt/dev.pass > "$LOG/vol-dev.out" 2>&1 || fail "volume-destroy" "dev volume init: $(tail -1 "$LOG/vol-dev.out")"
+setsid "$KD" run dev --zones "$Z" --rootfs "$R" --passphrase-file /root/zt/dev.pass -- sh -c 'echo DEV-UP; sleep 60' > "$LOG/dev-bg.out" 2>&1 &
+DBG=$!
+for _ in $(seq 1 60); do grep -q DEV-UP "$LOG/dev-bg.out" 2>/dev/null && break; sleep 0.5; done
+refused="$("$KD" volume destroy dev 2>&1)"; rrc=$?
+"$KD" stop dev >/dev/null 2>&1; wait "$DBG" 2>/dev/null
+for _ in $(seq 1 20); do [[ -e /dev/mapper/kryptik-zone-dev ]] || break; sleep 0.5; done
+gone="$("$KD" volume destroy dev 2>&1)"; grc=$?
+if [[ "$rrc" != 0 && "$refused" == *"stop the zone first"* && "$grc" = 0 && ! -e "$R/../volumes/dev.luks" ]]; then pass "volume-destroy" "refused while dev ran; the container went once it stopped"; else fail "volume-destroy" "running: rc=$rrc ${refused}; stopped: rc=$grc ${gone}"; fi
 # the vault: encrypted, offline
 printf 'vault-pass\n' > /root/zt/vault.pass; chmod 600 /root/zt/vault.pass
 "$KD" volume init vault --size 64M --passphrase-file /root/zt/vault.pass > "$LOG/vol-vault.out" 2>&1 || fail "vault-volume" "$(tail -1 "$LOG/vol-vault.out")"

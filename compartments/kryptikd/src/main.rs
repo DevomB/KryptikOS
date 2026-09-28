@@ -90,10 +90,11 @@ USAGE:
 Only descriptors 0, 1 and 2 reach the zone; the environment is rebuilt from
 an allowlist (see `kryptikd explain NAME`).
 
-    kryptikd volume init|passwd|backup-header|restore-header|status NAME
+    kryptikd volume init|passwd|backup-header|restore-header|destroy|status NAME
                                       an encrypted zone's LUKS2 volume (root;
                                       the passphrase comes on a descriptor or
-                                      the terminal, never on a command line)
+                                      the terminal, never on a command line;
+                                      destroy deletes the container and its data)
 
 Transfers are a zone verb on the broker socket, sent by the zone that offers
 the file (docs/design/broker.md), not a zone 0 command; the person answers through
@@ -864,11 +865,12 @@ fn run_options_from(args: &[String]) -> Result<spawn::RunOptions, String> {
 ///   volume init NAME [--size 512M] --passphrase-file F [--zone-uid N --zone-gid N]
 ///   volume passwd NAME --passphrase-file OLD --new-passphrase-file NEW
 ///   volume backup-header|restore-header NAME FILE
+///   volume destroy NAME
 ///   volume status NAME
 fn cmd_volume(dir: &Path, args: &[String]) -> ExitCode {
     let sub = args.get(1).map(String::as_str).unwrap_or("");
     let Some(name) = args.get(2).filter(|a| !a.starts_with("--")) else {
-        eprintln!("volume: usage: kryptikd volume init|passwd|backup-header|restore-header|status NAME ...");
+        eprintln!("volume: usage: kryptikd volume init|passwd|backup-header|restore-header|destroy|status NAME ...");
         return ExitCode::from(2);
     };
     let zone = match load_zone(dir, name) {
@@ -959,6 +961,13 @@ fn cmd_volume(dir: &Path, args: &[String]) -> ExitCode {
         "restore-header" => {
             let Some(file) = args.get(3) else { eprintln!("volume restore-header NAME FILE"); return ExitCode::from(2) };
             done(&format!("LUKS header restored from {file}"), volume::restore_header(&vol, file))
+        }
+        "destroy" => {
+            if !root {
+                eprintln!("volume destroy needs root");
+                return ExitCode::from(2);
+            }
+            done(&format!("{vol}: key slots erased and the file deleted, the zone's data with it; volume init makes a new one"), volume::destroy(name, &vol))
         }
         other => {
             eprintln!("volume: unknown subcommand {other:?}");
