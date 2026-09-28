@@ -331,6 +331,16 @@ else
 fi
 zrun untrusted 60 -- sh -c 'dd if=/dev/zero of=$HOME/big bs=1M count=3000 2>&1 | tail -1; echo DD-RC=$?; rm -f $HOME/big; echo TMPFS-SURVIVED'
 [[ "$ZOUT" == *TMPFS-SURVIVED* ]] && pass "ephemeral-size-bound" "untrusted's 2G tmpfs refused 3000 MiB and the zone survived" || fail "ephemeral-size-bound" "$(tail -2 "$LOG/untrusted.err" | tr '\n' ' ')"
+# The cpu limit reaches the kernel: while untrusted runs, its leaf says what its file says.
+setsid "$KD" run untrusted --zones "$Z" --rootfs "$R" -- sleep 20 > "$LOG/untrusted-cpu.out" 2>&1 &
+UCPU=$!
+cpu_line=""
+for _ in $(seq 1 40); do
+    for leaf in /sys/fs/cgroup/kryptik/untrusted.*; do [[ -f "$leaf/cpu.max" ]] && cpu_line="$(cat "$leaf/cpu.max")"; done
+    [[ -n "$cpu_line" ]] && break; sleep 0.5
+done
+"$KD" stop untrusted >/dev/null 2>&1; wait "$UCPU" 2>/dev/null
+[[ "$cpu_line" == "200000 100000" ]] && pass "cpu-max-set" "untrusted's cgroup has cpu.max=${cpu_line} (its file says cpu_max = \"200%\")" || fail "cpu-max-set" "cpu.max=${cpu_line:-unread}: $(tail -2 "$LOG/untrusted-cpu.out" | tr '\n' ' ')"
 # lifecycle: repeated start/stop, stop while running, registry clean
 for i in 1 2 3; do zrun untrusted 20 -- true; [[ "$ZRC" = 0 ]] || fail "lifecycle-repeat" "start $i exited $ZRC"; done
 [[ "$ZRC" = 0 ]] && pass "lifecycle-repeat" "untrusted started and exited three times"

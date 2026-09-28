@@ -54,6 +54,13 @@ CONFIG_CGROUPS=y
 # (No CGROUP_BPF: it needs bpf(), which is off; see BPF below.)
 CONFIG_MEMCG=y
 CONFIG_BLK_CGROUP=y
+# A zone's [limits]: pids.max, cpu.max (CFS bandwidth) and io.max
+# (blk-throttle) beside memory.max (docs/design/resource-limits-and-ephemeral-zones.md).
+CONFIG_CGROUP_PIDS=y
+CONFIG_CGROUP_SCHED=y
+CONFIG_FAIR_GROUP_SCHED=y
+CONFIG_CFS_BANDWIDTH=y
+CONFIG_BLK_DEV_THROTTLING=y
 CONFIG_DM_CRYPT=y
 CONFIG_DM_VERITY=y
 CONFIG_DM_VERITY_VERIFY_ROOTHASH_SIG=y

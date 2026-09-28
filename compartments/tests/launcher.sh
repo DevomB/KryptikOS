@@ -143,6 +143,16 @@ mkzone_limited() { # name colour memory pids
 mkzone_limited memcapped "#777777" "48M"  200   # memory is the variable
 mkzone_limited pidcapped "#999999" "512M" 32    # pids is the variable
 mkzone_limited roomy     "#888888" "512M" 200   # neither: the positive control
+# cpu_max is the variable: a quarter of one CPU, against roomy's unlimited
+# time. Its own colour: kryptikd refuses two zones that share one.
+{
+    printf '[zone]\nname = "cpucapped"\ndescription = "launcher-suite limit fixture"\n'
+    printf '[network]\nmode = "none"\n[storage]\nmode = "ephemeral"\nsize = "32M"\n'
+    printf '[limits]\ncpu_max = "25%%"\npids_max = 200\n[ui]\nborder_color = "#8b8b8b"\n'
+} > "$ZONES/cpucapped.toml"
+# io_max is the variable, on an encrypted fixture: 8 MiB per second on its volume.
+mkzone throttled none "#aaaaaa" '' encrypted
+printf '[limits]\nio_max = "8M"\n' >> "$ZONES/throttled.toml"
 
 # A root launch must map the zone to an unprivileged identity: kryptikd refuses
 # to make zone root host uid 0.
@@ -669,6 +679,40 @@ if (( PRIVILEGED == 1 )) && command -v cryptsetup >/dev/null 2>&1 && [[ -e /dev/
         else
             fail "F4c the volume is still open after stop --now"
             "$KRYPTIKD" gc >/dev/null 2>&1
+        fi
+        # io_max: the leaf names the volume's devices with the bytes per
+        # second, and a direct write of 24 MiB at 8 MiB per second takes 3 s.
+        F5PASS="$WORK/throttled.pass"; printf 'fixture-passphrase' > "$F5PASS"; chmod 600 "$F5PASS"
+        if ! F5INIT="$("$KRYPTIKD" volume init throttled --zones "$ZONES" --size 64M --passphrase-file "$F5PASS" "${IDENTITY[@]}" 2>&1)"; then
+            fail "F5  volume init for the throttled fixture failed"
+            info "output: $(printf '%s' "$F5INIT" | tr '\n' '|' | cut -c1-220)"
+        else
+            f5_t0="$(date +%s%N)"
+            "$KRYPTIKD" run throttled "${ZARGS[@]}" --passphrase-file "$F5PASS" \
+                -- /bin/sh -c 'dd if=/dev/zero of="$HOME/big" bs=1M count=24 oflag=direct 2>/dev/null && echo PROBE=WROTE' > "$WORK/throttled.out" 2>&1 &
+            f5_lp=$!
+            BG_PIDS+=("$f5_lp")
+            f5_leaf="/sys/fs/cgroup/kryptik/throttled.${f5_lp}" f5_io=""
+            for _ in $(seq 60); do
+                [[ -f "$f5_leaf/io.max" ]] && f5_io="$(cat "$f5_leaf/io.max" 2>/dev/null)" && [[ -n "$f5_io" ]] && break
+                sleep 0.05
+            done
+            wait "$f5_lp" 2>/dev/null
+            f5_ms=$(( ($(date +%s%N) - f5_t0) / 1000000 ))
+            if [[ "$f5_io" == *"rbps=8388608 wbps=8388608"* ]]; then
+                pass "F5a io_max reaches the kernel: the zone's cgroup has io.max '$(printf '%s' "$f5_io" | tr '\n' ';' | cut -c1-120)'"
+            else
+                fail "F5a io_max was not written: io.max is '$(printf '%s' "$f5_io" | tr '\n' ';' | cut -c1-120)'"
+                info "launcher said: $(tr '\n' '|' < "$WORK/throttled.out" | cut -c1-260)"
+            fi
+            if grep -q PROBE=WROTE "$WORK/throttled.out" && (( f5_ms >= 2500 )); then
+                pass "F5b io_max=8M held: 24 MiB of direct writes took ${f5_ms} ms"
+            elif ! grep -q PROBE=WROTE "$WORK/throttled.out"; then
+                fail "F5b the throttled zone did not finish its write"
+                info "launcher said: $(tr '\n' '|' < "$WORK/throttled.out" | cut -c1-260)"
+            else
+                fail "F5b io_max=8M did NOT hold: 24 MiB of direct writes took ${f5_ms} ms"
+            fi
         fi
     fi
 else
@@ -1255,6 +1299,52 @@ if (( CGROUP_OK == 0 )); then
     skip "M2-M6 cgroup enforcement [vm] this host cannot create cgroups; run the suite in the VM"
 else
     info "cgroups are creatable here; checking enforcement"
+
+    # --- cpu_max ------------------------------------------------------------
+    # A busy loop for two seconds; the leaf's cpu.stat says how much CPU time
+    # it got. Under cpu_max = "25%" that is a quarter of the wall time, and
+    # roomy, unlimited, gets the whole of it.
+    cpu_probe() { # zone -> sets CPU_LIMIT (cpu.max), CPU_USEC (used in about 2 s)
+        local zone="$1"
+        CPU_LIMIT=""; CPU_USEC=""
+        KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run "$zone" "${ZARGS[@]}" -- \
+            /bin/sh -c 'while :; do :; done' >/dev/null 2>"$WORK/cpu-probe-$zone.err" &
+        local lp=$!
+        BG_PIDS+=("$lp")
+        local leaf="/sys/fs/cgroup/kryptik/${zone}.${lp}" i=0 t0=""
+        while (( i < 200 )); do
+            if [[ -f "$leaf/cpu.stat" ]]; then
+                t0="$(sed -n 's/^usage_usec //p' "$leaf/cpu.stat")"
+                CPU_LIMIT="$(cat "$leaf/cpu.max" 2>/dev/null)"
+                break
+            fi
+            sleep 0.05; i=$((i+1))
+        done
+        if [[ -n "$t0" ]]; then
+            sleep 2
+            local t1; t1="$(sed -n 's/^usage_usec //p' "$leaf/cpu.stat" 2>/dev/null)"
+            [[ -n "$t1" ]] && CPU_USEC=$(( t1 - t0 ))
+        fi
+        kill -9 "$lp" 2>/dev/null
+        wait "$lp" 2>/dev/null
+        sleep 1
+    }
+    cpu_probe roomy
+    if [[ "$CPU_LIMIT" == "max 100000" ]] && [[ -n "$CPU_USEC" ]] && (( CPU_USEC >= 1200000 )); then
+        pass "M4a positive control: roomy's cpu.max is ${CPU_LIMIT} and a busy loop got ${CPU_USEC} µs of 2 s"
+    else
+        fail "M4a positive control FAILED: roomy's cpu.max is '${CPU_LIMIT}', the busy loop got '${CPU_USEC}' µs"
+        info "launcher stderr: $(tr '\n' '|' < "$WORK/cpu-probe-roomy.err" 2>/dev/null | cut -c1-300)"
+    fi
+    cpu_probe cpucapped
+    if [[ "$CPU_LIMIT" != "25000 100000" ]]; then
+        fail "M4b cpu_max was not written: the cgroup says '${CPU_LIMIT}', the zone file says 25%"
+        info "launcher stderr: $(tr '\n' '|' < "$WORK/cpu-probe-cpucapped.err" 2>/dev/null | cut -c1-300)"
+    elif [[ -n "$CPU_USEC" ]] && (( CPU_USEC <= 800000 )); then
+        pass "M4b cpu_max=25% held: cpu.max is ${CPU_LIMIT} and the busy loop got ${CPU_USEC} µs of 2 s"
+    else
+        fail "M4b cpu_max=25% did NOT hold: the busy loop got '${CPU_USEC}' µs of 2 s"
+    fi
 
     # --- pids_max -----------------------------------------------------------
     # Measured from outside: a zone out of pids cannot fork to report on itself.

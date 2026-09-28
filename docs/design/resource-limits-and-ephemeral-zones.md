@@ -15,19 +15,24 @@ namespace takes every other zone process with it.
 The host owns the cgroup: the zone can see that it is confined and cannot
 change it.
 
-- kryptikd creates `/sys/fs/cgroup/kryptik/` with `memory` and `pids`
-  enabled. A zone with `[limits]` gets one leaf per launch,
+- kryptikd creates `/sys/fs/cgroup/kryptik/` with `memory`, `pids`, `cpu`
+  and `io` enabled. A zone with `[limits]` gets one leaf per launch,
   `kryptik/<zone>.<launcher pid>`, so two overlapping launches of a zone never
   share a limit. The files stay `root:root`; a zone that owned its cgroup
   could raise its own limits.
-- The leaf gets `memory.max` and `pids.max` (`max` when unset),
+- The leaf gets `memory.max`, `pids.max` and `cpu.max` (`max` when unset),
   `memory.oom.group = 1` (an OOM kills the whole zone, never one process
-  while the rest keep its files and sockets) and `memory.swap.max = 0`. The
-  intermediate is moved in before it unshares with `CLONE_NEWCGROUP`, so the
-  zone's cgroup namespace is rooted at its leaf and `/proc/self/cgroup` reads
-  `0::/`. `/sys/fs/cgroup` is not mounted in the zone: nothing there needs it,
-  and a cgroup2 mount in a user namespace is writable surface.
-- Refuse, do not degrade: without the `memory` or `pids` controller, or if a
+  while the rest keep its files and sockets) and `memory.swap.max = 0`.
+  `cpu_max` is a percentage of one CPU (`"200%"` is two CPUs' worth of time)
+  written as a quota per 100 ms period. `io_max` is bytes per second each
+  way, written to `io.max` for the zone's volume mapping and for the devices
+  under it, so the bytes count wherever the encrypted writes land; only an
+  encrypted zone may set it, since it bounds nothing else. The intermediate
+  is moved in before it unshares with `CLONE_NEWCGROUP`, so the zone's cgroup
+  namespace is rooted at its leaf and `/proc/self/cgroup` reads `0::/`.
+  `/sys/fs/cgroup` is not mounted in the zone: nothing there needs it, and a
+  cgroup2 mount in a user namespace is writable surface.
+- Refuse, do not degrade: without one of the four controllers, or if a
   write fails, a zone with `[limits]` does not start. `KRYPTIK_EXPERIMENTAL=1`
   runs it unlimited on a developer host and says so; a root launch on the
   target kernel ignores that variable.

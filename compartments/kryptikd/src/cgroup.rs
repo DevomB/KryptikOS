@@ -15,8 +15,8 @@ const CGROUP2_ROOT: &str = "/sys/fs/cgroup";
 /// The directory kryptikd creates its per-zone cgroups under.
 const KRYPTIK_GROUP: &str = "kryptik";
 
-/// Controllers the leaf's parent must delegate, or `memory.max` and `pids.max` are missing.
-const NEEDED: &[&str] = &["memory", "pids"];
+/// Controllers the leaf's parent must delegate, or the leaf's limit files are missing.
+const NEEDED: &[&str] = &["memory", "pids", "cpu", "io"];
 
 #[derive(Debug)]
 pub enum CgroupError {
@@ -44,6 +44,41 @@ fn io_err(path: &Path, err: io::Error) -> CgroupError {
 /// Parse `memory_max` into bytes (`zone::parse_size`).
 pub fn parse_memory_max(v: &str) -> Result<u64, CgroupError> {
     crate::zone::parse_size(v).ok_or_else(|| CgroupError::BadLimit { field: "memory_max", value: v.to_string() })
+}
+
+/// Parse `cpu_max` into a percentage of one CPU (`zone::parse_cpu_max`).
+pub fn parse_cpu_max(v: &str) -> Result<u32, CgroupError> {
+    crate::zone::parse_cpu_max(v).ok_or_else(|| CgroupError::BadLimit { field: "cpu_max", value: v.to_string() })
+}
+
+/// Parse `io_max` into bytes per second (`zone::parse_size`).
+pub fn parse_io_max(v: &str) -> Result<u64, CgroupError> {
+    crate::zone::parse_size(v).ok_or_else(|| CgroupError::BadLimit { field: "io_max", value: v.to_string() })
+}
+
+/// The `MAJ:MIN` of the block device at `path`, then of the devices it is
+/// built on (`slaves` in sysfs): io.max names devices, and an encrypted
+/// volume's bytes land on the device under its mapping.
+pub fn block_devices(path: &str) -> io::Result<Vec<String>> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    let md = fs::metadata(path)?;
+    if !md.file_type().is_block_device() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("{path} is not a block device")));
+    }
+    let (major, minor) = (libc::major(md.rdev()), libc::minor(md.rdev()));
+    let mut out = vec![format!("{major}:{minor}")];
+    let slaves = Path::new("/sys/dev/block").join(format!("{major}:{minor}")).join("slaves");
+    if let Ok(entries) = fs::read_dir(&slaves) {
+        for e in entries.flatten() {
+            if let Ok(dev) = fs::read_to_string(e.path().join("dev")) {
+                let dev = dev.trim();
+                if !dev.is_empty() {
+                    out.push(dev.to_string());
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn read_trim(p: &Path) -> Result<String, CgroupError> {
@@ -239,8 +274,15 @@ impl Cgroup {
         &self.path
     }
 
-    /// Write the limits; an absent one is written as `max`, not left as inherited.
-    pub fn set_limits(&self, memory_max: Option<&str>, pids_max: Option<u32>) -> Result<(), CgroupError> {
+    /// Write the limits; an absent one is written as `max`, not left as
+    /// inherited. `io_max` names the volume's devices and the bytes per second.
+    pub fn set_limits(
+        &self,
+        memory_max: Option<&str>,
+        pids_max: Option<u32>,
+        cpu_max: Option<&str>,
+        io_max: Option<(&[String], &str)>,
+    ) -> Result<(), CgroupError> {
         let mem = self.path.join("memory.max");
         match memory_max {
             Some(v) => {
@@ -257,6 +299,27 @@ impl Cgroup {
             Some(n) => fs::write(&pids, n.to_string()).map_err(|e| io_err(&pids, e))?,
             None => {
                 let _ = fs::write(&pids, "max");
+            }
+        }
+
+        // cpu.max is a quota per 100 ms period: a percentage of one CPU is that many thousand microseconds.
+        let cpu = self.path.join("cpu.max");
+        match cpu_max {
+            Some(v) => {
+                let pct = parse_cpu_max(v)?;
+                fs::write(&cpu, format!("{} 100000", u64::from(pct) * 1000)).map_err(|e| io_err(&cpu, e))?;
+            }
+            None => {
+                let _ = fs::write(&cpu, "max 100000");
+            }
+        }
+
+        // io.max is per device: one line for the mapping and for each device under it.
+        if let Some((devices, v)) = io_max {
+            let bps = parse_io_max(v)?;
+            let io = self.path.join("io.max");
+            for d in devices {
+                fs::write(&io, format!("{d} rbps={bps} wbps={bps}")).map_err(|e| io_err(&io, e))?;
             }
         }
 
@@ -324,7 +387,7 @@ mod tests {
         let group = root.join(KRYPTIK_GROUP);
         fs::create_dir_all(&group).unwrap();
         for d in [&root, &group] {
-            fs::write(d.join("cgroup.controllers"), "cpu memory pids\n").unwrap();
+            fs::write(d.join("cgroup.controllers"), "cpu io memory pids\n").unwrap();
             fs::write(d.join("cgroup.subtree_control"), "memory pids\n").unwrap();
         }
         // Readable and delegated, but not writable by us.
@@ -353,6 +416,23 @@ mod tests {
         assert_eq!(parse_memory_max("2M").unwrap(), 2 * 1024 * 1024);
         assert_eq!(parse_memory_max("4G").unwrap(), 4 * 1024 * 1024 * 1024);
         assert_eq!(parse_memory_max("1T").unwrap(), 1024u64 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn cpu_and_io_limits_parse() {
+        assert_eq!(parse_cpu_max("50%").unwrap(), 50);
+        assert_eq!(parse_cpu_max("200%").unwrap(), 200);
+        for bad in ["0%", "50", "%", "abc%", ""] {
+            assert!(parse_cpu_max(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(parse_io_max("8M").unwrap(), 8 << 20);
+        assert!(parse_io_max("fast").is_err());
+        // A plain file is not a block device; a non-existent path is an error too.
+        let f = std::env::temp_dir().join(format!("kryptik-notblock-{}", std::process::id()));
+        fs::write(&f, "x").unwrap();
+        assert!(block_devices(f.to_str().unwrap()).is_err());
+        let _ = fs::remove_file(&f);
+        assert!(block_devices("/nonexistent/device").is_err());
     }
 
     #[test]
@@ -444,7 +524,7 @@ mod tests {
         }
 
         let cg = Cgroup { path: dir.clone() };
-        let err = cg.set_limits(Some("1M"), Some(10)).unwrap_err();
+        let err = cg.set_limits(Some("1M"), Some(10), None, None).unwrap_err();
         let msg = err.to_string();
 
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();

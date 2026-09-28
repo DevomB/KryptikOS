@@ -77,6 +77,11 @@ pub struct Zone {
     pub size: Option<String>,
     pub memory_max: Option<String>,
     pub pids_max: Option<u32>,
+    /// A share of CPU time as a percentage of one CPU (`"150%"`), enforced by
+    /// cgroup cpu.max; and bytes per second each way on the zone's volume, by
+    /// io.max, so only an encrypted zone may set it.
+    pub cpu_max: Option<String>,
+    pub io_max: Option<String>,
     pub border_color: String,
     /// Identity without colour: `glyph` and `label` name the zone in the
     /// chrome's menu, whose f names the last zone window's. Nothing draws
@@ -128,11 +133,21 @@ pub const KNOWN_KEYS: &[&str] = &[
     "network.mode", "network.nic",
     "storage.mode", "storage.volume", "storage.size",
     "policy.seccomp", "policy.landlock",
-    "limits.memory_max", "limits.pids_max",
+    "limits.memory_max", "limits.pids_max", "limits.cpu_max", "limits.io_max",
     "identity.uid_base",
     "transfer.to",
     "ui.border_color", "ui.border_pattern", "ui.glyph", "ui.label",
 ];
+
+/// A CPU limit as a zone file and cgroup cpu.max take it: a percentage of one
+/// CPU, digits then `%`, at least 1. None for anything else.
+pub fn parse_cpu_max(s: &str) -> Option<u32> {
+    let digits = s.strip_suffix('%')?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<u32>().ok().filter(|n| *n > 0)
+}
 
 /// A byte size as a zone file, cgroup memory.max and `volume init --size`
 /// take it: digits with an optional K, M, G or T. None for zero, for
@@ -288,6 +303,23 @@ impl Zone {
                 return Err(bad("limits.memory_max", v, "a size such as 512M or 2G"));
             }
         }
+        if let Some(v) = kv.get("limits.cpu_max") {
+            if parse_cpu_max(v).is_none() {
+                return Err(bad("limits.cpu_max", v, "a percentage of one CPU such as 50% or 200%"));
+            }
+        }
+        if let Some(v) = kv.get("limits.io_max") {
+            if parse_size(v).is_none() {
+                return Err(bad("limits.io_max", v, "bytes per second such as 20M"));
+            }
+            // The limit is on the volume's device; a zone without one has nothing to bound.
+            if storage != StorageMode::Encrypted {
+                return Err(ZoneError::Invalid(format!(
+                    "zone {name:?}: limits.io_max bounds reads and writes of the zone's volume, \
+                     and this zone has none (storage.mode is not \"encrypted\")"
+                )));
+            }
+        }
         // storage.size: required for ephemeral, refused where kryptikd cannot enforce it.
         match storage {
             StorageMode::Ephemeral => match kv.get("storage.size") {
@@ -419,6 +451,8 @@ impl Zone {
             landlock: get("policy.landlock"),
             memory_max: get("limits.memory_max"),
             pids_max,
+            cpu_max: get("limits.cpu_max"),
+            io_max: get("limits.io_max"),
             // One spelling, so the duplicate check sees #AA3333 and #aa3333 as one colour.
             border_color: need("ui.border_color")?.to_ascii_lowercase(),
             border_pattern: get("ui.border_pattern"),
@@ -852,6 +886,26 @@ border_color = "#000000"
         assert!(format!("{err}").contains("limits.memory_max"), "got: {err}");
         let ok = VAULT.replace("pids_max = 128", "memory_max = \"2G\"");
         assert_eq!(Zone::from_str(&ok).unwrap().memory_max.as_deref(), Some("2G"));
+        for v in ["\"150\"", "\"0%\"", "\"abc%\"", "\"%\"", "2"] {
+            let bad = VAULT.replace("pids_max = 128", &format!("cpu_max = {v}"));
+            let err = Zone::from_str(&bad).unwrap_err();
+            assert!(format!("{err}").contains("limits.cpu_max"), "{v}: {err}");
+        }
+        let ok = VAULT.replace("pids_max = 128", "cpu_max = \"150%\"");
+        assert_eq!(Zone::from_str(&ok).unwrap().cpu_max.as_deref(), Some("150%"));
+        assert_eq!(parse_cpu_max("50%"), Some(50));
+        assert_eq!(parse_cpu_max("100%"), Some(100));
+        for bad in ["0%", "50", "%", "", "1.5%", "-5%"] {
+            assert_eq!(parse_cpu_max(bad), None, "{bad:?}");
+        }
+        // io_max is bytes per second on the volume: only an encrypted zone has one.
+        let bad = VAULT.replace("pids_max = 128", "io_max = \"fast\"");
+        assert!(format!("{}", Zone::from_str(&bad).unwrap_err()).contains("limits.io_max"));
+        let ok = VAULT.replace("pids_max = 128", "io_max = \"20M\"");
+        assert_eq!(Zone::from_str(&ok).unwrap().io_max.as_deref(), Some("20M"));
+        let ephemeral = ok.replace("mode = \"encrypted\"\nvolume = \"/dev/kryptik/vault\"", "mode = \"ephemeral\"\nsize = \"64M\"");
+        let err = Zone::from_str(&ephemeral).unwrap_err();
+        assert!(format!("{err}").contains("io_max") && format!("{err}").contains("volume"), "got: {err}");
         assert_eq!(parse_size("32M"), Some(32 << 20));
         assert_eq!(parse_size("1g"), Some(1 << 30));
         assert_eq!(parse_size("2T"), Some(2 << 40));
@@ -863,7 +917,7 @@ border_color = "#000000"
 
     #[test]
     fn rejects_unknown_keys() {
-        for extra in ["[limits]\ncpu_max = 2", "[storage]\nunlock = \"on-start\"", "[network]\nbridge = \"kryptik0\""] {
+        for extra in ["[limits]\nnice = 2", "[storage]\nunlock = \"on-start\"", "[network]\nbridge = \"kryptik0\""] {
             let err = Zone::from_str(&format!("{VAULT}\n{extra}\n")).unwrap_err();
             assert!(format!("{err}").contains("unknown key"), "{extra}: {err}");
         }
