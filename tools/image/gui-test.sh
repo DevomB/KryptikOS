@@ -11,8 +11,9 @@
 # What the host adds to the guest's verdicts: screenshots in which each
 # window's frame is measured on all four sides, in its zone's colour from
 # build/desktop/zone-colours.h (full width focused, narrower by the band
-# unfocused), windowed, fullscreen and around a buffer larger than its
-# window; the fullscreen toggle (Alt+e) and the yes/no to the transfer
+# unfocused), windowed, after a refused fullscreen request and around a buffer
+# larger than its window; explicit focus (Alt+j), fullscreen refusal (Alt+e)
+# and the yes/no to the transfer
 # questions, delivered as keystrokes on the guest's keyboard, so the
 # trusted windows are exercised by input, not by writing answer files.
 set -uo pipefail
@@ -57,12 +58,16 @@ python3 "$DRV" --serial "$SER" --qmp "$QMP" --timeout 600 \
     "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
     "send:su - root -c 'bash /usr/lib/kryptik/guest-tests/gui-check.sh ${TUSER} 2>&1 | tee /var/log/kryptik/gui-check.log; echo GCHECK-DONE'" \
     "expect:Password: ?" "send:${RPASS}" \
+    "expect:GT KEY-FOCUS-ZONE" "key:alt+j" \
     "expect:GT SCREENSHOT-READY" "sleep:2" "screendump:${SHOT}" \
     "expect:GT KEY-FULLSCREEN\r?\n" "key:alt+e" \
     "expect:GT SCREENSHOT-FULLSCREEN" "sleep:2" "screendump:${SHOT_FS}" \
     "expect:GT KEY-FULLSCREEN-AGAIN" "key:alt+e" \
     "expect:GT KEY-MENU" "key:alt+p" \
+    "expect:GT KEY-FOCUS-OVERSIZE" "key:alt+j" \
     "expect:GT SCREENSHOT-OVERSIZE" "sleep:2" "screendump:${SHOT_OVER}" \
+    "expect:GT KEY-FOCUS-FORGED" "key:alt+j" \
+    "expect:GT KEY-FOCUS-PERSONAL" "key:alt+j" \
     "type-from:GT CONSENT-CODE 1 ([0-9]+)" \
     "expect:GT CONSENT-WAIT 2" "key:y" "key:ret" \
     "expect:GT END" "expect:GCHECK-DONE" \
@@ -78,7 +83,7 @@ gp="$(sed -n 's/.*passed=\([0-9]*\).*/\1/p' <<<"$summary")"; gf="$(sed -n 's/.*f
 if [[ -n "$summary" && "${gf:-1}" -eq 0 && "${gp:-0}" -ge 25 ]]; then green "every guest check passed (${gp})"; else red "guest checks: ${gp:-0} passed, ${gf:-?} failed"; fi
 grep 'GT FAIL' <<<"$T" | sed 's/^/        /'
 for name in session-socket compositor-running chrome-focus-record chrome-window-is-zone0 zone0-sees-capture zone-proxy-path zone-sees-needed zone-hidden-globals zone-bind-refused proxy-logged-refusal \
-            focus-shows-zone focus-shows-label title-prefixed last-zone-recorded menu-opens-on-key menu-keeps-last-zone fullscreen-identity-recorded compositor-survives-close oversize-window forged-title-named-by-zone second-zone-window no-virtual-input clipboard-isolated clipboard-move-gesture clipboard-moved \
+            map-keeps-zone0-focus focus-shows-zone focus-shows-label title-prefixed last-zone-recorded menu-opens-on-key menu-keeps-last-zone zone-fullscreen-refused compositor-survives-close oversize-window forged-title-named-by-zone second-zone-window no-virtual-input clipboard-isolated clipboard-move-gesture clipboard-moved \
             transfer-policy no-question-for-policy-refusal consent-code-shown transfer-approved transfer-landed plain-y-refused denied-file-absent; do
     grep -q "GT PASS ${name}" <<<"$T" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
@@ -178,9 +183,8 @@ else
 fi
 }
 check_shot "$SHOT" "windowed" untrusted:focused unzoned:unfocused
-# dwl keeps the zone border in fullscreen (dwl-zone-borders.py edit 8), so a
-# window cannot hide which zone it belongs to by going fullscreen.
-check_shot "$SHOT_FS" "fullscreen" untrusted:focused
+# A zone's fullscreen request leaves it tiled beside the trusted chrome.
+check_shot "$SHOT_FS" "fullscreen refused" untrusted:focused unzoned:unfocused
 # wlprobe oversize commits a buffer 40 px larger than its configure: the
 # borders must stay above the surface, or its excess covers them.
 check_shot "$SHOT_OVER" "oversized buffer" untrusted:focused unzoned:unfocused

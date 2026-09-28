@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Patch dwl.c (dwl v0.8) so every window's border is its zone's colour.
+"""Patch dwl.c (dwl v0.8) for zone borders, focus and scene layers.
 
 Usage: dwl-zone-borders.py DWL_SOURCE_DIR           (edits dwl.c in place)
        dwl-zone-borders.py --check DWL_SOURCE_DIR   (exit 0 if it would apply)
@@ -141,6 +141,82 @@ applyrules(Client *c)
 	 * window must not be able to remove it by going fullscreen. */
 	c->bw = borderpx;
 	client_set_fullscreen(c, fullscreen);
+"""),
+    # Mapping a different zone must not move it ahead of the active window.
+    ("""\twl_list_insert(&clients, &c->link);
+\twl_list_insert(&fstack, &c->flink);
+""",
+     """\twl_list_insert(&clients, &c->link);
+\t/* Compare with the actual keyboard focus, which may be on another monitor. */
+\tw = NULL;
+\ttoplevel_from_wlr_surface(seat->keyboard_state.focused_surface, &w, NULL);
+\tif (c->zoneborder != unzonedcolor && w && !client_is_unmanaged(w)
+\t\t\t&& w->zoneborder != c->zoneborder)
+\t\twl_list_insert(&w->flink, &c->flink);
+\telse
+\t\twl_list_insert(&fstack, &c->flink);
+"""),
+    # Keep zone clients out of the float and fullscreen scene layers.
+    ("""\t\tif (c->mon != m || c->scene->node.parent == layers[LyrFS])
+\t\t\tcontinue;
+
+\t\twlr_scene_node_reparent(&c->scene->node,
+""",
+     """\t\tif (c->mon != m || c->scene->node.parent == layers[LyrFS])
+\t\t\tcontinue;
+\t\t/* Zone 0 stays above every zoned tile, even in floating layout. */
+\t\tif (c->zoneborder == unzonedcolor) {
+\t\t\twlr_scene_node_reparent(&c->scene->node, layers[LyrFloat]);
+\t\t\tcontinue;
+\t\t}
+
+\t\twlr_scene_node_reparent(&c->scene->node,
+"""),
+    ("""setfloating(Client *c, int floating)
+{
+\tClient *p = client_get_parent(c);
+\tc->isfloating = floating;
+""",
+     """setfloating(Client *c, int floating)
+{
+\tClient *p = client_get_parent(c);
+\tc->isfloating = c->zoneborder != unzonedcolor ? 0 : floating;
+"""),
+    ("""setfullscreen(Client *c, int fullscreen)
+{
+\tc->isfullscreen = fullscreen;
+""",
+     """setfullscreen(Client *c, int fullscreen)
+{
+\t/* Only zone 0 can use LyrFS, which sits above the trusted windows. */
+\tc->isfullscreen = c->zoneborder != unzonedcolor ? 0 : fullscreen;
+\tfullscreen = c->isfullscreen;
+"""),
+    # A zone mapping must not cancel another zone's fullscreen either.
+    ("""\t\tif (w != c && w != p && w->isfullscreen && m == w->mon && (w->tags & c->tags))
+\t\t\tsetfullscreen(w, 0);
+""",
+     """\t\tif (w != c && w != p && w->isfullscreen && m == w->mon && (w->tags & c->tags)
+\t\t\t\t&& (c->zoneborder == unzonedcolor || w->zoneborder == c->zoneborder))
+\t\t\tsetfullscreen(w, 0);
+"""),
+    # setmon also chooses focus after mapping; preserve another zone's actual
+    # keyboard focus even when the selected monitor has changed.
+    ("""\t\tsetfloating(c, c->isfloating);
+\t}
+\tfocusclient(focustop(selmon), 1);
+}
+""",
+     """\t\tsetfloating(c, c->isfloating);
+\t}
+\tClient *focused = NULL;
+\ttoplevel_from_wlr_surface(seat->keyboard_state.focused_surface, &focused, NULL);
+\tif (c->zoneborder != unzonedcolor && focused
+\t\t\t&& focused->zoneborder != c->zoneborder)
+\t\tfocusclient(focused, 1);
+\telse
+\t\tfocusclient(focustop(selmon), 1);
+}
 """),
 ]
 

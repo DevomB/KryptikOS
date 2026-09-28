@@ -3,7 +3,9 @@
 # The host boots it with a virtual GPU and keyboard and acts on these lines:
 #   GT SCREENSHOT-READY, GT SCREENSHOT-FULLSCREEN,
 #   GT SCREENSHOT-OVERSIZE                          take a screenshot
-#   GT KEY-FULLSCREEN, GT KEY-FULLSCREEN-AGAIN      press Alt+e (dwl fullscreen)
+#   GT KEY-FOCUS-ZONE, GT KEY-FOCUS-OVERSIZE,
+#   GT KEY-FOCUS-FORGED, GT KEY-FOCUS-PERSONAL      press Alt+j (explicit focus)
+#   GT KEY-FULLSCREEN, GT KEY-FULLSCREEN-AGAIN      press Alt+e (zone refuses)
 #   GT KEY-MENU                                     press Alt+p (the chrome menu)
 #   GT CONSENT-CODE 1 NN                            type NN and Enter (the question's code)
 #   GT CONSENT-WAIT 2                               type y and Enter (not the code: refused)
@@ -99,8 +101,20 @@ out="$(since_mark bind untrusted)"
 [[ "$out" == *"bind refused"* ]] && pass "zone-bind-refused" "a bind of the screencopy manager got wl_display.error and a closed connection" || fail "zone-bind-refused" "$(echo "$out" | tail -3 | tr '\n' ' ')"
 grep -q 'not advertised' "$RT/kryptik/untrusted/proxy.log" 2>/dev/null && pass "proxy-logged-refusal" "$(grep 'not advertised' "$RT/kryptik/untrusted/proxy.log" | tail -1 | cut -c1-120)" || fail "proxy-logged-refusal" "no refusal in the proxy log"
 
-# --- a real window: identity in the chrome's record, on screen, in fullscreen --
+# --- a mapped zone window cannot take the chrome's focus ----------------------
+mark map untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe oversize 0 8 map-focus" > "$LOG/map-focus.out" 2>&1
+map_committed() { since_mark map untrusted | grep -q 'committed '; }
+if wait_for 20 map_committed && test -e /run/kryptik/zones/untrusted/init.pid && grep -q '^zone=0' "$RT/kryptik/focus"; then
+    pass "map-keeps-zone0-focus"
+else
+    fail "map-keeps-zone0-focus" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus"); probe: $(since_mark map untrusted | tail -3 | tr '\n' ' ')"
+fi
+wait_for 20 test ! -e /run/kryptik/zones/untrusted/init.pid; sleep 1
+
+# A real terminal: focus it with an explicit user key.
 launch_plain untrusted "havoc" > "$LOG/launch-havoc-untrusted.out" 2>&1
+echo "GT KEY-FOCUS-ZONE"
 if wait_for 20 grep -q '^zone=untrusted' "$RT/kryptik/focus"; then
     pass "focus-shows-zone" "$(tr '\n' ' ' < "$RT/kryptik/focus")"
 else
@@ -113,13 +127,13 @@ sleep 2
 echo "GT SCREENSHOT-READY"
 sleep 6
 echo "GT KEY-FULLSCREEN"
-if wait_for 20 grep -q '^fullscreen=1' "$RT/kryptik/focus"; then
-    pass "fullscreen-identity-recorded" "$(tr '\n' ' ' < "$RT/kryptik/focus")"
+sleep 2
+if grep -q '^fullscreen=0' "$RT/kryptik/focus" && grep -q '^zone=untrusted' "$RT/kryptik/focus"; then
+    pass "zone-fullscreen-refused" "$(tr '\n' ' ' < "$RT/kryptik/focus")"
 else
-    fail "fullscreen-identity-recorded" "focus after Alt+e: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+    fail "zone-fullscreen-refused" "focus after Alt+e: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
 fi
-# Fullscreen now: the host's screenshot must still show the zone's border
-# colour (dwl keeps the frame).
+# The host's screenshot must still show the chrome beside the zone window.
 sleep 2
 echo "GT SCREENSHOT-FULLSCREEN"
 sleep 6
@@ -165,6 +179,7 @@ fi
 # clips a surface only to (w - bw) x (h - bw), so the excess lies under the
 # right and bottom borders; the host measures all four in its screenshot.
 launch_plain untrusted "/usr/libexec/kryptik/wlprobe oversize 40 30" > "$LOG/launch-oversize.out" 2>&1
+echo "GT KEY-FOCUS-OVERSIZE"
 if wait_for 20 grep -q '^title=\[untrusted\] oversize' "$RT/kryptik/focus"; then
     pass "oversize-window" "$(tr '\n' ' ' < "$RT/kryptik/focus")"
 else
@@ -177,6 +192,7 @@ stop_zone untrusted
 # A window titled as another zone's is named by its own zone, from the app_id
 # the proxy stamps, never from its title.
 launch_plain untrusted "/usr/libexec/kryptik/wlprobe oversize 0 20 '[vault] forged'" > "$LOG/launch-forged.out" 2>&1
+echo "GT KEY-FOCUS-FORGED"
 if wait_for 20 grep -q '^title=\[untrusted\] \[vault\] forged' "$RT/kryptik/focus"; then
     grep -q '^zone=untrusted' "$RT/kryptik/focus.zone" && grep -q '^label=UNTRUSTED' "$RT/kryptik/focus.zone" \
         && pass "forged-title-named-by-zone" "$(tr '\n' ' ' < "$RT/kryptik/focus.zone")" \
@@ -196,6 +212,7 @@ wait_for 30 test ! -e /run/kryptik/zones/personal/init.pid; sleep 1
 out="$(since_mark probe personal)"
 if [[ "$out" == *"global "* && "$out" != *"virtual_keyboard"* && "$out" != *"virtual_pointer"* && "$out" != *"input_method"* ]]; then pass "no-virtual-input" "no virtual keyboard/pointer or input-method global in personal either"; else fail "no-virtual-input" "$(echo "$out" | grep -c global) globals; virtual input: $(echo "$out" | grep -o 'virtual_[a-z]*' | tr '\n' ' '); $(tr '\n' ' ' < "$LOG/launch-probe-personal.out")"; fi
 launch personal "havoc" > "$LOG/launch-havoc-personal.out" 2>&1
+echo "GT KEY-FOCUS-PERSONAL"
 wait_for 20 grep -q '^zone=personal' "$RT/kryptik/focus" && pass "second-zone-window" "$(tr '\n' ' ' < "$RT/kryptik/focus")" || fail "second-zone-window" "$(cat "$LOG/launch-havoc-personal.out" | tr '\n' ' '); $(zone_why personal)"
 stop_zone personal
 
@@ -221,7 +238,6 @@ stop_zone untrusted; stop_zone personal
 
 # --- transfers: the user decides --------------------------------------------------------
 launch work "havoc" > /dev/null 2>&1   # work must be running to receive
-wait_for 20 grep -q '^zone=work' "$RT/kryptik/focus" || info "work window not focused yet: $(tr '\n' ' ' < "$RT/kryptik/focus"); $(zone_why work)"
 # policy first: untrusted names no destination
 mark trf0 untrusted
 launch_plain untrusted "sh -c 'echo nope > \$HOME/x.txt; python3 $BC transfer work x.txt \$HOME/x.txt'" > /dev/null 2>&1; sleep 3

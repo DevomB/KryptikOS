@@ -80,6 +80,16 @@ delegated and as root on the installed system (the zones suite).
 there; `cgroup.rs` and `zone.rs` unit-test the sweep, the limits and
 `storage.size`.
 
+The Wayland shmem charge is still an image measurement, not a confirmed
+property of the zone cgroup. On the installed image, record `memory.current`
+and `memory.stat` for the zone and dwl's cgroups, then run
+`wlprobe charge` through `kryptik-launch` in that zone. It commits one
+unwritten 4 MiB buffer for ten seconds. Confirm the window was rendered and
+compare both cgroups while it is held; if dwl's cgroup is an ancestor of the
+zone, subtract the zone's change. A rise outside the zone without a
+corresponding zone charge would confirm the proposed bypass. The proxy's
+pool limits apply regardless of that result.
+
 ## Files
 
 `cgroup.rs`, `spawn.rs` (cgroup setup before the intermediate unshares;

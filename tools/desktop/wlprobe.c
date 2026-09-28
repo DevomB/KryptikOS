@@ -11,6 +11,8 @@
  *                             buffer EXTRA px wider and taller than asked, in a
  *                             colour no zone has; stay SECONDS, titled TITLE
  *                             ("oversize" by default, at most 255 bytes)
+ *   wlprobe charge            map one unwritten 4 MiB shmem buffer for 10 s;
+ *                             compare zone and compositor cgroup memory.current
  *
  * Exit: 0 listed, bind accepted or window held; 3 refused (wl_display.error,
  * or closed); 1 any other failure. The socket is $WAYLAND_DISPLAY, absolute
@@ -104,7 +106,7 @@ static int errored;
 /* oversize: the window's objects, by the ids this client gives them. A new
  * id must be the next unused one (the registry is 2, its sync 3). */
 enum { COMPOSITOR = 4, SHM, WM_BASE, SURFACE, XDG_SURFACE, TOPLEVEL };
-static int oversize, extra, conf_w, conf_h, closed;
+static int oversize, charge, drawn, draw_failed, extra, conf_w, conf_h, closed;
 static uint32_t next_id = TOPLEVEL + 1;
 
 /* A buffer `extra` px wider and taller than the last configure asked for (a
@@ -113,35 +115,41 @@ static uint32_t next_id = TOPLEVEL + 1;
  * the excess lies under the right and bottom borders. */
 static void draw(void)
 {
-	int w = (conf_w > 0 ? conf_w : 300) + extra, h = (conf_h > 0 ? conf_h : 200) + extra;
+	if (charge && drawn) return;                 /* one sparse pool for one measurement */
+	int w = charge ? 1024 : (conf_w > 0 ? conf_w : 300) + extra;
+	int h = charge ? 1024 : (conf_h > 0 ? conf_h : 200) + extra;
 	int stride = w * 4;
 	size_t size = (size_t)stride * (size_t)h;
 	int fd = memfd_create("wlprobe", MFD_CLOEXEC);
 	if (fd < 0 || ftruncate(fd, (off_t)size) < 0) {
 		printf("memfd: %s\n", strerror(errno));
 		if (fd >= 0) close(fd);
+		draw_failed = closed = 1;
 		return;
 	}
-	uint32_t *px = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-	if (px == MAP_FAILED) { printf("mmap: %s\n", strerror(errno)); close(fd); return; }
-	for (size_t i = 0; i < size / 4; i++) px[i] = 0x00ff00ff;
-	munmap(px, size);
+	if (!charge) {
+		uint32_t *px = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+		if (px == MAP_FAILED) { printf("mmap: %s\n", strerror(errno)); close(fd); draw_failed = closed = 1; return; }
+		for (size_t i = 0; i < size / 4; i++) px[i] = 0x00ff00ff;
+		munmap(px, size);
+	}
 	uint32_t pool = next_id++, buffer = next_id++;
 	unsigned char b[24];
 	put32(b, pool);
 	put32(b + 4, (uint32_t)size);
 	int r = send_msg_fd(SHM, 0, b, 8, fd);     /* wl_shm.create_pool(id, fd, size) */
 	close(fd);
-	if (r) { printf("create_pool: %s\n", strerror(errno)); return; }
+	if (r) { printf("create_pool: %s\n", strerror(errno)); draw_failed = closed = 1; return; }
 	put32(b, buffer); put32(b + 4, 0); put32(b + 8, (uint32_t)w); put32(b + 12, (uint32_t)h);
 	put32(b + 16, (uint32_t)stride); put32(b + 20, 1);
-	send_msg(pool, 0, b, 24);                  /* wl_shm_pool.create_buffer, xrgb8888 */
+	if (send_msg(pool, 0, b, 24)) { draw_failed = closed = 1; return; } /* wl_shm_pool.create_buffer */
 	put32(b, buffer); put32(b + 4, 0); put32(b + 8, 0);
-	send_msg(SURFACE, 1, b, 12);               /* wl_surface.attach */
+	if (send_msg(SURFACE, 1, b, 12)) { draw_failed = closed = 1; return; } /* wl_surface.attach */
 	put32(b, 0); put32(b + 4, 0); put32(b + 8, (uint32_t)w); put32(b + 12, (uint32_t)h);
-	send_msg(SURFACE, 2, b, 16);               /* wl_surface.damage */
-	send_msg(SURFACE, 6, b, 0);                /* wl_surface.commit */
-	printf("committed %dx%d for a %dx%d configure\n", w, h, conf_w, conf_h);
+	if (send_msg(SURFACE, 2, b, 16) || send_msg(SURFACE, 6, b, 0)) { draw_failed = closed = 1; return; }
+	drawn = 1;
+	printf("committed %dx%d for a %dx%d configure%s\n", w, h, conf_w, conf_h,
+		charge ? " (unwritten shmem; sample memory.current now)" : "");
 	fflush(stdout);
 }
 
@@ -248,15 +256,16 @@ static int hold_oversize(int more, int seconds, const char *title)
 	while (time(NULL) < end && !closed) {
 		if (drain(500) < 0) { puts(errored ? "refused" : "connection closed"); return 3; }
 	}
-	return 0;
+	return draw_failed ? 1 : 0;
 }
 
 int main(int argc, char **argv)
 {
-	if (argc < 2 || (strcmp(argv[1], "list") && strcmp(argv[1], "bind") && strcmp(argv[1], "oversize"))
+	if (argc < 2 || (strcmp(argv[1], "list") && strcmp(argv[1], "bind") && strcmp(argv[1], "oversize") && strcmp(argv[1], "charge"))
 	    || (!strcmp(argv[1], "bind") && argc < 3) || (!strcmp(argv[1], "oversize") && argc < 4)
-	    || (!strcmp(argv[1], "oversize") && argc > 4 && strlen(argv[4]) > 255)) {
-		fprintf(stderr, "usage: wlprobe list | bind INTERFACE | oversize EXTRA SECONDS [TITLE]\n");
+	    || (!strcmp(argv[1], "oversize") && argc > 4 && strlen(argv[4]) > 255)
+	    || (!strcmp(argv[1], "charge") && argc != 2)) {
+		fprintf(stderr, "usage: wlprobe list | bind INTERFACE | oversize EXTRA SECONDS [TITLE] | charge\n");
 		return 2;
 	}
 	const char *disp = getenv("WAYLAND_DISPLAY");
@@ -284,6 +293,7 @@ int main(int argc, char **argv)
 
 	if (!strcmp(argv[1], "list")) return errored ? 3 : 0;
 	if (!strcmp(argv[1], "oversize")) return hold_oversize(atoi(argv[2]), atoi(argv[3]), argc > 4 ? argv[4] : "oversize");
+	if (!strcmp(argv[1], "charge")) { charge = 1; return hold_oversize(0, 10, "shm-charge"); }
 
 	/* A filtered client cannot know a hidden global's name, so guess 1; the
 	 * proxy must refuse either way. */

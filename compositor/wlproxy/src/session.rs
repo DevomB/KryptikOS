@@ -34,6 +34,8 @@ pub enum SessionError {
     TooManyObjects,
     TooMuchPending(Dir),
     TooManyFds,
+    Forbidden(&'static str),
+    ResourceLimit(&'static str),
     Io(io::Error),
 }
 
@@ -59,6 +61,8 @@ impl std::fmt::Display for SessionError {
             SessionError::TooManyObjects => write!(f, "too many live objects"),
             SessionError::TooMuchPending(d) => write!(f, "too much unsent data ({d:?})"),
             SessionError::TooManyFds => write!(f, "too many queued descriptors"),
+            SessionError::Forbidden(why) => write!(f, "forbidden request: {why}"),
+            SessionError::ResourceLimit(why) => write!(f, "resource limit: {why}"),
             SessionError::Io(e) => write!(f, "{e}"),
         }
     }
@@ -332,11 +336,24 @@ impl Objects {
 }
 
 /// The proxied connection.
+struct Pool {
+    size: usize,
+    buffers: usize,
+    deleted: bool,
+}
+
 pub struct Session {
     pub zone: String,
     pub client: Endpoint,
     pub server: Endpoint,
     objects: Objects,
+    pools: HashMap<u64, Pool>,
+    pool_ids: HashMap<u32, u64>,
+    buffer_pools: HashMap<u32, u64>,
+    next_pool: u64,
+    pub shm_pool_bytes: usize,
+    pub shm_pool_count: usize,
+    pub toplevels: usize,
     /// Globals the server advertised and we let through: name -> (interface, version)
     globals: HashMap<u32, (&'static str, u32)>,
     /// How many globals were hidden from the client.
@@ -360,6 +377,13 @@ impl Session {
             client: Endpoint::new(client_fd),
             server: Endpoint::new(server_fd),
             objects: Objects::new((protocol::find("wl_display").expect("wl_display in tables"), 1)),
+            pools: HashMap::new(),
+            pool_ids: HashMap::new(),
+            buffer_pools: HashMap::new(),
+            next_pool: 0,
+            shm_pool_bytes: 0,
+            shm_pool_count: 0,
+            toplevels: 0,
             globals: HashMap::new(),
             hidden_count: 0,
             forwarded_c2s: 0,
@@ -396,7 +420,22 @@ impl Session {
          * checked against the allowlist, so only a compositor newer than the
          * tables can create one: refuse rather than guess. */
         let iface = protocol::find(iface_name).ok_or_else(|| SessionError::HiddenInterface(iface_name.to_string()))?;
-        self.objects.insert(id, (iface, version))
+        if iface.name == "xdg_toplevel" && self.toplevels >= policy::MAX_TOPLEVELS_PER_SESSION {
+            return Err(SessionError::ResourceLimit("too many toplevels in one session"));
+        }
+        self.objects.insert(id, (iface, version))?;
+        if iface.name == "xdg_toplevel" {
+            self.toplevels += 1;
+        }
+        Ok(())
+    }
+
+    fn release_pool_if_unused(&mut self, generation: u64) {
+        if self.pools.get(&generation).is_some_and(|p| p.deleted && p.buffers == 0) {
+            let pool = self.pools.remove(&generation).unwrap();
+            self.shm_pool_bytes -= pool.size;
+            self.shm_pool_count -= 1;
+        }
     }
 
     /// Process every complete message in one direction; Ok(()) when more input is needed.
@@ -471,6 +510,49 @@ impl Session {
                             }
                         }
                     }
+                    if iface.name == "xdg_surface" && m.name == "get_popup" {
+                        return Err(SessionError::Forbidden("xdg_surface.get_popup"));
+                    }
+                    if iface.name == "wl_shm" && m.name == "create_pool" {
+                        let mut r = ArgReader::new(&msg[HEADER_LEN..]);
+                        let id = r.u32()?;
+                        let size = r.u32()? as i32;
+                        if size <= 0 || size as usize > policy::MAX_SHM_POOL_BYTES {
+                            return Err(SessionError::ResourceLimit("wl_shm pool size"));
+                        }
+                        if self.shm_pool_count >= policy::MAX_SHM_POOLS_PER_SESSION
+                            || self.shm_pool_bytes + size as usize > policy::MAX_SHM_BYTES_PER_SESSION {
+                            return Err(SessionError::ResourceLimit("wl_shm pool budget in one session"));
+                        }
+                        // A destroyed pool may still back buffers. Its generation keeps
+                        // those buffers separate if Wayland later reuses the object id.
+                        self.next_pool += 1;
+                        self.shm_pool_count += 1;
+                        self.shm_pool_bytes += size as usize;
+                        self.pool_ids.insert(id, self.next_pool);
+                        self.pools.insert(self.next_pool, Pool { size: size as usize, buffers: 0, deleted: false });
+                    }
+                    if iface.name == "wl_shm_pool" && m.name == "resize" {
+                        let mut r = ArgReader::new(&msg[HEADER_LEN..]);
+                        let size = r.u32()? as i32;
+                        let generation = *self.pool_ids.get(&h.object).ok_or(SessionError::ResourceLimit("unknown wl_shm pool"))?;
+                        let old = self.pools[&generation].size;
+                        if size <= 0 || size as usize > policy::MAX_SHM_POOL_BYTES || (size as usize) < old {
+                            return Err(SessionError::ResourceLimit("wl_shm pool resize size"));
+                        }
+                        let growth = size as usize - old;
+                        if self.shm_pool_bytes + growth > policy::MAX_SHM_BYTES_PER_SESSION {
+                            return Err(SessionError::ResourceLimit("wl_shm pool budget in one session"));
+                        }
+                        self.shm_pool_bytes += growth;
+                        self.pools.get_mut(&generation).unwrap().size = size as usize;
+                    }
+                    if iface.name == "wl_shm_pool" && m.name == "create_buffer" {
+                        let id = decoded.new_object.ok_or(SessionError::Wire(WireError::ArgOverrun))?.0;
+                        let generation = *self.pool_ids.get(&h.object).ok_or(SessionError::ResourceLimit("unknown wl_shm pool"))?;
+                        self.buffer_pools.insert(id, generation);
+                        self.pools.get_mut(&generation).unwrap().buffers += 1;
+                    }
                     /* Every toplevel gets the zone's app_id right behind the
                      * get_toplevel that creates it: the compositor draws a toplevel
                      * with no app_id as zone 0's own, with the trusted border. A
@@ -519,6 +601,17 @@ impl Session {
                     if h.object == WL_DISPLAY && h.opcode == WL_DISPLAY_DELETE_ID {
                         let mut r = ArgReader::new(&msg[HEADER_LEN..]);
                         let id = r.u32()?;
+                        if self.objects.get(id).is_some_and(|(i, _)| i.name == "xdg_toplevel") {
+                            self.toplevels -= 1;
+                        }
+                        if let Some(generation) = self.pool_ids.remove(&id) {
+                            self.pools.get_mut(&generation).unwrap().deleted = true;
+                            self.release_pool_if_unused(generation);
+                        }
+                        if let Some(generation) = self.buffer_pools.remove(&id) {
+                            self.pools.get_mut(&generation).unwrap().buffers -= 1;
+                            self.release_pool_if_unused(generation);
+                        }
                         self.objects.remove(id);
                     }
                 }
@@ -756,6 +849,103 @@ mod tests {
         assert!(matches!(o.insert(id, callback), Err(SessionError::SparseId(_))));
         assert_eq!(id as usize, policy::MAX_ID_SLOTS);
         assert_eq!((o.client.len(), o.live), (policy::MAX_ID_SLOTS, 1));
+    }
+
+    #[test]
+    fn popup_is_refused_before_it_reaches_dwl() {
+        let (mut s, mut c, mut sv) = make();
+        s.objects.place(2, (protocol::find("xdg_surface").unwrap(), 1));
+        s.objects.place(3, (protocol::find("xdg_positioner").unwrap(), 1));
+        c.write_all(&MessageWriter::new(2, 2).u32(4).u32(0).u32(3).finish().unwrap()).unwrap();
+        assert!(matches!(pump_all(&mut s), Err(SessionError::Forbidden(_))));
+        assert!(!s.has_object(4));
+        assert!(read_all(&mut sv).is_empty());
+    }
+
+    #[test]
+    fn toplevel_budget_reclaims_only_on_compositor_delete_id() {
+        let (mut s, mut c, mut sv) = make();
+        s.objects.place(2, (protocol::find("xdg_surface").unwrap(), 1));
+        for id in 3..3 + policy::MAX_TOPLEVELS_PER_SESSION as u32 {
+            c.write_all(&MessageWriter::new(2, 1).u32(id).finish().unwrap()).unwrap();
+            pump_all(&mut s).unwrap();
+        }
+        assert_eq!(s.toplevels, policy::MAX_TOPLEVELS_PER_SESSION);
+        read_all(&mut sv);
+        let denied = 3 + policy::MAX_TOPLEVELS_PER_SESSION as u32;
+        c.write_all(&MessageWriter::new(2, 1).u32(denied).finish().unwrap()).unwrap();
+        assert!(matches!(pump_all(&mut s), Err(SessionError::ResourceLimit(_))));
+        assert!(!s.has_object(denied));
+        assert!(read_all(&mut sv).is_empty());
+        sv.write_all(&MessageWriter::new(1, WL_DISPLAY_DELETE_ID).u32(3).finish().unwrap()).unwrap();
+        pump_all(&mut s).unwrap();
+        assert_eq!(s.toplevels, policy::MAX_TOPLEVELS_PER_SESSION - 1);
+    }
+
+    #[test]
+    fn shm_pool_creation_and_resize_have_byte_and_count_limits() {
+        let (mut s, mut c, mut sv) = make();
+        s.objects.place(3, (protocol::find("wl_shm").unwrap(), 1));
+        let (fd, _) = UnixStream::pair().unwrap();
+        let create = |id, size| MessageWriter::new(3, 0).u32(id).i32(size).finish().unwrap();
+        send_with_fd(c.as_raw_fd(), &create(4, policy::MAX_SHM_POOL_BYTES as i32), fd.as_raw_fd());
+        pump_all(&mut s).unwrap();
+        assert_eq!(s.shm_pool_bytes, policy::MAX_SHM_POOL_BYTES);
+        let grow = MessageWriter::new(4, 2).i32(policy::MAX_SHM_POOL_BYTES as i32 + 1).finish().unwrap();
+        c.write_all(&grow).unwrap();
+        assert!(matches!(pump_all(&mut s), Err(SessionError::ResourceLimit(_))));
+        assert_eq!(s.shm_pool_bytes, policy::MAX_SHM_POOL_BYTES);
+        read_all(&mut sv);
+
+        let (mut s, mut c, mut sv) = make();
+        s.objects.place(3, (protocol::find("wl_shm").unwrap(), 1));
+        for id in 4..4 + policy::MAX_SHM_POOLS_PER_SESSION as u32 {
+            send_with_fd(c.as_raw_fd(), &create(id, 4096), fd.as_raw_fd());
+            pump_all(&mut s).unwrap();
+        }
+        assert_eq!(s.shm_pool_count, policy::MAX_SHM_POOLS_PER_SESSION);
+        read_all(&mut sv);
+        let denied = 4 + policy::MAX_SHM_POOLS_PER_SESSION as u32;
+        send_with_fd(c.as_raw_fd(), &create(denied, 4096), fd.as_raw_fd());
+        assert!(matches!(pump_all(&mut s), Err(SessionError::ResourceLimit(_))));
+        assert!(!s.has_object(denied));
+        assert!(read_all(&mut sv).is_empty());
+
+        let (mut s, mut c, mut sv) = make();
+        s.objects.place(3, (protocol::find("wl_shm").unwrap(), 1));
+        for id in 4..6 {
+            send_with_fd(c.as_raw_fd(), &create(id, policy::MAX_SHM_POOL_BYTES as i32), fd.as_raw_fd());
+            pump_all(&mut s).unwrap();
+        }
+        assert_eq!(s.shm_pool_bytes, policy::MAX_SHM_BYTES_PER_SESSION);
+        read_all(&mut sv);
+        send_with_fd(c.as_raw_fd(), &create(6, 4096), fd.as_raw_fd());
+        assert!(matches!(pump_all(&mut s), Err(SessionError::ResourceLimit(_))));
+        assert!(read_all(&mut sv).is_empty());
+    }
+
+    #[test]
+    fn pool_budget_follows_buffers_across_reused_object_ids() {
+        let (mut s, mut c, mut sv) = make();
+        s.objects.place(3, (protocol::find("wl_shm").unwrap(), 1));
+        let (fd, _) = UnixStream::pair().unwrap();
+        let create = |id| MessageWriter::new(3, 0).u32(id).i32(4096).finish().unwrap();
+        send_with_fd(c.as_raw_fd(), &create(4), fd.as_raw_fd());
+        c.write_all(&MessageWriter::new(4, 0).u32(5).i32(0).i32(16).i32(16).i32(64).u32(1).finish().unwrap()).unwrap();
+        c.write_all(&MessageWriter::new(4, 1).finish().unwrap()).unwrap();
+        pump_all(&mut s).unwrap();
+        sv.write_all(&MessageWriter::new(1, WL_DISPLAY_DELETE_ID).u32(4).finish().unwrap()).unwrap();
+        pump_all(&mut s).unwrap();
+        assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (1, 4096));
+
+        send_with_fd(c.as_raw_fd(), &create(4), fd.as_raw_fd());
+        pump_all(&mut s).unwrap();
+        assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (2, 8192));
+        c.write_all(&MessageWriter::new(5, 0).finish().unwrap()).unwrap();
+        pump_all(&mut s).unwrap();
+        sv.write_all(&MessageWriter::new(1, WL_DISPLAY_DELETE_ID).u32(5).finish().unwrap()).unwrap();
+        pump_all(&mut s).unwrap();
+        assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (1, 4096));
     }
 
     #[test]
