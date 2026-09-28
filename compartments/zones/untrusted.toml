@@ -20,6 +20,8 @@ seccomp  = "policy/untrusted.seccomp"
 [limits]
 memory_max = "4G"
 pids_max   = 512
+# Two CPUs' worth of time: what runs here cannot take the whole machine.
+cpu_max    = "200%"
 
 [identity]
 # Host uid/gid range: root inside maps to 327680, nobody to 393214. Fixed,

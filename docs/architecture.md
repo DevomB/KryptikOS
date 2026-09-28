@@ -11,7 +11,7 @@ A zone is the unit of isolation, and every process belongs to exactly one.
 | Files | own root; persistent zones get a LUKS2 volume |
 | Syscalls | seccomp-bpf, default-deny allowlist |
 | File access | Landlock |
-| Resources | cgroup v2 memory and pids limits |
+| Resources | cgroup v2 memory, pids, cpu and io limits |
 | Identity | border colour, drawn by the compositor, which has no title bars; the text identity (zone, glyph, label, the `[zone]` title prefix) is shown by the trusted chrome alone, so no window draws its own |
 
 ### Zone 0

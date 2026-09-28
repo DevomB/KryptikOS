@@ -717,7 +717,8 @@ pub fn run_in_zone(
     /* [limits] need a cgroup, and whether one can be made is found by trying,
      * not by uid: a delegated subtree is writable by a user, and root in a
      * container may find the hierarchy read-only. */
-    let wants_limits = zone.memory_max.is_some() || zone.pids_max.is_some();
+    let wants_limits =
+        zone.memory_max.is_some() || zone.pids_max.is_some() || zone.cpu_max.is_some() || zone.io_max.is_some();
     let mut limits: Option<std::path::PathBuf> = None;
     if wants_limits {
         match cgroup::available() {
@@ -912,11 +913,27 @@ pub fn run_in_zone(
             let cg = cgroup::Cgroup::create(base, &zone.name, parent_pid).map_err(|e| {
                 SpawnError::Setup(format!(
                     "[limits]: the zone's cgroup could not be created, so \
-                     limits.memory_max/limits.pids_max would not be in force: {e}"
+                     the zone's limits would not be in force: {e}"
                 ))
             })?;
-            cg.set_limits(zone.memory_max.as_deref(), zone.pids_max)
-                .map_err(|e| SpawnError::Setup(format!("cgroup limits: {e}")))?;
+            // io.max names the volume's devices, known only once it is open.
+            let io_devices: Vec<String> = match (&zone.io_max, &opened_volume) {
+                (Some(_), Some(_)) => cgroup::block_devices(&volume::mapper_path(&zone.name))
+                    .map_err(|e| SpawnError::Setup(format!("limits.io_max: the volume's device: {e}")))?,
+                (Some(_), None) => {
+                    return Err(SpawnError::Setup(
+                        "limits.io_max bounds the zone's volume, which only a root launch opens".into(),
+                    ))
+                }
+                (None, _) => Vec::new(),
+            };
+            cg.set_limits(
+                zone.memory_max.as_deref(),
+                zone.pids_max,
+                zone.cpu_max.as_deref(),
+                zone.io_max.as_deref().map(|v| (io_devices.as_slice(), v)),
+            )
+            .map_err(|e| SpawnError::Setup(format!("cgroup limits: {e}")))?;
             cg.attach(pid)
                 .map_err(|e| SpawnError::Setup(format!("cgroup attach: {e}")))?;
             /* Lets reclaim kill a dead launcher's processes by cgroup.kill; unlike
