@@ -33,8 +33,9 @@ containers.
 X11 lets any client log every other client's keystrokes and capture the whole
 screen, which ADR-003 cannot allow.
 
-**Cost:** an X11-only application needs Xwayland in its own zone, where it can
-leak only that zone.
+**Cost:** X11 programs are not supported. No Xwayland is built, and a zone
+runs Wayland clients alone; if the graphical applications of Version 2 need
+one, it runs inside the zone, where it can leak only that zone.
 
 ## ADR-005: hardened_malloc as the system allocator
 
