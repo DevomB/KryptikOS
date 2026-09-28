@@ -211,3 +211,28 @@ does not compress. Pre-2011 CPUs, which cannot boot Kryptik, account for 0.4 MB,
 not worth a rule. Four server-only Xeon families take 6.8 MB and stay while the
 README lists server hardware: a server whose microcode is left out still boots
 on old microcode, and nobody would notice.
+
+## ADR-014: The signed kernel is the whole boot chain
+
+The firmware loads Kryptik's kernel as the UEFI application, and nothing else
+runs before the verified root: no shim, no boot loader, no initramfs. The
+command line is compiled in and names the root slot and its dm-verity root
+hash, so the firmware's one signature check covers the code and the hash of
+everything it will run ([boot and updates](design/boot-and-updates.md)). A
+machine trusts that signature once Kryptik's certificate is in its firmware's
+database ([release keys](release-keys.md)).
+
+**Why:** every stage between the firmware and the root is a file to sign, a
+parser to attack and a place for an unmeasured change. A shim chains from
+Microsoft's key, which Kryptik does not use; a boot loader chooses and edits
+what boots, which the compiled-in command line forbids on purpose; an
+initramfs finds the root, which `dm-mod.create=` does inside the kernel.
+
+**Cost:** the certificate is enrolled by hand on every machine, and firmware
+that carries only Microsoft's keys refuses the media; the controller the root
+sits on is built into the kernel (ADR-013); A/B updates and recovery are the
+firmware's boot entries and a judged trial, not a loader's menu.
+
+**Rejected:** shim and a loader, two more signed stages and a configuration
+file; an initramfs inside the signed image, measured but a second userland to
+keep small and right.

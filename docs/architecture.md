@@ -12,7 +12,7 @@ A zone is the unit of isolation, and every process belongs to exactly one.
 | Syscalls | seccomp-bpf, default-deny allowlist |
 | File access | Landlock |
 | Resources | cgroup v2 memory and pids limits |
-| Identity | border colour; kryptik-chrome --focus names the focused window's zone, glyph and label |
+| Identity | border colour, drawn by the compositor, which has no title bars; the text identity (zone, glyph, label, the `[zone]` title prefix) is shown by the trusted chrome alone, so no window draws its own |
 
 ### Zone 0
 

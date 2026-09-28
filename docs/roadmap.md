@@ -111,6 +111,32 @@ work in zones from a terminal and a text browser, and keep it up to date.
       someone other than their author following the install, update and
       recovery instructions.
 
+### What the architecture promises and the tree does not yet keep
+
+- [ ] **Xwayland.** ADR-004 counts on Xwayland inside a zone for X11
+      programs, and none is built. Build it per zone, or take the sentence
+      out of the ADR.
+- [ ] **cpu and io limits.** A zone's `[limits]` are memory and pids; the
+      architecture names cpu and io as well. Add `cpu_max` and `io_max`, or
+      record that two are the set.
+- [ ] **The setuid audit fails, or strips on record.** Stage 06 takes eleven
+      unlisted bits off in silence, where the hardening text says the build
+      fails on one. Either fail and fix each package's install, or have the
+      strip name what it took off in the release record. The list needs a
+      justification per entry and the installed root is audited again in
+      `make zones-test`.
+- [ ] **Signatures as a gate.** `tools/verify-signatures.sh --strict` runs
+      nowhere that can fail a push: CI's gates are the hash lock and the
+      provenance check. Run it strict on push once every key in
+      `keys.manifest` has an audited route to its fingerprint.
+- [ ] **Zone 0 runs no user application, proven.** A desktop check that no
+      zone program runs outside a zone's cgroup.
+- [ ] **The shipped-binary audit fails per object.** An object without the
+      stack protector or FORTIFY is counted, never refused, and the audit
+      reads the sysroot rather than the image's root.
+- [ ] **A destroy verb**, or the statement that a zone is destroyed by
+      deleting its file and its volume.
+
 ## Version 2
 
 A desktop someone can live in, built the same way.
@@ -134,4 +160,14 @@ A desktop someone can live in, built the same way.
   zone.
 - **A hardware certification list** from people who ran acceptance on the
   machine they vouch for.
+
+## Housekeeping
+
+- **File organization.** The largest files are stage 04 (2340 lines, 57
+  package recipes and the stage's driver), the launcher suite (2222) and
+  kryptikd's spawn, broker, serve and main modules (2048, 1923, 1528, 1315,
+  each with its unit tests inline). Two bounded moves, when the tree is
+  quiet: the unit tests of the largest Rust modules into sibling files, and
+  stage 04's recipes into one file per package with the order kept in the
+  stage. Organization, not abstraction: no layer without a second caller.
 - **An independent audit** of the whole boundary, published.
