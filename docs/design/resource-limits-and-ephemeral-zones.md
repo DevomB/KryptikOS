@@ -26,8 +26,9 @@ change it.
   `cpu_max` is a percentage of one CPU (`"200%"` is two CPUs' worth of time)
   written as a quota per 100 ms period. `io_max` is bytes per second each
   way, written to `io.max` for the zone's volume mapping and for the devices
-  under it, so the bytes count wherever the encrypted writes land; only an
-  encrypted zone may set it, since it bounds nothing else. The intermediate
+  under it, so the bytes count wherever the encrypted writes land (a
+  partition among them counts as its disk, the only thing `io.max` takes);
+  only an encrypted zone may set it, since it bounds nothing else. The intermediate
   is moved in before it unshares with `CLONE_NEWCGROUP`, so the zone's cgroup
   namespace is rooted at its leaf and `/proc/self/cgroup` reads `0::/`.
   `/sys/fs/cgroup` is not mounted in the zone: nothing there needs it, and a
