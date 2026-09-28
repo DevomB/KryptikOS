@@ -39,8 +39,10 @@ machinery.
 
 ### What the audit finds
 
-`make audit-artifacts` (`tools/check-artifact-hardening.sh`), part of
-`make acceptance`, reads the ELF headers of what the build produced. A
+`make audit-artifacts` (`tools/check-artifact-hardening.sh`) reads the ELF
+headers of every object. Stage 06 runs it strict on the root tree as it packs
+it into the image, so a finding fails the build, and `make acceptance` runs
+it on the sysroot for the record. A
 writable and executable segment, an executable stack, text relocations or an
 RPATH into the build tree fail it. Acceptance also fails on a missing CET
 note, `BIND_NOW` or RELRO, a non-PIE executable and any other RPATH, unless
@@ -50,6 +52,10 @@ does not mark for CET, GMP's assembly, and the rpaths man-db, perl and glibc's
 converters need or that repeat the loader's own directory. An entry that no
 longer matches fails too, so the list holds only what the image still has. A
 new finding is fixed in its package's recipe, not by weakening the check.
+The stack protector and FORTIFY are counted, not required of each object: a
+function without a local array gets no canary and a call with no known size
+no `_chk` variant, so an object with neither shows nothing about its flags.
+The record names the objects without either.
 
 Everything stage 04 builds before its glibc, the first with `--enable-cet`,
 linked stage 01's crt files, which carry no CET note, so each of those
