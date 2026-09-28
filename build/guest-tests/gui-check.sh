@@ -220,6 +220,43 @@ if [[ "$out" == *"global "* && "$out" != *"virtual_keyboard"* && "$out" != *"vir
 launch personal "havoc" > "$LOG/launch-havoc-personal.out" 2>&1
 echo "GT KEY-FOCUS-PERSONAL"
 wait_for 20 grep -q '^zone=personal' "$RT/kryptik/focus" && pass "second-zone-window" "$(tr '\n' ' ' < "$RT/kryptik/focus")" || fail "second-zone-window" "$(cat "$LOG/launch-havoc-personal.out" | tr '\n' ' '); $(zone_why personal)"
+# --- zone 0 runs no user application (ADR-003) ----------------------------
+# With personal's terminal up, every process is read. One in a zone's cgroup
+# is that zone's. Any other must be one of zone 0's own programs (s6 and its
+# services, the session, a zone's launcher and proxy) or this test's own
+# shell tree. An interpreter counts only running one of Kryptik's scripts, the
+# terminal only as the chrome's, around its menu or a launch.
+ppid_of() { awk '/^PPid:/ { print $2 }' "/proc/$1/status" 2>/dev/null; }
+lineage=" $$ "; p="$(ppid_of "$$")"
+while [[ -n "$p" && "$p" -gt 1 ]]; do lineage="${lineage}${p} "; p="$(ppid_of "$p")"; done
+in_test_tree() {   # in_test_tree PID: this shell, an ancestor of it, or below one of them
+    local p="$1"
+    while [[ -n "$p" && "$p" -gt 1 ]]; do [[ "$lineage" == *" $p "* ]] && return 0; p="$(ppid_of "$p")"; done
+    return 1
+}
+foreign=(); zoned=""
+for d in /proc/[0-9]*; do
+    p="${d#/proc/}"
+    exe="$(readlink "$d/exe" 2>/dev/null)" && [[ -n "$exe" ]] || continue   # kernel threads, zombies
+    if [[ "$(cat "$d/cgroup" 2>/dev/null)" == *:/kryptik/* ]]; then
+        [[ "$exe" == /usr/bin/havoc ]] && zoned="$zoned $p:$(sed -n 's|^0::||p' "$d/cgroup")"
+        continue
+    fi
+    in_test_tree "$p" && continue
+    cmd="$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null)"
+    read -r _ script _ <<<"$cmd"
+    case "$exe" in
+        /usr/bin/s6-*|/usr/sbin/s6-*|/usr/libexec/s6-*|/usr/sbin/udevd|/usr/sbin/agetty|/usr/bin/seatd|/usr/bin/kryptikd|/usr/bin/kryptik-wlproxy|/usr/bin/kryptik-launch|/usr/bin/dwl|/usr/bin/sleep) ;;
+        /usr/bin/bash|/usr/bin/python3)
+            case "$script" in /usr/libexec/kryptik/*|/usr/bin/kryptik-session|/usr/bin/kryptik-chrome) ;; *) foreign+=("$p ${cmd:0:60}") ;; esac ;;
+        /usr/bin/havoc)
+            case "$script" in /usr/bin/kryptik-chrome|/usr/bin/kryptik-launch) ;; *) foreign+=("$p ${cmd:0:60}") ;; esac ;;
+        *) foreign+=("$p ${cmd:0:60}") ;;
+    esac
+done
+[[ "${#foreign[@]}" -eq 0 ]] && pass "zone0-own-programs-only" "every process outside the zones' cgroups is one of zone 0's own" || fail "zone0-own-programs-only" "$(printf '%s; ' "${foreign[@]}")"
+[[ -n "$zoned" ]] && pass "zone-app-in-cgroup" "the zone's terminal runs in its cgroup:$zoned" || fail "zone-app-in-cgroup" "no havoc in a /kryptik cgroup; processes in one: $(grep -ls kryptik /proc/[0-9]*/cgroup 2>/dev/null | wc -l)"
+
 stop_zone personal
 
 # --- clipboards: per zone, until the zone 0 gesture -----------------------
