@@ -1247,11 +1247,11 @@ mod tests {
     #[test]
     fn outgoing_descriptors_are_bounded() {
         let (mut s, c, _sv) = make();
-        s.objects.place(3, (protocol::find("wl_shm").unwrap(), 2));
+        s.objects.place(3, (protocol::find("wl_data_offer").unwrap(), 1));
         let (a, mut b) = UnixStream::pair().unwrap();
         b.set_nonblocking(true).unwrap();
         for i in 0..=policy::MAX_PENDING_FDS {
-            let msg = MessageWriter::new(3, 0).u32(4 + i as u32).i32(4096).finish().unwrap();
+            let msg = MessageWriter::new(3, 1).string("text/plain").finish().unwrap();
             send_with_fd(c.as_raw_fd(), &msg, a.as_raw_fd());
             s.client.read().unwrap();
             let result = s.pump(Dir::ClientToServer); // the compositor's queue is never flushed
