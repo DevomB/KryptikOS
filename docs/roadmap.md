@@ -48,7 +48,7 @@ work in zones from a terminal and a text browser, and keep it up to date.
       that accepts the next release and refuses a development build.
       Acceptance's production part, with a throwaway key medium, proves a
       build signing with the medium it is handed and the installed system's
-      half; `tools/test-release-keys.sh` proves a production build refuses to
+      half; `tools/tests/release-keys.sh` proves a production build refuses to
       make keys of its own. The keys kept offline are still to be made.
 - [x] **No known-vulnerable pins.** Every pin behind its upstream has a review
       in `tools/pin-reviews.tsv`, and `tools/check-pin-reviews.sh` fails CI
@@ -169,11 +169,10 @@ A desktop someone can live in, built the same way.
 
 ## Housekeeping
 
-- **File organization.** The largest files are stage 04 (2340 lines, 57
-  package recipes and the stage's driver), the launcher suite (2222) and
-  kryptikd's spawn, broker, serve and main modules (2048, 1923, 1528, 1315,
-  each with its unit tests inline). Two bounded moves, when the tree is
-  quiet: the unit tests of the largest Rust modules into sibling files, and
-  stage 04's recipes into one file per package with the order kept in the
-  stage. Organization, not abstraction: no layer without a second caller.
+- [x] **File organization.** Every Rust module's tests sit beside it in
+      `<module>/tests.rs`; stage 04's recipes are one file per step under
+      `build/recipes/`, with the order and the runner kept in the stage and
+      every step's fingerprint unchanged; the tools' suites live in
+      `tools/tests/`, one per tool. Organization, not abstraction: no layer
+      without a second caller. The launcher suite stays one file.
 - **An independent audit** of the whole boundary, published.
