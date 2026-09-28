@@ -117,28 +117,31 @@ work in zones from a terminal and a text browser, and keep it up to date.
 - [x] **Xwayland.** Not built, and ADR-004 says so: X11 programs are
       outside 1.0, and Version 2's applications decide whether one runs
       inside a zone.
-- [ ] **cpu and io limits.** A zone's `[limits]` are memory and pids; the
-      architecture names cpu and io as well. Add `cpu_max` and `io_max`, or
-      record that two are the set.
-- [ ] **The setuid audit fails, or strips on record.** Stage 06 takes eleven
-      unlisted bits off in silence, where the hardening text says the build
-      fails on one. Either fail and fix each package's install, or have the
-      strip name what it took off in the release record. The list needs a
-      justification per entry and the installed root is audited again in
-      `make zones-test`.
+- [x] **cpu and io limits.** `cpu_max` is a share of one CPU as a percentage,
+      held by cgroup `cpu.max`; `io_max` is bytes per second each way on an
+      encrypted zone's volume, held by `io.max` on the volume's devices
+      ([design](design/resource-limits-and-ephemeral-zones.md)). The launcher
+      suite measures both, and `untrusted` ships with `cpu_max = "200%"`.
+- [x] **The setuid audit fails.** Stage 06 refuses an unlisted setuid bit and
+      a list entry without its reason; shadow's and util-linux's spare bits are
+      dropped in their recipes, and traceroute is not built. The zones suite
+      audits the installed root again: setuid bits, file capabilities and the
+      sysctls as applied.
 - [ ] **Signatures as a gate.** `tools/verify-signatures.sh --strict` runs
       nowhere that can fail a push: CI's gates are the hash lock and the
       provenance check. Run it strict on push once every key in
       `keys.manifest` has an audited route to its fingerprint.
-- [ ] **Zone 0 runs no user application, proven.** A desktop check that no
-      zone program runs outside a zone's cgroup.
+- [x] **Zone 0 runs no user application, proven.** The desktop suite reads
+      every process with a zone's terminal up: outside the zones' cgroups only
+      zone 0's own programs run, and the zone's terminal is seen in its cgroup.
 - [x] **The shipped-binary audit reads the image's root.** Stage 06 fails
       the build on a finding in the tree it packs. The stack protector and
       FORTIFY stay counts, since an object without either shows nothing about
       its flags ([hardening](hardening.md#what-the-audit-finds)); the record
       names such objects.
-- [ ] **A destroy verb**, or the statement that a zone is destroyed by
-      deleting its file and its volume.
+- [x] **A destroy verb.** `kryptikd volume destroy NAME` erases a stopped
+      zone's key slots and deletes its container; it refuses an open volume
+      ([design](design/encrypted-volumes.md)). The zone's definition stays.
 
 ## Version 2
 
