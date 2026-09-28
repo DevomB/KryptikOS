@@ -306,10 +306,11 @@ fn cmd_stop(name: &str, now: bool, base: &str) -> ExitCode {
             }
             /* --now kills the zone's pid 1, which takes the pid namespace with
              * it, not the launcher: the launcher outlives its zone to unmount
-             * and close the zone's volume. */
+             * and close the zone's volume. During setup pid 1 may not yet be
+             * recorded; signal the launcher gracefully in that case. */
             let (pid, sig) = match init.filter(|i| now && i.still_alive()) {
                 Some(i) => (i.pid, libc::SIGKILL),
-                None => (l.pid, if now { libc::SIGKILL } else { libc::SIGTERM }),
+                None => (l.pid, libc::SIGTERM),
             };
             if unsafe { libc::kill(pid, sig) } < 0 {
                 eprintln!("kryptikd: signalling {pid}: {}", std::io::Error::last_os_error());
