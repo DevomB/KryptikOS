@@ -114,6 +114,122 @@ zrun untrusted 30 -- sh -c 'python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10
 ppid="$(cat /run/kryptik/zones/personal/init.pid 2>/dev/null | cut -d' ' -f1)"
 if [[ -n "$ppid" ]] && nsenter -t "$ppid" -n ping -c1 -W3 10.0.2.2 >/dev/null 2>&1; then pass "reattach-after-restart" "the zone that was running has egress again"; else fail "reattach-after-restart" "personal (init $ppid) has no egress after the net restart"; fi
 
+# --- zones: the net zone over a radio -----------------------------------------------
+# QEMU has no radio, so mac80211_hwsim makes two. phy1 goes into a network
+# namespace of its own as the access point (the image's wpa_supplicant in AP
+# mode and dnsmasq for the lease); phy0 stays in zone 0 for the net zone to
+# take on its next start, which `kryptikd wifi add` causes. The station is
+# the net zone's own wpa_supplicant, under its filter, on the shipped kernel.
+AP_SSID=kryptik-hwsim; AP_PASS=hwsim-passphrase; AP_ADDR=192.168.77.1
+WIFI_DIR=/var/lib/kryptik/wifi
+ready_count() { local n; n="$(grep -hc 'netzone: READY' /run/uncaught-logs/current 2>/dev/null)"; echo "${n:-0}"; }
+last_ready() { grep -h 'netzone: READY' /run/uncaught-logs/current /run/uncaught-logs/@* 2>/dev/null | tail -1; }
+ready_after() {   # ready_after COUNT TEXT SECONDS: the newest READY line once there are more than COUNT and it holds TEXT
+    local before="$1" text="$2" n="$3"
+    while [[ "$n" -gt 0 ]]; do
+        if [[ "$(ready_count)" -gt "$before" && "$(last_ready)" == *"$text"* ]]; then last_ready; return 0; fi
+        sleep 1; n=$((n - 1))
+    done
+    last_ready; return 1
+}
+wl_of_phy() {   # wl_of_phy phyN: the netdev on that wiphy, in this namespace
+    local d
+    for d in /sys/class/net/*; do
+        [[ "$(basename "$(readlink -f "$d/phy80211" 2>/dev/null)")" = "$1" ]] && { basename "$d"; return 0; }
+    done
+    return 1
+}
+# The namespace is a sleeper's, entered for its network alone: a cloned mount
+# namespace would keep a running zone's volume open past its stop.
+ap() { nsenter -t "$AP_HOLD" -n "$@"; }
+ap_wpa() { ap wpa_cli -p /run/zt-ap-ctrl -i "$AP_IF" "$@" 2>/dev/null; }
+STA_IF=""; AP_IF=""; AP_HOLD=""
+if modprobe mac80211_hwsim radios=2 2> "$LOG/hwsim.err"; then
+    for _ in $(seq 1 20); do [[ -e /sys/class/ieee80211/phy1 ]] && break; sleep 0.5; done
+    STA_IF="$(wl_of_phy phy0)"; AP_IF="$(wl_of_phy phy1)"
+fi
+if [[ -n "$STA_IF" && -n "$AP_IF" ]]; then
+    pass "wifi-module" "the signed mac80211_hwsim loaded with two radios: $STA_IF on phy0, $AP_IF on phy1"
+else
+    fail "wifi-module" "$(tr '\n' ' ' < "$LOG/hwsim.err") radios: $(ls /sys/class/ieee80211 2>/dev/null | tr '\n' ' ')"
+fi
+ap_up=0
+if [[ -n "$AP_IF" ]]; then
+    unshare -n sleep 900 > /dev/null 2>&1 & AP_HOLD=$!
+    for _ in $(seq 1 25); do [[ "$(readlink "/proc/$AP_HOLD/ns/net" 2>/dev/null)" != "$(readlink /proc/self/ns/net)" ]] && break; sleep 0.2; done
+fi
+if [[ -n "$AP_HOLD" ]] && iw phy phy1 set netns "$AP_HOLD" 2> "$LOG/ap.err"; then
+    cat > /root/zt/ap.conf <<EOF
+ctrl_interface=/run/zt-ap-ctrl
+ap_scan=2
+network={
+	ssid="$AP_SSID"
+	mode=2
+	frequency=2412
+	key_mgmt=WPA-PSK
+	proto=RSN
+	pairwise=CCMP
+	psk="$AP_PASS"
+}
+EOF
+    ap ip link set lo up
+    ap ip addr add "$AP_ADDR/24" dev "$AP_IF"
+    ap wpa_supplicant -B -i "$AP_IF" -c /root/zt/ap.conf -P /run/zt-ap-wpa.pid -f "$LOG/ap-wpa.log" >> "$LOG/ap.err" 2>&1
+    for _ in $(seq 1 30); do ap_wpa status | grep -q '^wpa_state=COMPLETED' && { ap_up=1; break; }; sleep 1; done
+    ap dnsmasq --port=0 --interface="$AP_IF" --bind-interfaces --dhcp-range=192.168.77.10,192.168.77.90,1h \
+       --dhcp-leasefile=/run/zt-ap.leases --pid-file=/run/zt-ap-dnsmasq.pid --user=root >> "$LOG/ap.err" 2>&1 || ap_up=0
+fi
+[[ "$ap_up" = 1 ]] && pass "wifi-ap" "$AP_SSID beacons on $AP_IF in its own namespace ($(ap_wpa status | grep -E '^(mode|freq)=' | tr '\n' ' ')) with a DHCP server" || fail "wifi-ap" "$(tr '\n' ' ' < "$LOG/ap.err" | cut -c1-200) status: $(ap_wpa status | tr '\n' ' ' | cut -c1-120)"
+# The credentials, as the user gives them: one file, 0400, owned by the net
+# zone's identity, and the add restarts the net zone.
+before="$(ready_count)"
+printf '%s\n' "$AP_PASS" | "$KD" wifi add "$AP_SSID" --wifi-dir "$WIFI_DIR" --zones "$Z" > "$LOG/wifi-add.out" 2>&1
+NET_UID="$(sed -n 's/^uid_base *= *\([0-9]*\).*/\1/p' "$Z/net.toml")"
+if grep -q "added network \"$AP_SSID\"; the net zone is restarting" "$LOG/wifi-add.out" \
+   && [[ "$(stat -c '%a %u' "$WIFI_DIR/wpa_supplicant.conf" 2>/dev/null)" = "400 $NET_UID" ]] \
+   && "$KD" wifi list --wifi-dir "$WIFI_DIR" 2>/dev/null | grep -qx "$AP_SSID"; then
+    pass "wifi-add" "kryptikd wifi add wrote the file 0400 for uid $NET_UID, lists the SSID, and restarted the net zone"
+else
+    fail "wifi-add" "$(tr '\n' ' ' < "$LOG/wifi-add.out") file: $(stat -c '%a %u' "$WIFI_DIR/wpa_supplicant.conf" 2>&1) list: $("$KD" wifi list --wifi-dir "$WIFI_DIR" 2>&1 | tr '\n' ' ')"
+fi
+line="$(ready_after "$before" " wifi=$AP_SSID " 90)"
+kills="$(dmesg 2>/dev/null | grep -a 'type=1326' | grep -ac 'comm="wpa_supplicant"')"
+if [[ "$line" == *" wifi=$AP_SSID "* && "${kills:-0}" = 0 ]]; then
+    pass "wifi-associated" "the net zone's supplicant joined $AP_SSID over $STA_IF with no filter kill: ${line#*netzone: }"
+else
+    fail "wifi-associated" "newest READY line: ${line:-none}; filter kills of wpa_supplicant: ${kills:-0}; $(grep -h 'netzone: wifi' /run/uncaught-logs/current 2>/dev/null | tail -3 | tr '\n' ' ')"
+fi
+net_init="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
+lease=""
+for _ in $(seq 1 40); do
+    [[ -n "$net_init" ]] && lease="$(nsenter -t "$net_init" -n ip -4 -o addr show "$STA_IF" 2>/dev/null | awk '{print $4}' | head -1)"
+    [[ "$lease" == 192.168.77.* ]] && break; sleep 1
+done
+[[ "$lease" == 192.168.77.* ]] && pass "wifi-lease" "$STA_IF in the net zone leased $lease from the access point" || fail "wifi-lease" "$STA_IF holds ${lease:-no address}; leases given: $(tr '\n' ' ' < /run/zt-ap.leases 2>/dev/null)"
+zrun untrusted 40 -- sh -c "python3 /usr/lib/kryptik/guest-tests/icmp-echo.py $AP_ADDR 3 >/dev/null 2>&1 && echo AP-REACHED || echo AP-UNREACHED"
+sta_seen="$(ap_wpa all_sta | grep -ciE '^[0-9a-f]{2}(:[0-9a-f]{2}){5}$')"
+if [[ "$ZOUT" == *AP-REACHED* && "${sta_seen:-0}" -ge 1 ]]; then
+    pass "wifi-egress" "a routed zone reached the access point ($AP_ADDR) through the net zone over the radio, which lists $sta_seen station"
+else
+    fail "wifi-egress" "$ZOUT; stations at the access point: ${sta_seen:-0}; $(tail -2 "$LOG/untrusted.err" | tr '\n' ' ')"
+fi
+# Back to the wire: the access point, its namespace (whose end returns phy1
+# to zone 0) and the radios go first, so the net zone the forget restarts
+# finds none.
+for f in /run/zt-ap-dnsmasq.pid /run/zt-ap-wpa.pid; do p="$(cat "$f" 2>/dev/null)"; [[ -n "$p" ]] && kill "$p" 2>/dev/null; done
+[[ -n "$AP_HOLD" ]] && kill "$AP_HOLD" 2>/dev/null
+sleep 1
+modprobe -r mac80211_hwsim 2>> "$LOG/hwsim.err" || info "wifi-module-removal $(tail -1 "$LOG/hwsim.err")"
+before="$(ready_count)"
+"$KD" wifi forget "$AP_SSID" --wifi-dir "$WIFI_DIR" --zones "$Z" > "$LOG/wifi-forget.out" 2>&1
+line="$(ready_after "$before" " wifi=none " 90)"
+if grep -q "forgot network \"$AP_SSID\"" "$LOG/wifi-forget.out" && [[ "$line" == *" wifi=none "* && "$line" == *" nat=yes "* ]] \
+   && ! "$KD" wifi list --wifi-dir "$WIFI_DIR" 2>/dev/null | grep -qx "$AP_SSID"; then
+    pass "wifi-forget" "the network is forgotten and the net zone is READY on the wire again with no radio"
+else
+    fail "wifi-forget" "$(tr '\n' ' ' < "$LOG/wifi-forget.out") newest READY: ${line:-none}"
+fi
+
 # --- the clock: zone 0 decides, the net zone only claims ----------------------------
 # (docs/design/time.md) This moves the real clock of a disposable machine and
 # puts it back from the boot clock, which nothing here touches.
