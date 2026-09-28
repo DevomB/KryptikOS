@@ -107,9 +107,11 @@ work in zones from a terminal and a text browser, and keep it up to date.
       with a manifest. Stage 04 installs each source's licence files under
       `/usr/share/licenses/`, firmware's `WHENCE` among them, and acceptance
       fails on a source without any; the build fails on a crate either
-      `Cargo.lock` names without its texts in `build/licences`. Still needed:
-      someone other than their author following the install, update and
-      recovery instructions.
+      `Cargo.lock` names without its texts in `build/licences`. A tag
+      `v<version>` builds and tests that version and drafts it on the
+      repository's Releases page with its source and its acceptance record
+      ([releases](releases.md)). Still needed: someone other than their
+      author following the install, update and recovery instructions.
 
 ### What the architecture promises and the tree does not yet keep
 

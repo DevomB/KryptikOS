@@ -119,3 +119,6 @@ make media KRYPTIK_VERSION=0.1.1
 make media KRYPTIK_VERSION=0.1.2
 make acceptance EXPORT=/tmp/kryptik-export
 ```
+
+`tools/release-publish.sh /tmp/kryptik-export` puts that export on the
+repository's Releases page once tag `v0.1.2` is pushed ([releases](releases.md)).

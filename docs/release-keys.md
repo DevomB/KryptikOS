@@ -92,6 +92,9 @@ For each release:
    days says so.
 6. Tag the revision you built from `v<version>` and push the tag. The next
    release's notes list what changed since it.
+7. Put the release on the repository's Releases page from the export
+   `make acceptance EXPORT=DIR` wrote: `tools/release-publish.sh DIR
+   --source-bundle FILE --publish` ([releases](releases.md)).
 
 ## Numbering a release
 

@@ -10,6 +10,9 @@ name: Distro
 on:
   push:
     branches: [main]
+    # A tag names a release: the run builds that version, tests it whole and
+    # drafts the Releases page (docs/releases.md).
+    tags: ['v*']
     paths-ignore:
       - 'docs/**'
       - '*.md'
@@ -55,6 +58,18 @@ jobs:
       ttfp: ${{ steps.progress02.outputs.ttfp }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      # Before anything is built: a release is numbered MAJOR.MINOR.PATCH
+      # (docs/release-keys.md), and 0.0.0 is the build the update suite
+      # updates from.
+      - name: The tag names the version
+        if: github.ref_type == 'tag'
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          if [[ "$GITHUB_REF_NAME" != v* || ! "$v" =~ ^(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){2}$ || "$v" == 0.0.0 ]]; then
+            echo "tag ${GITHUB_REF_NAME} does not name a release: tags are v<MAJOR>.<MINOR>.<PATCH>, digits without leading zeros, above 0.0.0"
+            exit 1
+          fi
+          echo "release ${v}"
       - uses: ./.github/actions/prepare
         with:
           sources: fetch
@@ -305,15 +320,20 @@ jobs:
       # medium that lives only while they are built, kept apart in
       # images-production (tools/production-pair.sh). Then release A, and B =
       # A's version with .1 (sorts after A), which the update test applies over
-      # A: the suites take the release built last as the one under test.
+      # A: the suites take the release built last as the one under test. A
+      # tag's run builds the tag's version as B, over a 0.0.0 A.
       - name: Stage 06, the media (production 1.0.0 and 1.0.1, release A and the update B)
         timeout-minutes: 90
         run: |
           make production-pair KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
           ls -la "$KRYPTIK_WORK/images-production"
-          VER_A="0.1.$(date -u +%Y%m%d).${GITHUB_SHA::8}"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            VER_A=0.0.0; VER_B="${GITHUB_REF_NAME#v}"
+          else
+            VER_A="0.1.$(date -u +%Y%m%d).${GITHUB_SHA::8}"; VER_B="${VER_A}.1"
+          fi
           make media KRYPTIK_VERSION="$VER_A" KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
-          make media KRYPTIK_VERSION="${VER_A}.1" KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
+          make media KRYPTIK_VERSION="$VER_B" KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
           ls -la "$KRYPTIK_WORK/images" | grep -E 'usb.img|\.iso|payload'
 
       # Never the private halves of the keys: the acceptance needs the
@@ -503,3 +523,33 @@ jobs:
         run: |
           echo "make acceptance did not pass; see the acceptance-report artifact"
           exit 1
+
+  # A tag's run ends on the Releases page: the tested export, the
+  # corresponding source and the acceptance logs, as a draft to publish after
+  # a look (docs/releases.md). The one job that writes to the repository.
+  release:
+    name: Draft the release
+    needs: [verdict]
+    if: ${{ !cancelled() && github.ref_type == 'tag' && needs.verdict.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      # The tag itself, for the check that it is at the tested revision.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/prepare
+        with:
+          sources: fetch
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: kryptik-release
+          path: /mnt/kryptik/export
+      - name: The corresponding source
+        run: make source-bundle
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: tools/release-publish.sh /mnt/kryptik/export --source-bundle "$(ls "$KRYPTIK_OUT"/source-*.tar)"
