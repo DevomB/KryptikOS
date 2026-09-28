@@ -104,8 +104,9 @@ grep -q 'not advertised' "$RT/kryptik/untrusted/proxy.log" 2>/dev/null && pass "
 # --- a mapped zone window cannot take the chrome's focus ----------------------
 mark map untrusted
 launch_plain untrusted "/usr/libexec/kryptik/wlprobe oversize 0 8 map-focus" > "$LOG/map-focus.out" 2>&1
-map_committed() { since_mark map untrusted | grep -q 'committed '; }
-if wait_for 20 map_committed && test -e /run/kryptik/zones/untrusted/init.pid && grep -q '^zone=0' "$RT/kryptik/focus"; then
+probe_committed() { since_mark "$1" untrusted | grep -q 'committed '; }
+probe_configured() { since_mark "$1" untrusted | grep -Eq 'committed .* for a [1-9][0-9]*x[1-9][0-9]* configure'; }
+if wait_for 20 probe_committed map && test -e /run/kryptik/zones/untrusted/init.pid && grep -q '^zone=0' "$RT/kryptik/focus"; then
     pass "map-keeps-zone0-focus"
 else
     fail "map-keeps-zone0-focus" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus"); probe: $(since_mark map untrusted | tail -3 | tr '\n' ' ')"
@@ -178,7 +179,9 @@ fi
 # wlprobe answers every configure with a buffer 40 px larger than asked. dwl
 # clips a surface only to (w - bw) x (h - bw), so the excess lies under the
 # right and bottom borders; the host measures all four in its screenshot.
+mark oversize untrusted
 launch_plain untrusted "/usr/libexec/kryptik/wlprobe oversize 40 30" > "$LOG/launch-oversize.out" 2>&1
+wait_for 20 probe_configured oversize || fail "oversize-mapped" "probe did not draw its configured window"
 echo "GT KEY-FOCUS-OVERSIZE"
 if wait_for 20 grep -q '^title=\[untrusted\] oversize' "$RT/kryptik/focus"; then
     pass "oversize-window" "$(tr '\n' ' ' < "$RT/kryptik/focus")"
@@ -191,7 +194,9 @@ sleep 6
 stop_zone untrusted
 # A window titled as another zone's is named by its own zone, from the app_id
 # the proxy stamps, never from its title.
+mark forged untrusted
 launch_plain untrusted "/usr/libexec/kryptik/wlprobe oversize 0 20 '[vault] forged'" > "$LOG/launch-forged.out" 2>&1
+wait_for 20 probe_configured forged || fail "forged-mapped" "probe did not draw its configured window"
 echo "GT KEY-FOCUS-FORGED"
 if wait_for 20 grep -q '^title=\[untrusted\] \[vault\] forged' "$RT/kryptik/focus"; then
     grep -q '^zone=untrusted' "$RT/kryptik/focus.zone" && grep -q '^label=UNTRUSTED' "$RT/kryptik/focus.zone" \

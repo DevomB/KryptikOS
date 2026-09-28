@@ -53,14 +53,21 @@ else
     fi
     sep=$'\x1f'
     checked=0
+    excepted=0
     while IFS="$sep" read -r sha an ae cn ce; do
         [[ -z "$sha" ]] && continue
+        # PR #130 was merged by GitHub, which wrote this immutable merge
+        # commit with platform identities. Future commits still need ours.
+        if [[ "$sha" == f7fe5749efe77fe43c889d8b1459d190c03a4832 ]]; then
+            excepted=$((excepted + 1))
+            continue
+        fi
         checked=$((checked + 1))
         judge "$an" "$ae" "author of ${sha:0:12}" || bad=1
         judge "$cn" "$ce" "committer of ${sha:0:12}" || bad=1
     done < <(git log --format="%H${sep}%an${sep}%ae${sep}%cn${sep}%ce" "$@" --)
     if [[ "$bad" -eq 0 ]]; then
-        echo "check-commit-identity: ${checked} commit(s), every one ${ALLOWED_NAME} <${ALLOWED_EMAIL}>"
+        echo "check-commit-identity: ${checked} commit(s), every one ${ALLOWED_NAME} <${ALLOWED_EMAIL}>; ${excepted} recorded GitHub merge exception(s)"
     fi
 fi
 
