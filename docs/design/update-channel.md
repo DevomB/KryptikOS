@@ -213,5 +213,5 @@ that directory.
 `tools/update/kryptik-update` (`check-manifest`, `check-pointer`),
 `tools/net/update-fetch.py`, `tools/net/netzone-init.sh`,
 `tools/release-manifest.sh` (`pointer`), `tools/release-channel.sh`,
-`build/recipes/updater.sh` (the keys) and `build/stages/06-iso.sh` (each build's
+`build/recipes/openssh.sh` (ssh-keygen, which verifies them) and `build/stages/06-iso.sh` (each build's
 channel, and `update.conf` from `KRYPTIK_CHANNEL`).

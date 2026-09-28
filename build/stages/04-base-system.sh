@@ -152,7 +152,6 @@ prebuilt_cmake() {
     printf '%s' "${dir}/bin/cmake"
 }
 
-
 # --- recipes ----------------------------------------------------------------
 # One file per step under build/recipes, sourced here. The build order is the
 # list below; a step's fingerprint is its function's text, wherever it lives.
