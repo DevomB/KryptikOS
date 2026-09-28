@@ -54,7 +54,7 @@ zone_is_nic() { grep -q '^mode[[:space:]]*=[[:space:]]*"nic"' "$ZONES/$1.toml" 2
 # app_id kryptik.<zone>.<claimed>; any other app_id is zone 0's.
 run_status() {
     mkdir -p "$RT/kryptik" 2>/dev/null
-    appid=""; title=""; fs=0
+    appid=""; title=""; fs=""; selected=0
     # The launcher window, so a fresh session shows something usable.
     "$TERMINAL" /usr/bin/kryptik-chrome --menu &
     # The consent watcher: one trusted window per question the broker leaves.
@@ -90,11 +90,15 @@ run_status() {
         out="${line%% *}"; rest="${line#* }"; key="${rest%% *}"; val="${rest#* }"
         [ "$key" = "$rest" ] && val=""
         case "$key" in
+            title) title="$val"; appid=""; fs=""; selected=0 ;;
             appid) appid="$val" ;;
-            title) title="$val" ;;
             fullscreen) fs="$val" ;;
+            selmon) selected="$val"; continue ;;
+            layout) [ "$selected" = 1 ] || continue ;;
             *) continue ;;
         esac
+        # dwl ends each output's status block with layout. Publish only the
+        # selected output after its title, app_id and fullscreen all arrived.
         case "$appid" in
             kryptik.*) zone="${appid#kryptik.}"; zone="${zone%%.*}" ;;
             "") zone="-" ;;

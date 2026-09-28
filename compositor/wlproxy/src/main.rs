@@ -213,9 +213,15 @@ fn main() {
         }
         // Service the sessions that were polled, against their own entries.
         let mut closed: Vec<usize> = Vec::new();
+        let mut zone_pool_bytes: usize = sessions.iter().map(|l| l.s.shm_pool_bytes).sum();
+        let mut zone_pool_count: usize = sessions.iter().map(|l| l.s.shm_pool_count).sum();
+        let mut zone_toplevels: usize = sessions.iter().map(|l| l.s.toplevels).sum();
         for (idx, l) in sessions.iter_mut().enumerate().take(polled) {
             let ce = fds[1 + idx * 2].revents;
             let se = fds[2 + idx * 2].revents;
+            let old_pool_bytes = l.s.shm_pool_bytes;
+            let old_pool_count = l.s.shm_pool_count;
+            let old_toplevels = l.s.toplevels;
             let step = |s: &mut Session, ce: i16, se: i16| -> Result<(), String> {
                 if (ce | se) & libc::POLLNVAL != 0 {
                     return Err("a socket vanished under the proxy".into());
@@ -236,6 +242,11 @@ fn main() {
                 }
                 s.pump(Dir::ClientToServer).map_err(|e| e.to_string())?;
                 s.pump(Dir::ServerToClient).map_err(|e| e.to_string())?;
+                if zone_pool_bytes + s.shm_pool_bytes - old_pool_bytes > policy::MAX_SHM_BYTES_PER_ZONE
+                    || zone_pool_count + s.shm_pool_count - old_pool_count > policy::MAX_SHM_POOLS_PER_ZONE
+                    || zone_toplevels + s.toplevels - old_toplevels > policy::MAX_TOPLEVELS_PER_ZONE {
+                    return Err("zone Wayland resource budget exceeded".into());
+                }
                 s.server.flush().map_err(|e| format!("compositor write: {e}"))?;
                 s.client.flush().map_err(|e| format!("client write: {e}"))?;
                 Ok(())
@@ -247,6 +258,10 @@ fn main() {
                 ));
                 l.s.refuse(&why);
                 closed.push(idx);
+            } else {
+                zone_pool_bytes = zone_pool_bytes - old_pool_bytes + l.s.shm_pool_bytes;
+                zone_pool_count = zone_pool_count - old_pool_count + l.s.shm_pool_count;
+                zone_toplevels = zone_toplevels - old_toplevels + l.s.toplevels;
             }
         }
         for idx in closed.into_iter().rev() {

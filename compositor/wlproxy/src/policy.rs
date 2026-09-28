@@ -64,13 +64,20 @@ pub fn app_id_for(zone: &str, claimed: &str) -> String {
     format!("kryptik.{zone}.{}", if cleaned.is_empty() { "app".to_string() } else { cleaned })
 }
 
-/// Resource bounds per client connection.
+/// Resource bounds per client connection and across a zone's connections.
 pub const MAX_OBJECTS: usize = 4096;
 /// Id slots per range. libwayland reuses freed ids, so its slots never outnumber
 /// its peak of live objects; a client that never reuses one stops here.
 pub const MAX_ID_SLOTS: usize = 2 * MAX_OBJECTS;
 pub const MAX_PENDING_BYTES: usize = 1 << 20; // per direction
 pub const MAX_PENDING_FDS: usize = 64;
+pub const MAX_TOPLEVELS_PER_SESSION: usize = 8;
+pub const MAX_TOPLEVELS_PER_ZONE: usize = 64;
+pub const MAX_SHM_POOLS_PER_SESSION: usize = 32;
+pub const MAX_SHM_POOLS_PER_ZONE: usize = 128;
+pub const MAX_SHM_POOL_BYTES: usize = 64 << 20; // room for a 4K RGBA frame and stride padding
+pub const MAX_SHM_BYTES_PER_SESSION: usize = 128 << 20;
+pub const MAX_SHM_BYTES_PER_ZONE: usize = 256 << 20;
 
 #[cfg(test)]
 mod tests {
