@@ -662,11 +662,6 @@ if (( PRIVILEGED == 1 )) && command -v cryptsetup >/dev/null 2>&1 && [[ -e /dev/
             sleep 0.2
         done
         "$KRYPTIKD" stop sealed --now >/dev/null 2>&1
-        # The launcher may need its five-second grace period before closing dm-crypt.
-        for _ in $(seq 50); do
-            [[ "$("$KRYPTIKD" volume status sealed --zones "$ZONES" 2>/dev/null)" == *"(closed)"* ]] && break
-            sleep 0.2
-        done
         if (( f4c_open == 0 )); then
             fail "F4c the encrypted zone did not open its volume within 10 s"
         elif [[ "$("$KRYPTIKD" volume status sealed --zones "$ZONES" 2>/dev/null)" == *"(closed)"* ]]; then
