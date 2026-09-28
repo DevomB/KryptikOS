@@ -35,7 +35,7 @@ boot_txt() { tr -d '\r' < "$BOOTLOG"; }
 # constant (see test-disk-size.sh), then the medium's installer run onto it
 # with the preseeded accounts.
 fresh_disk() {   # fresh_disk MEDIUM [test-disk-size.sh args]
-    local size; size="$("${SELF}/tests/disk-size.sh" --medium "$@")" || die "could not size the test disk from the medium"
+    local size; size="$("${SELF}/test-disk-size.sh" --medium "$@")" || die "could not size the test disk from the medium"
     rm -f "$DISK"; truncate -s "$size" "$DISK"
 }
 install_disk() {   # install_disk NAME MEDIUM [run-ovmf args]; 0 when the installer reported success
