@@ -128,8 +128,10 @@ s_rootfs() {
     [[ -f "$stage/usr/lib/libhardened_malloc.so" ]] || die "no /usr/lib/libhardened_malloc.so to preload"
     printf '%s\n' /usr/lib/libhardened_malloc.so > "$stage/etc/ld.so.preload"
 
-    # setuid/setgid only where build/config/setuid-allowlist.txt says why.
-    "${KRYPTIK_ROOT}/tools/audit-setuid.sh" --strip "$stage"
+    # A bit or a file capability only where build/config/setuid-allowlist.txt
+    # says why: the recipes install none other, and one that slipped in fails
+    # the build rather than being stripped in silence.
+    "${KRYPTIK_ROOT}/tools/audit-setuid.sh" "$stage"
 
     # The update trust anchor and the role, on the verified root and never in
     # /etc, which the state partition can shadow. Only the anchor's public
