@@ -404,10 +404,10 @@ pub fn restore_header(volume: &str, from: &str) -> Result<(), VolumeError> {
     Ok(())
 }
 
-/// Delete a zone's container file, and with it every key slot and the data:
-/// the zone is then as before `volume init`. Refused while the mapping is
-/// open (the zone runs, or `gc` has not closed it), for a block device (it is
-/// wiped by hand, not unlinked) and for a file without a LUKS signature.
+/// Erase a zone's key slots, then delete its container file: the zone is
+/// then as before `volume init`. Refused while the mapping is open (the zone
+/// runs, or `gc` has not closed it), for a block device (it is wiped by hand,
+/// not unlinked) and for a file without a LUKS signature.
 pub fn destroy(zone: &str, volume: &str) -> Result<(), VolumeError> {
     if mapping_exists(zone) {
         return Err(VolumeError::Io(format!(
@@ -433,6 +433,11 @@ pub fn destroy(zone: &str, volume: &str) -> Result<(), VolumeError> {
             if sig.is_empty() { "no signature".to_string() } else { format!("a {sig} signature") }
         )));
     }
+    // The slots first: an unlinked file's blocks stay on the disk until they
+    // are reused, and without its slots the container is ciphertext under a
+    // key nothing holds.
+    run("cryptsetup luksErase", "cryptsetup", &["luksErase", "--batch-mode", volume], None)
+        .map_err(|e| tool_err("cryptsetup luksErase", e))?;
     fs::remove_file(p).map_err(|e| VolumeError::Io(format!("{volume}: {e}")))
 }
 

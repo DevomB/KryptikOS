@@ -967,7 +967,7 @@ fn cmd_volume(dir: &Path, args: &[String]) -> ExitCode {
                 eprintln!("volume destroy needs root");
                 return ExitCode::from(2);
             }
-            done(&format!("{vol} deleted, and the zone's data with it; volume init makes a new one"), volume::destroy(name, &vol))
+            done(&format!("{vol}: key slots erased and the file deleted, the zone's data with it; volume init makes a new one"), volume::destroy(name, &vol))
         }
         other => {
             eprintln!("volume: unknown subcommand {other:?}");
