@@ -147,9 +147,12 @@ carrying capabilities (`security.capability`) needs one in
 `tools/audit-setuid.sh --strip` over the image's root, so the bit and the
 capabilities come off every other file (shadow and util-linux install eleven
 more setuid binaries); without `--strip` the script fails on any unlisted
-one. Either way it fails when it cannot read a directory, and a strip that
-would take the bit or the capabilities off a listed file through a hard link
-fails instead.
+one. Either way it fails when it cannot read a directory, on a list entry
+without a justification, and on a strip that would take the bit or the
+capabilities off a listed file through a hard link. `make zones-test` audits
+the installed root again: the bits are on the listed binaries alone, no file
+carries capabilities, and every sysctl reads back as `build/config/sysctl.d`
+says.
 
 ## Zone syscall filter
 
