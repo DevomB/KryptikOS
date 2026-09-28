@@ -58,6 +58,7 @@ declare -A COUNT=()
 declare -a HARD_LINES=()
 declare -a SOFT_LINES=()
 declare -a ACCEPTED_LINES=()
+declare -a NO_SSP=() NO_FORTIFY=()
 
 bump() { COUNT["$1"]=$(( ${COUNT["$1"]:-0} + 1 )); }
 
@@ -177,13 +178,11 @@ audit_one() {
 
     grep -qE 'IBT|SHSTK' <<<"$out" || soft "NO-CET" "$rel"
 
-    # Counted, never failed: code with no arrays needs no __stack_chk_fail.
-    if grep -q '__stack_chk_fail' <<<"$out"; then
-        bump "HAS-SSP"
-    fi
-    if grep -qE '__[a-z_]+_chk@|__[a-z_]+_chk$' <<<"$out"; then
-        bump "HAS-FORTIFY"
-    fi
+    # Counted, never failed: a function without a local array gets no canary
+    # and a call with no known size no _chk variant, so an object with neither
+    # shows nothing about its flags. The record names them.
+    if grep -q '__stack_chk_fail' <<<"$out"; then bump "HAS-SSP"; else NO_SSP+=("$rel"); fi
+    if grep -qE '__[a-z_]+_chk@|__[a-z_]+_chk$' <<<"$out"; then bump "HAS-FORTIFY"; else NO_FORTIFY+=("$rel"); fi
 }
 
 log "scanning"
@@ -272,7 +271,9 @@ if [[ -n "$JSON" ]]; then
         json_list hard "${HARD_LINES[@]}"; printf ',\n'
         json_list reported "${SOFT_LINES[@]}"; printf ',\n'
         json_list accepted "${ACCEPTED_LINES[@]}"; printf ',\n'
-        json_list stale "${STALE[@]}"; printf '\n}\n'
+        json_list stale "${STALE[@]}"; printf ',\n'
+        json_list without-ssp "${NO_SSP[@]}"; printf ',\n'
+        json_list without-fortify "${NO_FORTIFY[@]}"; printf '\n}\n'
     } > "$JSON"
     dim "wrote ${JSON}"
 fi

@@ -131,9 +131,11 @@ work in zones from a terminal and a text browser, and keep it up to date.
       `keys.manifest` has an audited route to its fingerprint.
 - [ ] **Zone 0 runs no user application, proven.** A desktop check that no
       zone program runs outside a zone's cgroup.
-- [ ] **The shipped-binary audit fails per object.** An object without the
-      stack protector or FORTIFY is counted, never refused, and the audit
-      reads the sysroot rather than the image's root.
+- [x] **The shipped-binary audit reads the image's root.** Stage 06 fails
+      the build on a finding in the tree it packs. The stack protector and
+      FORTIFY stay counts, since an object without either shows nothing about
+      its flags ([hardening](hardening.md#what-the-audit-finds)); the record
+      names such objects.
 - [ ] **A destroy verb**, or the statement that a zone is destroyed by
       deleting its file and its volume.
 

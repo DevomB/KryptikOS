@@ -189,6 +189,10 @@ devpts   /dev/pts  devpts   gid=5,mode=620,nosuid,noexec 0 0
 tmpfs    /dev/shm  tmpfs    nosuid,nodev         0 0
 EOF
 
+    # The objects that ship, audited as they are packed: a finding fails the
+    # build here; make acceptance audits the sysroot again for the record.
+    "${KRYPTIK_ROOT}/tools/check-artifact-hardening.sh" --strict "$stage"
+
     echo "--- ext4 (${fs_bytes} bytes, no journal, read-only by design) ---"
     local img="${IMG}/kryptik-root.img"
     rm -f "$img"
@@ -552,7 +556,7 @@ s_export() {
 }
 
 # --- run --------------------------------------------------------------------
-step rootfs         s_rootfs "$KRYPTIK_VERSION" "$(cat "${KRYPTIK_ROOT}/build/config/setuid-allowlist.txt" "${KRYPTIK_ROOT}/build/config/capability-allowlist.txt" "${KRYPTIK_ROOT}/tools/audit-setuid.sh" | sha256_of_stdin)" "$KRYPTIK_CHANNEL" "$ROLE" "$(_hash_file "$ANCHOR")"
+step rootfs         s_rootfs "$KRYPTIK_VERSION" "$(cat "${KRYPTIK_ROOT}/build/config/setuid-allowlist.txt" "${KRYPTIK_ROOT}/build/config/capability-allowlist.txt" "${KRYPTIK_ROOT}/tools/audit-setuid.sh" "${KRYPTIK_ROOT}/build/config/artifact-accepted.txt" "${KRYPTIK_ROOT}/tools/check-artifact-hardening.sh" | sha256_of_stdin)" "$KRYPTIK_CHANNEL" "$ROLE" "$(_hash_file "$ANCHOR")"
 step cmdlines       s_cmdlines "$(_hash_file "${IMG}/root.json")"
 step bind-kernels   s_bind_kernels "$(cat "${IMG}"/cmdlines/{slot-a,slot-b,media-usb}.txt | sha256_of_stdin)"
 step sign-kernels   s_sign_kernels "$(cat "${IMG}"/kernels/{slot-a,slot-b,media-usb}.efi | sha256_of_stdin)$(_hash_file "$SB_CERT")"
