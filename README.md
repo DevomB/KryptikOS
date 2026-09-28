@@ -29,7 +29,9 @@ Wayland desktop. `make acceptance` runs every suite against the built images.
 What is tested, and what the last acceptance run proved, is in
 [docs/status.md](docs/status.md). Everything so far has run under QEMU with
 OVMF firmware; nothing has run on physical hardware, and releases are signed
-by a key the build generates.
+by a key the build generates. Releases are on the repository's Releases
+page: what one is, how it is numbered and how to check a download is in
+[docs/releases.md](docs/releases.md).
 
 ## Hardware
 

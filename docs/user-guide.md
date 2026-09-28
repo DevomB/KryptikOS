@@ -23,6 +23,10 @@ firmware. Nothing has run on physical hardware yet.
 | `INSTRUCTIONS.md` | these instructions |
 | `ACCEPTANCE-REPORT.md`, `acceptance-logs/` | every suite, its result, the commands and their logs |
 
+On the repository's Releases page the two images are compressed, as
+`kryptik-VERSION-usb.img.zst` and `kryptik-VERSION.iso.zst`: `zstd -d` restores
+the files everything below checks ([releases](releases.md)).
+
 Verify before use:
 
 ```sh
