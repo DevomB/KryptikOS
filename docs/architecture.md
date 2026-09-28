@@ -18,7 +18,8 @@ A zone is the unit of isolation, and every process belongs to exactly one.
 
 The trusted base, like Qubes' `dom0`: PID 1, the services, kryptikd, the
 compositor and the desktop session. It has no route out and runs no user
-applications (ADR-003). kryptikd creates the other zones as root; unprivileged
+applications (ADR-003), which the desktop suite checks process by process.
+kryptikd creates the other zones as root; unprivileged
 user namespaces are off ([privileged launch](design/privileged-launch.md)).
 
 ### Shipped zones

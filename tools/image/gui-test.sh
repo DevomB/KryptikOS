@@ -83,7 +83,7 @@ gp="$(sed -n 's/.*passed=\([0-9]*\).*/\1/p' <<<"$summary")"; gf="$(sed -n 's/.*f
 if [[ -n "$summary" && "${gf:-1}" -eq 0 && "${gp:-0}" -ge 25 ]]; then green "every guest check passed (${gp})"; else red "guest checks: ${gp:-0} passed, ${gf:-?} failed"; fi
 grep 'GT FAIL' <<<"$T" | sed 's/^/        /'
 for name in session-socket compositor-running chrome-focus-record chrome-window-is-zone0 zone0-sees-capture zone-proxy-path zone-sees-needed zone-hidden-globals zone-bind-refused proxy-logged-refusal \
-            map-keeps-zone0-focus focus-shows-zone focus-shows-label title-prefixed last-zone-recorded menu-opens-on-key menu-keeps-last-zone zone-fullscreen-refused compositor-survives-close oversize-window forged-title-named-by-zone second-zone-window no-virtual-input clipboard-isolated clipboard-move-gesture clipboard-moved \
+            map-keeps-zone0-focus focus-shows-zone focus-shows-label title-prefixed last-zone-recorded menu-opens-on-key menu-keeps-last-zone zone-fullscreen-refused compositor-survives-close oversize-window forged-title-named-by-zone second-zone-window zone0-own-programs-only zone-app-in-cgroup no-virtual-input clipboard-isolated clipboard-move-gesture clipboard-moved \
             transfer-policy no-question-for-policy-refusal consent-code-shown transfer-approved transfer-landed plain-y-refused denied-file-absent; do
     grep -q "GT PASS ${name}" <<<"$T" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
