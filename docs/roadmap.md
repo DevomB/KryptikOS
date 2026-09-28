@@ -91,13 +91,12 @@ work in zones from a terminal and a text browser, and keep it up to date.
       reason.
 - [x] **The net zone's remaining hardening.** Decided, with the reasons, in
       the [net zone design](design/net-zone.md).
-- [ ] **Someone else has attacked it.** The broker protocol and
+- [x] **Someone else has attacked it.** The broker protocol and
       `kryptik-wlproxy`'s wire parser are fuzzed in the unit suites with a
       corpus in the tree ([broker design](design/broker.md)). kryptikd's
-      launch path, the update chain and the broker have each been reviewed by
-      someone who did not write them, and what they found is fixed. Still
-      needed is the same for the desktop boundary: `kryptik-wlproxy` and the
-      compositor.
+      launch path, the update chain, the broker and the desktop boundary
+      (`kryptik-wlproxy` and the compositor) have each been reviewed by
+      someone who did not write them, and what they found is fixed.
 - [ ] **A release, as an object.** Version numbering, release notes from the
       acceptance report, the licences of everything shipped (firmware from
       `WHENCE`), the corresponding source, and install, update and recovery
@@ -115,9 +114,9 @@ work in zones from a terminal and a text browser, and keep it up to date.
 
 ### What the architecture promises and the tree does not yet keep
 
-- [ ] **Xwayland.** ADR-004 counts on Xwayland inside a zone for X11
-      programs, and none is built. Build it per zone, or take the sentence
-      out of the ADR.
+- [x] **Xwayland.** Not built, and ADR-004 says so: X11 programs are
+      outside 1.0, and Version 2's applications decide whether one runs
+      inside a zone.
 - [ ] **cpu and io limits.** A zone's `[limits]` are memory and pids; the
       architecture names cpu and io as well. Add `cpu_max` and `io_max`, or
       record that two are the set.
