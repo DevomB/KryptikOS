@@ -161,6 +161,7 @@ pub const GRACE_SECS: u32 = 5;
 
 static FORWARD_TO: AtomicI32 = AtomicI32::new(0);
 static ARM_KILL: AtomicBool = AtomicBool::new(false);
+static PENDING_SIGNAL: AtomicI32 = AtomicI32::new(0);
 
 extern "C" fn forward_signal(sig: libc::c_int) {
     let pid = FORWARD_TO.load(Ordering::SeqCst);
@@ -171,6 +172,9 @@ extern "C" fn forward_signal(sig: libc::c_int) {
                 libc::alarm(GRACE_SECS);
             }
         }
+    } else {
+        // A stop during setup waits for the child, so the launcher can close its volume.
+        PENDING_SIGNAL.store(sig, Ordering::SeqCst);
     }
 }
 
@@ -200,6 +204,12 @@ fn install_forwarding(target: libc::pid_t, arm_kill: bool) {
     }
     if arm_kill {
         install_handler(libc::SIGALRM, on_alarm);
+    }
+    if target > 0 {
+        let pending = PENDING_SIGNAL.swap(0, Ordering::SeqCst);
+        if pending != 0 {
+            forward_signal(pending);
+        }
     }
 }
 
@@ -743,6 +753,8 @@ pub fn run_in_zone(
         }
     }
 
+    // Record stops before claim() exposes the launcher, including while its volume opens.
+    install_forwarding(0, false);
     /* One instance per zone: two launchers would share a data directory, a
      * cgroup and a veth name. claim() is an atomic mkdir; a stale entry is reclaimed. */
     let entry = registry::claim(&zone.name).map_err(|e| SpawnError::Setup(e.to_string()))?;
