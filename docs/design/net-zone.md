@@ -146,10 +146,15 @@ configured the zone keeps its IPv4 path and the launcher says so.
   state partition, like NetworkManager's connection files. A compromised net
   zone learns the passphrases of the networks it was given, and nothing more.
 
-QEMU has no radio, so the installed system is tested on the wired path; the
-wiphy move is tested on `mac80211_hwsim` (below). On real hardware, a seccomp
-refusal of `wpa_supplicant` would show as `SIGSYS` in the zone's log and a
-`wifi=connecting` that never changes.
+QEMU has no radio, so the zones suite makes two with `mac80211_hwsim`, the
+kernel's simulated radio, from the signed module the image carries: one goes
+into a namespace of its own as the access point (the image's `wpa_supplicant`
+in AP mode, `dnsmasq` for the lease), the other is left for the net zone,
+which joins the network `kryptik wifi add` gave it, leases an address over
+the radio and carries a routed zone's traffic to the access point. Real
+hardware is still untested: a seccomp refusal of `wpa_supplicant` there would
+show as `SIGSYS` in the zone's log and a `wifi=connecting` that never
+changes.
 
 ## Gateway failure
 
@@ -210,8 +215,10 @@ refusal of `wpa_supplicant` would show as `SIGSYS` in the zone's log and a
 - `build/guest-tests/zones-check.sh` on the installed system checks every
   guarantee above under QEMU user networking: the net zone `READY`, zone 0
   offline, a routed zone's address, NAT, ULA-only IPv6 and resolver, zones
-  separated, `vault` offline, no egress while the net zone is down, and
-  reattachment after a restart. It pings with an unprivileged ICMP socket
+  separated, `vault` offline, no egress while the net zone is down,
+  reattachment after a restart, and, on two `mac80211_hwsim` radios, the net
+  zone associating, leasing and routing over one while the other is the
+  access point. It pings with an unprivileged ICMP socket
   (`build/guest-tests/icmp-echo.py`), since routed zones lack `CAP_NET_RAW`.
 
 ## Kernel requirements

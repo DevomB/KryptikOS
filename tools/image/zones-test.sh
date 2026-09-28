@@ -9,7 +9,8 @@
 #   step 1  install, boot alone with QEMU user networking
 #   step 2  guest-tests/zones-check.sh: kernel support, the net zone, zone 0
 #           offline, routed egress and DNS, zone separation, fail-closed
-#           restart, time claims, limits, and the LUKS2 volume lifecycle
+#           restart, the net zone over a mac80211_hwsim radio, time claims,
+#           limits, and the LUKS2 volume lifecycle
 #   step 3  the compartment suites' [vm] rows on the target kernel (not with
 #           --skip-suites)
 #   step 4  reboot; the encrypted zone's data is still there
@@ -64,7 +65,9 @@ zp="$(sed -n 's/.*passed=\([0-9]*\).*/\1/p' <<<"$summary")"; zf="$(sed -n 's/.*f
 if [[ -n "$summary" && "${zf:-1}" -eq 0 && "${zp:-0}" -ge 30 ]]; then green "every guest check passed (${zp})"; else red "guest checks: ${zp:-0} passed, ${zf:-?} failed"; fi
 grep 'ZT FAIL' <<<"$T2" | sed 's/^/        /'
 # The key verdicts one by one, so a pass is not a single line.
-for name in kernel-support net-ready net-dns zone0-nic zone0-no-route zone0-offline routed-egress routed-ping routed-ping6 routed-dns routed-ipv6-noglobal zone-separation fail-closed net-restart-ready reattach-after-restart time-floor-ran time-clamp time-claim-stepped time-claim-floor time-claim-consent pids-limit ephemeral-size-bound \
+for name in kernel-support net-ready net-dns zone0-nic zone0-no-route zone0-offline routed-egress routed-ping routed-ping6 routed-dns routed-ipv6-noglobal zone-separation fail-closed net-restart-ready reattach-after-restart \
+            wifi-module wifi-ap wifi-add wifi-associated wifi-lease wifi-egress wifi-forget \
+            time-floor-ran time-clamp time-claim-stepped time-claim-floor time-claim-consent pids-limit ephemeral-size-bound \
             terminal-terminfo man-page text-browser tls-trust \
             volume-init encrypted-zone-start stop-closes-volume wrong-passphrase persist-reopen no-mapping-after ephemeral-gone concurrent-start-refused full-volume header-restore vault-offline vault-ping no-passphrase-leak; do
     grep -q "ZT PASS ${name}" <<<"$T2" && green "guest: ${name}" || red "guest: ${name} (not passed)"
