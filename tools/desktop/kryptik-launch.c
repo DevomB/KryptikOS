@@ -6,7 +6,7 @@
  *   kryptik-launch --stop ZONE
  *   kryptik-launch --info ZONE          encrypted yes|no, running yes|no
  *   kryptik-launch --runtime-dir        print the session's XDG_RUNTIME_DIR, creating it
- *   kryptik-launch --clipboard-move FROM TO   the zone 0 gesture: give TO a copy of FROM's clipboard
+ *   kryptik-launch --clipboard-move FROM TO   the zone 0 gesture: move FROM's clipboard to TO
  *   kryptik-launch --wifi-list          the net zone's Wi-Fi SSIDs, one per line
  *   kryptik-launch --wifi-add SSID      add one or replace its passphrase (one line on stdin)
  *   kryptik-launch --wifi-forget SSID   remove one

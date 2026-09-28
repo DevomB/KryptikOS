@@ -59,7 +59,7 @@ trap cleanup EXIT
 
 if (( EUID == 0 )); then PRIVILEGED=1; info "running as root: zones map to their own identity ranges"; else PRIVILEGED=0; info "running unprivileged as uid $EUID"; fi
 # A root daemon writes zone logs under /var/log/kryptik, a developer one in $WORK.
-if (( PRIVILEGED == 1 )); then ZLOG=/var/log/kryptik/zone-alpha.log; else ZLOG="$WORK/zone-alpha.log"; fi
+if (( PRIVILEGED == 1 )); then ZLOG=/var/log/kryptik/zone-alpha.log; ZLOGB=/var/log/kryptik/zone-beta.log; else ZLOG="$WORK/zone-alpha.log"; ZLOGB="$WORK/zone-beta.log"; fi
 MARK="LAUNCH_OK_$$"
 
 # --- fixtures ----------------------------------------------------------------
@@ -305,6 +305,33 @@ if [[ "$r" == ok\ [0-9]* ]] && grep -q "launcher ${r#ok } exited 0" "$WORK/serve
     pass "S7d a command that ends at once is ok, and the log says it ended"
 else
     fail "S7d ${r%$'\n'}: $(grep -F "${r#ok }" "$WORK/serve.log" | tr '\n' '|')"
+fi
+
+# --- the clipboard gesture -------------------------------------------------------------------
+# Two zones up at once, each talking to its own broker at /run/kryptik/broker,
+# one request per python3 call (a request without a newline gets one). alpha
+# sets a payload and waits for it to leave; beta waits for it to arrive.
+head_ "the clipboard gesture"
+BQ="python3 -c 'import socket,sys;r=sys.argv[1];r=r if chr(10) in r else r+chr(10);s=socket.socket(socket.AF_UNIX);s.connect(\"/run/kryptik/broker\");s.sendall(r.encode());s.shutdown(socket.SHUT_WR);sys.stdout.write(s.makefile(\"rb\").read().decode())'"
+SA="q() { $BQ \"\$1\"; }; q \"\$(printf 'clipboard-set text/plain 5'; echo; printf hello)\"; echo SET-$MARK; i=0; while [ \$i -lt 80 ]; do case \"\$(q clipboard-get)\" in empty*) echo GONE-$MARK; break;; esac; sleep 0.5; i=\$((i+1)); done; sleep 5"
+SB="q() { $BQ \"\$1\"; }; i=0; while [ \$i -lt 80 ]; do case \"\$(q clipboard-get)\" in ok*hello*) echo GOT-$MARK; break;; esac; sleep 0.5; i=\$((i+1)); done"
+ra="$(ask "run alpha\narg /bin/sh\narg -c\narg $SA\nend\n")"
+rb="$(ask "run beta\narg /bin/sh\narg -c\narg $SB\nend\n")"
+if [[ "$ra" == ok\ [0-9]* && "$rb" == ok\ [0-9]* ]]; then
+    ok=0; for _ in $(seq 1 100); do grep -q "SET-$MARK" "$ZLOG" 2>/dev/null && { ok=1; break; }; sleep 0.1; done
+    if [[ "$ok" -eq 1 ]]; then pass "S7e alpha set its clipboard through its broker"; else fail "S7e alpha never reported its clipboard-set"; sed 's/^/        /' "$ZLOG" 2>/dev/null | tail -4; fi
+    r="$(ask 'clipboard-move alpha beta\n')"
+    if [[ "$r" == "ok clipboard: moved 5 bytes of text/plain from alpha to beta"* ]]; then pass "S7f the gesture moves alpha's payload to beta"; else fail "S7f clipboard-move: $r"; fi
+    r2="$(ask 'clipboard-move alpha beta\n')"
+    if [[ "$r2" == "error: clipboard: nothing on the source zone's clipboard"* ]]; then pass "S7g a second gesture has nothing to move: the payload moved, it was not copied"; else fail "S7g second clipboard-move: $r2"; fi
+    ok=0; for _ in $(seq 1 100); do grep -q "GOT-$MARK" "$ZLOGB" 2>/dev/null && { ok=1; break; }; sleep 0.1; done
+    if [[ "$ok" -eq 1 ]]; then pass "S7h beta read the one payload from its own broker"; else fail "S7h beta never saw the payload"; sed 's/^/        /' "$ZLOGB" 2>/dev/null | tail -4; fi
+    ok=0; for _ in $(seq 1 100); do grep -q "GONE-$MARK" "$ZLOG" 2>/dev/null && { ok=1; break; }; sleep 0.1; done
+    if [[ "$ok" -eq 1 ]]; then pass "S7i alpha's own broker answers empty once the payload has left"; else fail "S7i alpha still sees a payload"; sed 's/^/        /' "$ZLOG" 2>/dev/null | tail -4; fi
+    ask 'stop alpha\n' > /dev/null; ask 'stop beta\n' > /dev/null
+    for _ in $(seq 1 100); do [[ "$(ask 'status\n')" == "end" ]] && break; sleep 0.1; done
+else
+    fail "S7e run alpha and beta for the gesture: ${ra%$'\n'} / ${rb%$'\n'}"
 fi
 
 # --- the proxy socket ------------------------------------------------------------------------

@@ -202,10 +202,10 @@ stop_zone personal
 # --- clipboards: per zone, until the zone 0 gesture -----------------------
 # A zone's clipboard lives in its launcher, so both zones stay up across the
 # gesture, each running one command that talks to its broker through
-# broker-client.py and logs the answers.
+# broker-client.py and logs the answers; untrusted waits for its payload to leave.
 BC=/usr/lib/kryptik/guest-tests/broker-client.py
 mark clip untrusted
-launch_plain untrusted "sh -c 'python3 $BC clipboard-set text/plain from-untrusted; echo SET-DONE; sleep 90'" > "$LOG/clip-set.out" 2>&1
+launch_plain untrusted "sh -c 'python3 $BC clipboard-set text/plain from-untrusted; echo SET-DONE; python3 $BC clipboard-wait-empty 90; echo WAIT-DONE'" > "$LOG/clip-set.out" 2>&1
 wait_for 15 grep -q SET-DONE /var/log/kryptik/zone-untrusted.log
 [[ "$(since_mark clip untrusted)" == *ok* ]] && pass "clipboard-set" "untrusted set its clipboard through its broker" || fail "clipboard-set" "$(since_mark clip untrusted | tail -2 | tr '\n' ' '); $(tr '\n' ' ' < "$LOG/clip-set.out")"
 mark clip1 personal
@@ -216,7 +216,8 @@ first="$(since_mark clip1 personal | sed '/GET1-DONE/q')"
 as_user "kryptik-launch --clipboard-move untrusted personal" > "$LOG/clip-move.out" 2>&1 && pass "clipboard-move-gesture" "$(tr '\n' ' ' < "$LOG/clip-move.out")" || fail "clipboard-move-gesture" "$(tr '\n' ' ' < "$LOG/clip-move.out")"
 wait_for 45 grep -q GET2-DONE /var/log/kryptik/zone-personal.log
 second="$(since_mark clip1 personal | sed -n '/GET1-DONE/,$p')"
-[[ "$second" == *from-untrusted* ]] && pass "clipboard-moved" "personal now holds the one payload the gesture moved" || fail "clipboard-moved" "$(echo "$second" | tail -2 | tr '\n' ' ')"
+wait_for 30 grep -q 'clipboard-empty' /var/log/kryptik/zone-untrusted.log; emptied=$?
+if [[ "$second" == *from-untrusted* && "$emptied" = 0 ]]; then pass "clipboard-moved" "personal holds the one payload the gesture moved, and untrusted's own broker answers empty: moved, not copied"; else fail "clipboard-moved" "personal: $(echo "$second" | tail -2 | tr '\n' ' '); untrusted: $(since_mark clip untrusted | tail -3 | tr '\n' ' ')"; fi
 stop_zone untrusted; stop_zone personal
 
 # --- transfers: the user decides --------------------------------------------------------
