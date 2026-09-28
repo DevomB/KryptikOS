@@ -57,6 +57,11 @@ a passphrase is a UX choice; kryptikd works either way.
   memfds. `volume backup-header NAME FILE` writes the header only and never
   over an existing file; the backup holds the wrapped key, so it is sensitive.
   `restore-header` and `status` complete the set.
+- `volume destroy NAME` deletes a stopped zone's container file, and its data
+  with it, so the zone is as before `volume init`. It refuses an open mapping
+  (stop the zone first), a block device (wiped by hand, not unlinked) and a
+  file without a LUKS signature. The zone's definition stays, on the verified
+  root, as does its empty data directory.
 - A wrong passphrase (`cryptsetup` exit 2) prints `zone "work": volume did not
   unlock (wrong passphrase)` and the zone does not start; the UI retries, not
   kryptikd.

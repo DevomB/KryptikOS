@@ -670,6 +670,33 @@ if (( PRIVILEGED == 1 )) && command -v cryptsetup >/dev/null 2>&1 && [[ -e /dev/
             fail "F4c the volume is still open after stop --now"
             "$KRYPTIKD" gc >/dev/null 2>&1
         fi
+        # destroy: refused while the volume is open, deletes the container
+        # once the zone is gone, and then there is nothing left to destroy.
+        "$KRYPTIKD" run sealed "${ZARGS[@]}" --passphrase-file "$F4PASS" -- /bin/sleep 60 >/dev/null 2>&1 &
+        BG_PIDS+=("$!")
+        for _ in $(seq 50); do [[ -e /dev/mapper/kryptik-zone-sealed ]] && break; sleep 0.2; done
+        out="$("$KRYPTIKD" volume destroy sealed --zones "$ZONES" 2>&1)"; rc=$?
+        if (( rc != 0 )) && [[ "$out" == *"stop the zone first"* && -e /dev/mapper/kryptik-zone-sealed ]]; then
+            pass "F6a volume destroy is refused while the zone runs, and the volume stays"
+        else
+            fail "F6a volume destroy with the zone running: exit $rc, $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
+        fi
+        "$KRYPTIKD" stop sealed --now >/dev/null 2>&1
+        for _ in $(seq 50); do [[ -e /dev/mapper/kryptik-zone-sealed ]] || break; sleep 0.2; done
+        vol_file="$("$KRYPTIKD" volume status sealed --zones "$ZONES" 2>/dev/null | sed -n 's/^container \([^ ]*\).*/\1/p')"
+        out="$("$KRYPTIKD" volume destroy sealed --zones "$ZONES" 2>&1)"; rc=$?
+        if (( rc == 0 )) && [[ -n "$vol_file" && ! -e "$vol_file" ]] \
+            && [[ "$("$KRYPTIKD" volume status sealed --zones "$ZONES" 2>/dev/null)" == *"ABSENT"* ]]; then
+            pass "F6b volume destroy deletes the stopped zone's container, and status says ABSENT"
+        else
+            fail "F6b volume destroy: exit $rc, container ${vol_file:-unknown} $([[ -e "$vol_file" ]] && echo "still there" || echo gone): $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
+        fi
+        out="$("$KRYPTIKD" volume destroy sealed --zones "$ZONES" 2>&1)"; rc=$?
+        if (( rc != 0 )) && [[ "$out" == *"no volume at"* ]]; then
+            pass "F6c a second destroy finds no volume"
+        else
+            fail "F6c second destroy: exit $rc, $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
+        fi
     fi
 else
     skip "F4  an encrypted zone starts on its LUKS2 volume [root + cryptsetup] - the VM runs this as root"
