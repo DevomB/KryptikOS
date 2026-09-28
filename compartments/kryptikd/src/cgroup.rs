@@ -58,7 +58,8 @@ pub fn parse_io_max(v: &str) -> Result<u64, CgroupError> {
 
 /// The `MAJ:MIN` of the block device at `path`, then of the devices it is
 /// built on (`slaves` in sysfs): io.max names devices, and an encrypted
-/// volume's bytes land on the device under its mapping.
+/// volume's bytes land on the device under its mapping. A partition among
+/// them stands for its disk, the only thing io.max takes.
 pub fn block_devices(path: &str) -> io::Result<Vec<String>> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
     let md = fs::metadata(path)?;
@@ -70,15 +71,23 @@ pub fn block_devices(path: &str) -> io::Result<Vec<String>> {
     let slaves = Path::new("/sys/dev/block").join(format!("{major}:{minor}")).join("slaves");
     if let Ok(entries) = fs::read_dir(&slaves) {
         for e in entries.flatten() {
-            if let Ok(dev) = fs::read_to_string(e.path().join("dev")) {
-                let dev = dev.trim();
-                if !dev.is_empty() {
-                    out.push(dev.to_string());
+            if let Some(dev) = whole_device(&e.path()) {
+                if !out.contains(&dev) {
+                    out.push(dev);
                 }
             }
         }
     }
     Ok(out)
+}
+
+/// A sysfs block entry's `MAJ:MIN`, or its disk's when the entry is a
+/// partition (`..` of a partition's directory is the disk's).
+fn whole_device(entry: &Path) -> Option<String> {
+    let dir = if entry.join("partition").exists() { entry.join("..") } else { entry.to_path_buf() };
+    let dev = fs::read_to_string(dir.join("dev")).ok()?;
+    let dev = dev.trim();
+    (!dev.is_empty()).then(|| dev.to_string())
 }
 
 fn read_trim(p: &Path) -> Result<String, CgroupError> {
@@ -433,6 +442,21 @@ mod tests {
         assert!(block_devices(f.to_str().unwrap()).is_err());
         let _ = fs::remove_file(&f);
         assert!(block_devices("/nonexistent/device").is_err());
+    }
+
+    #[test]
+    fn a_partition_stands_for_its_disk() {
+        // A disk's sysfs directory with a partition's inside it, as the kernel lays them out.
+        let disk = std::env::temp_dir().join(format!("kryptik-disk-{}", std::process::id()));
+        let part = disk.join("sda3");
+        fs::create_dir_all(&part).unwrap();
+        fs::write(disk.join("dev"), "8:0\n").unwrap();
+        fs::write(part.join("dev"), "8:3\n").unwrap();
+        fs::write(part.join("partition"), "3\n").unwrap();
+        assert_eq!(whole_device(&part).as_deref(), Some("8:0"));
+        assert_eq!(whole_device(&disk).as_deref(), Some("8:0"));
+        assert_eq!(whole_device(&disk.join("absent")), None);
+        let _ = fs::remove_dir_all(&disk);
     }
 
     #[test]
