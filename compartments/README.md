@@ -48,9 +48,9 @@ label          = "VAULT"
 ```
 
 The seccomp policy files are described in the
-[zone policy files design](../docs/design/zone-policy-files.md). A
-`[policy] landlock` entry is refused, not ignored: per-zone Landlock rules
-are not implemented.
+[zone policy files design](../docs/design/zone-policy-files.md), and so is
+the optional `[policy] landlock` file, which narrows the Landlock ruleset
+every zone gets at entry; no shipped zone names one.
 
 ## Test requirement
 
