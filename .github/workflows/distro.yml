@@ -70,14 +70,26 @@ jobs:
             exit 1
           fi
           echo "release ${v}"
+      # A release takes no held pin: a fix upstream that the tree has not
+      # taken must be taken or its hold reasoned away before the tag.
+      - name: The release's pins are reviewed, and none is held
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ./tools/check-source-currency.sh --tsv > pin-survey.tsv
+          ./tools/check-pin-reviews.sh --survey pin-survey.tsv --no-held
       - uses: ./.github/actions/prepare
         with:
           sources: fetch
 
       # The newest tree, whatever built it: its stamps decide what rebuilds,
-      # and 01-toolchain.sh clears one that another toolchain built.
+      # and 01-toolchain.sh clears one that another toolchain built. A tag
+      # restores nothing: a release holds only what a build from nothing
+      # makes, since a resumed tree keeps files a step no longer installs.
       - name: Stage 01-02 sysroot (cached)
         id: work02
+        if: github.ref_type != 'tag'
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: |
@@ -122,7 +134,7 @@ jobs:
           echo "ttfp=$ttfp" >> "$GITHUB_OUTPUT"
 
       - name: Save the stage 01-02 sysroot
-        if: ${{ !cancelled() && steps.progress02.outputs.prefix != '' && !startsWith(steps.work02.outputs.cache-matched-key, steps.progress02.outputs.prefix) }}
+        if: ${{ !cancelled() && github.ref_type != 'tag' && steps.progress02.outputs.prefix != '' && !startsWith(steps.work02.outputs.cache-matched-key, steps.progress02.outputs.prefix) }}
         continue-on-error: true
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
@@ -179,6 +191,7 @@ jobs:
       # save has a key of its own, since an existing key is never overwritten.
       - name: Stage 04-05 sysroot and kernel (cached)
         id: work05
+        if: github.ref_type != 'tag'
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: /mnt/kryptik/work-after-05.tar.zst
@@ -288,7 +301,7 @@ jobs:
       # when it finds none.
       - name: Pack the stage 04-05 tree for the cache
         id: pack05
-        if: ${{ !cancelled() && steps.progress05.outputs.prefix != '' && !startsWith(steps.work05.outputs.cache-matched-key, steps.progress05.outputs.prefix) }}
+        if: ${{ !cancelled() && github.ref_type != 'tag' && steps.progress05.outputs.prefix != '' && !startsWith(steps.work05.outputs.cache-matched-key, steps.progress05.outputs.prefix) }}
         run: |
           cd /mnt/kryptik
           members=(.stamps sysroot)

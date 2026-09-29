@@ -71,7 +71,8 @@ media it tested.
   version, or a package dropped from `sources.lock`, starts stage 04 again
   from the stage 02 tree, but a recipe change does not: a file its new
   version no longer installs stays in the image, as it does in a local work
-  directory rebuilt with `KRYPTIK_STALE=rebuild`. Removing such files safely
+  directory rebuilt with `KRYPTIK_STALE=rebuild`. A tag's run restores no
+  cache, so a release is free of this; the dated builds are not. Removing such files safely
   needs a record of what each rebuild wrote, not a before and after listing,
   with removals held to the end of the stage and never of a shared object
   something still links.
