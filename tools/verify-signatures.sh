@@ -72,9 +72,17 @@ chmod 700 "$GNUPGHOME"
 
 IMPORTED_MARK="${GNUPGHOME}/.kryptik-imported"
 
-quiet_fetch() {
-    curl -fL --no-progress-meter --connect-timeout 20 \
-         --retry 2 --retry-delay 2 -o "$2" "$1"
+# A host that throttles (freedesktop.org answers 418 to a busy runner, others
+# 429 or 503) is asked again after a pause; a 404 is an answer.
+quiet_fetch() {   # quiet_fetch URL OUT
+    local code try
+    for try in 1 2 3; do
+        if code="$(curl -fsL --connect-timeout 20 --retry 2 --retry-delay 2 \
+                        -o "$2" -w '%{http_code}' "$1" 2>/dev/null)"; then return 0; fi
+        case "$code" in 418|429|503) sleep $(( try * 5 )) ;; *) break ;; esac
+    done
+    rm -f "$2"
+    return 1
 }
 
 # --- keys ------------------------------------------------------------------
@@ -911,9 +919,16 @@ if [[ "$NOTED" -gt 0 ]]; then
     printf '  - %s\n' "${NOTED_LIST[@]}"
 fi
 # A note that no unheld key needed: the key is held now, or the source went.
+# A signature that could not be checked this run tried no note.
+untried_this_run() {   # untried_this_run NAME
+    local u
+    for u in "${UNVERIFIABLE_LIST[@]}"; do [[ "$u" == "$1 ("* ]] && return 0; done
+    return 1
+}
 STALE_NOTES=()
 for n_pkg in "${!NOTED_NO_KEY[@]}"; do
     [[ -n "${NOTE_USED[$n_pkg]:-}" ]] && continue
+    untried_this_run "$n_pkg" && continue
     [[ -n "${SEEN_SOURCE[$n_pkg]:-}" ]] && STALE_NOTES+=("$n_pkg")
 done
 if [[ "${#STALE_NOTES[@]}" -gt 0 ]]; then

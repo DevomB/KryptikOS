@@ -277,6 +277,17 @@ write_manifest good
 fresh_root; run --strict "--notes=${W}/notes-stale.tsv"
 expect_fail "a no-usable-key note for a source whose key is held fails --strict" "stale note"
 
+# A noted source whose signature could not be fetched this run: unverifiable,
+# and the note untried, not stale.
+printf 'fixture payload for unreached\n' > "${SRC}/unreached.tar.gz"
+rm -f "${SRC}/unreached.tar.gz.sig" "${SRC}/.signatures/unreached.tar.gz.sig"
+printf 'unreached  no-usable-key  https://example.invalid/  No route to the key was found. Checked 2026-09-28.\n' > "${W}/notes-unreached.tsv"
+write_manifest good; add_row unreached sig
+fresh_root; run --strict "--notes=${W}/notes-unreached.tsv"
+expect_fail "a signature that could not be fetched fails --strict as unverifiable" "unverifiable"
+if grep -q "stale note" "$OUT"; then red "a note for a signature that could not be fetched was called stale"; show
+else green "a note for a signature that could not be fetched is untried, not stale"; fi
+
 # A manifest row whose file was never downloaded.
 write_manifest good notfetched
 rm -f "${SRC}/notfetched.tar.gz"
