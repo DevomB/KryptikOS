@@ -203,11 +203,23 @@ wrong passphrases, just boot again.
 
 ## 4. Update
 
-An update is a signed payload directory holding exactly `manifest`,
-`manifest.sig`, `kryptik-root.img`, `kryptik-a.efi`, `kryptik-b.efi` and
-`root.json` (what `make media` writes as `images/payload-VERSION`). Bring it
-onto the state partition, for example under `/var/lib/kryptik/updates/`,
-and as root (the administration login, then `su`):
+A system built with a channel address lets its net zone bring the channel's
+statement of what is current, and does nothing else until you ask. As the
+user, at the administration login without `su`:
+
+```sh
+kryptik update status     # the running version, the newest release the channel names and how old that statement is, what has arrived
+kryptik update fetch      # bring that release onto the state partition, verified piece by piece
+kryptik update apply      # install it, with the trial boot described below
+```
+
+A release brought by hand is a signed payload directory holding exactly
+`manifest`, `manifest.sig`, `kryptik-root.img`, `kryptik-a.efi`,
+`kryptik-b.efi` and `root.json` (what `make media` writes as
+`images/payload-VERSION`, and what a release on the repository's page
+carries). Bring it onto the state partition, for example under
+`/var/lib/kryptik/updates/`, and as root (the administration login, then
+`su`):
 
 ```sh
 kryptik-update status
