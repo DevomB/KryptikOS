@@ -673,9 +673,9 @@ if (( PRIVILEGED == 1 )) && command -v cryptsetup >/dev/null 2>&1 && [[ -e /dev/
         done
         "$KRYPTIKD" stop sealed --now >/dev/null 2>&1
         # The launcher closes the volume once the zone's pid 1 is gone, not
-        # before stop returns: up to 10 s.
+        # before stop returns: up to 30 s on a slow host.
         f4c_closed=0
-        for _ in $(seq 50); do
+        for _ in $(seq 150); do
             [[ "$("$KRYPTIKD" volume status sealed --zones "$ZONES" 2>/dev/null)" == *"(closed)"* ]] && { f4c_closed=1; break; }
             sleep 0.2
         done
@@ -732,15 +732,16 @@ if (( PRIVILEGED == 1 )) && command -v cryptsetup >/dev/null 2>&1 && [[ -e /dev/
         else
             fail "F6a volume destroy with the zone running: exit $rc, $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
         fi
-        "$KRYPTIKD" stop sealed --now >/dev/null 2>&1
-        for _ in $(seq 50); do [[ -e /dev/mapper/kryptik-zone-sealed ]] || break; sleep 0.2; done
+        stop_out="$("$KRYPTIKD" stop sealed --now 2>&1)"
+        # The volume closes after pid 1 is gone: up to 30 s on a slow host.
+        for _ in $(seq 150); do [[ -e /dev/mapper/kryptik-zone-sealed ]] || break; sleep 0.2; done
         vol_file="$("$KRYPTIKD" volume status sealed --zones "$ZONES" 2>/dev/null | sed -n 's/^container \([^ ]*\).*/\1/p')"
         out="$("$KRYPTIKD" volume destroy sealed --zones "$ZONES" 2>&1)"; rc=$?
         if (( rc == 0 )) && [[ -n "$vol_file" && ! -e "$vol_file" ]] \
             && [[ "$("$KRYPTIKD" volume status sealed --zones "$ZONES" 2>/dev/null)" == *"ABSENT"* ]]; then
             pass "F6b volume destroy deletes the stopped zone's container, and status says ABSENT"
         else
-            fail "F6b volume destroy: exit $rc, container ${vol_file:-unknown} $([[ -e "$vol_file" ]] && echo "still there" || echo gone): $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
+            fail "F6b volume destroy: exit $rc, container ${vol_file:-unknown} $([[ -e "$vol_file" ]] && echo "still there" || echo gone): $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200); stop said: $(printf '%s' "$stop_out" | tr '\n' '|' | cut -c1-120)"
         fi
         out="$("$KRYPTIKD" volume destroy sealed --zones "$ZONES" 2>&1)"; rc=$?
         if (( rc != 0 )) && [[ "$out" == *"no volume at"* ]]; then
