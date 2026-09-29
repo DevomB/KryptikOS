@@ -17,12 +17,14 @@ m="${1:?usage: throwaway-key-medium.sh DIR}"
 mkdir -m 0700 "$m"
 ssh-keygen -q -t ed25519 -N '' -C kryptik-release -f "${m}/kryptik-release" < /dev/null
 ssh-keygen -q -t ed25519 -N '' -C kryptik-latest -f "${m}/kryptik-latest" < /dev/null
+ssh-keygen -q -t ed25519 -N '' -C kryptik-testctl -f "${m}/kryptik-testctl" < /dev/null
 {
     printf 'kryptik-release namespaces="kryptik-release,kryptik-media" %s\n' "$(cut -d' ' -f1,2 "${m}/kryptik-release.pub")"
     printf 'kryptik-latest namespaces="kryptik-latest" %s\n' "$(cut -d' ' -f1,2 "${m}/kryptik-latest.pub")"
+    printf 'kryptik-testctl namespaces="kryptik-testctl" %s\n' "$(cut -d' ' -f1,2 "${m}/kryptik-testctl.pub")"
 } > "${m}/release-signers"
 openssl req -new -x509 -newkey rsa:3072 -nodes -sha256 -days 7 \
     -subj "/CN=Kryptik Secure Boot (throwaway)/" \
     -keyout "${m}/kryptik-sb.key" -out "${m}/kryptik-sb.crt" 2>/dev/null
-chmod 600 "${m}/kryptik-release" "${m}/kryptik-latest" "${m}/kryptik-sb.key"
+chmod 600 "${m}/kryptik-release" "${m}/kryptik-latest" "${m}/kryptik-testctl" "${m}/kryptik-sb.key"
 ok "a throwaway key medium in ${m}"

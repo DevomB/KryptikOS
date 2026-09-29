@@ -34,18 +34,20 @@ release_version() {   # release_version ROLE VERSION
 dev_keys() {
     local rel="${KRYPTIK_WORK}/keys/release" sb="${KRYPTIK_WORK}/keys/sb" k
     mkdir -p "$rel" "$sb"; chmod 0700 "$rel" "$sb"
-    for k in kryptik-release kryptik-latest; do
+    for k in kryptik-release kryptik-latest kryptik-testctl; do
         if [[ ! -f "${rel}/${k}" ]]; then
             ssh-keygen -q -t ed25519 -N "" -C "${k} (developer)" -f "${rel}/${k}" < /dev/null
             echo "generated a new developer key: ${k}"
         fi
     done
     # Each key honoured in its own namespaces only: the release key's for
-    # manifests and the media's checksums, and the statement key's, kept at hand
-    # for re-signing the channel's statement, for that alone.
+    # manifests and the media's checksums; the statement key's, kept at hand
+    # for re-signing the channel's statement, for that alone; and the
+    # control-disk key's, which arms an unattended install and nothing else.
     {
         printf 'kryptik-release namespaces="kryptik-release,kryptik-media" %s\n' "$(cut -d' ' -f1,2 "${rel}/kryptik-release.pub")"
         printf 'kryptik-latest namespaces="kryptik-latest" %s\n' "$(cut -d' ' -f1,2 "${rel}/kryptik-latest.pub")"
+        printf 'kryptik-testctl namespaces="kryptik-testctl" %s\n' "$(cut -d' ' -f1,2 "${rel}/kryptik-testctl.pub")"
     } > "${rel}/release-signers"
     if [[ ! -f "${sb}/kryptik-sb.key" ]]; then
         openssl req -new -x509 -newkey rsa:3072 -nodes -days 3650 -sha256 \
@@ -69,20 +71,25 @@ EOF
 
 # A probe signed by each developer key and by a foreign one, in each namespace,
 # verified through the anchor as its readers verify: only the release key, in
-# kryptik-release and kryptik-media, and the statement key, in kryptik-latest,
-# may pass. The production keys sign nothing but what they are for, so this
-# runs for development alone.
+# kryptik-release and kryptik-media, the statement key, in kryptik-latest, and
+# the control-disk key, in kryptik-testctl, may pass. The production keys sign
+# nothing but what they are for, so this runs for development alone.
 probe_anchor() {
-    local t key ns who want got
+    local t key ns who want got tkey
+    tkey="$(dirname "$RELEASE_KEY")/kryptik-testctl"
     t="$(mktemp -d)"
     ssh-keygen -q -t ed25519 -N "" -f "$t/foreign" < /dev/null
     printf 'probe\n' > "$t/probe"
-    for key in "$RELEASE_KEY" "$LATEST_KEY" "$t/foreign"; do
-        for ns in kryptik-release kryptik-media kryptik-latest; do
-            who=kryptik-release; [[ "$ns" == kryptik-latest ]] && who=kryptik-latest
+    for key in "$RELEASE_KEY" "$LATEST_KEY" "$tkey" "$t/foreign"; do
+        for ns in kryptik-release kryptik-media kryptik-latest kryptik-testctl; do
+            case "$ns" in
+                kryptik-latest)  who=kryptik-latest ;;
+                kryptik-testctl) who=kryptik-testctl ;;
+                *)               who=kryptik-release ;;
+            esac
             want=refused
             case "$key:$ns" in
-                "$RELEASE_KEY:kryptik-release"|"$RELEASE_KEY:kryptik-media"|"$LATEST_KEY:kryptik-latest") want=accepted ;;
+                "$RELEASE_KEY:kryptik-release"|"$RELEASE_KEY:kryptik-media"|"$LATEST_KEY:kryptik-latest"|"$tkey:kryptik-testctl") want=accepted ;;
             esac
             rm -f "$t/probe.sig"
             # A refusal counts only when there was a signature to refuse.
@@ -115,16 +122,22 @@ medium_keys() {
     if [[ -e "${m}/kryptik-latest" && ! -f "${m}/kryptik-latest.pub" ]]; then
         die "the key medium ${m} has kryptik-latest but no kryptik-latest.pub"
     fi
-    for f in release-signers kryptik-release kryptik-release.pub kryptik-latest kryptik-latest.pub kryptik-sb.key kryptik-sb.crt; do
+    if [[ -e "${m}/kryptik-testctl" && ! -f "${m}/kryptik-testctl.pub" ]]; then
+        die "the key medium ${m} has kryptik-testctl but no kryptik-testctl.pub"
+    fi
+    for f in release-signers kryptik-release kryptik-release.pub kryptik-latest kryptik-latest.pub kryptik-testctl kryptik-testctl.pub kryptik-sb.key kryptik-sb.crt; do
         [[ ! -L "${m}/${f}" ]] || die "${m}/${f} is a symlink: the medium holds its files itself"
     done
-    for f in kryptik-release kryptik-latest kryptik-sb.key; do
+    for f in kryptik-release kryptik-latest kryptik-testctl kryptik-sb.key; do
         if [[ -e "${m}/${f}" ]]; then private_ok "${m}/${f}"; fi
     done
     anchor_ok "${m}/release-signers"
     pub_in_anchor "${m}/kryptik-release.pub" kryptik-release "${m}/release-signers"
     if [[ -e "${m}/kryptik-latest" ]]; then
         pub_in_anchor "${m}/kryptik-latest.pub" kryptik-latest "${m}/release-signers"
+    fi
+    if [[ -e "${m}/kryptik-testctl" ]]; then
+        pub_in_anchor "${m}/kryptik-testctl.pub" kryptik-testctl "${m}/release-signers"
     fi
     openssl x509 -in "${m}/kryptik-sb.crt" -noout -checkend 0 > /dev/null 2>&1 \
         || die "${m}/kryptik-sb.crt is not a certificate in force"
@@ -144,8 +157,10 @@ private_ok() {
 }
 
 # kryptik-release, held to kryptik-release (manifests) and kryptik-media (the
-# media's checksums), and kryptik-latest, held to kryptik-latest alone, with
-# Ed25519 keys (a security key's included). A principal may be listed more
+# media's checksums), kryptik-latest, held to kryptik-latest alone, and
+# kryptik-testctl, if listed, held to kryptik-testctl alone (the control disk
+# that arms an unattended install), with Ed25519 keys (a security key's
+# included). A principal may be listed more
 # than once, as the old key and its replacement are while a key is changed,
 # but a key only once: one that could sign both releases and statements would
 # undo the split.
@@ -156,7 +171,8 @@ anchor_ok() {
         case "$p" in
             kryptik-release) want='namespaces="kryptik-release,kryptik-media"' ;;
             kryptik-latest)  want='namespaces="kryptik-latest"' ;;
-            *) die "${a}: ${p} is neither kryptik-release nor kryptik-latest" ;;
+            kryptik-testctl) want='namespaces="kryptik-testctl"' ;;
+            *) die "${a}: ${p} is neither kryptik-release, kryptik-latest nor kryptik-testctl" ;;
         esac
         [[ "$ns" == "$want" ]] || die "${a}: ${p} is not held to its own namespaces (${want})"
         case "$t" in ssh-ed25519|sk-ssh-ed25519@openssh.com) ;; *) die "${a}: ${p}'s key is ${t}, not Ed25519" ;; esac

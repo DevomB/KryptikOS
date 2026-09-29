@@ -39,7 +39,9 @@ deny()  { if grep -qE "$2" "$TXT"; then red "$1"; else green "$1"; fi; }
 
 VMDIR="${KRYPTIK_WORK}/vm"; mkdir -p "$VMDIR"
 TESTCTL="${VMDIR}/testctl-smoke.img"
-"${SELF}/mk-testctl.sh" --out "$TESTCTL" smoke_poweroff=1 > /dev/null || die "could not make the control disk"
+# Signed with the kryptik-testctl key the medium's anchor lists (suite-lib.sh says which).
+TESTCTL_KEY="${KRYPTIK_TESTCTL_KEY:-${KRYPTIK_WORK}/keys/release/kryptik-testctl}"
+"${SELF}/mk-testctl.sh" --out "$TESTCTL" --key "$TESTCTL_KEY" smoke_poweroff=1 > /dev/null || die "could not make the control disk"
 
 log "media smoke: ${KIND} ${MEDIUM##*/} (variables: ${VARS})"
 [[ "$REFUSED" -eq 1 ]] && [[ "$TIMEOUT" -gt 120 ]] && TIMEOUT=120
