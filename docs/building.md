@@ -130,4 +130,7 @@ under test checks against its anchor. A development medium honours the
 build's own `kryptik-testctl` (under `<work>/keys/release`), the default; a
 production release's media honour the ceremony's, so its acceptance names a
 copy: `make acceptance EXPORT=DIR KRYPTIK_TESTCTL_KEY=<copy>/kryptik-testctl`
-([release keys](release-keys.md)).
+([release keys](release-keys.md)). The boot tests enrol the Secure Boot
+certificate the medium under test carries, and the export publishes that
+certificate: a production release is tested as a machine that enrolled its
+certificate boots it.

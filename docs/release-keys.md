@@ -68,15 +68,20 @@ For each release:
 1. Build up to the kernel on the build machine as usual (`make kernel`), in
    an empty work directory (a new `KRYPTIK_WORK`): a tree resumed from an
    earlier build can still hold files an older recipe installed (a known gap
-   in [status](status.md)). No key is needed for that, and none is ever
-   inside the chroot.
-2. Attach the key medium and make the media. `sbsign` asks for the Secure
-   Boot key's passphrase once for each kernel it signs (three: both slots and
-   the USB medium's), and `ssh-keygen` for the release key's twice, for the
-   media's checksums and for the manifest. A release key on a security key
-   asks to be touched instead, each time:
+   in [status](status.md)). Then the throwaway pair the acceptance's
+   production suite updates across (`make production-pair`). No key of yours
+   is needed for either, and none is ever inside the chroot.
+2. Attach the key medium and make the media: first a release for the update
+   suite to update from, numbered `0.0.0`, then the release. `sbsign` asks
+   for the Secure Boot key's passphrase once for each kernel it signs (three
+   per build: both slots and the USB medium's), and `ssh-keygen` for the
+   release key's twice per build, for the media's checksums and for the
+   manifest. A release key on a security key asks to be touched instead,
+   each time:
 
    ```sh
+   make media KRYPTIK_ROLE=production KRYPTIK_KEYS=/media/<medium>/kryptik-keys \
+       KRYPTIK_VERSION=0.0.0 KRYPTIK_CHANNEL=https://<host>/<channel>/
    make media KRYPTIK_ROLE=production KRYPTIK_KEYS=/media/<medium>/kryptik-keys \
        KRYPTIK_VERSION=<version> KRYPTIK_CHANNEL=https://<host>/<channel>/
    ```
@@ -86,21 +91,29 @@ For each release:
    `kryptik-<version>.SHA256SUMS` and its `.sig` beside the media, and the
    release record is under `KRYPTIK_OUT`. Publish the checksums and
    `release-signers` with the media: they are what a download is checked by.
-4. Tag the revision you built from `v<version>` and push the tag. The next
-   release's notes list what changed since it.
-5. Test the media and put the release on the repository's Releases page
-   from the export the suites wrote. These media honour a control disk
-   signed by the medium's `kryptik-testctl` alone, so the suites are handed
-   its copy:
+4. Test the media. The suites enrol the Secure Boot certificate the media
+   carry, install them with control disks signed by the medium's
+   `kryptik-testctl`, from its copy, and update the `0.0.0` release to
+   yours; the export they write is the release as the page publishes it:
 
    ```sh
    make acceptance EXPORT=DIR KRYPTIK_TESTCTL_KEY=<copy>/kryptik-testctl
+   ```
+
+5. Tag the revision you built from `v<version>` and push the tag. Its run
+   builds and tests that revision the same way, signed with a throwaway key
+   medium, and drafts nothing from that. The next release's notes list what
+   changed since the tag.
+6. Put the release on the repository's Releases page from the export:
+
+   ```sh
    tools/release-publish.sh DIR --source-bundle FILE --publish
    ```
 
-   ([releases](releases.md)). The payload goes up with it, under the names
-   its manifest gives: that page is the channel's base.
-6. Publish it into the channel: the release host is the repository's Pages
+   ([releases](releases.md); `make source-bundle` writes the bundle under
+   `KRYPTIK_OUT`). The payload goes up with it, under the names its manifest
+   gives: that page is the channel's base.
+7. Publish it into the channel: the release host is the repository's Pages
    site and the `Update channel` workflow
    ([update channel](design/update-channel.md#the-release-host)). Once, put
    the statement key in the `KRYPTIK_LATEST_KEY` repository secret, made

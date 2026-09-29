@@ -219,5 +219,33 @@ it_media_hashes > "$T/hashes.out" 2>&1; rc=$?
 [[ "$rc" -ne 0 ]] && grep -q "DOES NOT MATCH ${MEDIA_ISO}.sha256" "$T/hashes.out" \
     && ok "a sidecar that disagrees still fails" || bad "a wrong sidecar passed: rc=$rc"
 
+# --- the certificate the medium carries is read out of its ESP -----------------
+sed -n '/^medium_cert() {/,/^}/p' "$ACC" > "$T/cert.sh"
+grep -q '^medium_cert()' "$T/cert.sh" || { echo "could not extract medium_cert from $ACC"; exit 1; }
+# shellcheck source=/dev/null
+. "$T/cert.sh"
+if command -v sfdisk >/dev/null && command -v mkfs.vfat >/dev/null && command -v mcopy >/dev/null && command -v mtype >/dev/null; then
+    openssl req -new -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=Kryptik test certificate/" \
+        -keyout "$T/k" -out "$T/c" >/dev/null 2>&1
+    truncate -s $(( 6 * 1048576 )) "$T/esp.img"; mkfs.vfat -F 12 "$T/esp.img" >/dev/null
+    mmd -i "$T/esp.img" ::/kryptik; mcopy -i "$T/esp.img" "$T/c" ::/kryptik/kryptik-sb.crt
+    truncate -s $(( 8 * 1048576 )) "$T/medium.img"
+    printf 'label: gpt\nunit: sectors\nstart=2048, size=12288, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name="kryptik-esp"\n' \
+        | sfdisk --quiet --wipe always "$T/medium.img" >/dev/null 2>&1
+    dd if="$T/esp.img" of="$T/medium.img" bs=512 seek=2048 conv=notrunc status=none
+    if medium_cert "$T/medium.img" "$T/got.crt" && cmp -s "$T/c" "$T/got.crt"; then
+        ok "the certificate is read out of the medium's ESP as the medium carries it"
+    else bad "the medium's certificate was not read back"; fi
+    mdel -i "$T/esp.img" ::/kryptik/kryptik-sb.crt
+    dd if="$T/esp.img" of="$T/medium.img" bs=512 seek=2048 conv=notrunc status=none
+    if ! medium_cert "$T/medium.img" "$T/got2.crt" && [[ ! -e "$T/got2.crt" ]]; then
+        ok "a medium without the certificate reads as none, and leaves no file"
+    else bad "a medium without the certificate passed"; fi
+    : > "$T/plain.img"
+    if ! medium_cert "$T/plain.img" "$T/got3.crt"; then ok "a file with no partition table reads as none"; else bad "an empty file passed as a medium"; fi
+else
+    echo "  (no sfdisk, mkfs.vfat, mcopy or mtype here: the medium's certificate is not read)"
+fi
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
