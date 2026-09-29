@@ -35,11 +35,14 @@ the release key made offline. The dated builds CI makes of every push to main
    git push origin v0.1.0
    ```
 
-3. The Distro workflow builds that version as the release under test, over a
-   `0.0.0` build the update suite updates from, runs every suite on the
-   images, and its last job drafts the release: the export, the corresponding
-   source (`make source-bundle`) and the acceptance logs, with the release
-   notes as the page's text. Read the draft and publish it from the page.
+3. The Distro workflow refuses a held pin (`check-pin-reviews.sh
+   --no-held`), then builds that version from nothing, with no cached tree,
+   so the release holds only what a clean build makes: about three hours. It
+   builds it as the release under test, over a `0.0.0` build the update
+   suite updates from, runs every suite on the images, and its last job
+   drafts the release: the export, the corresponding source
+   (`make source-bundle`) and the acceptance logs, with the release notes as
+   the page's text. Read the draft and publish it from the page.
 4. A production release is built by hand with the key medium and its export
    published with the same tool once the tag is pushed:
    `tools/release-publish.sh DIR --source-bundle FILE --publish`.
