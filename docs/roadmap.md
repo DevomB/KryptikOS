@@ -86,9 +86,10 @@ work in zones from a terminal and a text browser, and keep it up to date.
       audit's soft findings: each entry closed or re-justified, with the
       audit's counts in the release notes. Acceptance fails on an artifact
       finding that `build/config/artifact-accepted.txt` gives no reason for.
-- [ ] **Core scheduling per zone, and the SMT decision.** ADR-011 revisited
-      with a measurement; the command line says `nosmt` or not, for a written
-      reason.
+- [x] **Core scheduling per zone, and the SMT decision.** ADR-011 decides:
+      `nosmt` stays, since a zone's cookie cannot keep it off the thread
+      beside the kernel, whose execution carries no cookie; each zone still
+      takes a cookie, for a machine with SMT it cannot turn off.
 - [x] **The net zone's remaining hardening.** Decided, with the reasons, in
       the [net zone design](design/net-zone.md).
 - [x] **Someone else has attacked it.** The broker protocol and

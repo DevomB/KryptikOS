@@ -148,13 +148,16 @@ it.
 **Cost:** half the logical CPUs on an SMT machine, roughly 15 to 30 percent of
 parallel throughput. Single-threaded performance is unchanged.
 
-**Revisit when** SMT can stay on without two trust domains sharing a core.
-Each zone already asks for its own core-scheduling cookie at launch
-([privileged launch](design/privileged-launch.md#core-scheduling)); what is
-missing is a measurement on real hardware of what `nosmt` costs and whether
-the cookies hold under load. Until then `nosmt` stays; with no sibling threads
-online the kernel refuses the cookie (`ENODEV`) and `kryptikd status` says
-`no-smt`.
+**Decided:** `nosmt` stays. Each zone asks for its own core-scheduling
+cookie at launch ([privileged launch](design/privileged-launch.md#core-scheduling)),
+which keeps two zones off the two threads of one core; it cannot keep a zone
+off the thread beside the kernel, since the kernel's own execution carries no
+cookie, and that is the leak the mitigations exist for. Closing it with SMT on
+means a flush on every kernel entry, which costs more than the threads give.
+No measurement changes which boundary the cookies leave open. The cookies
+stay as defence in depth for a machine whose firmware has no SMT to turn off;
+with no sibling thread online the kernel refuses the cookie (`ENODEV`) and
+`kryptikd status` says `no-smt`.
 
 ## ADR-012: Device firmware from linux-firmware, on the verified root
 
