@@ -37,7 +37,7 @@ if [[ -f "${S}/.nojekyll" && ! -e "${S}/stable" && ! -e "${S}/test/0.0.1" ]]; th
 else
     red "the site's contents: $(find "$S" | sed "s|^${S}||" | tr '\n' ' ')"
 fi
-if grep -q 'issued' "$L" && [[ "$(grep -c 'names 0.0.1' "$OUT")" -eq 2 ]]; then
+if grep -q 'issued' "$L" && [[ "$(grep -c 'latest names 0.0.1, issued' "$OUT")" -eq 2 ]]; then
     green "publish and reissue each wrote a statement for the same version"
 else
     red "two statements expected: $(cat "$OUT")"
