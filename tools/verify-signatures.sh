@@ -18,7 +18,8 @@ have gpg || die "gpg not found. Install gnupg."
 
 KEYDIR="${KRYPTIK_ROOT}/build/work/keys"
 SIGDIR="${KRYPTIK_SOURCES}/.signatures"
-GNU_KEYRING="${KEYDIR}/gnu-keyring.gpg"
+# With the sources, so a cache of them carries it (tools/fetch-sources.sh).
+GNU_KEYRING="${KRYPTIK_SOURCES}/.keys/gnu-keyring.gpg"
 
 # A private GNUPGHOME, not --keyring: GnuPG 2.4 with keyboxd silently ignores
 # --keyring and verifies against the user's own store.
@@ -30,7 +31,7 @@ REPORT=""
 NOTES="$(dirname "${BASH_SOURCE[0]}")/source-notes.tsv"
 for a in "$@"; do
     case "$a" in
-        --refresh) rm -rf "$GNUPGHOME" "$GNU_KEYRING" "${GNU_KEYRING}.imported" ;;
+        --refresh) rm -rf "$GNUPGHOME" "$GNU_KEYRING" ;;
         --fetch-unknown-keys) FETCH_UNKNOWN=1 ;;
         --strict) STRICT=1 ;;
         --report=*) REPORT="${a#--report=}" ;;
@@ -67,10 +68,13 @@ report() {
 # run, not only with --fetch-unknown-keys (see UNAUDITED_FPRS).
 KEYS_MANIFEST="${KRYPTIK_ROOT}/keys.manifest"
 
-mkdir -p "$KEYDIR" "$SIGDIR" "$GNUPGHOME"
+mkdir -p "$KEYDIR" "$SIGDIR" "$GNUPGHOME" "$(dirname "$GNU_KEYRING")"
 chmod 700 "$GNUPGHOME"
 
 IMPORTED_MARK="${GNUPGHOME}/.kryptik-imported"
+# This GNUPGHOME has the GNU keyring in it: kept beside the keys, not beside
+# the keyring file, which outlives any one checkout's keys.
+GNU_IMPORTED="${GNUPGHOME}/.gnu-keyring-imported"
 
 # A host that throttles (freedesktop.org answers 418 to a busy runner, others
 # 429 or 503) is asked again after a pause; a 404 is an answer.
@@ -157,15 +161,15 @@ import_keys() {
     if [[ ! -s "$GNU_KEYRING" ]]; then
         quiet_fetch "${CANONICAL_GNU}/gnu-keyring.gpg" "$GNU_KEYRING" || rm -f "$GNU_KEYRING"
     fi
-    if [[ -s "$GNU_KEYRING" && ! -f "${GNU_KEYRING}.imported" ]]; then
+    if [[ -s "$GNU_KEYRING" && ! -f "$GNU_IMPORTED" ]]; then
         log "importing GNU keyring (a few thousand keys, this takes a moment)"
         gpg --batch --quiet --import "$GNU_KEYRING" 2>/dev/null || true
         count="$(gpg --batch --list-keys 2>/dev/null | grep -c '^pub' || true)"
-        [[ "$count" =~ ^[0-9]+$ && "$count" -ge 100 ]] && : > "${GNU_KEYRING}.imported"
+        [[ "$count" =~ ^[0-9]+$ && "$count" -ge 100 ]] && : > "$GNU_IMPORTED"
     fi
     # Without it nothing a GNU maintainer signed can be checked: a run that
     # could not fetch it is not a pass.
-    if [[ ! -f "${GNU_KEYRING}.imported" ]]; then
+    if [[ ! -f "$GNU_IMPORTED" ]]; then
         rm -f "$IMPORTED_MARK"
         if [[ "$STRICT" -eq 1 ]]; then
             err "the GNU keyring could not be fetched from ${CANONICAL_GNU}"
@@ -188,7 +192,7 @@ Run again: what was fetched is kept."
 
     count="$(gpg --batch --list-keys 2>/dev/null | grep -c '^pub' || true)"
     [[ "$count" =~ ^[0-9]+$ ]] || count=0
-    if [[ -f "${GNU_KEYRING}.imported" && "$missing" -eq 0 ]]; then
+    if [[ -f "$GNU_IMPORTED" && "$missing" -eq 0 ]]; then
         printf '%s' "$count" > "$IMPORTED_MARK"
     else
         rm -f "$IMPORTED_MARK"
