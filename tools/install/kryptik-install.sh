@@ -12,6 +12,24 @@ PROG="kryptik-install"
 say()  { printf '%s: %s\n' "$PROG" "$*"; }
 die()  { printf '%s: FAILED: %s\n' "$PROG" "$*" >&2; exit 1; }
 
+# root.json is the medium's own record, not signed material: a rewritten
+# record must be able to make the install fail and nothing else, so every
+# field is checked for form before it is used, and what lands on the disk is
+# verified against the root hash the signed kernel carries.
+decimal_field() {   # decimal_field NAME VALUE: a bounded decimal, or die
+    case "$2" in ''|*[!0-9]*) die "root.json: $1 is not a number" ;; esac
+    [ "${#2}" -le 15 ] || die "root.json: $1 is too large"
+}
+hex_field() {   # hex_field NAME VALUE LENGTH: lowercase hex of that length, or die
+    case "$2" in *[!0-9a-f]*) die "root.json: $1 is not a hash" ;; esac
+    [ "${#2}" -eq "$3" ] || die "root.json: $1 is not a hash"
+}
+# The root's dm-verity table from the signed command line, as
+# "data_blocks hash_start_block root_hash salt"; empty when there is none.
+verity_of() {   # verity_of FILE
+    sed -n 's/.* verity 1 [^ ]* [^ ]* 4096 4096 \([0-9][0-9]*\) \([0-9][0-9]*\) sha256 \([0-9a-f]\{64\}\) \([0-9a-f]*\) .*/\1 \2 \3 \4/p' "$1" | head -1
+}
+
 TARGET=""
 ASSUME_YES=0
 REPLACE=0
@@ -165,6 +183,20 @@ esac
 jget() { sed -n "s/^  \"$1\": \"\{0,1\}\([^\",]*\)\"\{0,1\},\{0,1\}\$/\1/p" "$ROOT_JSON" | head -1; }
 ROOT_BYTES="$(jget total_bytes)"; ROOT_SHA="$(jget sha256)"; VERSION="$(jget version)"
 [ -n "$ROOT_BYTES" ] && [ -n "$ROOT_SHA" ] || die "root.json is incomplete"
+decimal_field total_bytes "$ROOT_BYTES"
+hex_field sha256 "$ROOT_SHA" 64
+case "$VERSION" in *[!A-Za-z0-9._-]*) die "root.json: version has characters a version cannot" ;; esac
+# The record must name the root the signed kernel carries, and its size must
+# hold that root and its hash tree without being absurd.
+VERITY="$(verity_of /proc/cmdline)"
+[ -n "$VERITY" ] || die "could not read the root's verity table from the signed command line"
+read -r V_BLOCKS V_HASH_START V_HASH V_SALT <<EOF
+$VERITY
+EOF
+[ "$(jget root_hash)" = "$V_HASH" ] || die "root.json names root hash $(jget root_hash); the signed kernel carries ${V_HASH}"
+[ "$(jget data_blocks)" = "$V_BLOCKS" ] || die "root.json names $(jget data_blocks) data blocks; the signed kernel carries ${V_BLOCKS}"
+[ "$ROOT_BYTES" -ge $(( (V_HASH_START + 1) * 4096 )) ] || die "root.json: total_bytes is smaller than the root and its hash tree"
+[ "$ROOT_BYTES" -le $(( V_BLOCKS * 4096 + V_BLOCKS * 64 + 16777216 )) ] || die "root.json: total_bytes is larger than a root and its hash tree can be"
 ESP_BYTES="$(stat -c %s "$ESP_SRC" 2>/dev/null || blockdev --getsize64 "$ESP_SRC")"
 [ -b "$ESP_SRC" ] && ESP_BYTES="$(blockdev --getsize64 "$ESP_SRC")"
 
@@ -257,6 +289,11 @@ say "reading kryptik-a back"
 got="$(dd if="$P2" bs=4M iflag=count_bytes count="$ROOT_BYTES" status=none | sha256sum | cut -c1-64)"
 [ "$got" = "$ROOT_SHA" ] || die "kryptik-a does not verify: wrote ${got}, the medium says ${ROOT_SHA}"
 say "kryptik-a verifies (${got})"
+# The record can lie about itself; the kernel's root hash cannot.
+veritysetup verify --no-superblock --hash=sha256 --data-block-size=4096 --hash-block-size=4096 \
+    --data-blocks="$V_BLOCKS" --hash-offset=$(( V_HASH_START * 4096 )) --salt="$V_SALT" "$P2" "$P2" "$V_HASH" \
+    || die "kryptik-a does not verify against the root hash the signed kernel carries"
+say "kryptik-a verifies against the signed kernel's root hash"
 say "clearing kryptik-b"
 dd if=/dev/zero of="$P3" bs=1M count=4 conv=fsync status=none || die "clearing kryptik-b failed"
 say "creating kryptik-state (LUKS2, ext4 inside it)"
