@@ -248,7 +248,7 @@ expect_fail "a signature that does not match its file is fatal" \
 
 write_manifest nosig
 fresh_root; run
-expect_pass "no signature published upstream is unverifiable" \
+expect_pass "no signature published upstream is unsigned, not unverifiable" \
     "no detached signature published"
 
 write_manifest nosig
