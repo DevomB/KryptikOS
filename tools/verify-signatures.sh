@@ -2,11 +2,14 @@
 # Verify upstream GPG signatures for fetched source tarballs.
 #
 #   ./tools/verify-signatures.sh [--strict] [--refresh] [--fetch-unknown-keys]
-#                                [--report=FILE]
-#     --strict              release gate: anything unverified or unaudited fails
+#                                [--report=FILE] [--notes=FILE]
+#     --strict              release gate: anything unverified or unaudited fails,
+#                           except a signer no publisher states, when
+#                           tools/source-notes.tsv says so (no-usable-key)
 #     --refresh             discard cached keys and re-import
 #     --fetch-unknown-keys  import keys the signatures name (unaudited)
 #     --report=FILE         per-source results to FILE
+#     --notes=FILE          the caveats, not tools/source-notes.tsv
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 load_config
@@ -24,17 +27,33 @@ export GNUPGHOME="${KEYDIR}/gnupg"
 FETCH_UNKNOWN=0
 STRICT=0
 REPORT=""
+NOTES="$(dirname "${BASH_SOURCE[0]}")/source-notes.tsv"
 for a in "$@"; do
     case "$a" in
         --refresh) rm -rf "$GNUPGHOME" "$GNU_KEYRING" ;;
         --fetch-unknown-keys) FETCH_UNKNOWN=1 ;;
         --strict) STRICT=1 ;;
         --report=*) REPORT="${a#--report=}" ;;
-        -h|--help) sed -n '2,9p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        --notes=*) NOTES="${a#--notes=}" ;;
+        -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $a" ;;
     esac
 done
 [[ -n "$REPORT" ]] && : > "$REPORT"
+
+# A signer no publisher states, accepted deliberately: the note names the
+# routes that were tried. Such a source is not held against --strict; a note
+# for a source whose key is held is stale, and --strict fails on it.
+declare -A NOTED_NO_KEY=()
+if [[ -f "$NOTES" ]]; then
+    while read -r n_pkg n_kind _; do
+        [[ "$n_kind" == no-usable-key ]] && NOTED_NO_KEY[$n_pkg]=1
+    done < <(grep -v '^[[:space:]]*#' "$NOTES")
+fi
+NOTED=0
+NOTED_LIST=()
+declare -A NOTE_USED=()
+declare -A SEEN_SOURCE=()
 
 # report <source> <class> <detail>
 # One tab-separated line per source, for provenance-inventory.sh. The class is
@@ -552,6 +571,12 @@ check_sig() {
             fi
         fi
 
+        if [[ -n "${NOTED_NO_KEY[$name]:-}" ]]; then
+            warn "${name}: signing key ${keyid} not held; no publisher states it (source-notes.tsv), accepted by note"
+            NOTED=$((NOTED + 1)); NOTED_LIST+=("${name} (key ${keyid})"); NOTE_USED[$name]=1
+            report "$name" key-not-held "${keyid}; no publisher states the key, accepted by note${how}"
+            return 0
+        fi
         warn "${name}: signing key ${keyid} not held"
         mark_unverifiable "${name} (signing key ${keyid} not held)"
         report "$name" key-not-held "${keyid}${how}"
@@ -775,6 +800,7 @@ echo
 
 # The manifest's sig column says how upstream vouches for each file.
 while read -r name _ver url sig _; do
+    SEEN_SOURCE[$name]=1
     [[ -z "$name" ]] && continue
     file="$(basename "$url")"
 
@@ -859,6 +885,23 @@ if [[ "$FAILED" -gt 0 ]]; then
     echo
     err "Signature verification FAILED for: ${FAILED_LIST[*]}"
     die "Do not build from these sources. Delete them and re-fetch."
+fi
+
+if [[ "$NOTED" -gt 0 ]]; then
+    echo
+    warn "${NOTED} source(s) signed by a key no publisher states, accepted by note (${NOTES#"$KRYPTIK_ROOT"/}):"
+    printf '  - %s\n' "${NOTED_LIST[@]}"
+fi
+# A note that no unheld key needed: the key is held now, or the source went.
+STALE_NOTES=()
+for n_pkg in "${!NOTED_NO_KEY[@]}"; do
+    [[ -n "${NOTE_USED[$n_pkg]:-}" ]] && continue
+    [[ -n "${SEEN_SOURCE[$n_pkg]:-}" ]] && STALE_NOTES+=("$n_pkg")
+done
+if [[ "${#STALE_NOTES[@]}" -gt 0 ]]; then
+    echo
+    warn "no-usable-key note(s) for a source whose key is held or whose signature is not checked this way: ${STALE_NOTES[*]}"
+    [[ "$STRICT" -eq 1 ]] && die "--strict will not carry a stale note; remove it from ${NOTES#"$KRYPTIK_ROOT"/}"
 fi
 
 echo

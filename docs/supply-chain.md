@@ -68,8 +68,11 @@ copy predates the maintainer extending the key. `verify-signatures.sh` counts
 them as verified and lists them separately, because a tool that cries
 tampering at routine expiry gets ignored. `BADSIG` (the file does not match
 its signature) and `REVKEYSIG` (the key was revoked, possibly compromised)
-always fail; `--strict`, the release gate, also fails on anything unverified
-or unaudited.
+always fail; `--strict`, the gate CI runs on every push, also fails on
+anything unverified or unaudited, except a signature by a key that no
+publisher states anywhere, when `tools/source-notes.tsv` records the routes
+that were tried (`no-usable-key`); such a note for a key that is held fails
+it as stale.
 
 ### Signature strength varies
 

@@ -128,10 +128,12 @@ work in zones from a terminal and a text browser, and keep it up to date.
       dropped in their recipes, and traceroute is not built. The zones suite
       audits the installed root again: setuid bits, file capabilities and the
       sysctls as applied.
-- [ ] **Signatures as a gate.** `tools/verify-signatures.sh --strict` runs
-      nowhere that can fail a push: CI's gates are the hash lock and the
-      provenance check. Run it strict on push once every key in
-      `keys.manifest` has an audited route to its fingerprint.
+- [x] **Signatures as a gate.** `tools/verify-signatures.sh --strict` runs
+      on every push in CI's source-manifest job. Every key has a published
+      route to its fingerprint (`tools/key-provenance.tsv`), except three no
+      publisher states (elfutils, file, flex), which `tools/source-notes.tsv`
+      accepts with the routes that were tried; a note left after its key is
+      held fails the gate.
 - [x] **Zone 0 runs no user application, proven.** The desktop suite reads
       every process with a zone's terminal up: outside the zones' cgroups only
       zone 0's own programs run, and the zone's terminal is seen in its cgroup.

@@ -264,6 +264,19 @@ write_manifest unknown
 fresh_root; run --strict
 expect_fail "an unheld signing key fails --strict" "unverifiable"
 
+# The same key, no publisher states it, and tools/source-notes.tsv says so.
+printf 'unknown  no-usable-key  https://example.invalid/  No route to the key was found. Checked 2026-09-28.\n' > "${W}/notes.tsv"
+write_manifest unknown
+fresh_root; run --strict "--notes=${W}/notes.tsv"
+expect_pass "an unheld key that no publisher states passes --strict when a note accepts it" "accepted by note"
+write_manifest good
+fresh_root; run --strict "--notes=${W}/notes.tsv"
+expect_pass "a note for a source outside the manifest is not this tool's concern" "verified:     1"
+printf 'good  no-usable-key  https://example.invalid/  A note that the held key makes stale.\n' > "${W}/notes-stale.tsv"
+write_manifest good
+fresh_root; run --strict "--notes=${W}/notes-stale.tsv"
+expect_fail "a no-usable-key note for a source whose key is held fails --strict" "stale note"
+
 # A manifest row whose file was never downloaded.
 write_manifest good notfetched
 rm -f "${SRC}/notfetched.tar.gz"

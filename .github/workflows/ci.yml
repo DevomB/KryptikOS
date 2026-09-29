@@ -208,6 +208,11 @@ jobs:
           # tag and a publisher checksum are different strengths of evidence.
           ./tools/provenance-inventory.sh
 
+      # The gate: every signature verifies against a key a publisher states,
+      # or tools/source-notes.tsv says which routes to the key were tried.
+      - name: Signatures, strict
+        run: ./tools/verify-signatures.sh --strict
+
       - name: sources.lock covers the manifest
         run: |
           fail=0
