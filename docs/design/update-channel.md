@@ -175,6 +175,27 @@ ahead). One run at a time holds the channel. Stage 06 publishes each build
 into `images/channel-<version>/` the same way, and the update suite serves
 that directory.
 
+## The release host
+
+The channel Kryptik ships lives on GitHub, in two parts a statement's `base`
+joins: the payload's files are among the release's files on the Releases
+page (`tools/release-publish.sh` uploads them under the manifest's names, so
+`https://github.com/<owner>/<repo>/releases/download/v<version>/` serves
+`manifest`, `kryptik-root.img` and the rest), and the statement is served by
+the repository's Pages site at `https://<owner>.github.io/<repo>/stable/`,
+which is the address an image is built with. The statement key is the
+`KRYPTIK_LATEST_KEY` repository secret, and the `Update channel` workflow
+(`.github/workflows/channel.yml`) is the timer: dispatched with a release's
+tag it publishes that release into the channel, dispatched with none or on
+its daily schedule it signs the current statement again, and its dry run
+proves the host with throwaway keys under `test/`. `tools/channel-host.sh`
+does the work: it mirrors what the site serves before it writes, so a date
+only moves forward and a deployment keeps every channel, and it verifies the
+payload it fetched from the page as the image will before naming it. A
+`publish` with `--base` and a `reissue` with `--manifest` are the
+`release-channel.sh` forms it uses, since the payload is not under the
+channel's directory.
+
 ## Tests
 
 - `update.rs` unit tests cover every rule above; `broker.rs` unit tests and
@@ -213,5 +234,6 @@ that directory.
 `tools/update/kryptik-update` (`check-manifest`, `check-pointer`),
 `tools/net/update-fetch.py`, `tools/net/netzone-init.sh`,
 `tools/release-manifest.sh` (`pointer`), `tools/release-channel.sh`,
+`tools/channel-host.sh` with `.github/workflows/channel.yml` (the host),
 `build/recipes/openssh.sh` (ssh-keygen, which verifies them) and `build/stages/06-iso.sh` (each build's
 channel, and `update.conf` from `KRYPTIK_CHANNEL`).

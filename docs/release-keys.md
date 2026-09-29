@@ -78,23 +78,21 @@ For each release:
    `kryptik-<version>.SHA256SUMS` and its `.sig` beside the media, and the
    release record is under `KRYPTIK_OUT`. Publish the checksums and
    `release-signers` with the media: they are what a download is checked by.
-4. Copy the payload and `release-signers` to the release host. It needs a
-   checkout of this repository for `tools/release-channel.sh`. Publish with
-   the statement key there:
-
-   ```sh
-   tools/release-channel.sh publish --key <statement key> --signers release-signers \
-       --payload payload-<version> --out /srv/<channel>
-   ```
-
-5. Keep the host's daily timer running `tools/release-channel.sh reissue`
-   with the same key and signers file. A machine that hears nothing for 30
-   days says so.
-6. Tag the revision you built from `v<version>` and push the tag. The next
+4. Tag the revision you built from `v<version>` and push the tag. The next
    release's notes list what changed since it.
-7. Put the release on the repository's Releases page from the export
+5. Put the release on the repository's Releases page from the export
    `make acceptance EXPORT=DIR` wrote: `tools/release-publish.sh DIR
-   --source-bundle FILE --publish` ([releases](releases.md)).
+   --source-bundle FILE --publish` ([releases](releases.md)). The payload
+   goes up with it, under the names its manifest gives: that page is the
+   channel's base.
+6. Publish it into the channel: the release host is the repository's Pages
+   site and the `Update channel` workflow
+   ([update channel](design/update-channel.md#the-release-host)). Once, put
+   the statement key in the `KRYPTIK_LATEST_KEY` repository secret, made
+   without a passphrase, since it signs from a timer; it is the one key that
+   is online by design. Then run the workflow with the release's tag. Its
+   daily schedule signs the statement again; a machine that hears nothing
+   for 30 days says so.
 
 ## Numbering a release
 

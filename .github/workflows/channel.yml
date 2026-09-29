@@ -1,0 +1,80 @@
+name: Update channel
+
+# The release host (docs/design/update-channel.md): the statement of what is
+# current, served by this repository's Pages site; the payload, among the
+# release's files; the statement key, in the KRYPTIK_LATEST_KEY secret. A
+# dispatch publishes a release into a channel, or with no release signs the
+# current statement again; the schedule signs it again daily, so a machine
+# that hears nothing for 30 days knows something is wrong.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "The release to publish, by tag (v1.0.0); empty signs the current statement again"
+        default: ""
+      channel:
+        description: "The channel under the site"
+        default: stable
+      dry_run:
+        description: "Prove the host with throwaway keys and a stand-in release under test/"
+        type: boolean
+        default: false
+  schedule:
+    - cron: '17 6 * * *'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One run at a time: a reissue finishing after a publish would name the older release again.
+concurrency:
+  group: update-channel
+  cancel-in-progress: false
+
+jobs:
+  channel:
+    name: ${{ inputs.dry_run && 'Dry run' || (inputs.release && format('Publish {0}', inputs.release) || 'Reissue') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: The statement key
+        if: ${{ !inputs.dry_run }}
+        env:
+          KEY: ${{ secrets.KRYPTIK_LATEST_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "no KRYPTIK_LATEST_KEY secret: the statement key the ceremony made (docs/release-keys.md), without a passphrase"
+            exit 1
+          fi
+          umask 077
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/kryptik-latest"
+
+      - name: The channel
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ inputs.release }}
+          CHANNEL: ${{ inputs.channel || 'stable' }}
+        run: |
+          if [ "${{ inputs.dry_run }}" = true ]; then
+            tools/channel-host.sh dry-run --site site --channel test --repo "$GITHUB_REPOSITORY"
+          elif [ -n "$RELEASE" ]; then
+            tools/channel-host.sh publish --release "$RELEASE" --key "$RUNNER_TEMP/kryptik-latest" --site site --channel "$CHANNEL" --repo "$GITHUB_REPOSITORY"
+          else
+            tools/channel-host.sh reissue --key "$RUNNER_TEMP/kryptik-latest" --site site --channel "$CHANNEL" --repo "$GITHUB_REPOSITORY"
+          fi
+          rm -f "$RUNNER_TEMP/kryptik-latest"
+          find site -type f | sort
+
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
