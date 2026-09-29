@@ -3,12 +3,16 @@
 # statement of what is current again (docs/design/update-channel.md).
 #
 #   ./tools/release-channel.sh publish --key KEY --signers FILE --payload DIR
-#                                      --out CHANNEL [--issued DATE]
+#                                      --out CHANNEL [--issued DATE] [--base ADDRESS]
 #   ./tools/release-channel.sh reissue --key KEY --signers FILE
-#                                      [--issued DATE] CHANNEL
+#                                      [--issued DATE] [--manifest FILE] CHANNEL
 #
 # CHANNEL is served as it stands: latest, latest.sig, and one directory per
-# version, which the statement's base names. KEY is the kryptik-latest key,
+# version, which the statement's base names. With --base the payload is
+# served at that https address instead (the release's files on GitHub, as
+# tools/channel-host.sh publishes them): it is verified here as the image
+# will verify it, and only the statement is written; a reissue of such a
+# statement takes --manifest, the manifest served there. KEY is the kryptik-latest key,
 # passed to ssh-keygen by path and never read here; SIGNERS is the anchor the
 # image carries, and every statement is checked against it as a client would.
 # DATE defaults to now, as YYYY-MM-DDTHH:MM:SS+00:00. The payload's files are
@@ -76,7 +80,7 @@ install_statement() {   # install_statement CHANNEL MANIFEST BASE KEY SIGNERS IS
 }
 
 do_publish() {
-    local key="" signers="" payload="" out="" issued=""
+    local key="" signers="" payload="" out="" issued="" base=""
     while [[ "$#" -gt 0 ]]; do
         case "$1" in
             --key)     key="${2:?--key needs a file}"; shift 2 ;;
@@ -84,6 +88,7 @@ do_publish() {
             --payload) payload="${2:?--payload needs a directory}"; shift 2 ;;
             --out)     out="${2:?--out needs a directory}"; shift 2 ;;
             --issued)  issued="${2:?--issued needs a date}"; shift 2 ;;
+            --base)    base="${2:?--base needs an address}"; shift 2 ;;
             *) die "publish: unknown argument: $1" ;;
         esac
     done
@@ -108,6 +113,12 @@ do_publish() {
     version="$(field "${payload}/manifest" version)"
     [[ -n "$version" && "$version" != */* && "$version" != .* ]] || die "publish: the manifest names no usable version"
 
+    if [[ -n "$base" ]]; then
+        # Served elsewhere, from this same payload; only the statement lives here.
+        [[ "$base" == https://*/ ]] || die "publish: --base must be an https address ending in /"
+        install_statement "$out" "${payload}/manifest" "$base" "$key" "$signers" "$issued"
+        return
+    fi
     local dir="${out}/${version}"
     if [[ -e "$dir" ]]; then
         # A published version never changes: a client may be part way through it.
@@ -127,12 +138,13 @@ do_publish() {
 }
 
 do_reissue() {
-    local key="" signers="" issued="" chan=""
+    local key="" signers="" issued="" chan="" manifest=""
     while [[ "$#" -gt 0 ]]; do
         case "$1" in
-            --key)     key="${2:?--key needs a file}"; shift 2 ;;
-            --signers) signers="${2:?--signers needs a file}"; shift 2 ;;
-            --issued)  issued="${2:?--issued needs a date}"; shift 2 ;;
+            --key)      key="${2:?--key needs a file}"; shift 2 ;;
+            --signers)  signers="${2:?--signers needs a file}"; shift 2 ;;
+            --issued)   issued="${2:?--issued needs a date}"; shift 2 ;;
+            --manifest) manifest="${2:?--manifest needs a file}"; shift 2 ;;
             -*) die "reissue: unknown argument: $1" ;;
             *)  chan="$1"; shift ;;
         esac
@@ -143,12 +155,17 @@ do_reissue() {
     # Only what already verifies is signed again, so a tampered channel stays refused.
     statement_ok "${chan}/latest" "$signers" || die "reissue: ${chan}/latest does not verify against ${signers}"
     local base; base="$(field "${chan}/latest" base)"
-    [[ "$base" != *://* ]] || die "reissue: ${chan}/latest names an absolute base (${base}); only a relative one can be checked here"
-    # The same manifest, so the new statement differs from the old only in its date.
-    [[ -f "${chan}/${base}manifest" \
-        && "$(sha256sum "${chan}/${base}manifest" | cut -c1-64)" == "$(field "${chan}/latest" manifest-sha256)" ]] \
-        || die "reissue: ${chan}/${base}manifest is not the manifest the statement names"
-    install_statement "$chan" "${chan}/${base}manifest" "$base" "$key" "$signers" "$issued"
+    # The same manifest, so the new statement differs from the old only in its
+    # date: under the channel for a relative base, given for an absolute one.
+    if [[ "$base" == *://* ]]; then
+        [[ -n "$manifest" ]] || die "reissue: ${chan}/latest names an absolute base (${base}); give --manifest, the manifest served there"
+    else
+        [[ -z "$manifest" ]] || die "reissue: --manifest is for a statement whose base is an address"
+        manifest="${chan}/${base}manifest"
+    fi
+    [[ -f "$manifest" && "$(sha256sum "$manifest" | cut -c1-64)" == "$(field "${chan}/latest" manifest-sha256)" ]] \
+        || die "reissue: ${manifest} is not the manifest the statement names"
+    install_statement "$chan" "$manifest" "$base" "$key" "$signers" "$issued"
 }
 
 case "$MODE" in

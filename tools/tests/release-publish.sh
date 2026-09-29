@@ -66,6 +66,11 @@ make_export() {   # make_export DIR VERSION ROLE VERDICT REVISION
     printf '# Instructions\n' > "$d/INSTRUCTIONS.md"
     printf '# Report\n\nVerdict: **%s**\n' "$verdict" > "$d/ACCEPTANCE-REPORT.md"
     printf 'a log line\n' > "$d/acceptance-logs/install.log"
+    # The payload as acceptance exports it: the same root.json and manifest, under the channel's names.
+    mkdir -p "$d/payload"
+    printf 'the root image of %s\n' "$v" > "$d/payload/kryptik-root.img"
+    printf 'kernel a\n' > "$d/payload/kryptik-a.efi"; printf 'kernel b\n' > "$d/payload/kryptik-b.efi"
+    cp "$d/root.json" "$d/payload/root.json"; cp "$d/manifest-${v}" "$d/payload/manifest"; cp "$d/manifest-${v}.sig" "$d/payload/manifest.sig"
     {
         echo "Kryptik ${v}"
         echo "acceptance : ${verdict} (20260928T000000; see ACCEPTANCE-REPORT.md)"
@@ -116,8 +121,8 @@ sha() { sha256sum "$1" | cut -c1-64; }
 E="${W}/export"; S="${W}/stage"
 make_export "$E" 0.1.0 development PASS "$REV"
 publish "$E" "$S" --source-bundle "$BUNDLE"; rc=$?
-if [[ "$rc" -eq 0 ]] && has "staged v0.1.0, a pre-release, in ${S}: 18 files and NOTES.md"; then
-    green "a development release stages as a pre-release with every file and the notes"
+if [[ "$rc" -eq 0 ]] && has "staged v0.1.0, a pre-release, in ${S}: 23 files and NOTES.md"; then
+    green "a development release stages as a pre-release with every file, the payload under its names, and the notes"
 else
     red "staging (exit ${rc}): $(cat "$OUT")"; show
 fi
@@ -158,7 +163,7 @@ fi
 E2="${W}/export-production"; S2="${W}/stage-production"
 make_export "$E2" 0.1.0 production PASS "$REV"
 publish "$E2" "$S2"; rc=$?
-if [[ "$rc" -eq 0 ]] && has "staged v0.1.0, a release, in ${S2}: 17 files and NOTES.md"; then
+if [[ "$rc" -eq 0 ]] && has "staged v0.1.0, a release, in ${S2}: 22 files and NOTES.md"; then
     green "a production release stages as a release, and without a bundle one file fewer"
 else
     red "the production export (exit ${rc}): $(cat "$OUT")"; show
@@ -168,7 +173,7 @@ fi
 TOP="$(cd "$T" && pwd -P)"
 page "$E" --source-bundle "$BUNDLE"; rc=$?
 if [[ "$rc" -eq 0 ]] && has "v0.1.0, a pre-release, drafted: https://example.invalid/releases/tag/v0.1.0" \
-    && grep -qF "cwd=${TOP} files=19 args=release create v0.1.0 --title Kryptik 0.1.0 --notes-file " "$GH_LOG" \
+    && grep -qF "cwd=${TOP} files=24 args=release create v0.1.0 --title Kryptik 0.1.0 --notes-file " "$GH_LOG" \
     && grep -q -- ' --verify-tag --prerelease --draft /' "$GH_LOG"; then
     green "the page is made from the checkout, wherever the tool runs: a draft pre-release with every file"
 else
@@ -176,7 +181,7 @@ else
 fi
 page "$E2" --publish --repo octo/kryptik; rc=$?
 if [[ "$rc" -eq 0 ]] && has "v0.1.0, a release, published:" \
-    && grep -qF "files=18 args=release create v0.1.0 --title Kryptik 0.1.0 --notes-file " "$GH_LOG" \
+    && grep -qF "files=23 args=release create v0.1.0 --title Kryptik 0.1.0 --notes-file " "$GH_LOG" \
     && ! grep -qE -- '--draft|--prerelease' "$GH_LOG" \
     && ! grep -v -- '--repo octo/kryptik$' "$GH_LOG" | grep -q .; then
     green "--publish makes the release live, and --repo names the repository to every call"

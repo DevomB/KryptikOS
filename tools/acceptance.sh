@@ -520,6 +520,14 @@ it_export() {
         cp "${PAYLOAD_B}/manifest" "${d}/manifest-${VER_B}"
         [[ -f "${PAYLOAD_B}/manifest.sig" ]] && cp "${PAYLOAD_B}/manifest.sig" "${d}/manifest-${VER_B}.sig"
     fi
+    # The update payload as the channel serves it, file for file: the release
+    # page gets these from the export (tools/release-publish.sh).
+    if [[ -n "$PAYLOAD_B" && -d "$PAYLOAD_B" ]]; then
+        mkdir -p "${d}/payload"
+        for f in "$PAYLOAD_B"/*; do
+            [[ -f "$f" ]] && { cp --sparse=always "$f" "${d}/payload/" || ok=1; }
+        done
+    fi
     if [[ -f "${ROOT}/docs/user-guide.md" ]]; then cp "${ROOT}/docs/user-guide.md" "${d}/INSTRUCTIONS.md"; else echo "  no docs/user-guide.md to ship"; ok=1; fi
     cp "${OUT}/REVISION.txt" "${d}/" 2>/dev/null
     mkdir -p "${d}/acceptance-logs" && cp "${OUT}"/*.log "${OUT}/results.tsv" "${d}/acceptance-logs/" 2>/dev/null

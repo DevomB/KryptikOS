@@ -232,5 +232,53 @@ else
     green "no private key is in the channel"
 fi
 
+# --- a payload served elsewhere: the statement alone lives in the channel -----------
+CR="${W}/remote"
+make_payload "${W}/p3" 1.0.3
+channel publish --key "$KEY" --payload "${W}/p3" --out "$CR" --base https://example.invalid/releases/download/v1.0.3/ --issued 2026-09-03T00:00:00+00:00
+rc=$?
+if [[ "$rc" -eq 0 ]] && verifies "$CR" && [[ "$(field "${CR}/latest" base)" == https://example.invalid/releases/download/v1.0.3/ \
+    && ! -e "${CR}/1.0.3" && "$(field "${CR}/latest" manifest-sha256)" == "$(sha256sum "${W}/p3/manifest" | cut -c1-64)" ]]; then
+    green "--base writes a statement naming the address the files are served at, and copies nothing"
+else
+    red "publish with --base (exit ${rc})"; show
+fi
+channel publish --key "$KEY" --payload "${W}/p3" --out "${W}/remote2" --base http://example.invalid/r/
+rc=$?
+if [[ "$rc" -ne 0 ]] && grep -q "https address ending in /" "$OUT"; then
+    green "a base that is not https, or does not end in /, is refused"
+else
+    red "the plain-http base (exit ${rc})"; show
+fi
+channel reissue --key "$KEY" "$CR" --issued 2026-09-04T00:00:00+00:00
+rc=$?
+if [[ "$rc" -ne 0 ]] && grep -q "give --manifest" "$OUT"; then
+    green "a reissue of a statement with an address as its base needs the manifest served there"
+else
+    red "reissue without --manifest (exit ${rc})"; show
+fi
+channel reissue --key "$KEY" --manifest "${W}/p2/manifest" "$CR" --issued 2026-09-04T00:00:00+00:00
+rc=$?
+if [[ "$rc" -ne 0 ]] && grep -q "is not the manifest the statement names" "$OUT"; then
+    green "another version's manifest is refused for the reissue"
+else
+    red "reissue with the wrong manifest (exit ${rc})"; show
+fi
+channel reissue --key "$KEY" --manifest "${W}/p3/manifest" "$CR" --issued 2026-09-04T00:00:00+00:00
+rc=$?
+if [[ "$rc" -eq 0 ]] && verifies "$CR" && [[ "$(field "${CR}/latest" issued)" == 2026-09-04T00:00:00+00:00 \
+    && "$(field "${CR}/latest" base)" == https://example.invalid/releases/download/v1.0.3/ ]]; then
+    green "with the manifest served there, the statement is signed again with the new date and the same base"
+else
+    red "reissue with --manifest (exit ${rc})"; show
+fi
+channel reissue --key "$KEY" --manifest "${W}/p2/manifest" "$CH"
+rc=$?
+if [[ "$rc" -ne 0 ]] && grep -q "is for a statement whose base is an address" "$OUT"; then
+    green "--manifest is refused for a channel that serves its own payloads"
+else
+    red "--manifest on a local channel (exit ${rc})"; show
+fi
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

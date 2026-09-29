@@ -11,9 +11,11 @@
 # with tag v<version> at the tested revision. The two images go up compressed
 # (a release file is capped at 2 GiB), so the notes gain a table of the
 # uploaded files' hashes; the signed checksums stay the authority for what
-# zstd -d restores. A development release is marked a pre-release. The release
-# is a draft until --publish. --stage DIR writes the assets and the notes there
-# and calls GitHub not at all.
+# zstd -d restores. The update payload in EXPORT/payload goes up as it is,
+# under the names its manifest gives, so the page can be a channel's base
+# (tools/channel-host.sh). A development release is marked a pre-release. The
+# release is a draft until --publish. --stage DIR writes the assets and the
+# notes there and calls GitHub not at all.
 set -Eeuo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 
@@ -96,6 +98,20 @@ fi
 if [[ -d "${EXPORT}/acceptance-logs" ]]; then
     tar -C "$EXPORT" -I 'zstd -q -T0 -19' -cf "${OUT}/kryptik-${VERSION}-acceptance-logs.tar.zst" acceptance-logs
     ASSETS+=("kryptik-${VERSION}-acceptance-logs.tar.zst")
+fi
+# The payload's files, uncompressed and under the manifest's names: a machine
+# fetches them by name from the statement's base and checks each hash.
+if [[ -d "${EXPORT}/payload" ]]; then
+    for f in "${EXPORT}/payload"/*; do
+        [[ -f "$f" ]] || continue
+        b="$(basename "$f")"
+        (( $(stat -c %s "$f") <= 2147483648 )) || die "payload/${b} is over the 2 GiB a release file may be"
+        if [[ -e "${OUT}/${b}" ]]; then
+            cmp -s "$f" "${OUT}/${b}" || die "payload/${b} differs from the record's ${b}"
+            continue
+        fi
+        cp --sparse=always "$f" "${OUT}/"; ASSETS+=("$b")
+    done
 fi
 {
     cat "${EXPORT}/RELEASE-NOTES.md"
