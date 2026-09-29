@@ -38,7 +38,6 @@ intel-microcode 20260812 20260925 fine  2026-09-27  Release notes 20260925: one 
 ca-bundle     2026-08-13 2026-09-25 fine  2026-09-27  The 2026-09-25 bundle holds the same 121 certificates, byte for byte; only its header's date and certdata.txt digest differ.
 groff         1.23.0   1.24.1   fine  2026-09-19  NEWS 1.24.0 and 1.24.1: no security fix. 1.24.0 has incompatible request-syntax changes; never that one.
 e2fsprogs     1.47.1   1.47.4   fine  2026-09-19  Release notes 1.47.2 to 1.47.4: no security fix.
-eudev         3.2.14   3.2.15   held  2026-09-27  Release 3.2.15 syncs rules, hwdb, builtins and helpers with systemd-udev v262+ and includes static-analysis memory-safety fixes in hwdb compiler, scsi_id, fileio and cunescape. The new rules change device names and render-node ownership; keep 3.2.14 until the package and boot/device tests are integrated against this release. https://github.com/eudev-project/eudev/releases/tag/v3.2.15
 libpipeline   1.5.7    1.5.8    fine  2026-09-19  NEWS 1.5.8: no security fix.
 man-db        2.12.1   2.13.1   fine  2026-09-19  NEWS 2.13.0 and 2.13.1: no security fix.
 perl          5.40.5   5.44.0   fine  2026-09-19  5.40.5 is the newest 5.40.x and has every fix through CVE-2026-13221. 5.40 is in perlpolicy's security-fix window (tools/support-policy.tsv). 5.42 and 5.44 are new series, not security releases.
