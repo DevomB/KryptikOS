@@ -225,7 +225,7 @@ PACKAGES=(
     "make"        "native_build make-${V_MAKE}.tar.gz make-${V_MAKE}"
     "patch"       "native_build patch-${V_PATCH}.tar.xz patch-${V_PATCH}"
     "tar"         "s_tar"
-    "groff"       "native_build groff-${V_GROFF}.tar.gz groff-${V_GROFF}"
+    "groff"       "s_groff"
     # For the kernel build, which generates timeconst.h with `bc -q`. After flex
     # and bison, which bc needs.
     "bc"          "s_bc"

@@ -36,7 +36,7 @@ pkgconf       2.3.0    3.0.7    fine  2026-09-19  NEWS to 3.0.7: no security fix
 iana-etc      20240806 20260911 fine  2026-09-19  Data only: /etc/services and /etc/protocols.
 intel-microcode 20260812 20260925 fine  2026-09-27  Release notes 20260925: one functional update, Meteor Lake C0 (06-aa-04, 0x28 to 0x2b), and no security advisory.
 ca-bundle     2026-08-13 2026-09-25 fine  2026-09-27  The 2026-09-25 bundle holds the same 121 certificates, byte for byte; only its header's date and certdata.txt digest differ.
-groff         1.23.0   1.24.1   fine  2026-09-19  NEWS 1.24.0 and 1.24.1: no security fix. 1.24.0 has incompatible request-syntax changes; never that one.
+groff         1.23.0   1.24.2   fine  2026-09-29  NEWS 1.24.0 to 1.24.2: 1.24.2 fixes command injection (CWE-78) in mmroff, pdfmom and pre-grohtml, which the image does not install (build/recipes/groff.sh); man renders for a terminal, never HTML. 1.24.0 has incompatible request-syntax changes; never that one.
 e2fsprogs     1.47.1   1.47.4   fine  2026-09-19  Release notes 1.47.2 to 1.47.4: no security fix.
 libpipeline   1.5.7    1.5.8    fine  2026-09-19  NEWS 1.5.8: no security fix.
 man-db        2.12.1   2.13.1   fine  2026-09-19  NEWS 2.13.0 and 2.13.1: no security fix.
