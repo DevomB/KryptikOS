@@ -23,7 +23,7 @@ the release key made offline. The dated builds CI makes of every push to main
 | keys | made by that build and then gone | the key medium, kept offline |
 | Secure Boot | a certificate per release, enrolled by hand | one certificate, enrolled once |
 | the next release | a reinstall from its medium | an update from the channel, signed by the release key |
-| built by | the Distro workflow, from the tag | you, with the medium attached |
+| built by | the Distro workflow, from the tag | you, with the medium attached, and `KRYPTIK_CHANNEL=https://<owner>.github.io/<repo>/stable/` |
 
 ## Cutting one
 
@@ -42,7 +42,10 @@ the release key made offline. The dated builds CI makes of every push to main
    notes as the page's text. Read the draft and publish it from the page.
 4. A production release is built by hand with the key medium and its export
    published with the same tool once the tag is pushed:
-   `tools/release-publish.sh DIR --source-bundle FILE --publish`.
+   `tools/release-publish.sh DIR --source-bundle FILE --publish`. Its payload
+   goes up with it, and the `Update channel` workflow, run with the tag,
+   makes it what installed machines update to
+   ([release keys](release-keys.md#using-them)).
 
 ## What the page carries
 
