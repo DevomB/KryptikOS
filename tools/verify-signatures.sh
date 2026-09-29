@@ -197,6 +197,16 @@ mark_unverifiable() {
     UNVERIFIABLE_LIST+=("$1")
 }
 
+# No OpenPGP signature to check: the lock pins the file, and
+# tools/verify-provenance.sh checks whatever else upstream publishes. Not a
+# signature the gate can fail.
+UNSIGNED=0
+UNSIGNED_LIST=()
+mark_unsigned() {
+    UNSIGNED=$((UNSIGNED + 1))
+    UNSIGNED_LIST+=("$1")
+}
+
 # Unaudited keys, from keys.manifest. Once cached, such a key gives a plain
 # GOODSIG, so the manifest (read on every run) is what keeps it marked.
 declare -a UNAUDITED_FPRS=()
@@ -614,7 +624,7 @@ verify_gnu() {
         && ! quiet_fetch "${url}.sig" "$sig"; then
             rm -f "$sig"
             warn "${name}: no .sig published upstream"
-            mark_unverifiable "${name} (no signature upstream)"
+            mark_unsigned "${name} (no signature upstream)"
             report "$name" no-signature-upstream "no .sig on the canonical GNU host"
             return
         fi
@@ -658,12 +668,12 @@ verify_any() {
     if [[ "${#wrong_format[@]}" -gt 0 ]]; then
         warn "${name}: upstream publishes ${wrong_format[*]} but none of them is an"
         warn "       OpenPGP signature (Sigstore, minisign or similar)"
-        mark_unverifiable "${name} (published ${wrong_format[*]} is not OpenPGP)"
+        mark_unsigned "${name} (published ${wrong_format[*]} is not OpenPGP)"
         report "$name" signature-not-openpgp "published ${wrong_format[*]} is not an OpenPGP signature"
         return
     fi
     warn "${name}: no detached signature published (.sig/.asc/.sign)"
-    mark_unverifiable "${name} (upstream publishes no signature)"
+    mark_unsigned "${name} (upstream publishes no signature)"
     report "$name" no-signature-upstream "none of .sig/.asc/.sign is published"
 }
 
@@ -676,14 +686,14 @@ verify_detached() {
     if [[ ! -s "$sig" ]] && ! quiet_fetch "$sigurl" "$sig"; then
         rm -f "$sig"
         warn "${name}: no ${suffix} published upstream"
-        mark_unverifiable "${name} (no signature upstream)"
+        mark_unsigned "${name} (no signature upstream)"
         report "$name" no-signature-upstream "no ${suffix} published beside the tarball"
         return
     fi
     if ! is_pgp_signature "$sig"; then
         rm -f "$sig"
         warn "${name}: the published ${suffix} is not an OpenPGP signature"
-        mark_unverifiable "${name} (published ${suffix} is not OpenPGP)"
+        mark_unsigned "${name} (published ${suffix} is not OpenPGP)"
         report "$name" signature-not-openpgp "published ${suffix} is not an OpenPGP signature"
         return
     fi
@@ -727,7 +737,7 @@ verify_sums() {
     if [[ ! -s "$list" ]] && ! quiet_fetch "${url%/*}/${listname}" "$list"; then
         rm -f "$list"
         warn "${name}: no ${listname} published upstream"
-        mark_unverifiable "${name} (no checksum list upstream)"
+        mark_unsigned "${name} (no checksum list upstream)"
         report "$name" no-signature-upstream "no ${listname} published beside the tarball"
         return
     fi
@@ -835,12 +845,12 @@ while read -r name _ver url sig _; do
             what="the publisher's .${sig}"
             [[ "$sig" == tag ]] && what="the signed tag"
             warn "${name}: no OpenPGP signature upstream; ${what} is verify-provenance's"
-            mark_unverifiable "${name} (${what}, see verify-provenance)"
+            mark_unsigned "${name} (${what}, see verify-provenance)"
             report "$name" no-signature-upstream "no OpenPGP signature; tools/verify-provenance.sh checks ${what}"
             ;;
         none)
             warn "${name}: upstream publishes no signature for it"
-            mark_unverifiable "${name} (upstream publishes no signature)"
+            mark_unsigned "${name} (upstream publishes no signature)"
             report "$name" no-signature-upstream "upstream publishes no signature for it"
             ;;
     esac
@@ -851,6 +861,7 @@ log "Summary"
 ok "verified:     ${VERIFIED}$([[ "$EXPIRED" -gt 0 ]] && printf ' (%s with expired keys)' "$EXPIRED")"
 [[ "$FETCHED" -gt 0 ]]      && warn "unaudited:    ${FETCHED} (key taken from the signature itself)"
 [[ "$UNVERIFIABLE" -gt 0 ]] && warn "unverifiable: ${UNVERIFIABLE}"
+[[ "$UNSIGNED" -gt 0 ]]     && dim  "unsigned:     ${UNSIGNED} (no OpenPGP signature upstream; the lock's and verify-provenance's)"
 [[ "$REVOKED" -gt 0 ]]      && err  "REVOKED KEYS: ${REVOKED}"
 [[ "$FAILED" -gt 0 ]]       && err  "FAILED:       ${FAILED}"
 
@@ -877,8 +888,14 @@ fi
 
 if [[ "${#UNVERIFIABLE_LIST[@]}" -gt 0 ]]; then
     echo
-    dim "Unverifiable (not proof of tampering - upstream may publish no signature):"
+    dim "Unverifiable (not proof of tampering - a signature that could not be checked):"
     printf '  - %s\n' "${UNVERIFIABLE_LIST[@]}"
+fi
+
+if [[ "${#UNSIGNED_LIST[@]}" -gt 0 ]]; then
+    echo
+    dim "Publish no OpenPGP signature (sources.lock pins them; tools/verify-provenance.sh checks what else they publish):"
+    printf '  - %s\n' "${UNSIGNED_LIST[@]}"
 fi
 
 if [[ "$FAILED" -gt 0 ]]; then
@@ -915,6 +932,9 @@ fi
 if [[ "$UNVERIFIABLE" -gt 0 ]]; then
     warn "${UNVERIFIABLE} source(s) unverified. sources.lock pins them by hash,
 which protects against later tampering but not against a bad first fetch."
+fi
+if [[ "$UNSIGNED" -gt 0 ]]; then
+    dim "${UNSIGNED} source(s) publish no OpenPGP signature; tools/verify-provenance.sh --strict is their gate."
 fi
 if [[ "$((UNVERIFIABLE + FETCHED))" -gt 0 ]]; then
     warn "This run is informational. --strict fails here."

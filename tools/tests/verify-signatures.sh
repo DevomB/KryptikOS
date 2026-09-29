@@ -253,8 +253,8 @@ expect_pass "no signature published upstream is unverifiable" \
 
 write_manifest nosig
 fresh_root; run --strict
-expect_fail "an unverifiable source fails --strict" \
-    "will not pass sources whose signer was never established"
+expect_pass "a source that publishes no signature is not held against --strict: the lock's and verify-provenance's" \
+    "publish no OpenPGP signature"
 
 write_manifest unknown
 fresh_root; run
@@ -563,7 +563,7 @@ write_manifest good expired revoked bad nosig unknown
 fresh_root; run --fetch-unknown-keys
 # good + expired verified; unknown unaudited; nosig unverifiable;
 # revoked + bad fatal.
-for want in "verified:     2" "unaudited:    1" "unverifiable: 1" \
+for want in "verified:     2" "unaudited:    1" "unsigned:     1" \
             "REVOKED KEYS: 1" "FAILED:       2"; do
     if grep -qF "$want" "$OUT"; then
         green "mixed manifest reports [${want}]"

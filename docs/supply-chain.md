@@ -68,11 +68,15 @@ copy predates the maintainer extending the key. `verify-signatures.sh` counts
 them as verified and lists them separately, because a tool that cries
 tampering at routine expiry gets ignored. `BADSIG` (the file does not match
 its signature) and `REVKEYSIG` (the key was revoked, possibly compromised)
-always fail; `--strict`, the gate CI runs on every push, also fails on
-anything unverified or unaudited, except a signature by a key that no
-publisher states anywhere, when `tools/source-notes.tsv` records the routes
-that were tried (`no-usable-key`); such a note for a key that is held fails
-it as stale.
+always fail; `--strict`, the gate CI runs on every push, also fails on a
+signature that could not be checked or a signer never established: a key
+taken from the signature itself, a key not held, a file not downloaded. A
+key that no publisher states anywhere passes it only while
+`tools/source-notes.tsv` records the routes that were tried
+(`no-usable-key`); such a note for a key that is held fails it as stale. A
+source that publishes no OpenPGP signature is not the gate's: the lock pins
+it, and `tools/verify-provenance.sh --strict` checks whatever else its
+publisher states.
 
 ### Signature strength varies
 
