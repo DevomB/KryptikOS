@@ -384,7 +384,7 @@ else
 fi
 
 fresh_root; run --strict
-expect_fail "and --strict still counts them unverifiable" "unverifiable"
+expect_pass "and --strict leaves them to verify-provenance.sh, as unsigned" "publish no OpenPGP signature"
 
 # A kind this script does not know fails, even on a file it could verify.
 : > "${W}/manifest"; add_row good telepathy

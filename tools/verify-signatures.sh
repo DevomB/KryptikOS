@@ -197,9 +197,10 @@ mark_unverifiable() {
     UNVERIFIABLE_LIST+=("$1")
 }
 
-# No OpenPGP signature to check: the lock pins the file, and
-# tools/verify-provenance.sh checks whatever else upstream publishes. Not a
-# signature the gate can fail.
+# Upstream signs with nothing OpenPGP, by the manifest's own declaration or
+# by a listing that holds none: the lock pins the file, and
+# tools/verify-provenance.sh checks whatever else upstream publishes. A
+# declared signature that is missing or is not a signature stays unverifiable.
 UNSIGNED=0
 UNSIGNED_LIST=()
 mark_unsigned() {
@@ -624,7 +625,7 @@ verify_gnu() {
         && ! quiet_fetch "${url}.sig" "$sig"; then
             rm -f "$sig"
             warn "${name}: no .sig published upstream"
-            mark_unsigned "${name} (no signature upstream)"
+            mark_unverifiable "${name} (no signature upstream)"
             report "$name" no-signature-upstream "no .sig on the canonical GNU host"
             return
         fi
@@ -668,7 +669,7 @@ verify_any() {
     if [[ "${#wrong_format[@]}" -gt 0 ]]; then
         warn "${name}: upstream publishes ${wrong_format[*]} but none of them is an"
         warn "       OpenPGP signature (Sigstore, minisign or similar)"
-        mark_unsigned "${name} (published ${wrong_format[*]} is not OpenPGP)"
+        mark_unverifiable "${name} (published ${wrong_format[*]} is not OpenPGP)"
         report "$name" signature-not-openpgp "published ${wrong_format[*]} is not an OpenPGP signature"
         return
     fi
@@ -686,14 +687,14 @@ verify_detached() {
     if [[ ! -s "$sig" ]] && ! quiet_fetch "$sigurl" "$sig"; then
         rm -f "$sig"
         warn "${name}: no ${suffix} published upstream"
-        mark_unsigned "${name} (no signature upstream)"
+        mark_unverifiable "${name} (no signature upstream)"
         report "$name" no-signature-upstream "no ${suffix} published beside the tarball"
         return
     fi
     if ! is_pgp_signature "$sig"; then
         rm -f "$sig"
         warn "${name}: the published ${suffix} is not an OpenPGP signature"
-        mark_unsigned "${name} (published ${suffix} is not OpenPGP)"
+        mark_unverifiable "${name} (published ${suffix} is not OpenPGP)"
         report "$name" signature-not-openpgp "published ${suffix} is not an OpenPGP signature"
         return
     fi
@@ -737,7 +738,7 @@ verify_sums() {
     if [[ ! -s "$list" ]] && ! quiet_fetch "${url%/*}/${listname}" "$list"; then
         rm -f "$list"
         warn "${name}: no ${listname} published upstream"
-        mark_unsigned "${name} (no checksum list upstream)"
+        mark_unverifiable "${name} (no checksum list upstream)"
         report "$name" no-signature-upstream "no ${listname} published beside the tarball"
         return
     fi
