@@ -152,47 +152,49 @@ import_keys() {
     # says" unless its keys are checked out of band (docs/supply-chain.md).
     # The keyring counts as imported only when the GNU keyring and every
     # pinned key are in it; what a run could not fetch, the next fetches again.
-    local complete=1 count
+    local count
     log "fetching GNU keyring"
     if [[ ! -s "$GNU_KEYRING" ]]; then
-        quiet_fetch "${CANONICAL_GNU}/gnu-keyring.gpg" "$GNU_KEYRING" \
-            || { rm -f "$GNU_KEYRING"; warn "could not fetch GNU keyring"; complete=0; }
+        quiet_fetch "${CANONICAL_GNU}/gnu-keyring.gpg" "$GNU_KEYRING" || rm -f "$GNU_KEYRING"
     fi
-
     if [[ -s "$GNU_KEYRING" && ! -f "${GNU_KEYRING}.imported" ]]; then
         log "importing GNU keyring (a few thousand keys, this takes a moment)"
         gpg --batch --quiet --import "$GNU_KEYRING" 2>/dev/null || true
         count="$(gpg --batch --list-keys 2>/dev/null | grep -c '^pub' || true)"
-        if [[ "$count" =~ ^[0-9]+$ && "$count" -ge 100 ]]; then
-            : > "${GNU_KEYRING}.imported"
-        else
-            warn "the GNU keyring did not import"; complete=0
+        [[ "$count" =~ ^[0-9]+$ && "$count" -ge 100 ]] && : > "${GNU_KEYRING}.imported"
+    fi
+    # Without it nothing a GNU maintainer signed can be checked: a run that
+    # could not fetch it is not a pass.
+    if [[ ! -f "${GNU_KEYRING}.imported" ]]; then
+        rm -f "$IMPORTED_MARK"
+        if [[ "$STRICT" -eq 1 ]]; then
+            err "the GNU keyring could not be fetched from ${CANONICAL_GNU}"
+            die "Without it nothing a GNU maintainer signed can be authenticated, and
+--strict will not report a run that could not check anything as a pass.
+Run again: what was fetched is kept."
         fi
+        warn "the GNU keyring could not be fetched: what GNU maintainers signed is unverifiable this run"
     fi
 
-    # Safe from a keyserver: it cannot serve another key under a full fingerprint.
+    # Safe from a keyserver: it cannot serve another key under a full
+    # fingerprint. One it does not serve is fetched again next run, and the
+    # sources that key signs are unverifiable until then.
     log "fetching pinned maintainer keys (${#PINNED_FPRS[@]})"
-    local fpr
+    local fpr missing=0
     for fpr in "${PINNED_FPRS[@]}"; do
         gpg --batch --list-keys "$fpr" >/dev/null 2>&1 && continue
-        recv_key "$fpr" || { warn "could not fetch pinned key ${fpr}"; complete=0; }
+        recv_key "$fpr" || { warn "could not fetch pinned key ${fpr}"; missing=$((missing + 1)); }
     done
 
     count="$(gpg --batch --list-keys 2>/dev/null | grep -c '^pub' || true)"
     [[ "$count" =~ ^[0-9]+$ ]] || count=0
-    if [[ "$complete" -eq 1 ]]; then
+    if [[ -f "${GNU_KEYRING}.imported" && "$missing" -eq 0 ]]; then
         printf '%s' "$count" > "$IMPORTED_MARK"
-        ok "keyring ready (${count} public keys)"
-        return 0
+    else
+        rm -f "$IMPORTED_MARK"
     fi
-    rm -f "$IMPORTED_MARK"
-    if [[ "$STRICT" -eq 1 ]]; then
-        err "the keyring is incomplete (${count} key(s) imported)"
-        die "Without the maintainer keys nothing can be authenticated, and
---strict will not report a run that could not check anything as a pass.
-Restore network access and run again: what was fetched is kept."
-    fi
-    warn "the keyring is incomplete (${count} key(s) imported) - verification will be partly unverifiable"
+    ok "keyring ready (${count} public keys)"
+    [[ "$missing" -eq 0 ]] || warn "${missing} pinned key(s) not fetched; fetched again next run"
 }
 
 # --- verification ----------------------------------------------------------
