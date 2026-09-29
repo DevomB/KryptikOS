@@ -31,14 +31,6 @@ img="${KRYPTIK_WORK}/images" p="${KRYPTIK_WORK}/images-production"
 # installs of these media and signs nothing else. The three below are gone.
 "${sudo[@]}" mkdir -p -m 0700 "$p/keys"
 "${sudo[@]}" cp "${m}/kryptik-testctl" "${m}/kryptik-testctl.pub" "$p/keys/"
-# The control-disk key stays with the pair: it arms the suites' unattended
-# installs of these media and signs nothing else. The three below are gone.
-"${sudo[@]}" mkdir -p -m 0700 "$p/keys"
-"${sudo[@]}" cp "${m}/kryptik-testctl" "${m}/kryptik-testctl.pub" "$p/keys/"
-# The control-disk key stays with the pair: it arms the suites' unattended
-# installs of these media and signs nothing else. The three below are gone.
-"${sudo[@]}" mkdir -p -m 0700 "$p/keys"
-"${sudo[@]}" cp "${m}/kryptik-testctl" "${m}/kryptik-testctl.pub" "$p/keys/"
 
 # An OpenSSH key's fifth line holds its seed; the last line of a PEM key's body
 # ends its private values.

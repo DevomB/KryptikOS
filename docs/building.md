@@ -66,7 +66,9 @@ make media KRYPTIK_ROLE=production KRYPTIK_KEYS=/media/<medium> KRYPTIK_VERSION=
 
 The medium holds `release-signers` (the anchor the image will trust),
 `kryptik-release` and `kryptik-release.pub`, `kryptik-sb.key` and
-`kryptik-sb.crt`, and optionally `kryptik-latest` and `kryptik-latest.pub`.
+`kryptik-sb.crt`, and optionally `kryptik-latest` and `kryptik-latest.pub`
+and `kryptik-testctl` and `kryptik-testctl.pub`, which the build reads only
+to check they are the anchor's.
 Its private keys must be readable by their owner alone, who is root or the
 user running the build, and it must not be inside the work or output tree.
 Stage 06 checks all of that before it signs anything. It makes no key and
@@ -122,3 +124,10 @@ make acceptance EXPORT=/tmp/kryptik-export
 
 `tools/release-publish.sh /tmp/kryptik-export` puts that export on the
 repository's Releases page once tag `v0.1.2` is pushed ([releases](releases.md)).
+
+The suites arm their unattended installs with a control disk the medium
+under test checks against its anchor. A development medium honours the
+build's own `kryptik-testctl` (under `<work>/keys/release`), the default; a
+production release's media honour the ceremony's, so its acceptance names a
+copy: `make acceptance EXPORT=DIR KRYPTIK_TESTCTL_KEY=<copy>/kryptik-testctl`
+([release keys](release-keys.md)).

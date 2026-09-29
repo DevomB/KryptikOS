@@ -72,6 +72,7 @@ CHROOT_ENV := KRYPTIK_ROOT="$(ROOT)" \
               TERM="$(TERM)" \
               NO_COLOR="$(NO_COLOR)" \
               $(if $(CARGO_TARGET_DIR),CARGO_TARGET_DIR="$(CARGO_TARGET_DIR)") \
+              $(if $(KRYPTIK_TESTCTL_KEY),KRYPTIK_TESTCTL_KEY="$(KRYPTIK_TESTCTL_KEY)") \
               $(if $(TMPDIR),TMPDIR="$(TMPDIR)")
 
 CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"

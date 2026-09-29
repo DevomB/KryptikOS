@@ -22,16 +22,6 @@ testctl_signed() {   # testctl_signed FILE
     ssh-keygen -Y verify -f "$TESTCTL_ANCHOR" -I kryptik-testctl -n kryptik-testctl \
         -s "$1.sig" < "$1" > /dev/null 2>&1
 }
-TESTCTL_ANCHOR="${TESTCTL_ANCHOR:-/usr/share/kryptik/trust/release-signers}"
-
-# The file and a signature over it by the kryptik-testctl key the anchor
-# lists, in that key's own namespace: the holder of that key alone can arm an
-# install on a machine that boots this medium.
-testctl_signed() {   # testctl_signed FILE
-    [ -r "$1" ] && [ -r "$1.sig" ] || return 1
-    ssh-keygen -Y verify -f "$TESTCTL_ANCHOR" -I kryptik-testctl -n kryptik-testctl \
-        -s "$1.sig" < "$1" > /dev/null 2>&1
-}
 
 testctl_media() {
     grep -qs '^media=.\+' /run/kryptik/boot-identity 2>/dev/null && return 0

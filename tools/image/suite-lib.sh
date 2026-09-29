@@ -21,10 +21,6 @@ PRESEED=( "preseed_user=${TUSER}" "preseed_password_hash=${TUSER_HASH}" "preseed
 # anchor lists: the developer keys' for a development medium, and for the
 # production pair the one tools/production-pair.sh keeps beside it.
 TESTCTL_KEY="${KRYPTIK_TESTCTL_KEY:-${KRYPTIK_WORK}/keys/release/kryptik-testctl}"
-# The control disks are signed with the kryptik-testctl key the medium's
-# anchor lists: the developer keys' for a development medium, and for the
-# production pair the one tools/production-pair.sh keeps beside it.
-TESTCTL_KEY="${KRYPTIK_TESTCTL_KEY:-${KRYPTIK_WORK}/keys/release/kryptik-testctl}"
 
 DRV="${SELF}/vm-drive.py"
 
