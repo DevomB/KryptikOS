@@ -248,13 +248,13 @@ expect_fail "a signature that does not match its file is fatal" \
 
 write_manifest nosig
 fresh_root; run
-expect_pass "no signature published upstream is unverifiable" \
+expect_pass "no signature published upstream is unsigned, not unverifiable" \
     "no detached signature published"
 
 write_manifest nosig
 fresh_root; run --strict
-expect_fail "an unverifiable source fails --strict" \
-    "will not pass sources whose signer was never established"
+expect_pass "a source that publishes no signature is not held against --strict: the lock's and verify-provenance's" \
+    "publish no OpenPGP signature"
 
 write_manifest unknown
 fresh_root; run
@@ -263,6 +263,19 @@ expect_pass "a signature by an unheld key is unverifiable" "not held"
 write_manifest unknown
 fresh_root; run --strict
 expect_fail "an unheld signing key fails --strict" "unverifiable"
+
+# The same key, no publisher states it, and tools/source-notes.tsv says so.
+printf 'unknown  no-usable-key  https://example.invalid/  No route to the key was found. Checked 2026-09-28.\n' > "${W}/notes.tsv"
+write_manifest unknown
+fresh_root; run --strict "--notes=${W}/notes.tsv"
+expect_pass "an unheld key that no publisher states passes --strict when a note accepts it" "accepted by note"
+write_manifest good
+fresh_root; run --strict "--notes=${W}/notes.tsv"
+expect_pass "a note for a source outside the manifest is not this tool's concern" "verified:     1"
+printf 'good  no-usable-key  https://example.invalid/  A note that the held key makes stale.\n' > "${W}/notes-stale.tsv"
+write_manifest good
+fresh_root; run --strict "--notes=${W}/notes-stale.tsv"
+expect_fail "a no-usable-key note for a source whose key is held fails --strict" "stale note"
 
 # A manifest row whose file was never downloaded.
 write_manifest good notfetched
@@ -371,7 +384,7 @@ else
 fi
 
 fresh_root; run --strict
-expect_fail "and --strict still counts them unverifiable" "unverifiable"
+expect_pass "and --strict leaves them to verify-provenance.sh, as unsigned" "publish no OpenPGP signature"
 
 # A kind this script does not know fails, even on a file it could verify.
 : > "${W}/manifest"; add_row good telepathy
@@ -550,7 +563,7 @@ write_manifest good expired revoked bad nosig unknown
 fresh_root; run --fetch-unknown-keys
 # good + expired verified; unknown unaudited; nosig unverifiable;
 # revoked + bad fatal.
-for want in "verified:     2" "unaudited:    1" "unverifiable: 1" \
+for want in "verified:     2" "unaudited:    1" "unsigned:     1" \
             "REVOKED KEYS: 1" "FAILED:       2"; do
     if grep -qF "$want" "$OUT"; then
         green "mixed manifest reports [${want}]"
