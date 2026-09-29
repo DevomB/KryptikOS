@@ -148,9 +148,9 @@ checks them against kernel.org's published developer keys.
 
 ## Open problems
 
-- The GNU keyring is fetched over the network, so a signature checked against
-  it means "signed by whoever the keyring says". Checking those keys out of
-  band is manual.
+- The GNU keyring is fetched over the network and kept with the sources, so a
+  signature checked against it means "signed by whoever the keyring said when
+  it was fetched". Checking those keys out of band is manual.
 - The kernel.org signing keys are pinned by fingerprint in
   `tools/verify-signatures.sh`, and those fingerprints still need confirming
   against kernel.org independently.

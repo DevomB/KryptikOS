@@ -291,6 +291,17 @@ delete it yet - work out why first. See docs/supply-chain.md."
     fi
 done < <(manifest)
 
+# The GNU keyring, kept with the sources so a cache of them carries it: the
+# signature gate checks GNU signatures against it, and ftp.gnu.org does not
+# answer every runner every time.
+keyring="${KRYPTIK_SOURCES}/.keys/gnu-keyring.gpg"
+if [[ ! -s "$keyring" ]]; then
+    mkdir -p "${KRYPTIK_SOURCES}/.keys"
+    log "fetching the GNU keyring"
+    fetch_attempt "https://ftp.gnu.org/gnu/gnu-keyring.gpg" "$keyring" fresh \
+        || { rm -f "${keyring}.part"; warn "could not fetch the GNU keyring; tools/verify-signatures.sh fetches it again"; }
+fi
+
 if [[ "$MODE" == "lock" ]]; then
     sort -k2 "${KRYPTIK_LOCK}.new" > "$KRYPTIK_LOCK"
     rm -f "${KRYPTIK_LOCK}.new"
