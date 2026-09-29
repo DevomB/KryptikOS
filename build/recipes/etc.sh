@@ -34,8 +34,9 @@ EOF
 
     # seat may talk to seatd (the compositor's user); kryptik may launch zones
     # through the trusted UI; the net zone's DHCP client drops to dhcpcd.
+    # udev's rules give the DRM cards to video and the render nodes to render.
     local g
-    for g in seat kryptik wheel; do
+    for g in seat kryptik wheel video render; do
         getent group "$g" >/dev/null 2>&1 || groupadd -r "$g"
     done
     getent passwd dhcpcd >/dev/null 2>&1 || \
