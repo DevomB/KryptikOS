@@ -106,5 +106,41 @@ else
 fi
 
 echo
+echo "-- root.json is checked for form, and against the signed command line"
+# The helpers, taken from the installer; die exits the subshell each runs in.
+eval "$(sed -n '/^decimal_field()/,/^}/p; /^hex_field()/,/^}/p; /^verity_of()/,/^}/p' "$INSTALLER")"
+die() { printf 'die: %s\n' "$*"; exit 1; }
+if ! declare -F decimal_field >/dev/null || ! declare -F verity_of >/dev/null; then
+    red "could not extract the record checks from the installer"
+else
+    out="$( (decimal_field total_bytes '1$(reboot)') 2>&1 )"; rc=$?
+    [[ "$rc" -ne 0 && "$out" == *"total_bytes is not a number"* ]] \
+        && green "a command in total_bytes is refused before any arithmetic" \
+        || red "a command in total_bytes: rc=${rc} ${out}"
+    out="$( (decimal_field total_bytes '1234567890123456') 2>&1 )"; rc=$?
+    [[ "$rc" -ne 0 && "$out" == *"too large"* ]] \
+        && green "a number too long for arithmetic is refused" \
+        || red "a 16-digit total_bytes: rc=${rc} ${out}"
+    ( decimal_field total_bytes 1073741824 ) >/dev/null 2>&1 \
+        && green "a plain decimal passes" || red "a plain decimal was refused"
+    out="$( (hex_field sha256 'deadbeef' 64) 2>&1 )"; rc=$?
+    [[ "$rc" -ne 0 && "$out" == *"not a hash"* ]] \
+        && green "a short hash is refused" || red "a short hash: rc=${rc} ${out}"
+    h="$(printf 'a%.0s' $(seq 64))"
+    ( hex_field sha256 "$h" 64 ) >/dev/null 2>&1 \
+        && green "a 64-digit hash passes" || red "a 64-digit hash was refused"
+    tmp="$(mktemp)"
+    printf 'ro rootwait dm-mod.create="kryptik-root,,,ro,0 2097152 verity 1 /dev/sda2 /dev/sda2 4096 4096 262144 262144 sha256 %s 0123abcd 1 panic_on_corruption" mitigations=auto,nosmt\n' "$h" > "$tmp"
+    got="$(verity_of "$tmp")"
+    [[ "$got" == "262144 262144 ${h} 0123abcd" ]] \
+        && green "the verity table's blocks, hash start, root hash and salt are read from the command line" \
+        || red "verity_of read: ${got}"
+    printf 'ro dm-mod.create="x,,,ro,0 8 verity 1 /dev/sda2 /dev/sda2 4096 4096 1 1 sha256 nothex 00 1 panic_on_corruption"\n' > "$tmp"
+    [[ -z "$(verity_of "$tmp")" ]] \
+        && green "a table whose root hash is not 64 hex digits reads as none" \
+        || red "a malformed table was accepted"
+    rm -f "$tmp"
+fi
+echo
 printf 'passed %d, failed %d\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]] || exit 1
