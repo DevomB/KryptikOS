@@ -111,6 +111,25 @@ fi
 VER_A=""; [[ -n "$PAYLOAD_A" ]] && VER_A="$(version_of_payload "$PAYLOAD_A")"
 MEDIA_USB_A=""; [[ -n "$VER_A" && -f "${IMGDIR}/kryptik-${VER_A}-usb.img" ]] && MEDIA_USB_A="${IMGDIR}/kryptik-${VER_A}-usb.img"
 
+# ------------------------------------------------------------- certificate --
+# The Secure Boot certificate the medium under test carries, read out of its
+# ESP (/kryptik/kryptik-sb.crt): the one the boot tests enrol and the export
+# publishes, whichever key signed the kernels, a development build's own or
+# the key medium's.
+medium_cert() {   # medium_cert USB-IMAGE OUT; 0 when a certificate was read
+    local start
+    start="$(sfdisk -d "$1" 2>/dev/null | awk -F'[ ,]+' '$1 ~ /1$/ { for (i = 1; i <= NF; i++) if ($i == "start=") print $(i + 1); exit }')"
+    [[ -n "$start" ]] || return 1
+    if mtype -i "${1}@@$(( start * 512 ))" ::/kryptik/kryptik-sb.crt > "$2" 2>/dev/null \
+       && openssl x509 -in "$2" -noout > /dev/null 2>&1; then return 0; fi
+    rm -f "$2"; return 1
+}
+MEDIUM_CERT=""; CERT_NAME=""
+if [[ -f "$MEDIA_USB" ]] && medium_cert "$MEDIA_USB" "${OUT}/kryptik-sb.crt"; then
+    MEDIUM_CERT="${OUT}/kryptik-sb.crt"
+    CERT_NAME="$(openssl x509 -in "$MEDIUM_CERT" -noout -subject -nameopt multiline | sed -n 's/^ *commonName *= *//p')"
+fi
+
 # A production pair, built with a throwaway key medium and kept apart, since
 # its versions would sort above A and B here: the two highest payloads, the
 # lower one's USB medium, and the certificate its media carry.
@@ -345,7 +364,11 @@ it_artifacts()     { "${SELF}/check-artifact-hardening.sh" "$SYSROOT" --strict -
 it_licences()      { "${SELF}/check-image-licences.sh" "$SYSROOT"; }
 it_kernel_config() { "${SELF}/validate-kernel-config.sh" --boot && "${SELF}/validate-kernel-config.sh" --hardened; }
 it_support_status() { "${SELF}/check-support-status.sh" --strict; }
-it_ovmf_vars()     { "${IMG}/ovmf-vars.sh"; }
+it_ovmf_vars() {
+    [[ -n "$MEDIUM_CERT" ]] || { echo "no certificate could be read out of ${MEDIA_USB:-(no medium)}: /kryptik/kryptik-sb.crt on its ESP"; return 1; }
+    echo "the certificate the medium carries: ${CERT_NAME} ($(openssl x509 -in "$MEDIUM_CERT" -noout -fingerprint -sha256 | cut -d= -f2))"
+    "${IMG}/ovmf-vars.sh" --cert "$MEDIUM_CERT"
+}
 it_smoke_usb()     { "${IMG}/media-smoke.sh" --usb "$MEDIA_USB" --vars clean; }
 it_smoke_iso()     { "${IMG}/media-smoke.sh" --iso "$MEDIA_ISO" --vars clean; }
 it_smoke_sb()      { "${IMG}/media-smoke.sh" --usb "$MEDIA_USB" --vars enrolled; }
@@ -499,9 +522,11 @@ it_export() {
     # B's own root.json: images/root.json is whichever release was built last.
     if [[ -n "$PAYLOAD_B" && -f "${PAYLOAD_B}/root.json" ]]; then cp "${PAYLOAD_B}/root.json" "${d}/"
     elif [[ -f "${IMGDIR}/root.json" ]]; then cp "${IMGDIR}/root.json" "${d}/"; fi
-    for f in "${KRYPTIK_WORK}/keys/sb/kryptik-sb.crt" "${KRYPTIK_WORK}/keys/sb/kryptik-sb.der"; do
-        if [[ -f "$f" ]]; then cp "$f" "${d}/"; else echo "  missing trust material: $f"; ok=1; fi
-    done
+    # The certificate the media carry, as they carry it, and in DER form for
+    # a firmware's enrolment menu.
+    if [[ -n "$MEDIUM_CERT" ]] && cp "$MEDIUM_CERT" "${d}/kryptik-sb.crt" \
+       && openssl x509 -in "$MEDIUM_CERT" -outform DER -out "${d}/kryptik-sb.der" 2>/dev/null; then :
+    else echo "  no certificate read out of ${MEDIA_USB:-(no medium)} to publish"; ok=1; fi
     # The media's checksums as stage 06 signed them, and the anchor the tested
     # image carries, read out of B's root image: what a download is checked by.
     if [[ -n "$VER" && -f "${IMGDIR}/${sums}" && -f "${IMGDIR}/${sums}.sig" ]]; then
@@ -585,7 +610,7 @@ if [[ -n "$EXPORT" ]] || wanted release; then
             echo "iso        : $(basename "${MEDIA_ISO:-none}") sha256 ${H_ISO:-none}"
             echo "firmware   : ${FW_PKG} (${FW})"
             echo "kernel     : ${KERNEL_LINE:-not observed}"
-            echo "trust      : kryptik-sb.crt / kryptik-sb.der (the developer Secure Boot key, a test anchor)"
+            echo "trust      : kryptik-sb.crt / kryptik-sb.der (the Secure Boot certificate the media carry: ${CERT_NAME:-unknown})"
             echo "checksums  : kryptik-${VER:-unknown}.SHA256SUMS and .sig, signed by the release key; release-signers checks them"
             echo "read       : INSTRUCTIONS.md$([[ -f "${EXPORT}/RELEASE-NOTES.md" ]] && echo ", RELEASE-NOTES.md")"
         } > "${EXPORT}/RELEASE.txt"

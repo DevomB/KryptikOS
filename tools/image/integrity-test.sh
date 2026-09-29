@@ -83,11 +83,14 @@ dd if="$DISK" of="$ESPIMG" bs=1M iflag=skip_bytes,count_bytes skip="$ESP_OFF" co
 cp "$ESPIMG" "${ESPIMG}.pristine"
 TMPK="$(mktemp -d)"
 mcopy -i "$ESPIMG" ::/EFI/BOOT/BOOTX64.EFI "$TMPK/good.efi"
+# The certificate the medium carries, which signed the kernel it installed.
+mtype -i "${USB}@@$(( $(part_start "$USB" 1) * 512 ))" ::/kryptik/kryptik-sb.crt > "$TMPK/medium.crt" 2>/dev/null
+sbverify --cert "$TMPK/medium.crt" "$TMPK/good.efi" >/dev/null 2>&1 && green "control: the medium's certificate verifies the installed kernel" || red "control: the medium's certificate does not verify the installed kernel"
 openssl req -new -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=not kryptik/" -keyout "$TMPK/k" -out "$TMPK/c" >/dev/null 2>&1
-# strip the developer signature, sign with the foreign key
+# strip the signature, sign with the foreign key
 sbattach --remove "$TMPK/good.efi" 2>/dev/null || true
 sbsign --key "$TMPK/k" --cert "$TMPK/c" --output "$TMPK/foreign.efi" "$TMPK/good.efi" >/dev/null 2>&1
-sbverify --cert "${KRYPTIK_WORK}/keys/sb/kryptik-sb.crt" "$TMPK/foreign.efi" >/dev/null 2>&1 && red "control: the foreign kernel verifies against our key" || green "control: the foreign-signed kernel does not verify against the developer key"
+sbverify --cert "$TMPK/medium.crt" "$TMPK/foreign.efi" >/dev/null 2>&1 && red "control: the foreign kernel verifies against the medium's certificate" || green "control: the foreign-signed kernel does not verify against the medium's certificate"
 mdel -i "$ESPIMG" ::/EFI/BOOT/BOOTX64.EFI
 mcopy -i "$ESPIMG" "$TMPK/foreign.efi" ::/EFI/BOOT/BOOTX64.EFI
 dd if="$ESPIMG" of="$DISK" bs=1M oflag=seek_bytes seek="$ESP_OFF" conv=notrunc status=none

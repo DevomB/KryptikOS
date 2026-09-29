@@ -18,6 +18,12 @@ on:
       - '*.md'
       - '.github/workflows/ci.yml'
   workflow_dispatch:
+    inputs:
+      role:
+        description: "Build and test the release as a development build, or as a production one signed with a throwaway key medium: the release flow, rehearsed"
+        type: choice
+        options: [development, production]
+        default: development
 
 # Said in the reviewed file rather than left to a repository setting. The cache
 # and the artifacts use the runner's own credential, not this token.
@@ -334,19 +340,41 @@ jobs:
       # images-production (tools/production-pair.sh). Then release A, and B =
       # A's version with .1 (sorts after A), which the update test applies over
       # A: the suites take the release built last as the one under test. A
-      # tag's run builds the tag's version as B, over a 0.0.0 A.
+      # tag's run builds the tag's version as B, over a 0.0.0 A. A production
+      # version (v1 and up, or the role asked for) is built as a release is,
+      # signed with a throwaway key medium that lives only while the media are
+      # built: the release flow rehearsed, and no job publishes its export.
       - name: Stage 06, the media (production 1.0.0 and 1.0.1, release A and the update B)
         timeout-minutes: 90
         run: |
           make production-pair KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
           ls -la "$KRYPTIK_WORK/images-production"
+          ROLE=development
+          if [ "${{ inputs.role }}" = production ]; then ROLE=production; fi
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             VER_A=0.0.0; VER_B="${GITHUB_REF_NAME#v}"
+            case "$GITHUB_REF_NAME" in v0.*) ;; *) ROLE=production ;; esac
+          elif [ "$ROLE" = production ]; then
+            VER_A=0.0.0; VER_B=0.0.1
           else
             VER_A="0.1.$(date -u +%Y%m%d).${GITHUB_SHA::8}"; VER_B="${VER_A}.1"
           fi
-          make media KRYPTIK_VERSION="$VER_A" KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
-          make media KRYPTIK_VERSION="$VER_B" KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
+          echo "a ${ROLE} release: ${VER_B}, updating from ${VER_A}"
+          KEYS=()
+          if [ "$ROLE" = production ]; then
+            tools/throwaway-key-medium.sh /mnt/kryptik/medium
+            KEYS=(KRYPTIK_ROLE=production KRYPTIK_KEYS=/mnt/kryptik/medium)
+          fi
+          make media KRYPTIK_VERSION="$VER_A" "${KEYS[@]}" KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
+          make media KRYPTIK_VERSION="$VER_B" "${KEYS[@]}" KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
+          if [ "$ROLE" = production ]; then
+            # The suites sign their control disks with the medium's own key,
+            # from a copy, as a release's acceptance does; the rest of the
+            # medium is gone before anything is packed.
+            sudo mkdir -p "$KRYPTIK_WORK/keys/medium"
+            sudo cp /mnt/kryptik/medium/kryptik-testctl /mnt/kryptik/medium/kryptik-testctl.pub "$KRYPTIK_WORK/keys/medium/"
+            rm -rf /mnt/kryptik/medium
+          fi
           ls -la "$KRYPTIK_WORK/images" | grep -E 'usb.img|\.iso|payload'
 
       # Never the private halves of the keys: the acceptance needs the
@@ -443,7 +471,9 @@ jobs:
           SUITES: ${{ matrix.suites }}
         run: |
           rc=0
-          sudo env KRYPTIK_WORK="$KRYPTIK_WORK" KRYPTIK_SOURCES="$KRYPTIK_SOURCES" NO_COLOR=1 \
+          # A release's media honour control disks signed by their medium's key: its copy, when there is one.
+          k="$KRYPTIK_WORK/keys/medium/kryptik-testctl"; [ -f "$k" ] || k=""
+          sudo env KRYPTIK_WORK="$KRYPTIK_WORK" KRYPTIK_SOURCES="$KRYPTIK_SOURCES" NO_COLOR=1 KRYPTIK_TESTCTL_KEY="$k" \
             TMPDIR="$TMPDIR" CARGO_TARGET_DIR="$CARGO_TARGET_DIR" tools/acceptance.sh --only "$SUITES" || rc=$?
           [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]
 
@@ -537,13 +567,16 @@ jobs:
           echo "make acceptance did not pass; see the acceptance-report artifact"
           exit 1
 
-  # A tag's run ends on the Releases page: the tested export, the
-  # corresponding source and the acceptance logs, as a draft to publish after
-  # a look (docs/releases.md). The one job that writes to the repository.
+  # A development release's tag (v0.x) ends on the Releases page: the tested
+  # export, the corresponding source and the acceptance logs, as a draft to
+  # publish after a look (docs/releases.md). A production release is built by
+  # hand with the key medium and published with the same tool; its tag's run
+  # rehearsed that with a throwaway medium, and nothing signed by one goes on
+  # the page. The one job that writes to the repository.
   release:
     name: Draft the release
     needs: [verdict]
-    if: ${{ !cancelled() && github.ref_type == 'tag' && needs.verdict.result == 'success' }}
+    if: ${{ !cancelled() && github.ref_type == 'tag' && startsWith(github.ref_name, 'v0.') && needs.verdict.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:

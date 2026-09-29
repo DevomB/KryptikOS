@@ -39,16 +39,19 @@ the release key made offline. The dated builds CI makes of every push to main
    --no-held`), then builds that version from nothing, with no cached tree,
    so the release holds only what a clean build makes: about three hours. It
    builds it as the release under test, over a `0.0.0` build the update
-   suite updates from, runs every suite on the images, and its last job
-   drafts the release: the export, the corresponding source
-   (`make source-bundle`) and the acceptance logs, with the release notes as
-   the page's text. Read the draft and publish it from the page.
-4. A production release is built by hand with the key medium and its export
-   published with the same tool once the tag is pushed:
+   suite updates from, and runs every suite on the images. For a development
+   release (`v0.x`) its last job drafts the release: the export, the
+   corresponding source (`make source-bundle`) and the acceptance logs, with
+   the release notes as the page's text. Read the draft and publish it from
+   the page.
+4. A production release (`v1.0.0` and up) is built by hand with the key
+   medium ([release keys](release-keys.md#using-them)). Its tag's run builds
+   and tests the revision the same way, signed with a throwaway key medium,
+   and drafts nothing from that: the page takes your export, with the same
+   tool, once the tag is pushed:
    `tools/release-publish.sh DIR --source-bundle FILE --publish`. Its payload
    goes up with it, and the `Update channel` workflow, run with the tag,
-   makes it what installed machines update to
-   ([release keys](release-keys.md#using-them)).
+   makes it what installed machines update to.
 
 ## What the page carries
 
