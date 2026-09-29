@@ -378,8 +378,8 @@ it_state()         { "${IMG}/state-test.sh" --usb "$MEDIA_USB"; }
 it_integrity()     { "${IMG}/integrity-test.sh" --usb "$MEDIA_USB"; }
 it_zones()         { "${IMG}/zones-test.sh" --usb "$MEDIA_USB"; }
 it_gui()           { "${IMG}/gui-test.sh" --usb "$MEDIA_USB"; }
-# Each update suite is handed the other role's newest payload too, which the
-# release it installed must refuse.
+# Each update suite is handed the other flow's newest payload too, signed by
+# keys the release it installed does not trust, which it must refuse.
 it_update() {
     local foreign=(); [[ -n "$PROD_B" ]] && foreign=(--foreign "$PROD_B")
     "${IMG}/update-test.sh" --usb-a "$MEDIA_USB_A" --payload-a "$PAYLOAD_A" --payload-b "$PAYLOAD_B" --vars clean "${foreign[@]}"

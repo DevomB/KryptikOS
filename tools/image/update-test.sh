@@ -6,8 +6,9 @@
 #                              [--foreign DIR] [--disk FILE] [--timeout N]
 #                              [--vars clean|enrolled | --vars-file FILE]
 #
-#   --foreign DIR    a payload of the other role, which B must refuse; required
-#                    when B is a production release
+#   --foreign DIR    a payload signed by a key B does not trust, which B must
+#                    refuse: the other role's build, or another medium's;
+#                    required when B is a production release
 #   --vars-file FILE the firmware variable store to start from, for media
 #                    signed with a key other than this build's own
 #
@@ -17,7 +18,7 @@
 #
 #   step 1  install A, boot, create a zone volume and a home file
 #   step 2  apply B, reboot: slot b committed, data intact
-#   step 3  refusals on B: wrong key, the other role's build (--foreign),
+#   step 3  refusals on B: wrong key, a build it does not trust (--foreign),
 #           modified image, truncated kernel, extra file, older release, full
 #           disk, concurrent run; no trial armed. On a development B also a
 #           manifest for the other role, signed by B's own key
@@ -62,10 +63,13 @@ B_ROLE="$(role_of "$PAY_B")"
 case "$B_ROLE" in development|production) ;; *) die "B's manifest names no role this suite knows: '${B_ROLE}'" ;; esac
 if [[ -n "$FOREIGN" ]]; then
     F_ROLE="$(role_of "$FOREIGN")"
-    [[ -n "$F_ROLE" && "$F_ROLE" != "$B_ROLE" && -s "$FOREIGN/manifest.sig" ]] \
-        || die "--foreign ${FOREIGN} must be a signed payload of the other role than B's (${B_ROLE})"
+    [[ -n "$F_ROLE" && -s "$FOREIGN/manifest.sig" ]] \
+        || die "--foreign ${FOREIGN} must be a signed stage 06 payload"
+    if cmp -s "$FOREIGN/manifest.sig" "$PAY_B/manifest.sig"; then
+        die "--foreign ${FOREIGN} is B's own payload: name one signed by a key B does not trust"
+    fi
 elif [[ "$B_ROLE" == production ]]; then
-    die "a production B must refuse a development build: name one with --foreign DIR"
+    die "a production B must refuse a build it does not trust: name one with --foreign DIR"
 fi
 [[ -z "$VARS_FILE" || -f "$VARS_FILE" ]] || die "--vars-file ${VARS_FILE} is not a file"
 # Stage 06 publishes B into a channel beside its payload with
