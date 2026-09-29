@@ -100,7 +100,7 @@ grep -qE 'Access Denied|Security Violation' <<<"$T2" && green "the firmware refu
 grep -q 'Linux version' <<<"$T2" && red "a foreign-signed kernel BOOTED under the enrolled key" || green "the firmware did not start the foreign-signed kernel"
 grep -q 'KRYPTIK_SMOKE: BEGIN' <<<"$T2" && red "Kryptik userspace ran from an untrusted boot file" || green "no userspace ran"
 # positive control: the same firmware and store boot the medium's signed kernel
-"${SELF}/mk-testctl.sh" --out "${VMDIR}/testctl-smoke.img" smoke_poweroff=1 > /dev/null
+"${SELF}/mk-testctl.sh" --out "${VMDIR}/testctl-smoke.img" --key "$TESTCTL_KEY" smoke_poweroff=1 > /dev/null
 smoke integ-p2ctl --usb "$USB" --testctl "${VMDIR}/testctl-smoke.img" --vars enrolled --timeout 300 > /dev/null 2>&1
 boot_txt | grep -q 'Linux version' && green "control: the developer-signed medium boots under the same store" || red "control failed: the signed medium did not boot"
 # restore the pristine ESP
@@ -129,7 +129,7 @@ grep -q 'login:' <<<"$T3" && red "a login prompt appeared on a tampered root" ||
 # ----------------------------------------------------------------- step 4 --
 step "step 4: recovery from the medium restores slot a; state survives"
 CTLR="${VMDIR}/testctl-recover.img"
-"${SELF}/mk-testctl.sh" --out "$CTLR" recover_disk=/dev/vda recover_slot=a recover_mode=restore smoke_poweroff=1 install_wait=5 > /dev/null
+"${SELF}/mk-testctl.sh" --out "$CTLR" --key "$TESTCTL_KEY" recover_disk=/dev/vda recover_slot=a recover_mode=restore smoke_poweroff=1 install_wait=5 > /dev/null
 smoke integ-p4 --usb "$USB" --disk "$DISK" --testctl "$CTLR" --vars enrolled --timeout "$TIMEOUT" > /dev/null
 boot_txt | grep -q 'KRYPTIK_RECOVER: rc=0' && green "kryptik-recover --restore-slot a succeeded from the medium" || { red "recovery did not report success"; boot_txt | grep 'KRYPTIK_RECOVER' | tail -5 | sed 's/^/        /'; }
 # The records recovery wrote on the ESP, read from the host: whole, and

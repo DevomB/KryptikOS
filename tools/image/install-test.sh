@@ -55,7 +55,7 @@ step "step 1: install from the medium onto a blank ${SIZE} disk"
 if [[ -z "$SIZE" ]]; then SIZE="$("${SELF}/test-disk-size.sh" --medium "$USB")" || die "could not size the test disk from the medium"; fi
 rm -f "$DISK"; truncate -s "$SIZE" "$DISK"
 CTL="${VMDIR}/testctl-install.img"
-"${SELF}/mk-testctl.sh" --out "$CTL" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
+"${SELF}/mk-testctl.sh" --out "$CTL" --key "$TESTCTL_KEY" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
     "${PRESEED[@]}" > /dev/null || die "control disk"
 smoke install-p1 --usb "$USB" --disk "$DISK" --testctl "$CTL" --vars "$VARS" --timeout "$TIMEOUT"
 qrc=$?
@@ -155,7 +155,7 @@ refusal_case() {   # refusal_case NAME DISK-SIZE EXTRA-RUN-ARGS... ; expects rc!
     local name="$1" size="$2"; shift 2
     local d="${VMDIR}/refuse-${name}.img"; rm -f "$d"; truncate -s "$size" "$d"
     local ctl="${VMDIR}/testctl-${name}.img"
-    "${SELF}/mk-testctl.sh" --out "$ctl" install_target=/dev/vda smoke_poweroff=1 install_wait=5 > /dev/null
+    "${SELF}/mk-testctl.sh" --out "$ctl" --key "$TESTCTL_KEY" install_target=/dev/vda smoke_poweroff=1 install_wait=5 > /dev/null
     smoke "refuse-${name}" --usb "$USB" --disk "$d" --testctl "$ctl" --vars "$VARS" --timeout "$TIMEOUT" "$@" > /dev/null
     local t="${VMDIR}/refuse-${name}.txt"; boot_txt > "$t"
     want "$t" 'KRYPTIK_INSTALL: BEGIN'            "${name}: the installer ran"
@@ -190,13 +190,25 @@ fi
 # The disk this system runs from: the medium, the one USB disk in the guest.
 # No flag opens it.
 ctl="${VMDIR}/testctl-medium.img"
-"${SELF}/mk-testctl.sh" --out "$ctl" install_target=/dev/sda install_replace=1 smoke_poweroff=1 install_wait=5 > /dev/null
+"${SELF}/mk-testctl.sh" --out "$ctl" --key "$TESTCTL_KEY" install_target=/dev/sda install_replace=1 smoke_poweroff=1 install_wait=5 > /dev/null
 d="${VMDIR}/refuse-medium.img"; rm -f "$d"; truncate -s "$SIZE" "$d"
 smoke refuse-medium --usb "$USB" --disk "$d" --testctl "$ctl" --vars "$VARS" --timeout "$TIMEOUT" > /dev/null
 t="${VMDIR}/refuse-medium.txt"; boot_txt > "$t"
 want "$t" 'KRYPTIK_INSTALL: BEGIN target=/dev/sda'                     "medium: the installer ran against the medium's own disk"
 want "$t" 'KRYPTIK_INSTALL: .*is the disk this system is running from' "medium: refused as the disk this system runs from, even with --replace-kryptik"
 deny "$t" 'KRYPTIK_INSTALL: rc=0'                                      "medium: never reported success"
+
+# A control disk signed by some other key: the medium honours the
+# kryptik-testctl key its anchor lists and no other, so nothing is armed. The
+# disk's poweroff is ignored with the rest, so this boot runs to its timeout.
+ssh-keygen -q -t ed25519 -N '' -C stranger -f "${VMDIR}/stranger-key" < /dev/null
+ctl="${VMDIR}/testctl-stranger.img"
+"${SELF}/mk-testctl.sh" --out "$ctl" --key "${VMDIR}/stranger-key" install_target=/dev/vda smoke_poweroff=1 install_wait=5 > /dev/null
+d="${VMDIR}/refuse-stranger.img"; rm -f "$d"; truncate -s "$SIZE" "$d"
+smoke refuse-stranger --usb "$USB" --disk "$d" --testctl "$ctl" --vars "$VARS" --timeout 120 > /dev/null || true
+t="${VMDIR}/refuse-stranger.txt"; boot_txt > "$t"
+want "$t" 'testctl: the control file on .* is not signed by this medium' "stranger: a control disk signed by another key is named and ignored"
+deny "$t" 'KRYPTIK_INSTALL: BEGIN'                                    "stranger: no install began"
 
 # the LUKS UUID of IMG's kryptik-state partition, read from the host
 state_uuid() {
@@ -208,7 +220,7 @@ state_uuid() {
 # An old installation: refused without the flag, and left exactly as it was.
 old="${VMDIR}/old-install.img"; rm -f "$old"; cp --sparse=always "$DISK" "$old"
 ctl="${VMDIR}/testctl-oldinstall.img"
-"${SELF}/mk-testctl.sh" --out "$ctl" install_target=/dev/vda smoke_poweroff=1 install_wait=5 > /dev/null
+"${SELF}/mk-testctl.sh" --out "$ctl" --key "$TESTCTL_KEY" install_target=/dev/vda smoke_poweroff=1 install_wait=5 > /dev/null
 smoke refuse-oldinstall --usb "$USB" --disk "$old" --testctl "$ctl" --vars "$VARS" --timeout "$TIMEOUT" > /dev/null
 t="${VMDIR}/refuse-oldinstall.txt"; boot_txt > "$t"
 want "$t" 'KRYPTIK_INSTALL: .*holds a Kryptik installation or medium' "oldinstall: refused without --replace-kryptik, and says why"
@@ -223,7 +235,7 @@ fi
 if [[ "$QUICK" -eq 0 ]]; then
     before="$(state_uuid "$old")"
     ctl="${VMDIR}/testctl-replace.img"
-    "${SELF}/mk-testctl.sh" --out "$ctl" install_target=/dev/vda install_replace=1 smoke_poweroff=1 install_wait=5 \
+    "${SELF}/mk-testctl.sh" --out "$ctl" --key "$TESTCTL_KEY" install_target=/dev/vda install_replace=1 smoke_poweroff=1 install_wait=5 \
         "${PRESEED[@]}" > /dev/null
     smoke replace-oldinstall --usb "$USB" --disk "$old" --testctl "$ctl" --vars "$VARS" --timeout "$TIMEOUT" > /dev/null
     t="${VMDIR}/replace-oldinstall.txt"; boot_txt > "$t"

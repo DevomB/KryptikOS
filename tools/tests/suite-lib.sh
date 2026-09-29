@@ -91,7 +91,7 @@ check "an installer that reports rc=0 passes" "$?" "0"
 check "run-ovmf.sh got the medium, disk, control disk and the suite's arguments" "$(tail -1 "$STUB_ARGS")" \
     "--mode smoke --name t-install --log ${BOOTLOG} --usb /medium.img --disk ${DISK} --testctl ${VMDIR}/testctl-t-install.img --timeout 900 --vars clean"
 check "the control disk arms the install with the preseeded accounts" "$(grep '^mk-testctl' "$STUB_ARGS" | tail -1)" \
-    "mk-testctl --out ${VMDIR}/testctl-t-install.img install_target=/dev/vda smoke_poweroff=1 install_wait=5 ${PRESEED[*]}"
+    "mk-testctl --out ${VMDIR}/testctl-t-install.img --key ${TESTCTL_KEY} install_target=/dev/vda smoke_poweroff=1 install_wait=5 ${PRESEED[*]}"
 STUB_INSTALLED=1 install_disk t-install /medium.img --vars clean
 [[ $? -ne 0 ]] && ok "an installer that reports rc=1 fails" || bad "an installer that reports rc=1 fails"
 install_disk t-install /medium.img --vars clean

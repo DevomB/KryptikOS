@@ -17,6 +17,10 @@ TUSER_HASH="$(openssl passwd -6 "$TPASS")"; ROOT_HASH="$(openssl passwd -6 "$RPA
 export KRYPTIK_STATE_PASSPHRASE=state-pw
 PRESEED=( "preseed_user=${TUSER}" "preseed_password_hash=${TUSER_HASH}" "preseed_root_hash=${ROOT_HASH}"
           "state_passphrase=${KRYPTIK_STATE_PASSPHRASE}" )
+# The control disks are signed with the kryptik-testctl key the medium's
+# anchor lists: the developer keys' for a development medium, and for the
+# production pair the one tools/production-pair.sh keeps beside it.
+TESTCTL_KEY="${KRYPTIK_TESTCTL_KEY:-${KRYPTIK_WORK}/keys/release/kryptik-testctl}"
 
 DRV="${SELF}/vm-drive.py"
 
@@ -40,7 +44,7 @@ fresh_disk() {   # fresh_disk MEDIUM [test-disk-size.sh args]
 }
 install_disk() {   # install_disk NAME MEDIUM [run-ovmf args]; 0 when the installer reported success
     local ctl="${VMDIR}/testctl-$1.img"
-    "${SELF}/mk-testctl.sh" --out "$ctl" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
+    "${SELF}/mk-testctl.sh" --out "$ctl" --key "$TESTCTL_KEY" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
         "${PRESEED[@]}" > /dev/null || die "the install control disk"
     smoke "$1" --usb "$2" --disk "$DISK" --testctl "$ctl" --timeout "$TIMEOUT" "${@:3}" > /dev/null
     boot_txt | grep -q 'KRYPTIK_INSTALL: rc=0'

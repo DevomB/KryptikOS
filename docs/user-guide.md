@@ -128,12 +128,16 @@ Remove the medium. The installed disk boots on its own; it does not need
 the medium again unless it has to be recovered.
 
 **Unattended install** (what the VM tests do): a small control disk labelled
-`kryptik-testctl`, made with `tools/image/mk-testctl.sh --out FILE
-KEY=VALUE...`, carrying `install_target=/dev/vda`, the state passphrase as
-`state_passphrase=...` (required), and optionally `preseed_user=`,
-`preseed_password_hash=` and `preseed_root_hash=` for the first accounts. An
-install medium honours it and reports `KRYPTIK_INSTALL: rc=0` on success; an
-installed system ignores it.
+`kryptik-testctl`, made with `tools/image/mk-testctl.sh --out FILE --key
+KRYPTIK-TESTCTL KEY=VALUE...`, carrying `install_target=/dev/vda`, the state
+passphrase as `state_passphrase=...` (required), and optionally
+`preseed_user=`, `preseed_password_hash=` and `preseed_root_hash=` for the
+first accounts. The file is signed by the release's `kryptik-testctl` key
+([release keys](release-keys.md)), and a medium honours only a disk its own
+anchor's key signed: anyone else's is named on the console and ignored, so a
+disk attached to a machine that boots your medium cannot arm an install. An
+install medium then reports `KRYPTIK_INSTALL: rc=0` on success; an installed
+system ignores the disk either way.
 
 ## 3. First boot and daily use
 

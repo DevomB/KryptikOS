@@ -365,6 +365,7 @@ it_production() {
     echo "production pair:"
     sha256sum "$PROD_USB_A" "${PROD_A}/manifest" "${PROD_B}/manifest" "${PRODDIR}/kryptik-sb.crt" | sed 's/^/  /'
     "${IMG}/ovmf-vars.sh" --cert "${PRODDIR}/kryptik-sb.crt" --out "${PRODDIR}/vars" || return 1
+    KRYPTIK_TESTCTL_KEY="${PRODDIR}/keys/kryptik-testctl" \
     "${IMG}/update-test.sh" --usb-a "$PROD_USB_A" --payload-a "$PROD_A" --payload-b "$PROD_B" \
         --vars-file "${PRODDIR}/vars/enrolled.fd" --foreign "$PAYLOAD_B"
 }

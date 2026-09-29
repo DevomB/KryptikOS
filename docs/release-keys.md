@@ -11,14 +11,16 @@ makes these keys and never keeps a copy (`build/lib/release-keys.sh`).
 | `kryptik-release` (Ed25519) | every release's manifest, and the checksums of its install media | offline, on the key medium | the thief can sign a release that every machine installs |
 | `kryptik-latest` (Ed25519) | the channel's "this release is current" statement, daily | on the release host, for its timer | machines can be held on an old release; nothing can be installed with it |
 | `kryptik-sb` (RSA, X.509) | the kernels, for Secure Boot | offline, on the key medium | the thief can sign kernels that machines which enrolled it will boot |
+| `kryptik-testctl` (Ed25519) | a control disk that arms an unattended install or recovery on a machine booting your medium (the suites' installs, and your own) | on the key medium, and on the build machine for `make acceptance` | the thief can wipe a disk on a machine they boot your medium on with a control disk attached; nothing can be signed or installed with it |
 | the module key | the kernel's modules | nowhere: each kernel build makes one and throws it away | nothing to steal |
 
-An image trusts the two Ed25519 keys through its anchor,
+An image trusts the three Ed25519 keys through its anchor,
 `/usr/share/kryptik/trust/release-signers`. Each key is listed under its own
 name and held to its own namespaces: the release key to `kryptik-release` for
 manifests and `kryptik-media` for the media's checksums, the statement key to
-`kryptik-latest`. So a statement key cannot sign a release or its media, and
-no signature passes for one of another kind. A machine trusts the Secure Boot
+`kryptik-latest`, the control-disk key to `kryptik-testctl`. So a statement
+key cannot sign a release or its media, a control-disk key can arm nothing
+but an install, and no signature passes for one of another kind. A machine trusts the Secure Boot
 key once its certificate is enrolled in the machine's firmware.
 
 ## Making them
@@ -31,18 +33,24 @@ media, the key medium and its backup, ideally encrypted.
 mkdir kryptik-keys && cd kryptik-keys
 ssh-keygen -t ed25519 -C kryptik-release -f kryptik-release     # set a passphrase
 ssh-keygen -t ed25519 -C kryptik-latest -f kryptik-latest       # set a passphrase
+ssh-keygen -t ed25519 -C kryptik-testctl -f kryptik-testctl     # no passphrase: the suites sign with it unattended
 {
     printf 'kryptik-release namespaces="kryptik-release,kryptik-media" %s\n' "$(cut -d' ' -f1,2 kryptik-release.pub)"
     printf 'kryptik-latest namespaces="kryptik-latest" %s\n' "$(cut -d' ' -f1,2 kryptik-latest.pub)"
+    printf 'kryptik-testctl namespaces="kryptik-testctl" %s\n' "$(cut -d' ' -f1,2 kryptik-testctl.pub)"
 } > release-signers
 openssl req -new -x509 -newkey rsa:3072 -sha256 -days 3650 \
     -subj "/CN=Kryptik Secure Boot/" -keyout kryptik-sb.key -out kryptik-sb.crt   # set a passphrase
-chmod 600 kryptik-release kryptik-latest kryptik-sb.key
+chmod 600 kryptik-release kryptik-latest kryptik-testctl kryptik-sb.key
 ```
 
 The backup gets the whole directory. The key medium gets everything except
 `kryptik-latest` and `kryptik-latest.pub`: the build does not need them. The
 statement key goes to the release host, and nowhere else that is online.
+`kryptik-testctl` may also be copied to the build machine, where
+`make acceptance` signs the control disks that install the media under test
+(`KRYPTIK_TESTCTL_KEY` names it); it arms installs on machines that boot your
+medium and signs nothing else.
 
 The build takes the key medium as it is. It refuses a private key anyone but
 its owner can read, a key owned by anyone but root or the user running the
@@ -80,11 +88,18 @@ For each release:
    `release-signers` with the media: they are what a download is checked by.
 4. Tag the revision you built from `v<version>` and push the tag. The next
    release's notes list what changed since it.
-5. Put the release on the repository's Releases page from the export
-   `make acceptance EXPORT=DIR` wrote: `tools/release-publish.sh DIR
-   --source-bundle FILE --publish` ([releases](releases.md)). The payload
-   goes up with it, under the names its manifest gives: that page is the
-   channel's base.
+5. Test the media and put the release on the repository's Releases page
+   from the export the suites wrote. These media honour a control disk
+   signed by the medium's `kryptik-testctl` alone, so the suites are handed
+   its copy:
+
+   ```sh
+   make acceptance EXPORT=DIR KRYPTIK_TESTCTL_KEY=<copy>/kryptik-testctl
+   tools/release-publish.sh DIR --source-bundle FILE --publish
+   ```
+
+   ([releases](releases.md)). The payload goes up with it, under the names
+   its manifest gives: that page is the channel's base.
 6. Publish it into the channel: the release host is the repository's Pages
    site and the `Update channel` workflow
    ([update channel](design/update-channel.md#the-release-host)). Once, put

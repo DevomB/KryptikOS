@@ -149,7 +149,7 @@ refused "an anchor that lets the release key sign statements" "kryptik-release i
 make_medium; sed -i '1p' "$M/release-signers"
 refused "an anchor listing a key twice" "a key is listed twice"
 make_medium; printf 'someone namespaces="someone" %s\n' "$(cut -d' ' -f1,2 < "$M/kryptik-release.pub")" >> "$M/release-signers"
-refused "an anchor with a third principal" "neither kryptik-release nor kryptik-latest"
+refused "an anchor with a principal of its own" "neither kryptik-release, kryptik-latest nor kryptik-testctl"
 make_medium; sed -i "2s|ssh-ed25519 [^ ]*|$(cut -d' ' -f1,2 < "$M/kryptik-release.pub" | sed 's/[\/&|]/\\&/g')|" "$M/release-signers"
 refused "an anchor with one key for both" "a key is listed twice"
 make_medium; cp "$M/kryptik-latest.pub" "$M/kryptik-release.pub"
