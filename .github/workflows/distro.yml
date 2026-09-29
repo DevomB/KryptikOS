@@ -58,6 +58,10 @@ env:
 jobs:
   toolchain:
     name: Stages 01-02 (cross toolchain, temporary tools)
+    # actions: read, for the tag preflight to read CI's verdict on the commit.
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     outputs:
@@ -88,6 +92,37 @@ jobs:
       - uses: ./.github/actions/prepare
         with:
           sources: fetch
+
+      # A release takes only sources whose signatures verify against keys a
+      # publisher states, whose provenance holds, and a commit whose CI
+      # passed: the gates CI runs on every push, run again here so a tag
+      # never outruns them.
+      - name: The release's sources are signed, and their provenance holds
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ./tools/verify-signatures.sh --strict
+          ./tools/verify-provenance.sh --strict
+      - name: CI passed on the tagged commit
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sha="$(git rev-parse 'HEAD^{commit}')"
+          status=none; conclusion=-
+          for try in $(seq 1 40); do
+            read -r status conclusion < <(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${sha}&per_page=1" \
+              --jq '.workflow_runs[0] | "\(.status // "none") \(.conclusion // "-")"')
+            case "$status" in
+              completed) break ;;
+              none) echo "no CI run for ${sha}: a release is cut from a commit CI has tested"; exit 1 ;;
+              *) echo "CI is ${status} on ${sha}; waiting (${try}/40)"; sleep 60 ;;
+            esac
+          done
+          [ "$status" = completed ] || { echo "CI did not finish on ${sha} in time"; exit 1; }
+          [ "$conclusion" = success ] || { echo "CI concluded ${conclusion} on ${sha}: a release is cut only from a commit CI passed"; exit 1; }
+          echo "CI passed on ${sha}"
 
       # The newest tree, whatever built it: its stamps decide what rebuilds,
       # and 01-toolchain.sh clears one that another toolchain built. A tag

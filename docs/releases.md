@@ -36,8 +36,11 @@ the release key made offline. The dated builds CI makes of every push to main
    ```
 
 3. The Distro workflow refuses a held pin (`check-pin-reviews.sh
-   --no-held`), then builds that version from nothing, with no cached tree,
-   so the release holds only what a clean build makes: about three hours. It
+   --no-held`), a source whose signature or provenance does not verify
+   (`verify-signatures.sh --strict`, `verify-provenance.sh --strict`) and a
+   commit whose CI did not pass, then builds that version from nothing, with
+   no cached tree, so the release holds only what a clean build makes: about
+   three hours. It
    builds it as the release under test, over a `0.0.0` build the update
    suite updates from, and runs every suite on the images. For a development
    release (`v0.x`) its last job drafts the release: the export, the
