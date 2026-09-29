@@ -73,7 +73,8 @@ signature that could not be checked or a signer never established: a key
 taken from the signature itself, a key not held, a file not downloaded. A
 key that no publisher states anywhere passes it only while
 `tools/source-notes.tsv` records the routes that were tried
-(`no-usable-key`); such a note for a key that is held fails it as stale. A
+(`no-usable-key`); such a note for a key that is held fails it as stale,
+while a signature the run could not fetch leaves its note untried. A
 source that publishes no OpenPGP signature is not the gate's: the lock pins
 it, and `tools/verify-provenance.sh --strict` checks whatever else its
 publisher states.
