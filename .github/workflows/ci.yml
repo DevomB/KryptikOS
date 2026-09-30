@@ -235,6 +235,12 @@ jobs:
       - name: kryptikd unit tests
         run: cd compartments/kryptikd && cargo test
 
+      # kryptik-wlproxy and zoneid: their unit and live tests, and the shipped
+      # zone files against the identity invariant. The acceptance runs the same
+      # suite hours later; this is the answer a compositor change gets first.
+      - name: Compositor tests
+        run: tools/tests/compositor.sh
+
       - name: Zone definitions validate
         run: |
           cd compartments/kryptikd && cargo build --quiet
