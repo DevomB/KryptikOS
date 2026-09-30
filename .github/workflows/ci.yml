@@ -133,15 +133,19 @@ jobs:
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: /mnt/kryptik/sources
-          key: sources-v2-${{ hashFiles('sources.lock') }}
+          key: sources-v3-${{ hashFiles('sources.lock') }}
           restore-keys: |
             sources-
 
+      # The signatures are fetched here too, into the set the cache keeps:
+      # the gate below then reads them from disk instead of asking sixty
+      # hosts again on every run. What this pass says is not the verdict.
       - name: Fetch and verify the sources
         if: steps.sources.outputs.cache-hit != 'true'
         run: |
           make sources
           ./tools/prune-sources.sh
+          ./tools/verify-signatures.sh > /dev/null 2>&1 || true
 
       # Not from a pull request: its cache is scoped to its merge ref, so every
       # one whose lock differs from main's would keep a whole copy of its own.

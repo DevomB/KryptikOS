@@ -714,6 +714,13 @@ verify_detached() {
         report "$name" no-signature-upstream "no ${suffix} published beside the tarball"
         return
     fi
+    # A host can answer a busy runner with a page in place of the file: what
+    # came back is not kept, and the file is asked for once more.
+    if ! is_pgp_signature "$sig"; then
+        rm -f "$sig"
+        [[ "${KRYPTIK_SIGCHECK_SELFTEST:-0}" == "1" ]] || sleep 5
+        quiet_fetch "$sigurl" "$sig" || rm -f "$sig"
+    fi
     if ! is_pgp_signature "$sig"; then
         rm -f "$sig"
         warn "${name}: the published ${suffix} is not an OpenPGP signature"
