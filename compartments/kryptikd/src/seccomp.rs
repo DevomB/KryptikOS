@@ -132,6 +132,7 @@ pub enum SeccompError {
     BadSyscallNumber(libc::c_long),
     Syscall { call: &'static str, errno: i32 },
     Unsynced(libc::c_long),
+    Denied(libc::c_long),
 }
 
 impl std::fmt::Display for SeccompError {
@@ -156,6 +157,11 @@ impl std::fmt::Display for SeccompError {
             SeccompError::Unsynced(tid) => write!(
                 f,
                 "seccomp(SET_MODE_FILTER): thread {tid} could not take the filter, so none was attached"
+            ),
+            SeccompError::Denied(nr) => write!(
+                f,
+                "syscall {} ({nr}) is denied by the base policy; no zone policy can allow it",
+                name_of(*nr).unwrap_or("?")
             ),
         }
     }
@@ -674,7 +680,7 @@ pub fn widened(extra: &[libc::c_long]) -> Result<Vec<libc::c_long>, SeccompError
     let mut allow: Vec<libc::c_long> = BASE_ALLOWLIST.to_vec();
     for &nr in extra {
         if is_denied(nr) {
-            return Err(SeccompError::BadSyscallNumber(nr));
+            return Err(SeccompError::Denied(nr));
         }
         if !allow.contains(&nr) {
             allow.push(nr);

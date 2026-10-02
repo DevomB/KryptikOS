@@ -92,6 +92,14 @@ fn gc_sees_only_zone_mappings() {
     assert_eq!(zones_mapped(names.iter().map(|s| s.to_string()).collect()), ["state", "work"]);
 }
 
+#[test]
+fn mount_paths_escaped() {
+    assert_eq!(mount_escaped("/var/lib/kryptik/zones/work"), "/var/lib/kryptik/zones/work");
+    assert_eq!(mount_escaped("/z/a b\tc\nd"), "/z/a\\040b\\011c\\012d");
+    // A literal backslash is escaped too, so "\040" in a name is not a space.
+    assert_eq!(mount_escaped("/z/a\\040b"), "/z/a\\134040b");
+}
+
 /// Needs root, cryptsetup and dm-crypt; returns early without them.
 #[test]
 fn luks2_lifecycle_when_root() {
