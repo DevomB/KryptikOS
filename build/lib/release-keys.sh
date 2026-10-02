@@ -159,7 +159,7 @@ medium_public() {
         [[ -f "${m}/${f}" ]] || die "${m} has no ${f}"
         [[ ! -L "${m}/${f}" ]] || die "${m}/${f} is a symlink: the medium holds its files itself"
     done
-    f="$(grep -rls -- 'PRIVATE KEY' "$m" | head -1)"
+    f="$(grep -rls -- 'PRIVATE KEY' "$m" | head -1 || true)"
     [[ -z "$f" ]] || die "${f} holds a private key: binding is handed the anchor and the certificate alone"
     anchor_ok "${m}/release-signers"
     openssl x509 -in "${m}/kryptik-sb.crt" -noout -checkend 0 > /dev/null 2>&1 \
