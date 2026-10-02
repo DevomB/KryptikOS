@@ -187,6 +187,14 @@ rm "$T/parts/a/identity"
 # shellcheck disable=SC2034  # back to a run of its own
 PARTS=()
 
+# --- the report's suite list holds every suite an item names -------------------
+named="$(sed -n 's/^ *item  *\([a-z]*\)  *.*/\1/p' "$ACC" | sort -u | tr '\n' ' ')"
+listed="$(sed -n 's/^ *for g in \(.*\); do$/\1/p' "$ACC")"
+unlisted=""
+for s in $named; do [[ " $listed " == *" $s "* ]] || unlisted="$unlisted $s"; done
+[[ -n "$named" && -n "$listed" && -z "$unlisted" ]] && ok "REPORT.md's suite list holds every suite an item names" \
+    || bad "suites with items and no line in the report's list:${unlisted:- the lists could not be read}"
+
 # --- the export's list covers every file in it but itself ---------------------
 E="$T/export"; mkdir -p "$E/acceptance-logs"
 for f in kryptik-1-usb.img manifest-1 manifest-1.sig INSTRUCTIONS.md RELEASE.txt ACCEPTANCE-REPORT.md acceptance-logs/results.tsv; do echo "$f" > "$E/$f"; done

@@ -383,12 +383,13 @@ for f in /proc/[0-9]*/cmdline; do
     c="$(tr '\0' ' ' < "$f" 2>/dev/null)"
     case "$c" in *"$MARKER_TOKEN"*) host_hits=$((host_hits+1));; esac
 done
-if kill -0 "$MARKER_PID" 2>/dev/null && (( host_hits > 0 )); then
+kill -0 "$MARKER_PID" 2>/dev/null; marker_rc=$?
+if (( marker_rc == 0 && host_hits > 0 )); then
     pass "B2a positive control: the host marker process is running and visible in /proc"
     MARKER_LIVE=1
 else
     fail "B2a positive control FAILED: marker not running or not visible; B2b/B2c prove nothing"
-    info "kill -0 rc=$? host_hits=$host_hits"
+    info "kill -0 rc=$marker_rc host_hits=$host_hits"
     MARKER_LIVE=0
 fi
 
@@ -406,8 +407,10 @@ else
     skip "B2c a second zone cannot see it either (positive control failed)"
 fi
 
-# The same scan must find a process that is there: the zone's own child.
-zrun alpha -- /bin/sh -c "$PRO h=SELFMARK; t=ER991; pat=\"\$h\$t\"; /bin/sleep 5 & sleep 0.2; n=0; for f in /proc/[0-9]*/cmdline; do c=\$(tr \"\\0\" \" \" < \"\$f\" 2>/dev/null); case \"\$c\" in *sleep*) n=\$((n+1));; esac; done; if [ \"\$n\" -gt 0 ]; then echo PROBE=sees-own; else echo PROBE=BLIND; fi"
+# The same scan must find a process that is there: the zone's own child,
+# which alone carries the joined token, as its $0. The ":" keeps the child a
+# shell: a lone command would replace it, and the token with it.
+zrun alpha -- /bin/sh -c "$PRO h=SELFMARK; t=ER991; pat=\"\$h\$t\"; /bin/sh -c 'sleep 5; :' \"\$pat\" & sleep 0.2; n=0; for f in /proc/[0-9]*/cmdline; do c=\$(tr \"\\0\" \" \" < \"\$f\" 2>/dev/null); case \"\$c\" in *\"\$pat\"*) n=\$((n+1));; esac; done; if [ \"\$n\" -gt 0 ]; then echo PROBE=sees-own; else echo PROBE=BLIND; fi"
 probe "B2d the /proc scan is not vacuous: a zone DOES see its own child" "sees-own"
 
 # Private /tmp per zone.
