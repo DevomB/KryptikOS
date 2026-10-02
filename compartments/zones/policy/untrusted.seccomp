@@ -1,2 +1,1 @@
-# untrusted: the shared base policy only. Directives: allow-syscall NAME, allow-socket AF_X,
-# allow-netlink NETLINK_X, keep-capability CAP_X (see docs/design/zone-policy-files.md).
+# untrusted: the base policy only; the directives are in docs/design/zone-policy-files.md.
