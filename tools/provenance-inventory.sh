@@ -324,6 +324,8 @@ CLASSES = [
      "detached signature; signer key published by kernel.org AND certified by a reference key"),
     ("signature-korg-published-key",
      "detached signature; signer key published by kernel.org, no certification on the material"),
+    ("signature-savannah-published-key",
+     "detached signature; signer key in the release keyring GNU Savannah publishes for the project"),
     ("signature-wkd-published-key",
      "detached signature; signer key published over WKD by the signer's own email domain - a third party's statement, not upstream designating a signer"),
     ("signature-platform-published-key",
@@ -412,6 +414,7 @@ def classify(name):
     # a worse answer than the one the verifier actually gave.
     if s and s[0] in ("signature-korg-published-key",
                       "signature-korg-certified-key",
+                      "signature-savannah-published-key",
                       "signature-wkd-published-key",
                       "signature-platform-published-key"):
         return s[0], s[1]

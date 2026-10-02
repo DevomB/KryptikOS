@@ -244,7 +244,7 @@ fi
 # fetched GNU keyring. Each must be a fingerprint the project publishes on its
 # own origin, with that source noted here so it can be rechecked.
 PINNED_FPRS=(
-    # kernel.org mainline and stable.
+    # kernel.org mainline and stable: pgpkeys.git and kernel.org's WKD serve both (2026-10-02; key-provenance.tsv).
     "ABAF11C65A2970B130ABE3C479BE3E4300411886"   # Linus Torvalds, mainline
     "647F28654894E3BD457199BE38DBBDC86092693E"   # Greg Kroah-Hartman, stable
 
@@ -322,6 +322,8 @@ key_is_pinned() { _key_in "$1" "${PINNED_FPRS[@]}"; }
 KEY_PROVENANCE="${KRYPTIK_SIGCHECK_PROVENANCE:-$(dirname "${BASH_SOURCE[0]}")/key-provenance.tsv}"
 
 declare -a PROV_FPR=() PROV_KIND=() PROV_LOC=() PROV_SIGNS=()
+# The one page of GNU Savannah that serves a project's release keyring.
+SAVANNAH_LOCATOR='^https://savannah\.gnu\.org/project/release-gpgkeys\.php\?group=[a-z0-9-]+&download=1$'
 
 load_key_provenance() {
     [[ -f "$KEY_PROVENANCE" ]] || return 0
@@ -358,6 +360,15 @@ load_key_provenance() {
                     # "GitHub hosts this key".
                     [[ "$rest" == *published\ by* ]] \
                         || why="a github row must record which account published the release"
+                    ;;
+                savannah)
+                    if [[ "$l" =~ $SAVANNAH_LOCATOR ]]; then
+                        :
+                    elif [[ "${KRYPTIK_SIGCHECK_SELFTEST:-0}" == "1" && "$l" == file://* ]]; then
+                        :
+                    else
+                        why="a savannah locator must be the project's release-gpgkeys.php?group=<project>&download=1"
+                    fi
                     ;;
                 wkd)  [[ "$l" == *@*.* ]]     || why="a wkd locator must be an email address" ;;
                 *)    why="unknown kind '${k}'" ;;
@@ -428,7 +439,7 @@ import_provenance_keys_for() {
 
         tmp="$(mktemp)"
         case "${PROV_KIND[$i]}" in
-            korg|github)
+            korg|github|savannah)
                 if ! curl -fsSL --max-time 30 -o "$tmp" "${PROV_LOC[$i]}" 2>/dev/null; then
                     warn "${name}: could not fetch the published key from ${PROV_LOC[$i]}"
                     rm -f "$tmp"; continue
@@ -483,7 +494,7 @@ refused_locator_for() {
     return 1
 }
 
-# korg, wkd, github or empty: the provenance of the key that made a signature.
+# korg, savannah, wkd, github or empty: the provenance of the key that made a signature.
 key_provenance_kind() {
     local keyid="$1" fpr i
     [[ -n "$keyid" ]] || return 0
@@ -548,6 +559,7 @@ check_sig() {
         local klass=signature-keyring-key
         case "$pkind" in
             korg)   klass=signature-korg-published-key ;;
+            savannah) klass=signature-savannah-published-key ;;
             wkd)    klass=signature-wkd-published-key ;;
             github) klass=signature-platform-published-key ;;
         esac

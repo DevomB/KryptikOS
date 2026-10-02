@@ -922,6 +922,21 @@ bad_prov "${UNKFPR}  github  https://github.com/acct/extra.gpg  2026-09-11  unkn
 bad_prov "${UNKFPR}  github  https://github.com/acct.gpg  2026-09-11  unknown  just a uid, no tie recorded" \
          "a github row with no recorded release author is refused"
 
+# --- the forge-published kind ---------------------------------------------------
+fresh_root
+write_manifest unknown
+prov_table "${UNKFPR}  savannah  file://${PROV}/unknown.asc  2026-09-11  unknown  unknown fixture <unknown@example.test>"
+runprov --report="${W}/s1.tsv"
+if [[ "$(klass_of "${W}/s1.tsv" unknown)" == "signature-savannah-published-key" ]]; then
+    green "a savannah row classes the signature as published by the project's forge"
+else
+    red "expected signature-savannah-published-key, got $(klass_of "${W}/s1.tsv" unknown)"; show
+fi
+bad_prov "${UNKFPR}  savannah  https://savannah.example/project/release-gpgkeys.php?group=x&download=1  2026-09-11  unknown  x" \
+         "a savannah locator on another host is refused"
+bad_prov "${UNKFPR}  savannah  https://savannah.gnu.org/project/memberlist.php?group=x  2026-09-11  unknown  x" \
+         "a savannah locator that is not the project's release keyring is refused"
+
 # Shipped github rows need both the endpoint shape and the release-author tie.
 gh_bad=0
 while read -r _fpr kind loc _ret _signs rest; do

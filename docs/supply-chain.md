@@ -150,10 +150,17 @@ checks them against kernel.org's published developer keys.
 
 - The GNU keyring is fetched over the network and kept with the sources, so a
   signature checked against it means "signed by whoever the keyring said when
-  it was fetched". Checking those keys out of band is manual.
-- The kernel.org signing keys are pinned by fingerprint in
-  `tools/verify-signatures.sh`, and those fingerprints still need confirming
-  against kernel.org independently.
+  it was fetched". Eight GNU sources have a second route the gate walks on
+  every run: coreutils, sed, grep, diffutils, gzip, findutils and inetutils
+  through the release keyring GNU Savannah serves for each project, and patch
+  through kernel.org. The others (binutils, gcc, glibc, bash, readline, gawk,
+  tar, make and more) have no Savannah keyring, and their keys rest on the GNU
+  keyring alone.
+- The kernel.org signing keys pinned in `tools/verify-signatures.sh` are
+  confirmed by two routes, kernel.org's `pgpkeys.git` and kernel.org's WKD,
+  and `tools/key-provenance.tsv` has the gate fetch them from `pgpkeys.git` on
+  every run. Like every route there, both rest on TLS; nobody has compared
+  these fingerprints in person.
 - Builds are not reproducible, so "built from source" still means trusting the
   machine that built it.
 - The first compiler comes from the host, so Thompson's "Reflections on
