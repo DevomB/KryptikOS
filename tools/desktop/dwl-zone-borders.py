@@ -75,7 +75,7 @@ zonebar(Client *c)
 \tsize_t i;
 
 \tzonecolors(c);
-\tif (c->zoneborder != unzonedcolor)
+\tif (c->zoneborder != unzonedcolor && strncmp(id, "kryptik.", 8) == 0)
 \t\tsnprintf(name, sizeof(name), "%.*s", (int)strcspn(id + 8, "."), id + 8);
 \tink = 0.299f * c->zoneborder[0] + 0.587f * c->zoneborder[1]
 \t\t\t+ 0.114f * c->zoneborder[2] > 0.5f ? black : white;
