@@ -13,6 +13,8 @@
 #   step 5  no kryptik-state partition: degraded
 #   step 6  the watchdog feeder stopped: the machine resets and comes back
 #   step 7  three wrong passphrases: degraded; then the right one
+#   step 8  root changes the passphrase with `kryptik state passphrase`: the
+#           old one no longer unlocks, the new one does
 #
 # A degraded boot has no accounts, so only its console is checked; after each
 # repair a login must find the user's file. Every disk is a file made here.
@@ -28,7 +30,7 @@ while [[ "$#" -gt 0 ]]; do
         --usb) USB="${2:?}"; shift 2 ;;
         --disk) DISK="${2:?}"; shift 2 ;;
         --timeout) TIMEOUT="${2:?}"; shift 2 ;;
-        -h|--help) sed -n '2,18p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -168,6 +170,25 @@ step "step 7: three wrong passphrases, then the right one"
 KRYPTIK_STATE_PASSPHRASE=not-the-passphrase degraded_boot state-p7 '/dev/vda4 was not unlocked in three tries'
 [[ "$(txt | grep -c 'passphrase for the state partition')" -eq 3 ]] && green "state-p7: asked three times and no more" || red "state-p7: not asked exactly three times"
 normal_boot state-p7b
+
+# ----------------------------------------------------------------- step 8 --
+# Last: the disk keeps the new passphrase. cryptsetup asks on the terminal,
+# so the answers are typed there, not passed to it. It prints each prompt and
+# then discards what the terminal already holds, so an answer waits a moment.
+step "step 8: root changes the state passphrase; the old one no longer unlocks"
+NEWPASS=state-pw-changed
+start_vm state-p8
+drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
+    "send:su - root -c 'kryptik state passphrase; echo CHANGED=\$?'" "expect:Password: ?" "send:${RPASS}" \
+    "expect:Enter passphrase to be changed: ?" "sleep:2" "send:${KRYPTIK_STATE_PASSPHRASE}" \
+    "expect:Enter new passphrase: ?" "sleep:2" "send:${NEWPASS}" \
+    "expect:Verify passphrase: ?" "sleep:2" "send:${NEWPASS}" \
+    "expect:CHANGED=0" \
+    "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
+rc=$?; stop_vm
+[[ "$rc" -eq 0 ]] && green "state-p8: kryptik state passphrase took the old passphrase and the new one twice" || red "state-p8: changing the passphrase failed"
+degraded_boot state-p8b '/dev/vda4 was not unlocked in three tries'
+KRYPTIK_STATE_PASSPHRASE="$NEWPASS" normal_boot state-p8c
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]] || exit 1

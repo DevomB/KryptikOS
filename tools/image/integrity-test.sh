@@ -9,12 +9,15 @@
 #   step 1  install and boot alone under the enrolled store; lockdown and
 #           module signing checked from inside
 #   step 2  BOOTX64.EFI re-signed with a foreign key: the firmware refuses it
-#           (control: the signed medium boots under the same store)
+#           (control: the signed medium boots under the same store); then
+#           kryptik-recover --commit-slot a puts the signed kernel back
 #   step 3  a byte of slot a's root flipped: dm-verity stops the boot
 #   step 4  kryptik-recover --restore-slot a from the medium; its records on
 #           the ESP are whole, and the user's data survives
 #   step 5  an anchor, zone, sysctl, preload library and udev rule planted in
 #           the state's /etc layer: none takes effect
+#   step 6  the state header saved, wiped and restored by kryptik-recover
+#           from the medium: the disk unlocks and the user's data is there
 #
 # Every disk and variable store is a file made here; no firmware is touched.
 set -uo pipefail
@@ -29,7 +32,7 @@ while [[ "$#" -gt 0 ]]; do
         --usb) USB="${2:?}"; shift 2 ;;
         --disk) DISK="${2:?}"; shift 2 ;;
         --timeout) TIMEOUT="${2:?}"; shift 2 ;;
-        -h|--help) sed -n '2,18p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,21p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -106,6 +109,18 @@ grep -q 'KRYPTIK_SMOKE: BEGIN' <<<"$T2" && red "Kryptik userspace ran from an un
 "${SELF}/mk-testctl.sh" --out "${VMDIR}/testctl-smoke.img" --key "$TESTCTL_KEY" smoke_poweroff=1 > /dev/null
 smoke integ-p2ctl --usb "$USB" --testctl "${VMDIR}/testctl-smoke.img" --vars enrolled --timeout 300 > /dev/null 2>&1
 boot_txt | grep -q 'Linux version' && green "control: the developer-signed medium boots under the same store" || red "control failed: the signed medium did not boot"
+# The repair a user has: --commit-slot from the medium makes slot a's signed
+# kernel the boot file again.
+CTLC="${VMDIR}/testctl-commit.img"
+"${SELF}/mk-testctl.sh" --out "$CTLC" --key "$TESTCTL_KEY" recover_disk=/dev/vda recover_slot=a recover_mode=commit smoke_poweroff=1 install_wait=5 > /dev/null
+smoke integ-p2r --usb "$USB" --disk "$DISK" --testctl "$CTLC" --vars enrolled --timeout "$TIMEOUT" > /dev/null
+boot_txt | grep -q 'KRYPTIK_RECOVER: rc=0' && green "kryptik-recover --commit-slot a succeeded from the medium" || { red "--commit-slot did not report success"; boot_txt | grep 'KRYPTIK_RECOVER' | tail -5 | sed 's/^/        /'; }
+dd if="$DISK" of="$ESPIMG" bs=1M iflag=skip_bytes,count_bytes skip="$ESP_OFF" count=$((512*1024*1024)) status=none
+mcopy -n -i "$ESPIMG" ::/EFI/BOOT/BOOTX64.EFI "$TMPK/committed.efi" 2>/dev/null
+mcopy -n -i "${ESPIMG}.pristine" ::/EFI/BOOT/BOOTX64.EFI "$TMPK/installed.efi" 2>/dev/null
+cmp -s "$TMPK/committed.efi" "$TMPK/installed.efi" && green "the boot file is the kernel the install wrote, byte for byte" || red "the boot file is not the kernel the install wrote"
+sbverify --cert "$TMPK/medium.crt" "$TMPK/committed.efi" >/dev/null 2>&1 && green "the medium's certificate verifies the boot file again" || red "the medium's certificate does not verify the committed boot file"
+[[ "$(mtype -i "$ESPIMG" ::/kryptik/committed-slot 2>/dev/null)" == a ]] && green "the ESP records slot a as committed" || red "the ESP does not record slot a as committed"
 # restore the pristine ESP
 dd if="${ESPIMG}.pristine" of="$DISK" bs=1M oflag=seek_bytes seek="$ESP_OFF" conv=notrunc status=none
 rm -rf "$TMPK"
@@ -252,6 +267,29 @@ if open_state "$DISK" "$MNT" 2>/dev/null; then
     close_state "$MNT"
 fi
 rm -rf "$TMPK"
+
+# ----------------------------------------------------------------- step 6 --
+step "step 6: the state partition's header saved, wiped and restored from the medium"
+CTLH="${VMDIR}/testctl-header.img"
+"${SELF}/mk-testctl.sh" --out "$CTLH" --key "$TESTCTL_KEY" recover_disk=/dev/vda recover_mode=header smoke_poweroff=1 install_wait=5 > /dev/null
+smoke integ-p6 --usb "$USB" --disk "$DISK" --testctl "$CTLH" --vars enrolled --timeout "$TIMEOUT" > /dev/null
+T6="$(boot_txt)"
+grep -q 'KRYPTIK_RECOVER: header: wiped [0-9]* bytes, and /dev/vda4 is no longer LUKS' <<<"$T6" \
+    && green "--backup-state-header saved the header; wiped on the disk, the partition is no longer LUKS" || red "the header was not saved and wiped"
+if grep -q 'KRYPTIK_RECOVER: header: restored' <<<"$T6" && grep -q 'KRYPTIK_RECOVER: rc=0' <<<"$T6"; then
+    green "--restore-state-header put it back: the partition reads back as the backup"
+else
+    red "the header was not restored"; grep 'KRYPTIK_RECOVER' <<<"$T6" | tail -6 | sed 's/^/        /'
+fi
+cp "$ENROLLED" "$VARSF"
+start_vm integ-p6b; LOG6="$LOG"
+python3 "$DRV" --serial "$SER" --timeout 300 \
+    "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
+    "run:test \"\$(cat /home/${TUSER}/marker)\" = integrity-marker" \
+    "su:${RPASS}:poweroff" "expect:Power down" "wait-exit"
+rc=$?; sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
+[[ "$rc" -eq 0 ]] && green "the disk unlocks with the restored header; the user and the home file are there" || red "step 6 drive failed"
+tr -d '\r' < "$LOG6" | grep -q 'STATE DEGRADED' && red "degraded after the header was restored" || green "the state is not degraded after the restore"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]] || exit 1
