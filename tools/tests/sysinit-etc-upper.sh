@@ -33,16 +33,18 @@ stage
 out="$(sh -e -c ". $T/fn.sh; prune_etc_upper $T/up $T/q" 2>&1)"; rc=$?
 [[ "$rc" -eq 0 ]] && ok "prune_etc_upper returns 0 under sh -e" || bad "prune_etc_upper failed under sh -e (rc=$rc): $(tail -2 <<<"$out" | tr '\n' ' ')"
 
+lost=""
 for f in shadow group gshadow subuid subgid passwd- .pwd.lock hostname machine-id localtime adjtime resolv.conf; do
-    [[ -f "$T/up/$f" && "$(cat "$T/up/$f")" = kept ]] || bad "allowed entry '$f' was not kept in the upper layer"
+    [[ -f "$T/up/$f" && "$(cat "$T/up/$f")" = kept ]] || lost="$lost $f"
 done
-ok "the account database, the machine's identity and clock stay in the upper layer"
+[[ -z "$lost" ]] && ok "the account database, the machine's identity and clock stay in the upper layer" || bad "allowed entries were not kept in the upper layer:$lost"
 
+left=""
 for f in ld.so.preload udev kryptik sysctl.d profile nsswitch.conf; do
-    [[ ! -e "$T/up/$f" ]] || bad "'$f' is still in the upper layer"
-    quarantined "$f" || bad "'$f' is not in the quarantine directory"
+    [[ ! -e "$T/up/$f" ]] || left="$left $f (still in the upper layer)"
+    quarantined "$f" || left="$left $f (not in the quarantine directory)"
 done
-ok "a preload library, a udev rule, a zone definition, a sysctl fragment, a profile and nsswitch.conf are quarantined"
+[[ -z "$left" ]] && ok "a preload library, a udev rule, a zone definition, a sysctl fragment, a profile and nsswitch.conf are quarantined" || bad "not quarantined:$left"
 
 [[ ! -e "$T/up/passwd" ]] && quarantined passwd && ok "a directory named after an allowed file is quarantined, not kept" || bad "a directory named passwd stayed in the upper layer"
 

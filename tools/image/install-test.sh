@@ -162,7 +162,19 @@ refusal_case() {   # refusal_case NAME DISK-SIZE EXTRA-RUN-ARGS... ; expects rc!
     want "$t" 'KRYPTIK_INSTALL: rc=[1-9]'         "${name}: reported a non-zero status"
     want "$t" 'KRYPTIK_INSTALL: .*FAILED'         "${name}: said FAILED and why"
     deny "$t" 'KRYPTIK_INSTALL: rc=0'             "${name}: never reported success"
-    if sfdisk -d "$d" 2>/dev/null | grep -q 'name="kryptik-a"' && [[ "$name" != "ioerror" ]]; then
+    if [[ "$name" == "ioerror" ]]; then
+        # Its table is written before the copy that fails. What a failed
+        # install must not have is what a finished one makes after that copy:
+        # the LUKS header of the state partition.
+        local s4; s4="$(part_start "$d" 4)"
+        if [[ -z "$s4" ]]; then
+            red "${name}: no partition table on the disk, so the error did not come in the root image copy"
+        elif [[ "$(dd if="$d" bs=1 skip=$(( s4 * 512 )) count=6 status=none | od -An -tx1 | tr -d ' \n')" == 4c554b53babe ]]; then
+            red "${name}: the install went on to make the state partition"
+        else
+            green "${name}: the install stopped before the state partition was made"
+        fi
+    elif sfdisk -d "$d" 2>/dev/null | grep -q 'name="kryptik-a"'; then
         red "${name}: a kryptik-a partition was written anyway"
     else
         green "${name}: no completed installation on the disk"

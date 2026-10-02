@@ -34,7 +34,7 @@ while [[ "$#" -gt 0 ]]; do
     esac
 done
 [[ -f "$USB" ]] || die "--usb IMG is required"
-for t in python3 sbsign sbverify openssl mcopy mdel mdir mtype sfdisk cryptsetup losetup; do have "$t" || die "required tool not found: $t"; done
+for t in python3 sbsign sbverify sbattach openssl mcopy mdel mdir mtype sfdisk cryptsetup losetup; do have "$t" || die "required tool not found: $t"; done
 VMDIR="${KRYPTIK_WORK}/vm"; mkdir -p "$VMDIR"
 DISK="${DISK:-${VMDIR}/integrity.img}"
 [[ -e "$DISK" && ! -f "$DISK" ]] && die "refusing: ${DISK} is not a regular file"
@@ -87,10 +87,17 @@ mcopy -i "$ESPIMG" ::/EFI/BOOT/BOOTX64.EFI "$TMPK/good.efi"
 mtype -i "${USB}@@$(( $(part_start "$USB" 1) * 512 ))" ::/kryptik/kryptik-sb.crt > "$TMPK/medium.crt" 2>/dev/null
 sbverify --cert "$TMPK/medium.crt" "$TMPK/good.efi" >/dev/null 2>&1 && green "control: the medium's certificate verifies the installed kernel" || red "control: the medium's certificate does not verify the installed kernel"
 openssl req -new -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=not kryptik/" -keyout "$TMPK/k" -out "$TMPK/c" >/dev/null 2>&1
-# strip the signature, sign with the foreign key
-sbattach --remove "$TMPK/good.efi" 2>/dev/null || true
+# Strip the signature, sign with the foreign key. The result must verify
+# against the foreign certificate and not the medium's: a file sbsign never
+# wrote verifies against neither, and one that kept the medium's signature
+# verifies against both.
+sbattach --remove "$TMPK/good.efi" >/dev/null 2>&1
 sbsign --key "$TMPK/k" --cert "$TMPK/c" --output "$TMPK/foreign.efi" "$TMPK/good.efi" >/dev/null 2>&1
-sbverify --cert "$TMPK/medium.crt" "$TMPK/foreign.efi" >/dev/null 2>&1 && red "control: the foreign kernel verifies against the medium's certificate" || green "control: the foreign-signed kernel does not verify against the medium's certificate"
+if sbverify --cert "$TMPK/c" "$TMPK/foreign.efi" >/dev/null 2>&1 && ! sbverify --cert "$TMPK/medium.crt" "$TMPK/foreign.efi" >/dev/null 2>&1; then
+    green "control: the boot file now carries the foreign key's signature and not the medium's"
+else
+    red "control: the boot file was not re-signed with the foreign key alone"
+fi
 mdel -i "$ESPIMG" ::/EFI/BOOT/BOOTX64.EFI
 mcopy -i "$ESPIMG" "$TMPK/foreign.efi" ::/EFI/BOOT/BOOTX64.EFI
 dd if="$ESPIMG" of="$DISK" bs=1M oflag=seek_bytes seek="$ESP_OFF" conv=notrunc status=none
