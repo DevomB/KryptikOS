@@ -1,7 +1,7 @@
 # Threat model
 
 What Kryptik defends against, and what it does not. A design change that
-contradicts this document changes the document first.
+contradicts the threat model changes the threat model first.
 
 ## Assets
 
@@ -17,11 +17,12 @@ contradicts this document changes the document first.
 
 *Capability: arbitrary code execution as the user, inside one zone.*
 
-**Defended.** The application sees only its own zone's files and processes, has no route to the physical NIC, and runs under a
-default-deny seccomp filter and a Landlock ruleset. Its `/proc` hides the
-machine-wide interrupt and scheduling counters, which would time keystrokes
-typed in any zone, and gives it a boot ID of its own. Escaping needs a kernel
-bug ([kernel local privilege escalation](#kernel-local-privilege-escalation)).
+**Defended.** The application sees only its own zone's files and processes,
+has no route to the physical NIC, and runs under a default-deny seccomp
+filter and a Landlock ruleset. Its `/proc` hides the machine-wide interrupt
+and scheduling counters, which would time keystrokes typed in any zone, and
+gives it a boot ID of its own. Escaping needs a kernel bug
+([kernel local privilege escalation](#kernel-local-privilege-escalation)).
 
 ### Malicious document or link
 
@@ -63,8 +64,8 @@ the LUKS header are in the clear, so the disk shows it is Kryptik.
 
 *Capability: the user pastes the wrong thing into the wrong window.*
 
-**Partially defended.** This is the failure that actually happens, which is
-why the clipboard is brokered and zone borders are mandatory. A deliberate
+**Partially defended.** This is the most common failure, which is why the
+clipboard is brokered and zone borders are mandatory. A deliberate
 cross-zone paste stays possible, because a system that forbids it gets
 circumvented.
 
@@ -83,8 +84,8 @@ already own, at battery life you will tolerate (ADR-002).
 
 UEFI implants, a compromised Management Engine, malicious microcode and
 backdoored silicon sit below everything Kryptik controls. Secure Boot assumes
-the firmware enforcing it is honest, and device firmware and microcode ship as
-vendor binaries (ADR-012).
+the firmware enforcing it is trustworthy, and device firmware and microcode
+ship as vendor binaries (ADR-012).
 
 ### Coercion, and access to a running or suspended machine
 
@@ -94,10 +95,10 @@ suspended machine are out of scope, and no software helps against coercion.
 ### Microarchitectural side channels
 
 Shared caches and branch predictors allow cross-zone inference. The signed
-command line carries `nosmt`, so no two zones share a core's threads; if SMT
-were turned back on, each zone would need a core-scheduling cookie of its own
-to start (ADR-011 in [decisions](decisions.md); the cost of `nosmt` on real
-hardware is not yet measured). Caches and predictors shared between cores, and
+command line carries `nosmt`, so no two zones share a core's threads. If SMT
+were turned back on, a zone would not start without a core-scheduling cookie
+of its own (ADR-011 in [decisions](decisions.md)). The cost of `nosmt` on real
+hardware is not yet measured. Caches and predictors shared between cores, and
 between a zone and the kernel, remain a known gap.
 
 ### Well-resourced targeted attack
