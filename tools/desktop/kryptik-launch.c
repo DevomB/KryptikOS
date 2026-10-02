@@ -154,20 +154,20 @@ static void join(char *out, const char *dir, const char *name)
 static const char *ensure_proxy(const char *zone)
 {
 	static char sock[PATH_MAX];
-	char dir[PATH_MAX], pidfile[PATH_MAX], logfile[PATH_MAX], oldlog[PATH_MAX], upstream[PATH_MAX];
+	char top[PATH_MAX], dir[PATH_MAX], pidfile[PATH_MAX], logfile[PATH_MAX], oldlog[PATH_MAX], upstream[PATH_MAX];
 	const char *rt = getenv("XDG_RUNTIME_DIR");
 	const char *disp = getenv("WAYLAND_DISPLAY");
 	if (!rt || !*rt)
 		die("XDG_RUNTIME_DIR is not set; use --no-display for a zone without a window");
 	if (!disp || !*disp)
 		disp = "wayland-0";
-	if (disp[0] == '/')
-		snprintf(upstream, sizeof upstream, "%s", disp);
-	else
-		snprintf(upstream, sizeof upstream, "%s/%s", rt, disp);
-	snprintf(dir, sizeof dir, "%s/kryptik", rt);
-	mkdir(dir, 0700);
-	snprintf(dir, sizeof dir, "%s/kryptik/%s", rt, zone);
+	if (disp[0] != '/')
+		join(upstream, rt, disp);
+	else if (snprintf(upstream, sizeof upstream, "%s", disp) >= (int)sizeof upstream)
+		die("path too long: %s", disp);
+	join(top, rt, "kryptik");
+	mkdir(top, 0700);
+	join(dir, top, zone);
 	if (mkdir(dir, 0700) < 0 && errno != EEXIST)
 		die("%s: %s", dir, strerror(errno));
 	join(sock, dir, "wayland-0");
@@ -226,20 +226,46 @@ static const char *ensure_proxy(const char *zone)
 	die("kryptik-wlproxy did not start listening on %s (see %s)", sock, logfile);
 }
 
-/* Read a passphrase from the open terminal into a memfd; returns the fd.
- * Echo goes off before the prompt, and what was typed ahead is kept. */
+static volatile sig_atomic_t caught;
+static void on_signal(int sig) { caught = sig; }
+
+static const int quiet_sigs[] = { SIGINT, SIGQUIT, SIGTERM, SIGHUP };
+static struct sigaction quiet_old[4];
+static struct termios quiet_saved;
+
+/* Echo off on a terminal, before any prompt so what was typed ahead is kept.
+ * Until quiet_end the signals that would leave it silent only end the read. */
+static void quiet_start(int fd)
+{
+	struct sigaction sa = { .sa_handler = on_signal };
+	sigemptyset(&sa.sa_mask);
+	for (int i = 0; i < 4; i++)
+		sigaction(quiet_sigs[i], &sa, &quiet_old[i]);
+	tcgetattr(fd, &quiet_saved);
+	struct termios raw = quiet_saved;
+	raw.c_lflag &= ~(tcflag_t)ECHO;
+	tcsetattr(fd, TCSANOW, &raw);
+}
+
+/* Echo back on, a newline to out, then any signal caught meanwhile. */
+static void quiet_end(int fd, int out)
+{
+	tcsetattr(fd, TCSANOW, &quiet_saved);
+	dprintf(out, "\n");
+	for (int i = 0; i < 4; i++)
+		sigaction(quiet_sigs[i], &quiet_old[i], NULL);
+	if (caught)
+		raise(caught);
+}
+
+/* Read a passphrase from the open terminal into a memfd; returns the fd. */
 static int passphrase_from_tty(int tty, const char *zone)
 {
-	struct termios old, raw;
-	tcgetattr(tty, &old);
-	raw = old;
-	raw.c_lflag &= ~(tcflag_t)ECHO;
-	tcsetattr(tty, TCSANOW, &raw);
+	quiet_start(tty);
 	dprintf(tty, "passphrase for zone %s: ", zone);
 	char buf[512];
-	ssize_t n = read(tty, buf, sizeof buf - 1);
-	tcsetattr(tty, TCSANOW, &old);
-	dprintf(tty, "\n");
+	ssize_t n = caught ? -1 : read(tty, buf, sizeof buf - 1);
+	quiet_end(tty, tty);
 	close(tty);
 	if (n <= 0)
 		die("no passphrase");
@@ -282,25 +308,30 @@ static void usage(void)
 	exit(2);
 }
 
+/* A descriptor number, all of the argument. */
+static int fd_arg(const char *s)
+{
+	char *end;
+	errno = 0;
+	long v = strtol(s, &end, 10);
+	if (errno || end == s || *end || v < 0 || v > INT_MAX)
+		usage();
+	return (int)v;
+}
+
 /* One secret line from stdin: prompted with echo off on a terminal, silent
  * from a pipe (the kryptik command pipes it). Trailing newlines dropped. */
 static void secret_from_stdin(const char *prompt, char *buf, size_t size)
 {
-	struct termios old, raw;
 	int tty = isatty(0);
 	if (tty) {
-		tcgetattr(0, &old);
-		raw = old;
-		raw.c_lflag &= ~(tcflag_t)ECHO;
+		quiet_start(0);
 		fputs(prompt, stderr);
 		fflush(stderr);
-		tcsetattr(0, TCSAFLUSH, &raw);
 	}
-	char *got = fgets(buf, (int)size, stdin);
-	if (tty) {
-		tcsetattr(0, TCSAFLUSH, &old);
-		fputc('\n', stderr);
-	}
+	char *got = caught ? NULL : fgets(buf, (int)size, stdin);
+	if (tty)
+		quiet_end(0, 2);
 	if (!got)
 		die("no passphrase on standard input");
 	size_t n = strlen(buf);
@@ -398,7 +429,7 @@ int main(int argc, char **argv)
 		if (strcmp(argv[i], "--") == 0) { sep = i; break; }
 		else if (strcmp(argv[i], "--ask") == 0) ask = 1;
 		else if (strcmp(argv[i], "--no-display") == 0) no_display = 1;
-		else if (strcmp(argv[i], "--passphrase-fd") == 0 && i + 1 < argc) pass_fd = atoi(argv[++i]);
+		else if (strcmp(argv[i], "--passphrase-fd") == 0 && i + 1 < argc) pass_fd = fd_arg(argv[++i]);
 		else if (strcmp(argv[i], "--stop") == 0) mode = "stop";
 		else if (strcmp(argv[i], "--info") == 0) mode = "info";
 		else if (strcmp(argv[i], "--runtime-dir") == 0) mode = "runtime";
@@ -445,6 +476,8 @@ int main(int argc, char **argv)
 		} else {
 			/* The trusted chrome prompts and calls back with --passphrase-fd. */
 			char **nargv = calloc((size_t)ncmd + 8, sizeof *nargv);
+			if (!nargv)
+				die("out of memory");
 			int k = 0;
 			nargv[k++] = CHROME_BIN;
 			nargv[k++] = "--prompt";
