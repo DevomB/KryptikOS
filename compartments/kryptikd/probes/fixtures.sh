@@ -33,6 +33,7 @@ zone packet \
     '[network]' 'mode = "none"' \
     '[storage]' 'mode = "ephemeral"' 'size = "64M"' \
     '[policy]' 'seccomp = "policy/packet.seccomp"' \
+    '[transfer]' 'max_bytes = 16' \
     '[ui]' 'border_color = "#654321"'
 printf '%s\n' \
     '# Synthetic: the socket family is allowed, no capability is kept.' \
