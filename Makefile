@@ -33,21 +33,25 @@ KRYPTIK_WLPROXY_BIN ?=
 export KRYPTIK_ROOT := $(ROOT)
 # Read through the shell: versions.env is shell syntax, not make syntax.
 V_LINUX := $(shell . "$(ROOT)/build/config/versions.env" && echo $$V_LINUX)
-# Release name stamped into the media.
+# Stage 06's settings, taken as written and read from the environment, so nothing in them reaches a shell as syntax.
 KRYPTIK_VERSION ?=
+override KRYPTIK_VERSION := $(value KRYPTIK_VERSION)
 export KRYPTIK_VERSION
-# Where the image's net zone asks for releases (docs/design/update-channel.md);
-# empty, the image names none and fetches nothing. Taken as written, since make
-# would expand a $ in it ($web paths), and read by the recipes from the
-# environment, so nothing in it reaches a shell as syntax.
+# Where the image's net zone asks for releases (docs/design/update-channel.md); empty, it fetches nothing.
 KRYPTIK_CHANNEL ?=
 override KRYPTIK_CHANNEL := $(value KRYPTIK_CHANNEL)
 export KRYPTIK_CHANNEL
-# development: keys made on first use under the work tree. production: signed
-# only with the key medium KRYPTIK_KEYS names (build/lib/release-keys.sh).
-# Handed to stage 06 alone, on the host; the chroot never sees a key.
+# development: keys made on first use under the work tree; production: the key medium KRYPTIK_KEYS names.
 KRYPTIK_ROLE ?= development
+override KRYPTIK_ROLE := $(value KRYPTIK_ROLE)
+export KRYPTIK_ROLE
 KRYPTIK_KEYS ?=
+override KRYPTIK_KEYS := $(value KRYPTIK_KEYS)
+export KRYPTIK_KEYS
+# bind or sign splits a production build in two (docs/release-keys.md).
+KRYPTIK_MEDIA_PHASE ?=
+override KRYPTIK_MEDIA_PHASE := $(value KRYPTIK_MEDIA_PHASE)
+export KRYPTIK_MEDIA_PHASE
 export KRYPTIK_WORK
 export KRYPTIK_SOURCES
 export KRYPTIK_OUT
@@ -281,12 +285,14 @@ chroot-status:
 # Stage 06 runs as root: the sysroot has root-only paths and the relink goes
 # through the chroot.
 iso: kernel
-	@$(SUDO) env $(CHROOT_ENV) KRYPTIK_VERSION="$(KRYPTIK_VERSION)" KRYPTIK_CHANNEL="$$KRYPTIK_CHANNEL" \
-	    KRYPTIK_ROLE="$(KRYPTIK_ROLE)" KRYPTIK_KEYS="$(KRYPTIK_KEYS)" "$(STAGES)"/06-iso.sh
+	@$(SUDO) env $(CHROOT_ENV) KRYPTIK_VERSION="$$KRYPTIK_VERSION" KRYPTIK_CHANNEL="$$KRYPTIK_CHANNEL" \
+	    KRYPTIK_ROLE="$$KRYPTIK_ROLE" KRYPTIK_KEYS="$$KRYPTIK_KEYS" KRYPTIK_MEDIA_PHASE="$$KRYPTIK_MEDIA_PHASE" \
+	    "$(STAGES)"/06-iso.sh
 
 media:
-	@$(SUDO) env $(CHROOT_ENV) KRYPTIK_VERSION="$(KRYPTIK_VERSION)" KRYPTIK_CHANNEL="$$KRYPTIK_CHANNEL" \
-	    KRYPTIK_ROLE="$(KRYPTIK_ROLE)" KRYPTIK_KEYS="$(KRYPTIK_KEYS)" "$(STAGES)"/06-iso.sh
+	@$(SUDO) env $(CHROOT_ENV) KRYPTIK_VERSION="$$KRYPTIK_VERSION" KRYPTIK_CHANNEL="$$KRYPTIK_CHANNEL" \
+	    KRYPTIK_ROLE="$$KRYPTIK_ROLE" KRYPTIK_KEYS="$$KRYPTIK_KEYS" KRYPTIK_MEDIA_PHASE="$$KRYPTIK_MEDIA_PHASE" \
+	    "$(STAGES)"/06-iso.sh
 
 # A production pair for acceptance's production suite, signed with a throwaway
 # key medium (tools/production-pair.sh). Before `make media` builds the

@@ -75,7 +75,8 @@ latest.sig    an OpenSSH signature over those bytes, namespace kryptik-latest
   keeping it from this machine". That needs a clock the net zone cannot set.
 
 **Which key signs it.** Re-signing on a schedule needs a key a timer can
-reach, and the release key is meant to stay offline, so the build uses two.
+reach, and the release key signs only in a release run its maintainer
+approves, so the build uses two.
 The anchor stage 06 puts on the image lists the release key as
 `kryptik-release namespaces="kryptik-release,kryptik-media"` (manifests, and
 the media's checksums) and the statement key as
