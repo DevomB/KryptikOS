@@ -1,18 +1,6 @@
 #!/usr/bin/env bash
-# The real-launcher suite: every check goes through `kryptikd run ZONE --zones
-# DIR --rootfs DIR -- COMMAND`; adversarial.sh tests the primitives alone.
-#
-# A zone that dies in setup leaks nothing either, so each isolation check has
-# the zone print a launch sentinel before its probe result, and a missing
-# sentinel fails as "did not launch" (want_launch, probe). Positive controls
-# first show that the target is reachable from outside.
-#
-# [unpriv] groups run as any user on a Linux host with the kernel features;
-# [vm] groups need root in a disposable VM and are otherwise NOT RUN, which is
-# not a pass. Launches are time-bounded and all state lives under one mktemp -d.
-#
-# Exit status: 1 if any check failed, 2 if the suite could not start. A run
-# with checks NOT RUN exits 0 but reports gaps, which is not a release pass.
+# Launcher suite: every check runs through `kryptikd run`; adversarial.sh tests the primitives.
+# Exit 1 if a check failed, 2 if the suite could not start; a NOT RUN check is a gap, not a pass.
 
 set -uo pipefail
 
@@ -43,15 +31,13 @@ if [[ ! -x "$KRYPTIKD" ]]; then
     exit 2
 fi
 
-# A kryptikd older than its sources makes every check fail as "did not launch"
-# with nothing pointing at the binary. Only in a build tree (Cargo.toml): an
-# image ships isolate.rs for adversarial.sh, newer than its installed binary.
+# A stale binary fails every check as "did not launch"; only checked in a build tree.
 if [[ -z "${KRYPTIK_SKIP_STALE_CHECK:-}" && -f "$REPO/compartments/kryptikd/Cargo.toml" ]]; then
     newer="$(find "$REPO/compartments/kryptikd/src" "$REPO/compartments/kryptikd/Cargo.toml" \
                   -newer "$KRYPTIKD" 2>/dev/null | head -3)"
     if [[ -n "$newer" ]]; then
         printf '%sSTALE BINARY%s: %s is older than its sources.\n' "$C_YEL" "$C_RST" "$KRYPTIKD"
-        printf 'Every check would report "did not launch" and none of them would say why.\n'
+        printf 'Every check would fail as "did not launch".\n'
         printf 'Newer than the binary:\n'
         printf '  %s\n' $newer
         printf '\nRun: (cd %s/compartments/kryptikd && cargo build)\n' "$REPO"
@@ -80,7 +66,7 @@ cleanup() {
     for p in "${BG_PIDS[@]:-}"; do
         [[ -n "$p" ]] && kill -9 "$p" 2>/dev/null
     done
-    # Zone mounts lived in the zones' own mount namespaces; only directories remain.
+    # Zone mounts live in the zones' own mount namespaces, so only directories remain.
     rm -rf "$WORK" 2>/dev/null
 }
 trap cleanup EXIT
@@ -90,8 +76,7 @@ trap cleanup EXIT
 # A synthetic canary, unmistakable in a grep.
 CANARY="KRYPTIK_CANARY_a7f3c091_DO_NOT_LEAK"
 
-# Stand-in host configuration a zone must not see. World-readable, so a zone
-# that cannot read it is contained, not merely refused by file permissions.
+# World-readable, so a zone that cannot read it is contained, not merely denied by mode.
 printf 'token = %s\n' "$CANARY" > "$HOSTFIX/hostconfig.conf"
 chmod 0644 "$HOSTFIX/hostconfig.conf"
 
@@ -104,47 +89,39 @@ mkzone() { # name mode colour [extra-network-lines] [storage-mode]
         printf '[storage]\nmode = "%s"\n' "$storage"
         # storage.size is required for ephemeral and refused for encrypted.
         [[ "$storage" == "ephemeral" ]] && printf 'size = "64M"\n'
-        # An encrypted fixture's volume lives under $WORK (F4 creates it as
-        # root), never in /var/lib/kryptik.
+        # An encrypted fixture's volume: under $WORK (F4 creates it as root), not /var/lib/kryptik.
         [[ "$storage" == "encrypted" ]] && printf 'volume = "%s/volumes/%s.luks"\n' "$WORK" "$name"
         printf '[ui]\nborder_color = "%s"\n' "$colour"
     } > "$ZONES/$name.toml"
 }
 
-# A zone set needs exactly one NIC zone, hence `carrier`. Only group NETR,
-# in a disposable VM, starts it.
+# A zone set needs exactly one NIC zone, hence `carrier`; only group NETR starts it.
 mkzone alpha    none   "#111111"
 mkzone beta     none   "#222222"
 mkzone carrier  nic    "#333333"
 mkzone sealed   none   "#444444" ''                      encrypted
 mkzone wiped    none   "#555555" ''                      ephemeral
-# The persistent fixture. `sealed` needs a volume and a passphrase (group F),
-# so checks that only need a kept directory use this one.
+# Persistent but unencrypted, for checks that only need a kept directory.
 mkzone keeper   none   "#4a4a4a" ''                      persistent
 # K7: a zone whose data directory is owned by someone else.
 mkzone stranger none   "#666666"
 mkzone lczone   none   "#0a0a0a"
 
-# Group M fixtures, and `roomy`: the same shape with limits nothing should hit,
-# as the positive control.
 mkzone_limited() { # name colour memory pids
     {
         printf '[zone]\nname = "%s"\ndescription = "launcher-suite limit fixture"\n' "$1"
         printf '[network]\nmode = "none"\n'
-        # Under every memory_max here (memcapped's is 48M): a tmpfs larger than
-        # the memory limit is refused, since its pages are charged to it.
+        # Below memcapped's 48M, since a tmpfs larger than the memory limit is refused.
         printf '[storage]\nmode = "ephemeral"\nsize = "32M"\n'
         printf '[limits]\nmemory_max = "%s"\npids_max = %s\n' "$3" "$4"
         printf '[ui]\nborder_color = "%s"\n' "$2"
     } > "$ZONES/$1.toml"
 }
-# One limit per fixture: under a 48M memory limit the OOM killer takes the zone
-# before a fork loop could reach a pids limit.
+# One limit per fixture: at 48M the OOM killer would end a fork loop before a pids limit.
 mkzone_limited memcapped "#777777" "48M"  200   # memory is the variable
 mkzone_limited pidcapped "#999999" "512M" 32    # pids is the variable
 mkzone_limited roomy     "#888888" "512M" 200   # neither: the positive control
-# cpu_max is the variable: a quarter of one CPU, against roomy's unlimited
-# time. Its own colour: kryptikd refuses two zones that share one.
+# cpu_max is the variable, a quarter of one CPU; kryptikd refuses a colour two zones share.
 {
     printf '[zone]\nname = "cpucapped"\ndescription = "launcher-suite limit fixture"\n'
     printf '[network]\nmode = "none"\n[storage]\nmode = "ephemeral"\nsize = "32M"\n'
@@ -154,8 +131,7 @@ mkzone_limited roomy     "#888888" "512M" 200   # neither: the positive control
 mkzone throttled none "#aaaaaa" '' encrypted
 printf '[limits]\nio_max = "8M"\n' >> "$ZONES/throttled.toml"
 
-# A root launch must map the zone to an unprivileged identity: kryptikd refuses
-# to make zone root host uid 0.
+# kryptikd refuses to make zone root host uid 0, so a root launch maps it elsewhere.
 ZONE_UID=100000
 ZONE_GID=100000
 IDENTITY=()
@@ -168,8 +144,7 @@ else
     info "running unprivileged as uid $EUID: zones map to this uid"
 fi
 
-# mktemp -d makes 0700, but a privileged zone's setup drops to the mapped uid
-# before it opens its data directory.
+# mktemp -d makes 0700, but a privileged zone's setup opens its data as the mapped uid.
 chmod 0755 "$WORK" "$ZONES" "$ROOTFS" "$HOSTFIX"
 if (( PRIVILEGED == 1 )); then
     # kryptikd refuses a data directory not owned by the mapped uid.
@@ -181,14 +156,12 @@ ZARGS=(--zones "$ZONES" --rootfs "$ROOTFS" "${IDENTITY[@]}")
 
 # --- launch helpers ---------------------------------------------------------
 
-# zrun ZONE -- CMD...: run in a zone with KRYPTIK_EXPERIMENTAL=1; output to
-# ZOUT, exit code to ZRC. zrun_raw: without the override, for refusal checks.
+# zrun ZONE -- CMD...: run with KRYPTIK_EXPERIMENTAL=1; output in ZOUT, status in ZRC.
 ZOUT=""; ZRC=0
 zrun_with() {  # zrun_with with|without ZONE -- CMD...
     local mode="$1" zone="$2"; shift 2
     [[ "${1:-}" == "--" ]] && shift
-    # A zone that declares [identity] refuses --zone-uid/--zone-gid: the file
-    # decides who owns its data (tools/kryptik does the same).
+    # A zone with [identity] refuses --zone-uid/--zone-gid: the file decides who owns its data.
     local -a za=("${ZARGS[@]}")
     if (( ${#IDENTITY[@]} )) && grep -q '^\[identity\]' "$ZONES/$zone.toml" 2>/dev/null; then
         za=(--zones "$ZONES" --rootfs "$ROOTFS")
@@ -206,22 +179,21 @@ zrun_with() {  # zrun_with with|without ZONE -- CMD...
     return 0
 }
 zrun()     { zrun_with with "$@"; }
-zrun_raw() { zrun_with without "$@"; }
+zrun_raw() { zrun_with without "$@"; }   # without the override, for refusal checks
 
-# The launch sentinel, printed first by every zone command.
+# Printed first by every zone command, since a zone that dies in setup also leaks nothing.
 LAUNCHED="ZONE_LAUNCH_OK"
 
-# kryptikd's zone registry, derived as base() does; groups K and LC read it.
+# kryptikd's zone registry, derived as registry.rs's base() does.
 REG="${XDG_RUNTIME_DIR:-/tmp/kryptik-$(id -u)}/kryptik/zones"
 [[ "$EUID" -eq 0 ]] && REG=/run/kryptik/zones
 
-# Preflight: a second `run` of a running zone is refused, so one leftover
-# launcher would fail dozens of checks. Only this suite's names count: the
-# registry is per uid, shared with every other checkout on the machine.
+# A leftover launcher would fail dozens of checks: a second `run` of a running zone is refused.
 mine="$(cd "$ZONES" && ls ./*.toml 2>/dev/null | sed 's|^\./||; s|\.toml$||' | tr '\n' '|')"
 mine="${mine%|}"
 if running="$("$KRYPTIKD" list --running 2>/dev/null)"; then
     if [[ -n "$mine" ]]; then
+        # Only this suite's names: the registry is per uid, shared with every other checkout.
         running="$(printf '%s\n' "$running" | grep -E "^(${mine})[[:space:]]" || true)"
     fi
     if [[ "$running" != *"no zones are running"* && -n "${running//[[:space:]]/}" ]]; then
@@ -229,10 +201,8 @@ if running="$("$KRYPTIKD" list --running 2>/dev/null)"; then
         printf '%s\n' "$running" | sed 's/^/    /' >&2
         cat >&2 <<'PRE'
 
-This suite reuses these zone names, and the registry refuses a second launch of
-a name that is already running - so it would report dozens of failures that are
-all this one fact. Stop the launcher (or run `kryptikd gc` if it is dead) and
-try again.
+This suite reuses these zone names, and a running zone refuses a second launch.
+Stop the launcher (or run `kryptikd gc` if it is dead) and try again.
 PRE
         exit 2
     fi
@@ -245,9 +215,7 @@ want_launch() {
         return 0
     fi
 
-    # A launch the target kernel refuses by design is NOT RUN, not failed:
-    # kryptikd ignores KRYPTIK_EXPERIMENTAL for a root launch on a kernel that
-    # restricts unprivileged user namespaces (docs/design/privileged-launch.md).
+    # As root on a kernel restricting user namespaces the override is ignored: NOT RUN, not failed.
     if [[ "$ZOUT" == *"KRYPTIK_EXPERIMENTAL is ignored"* ]]; then
         skip "$desc [needs a zone whose guarantees are unmet; this kernel correctly refuses to start one]"
         return 1
@@ -286,8 +254,8 @@ PRO="echo $LAUNCHED;"
 # ============================================================================
 head_ "A. The launcher actually runs programs  [unpriv]"
 # ============================================================================
-# A zone that runs nothing isolates perfectly, so this group comes first.
 
+# First, since a zone that runs nothing isolates perfectly.
 zrun alpha -- /bin/echo "$LAUNCHED"
 if want_launch "A1  a program executes inside a zone"; then
     (( ZRC == 0 )) && pass "A1  a program executes inside a zone" \
@@ -304,8 +272,7 @@ else
     info "A2  note: /bin/sh appears static here; A2 proves less than usual"
 fi
 
-# $HOME, not /: the zone root is a sealed read-only tmpfs, and the data
-# directory (<rootfs-base>/<zone> on the host) is bound at /home/<zone>.
+# $HOME, not /: the zone root is sealed read-only, and the data directory is /home/<zone>.
 zrun alpha -- /bin/sh -c "$PRO echo hello > \$HOME/zonefile; sed 's/^/PROBE=/' \$HOME/zonefile"
 probe "A3  a zone can write and read back a file it owns" "hello"
 
@@ -326,12 +293,10 @@ fi
 head_ "B. Two real zones cannot reach each other  [unpriv]"
 # ============================================================================
 
-# keeper writes a canary into its own home. Not the ephemeral alpha: its writes
-# never reach the host, and B1b needs a file to find.
+# keeper, not the ephemeral alpha, whose writes never reach the host for B1b to find.
 zrun keeper -- /bin/sh -c "$PRO printf '%s' '$CANARY' > \$HOME/alpha-secret; echo PROBE=written"
 probe "B1a a persistent zone can write a file in its own zone" "written"
 
-# Positive control: the file exists on the host.
 if [[ -f "$ROOTFS/keeper/alpha-secret" ]] && grep -q "$CANARY" "$ROOTFS/keeper/alpha-secret"; then
     pass "B1b positive control: the file is real and readable from the host"
 else
@@ -343,15 +308,13 @@ fi
 zrun keeper -- /bin/sh -c "$PRO if grep -q '$CANARY' \$HOME/alpha-secret 2>/dev/null; then echo PROBE=kept; else echo PROBE=LOST; fi"
 probe "B1e a persistent zone still has its file on the NEXT launch" "kept"
 
-# Control: the same sequence in an ephemeral zone must lose the file.
 zrun wiped -- /bin/sh -c "$PRO printf '%s' '$CANARY' > \$HOME/eph-secret; echo PROBE=written"
 probe "B1f control: an ephemeral zone can write the same file" "written"
 
 zrun wiped -- /bin/sh -c "$PRO if grep -q '$CANARY' \$HOME/eph-secret 2>/dev/null; then echo PROBE=KEPT; else echo PROBE=gone; fi"
 probe "B1g control: the ephemeral zone does NOT have it on its next launch" "gone"
 
-# beta tries keeper's in-zone path and its host path; each zone binds only its
-# own directory.
+# Each zone binds only its own data directory.
 zrun beta -- /bin/sh -c "$PRO if cat /home/keeper/alpha-secret 2>/dev/null | grep -q '$CANARY'; then echo PROBE=LEAKED; else echo PROBE=denied; fi"
 probe "B1c another zone cannot read it at its in-zone path" "denied"
 
@@ -359,15 +322,11 @@ zrun beta -- /bin/sh -c "$PRO if cat '$ROOTFS/keeper/alpha-secret' 2>/dev/null |
 probe "B1d another zone cannot read it by its host path" "denied"
 
 # --- process visibility ------------------------------------------------------
-# A marker process runs on the host, the parent of every zone, and no zone may
-# see it. (One zone looking for another proves nothing: each run's pid
-# namespace is gone when it exits.) The probe builds the token from two halves
-# and scans /proc with a shell loop, so neither its argv nor a child's matches.
 
+# A host process, not another zone: each zone's pid namespace is gone when it exits.
 MARKER_TOKEN="KRYPTIKMARKER7f3c091"
 MARKER_BIN="$WORK/${MARKER_TOKEN}_marker.sh"
-# A script, not a renamed sleep: busybox dispatches on argv[0]. It must not
-# exec, or the token would leave its command line.
+# A script, as busybox dispatches on argv[0]; it must not exec, or the token leaves its argv.
 printf '#!/bin/sh\nsleep %s\n' "$TIMEOUT" > "$MARKER_BIN"
 chmod 0755 "$MARKER_BIN"
 /bin/sh "$MARKER_BIN" >/dev/null 2>&1 &
@@ -377,7 +336,7 @@ BG_PIDS+=("$MARKER_PID")
 disown "$MARKER_PID" 2>/dev/null || true
 sleep 1
 
-# Positive control: the probe's own /proc scan finds the marker from the host.
+# Positive control: the same /proc scan finds the marker from the host.
 host_hits=0
 for f in /proc/[0-9]*/cmdline; do
     c="$(tr '\0' ' ' < "$f" 2>/dev/null)"
@@ -417,7 +376,6 @@ probe "B3a alpha can write its private /tmp" "written"
 zrun beta -- /bin/sh -c "$PRO if grep -q '$CANARY' /tmp/canary 2>/dev/null; then echo PROBE=LEAKED; else echo PROBE=denied; fi"
 probe "B3b beta's /tmp does not contain alpha's file" "denied"
 
-# ...and the zone's /tmp is not the host's /tmp either.
 HOSTTMP_CANARY="/tmp/kryptik_hosttmp_$$_$RANDOM"
 printf '%s' "$CANARY" > "$HOSTTMP_CANARY"
 zrun alpha -- /bin/sh -c "$PRO if grep -q '$CANARY' '$HOSTTMP_CANARY' 2>/dev/null; then echo PROBE=LEAKED; else echo PROBE=denied; fi"
@@ -427,9 +385,8 @@ rm -f "$HOSTTMP_CANARY"
 # ============================================================================
 head_ "C. Outside paths and inherited descriptors  [unpriv]"
 # ============================================================================
-# The two escapes rootfs.rs exists to close.
 
-# Positive control for the whole group.
+# The two escapes rootfs.rs exists to close; C0 is the control for both.
 if grep -q "$CANARY" "$HOSTFIX/hostconfig.conf"; then
     pass "C0  positive control: the host fixture is readable outside the zone"
 else
@@ -439,9 +396,7 @@ fi
 zrun alpha -- /bin/sh -c "$PRO if grep -q '$CANARY' '$HOSTFIX/hostconfig.conf' 2>/dev/null; then echo PROBE=LEAKED; else echo PROBE=denied; fi"
 probe "C1  an outside path is not reachable from inside a zone" "denied"
 
-# A descriptor opened before the zone existed survives pivot_root and is not
-# governed by Landlock, so rootfs.rs::close_inherited_fds must close it. The
-# control shows fd 9 is inherited when nothing closes it.
+# An inherited descriptor survives pivot_root and Landlock, so close_inherited_fds must close it.
 ctl="$(exec 9<"$HOSTFIX/hostconfig.conf"; /bin/sh -c 'cat <&9' 2>/dev/null)"
 if [[ "$ctl" == *"$CANARY"* ]]; then
     pass "C2a positive control: fd 9 is inherited and readable by a plain child"
@@ -462,8 +417,7 @@ ZOUT="$(exec 200<"$HOSTFIX/hostconfig.conf"; KRYPTIK_EXPERIMENTAL=1 timeout "$TI
 ZRC=$?
 probe "C3  a high inherited descriptor (fd 200) cannot be read either" "denied"
 
-# A directory descriptor is worse than a file one: it survives as a walk root
-# and openat(dirfd, "..") climbs out of any subtree.
+# A directory descriptor is worse: openat(dirfd, "..") climbs out of any subtree.
 ZOUT="$(exec 9<"$HOSTFIX"; KRYPTIK_EXPERIMENTAL=1 timeout "$TIMEOUT" \
         "$KRYPTIKD" run alpha "${ZARGS[@]}" -- \
         /bin/sh -c "$PRO if ls /proc/self/fd/9/ 2>/dev/null | grep -q hostconfig; then echo PROBE=LEAKED; else echo PROBE=denied; fi" 2>&1)"
@@ -475,14 +429,13 @@ ZOUT="$(exec 5000<"$HOSTFIX/hostconfig.conf"; KRYPTIK_EXPERIMENTAL=1 timeout "$T
         "$KRYPTIKD" run alpha "${ZARGS[@]}" -- \
         /bin/sh -c "$PRO if cat <&5000 2>/dev/null | grep -q '$CANARY'; then echo PROBE=LEAKED; else echo PROBE=denied; fi" 2>&1)"
 ZRC=$?
-probe "C5  a descriptor above the old sweep bound (fd 5000) is closed too" "denied"
+probe "C5  a descriptor above a fixed sweep bound (fd 5000) is closed too" "denied"
 
 # ============================================================================
 head_ "D. Environment and host configuration exposure  [unpriv]"
 # ============================================================================
-# The zone gets a fixed, minimal environment (spawn.rs::zone_environment):
-# none of the caller's paths, tokens or LD_* variables.
 
+# The zone's environment is fixed (spawn.rs::zone_environment), never the caller's.
 ZOUT="$(KRYPTIK_SYNTHETIC_SECRET="$CANARY" KRYPTIK_EXPERIMENTAL=1 timeout "$TIMEOUT" \
         "$KRYPTIKD" run alpha "${ZARGS[@]}" -- \
         /bin/sh -c "$PRO if /usr/bin/env | grep -q '$CANARY'; then echo PROBE=LEAKED; else echo PROBE=clean; fi" 2>&1)"
@@ -509,8 +462,7 @@ probe "D4  the zone is told its own name via KRYPTIK_ZONE" "alpha"
 zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$PATH"
 probe "D5  PATH is the fixed zone PATH, not the caller's" "/usr/bin:/usr/sbin:/bin:/sbin"
 
-# Machine-wide state that links zones or times keystrokes (rootfs.rs:
-# PROC_MASKED, PROC_EMPTIED, SYSFS_KEPT, the zone's own boot_id).
+# Machine-wide state that links zones or times keystrokes: rootfs.rs hides or replaces it.
 zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(cat /proc/interrupts /proc/softirqs /proc/stat /proc/schedstat 2>/dev/null | wc -c)"
 probe "D6  the interrupt and context-switch counts are hidden from the zone" "0"
 
@@ -542,7 +494,6 @@ probe "E1a the old root mountpoint is gone from the zone" "detached"
 zrun alpha -- /bin/sh -c "$PRO if grep -q 'oldroot' /proc/mounts 2>/dev/null; then echo PROBE=PRESENT; else echo PROBE=detached; fi"
 probe "E1b no oldroot mount remains in the zone's mount table" "detached"
 
-# The host's own marker directories must not resolve.
 zrun alpha -- /bin/sh -c "$PRO if [ -d '$HOSTFIX' ]; then echo PROBE=PRESENT; else echo PROBE=detached; fi"
 probe "E1c the host's directory tree does not resolve inside the zone" "detached"
 
@@ -555,14 +506,13 @@ probe "E2b /etc is read-only inside the zone" "readonly"
 
 # Positive control: a zone where nothing is writable would pass E2 as well.
 zrun alpha -- /bin/sh -c "$PRO if touch /tmp/ok 2>/dev/null; then echo PROBE=writable; else echo PROBE=BROKEN; fi"
-probe "E2c positive control: /tmp IS writable (the zone is not simply inert)" "writable"
+probe "E2c positive control: /tmp is writable (the zone is not inert)" "writable"
 
 # A setuid binary on a system mount must confer nothing: check the mount flags.
 zrun alpha -- /bin/sh -c "$PRO if grep -E ' /usr .*nosuid' /proc/mounts >/dev/null; then echo PROBE=nosuid; else echo PROBE=SUID_ALLOWED; fi"
 probe "E2d /usr is mounted nosuid" "nosuid"
 
-# rootfs.rs::DEVICES, a private /dev/shm tmpfs, a private devpts (pts, ptmx) and
-# the fd/stdin/stdout/stderr symlinks; nothing else.
+# rootfs.rs::DEVICES, a private shm and devpts, and the fd/std* symlinks; nothing else.
 zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(ls /dev | sort | tr '\n' ',')"
 probe "E3a /dev contains exactly the allowlisted entries" \
       "fd,full,null,ptmx,pts,random,shm,stderr,stdin,stdout,tty,urandom,zero,"
@@ -570,10 +520,8 @@ probe "E3a /dev contains exactly the allowlisted entries" \
 zrun alpha -- /bin/sh -c "$PRO for d in /dev/mem /dev/kmem /dev/port /dev/kvm /dev/sda /dev/sdd /dev/nvme0n1 /dev/input; do [ -e \$d ] && { echo PROBE=EXPOSED_\$d; exit 0; }; done; echo PROBE=absent"
 probe "E3b no hardware, memory or input devices are visible" "absent"
 
-# /proc is the zone's own, not the host's.
 zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(readlink /proc/self | sed 's/[0-9]*/n/')"
 if want_launch "E4a /proc is the zone's own pid namespace"; then
-    n="$(printf '%s\n' "$ZOUT" | sed -n 's/^PROBE=//p' | head -1)"
     # In its own pid namespace the shell sees a very small pid.
     zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$\$"
     selfpid="$(printf '%s\n' "$ZOUT" | sed -n 's/^PROBE=//p' | head -1)"
@@ -600,9 +548,8 @@ fi
 # ============================================================================
 head_ "F. Encrypted storage: refused without its passphrase, real with it  [unpriv; F4 root]"
 # ============================================================================
-# An encrypted zone starts only with its passphrase; without it the command
-# never runs, override or not. F1 checks the converse: an implemented storage
-# mode is not refused.
+
+# The converse of F2 and F3: an implemented storage mode runs without the override.
 zrun_raw wiped -- /bin/sh -c "echo $LAUNCHED; echo PROBE=RAN"
 if [[ "$ZOUT" == *"$LAUNCHED"* ]] && (( ZRC == 0 )); then
     pass "F1  ephemeral storage is implemented and runs without the override"
@@ -637,8 +584,7 @@ else
     info "output: $(printf '%s' "$ZOUT" | tr '\n' '|' | cut -c1-220)"
 fi
 
-# With a volume and its passphrase the zone starts, its home on the dm-crypt
-# mapping. Root only (cryptsetup, dm-crypt, a loop device).
+# Root only: a LUKS2 volume needs cryptsetup, dm-crypt and a loop device.
 if (( PRIVILEGED == 1 )) && command -v cryptsetup >/dev/null 2>&1 && [[ -e /dev/mapper/control ]]; then
     F4PASS="$WORK/sealed.pass"; printf 'fixture-passphrase' > "$F4PASS"; chmod 600 "$F4PASS"
     if ! F4INIT="$("$KRYPTIKD" volume init sealed --zones "$ZONES" --size 32M --passphrase-file "$F4PASS" "${IDENTITY[@]}" 2>&1)"; then
@@ -662,8 +608,7 @@ if (( PRIVILEGED == 1 )) && command -v cryptsetup >/dev/null 2>&1 && [[ -e /dev/
         else
             pass "F4b the mapping is closed when the zone exits"
         fi
-        # stop --now kills the zone's pid 1, so the launcher outlives it and
-        # closes the volume; killing the launcher left it open.
+        # stop --now kills pid 1, so the launcher outlives the zone and closes the volume.
         "$KRYPTIKD" run sealed "${ZARGS[@]}" --passphrase-file "$F4PASS" -- /bin/sleep 60 >/dev/null 2>&1 &
         BG_PIDS+=("$!")
         f4c_open=0
@@ -672,8 +617,7 @@ if (( PRIVILEGED == 1 )) && command -v cryptsetup >/dev/null 2>&1 && [[ -e /dev/
             sleep 0.2
         done
         "$KRYPTIKD" stop sealed --now >/dev/null 2>&1
-        # The launcher closes the volume once the zone's pid 1 is gone, not
-        # before stop returns: up to 30 s on a slow host.
+        # The volume closes after pid 1 is gone, not when stop returns: up to 30 s on a slow host.
         f4c_closed=0
         for _ in $(seq 150); do
             [[ "$("$KRYPTIKD" volume status sealed --zones "$ZONES" 2>/dev/null)" == *"(closed)"* ]] && { f4c_closed=1; break; }
@@ -684,11 +628,10 @@ if (( PRIVILEGED == 1 )) && command -v cryptsetup >/dev/null 2>&1 && [[ -e /dev/
         elif (( f4c_closed == 1 )); then
             pass "F4c stop --now leaves the volume closed"
         else
-            fail "F4c the volume is still open 10 s after stop --now"
+            fail "F4c the volume is still open 30 s after stop --now"
             "$KRYPTIKD" gc >/dev/null 2>&1
         fi
-        # io_max: the leaf names the volume's devices with the bytes per
-        # second, and a direct write of 24 MiB at 8 MiB per second takes 3 s.
+        # io.max names the volume's devices; 24 MiB of direct writes at 8 MiB/s take 3 s.
         F5PASS="$WORK/throttled.pass"; printf 'fixture-passphrase' > "$F5PASS"; chmod 600 "$F5PASS"
         if ! F5INIT="$("$KRYPTIKD" volume init throttled --zones "$ZONES" --size 64M --passphrase-file "$F5PASS" "${IDENTITY[@]}" 2>&1)"; then
             fail "F5  volume init for the throttled fixture failed"
@@ -721,8 +664,7 @@ if (( PRIVILEGED == 1 )) && command -v cryptsetup >/dev/null 2>&1 && [[ -e /dev/
                 fail "F5b io_max=8M did NOT hold: 24 MiB of direct writes took ${f5_ms} ms"
             fi
         fi
-        # destroy: refused while the volume is open, deletes the container
-        # once the zone is gone, and then there is nothing left to destroy.
+        # volume destroy, while the zone runs and after it stops.
         "$KRYPTIKD" run sealed "${ZARGS[@]}" --passphrase-file "$F4PASS" -- /bin/sleep 60 >/dev/null 2>&1 &
         BG_PIDS+=("$!")
         for _ in $(seq 50); do [[ -e /dev/mapper/kryptik-zone-sealed ]] && break; sleep 0.2; done
@@ -765,10 +707,7 @@ else
     fail "G1  expected exit 127 for a missing command, got $ZRC"
 fi
 
-# A zone killed by a signal reports 128+signo, as a shell does. Not with
-# `kill -TERM $$`: the command is pid 1 of its pid namespace, and the kernel
-# drops default-action signals sent to it from inside. A seccomp SIGSYS is
-# synchronous and not subject to that.
+# SIGSYS, not `kill -TERM $$`: the kernel drops default-action signals a pid 1 sends itself.
 zrun alpha -- /bin/sh -c "$PRO /bin/mount -t tmpfs none /tmp 2>/dev/null"
 if want_launch "G2  a zone killed by a signal reports 128+signo"; then
     if (( ZRC == 128 + 31 )); then
@@ -778,8 +717,7 @@ if want_launch "G2  a zone killed by a signal reports 128+signo"; then
     fi
 fi
 
-# A rootfs base that cannot be created must fail promptly, not hang on the
-# sync pipe.
+# A rootfs base that cannot be created must fail promptly, not hang on the sync pipe.
 start=$(date +%s)
 out="$(KRYPTIK_EXPERIMENTAL=1 timeout "$TIMEOUT" "$KRYPTIKD" run alpha \
        --zones "$ZONES" --rootfs /proc/cannot-create-here \
@@ -796,7 +734,6 @@ else
     fail "G3  an unwritable rootfs base exited 0"
 fi
 
-# A zone that is asked to run a directory rather than a program.
 zrun alpha -- /tmp
 if (( ZRC != 0 )) && (( ZRC != 124 )); then
     pass "G4  exec'ing a non-program fails cleanly (exit $ZRC)"
@@ -804,9 +741,7 @@ else
     fail "G4  exec'ing a directory returned $ZRC"
 fi
 
-# No zone process outlives the launcher. Scoped to this launch by a marker in
-# its argv, as other runs may be live. Counted with wc -l: pgrep -c prints 0
-# and also fails when nothing matches.
+# A marker scopes pgrep to this launch; wc -l, as pgrep -c also fails when nothing matches.
 G5MARK="G5PROBE_${$}_${RANDOM}"
 KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run alpha "${ZARGS[@]}" -- \
     /bin/sh -c "$PRO echo PROBE=done; /bin/sleep 3; : $G5MARK" \
@@ -831,8 +766,7 @@ else
     info "output: $(tr '\n' '|' < "$WORK/g5.out" 2>/dev/null | cut -c1-200)"
 fi
 
-# The host's mount table is unchanged: pivot_into makes the tree MS_PRIVATE
-# first, so zone mounts cannot propagate out.
+# pivot_into makes the tree MS_PRIVATE first, so zone mounts cannot propagate out.
 hm_before="$(wc -l < /proc/mounts)"
 zrun alpha -- /bin/sh -c "$PRO echo PROBE=done"
 hm_after="$(wc -l < /proc/mounts)"
@@ -846,18 +780,15 @@ fi
 # ============================================================================
 head_ "I. Seccomp is enforced on the real launch path  [unpriv]"
 # ============================================================================
-# adversarial.sh tests the filter in a purpose-built child (`kryptikd
-# seccomp-test`); these check that `run` installs it, after pivot_root and
-# Landlock.
 
+# adversarial.sh tests the filter alone; these check that `run` installs it.
 zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(grep '^Seccomp:' /proc/self/status | awk '{print \$2}')"
 probe "I1  a zone process reports seccomp mode 2 (filtered)" "2"
 
 zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(grep '^Seccomp_filters:' /proc/self/status | awk '{print \$2}')"
 probe "I2  exactly one filter is installed, not zero and not a stack" "1"
 
-# Each is in seccomp.rs::DENIED_RATIONALE. A denied syscall kills the zone
-# (SIGSYS, exit 159) rather than returning an error it could ignore.
+# A denied syscall (seccomp.rs::DENIED_RATIONALE) kills the zone, so it cannot ignore an error.
 seccomp_kill() { # desc shell-command
     local desc="$1" cmd="$2"
     zrun alpha -- /bin/sh -c "$cmd"
@@ -876,8 +807,7 @@ seccomp_kill "I4  chroot(2) kills the zone (double-chroot escape)" \
              '/usr/sbin/chroot / /bin/true'
 seccomp_kill "I5  unshare(2) kills the zone (nested namespace LPE surface)" \
              '/usr/bin/unshare -U /bin/true'
-# mknod(2) is allowed so mkfifo works; a device node is refused by Landlock
-# (MAKE_CHAR/MAKE_BLOCK granted nowhere) and by nodev on every mount.
+# mknod(2) is allowed for mkfifo; Landlock and nodev refuse a device node.
 zrun alpha -- /bin/sh -c "$PRO /usr/bin/mknod /tmp/n c 1 3 2>/dev/null; if [ -e /tmp/n ]; then echo PROBE=CREATED; else echo PROBE=refused; fi"
 probe "I6  a zone cannot create a device node (Landlock + nodev, not SIGSYS)" "refused"
 
@@ -893,8 +823,7 @@ probe "I7  positive control: allowed syscalls still work under the filter" "allo
 head_ "J. The hardened zone tree  [unpriv]"
 # ============================================================================
 
-# The zone root is a sealed read-only tmpfs, so a zone cannot plant a symlink
-# on a future mount point for its next run.
+# Sealed read-only, so a zone cannot plant a symlink on a mount point for its next run.
 zrun alpha -- /bin/sh -c "$PRO if touch /probe 2>/dev/null; then echo PROBE=WRITABLE; else echo PROBE=sealed; fi"
 probe "J1  the zone root is read-only, even to zone root" "sealed"
 
@@ -908,8 +837,7 @@ probe "J2b positive control: \$HOME IS writable (the zone is not inert)" "writab
 zrun alpha -- /bin/sh -c "$PRO if mkdir /dev/evil 2>/dev/null; then echo PROBE=ALLOWED; else echo PROBE=denied; fi"
 probe "J3  Landlock denies creating a directory under /dev" "denied"
 
-# Write rights Landlock must still grant: truncate needs FS_TRUNCATE, and mv
-# across directories FS_REFER (without it mv falls back to copy+fchmod and fails).
+# Write rights Landlock must grant; without FS_REFER, mv falls back to copy+fchmod and fails.
 zrun alpha -- /bin/sh -c "$PRO echo aaaa > /tmp/t; echo b > /tmp/t; echo PROBE=\$(cat /tmp/t)"
 probe "J4  truncating an existing file works (FS_TRUNCATE granted)" "b"
 
@@ -929,8 +857,7 @@ probe "J8  no host identity or secret files are visible in /etc" "absent"
 zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(hostname)"
 probe "J9  the zone's hostname is the zone name, not the host's" "alpha"
 
-# Positive control: without the CA bundle TLS breaks in every zone. Checked
-# only where the host has one.
+# Positive control: without the CA bundle TLS breaks in every zone.
 if [[ -d /etc/ssl/certs ]]; then
     zrun alpha -- /bin/sh -c "$PRO if [ -d /etc/ssl/certs ]; then echo PROBE=present; else echo PROBE=MISSING; fi"
     probe "J10 positive control: the CA certificate directory reaches the zone" "present"
@@ -938,20 +865,15 @@ else
     skip "J10 the host has no /etc/ssl/certs, so the CA passthrough cannot be checked here"
 fi
 
-# Remounting a recursive bind MS_RDONLY only affects the top mount, not its
-# submounts.
+# Remounting a recursive bind MS_RDONLY only affects the top mount, not its submounts.
 zrun alpha -- /bin/sh -c "$PRO n=\$(awk '\$5 ~ /^\/(usr|lib|lib64|bin|sbin|etc)/ && \$6 ~ /(^|,)rw(,|\$)/ {c++} END{print c+0}' /proc/self/mountinfo); echo PROBE=\$n"
 probe "J11 no system mount or submount is read-write inside the zone" "0"
 
 # ============================================================================
 head_ "H. Network isolation, without overclaiming  [unpriv]"
 # ============================================================================
-# network.mode = "none". Routed zones are group NETR.
 
-# Devices the kernel creates in every new netns, which the zone cannot remove
-# (sit0: CONFIG_IPV6_SIT=y adds a fallback tunnel to each). H1 allows these
-# names and no others, and every device but lo must be down with no address.
-# The same list as adversarial.sh.
+# Devices every netns gets and a zone cannot remove (sit0: CONFIG_IPV6_SIT=y); as in adversarial.sh.
 KERNEL_FALLBACK_IFS="sit0"
 FALLBACK_RE="lo|${KERNEL_FALLBACK_IFS// /|}"
 
@@ -991,24 +913,22 @@ probe "H2  a mode=none zone has no routes at all" "none"
 zrun alpha -- /bin/sh -c "$PRO if timeout 3 /bin/sh -c 'exec 3<>/dev/tcp/10.255.255.1/80' 2>/dev/null; then echo PROBE=CONNECTED; else echo PROBE=unreachable; fi"
 probe "H3  an outbound TCP connect from a mode=none zone cannot succeed" "unreachable"
 
-# Positive control for H1, which only discriminates if the host has more than
-# lo. The developer VM has no NIC (-nic none), so there it is NOT RUN.
+# Positive control for H1, which only discriminates on a host with more than lo.
 hostifs="$(tail -n +3 /proc/net/dev | awk '{print $1}' | tr -d ':' | grep -cv '^lo$')"
 if (( hostifs > 0 )); then
     pass "H1c positive control: the host has $hostifs non-loopback interface(s) the zone did not see"
 else
     skip "H1c H1 cannot discriminate here: this host has no non-loopback interface either"
-    info "     (expected in the developer VM, which is launched with -nic none)"
+    info "     (expected on an installed system, where the net zone holds the interfaces)"
 fi
 
 # ============================================================================
 head_ "K. The privileged launch path  [vm / root only]"
 # ============================================================================
-# What changes when kryptikd is root, as it runs in zone 0 on Kryptik.
 
+# The path the installed system takes: kryptikd runs as root in zone 0.
 if (( PRIVILEGED == 1 )); then
-    # Mapping zone root to host uid 0 would make it real root for every DAC
-    # check on every bound path.
+    # Zone root as host uid 0 would be real root for every DAC check on every bound path.
     out="$(KRYPTIK_EXPERIMENTAL=1 timeout "$TIMEOUT" "$KRYPTIKD" run alpha \
            --zones "$ZONES" --rootfs "$ROOTFS" -- /bin/echo "$LAUNCHED" 2>&1)"
     rc=$?
@@ -1021,12 +941,10 @@ if (( PRIVILEGED == 1 )); then
         info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
     fi
 
-    # Zone root is uid 0 inside the zone...
     zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(id -u)"
     probe "K2  the zone's process is uid 0 inside its own user namespace" "0"
 
-    # ...and its files belong to the mapped host identity, checked on the host
-    # side. `keeper`, since an ephemeral zone writes nothing there.
+    # keeper, since an ephemeral zone writes nothing to the host.
     zrun keeper -- /bin/sh -c "$PRO echo k3 > \$HOME/k3file; echo PROBE=written"
     if want_launch "K3  a zone's files are owned by the mapped identity"; then
         owner="$(stat -c %u "$ROOTFS/keeper/k3file" 2>/dev/null)"
@@ -1038,15 +956,12 @@ if (( PRIVILEGED == 1 )); then
         fi
     fi
 
-    # Supplementary groups are dropped on a privileged launch (setgroups needs
-    # CAP_SETGID). That only shows if the launcher has groups to drop, and a
-    # root started by init often has none, so it is given some.
+    # A root started by init often has no groups to drop, so K4 gives the launcher some.
     K4_GROUPS="4,27"
     K4_WRAP=()
     launcher_groups="$(grep '^Groups:' /proc/self/status | cut -f2- | wc -w)"
     if (( launcher_groups == 0 )); then
-        # busybox setpriv has no --groups; s6-applyuidgid -G does, and the image
-        # ships s6. A wrapper that grants no groups is discarded.
+        # busybox setpriv has no --groups, but the image ships s6-applyuidgid -G.
         for k4_cand in "setpriv --groups=$K4_GROUPS --" "s6-applyuidgid -G $K4_GROUPS"; do
             read -ra k4_try <<< "$k4_cand"
             command -v "${k4_try[0]}" >/dev/null 2>&1 || continue
@@ -1083,9 +998,7 @@ if (( PRIVILEGED == 1 )); then
     zrun alpha -- /bin/sh -c "$PRO if touch /usr/rootprobe 2>/dev/null; then echo PROBE=WRITABLE; else echo PROBE=readonly; fi"
     probe "K6  /usr is read-only even to a privileged launch" "readonly"
 
-    # A data directory owned by anyone but the zone's identity is refused, or
-    # one planted by another user would become the zone's. The suite's own
-    # chown never exercises that.
+    # Refused, or a data directory another user planted would become the zone's.
     mkdir -p "$ROOTFS/stranger"
     chown 100001:100001 "$ROOTFS/stranger" 2>/dev/null
     out="$(KRYPTIK_EXPERIMENTAL=1 timeout "$TIMEOUT" "$KRYPTIKD" run stranger \
@@ -1100,14 +1013,12 @@ if (( PRIVILEGED == 1 )); then
         info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
     fi
 else
-    skip "K1-K6 the privileged launch path [vm] needs root; run this suite inside the developer VM"
+    skip "K1-K7 the privileged launch path [vm] needs root; tools/image/zones-test.sh runs this suite as root"
 fi
 
 # --- T11: the zone as the host sees it --------------------------------------
-# Every other identity check asks the zone. This reads the zone's pid 1 (from
-# the registry) in /proc from outside: a zone mapped to real root, with a
-# capability left effective or a namespace shared with pid 1 fails here even
-# if every in-zone check passes.
+
+# Every other identity check asks the zone; this reads its pid 1 in the host's /proc.
 if (( PRIVILEGED == 1 )); then
     KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run alpha "${ZARGS[@]}" -- \
         /bin/sh -c "$PRO echo PROBE=up; /bin/sleep 30" > "$WORK/t11.out" 2>&1 &
@@ -1176,9 +1087,8 @@ head_ "L. Supervision, termination and the filter probes  [unpriv]"
 # ============================================================================
 
 # --- nothing outlives the launcher -------------------------------------------
-# A unique sleep duration is the marker: it appears in the zone process's argv
-# and in nothing else. It comes from this run's pid, since pgrep and pkill see
-# every process of the user, another run of this suite included.
+
+# A sleep duration from this run's pid marks the zone: pgrep also sees other runs' processes.
 MARK_BASE=$(( 3000000 + ($$ % 100000) * 10 ))
 MARK_KILL=$(( MARK_BASE + 1 ))
 KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run alpha "${ZARGS[@]}" -- /bin/sleep "$MARK_KILL" >/dev/null 2>&1 &
@@ -1202,13 +1112,12 @@ else
 fi
 
 # --- SIGTERM to the launcher -------------------------------------------------
-# The check is that no zone process survives, not timeout(1)'s exit code: 124
-# from coreutils, the child's status (137) from busybox. The zone's pid 1
-# ignores SIGTERM, so the launcher's SIGKILL 5 s later is what ends it.
+
+# Judged by survivors, not timeout(1)'s status: 124 from coreutils, 137 from busybox.
 MARK_TERM=$(( MARK_BASE + 2 ))
 KRYPTIK_EXPERIMENTAL=1 timeout 2 "$KRYPTIKD" run alpha "${ZARGS[@]}" -- /bin/sleep "$MARK_TERM" >/dev/null 2>&1
 trc=$?
-# The escalation is 5s after the signal, so wait past it before judging.
+# pid 1 ignores SIGTERM, and the launcher's SIGKILL follows 5 s later: wait past it.
 sleep 6
 after="$(pgrep -f "sleep $MARK_TERM" 2>/dev/null | wc -l)"
 if (( trc == 0 )); then
@@ -1222,9 +1131,8 @@ else
 fi
 
 # --- the filter probes -------------------------------------------------------
-# `kryptikd seccomp-test` makes the syscall in a child under the real zone
-# filter. Exit 5: killed by SIGSYS; 7: refused with the intended errno; 0: the
-# call completed (the positive control).
+
+# seccomp-test exits 5 when SIGSYS kills the call, 7 on the intended errno, 0 when it completes.
 filter_probe() { # desc probe expected
     local desc="$1" probe_name="$2" want="$3"
     timeout "$TIMEOUT" "$KRYPTIKD" seccomp-test "$probe_name" >/dev/null 2>&1
@@ -1243,9 +1151,7 @@ filter_probe "L6  socket(AF_NETLINK/NETFILTER) is refused with an errno" socket-
 filter_probe "L7  ioctl(TIOCSTI) is killed (terminal input injection)" ioctl-tiocsti 5
 filter_probe "L8  positive control: socket(AF_INET) still works" socket-inet 0
 
-# seccomp-trace names each refused call and lets the program carry on:
-# reboot(2) is refused by the zone filter and fails with ENOSYS (38), and so
-# does inotify_init1(2), marked soft since a zone gets ENOSYS for it too.
+# reboot(2) and inotify_init1(2), a soft refusal, both get ENOSYS (38) and the program goes on.
 out="$(timeout "$TIMEOUT" "$KRYPTIKD" seccomp-trace -- python3 -c \
     'import ctypes; c = ctypes.CDLL(None, use_errno=True); [print(c.syscall(nr, 0, 0, 0, 0), ctypes.get_errno()) for nr in (169, 294)]' 2>&1)"
 if grep -qx 'KRYPTIK_SECCOMP_DENIED 169 reboot' <<<"$out" \
@@ -1256,9 +1162,7 @@ else
     fail "L9  seccomp-trace did not report reboot(2) and inotify_init1(2) [$(tr '\n' ' ' <<<"$out")]"
 fi
 
-# ncurses brackets each terminfo open with setfsuid and setfsgid. The filter
-# answers them with EPERM; a kill would take every terminal program with it
-# (tput would end with 159, SIGSYS).
+# ncurses calls setfsuid and setfsgid around terminfo opens: EPERM, as a kill would end tput.
 if command -v tput > /dev/null 2>&1; then
     zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(tput -T xterm cols 2>/dev/null || echo exit-\$?)"
     probe "L10 a terminal program opens terminfo in a zone and lives" "80"
@@ -1266,16 +1170,15 @@ else
     info "L10 not run: this host has no tput"
 fi
 
-# cp -a and gzip give what they make its source's owner (tar does too, as
-# root); with chown refused neither would finish.
+# cp -a and gzip chown what they make to its source's owner; refusing chown would stop both.
 zrun alpha -- /bin/sh -c "$PRO cd /tmp && echo x > o && cp -a o o2 && gzip -k o && echo PROBE=kept"
 probe "L11 cp -a and gzip keep an owner in a zone and live" "kept"
 
-# install(1) resets a file's ACL through its xattrs, and Python's asyncio
-# watches a child through a pidfd.
+# install(1) resets a file's ACL through its xattrs.
 zrun alpha -- /bin/sh -c "$PRO echo x > /tmp/src && install -D -m 644 /tmp/src /tmp/i/x && echo PROBE=installed"
 probe "L12 install(1) sets a mode in a zone and lives" "installed"
 if command -v python3 > /dev/null 2>&1; then
+    # asyncio watches its child through a pidfd.
     zrun alpha -- /bin/sh -c "$PRO python3 -c 'import asyncio
 async def m():
     p = await asyncio.create_subprocess_exec(\"true\")
@@ -1288,8 +1191,7 @@ asyncio.run(m())'"
 f = open(\"/tmp/m\", \"w+b\"); f.write(bytes(4096)); f.flush()
 m = mmap.mmap(f.fileno(), 4096); m[0:1] = b\"y\"; m.flush(); print(\"PROBE=flushed\")'"
     probe "L14 timeout(1) and a flushed mapping live in a zone" "flushed"
-    # sudo, su and daemons dropping privilege call the set*id family as root:
-    # refused with EPERM, they can say so instead of dying of SIGSYS.
+    # sudo, su and daemons call set*id as root: EPERM lets them say so, SIGSYS would kill them.
     zrun alpha -- /bin/sh -c "$PRO python3 -c 'import os
 try:
     os.setgroups([]); os.setgid(65534); os.setuid(65534); print(\"PROBE=CHANGED\")
@@ -1303,11 +1205,8 @@ fi
 # ============================================================================
 head_ "M. cgroup resource limits  [unpriv where delegated, otherwise vm]"
 # ============================================================================
-# Where a cgroup can be created the limits must be enforced, and where one
-# cannot the zone must be refused: never started unlimited.
 
-# Probe as kryptikd does, by trying: a delegated subtree is writable by a user,
-# and root in a container may find the hierarchy read-only.
+# Probe by trying, as kryptikd does: a user may have a delegated subtree, root in a container none.
 CGROUP_OK=0
 if [[ -f /sys/fs/cgroup/cgroup.controllers ]] \
    && mkdir /sys/fs/cgroup/kryptik-suite-probe 2>/dev/null; then
@@ -1318,7 +1217,6 @@ fi
 if (( CGROUP_OK == 0 )); then
     info "this host cannot create cgroups; checking the REFUSAL instead of enforcement"
 
-    # The refusal must name the limits, and the command must not run.
     zrun_raw pidcapped -- /bin/sh -c "echo $LAUNCHED"
     if [[ "$ZOUT" == *"$LAUNCHED"* ]]; then
         fail "M1  a zone declaring [limits] RAN on a host that cannot enforce them"
@@ -1336,9 +1234,8 @@ else
     info "cgroups are creatable here; checking enforcement"
 
     # --- cpu_max ------------------------------------------------------------
-    # A busy loop for two seconds; the leaf's cpu.stat says how much CPU time
-    # it got. Under cpu_max = "25%" that is a quarter of the wall time, and
-    # roomy, unlimited, gets the whole of it.
+
+    # A 2 s busy loop's CPU time from cpu.stat: a quarter of it under 25%, all of it in roomy.
     cpu_probe() { # zone -> sets CPU_LIMIT (cpu.max), CPU_USEC (used in about 2 s)
         local zone="$1"
         CPU_LIMIT=""; CPU_USEC=""
@@ -1382,11 +1279,8 @@ else
     fi
 
     # --- pids_max -----------------------------------------------------------
-    # Measured from outside: a zone out of pids cannot fork to report on itself.
-    # The cgroup leaf is <zone>.<launcher-pid>, so $! gives the path. Polled from
-    # 0.2 s, keeping the last good reading, as the cgroup goes when the zone
-    # dies. The verdict uses pids.events `max` (forks refused) and pids.peak;
-    # pids.current only describes the instant it was read.
+
+    # Measured from outside, as a zone out of pids cannot fork to report on itself.
     pids_probe() { # zone ATTEMPTS -> sets PIDS_CUR, PIDS_PEAK, PIDS_MAXEV, PIDS_LIMIT
         local zone="$1"
         local ATTEMPTS="${2:-20}"
@@ -1394,8 +1288,7 @@ else
         PIDS_SAMPLES=0; PIDS_TRACE=""
         PIDS_ERR="$WORK/pids-probe-$zone.err"
         PIDS_LEAF=""
-        # busybox ash, not bash: bash aborts when a fork fails and the zone is
-        # gone before the poll sees it; ash reports the failure and carries on.
+        # busybox ash carries on past a failed fork; bash aborts, ending the zone before a poll.
         local sh_cmd=(/bin/sh -c)
         [[ -x /bin/busybox ]] && sh_cmd=(/bin/busybox ash -c)
         KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run "$zone" "${ZARGS[@]}" -- \
@@ -1411,16 +1304,14 @@ else
             if [[ -d "$leaf" ]]; then
                 cur="$(cat "$leaf/pids.current" 2>/dev/null)"
                 lim="$(cat "$leaf/pids.max" 2>/dev/null)"
-                # pids.events also counts refusals by an ancestor's limit;
-                # pids.events.local only this cgroup's.
+                # pids.events.local counts only this cgroup's refusals, not an ancestor's.
                 ev="$(sed -n 's/^max //p' "$leaf/pids.events.local" 2>/dev/null)"
                 [[ -z "$ev" ]] && ev="$(sed -n 's/^max //p' "$leaf/pids.events" 2>/dev/null)"
                 pk="$(cat "$leaf/pids.peak" 2>/dev/null)"
                 [[ -n "$cur" ]] && PIDS_CUR="$cur"
                 [[ -n "$lim" ]] && PIDS_LIMIT="$lim"
                 [[ -n "$ev"  ]] && PIDS_MAXEV="$ev"
-                # pids.peak needs kernel 6.1+; fall back to the largest
-                # pids.current we happened to see.
+                # pids.peak needs kernel 6.1+; otherwise the largest pids.current seen.
                 if [[ -n "$pk" ]]; then
                     PIDS_PEAK="$pk"
                 elif [[ -n "$cur" ]] && { [[ -z "$PIDS_PEAK" ]] || (( cur > PIDS_PEAK )); }; then
@@ -1429,7 +1320,7 @@ else
                 PIDS_SAMPLES=$((PIDS_SAMPLES+1))
                 PIDS_TRACE="$PIDS_TRACE [$i cur=$cur pk=$pk ev=$ev]"
             elif [[ -n "$PIDS_CUR" ]]; then
-                break   # it existed, we read it, and it has now been cleaned up
+                break   # read while it existed, and now removed with the zone
             fi
             if (( i < 200 )); then step=0.005; else step=0.1; fi
             sleep "$step"
@@ -1461,11 +1352,7 @@ else
         pass "M3a pids_max reaches the kernel: the zone's cgroup has pids.max=$PIDS_LIMIT"
     fi
 
-    # M3b: enforcement, measured by the refusal. At pids.max fork(2) fails with
-    # EAGAIN and the shell, the zone's pid 1, dies and takes the zone and its
-    # cgroup with it within milliseconds, so reading the cgroup races its
-    # removal. The EAGAIN on stderr does not race, and with the same payload
-    # fine in roomy it can only come from the pids controller.
+    # M3b reads the EAGAIN on stderr: the cgroup goes with the zone within milliseconds.
     fork_storm() { # zone attempts -> sets FS_RC, FS_OUT
         local zone="$1" attempts="$2"
         local sh_cmd=(/bin/sh -c)
@@ -1500,19 +1387,15 @@ else
     fi
 
     # --- memory_max ---------------------------------------------------------
-    # Writing to /dev/shm charges the zone's memory cgroup. memory.oom.group=1
-    # kills the whole zone rather than one process, so the launcher sees 137.
+
+    # /dev/shm is charged to the zone's cgroup; memory.oom.group kills the whole zone (137).
     zrun roomy -- /bin/sh -c "$PRO dd if=/dev/zero of=/dev/shm/blob bs=1M count=32 2>/dev/null && echo PROBE=wrote32M"
     probe "M4  positive control: 32M fits inside a 512M zone" "wrote32M"
 
-    # M5 reads the kernel's oom_kill counter: exit 137 alone is what any SIGKILL
-    # gives.
+    # M5 reads the kernel's oom_kill counter: exit 137 alone is what any SIGKILL gives.
     MEM_OOM=""; MEM_GROUP=""; MEM_LEAF=""; MEM_RC=""
 
-    # The zone's leaf goes milliseconds after the OOM kill, so polling it
-    # usually misses. memory.events is hierarchical and the parent outlives
-    # every zone: its counter, read either side of this one launch, gives the
-    # delta. The leaf poll names the exact cgroup when it does win.
+    # The leaf goes right after the kill, so the parent's hierarchical counter gives the delta.
     MEM_PARENT="/sys/fs/cgroup/kryptik"
     mem_ev() { sed -n "s/^$1 //p" "$MEM_PARENT/memory.events" 2>/dev/null; }
     MEM_P_BEFORE="$(mem_ev oom_kill)"
@@ -1524,8 +1407,7 @@ else
     mempid=$!
     BG_PIDS+=("$mempid")
     MEM_LEAF="$MEM_PARENT/memcapped.${mempid}"
-    # Poll for as long as the launcher lives: in the emulated VM the OOM lands
-    # around 36 s.
+    # Poll while the launcher lives: in the emulated VM the OOM lands around 36 s.
     i=0
     while (( i < 1200 )); do                       # 120s hard ceiling
         if [[ -d "$MEM_LEAF" ]]; then
@@ -1534,7 +1416,7 @@ else
             [[ -n "$v" ]] && (( v > 0 )) && MEM_OOM="$v"
             [[ -n "$g" ]] && (( g > 0 )) && MEM_GROUP="$g"
         fi
-        kill -0 "$mempid" 2>/dev/null || break     # the launcher is done
+        kill -0 "$mempid" 2>/dev/null || break
         sleep 0.1
         i=$((i+1))
     done
@@ -1542,7 +1424,7 @@ else
     MEM_RC=$?
     memout="$(cat "$WORK/mem.out" 2>/dev/null)"
 
-    # One count, and a statement of where it came from.
+    # The kill count, and where it was read.
     MEM_KILLS=""; MEM_GROUP_KILLS=0; MEM_SRC=""
     if [[ -n "$MEM_OOM" ]]; then
         MEM_KILLS="$MEM_OOM"; MEM_GROUP_KILLS="${MEM_GROUP:-0}"
@@ -1570,12 +1452,10 @@ else
         fi
     elif [[ -z "$MEM_SRC" ]]; then
         skip "M5  memory_max: no readable oom_kill counter (leaf $MEM_LEAF, parent $MEM_PARENT)"
-        info "     exit was $MEM_RC, which on its own is also what a SIGKILL from the test would give,"
-        info "     so this run neither proves nor disproves the limit"
+        info "     exit $MEM_RC alone could be any SIGKILL, so this run neither proves nor disproves the limit"
         info "     launcher said: $(printf '%s' "$memout" | tr '\n' '|' | cut -c1-260)"
     elif [[ -n "$MEM_KILLS" ]] && (( MEM_KILLS > 0 )); then
-        # A pass needs both signals. The kernel counted an OOM kill but the
-        # launcher did not exit 137: not a pass, and not a failed limit either.
+        # An OOM kill without exit 137 is neither a pass nor a failed limit.
         skip "M5  the kernel OOM-killed the zone but the launcher exited $MEM_RC, not 137"
         info "     $MEM_SRC"
     else
@@ -1589,9 +1469,8 @@ else
     probe "M6  a zone cannot write the cgroup filesystem from inside" "denied"
 
     # --- cleanup ------------------------------------------------------------
-    # A launcher that exits normally removes its cgroup (rmdir fails with EBUSY
-    # while a process remains). One launch only: M2, M3 and M8 kill their
-    # launchers and leave empty cgroups for M9's sweep.
+
+    # Only this launch's leaf: M2, M3 and M8 kill their launchers and leave cgroups for M9.
     KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run roomy "${ZARGS[@]}" -- /bin/true >/dev/null 2>&1 &
     normal_lp=$!
     wait "$normal_lp" 2>/dev/null
@@ -1612,8 +1491,7 @@ else
     kill -9 "$cgpid" 2>/dev/null
     sleep 2
     after_procs="$(pgrep -f "sleep $MARK_CG" 2>/dev/null | wc -l)"
-    # Leaves whose launcher (the pid in the name) is gone. A live launcher's
-    # leaf is a running zone, such as the installed system's net zone.
+    # Leaves whose launcher (the pid in the name) is gone; a live one may be the net zone's.
     abandoned_leaves() {
         local d n p
         for d in /sys/fs/cgroup/kryptik/*/; do
@@ -1624,8 +1502,7 @@ else
         done
     }
     after_cg="$(abandoned_leaves | wc -l)"
-    # A SIGKILLed launcher cannot clean up, but PR_SET_PDEATHSIG kills every
-    # process: its cgroup must be empty, for the next launch to sweep (M9).
+    # PR_SET_PDEATHSIG kills every zone process, leaving an empty cgroup for M9 to sweep.
     if (( after_procs != 0 )); then
         fail "M8  $after_procs process(es) survived a SIGKILLed launcher with limits"
         pkill -9 -f "sleep $MARK_CG" 2>/dev/null
@@ -1643,8 +1520,7 @@ else
         fi
     fi
 
-    # M9: the next launch that needs a cgroup removes empty leaves older than
-    # the staleness window.
+    # M9: the next launch with limits removes empty leaves past the staleness window.
     if (( after_cg > 0 )); then
         sleep 6   # older than cgroup.rs::STALE_AFTER
         zrun pidcapped -- /bin/sh -c "$PRO echo PROBE=swept"
@@ -1655,8 +1531,7 @@ else
                 pass "M9  the next launch swept the abandoned cgroup"
             else
                 fail "M9  $still abandoned cgroup(s) survived the next launch's sweep"
-                # Which, and why: what the leaf holds, and what rmdir itself
-                # says about it.
+                # What each leaf holds, and what rmdir says about it.
                 while IFS= read -r d; do
                     [[ -n "$d" ]] || continue
                     info "     $(basename "$d"): procs=[$(tr '\n' ' ' < "$d/cgroup.procs" 2>/dev/null)]; $(tr '\n' ' ' < "$d/cgroup.events" 2>/dev/null); rmdir: $(rmdir "$d" 2>&1 && echo ok)"
@@ -1672,10 +1547,6 @@ fi
 # ============================================================================
 head_ "E-EPH. Ephemeral zones keep nothing  [unpriv]"
 # ============================================================================
-# An ephemeral $HOME is a per-launch tmpfs in the zone's mount namespace. The
-# kernel frees it when the namespace dies, so there is no teardown for a crash
-# to skip. It is not secure erasure (tmpfs pages can be swapped out), and EPH8
-# checks that the tooling says so.
 
 # A dedicated rootfs base, so leftovers from other groups cannot confuse EPH4.
 EPHROOT="$WORK/ephroot"
@@ -1693,11 +1564,9 @@ ephrun() { # zone -- cmd...
     return 0
 }
 
-# EPH1, the positive control: $HOME works.
 ephrun alpha -- /bin/sh -c "$PRO printf '%s' '$CANARY' > \$HOME/secret; cat \$HOME/secret | sed 's/^/PROBE=/'"
 probe "EPH1 positive control: an ephemeral zone can write and read its \$HOME" "$CANARY"
 
-# EPH2: the zone's directory on the host stays empty.
 if [[ -d "$EPHROOT/alpha" ]]; then
     n="$(find "$EPHROOT/alpha" -mindepth 1 2>/dev/null | wc -l)"
     if (( n == 0 )); then
@@ -1710,11 +1579,10 @@ else
     fail "EPH2 the persistent directory was not created at all"
 fi
 
-# EPH3: a second launch cannot see the first launch's data.
 ephrun alpha -- /bin/sh -c "$PRO if [ -e \$HOME/secret ]; then echo PROBE=RECOVERED; else echo PROBE=gone; fi"
 probe "EPH3 a later launch cannot recover the previous run's data" "gone"
 
-# EPH4: the same after the launcher is SIGKILLed.
+# The kernel frees the tmpfs with the zone's mount namespace: no teardown for a crash to skip.
 MARK_EPH=$(( MARK_BASE + 4 ))
 KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run beta "${EPHARGS[@]}" -- \
     /bin/sh -c "printf '%s' '$CANARY' > \$HOME/crashfile; sleep $MARK_EPH" >/dev/null 2>&1 &
@@ -1736,7 +1604,6 @@ if want_launch "EPH4 a crashed launcher leaves nothing recoverable"; then
     fi
 fi
 
-# EPH5: the zone's tmpfs never appears in the host's mount table.
 hm_before="$(wc -l < /proc/mounts)"
 ephrun alpha -- /bin/sh -c "$PRO echo PROBE=done"
 hm_after="$(wc -l < /proc/mounts)"
@@ -1747,12 +1614,9 @@ else
     grep "$EPHROOT" /proc/mounts 2>/dev/null | sed 's/^/        /' | head -3
 fi
 
-# EPH6: storage.size bounds the tmpfs: 128M written into a 64M zone.
 ephrun alpha -- /bin/sh -c "$PRO dd if=/dev/zero of=\$HOME/big bs=1M count=128 2>/dev/null; s=\$(wc -c < \$HOME/big 2>/dev/null || echo 0); if [ \"\$s\" -gt 100000000 ]; then echo PROBE=UNBOUNDED; else echo PROBE=bounded; fi"
 probe "EPH6 storage.size bounds the tmpfs (128M into a 64M zone is truncated)" "bounded"
 
-# EPH7: an ephemeral zone will not start over data it did not write, and
-# kryptikd refuses rather than deleting it.
 mkdir -p "$EPHROOT/wiped"
 (( PRIVILEGED == 1 )) && chown "$ZONE_UID:$ZONE_GID" "$EPHROOT/wiped" 2>/dev/null
 echo "left over from an earlier build" > "$EPHROOT/wiped/stale.txt"
@@ -1772,7 +1636,7 @@ else
 fi
 rm -rf "$EPHROOT/wiped"
 
-# EPH8: the tooling must not let "ephemeral" be read as secure erasure.
+# Swap can hold tmpfs pages, so the tooling must not let "ephemeral" read as secure erasure.
 expl="$("$KRYPTIKD" explain alpha "${EPHARGS[@]}" 2>&1)"
 if [[ "$expl" == *tmpfs* && "$expl" == *swap* && "$expl" == *"NOT secure erasure"* ]]; then
     pass "EPH8 explain says what ephemeral is, and that swap makes it not erasure"
@@ -1784,12 +1648,8 @@ fi
 # ============================================================================
 head_ "CAP. The capability bounding set  [unpriv]"
 # ============================================================================
-# Zone root keeps only CAP_NET_BIND_SERVICE (bit 10, 0x400). NET_ADMIN and
-# NET_RAW matter most: in a zone that owns a veth they would let it re-address
-# its link and send raw frames on the bridge segment.
 
-# Positive control: 0x400 in the zone shows a drop only if the launcher's
-# bounding set is wider.
+# Positive control: a zone's 0x400 shows a drop only if the launcher's bounding set is wider.
 host_capbnd="$(grep -m1 '^CapBnd:' /proc/self/status | awk '{print $2}')"
 if [[ -n "$host_capbnd" && "$host_capbnd" != "0000000000000400" ]]; then
     pass "CAP0 positive control: the launcher's bounding set is $host_capbnd, wider than a zone's"
@@ -1804,23 +1664,19 @@ probe "CAP1 the zone's bounding set is CAP_NET_BIND_SERVICE and nothing else" "0
 zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(grep -m1 '^CapEff:' /proc/self/status | awk '{print \$2}')"
 probe "CAP2 the zone's effective set is the same single capability" "0000000000000400"
 
-# The ones that matter most, by number so a failure names them: 21 SYS_ADMIN,
-# 12 NET_ADMIN, 13 NET_RAW, 16 SYS_MODULE, 19 SYS_PTRACE, 27 MKNOD.
+# 21 SYS_ADMIN, 12 NET_ADMIN, 13 NET_RAW, 16 SYS_MODULE, 19 SYS_PTRACE, 27 MKNOD.
 zrun alpha -- /bin/sh -c "$PRO b=\$(grep -m1 '^CapBnd:' /proc/self/status | awk '{print \$2}'); v=\$(printf '%d' 0x\$b); bad=''; for c in 21 12 13 16 19 27; do if [ \$(( (v >> c) & 1 )) -eq 1 ]; then bad=\"\$bad \$c\"; fi; done; if [ -n \"\$bad\" ]; then echo PROBE=KEPT\$bad; else echo PROBE=dropped; fi"
 probe "CAP3 SYS_ADMIN, NET_ADMIN, NET_RAW, SYS_MODULE, PTRACE and MKNOD are gone" "dropped"
 
-# Positive control: an empty bounding set would pass CAP1-CAP3 and break every
-# zone.
+# Positive control: an empty bounding set would pass CAP1-CAP3 and break every zone.
 zrun alpha -- /bin/sh -c "$PRO echo hi > \$HOME/capfile && cat \$HOME/capfile | sed 's/^/PROBE=/'"
 probe "CAP4 positive control: the zone still runs normally after the drop" "hi"
 
 # ============================================================================
 head_ "BRK. The broker channel  [unpriv + vm]"
 # ============================================================================
-# The launcher serves /run/kryptik/broker for its zone and identifies the peer
-# by SO_PEERCRED, never by what the zone sends. The client is python: bash has
-# no AF_UNIX and busybox nc no -U. A refused peer can be answered and closed
-# before it sends, so EPIPE is ignored and the answer read anyway.
+
+# Python, as bash has no AF_UNIX and busybox nc no -U; a refused peer may get EPIPE first.
 BRK_CLIENT='import socket,sys
 s=socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.settimeout(5)
@@ -1832,12 +1688,10 @@ except BrokenPipeError:
 sys.stdout.write(s.recv(256).decode(errors="replace").strip())'
 
 if command -v python3 >/dev/null 2>&1; then
-    # The broker names the zone from the connecting uid; a zone cannot ask to
-    # be another.
+    # The broker names the zone from the peer's uid (SO_PEERCRED), not from what it sends.
     zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(python3 -c '$BRK_CLIENT' /run/kryptik/broker version 2>&1)"
     probe "BRK1 a zone's broker answers version, naming that zone" "kryptik-broker 1 zone=alpha"
 
-    # The server parses rather than echoes.
     zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(python3 -c '$BRK_CLIENT' /run/kryptik/broker notaverb 2>&1)"
     probe "BRK2 an unknown verb is refused rather than echoed" "error: unknown verb"
 
@@ -1848,8 +1702,7 @@ else
     skip "BRK1-BRK3 need python3 for an AF_UNIX client; this environment has none"
 fi
 
-# BRK4, the authentication, needs two uids: only a privileged launch gives each
-# zone its own.
+# BRK4 needs two uids, and only a privileged launch gives each zone its own.
 if (( PRIVILEGED == 1 )) && command -v python3 >/dev/null 2>&1; then
     KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run alpha "${ZARGS[@]}" -- \
         /bin/sh -c "$PRO echo PROBE=up; /bin/sleep 20" > "$WORK/brk.out" 2>&1 &
@@ -1884,16 +1737,13 @@ fi
 # ============================================================================
 head_ "NETR. Routed networking, end to end  [vm / root only]"
 # ============================================================================
-# The nic zone holds the bridge (and any physical interfaces it names); a
-# routed zone gets a veth into it. Starting a nic zone can take interfaces
-# from zone 0, so this runs only in a disposable VM that says so
-# (KRYPTIK_VM_DISPOSABLE=1), never as root on a real machine.
+
+# A nic zone can take zone 0's interfaces, so this runs only where KRYPTIK_VM_DISPOSABLE=1.
 if (( PRIVILEGED == 1 )) && [[ "${KRYPTIK_VM_DISPOSABLE:-}" == "1" ]]; then
-    # A routed fixture. `carrier` already holds the nic.
+    # A routed fixture; `carrier` already holds the nic.
     mkzone router none "#0f0f0f"
     sed -i 's/^mode = "none"$/mode = "routed"/' "$ZONES/router.toml"
-    # A routed zone's bridge address comes from its uid_base
-    # (netzone::host_number); without one it starts with loopback only.
+    # The bridge address comes from uid_base (netzone::host_number); without it, loopback only.
     printf '[identity]\nuid_base = 393216\n' >> "$ZONES/router.toml"
 
     # The nic zone must be running for a routed zone to attach to it.
@@ -1915,12 +1765,10 @@ if (( PRIVILEGED == 1 )) && [[ "${KRYPTIK_VM_DISPOSABLE:-}" == "1" ]]; then
     else
         pass "NETR1 the nic zone started and holds the interface"
 
-        # Counted from /proc/net/dev (no iproute2 needed), without the kernel
-        # fallback devices, or sit0 could pass for NETR3's interface.
+        # From /proc/net/dev, without the fallback devices, or sit0 could pass for NETR3's.
         zrun router -- /bin/sh -c "$PRO n=\$(sed 1,2d /proc/net/dev | sed 's/:.*//' | tr -d ' ' | grep -vxE '$FALLBACK_RE' | wc -l); r=\$(sed 1d /proc/net/route | wc -l); echo PROBE=if=\$n,routes=\$r"
         if want_launch "NETR2 a routed zone starts while the nic zone is up"; then
-            # A plumb failure does not stop the launch, so check the zone was
-            # plumbed before NETR3 and NETR4 judge the result.
+            # A plumbing failure does not stop the launch, so NETR3 and NETR4 need this first.
             if [[ "$ZOUT" == *"has no network path"* ]]; then
                 fail "NETR2b the routed zone was never plumbed, so NETR3/NETR4 measure nothing"
                 info "kryptikd said: $(printf '%s\n' "$ZOUT" | grep -a 'no network path' | head -1)"
@@ -1942,8 +1790,7 @@ if (( PRIVILEGED == 1 )) && [[ "${KRYPTIK_VM_DISPOSABLE:-}" == "1" ]]; then
             fi
         fi
 
-        # Control: with the nic zone up, a mode=none zone still sees only
-        # loopback, so NETR3 measured routing and not something every zone gets.
+        # Control: a mode=none zone still sees only loopback, so NETR3 measured routing.
         zrun alpha -- /bin/sh -c "$PRO n=\$(sed 1,2d /proc/net/dev | sed 's/:.*//' | tr -d ' ' | grep -vxE '$FALLBACK_RE' | wc -l); echo PROBE=\$n"
         probe "NETR5 control: an airgapped zone still sees only loopback while the nic zone runs" "0"
     fi
@@ -1952,7 +1799,7 @@ if (( PRIVILEGED == 1 )) && [[ "${KRYPTIK_VM_DISPOSABLE:-}" == "1" ]]; then
     wait "$nicpid" 2>/dev/null
     "$KRYPTIKD" gc >/dev/null 2>&1 || true
 elif (( PRIVILEGED == 1 )); then
-    skip "NETR routed networking [vm] needs a disposable VM: this check MOVES THE PHYSICAL NIC into a zone, and will not do that to a machine it did not build"
+    skip "NETR routed networking [vm] needs KRYPTIK_VM_DISPOSABLE=1: it moves the physical NIC into a zone"
 else
     skip "NETR routed networking [vm] needs root and a disposable VM"
 fi
@@ -1960,19 +1807,12 @@ fi
 # ============================================================================
 head_ "POL. Per-zone policy files  [unpriv]"
 # ============================================================================
-# Checked by what a file changes in the zone, not by what kryptikd says it
-# read: a keep-capability shows in the zone's bounding set.
+
+# Landlock policy files are covered by boundary-checks.sh.
 mkdir -p "$ZONES/policy"
 
-# A zone whose file keeps one extra capability...
 cat > "$ZONES/policy/widened.seccomp" <<'POLICY'
-# launcher.sh fixture: one directive with an effect that can be seen from
-# inside the zone with nothing but /proc/self/status.
-#
-# CAP_SYS_NICE and not CAP_NET_RAW: the network capabilities may be kept ONLY
-# by the zone that owns the NIC, which POL2b checks. This fixture is a
-# mode=none zone, so asking for CAP_NET_RAW here is refused - correctly - and
-# the check would be measuring that refusal instead of the widening.
+# CAP_SYS_NICE, not CAP_NET_RAW: only the zone that owns the NIC may keep that (POL2b).
 keep-capability CAP_SYS_NICE
 POLICY
 mkzone_policy() { # name colour policyfile
@@ -1987,6 +1827,7 @@ mkzone_policy() { # name colour policyfile
 mkzone_policy widened "#0b0b0b" "policy/widened.seccomp"
 mkzone_policy plainpol "#0c0c0c" ""
 
+# Judged by the zone's bounding set, not by what kryptikd says it read.
 CAPBND='grep ^CapBnd /proc/self/status | tr -d "\t" | sed s/CapBnd://'
 
 zrun plainpol -- /bin/sh -c "$PRO echo PROBE=\$($CAPBND)"
@@ -1998,8 +1839,7 @@ zrun widened -- /bin/sh -c "$PRO echo PROBE=\$($CAPBND)"
 probe "POL2 a policy file's keep-capability reaches the zone's bounding set" \
       "0000000000800400"
 
-# Only the zone that owns the NIC may keep the network capabilities; another
-# zone asking is refused, naming the rule.
+# Another zone asking for a network capability is refused, naming the rule.
 cat > "$ZONES/policy/netraw.seccomp" <<'POLICY'
 keep-capability CAP_NET_RAW
 POLICY
@@ -2029,7 +1869,7 @@ else
     info "output: $(printf '%s' "$ZOUT" | tr '\n' '|' | cut -c1-200)"
 fi
 
-# And a file must not be able to re-allow something the base policy denies.
+# A file must not re-allow something the base policy denies.
 cat > "$ZONES/policy/escalate.seccomp" <<'POLICY'
 allow-syscall ptrace
 POLICY
@@ -2041,8 +1881,6 @@ else
     pass "POL4 a policy file cannot re-allow a syscall the base policy denies"
 fi
 
-# Per-zone Landlock files are applied; the boundary probes (group E) show one
-# narrowing where a zone may write.
 lp="$("$KRYPTIKD" explain widened --zones "$ZONES" 2>&1 | sed -n 's/^policy *//p' | head -1)"
 if [[ -n "$lp" ]]; then
     pass "POL5 explain reports what the policy file adds ($lp)"
@@ -2050,8 +1888,7 @@ else
     fail "POL5 explain does not report the policy file's additions"
 fi
 
-# seccomp-trace --zone traces under that zone's filter, so a call its policy
-# file allows is not reported, and the program gets it.
+# seccomp-trace --zone uses that zone's filter: a call its policy allows is not reported.
 cat > "$ZONES/policy/tracer.seccomp" <<'POLICY'
 allow-syscall sched_setscheduler
 POLICY
@@ -2072,11 +1909,8 @@ fi
 # ============================================================================
 head_ "LC. Zone lifecycle: registry, stop, concurrency  [unpriv]"
 # ============================================================================
-# The registry is how one kryptikd finds another's zone
-# (docs/design/zone-registry.md). Liveness is a lock, not a pid: the launcher
-# holds flock(LOCK_EX) on its entry for life, so a crash frees it. The pid is
-# kept, with its start time, only so `stop` can signal it and never a reused pid.
 
+# A launcher holds its entry's lock for life, so a crash frees it (docs/design/zone-registry.md).
 info "registry: $REG"
 
 lc_cleanup() {
@@ -2085,9 +1919,7 @@ lc_cleanup() {
 }
 lc_cleanup
 
-# --- LC1: one instance per zone ---------------------------------------------
-# Two launchers of one zone would share a data directory, a cgroup name and,
-# for a routed zone, a veth name.
+# --- LC1: one instance per zone, or two would share its data, cgroup and veth ---
 KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run lczone "${ZARGS[@]}" -- /bin/sleep 20 >/dev/null 2>&1 &
 lc1=$!
 BG_PIDS+=("$lc1")
@@ -2103,7 +1935,6 @@ else
     info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
 fi
 
-# LC8a: while it runs, the registry says so.
 st="$("$KRYPTIKD" status lczone 2>&1)"
 if [[ "$st" == *running* ]]; then
     pass "LC8a status reports a running zone as running"
@@ -2112,7 +1943,6 @@ else
     fail "LC8a status did not report the running zone: $st"
 fi
 
-# LC10: init.pid is the zone's pid 1: another pid namespace, NSpid ending in 1.
 initpid="$(awk '{print $1}' "$REG/lczone/init.pid" 2>/dev/null)"
 if [[ -n "$initpid" ]] && [[ -r "/proc/$initpid/status" ]]; then
     ourns="$(readlink /proc/self/ns/pid 2>/dev/null)"
@@ -2123,11 +1953,7 @@ if [[ -n "$initpid" ]] && [[ -r "/proc/$initpid/status" ]]; then
     else
         fail "LC10 init.pid $initpid: ns=$zns (ours $ourns) NSpid=$nspid"
     fi
-    # LC17: the zone has a core-scheduling cookie of its own, so a core's
-    # sibling threads run its tasks or nothing. /proc does not show cookies;
-    # `kryptikd status` asks the kernel (PR_SCHED_CORE_GET). "no-smt": no core
-    # has a second thread online (ENODEV, as under nosmt), and the zone must
-    # still launch. "unavailable": no CONFIG_SCHED_CORE.
+    # /proc shows no core-scheduling cookie, so `kryptikd status` asks (PR_SCHED_CORE_GET).
     cs="$("$KRYPTIKD" status lczone 2>/dev/null | grep -o 'core-sched [a-z-]*' | head -1)"
     case "$cs" in
         "core-sched own")   pass "LC17 the zone's pid 1 has a core-scheduling cookie of its own" ;;
@@ -2139,8 +1965,7 @@ else
     fail "LC10 no usable init.pid in the registry entry"
 fi
 
-# LC7: the registry names running zones, their identities and cgroups, so only
-# the launching uid may read it.
+# The registry names running zones, their identities and cgroups: only its uid may read it.
 mode="$(stat -c '%a %u' "$REG" 2>/dev/null)"
 if [[ "$mode" == "700 $EUID" ]]; then
     pass "LC7 the registry is 0700 and owned by the launching uid ($mode)"
@@ -2161,7 +1986,6 @@ else
 fi
 wait "$lc1" 2>/dev/null
 
-# LC8b: and afterwards it is absent.
 st="$("$KRYPTIKD" status lczone 2>&1)"
 [[ "$st" == *absent* ]] && pass "LC8b status reports a stopped zone as absent" \
                         || fail "LC8b status after stop: $st"
@@ -2179,9 +2003,7 @@ else
 fi
 wait "$lc9" 2>/dev/null
 
-# --- LC3: a zone that ignores SIGTERM still dies ----------------------------
-# A zone that traps TERM must not keep itself alive: stop escalates to SIGKILL
-# after 5 s.
+# --- LC3: a zone that ignores SIGTERM still dies: stop sends SIGKILL after 5 s ---
 KRYPTIK_EXPERIMENTAL=1 "$KRYPTIKD" run lczone "${ZARGS[@]}" -- \
     /bin/sh -c 'trap "" TERM; sleep 60' >/dev/null 2>&1 &
 lc3=$!
@@ -2228,8 +2050,6 @@ else
 fi
 
 # --- LC5: a reused pid is never signalled -----------------------------------
-# A stale entry whose recorded pid now belongs to another process, which
-# kryptikd must leave alone.
 lc_cleanup
 mkdir -p "$REG/lczone"
 /bin/sleep 25 & victim=$!
@@ -2253,26 +2073,19 @@ fi
 kill -9 "$victim" 2>/dev/null
 lc_cleanup
 
-# --- LC6: the registry is invisible inside a zone ---------------------------
-# A zone has /run/kryptik/broker but must not see /run/kryptik/zones, which
-# names every other zone's pid and cgroup.
+# --- LC6: the registry, naming every zone's pid and cgroup, is invisible in a zone ---
 zrun alpha -- /bin/sh -c "$PRO if [ -e /run/kryptik/zones ]; then echo PROBE=VISIBLE; else echo PROBE=absent; fi"
 probe "LC6 the zone registry is not visible inside a zone" "absent"
 
-# Control: /run/kryptik is there, holding only the broker socket.
-zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(ls -A /run/kryptik 2>/dev/null | tr '
-' ',')"
+zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(ls -A /run/kryptik 2>/dev/null | tr '\n' ',')"
 probe "LC6b control: /run/kryptik is present and contains only the broker socket" "broker,"
 
-# LC15: the registry directory must not be plantable. base() can fall back to
-# world-writable /tmp, where another user could create or symlink it first.
-# XDG_RUNTIME_DIR points base() into $WORK, leaving the real registry alone.
-# Unprivileged only: as root base() is /run/kryptik/zones, which nobody else
-# can plant, and a plant there would displace the entries of running zones.
+# base() can fall back to world-writable /tmp, where another user could plant the registry first.
 if (( PRIVILEGED == 1 )); then
-    skip "LC15/LC16 the plantable-registry checks cover the UNPRIVILEGED base path; as root base() is /run/kryptik and ignores XDG_RUNTIME_DIR — the host run exercises them"
+    skip "LC15/LC16 the plantable-registry checks are unprivileged-only: as root base() is /run/kryptik, whatever XDG_RUNTIME_DIR says"
 else
 
+# XDG_RUNTIME_DIR moves base() into $WORK, leaving the real registry alone.
 LC_XDG="$WORK/xdgplant"
 mkdir -p "$LC_XDG"
 ln -s "$WORK/elsewhere" "$LC_XDG/kryptik"
@@ -2292,7 +2105,6 @@ else
 fi
 rm -f "$LC_XDG/kryptik"
 
-# LC16, the control for LC15: the same launch with a real directory starts.
 mkdir -p "$LC_XDG/kryptik"
 chmod 0700 "$LC_XDG/kryptik"
 out="$(XDG_RUNTIME_DIR="$LC_XDG" KRYPTIK_EXPERIMENTAL=1 timeout "$TIMEOUT" \
@@ -2309,8 +2121,8 @@ fi   # end of the unprivileged-only LC15/LC16 pair
 # ============================================================================
 head_ "Mandatory checks NOT RUN here"
 # ============================================================================
-# Named, so the gaps show in the summary.
 
+# Named, so the gaps show in the summary.
 if (( CGROUP_OK == 0 )); then
     skip "cgroup memory/pids limits are enforced          [vm] this host cannot create cgroups; group M covers it there"
 fi
