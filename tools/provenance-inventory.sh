@@ -380,7 +380,7 @@ for r in rows(id_path):
 # ---- per-source classification --------------------------------------------
 
 FAILED_SIG = {"signature-bad", "signature-revoked-key", "published-key-changed"}
-UNVERIFIED_SIG = {"key-not-held", "no-signature-upstream", "signature-uncheckable",
+UNVERIFIED_SIG = {"key-not-held", "published-key-unread", "no-signature-upstream", "signature-uncheckable",
                   "signature-unavailable", "inconclusive", "decompression-failed"}
 
 

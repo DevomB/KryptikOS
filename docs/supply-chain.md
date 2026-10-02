@@ -70,7 +70,9 @@ tampering at routine expiry gets ignored. `BADSIG` (the file does not match
 its signature) and `REVKEYSIG` (the key was revoked, possibly compromised)
 always fail; `--strict`, the gate CI runs on every push, also fails on a
 signature that could not be checked or a signer never established: a key
-taken from the signature itself, a key not held, a file not downloaded. A
+taken from the signature itself, a key not held, a file not downloaded, a
+key whose published copy (`tools/key-provenance.tsv`) could not be read that
+run. A row there speaks only for the sources it names. A
 key that no publisher states anywhere passes it only while
 `tools/source-notes.tsv` records the routes that were tried
 (`no-usable-key`); such a note for a key that is held fails it as stale,

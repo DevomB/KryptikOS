@@ -867,6 +867,36 @@ else
     red "a key that signs two sources is fetched once a run"; show
 fi
 
+# good's key recorded for another source: the row says nothing about good.
+fresh_root
+write_manifest good
+prov_table "${GOODFPR}  korg  file://${PROV}/good.asc  2026-09-11  other  good fixture, recorded for another source"
+runprov --report="${W}/r7.tsv"
+if [[ "$RC" -eq 0 && "$(klass_of "${W}/r7.tsv" good)" == "signature-keyring-key" ]]; then
+    green "a row gives its class only to the sources it names"
+else
+    red "a row gives its class only to the sources it names (exit ${RC}, got $(klass_of "${W}/r7.tsv" good))"; show
+fi
+
+# A row whose published copy cannot be read this run gives no class.
+fresh_root
+write_manifest good
+prov_table "${GOODFPR}  korg  file://${PROV}/missing.asc  2026-09-11  good  good fixture, its published copy gone"
+runprov --report="${W}/r8.tsv"
+if [[ "$RC" -eq 0 && "$(klass_of "${W}/r8.tsv" good)" == "signature-keyring-key" ]] \
+   && grep -qF "not read this run" "${W}/r8.tsv"; then
+    green "a row not read this run gives no class, and the report says so"
+else
+    red "a row not read this run gives no class (exit ${RC}, got $(klass_of "${W}/r8.tsv" good))"; show
+fi
+fresh_root
+runprov --strict
+if [[ "$RC" -ne 0 ]] && grep -qF "published copy at file://${PROV}/missing.asc not read this run" "$OUT"; then
+    green "and --strict counts its source unverifiable"
+else
+    red "and --strict counts its source unverifiable (exit ${RC})"; show
+fi
+
 # --- malformed provenance rows ----------------------------------------------
 
 bad_prov() {  # bad_prov ROW NAME
@@ -969,10 +999,13 @@ if [[ -n "$PINS_T" ]] && [[ -z "$(printf '%s\n' "$PINS_T" | grep -vE '^[0-9A-F]{
 else
     red "the shipped provenance table has a malformed fingerprint column"
 fi
-if [[ -z "$(printf '%s\n' "$PINS_T" | sort | uniq -d)" ]]; then
-    green "no fingerprint appears twice in the shipped table"
+# A key may have a row per project; a key and source in two rows would be ambiguous.
+PAIRS_T="$(awk '/^# fingerprint/{f=1;next} f&&/^[0-9A-F]{40}/{n=split($5,s,",");for(i=1;i<=n;i++)print $1" "s[i]}' \
+           "${ROOT}/tools/key-provenance.tsv")"
+if [[ -z "$(printf '%s\n' "$PAIRS_T" | sort | uniq -d)" ]]; then
+    green "no key and source appear in two rows of the shipped table"
 else
-    red "duplicated fingerprints: $(printf '%s\n' "$PINS_T" | sort | uniq -d | tr '\n' ' ')"
+    red "a key and source in two rows: $(printf '%s\n' "$PAIRS_T" | sort | uniq -d | tr '\n' ' ')"
 fi
 
 fresh_root
