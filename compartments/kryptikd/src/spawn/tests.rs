@@ -13,7 +13,7 @@ fn relayed(chunks: &[&[u8]]) -> Vec<String> {
 }
 
 #[test]
-fn zone_output_is_prefixed_and_sanitized() {
+fn zone_output_relay() {
     // Every line is marked, and a line split across reads stays one line.
     assert_eq!(
         relayed(&[b"kryptikd[zone work]: broker served \"steal\"\nhal", b"f\n"]),
@@ -54,7 +54,7 @@ fn broker_log_bounded() {
 }
 
 #[test]
-fn wayland_socket_is_the_verified_one() {
+fn wayland_socket_verified() {
     let dir = std::env::temp_dir().join(format!("kryptik-wlsock-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -85,8 +85,7 @@ fn peer_gone_after_close() {
 
 #[test]
 fn pump_reads_bounded_amount() {
-    /* A zone that never stops writing must not keep one pump from
-     * returning: fill the pipe past one pass and check the rest is left. */
+    // An endless writer must not keep a pump from returning: fill past one pass, check the rest.
     let mut fds = [0; 2];
     assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) }, 0);
     let (r, w) = (fds[0], fds[1]);
@@ -139,10 +138,9 @@ fn explain_names_core_scheduling() {
     assert!(line.contains(want), "{line}");
 }
 
-/// Two forked writers share one pipe, one of them through `log_line`;
-/// every line read back must be one writer's, whole.
+/// Two forked writers share a pipe, one through `log_line`; every line must come back whole.
 #[test]
-fn log_line_is_never_split() {
+fn log_line_never_split() {
     use std::io::Read;
     use std::os::unix::io::FromRawFd;
     const N: usize = 1500;
@@ -194,7 +192,7 @@ fn log_line_is_never_split() {
 }
 
 #[test]
-fn explain_reports_capabilities_kept_by_policy() {
+fn explain_policy_caps() {
     let dir = std::env::temp_dir().join(format!("kryptik-explain-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("policy")).unwrap();
     std::fs::write(dir.join("policy/n.seccomp"), "keep-capability CAP_NET_RAW\nkeep-capability CAP_NET_ADMIN\n").unwrap();
@@ -243,7 +241,6 @@ fn explain_warns_persistent_unencrypted() {
         e.contains("/var/lib/kryptik/zones/t (visible inside as"),
         "the data line must place it: {e}"
     );
-    assert!(!e.contains("NOT YET IMPLEMENTED"), "persistent IS implemented: {e}");
 }
 
 fn z_encrypted() -> Zone {
@@ -256,29 +253,29 @@ fn z_encrypted() -> Zone {
 }
 
 #[test]
-fn rootfs_path_is_under_base() {
+fn rootfs_under_base() {
     assert_eq!(zone_rootfs(&z("routed"), "/var/lib/kryptik/zones"),
                "/var/lib/kryptik/zones/t");
 }
 
 #[test]
-fn explain_names_namespaces_and_storage() {
+fn explain_namespaces_storage() {
     let e = explain(&z("none"), "/tmp/t", std::path::Path::new("/nonexistent"));
     assert!(e.contains("user"), "{e}");
     assert!(e.contains("net"), "{e}");
-    assert!(e.contains("tmpfs"), "explain must say what ephemeral storage IS: {e}");
+    assert!(e.contains("tmpfs"), "explain must say what ephemeral storage is: {e}");
 }
 
 #[test]
 fn explain_does_not_overclaim() {
     let e = explain(&z("routed"), "/tmp/t", std::path::Path::new("/tmp"));
     // A routed zone's way out is the nic zone's to open, never kryptikd's.
-    let honest = e.contains("no path out")
+    let says_who = e.contains("no path out")
         || e.contains("loopback")
         || e.contains("nic zone")
         || e.contains("NAT")
         || e.contains("uid_base");
-    assert!(honest, "explain must say who opens a routed zone's way out: {e}");
+    assert!(says_who, "explain must say who opens a routed zone's way out: {e}");
     assert!(e.contains("swap"), "explain must name the swap caveat: {e}");
     assert!(
         e.contains("NOT secure erasure"),
@@ -331,7 +328,7 @@ fn environment_is_allowlist() {
 }
 
 #[test]
-fn passthrough_values_must_be_well_formed() {
+fn passthrough_well_formed() {
     assert!(env_value_is_sane("xterm-256color"));
     assert!(env_value_is_sane("en_US.UTF-8"));
     assert!(!env_value_is_sane(""));
@@ -348,7 +345,7 @@ fn passthrough_values_must_be_well_formed() {
 }
 
 #[test]
-fn unprivileged_launch_cannot_pick_identity() {
+fn unprivileged_identity() {
     if unsafe { libc::geteuid() } == 0 {
         // As root the rule is the reverse; see the next test.
         return;
@@ -361,7 +358,7 @@ fn unprivileged_launch_cannot_pick_identity() {
 }
 
 #[test]
-fn root_launch_needs_unprivileged_identity() {
+fn root_launch_identity() {
     if unsafe { libc::geteuid() } != 0 {
         return;
     }

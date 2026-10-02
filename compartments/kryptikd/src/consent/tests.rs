@@ -13,8 +13,7 @@ fn env_lock() -> std::sync::MutexGuard<'static, ()> {
     ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Hold the watcher lock while the returned file lives. Children forked by
-/// other tests inherit the flock, so no test may rely on its release.
+/// Hold the watcher lock while the file lives. No test may rely on its release: forks inherit it.
 fn hold_watch(d: &std::path::Path) -> std::fs::File {
     use std::os::unix::io::AsRawFd;
     let f = std::fs::File::create(d.join(WATCHER_LOCK)).unwrap();
@@ -75,8 +74,7 @@ fn silence_and_missing_channel_refuse() {
     with_dir(|d| {
         std::env::set_var("KRYPTIK_CONSENT_DIR", d);
         std::env::set_var("KRYPTIK_CONSENT_TIMEOUT", "1");
-        /* Nobody watching (no lock file, then one nobody holds): refused at
-         * once, and no question is left behind. */
+        // Nobody watching (no lock file, then an unheld one): refused at once, nothing left behind.
         for lock_file in [false, true] {
             if lock_file {
                 std::fs::File::create(d.join(WATCHER_LOCK)).unwrap();
@@ -122,8 +120,7 @@ fn vanished_sender_withdraws_question() {
     });
 }
 
-/// A group member plants symlinks and a ready "yes" under the pid-counter
-/// names: root must not write through them or believe the answer.
+/// Symlinks and a ready "yes" planted under the pid-counter names: neither written nor believed.
 #[test]
 fn planted_names_are_ignored() {
     use std::os::unix::fs::symlink;
@@ -148,8 +145,7 @@ fn planted_names_are_ignored() {
     });
 }
 
-/// A FIFO at the answer's name must not hang the broker, and a symlink to
-/// a "yes" must not be followed.
+/// A FIFO at the answer's name must not hang the broker, nor a symlink to a "yes" be followed.
 #[test]
 fn non_file_answer_refused_promptly() {
     use std::os::unix::fs::symlink;

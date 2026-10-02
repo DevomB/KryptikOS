@@ -1,6 +1,5 @@
-//! seccomp-bpf syscall filtering: a default-deny allowlist
-//! (docs/architecture.md), built as classic BPF by hand rather than with
-//! libseccomp, a large C dependency (ADR-010).
+//! Default-deny seccomp-bpf syscall allowlist (docs/architecture.md), hand-built as classic BPF
+//! instead of with libseccomp, a large C dependency (ADR-010).
 
 use std::io;
 use std::os::unix::io::RawFd;
@@ -27,32 +26,27 @@ const BPF_RET: u16 = 0x06;
 // Filter return actions.
 const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
 const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
-/* Fail the call instead of killing, for programs that probe for a feature and
- * must hear "no": clone3, unwanted socket families, `REFUSED_SOFTLY`. */
+// Fail instead of kill, for programs that probe a feature and must hear "no".
 const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
 
 // Offsets into struct seccomp_data.
 const OFF_NR: u32 = 0;
 const OFF_ARCH: u32 = 4;
-/* Low 32 bits of args[i] (little-endian). The kernel reads every argument
- * checked here as 32 bits: clone flags, ioctl cmd, socket family, protocol. */
+// Low 32 bits of args[i] (little-endian); the kernel reads every argument checked here as 32 bits.
 const fn arg_lo(i: u32) -> u32 {
     16 + 8 * i
 }
 
-/// Namespace-creating clone(2) flags: clone with any of them is unshare(2) by
-/// another name. Not CLONE_NEWTIME (0x80): legacy clone's low byte is the exit
-/// signal, which the kernel strips.
+/// clone(2) flags that create namespaces, making clone an unshare(2). Not CLONE_NEWTIME (0x80):
+/// legacy clone's low byte is the exit signal, which the kernel strips.
 pub const CLONE_NS_MASK: u32 = 0x7e02_0000;
 
-/// ioctls that inject into or read from the terminal: with TIOCSTI, a zone on
-/// the user's tty types into the user's shell. Denied whatever LEGACY_TIOCSTI is.
+/// ioctls that inject into or read the tty: TIOCSTI types into the user's shell. Always denied.
 const TIOCSTI: u32 = 0x5412;
 const TIOCLINUX: u32 = 0x541C;
 
-/// Socket families a zone may open. The rest (AF_VSOCK reaches the host;
-/// AF_ALG, AF_PACKET, AF_XDP, ...) are CVE-prone and unneeded, though a policy
-/// may add some. AF_NETLINK only as NETLINK_ROUTE, for getifaddrs() and ip(8).
+/// Socket families a zone may open; the rest (AF_VSOCK reaches the host; AF_ALG, AF_PACKET,
+/// AF_XDP ...) are CVE-prone and unneeded, though a policy may add some.
 pub const AF_UNIX: u32 = 1;
 pub const AF_INET: u32 = 2;
 pub const AF_INET6: u32 = 10;
@@ -62,7 +56,7 @@ const EAFNOSUPPORT: u32 = 97;
 const ENOSYS: u32 = 38;
 const EPERM: u32 = 1;
 
-/// Families the base policy allows (AF_NETLINK only as NETLINK_ROUTE).
+/// Families the base policy allows; AF_NETLINK only as NETLINK_ROUTE, for getifaddrs() and ip(8).
 pub const BASE_SOCKET_FAMILIES: &[u32] = &[AF_UNIX, AF_INET, AF_INET6, AF_NETLINK];
 
 /// The families a zone policy may name. Numbers from <linux/socket.h>.
@@ -145,11 +139,9 @@ impl std::fmt::Display for SeccompError {
             SeccompError::TooManyRules(n) => {
                 write!(f, "filter would be {n} instructions; the kernel limit is 4096")
             }
-            SeccompError::BadSyscallNumber(nr) => write!(
-                f,
-                "syscall number {nr} is out of range for a 32-bit comparison; \
-                 refusing to build a filter that would compare a truncated value"
-            ),
+            SeccompError::BadSyscallNumber(nr) => {
+                write!(f, "syscall number {nr} does not fit the filter's 32-bit comparison")
+            }
             SeccompError::Syscall { call, errno } => {
                 write!(f, "{call}: {}", io::Error::from_raw_os_error(*errno))
             }
@@ -216,14 +208,11 @@ syscalls! {
     libc::SYS_openat2, libc::SYS_close_range,
     // FIFOs and sockets; Landlock and nodev stop device nodes.
     libc::SYS_mknod, libc::SYS_mknodat,
-    /* tar, git, cargo and install(1) set modes. Paths outside the zone are
-     * unreachable after pivot_root, and read-only mounts refuse chmod (EROFS). */
+    // tar, git and install(1) set modes; pivot_root hides other paths and read-only mounts refuse.
     libc::SYS_chmod, libc::SYS_fchmod, libc::SYS_fchmodat,
     // glibc 2.39 and later make fchmodat with flags (rsync -a) this call.
     libc::SYS_fchmodat2,
-    /* gzip, xz and cp -a give a file they make its source's owner, and tar
-     * does as root. Without CAP_CHOWN, and with only the zone's own ids
-     * mapped, a chown is a no-op or fails. */
+    // gzip, xz, cp -a and tar copy owners; without CAP_CHOWN a chown is a no-op or fails.
     libc::SYS_chown, libc::SYS_fchown, libc::SYS_lchown, libc::SYS_fchownat,
     libc::SYS_copy_file_range, libc::SYS_sendfile, libc::SYS_splice,
     // GNU cat and cp call posix_fadvise() on every file they read.
@@ -233,9 +222,7 @@ syscalls! {
     libc::SYS_sync, libc::SYS_syncfs,
     libc::SYS_getxattr, libc::SYS_lgetxattr, libc::SYS_fgetxattr,
     libc::SYS_listxattr, libc::SYS_llistxattr, libc::SYS_flistxattr,
-    /* install(1) resets a file's ACL through them, as do cp and tar keeping
-     * xattrs. A zone reaches only user.* and the ACLs of its own files: the
-     * security., trusted. and capability names need capabilities it lacks. */
+    // install, cp and tar set ACLs and xattrs; a zone reaches only user.* and its own files' ACLs.
     libc::SYS_setxattr, libc::SYS_lsetxattr, libc::SYS_fsetxattr,
     libc::SYS_removexattr, libc::SYS_lremovexattr, libc::SYS_fremovexattr,
 
@@ -244,18 +231,14 @@ syscalls! {
     libc::SYS_madvise, libc::SYS_mlock, libc::SYS_munlock, libc::SYS_memfd_create,
     // Python's mmap.flush and databases that map their files.
     libc::SYS_msync,
-    /* Every dynamic linker needs mprotect, though it can defeat W^X; RELRO and
-     * BIND_NOW make the GOT read-only before main() (docs/hardening.md). */
+    // Dynamic linkers need it, though it can defeat W^X; RELRO and BIND_NOW seal the GOT first.
     libc::SYS_mprotect,
 
-    // --- process / thread lifecycle ---
-    /* clone is argument-filtered; clone3 gets ENOSYS, since the filter cannot
-     * read its struct and glibc falls back to clone. See `ARG_RULES`. */
+    // --- process / thread lifecycle (`ARG_RULES` check clone's flags and give clone3 ENOSYS) ---
     libc::SYS_clone, libc::SYS_clone3, libc::SYS_fork, libc::SYS_vfork,
     libc::SYS_execve, libc::SYS_execveat, libc::SYS_exit, libc::SYS_exit_group,
     libc::SYS_wait4, libc::SYS_waitid,
-    /* Python's asyncio (3.12) watches its children through a pidfd. It names
-     * a process the zone can already see and kill; pidfd_getfd stays out. */
+    // Python's asyncio watches children by pidfd, which reaches only processes the zone can kill.
     libc::SYS_pidfd_open, libc::SYS_pidfd_send_signal,
     libc::SYS_getpid, libc::SYS_getppid, libc::SYS_gettid,
     libc::SYS_getuid, libc::SYS_geteuid, libc::SYS_getgid, libc::SYS_getegid,
@@ -282,8 +265,7 @@ syscalls! {
     libc::SYS_clock_gettime, libc::SYS_clock_getres, libc::SYS_clock_nanosleep,
     libc::SYS_gettimeofday, libc::SYS_nanosleep, libc::SYS_times,
     libc::SYS_alarm, libc::SYS_setitimer, libc::SYS_getitimer, libc::SYS_pause,
-    /* POSIX timers, which coreutils timeout(1) and vim arm: like setitimer,
-     * they signal the caller's own process. */
+    // POSIX timers for timeout(1) and vim; like setitimer, they signal only the caller's process.
     libc::SYS_timer_create, libc::SYS_timer_settime, libc::SYS_timer_gettime,
     libc::SYS_timer_getoverrun, libc::SYS_timer_delete,
 
@@ -320,7 +302,7 @@ denied! {
     (libc::SYS_pivot_root, "replace the zone's root"),
     (libc::SYS_chroot, "escape via the classic double-chroot trick"),
     (libc::SYS_unshare, "create nested namespaces; a known LPE surface"),
-    (libc::SYS_setns, "ENTER ANOTHER ZONE'S NAMESPACE - defeats the whole model"),
+    (libc::SYS_setns, "enter another zone's namespaces"),
     (libc::SYS_bpf, "load kernel programs; a well-worn privilege-escalation path"),
     (libc::SYS_perf_event_open, "long history of privilege escalation bugs"),
     (libc::SYS_userfaultfd, "reliable heap-grooming primitive for kernel exploits"),
@@ -350,7 +332,7 @@ denied! {
     (libc::SYS_open_tree, "new mount API: detach a mount tree"),
     (libc::SYS_mount_setattr, "change mount flags, e.g. clear read-only"),
     // io_uring does file and socket I/O without syscalls: a seccomp bypass.
-    (libc::SYS_io_uring_setup, "io_uring: bypasses the syscall filter by design"),
+    (libc::SYS_io_uring_setup, "io_uring: does I/O past the syscall filter"),
     (libc::SYS_io_uring_enter, "io_uring"),
     (libc::SYS_io_uring_register, "io_uring"),
     (libc::SYS_pidfd_getfd, "steal a descriptor from another process"),
@@ -369,8 +351,7 @@ denied! {
     ]
 }
 
-/// Argument checks on allowlisted syscalls. They run before the plain
-/// allowlist, so a syscall named here is decided here.
+/// Argument checks, run before the plain allowlist, so a syscall named here is decided here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArgRule {
     /// clone(2): kill if any CLONE_NEW* flag is set in args[0].
@@ -381,8 +362,7 @@ pub enum ArgRule {
     IoctlNoTtyInject,
     /// socket(2): the base families plus the policy's; others get EAFNOSUPPORT.
     SocketFamilies,
-    /// socketpair(2): AF_UNIX only. The kernel runs a family's create code,
-    /// module autoload included, before it asks for a pair.
+    /// socketpair(2): AF_UNIX only; other families' create code and module autoload run first.
     SocketpairUnix,
 }
 
@@ -406,16 +386,15 @@ impl ArgRule {
     }
 }
 
-/// Refused with an errno instead of killed: programs carry on or say why.
-/// inotify: a watch on the /usr the zones share with zone 0 sees every program
-/// any of them starts; a zone policy may allow it. The id and capability calls
-/// never succeed, but ncurses brackets every terminfo open with setfsuid and
-/// setfsgid, and sudo, su and privilege-dropping daemons call the rest.
+/// Refused with an errno instead of killed, so programs carry on or say why.
 pub const REFUSED_SOFTLY: &[(libc::c_long, u32)] = &[
+    // A watch on the /usr shared with zone 0 sees every program started; a policy may allow it.
     (libc::SYS_inotify_init, ENOSYS),
     (libc::SYS_inotify_init1, ENOSYS),
+    // Denied, but ncurses brackets every terminfo open with these two.
     (libc::SYS_setfsuid, EPERM),
     (libc::SYS_setfsgid, EPERM),
+    // Denied, but sudo, su and privilege-dropping daemons call these.
     (libc::SYS_setuid, EPERM),
     (libc::SYS_setgid, EPERM),
     (libc::SYS_setreuid, EPERM),
@@ -430,9 +409,8 @@ const fn errno_action(e: u32) -> u32 {
     SECCOMP_RET_ERRNO | (e & 0xffff)
 }
 
-/// Emit one argument rule. Entered with the syscall number in the accumulator;
-/// a non-matching number skips the block with the accumulator intact, and every
-/// path through a matched block ends in `ret`.
+/// Emit one argument rule. Another syscall number skips the block with the accumulator intact,
+/// and every path through a matched block ends in `ret`.
 fn emit_arg_rule(p: &mut Vec<SockFilter>, rule: ArgRule, deny_action: u32, sockets: &SocketPolicy) {
     let body: Vec<SockFilter> = match rule {
         ArgRule::CloneNoNamespaces => vec![
@@ -459,8 +437,7 @@ fn emit_arg_rule(p: &mut Vec<SockFilter>, rule: ArgRule, deny_action: u32, socke
          *   ret ALLOW
          *   ret ERRNO(EAFNOSUPPORT)
          *
-         * A miss on the last comparison jumps to DENY; others fall through.
-         */
+         * A miss on the last comparison jumps to DENY; others fall through. */
         ArgRule::SocketFamilies => {
             let mut fams: Vec<u32> = vec![AF_UNIX, AF_INET, AF_INET6];
             for f in &sockets.families {
@@ -533,9 +510,8 @@ fn build_program_with(
     build_program_full(allow, deny_action, &SocketPolicy::default())
 }
 
-/// Build the BPF program: arch check, x32 check, argument rules, then a
-/// `jeq nr; ret ALLOW` pair per syscall, so no jump offset (one byte) grows
-/// with the list, then default deny.
+/// Arch check, x32 check, argument rules, soft refusals, then a `jeq nr; ret ALLOW` pair per
+/// syscall, so no one-byte jump offset grows with the list, then default deny.
 fn build_program_full(
     allow: &[libc::c_long],
     deny_action: u32,
@@ -549,8 +525,7 @@ fn build_program_full(
 
     p.push(stmt(BPF_LD | BPF_W | BPF_ABS, OFF_NR));
 
-    /* x32 calls arrive as 0x40000000 | nr, so this is >=, not ==. Default deny
-     * would catch them too; this is defence in depth. */
+    // x32 calls arrive as 0x40000000 | nr, hence >=; default deny would catch them too.
     p.push(jump(BPF_JMP | BPF_JGE | BPF_K, X32_SYSCALL_BIT, 0, 1));
     p.push(stmt(BPF_RET | BPF_K, deny_action));
 
@@ -564,8 +539,7 @@ fn build_program_full(
     for &(nr, e) in REFUSED_SOFTLY {
         // Allowed by the list, it is allowed below like any other.
         if !allow.contains(&nr) {
-            /* seccomp-trace answers these with the same errno, so the program
-             * runs as it would in a zone and the call is still named. */
+            // seccomp-trace names the call and answers with the same errno, as in a zone.
             let refuse = if deny_action == libc::SECCOMP_RET_USER_NOTIF { deny_action } else { errno_action(e) };
             p.push(jump(BPF_JMP | BPF_JEQ | BPF_K, nr as u32, 0, 1));
             p.push(stmt(BPF_RET | BPF_K, refuse));
@@ -594,15 +568,13 @@ fn build_program_full(
     Ok(p)
 }
 
-/// Install a default-deny filter on every thread of the process (TSYNC) and
-/// all descendants. Irreversible.
+/// Install a default-deny filter on every thread (TSYNC) and all descendants; irreversible.
 pub fn install(allow: &[libc::c_long]) -> Result<(), SeccompError> {
     install_with(allow, SECCOMP_RET_KILL_PROCESS, &SocketPolicy::default(), SECCOMP_FILTER_FLAG_TSYNC).map(|_| ())
 }
 
-/// As `install` for a single-threaded caller, but a refused call waits for a
-/// supervisor instead of killing: returns the listener descriptor, which is
-/// close-on-exec (`kryptikd seccomp-trace`).
+/// `install` for a single-threaded caller, but a refused call waits for a supervisor; returns
+/// the close-on-exec listener (`kryptikd seccomp-trace`).
 pub fn install_notifying(allow: &[libc::c_long], sockets: &SocketPolicy) -> Result<RawFd, SeccompError> {
     let fd = install_with(allow, libc::SECCOMP_RET_USER_NOTIF, sockets, libc::SECCOMP_FILTER_FLAG_NEW_LISTENER)?;
     Ok(fd as RawFd)
@@ -649,8 +621,7 @@ fn install_with(
             errno: io::Error::last_os_error().raw_os_error().unwrap_or(0),
         });
     }
-    /* TSYNC names a thread it could not synchronise by returning its id, and
-     * attaches nothing; only a listener is otherwise positive. */
+    // Without NEW_LISTENER, a positive return is a thread TSYNC could not sync; nothing attached.
     if ret > 0 && flags & libc::SECCOMP_FILTER_FLAG_NEW_LISTENER == 0 {
         return Err(SeccompError::Unsynced(ret));
     }
@@ -662,14 +633,12 @@ pub fn confine_zone() -> Result<(), SeccompError> {
     install(BASE_ALLOWLIST)
 }
 
-/// Install the zone filter widened by a policy: `extra` syscalls and the
-/// socket rule widened by `sockets`.
+/// Install the zone filter widened by a policy's `extra` syscalls and `sockets` rule.
 pub fn confine_zone_with(extra: &[libc::c_long], sockets: &SocketPolicy) -> Result<(), SeccompError> {
     install_with(&widened(extra)?, SECCOMP_RET_KILL_PROCESS, sockets, SECCOMP_FILTER_FLAG_TSYNC).map(|_| ())
 }
 
-/// The base allowlist and a policy's `extra` syscalls, each checked again
-/// against the denied list.
+/// The base allowlist plus a policy's `extra` syscalls, each checked again against the denied list.
 pub fn widened(extra: &[libc::c_long]) -> Result<Vec<libc::c_long>, SeccompError> {
     let mut allow: Vec<libc::c_long> = BASE_ALLOWLIST.to_vec();
     for &nr in extra {
@@ -695,8 +664,7 @@ pub const ADDABLE: &[(&str, libc::c_long)] = by_name![
     SYS_syslog, SYS_vhangup,
 ];
 
-/// Every syscall a policy file may name: a denied one is refused, a base one
-/// warns, and an `ADDABLE` one is added.
+/// Syscalls a policy may name: denied ones are refused, base ones warn, `ADDABLE` ones are added.
 pub fn names() -> impl Iterator<Item = &'static (&'static str, libc::c_long)> {
     DENIED_NAMES.iter().chain(BASE_NAMES).chain(ADDABLE)
 }
