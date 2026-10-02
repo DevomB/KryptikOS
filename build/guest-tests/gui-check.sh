@@ -5,7 +5,7 @@
 #   GT SCREENSHOT-OVERSIZE                          take a screenshot
 #   GT KEY-FOCUS-ZONE, GT KEY-FOCUS-OVERSIZE,
 #   GT KEY-FOCUS-FORGED, GT KEY-FOCUS-PERSONAL      press Alt+j (explicit focus)
-#   GT KEY-FULLSCREEN, GT KEY-FULLSCREEN-AGAIN      press Alt+e (zone refuses)
+#   GT KEY-FULLSCREEN, GT KEY-FULLSCREEN-AGAIN      press Alt+e (fullscreen, then back)
 #   GT KEY-MENU                                     press Alt+p (the chrome menu)
 #   GT CONSENT-CODE 1 NN                            type NN and Enter (the question's code)
 #   GT CONSENT-WAIT 2                               type y and Enter (not the code: refused)
@@ -102,6 +102,23 @@ out="$(since_mark bind untrusted)"
 [[ "$out" == *"bind refused"* ]] && pass "zone-bind-refused" "a bind of the screencopy manager got wl_display.error and a closed connection" || fail "zone-bind-refused" "$(echo "$out" | tail -3 | tr '\n' ' ')"
 grep -q 'not advertised' "$RT/kryptik/untrusted/proxy.log" 2>/dev/null && pass "proxy-logged-refusal" "$(grep 'not advertised' "$RT/kryptik/untrusted/proxy.log" | tail -1 | cut -c1-120)" || fail "proxy-logged-refusal" "no refusal in the proxy log"
 
+# --- a zone window goes fullscreen only by the user's key ----------------
+# wlprobe asks for it once drawn and says which configures were fullscreen;
+# zone 0's request is granted, which shows the probe would see a grant.
+as_user "/usr/libexec/kryptik/wlprobe fullscreen 4" > "$LOG/fullscreen-zone0.out" 2>&1
+grep -q 'configure (fullscreen)' "$LOG/fullscreen-zone0.out" && pass "zone0-fullscreen-granted" || fail "zone0-fullscreen-granted" "$(tr '\n' ' ' < "$LOG/fullscreen-zone0.out")"
+mark fs untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe fullscreen 6" > "$LOG/launch-fullscreen.out" 2>&1
+fs_answered() { since_mark fs untrusted | sed -n '/asked for fullscreen/,$p' | grep -q committed; }
+wait_for 20 fs_answered; answered=$?
+wait_for 20 test ! -e /run/kryptik/zones/untrusted/init.pid; sleep 1
+out="$(since_mark fs untrusted)"
+if [[ "$answered" = 0 && "$out" != *"(fullscreen)"* ]]; then
+    pass "zone-fullscreen-refused" "the zone's own request was answered with a configure that is not fullscreen"
+else
+    fail "zone-fullscreen-refused" "$(echo "$out" | tail -4 | tr '\n' ' '); $(tr '\n' ' ' < "$LOG/launch-fullscreen.out")"
+fi
+
 # --- a mapped zone window cannot take the chrome's focus ----------------------
 mark map untrusted
 launch_plain untrusted "/usr/libexec/kryptik/wlprobe oversize 0 8 map-focus" > "$LOG/map-focus.out" 2>&1
@@ -129,13 +146,12 @@ sleep 2
 echo "GT SCREENSHOT-READY"
 sleep 6
 echo "GT KEY-FULLSCREEN"
-sleep 2
-if grep -q '^fullscreen=0' "$RT/kryptik/focus" && grep -q '^zone=untrusted' "$RT/kryptik/focus"; then
-    pass "zone-fullscreen-refused" "$(tr '\n' ' ' < "$RT/kryptik/focus")"
+if wait_for 20 grep -q '^fullscreen=1' "$RT/kryptik/focus" && grep -q '^zone=untrusted' "$RT/kryptik/focus"; then
+    pass "fullscreen-by-key" "$(tr '\n' ' ' < "$RT/kryptik/focus")"
 else
-    fail "zone-fullscreen-refused" "focus after Alt+e: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+    fail "fullscreen-by-key" "focus after Alt+e: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
 fi
-# The host's screenshot must still show the chrome beside the zone window.
+# The host's screenshot must show the bar naming the zone above the window.
 sleep 2
 echo "GT SCREENSHOT-FULLSCREEN"
 sleep 6

@@ -4,8 +4,10 @@
 # Runs in zone 0 on the compositor directly, with no proxy in between: what it
 # shows comes from the compositor and the launch daemon, never from a zone, and
 # dwl gives its windows the UNZONED border (build/desktop/zone-colours.h). No
-# zone can draw over it, read its input or capture it: the proxy passes no
-# layer shell, global input or screencopy.
+# zone can draw over it by itself, read its input or capture it: the proxy
+# passes no layer shell, global input or screencopy, and a zone's window
+# covers the chrome only fullscreen, by the user's Alt+e, until the chrome
+# opens another window.
 #
 #   kryptik-chrome                 dwl's startup command (`dwl -s`): reads
 #                                  dwl's status stream on stdin, records the

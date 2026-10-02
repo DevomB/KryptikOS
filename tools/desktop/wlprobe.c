@@ -11,6 +11,9 @@
  *                             buffer EXTRA px wider and taller than asked, in a
  *                             colour no zone has; stay SECONDS, titled TITLE
  *                             ("oversize" by default, at most 255 bytes)
+ *   wlprobe fullscreen SECONDS
+ *                             as oversize 0, and once drawn ask for fullscreen;
+ *                             a commit says when its configure was fullscreen
  *   wlprobe charge            map one unwritten 4 MiB shmem buffer for 10 s;
  *                             compare zone and compositor cgroup memory.current
  *
@@ -107,6 +110,7 @@ static int errored;
  * id must be the next unused one (the registry is 2, its sync 3). */
 enum { COMPOSITOR = 4, SHM, WM_BASE, SURFACE, XDG_SURFACE, TOPLEVEL };
 static int oversize, charge, drawn, draw_failed, extra, conf_w, conf_h, closed;
+static int askfs, conf_fs;
 static uint32_t next_id = TOPLEVEL + 1;
 
 /* A buffer `extra` px wider and taller than the last configure asked for (a
@@ -148,7 +152,8 @@ static void draw(void)
 	put32(b, 0); put32(b + 4, 0); put32(b + 8, (uint32_t)w); put32(b + 12, (uint32_t)h);
 	if (send_msg(SURFACE, 2, b, 16) || send_msg(SURFACE, 6, b, 0)) { draw_failed = closed = 1; return; }
 	drawn = 1;
-	printf("committed %dx%d for a %dx%d configure%s\n", w, h, conf_w, conf_h,
+	printf("committed %dx%d for a %dx%d configure%s%s\n", w, h, conf_w, conf_h,
+		conf_fs ? " (fullscreen)" : "",
 		charge ? " (unwritten shmem; sample memory.current now)" : "");
 	fflush(stdout);
 }
@@ -190,6 +195,9 @@ static int handle_one(void)
 	} else if (oversize && object == TOPLEVEL && opcode == 0) {
 		conf_w = (int)get32(body);             /* xdg_toplevel.configure(width, height, states) */
 		conf_h = (int)get32(body + 4);
+		conf_fs = 0;
+		for (uint32_t k = 0, len = get32(body + 8); k + 4 <= len && 16u + k <= size - 8u; k += 4)
+			if (get32(body + 12 + k) == 2) conf_fs = 1;  /* xdg_toplevel.state.fullscreen */
 	} else if (oversize && object == TOPLEVEL && opcode == 1) {
 		closed = 1;                             /* xdg_toplevel.close */
 	} else if (oversize && object == XDG_SURFACE && opcode == 0) {
@@ -255,17 +263,26 @@ static int hold_oversize(int more, int seconds, const char *title)
 	time_t end = time(NULL) + seconds;
 	while (time(NULL) < end && !closed) {
 		if (drain(500) < 0) { puts(errored ? "refused" : "connection closed"); return 3; }
+		if (askfs == 1 && drawn) {
+			put32(b, 0);                           /* no output: the compositor's choice */
+			send_msg(TOPLEVEL, 11, b, 4);          /* xdg_toplevel.set_fullscreen */
+			askfs = 2;
+			puts("asked for fullscreen");
+			fflush(stdout);
+		}
 	}
 	return draw_failed ? 1 : 0;
 }
 
 int main(int argc, char **argv)
 {
-	if (argc < 2 || (strcmp(argv[1], "list") && strcmp(argv[1], "bind") && strcmp(argv[1], "oversize") && strcmp(argv[1], "charge"))
+	if (argc < 2 || (strcmp(argv[1], "list") && strcmp(argv[1], "bind") && strcmp(argv[1], "oversize")
+	                 && strcmp(argv[1], "fullscreen") && strcmp(argv[1], "charge"))
 	    || (!strcmp(argv[1], "bind") && argc < 3) || (!strcmp(argv[1], "oversize") && argc < 4)
 	    || (!strcmp(argv[1], "oversize") && argc > 4 && strlen(argv[4]) > 255)
+	    || (!strcmp(argv[1], "fullscreen") && argc != 3)
 	    || (!strcmp(argv[1], "charge") && argc != 2)) {
-		fprintf(stderr, "usage: wlprobe list | bind INTERFACE | oversize EXTRA SECONDS [TITLE] | charge\n");
+		fprintf(stderr, "usage: wlprobe list | bind INTERFACE | oversize EXTRA SECONDS [TITLE] | fullscreen SECONDS | charge\n");
 		return 2;
 	}
 	const char *disp = getenv("WAYLAND_DISPLAY");
@@ -293,6 +310,7 @@ int main(int argc, char **argv)
 
 	if (!strcmp(argv[1], "list")) return errored ? 3 : 0;
 	if (!strcmp(argv[1], "oversize")) return hold_oversize(atoi(argv[2]), atoi(argv[3]), argc > 4 ? argv[4] : "oversize");
+	if (!strcmp(argv[1], "fullscreen")) { askfs = 1; return hold_oversize(0, atoi(argv[2]), "fullscreen"); }
 	if (!strcmp(argv[1], "charge")) { charge = 1; return hold_oversize(0, 10, "shm-charge"); }
 
 	/* A filtered client cannot know a hidden global's name, so guess 1; the
