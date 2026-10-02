@@ -1,6 +1,7 @@
 # Architecture decision records
 
-Each record gives the decision, the reasons and the cost. All are accepted.
+Each record gives the decision, the reasons and the cost. All are accepted
+except those marked proposed, which wait for the owner's decision.
 
 ## ADR-001: Build from Linux From Scratch
 
@@ -240,3 +241,36 @@ firmware's boot entries and a judged trial, not a loader's menu.
 **Rejected:** shim and a loader, two more signed stages and a configuration
 file; an initramfs inside the signed image, measured but a second userland to
 keep small and right.
+
+## ADR-016 (proposed): Firefox in zones, rendering in software; the GPU and X11 by zone
+
+The browser is Firefox ESR, built by stage 04's GCC for Wayland alone, on
+GTK 3 without X11 or D-Bus, and run with its own seccomp sandbox inside the
+zone's. Zones render in software into shared memory. A zone gets the GPU's
+render node only when its file on the verified root says `gpu = "render"`;
+no shipped zone that runs a browser does, the proxy then offers that zone
+alone `zwp_linux_dmabuf_v1`, and the compositor imports its buffers with a
+GPU renderer. X11 programs run in a rootful Xwayland inside their zone, from
+an image of their own; the compositor never acts as an X window manager
+([browser and graphics](design/browser-and-graphics.md)).
+
+This amends ADR-004's cost: Xwayland, when built, is rootful and inside the
+zone.
+
+**Why:** Chromium's sandbox needs user namespaces or a setuid helper, which
+zones refuse, so it would run without one; WebKitGTK's sandbox needs
+bubblewrap for the same reason. Firefox degrades to its seccomp layer. A
+render node exposes the GPU kernel driver, among the largest in the kernel,
+to the zones most likely to be compromised; under ADR-002 that is every
+zone's risk. Rootless Xwayland would make the compositor parse X11 from a
+zone.
+
+**Cost:** clang, libclang, Node.js and a WASI sysroot to build Firefox, and
+hours of build time; video and WebGL on the CPU in browsing zones; the zone
+filter answers `clone` and `unshare` with namespace flags with `EPERM`
+instead of killing, so Firefox's start-up probe survives; a GPU zone, when
+one exists, brings Mesa into the compositor.
+
+**Rejected:** Chromium (no sandbox in a zone, clang only); a WebKitGTK
+browser (its sandbox off in a zone); rootless Xwayland; copying GPU frames
+into shared memory in the proxy (slow reads of write-combined memory).
