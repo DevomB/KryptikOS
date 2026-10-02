@@ -22,6 +22,9 @@ Steps (each one argument):
     screendump:FILE         ask QEMU (QMP) for a PPM screenshot
     key:NAME[+NAME...]      press keys on the guest's keyboard through QMP
                             (qcodes, e.g. key:y  key:ret  key:alt+e)
+    pointer:DX,DY           move the guest's mouse by DX,DY through QMP; it is
+                            relative and accelerated, so a large move ends at
+                            the screen's edge
     type-from:REGEX         wait for REGEX on a line that has ended (REGEX
                             names no line end), then type what its first
                             group matched (digits and letters) and Enter
@@ -272,6 +275,14 @@ def main():
                 keys = [{"type": "qcode", "data": k} for k in rest.split("+")]
                 r = qmp(qmpsock, "send-key", {"keys": keys, "hold-time": 80})
                 if "error" in r: raise RuntimeError(f"send-key {rest}: {r['error']}")
+                time.sleep(0.3)
+            elif kind == "pointer":
+                if not qmpsock: raise RuntimeError("pointer needs --qmp")
+                dx, dy = (int(v) for v in rest.split(","))
+                events = [{"type": "rel", "data": {"axis": "x", "value": dx}},
+                          {"type": "rel", "data": {"axis": "y", "value": dy}}]
+                r = qmp(qmpsock, "input-send-event", {"events": events})
+                if "error" in r: raise RuntimeError(f"input-send-event {rest}: {r['error']}")
                 time.sleep(0.3)
             elif kind == "type-from":
                 if not qmpsock: raise RuntimeError("type-from needs --qmp")

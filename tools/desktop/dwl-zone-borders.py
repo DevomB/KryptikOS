@@ -218,6 +218,27 @@ applyrules(Client *c)
 \t\tfocusclient(focustop(selmon), 1);
 }
 """),
+    # setcursor: a client's cursor image is drawn above every layer, anywhere
+    # its hotspot puts it, so a zone's pointer shows dwl's default instead.
+    ("""\tstruct wlr_seat_pointer_request_set_cursor_event *event = data;
+""",
+     """\tstruct wlr_seat_pointer_request_set_cursor_event *event = data;
+\tClient *c = NULL;
+"""),
+    ("""\tif (event->seat_client == seat->pointer_state.focused_client)
+\t\twlr_cursor_set_surface(cursor, event->surface,
+\t\t\t\tevent->hotspot_x, event->hotspot_y);
+""",
+     """\tif (event->seat_client != seat->pointer_state.focused_client)
+\t\treturn;
+\t/* Kryptik: a zone never gets its own cursor image, which would draw over the chrome. */
+\ttoplevel_from_wlr_surface(seat->pointer_state.focused_surface, &c, NULL);
+\tif (c && c->zoneborder != unzonedcolor)
+\t\twlr_cursor_set_xcursor(cursor, cursor_mgr, "default");
+\telse
+\t\twlr_cursor_set_surface(cursor, event->surface,
+\t\t\t\tevent->hotspot_x, event->hotspot_y);
+"""),
 ]
 
 

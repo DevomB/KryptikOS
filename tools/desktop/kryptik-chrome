@@ -5,7 +5,8 @@
 # shows comes from the compositor and the launch daemon, never from a zone, and
 # dwl gives its windows the UNZONED border (build/desktop/zone-colours.h). No
 # zone can draw over it, read its input or capture it: the proxy passes no
-# layer shell, global input or screencopy.
+# layer shell, global input or screencopy, and dwl never draws a zone's
+# cursor image.
 #
 #   kryptik-chrome                 dwl's startup command (`dwl -s`): reads
 #                                  dwl's status stream on stdin, records the
