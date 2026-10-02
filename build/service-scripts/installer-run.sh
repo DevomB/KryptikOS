@@ -14,6 +14,23 @@ if ! testctl_load; then
     echo "installer: no kryptik-testctl control disk; nothing to do (run kryptik-install by hand)"
     exit 0
 fi
+# The state header saved, wiped on the disk and put back by kryptik-recover,
+# as a user with a backup repairs a damaged one.
+header_roundtrip() {   # header_roundtrip DISK
+    st="$(blkid -t PARTLABEL=kryptik-state -o device 2>/dev/null | grep "^$1" | head -1)"
+    [ -b "$st" ] || { echo "header: no kryptik-state partition on $1"; return 1; }
+    h=/run/kryptik-state-header
+    rm -f "$h"
+    /usr/sbin/kryptik-recover --disk "$1" --backup-state-header "$h" || return 1
+    n="$(stat -c %s "$h")"
+    dd if=/dev/zero of="$st" bs=1M iflag=count_bytes count="$n" conv=fsync status=none || return 1
+    if cryptsetup isLuks "$st" 2>/dev/null; then echo "header: ${st} is still LUKS after the wipe"; return 1; fi
+    echo "header: wiped ${n} bytes, and ${st} is no longer LUKS"
+    /usr/sbin/kryptik-recover --disk "$1" --restore-state-header "$h" || return 1
+    [ "$(head -c "$n" "$st" | sha256sum)" = "$(sha256sum < "$h")" ] || { echo "header: ${st} does not read back as the backup"; return 1; }
+    echo "header: restored, and ${st} reads back as the backup"
+}
+
 # Recovery of an installed disk (kryptik-recover), armed the same way.
 rdisk="$(testctl_get recover_disk)"
 if [ -n "$rdisk" ]; then
@@ -24,6 +41,7 @@ if [ -n "$rdisk" ]; then
     case "$rmode" in
         restore) /usr/sbin/kryptik-recover --disk "$rdisk" --restore-slot "$rslot" > "$logr" 2>&1 ;;
         commit)  /usr/sbin/kryptik-recover --disk "$rdisk" --commit-slot "$rslot" > "$logr" 2>&1 ;;
+        header)  header_roundtrip "$rdisk" > "$logr" 2>&1 ;;
         *)       /usr/sbin/kryptik-recover --disk "$rdisk" --status > "$logr" 2>&1 ;;
     esac
     rrc=$?
