@@ -506,7 +506,7 @@ probe "E2b /etc is read-only inside the zone" "readonly"
 
 # Positive control: a zone where nothing is writable would pass E2 as well.
 zrun alpha -- /bin/sh -c "$PRO if touch /tmp/ok 2>/dev/null; then echo PROBE=writable; else echo PROBE=BROKEN; fi"
-probe "E2c positive control: /tmp IS writable (the zone is not simply inert)" "writable"
+probe "E2c positive control: /tmp is writable (the zone is not inert)" "writable"
 
 # A setuid binary on a system mount must confer nothing: check the mount flags.
 zrun alpha -- /bin/sh -c "$PRO if grep -E ' /usr .*nosuid' /proc/mounts >/dev/null; then echo PROBE=nosuid; else echo PROBE=SUID_ALLOWED; fi"
