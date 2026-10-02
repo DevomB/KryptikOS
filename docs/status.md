@@ -18,7 +18,7 @@ that ship, under QEMU with OVMF firmware.
 | Stages 01–02: cross toolchain, temporary tools | **tested**: glibc carries two upstream loader fixes the 2.40 tarball lacks (`build/patches/glibc-2.40/`), and each glibc build proves with `readelf` that its loader takes its own map bounds without a run-time relocation |
 | Stage 04: base system | **tested**: every package builds with the hardening set; `make test-libc-unwind` (the target libc unwinds through a dlopened library), `make smoke-userspace`, `make audit-artifacts` (the ELF headers of what shipped) |
 | Stage 05: hardened kernel | **tested**: the stage refuses a config that drops a fragment line or that kernel-hardening-checker faults beyond the accepted list; every VM suite boots the kernel (EFI stub, compiled-in command line with `CMDLINE_OVERRIDE`), `make integrity-test` its dm-init verity root, and `make zones-test` Landlock, seccomp and cgroup v2 on it |
-| Stage 06: install media and release payloads | **tested**: the firmware, install, integrity and update suites boot its USB image and ISO, whose kernels carry a build-generated Secure Boot key's signature; the stage strips every setuid bit the allowlist does not justify (`tools/tests/audit-setuid.sh`) and checks that the image's trust anchor refuses a statement signed by the release key |
+| Stage 06: install media and release payloads | **tested**: the firmware, install, integrity and update suites boot its USB image and ISO, whose kernels are signed with the build's Secure Boot key; the stage strips every setuid bit the allowlist does not justify (`tools/tests/audit-setuid.sh`) and checks that the image's trust anchor refuses a statement signed by the release key |
 | Firmware boot of the media | **tested**: `make media-smoke-usb` / `media-smoke-iso`, firmware discovery only (no `-kernel`, `-initrd`, `-append` or host filesystem; acceptance reads the recorded QEMU commands back) |
 | Installation and the state partition | **tested**: `make install-test` (install, boot alone, reboot, cold boot, refusals including an injected I/O error), `make state-test` (a cloned disk, ambiguous labels, a corrupt or missing state partition: the system boots degraded and says so) |
 | Boot integrity | **tested**: `make media-smoke-secureboot`, `make media-refused-foreign-keys` (Microsoft keys refuse the medium), `make integrity-test` (a foreign-signed boot file refused, a tampered root refused by dm-verity, recovery from the medium with state intact) |
@@ -43,18 +43,19 @@ media it tested.
 
 ## Known gaps
 
-- Nothing has run on physical hardware.
-- Every release so far is signed by a developer key the build generates. A
-  production build signs only with keys it is handed, and none have been
-  made. The kernel's modules are signed by a key each kernel build makes for
-  itself.
+- Testing on physical hardware is planned for October 2026.
+- The keys that sign a release from 1.0.0 on are held on GitHub, in the
+  repository's protected release environment: a release tag's build uses
+  them once the maintainer approves it, so a release is as trustworthy as
+  the maintainer's GitHub account and the runners that build it. The
+  kernel's modules are signed by a key each kernel build makes for itself.
 - The watchdog catches a machine that has stopped, not one that is merely
   broken. A supervised service feeds every watchdog device, so a machine
   whose userspace stops being scheduled resets (the state suite proves it by
   stopping the feeder). A crashed service or a frozen desktop is not
   detected, because a false reboot is worse than the hang. A hung kernel is
   reset only by a hardware timer (Intel TCO, AMD SP5100) or the lockup
-  detectors; no physical timer has been exercised.
+  detectors.
 - glibc is 2.40 with upstream's maintained release branch applied as of
   2026-09-10 (`build/patches/glibc-2.40/`). Nothing moves the pin along the
   branch automatically, though `tools/check-source-currency.sh` reports when

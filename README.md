@@ -19,7 +19,7 @@ GNU bash, version 5.2.32(1)-release (x86_64-kryptik-linux-gnu)
 
 ## Status
 
-A pre-release, v0.1.0, is on the repository's Releases page. The build
+Releases are on the repository's Releases page. The build
 produces a hardened kernel with the linux-hardened patchset; install media (a
 USB image and an ISO) that boot by UEFI firmware alone; an installer; an
 installed system that verifies its root with dm-verity on every boot and
@@ -29,33 +29,70 @@ boot and recovery from the medium; and a zoned Wayland desktop.
 is cut only from a run in which every suite passed.
 
 What is tested, and what the last acceptance run proved, is in
-[docs/status.md](docs/status.md). Everything so far has run under QEMU with
-OVMF firmware; nothing has run on physical hardware, and every release so far
-is signed by keys the build generated. What a release is, how it is numbered
-and how a production release will differ is in
-[docs/releases.md](docs/releases.md).
+[docs/status.md](docs/status.md). The suites run under QEMU with OVMF
+firmware; testing on physical hardware is planned for October 2026. From
+1.0.0 on, a release is signed by the project's release keys, which are held
+in the repository's protected release environment and used only by a release
+tag's build, after the maintainer approves it. What a release is and how it
+is numbered is in [docs/releases.md](docs/releases.md).
 
 ## Get it
 
 From the Releases page take the medium, its signed checksums and the anchor:
 `kryptik-VERSION-usb.img.zst` (or `kryptik-VERSION.iso.zst`),
 `kryptik-VERSION.SHA256SUMS` with its `.sig`, and `release-signers`. Check
-the download, then write it to a USB stick:
+the download, then write it to a USB stick. The stick is overwritten whole:
+be sure of the disk you name.
+
+**Linux**
 
 ```sh
 zstd -d kryptik-VERSION-usb.img.zst
 ssh-keygen -Y verify -f release-signers -I kryptik-release -n kryptik-media \
     -s kryptik-VERSION.SHA256SUMS.sig < kryptik-VERSION.SHA256SUMS
 sha256sum -c --ignore-missing kryptik-VERSION.SHA256SUMS
+lsblk                              # the stick is a whole disk, such as /dev/sdX
 sudo dd if=kryptik-VERSION-usb.img of=/dev/sdX bs=4M status=progress oflag=sync
 ```
 
-The anchor comes with the download, so this proves the files belong together,
-not who made them; a production release's anchor will be the one made
-offline. Boot with Secure Boot off, or enrol `kryptik-sb.der` from the same
-page in the firmware first. Installing, the first boot, daily use, updating
-and recovery are in the [user guide](docs/user-guide.md), which every release
-also ships as `INSTRUCTIONS.md`.
+**macOS**, with zstd from Homebrew (`brew install zstd`)
+
+```sh
+zstd -d kryptik-VERSION-usb.img.zst
+ssh-keygen -Y verify -f release-signers -I kryptik-release -n kryptik-media \
+    -s kryptik-VERSION.SHA256SUMS.sig < kryptik-VERSION.SHA256SUMS
+shasum -a 256 -c --ignore-missing kryptik-VERSION.SHA256SUMS
+diskutil list                      # the stick is an external disk, such as /dev/disk4
+diskutil unmountDisk /dev/diskN
+sudo dd if=kryptik-VERSION-usb.img of=/dev/rdiskN bs=4m
+diskutil eject /dev/diskN
+```
+
+**Windows**, in Command Prompt, since PowerShell has no `<`. `zstd.exe` is
+on zstd's releases page, and 7-Zip 24 and later unpacks the image too;
+`ssh-keygen` comes with Windows 11, and with Windows 10 once its OpenSSH is
+8.1 or later (`ssh -V`).
+
+```bat
+zstd -d kryptik-VERSION-usb.img.zst
+ssh-keygen -Y verify -f release-signers -I kryptik-release -n kryptik-media -s kryptik-VERSION.SHA256SUMS.sig < kryptik-VERSION.SHA256SUMS
+certutil -hashfile kryptik-VERSION-usb.img SHA256
+findstr usb.img kryptik-VERSION.SHA256SUMS
+```
+
+The hash `certutil` prints must be the one `findstr` shows. Then write
+`kryptik-VERSION-usb.img` to the stick with Rufus, which writes a disk image
+as it is (DD mode), or with balenaEtcher. When macOS or Windows offers to
+initialise or format the stick afterwards, decline.
+
+The anchor comes with the download, so by itself this proves the files belong
+together, not who made them. From 1.0.0 on the anchor is the project's, and
+this repository holds it: compare the download's `release-signers` with
+`build/config/release/release-signers`. Boot with Secure Boot off, or enrol
+`kryptik-sb.der` from the same page in the firmware first. Installing, the
+first boot, daily use, updating and recovery are in the
+[user guide](docs/user-guide.md), which every release also ships as
+`INSTRUCTIONS.md`.
 
 ## Hardware
 
@@ -285,9 +322,9 @@ docs/               Architecture, threat model, decisions, status
 The `Distro` workflow (`.github/workflows/distro.yml`) builds and tests
 everything on GitHub's runners: stages 01–02, then stages 04–06, then
 `make acceptance` under KVM, uploading the acceptance report and the tested
-images. A tag `v<version>` builds that version from nothing and, for a
-development release, drafts it on the Releases page. To build locally, on
-Linux:
+images. A tag `v<version>` builds that version from nothing, tests it and
+drafts it on the Releases page; from `v1` on, the build signs with the
+release keys once the maintainer approves it. To build locally, on Linux:
 
 ```sh
 make check      # what the host is missing
@@ -306,7 +343,7 @@ make acceptance EXPORT=DIR  # every suite on the newest media; root and KVM
 
 Host setup: [docs/building.md](docs/building.md). Booting, installing,
 updating and recovering a release: [docs/user-guide.md](docs/user-guide.md).
-A production release, signed with keys made offline:
+The keys that sign a release, and where they are held:
 [docs/release-keys.md](docs/release-keys.md).
 
 ## Documentation

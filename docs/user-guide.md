@@ -1,9 +1,9 @@
 # Kryptik: boot, install, update and recover
 
 These instructions ship beside each tested release, next to `RELEASE.txt`
-and `ACCEPTANCE-REPORT.md`. Everything below was exercised by
-`make acceptance` on the images the hashes name, under QEMU with OVMF
-firmware. Nothing has run on physical hardware yet.
+and `ACCEPTANCE-REPORT.md`. `make acceptance` ran every suite on the images
+the hashes name, under QEMU with OVMF firmware, and the report has each item
+and its result. Testing on physical hardware is planned for October 2026.
 
 ## What is in the release directory
 
@@ -11,36 +11,52 @@ firmware. Nothing has run on physical hardware yet.
 | --- | --- |
 | `kryptik-VERSION-usb.img` | the install medium as a raw disk image: GPT, an EFI system partition with the signed kernel, and the verified root image |
 | `kryptik-VERSION.iso` | the same medium as an ISO for CD/DVD boot (its kernel looks for `/dev/sr0`; use the USB image for a USB stick) |
-| `*.sha256`, `SHA256SUMS` | the hashes the release was tested under |
+| `*.sha256`, `SHA256SUMS` | the hashes the release was tested under: each image's, and every file of this directory |
 | `kryptik-VERSION.SHA256SUMS`, `.sig` | the media's hashes, signed by the release key |
 | `release-signers` | the keys the release's images trust for updates, which check that signature |
-| `kryptik-sb.crt`, `kryptik-sb.der` | the developer Secure Boot certificate that signed the kernels. A test anchor, not a production key |
+| `kryptik-sb.crt`, `kryptik-sb.der` | the Secure Boot certificate that signed the kernels, to enrol in the firmware (section 1) |
 | `root.json` | the verified root image's dm-verity record (root hash, salt, sizes) |
 | `manifest-VERSION`, `.sig` | the signed release manifest of each of the two payloads the update test moved between |
+| `payload/` | the update payload as the channel serves it (section 4) |
 | `REVISION.txt` | the source revision the images were built and tested from |
 | `RELEASE.txt` | a summary: the verdict, the revision, the media hashes, the firmware and the kernel |
 | `RELEASE-NOTES.md` | what changed since the previous release |
 | `INSTRUCTIONS.md` | these instructions |
 | `ACCEPTANCE-REPORT.md`, `acceptance-logs/` | every suite, its result, the commands and their logs |
 
-On the repository's Releases page the two images are compressed, as
-`kryptik-VERSION-usb.img.zst` and `kryptik-VERSION.iso.zst`: `zstd -d` restores
-the files everything below checks ([releases](releases.md)).
+The repository's Releases page carries this directory's files laid out for a
+download ([releases](releases.md)): the two images compressed, as
+`kryptik-VERSION-usb.img.zst` and `kryptik-VERSION.iso.zst`, which `zstd -d`
+restores to the files the signed checksums cover; the acceptance logs as one
+archive; the payload's files beside the rest; and no `*.sha256`.
 
 Verify before use:
 
 ```sh
 ssh-keygen -Y verify -f release-signers -I kryptik-release -n kryptik-media \
     -s kryptik-VERSION.SHA256SUMS.sig < kryptik-VERSION.SHA256SUMS
-sha256sum -c kryptik-VERSION.SHA256SUMS
-sha256sum -c SHA256SUMS
+sha256sum -c --ignore-missing kryptik-VERSION.SHA256SUMS
 openssl x509 -in kryptik-sb.crt -noout -subject -fingerprint -sha256
 ```
 
+The signed checksums cover both images, and `--ignore-missing` checks the one
+you took. `SHA256SUMS` describes this directory as the acceptance run wrote
+it, so `sha256sum -c SHA256SUMS` checks every other file there, and does not
+fit a download from the page.
+
+On macOS the hash check is `shasum -a 256 -c --ignore-missing`. On Windows,
+run the `ssh-keygen` line in Command Prompt, on one line (PowerShell has no
+`<`), and compare what `certutil -hashfile kryptik-VERSION-usb.img SHA256`
+prints with the image's line in `kryptik-VERSION.SHA256SUMS`.
+
 The signature is only as good as the `release-signers` it is checked with,
-and whoever could change the download could change that file too. A machine
-that already runs Kryptik holds the same file at
-`/usr/share/kryptik/trust/release-signers`: compare the two.
+and whoever could change the download could change that file too. From 1.0.0
+on, a release's anchor and certificate are the project's, and the source
+repository holds them as `build/config/release/release-signers` and
+`build/config/release/kryptik-sb.crt`: compare them. A machine that runs
+1.0.0 or later holds the same anchor at
+`/usr/share/kryptik/trust/release-signers`. A `0.x` build made its own keys,
+so its anchor matches no other build's.
 
 ## 1. Boot the medium
 
@@ -50,22 +66,27 @@ Linux kernel with its command line compiled in. The kernel builds the
 dm-verity root itself (no initramfs) and refuses to continue if the root
 image does not match the hash it carries.
 
-**USB stick.** Write the raw image to the whole device, never to a
-partition, and only to a device you are sure of:
+**USB stick.** Write the raw image, checked as above, to the whole device,
+never to a partition, and only to a device you are sure of:
 
 ```sh
-sha256sum -c kryptik-VERSION-usb.img.sha256
 sudo dd if=kryptik-VERSION-usb.img of=/dev/sdX bs=4M status=progress oflag=sync
 ```
+
+On macOS, find the stick with `diskutil list`, then
+`diskutil unmountDisk /dev/diskN` and
+`sudo dd if=kryptik-VERSION-usb.img of=/dev/rdiskN bs=4m`. On Windows, Rufus
+writes a disk image as it is (DD mode), and so does balenaEtcher. Decline
+any offer to initialise or format the stick afterwards.
 
 **Optical.** Burn `kryptik-VERSION.iso` as an image.
 
 **Secure Boot.** The kernel is signed with the build's Secure Boot key: a
-release's is the one made offline ([release keys](release-keys.md)), enrolled
-once for every release after it; a development build's is made by that build
-and is its own. A firmware that carries only Microsoft's keys refuses either
-(the acceptance run proves the refusal: `media-refused-foreign-keys`). To
-boot with Secure Boot on, enrol
+release's, from 1.0.0 on, is the project's ([release keys](release-keys.md)),
+enrolled once for every release after it; a development build's is made by
+that build and is its own. A firmware that carries only Microsoft's keys
+refuses either (the acceptance run proves the refusal:
+`media-refused-foreign-keys`). To boot with Secure Boot on, enrol
 `kryptik-sb.der` in the firmware's `db` (and, on most machines, PK/KEK) from
 the firmware setup menu; or turn Secure Boot off. The medium reports which it
 got: `KRYPTIK_SMOKE: secureboot=1` or `=0` on the console.
@@ -80,7 +101,24 @@ tools/image/run-ovmf.sh --usb kryptik-VERSION-usb.img --vars enrolled --mode con
 
 These need QEMU, OVMF's 4M Secure Boot build (in `/usr/share/OVMF`, or
 wherever `KRYPTIK_OVMF_DIR` names) and, for the enrolled store,
-`virt-fw-vars`.
+`virt-fw-vars`. They boot the medium and nothing else. To install and then
+run the installed system, give the guest a disk, which is a file, and a
+variable store that lasts from one run to the next, since an update's trial
+boot is a firmware variable:
+
+```sh
+truncate -s 16G disk.img
+cp /usr/share/OVMF/OVMF_VARS_4M.fd vars.fd
+tools/image/run-ovmf.sh --usb kryptik-VERSION-usb.img --disk disk.img --vars-file vars.fd --mode console   # install to /dev/vda (section 2)
+tools/image/run-ovmf.sh --no-media --disk disk.img --vars-file vars.fd --allow-reboot --mode console        # the installed system
+```
+
+`--allow-reboot` lets `reboot` restart the guest instead of ending QEMU, and
+`--net user` gives the net zone a network. For Secure Boot on, start
+`vars.fd` from the enrolled store instead
+(`tools/image/ovmf-vars.sh --cert kryptik-sb.crt --out DIR` writes
+`DIR/enrolled.fd`). The console is the serial line and no window opens, so
+the desktop is not seen this way.
 
 The medium presents a root shell with no password, on the display and, if
 the machine has one, on the serial console (the serial line under QEMU).
@@ -117,10 +155,14 @@ skips that), then twice for the state partition's passphrase, which the
 system then asks for at every boot. There is no escrow: without the
 passphrase, or without the partition's header, the state is lost. It ends
 with `kryptik-install: installed VERSION to /dev/sdY: boot it from firmware
-with the medium removed.` and a reminder to keep a copy of that header
-(section 5). Then:
+with the medium removed.` and a reminder to keep a copy of that header. Make
+the copy now, on a second removable disk (FAT or ext4): `/root`, `/var` and
+`/tmp` on a medium are memory, and a file left there is gone at power-off.
 
 ```sh
+mount /dev/sdZ1 /mnt
+kryptik-recover --disk /dev/sdY --backup-state-header /mnt/kryptik-state-header
+umount /mnt
 poweroff
 ```
 
@@ -137,7 +179,9 @@ first accounts. The file is signed by the release's `kryptik-testctl` key
 anchor's key signed: anyone else's is named on the console and ignored, so a
 disk attached to a machine that boots your medium cannot arm an install. An
 install medium then reports `KRYPTIK_INSTALL: rc=0` on success; an installed
-system ignores the disk either way.
+system ignores the disk either way. No release publishes that key, so an
+unattended install is for media you built yourself, whose key your build
+holds (`<work>/keys/release/kryptik-testctl` for a development build).
 
 ## 3. First boot and daily use
 
@@ -146,8 +190,9 @@ anything else starts: on the display and, if the machine has one, on the
 serial console, and the first answer counts. Root changes it with `kryptik
 state passphrase`. On the
 first boot, before the login prompt, a setup program asks in the same places
-for a user name and that user's password, then for root's password (root still
-cannot log in at a terminal; the password is for `su`, below). After an
+for a user name (lower-case letters, digits, `_` and `-` only) and that
+user's password, then for root's password (root still cannot log in at a
+terminal; the password is for `su`, below). After an
 unattended install with a preseed, it creates those accounts from the preseed
 instead. If setup is interrupted, a question waits unanswered for 10 minutes,
 or a password is not set, boot again: every boot asks for whatever is still
@@ -216,9 +261,14 @@ user, at the administration login without `su`:
 
 ```sh
 kryptik update status     # the running version, the newest release the channel names and how old that statement is, what has arrived
-kryptik update fetch      # bring that release onto the state partition, verified piece by piece
+kryptik update fetch      # ask for that release: the net zone brings it onto the state partition, verified piece by piece
+kryptik update status     # again, until the staged release reads "complete"
 kryptik update apply      # install it, with the trial boot described below
 ```
+
+`fetch` only records the request, and the release arrives when the net zone
+next asks; `apply` refuses a release that is still arriving. Then reboot, as
+root (`su`, then `reboot`): the next boot is the trial.
 
 A release brought by hand is a signed payload directory holding exactly
 `manifest`, `manifest.sig`, `kryptik-root.img`, `kryptik-a.efi`,
@@ -243,9 +293,9 @@ The next boot runs the new slot; `boot-success` judges it (state partition
 usable, services up, the zone supervisor healthy) and only then makes it the
 committed boot file. An unhealthy trial reboots into the previous slot by
 itself. Persistent zone data on `kryptik-state` is never written by any of
-this. `apply` refuses while another trial is armed (reboot first, or roll
-back) and while the state partition is degraded; after a trial that failed
-to boot it refuses that slot again until you pass `--retry`.
+this. `apply` refuses while another trial is armed (reboot first) and while
+the state partition is degraded; after a trial that failed to boot it
+refuses that slot again until you pass `--retry`.
 
 ```sh
 kryptik-update rollback                       # back to the other slot, if it is intact
@@ -264,8 +314,10 @@ kryptik-recover --disk /dev/sdY --restore-slot a    # the slot's root is damaged
 ```
 
 `--backup-state-header FILE` and `--restore-state-header FILE` save and put
-back the state partition's LUKS2 header. Keep a backup somewhere that is not
-this disk: a damaged header with no backup is a lost state partition.
+back the state partition's LUKS2 header. FILE is on a disk mounted for it, as
+in section 2: the medium keeps nothing of its own. Keep the backup somewhere
+that is not the installed disk: a damaged header with no backup is a lost
+state partition.
 
 `--restore-slot` writes the medium's own root image and kernel into the
 slot, as the installer does, then commits it. Every byte comes from the
@@ -286,14 +338,17 @@ shows each timer, its timeout and whether it is running.
 
 ## Known limitations of this release
 
-- A development build, which every `0.x` release is, is signed with keys
-  that build generated and then discarded, so its certificate is enrolled on
-  its own and no other build's release updates it; a production release is
-  signed with the keys made offline in the release ceremony
-  ([release keys](release-keys.md)). No independent security review has
-  been made.
-- Tested under QEMU with OVMF only. No physical machine has booted it; no
-  hardware support beyond what the virtual machine exercised is claimed.
+- The keys that sign a release from 1.0.0 on are held on GitHub, in the
+  repository's protected release environment: a release tag's build uses
+  them once the maintainer approves it, so a release is as trustworthy as
+  the maintainer's GitHub account and the runners that build it
+  ([release keys](release-keys.md)). A development build, which every `0.x`
+  release is, is signed with keys that build generated and then discarded,
+  so its certificate is enrolled on its own and no other build's release
+  updates it.
+- No independent security review has been made.
+- Tested under QEMU with OVMF firmware. Testing on physical hardware is
+  planned for October 2026.
 - The builds are not reproducible bit for bit; the hashes name what was
   tested, not what a rebuild would produce.
 - A fullscreen window is framed by its zone's border colour; there is no
