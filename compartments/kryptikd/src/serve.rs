@@ -11,7 +11,8 @@
 //!              wifi-add, `ssid <ssid>`, `psk <passphrase>`, `end`
 //!              wifi-forget, `ssid <ssid>`, `end`
 //!              stop <zone> | clipboard-move <from> <to> | info <zone> | status |
-//!              runtime | wifi-list | update-status | update-fetch | update-apply
+//!              runtime | wifi-list | update-status | update-fetch | update-apply |
+//!              update-auto on|off
 //!   reply    ok ...\n  |  error: <why>\n  |  lines ... end\n
 //!
 //! `run` replies `ok <launcher pid>` once the zone's pid 1 exists and the
@@ -1043,13 +1044,15 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
                 Err((conn, e)) => reply(&conn, &format!("error: {e}\n")),
             }
         }
-        /* The user's side of the update channel (update.rs). Until `fetch` the
-         * net zone is told `idle`; `apply` hands the stage to kryptik-update,
-         * which verifies it all again before writing a slot. */
-        "update-status" | "update-fetch" | "update-apply" => {
+        /* The user's side of the update channel (update.rs). Until `fetch`, or
+         * with `auto on` a newer statement, the net zone is told `idle`;
+         * `apply` hands the stage to kryptik-update, which verifies it all
+         * again before writing a slot. */
+        "update-status" | "update-fetch" | "update-apply" | "update-auto" => {
             use crate::update as up;
             let dir = std::path::Path::new(up::STATE_DIR);
             let running = up::running_version();
+            let mut said = verb.to_string();
             let done = match verb {
                 "update-status" => {
                     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
@@ -1060,6 +1063,25 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
                     up::required_role()
                         .and_then(|role| up::want(dir, up::channel_from(&conf).as_deref(), &role, &running))
                         .map(|v| format!("{v} will be fetched when the net zone next asks; `kryptik update status` shows it arriving\n"))
+                }
+                "update-auto" => {
+                    let on = match first.split_whitespace().collect::<Vec<_>>().as_slice() {
+                        [_, "on"] => true,
+                        [_, "off"] => false,
+                        _ => {
+                            reply(&conn, "error: update-auto takes on or off\n");
+                            return None;
+                        }
+                    };
+                    said = format!("{verb} {}", if on { "on" } else { "off" });
+                    let conf = std::fs::read_to_string(up::CONF).unwrap_or_default();
+                    up::set_auto(dir, on, up::channel_from(&conf).as_deref()).map(|()| {
+                        if on {
+                            "automatic fetching is on: each newer release is fetched as it is announced, and waits for `kryptik update apply`\n".to_string()
+                        } else {
+                            "automatic fetching is off: a release is fetched only when you ask (`kryptik update fetch`)\n".to_string()
+                        }
+                    })
                 }
                 _ => {
                     // Started, not waited for; one at a time.
@@ -1083,7 +1105,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
             };
             match done {
                 Ok(text) => {
-                    eprintln!("kryptikd serve: {verb}");
+                    eprintln!("kryptikd serve: uid {uid} {said}");
                     reply(&conn, &format!("ok\n{text}"));
                 }
                 Err(e) => reply(&conn, &format!("error: {e}\n")),

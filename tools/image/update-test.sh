@@ -27,7 +27,7 @@
 #   step 6  the VM killed mid-write (the slot then named by nothing on the
 #           ESP, so rollback refuses it), then after arming: both recover
 #   step 7  a corrupt trial falls back to slot a, is recorded, needs --retry
-#   step 8  B fetched by the net zone from a loopback release host, applied.
+#   step 8  automatic fetching brings B from a loopback release host; applied.
 #           A production image fetches nothing over plain http, and says so
 #
 # Whether A and B are development or production releases is read from B's
@@ -400,23 +400,29 @@ UP_TO_STATEMENT=("expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
 start_vm update-p8b --net user
 if [[ "$B_ROLE" == production ]]; then
     # A production image fetches no release over plain http, and the user who
-    # asks is told why, not left with a poll that answers idle.
+    # asks is told why, not left with a poll that answers idle. Turned on,
+    # automatic fetching asks for nothing either.
     drive "${UP_TO_STATEMENT[@]}" \
         "run!:kryptik update fetch" "expect:a production image does not fetch over plain http" \
+        "run:kryptik update auto on" "expect:automatic fetching is on" \
         "$(ROOTSH 'sleep 70; echo STAGED=$(ls /var/lib/kryptik/update/incoming 2>/dev/null | wc -l)')" "expect:STAGED=0" \
         "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
     rc=$?; stop_vm
     kill "$CHAN_PID" 2>/dev/null; CHAN_PID=""
-    [[ "$rc" -eq 0 ]] && green "the production image took ${VB}'s statement over plain http, refused to fetch the release that way when asked, and said why; nothing was staged" || red "step 8 drive failed"
+    [[ "$rc" -eq 0 ]] && green "the production image took ${VB}'s statement over plain http, refused to fetch the release that way when asked or automatically, and said why; nothing was staged" || red "step 8 drive failed"
     asked="$(awk '{sub("^/", "", $1); print $1}' "$CHAN_LOG" | sort -u | tr '\n' ' ')"
     [[ "$asked" == "latest latest.sig " ]] && green "the release host was asked for the statement alone" || red "the release host was asked for: ${asked}"
 else
-    # In order: the statement arrives, nothing is fetched until the user asks,
-    # the release arrives whole, then apply, trial boot and commit.
+    # In order: the statement arrives, nothing is fetched while that is left to
+    # the user, automatic fetching brings the release whole without a fetch
+    # (one asked for as well changes nothing), then apply, trial boot and
+    # commit, and the setting outlasts the update.
     drive "${UP_TO_STATEMENT[@]}" \
         "$(ROOTSH 'sleep 70; echo STAGED-UNASKED=$(ls /var/lib/kryptik/update/incoming 2>/dev/null | wc -l)')" "expect:STAGED-UNASKED=0" \
-        "run:kryptik update fetch" "expect:${VB} will be fetched" \
+        "run:kryptik update status | grep -q 'fetching *only when asked'" \
+        "run:kryptik update auto on" "expect:automatic fetching is on" \
         "run:$(wait_status "${VB}: .* bytes, " ARRIVING-OK)" "expect:ARRIVING-OK" \
+        "run:kryptik update fetch" "expect:${VB} will be fetched" \
         "run:$(wait_arrival)" "run:$(wait_arrival)" "run:$(wait_arrival)" "run:$(wait_arrival)" \
         "run:kryptik update status | grep -q 'bytes, complete'" \
         "$(ROOTSH "ls /var/lib/kryptik/update/incoming/${VB} | sort | tr \"\\n\" \" \"; echo LISTED")" "expect:kryptik-a.efi kryptik-b.efi kryptik-root.img manifest manifest.sig root.json LISTED" \
@@ -425,10 +431,13 @@ else
         "login:${TUSER}:${TPASS}" \
         "$(ROOTSH 'cat /run/kryptik/boot-identity | head -1; cat /var/lib/kryptik/boot/last-result; echo P8C-OK')" "expect:slot=b" "expect:commit b" "expect:P8C-OK" \
         "run:test \"\$(cat /home/${TUSER}/marker)\" = before-update" \
+        "run:kryptik update status | grep -q 'fetching *automatically'" \
+        "run:kryptik update auto off" "expect:automatic fetching is off" \
+        "run:kryptik update status | grep -q 'fetching *only when asked'" \
         "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
     rc=$?; stop_vm
     kill "$CHAN_PID" 2>/dev/null; CHAN_PID=""
-    [[ "$rc" -eq 0 ]] && green "the net zone brought the statement, nothing was fetched until it was asked for, ${VB} arrived whole, and it was applied, trial-booted and committed; data intact" || red "step 8 drive failed"
+    [[ "$rc" -eq 0 ]] && green "the net zone brought the statement, nothing was fetched until automatic fetching was turned on, then ${VB} arrived whole unasked and was applied, trial-booted and committed; data intact, and the setting outlasted the update" || red "step 8 drive failed"
     # The step's first boot must report A and its last B; B anywhere is not enough.
     first_boot="$(txt | sed -n 's/^KRYPTIK_SMOKE: os_id=.* version_id=//p' | head -1)"
     last_boot="$(txt | sed -n 's/^KRYPTIK_SMOKE: os_id=.* version_id=//p' | tail -1)"

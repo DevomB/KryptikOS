@@ -233,6 +233,9 @@ MATCH="must be a single path component" check "a piece of a release named with a
 hello"
 MATCH="is not 1 to 1048576 bytes" check "a piece of a release larger than one piece is refused at parse time" 0 /usr/bin/python3 -c "$BRK" "update-put kryptik-root.img 0 1048577
 "
+# Whether releases are fetched unasked is zone 0's setting; no zone has a verb for it.
+MATCH="^error: unknown verb$" check "automatic fetching cannot be turned on from a zone" 0 /usr/bin/python3 -c "$BRK" "update-auto on
+"
 MATCH="^ok text/plain 5 hello$" check "clipboard-set then clipboard-get round-trips" 0 /bin/sh -c "python3 -c '$BRK' 'clipboard-set text/plain 5
 hello' >/dev/null && python3 -c '$BRK' 'clipboard-get
 '"

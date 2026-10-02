@@ -11,6 +11,7 @@
  *   kryptik-launch --wifi-add SSID      add one or replace its passphrase (one line on stdin)
  *   kryptik-launch --wifi-forget SSID   remove one
  *   kryptik-launch --update status|fetch|apply   show, fetch or install a release
+ *   kryptik-launch --update auto on|off   fetch each release as it is announced, or when asked
  *
  * With a display, the zone's kryptik-wlproxy is started if needed at
  * $XDG_RUNTIME_DIR/kryptik/ZONE/wayland-0; the daemon binds that socket into
@@ -278,7 +279,7 @@ static void usage(void)
 	      "       kryptik-launch --clipboard-move FROM TO\n"
 	      "       kryptik-launch --wifi-list | --wifi-add SSID | --wifi-forget SSID\n"
 	      "                      (--wifi-add reads the passphrase from standard input)\n"
-	      "       kryptik-launch --update status|fetch|apply\n", stderr);
+	      "       kryptik-launch --update status|fetch|apply | --update auto on|off\n", stderr);
 	exit(2);
 }
 
@@ -366,10 +367,14 @@ static int wifi_main(int argc, char **argv)
  * kryptik-update has written the slot. */
 static int update_main(int argc, char **argv)
 {
-	if (argc != 3 || (strcmp(argv[2], "status") != 0 && strcmp(argv[2], "fetch") != 0 && strcmp(argv[2], "apply") != 0))
+	int automatic = argc == 4 && strcmp(argv[2], "auto") == 0 && (strcmp(argv[3], "on") == 0 || strcmp(argv[3], "off") == 0);
+	if (!automatic && (argc != 3 || (strcmp(argv[2], "status") != 0 && strcmp(argv[2], "fetch") != 0 && strcmp(argv[2], "apply") != 0)))
 		usage();
 	char req[32];
-	snprintf(req, sizeof req, "update-%s\n", argv[2]);
+	if (automatic)
+		snprintf(req, sizeof req, "update-auto %s\n", argv[3]);
+	else
+		snprintf(req, sizeof req, "update-%s\n", argv[2]);
 	char *r = talk(req, -1);
 	int ok = strncmp(r, "ok\n", 3) == 0;
 	fputs(ok ? r + 3 : r, ok ? stdout : stderr);
