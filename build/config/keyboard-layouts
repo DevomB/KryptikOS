@@ -1,0 +1,24 @@
+# The keyboard layouts a machine may name (docs/design/keyboard-layout.md):
+#   name   console keymap, under /usr/share/keymaps   xkb layout   xkb variant
+# A name is lower-case letters, digits and "-"; "-" for no variant. Stage 04
+# reads every keymap and finds every xkb layout before it installs this.
+us             i386/qwerty/us.map.gz                    us  -
+uk             i386/qwerty/uk.map.gz                    gb  -
+de             i386/qwertz/de-latin1.map.gz             de  -
+de-nodeadkeys  i386/qwertz/de-latin1-nodeadkeys.map.gz  de  nodeadkeys
+fr             i386/azerty/fr-latin1.map.gz             fr  -
+es             i386/qwerty/es.map.gz                    es  -
+it             i386/qwerty/it.map.gz                    it  -
+pt             i386/qwerty/pt-latin1.map.gz             pt  -
+br             i386/qwerty/br-abnt2.map.gz              br  -
+dk             i386/qwerty/dk.map.gz                    dk  -
+no             i386/qwerty/no.map.gz                    no  -
+fi             i386/qwerty/fi.map.gz                    fi  -
+nl             i386/qwerty/nl.map.gz                    nl  -
+pl             i386/qwerty/pl.map.gz                    pl  -
+be             i386/azerty/be-latin1.map.gz             be  -
+ch-de          i386/qwertz/sg.map.gz                    ch  -
+ch-fr          i386/qwertz/fr_CH.map.gz                 ch  fr
+cz             i386/qwertz/cz.map.gz                    cz  -
+hu             i386/qwertz/hu.map.gz                    hu  -
+dvorak         i386/dvorak/dvorak.map.gz                us  dvorak

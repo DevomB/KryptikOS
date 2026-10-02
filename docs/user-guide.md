@@ -97,6 +97,12 @@ lsblk                                  # find the target: a whole disk, not a pa
 kryptik-install --target /dev/sdY      # add --dry-run to see the plan and write nothing
 ```
 
+On a keyboard that is not a US one, `kryptik keyboard` lists the layouts and
+`kryptik-install --keyboard NAME` installs with one: `ERASE` and the
+passphrase are then typed under it, here and at every boot, and the desktop
+uses it too. `kryptik keyboard NAME`, as root, changes it later
+([keyboard layout](design/keyboard-layout.md)).
+
 The installer refuses the disk the medium is on; anything with a mounted
 partition, active swap, or a partition held open (an unlocked LUKS volume,
 LVM); anything that is not a whole, writable disk; and a disk too small to
