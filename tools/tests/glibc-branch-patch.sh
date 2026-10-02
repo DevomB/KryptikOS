@@ -55,7 +55,7 @@ tree; run "$NOTES"; rc=$?
 [[ "$rc" -eq 0 && -f "$P/0001-release-2.40-master-${NOTES:0:12}.patch" ]] && grep -qF ', 2 commits)' "$P/README.md" \
     && ok "a commit before the head can be named" || { bad "naming an earlier commit (exit ${rc})"; cat "$T/out"; }
 
-tree; run "$(g rev-parse glibc-2.40^{commit})"; rc=$?
+tree; run "$(g rev-parse "glibc-2.40^{commit}")"; rc=$?
 [[ "$rc" -ne 0 ]] && grep -q "is not on release/2.40/master" "$T/out" \
     && ok "a commit not on the branch is refused" || { bad "the tag itself was taken (exit ${rc})"; cat "$T/out"; }
 
