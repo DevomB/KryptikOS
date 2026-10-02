@@ -1,7 +1,5 @@
 //! zoneid: audit zone border colours, propose palettes, simulate vision models.
-//!
-//! Exit codes: 0 clean or informational, 1 the zone set fails the invariant,
-//! 2 usage error, 3 the zone files could not be read.
+//! Exit 0 clean or informational, 1 the zone set fails, 2 usage error, 3 unreadable zone files.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -32,7 +30,7 @@ Usage:
         Show colours as they appear under each vision model.
 
     zoneid explain
-        What the invariant is and why it is shaped this way.
+        Explain the invariant and its channels.
 
 Zones are read from compartments/zones/*.toml by default."
 }
@@ -62,8 +60,7 @@ fn main() -> ExitCode {
     }
 }
 
-/// Parse `flag value` pairs, each known flag at most once. Anything else is a
-/// usage error, so a misspelt `--zone X` cannot audit the default set and pass.
+/// Known `flag value` pairs, each once; a misspelt `--zone X` errs instead of auditing the default.
 fn options<'a>(args: &'a [String], known: &[&str]) -> Result<Vec<(&'a str, &'a str)>, String> {
     let mut out: Vec<(&str, &str)> = Vec::new();
     let mut it = args.iter();
@@ -94,8 +91,7 @@ fn cmd_audit(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    /* --zones, else compartments/zones here, else the set shipped beside this
-     * crate, so cargo run works from anywhere in the tree. */
+    // --zones, else ./compartments/zones, else the crate's own tree, so cargo run works anywhere.
     let dir = match flag(&args, "--zones") {
         Some(d) => PathBuf::from(d),
         None => {
@@ -209,9 +205,7 @@ fn cmd_audit(args: &[String]) -> ExitCode {
     let crit = r.critical().count();
     if r.is_fatal() {
         println!(
-            "FAIL: {crit} critical collision(s). Two border colours the compositor draws\n\
-             are the same window edge to some users, so a window cannot be attributed\n\
-             by looking at it."
+            "FAIL: {crit} critical collision(s): some users cannot tell two border colours apart."
         );
         ExitCode::from(1)
     } else {
@@ -296,10 +290,7 @@ fn cmd_propose(args: &[String]) -> ExitCode {
         println!("  {:<14} worst pair dE00 {:>6.2}", v.name(), d);
     }
     println!("\n  overall floor: dE00 {:.2}", p.score);
-    println!(
-        "\nHeuristic search, not a proven optimum: it establishes a lower bound on\n\
-         what is achievable under these constraints."
-    );
+    println!("\nHeuristic search: a lower bound on what these constraints allow, not an optimum.");
     ExitCode::SUCCESS
 }
 
@@ -360,9 +351,8 @@ const EXPLAIN: &str = "\
 Zone distinctness
 
 A window's border colour is how the user tells which zone it belongs to
-(docs/architecture.md). If they cannot tell at a glance which zone a password
-prompt belongs to, the zones have failed them. That is a question of
-perception, so it is checked against a model of it, not by comparing strings.
+(docs/architecture.md). That is a question of perception, so colours are
+checked against a model of it, not compared as strings.
 
 The rule: every two border colours the compositor draws (each zone's, and its
 own for a window from no zone, from an unknown zone, or asking for attention)
@@ -375,12 +365,12 @@ Channels:
   label     the chrome menu and its f      seen when asked for
   pattern   not drawn                      validated, given no weight
 
-Focus is shown by border width, never by colour, so the window taking your
-keystrokes carries exactly its zone's audited colour.
+Focus is shown by border width, never by colour, so the focused window
+carries its zone's audited colour.
 
-A pass is a floor, not a guarantee: it says two identities differ under a
-stated vision model by a stated metric, not that nobody in a hurry, in poor
-light, on a badly calibrated screen could confuse them.
+A pass is a floor, not a guarantee: two identities differ by a stated metric
+under each vision model, which does not rule out confusion in poor light or
+on a badly calibrated screen.
 ";
 
 // A binary's root finds a module beside itself; the tests sit under its name.

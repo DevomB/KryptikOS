@@ -1,11 +1,5 @@
-//! One proxied connection, zone client to compositor: framed (wire.rs) against
-//! the tables (protocol.rs), checked, rewritten and forwarded.
-//!
-//! Every live object id is mapped to its interface. A message the map or the
-//! tables cannot account for, a hidden bind or an exceeded bound ends the
-//! session with one wl_display.error. Received descriptors queue in arrival
-//! order; a message takes as many as its signature has `h` arguments, waiting
-//! if they have not arrived, and sends them with its own bytes.
+//! One proxied connection, zone client to compositor. A message the object map or the tables
+//! cannot account for, a hidden bind or an exceeded bound ends it with one wl_display.error.
 
 use std::collections::{HashMap, VecDeque};
 use std::io;
@@ -81,8 +75,7 @@ impl From<io::Error> for SessionError {
 
 /// Bytes gathered into one outbound batch: the largest message.
 const BATCH_BYTES: usize = MAX_MESSAGE_LEN;
-/// Descriptors in one sendmsg: libwayland reads at most 28 per message
-/// (MAX_FDS_OUT) and ends the connection on more.
+/// Descriptors per sendmsg: libwayland reads at most 28 (MAX_FDS_OUT) and hangs up on more.
 pub(crate) const BATCH_FDS: usize = 28;
 
 /// One socket: inbound bytes and descriptors, outbound batches with theirs.
@@ -109,8 +102,7 @@ impl Endpoint {
         &self.inbuf[self.in_pos..]
     }
 
-    /// Move the next `n` pending bytes (one message) into the caller's reused
-    /// buffer; the caller has checked they are present.
+    /// Move the next `n` pending bytes into `out`; the caller has checked they are there.
     fn take(&mut self, n: usize, out: &mut Vec<u8>) {
         out.clear();
         out.extend_from_slice(&self.inbuf[self.in_pos..self.in_pos + n]);
@@ -130,8 +122,7 @@ impl Endpoint {
         bytes
     }
 
-    /// One recvmsg with room for descriptors. Returns bytes read: 0 is EOF,
-    /// usize::MAX that it would block.
+    /// One recvmsg with room for descriptors: bytes read, 0 at EOF, usize::MAX if it would block.
     pub fn read(&mut self) -> io::Result<usize> {
         let mut buf = [0u8; 4096];
         let mut cmsg = [0usize; 32]; // cmsghdr needs native alignment
@@ -149,7 +140,7 @@ impl Endpoint {
             }
             return Err(e);
         }
-        // Collect descriptors before the bytes, in order.
+        // Queue the descriptors in order before any check, so a refused read cannot leak them.
         unsafe {
             let mut c = libc::CMSG_FIRSTHDR(&msg);
             while !c.is_null() {
@@ -164,8 +155,7 @@ impl Endpoint {
                 c = libc::CMSG_NXTHDR(&msg, c);
             }
         }
-        /* Bounds hold at ingress too, even while pump waits for a missing
-         * descriptor: nothing may accumulate behind it. */
+        // Bounds hold at ingress too, so nothing piles up while pump waits for a descriptor.
         if msg.msg_flags & libc::MSG_CTRUNC != 0
             || self.in_fds.len() > policy::MAX_PENDING_FDS
             || self.pending_in().len() + n as usize > policy::MAX_PENDING_BYTES
@@ -175,7 +165,7 @@ impl Endpoint {
         if n == 0 {
             return Ok(0);
         }
-        // One compaction per read, here, rather than one per message.
+        // Compact once per read, not once per message.
         if self.in_pos > 0 {
             self.inbuf.drain(..self.in_pos);
             self.in_pos = 0;
@@ -217,8 +207,7 @@ impl Endpoint {
                 return Err(e);
             }
             let n = n as usize;
-            /* The descriptors went with the first byte and must not go again
-             * with the rest: close our copies. */
+            // The descriptors went with the first byte: close ours, so the rest goes without them.
             self.pending_fds -= fds.len();
             for fd in fds.drain(..) {
                 unsafe { libc::close(fd) };
@@ -233,9 +222,7 @@ impl Endpoint {
         Ok(false)
     }
 
-    /// Queue one message, joining the last batch while it has room. Its
-    /// descriptors go with that batch, so they arrive in order and no later
-    /// than the message, which is all libwayland asks.
+    /// Add to the last batch if it fits; fds ride with it, in order and never after their message.
     fn queue(&mut self, bytes: &[u8], fds: Vec<RawFd>) {
         self.pending_out += bytes.len();
         self.pending_fds += fds.len();
@@ -270,10 +257,7 @@ impl Endpoint {
 /// A live object: its interface from the tables and its negotiated version.
 type Obj = (&'static protocol::Interface, u32);
 
-/// Live objects by id. libwayland hands out ids densely, the client's from 1
-/// and the compositor's from SERVER_ID_BASE, and libwayland-server refuses a
-/// new id past the next unused slot. So each range is a vector, and an id that
-/// skips ahead is refused here as the compositor would refuse it.
+/// Live objects, a vector per id range: libwayland ids are dense, and one that skips is refused.
 struct Objects {
     client: Vec<Option<Obj>>,
     server: Vec<Option<Obj>>,
@@ -335,13 +319,14 @@ impl Objects {
     }
 }
 
-/// The proxied connection.
+/// A wl_shm pool's charge on the budgets, kept until the pool and its buffers are all deleted.
 struct Pool {
     size: usize,
     buffers: usize,
     deleted: bool,
 }
 
+/// The proxied connection.
 pub struct Session {
     pub zone: String,
     pub client: Endpoint,
@@ -354,9 +339,8 @@ pub struct Session {
     pub shm_pool_bytes: usize,
     pub shm_pool_count: usize,
     pub toplevels: usize,
-    /// Globals the server advertised and we let through: name -> (interface, version)
+    /// Globals let through to the client: name -> (interface, version cap).
     globals: HashMap<u32, (&'static str, u32)>,
-    /// How many globals were hidden from the client.
     pub hidden_count: usize,
     pub forwarded_c2s: u64,
     pub forwarded_s2c: u64,
@@ -416,9 +400,8 @@ impl Session {
         if !ok || id == 0 {
             return Err(SessionError::IdOutOfRange { id, dir });
         }
-        /* An interface missing from the tables cannot be tracked. Binds are
-         * checked against the allowlist, so only a compositor newer than the
-         * tables can create one: refuse rather than guess. */
+        /* Refuse an interface the tables lack: binds are allowlisted, so only a
+         * compositor newer than the tables can name one. */
         let iface = protocol::find(iface_name).ok_or_else(|| SessionError::HiddenInterface(iface_name.to_string()))?;
         if iface.name == "xdg_toplevel" && self.toplevels >= policy::MAX_TOPLEVELS_PER_SESSION {
             return Err(SessionError::ResourceLimit("too many toplevels in one session"));
@@ -478,7 +461,7 @@ impl Session {
             let mut stamp: Option<Vec<u8>> = None;
             match dir {
                 Dir::ClientToServer => {
-                    // get_registry needs nothing here: its registry is registered below like any child.
+                    // get_registry needs no check here; its new registry is registered below.
                     if iface.name == "wl_registry" && h.opcode == WL_REGISTRY_BIND {
                         let (name, version) = match (decoded.new_object, decoded.bind_version) {
                             (Some((_, n)), Some(v)) => (n, v),
@@ -524,8 +507,8 @@ impl Session {
                             || self.shm_pool_bytes + size as usize > policy::MAX_SHM_BYTES_PER_SESSION {
                             return Err(SessionError::ResourceLimit("wl_shm pool budget in one session"));
                         }
-                        // A destroyed pool may still back buffers. Its generation keeps
-                        // those buffers separate if Wayland later reuses the object id.
+                        /* A destroyed pool may still back buffers; the generation keeps
+                         * them apart from a new pool on the same object id. */
                         self.next_pool += 1;
                         self.shm_pool_count += 1;
                         self.shm_pool_bytes += size as usize;
@@ -553,13 +536,11 @@ impl Session {
                         self.buffer_pools.insert(id, generation);
                         self.pools.get_mut(&generation).unwrap().buffers += 1;
                     }
-                    /* Every toplevel gets the zone's app_id right behind the
-                     * get_toplevel that creates it: the compositor draws a toplevel
-                     * with no app_id as zone 0's own, with the trusted border. A
-                     * later set_app_id from the client is rewritten and replaces it. */
+                    /* Stamp the zone's app_id right behind get_toplevel: the compositor draws
+                     * a toplevel with no app_id as zone 0's own, with the trusted border. */
                     if iface.name == "xdg_surface" && m.name == "get_toplevel" {
                         if let Some((id, _)) = decoded.new_object {
-                            // Resolved once; tables without set_app_id refuse rather than guess an opcode.
+                            // Looked up once, not hardcoded; tables without set_app_id refuse.
                             static SET_APP_ID: std::sync::OnceLock<Option<u16>> = std::sync::OnceLock::new();
                             let opcode = SET_APP_ID
                                 .get_or_init(|| {
@@ -616,8 +597,7 @@ impl Session {
                     }
                 }
             }
-            /* The new object, whichever side created it. A registry binding
-             * chooses its version; any other child inherits its parent's. */
+            // A bind picks the new object's version; any other new object inherits its parent's.
             if let Some((id, name)) = decoded.new_object {
                 self.register(id, name, decoded.bind_version.unwrap_or(version), dir)?;
             }
@@ -647,8 +627,7 @@ impl Session {
         }
     }
 
-    /// Tell the client why with a fatal wl_display.error (code 3,
-    /// implementation), then close both sides.
+    /// Tell the client why in a fatal wl_display.error (code 3, implementation); close both sides.
     pub fn refuse(&mut self, why: &str) {
         let text = format!("kryptik-wlproxy: {why}");
         if let Some(m) = MessageWriter::new(WL_DISPLAY, WL_DISPLAY_ERROR).u32(WL_DISPLAY).u32(3).string(&text).finish() {

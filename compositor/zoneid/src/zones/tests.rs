@@ -2,7 +2,7 @@ use super::*;
 use crate::distinct::{analyze, Thresholds, COMPOSITOR_COLOURS, MIN_DELTA_E};
 use crate::identity::Channel;
 
-/// dwl's colour header holds exactly the audited colours, so dwl draws none unchecked.
+/// dwl's colour header holds the audited colours and no others, so dwl draws none unchecked.
 #[test]
 fn header_colours_are_audited() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../build/desktop/zone-colours.h");
@@ -24,8 +24,7 @@ fn header_colours_are_audited() {
     assert_eq!(drawn, audited);
 }
 
-/// Every shipped pair clears the floor under every vision model, with no
-/// other finding, and every zone carries all four channels.
+/// The shipped zones pass with no finding at all, and each carries all four channels.
 #[test]
 fn shipped_zones_pass_invariant() {
     let zones = load_zones(&shipped_zone_dir()).expect("the shipped zone files parse");

@@ -43,6 +43,33 @@ fn get_registry(id: u32) -> Vec<u8> {
 fn global(reg: u32, name: u32, iface: &str, version: u32) -> Vec<u8> {
     MessageWriter::new(reg, WL_REGISTRY_GLOBAL).u32(name).string(iface).u32(version).finish().unwrap()
 }
+/// A session with toplevel 7 created and the compositor's end drained.
+fn with_toplevel() -> (Session, UnixStream, UnixStream) {
+    let (mut s, mut c, mut sv) = make();
+    c.write_all(&get_registry(2)).unwrap();
+    sv.write_all(&global(2, 1, "wl_compositor", 6)).unwrap();
+    sv.write_all(&global(2, 2, "xdg_wm_base", 6)).unwrap();
+    pump_all(&mut s).unwrap();
+    c.write_all(&MessageWriter::new(2, WL_REGISTRY_BIND).u32(1).string("wl_compositor").u32(6).u32(3).finish().unwrap()).unwrap();
+    c.write_all(&MessageWriter::new(2, WL_REGISTRY_BIND).u32(2).string("xdg_wm_base").u32(6).u32(4).finish().unwrap()).unwrap();
+    c.write_all(&MessageWriter::new(3, 0).u32(5).finish().unwrap()).unwrap(); // create_surface -> 5
+    c.write_all(&MessageWriter::new(4, 2).u32(6).u32(5).finish().unwrap()).unwrap(); // get_xdg_surface -> 6
+    c.write_all(&MessageWriter::new(6, 1).u32(7).finish().unwrap()).unwrap(); // get_toplevel -> 7
+    pump_all(&mut s).unwrap();
+    let _ = read_all(&mut sv);
+    (s, c, sv)
+}
+/// A session with wl_shm v2 bound as object 3 and the compositor's end drained.
+fn with_shm() -> (Session, UnixStream, UnixStream) {
+    let (mut s, mut c, mut sv) = make();
+    c.write_all(&get_registry(2)).unwrap();
+    sv.write_all(&global(2, 1, "wl_shm", 2)).unwrap();
+    pump_all(&mut s).unwrap();
+    c.write_all(&MessageWriter::new(2, WL_REGISTRY_BIND).u32(1).string("wl_shm").u32(2).u32(3).finish().unwrap()).unwrap();
+    pump_all(&mut s).unwrap();
+    let _ = read_all(&mut sv);
+    (s, c, sv)
+}
 
 #[test]
 fn hidden_globals_invisible_and_unbindable() {
@@ -129,7 +156,7 @@ fn bind_must_match_advertised_global() {
 }
 
 #[test]
-fn new_object_cannot_replace_live_one() {
+fn live_object_not_replaced() {
     let (mut s, mut c, mut sv) = make();
     c.write_all(&get_registry(2)).unwrap();
     pump_all(&mut s).unwrap();
@@ -183,7 +210,7 @@ fn id_slots_bounded() {
 }
 
 #[test]
-fn popup_is_refused_before_it_reaches_dwl() {
+fn popup_refused() {
     let (mut s, mut c, mut sv) = make();
     s.objects.place(2, (protocol::find("xdg_surface").unwrap(), 1));
     s.objects.place(3, (protocol::find("xdg_positioner").unwrap(), 1));
@@ -194,7 +221,7 @@ fn popup_is_refused_before_it_reaches_dwl() {
 }
 
 #[test]
-fn toplevel_budget_reclaims_only_on_compositor_delete_id() {
+fn toplevel_limit_and_reclaim() {
     let (mut s, mut c, mut sv) = make();
     s.objects.place(2, (protocol::find("xdg_surface").unwrap(), 1));
     for id in 3..3 + policy::MAX_TOPLEVELS_PER_SESSION as u32 {
@@ -214,7 +241,7 @@ fn toplevel_budget_reclaims_only_on_compositor_delete_id() {
 }
 
 #[test]
-fn shm_pool_creation_and_resize_have_byte_and_count_limits() {
+fn shm_pool_limits() {
     let (mut s, mut c, mut sv) = make();
     s.objects.place(3, (protocol::find("wl_shm").unwrap(), 1));
     let (fd, _) = UnixStream::pair().unwrap();
@@ -256,7 +283,7 @@ fn shm_pool_creation_and_resize_have_byte_and_count_limits() {
 }
 
 #[test]
-fn pool_budget_follows_buffers_across_reused_object_ids() {
+fn pool_budget_follows_buffers() {
     let (mut s, mut c, mut sv) = make();
     s.objects.place(3, (protocol::find("wl_shm").unwrap(), 1));
     let (fd, _) = UnixStream::pair().unwrap();
@@ -309,19 +336,8 @@ fn messages_respect_bound_versions() {
 }
 
 #[test]
-fn titles_and_app_ids_are_rewritten() {
-    let (mut s, mut c, mut sv) = make();
-    c.write_all(&get_registry(2)).unwrap();
-    sv.write_all(&global(2, 1, "wl_compositor", 6)).unwrap();
-    sv.write_all(&global(2, 2, "xdg_wm_base", 6)).unwrap();
-    pump_all(&mut s).unwrap();
-    c.write_all(&MessageWriter::new(2, WL_REGISTRY_BIND).u32(1).string("wl_compositor").u32(6).u32(3).finish().unwrap()).unwrap();
-    c.write_all(&MessageWriter::new(2, WL_REGISTRY_BIND).u32(2).string("xdg_wm_base").u32(6).u32(4).finish().unwrap()).unwrap();
-    c.write_all(&MessageWriter::new(3, 0).u32(5).finish().unwrap()).unwrap(); // create_surface -> 5
-    c.write_all(&MessageWriter::new(4, 2).u32(6).u32(5).finish().unwrap()).unwrap(); // get_xdg_surface -> 6
-    c.write_all(&MessageWriter::new(6, 1).u32(7).finish().unwrap()).unwrap(); // get_toplevel -> 7
-    pump_all(&mut s).unwrap();
-    let _ = read_all(&mut sv);
+fn titles_and_app_ids_rewritten() {
+    let (mut s, mut c, mut sv) = with_toplevel();
     c.write_all(&MessageWriter::new(7, 2).string("Notes").finish().unwrap()).unwrap(); // set_title
     c.write_all(&MessageWriter::new(7, 3).string("editor").finish().unwrap()).unwrap(); // set_app_id
     pump_all(&mut s).unwrap();
@@ -350,8 +366,7 @@ fn unnamed_toplevel_is_stamped() {
     c.write_all(&MessageWriter::new(5, 6).finish().unwrap()).unwrap(); // wl_surface.commit, and no set_app_id ever
     pump_all(&mut s).unwrap();
     let got = read_all(&mut sv);
-    let msgs = split_messages_for_test(&got);
-    // get_toplevel, then the proxy's set_app_id on the new object, then the commit.
+    let msgs = split_messages(&got);
     assert_eq!(msgs[0].0, (6, 1), "get_toplevel is forwarded first: {msgs:?}");
     assert_eq!(msgs[1].0, (7, 3), "the proxy's set_app_id follows on the new toplevel: {msgs:?}");
     assert_eq!(msgs[2].0, (5, 6), "the commit comes after the identity: {msgs:?}");
@@ -366,7 +381,7 @@ fn unnamed_toplevel_is_stamped() {
 }
 
 /// (object, opcode) and body of each message in a byte stream.
-fn split_messages_for_test(mut bytes: &[u8]) -> Vec<((u32, u16), Vec<u8>)> {
+fn split_messages(mut bytes: &[u8]) -> Vec<((u32, u16), Vec<u8>)> {
     let mut out = Vec::new();
     while bytes.len() >= HEADER_LEN {
         let h = Header::parse(bytes).unwrap();
@@ -380,18 +395,7 @@ fn split_messages_for_test(mut bytes: &[u8]) -> Vec<((u32, u16), Vec<u8>)> {
 /// Bounded, prefixed, still valid UTF-8, and the session survives it.
 #[test]
 fn long_multibyte_title_is_forwarded() {
-    let (mut s, mut c, mut sv) = make();
-    c.write_all(&get_registry(2)).unwrap();
-    sv.write_all(&global(2, 1, "wl_compositor", 6)).unwrap();
-    sv.write_all(&global(2, 2, "xdg_wm_base", 6)).unwrap();
-    pump_all(&mut s).unwrap();
-    c.write_all(&MessageWriter::new(2, WL_REGISTRY_BIND).u32(1).string("wl_compositor").u32(6).u32(3).finish().unwrap()).unwrap();
-    c.write_all(&MessageWriter::new(2, WL_REGISTRY_BIND).u32(2).string("xdg_wm_base").u32(6).u32(4).finish().unwrap()).unwrap();
-    c.write_all(&MessageWriter::new(3, 0).u32(5).finish().unwrap()).unwrap();
-    c.write_all(&MessageWriter::new(4, 2).u32(6).u32(5).finish().unwrap()).unwrap();
-    c.write_all(&MessageWriter::new(6, 1).u32(7).finish().unwrap()).unwrap();
-    pump_all(&mut s).unwrap();
-    let _ = read_all(&mut sv);
+    let (mut s, mut c, mut sv) = with_toplevel();
     let title = "\u{00e9}".repeat(200); // 400 bytes; byte 253 is mid-character
     c.write_all(&MessageWriter::new(7, 2).string(&title).finish().unwrap()).unwrap();
     pump_all(&mut s).unwrap();
@@ -467,13 +471,7 @@ fn batches_small_messages() {
 
 #[test]
 fn descriptors_ride_with_their_message() {
-    let (mut s, mut c, mut sv) = make();
-    c.write_all(&get_registry(2)).unwrap();
-    sv.write_all(&global(2, 1, "wl_shm", 2)).unwrap();
-    pump_all(&mut s).unwrap();
-    c.write_all(&MessageWriter::new(2, WL_REGISTRY_BIND).u32(1).string("wl_shm").u32(2).u32(3).finish().unwrap()).unwrap();
-    pump_all(&mut s).unwrap();
-    let _ = read_all(&mut sv);
+    let (mut s, mut c, sv) = with_shm();
     // wl_shm.create_pool(new_id pool, fd, size): send bytes and one fd together
     let (probe_a, probe_b) = UnixStream::pair().unwrap();
     let msg = MessageWriter::new(3, 0).u32(4).i32(4096).finish().unwrap();
@@ -491,10 +489,9 @@ fn descriptors_ride_with_their_message() {
     let mut buf = [0u8; 16];
     let n = probe_b.read(&mut buf).unwrap();
     assert_eq!(&buf[..n], b"same file");
-    /* A message with no fd argument must not take one: an fd sent with
-     * wl_shm.release goes with the create_pool that follows. */
+    // An fd sent with wl_shm.release, which takes none, goes with the next create_pool.
     let (extra_a, _extra_b) = UnixStream::pair().unwrap();
-    send_with_fd(c.as_raw_fd(), &MessageWriter::new(3, 1).finish().unwrap(), extra_a.as_raw_fd()); // wl_shm.release (v2), carries no fd
+    send_with_fd(c.as_raw_fd(), &MessageWriter::new(3, 1).finish().unwrap(), extra_a.as_raw_fd());
     c.write_all(&MessageWriter::new(3, 0).u32(5).i32(8192).finish().unwrap()).unwrap();
     pump_all(&mut s).unwrap();
     let (bytes, fds) = recv_with_fds(sv.as_raw_fd());
@@ -505,13 +502,7 @@ fn descriptors_ride_with_their_message() {
 
 #[test]
 fn message_waits_for_descriptor() {
-    let (mut s, mut c, mut sv) = make();
-    c.write_all(&get_registry(2)).unwrap();
-    sv.write_all(&global(2, 1, "wl_shm", 2)).unwrap();
-    pump_all(&mut s).unwrap();
-    c.write_all(&MessageWriter::new(2, WL_REGISTRY_BIND).u32(1).string("wl_shm").u32(2).u32(3).finish().unwrap()).unwrap();
-    pump_all(&mut s).unwrap();
-    let _ = read_all(&mut sv);
+    let (mut s, mut c, mut sv) = with_shm();
     // most of the bytes first, no fd: nothing is forwarded yet
     let msg = MessageWriter::new(3, 0).u32(4).i32(4096).finish().unwrap();
     c.write_all(&msg[..12]).unwrap();
@@ -548,7 +539,7 @@ fn rejected_message_closes_its_descriptors() {
 }
 
 #[test]
-fn surplus_descriptors_are_bounded_at_ingress() {
+fn inbound_descriptors_bounded() {
     let (mut s, c, _sv) = make();
     let (a, mut b) = UnixStream::pair().unwrap();
     b.set_nonblocking(true).unwrap();
@@ -598,7 +589,7 @@ fn outgoing_descriptors_are_bounded() {
 }
 
 #[test]
-fn input_bounded_while_waiting_for_fd() {
+fn input_bounded_awaiting_fd() {
     let (mut s, mut c, _sv) = make();
     s.objects.place(3, (protocol::find("wl_shm").unwrap(), 2));
     c.write_all(&MessageWriter::new(3, 0).u32(4).i32(4096).finish().unwrap()).unwrap();
@@ -617,7 +608,7 @@ fn input_bounded_while_waiting_for_fd() {
 }
 
 #[test]
-fn disconnect_and_refusal_close_both_sides() {
+fn refusal_closes_both_sides() {
     let (mut s, mut c, sv) = make();
     c.write_all(&get_registry(2)).unwrap();
     pump_all(&mut s).unwrap();
@@ -694,9 +685,7 @@ fn recv_with_fds(sock: RawFd) -> (Vec<u8>, Vec<RawFd>) {
     (bytes, fds)
 }
 
-/// A real opening conversation, damaged by the seeded generator and sent in
-/// random fragments. The session may refuse but never panic, and all it
-/// forwards must be whole, well-formed messages.
+/// Damaged openings sent in random fragments: no panic, and only whole messages forwarded.
 #[test]
 fn compositor_gets_only_whole_messages() {
     use crate::protocol::tests::Rng;
@@ -713,7 +702,6 @@ fn compositor_gets_only_whole_messages() {
     let (mut refused, mut through) = (0u32, 0u32);
     for round in 0..400 {
         let (mut s, mut c, mut sv) = make();
-        // Once get_registry has crossed, the compositor advertises the global to bind.
         let mut bytes = conversation.clone();
         if round > 0 {
             for _ in 0..1 + rng.below(3) {
@@ -726,6 +714,7 @@ fn compositor_gets_only_whole_messages() {
                 }
             }
         }
+        // Once get_registry has crossed, the compositor advertises the global to bind.
         let mut advertised = false;
         let mut outcome = Ok(());
         let mut rest: &[u8] = &bytes;
@@ -750,7 +739,7 @@ fn compositor_gets_only_whole_messages() {
         }
         if round == 0 {
             assert!(outcome.is_ok(), "the undamaged conversation was refused: {:?}", outcome.err().map(|e| e.to_string()));
-            assert!(s.has_object(2) && s.has_object(3), "the undamaged conversation did not do what it says");
+            assert!(s.has_object(2) && s.has_object(3), "the undamaged conversation did not bind the compositor");
         }
         s.client.close_all();
         s.server.close_all();
