@@ -163,8 +163,8 @@ A desktop someone can live in, built the same way.
 - **Reproducible builds,** checked by CI, then a bootstrappable toolchain so
   the first compiler is not the host's.
 - **A kernel built with Clang** for kernel CFI, userspace staying on GCC.
-- **Installer choices.** Beside another OS, across disks, a chosen slot size,
-  and an upgrade path when slots become too small.
+- **Installer choices.** Beside another OS, across disks, and an upgrade path
+  when slots become too small.
 - **Anonymity as a zone property.** A Tor or VPN uplink enforced by the net
   zone.
 - **A hardware certification list** from people who ran acceptance on the

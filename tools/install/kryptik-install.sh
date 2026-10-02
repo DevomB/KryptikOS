@@ -5,7 +5,7 @@
 # on a build host; every check runs before the first write.
 #
 #   kryptik-install --target DISK [--yes] [--dry-run] [--preseed FILE]
-#                   [--replace-kryptik]
+#                   [--replace-kryptik] [--slot-size MIB]
 set -eu
 
 PROG="kryptik-install"
@@ -29,12 +29,19 @@ hex_field() {   # hex_field NAME VALUE LENGTH: lowercase hex of that length, or 
 verity_of() {   # verity_of FILE
     sed -n 's/.* verity 1 [^ ]* [^ ]* 4096 4096 \([0-9][0-9]*\) \([0-9][0-9]*\) sha256 \([0-9a-f]\{64\}\) \([0-9a-f]*\) .*/\1 \2 \3 \4/p' "$1" | head -1
 }
+# A slot may be made larger than this image needs, never smaller.
+slot_size_ok() {   # slot_size_ok ASKED NEEDED: both in MiB, or die
+    case "$1" in ''|0*|*[!0-9]*) die "--slot-size takes a number of MiB" ;; esac
+    [ "${#1}" -le 9 ] || die "--slot-size $1 is too large"
+    [ "$1" -ge "$2" ] || die "--slot-size $1 is less than the $2 MiB a slot needs: the image, and room for a later, larger one"
+}
 
 TARGET=""
 ASSUME_YES=0
 REPLACE=0
 DRY_RUN=0
 PRESEED=""
+SLOT_ASKED=""
 MNT_BASE=/run/kryptik-install
 
 while [ $# -gt 0 ]; do
@@ -44,11 +51,13 @@ while [ $# -gt 0 ]; do
         --dry-run) DRY_RUN=1; shift ;;
         --preseed) PRESEED="${2:-}"; shift 2 ;;
         --replace-kryptik) REPLACE=1; shift ;;
+        --slot-size) SLOT_ASKED="${2:-}"; [ -n "$SLOT_ASKED" ] || die "--slot-size needs a number of MiB"; shift 2 ;;
         -h|--help)
-            printf 'usage: %s --target /dev/vdb [--yes] [--dry-run] [--preseed FILE] [--replace-kryptik]\n' "$PROG"
+            printf 'usage: %s --target /dev/vdb [--yes] [--dry-run] [--preseed FILE] [--replace-kryptik] [--slot-size MIB]\n' "$PROG"
             printf '\nInstalls the running medium onto --target. Destroys everything on it.\n'
             printf '%s\n' '--dry-run checks everything and writes nothing.'
             printf '%s\n' '--replace-kryptik allows a disk that holds an old Kryptik installation or medium.'
+            printf '%s\n' '--slot-size MIB makes each root slot that large, for later releases with larger images.'
             exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
@@ -211,6 +220,10 @@ slot_mib=$(( (ROOT_BYTES + MIB - 1) / MIB ))
 room_mib=$(( slot_mib / 2 ))
 [ "$room_mib" -ge 512 ] || room_mib=512
 slot_mib=$(( (slot_mib + room_mib + 63) / 64 * 64 ))
+if [ -n "$SLOT_ASKED" ]; then
+    slot_size_ok "$SLOT_ASKED" "$slot_mib"
+    slot_mib="$SLOT_ASKED"
+fi
 # State gets the rest: at least one update payload (the image plus two
 # kernels, staged there while it is verified) and 1 GiB of user data.
 image_mib=$(( (ROOT_BYTES + MIB - 1) / MIB ))

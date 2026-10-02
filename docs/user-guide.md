@@ -108,6 +108,10 @@ only copy of someone's encrypted state. To reinstall over one, add
 `--replace-kryptik`: the installer names the Kryptik partitions it is about
 to destroy and then asks for `ERASE` as usual.
 
+Each root slot is sized for the image and half again, so that a later, larger
+release still fits. `--slot-size MIB` makes both slots larger than that,
+never smaller, and the state partition gets what is left.
+
 It writes four GPT partitions: `kryptik-esp` (the medium's ESP, with the slot
 A kernel as the boot file), `kryptik-a` (the verified root image, read back
 and hashed against the medium's record), `kryptik-b` (empty until the first
