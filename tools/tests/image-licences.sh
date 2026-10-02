@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# tools/check-image-licences.sh on a staged root: it passes when every listed
-# source has licence files or an exception, and Kryptik has its own, and names
-# each source that has neither. Then header_notices, which gives a source
-# without a licence file (libdrm) the notices at the head of its files.
+# tools/check-image-licences.sh on a staged root, then header_notices on a libdrm-like tarball.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PASS=0; FAIL=0

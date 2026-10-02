@@ -8,9 +8,7 @@
 #   ./tools/check-source-currency.sh --strict        also fail on UNKNOWN
 #   ./tools/check-source-currency.sh --tsv           machine-readable
 
-# Every "newest" comes from the project's own host: a listing or its designated
-# latest release. Anything that does not parse is UNKNOWN, never "current".
-# Each manifest row's new column says where to look (tools/fetch-sources.sh).
+# Every "newest" comes from the project's own host; anything unparsed is UNKNOWN, never "current".
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 load_config
@@ -33,9 +31,6 @@ done
 have curl    || die "curl required"
 have python3 || die "python3 required"
 
-WORK="${KRYPTIK_WORK}/currency"
-rm -rf "$WORK"; mkdir -p "$WORK"
-
 # Test hook: tools/tests/check-source-currency.sh serves listings on 127.0.0.1.
 if [[ -n "${KRYPTIK_CURRENCY_BASE:-}" ]]; then
     [[ "${KRYPTIK_CURRENCY_SELFTEST:-0}" == "1" ]] || die \
@@ -54,13 +49,10 @@ resolve() {
     fi
 }
 
-# `|| true`: a failed fetch must give an empty answer (UNKNOWN), not trip
-# common.sh's ERR trap and abort the run.
+# A failed fetch is an empty answer (UNKNOWN), not an abort by common.sh's ERR trap.
 fetch() { curl -fsSL --max-time 25 "$(resolve "$1")" 2>/dev/null || true; }
 
-# versions_in_listing <listing-url> <ERE with one capture group>
-# Every version offered, pre-releases dropped, in version order. The ERE goes
-# into sed with "@" as the delimiter (patterns match a trailing "/"), so no "@".
+# versions_in_listing URL ERE: releases in version order; the ERE has one group and no "@".
 versions_in_listing() {
     fetch "$1" \
       | grep -oE "$2" \
@@ -69,13 +61,10 @@ versions_in_listing() {
       | sort -V -u || true
 }
 
-# Separate from versions_in_listing so Perl's filter can run before the maximum.
+# Separate from versions_in_listing so a rule's keep filter can run before the maximum.
 newest_in_listing() { versions_in_listing "$@" | tail -1; }
 
-# The project's designated latest release, not the highest tag (expat has a
-# CVS-era "V20000512"). No releases.atom fallback: without Releases it lists
-# tags, newest first, which gave shadow a "3.3.1" that is not shadow's.
-# Unauthenticated, the API allows 60 requests an hour; set GH_TOKEN.
+# The designated latest release, not the highest tag (expat's "V20000512") nor releases.atom's tags.
 newest_github_release() {
     local auth=()
     [[ -n "${GH_TOKEN:-}" ]] && auth=(-H "Authorization: Bearer ${GH_TOKEN}")
@@ -96,9 +85,7 @@ m = re.search(r'(\d+[\d._]*\d)', tag.replace('_', '.'))
 print(m.group(1) if m else '')" || true
 }
 
-# Every value of one string key in a JSON response, leading "v" dropped. The key
-# is matched with its opening quote ("name" is not "author_name") and, for
-# "name", the object's opening brace, so a nested "name" is skipped.
+# Each value of a JSON string key, "v" dropped; "name" must open its object, so nested ones are skipped.
 api_values() {  # api_values URL KEY
     local open='"'
     [[ "$2" == name ]] && open='\{"'
@@ -106,11 +93,10 @@ api_values() {  # api_values URL KEY
         | sed -E "s/.*\"$2\":\"v?([^\"]*)\"/\1/" || true
 }
 
-# The highest all-numeric version (0.8-dev and 4.0.7rc1 are dropped). Sorted,
-# since GitLab lists releases by date, not version.
+# The highest all-numeric version (not 0.8-dev or 4.0.7rc1), sorted: GitLab lists by date.
 numeric_newest() { grep -E '^[0-9]+(\.[0-9]+)+$' | sort -V -u | tail -1 || true; }
 
-# keep <policy> <pinned>: the versions a rule lets the pin move to, in order.
+# keep POLICY PINNED: the versions a rule lets the pin move to, in order.
 keep() {
     local s
     case "$1" in
@@ -126,7 +112,7 @@ keep() {
 
 # --- rules ------------------------------------------------------------------
 
-# Where a row that declares "rule" looks, beside the manifest it serves.
+# Where a manifest row that declares "rule" looks.
 RULES="${KRYPTIK_ROOT}/tools/currency-rules.tsv"
 declare -A R_SHAPE=() R_WHERE=() R_MATCH=() R_KEEP=()
 
@@ -168,7 +154,7 @@ A rule that cannot be read is a tooling fault: its row would read UNKNOWN."
 
 load_rules
 
-# rule_newest <name> <pinned> prints "<newest>|<consulted>".
+# rule_newest NAME PINNED: "newest|consulted".
 rule_newest() {
     local name="$1" pinned="$2" newest="" consulted
     if [[ -z "${R_SHAPE[$name]:-}" ]]; then
@@ -193,16 +179,14 @@ rule_newest() {
 
 # --- per-source strategy ----------------------------------------------------
 
-# upstream_for <name> <pinned> <url> <new> prints "<newest>|<consulted>";
-# either may be empty. new is the manifest's column (tools/fetch-sources.sh).
+# upstream_for NAME PINNED URL NEW (the manifest's column): "newest|consulted", either may be empty.
 upstream_for() {
     local name="$1" pinned="$2" url="$3" new="$4"
     local dir="${url%/*}" base="${url##*/}"
     local newest="" consulted="" stem="${base%%-[0-9]*}"
 
     case "$new" in
-        # A longterm kernel is not "behind" a newer series; check-kernel-eol.sh
-        # checks its support status instead.
+        # A longterm kernel is not "behind" a newer series; check-kernel-eol.sh checks its support.
         eol)
             consulted="tools/check-kernel-eol.sh (support status, not version)" ;;
         follows:*)
@@ -220,8 +204,7 @@ upstream_for() {
                       "${name}-([0-9]+(\.[0-9]+)+)\.tar\.(xz|gz)")"
             ;;
 
-        # A vN/ directory offers only its own series, so the parent's newest
-        # vN/ is read first.
+        # A vN/ directory offers only its own series, so the parent's newest vN/ is read first.
         vdir)
             local parent="${dir%/*}"
             local vdir
@@ -310,17 +293,14 @@ while read -r name pinned url _ new; do
     fi
 done < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list)
 
-# glibc is its tarball plus upstream's release branch up to one commit, which
-# the patch set's name records (build/patches/glibc-*/0001-release-*-<commit>).
-# The branch head, from sourceware's own git, says whether the branch moved on.
+# glibc's patch set carries its release branch up to the commit its name ends in; check the head.
 glibc_patch=("${KRYPTIK_ROOT}/build/patches/glibc-${V_GLIBC:-none}"/0001-release-*.patch)
 if [[ -f "${glibc_patch[0]}" && ( -z "$ONLY" || "$ONLY" == glibc-branch ) ]]; then
     name=glibc-branch
     pinned="${glibc_patch[0]##*-}"; pinned="${pinned%.patch}"
     ref="refs/heads/release/${V_GLIBC}/master"
     consulted="https://sourceware.org/git/glibc.git ${ref}"
-    # From /: ls-remote needs no repository, and whatever the current one is
-    # (a worktree git cannot open) must not decide the answer.
+    # From /: ls-remote needs no repository, and a current one git cannot open must not decide.
     newest="$(GIT_TERMINAL_PROMPT=0 timeout 30 git -C / ls-remote "$(resolve https://sourceware.org/git/glibc.git)" "$ref" 2>/dev/null \
         | cut -c1-40 | head -1 || true)"
     if [[ -z "$newest" ]]; then
@@ -356,17 +336,13 @@ if [[ "$BEHIND" -gt 0 ]]; then
 fi
 if [[ "$UNKNOWN" -gt 0 ]]; then
     echo
-    dim "Could not be determined - the row names no way to look this script"
-    dim "knows, or upstream's answer held nothing that parses as a version:"
+    dim "Not determined (no known way to look, or no version in upstream's answer):"
     printf '  - %s\n' "${UNKNOWN_LIST[@]}"
 fi
 
 echo
-dim "Being behind is not automatically a defect: xz is pinned well clear of the"
-dim "CVE-2024-3094 window on purpose, and a major bump can change build"
-dim "behaviour. Read this with build/config/versions.env open."
-dim "For the kernel, support status rather than version number is the question:"
-dim "tools/check-kernel-eol.sh."
+dim "Being behind is not automatically a defect: a major bump can change the build."
+dim "For the kernel, support status is the question: tools/check-kernel-eol.sh."
 
 rc=0
 if [[ "$FAIL_BEHIND" -eq 1 && "$BEHIND" -gt 0 ]]; then

@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Tests for tools/check-support-status.sh, on fixture policies with a fixed
-# --now, so they need no network and do not age.
+# Tests for tools/check-support-status.sh on fixture policies, with a fixed --now so they do not age.
 
 set -uo pipefail
 
@@ -82,7 +81,7 @@ expect_rc 0 "the shipped support-policy.tsv is well formed"
 expect_not 'malformed' "no malformed rows in the shipped policy"
 
 run --policy="$REAL_POLICY" --versions="${ROOT}/build/config/versions.env" --now=2026-09-11
-# That there is a verdict for each package, not which, so pin bumps pass.
+# Only that each package gets a verdict, not which, so a pin bump does not break this.
 for pkg in openssl python perl expat linux; do
     if grep -qE "(^|[^a-z])${pkg} " "$OUT"; then
         green "the real tree is evaluated for ${pkg}"
@@ -106,7 +105,7 @@ run --policy="$POL" --versions="$V" --now=2026-09-11
 expect_rc 1 "an EOL series fails informational mode too"
 expect_has 'false claim of support' "and explains why it is not mode dependent"
 expect_has '155 days ago' "it counts the days since support ended"
-expect_has 'do not edit a pin under a' "and points at coordination, not a unilateral bump"
+expect_has 'do not edit a pin under a' "and says to move the pin in a change of its own"
 
 # A fixed pin, openssl 3.3.1, against the real policy data.
 versions 'V_OPENSSL=3.3.1'
@@ -188,7 +187,7 @@ good_policy
 versions 'V_LINUX=6.18.50'
 run --policy="$POL" --versions="$V" --now=2026-09-11 --strict
 expect_rc 0 "a delegated row whose tool exists passes"
-expect_has 'NOT' "and reports NOT CHECKED rather than ok"
+expect_has 'NOT' "and reports NOT CHECKED, not ok"
 expect_has 'established by tools/check-kernel-eol.sh' "naming the tool"
 expect_not '  ok .*linux' "a delegated row is never reported as ok"
 
@@ -243,7 +242,7 @@ expect_rc 1 "a policy file with no rows is refused"
 
 run --policy="${W}/does-not-exist.tsv" --versions="$V" --now=2026-09-11
 expect_rc 1 "a missing policy file is refused"
-expect_has 'cannot establish anything without it' "rather than passing vacuously"
+expect_has 'cannot establish anything without it' "instead of passing vacuously"
 
 echo
 echo "=== arguments, pins and the report ==="

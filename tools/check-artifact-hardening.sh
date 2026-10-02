@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
-# Audit the hardening of the ELF objects a build actually produced.
+# Audit the hardening of the ELF objects a build produced.
 #
-#   tools/check-artifact-hardening.sh [ROOT] [--strict] [--json FILE]
-#                                     [--accepted FILE]
+#   tools/check-artifact-hardening.sh [ROOT] [--strict] [--json FILE] [--accepted FILE]
 #
-# ROOT defaults to the sysroot for the current KRYPTIK_WORK. RWX, TEXTREL,
-# EXEC-STACK and BUILD-RPATH (an rpath into the build tree) always fail. The
-# rest are reported, except where the accepted list (by default
-# build/config/artifact-accepted.txt) gives the reason. --strict fails on a
-# reported finding and on a list entry that matched nothing; without it, a
-# sysroot mid-build holds unfinished objects.
+#   ROOT        default: the sysroot
+#   --strict    also fail on reported findings and on accepted entries that matched nothing
+#   --accepted  findings kept, each with a reason; default build/config/artifact-accepted.txt
+#
+# RWX, TEXTREL, EXEC-STACK and BUILD-RPATH (an rpath into the build tree) always fail.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 
@@ -43,8 +41,7 @@ Give a root to inspect, or build one first:
 
 have readelf || die "readelf is required (binutils)"
 
-# Not shipped: /tools is the stage 01 cross toolchain, built without hardening
-# and deleted before release; /kryptik* are bind-mount points.
+# Not shipped: /tools is stage 01's unhardened cross toolchain; /kryptik* are bind-mount points.
 EXCLUDE_RE='^(tools|kryptik|kryptik-work|kryptik-sources|usr/src|usr/share/doc)(/|$)'
 
 log "Artifact hardening audit"
@@ -62,9 +59,7 @@ declare -a NO_SSP=() NO_FORTIFY=()
 
 bump() { COUNT["$1"]=$(( ${COUNT["$1"]:-0} + 1 )); }
 
-# The accepted list: `FINDING PATH # why`, or `RPATH PATH RPATH # why`, the
-# paths being globs. An RPATH entry names the rpath too, since that is what
-# it accepts. Only reported findings can be listed, and only with a reason.
+# The accepted list: `FINDING GLOB  # why`, or `RPATH GLOB RPATH  # why` naming the rpath accepted.
 declare -a ACC_KIND=() ACC_PATH=() ACC_RPATH=() ACC_USED=() ACC_LINE=()
 if [[ -n "$ACCEPTED" ]]; then
     n=0
@@ -132,7 +127,7 @@ audit_one() {
         kind=lib; LIBS=$((LIBS + 1))
     fi
 
-    # Hard failures. First, a LOAD segment carrying all three permission bits.
+    # Hard failures, starting with a LOAD segment that carries all three permission bits.
     if awk '/^ +LOAD/ { if ($0 ~ /RWE/) exit 1 } END { exit 0 }' <<<"$out"; then :; else
         hard "RWX" "$rel"
     fi
@@ -178,9 +173,7 @@ audit_one() {
 
     grep -qE 'IBT|SHSTK' <<<"$out" || soft "NO-CET" "$rel"
 
-    # Counted, never failed: a function without a local array gets no canary
-    # and a call with no known size no _chk variant, so an object with neither
-    # shows nothing about its flags. The record names them.
+    # Counted, never failed: code with no local arrays or sized calls shows neither, whatever its flags.
     if grep -q '__stack_chk_fail' <<<"$out"; then bump "HAS-SSP"; else NO_SSP+=("$rel"); fi
     if grep -qE '__[a-z_]+_chk@|__[a-z_]+_chk$' <<<"$out"; then bump "HAS-FORTIFY"; else NO_FORTIFY+=("$rel"); fi
 }
@@ -195,8 +188,7 @@ done < <(find "$ROOT" -xdev -type f -print0 2>/dev/null)
 
 echo
 if [[ "$TOTAL" -eq 0 ]]; then
-    warn "no ELF objects found under ${ROOT}"
-    warn "Either the build has not produced anything yet, or ROOT is wrong."
+    warn "no ELF objects found under ${ROOT}: nothing built yet, or the wrong ROOT"
     exit 1
 fi
 
@@ -250,7 +242,7 @@ if [[ -n "$JSON" ]]; then
         printf '  "findings": {\n'
         sep=""
         for k in "${!COUNT[@]}"; do
-            # A real newline: through %s, "\n" would print as two characters.
+            # $',\n' holds a newline; "\n" through %s would print as two characters.
             printf '%s    "%s": %d' "$sep" "$k" "${COUNT[$k]}"
             sep=$',\n'
         done
@@ -280,11 +272,9 @@ fi
 
 echo
 if [[ "$HARD" -gt 0 ]]; then
-    die "${HARD} object(s) failed a check that has no legitimate explanation.
-
-Do not fix these by removing flags from build/config/hardening.env. Find the
-package, read its link line in ${KRYPTIK_WORK}/logs, and either correct how it
-takes LDFLAGS or add a justified per-package exception."
+    die "${HARD} object(s) failed a hard check.
+Do not remove flags from build/config/hardening.env: read the package's link line in
+${KRYPTIK_WORK}/logs and fix how it takes LDFLAGS, or add a justified per-package exception."
 fi
 if [[ "$STRICT" -eq 1 && "${#SOFT_LINES[@]}" -gt 0 ]]; then
     die "${#SOFT_LINES[@]} reported finding(s), and --strict was requested."
