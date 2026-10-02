@@ -174,6 +174,7 @@ is the modifier):
 | Alt+e | fullscreen (the window keeps its zone border, so the zone stays visible) |
 | Alt+Shift+c | close the focused window |
 | Alt+j / Alt+k | focus next / previous |
+| Alt+, / Alt+. | the monitor to the left / right; with Shift, the focused window moves there |
 | Alt+1 … Alt+9 / Alt+Shift+1 … 9 | show a tag / move the focused window to it; vault windows keep to tag 9 |
 | Ctrl+Alt+F2 / Ctrl+Alt+F1 | the administration login / back to the desktop |
 | Alt+Shift+q | leave the desktop, which logs you out |
