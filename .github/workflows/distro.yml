@@ -189,10 +189,6 @@ jobs:
     needs: toolchain
     runs-on: ubuntu-24.04
     timeout-minutes: 360
-    outputs:
-      role: ${{ steps.media.outputs.role }}
-      versions: ${{ steps.media.outputs.versions }}
-      channel: ${{ steps.media.outputs.channel }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - uses: ./.github/actions/prepare
@@ -372,8 +368,6 @@ jobs:
             sudo mv "$KRYPTIK_WORK/images" "$KRYPTIK_WORK/bound/$v/images"
             sudo cp -a "$KRYPTIK_WORK/.stamps"/img-* "$KRYPTIK_WORK/bound/$v/stamps/"
           done
-          echo "versions=${VER_A} ${VER_B}" >> "$GITHUB_OUTPUT"
-          echo "channel=${channel}" >> "$GITHUB_OUTPUT"
 
       - name: Pack the work tree for the next jobs
         run: |
@@ -397,7 +391,8 @@ jobs:
         with:
           name: work-bound
           path: /mnt/kryptik/work-bound.tar.zst
-          retention-days: 1
+          # A release waits for its owner's approval; a rehearsal does not.
+          retention-days: ${{ github.ref_type == 'tag' && 7 || 1 }}
           compression-level: 0
 
       # Throwaway keys, made for this rehearsal alone.
@@ -412,7 +407,7 @@ jobs:
         with:
           name: production-media
           path: /mnt/kryptik/production-media.tar.zst
-          retention-days: 3
+          retention-days: ${{ github.ref_type == 'tag' && 7 || 3 }}
           compression-level: 0
 
       - name: Stage logs
@@ -424,11 +419,12 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # A production release signed on a fresh runner that never ran anything built from upstream sources.
+  # A production release signed on a fresh runner, unprivileged, from what the build job bound: nothing it hands over runs or links here.
   sign:
     name: Stage 06, signed (a production release)
     needs: system
-    if: needs.system.outputs.role == 'production'
+    # From the ref, never from the build job's outputs, which its root processes could write.
+    if: ${{ (github.ref_type == 'tag' && !startsWith(github.ref_name, 'v0.')) || inputs.role == 'production' }}
     # A tag's keys: the release environment takes only release tags, and its owner approves each run.
     environment: ${{ github.ref_type == 'tag' && 'release' || '' }}
     runs-on: ubuntu-24.04
@@ -448,57 +444,71 @@ jobs:
           name: rehearsal-medium
           path: /mnt/kryptik
 
-      - name: Unpack the work tree
+      # The bound releases and the stamps alone, as the runner user, and nothing but plain files and directories: a link could reach the keys.
+      - name: Unpack what was bound
         run: |
           cd /mnt/kryptik
-          sudo tar --zstd -xf work-bound.tar.zst -C work
-          rm -f work-bound.tar.zst
-          ls work/bound; df -h /mnt | tail -1
+          mkdir bound-in
+          tar --zstd -xf work-bound.tar.zst -C bound-in ./bound ./.stamps
+          odd="$(find bound-in ! -type f ! -type d)"
+          [ -z "$odd" ] || { echo "the bound tree holds more than plain files and directories:"; echo "$odd" | head; exit 1; }
+          ls bound-in/bound
 
       - name: Sign and assemble the media
+        id: sign
         env:
           MEDIUM: ${{ secrets.KRYPTIK_KEY_MEDIUM }}
-          VERSIONS: ${{ needs.system.outputs.versions }}
-          CHANNEL: ${{ needs.system.outputs.channel }}
         run: |
-          m=/mnt/kryptik/medium
-          mkdir -m 0700 "$m"
+          # The versions and the channel from the ref, as the build job made them.
+          if [ "$GITHUB_REF_TYPE" = tag ]; then VER_B="${GITHUB_REF_NAME#v}"; else VER_B=0.0.1; fi
+          [[ "$VER_B" =~ ^(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){2}$ ]] || { echo "${VER_B} is not a release version"; exit 1; }
+          channel="https://${GITHUB_REPOSITORY_OWNER,,}.github.io/${GITHUB_REPOSITORY#*/}/stable/"
+          m="$(mktemp -d)"; lines="$(mktemp)"
+          trap 'rm -rf "$m" "$lines"' EXIT
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             [ -n "$MEDIUM" ] || { echo "the release environment has no KRYPTIK_KEY_MEDIUM (docs/release-keys.md)"; exit 1; }
             printf '%s' "$MEDIUM" | base64 -d | tar -xz -C "$m"
+            cmp build/config/release/release-signers "$m/release-signers" && cmp build/config/release/kryptik-sb.crt "$m/kryptik-sb.crt" \
+              || { echo "the release environment's keys are not the ones build/config/release names"; exit 1; }
           else
             base64 -d /mnt/kryptik/rehearsal-medium.b64 | tar -xz -C "$m"
             rm -f /mnt/kryptik/rehearsal-medium.b64
           fi
-          for v in $VERSIONS; do
-            sudo rm -rf "$KRYPTIK_WORK/images"
-            sudo mv "$KRYPTIK_WORK/bound/$v/images" "$KRYPTIK_WORK/images"
-            sudo find "$KRYPTIK_WORK/.stamps" -maxdepth 1 -name 'img-*' -delete
-            sudo cp -a "$KRYPTIK_WORK/bound/$v/stamps/." "$KRYPTIK_WORK/.stamps/"
-            make media KRYPTIK_MEDIA_PHASE=sign KRYPTIK_ROLE=production KRYPTIK_KEYS="$m" \
-              KRYPTIK_VERSION="$v" KRYPTIK_CHANNEL="$CHANNEL"
-            sudo mv "$KRYPTIK_WORK/images" "$KRYPTIK_WORK/signed-$v"
-          done
-          # One images directory, as a one-job build leaves it: the last release's files over the first's.
-          sudo mkdir -p "$KRYPTIK_WORK/images"
-          for v in $VERSIONS; do sudo cp -a "$KRYPTIK_WORK/signed-$v/." "$KRYPTIK_WORK/images/"; done
-          sudo rm -rf "$KRYPTIK_WORK"/signed-* "$KRYPTIK_WORK/bound"
-          # A rehearsal's suites sign control disks with its throwaway key; a release's get theirs from release-tests.
-          if [ -f "$m/kryptik-testctl" ]; then
-            sudo mkdir -p "$KRYPTIK_WORK/keys/medium"
-            sudo cp "$m/kryptik-testctl" "$m/kryptik-testctl.pub" "$KRYPTIK_WORK/keys/medium/"
-          fi
-          # The secret line of each key that must not be in the tree.
+          unset MEDIUM
+          # The secret line of each signing key, which nothing signed or logged may hold.
           { for k in kryptik-release kryptik-latest; do [ ! -f "$m/$k" ] || sed -n 5p "$m/$k"; done
-            tail -n 2 "$m/kryptik-sb.key" | head -n 1; } | grep -v '^$' > /mnt/kryptik/secret-lines
+            tail -n 2 "$m/kryptik-sb.key" | head -n 1; } | grep -v '^$' > "$lines"
+          sw=/mnt/kryptik/sign-work; so=/mnt/kryptik/sign-out
+          mkdir -p "$sw/.stamps" "$sw/logs" "$so"
+          cp /mnt/kryptik/bound-in/.stamps/kernel-install /mnt/kryptik/bound-in/.stamps/bs-licences "$sw/.stamps/"
+          for v in 0.0.0 "$VER_B"; do
+            rm -rf "$sw/images"; find "$sw/.stamps" -maxdepth 1 -name 'img-*' -delete
+            mv "/mnt/kryptik/bound-in/bound/$v/images" "$sw/images"
+            cp "/mnt/kryptik/bound-in/bound/$v/stamps"/img-* "$sw/.stamps/"
+            make media SUDO= KRYPTIK_WORK="$sw" KRYPTIK_OUT="$so" KRYPTIK_MEDIA_PHASE=sign KRYPTIK_ROLE=production \
+              KRYPTIK_KEYS="$m" KRYPTIK_VERSION="$v" KRYPTIK_CHANNEL="$channel"
+            mv "$sw/images" "/mnt/kryptik/signed-$v"
+          done
+          # A rehearsal's suites sign control disks with its throwaway key; a release's get theirs from release-tests.
+          if [ -f "$m/kryptik-testctl" ]; then mkdir /mnt/kryptik/rehearsal-testctl; cp "$m"/kryptik-testctl "$m"/kryptik-testctl.pub /mnt/kryptik/rehearsal-testctl/; fi
           rm -rf "$m"
-          rc=0; sudo grep -rlF -D skip -f /mnt/kryptik/secret-lines "$KRYPTIK_WORK" || rc=$?
-          rm -f /mnt/kryptik/secret-lines
-          [ "$rc" -eq 1 ] || { echo "a private key is in the work tree, or it could not be searched (grep exited ${rc})"; exit 1; }
-          ls -la "$KRYPTIK_WORK/images" | grep -E 'usb.img|\.iso|payload'
+          rc=0; grep -rlF -f "$lines" /mnt/kryptik/signed-* "$sw" "$so" || rc=$?
+          [ "$rc" -eq 1 ] || { echo "a private key is in what was signed, or it could not be searched (grep exited ${rc})"; exit 1; }
+          echo "versions=0.0.0 ${VER_B}" >> "$GITHUB_OUTPUT"
 
+      # The rest of the tree only now, with the keys gone: the suites' tree with the signed media in it.
       - name: Pack the work tree for the acceptance
-        run: tools/image/pack-work.sh work-after-media
+        run: |
+          cd /mnt/kryptik
+          sudo tar --zstd -xf work-bound.tar.zst -C work
+          rm -f work-bound.tar.zst
+          sudo rm -rf work/bound work/images
+          sudo mkdir work/images
+          for v in ${{ steps.sign.outputs.versions }}; do sudo cp -a "signed-$v/." work/images/; done
+          if [ -d rehearsal-testctl ]; then sudo mkdir -p work/keys/medium; sudo cp rehearsal-testctl/* work/keys/medium/; fi
+          rm -rf signed-* bound-in rehearsal-testctl
+          ls -la work/images | grep -E 'usb.img|\.iso|payload'
+          tools/image/pack-work.sh work-after-media
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
@@ -507,12 +517,13 @@ jobs:
           retention-days: 3
           compression-level: 0
 
+      # A release's logs only once the search found no key in them.
       - name: Stage logs
-        if: always()
+        if: ${{ success() || github.ref_type != 'tag' }}
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: logs-sign
-          path: /mnt/kryptik/work/logs
+          path: /mnt/kryptik/sign-work/logs
           retention-days: 7
           if-no-files-found: ignore
 
@@ -522,14 +533,14 @@ jobs:
     needs: [system, sign]
     if: ${{ !cancelled() && needs.system.result == 'success' && (needs.sign.result == 'success' || needs.sign.result == 'skipped') }}
     # A release's control-disk key, which no artifact may carry; release-tests takes only release tags.
-    environment: ${{ github.ref_type == 'tag' && needs.system.outputs.role == 'production' && 'release-tests' || '' }}
+    environment: ${{ github.ref_type == 'tag' && !startsWith(github.ref_name, 'v0.') && 'release-tests' || '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
-        # Parts of about 18, 16, 12 and 11 minutes, and the production pair's update suite; a suite no part runs is INCOMPLETE.
-        suites: [update, install, 'integrity,zones', 'inputs,build,boot,desktop', production]
+        # About 18, 16, 12 and 11 minutes, and the pair's update suite beside build, the one that runs sysroot programs on the host.
+        suites: [update, install, 'integrity,zones', 'inputs,boot,desktop', 'build,production']
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - uses: ./.github/actions/prepare
@@ -567,10 +578,11 @@ jobs:
           rc=0
           # A release's media honour control disks signed by their medium's key: a rehearsal's copy, or a release's secret.
           k="$KRYPTIK_WORK/keys/medium/kryptik-testctl"; [ -f "$k" ] || k=""
-          if [ "$GITHUB_REF_TYPE" = tag ] && [ -n "$TESTCTL" ]; then
-            k=/mnt/kryptik/testctl/kryptik-testctl
-            mkdir -m 0700 -p "${k%/*}"; (umask 077; printf '%s\n' "$TESTCTL" > "$k")
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ -n "$TESTCTL" ] && [[ ",${SUITES}," != *,build,* ]]; then
+            k="$(mktemp -d)/kryptik-testctl"
+            (umask 077; printf '%s\n' "$TESTCTL" > "$k")
           fi
+          unset TESTCTL
           sudo env KRYPTIK_WORK="$KRYPTIK_WORK" KRYPTIK_SOURCES="$KRYPTIK_SOURCES" NO_COLOR=1 KRYPTIK_TESTCTL_KEY="$k" \
             TMPDIR="$TMPDIR" CARGO_TARGET_DIR="$CARGO_TARGET_DIR" tools/acceptance.sh --only "$SUITES" || rc=$?
           [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]

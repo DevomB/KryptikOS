@@ -14,7 +14,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/release-keys.sh"
 load_config
 require_outside_chroot "stage 06"
-[[ "$EUID" -eq 0 ]] || die "stage 06 must run as root: the sysroot has root-only paths and the kernel relink needs the chroot.
+[[ "$EUID" -eq 0 || "${KRYPTIK_MEDIA_PHASE:-}" == sign ]] || die "stage 06 must run as root: the sysroot has root-only paths and the kernel relink needs the chroot.
   sudo -E make iso     (or SUDO= as root)"
 
 stage_contract "${BASH_SOURCE[0]}" "img-" gcc
@@ -591,9 +591,18 @@ bound() {   # bound NAME RECIPE ARGS...
 
 # Signed only if intact, of this version and role, trusting this medium's anchor, with kernels bound to it.
 check_bound() {
-    local f got v
-    for f in kryptik-root.img root.json iso-root-start kernel-unbound.sha256 kernels/{slot-a,slot-b,media-usb,media-iso}.efi; do
-        [[ -s "${IMG}/${f}" ]] || die "the bound images have no ${f}"
+    local f got v sum='^[0-9a-f]{64}  kryptik-root\.img$'
+    [[ -z "$(find "$IMG" ! -type f ! -type d)" ]] || die "the bound images hold more than plain files and directories"
+    for f in kryptik-root.img kryptik-root.img.sha256 root.json iso-root-start kernel-unbound.sha256 \
+             kernels/{slot-a,slot-b,media-usb,media-iso}.efi cmdlines/{slot-a,slot-b,media-usb,media-iso}.txt; do
+        [[ -f "${IMG}/${f}" && -s "${IMG}/${f}" ]] || die "the bound images have no ${f}"
+    done
+    [[ "$(cat "${IMG}/iso-root-start")" =~ ^[0-9]+$ ]] || die "iso-root-start is not a sector number"
+    [[ "$(cat "${IMG}/kernel-unbound.sha256")" =~ ^[0-9a-f]{64}$ ]] || die "kernel-unbound.sha256 is not a SHA-256"
+    [[ "$(cat "${IMG}/kryptik-root.img.sha256")" =~ $sum ]] || die "kryptik-root.img.sha256 is not the root image's hash line"
+    for f in root_hash salt sha256; do [[ "$(root_json "$f")" =~ ^[0-9a-f]{64}$ ]] || die "root.json's ${f} is not 64 hex digits"; done
+    for f in data_bytes data_blocks data_sectors hash_start_block total_bytes; do
+        [[ "$(root_json "$f")" =~ ^[0-9]+$ ]] || die "root.json's ${f} is not a number"
     done
     [[ "$(root_json version)" == "$KRYPTIK_VERSION" ]] || die "the bound root is $(root_json version), not ${KRYPTIK_VERSION}"
     got="$(sha256_of "${IMG}/kryptik-root.img")"
@@ -603,12 +612,13 @@ check_bound() {
     got="$(debugfs -R 'cat /usr/share/kryptik/trust/required-role' "${IMG}/kryptik-root.img" 2>/dev/null)"
     [[ "$got" == "$ROLE" ]] || die "the bound root takes ${got:-no role}, not ${ROLE}"
     for v in slot-a slot-b media-usb media-iso; do
-        grep -q -a -F "$(root_json root_hash)" "${IMG}/kernels/${v}.efi" || die "${v}.efi is not bound to this root"
+        grep -q -a -F -e "$(root_json root_hash)" "${IMG}/kernels/${v}.efi" || die "${v}.efi is not bound to this root"
     done
     ok "the bound root trusts ${ANCHOR}, and its four kernels are bound to it"
 }
 
 # --- run --------------------------------------------------------------------
+[[ "$PHASE" != sign ]] || check_bound
 bound rootfs        s_rootfs "$KRYPTIK_VERSION" "$(cat "${KRYPTIK_ROOT}/build/config/setuid-allowlist.txt" "${KRYPTIK_ROOT}/build/config/capability-allowlist.txt" "${KRYPTIK_ROOT}/tools/audit-setuid.sh" "${KRYPTIK_ROOT}/build/config/artifact-accepted.txt" "${KRYPTIK_ROOT}/tools/check-artifact-hardening.sh" | sha256_of_stdin)" "$KRYPTIK_CHANNEL" "$ROLE" "$(_hash_file "$ANCHOR")"
 bound cmdlines      s_cmdlines "$(_hash_file "${IMG}/root.json")"
 bound bind-kernels  s_bind_kernels "$(cat "${IMG}"/cmdlines/{slot-a,slot-b,media-usb}.txt | sha256_of_stdin)"
@@ -618,7 +628,6 @@ if [[ "$PHASE" == bind ]]; then
     ok "Stage 06 bound ${KRYPTIK_VERSION} in ${IMG}: KRYPTIK_MEDIA_PHASE=sign signs it"
     exit 0
 fi
-[[ "$PHASE" != sign ]] || check_bound
 step sign-kernels   s_sign_kernels "$(cat "${IMG}"/kernels/{slot-a,slot-b,media-usb}.efi | sha256_of_stdin)$(_hash_file "$SB_CERT")"
 step esp            s_esp "$(cat "${IMG}"/kernels/{slot-a,slot-b,media-usb}.signed.efi "${IMG}/root.json" | sha256_of_stdin)"
 step usb            s_usb "$(cat "${IMG}/esp-usb.img" | sha256_of_stdin)$(root_json sha256)"

@@ -35,12 +35,17 @@ A release tag's Distro run builds the system as any run does, then binds each
 release's root and kernels to the public halves alone
 (`KRYPTIK_MEDIA_PHASE=bind`). That job ran every upstream build script as
 root, so no private key reaches it. The `sign` job then waits for the
-maintainer's approval, takes the key medium from the `release` environment on
-a fresh runner, signs and assembles the media with host tools
-(`KRYPTIK_MEDIA_PHASE=sign`), checks that no line of a private key is in the
-work tree, and deletes the medium. Only `v*` tags may use the environment. The
-acceptance parts take the control-disk key from `release-tests` the same way,
-so no artifact carries it.
+maintainer's approval and takes the key medium from the `release` environment
+on a fresh runner. It treats what the build job handed over as hostile: it
+unpacks only the bound releases and the stamps, refuses anything in them that
+is not a plain file or directory, takes the versions from the tag rather than
+from the build job, and checks the bound root against the medium. Then, as an
+unprivileged user, it signs and assembles the media with host tools
+(`KRYPTIK_MEDIA_PHASE=sign`), checks that no line of a private key is in
+anything it made or logged, and deletes the medium. Only `v*` tags may use the
+environment. The acceptance parts take the control-disk key from
+`release-tests` the same way, so no artifact carries it, and the part that
+runs sysroot programs on the host never gets it.
 
 A release is therefore as trustworthy as the maintainer's GitHub account and
 the runners that build it: whoever can push a `v*` tag and approve its run
@@ -85,6 +90,14 @@ keeps the secrets encrypted, and the backup is encrypted as a whole.
    done
    ```
 
+   Check both before any secret goes in: a run that names an environment
+   before it exists creates one with no rules.
+
+   ```sh
+   gh api repos/{owner}/{repo}/environments/release --jq '.protection_rules'
+   gh api repos/{owner}/{repo}/environments/release/deployment-branch-policies --jq '.branch_policies'
+   ```
+
 2. Put the keys where the workflows read them. The medium leaves out the
    control-disk key, which only the suites use:
 
@@ -116,7 +129,8 @@ For each release:
    `git tag v1.0.1 <commit> && git push origin v1.0.1`.
 2. The run checks the tag, the pins, the sources and CI on the commit
    ([releases](releases.md#cutting-one)), builds from nothing, binds, and
-   waits: approve the `sign` job's deployment to `release` on the run's page.
+   waits: approve the `sign` job's deployment to `release` on the run's page,
+   within the week its bound releases are kept.
 3. It signs, runs every suite on the signed media and drafts the release with
    its export, source and acceptance logs. Read the draft, then publish it:
    `gh release edit v1.0.1 --draft=false --latest`.

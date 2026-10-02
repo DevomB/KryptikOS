@@ -233,6 +233,32 @@ else
     red "the used stage directory (exit ${rc})"; show
 fi
 
+# --- from 1.0.0 on: a production build, signed by the keys the tree names -----------------
+git -C "$T" tag v1.0.0 "$REV"
+P="${T}/build/config/release"; mkdir -p "$P"
+cp "${K}/release-signers" "$P/"; printf 'cert\n' > "$P/kryptik-sb.crt"
+E8="${W}/export-1.0.0"; make_export "$E8" 1.0.0 production PASS "$REV"
+publish "$E8" "${W}/stage-1.0.0"; rc=$?
+if [[ "$rc" -eq 0 ]] && has "staged v1.0.0, a release"; then
+    green "1.0.0 signed by the tree's keys stages as a release"
+else
+    red "1.0.0 with the tree's keys (exit ${rc})"; show
+fi
+make_export "$E8" 1.0.0 development PASS "$REV"
+publish "$E8" "${W}/stage-1.0.0-dev"; rc=$?
+if [[ "$rc" -ne 0 ]] && refused "1.0.0 is a production version"; then
+    green "1.0.0 built as a development release is refused"
+else
+    red "a development 1.0.0 (exit ${rc})"; show
+fi
+make_export "$E8" 1.0.0 production PASS "$REV"; printf 'another cert\n' > "$P/kryptik-sb.crt"
+publish "$E8" "${W}/stage-1.0.0-cert"; rc=$?
+if [[ "$rc" -ne 0 ]] && refused "kryptik-sb.crt is not"; then
+    green "1.0.0 whose certificate is not the tree's is refused"
+else
+    red "a 1.0.0 with another certificate (exit ${rc})"; show
+fi
+
 echo
 echo "${PASS} passed, ${FAIL} failed"
 [[ "$FAIL" -eq 0 ]]
