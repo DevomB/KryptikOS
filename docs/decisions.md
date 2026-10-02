@@ -155,8 +155,9 @@ off the thread beside the kernel, since the kernel's own execution carries no
 cookie, and that is the leak the mitigations exist for. Closing it with SMT on
 means a flush on every kernel entry, which costs more than the threads give.
 No measurement changes which boundary the cookies leave open. The cookies
-stay as defence in depth for a machine whose firmware has no SMT to turn off;
-with no sibling thread online the kernel refuses the cookie (`ENODEV`) and
+stay as defence in depth for when SMT is on all the same: plain `nosmt` lets
+root turn it back on through `/sys/devices/system/cpu/smt/control`. With no
+sibling thread online the kernel refuses the cookie (`ENODEV`) and
 `kryptikd status` says `no-smt`.
 
 ## ADR-012: Device firmware from linux-firmware, on the verified root
@@ -190,8 +191,8 @@ it a machine runs whatever microcode its firmware last shipped, which on older
 machines means known, unfixed CPU vulnerabilities.
 
 **Cost:** about 135 MB after zstd (385 MB of files; Intel Wi-Fi is 56 MB and
-amdgpu 38 MB compressed) on a 2.7 GB root image, and an input nobody here can
-read.
+amdgpu 38 MB compressed) on a root image of about 1.7 GB, and an input nobody
+here can read.
 
 ## ADR-013: A driver is built in only when boot needs it
 
