@@ -667,7 +667,8 @@ fi
 
 # A key id in place of a full fingerprint could be collided, yet would still
 # report as signature-pinned-key.
-PINS="$(awk '/^PINNED_FPRS=\(/{f=1;next} f&&/^\)/{f=0} f' "${ROOT}/tools/verify-signatures.sh"         | grep -oE '"[0-9A-Fa-f]+"' | tr -d '"')"
+PINS="$(awk '/^PINNED_FPRS=\(/{f=1;next} f&&/^\)/{f=0} f' "${ROOT}/tools/verify-signatures.sh" \
+        | grep -oE '"[0-9A-Fa-f]+"' | tr -d '"')"
 
 if [[ -n "$PINS" ]]; then
     green "the pinned-fingerprint list is readable and non-empty"
@@ -675,18 +676,14 @@ else
     red "the pinned-fingerprint list is readable and non-empty"
 fi
 
-badshape="$(printf '%s
-' "$PINS" | grep -vE '^[0-9A-F]{40}$' | tr '
-' ' ')"
+badshape="$(printf '%s\n' "$PINS" | grep -vE '^[0-9A-F]{40}$' | tr '\n' ' ')"
 if [[ -z "${badshape// /}" ]]; then
     green "every pin is a full 40-character uppercase fingerprint"
 else
     red "pins that are not full uppercase fingerprints: ${badshape}"
 fi
 
-dupes="$(printf '%s
-' "$PINS" | sort | uniq -d | tr '
-' ' ')"
+dupes="$(printf '%s\n' "$PINS" | sort | uniq -d | tr '\n' ' ')"
 if [[ -z "${dupes// /}" ]]; then
     green "no fingerprint is pinned twice"
 else
@@ -694,8 +691,8 @@ else
 fi
 
 # Each pin needs a comment saying whose key it is.
-uncommented="$(awk '/^PINNED_FPRS=\(/{f=1;next} f&&/^\)/{f=0} f && /"[0-9A-Fa-f]{40}"/ && $0 !~ /#/'                "${ROOT}/tools/verify-signatures.sh" | tr -d ' "' | tr '
-' ' ')"
+uncommented="$(awk '/^PINNED_FPRS=\(/{f=1;next} f&&/^\)/{f=0} f && /"[0-9A-Fa-f]{40}"/ && $0 !~ /#/' \
+               "${ROOT}/tools/verify-signatures.sh" | tr -d ' "' | tr '\n' ' ')"
 if [[ -z "${uncommented// /}" ]]; then
     green "every pin carries a comment naming whose key it is"
 else

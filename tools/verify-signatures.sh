@@ -255,11 +255,9 @@ PINNED_FPRS=(
     "7169605F62C751356D054A26A821E680E5FA6305"   # Thomas Wouters, CPython 3.12/3.13
 
     # From https://openssl-library.org/source/ (retrieved 2026-09-11): the page
-    # names the 2026 key as the release trust anchor, and the OMC key is in the
-    # pubkeys.asc it links. Both rest on TLS to that site alone. The OMC key has
-    # expired, so its signature on 3.3.1 verifies as EXPKEYSIG.
-    "EFC0A467D613CB83C7ED6D30D894E2CE8B3D79F5"   # OpenSSL OMC, signs 3.3.1
-    "B146647E45A7B33947AB226B2A2C87D161692D40"   # OpenSSL 2026 key, signs 3.5.8
+    # names the 2026 key as the release trust anchor. It rests on TLS to that
+    # site alone.
+    "B146647E45A7B33947AB226B2A2C87D161692D40"   # OpenSSL 2026 key, signs 3.5.x
 
     # From https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/RELEASE_KEY.asc
     # (retrieved 2026-09-27), the key file beside the releases. Of its five
@@ -639,6 +637,7 @@ check_sig() {
                     [[ -n "$fpr" ]] && UNAUDITED_FPRS+=("${fpr^^}")
                     FETCHED=$((FETCHED + 1))
                     FETCHED_LIST+=("${name} - ${signer:-unknown} (${fpr:-$keyid})")
+                    report "$name" signature-unaudited-key "${signer:-unknown} (${fpr:-$keyid})${how}"
                     return 0
                 fi
             fi
@@ -878,8 +877,8 @@ echo
 
 # The manifest's sig column says how upstream vouches for each file.
 while read -r name _ver url sig _; do
-    SEEN_SOURCE[$name]=1
     [[ -z "$name" ]] && continue
+    SEEN_SOURCE[$name]=1
     file="$(basename "$url")"
 
     # A kind this script does not know fails: skipping it would pass the row.
