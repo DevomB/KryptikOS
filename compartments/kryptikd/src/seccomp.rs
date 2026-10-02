@@ -302,7 +302,7 @@ denied! {
     (libc::SYS_pivot_root, "replace the zone's root"),
     (libc::SYS_chroot, "escape via the classic double-chroot trick"),
     (libc::SYS_unshare, "create nested namespaces; a known LPE surface"),
-    (libc::SYS_setns, "ENTER ANOTHER ZONE'S NAMESPACE - defeats the whole model"),
+    (libc::SYS_setns, "enter another zone's namespaces"),
     (libc::SYS_bpf, "load kernel programs; a well-worn privilege-escalation path"),
     (libc::SYS_perf_event_open, "long history of privilege escalation bugs"),
     (libc::SYS_userfaultfd, "reliable heap-grooming primitive for kernel exploits"),
@@ -332,7 +332,7 @@ denied! {
     (libc::SYS_open_tree, "new mount API: detach a mount tree"),
     (libc::SYS_mount_setattr, "change mount flags, e.g. clear read-only"),
     // io_uring does file and socket I/O without syscalls: a seccomp bypass.
-    (libc::SYS_io_uring_setup, "io_uring: bypasses the syscall filter by design"),
+    (libc::SYS_io_uring_setup, "io_uring: does I/O past the syscall filter"),
     (libc::SYS_io_uring_enter, "io_uring"),
     (libc::SYS_io_uring_register, "io_uring"),
     (libc::SYS_pidfd_getfd, "steal a descriptor from another process"),
