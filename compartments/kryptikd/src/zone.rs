@@ -68,6 +68,10 @@ pub struct Zone {
     /// Interface a `nic` zone takes (`nic = "eth0"`), or `"*"` for every
     /// physical one (`netzone::physical_interfaces`). Refused for other modes.
     pub nic: Option<String>,
+    /// `[network] local = true`: the nic zone lets this routed zone reach the
+    /// networks its uplinks sit on; every other routed zone is refused them
+    /// (tools/net/netzone-init.sh reads the same key).
+    pub local: bool,
     pub storage: StorageMode,
     pub volume: Option<String>,
     pub seccomp: Option<String>,
@@ -130,7 +134,7 @@ impl fmt::Display for ZoneError {
 /// Every key a zone file may contain; any other is refused, not ignored.
 pub const KNOWN_KEYS: &[&str] = &[
     "zone.name", "zone.description",
-    "network.mode", "network.nic",
+    "network.mode", "network.nic", "network.local",
     "storage.mode", "storage.volume", "storage.size",
     "policy.seccomp", "policy.landlock",
     "limits.memory_max", "limits.pids_max", "limits.cpu_max", "limits.io_max",
@@ -409,6 +413,18 @@ impl Zone {
             }
         }
 
+        let local = match kv.get("network.local").map(String::as_str) {
+            None => false,
+            Some(_) if network != NetworkMode::Routed => {
+                return Err(ZoneError::Invalid(format!(
+                    "zone {name:?}: network.local is only meaningful for network.mode = \"routed\""
+                )))
+            }
+            Some("true") => true,
+            Some("false") => false,
+            Some(v) => return Err(bad("network.local", v, "true or false")),
+        };
+
         let transfer_to: Vec<String> = match get("transfer.to") {
             None => Vec::new(),
             Some(v) => {
@@ -460,6 +476,7 @@ impl Zone {
             label: get("ui.label"),
             name,
             network,
+            local,
             storage,
         };
 

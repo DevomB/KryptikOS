@@ -135,6 +135,13 @@ fn plan_describes_each_mode() {
     assert!(plan(&z("none", None, None), true).contains("nothing created"));
     assert!(plan(&z("routed", Some(131072), None), false).contains("unprivileged"));
     assert!(plan(&z("routed", Some(131072), None), true).contains("10.19.0.2/24"));
+    assert!(plan(&z("routed", Some(131072), None), true).contains("refused the networks the uplinks sit on"));
+    let local = Zone::from_str(
+        "[zone]\nname = \"t\"\n[network]\nmode = \"routed\"\nlocal = true\n[storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n\
+         [identity]\nuid_base = 131072\n[ui]\nborder_color = \"#123456\"\n",
+    )
+    .unwrap();
+    assert!(plan(&local, true).contains("may reach the networks the uplinks sit on"));
     assert!(plan(&z("routed", None, None), true).contains("needs [identity]"));
     assert!(plan(&z("nic", None, Some("eth0")), true).contains("eth0 moves"));
     assert!(plan(&z("nic", None, Some("*")), true).contains("every physical interface"));
