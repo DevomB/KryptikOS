@@ -508,7 +508,7 @@ jobs:
           if [ -d rehearsal-testctl ]; then sudo mkdir -p work/keys/medium; sudo cp rehearsal-testctl/* work/keys/medium/; fi
           rm -rf signed-* bound-in rehearsal-testctl
           ls -la work/images | grep -E 'usb.img|\.iso|payload'
-          tools/image/pack-work.sh work-after-media
+          "$GITHUB_WORKSPACE/tools/image/pack-work.sh" work-after-media
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
