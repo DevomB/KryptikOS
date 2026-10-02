@@ -1,7 +1,5 @@
-//! Zone definitions: parsing and validation.
-//!
-//! A hand-written parser rather than a TOML crate, to keep dependencies to
-//! `libc` (ADR-010). A malformed file is an error, never a weaker zone.
+//! Zone definitions, parsed by hand to keep dependencies to `libc` (ADR-010).
+//! A malformed file is an error, never a weaker zone.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -40,8 +38,7 @@ pub enum StorageMode {
     Encrypted,
     /// tmpfs overlay, destroyed at teardown.
     Ephemeral,
-    /// A plain directory on the host filesystem, kept between launches. Not
-    /// encrypted at rest, and every report of this mode says so.
+    /// A plain host directory kept between launches; not encrypted at rest, and reports say so.
     Persistent,
 }
 
@@ -65,38 +62,30 @@ pub struct Zone {
     pub name: String,
     pub description: String,
     pub network: NetworkMode,
-    /// Interface a `nic` zone takes (`nic = "eth0"`), or `"*"` for every
-    /// physical one (`netzone::physical_interfaces`). Refused for other modes.
+    /// The `nic` zone's interface (`nic = "eth0"`), or `"*"` for every physical one.
     pub nic: Option<String>,
     pub storage: StorageMode,
     pub volume: Option<String>,
     pub seccomp: Option<String>,
     pub landlock: Option<String>,
-    /// Upper bound on an ephemeral zone's tmpfs: required for ephemeral,
-    /// refused otherwise. Unbounded, a zone could fill host memory with files.
+    /// Required bound on an ephemeral zone's tmpfs, which could otherwise fill host memory.
     pub size: Option<String>,
     pub memory_max: Option<String>,
     pub pids_max: Option<u32>,
-    /// A share of CPU time as a percentage of one CPU (`"150%"`), enforced by
-    /// cgroup cpu.max; and bytes per second each way on the zone's volume, by
-    /// io.max, so only an encrypted zone may set it.
+    /// A percentage of one CPU (`"150%"`), enforced by cgroup cpu.max.
     pub cpu_max: Option<String>,
+    /// Bytes per second each way on the zone's volume (io.max), so encrypted zones only.
     pub io_max: Option<String>,
     pub border_color: String,
-    /// Identity without colour: `glyph` and `label` name the zone in the
-    /// chrome's menu, whose f names the last zone window's. Nothing draws
-    /// `border_pattern`; it is only checked here, and `zoneid audit` gives it
-    /// no weight.
+    /// Never drawn: only checked here, and `zoneid audit` gives it no weight.
     pub border_pattern: Option<String>,
+    /// Glyph and label identify the zone without colour, in the chrome menu.
     pub glyph: Option<String>,
     pub label: Option<String>,
-    /// Host identity range, `[identity] uid_base = N`: a privileged launch maps
-    /// root to N and nobody to N + 65534. Declared, not derived from zone order,
-    /// so adding a zone never changes who owns another's files. `None`: a root
-    /// launch needs `--zone-uid/--zone-gid`, and `check --target` refuses it.
+    /// Host uid the zone's root maps to; declared, not derived from zone order, so adding a zone
+    /// never changes who owns another's files. None: a root launch needs `--zone-uid/--zone-gid`.
     pub uid_base: Option<u32>,
-    /// `[transfer] to = "work personal"`: zones this one may send files to via
-    /// the broker. Never the nic zone (`check_invariants`).
+    /// `[transfer] to = "work personal"`: zones this one may send files to; never the nic zone.
     pub transfer_to: Vec<String>,
 }
 
@@ -139,8 +128,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "ui.border_color", "ui.border_pattern", "ui.glyph", "ui.label",
 ];
 
-/// A CPU limit as a zone file and cgroup cpu.max take it: a percentage of one
-/// CPU, digits then `%`, at least 1. None for anything else.
+/// A percentage of one CPU, digits then `%`, at least 1; None for anything else.
 pub fn parse_cpu_max(s: &str) -> Option<u32> {
     let digits = s.strip_suffix('%')?;
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
@@ -149,9 +137,7 @@ pub fn parse_cpu_max(s: &str) -> Option<u32> {
     digits.parse::<u32>().ok().filter(|n| *n > 0)
 }
 
-/// A byte size as a zone file, cgroup memory.max and `volume init --size`
-/// take it: digits with an optional K, M, G or T. None for zero, for
-/// anything else (so not "max": omit the key), and on overflow.
+/// Bytes as digits with an optional K, M, G or T; None for zero, "max", other text or overflow.
 pub fn parse_size(s: &str) -> Option<u64> {
     let (digits, shift) = match s.as_bytes().last()? {
         b'K' | b'k' => (&s[..s.len() - 1], 10),
@@ -166,8 +152,7 @@ pub fn parse_size(s: &str) -> Option<u64> {
     digits.parse::<u64>().ok().filter(|&n| n > 0)?.checked_mul(1 << shift)
 }
 
-/// Minimal TOML reader: `[section]`, `key = value` (quoted string, integer or
-/// boolean) and `#` comments. Arrays and nested tables are errors, not ignored.
+/// Flat TOML: `[section]`, `key = value` (quoted string, integer or boolean) and `#` comments.
 fn parse_flat_toml(text: &str) -> Result<HashMap<String, String>, ZoneError> {
     let mut out = HashMap::new();
     let mut section = String::new();
@@ -272,10 +257,7 @@ impl Zone {
 
         for k in kv.keys() {
             if !KNOWN_KEYS.contains(&k.as_str()) {
-                return Err(ZoneError::Invalid(format!(
-                    "unknown key {k:?}: not a zone setting, and an unknown key would \
-                     otherwise be silently ignored"
-                )));
+                return Err(ZoneError::Invalid(format!("unknown key {k:?}: not a zone setting")));
             }
         }
 
@@ -312,7 +294,6 @@ impl Zone {
             if parse_size(v).is_none() {
                 return Err(bad("limits.io_max", v, "bytes per second such as 20M"));
             }
-            // The limit is on the volume's device; a zone without one has nothing to bound.
             if storage != StorageMode::Encrypted {
                 return Err(ZoneError::Invalid(format!(
                     "zone {name:?}: limits.io_max bounds reads and writes of the zone's volume, \
@@ -325,11 +306,8 @@ impl Zone {
             StorageMode::Ephemeral => match kv.get("storage.size") {
                 None => {
                     return Err(ZoneError::Invalid(format!(
-                        "zone {:?}: storage.mode is \"ephemeral\" but no storage.size given. \
-                         An ephemeral zone's data lives in a tmpfs, and an unbounded tmpfs \
-                         lets the zone consume host memory by writing files - which the \
-                         memory limit does not stop, because those pages outlive the writer.",
-                        name
+                        "zone {name:?}: storage.mode is \"ephemeral\" but no storage.size given; \
+                         an unbounded tmpfs could fill host memory"
                     )))
                 }
                 Some(v) if parse_size(v).is_none() => {
@@ -343,10 +321,8 @@ impl Zone {
                             (Some(sz), Some(mm)) if sz > mm => {
                                 return Err(ZoneError::Invalid(format!(
                                     "zone {name:?}: storage.size = {v:?} is larger than \
-                                     limits.memory_max = {m:?}. The tmpfs is charged to the \
-                                     zone's memory limit, so it can never reach {v}: the zone \
-                                     would be OOM-killed first. Lower storage.size, or raise \
-                                     memory_max."
+                                     limits.memory_max = {m:?}, so the tmpfs could never fill; \
+                                     lower storage.size or raise memory_max"
                                 )))
                             }
                             _ => {}
@@ -364,14 +340,11 @@ impl Zone {
                 }
             }
             StorageMode::Persistent => {
-                // Nothing would enforce it: a host directory with no quota.
                 if kv.contains_key("storage.size") {
                     return Err(ZoneError::Invalid(format!(
-                        "zone {:?}: storage.size is only meaningful for storage.mode = \
-                         \"ephemeral\". A persistent zone writes into a directory on the \
-                         host filesystem, and kryptikd does not impose a quota on it - \
-                         so a size here would be a limit that is not in force.",
-                        name
+                        "zone {name:?}: storage.size is only meaningful for storage.mode = \
+                         \"ephemeral\"; a persistent zone's directory has no quota, so the \
+                         limit would not be in force"
                     )));
                 }
             }
@@ -472,7 +445,6 @@ impl Zone {
         if self.name.is_empty() {
             return Err(ZoneError::Invalid("zone.name must not be empty".into()));
         }
-        // The name goes into cgroup paths and interface names.
         if !self
             .name
             .chars()
@@ -499,14 +471,11 @@ impl Zone {
                 self.name
             )));
         }
-        // A persistent zone is a directory and opens no volume.
         if self.storage == StorageMode::Persistent && self.volume.is_some() {
             return Err(ZoneError::Invalid(format!(
                 "zone {:?}: storage.volume is only meaningful for storage.mode = \
-                 \"encrypted\". A persistent zone keeps its data in a plain directory \
-                 under the zone root; it does not open {:?}. If this zone was meant to \
-                 be encrypted, say so - kryptikd will refuse to start it until \
-                 `kryptikd volume init` has made its volume, which is the point.",
+                 \"encrypted\"; a persistent zone does not open {:?} (an encrypted zone \
+                 refuses to start until `kryptikd volume init` makes it)",
                 self.name,
                 self.volume.as_deref().unwrap_or("")
             )));
@@ -519,8 +488,7 @@ impl Zone {
                 self.name, self.border_color
             )));
         }
-        /* Shape only, as zoneid checks it. A printable-ASCII label rules out
-         * bidi controls and homographs. */
+        // Shape only, as zoneid checks it.
         if let Some(p) = &self.border_pattern {
             const PATTERNS: [&str; 6] = ["solid", "dashed", "dotted", "double", "dash-dot", "notched"];
             if !PATTERNS.contains(&p.as_str()) {
@@ -538,6 +506,7 @@ impl Zone {
                 )));
             }
         }
+        // Printable ASCII rules out bidi controls and homographs.
         if let Some(l) = &self.label {
             if l.is_empty() || l.len() > 12 || !l.chars().all(|c| matches!(c, ' '..='~')) || l.starts_with(' ') || l.ends_with(' ') {
                 return Err(ZoneError::Invalid(format!(
@@ -570,8 +539,7 @@ pub fn load_all(dir: &Path) -> Result<Vec<Zone>, ZoneError> {
             continue;
         }
         let zone = Zone::from_file(&path)?;
-        /* The broker and the net zone open a zone as <name>.toml, so a file
-         * named otherwise would launch but never receive a transfer. */
+        // The broker and the net zone open <name>.toml; a file named otherwise gets no transfer.
         if path.file_stem().and_then(|s| s.to_str()) != Some(zone.name.as_str()) {
             return Err(ZoneError::Invalid(format!(
                 "{}: holds zone {:?}; a zone's file is named {}.toml",
@@ -590,8 +558,7 @@ pub fn load_all(dir: &Path) -> Result<Vec<Zone>, ZoneError> {
 
 /// Invariants that hold across the whole zone set, not within one file.
 pub fn check_invariants(zones: &[Zone]) -> Result<(), ZoneError> {
-    /* [transfer] to must name configured zones, never the nic zone. First
-     * occurrence wins; duplicate names are refused below. */
+    // Transfer targets must be configured zones, never the nic zone; duplicates are refused below.
     let mut by_name: HashMap<&str, &Zone> = HashMap::with_capacity(zones.len());
     for z in zones {
         by_name.entry(z.name.as_str()).or_insert(z);
@@ -633,8 +600,7 @@ pub fn check_invariants(zones: &[Zone]) -> Result<(), ZoneError> {
         }
         _ => {
             return Err(ZoneError::Invalid(format!(
-                "{} zones claim the physical NIC ({}); exactly one may. \
-                 Two paths to the network means no chokepoint.",
+                "{} zones claim the physical NIC ({}); exactly one may",
                 nic.len(),
                 nic.join(", ")
             )))
@@ -649,8 +615,7 @@ pub fn check_invariants(zones: &[Zone]) -> Result<(), ZoneError> {
         }
     }
 
-    /* Zones sharing a range could not be told apart by uid (broker, compositor
-     * proxy). Bases are stride-aligned, so distinct bases never overlap. */
+    // The broker and compositor proxy tell zones apart by uid; aligned bases never overlap.
     let mut bases: HashMap<u32, &str> = HashMap::new();
     for z in zones {
         if let Some(b) = z.uid_base {

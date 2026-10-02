@@ -1,21 +1,9 @@
 #!/usr/bin/env bash
-#
-# The zoned desktop on the INSTALLED system (the desktop suite): install from the
-# medium, boot the disk alone with a virtual GPU, keyboard and mouse, start
-# the desktop session for an ordinary user and run the guest-side checks
-# (build/guest-tests/gui-check.sh) as root over the serial login, pressing
-# keys and taking screenshots through QMP where the guest asks for them.
+# Desktop suite: install, boot the disk with a virtual GPU, run guest-tests/gui-check.sh as root.
 #
 #   tools/image/gui-test.sh --usb IMG [--disk FILE] [--timeout N]
 #
-# What the host adds to the guest's verdicts: screenshots in which each
-# window's frame is measured on all four sides, in its zone's colour from
-# build/desktop/zone-colours.h (full width focused, narrower by the band
-# unfocused), windowed, after a refused fullscreen request and around a buffer
-# larger than its window; explicit focus (Alt+j), fullscreen refusal (Alt+e)
-# and the yes/no to the transfer
-# questions, delivered as keystrokes on the guest's keyboard, so the
-# trusted windows are exercised by input, not by writing answer files.
+# The host presses the keys the guest asks for over QMP, and checks window frames in screenshots.
 set -uo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -28,7 +16,7 @@ while [[ "$#" -gt 0 ]]; do
         --usb) USB="${2:?}"; shift 2 ;;
         --disk) DISK="${2:?}"; shift 2 ;;
         --timeout) TIMEOUT="${2:?}"; shift 2 ;;
-        -h|--help) sed -n '2,17p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,6p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -132,10 +120,7 @@ def run(x, y, dx, dy, col):
     return n
 
 def frame(col):
-    """The window framed in `col`, found by its top border (the first run of
-    50 or more) and its left border (down from that run's start). A surface
-    starts at (bw, bw), so neither can be covered; the right and bottom are
-    then measured where they must be."""
+    """The window framed in `col`, found by its top and left borders, which no surface covers."""
     for y in range(hgt):
         x = 0
         while x < w:
@@ -185,8 +170,7 @@ fi
 check_shot "$SHOT" "windowed" untrusted:focused unzoned:unfocused
 # A zone's fullscreen request leaves it tiled beside the trusted chrome.
 check_shot "$SHOT_FS" "fullscreen refused" untrusted:focused unzoned:unfocused
-# wlprobe oversize commits a buffer 40 px larger than its configure: the
-# borders must stay above the surface, or its excess covers them.
+# wlprobe oversize's buffer is 40 px larger than configured: the borders must stay above it.
 check_shot "$SHOT_OVER" "oversized buffer" untrusted:focused unzoned:unfocused
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

@@ -9,17 +9,11 @@ RUNNER="${ROOT}/build/service-scripts/installer-run.sh"
 pass=0; fail=0
 green() { printf '  PASS  %s\n' "$*"; pass=$((pass + 1)); }
 red()   { printf '  FAIL  %s\n' "$*"; fail=$((fail + 1)); }
-note()  { printf '        %s\n' "$*"; }
 
 for f in "$INSTALLER" "$RUNNER"; do
     [[ -f "$f" ]] || { printf 'missing: %s\n' "$f"; exit 1; }
 done
 
-echo "-- the harness can tell a pass from a failure"
-if true;  then green "a true condition is seen as passing"; else red "broken harness"; fi
-if false; then red "a false condition was seen as passing"; else green "a false condition is seen as failing"; fi
-
-echo
 echo "-- partition device naming"
 # part_dev, taken from the installer: a name ending in a digit takes a "p".
 eval "$(sed -n '/^part_dev()/,/^}/p' "$INSTALLER")"
@@ -84,13 +78,11 @@ grep -q 'testctl_get install_replace' "$RUNNER" \
 
 echo
 echo "-- the runner reports the installer's exit status, not something else's"
-# After `cmd | sed`, $? is sed's. Match a call at the start of a line, not the
-# word: comments and kryptik-install.json are not calls.
+# After `cmd | sed`, $? is sed's. A call starts its line, unlike comments or kryptik-install.json.
 piped="$(grep -nE '^[[:space:]]*(/usr/sbin/)?kryptik-install[^|#]*\|' "$RUNNER" || true)"
 if [[ -n "$piped" ]]; then
-    red "the installer is still piped; rc would be the pipeline's last element"
-    printf '%s
-' "$piped" | sed 's/^/        /'
+    red "the installer is piped; rc would be the pipeline's last element"
+    printf '%s\n' "$piped" | sed 's/^/        /'
 else
     green "the installer is not piped, so \$? is its own"
 fi

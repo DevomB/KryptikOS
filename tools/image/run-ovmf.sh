@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Boot Kryptik media or an installed disk under OVMF, as real firmware would:
-# no -kernel, -initrd, -append or host filesystem sharing.
+# Boot media or an installed disk under OVMF alone: no -kernel, -initrd, -append or shared folders.
 #
 #   tools/image/run-ovmf.sh (--usb IMG | --iso ISO | --no-media)
 #        [--disk FILE]... [--testctl FILE] [--vars clean|enrolled|ms|FILE]
@@ -25,9 +24,8 @@
 #                  runs (the A/B trial needs BootNext to survive a reboot)
 #   --mode smoke   run to poweroff (or --timeout), serial to --log, exit code
 #                  0 = guest powered off, 124 = timeout
-#   --until REGEX  smoke mode: stop the guest 10 s after REGEX appears on its
-#                  console, for a boot that never powers itself off (a refused
-#                  kernel); exit code 2 if it was still running
+#   --until REGEX  smoke mode: stop the guest 10 s after REGEX appears, for a boot
+#                  that never powers off (a refused kernel); exit 2 if still running
 #   --mode serve   start detached with a serial socket and a QMP socket, print
 #                  their paths; tools/image/vm-drive.py talks to them
 #   --mode console interactive serial console (Ctrl-A X quits)
@@ -61,7 +59,7 @@ while [[ "$#" -gt 0 ]]; do
         --allow-reboot) ALLOW_REBOOT=1; shift ;;
         --until)     UNTIL="${2:?}"; shift 2 ;;
         --name)      NAME="${2:?}"; shift 2 ;;
-        -h|--help)   sed -n '2,33p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help)   sed -n '2,31p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -128,9 +126,7 @@ ARGS=(
     -boot menu=off
 )
 if [[ "$GPU" -eq 1 ]]; then
-    # virtio-vga, not virtio-gpu-pci: the firmware framebuffer is in its BAR,
-    # so virtio-gpu replaces simpledrm and wlroots sees one DRM device (with
-    # two it takes a multi-GPU path the pixman renderer cannot serve).
+    # virtio-vga (not virtio-gpu-pci) replaces simpledrm: one DRM device, as pixman has no multi-GPU.
     ARGS+=( -display none -vga none -device virtio-vga -device virtio-keyboard-pci -device virtio-mouse-pci )
 else
     ARGS+=( -display none -vga none )
@@ -183,23 +179,19 @@ smoke)
     { printf '%q ' "$QEMU" "${ARGS[@]}"; echo; } > "${LOG}.cmd"
     ln -sfn "$LOG" "${KRYPTIK_WORK}/logs/ovmf-serial.latest.log"
     echo "serial log: ${LOG}"
-    # The console is a socket so the driver can answer the state passphrase
-    # prompt; wait=on holds the guest until the driver is connected.
+    # A socket console, so the driver can answer the passphrase; wait=on holds the guest for it.
     SER="${VMDIR}/${RUN_ID}.serial"
     set +e; trap - ERR
     "$QEMU" "${ARGS[@]}" -chardev "socket,id=ser0,path=${SER},server=on,wait=on,logfile=${LOG}" -serial chardev:ser0 \
         -monitor none < /dev/null > "${LOG}.qemu" 2>&1 &
     qpid=$!
     for _ in $(seq 1 50); do [[ -S "$SER" ]] && break; sleep 0.2; done
-    # The driver decides: 0 when the console closed (the guest is gone, and
-    # QEMU's own status is the result), 1 at its timeout (QEMU is killed).
-    # QEMU closes its console just before it exits, so its pid cannot tell.
+    # The driver judges the end by the console: QEMU closes it just before it exits.
     if [[ ! -S "$SER" ]]; then
         kill "$qpid" 2>/dev/null; wait "$qpid"; rc=$?; [[ "$rc" -eq 0 ]] && rc=1
         warn "QEMU did not open its console socket ${SER}"
     elif [[ -n "$UNTIL" ]]; then
-        # The line, then 10 s for anything after it. A guest that powered off
-        # meanwhile keeps QEMU's status; one still running is stopped: 2.
+        # The line, then 10 s more; a guest still running after that is stopped, with status 2.
         python3 "${SELF}/vm-drive.py" --serial "$SER" --timeout "$TIMEOUT" "expect:${UNTIL}" "sleep:10" > /dev/null
         seen=$?
         for _ in $(seq 1 30); do kill -0 "$qpid" 2>/dev/null || break; sleep 0.1; done

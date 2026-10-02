@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-# kryptik-update and the ESP: a subcommand unmounts only a mount it made,
-# status leaves the ESP alone while an apply holds the lock, and a slot being
-# written is named by nothing there, so rollback refuses it. The functions
-# come from the tool itself, pointed at a scratch mountpoint, with mount
-# stand-ins that keep a record; flock is the real one.
+# kryptik-update and the ESP, via its functions and recording mount stand-ins: it undoes only its
+# own mounts, status keeps off the ESP during an apply, and a slot being written is unlisted.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TOOL="$ROOT/tools/update/kryptik-update"

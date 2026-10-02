@@ -1,15 +1,9 @@
 #!/bin/sh
-# A/B boot-success tracking (docs/design/boot-and-updates.md): decides, late in
-# boot, whether the slot that booted is one to keep.
-# /var/lib/kryptik/boot/trial holds the slot kryptik-update armed, then armed=0
-# (before BootNext was set) or armed=1; last-result holds the last boot's
-# outcome, which also stops the updater re-arming a failed payload.
-# A trial slot that passes health() is committed (its kernel becomes
-# BOOTX64.EFI). One that fails reboots, and with BootNext spent that lands on
-# the committed slot. A committed slot is only reported on, never rebooted.
-# The paths are overridable for tools/tests/boot-success.sh only.
+# A/B boot success (docs/design/boot-and-updates.md): commit a healthy trial, reboot a failed one.
+# A committed slot is only reported on, never rebooted.
 set -u
 say() { echo "boot-success: $*"; }
+# The overrides are for tools/tests/boot-success.sh only.
 RUN="${KRYPTIK_RUN:-/run/kryptik}"
 B="${KRYPTIK_BOOT_STATE:-/var/lib/kryptik/boot}"
 SVC="${KRYPTIK_SERVICE_DIR:-/run/service}"
@@ -35,11 +29,12 @@ if [ -z "$slot" ]; then
     exit 0
 fi
 
+# trial: the slot kryptik-update armed, then armed=0 (before BootNext was set) or armed=1.
 trial=""; armed=""
 if [ -r "$B/trial" ]; then
     trial="$(sed -n '1p' "$B/trial")"
     armed="$(sed -n 's/^armed=//p' "$B/trial" | head -1)"
-    [ -n "$armed" ] || armed=1   # a record from before the armed= line: assume it was
+    [ -n "$armed" ] || armed=1   # an older record has no armed= line: assume armed
 fi
 
 # --- the essential-readiness check ------------------------------------------
@@ -64,7 +59,7 @@ health() {   # prints one failure per line; nothing when healthy
     fi
 }
 
-# --- the commit ---------------------------------------------------------------
+# --- the commit -------------------------------------------------------------
 commit_slot() {   # commit_slot <slot>: make BOOTX64.EFI this slot's kernel
     esp="$(kryptik_part kryptik-esp 2>/dev/null)"
     [ -n "$esp" ] || { say "no unambiguous ESP on this installation's disk; cannot commit"; return 1; }
@@ -92,12 +87,7 @@ commit_slot() {   # commit_slot <slot>: make BOOTX64.EFI this slot's kernel
     return "$rc"
 }
 
-# However a trial ends, remove BootNext and both slots' entries, so the
-# firmware boots the disk's own entry (BOOTX64.EFI, the committed slot). A
-# firmware re-adds that entry at the end of BootOrder when devices change, so a
-# leftover entry for the other slot would win every cold boot. The committed
-# slot then gets its own entry back: it boots what BOOTX64.EFI boots, and is a
-# second way to it should that one file be lost.
+# Run however a trial ends: a stale slot entry would outrank BOOTX64.EFI on every cold boot.
 forget_entries() {   # forget_entries COMMITTED-SLOT
     if ! kryptik-efiboot forget >/dev/null 2>&1; then
         say "the firmware's Kryptik entries could not be removed; its own boot order may not name the committed slot"
@@ -108,8 +98,7 @@ forget_entries() {   # forget_entries COMMITTED-SLOT
     return 0
 }
 
-# On a degraded state the trial record is unreadable; the ESP still names the
-# committed slot, and any other slot is on trial.
+# State degraded: the trial record is unreadable, and a slot the ESP does not name is on trial.
 esp_committed() {
     e="$(kryptik_part kryptik-esp 2>/dev/null)" && [ -n "$e" ] || return 0
     mkdir -p "$ESP_MNT"
@@ -123,7 +112,7 @@ if [ -z "$trial" ] && [ "$state" != persistent ]; then
     if [ -n "$c" ] && [ "$c" != "$slot" ]; then trial="$slot"; unrecorded=1; fi
 fi
 
-# --- the decision -------------------------------------------------------------
+# --- the decision -----------------------------------------------------------
 if [ -n "$trial" ]; then
     if [ "$trial" = "$slot" ]; then
         say "trial slot $slot is running; checking that the system is usable before committing"
@@ -146,8 +135,7 @@ if [ -n "$trial" ]; then
             [ ! -f "$B/trial" ] || mv -f "$B/trial" "$B/trial.failed"
             sync
             if ! forget_entries "$(other_slot "$slot")" && [ -n "$unrecorded" ]; then
-                # With no record of this trial, only removing its entries
-                # stops the next boot from repeating it.
+                # No trial record: only removing its entries stops the next boot repeating it.
                 say "not rebooting: with its entries still there the firmware could boot this trial again"
             elif [ "${KRYPTIK_NO_REBOOT:-0}" = 1 ]; then
                 say "not rebooting (KRYPTIK_NO_REBOOT=1)"
@@ -160,14 +148,12 @@ if [ -n "$trial" ]; then
         fi
     else
         if [ "$armed" = 1 ]; then
-            # BootNext is spent and the old slot is running: the trial did not
-            # come up. The updater will not re-arm this payload without --retry.
+            # trial.failed stops kryptik-update re-arming this payload without --retry.
             say "trial slot $trial did NOT boot; running slot $slot again"
             result "trial-failed $trial"
             mv -f "$B/trial" "$B/trial.failed"
             forget_entries "$slot"
         else
-            # The updater stopped before setting BootNext: nothing was tried.
             say "the arming of slot $trial was interrupted before BootNext was set; nothing was tried"
             result "arming-interrupted $trial"
             rm -f "$B/trial"

@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# make acceptance: run the acceptance suites against the built media and write
-# REPORT.md, with one verdict.
+# make acceptance: run the acceptance suites on the built media; REPORT.md holds the verdict.
 #
 #   tools/acceptance.sh [--media-usb IMG] [--media-iso ISO]
 #                       [--payload-a DIR] [--payload-b DIR]
@@ -11,26 +10,22 @@
 #   --no-host      skip the host test suites (run-tests.sh)
 #   --export DIR   copy the tested media, hashes, trust material, report and
 #                  instructions to DIR, and check the copies hash as tested
-#   --merge DIR    judge parts run with --only on other machines: each item's
-#                  row comes from the results.tsv under DIR; only the items
-#                  done after the suites (firmware record, export) run here
+#   --merge DIR    judge the --only parts run elsewhere from the results.tsv under
+#                  DIR; only the post items (firmware record, export, notes) run here
 #
-# Each item is PASS, FAIL or INCOMPLETE (could not run here, exit 77, or not
-# selected; never a pass). "host" items are not installed-system evidence.
+# Each item is PASS, FAIL or INCOMPLETE (could not run, exit 77, or not selected).
 # Exit 0 when every mandatory item passed, 1 on any FAIL, 2 otherwise.
 set -uo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SELF}/.." && pwd)"
-# Git trusts this checkout alone: acceptance runs as root over a checkout root
-# does not own, and trusting every repository would trust a parent's too.
+# Root runs git over a checkout it does not own: trust this one, not every repository.
 TOP="$(cd "$ROOT" && pwd -P)"
 g() { git -c safe.directory="$TOP" -C "$TOP" "$@"; }
 export NO_COLOR=1
 # shellcheck source=/dev/null
 source "${ROOT}/build/lib/common.sh"
 trap - ERR; set +e
-# sudo resets PATH and HOME, and rustup installs per user: take cargo from
-# $HOME or else the sudo user's home, and point RUSTUP_HOME there too.
+# sudo resets PATH and HOME: find cargo under $HOME or the sudo user's home, with its RUSTUP_HOME.
 for h in "${HOME:-/root}" "$(getent passwd "${SUDO_USER:-}" 2>/dev/null | cut -d: -f6)"; do
     [[ -n "$h" && -d "$h/.cargo/bin" ]] || continue
     PATH="$h/.cargo/bin:${PATH}"
@@ -51,7 +46,7 @@ while [[ "$#" -gt 0 ]]; do
         --only)      ONLY="${2:?}"; shift 2 ;;
         --no-host)   NOHOST=1; shift ;;
         --merge)     MERGE+=("${2:?}"); shift 2 ;;
-        -h|--help)   sed -n '2,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help)   sed -n '2,17p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -62,8 +57,7 @@ OUT="${OUT:-${KRYPTIK_WORK}/acceptance/${START_TS}}"
 mkdir -p "$OUT" || die "cannot create ${OUT}"
 MARK="${OUT}/.start"; : > "$MARK"
 
-# The parts' results, and everything beside them (logs, boot records,
-# REVISION.txt) copied here, where the report and the export look.
+# Copy the parts' logs, boot records and REVISION.txt here, where the report and export look.
 PARTS=()
 if [[ "${#MERGE[@]}" -gt 0 ]]; then
     mapfile -t PARTS < <(find "${MERGE[@]}" -name results.tsv | sort)
@@ -77,12 +71,9 @@ IMG="${SELF}/image"
 SYSROOT="${KRYPTIK_WORK}/sysroot"
 
 # ---------------------------------------------------------------- inputs --
-# The release under test is the named medium, or the highest version on hand
-# (by version, not mtime); its payload is B. A is the highest lower version
-# with both a payload and a USB medium: the update test installs A, applies B.
-# Explicit --media-*/--payload-* win.
 version_of_medium()  { local b; b="$(basename "$1")"; b="${b#kryptik-}"; printf '%s' "${b%-usb.img}"; }
 version_of_payload() { local b; b="$(basename "$1")"; printf '%s' "${b#payload-}"; }
+# The release under test, whose payload is B: the named medium, else the highest version on hand.
 if [[ -z "$MEDIA_USB" ]]; then
     media=()
     for f in "${IMGDIR}"/kryptik-*-usb.img; do [[ -f "$f" ]] && media+=("$(version_of_medium "$f")"); done
@@ -96,6 +87,7 @@ VER=""; [[ -n "$MEDIA_USB" ]] && VER="$(version_of_medium "$MEDIA_USB")"
 [[ -z "$MEDIA_ISO" && -n "$VER" && -f "${IMGDIR}/kryptik-${VER}.iso" ]] && MEDIA_ISO="${IMGDIR}/kryptik-${VER}.iso"
 [[ -z "$PAYLOAD_B" && -n "$VER" && -d "${IMGDIR}/payload-${VER}" ]] && PAYLOAD_B="${IMGDIR}/payload-${VER}"
 VER_B=""; [[ -n "$PAYLOAD_B" ]] && VER_B="$(version_of_payload "$PAYLOAD_B")"
+# A, which the update test installs before B: the highest lower payload with a USB medium.
 if [[ -z "$PAYLOAD_A" && -n "$VER_B" ]]; then
     versions=()
     for d in "${IMGDIR}"/payload-*; do [[ -d "$d" ]] && versions+=("$(version_of_payload "$d")"); done
@@ -112,10 +104,6 @@ VER_A=""; [[ -n "$PAYLOAD_A" ]] && VER_A="$(version_of_payload "$PAYLOAD_A")"
 MEDIA_USB_A=""; [[ -n "$VER_A" && -f "${IMGDIR}/kryptik-${VER_A}-usb.img" ]] && MEDIA_USB_A="${IMGDIR}/kryptik-${VER_A}-usb.img"
 
 # ------------------------------------------------------------- certificate --
-# The Secure Boot certificate the medium under test carries, read out of its
-# ESP (/kryptik/kryptik-sb.crt): the one the boot tests enrol and the export
-# publishes, whichever key signed the kernels, a development build's own or
-# the key medium's.
 medium_cert() {   # medium_cert USB-IMAGE OUT; 0 when a certificate was read
     local start
     start="$(sfdisk -d "$1" 2>/dev/null | awk -F'[ ,]+' '$1 ~ /1$/ { for (i = 1; i <= NF; i++) if ($i == "start=") print $(i + 1); exit }')"
@@ -124,15 +112,14 @@ medium_cert() {   # medium_cert USB-IMAGE OUT; 0 when a certificate was read
        && openssl x509 -in "$2" -noout > /dev/null 2>&1; then return 0; fi
     rm -f "$2"; return 1
 }
+# The boot tests enrol and the export publishes the medium's own certificate, whoever signed it.
 MEDIUM_CERT=""; CERT_NAME=""
 if [[ -f "$MEDIA_USB" ]] && medium_cert "$MEDIA_USB" "${OUT}/kryptik-sb.crt"; then
     MEDIUM_CERT="${OUT}/kryptik-sb.crt"
     CERT_NAME="$(openssl x509 -in "$MEDIUM_CERT" -noout -subject -nameopt multiline | sed -n 's/^ *commonName *= *//p')"
 fi
 
-# A production pair, built with a throwaway key medium and kept apart, since
-# its versions would sort above A and B here: the two highest payloads, the
-# lower one's USB medium, and the certificate its media carry.
+# The production pair is kept apart, as its versions would sort above A and B here.
 PRODDIR="${KRYPTIK_WORK}/images-production"
 PROD_A=""; PROD_B=""; PROD_USB_A=""; PROD_DESC="none"
 versions=()
@@ -160,10 +147,7 @@ REV="$(g rev-parse HEAD 2>/dev/null || echo unknown)"
 REV_DESC="$(g describe --always --dirty --long 2>/dev/null || echo unknown)"
 DIRTY="$(g status --porcelain 2>/dev/null)"
 
-# A part of a split run writes down what it tested and what it ran on. The
-# merge takes only parts that tested this revision on these media and ran on
-# one firmware and one QEMU, and its report names theirs: the merging machine
-# boots nothing, and its packages may be newer than the parts' were.
+# A merge takes only parts that tested this revision and media, all on one firmware and QEMU.
 tested() { printf 'revision %s (%s)\nusb %s\niso %s\n' "$REV" "$REV_DESC" "$H_USB" "$H_ISO"; }
 ran_on() { printf 'firmware-sha256 %s\nfirmware-package %s\nqemu %s\nkvm %s\n' "$H_FW" "$FW_PKG" "$QEMU_VER" "$KVM"; }
 parts_disagree() {   # the first part that tested or ran on something else, and what
@@ -187,6 +171,7 @@ if [[ -n "$ONLY" ]]; then
 elif [[ "${#PARTS[@]}" -gt 0 ]]; then
     disagree="$(parts_disagree)"
     [[ -z "$disagree" ]] || die "not one run: ${disagree}; this merge tests $(tested | tr '\n' ';')"
+    # The merging machine boots nothing: report the firmware and QEMU the parts ran on.
     id="$(dirname "${PARTS[0]}")/identity"
     H_FW="$(sed -n 's/^firmware-sha256 //p' "$id")"; FW_PKG="$(sed -n 's/^firmware-package //p' "$id")"
     QEMU_VER="$(sed -n 's/^qemu //p' "$id")"; KVM="$(sed -n 's/^kvm //p' "$id")"
@@ -213,9 +198,8 @@ checks_in() {
     printf '%s' "-"
 }
 
-# item SUITE NAME M|O host|vm|post MINPASS FN [PREREQ-FN]
-#   MINPASS: passed checks the driver must report, so a launcher that starts
-#   nothing cannot pass every denial. PREREQ-FN prints why the item cannot run.
+# item SUITE NAME M|O host|vm|post MINPASS FN [PREREQ-FN]; PREREQ-FN prints why it cannot run
+# MINPASS: the fewest passed checks to accept, so a driver that starts nothing cannot pass.
 item() {
     local suite="$1" name="$2" mand="$3" kind="$4" minp="$5" fn="$6" pre="${7:-}"
     local log="${OUT}/${suite}-${name}.log" rc res checks="-" note="" reason="" t0
@@ -239,15 +223,14 @@ item() {
         if [[ "$checks" != "-" && "$f" -gt 0 ]]; then
             res=FAIL; note="exit 0 but its own summary counts ${f} failed"
         elif [[ "$minp" -gt 0 && ( "$checks" == "-" || "$p" -lt "$minp" ) ]]; then
-            res=FAIL; note="exit 0 but only ${p:-no} checks reported passed (minimum ${minp}): the driver did not exercise what it claims"
+            res=FAIL; note="exit 0 but only ${p:-no} checks passed (minimum ${minp})"
         fi
     fi
     printf -- '-- %s: %s (exit %s, %ss, checks %s)%s\n' "$name" "$res" "$rc" "$((SECONDS - t0))" "$checks" "${note:+ - $note}"
     record "$suite" "$name" "$mand" "$kind" "$res" "$checks" "$rc" "$((SECONDS - t0))" "$log" "$note"
 }
 
-# The row of every part that ran the item. A part records what it left to the
-# others as "not run (--only ...)"; an item no part ran is INCOMPLETE.
+# The item's row from each part that ran it; an item no part ran is INCOMPLETE.
 merged() {
     local suite="$1" name="$2" mand="$3" kind="$4" f n=0 s i res checks rc secs log note
     for f in "${PARTS[@]}"; do
@@ -296,7 +279,7 @@ need_update() {
     [[ -f "$MEDIA_USB_A" ]] || { echo "no USB medium for the previous release ${VER_A} (images/kryptik-${VER_A}-usb.img)"; return; }
     [[ "$VER_A" != "$VER_B" ]] || { echo "release A and B carry the same version (${VER_A})"; return; }
     [[ "$(printf '%s\n' "$VER_A" "$VER_B" | sort -V | tail -1)" == "$VER_B" ]] \
-        || echo "release A (${VER_A}) is not older than B (${VER_B}); the update test applies a newer release over an older one"
+        || echo "release A (${VER_A}) is not older than B (${VER_B})"
 }
 need_production() {
     local r; r="$(need_update)"; [[ -n "$r" ]] && { echo "$r"; return; }
@@ -321,11 +304,11 @@ it_revision() {
     echo "tree     : ${ROOT}"
     printf 'revision=%s\ndescribe=%s\ntree=%s\ndate=%s\n' "$REV" "$REV_DESC" "$ROOT" "$(date -Iseconds)" > "${OUT}/REVISION.txt"
     if [[ -n "$DIRTY" ]]; then
-        echo "the tree is not clean; what was tested is not what the revision names:"
+        echo "the tree is not clean, so the revision is not what was tested:"
         printf '  %s\n' "$DIRTY"
         return 1
     fi
-    echo "tree is clean: the revision names exactly what was tested"
+    echo "the tree is clean"
 }
 it_compositor_sources() {
     local ok=0 p
@@ -341,8 +324,7 @@ it_sources_lock() {
     ( cd "$KRYPTIK_SOURCES" && sha256sum --check --quiet --strict "${ROOT}/sources.lock" ) || return 1
     echo "  ok: $(grep -c . "${ROOT}/sources.lock") entries verified"
 }
-# Each medium against its sidecar, by the hash the run took of it at the start
-# and names in its identity.
+# Check each medium's sidecar against the hash the run took at the start.
 it_media_hashes() {
     local ok=0 f h
     for f in "$MEDIA_USB" "$MEDIA_ISO"; do
@@ -378,8 +360,7 @@ it_state()         { "${IMG}/state-test.sh" --usb "$MEDIA_USB"; }
 it_integrity()     { "${IMG}/integrity-test.sh" --usb "$MEDIA_USB"; }
 it_zones()         { "${IMG}/zones-test.sh" --usb "$MEDIA_USB"; }
 it_gui()           { "${IMG}/gui-test.sh" --usb "$MEDIA_USB"; }
-# Each update suite is handed the other flow's newest payload too, signed by
-# keys the release it installed does not trust, which it must refuse.
+# Each update suite must refuse the other flow's newest payload, signed by keys it does not trust.
 it_update() {
     local foreign=(); [[ -n "$PROD_B" ]] && foreign=(--foreign "$PROD_B")
     "${IMG}/update-test.sh" --usb-a "$MEDIA_USB_A" --payload-a "$PAYLOAD_A" --payload-b "$PAYLOAD_B" --vars clean "${foreign[@]}"
@@ -393,8 +374,7 @@ it_production() {
         --vars-file "${PRODDIR}/vars/enrolled.fd" --foreign "$PAYLOAD_B"
 }
 
-# Every boot this run recorded went through the firmware, with no host-side
-# boot input (-kernel, -initrd, -append, shared directory, FAT-from-directory).
+# Every boot this run recorded went through the firmware, with no host-side boot input.
 it_firmware_only() {
     local n=0 bad=0 f src=("${KRYPTIK_WORK}/logs" -newer "$MARK")
     [[ "${#PARTS[@]}" -gt 0 ]] && src=("$OUT")
@@ -522,13 +502,11 @@ it_export() {
     # B's own root.json: images/root.json is whichever release was built last.
     if [[ -n "$PAYLOAD_B" && -f "${PAYLOAD_B}/root.json" ]]; then cp "${PAYLOAD_B}/root.json" "${d}/"
     elif [[ -f "${IMGDIR}/root.json" ]]; then cp "${IMGDIR}/root.json" "${d}/"; fi
-    # The certificate the media carry, as they carry it, and in DER form for
-    # a firmware's enrolment menu.
+    # The media's certificate as they carry it, and in DER for a firmware's enrolment menu.
     if [[ -n "$MEDIUM_CERT" ]] && cp "$MEDIUM_CERT" "${d}/kryptik-sb.crt" \
        && openssl x509 -in "$MEDIUM_CERT" -outform DER -out "${d}/kryptik-sb.der" 2>/dev/null; then :
     else echo "  no certificate read out of ${MEDIA_USB:-(no medium)} to publish"; ok=1; fi
-    # The media's checksums as stage 06 signed them, and the anchor the tested
-    # image carries, read out of B's root image: what a download is checked by.
+    # A download is checked by the signed media checksums and the anchor in B's root image.
     if [[ -n "$VER" && -f "${IMGDIR}/${sums}" && -f "${IMGDIR}/${sums}.sig" ]]; then
         cp "${IMGDIR}/${sums}" "${IMGDIR}/${sums}.sig" "${d}/"
     else
@@ -546,8 +524,7 @@ it_export() {
         cp "${PAYLOAD_B}/manifest" "${d}/manifest-${VER_B}"
         [[ -f "${PAYLOAD_B}/manifest.sig" ]] && cp "${PAYLOAD_B}/manifest.sig" "${d}/manifest-${VER_B}.sig"
     fi
-    # The update payload as the channel serves it, file for file: the release
-    # page gets these from the export (tools/release-publish.sh).
+    # The payload as the channel serves it; tools/release-publish.sh puts it on the release page.
     if [[ -n "$PAYLOAD_B" && -d "$PAYLOAD_B" ]]; then
         mkdir -p "${d}/payload"
         for f in "$PAYLOAD_B"/*; do
@@ -576,8 +553,7 @@ it_export() {
     fi
     return "$ok"
 }
-# The release's notes (tools/release-notes.sh), from every row before this
-# one. What changed runs from the latest release tag before this revision.
+# Release notes from the rows so far, with what changed since the last release tag.
 it_notes() {
     local prev
     prev="$(g describe --tags --abbrev=0 --match 'v[0-9]*' HEAD^ 2>/dev/null || true)"
@@ -585,8 +561,7 @@ it_notes() {
         || { rm -f "${EXPORT}/RELEASE-NOTES.md"; return 1; }
     echo "wrote ${EXPORT}/RELEASE-NOTES.md${prev:+ (changes since ${prev})}"
 }
-# Hash every export file but the media (it_export's lines); run last, once the
-# report, results and RELEASE.txt are final.
+# Hash every export file but the media (it_export listed those); run once all of it is final.
 seal_export() {   # seal_export DIR
     ( cd "$1" && find . -type f ! -name SHA256SUMS ! -name '*.img' ! -name '*.iso' -print0 | sort -z | xargs -0 sha256sum ) >> "$1/SHA256SUMS"
 }
@@ -624,11 +599,10 @@ echo
 echo "================================================================"
 sed -n '/^| suite/,/^$/p' "${OUT}/REPORT.md"
 echo "Verdict: ${V}   (report: ${OUT}/REPORT.md)"
-# The 12 GB VM disks only help debug a failure, and on WSL they grow the host's
-# virtual disk for good: remove them once the whole run has passed.
+# The 12 GB VM disks only help debug a failure, and grow a WSL host's virtual disk for good.
 if [[ "$V" == PASS ]]; then
     rm -f "${KRYPTIK_WORK}"/vm/*.img "${KRYPTIK_WORK}"/vm/*.fd "${KRYPTIK_WORK}"/vm/*.pristine 2>/dev/null
     rm -rf "${KRYPTIK_WORK}"/vm/bad 2>/dev/null
-    echo "VM disks removed (every item passed; the transcripts under ${KRYPTIK_WORK}/logs are the evidence)"
+    echo "VM disks removed; the transcripts are under ${KRYPTIK_WORK}/logs"
 fi
 case "$V" in PASS) exit 0 ;; FAIL) exit 1 ;; *) exit 2 ;; esac

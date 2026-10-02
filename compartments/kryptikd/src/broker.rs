@@ -1,9 +1,6 @@
-//! The zone broker (docs/design/broker.md): each zone's one socket into zone 0,
-//! serving the clipboard, transfer, time and update verbs.
-//!
-//! A peer is known by its `SO_PEERCRED` uid, which the kernel asserts and the
-//! zone cannot choose; each zone has its own `[identity]` uid range. The pid
-//! is never used, since it may be reused.
+//! The zone broker (docs/design/broker.md): each zone's socket into zone 0, for the clipboard,
+//! transfer, time and update verbs. A peer is known by its `SO_PEERCRED` uid, as each zone
+//! has its own uid range; never by its pid, which may be reused.
 
 use std::cell::Cell;
 use std::ffi::CString;
@@ -19,8 +16,7 @@ use crate::zone::{NetworkMode, Zone};
 /// The socket's name in a registry entry, and in the zone's /run/kryptik.
 pub const SOCKET_NAME: &str = "broker";
 
-/// Listen on an AF_UNIX socket at `path` that only the zone identity can
-/// connect to. A stale file is removed first: this launcher owns the entry.
+/// Listen at `path` for the zone identity alone, replacing a stale file: the entry is ours.
 pub fn listen_at(path: &std::path::Path, uid: u32, gid: u32) -> io::Result<RawFd> {
     let _ = std::fs::remove_file(path);
     let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
@@ -60,9 +56,7 @@ pub fn listen_at(path: &std::path::Path, uid: u32, gid: u32) -> io::Result<RawFd
     Ok(fd.into_raw_fd())
 }
 
-/// A zone's clipboard, a file in its registry entry: the MIME type on the
-/// first line, then the bytes. A zone reaches only its own; moving one to
-/// another zone is the zone 0 command `kryptikd clipboard move`.
+/// A zone's clipboard, in its registry entry: a MIME type line, then the bytes.
 pub const CLIPBOARD_FILE: &str = "clipboard";
 pub const CLIPBOARD_MAX: usize = 1 << 20;
 
@@ -77,8 +71,7 @@ pub const MIME_TYPES: &[&str] = &[
     "application/octet-stream",
 ];
 
-/// How long one request may take end to end. The launcher serves its broker
-/// between waitpid polls, so a slow zone stalls only its own supervision.
+/// One request's end-to-end deadline; a slow zone stalls only its own launcher meanwhile.
 const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
 
 /// One request: a header line, then the payload its verb announces.
@@ -87,14 +80,18 @@ const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
 /// version\n                              -> kryptik-broker 1 zone=NAME\n
 /// clipboard-set <mime> <len>\n<bytes>    -> ok\n
 /// clipboard-get\n                        -> ok <mime> <len>\n<bytes>  |  empty\n
-/// time-offset <seconds> <sources>\n        -> ok ignored | slewed | stepped | stepped after consent\n
-///                                           (from the zone that holds the network, and no other)
-/// update-latest <plen> <slen>\n<pointer><sig> -> ok current | ok available <version>\n
+/// transfer <zone> <name>\n  (+1 fd)      -> ok <final name>\n
+/// clipboard-move ...                     -> error: clipboard-move is a zone 0 act, not a zone verb\n
+/// time-offset <seconds> <sources>\n      -> ok ignored | slewed | stepped | stepped after consent\n
+/// update-latest <plen> <slen>\n<pointer><sig>
+///                                        -> ok current | ok available <version>\n
 /// update-poll\n                          -> idle | fetch <version> <base> need <name> <offset> ...\n
-/// update-put <name> <offset> <len>\n<bytes>   -> ok <name> <held>/<size> | ok <name> complete\n
-///                                           (the same zone, and no other)
+/// update-put <name> <offset> <len>\n<bytes>
+///                                        -> ok <name> <held>/<size> | ok <name> complete\n
 /// anything else                          -> error: <reason>\n
 /// ```
+///
+/// The time and update verbs are taken from the nic zone alone.
 #[derive(Debug, PartialEq)]
 pub enum Request {
     Version,
@@ -107,8 +104,6 @@ pub enum Request {
     /// The nic zone's claim of the clock's offset from network time (docs/design/time.md).
     TimeOffset(crate::time::Claim),
     /// The update channel (docs/design/update-channel.md), nic zone only.
-    /// `update-latest` is followed by the pointer and its signature,
-    /// `update-put` by `len` bytes of the named file.
     UpdateLatest { plen: usize, slen: usize },
     UpdatePoll,
     UpdatePut { name: String, offset: u64, len: usize },
@@ -141,8 +136,7 @@ fn check_zone_name(s: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// A transferred file's name: one path component of 1 to 255 printable ASCII
-/// bytes, with no leading dot, so a zone cannot plant dotfiles.
+/// A transferred file's name: one component of 1 to 255 printable ASCII bytes, not a dotfile.
 pub fn check_transfer_name(n: &str) -> Result<(), String> {
     if n.is_empty() || n.len() > 255 {
         return Err("name must be 1 to 255 bytes".into());
@@ -215,8 +209,7 @@ pub fn parse_request(line: &str) -> Result<Request, String> {
     }
 }
 
-/// `time-offset`, taken only from the nic zone: no other zone has a network of
-/// its own to measure with. `time::consider` decides what to believe.
+/// `time-offset`, nic zone only: no other zone has a network of its own to measure with.
 fn handle_time_offset(zone: &Zone, claim: &crate::time::Claim, asking: &dyn Fn() -> bool) -> crate::time::Outcome {
     time_offset_in(
         zone,
@@ -228,8 +221,7 @@ fn handle_time_offset(zone: &Zone, claim: &crate::time::Claim, asking: &dyn Fn()
     )
 }
 
-/// Why `zone` may not bring an update: only the nic zone can have fetched one.
-/// What it sends is still untrusted; `update.rs` judges it.
+/// Only the nic zone can have fetched an update; what it sends is still judged by update.rs.
 fn update_refusal(zone: &Zone) -> Option<String> {
     (zone.network != NetworkMode::Nic)
         .then(|| format!("zone {:?} does not hold the network; only the zone that does may bring an update", zone.name))
@@ -304,29 +296,25 @@ pub struct Served<'a> {
     pub entry: &'a Path,
     /// The zone directory, to load a destination's zone file.
     pub zones_dir: &'a Path,
-    /// st_dev of the zone's /home/<zone>, looked up per request because the
-    /// zone's root is built after its pid 1 starts. None refuses every transfer.
+    /// st_dev of the zone's /home/<zone>, per request: its root is built after pid 1 starts.
     pub home_dev: &'a dyn Fn() -> Option<u64>,
     /// The development stand-in for the zone 0 prompt.
     pub auto_approve: bool,
     pub max_bytes: u64,
     /// Finds a running destination's root and identity: the registry, or a test directory.
     pub resolve_dest: &'a dyn Fn(&str) -> Result<Target, String>,
-    /// Called ten times a second while the user is being asked; the launcher
-    /// pumps zone output there, and `false` withdraws the question.
+    /// Called ten times a second while asking: the launcher pumps zone output; `false` withdraws.
     pub asking: &'a dyn Fn() -> bool,
     /// Where the broker's lines go; the launcher bounds them per launch.
     pub log: &'a dyn Fn(&str),
-    /// Until when this launch asks nothing more after a refusal: every
-    /// question takes focus in zone 0, so a zone may not raise them in a loop.
+    /// After a refusal, no new question until then: each one takes focus in zone 0.
     pub refused_until: &'a Cell<Option<Instant>>,
 }
 
 /// How long a refused zone waits before it may ask again.
 pub const REFUSAL_PAUSE: Duration = Duration::from_secs(60);
 
-/// The launcher's `resolve_dest`: the registry says whether the zone runs and
-/// as whom, and its pid 1's root leads into its mount namespace.
+/// The launcher's `resolve_dest`, from the registry and the zone's pid 1 root.
 pub fn registry_target(dest: &str) -> Result<Target, String> {
     let st = match registry::state(dest) {
         Ok(registry::State::Running { init: Some(st), .. }) if st.still_alive() => st,
@@ -388,11 +376,8 @@ fn openat2(dirfd: RawFd, path: &str, flags: u64, mode: u64, resolve: u64) -> io:
     }
 }
 
-/// Check a transfer, ask the user, then deliver it. The checks run in order,
-/// refusing at the first failure: one descriptor; a destination other than the
-/// sender, named in its `[transfer] to`, configured and not the nic zone; a
-/// regular O_RDONLY file on the sender's data mount within the cap. The zone
-/// learns only the name the file landed under.
+/// Check a transfer in the order docs/design/broker.md gives, ask the user, then deliver it.
+/// The zone learns only the name the file landed under.
 fn handle_transfer(s: &Served, dest: &str, name: &str, fds: &[OwnedFd]) -> Result<(String, u64), String> {
     let sender = &s.zone.name;
     if fds.len() != 1 {
@@ -402,14 +387,12 @@ fn handle_transfer(s: &Served, dest: &str, name: &str, fds: &[OwnedFd]) -> Resul
         return Err("a zone cannot transfer to itself".into());
     }
     if !s.zone.transfer_to.iter().any(|d| d == dest) {
-        return Err(format!(
-            "[transfer] to in zone {sender:?} does not name {dest:?}; a zone sends only where its file says"
-        ));
+        return Err(format!("[transfer] to in zone {sender:?} does not name {dest:?}"));
     }
     let dz = Zone::from_file(&s.zones_dir.join(format!("{dest}.toml")))
         .map_err(|e| format!("destination zone {dest:?}: {e}"))?;
     if dz.network == NetworkMode::Nic {
-        return Err(format!("zone {dest:?} holds the NIC and receives nothing, ever"));
+        return Err(format!("zone {dest:?} holds the NIC and receives nothing"));
     }
     let src = fds[0].as_raw_fd();
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
@@ -439,10 +422,8 @@ fn handle_transfer(s: &Served, dest: &str, name: &str, fds: &[OwnedFd]) -> Resul
     if st.st_size as u64 > s.max_bytes {
         return Err(format!("file is {} bytes; the transfer limit is {}", st.st_size, s.max_bytes));
     }
-    /* Ask last, once even the destination is known to be running: a question
-     * whose answer changes nothing teaches people to say yes. Look it up again
-     * afterwards; holding its root through the wait would pin its mounts, and
-     * the zone may have restarted meanwhile. */
+    /* Ask last, once the destination is known to run: a pointless question teaches people to say
+     * yes. Then look it up again; holding its root through the wait would pin its mounts. */
     if !s.auto_approve {
         drop((s.resolve_dest)(dest)?);
         if s.refused_until.get().is_some_and(|t| Instant::now() < t) {
@@ -461,8 +442,7 @@ fn handle_transfer(s: &Served, dest: &str, name: &str, fds: &[OwnedFd]) -> Resul
     deliver(&target, name, src, st.st_size as u64)
 }
 
-/// Copy into the destination's `incoming/`. Every path is resolved from its
-/// root with openat2 and no symlinks, so nothing written leaves its tree.
+/// Copy into the destination's `incoming/`, every path resolved in its root without symlinks.
 fn deliver(target: &Target, name: &str, src: RawFd, size: u64) -> Result<(String, u64), String> {
     let home = openat2(
         target.root_fd.as_raw_fd(),
@@ -472,10 +452,8 @@ fn deliver(target: &Target, name: &str, src: RawFd, size: u64) -> Result<(String
         RESOLVE_IN_ROOT | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS,
     )
     .map_err(|e| format!("destination home is not reachable: {e}"))?;
-    /* Create as the destination identity: an ephemeral zone's home is a tmpfs
-     * mounted in its user namespace, which refuses (EOVERFLOW) to create an
-     * inode for an unmapped uid such as host root. Restored on every path;
-     * the broker serves one request at a time. */
+    /* As the destination identity: an ephemeral home is a tmpfs in the zone's user namespace,
+     * which refuses (EOVERFLOW) an inode for an unmapped uid such as host root. */
     let switched = unsafe { libc::geteuid() } == 0;
     if switched {
         unsafe {
@@ -523,8 +501,7 @@ fn deliver_into(home: RawFd, target: &Target, name: &str, src: RawFd, size: u64)
     if st.st_uid != target.uid {
         return Err("incoming/ is not owned by the destination zone".into());
     }
-    /* O_EXCL picks the name: a collision, or a planted symlink (also EEXIST),
-     * moves on to the next number. */
+    // O_EXCL picks the name: a collision or a planted symlink (EEXIST) moves to the next number.
     for i in 1..=100u32 {
         let cand = if i == 1 { name.to_string() } else { format!("{name}-{i}") };
         match openat2(
@@ -566,10 +543,8 @@ fn fill(out: RawFd, src: RawFd, size: u64, target: &Target) -> Result<u64, Strin
     Ok(total)
 }
 
-/// Copy `src` from its first byte to `out`, enforcing `cap` on the bytes
-/// actually copied: a file can grow after its st_size was checked. The read
-/// offset is the copy's own, so a sender moving the shared descriptor's
-/// position changes nothing.
+/// Copy `src` to `out` from byte 0, with `cap` on the bytes copied: the file may have grown.
+/// The offset is the copy's own, so moving the shared descriptor's position changes nothing.
 pub fn copy_capped(src: RawFd, out: RawFd, cap: u64) -> Result<u64, String> {
     let mut total: u64 = 0;
     let mut fallback = false;
@@ -637,8 +612,7 @@ fn write_all(fd: RawFd, mut data: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-/// Accept one connection and answer one request. Returns the request's name
-/// (Request::name), for logging.
+/// Accept one connection and answer its request; returns the request's name for the log.
 pub fn serve_one(listen_fd: RawFd, s: &Served) -> io::Result<Option<&'static str>> {
     let fd = unsafe { libc::accept4(listen_fd, std::ptr::null_mut(), std::ptr::null_mut(), libc::SOCK_CLOEXEC) };
     if fd < 0 {
@@ -653,8 +627,7 @@ pub fn serve_one(listen_fd: RawFd, s: &Served) -> io::Result<Option<&'static str
     serve_connection(fd.as_raw_fd(), s)
 }
 
-/// Answer one request on an accepted connection. A peer other than the zone
-/// (`s.uid`) learns nothing. Refusals come before any payload is read.
+/// Answer one request: a foreign peer learns nothing, and refusals come before the payload.
 pub fn serve_connection(fd: RawFd, s: &Served) -> io::Result<Option<&'static str>> {
     let zone = s.zone.name.as_str();
     let entry = s.entry;
@@ -784,8 +757,7 @@ fn recv_first(fd: RawFd, buf: &mut Vec<u8>, started: Instant) -> io::Result<(boo
     }
 }
 
-/// Receive straight into `buf` until it holds `want` bytes (a length the
-/// header was checked against) or the peer reaches EOF, within the deadline.
+/// Receive into `buf` until it holds `want` bytes (a checked length) or EOF, by the deadline.
 fn read_more(fd: RawFd, buf: &mut Vec<u8>, want: usize, started: Instant) -> io::Result<()> {
     let mut filled = buf.len();
     if filled >= want {
@@ -891,8 +863,7 @@ pub fn clipboard_read(entry: &Path) -> io::Result<Option<(String, Vec<u8>)>> {
     Ok(Some((mime, bytes)))
 }
 
-/// Replace the zone's payload whole, 0600; a planted symlink is replaced,
-/// never followed.
+/// Replace the zone's payload whole, 0600; a planted symlink is replaced, never followed.
 pub fn clipboard_write(entry: &Path, mime: &str, bytes: &[u8]) -> io::Result<()> {
     if !MIME_TYPES.contains(&mime) {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("unsupported MIME type {mime:?}")));
@@ -903,9 +874,7 @@ pub fn clipboard_write(entry: &Path, mime: &str, bytes: &[u8]) -> io::Result<()>
     crate::files::write_atomic(&entry.join(CLIPBOARD_FILE), &[mime.as_bytes(), b"\n", bytes], 0o600, None)
 }
 
-/// `kryptikd clipboard move`: `to` takes `from`'s payload, which leaves
-/// `from`: one payload crosses, once. Both are registry entries of running
-/// zones. Returns what moved.
+/// Move `from`'s payload to `to` (registry entries of running zones); returns what moved.
 pub fn clipboard_move(from: &Path, to: &Path) -> io::Result<(String, usize)> {
     let Some((mime, bytes)) = clipboard_read(from)? else {
         return Err(io::Error::new(io::ErrorKind::NotFound, "nothing on the source zone's clipboard"));
@@ -922,8 +891,7 @@ pub fn clipboard_move(from: &Path, to: &Path) -> io::Result<(String, usize)> {
     Ok((mime, bytes.len()))
 }
 
-/// The zone 0 gesture, for `kryptikd clipboard move` and serve alike: both
-/// zones must be running. Ok is the line to show, Err why it was refused.
+/// The zone 0 gesture, for `kryptikd clipboard move` and serve: Ok is the line to show.
 pub fn move_between(from: &str, to: &str) -> Result<String, String> {
     use crate::registry::{self, State};
     for z in [from, to] {

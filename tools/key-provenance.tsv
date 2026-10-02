@@ -1,66 +1,19 @@
-# Where each signing key is PUBLISHED, independently of the signature it makes.
-#
-# Read by tools/verify-signatures.sh, which fetches each key from the locator
-# recorded here rather than asking a keyserver for the id a signature named.
-#
-# THE DISTINCTION THIS FILE EXISTS FOR.
-#
-#   DISCOVERY may be circular. Asking a keyserver for the key id a signature
-#   names is how you find out which address to look up. It establishes nothing:
-#   it proves a file was signed by whoever signed it.
-#
-#   CONFIRMATION must not be. A fingerprint earns a row here only when some
-#   publisher states it by a route that does not depend on the signature, and
-#   the row records exactly which route and when it was walked.
+# Where each signing key is published, by a route that does not depend on its signatures.
+# tools/verify-signatures.sh fetches each key from its locator and refuses one that has changed.
+# A refused key fails every source its row signs, held copy or not; a retired key's row goes.
+# All kinds rest on TLS and none is out-of-band confirmation; the script's pins are stronger.
+# Walk each route yourself: never copy a fingerprint from package metadata or a blog post.
 #
 # Columns are whitespace separated; the note runs to the end of the line.
-#
-#   fingerprint  the full 40-character primary key fingerprint, uppercase
-#   kind         korg | wkd | github
-#   locator      kind korg: the URL the armoured key was fetched from
-#                kind wkd:  the email address whose Web Key Directory serves it
-#                kind github: https://github.com/<account>.gpg
-#   retrieved    the date the confirmation was walked
-#   signs        comma-separated source names this key signs, no spaces
-#   note         the uid as published, and anything a reader needs
-#
-# What each kind establishes, precisely:
-#
-#   korg  git.kernel.org/pub/scm/docs/kernel/pgpkeys.git, whose README states
-#         its purpose as distributing "Linux kernel developer PGP keys that
-#         have valid trust paths to Linus Torvalds", one armoured key per long
-#         key id. A match means kernel.org publishes THIS EXACT KEY for a
-#         developer of that name.
-#
-#   wkd   the Web Key Directory of the signer's own email domain, served over
-#         HTTPS by that domain. A match means that domain publishes this key
-#         for that address. It is a third party's statement about the key and
-#         is not upstream designating a release signer.
-#
-#   github  the key GitHub publishes for a named account, AND that account is
-#         the one that published the release we pin - checked through the
-#         releases API and recorded in the note. This only ever applies to a
-#         release whose tarball GitHub itself serves: the platform is already
-#         the delivery channel, so taking the key from the same platform adds
-#         no single point of failure that the download did not already have.
-#         BE CLEAR ABOUT THE LIMIT: an attacker holding that GitHub account
-#         breaks both halves at once. What it does establish is that the
-#         fingerprint was not learned from the signature under test - it came
-#         from the account that publishes the releases.
-#
-# NONE IS OUT-OF-BAND CONFIRMATION. All three rest on TLS and the CA system, and
-# no human here has checked any of these fingerprints through a second channel.
-# They are strictly better than a keyserver lookup by the id under test, and
-# strictly weaker than a fingerprint Kryptik chose in advance - which is what
-# PINNED_FPRS in tools/verify-signatures.sh is for.
-#
-# ADDING A ROW: walk the confirmation yourself and put the route in locator.
-# Do not copy a fingerprint out of a distribution's package metadata or a blog
-# post. If the publisher later serves a DIFFERENT key for the same locator,
-# verify-signatures.sh treats that as a finding: it refuses the key and fails
-# every source the row signs, held copy or not, because a silently rotated key
-# is the case this file has to be able to notice. When upstream retires a key
-# on purpose, its row goes, and the new key gets a row of its own.
+#   fingerprint  full 40-character primary key fingerprint, uppercase
+#   kind         korg    kernel.org's pgpkeys.git, developer keys with trust paths to Linus Torvalds
+#                wkd     the Web Key Directory of the signer's email domain, a third party's word
+#                github  the key GitHub publishes for the account that published the pinned release
+#   locator      korg: the armoured key's URL; wkd: the email address;
+#                github: https://github.com/<account>.gpg
+#   retrieved    the date the route was walked, YYYY-MM-DD
+#   signs        comma-separated source names, no spaces
+#   note         the uid as published; a github row also says who published the release
 
 # fingerprint                               kind  locator                                                                                      retrieved   signs             note
 259B3792B3D6D319212CC4DCD5BF9FEB0313653A    korg  https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git/plain/keys/D5BF9FEB0313653A.asc       2026-09-26  acl,attr          Andreas Gruenbacher <agruenba@redhat.com>; signs acl 2.4.0 and attr 2.6.0; Mike Frysinger signed acl 2.3.2

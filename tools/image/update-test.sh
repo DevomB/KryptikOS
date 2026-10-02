@@ -1,20 +1,15 @@
 #!/usr/bin/env bash
-# OS updates on an installed system: install release A, update to B, reboot
-# into it, roll back, and check refusals, interruptions and a broken trial.
+# OS updates on an installed system: install A, update to B, roll back; refusals and interruptions.
 #
 #   tools/image/update-test.sh --usb-a IMG_A --payload-a DIR_A --payload-b DIR_B
 #                              [--foreign DIR] [--disk FILE] [--timeout N]
 #                              [--vars clean|enrolled | --vars-file FILE]
 #
-#   --foreign DIR    a payload signed by a key B does not trust, which B must
-#                    refuse: the other role's build, or another medium's;
-#                    required when B is a production release
-#   --vars-file FILE the firmware variable store to start from, for media
-#                    signed with a key other than this build's own
+#   --foreign DIR    a payload signed by a key B does not trust (the other role's build,
+#                    or another medium's); required when B is a production release
+#   --vars-file FILE the variable store to start from, for media another key signed
 #
-# A and B are two stage 06 releases of this tree (make media KRYPTIK_VERSION=...
-# twice). Steps 2-7 give the guest the payload on an ext4 disk image; step 8
-# has the net zone fetch it (docs/design/update-channel.md).
+# A and B: stage 06 releases (make media KRYPTIK_VERSION=... twice); B's manifest says the role.
 #
 #   step 1  install A, boot, create a zone volume and a home file
 #   step 2  apply B, reboot: slot b committed, data intact
@@ -24,14 +19,11 @@
 #           manifest for the other role, signed by B's own key
 #   step 4  apply A with --recovery, reboot: slot a
 #   step 5  rollback: slot b again
-#   step 6  the VM killed mid-write (the slot then named by nothing on the
-#           ESP, so rollback refuses it), then after arming: both recover
+#   step 6  the VM killed mid-write (rollback then refuses the unnamed slot),
+#           then after arming: both recover
 #   step 7  a corrupt trial falls back to slot a, is recorded, needs --retry
-#   step 8  B fetched by the net zone from a loopback release host, applied.
-#           A production image fetches nothing over plain http, and says so
-#
-# Whether A and B are development or production releases is read from B's
-# manifest.
+#   step 8  B fetched by the net zone from a loopback release host and applied;
+#           a production image fetches nothing over plain http, and says so
 set -uo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -49,7 +41,7 @@ while [[ "$#" -gt 0 ]]; do
         --vars) VARS="${2:?}"; shift 2 ;;
         --vars-file) VARS_FILE="${2:?}"; shift 2 ;;
         --timeout) TIMEOUT="${2:?}"; shift 2 ;;
-        -h|--help) sed -n '2,32p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,26p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -72,11 +64,7 @@ elif [[ "$B_ROLE" == production ]]; then
     die "a production B must refuse a build it does not trust: name one with --foreign DIR"
 fi
 [[ -z "$VARS_FILE" || -f "$VARS_FILE" ]] || die "--vars-file ${VARS_FILE} is not a file"
-# Stage 06 publishes B into a channel beside its payload with
-# tools/release-channel.sh (this job has no private key): the signed statement
-# that B is current, and B under ${VB}/. not-a-pointer, its control, is the
-# same text signed by the release key in the manifest's namespace; only a
-# development build makes it.
+# Stage 06's channel beside B; not-a-pointer, its control, comes with development builds only.
 CHAN_B="$(dirname "$PAY_B")/channel-${VB}"
 CHAN_FILES=(latest latest.sig "${VB}/manifest")
 [[ "$B_ROLE" == development ]] && CHAN_FILES+=(not-a-pointer not-a-pointer.sig)
@@ -98,8 +86,7 @@ if [[ -n "$VARS_FILE" ]]; then
 elif [[ "$VARS" == "enrolled" ]]; then cp "${KRYPTIK_WORK}/keys/sb/vars/enrolled.fd" "$VARSF"
 else cp /usr/share/OVMF/OVMF_VARS_4M.fd "$VARSF"; fi
 
-# A payload as a plain ext4 disk image, which the guest mounts read-only under
-# /run (its root is read-only, so no mount point can be made under /mnt).
+# A payload as an ext4 disk image, mounted under /run: the read-only root takes no new mount point.
 payload_disk() {   # payload_disk OUT DIR
     rm -f "$1"; local bytes; bytes="$(du -sb "$2" | cut -f1)"
     truncate -s $(( bytes + bytes / 10 + 64 * 1024 * 1024 )) "$1"
@@ -108,12 +95,9 @@ payload_disk() {   # payload_disk OUT DIR
 PA="${VMDIR}/payload-a.img"; PB="${VMDIR}/payload-b.img"
 payload_disk "$PA" "$PAY_A"; payload_disk "$PB" "$PAY_B"
 
-# Variants of A for the refusals, applied on B with --recovery, which admits
-# the older version so the check under test is reached (a variant of the
-# running version would stop at "nothing to apply").
+# Variants of A, applied with --recovery so the older version reaches the check under test.
 BAD="${VMDIR}/bad"; rm -rf "$BAD"; mkdir -p "$BAD"
-# Payload A hard-linked, and a real copy of each FILE the variant changes in
-# place: a root image is gigabytes, and mkfs -d stores a link once.
+# A hard-linked, with copies of the FILEs changed in place: mkfs -d stores a link once.
 mk_variant() {   # mk_variant NAME [FILE...]
     rm -rf "${BAD:?}/$1"
     cp -al "$PAY_A" "$BAD/$1" 2>/dev/null || cp -a --sparse=always "$PAY_A" "$BAD/$1"
@@ -121,15 +105,13 @@ mk_variant() {   # mk_variant NAME [FILE...]
         rm -f "$BAD/$1/$f"; cp --sparse=always "$PAY_A/$f" "$BAD/$1/$f"
     done
 }
-# The byte at OFFSET, inverted: a fixed value can land on a byte that already
-# holds it, and the "modified" payload is then A itself.
+# Inverted, not overwritten: a fixed value may already be there and leave the file as it was.
 flip() {   # flip FILE OFFSET
     local b; b="$(od -An -tu1 -j "$2" -N1 "$1" 2>/dev/null | tr -d ' ')" || b=""
     [[ -n "$b" ]] || die "flip: ${1} has no byte at offset ${2}"
     printf '%b' "\\x$(printf '%02x' $(( b ^ 255 )))" | dd of="$1" bs=1 seek="$2" conv=notrunc status=none
 }
-# A variant's FILE must not be the one A's manifest lists, or its refusal
-# check could pass on a genuine payload.
+# A variant's FILE must differ from A's, or its refusal check could pass on a genuine payload.
 changed() {   # changed NAME FILE
     local want; want="$(awk -v f="$2" '$3 == f { print $1; exit }' "$PAY_A/manifest")"
     [[ -n "$want" && "$(sha256sum "$BAD/$1/$2" | cut -c1-64)" != "$want" ]] \
@@ -145,10 +127,7 @@ mk_variant hidden; mkdir -p "$BAD/hidden/lost+found"; echo "ride along" > "$BAD/
 # The statement and its control, for step 3 to check offline against the real anchor.
 mkdir -p "$BAD/statement"; cp "$CHAN_B/latest" "$CHAN_B/latest.sig" "$BAD/statement/"
 [[ "$B_ROLE" == development ]] && cp "$CHAN_B/not-a-pointer" "$CHAN_B/not-a-pointer.sig" "$BAD/statement/"
-# The signature and the role are checked before any file, so these two need
-# only a manifest and its signature: the other role's build, and, beside a
-# development B, stage 06's role control (B's manifest for production, signed
-# by B's own key).
+# Signature and role are checked before any file: the foreign and role cases need only a manifest.
 [[ -n "$FOREIGN" ]] && { mkdir -p "$BAD/foreign"; cp "$FOREIGN/manifest" "$FOREIGN/manifest.sig" "$BAD/foreign/"; }
 if [[ "$B_ROLE" == development ]]; then
     ROLECTL="$(dirname "$PAY_B")/role-control-${VB}"
@@ -167,11 +146,18 @@ stop_unless_ok() {   # stop_unless_ok RC WHAT
     exit 1
 }
 
+# QEMU told to quit over QMP: the guest gets no clean shutdown.
+qmp_quit() {
+    python3 - "$QMP" <<'PY'
+import socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect(sys.argv[1]); f = s.makefile("rwb", buffering=0)
+f.readline(); f.write(b'{"execute":"qmp_capabilities"}\n'); f.readline(); f.write(b'{"execute":"quit"}\n'); f.readline()
+PY
+}
+
 # ----------------------------------------------------------------- step 1 --
 step "step 1: install ${VA}, boot it, create zone data"
-# Sized from the medium, with room for one payload: the release step 8 fetches
-# is staged on kryptik-state, and every other step applies from the payload
-# disk, mounted read-only.
+# Room for one payload: the release step 8 fetches is staged on kryptik-state.
 fresh_disk "$USB_A" --payloads 1
 install_disk update-install "$USB_A" "${INSTALL_VARS[@]}" && green "A installed" || { red "A did not install"; exit 1; }
 
@@ -277,11 +263,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'mkdir -p /run/upd/a && mount -o ro /dev/vdb /run/upd/a && echo MNT-OK')" "expect:MNT-OK" \
     "send:su - root -c 'kryptik-update apply /run/upd/a --recovery'" "expect:Password: ?" "send:${RPASS}" \
     "expect:writing kryptik-a"
-python3 - "$QMP" <<'PY'
-import json, socket, sys
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect(sys.argv[1]); f = s.makefile("rwb", buffering=0)
-f.readline(); f.write(b'{"execute":"qmp_capabilities"}\n'); f.readline(); f.write(b'{"execute":"quit"}\n'); f.readline()
-PY
+qmp_quit
 sleep 2; stop_vm
 green "VM killed while slot a was being written (QMP quit, no clean shutdown)"
 start_vm update-p6b --disk "$PA"
@@ -294,11 +276,7 @@ rc=$?
 [[ "$rc" -eq 0 ]] && green "after the interrupted write: still slot b, no trial, slot a named by nothing and refused by rollback; the apply succeeds again" || red "step 6a drive failed"
 stop_unless_ok "$rc" "step 6a"
 # armed, now kill again before the reboot: the firmware consumes BootNext at the next boot
-python3 - "$QMP" <<'PY'
-import socket, sys
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect(sys.argv[1]); f = s.makefile("rwb", buffering=0)
-f.readline(); f.write(b'{"execute":"qmp_capabilities"}\n'); f.readline(); f.write(b'{"execute":"quit"}\n'); f.readline()
-PY
+qmp_quit
 sleep 2; stop_vm
 start_vm update-p6c
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
@@ -309,10 +287,8 @@ rc=$?; stop_vm
 stop_unless_ok "$rc" "step 6c"
 
 # ----------------------------------------------------------------- step 7 --
-step "step 7: a deliberately broken trial falls back, is recorded, and is refused until retried"
-# From slot a: arm B, power off, corrupt slot b from the host, boot. The trial
-# panics in dm-verity, panic=10 reboots with BootNext spent, slot a comes up
-# and boot-success records the failure; apply then needs --retry.
+step "step 7: a broken trial falls back, is recorded, and is refused until retried"
+# The corrupt trial panics in dm-verity; panic=10 reboots with BootNext spent, so slot a comes up.
 start_vm update-p7 --disk "$PB"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'cat /run/kryptik/boot-identity | head -1; mkdir -p /run/upd/p && mount -o ro /dev/vdb /run/upd/p && kryptik-update apply /run/upd/p && echo ARM7-OK')" \
@@ -322,8 +298,7 @@ rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "B armed from slot a" || red "step 7 arming failed"
 stop_unless_ok "$rc" "step 7 arming"
 B_OFF=$(( $(part_start "$DISK" 3) * 512 ))
-# The superblock's volume name, the first block a root mount reads (a block
-# nothing reads at boot would let the trial succeed).
+# The superblock's volume name: the root mount reads it first, so the trial cannot get past it.
 printf '\xa5' | dd of="$DISK" bs=1 seek=$(( B_OFF + 1024 + 0x78 )) conv=notrunc status=none
 green "slot b's root image corrupted from the host (one byte in the superblock)"
 start_vm update-p7b --disk "$PB"
@@ -344,16 +319,14 @@ drive "expect:BdsDxe: starting Boot" \
 rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "broken trial: verity panic, fallback to a, trial-failed recorded, refused without --retry, rewritten and committed with it; data intact" || red "step 7 drive failed"
 txt | grep -q 'boot-success: trial slot b did NOT boot' && green "boot-success named the failed trial" || red "boot-success did not record the failed trial"
-# loglevel=4 keeps the kernel banner off the console (every "Linux version" is
-# boot-smoke's, from userspace), so boots are counted by the firmware's line.
+# loglevel=4 hides the kernel banner ("Linux version" is boot-smoke's): count the firmware's starts.
 starts="$(txt | grep -c 'BdsDxe: starting Boot')"; ups="$(txt | grep -c 'KRYPTIK_SMOKE: END')"; panics="$(txt | grep -c 'Kernel panic')"
 if [[ "$starts" -ge 3 && "$ups" -ge 2 && "$panics" -ge 1 ]]; then green "three boots in one session: the corrupt trial (panicked), the fallback and the retried trial (both reached userspace)"; else red "expected three boots: firmware starts=${starts}, userspace ends=${ups}, panics=${panics}"; fi
 
 # ----------------------------------------------------------------- step 8 --
 if [[ "$B_ROLE" == development ]]; then step "step 8: ${VB} once more, fetched by the net zone and staged by zone 0"
 else step "step 8: ${VB}'s statement over plain http, by which a production image fetches nothing"; fi
-# Step 7 leaves B committed with nothing newer to fetch, so roll back to A
-# first.
+# Step 7 leaves B committed with nothing newer to fetch, so roll back to A first.
 start_vm update-p8
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'kryptik-update rollback && echo RB8-OK')" "expect:armed: the next boot tries slot a" "expect:RB8-OK" \
@@ -365,9 +338,7 @@ rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "back on slot a (${VA}) by rollback, with room for one staged release" || red "step 8: the rollback to slot a failed"
 stop_unless_ok "$rc" "step 8 rollback"
 
-# The release host serves the channel stage 06 published, as it stands, on
-# loopback (10.0.2.2 to the guest); plain http is for development images only.
-# The trap stops the host however the suite ends.
+# The release host serves stage 06's channel on loopback; the trap stops it however the suite ends.
 CHAN_LOG="${VMDIR}/channel-requests.log"; : > "$CHAN_LOG"; rm -f "${VMDIR}/channel.port"
 python3 "${SELF}/release-host.py" "$CHAN_B" "${VMDIR}/channel.port" "$CHAN_LOG" > "${VMDIR}/channel-host.err" 2>&1 &
 CHAN_PID=$!
@@ -376,21 +347,13 @@ for _ in $(seq 50); do [[ -s "${VMDIR}/channel.port" ]] && break; sleep 0.1; don
 CHAN_PORT="$(cat "${VMDIR}/channel.port" 2>/dev/null)"
 [[ -n "$CHAN_PORT" ]] || die "the release host did not start: $(cat "${VMDIR}/channel-host.err")"
 
-# Restart the net zone so it reads the new update.conf, as zones-check.sh
-# does, and wait for a new "netzone: READY" line. A ROOTSH command may hold no
-# single quote (su -c wraps it in them) and must not exit the shell (the
-# driver's marker must still print), hence the subshell.
+# A ROOTSH command holds no single quote (su -c adds them) and must not exit: hence the subshell.
 RESTART_NET='before=$(grep -hc "netzone: READY" /run/uncaught-logs/current 2>/dev/null); before=${before:-0}; s6-svc -d /run/service/net-zone; sleep 3; s6-svc -u /run/service/net-zone; (i=0; until [ "$(grep -hc "netzone: READY" /run/uncaught-logs/current 2>/dev/null || true)" -gt "$before" ]; do i=$((i+1)); [ $i -lt 90 ] || exit 1; sleep 1; done) && echo NET-RESTARTED || echo NET-NOT-READY'
-# Waits on progress, not a clock: done at "complete", failed after 100 s with
-# no change (the net zone polls once a minute), and after six minutes of
-# arrival it passes, for the next wait to take over.
+# Ends at "complete"; fails after 100 s unchanged (polls are a minute apart); hands on after 6 min.
 wait_arrival() { printf '%s' '(prev=; same=0; i=0; while [ $i -lt 72 ]; do s="$(kryptik update status | sed -n "s/^staged *//p")"; case "$s" in *"bytes, complete"*) echo ARRIVED-WHOLE; exit 0 ;; esac; if [ "$s" = "$prev" ]; then same=$((same+1)); else same=0; prev="$s"; fi; [ $same -lt 20 ] || { echo "STALLED at: $s"; exit 1; }; i=$((i+1)); sleep 5; done; echo "still arriving: $s")'; }
-# Waits until status shows $1, then prints $2 for the driver to expect (echo is
-# off, so only the output shows it). Giving up fails the run: step.
+# Prints $2 once status shows $1 (echo is off, so only output shows it); giving up fails the step.
 wait_status() { printf '(i=0; until kryptik update status | grep -q "%s"; do i=$((i+1)); [ $i -lt 72 ] || exit 1; sleep 5; done) && echo %s || { kryptik update status; false; }' "$1" "$2"; }
-# The step assumes slot a; check, as the firmware's own boot order can still
-# name the last slot tried. The statement is signed, so it is taken over plain
-# http on either role.
+# The firmware may boot the last slot tried, so check for a; a signed statement is safe over http.
 UP_TO_STATEMENT=("expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'echo P8B-BOOTED-$(sed -n "s/^slot=//p" /run/kryptik/boot-identity | head -1)')" "expect:P8B-BOOTED-a" \
     "$(ROOTSH "mkdir -p /etc/kryptik && printf \"channel = http://10.0.2.2:${CHAN_PORT}/\\n\" > /etc/kryptik/update.conf && echo CONF-OK")" "expect:CONF-OK" \
@@ -399,8 +362,7 @@ UP_TO_STATEMENT=("expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "run:$(wait_status "newest     ${VB} " STATED-OK)" "expect:STATED-OK")
 start_vm update-p8b --net user
 if [[ "$B_ROLE" == production ]]; then
-    # A production image fetches no release over plain http, and the user who
-    # asks is told why, not left with a poll that answers idle.
+    # A production image fetches nothing over plain http, and tells a user who asks why.
     drive "${UP_TO_STATEMENT[@]}" \
         "run!:kryptik update fetch" "expect:a production image does not fetch over plain http" \
         "$(ROOTSH 'sleep 70; echo STAGED=$(ls /var/lib/kryptik/update/incoming 2>/dev/null | wc -l)')" "expect:STAGED=0" \
@@ -411,8 +373,6 @@ if [[ "$B_ROLE" == production ]]; then
     asked="$(awk '{sub("^/", "", $1); print $1}' "$CHAN_LOG" | sort -u | tr '\n' ' ')"
     [[ "$asked" == "latest latest.sig " ]] && green "the release host was asked for the statement alone" || red "the release host was asked for: ${asked}"
 else
-    # In order: the statement arrives, nothing is fetched until the user asks,
-    # the release arrives whole, then apply, trial boot and commit.
     drive "${UP_TO_STATEMENT[@]}" \
         "$(ROOTSH 'sleep 70; echo STAGED-UNASKED=$(ls /var/lib/kryptik/update/incoming 2>/dev/null | wc -l)')" "expect:STAGED-UNASKED=0" \
         "run:kryptik update fetch" "expect:${VB} will be fetched" \
@@ -434,8 +394,6 @@ else
     last_boot="$(txt | sed -n 's/^KRYPTIK_SMOKE: os_id=.* version_id=//p' | tail -1)"
     [[ "$first_boot" == "$VA" && "$last_boot" == "$VB" ]] && green "the guest booted ${VA} and, after the fetched update, reports ${VB}" \
         || red "the guest's boots in this step: first ${first_boot:-none}, last ${last_boot:-none}; wanted ${VA} then ${VB}"
-    # What the release host was asked for: the statement, then the manifest and
-    # its signature before anything large.
     first="$(awk '{sub("^/", "", $1); if (!seen[$1]++) print $1}' "$CHAN_LOG" | head -5 | tr '\n' ' ')"
     if [[ "$first" == "latest latest.sig ${VB}/manifest ${VB}/manifest.sig "* ]]; then green "the release host was asked for the statement, then the manifest and its signature, before any image"; else red "the release host was asked in another order: ${first}"; fi
 fi

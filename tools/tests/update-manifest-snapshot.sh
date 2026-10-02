@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# Test kryptik-update's verify_payload with the real ssh-keygen: the manifest is
-# read once, before the signature check, so files swapped in after the check
-# cannot change the version or hashes. Also tests check-manifest and
-# check-pointer. Needs ssh-keygen with -Y (OpenSSH 8.2+).
+# Test kryptik-update's verify_payload, check-manifest and check-pointer with ssh-keygen -Y.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TOOL="$ROOT/tools/update/kryptik-update"
@@ -51,8 +48,7 @@ mkpayload replacement 3
 
 ssh-keygen -q -t ed25519 -N '' -f key >/dev/null 2>&1 || { echo "cannot make a key"; exit 77; }
 ssh-keygen -q -t ed25519 -N '' -f latestkey >/dev/null 2>&1 || { echo "cannot make a key"; exit 77; }
-# The trust anchor as stage 04 installs it: each key limited to its own
-# namespace (release: manifests; latest: statements of what is current).
+# The trust anchor as stage 04 installs it: each key limited to its own namespace.
 {
     printf 'kryptik-release namespaces="kryptik-release" %s\n' "$(cut -d' ' -f1,2 key.pub)"
     printf 'kryptik-latest namespaces="kryptik-latest" %s\n' "$(cut -d' ' -f1,2 latestkey.pub)"
@@ -60,8 +56,7 @@ ssh-keygen -q -t ed25519 -N '' -f latestkey >/dev/null 2>&1 || { echo "cannot ma
 ssh-keygen -Y sign -f key -n kryptik-release signed/manifest >/dev/null 2>&1 || { echo "cannot sign"; exit 77; }
 printf 'development\n' > role
 
-# The tool's functions, verbatim, with the environment they expect. die exits,
-# so each case runs in its own bash.
+# The tool's functions verbatim, with their environment; die exits, so each case runs alone.
 {
     echo 'NAMESPACE=kryptik-release'
     echo 'MAGIC=KRYPTIK-MANIFEST-1'
@@ -79,9 +74,7 @@ grep -q '^verify_payload() {' verify.sh || { echo "could not extract verify_payl
 
 grep -q '^pin() {' verify.sh || { echo "could not extract pin from $TOOL"; exit 1; }
 
-# run_case NAME WHAT: verify_payload over a fresh copy of the signed payload,
-# with WHAT changed the moment ssh-keygen verifies. Prints the tool's output,
-# plus VERSION=<reported> if it accepted.
+# run_case NAME WHAT: verify_payload on a copy of the signed payload, WHAT changed as it verifies.
 run_case() {
     local name="$1" what="$2"
     rm -rf "$T/payload" "$T/snap-$name"; cp -a "$T/signed" "$T/payload"; mkdir -p "$T/snap-$name"
@@ -116,8 +109,7 @@ EOF
 out="$(run_case plain none)"
 if [[ "$out" == *"VERSION=2"* ]]; then ok "the signed payload verifies and reports version 2"; else bad "the signed payload did not verify: $(tail -2 <<<"$out" | tr '\n' ' ')"; fi
 
-# Only the manifest replaced: the kept copy still matches the files, so the
-# answer is version 2, never 3.
+# Only the manifest replaced: the kept copy still matches the files, so the answer stays 2.
 out="$(run_case manifest manifest)"
 if [[ "$out" == *"VERSION=3"* ]]; then
     bad "the replaced, unsigned manifest was read after the signature check (version 3)"
@@ -156,9 +148,7 @@ else
     ok "control: the real verifier rejects the replacement manifest"
 fi
 
-# --- the update channel's two checks -----------------------------------------
-# Zone 0 runs these before it believes a manifest or a statement of what is
-# current (docs/design/update-channel.md).
+# --- check-manifest and check-pointer, run by zone 0 before it believes either -----
 check() {   # check FUNCTION ARGS... -> the tool's output, REFUSED: on a refusal
     { echo "source $T/verify.sh"; printf 'SNAP=%q\n' "$(mktemp -d "$T/snap.XXXXXX")"; printf '%q ' "$@"; echo; } > "$T/check.sh"
     bash "$T/check.sh" 2>&1
@@ -176,8 +166,7 @@ if [[ "$out" == *"version: 2"* && "$out" == *"sha256: $want_sha"* && "$(grep -c 
 else
     bad "check-manifest on a signed manifest: $(tail -3 <<<"$out" | tr '\n' ' ')"
 fi
-# Zone 0 reads only stdout and wants the version on its first line
-# (compartments/kryptikd/src/update.rs); the case above searches both streams.
+# Zone 0 (kryptikd's update.rs) reads the version from stdout's first line; above, both streams.
 staged stage
 check cmd_check_manifest "$T/stage" > /dev/null
 first="$(bash "$T/check.sh" 2>/dev/null | head -1)"
@@ -185,8 +174,7 @@ first="$(bash "$T/check.sh" 2>/dev/null | head -1)"
     && ok "check-manifest: the first line of its standard output is the version, as zone 0 reads it" \
     || bad "check-manifest: the first line zone 0 reads is '${first}', not 'version: 2'"
 
-# Signed by the right key in the pointer's namespace: a pointer's signature
-# must never pass for a manifest's.
+# The right key in the pointer's namespace: a pointer's signature must not pass for a manifest's.
 staged crossed; rm -f "$T/crossed/manifest.sig"
 ssh-keygen -Y sign -f key -n kryptik-latest "$T/crossed/manifest" >/dev/null 2>&1
 out="$(check cmd_check_manifest "$T/crossed")"
@@ -202,8 +190,7 @@ out="$(check cmd_check_manifest "$T/stranger")"
     && ok "check-manifest: a manifest signed by a key that is not enrolled is refused" \
     || bad "check-manifest accepted a stranger's key: $(tail -2 <<<"$out" | tr '\n' ' ')"
 
-# apply's rules too, as it is the same function: the role, and no downgrade
-# (a network delivery is never a recovery).
+# apply's rules too (the same function): the role, and no downgrade, as a download is no recovery.
 resigned() {   # resigned NAME SED-EXPRESSION -> the signed manifest, edited, signed again
     rm -rf "${T:?}/$1"; mkdir -p "$T/$1"
     sed "$2" "$T/signed/manifest" > "$T/$1/manifest"
@@ -255,8 +242,7 @@ out="$(check cmd_check_pointer "$T/ptr/stranger" "$T/ptr/stranger.sig")"
     && ok "check-pointer: a pointer signed by a key that is not enrolled is refused" \
     || bad "check-pointer accepted a stranger's key: $(tail -2 <<<"$out" | tr '\n' ' ')"
 
-# Each key is enrolled for one namespace only, both ways round; this is what
-# lets the statement key live where a timer can reach it.
+# Each key holds one namespace, both ways round, so the statement key can live where a timer runs.
 cp "$T/ptr/latest" "$T/ptr/by-release-key"
 ssh-keygen -Y sign -f key -n kryptik-latest "$T/ptr/by-release-key" >/dev/null 2>&1
 out="$(check cmd_check_pointer "$T/ptr/by-release-key" "$T/ptr/by-release-key.sig")"
@@ -290,8 +276,7 @@ if [[ "$(id -u)" != 0 ]]; then
     [[ "$out" != *"must run as root"* && "$out" == *"no trust anchor at /usr/share/kryptik/trust/release-signers"* ]] \
         && ok "check-pointer runs without root and stops at the image's trust anchor, which this host does not have" \
         || bad "the tool's own check-pointer, unprivileged: $(tail -2 <<<"$out" | tr '\n' ' ')"
-    # The exit trap removes the tool's copy directory, so the environment must
-    # not choose it.
+    # The exit trap removes the tool's copy directory, so the environment must not choose it.
     mkdir -p "$T/precious"; echo keep > "$T/precious/marker"
     SNAP="$T/precious" sh "$TOOL" check-pointer "$T/ptr/latest" "$T/ptr/latest.sig" >/dev/null 2>&1
     [[ -f "$T/precious/marker" && -z "$(find "$T/precious" -name 'latest*')" ]] \

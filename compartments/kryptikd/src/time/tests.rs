@@ -132,7 +132,7 @@ fn refused_without_floor_or_permission() {
 }
 
 #[test]
-fn clamp_raises_dead_clock_to_floor() {
+fn clamp_raises_dead_clock() {
     let dir = scratch("clamp");
     let mut dead = FakeClock::at(946_684_800.0);
     let said = clamp(&mut dead, &dir, Some(BUILT)).unwrap();

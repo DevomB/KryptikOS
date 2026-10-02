@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
-# Regression probes for the kryptikd zone boundary, through the real launcher
-# (`kryptikd run`). Exit status is the number of failures.
+# Regression probes for the zone boundary, through `kryptikd run`; the exit status counts failures.
 #   compartments/kryptikd/probes/boundary-checks.sh [path/to/kryptikd]
-# Unprivileged on a developer host, where what needs root and the target kernel
-# is reported as not run; also run as root on the installed system
-# (tools/image/zones-test.sh).
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -15,9 +11,7 @@ K="$(cd "$(dirname "$K")" && pwd)/$(basename "$K")"
 # shellcheck source=fixtures.sh
 source "$HERE/fixtures.sh"
 
-# As root, zones need an explicit identity (kryptikd will not map a zone's root
-# to uid 0), and the fixture roots must belong to it: setup drops to that uid
-# before it opens the data directory.
+# As root, zones need an identity other than uid 0, and setup opens their data as that uid.
 IDFLAGS=()
 if [[ "$(id -u)" -eq 0 ]]; then
     IDFLAGS=(--zone-uid 100000 --zone-gid 100000)
@@ -33,8 +27,7 @@ fail() { echo "FAIL  $1"; shift; [[ $# -gt 0 ]] && printf '%s\n' "$1" | sed 's/^
 skip() { echo "SKIP  $1"; SKIPS=$((SKIPS+1)); }
 head_() { echo; echo "== $1"; }
 
-# Noise every launch prints that no check is about: the experimental hint,
-# the swap caveat, inherited groups an unprivileged launcher cannot drop.
+# Lines every launch prints that no check is about.
 denoise() {
     grep -v 'KRYPTIK_EXPERIMENTAL=1 -\|supplementary host group\|not secure erasure\|auto-approve-transfers: every\|NOT encrypted at rest'
 }
@@ -43,9 +36,7 @@ denoise() {
 zrun() {
     local zone="$1"; shift
     [[ "${1:-}" == "--" ]] && shift
-    # No pipe, so ZRC is the launcher's status. stdout and stderr are captured
-    # apart and joined after, zone output first: on one pipe they interleave
-    # mid-line.
+    # Files, not a pipe: ZRC stays the launcher's status, and the two streams cannot interleave.
     local out="$F/zrun.out" err="$F/zrun.err"
     timeout 60 "$K" run "$zone" "${ZFLAGS[@]}" "${IDFLAGS[@]}" --zones "$F/zones" --rootfs "$F/roots" -- "$@" > "$out" 2> "$err"
     ZRC=$?
@@ -54,19 +45,7 @@ zrun() {
 }
 ZFLAGS=()
 
-# check NAME WANT_RC CMD...: run in `probe` and compare rc, and $MATCH if set.
-check() {
-    local name="$1" want="$2"; shift 2
-    zrun probe -- "$@"
-    if [[ "$ZRC" == "$want" ]] && { [[ -z "${MATCH:-}" ]] || grep -q -- "$MATCH" <<<"$ZOUT"; }; then
-        pass "$name"
-    else
-        fail "$name (rc=$ZRC want=$want)" "$ZOUT"
-    fi
-    unset MATCH
-}
-
-# checkz ZONE NAME WANT_RC CMD...: the same, in a named zone.
+# checkz ZONE NAME WANT_RC CMD...: run CMD in ZONE and compare rc, and $MATCH if set.
 checkz() {
     local zone="$1" name="$2" want="$3"; shift 3
     zrun "$zone" -- "$@"
@@ -77,6 +56,9 @@ checkz() {
     fi
     unset MATCH
 }
+
+# check NAME WANT_RC CMD...: checkz in the `probe` zone.
+check() { checkz probe "$@"; }
 
 echo "kryptikd boundary probes - $K"
 echo "fixtures in $F (removed on exit); unprivileged: euid=$(id -u)"
@@ -133,8 +115,7 @@ import socket
 for n,f,t in [('AF_VSOCK',40,1),('AF_ALG',38,5),('AF_PACKET',17,2)]:
     try: socket.socket(f,t); print(n,'OPENED')
     except OSError as e: print(n,'refused',e.errno)"
-# The kernel runs a family's create code before it refuses a pair (EOPNOTSUPP,
-# 95), so the filter refuses every family but AF_UNIX first (97).
+# The kernel runs a family's create code before refusing a pair, so the filter refuses first (97).
 MATCH="^unix-pair inet 97$" check "socketpair(2) makes AF_UNIX pairs and refuses AF_INET by family" 0 /usr/bin/python3 -c "
 import socket
 a,b=socket.socketpair(); a.close(); b.close()
@@ -161,8 +142,7 @@ MATCH="owns the NIC" checkz routedraw "a zone that does not own the NIC may not 
 MATCH="policy" checkz nopolicy "a policy file that does not exist is a refusal, not a fallback" 1 /bin/sh -c "echo RAN-ANYWAY"
 MATCH="ptrace" checkz badpolicy "a policy may not re-allow something on the denied list" 1 /bin/sh -c "echo RAN-ANYWAY"
 
-# Landlock: a zone policy is a second layer, and layers intersect, so it can
-# only take access away.
+# A Landlock policy is a second layer, and layers intersect, so it can only take access away.
 MATCH="^ok$"   checkz narrowed "a zone with a Landlock policy still runs and can read its root" 0 /bin/sh -c "test -r /usr/bin/env && echo ok"
 MATCH="^ok$"   checkz narrowed "... and writes where the policy grants write" 0 /bin/sh -c "echo x > /tmp/f && echo x > /dev/null && echo ok"
 MATCH="^denied$" checkz narrowed "... but NOT its own HOME, which the base rules alone would allow" 0 /bin/sh -c "echo x > \$HOME/f 2>/dev/null && echo WROTE || echo denied"
@@ -176,8 +156,7 @@ MATCH="symbolic link" checkz swapped "... which its next start refuses rather th
 # ---------------------------------------------------------------------------
 head_ "F. Guarantees a build cannot give are refused, not implied"
 
-# Unprivileged, the refusal is that a LUKS2 volume needs a root launch; as
-# root, that the passphrase is missing. Both say "is encrypted:".
+# Unprivileged it needs a root launch, as root a passphrase; both refusals say "is encrypted:".
 MATCH="is encrypted:" checkz sealed "a zone declaring encrypted storage does not start on a plain directory" 1 /bin/sh -c "echo RAN-ANYWAY"
 if "$K" run capped "${ZFLAGS[@]}" "${IDFLAGS[@]}" --zones "$F/zones" --rootfs "$F/roots" -- /bin/sh -c "echo LIMITS-RAN" 2>&1 | grep -q LIMITS-RAN; then
     pass "[limits] is enforced here: cgroups are creatable and the zone ran"
@@ -213,16 +192,12 @@ MATCH="^kryptik-broker 1 zone=probe$" check "a zone reaches its own broker and i
 "
 MATCH="^error: unknown verb$" check "an unknown verb is refused"        0 /usr/bin/python3 -c "$BRK" "steal
 "
-# The clock (docs/design/time.md): only the zone that holds the network may
-# claim a time. A malformed claim is refused at parse time, before the caller
-# is checked.
+# Only the zone holding the network may claim a time (docs/design/time.md); parsing comes first.
 MATCH="does not hold the network" check "the clock's verb is refused from a zone that does not hold the network" 0 /usr/bin/python3 -c "$BRK" "time-offset 5 4
 "
 MATCH="is not an offset in seconds" check "a time claim outside the grammar is refused at parse time" 0 /usr/bin/python3 -c "$BRK" "time-offset 1e9 4
 "
-# The update channel (docs/design/update-channel.md): only the zone that holds
-# the network may bring a release. Other zones are refused before any payload
-# is read, and a malformed request at parse time, before that.
+# Only the zone holding the network may bring a release (docs/design/update-channel.md).
 MATCH="does not hold the network" check "a statement of what is current is refused from a zone that does not hold the network" 0 /usr/bin/python3 -c "$BRK" "update-latest 5 3
 helloabc"
 MATCH="does not hold the network" check "asking whether a release is wanted is refused from a zone that does not hold the network" 0 /usr/bin/python3 -c "$BRK" "update-poll
@@ -251,10 +226,7 @@ s=socket.socket(socket.AF_UNIX); s.connect("/run/kryptik/broker")
 s.sendmsg([("transfer %s %s\n"%(dest,name)).encode()],[(socket.SOL_SOCKET,socket.SCM_RIGHTS,array.array("i",[fd]))])
 print(s.recv(300).decode().strip())'
 
-# A real transfer between two running zones: packet announces itself, waits
-# for the file and reports it; probe then sends one. Waits are bounded polls,
-# not sleeps, as zone start-up time varies widely. The broker creates the file
-# under its final name before filling it, so an empty file is still landing.
+# packet polls for a non-empty file: the broker creates it under its final name before filling it.
 "$K" run packet "${ZFLAGS[@]}" "${IDFLAGS[@]}" --zones "$F/zones" --rootfs "$F/roots" -- /usr/bin/python3 -u -c "
 import os,time
 print('PACKET-UP')
@@ -288,8 +260,7 @@ MATCH="not a regular file" check "a descriptor to a directory is refused" 0 /bin
 MATCH="not on the zone" check "a file from the zone's tmpfs, not its data mount, is refused" 0 /bin/sh -c "echo x > /tmp/f && python3 -c '$TX' packet f /tmp/f 0"
 MATCH="not running" check "a destination that is not running is refused"  0 /bin/sh -c "echo x > /home/probe/f && python3 -c '$TX' packet f /home/probe/f 0"
 ZFLAGS=()
-# Consent is asked only for a running destination. Nobody answers here, so a
-# short deadline makes that a refusal rather than a timeout.
+# Consent is asked only for a running destination; a short deadline makes no answer a refusal.
 "$K" run packet "${IDFLAGS[@]}" --zones "$F/zones" --rootfs "$F/roots" -- /usr/bin/python3 -u -c "
 import time
 print('PACKET-UP')
@@ -304,9 +275,7 @@ MATCH="single path component" check "a name carrying a path separator is refused
 # ---------------------------------------------------------------------------
 head_ "H. The zone dies with its launcher"
 
-# MARK is argv[0] of the zone's command, so `pgrep -f "^$MARK"` matches it and
-# not the launcher, whose command line carries it further along. The zone must
-# be up before its launcher is signalled; both waits are bounded polls.
+# MARK is argv[0] of the zone's command, so "^$MARK" matches it and not the launcher.
 MARK="kryptik-probe-sleep-$$"
 zone_up()   { for _ in $(seq 1 300); do pgrep -f "^$MARK" >/dev/null && return 0; kill -0 "$1" 2>/dev/null || return 1; sleep 0.1; done; return 1; }
 zone_gone() { for _ in $(seq 1 100); do pgrep -f "^$MARK" >/dev/null || return 0; sleep 0.1; done; return 1; }
@@ -334,7 +303,7 @@ dies_with TERM
 # ---------------------------------------------------------------------------
 head_ "I. What only a privileged run on the target kernel can show"
 if [[ "$(id -u)" -eq 0 ]]; then
-    skip "I   running as root here would still not be the target kernel; use security/probes/vm-*.sh in a disposable VM"
+    skip "I   the target-kernel rows are outside this suite, as root or not"
 else
     skip "per-zone host identity (uid_base): every zone maps to this one user unprivileged"
     skip "the NIC really moving into the nic zone, and routed zones addressed on the bridge"

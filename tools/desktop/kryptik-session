@@ -1,8 +1,6 @@
 #!/bin/sh
-# kryptik-session: the zoned desktop, exec'd by /etc/profile.d for a tty1 login.
-# Runs as that user, never with privilege: anything that needs root, starting
-# zones included, goes to the launch daemon through kryptik-launch. The user
-# needs groups seat (seatd) and kryptik (the daemon); kryptik-firstboot grants both.
+# kryptik-session: the zoned desktop, exec'd by /etc/profile.d for a tty1 login, never as root.
+# Needs groups seat (seatd) and kryptik (the launch daemon); kryptik-firstboot grants both.
 
 umask 077
 
@@ -10,8 +8,7 @@ if [ "$(id -u)" -eq 0 ]; then
     echo "kryptik-session: the desktop is an ordinary user's session, not root's" >&2
     exit 1
 fi
-# A degraded state partition (sysinit.sh) could keep nothing: say so and exit,
-# which ends the login.
+# A degraded state partition (sysinit.sh) keeps nothing: exit, which ends the login.
 if [ -r /run/kryptik/state-degraded ]; then
     echo "kryptik-session: NOT starting the desktop: state is degraded ($(cat /run/kryptik/state-degraded))." >&2
     echo "kryptik-session: nothing would persist. Repair the state partition, or boot the install medium." >&2
@@ -32,11 +29,9 @@ esac
 export XDG_RUNTIME_DIR="$rt"
 export XDG_SESSION_TYPE=wayland
 export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
-# No WAYLAND_DISPLAY: wlroots would take it as a display to nest in. dwl names
-# its own socket and exports it to the chrome.
+# wlroots would nest in a set WAYLAND_DISPLAY; dwl names its own socket for the chrome.
 unset WAYLAND_DISPLAY WAYLAND_SOCKET DISPLAY
-# pixman is the only renderer built (s_wlroots), and wlroots picks it by itself
-# only for a GPU without a render node.
+# pixman, the only renderer built (s_wlroots), is picked unasked only without a render node.
 export WLR_RENDERER=pixman
 mkdir -p "$rt/kryptik" && chmod 0700 "$rt/kryptik"
 log="$rt/kryptik/session.log"
@@ -50,7 +45,5 @@ log="$rt/kryptik/session.log"
     done
 } >> "$log"
 
-# dwl draws the zone borders (build/desktop/dwl-config.h) and pipes its status
-# to the chrome, which shows the focused zone and is the launcher. When dwl
-# exits, the login ends and tty1 returns to the login prompt.
+# dwl pipes its status to the chrome; when dwl exits, the login ends.
 exec /usr/bin/dwl -s /usr/bin/kryptik-chrome 2>> "$log"

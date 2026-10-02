@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Synthetic zones for the kryptikd boundary probes, sourced by boundary-checks.sh.
-# Exports $F, a temporary root (removed on exit) holding zones/, zones/policy/
-# and roots/. Nothing here is secret; payloads are the strings a check greps for.
+# Synthetic zones for boundary-checks.sh, under $F (zones/, zones/policy/, roots/; removed on exit).
 set -u
 
 F="$(mktemp -d -t kryptik-probe-XXXXXX)"
@@ -17,8 +15,7 @@ zone() { # zone NAME BODY...
     mkdir -p "$F/roots/$name"
 }
 
-# probe: the ordinary zone most checks run in. No policy file: base seccomp
-# allowlist and CAP_NET_BIND_SERVICE only.
+# probe: where most checks run, with no policy file: the base allowlist and CAP_NET_BIND_SERVICE.
 zone probe \
     '[zone]' 'name = "probe"' \
     '[network]' 'mode = "routed"' \
@@ -26,8 +23,7 @@ zone probe \
     '[transfer]' 'to = "packet"' \
     '[ui]' 'border_color = "#123456"'
 
-# packet: the transfer destination. Its policy allows AF_PACKET but keeps no
-# capability, so the socket passes seccomp and the kernel refuses it.
+# packet: the transfer destination, allowed AF_PACKET but no capability, so the kernel refuses it.
 zone packet \
     '[zone]' 'name = "packet"' \
     '[network]' 'mode = "none"' \
@@ -38,8 +34,7 @@ printf '%s\n' \
     '# Synthetic: the socket family is allowed, no capability is kept.' \
     'allow-socket AF_PACKET' > "$F/zones/policy/packet.seccomp"
 
-# capped: declares [limits]. Where cgroups cannot be created it must be
-# refused, naming [limits].
+# capped: declares [limits], which must be refused where cgroups cannot be created.
 zone capped \
     '[zone]' 'name = "capped"' \
     '[network]' 'mode = "none"' \
@@ -54,16 +49,14 @@ zone keeper \
     '[storage]' 'mode = "persistent"' \
     '[ui]' 'border_color = "#fedcba"'
 
-# sealed: encrypted storage must refuse to start, never fall back to a plain
-# directory.
+# sealed: encrypted storage must refuse to start, never fall back to a plain directory.
 zone sealed \
     '[zone]' 'name = "sealed"' \
     '[network]' 'mode = "none"' \
     '[storage]' 'mode = "encrypted"' 'volume = "/dev/null"' \
     '[ui]' 'border_color = "#0f0f0f"'
 
-# nicholder: the NIC owner every zone set needs, and the zone NIC-only policy
-# rules apply to. It names no interface, so none is moved.
+# nicholder: the NIC owner every zone set needs; it names no interface, so none is moved.
 zone nicholder \
     '[zone]' 'name = "nicholder"' \
     '[network]' 'mode = "nic"' \
@@ -76,8 +69,7 @@ printf '%s\n' \
     'keep-capability CAP_NET_RAW' \
     'keep-capability CAP_NET_ADMIN' > "$F/zones/policy/nic.seccomp"
 
-# routedraw: a zone that does not own the NIC may not keep CAP_NET_RAW,
-# whatever its policy says.
+# routedraw: does not own the NIC, so it may not keep CAP_NET_RAW whatever its policy says.
 zone routedraw \
     '[zone]' 'name = "routedraw"' \
     '[network]' 'mode = "routed"' \
@@ -85,8 +77,7 @@ zone routedraw \
     '[policy]' 'seccomp = "policy/nic.seccomp"' \
     '[ui]' 'border_color = "#ff0088"'
 
-# nopolicy: a missing policy file is a refusal, never a fallback to the base
-# rules.
+# nopolicy: a missing policy file is a refusal, never a fallback to the base rules.
 zone nopolicy \
     '[zone]' 'name = "nopolicy"' \
     '[network]' 'mode = "none"' \
@@ -94,8 +85,7 @@ zone nopolicy \
     '[policy]' 'seccomp = "policy/absent.seccomp"' \
     '[ui]' 'border_color = "#333333"'
 
-# narrowed: Landlock grants read everywhere and write only in /tmp and /dev,
-# so its HOME becomes read-only; the second layer can only subtract.
+# narrowed: its Landlock policy grants write only in /tmp and /dev, so its HOME is read-only.
 zone narrowed \
     '[zone]' 'name = "narrowed"' \
     '[network]' 'mode = "none"' \
@@ -108,9 +98,7 @@ printf '%s\n' \
     'read-write /tmp' \
     'read-write /dev' > "$F/zones/policy/narrowed.landlock"
 
-# swapped: persistent, and its policy keeps HOME read-only but for work, with
-# exec only in work/bin. Write in work lets it swap work/bin for a link to
-# HOME, which a rule must refuse at the next start, not follow.
+# swapped: can replace work/bin with a link to HOME, which its next start must refuse, not follow.
 zone swapped \
     '[zone]' 'name = "swapped"' \
     '[network]' 'mode = "none"' \

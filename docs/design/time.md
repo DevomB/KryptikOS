@@ -41,11 +41,10 @@ reported, so one liar among three is outvoted. The servers come from
 `/etc/kryptik/time.conf` on the verified root (`server HOST` or `pool HOST`,
 a pool giving up to four addresses; the public pool without the file). The
 zone reports an offset, not a time: it reads the same `CLOCK_REALTIME` as
-zone 0, so nothing is lost to the delay before zone 0 acts. It is a script
-rather than an NTP daemon because a daemon is a whole package for one number,
-and the script can be tested against a real server on loopback. NTS is not
-used: the image has no gnutls, and it would not authenticate a compromised
-net zone.
+zone 0, so nothing is lost to the delay before zone 0 acts. It is a script,
+not an NTP daemon, because a daemon is a whole package for one number and a
+script can be tested against a real server on loopback. NTS is not used: the
+image has no gnutls, and it would not authenticate a compromised net zone.
 
 **The claim.** `time-offset <seconds> <sources>`: a signed decimal with at
 most 10 integer and 6 fractional digits, and the number of servers (1 to 16)
@@ -87,18 +86,18 @@ A net zone that never answers leaves the clock to the RTC; that is reported
 step, the bound per claim and in total, consent, the interval and the claim
 grammar. The boundary suite checks that the verb is refused from a zone
 without the network and that a malformed claim is refused.
-`tools/tests/netzone-time.sh` runs the query and its
-caller against loopback servers five minutes ahead or behind, a day out among
-three, unsynchronised, sending kiss-of-death, not echoing, or silent, under
-every POSIX shell on the host. On the installed system,
-`build/guest-tests/zones-check.sh` sets the clock to 2000 and checks the
-clamp, then that a claim steps the clock, one below the floor is refused, a
-day's jump waits for consent, and a clock 300 s fast is put right.
+`tools/tests/netzone-time.sh` runs the query and its caller against loopback
+servers five minutes ahead or behind, a day out among three, unsynchronised,
+sending kiss-of-death, not echoing, or silent, under every POSIX shell on the
+host. On the installed system, `build/guest-tests/zones-check.sh` sets the
+clock to 2000 and checks the clamp, then that a claim steps the clock, one
+below the floor is refused, a day's jump waits for consent, and a clock 300 s
+fast is put right.
 
 ## Open points
 
 - The bound and the interval are constants (`DEFAULT_BOUND_SECS`,
-  `CLAIM_INTERVAL_SECS`); `time.conf` names only servers. The floor is not
+  `CLAIM_INTERVAL_SECS`); `time.conf` sets only servers. The floor is not
   configurable.
 - The date of the newest release the machine has committed to would be a
   better floor after an update than the running image's; it is not used yet.

@@ -544,10 +544,10 @@ if [[ "$RC" -ne 0 ]] && grep -qE 'notes\.tsv:2|:2: ' "$OUT"; then
 else
     red "the refusal names the offending line number (exit ${RC})"; show
 fi
-if grep -qF 'not a provenance' "$OUT"; then
-    green "and says nothing was reported rather than reporting a partial inventory"
+if grep -qF 'no inventory is reported' "$OUT"; then
+    green "and says no partial inventory is reported"
 else
-    red "and says nothing was reported rather than reporting a partial inventory"; show
+    red "and says no partial inventory is reported"; show
 fi
 
 run --offline --notes="${W}/no-such-notes.tsv"

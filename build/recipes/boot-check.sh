@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# boot-check: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
 # Everything a boot needs, checked from the target's point of view.
 s_boot_check() {
@@ -37,8 +35,7 @@ s_boot_check() {
     chk "havoc font"        /usr/share/fonts/TTF/DejaVuSansMono.ttf
     chk "kryptik-wlproxy"   /usr/bin/kryptik-wlproxy x
     chk "kryptikd"          /usr/bin/kryptikd x
-    # The net zone's Wi-Fi, and the regulatory database a radio needs before it
-    # may transmit (compressed, like all of /lib/firmware).
+    # The net zone's Wi-Fi, and the regulatory database a radio needs before it may transmit.
     chk "wpa_supplicant"    /usr/sbin/wpa_supplicant x
     chk "wpa_cli"           /usr/sbin/wpa_cli x
     chk "iw"                /usr/sbin/iw x

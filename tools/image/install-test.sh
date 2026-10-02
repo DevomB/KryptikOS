@@ -1,19 +1,15 @@
 #!/usr/bin/env bash
-# Install from the medium, boot the result from firmware alone (medium gone,
-# variables reset), and check that the installer's refusals refuse.
+# Install from the medium, boot the result from firmware alone, and check the installer's refusals.
 #
 #   tools/image/install-test.sh --usb IMG [--disk FILE] [--size 12G]
 #                               [--vars clean|enrolled] [--timeout N] [--quick]
 #
-#   step 1  install unattended onto a blank disk; check the transcript and,
-#           from the host, the partition table
+#   step 1  install onto a blank disk; check the transcript and the partition table
 #   step 2  boot the disk alone: first boot, login, reboot, login, poweroff
 #   step 3  cold boot it again (not with --quick)
-#   step 4  a disk too small, a read-only disk, and an I/O error in the root
-#           image copy (not with --quick): each must fail, installing nothing;
-#           the medium's own disk, even with --replace-kryptik, and a copy of
-#           the installed disk without it: each refused, the copy untouched;
-#           then (not with --quick) that copy replaced with --replace-kryptik
+#   step 4  refused or failed: a disk too small, a read-only disk, an I/O error (not with
+#           --quick), the medium's own disk, a control disk signed by another key, and an
+#           old installation without --replace-kryptik; then with it (not with --quick)
 #
 # Every disk is a file this script creates; no device is touched.
 set -uo pipefail
@@ -31,7 +27,7 @@ while [[ "$#" -gt 0 ]]; do
         --vars) VARS="${2:?}"; shift 2 ;;
         --timeout) TIMEOUT="${2:?}"; shift 2 ;;
         --quick) QUICK=1; shift ;;
-        -h|--help) sed -n '2,15p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,14p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -59,28 +55,28 @@ CTL="${VMDIR}/testctl-install.img"
     "${PRESEED[@]}" > /dev/null || die "control disk"
 smoke install-p1 --usb "$USB" --disk "$DISK" --testctl "$CTL" --vars "$VARS" --timeout "$TIMEOUT"
 qrc=$?
-P1="${VMDIR}/install-p1.txt"; boot_txt > "$P1"
-echo "  transcript: ${BOOTLOG} ($(grep -c '' < "$P1") lines, qemu ${qrc})"
-want "$P1" 'KRYPTIK_INSTALL: BEGIN target=/dev/vda'      "the installer was armed and ran"
-want "$P1" 'KRYPTIK_INSTALL: rc=0'                       "the installer exited 0"
-want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-esp=/dev/vda1 type=vfat'   "partition 1 is the ESP"
-want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-a=/dev/vda2'  "partition 2 is kryptik-a"
-want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-b=/dev/vda3'  "partition 3 is kryptik-b"
-want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-state=/dev/vda4 type=crypto_LUKS' "partition 4 is the state partition, and it is LUKS"
-want "$P1" 'KRYPTIK_INSTALL: verify: esp_files=.*EFI/BOOT/BOOTX64.EFI' "the ESP has the removable-media boot file"
-want "$P1" 'KRYPTIK_INSTALL: verify: install_json=yes'   "install.json was written"
-want "$P1" 'KRYPTIK_INSTALL: verify: preseed=present'    "the first-boot preseed was written"
-want "$P1" 'KRYPTIK_INSTALL: .*kryptik-a verifies'       "the root image was read back and verified"
-deny "$P1" 'KRYPTIK_INSTALL: FAILED'                     "the installer reported no failure"
-want "$P1" 'Power down'                                  "the medium powered off afterwards"
-deny "$P1" 'Kernel panic|Oops:'                          "no panic during the install boot"
+INSTALL_TXT="${VMDIR}/install-p1.txt"; boot_txt > "$INSTALL_TXT"
+echo "  transcript: ${BOOTLOG} ($(grep -c '' < "$INSTALL_TXT") lines, qemu ${qrc})"
+want "$INSTALL_TXT" 'KRYPTIK_INSTALL: BEGIN target=/dev/vda'      "the installer was armed and ran"
+want "$INSTALL_TXT" 'KRYPTIK_INSTALL: rc=0'                       "the installer exited 0"
+want "$INSTALL_TXT" 'KRYPTIK_INSTALL: verify: kryptik-esp=/dev/vda1 type=vfat'   "partition 1 is the ESP"
+want "$INSTALL_TXT" 'KRYPTIK_INSTALL: verify: kryptik-a=/dev/vda2'  "partition 2 is kryptik-a"
+want "$INSTALL_TXT" 'KRYPTIK_INSTALL: verify: kryptik-b=/dev/vda3'  "partition 3 is kryptik-b"
+want "$INSTALL_TXT" 'KRYPTIK_INSTALL: verify: kryptik-state=/dev/vda4 type=crypto_LUKS' "partition 4 is the state partition, and it is LUKS"
+want "$INSTALL_TXT" 'KRYPTIK_INSTALL: verify: esp_files=.*EFI/BOOT/BOOTX64.EFI' "the ESP has the removable-media boot file"
+want "$INSTALL_TXT" 'KRYPTIK_INSTALL: verify: install_json=yes'   "install.json was written"
+want "$INSTALL_TXT" 'KRYPTIK_INSTALL: verify: preseed=present'    "the first-boot preseed was written"
+want "$INSTALL_TXT" 'KRYPTIK_INSTALL: .*kryptik-a verifies'       "the root image was read back and verified"
+deny "$INSTALL_TXT" 'KRYPTIK_INSTALL: FAILED'                     "the installer reported no failure"
+want "$INSTALL_TXT" 'Power down'                                  "the medium powered off afterwards"
+deny "$INSTALL_TXT" 'Kernel panic|Oops:'                          "no panic during the install boot"
 # From the host side: the partition table the guest wrote.
 sfdisk -l "$DISK" 2>/dev/null | grep -E '^/|Disklabel' | sed 's/^/        /'
 if [[ "$(sfdisk -l "$DISK" 2>/dev/null | grep -c "^${DISK}")" -eq 4 ]]; then green "host sees four partitions on the target"; else red "host does not see four partitions"; fi
 lbls="$(blkid -p -O 0 "$DISK" >/dev/null 2>&1; sfdisk -d "$DISK" 2>/dev/null | grep -o 'name="[^"]*"' | tr '\n' ' ')"
 if [[ "$lbls" == *kryptik-esp* && "$lbls" == *kryptik-a* && "$lbls" == *kryptik-b* && "$lbls" == *kryptik-state* ]]; then
     green "host sees the four partition labels"; else red "host labels: ${lbls}"; fi
-if [[ "$FAIL" -ne 0 ]]; then printf '\nphase 1 failed; not booting the result.\n%d passed, %d failed\n' "$PASS" "$FAIL"; exit 1; fi
+if [[ "$FAIL" -ne 0 ]]; then printf '\nstep 1 failed; not booting the result.\n%d passed, %d failed\n' "$PASS" "$FAIL"; exit 1; fi
 
 # ----------------------------------------------------------------- step 2 --
 step "step 2: boot the installed disk alone, medium detached, variables reset"
@@ -110,14 +106,14 @@ python3 "$DRV" --serial "$SER" --timeout 300 --record "$REC" \
     "wait-exit"
 drc=$?
 sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
-P2="${VMDIR}/install-p2.txt"; txt_of "$LOG2" > "$P2"
+BOOTS_TXT="${VMDIR}/install-p2.txt"; txt_of "$LOG2" > "$BOOTS_TXT"
 echo "  transcript: ${LOG2}"
 [[ "$drc" -eq 0 ]] && green "first boot, login, reboot, second login and clean poweroff all happened" || red "the serial drive failed (see above)"
-want "$P2" 'KRYPTIK_SMOKE: root_source=/dev/dm-0 ext4 ro'   "installed root is the verity device"
-want "$P2" 'KRYPTIK_SMOKE: boot_identity=slot=a media='      "booted slot a"
-want "$P2" 'KRYPTIK_SMOKE: var_source=/dev/mapper/kryptik-state ext4' "the unlocked state partition is mounted on /var"
-want "$P2" 'passphrase for the state partition \(try 1 of 3\)' "sysinit asked for the state passphrase on the console"
-deny "$P2" "$KRYPTIK_STATE_PASSPHRASE"                       "the passphrase is nowhere in the transcript"
+want "$BOOTS_TXT" 'KRYPTIK_SMOKE: root_source=/dev/dm-0 ext4 ro'   "installed root is the verity device"
+want "$BOOTS_TXT" 'KRYPTIK_SMOKE: boot_identity=slot=a media='      "booted slot a"
+want "$BOOTS_TXT" 'KRYPTIK_SMOKE: var_source=/dev/mapper/kryptik-state ext4' "the unlocked state partition is mounted on /var"
+want "$BOOTS_TXT" 'passphrase for the state partition \(try 1 of 3\)' "sysinit asked for the state passphrase on the console"
+deny "$BOOTS_TXT" "$KRYPTIK_STATE_PASSPHRASE"                       "the passphrase is nowhere in the transcript"
 # From the host: partition 4 is a LUKS header and ciphertext.
 S4=$(( $(part_start "$DISK" 4) * 512 ))
 magic() { dd if="$DISK" bs=1 skip="$1" count="$2" status=none | od -An -tx1 | tr -d ' \n'; }
@@ -125,13 +121,13 @@ magic() { dd if="$DISK" bs=1 skip="$1" count="$2" status=none | od -An -tx1 | tr
 [[ "$(magic $(( S4 + 1080 )) 2)" != 53ef ]] && green "no ext4 superblock in the clear" || red "an ext4 superblock is readable on partition 4"
 if tail -c +$(( S4 + 1 )) "$DISK" | LC_ALL=C grep -aq 'KRYPTIK-CLEAR-MARKER-7f3a91'; then red "a file written under /home is readable from the raw partition"
 else green "a file written under /home is not readable from the raw partition"; fi
-want "$P2" 'KRYPTIK_SMOKE: etc_source=overlay'               "/etc is an overlay"
-want "$P2" 'KRYPTIK_SMOKE: root_writable=no'                 "the verified root is not writable"
-want "$P2" 'boot-success: slot a up'                         "boot-success recorded slot a"
-want "$P2" 'reboot: Restarting system'                       "the guest rebooted itself"
-if [[ "$(grep -c 'Linux version' "$P2")" -ge 2 ]]; then green "two kernel boots in one session (reboot worked)"; else red "expected two kernel boots"; fi
-want "$P2" 'Power down'                                      "the guest powered off from inside"
-deny "$P2" 'Kernel panic|Oops:|POWEROFF_DID_NOT_TAKE_EFFECT' "no panic, no forced poweroff"
+want "$BOOTS_TXT" 'KRYPTIK_SMOKE: etc_source=overlay'               "/etc is an overlay"
+want "$BOOTS_TXT" 'KRYPTIK_SMOKE: root_writable=no'                 "the verified root is not writable"
+want "$BOOTS_TXT" 'boot-success: slot a up'                         "boot-success recorded slot a"
+want "$BOOTS_TXT" 'reboot: Restarting system'                       "the guest rebooted itself"
+if [[ "$(grep -c 'Linux version' "$BOOTS_TXT")" -ge 2 ]]; then green "two kernel boots in one session (reboot worked)"; else red "expected two kernel boots"; fi
+want "$BOOTS_TXT" 'Power down'                                      "the guest powered off from inside"
+deny "$BOOTS_TXT" 'Kernel panic|Oops:|POWEROFF_DID_NOT_TAKE_EFFECT' "no panic, no forced poweroff"
 if [[ -f "$REC" ]]; then echo "  recorded:"; sed 's/^/    /' "$REC" | head -30; fi
 
 # ----------------------------------------------------------------- step 3 --
@@ -145,8 +141,8 @@ python3 "$DRV" --serial "$SER" --timeout 300 \
 drc=$?
 sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
 [[ "$drc" -eq 0 ]] && green "cold boot: login, persisted file present, clean poweroff" || red "cold boot drive failed"
-P3="${VMDIR}/install-p3.txt"; txt_of "$LOG3" > "$P3"
-deny "$P3" 'kryptik-firstboot: created user'  "first-boot setup did not run again"
+COLD_TXT="${VMDIR}/install-p3.txt"; txt_of "$LOG3" > "$COLD_TXT"
+deny "$COLD_TXT" 'kryptik-firstboot: created user'  "first-boot setup did not run again"
 fi
 
 # ----------------------------------------------------------------- step 4 --
@@ -171,8 +167,7 @@ refusal_case() {   # refusal_case NAME DISK-SIZE EXTRA-RUN-ARGS... ; expects rc!
 }
 refusal_case toosmall 1G
 refusal_case readonly "$SIZE" --disk-readonly
-# An I/O error in the root image copy, after the partition table is written;
-# the runner must report that failure.
+# An I/O error in the root image copy, after the partition table is written, must fail the install.
 if [[ "$QUICK" -eq 0 ]]; then
     cat > "${VMDIR}/blkdebug.conf" <<'EOF'
 [inject-error]
@@ -184,11 +179,9 @@ EOF
     refusal_case ioerror "$SIZE" --blkdebug "${VMDIR}/blkdebug.conf"
 fi
 
-# The runner always passes --yes, so none of these refusals is the ERASE
-# prompt waiting.
+# The runner always passes --yes, so no refusal here is the ERASE prompt waiting.
 
-# The disk this system runs from: the medium, the one USB disk in the guest.
-# No flag opens it.
+# The medium, the guest's one USB disk, is the disk this system runs from: no flag opens it.
 ctl="${VMDIR}/testctl-medium.img"
 "${SELF}/mk-testctl.sh" --out "$ctl" --key "$TESTCTL_KEY" install_target=/dev/sda install_replace=1 smoke_poweroff=1 install_wait=5 > /dev/null
 d="${VMDIR}/refuse-medium.img"; rm -f "$d"; truncate -s "$SIZE" "$d"
@@ -198,9 +191,7 @@ want "$t" 'KRYPTIK_INSTALL: BEGIN target=/dev/sda'                     "medium: 
 want "$t" 'KRYPTIK_INSTALL: .*is the disk this system is running from' "medium: refused as the disk this system runs from, even with --replace-kryptik"
 deny "$t" 'KRYPTIK_INSTALL: rc=0'                                      "medium: never reported success"
 
-# A control disk signed by some other key: the medium honours the
-# kryptik-testctl key its anchor lists and no other, so nothing is armed. The
-# disk's poweroff is ignored with the rest, so this boot runs to its timeout.
+# The medium ignores a control disk its testctl key did not sign, poweroff too: this boot times out.
 ssh-keygen -q -t ed25519 -N '' -C stranger -f "${VMDIR}/stranger-key" < /dev/null
 ctl="${VMDIR}/testctl-stranger.img"
 "${SELF}/mk-testctl.sh" --out "$ctl" --key "${VMDIR}/stranger-key" install_target=/dev/vda smoke_poweroff=1 install_wait=5 > /dev/null
@@ -217,7 +208,7 @@ state_uuid() {
     [[ -n "$start" ]] && blkid -p -O "$(( start * 512 ))" -s UUID -o value "$1" 2>/dev/null
 }
 
-# An old installation: refused without the flag, and left exactly as it was.
+# An old installation is refused without the flag, and left as it was.
 old="${VMDIR}/old-install.img"; rm -f "$old"; cp --sparse=always "$DISK" "$old"
 ctl="${VMDIR}/testctl-oldinstall.img"
 "${SELF}/mk-testctl.sh" --out "$ctl" --key "$TESTCTL_KEY" install_target=/dev/vda smoke_poweroff=1 install_wait=5 > /dev/null

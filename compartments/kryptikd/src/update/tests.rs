@@ -51,7 +51,7 @@ fn versions_order_like_sort_v() {
 }
 
 #[test]
-fn pointer_accepted_for_role_never_backwards() {
+fn pointer_acceptance() {
     let p = parse_pointer(&pointer_text("1.0.3", "2027-03-02T14:05:00Z")).unwrap();
     assert_eq!(accept_pointer(&p, "production", "1.0.2", None, p.issued), Ok(Standing::Available("1.0.3".into())));
     assert_eq!(accept_pointer(&p, "production", "1.0.3", None, p.issued), Ok(Standing::Current));
@@ -99,7 +99,7 @@ fn file_list_rejects_odd_entries() {
 }
 
 #[test]
-fn nothing_large_before_manifest_verifies() {
+fn may_put_before_manifest() {
     assert!(may_put(None, "manifest", 0, 4096, 0).is_ok());
     assert!(may_put(None, "manifest.sig", 0, MANIFEST_MAX, 0).is_ok());
     assert!(may_put(None, "manifest", 0, MANIFEST_MAX + 1, 0).is_err());
@@ -110,7 +110,7 @@ fn nothing_large_before_manifest_verifies() {
 }
 
 #[test]
-fn bytes_taken_only_where_manifest_allows() {
+fn may_put_after_manifest() {
     let f = files();
     assert!(may_put(Some(&f), "kryptik-root.img", 0, 1000, 0).is_ok());
     assert!(may_put(Some(&f), "kryptik-root.img", 600, 400, 600).is_ok());
@@ -124,7 +124,7 @@ fn bytes_taken_only_where_manifest_allows() {
 }
 
 #[test]
-fn poll_names_missing_files_and_offsets() {
+fn still_needed_offsets() {
     let held = |n: &str| match n { "kryptik-root.img" => 600, "kryptik-a.efi" => 40, _ => 0 };
     assert_eq!(
         still_needed(&files(), held),
@@ -133,7 +133,7 @@ fn poll_names_missing_files_and_offsets() {
     assert!(still_needed(&files(), |_| u64::MAX).is_empty());
 }
 
-// --- the state, against a directory of the test's own ---
+// --- the state, in a scratch directory per test ---
 
 fn scratch(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("kryptik-update-test-{}-{tag}", std::process::id()));
@@ -200,8 +200,7 @@ fn release_is_staged_in_order() {
     assert!(put(&d, &yes(), T0, "manifest", 0, b"another").unwrap_err().contains("not replaced"));
     assert!(put(&d, &yes(), T0, "stowaway", 0, b"x").unwrap_err().contains("does not list"));
     assert_eq!(put(&d, &yes(), T0, "kryptik-root.img", 0, b"01234").unwrap(), "kryptik-root.img 5/10");
-    /* The connection dropped: the poll says where to resume, and any other
-     * offset is refused without writing. */
+    // After a dropped connection the poll says where to resume; other offsets are not written.
     assert_eq!(poll(&d, CH, "production", "1.0.2"), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need kryptik-root.img 5 root.json 0");
     assert!(put(&d, &yes(), T0, "kryptik-root.img", 0, b"01234").unwrap_err().contains("5 bytes are held"));
     assert!(put(&d, &yes(), T0, "kryptik-root.img", 5, b"567890").unwrap_err().contains("past that"));
@@ -225,7 +224,7 @@ fn release_is_staged_in_order() {
 }
 
 #[test]
-fn fetch_says_why_this_image_would_not_fetch() {
+fn fetch_refuses_unfetchable() {
     let d = scratch("unfetchable");
     latest(&d, &yes(), T0, "production", "1.0.2", pointer_text("1.0.3", "2027-03-02T14:05:00Z").as_bytes(), b"sig").unwrap();
     assert!(want(&d, Some("http://10.0.2.2:8080/"), "production", "1.0.2").unwrap_err().contains("plain http"));

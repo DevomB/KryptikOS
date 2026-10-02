@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# Boot integrity on an installed disk: Secure Boot enforced with the developer
-# key, a foreign-signed boot file refused, a tampered root stopped by dm-verity
-# before userspace, recovery from the medium, and offline tampering of the
-# state partition kept away from privileged startup.
+# Boot integrity of an installed disk under Secure Boot (the enrolled store from ovmf-vars.sh).
 #
 #   tools/image/integrity-test.sh --usb IMG [--disk FILE] [--timeout N]
 #
@@ -29,7 +26,7 @@ while [[ "$#" -gt 0 ]]; do
         --usb) USB="${2:?}"; shift 2 ;;
         --disk) DISK="${2:?}"; shift 2 ;;
         --timeout) TIMEOUT="${2:?}"; shift 2 ;;
-        -h|--help) sed -n '2,18p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,16p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -64,8 +61,7 @@ rc=$?; sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
 [[ "$rc" -eq 0 ]] && green "installed system boots with Secure Boot enforced (SecureBoot=1 inside the guest)" || red "step 1 drive failed"
 T1="$(tr -d '\r' < "$LOG1")"
 grep -q 'KRYPTIK_SMOKE: verity_root=0 [0-9]* verity V' <<<"$T1" && green "dm-verity reports the root valid" || red "no valid verity root reported"
-# Lockdown in confidentiality mode, and module signing both ways: stage 05's
-# unsigned copy of a driver is refused with the kernel's reason, the signed one loads.
+# Stage 05's unsigned copy of a driver is refused with the kernel's reason; the signed one loads.
 grep -q 'LOCKDOWN=confidentiality' <<<"$T1" && green "lockdown reports confidentiality" || red "lockdown is not in confidentiality mode"
 if grep -q 'UNSIGNED=refused' <<<"$T1" && grep -q 'Key was rejected by service\|Required key not available' <<<"$T1"; then
     green "an unsigned module is refused (Key was rejected by service)"
@@ -87,7 +83,6 @@ mcopy -i "$ESPIMG" ::/EFI/BOOT/BOOTX64.EFI "$TMPK/good.efi"
 mtype -i "${USB}@@$(( $(part_start "$USB" 1) * 512 ))" ::/kryptik/kryptik-sb.crt > "$TMPK/medium.crt" 2>/dev/null
 sbverify --cert "$TMPK/medium.crt" "$TMPK/good.efi" >/dev/null 2>&1 && green "control: the medium's certificate verifies the installed kernel" || red "control: the medium's certificate does not verify the installed kernel"
 openssl req -new -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=not kryptik/" -keyout "$TMPK/k" -out "$TMPK/c" >/dev/null 2>&1
-# strip the signature, sign with the foreign key
 sbattach --remove "$TMPK/good.efi" 2>/dev/null || true
 sbsign --key "$TMPK/k" --cert "$TMPK/c" --output "$TMPK/foreign.efi" "$TMPK/good.efi" >/dev/null 2>&1
 sbverify --cert "$TMPK/medium.crt" "$TMPK/foreign.efi" >/dev/null 2>&1 && red "control: the foreign kernel verifies against the medium's certificate" || green "control: the foreign-signed kernel does not verify against the medium's certificate"
@@ -106,22 +101,18 @@ grep -q 'KRYPTIK_SMOKE: BEGIN' <<<"$T2" && red "Kryptik userspace ran from an un
 "${SELF}/mk-testctl.sh" --out "${VMDIR}/testctl-smoke.img" --key "$TESTCTL_KEY" smoke_poweroff=1 > /dev/null
 smoke integ-p2ctl --usb "$USB" --testctl "${VMDIR}/testctl-smoke.img" --vars enrolled --timeout 300 > /dev/null 2>&1
 boot_txt | grep -q 'Linux version' && green "control: the developer-signed medium boots under the same store" || red "control failed: the signed medium did not boot"
-# restore the pristine ESP
 dd if="${ESPIMG}.pristine" of="$DISK" bs=1M oflag=seek_bytes seek="$ESP_OFF" conv=notrunc status=none
 rm -rf "$TMPK"
 
 # ----------------------------------------------------------------- step 3 --
 step "step 3: a tampered root is refused by dm-verity before userspace"
 A_OFF=$(( $(part_start "$DISK" 2) * 512 ))
-# Flip a byte of the ext4 superblock (the volume name, 1024 + 0x78): mounting
-# the root reads it first, so dm-verity fails before userspace. A block that
-# nothing reads at boot would go unnoticed.
+# The superblock's volume name (1024 + 0x78): the root mount reads it first, so verity fails early.
 printf '\xa5' | dd of="$DISK" bs=1 seek=$(( A_OFF + 1024 + 0x78 )) conv=notrunc status=none
 cp "$ENROLLED" "$VARSF"
 smoke integ-p3 --no-media --disk "$DISK" --vars-file "$VARSF" --timeout 300 > /dev/null
 T3="$(boot_txt)"
-# loglevel=4 hides the KERN_NOTICE banner, so the kernel's timestamped console
-# lines are the proof it started.
+# loglevel=4 hides the KERN_NOTICE banner; timestamped console lines show the kernel started.
 grep -qE '^\[ *[0-9]+\.[0-9]+\] |Linux version' <<<"$T3" && green "the (untampered) kernel still starts" || red "the kernel did not start after the root tamper"
 # The kernel's own message, not the command line's "panic_on_corruption".
 grep -qE 'device-mapper: verity:.*(corrupt|mismatch|error)|dm-verity device corrupted' <<<"$T3" && green "dm-verity named the corruption" || red "no dm-verity corruption report"
@@ -135,8 +126,7 @@ CTLR="${VMDIR}/testctl-recover.img"
 "${SELF}/mk-testctl.sh" --out "$CTLR" --key "$TESTCTL_KEY" recover_disk=/dev/vda recover_slot=a recover_mode=restore smoke_poweroff=1 install_wait=5 > /dev/null
 smoke integ-p4 --usb "$USB" --disk "$DISK" --testctl "$CTLR" --vars enrolled --timeout "$TIMEOUT" > /dev/null
 boot_txt | grep -q 'KRYPTIK_RECOVER: rc=0' && green "kryptik-recover --restore-slot a succeeded from the medium" || { red "recovery did not report success"; boot_txt | grep 'KRYPTIK_RECOVER' | tail -5 | sed 's/^/        /'; }
-# The records recovery wrote on the ESP, read from the host: whole, and
-# nothing written through a .new left behind.
+# Recovery's records on the ESP, read from the host: whole, and no .new file left behind.
 dd if="$DISK" of="$ESPIMG" bs=1M iflag=skip_bytes,count_bytes skip="$ESP_OFF" count=$((512*1024*1024)) status=none
 MVER="$(basename "$USB")"; MVER="${MVER#kryptik-}"; MVER="${MVER%-usb.img}"
 CSLOT="$(mtype -i "$ESPIMG" ::/kryptik/committed-slot 2>/dev/null)"; CVER="$(mtype -i "$ESPIMG" ::/kryptik/version-a 2>/dev/null)"
@@ -157,9 +147,7 @@ tr -d '\r' < "$LOG4" | grep -q 'kryptik-firstboot: created user' && red "first-b
 
 # ----------------------------------------------------------------- step 5 --
 step "step 5: offline tampering of the state partition does not reach privileged startup"
-# The state partition is unauthenticated (sysinit.sh, "the trust boundary"):
-# plant an update anchor, a zone and a sysctl in its /etc layer from the host,
-# and check from inside the guest that none takes effect.
+# The state partition is unauthenticated: plant /etc content in it from the host.
 TMPK="$(mktemp -d)"; MNT="$TMPK/state"; mkdir -p "$MNT"
 ssh-keygen -q -t ed25519 -N "" -f "$TMPK/attacker" >/dev/null
 if open_state "$DISK" "$MNT" 2>/dev/null; then
@@ -182,8 +170,7 @@ uid_base = 1310720
 border_color = "#000001"
 EOF
     printf 'kernel.kptr_restrict = 0\n' > "$up/sysctl.d/99-evil.conf"
-    # Also a preload library and a udev rule run as root, both pointing at the
-    # state partition, and one allowed change (a subuid line) as a control.
+    # A preload library and a root udev rule on the state partition; a subuid line is the control.
     mkdir -p "$up/udev/rules.d" "$MNT/lib/kryptik"
     printf '/var/lib/kryptik/evil.so\n' > "$up/ld.so.preload"
     printf 'ACTION=="add", RUN+="/var/lib/kryptik/evil.sh"\n' > "$up/udev/rules.d/99-evil.rules"
@@ -194,9 +181,7 @@ EOF
 else
     red "could not mount the state partition from the host (loop/offset); step 5 not performed"
 fi
-# A payload signed with the attacker's key: valid against the planted anchor,
-# not against the image's. Its manifest alone, since the updater checks the
-# signature before it reads a file the manifest lists.
+# A manifest alone, signed by the attacker: the updater checks the signature before any file.
 PAYDIR="${KRYPTIK_WORK}/images/payload-$(sed -n 's/^  "version": "\([^"]*\)".*/\1/p' "${KRYPTIK_WORK}/images/root.json" 2>/dev/null)"
 if [[ -f "$PAYDIR/manifest" ]]; then
     rm -rf "$TMPK/pay"; mkdir -p "$TMPK/pay"; cp "$PAYDIR/manifest" "$TMPK/pay/"
@@ -211,10 +196,7 @@ else
 fi
 cp "$ENROLLED" "$VARSF"
 start_vm integ-p5 "${EXTRA[@]}"; LOG5="$LOG"
-# The planted kryptik/ directory must be quarantined and gone from /etc, and
-# the updater's anchor on the verified root must still name the release key.
-# The root has an ld.so.preload of its own (the allocator), so the planted
-# library is looked for by name.
+# The root has its own ld.so.preload (the allocator), so the planted library is looked for by name.
 python3 "$DRV" --serial "$SER" --timeout 300 \
     "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "grab:overlay:ls /etc/kryptik/ /var/lib/kryptik/etc/quarantine/ 2>&1 | head -12" \

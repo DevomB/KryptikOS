@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Test boot-success.sh's decision table with stand-ins: a fake /run/kryptik,
-# service directory and ESP, and fake s6-svstat, kryptikd, kryptik-efiboot,
-# reboot and mount that record what they were asked.
+# boot-success.sh's decision table, against a fake /run/kryptik, service directory and ESP, and
+# fake s6-svstat, kryptikd, kryptik-efiboot, reboot and mount that record what they were asked.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT="$ROOT/build/service-scripts/boot-success.sh"
@@ -12,7 +11,9 @@ check() { if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1 (got '$2', want '$3'
 
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/run" "$T/boot" "$T/svc"
+
 # --- stand-ins ---------------------------------------------------------------
+
 # The script sources devices.sh; this one answers from the case's files.
 cat > "$T/devices.sh" <<'EOF'
 kryptik_root_disk() { cat "$KTEST/root_disk" 2>/dev/null; }
@@ -130,7 +131,7 @@ check "... and reboots if they stay: its record, now trial.failed, keeps it from
 run_case degraded b "" degraded "" $ALL; go
 check "trial on a degraded state: known from the ESP, not committed, forgotten, rebooted" "${RESULT%%:*}|$(cat "$KTEST/esp/EFI/BOOT/BOOTX64.EFI")|$CALLS" "trial-unhealthy b|kernel-a|mount -o ro,nosuid,nodev,noexec /dev/vda1 $KTEST/run/esp umount $KTEST/run/esp efiboot forget efiboot ensure a reboot "
 run_case degraded2 b "" degraded "" $ALL; : > "$KTEST/efiboot_fails"; go
-check "... not rebooted while its entries stay: nothing else keeps the next boot from being it" "$(reboots)" "0"
+check "... not rebooted while its entries stay, or the next boot would be it again" "$(reboots)" "0"
 run_case degraded3 a "" degraded "" $ALL; go
 check "the committed slot on a degraded state: reported, left running" "${RESULT%%:*}|$(reboots)" "unhealthy a|0"
 run_case ambig b "" persistent 'b\narmed=1\n' $ALL; : > "$KTEST/part_kryptik-esp"; echo 2 > "$KTEST/count_kryptik-esp"; go
@@ -143,7 +144,7 @@ check "KRYPTIK_NO_REBOOT=1 records without rebooting" "$(reboots)" "0"
 run_case noensure b "" persistent 'b\narmed=1\n' $ALL; : > "$KTEST/efiboot_fails_ensure"; go
 check "a commit stands when the committed slot's own entry cannot be made" "$RESULT|$(cat "$KTEST/esp/EFI/BOOT/BOOTX64.EFI")" "commit b|kernel-b"
 run_case noensure2 b "" degraded "" $ALL; : > "$KTEST/efiboot_fails_ensure"; go
-check "... and an unrecorded trial still reboots: its entries are gone, and that is what keeps it from coming back" "$(reboots)" "1"
+check "... and an unrecorded trial still reboots: with its entries gone, it cannot come back" "$(reboots)" "1"
 
 echo "-- a trial that did not boot"
 run_case failed a "" persistent 'b\narmed=1\n' $ALL; go

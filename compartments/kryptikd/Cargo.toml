@@ -5,8 +5,7 @@ edition = "2021"
 description = "Kryptik compartment manager: zone lifecycle and isolation"
 license = "GPL-2.0-or-later"
 
-# kryptikd is the most privileged process on the system, so it depends on
-# `libc` alone (ADR-010); anything else, TOML parsing included, is written here.
+# The most privileged process on the system depends on libc alone; even TOML parsing is ours (ADR-010).
 [dependencies]
 libc = "0.2"
 

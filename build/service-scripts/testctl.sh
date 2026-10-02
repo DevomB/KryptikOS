@@ -1,22 +1,17 @@
 #!/bin/sh
-# Test control for install media, sourced by boot-time services. A disk
-# labelled kryptik-testctl carries a key=value file, read only when booted from
-# an install medium (kryptik.media=), so such a disk cannot reinstall or shut
-# down an installed system, and only when the kryptik-testctl key the medium's
-# anchor lists signed it, so no one else's disk can arm an install either.
+# Test control, sourced by boot services: key=value from a disk labelled kryptik-testctl.
+# Read only on an install medium, and only when signed by the anchor's kryptik-testctl key.
 #   testctl_load      0, with TESTCTL_FILE set, when a control file was read
 #   testctl_get KEY   the value, or empty
-# Keys: install_target=/dev/vdb   smoke_poweroff=1   preseed_user=NAME
-#       preseed_password_hash=HASH  preseed_root_hash=HASH  install_wait=SECONDS
-#       recover_disk=/dev/vda recover_slot=a|b recover_mode=restore|commit|status
+# Keys: install_target=/dev/vdb  install_replace=1  install_wait=SECONDS  state_passphrase=TEXT
+#       preseed_user=NAME  preseed_password_hash=HASH  preseed_root_hash=HASH  smoke_poweroff=1
+#       recover_disk=/dev/vda  recover_slot=a|b  recover_mode=restore|commit|status
 
 TESTCTL_MNT=/run/kryptik/testctl
 TESTCTL_FILE=""
 TESTCTL_ANCHOR="${TESTCTL_ANCHOR:-/usr/share/kryptik/trust/release-signers}"
 
-# The file and a signature over it by the kryptik-testctl key the anchor
-# lists, in that key's own namespace: the holder of that key alone can arm an
-# install on a machine that boots this medium.
+# FILE.sig must verify with the anchor's kryptik-testctl key, in that key's own namespace.
 testctl_signed() {   # testctl_signed FILE
     [ -r "$1" ] && [ -r "$1.sig" ] || return 1
     ssh-keygen -Y verify -f "$TESTCTL_ANCHOR" -I kryptik-testctl -n kryptik-testctl \

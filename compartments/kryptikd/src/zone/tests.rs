@@ -26,13 +26,13 @@ fn parses_valid_zone() {
 }
 
 #[test]
-fn hash_in_colour_is_not_comment() {
+fn colour_hash_not_comment() {
     let z = Zone::from_str(VAULT).unwrap();
     assert_eq!(z.border_color, "#c9a227");
 }
 
 #[test]
-fn tmpfs_larger_than_memory_max_refused() {
+fn tmpfs_over_memory_max() {
     let toml = r##"
 [zone]
 name = "z"
@@ -77,7 +77,7 @@ fn transfer_to_validates_names() {
 }
 
 #[test]
-fn transfer_targets_exist_and_are_not_nic() {
+fn transfer_targets_checked() {
     let set = |to: &str| {
         vec![
             with_transfer("n", "nic", None).unwrap(),
@@ -121,11 +121,7 @@ fn persistent_zone_refuses_volume() {
         .expect_err("a persistent zone opens no volume");
     let m = e.to_string();
     assert!(m.contains("/dev/kryptik/keeper"), "name the device: {m}");
-    assert!(
-        m.contains("refuse"),
-        "point at the encrypted mode that WOULD be refused, so the reader learns \
-             the difference rather than deleting the line: {m}"
-    );
+    assert!(m.contains("refuse"), "say what the encrypted mode would need: {m}");
 }
 
 #[test]
@@ -166,7 +162,7 @@ fn rejects_path_traversal_in_name() {
 }
 
 #[test]
-fn rejects_name_too_long_for_ifnamsiz() {
+fn rejects_long_name() {
     let bad = VAULT.replace("\"vault\"", "\"averylongzonename\"");
     let err = Zone::from_str(&bad).unwrap_err();
     assert!(format!("{err}").contains("IFNAMSIZ"), "got: {err}");

@@ -7,12 +7,9 @@ Usage: dwl-zone-borders.py DWL_SOURCE_DIR           (edits dwl.c in place)
 import os
 import sys
 
-# Exact-string edits rather than a diff, so a different dwl fails with the text
-# not found instead of patching with fuzz. The colour comes from the app_id
-# prefix only the zone's proxy sets; focus is shown by width (a band of the
-# root colour when unfocused), and fullscreen keeps the border.
+# Exact-string edits, not a diff: a different dwl fails on missing text instead of fuzzing.
 EDITS = [
-    # (1) Client: the zone's colour and the band that marks it unfocused.
+    # Client: the zone's colour and the band that marks it unfocused.
     ("""	struct wlr_scene_rect *border[4]; /* top, bottom, left, right */
 """,
      """	struct wlr_scene_rect *border[4]; /* top, bottom, left, right */
@@ -20,7 +17,7 @@ EDITS = [
 	struct wlr_scene_tree *band; /* Kryptik: over the border's inner edge while unfocused */
 	struct wlr_scene_rect *bands[4]; /* top, bottom, left, right */
 """),
-    # (2) The ZoneColor type, beside Rule so config.h can define the table.
+    # The ZoneColor type, beside Rule so config.h can define the table.
     ("""typedef struct {
 	const char *id;
 	const char *title;
@@ -42,18 +39,13 @@ typedef struct {
 	const float border[4];
 } ZoneColor;
 """),
-    # (3) The chooser, defined before applyrules (its first neighbour).
+    # The chooser, placed before applyrules.
     ("""void
 applyrules(Client *c)
 {
 """,
-     """/* Kryptik: the border colour is the compositor's statement of which zone a
- * window belongs to. Every zone client reaches the compositor through its
- * zone's proxy, which rewrites app_id to kryptik.<zone>.<claimed>; the zone
- * is read from there. A client with no such prefix did not come through a
- * proxy - it is the chrome, or something the session user ran on the
- * session's own display - and is drawn as unzoned. A prefix naming a zone
- * with no colour is drawn as unknown. */
+     """/* Kryptik: the zone comes from the kryptik.<zone>. app_id prefix its proxy stamps; without
+ * one a client is zone 0's and drawn unzoned, and a zone with no colour is drawn unknown. */
 static void
 zonecolors(Client *c)
 {
@@ -79,10 +71,7 @@ void
 applyrules(Client *c)
 {
 """),
-    # (4) mapnotify: zone-coloured borders, then the band over them as four
-    # strips. The surface stays below both, or a buffer larger than its
-    # configure would paint over the right and bottom borders. A new window
-    # starts unfocused, so the band starts enabled.
+    # mapnotify: zone borders, then the band (a new window is unfocused); the surface stays below both.
     ("""	for (i = 0; i < 4; i++) {
 		c->border[i] = wlr_scene_rect_create(c->scene, 0, 0,
 				c->isurgent ? urgentcolor : bordercolor);
@@ -101,7 +90,7 @@ applyrules(Client *c)
 		c->bands[i]->node.data = c;
 	}
 """),
-    # (5) resize: the band is the ring of the border nearest the surface.
+    # resize: the band is the ring of the border nearest the surface.
     ("""	wlr_scene_node_set_position(&c->border[3]->node, c->geom.width - c->bw, c->bw);
 """,
      """	wlr_scene_node_set_position(&c->border[3]->node, c->geom.width - c->bw, c->bw);
@@ -114,7 +103,7 @@ applyrules(Client *c)
 	wlr_scene_node_set_position(&c->bands[2]->node, c->bw - bandpx, c->bw);
 	wlr_scene_node_set_position(&c->bands[3]->node, c->geom.width - c->bw, c->bw);
 """),
-    # (6) focusclient: the colour is the zone's either way; focus hides the band.
+    # focusclient: the colour is the zone's either way; focus hides the band.
     ("""		if (!exclusive_focus && !seat->drag)
 			client_set_border_color(c, focuscolor);
 """,
@@ -124,7 +113,7 @@ applyrules(Client *c)
 			wlr_scene_node_set_enabled(&c->band->node, 0);
 		}
 """),
-    # (7) focusclient, the window losing focus: its band comes back.
+    # focusclient, the window losing focus: its band comes back.
     ("""		} else if (old_c && !client_is_unmanaged(old_c) && (!c || !client_wants_focus(c))) {
 			client_set_border_color(old_c, bordercolor);
 """,
@@ -132,13 +121,11 @@ applyrules(Client *c)
 			client_set_border_color(old_c, old_c->zoneborder);
 			wlr_scene_node_set_enabled(&old_c->band->node, 1);
 """),
-    # (8) setfullscreen: keep the border; dwl's 0 would let a window hide its zone.
+    # setfullscreen: keep the border; dwl's 0 would let a window hide its zone.
     ("""	c->bw = fullscreen ? 0 : borderpx;
 	client_set_fullscreen(c, fullscreen);
 """,
-     """	/* Kryptik: a fullscreen window keeps its zone border. The border is the
-	 * compositor's statement of which zone the window belongs to, and a
-	 * window must not be able to remove it by going fullscreen. */
+     """	/* Kryptik: a fullscreen window keeps its zone border, or it could hide its zone. */
 	c->bw = borderpx;
 	client_set_fullscreen(c, fullscreen);
 """),
@@ -147,7 +134,7 @@ applyrules(Client *c)
 \twl_list_insert(&fstack, &c->flink);
 """,
      """\twl_list_insert(&clients, &c->link);
-\t/* Compare with the actual keyboard focus, which may be on another monitor. */
+\t/* Compare with the seat's keyboard focus, which may be on another monitor. */
 \tw = NULL;
 \ttoplevel_from_wlr_surface(seat->keyboard_state.focused_surface, &w, NULL);
 \tif (c->zoneborder != unzonedcolor && w && !client_is_unmanaged(w)
@@ -200,8 +187,7 @@ applyrules(Client *c)
 \t\t\t\t&& (c->zoneborder == unzonedcolor || w->zoneborder == c->zoneborder))
 \t\t\tsetfullscreen(w, 0);
 """),
-    # setmon also chooses focus after mapping; preserve another zone's actual
-    # keyboard focus even when the selected monitor has changed.
+    # setmon also picks focus after mapping: keep another zone's keyboard focus across monitors.
     ("""\t\tsetfloating(c, c->isfloating);
 \t}
 \tfocusclient(focustop(selmon), 1);

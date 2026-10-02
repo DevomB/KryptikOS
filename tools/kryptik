@@ -1,11 +1,5 @@
 #!/usr/bin/env bash
-# kryptik: the user's command for zones. Fills in kryptikd's paths from
-# kryptik.conf and never offers a way past kryptikd's refusals.
-#
-# When not root and the session's launch service (kryptik-launch) answers,
-# zones start through it; otherwise kryptikd runs them directly. There is no
-# transfer, clipboard or mount command: from zone 0 those would bypass the
-# chrome, where the user approves each move.
+# kryptik: the user's zone command; fills in kryptikd's paths and offers no way past its refusals.
 set -uo pipefail
 
 PROG="${0##*/}"
@@ -72,12 +66,11 @@ As an ordinary user in a desktop session, shell/run/stop go through the
 session's launch service (kryptik-launch). Files cross zones only through the
 broker, from inside a zone, after you answer the chrome's question; the
 clipboard moves only by the chrome's zone 0 gesture (Alt+p, then m<from><to>).
-$PROG has no commands for either, on purpose.
+$PROG has no command for either.
 USAGE
 }
 
-# True when not root and the session's launch service answers. --runtime-dir
-# is its cheapest request and fails fast rather than hanging.
+# Not root and the launch service answers; --runtime-dir is its cheapest request and fails fast.
 LAUNCH="${KRYPTIK_LAUNCH:-kryptik-launch}"
 via_launch() {
     [[ "$(id -u)" -ne 0 ]] || return 1
@@ -86,6 +79,7 @@ via_launch() {
 }
 
 # --- configuration ----------------------------------------------------------
+
 # Parsed, not sourced: a stray line in the file must not run as the caller.
 load_conf() {
     [[ -r "$CONF" ]] || return 0
@@ -108,23 +102,18 @@ load_conf() {
 }
 
 have_kryptikd() {
-    command -v "$KRYPTIKD" >/dev/null 2>&1 || die \
-"kryptikd is not on PATH.
-    This is the program that actually creates zones; $PROG only arranges its
-    arguments. Install it, or set KRYPTIKD=/path/to/kryptikd."
+    command -v "$KRYPTIKD" >/dev/null 2>&1 \
+        || die "kryptikd is not on PATH; install it, or set KRYPTIKD=/path/to/kryptikd"
 }
 
-# The flags that map a zone to an unprivileged host user. kryptikd takes them
-# only as root, and then requires them unless the zone declares its own.
-# Sets an array rather than printing for `< <(...)`: process substitution
-# needs /dev/fd, which a minimal system may lack.
+# An array, not printed for `< <(...)`: process substitution needs /dev/fd, which may be missing.
 IDENTITY_ARGS=()
+# The flags mapping a zone to a host user: kryptikd takes them only as root, then requires them.
 set_identity_args() { # zone name
     IDENTITY_ARGS=()
     [[ "$(id -u)" -eq 0 ]] || return 0
 
-    # kryptikd refuses the flags for a zone with [identity] uid_base. A
-    # presence test is enough: kryptikd checks the value itself.
+    # Not for a zone with [identity] uid_base; kryptikd checks the value, so presence is enough.
     if grep -qE '^[[:space:]]*uid_base[[:space:]]*=' "$ZONES_DIR/$1.toml" 2>/dev/null; then
         return 0
     fi
@@ -154,8 +143,7 @@ require_zone() {
     if (( ZONE_LIST_RC != 0 )) || [[ -n "$ZONE_LIST_ERR" ]]; then
         printf '%s: could not read the zones in %s\n\n' "$PROG" "$ZONES_DIR" >&2
         [[ -n "$ZONE_LIST_ERR" ]] && printf '%s\n' "$ZONE_LIST_ERR" | sed 's/^/    /' >&2
-        printf '\nThis is not the same as having no zones. Until it is fixed, no zone\n' >&2
-        printf 'will start. Try: %s doctor\n' "$PROG" >&2
+        printf '\nNo zone starts until this is fixed. Try: %s doctor\n' "$PROG" >&2
         exit 1
     fi
     printf '%s: no zone named %s\n\n' "$PROG" "$name" >&2
@@ -169,8 +157,8 @@ require_zone() {
 }
 
 # --- running state ----------------------------------------------------------
-# A word, not a colour: it must survive a pipe, a monochrome terminal and a
-# screen reader.
+
+# A word, not a colour: it must survive a pipe, a monochrome terminal and a screen reader.
 running_state() {
     local out
     out="$("$KRYPTIKD" status "$1" 2>/dev/null)" || { printf 'unknown'; return; }
@@ -246,13 +234,12 @@ cmd_stop() {
 
 # --- starting ---------------------------------------------------------------
 
-# The one place that runs a zone, for both shell and run.
+# Shared by shell and run.
 start_zone() {
     local name="$1"; shift
     if via_launch; then
         [[ -f "$ZONES_DIR/$name.toml" ]] || die "no zone named $name in $ZONES_DIR"
-        # --ask reads an encrypted zone's passphrase on this terminal and passes
-        # it on a descriptor, never as an argument.
+        # --ask reads an encrypted zone's passphrase on this terminal and passes it on a descriptor.
         "$LAUNCH" --ask --no-display "$name" -- "$@"
         local rc=$?
         (( rc == 0 )) || printf '\n%s: %s did not start through the launch service (exit %d).\n' "$PROG" "$name" "$rc" >&2
@@ -266,8 +253,7 @@ start_zone() {
     local rc
     set_identity_args "$name"
 
-    # Not captured: a shell needs the terminal, and kryptikd's warnings and
-    # refusals must reach the user unchanged.
+    # Not captured: a shell needs the terminal, and the user must see kryptikd's refusals unchanged.
     "$KRYPTIKD" run "$name" --zones "$ZONES_DIR" \
         --rootfs "$ROOTFS" "${IDENTITY_ARGS[@]}" -- "$@"
     rc=$?
@@ -293,9 +279,7 @@ cmd_run() {
     start_zone "$name" "$@"
 }
 
-# --- the net zone's Wi-Fi networks ------------------------------------------
-# kryptikd keeps the credentials in zone 0 and restarts the net zone after a
-# change (docs/design/net-zone.md). The passphrase always goes on stdin.
+# --- the net zone's Wi-Fi networks, kept by kryptikd in zone 0 --------------
 
 # Read one line into PASSPHRASE: from the terminal with echo off, or a pipe.
 PASSPHRASE=""
@@ -335,8 +319,7 @@ cmd_wifi() {
     esac
 }
 
-# Installed systems only: the update state is zone 0's, reached through the
-# launch service.
+# Installed systems only: the update state is zone 0's, reached through the launch service.
 cmd_update() {
     case "${1:-}" in
         status|fetch|apply) [[ $# -eq 1 ]] || die "$PROG update $1 takes no argument" 2 ;;
@@ -387,11 +370,9 @@ case "$cmd" in
     ""|help) usage ;;
     # Commands users will expect, answered with why they do not exist.
     transfer|copy|clipboard|paste|mount)
-        die "\`$cmd\` is not a $PROG command, on purpose.
-    A file crosses zones only through the broker socket INSIDE the sending zone
-    (the zone verb \`transfer TO NAME\` with the file's descriptor; see
-    docs/design/broker.md), and only after you answer the question the chrome shows.
-    The clipboard moves only by the chrome's zone 0 gesture: Alt+p, then
-    m<from><to>. Nothing in zone 0 can do either for you." 2 ;;
+        die "\`$cmd\` is not a $PROG command.
+    A file crosses zones only through the broker socket inside the sending zone
+    (\`transfer TO NAME\`, docs/design/broker.md), after you answer the chrome's
+    question. The clipboard moves only by the chrome's gesture: Alt+p, then m<from><to>." 2 ;;
     *) usage >&2; die "unknown command: $cmd" 2 ;;
 esac

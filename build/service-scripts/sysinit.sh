@@ -1,16 +1,13 @@
 #!/bin/sh -e
-# Early boot: filesystems, the state partition, the /etc overlay, sysctls.
-# Idempotent, since s6-rc may run it again after a runlevel change.
+# Early boot: filesystems, state, the /etc overlay, sysctls; idempotent, as s6-rc may rerun it.
 
-# kryptik-console holds the getty back until this finishes: it may ask for the
-# state passphrase, and two readers on one terminal lose keystrokes.
+# kryptik-console holds its getty until this ends, so the passphrase prompt gets every keystroke.
 echo running > /run/kryptik-sysinit
 trap 'echo finished > /run/kryptik-sysinit' EXIT
 
 [ -r /etc/hostname ] && hostname "$(cat /etc/hostname)" || true
 
-# The only names the /etc overlay's upper layer may carry: accounts (with the
-# shadow tools' backups and lock), identity, clock and zone 0's resolver.
+# The only names the /etc upper layer may carry: accounts, identity, clock, zone 0's resolver.
 ETC_MUTABLE="passwd shadow group gshadow subuid subgid passwd- shadow- group- gshadow- subuid- subgid- .pwd.lock hostname machine-id localtime adjtime resolv.conf"
 prune_etc_upper() {   # prune_etc_upper UPPER QUARANTINE
     up="$1"; q="$2"; moved=0
@@ -25,9 +22,9 @@ prune_etc_upper() {   # prune_etc_upper UPPER QUARANTINE
         name="${e##*/}"
         keep=0
         for k in $ETC_MUTABLE; do [ "$name" = "$k" ] && keep=1; done
-        # Accounts must be regular files, not FIFOs or links into mutable
-        # state. localtime may point only into the verified zoneinfo tree.
+        # A kept name must be a regular file, not a FIFO or a link into mutable state.
         if [ "$keep" = 1 ] && [ -f "$e" ] && [ ! -L "$e" ]; then continue; fi
+        # localtime may link only into the verified zoneinfo tree.
         if [ "$name" = localtime ] && [ -L "$e" ] && [ -f "$e" ]; then
             case "$(realpath -e -- "$e")" in /usr/share/zoneinfo/*) continue ;; esac
         fi
@@ -41,13 +38,12 @@ prune_etc_upper() {   # prune_etc_upper UPPER QUARANTINE
     return 0
 }
 
-# Up to three passphrase prompts, on every console (ask.sh). printf is a
-# builtin: the passphrase never appears as an argument.
 . /usr/libexec/kryptik/ask.sh
 unlock_state() {   # unlock_state DEVICE -> /dev/mapper/kryptik-state
     try=1
     while [ "$try" -le 3 ] && [ ! -b /dev/mapper/kryptik-state ]; do
         pass=$(ask -s 0 "sysinit: passphrase for the state partition (try $try of 3): ") || pass=""
+        # printf is a builtin: the passphrase never appears as an argument.
         printf '%s' "$pass" | cryptsetup open --type luks2 --key-file=- "$1" kryptik-state 2>/dev/null || true
         try=$((try + 1))
     done
@@ -55,12 +51,10 @@ unlock_state() {   # unlock_state DEVICE -> /dev/mapper/kryptik-state
     [ -b /dev/mapper/kryptik-state ]
 }
 
-# The kernel mounts devtmpfs (CONFIG_DEVTMPFS_MOUNT=y); stage 2 init may
-# already have mounted the rest.
+# devtmpfs is the kernel's (CONFIG_DEVTMPFS_MOUNT=y); stage 2 init may have mounted the rest.
 mountpoint -q /proc    || mount -t proc  proc  /proc -o nosuid,noexec,nodev
 mountpoint -q /sys     || mount -t sysfs sysfs /sys  -o nosuid,noexec,nodev
-# Neither securityfs nor cgroup2 may abort this `sh -e` script: s6-rc would
-# then start no services at all.
+# Neither securityfs nor cgroup2 may abort this `sh -e` script, or s6-rc starts no services.
 if ! mountpoint -q /sys/kernel/security 2>/dev/null; then
     if mount -t securityfs securityfs /sys/kernel/security \
              -o nosuid,noexec,nodev 2>/dev/null; then
@@ -86,8 +80,7 @@ fi
 mkdir -p /dev/pts /dev/shm
 mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts -o gid=5,mode=620,nosuid,noexec
 mountpoint -q /dev/shm || mount -t tmpfs  tmpfs  /dev/shm -o nosuid,nodev
-# efivarfs: the A/B trial (boot-success, kryptik-update) uses Boot#### and
-# BootNext. boot-success reports a non-UEFI boot.
+# efivarfs, for the A/B trial's Boot#### and BootNext (boot-success, kryptik-update).
 if [ -d /sys/firmware/efi/efivars ] && ! mountpoint -q /sys/firmware/efi/efivars; then
     mount -t efivarfs efivarfs /sys/firmware/efi/efivars -o nosuid,noexec,nodev 2>/dev/null \
         || echo "sysinit: efivarfs did not mount" >&2
@@ -102,14 +95,7 @@ for word in $(cat /proc/cmdline 2>/dev/null); do
     esac
 done
 
-# --- persistent state --------------------------------------------------------
-# The root is read-only; what changes lives on the kryptik-state partition of
-# the root's own disk (devices.sh), seeded once from the image's /var.
-#   persistent  the state partition is mounted at /var
-#   tmpfs       install medium: nothing persists
-#   degraded    installed, but the state partition cannot be used: /var is a
-#               tmpfs for repair, and first boot, the session, the update
-#               commit and the updater refuse (/run/kryptik/state-degraded)
+# --- persistent state, on the root disk's kryptik-state partition -----------
 . /usr/libexec/kryptik/devices.sh
 state_mnt=/run/kryptik/state
 STATE=""; STATE_REASON=""; state_dev=""; root_disk=""
@@ -150,6 +136,7 @@ if ! mountpoint -q /var; then
         mount -t tmpfs -o nosuid,nodev,mode=0755 tmpfs "$state_mnt"
     fi
     if [ "$STATE" = degraded ]; then
+        # First boot, the session, the update commit and the updater refuse while this exists.
         printf '%s\n' "$STATE_REASON" > /run/kryptik/state-degraded
         tell "" \
             "sysinit: ******************************************************************" \
@@ -174,9 +161,7 @@ if ! mountpoint -q /var; then
         chmod 0755 "$state_mnt/home"
         date -Iseconds > "$state_mnt/.kryptik-state" 2>/dev/null || : > "$state_mnt/.kryptik-state"
     fi
-    # State is not authenticated, and root honours files under /etc unasked
-    # (ld.so.preload, nsswitch.conf, udev rules, login configuration), so the
-    # upper layer is pruned to ETC_MUTABLE before the overlay is mounted.
+    # State is unauthenticated, and root obeys /etc unasked (ld.so.preload, nsswitch.conf, udev).
     prune_etc_upper "$state_mnt/lib/kryptik/etc/upper" "$state_mnt/lib/kryptik/etc/quarantine" || {
         echo "sysinit: refusing to boot with an unsafe /etc upper layer; recover from the install medium" >&2
         exit 1
@@ -187,13 +172,7 @@ else
 fi
 rmdir "$state_mnt" 2>/dev/null || true
 
-# /etc as an overlay: the verified root's /etc under the machine's changes on
-# state. The upper layer is not authenticated, so nothing deciding privilege or
-# trust is read from /etc; those come from the verified root:
-#   init, services   /usr/lib/s6-linux-init, /usr/lib/kryptik/s6-rc
-#   sysctls          /usr/lib/kryptik/sysctl.d
-#   zones            /usr/lib/kryptik/zones
-#   release anchor   /usr/share/kryptik/trust
+# Nothing deciding privilege or trust is read from /etc: its upper layer is unauthenticated.
 if ! mountpoint -q /etc; then
     mkdir -p /var/lib/kryptik/etc/upper /var/lib/kryptik/etc/work
     if mount -t overlay overlay \
@@ -213,9 +192,7 @@ mountpoint -q /tmp  || mount -t tmpfs -o nosuid,nodev,mode=1777 tmpfs /tmp
 mkdir -p /run/kryptik /run/lock /var/log/kryptik /var/lib/kryptik/boot
 chmod 0700 /run/kryptik
 chmod 0755 /run/lock /var/log/kryptik
-# Transfer consent (kryptikd consent.rs): broker questions, answers from the
-# desktop session (group kryptik). Not under the 0700 /run/kryptik; no zone has
-# a path here. Setgid so the session's answers belong to the group.
+# Consent questions (consent.rs) for the session's group kryptik; no zone has a path here.
 mkdir -p /run/kryptik-consent
 chown root:kryptik /run/kryptik-consent 2>/dev/null || true
 chmod 2770 /run/kryptik-consent
@@ -225,7 +202,7 @@ printf 'slot=%s\nmedia=%s\nstate=%s\nstate_dev=%s\nroot_disk=%s\n' \
     "$slot" "$media" "$STATE" "$state_dev" "$root_disk" > /run/kryptik/boot-identity
 echo "sysinit: booted slot='${slot}' media='${media}' state=${STATE}${state_dev:+ (${state_dev})}"
 
-# Kernel tunables, from the verified root only. Failures are reported.
+# Kernel tunables, from the verified root only.
 if [ -d /usr/lib/kryptik/sysctl.d ]; then
     for f in /usr/lib/kryptik/sysctl.d/*.conf; do
         [ -r "$f" ] || continue

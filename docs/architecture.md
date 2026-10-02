@@ -12,15 +12,15 @@ A zone is the unit of isolation, and every process belongs to exactly one.
 | Syscalls | seccomp-bpf, default-deny allowlist |
 | File access | Landlock |
 | Resources | cgroup v2 memory, pids, cpu and io limits |
-| Identity | border colour, drawn by the compositor, which has no title bars; the text identity (zone, glyph, label, the `[zone]` title prefix) is shown by the trusted chrome alone, so no window draws its own |
+| Identity | border colour drawn by the compositor, with no title bars; the zone's name, glyph, label and `[zone]` title prefix appear only in the trusted chrome, so no window draws its own |
 
 ### Zone 0
 
 The trusted base, like Qubes' `dom0`: PID 1, the services, kryptikd, the
 compositor and the desktop session. It has no route out and runs no user
 applications (ADR-003), which the desktop suite checks process by process.
-kryptikd creates the other zones as root; unprivileged
-user namespaces are off ([privileged launch](design/privileged-launch.md)).
+kryptikd creates the other zones as root; unprivileged user namespaces are
+off ([privileged launch](design/privileged-launch.md)).
 
 ### Shipped zones
 
@@ -37,11 +37,11 @@ Defined in `compartments/zones/`, installed on the verified root.
 
 ## Between zones
 
-Nothing crosses by default. The broker in kryptikd identifies a caller by its
-socket's peer uid and carries two things ([broker](design/broker.md)): a file
-transfer, one file one way to a zone the sender's policy names, after the user
-approves it; and the clipboard, one per zone, moved between zones only by a
-user gesture in zone 0.
+Nothing crosses by default. The [broker](design/broker.md) in kryptikd
+identifies a caller by its socket's peer uid and carries two things. A file
+transfer sends one file, one way, to a zone listed in the sender's policy,
+once the user approves it. Each zone has one clipboard, moved to another zone
+only by a user gesture in zone 0.
 
 Routed zones reach the network through isolated ports on the `net` zone's
 bridge. The `net` zone can also send zone 0 a clock offset and releases, both
@@ -54,12 +54,12 @@ D-Bus or shared `/tmp`: every channel is a confused-deputy risk.
 No zone can reach the compositor's socket. A zone started from the desktop
 gets its own `kryptik-wlproxy`, which hides the capture, clipboard,
 input-injection and similar Wayland globals and stamps each window with its
-zone; the compositor draws the zone's border and title prefix from that.
+zone, from which the compositor draws the zone's border.
 
 A window's border colour is how the user tells which zone it belongs to. If
 they cannot tell at a glance which zone a password prompt belongs to, the
-zones have failed them.
-`zoneid audit` checks that every pair of zones stays distinguishable.
+zones have failed them. `zoneid audit` checks that every pair of zones stays
+distinguishable.
 
 ## Storage
 

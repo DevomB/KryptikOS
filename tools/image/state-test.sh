@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# The installed system's state partition: found on the system's own disk, and
-# a boot that says so when it cannot use it (docs/design/boot-and-updates.md,
-# sysinit.sh).
+# The installed system's state partition: found on its own disk, and a degraded boot when unusable.
 #
 #   tools/image/state-test.sh --usb IMG [--disk FILE] [--timeout N]
 #
@@ -14,8 +12,7 @@
 #   step 6  the watchdog feeder stopped: the machine resets and comes back
 #   step 7  three wrong passphrases: degraded; then the right one
 #
-# A degraded boot has no accounts, so only its console is checked; after each
-# repair a login must find the user's file. Every disk is a file made here.
+# After each repair a login must find the user's file. Every disk is a file made here.
 set -uo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -28,7 +25,7 @@ while [[ "$#" -gt 0 ]]; do
         --usb) USB="${2:?}"; shift 2 ;;
         --disk) DISK="${2:?}"; shift 2 ;;
         --timeout) TIMEOUT="${2:?}"; shift 2 ;;
-        -h|--help) sed -n '2,18p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,15p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -44,9 +41,7 @@ source "${SELF}/suite-lib.sh"
 VARSF="${VMDIR}/state-vars.fd"; cp /usr/share/OVMF/OVMF_VARS_4M.fd "$VARSF"
 
 
-# A boot that must come up degraded. Nobody can log in to power it off, so it
-# is stopped once its report ends, and only its transcript is checked: every
-# line below comes before the report's END.
+# Nobody can log in to a degraded boot: stop it at its report's END and check the transcript.
 degraded_boot() {   # degraded_boot NAME REASON-REGEX
     start_vm "$1"
     DRIVE_TIMEOUT=150 drive "expect:KRYPTIK_SMOKE: END" > /dev/null
@@ -142,10 +137,9 @@ sfdisk --part-label "$DISK" 4 kryptik-state >/dev/null 2>&1 || die "relabel back
 normal_boot state-p5b
 
 # ----------------------------------------------------------------- step 6 --
-# Stop the feeder rather than kill it (s6 would restart it): to the timer that
-# is a hung userspace, and only the watchdog's reset can bring a second boot.
 step "step 6: nothing feeds the watchdog: the machine resets itself and comes back with its data"
 start_vm state-p6
+# The feeder stopped, not killed (s6 would restart it): a hung userspace only the watchdog resets.
 p6=( "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}"
      "$(ROOTSH 's6-svc -p /run/service/watchdog && echo FEEDER-STOPPED')" "expect:FEEDER-STOPPED"
      "expect:KRYPTIK_SMOKE: BEGIN" "expect:KRYPTIK_SMOKE: END"

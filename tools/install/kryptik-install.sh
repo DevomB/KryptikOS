@@ -1,21 +1,15 @@
 #!/bin/sh
-# Install Kryptik from the booted medium onto a whole disk: ESP, root slots A
-# and B, and a LUKS2 state partition (docs/design/boot-and-updates.md,
-# docs/design/state-encryption.md). Runs as root inside a booted medium, never
-# on a build host; every check runs before the first write.
+# Install Kryptik from the booted medium onto a whole disk (docs/design/boot-and-updates.md).
+# Runs as root on the medium, never on a build host; every check runs before the first write.
 #
-#   kryptik-install --target DISK [--yes] [--dry-run] [--preseed FILE]
-#                   [--replace-kryptik]
+#   kryptik-install --target DISK [--yes] [--dry-run] [--preseed FILE] [--replace-kryptik]
 set -eu
 
 PROG="kryptik-install"
 say()  { printf '%s: %s\n' "$PROG" "$*"; }
 die()  { printf '%s: FAILED: %s\n' "$PROG" "$*" >&2; exit 1; }
 
-# root.json is the medium's own record, not signed material: a rewritten
-# record must be able to make the install fail and nothing else, so every
-# field is checked for form before it is used, and what lands on the disk is
-# verified against the root hash the signed kernel carries.
+# root.json is unsigned: a rewritten one may only fail the install, so every field is checked.
 decimal_field() {   # decimal_field NAME VALUE: a bounded decimal, or die
     case "$2" in ''|*[!0-9]*) die "root.json: $1 is not a number" ;; esac
     [ "${#2}" -le 15 ] || die "root.json: $1 is too large"
@@ -24,8 +18,7 @@ hex_field() {   # hex_field NAME VALUE LENGTH: lowercase hex of that length, or 
     case "$2" in *[!0-9a-f]*) die "root.json: $1 is not a hash" ;; esac
     [ "${#2}" -eq "$3" ] || die "root.json: $1 is not a hash"
 }
-# The root's dm-verity table from the signed command line, as
-# "data_blocks hash_start_block root_hash salt"; empty when there is none.
+# The signed command line's verity table as "data_blocks hash_start root_hash salt", or nothing.
 verity_of() {   # verity_of FILE
     sed -n 's/.* verity 1 [^ ]* [^ ]* 4096 4096 \([0-9][0-9]*\) \([0-9][0-9]*\) sha256 \([0-9a-f]\{64\}\) \([0-9a-f]*\) .*/\1 \2 \3 \4/p' "$1" | head -1
 }
@@ -63,9 +56,7 @@ for tool in sfdisk partx blockdev blkid cryptsetup stty mkfs.ext4 dd sha256sum m
             readlink lsblk head cmp cp mkdir stat tr; do
     command -v "$tool" >/dev/null 2>&1 || missing="${missing} ${tool}"
 done
-[ -z "$missing" ] || die "this system is missing:${missing}
-Refusing to start. Every tool this installer needs has to exist before it
-touches a disk, not at the moment it is first called."
+[ -z "$missing" ] || die "this system is missing:${missing}; nothing was written"
 
 # part_dev DISK N: nvme0n1 -> nvme0n1p2, vdb -> vdb2.
 part_dev() {
@@ -75,27 +66,21 @@ part_dev() {
     esac
 }
 
-# The boot services' answers to which disk a device is on and which partitions
-# are this system's own.
+# kryptik_root_disk and kryptik_part, as the boot services resolve them.
 . /usr/libexec/kryptik/devices.sh
 
 # --- refuse anything that is not a disposable whole disk -------------------
-[ -b "$TARGET" ] || die "${TARGET} is not a block device.
-This installer writes to a whole disk. It does not write to files, and it does
-not create devices."
+[ -b "$TARGET" ] || die "${TARGET} is not a block device; name a whole disk"
 TARGET_REAL="$(readlink -f "$TARGET")"
 [ -b "$TARGET_REAL" ] || die "${TARGET} resolves to ${TARGET_REAL}, which is not a block device"
 tname="$(basename "$TARGET_REAL")"
 
-# Never the disk the running root is on, through any dm/loop layer: booted
-# from a medium, that is the medium. First, so no other refusal stands in
-# for it, and no flag overrides it.
+# Never the running root's disk, through any dm/loop layer: checked first, and no flag overrides it.
 root_src="$(awk '$2 == "/" { print $1; exit }' /proc/mounts)"
 # Not root_src: without an initramfs the root is /dev/root, which names no device.
 root_disks="$(kryptik_root_disk 2>/dev/null || true)"
 for d in $root_disks; do
-    [ "$(readlink -f "$d")" = "$TARGET_REAL" ] && die "${TARGET} is the disk this system is running from (root ${root_src} sits on ${d}).
-Refusing."
+    [ "$(readlink -f "$d")" = "$TARGET_REAL" ] && die "${TARGET} is the disk this system is running from (root ${root_src} sits on ${d})"
 done
 
 [ -e "/sys/class/block/$tname/partition" ] && die "${TARGET} is a partition, not a whole disk. Name the disk."
@@ -109,7 +94,7 @@ if [ -n "$mounted" ]; then
     die "the target has mounted filesystems. Unmount them first, or pick another disk."
 fi
 if awk -v d="${TARGET_REAL}" 'NR>1 && $1 ~ "^" d { found=1 } END { exit !found }' /proc/swaps 2>/dev/null; then
-    die "${TARGET} has active swap on it. Refusing."
+    die "${TARGET} has active swap on it"
 fi
 # Nor held open by device-mapper (an unlocked LUKS partition, LVM) or md.
 held=""
@@ -118,9 +103,7 @@ for h in "/sys/class/block/$tname/holders/"* "/sys/class/block/$tname/$tname"*/h
 done
 [ -z "$held" ] || die "${TARGET} is in use: held open by${held}. Close them first, or pick another disk."
 
-# A disk that carries Kryptik (an old installation, a medium, a test-control
-# disk) may hold the only copy of someone's state: it is replaced only when
-# asked for by name.
+# A disk that carries Kryptik may hold the only copy of someone's state: replaced only on request.
 labels=""
 for p in "/sys/class/block/$tname/$tname"*; do
     [ -e "$p/partition" ] || continue
@@ -131,8 +114,8 @@ for p in "/sys/class/block/$tname/$tname"*; do
 done
 if [ -n "$labels" ]; then
     [ "$REPLACE" -eq 1 ] || die "${TARGET} holds a Kryptik installation or medium (${labels}).
-Nothing on it is in use by this system. To replace it, run again with
---replace-kryptik: everything on it, including its encrypted state, is destroyed."
+To replace it, run again with --replace-kryptik: everything on it, including
+its encrypted state, is destroyed."
     say "replacing ${labels} on ${TARGET}"
 fi
 
@@ -171,8 +154,7 @@ case "$media" in
         [ -f "$ESP_SRC" ] || die "no esp.img on the medium"
         ROOT_JSON="$MNT_BASE/media/root.json"
         ROOT_SRC=/dev/sr0
-        # The signed command line's linear table is "0 N linear /dev/sr0 START":
-        # the root image starts at sector START of the medium.
+        # The signed linear table "0 N linear /dev/sr0 START" puts the root image at sector START.
         ROOT_OFF="$(sed -n 's/.*linear \/dev\/sr0 \([0-9]*\).*/\1/p' /proc/cmdline | head -1)"
         [ -n "$ROOT_OFF" ] || die "could not read the root image offset from the signed command line"
         ROOT_OFF=$(( ROOT_OFF * 512 ))
@@ -186,8 +168,7 @@ ROOT_BYTES="$(jget total_bytes)"; ROOT_SHA="$(jget sha256)"; VERSION="$(jget ver
 decimal_field total_bytes "$ROOT_BYTES"
 hex_field sha256 "$ROOT_SHA" 64
 case "$VERSION" in *[!A-Za-z0-9._-]*) die "root.json: version has characters a version cannot" ;; esac
-# The record must name the root the signed kernel carries, and its size must
-# hold that root and its hash tree without being absurd.
+# The record must name the signed kernel's root, with a size that fits it and its hash tree.
 VERITY="$(verity_of /proc/cmdline)"
 [ -n "$VERITY" ] || die "could not read the root's verity table from the signed command line"
 read -r V_BLOCKS V_HASH_START V_HASH V_SALT <<EOF
@@ -204,15 +185,12 @@ size_bytes="$(blockdev --getsize64 "$TARGET_REAL" 2>/dev/null || echo 0)"
 [ "$size_bytes" -gt 0 ] || die "could not read the size of ${TARGET}"
 MIB=1048576
 esp_mib=$(( (ESP_BYTES + MIB - 1) / MIB ))
-# A slot must also hold later, larger images: the image plus half again (at
-# least 512 MiB of room), rounded up to 64 MiB. tools/image/test-disk-size.sh
-# does the same arithmetic.
+# A slot holds the image plus half again for larger releases (at least 512 MiB), in 64 MiB steps.
 slot_mib=$(( (ROOT_BYTES + MIB - 1) / MIB ))
 room_mib=$(( slot_mib / 2 ))
 [ "$room_mib" -ge 512 ] || room_mib=512
-slot_mib=$(( (slot_mib + room_mib + 63) / 64 * 64 ))
-# State gets the rest: at least one update payload (the image plus two
-# kernels, staged there while it is verified) and 1 GiB of user data.
+slot_mib=$(( (slot_mib + room_mib + 63) / 64 * 64 ))   # as tools/image/test-disk-size.sh does
+# State gets the rest: at least an update payload (the image and two kernels) and 1 GiB of data.
 image_mib=$(( (ROOT_BYTES + MIB - 1) / MIB ))
 state_min_mib=$(( image_mib + 128 + 1024 ))
 need_mib=$(( 1 + esp_mib + 2 * slot_mib + state_min_mib + 1 ))
@@ -237,9 +215,7 @@ if [ "$ASSUME_YES" -ne 1 ]; then
     [ "$answer" = "ERASE" ] || die "not confirmed; nothing was written"
 fi
 
-# The state passphrase, before the first write: twice on a terminal, else one
-# line of stdin. It reaches cryptsetup through a pipe from the printf builtin,
-# never in argv or a file.
+# The state passphrase, before the first write; it reaches cryptsetup only via the printf builtin.
 if [ -t 0 ]; then
     stty -echo
     printf '%s: a passphrase for the state partition, asked at every boot: ' "$PROG"

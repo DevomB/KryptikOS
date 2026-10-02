@@ -3,8 +3,7 @@
 #
 #   ./tools/provenance-inventory.sh [options]
 #     --offline        lock integrity only
-#     --identity       also check signer identity against kernel.org's
-#                      published developer keys
+#     --identity       also check signers against kernel.org's developer keys
 #     --md             markdown table
 #     --json           JSON document
 #     --licences       also collect licence evidence (slow)
@@ -29,7 +28,7 @@ for a in "$@"; do
         --licences|--licenses) LICENCES=1 ;;
         --artifacts=*) ARTIFACTS="${a#--artifacts=}" ;;
         --notes=*)  NOTES_ARG="${a#--notes=}" ;;
-        -h|--help)  sed -n '2,12p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help)  sed -n '2,11p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $a" ;;
     esac
 done
@@ -63,9 +62,7 @@ done < "$MANIFEST"
 
 # --- recorded provenance caveats --------------------------------------------
 
-# Facts no check can see (a recipe that rewrites upstream files, a signer
-# upstream never designated): caveats, never classes. They describe the tree
-# being inventoried, so they come from KRYPTIK_ROOT. Optional unless --notes.
+# Caveats describe the inventoried tree, so they come from KRYPTIK_ROOT; optional unless --notes.
 NOTESF="${KRYPTIK_ROOT}/tools/source-notes.tsv"
 if [[ -n "${NOTES_ARG:-}" ]]; then
     NOTESF="$NOTES_ARG"
@@ -103,17 +100,14 @@ if [[ -f "$NOTESF" ]]; then
         fi
         printf '%s\t%s\t%s\t%s\n' "$n_pkg" "$n_kind" "$n_loc" "$n_note" >> "$NOTES_TSV"
     done < "$NOTESF"
-    [[ "$nbad" -eq 0 ]] || die "${nbad} malformed row(s) in ${NOTESF}.
-A caveat file that cannot be parsed is a tooling fault, not a provenance
-result: reporting the inventory without it would drop recorded facts silently."
+    [[ "$nbad" -eq 0 ]] || die "${nbad} malformed row(s) in ${NOTESF}; no inventory is reported without its caveats."
     dim "  notes: $(grep -c . "$NOTES_TSV" || true) recorded caveat(s)"
 fi
 
 # Test hook: pre-made reports from tools/tests/provenance-inventory.sh.
 if [[ -n "${KRYPTIK_INVENTORY_REPORTS:-}" ]]; then
-    [[ "${KRYPTIK_INVENTORY_SELFTEST:-0}" == "1" ]] || die \
-"KRYPTIK_INVENTORY_REPORTS is set but KRYPTIK_INVENTORY_SELFTEST is not.
-Refusing to build an inventory from substituted evidence."
+    [[ "${KRYPTIK_INVENTORY_SELFTEST:-0}" == "1" ]] \
+        || die "Refusing to build an inventory from substituted evidence without KRYPTIK_INVENTORY_SELFTEST=1"
     warn "SELF-TEST MODE: evidence is supplied, not collected"
     for f in signatures provenance identity; do
         [[ -f "${KRYPTIK_INVENTORY_REPORTS}/${f}.tsv" ]] \
@@ -121,11 +115,9 @@ Refusing to build an inventory from substituted evidence."
     done
     IDREP_PRESET=1
 elif [[ "$OFFLINE" -eq 1 ]]; then
-    warn "--offline: signature and publisher evidence will not be collected."
-    warn "Every source will therefore show only what sources.lock establishes."
+    warn "--offline: no signature or publisher evidence, so each source shows only what sources.lock establishes."
 else
-    # The evidence is the verifiers' --report output. This is not a gate, so
-    # their exit status is ignored.
+    # Not a gate: the verifiers' --report output is the evidence, and their exit status is ignored.
     dim "  running tools/verify-signatures.sh"
     "${KRYPTIK_ROOT}/tools/verify-signatures.sh" --report="$SIGREP" \
         > "${WORK}/signatures.log" 2>&1 || true
@@ -136,9 +128,7 @@ fi
 
 # --- signer identity --------------------------------------------------------
 
-# Looks up each keys.manifest key in kernel.org's pgpkeys.git (developer keys
-# with trust paths to Torvalds, one per long key id under keys/). A match means
-# kernel.org publishes that key; its trust root is TLS to git.kernel.org.
+# Looks up each keys.manifest key in kernel.org's pgpkeys.git; its trust root is TLS to kernel.org.
 IDREP="${WORK}/identity.tsv"
 # Keep what the test hook copied in.
 [[ -n "${IDREP_PRESET:-}" ]] || : > "$IDREP"
@@ -154,8 +144,7 @@ collect_identity() {
     local home="${WORK}/gnupg"
     mkdir -p "$home"; chmod 700 "$home"
 
-    # Reference keys. The kernel tarball is already verified against the stable
-    # key, so a certification by it is no new trust decision.
+    # Reference keys: the kernel is verified against the stable key, so they add no new trust.
     local ref rid
     for ref in "79BE3E4300411886:Torvalds" "38DBBDC86092693E:Kroah-Hartman" \
                "E63EDCA9329DD07E:Ryabitsev"; do
@@ -218,20 +207,17 @@ fi
 
 # --- licence evidence and built artefacts -----------------------------------
 
-# Off by default: listing a tarball means decompressing all of it. Uncollected
-# licences read not-collected, never unknown.
+# Off by default, as listing a tarball decompresses all of it; uncollected reads not-collected.
 LICREP="${WORK}/licences.tsv"
 : > "$LICREP"
 if [[ "$LICENCES" -eq 1 ]]; then
     log "Collecting licence evidence"
-    # Part of this tool, so found beside it rather than under KRYPTIK_ROOT.
+    # Part of this tool, so found beside it, not under KRYPTIK_ROOT.
     "$(dirname "${BASH_SOURCE[0]}")/scan-licenses.sh" > "$LICREP" 2>/dev/null || true
     dim "  $(grep -c . "$LICREP" || true) source(s) scanned"
 fi
 
-# A built tree's identity: path, file count, size, BUILD_ID and the sha256 of
-# the artifact-manifest.txt beside it. Re-hashing the files is left to
-# `make verify-manifest`.
+# A built tree's identity; `make verify-manifest` re-hashes its files.
 ARTREP="${WORK}/artifacts.tsv"
 : > "$ARTREP"
 if [[ -n "$ARTIFACTS" ]]; then
@@ -240,9 +226,7 @@ if [[ -n "$ARTIFACTS" ]]; then
         printf 'sysroot\t%s\tabsent\t-\t-\t-\t-\n' "$ARTIFACTS" >> "$ARTREP"
     else
         log "Recording built artefact identity"
-        # `|| true`: find and du fail on a chroot-built tree's root-owned
-        # directories yet still count, and under pipefail common.sh's ERR trap
-        # would abort. Such counts are recorded as partial.
+        # || true: find and du fail on a chroot-built tree's root-owned directories but still count.
         art_files="$(find "$ARTIFACTS" -type f 2>/dev/null | wc -l || true)"
         art_readable=yes
         find "$ARTIFACTS" -type d >/dev/null 2>&1 || art_readable=partial
@@ -262,8 +246,7 @@ fi
 
 if [[ "$MD" -eq 1 || "$JSON" -eq 1 ]]; then exec 1>&3 3>&-; fi
 
-# The keyring the counts were measured against: one warmed by an earlier
-# --fetch-unknown-keys run moves many sources out of lock-only.
+# A keyring warmed by --fetch-unknown-keys moves sources out of lock-only, so the report names it.
 KEYSTATE="unknown"
 if [[ -f "${WORK}/signatures.log" ]]; then
     KEYSTATE="$(grep -oE '(keyring ready \([0-9]+ public keys\)|using cached keyring \([0-9]+ keys\))' \
@@ -274,9 +257,8 @@ if [[ "$JSON" -eq 1 ]]; then
     : # carried in the document as keyring_state
 elif [[ "$MD" -eq 1 ]]; then
     printf '**Keyring state for this run:** %s.\n' "$KEYSTATE"
-    printf 'A keyring warmed by a previous `--fetch-unknown-keys` run holds keys taken\n'
-    printf 'from the signatures themselves and shifts these counts; run\n'
-    printf '`verify-signatures.sh --refresh` first for the state a fresh checkout sees.\n\n'
+    printf 'A keyring warmed by `--fetch-unknown-keys` shifts these counts;\n'
+    printf '`verify-signatures.sh --refresh` resets it.\n\n'
 else
     dim "keyring state for this run: ${KEYSTATE}"
     echo
@@ -311,10 +293,8 @@ def rows(path):
         return
 
 
-# ---- assurance classes, strongest first ------------------------------------
-#
-# The order is the point. Each entry is (key, one-line statement of what it is
-# worth). Nothing is ever summed across two of these.
+# ---- assurance classes, strongest first, never summed ----------------------
+
 CLASSES = [
     ("signed-tree-pinned-key",
      "signed tag by a key pinned in-tree, and the archive reproduces that tag's tree"),
@@ -383,8 +363,7 @@ UNVERIFIED_SIG = {"key-not-held", "no-signature-upstream", "signature-uncheckabl
 
 
 def classify(name):
-    """Return (class, detail). One class per source: the strongest ESTABLISHED
-    assertion about it, or the failure if there is one."""
+    """Return (class, detail): the strongest established assertion, or the failure."""
     s = sig.get(name)
     p = prov.get(name, {})
 
@@ -406,10 +385,7 @@ def classify(name):
     if s and s[0] == "signature-pinned-key":
         return "signature-pinned-key", s[1]
 
-    # verify-signatures.sh emits these directly when tools/key-provenance.tsv
-    # names a publisher for the key. Without this passthrough they would fall
-    # off the end of the chain and be reported as "unverified", which would be
-    # a worse answer than the one the verifier actually gave.
+    # verify-signatures.sh emits these when tools/key-provenance.tsv names the key's publisher.
     if s and s[0] in ("signature-korg-published-key",
                       "signature-korg-certified-key",
                       "signature-wkd-published-key",
@@ -466,8 +442,7 @@ for r in rows(lic_path):
         lic[r[0]] = {"spdx": r[2], "multiple": r[3] == "yes",
                      "files": r[4], "method": r[5]}
 
-# recorded caveats, keyed by source name. Validated in the shell above, so a
-# row reaching here is well formed and names a source in the manifest.
+# recorded caveats, keyed by source name and already validated by the shell above
 notes = {}
 for r in rows(notes_path):
     if len(r) >= 4:
@@ -482,8 +457,7 @@ for r in rows(art_path):
             "files": int(r[3]) if r[3].isdigit() else None,
             "size": r[4], "build_id": r[5],
             "build_manifest_sha256": r[6] if len(r) > 6 else "-",
-            # A tree built through a chroot has root-owned directories this
-            # process cannot descend, so the count is a floor, not a fact.
+            # A chroot-built tree has root-owned directories, so a partial count is a floor.
             "count_complete": not r[2].endswith("partial"),
         })
 
@@ -543,8 +517,7 @@ if os.environ.get("JSON") == "1":
     doc["per_licence_counts"] = lic_counts
     doc["source_count"] = len(doc["sources"])
 
-    # Counted separately and deliberately never folded into per_class_counts:
-    # a caveat is not a weaker class, and a class is not a caveat.
+    # Never folded into per_class_counts: a caveat is not a weaker class.
     note_counts = {}
     for src in doc["sources"]:
         for n in src.get("notes", []):
@@ -589,19 +562,12 @@ unknown = sorted(k for k in counts if k not in CLASS_ORDER)
 for k in unknown:
     print("  %3d  %-30s (unrecognised class)" % (counts[k], k))
 
-print()
-print("No single coverage figure is printed. Adding a signature checked against")
-print("a pinned key to one checked against a key the signature itself named")
-print("produces a number whose meaning is the weakest term in it.")
-
 if notes:
     print()
     if markdown:
         print("### Recorded caveats")
         print()
-        print("A caveat is **not** an assurance class. These are counted")
-        print("separately and never added to the per-class counts above: a class")
-        print("says what was established, a caveat says what is true anyway.")
+        print("Caveats are not assurance classes and are never added to the counts above.")
         print()
         print("| source | kind | location | note |")
         print("|---|---|---|---|")
@@ -611,9 +577,7 @@ if notes:
                       % (nm, n["kind"], n["location"],
                          n["note"].replace("|", "/")))
     else:
-        print("RECORDED CAVEATS - not assurance classes, and never added to the")
-        print("counts above. A class says what was established; a caveat says")
-        print("what is true anyway.")
+        print("RECORDED CAVEATS - not assurance classes, and never added to the counts above.")
         print()
         for nm in sorted(notes):
             for n in notes[nm]:
