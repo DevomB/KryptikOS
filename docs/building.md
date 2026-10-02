@@ -48,7 +48,12 @@ make media      # stage 06: USB image, ISO, signed release payload
 
 `make paths` prints where everything goes; `KRYPTIK_WORK` moves the work tree.
 Each step is stamped, so a rerun resumes where it stopped and a changed
-recipe rebuilds from that step on.
+recipe rebuilds from that step on. Stage 04 also records what each step
+wrote (`<work>/.stamps/files`), so when a rebuilt step no longer installs a
+file, the stage removes it at its end, as a clean build would never have had
+it (`build/lib/step-files.sh`). A file another step still writes, or a
+library something still links, stays. Nothing is removed until every step
+has a record, which a stage 04 built from the stage 02 tree gives it.
 
 `make media KRYPTIK_CHANNEL=https://<host>/<channel>/` names where the
 image's network zone asks for new releases

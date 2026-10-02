@@ -6,6 +6,7 @@
 #        04-base-system.sh --list   print the build order and stop
 
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/step-files.sh"
 load_config
 
 # --- hardening --------------------------------------------------------------
@@ -370,13 +371,18 @@ require_inside_chroot "stage 04" "system"
 # gcc2 is its last build step; verify after it is a check.
 stage_depends_on "tt-" gcc2
 
+names=()
 for ((i = 0; i < ${#PACKAGES[@]}; i += 2)); do
     name="${PACKAGES[i]}"
     recipe="${PACKAGES[i+1]}"
     [[ -n "$recipe" ]] || die "${name}: a row with no recipe"
+    names+=("$name")
+    marker="$(step_files_mark)"
     # shellcheck disable=SC2086  # recipe is a deliberately word-split command
     step "$name" $recipe
+    step_files_record "$name" "${STAMPS}/${STAMP_PREFIX}${name}" "$marker"
 done
+step_files_sweep "${names[@]}"
 
 # Written on every run and by no step (see s_etc).
 sed -i '/^BUILD_ID=/d' /etc/os-release
