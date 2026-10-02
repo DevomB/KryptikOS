@@ -35,6 +35,11 @@ one() { [ -r "$1" ] && head -n 1 "$1" 2>/dev/null; }          # a file's first l
 hex() { v="$(one "$1")"; v="${v#0x}"; printf '%s' "${v:--}"; }  # the same, without 0x
 target() { [ -e "$1" ] && basename "$(readlink -f "$1")"; }   # what a link names
 kmsg() { if [ -n "$R" ]; then cat "$R/dmesg" 2>/dev/null; else dmesg 2>/dev/null; fi; }
+# netzone NAME COMMAND...: COMMAND in the net zone's network namespace; the
+# fixture tree holds its output as netzone/NAME.
+netzone() {
+    if [ -n "$R" ]; then cat "$R/netzone/$1" 2>/dev/null; else shift; nsenter -t "$pid" -n "$@" 2>/dev/null; fi
+}
 sec() { printf '\n== %s ==\n' "$1"; }
 or_none() { if [ -s "$1" ]; then sed 's/^/  /' "$1"; else echo "  (none)"; fi; }
 
@@ -64,6 +69,7 @@ system() {
     media="$(sed -n 's/^media=//p' "$id" 2>/dev/null)"
     if [ -n "$media" ]; then printf 'booted: the %s medium\n' "$media"
     else printf 'booted: slot %s, installed\n' "$(sed -n 's/^slot=//p' "$id" 2>/dev/null)"; fi
+    printf 'state: %s\n' "$(sed -n 's/^state=//p' "$id" 2>/dev/null)"
     printf 'taken: %s\n' "$(date -u +%Y-%m-%dT%H:%MZ)"
 }
 
@@ -232,15 +238,21 @@ network() {
     for r in "$SYS"/class/rfkill/rfkill*; do
         [ -e "$r" ] && printf '%s %s %s soft %s hard %s\n' "${r##*/}" "$(one "$r/type")" "$(one "$r/name")" "$(one "$r/soft")" "$(one "$r/hard")"
     done
-    # The machine's interfaces are the net zone's, in its own namespace.
-    [ -z "$R" ] || return 0
-    pid="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
-    if [ -n "$pid" ]; then
-        echo "in the net zone:"
-        nsenter -t "$pid" -n ip -o link 2>/dev/null | awk '$2 != "lo:" { print "  " $2, $3 }'
-    else
-        echo "the net zone is not running"
-    fi
+    # The machine's interfaces are the net zone's, in its own namespace: each
+    # by kind and flags, and the one the default route leaves by.
+    pid="$(cut -d' ' -f1 "$R/run/kryptik/zones/net/init.pid" 2>/dev/null)"
+    [ -n "$pid" ] || { echo "the net zone is not running"; return 0; }
+    echo "in the net zone:"
+    radios="$(netzone iw-dev iw dev | awk '$1 == "Interface" { print $2 }' | tr '\n' ' ')"
+    netzone ip-link ip -o -d link | awk -v radios="$radios" '
+        BEGIN { n = split(radios, r, " "); for (i = 1; i <= n; i++) radio[r[i]] = 1 }
+        $2 == "lo:" { next }
+        {
+            name = $2; sub(/:$/, "", name); sub(/@.*/, "", name)
+            kind = ($0 ~ / (bridge|veth|dummy|tun) /) ? "virtual" : (name in radio) ? "wireless" : "wired"
+            print "  " name, kind, $3
+        }'
+    netzone ip-route ip -4 route show default | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") print "  default route by " $(i + 1) }'
 }
 
 inputs() {

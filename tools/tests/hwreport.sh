@@ -95,6 +95,18 @@ ln -s "$W/$radio/1-3:1.0" "$W/sys/bus/usb/devices/1-3:1.0"
 mkdir -p "$W/usr/share/hwdata"
 printf '# a comment\n8086  Intel Corporation\n\t15fb  Ethernet Connection (13) I219-LM\n\ta0f0  Wi-Fi 6 AX201\n\t\t8086 0074  a subsystem line\n\ta0d3  Tiger Lake-LP SATA Controller\n10ec  Realtek\n\ta0f0  not this vendor\nC 01  Mass storage controller\n\t06  SATA controller\n\t\t01  AHCI 1.0\nC 02  Network controller\n\t00  Ethernet controller\n\t80  Network controller\nC 06  Bridge\n' > "$W/usr/share/hwdata/pci.ids"
 
+put run/kryptik/zones/net/init.pid '4242 9876'
+mkdir -p "$W/netzone"
+cat > "$W/netzone/ip-link" <<'EOF'
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00 promiscuity 0 allmulti 0 minmtu 0 maxmtu 0
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP mode DEFAULT group default qlen 1000\    link/ether 52:54:00:12:34:56 brd ff:ff:ff:ff:ff:ff promiscuity 0 allmulti 0 minmtu 68 maxmtu 9194 parentbus pci parentdev 0000:00:1f.6
+3: wlan0: <NO-CARRIER,BROADCAST,MULTICAST,UP> mtu 1500 qdisc noqueue state DOWN mode DORMANT group default qlen 1000\    link/ether 52:54:00:65:43:21 brd ff:ff:ff:ff:ff:ff promiscuity 0 allmulti 0 minmtu 256 maxmtu 2304
+4: kzbr0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000\    link/ether 52:54:00:00:00:01 brd ff:ff:ff:ff:ff:ff promiscuity 0 allmulti 0 minmtu 68 maxmtu 65535 \    bridge forward_delay 1500 hello_time 200
+5: vz-untrusted@if2: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master kzbr0 state UP mode DEFAULT group default qlen 1000\    link/ether 52:54:00:00:00:02 brd ff:ff:ff:ff:ff:ff link-netnsid 1 promiscuity 1 allmulti 1 minmtu 68 maxmtu 65535 \    veth \    bridge_slave state forwarding
+EOF
+printf 'phy#0\n\tInterface wlan0\n\t\tifindex 3\n\t\taddr 52:54:00:65:43:21\n\t\ttype managed\n' > "$W/netzone/iw-dev"
+put netzone/ip-route 'default via 10.0.2.2 dev eth0 proto dhcp src 10.0.2.15 metric 1002'
+
 cat > "$W/dmesg" <<'EOF'
 [    0.000000] Linux version 6.18.53-hardened1 (kryptik@build)
 [    0.100000] microcode: Current revision: 0x000000a4
@@ -116,6 +128,7 @@ echo "-- what the machine is"
 [[ "$(head -1 "$OUT")" == "kryptik-hwreport 1" ]] && green "it opens with its name and format" || red "first line: $(head -1 "$OUT")"
 want "the release and the kernel"           '^kryptik: 0\.1\.20261002\.abcdef12 \(build abcdef1234\)$'
 want "what booted"                          '^booted: the usb medium$'
+want "whether its state is kept"            '^state: tmpfs$'
 want "the maker and the model"              '^product_version: ThinkPad X1 Carbon Gen 9$'
 want "Secure Boot, read from the firmware"  '^secure boot: on$'
 want "the lockdown in force"                '^lockdown: confidentiality$'
@@ -136,6 +149,14 @@ want "an interface nothing drives, with what would" '^usb 1-3:1\.0 usb:v8087p002
 want "the disk, through its drivers"        '^sda 476\.9 GiB \| Samsung SSD 860 \| sd \(built in\), ahci \(module\)$'
 want "the stick the root is on"             '^sdb 14\.3 GiB removable \(the root is here\) \| Ultra \| sd \(built in\), usb-storage \(built in\), xhci_hcd \(built in\)$'
 
+echo "-- the interfaces the net zone holds"
+want "a wired one, by its flags"            '^  eth0 wired <BROADCAST,MULTICAST,UP,LOWER_UP>$'
+want "a radio, known from iw"               '^  wlan0 wireless <NO-CARRIER,BROADCAST,MULTICAST,UP>$'
+want "the zones' bridge is not the machine's" '^  kzbr0 virtual '
+want "nor a zone's link, named without its peer" '^  vz-untrusted virtual '
+want "where the default route leaves"       '^  default route by eth0$'
+deny "no address of the network it is on"   '10\.0\.2\.'
+
 echo "-- what the image lacks"
 missing="$(sed -n '/^== missing ==$/,/^== pci ==$/p' "$OUT")"
 has() { if grep -qF -- "$2" <<<"$missing"; then green "$1"; else red "$1"; fi; }
@@ -148,7 +169,7 @@ if grep -qF '0000:00:00.0' <<<"$missing"; then red "a host bridge is listed as w
 if grep -qF 'sdb:' <<<"$missing"; then red "the stick is listed as behind a module"; else green "a disk behind built-in drivers is not listed"; fi
 
 echo "-- what stays on the machine"
-deny "no hardware address"                  '8c:16:45|00:11:22:33:44:55|66:77:88:99:aa:bb'
+deny "no hardware address"                  '8c:16:45|00:11:22:33:44:55|66:77:88:99:aa:bb|52:54:00'
 want "each struck where it stood"           'eth0: \(PCI Express:2\.5GT/s:Width x1\) xx:xx:xx:xx:xx:xx$'
 want "two on one line, both"                'authenticate with xx:xx:xx:xx:xx:xx \(local address=xx:xx:xx:xx:xx:xx\)$'
 deny "no serial number from the log or sysfs" '4C530001230506115281|PF-SECRET-1|L1-SECRET-2'
@@ -156,6 +177,14 @@ want "the log line kept, the number gone"   'usb 1-2: SerialNumber: <removed>$'
 deny "no UUID"                              '0a1b2c3d-1111|4c4c4544-0042'
 want "the filesystem line kept"             'mounted filesystem <uuid> ro'
 want "a PCI address is not an address to strike" 'pci 0000:00:1f\.6: \[8086:15fb\] type 00 class 0x020000$'
+
+echo "-- the listing it carries"
+LISTING="$(bash "${ROOT}/tools/check-hardware.sh" "$OUT" 2>&1)"; rc=$?
+[[ "$rc" -eq 0 ]] && grep -q '^  carries    reported; short of certified:$' <<<"$LISTING" \
+    && green "check-hardware.sh reads it: reported" || { red "check-hardware.sh on the report: exit ${rc}"; sed 's/^/        /' <<<"$LISTING" | tail -8; }
+grep -qF '      not taken on an installed system (booted: the usb medium)' <<<"$LISTING" && green "short of certified for booting the medium" || red "no word on the medium"
+grep -qF '      firmware the kernel did not find: iwlwifi-QuZ-a0-hr-b0-77.ucode' <<<"$LISTING" && green "and for the firmware it lacks" || red "no word on the firmware"
+grep -qF '  network    wired eth0' <<<"$LISTING" && green "the network path is read from it" || red "network line: $(grep '^  network' <<<"$LISTING")"
 
 echo "-- where it may be written"
 sed -i 's/^media=usb$/media=/' "$W/run/kryptik/boot-identity"
