@@ -296,8 +296,10 @@ shows each timer, its timeout and whether it is running.
   hardware support beyond what the virtual machine exercised is claimed.
 - The builds are not reproducible bit for bit; the hashes name what was
   tested, not what a rebuild would produce.
-- A fullscreen window is framed by its zone's border colour; there is no
-  separate always-visible bar with the zone's name.
+- A program in a zone cannot make its window fullscreen; Alt+e does, and
+  the window then sits below a bar in its zone's colour that names the
+  zone. Other windows show their zone by border colour alone, and the
+  menu's f names it in words.
 - A trial boot is judged by services and the zone supervisor coming up.
   After that, a watchdog resets a machine whose userspace has stopped
   running for a minute; it does not notice a single crashed service or a

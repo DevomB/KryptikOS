@@ -10,15 +10,109 @@ import sys
 # Exact-string edits rather than a diff, so a different dwl fails with the text
 # not found instead of patching with fuzz. The colour comes from the app_id
 # prefix only the zone's proxy sets; focus is shown by width (a band of the
-# root colour when unfocused), and fullscreen keeps the border.
+# root colour when unfocused), and fullscreen keeps the border under a bar
+# that names the zone.
+
+# The bar's lettering, 5x7: capitals for the letters, digits and '-' of a zone name.
+FONT = {
+    "a": "01110 10001 10001 10001 11111 10001 10001",
+    "b": "11110 10001 10001 11110 10001 10001 11110",
+    "c": "01110 10001 10000 10000 10000 10001 01110",
+    "d": "11100 10010 10001 10001 10001 10010 11100",
+    "e": "11111 10000 10000 11110 10000 10000 11111",
+    "f": "11111 10000 10000 11110 10000 10000 10000",
+    "g": "01110 10001 10000 10111 10001 10001 01111",
+    "h": "10001 10001 10001 11111 10001 10001 10001",
+    "i": "01110 00100 00100 00100 00100 00100 01110",
+    "j": "00111 00010 00010 00010 00010 10010 01100",
+    "k": "10001 10010 10100 11000 10100 10010 10001",
+    "l": "10000 10000 10000 10000 10000 10000 11111",
+    "m": "10001 11011 10101 10101 10001 10001 10001",
+    "n": "10001 10001 11001 10101 10011 10001 10001",
+    "o": "01110 10001 10001 10001 10001 10001 01110",
+    "p": "11110 10001 10001 11110 10000 10000 10000",
+    "q": "01110 10001 10001 10001 10101 10010 01101",
+    "r": "11110 10001 10001 11110 10100 10010 10001",
+    "s": "01111 10000 10000 01110 00001 00001 11110",
+    "t": "11111 00100 00100 00100 00100 00100 00100",
+    "u": "10001 10001 10001 10001 10001 10001 01110",
+    "v": "10001 10001 10001 10001 10001 01010 00100",
+    "w": "10001 10001 10001 10101 10101 10101 01010",
+    "x": "10001 10001 01010 00100 01010 10001 10001",
+    "y": "10001 10001 10001 01010 00100 00100 00100",
+    "z": "11111 00001 00010 00100 01000 10000 11111",
+    "0": "01110 10001 10011 10101 11001 10001 01110",
+    "1": "00100 01100 00100 00100 00100 00100 01110",
+    "2": "01110 10001 00001 00010 00100 01000 11111",
+    "3": "11111 00010 00100 00010 00001 10001 01110",
+    "4": "00010 00110 01010 10010 11111 00010 00010",
+    "5": "11111 10000 11110 00001 00001 10001 01110",
+    "6": "00110 01000 10000 11110 10001 10001 01110",
+    "7": "11111 00001 00010 00100 01000 01000 01000",
+    "8": "01110 10001 10001 01110 10001 10001 01110",
+    "9": "01110 10001 10001 01111 00001 00010 01100",
+    "-": "00000 00000 00000 11111 00000 00000 00000",
+}
+FONT_ROWS = "".join("\t['%s'] = {%s},\n" % (ch, ", ".join("0x%02x" % int(r, 2) for r in rows.split()))
+                    for ch, rows in FONT.items())
+
+ZONEBAR = """/* Kryptik: the bar's lettering, indexed by the lower-case name; bit 4 is leftmost. */
+static const unsigned char zonefont[128][7] = {
+""" + FONT_ROWS + """};
+
+/* Kryptik: a fullscreen window leaves the top barpx rows of its output to a
+ * bar in its zone's colour that names the zone, outside the window's frame:
+ * its surfaces are clipped to the frame, and a zone has no popups. */
+static void
+zonebar(Client *c)
+{
+\tstatic const float black[] = {0, 0, 0, 1}, white[] = {1, 1, 1, 1};
+\tconst char *id = client_get_appid(c);
+\tconst float *ink;
+\tstruct wlr_box box = c->mon->m;
+\tchar name[16] = "zone 0";
+\tint s = (int)barscale, pad = ((int)barpx - 7 * s) / 2, x, row, col, n;
+\tsize_t i;
+
+\tzonecolors(c);
+\tif (c->zoneborder != unzonedcolor)
+\t\tsnprintf(name, sizeof(name), "%.*s", (int)strcspn(id + 8, "."), id + 8);
+\tink = 0.299f * c->zoneborder[0] + 0.587f * c->zoneborder[1]
+\t\t\t+ 0.114f * c->zoneborder[2] > 0.5f ? black : white;
+
+\tbox.y += (int)barpx;
+\tbox.height -= (int)barpx;
+\tresize(c, box, 0);
+
+\twlr_scene_node_destroy(&c->bar->node);
+\tc->bar = wlr_scene_tree_create(c->scene);
+\twlr_scene_node_set_position(&c->bar->node, 0, -(int)barpx);
+\twlr_scene_rect_create(c->bar, box.width, (int)barpx, c->zoneborder);
+\t/* One rect per run of lit pixels in a row of a glyph. */
+\tfor (i = 0, x = pad; name[i]; i++, x += 6 * s) {
+\t\tfor (row = 0; row < 7; row++) {
+\t\t\tfor (col = 0; col < 5; col += n + 1) {
+\t\t\t\tfor (n = 0; col + n < 5 && ((zonefont[name[i] & 0x7f][row] >> (4 - col - n)) & 1); n++)
+\t\t\t\t\t;
+\t\t\t\tif (n)
+\t\t\t\t\twlr_scene_node_set_position(&wlr_scene_rect_create(c->bar,
+\t\t\t\t\t\t\tn * s, s, ink)->node, x + col * s, pad + row * s);
+\t\t\t}
+\t\t}
+\t}
+}
+
+"""
+
 EDITS = [
-    # (1) Client: the zone's colour and the band that marks it unfocused.
+    # (1) Client: the zone's colour, the band that marks it unfocused, the bar.
     ("""	struct wlr_scene_rect *border[4]; /* top, bottom, left, right */
 """,
      """	struct wlr_scene_rect *border[4]; /* top, bottom, left, right */
 	const float *zoneborder; /* Kryptik: chosen by zone from the app_id */
 	struct wlr_scene_tree *band; /* Kryptik: over the border's inner edge while unfocused */
 	struct wlr_scene_rect *bands[4]; /* top, bottom, left, right */
+	struct wlr_scene_tree *bar; /* Kryptik: names the zone above a fullscreen window */
 """),
     # (2) The ZoneColor type, beside Rule so config.h can define the table.
     ("""typedef struct {
@@ -82,7 +176,7 @@ applyrules(Client *c)
     # (4) mapnotify: zone-coloured borders, then the band over them as four
     # strips. The surface stays below both, or a buffer larger than its
     # configure would paint over the right and bottom borders. A new window
-    # starts unfocused, so the band starts enabled.
+    # starts unfocused, so the band starts enabled; the bar starts hidden.
     ("""	for (i = 0; i < 4; i++) {
 		c->border[i] = wlr_scene_rect_create(c->scene, 0, 0,
 				c->isurgent ? urgentcolor : bordercolor);
@@ -100,6 +194,8 @@ applyrules(Client *c)
 		c->bands[i] = wlr_scene_rect_create(c->band, 0, 0, rootcolor);
 		c->bands[i]->node.data = c;
 	}
+	c->bar = wlr_scene_tree_create(c->scene);
+	wlr_scene_node_set_enabled(&c->bar->node, 0);
 """),
     # (5) resize: the band is the ring of the border nearest the surface.
     ("""	wlr_scene_node_set_position(&c->border[3]->node, c->geom.width - c->bw, c->bw);
@@ -156,7 +252,7 @@ applyrules(Client *c)
 \telse
 \t\twl_list_insert(&fstack, &c->flink);
 """),
-    # Keep zone clients out of the float and fullscreen scene layers.
+    # Keep zone clients out of the float scene layer.
     ("""\t\tif (c->mon != m || c->scene->node.parent == layers[LyrFS])
 \t\t\tcontinue;
 
@@ -182,15 +278,66 @@ applyrules(Client *c)
 \tClient *p = client_get_parent(c);
 \tc->isfloating = c->zoneborder != unzonedcolor ? 0 : floating;
 """),
-    ("""setfullscreen(Client *c, int fullscreen)
-{
-\tc->isfullscreen = fullscreen;
+    # A zone's window reaches LyrFS, above the chrome, only fullscreen itself.
+    ("""\twlr_scene_node_reparent(&c->scene->node, layers[c->isfullscreen ||
+\t\t\t(p && p->isfullscreen) ? LyrFS
 """,
-     """setfullscreen(Client *c, int fullscreen)
+     """\t/* Kryptik: a zone's child stays out of LyrFS, where it would cover its parent's bar. */
+\twlr_scene_node_reparent(&c->scene->node, layers[c->isfullscreen ||
+\t\t\t(p && p->isfullscreen && c->zoneborder == unzonedcolor) ? LyrFS
+"""),
+    # A zone's request may take its window out of fullscreen, never into it.
+    ("""\tClient *c = wl_container_of(listener, c, fullscreen);
+\tsetfullscreen(c, client_wants_fullscreen(c));
+""",
+     """\tClient *c = wl_container_of(listener, c, fullscreen);
+\t/* Kryptik: a zone window goes fullscreen only by the user's key. */
+\tsetfullscreen(c, client_wants_fullscreen(c)
+\t\t\t&& (c->zoneborder == unzonedcolor || c->isfullscreen));
+"""),
+    # The bar, defined before setfullscreen, its first caller.
+    ("""void
+setfullscreen(Client *c, int fullscreen)
 {
-\t/* Only zone 0 can use LyrFS, which sits above the trusted windows. */
-\tc->isfullscreen = c->zoneborder != unzonedcolor ? 0 : fullscreen;
-\tfullscreen = c->isfullscreen;
+""",
+     ZONEBAR + """void
+setfullscreen(Client *c, int fullscreen)
+{
+"""),
+    # setfullscreen and updatemons: a fullscreen window is sized below its bar.
+    ("""\tif (fullscreen) {
+\t\tc->prev = c->geom;
+\t\tresize(c, c->mon->m, 0);
+\t} else {
+""",
+     """\twlr_scene_node_set_enabled(&c->bar->node, fullscreen);
+\tif (fullscreen) {
+\t\tc->prev = c->geom;
+\t\tzonebar(c);
+\t} else {
+"""),
+    ("""\t\tif ((c = focustop(m)) && c->isfullscreen)
+\t\t\tresize(c, m->m, 0);
+""",
+     """\t\tif ((c = focustop(m)) && c->isfullscreen)
+\t\t\tzonebar(c);
+"""),
+    # xytonode: the pointer goes to what is on top. dwl looks on through lower
+    # layers past a border or background, which over a fullscreen window would
+    # hand clicks on its bar to another zone's window hidden below.
+    ("""\t\tif (c && c->type == LayerShell) {
+\t\t\tc = NULL;
+\t\t\tl = pnode->data;
+\t\t}
+\t}
+""",
+     """\t\tif (c && c->type == LayerShell) {
+\t\t\tc = NULL;
+\t\t\tl = pnode->data;
+\t\t}
+\t\t/* Kryptik: never past the first thing drawn under the pointer. */
+\t\tbreak;
+\t}
 """),
     # A zone mapping must not cancel another zone's fullscreen either.
     ("""\t\tif (w != c && w != p && w->isfullscreen && m == w->mon && (w->tags & c->tags))
