@@ -8,6 +8,7 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use crate::zone::NetworkMode;
 
@@ -284,27 +285,12 @@ pub fn restart_net_zone(dir: &Path) -> String {
 /// Read one line from stdin for `kryptikd wifi add`, prompting with echo off
 /// on a terminal. The passphrase never comes from argv or the environment.
 pub fn read_passphrase(prompt: &str) -> Result<String, String> {
-    let tty = unsafe { libc::isatty(0) } == 1;
-    let mut saved: libc::termios = unsafe { std::mem::zeroed() };
-    if tty {
-        if unsafe { libc::tcgetattr(0, &mut saved) } < 0 {
-            return Err(format!("tcgetattr: {}", io::Error::last_os_error()));
-        }
-        let mut raw = saved;
-        raw.c_lflag &= !libc::ECHO;
-        let _ = io::stderr().write_all(prompt.as_bytes());
-        let _ = io::stderr().flush();
-        if unsafe { libc::tcsetattr(0, libc::TCSAFLUSH, &raw) } < 0 {
-            return Err(format!("tcsetattr: {}", io::Error::last_os_error()));
-        }
-    }
     let mut line = String::new();
-    let read = io::stdin().read_line(&mut line);
-    if tty {
-        unsafe { libc::tcsetattr(0, libc::TCSAFLUSH, &saved) };
-        let _ = io::stderr().write_all(b"\n");
+    if unsafe { libc::isatty(0) } == 1 {
+        line = read_silent(prompt)?;
+    } else {
+        io::stdin().read_line(&mut line).map_err(|e| format!("reading the passphrase: {e}"))?;
     }
-    read.map_err(|e| format!("reading the passphrase: {e}"))?;
     while line.ends_with('\n') || line.ends_with('\r') {
         line.pop();
     }
@@ -312,6 +298,60 @@ pub fn read_passphrase(prompt: &str) -> Result<String, String> {
         return Err("no passphrase given".into());
     }
     Ok(line)
+}
+
+static CAUGHT: AtomicI32 = AtomicI32::new(0);
+
+extern "C" fn on_signal(sig: libc::c_int) {
+    CAUGHT.store(sig, Ordering::SeqCst);
+}
+
+/// One line from the terminal on stdin with echo off from before the prompt. Ctrl-C and the
+/// like end the read, and take effect once the terminal is as it was.
+fn read_silent(prompt: &str) -> Result<String, String> {
+    let mut saved: libc::termios = unsafe { std::mem::zeroed() };
+    if unsafe { libc::tcgetattr(0, &mut saved) } < 0 {
+        return Err(format!("tcgetattr: {}", io::Error::last_os_error()));
+    }
+    let sigs = [libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGHUP];
+    let mut old: [libc::sigaction; 4] = unsafe { std::mem::zeroed() };
+    unsafe {
+        // No SA_RESTART: the signal must interrupt the read.
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = on_signal as usize;
+        libc::sigemptyset(&mut sa.sa_mask);
+        for (s, o) in sigs.iter().zip(old.iter_mut()) {
+            libc::sigaction(*s, &sa, o);
+        }
+        let mut quiet = saved;
+        quiet.c_lflag &= !libc::ECHO;
+        libc::tcsetattr(0, libc::TCSANOW, &quiet);
+    }
+    let _ = io::stderr().write_all(prompt.as_bytes());
+    let mut got = Vec::new();
+    let mut buf = [0u8; 256];
+    while CAUGHT.load(Ordering::SeqCst) == 0 && !got.ends_with(b"\n") {
+        let n = unsafe { libc::read(0, buf.as_mut_ptr().cast(), buf.len()) };
+        if n == 0 || (n < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted) {
+            break;
+        }
+        if n > 0 {
+            got.extend_from_slice(&buf[..n as usize]);
+        }
+    }
+    unsafe {
+        libc::tcsetattr(0, libc::TCSANOW, &saved);
+        for (s, o) in sigs.iter().zip(old.iter()) {
+            libc::sigaction(*s, o, std::ptr::null_mut());
+        }
+    }
+    let _ = io::stderr().write_all(b"\n");
+    let sig = CAUGHT.swap(0, Ordering::SeqCst);
+    if sig != 0 {
+        unsafe { libc::raise(sig) };
+        return Err("interrupted".into());
+    }
+    String::from_utf8(got).map_err(|_| "the passphrase is not UTF-8".into())
 }
 
 #[cfg(test)]

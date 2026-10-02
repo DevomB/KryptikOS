@@ -399,7 +399,9 @@ impl Zone {
 
         let nic = get("network.nic");
         if let Some(n) = &nic {
-            if n.is_empty() || n.len() > 15 || n.contains('/') || n.contains(char::is_whitespace) {
+            // The kernel's rule (dev_valid_name), kept to printable ASCII so no NUL cuts it short.
+            let ok = |b: u8| b.is_ascii_graphic() && b != b'/' && b != b':';
+            if n.is_empty() || n.len() > 15 || n == "." || n == ".." || !n.bytes().all(ok) {
                 return Err(bad("network.nic", n, "an interface name of at most 15 characters, or \"*\" for every physical interface"));
             }
             if network != NetworkMode::Nic {
