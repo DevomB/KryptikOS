@@ -308,8 +308,7 @@ s_verify_install() {
     # A ${KRYPTIK_WORK}/sysroot here means a nested install.
     if [[ -e "${KRYPTIK_WORK}/sysroot" ]]; then
         echo "FAIL: ${KRYPTIK_WORK}/sysroot exists inside the chroot."
-        echo "Something installed into a nested target tree. See the header of"
-        echo "this file."
+        echo "Something installed into a nested target tree (see the header of build/stages/05-kernel.sh)."
         n=$((n + 1))
     else
         echo "ok: no nested target tree under ${KRYPTIK_WORK}"
