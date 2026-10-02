@@ -21,9 +21,9 @@ keep-capability   CAP_NET_RAW         # left in the bounding set
 - `allow-syscall`: a name from `seccomp::ADDABLE`. A syscall on the base
   denied list (`DENIED_RATIONALE`: `ptrace`, `mount`, `setns`, `bpf`, ...)
   cannot be re-allowed, one on the base allowlist is reported as already
-  allowed, and any other name is an error. The id and capability calls on
-  the denied list fail with EPERM instead of killing the caller; the trace
-  paragraph below says why.
+  allowed, and any other name is an error. The id and capability calls and
+  `unshare` on the denied list fail with EPERM instead of killing the caller;
+  the trace paragraph below says why.
 - `allow-socket`: `AF_PACKET`, `AF_KEY`, `AF_ALG`, `AF_VSOCK`, `AF_BLUETOOTH`,
   `AF_CAN`, `AF_RDS`, `AF_TIPC` or `AF_XDP`; `AF_NETLINK` drops the netlink
   protocol check. `socketpair(2)` stays `AF_UNIX` only whatever the file
@@ -55,6 +55,11 @@ after its name and gets the same errno here:
   `setfsgid`, and `sudo`, `su` and daemons that drop privilege as root call
   the rest, so a kill would take them down unexplained. They stay on the denied
   list, and no id or capability changes either way.
+- `unshare`, and `clone` with namespace flags, fail with EPERM: Firefox,
+  Chromium and bubblewrap probe for user namespaces at start and must hear
+  no, as the kernel tells an unprivileged caller. `unshare` stays on the
+  denied list, and `setns`, which would enter another zone's namespaces, is
+  killed.
 
 A printed name can go on an `allow-syscall` line unless it is on the denied
 list; a call refused for its arguments (namespace flags to `clone`,

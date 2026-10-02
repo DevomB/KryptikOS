@@ -28,7 +28,8 @@ const BPF_RET: u16 = 0x06;
 const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
 const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
 /* Fail the call instead of killing, for programs that probe for a feature and
- * must hear "no": clone3, unwanted socket families, `REFUSED_SOFTLY`. */
+ * must hear "no": clone3, a namespace clone, unwanted socket families,
+ * `REFUSED_SOFTLY`. */
 const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
 
 // Offsets into struct seccomp_data.
@@ -373,7 +374,7 @@ denied! {
 /// allowlist, so a syscall named here is decided here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArgRule {
-    /// clone(2): kill if any CLONE_NEW* flag is set in args[0].
+    /// clone(2): EPERM if any CLONE_NEW* flag is set in args[0], like unshare(2).
     CloneNoNamespaces,
     /// clone3(2): ENOSYS, so libc falls back to clone(2), which the filter can read.
     Clone3Enosys,
@@ -411,6 +412,9 @@ impl ArgRule {
 /// any of them starts; a zone policy may allow it. The id and capability calls
 /// never succeed, but ncurses brackets every terminfo open with setfsuid and
 /// setfsgid, and sudo, su and privilege-dropping daemons call the rest.
+/// unshare: Firefox, Chromium and bubblewrap probe for user namespaces and must
+/// hear no, as Kryptik's kernel tells an unprivileged caller; a namespace clone
+/// gets the same (`ArgRule::CloneNoNamespaces`).
 pub const REFUSED_SOFTLY: &[(libc::c_long, u32)] = &[
     (libc::SYS_inotify_init, ENOSYS),
     (libc::SYS_inotify_init1, ENOSYS),
@@ -424,10 +428,31 @@ pub const REFUSED_SOFTLY: &[(libc::c_long, u32)] = &[
     (libc::SYS_setresgid, EPERM),
     (libc::SYS_setgroups, EPERM),
     (libc::SYS_capset, EPERM),
+    (libc::SYS_unshare, EPERM),
 ];
 
 const fn errno_action(e: u32) -> u32 {
     SECCOMP_RET_ERRNO | (e & 0xffff)
+}
+
+/// A soft refusal's action. seccomp-trace is notified instead and answers with
+/// the same errno, so the program runs as it would in a zone and the call is
+/// still named.
+const fn soft_refusal(e: u32, deny_action: u32) -> u32 {
+    if deny_action == libc::SECCOMP_RET_USER_NOTIF { deny_action } else { errno_action(e) }
+}
+
+/// The errno a zone gets for a call refused without a kill, None for one it is
+/// killed for: what `seccomp-trace` answers a call it is notified of.
+pub fn soft_errno(call: &libc::seccomp_data) -> Option<u32> {
+    let nr = libc::c_long::from(call.nr);
+    if call.arch != AUDIT_ARCH_X86_64 {
+        return None;
+    }
+    if nr == libc::SYS_clone && (call.args[0] as u32) & CLONE_NS_MASK != 0 {
+        return Some(EPERM);
+    }
+    REFUSED_SOFTLY.iter().find(|(n, _)| *n == nr).map(|&(_, e)| e)
 }
 
 /// Emit one argument rule. Entered with the syscall number in the accumulator;
@@ -438,7 +463,7 @@ fn emit_arg_rule(p: &mut Vec<SockFilter>, rule: ArgRule, deny_action: u32, socke
         ArgRule::CloneNoNamespaces => vec![
             stmt(BPF_LD | BPF_W | BPF_ABS, arg_lo(0)),
             jump(BPF_JMP | BPF_JSET | BPF_K, CLONE_NS_MASK, 0, 1),
-            stmt(BPF_RET | BPF_K, deny_action),
+            stmt(BPF_RET | BPF_K, soft_refusal(EPERM, deny_action)),
             stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
         ],
         ArgRule::Clone3Enosys => vec![stmt(BPF_RET | BPF_K, errno_action(ENOSYS))],
@@ -564,11 +589,8 @@ fn build_program_full(
     for &(nr, e) in REFUSED_SOFTLY {
         // Allowed by the list, it is allowed below like any other.
         if !allow.contains(&nr) {
-            /* seccomp-trace answers these with the same errno, so the program
-             * runs as it would in a zone and the call is still named. */
-            let refuse = if deny_action == libc::SECCOMP_RET_USER_NOTIF { deny_action } else { errno_action(e) };
             p.push(jump(BPF_JMP | BPF_JEQ | BPF_K, nr as u32, 0, 1));
-            p.push(stmt(BPF_RET | BPF_K, refuse));
+            p.push(stmt(BPF_RET | BPF_K, soft_refusal(e, deny_action)));
         }
     }
 

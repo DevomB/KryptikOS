@@ -793,7 +793,11 @@ fn cmd_seccomp_probe(name: &str) -> Option<ExitCode> {
             if r > 0 {
                 libc::waitpid(r as libc::pid_t, std::ptr::null_mut(), 0);
             }
-            0
+            if r < 0 && *libc::__errno_location() == libc::EPERM { 7 } else { 0 }
+        },
+        "unshare-newuser" => || unsafe {
+            let r = libc::unshare(libc::CLONE_NEWUSER);
+            if r < 0 && *libc::__errno_location() == libc::EPERM { 7 } else { 0 }
         },
         "clone3" => || unsafe {
             let r = libc::syscall(libc::SYS_clone3, std::ptr::null::<u8>(), 0usize);
@@ -1219,7 +1223,7 @@ fn cmd_seccomp_trace(cmd: &[String], allow: &[libc::c_long], sockets: &seccomp::
             let nr = libc::c_long::from(req.data.nr);
             let name = seccomp::name_of(nr).unwrap_or("");
             // A soft refusal gets the errno a zone gets, and is marked.
-            let soft = seccomp::REFUSED_SOFTLY.iter().find(|(n, _)| *n == nr).map(|&(_, e)| e as libc::c_int);
+            let soft = seccomp::soft_errno(&req.data).map(|e| e as libc::c_int);
             eprintln!("KRYPTIK_SECCOMP_DENIED {nr} {name}{}", if soft.is_some() { " soft" } else { "" });
             refused += 1;
             let mut resp: libc::seccomp_notif_resp = unsafe { std::mem::zeroed() };
