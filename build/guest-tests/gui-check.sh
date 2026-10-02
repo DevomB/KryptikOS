@@ -9,6 +9,10 @@
 #   GT KEY-MENU                                     press Alt+p (the chrome menu)
 #   GT CONSENT-CODE 1 NN                            type NN and Enter (the question's code)
 #   GT CONSENT-WAIT 2                               type y and Enter (not the code: refused)
+#   GT HEAD-ON, GT HEAD-OFF                         plug a second monitor in, pull it out
+#   GT KEY-FOCUS-HEAD                               press Alt+period (the next monitor)
+#   GT KEY-FOCUS-HEAD-WINDOW                        press Alt+j
+#   GT SCREENSHOT-HEAD                              take a screenshot of the second monitor
 #   GT END
 # Verdicts: "GT PASS|FAIL|INFO name - detail".
 set -u
@@ -335,6 +339,56 @@ out="$(since_mark trf2 dev)"
 n=20; while [[ "$n" -gt 0 && -n "$(questions)" ]]; do n=$((n - 1)); sleep 1; done
 [[ -z "$(questions)" ]] && pass "consent-cleaned" "no question left behind" || fail "consent-cleaned" "$(questions | tr '
 ' ' ')"
+
+# --- a second monitor, plugged in and pulled out -------------------------------------------
+# A zone's window on the new monitor is framed and named as on the first, the
+# chrome's record follows the monitor in use, and pulling the monitor out
+# takes down neither the compositor nor the zone.
+for z in untrusted personal dev work; do stop_zone "$z"; done
+outputs() { as_user "/usr/libexec/kryptik/wlprobe list" 2>/dev/null | grep -c ' wl_output '; }
+heads() { [[ "$(outputs)" -eq "$1" ]]; }
+focus_output() { sed -n 's/^output=//p' "$RT/kryptik/focus" 2>/dev/null; }
+first_head="$(focus_output)"
+echo "GT HEAD-ON"
+if wait_for 30 heads 2; then
+    pass "second-head-appears" "the compositor offers two outputs once the second is plugged in"
+else
+    fail "second-head-appears" "$(outputs) output(s); connectors: $(for s in /sys/class/drm/card*-*/status; do printf '%s=%s ' "${s%/status}" "$(cat "$s" 2>/dev/null)"; done)"
+fi
+echo "GT KEY-FOCUS-HEAD"
+on_second_head() { local o; o="$(focus_output)"; [[ -n "$o" && "$o" != "$first_head" ]]; }
+if wait_for 20 on_second_head; then
+    pass "chrome-follows-head" "the record names $(focus_output) after Alt+period; the first monitor is ${first_head}"
+else
+    fail "chrome-follows-head" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+fi
+second_head="$(focus_output)"
+launch_plain untrusted "havoc" > "$LOG/launch-havoc-head2.out" 2>&1
+sleep 3
+echo "GT KEY-FOCUS-HEAD-WINDOW"
+zone_on_second_head() { grep -q '^zone=untrusted' "$RT/kryptik/focus" && [[ "$(focus_output)" == "$second_head" ]]; }
+if wait_for 20 zone_on_second_head; then
+    pass "second-head-zone-window" "$(tr '\n' ' ' < "$RT/kryptik/focus")"
+else
+    fail "second-head-zone-window" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); launch: $(tr '\n' ' ' < "$LOG/launch-havoc-head2.out"); $(zone_why untrusted)"
+fi
+if grep -q '^title=\[untrusted\]' "$RT/kryptik/focus" 2>/dev/null && grep -q '^label=UNTRUSTED' "$RT/kryptik/focus"; then
+    pass "second-head-names-zone" "$(grep -E '^(title|label)=' "$RT/kryptik/focus" | tr '\n' ' ')"
+else
+    fail "second-head-names-zone" "$(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+fi
+sleep 2
+echo "GT SCREENSHOT-HEAD"
+sleep 6
+echo "GT HEAD-OFF"
+if wait_for 30 heads 1; then pass "second-head-gone" "one output again"; else fail "second-head-gone" "$(outputs) output(s) after the monitor was pulled"; fi
+pgrep -u "$USER_NAME" -x dwl > /dev/null && pass "compositor-survives-unplug" "dwl still runs" \
+    || fail "compositor-survives-unplug" "session.log: $(tail -4 "$RT/kryptik/session.log" 2>/dev/null | tr '\n' ' ')"
+test -e /run/kryptik/zones/untrusted/init.pid && pass "zone-survives-unplug" "untrusted still runs" || fail "zone-survives-unplug" "$(zone_why untrusted)"
+back_on_first_head() { [[ "$(focus_output)" == "$first_head" ]]; }
+wait_for 20 back_on_first_head && pass "chrome-back-on-first-head" "$(tr '\n' ' ' < "$RT/kryptik/focus")" \
+    || fail "chrome-back-on-first-head" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+stop_zone untrusted
 
 # --- teardown ------------------------------------------------------------------------------
 # The runtime tmpfs does not survive power-off: copy the session log and the

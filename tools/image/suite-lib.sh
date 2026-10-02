@@ -50,11 +50,12 @@ install_disk() {   # install_disk NAME MEDIUM [run-ovmf args]; 0 when the instal
     boot_txt | grep -q 'KRYPTIK_INSTALL: rc=0'
 }
 
-start_vm() {   # start_vm NAME [run-ovmf args] -> SER QMP PIDF LOG
+start_vm() {   # start_vm NAME [run-ovmf args] -> SER QMP PIDF LOG, and HEAD2 with --second-head
     local name="$1"; shift
     local out; out="$("${SELF}/run-ovmf.sh" --no-media --disk "$DISK" --vars-file "$VARSF" --mode serve --allow-reboot --name "$name" "$@")"
     SER="$(sed -n 's/^serial=//p' <<<"$out")"; QMP="$(sed -n 's/^qmp=//p' <<<"$out")"
     PIDF="$(sed -n 's/^pid=//p' <<<"$out")"; LOG="$(sed -n 's/^log=//p' <<<"$out")"
+    HEAD2="$(sed -n 's/^head2=//p' <<<"$out")"
     [[ -S "$SER" ]] || die "no serial socket: ${out}"
 }
 stop_vm() { sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null; sleep 1; }
