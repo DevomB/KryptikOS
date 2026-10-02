@@ -1,6 +1,7 @@
 # Architecture decision records
 
-Each record gives the decision, the reasons and the cost. All are accepted.
+Each record gives the decision, the reasons and the cost. All are accepted
+except those marked proposed, which wait for the owner's decision.
 
 ## ADR-001: Build from Linux From Scratch
 
@@ -240,3 +241,28 @@ firmware's boot entries and a judged trial, not a loader's menu.
 **Rejected:** shim and a loader, two more signed stages and a configuration
 file; an initramfs inside the signed image, measured but a second userland to
 keep small and right.
+
+## ADR-019 (proposed): The kernel is built with Clang for kernel CFI
+
+Stage 05 builds the kernel and its modules with a pinned Clang, version 21
+or later, from an LLVM stage built in the chroot and kept out of the image,
+with `CONFIG_CFI=y`, `CFI_PERMISSIVE` and `CFI_AUTO_DEFAULT` off, and
+`cfi=kcfi` on the command line. Userspace stays on GCC. The GCC plugin for
+latent entropy is given up and recorded in the checker's accepted list, and
+the size budget is measured again under its rule
+([Clang kernel](design/clang-kernel.md)).
+
+**Why:** a corrupted function pointer is among the commonest steps of a
+kernel exploit, and a kernel privilege escalation breaks every zone
+(ADR-002). Since Linux 6.18 the option is keyed on `-fsanitize=kcfi`, which
+only Clang has in a released compiler.
+
+**Cost:** an LLVM build of hours with a cache of its own (shared with the
+browser's bindgen and Mesa when they come); linux-hardened built by a
+compiler its main users do not use; latent entropy lost; a few percent more
+kernel code; a second compiler to pin and review.
+
+**Rejected:** waiting for GCC 17's kCFI (unreleased; when Kryptik's
+toolchain reaches it, the kernel can return to GCC with no configuration
+change); FineIBT by default (`cfi=auto`), which the hardening checker does
+not accept.
