@@ -308,7 +308,7 @@ cmd_apply() {
     slot="$(running_slot)"; target="$(other_slot "$slot")"
     [ -n "$target" ] || die "cannot tell which slot is running (kryptik.slot= missing)"
     if [ -f "$B/trial" ]; then
-        die "a trial of slot $(sed -n 1p "$B/trial") is already armed; reboot first, or run rollback"
+        die "a trial of slot $(sed -n 1p "$B/trial") is already armed; reboot first"
     fi
     if [ "$retry" != 1 ] && [ -f "$B/trial.failed" ]; then
         die "the last trial of slot $(cat "$B/trial.failed") failed to boot. To try it again, run as root: kryptik-update apply $dir --retry"
