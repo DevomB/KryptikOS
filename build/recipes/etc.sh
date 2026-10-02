@@ -8,7 +8,7 @@
 s_etc() {
     cat > /etc/os-release <<'EOF'
 NAME="Kryptik"
-PRETTY_NAME="Kryptik (pre-alpha)"
+PRETTY_NAME="Kryptik"
 ID=kryptik
 ANSI_COLOR="0;36"
 EOF
