@@ -220,9 +220,10 @@ up ADR-001 in the zones where the applications run.
   images = ["browser"]
   ```
 
-  `untrusted` and `vault` name none in the first release that has images.
-  Zone 0 never mounts one: the compositor and zone 0's programs see only the
-  root.
+  `untrusted` names the browser image too, since the
+  [threat model](../threat-model.md#malicious-document-or-link) opens unknown
+  links there; `vault` names none. Zone 0 never mounts one: the compositor
+  and zone 0's programs see only the root.
 - **Not in the loader cache.** A zone's `/etc/ld.so.cache` is bound from zone
   0 and lists the root's libraries; the loader finds an image's libraries by
   its default search of `/usr/lib`. A cache per image set is a later
@@ -260,7 +261,7 @@ image-only update from the channel:
   refused;
 - `kryptikd check` refuses a zone that names an image without the policy
   lines the image needs;
-- `untrusted`, which names no image, finds none of its files.
+- `vault`, which names no image, finds none of its files.
 
 ## Open questions
 
