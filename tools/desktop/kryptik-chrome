@@ -50,11 +50,50 @@ zone_is_nic() { grep -q '^mode[[:space:]]*=[[:space:]]*"nic"' "$ZONES/$1.toml" 2
 # --- the status stream ---------------------------------------------------------
 
 # dwl writes `<output> title <t>`, `<output> appid <id>`, `<output> fullscreen
-# <0|1>` ... on every focus or state change. The proxy stamps a zone window's
-# app_id kryptik.<zone>.<claimed>; any other app_id is zone 0's.
+# <0|1>` ... on every focus or state change, one output after another, each
+# output's lines ending with layout. The proxy stamps a zone window's app_id
+# kryptik.<zone>.<claimed>; any other app_id is zone 0's.
+#
+# The record is the selected output's window. Only that output's layout line
+# publishes: with two monitors, the one dwl writes last need not be the one
+# in use.
+status_to_focus() {
+    appid=""; title=""; fs=""; selected=0
+    while IFS= read -r line; do
+        out="${line%% *}"; rest="${line#* }"; key="${rest%% *}"; val="${rest#* }"
+        [ "$key" = "$rest" ] && val=""
+        case "$key" in
+            title) title="$val"; appid=""; fs=""; selected=0; continue ;;
+            appid) appid="$val"; continue ;;
+            fullscreen) fs="$val"; continue ;;
+            selmon) selected="$val"; continue ;;
+            layout) [ "$selected" = 1 ] || continue ;;
+            *) continue ;;
+        esac
+        case "$appid" in
+            kryptik.*) zone="${appid#kryptik.}"; zone="${zone%%.*}" ;;
+            "") zone="-" ;;
+            *) zone="0" ;;
+        esac
+        label="$(zone_field "$zone" label)"
+        glyph="$(zone_field "$zone" glyph)"
+        [ "$zone" = "0" ] && label="ZONE 0 (trusted)"
+        [ "$zone" = "-" ] && label="(no window)"
+        [ -n "$label" ] || label="UNKNOWN ZONE $zone"
+        tmp="$FOCUS.tmp.$$"
+        printf 'output=%s\nzone=%s\nlabel=%s\nglyph=%s\ntitle=%s\nfullscreen=%s\n' \
+            "$out" "$zone" "$label" "$glyph" "$title" "$fs" > "$tmp" && mv -f "$tmp" "$FOCUS"
+        # The zone comes from the app_id the proxy stamps; a title is the zone's own words.
+        case "$zone" in
+            0|-) ;;
+            *) cp -f "$FOCUS" "$FOCUS_ZONE.tmp.$$" && mv -f "$FOCUS_ZONE.tmp.$$" "$FOCUS_ZONE" ;;
+        esac
+        echo "focus: zone=$zone label=$label fullscreen=$fs title=$title" >&2
+    done
+}
+
 run_status() {
     mkdir -p "$RT/kryptik" 2>/dev/null
-    appid=""; title=""; fs=""; selected=0
     # The launcher window, so a fresh session shows something usable.
     "$TERMINAL" /usr/bin/kryptik-chrome --menu &
     # The consent watcher: one trusted window per question the broker leaves.
@@ -86,39 +125,7 @@ run_status() {
             sleep 1
         done
     ) &
-    while IFS= read -r line; do
-        out="${line%% *}"; rest="${line#* }"; key="${rest%% *}"; val="${rest#* }"
-        [ "$key" = "$rest" ] && val=""
-        case "$key" in
-            title) title="$val"; appid=""; fs=""; selected=0 ;;
-            appid) appid="$val" ;;
-            fullscreen) fs="$val" ;;
-            selmon) selected="$val"; continue ;;
-            layout) [ "$selected" = 1 ] || continue ;;
-            *) continue ;;
-        esac
-        # dwl ends each output's status block with layout. Publish only the
-        # selected output after its title, app_id and fullscreen all arrived.
-        case "$appid" in
-            kryptik.*) zone="${appid#kryptik.}"; zone="${zone%%.*}" ;;
-            "") zone="-" ;;
-            *) zone="0" ;;
-        esac
-        label="$(zone_field "$zone" label)"
-        glyph="$(zone_field "$zone" glyph)"
-        [ "$zone" = "0" ] && label="ZONE 0 (trusted)"
-        [ "$zone" = "-" ] && label="(no window)"
-        [ -n "$label" ] || label="UNKNOWN ZONE $zone"
-        tmp="$FOCUS.tmp.$$"
-        printf 'output=%s\nzone=%s\nlabel=%s\nglyph=%s\ntitle=%s\nfullscreen=%s\n' \
-            "$out" "$zone" "$label" "$glyph" "$title" "$fs" > "$tmp" && mv -f "$tmp" "$FOCUS"
-        # The zone comes from the app_id the proxy stamps; a title is the zone's own words.
-        case "$zone" in
-            0|-) ;;
-            *) cp -f "$FOCUS" "$FOCUS_ZONE.tmp.$$" && mv -f "$FOCUS_ZONE.tmp.$$" "$FOCUS_ZONE" ;;
-        esac
-        echo "focus: zone=$zone label=$label fullscreen=$fs title=$title" >&2
-    done
+    status_to_focus
 }
 
 # --- the launcher ---------------------------------------------------------------
