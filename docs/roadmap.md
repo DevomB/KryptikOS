@@ -157,7 +157,8 @@ A desktop someone can live in, built the same way.
   repository, or zones that carry their own userland. An ADR first.
 - **The laptop.** Per-zone sound brokered like the clipboard, Bluetooth,
   suspend and resume with volume keys dropped across it, power management,
-  hotplug and multiple monitors, keyboard layouts and input methods.
+  hotplug and multiple monitors, input methods and a second keyboard layout
+  to switch to.
 - **Disk unlock by the TPM.** Measured boot and a state partition sealed to
   it, with the passphrase as fallback.
 - **Reproducible builds,** checked by CI, then a bootstrappable toolchain so

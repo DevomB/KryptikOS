@@ -50,6 +50,10 @@ USAGE:
                                     tries it once and falls back if it fails
     $PROG state passphrase          change the passphrase the state partition
                                     asks for at boot (root; the old one first)
+    $PROG keyboard                  the keyboard layouts, the one in force marked
+    $PROG keyboard NAME             use that layout (root): the console now, the
+                                    desktop at its next login, the passphrase's
+                                    prompt from the next boot
 
 OPTIONS:
     --zones DIR           override the zone directory (default: $ZONES_DIR)
@@ -355,6 +359,34 @@ cmd_state() {
     exec cryptsetup luksChangeKey "$dev"
 }
 
+# The layout's name is kept in the firmware and its keymaps on the verified
+# root (docs/design/keyboard-layout.md).
+cmd_keyboard() {
+    [[ $# -le 1 ]] || die "$PROG keyboard takes one layout's name, or none to list them" 2
+    local lib=/usr/libexec/kryptik/keyboard.sh now n
+    [[ -r "$lib" ]] || die "keyboard layouts are an installed Kryptik's: no ${lib} here"
+    # shellcheck source=/dev/null
+    . "$lib"
+    now="$(kb_current)"
+    if [[ $# -eq 0 ]]; then
+        while read -r n; do
+            if [[ "$n" == "$now" ]]; then echo "* $n"; else echo "  $n"; fi
+        done < <(kb_names)
+        return 0
+    fi
+    [[ $EUID -eq 0 ]] || die "the keyboard layout is root's to change"
+    kb_row "$1" > /dev/null || die "no keyboard layout named $1: \`$PROG keyboard\` lists them" 2
+    kb_load "$1" || die "could not load the console keymap of $1"
+    # A medium keeps nothing: kryptik-install names the layout in force.
+    if grep -qs '^media=.' /run/kryptik/boot-identity; then
+        echo "keyboard layout $1, until this medium is shut down"
+        return 0
+    fi
+    kb_store "$1" || die "the console has $1 now, but the firmware did not take the name: the next boot asks under $(kb_stored | grep . || echo us)"
+    echo "keyboard layout $1: the console now, the desktop at its next login, the state passphrase's prompt from the next boot."
+    echo "Keys that $1 puts elsewhere are pressed where $1 has them, the passphrase's too."
+}
+
 # --- argument parsing -------------------------------------------------------
 load_conf
 
@@ -384,6 +416,7 @@ case "$cmd" in
     wifi)    cmd_wifi "$@" ;;
     update)  cmd_update "$@" ;;
     state)   cmd_state "$@" ;;
+    keyboard) cmd_keyboard "$@" ;;
     ""|help) usage ;;
     # Commands users will expect, answered with why they do not exist.
     transfer|copy|clipboard|paste|mount)
