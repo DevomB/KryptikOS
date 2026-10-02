@@ -4,6 +4,9 @@
 //! process that creates zones or moves data between them. Anything not built
 //! is refused with an error, never a silent no-op.
 
+// cargo fuzz builds this file with cfg(fuzzing), and libFuzzer brings its own main.
+#![cfg_attr(fuzzing, no_main, allow(dead_code))]
+
 mod broker;
 mod caps;
 mod cgroup;
@@ -24,6 +27,10 @@ mod update;
 mod volume;
 mod wifi;
 mod zone;
+// The parser is private to the daemon, so its fuzz target compiles inside it (fuzz/Cargo.toml).
+#[cfg(fuzzing)]
+#[path = "../fuzz/broker_request.rs"]
+mod fuzz;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
