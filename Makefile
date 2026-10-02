@@ -167,7 +167,7 @@ help:
 	@echo "  KRYPTIK_KEYS     = $(if $(KRYPTIK_KEYS),$(KRYPTIK_KEYS),(not set - only a development image can be built))"
 	@echo "  SUDO             = $(if $(SUDO),$(SUDO),(none))"
 	@echo
-	@echo "Status: pre-alpha. See docs/roadmap.md for what actually works."
+	@echo "What is tested: docs/status.md. What remains: docs/roadmap.md."
 
 paths:
 	@echo "KRYPTIK_ROOT    = $(ROOT)"
