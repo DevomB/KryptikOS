@@ -146,6 +146,22 @@ fn encrypted_storage_requires_volume() {
 }
 
 #[test]
+fn only_routed_zone_claims_local() {
+    let routed = VAULT.replace("mode = \"none\"", "mode = \"routed\"");
+    assert!(!Zone::from_str(&routed).unwrap().local);
+    let yes = VAULT.replace("mode = \"none\"", "mode = \"routed\"\nlocal = true");
+    assert!(Zone::from_str(&yes).unwrap().local);
+    let no = VAULT.replace("mode = \"none\"", "mode = \"routed\"\nlocal = false");
+    assert!(!Zone::from_str(&no).unwrap().local);
+    let odd = VAULT.replace("mode = \"none\"", "mode = \"routed\"\nlocal = \"yes\"");
+    let err = Zone::from_str(&odd).unwrap_err();
+    assert!(format!("{err}").contains("true or false"), "got: {err}");
+    let offline = VAULT.replace("mode = \"none\"", "mode = \"none\"\nlocal = true");
+    let err = Zone::from_str(&offline).unwrap_err();
+    assert!(format!("{err}").contains("only meaningful"), "got: {err}");
+}
+
+#[test]
 fn only_nic_zone_names_interface() {
     let ok = VAULT.replace("mode = \"none\"", "mode = \"nic\"\nnic = \"eth0\"");
     assert_eq!(Zone::from_str(&ok).unwrap().nic.as_deref(), Some("eth0"));
