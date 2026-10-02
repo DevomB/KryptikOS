@@ -54,28 +54,12 @@ key.
 
 ## Making them
 
-Once, on a machine you trust, outside any checkout:
-
-```sh
-mkdir kryptik-keys && cd kryptik-keys
-for k in kryptik-release kryptik-latest kryptik-testctl; do
-    ssh-keygen -q -t ed25519 -N '' -C "$k" -f "$k"
-done
-{
-    printf 'kryptik-release namespaces="kryptik-release,kryptik-media" %s\n' "$(cut -d' ' -f1,2 kryptik-release.pub)"
-    printf 'kryptik-latest namespaces="kryptik-latest" %s\n' "$(cut -d' ' -f1,2 kryptik-latest.pub)"
-    printf 'kryptik-testctl namespaces="kryptik-testctl" %s\n' "$(cut -d' ' -f1,2 kryptik-testctl.pub)"
-} > release-signers
-openssl req -new -x509 -newkey rsa:3072 -nodes -sha256 -days 3650 \
-    -subj "/CN=Kryptik Secure Boot/" -keyout kryptik-sb.key -out kryptik-sb.crt
-chmod 600 kryptik-release kryptik-latest kryptik-testctl kryptik-sb.key
-```
-
-The keys carry no passphrase, since the workflow signs unattended; GitHub
-keeps the secrets encrypted, and the backup is encrypted as a whole.
+Once, on a machine you trust.
 
 1. Make the two environments. `release` takes only `v*` tags and waits for a
-   reviewer; `release-tests` takes only `v*` tags:
+   reviewer; `release-tests` takes only `v*` tags. A run that names an
+   environment before it exists creates one with no rules, so these come
+   first:
 
    ```sh
    me="$(gh api user --jq .id)"
@@ -90,31 +74,23 @@ keeps the secrets encrypted, and the backup is encrypted as a whole.
    done
    ```
 
-   Check both before any secret goes in: a run that names an environment
-   before it exists creates one with no rules.
+2. Run `tools/make-release-keys.sh BACKUP-DIR` from the checkout. It refuses
+   to go on unless `release` has a reviewer and a tag policy. It asks for a
+   passphrase for the backup and makes the four keys in a temporary
+   directory, with no passphrase of their own, since the workflow signs
+   unattended. It writes `BACKUP-DIR/kryptik-keys.tar.gz.enc` and checks
+   that the backup opens before anything leaves the machine. Only then does
+   it set the three secrets:
+   - `KRYPTIK_KEY_MEDIUM` in `release`: the medium the sign job unpacks,
+     every file its owner's alone, without the control-disk key;
+   - `KRYPTIK_TESTCTL_KEY` in `release-tests`;
+   - `KRYPTIK_LATEST_KEY` for the repository.
 
-   ```sh
-   gh api repos/{owner}/{repo}/environments/release --jq '.protection_rules'
-   gh api repos/{owner}/{repo}/environments/release/deployment-branch-policies --jq '.branch_policies'
-   ```
-
-2. Put the keys where the workflows read them. The medium leaves out the
-   control-disk key, which only the suites use:
-
-   ```sh
-   tar -cz release-signers kryptik-release kryptik-release.pub kryptik-latest kryptik-latest.pub \
-       kryptik-sb.key kryptik-sb.crt | base64 -w0 | gh secret set KRYPTIK_KEY_MEDIUM --env release
-   gh secret set KRYPTIK_TESTCTL_KEY --env release-tests < kryptik-testctl
-   gh secret set KRYPTIK_LATEST_KEY < kryptik-latest
-   ```
-
-3. Commit `release-signers` and `kryptik-sb.crt` to `build/config/release/`.
-4. Encrypt the directory, keep the result in two places (a password manager's
-   file store and a USB stick, say), and delete the plaintext:
-
-   ```sh
-   cd .. && tar -cz kryptik-keys | openssl enc -aes-256-cbc -pbkdf2 -iter 1000000 -salt -out kryptik-keys.tar.gz.enc
-   ```
+   It copies `release-signers` and `kryptik-sb.crt` to `build/config/release/`.
+   The temporary directory goes when it exits.
+3. Commit `build/config/release/`, and keep the backup in a second place as
+   well (a password manager's file store and a USB stick, say). It opens with
+   `openssl enc -d -aes-256-cbc -pbkdf2 -iter 1000000 -in kryptik-keys.tar.gz.enc | tar -xz`.
 
 Losing `kryptik-release` without a backup means no installed machine can be
 updated again. A new key can only reach them in a release signed by the old
