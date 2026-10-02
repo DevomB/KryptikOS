@@ -1,6 +1,7 @@
 # Architecture decision records
 
-Each record gives the decision, the reasons and the cost. All are accepted.
+Each record gives the decision, the reasons and the cost. All are accepted
+except those marked proposed, which wait for the owner's decision.
 
 ## ADR-001: Build from Linux From Scratch
 
@@ -240,3 +241,34 @@ firmware's boot entries and a judged trial, not a loader's menu.
 **Rejected:** shim and a loader, two more signed stages and a configuration
 file; an initramfs inside the signed image, measured but a second userland to
 keep small and right.
+
+## ADR-023 (proposed): Slots grow at the end of the disk; beside another OS, Kryptik keeps its own ESP and boot entry
+
+Slots default to twice the image or 4 GiB, whichever is larger. When a
+release no longer fits, `check-manifest` refuses it before its image is
+fetched, and `kryptik-recover --grow-slots` from the medium shrinks the state
+partition at its end, creates two larger slots there and moves the
+`kryptik-a` and `kryptik-b` labels to them in one GPT write; the old slots'
+space stays unused. A release that needs this is a major version. Beside
+another OS, the installer uses free space alone, makes an ESP of Kryptik's
+own, and boots by a `Boot####` entry of its own instead of the
+removable-media path; Kryptik's certificate sits in db beside Microsoft's.
+Across disks, the state partition's identity is recorded on the ESP
+([installer choices](design/installer-choices.md)).
+
+**Why:** the slots are fixed at install time and every Version 2 item makes
+the root larger. Moving the state partition's start would risk the
+partition that holds everything; growing at the end moves no data, and the
+signed kernels already find their slots by label. Sharing another system's
+ESP would not leave room for Kryptik's kernels, and the removable path is
+ambiguous with two ESPs on one disk.
+
+**Cost:** about 3.4 GiB more disk at install; the old slots' space lost after
+a migration; a medium step for the release that needs it. Beside another
+OS, boot integrity also rests on everything Microsoft's keys sign and on a
+current dbx, which the threat model must say, and enrolling Kryptik's
+certificate sends Windows to its BitLocker recovery key once.
+
+**Rejected:** moving the state partition's start; extending slots with a
+linear table in the shared command line; a shared ESP; a boot loader to
+choose between systems (ADR-014).
