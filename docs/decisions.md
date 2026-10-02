@@ -1,6 +1,7 @@
 # Architecture decision records
 
-Each record gives the decision, the reasons and the cost. All are accepted.
+Each record gives the decision, the reasons and the cost. All are accepted
+except those marked proposed, which wait for the owner's decision.
 
 ## ADR-001: Build from Linux From Scratch
 
@@ -240,3 +241,33 @@ firmware's boot entries and a judged trial, not a loader's menu.
 **Rejected:** shim and a loader, two more signed stages and a configuration
 file; an initramfs inside the signed image, measured but a second userland to
 keep small and right.
+
+## ADR-020 (proposed): Anonymity is a zone property, enforced by how the zone is wired
+
+A zone file may give a routed zone an anonymous uplink: `uplink = "tor"` or
+`uplink = "vpn"`. A Tor zone's only interface is a veth into a gateway zone
+(`network.mode = "gateway"`, the shipped ephemeral `tor` zone) that runs Tor
+alone, forwards nothing, and lets the anonymous zone reach only Tor's ports,
+under rules kryptikd loads and the gateway cannot change. A VPN zone's only
+interface is a WireGuard device created in the net zone's namespace, moved
+into the zone and keyed from zone 0. Either way the zone has no clearnet
+route, its DNS goes through the uplink, and it is left with loopback when
+the uplink goes. The threat model changes first: anonymity becomes a
+property a zone can have, with the limits the design lists
+([anonymous uplinks](design/anonymous-uplinks.md)).
+
+**Why:** the threat model calls anonymity a non-goal, and a design that
+contradicts it changes it first. Tor in the net zone would hand the Tor
+client to whoever compromises the zone that faces the local network; a
+gateway zone keeps it one hop further in, as Whonix does. Fail-closed by
+wiring holds when daemons crash; fail-closed by rules holds only while they
+load.
+
+**Cost:** a new network mode and a second bridge in kryptikd; a zone more
+running whenever an anonymous zone does; Tor and WireGuard to build and keep
+current; an anonymous zone still shares the kernel, the screen, the fonts
+and the clock with every other zone.
+
+**Rejected:** Tor in the net zone; userspace VPNs, which need a tun device
+and `CAP_NET_ADMIN` in a zone; any setting on the state partition that could
+give an anonymous zone a clearnet route.
