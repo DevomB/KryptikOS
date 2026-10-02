@@ -125,14 +125,16 @@ payloads come from [the update channel](update-channel.md) or by hand.
    cut short leaves nothing that `rollback` or `kryptik-recover --commit-slot`
    would take. Write the slot (`dd conv=fsync`) and read it back.
 3. Put its kernel on the ESP as `.efi.new`, fsync, check it, rename; write
-   its version file.
+   its version file. Keep the verified manifest and signature in
+   `/var/lib/kryptik/boot/release-<slot>/` for the [clock's floor](time.md).
 4. Record the trial (`armed=0`), run `kryptik-efiboot set-next <inactive>`,
    record `armed=1`, reboot.
 5. `boot-success` judges the trial slot: state persistent; eudev, seatd, the
    launch daemon, the net zone and the login getty up; kryptikd finding kernel
    support and the zones; an unambiguous ESP. Healthy: it copies the kernel
    over `BOOTX64.EFI` (`.new`, fsync, rename), updates `committed-slot`,
-   clears the trial and forgets the entries. Unhealthy: it records that,
+   clears the trial and forgets the entries, and the slot's kept manifest
+   raises the clock's floor if it is the newest. Unhealthy: it records that,
    forgets the entries and reboots into the committed slot, `BootNext` being
    spent. On a degraded state the trial record is out of reach, so
    `committed-slot` says whether the boot is a trial. A trial that never comes

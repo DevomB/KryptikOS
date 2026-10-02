@@ -31,6 +31,7 @@ cat > "$T/bin/kryptikd" <<'EOF'
 case "$1" in
     check) [ -e "$KTEST/kernel_ok" ] ;;
     list)  [ -e "$KTEST/zones_ok" ] ;;
+    time)  echo "kryptikd $*" >> "$KTEST/calls" ;;
     *) exit 2 ;;
 esac
 EOF
@@ -107,7 +108,7 @@ check "healthy trial: committed" "$RESULT" "commit b"
 check "BOOTX64.EFI is now the slot b kernel" "$(cat "$KTEST/esp/EFI/BOOT/BOOTX64.EFI")" "kernel-b"
 check "committed-slot records b" "$(cat "$KTEST/esp/kryptik/committed-slot")" "b"
 check "the trial record is gone" "$([[ -e "$KTEST/boot/trial" ]] && echo present || echo gone)" "gone"
-check "the trial's firmware entries and BootNext are forgotten after the commit, and the committed slot gets its own" "$CALLS" "mount -o rw,nosuid,nodev,noexec /dev/vda1 $KTEST/run/esp umount $KTEST/run/esp efiboot forget efiboot ensure b "
+check "the trial's firmware entries and BootNext are forgotten after the commit, the committed slot gets its own, and its release goes to the clock's floor" "$CALLS" "mount -o rw,nosuid,nodev,noexec /dev/vda1 $KTEST/run/esp umount $KTEST/run/esp efiboot forget efiboot ensure b kryptikd time committed $KTEST/boot/release-b "
 run_case commit0 b "" persistent 'b\narmed=0\n' $ALL; go
 check "a trial that booted before its armed=1 line was written is still a trial: committed" "$RESULT" "commit b"
 

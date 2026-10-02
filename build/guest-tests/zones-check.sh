@@ -264,6 +264,23 @@ if [[ "$FLOOR_S" -gt 0 ]]; then
     if (( got >= FLOOR_S && got <= FLOOR_S + 90 )); then pass "time-clamp" "a clock set to 2000-01-01 came back at the build date: ${said}"; else fail "time-clamp" "clock reads $(date -u -d "@$got" +%F) after the clamp, floor is ${FLOOR}: ${said}"; fi
     put_clock_back
 
+    # The newest release committed to, as whoever writes the state partition
+    # could leave it: dated 2099, signed by a key the anchor does not list.
+    rel=/var/lib/kryptik/time/release
+    rm -rf "$rel" /root/zt/forger /root/zt/forger.pub; mkdir -p "$rel"
+    printf 'KRYPTIK-MANIFEST-1\nname: kryptik\nversion: 99.0\nrole: %s\ncreated: 2099-01-01T00:00:00Z\nfiles: 0\n--\n' \
+        "$(cat /usr/share/kryptik/trust/required-role 2>/dev/null)" > "$rel/manifest"
+    ssh-keygen -q -t ed25519 -N '' -f /root/zt/forger >/dev/null 2>&1
+    ssh-keygen -Y sign -f /root/zt/forger -n kryptik-release "$rel/manifest" >/dev/null 2>&1
+    st="$("$KD" time status 2>&1)"
+    f="$(sed -n 's/^floor  *\([0-9-]* [0-9:]*\) UTC.*/\1/p' <<<"$st")"
+    if [[ -s "$rel/manifest.sig" && "$f" == "$FLOOR" && "$st" == *"not used"*"not enrolled"* ]]; then
+        pass "time-floor-forged" "a release dated 2099 that the release key did not sign leaves the floor at ${FLOOR}"
+    else
+        fail "time-floor-forged" "floor '${f}', build date '${FLOOR}': $(tr '\n' ' ' <<<"$st")"
+    fi
+    rm -rf "$rel" /root/zt/forger /root/zt/forger.pub
+
     if [[ -n "$net_init" ]]; then
         before="$(date +%s)"; r="$(claim 120)"; after="$(date +%s)"
         moved=$(( after - before ))
@@ -271,7 +288,7 @@ if [[ "$FLOOR_S" -gt 0 ]]; then
         put_clock_back
 
         before="$(date +%s)"; r="$(claim -999999999)"; after="$(date +%s)"
-        if [[ "$r" == error:*"before this system was built"* ]] && (( after - before < 30 )); then pass "time-claim-floor" "a claim below the build date is refused and the clock is untouched"; else fail "time-claim-floor" "reply '${r}', clock moved $(( after - before )) s"; fi
+        if [[ "$r" == error:*"before the floor"* ]] && (( after - before < 30 )); then pass "time-claim-floor" "a claim below the build date is refused and the clock is untouched"; else fail "time-claim-floor" "reply '${r}', clock moved $(( after - before )) s"; fi
 
         # past the bound with nobody at a trusted window: refused, not applied
         before="$(date +%s)"; r="$(claim 90000)"; after="$(date +%s)"

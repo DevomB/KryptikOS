@@ -1,6 +1,7 @@
 #!/bin/sh
 # Clock floor (docs/design/time.md): a clock earlier than the image's build
-# date (a dead RTC battery) is raised to it before the network is asked.
+# date, or the newest release committed to, is raised to it before the
+# network is asked.
 # Always exits 0, so the net zone that depends on this oneshot still starts.
 log=/var/log/kryptik/time.log
 mkdir -p /var/log/kryptik

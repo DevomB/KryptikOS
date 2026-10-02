@@ -67,6 +67,15 @@ w="$(grep -n 'dd if=/proc/self/fd/3 of=' <<< "$body" | head -1 | cut -d: -f1)"
 [[ -n "$u" && -n "$w" && "$u" -lt "$w" ]] \
     && ok "apply takes the slot off the ESP before it writes a byte of it" \
     || bad "apply: the slot is taken off the ESP at line '${u}', written at line '${w}'"
+# The manifest kept for the clock's floor goes with the slot, and comes back
+# only once the slot has verified, before the trial is armed.
+f="$(grep -n 'rm -rf "$B/release-$target"' <<< "$body" | head -1 | cut -d: -f1)"
+v="$(grep -n 'say "slot $target verifies after write"' <<< "$body" | head -1 | cut -d: -f1)"
+k="$(grep -n 'cp "$m" "$sig" "$B/release-$target/"' <<< "$body" | head -1 | cut -d: -f1)"
+a="$(grep -n 'arm_trial "$target"' <<< "$body" | head -1 | cut -d: -f1)"
+[[ -n "$f" && -n "$v" && -n "$k" && -n "$a" && "$f" -lt "$w" && "$v" -lt "$k" && "$k" -lt "$a" ]] \
+    && ok "apply forgets the slot's kept manifest before writing it, and keeps the new one after it verifies" \
+    || bad "apply: kept manifest removed at line '${f}', slot written at '${w}', verified at '${v}', kept at '${k}', armed at '${a}'"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
