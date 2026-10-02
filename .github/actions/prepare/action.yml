@@ -5,7 +5,7 @@ inputs:
     description: Also let the runner start VMs (KVM, and virt-fw-vars for the variable stores).
     default: 'false'
   sources:
-    description: The upstream sources, cached by sources.lock. 'fetch' also fetches what the cache lacks and saves the set; 'restore' only restores it.
+    description: The upstream sources, cached by sources.lock. Either fetches what the cache lacks; 'fetch' also saves the set.
     default: ''
 runs:
   using: composite
@@ -48,16 +48,19 @@ runs:
         key: sources-v3-${{ hashFiles('sources.lock') }}
         # A changed lock restores the previous set and fetches only what is
         # new; every file is still hashed against the lock.
-        restore-keys: ${{ inputs.sources == 'fetch' && 'sources-' || '' }}
+        restore-keys: sources-
 
-    - if: inputs.sources == 'fetch' && steps.sources.outputs.cache-hit != 'true'
+    # A cache evicted since the build job is fetched again, not taken as gone.
+    - if: inputs.sources != '' && steps.sources.outputs.cache-hit != 'true'
       shell: bash
+      env:
+        MODE: ${{ inputs.sources }}
       run: |
         make sources
         ./tools/prune-sources.sh
         # The signatures too, so the set this job saves is the one CI's
         # signature gate reads from disk; this pass is not the verdict.
-        ./tools/verify-signatures.sh > /dev/null 2>&1 || true
+        [[ "$MODE" != fetch ]] || ./tools/verify-signatures.sh > /dev/null 2>&1 || true
 
     # Saved as soon as the set is verified, not when the job ends: a job that
     # fails later would otherwise fetch the lock's new files again next time.
