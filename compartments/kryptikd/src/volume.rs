@@ -1,11 +1,6 @@
-//! Per-zone LUKS2 volumes (docs/design/encrypted-volumes.md), opened in zone 0
-//! before the zone exists and closed after it is gone.
-//!
-//! The container opens as `/dev/mapper/kryptik-zone-<zone>`, a prefix only zone
-//! volumes use, which is how `gc` tells them from the state partition. The
-//! ext4 inside is mounted `nosuid,nodev` as the zone's data directory; the
-//! zone never sees the container or the mapping. Passphrases reach cryptsetup
-//! on stdin or a memfd, never argv, and no tool runs through a shell.
+//! Per-zone LUKS2 volumes (docs/design/encrypted-volumes.md), opened in zone 0 before the zone
+//! exists and closed after it is gone; the zone sees only the ext4 inside, mounted `nosuid,nodev`.
+//! Passphrases go on stdin or in a memfd, never argv, and no tool runs through a shell.
 
 use std::ffi::CString;
 use std::fs;
@@ -57,8 +52,7 @@ impl Passphrase {
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
-    /// Read a passphrase from a regular file owned by root or the caller, with
-    /// no group or other permission bits.
+    /// Read from a regular file owned by root or the caller, with no group or other access.
     pub fn from_file(path: &Path) -> Result<Self, VolumeError> {
         /* Check the opened inode, not the path, which could be swapped. NONBLOCK
          * keeps a planted FIFO from hanging open() before the type check. */
@@ -82,11 +76,8 @@ impl Passphrase {
         }
         Self::read_bounded(f)
     }
-}
 
-impl Passphrase {
-    /// Read a passphrase from a memfd or pipe received over SCM_RIGHTS. Always
-    /// closes `fd`; a pipe must reach EOF within 5 s.
+    /// Read from a memfd or pipe passed over SCM_RIGHTS, closing `fd`; a pipe must end within 5 s.
     pub fn from_fd(fd: i32) -> Result<Self, VolumeError> {
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
         if flags < 0 {
@@ -209,8 +200,7 @@ pub fn mapping_exists(zone: &str) -> bool {
     Path::new(&mapper_path(zone)).exists()
 }
 
-/// An open, mounted volume. Dropping it unclosed closes it, so a failed launch
-/// never leaves plaintext mounted.
+/// An open, mounted volume, closed on drop so a failed launch never leaves plaintext mounted.
 pub struct Opened {
     pub zone: String,
     pub mountpoint: String,
@@ -265,13 +255,12 @@ pub fn open_and_mount(zone: &str, volume: &str, pass: &Passphrase, mountpoint: &
     Ok(opened)
 }
 
-/// Unmount and close; dm-crypt then frees the volume key. A busy unmount is
-/// retried for 3 s, as a dead zone's mount namespace goes asynchronously;
-/// after that something escaped, which is an invariant failure.
+/// Unmount and close; dm-crypt then frees the volume key.
 pub fn close_mapping(zone: &str, mountpoint: &str) -> Result<(), VolumeError> {
     let mapper = mapper_path(zone);
     let mut last = String::new();
     let mut unmounted = !is_mountpoint(mountpoint);
+    // A dead zone's mount namespace goes asynchronously; still busy after 3 s, something escaped.
     for _ in 0..30 {
         if unmounted {
             break;
@@ -303,8 +292,7 @@ pub fn is_mountpoint(path: &str) -> bool {
     text.lines().any(|l| l.split_whitespace().nth(1) == Some(&esc))
 }
 
-/// Create a volume: LUKS2 (argon2id) on a sparse file or empty block device,
-/// holding an ext4 owned by the zone's identity. Refuses anything with a signature.
+/// Create LUKS2 (argon2id) on a sparse file or blank device, holding an ext4 owned by the zone.
 pub fn init(zone: &str, volume: &str, size: u64, pass: &Passphrase, uid: u32, gid: u32) -> Result<(), VolumeError> {
     let p = Path::new(volume);
     if p.exists() {
@@ -404,10 +392,7 @@ pub fn restore_header(volume: &str, from: &str) -> Result<(), VolumeError> {
     Ok(())
 }
 
-/// Erase a zone's key slots, then delete its container file: the zone is
-/// then as before `volume init`. Refused while the mapping is open (the zone
-/// runs, or `gc` has not closed it), for a block device (it is wiped by hand,
-/// not unlinked) and for a file without a LUKS signature.
+/// Erase a zone's key slots, then delete its container file: back to before `volume init`.
 pub fn destroy(zone: &str, volume: &str) -> Result<(), VolumeError> {
     if mapping_exists(zone) {
         return Err(VolumeError::Io(format!(
@@ -433,9 +418,7 @@ pub fn destroy(zone: &str, volume: &str) -> Result<(), VolumeError> {
             if sig.is_empty() { "no signature".to_string() } else { format!("a {sig} signature") }
         )));
     }
-    // The slots first: an unlinked file's blocks stay on the disk until they
-    // are reused, and without its slots the container is ciphertext under a
-    // key nothing holds.
+    // Slots first: an unlinked file's blocks linger, but without slots no key decrypts them.
     run("cryptsetup luksErase", "cryptsetup", &["luksErase", "--batch-mode", volume], None)
         .map_err(|e| tool_err("cryptsetup luksErase", e))?;
     fs::remove_file(p).map_err(|e| VolumeError::Io(format!("{volume}: {e}")))

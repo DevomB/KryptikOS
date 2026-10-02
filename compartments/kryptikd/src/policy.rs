@@ -1,10 +1,7 @@
-//! Per-zone policy files (docs/design/zone-policy-files.md).
-//!
-//! One directive per line, each adding one thing to the base policy:
-//! `allow-syscall NAME`, `allow-socket AF_X`, `allow-netlink NETLINK_X` or
-//! `keep-capability CAP_X`. A file cannot re-allow a syscall the base policy
-//! denies, capabilities come only from `caps::KEEPABLE`, and an unknown name
-//! is an error with a line number. Any error refuses the launch.
+//! Per-zone policy files (docs/design/zone-policy-files.md). Each line adds one thing to the
+//! base policy: `allow-syscall NAME`, `allow-socket AF_X`, `allow-netlink NETLINK_X` or
+//! `keep-capability CAP_X`. A denied syscall stays denied and capabilities come only from
+//! `caps::KEEPABLE`; an unknown name is an error with its line, and any error refuses the launch.
 
 use std::collections::HashSet;
 use std::fmt;
@@ -161,9 +158,8 @@ pub fn parse(text: &str, source: &str) -> Result<Policy, PolicyError> {
 }
 
 impl Policy {
-    /// Only the nic zone may keep `CAP_NET_ADMIN` or `CAP_NET_RAW`. In any other
-    /// zone they would let it re-address its veth, route around port isolation
-    /// through the bridge address, or forge frames.
+    /// Only the nic zone may keep `CAP_NET_ADMIN` or `CAP_NET_RAW`; elsewhere they let a zone
+    /// re-address its veth, route around port isolation via the bridge address, or forge frames.
     pub fn check_for_zone(&self, zone: &crate::zone::Zone) -> Result<(), PolicyError> {
         if zone.network != crate::zone::NetworkMode::Nic {
             for (c, name) in self.keep_caps.iter().zip(&self.keep_cap_names) {
