@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Run the built sysroot's programs in a chroot: they must work, not merely
-# exist. Needs root.
+# Run the built sysroot's programs in a chroot: they must work, not merely exist. Needs root.
 set -uo pipefail
 # This checkout, and the variables make passes to every stage.
 WT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -20,8 +19,7 @@ mkdir -p "$WORK/logs"
 LOG="$WORK/logs/userspace-smoke.$(date +%Y%m%dT%H%M%S).log"
 ln -sfn "$LOG" "$WORK/logs/userspace-smoke.latest.log"
 
-# Expected versions come from build/config/versions.env, written into the head
-# of the inner script, which runs in the chroot and cannot read the repository.
+# The expected versions go into the inner script's head: in the chroot it cannot read versions.env.
 # shellcheck source=/dev/null
 . "$WT/build/config/versions.env"
 {
@@ -31,7 +29,7 @@ ln -sfn "$LOG" "$WORK/logs/userspace-smoke.latest.log"
     done
 } > /tmp/kryptik-smoke-inner.sh
 cat >> /tmp/kryptik-smoke-inner.sh <<'INNER'
-# Runs INSIDE the chroot. Deliberately writes nothing outside /run.
+# Runs inside the chroot and writes nothing outside /run.
 fail=0
 ok()   { printf '  PASS  %s\n' "$1"; }
 bad()  { printf '  FAIL  %s\n' "$1"; fail=$((fail+1)); }
@@ -42,48 +40,47 @@ t() {  # t <description> <expected> <command...>
 }
 
 echo "== identity =="
-t "os-release names Kryptik"        "ID=kryptik"        cat /etc/os-release
-# BUILD_ID is the commit the system was built from: a hex id, never
-# "unknown", and not any one commit this file could name.
+t "os-release names Kryptik"        "ID=kryptik"            cat /etc/os-release
+# BUILD_ID is the commit the system was built from: a hex id, never "unknown".
 if grep -qE '^BUILD_ID=[0-9a-f]{7,}$' /etc/os-release; then
     ok "os-release carries a build id ($(sed -n 's/^BUILD_ID=//p' /etc/os-release))"
 else
     bad "os-release carries a build id (got: $(grep '^BUILD_ID=' /etc/os-release))"
 fi
-t "uname is x86_64"                 "x86_64"            uname -m
+t "uname is x86_64"                 "x86_64"                uname -m
 
 echo
 echo "== the C library and loader =="
 t "glibc reports its version"       "$V_GLIBC"              /usr/lib/libc.so.6 --version
-t "ldd works"                       "libc.so.6"         ldd /usr/bin/bash
+t "ldd works"                       "libc.so.6"             ldd /usr/bin/bash
 
 echo
-echo "== core userland actually executes =="
-t "bash"        "$V_BASH"        bash --version
-t "coreutils"   "$V_COREUTILS"           ls --version
-t "sed"         "$V_SED"           sed --version
-t "grep"        "$V_GREP"          grep --version
-t "gawk"        "$V_GAWK"         gawk --version
-t "tar"         "$V_TAR"          tar --version
-t "findutils"   "$V_FINDUTILS"        find --version
-t "diffutils"   "$V_DIFFUTILS"          diff --version
-t "xz"          "$V_XZ"         xz --version
-t "zstd"        "$V_ZSTD"         zstd --version
-t "openssl"     "$V_OPENSSL"         openssl version
-t "perl"        "v$V_PERL"       perl --version
-t "python3"     "$V_PYTHON"        python3 --version
-t "pkg-config"  "$V_PKGCONF"         pkg-config --version
-t "kmod"        "$V_KMOD"            kmod --version
-t "procps top"    "procps-ng"     top -V
-t "iproute2"    "ip utility"    ip -V
-t "shadow"      "Usage: useradd" useradd --help
-t "agetty"      "agetty"        agetty --help
+echo "== core userland executes =="
+t "bash"        "$V_BASH"           bash --version
+t "coreutils"   "$V_COREUTILS"      ls --version
+t "sed"         "$V_SED"            sed --version
+t "grep"        "$V_GREP"           grep --version
+t "gawk"        "$V_GAWK"           gawk --version
+t "tar"         "$V_TAR"            tar --version
+t "findutils"   "$V_FINDUTILS"      find --version
+t "diffutils"   "$V_DIFFUTILS"      diff --version
+t "xz"          "$V_XZ"             xz --version
+t "zstd"        "$V_ZSTD"           zstd --version
+t "openssl"     "$V_OPENSSL"        openssl version
+t "perl"        "v$V_PERL"          perl --version
+t "python3"     "$V_PYTHON"         python3 --version
+t "pkg-config"  "$V_PKGCONF"        pkg-config --version
+t "kmod"        "$V_KMOD"           kmod --version
+t "procps top"  "procps-ng"         top -V
+t "iproute2"    "ip utility"        ip -V
+t "shadow"      "Usage: useradd"    useradd --help
+t "agetty"      "agetty"            agetty --help
 
 echo
 echo "== the pieces a boot needs =="
-t "s6-svscan runs"      "s6-svscan"     s6-svscan -h
-t "kryptikd runs"       "compartment"   kryptikd --help
-t "kryptikd reads zones" "vault"        kryptikd list --zones /usr/lib/kryptik/zones
+t "s6-svscan runs"       "s6-svscan"     s6-svscan -h
+t "kryptikd runs"        "compartment"   kryptikd --help
+t "kryptikd reads zones" "vault"         kryptikd list --zones /usr/lib/kryptik/zones
 [ -x /sbin/init ] && ok "/sbin/init is executable" || bad "/sbin/init is executable"
 [ -x /usr/libexec/kryptik-console ] && ok "console wrapper is executable" \
                                     || bad "console wrapper is executable"
@@ -99,7 +96,7 @@ else
 fi
 
 echo
-echo "== hardened_malloc can actually be loaded =="
+echo "== hardened_malloc loads =="
 if out=$(LD_PRELOAD=/usr/lib/libhardened_malloc.so /usr/bin/bash -c 'echo alive' 2>&1) \
    && [ "$out" = alive ]; then
     ok "bash runs under LD_PRELOAD=libhardened_malloc.so"
@@ -114,8 +111,7 @@ INNER
 chmod 0755 /tmp/kryptik-smoke-inner.sh
 cp /tmp/kryptik-smoke-inner.sh "$WORK/sysroot/run-smoke.sh" 2>/dev/null || true
 
-# The status leaves the block through a file: $? after `{ ... } >> log` would
-# be the block's last command, an echo.
+# The status leaves the block through a file: $? after `{ ... } >> log` would be its last echo's.
 RCFILE="$(mktemp)"
 {
     date -Iseconds

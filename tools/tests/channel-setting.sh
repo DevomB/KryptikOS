@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
-# Stage 06's KRYPTIK_CHANNEL: which addresses it takes for which role, and
-# that every address it takes is one the net zone's fetcher can use: the
-# update.conf stage 06 writes reads back as a request with a host, no query or
-# fragment, and a path that ends in the name asked for. Runs stage 06's own
-# check, role reader and writer, and the real fetcher.
+# Stage 06's KRYPTIK_CHANNEL check per role, and that the real fetcher can use every address taken.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 S06="$ROOT/build/stages/06-iso.sh"
@@ -74,8 +70,7 @@ for ((i = 0; i < ${#TABLE[@]}; i += 3)); do
     [[ "${TABLE[i+2]}" == take ]] && taken+=("$a")
 done
 
-# Every address stage 06 takes, written as it writes it and read by the
-# fetcher, makes requests the fetcher can send.
+# Each address taken, written by channel_conf and read by the fetcher, gives requests it can send.
 n=0
 for a in "${taken[@]}"; do channel_conf "$a" > "$T/update-$n.conf"; n=$((n + 1)); done
 out="$(python3 - "$ROOT/tools/net/update-fetch.py" "$T"/update-*.conf <<'EOF' 2>&1

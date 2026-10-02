@@ -1,6 +1,5 @@
-/* kryptik-efiboot: the firmware side of the A/B trial
- * (docs/design/boot-and-updates.md). Reads and writes Boot####, BootNext and
- * BootOrder through efivarfs, with no library.
+/* kryptik-efiboot: the firmware side of the A/B trial (docs/design/boot-and-updates.md).
+ * Reads and writes Boot####, BootNext and BootOrder through efivarfs, with no library.
  *
  *   kryptik-efiboot list                 print Boot####, BootOrder, BootNext, BootCurrent
  *   kryptik-efiboot set-next SLOT        create/refresh "Kryptik slot SLOT" -> \EFI\kryptik\kryptik-SLOT.efi, set BootNext
@@ -10,12 +9,8 @@
  *   kryptik-efiboot forget               delete Kryptik's entries, and BootNext if it names one,
  *                                        drop them from BootOrder: the firmware boots BOOTX64.EFI
  *
- * The ESP is kryptik-esp on the root's own disk, as devices.sh resolves it: a
- * second disk's is ignored, two on the root disk are refused. An entry is
- * Kryptik's when its description and its file say so, never by its number:
- * slot a's is Boot00A0 and slot b's Boot00B0 unless another system already
- * uses that number, and then the next free one. Re-arming reuses the entry.
- */
+ * An entry is Kryptik's by its description and file, never its number: slot a's is Boot00A0
+ * and slot b's Boot00B0 unless another system holds that number, then the next free one. */
 #define _GNU_SOURCE
 #include <ctype.h>
 #include <dirent.h>
@@ -61,24 +56,26 @@ static int read_var(const char *name, unsigned char *buf, size_t cap, size_t *le
     return 0;
 }
 
-/* efivarfs write: attributes (u32 LE) followed by the data, in one write. A
- * variable that exists is immutable-flagged by the kernel; clear that first. */
+/* The kernel marks an existing variable immutable; clear that (FS_IOC_GETFLAGS/SETFLAGS). */
+static void make_mutable(const char *path) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return;
+    int flags = 0;
+    if (ioctl(fd, _IOR('f', 1, long), &flags) == 0 && (flags & 0x10)) {
+        flags &= ~0x10; ioctl(fd, _IOW('f', 2, long), &flags);
+    }
+    close(fd);
+}
+
+/* efivarfs takes the attributes (u32 LE) and the data in one write. */
 static int write_var(const char *name, const unsigned char *data, size_t len) {
     char path[512]; snprintf(path, sizeof path, EFIVARS "%s-" GLOBAL_GUID, name);
     unsigned char *buf = malloc(len + 4);
     if (!buf) return -1;
     uint32_t attr = EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS;
     memcpy(buf, &attr, 4); memcpy(buf + 4, data, len);
-    /* remove the immutable attribute if present (FS_IOC_SETFLAGS) */
-    int fd = open(path, O_RDONLY);
-    if (fd >= 0) {
-        int flags = 0;
-        if (ioctl(fd, _IOR('f', 1, long), &flags) == 0 && (flags & 0x10)) {
-            flags &= ~0x10; ioctl(fd, _IOW('f', 2, long), &flags);
-        }
-        close(fd);
-    }
-    fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    make_mutable(path);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) { free(buf); return -1; }
     ssize_t n = write(fd, buf, len + 4);
     close(fd); free(buf);
@@ -87,8 +84,7 @@ static int write_var(const char *name, const unsigned char *data, size_t len) {
 
 static int delete_var(const char *name) {
     char path[512]; snprintf(path, sizeof path, EFIVARS "%s-" GLOBAL_GUID, name);
-    int fd = open(path, O_RDONLY);
-    if (fd >= 0) { int flags = 0; if (ioctl(fd, _IOR('f', 1, long), &flags) == 0 && (flags & 0x10)) { flags &= ~0x10; ioctl(fd, _IOW('f', 2, long), &flags); } close(fd); }
+    make_mutable(path);
     return unlink(path) == 0 || errno == ENOENT ? 0 : -1;
 }
 
@@ -100,8 +96,7 @@ static int var_exists(const char *name) {
 /* --- the ESP partition, by label ------------------------------------------ */
 struct part { char dev[128]; char uuid[40]; uint64_t start, size; uint32_t number; };
 
-/* The first line a program prints. No shell: the arguments are an array, so
- * nothing in them is ever parsed as a command. */
+/* The first line a program prints; no shell, so nothing in argv is parsed as a command. */
 static int run_read(char *const argv[], char *out, size_t cap) {
     int fd[2];
     if (pipe(fd)) return -1;
@@ -126,8 +121,7 @@ static int run_read(char *const argv[], char *out, size_t cap) {
     return 0;
 }
 
-/* NAMED, which must carry the kryptik-esp label (kryptik-recover names an
- * installed disk's from a medium), or else the one devices.sh finds. */
+/* NAMED if it carries the kryptik-esp label (kryptik-recover, from a medium), else devices.sh's. */
 static int find_esp(struct part *p, const char *named) {
     char dev[128];
     if (named) {
@@ -202,8 +196,7 @@ static size_t build_load_option(unsigned char *buf, const struct part *esp, cons
 
 /* --- Kryptik's entries ----------------------------------------------------- */
 
-/* A load option's description and the file its path names, in ASCII ('?' for
- * anything else); -1 if VAR is not there or is too short to be one. */
+/* VAR's description and file path in ASCII ('?' for the rest); -1 if it is absent or too short. */
 static int option_text(const char *var, char *desc, size_t dcap, char *file, size_t fcap, int *active) {
     unsigned char buf[2048]; size_t n = 0, d = 0, f = 0;
     if (read_var(var, buf, sizeof buf, &n) || n < 6) return -1;
@@ -225,9 +218,8 @@ static int option_text(const char *var, char *desc, size_t dcap, char *file, siz
     return 0;
 }
 
-/* Is VAR Kryptik's entry for SLOT ("a" or "b", NULL for either)? Its
- * description and its file must both say so: another system may use any
- * number, Boot00A0 and Boot00B0 among them. */
+/* Is VAR Kryptik's entry for SLOT ("a" or "b", NULL for either)? Description and file must
+ * both say so: another system may use any number, Boot00A0 and Boot00B0 included. */
 static int is_ours(const char *var, const char *slot) {
     char desc[128], file[256];
     if (option_text(var, desc, sizeof desc, file, sizeof file, NULL)) return 0;
@@ -261,9 +253,8 @@ static int holds(const unsigned char *list, size_t len, uint16_t num) {
     return 0;
 }
 
-/* Where SLOT's entry goes: where Kryptik's entry for it already is, its own
- * number first; else its own number if that is free; else the next number
- * that no variable and no place in BootOrder uses. */
+/* Where SLOT's entry goes: its existing entry (own number first), else its own number if free,
+ * else the next number that no variable and no place in BootOrder uses. */
 static int slot_var(const char *slot, char var[9]) {
     unsigned own = !strcmp(slot, "a") ? 0x00A0 : 0x00B0;
     snprintf(var, 9, "Boot%04X", own);
@@ -303,8 +294,7 @@ static int ensure_entry(const char *slot, const char *named, char var[9]) {
         if (write_var(var, buf, n)) return die("writing the Boot#### entry failed");
         printf("%s -> %s on %s (PARTUUID %s)\n", var, file, esp.dev, esp.uuid);
     }
-    /* Appended to BootOrder, so a firmware that ignores BootNext still offers
-     * it without displacing the machine's own entry; forget removes it. */
+    /* Last in BootOrder, for a firmware that ignores BootNext; forget removes it. */
     unsigned char order[512]; size_t ol = 0; uint16_t num = (uint16_t)strtol(var + 4, NULL, 16);
     if (read_var("BootOrder", order, sizeof order, &ol)) ol = 0;
     if (!holds(order, ol, num) && ol + 2 <= sizeof order) { ol += put_u16(order + ol, num); if (write_var("BootOrder", order, ol)) return die("updating BootOrder failed"); }
@@ -320,11 +310,8 @@ static int cmd_set_next(const char *slot) {
     return 0;
 }
 
-/* Delete Kryptik's entries, and BootNext if it names one of them or nothing,
- * and drop them from BootOrder, so the firmware boots BOOTX64.EFI, the
- * committed slot. Run whenever a trial ends: a firmware re-adds its own disk
- * entry at the end of BootOrder, so a leftover Kryptik entry would win over
- * the committed slot at every cold boot. */
+/* Drop Kryptik's entries, and a BootNext naming one or no entry, so BOOTX64.EFI (the committed
+ * slot) boots: a firmware re-adds its disk entry last, behind any leftover Kryptik entry. */
 static int cmd_forget(void) {
     char names[256][9], mine[256][9]; int cnt = boot_vars(names, 256), no = 0;
     unsigned char ours[512]; size_t on = 0;
