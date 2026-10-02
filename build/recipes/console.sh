@@ -51,7 +51,7 @@ if [ -x /usr/sbin/agetty ]; then
     # serial console is the installer's root shell: -n -l skips login(1).
     # On an installed system it is an ordinary login prompt; root is locked,
     # so it admits the first-boot user, not root.
-    if grep -qw 'kryptik\.media=[a-z]' /proc/cmdline 2>/dev/null; then
+    if grep -qE '(^| )kryptik\.media=[a-z]+( |$)' /proc/cmdline 2>/dev/null; then
         exec /usr/sbin/agetty -n -l /usr/bin/bash --keep-baud \
              115200,57600,38400,9600 "$dev" vt220
     fi

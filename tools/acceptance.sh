@@ -370,6 +370,10 @@ it_ovmf_vars() {
     "${IMG}/ovmf-vars.sh" --cert "$MEDIUM_CERT"
 }
 it_smoke_usb()     { "${IMG}/media-smoke.sh" --usb "$MEDIA_USB" --vars clean; }
+it_medium_shell() {
+    local m=(--usb "$MEDIA_USB"); [[ -f "$MEDIA_ISO" ]] && m+=(--iso "$MEDIA_ISO")
+    "${IMG}/medium-shell-test.sh" "${m[@]}"
+}
 it_smoke_iso()     { "${IMG}/media-smoke.sh" --iso "$MEDIA_ISO" --vars clean; }
 it_smoke_sb()      { "${IMG}/media-smoke.sh" --usb "$MEDIA_USB" --vars enrolled; }
 it_refused()       { "${IMG}/media-smoke.sh" --usb "$MEDIA_USB" --vars ms --expect-refused; }
@@ -431,6 +435,7 @@ item build     licences                   M host  0 it_licences need_sysroot
 item build     kernel-config              M host  0 it_kernel_config need_sources
 item build     support-status             M host  0 it_support_status
 item boot      media-smoke-usb            M vm   25 it_smoke_usb need_vm
+item boot      medium-shell               M vm    3 it_medium_shell need_vm
 item boot      media-smoke-iso            M vm   25 it_smoke_iso need_vm_iso
 item install   install-test               M vm   10 it_install need_vm
 item install   state-test                 M vm   10 it_state need_vm
