@@ -1,6 +1,7 @@
 # Architecture decision records
 
-Each record gives the decision, the reasons and the cost. All are accepted.
+Each record gives the decision, the reasons and the cost. All are accepted
+except those marked proposed, which wait for the owner's decision.
 
 ## ADR-001: Build from Linux From Scratch
 
@@ -240,3 +241,58 @@ firmware's boot entries and a judged trial, not a loader's menu.
 **Rejected:** shim and a loader, two more signed stages and a configuration
 file; an initramfs inside the signed image, measured but a second userland to
 keep small and right.
+
+## ADR-021 (proposed): Sound is mixed in zone 0; Bluetooth carries audio from a zone of its own; input methods run per zone
+
+Sound drivers are built as signed modules, and Intel's SOF firmware comes
+from the SOF project's releases, a second firmware source beside
+linux-firmware. A mixer in zone 0, `kryptik-sound`, runs as its own user
+and reads one fixed-format stream per zone (48 kHz, stereo, 16-bit) from a
+socket kryptikd binds into the zone. A zone records only after a gesture in
+the chrome grants it the microphone, one zone at a time, and the chrome
+shows it. Bluetooth, when it comes, runs in a zone of its own with its own
+bus, after a kernel patch lets one network namespace use `AF_BLUETOOTH`;
+it carries audio only, never keyboards. Input methods run inside each zone,
+and the compositor routes their keys and commits to that zone's surfaces
+alone; the virtual keyboard is never offered to a zone
+([the laptop](design/laptop.md)).
+
+This amends ADR-013, which lists sound among what is never built, and
+ADR-012, which leaves sound and Bluetooth firmware out.
+
+**Why:** a fixed format leaves zone 0 nothing to parse, and the microphone's
+gate stays in trusted code; a sound zone would gate the microphone from the
+place an attacker controls. The kernel refuses Bluetooth sockets outside the
+initial network namespace, and bluetoothd faces a radio and could type into
+the chrome through uhid. An input method shared by all zones would learn
+from every zone and offer one zone's words in another.
+
+**Cost:** sound drivers, alsa-lib and a new daemon in zone 0; a firmware
+source that is not linux-firmware; a Kryptik kernel patch for Bluetooth,
+rebased with linux-hardened (ADR-009); no Bluetooth keyboards; compositor
+work to route input methods by zone.
+
+**Rejected:** PipeWire in zone 0 with a socket per zone; a sound zone;
+bluetoothd in zone 0; one input method for all zones.
+
+## ADR-022 (proposed): Suspend wipes the disk keys
+
+Before the machine sleeps, the launch daemon locks the screen, freezes every
+zone, and suspends the state partition and every open zone volume with
+their keys wiped (`cryptsetup luksSuspend`). At resume the lock asks for the
+state partition's passphrase, never the TPM, and each zone stays frozen
+until its own passphrase is given. Everything on the resume path runs from
+the verified root and `/run`. Hibernation stays off. The threat model
+changes: a suspended machine holds no disk key, though memory still holds
+what the zones were using ([the laptop](design/laptop.md#suspend-and-resume-with-the-keys-dropped)).
+
+**Why:** a laptop is suspended far more often than it is off, and today a
+suspended Kryptik keeps every key in RAM.
+
+**Cost:** a passphrase at every resume, and one for each zone the user
+wants back; a lock client in zone 0; zone 0 programs that touch `/var`
+stall until resume.
+
+**Rejected:** resuming with the TPM, which would let whoever holds the
+machine resume it; keeping the state partition's key while dropping only
+the zones' keys.
