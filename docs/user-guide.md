@@ -44,6 +44,11 @@ you took. `SHA256SUMS` describes this directory as the acceptance run wrote
 it, so `sha256sum -c SHA256SUMS` checks every other file there, and does not
 fit a download from the page.
 
+On macOS the hash check is `shasum -a 256 -c --ignore-missing`. On Windows,
+run the `ssh-keygen` line in Command Prompt, on one line (PowerShell has no
+`<`), and compare what `certutil -hashfile kryptik-VERSION-usb.img SHA256`
+prints with the image's line in `kryptik-VERSION.SHA256SUMS`.
+
 The signature is only as good as the `release-signers` it is checked with,
 and whoever could change the download could change that file too. From 1.0.0
 on, a release's anchor and certificate are the project's, and the source
@@ -67,6 +72,12 @@ never to a partition, and only to a device you are sure of:
 ```sh
 sudo dd if=kryptik-VERSION-usb.img of=/dev/sdX bs=4M status=progress oflag=sync
 ```
+
+On macOS, find the stick with `diskutil list`, then
+`diskutil unmountDisk /dev/diskN` and
+`sudo dd if=kryptik-VERSION-usb.img of=/dev/rdiskN bs=4m`. On Windows, Rufus
+writes a disk image as it is (DD mode), and so does balenaEtcher. Decline
+any offer to initialise or format the stick afterwards.
 
 **Optical.** Burn `kryptik-VERSION.iso` as an image.
 

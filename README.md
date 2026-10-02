@@ -41,15 +41,49 @@ is numbered is in [docs/releases.md](docs/releases.md).
 From the Releases page take the medium, its signed checksums and the anchor:
 `kryptik-VERSION-usb.img.zst` (or `kryptik-VERSION.iso.zst`),
 `kryptik-VERSION.SHA256SUMS` with its `.sig`, and `release-signers`. Check
-the download, then write it to a USB stick:
+the download, then write it to a USB stick. The stick is overwritten whole:
+be sure of the disk you name.
+
+**Linux**
 
 ```sh
 zstd -d kryptik-VERSION-usb.img.zst
 ssh-keygen -Y verify -f release-signers -I kryptik-release -n kryptik-media \
     -s kryptik-VERSION.SHA256SUMS.sig < kryptik-VERSION.SHA256SUMS
 sha256sum -c --ignore-missing kryptik-VERSION.SHA256SUMS
+lsblk                              # the stick is a whole disk, such as /dev/sdX
 sudo dd if=kryptik-VERSION-usb.img of=/dev/sdX bs=4M status=progress oflag=sync
 ```
+
+**macOS**, with zstd from Homebrew (`brew install zstd`)
+
+```sh
+zstd -d kryptik-VERSION-usb.img.zst
+ssh-keygen -Y verify -f release-signers -I kryptik-release -n kryptik-media \
+    -s kryptik-VERSION.SHA256SUMS.sig < kryptik-VERSION.SHA256SUMS
+shasum -a 256 -c --ignore-missing kryptik-VERSION.SHA256SUMS
+diskutil list                      # the stick is an external disk, such as /dev/disk4
+diskutil unmountDisk /dev/diskN
+sudo dd if=kryptik-VERSION-usb.img of=/dev/rdiskN bs=4m
+diskutil eject /dev/diskN
+```
+
+**Windows**, in Command Prompt, since PowerShell has no `<`. `zstd.exe` is
+on zstd's releases page, and 7-Zip 24 and later unpacks the image too;
+`ssh-keygen` comes with Windows 11, and with Windows 10 once its OpenSSH is
+8.1 or later (`ssh -V`).
+
+```bat
+zstd -d kryptik-VERSION-usb.img.zst
+ssh-keygen -Y verify -f release-signers -I kryptik-release -n kryptik-media -s kryptik-VERSION.SHA256SUMS.sig < kryptik-VERSION.SHA256SUMS
+certutil -hashfile kryptik-VERSION-usb.img SHA256
+findstr usb.img kryptik-VERSION.SHA256SUMS
+```
+
+The hash `certutil` prints must be the one `findstr` shows. Then write
+`kryptik-VERSION-usb.img` to the stick with Rufus, which writes a disk image
+as it is (DD mode), or with balenaEtcher. When macOS or Windows offers to
+initialise or format the stick afterwards, decline.
 
 The anchor comes with the download, so by itself this proves the files belong
 together, not who made them. From 1.0.0 on the anchor is the project's, and
