@@ -290,7 +290,7 @@ else
 
     # setns alone would step into another zone's namespaces, defeating 1-4.
     leaked=0
-    for sc in setns ptrace unshare mount bpf perf_event_open userfaultfd \
+    for sc in setns ptrace mount bpf perf_event_open userfaultfd \
               keyctl init_module kexec_load process_vm_readv pivot_root chroot; do
         "$KRYPTIKD" seccomp-test "$sc" >/dev/null 2>&1
         rc=$?
@@ -301,9 +301,29 @@ else
     done
 
     if [[ "$leaked" -eq 0 ]]; then
-        pass "all 13 dangerous syscalls killed by SIGSYS (setns among them)"
+        pass "all 12 dangerous syscalls killed by SIGSYS (setns among them)"
     else
         fail "${leaked} dangerous syscall(s) reachable from inside a zone"
+    fi
+
+    # unshare(2) and a namespace clone fail with EPERM instead: programs probe
+    # for user namespaces and must hear no, as the kernel tells an unprivileged
+    # caller. This host lets the suite make one (the preconditions), so EPERM
+    # here is the filter's, and exit 7 means no namespace was made.
+    nested=0
+    for p in unshare-newuser clone-newuser; do
+        "$KRYPTIKD" seccomp-test "$p" >/dev/null 2>&1
+        rc=$?
+        if [[ "$rc" -ne 7 ]]; then
+            echo "      ${p} was NOT refused with EPERM (rc=${rc})"
+            nested=$((nested + 1))
+        fi
+    done
+
+    if [[ "$nested" -eq 0 ]]; then
+        pass "unshare(2) and clone(CLONE_NEWUSER) fail with EPERM and make no namespace"
+    else
+        fail "${nested} namespace-creating call(s) not refused with EPERM"
     fi
 fi
 

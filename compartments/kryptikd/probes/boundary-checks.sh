@@ -126,8 +126,9 @@ MATCH="^0 1 2 3$" check "the only descriptors are 0, 1, 2 and the lister's own" 
 # ---------------------------------------------------------------------------
 head_ "D. Seccomp"
 
-# unshare(1) makes the call (python here has no ctypes); 159 is 128+SIGSYS.
-check "clone(CLONE_NEWUSER) from inside the zone is killed, not refused" 159 /usr/bin/unshare -U /bin/true
+# unshare(1) makes the call, which fails with EPERM as the kernel tells an
+# unprivileged caller: it exits 1, not 159 (SIGSYS), and never runs true.
+MATCH="Operation not permitted" check "unshare(2) from inside the zone fails with EPERM, is not killed, and makes no namespace" 1 /usr/bin/unshare -U /bin/true
 MATCH="AF_VSOCK refused 97" check "AF_VSOCK, AF_ALG and AF_PACKET are refused by family, with EAFNOSUPPORT" 0 /usr/bin/python3 -c "
 import socket
 for n,f,t in [('AF_VSOCK',40,1),('AF_ALG',38,5),('AF_PACKET',17,2)]:
@@ -140,7 +141,7 @@ import socket
 a,b=socket.socketpair(); a.close(); b.close()
 try: socket.socketpair(socket.AF_INET); print('unix-pair inet PAIRED')
 except OSError as e: print('unix-pair inet', e.errno)"
-for p in "clone-newuser 5" "clone3 7" "inotify 7" "setfsuid 7" "socket-vsock 7" "socket-netlink-nf 7" "socket-inet 0" "ioctl-tiocsti 5" "setns 5" "unshare 5" "mount 5" "getpid 0"; do
+for p in "clone-newuser 7" "unshare-newuser 7" "clone3 7" "inotify 7" "setfsuid 7" "socket-vsock 7" "socket-netlink-nf 7" "socket-inet 0" "ioctl-tiocsti 5" "setns 5" "mount 5" "getpid 0"; do
     set -- $p
     "$K" seccomp-test "$1" >/dev/null 2>&1; rc=$?
     if [[ "$rc" == "$2" ]]; then pass "seccomp-test $1 -> $rc"; else fail "seccomp-test $1 -> $rc (want $2)"; fi
