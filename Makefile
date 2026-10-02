@@ -282,11 +282,13 @@ chroot-status:
 # through the chroot.
 iso: kernel
 	@$(SUDO) env $(CHROOT_ENV) KRYPTIK_VERSION="$(KRYPTIK_VERSION)" KRYPTIK_CHANNEL="$$KRYPTIK_CHANNEL" \
-	    KRYPTIK_ROLE="$(KRYPTIK_ROLE)" KRYPTIK_KEYS="$(KRYPTIK_KEYS)" "$(STAGES)"/06-iso.sh
+	    KRYPTIK_ROLE="$(KRYPTIK_ROLE)" KRYPTIK_KEYS="$(KRYPTIK_KEYS)" KRYPTIK_MEDIA_PHASE="$(KRYPTIK_MEDIA_PHASE)" \
+	    "$(STAGES)"/06-iso.sh
 
 media:
 	@$(SUDO) env $(CHROOT_ENV) KRYPTIK_VERSION="$(KRYPTIK_VERSION)" KRYPTIK_CHANNEL="$$KRYPTIK_CHANNEL" \
-	    KRYPTIK_ROLE="$(KRYPTIK_ROLE)" KRYPTIK_KEYS="$(KRYPTIK_KEYS)" "$(STAGES)"/06-iso.sh
+	    KRYPTIK_ROLE="$(KRYPTIK_ROLE)" KRYPTIK_KEYS="$(KRYPTIK_KEYS)" KRYPTIK_MEDIA_PHASE="$(KRYPTIK_MEDIA_PHASE)" \
+	    "$(STAGES)"/06-iso.sh
 
 # A production pair for acceptance's production suite, signed with a throwaway
 # key medium (tools/production-pair.sh). Before `make media` builds the

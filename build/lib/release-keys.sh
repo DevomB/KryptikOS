@@ -11,7 +11,8 @@
 #   release-signers, kryptik-release and kryptik-release.pub, kryptik-sb.key,
 #   kryptik-sb.crt and, optionally, kryptik-latest and kryptik-latest.pub.
 #   Nothing is made. Every file is checked before any is used, and the private
-#   keys are read only by the tools that sign with them, by path.
+#   keys are read only by the tools that sign with them, by path. Binding
+#   (KRYPTIK_MEDIA_PHASE=bind) takes release-signers and kryptik-sb.crt alone.
 
 release_keys() {
     case "$1" in
@@ -108,6 +109,7 @@ probe_anchor() {
 
 medium_keys() {
     local m="${KRYPTIK_KEYS:-}" w f
+    if [[ "${KRYPTIK_MEDIA_PHASE:-all}" == bind ]]; then medium_public; return; fi
     [[ -n "$m" ]] || die "a production image is signed only with keys it is handed: set KRYPTIK_KEYS to the key medium"
     [[ -d "$m" ]] || die "KRYPTIK_KEYS=${m} is not a directory"
     m="$(cd "$m" && pwd -P)"
@@ -145,6 +147,26 @@ medium_keys() {
     if [[ -e "${m}/kryptik-latest" ]]; then LATEST_KEY="${m}/kryptik-latest"; fi
     # shellcheck disable=SC2034  # read by stage 06
     SB_KEY="${m}/kryptik-sb.key" SB_CERT="${m}/kryptik-sb.crt"
+}
+
+# Binding runs the chroot, where upstream build scripts ran as root, so it gets the public half only.
+medium_public() {
+    local m="${KRYPTIK_KEYS:-}" f
+    [[ -n "$m" ]] || die "a production image is bound to the anchor it is handed: set KRYPTIK_KEYS to a directory holding release-signers and kryptik-sb.crt"
+    [[ -d "$m" ]] || die "KRYPTIK_KEYS=${m} is not a directory"
+    m="$(cd "$m" && pwd -P)"
+    for f in release-signers kryptik-sb.crt; do
+        [[ -f "${m}/${f}" ]] || die "${m} has no ${f}"
+        [[ ! -L "${m}/${f}" ]] || die "${m}/${f} is a symlink: the medium holds its files itself"
+    done
+    f="$(grep -rls -- 'PRIVATE KEY' "$m" | head -1)"
+    [[ -z "$f" ]] || die "${f} holds a private key: binding is handed the anchor and the certificate alone"
+    anchor_ok "${m}/release-signers"
+    openssl x509 -in "${m}/kryptik-sb.crt" -noout -checkend 0 > /dev/null 2>&1 \
+        || die "${m}/kryptik-sb.crt is not a certificate in force"
+    ANCHOR="${m}/release-signers"; RELEASE_KEY=""; LATEST_KEY=""
+    # shellcheck disable=SC2034  # read by stage 06
+    SB_KEY="" SB_CERT="${m}/kryptik-sb.crt"
 }
 
 # A private key readable by its owner alone, who is root or whoever ran the
