@@ -1,6 +1,4 @@
-# Packages exempted from part of the hardening flag set:
-#   <package>  <flag-to-drop>  # justification
-# An entry without a justification fails the build. Say what breaks and what
-# you tried; exceptions are meant to be removed, not accumulated.
+# Packages exempted from a hardening flag; an entry without a justification fails the build.
+#   <package>  <flag-to-drop>  # what breaks, and what was tried
 
-glibc  -D_FORTIFY_SOURCE=3  # glibc DEFINES the fortify machinery; fortifying it against itself fails to build
+glibc  -D_FORTIFY_SOURCE=3  # glibc provides the fortify machinery; fortifying it against itself fails to build

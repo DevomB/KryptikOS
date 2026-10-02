@@ -1,14 +1,11 @@
 #!/usr/bin/env bash
-# shadow: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
 s_shadow() {
     local src; src="$(unpack "shadow-${V_SHADOW}.tar.xz" "shadow-${V_SHADOW}")"
     cd "$src"
     # build/patches/shadow-4.16.0 (see its README): upstream's sgetgrent fix from 4.17.0.
     apply_repo_patches "shadow-${V_SHADOW}"
-    # Kryptik does not ship groups(1) or the *chage man pages that conflict
-    # with coreutils/man-pages.
+    # No groups(1) or its man page: coreutils provides groups.
     sed -i 's/groups$(EXEEXT) //' src/Makefile.in
     find man -name Makefile.in -exec sed -i 's/groups\.1 / /' {} \;
 
@@ -22,7 +19,6 @@ s_shadow() {
         --without-libbsd --with-group-name-max-length=32
     make
     make exec_prefix=/usr install
-    # Privilege from a bit is su's and passwd's alone
-    # (build/config/setuid-allowlist.txt); the rest run unprivileged or not at all.
+    # Only su and passwd keep a setuid bit (build/config/setuid-allowlist.txt).
     chmod ug-s /usr/bin/{chage,chfn,chsh,expiry,gpasswd,newgidmap,newgrp,newuidmap}
 }

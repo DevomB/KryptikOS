@@ -1,3 +1,2 @@
-# Largest arch/x86/boot/bzImage stage 05 accepts, in bytes: the measured
-# 21,988,352 (about 18 MB of it microcode, which does not compress) plus 5%.
+# Largest bzImage stage 05 accepts, in bytes: the measured 21,988,352 (18 MB is microcode) plus 5%.
 bzimage_max_bytes 23087770
