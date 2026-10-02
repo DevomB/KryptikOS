@@ -38,7 +38,7 @@ if [[ "$rc" -eq 0 ]] && KP="$PP" openssl enc -d -aes-256-cbc -pbkdf2 -iter 10000
 else
     bad "the backup (exit ${rc})"; cat "$T/out"
 fi
-listing="$(base64 -d "$T/gh/release-KRYPTIK_KEY_MEDIUM" | tar -tvz 2>/dev/null)"
+listing="$(base64 -d "$T/gh/release-KRYPTIK_KEY_MEDIUM" | tar --numeric-owner -tvz 2>/dev/null)"
 if [[ "$(wc -l <<< "$listing")" -eq 7 ]] && ! grep -q kryptik-testctl <<< "$listing" \
     && [[ -z "$(awk '$1 != "-rw-------" || $2 != "0/0"' <<< "$listing")" ]]; then
     ok "the release environment's medium is seven owner-only files, without the control-disk key"
