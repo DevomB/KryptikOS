@@ -16,6 +16,8 @@
 # and the yes/no to the transfer
 # questions, delivered as keystrokes on the guest's keyboard, so the
 # trusted windows are exercised by input, not by writing answer files.
+# With the pointer moved onto a zone's window, the cursor image the zone asks
+# for must not be drawn; zone 0's, which is, shows a screenshot would see it.
 set -uo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -44,6 +46,8 @@ VARSF="${VMDIR}/gui-vars.fd"; cp /usr/share/OVMF/OVMF_VARS_4M.fd "$VARSF"
 SHOT="${VMDIR}/gui-untrusted.ppm"
 SHOT_FS="${VMDIR}/gui-untrusted-fullscreen.ppm"
 SHOT_OVER="${VMDIR}/gui-untrusted-oversize.ppm"
+SHOT_CUR0="${VMDIR}/gui-cursor-zone0.ppm"
+SHOT_CUR="${VMDIR}/gui-cursor-untrusted.ppm"
 
 # ----------------------------------------------------------------- step 1 --
 step "step 1: install"
@@ -52,7 +56,7 @@ install_disk gui-install "$USB" --vars clean && green "installed" || { red "inst
 
 # ----------------------------------------------------------------- step 2 --
 step "step 2: the desktop, driven"
-rm -f "$SHOT" "$SHOT_FS" "$SHOT_OVER"
+rm -f "$SHOT" "$SHOT_FS" "$SHOT_OVER" "$SHOT_CUR0" "$SHOT_CUR"
 start_vm gui-p2 --net user --gpu --mem 3072
 python3 "$DRV" --serial "$SER" --qmp "$QMP" --timeout 600 \
     "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
@@ -70,6 +74,10 @@ python3 "$DRV" --serial "$SER" --qmp "$QMP" --timeout 600 \
     "expect:GT KEY-FOCUS-PERSONAL" "key:alt+j" \
     "type-from:GT CONSENT-CODE 1 ([0-9]+)" \
     "expect:GT CONSENT-WAIT 2" "key:y" "key:ret" \
+    "expect:GT POINTER-ZONE0" "pointer:-4000,-4000" "pointer:120,120" \
+    "expect:GT SCREENSHOT-CURSOR-ZONE0" "sleep:2" "screendump:${SHOT_CUR0}" \
+    "expect:GT POINTER-UNTRUSTED" "pointer:-4000,-4000" "pointer:120,120" \
+    "expect:GT SCREENSHOT-CURSOR-UNTRUSTED" "sleep:2" "screendump:${SHOT_CUR}" \
     "expect:GT END" "expect:GCHECK-DONE" \
     "send:su - root -c 'poweroff'" "expect:Password: ?" "send:${RPASS}" \
     "expect:Power down" "wait-exit"
@@ -189,6 +197,33 @@ check_shot "$SHOT_FS" "fullscreen refused" untrusted:focused unzoned:unfocused
 # borders must stay above the surface, or its excess covers them.
 check_shot "$SHOT_OVER" "oversized buffer" untrusted:focused unzoned:unfocused
 
+# A cursor image is drawn above every window: zone 0's shows, a zone's never does.
+cursor_px() {   # cursor_px FILE: the pixels in wlprobe's cursor colour, and all of them
+    python3 - "$1" "${SELF}/../desktop/wlprobe.c" <<'PY'
+import re, sys
+shot, probe = sys.argv[1:]
+rgb = bytes.fromhex(re.search(r'cursor_rgb\s*=\s*0x([0-9a-f]{6})', open(probe).read()).group(1))
+data = open(shot, "rb").read()
+m = re.match(rb"P6\s+(\d+)\s+(\d+)\s+\d+\s", data)
+w, h = int(m.group(1)), int(m.group(2))
+px = data[m.end():m.end() + w * h * 3]
+print(sum(px[i:i + 3] == rgb for i in range(0, len(px), 3)), w * h)
+PY
+}
+read -r n0 all0 <<<"$(cursor_px "$SHOT_CUR0" 2>/dev/null)"
+if grep -q "GT PASS zone0-cursor-set" <<<"$T" && [[ "${n0:-0}" -gt $(( ${all0:-2} / 2 )) ]]; then
+    green "zone 0's cursor image covers the screen (${n0} of ${all0} px): a drawn cursor shows in the screenshot"
+else
+    red "zone 0's cursor image is not in the screenshot (${n0:-no} px), so the zone's check proves nothing (${SHOT_CUR0})"
+fi
+read -r n1 all1 <<<"$(cursor_px "$SHOT_CUR" 2>/dev/null)"
+if grep -q "GT PASS zone-cursor-asked" <<<"$T" && [[ "${n1:-1}" -eq 0 ]]; then
+    green "the zone asked for its cursor image and none of it is drawn (0 of ${all1} px)"
+else
+    red "a zone's cursor image: ${n1:-no} px drawn, or the zone never asked (${SHOT_CUR})"
+fi
+check_shot "$SHOT_CUR" "with a zone's cursor asked for" untrusted:focused work:unfocused unzoned:unfocused
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
-echo "Guest log: /var/log/kryptik/gui-check.log on ${DISK}; serial transcript ${LOG}; screenshots ${SHOT} ${SHOT_FS} ${SHOT_OVER}"
+echo "Guest log: /var/log/kryptik/gui-check.log on ${DISK}; serial transcript ${LOG}; screenshots ${SHOT} ${SHOT_FS} ${SHOT_OVER} ${SHOT_CUR0} ${SHOT_CUR}"
 [[ "$FAIL" -eq 0 ]] || exit 1
