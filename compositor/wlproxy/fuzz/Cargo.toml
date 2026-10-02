@@ -1,0 +1,29 @@
+# kryptik-wlproxy's wire parser under libFuzzer, run weekly by
+# .github/workflows/fuzz.yml. A package, workspace and lockfile of its own, so
+# libfuzzer-sys never reaches the compositor's dependencies or Cargo.lock
+# (ADR-010).
+[package]
+name = "wlproxy-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[[bin]]
+name = "wire"
+path = "wire.rs"
+test = false
+doc = false
+bench = false
+
+# The release build's overflow checks, and debug assertions as well.
+[profile.release]
+debug-assertions = true
+overflow-checks = true
+
+[workspace]
