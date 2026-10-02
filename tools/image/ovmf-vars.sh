@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
-# Build the disposable OVMF variable stores the boot tests use.
+# Build the throwaway OVMF variable stores the boot tests use, as files: no firmware is touched.
 #
 #   tools/image/ovmf-vars.sh [--cert FILE] [--out DIR]
 #
 #   clean.fd     a copy of OVMF_VARS_4M.fd: no keys, Secure Boot off
 #   enrolled.fd  the certificate as PK, KEK and db: Secure Boot on
-#   ms.fd        a copy of OVMF_VARS_4M.ms.fd: Microsoft keys, Secure Boot on
-#                (this one must refuse Kryptik's kernels)
+#   ms.fd        a copy of OVMF_VARS_4M.ms.fd: Microsoft keys, Secure Boot on, Kryptik refused
 #
-# The certificate is the developer one unless --cert names another, such as
-# the one a production image's media carry. Writes files only, never this
-# machine's firmware. The developer key is a test anchor, not a production one.
+# The certificate is the developer one (a test anchor only) unless --cert gives another.
 set -Eeuo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -23,7 +20,7 @@ while [[ "$#" -gt 0 ]]; do
     case "$1" in
         --cert) CERT="${2:?}"; shift 2 ;;
         --out)  OUT="${2:?}"; shift 2 ;;
-        -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,10p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -47,8 +44,7 @@ virt-fw-vars --input "${OVMF_DIR}/OVMF_VARS_4M.fd" --output "${OUT}/enrolled.fd"
 listing="$(virt-fw-vars --input "${OUT}/enrolled.fd" --print --verbose 2>/dev/null || true)"
 echo "--- enrolled.fd ---"
 grep -E 'SecureBoot|^  (PK|KEK|db|dbx)|Kryptik' <<< "$listing" | head -20 || true
-# The enrolled store must list the certificate it was given, found by the
-# common name of its subject.
+# The enrolled store must list the given certificate, found by its subject's common name.
 cn="$(openssl x509 -in "$CERT" -noout -subject -nameopt multiline | sed -n 's/^ *commonName *= *//p')"
 [[ -n "$cn" ]] || die "${CERT} has no common name to find it by"
 grep -qF -- "$cn" <<< "$listing" || die "the enrolled store does not list ${CERT} (${cn})"

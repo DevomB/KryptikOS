@@ -4,9 +4,8 @@
     sntp-offset.py [--timeout SECONDS] (--server HOST | --pool HOST)...
 
 Prints "<offset> <answers>": the seconds to add to this clock (signed, six
-decimals) and how many servers that is the median of. Exits 1, printing
-nothing, if none answered. A plain SNTP query (RFC 4330) that sets nothing;
-zone 0 treats the result as an untrusted claim.
+decimals) and how many servers that is the median of; nothing, and exit 1, if
+none answered. A plain SNTP query (RFC 4330) that sets nothing.
 """
 import select
 import socket

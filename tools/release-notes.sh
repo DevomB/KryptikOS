@@ -3,16 +3,15 @@
 #
 #   ./tools/release-notes.sh --run DIR --payload DIR [--since REV] > RELEASE-NOTES.md
 #
-# --run is a merged acceptance run (results.tsv, REPORT.md,
-# artifact-hardening.json) and --payload the release's payload, whose manifest
-# names the version. Only a run that passed every suite on this very version
-# makes notes, and only from the tree of the revision it tested, so the known
-# gaps quoted from docs/status.md and the counts of the accepted lists are
-# that release's own. --since names the previous release's revision.
+#   --run DIR      a merged acceptance run: results.tsv, REPORT.md, artifact-hardening.json
+#   --payload DIR  the release's payload, whose manifest gives the version
+#   --since REV    the previous release, for the list of changes
+#
+# Only a run that passed this version makes notes, in the tree it tested, so they quote its docs.
 set -Eeuo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 
-usage() { sed -n '2,11p' "${BASH_SOURCE[0]}"; }
+usage() { sed -n '2,10p' "${BASH_SOURCE[0]}"; }
 
 RUN="" PAYLOAD="" SINCE=""
 while [[ "$#" -gt 0 ]]; do
@@ -32,9 +31,7 @@ done
 [[ -f "${PAYLOAD}/manifest" ]] || die "no manifest in ${PAYLOAD}"
 
 field() { awk -F': ' -v k="$2" '$1 == k { print $2; exit }' "$1"; }
-# The verdict job is root on the runner's checkout, which git refuses unless
-# told it is safe: this checkout alone, since git can run commands a
-# repository's own config names.
+# Root runs git over a checkout it does not own: trust this one alone, as config can run commands.
 TOP="$(cd "$KRYPTIK_ROOT" && pwd -P)"
 g() { git -c safe.directory="$TOP" -C "$TOP" "$@"; }
 row() {   # row LABEL: the value in REPORT.md's header row LABEL
@@ -54,7 +51,7 @@ bad="$(awk -F'\t' 'NR > 1 && $3 == "M" && $5 != "PASS" { printf "%s%s/%s %s", se
 version="$(field "${PAYLOAD}/manifest" version)"
 tested="$(row 'release under test' | awk '{ print $1 }')"
 [[ -n "$version" && "$version" == "$tested" ]] \
-    || die "the run tested ${tested:-no release}, and this payload is ${version:-unnamed}: notes come from the run that passed this very release"
+    || die "the run tested ${tested:-no release}, and this payload is ${version:-unnamed}"
 rev="$(row 'source revision' | sed -n 's/^`\([0-9a-f]\{40\}\)`.*/\1/p')"
 [[ -n "$rev" ]] || die "REPORT.md names no source revision"
 head="$(g rev-parse HEAD 2>/dev/null)" || die "${KRYPTIK_ROOT} is not a git checkout"
@@ -98,14 +95,12 @@ if [[ -n "$SINCE" ]]; then
         || die "--since ${SINCE} is not an ancestor of ${rev:0:12} here (a shallow clone lacks the history: fetch it)"
     since_name="$(g describe --exact-match --tags "$SINCE" 2>/dev/null \
                   || g rev-parse --short=12 "$SINCE")"
-    # First-parent subjects are the merges' own sentences, less their
-    # "Merge X into Y (#N): ". A merge with no sentence says nothing to a user.
+    # First-parent subjects less "Merge X into Y (#N): "; a merge with no sentence is left out.
     changes="$(g log --first-parent --reverse --format='%s' "${SINCE}..${rev}" \
                | sed 's/^Merge [^:]*: //' | grep -v '^Merge ' | sed 's/^./\U&/; s/^/- /' || true)"
 fi
 
-# The ELF audit: nothing refused, reported or stale, and each accepted kind
-# with the reasons its list gives.
+# The ELF audit: nothing refused, reported or stale; each accepted kind with its list's reasons.
 audit="$(python3 - "${RUN}/artifact-hardening.json" "${KRYPTIK_ROOT}/build/config/artifact-accepted.txt" <<'PY'
 import json, sys, collections
 def many(n, one, other=None):

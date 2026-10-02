@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# Test sysinit's prune_etc_upper, taken from the script and run under sh -e:
-# the /etc upper layer (on the unauthenticated state partition) keeps only the
-# account database, machine identity and clock; the rest is quarantined.
+# sysinit's prune_etc_upper under sh -e: the /etc upper layer, on the unauthenticated state
+# partition, keeps only the account database, machine identity and clock; the rest is quarantined.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SYSINIT="$ROOT/build/service-scripts/sysinit.sh"
 PASS=0; FAIL=0
 ok()  { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
 bad() { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
-quarantined() { compgen -G "$T/q/$1.*" > /dev/null; }   # an entry NAME.<epoch> exists in the quarantine
+quarantined() { compgen -G "$T/q/$1.*" > /dev/null; }   # NAME.<epoch> is in the quarantine
 
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
@@ -59,8 +58,7 @@ sh -e -c ". $T/fn.sh; prune_etc_upper $T/up $T/q" >/dev/null 2>&1 && ok "a missi
 mkdir -p "$T/up"
 sh -e -c ". $T/fn.sh; prune_etc_upper $T/up $T/q" >/dev/null 2>&1 && [[ ! -e "$T/q" ]] && ok "an empty upper layer creates no quarantine directory" || bad "an empty upper layer was not left alone"
 
-# A failed move must fail the call even under `if` (where sh -e is off), so
-# the unfiltered layer is never mounted.
+# A failed move fails the call even under `if` (no sh -e there), so no unfiltered layer is mounted.
 stage
 if sh -e -c '. "$1"; mv() { return 1; }; if prune_etc_upper "$2" "$3"; then exit 0; else exit 1; fi' sh "$T/fn.sh" "$T/up" "$T/q" >/dev/null 2>&1; then
     bad "a failed quarantine move was reported as success"

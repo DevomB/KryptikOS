@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Create, sign and verify Kryptik release manifests, and sign the update
-# channel's `latest` pointer.
+# Create, sign and verify release manifests, and sign the update channel's `latest` pointer.
 #
 #   ./tools/release-manifest.sh create --out FILE [--name N] [--version V]
 #                                      [--role development|production]
@@ -22,7 +21,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 NAMESPACE="kryptik-release"
 MAGIC="KRYPTIK-MANIFEST-1"
 
-usage() { sed -n '2,18p' "${BASH_SOURCE[0]}"; }
+usage() { sed -n '2,17p' "${BASH_SOURCE[0]}"; }
 
 [[ "$#" -gt 0 ]] || { usage; exit 1; }
 MODE="$1"; shift
@@ -60,8 +59,7 @@ do_create() {
         printf 'created: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     } > "$tmp"
 
-    # Paths are relative to --root; absolute ones would have verify check
-    # files other than those being installed.
+    # Relative to --root, or verify would check files other than the ones being installed.
     local p f rel
     local -a files=()
     for p in "${paths[@]}"; do
@@ -76,8 +74,7 @@ do_create() {
         fi
     done
 
-    # Sorted, so an unchanged tree gives a byte-identical manifest. The "./"
-    # that `create --root DIR .` produces is dropped to match --exact's names.
+    # Sorted, for the same bytes from an unchanged tree; "./" is dropped to match --exact's names.
     local -a sorted=()
     while IFS= read -r rel; do rel="${rel#./}"; sorted+=("$rel"); done \
         < <(printf '%s\n' "${files[@]}" | LC_ALL=C sort -u)
@@ -93,7 +90,7 @@ do_create() {
 
     mv -f "$tmp" "$out"
     ok "wrote ${out}: ${#sorted[@]} file(s), role ${role}, version ${version}"
-    warn "UNSIGNED. Sign it before it means anything: ${0##*/} sign --key K ${out}"
+    warn "UNSIGNED: sign it with ${0##*/} sign --key K ${out}"
 }
 
 do_sign() {
@@ -114,8 +111,7 @@ do_sign() {
         || die "sign: ${manifest} is not a ${MAGIC}"
 
     rm -f "${manifest}.sig"
-    # A security key asks on stderr to be touched, which a build step logs:
-    # the terminal, when there is one, gets it.
+    # A security key's touch prompt goes to the terminal, if there is one, not to a build log.
     local to=/dev/null; { : > /dev/tty; } 2>/dev/null && to=/dev/tty
     ssh-keygen -Y sign -f "$key" -n "$NAMESPACE" "$manifest" >/dev/null 2>"$to" \
         || die "sign: ssh-keygen could not sign with ${key}"
@@ -123,8 +119,7 @@ do_sign() {
 
     local role; role="$(awk -F': ' '$1=="role"{print $2; exit}' "$manifest")"
     if [[ "$role" == "development" ]]; then
-        warn "This manifest says 'role: development'. A verifier run with"
-        warn "--require-role production will refuse it, which is the point."
+        warn "role: development; a verifier run with --require-role production refuses it"
     fi
 }
 
@@ -151,10 +146,8 @@ do_verify() {
     [[ -n "$manifest" ]] || die "verify: a manifest path is required"
     [[ -f "$manifest" ]] || die "verify: no such manifest: ${manifest}"
 
-    [[ -n "$signers" ]] || die \
-"verify: --signers FILE is required (or KRYPTIK_RELEASE_SIGNERS).
-There is no default trust anchor: a verifier that trusts something by default
-eventually trusts the wrong thing without saying so."
+    [[ -n "$signers" ]] \
+        || die "verify: --signers FILE is required (or KRYPTIK_RELEASE_SIGNERS); there is no default trust anchor"
     [[ -f "$signers" ]] || die "verify: no such allowed-signers file: ${signers}"
 
     head -1 "$manifest" | grep -qxF "$MAGIC" \
@@ -167,24 +160,20 @@ eventually trusts the wrong thing without saying so."
         die "verify: refusing to report an unsigned manifest as verified"
     fi
 
-    # Enrolled principals holding the signing key (-Y verify needs one as -I).
-    # No match exits non-zero; `|| true` so errexit does not skip the error below.
+    # The principals holding the signing key, one for -I; `|| true` as no match exits non-zero.
     local found
     found="$(ssh-keygen -Y find-principals -s "$sig" -f "$signers" 2>/dev/null \
              | LC_ALL=C sort -u || true)"
     if [[ -z "$found" ]]; then
         err "no principal in ${signers} holds the key that signed ${manifest}"
-        die "verify: the signing key is not enrolled. A signature by an
-unenrolled key is not a weaker verification; it is no verification."
+        die "verify: the signing key is not enrolled"
     fi
 
     local principal
     if [[ -n "$want_principal" ]]; then
         if ! printf '%s\n' "$found" | grep -qxF "$want_principal"; then
             err "manifest was signed by [$(printf '%s' "$found" | tr '\n' ' ')]"
-            err "but ${want_principal} was required"
-            die "verify: signed by an enrolled key, but not by the identity
-this release requires."
+            die "verify: signed by an enrolled key, but not by ${want_principal}"
         fi
         principal="$want_principal"
     else
@@ -197,16 +186,13 @@ this release requires."
         err "signature does NOT verify against ${signers}:"
         err "  $(tr '\n' ' ' < "$vout" | cut -c1-200)"
         rm -f "$vout"
-        die "verify: refusing to check the contents of a manifest whose
-signature did not verify. Nothing inside it can be trusted, including its
-role and version headers."
+        die "verify: refusing to check a manifest whose signature does not verify"
     fi
     rm -f "$vout"
     ok "signature verifies, signed by ${principal}"
     VERIFIED=$((VERIFIED + 1))
     if [[ -z "$want_principal" ]]; then
-        dim "  (no --principal given, so this reports who signed it rather"
-        dim "   than checking who was required; pass --principal for that)"
+        dim "  (without --principal, any enrolled signer is accepted)"
     fi
 
     # Only now are the headers trusted: editing one breaks the signature.
@@ -222,8 +208,6 @@ role and version headers."
 
     if [[ -n "$want_role" && "$role" != "$want_role" ]]; then
         problem "manifest role is '${role}', but '${want_role}' was required"
-        err "  A development signature is not production trust. Enrolling a"
-        err "  production key is a separate, deliberate act."
     fi
 
     if [[ -n "$no_downgrade" ]]; then
@@ -231,8 +215,6 @@ role and version headers."
         oldest="$(printf '%s\n%s\n' "$version" "$no_downgrade" | sort -V | head -1)"
         if [[ "$version" != "$no_downgrade" && "$oldest" == "$version" ]]; then
             problem "manifest version ${version} is older than the installed ${no_downgrade}"
-            err "  Refusing a downgrade: an attacker who can replay an old"
-            err "  signed release can reintroduce a fixed vulnerability."
         else
             ok "version ${version} is not older than the installed ${no_downgrade}"
         fi
@@ -276,8 +258,7 @@ role and version headers."
         ok "${listed} file(s) match the manifest"
     fi
 
-    # A payload can arrive alongside the listed files; --exact refuses it. Each
-    # file is looked up among the names read above, exactly as they were read.
+    # --exact refuses unlisted files; each name is looked up verbatim among those listed.
     if [[ "$exact" -eq 1 ]]; then
         local extra=0 f
         while IFS= read -r f; do
@@ -292,19 +273,15 @@ role and version headers."
 
     echo
     if [[ "$PROBLEMS" -gt 0 ]]; then
-        die "verify: ${PROBLEMS} problem(s). This release does not match its
-signed manifest; do not install or boot it."
+        die "verify: ${PROBLEMS} problem(s); this release does not match its signed manifest"
     fi
     if [[ "$strict" -eq 1 && "$role" != "production" && -z "$want_role" ]]; then
-        warn "verified against a '${role}' manifest."
-        warn "--strict does not by itself make a development signature"
-        warn "production trust; pass --require-role production for that."
+        warn "--strict does not by itself make a development signature production trust: pass --require-role production"
     fi
     ok "manifest verified: signature, role, and every listed file."
 }
 
-# The channel's `latest` (docs/design/update-channel.md), signed in its own
-# namespace so manifest and pointer signatures cannot stand in for each other.
+# `latest` has its own namespace, so manifest and pointer signatures cannot stand in for each other.
 POINTER_MAGIC="KRYPTIK-LATEST-1"
 POINTER_NAMESPACE="kryptik-latest"
 
