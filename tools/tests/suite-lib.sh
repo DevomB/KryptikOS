@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Test tools/image/suite-lib.sh's boot wrappers against a stand-in run-ovmf.sh,
-# which, like another suite booting on the same host, points the shared
-# ovmf-serial.latest.log link at a stranger's transcript after every boot.
+# Tests for tools/image/suite-lib.sh's boot wrappers against a stand-in run-ovmf.sh.
+# Like another suite booting on the host, the stand-in repoints ovmf-serial.latest.log after each boot.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PASS=0; FAIL=0

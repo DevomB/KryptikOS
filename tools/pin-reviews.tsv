@@ -1,14 +1,11 @@
-# Reviews of pins that are behind their upstream. Read by tools/check-pin-reviews.sh.
+# Reviews of pins that are behind their upstream, read by tools/check-pin-reviews.sh.
 #
 #   package  pinned  reviewed_up_to  fine|held  date  what was read, and why
 #
-# fine: nothing released after the pin, up to reviewed_up_to, is a security fix
-# that reaches Kryptik. held: something is, and the note says why the pin stays.
-# A pin that has caught up has no row; a row for it fails, so this file shrinks.
-
-# Reviewed 2026-09-19 from upstream NEWS and changelogs, project security
-# pages, the Debian security tracker and NVD records. "Survey" below is
-# check-source-currency.sh's newest-upstream column on that day.
+# reviewed_up_to: upstream's newest in the survey (check-source-currency.sh --tsv) on that date.
+# fine: nothing released after the pin, up to reviewed_up_to, is a security fix that reaches Kryptik.
+# held: something is, and the note says why the pin stays. A pin that has caught up has no row.
+# Read from upstream NEWS and changelogs, security pages, the Debian security tracker and NVD.
 
 # --- toolchain -----------------------------------------------------------------
 binutils      2.43.1   2.47     fine  2026-09-19  NEWS 2.44 to 2.47 and the Debian tracker: every CVE since 2.43 is a crafted-input bug in tools that are only fed the project's own objects, and upstream's SECURITY.txt excludes them; no wrong-code or hardening fix found. 2.44 drops gold, which the recipe enables.

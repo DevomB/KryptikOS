@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Tests for tools/check-artifact-hardening.sh, on objects compiled here (not
-# checked in) so they match the real toolchain.
+# Tests for tools/check-artifact-hardening.sh on objects compiled here, so they match the toolchain.
 
 set -uo pipefail
 
@@ -37,8 +36,7 @@ HLD="-Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack"
 # One root per case, so findings cannot bleed between cases.
 mkroot() { local d="$W/$1/usr/bin"; mkdir -p "$d"; printf '%s' "$W/$1"; }
 
-# An empty accepted list unless a case writes one: the repository's own list
-# names objects no fixture has.
+# An empty accepted list unless a case writes one; the repository's names objects no fixture has.
 ACC="$W/accepted.txt"; : > "$ACC"
 run_check() {  # run_check <root> [extra args...] -> prints output, returns rc
     local r="$1"; shift

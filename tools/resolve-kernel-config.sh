@@ -1,15 +1,9 @@
 #!/usr/bin/env bash
-# Resolve the kernel config on the host as stage 05 does in the chroot, and
-# check that every fragment line survived.
+# Resolve the kernel config on the host as stage 05 does, and check that every fragment line survived.
 #
-#   ./tools/resolve-kernel-config.sh [OUT]
+#   ./tools/resolve-kernel-config.sh [OUT]   default OUT: ${KRYPTIK_WORK}/kconfig-tree/kryptik.config
 #
-#   OUT   where the resolved .config is written;
-#         default ${KRYPTIK_WORK}/kconfig-tree/kryptik.config
-#
-# validate-kernel-config.sh shows each symbol exists; this shows it survives
-# resolution, which drops unmet dependencies as silently as typos. The host's
-# gcc stands in for the chroot's, so CC_HAS_* and GCC plugin options can differ.
+# The host's gcc stands in for the chroot's, so CC_HAS_* and GCC plugin options can differ.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/kconfig-check.sh"
@@ -32,7 +26,7 @@ done
 # Unpacked and patched once per linux-hardened version, which the stamp names.
 stamp="${TREE_DIR}/.patched-${V_LINUX_HARDENED}"
 if [[ ! -f "$stamp" ]]; then
-    log "unpacking linux-${V_LINUX} (this is the whole tree, kconfig needs its Makefile and scripts)"
+    log "unpacking linux-${V_LINUX} (kconfig needs the whole tree's Makefile and scripts)"
     rm -rf "$TREE_DIR"; mkdir -p "$TREE_DIR"
     tar -xf "$TARBALL" -C "$TREE_DIR"
     [[ -d "$KSRC" ]] || die "expected ${KSRC} after unpacking"
@@ -55,8 +49,8 @@ plugin_dir="$(gcc -print-file-name=plugin 2>/dev/null || true)"
 if [[ -e "${plugin_dir}/include/plugin-version.h" ]]; then
     dim "  host gcc $(gcc -dumpversion) has plugin headers: GCC plugin options resolve as in the chroot"
 else
-    warn "host gcc $(gcc -dumpversion) has no plugin headers (${plugin_dir}/include); every GCC_PLUGINS-dependent"
-    warn "option will read as DROPPED here although the chroot's compiler has them. Install gcc-$(gcc -dumpversion | cut -d. -f1)-plugin-dev."
+    warn "host gcc $(gcc -dumpversion) has no plugin headers (${plugin_dir}/include): GCC_PLUGINS options read as DROPPED here"
+    warn "the chroot's compiler has them; install gcc-$(gcc -dumpversion | cut -d. -f1)-plugin-dev"
 fi
 dim "  =y: $(grep -c '=y$' .config)  =m: $(grep -c '=m$' .config)"
 
@@ -74,5 +68,5 @@ if kconfig_fragment_check "$OUT" "${FRAGMENTS[@]}"; then
     ok "every fragment line survived resolution"
 else
     echo
-    die "fragment lines were not honoured. Each is a mitigation or a driver the built kernel would not have while the fragment says it does."
+    die "fragment lines were not honoured: the built kernel would lack what the fragment asks for"
 fi
