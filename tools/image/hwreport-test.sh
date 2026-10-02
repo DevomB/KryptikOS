@@ -15,6 +15,9 @@
 #           installed disk
 #   step 5  kryptik-hwreport --save at the medium's root shell, on a stick
 #           nobody prepared
+#   step 6  the installed disk under Secure Boot, with a display and a
+#           network: the report taken there carries a certified listing
+#           (tools/check-hardware.sh), or falls short only as a dated build
 #
 # Every boot is of a copy this script makes; the medium itself is only read.
 set -uo pipefail
@@ -28,7 +31,7 @@ while [[ "$#" -gt 0 ]]; do
     case "$1" in
         --usb) USB="${2:?}"; shift 2 ;;
         --timeout) TIMEOUT="${2:?}"; shift 2 ;;
-        -h|--help) sed -n '2,19p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,22p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -95,6 +98,9 @@ want "$R1" 'Linux version .*hardened'                         "from its first li
 deny "$R1" '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}'               "no hardware address"
 deny "$R1" '[Ss]erial ?[Nn]umber[:=] ?[^< ]'                  "no serial number"
 deny "$R1" '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' "no UUID"
+LISTING="$("${SELF}/../check-hardware.sh" "$R1" 2>&1)"
+if grep -q '^  carries    reported; short of certified:$' <<<"$LISTING"; then green "check-hardware.sh reads it: a reported listing"
+else red "check-hardware.sh does not read the medium's report as reported"; sed 's/^/        /' <<<"$LISTING" | tail -8; fi
 if [[ "$PRISTINE_FSCK" -eq 0 ]]; then
     if fsck_esp "$ASKED"; then green "the stick's filesystem is clean after the write"
     else red "the stick's filesystem is not clean after the write"; sed 's/^/        /' "${VMDIR}/hwreport-fsck.txt" | head -8; fi
@@ -154,6 +160,36 @@ drc=$?
 stop_vm
 [[ "$drc" -eq 0 ]] && green "the command wrote a report and said where" || red "the serial drive failed (see above)"
 [[ "$(report_of "$PLAIN" 1 | head -1)" == "kryptik-hwreport 1" ]] && green "and it is on the stick" || red "no report on the stick"
+
+# ----------------------------------------------------------------- step 6 --
+step "step 6: the installed system under Secure Boot, and the listing its report carries"
+CERT="${VMDIR}/hwreport-sb.crt"
+mtype -i "$(esp_of "$USB")" ::/kryptik/kryptik-sb.crt > "$CERT" 2>/dev/null
+if "${SELF}/ovmf-vars.sh" --cert "$CERT" --out "${VMDIR}/hwreport-vars" > /dev/null 2>&1; then
+    VARSF="${VMDIR}/hwreport-vars.fd"; cp "${VMDIR}/hwreport-vars/enrolled.fd" "$VARSF"
+    start_vm hwreport-installed --net user --gpu
+    python3 "$DRV" --serial "$SER" --timeout 300 \
+        "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" "sleep:5" \
+        "$(ROOTSH 'kryptik-hwreport > /var/lib/kryptik/hwreport.txt')" \
+        "su:${RPASS}:poweroff" "expect:Power down" "wait-exit"
+    drc=$?
+    stop_vm
+    [[ "$drc" -eq 0 ]] && green "the installed system booted with the medium's certificate enrolled and took its report" || red "the serial drive failed (see above)"
+    IR="${VMDIR}/hwreport-installed.txt"; MNT="${VMDIR}/hwreport-state"; mkdir -p "$MNT"; rm -f "$IR"
+    if open_state "$DISK" "$MNT"; then cp "$MNT/lib/kryptik/hwreport.txt" "$IR" 2>/dev/null; close_state "$MNT"; fi
+    LISTING="$("${SELF}/../check-hardware.sh" "$IR" 2>&1)"
+    sed 's/^/        /' <<<"$LISTING"
+    if grep -q '^  carries    certified$' <<<"$LISTING"; then
+        green "its report carries a certified listing"
+    elif grep -q '^  carries    reported; short of certified:$' <<<"$LISTING" \
+            && [[ "$(grep -c '^      ' <<<"$LISTING")" -eq 1 ]] && grep -q '^      .* is not a release' <<<"$LISTING"; then
+        green "its report falls short of certified in one thing: a dated build is not a release"
+    else
+        red "the installed system's report carries less than it should"
+    fi
+else
+    red "no variable store with the medium's certificate enrolled"
+fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]] || exit 1
