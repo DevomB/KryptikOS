@@ -24,10 +24,10 @@ trap 'rm -rf "$W"' EXIT
 show() { sed 's/^/        /' "$OUT"; }
 mkdir -p "${W}/built"
 
-# keys ROLE WORK [MEDIUM]: release_keys in a fresh bash, as stage 06 calls it,
-# with WORK as the work tree; its output, then the paths it chose, in $OUT.
+# keys ROLE WORK [MEDIUM]: release_keys as stage 06 calls it, with PHASE as KRYPTIK_MEDIA_PHASE; output in $OUT.
+PHASE=""
 keys() {
-    KRYPTIK_WORK="$2" KRYPTIK_OUT="${W}/built" KRYPTIK_KEYS="${3:-}" NO_COLOR=1 \
+    KRYPTIK_WORK="$2" KRYPTIK_OUT="${W}/built" KRYPTIK_KEYS="${3:-}" KRYPTIK_MEDIA_PHASE="$PHASE" NO_COLOR=1 \
         bash -c 'source "$1/build/lib/common.sh"; source "$1/build/lib/release-keys.sh"
                  release_keys "$2"
                  printf "ANCHOR=%s\nRELEASE_KEY=%s\nLATEST_KEY=%s\nSB_KEY=%s\nSB_CERT=%s\n" \
@@ -201,6 +201,34 @@ if [[ "$rc" -ne 0 ]] && grep -q "development or production" "$OUT"; then
 else
     red "an unknown role was taken (exit ${rc})"; show
 fi
+
+# --- the binding half: the medium's public half, nothing that signs ---------------
+P="${W}/public"
+make_public() { make_medium; rm -rf "$P"; mkdir -p "$P"; cp "$M/release-signers" "$M/kryptik-sb.crt" "$P/"; }
+PHASE=bind
+make_public
+keys production "$PW" "$P"; rc=$?
+if [[ "$rc" -eq 0 && "$(got ANCHOR)" == "${P}/release-signers" && "$(got SB_CERT)" == "${P}/kryptik-sb.crt" \
+      && -z "$(got RELEASE_KEY)$(got LATEST_KEY)$(got SB_KEY)" ]]; then
+    green "binding takes the anchor and the certificate alone, and has no key to sign with"
+else
+    red "binding with the public half (exit ${rc})"; show
+fi
+keys production "$PW" "$M"; rc=$?
+if [[ "$rc" -ne 0 ]] && grep -q "holds a private key" "$OUT"; then green "binding refuses a medium holding a private key"; else red "binding took a private key (exit ${rc})"; show; fi
+make_public; cp "$M/kryptik-sb.key" "$P/spare"
+keys production "$PW" "$P"; rc=$?
+if [[ "$rc" -ne 0 ]] && grep -q "spare holds a private key" "$OUT"; then green "binding refuses a private key under any name"; else red "binding took a renamed private key (exit ${rc})"; show; fi
+make_public; rm "$P/kryptik-sb.crt"
+keys production "$PW" "$P"; rc=$?
+if [[ "$rc" -ne 0 ]] && grep -q "has no kryptik-sb.crt" "$OUT"; then green "binding refuses a public half without the certificate"; else red "binding without a certificate (exit ${rc})"; show; fi
+make_public; sed -i '1p' "$P/release-signers"
+keys production "$PW" "$P"; rc=$?
+if [[ "$rc" -ne 0 ]] && grep -q "a key is listed twice" "$OUT"; then green "binding checks the anchor as signing does"; else red "binding took an anchor listing a key twice (exit ${rc})"; show; fi
+PHASE=""
+make_public
+keys production "$PW" "$P"; rc=$?
+if [[ "$rc" -ne 0 ]] && grep -q "has no kryptik-release" "$OUT"; then green "signing refuses the public half alone"; else red "signing took a medium without keys (exit ${rc})"; show; fi
 
 # --- the version ------------------------------------------------------------------
 version() {   # version ROLE VERSION: release_version in a fresh bash; its output in $OUT
