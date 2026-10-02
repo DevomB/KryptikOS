@@ -331,13 +331,13 @@ jobs:
           bins=(KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl)
           make production-pair "${bins[@]}"
           ls -la "$KRYPTIK_WORK/images-production"
+          # A tag's version decides its role; elsewhere the dispatch input does.
           ROLE=development
-          if [ "${{ inputs.role }}" = production ]; then ROLE=production; fi
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             VER_A=0.0.0; VER_B="${GITHUB_REF_NAME#v}"
             case "$GITHUB_REF_NAME" in v0.*) ;; *) ROLE=production ;; esac
-          elif [ "$ROLE" = production ]; then
-            VER_A=0.0.0; VER_B=0.0.1
+          elif [ "${{ inputs.role }}" = production ]; then
+            ROLE=production; VER_A=0.0.0; VER_B=0.0.1
           else
             VER_A="0.1.$(date -u +%Y%m%d).${GITHUB_SHA::8}"; VER_B="${VER_A}.1"
           fi
@@ -424,9 +424,9 @@ jobs:
     name: Stage 06, signed (a production release)
     needs: system
     # From the ref, never from the build job's outputs, which its root processes could write.
-    if: ${{ (github.ref_type == 'tag' && !startsWith(github.ref_name, 'v0.')) || inputs.role == 'production' }}
+    if: ${{ (github.ref_type == 'tag' && !startsWith(github.ref_name, 'v0.')) || (github.ref_type != 'tag' && inputs.role == 'production') }}
     # A tag's keys: the release environment takes only release tags, and its owner approves each run.
-    environment: ${{ github.ref_type == 'tag' && 'release' || '' }}
+    environment: ${{ github.ref_type == 'tag' && !startsWith(github.ref_name, 'v0.') && 'release' || '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -555,7 +555,7 @@ jobs:
 
       # The whole production pair, for its own part.
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        if: matrix.suites == 'production'
+        if: contains(matrix.suites, 'production')
         with:
           name: production-media
           path: /mnt/kryptik
