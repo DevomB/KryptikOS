@@ -1,16 +1,12 @@
-//! The zone identity model: four channels and what a valid value is in each.
-//!
-//! Glyphs come from an allowlist, as syscalls do in the seccomp filter: a
-//! denylist must foresee every bidi control, combining mark and confusable,
-//! and missing one lets a zone file forge another zone's tag. Labels are
-//! printable ASCII, which rules out bidi overrides and homographs at once.
+//! The zone identity model: four channels and what a valid value is in each. Glyphs come from
+//! an allowlist, as a denylist missing one confusable lets a zone forge another zone's tag;
+//! labels are printable ASCII, which rules out bidi overrides and homographs.
 
 use std::fmt;
 
 use crate::color::{ParseHexError, Srgb};
 
-/// The border stroke a zone asks for. Validated to catch typos, but every
-/// border is drawn solid, so zoneid gives it no weight.
+/// The border stroke a zone asks for: validated, but every border is drawn solid.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Pattern {
     Solid,
@@ -57,9 +53,8 @@ impl fmt::Display for Pattern {
     }
 }
 
-/// Glyphs a zone may use. Each entry is in DejaVu and Liberation, has text
-/// (not emoji) presentation, differs from every other entry at 12px, is no
-/// mark, control, format character or space, and is unambiguous under NFKC.
+/// Glyphs a zone may use: each is in DejaVu and Liberation, text (not emoji) presentation,
+/// distinct from the others at 12px, no mark, control, format or space, unambiguous under NFKC.
 pub const GLYPH_ALLOWLIST: &[char] = &[
     // Geometric shapes, U+25xx and U+26xx.
     '\u{25CF}', // ● BLACK CIRCLE
@@ -130,21 +125,16 @@ impl fmt::Display for IdentityError {
             ),
             IdentityError::GlyphNotAllowed(c) => write!(
                 f,
-                "glyph: U+{:04X} is not on the allowlist. Glyphs are allowlisted, \
-                 not filtered, so that font coverage and confusability are \
-                 reviewed rather than assumed; see GLYPH_ALLOWLIST",
+                "glyph: U+{:04X} is not on the allowlist; see GLYPH_ALLOWLIST",
                 *c as u32
             ),
             IdentityError::LabelEmpty => write!(f, "label: must not be empty"),
             IdentityError::LabelTooLong(n) => {
                 write!(f, "label: at most 12 characters, got {n}")
             }
-            IdentityError::LabelNotAscii(c) => write!(
-                f,
-                "label: U+{:04X} is not printable ASCII. Labels are ASCII-only so \
-                 that bidi overrides cannot make one zone render as another",
-                *c as u32
-            ),
+            IdentityError::LabelNotAscii(c) => {
+                write!(f, "label: U+{:04X} is not printable ASCII", *c as u32)
+            }
             IdentityError::LabelPadded => {
                 write!(f, "label: must not begin or end with a space")
             }
@@ -152,8 +142,7 @@ impl fmt::Display for IdentityError {
     }
 }
 
-/// A zone's visual identity as configured. Missing non-colour channels stay
-/// `None` rather than defaulting, because their absence is a finding.
+/// A zone's identity as configured; a missing channel stays `None`, as its absence is a finding.
 #[derive(Clone, Debug)]
 pub struct ZoneIdentity {
     pub zone: String,
@@ -195,7 +184,7 @@ impl ZoneIdentity {
         })
     }
 
-    /// Channels this zone actually configures.
+    /// Channels this zone configures.
     pub fn present_channels(&self) -> Vec<Channel> {
         let mut v = vec![Channel::Color];
         if self.pattern.is_some() {
@@ -210,8 +199,7 @@ impl ZoneIdentity {
         v
     }
 
-    /// Whether something other than colour on screen names this zone: the
-    /// glyph or label the chrome shows. A pattern is not drawn.
+    /// Whether the chrome can name this zone by glyph or label; a pattern is not drawn.
     pub fn has_non_color_channel(&self) -> bool {
         self.glyph.is_some() || self.label.is_some()
     }

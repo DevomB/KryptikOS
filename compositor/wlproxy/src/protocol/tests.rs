@@ -75,11 +75,7 @@ fn strings_are_located_for_rewriting() {
     assert_eq!(d.strings, vec![(0, "hello")]);
 }
 
-// --- the decoder, attacked ---------------------------------------------
-/* `Header::parse` and `decode` see every byte a client sends. A well-formed
- * body for each message in the tables is damaged by a fixed-seed generator,
- * so a failure repeats on every machine. The decoder must never panic or
- * read past the body, and returns Ok only for an exact parse. */
+// --- Header::parse and decode see every byte a client sends: fuzz them ---
 
 /// xorshift64*: small, seeded, the same sequence everywhere.
 pub(crate) struct Rng(pub u64);
@@ -175,7 +171,7 @@ fn decoder_survives_any_body() {
             }
         }
     }
-    // The generator must actually reach both sides of the decoder.
+    // The generator must reach both sides of the decoder.
     assert!(tried > 10_000 && accepted > tried / 50 && accepted < tried, "tried {tried}, accepted {accepted}");
 }
 
