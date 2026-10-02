@@ -1,6 +1,7 @@
 # Architecture decision records
 
-Each record gives the decision, the reasons and the cost. All are accepted.
+Each record gives the decision, the reasons and the cost. All are accepted
+except those marked proposed, which wait for the owner's decision.
 
 ## ADR-001: Build from Linux From Scratch
 
@@ -240,3 +241,31 @@ firmware's boot entries and a judged trial, not a loader's menu.
 **Rejected:** shim and a loader, two more signed stages and a configuration
 file; an initramfs inside the signed image, measured but a second userland to
 keep small and right.
+
+## ADR-017 (proposed): The state partition may unlock from the TPM, for the exact kernel
+
+A user may enrol the TPM to open the state partition without a prompt. The
+key is a second LUKS2 keyslot, sealed by the TPM to a policy kept in an NV
+index: PCR 4 (the exact signed kernel, whose compiled-in command line carries
+the root hash) and PCR 7 (Kryptik's Secure Boot policy and certificate), for
+the committed kernel and, during a trial, the kernel the updater predicted
+from this boot's event log. `sysinit` unseals it from the verified root
+through a salted session and then extends PCR 15, so nothing later in the
+same boot can unseal it again. Every failure falls back to the passphrase,
+whose keyslot is never removed
+([TPM unlock](design/tpm-unlock.md)).
+
+**Why:** with no initramfs, PCR 4 already names the kernel and the root, so
+the binding needs no stub or extra measurement (ADR-014). PCR 7 alone would
+let the install medium, signed by the same key, unseal the key from its root
+shell, and would let every older kernel do the same.
+
+**Cost:** the threat model changes: an enrolled machine boots to its login
+prompt with the state partition open, and an attacker who can extract the
+TPM's secrets reads it. The updater rewrites the NV policy for each trial;
+a firmware or dbx update, a rollback and a wrong prediction each cost one
+passphrase prompt; tpm2-tss and tpm2-tools join the image.
+
+**Rejected:** PCR 7 alone (the medium and old kernels unseal); a policy
+signed at release time (old kernels stay valid, a key more, and no
+knowledge of each machine's firmware events); enrolment by default.
