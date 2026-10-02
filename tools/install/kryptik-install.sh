@@ -313,6 +313,8 @@ mv -f "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI.new" "$MNT_BASE/tesp/EFI/BOOT/BOOTX64
 cmp -s "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI" "$MNT_BASE/tesp/EFI/kryptik/kryptik-a.efi" || die "BOOTX64.EFI is not the slot A kernel"
 printf 'a\n' > "$MNT_BASE/tesp/kryptik/committed-slot"
 rm -f "$MNT_BASE/tesp/kryptik/media-kernel"
+# The stick's hardware reports (kryptik-hwreport) are not the installation's.
+rm -rf "$MNT_BASE/tesp/kryptik-report"
 sync
 umount "$MNT_BASE/tesp" || die "could not unmount the new ESP"
 
