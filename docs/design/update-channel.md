@@ -168,7 +168,7 @@ already asked for keeps arriving, as one asked for by hand does.
   so a block an offline writer damages reads as off.
 - **Who changes it.** Whoever may use `fetch`: the launch service takes
   `update-auto on|off` from those it takes `update-fetch` from (group
-  `kryptik`) and logs who did, which allows nothing `fetch` does not. No
+  `kryptik`) and logs the change, which allows nothing `fetch` does not. No
   zone can change it, the net zone included: the broker has no verb for it.
   `on` is refused on an image that names no channel.
 - **What a hostile net zone gains.** The timing, not the amount. Without it,

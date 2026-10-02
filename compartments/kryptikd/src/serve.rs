@@ -1105,7 +1105,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
             };
             match done {
                 Ok(text) => {
-                    eprintln!("kryptikd serve: uid {uid} {said}");
+                    eprintln!("kryptikd serve: {said}");
                     reply(&conn, &format!("ok\n{text}"));
                 }
                 Err(e) => reply(&conn, &format!("error: {e}\n")),
