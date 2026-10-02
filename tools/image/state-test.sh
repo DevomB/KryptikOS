@@ -173,15 +173,16 @@ normal_boot state-p7b
 
 # ----------------------------------------------------------------- step 8 --
 # Last: the disk keeps the new passphrase. cryptsetup asks on the terminal,
-# so the answers are typed there, not passed to it.
+# so the answers are typed there, not passed to it. It prints each prompt and
+# then discards what the terminal already holds, so an answer waits a moment.
 step "step 8: root changes the state passphrase; the old one no longer unlocks"
 NEWPASS=state-pw-changed
 start_vm state-p8
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "send:su - root -c 'kryptik state passphrase; echo CHANGED=\$?'" "expect:Password: ?" "send:${RPASS}" \
-    "expect:Enter passphrase to be changed: ?" "send:${KRYPTIK_STATE_PASSPHRASE}" \
-    "expect:Enter new passphrase: ?" "send:${NEWPASS}" \
-    "expect:Verify passphrase: ?" "send:${NEWPASS}" \
+    "expect:Enter passphrase to be changed: ?" "sleep:2" "send:${KRYPTIK_STATE_PASSPHRASE}" \
+    "expect:Enter new passphrase: ?" "sleep:2" "send:${NEWPASS}" \
+    "expect:Verify passphrase: ?" "sleep:2" "send:${NEWPASS}" \
     "expect:CHANGED=0" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
