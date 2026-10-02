@@ -153,7 +153,7 @@ N="${S}/NOTES.md"
 zsum="$(sha "${S}/kryptik-0.1.0-usb.img.zst")"; bsum="$(sha "${S}/source-${REV:0:12}.tar")"
 if [[ "$(head -1 "$N")" == "# Kryptik 0.1.0" ]] && grep -qF 'built from `'"${REV}"'`' "$N" && grep -qx '## Downloads' "$N" \
     && grep -qF "| \`kryptik-0.1.0-usb.img.zst\` | " "$N" && grep -qF "| \`${zsum}\` |" "$N" && grep -qF "| \`${bsum}\` |" "$N" \
-    && grep -qF -- '-s kryptik-0.1.0.SHA256SUMS.sig < kryptik-0.1.0.SHA256SUMS' "$N" && grep -qF 'sha256sum -c kryptik-0.1.0.SHA256SUMS' "$N"; then
+    && grep -qF -- '-s kryptik-0.1.0.SHA256SUMS.sig < kryptik-0.1.0.SHA256SUMS' "$N" && grep -qF 'sha256sum -c --ignore-missing kryptik-0.1.0.SHA256SUMS' "$N"; then
     green "the page's text is the release notes, then each upload's size and hash and how to check a download"
 else
     red "NOTES.md"; sed 's/^/        /' "$N"

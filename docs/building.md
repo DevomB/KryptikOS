@@ -76,6 +76,15 @@ copies none: the keys are read by the tools that sign with them, by path.
 Making the keys, publishing with them, and replacing them are in
 [release keys](release-keys.md).
 
+The Distro workflow splits a production build so its keys never reach the
+machine that ran the chroot. `KRYPTIK_MEDIA_PHASE=bind`, with `KRYPTIK_KEYS`
+naming a directory that holds `release-signers` and `kryptik-sb.crt` and no
+private key, builds the root and binds the kernels to it. Then
+`KRYPTIK_MEDIA_PHASE=sign`, with the whole medium, on another machine given
+the work tree and that release's stage 06 stamps, checks what was bound
+against the medium, signs and assembles the media without touching the
+sysroot or the chroot.
+
 To publish a build, add its payload to the channel's directory, which any web
 server can then serve at that address:
 
@@ -128,8 +137,8 @@ repository's Releases page once tag `v0.1.2` is pushed ([releases](releases.md))
 The suites arm their unattended installs with a control disk the medium
 under test checks against its anchor. A development medium honours the
 build's own `kryptik-testctl` (under `<work>/keys/release`), the default; a
-production release's media honour the ceremony's, so its acceptance names a
-copy: `make acceptance EXPORT=DIR KRYPTIK_TESTCTL_KEY=<copy>/kryptik-testctl`
+production release's media honour the release's own, so its acceptance names
+it: `make acceptance EXPORT=DIR KRYPTIK_TESTCTL_KEY=<copy>/kryptik-testctl`
 ([release keys](release-keys.md)). The boot tests enrol the Secure Boot
 certificate the medium under test carries, and the export publishes that
 certificate: a production release is tested as a machine that enrolled its

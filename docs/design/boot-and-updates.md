@@ -57,7 +57,9 @@ shows the chain enforces a key; it is not production certification. A
 production image (`KRYPTIK_ROLE=production`) is signed with the key on the key
 medium that `KRYPTIK_KEYS` names, and no key is made (`build/lib/release-keys.sh`,
 [building](../building.md)). Stage 06 runs on the host: no key is ever
-inside the chroot, where the upstream build scripts run.
+inside the chroot, where the upstream build scripts run, and a release's keys
+reach only the job that signs, never the one that ran the chroot
+([release keys](../release-keys.md#where-they-are-used)).
 
 ## Mutable state
 

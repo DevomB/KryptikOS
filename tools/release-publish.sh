@@ -122,7 +122,7 @@ fi
         printf '| `%s` | %s | `%s` |\n' "$f" "$(stat -c %s "${OUT}/${f}" | numfmt --to=iec-i --suffix=B)" "$(sha256_of "${OUT}/${f}")"
     done
     printf '\nAfter `zstd -d kryptik-%s-usb.img.zst`, check it as `INSTRUCTIONS.md` says:\n\n' "$VERSION"
-    printf '```sh\nssh-keygen -Y verify -f release-signers -I kryptik-release -n kryptik-media \\\n    -s kryptik-%s.SHA256SUMS.sig < kryptik-%s.SHA256SUMS\nsha256sum -c kryptik-%s.SHA256SUMS\n```\n' "$VERSION" "$VERSION" "$VERSION"
+    printf '```sh\nssh-keygen -Y verify -f release-signers -I kryptik-release -n kryptik-media \\\n    -s kryptik-%s.SHA256SUMS.sig < kryptik-%s.SHA256SUMS\nsha256sum -c --ignore-missing kryptik-%s.SHA256SUMS\n```\n' "$VERSION" "$VERSION" "$VERSION"
 } > "${OUT}/NOTES.md"
 if [[ -n "$STAGE" ]]; then
     ok "staged ${TAG}, a ${KIND}, in ${OUT}: ${#ASSETS[@]} files and NOTES.md"
