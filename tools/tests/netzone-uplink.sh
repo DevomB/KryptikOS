@@ -30,10 +30,12 @@ zone() {   # zone DIR NAME UID_BASE NETWORK-LINES...: a definition as the shippe
         printf '\n[storage]\nmode = "ephemeral"\nsize = "64M"\n\n[identity]\nuid_base = %s\n\n[ui]\nborder_color   = "#ba7c02"\n' "$base"
     } > "$dir/$name.toml"
 }
-# The addresses netzone.rs's own test gives for these bases: 2, 3, 7 and 249.
+# The addresses netzone.rs's own test gives for these bases: 2, 3, 7 and 249;
+# kryptikd reads a quoted number as the number, so the tenth counts too.
 zone "$T/z" first  131072   'mode = "routed"' 'local = true'
 zone "$T/z" second 196608   'mode = "routed"' 'local = true   # the portal zone'
 zone "$T/z" third  458752   'mode = "routed"' 'local="true"'
+zone "$T/z" quoted '"655360"' 'mode = "routed"' 'local = true'
 zone "$T/z" last   16318464 'mode = "routed"' 'local = true'
 zone "$T/z" beyond 16384000 'mode = "routed"' 'local = true'
 zone "$T/z" plain  262144   'mode = "routed"'
@@ -83,7 +85,7 @@ for sh in sh bash dash; do
     run() { PATH="$T/bin:$PATH" ROUTES="$T/routes" NFT_LOG="$T/nft.log" "$sh" "$T/harness.sh" "$@" 2>&1; }
     echo "-- ${sh}: the zones a definition lets through"
     same "a zone is named by the address its uid_base gives it, as kryptikd derives it" \
-        "$(run zones "$T/z" | LC_ALL=C sort)" "$(printf '10.19.0.2 fd19::2\n10.19.0.249 fd19::f9\n10.19.0.3 fd19::3\n10.19.0.7 fd19::7')"
+        "$(run zones "$T/z" | LC_ALL=C sort)" "$(printf '10.19.0.10 fd19::a\n10.19.0.2 fd19::2\n10.19.0.249 fd19::f9\n10.19.0.3 fd19::3\n10.19.0.7 fd19::7')"
     same "the shipped zones: untrusted alone" "$(run zones "${ROOT}/compartments/zones")" "10.19.0.5 fd19::5"
     same "a directory this zone cannot read names nobody" "$(run zones "$T/none")" ""
 

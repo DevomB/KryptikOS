@@ -64,7 +64,7 @@ local_zones() {   # local_zones DIR: "10.19.0.K fd19::K" for each
             /^\[/ { section = $0; next }
             section == "[network]" && ($0 == "local=true" || $0 == "local=\"true\"") { claims = 1 }
             section == "[network]" && $0 == "mode=\"routed\"" { routed = 1 }
-            section == "[identity]" && /^uid_base=[0-9]+$/ { base = substr($0, 10) }
+            section == "[identity]" && /^uid_base="?[0-9]+"?$/ { base = $0; gsub(/[^0-9]/, "", base) }
             END {
                 k = (base - 131072) / 65536 + 2
                 if (claims && routed && base != "" && k == int(k) && k >= 2 && k < 250) printf "10.19.0.%d fd19::%x\n", k, k
