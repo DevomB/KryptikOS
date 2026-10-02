@@ -46,7 +46,13 @@ for lblname in kryptik-state kryptik-media; do
 done
 mountpoint -q /run/kryptik-recover 2>/dev/null && umount /run/kryptik-recover
 mkdir -p /run/kryptik-recover
-cleanup() { mountpoint -q /run/kryptik-recover 2>/dev/null && umount /run/kryptik-recover; rmdir /run/kryptik-recover 2>/dev/null || true; }
+# The ESP image first: it is a file on the medium.
+cleanup() {
+    for d in /run/kryptik-recover-esp /run/kryptik-recover-media /run/kryptik-recover; do
+        mountpoint -q "$d" 2>/dev/null && umount "$d"
+        rmdir "$d" 2>/dev/null || true
+    done
+}
 trap cleanup EXIT INT TERM
 slot_dev() { case "$1" in a) echo "$SA" ;; b) echo "$SB" ;; *) die "slot must be a or b" ;; esac; }
 has_fs() { [ "$(dd if="$1" bs=1 skip=1080 count=2 status=none | od -An -tx1 | tr -d ' \n')" = "53ef" ]; }
@@ -118,6 +124,12 @@ if [ -n "$RESTORE" ]; then
             kdir=/run/kryptik-recover-esp/EFI/kryptik ;;
     esac
     bytes="$(sed -n 's/^  "total_bytes": \([0-9]*\).*/\1/p' "$rj")"; sha="$(sed -n 's/^  "sha256": "\([0-9a-f]*\)".*/\1/p' "$rj")"; ver="$(sed -n 's/^  "version": "\([^"]*\)".*/\1/p' "$rj")"
+    # The medium's record, not signed material: each field's form is checked, as the installer does.
+    case "$bytes" in ''|*[!0-9]*) die "root.json: total_bytes is not a number" ;; esac
+    [ "${#bytes}" -le 15 ] || die "root.json: total_bytes is too large"
+    case "$sha" in *[!0-9a-f]*) die "root.json: sha256 is not a hash" ;; esac
+    [ "${#sha}" -eq 64 ] || die "root.json: sha256 is not a hash"
+    case "$ver" in ''|*[!A-Za-z0-9._-]*) die "root.json: version is not a version" ;; esac
     [ "$(blockdev --getsize64 "$sd")" -ge "$bytes" ] || die "slot $RESTORE is smaller than the medium's root image"
     # As kryptik-update does, the ESP stops naming the slot before it is
     # rewritten, and is unmounted meanwhile: a restore cut short leaves nothing
