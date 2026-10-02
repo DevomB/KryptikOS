@@ -1,6 +1,7 @@
 # Architecture decision records
 
-Each record gives the decision, the reasons and the cost. All are accepted.
+Each record gives the decision, the reasons and the cost. All are accepted
+except those marked proposed, which wait for the owner's decision.
 
 ## ADR-001: Build from Linux From Scratch
 
@@ -240,3 +241,28 @@ firmware's boot entries and a judged trial, not a loader's menu.
 **Rejected:** shim and a loader, two more signed stages and a configuration
 file; an initramfs inside the signed image, measured but a second userland to
 keep small and right.
+
+## ADR-024 (proposed): Zones reach the compositor through sockets it filters, by proxies that run as users of their own
+
+dwl serves each zone on a socket of its own, offers it only the globals the
+proxy allows (`wl_display_set_global_filter`), and takes a window's zone
+from the socket, not from the app_id. Each zone's `kryptik-wlproxy` runs as
+a uid of its own, outside groups `kryptik` and `seat`, under seccomp, with a
+Landlock ruleset that grants no files, in an empty network namespace,
+started by the launch daemon. Later, dwl runs as a `compositor` user and
+confines itself after start-up, with commands run by a fixed spawner. Last,
+Wayland parsing moves into the zones, and only pixels and input cross
+([compositor separation](design/compositor-separation.md)).
+
+**Why:** today every proxy runs as the login user and connects to dwl's own
+socket, which offers screencopy, the virtual keyboard and layer-shell. A bug
+in the parser zones reach first gives a zone the whole desktop, the consent
+directory and the launch daemon, and lets it draw another zone's border.
+
+**Cost:** changes to dwl (sockets per zone, the filter, then the sandbox
+and a spawner); the launch daemon starts proxies and the compositor; uids
+per zone; a crate shared by kryptikd and the proxy for seccomp and Landlock.
+A compromised compositor still controls what the user sees and types.
+
+**Rejected:** splitting dwl into an input process and a renderer, which
+leaves the renderer drawing the borders and every zone talking to it.
