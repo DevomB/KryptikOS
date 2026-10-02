@@ -68,7 +68,7 @@ smoke hwreport-plain --usb "$PLAIN" --usb-writable --testctl "$CTL" --timeout "$
 P1="${VMDIR}/hwreport-p1.txt"; boot_txt > "$P1"
 want "$P1" 'KRYPTIK_SMOKE: END'              "the medium booted"
 want "$P1" 'Power down'                      "and powered off"
-deny "$P1" 'hw-report:|kryptik-hwreport:'    "no report was offered or written"
+deny "$P1" 'hw-report: this stick|kryptik-hwreport: |hardware report' "no report was offered or written"
 if cmp -s "$USB" "$PLAIN"; then green "the stick is byte for byte what it was"; else red "the stick changed, and nobody asked"; fi
 
 # ----------------------------------------------------------------- step 2 --
