@@ -65,7 +65,7 @@ border from that, not from the app_id the proxy wrote.
   through `work`'s socket gets `work`'s border.
 - **Cost:** a change to dwl (sockets per zone, the filter, the border from
   the socket), the proxy's upstream argument, and two gui-test cases. The
-  proxy and the compositor then check the same list twice, on purpose: two
+  proxy and the compositor then check the same list twice: two
   implementations must both be wrong before a zone gets a hidden global.
 
 ### The proxies as users of their own, confined
@@ -137,8 +137,8 @@ zones, and the proxy goes away.
 
 ### Splitting rendering from input inside zone 0
 
-The order this document was asked to weigh includes splitting dwl into an
-input process, which holds the devices and decides focus, and a renderer.
+The usual proposal is to split dwl into an input process, which holds the
+devices and decides focus, and a renderer.
 The renderer would still draw the borders and the chrome, so a compromised
 renderer could still show a false border or a false question, and the input
 process would deliver the user's keys to whatever the renderer showed.
