@@ -3,7 +3,7 @@
 These instructions ship beside each tested release, next to `RELEASE.txt`
 and `ACCEPTANCE-REPORT.md`. Everything below was exercised by
 `make acceptance` on the images the hashes name, under QEMU with OVMF
-firmware. Nothing has run on physical hardware yet.
+firmware. Testing on physical hardware is planned for October 2026.
 
 ## What is in the release directory
 
@@ -14,7 +14,7 @@ firmware. Nothing has run on physical hardware yet.
 | `*.sha256`, `SHA256SUMS` | the hashes the release was tested under |
 | `kryptik-VERSION.SHA256SUMS`, `.sig` | the media's hashes, signed by the release key |
 | `release-signers` | the keys the release's images trust for updates, which check that signature |
-| `kryptik-sb.crt`, `kryptik-sb.der` | the developer Secure Boot certificate that signed the kernels. A test anchor, not a production key |
+| `kryptik-sb.crt`, `kryptik-sb.der` | the Secure Boot certificate that signed the kernels, to enrol in the firmware (section 1) |
 | `root.json` | the verified root image's dm-verity record (root hash, salt, sizes) |
 | `manifest-VERSION`, `.sig` | the signed release manifest of each of the two payloads the update test moved between |
 | `REVISION.txt` | the source revision the images were built and tested from |
@@ -38,9 +38,11 @@ openssl x509 -in kryptik-sb.crt -noout -subject -fingerprint -sha256
 ```
 
 The signature is only as good as the `release-signers` it is checked with,
-and whoever could change the download could change that file too. A machine
-that already runs Kryptik holds the same file at
-`/usr/share/kryptik/trust/release-signers`: compare the two.
+and whoever could change the download could change that file too. From 1.0.0
+on, a release's anchor and certificate are the project's, and the source
+repository holds both under `build/config/release/`: compare them. A machine
+that already runs Kryptik holds the anchor at
+`/usr/share/kryptik/trust/release-signers`.
 
 ## 1. Boot the medium
 
@@ -61,11 +63,11 @@ sudo dd if=kryptik-VERSION-usb.img of=/dev/sdX bs=4M status=progress oflag=sync
 **Optical.** Burn `kryptik-VERSION.iso` as an image.
 
 **Secure Boot.** The kernel is signed with the build's Secure Boot key: a
-release's is the one made offline ([release keys](release-keys.md)), enrolled
-once for every release after it; a development build's is made by that build
-and is its own. A firmware that carries only Microsoft's keys refuses either
-(the acceptance run proves the refusal: `media-refused-foreign-keys`). To
-boot with Secure Boot on, enrol
+release's, from 1.0.0 on, is the project's ([release keys](release-keys.md)),
+enrolled once for every release after it; a development build's is made by
+that build and is its own. A firmware that carries only Microsoft's keys
+refuses either (the acceptance run proves the refusal:
+`media-refused-foreign-keys`). To boot with Secure Boot on, enrol
 `kryptik-sb.der` in the firmware's `db` (and, on most machines, PK/KEK) from
 the firmware setup menu; or turn Secure Boot off. The medium reports which it
 got: `KRYPTIK_SMOKE: secureboot=1` or `=0` on the console.
@@ -286,14 +288,17 @@ shows each timer, its timeout and whether it is running.
 
 ## Known limitations of this release
 
-- A development build, which every `0.x` release is, is signed with keys
-  that build generated and then discarded, so its certificate is enrolled on
-  its own and no other build's release updates it; a production release is
-  signed with the keys made offline in the release ceremony
-  ([release keys](release-keys.md)). No independent security review has
-  been made.
-- Tested under QEMU with OVMF only. No physical machine has booted it; no
-  hardware support beyond what the virtual machine exercised is claimed.
+- The keys that sign a release from 1.0.0 on are held on GitHub, in the
+  repository's protected release environment: a release tag's build uses
+  them once the maintainer approves it, so a release is as trustworthy as
+  the maintainer's GitHub account and the runners that build it
+  ([release keys](release-keys.md)). A development build, which every `0.x`
+  release is, is signed with keys that build generated and then discarded,
+  so its certificate is enrolled on its own and no other build's release
+  updates it.
+- No independent security review has been made.
+- Tested under QEMU with OVMF firmware. Testing on physical hardware is
+  planned for October 2026.
 - The builds are not reproducible bit for bit; the hashes name what was
   tested, not what a rebuild would produce.
 - A fullscreen window is framed by its zone's border colour; there is no
