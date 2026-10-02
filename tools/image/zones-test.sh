@@ -65,7 +65,7 @@ zp="$(sed -n 's/.*passed=\([0-9]*\).*/\1/p' <<<"$summary")"; zf="$(sed -n 's/.*f
 if [[ -n "$summary" && "${zf:-1}" -eq 0 && "${zp:-0}" -ge 30 ]]; then green "every guest check passed (${zp})"; else red "guest checks: ${zp:-0} passed, ${zf:-?} failed"; fi
 grep 'ZT FAIL' <<<"$T2" | sed 's/^/        /'
 # The key verdicts one by one, so a pass is not a single line.
-for name in kernel-support net-ready net-dns zone0-nic zone0-no-route zone0-offline routed-egress routed-ping routed-ping6 routed-dns routed-ipv6-noglobal zone-separation fail-closed net-restart-ready reattach-after-restart \
+for name in kernel-support net-ready net-dns zone0-nic zone0-no-route zone0-offline routed-egress routed-ping routed-ping6 routed-dns routed-ipv6-noglobal zone-separation fail-closed net-restart-ready reattach-after-restart uplink-refused wifi-beyond \
             wifi-module wifi-ap wifi-add wifi-associated wifi-lease wifi-egress wifi-forget \
             time-floor-ran time-clamp time-claim-stepped time-claim-floor time-claim-consent pids-limit ephemeral-size-bound cpu-max-set \
             terminal-terminfo man-page text-browser tls-trust \
