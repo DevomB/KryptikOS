@@ -1,8 +1,5 @@
 #!/bin/sh
-# The net zone, sole holder of the physical NICs: every interface on a bus
-# device (`nic = "*"`, kryptikd's netzone::physical_interfaces). Ephemeral, so
-# no --passphrase-file. Waits for such an interface rather than failing in a
-# restart loop: drivers are modules, and a radio or a dock can appear later.
+# The net zone takes every NIC on a bus device (`nic = "*"`, netzone::physical_interfaces).
 have_nic() {
     for d in /sys/class/net/*; do
         case "${d##*/}" in lo) continue ;; esac
@@ -10,6 +7,7 @@ have_nic() {
     done
     return 1
 }
+# Wait for one, not a restart loop: drivers are modules, and a radio or a dock can come later.
 if ! have_nic; then
     echo "net-zone: no physical network interface yet; waiting for one"
     while ! have_nic; do sleep 5; done

@@ -5,9 +5,7 @@
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
 load_config
 
-# No hardening flags: pass-1 GCC implements -fstack-protector and cannot be
-# built with it, and host CFLAGS leak into a cross build. Hardening starts at
-# stage 04 (docs/hardening.md).
+# No flags before stage 04: pass-1 GCC cannot build with the SSP it provides, and host flags leak in.
 unset CFLAGS CXXFLAGS LDFLAGS CPPFLAGS LD_LIBRARY_PATH
 
 require_outside_chroot "stage 01"
@@ -21,7 +19,7 @@ KRYPTIK_JOBS="${KRYPTIK_JOBS:-$(kryptik_default_jobs)}"
 export MAKEFLAGS="-j${KRYPTIK_JOBS}"
 umask 022
 
-# The host gcc builds this stage.
+# The host gcc: the cross one exists only halfway through this stage.
 stage_contract "${BASH_SOURCE[0]}" "" gcc
 
 STAMPS="${KRYPTIK_WORK}/.stamps"
@@ -80,8 +78,7 @@ s_gcc_pass1() {
 
     mkdir -p build
     cd build
-    # Default PIE and SSP are built into the compiler, so a package that
-    # forgets the flags still gets them (docs/hardening.md).
+    # Default PIE and SSP in the compiler, so a package that drops the flags still gets them.
     ../configure \
         --target="$LFS_TGT" \
         --prefix="${LFS}/tools" \
@@ -120,8 +117,7 @@ s_linux_headers() {
     make headers
     find usr/include -type f ! -name "*.h" -delete
 
-    # Clear old headers first, or a V_LINUX bump leaves behind files the new
-    # kernel dropped and glibc builds against a mix of two versions.
+    # Cleared first, or a V_LINUX bump leaves headers the new kernel dropped for glibc to mix in.
     rm -rf "${LFS}/usr/include"
     cp -rv usr/include "${LFS}/usr"
 
@@ -155,9 +151,7 @@ s_glibc() {
         echo "note: FHS patch absent, continuing without it"
     fi
 
-    # Upstream's release/2.40/master branch plus the bug 33088 fix, without
-    # which GCC 14 makes ld.so record its own map at address 0 (see the patch
-    # set's README). Stage 04 applies the same set to the final glibc.
+    # release/2.40 plus the bug 33088 fix (see the README); stage 04 applies the same set.
     apply_repo_patches "glibc-${V_GLIBC}"
 
     mkdir -p build
@@ -173,8 +167,7 @@ s_glibc() {
         libc_cv_slibdir=/usr/lib
     make
 
-    # Upstream's check for bug 33088: rtld must not reach __ehdr_start or _end
-    # through a run-time relocation, as it stores them before relocating itself.
+    # Upstream's bug 33088 check: rtld stores __ehdr_start and _end before relocating itself.
     echo "--- run-time relocations against __ehdr_start or _end in rtld.os ---"
     local rtld_relocs
     rtld_relocs="$(readelf -rW elf/rtld.os | grep -E 'R_X86_64_64.*(__ehdr_start|_end)' || true)"
@@ -192,8 +185,7 @@ s_glibc() {
     sed "/RTLDLIST=/s@/usr@@g" -i "${LFS}/usr/bin/ldd"
 }
 
-# Cross-compiled binaries must request the target's loader, not the host's;
-# otherwise everything downstream is silently host-contaminated.
+# Cross-compiled binaries must request the target's loader, or the host leaks into everything.
 s_sanity_check() {
     cd "$BUILDDIR"
     echo "int main(void){return 0;}" > sanity.c
@@ -212,8 +204,7 @@ s_sanity_check() {
     fi
     echo "PASS: binaries link against the target loader."
 
-    # --enable-default-pie took effect. No `readelf | grep -q`: under
-    # pipefail, grep exiting on a match can fail the pipeline with SIGPIPE.
+    # Default PIE took effect; no readelf | grep -q, which can SIGPIPE under pipefail.
     local hdr
     hdr="$(readelf -h sanity 2>/dev/null || true)"
     if [[ "$hdr" == *"DYN (Position-Independent"* ]]; then
@@ -258,11 +249,7 @@ STEPS=(
     "libstdcxx s_libstdcxx"
 )
 
-# The toolchain's identity: its build steps' fingerprints, chained as step()
-# chains them, so it changes exactly when one of them would rebuild: a recipe
-# or a helper it calls, a version or patch set it names, the flags, or the host
-# compiler. The walk comes before any step runs, so no step's arguments may
-# read what an earlier one writes (tools/tests/toolchain-identity.sh).
+# The toolchain's identity, walked before any step runs: no step argument may read build output.
 toolchain_id="$(for row in "${STEPS[@]}"; do
                     read -ra s <<< "$row"
                     [[ "${s[1]}" != --check ]] || continue
@@ -311,25 +298,21 @@ Run 'make check' for the full host requirement list."
 preflight
 
 # --- a cross toolchain is never rebuilt over another one's sysroot -------------
-# Pass 1 expects a sysroot with no headers; over an older tree, fixincludes
-# keeps copies of the old glibc headers, which no stamp hashes. So a tree built
-# by another toolchain, or by a stage 01 step since changed, is cleared, stamps
-# included. The record of which one built it stays out of the sysroot, which
-# becomes the root image.
+
+# Kept out of the sysroot, which becomes the root image.
 toolchain_marker="${STAMPS}/toolchain-id"
 
-# Anything mounted under DIR? Stage 03 binds this repository into the sysroot,
-# and rm --one-file-system does not stop at a bind mount of the same filesystem.
-# /proc/mounts has resolved paths with a space as \040 (ENVIRON, since awk -v
-# would unescape it). Unreadable means yes.
+# Mounted under DIR (unreadable means yes)? rm --one-file-system crosses stage 03's binds.
 mounted_under() {
     local real esc
     real="$(realpath -m -- "$1")" || return 0
     [[ -r /proc/mounts ]] || return 0
+    # /proc/mounts writes a space as \040; ENVIRON, since awk -v would unescape it.
     esc="$(printf '%s' "$real" | sed -e 's/\\/\\134/g' -e 's/ /\\040/g' -e 's/\t/\\011/g')"
     P="${esc}/" awk 'index($2, ENVIRON["P"]) == 1 { found = 1 } END { exit !found }' /proc/mounts
 }
 
+# Over another toolchain's tree, fixincludes would keep old glibc headers that no stamp hashes.
 if [[ -d "${LFS}/usr/include" && "$(cat "$toolchain_marker" 2>/dev/null)" != "$toolchain_id" ]]; then
     warn "the sysroot was built by a different toolchain (or by none this script recorded)."
     if mounted_under "$LFS"; then

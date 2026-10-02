@@ -6,7 +6,7 @@ Applied by `s_tar` in stage 04 through `apply_repo_patches`;
 tar 1.35 defines three private helpers, `acl_get_file_at()`,
 `acl_set_file_at()` and `acl_delete_def_file_at()`, in `src/xattrs.c`.
 acl 2.4.0 declares public functions of those names with other signatures in
-`<sys/acl.h>`, so tar no longer compiles against it ("conflicting types
+`<sys/acl.h>`, so tar does not compile against it ("conflicting types
 for 'acl_get_file_at'"). The patch is upstream's rename to `tar_acl_*`,
 08c3fc2e9337094aff01a511170fd35fdb8f1ee3, "Avoid acl_ prefix for functions",
 made against 1.35's text: the same three names renamed at the same
