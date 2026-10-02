@@ -58,6 +58,10 @@ done
 for t in python3 mkfs.ext4 truncate ssh-keygen sfdisk; do have "$t" || die "required tool not found: $t"; done
 VA="$(awk -F': ' '$1=="version"{print $2}' "$PAY_A/manifest")"; VB="$(awk -F': ' '$1=="version"{print $2}' "$PAY_B/manifest")"
 [[ "$VA" != "$VB" ]] || die "A and B are the same version (${VA})"
+# Once B is committed the clock's floor is the date B's manifest was signed
+# with, to the minute as `kryptikd time status` prints it, even back on A.
+B_FLOOR="$(date -u -d "$(awk -F': ' '$1=="created"{print $2; exit}' "$PAY_B/manifest")" '+%Y-%m-%d %H:%M' 2>/dev/null)"
+[[ -n "$B_FLOOR" ]] || die "B's manifest has no created date"
 role_of() { awk -F': ' '$1=="role"{print $2}' "$1/manifest" 2>/dev/null; }
 B_ROLE="$(role_of "$PAY_B")"
 case "$B_ROLE" in development|production) ;; *) die "B's manifest names no role this suite knows: '${B_ROLE}'" ;; esac
@@ -181,11 +185,14 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "run:echo before-update > /home/${TUSER}/marker && sync" \
     "$(ROOTSH 'printf zone-pw > /root/zp && chmod 600 /root/zp && kryptikd volume init work --size 64M --passphrase-file /root/zp && sha256sum /var/lib/kryptik/volumes/work.luks > /root/work.sha && echo VOL-OK')" \
     "expect:VOL-OK" \
+    "$(ROOTSH 'kryptikd time status')" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "A boots, zone volume created (${VA})" || red "step 1 drive failed"
 stop_unless_ok "$rc" "step 1"
 txt | grep -q "version_id=${VA}" && green "guest reports version ${VA}" || red "guest did not report version ${VA}"
+txt | grep -q "floor    [0-9-]* [0-9:]* UTC (this system's build date" \
+    && green "with no release committed yet, the clock's floor is A's build date" || red "A's floor is not its build date: $(txt | grep -E '(floor|release)  ' | tail -2 | tr '\n' ' ')"
 
 # ----------------------------------------------------------------- step 2 --
 step "step 2: apply ${VB}, reboot into slot b"
@@ -199,6 +206,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "grab:v2:grep ^VERSION_ID= /etc/os-release; cat /run/kryptik/boot-identity; cat /var/lib/kryptik/boot/last-result" \
     "run:test \"\$(cat /home/${TUSER}/marker)\" = before-update" \
     "$(ROOTSH 'sha256sum -c /root/work.sha && kryptik-update status && echo B-OK')" "expect:B-OK" \
+    "$(ROOTSH 'kryptikd time status')" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "B applied, rebooted into slot b, home file and zone volume intact" || red "step 2 drive failed"
@@ -207,6 +215,8 @@ txt | grep -q "KRYPTIK_SMOKE: boot_identity=slot=b" && green "booted slot b" || 
 txt | grep -q "version_id=${VB}" && green "guest reports version ${VB}" || red "guest did not report ${VB}"
 txt | grep -q "boot-success: committed: BOOTX64.EFI is now slot b" && green "boot-success committed slot b" || red "no commit of slot b"
 txt | grep -q "committed slot:   b" && green "status shows committed slot b" || red "committed slot is not b"
+txt | grep -qF "floor    ${B_FLOOR} UTC (release ${VB}, the newest this machine committed to" \
+    && green "the clock's floor is ${VB}'s signed date (${B_FLOOR} UTC)" || red "after the commit of ${VB} the floor is not its date: $(txt | grep -E '(floor|release)  ' | tail -2 | tr '\n' ' ')"
 
 # ----------------------------------------------------------------- step 3 --
 step "step 3: refusals on the running ${VB}"
@@ -250,11 +260,14 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "login:${TUSER}:${TPASS}" \
     "run:test \"\$(cat /home/${TUSER}/marker)\" = before-update" \
     "$(ROOTSH 'sha256sum -c /root/work.sha && cat /var/lib/kryptik/boot/last-result && echo A-OK')" "expect:commit a" "expect:A-OK" \
+    "$(ROOTSH 'kryptikd time status')" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "recovery to ${VA}: slot a booted and committed, data intact" || red "step 4 drive failed"
 stop_unless_ok "$rc" "step 4"
 txt | grep -q "version_id=${VA}" && green "guest reports ${VA} again" || red "guest did not report ${VA}"
+txt | grep -qF "floor    ${B_FLOOR} UTC (release ${VB}, the newest this machine committed to" \
+    && green "back on ${VA}, the clock's floor is still ${VB}'s signed date, not ${VA}'s build date" || red "back on ${VA}, the floor is not ${VB}'s date: $(txt | grep -E '(floor|release)  ' | tail -2 | tr '\n' ' ')"
 
 # ----------------------------------------------------------------- step 5 --
 step "step 5: rollback arms the other slot (b) and it boots"

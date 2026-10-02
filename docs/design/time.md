@@ -19,7 +19,8 @@ signed "latest release" statement look fresh, holding the machine on a
 release with a known hole; that direction matters most. Forwards, every
 certificate expires. Either way logs, file times and the update history lie.
 The defence is what zone 0 knows without the network, the image's build
-date, and bounds on what it believes.
+date and the date of the newest release it has committed to, and bounds on
+what it believes.
 
 ## Design
 
@@ -57,12 +58,13 @@ and the net zone prints `time=<offset|no-answer|...>` in its readiness line.
 
 **The decision** (`time::decide`, a pure function):
 
-1. Nothing is applied or offered that puts the clock before the floor, the
-   running image's build date (`built_at` in `/etc/kryptik-image.json`). With
-   no floor known, every claim is refused.
+1. Nothing is applied or offered that puts the clock before the floor: the
+   running image's build date (`built_at` in `/etc/kryptik-image.json`), or
+   the signed date of the newest release this machine has committed to when
+   that is later (below). With no build date known, every claim is refused.
 2. At boot, before the net zone starts, the `time-floor` service raises a
    clock below the floor to it, with no network. A dead RTC starts at the
-   build date.
+   floor.
 3. Under 5 ms nothing happens; under 1 s the clock is slewed (`adjtime`), so
    it never runs backwards; up to the bound it is stepped.
 4. Beyond the bound, one hour either way, the user decides: an RTC drifts
@@ -81,32 +83,66 @@ and the net zone prints `time=<offset|no-answer|...>` in its readiness line.
 A net zone that never answers leaves the clock to the RTC; that is reported
 (`time=no-answer`), not repaired.
 
+**The newest release committed to.** After a rollback or a recovery the
+running image is older than a release this machine has already run, and the
+clock cannot be earlier than that release either. `kryptik-update apply`
+keeps the manifest and signature it verified for the slot it writes
+(`/var/lib/kryptik/boot/release-<slot>/`). Once `boot-success` has committed
+a slot, `kryptikd time committed` copies that pair to
+`/var/lib/kryptik/time/release/` if it names the running release and its
+signed `created` date is later than the kept one's. The date is believed on
+the release key's signature alone. Each process that needs the floor runs
+`kryptik-update check-release` on the kept pair once, not per claim; it
+checks the signature and the role against the running root's trust anchor
+as `apply` does, in any version order. The state partition is not
+authenticated ([state encryption](state-encryption.md)), so whoever can write
+it can delete or damage the pair, which leaves the build date as the floor,
+or put another release's genuine pair there, whose date has passed as well;
+it cannot make the floor a date the release key did not sign. A release
+signed by a key the running image does not list is not used.
+
+The [statement of what is current](update-channel.md) is signed and newer
+still, but its key is online and a statement may be dated a day ahead of the
+clock: as a floor, a stolen key could walk the clock forward a day at a
+time. A release built with a wrong date keeps the floor there through a
+rollback; root deleting `/var/lib/kryptik/time/release` returns it to the
+build date.
+
+**Constants.** The bound (`DEFAULT_BOUND_SECS`), the interval
+(`CLAIM_INTERVAL_SECS`) and the floor are not settings, and `time.conf` names
+only servers. A value in `time.conf` would change only with a release, as a
+constant does (a copy under `/etc` is quarantined at boot). One on the state
+partition could be set by whoever writes that partition: a wider bound lets
+lies through unasked, a shorter interval brings question after question, and
+a moved floor holds the clock wrong.
+
 ## Tests
 
-`time.rs` unit tests cover every rule above: the floor, the clamp, slew and
-step, the bound per claim and in total, consent, the interval and the claim
-grammar. The boundary suite checks that the verb is refused from a zone
-without the network and that a malformed claim is refused.
-`tools/tests/netzone-time.sh` runs the query and its
+`time.rs` unit tests cover every rule above: the floor and the release that
+raises it, which release a commit keeps, the clamp, slew and step, the bound
+per claim and in total, consent, the interval and the claim grammar. The
+boundary suite checks that the verb is refused from a zone without the
+network and that a malformed claim is refused.
+`tools/tests/update-manifest-snapshot.sh` runs `check-release` with the real
+`ssh-keygen`: any version order, and the refusals `check-manifest` makes.
+`tools/tests/boot-success.sh` checks that only a commit hands the slot's pair
+on. `tools/tests/netzone-time.sh` runs the query and its
 caller against loopback servers five minutes ahead or behind, a day out among
 three, unsynchronised, sending kiss-of-death, not echoing, or silent, under
 every POSIX shell on the host. On the installed system,
 `build/guest-tests/zones-check.sh` sets the clock to 2000 and checks the
-clamp, then that a claim steps the clock, one below the floor is refused, a
-day's jump waits for consent, and a clock 300 s fast is put right.
-
-## Open points
-
-- The bound and the interval are constants (`DEFAULT_BOUND_SECS`,
-  `CLAIM_INTERVAL_SECS`); `time.conf` names only servers. The floor is not
-  configurable.
-- The date of the newest release the machine has committed to would be a
-  better floor after an update than the running image's; it is not used yet.
+clamp, that a release dated 2099 and signed by a key the anchor does not list
+leaves the floor alone, then that a claim steps the clock, one below the
+floor is refused, a day's jump waits for consent, and a clock 300 s fast is
+put right. The update suite (`tools/image/update-test.sh`) checks that the
+floor is B's signed date once B is committed, and still is after the
+recovery to A.
 
 ## Files
 
-`compartments/kryptikd/src/time.rs` (`kryptikd time floor | status`),
-`broker.rs`, `consent.rs`, `tools/desktop/kryptik-chrome`,
+`compartments/kryptikd/src/time.rs` (`kryptikd time floor | status |
+committed`), `broker.rs`, `consent.rs`, `tools/desktop/kryptik-chrome`,
 `tools/net/sntp-offset.py`, `tools/net/netzone-init.sh`, `rootfs.rs`
-(`time.conf` into the zones' `/etc`), `build/services/time-floor` and
-`build/service-scripts/time-floor.sh`.
+(`time.conf` into the zones' `/etc`), `build/services/time-floor`,
+`build/service-scripts/time-floor.sh`, `boot-success.sh` and
+`tools/update/kryptik-update` (`check-release`, the kept manifest).

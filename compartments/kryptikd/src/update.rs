@@ -276,6 +276,12 @@ pub fn tool_checks() -> Checks<'static> {
     }
 }
 
+/// `kryptik-update check-release` on the manifest and signature in `dir`:
+/// its version and signed date once both verify, in any version order.
+pub fn check_release(dir: &Path) -> Result<String, String> {
+    run_tool(&["check-release".as_ref(), dir.as_os_str()])
+}
+
 /// The role this image requires. A missing file is refused, never read as
 /// development: it must not be what decides which releases an image takes.
 pub fn required_role() -> Result<String, String> {
