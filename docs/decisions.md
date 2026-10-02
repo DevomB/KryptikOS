@@ -1,6 +1,7 @@
 # Architecture decision records
 
-Each record gives the decision, the reasons and the cost. All are accepted.
+Each record gives the decision, the reasons and the cost. All are accepted
+except those marked proposed, which wait for the owner's decision.
 
 ## ADR-001: Build from Linux From Scratch
 
@@ -240,3 +241,36 @@ firmware's boot entries and a judged trial, not a loader's menu.
 **Rejected:** shim and a loader, two more signed stages and a configuration
 file; an initramfs inside the signed image, measured but a second userland to
 keep small and right.
+
+## ADR-015 (proposed): Applications ship as signed images beside the root
+
+The root keeps the base system: what zone 0 runs and what every zone needs.
+Applications (the browser and its toolkit, a mail client, a document viewer,
+Mesa) are built by the same toolchain in the same build, packed as read-only
+ext4 images with dm-verity trees, and listed with their root hashes in a
+manifest the release key signs in a namespace of its own (`kryptik-image`).
+They are stored on the state partition and fetched through the update
+channel. kryptikd verifies the manifest, opens each image with dm-verity, and
+stacks the images a zone file names over zone 0's `/usr` for that zone alone.
+An image is built for one root release and mounted over no other, may add
+files but never replace the root's, and lists the policy lines its programs
+need, which the zone file must already grant
+([how software reaches zones](design/software-delivery.md)).
+
+**Why:** the root cannot grow much on an installed machine (a slot is the
+image plus half again), and applications change faster than the base. Images
+keep every block verified at read on an unauthenticated partition, need no
+second trust root, and let a browser fix ship without a whole release or a
+reboot.
+
+**Cost:** new mounting code in kryptikd; a build step that captures what a
+set of recipes installs; disk on the state partition for two generations of
+images; every root release rebuilds every image; a browser fix still needs
+the key medium.
+
+**Rejected:** a package manager installing into zone 0 (unverified code on
+the state partition, unpacked by root); one installing into each zone (a
+second trust root, a signing key in frequent use, a copy per zone, nothing for
+ephemeral zones); another distribution's userland in a zone (gives up
+ADR-001 where the applications run); everything on the root (does not fit
+the slots of machines already installed).
