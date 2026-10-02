@@ -1,10 +1,8 @@
 #!/bin/sh
-# Which partitions belong to this installation: those with the right GPT label
-# on the disk the running root came from, since another disk (a clone, an old
-# install) can carry the same labels. POSIX sh, sourced by services and tools.
+# Partitions by GPT label on the root's own disk only: another disk may carry the same labels.
+# POSIX sh, sourced by services and tools.
 #   kryptik_root_disk         the disk under the root, via dm and loop devices
-#   kryptik_part LABEL        the one partition with LABEL there; fails on none
-#                             or several, never picks one
+#   kryptik_part LABEL        the one partition with LABEL there; fails on none or several
 #   kryptik_part_count LABEL  how many carry LABEL there
 #   kryptik_others LABEL      partitions with LABEL on other disks
 
@@ -72,8 +70,7 @@ kryptik_others() {   # LABEL -> partitions with LABEL that are NOT on the root d
     done
 }
 
-# Run as a command (by kryptik-efiboot):
-#   devices.sh disk | part LABEL | count LABEL | others LABEL
+# As a command, for kryptik-efiboot.
 case "${0##*/}" in
     devices.sh)
         case "${1:-}" in

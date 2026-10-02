@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-# netzone: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
-# The net zone's startup program (docs/design/net-zone.md): dhcpcd, nftables
-# NAT and dnsmasq in the zone that holds the NIC, run by the net-zone service.
+# The net zone's startup program (docs/design/net-zone.md): DHCP, NAT and DNS beside the NIC.
 s_netzone() {
     local src="${KRYPTIK_ROOT}/tools/net/netzone-init.sh"
     [[ -f "$src" ]] || { echo "no netzone-init at ${src}"; return 1; }

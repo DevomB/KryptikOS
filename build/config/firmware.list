@@ -1,17 +1,10 @@
 # The only firmware shipped under /lib/firmware on the verified root (ADR-012).
-# One `find -path` pattern per line, matched in the tree linux-firmware's
-# copy-firmware.sh lays out; a selected link brings its target.
-# `newest N PATTERN` keeps the N highest trailing -NUMBERs per device, since a
-# driver falls back only a few firmware API versions. A pattern that matches
-# nothing fails the build.
+#   PATTERN            a `find -path` pattern in copy-firmware.sh's layout; a link brings its target
+#   newest N PATTERN   only the N highest trailing -NUMBERs (API versions) per device
+# A pattern that matches nothing fails the build.
 
-# Intel Wi-Fi: the newest three API versions per device, and every PNVM.
-# Not the version MODULE_FIRMWARE names, on purpose: the driver loads the
-# highest one inside its MAC's range intersected with its RF's (iwl-drv.c), so
-# AX210 with a gf radio declares -100 and loads -89, and the newest parts try
-# cNN names, which newest-N keeps whole, before NN ones. Picking exactly takes
-# that logic and a real card to test on. The glob also keeps the DVM parts'
-# firmware, about 2 MB this kernel cannot load, rather than a way to exclude it.
+# Intel Wi-Fi: three API versions per device, as which one loads depends on MAC and RF (iwl-drv.c).
+# The glob also keeps about 2 MB of DVM firmware this kernel cannot load.
 newest 3 iwlwifi-*.ucode
 iwlwifi-*.pnvm
 
@@ -42,8 +35,7 @@ rtlwifi/rtl8188eufw.bin
 # Broadcom over PCIe (Dell and Apple machines); the SDIO parts are not.
 brcm/brcmfmac*-pcie*
 
-# Graphics: all of Intel's and AMD's. Not NVIDIA: nouveau's GSP firmware is tens
-# of MB per generation, and the firmware framebuffer still gives a display.
+# Graphics: Intel and AMD, not NVIDIA (GSP firmware is tens of MB; the framebuffer still works).
 i915/*
 xe/*
 amdgpu/*

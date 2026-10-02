@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
-# gcc: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
-# GCC again, in place of stage 02's temporary compiler, which set no flags:
-# the same triplet and defaults, so stage 05 and the stamps see the same
-# compiler, but now built with the hardening flags. Its binaries become PIE
-# with BIND_NOW, and libgcc_s and libstdc++, which glibc's unwinder and every
-# C++ program load, carry IBT and SHSTK.
+# GCC with the hardening, same triplet and defaults as stage 02's so stage 05 and the stamps agree.
 s_gcc_native() {
     local src; src="$(unpack "gcc-${V_GCC}.tar.xz" "gcc-${V_GCC}")"
     cd "$src"
@@ -14,11 +8,8 @@ s_gcc_native() {
         x86_64) sed -e '/m64=/s/lib64/lib/' -i.orig gcc/config/i386/t-linux64 ;;
     esac
     mkdir -p build && cd build
-    # The target libraries take CFLAGS by themselves in a native build, but
-    # not LDFLAGS: named, so libgcc_s and libstdc++ are linked with them too.
-    # Without a bootstrap, cc1 and the drivers would link stage 02's static
-    # libstdc++ and libgcc, which carry no CET note, and lose theirs; the
-    # empty stage1 flags link the shared ones instead.
+    # LDFLAGS_FOR_TARGET: a native build passes CFLAGS to the target libraries, not LDFLAGS.
+    # --with-stage1-ldflags=: else cc1 links stage 02's static libstdc++, which has no CET note.
     local want; want="$(uname -m)-kryptik-linux-gnu"
     ../configure --build="$want" --prefix=/usr LD=ld LDFLAGS_FOR_TARGET="$LDFLAGS" \
         --with-stage1-ldflags= \
@@ -29,12 +20,9 @@ s_gcc_native() {
         --disable-libsanitizer --disable-libssp --disable-libvtv \
         --with-system-zlib
     make
-    # Stage 02's compiler ran fixincludes and this one does not, so its fixed
-    # headers (searched before /usr/include) and its fixincl would stay.
+    # No fixincludes here, so stage 02's fixed headers (searched first) would stay.
     rm -rf "/usr/lib/gcc/${want}/${V_GCC}/include-fixed" "/usr/libexec/gcc/${want}/${V_GCC}/install-tools"
-    # -j1: the install replaces /usr/include/c++'s headers one by one, and a
-    # parallel job rebuilding libcc1 against them, which they now postdate,
-    # can find one gone.
+    # -j1: install replaces the C++ headers one by one, and a parallel libcc1 rebuild can miss one.
     make -j1 install
 
     local triple t lib
@@ -48,9 +36,7 @@ s_gcc_native() {
     { gcc $CFLAGS $LDFLAGS -o "$t/c" "$t/c.c" && "$t/c" \
         && g++ $CXXFLAGS $LDFLAGS -o "$t/p" "$t/p.cc" && "$t/p"; } \
         || { rm -rf "$t"; echo "FAIL: the new compiler cannot build and run a C and a C++ program that throws"; return 1; }
-    # Whole outputs, not pipes into grep -q, which can end readelf with SIGPIPE.
-    # A program keeps the CET note only if every object it links has it: the
-    # crt files, libc_nonshared and libgcc.a included.
+    # Captured, as grep -q can SIGPIPE readelf; CET survives only if every linked object has it.
     local out; out="$(readelf -h -n "$t/c")"; rm -rf "$t"
     [[ "$out" == *"Type:"*"DYN"* ]] || { echo "FAIL: its programs are not PIE"; return 1; }
     [[ "$out" == *"x86 feature: IBT, SHSTK"* ]] || { echo "FAIL: its programs carry no IBT and SHSTK: an object they link lacks the note"; return 1; }

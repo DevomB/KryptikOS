@@ -3,9 +3,7 @@
 
     icmp-echo.py HOST [TIMEOUT]
 """
-# The ICMP datagram socket needs no privilege (net.ipv4.ping_group_range, set
-# by kryptikd in the zone). ping uses it too; the reachability checks use this
-# instead, so a broken ping fails only the ping checks.
+# Not ping itself, so a broken ping fails only the ping checks.
 import socket
 import struct
 import sys
@@ -31,7 +29,7 @@ while True:
         s.recvfrom(1500)
         print("PONG", host)
         sys.exit(0)
-    except Exception as e:  # noqa: BLE001 - the reason is the point
+    except Exception as e:  # noqa: BLE001 - its text is the reason printed
         last = str(e)
     finally:
         try:

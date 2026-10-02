@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
-# Stage 05: the linux-hardened kernel (ADR-009), built in the chroot by the
-# native target compiler from the fragments in build/config/kernel:
-#   hardening.fragment   KSPP options in vanilla Linux
-#   hardened.fragment    options that exist only with linux-hardened
-#   boot.fragment        firmware boot, the verified root, the desktop, drivers
-# It installs into the chroot's own /boot and /lib/modules. An install under
-# ${KRYPTIK_WORK}/sysroot would be a nested, half-populated target tree.
+# Stage 05: the linux-hardened kernel (ADR-009), built in the chroot from build/config/kernel.
+# It installs into the chroot's own /boot and /lib/modules, never a nested ${KRYPTIK_WORK}/sysroot.
 # usage: make kernel   (or, inside the chroot, 05-kernel.sh [--redo <step>])
 
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
@@ -36,7 +31,6 @@ MODDIR="${KRYPTIK_DESTDIR}/lib/modules"
 CONFIG_DIR="${KRYPTIK_ROOT}/build/config/kernel"
 FRAG_BASE="${CONFIG_DIR}/hardening.fragment"
 FRAG_HARDENED="${CONFIG_DIR}/hardened.fragment"
-# See docs/design/boot-and-updates.md.
 FRAG_BOOT="${CONFIG_DIR}/boot.fragment"
 
 REDO=""
@@ -47,8 +41,7 @@ mkdir -p "$STAMPS" "$LOGS" "$BUILDDIR"
 
 # --- steps -----------------------------------------------------------------
 
-# Before unpacking the source: gcc must be native (not the /tools cross
-# compiler), target Kryptik, and be the one stage 04 built userspace with.
+# Before unpacking: gcc must be the native Kryptik compiler stage 04 built userspace with.
 s_compiler_check() {
     local cc; cc="$(command -v gcc || true)"
     [[ -n "$cc" ]] || { echo "no gcc on PATH (${PATH})"; return 1; }
@@ -76,8 +69,7 @@ s_compiler_check() {
     fi
     echo "PASS: native target compiler"
 
-    # KSTACK_ERASE, RANDSTRUCT_FULL and LATENT_ENTROPY are GCC plugins; without
-    # the plugin headers kconfig drops them and s_config refuses the config.
+    # KSTACK_ERASE, RANDSTRUCT_FULL and LATENT_ENTROPY need the plugin headers, or s_config fails.
     local plugin_dir; plugin_dir="$(gcc -print-file-name=plugin)"
     if [[ -e "${plugin_dir}/include/plugin-version.h" ]]; then
         echo "PASS: gcc plugin headers at ${plugin_dir}/include"
@@ -86,7 +78,6 @@ s_compiler_check() {
         echo "         CONFIG_GCC_PLUGINS resolves to n and the fragment check in s_config will fail."
     fi
 
-    # And it must link binaries that run.
     local t; t="$(mktemp -d)"
     # shellcheck disable=SC2064  # $t is wanted at trap-definition time
     trap "rm -rf '$t'" RETURN
@@ -141,23 +132,20 @@ s_patch() {
     echo "--- applying ---"
     patch -Np1 -i "$patch"
 
-    # A hardened-only symbol must now exist.
+    # After patching, a hardened-only symbol must exist.
     if ! grep -rq "config SLAB_CANARY" security/ mm/ 2>/dev/null \
     && ! grep -rq "SLAB_CANARY" security/Kconfig.hardening 2>/dev/null; then
         echo "WARNING: SLAB_CANARY not found after patching - verify the patch"
     fi
 }
 
-# CPU microcode, built into the signed kernel (CONFIG_EXTRA_FIRMWARE): with no
-# initramfs, the early loader can find it nowhere else. All of Intel's files
-# (it picks by family-model-stepping) and AMD's containers, about 18 MB. Intel's
-# "with caveats" updates stay out; they need a BIOS that expects them.
+# CPU microcode, built into the kernel: with no initramfs the early loader finds it nowhere else.
 s_microcode() {
     echo "inputs: intel ${1:-none}, amd from linux-firmware ${2:-none}"
-    # Inside the kernel tree: stage 06 relinks from a cached or artifact copy
-    # of the tree, which carries nothing beside it.
+    # In the kernel tree, since stage 06 relinks from a copy of the tree alone.
     local dir="${KSRC}/kryptik-microcode"
     rm -rf "$dir"; mkdir -p "$dir"
+    # Not Intel's "with caveats" set, which needs a BIOS that expects it.
     tar -xf "${KRYPTIK_SOURCES}/microcode-${V_INTEL_MICROCODE}.tar.gz" -C "$dir" \
         --strip-components=1 --wildcards '*/intel-ucode/*' '*/license'
     tar -xf "${KRYPTIK_SOURCES}/linux-firmware-${V_LINUX_FIRMWARE}.tar.xz" -C "$dir" \
@@ -176,9 +164,7 @@ s_microcode() {
 }
 
 s_config() {
-    # $1 fragment digest, $2 $3 microcode releases, $4 the critical option
-    # list's digest: arguments only so the stamp covers inputs read by path or
-    # held in a variable, which a function's text does not show.
+    # Arguments only for the stamp: fragment digest, microcode releases, critical list digest.
     echo "fragment digest: ${1:-none}; microcode: ${2:-none} ${3:-none}; critical options: ${4:-none}"
     cd "$KSRC"
 
@@ -285,8 +271,7 @@ s_install() {
     cp -v System.map "${BOOTDIR}/System.map-${V_LINUX}"
     cp -v .config "${BOOTDIR}/config-${V_LINUX}"
 
-    # The integrity suite loads the signed mac80211_hwsim and must see this
-    # unsigned copy refused. modules_install signs; the build tree's .ko is not.
+    # An unsigned copy the integrity suite must see refused; only modules_install signs.
     local hwsim="drivers/net/wireless/virtual/mac80211_hwsim.ko"
     [[ -f "$hwsim" ]] || { echo "FAIL: ${hwsim} was not built (CONFIG_MAC80211_HWSIM=m, boot.fragment)"; return 1; }
     if grep -q '~Module signature appended~' "$hwsim"; then
@@ -307,8 +292,7 @@ s_verify_install() {
 
     [[ -s "$img" ]] || { echo "FAIL: ${img} missing or empty"; n=$((n + 1)); }
 
-    # Modules live under the kernel release (include/config/kernel.release),
-    # which LOCALVERSION makes differ from V_LINUX.
+    # Modules live under the kernel release, which LOCALVERSION makes differ from V_LINUX.
     local krel
     krel="$(cat "${KSRC}/include/config/kernel.release" 2>/dev/null || true)"
     [[ -n "$krel" ]] || krel="${V_LINUX}"
@@ -324,16 +308,14 @@ s_verify_install() {
     # A ${KRYPTIK_WORK}/sysroot here means a nested install.
     if [[ -e "${KRYPTIK_WORK}/sysroot" ]]; then
         echo "FAIL: ${KRYPTIK_WORK}/sysroot exists inside the chroot."
-        echo "Something installed into a nested target tree. See the header of"
-        echo "this file."
+        echo "Something installed into a nested target tree (see the header of build/stages/05-kernel.sh)."
         n=$((n + 1))
     else
         echo "ok: no nested target tree under ${KRYPTIK_WORK}"
     fi
 
     echo "--- compiler recorded in the image ---"
-    # grep reads vmlinux itself: `strings | grep -m1` can fail on SIGPIPE.
-    # [ -~] stops at the NUL ending the banner, which names the compiler.
+    # grep reads vmlinux itself, as strings | grep -m1 can SIGPIPE; [ -~] stops at the banner's NUL.
     local banner
     banner="$(grep -a -m1 -o 'Linux version [ -~]*' "$KSRC/vmlinux" 2>/dev/null || true)"
     if [[ -z "$banner" ]]; then
@@ -368,24 +350,18 @@ echo
 [[ -f "$FRAG_BASE" ]]     || die "missing ${FRAG_BASE}"
 [[ -f "$FRAG_HARDENED" ]] || die "missing ${FRAG_HARDENED}"
 
-# An EOL kernel is refused (ADR-009) on the host, by `make kernel` before it
-# enters the chroot: in here there is no network to ask kernel.org.
+# `make kernel` refuses an EOL kernel (ADR-009) on the host: in here there is no network.
 
-# No -lgcc_s workaround for sorttable's pthread_exit(): the patched glibc
-# loader copes with it (build/patches/glibc-2.40/README.md), and this link
-# tests that.
+# No -lgcc_s for sorttable's pthread_exit(): the patched glibc copes, and this link tests it.
 
-# Files read by path and variables from the environment are invisible to
-# `declare -f`, so their digests are passed as step arguments.
+# Files read by path are invisible to declare -f, so their digests go in as step arguments.
 FRAG_DIGEST="$(cat "$FRAG_BASE" "$FRAG_HARDENED" "$FRAG_BOOT" | sha256_of_stdin)"
 
-# elfutils is the last of the kernel's build dependencies in stage 04's order,
-# so this covers them without tying the kernel to later packages.
+# The kernel's last build dependency in stage 04, so later packages do not rebuild the kernel.
 stage_depends_on "bs-" elfutils
 
 step compiler-check  --check s_compiler_check
-# The build tree may be deleted to reclaim space; then every step that reads
-# it must run again, so their stamps are archived.
+# A build tree deleted to reclaim space: archive the stamps of every step that reads it.
 if [[ ! -d "$KSRC" && -f "${STAMPS}/${STAMP_PREFIX}unpack" ]]; then
     gone="${STAMPS}/legacy/kernel-tree-gone-$(date +%Y%m%dT%H%M%S)"
     mkdir -p "$gone"
@@ -395,10 +371,7 @@ if [[ ! -d "$KSRC" && -f "${STAMPS}/${STAMP_PREFIX}unpack" ]]; then
     warn "the kernel tree ${KSRC} is gone but its steps were stamped as built;"
     warn "those stamps are archived under ${gone}/ and the tree is unpacked, patched, configured and built again."
 fi
-# The module signing key never goes into the cache, which a pull request's run
-# can restore. A tree without it builds again from `build`: kbuild makes a new
-# key, and the kernel and its modules are signed as one pair. Every restore
-# comes here, so the stamps are dropped, not archived.
+# The signing key is never cached (a pull request's run can restore caches): rebuild and re-sign.
 if [[ -d "$KSRC" && ! -f "$KSRC/certs/signing_key.pem" && -f "${STAMPS}/${STAMP_PREFIX}build" ]]; then
     for s in build size modules install verify-install; do
         rm -f "${STAMPS}/${STAMP_PREFIX}${s}"
@@ -412,9 +385,7 @@ step microcode       s_microcode "$V_INTEL_MICROCODE" "$V_LINUX_FIRMWARE"
 step config          s_config "$FRAG_DIGEST" "$V_INTEL_MICROCODE" "$V_LINUX_FIRMWARE" \
     "$(printf '%s' "$KCONFIG_CRITICAL" | sha256_of_stdin)"
 
-# kernel-hardening-checker (KSPP) on this .config and on stage 06's COMMON_ARGS
-# command line. Each finding must be fixed in a fragment or listed, with its
-# reason, in build/config/kernel/checker-accepted.txt.
+# kernel-hardening-checker on .config and stage 06's COMMON_ARGS; fix a finding or accept it.
 s_hardening_check() {
     echo "config digest: ${1:-none}; accepted list digest: ${2:-none}; command line digest: ${3:-none}"
     echo "checker: ${5:-none}, the script that runs it: ${4:-none}"
@@ -427,8 +398,7 @@ step hardening-check --check s_hardening_check \
     "$(sha256_of "$ACCEPTED_LIST")" "$COMMON_ARGS_DIGEST" \
     "$(sha256_of "${KRYPTIK_ROOT}/tools/check-kernel-hardening.sh")" "$V_KERNEL_HARDENING_CHECKER"
 
-# .config is an input of every later step, but a fingerprint covers only a
-# step's recipe and arguments; hence this digest, taken after s_config wrote it.
+# .config feeds every later step, but no fingerprint sees it; hence this digest, after s_config.
 CFG_DIGEST="$(sha256_of "${KSRC}/.config" 2>/dev/null || echo noconfig)"
 
 step build           s_build "${HOSTLDFLAGS:-}" "$CFG_DIGEST"
