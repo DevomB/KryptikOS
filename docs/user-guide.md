@@ -211,13 +211,15 @@ wrong passphrases, just boot again.
 ## 4. Update
 
 A system built with a channel address lets its net zone bring the channel's
-statement of what is current, and does nothing else until you ask. As the
-user, at the administration login without `su`:
+statement of what is current, and fetches nothing until you ask, unless you
+have turned automatic fetching on; installing is always yours. As the user,
+at the administration login without `su`:
 
 ```sh
 kryptik update status     # the running version, the newest release the channel names and how old that statement is, what has arrived
 kryptik update fetch      # bring that release onto the state partition, verified piece by piece
 kryptik update apply      # install it, with the trial boot described below
+kryptik update auto on    # fetch each newer release as it is announced; `auto off`, the default, waits for `fetch`
 ```
 
 A release brought by hand is a signed payload directory holding exactly

@@ -12,7 +12,8 @@
 #                                  focused zone in $XDG_RUNTIME_DIR/kryptik/
 #                                  focus as text (and the last zone window's
 #                                  in focus.zone), and opens the launcher
-#   kryptik-chrome --menu          the launcher: zones, their state, apps
+#   kryptik-chrome --menu          the launcher: zones, their state, apps,
+#                                  and a release that waits to be installed
 #   kryptik-chrome --prompt ZONE [--no-display] -- CMD [ARG...]
 #                                  ask for the zone's passphrase in a trusted
 #                                  window, then launch (kryptik-launch hands
@@ -142,6 +143,15 @@ menu_zones() {
     done
 }
 
+# A release that has arrived whole waits for the user, so the launcher says so.
+menu_update() {
+    v="$("$LAUNCH" --update status 2>/dev/null | sed -n 's/^staged *\([^:]*\): .*, complete.*/\1/p')"
+    [ -n "$v" ] || return 0
+    echo
+    echo "Update: ${v} has arrived. To install it: kryptik update apply, at the"
+    echo "        administration login (Ctrl+Alt+F2); the next boot tries it."
+}
+
 run_menu() {
     while :; do
         clear 2>/dev/null
@@ -151,6 +161,7 @@ run_menu() {
         echo
         echo "Zones:"
         menu_zones
+        menu_update
         echo
         echo "Apps:  t terminal   e editor (nano)   b browser (lynx, needs routed network)"
         echo "Also:  s<N> stop zone N   m<N><M> move zone N's clipboard to zone M (one payload, once)"
