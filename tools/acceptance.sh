@@ -494,7 +494,7 @@ write_report() {
         echo
         echo "## Suites"
         echo
-        for g in inputs build boot install integrity zones desktop update release; do
+        for g in inputs build boot install integrity zones desktop update production release; do
             gs="PASS"; any=0
             for i in "${!R_SUITE[@]}"; do
                 [[ "${R_SUITE[$i]}" == "$g" ]] || continue; any=1

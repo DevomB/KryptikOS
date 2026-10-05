@@ -86,10 +86,11 @@ launch_plain untrusted "/usr/libexec/kryptik/wlprobe list" > "$LOG/launch-probe.
 sleep 3
 out="$(since_mark probe untrusted)"
 [[ "$out" == *"connected /run/kryptik/wayland-0"* ]] && pass "zone-proxy-path" "the zone's client connected to /run/kryptik/wayland-0 (the proxy)" || fail "zone-proxy-path" "$(echo "$out" | head -3 | tr '\n' ' ') [$(cat "$LOG/launch-probe.out" | tr '\n' ' ')]"
+needed_missing=""
 for g in wl_compositor wl_shm wl_seat xdg_wm_base; do
-    [[ "$out" == *"global "*" $g "* ]] || fail "zone-sees-$g" "not offered"
+    [[ "$out" == *"global "*" $g "* ]] || needed_missing="$needed_missing $g"
 done
-[[ "$out" == *"global "*" xdg_wm_base "* ]] && pass "zone-sees-needed" "wl_compositor, wl_shm, wl_seat, xdg_wm_base offered"
+[[ -z "$needed_missing" ]] && pass "zone-sees-needed" "wl_compositor, wl_shm, wl_seat, xdg_wm_base offered" || fail "zone-sees-needed" "not offered:$needed_missing"
 hidden_seen=""
 for g in zwlr_screencopy_manager_v1 wl_data_device_manager zwlr_data_control_manager_v1 zwlr_layer_shell_v1 zwp_virtual_keyboard_manager_v1 zwlr_virtual_pointer_manager_v1 zwlr_export_dmabuf_manager_v1 zwlr_gamma_control_manager_v1 zwlr_output_manager_v1 ext_session_lock_manager_v1 zwlr_foreign_toplevel_manager_v1; do
     [[ "$out" == *" $g "* ]] && hidden_seen="$hidden_seen $g"
@@ -320,6 +321,11 @@ n=40; while [[ "$n" -gt 0 ]] && [[ "$(since_mark trf1 dev)" != *ok* && "$(since_
 out="$(since_mark trf1 dev)"
 [[ "$out" == *"ok report.txt"* ]] && pass "transfer-approved" "after the person typed the code: $(echo "$out" | grep -o 'ok .*' | head -1)" || fail "transfer-approved" "$(echo "$out" | tail -2 | tr '\n' ' '); $(zone_why work)"
 if [[ -f "$R/work/incoming/report.txt" ]] && [[ "$(cat "$R/work/incoming/report.txt")" = report-body ]]; then pass "transfer-landed" "the file is in work's incoming/, byte-identical"; else fail "transfer-landed" "$(ls -la "$R/work/incoming" 2>&1 | tail -2 | tr '\n' ' ')"; fi
+# Delivered as the destination's own: left to root or to the sender, it is a
+# file work cannot open, or one it does not hold alone.
+work_uid="$(sed -n 's/^uid_base *= *\([0-9]*\).*/\1/p' /usr/lib/kryptik/zones/work.toml)"
+landed_uid="$(stat -c %u "$R/work/incoming/report.txt" 2>/dev/null)"
+[[ -n "$work_uid" && "$landed_uid" == "$work_uid" ]] && pass "transfer-owned-by-destination" "report.txt belongs to work's identity (uid $landed_uid)" || fail "transfer-owned-by-destination" "owner uid ${landed_uid:-unreadable}; work's identity is ${work_uid:-unknown}"
 # As for personal above: wait for dev's volume to close before the next launch.
 wait_for 30 test ! -e /run/kryptik/zones/dev/init.pid; sleep 1
 mark trf2 dev

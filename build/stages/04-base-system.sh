@@ -315,7 +315,7 @@ PACKAGES=(
     # validates them at install time, so the two must move together.
     "kryptikd"    "s_kryptikd ${KRYPTIK_KRYPTIKD_BIN:-none} $([[ -f "${KRYPTIK_KRYPTIKD_BIN:-}" ]] && sha256_of "${KRYPTIK_KRYPTIKD_BIN}" || echo absent) $(tree_digest "${KRYPTIK_ROOT}"/compartments/zones/*.toml "${KRYPTIK_ROOT}"/compartments/zones/policy/*) $(sha256_of "${KRYPTIK_ROOT}/tools/kryptik" 2>/dev/null || echo none)"
     # The suites and guest checks the VM drivers run; every file is an input.
-    "tests"       "s_tests $(tree_digest "${KRYPTIK_ROOT}"/compartments/tests/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/probes/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/src/isolate.rs "${KRYPTIK_ROOT}"/compartments/kryptikd/src/rootfs.rs "${KRYPTIK_ROOT}"/build/guest-tests/*.sh "${KRYPTIK_ROOT}"/build/guest-tests/*.py)"
+    "tests"       "s_tests $(tree_digest "${KRYPTIK_ROOT}"/compartments/tests/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/probes/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/src/isolate.rs "${KRYPTIK_ROOT}"/compartments/kryptikd/src/rootfs.rs "${KRYPTIK_ROOT}"/compartments/kryptikd/src/seccomp.rs "${KRYPTIK_ROOT}"/build/guest-tests/*.sh "${KRYPTIK_ROOT}"/build/guest-tests/*.py)"
     # The tarballs it reads are pinned by sources.lock and named by fetch-sources.
     "licences"    "s_licences $(sha256_of "${KRYPTIK_ROOT}/sources.lock") $(sha256_of "${KRYPTIK_ROOT}/tools/fetch-sources.sh") $(sha256_of "${KRYPTIK_ROOT}/LICENSE") $(tree_digest "${KRYPTIK_ROOT}/build/licences")"
     "boot-check"  "--check s_boot_check"

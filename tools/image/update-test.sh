@@ -244,7 +244,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'kryptik-update check-pointer /run/upd/p/statement/latest /run/upd/p/statement/latest.sig && echo STATEMENT-OK')" "expect:signed by kryptik-latest" "expect:STATEMENT-OK" \
     "${NOT_A_POINTER[@]}" \
     "$(ROOTSH 'flock /run/kryptik/update.lock sleep 20 & sleep 1; kryptik-update apply /run/upd/a --recovery; echo RC=$?')" "expect:another update is in progress" \
-    "$(ROOTSH 'fallocate -l 100G /var/filler 2>/dev/null || dd if=/dev/zero of=/var/filler bs=1M 2>/dev/null; cp -a /run/upd/a /var/lib/kryptik/updates/a-full 2>&1 | tail -1; kryptik-update apply /var/lib/kryptik/updates/a-full --recovery; echo RC=$?; rm -rf /var/filler /var/lib/kryptik/updates/a-full')" "expect:RC=1\r?\n" \
+    "$(ROOTSH 'fallocate -l 100G /var/filler 2>/dev/null || dd if=/dev/zero of=/var/filler bs=1M 2>/dev/null; cp -a /run/upd/a /var/lib/kryptik/updates/a-full 2>&1 | tail -1; kryptik-update apply /var/lib/kryptik/updates/a-full --recovery; echo FULL-RC=$?; rm -rf /var/filler /var/lib/kryptik/updates/a-full')" "expect:FULL-RC=1\r?\n" \
     "$(ROOTSH 'kryptik-update status')" "expect:trial pending:    none" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
@@ -290,13 +290,16 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'mkdir -p /run/upd/a && mount -o ro /dev/vdb /run/upd/a && echo MNT-OK')" "expect:MNT-OK" \
     "send:su - root -c 'kryptik-update apply /run/upd/a --recovery'" "expect:Password: ?" "send:${RPASS}" \
     "expect:writing kryptik-a"
+rc=$?
 python3 - "$QMP" <<'PY'
 import json, socket, sys
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect(sys.argv[1]); f = s.makefile("rwb", buffering=0)
 f.readline(); f.write(b'{"execute":"qmp_capabilities"}\n'); f.readline(); f.write(b'{"execute":"quit"}\n'); f.readline()
 PY
 sleep 2; stop_vm
-green "VM killed while slot a was being written (QMP quit, no clean shutdown)"
+# Killed during the write only if the write was seen to begin.
+[[ "$rc" -eq 0 ]] && green "VM killed while slot a was being written (QMP quit, no clean shutdown)" || red "the write of slot a was never seen to begin, so the VM was not killed during it"
+stop_unless_ok "$rc" "step 6, the kill during the write"
 start_vm update-p6b --disk "$PA"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'cat /run/kryptik/boot-identity; kryptik-update status; echo P6-OK')" "expect:slot=b" "expect:trial pending:    none" \
@@ -337,8 +340,11 @@ stop_unless_ok "$rc" "step 7 arming"
 B_OFF=$(( $(part_start "$DISK" 3) * 512 ))
 # The superblock's volume name, the first block a root mount reads (a block
 # nothing reads at boot would let the trial succeed).
-printf '\xa5' | dd of="$DISK" bs=1 seek=$(( B_OFF + 1024 + 0x78 )) conv=notrunc status=none
-green "slot b's root image corrupted from the host (one byte in the superblock)"
+if [[ "$B_OFF" -gt 0 ]] && printf '\xa5' | dd of="$DISK" bs=1 seek=$(( B_OFF + 1024 + 0x78 )) conv=notrunc status=none; then
+    green "slot b's root image corrupted from the host (one byte in the superblock)"
+else
+    red "slot b's root image could not be changed from the host (partition 3 starts at byte ${B_OFF})"
+fi
 start_vm update-p7b --disk "$PB"
 drive "expect:BdsDxe: starting Boot" \
     "expect:device-mapper: verity:.*(corrupt|mismatch|error)|dm-verity device corrupted" \
