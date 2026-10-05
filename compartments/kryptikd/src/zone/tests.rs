@@ -157,6 +157,10 @@ fn only_nic_zone_names_interface() {
     assert!(format!("{err}").contains("only meaningful"), "got: {err}");
     let bad = VAULT.replace("mode = \"none\"", "mode = \"nic\"\nnic = \"averylongname123\"");
     assert!(Zone::from_str(&bad).is_err());
+    for odd in ["eth\0x", "eth0:1", "..", "eth\u{1b}0", "eth 0", "eth\u{e9}"] {
+        let bad = VAULT.replace("mode = \"none\"", &format!("mode = \"nic\"\nnic = \"{odd}\""));
+        assert!(Zone::from_str(&bad).is_err(), "{odd:?} must be refused");
+    }
 }
 
 #[test]

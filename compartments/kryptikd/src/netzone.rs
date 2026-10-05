@@ -306,7 +306,8 @@ fn plumb_nic_zone_bridge(zone: &Zone, zone_ns: i32) -> Result<(), NetError> {
         Some("*") => physical_interfaces().map_err(|e| io("list the physical interfaces of zone 0", e))?,
         Some(n) => {
             // A named NIC missing from zone 0 is a configuration error.
-            if unsafe { libc::if_nametoindex(std::ffi::CString::new(n).unwrap().as_ptr()) } == 0 {
+            let c = std::ffi::CString::new(n).map_err(|_| NetError::Refused(format!("[network] nic = {n:?}")))?;
+            if unsafe { libc::if_nametoindex(c.as_ptr()) } == 0 {
                 return Err(NetError::Refused(format!(
                     "[network] nic = {n:?} is not an interface in this namespace"
                 )));

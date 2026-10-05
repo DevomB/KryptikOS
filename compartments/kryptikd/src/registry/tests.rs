@@ -221,3 +221,19 @@ fn probe_creates_no_lock_file() {
     reclaim(&zone).unwrap();
     assert!(!dir.exists());
 }
+
+#[test]
+fn reclaim_stays_below_kryptik_root() {
+    let root = Path::new("/sys/fs/cgroup/kryptik");
+    assert!(under(Path::new("/sys/fs/cgroup/kryptik/zone-vault"), root));
+    for p in [
+        "/sys/fs/cgroup/kryptik/../user.slice",
+        "/sys/fs/cgroup/kryptik/a/../../x",
+        "/sys/fs/cgroup/kryptik",
+        "/sys/fs/cgroup/kryptik/.",
+        "/sys/fs/cgroup/kryptikx/a",
+        "kryptik/a",
+    ] {
+        assert!(!under(Path::new(p), root), "{p} must not be reclaimed");
+    }
+}

@@ -10,7 +10,7 @@ use crate::cgroup;
 use std::fs;
 use std::io;
 use std::os::unix::io::RawFd;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug)]
 pub enum RegistryError {
@@ -419,7 +419,7 @@ fn reclaim_locked(dir: &Path, zone: &str) -> Result<(), RegistryError> {
         let p = Path::new(&path);
         /* Only inside kryptikd's own cgroup tree: a malformed or planted entry
          * must not aim cgroup.kill at, say, /sys/fs/cgroup/user.slice. */
-        if !p.starts_with(cgroup::kryptik_root()) {
+        if !under(p, &cgroup::kryptik_root()) {
             eprintln!(
                 "kryptikd: ignoring a registry entry for zone {zone:?} that names a cgroup \
                  outside {}: {}",
@@ -437,6 +437,11 @@ fn reclaim_locked(dir: &Path, zone: &str) -> Result<(), RegistryError> {
         }
     }
     sweep(dir)
+}
+
+/// `p` names something below `root`. starts_with alone takes `root/../user.slice`.
+fn under(p: &Path, root: &Path) -> bool {
+    p.starts_with(root) && p != root && !p.components().any(|c| c == Component::ParentDir)
 }
 
 /// An entry this process owns. Dropping it removes the entry and releases the
