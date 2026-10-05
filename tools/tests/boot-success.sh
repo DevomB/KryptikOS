@@ -107,7 +107,7 @@ check "healthy trial: committed" "$RESULT" "commit b"
 check "BOOTX64.EFI is now the slot b kernel" "$(cat "$KTEST/esp/EFI/BOOT/BOOTX64.EFI")" "kernel-b"
 check "committed-slot records b" "$(cat "$KTEST/esp/kryptik/committed-slot")" "b"
 check "the trial record is gone" "$([[ -e "$KTEST/boot/trial" ]] && echo present || echo gone)" "gone"
-check "the trial's firmware entries and BootNext are forgotten after the commit, and the committed slot gets its own" "$CALLS" "mount -o rw,nosuid,nodev,noexec /dev/vda1 $KTEST/run/esp umount $KTEST/run/esp efiboot forget efiboot ensure b "
+check "the trial's firmware entries and BootNext are forgotten after the commit, and the committed slot gets its own" "$CALLS" "mount -t vfat -o rw,nosuid,nodev,noexec /dev/vda1 $KTEST/run/esp umount $KTEST/run/esp efiboot forget efiboot ensure b "
 run_case commit0 b "" persistent 'b\narmed=0\n' $ALL; go
 check "a trial that booted before its armed=1 line was written is still a trial: committed" "$RESULT" "commit b"
 
@@ -128,7 +128,7 @@ run_case unforget2 b "" persistent 'b\narmed=1\n' eudev; : > "$KTEST/efiboot_fai
 check "... and reboots if they stay: its record, now trial.failed, keeps it from coming back" "$(reboots)" "1"
 # On a degraded state /var is a tmpfs, so the trial record is out of reach.
 run_case degraded b "" degraded "" $ALL; go
-check "trial on a degraded state: known from the ESP, not committed, forgotten, rebooted" "${RESULT%%:*}|$(cat "$KTEST/esp/EFI/BOOT/BOOTX64.EFI")|$CALLS" "trial-unhealthy b|kernel-a|mount -o ro,nosuid,nodev,noexec /dev/vda1 $KTEST/run/esp umount $KTEST/run/esp efiboot forget efiboot ensure a reboot "
+check "trial on a degraded state: known from the ESP, not committed, forgotten, rebooted" "${RESULT%%:*}|$(cat "$KTEST/esp/EFI/BOOT/BOOTX64.EFI")|$CALLS" "trial-unhealthy b|kernel-a|mount -t vfat -o ro,nosuid,nodev,noexec /dev/vda1 $KTEST/run/esp umount $KTEST/run/esp efiboot forget efiboot ensure a reboot "
 run_case degraded2 b "" degraded "" $ALL; : > "$KTEST/efiboot_fails"; go
 check "... not rebooted while its entries stay: nothing else keeps the next boot from being it" "$(reboots)" "0"
 run_case degraded3 a "" degraded "" $ALL; go

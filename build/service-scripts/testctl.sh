@@ -35,7 +35,7 @@ testctl_load() {
     [ -n "$dev" ] && [ -b "$dev" ] || return 1
     mkdir -p "$TESTCTL_MNT"
     if ! mountpoint -q "$TESTCTL_MNT"; then
-        mount -o ro,nosuid,nodev,noexec "$dev" "$TESTCTL_MNT" 2>/dev/null || return 1
+        mount -t vfat -o ro,nosuid,nodev,noexec "$dev" "$TESTCTL_MNT" 2>/dev/null || return 1
     fi
     [ -r "$TESTCTL_MNT/kryptik-test.conf" ] || return 1
     if ! testctl_signed "$TESTCTL_MNT/kryptik-test.conf"; then

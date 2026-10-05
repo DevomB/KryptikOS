@@ -162,7 +162,7 @@ case "$media" in
         [ -b "$ROOT_SRC" ] || die "no single kryptik-media partition on the medium this system booted from"
         ESP_SRC="$(kryptik_part kryptik-esp)" || true
         [ -b "$ESP_SRC" ] || die "no single kryptik-esp partition on the medium this system booted from"
-        mount -o ro "$ESP_SRC" "$MNT_BASE/esp" || die "could not mount the medium's ESP"
+        mount -t vfat -o ro "$ESP_SRC" "$MNT_BASE/esp" || die "could not mount the medium's ESP"
         ROOT_JSON="$MNT_BASE/esp/kryptik/root.json"
         ;;
     iso)
@@ -305,7 +305,7 @@ STATE_PASS=""
 mkfs.ext4 -q -F -L kryptik-state "/dev/mapper/$MAPPING" || die "mkfs.ext4 inside ${P4} failed"
 
 # --- the target ESP: slot A is the committed boot file ----------------------
-mount -o rw "$P1" "$MNT_BASE/tesp" || die "could not mount the new ESP"
+mount -t vfat -o rw "$P1" "$MNT_BASE/tesp" || die "could not mount the new ESP"
 [ -f "$MNT_BASE/tesp/EFI/kryptik/kryptik-a.efi" ] || die "the copied ESP has no slot A kernel"
 cp "$MNT_BASE/tesp/EFI/kryptik/kryptik-a.efi" "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI.new" || die "could not stage BOOTX64.EFI"
 sync -f "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI.new"
@@ -317,7 +317,7 @@ sync
 umount "$MNT_BASE/tesp" || die "could not unmount the new ESP"
 
 # --- the state partition: what installed this, and the first-boot preseed --
-mount -o rw "/dev/mapper/$MAPPING" "$MNT_BASE/state" || die "could not mount kryptik-state"
+mount -t ext4 -o rw "/dev/mapper/$MAPPING" "$MNT_BASE/state" || die "could not mount kryptik-state"
 mkdir -p "$MNT_BASE/state/lib/kryptik"
 cat > "$MNT_BASE/state/lib/kryptik/install.json" <<EOF
 {

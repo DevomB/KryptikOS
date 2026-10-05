@@ -76,7 +76,7 @@ mount_esp() {
     dev="$(esp_dev)" || exit 1
     mkdir -p "$ESP_MNT"
     if ! mountpoint -q "$ESP_MNT"; then
-        mount -o rw,nosuid,nodev,noexec "$dev" "$ESP_MNT" || die "cannot mount the ESP"
+        mount -t vfat -o rw,nosuid,nodev,noexec "$dev" "$ESP_MNT" || die "cannot mount the ESP"
         ESP_MINE=1
     fi
 }
