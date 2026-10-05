@@ -93,6 +93,16 @@ zrun untrusted 30 -- sh -c "python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10
 [[ "$ZOUT" == *CROSS-ZONE-BLOCKED* ]] && pass "zone-separation" "untrusted cannot reach personal (10.19.0.$PER) on the bridge" || fail "zone-separation" "$ZOUT"
 [[ "$ZOUT" == *"volumes"* && "$ZOUT" != *"No such"* ]] && fail "volume-hidden" "the volume directory is visible from untrusted" || pass "volume-hidden" "no /var/lib/kryptik/volumes inside untrusted"
 [[ "$ZOUT" == *"personal"* ]] && fail "home-hidden" "another zone's home is visible" || pass "home-hidden" "no other zone's home under /home"
+# The network the uplink sits on: untrusted's definition opens it ([network]
+# local) and personal's does not. The bridge answers personal, so the refusal
+# is the rule's and not a dead path.
+ppid="$(cut -d' ' -f1 /run/kryptik/zones/personal/init.pid 2>/dev/null)"
+if [[ -n "$ppid" ]] && nsenter -t "$ppid" -n ping -c1 -W3 10.19.0.1 >/dev/null 2>&1 \
+   && ! nsenter -t "$ppid" -n ping -c1 -W3 10.0.2.2 >/dev/null 2>&1; then
+    pass "uplink-refused" "personal reaches the bridge and is refused the VM gateway, which untrusted reached"
+else
+    fail "uplink-refused" "personal (init ${ppid:-none}) reached the VM gateway, or not even the bridge; $(grep -h 'netzone: nftables: zones go out' /run/uncaught-logs/current 2>/dev/null | tail -1)"
+fi
 
 # net zone restart: routed zones fail closed while it is down, recover after
 # Not `|| echo 0`: grep -c prints 0 and also exits 1.
@@ -112,7 +122,7 @@ zrun untrusted 30 -- sh -c 'python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10
 [[ "$ZOUT" == *GATEWAY-OK* ]] && pass "egress-after-restart" "a zone started after the restart has egress" || fail "egress-after-restart" "$ZOUT"
 # the running zone was reattached
 ppid="$(cat /run/kryptik/zones/personal/init.pid 2>/dev/null | cut -d' ' -f1)"
-if [[ -n "$ppid" ]] && nsenter -t "$ppid" -n ping -c1 -W3 10.0.2.2 >/dev/null 2>&1; then pass "reattach-after-restart" "the zone that was running has egress again"; else fail "reattach-after-restart" "personal (init $ppid) has no egress after the net restart"; fi
+if [[ -n "$ppid" ]] && nsenter -t "$ppid" -n ping -c1 -W3 10.19.0.1 >/dev/null 2>&1; then pass "reattach-after-restart" "the zone that was running reaches the net zone again"; else fail "reattach-after-restart" "personal (init $ppid) does not reach the bridge after the net restart"; fi
 
 # --- zones: the net zone over a radio -----------------------------------------------
 # QEMU has no radio, so mac80211_hwsim makes two. phy1 goes into a network
@@ -121,6 +131,8 @@ if [[ -n "$ppid" ]] && nsenter -t "$ppid" -n ping -c1 -W3 10.0.2.2 >/dev/null 2>
 # take on its next start, which `kryptikd wifi add` causes. The station is
 # the net zone's own wpa_supplicant, under its filter, on the shipped kernel.
 AP_SSID=kryptik-hwsim; AP_PASS=hwsim-passphrase; AP_ADDR=192.168.77.1
+# An address the access point routes to, past the network the radio is on.
+AP_FAR=198.51.100.1
 WIFI_DIR=/var/lib/kryptik/wifi
 ready_count() { local n; n="$(grep -hc 'netzone: READY' /run/uncaught-logs/current 2>/dev/null)"; echo "${n:-0}"; }
 last_ready() { grep -h 'netzone: READY' /run/uncaught-logs/current /run/uncaught-logs/@* 2>/dev/null | tail -1; }
@@ -174,9 +186,11 @@ network={
 EOF
     ap ip link set lo up
     ap ip addr add "$AP_ADDR/24" dev "$AP_IF"
+    ap ip addr add "$AP_FAR/32" dev lo
     ap wpa_supplicant -B -i "$AP_IF" -c /root/zt/ap.conf -P /run/zt-ap-wpa.pid -f "$LOG/ap-wpa.log" >> "$LOG/ap.err" 2>&1
     for _ in $(seq 1 30); do ap_wpa status | grep -q '^wpa_state=COMPLETED' && { ap_up=1; break; }; sleep 1; done
     ap dnsmasq --port=0 --interface="$AP_IF" --bind-interfaces --dhcp-range=192.168.77.10,192.168.77.90,1h \
+       --dhcp-option=121,198.51.100.0/24,"$AP_ADDR" \
        --dhcp-leasefile=/run/zt-ap.leases --pid-file=/run/zt-ap-dnsmasq.pid --user=root >> "$LOG/ap.err" 2>&1 || ap_up=0
 fi
 [[ "$ap_up" = 1 ]] && pass "wifi-ap" "$AP_SSID beacons on $AP_IF in its own namespace ($(ap_wpa status | grep -E '^(mode|freq)=' | tr '\n' ' ')) with a DHCP server" || fail "wifi-ap" "$(tr '\n' ' ' < "$LOG/ap.err" | cut -c1-200) status: $(ap_wpa status | tr '\n' ' ' | cut -c1-120)"
@@ -212,6 +226,23 @@ if [[ "$ZOUT" == *AP-REACHED* && "${sta_seen:-0}" -ge 1 ]]; then
     pass "wifi-egress" "a routed zone reached the access point ($AP_ADDR) through the net zone over the radio, which lists $sta_seen station"
 else
     fail "wifi-egress" "$ZOUT; stations at the access point: ${sta_seen:-0}; $(tail -2 "$LOG/untrusted.err" | tr '\n' ' ')"
+fi
+# personal's definition does not open the radio's own network: once the net
+# zone has taken the access point as a gateway, its address is refused
+# personal, and what lies past it is not.
+ppid="$(cut -d' ' -f1 /run/kryptik/zones/personal/init.pid 2>/dev/null)"
+for _ in $(seq 1 30); do
+    grep -h 'netzone: nftables: zones go out' /run/uncaught-logs/current 2>/dev/null | tail -1 | grep -q "$AP_ADDR" && break; sleep 1
+done
+far=1; near=0
+if [[ -n "$ppid" ]]; then
+    nsenter -t "$ppid" -n ping -c1 -W3 "$AP_FAR" >/dev/null 2>&1; far=$?
+    nsenter -t "$ppid" -n ping -c1 -W3 "$AP_ADDR" >/dev/null 2>&1; near=$?
+fi
+if [[ "$far" -eq 0 && "$near" -ne 0 ]]; then
+    pass "wifi-beyond" "personal is refused the access point's own address and reaches $AP_FAR past it"
+else
+    fail "wifi-beyond" "personal (init ${ppid:-none}): $AP_FAR rc=$far, $AP_ADDR rc=$near; $(grep -h 'netzone: nftables: zones go out' /run/uncaught-logs/current 2>/dev/null | tail -1); routes: $(nsenter -t "$net_init" -n ip -4 route 2>/dev/null | tr '\n' ';')"
 fi
 # Back to the wire: the access point, its namespace (whose end returns phy1
 # to zone 0) and the radios go first, so the net zone the forget restarts

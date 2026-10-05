@@ -480,8 +480,13 @@ fn plan_line(zone: &Zone, privileged: bool) -> String {
             Some(k) => format!(
                 "network    routed: eth0 = 10.19.0.{k}/24 fd19::{k:x}/64 via the nic zone's {BRIDGE}, \
                  isolated port {}; forwarding and NAT are the nic zone's program's to enable \
-                 once its firewall is loaded (kryptikd leaves forwarding off)",
-                port_name(&zone.name)
+                 once its firewall is loaded (kryptikd leaves forwarding off); {}",
+                port_name(&zone.name),
+                if zone.local {
+                    "may reach the networks the uplinks sit on ([network] local)"
+                } else {
+                    "refused the networks the uplinks sit on"
+                }
             ),
             None => "network    routed: needs [identity] uid_base to derive an address".into(),
         },

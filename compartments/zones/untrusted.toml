@@ -7,6 +7,9 @@ description = "Unknown files and sketchy links. Wiped on exit."
 
 [network]
 mode = "routed"
+# The network the machine is plugged into, with its router and the page a
+# Wi-Fi logs in on: this zone alone reaches it (docs/design/net-zone.md).
+local = true
 
 [storage]
 mode = "ephemeral"

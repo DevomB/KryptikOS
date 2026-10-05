@@ -23,6 +23,8 @@ report() {   # report READY|NOT READY ...: on stdout and in a file for the tests
     say "$*"
     printf '%s\n' "$*" > "$STATUS.new" 2>/dev/null && mv -f "$STATUS.new" "$STATUS" 2>/dev/null || true
 }
+# The zone definitions, on the root this zone shares read-only with zone 0.
+ZONES="${1:-/usr/lib/kryptik/zones}"
 
 [ -d /proc/sys/net/ipv4 ] || { report "NOT READY no network stack"; exit 1; }
 # Nothing forwards until the policy is in place, whatever zone 0 set.
@@ -51,11 +53,47 @@ NICSET=""
 for n in "$@"; do NICSET="${NICSET:+$NICSET, }\"$n\""; done
 NICSET="{ $NICSET }"
 
+# The routed zones whose definition says [network] local = true, each by the
+# address kryptikd gives it (netzone.rs, host_number). A file this zone cannot
+# read names nobody.
+local_zones() {   # local_zones DIR: "10.19.0.K fd19::K" for each
+    for f in "$1"/*.toml; do
+        [ -r "$f" ] || continue
+        awk '
+            { sub(/#.*/, ""); gsub(/[ \t]/, "") }
+            /^\[/ { section = $0; next }
+            section == "[network]" && ($0 == "local=true" || $0 == "local=\"true\"") { claims = 1 }
+            section == "[network]" && $0 == "mode=\"routed\"" { routed = 1 }
+            section == "[identity]" && /^uid_base="?[0-9]+"?$/ { base = $0; gsub(/[^0-9]/, "", base) }
+            END {
+                k = (base - 131072) / 65536 + 2
+                if (claims && routed && base != "" && k == int(k) && k >= 2 && k < 250) printf "10.19.0.%d fd19::%x\n", k, k
+            }' "$f"
+    done
+}
+LOCAL4="$(local_zones "$ZONES" | awk '{ print $1 }' | tr '\n' ',' | sed 's/,$//')"
+LOCAL6="$(local_zones "$ZONES" | awk '{ print $2 }' | tr '\n' ',' | sed 's/,$//')"
+SET4="set local4 { type ipv4_addr; }"; SET6="set local6 { type ipv6_addr; }"
+[ -z "$LOCAL4" ] || SET4="set local4 { type ipv4_addr; elements = { ${LOCAL4} } }"
+[ -z "$LOCAL6" ] || SET6="set local6 { type ipv6_addr; elements = { ${LOCAL6} } }"
+
+# A zone goes out by a gateway (gw4, gw6) and never to the gateway itself:
+# the rest of what an uplink reaches is the network it sits on, open to local4
+# and local6 alone. With no gateway in the sets nothing goes out, so a new
+# lease opens no way in before sync_gateways has seen it.
 RULES="table inet kryptik {
+    set gw4 { type ipv4_addr; }
+    set gw6 { type ipv6_addr; }
+    ${SET4}
+    ${SET6}
     chain forward {
         type filter hook forward priority filter; policy drop;
         ct state established,related accept
-        iifname \"${BR}\" oifname ${NICSET} accept
+        iifname \"${BR}\" oifname ${NICSET} ip saddr @local4 accept
+        iifname \"${BR}\" oifname ${NICSET} ip6 saddr @local6 accept
+        iifname \"${BR}\" oifname ${NICSET} rt ip nexthop @gw4 ip daddr != @gw4 accept
+        iifname \"${BR}\" oifname ${NICSET} rt ip6 nexthop @gw6 ip6 daddr != @gw6 accept
+        iifname \"${BR}\" oifname ${NICSET} reject with icmpx type admin-prohibited
         iifname \"${BR}\" oifname \"${BR}\" drop
     }
     chain postrouting {
@@ -81,11 +119,37 @@ load_policy() {
         *"policy drop"*"masquerade"*) ;;
         *) say "nftables: the loaded table is not the policy (missing drop policy or masquerade)"; nft flush ruleset 2>/dev/null; return 1 ;;
     esac
+    GATEWAYS=""
     return 0
 }
 
+# The gateways the uplinks' routes go by, as "4 ADDRESS" or "6 ADDRESS".
+uplink_gateways() {   # uplink_gateways <uplink>...
+    for n in "$@"; do
+        ip -4 route show dev "$n" 2>/dev/null | awk '$2 == "via" { print 4, $3 }'
+        ip -6 route show dev "$n" 2>/dev/null | awk '$2 == "via" { print 6, $3 }'
+    done | sort -u
+}
+# Put them in gw4 and gw6 when they have changed: one transaction, so the
+# sets are never seen half filled. 1 when nft refuses it.
+GATEWAYS=""
+sync_gateways() {   # sync_gateways <uplink>...
+    now="$(uplink_gateways "$@")"
+    [ "$now" = "$GATEWAYS" ] && return 0
+    gw4="$(printf '%s\n' "$now" | sed -n 's/^4 //p' | tr '\n' ',' | sed 's/,$//')"
+    gw6="$(printf '%s\n' "$now" | sed -n 's/^6 //p' | tr '\n' ',' | sed 's/,$//')"
+    {
+        echo "flush set inet kryptik gw4"
+        echo "flush set inet kryptik gw6"
+        [ -z "$gw4" ] || echo "add element inet kryptik gw4 { $gw4 }"
+        [ -z "$gw6" ] || echo "add element inet kryptik gw6 { $gw6 }"
+    } | nft -f - 2>/tmp/nft.err || { say "nftables: the gateways could not be set: $(tr '\n' ' ' < /tmp/nft.err)"; return 1; }
+    GATEWAYS="$now"
+    say "nftables: zones go out by ${gw4:-no IPv4 gateway} and ${gw6:-no IPv6 gateway}; the uplinks' own networks are refused${LOCAL4:+ but to $LOCAL4}"
+}
+
 policy_ok=0
-if load_policy; then
+if load_policy && sync_gateways "$@"; then
     policy_ok=1
     forwarding on || { report "NOT READY cannot enable forwarding"; policy_ok=0; }
     [ "$policy_ok" = 1 ] && say "nftables: masquerade 10.19.0.0/24 and fd19::/64 via ${NICSET}; forward bridge->uplink only; forwarding enabled"
@@ -162,6 +226,8 @@ if command -v dhcpcd >/dev/null 2>&1; then
 else
     say "no dhcpcd; keeping the carried-over configuration"
 fi
+# The lease named a gateway: until it is in the sets, only local zones go out.
+[ "$policy_ok" = 1 ] && { sync_gateways "$@" || { forwarding off; policy_ok=0; }; }
 
 # --- the resolver routed zones already point at ----------------------------
 DNSPID=""
@@ -295,10 +361,12 @@ trap cleanup TERM INT
 while :; do
     changed=0
     if [ "$policy_ok" != 1 ]; then
-        if load_policy && forwarding on; then policy_ok=1; changed=1; say "nftables: policy loaded on retry; forwarding enabled"; fi
+        if load_policy && sync_gateways "$@" && forwarding on; then policy_ok=1; changed=1; say "nftables: policy loaded on retry; forwarding enabled"; fi
     elif ! nft list table inet kryptik >/dev/null 2>&1; then
         # The policy vanished (a flush inside the zone, say): close the path.
         forwarding off; policy_ok=0; changed=1; say "nftables: the policy is gone; forwarding disabled"
+    elif ! sync_gateways "$@"; then
+        forwarding off; policy_ok=0; changed=1
     fi
     if [ -n "$DNSPID" ] && ! kill -0 "$DNSPID" 2>/dev/null; then
         say "dnsmasq died; restarting"; DNSPID=""; dns_ok=0; changed=1

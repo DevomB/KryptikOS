@@ -244,6 +244,11 @@ typed and then Enter, allows the file. Anything else refuses, keys typed
 before the code appears are dropped, and after a refusal that zone may not
 ask again for a minute.
 
+**The local network.** Every zone with a network reaches the internet through
+the net zone. The network the machine itself is on, with its router, its
+printers and the page a hotel's or café's Wi-Fi asks you to log in on, is
+open to `untrusted` alone: open that page there (Alt+Shift+u).
+
 **Degraded boot.** If the system cannot find exactly one `kryptik-state`
 partition on its own disk, or cannot unlock or mount it, it boots degraded: it says
 so on the console, creates no account, starts no desktop and refuses
