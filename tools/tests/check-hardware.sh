@@ -157,7 +157,7 @@ bad() {   # bad WHAT WORDS: the list as it stands is refused, in WORDS
     if [[ "$RC" -ne 0 ]] && grep -qF -- "$2" <<<"$OUT"; then green "$1"; else red "$1"; sed 's/^/        /' <<<"$OUT" | tail -5; fi
 }
 cp "$W/good.txt" "$L/lenovo-thinkpad-x1-carbon-gen-9.txt"
-cp "$W/medium.txt" "$L/dell-xps-13-9310.txt"
+sed 's/^taken: 2026-10-14/taken: 2026-10-15/' "$W/medium.txt" > "$L/dell-xps-13-9310.txt"
 rows "lenovo-thinkpad-x1-carbon-gen-9.txt  certified  DevomB  2026-10-14  on its own screen" \
      "dell-xps-13-9310.txt  reported  DevomB  2026-10-15"
 lists
@@ -183,6 +183,15 @@ cp "$W/address.txt" "$L/acer-swift-3.txt"
 rows "lenovo-thinkpad-x1-carbon-gen-9.txt  certified  DevomB  2026-10-14" "dell-xps-13-9310.txt  reported  DevomB  2026-10-15" \
      "acer-swift-3.txt  reported  DevomB  2026-10-16"
 bad "a report holding an address is not listed" "acer-swift-3.txt: carries no listing:"
+rm "$L/acer-swift-3.txt"
+# The processor's own word for it: a report whole in every other way.
+sed '/^threads running/a of note: nx smep smap hypervisor' "$W/good.txt" > "$L/qemu-standard-pc.txt"
+rows "lenovo-thinkpad-x1-carbon-gen-9.txt  certified  DevomB  2026-10-14" "dell-xps-13-9310.txt  reported  DevomB  2026-10-15" \
+     "qemu-standard-pc.txt  certified  DevomB  2026-10-14"
+bad "a report taken in a virtual machine is not listed" "qemu-standard-pc.txt: taken in a virtual machine"
+rm "$L/qemu-standard-pc.txt"
+rows "lenovo-thinkpad-x1-carbon-gen-9.txt  certified  DevomB  2026-10-13" "dell-xps-13-9310.txt  reported  DevomB  2026-10-15"
+bad "a row's day is the day its report was taken" "lenovo-thinkpad-x1-carbon-gen-9.txt: its row says 2026-10-13, and the report was taken 2026-10-14T09:12Z"
 
 echo "-- the tree's own list"
 OUT="$(bash "$TOOL" --list 2>&1)"; RC=$?

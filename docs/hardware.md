@@ -4,7 +4,7 @@ Which machines Kryptik has been run on, who ran it, and what each run
 showed. The list is `docs/hardware/list.tsv`; beside it sits one report per
 row, made on the machine by `kryptik-hwreport`, and
 `tools/check-hardware.sh --list` holds every row to its report. The list is
-empty until the hardware tests planned for October 2026.
+empty. Testing on physical hardware is planned for October 2026.
 
 What the kernel is built to drive is in the [README](../README.md#hardware).
 This page is about what was seen to work.
@@ -80,5 +80,5 @@ a new report and a new row.
 `tools/check-hardware.sh REPORT` prints what a report shows and the level it
 carries, with each reason it falls short of `certified`. `--list` checks the
 whole list: every row's report is there and carries the level the row claims,
-no report holds a hardware address, a UUID or a serial number, and no report
-is without a row.
+was taken on the row's day and not in a virtual machine, no report holds a
+hardware address, a UUID or a serial number, and no report is without a row.

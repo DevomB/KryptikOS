@@ -121,7 +121,7 @@ show() {   # show REPORT: its facts, and why it falls short; 1 when it carries n
 }
 
 list() {
-    local tsv="${DIR}/list.tsv" bad=0 n=0 report level by day have f
+    local tsv="${DIR}/list.tsv" bad=0 n=0 report level by day have taken f
     [[ -f "$tsv" ]] || { echo "no list at ${tsv}"; return 1; }
     declare -A seen=()
     fail() { echo "  FAIL  $*"; bad=$((bad + 1)); }
@@ -136,10 +136,16 @@ list() {
         [[ -n "$by" && "$day" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { fail "${report}: a row names who vouches and the day (YYYY-MM-DD)"; continue; }
         examine "${DIR}/${report}"
         have="$(carries)"
+        taken="$(section system "${DIR}/${report}" | field taken)"
         if [[ -z "$have" ]]; then
             fail "${report}: carries no listing:"; sed '/^$/d; s/^/          /' <<<"$NOT_REPORTED"
         elif [[ "$level" == certified && "$have" != certified ]]; then
             fail "${report}: listed certified, and its report is short of that:"; sed '/^$/d; s/^/          /' <<<"$NOT_CERTIFIED"
+        # The list is of machines, each on the day its report was taken.
+        elif section cpu "${DIR}/${report}" | field 'of note' | grep -qw hypervisor; then
+            fail "${report}: taken in a virtual machine, and the list holds machines"
+        elif [[ "$taken" != "${day}T"* ]]; then
+            fail "${report}: its row says ${day}, and the report was taken ${taken:-on no day it names}"
         else
             printf '  ok    %-10s %s, %s (%s, %s)\n' "$level" "$MACHINE" "$RELEASE" "$by" "$day"
         fi
