@@ -275,6 +275,22 @@ else
     fail "wifi forget: exit $rc, output '$out'"
 fi
 
+# --- update: refused here before the launch service is asked -----------------
+out="$(K update 2>&1)"; rc=$?
+if (( rc == 2 )) && [[ "$out" == *"status, fetch, apply, or auto on|off"* ]]; then
+    pass "update without a subcommand fails and names the subcommands"
+else
+    fail "update without a subcommand: exit $rc"
+    info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
+fi
+out="$(K update auto sometimes 2>&1)"; rc=$?
+if (( rc == 2 )) && [[ "$out" == *"takes on or off"* ]]; then
+    pass "update auto takes on or off, nothing else"
+else
+    fail "update auto with another word: exit $rc"
+    info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
+fi
+
 # Through the launch service, as a user in a session gets there. Its socket
 # path is fixed, so a stand-in for kryptik-launch with the same command line
 # forwards to this suite's daemon; under test is the wrapper's side.

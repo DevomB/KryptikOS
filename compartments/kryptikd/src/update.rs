@@ -229,7 +229,8 @@ pub fn still_needed(files: &[Entry], held: impl Fn(&str) -> u64) -> Vec<(String,
  *   pointer             the newest statement accepted, as signed
  *   considered          when a statement was last looked at (rate limit)
  *   refused             when a manifest was last refused (rate limit)
- *   wanted              the version the user asked for (`kryptik update fetch`)
+ *   wanted              the version asked for (`kryptik update fetch`, or `auto`)
+ *   auto                `on` while each newer release is asked for unprompted
  *   files               `check-manifest`'s output for it, once verified
  *   incoming/<version>/ the staged release, the directory `apply` is given
  *
@@ -366,9 +367,10 @@ pub fn latest(dir: &Path, checks: &Checks, now: i64, role: &str, running: &str, 
     Ok(standing)
 }
 
-/// `kryptik update fetch`: the user asks for the release the newest accepted
-/// statement names. Nothing is fetched that was not asked for, and nothing is
-/// asked for that this image would not fetch: the poll would only say `idle`.
+/// `kryptik update fetch`, or the poll with `auto` on: asks for the release the
+/// newest accepted statement names. Nothing is fetched that was not asked for,
+/// and nothing is asked for that this image would not fetch: the poll would
+/// only say `idle`.
 pub fn want(dir: &Path, channel: Option<&str>, role: &str, running: &str) -> Result<String, String> {
     let p = stored_pointer(dir).ok_or("no statement of what is current has been accepted yet")?;
     if version_cmp(&p.version, running) != Ordering::Greater {
@@ -384,12 +386,40 @@ pub fn want(dir: &Path, channel: Option<&str>, role: &str, running: &str) -> Res
     Ok(p.version)
 }
 
+/// Anything but `on` is off, a damaged block among them.
+fn auto(dir: &Path) -> bool {
+    std::fs::read_to_string(dir.join("auto")).is_ok_and(|s| s.trim() == "on")
+}
+
+/// `kryptik update auto on|off`. Off asks for nothing more; what was asked
+/// for keeps arriving, as after a `fetch`.
+pub fn set_auto(dir: &Path, on: bool, channel: Option<&str>) -> Result<(), String> {
+    private_dir(dir)?;
+    let path = dir.join("auto");
+    if !on {
+        return match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("{}: {e}", path.display())),
+            _ => Ok(()),
+        };
+    }
+    if channel.is_none() {
+        return Err(format!("this image names no update channel ({CONF}), so there is nothing to fetch"));
+    }
+    put_file(&path, b"on\n")
+}
+
+/// Whether a manifest was refused less than an interval before `now`.
+fn refused_lately(dir: &Path, now: i64) -> bool {
+    let t: Option<i64> = std::fs::read_to_string(dir.join("refused")).ok().and_then(|s| s.trim().parse().ok());
+    t.is_some_and(|t| (now - t).unsigned_abs() < POINTER_INTERVAL_SECS)
+}
+
 /// A wanted release: its pointer, its base, and the files still missing with their sizes.
 type Outstanding = (Pointer, String, Vec<(String, u64)>);
 
 /// What is wanted, where from, and what of it is still missing: `None` when
 /// nothing is, which the broker says as `idle`.
-fn outstanding(dir: &Path, channel: &str, role: &str, running: &str) -> Option<Outstanding> {
+fn outstanding(dir: &Path, channel: &str, role: &str, running: &str, now: i64) -> Option<Outstanding> {
     let version = wanted(dir)?;
     let p = stored_pointer(dir).filter(|p| p.version == version)?;
     if version_cmp(&version, running) != Ordering::Greater {
@@ -399,14 +429,22 @@ fn outstanding(dir: &Path, channel: &str, role: &str, running: &str) -> Option<O
     let stage = staging(dir, &version);
     let need = match verified_files(dir, &version) {
         Some(files) => still_needed(&files, |n| held(&stage, n)),
+        // The next pair would be refused unread, so none is fetched.
+        None if refused_lately(dir, now) => return None,
         None => ["manifest", "manifest.sig"].iter().filter(|n| held(&stage, n) == 0).map(|n| (n.to_string(), 0)).collect(),
     };
     Some((p, base, need))
 }
 
-/// `update-poll`: the net zone asks, because nothing can call it.
-pub fn poll(dir: &Path, channel: &str, role: &str, running: &str) -> String {
-    match outstanding(dir, channel, role, running) {
+/// `update-poll`: the net zone asks, because nothing can call it. With `auto`
+/// on, the release the newest statement names is first asked for, as `fetch`
+/// would ask for it.
+pub fn poll(dir: &Path, channel: &str, role: &str, running: &str, now: i64) -> String {
+    if auto(dir) && stored_pointer(dir).is_some_and(|p| wanted(dir) != Some(p.version)) {
+        // Refused as `fetch` would be: nothing newer, or not fetchable here.
+        let _ = want(dir, Some(channel), role, running);
+    }
+    match outstanding(dir, channel, role, running, now) {
         Some((p, base, need)) if !need.is_empty() => {
             let list: Vec<String> = need.iter().map(|(n, o)| format!("{n} {o}")).collect();
             format!("fetch {} {base} need {}", p.version, list.join(" "))
@@ -455,8 +493,7 @@ pub fn put(dir: &Path, checks: &Checks, now: i64, name: &str, offset: u64, bytes
     };
     /* One refused manifest per interval: a refusal clears the stage, so a
      * hostile zone could otherwise feed the verifier pairs as fast as it sends. */
-    let refused: Option<i64> = std::fs::read_to_string(dir.join("refused")).ok().and_then(|s| s.trim().parse().ok());
-    if refused.is_some_and(|t| (now - t).unsigned_abs() < POINTER_INTERVAL_SECS) {
+    if refused_lately(dir, now) {
         return refuse(format!("a manifest was refused less than {} minutes ago", POINTER_INTERVAL_SECS / 60));
     }
     // Every refusal below starts the interval: each cost a download and a verification.
@@ -501,6 +538,7 @@ pub fn status(dir: &Path, now: i64, running: &str) -> String {
             }
         }
     }
+    out.push_str(if auto(dir) { "fetching   automatically, as each release is announced\n" } else { "fetching   only when asked\n" });
     match wanted(dir) {
         None => out.push_str("staged     nothing asked for\n"),
         Some(v) => {

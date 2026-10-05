@@ -254,7 +254,7 @@ fn handle_update(req: &Request, payload: &[u8]) -> Result<String, String> {
             let (role, running) = (up::required_role()?, up::running_version());
             up::forget_if_installed(dir, &running);
             let conf = std::fs::read_to_string(up::CONF).unwrap_or_default();
-            Ok(up::channel_from(&conf).map_or("idle".to_string(), |channel| up::poll(dir, &channel, &role, &running)))
+            Ok(up::channel_from(&conf).map_or("idle".to_string(), |channel| up::poll(dir, &channel, &role, &running, now)))
         }
         Request::UpdatePut { name, offset, .. } => up::put(dir, &up::tool_checks(), now, name, *offset, payload).map(|r| format!("ok {r}")),
         _ => Err("not an update verb".into()),
