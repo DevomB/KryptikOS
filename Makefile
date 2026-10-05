@@ -88,7 +88,7 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
         chroot chroot-enter chroot-umount chroot-status \
         iso media production-pair ovmf-vars media-smoke-usb media-smoke-iso media-smoke-secureboot \
         media-refused-foreign-keys install-test integrity-test update-test \
-        state-test zones-test gui-test acceptance \
+        state-test keyboard-test zones-test gui-test acceptance \
         zones zone-test launcher-test zone-tests cli-test serve-test \
         test test-libc-unwind smoke-userspace \
         audit-artifacts audit-artifacts-strict manifest verify-manifest source-bundle \
@@ -125,6 +125,7 @@ help:
 	@echo "  make integrity-test  Secure Boot enforced, foreign boot file refused, root tamper refused, recovery"
 	@echo "  make update-test PAYLOAD_A=.. PAYLOAD_B=..  A/B update, rollback, refusals, interruptions"
 	@echo "  make state-test | zones-test | gui-test    the state partition, zones, the desktop"
+	@echo "  make keyboard-test  a keyboard layout at the passphrase prompt, on the console, for the session"
 	@echo
 	@echo "  make verify      verify upstream GPG signatures on fetched sources"
 	@echo "  make source-bundle  the corresponding source of this commit, for a release"
@@ -341,6 +342,10 @@ update-test:
 state-test:
 	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
 	@"$(TOOLS)"/image/state-test.sh --usb "$(MEDIA_USB)"
+
+keyboard-test:
+	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
+	@"$(TOOLS)"/image/keyboard-test.sh --usb "$(MEDIA_USB)"
 
 zones-test:
 	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }

@@ -225,6 +225,26 @@ else
     fail "doctor did not report its configuration"
 fi
 
+# --- keyboard: the layouts are the installed system's ------------------------
+out="$(K keyboard 2>&1)"; rc=$?
+if [[ -r /usr/libexec/kryptik/keyboard.sh ]]; then
+    if (( rc == 0 )) && grep -q '^\* ' <<<"$out"; then
+        pass "keyboard lists the layouts and marks the one in force"
+    else
+        fail "keyboard on an installed system: exit $rc, output '$out'"
+    fi
+elif (( rc != 0 )) && [[ "$out" == *"an installed Kryptik's"* ]]; then
+    pass "keyboard without the installed system's helper says so"
+else
+    fail "keyboard without the helper: exit $rc, output '$out'"
+fi
+out="$(K keyboard de us 2>&1)"; rc=$?
+if (( rc == 2 )) && [[ "$out" == *"one layout's name"* ]]; then
+    pass "keyboard with two names is refused"
+else
+    fail "keyboard with two names: exit $rc, output '$out'"
+fi
+
 # --- wifi: the net zone's credentials ----------------------------------------
 # A passphrase never goes on a command line, where any process could read it:
 # `kryptik wifi add` reads it (terminal with echo off, or a pipe) and passes it

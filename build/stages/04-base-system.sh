@@ -305,7 +305,7 @@ PACKAGES=(
     # After init, whose stage 2 scripts look for the database; before the
     # updater and efiboot, whose checks source the devices.sh it installs. The
     # digest covers the files the recipe reads by path, which declare -f cannot.
-    "services" "s_services $(tree_digest "${KRYPTIK_ROOT}"/build/services/*/* "${KRYPTIK_ROOT}"/build/service-scripts/*.sh "${KRYPTIK_ROOT}"/build/config/sysctl.d/*.conf)"
+    "services" "s_services $(tree_digest "${KRYPTIK_ROOT}"/build/services/*/* "${KRYPTIK_ROOT}"/build/service-scripts/*.sh "${KRYPTIK_ROOT}"/build/config/sysctl.d/*.conf "${KRYPTIK_ROOT}"/build/config/keyboard-layouts)"
     # Before the updater, whose check runs kryptik-update, which needs efiboot.
     "efiboot"     "s_efiboot $(sha256_of "${KRYPTIK_ROOT}/tools/efi/kryptik-efiboot.c" 2>/dev/null || echo none)"
     "updater"     "s_updater $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-update" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-recover" 2>/dev/null || echo none)"

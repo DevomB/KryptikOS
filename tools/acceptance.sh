@@ -379,6 +379,7 @@ it_smoke_sb()      { "${IMG}/media-smoke.sh" --usb "$MEDIA_USB" --vars enrolled;
 it_refused()       { "${IMG}/media-smoke.sh" --usb "$MEDIA_USB" --vars ms --expect-refused; }
 it_install()       { "${IMG}/install-test.sh" --usb "$MEDIA_USB" --vars clean; }
 it_state()         { "${IMG}/state-test.sh" --usb "$MEDIA_USB"; }
+it_keyboard()      { "${IMG}/keyboard-test.sh" --usb "$MEDIA_USB"; }
 it_integrity()     { "${IMG}/integrity-test.sh" --usb "$MEDIA_USB"; }
 it_zones()         { "${IMG}/zones-test.sh" --usb "$MEDIA_USB"; }
 it_gui()           { "${IMG}/gui-test.sh" --usb "$MEDIA_USB"; }
@@ -439,6 +440,7 @@ item boot      medium-shell               M vm    3 it_medium_shell need_vm
 item boot      media-smoke-iso            M vm   25 it_smoke_iso need_vm_iso
 item install   install-test               M vm   10 it_install need_vm
 item install   state-test                 M vm   10 it_state need_vm
+item install   keyboard-test              M vm   10 it_keyboard need_vm
 item integrity ovmf-vars                  M host  0 it_ovmf_vars need_usb
 item integrity media-smoke-secureboot     M vm   25 it_smoke_sb need_enrolled
 item integrity media-refused-foreign-keys M vm    5 it_refused need_ms

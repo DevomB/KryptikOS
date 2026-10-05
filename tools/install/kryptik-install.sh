@@ -5,7 +5,7 @@
 # on a build host; every check runs before the first write.
 #
 #   kryptik-install --target DISK [--yes] [--dry-run] [--preseed FILE]
-#                   [--replace-kryptik] [--slot-size MIB]
+#                   [--replace-kryptik] [--slot-size MIB] [--keyboard NAME]
 set -eu
 
 PROG="kryptik-install"
@@ -42,6 +42,7 @@ REPLACE=0
 DRY_RUN=0
 PRESEED=""
 SLOT_ASKED=""
+KEYBOARD=""
 MNT_BASE=/run/kryptik-install
 
 while [ $# -gt 0 ]; do
@@ -52,12 +53,14 @@ while [ $# -gt 0 ]; do
         --preseed) PRESEED="${2:-}"; shift 2 ;;
         --replace-kryptik) REPLACE=1; shift ;;
         --slot-size) SLOT_ASKED="${2:-}"; [ -n "$SLOT_ASKED" ] || die "--slot-size needs a number of MiB"; shift 2 ;;
+        --keyboard) KEYBOARD="${2:-}"; [ -n "$KEYBOARD" ] || die "--keyboard needs a layout's name"; shift 2 ;;
         -h|--help)
-            printf 'usage: %s --target /dev/vdb [--yes] [--dry-run] [--preseed FILE] [--replace-kryptik] [--slot-size MIB]\n' "$PROG"
+            printf 'usage: %s --target /dev/vdb [--yes] [--dry-run] [--preseed FILE] [--replace-kryptik] [--slot-size MIB] [--keyboard NAME]\n' "$PROG"
             printf '\nInstalls the running medium onto --target. Destroys everything on it.\n'
             printf '%s\n' '--dry-run checks everything and writes nothing.'
             printf '%s\n' '--replace-kryptik allows a disk that holds an old Kryptik installation or medium.'
             printf '%s\n' '--slot-size MIB makes each root slot that large, for later releases with larger images.'
+            printf '%s\n' '--keyboard NAME installs with that keyboard layout; kryptik keyboard lists them.'
             exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
@@ -69,7 +72,7 @@ done
 # --- every external tool, checked before the first write -------------------
 missing=""
 for tool in sfdisk partx blockdev blkid cryptsetup stty mkfs.ext4 dd sha256sum mount umount sync awk sed \
-            readlink lsblk head cmp cp mkdir stat tr; do
+            readlink lsblk head tail wc cmp cp mv chmod mkdir stat tr loadkeys chattr; do
     command -v "$tool" >/dev/null 2>&1 || missing="${missing} ${tool}"
 done
 [ -z "$missing" ] || die "this system is missing:${missing}
@@ -87,6 +90,8 @@ part_dev() {
 # The boot services' answers to which disk a device is on and which partitions
 # are this system's own.
 . /usr/libexec/kryptik/devices.sh
+. /usr/libexec/kryptik/keyboard.sh
+[ -z "$KEYBOARD" ] || kb_row "$KEYBOARD" > /dev/null || die "no keyboard layout named ${KEYBOARD}: kryptik keyboard lists them"
 
 # --- refuse anything that is not a disposable whole disk -------------------
 [ -b "$TARGET" ] || die "${TARGET} is not a block device.
@@ -244,6 +249,13 @@ if [ "$DRY_RUN" -eq 1 ]; then
     say "dry run: every check passed; nothing was written"
     exit 0
 fi
+# Before the first thing typed: ERASE and the passphrase are typed under the
+# layout the installed system will ask the passphrase under.
+if [ -n "$KEYBOARD" ]; then
+    kb_load "$KEYBOARD" || die "could not load the keyboard layout ${KEYBOARD}; nothing was written"
+fi
+LAYOUT="$(kb_current)"
+say "keyboard     ${LAYOUT}: the state passphrase is asked under it at every boot"
 if [ "$ASSUME_YES" -ne 1 ]; then
     printf '%s: this DESTROYS everything on %s. Type ERASE to continue: ' "$PROG" "$TARGET"
     read -r answer
@@ -266,6 +278,9 @@ else
     IFS= read -r STATE_PASS || STATE_PASS=""
 fi
 [ -n "$STATE_PASS" ] || die "no state passphrase given; nothing was written"
+# Named in the firmware once nothing is left to refuse, and before anything
+# is written to the disk: an install refused above has changed nothing.
+kb_store "$LAYOUT" || die "the firmware did not take the keyboard layout ${LAYOUT}; nothing was written"
 
 # --- partition -------------------------------------------------------------
 say "partitioning (sfdisk, GPT: kryptik-esp, kryptik-a, kryptik-b, kryptik-state)"

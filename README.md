@@ -372,6 +372,7 @@ Designs of the individual parts:
 - [Boot and updates](docs/design/boot-and-updates.md): firmware boot, A/B slots, signed updates, recovery
 - [Update channel](docs/design/update-channel.md): fetching releases through the net zone
 - [State encryption](docs/design/state-encryption.md): the encrypted state partition
+- [Keyboard layout](docs/design/keyboard-layout.md): one layout for the passphrase prompt, the console and the desktop
 
 ## License
 

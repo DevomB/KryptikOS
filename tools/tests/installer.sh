@@ -160,6 +160,14 @@ else
     slot 1234567890; [[ "$rc" -ne 0 && "$out" == *"too large"* ]] \
         && green "a size too long for arithmetic is refused" || red "a 10-digit size: rc=${rc} ${out}"
 fi
+# The layout's name goes into the firmware after the last refusal that says
+# nothing was written, and before the disk is: a refused install changed nothing.
+store="$(grep -n '^kb_store ' "$INSTALLER" | cut -d: -f1)"
+refused="$(grep -n 'no state passphrase given; nothing was written' "$INSTALLER" | cut -d: -f1)"
+written="$(grep -n '^sfdisk --quiet' "$INSTALLER" | cut -d: -f1)"
+[[ "$store" =~ ^[0-9]+$ && "$refused" =~ ^[0-9]+$ && "$written" =~ ^[0-9]+$ && "$store" -gt "$refused" && "$store" -lt "$written" ]] \
+    && green "the keyboard layout is stored after the passphrase is taken and before the first write" \
+    || red "the keyboard layout is stored at line ${store:-none}; the passphrase is taken by ${refused:-none} and the disk written from ${written:-none}"
 grep -q 'testctl_get install_slot_mib' "$RUNNER" \
     && green "the runner passes --slot-size only when the control disk asks" \
     || red "the runner has no install_slot_mib switch"
