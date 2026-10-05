@@ -77,15 +77,25 @@ PY'
 [[ "$ZOUT" == *PING6-OK* ]] && pass "routed-ping6" "ping reaches the bridge over IPv6" || fail "routed-ping6" "$(grep -o 'PING6-FAIL.*' "$LOG/untrusted.out")"
 [[ "$ZOUT" == *DNS-ANSWERED* ]] && pass "routed-dns" "$(grep -o 'DNS-ANSWERED.*' "$LOG/untrusted.out")" || fail "routed-dns" "$(grep -o 'DNS-.*' "$LOG/untrusted.out")"
 
-# The resolver follows the servers a lease names. The net zone's resolv.conf
-# gains one, as a lease that came late or another network would change it, and
-# loses it again: each time dnsmasq must be told within two of the zone's 10 s
-# passes. The first server stays throughout, so names still resolve.
+# The lease reaches the zone's resolv.conf: every server the resolver forwards
+# to comes from there, and under QEMU the stand-in is the lease's own server,
+# so a hook that wrote nothing would go unseen without this.
 net_init="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
-netsh() { nsenter -t "${net_init:-0}" -m sh -c "$1" 2>/dev/null; }
+netsh() { nsenter -t "${net_init:-0}" -m sh -c "$1" 2>&1; }
+lease_dns="$(netsh 'grep "^nameserver" /etc/resolv.conf')"
+if [[ "$lease_dns" == nameserver* ]]; then
+    pass "net-lease-names-resolver" "the net zone's resolv.conf: $(tr '\n' ' ' <<<"$lease_dns")"
+else
+    fail "net-lease-names-resolver" "the net zone's resolv.conf names no server (${lease_dns:-nothing read}); $(netsh 'ls -l /etc/resolv.conf; ls /tmp /run/dhcpcd 2>&1 | head -12' | tr '\n' ' ')"
+fi
+# The resolver follows the servers a lease names. The net zone's resolv.conf
+# is written with the servers dnsmasq has and one more, as a lease that came
+# late or another network would change it, and then without it: each time
+# dnsmasq must be told within a few of the zone's 10 s passes. Its own servers
+# stay throughout, so names still resolve.
 forwards_to() {   # forwards_to yes|no: wait until dnsmasq's file does, or does not, name the added server
     for _ in $(seq 1 40); do
-        if netsh 'grep -q "^nameserver 192\.0\.2\.53$" /run/uplink-resolv.conf'; then [[ "$1" == yes ]] && return 0
+        if netsh 'grep -q "^nameserver 192\.0\.2\.53$" /run/uplink-resolv.conf' > /dev/null; then [[ "$1" == yes ]] && return 0
         else [[ "$1" == no ]] && return 0; fi
         sleep 1
     done
@@ -93,9 +103,10 @@ forwards_to() {   # forwards_to yes|no: wait until dnsmasq's file does, or does 
 }
 told() { grep -hc 'netzone: dnsmasq: now forwarding to' /run/uncaught-logs/current /run/uncaught-logs/@* 2>/dev/null | awk '{ n += $1 } END { print n + 0 }'; }
 told_before="$(told)"
-if netsh 'grep -q "^nameserver" /etc/resolv.conf && cp /etc/resolv.conf /run/resolv.before && echo "nameserver 192.0.2.53" >> /etc/resolv.conf'; then
+was="$(netsh 'grep "^nameserver" /run/uplink-resolv.conf')"
+if [[ "$was" == nameserver* ]] && wrote="$(netsh "printf '%s\n' '${was}' 'nameserver 192.0.2.53' > /etc/resolv.conf")"; then
     forwards_to yes; came=$?
-    netsh 'cat /run/resolv.before > /etc/resolv.conf; rm -f /run/resolv.before'
+    netsh "printf '%s\n' '${was}' > /etc/resolv.conf" > /dev/null
     forwards_to no; went=$?
     sleep 2   # the zone says so after it has told dnsmasq
     if [[ "$came" -eq 0 && "$went" -eq 0 && "$(( $(told) - told_before ))" -ge 2 ]]; then
@@ -104,7 +115,7 @@ if netsh 'grep -q "^nameserver" /etc/resolv.conf && cp /etc/resolv.conf /run/res
         fail "dns-follows-lease" "gained: rc=$came, lost: rc=$went, told $(( $(told) - told_before )) time(s); $(grep -h 'netzone: dnsmasq' /run/uncaught-logs/current 2>/dev/null | tail -2 | tr '\n' ' ')"
     fi
 else
-    fail "dns-follows-lease" "the net zone (init ${net_init:-none}) has no resolv.conf with a server to add to"
+    fail "dns-follows-lease" "dnsmasq's servers could not be read in the net zone (init ${net_init:-none}), or its resolv.conf not written: ${was:-nothing read} ${wrote:-}"
 fi
 # dnsmasq is still there after reading its servers again, as routed-dns found it.
 zrun untrusted 20 -- python3 -c 'import socket, struct
