@@ -208,7 +208,14 @@ title to `[zone] ...`, from which the compositor draws the zone's border.
   the body, only exact parses accepted) and feeds a damaged opening through a
   live session in arbitrary fragments (only whole messages reach the
   compositor). Inputs that ever break a parser join the corpus.
-  Coverage-guided fuzzing needs nightly Rust and belongs in a scheduled job.
+- `.github/workflows/fuzz.yml` fuzzes both parsers under libFuzzer weekly,
+  twenty minutes each, on a nightly pinned by date. `compartments/kryptikd/fuzz`
+  takes the request parser, seeded from that corpus, and holds every request
+  it accepts to the bounds its refusals enforce; `compositor/wlproxy/fuzz`
+  takes the framing, every signature in the tables and the writer the
+  rewrites use. An input that breaks one is kept as the run's artifact. Each
+  is a package with a lockfile of its own, so libfuzzer-sys is in nothing that
+  ships.
 
 ## Not built
 
