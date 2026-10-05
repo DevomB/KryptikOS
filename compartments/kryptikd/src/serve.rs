@@ -563,12 +563,7 @@ fn spawn_launcher(
     args.extend(req.argv.iter().cloned());
 
     let log = cfg.log_dir.join(format!("zone-{}.log", req.zone));
-    let logf = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(&log)
-        .map_err(|e| format!("{}: {e}", log.display()))?;
+    let logf = open_zone_log(&log)?;
     let cexe = CString::new(exe.display().to_string()).map_err(|_| "NUL in exe path".to_string())?;
     let cargs: Vec<CString> = std::iter::once(CString::new("kryptikd").unwrap())
         .chain(args.iter().map(|a| CString::new(a.as_str()).unwrap_or_else(|_| CString::new("?").unwrap())))
@@ -615,6 +610,29 @@ fn spawn_launcher(
     drop(pass);
     drop(wayland);
     Ok(Launch { pid, ready: ready_r, log })
+}
+
+/// A zone's log past this size starts again at its next launch.
+const ZONE_LOG_KEEP: u64 = 8 << 20;
+
+/// Open a zone's log for a launch. Each launch adds a bounded amount
+/// (spawn.rs, ZoneOutput) and nothing else trims the file, so past
+/// ZONE_LOG_KEEP it becomes `.old`, replacing the one before, and a new file
+/// starts: a zone keeps two files of that size and a launch's worth each.
+fn open_zone_log(log: &Path) -> Result<std::fs::File, String> {
+    if std::fs::symlink_metadata(log).map(|m| m.len() > ZONE_LOG_KEEP).unwrap_or(false) {
+        let mut old = log.as_os_str().to_owned();
+        old.push(".old");
+        let _ = std::fs::rename(log, old);
+    }
+    // Never through a link at the name, as last_log_line reads it.
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(log)
+        .map_err(|e| format!("{}: {e}", log.display()))
 }
 
 /// The launcher's last log line, printable and bounded, for an error reply.
