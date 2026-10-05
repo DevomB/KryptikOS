@@ -151,21 +151,27 @@ fi
 
 # ----------------------------------------------------------------- step 4 --
 step "step 4: refusals and failures report as failures"
-refusal_case() {   # refusal_case NAME DISK-SIZE EXTRA-RUN-ARGS... ; expects rc!=0 and FAILED, no kryptik-a
-    local name="$1" size="$2"; shift 2
+refusal_case() {   # refusal_case NAME DISK-SIZE WHY EXTRA-RUN-ARGS... ; expects rc!=0 and FAILED for WHY, no kryptik-a
+    local name="$1" size="$2" why="$3"; shift 3
     local d="${VMDIR}/refuse-${name}.img"; rm -f "$d"; truncate -s "$size" "$d"
     local ctl="${VMDIR}/testctl-${name}.img"
-    "${SELF}/mk-testctl.sh" --out "$ctl" --key "$TESTCTL_KEY" install_target=/dev/vda smoke_poweroff=1 install_wait=5 > /dev/null
+    # Everything an install needs, so the one thing wrong is the case's own.
+    "${SELF}/mk-testctl.sh" --out "$ctl" --key "$TESTCTL_KEY" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
+        "${PRESEED[@]}" > /dev/null || die "the ${name} control disk"
     smoke "refuse-${name}" --usb "$USB" --disk "$d" --testctl "$ctl" --vars "$VARS" --timeout "$TIMEOUT" "$@" > /dev/null
     local t="${VMDIR}/refuse-${name}.txt"; boot_txt > "$t"
     want "$t" 'KRYPTIK_INSTALL: BEGIN'            "${name}: the installer ran"
     want "$t" 'KRYPTIK_INSTALL: rc=[1-9]'         "${name}: reported a non-zero status"
-    want "$t" 'KRYPTIK_INSTALL: .*FAILED'         "${name}: said FAILED and why"
+    want "$t" "KRYPTIK_INSTALL: .*FAILED: .*${why}" "${name}: said FAILED, and for this reason"
     deny "$t" 'KRYPTIK_INSTALL: rc=0'             "${name}: never reported success"
     if [[ "$name" == "ioerror" ]]; then
         # Its table is written before the copy that fails. What a failed
         # install must not have is what a finished one makes after that copy:
         # the LUKS header of the state partition.
+        want "$t" 'KRYPTIK_INSTALL: .*writing the root image to kryptik-a' "${name}: the root image copy began"
+        deny "$t" 'KRYPTIK_INSTALL: .*kryptik-a verifies'                  "${name}: the copy was not taken as whole"
+        [[ "$(part_start "$d" 2)" == "$A_START" ]] && green "${name}: kryptik-a is where the error was aimed" \
+            || red "${name}: kryptik-a starts at sector $(part_start "$d" 2), and the error was aimed past ${A_START}"
         local s4; s4="$(part_start "$d" 4)"
         if [[ -z "$s4" ]]; then
             red "${name}: no partition table on the disk, so the error did not come in the root image copy"
@@ -181,19 +187,23 @@ refusal_case() {   # refusal_case NAME DISK-SIZE EXTRA-RUN-ARGS... ; expects rc!
     fi
     grep -E 'KRYPTIK_INSTALL: .*FAILED' "$t" | head -2 | sed 's/^/        /'
 }
-refusal_case toosmall 1G
-refusal_case readonly "$SIZE" --disk-readonly
+refusal_case toosmall 1G 'this layout needs at least'
+refusal_case readonly "$SIZE" 'is read-only' --disk-readonly
 # An I/O error in the root image copy, after the partition table is written;
-# the runner must report that failure.
+# the runner must report that failure. A disk of step 1's size is laid out as
+# step 1's was, so the error sits 4 MiB into where kryptik-a will be: past
+# anything partitioning writes, inside any root image.
 if [[ "$QUICK" -eq 0 ]]; then
-    cat > "${VMDIR}/blkdebug.conf" <<'EOF'
+    A_START="$(part_start "$DISK" 2)"
+    [[ "$A_START" =~ ^[0-9]+$ ]] || die "could not read kryptik-a's start from ${DISK}"
+    cat > "${VMDIR}/blkdebug.conf" <<EOF
 [inject-error]
 event = "write_aio"
 errno = "5"
-sector = "1400000"
+sector = "$(( A_START + 8192 ))"
 once = "off"
 EOF
-    refusal_case ioerror "$SIZE" --blkdebug "${VMDIR}/blkdebug.conf"
+    refusal_case ioerror "$SIZE" 'writing the root image failed' --blkdebug "${VMDIR}/blkdebug.conf"
 fi
 
 # The runner always passes --yes, so none of these refusals is the ERASE
