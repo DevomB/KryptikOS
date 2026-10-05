@@ -337,3 +337,33 @@ passphrase prompt; tpm2-tss and tpm2-tools join the image.
 **Rejected:** PCR 7 alone (the medium and old kernels unseal); a policy
 signed at release time (old kernels stay valid, a key more, and no
 knowledge of each machine's firmware events); enrolment by default.
+
+## ADR-018 (proposed): Builds are reproducible and checked; the first compiler is bootstrapped
+
+Everything that ships is built so that two builds of one commit produce the
+same bytes, signatures set aside: `SOURCE_DATE_EPOCH` is the commit's time,
+the root image is made by the sysroot's own e2fsprogs in the chroot with a
+fixed UUID, hash seed and salt, and the kernel's build identity and
+randstruct seed are fixed. CI builds a commit twice, on two runner images,
+weekly and for every tag, and compares the root image and the unsigned
+kernels byte for byte. Releases sign their modules in a second pass, with a
+key made for that build and thrown away, and publish the certificate and the
+module signatures, so anyone can rebuild a release's root image exactly.
+After that, a stage before stage 01 runs live-bootstrap from its hex0 seed,
+and stage 01 is built by its compiler instead of the host's
+([reproducible builds](design/reproducible-builds.md)).
+
+**Why:** "built from source" means little while nobody can check that the
+binary came from the source; and as long as the first compiler is the
+host's, every later stage inherits whatever that compiler does.
+
+**Cost:** a second full build for every comparison; the image's clock floor
+becomes the commit's time instead of the build's (earlier, never later);
+the randstruct seed is fixed, which costs a published kernel nothing; a
+two-pass kernel build for releases; live-bootstrap's sources to pin and
+hours of build in front of stage 01. The Rust toolchain stays a binary
+(ADR-010).
+
+**Rejected:** a long-lived module signing key (a second key that would let
+its holder load kernel code on every machine); waiting for hash-based module
+integrity before starting (it is in no released kernel).
