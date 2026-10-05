@@ -65,9 +65,13 @@ USAGE:
                    [--wifi-dir DIR]   (the session does this through `kryptik
                                       wifi` and the launch daemon; this is root's
                                       path and the tests')
-    kryptikd time floor               at boot: a clock that reads earlier than this
-                                      system was built is set to the build date
+    kryptikd time floor               at boot: a clock that reads earlier than the
+                                      floor (the build date, or the newest release
+                                      committed to) is set to it
     kryptikd time status              the clock, the floor, and what was last done to it
+    kryptikd time committed DIR       once boot-success has committed a slot: its
+                                      release (the signed manifest in DIR) is the
+                                      floor if it is the newest
 
     --rootfs DIR   base directory for zone data (default: /var/lib/kryptik/zones);
                    the zone sees its own directory as /home/NAME
@@ -984,9 +988,11 @@ fn wifi_dir_from(args: &[String]) -> PathBuf {
     PathBuf::from(value(args, "--wifi-dir").unwrap_or(wifi::DEFAULT_DIR))
 }
 
-/// `kryptikd time floor | status` (docs/design/time.md). The clock is set only
-/// here, from the floor, and in the broker, from a net zone claim zone 0 judged.
+/// `kryptikd time floor | status | committed DIR` (docs/design/time.md). The
+/// clock is set only here, from the floor, and in the broker, from a net zone
+/// claim zone 0 judged.
 fn cmd_time(args: &[String]) -> ExitCode {
+    use time::Clock;
     let dir = Path::new(time::STATE_DIR);
     match args.get(1).map(String::as_str) {
         Some("floor") => match time::clamp(&mut time::SystemClock, dir, time::floor_of_this_system()) {
@@ -999,12 +1005,35 @@ fn cmd_time(args: &[String]) -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some("committed") => {
+            let Some(offered) = args.get(2) else {
+                eprintln!("usage: kryptikd time committed DIR");
+                return ExitCode::from(2);
+            };
+            let running = update::running_version();
+            match time::keep_release(dir, Path::new(offered), &running, time::SystemClock.now(), &update::check_release) {
+                Ok(said) => {
+                    println!("kryptikd: time: {said}");
+                    ExitCode::SUCCESS
+                }
+                Err(why) => {
+                    eprintln!("kryptikd: time: {why}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some("status") => {
-            use time::Clock;
             println!("clock    {}", time::format_utc(time::SystemClock.now()));
-            match time::floor_of_this_system() {
-                Some(f) => println!("floor    {} (this system's build date; nothing earlier is believed)", time::format_utc(f as f64)),
-                None => println!("floor    unknown: {} is missing or unreadable, so every claim is refused", time::IMAGE_JSON),
+            let release = time::committed_release();
+            match (time::floor_of_this_system(), &release) {
+                (None, _) => println!("floor    unknown: {} is missing or unreadable, so every claim is refused", time::IMAGE_JSON),
+                (Some(f), Ok(Some((v, at)))) if *at == f => {
+                    println!("floor    {} (release {v}, the newest this machine committed to; nothing earlier is believed)", time::format_utc(f as f64))
+                }
+                (Some(f), _) => println!("floor    {} (this system's build date; nothing earlier is believed)", time::format_utc(f as f64)),
+            }
+            if let Err(why) = &release {
+                println!("release  not used: {why}");
             }
             match std::fs::read_to_string(dir.join("history")) {
                 Ok(h) => match h.lines().last() {
@@ -1016,7 +1045,7 @@ fn cmd_time(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         _ => {
-            eprintln!("usage: kryptikd time floor | status");
+            eprintln!("usage: kryptikd time floor | status | committed DIR");
             ExitCode::from(2)
         }
     }

@@ -134,6 +134,8 @@ if [ -n "$trial" ]; then
                 result "commit $slot"
                 forget_entries "$slot"
                 say "slot $slot is healthy and committed"
+                # Its release's signed date becomes the clock's floor if it is the newest (docs/design/time.md).
+                say "$(kryptikd time committed "$B/release-$slot" 2>&1)"
             else
                 result "commit-failed $slot"
                 say "slot $slot is healthy but the commit failed; the committed slot is unchanged"

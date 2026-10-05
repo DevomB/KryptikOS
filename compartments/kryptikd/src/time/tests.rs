@@ -182,7 +182,7 @@ fn below_floor_is_refused() {
     let now = BUILT as f64 + 86400.0;
     // Below the floor: refused, not asked, though far past the bound.
     match decide(&k(now), &c(-86401.0)) {
-        Decision::Refuse(why) => assert!(why.contains("before this system was built"), "{why}"),
+        Decision::Refuse(why) => assert!(why.contains("before the floor (2026-09-19 18:11 UTC)"), "{why}"),
         d => panic!("{d:?}"),
     }
     // The floor itself is the earliest time that may be asked about.
@@ -261,6 +261,95 @@ fn floor_from_image_record() {
                 "{\"built_at\": \"2026-09-19T18:11:28\"}", "{\"built_at\": \"2026-09-19 18:11:28Z\"}"] {
         assert_eq!(floor_from_image_json(bad), None, "{bad}");
     }
+}
+
+#[test]
+fn release_only_raises_floor() {
+    assert_eq!(floor_from(BUILT, None), BUILT);
+    assert_eq!(floor_from(BUILT, Some(BUILT + 86400)), BUILT + 86400);
+    // Running a newer image than the release kept: the build date stands.
+    assert_eq!(floor_from(BUILT, Some(BUILT - 86400)), BUILT);
+}
+
+#[test]
+fn release_answer_is_strict() {
+    assert_eq!(parse_release("version: 1.0.1\ncreated: 2026-09-19T18:11:28Z\n"), Ok(("1.0.1".into(), BUILT)));
+    for bad in [
+        "", "version: 1.0.1\n", "created: 2026-09-19T18:11:28Z\n", "version: \ncreated: 2026-09-19T18:11:28Z\n",
+        "version: 1.0.1\ncreated: yesterday\n", "version: 1.0.1\ncreated: 2026-09-19 18:11:28Z\n",
+    ] {
+        assert!(parse_release(bad).is_err(), "{bad:?} was accepted");
+    }
+}
+
+/// Stands in for `kryptik-update check-release`: a signature reading "good"
+/// verifies, and the answer is the manifest's own version and created lines.
+fn check(dir: &Path) -> Result<String, String> {
+    if std::fs::read_to_string(dir.join("manifest.sig")).map_err(|e| e.to_string())? != "good" {
+        return Err("the manifest signature does NOT verify".into());
+    }
+    let m = std::fs::read_to_string(dir.join("manifest")).map_err(|e| e.to_string())?;
+    Ok(m.lines().filter(|l| l.starts_with("version: ") || l.starts_with("created: ")).map(|l| format!("{l}\n")).collect())
+}
+
+fn release(dir: &Path, version: &str, created: &str, sig: &str) {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join("manifest"), format!("KRYPTIK-MANIFEST-1\nversion: {version}\ncreated: {created}\n")).unwrap();
+    std::fs::write(dir.join("manifest.sig"), sig).unwrap();
+}
+
+#[test]
+fn kept_release_must_verify() {
+    let d = scratch("kept");
+    assert_eq!(release_in(&d, &check), Ok(None));
+    release(&d, "1.0.1", "2026-09-19T18:11:28Z", "good");
+    assert_eq!(release_in(&d, &check), Ok(Some(("1.0.1".into(), BUILT))));
+    // Whoever writes the state partition cannot sign: the build date is the floor again.
+    std::fs::write(d.join("manifest.sig"), "forged").unwrap();
+    assert!(release_in(&d, &check).unwrap_err().contains("does NOT verify"));
+    std::fs::remove_file(d.join("manifest.sig")).unwrap();
+    assert!(release_in(&d, &check).is_err());
+    // A link or an outsized file is refused before the tool runs.
+    let never = |_: &Path| -> Result<String, String> { panic!("the check ran") };
+    std::fs::write(d.join("manifest.sig"), "good").unwrap();
+    std::fs::remove_file(d.join("manifest")).unwrap();
+    std::os::unix::fs::symlink("/etc/hostname", d.join("manifest")).unwrap();
+    assert!(release_in(&d, &never).is_err());
+    std::fs::remove_file(d.join("manifest")).unwrap();
+    std::fs::write(d.join("manifest"), vec![b'x'; crate::update::MANIFEST_MAX as usize + 1]).unwrap();
+    assert!(release_in(&d, &never).is_err());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn commit_keeps_newest_release() {
+    let dir = scratch("commit");
+    crate::files::private_dir(&dir).unwrap();
+    let (a, b) = (dir.join("release-a"), dir.join("release-b"));
+    release(&a, "1.0.0", "2026-08-01T00:00:00Z", "good");
+    release(&b, "1.0.1", "2026-09-19T18:11:28Z", "good");
+    let now = BUILT as f64 + 600.0;
+    let kept = || release_in(&dir.join("release"), &check);
+    assert!(keep_release(&dir, &b, "1.0.1", now, &check).unwrap().contains("release 1.0.1 (2026-09-19 18:11 UTC) is the floor now"));
+    assert_eq!(kept(), Ok(Some(("1.0.1".into(), BUILT))));
+    assert!(std::fs::read_to_string(dir.join("history")).unwrap().contains("release 1.0.1 (2026-09-19 18:11 UTC) is the floor now"));
+    // A recovery to the older release: the newer one stays the floor.
+    assert!(keep_release(&dir, &a, "1.0.0", now, &check).unwrap().contains("release 1.0.1 (2026-09-19 18:11 UTC) stays"));
+    assert_eq!(kept(), Ok(Some(("1.0.1".into(), BUILT))));
+    // Only the running release's pair is taken, and only one that verifies.
+    assert!(keep_release(&dir, &b, "1.0.0", now, &check).unwrap_err().contains("this system runs 1.0.0"));
+    let c = dir.join("release-c");
+    release(&c, "1.0.2", "2026-10-01T00:00:00Z", "forged");
+    assert!(keep_release(&dir, &c, "1.0.2", now, &check).unwrap_err().contains("does NOT verify"));
+    assert!(keep_release(&dir, &dir.join("release-x"), "1.0.2", now, &check).unwrap_err().contains("holds no manifest"));
+    assert_eq!(kept().unwrap().unwrap().0, "1.0.1");
+    // A newer one replaces it; so does any that verifies once the kept pair no longer does.
+    std::fs::write(c.join("manifest.sig"), "good").unwrap();
+    assert!(keep_release(&dir, &c, "1.0.2", now, &check).unwrap().contains("release 1.0.2"));
+    std::fs::write(dir.join("release").join("manifest.sig"), "damaged").unwrap();
+    assert!(keep_release(&dir, &a, "1.0.0", now, &check).unwrap().contains("is the floor now"));
+    assert_eq!(kept().unwrap().unwrap().0, "1.0.0");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
