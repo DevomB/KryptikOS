@@ -10,6 +10,7 @@ seatd
 net-zone
 getty-tty1
 getty-tty2
+hw-report
 installer-run
 boot-success
 boot-smoke
