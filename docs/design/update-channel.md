@@ -126,7 +126,9 @@ resumes and nothing is written twice), never past the signed size.
 So a hostile net zone can make zone 0 store at most the declared size of a
 release the release key signed, once, in one root-only directory
 (`/var/lib/kryptik/update/incoming/<version>/`); wrong bytes of the right
-length fail `apply`'s hashes. The net zone streams HTTPS straight into the
+length fail `apply`'s hashes, and the launch service then discards what had
+arrived, so the release is fetched again and one bad download does not hold
+the machine at its release until the next one is announced. The net zone streams HTTPS straight into the
 broker, resuming with range requests. TLS, with the image's CA bundle, keeps
 the download private; authenticity does not rest on it. Each piece of at
 most 1 MiB is one request the launcher answers between looks at its zone,

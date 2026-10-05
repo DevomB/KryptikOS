@@ -128,6 +128,18 @@ fn identifiers() {
 }
 
 #[test]
+fn spoiled_stage_is_known_by_the_updater_words() {
+    // The two refusals kryptik-update gives a file that is not what its manifest signs.
+    let tool = include_str!("../../../../tools/update/kryptik-update");
+    for words in ["sha256 does not match the manifest", "truncated or altered"] {
+        assert!(tool.contains(words), "kryptik-update no longer says {words:?}");
+        assert!(spoiled(&format!("kryptik-update: FAILED: kryptik-root.img: {words}")));
+    }
+    assert!(!spoiled("kryptik-update: FAILED: another update is in progress (lock /run/kryptik/update.lock)"));
+    assert!(!spoiled("kryptik-update: FAILED: slot b is 1 bytes; the root image needs 2"));
+}
+
+#[test]
 fn last_log_line_reads_tail() {
     let dir = std::env::temp_dir().join(format!("kryptik-serve-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
