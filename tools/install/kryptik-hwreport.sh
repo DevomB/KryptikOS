@@ -318,7 +318,7 @@ report | scrub > "$T/report.txt"
 mkdir /run/kryptik/hwreport.lock 2>/dev/null || die "another report is being written (/run/kryptik/hwreport.lock)"
 lock=/run/kryptik/hwreport.lock; mnt="$lock/esp"
 mkdir "$mnt"
-mount -o rw,nosuid,nodev,noexec "$esp" "$mnt" 2>/dev/null \
+mount -t vfat -o rw,nosuid,nodev,noexec "$esp" "$mnt" 2>/dev/null \
     || die "could not mount ${esp}: is kryptik-install running, or the partition damaged?"
 # mount falls back to read-only on a device that refuses writes.
 [ -w "$mnt" ] || die "the stick is write-protected: no report was written"

@@ -164,6 +164,14 @@ if [[ "$rc" -ne 0 ]] && grep -q 'this is not one' "$W/save.out"; then green "--s
 KRYPTIK_HWREPORT_ROOT="$W" sh "$TOOL" --elsewhere > "$W/save.out" 2>&1; rc=$?
 [[ "$rc" -ne 0 ]] && green "an unknown argument is refused" || red "an unknown argument was taken"
 
+echo "-- how the stick is mounted"
+# A link on another filesystem under the stick's label would carry the write
+# to a disk of the machine.
+for f in build/service-scripts/hw-report.sh tools/install/kryptik-hwreport.sh; do
+    m="$(grep -cE '^[[:space:]]*mount ' "${ROOT}/${f}")"; v="$(grep -cE '^[[:space:]]*mount -t vfat ' "${ROOT}/${f}")"
+    [[ "$m" -ge 1 && "$m" -eq "$v" ]] && green "${f}: mounts the stick as FAT and nothing else" || red "${f}: ${m} mount(s), ${v} of them as FAT"
+done
+
 echo
 echo "${PASS} passed, ${FAIL} failed"
 [[ "$FAIL" -eq 0 ]]
