@@ -394,8 +394,11 @@ fn serve_until_exit(pid: libc::pid_t, listen_fd: RawFd, s: &broker::Served, out:
         let pfd = pfds[0];
         if n > 0 && pfd.revents & libc::POLLIN != 0 {
             match broker::serve_one(listen_fd, s) {
+                /* Not the calls a net zone makes by the minute: they would use
+                 * up the log's bound in days, and what they decide is logged
+                 * where it is decided. */
+                Ok(Some("update-poll" | "update-put" | "version")) | Ok(None) => {}
                 Ok(Some(verb)) => log(&format!("kryptikd[zone {zone}]: broker request: {verb}")),
-                Ok(None) => {}
                 Err(e) => log(&format!("kryptikd[zone {zone}]: broker: {e}")),
             }
         }
