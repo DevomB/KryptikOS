@@ -25,7 +25,7 @@ testctl_signed() {   # testctl_signed FILE
 
 testctl_media() {
     grep -qs '^media=.\+' /run/kryptik/boot-identity 2>/dev/null && return 0
-    grep -qw 'kryptik\.media=[a-z]' /proc/cmdline 2>/dev/null
+    grep -qE '(^| )kryptik\.media=[a-z]+( |$)' /proc/cmdline 2>/dev/null
 }
 
 testctl_load() {

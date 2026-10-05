@@ -1,0 +1,7 @@
+# Machines Kryptik has been run on (docs/hardware.md). Read by
+# tools/check-hardware.sh --list.
+#
+#   report  level  who  day  note
+#
+# report: the kryptik-hwreport file beside this list, which must carry the
+# level. level: reported or certified. who vouches, and the day it was taken.

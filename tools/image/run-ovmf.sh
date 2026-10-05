@@ -2,13 +2,15 @@
 # Boot Kryptik media or an installed disk under OVMF, as real firmware would:
 # no -kernel, -initrd, -append or host filesystem sharing.
 #
-#   tools/image/run-ovmf.sh (--usb IMG | --iso ISO | --no-media)
+#   tools/image/run-ovmf.sh (--usb IMG [--usb-writable] | --iso ISO | --no-media)
 #        [--disk FILE]... [--testctl FILE] [--vars clean|enrolled|ms|FILE]
 #        [--vars-file FILE] [--mode console|smoke|serve] [--timeout N]
 #        [--log FILE] [--net none|user] [--mem MB] [--cpus N] [--gpu]
 #        [--allow-reboot] [--until REGEX] [--name TAG]
 #
-#   --usb IMG      the medium as a USB mass-storage device (removable)
+#   --usb IMG      the medium as a USB mass-storage device (removable),
+#                  write-protected unless --usb-writable says the guest may
+#                  write to it: for a copy a test made, never the medium
 #   --iso ISO      the medium as a SATA CD-ROM (/dev/sr0 in the guest)
 #   --no-media     boot only the --disk(s): an installed system
 #   --disk FILE    a virtio disk (repeatable; the first is the install target
@@ -39,10 +41,11 @@ source "${SELF}/../../build/lib/common.sh"
 
 USB=""; ISO=""; NOMEDIA=0; DISKS=(); TESTCTL=""; VARS="clean"; VARS_FILE=""
 MODE="smoke"; TIMEOUT=300; LOG=""; NET="none"; MEM=2048; CPUS=2; GPU=0; ALLOW_REBOOT=0; NAME="vm"
-DISK_RO=0; BLKDEBUG=""; UNTIL=""
+DISK_RO=0; BLKDEBUG=""; UNTIL=""; USB_RO=on
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
         --usb)       USB="${2:?}"; shift 2 ;;
+        --usb-writable) USB_RO=off; shift ;;
         --iso)       ISO="${2:?}"; shift 2 ;;
         --no-media)  NOMEDIA=1; shift ;;
         --disk)      DISKS+=("${2:?}"); shift 2 ;;
@@ -61,7 +64,7 @@ while [[ "$#" -gt 0 ]]; do
         --allow-reboot) ALLOW_REBOOT=1; shift ;;
         --until)     UNTIL="${2:?}"; shift 2 ;;
         --name)      NAME="${2:?}"; shift 2 ;;
-        -h|--help)   sed -n '2,33p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help)   sed -n '2,35p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -143,7 +146,7 @@ case "$NET" in
 esac
 if [[ -n "$USB" ]]; then
     ARGS+=( -device qemu-xhci,id=xhci
-            -drive "if=none,id=usbmedia,format=raw,readonly=on,file=${USB}"
+            -drive "if=none,id=usbmedia,format=raw,readonly=${USB_RO},file=${USB}"
             -device usb-storage,bus=xhci.0,drive=usbmedia,removable=on )
 fi
 if [[ -n "$ISO" ]]; then
