@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 # glibc's maintained release branch as one patch over the release tarball, made as build/patches/glibc-<V>/README.md says.
 #
-#   tools/glibc-branch-patch.sh [COMMIT]   the branch's head by default
+#   tools/glibc-branch-patch.sh [COMMIT]   the newest commit both hosts hold by default
 #
 # Writes 0001-release-<V>-master-<commit>.patch in place of the old one, its lines in SHA256SUMS and
 # UPSTREAM-SHA256SUMS, and README.md's row for it; the list of fixes in README.md stays the reviewer's.
-# GLIBC_GIT names another upstream (the fixture suite uses a local one).
+# The patch is cut only at a commit two hosts hold on the branch: a commit id names its content, so
+# the two then serve the same. GLIBC_GIT and GLIBC_GIT_SECOND name other hosts (the fixture suite's are local).
 set -Eeuo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 load_config
 
 url="${GLIBC_GIT:-https://sourceware.org/git/glibc.git}"
+second="${GLIBC_GIT_SECOND:-https://gitlab.com/gnutools/glibc}"
 branch="release/${V_GLIBC}/master"
 tag="glibc-${V_GLIBC}"
 dir="${KRYPTIK_ROOT}/build/patches/glibc-${V_GLIBC}"
@@ -24,15 +26,32 @@ git -C "$g" init -q
 git -C "$g" fetch -q --depth=1 "$url" "refs/tags/${tag}:refs/tags/${tag}"
 # The branch since the tag: the commits to count, and the trees to diff.
 git -C "$g" fetch -q --shallow-exclude="refs/tags/${tag}" "$url" "refs/heads/${branch}:refs/remotes/upstream/branch"
-commit="${1:-$(git -C "$g" rev-parse refs/remotes/upstream/branch)}"
+git -C "$g" fetch -q --shallow-exclude="refs/tags/${tag}" "$second" "refs/heads/${branch}:refs/remotes/second/branch" \
+    || die "${second} did not give ${branch}: the patch is cut only at a commit two hosts hold"
+on() { git -C "$g" merge-base --is-ancestor "$1" "$2" 2>/dev/null; }   # on COMMIT REF
+a="$(git -C "$g" rev-parse refs/remotes/upstream/branch)"; b="$(git -C "$g" rev-parse refs/remotes/second/branch)"
+# With none named, the newest both hold: one host's head, when the other is behind it.
+if [[ $# -gt 0 ]]; then commit="$1"
+elif on "$a" "$b"; then commit="$a"
+elif on "$b" "$a"; then commit="$b"
+else die "${branch} differs between the two hosts: ${a} at ${url}, ${b} at ${second}"
+fi
 [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || die "${commit}: give a full commit id"
-git -C "$g" merge-base --is-ancestor "$commit" refs/remotes/upstream/branch 2>/dev/null \
-    || die "${commit} is not on ${branch}"
+on "$commit" refs/remotes/upstream/branch || die "${commit} is not on ${branch}"
+on "$commit" refs/remotes/second/branch || die "${commit} is not on ${branch} at ${second}: name a commit both hosts hold"
 count="$(git -C "$g" rev-list --count "$commit")"
 date="$(git -C "$g" log -1 --format=%cs "$commit")"
 
+# README.md's command, whatever this user's git configuration says.
+gd() {
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -C "$g" -c core.abbrev=40 diff --no-ext-diff --no-color "$@" \
+        "${tag}..${commit}" -- . ':!NEWS' ':!advisories'
+}
+# patch(1) carries neither a binary change nor a change of mode alone.
+[[ -z "$(gd --numstat | awk '$1 == "-"')" ]] || die "the branch changes a binary file since ${tag}, which a patch cannot carry"
+[[ -z "$(gd --raw --abbrev=40 | awk 'substr($1, 2) != $2 && $3 == $4')" ]] || die "the branch changes a file's mode alone since ${tag}, which a patch cannot carry"
 name="0001-release-${V_GLIBC}-master-${commit:0:12}.patch"
-git -C "$g" diff --full-index --no-renames "${tag}..${commit}" -- . ':!NEWS' ':!advisories' > "${dir}/${name}.new"
+gd --full-index --no-renames > "${dir}/${name}.new"
 [[ -s "${dir}/${name}.new" ]] || { rm -f "${dir}/${name}.new"; die "the branch at ${commit:0:12} differs from ${tag} in nothing"; }
 oldname="${old[0]##*/}"
 oldcommit="$(sed -n "s/.*${tag}\.\.\([0-9a-f]\{40\}\).*/\1/p" "${dir}/UPSTREAM-SHA256SUMS" | head -1)"
@@ -54,7 +73,7 @@ sed -i -e "s|\`${oldname}\`|\`${name}\`|" \
        "${dir}/README.md"
 grep -qF "\`${commit}\` (${date}, ${count} commits)" "${dir}/README.md" || warn "README.md's row for 0001 did not take the new commit; edit it by hand"
 
-ok "${name}: ${count} commits up to ${commit:0:12} (${date}), sha256 ${sum}"
+ok "${name}: ${count} commits up to ${commit:0:12} (${date}), on ${branch} at ${url} and at ${second}, sha256 ${sum}"
 if [[ "$name" == "$oldname" ]]; then
     echo "the same commit as before: the patch is the one upstream's branch gives, byte for byte, if git shows no change"
 fi
