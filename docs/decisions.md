@@ -309,3 +309,31 @@ Mesa into the compositor.
 **Rejected:** Chromium (no sandbox in a zone, clang only); a WebKitGTK
 browser (its sandbox off in a zone); rootless Xwayland; copying GPU frames
 into shared memory in the proxy (slow reads of write-combined memory).
+
+## ADR-017 (proposed): The state partition may unlock from the TPM, for the exact kernel
+
+A user may enrol the TPM to open the state partition without a prompt. The
+key is a second LUKS2 keyslot, sealed by the TPM to a policy kept in an NV
+index: PCR 4 (the exact signed kernel, whose compiled-in command line carries
+the root hash) and PCR 7 (Kryptik's Secure Boot policy and certificate), for
+the committed kernel and, during a trial, the kernel the updater predicted
+from this boot's event log. `sysinit` unseals it from the verified root
+through a salted session and then extends PCR 15, so nothing later in the
+same boot can unseal it again. Every failure falls back to the passphrase,
+whose keyslot is never removed
+([TPM unlock](design/tpm-unlock.md)).
+
+**Why:** with no initramfs, PCR 4 already names the kernel and the root, so
+the binding needs no stub or extra measurement (ADR-014). PCR 7 alone would
+let the install medium, signed by the same key, unseal the key from its root
+shell, and would let every older kernel do the same.
+
+**Cost:** the threat model changes: an enrolled machine boots to its login
+prompt with the state partition open, and an attacker who can extract the
+TPM's secrets reads it. The updater rewrites the NV policy for each trial;
+a firmware or dbx update, a rollback and a wrong prediction each cost one
+passphrase prompt; tpm2-tss and tpm2-tools join the image.
+
+**Rejected:** PCR 7 alone (the medium and old kernels unseal); a policy
+signed at release time (old kernels stay valid, a key more, and no
+knowledge of each machine's firmware events); enrolment by default.
