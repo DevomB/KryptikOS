@@ -70,7 +70,9 @@ tampering at routine expiry gets ignored. `BADSIG` (the file does not match
 its signature) and `REVKEYSIG` (the key was revoked, possibly compromised)
 always fail; `--strict`, the gate CI runs on every push, also fails on a
 signature that could not be checked or a signer never established: a key
-taken from the signature itself, a key not held, a file not downloaded. A
+taken from the signature itself, a key not held, a file not downloaded, a
+key whose published copy (`tools/key-provenance.tsv`) could not be read that
+run. A row there speaks only for the sources it names. A
 key that no publisher states anywhere passes it only while
 `tools/source-notes.tsv` records the routes that were tried
 (`no-usable-key`); such a note for a key that is held fails it as stale,
@@ -150,10 +152,17 @@ checks them against kernel.org's published developer keys.
 
 - The GNU keyring is fetched over the network and kept with the sources, so a
   signature checked against it means "signed by whoever the keyring said when
-  it was fetched". Checking those keys out of band is manual.
-- The kernel.org signing keys are pinned by fingerprint in
-  `tools/verify-signatures.sh`, and those fingerprints still need confirming
-  against kernel.org independently.
+  it was fetched". Eight GNU sources have a second route the gate walks on
+  every run: coreutils, sed, grep, diffutils, gzip, findutils and inetutils
+  through the release keyring GNU Savannah serves for each project, and patch
+  through kernel.org. The others (binutils, gcc, glibc, bash, readline, gawk,
+  tar, make and more) have no Savannah keyring, and their keys rest on the GNU
+  keyring alone.
+- The kernel.org signing keys pinned in `tools/verify-signatures.sh` are
+  confirmed by two routes, kernel.org's `pgpkeys.git` and kernel.org's WKD,
+  and `tools/key-provenance.tsv` has the gate fetch them from `pgpkeys.git` on
+  every run. Like every route there, both rest on TLS; nobody has compared
+  these fingerprints in person.
 - Builds are not reproducible, so "built from source" still means trusting the
   machine that built it.
 - The first compiler comes from the host, so Thompson's "Reflections on
