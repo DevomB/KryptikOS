@@ -287,6 +287,7 @@ else
 fi
 MATCH="not a regular file" check "a descriptor to a directory is refused" 0 /bin/sh -c "python3 -c '$TX' packet f /home/probe 0"
 MATCH="not on the zone" check "a file from the zone's tmpfs, not its data mount, is refused" 0 /bin/sh -c "echo x > /tmp/f && python3 -c '$TX' packet f /tmp/f 0"
+MATCH="transfer limit is 16" check "a file over the destination's [transfer] max_bytes is refused" 0 /bin/sh -c "printf '%017d' 0 > /home/probe/big && python3 -c '$TX' packet big /home/probe/big 0"
 MATCH="not running" check "a destination that is not running is refused"  0 /bin/sh -c "echo x > /home/probe/f && python3 -c '$TX' packet f /home/probe/f 0"
 ZFLAGS=()
 # Consent is asked only for a running destination. Nobody answers here, so a

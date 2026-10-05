@@ -61,8 +61,8 @@ failure:
    The only shipped policy is `dev`'s `to = "work"`.
 4. The descriptor is a regular file, `O_RDONLY` and not `O_PATH`, on the
    sender's data mount (`st_dev` of `/home/<zone>`, read through the zone's
-   pid 1 root at request time), and within the 1 GiB cap. `/proc/self/fd/N`
-   is never consulted.
+   pid 1 root at request time), and within the size limit (below).
+   `/proc/self/fd/N` is never consulted.
 5. The destination is running. A refusal here tells the sender whether a
    zone its own `[transfer] to` names is running, which timing would tell it
    anyway.
@@ -71,6 +71,18 @@ failure:
    allow, the same launch asks nothing for a minute: every question takes
    focus in zone 0, so a zone may not raise them in a loop. A refusal that
    showed nothing (no channel, nobody watching) does not pause.
+
+No file larger than 1 GiB is carried, and a zone may lower that for itself
+with `[transfer] max_bytes = N`, a whole number of bytes from 1 to 1073741824;
+zero, a sign, a fraction, a unit or more than 1 GiB is refused when the zone
+file is read. A zone's limit bounds every file it sends and every file it
+receives, so a transfer is held to the smallest of the cap, the sender's limit
+and the receiver's. The receiver's applies because the receiver is the one
+that has to hold the file (an ephemeral zone in a tmpfs of fixed size), and no
+sender can raise it; the sender's, because it bounds what can leave the zone
+in one transfer. The sender's is read from its file at launch and the
+receiver's at the request, and a refusal names whose limit it was. No shipped
+zone sets one.
 
 After the user answers, the destination is looked up again, so nothing holds
 its mounts through the wait and a zone that stopped meanwhile gets nothing.
@@ -168,7 +180,8 @@ title to `[zone] ...`, from which the compositor draws the zone's border.
 - `broker::tests` drive `serve_connection` over socketpairs with real
   `SCM_RIGHTS`: every refusal above with its exact reply, the transfer
   landing 0600 and byte-identical, numbered names, planted symlinks as the
-  name and as `incoming`, a file growing past the cap mid-copy, descriptor
+  name and as `incoming`, a file growing past the cap mid-copy, the sender's
+  and the receiver's `max_bytes` each refusing a file over it, descriptor
   leaks, and no second question within a minute of a refusal. `consent.rs`
   tests yes, no, silence, a missing channel or watcher, a vanished sender,
   planted names and a non-file answer.
@@ -199,7 +212,6 @@ title to `[zone] ...`, from which the compositor draws the zone's border.
 
 ## Not built
 
-- A per-zone transfer limit (`transfer.max_bytes`); the cap is 1 GiB for all.
 - A zone-side client in the image. Zones speak the wire format directly; the
   tests use `build/guest-tests/broker-client.py`.
 

@@ -8,6 +8,8 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 
+use crate::broker::TRANSFER_MAX;
+
 /// How a zone reaches the network.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkMode {
@@ -98,6 +100,9 @@ pub struct Zone {
     /// `[transfer] to = "work personal"`: zones this one may send files to via
     /// the broker. Never the nic zone (`check_invariants`).
     pub transfer_to: Vec<String>,
+    /// `[transfer] max_bytes = N`: the largest file this zone sends or
+    /// receives through the broker, at most its cap. None: the cap alone.
+    pub transfer_max: Option<u64>,
 }
 
 /// Smallest `identity.uid_base`; every base is a multiple of `IDENTITY_STRIDE`.
@@ -135,7 +140,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "policy.seccomp", "policy.landlock",
     "limits.memory_max", "limits.pids_max", "limits.cpu_max", "limits.io_max",
     "identity.uid_base",
-    "transfer.to",
+    "transfer.to", "transfer.max_bytes",
     "ui.border_color", "ui.border_pattern", "ui.glyph", "ui.label",
 ];
 
@@ -441,11 +446,26 @@ impl Zone {
                 out
             }
         };
+        // Digits alone, so no sign or unit, and never past the broker's cap.
+        let transfer_max = match kv.get("transfer.max_bytes") {
+            None => None,
+            Some(v) => match v.parse::<u64>() {
+                Ok(n @ 1..=TRANSFER_MAX) if v.bytes().all(|b| b.is_ascii_digit()) => Some(n),
+                _ => {
+                    return Err(bad(
+                        "transfer.max_bytes",
+                        v,
+                        &format!("a whole number of bytes from 1 to {TRANSFER_MAX}"),
+                    ))
+                }
+            },
+        };
 
         let zone = Zone {
             nic,
             uid_base,
             transfer_to,
+            transfer_max,
             description: get("zone.description").unwrap_or_default(),
             volume: get("storage.volume"),
             size: get("storage.size"),
