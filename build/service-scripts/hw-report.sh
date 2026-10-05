@@ -13,7 +13,9 @@ esp="$(kryptik_part kryptik-esp)" || exit 0
 
 look=/run/kryptik/hwreport-look
 mkdir -p "$look"
-mount -o ro,nosuid,nodev,noexec "$esp" "$look" 2>/dev/null || exit 0
+# As FAT and nothing else, here and where the report is written: FAT holds no
+# links, so a prepared stick cannot send root's write anywhere but itself.
+mount -t vfat -o ro,nosuid,nodev,noexec "$esp" "$look" 2>/dev/null || exit 0
 asked=no
 [ -d "$look/kryptik-report" ] && asked=yes
 umount "$look"
