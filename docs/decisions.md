@@ -268,8 +268,10 @@ zone.
 **Cost:** clang, libclang, Node.js and a WASI sysroot to build Firefox, and
 hours of build time; video and WebGL on the CPU in browsing zones; the zone
 filter answers `clone` and `unshare` with namespace flags with `EPERM`
-instead of killing, so Firefox's start-up probe survives; a GPU zone, when
-one exists, brings Mesa into the compositor.
+instead of killing, so Firefox's start-up probe survives; popups, which the
+proxy refuses since the desktop-boundary review, return for zones in a form
+that cannot leave the zone's own window; a GPU zone, when one exists, brings
+Mesa into the compositor.
 
 **Rejected:** Chromium (no sandbox in a zone, clang only); a WebKitGTK
 browser (its sandbox off in a zone); rootless Xwayland; copying GPU frames

@@ -229,9 +229,16 @@ yet; ADR-004's cost text says so.
 
 ## What the proxy must offer for a usable browser
 
-Firefox runs on the eight globals offered now. Three more things are needed
-before it is pleasant, each with its own review:
+Firefox does not run on the proxy as it is: the proxy refuses
+`xdg_surface.get_popup` and ends the session, and every GTK menu, dropdown
+and tooltip is a popup. Four things are needed, each with its own review:
 
+- **Popups.** The proxy refuses them because a popup is a surface with no
+  border, which the compositor will place over other windows, zone 0's
+  among them. A browser needs them back in a form that cannot leave its own
+  window: inside the zone's toplevel, under its border, or refused. How the
+  proxy and the compositor hold that is not designed here, and it is the
+  first thing this design needs.
 - **Copy and paste inside a zone.** The proxy serves
   `wl_data_device_manager` itself, keeping selections among its own zone's
   clients and never forwarding them to the compositor, and joins it to the
@@ -278,8 +285,9 @@ filesystem and the hash tree.
 3. The zone filter answers `clone` and `unshare` with namespace flags with
    `EPERM` instead of killing, and the browser zones' policy files add
    `allow-syscall seccomp`.
-4. The proxy serves copy and paste within a zone, fractional scaling and
-   idle inhibition; it keeps activation hidden.
+4. The proxy lets a zone's popups through only where they cannot leave the
+   zone's own window, and serves copy and paste within a zone, fractional
+   scaling and idle inhibition; it keeps activation hidden.
 5. No render node in any shipped browsing zone. GPU zones wait for the
    compositor's renderer to be decided, and then go by zone file, never to
    `untrusted`.
@@ -301,6 +309,8 @@ filesystem and the hash tree.
   `allow-syscall seccomp`;
 - no process in any zone holds a `/dev/dri` node, and a client binding
   `zwp_linux_dmabuf_v1` through any zone's proxy is disconnected;
+- a menu opened in Firefox is drawn inside its window's border, and a popup
+  a zone's client places outside its window is refused or clipped to it;
 - text copied in one window of a zone pastes in another window of the same
   zone, and does not paste in another zone until the zone 0 gesture moves
   it;
