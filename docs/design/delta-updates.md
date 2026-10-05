@@ -18,7 +18,7 @@ whether it is worth doing at today's release sizes.
   holds, in order, never past the signed size, in pieces of at most 1 MiB
   (`may_put` and `put` in `compartments/kryptikd/src/update.rs`). Zone 0
   stores no more than the release's signed size, and `apply` checks every
-  hash again before it writes the inactive slot.
+  hash before it writes the inactive slot.
 - **The image is sent raw.** `kryptik-root.img` is an ext4 filesystem
   followed by its hash tree, about 1,560 MiB today. Stage 06 sizes the
   filesystem at its contents plus an eighth plus 96 MiB, so a large part of
@@ -38,7 +38,8 @@ whether it is worth doing at today's release sizes.
   transport bytes, never a different thing to verify: the staged
   `kryptik-root.img` must hash to the manifest's SHA-256, and `apply` checks
   it as now.
-- **Zone 0 stores only what is proven,** and never more than the signed size
+- **Zone 0 stores only what is proven,** which is new with this design, and
+  as now never more than the signed size
   ([update channel](update-channel.md#bytes-in-an-order-that-bounds-them)).
 - **The net zone is hostile.** It may lie, withhold, reorder and cut.
 - **The broker's loop answers each request within 5 s,** so anything long,
@@ -69,6 +70,8 @@ new tree before it is used, so a damaged or hostile source can only fail to
 match.
 
 ## The verbs
+
+None of this is built. With delta fetching the verbs would change:
 
 - `update-poll` answers with the next runs still missing, at most 64 per
   answer, as `kryptik-root.img <offset>+<length>`. Runs are whole 4 KiB
