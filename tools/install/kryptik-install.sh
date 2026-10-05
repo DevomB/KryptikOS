@@ -72,7 +72,7 @@ done
 # --- every external tool, checked before the first write -------------------
 missing=""
 for tool in sfdisk partx blockdev blkid cryptsetup stty mkfs.ext4 dd sha256sum mount umount sync awk sed \
-            readlink lsblk head tail wc cmp cp mv chmod mkdir stat tr loadkeys; do
+            readlink lsblk head tail wc cmp cp mv chmod mkdir stat tr loadkeys chattr; do
     command -v "$tool" >/dev/null 2>&1 || missing="${missing} ${tool}"
 done
 [ -z "$missing" ] || die "this system is missing:${missing}
@@ -261,8 +261,6 @@ if [ "$ASSUME_YES" -ne 1 ]; then
     read -r answer
     [ "$answer" = "ERASE" ] || die "not confirmed; nothing was written"
 fi
-# Named in the firmware before anything is written to the disk.
-kb_store "$LAYOUT" || die "the firmware did not take the keyboard layout ${LAYOUT}; nothing was written"
 
 # The state passphrase, before the first write: twice on a terminal, else one
 # line of stdin. It reaches cryptsetup through a pipe from the printf builtin,
@@ -280,6 +278,9 @@ else
     IFS= read -r STATE_PASS || STATE_PASS=""
 fi
 [ -n "$STATE_PASS" ] || die "no state passphrase given; nothing was written"
+# Named in the firmware once nothing is left to refuse, and before anything
+# is written to the disk: an install refused above has changed nothing.
+kb_store "$LAYOUT" || die "the firmware did not take the keyboard layout ${LAYOUT}; nothing was written"
 
 # --- partition -------------------------------------------------------------
 say "partitioning (sfdisk, GPT: kryptik-esp, kryptik-a, kryptik-b, kryptik-state)"
