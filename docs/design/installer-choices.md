@@ -20,11 +20,12 @@ often a major version happens. The proposed decision is ADR-023 in
   more, rounded up to 64 MiB. Today's root image is about 1,560 MiB, so a
   slot is 2,368 MiB, and a machine installed now takes releases about
   800 MiB larger before `kryptik-update apply` refuses one ("slot b is N
-  bytes; the root image needs M"). Draft #179 adds `--slot-size MIB`.
+  bytes; the root image needs M").
 - **Boot path.** The installed disk boots `\EFI\BOOT\BOOTX64.EFI`, a copy of
   the committed slot's kernel, through the removable-media path with no
   firmware variables. `kryptik-efiboot` writes `Boot####` entries around a
-  trial and removes them when it ends.
+  trial; when it ends the committed slot keeps one, and a fresh install has
+  none until its first trial.
 - **Identity.** The kernel finds its slot by `PARTLABEL` on whatever disk
   has it, and dm-verity refuses a slot that is not the one its root hash
   names. `sysinit` takes the state partition only from the disk the root
@@ -48,7 +49,7 @@ often a major version happens. The proposed decision is ADR-023 in
 
 ## A chosen slot size
 
-`--slot-size` (#179) covers the user who knows. The default is the question.
+`--slot-size` covers the user who knows. The default is the question.
 Image plus half again was right for a root that grew slowly. Version 2 puts
 more in the root: firmware, Mesa if the compositor moves to the GPU, and the
 browser stack itself unless applications ship as images (ADR-015, proposed
@@ -141,8 +142,8 @@ The removable-media path belongs to the firmware's fallback for a disk, and
 with two ESPs on one disk, which one the firmware takes is the firmware's
 choice. Beside another OS, Kryptik boots by a `Boot####` entry of its own,
 named `Kryptik`, that points at the committed slot's kernel.
-`kryptik-efiboot forget` keeps that entry instead of leaving the disk to the
-fallback. The installer puts it first in `BootOrder` and nothing reorders it
+A fresh install has no entry until its first trial, so the installer makes
+it (`kryptik-efiboot ensure`). The installer puts it first in `BootOrder` and nothing reorders it
 afterwards: if the other OS moves itself first, as Windows updates do, the
 user picks Kryptik from the firmware's boot menu. ADR-014 stands, with no
 boot loader.
@@ -226,7 +227,7 @@ whose large disk is not the one it boots from.
 The install suite, extended:
 
 - a default install makes slots of the new size, and `--slot-size` larger
-  ones (as in #179);
+  ones;
 - on a disk laid out as Windows lays one out (a 100 MiB ESP with
   `\EFI\Microsoft`, a Microsoft reserved partition, a data partition, then
   free space), `--beside` installs into the free space alone. The other
