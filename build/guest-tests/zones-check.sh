@@ -77,6 +77,42 @@ PY'
 [[ "$ZOUT" == *PING6-OK* ]] && pass "routed-ping6" "ping reaches the bridge over IPv6" || fail "routed-ping6" "$(grep -o 'PING6-FAIL.*' "$LOG/untrusted.out")"
 [[ "$ZOUT" == *DNS-ANSWERED* ]] && pass "routed-dns" "$(grep -o 'DNS-ANSWERED.*' "$LOG/untrusted.out")" || fail "routed-dns" "$(grep -o 'DNS-.*' "$LOG/untrusted.out")"
 
+# The resolver follows the servers a lease names. The net zone's resolv.conf
+# gains one, as a lease that came late or another network would change it, and
+# loses it again: each time dnsmasq must be told within two of the zone's 10 s
+# passes. The first server stays throughout, so names still resolve.
+net_init="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
+netsh() { nsenter -t "${net_init:-0}" -m sh -c "$1" 2>/dev/null; }
+forwards_to() {   # forwards_to yes|no: wait until dnsmasq's file does, or does not, name the added server
+    for _ in $(seq 1 40); do
+        if netsh 'grep -q "^nameserver 192\.0\.2\.53$" /run/uplink-resolv.conf'; then [[ "$1" == yes ]] && return 0
+        else [[ "$1" == no ]] && return 0; fi
+        sleep 1
+    done
+    return 1
+}
+told() { grep -hc 'netzone: dnsmasq: now forwarding to' /run/uncaught-logs/current /run/uncaught-logs/@* 2>/dev/null | awk '{ n += $1 } END { print n + 0 }'; }
+told_before="$(told)"
+if netsh 'grep -q "^nameserver" /etc/resolv.conf && cp /etc/resolv.conf /run/resolv.before && echo "nameserver 192.0.2.53" >> /etc/resolv.conf'; then
+    forwards_to yes; came=$?
+    netsh 'cat /run/resolv.before > /etc/resolv.conf; rm -f /run/resolv.before'
+    forwards_to no; went=$?
+    sleep 2   # the zone says so after it has told dnsmasq
+    if [[ "$came" -eq 0 && "$went" -eq 0 && "$(( $(told) - told_before ))" -ge 2 ]]; then
+        pass "dns-follows-lease" "a server the net zone's resolv.conf gained reached dnsmasq, and left it again with the lease"
+    else
+        fail "dns-follows-lease" "gained: rc=$came, lost: rc=$went, told $(( $(told) - told_before )) time(s); $(grep -h 'netzone: dnsmasq' /run/uncaught-logs/current 2>/dev/null | tail -2 | tr '\n' ' ')"
+    fi
+else
+    fail "dns-follows-lease" "the net zone (init ${net_init:-none}) has no resolv.conf with a server to add to"
+fi
+# dnsmasq is still there after reading its servers again, as routed-dns found it.
+zrun untrusted 20 -- python3 -c 'import socket, struct
+q = struct.pack(">HHHHHH", 0x4321, 0x0100, 1, 0, 0, 0) + b"\x07kryptik\x04test\x00" + struct.pack(">HH", 1, 1)
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(4)
+s.sendto(q, ("10.19.0.1", 53)); d, _ = s.recvfrom(512); print("DNS-STILL-ANSWERED rcode=%d" % (d[3] & 0x0f))'
+[[ "$ZOUT" == *DNS-STILL-ANSWERED* ]] && pass "dns-after-reload" "$(grep -o 'DNS-STILL-ANSWERED.*' "$LOG/untrusted.out")" || fail "dns-after-reload" "no answer from the resolver: $(tail -1 "$LOG/untrusted.err")"
+
 # (the vault is probed once its volume exists, under storage below)
 
 # --- zones: separation between routed zones; fail-closed on a net restart -------
