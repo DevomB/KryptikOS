@@ -167,11 +167,13 @@ every sysctl reads back as `build/config/sysctl.d` says.
 
 Every zoned process runs under a default-deny seccomp-bpf filter
 (`compartments/kryptikd/src/seccomp.rs`) allowing about 200 syscalls; anything
-else is `SECCOMP_RET_KILL_PROCESS`. `clone` with namespace flags is killed,
-`clone3` fails with `ENOSYS` so libc falls back to `clone`, the `TIOCSTI` and
-`TIOCLINUX` ioctls are killed, and `socket` is limited to `AF_UNIX`,
-`AF_INET`, `AF_INET6` and `NETLINK_ROUTE`. A zone policy file can widen this
-in named ways but never re-allow a denied syscall
+else is `SECCOMP_RET_KILL_PROCESS`. `unshare` and `clone` with namespace flags
+fail with `EPERM` instead: Firefox, Chromium and bubblewrap probe for user
+namespaces at start and must hear no, as the kernel tells an unprivileged
+caller. `clone3` fails with `ENOSYS` so libc falls back to `clone`, the
+`TIOCSTI` and `TIOCLINUX` ioctls are killed, and `socket` is limited to
+`AF_UNIX`, `AF_INET`, `AF_INET6` and `NETLINK_ROUTE`. A zone policy file can
+widen this in named ways but never re-allow a denied syscall
 ([zone policy files](design/zone-policy-files.md)).
 
 | Denied | Why |
@@ -186,8 +188,8 @@ in named ways but never re-allow a denied syscall
 | `init_module`, `finit_module`, `kexec_load` | load kernel code |
 | `io_uring_*` | does I/O without syscalls, past the filter |
 
-`compartments/tests/adversarial.sh` makes 13 of these calls in a real process
-and expects SIGSYS.
+`compartments/tests/adversarial.sh` makes 12 of these calls in a real process
+and expects SIGSYS; from `unshare` and a namespace `clone` it expects `EPERM`.
 
 Other architectures are refused, and x32 calls (x86-64 numbers with bit 30
 set) are killed before the allowlist. Each allowed syscall is a compare
