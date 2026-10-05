@@ -7,6 +7,8 @@
 # A trial slot that passes health() is committed (its kernel becomes
 # BOOTX64.EFI). One that fails reboots, and with BootNext spent that lands on
 # the committed slot. A committed slot is only reported on, never rebooted.
+# A slot that runs with no trial on record and is not the committed one was
+# booted from outside: it is reported as uncommitted and rebooted from, once.
 # The paths are overridable for tools/tests/boot-success.sh only.
 set -u
 say() { echo "boot-success: $*"; }
@@ -117,10 +119,20 @@ esp_committed() {
     sed -n 1p "$ESP_MNT/kryptik/committed-slot" 2>/dev/null
     umount "$ESP_MNT"
 }
-unrecorded=""
-if [ -z "$trial" ] && [ "$state" != persistent ]; then
+# With no trial on record, the slot that runs should be the committed one. On a
+# degraded state the record is out of reach, so another slot is a trial. With
+# the record readable, nothing of Kryptik's asked for this slot: the earlier
+# release stays bootable for rollback, and a firmware entry or BootNext set
+# from outside boots it.
+unrecorded=""; stray=""
+if [ -z "$trial" ]; then
     c="$(esp_committed)"
-    if [ -n "$c" ] && [ "$c" != "$slot" ]; then trial="$slot"; unrecorded=1; fi
+    case "$c" in a|b) ;; *) c="" ;; esac
+    if [ "$c" = "$slot" ]; then
+        rm -f "$B/uncommitted"
+    elif [ -n "$c" ]; then
+        if [ "$state" = persistent ]; then stray="$c"; else trial="$slot"; unrecorded=1; fi
+    fi
 fi
 
 # --- the decision -------------------------------------------------------------
@@ -173,6 +185,18 @@ if [ -n "$trial" ]; then
             rm -f "$B/trial"
             forget_entries "$slot"
         fi
+    fi
+elif [ -n "$stray" ]; then
+    say "slot $slot is running, slot $stray is the committed one and no trial was armed: the firmware was told to boot this slot"
+    result "uncommitted $slot"
+    # Once: an entry that is not Kryptik's own outlives the forgetting, and
+    # the machine must stay up to be put right.
+    if forget_entries "$stray" && [ ! -e "$B/uncommitted" ] && [ "${KRYPTIK_NO_REBOOT:-0}" != 1 ]; then
+        : > "$B/uncommitted"; sync
+        say "rebooting to the committed slot in 5 s"
+        { echo "boot-success: slot $slot is not the committed one; rebooting to slot $stray"; } > /dev/console 2>&1 || true
+        sleep 5
+        reboot
     fi
 else
     failures="$(health)"
