@@ -266,7 +266,7 @@ reboot.
 **Cost:** new mounting code in kryptikd; a build step that captures what a
 set of recipes installs; disk on the state partition for two generations of
 images; every root release rebuilds every image; a browser fix still needs
-the key medium.
+an approved signing run.
 
 **Rejected:** a package manager installing into zone 0 (unverified code on
 the state partition, unpacked by root); one installing into each zone (a

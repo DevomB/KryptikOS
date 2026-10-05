@@ -23,8 +23,8 @@ ADR-015 in [decisions](../decisions.md).
   2,368 MiB slots, and `kryptik-update apply` refuses an image larger than
   the inactive slot. A machine installed now can take releases about
   800 MiB larger than today's before it needs a reinstall, which
-  [releases](../releases.md) numbers as a major version. Draft #179 lets an
-  install ask for larger slots; that helps only new installs.
+  [releases](../releases.md) numbers as a major version. A slot size
+  chosen at install time would help only new installs.
 - **A zone can already run what it brings.** A zone's root is a tmpfs sealed
   read-only after `pivot_root`. Its home, `/tmp` and `/dev/shm` are
   writable, and the base Landlock rules allow exec in its home and `/tmp`
@@ -34,7 +34,7 @@ ADR-015 in [decisions](../decisions.md).
   (`/usr/lib/kryptik/zones`). The state partition is encrypted but not
   authenticated: an offline writer can damage blocks, not choose what they
   decrypt to ([state encryption](state-encryption.md)).
-- **Updates are verified before they are stored.** The net zone streams a
+- **Updates are bounded before they are stored.** The net zone streams a
   release through the broker, and zone 0 keeps no more than the signed
   manifest's sizes ([update channel](update-channel.md)).
 
@@ -54,9 +54,9 @@ ADR-015 in [decisions](../decisions.md).
 - **Code read from the state partition must be verified when it is read,**
   not only when it arrives, since an offline writer can change the blocks
   between the two.
-- **The release key stays offline.** Each use is a ceremony with the key
-  medium ([release keys](../release-keys.md)). The only online key, the
-  statement key, can freeze a machine on an old release but cannot install
+- **The release key signs only in a release run the maintainer approves**
+  ([release keys](../release-keys.md)). The statement key, which a timer
+  can use, can freeze a machine on an old release but cannot install
   anything.
 - **Slots do not grow** on an installed machine (above).
 
@@ -76,7 +76,7 @@ its files are in the root image.
 - **dm-verity** covers it with nothing new.
 - **The channel** is unchanged. Every application fix is a whole release:
   Firefox's security releases come every four weeks, so Kryptik would cut a
-  release, with the key medium, at least that often.
+  release, each one approved, at least that often.
 - **Policies** are the zone files', as now.
 - **The slot limit** decides it. The browser and its toolkit stack alone
   take most of the 800 MiB of headroom a 1.0 install has (the browser and
@@ -151,7 +151,7 @@ the zones whose file names it.
   gets it at its next start.
 - **Signing** stays with the release key, in a namespace of its own, so an
   image manifest can never pass for a root manifest or the reverse. A
-  browser fix still needs the key medium, but not a whole release.
+  browser fix still needs an approved signing run, but not a whole release.
 - **Compatibility** is exact. An image is built against one root release's
   sysroot and records that release; kryptikd mounts it over that root and no
   other. A root release rebuilds every image.
@@ -266,7 +266,7 @@ image-only update from the channel:
 ## Open questions
 
 - Whether images should ever be signed by a key that can be used without
-  the key medium, to ship browser fixes faster. This document says no.
+  the maintainer's approval, to ship browser fixes faster. This document says no.
 - Delta updates of images, which dm-verity's block structure would allow, as
   for the root ([update channel](update-channel.md#open-points)).
 - How a user picks images for a zone beyond the shipped files; that waits
