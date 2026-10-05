@@ -104,7 +104,7 @@ if [ "$rc" -eq 0 ]; then
     done
     esp="$(blkid -t PARTLABEL=kryptik-esp -o device 2>/dev/null | grep "^${target}" | head -1)"
     mkdir -p /run/verify
-    if [ -n "$esp" ] && mount -o ro "$esp" /run/verify 2>/dev/null; then
+    if [ -n "$esp" ] && mount -t vfat -o ro "$esp" /run/verify 2>/dev/null; then
         say "verify: esp_files=$(cd /run/verify && find . -type f | sort | tr '\n' ' ')"
         say "verify: bootx64_sha256=$(sha256sum /run/verify/EFI/BOOT/BOOTX64.EFI 2>/dev/null | cut -c1-64)"
         say "verify: version_a=$(cat /run/verify/kryptik/version-a 2>/dev/null || echo none)"
@@ -114,7 +114,7 @@ if [ "$rc" -eq 0 ]; then
     fi
     st="$(blkid -t PARTLABEL=kryptik-state -o device 2>/dev/null | grep "^${target}" | head -1)"
     if [ -n "$st" ] && printf '%s' "$sp" | cryptsetup open --readonly --type luks2 --key-file=- "$st" kryptik-verify-state 2>/dev/null \
-            && mount -o ro /dev/mapper/kryptik-verify-state /run/verify 2>/dev/null; then
+            && mount -t ext4 -o ro /dev/mapper/kryptik-verify-state /run/verify 2>/dev/null; then
         say "verify: state_marker=$([ -e /run/verify/.kryptik-state ] && echo yes || echo no)"
         say "verify: install_json=$([ -r /run/verify/lib/kryptik/install.json ] && echo yes || echo no)"
         say "verify: preseed=$([ -r /run/verify/lib/kryptik/firstboot.preseed ] && echo present || echo none)"

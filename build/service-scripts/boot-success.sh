@@ -69,7 +69,7 @@ commit_slot() {   # commit_slot <slot>: make BOOTX64.EFI this slot's kernel
     esp="$(kryptik_part kryptik-esp 2>/dev/null)"
     [ -n "$esp" ] || { say "no unambiguous ESP on this installation's disk; cannot commit"; return 1; }
     mkdir -p "$ESP_MNT"
-    mount -o rw,nosuid,nodev,noexec "$esp" "$ESP_MNT" || { say "cannot mount ESP $esp"; return 1; }
+    mount -t vfat -o rw,nosuid,nodev,noexec "$esp" "$ESP_MNT" || { say "cannot mount ESP $esp"; return 1; }
     src="$ESP_MNT/EFI/kryptik/kryptik-$1.efi"
     dst="$ESP_MNT/EFI/BOOT/BOOTX64.EFI"
     rc=1
@@ -113,7 +113,7 @@ forget_entries() {   # forget_entries COMMITTED-SLOT
 esp_committed() {
     e="$(kryptik_part kryptik-esp 2>/dev/null)" && [ -n "$e" ] || return 0
     mkdir -p "$ESP_MNT"
-    mount -o ro,nosuid,nodev,noexec "$e" "$ESP_MNT" 2>/dev/null || return 0
+    mount -t vfat -o ro,nosuid,nodev,noexec "$e" "$ESP_MNT" 2>/dev/null || return 0
     sed -n 1p "$ESP_MNT/kryptik/committed-slot" 2>/dev/null
     umount "$ESP_MNT"
 }
