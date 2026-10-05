@@ -101,8 +101,8 @@ static archives (member times, unless binutils is in deterministic mode),
 Python's bytecode (a timestamp in each `.pyc`, unless `SOURCE_DATE_EPOCH`
 is set, when `py_compile` writes hash-checked files), and perl's
 `Config.pm`, which records when and by whom perl was built.
-`SOURCE_DATE_EPOCH`, exported by `build/lib/common.sh` for every step,
-takes most of them. The comparison finds the rest package by package.
+Exporting `SOURCE_DATE_EPOCH` from `build/lib/common.sh` for every step,
+which nothing does today, would take most of them. The comparison finds the rest package by package.
 
 ### The Rust binaries
 
