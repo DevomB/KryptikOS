@@ -145,6 +145,34 @@ fn last_log_line_reads_tail() {
 }
 
 #[test]
+fn zone_log_starts_again_past_its_bound() {
+    let dir = std::env::temp_dir().join(format!("kryptik-serve-log-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let log = dir.join("zone-x.log");
+    let old = dir.join("zone-x.log.old");
+    // Under the bound a launch appends to what is there.
+    std::fs::write(&log, "first launch\n").unwrap();
+    open_zone_log(&log).unwrap().write_all(b"second launch\n").unwrap();
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), "first launch\nsecond launch\n");
+    assert!(!old.exists(), "a log under the bound was moved aside");
+    // Past it the file is kept as .old, in place of the one before, and a new one starts.
+    std::fs::write(&old, "the generation before\n").unwrap();
+    let grown = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+    grown.set_len(ZONE_LOG_KEEP + 1).unwrap(); // sparse: no large allocation or disk write
+    drop(grown);
+    open_zone_log(&log).unwrap().write_all(b"third launch\n").unwrap();
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), "third launch\n");
+    assert_eq!(std::fs::metadata(&old).unwrap().len(), ZONE_LOG_KEEP + 1, "the grown log is not the one kept");
+    // A link at the name is refused, and nothing is made through it.
+    let target = dir.join("elsewhere");
+    std::fs::remove_file(&log).unwrap();
+    std::os::unix::fs::symlink(&target, &log).unwrap();
+    assert!(open_zone_log(&log).is_err(), "a log was opened through a link");
+    assert!(!target.exists(), "a file was made through a link at the log's name");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn socketpair_peer_is_self() {
     let (a, _b) = UnixStream::pair().unwrap();
     let cred = peer_cred(a.as_raw_fd()).unwrap();
