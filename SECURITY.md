@@ -12,8 +12,9 @@ security advisory, crediting you if you want to be.
 
 ## What is supported
 
-The newest release. Production releases, 1.0.0 and later, update over the
-channel. Development releases (0.x) are superseded by 1.0.0 and get no fixes.
+The newest production release. Production releases, 1.0.0 and later, update
+over the channel. Development releases (0.x) are pre-releases and get no
+fixes.
 
 ## Scope
 
