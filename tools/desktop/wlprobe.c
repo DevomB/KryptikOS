@@ -15,7 +15,10 @@
  *                             compare zone and compositor cgroup memory.current
  *   wlprobe cursor SECONDS    as oversize 0, and when the pointer enters, set a
  *                             cursor image twice the screen's size, hotspot in
- *                             its middle: drawn, it covers the whole screen
+ *                             its middle: drawn, it covers the whole screen.
+ *                             Says when the window, and when the cursor image,
+ *                             enters an output: the second only if the
+ *                             compositor took the image
  *
  * Exit: 0 listed, bind accepted or window held; 3 refused (wl_display.error,
  * or closed); 1 any other failure. The socket is $WAYLAND_DISPLAY, absolute
@@ -157,7 +160,7 @@ static void draw(void)
 }
 
 /* cursor: the image is 2560x1600, for a 1280x800 screen, in a colour nothing
- * else draws; the host counts its pixels in a screenshot. */
+ * else draws. */
 static const uint32_t cursor_rgb = 0x13f7a5;
 static uint32_t seat_id, pointer_id, cursor_surf;
 static int cursor;
@@ -251,6 +254,10 @@ static int handle_one(void)
 		draw();
 	} else if (cursor && object == pointer_id && opcode == 0) {
 		set_cursor(get32(body));                /* wl_pointer.enter(serial, surface, x, y) */
+	} else if (cursor && opcode == 0 && (object == SURFACE || (cursor_surf && object == cursor_surf))) {
+		/* wl_surface.enter(output) */
+		printf("%s entered an output\n", object == SURFACE ? "the window" : "the cursor image");
+		fflush(stdout);
 	} else if (!oversize) {
 		printf("event object=%u opcode=%u size=%u\n", object, opcode, size);
 	}
@@ -311,6 +318,10 @@ static int hold_oversize(int more, int seconds, const char *title)
 		pointer_id = next_id++;
 		put32(b, pointer_id);
 		send_msg(seat_id, 0, b, 4);            /* wl_seat.get_pointer */
+		/* A client that holds an output is told when a surface of its own
+		 * enters it: the window when it is shown, a cursor image when the
+		 * compositor takes it. */
+		if (bind_global("wl_output", next_id++)) return 1;
 	}
 	send_msg(SURFACE, 6, b, 0);                /* wl_surface.commit: ask for a configure */
 	time_t end = time(NULL) + seconds;
