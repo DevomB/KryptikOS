@@ -20,6 +20,10 @@ Steps (each one argument):
     grab:NAME:CMD           run CMD and record its output under NAME in --record
     sleep:SECONDS
     screendump:FILE         ask QEMU (QMP) for a PPM screenshot
+    screendump-head:N:FILE  the same of the GPU's output N (0 is the first)
+    head:SOCKET:WxH         plug a monitor of that size into the output whose
+                            VNC socket this is (run-ovmf.sh --second-head);
+                            0x0 pulls it out again
     key:NAME[+NAME...]      press keys on the guest's keyboard through QMP
                             (qcodes, e.g. key:y  key:ret  key:alt+e)
     type-from:REGEX         wait for REGEX on a line that has ended (REGEX
@@ -32,7 +36,7 @@ With KRYPTIK_STATE_PASSPHRASE set, the driver answers an installed disk's
 state passphrase prompt at every boot; no step names it. Exits 0 when every
 step succeeded, else names the failing step. Standard library only.
 """
-import json, os, re, socket, sys, time
+import json, os, re, socket, struct, sys, time
 
 UNLOCK = re.compile(rb"passphrase for the state partition \(try \d of 3\): ")
 
@@ -204,6 +208,38 @@ class Drive:
                 raise RuntimeError(f"timeout ({self.timeout}s) waiting for the end of: {cmd}; last output:\n{tail}")
             self._read()
 
+def vnc_open(path):
+    """An RFB 3.8 client on a display's VNC socket, as far as the server's
+    init: QEMU turns a virtio-gpu output on when a display asks for a size."""
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(15)
+    s.connect(path)
+    def need(n):
+        b = b""
+        while len(b) < n:
+            d = s.recv(n - len(b))
+            if not d: raise RuntimeError("the VNC server closed the connection")
+            b += d
+        return b
+    need(12)                                   # the server's version line
+    s.sendall(b"RFB 003.008\n")
+    types = need(need(1)[0])
+    if 1 not in types: raise RuntimeError(f"the VNC server offers no open access (types {list(types)})")
+    s.sendall(b"\x01")                         # security type None
+    if struct.unpack(">I", need(4))[0] != 0: raise RuntimeError("the VNC server refused the connection")
+    s.sendall(b"\x01")                         # ClientInit, shared
+    need(20)                                   # the size and pixel format
+    need(struct.unpack(">I", need(4))[0])      # the name
+    s.sendall(struct.pack(">BBHi", 2, 0, 1, -308))   # SetEncodings: ExtendedDesktopSize
+    return s
+
+def vnc_size(s, w, h):
+    """SetDesktopSize: one screen of w x h, or none, which turns the output off."""
+    n = 1 if w and h else 0
+    msg = struct.pack(">BBHHBB", 251, 0, w, h, n, 0)
+    if n: msg += struct.pack(">IHHHHI", 0, 0, 0, w, h, 0)
+    s.sendall(msg)
+
 def qmp(path, cmd, args=None):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.connect(path)
@@ -233,6 +269,7 @@ def main():
         print(__doc__); return 2
     d = Drive(serial, log, timeout)
     grabbed = {}
+    heads = {}   # VNC connections, kept: an output stays on while its display is there
     for i, st in enumerate(steps, 1):
         kind, _, rest = st.partition(":")
         try:
@@ -267,6 +304,16 @@ def main():
                 if not qmpsock: raise RuntimeError("screendump needs --qmp")
                 r = qmp(qmpsock, "screendump", {"filename": rest})
                 if "error" in r: raise RuntimeError(f"screendump: {r['error']}")
+            elif kind == "screendump-head":
+                if not qmpsock: raise RuntimeError("screendump-head needs --qmp")
+                head, _, fn = rest.partition(":")
+                r = qmp(qmpsock, "screendump", {"filename": fn, "device": "gpu0", "head": int(head)})
+                if "error" in r: raise RuntimeError(f"screendump of head {head}: {r['error']}")
+            elif kind == "head":
+                path, _, size = rest.rpartition(":")
+                w, _, h = size.partition("x")
+                if path not in heads: heads[path] = vnc_open(path)
+                vnc_size(heads[path], int(w), int(h))
             elif kind == "key":
                 if not qmpsock: raise RuntimeError("key needs --qmp")
                 keys = [{"type": "qcode", "data": k} for k in rest.split("+")]
