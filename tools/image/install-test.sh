@@ -14,6 +14,8 @@
 #           the medium's own disk, even with --replace-kryptik, and a copy of
 #           the installed disk without it: each refused, the copy untouched;
 #           then (not with --quick) that copy replaced with --replace-kryptik
+#   step 5  --slot-size: less than the image needs is refused; more is taken
+#           (not with --quick), and that disk boots with slots of that size
 #
 # Every disk is a file this script creates; no device is touched.
 set -uo pipefail
@@ -31,7 +33,7 @@ while [[ "$#" -gt 0 ]]; do
         --vars) VARS="${2:?}"; shift 2 ;;
         --timeout) TIMEOUT="${2:?}"; shift 2 ;;
         --quick) QUICK=1; shift ;;
-        -h|--help) sed -n '2,15p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -270,6 +272,48 @@ if [[ "$QUICK" -eq 0 ]]; then
     else
         red "replace: the state partition was not replaced (before '${before}', after '${after}')"
     fi
+fi
+
+# ----------------------------------------------------------------- step 5 --
+step "step 5: a chosen slot size: less than the image needs is refused, more is taken"
+# What the installer gave each slot in step 1, from its own plan.
+SLOT="$(sed -n 's/.*KRYPTIK_INSTALL: .*kryptik-a \([0-9][0-9]*\) MiB, kryptik-b.*/\1/p' "$P1" | head -1)"
+[[ -n "$SLOT" ]] && green "slot-size: step 1's plan gave each slot ${SLOT} MiB" || red "slot-size: no slot size in step 1's plan"
+ctl="${VMDIR}/testctl-slotsmall.img"
+"${SELF}/mk-testctl.sh" --out "$ctl" --key "$TESTCTL_KEY" install_target=/dev/vda "install_slot_mib=$(( ${SLOT:-128} - 64 ))" smoke_poweroff=1 install_wait=5 > /dev/null
+d="${VMDIR}/refuse-slotsmall.img"; rm -f "$d"; truncate -s "$SIZE" "$d"
+smoke refuse-slotsmall --usb "$USB" --disk "$d" --testctl "$ctl" --vars "$VARS" --timeout "$TIMEOUT" > /dev/null
+t="${VMDIR}/refuse-slotsmall.txt"; boot_txt > "$t"
+want "$t" "KRYPTIK_INSTALL: .*--slot-size [0-9]+ is less than the ${SLOT} MiB a slot needs" "slot-size: a slot smaller than the image and its room is refused, and says why"
+want "$t" 'KRYPTIK_INSTALL: rc=[1-9]'  "slot-size: the refusal reported a non-zero status"
+if sfdisk -d "$d" 2>/dev/null | grep -q 'name="kryptik-a"'; then red "slot-size: the refused install partitioned the disk"; else green "slot-size: the refused install wrote nothing"; fi
+
+if [[ "$QUICK" -eq 0 && -n "$SLOT" ]]; then
+    BIG=$(( SLOT + 256 ))
+    big="${VMDIR}/slot-size.img"; rm -f "$big"
+    truncate -s "$("${SELF}/test-disk-size.sh" --medium "$USB" --extra-mib 512)" "$big"
+    ctl="${VMDIR}/testctl-slotbig.img"
+    "${SELF}/mk-testctl.sh" --out "$ctl" --key "$TESTCTL_KEY" install_target=/dev/vda "install_slot_mib=${BIG}" smoke_poweroff=1 install_wait=5 \
+        "${PRESEED[@]}" > /dev/null
+    smoke slot-size --usb "$USB" --disk "$big" --testctl "$ctl" --vars "$VARS" --timeout "$TIMEOUT" > /dev/null
+    t="${VMDIR}/slot-size.txt"; boot_txt > "$t"
+    want "$t" 'KRYPTIK_INSTALL: rc=0' "slot-size: the install with --slot-size ${BIG} succeeded"
+    want "$t" "KRYPTIK_INSTALL: .*kryptik-a ${BIG} MiB, kryptik-b ${BIG} MiB" "slot-size: the plan names slots of ${BIG} MiB"
+    want "$t" 'KRYPTIK_INSTALL: .*kryptik-a verifies against the signed kernel' "slot-size: the root in the larger slot verifies"
+    sectors="$(sfdisk -d "$big" 2>/dev/null | sed -n 's/.*size= *\([0-9]*\),.*name="kryptik-[ab]".*/\1/p' | sort -u | tr '\n' ' ')"
+    [[ "$sectors" == "$(( BIG * 2048 )) " ]] && green "slot-size: host sees both slots at ${BIG} MiB" || red "slot-size: host sees slots of ${sectors}sectors, wanted $(( BIG * 2048 ))"
+    SAVED_DISK="$DISK"; DISK="$big"
+    cp "/usr/share/OVMF/OVMF_VARS_4M.fd" "$VARSF"
+    [[ "$VARS" == "enrolled" ]] && cp "${KRYPTIK_WORK}/keys/sb/vars/enrolled.fd" "$VARSF"
+    start_vm slot-size-boot
+    python3 "$DRV" --serial "$SER" --timeout 300 \
+        "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
+        "run:test \"\$(cat /sys/class/block/vda2/size)\" = $(( BIG * 2048 ))" \
+        "su:${RPASS}:poweroff" "expect:Power down" "wait-exit"
+    drc=$?
+    sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
+    DISK="$SAVED_DISK"
+    [[ "$drc" -eq 0 ]] && green "slot-size: the disk boots alone, and slot a is ${BIG} MiB from inside" || red "slot-size: the boot of the disk with larger slots failed"
 fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

@@ -141,6 +141,28 @@ else
         || red "a malformed table was accepted"
     rm -f "$tmp"
 fi
+
+echo
+echo "-- --slot-size is a number of MiB, no less than a slot needs"
+eval "$(sed -n '/^slot_size_ok()/,/^}/p' "$INSTALLER")"
+if ! declare -F slot_size_ok >/dev/null; then
+    red "could not extract slot_size_ok from the installer"
+else
+    slot() { out="$( (slot_size_ok "$1" 3072) 2>&1 )"; rc=$?; }
+    slot 3072; [[ "$rc" -eq 0 ]] && green "the size a slot needs is taken" || red "3072 of 3072: rc=${rc} ${out}"
+    slot 4096; [[ "$rc" -eq 0 ]] && green "a larger slot is taken" || red "4096 of 3072: rc=${rc} ${out}"
+    slot 3071; [[ "$rc" -ne 0 && "$out" == *"is less than the 3072 MiB a slot needs"* ]] \
+        && green "a smaller slot is refused, with the size a slot needs" || red "3071 of 3072: rc=${rc} ${out}"
+    slot '4096$(reboot)'; [[ "$rc" -ne 0 && "$out" == *"takes a number of MiB"* ]] \
+        && green "a command in the size is refused before any arithmetic" || red "a command in the size: rc=${rc} ${out}"
+    slot 04096; [[ "$rc" -ne 0 && "$out" == *"takes a number of MiB"* ]] \
+        && green "a leading zero, which arithmetic reads as octal, is refused" || red "04096: rc=${rc} ${out}"
+    slot 1234567890; [[ "$rc" -ne 0 && "$out" == *"too large"* ]] \
+        && green "a size too long for arithmetic is refused" || red "a 10-digit size: rc=${rc} ${out}"
+fi
+grep -q 'testctl_get install_slot_mib' "$RUNNER" \
+    && green "the runner passes --slot-size only when the control disk asks" \
+    || red "the runner has no install_slot_mib switch"
 echo
 printf 'passed %d, failed %d\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]] || exit 1
