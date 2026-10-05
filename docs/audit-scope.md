@@ -26,10 +26,10 @@ everything below is built from it by the workflows in `.github/workflows/`.
 | State encryption | LUKS2 state partition on the root's disk; `/etc` overlay allow-list; degraded state | `build/service-scripts/sysinit.sh`, `devices.sh`, `ask.sh` | `make state-test`, `install-test` | [state encryption](design/state-encryption.md) |
 | Installer and recovery | whole-disk install with every check before the first write; slot and header recovery from the medium | `tools/install/kryptik-install.sh`, `tools/update/kryptik-recover` | `make install-test`, `tools/tests/installer.sh` | [boot and updates](design/boot-and-updates.md#installer) |
 | Update chain | a signed manifest checked before any write; A/B slots with a judged trial; a channel fetched by the hostile net zone and bounded by zone 0 | `tools/update/kryptik-update`, `tools/efi/kryptik-efiboot.c`, `build/service-scripts/boot-success.sh`, `update.rs`, `tools/net/update-fetch.py`, `tools/release-manifest.sh`, `tools/release-channel.sh` | `make update-test`, `tools/tests/update-*.sh`, `release-*.sh` | [boot and updates](design/boot-and-updates.md#updates), [update channel](design/update-channel.md) |
-| Release signing | keys made offline, a build that signs only with a key medium it is handed, namespaces per key; development releases signed by throwaway keys in CI; the statement key in a repository secret for the channel workflow | `build/lib/release-keys.sh`, `.github/workflows/distro.yml`, `channel.yml`, `tools/channel-host.sh` | `tools/tests/release-keys.sh`, the production acceptance suite | [release keys](release-keys.md), [releases](releases.md) |
+| Release signing | keys held in the repository's protected release environment, used only by a release tag's build once the maintainer approves it, in a job apart from the one that ran upstream build scripts; namespaces per key; development releases signed by throwaway keys in CI; the statement key in a repository secret for the channel workflow | `build/lib/release-keys.sh`, `.github/workflows/distro.yml`, `channel.yml`, `tools/channel-host.sh` | `tools/tests/release-keys.sh`, the production acceptance suite | [release keys](release-keys.md), [releases](releases.md) |
 
 kryptikd is about 12,600 lines of Rust with 5,300 lines of tests beside it,
-`kryptik-wlproxy` about 1,900 and `zoneid` about 1,600; the rest is C and
+`kryptik-wlproxy` about 1,900 and `zoneid` about 1,900; the rest is C and
 shell named above. The hardening applied to everything else is in
 [hardening](hardening.md); the kernel configuration is three fragments
 under `build/config/kernel/`.
@@ -69,8 +69,9 @@ and control disks, which arm an unattended install only when the medium's
 
 **Through the release path:** the release host and the channel's pointer
 and payload, all verified against the anchor on the verified root; the
-workflows that build, test and publish; the repository secret that holds
-the statement key.
+workflows that build, test and publish; the release environments' secrets
+and the job that signs with them; the repository secret that holds the
+statement key.
 
 ## What sets the limits
 
@@ -150,9 +151,10 @@ Everything runs on GitHub's runners, so a fork is enough:
 
 From [status](status.md#known-gaps) and the designs' own lists:
 
-- Nothing has run on physical hardware.
-- The production keys have not been made; every release so far is signed by
-  a key its build generated.
+- Testing on physical hardware is planned for October 2026.
+- The keys that sign a release from 1.0.0 on are held on GitHub, in the
+  repository's protected release environment: a release is as trustworthy
+  as the maintainer's GitHub account and the runners that build it.
 - The watchdog resets a machine that has stopped, not a crashed service or a
   frozen desktop.
 - Builds are not reproducible, and the first compiler is the host's
