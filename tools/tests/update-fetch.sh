@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Test update-fetch.py (docs/design/update-channel.md), which decides nothing:
-# bytes from a loopback HTTP server must reach a stand-in broker unchanged, at
-# the offsets it asks for, and a refusal must stop the run.
+# update-fetch.py: bytes from a loopback HTTP server reach a stand-in broker unchanged, at the
+# offsets it asks for, and a refusal stops the run.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FETCH="$ROOT/tools/net/update-fetch.py"
@@ -132,7 +131,7 @@ else
 fi
 first_two="$(grep '^update-put' "$T/requests.log" | head -2 | awk '{print $2}' | tr '\n' ' ')"
 [[ "$first_two" == "manifest manifest.sig " ]] \
-    && ok "poll: the manifest and its signature cross before anything else, because that is what zone 0 asked for" \
+    && ok "poll: the manifest and its signature cross first, as zone 0 asked" \
     || bad "poll: the first two pieces were: $first_two"
 biggest="$(grep '^update-put' "$T/requests.log" | awk '{print $4}' | sort -n | tail -1)"
 pieces="$(grep -c '^update-put kryptik-root.img' "$T/requests.log")"
@@ -152,7 +151,7 @@ truncate -s 1048581 "$T/stage/kryptik-root.img"; : > "$T/norange"
 out="$(run poll 2>&1)"; rc=$?
 rm -f "$T/norange"
 [[ "$rc" = 0 ]] && identical kryptik-root.img \
-    && ok "poll: a server that ignores Range sends the whole file; the bytes before the offset are dropped, not sent to zone 0" \
+    && ok "poll: from a server that ignores Range, the bytes before the offset are dropped, not sent to zone 0" \
     || bad "poll, resume without Range: rc=$rc out=$out"
 
 # --- zone 0 has the last word ----------------------------------------------------------

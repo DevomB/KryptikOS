@@ -6,10 +6,8 @@
     update-fetch.py poll      ask zone 0 whether a release is wanted and, if
                               one is, stream what it says is still missing
 
-Decides nothing and is trusted for nothing, TLS included: zone 0 names the
-channel (`channel = <address>` in update.conf), verifies every signature and
-refuses any piece it did not ask for. Keeps nothing: a release is larger than
-this zone's storage.
+Trusted for nothing, TLS included: zone 0 names the channel in update.conf and
+verifies every piece. Keeps nothing: a release is larger than this zone's storage.
 """
 import argparse
 import socket
