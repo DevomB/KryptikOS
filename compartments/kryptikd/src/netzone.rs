@@ -5,7 +5,7 @@
 //!                                   kryptik0 bridge 10.19.0.1/24, fd19::1/64
 //!  routed zone k:  kv-<zone> in net's netns, on kryptik0, isolated
 //!                  eth0 in the zone's netns: 10.19.0.k/24, fd19::k/64,
-//!                  default routes via the bridge
+//!                  MAC 02:19:00:00:00:k, default routes via the bridge
 //!  zone 0:         keeps lo only once net has taken the NIC
 //!  mode = "none":  nothing is ever created
 //! ```
@@ -372,7 +372,7 @@ fn attach_routed(name: &str, k: u8, nic_ns: i32, zone_ns: i32, host_gid: Option<
 
 fn attach_v4(port: &str, k: u8, nic_ns: i32, zone_ns: i32, host_gid: Option<u32>) -> Result<(), NetError> {
     netlink::with_netns(nic_ns, || {
-        netlink::create_veth(port, "eth0", Some(zone_ns))?;
+        netlink::create_veth(port, "eth0", Some(zone_ns), Some(netlink::zone_mac(k)))?;
         netlink::set_master(port, BRIDGE)?;
         netlink::set_port_isolated(port, true)?;
         netlink::set_up(port)

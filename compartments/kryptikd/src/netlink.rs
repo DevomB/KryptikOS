@@ -33,6 +33,7 @@ const NLM_F_EXCL: u16 = 0x200;
 const NLM_F_CREATE: u16 = 0x400;
 const NLA_F_NESTED: u16 = 0x8000;
 
+const IFLA_ADDRESS: u16 = 1;
 const IFLA_IFNAME: u16 = 3;
 const IFLA_MASTER: u16 = 10;
 // A bridge acks and ignores an unknown attribute, so the isolation test checks sysfs and the wire.
@@ -246,8 +247,8 @@ fn check_name(name: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// Create a veth pair `a` <-> `b`, with `b` born in the namespace `peer_ns` if given.
-pub fn create_veth(a: &str, b: &str, peer_ns: Option<RawFd>) -> io::Result<()> {
+/// Create a veth pair `a` <-> `b`, `b` born in namespace `peer_ns` and with MAC `peer_mac` when given.
+pub fn create_veth(a: &str, b: &str, peer_ns: Option<RawFd>, peer_mac: Option<[u8; 6]>) -> io::Result<()> {
     check_name(a)?;
     check_name(b)?;
     let mut m = Msg::new(RTM_NEWLINK, NLM_F_CREATE | NLM_F_EXCL, 1);
@@ -261,6 +262,9 @@ pub fn create_veth(a: &str, b: &str, peer_ns: Option<RawFd>) -> io::Result<()> {
     m.attr_str(IFLA_IFNAME, b);
     if let Some(fd) = peer_ns {
         m.attr_u32(IFLA_NET_NS_FD, fd as u32);
+    }
+    if let Some(mac) = peer_mac {
+        m.attr(IFLA_ADDRESS, &mac);
     }
     m.end_nested(peer);
     m.end_nested(data);
@@ -434,6 +438,32 @@ pub fn is_up(dev: &str) -> io::Result<bool> {
     Ok(flags & libc::IFF_UP != 0)
 }
 
+/// `dev`'s MAC.
+#[cfg(test)]
+pub fn mac_of(dev: &str) -> io::Result<[u8; 6]> {
+    let c = CString::new(dev).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL"))?;
+    let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
+    if sock < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut ifr: libc::ifreq = unsafe { std::mem::zeroed() };
+    for (i, b) in c.as_bytes_with_nul().iter().take(libc::IFNAMSIZ).enumerate() {
+        ifr.ifr_name[i] = *b as libc::c_char;
+    }
+    let r = unsafe { libc::ioctl(sock, libc::SIOCGIFHWADDR as _, &mut ifr) };
+    let e = io::Error::last_os_error();
+    unsafe { libc::close(sock) };
+    if r < 0 {
+        return Err(e);
+    }
+    let sa = unsafe { ifr.ifr_ifru.ifru_hwaddr };
+    let mut mac = [0u8; 6];
+    for (m, b) in mac.iter_mut().zip(sa.sa_data.iter()) {
+        *m = *b as u8;
+    }
+    Ok(mac)
+}
+
 /// Open a handle on a process's network namespace.
 pub fn open_netns_of(pid: libc::pid_t) -> io::Result<RawFd> {
     let p = CString::new(format!("/proc/{pid}/ns/net")).unwrap();
@@ -475,6 +505,11 @@ pub fn zone_v6(k: u8) -> [u8; 16] {
     let mut a = BRIDGE_V6;
     a[15] = k;
     a
+}
+
+/// Host `k`'s eth0 MAC, 02:19:00:00:00:k; the net zone takes 10.19.0.k and fd19::k only with it.
+pub fn zone_mac(k: u8) -> [u8; 6] {
+    [0x02, 0x19, 0, 0, 0, k]
 }
 
 #[cfg(test)]
