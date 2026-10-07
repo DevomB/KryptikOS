@@ -331,6 +331,30 @@ fn wrong_manifest_is_discarded() {
 }
 
 #[test]
+fn discarded_stage_is_asked_for_again() {
+    let d = scratch("discard");
+    let p = pointer_text("1.0.3", "2027-03-02T14:05:00Z");
+    latest(&d, &yes(), T0, "production", "1.0.2", p.as_bytes(), b"sig").unwrap();
+    want(&d, Some(CH), "production", "1.0.2").unwrap();
+    put(&d, &yes(), T0, "manifest", 0, b"the manifest").unwrap();
+    put(&d, &yes(), T0, "manifest.sig", 0, b"its signature").unwrap();
+    // Wrong bytes of the right sizes: by its sizes the stage is complete, and stays so.
+    put(&d, &yes(), T0, "kryptik-root.img", 0, b"xxxxxxxxxx").unwrap();
+    put(&d, &yes(), T0, "root.json", 0, b"xxxx").unwrap();
+    assert!(complete_stage(&d).is_ok());
+    assert!(put(&d, &yes(), T0, "kryptik-root.img", 0, b"0123456789").is_err(), "a whole file was taken again");
+    assert!(discard_stage(&d));
+    assert!(!d.join("incoming").exists() && !d.join("files").exists(), "something of the stage is left");
+    assert!(d.join("wanted").exists(), "the request went with the stage");
+    assert!(complete_stage(&d).unwrap_err().contains("has not arrived"));
+    // The same release can arrive again, from the manifest on.
+    assert!(put(&d, &yes(), T0, "kryptik-root.img", 0, b"0123456789").unwrap_err().contains("before the manifest"));
+    assert_eq!(put(&d, &yes(), T0, "manifest", 0, b"the manifest").unwrap(), "manifest complete");
+    assert!(discard_stage(&d) && discard_stage(&d), "nothing staged is nothing to fail on");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn channel_read_from_config() {
     assert_eq!(channel_from("# where releases are\nchannel = https://updates.example/stable\n").as_deref(), Some(CH));
     assert_eq!(channel_from("channel =\n"), None);
