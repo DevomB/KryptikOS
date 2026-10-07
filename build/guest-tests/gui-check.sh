@@ -6,7 +6,8 @@
 #   GT KEY-FOCUS-ZONE, GT KEY-FOCUS-OVERSIZE,
 #   GT KEY-FOCUS-FORGED, GT KEY-FOCUS-PERSONAL      press Alt+j (explicit focus)
 #   GT KEY-FULLSCREEN, GT KEY-FULLSCREEN-AGAIN      press Alt+e (fullscreen, then back)
-#   GT KEY-FOCUS-PARENT, GT KEY-FOCUS-BELOW         press Alt+j
+#   GT KEY-FOCUS-CHILD, GT KEY-FOCUS-PARENT,
+#   GT KEY-FOCUS-BELOW, GT KEY-FOCUS-LATE            press Alt+j
 #   GT KEY-PARENT-FULLSCREEN, GT KEY-PARENT-WINDOWED,
 #   GT KEY-LATE-FULLSCREEN                          press Alt+e
 #   GT KEY-MENU                                     press Alt+p (the chrome menu)
@@ -128,6 +129,57 @@ else
     fail "zone-fullscreen-refused" "$(echo "$out" | tail -4 | tr '\n' ' '); $(tr '\n' ' ' < "$LOG/launch-fullscreen.out")"
 fi
 
+# --- a fullscreen zone window keeps the focus from what it hides -------------
+# wlprobe child maps a window and a child of it, both tiled: a zone's child
+# is never drawn above its parent. The zone starts for the probe, so its
+# windows take no focus from zone 0, and Alt+j walks there, newest window
+# first. From the fullscreen parent, Alt+j must then find nothing: every
+# other window is hidden below it, zone 0's and other zones' alike.
+focus_is() { grep -q "^title=\[untrusted\] $1\$" "$RT/kryptik/focus" 2>/dev/null && grep -q "^fullscreen=$2" "$RT/kryptik/focus"; }
+zone_gone() { test ! -e /run/kryptik/zones/untrusted/init.pid; }
+child_ready() { since_mark child untrusted | grep -q 'child committed'; }
+mark child untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe child 45" > "$LOG/launch-child.out" 2>&1
+if wait_for 20 child_ready; then
+    pass "zone-child-mapped" "$(since_mark child untrusted | grep -c committed) commits"
+else
+    fail "zone-child-mapped" "$(since_mark child untrusted | tail -3 | tr '\n' ' '); $(tr '\n' ' ' < "$LOG/launch-child.out")"
+fi
+sleep 1
+echo "GT KEY-FOCUS-CHILD"
+wait_for 10 focus_is child 0 && pass "child-focused" "$(tr '\n' ' ' < "$RT/kryptik/focus")" || fail "child-focused" "focus after Alt+j: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+echo "GT KEY-FOCUS-PARENT"
+wait_for 10 focus_is child-parent 0 && pass "parent-focused" "$(tr '\n' ' ' < "$RT/kryptik/focus")" || fail "parent-focused" "focus after Alt+j: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+echo "GT KEY-PARENT-FULLSCREEN"
+wait_for 10 focus_is child-parent 1 && pass "parent-fullscreen" || fail "parent-fullscreen" "focus after Alt+e: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+echo "GT KEY-FOCUS-BELOW"
+sleep 3
+if focus_is child-parent 1; then
+    pass "fullscreen-keeps-focus" "Alt+j left the focus on the fullscreen window"
+else
+    fail "fullscreen-keeps-focus" "Alt+j moved the focus to a hidden window: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+fi
+echo "GT KEY-PARENT-WINDOWED"
+wait_for 10 focus_is child-parent 0 && pass "parent-windowed-again" || fail "parent-windowed-again" "$(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+wait_for 60 zone_gone
+# A child that maps under its fullscreen parent ends the fullscreen: the
+# zone cannot have it drawn above the bar, so both are shown tiled instead.
+late_drawn() { since_mark late untrusted | grep -q committed; }
+late_done() { since_mark late untrusted | sed -n '/asked for a child/,$p' | grep committed | grep -v child | grep -qv '(fullscreen)'; }
+mark late untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe child 25 late" > "$LOG/launch-late.out" 2>&1
+wait_for 20 late_drawn
+sleep 1
+echo "GT KEY-FOCUS-LATE"
+wait_for 10 focus_is child-parent 0
+echo "GT KEY-LATE-FULLSCREEN"
+if wait_for 20 late_done && wait_for 10 grep -q '^fullscreen=0' "$RT/kryptik/focus"; then
+    pass "child-ends-fullscreen" "$(since_mark late untrusted | grep -E 'asked for a child|committed' | tail -3 | tr '\n' ' ')"
+else
+    fail "child-ends-fullscreen" "$(since_mark late untrusted | tail -4 | tr '\n' ' '); focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+fi
+wait_for 40 zone_gone
+
 # --- a mapped zone window cannot take the chrome's focus ----------------------
 mark map untrusted
 launch_plain untrusted "/usr/libexec/kryptik/wlprobe oversize 0 8 map-focus" > "$LOG/map-focus.out" 2>&1
@@ -166,49 +218,6 @@ echo "GT SCREENSHOT-FULLSCREEN"
 sleep 6
 echo "GT KEY-FULLSCREEN-AGAIN"
 wait_for 20 grep -q '^fullscreen=0' "$RT/kryptik/focus" && pass "fullscreen-off-again" || fail "fullscreen-off-again"
-# --- a fullscreen zone window keeps the focus from what it hides -------------
-# wlprobe child maps a window and a child of it; a zone's child is tiled,
-# never drawn above its parent. Alt+j walks the focus between the visible
-# windows, and from the fullscreen parent it must find none: every other
-# window on the output is hidden below it, some of them other zones'.
-focus_is() { grep -q "^title=\[untrusted\] $1\$" "$RT/kryptik/focus" 2>/dev/null && grep -q "^fullscreen=$2" "$RT/kryptik/focus"; }
-probe_gone() { ! pgrep -f 'wlprobe child' > /dev/null; }
-child_ready() { since_mark child untrusted | grep -q 'child committed'; }
-mark child untrusted
-launch_plain untrusted "/usr/libexec/kryptik/wlprobe child 30" > "$LOG/launch-child.out" 2>&1
-if wait_for 20 child_ready; then
-    pass "zone-child-mapped" "$(since_mark child untrusted | grep -c committed) commits"
-else
-    fail "zone-child-mapped" "$(since_mark child untrusted | tail -3 | tr '\n' ' '); $(tr '\n' ' ' < "$LOG/launch-child.out")"
-fi
-sleep 1
-echo "GT KEY-FOCUS-PARENT"
-wait_for 10 focus_is child-parent 0 && pass "parent-focused" "$(tr '\n' ' ' < "$RT/kryptik/focus")" || fail "parent-focused" "focus after Alt+j: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
-echo "GT KEY-PARENT-FULLSCREEN"
-wait_for 10 focus_is child-parent 1 && pass "parent-fullscreen" || fail "parent-fullscreen" "focus after Alt+e: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
-echo "GT KEY-FOCUS-BELOW"
-sleep 3
-if focus_is child-parent 1; then
-    pass "fullscreen-keeps-focus" "Alt+j left the focus on the fullscreen window"
-else
-    fail "fullscreen-keeps-focus" "Alt+j moved the focus to a hidden window: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
-fi
-echo "GT KEY-PARENT-WINDOWED"
-wait_for 10 focus_is child-parent 0 && pass "parent-windowed-again" || fail "parent-windowed-again" "$(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
-wait_for 40 probe_gone
-# A child that maps under its fullscreen parent ends the fullscreen: the
-# zone cannot have it drawn above the bar, so both are shown tiled instead.
-late_done() { since_mark late untrusted | sed -n '/asked for a child/,$p' | grep committed | grep -v child | grep -qv '(fullscreen)'; }
-mark late untrusted
-launch_plain untrusted "/usr/libexec/kryptik/wlprobe child 20 late" > "$LOG/launch-late.out" 2>&1
-wait_for 20 focus_is child-parent 0
-echo "GT KEY-LATE-FULLSCREEN"
-if wait_for 20 late_done && wait_for 10 grep -q '^fullscreen=0' "$RT/kryptik/focus"; then
-    pass "child-ends-fullscreen" "$(since_mark late untrusted | grep -E 'asked for a child|committed' | tail -3 | tr '\n' ' ')"
-else
-    fail "child-ends-fullscreen" "$(since_mark late untrusted | tail -4 | tr '\n' ' '); focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
-fi
-wait_for 30 probe_gone
 # Alt+p opens one more menu window: the chrome's text menu in a zone 0
 # terminal of its own, as at login. Closed again once seen.
 menu_windows() { pgrep -u "$USER_NAME" -f 'havoc /usr/bin/kryptik-chrome --menu' | wc -l; }
