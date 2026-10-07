@@ -48,7 +48,8 @@ def servers(env, iface):
             if listed is None:
                 continue
             life = env.get("nd%d_rdnss%d_lifetime" % (i, j), "0")
-            if life.isdigit() and int(life) > 0:
+            # ASCII digits only: isdigit() also takes "²", which int() refuses.
+            if re.fullmatch(r"[0-9]{1,10}", life) and int(life) > 0:
                 words += listed.split()
     for w in words[:4 * PER_SOURCE]:
         a = address(w, iface)

@@ -48,6 +48,11 @@ same "an interface name that is a path writes nothing" \
     "$(hook interface=../../etc protocol=dhcp reason=BOUND if_up=true new_domain_name_servers=192.0.2.66)" "$before"
 same "a protocol not on the list writes nothing" \
     "$(hook interface=eth0 protocol=../x reason=BOUND if_up=true new_domain_name_servers=192.0.2.66)" "$before"
+# "²", which str.isdigit() takes and int() refuses, as UTF-8 bytes whatever the locale.
+env -i interface=eth0 protocol=ra reason=ROUTERADVERT nd1_rdnss1_servers=fec0::9 nd1_rdnss1_lifetime=$'\xc2\xb2' \
+    python3 -I "$HOOK" --state "$T/state" --out "$T/tmp/resolv.conf" 2> "$T/err"; rc=$?
+same "a lifetime that is not plain digits is no lifetime, and the hook does not fall over on it" \
+    "rc=${rc} $(cat "$T/tmp/resolv.conf") $(head -1 "$T/err")" "rc=0 ${before} "
 same "an event that is neither up nor down changes nothing" \
     "$(hook interface=eth0 protocol=dhcp reason=PREINIT new_domain_name_servers=192.0.2.66)" "$before"
 [[ "$(ls -A "$T/state")" == "eth0.dhcp" ]] && green "the state holds one file per interface and protocol that passed, and no other" \
