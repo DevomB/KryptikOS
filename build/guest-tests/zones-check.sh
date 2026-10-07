@@ -148,7 +148,9 @@ setsid "$KD" run untrusted --zones "$Z" --rootfs "$R" -- sh -c 'echo UNTRUSTED-U
 UBG=$!
 for _ in $(seq 1 40); do grep -q UNTRUSTED-UP "$LOG/untrusted-bg.out" 2>/dev/null && break; sleep 0.5; done
 upid="$(cut -d' ' -f1 /run/kryptik/zones/untrusted/init.pid 2>/dev/null)"
-gateway_echo() { [[ -n "$upid" ]] && nsenter -t "$upid" -n python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.0.2.2 "$1" >/dev/null 2>&1; }
+# ping, not icmp-echo.py: the zone's ping_group_range names its own gid, not
+# root's, so root in its namespace needs ping's raw socket.
+gateway_echo() { [[ -n "$upid" ]] && nsenter -t "$upid" -n ping -c1 -W"$1" 10.0.2.2 >/dev/null 2>&1; }
 physical() { local d; for d in /sys/class/net/*; do [[ -e "$d/device" ]] && printf '%s ' "${d##*/}"; done; }
 out_before=no; gateway_echo 3 && out_before=yes
 before="$(ready_count)"
