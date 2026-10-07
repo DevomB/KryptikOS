@@ -1170,7 +1170,7 @@ const fn seccomp_iowr(nr: u32, size: usize) -> libc::c_ulong {
 const NOTIF_RECV: libc::c_ulong = seccomp_iowr(0, std::mem::size_of::<libc::seccomp_notif>());
 const NOTIF_SEND: libc::c_ulong = seccomp_iowr(1, std::mem::size_of::<libc::seccomp_notif_resp>());
 
-/// The filter zone `name` runs under: the base, widened by its policy file.
+/// The filter zone `name` runs under: the base, widened by its policy file and kept capabilities.
 fn trace_filter(dir: &Path, name: &str) -> Result<(Vec<libc::c_long>, seccomp::SocketPolicy), String> {
     let zones = zone::load_all(dir).map_err(|e| e.to_string())?;
     let z = zones.iter().find(|z| z.name == name).ok_or_else(|| format!("no zone named {name:?}"))?;
@@ -1180,7 +1180,7 @@ fn trace_filter(dir: &Path, name: &str) -> Result<(Vec<libc::c_long>, seccomp::S
     let p = policy::load(&policy::resolve(dir, rel))
         .and_then(|p| p.check_for_zone(z).map(|_| p))
         .map_err(|e| format!("{rel}: {e}"))?;
-    Ok((seccomp::widened(&p.extra_syscalls).map_err(|e| e.to_string())?, p.sockets))
+    Ok((seccomp::widened_for(&p.extra_syscalls, &p.keep_caps).map_err(|e| e.to_string())?, p.sockets))
 }
 
 /* Run CMD under a zone filter and name every call it refuses. Refused calls

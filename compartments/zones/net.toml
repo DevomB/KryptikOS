@@ -23,7 +23,8 @@ memory_max = "1G"
 pids_max   = 256
 
 [identity]
-# Root inside maps to host uid/gid 196608, nobody to 262142; fixed, never derived from zone order.
+# Root inside maps to host uid/gid 196608, dhcpcd's user (100) to 196708 and nobody to 262142;
+# fixed, never derived from zone order.
 uid_base = 196608
 
 [ui]

@@ -5,3 +5,8 @@ keep-capability CAP_NET_ADMIN
 keep-capability CAP_NET_RAW
 # dhcpcd exits if refused NETLINK_GENERIC (nl80211 events), leaving routed zones no uplink.
 allow-netlink NETLINK_GENERIC
+# dhcpcd's privilege separation: its parsers drop to the dhcpcd user, chrooted to
+# /var/empty, and only a small helper stays root (kept together or not at all).
+keep-capability CAP_SETUID
+keep-capability CAP_SETGID
+keep-capability CAP_SYS_CHROOT

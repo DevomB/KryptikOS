@@ -90,9 +90,16 @@ fn bridge_resolver() {
 
 #[test]
 fn identity_names_zone() {
-    let pw = passwd_for("work", "/home/work");
+    let pw = passwd_for("work", "/home/work", false);
     assert!(pw.starts_with("root:x:0:0:work:/home/work:"), "{pw}");
     assert_eq!(pw.lines().count(), 2);
+    assert_eq!(group_for(false).lines().count(), 2);
+    // The nic zone's dhcpcd drops to the third mapped id, chrooted to an empty directory.
+    let pw = passwd_for("net", "/home/net", true);
+    assert_eq!(pw.lines().count(), 3);
+    assert!(pw.contains("\ndhcpcd:x:100:100:dhcpcd:/var/empty:/bin/false\n"), "{pw}");
+    assert!(group_for(true).contains("\ndhcpcd:x:100:\n"));
+    assert_eq!(crate::isolate::SERVICE_ID, 100);
     assert!(hosts_for("work").contains("127.0.0.1 localhost work"));
     assert_eq!(zone_home("work"), "/home/work");
     assert!(nsswitch().contains("passwd: files"));
