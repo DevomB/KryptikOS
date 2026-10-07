@@ -11,7 +11,7 @@ use std::ffi::CString;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::os::unix::io::{AsRawFd, FromRawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -297,9 +297,15 @@ pub fn close_mapping(zone: &str, mountpoint: &str) -> Result<(), VolumeError> {
     Ok(())
 }
 
+/// `path` as /proc/self/mounts writes it, with space, tab, newline and
+/// backslash octal-escaped; backslash goes first, as the others add one.
+fn mount_escaped(path: &str) -> String {
+    path.replace('\\', "\\134").replace(' ', "\\040").replace('\t', "\\011").replace('\n', "\\012")
+}
+
 pub fn is_mountpoint(path: &str) -> bool {
     let Ok(text) = fs::read_to_string("/proc/self/mounts") else { return false };
-    let esc = path.replace(' ', "\\040");
+    let esc = mount_escaped(path);
     text.lines().any(|l| l.split_whitespace().nth(1) == Some(&esc))
 }
 
@@ -351,40 +357,35 @@ pub fn init(zone: &str, volume: &str, size: u64, pass: &Passphrase, uid: u32, gi
 }
 
 /// Replace passphrase `old` with `new`; both travel through memfds, never argv.
-pub fn change_key(volume: &str, old: &Passphrase, new: &Passphrase) -> Result<(), VolumeError> {
+pub fn change_key(zone: &str, volume: &str, old: &Passphrase, new: &Passphrase) -> Result<(), VolumeError> {
     let oldfd = memfd("old", old.as_bytes())?;
     let newfd = memfd("new", new.as_bytes())?;
-    let oldp = format!("/proc/self/fd/{oldfd}");
-    let newp = format!("/proc/self/fd/{newfd}");
-    let r = run("cryptsetup luksChangeKey", "cryptsetup", &["luksChangeKey", "--batch-mode", "--key-file", &oldp, volume, &newp], None);
-    unsafe {
-        libc::close(oldfd);
-        libc::close(newfd);
-    }
-    match r {
+    let oldp = format!("/proc/self/fd/{}", oldfd.as_raw_fd());
+    let newp = format!("/proc/self/fd/{}", newfd.as_raw_fd());
+    match run("cryptsetup luksChangeKey", "cryptsetup", &["luksChangeKey", "--batch-mode", "--key-file", &oldp, volume, &newp], None) {
         Ok(_) => Ok(()),
-        Err((2, _)) => Err(VolumeError::WrongPassphrase { zone: volume.into() }),
+        Err((2, _)) => Err(VolumeError::WrongPassphrase { zone: zone.into() }),
         Err(e) => Err(tool_err("cryptsetup luksChangeKey", e)),
     }
 }
 
 /// A memfd holding `bytes`, without CLOEXEC so a child can read /proc/self/fd/N.
-fn memfd(name: &str, bytes: &[u8]) -> Result<i32, VolumeError> {
+fn memfd(name: &str, bytes: &[u8]) -> Result<OwnedFd, VolumeError> {
     let c = CString::new(name).unwrap();
     let fd = unsafe { libc::memfd_create(c.as_ptr(), 0) };
     if fd < 0 {
         return Err(VolumeError::Io(format!("memfd_create: {}", std::io::Error::last_os_error())));
     }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
     let mut off = 0usize;
     while off < bytes.len() {
-        let n = unsafe { libc::write(fd, bytes[off..].as_ptr() as *const libc::c_void, bytes.len() - off) };
+        let n = unsafe { libc::write(fd.as_raw_fd(), bytes[off..].as_ptr() as *const libc::c_void, bytes.len() - off) };
         if n <= 0 {
-            unsafe { libc::close(fd) };
             return Err(VolumeError::Io("memfd write failed".into()));
         }
         off += n as usize;
     }
-    unsafe { libc::lseek(fd, 0, libc::SEEK_SET) };
+    unsafe { libc::lseek(fd.as_raw_fd(), 0, libc::SEEK_SET) };
     Ok(fd)
 }
 
