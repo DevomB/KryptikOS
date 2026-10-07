@@ -42,11 +42,10 @@ reported, so one liar among three is outvoted. The servers come from
 `/etc/kryptik/time.conf` on the verified root (`server HOST` or `pool HOST`,
 a pool giving up to four addresses; the public pool without the file). The
 zone reports an offset, not a time: it reads the same `CLOCK_REALTIME` as
-zone 0, so nothing is lost to the delay before zone 0 acts. It is a script
-rather than an NTP daemon because a daemon is a whole package for one number,
-and the script can be tested against a real server on loopback. NTS is not
-used: the image has no gnutls, and it would not authenticate a compromised
-net zone.
+zone 0, so nothing is lost to the delay before zone 0 acts. It is a script,
+not an NTP daemon, because a daemon is a whole package for one number and a
+script can be tested against a real server on loopback. NTS is not used: the
+image has no gnutls, and it would not authenticate a compromised net zone.
 
 **The claim.** `time-offset <seconds> <sources>`: a signed decimal with at
 most 10 integer and 6 fractional digits, and the number of servers (1 to 16)
