@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""The chrome's question window takes focus when it maps, so it counts only
-the code it shows, typed after it shows: a "y" and Enter meant for another
-window, a hostile zone's among them, or a half-typed line, must not answer it."""
+"""The chrome's question window takes focus when it maps, so only the code it shows, typed after
+it shows, answers it: not a "y" and Enter meant for another window, nor a half-typed line."""
 import os
 from pathlib import Path
 import re
@@ -46,9 +45,8 @@ def main():
         chrome.chmod(0o700)
 
         def confirm(kind, early, late, plant=None):
-            """One question, with EARLY typed before it shows and LATE after it
-            asks ({code} is the code shown), and a link to PLANT at the answer's
-            temporary name if given. Returns (answer or None, what it showed)."""
+            """Ask once, EARLY typed before the window shows and LATE after ({code}: the code),
+            with any PLANT linked at the answer's temporary name. Returns (answer or None, shown)."""
             ident = f"q-{kind}"
             if kind == "clock":
                 ask = "kind=clock\nnow=2026-09-27 10:00:00\nproposed=2026-09-28 10:00:00\nsources=4\n"
@@ -94,8 +92,7 @@ def main():
             assert ("is ignored" in shown) == dropped, f"{what}: the note on early keys {'missing' if dropped else 'shown'}\n{shown}"
             print(f"PASS: {what}: {got}")
 
-        # Any member of group kryptik can plant a link in the directory: the
-        # window's writes must not follow one, and the answer is then a refusal.
+        # Group kryptik can plant links in the directory: the window must not write through one.
         victim = work / "victim"
         victim.write_text("untouched\n")
         got, shown = confirm("transfer", b"", "{code}\n", plant=victim)

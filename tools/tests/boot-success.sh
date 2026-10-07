@@ -31,6 +31,7 @@ cat > "$T/bin/kryptikd" <<'EOF'
 case "$1" in
     check) [ -e "$KTEST/kernel_ok" ] ;;
     list)  [ -e "$KTEST/zones_ok" ] ;;
+    time)  echo "kryptikd $*" >> "$KTEST/calls" ;;
     *) exit 2 ;;
 esac
 EOF
@@ -94,12 +95,31 @@ ALL="eudev seatd kryptikd-serve net-zone getty-tty1"
 echo "-- no trial"
 run_case ok a "" persistent "" $ALL; go
 check "healthy committed slot: ok" "$RESULT" "ok a"
-check "no reboot, no commit on a plain boot" "$CALLS" ""
+check "a plain boot reads the committed slot off the ESP and does nothing more" "$CALLS" "mount -t vfat -o ro,nosuid,nodev,noexec /dev/vda1 $KTEST/run/esp umount $KTEST/run/esp "
 run_case media "" usb tmpfs "" $ALL; go
 check "install medium: nothing tracked" "$(cat "$KTEST/boot/last-result" 2>/dev/null)" ""
 run_case unhealthy a "" persistent "" eudev seatd; go
 check "committed slot with services down: reported unhealthy, left running" "${RESULT%%:*}" "unhealthy a"
-check "no reboot for a committed slot" "$CALLS" ""
+check "no reboot for a committed slot" "$(reboots)" "0"
+
+echo "-- a slot nothing asked for"
+# The ESP names slot a as committed (run_case), no trial is on record, and
+# slot b runs: a firmware entry or BootNext set from outside booted it.
+run_case stray b "" persistent "" $ALL; go
+check "the earlier slot booted from outside is reported as uncommitted, not as ok" "$RESULT" "uncommitted b"
+check "its entries are forgotten, the committed slot gets its own, and the machine reboots" "$CALLS" "mount -t vfat -o ro,nosuid,nodev,noexec /dev/vda1 $KTEST/run/esp umount $KTEST/run/esp efiboot forget efiboot ensure a reboot "
+check "BOOTX64.EFI and the committed slot are left as they were" "$(cat "$KTEST/esp/EFI/BOOT/BOOTX64.EFI")|$(cat "$KTEST/esp/kryptik/committed-slot")" "kernel-a|a"
+check "the reboot is on record" "$([[ -e "$KTEST/boot/uncommitted" ]] && echo marked || echo unmarked)" "marked"
+run_case stray2 b "" persistent "" $ALL; : > "$KTEST/boot/uncommitted"; go
+check "booted there again after that reboot: reported, and left running to be put right" "$RESULT|$(reboots)" "uncommitted b|0"
+run_case stray3 b "" persistent "" $ALL; : > "$KTEST/efiboot_fails"; go
+check "no reboot while the firmware's entries could not be removed" "$RESULT|$(reboots)" "uncommitted b|0"
+run_case stray4 a "" persistent "" $ALL; : > "$KTEST/boot/uncommitted"; go
+check "a boot of the committed slot clears the record, so the next such boot is rebooted from again" "$RESULT|$([[ -e "$KTEST/boot/uncommitted" ]] && echo marked || echo unmarked)" "ok a|unmarked"
+run_case stray5 b "" persistent "" $ALL; rm -f "$KTEST/esp/kryptik/committed-slot"; go
+check "an ESP that names no committed slot accuses nobody" "$RESULT" "ok b"
+run_case stray6 b "" persistent "" $ALL; printf 'b; reboot\n' > "$KTEST/esp/kryptik/committed-slot"; go
+check "nor does one that names something that is no slot" "$RESULT|$(reboots)" "ok b|0"
 
 echo "-- a trial that booted"
 run_case commit b "" persistent 'b\narmed=1\n' $ALL; go
@@ -107,7 +127,7 @@ check "healthy trial: committed" "$RESULT" "commit b"
 check "BOOTX64.EFI is now the slot b kernel" "$(cat "$KTEST/esp/EFI/BOOT/BOOTX64.EFI")" "kernel-b"
 check "committed-slot records b" "$(cat "$KTEST/esp/kryptik/committed-slot")" "b"
 check "the trial record is gone" "$([[ -e "$KTEST/boot/trial" ]] && echo present || echo gone)" "gone"
-check "the trial's firmware entries and BootNext are forgotten after the commit, and the committed slot gets its own" "$CALLS" "mount -o rw,nosuid,nodev,noexec /dev/vda1 $KTEST/run/esp umount $KTEST/run/esp efiboot forget efiboot ensure b "
+check "the trial's firmware entries and BootNext are forgotten after the commit, the committed slot gets its own, and its release goes to the clock's floor" "$CALLS" "mount -t vfat -o rw,nosuid,nodev,noexec /dev/vda1 $KTEST/run/esp umount $KTEST/run/esp efiboot forget efiboot ensure b kryptikd time committed $KTEST/boot/release-b "
 run_case commit0 b "" persistent 'b\narmed=0\n' $ALL; go
 check "a trial that booted before its armed=1 line was written is still a trial: committed" "$RESULT" "commit b"
 
@@ -128,7 +148,7 @@ run_case unforget2 b "" persistent 'b\narmed=1\n' eudev; : > "$KTEST/efiboot_fai
 check "... and reboots if they stay: its record, now trial.failed, keeps it from coming back" "$(reboots)" "1"
 # On a degraded state /var is a tmpfs, so the trial record is out of reach.
 run_case degraded b "" degraded "" $ALL; go
-check "trial on a degraded state: known from the ESP, not committed, forgotten, rebooted" "${RESULT%%:*}|$(cat "$KTEST/esp/EFI/BOOT/BOOTX64.EFI")|$CALLS" "trial-unhealthy b|kernel-a|mount -o ro,nosuid,nodev,noexec /dev/vda1 $KTEST/run/esp umount $KTEST/run/esp efiboot forget efiboot ensure a reboot "
+check "trial on a degraded state: known from the ESP, not committed, forgotten, rebooted" "${RESULT%%:*}|$(cat "$KTEST/esp/EFI/BOOT/BOOTX64.EFI")|$CALLS" "trial-unhealthy b|kernel-a|mount -t vfat -o ro,nosuid,nodev,noexec /dev/vda1 $KTEST/run/esp umount $KTEST/run/esp efiboot forget efiboot ensure a reboot "
 run_case degraded2 b "" degraded "" $ALL; : > "$KTEST/efiboot_fails"; go
 check "... not rebooted while its entries stay: nothing else keeps the next boot from being it" "$(reboots)" "0"
 run_case degraded3 a "" degraded "" $ALL; go

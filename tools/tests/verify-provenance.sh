@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
-# Tests for tools/verify-provenance.sh. Offline, with real fixtures: tags
-# SSH-signed by per-run keys, and a publisher on 127.0.0.1. Each case runs the
-# tool against a throwaway KRYPTIK_ROOT.
+# Tests for tools/verify-provenance.sh, offline: per-run SSH-signed tags, a publisher on 127.0.0.1.
 
 set -uo pipefail
 
-# common.sh prefers these over paths derived from KRYPTIK_ROOT, so an exported
-# one would point the tool at the real tree.
+# common.sh prefers these, when exported, to paths derived from KRYPTIK_ROOT.
 unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -87,8 +84,7 @@ mkdir -p "$ARCHIVES"
 git -C "$FIXREPO" archive --format=tar.gz --prefix="${PREFIX}/" \
     -o "${ARCHIVES}/authentic.tar.gz" "$TAG"
 
-# One file changed, repacked. Its own hash goes in the lock, so only the tree
-# binding can catch it.
+# One file changed and repacked; its own hash goes in the lock, so only the tree binding catches it.
 (
     cd "$TMP"
     rm -rf alter && mkdir alter && cd alter
@@ -178,8 +174,7 @@ DEAD_SKARNET="http://127.0.0.1:1"
 
 FAKE="${TMP}/root"
 
-# build_root <hm-archive-path|-> <hm-lock-hash|auto|none>
-# The publisher is FIX_SKARNET at the time of the call.
+# build_root ARCHIVE|- LOCKHASH|auto|none; the publisher is FIX_SKARNET at the time of the call.
 build_root() {
     local hm_archive="$1" hm_lock="$2"
     rm -rf "$FAKE"
@@ -237,8 +232,7 @@ STUB
     esac
 }
 
-# run [--strict] [--offline]
-# Uses the FIX_* inputs, which cases reassign and then restore.
+# run [--strict] [--offline] uses these inputs, which cases reassign and then restore.
 FIX_SIGNERS="${TMP}/keys/allowed_signers"
 FIX_FPR="$GOOD_FPR"
 FIX_SKARNET="$SKARNET"
@@ -543,8 +537,7 @@ expect_pass "--offline reports informationally" "--strict fails here"
 
 # --- --report ---------------------------------------------------------------
 
-# provenance-inventory.sh joins rows on the names fetch-sources.sh --list
-# prints; a row keyed by a display label would silently drop out.
+# provenance-inventory.sh joins rows on the --list names, so a display-label key would drop out.
 build_root "${ARCHIVES}/authentic.tar.gz" auto
 REPORT="${TMP}/report.tsv"
 KRYPTIK_ROOT="$FAKE" \

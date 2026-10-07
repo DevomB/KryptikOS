@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# bc: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
 s_bc() {
     local src; src="$(unpack "bc-${V_BC}.tar.gz" "bc-${V_BC}")"
@@ -21,7 +19,7 @@ s_bc() {
     echo "  1000000000/250 = ${got}"
     [[ "$got" == "4000000" ]] || { echo "FAIL: bc computed ${got}, expected 4000000"; return 1; }
 
-    # libmath is what fix-libmath_h exists for; -l loads it.
+    # -l loads libmath, which the build generates with fix-libmath.sed.
     got="$(echo 's(0)' | bc -q -l)"
     echo "  s(0) = ${got}"
     [[ "$got" == "0" || "$got" == ".00000000000000000000" ]] \

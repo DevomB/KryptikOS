@@ -1,9 +1,6 @@
-//! Minimal rtnetlink client for the zone topology (docs/design/net-zone.md).
-//!
-//! Built here because kryptikd depends on `libc` alone (ADR-010) and busybox
-//! `ip` cannot create a veth peer in another namespace or set bridge port
-//! flags. A netlink socket belongs to the namespace it was opened in, so each
-//! request opens its own, and none succeeds until the kernel acks it.
+//! Minimal netlink client for the zone topology (docs/design/net-zone.md): kryptikd uses only
+//! `libc` (ADR-010), and busybox `ip` cannot put a veth peer in another namespace or set bridge
+//! port flags. A socket belongs to the namespace it was opened in, so each request opens its own.
 
 use std::ffi::CString;
 use std::io;
@@ -39,8 +36,7 @@ const NLA_F_NESTED: u16 = 0x8000;
 const IFLA_ADDRESS: u16 = 1;
 const IFLA_IFNAME: u16 = 3;
 const IFLA_MASTER: u16 = 10;
-/* A bridge setlink acks an unknown attribute and ignores it, so a wrong
- * number here fails silently: the isolation test checks sysfs and the wire. */
+// A bridge acks and ignores an unknown attribute, so the isolation test checks sysfs and the wire.
 const IFLA_PROTINFO: u16 = 12;
 const IFLA_LINKINFO: u16 = 18;
 const IFLA_NET_NS_FD: u16 = 28;
@@ -155,7 +151,7 @@ impl Msg {
     }
 }
 
-/// Most reply payload one request may gather; real replies are a few hundred bytes.
+/// Cap on the reply payload one request gathers; replies are a few hundred bytes.
 const MAX_REPLY: usize = 64 * 1024;
 
 /// One request/ack exchange on a fresh NETLINK_ROUTE socket.
@@ -163,16 +159,14 @@ fn transact(msg: Vec<u8>, what: &str) -> io::Result<()> {
     transact_on(NETLINK_ROUTE, msg, what).map(|_| ())
 }
 
-/// One request on a fresh socket of protocol `proto`, read until the ack or
-/// DONE. Returns the payloads of the replies before it, without their headers.
+/// One request on a fresh `proto` socket; returns the reply payloads that precede the ack or DONE.
 fn transact_on(proto: libc::c_int, msg: Vec<u8>, what: &str) -> io::Result<Vec<u8>> {
     let fd = unsafe { libc::socket(libc::AF_NETLINK, libc::SOCK_RAW | libc::SOCK_CLOEXEC, proto) };
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }
     let result = (|| {
-        /* Connect to port 0 so only the kernel can reply. Unconnected, anything
-         * with CAP_NET_ADMIN in this namespace could, and the nic zone has it. */
+        // Connect to port 0 so only the kernel can reply, not the nic zone with its CAP_NET_ADMIN.
         let mut kernel: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
         kernel.nl_family = libc::AF_NETLINK as libc::sa_family_t;
         let rc = unsafe {
@@ -253,9 +247,7 @@ fn check_name(name: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// Create a veth pair `a` <-> `b`. When `peer_ns` is given, `b` is created in
-/// that network namespace and never appears in this one; `peer_mac` is `b`'s
-/// MAC, random when None.
+/// Create a veth pair `a` <-> `b`, `b` born in namespace `peer_ns` and with MAC `peer_mac` when given.
 pub fn create_veth(a: &str, b: &str, peer_ns: Option<RawFd>, peer_mac: Option<[u8; 6]>) -> io::Result<()> {
     check_name(a)?;
     check_name(b)?;
@@ -301,8 +293,7 @@ pub fn set_master(dev: &str, master: &str) -> io::Result<()> {
     transact(m.finish(), &format!("enslave {dev} to {master}"))
 }
 
-/// Set a bridge port's isolation flag. Isolated ports never exchange frames
-/// with each other, and a zone cannot clear the flag from its end of the veth.
+/// Isolated bridge ports never exchange frames, and a zone cannot clear the flag from its end.
 pub fn set_port_isolated(dev: &str, on: bool) -> io::Result<()> {
     let idx = index_of(dev)?;
     let mut m = Msg::new(RTM_SETLINK, 0, 1);
@@ -328,8 +319,7 @@ pub fn set_up(dev: &str) -> io::Result<()> {
     transact(m.finish(), &format!("bring up {dev}"))
 }
 
-/// Move `dev` into the namespace behind `ns_fd`. A wireless netdev is
-/// namespace-local and gets EINVAL; move its wiphy with `set_wiphy_netns`.
+/// Move `dev` into `ns_fd`'s namespace; a wireless netdev refuses (EINVAL): see `set_wiphy_netns`.
 pub fn set_netns(dev: &str, ns_fd: RawFd) -> io::Result<()> {
     let idx = index_of(dev)?;
     let mut m = Msg::new(RTM_NEWLINK, 0, 1);
@@ -377,8 +367,7 @@ fn genl_family_id(name: &str) -> io::Result<u16> {
     ))
 }
 
-/// Move a wiphy and its interfaces, names intact, into the namespace behind
-/// `ns_fd` (`iw phy <phy> set netns`). Needs CAP_NET_ADMIN where it is now.
+/// `iw phy <phy> set netns`: move a wiphy and its interfaces into `ns_fd`'s netns (CAP_NET_ADMIN).
 pub fn set_wiphy_netns(phy: u32, ns_fd: RawFd) -> io::Result<()> {
     let family = genl_family_id("nl80211")?;
     let mut m = Msg::new(family, 0, 1);
@@ -485,8 +474,7 @@ pub fn open_netns_of(pid: libc::pid_t) -> io::Result<RawFd> {
     Ok(fd)
 }
 
-/// Run `f` inside the network namespace behind `ns_fd`, then switch back.
-/// Needs CAP_SYS_ADMIN over both namespaces; setns moves only this thread.
+/// Run `f` in `ns_fd`'s netns and switch back (CAP_SYS_ADMIN over both); moves only this thread.
 pub fn with_netns<T>(ns_fd: RawFd, f: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
     let mine = open_netns_of(unsafe { libc::getpid() })?;
     if unsafe { libc::setns(ns_fd, libc::CLONE_NEWNET) } < 0 {
@@ -505,8 +493,7 @@ pub fn with_netns<T>(ns_fd: RawFd, f: impl FnOnce() -> io::Result<T>) -> io::Res
     result
 }
 
-/// Routed-zone address plan (docs/design/net-zone.md): the bridge is
-/// 10.19.0.1/24 and fd19::1/64; host number `k` is 10.19.0.k and fd19::k.
+/// The bridge is 10.19.0.1/24 and fd19::1/64; zone host `k` is 10.19.0.k and fd19::k.
 pub const BRIDGE_V4: [u8; 4] = [10, 19, 0, 1];
 pub const BRIDGE_V6: [u8; 16] = [0xfd, 0x19, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
 
@@ -520,8 +507,7 @@ pub fn zone_v6(k: u8) -> [u8; 16] {
     a
 }
 
-/// Host `k`'s eth0 MAC, 02:19:00:00:00:k (locally administered, unicast). The
-/// net zone takes 10.19.0.k and fd19::k only with it (tools/net/netzone-init.sh).
+/// Host `k`'s eth0 MAC, 02:19:00:00:00:k; the net zone takes 10.19.0.k and fd19::k only with it.
 pub fn zone_mac(k: u8) -> [u8; 6] {
     [0x02, 0x19, 0, 0, 0, k]
 }

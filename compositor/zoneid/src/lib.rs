@@ -1,16 +1,12 @@
-//! Zone visual identity: can the user tell every two border colours the
-//! compositor draws apart, under each of four vision models?
-//!
-//! The `zoneid` binary audits the zone files in CI and searches for palettes
-//! that pass (docs/architecture.md). kryptikd only checks the shape of the
-//! `[ui]` keys; neither it nor the proxy uses this crate. The check is a floor
-//! on a colour-difference metric, not a guarantee against confusion.
+//! Zone visual identity: can every two border colours the compositor draws be told apart
+//! under each of four vision models? The `zoneid` binary audits the zone files in CI and
+//! proposes palettes; kryptikd checks only the shape of the `[ui]` keys and does not use this.
 //!
 //! | Channel | Shown by |
 //! |---|---|
 //! | `color` | the whole window border, drawn by dwl |
 //! | `glyph`, `label` | the chrome, for the focused window |
-//! | `pattern` | nothing yet: validated, given no weight |
+//! | `pattern` | nothing: validated, given no weight |
 
 pub mod color;
 pub mod cvd;

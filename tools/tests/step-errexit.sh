@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
-# Tests for step() in build/lib/common.sh, run for real with its ERR trap: a
-# recipe that fails partway is never stamped, and a stamp is refused once its
-# inputs change.
-#
-# bash suppresses errexit in any condition context (`if cmd`, `cmd || x`) and
-# in functions called from one, even under `set -e` inside a subshell.
+# Tests for step() in build/lib/common.sh, run for real with its ERR trap.
+# Under `if cmd` or `cmd || x`, bash ignores errexit in everything cmd runs, a subshell's set -e too.
 
 set -uo pipefail
 
@@ -12,19 +8,16 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PASS=0
 FAIL=0
 
-# Test the default (refuse changed inputs): builds export KRYPTIK_STALE=rebuild,
-# and the rebuild cases set it per invocation.
+# The default refuses changed inputs; builds export KRYPTIK_STALE=rebuild, and cases set it.
 unset KRYPTIK_STALE
 
 green() { printf '\033[32m  PASS\033[0m  %s\n' "$1"; PASS=$((PASS + 1)); }
 red()   { printf '\033[31m  FAIL\033[0m  %s\n' "$1"; FAIL=$((FAIL + 1)); }
 
-yes_() { green "$1"; }
-no_()  { red "$1"; }
 check() { if [[ "$2" == ok ]]; then green "$1"; else red "$1"; fi; }
 
-# make_harness WORK [EXTRA]: a script that runs the real step() on its
-# arguments. EXTRA goes into recipe_ok's body, to change the recipe.
+# make_harness WORK [EXTRA HCODE HCOMMENT UCODE]: a script running the real step() on its arguments.
+# EXTRA goes into recipe_ok, HCODE and HCOMMENT into helper_inner, UCODE into helper_unused.
 make_harness() {
     local work="$1" extra="${2:-}" hcode="${3:-true}" hcomment="${4:-a comment}" ucode="${5:-true}"
     mkdir -p "$work/.stamps" "$work/logs" "$work/src"
@@ -166,8 +159,7 @@ HARNESS
 
 run_harness() { bash "$1/harness.sh" "${@:2}" 2>&1; }
 
-# make_patchset WORK SET LINE: one patch turning the tree's "a" into LINE,
-# with its SHA256SUMS.
+# make_patchset WORK SET LINE: one patch turning the tree's "a" into LINE, and its SHA256SUMS.
 make_patchset() {
     local dir="$1/patches/$2"
     mkdir -p "$dir"
@@ -210,7 +202,7 @@ test_negative() {
           "$([[ $rc -ne 0 ]] && echo ok)"
 
     # A step() that never ran the recipe would leave no stamp either.
-    check "failing recipe: the recipe really ran" \
+    check "failing recipe: the recipe ran" \
           "$(grep -q 'recipe: step 1' "$log" 2>/dev/null && echo ok)"
 
     check "failing recipe: no command after the failure ran" \
@@ -222,8 +214,7 @@ test_negative() {
     check "failing recipe: common.sh ERR trap fired and named the line" \
           "$(grep -q 'aborted at' "$log" 2>/dev/null && echo ok)"
 
-    # The checks above also pass if step() died with the recipe: `set +e` does
-    # not disable common.sh's exiting ERR trap. These show it lived to report.
+    # The checks above also pass if the ERR trap killed step() too; these show it lived to report.
     check "failing recipe: step() reports which step failed and where" \
           "$(grep -q 'bad failed. Last .* lines of' <<<"$out" && echo ok)"
     check "failing recipe: step_failure_hint ran" \
@@ -234,8 +225,7 @@ test_negative() {
     rm -rf "$work"
 }
 
-# A changed recipe invalidates its own stamp and no other (a fingerprint of the
-# whole stage file would rebuild everything on any change).
+# A changed recipe invalidates its own stamp and no other.
 test_staleness() {
     local work; work="$(mktemp -d)"
     make_harness "$work"
@@ -265,8 +255,7 @@ test_staleness() {
     rm -rf "$work"
 }
 
-# The helpers a recipe reaches are its inputs, by their code: not a comment in
-# them, not a helper it never calls.
+# The helpers a recipe reaches are inputs by their code: not their comments, not unused helpers.
 test_helpers() {
     local work out rc; work="$(mktemp -d)"
     make_harness "$work"
@@ -286,10 +275,7 @@ test_helpers() {
     out="$(bash -c 'source "$1"; recipe() { echo "the step before"; }; _helpers_of recipe' _ "$ROOT/build/lib/common.sh" 2>&1)"
     check "helpers: \"step\" in a recipe's message does not bring in the step runner" "$([[ -z "$out" ]] && echo ok)"
 
-    # The runner is in no fingerprint, so the lines every recipe runs under
-    # change only with a stamp format bump, and this test with them: the
-    # subshell and what sets it up and takes it down, as whole lines, so a
-    # comment quoting them cannot stand in, nor a line added among them pass.
+    # The runner is in no fingerprint, so its lines (matched whole) change only with the stamp format.
     local runner want
     runner="$(grep -B2 -A3 -xF '    ( set -Eeuo pipefail; trap _kryptik_trap ERR; "$@" ) > "$logfile" 2>&1' "$ROOT/build/lib/common.sh")"
     want="$(printf '%s\n' '    set +e' '    trap - ERR' \
@@ -331,8 +317,7 @@ test_source_inputs() {
     check "changed tarball: a step that does not name it is untouched" \
           "$({ [[ $rc -eq 0 ]] && [[ $out == *"skip ver"* ]]; } && echo ok)"
 
-    # A version bump must reach recipes that build the filename from V_*, as
-    # s_glibc and the stage 05 steps do.
+    # A version bump must reach recipes that name the file through V_* (s_glibc, stage 05).
     out="$(sed -i 's/^V_PROBE=1.0/V_PROBE=1.1/' "$work/harness.sh"; run_harness "$work" ver recipe_ver)"; rc=$?
     check "version bump: a recipe that interpolates V_* is refused" \
           "$({ [[ $rc -ne 0 ]] && [[ $out == *"Refusing to resume"* ]]; } && echo ok)"
@@ -340,8 +325,7 @@ test_source_inputs() {
     rm -rf "$work"
 }
 
-# The skip check must fingerprint the flags after set_flags_for, as the stamp
-# does, or a package with a hardening exception (glibc) never skips.
+# The skip check fingerprints flags after set_flags_for, as the stamp does, or glibc never skips.
 test_per_step_flags() {
     local work; work="$(mktemp -d)"
     make_harness "$work"
@@ -370,8 +354,7 @@ test_per_step_flags() {
     rm -rf "$work"
 }
 
-# A stamp covers the fingerprints of the steps before it: a change invalidates
-# the steps after it and leaves the ones before alone.
+# A stamp covers the steps before it: a change invalidates the steps after, not those before.
 test_dependency_chain() {
     local work; work="$(mktemp -d)"
     make_harness "$work"
@@ -396,8 +379,7 @@ test_dependency_chain() {
     check "changed middle step: it is rebuilt" \
           "$([[ $out == *"first: KRYPTIK_STALE=rebuild"* ]] && echo ok)"
 
-    # The step after it: its own inputs are unchanged, but what it was built
-    # on is not, so its stamp is refused.
+    # The step after it has unchanged inputs but a changed base, so its stamp is refused.
     out="$(run_harness "$work" zero recipe_ver -- first recipe_ok -- second recipe_src probe-1.0.tar.gz)"; rc=$?
     check "changed middle step: the step after it is refused although its own inputs are unchanged" \
           "$({ [[ $rc -ne 0 ]] && [[ $out == *"skip first"* ]] && [[ $out == *"second: stamp records a different fingerprint"* ]]; } && echo ok)"
@@ -411,9 +393,7 @@ test_dependency_chain() {
     rm -rf "$work"
 }
 
-# A stage's chain starts from its predecessor's stamp (stage 04 builds with
-# stage 02's toolchain): a rebuilt predecessor invalidates it, and a missing
-# one stops the stage.
+# A stage seeds its chain from its predecessor's stamp, which must exist and must not have changed.
 test_stage_seed() {
     local work; work="$(mktemp -d)"
     make_harness "$work"
@@ -498,8 +478,7 @@ test_patchset() {
     rm -rf "$work"
 }
 
-# A stamp with no fingerprint may record a failed build: rebuild the step, and
-# keep the old stamp under .stamps/legacy/.
+# A stamp with no fingerprint may record a failed build: rebuild, keeping it in .stamps/legacy/.
 test_legacy_stamp() {
     local work; work="$(mktemp -d)"
     make_harness "$work"
@@ -512,7 +491,7 @@ test_legacy_stamp() {
     check "legacy stamp: the step is rebuilt" "$([[ $rc -eq 0 ]] && echo ok)"
     check "legacy stamp: refused as evidence, with a reason" \
           "$([[ $out == *"proves nothing"* ]] && echo ok)"
-    check "legacy stamp: archived rather than deleted" \
+    check "legacy stamp: archived, not deleted" \
           "$([[ -f "$work/.stamps/legacy/t-ancient" ]] && echo ok)"
     check "legacy stamp: replaced by a fingerprinted one" \
           "$(grep -q '^fingerprint: ' "$work/.stamps/t-ancient" 2>/dev/null && echo ok)"
@@ -545,8 +524,7 @@ test_single_implementation() {
     done
 }
 
-# A check is stamped and reruns when what came before it changes, but it is no
-# link in the chain: editing it, or losing its stamp, reruns it alone.
+# A check reruns when earlier steps change, but is no link in the chain: editing it reruns it alone.
 test_checks() {
     local work; work="$(mktemp -d)"
     make_harness "$work"
@@ -609,7 +587,7 @@ echo
 echo "-- in-repository patch sets are inputs, verified before use"
 test_patchset
 echo
-echo "-- stamps from the pre-fix harness are not evidence"
+echo "-- a stamp with no fingerprint is not evidence"
 test_legacy_stamp
 echo
 echo "-- there is one step(), and the stages declare their inputs"
@@ -618,9 +596,7 @@ test_single_implementation
 echo
 if [[ "$FAIL" -gt 0 ]]; then
     echo "${FAIL} check(s) failed, ${PASS} passed."
-    echo "A build run under this harness cannot be trusted to have built what"
-    echo "its stamps claim. Fix the harness before reading anything into a"
-    echo "green build."
+    echo "A build under this step runner cannot be trusted to have built what its stamps claim."
     exit 1
 fi
 echo "All ${PASS} checks passed."

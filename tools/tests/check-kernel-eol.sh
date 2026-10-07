@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Tests for tools/check-kernel-eol.sh. Feeds come from a local http.server, and
-# the pin from a throwaway KRYPTIK_ROOT, never the repository's versions.env.
+# Tests for tools/check-kernel-eol.sh, with feeds from a local server and pins from a throwaway root.
 
 set -uo pipefail
 
@@ -152,8 +151,7 @@ fake_root() {
     printf '%s' "$root"
 }
 
-# run <pinned> <feed-url> [--strict]
-# Output goes to $OUT and status to $RC; called as $(run), RC would be lost.
+# run PINNED FEED-URL [--strict]: output to $OUT and status to $RC, which $(run) would lose.
 OUT="${TMP}/out"
 RC=0
 run() {

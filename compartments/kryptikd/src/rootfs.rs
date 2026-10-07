@@ -1,9 +1,6 @@
-//! Zone roots built with pivot_root, so host paths do not exist for a zone
-//! rather than being denied: Landlock cannot revoke an inherited descriptor
-//! or stop chmod on files the zone's uid owns.
-//!
-//! The root is a fresh tmpfs. System paths are bound read-only recursively,
-//! /etc is synthesized, and the data directory is bound only at /home/<zone>.
+//! Zone roots built with pivot_root, so host paths do not exist for a zone: Landlock cannot
+//! revoke an inherited descriptor or stop chmod on files the zone's uid owns. The root is a
+//! fresh tmpfs with system paths bound read-only, /etc synthesized and the data at /home/<zone>.
 
 use std::ffi::CString;
 use std::fs;
@@ -78,8 +75,7 @@ fn mount_raw(
     Ok(())
 }
 
-/* mount_setattr(2), Linux 5.12+: the only way to make a whole bind tree
- * read-only in one step. glibc has no wrapper. */
+// mount_setattr(2), Linux 5.12+ with no glibc wrapper: makes a whole bind tree read-only at once.
 const SYS_MOUNT_SETATTR: libc::c_long = 442;
 const AT_RECURSIVE: libc::c_uint = 0x8000;
 const MOUNT_ATTR_RDONLY: u64 = 0x1;
@@ -154,51 +150,33 @@ fn bind_over_ro(src: &str, target: &str) -> Result<(), RootfsError> {
     set_mount_attr(target, MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV, false)
 }
 
-/// System directories a zone gets, read-only, nosuid, nodev. Not /etc: see
-/// `populate_etc`.
+/// System directories a zone gets, read-only, nosuid, nodev; /etc is `populate_etc`'s.
 pub const SYSTEM_PATHS: &[&str] = &["/usr", "/lib", "/lib64", "/bin", "/sbin"];
 
-/// Host files under /etc a zone may read: public, machine-independent data.
-/// Never ld.so.preload (a zone gets its own, naming only ALLOCATOR),
-/// machine-id (links zones to the host), the host's identity files,
-/// resolv.conf, localtime (zones run UTC), or any secret. man refuses to
-/// start without man_db.conf. ssl/cert.pem is OpenSSL's default CA file: the
-/// ssl/certs directory holds the bundle but no hash links, so without
-/// cert.pem no TLS peer verifies in a zone.
+/// Host files under /etc a zone may read: public, machine-independent data. man needs
+/// man_db.conf; OpenSSL needs cert.pem, as ssl/certs has the bundle but no hash links.
 pub const ETC_RO_FILES: &[&str] =
     &["/etc/ld.so.cache", "/etc/services", "/etc/protocols", "/etc/man_db.conf", "/etc/ssl/cert.pem"];
 
-/// The nic zone's own configuration, bound into that zone alone: its DHCP
-/// client defaults, time sources (docs/design/time.md) and release source
-/// (docs/design/update-channel.md).
+/// The nic zone's own configuration (DHCP client, time sources, release source), for it alone.
 pub const NIC_ETC_FILES: &[&str] = &["/etc/dhcpcd.conf", "/etc/kryptik/time.conf", "/etc/kryptik/update.conf"];
 
-/// Files of a zone's /proc about the whole machine, hidden behind /dev/null:
-/// the interrupt counts (interrupts, softirqs, stat's intr line, pressure/irq)
-/// and the context-switch counts (stat's ctxt line, schedstat) time every
-/// keystroke typed anywhere, and timer_list names other zones' tasks. Masking
-/// stat hides its CPU counters too, so top shows no CPU use, vmstat will not
-/// start, and libuv's os.cpus() and Java's load figures read nothing: the
-/// price of closing the keystroke channel, not something to unmask. ps takes
-/// its boot time from CLOCK_BOOTTIME and is unaffected.
+/// /proc files hidden behind /dev/null: interrupt and context-switch counts time every keystroke,
+/// and timer_list names other zones' tasks. Losing stat's CPU figures (top, vmstat) is the price.
 pub const PROC_MASKED: &[&str] =
     &["interrupts", "softirqs", "stat", "schedstat", "pressure/irq", "timer_list", "sched_debug"];
 
-/// Directories of a zone's /proc hidden behind an empty read-only tmpfs.
-/// irq/<n>/spurious counts each interrupt of line n, the keyboard's included.
+/// /proc directories hidden behind an empty tmpfs: irq/<n>/spurious counts keyboard interrupts too.
 pub const PROC_EMPTIED: &[&str] = &["irq"];
 
-/// What a zone other than the nic zone sees of sysfs: its own interfaces and
-/// the CPU layout (glibc counts CPUs there). The rest describes the machine:
-/// disk, USB and monitor serials, and which encrypted zones are running.
+/// What a zone other than the nic zone sees of sysfs: its interfaces and the CPU layout (glibc
+/// counts CPUs there). The rest holds disk and monitor serials and which encrypted zones run.
 pub const SYSFS_KEPT: &[&str] = &["class/net", "devices/virtual/net", "devices/system/cpu"];
 
-/// Host directories under /etc a zone may read, on the same terms as
-/// `ETC_RO_FILES`. lynx will not start without its lynx.cfg.
+/// Host directories under /etc a zone may read, as `ETC_RO_FILES`; lynx needs its lynx.cfg.
 pub const ETC_RO_DIRS: &[&str] = &["/etc/alternatives", "/etc/ssl/certs", "/etc/pki/tls/certs", "/etc/lynx"];
 
-/// The system allocator (ADR-005), which a zone preloads from the /usr it
-/// shares read-only with zone 0.
+/// The system allocator (ADR-005), preloaded in a zone from the /usr it shares with zone 0.
 pub const ALLOCATOR: &str = "/usr/lib/libhardened_malloc.so";
 
 /// Device nodes a zone gets; no other exists for it.
@@ -249,8 +227,7 @@ pub enum Resolver {
     None,
     /// A routed zone with a path: only the nic zone's bridge address is named.
     Bridge,
-    /// The nic zone, whose DHCP client writes it: the root is sealed, so
-    /// /etc/resolv.conf is a symlink into the zone's private /tmp.
+    /// The nic zone's DHCP client writes it, through a symlink into /tmp: the root is sealed.
     Writable,
 }
 
@@ -258,9 +235,7 @@ pub fn resolv_conf_for_bridge() -> String {
     "nameserver 10.19.0.1\nnameserver fd19::1\n".to_string()
 }
 
-/// Refuse an ephemeral zone whose persistent directory is not empty: leftover
-/// data would sit on disk unwiped, and kryptikd must not delete what it did not
-/// create.
+/// Refuse an ephemeral zone over leftover data: it would sit unwiped, and is not ours to delete.
 pub fn check_data_dir_empty(path: &str, zone: &str) -> Result<(), RootfsError> {
     let entries = fs::read_dir(path)
         .map_err(|e| RootfsError::Setup(format!("{path}: {e}")))?;
@@ -274,15 +249,12 @@ pub fn check_data_dir_empty(path: &str, zone: &str) -> Result<(), RootfsError> {
     }
     Err(RootfsError::Setup(format!(
         "ephemeral zone {zone:?} has persistent data in {path} from an earlier run \
-         ({}); move or delete it. An ephemeral zone keeps nothing, so kryptikd will \
-         not start one over data it did not write and must not silently destroy.",
+         ({}); move or delete it",
         leftovers.join(", ")
     )))
 }
 
-/// Refuse a data directory that is not a plain directory owned by the zone's
-/// identity: a symlink would redirect the bind, and another owner's files would
-/// be exposed to the zone.
+/// Refuse a data directory that is a symlink, which would redirect the bind, or another owner's.
 pub fn check_data_dir(path: &str, expected_uid: u32) -> Result<(), RootfsError> {
     let md = fs::symlink_metadata(path)
         .map_err(|e| RootfsError::Setup(format!("{path}: {e}")))?;
@@ -307,11 +279,8 @@ pub fn check_data_dir(path: &str, expected_uid: u32) -> Result<(), RootfsError> 
     Ok(())
 }
 
-/// Replace the zone's root with a tree holding only what it should see, and
-/// return the zone's home path. Runs after unshare(CLONE_NEWNS) and the uid map
-/// (pivot_root needs CAP_SYS_ADMIN in the new user namespace) and before
-/// Landlock and seccomp, which forbid mount and pivot_root. `ephemeral` is the
-/// home tmpfs size of an ephemeral zone.
+/// Pivot into a root holding only what the zone should see; returns the home. Runs as root in the
+/// new user namespace, before Landlock and seccomp; `ephemeral` is a tmpfs home's size.
 pub fn pivot_into(
     data_dir: &str,
     zone: &str,
@@ -355,9 +324,8 @@ pub fn pivot_into(
         fd
     };
 
-    /* The zone's root: a fresh tmpfs over the data directory's path. Every
-     * mount point below is created on it by kryptikd, so nothing the zone
-     * wrote can redirect a mount. */
+    /* A fresh tmpfs over the data directory's path: kryptikd makes every mount point on it, so
+     * nothing the zone wrote can redirect a mount. */
     let root = data_dir;
     mount_raw(
         "tmpfs",
@@ -394,9 +362,8 @@ pub fn pivot_into(
     )?;
     mask_proc(root, &proc_dir)?;
 
-    /* Read-only sysfs for this zone's network namespace: the nic zone gets
-     * all of it, any other zone only `SYSFS_KEPT`, bound from a sysfs mounted
-     * aside and then dropped. Best effort: it can fail in a nested namespace. */
+    /* Read-only sysfs: all of it for the nic zone, `SYSFS_KEPT` from a sysfs mounted aside for
+     * the others. Best effort: it can fail in a nested namespace. */
     let sys_dir = mkdir("sys")?;
     let aside = if resolver == Resolver::Writable { sys_dir.clone() } else { mkdir(".sysfs")? };
     let mounted = mount_raw(
@@ -435,9 +402,8 @@ pub fn pivot_into(
         "mount(tmp)",
     )?;
 
-    /* The nic zone's private /run and /var/lib, for the network daemons' pid
-     * files, sockets and DHCP leases. Other zones have no /var, and a /run on
-     * the sealed root holding only what kryptikd binds there. */
+    /* The nic zone's private /run and /var/lib, for its daemons' pid files, sockets and leases.
+     * Other zones have no /var, and in /run only what kryptikd binds there. */
     if resolver == Resolver::Writable {
         for (rel, call) in [("run", "mount(nic /run tmpfs)"), ("var/lib", "mount(nic /var/lib tmpfs)")] {
             let d = mkdir(rel)?;
@@ -452,16 +418,14 @@ pub fn pivot_into(
         }
     }
 
-    /* The nic zone's Wi-Fi credentials (wifi.rs): 0400, owned by the zone's
-     * identity, bound read-only. No file means no networks are configured. */
+    // The nic zone's Wi-Fi credentials, bound read-only; no file means no networks configured.
     if let Some(conf) = wifi_conf {
         if fs::metadata(conf).map(|m| m.is_file()).unwrap_or(false) {
             bind_ro_file(conf, &format!("{root}{}", crate::wifi::IN_ZONE))?;
         }
     }
 
-    /* The zone's broker socket, 0600 and owned by the zone identity.
-     * connect(2) is not a Landlock filesystem access. */
+    // The zone's broker socket; connect(2) is not a Landlock filesystem access.
     if let Some(sock) = broker {
         let rk = mkdir("run/kryptik")?;
         let target = format!("{rk}/{}", crate::broker::SOCKET_NAME);
@@ -475,13 +439,11 @@ pub fn pivot_into(
         bind_ro_file(sock, &target)?;
     }
 
-    /* The zone's data at /home/<zone>, bound through the descriptor so it is
-     * the directory that was checked. Non-recursive, so mounts inside it are
-     * not carried in; with locked submounts the kernel says EINVAL. */
+    /* The zone's data at /home/<zone>, bound through the descriptor that was checked. Not
+     * recursive, so mounts inside are not carried in (locked submounts give EINVAL). */
     let home_dir = mkdir(&home[1..])?;
     if let Some(size) = ephemeral {
-        /* A tmpfs in the zone's own mount namespace: the kernel frees it with
-         * the namespace, even after kill -9. uid 0 is the zone's root. */
+        // Freed with the zone's mount namespace, even after kill -9; uid 0 is the zone's root.
         mount_raw(
             "tmpfs",
             &home_dir,
@@ -585,9 +547,8 @@ fn populate_etc(root: &str, zone: &str, home: &str, resolver: Resolver) -> Resul
     Ok(())
 }
 
-/// Hide `PROC_MASKED` behind /dev/null and `PROC_EMPTIED` behind an empty
-/// tmpfs, and give the zone a boot_id of its own: the host's is the same in
-/// every zone, so it would link them.
+/// Hide `PROC_MASKED` and `PROC_EMPTIED`, and give the zone its own boot_id: the host's is the
+/// same in every zone, so it would link them.
 fn mask_proc(root: &str, proc_dir: &str) -> Result<(), RootfsError> {
     for f in PROC_MASKED {
         let target = format!("{proc_dir}/{f}");
@@ -613,8 +574,7 @@ fn mask_proc(root: &str, proc_dir: &str) -> Result<(), RootfsError> {
     Ok(())
 }
 
-/// Bind `SYSFS_KEPT` from the sysfs mounted at `aside` into a read-only
-/// tmpfs at `sys_dir`.
+/// Bind `SYSFS_KEPT` from the sysfs at `aside` into a read-only tmpfs at `sys_dir`.
 fn keep_sysfs(aside: &str, sys_dir: &str) -> Result<(), RootfsError> {
     let flags = (libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC) as libc::c_ulong;
     mount_raw("tmpfs", sys_dir, Some("tmpfs"), flags, Some("mode=0755,size=64k"), "mount(sys tmpfs)")?;
@@ -627,8 +587,7 @@ fn keep_sysfs(aside: &str, sys_dir: &str) -> Result<(), RootfsError> {
     mount_raw("none", sys_dir, None, flags | libc::MS_REMOUNT | libc::MS_RDONLY, None, "mount(sys tmpfs, ro)")
 }
 
-/// A minimal /dev on tmpfs: the `DEVICES` nodes bound from the host (mknod would
-/// need CAP_MKNOD there), a private /dev/shm and devpts, and the usual links.
+/// A minimal /dev: `DEVICES` bound from the host (mknod needs CAP_MKNOD there), shm and devpts.
 fn populate_dev(root: &str) -> Result<(), RootfsError> {
     let dev_dir = format!("{root}/dev");
     fs::create_dir_all(&dev_dir).map_err(|e| RootfsError::Setup(e.to_string()))?;
@@ -692,8 +651,7 @@ fn populate_dev(root: &str) -> Result<(), RootfsError> {
     Ok(())
 }
 
-/// Open /dev/null on whichever of 0, 1, 2 is closed, so the zone's first open()
-/// cannot become its stdout.
+/// Open /dev/null on any closed 0, 1 or 2, so the zone's first open() cannot become its stdout.
 pub fn ensure_stdio() {
     let devnull = cs("/dev/null").expect("static path");
     for fd in 0..=2 {
@@ -708,9 +666,7 @@ pub fn ensure_stdio() {
     }
 }
 
-/// Close every descriptor above stderr before handing control to the zone.
-/// Neither Landlock nor pivot_root affects a descriptor already open, so only
-/// 0, 1 and 2 are inherited; even one passed with `3<file` is closed.
+/// Close every descriptor above stderr: neither Landlock nor pivot_root affects an open one.
 pub fn close_inherited_fds() -> std::io::Result<()> {
     let r = unsafe { libc::syscall(libc::SYS_close_range, 3 as libc::c_uint, libc::c_uint::MAX, 0 as libc::c_uint) };
     if r == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }

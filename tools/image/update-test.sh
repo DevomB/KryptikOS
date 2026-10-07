@@ -27,7 +27,7 @@
 #   step 6  the VM killed mid-write (the slot then named by nothing on the
 #           ESP, so rollback refuses it), then after arming: both recover
 #   step 7  a corrupt trial falls back to slot a, is recorded, needs --retry
-#   step 8  B fetched by the net zone from a loopback release host, applied.
+#   step 8  automatic fetching brings B from a loopback release host; applied.
 #           A production image fetches nothing over plain http, and says so
 #
 # Whether A and B are development or production releases is read from B's
@@ -58,6 +58,10 @@ done
 for t in python3 mkfs.ext4 truncate ssh-keygen sfdisk; do have "$t" || die "required tool not found: $t"; done
 VA="$(awk -F': ' '$1=="version"{print $2}' "$PAY_A/manifest")"; VB="$(awk -F': ' '$1=="version"{print $2}' "$PAY_B/manifest")"
 [[ "$VA" != "$VB" ]] || die "A and B are the same version (${VA})"
+# Once B is committed the clock's floor is the date B's manifest was signed
+# with, to the minute as `kryptikd time status` prints it, even back on A.
+B_FLOOR="$(date -u -d "$(awk -F': ' '$1=="created"{print $2; exit}' "$PAY_B/manifest")" '+%Y-%m-%d %H:%M' 2>/dev/null)"
+[[ -n "$B_FLOOR" ]] || die "B's manifest has no created date"
 role_of() { awk -F': ' '$1=="role"{print $2}' "$1/manifest" 2>/dev/null; }
 B_ROLE="$(role_of "$PAY_B")"
 case "$B_ROLE" in development|production) ;; *) die "B's manifest names no role this suite knows: '${B_ROLE}'" ;; esac
@@ -181,11 +185,14 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "run:echo before-update > /home/${TUSER}/marker && sync" \
     "$(ROOTSH 'printf zone-pw > /root/zp && chmod 600 /root/zp && kryptikd volume init work --size 64M --passphrase-file /root/zp && sha256sum /var/lib/kryptik/volumes/work.luks > /root/work.sha && echo VOL-OK')" \
     "expect:VOL-OK" \
+    "$(ROOTSH 'kryptikd time status')" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "A boots, zone volume created (${VA})" || red "step 1 drive failed"
 stop_unless_ok "$rc" "step 1"
 txt | grep -q "version_id=${VA}" && green "guest reports version ${VA}" || red "guest did not report version ${VA}"
+txt | grep -q "floor    [0-9-]* [0-9:]* UTC (this system's build date" \
+    && green "with no release committed yet, the clock's floor is A's build date" || red "A's floor is not its build date: $(txt | grep -E '(floor|release)  ' | tail -2 | tr '\n' ' ')"
 
 # ----------------------------------------------------------------- step 2 --
 step "step 2: apply ${VB}, reboot into slot b"
@@ -199,6 +206,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "grab:v2:grep ^VERSION_ID= /etc/os-release; cat /run/kryptik/boot-identity; cat /var/lib/kryptik/boot/last-result" \
     "run:test \"\$(cat /home/${TUSER}/marker)\" = before-update" \
     "$(ROOTSH 'sha256sum -c /root/work.sha && kryptik-update status && echo B-OK')" "expect:B-OK" \
+    "$(ROOTSH 'kryptikd time status')" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "B applied, rebooted into slot b, home file and zone volume intact" || red "step 2 drive failed"
@@ -207,6 +215,8 @@ txt | grep -q "KRYPTIK_SMOKE: boot_identity=slot=b" && green "booted slot b" || 
 txt | grep -q "version_id=${VB}" && green "guest reports version ${VB}" || red "guest did not report ${VB}"
 txt | grep -q "boot-success: committed: BOOTX64.EFI is now slot b" && green "boot-success committed slot b" || red "no commit of slot b"
 txt | grep -q "committed slot:   b" && green "status shows committed slot b" || red "committed slot is not b"
+txt | grep -qF "floor    ${B_FLOOR} UTC (release ${VB}, the newest this machine committed to" \
+    && green "the clock's floor is ${VB}'s signed date (${B_FLOOR} UTC)" || red "after the commit of ${VB} the floor is not its date: $(txt | grep -E '(floor|release)  ' | tail -2 | tr '\n' ' ')"
 
 # ----------------------------------------------------------------- step 3 --
 step "step 3: refusals on the running ${VB}"
@@ -234,7 +244,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'kryptik-update check-pointer /run/upd/p/statement/latest /run/upd/p/statement/latest.sig && echo STATEMENT-OK')" "expect:signed by kryptik-latest" "expect:STATEMENT-OK" \
     "${NOT_A_POINTER[@]}" \
     "$(ROOTSH 'flock /run/kryptik/update.lock sleep 20 & sleep 1; kryptik-update apply /run/upd/a --recovery; echo RC=$?')" "expect:another update is in progress" \
-    "$(ROOTSH 'fallocate -l 100G /var/filler 2>/dev/null || dd if=/dev/zero of=/var/filler bs=1M 2>/dev/null; cp -a /run/upd/a /var/lib/kryptik/updates/a-full 2>&1 | tail -1; kryptik-update apply /var/lib/kryptik/updates/a-full --recovery; echo RC=$?; rm -rf /var/filler /var/lib/kryptik/updates/a-full')" "expect:RC=1\r?\n" \
+    "$(ROOTSH 'fallocate -l 100G /var/filler 2>/dev/null || dd if=/dev/zero of=/var/filler bs=1M 2>/dev/null; cp -a /run/upd/a /var/lib/kryptik/updates/a-full 2>&1 | tail -1; kryptik-update apply /var/lib/kryptik/updates/a-full --recovery; echo FULL-RC=$?; rm -rf /var/filler /var/lib/kryptik/updates/a-full')" "expect:FULL-RC=1\r?\n" \
     "$(ROOTSH 'kryptik-update status')" "expect:trial pending:    none" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
@@ -250,11 +260,14 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "login:${TUSER}:${TPASS}" \
     "run:test \"\$(cat /home/${TUSER}/marker)\" = before-update" \
     "$(ROOTSH 'sha256sum -c /root/work.sha && cat /var/lib/kryptik/boot/last-result && echo A-OK')" "expect:commit a" "expect:A-OK" \
+    "$(ROOTSH 'kryptikd time status')" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "recovery to ${VA}: slot a booted and committed, data intact" || red "step 4 drive failed"
 stop_unless_ok "$rc" "step 4"
 txt | grep -q "version_id=${VA}" && green "guest reports ${VA} again" || red "guest did not report ${VA}"
+txt | grep -qF "floor    ${B_FLOOR} UTC (release ${VB}, the newest this machine committed to" \
+    && green "back on ${VA}, the clock's floor is still ${VB}'s signed date, not ${VA}'s build date" || red "back on ${VA}, the floor is not ${VB}'s date: $(txt | grep -E '(floor|release)  ' | tail -2 | tr '\n' ' ')"
 
 # ----------------------------------------------------------------- step 5 --
 step "step 5: rollback arms the other slot (b) and it boots"
@@ -277,13 +290,16 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'mkdir -p /run/upd/a && mount -o ro /dev/vdb /run/upd/a && echo MNT-OK')" "expect:MNT-OK" \
     "send:su - root -c 'kryptik-update apply /run/upd/a --recovery'" "expect:Password: ?" "send:${RPASS}" \
     "expect:writing kryptik-a"
+rc=$?
 python3 - "$QMP" <<'PY'
 import json, socket, sys
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect(sys.argv[1]); f = s.makefile("rwb", buffering=0)
 f.readline(); f.write(b'{"execute":"qmp_capabilities"}\n'); f.readline(); f.write(b'{"execute":"quit"}\n'); f.readline()
 PY
 sleep 2; stop_vm
-green "VM killed while slot a was being written (QMP quit, no clean shutdown)"
+# Killed during the write only if the write was seen to begin.
+[[ "$rc" -eq 0 ]] && green "VM killed while slot a was being written (QMP quit, no clean shutdown)" || red "the write of slot a was never seen to begin, so the VM was not killed during it"
+stop_unless_ok "$rc" "step 6, the kill during the write"
 start_vm update-p6b --disk "$PA"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'cat /run/kryptik/boot-identity; kryptik-update status; echo P6-OK')" "expect:slot=b" "expect:trial pending:    none" \
@@ -324,8 +340,11 @@ stop_unless_ok "$rc" "step 7 arming"
 B_OFF=$(( $(part_start "$DISK" 3) * 512 ))
 # The superblock's volume name, the first block a root mount reads (a block
 # nothing reads at boot would let the trial succeed).
-printf '\xa5' | dd of="$DISK" bs=1 seek=$(( B_OFF + 1024 + 0x78 )) conv=notrunc status=none
-green "slot b's root image corrupted from the host (one byte in the superblock)"
+if [[ "$B_OFF" -gt 0 ]] && printf '\xa5' | dd of="$DISK" bs=1 seek=$(( B_OFF + 1024 + 0x78 )) conv=notrunc status=none; then
+    green "slot b's root image corrupted from the host (one byte in the superblock)"
+else
+    red "slot b's root image could not be changed from the host (partition 3 starts at byte ${B_OFF})"
+fi
 start_vm update-p7b --disk "$PB"
 drive "expect:BdsDxe: starting Boot" \
     "expect:device-mapper: verity:.*(corrupt|mismatch|error)|dm-verity device corrupted" \
@@ -400,23 +419,29 @@ UP_TO_STATEMENT=("expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
 start_vm update-p8b --net user
 if [[ "$B_ROLE" == production ]]; then
     # A production image fetches no release over plain http, and the user who
-    # asks is told why, not left with a poll that answers idle.
+    # asks is told why, not left with a poll that answers idle. Turned on,
+    # automatic fetching asks for nothing either.
     drive "${UP_TO_STATEMENT[@]}" \
         "run!:kryptik update fetch" "expect:a production image does not fetch over plain http" \
+        "run:kryptik update auto on" "expect:automatic fetching is on" \
         "$(ROOTSH 'sleep 70; echo STAGED=$(ls /var/lib/kryptik/update/incoming 2>/dev/null | wc -l)')" "expect:STAGED=0" \
         "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
     rc=$?; stop_vm
     kill "$CHAN_PID" 2>/dev/null; CHAN_PID=""
-    [[ "$rc" -eq 0 ]] && green "the production image took ${VB}'s statement over plain http, refused to fetch the release that way when asked, and said why; nothing was staged" || red "step 8 drive failed"
+    [[ "$rc" -eq 0 ]] && green "the production image took ${VB}'s statement over plain http, refused to fetch the release that way when asked or automatically, and said why; nothing was staged" || red "step 8 drive failed"
     asked="$(awk '{sub("^/", "", $1); print $1}' "$CHAN_LOG" | sort -u | tr '\n' ' ')"
     [[ "$asked" == "latest latest.sig " ]] && green "the release host was asked for the statement alone" || red "the release host was asked for: ${asked}"
 else
-    # In order: the statement arrives, nothing is fetched until the user asks,
-    # the release arrives whole, then apply, trial boot and commit.
+    # In order: the statement arrives, nothing is fetched while that is left to
+    # the user, automatic fetching brings the release whole without a fetch
+    # (one asked for as well changes nothing), then apply, trial boot and
+    # commit, and the setting outlasts the update.
     drive "${UP_TO_STATEMENT[@]}" \
         "$(ROOTSH 'sleep 70; echo STAGED-UNASKED=$(ls /var/lib/kryptik/update/incoming 2>/dev/null | wc -l)')" "expect:STAGED-UNASKED=0" \
-        "run:kryptik update fetch" "expect:${VB} will be fetched" \
+        "run:kryptik update status | grep -q 'fetching *only when asked'" \
+        "run:kryptik update auto on" "expect:automatic fetching is on" \
         "run:$(wait_status "${VB}: .* bytes, " ARRIVING-OK)" "expect:ARRIVING-OK" \
+        "run:kryptik update fetch" "expect:${VB} will be fetched" \
         "run:$(wait_arrival)" "run:$(wait_arrival)" "run:$(wait_arrival)" "run:$(wait_arrival)" \
         "run:kryptik update status | grep -q 'bytes, complete'" \
         "$(ROOTSH "ls /var/lib/kryptik/update/incoming/${VB} | sort | tr \"\\n\" \" \"; echo LISTED")" "expect:kryptik-a.efi kryptik-b.efi kryptik-root.img manifest manifest.sig root.json LISTED" \
@@ -425,10 +450,13 @@ else
         "login:${TUSER}:${TPASS}" \
         "$(ROOTSH 'cat /run/kryptik/boot-identity | head -1; cat /var/lib/kryptik/boot/last-result; echo P8C-OK')" "expect:slot=b" "expect:commit b" "expect:P8C-OK" \
         "run:test \"\$(cat /home/${TUSER}/marker)\" = before-update" \
+        "run:kryptik update status | grep -q 'fetching *automatically'" \
+        "run:kryptik update auto off" "expect:automatic fetching is off" \
+        "run:kryptik update status | grep -q 'fetching *only when asked'" \
         "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
     rc=$?; stop_vm
     kill "$CHAN_PID" 2>/dev/null; CHAN_PID=""
-    [[ "$rc" -eq 0 ]] && green "the net zone brought the statement, nothing was fetched until it was asked for, ${VB} arrived whole, and it was applied, trial-booted and committed; data intact" || red "step 8 drive failed"
+    [[ "$rc" -eq 0 ]] && green "the net zone brought the statement, nothing was fetched until automatic fetching was turned on, then ${VB} arrived whole unasked and was applied, trial-booted and committed; data intact, and the setting outlasted the update" || red "step 8 drive failed"
     # The step's first boot must report A and its last B; B anywhere is not enough.
     first_boot="$(txt | sed -n 's/^KRYPTIK_SMOKE: os_id=.* version_id=//p' | head -1)"
     last_boot="$(txt | sed -n 's/^KRYPTIK_SMOKE: os_id=.* version_id=//p' | tail -1)"

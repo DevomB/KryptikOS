@@ -15,7 +15,12 @@
 # larger than its window; explicit focus (Alt+j), fullscreen refusal (Alt+e)
 # and the yes/no to the transfer
 # questions, delivered as keystrokes on the guest's keyboard, so the
-# trusted windows are exercised by input, not by writing answer files.
+# trusted windows are exercised by input, not by writing answer files; and a
+# second monitor, plugged into the GPU's second output while the session
+# runs, photographed with a zone's window on it, and pulled out again.
+# With the pointer moved onto a zone's window, the cursor image the zone asks
+# for must not be taken by the compositor; zone 0's, which is, shows the
+# guest's check can tell.
 set -uo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -28,7 +33,7 @@ while [[ "$#" -gt 0 ]]; do
         --usb) USB="${2:?}"; shift 2 ;;
         --disk) DISK="${2:?}"; shift 2 ;;
         --timeout) TIMEOUT="${2:?}"; shift 2 ;;
-        -h|--help) sed -n '2,17p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -44,6 +49,7 @@ VARSF="${VMDIR}/gui-vars.fd"; cp /usr/share/OVMF/OVMF_VARS_4M.fd "$VARSF"
 SHOT="${VMDIR}/gui-untrusted.ppm"
 SHOT_FS="${VMDIR}/gui-untrusted-fullscreen.ppm"
 SHOT_OVER="${VMDIR}/gui-untrusted-oversize.ppm"
+SHOT_HEAD="${VMDIR}/gui-second-head.ppm"
 
 # ----------------------------------------------------------------- step 1 --
 step "step 1: install"
@@ -52,8 +58,8 @@ install_disk gui-install "$USB" --vars clean && green "installed" || { red "inst
 
 # ----------------------------------------------------------------- step 2 --
 step "step 2: the desktop, driven"
-rm -f "$SHOT" "$SHOT_FS" "$SHOT_OVER"
-start_vm gui-p2 --net user --gpu --mem 3072
+rm -f "$SHOT" "$SHOT_FS" "$SHOT_OVER" "$SHOT_HEAD"
+start_vm gui-p2 --net user --gpu --second-head --mem 3072
 python3 "$DRV" --serial "$SER" --qmp "$QMP" --timeout 600 \
     "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
     "send:su - root -c 'bash /usr/lib/kryptik/guest-tests/gui-check.sh ${TUSER} 2>&1 | tee /var/log/kryptik/gui-check.log; echo GCHECK-DONE'" \
@@ -70,6 +76,13 @@ python3 "$DRV" --serial "$SER" --qmp "$QMP" --timeout 600 \
     "expect:GT KEY-FOCUS-PERSONAL" "key:alt+j" \
     "type-from:GT CONSENT-CODE 1 ([0-9]+)" \
     "expect:GT CONSENT-WAIT 2" "key:y" "key:ret" \
+    "expect:GT POINTER-ZONE0" "pointer:-4000,-4000" "pointer:120,120" \
+    "expect:GT POINTER-UNTRUSTED" "pointer:-4000,-4000" "pointer:120,120" \
+    "expect:GT HEAD-ON" "head:${HEAD2}:1024x768" \
+    "expect:GT KEY-FOCUS-HEAD\r?\n" "key:alt+dot" \
+    "expect:GT KEY-FOCUS-HEAD-WINDOW" "key:alt+j" \
+    "expect:GT SCREENSHOT-HEAD" "sleep:2" "screendump-head:1:${SHOT_HEAD}" \
+    "expect:GT HEAD-OFF" "head:${HEAD2}:0x0" \
     "expect:GT END" "expect:GCHECK-DONE" \
     "send:su - root -c 'poweroff'" "expect:Password: ?" "send:${RPASS}" \
     "expect:Power down" "wait-exit"
@@ -84,7 +97,9 @@ if [[ -n "$summary" && "${gf:-1}" -eq 0 && "${gp:-0}" -ge 25 ]]; then green "eve
 grep 'GT FAIL' <<<"$T" | sed 's/^/        /'
 for name in session-socket compositor-running chrome-focus-record chrome-window-is-zone0 zone0-sees-capture zone-proxy-path zone-sees-needed zone-hidden-globals zone-bind-refused proxy-logged-refusal \
             map-keeps-zone0-focus focus-shows-zone focus-shows-label title-prefixed last-zone-recorded menu-opens-on-key menu-keeps-last-zone zone-fullscreen-refused compositor-survives-close oversize-window forged-title-named-by-zone second-zone-window zone0-own-programs-only zone-app-in-cgroup no-virtual-input clipboard-isolated clipboard-move-gesture clipboard-moved \
-            transfer-policy no-question-for-policy-refusal consent-code-shown transfer-approved transfer-landed plain-y-refused denied-file-absent; do
+            transfer-policy no-question-for-policy-refusal consent-code-shown transfer-approved transfer-landed plain-y-refused denied-file-absent \
+            second-head-appears chrome-follows-head second-head-zone-window second-head-names-zone second-head-gone compositor-survives-unplug zone-survives-unplug chrome-back-on-first-head \
+            zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown; do
     grep -q "GT PASS ${name}" <<<"$T" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
 
@@ -188,7 +203,9 @@ check_shot "$SHOT_FS" "fullscreen refused" untrusted:focused unzoned:unfocused
 # wlprobe oversize commits a buffer 40 px larger than its configure: the
 # borders must stay above the surface, or its excess covers them.
 check_shot "$SHOT_OVER" "oversized buffer" untrusted:focused unzoned:unfocused
+# The second monitor's own picture: the zone's window alone on it.
+check_shot "$SHOT_HEAD" "second head" untrusted:focused
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
-echo "Guest log: /var/log/kryptik/gui-check.log on ${DISK}; serial transcript ${LOG}; screenshots ${SHOT} ${SHOT_FS} ${SHOT_OVER}"
+echo "Guest log: /var/log/kryptik/gui-check.log on ${DISK}; serial transcript ${LOG}; screenshots ${SHOT} ${SHOT_FS} ${SHOT_OVER} ${SHOT_HEAD}"
 [[ "$FAIL" -eq 0 ]] || exit 1

@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Tests for the git hooks, check-commit-identity.sh and install-git-hooks.sh.
-# Each case commits into a throwaway repository whose core.hooksPath is the
-# real hooks, so git itself runs them. Offline.
+# Tests for the git hooks and their tools, run by git itself in throwaway repositories.
 
 set -uo pipefail
 
@@ -45,8 +43,7 @@ newrepo() {
     git -C "$FIX" config user.name "$ALLOWED_NAME"
     git -C "$FIX" config user.email "$ALLOWED_EMAIL"
     git -C "$FIX" config advice.ignoredHook false
-    # The CRLF case must stage its CR bytes; Git for Windows defaults
-    # core.autocrlf to true, which strips them.
+    # Git for Windows defaults core.autocrlf to true, which strips the CRLF case's CR bytes.
     git -C "$FIX" config core.autocrlf false
     cp "$HOOK" "${FIX}/tools/git-hooks/pre-commit"
     cp "$PUSH_HOOK" "${FIX}/tools/git-hooks/pre-push"
@@ -67,8 +64,7 @@ mode_of() {  # mode_of PATH  (in HEAD)
 
 has() { grep -qE -- "$1" "$OUT"; }
 
-# Positive controls first: a hook that refused everything would pass every
-# refusal case below.
+# Positive controls first: a hook that refused everything would pass every refusal below.
 echo "=== positive controls: the hook must let good commits through ==="
 
 newrepo
@@ -144,13 +140,13 @@ chmod 644 "${FIX}/build/lib/common.sh"
 git -C "$FIX" add build/lib/common.sh
 commit_in "a sourced library"
 if [[ "$(mode_of build/lib/common.sh)" == "100644" ]]; then
-    green "build/lib/common.sh is left at 100644 deliberately"
+    green "build/lib/common.sh, which is sourced, stays 100644"
 else
-    red "build/lib/common.sh is left at 100644 deliberately (got $(mode_of build/lib/common.sh))"
+    red "build/lib/common.sh, which is sourced, stays 100644 (got $(mode_of build/lib/common.sh))"
 fi
 
 echo
-echo "=== the defect this suite exists for: hook files have no .sh suffix ==="
+echo "=== hook files, which have no .sh suffix ==="
 
 newrepo
 printf '#!/usr/bin/env bash\nexit 0\n' > "${FIX}/tools/git-hooks/pre-push"
@@ -175,10 +171,9 @@ else
 fi
 
 echo
-echo "=== and the real repository, which is where it was actually wrong ==="
+echo "=== the repository's own hook ==="
 
-# safe.directory: acceptance runs this as root over a checkout root does not
-# own; git trusts this checkout alone.
+# safe.directory: acceptance runs this as root over a checkout root does not own.
 top="$(cd "$ROOT" && pwd -P)"
 real_mode="$(git -c safe.directory="$top" -C "$top" ls-files -s -- tools/git-hooks/pre-commit | awk '{print $1}')"
 if [[ "$real_mode" == "100755" ]]; then
@@ -188,16 +183,16 @@ else
 fi
 
 echo
-echo "=== refusals, each of which must actually refuse ==="
+echo "=== refusals ==="
 
 newrepo
 printf '#!/usr/bin/env bash\r\necho windows\r\n' > "${FIX}/tools/crlf.sh"
 git -C "$FIX" add tools/crlf.sh
 # The staged blob must carry CR, or the refusal below proves nothing.
 if git -C "$FIX" show :tools/crlf.sh | grep -qU $'\r'; then
-    green "the CRLF fixture really is staged with CR bytes"
+    green "the CRLF fixture is staged with CR bytes"
 else
-    red "the CRLF fixture really is staged with CR bytes"
+    red "the CRLF fixture is staged with CR bytes"
 fi
 commit_in "a CRLF script"
 if [[ "$RC" -ne 0 ]] && has 'contains CRLF'; then
@@ -303,9 +298,9 @@ printf 'prose\n' > "${FIX}/note.md"
 git -C "$FIX" add note.md
 commit_in "with the checker missing"
 if [[ "$RC" -ne 0 ]] && has 'no identity checker'; then
-    green "a hook that cannot find the checker refuses rather than passing"
+    green "a hook that cannot find the checker refuses"
 else
-    red "a hook that cannot find the checker refuses rather than passing (exit ${RC})"; show
+    red "a hook that cannot find the checker refuses (exit ${RC})"; show
 fi
 
 echo
@@ -349,7 +344,7 @@ git -C "$FIX" push -q origin HEAD:refs/heads/main > "$OUT" 2>&1 || RC=$?
 if [[ "$RC" -eq 0 ]]; then green "after --reset-author under the permitted identity, the push succeeds"; else red "after --reset-author under the permitted identity, the push succeeds"; show; fi
 
 echo
-echo "=== install-git-hooks.sh verifies rather than asserting ==="
+echo "=== install-git-hooks.sh checks what it installs ==="
 
 run_installer() {
     RC=0
@@ -375,13 +370,12 @@ else
 fi
 if has 'COMMIT THAT CHANGE'; then green "and says the correction must be committed"; else red "and says the correction must be committed"; show; fi
 if has 'confirmed runnable'; then green "success is phrased as confirmed, not assumed"; else red "success is phrased as confirmed, not assumed"; show; fi
-if has 'core.hooksPath = tools/git-hooks'; then green "and reports the path it actually configured"; else red "and reports the path it actually configured"; show; fi
+if has 'core.hooksPath = tools/git-hooks'; then green "and reports the path it configured"; else red "and reports the path it configured"; show; fi
 
 newrepo
 chmod 644 "${FIX}/tools/git-hooks/pre-commit"
 run_installer
-# The installer chmods +x first, so this normally recovers; it must never
-# claim success while the hook is not executable.
+# The installer chmods +x first, so this recovers; it must never claim success otherwise.
 if [[ "$RC" -eq 0 ]] && [[ -x "${FIX}/tools/git-hooks/pre-commit" ]]; then
     green "a non-executable hook is made executable before success is claimed"
 elif [[ "$RC" -ne 0 ]] && has 'git will IGNORE it'; then

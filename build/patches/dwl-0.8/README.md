@@ -1,4 +1,4 @@
-# dwl 0.8: a window closed with its decoration still alive no longer crashes dwl
+# dwl 0.8: a window closing with its decoration alive does not crash dwl
 
 Applied by `s_dwl` in stage 04 through `apply_repo_patches`, before
 `tools/desktop/dwl-zone-borders.py`; `SHA256SUMS` is verified before anything
@@ -8,10 +8,10 @@ dwl 0.8 frees a client in `destroynotify` without removing the two listeners
 it put on the client's xdg-decoration, and `destroydecoration` leaves
 `c->decoration` set. When a client disconnects, wlroots destroys its toplevel
 first: `destroynotify` frees the client, then the decoration is destroyed and
-its destroy signal walks into the freed listeners. Under glibc the freed
-memory still held the old links, so nothing showed. The image preloads
-hardened_malloc, which does not keep them: dwl died the first time a zone's
-havoc window closed, and every later window, in any zone, found no display.
+its destroy signal walks into the freed listeners. glibc leaves the old links
+in freed memory, so nothing shows. hardened_malloc, which the image preloads,
+does not: dwl dies the first time a zone's window closes, and every later
+window, in any zone, finds no display.
 
 Both patches are upstream's, generated with `git format-patch` and unchanged;
 they apply to the 0.8 tarball with a one-line offset:
@@ -24,14 +24,14 @@ they apply to the 0.8 tarball with a one-line offset:
 
 Checked on headless dwl 0.8 with wlroots 0.19.3 and hardened_malloc 14
 preloaded: without the patches dwl dies of SIGSEGV when a havoc window's
-client disconnects, with them it carries on. The desktop suite's
+client disconnects; with them it carries on. The desktop suite's
 `compositor-survives-close` checks the same on the image. Delete this
 directory when the dwl pin moves to a release that contains both commits.
 
-Reviewed and not carried: upstream 4847f97 ("Clear surface->data on unmap
-to fix idle-inhibitor use-after-free"). No zone can create an idle inhibitor,
-since the proxy does not offer the protocol, and under hardened_malloc the
-freed scene tree `checkidleinhibitor` reads is zeroed, so its parent is NULL
-and the read is harmless; a zone-0 client that inhibits, drops its toplevel
-and keeps the surface does not crash dwl with or without it. Take it with the
-next dwl release rather than as a patch.
+Not carried: upstream 4847f97 ("Clear surface->data on unmap to fix
+idle-inhibitor use-after-free"). No zone can create an idle inhibitor, since
+the proxy does not offer the protocol, and under hardened_malloc the freed
+scene tree `checkidleinhibitor` reads is zeroed, so its parent is NULL and the
+read is harmless; a zone 0 client that inhibits, drops its toplevel and keeps
+the surface does not crash dwl with or without it. It comes with the next dwl
+release.

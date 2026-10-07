@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-# glibc: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
-# glibc, rebuilt natively with the hardening flags (stage 01's was built
-# without). After python, which glibc's configure requires.
+# glibc rebuilt with the hardening flags; after python, which its configure requires.
 s_glibc() {
     local src; src="$(unpack "glibc-${V_GLIBC}.tar.xz" "glibc-${V_GLIBC}")"
     cd "$src"
@@ -11,9 +8,7 @@ s_glibc() {
     local fhs="${KRYPTIK_SOURCES}/glibc-${V_GLIBC}-fhs-1.patch"
     [[ -f "$fhs" ]] && patch -Np1 -i "$fhs"
 
-    # build/patches/glibc-2.40 (see its README): upstream's release/2.40/master
-    # branch plus the bug 33088 fix, without which ld.so records its own map at
-    # address 0 and unwinding aborts. The two checks below catch its return.
+    # release/2.40 plus the bug 33088 fix (see the README), without which unwinding aborts.
     apply_repo_patches "glibc-${V_GLIBC}"
 
     mkdir -p build
@@ -21,11 +16,7 @@ s_glibc() {
     echo "rootsbindir=/usr/sbin" > configparms
 
     # --enable-stack-protector=strong: glibc builds its own stack protection.
-    # --enable-cet: glibc compiles its CET support only when GCC defines __CET__
-    # by default (Kryptik's does not), yet -fcf-protection=full in CFLAGS makes
-    # rtld call it, so the link fails on _dl_cet_*. Dropping the flag instead
-    # would leave the loader, which arms IBT and shadow stacks for everything,
-    # without CET. Activation still depends on the CPU and kernel.
+    # --enable-cet: CFLAGS' -fcf-protection makes rtld call _dl_cet_*, built only with this flag.
     ../configure \
         --prefix=/usr \
         --disable-werror \
@@ -36,8 +27,7 @@ s_glibc() {
         libc_cv_slibdir=/usr/lib
     make
 
-    # Upstream's check for bug 33088 (the test suite is not run): rtld must not
-    # reach __ehdr_start or _end through a run-time relocation.
+    # Upstream's bug 33088 check, since the test suite is not run.
     echo "--- run-time relocations against __ehdr_start or _end in rtld.os ---"
     local rtld_relocs
     rtld_relocs="$(readelf -rW elf/rtld.os | grep -E 'R_X86_64_64.*(__ehdr_start|_end)' || true)"
@@ -50,8 +40,7 @@ s_glibc() {
     fi
     echo "  ok: none"
 
-    # Skip glibc's test-installation script, as LFS does: it fails in a partly
-    # built system.
+    # Skip the test-installation script, as LFS does: it fails in a partly built system.
     sed '/test-installation/s@$(PERL)@true@' -i ../Makefile
     touch /etc/ld.so.conf
     make install
@@ -65,8 +54,7 @@ s_glibc() {
     grep -a -m1 -o "GNU C Library.*" /usr/lib/libc.so.6 || \
         echo "(no GNU C Library banner found - check the install)"
 
-    # Without the CET property note the loader arms IBT and shadow stacks for
-    # nothing.
+    # Without the CET property note the loader arms IBT and shadow stacks for nothing.
     echo "--- CET in the dynamic loader ---"
     local ldso=/usr/lib/ld-linux-x86-64.so.2
     if [[ -e "$ldso" ]]; then
@@ -86,9 +74,7 @@ s_glibc() {
         return 1
     fi
 
-    # The runtime form of that check: LD_TRACE_LOADED_OBJECTS (what ldd runs)
-    # prints each map start, and with bug 33088 the loader's is 0.
-    # tools/tests/libc-unwind.sh tests the consequence on the whole system.
+    # The runtime check: LD_TRACE_LOADED_OBJECTS prints map starts, and with bug 33088 ld.so's is 0.
     echo "--- the loader's own map start ---"
     local trace ldso_start
     trace="$(LD_TRACE_LOADED_OBJECTS=1 /usr/bin/bash 2>&1 || true)"

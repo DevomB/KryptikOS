@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-# Tests for the medium's control-disk check (build/service-scripts/testctl.sh)
-# and the tool that makes a control disk (tools/image/mk-testctl.sh): a file
-# is honoured only with a signature by the kryptik-testctl key the anchor
-# lists, in that key's namespace. Offline, with throwaway keys; the disk image
-# itself is made only where mtools and sfdisk are.
+# The medium's control-disk check (build/service-scripts/testctl.sh) and tools/image/mk-testctl.sh:
+# a file counts only when signed by the anchor's kryptik-testctl key, in its namespace.
 
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

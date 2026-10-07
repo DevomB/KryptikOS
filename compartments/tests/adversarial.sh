@@ -1,13 +1,6 @@
 #!/usr/bin/env bash
-# The isolation exit test: as root inside an `untrusted` zone it must be
-# impossible to 1. list another zone's processes, 2. read another zone's files,
-# 3. reach the physical NIC, 4. read the vault (the four in compartments/README.md)
-# or 5. reach dangerous syscalls, since a kernel LPE compromises every zone at
-# once (docs/threat-model.md).
-#
-# Runs on any host with user namespaces: unshare(1) with kryptikd's namespace
-# set (isolate.rs), and kryptikd itself for Landlock and seccomp. Exits 0 only
-# when every check passes.
+# Isolation exit test: root in `untrusted` attacks other zones, the NIC, the vault and the kernel.
+# Needs user namespaces; uses unshare(1) and kryptikd. Exits 0 only when every check passes.
 
 set -uo pipefail
 
@@ -31,8 +24,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# kryptikd's namespace set for a non-NIC zone, as in isolate.rs::namespace_flags;
-# the consistency check below compares them.
+# isolate.rs::namespace_flags for a non-NIC zone; the consistency check compares the two.
 ZONE_UNSHARE=(--user --map-root-user --pid --mount --ipc --uts --net --fork)
 
 printf '%sKryptik isolation exit test — adversarial%s\n' "$C_BLU" "$C_RST"
@@ -53,15 +45,8 @@ if ! unshare --user --map-root-user true 2>/dev/null; then
     # Ubuntu 24.04+ and some hardened kernels block this by default.
     restrict="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo "")"
     if [[ "$restrict" == "1" ]]; then
-        info ""
-        info "kernel.apparmor_restrict_unprivileged_userns=1 on this host."
-        info "Ubuntu 24.04+ sets this because unprivileged userns is a known"
-        info "LPE vector. To run this test:"
+        info "kernel.apparmor_restrict_unprivileged_userns=1 on this host. To run this test:"
         info "  sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0"
-        info ""
-        info "Kryptik agrees with the restriction, incidentally: it sets"
-        info "CONFIG_USER_NS_UNPRIVILEGED=n, because kryptikd creates zones"
-        info "with privilege and nothing inside a zone needs to."
     fi
     max_ns="$(sysctl -n user.max_user_namespaces 2>/dev/null || echo "")"
     if [[ "$max_ns" == "0" ]]; then
@@ -107,8 +92,7 @@ info "planted: $(basename "$OTHER_ZONE_SECRET"), $(basename "$VAULT_SECRET")"
 
 head_ "Requirement 1 — cannot list processes in another zone"
 
-# Without --mount-proc the zone keeps the host's /proc, pid namespace or not.
-# It may see its own processes, just no one else's.
+# Without --mount-proc the zone keeps the host's /proc, whatever its pid namespace.
 visible="$(unshare "${ZONE_UNSHARE[@]}" --mount-proc bash -c 'ls /proc | grep -c "^[0-9]*$"' 2>/dev/null)"
 # Every /proc entry starting with a digit is a pid; a glob starts no process.
 host_pids=0
@@ -119,7 +103,6 @@ else
     fail "zone sees ${visible:-?} pids (host has ${host_pids}) - pid namespace is not isolating"
 fi
 
-# The zone's pid 1 must be its own init, not the host's.
 zone_init="$(unshare "${ZONE_UNSHARE[@]}" --mount-proc bash -c 'cat /proc/1/comm' 2>/dev/null)"
 host_init="$(cat /proc/1/comm 2>/dev/null)"
 if [[ -n "$zone_init" ]] && [[ "$zone_init" != "$host_init" ]]; then
@@ -145,9 +128,7 @@ fi
 
 head_ "Requirement 3 — cannot reach the physical NIC"
 
-# Devices the kernel puts in every netns, which the zone neither asked for nor
-# can remove; the same list as launcher.sh. The netns is probed directly: /sys
-# disagrees with it until remounted (below).
+# Devices every netns gets and a zone cannot remove; the same list as launcher.sh.
 KERNEL_FALLBACK_IFS="sit0"
 
 ifaces="$(unshare "${ZONE_UNSHARE[@]}" bash -c 'ip -o link show 2>/dev/null | sed "s/^[0-9]*: //; s/[:@].*//"' 2>/dev/null | tr '\n' ' ' | xargs)"
@@ -164,9 +145,7 @@ else
     pass "zone network namespace contains only loopback (found: ${ifaces})"
 fi
 
-# A fallback device that can be deleted inside the netns is for kryptikd to
-# delete, not for the kernel config. Each unshare makes a fresh netns, so the
-# delete and its listing share one.
+# A deletable fallback device is kryptikd's job, not the kernel's; delete and list in one netns.
 for d in $adv_fallback; do
     delmsg="$(unshare "${ZONE_UNSHARE[@]}" bash -c "ip link del $d 2>&1 | head -1" 2>/dev/null)"
     after="$(unshare "${ZONE_UNSHARE[@]}" bash -c "ip link del $d >/dev/null 2>&1; ip -o link show 2>/dev/null | sed 's/^[0-9]*: //; s/[:@].*//'" 2>/dev/null | tr '\n' ' ' | xargs)"
@@ -179,8 +158,7 @@ for d in $adv_fallback; do
     fi
 done
 
-# Without a sysfs remount the zone reads the host's /sys/class/net: it cannot
-# use those interfaces, but it learns the topology.
+# Without a sysfs remount the zone cannot use the host's interfaces but learns their names.
 sys_before="$(unshare "${ZONE_UNSHARE[@]}" bash -c 'ls /sys/class/net 2>/dev/null' 2>/dev/null | tr '\n' ' ' | xargs)"
 sys_after="$(unshare "${ZONE_UNSHARE[@]}" bash -c 'mount -t sysfs sysfs /sys 2>/dev/null; ls /sys/class/net 2>/dev/null' 2>/dev/null | tr '\n' ' ' | xargs)"
 # Only host devices fail it; lo and the fallback devices are expected.
@@ -209,15 +187,13 @@ fi
 
 head_ "Requirement 2 — cannot read another zone's filesystem"
 
-# Negative control: a mount namespace copies the mount table and gives no
-# private view of the files, so namespaces alone leave other zones readable.
+# Negative control: a mount namespace only copies the mount table, so it hides no file.
 if unshare "${ZONE_UNSHARE[@]}" cat "$OTHER_ZONE_SECRET" >/dev/null 2>&1; then
     info "control: with namespaces ALONE the zone can read ${OTHER_ZONE_SECRET##*/}"
     info "         a mount namespace is not filesystem isolation"
 fi
 
-# Landlock, applied by kryptikd itself. tools/run-tests.sh exports KRYPTIKD;
-# run directly, the suite uses the default build paths.
+# tools/run-tests.sh exports KRYPTIKD; run directly, the suite looks in the build tree.
 if [[ -z "${KRYPTIKD:-}" || ! -x "${KRYPTIKD:-}" ]]; then
     KRYPTIKD="$(dirname "${BASH_SOURCE[0]}")/../kryptikd/target/debug/kryptikd"
     [[ -x "$KRYPTIKD" ]] || KRYPTIKD="$(dirname "${BASH_SOURCE[0]}")/../kryptikd/target/release/kryptikd"
@@ -231,8 +207,7 @@ else
     mkdir -p "$ZONE_ROOT"
     echo "this zone's own data" > "${ZONE_ROOT}/mine.txt"
 
-    # Control: the zone must still read its own files, or "blocked" below
-    # proves nothing.
+    # Control: the zone must still read its own files, or "blocked" below proves nothing.
     "$KRYPTIKD" confine-test "$ZONE_ROOT" "${ZONE_ROOT}/mine.txt" >/dev/null 2>&1
     own_rc=$?
     if [[ "$own_rc" -eq 0 ]]; then
@@ -264,15 +239,13 @@ else
         0) fail "confined zone read vault content - Landlock did not confine" ;;
         *) fail "vault confinement test errored (rc=${vault_rc})" ;;
     esac
-    info "In a real Kryptik system the vault has a second, independent control:"
-    info "its LUKS2 volume is not unlocked at all while other zones run, so"
-    info "there is no plaintext to reach even if Landlock were bypassed."
+    info "on Kryptik the vault's LUKS2 volume is also closed whenever the vault zone is not running"
 fi
 
 # --- requirement 5: kernel attack surface -----------------------------------
-# All zones share one kernel; seccomp raises the cost of finding an LPE in it.
 
 head_ "Requirement 5 — cannot reach the kernel's dangerous syscalls"
+# All zones share one kernel; seccomp raises the cost of finding an LPE in it.
 
 if [[ ! -x "${KRYPTIKD:-}" ]]; then
     fail "kryptikd not built - cannot test seccomp"
@@ -288,9 +261,9 @@ else
         fail "the filter blocks syscalls a zone needs - over-restrictive"
     fi
 
-    # setns alone would step into another zone's namespaces, defeating 1-4.
+    # setns alone would step into another zone's namespaces.
     leaked=0
-    for sc in setns ptrace unshare mount bpf perf_event_open userfaultfd \
+    for sc in setns ptrace mount bpf perf_event_open userfaultfd \
               keyctl init_module kexec_load process_vm_readv pivot_root chroot; do
         "$KRYPTIKD" seccomp-test "$sc" >/dev/null 2>&1
         rc=$?
@@ -301,9 +274,29 @@ else
     done
 
     if [[ "$leaked" -eq 0 ]]; then
-        pass "all 13 dangerous syscalls killed by SIGSYS (setns among them)"
+        pass "all 12 dangerous syscalls killed by SIGSYS (setns among them)"
     else
         fail "${leaked} dangerous syscall(s) reachable from inside a zone"
+    fi
+
+    # unshare(2) and a namespace clone fail with EPERM instead: programs probe
+    # for user namespaces and must hear no, as the kernel tells an unprivileged
+    # caller. This host lets the suite make one (the preconditions), so EPERM
+    # here is the filter's, and exit 7 means no namespace was made.
+    nested=0
+    for p in unshare-newuser clone-newuser; do
+        "$KRYPTIKD" seccomp-test "$p" >/dev/null 2>&1
+        rc=$?
+        if [[ "$rc" -ne 7 ]]; then
+            echo "      ${p} was NOT refused with EPERM (rc=${rc})"
+            nested=$((nested + 1))
+        fi
+    done
+
+    if [[ "$nested" -eq 0 ]]; then
+        pass "unshare(2) and clone(CLONE_NEWUSER) fail with EPERM and make no namespace"
+    else
+        fail "${nested} namespace-creating call(s) not refused with EPERM"
     fi
 fi
 
@@ -324,13 +317,16 @@ if [[ -f "$ISOLATE_RS" ]]; then
             grep -qF "\"${m}\"" "$ROOTFS_RS" || { echo "    kryptikd rootfs build is missing ${m}"; missing=1; }
         done
     else
-        # The image ships rootfs.rs for this check, so its absence is reported.
-        info "rootfs.rs not shipped beside this suite; the proc/sysfs mount check did not run"
+        # The image ships each source this reads: one that is absent leaves
+        # its check unrun, which is not a match.
+        echo "    rootfs.rs is not beside this suite: the proc/sysfs mount check did not run"; missing=1
     fi
     # The seccomp filter must default-deny, so it needs a kill action.
     SECCOMP_RS="$(dirname "${BASH_SOURCE[0]}")/../kryptikd/src/seccomp.rs"
     if [[ -f "$SECCOMP_RS" ]]; then
-        grep -q "SECCOMP_RET_KILL_PROCESS" "$SECCOMP_RS"             || { echo "    seccomp filter has no kill action"; missing=1; }
+        grep -q "SECCOMP_RET_KILL_PROCESS" "$SECCOMP_RS" || { echo "    seccomp filter has no kill action"; missing=1; }
+    else
+        echo "    seccomp.rs is not beside this suite: the kill-action check did not run"; missing=1
     fi
     if [[ "$missing" -eq 0 ]]; then
         pass "kryptikd declares every namespace this test exercises"
@@ -338,7 +334,7 @@ if [[ -f "$ISOLATE_RS" ]]; then
         fail "kryptikd namespace set does not match this test"
     fi
 else
-    info "isolate.rs not found; skipping consistency check"
+    fail "isolate.rs is not beside this suite: the consistency check did not run"
 fi
 
 # --- summary ----------------------------------------------------------------
@@ -350,9 +346,7 @@ printf '  failed: %d\n' "$FAIL"
 if [[ "$FAIL" -gt 0 ]]; then
     printf '\n%sUnmet requirements:%s\n' "$C_YEL" "$C_RST"
     printf '  - %s\n' "${FAILED[@]}"
-    printf '\n%sThe compartment layer is NOT complete.%s\n' "$C_YEL" "$C_RST"
-    printf 'This is the expected result while the compartment layer is being\n'
-    printf 'built. The failures above are the specification for what remains.\n'
+    printf '\n%sNot every isolation exit requirement holds.%s\n' "$C_YEL" "$C_RST"
     exit 1
 fi
 

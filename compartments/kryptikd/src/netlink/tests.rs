@@ -1,8 +1,7 @@
 use super::*;
 use std::fs;
 
-/// Run `body` in a forked child in a fresh user and network namespace.
-/// Returns its exit code, or 77 when no user namespace could be created.
+/// Run `body` in a forked child in fresh user and network namespaces; 77 if they cannot be made.
 pub(crate) fn in_userns_netns(body: impl FnOnce() -> i32) -> i32 {
     let pid = unsafe { libc::fork() };
     assert!(pid >= 0);
@@ -68,9 +67,7 @@ fn hwsim_netdev() -> Option<String> {
     found.into_iter().next()
 }
 
-/// Root and mac80211_hwsim only. The netdev alone gets EINVAL; the wiphy
-/// move carries it, same name, into the holder, and cfg80211 returns it
-/// to the initial namespace when the holder dies.
+/// Root and mac80211_hwsim only; the wiphy returns to the initial namespace when its holder dies.
 #[test]
 fn wireless_moves_by_wiphy() {
     use std::process::Command;
@@ -100,7 +97,6 @@ fn wireless_moves_by_wiphy() {
             panic!("{dev}: no wiphy index ({other:?})");
         }
     };
-    // The netdev alone must refuse: that refusal is why the wiphy path exists.
     let (holder, zone_ns) = match spawn_netns_holder() {
         Ok(v) => v,
         Err(c) => {
@@ -109,6 +105,7 @@ fn wireless_moves_by_wiphy() {
         }
     };
     let r: Result<(), String> = (|| {
+        // The netdev alone must refuse: that refusal is why the wiphy path exists.
         match set_netns(&dev, zone_ns) {
             Err(e) if e.raw_os_error() == Some(libc::EINVAL) => {}
             Err(e) => return Err(format!("RTM_SETLINK on {dev}: expected EINVAL, got {e}")),
@@ -148,8 +145,7 @@ fn wireless_moves_by_wiphy() {
 
 #[test]
 fn message_layout_matches_kernel() {
-    /* ifinfomsg is 16 bytes, attributes are 4-aligned, a nested length
-     * covers its payload, and the header length is the total. */
+    // ifinfomsg is 16 bytes, attributes 4-aligned, and a nest's length covers its payload.
     let mut m = Msg::new(RTM_NEWLINK, NLM_F_CREATE, 7);
     m.ifinfomsg(0, 0, 0, 0);
     m.attr_str(IFLA_IFNAME, "ab"); // 4 + 3 = 7 -> padded to 8
@@ -185,8 +181,7 @@ fn address_plan_is_fixed() {
     assert!(check_name("a/b").is_err());
 }
 
-/// Fork a child that unshares a network namespace and waits to be killed.
-/// Returns (pid, netns fd); the caller's user namespace owns the namespace.
+/// Fork a child that holds a new netns, owned by the caller's user namespace, until killed.
 pub(crate) fn spawn_netns_holder() -> Result<(libc::pid_t, RawFd), i32> {
     let mut p = [0 as RawFd; 2];
     if unsafe { libc::pipe(p.as_mut_ptr()) } < 0 {
@@ -272,8 +267,7 @@ fn udp_received(fd: RawFd) -> bool {
     unsafe { libc::recv(fd, b.as_mut_ptr() as *mut libc::c_void, b.len(), 0) > 0 }
 }
 
-/// Veth, addresses, bridge, port and routes in a private namespace, plus
-/// two refusals (duplicate address and name) that show requests are acked.
+/// Veth, addresses, bridge, port and routes; refused duplicates show that requests are acked.
 #[test]
 fn veth_bridge_addresses_routes() {
     let rc = in_userns_netns(|| {
@@ -361,7 +355,6 @@ fn isolated_ports_block_zone_to_zone() {
         let r: Result<(), i32> = (|| {
             let (gc1, ns1) = spawn_netns_holder()?;
             let (gc2, ns2) = spawn_netns_holder()?;
-            let _kill = (gc1, gc2);
             step(40, create_bridge("kryptik0"))?;
             step(41, set_up("kryptik0"))?;
             step(42, add_addr4("kryptik0", [10, 99, 0, 254], 24))?;
@@ -401,8 +394,7 @@ fn isolated_ports_block_zone_to_zone() {
             }
             step(52, set_port_isolated("kv-z1", false))?;
             step(53, set_port_isolated("kv-z2", false))?;
-            /* The unanswered ARP request left the neighbour entry in
-             * retransmit backoff (about 1 s); keep sending for up to 3 s. */
+            // The unanswered ARP left the neighbour in backoff (about 1 s): retry for up to 3 s.
             let mut delivered = false;
             for _ in 0..10 {
                 udp_send(tx1, [10, 99, 0, 2], 9999);

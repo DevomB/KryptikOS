@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# Stage 06, chroot half: relink bzImage with images/cmdlines/VARIANT.txt as its
-# built-in command line, into images/kernels/VARIANT.efi for the host to sign.
-# Not a fragment setting: the line carries the verity root hash, which exists
-# only once the root image, holding this kernel's modules, is built.
+# Stage 06, chroot half: relink bzImage with images/cmdlines/VARIANT.txt built in, for the host to sign.
+# Not a fragment setting: the line holds the verity root hash, known only once the root image is built.
 #   03-chroot-prep.sh run /kryptik/build/stages/06-kernel-bind.sh VARIANT...
 set -Eeuo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"

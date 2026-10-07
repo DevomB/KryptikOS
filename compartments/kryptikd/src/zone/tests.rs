@@ -109,6 +109,24 @@ fn persistent_zone_needs_no_volume() {
 }
 
 #[test]
+fn transfer_limit_within_cap() {
+    let with = |v: &str| VAULT.replace("[ui]", &format!("[transfer]\nmax_bytes = {v}\n[ui]"));
+    // A zone that sends nothing may still bound what it receives.
+    for (v, want) in [("1", 1), ("4096", 4096), ("1073741824", 1 << 30), ("\"65536\"", 65536)] {
+        assert_eq!(Zone::from_str(&with(v)).unwrap().transfer_max, Some(want), "{v}");
+    }
+    for v in ["0", "1073741825", "18446744073709551616", "\"-5\"", "\"+5\"", "\"1.5\"", "\"64M\"", "\"\"", "true"] {
+        let err = Zone::from_str(&with(v)).unwrap_err();
+        assert!(format!("{err}").contains("transfer.max_bytes"), "{v}: {err}");
+    }
+    // A bare sign or point is refused before the value is read.
+    for v in ["-5", "1.5"] {
+        assert!(Zone::from_str(&with(v)).is_err(), "{v}");
+    }
+    assert_eq!(Zone::from_str(VAULT).unwrap().transfer_max, None);
+}
+
+#[test]
 fn persistent_zone_refuses_size() {
     let e = persistent("size = \"512M\"\n").expect_err("size must be refused");
     let m = e.to_string();
@@ -173,6 +191,10 @@ fn only_nic_zone_names_interface() {
     assert!(format!("{err}").contains("only meaningful"), "got: {err}");
     let bad = VAULT.replace("mode = \"none\"", "mode = \"nic\"\nnic = \"averylongname123\"");
     assert!(Zone::from_str(&bad).is_err());
+    for odd in ["eth\0x", "eth0:1", "..", "eth\u{1b}0", "eth 0", "eth\u{e9}"] {
+        let bad = VAULT.replace("mode = \"none\"", &format!("mode = \"nic\"\nnic = \"{odd}\""));
+        assert!(Zone::from_str(&bad).is_err(), "{odd:?} must be refused");
+    }
 }
 
 #[test]

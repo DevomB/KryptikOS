@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
-# tools/audit-setuid.sh on a staged tree: it fails on a setuid or setgid file
-# the allowlist does not name, and with --strip takes the bit off each such
-# file and leaves the named ones alone. Run against a copy of the script beside
-# a test allowlist. No root: a user may set these bits on their own files.
+# Tests for tools/audit-setuid.sh, copied beside a test allowlist; a user may setuid its own files.
 set -uo pipefail
-# An exported KRYPTIK_ROOT, as acceptance sets, would point the copy at the
-# repository's own allowlist.
+# An exported KRYPTIK_ROOT (acceptance sets one) would point the copy at the real allowlist.
 unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PASS=0; FAIL=0
@@ -13,8 +9,7 @@ ok()  { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
 bad() { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
 
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
-# The audit's own temporary file goes here too: under unshare -r, a TMPDIR
-# owned by a user the namespace does not map is not writable, even by its root.
+# Under unshare -r, a TMPDIR owned by an unmapped user is unwritable, even by the namespace's root.
 export TMPDIR="$T"
 mkdir -p "$T/repo/tools" "$T/repo/build/lib" "$T/repo/build/config" "$T/root/usr/bin"
 cp "$ROOT/tools/audit-setuid.sh" "$T/repo/tools/"
@@ -38,30 +33,26 @@ out="$(audit --strip "$T/root")"; rc=$?
 [[ "$(mode su)/$(mode ls)" == 4755/755 ]] && ok "the listed file keeps it, and a plain file is untouched" || bad "after --strip: su $(mode su), ls $(mode ls)"
 audit "$T/root" > /dev/null && ok "the stripped tree passes the audit" || bad "the stripped tree still fails the audit"
 
-# A root named with a trailing slash, or through a symlink, is the same root:
-# the listed file is still recognised, not stripped as unknown.
+# A root named with a trailing slash or through a symlink is the same root.
 chmod 4755 "$T/root/usr/bin/mount"; ln -s root "$T/link"
 out="$(audit --strip "$T/link/")"; rc=$?
 [[ "$rc" -eq 0 && "$(mode su)/$(mode mount)" == 4755/755 ]] \
     && ok "a trailing slash and a symlinked root keep the listed file's bit" || bad "trailing slash: rc=$rc su $(mode su) mount $(mode mount): $out"
 
-# --strip refuses this machine's root before looking at it. A stand-in chmod
-# records any attempt, so a broken refusal changes nothing here either.
+# --strip refuses this machine's root; a stand-in chmod records any attempt and changes nothing.
 mkdir -p "$T/bin"; printf '#!/bin/sh\necho "$@" >> "%s/chmod-called"; exit 1\n' "$T" > "$T/bin/chmod"; chmod 755 "$T/bin/chmod"
 out="$(PATH="$T/bin:$PATH" audit --strip /)"; rc=$?
 [[ "$rc" -ne 0 && "$out" == *"never this machine"* && ! -e "$T/chmod-called" ]] \
     && ok "--strip refuses /" || bad "--strip /: rc=$rc: $out"
 
-# A stripped name that is a hard link to a listed binary took the bit off the
-# listed one too; the strip says so and fails.
+# Stripping a hard link to a listed binary strips the listed one too, so the strip fails.
 ln "$T/root/usr/bin/su" "$T/root/usr/bin/su2"
 out="$(audit --strip "$T/root")"; rc=$?
 [[ "$rc" -ne 0 && "$out" == *"/usr/bin/su lost its bit"* ]] \
     && ok "stripping a hard link to a listed binary fails, naming it" || bad "hard link: rc=$rc: $out"
 rm -f "$T/root/usr/bin/su2"; chmod 4755 "$T/root/usr/bin/su"
 
-# The last entry counts without a newline after it; a missing list strips
-# nothing, since by it every binary would lose its bit.
+# A last entry with no newline still counts; a missing list strips nothing.
 L="$T/repo/build/config/setuid-allowlist.txt"
 printf '# test\n/usr/bin/su   # why' > "$L"
 chmod 4755 "$T/root/usr/bin/mount"
@@ -74,8 +65,7 @@ out="$(audit --strip "$T/root")"; rc=$?
     && ok "--strip without an allowlist refuses, and changes nothing" || bad "no allowlist: rc=$rc su $(mode su) mount $(mode mount): $out"
 mv "$L.away" "$L"; chmod 755 "$T/root/usr/bin/mount"
 
-# An entry without a justification refuses the audit before it looks at any
-# file, so a list that does not say why strips nothing.
+# An entry without a justification refuses the audit before any file is touched.
 printf '# test\n/usr/bin/su\n' > "$L"
 chmod 4755 "$T/root/usr/bin/mount"
 out="$(audit --strip "$T/root")"; rc=$?
@@ -83,9 +73,7 @@ out="$(audit --strip "$T/root")"; rc=$?
     && ok "an entry without a justification refuses the audit, and nothing is stripped" || bad "no justification: rc=$rc su $(mode su) mount $(mode mount): $out"
 printf '# test\n/usr/bin/su   # why\n' > "$L"; chmod 755 "$T/root/usr/bin/mount"
 
-# A bind mount of / is this machine's / as much as / is. It is made in a mount
-# namespace of the check's own, so it ends with the check and never outlives
-# it under $T, where the cleanup would walk into it.
+# A bind mount of / is still /; a private mount namespace keeps it out of $T's cleanup.
 mkdir -p "$T/slash"
 if unshare -rm mount --rbind / "$T/slash" 2>/dev/null; then
     out="$(PATH="$T/bin:$PATH" NO_COLOR=1 unshare -rm bash -c 'mount --rbind / "$1" && bash "$2" --strip "$1"' _ "$T/slash" "$T/repo/tools/audit-setuid.sh" 2>&1)"; rc=$?
@@ -95,8 +83,7 @@ else
     printf '  SKIP  --strip refuses a bind mount of / (no mount namespace here)\n'
 fi
 
-# File capabilities, the other way a file is given privilege. Setting or
-# removing one needs CAP_SETFCAP, which a user has in a namespace of its own.
+# File capabilities: setting or removing one needs CAP_SETFCAP, which a user namespace grants.
 printf '# test\n/usr/bin/capok   # why\n' > "$T/repo/build/config/capability-allowlist.txt"
 setcap_ns() {   # setcap_ns FILE: cap_net_raw+ep on FILE, set from a user namespace
     unshare -r python3 -c 'import os, struct, sys; os.setxattr(sys.argv[1], "security.capability", struct.pack("<5I", 0x02000001, 1 << 13, 0, 0, 0))' "$1" 2>/dev/null
@@ -120,8 +107,7 @@ else
     printf '  SKIP  file capabilities (no user namespace to set one in)\n'
 fi
 
-# A directory the audit cannot read could hide a binary: that is a failure.
-# Root reads every directory, so this holds only for a user.
+# An unreadable directory could hide a binary, so it fails the audit; root reads them all.
 if [[ "$(id -u)" -ne 0 ]]; then
     mkdir "$T/root/locked"; chmod 000 "$T/root/locked"
     out="$(audit "$T/root")"; rc=$?

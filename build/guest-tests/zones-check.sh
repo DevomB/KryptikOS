@@ -35,8 +35,7 @@ else
 fi
 zones="$("$KD" list --zones "$Z" 2>/dev/null | tr '\n' ' ')"
 [[ "$zones" == *work* && "$zones" == *net* && "$zones" == *vault* && "$zones" == *untrusted* ]] && pass "shipped-zones" "$zones" || fail "shipped-zones" "$zones"
-for p in "$Z"/policy/*.seccomp; do [[ -f "$p" ]] || fail "policies" "no policy files"; done
-[[ -f "$Z/policy/work.seccomp" ]] && pass "policies" "seccomp policies installed beside the zones"
+[[ -f "$Z/policy/work.seccomp" ]] && pass "policies" "seccomp policies installed beside the zones" || fail "policies" "no work.seccomp in $Z/policy"
 
 # --- zones: the net zone and zone 0 --------------------------------------------
 if [[ "$(s6-svstat -o up /run/service/net-zone 2>/dev/null)" = true ]]; then pass "net-zone-up" "supervised and up"; else fail "net-zone-up" "$(s6-svstat /run/service/net-zone 2>&1)"; fi
@@ -76,6 +75,53 @@ PY'
 [[ "$ZOUT" == *BRIDGE6-OK* ]] && pass "routed-ipv6-bridge" || fail "routed-ipv6-bridge"
 [[ "$ZOUT" == *PING6-OK* ]] && pass "routed-ping6" "ping reaches the bridge over IPv6" || fail "routed-ping6" "$(grep -o 'PING6-FAIL.*' "$LOG/untrusted.out")"
 [[ "$ZOUT" == *DNS-ANSWERED* ]] && pass "routed-dns" "$(grep -o 'DNS-ANSWERED.*' "$LOG/untrusted.out")" || fail "routed-dns" "$(grep -o 'DNS-.*' "$LOG/untrusted.out")"
+
+# The lease reaches the zone's resolv.conf: every server the resolver forwards
+# to comes from there, and under QEMU the stand-in is the lease's own server,
+# so a hook that wrote nothing would go unseen without this.
+net_init="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
+netsh() { nsenter -t "${net_init:-0}" -m sh -c "$1" 2>&1; }
+lease_dns="$(netsh 'grep "^nameserver" /etc/resolv.conf')"
+if [[ "$lease_dns" == nameserver* ]]; then
+    pass "net-lease-names-resolver" "the net zone's resolv.conf: $(tr '\n' ' ' <<<"$lease_dns")"
+else
+    fail "net-lease-names-resolver" "the net zone's resolv.conf names no server (${lease_dns:-nothing read}); $(netsh 'ls -l /etc/resolv.conf; ls /tmp /run/dhcpcd 2>&1 | head -12' | tr '\n' ' ')"
+fi
+# The resolver follows the servers a lease names. The net zone's resolv.conf
+# is written with the servers dnsmasq has and one more, as a lease that came
+# late or another network would change it, and then without it: each time
+# dnsmasq must be told within a few of the zone's 10 s passes. Its own servers
+# stay throughout, so names still resolve.
+forwards_to() {   # forwards_to yes|no: wait until dnsmasq's file does, or does not, name the added server
+    for _ in $(seq 1 40); do
+        if netsh 'grep -q "^nameserver 192\.0\.2\.53$" /run/uplink-resolv.conf' > /dev/null; then [[ "$1" == yes ]] && return 0
+        else [[ "$1" == no ]] && return 0; fi
+        sleep 1
+    done
+    return 1
+}
+told() { grep -hc 'netzone: dnsmasq: now forwarding to' /run/uncaught-logs/current /run/uncaught-logs/@* 2>/dev/null | awk '{ n += $1 } END { print n + 0 }'; }
+told_before="$(told)"
+was="$(netsh 'grep "^nameserver" /run/uplink-resolv.conf')"
+if [[ "$was" == nameserver* ]] && wrote="$(netsh "printf '%s\n' '${was}' 'nameserver 192.0.2.53' > /etc/resolv.conf")"; then
+    forwards_to yes; came=$?
+    netsh "printf '%s\n' '${was}' > /etc/resolv.conf" > /dev/null
+    forwards_to no; went=$?
+    sleep 2   # the zone says so after it has told dnsmasq
+    if [[ "$came" -eq 0 && "$went" -eq 0 && "$(( $(told) - told_before ))" -ge 2 ]]; then
+        pass "dns-follows-lease" "a server the net zone's resolv.conf gained reached dnsmasq, and left it again with the lease"
+    else
+        fail "dns-follows-lease" "gained: rc=$came, lost: rc=$went, told $(( $(told) - told_before )) time(s); $(grep -h 'netzone: dnsmasq' /run/uncaught-logs/current 2>/dev/null | tail -2 | tr '\n' ' ')"
+    fi
+else
+    fail "dns-follows-lease" "dnsmasq's servers could not be read in the net zone (init ${net_init:-none}), or its resolv.conf not written: ${was:-nothing read} ${wrote:-}"
+fi
+# dnsmasq is still there after reading its servers again, as routed-dns found it.
+zrun untrusted 20 -- python3 -c 'import socket, struct
+q = struct.pack(">HHHHHH", 0x4321, 0x0100, 1, 0, 0, 0) + b"\x07kryptik\x04test\x00" + struct.pack(">HH", 1, 1)
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(4)
+s.sendto(q, ("10.19.0.1", 53)); d, _ = s.recvfrom(512); print("DNS-STILL-ANSWERED rcode=%d" % (d[3] & 0x0f))'
+[[ "$ZOUT" == *DNS-STILL-ANSWERED* ]] && pass "dns-after-reload" "$(grep -o 'DNS-STILL-ANSWERED.*' "$LOG/untrusted.out")" || fail "dns-after-reload" "no answer from the resolver: $(tail -1 "$LOG/untrusted.err")"
 
 # (the vault is probed once its volume exists, under storage below)
 
@@ -170,10 +216,22 @@ PBG=$!
 for _ in $(seq 1 60); do grep -q PERSONAL-UP "$LOG/personal-bg.out" 2>/dev/null && break; sleep 0.5; done
 grep -q PERSONAL-UP "$LOG/personal-bg.out" && pass "encrypted-zone-start" "personal up on its LUKS2 volume" || fail "encrypted-zone-start" "$(tail -3 "$LOG/personal-bg.out" | tr '\n' ' ')"
 [[ -e /dev/mapper/kryptik-zone-personal ]] && pass "mapping-while-running" "/dev/mapper/kryptik-zone-personal exists while the zone runs" || fail "mapping-while-running"
-zrun untrusted 30 -- sh -c "python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.19.0.$PER 2 >/dev/null 2>&1 && echo CROSS-ZONE-REACHED || echo CROSS-ZONE-BLOCKED; ls /var/lib/kryptik/volumes 2>&1 | head -1; ls /home 2>&1 | tr '\n' ' '"
-[[ "$ZOUT" == *CROSS-ZONE-BLOCKED* ]] && pass "zone-separation" "untrusted cannot reach personal (10.19.0.$PER) on the bridge" || fail "zone-separation" "$ZOUT"
-[[ "$ZOUT" == *"volumes"* && "$ZOUT" != *"No such"* ]] && fail "volume-hidden" "the volume directory is visible from untrusted" || pass "volume-hidden" "no /var/lib/kryptik/volumes inside untrusted"
-[[ "$ZOUT" == *"personal"* ]] && fail "home-hidden" "another zone's home is visible" || pass "home-hidden" "no other zone's home under /home"
+# The passphrase search, made while a zone that took one runs (the verdict is
+# with the storage checks). It must find that launcher's command line, or
+# finding no passphrase says nothing. The [e] and [s] keep a grep's own
+# command line from matching.
+pp_seen=0; pp_leak=0
+grep -qs 'passphrase-fil[e]' /proc/[0-9]*/cmdline && pp_seen=1
+grep -rqs 'personal-pas[s]' /run/kryptik /proc/[0-9]*/cmdline && pp_leak=1
+# An echo that gets no answer shows separation only while personal holds the
+# address that was tried.
+per_init="$(cut -d' ' -f1 /run/kryptik/zones/personal/init.pid 2>/dev/null)"
+per_addr="$(nsenter -t "${per_init:-0}" -n ip -4 -o addr show eth0 2>/dev/null | awk '{print $4}' | head -1)"
+zrun untrusted 30 -- sh -c "python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.19.0.$PER 2 >/dev/null 2>&1 && echo CROSS-ZONE-REACHED || echo CROSS-ZONE-BLOCKED; test -e /var/lib/kryptik/volumes && echo VOLUMES-VISIBLE || echo VOLUMES-ABSENT; echo \"HOMES=\$(ls /home 2>&1 | tr '\n' ' ')\""
+[[ "$ZOUT" == *CROSS-ZONE-BLOCKED* && "$per_addr" == "10.19.0.$PER/24" ]] && pass "zone-separation" "untrusted cannot reach personal, which holds 10.19.0.$PER on the bridge" || fail "zone-separation" "$ZOUT; personal's address: ${per_addr:-none}"
+[[ "$ZOUT" == *VOLUMES-ABSENT* ]] && pass "volume-hidden" "no /var/lib/kryptik/volumes inside untrusted" || fail "volume-hidden" "the volume directory is visible from untrusted, or the probe did not run: $ZOUT"
+homes="$(sed -n 's/^HOMES=//p' <<<"$ZOUT")"
+[[ "$(tr -d ' ' <<<"$homes")" == untrusted ]] && pass "home-hidden" "/home in untrusted holds its own directory and no other zone's" || fail "home-hidden" "/home in untrusted: ${homes:-not listed}"
 # The network the uplink sits on: untrusted's definition opens it ([network]
 # local) and personal's does not. The bridge answers personal, so the refusal
 # is the rule's and not a dead path.
@@ -376,6 +434,23 @@ if [[ "$FLOOR_S" -gt 0 ]]; then
     if (( got >= FLOOR_S && got <= FLOOR_S + 90 )); then pass "time-clamp" "a clock set to 2000-01-01 came back at the build date: ${said}"; else fail "time-clamp" "clock reads $(date -u -d "@$got" +%F) after the clamp, floor is ${FLOOR}: ${said}"; fi
     put_clock_back
 
+    # The newest release committed to, as whoever writes the state partition
+    # could leave it: dated 2099, signed by a key the anchor does not list.
+    rel=/var/lib/kryptik/time/release
+    rm -rf "$rel" /root/zt/forger /root/zt/forger.pub; mkdir -p "$rel"
+    printf 'KRYPTIK-MANIFEST-1\nname: kryptik\nversion: 99.0\nrole: %s\ncreated: 2099-01-01T00:00:00Z\nfiles: 0\n--\n' \
+        "$(cat /usr/share/kryptik/trust/required-role 2>/dev/null)" > "$rel/manifest"
+    ssh-keygen -q -t ed25519 -N '' -f /root/zt/forger >/dev/null 2>&1
+    ssh-keygen -Y sign -f /root/zt/forger -n kryptik-release "$rel/manifest" >/dev/null 2>&1
+    st="$("$KD" time status 2>&1)"
+    f="$(sed -n 's/^floor  *\([0-9-]* [0-9:]*\) UTC.*/\1/p' <<<"$st")"
+    if [[ -s "$rel/manifest.sig" && "$f" == "$FLOOR" && "$st" == *"not used"*"not enrolled"* ]]; then
+        pass "time-floor-forged" "a release dated 2099 that the release key did not sign leaves the floor at ${FLOOR}"
+    else
+        fail "time-floor-forged" "floor '${f}', build date '${FLOOR}': $(tr '\n' ' ' <<<"$st")"
+    fi
+    rm -rf "$rel" /root/zt/forger /root/zt/forger.pub
+
     if [[ -n "$net_init" ]]; then
         before="$(date +%s)"; r="$(claim 120)"; after="$(date +%s)"
         moved=$(( after - before ))
@@ -383,7 +458,7 @@ if [[ "$FLOOR_S" -gt 0 ]]; then
         put_clock_back
 
         before="$(date +%s)"; r="$(claim -999999999)"; after="$(date +%s)"
-        if [[ "$r" == error:*"before this system was built"* ]] && (( after - before < 30 )); then pass "time-claim-floor" "a claim below the build date is refused and the clock is untouched"; else fail "time-claim-floor" "reply '${r}', clock moved $(( after - before )) s"; fi
+        if [[ "$r" == error:*"before the floor"* ]] && (( after - before < 30 )); then pass "time-claim-floor" "a claim below the build date is refused and the clock is untouched"; else fail "time-claim-floor" "reply '${r}', clock moved $(( after - before )) s"; fi
 
         # past the bound with nobody at a trusted window: refused, not applied
         before="$(date +%s)"; r="$(claim 90000)"; after="$(date +%s)"
@@ -441,8 +516,13 @@ if [[ "$ZOUT" == *LIMIT-SURVIVED* ]]; then
 else
     fail "pids-limit" "the zone did not survive the fork storm: $(tail -2 "$LOG/untrusted.err" | tr '\n' ' ')"
 fi
-zrun untrusted 60 -- sh -c 'dd if=/dev/zero of=$HOME/big bs=1M count=3000 2>&1 | tail -1; echo DD-RC=$?; rm -f $HOME/big; echo TMPFS-SURVIVED'
-[[ "$ZOUT" == *TMPFS-SURVIVED* ]] && pass "ephemeral-size-bound" "untrusted's 2G tmpfs refused 3000 MiB and the zone survived" || fail "ephemeral-size-bound" "$(tail -2 "$LOG/untrusted.err" | tr '\n' ' ')"
+# dd's own status and words: a tmpfs that took all 3000 MiB is not bounded.
+zrun untrusted 60 -- sh -c 'out=$(dd if=/dev/zero of=$HOME/big bs=1M count=3000 2>&1); echo "DD-RC=$?"; echo "$out" | grep -o "No space left on device" | head -1; rm -f $HOME/big; echo TMPFS-SURVIVED'
+if [[ "$ZOUT" == *TMPFS-SURVIVED* && "$ZOUT" == *"No space left on device"* ]] && grep -qx 'DD-RC=1' <<<"$ZOUT"; then
+    pass "ephemeral-size-bound" "untrusted's 2G tmpfs refused 3000 MiB (No space left on device) and the zone survived"
+else
+    fail "ephemeral-size-bound" "$(tr '\n' ' ' <<<"$ZOUT") $(tail -2 "$LOG/untrusted.err" | tr '\n' ' ')"
+fi
 # The cpu limit reaches the kernel: while untrusted runs, its leaf says what its file says.
 setsid "$KD" run untrusted --zones "$Z" --rootfs "$R" -- sleep 20 > "$LOG/untrusted-cpu.out" 2>&1 &
 UCPU=$!
@@ -454,9 +534,13 @@ done
 "$KD" stop untrusted >/dev/null 2>&1; wait "$UCPU" 2>/dev/null
 [[ "$cpu_line" == "200000 100000" ]] && pass "cpu-max-set" "untrusted's cgroup has cpu.max=${cpu_line} (its file says cpu_max = \"200%\")" || fail "cpu-max-set" "cpu.max=${cpu_line:-unread}: $(tail -2 "$LOG/untrusted-cpu.out" | tr '\n' ' ')"
 # lifecycle: repeated start/stop, stop while running, registry clean
-for i in 1 2 3; do zrun untrusted 20 -- true; [[ "$ZRC" = 0 ]] || fail "lifecycle-repeat" "start $i exited $ZRC"; done
-[[ "$ZRC" = 0 ]] && pass "lifecycle-repeat" "untrusted started and exited three times"
-"$KD" status untrusted 2>&1 | grep -qi 'running' && fail "lifecycle-registry" "untrusted still registered as running" || pass "lifecycle-registry" "$("$KD" status untrusted 2>&1 | head -1)"
+repeat_bad=""
+for i in 1 2 3; do zrun untrusted 20 -- true; [[ "$ZRC" = 0 ]] || repeat_bad="$repeat_bad start $i exited $ZRC;"; done
+[[ -z "$repeat_bad" ]] && pass "lifecycle-repeat" "untrusted started and exited three times" || fail "lifecycle-repeat" "$repeat_bad"
+# "absent" is the registry's word for a zone with no entry: an error from
+# status, or a stale entry, is not a clean registry.
+reg="$("$KD" status untrusted 2>&1 | head -1)"
+[[ "$reg" == "untrusted  absent" ]] && pass "lifecycle-registry" "$reg" || fail "lifecycle-registry" "${reg:-status printed nothing}"
 "$KD" stop personal >/dev/null 2>&1; wait "$PBG" 2>/dev/null
 for _ in $(seq 1 20); do [[ -e /dev/mapper/kryptik-zone-personal ]] || break; sleep 0.5; done
 [[ -e /dev/mapper/kryptik-zone-personal ]] && fail "stop-closes-volume" "mapping still present after stop" || pass "stop-closes-volume" "the LUKS mapping is gone after stop"
@@ -484,26 +568,34 @@ cas="$(grep -o 'CAS=[0-9]*' <<<"$ZOUT" | cut -d= -f2)"
 # --- storage: encrypted storage lifecycle ----------------------------------------
 printf 'wrong-pass\n' > /root/zt/wrong.pass; chmod 600 /root/zt/wrong.pass
 zrun personal 30 --passphrase-file /root/zt/wrong.pass -- sh -c 'echo SHOULD-NOT-RUN'
-if [[ "$ZRC" != 0 && "$ZOUT" != *SHOULD-NOT-RUN* && ! -e /dev/mapper/kryptik-zone-personal ]]; then pass "wrong-passphrase" "refused, no mapping left"; else fail "wrong-passphrase" "rc=$ZRC out=$ZOUT"; fi
+# Refused for the passphrase, in kryptikd's words: a start that failed or
+# timed out for another reason is not this refusal.
+if [[ "$ZRC" != 0 && "$ZOUT" != *SHOULD-NOT-RUN* && ! -e /dev/mapper/kryptik-zone-personal ]] && grep -q 'wrong passphrase' "$LOG/personal.err" "$LOG/personal.out"; then pass "wrong-passphrase" "refused as a wrong passphrase, no mapping left"; else fail "wrong-passphrase" "rc=$ZRC out=$ZOUT $(tail -2 "$LOG/personal.err" | tr '\n' ' ')"; fi
 zrun personal 30 --passphrase-file /root/zt/personal.pass -- sh -c 'echo secret-data-1 > "$HOME/keep" && sync && echo WROTE'
 [[ "$ZOUT" == *WROTE* ]] && pass "persist-write" || fail "persist-write" "$(tail -2 "$LOG/personal.err" | tr '\n' ' ')"
 zrun personal 30 --passphrase-file /root/zt/personal.pass -- sh -c 'cat "$HOME/keep"'
 [[ "$ZOUT" == *secret-data-1* ]] && pass "persist-reopen" "data survives stop and restart" || fail "persist-reopen" "$ZOUT"
 [[ -e /dev/mapper/kryptik-zone-personal ]] && fail "no-mapping-after" || pass "no-mapping-after" "no mapping after the zone exited"
 [[ -z "$(ls -A "$R/personal" 2>/dev/null)" ]] && pass "no-plaintext-after" "the mount point is empty after the zone exited" || fail "no-plaintext-after" "$(ls -A "$R/personal" | head -3 | tr '\n' ' ')"
-zrun untrusted 30 -- sh -c 'echo ephemeral-1 > "$HOME/eph" && echo EPH-WROTE'
+zrun untrusted 30 -- sh -c 'echo ephemeral-1 > "$HOME/eph" && test -f "$HOME/eph" && echo EPH-WROTE'
+eph_wrote="$ZOUT"
 zrun untrusted 30 -- sh -c 'test -f "$HOME/eph" && echo EPH-STILL-THERE || echo EPH-GONE'
-[[ "$ZOUT" == *EPH-GONE* ]] && pass "ephemeral-gone" "untrusted's data did not survive a restart" || fail "ephemeral-gone" "$ZOUT"
+[[ "$eph_wrote" == *EPH-WROTE* && "$ZOUT" == *EPH-GONE* ]] && pass "ephemeral-gone" "a file untrusted wrote did not survive a restart" || fail "ephemeral-gone" "first run: ${eph_wrote:-wrote nothing}; second: $ZOUT"
 # concurrent start of the same zone
 setsid "$KD" run personal --zones "$Z" --rootfs "$R" --passphrase-file /root/zt/personal.pass -- sh -c 'echo P2-UP; sleep 60' > "$LOG/personal-bg2.out" 2>&1 &
 PBG2=$!
 for _ in $(seq 1 40); do grep -q P2-UP "$LOG/personal-bg2.out" 2>/dev/null && break; sleep 0.5; done
 zrun personal 20 --passphrase-file /root/zt/personal.pass -- sh -c 'echo SECOND-INSTANCE'
-[[ "$ZRC" != 0 && "$ZOUT" != *SECOND-INSTANCE* ]] && pass "concurrent-start-refused" "$(grep -o 'already running.*' "$LOG/personal.err" | head -1)" || fail "concurrent-start-refused" "rc=$ZRC"
+# With the first instance seen up, and refused in the registry's words.
+if grep -q P2-UP "$LOG/personal-bg2.out" && [[ "$ZRC" != 0 && "$ZOUT" != *SECOND-INSTANCE* ]] && grep -q 'already running' "$LOG/personal.err"; then
+    pass "concurrent-start-refused" "$(grep -o 'already running.*' "$LOG/personal.err" | head -1)"
+else
+    fail "concurrent-start-refused" "rc=$ZRC first instance: $(tail -1 "$LOG/personal-bg2.out") second: $(tail -1 "$LOG/personal.err")"
+fi
 "$KD" stop personal >/dev/null 2>&1; wait "$PBG2" 2>/dev/null
 # full volume
-zrun personal 120 --passphrase-file /root/zt/personal.pass -- sh -c 'dd if=/dev/zero of="$HOME/fill" bs=1M 2>&1 | tail -1; echo FILL-RC=$?; rm -f "$HOME/fill"; cat "$HOME/keep"; echo FULL-SURVIVED'
-[[ "$ZOUT" == *FULL-SURVIVED* && "$ZOUT" == *secret-data-1* ]] && pass "full-volume" "ENOSPC inside the volume; the zone and its data survived" || fail "full-volume" "$(tail -2 "$LOG/personal.err" | tr '\n' ' ')"
+zrun personal 120 --passphrase-file /root/zt/personal.pass -- sh -c 'out=$(dd if=/dev/zero of="$HOME/fill" bs=1M 2>&1); echo "FILL-RC=$?"; echo "$out" | grep -o "No space left on device" | head -1; rm -f "$HOME/fill"; cat "$HOME/keep"; echo FULL-SURVIVED'
+[[ "$ZOUT" == *"No space left on device"* && "$ZOUT" == *FULL-SURVIVED* && "$ZOUT" == *secret-data-1* ]] && pass "full-volume" "ENOSPC inside the volume; the zone and its data survived" || fail "full-volume" "$(tr '\n' ' ' <<<"$ZOUT") $(tail -2 "$LOG/personal.err" | tr '\n' ' ')"
 # header backup and restore
 if "$KD" volume backup-header personal /root/zt/personal.hdr > "$LOG/hdr.out" 2>&1; then
     # Zero both LUKS2 headers: cryptsetup falls back to the secondary one, at
@@ -539,9 +631,15 @@ zrun vault 30 --passphrase-file /root/zt/vault.pass -- sh -c 'echo LINKS=$(ip -o
 # 2 is ping's error exit; 1 would mean a packet went out and no reply came.
 grep -qE 'VAULT-PING rc=2 ' <<<"$ZOUT" && pass "vault-ping" "ping in an offline zone fails without sending: $(grep -o 'VAULT-PING.*' <<<"$ZOUT")" || fail "vault-ping" "$(grep -o 'VAULT-PING.*' <<<"$ZOUT")"
 [[ "$ZOUT" == *VAULT-ISOLATED* && "$ZOUT" == *VAULT-WROTE* && "$ZOUT" == *LINKS=0* ]] && pass "vault-offline" "vault has loopback only, no path to the bridge, and keeps data" || fail "vault-offline" "$(tr '\n' ' ' <<<"$ZOUT") $(tail -1 "$LOG/vault.err")"
-# No passphrase on any command line or in the registry. The [s] keeps this
-# grep's own command line from matching.
-if grep -rqs 'personal-pas[s]\|vault-pas[s]' /run/kryptik /proc/*/cmdline 2>/dev/null; then fail "no-passphrase-leak" "a passphrase appeared in the registry or a command line"; else pass "no-passphrase-leak" "no passphrase in /run/kryptik or any command line"; fi
+# No passphrase on any command line or in the registry: while personal ran
+# (above), and now that every zone that took one has stopped.
+if [[ "$pp_seen" != 1 ]]; then
+    fail "no-passphrase-leak" "the search did not see personal's launcher while it ran, so it proves nothing"
+elif [[ "$pp_leak" = 1 ]] || grep -rqs 'personal-pas[s]\|vault-pas[s]\|dev-pas[s]' /run/kryptik /proc/[0-9]*/cmdline; then
+    fail "no-passphrase-leak" "a passphrase appeared in the registry or a command line"
+else
+    pass "no-passphrase-leak" "no passphrase in /run/kryptik or any command line, while personal ran and after the zones stopped"
+fi
 
 # --- the system allocator (ADR-005), in zone 0 and in a zone -----------------------
 grep -q /usr/lib/libhardened_malloc.so /proc/self/maps && pass "allocator-zone0" "zone 0 runs on hardened_malloc" || fail "allocator-zone0" "libhardened_malloc.so is not mapped in zone 0"
@@ -554,10 +652,13 @@ zrun untrusted 30 -- grep -c /usr/lib/libhardened_malloc.so /proc/self/maps
 # and file capabilities are on none (capability-allowlist.txt is empty).
 setuid_found="$(find / -xdev -type f -perm /6000 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"
 [[ "$setuid_found" == "/usr/bin/passwd /usr/bin/su " ]] && pass "setuid-only-allowed" "on the root filesystem: ${setuid_found}" || fail "setuid-only-allowed" "found: ${setuid_found:-none}"
-capped="$(python3 - <<'PY'
+# The scan ends with how many files it read: one that died early, or walked
+# nothing, has not shown that no file carries a capability.
+capscan="$(python3 - <<'PY'
 import os, stat
 dev = os.lstat("/").st_dev
 out = []
+seen = 0
 for d, dirs, files in os.walk("/"):
     dirs[:] = [x for x in dirs if os.lstat(os.path.join(d, x)).st_dev == dev]
     for name in files:
@@ -565,27 +666,31 @@ for d, dirs, files in os.walk("/"):
         try:
             if not stat.S_ISREG(os.lstat(p).st_mode):
                 continue
+            seen += 1
             os.getxattr(p, "security.capability", follow_symlinks=False)
         except OSError:
             continue
         out.append(p)
-print(" ".join(out))
+print("scanned=%d capped=%s" % (seen, " ".join(out)))
 PY
 )"
-[[ -z "$capped" ]] && pass "no-file-capabilities" "no file on the root filesystem carries security.capability" || fail "no-file-capabilities" "$capped"
+scanned="$(sed -n 's/^scanned=\([0-9]*\) capped=.*/\1/p' <<<"$capscan")"; capped="${capscan#*capped=}"
+[[ "${scanned:-0}" -ge 1000 && -z "$capped" ]] && pass "no-file-capabilities" "none of the $scanned files on the root filesystem carries security.capability" || fail "no-file-capabilities" "${capscan:-the scan printed nothing}"
 
 # --- the kernel tunables, as the verified root's file says --------------------------
 # sysinit applies /usr/lib/kryptik/sysctl.d at boot; every key reads back with
 # the file's value, whitespace aside, or the line is named.
-sysctl_bad=""
+sysctl_bad=""; sysctl_keys=0
 while IFS= read -r line; do
     line="${line%%#*}"; [[ "$line" == *=* ]] || continue
     key="$(printf '%s' "${line%%=*}" | tr -d '[:space:]')"
     want="$(printf '%s' "${line#*=}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
     got="$(tr -s '[:space:]' ' ' < "/proc/sys/${key//.//}" 2>/dev/null | sed 's/ $//')"
+    sysctl_keys=$((sysctl_keys + 1))
     [[ "$got" == "$want" ]] || sysctl_bad="${sysctl_bad}${key}=${got:-unreadable} (wanted ${want}); "
 done < /usr/lib/kryptik/sysctl.d/99-kryptik-hardening.conf
-[[ -z "$sysctl_bad" ]] && pass "sysctls-applied" "every key in 99-kryptik-hardening.conf reads back as written" || fail "sysctls-applied" "$sysctl_bad"
+# A file that is missing or holds no key reads back nothing wrong.
+[[ "$sysctl_keys" -gt 0 && -z "$sysctl_bad" ]] && pass "sysctls-applied" "all $sysctl_keys keys in 99-kryptik-hardening.conf read back as written" || fail "sysctls-applied" "${sysctl_bad:-no key read from 99-kryptik-hardening.conf}"
 
 echo "ZT SUMMARY passed=$PASS failed=$FAIL"
 echo "ZT END"

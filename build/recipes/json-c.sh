@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# json-c: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
 s_json_c() {
     local cmake
@@ -11,19 +9,15 @@ s_json_c() {
     echo "cmake: ${cmake}"
     local src; src="$(unpack "json-c-${V_JSON_C}.tar.gz" "json-c-json-c-${V_JSON_C}")"
     cd "$src"
-    # CMAKE_POLICY_VERSION_MINIMUM: cmake 4 refuses projects whose minimum is
-    # below 3.5, and json-c's test/app subdirectories still say 2.8/3.9.
-    #
-    # CMAKE_INSTALL_LIBDIR=lib: Kitware's binary, unlike the patched source
-    # build, picks lib64 here, where nothing in this sysroot looks.
+    # CMAKE_POLICY_VERSION_MINIMUM: cmake 4 refuses the old minimums json-c's subdirectories set.
+    # CMAKE_INSTALL_LIBDIR=lib: Kitware's binary would pick lib64, where nothing looks.
     "$cmake" -S . -B build -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_LIBDIR=lib \
         -DBUILD_STATIC_LIBS=OFF -DBUILD_TESTING=OFF -DBUILD_APPS=OFF \
         -DCMAKE_POLICY_VERSION_MINIMUM=3.5
     "$cmake" --build build
     "$cmake" --install build
-    # cryptsetup's own check, made here where a failure names json-c (as s_lvm2
-    # does for devmapper.pc).
+    # cryptsetup's own check, made here where a failure names json-c.
     [[ -f /usr/lib/pkgconfig/json-c.pc ]] || { echo "no /usr/lib/pkgconfig/json-c.pc (installed under lib64?)"; return 1; }
     [[ -e /usr/lib64/libjson-c.so ]] && { echo "json-c installed into /usr/lib64, which this sysroot does not use"; return 1; }
     pkg-config --exists --print-errors json-c || return 1

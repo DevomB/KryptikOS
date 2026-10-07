@@ -25,6 +25,7 @@ echo b > "$T/esp/kryptik/committed-slot"
     echo 'sync() { :; }'
     echo 'running_slot() { echo a; }; running_version() { echo 1.0; }; kryptik-efiboot() { :; }'
     echo "ESP_MNT='$T/esp'; LOCK='$T/lock'; B='$T/boot'; DEGRADED='$T/degraded'"
+    echo ". '$ROOT/build/service-scripts/esp-records.sh'"
     sed -n '/^mount_esp() {/,/^}/p; /^umount_esp() {/,/^}/p; /^ESP_MINE=/p; /^trap .*umount_esp/p; /^cmd_status() {/,/^}/p;
             /^other_slot() /p; /^unlist_slot() {/,/^}/p; /^cmd_rollback() {/,/^}/p' "$TOOL"
 } > "$T/esp.sh"
@@ -48,6 +49,14 @@ sleep 0.5
 out="$(bash -c "source '$T/esp.sh'; cmd_status" 2>&1)"
 wait "$holder"
 [[ "$out" == *"being applied"* && -z "$(calls)" ]] && ok "status leaves the ESP alone while an apply holds the lock" || bad "status under an apply: $(calls) / $out"
+# Records rewritten by whoever held the disk: shown as unknown, never as written.
+printf '\033]0;owned\007b\n' > "$T/esp/kryptik/committed-slot"
+printf '9.9.9 (newest)\n' > "$T/esp/kryptik/version-a"; printf '1.0.0\n' > "$T/esp/kryptik/version-b"
+fresh; out="$(bash -c "source '$T/esp.sh'; cmd_status" 2>&1)"
+[[ "$out" == *"committed slot:   unknown"* && "$out" == *"slot a:           version unknown"* \
+   && "$out" == *"slot b:           version 1.0.0"* && "$out" != *$'\033'* ]] \
+    && ok "status shows the ESP's records only in the shape Kryptik writes them" || bad "status of rewritten records: $out"
+echo b > "$T/esp/kryptik/committed-slot"; rm -f "$T/esp/kryptik/version-a" "$T/esp/kryptik/version-b"
 
 echo "-- an apply cut short while it writes a slot"
 mkdir -p "$T/esp/EFI/kryptik"
@@ -67,6 +76,15 @@ w="$(grep -n 'dd if=/proc/self/fd/3 of=' <<< "$body" | head -1 | cut -d: -f1)"
 [[ -n "$u" && -n "$w" && "$u" -lt "$w" ]] \
     && ok "apply takes the slot off the ESP before it writes a byte of it" \
     || bad "apply: the slot is taken off the ESP at line '${u}', written at line '${w}'"
+# The manifest kept for the clock's floor goes with the slot, and comes back
+# only once the slot has verified, before the trial is armed.
+f="$(grep -n 'rm -rf "$B/release-$target"' <<< "$body" | head -1 | cut -d: -f1)"
+v="$(grep -n 'say "slot $target verifies after write"' <<< "$body" | head -1 | cut -d: -f1)"
+k="$(grep -n 'cp "$m" "$sig" "$B/release-$target/"' <<< "$body" | head -1 | cut -d: -f1)"
+a="$(grep -n 'arm_trial "$target"' <<< "$body" | head -1 | cut -d: -f1)"
+[[ -n "$f" && -n "$v" && -n "$k" && -n "$a" && "$f" -lt "$w" && "$v" -lt "$k" && "$k" -lt "$a" ]] \
+    && ok "apply forgets the slot's kept manifest before writing it, and keeps the new one after it verifies" \
+    || bad "apply: kept manifest removed at line '${f}', slot written at '${w}', verified at '${v}', kept at '${k}', armed at '${a}'"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

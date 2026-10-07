@@ -75,7 +75,7 @@ except RuntimeError as e:
     got = "refused" if "command failed (1)" in str(e) else str(e)
 check("run: refuses a failed command", got, "refused")
 
-print("-- su: leaves what the command printed, as before")
+print("-- su: leaves what the command printed, as run: does")
 d.su("root-pw", "id")
 try:
     d.expect(r"uid=0\(root\)"); got = "found"
@@ -96,7 +96,7 @@ while not d.closed and time.time() < deadline:
     d._read()
 check("wait-exit sees the socket close", d.closed, True)
 
-print("-- a step no suite uses is unknown, not kept for nothing")
+print("-- an unknown step is refused")
 import contextlib, io
 sock2 = os.path.join(T, "serial2")
 Guest(sock2, {}).start()

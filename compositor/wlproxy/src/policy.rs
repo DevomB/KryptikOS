@@ -1,13 +1,9 @@
-//! What a zone's client may reach through the proxy, and what it rewrites.
-//!
-//! Globals off the allowlist are never advertised, so they cannot be bound: no
-//! capture, global input, layer shell (nothing may draw over the chrome),
-//! clipboard (the broker is the only cross-zone channel), virtual keyboard,
-//! output management or activation; binding one anyway disconnects the client.
-//! Every toplevel title and app_id comes out carrying the zone's name.
+//! What a zone's client may bind, and how its titles and app_ids carry the zone's name.
+//! Nothing else is advertised: no capture, global input, layer shell (nothing may draw over the
+//! chrome), clipboard (the broker is the only cross-zone channel), virtual keyboard, output
+//! management or activation.
 
-/// Interfaces a zone client may bind, capped at the version the generated
-/// tables know: requests of a newer version could not be parsed here.
+/// Bindable interfaces, capped at the tables' versions: a newer request could not be parsed.
 pub const ALLOWED: &[(&str, u32)] = &[
     ("wl_compositor", 6),
     ("wl_subcompositor", 1),
@@ -26,11 +22,9 @@ pub fn allowed_version(interface: &str) -> Option<u32> {
 /// The most bytes a rewritten title may carry; only one line is ever shown.
 pub const MAX_TITLE_BYTES: usize = 256;
 
-/// Prefix a title with `[zone] `. A claimed `[vault] ` just follows the real
-/// prefix: `[work] [vault] ...`.
+/// Prefix a title with `[zone] `; a claimed `[vault] ` follows the real one: `[work] [vault] ...`.
 pub fn title_for(zone: &str, title: &str) -> String {
-    /* Titles reach dwl's line-based status stream and terminal chrome: no
-     * control may inject records, terminal escapes or bidi overrides. */
+    // Titles reach dwl's status lines and terminal chrome: controls and bidi marks become spaces.
     let title: String = title.chars().map(|c| {
         if c.is_control() || matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}') { ' ' } else { c }
     }).collect();
@@ -39,8 +33,7 @@ pub fn title_for(zone: &str, title: &str) -> String {
     out
 }
 
-/// Cut `s` to at most `max` bytes, ending in `...` if anything was cut. The
-/// cut lands on a character boundary: `String::truncate` panics inside one.
+/// Cut `s` to `max` bytes with a `...`, on a char boundary: `String::truncate` panics inside one.
 fn bound_utf8(s: &mut String, max: usize) {
     if s.len() <= max {
         return;
@@ -53,8 +46,7 @@ fn bound_utf8(s: &mut String, max: usize) {
     s.push_str("...");
 }
 
-/// `kryptik.<zone>.<claimed>`, the claimed part cut to a safe alphabet so a
-/// zone name inside it cannot pass for the real one.
+/// `kryptik.<zone>.<claimed>`, the claim cut to `[A-Za-z0-9_-]` so it cannot pass for another zone.
 pub fn app_id_for(zone: &str, claimed: &str) -> String {
     let cleaned: String = claimed
         .chars()
@@ -64,10 +56,9 @@ pub fn app_id_for(zone: &str, claimed: &str) -> String {
     format!("kryptik.{zone}.{}", if cleaned.is_empty() { "app".to_string() } else { cleaned })
 }
 
-/// Resource bounds per client connection and across a zone's connections.
+// Resource bounds per client connection and across a zone's connections.
 pub const MAX_OBJECTS: usize = 4096;
-/// Id slots per range. libwayland reuses freed ids, so its slots never outnumber
-/// its peak of live objects; a client that never reuses one stops here.
+/// Id slots per range: libwayland reuses freed ids, so only a client that never does reaches this.
 pub const MAX_ID_SLOTS: usize = 2 * MAX_OBJECTS;
 pub const MAX_PENDING_BYTES: usize = 1 << 20; // per direction
 pub const MAX_PENDING_FDS: usize = 64;

@@ -1,15 +1,9 @@
 #!/usr/bin/env bash
-# The licence texts build/licences carries for what kryptikd and
-# kryptik-wlproxy link are the ones the pinned Rust release and the locked
-# crates carry: Rust's own files and its library's COPYRIGHT-library.html,
-# each locked crate's licence files, and the COPYRIGHT of the musl that
-# rust-std's musl target links.
+# Checks build/licences against the Rust release, crates and musl in kryptikd and kryptik-wlproxy.
 #
 #   ./tools/check-rust-licences.sh DIST
 #
-# DIST holds the tarballs build/config/rust.lock pins, unpacked (the Distro
-# workflow's rust-dist). The crates are read from the cargo registry they were
-# fetched into, so this runs after the build.
+# DIST holds the unpacked rust.lock tarballs; run after the build, which fills the cargo registry.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 
@@ -41,8 +35,7 @@ if ! cmp -s "${rustc}/rustc/share/doc/rust/COPYRIGHT-library.html" "$lib"; then
     bad=$((bad + 1))
 fi
 
-# Each crate the shipped binaries' lockfiles fetch has build/licences/rust-NAME
-# with exactly its licence files, and no other crate has one.
+# Every locked crate, and no other, has build/licences/rust-NAME with exactly its licence files.
 declare -A locked=()
 while read -r name ver; do
     locked[$name]=1

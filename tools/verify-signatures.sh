@@ -187,6 +187,8 @@ Run again: what was fetched is kept."
     local fpr missing=0
     for fpr in "${PINNED_FPRS[@]}"; do
         gpg --batch --list-keys "$fpr" >/dev/null 2>&1 && continue
+        # Its publisher serves it when a source needs it.
+        has_provenance_row "$fpr" && continue
         recv_key "$fpr" || { warn "could not fetch pinned key ${fpr}"; missing=$((missing + 1)); }
     done
 
@@ -244,7 +246,7 @@ fi
 # fetched GNU keyring. Each must be a fingerprint the project publishes on its
 # own origin, with that source noted here so it can be rechecked.
 PINNED_FPRS=(
-    # kernel.org mainline and stable.
+    # kernel.org mainline and stable: pgpkeys.git and kernel.org's WKD serve both (2026-10-02; key-provenance.tsv).
     "ABAF11C65A2970B130ABE3C479BE3E4300411886"   # Linus Torvalds, mainline
     "647F28654894E3BD457199BE38DBBDC86092693E"   # Greg Kroah-Hartman, stable
 
@@ -253,11 +255,9 @@ PINNED_FPRS=(
     "7169605F62C751356D054A26A821E680E5FA6305"   # Thomas Wouters, CPython 3.12/3.13
 
     # From https://openssl-library.org/source/ (retrieved 2026-09-11): the page
-    # names the 2026 key as the release trust anchor, and the OMC key is in the
-    # pubkeys.asc it links. Both rest on TLS to that site alone. The OMC key has
-    # expired, so its signature on 3.3.1 verifies as EXPKEYSIG.
-    "EFC0A467D613CB83C7ED6D30D894E2CE8B3D79F5"   # OpenSSL OMC, signs 3.3.1
-    "B146647E45A7B33947AB226B2A2C87D161692D40"   # OpenSSL 2026 key, signs 3.5.8
+    # names the 2026 key as the release trust anchor. It rests on TLS to that
+    # site alone.
+    "B146647E45A7B33947AB226B2A2C87D161692D40"   # OpenSSL 2026 key, signs 3.5.x
 
     # From https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/RELEASE_KEY.asc
     # (retrieved 2026-09-27), the key file beside the releases. Of its five
@@ -322,6 +322,8 @@ key_is_pinned() { _key_in "$1" "${PINNED_FPRS[@]}"; }
 KEY_PROVENANCE="${KRYPTIK_SIGCHECK_PROVENANCE:-$(dirname "${BASH_SOURCE[0]}")/key-provenance.tsv}"
 
 declare -a PROV_FPR=() PROV_KIND=() PROV_LOC=() PROV_SIGNS=()
+# The one page of GNU Savannah that serves a project's release keyring.
+SAVANNAH_LOCATOR='^https://savannah\.gnu\.org/project/release-gpgkeys\.php\?group=[a-z0-9-]+&download=1$'
 
 load_key_provenance() {
     [[ -f "$KEY_PROVENANCE" ]] || return 0
@@ -358,6 +360,15 @@ load_key_provenance() {
                     # "GitHub hosts this key".
                     [[ "$rest" == *published\ by* ]] \
                         || why="a github row must record which account published the release"
+                    ;;
+                savannah)
+                    if [[ "$l" =~ $SAVANNAH_LOCATOR ]]; then
+                        :
+                    elif [[ "${KRYPTIK_SIGCHECK_SELFTEST:-0}" == "1" && "$l" == file://* ]]; then
+                        :
+                    else
+                        why="a savannah locator must be the project's release-gpgkeys.php?group=<project>&download=1"
+                    fi
                     ;;
                 wkd)  [[ "$l" == *@*.* ]]     || why="a wkd locator must be an email address" ;;
                 *)    why="unknown kind '${k}'" ;;
@@ -416,36 +427,42 @@ anchored_import() {
 # not, so a revocation or a new subkey published there is seen. The recorded
 # fingerprint is the anchor: only that key is taken from what a locator
 # serves, and a locator no longer serving it is refused, which fails every
-# source the key signs, even with a copy held. Once a run each.
-declare -A PROV_FETCHED=() PROV_REFUSED=()
+# source the row signs, even with a copy held. Each row once a run; a row
+# that could not be read is remembered, and gives no class this run.
+declare -A PROV_FETCHED=() PROV_REFUSED=() PROV_MISSED=()
 import_provenance_keys_for() {
-    local name="$1" i fpr tmp home got rc
+    local name="$1" i fpr tmp home got rc try
     for i in "${!PROV_FPR[@]}"; do
         case "${PROV_SIGNS[$i]}" in *",${name},"*) ;; *) continue ;; esac
+        [[ -z "${PROV_FETCHED[$i]:-}" ]] || continue
+        PROV_FETCHED[$i]=1
         fpr="${PROV_FPR[$i]}"
-        [[ -z "${PROV_FETCHED[$fpr]:-}" ]] || continue
-        PROV_FETCHED[$fpr]=1
 
         tmp="$(mktemp)"
         case "${PROV_KIND[$i]}" in
-            korg|github)
-                if ! curl -fsSL --max-time 30 -o "$tmp" "${PROV_LOC[$i]}" 2>/dev/null; then
+            korg|github|savannah)
+                if ! curl -fsSL --max-time 30 --retry 2 --retry-delay 5 -o "$tmp" "${PROV_LOC[$i]}" 2>/dev/null; then
                     warn "${name}: could not fetch the published key from ${PROV_LOC[$i]}"
+                    PROV_MISSED[$i]=1
                     rm -f "$tmp"; continue
                 fi
                 ;;
             wkd)
                 # --locate-external-key imports what it finds, so it runs in a
                 # keyring of its own and only its export is read.
-                home="$(mktemp -d)"; chmod 700 "$home"
-                if GNUPGHOME="$home" gpg --batch --quiet --auto-key-locate clear,wkd \
-                       --locate-external-key "${PROV_LOC[$i]}" >/dev/null 2>&1; then
-                    GNUPGHOME="$home" gpg --batch --export > "$tmp" 2>/dev/null || true
-                fi
-                GNUPGHOME="$home" gpgconf --kill all >/dev/null 2>&1 || true
-                rm -rf "$home"
+                for try in 1 2; do
+                    home="$(mktemp -d)"; chmod 700 "$home"
+                    if GNUPGHOME="$home" gpg --batch --quiet --auto-key-locate clear,wkd \
+                           --locate-external-key "${PROV_LOC[$i]}" >/dev/null 2>&1; then
+                        GNUPGHOME="$home" gpg --batch --export > "$tmp" 2>/dev/null || true
+                    fi
+                    GNUPGHOME="$home" gpgconf --kill all >/dev/null 2>&1 || true
+                    rm -rf "$home"
+                    [[ -s "$tmp" ]] && break
+                done
                 if [[ ! -s "$tmp" ]]; then
                     warn "${name}: no WKD answer for ${PROV_LOC[$i]}"
+                    PROV_MISSED[$i]=1
                     rm -f "$tmp"; continue
                 fi
                 ;;
@@ -465,38 +482,44 @@ import_provenance_keys_for() {
             err "  not the recorded ${fpr}. REFUSING it: a key that"
             err "  changed at a published location is a finding, not an update."
         fi
-        PROV_REFUSED[$fpr]="${PROV_LOC[$i]}"
+        PROV_REFUSED[$i]="${PROV_LOC[$i]}"
     done
     return 0
 }
 
-# The locator of a refused key that signs NAME; fails if there is none.
+# The locator of a refused row that signs NAME; fails if there is none.
 refused_locator_for() {
     local name="$1" i
     for i in "${!PROV_FPR[@]}"; do
         case "${PROV_SIGNS[$i]}" in *",${name},"*) ;; *) continue ;; esac
-        if [[ -n "${PROV_REFUSED[${PROV_FPR[$i]}]:-}" ]]; then
-            printf '%s' "${PROV_REFUSED[${PROV_FPR[$i]}]}"
+        if [[ -n "${PROV_REFUSED[$i]:-}" ]]; then
+            printf '%s' "${PROV_REFUSED[$i]}"
             return 0
         fi
     done
     return 1
 }
 
-# korg, wkd, github or empty: the provenance of the key that made a signature.
-key_provenance_kind() {
-    local keyid="$1" fpr i
-    [[ -n "$keyid" ]] || return 0
-    [[ "${#PROV_FPR[@]}" -gt 0 ]] || return 0
+# The row recording the key behind KEYID for NAME; fails if there is none.
+# A row speaks only for the sources it names.
+provenance_row() {
+    local name="$1" keyid="$2" fpr i
+    [[ -n "$keyid" && "${#PROV_FPR[@]}" -gt 0 ]] || return 1
     while IFS= read -r fpr; do
         for i in "${!PROV_FPR[@]}"; do
-            if [[ "${fpr^^}" == "${PROV_FPR[$i]}" ]]; then
-                printf '%s' "${PROV_KIND[$i]}"
+            if [[ "${fpr^^}" == "${PROV_FPR[$i]}" && "${PROV_SIGNS[$i]}" == *",${name},"* ]]; then
+                printf '%s' "$i"
                 return 0
             fi
         done
     done < <(key_fingerprints "$keyid")
-    return 0
+    return 1
+}
+
+has_provenance_row() {
+    local i
+    for i in "${!PROV_FPR[@]}"; do [[ "${PROV_FPR[$i]}" == "$1" ]] && return 0; done
+    return 1
 }
 
 load_key_provenance
@@ -532,9 +555,21 @@ check_sig() {
         signer="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] \(GOODSIG\|EXPKEYSIG\) [0-9A-F]* //p' | head -1)"
         keyid="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] \(GOODSIG\|EXPKEYSIG\) \([0-9A-F]*\).*/\2/p' | head -1)"
 
-        # A published or pinned key is no longer unaudited.
-        local pkind
-        pkind="$(key_provenance_kind "$keyid")"
+        # A published or pinned key is no longer unaudited. A row gives its
+        # class only once its published copy was read this run.
+        local row pkind=""
+        if row="$(provenance_row "$name" "$keyid")"; then
+            if [[ -z "${PROV_MISSED[$row]:-}" ]]; then
+                pkind="${PROV_KIND[$row]}"
+            elif [[ "$STRICT" -eq 1 ]]; then
+                warn "${name}: signature valid  [${signer:-unknown}], but the key's published copy was not read"
+                mark_unverifiable "${name} (its key's published copy at ${PROV_LOC[$row]} not read this run)"
+                report "$name" published-key-unread "${signer:-unknown} (${keyid}); ${PROV_LOC[$row]}${how}"
+                return 0
+            else
+                how="${how}; published copy at ${PROV_LOC[$row]} not read this run"
+            fi
+        fi
 
         if [[ -z "$pkind" ]] && ! key_is_pinned "$keyid" \
            && key_is_unaudited "$keyid"; then
@@ -548,6 +583,7 @@ check_sig() {
         local klass=signature-keyring-key
         case "$pkind" in
             korg)   klass=signature-korg-published-key ;;
+            savannah) klass=signature-savannah-published-key ;;
             wkd)    klass=signature-wkd-published-key ;;
             github) klass=signature-platform-published-key ;;
         esac
@@ -590,16 +626,18 @@ check_sig() {
                 if printf '%s' "$out" | grep -qE "^\[GNUPG:\] (GOODSIG|EXPKEYSIG)"; then
                     signer="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] \(GOODSIG\|EXPKEYSIG\) [0-9A-F]* //p' | head -1)"
                     local fpr
-                    fpr="$(gpg --batch --with-colons --fingerprint "$keyid" 2>/dev/null                            | awk -F: '$1=="fpr"{print $10; exit}')"
+                    fpr="$(gpg --batch --with-colons --fingerprint "$keyid" 2>/dev/null \
+                           | awk -F: '$1=="fpr"{print $10; exit}')"
                     warn "${name}: signature valid  [${signer:-unknown}] but by an UNAUDITED key"
                     if ! grep -qiF -- "${fpr:-$keyid}" "$KEYS_MANIFEST" 2>/dev/null; then
-                        printf '%-18s %-42s %s
-' "$name" "${fpr:-$keyid}" "${signer:-unknown}"                             >> "$KEYS_MANIFEST"
+                        printf '%-18s %-42s %s\n' "$name" "${fpr:-$keyid}" "${signer:-unknown}" \
+                            >> "$KEYS_MANIFEST"
                     fi
                     # So later sources signed by this key count as unaudited too.
                     [[ -n "$fpr" ]] && UNAUDITED_FPRS+=("${fpr^^}")
                     FETCHED=$((FETCHED + 1))
                     FETCHED_LIST+=("${name} - ${signer:-unknown} (${fpr:-$keyid})")
+                    report "$name" signature-unaudited-key "${signer:-unknown} (${fpr:-$keyid})${how}"
                     return 0
                 fi
             fi
@@ -830,10 +868,8 @@ if [[ "$FETCH_UNKNOWN" -eq 1 ]]; then
     # Never truncate: this is the only record of unaudited keys, and a later
     # run finds them already cached and would not add them back.
     if [[ ! -s "$KEYS_MANIFEST" ]]; then
-        printf '# Keys fetched by --fetch-unknown-keys. AUDIT THESE.
-' >> "$KEYS_MANIFEST"
-        printf '# package           fingerprint                                signer
-' >> "$KEYS_MANIFEST"
+        printf '# Keys fetched by --fetch-unknown-keys. AUDIT THESE.\n' >> "$KEYS_MANIFEST"
+        printf '# package           fingerprint                                signer\n' >> "$KEYS_MANIFEST"
     fi
 fi
 import_keys
@@ -841,8 +877,8 @@ echo
 
 # The manifest's sig column says how upstream vouches for each file.
 while read -r name _ver url sig _; do
-    SEEN_SOURCE[$name]=1
     [[ -z "$name" ]] && continue
+    SEEN_SOURCE[$name]=1
     file="$(basename "$url")"
 
     # A kind this script does not know fails: skipping it would pass the row.

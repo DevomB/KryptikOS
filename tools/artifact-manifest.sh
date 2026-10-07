@@ -4,9 +4,7 @@
 #   tools/artifact-manifest.sh [--root DIR] [--out FILE]
 #   tools/artifact-manifest.sh --verify FILE [--root DIR]
 #
-# The body is sorted and free of timestamps, absolute paths and hostnames, so
-# the same tree always gives the same digest. The same inputs need not: this
-# identifies a tree, it does not claim the build is reproducible.
+# The same tree always gives the same digest; that identifies a tree, not a reproducible build.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 
@@ -33,9 +31,7 @@ MANIFEST_FORMAT=1
 emit_inputs() {
     printf 'format\t%s\n' "$MANIFEST_FORMAT"
 
-    # --dirty: naming a commit for an edited tree is worse than naming none.
-    # safe.directory: run as root, git would refuse the user's checkout; it
-    # trusts this checkout alone.
+    # --dirty, so an edited tree never passes for its commit; safe.directory lets root read it.
     local commit="unknown" top
     top="$(cd "$KRYPTIK_ROOT" && pwd -P)"
     if have git && git -c safe.directory="$top" -C "$top" rev-parse --git-dir >/dev/null 2>&1; then
@@ -89,38 +85,29 @@ emit_inputs() {
 emit_tree() {
     local hashes; hashes="$(mktemp)"
     local meta;   meta="$(mktemp)"
+    local ferr;   ferr="$(mktemp)"
+    local raw;    raw="$(mktemp)"
+    # A RETURN trap outlives the function, so it clears itself.
     # shellcheck disable=SC2064
-    trap "rm -f '$hashes' '$meta'" RETURN
-
-    local ferr; ferr="$(mktemp)"
-    local raw;  raw="$(mktemp)"
-    # shellcheck disable=SC2064
-    trap "rm -f '$ferr' '$raw'" RETURN
+    trap "rm -f '$hashes' '$meta' '$ferr' '$raw'; trap - RETURN" RETURN
 
     # common.sh's ERR trap exits, and it fires even under set +e.
     local frc=0
     set +e
     trap - ERR
     # -xdev: after stage 03 the host's /dev is bind-mounted in the sysroot.
-    # find exits 1 on directories it cannot read (/root, /etc/kryptik/zones)
-    # but still prints the rest, so a manifest with holes would look complete.
     find "$ROOT" -xdev -mindepth 1 \
          -printf '%y\t%m\t%U\t%G\t%s\t%P\t%l\n' > "$raw" 2>"$ferr"
     frc=$?
     trap _kryptik_trap ERR
     set -e
 
+    # find still prints what it could read, so a manifest with holes would look complete.
     if [[ "$frc" -ne 0 ]]; then
         err "could not read every entry under ${ROOT}:"
         sed 's/^/    /' "$ferr" | head -10 >&2
         [[ "$(grep -c '' < "$ferr")" -gt 10 ]] && echo "    ..." >&2
-        die "Refusing to write a manifest that omits what it could not read.
-
-A sysroot has directories only root can enter. An identity record with
-holes in it is worse than no identity record, because it still produces a
-digest and the digest still looks authoritative.
-
-  sudo tools/artifact-manifest.sh --root ${ROOT} --out ..."
+        die "refusing to write a manifest with holes; as root: sudo tools/artifact-manifest.sh --root ${ROOT} --out ..."
     fi
 
     LC_ALL=C sort -t "$(printf '\t')" -k6,6 < "$raw" > "$meta"
@@ -132,9 +119,7 @@ digest and the digest still looks authoritative.
     # Unreadable files get the hash UNREADABLE, which the caller refuses.
     LC_ALL=C awk -F '\t' -v hashfile="$hashes" '
     BEGIN {
-        # sha256sum prints "<hash>  <path>", and escapes a leading backslash
-        # or an embedded newline by prefixing the line with "\". Those paths
-        # are recorded as unhashable rather than silently mis-attributed.
+        # sha256sum marks an escaped path with a leading "\": skip it, so it reads UNREADABLE.
         while ((getline line < hashfile) > 0) {
             if (substr(line, 1, 1) == "\\") { continue }
             h = substr(line, 1, 64)
@@ -153,9 +138,7 @@ digest and the digest still looks authoritative.
         } else if (type == "d") {
             printf "d\t%s\t%s\t%s\t-\t-\t%s\n", mode, uid, gid, path
         } else {
-            # Device nodes, fifos, sockets. Their presence and mode are part of
-            # the artifact - stage 03 creates /dev/console and /dev/null by
-            # hand, and a sysroot missing them does not boot.
+            # Device nodes, fifos, sockets: without /dev/console and /dev/null (stage 03) no boot.
             printf "%s\t%s\t%s\t%s\t-\t-\t%s\n", type, mode, uid, gid, path
         }
     }' "$meta" | LC_ALL=C sort
@@ -248,11 +231,8 @@ verify)
     echo >&2
     # Differing `input source` lines usually mean another KRYPTIK_SOURCES.
     if LC_ALL=C comm -23 "$old" "$new" | grep -q '^input\tsource\t'; then
-        warn "some differences are in 'input source' lines."
-        warn "Those enumerate \$KRYPTIK_SOURCES, which is currently:"
-        warn "  ${KRYPTIK_SOURCES}"
-        warn "If that is not the directory this manifest was generated under,"
-        warn "the tree may be untouched and only the environment differs."
+        warn "some differences are in 'input source' lines, which list \$KRYPTIK_SOURCES (${KRYPTIK_SOURCES})"
+        warn "if the manifest was made with another, the tree itself may be unchanged"
     fi
 
     err "first 40 differences (- manifest, + now):"

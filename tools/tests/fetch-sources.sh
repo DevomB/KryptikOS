@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
-# Tests for tools/fetch-sources.sh. Offline: a substituted manifest of file://
-# URLs, fetched and hashed by the real curl and sha256sum.
+# Tests for tools/fetch-sources.sh, offline: a manifest of file:// URLs, fetched by the real curl.
 
 set -uo pipefail
 
-# common.sh prefers these over paths derived from KRYPTIK_ROOT, so an exported
-# one would point the tool at the real tree.
+# common.sh prefers these, when exported, to paths derived from KRYPTIK_ROOT.
 unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -46,8 +44,7 @@ MANIFEST="${W}/manifest"
 
 sha_of() { sha256sum "$1" | cut -d' ' -f1; }
 
-# build_root <lock-spec>...
-#   each spec is name-ver:good|bad|absent  (absent = no lock entry)
+# build_root NAME-VER:good|bad|absent...: a lock entry per spec, none for absent.
 build_root() {
     rm -rf "$FAKE"
     mkdir -p "${FAKE}/build/config" "${FAKE}/sources"
@@ -188,8 +185,7 @@ else
     red "a .part survived a successful download"
 fi
 
-# Longer than the upstream file, so the range is unsatisfiable (curl exits 36
-# on file://, 33/416 over HTTP).
+# Longer than the upstream file, so the range is unsatisfiable (curl 36 on file://, 33/416 on HTTP).
 build_root alpha-1.0:good beta-2.0:good gamma-3.0:good
 place beta-2.0; place gamma-3.0
 head -c 100000 /dev/zero > "$(part alpha-1.0)"
@@ -207,8 +203,7 @@ else
     red "the restarted download produced wrong bytes"
 fi
 
-# Wrong bytes, shorter than upstream: the resume succeeds into a corrupt file
-# that only the checksum catches, and the message must blame the download.
+# A short .part of wrong bytes resumes into a corrupt file that only the checksum catches.
 build_root alpha-1.0:good beta-2.0:good gamma-3.0:good
 place beta-2.0; place gamma-3.0
 head -c 1500 /dev/zero > "$(part alpha-1.0)"
@@ -264,13 +259,13 @@ else
     sed 's/^/        /' "${FAKE}/sources.lock"
 fi
 
-# By design, --lock records whatever is on disk, tampered or not.
+# --lock records whatever is on disk, tampered or not.
 build_root alpha-1.0:absent
 place alpha-1.0 tampered; place beta-2.0; place gamma-3.0
 run --lock
 if [[ "$RC" -eq 0 ]] \
    && grep -qF "Lock mode: recording checksums of whatever downloads" "$OUT"; then
-    green "KNOWN BY DESIGN: --lock records a tampered file and says so"
+    green "--lock records a tampered file and says so"
 else
     red "--lock did not state that it records whatever is present"; show
 fi
@@ -295,32 +290,27 @@ fi
 
 # --- the shipped manifest and the shipped lockfile must agree ---------------
 
-# A row with no lock line is refused at fetch time; a lock line with no row is
-# a hash nobody checks. --list expands version defaults (gdbm's) as well.
+# A row with no lock line is refused at fetch time; a lock line with no row is a hash nobody checks.
 bash "$TOOL" --list > "${W}/live-manifest" 2>/dev/null
 awk '{n = $3; sub(/.*\//, "", n); print n}' "${W}/live-manifest" | sort -u > "${W}/mf"
 awk '{print $2}' "${ROOT}/sources.lock" | sort -u > "${W}/lk"
 
-miss="$(comm -23 "${W}/mf" "${W}/lk" | tr '
-' ' ')"
+miss="$(comm -23 "${W}/mf" "${W}/lk" | tr '\n' ' ')"
 if [[ -z "${miss// /}" ]]; then
     green "every source in the manifest has a sources.lock entry"
 else
     red "manifest rows with no lock entry: ${miss}"
 fi
 
-stale="$(comm -13 "${W}/mf" "${W}/lk" | tr '
-' ' ')"
+stale="$(comm -13 "${W}/mf" "${W}/lk" | tr '\n' ' ')"
 if [[ -z "${stale// /}" ]]; then
     green "every sources.lock entry corresponds to a manifest row"
 else
     red "lock entries with no manifest row: ${stale}"
 fi
 
-# An unset version with no default gives a URL like gdbm-.tar.gz: a quiet 404.
-# An empty field leaves a row short of its five.
-blank="$(awk 'NF != 5 {print $1}' "${W}/live-manifest" | tr '
-' ' ')"
+# An unset version leaves a field empty (a URL like gdbm-.tar.gz, a quiet 404) and the row short.
+blank="$(awk 'NF != 5 {print $1}' "${W}/live-manifest" | tr '\n' ' ')"
 if [[ -z "${blank// /}" ]]; then
     green "no manifest row resolves to an empty field"
 else
@@ -340,8 +330,7 @@ else
     red "rows declaring a value no tool knows: ${odd}"
 fi
 
-# gnu, stem.sig, vdir and github work from the URL, so each needs a URL of its
-# shape.
+# gnu, stem.sig, vdir and github work from the URL, so each needs a URL of its shape.
 gnu="$(sed -n 's/^MIRROR_GNU="\(.*\)"$/\1/p' "${ROOT}/build/config/versions.env")"
 misfit="$(awk -v gnu="${gnu}/" '
     ($4 == "gnu") != (index($3, gnu) == 1) { print $1 " (sig " $4 ")" }
@@ -365,8 +354,7 @@ else
     red "rows that follow no row: ${dangling}"
 fi
 
-# A row that declares rule reads UNKNOWN without its rule, and a rule with no
-# such row is read by nothing.
+# A rule row reads UNKNOWN without its rule, and a rule with no such row is read by nothing.
 awk '$5 == "rule" {print $1}' "${W}/live-manifest" | sort > "${W}/ruled"
 grep -v -E '^[[:space:]]*(#|$)' "${ROOT}/tools/currency-rules.tsv" | cut -f1 | sort > "${W}/rules"
 unruled="$(comm -23 "${W}/ruled" "${W}/rules" | tr '\n' ' ')"

@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
-# Make a kryptik-testctl control disk: an 8 MiB GPT image with one FAT
-# partition labelled kryptik-testctl holding kryptik-test.conf and its
-# signature by the kryptik-testctl key, which the medium checks against its
-# anchor before it honours a key: a disk signed by any other key is ignored.
+# Make a kryptik-testctl control disk: kryptik-test.conf and its signature on a small GPT image.
 #
 #   tools/image/mk-testctl.sh --out FILE --key KRYPTIK-TESTCTL KEY=VALUE...
 #
-# Read only by an install medium; keys include (build/service-scripts/testctl.sh):
+# Only an install medium reads it, and only when signed by the testctl key its anchor lists.
+# Keys include (build/service-scripts/testctl.sh):
 #   install_target=/dev/vdb  smoke_poweroff=1  install_wait=SECONDS
 #   preseed_user=NAME  preseed_password_hash=HASH
 set -Eeuo pipefail
@@ -18,7 +16,7 @@ while [[ "$#" -gt 0 ]]; do
     case "$1" in
         --out) OUT="${2:?}"; shift 2 ;;
         --key) KEY="${2:?}"; shift 2 ;;
-        -h|--help) sed -n '2,11p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,9p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *=*) KV+=("$1"); shift ;;
         *) die "unknown argument: $1" ;;
     esac

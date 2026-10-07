@@ -18,6 +18,10 @@
 # Rust and Python
 /compartments/kryptikd/target/
 compositor/target/
+**/fuzz/target/
+**/fuzz/corpus/
+**/fuzz/artifacts/
+**/fuzz/coverage/
 __pycache__/
 
 # Editor / OS noise

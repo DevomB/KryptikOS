@@ -41,8 +41,7 @@ fn arch_checked_before_syscall_number() {
     assert!(p.iter().take(3).any(|i| i.k == AUDIT_ARCH_X86_64));
 }
 
-/// Interprets the BPF subset `build_program` emits, so tests check what the
-/// filter does rather than which constants it holds.
+/// Interprets what `build_program` emits, so tests check what the filter does, not its constants.
 fn evaluate(prog: &[SockFilter], arch: u32, nr: u32) -> u32 {
     evaluate_args(prog, arch, nr, [0; 6])
 }
@@ -190,9 +189,7 @@ fn whole_allowlist_evaluates_correctly() {
     let p = build_program(BASE_ALLOWLIST).unwrap();
     for &nr in BASE_ALLOWLIST {
         let r = evaluate(&p, AUDIT_ARCH_X86_64, nr as u32);
-        /* With zero arguments clone3 gets ENOSYS and family 0 is refused
-         * to socket and socketpair; nothing listed is killed, and the rest
-         * are allowed. */
+        // With zero arguments clone3 gets ENOSYS and family 0 is refused; nothing listed is killed.
         assert_ne!(r, SECCOMP_RET_KILL_PROCESS, "allowlisted syscall {nr} was killed");
         if ![libc::SYS_clone3, libc::SYS_socket, libc::SYS_socketpair].contains(&nr) {
             assert_eq!(r, SECCOMP_RET_ALLOW, "allowlisted syscall {nr} was not allowed");
@@ -254,9 +251,9 @@ fn with_arg(i: usize, v: u64) -> [u64; 6] {
 }
 
 #[test]
-fn clone_without_namespace_flags_is_allowed() {
+fn plain_clone_allowed() {
     let p = build_program(BASE_ALLOWLIST).unwrap();
-    // What pthread_create and fork() actually pass.
+    // What pthread_create and fork() pass.
     let thread = 0x3d0f00u64; // VM|FS|FILES|SIGHAND|THREAD|SYSVSEM|SETTLS|PARENT_SETTID|CHILD_CLEARTID
     let fork = 0x1200011u64; // CHILD_SETTID|CHILD_CLEARTID|SIGCHLD
     for f in [thread, fork, 17] {
@@ -269,7 +266,8 @@ fn clone_without_namespace_flags_is_allowed() {
 }
 
 #[test]
-fn clone_with_any_namespace_flag_is_killed() {
+fn namespace_clone_fails_with_eperm() {
+    // As unshare(2) does: a program probing for user namespaces lives on.
     let p = build_program(BASE_ALLOWLIST).unwrap();
     for f in [
         libc::CLONE_NEWUSER, libc::CLONE_NEWNS, libc::CLONE_NEWPID,
@@ -279,15 +277,67 @@ fn clone_with_any_namespace_flag_is_killed() {
         let flags = (f as u32 | libc::SIGCHLD as u32) as u64;
         assert_eq!(
             evaluate_args(&p, X86, libc::SYS_clone as u32, with_arg(0, flags)),
-            SECCOMP_RET_KILL_PROCESS,
-            "clone flags {flags:#x} must be killed"
+            errno_action(EPERM),
+            "clone flags {flags:#x} must fail with EPERM"
         );
         // Legacy clone ignores the high word, and so does the filter.
         assert_eq!(
             evaluate_args(&p, X86, libc::SYS_clone as u32, with_arg(0, flags | (1 << 40))),
-            SECCOMP_RET_KILL_PROCESS
+            errno_action(EPERM)
         );
     }
+}
+
+#[test]
+fn unshare_fails_setns_killed() {
+    // Both stay on the denied list: no policy may allow either.
+    let p = build_program(BASE_ALLOWLIST).unwrap();
+    for f in [0, libc::CLONE_NEWUSER as u64, CLONE_NS_MASK as u64] {
+        let r = evaluate_args(&p, X86, libc::SYS_unshare as u32, with_arg(0, f));
+        assert_eq!(r, errno_action(EPERM), "unshare flags {f:#x}");
+    }
+    let r = evaluate_args(&p, X86, libc::SYS_setns as u32, with_arg(1, libc::CLONE_NEWUSER as u64));
+    assert_eq!(r, SECCOMP_RET_KILL_PROCESS);
+    for nr in [libc::SYS_unshare, libc::SYS_setns] {
+        assert!(is_denied(nr) && widened(&[nr]).is_err(), "syscall {nr} can be allowed");
+    }
+}
+
+#[test]
+fn trace_names_namespace_refusals() {
+    // Named like any soft refusal, while a plain clone runs.
+    let p = build_program_with(BASE_ALLOWLIST, libc::SECCOMP_RET_USER_NOTIF).unwrap();
+    let ns = with_arg(0, (libc::CLONE_NEWUSER | libc::SIGCHLD) as u64);
+    assert_eq!(evaluate_args(&p, X86, libc::SYS_clone as u32, ns), libc::SECCOMP_RET_USER_NOTIF);
+    assert_eq!(evaluate_args(&p, X86, libc::SYS_unshare as u32, ns), libc::SECCOMP_RET_USER_NOTIF);
+    let fork = with_arg(0, libc::SIGCHLD as u64);
+    assert_eq!(evaluate_args(&p, X86, libc::SYS_clone as u32, fork), SECCOMP_RET_ALLOW);
+}
+
+#[test]
+fn trace_answers_as_a_zone() {
+    /* seccomp-trace hears of every call the zone filter refuses, and answers
+     * each as a zone hears it: a soft refusal's errno, or ENOSYS where a zone
+     * is killed. */
+    let zone = build_program(BASE_ALLOWLIST).unwrap();
+    let trace = build_program_with(BASE_ALLOWLIST, libc::SECCOMP_RET_USER_NOTIF).unwrap();
+    let ns = with_arg(0, (libc::CLONE_NEWUSER | libc::SIGCHLD) as u64);
+    let mut calls: Vec<(libc::c_long, [u64; 6])> = DENIED_RATIONALE
+        .iter()
+        .map(|&(nr, _)| nr)
+        .chain(REFUSED_SOFTLY.iter().map(|&(nr, _)| nr))
+        .map(|nr| (nr, [0; 6]))
+        .collect();
+    calls.extend([(libc::SYS_clone, ns), (libc::SYS_unshare, ns), (libc::SYS_ioctl, with_arg(1, TIOCSTI as u64))]);
+    for (nr, args) in calls {
+        assert_eq!(evaluate_args(&trace, X86, nr as u32, args), libc::SECCOMP_RET_USER_NOTIF, "syscall {nr} is not named");
+        let call = libc::seccomp_data { nr: nr as i32, arch: X86, instruction_pointer: 0, args };
+        let heard = soft_errno(&call).map_or(SECCOMP_RET_KILL_PROCESS, errno_action);
+        assert_eq!(evaluate_args(&zone, X86, nr as u32, args), heard, "syscall {nr}");
+    }
+    // Another architecture is killed in a zone whatever the number.
+    let i386 = libc::seccomp_data { nr: libc::SYS_unshare as i32, arch: 0x4000_0003, instruction_pointer: 0, args: ns };
+    assert_eq!(soft_errno(&i386), None);
 }
 
 #[test]
@@ -362,9 +412,8 @@ fn socketpair_unix_only() {
 
 #[test]
 fn tsync_failure_is_error() {
-    /* A thread with a filter of its own cannot take another by TSYNC: the
-     * kernel returns its id and attaches nothing. In a forked child, which
-     * exits while that thread still waits. */
+    /* TSYNC fails on a thread with a filter of its own: the kernel returns its id and attaches
+     * nothing. Run in a forked child, which exits while that thread still waits. */
     let pid = unsafe { libc::fork() };
     assert!(pid >= 0);
     if pid == 0 {
@@ -399,8 +448,7 @@ fn tsync_failure_is_error() {
 
 #[test]
 fn arg_rules_leave_allowlist_alone() {
-    /* A non-matching rule block must leave the syscall number in the
-     * accumulator; these arguments would trip any rule consulted. */
+    // A skipped rule block must leave the syscall number loaded; these arguments trip any rule.
     let p = build_program(BASE_ALLOWLIST).unwrap();
     let args = [CLONE_NS_MASK as u64, TIOCSTI as u64, 40, 7, 1 << 33, 9];
     for &nr in BASE_ALLOWLIST {
@@ -417,7 +465,8 @@ fn arg_rules_leave_allowlist_alone() {
 
 #[test]
 fn widened_refuses_denied() {
-    assert!(widened(&[libc::SYS_ptrace]).is_err());
+    let e = widened(&[libc::SYS_ptrace]).unwrap_err();
+    assert!(matches!(e, SeccompError::Denied(libc::SYS_ptrace)) && e.to_string().contains("ptrace"), "{e}");
     let w = widened(&[libc::SYS_sched_setscheduler, libc::SYS_read]).unwrap();
     assert_eq!(w.len(), BASE_ALLOWLIST.len() + 1, "a base call is not added twice");
     assert!(w.contains(&libc::SYS_sched_setscheduler));
@@ -425,8 +474,7 @@ fn widened_refuses_denied() {
 
 #[test]
 fn everyday_calls_allowed() {
-    /* Each killed a common program in a zone: tar, gzip, cp -a, rsync,
-     * install, asyncio, timeout, mmap.flush, chrt -p. */
+    // tar, gzip, cp -a, rsync, install, asyncio, timeout, mmap.flush and chrt -p need these.
     let allowed: HashSet<libc::c_long> = BASE_ALLOWLIST.iter().copied().collect();
     for nr in [
         libc::SYS_chmod, libc::SYS_fchmod, libc::SYS_fchmodat, libc::SYS_fchmodat2,
@@ -445,18 +493,15 @@ fn everyday_calls_allowed() {
 // --- zone policy widenings ---------------------------------------------
 
 #[test]
-fn widened_socket_rule_allows_named_extras() {
+fn socket_policy_extras() {
     let sp = SocketPolicy { families: vec![17], netlink_protocols: vec![12], netlink_all: false };
     let p = build_program_full(BASE_ALLOWLIST, SECCOMP_RET_KILL_PROCESS, &sp).unwrap();
-    // The base families still pass...
     for fam in [AF_UNIX, AF_INET, AF_INET6] {
         assert_eq!(evaluate_args(&p, X86, libc::SYS_socket as u32, with_arg(0, fam as u64)), SECCOMP_RET_ALLOW, "{fam}");
     }
-    // ...the extra family passes...
     assert_eq!(evaluate_args(&p, X86, libc::SYS_socket as u32, with_arg(0, 17)), SECCOMP_RET_ALLOW);
-    // ...an unnamed family still does not...
     assert_eq!(evaluate_args(&p, X86, libc::SYS_socket as u32, with_arg(0, 40)), errno_action(EAFNOSUPPORT));
-    // ...NETLINK_ROUTE and the extra protocol pass, another does not.
+    // NETLINK_ROUTE and the extra protocol pass, another does not.
     let mut a = [0u64; 6];
     a[0] = AF_NETLINK as u64;
     for (proto, want) in [(0u64, SECCOMP_RET_ALLOW), (12, SECCOMP_RET_ALLOW), (9, errno_action(EAFNOSUPPORT))] {

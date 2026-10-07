@@ -254,7 +254,7 @@ fn handle_update(req: &Request, payload: &[u8]) -> Result<String, String> {
             let (role, running) = (up::required_role()?, up::running_version());
             up::forget_if_installed(dir, &running);
             let conf = std::fs::read_to_string(up::CONF).unwrap_or_default();
-            Ok(up::channel_from(&conf).map_or("idle".to_string(), |channel| up::poll(dir, &channel, &role, &running)))
+            Ok(up::channel_from(&conf).map_or("idle".to_string(), |channel| up::poll(dir, &channel, &role, &running, now)))
         }
         Request::UpdatePut { name, offset, .. } => up::put(dir, &up::tool_checks(), now, name, *offset, payload).map(|r| format!("ok {r}")),
         _ => Err("not an update verb".into()),
@@ -309,6 +309,7 @@ pub struct Served<'a> {
     pub home_dev: &'a dyn Fn() -> Option<u64>,
     /// The development stand-in for the zone 0 prompt.
     pub auto_approve: bool,
+    /// The cap on every transfer, which a zone's `[transfer] max_bytes` may lower.
     pub max_bytes: u64,
     /// Finds a running destination's root and identity: the registry, or a test directory.
     pub resolve_dest: &'a dyn Fn(&str) -> Result<Target, String>,
@@ -391,8 +392,9 @@ fn openat2(dirfd: RawFd, path: &str, flags: u64, mode: u64, resolve: u64) -> io:
 /// Check a transfer, ask the user, then deliver it. The checks run in order,
 /// refusing at the first failure: one descriptor; a destination other than the
 /// sender, named in its `[transfer] to`, configured and not the nic zone; a
-/// regular O_RDONLY file on the sender's data mount within the cap. The zone
-/// learns only the name the file landed under.
+/// regular O_RDONLY file on the sender's data mount within the cap and both
+/// zones' `[transfer] max_bytes`. The zone learns only the name the file
+/// landed under.
 fn handle_transfer(s: &Served, dest: &str, name: &str, fds: &[OwnedFd]) -> Result<(String, u64), String> {
     let sender = &s.zone.name;
     if fds.len() != 1 {
@@ -436,8 +438,15 @@ fn handle_transfer(s: &Served, dest: &str, name: &str, fds: &[OwnedFd]) -> Resul
         }
         _ => {}
     }
-    if st.st_size as u64 > s.max_bytes {
-        return Err(format!("file is {} bytes; the transfer limit is {}", st.st_size, s.max_bytes));
+    // A zone's [transfer] max_bytes bounds what it sends and what it receives.
+    let (mut limit, mut whose) = (s.max_bytes, String::new());
+    for z in [s.zone, &dz] {
+        if let Some(m) = z.transfer_max.filter(|m| *m < limit) {
+            (limit, whose) = (m, format!(" ([transfer] max_bytes of zone {:?})", z.name));
+        }
+    }
+    if st.st_size as u64 > limit {
+        return Err(format!("file is {} bytes; the transfer limit is {limit}{whose}", st.st_size));
     }
     /* Ask last, once even the destination is known to be running: a question
      * whose answer changes nothing teaches people to say yes. Look it up again

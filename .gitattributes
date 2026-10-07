@@ -1,5 +1,4 @@
-# LF everywhere, whatever core.autocrlf says: a CRLF script fails with
-# "bad interpreter".
+# LF everywhere, whatever core.autocrlf says: a CRLF script fails with "bad interpreter".
 * text=auto eol=lf
 
 *.sh        text eol=lf

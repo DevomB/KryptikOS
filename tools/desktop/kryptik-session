@@ -35,6 +35,10 @@ export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 # No WAYLAND_DISPLAY: wlroots would take it as a display to nest in. dwl names
 # its own socket and exports it to the chrome.
 unset WAYLAND_DISPLAY WAYLAND_SOCKET DISPLAY
+# The layout sysinit loaded on the console, for dwl's xkb keymap; every zone's
+# clients are handed the compositor's.
+. /usr/libexec/kryptik/keyboard.sh
+kb_export_xkb
 # pixman is the only renderer built (s_wlroots), and wlroots picks it by itself
 # only for a GPU without a render node.
 export WLR_RENDERER=pixman

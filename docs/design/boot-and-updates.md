@@ -21,6 +21,12 @@ Partitions are found by GPT label, never by device name.
 | 3 | `kryptik-b` | slot B, empty after install |
 | 4 | `kryptik-state` | LUKS2 with ext4 inside, rest of disk: `/var`, the `/etc` upper layer, `/home`, zone volumes, update staging |
 
+Nothing on the ESP is signed but the kernels. Its records reach a terminal
+and `update.log` (`kryptik-update status` and `rollback`,
+`kryptik-recover --status`) only in the shape Kryptik writes them, a slot
+`a` or `b` and a release's version (`build/service-scripts/esp-records.sh`);
+anything else reads as `unknown`.
+
 The USB image holds `kryptik-esp` and `kryptik-media`; the ISO holds the ESP
 as its El Torito image and the root image at a sector offset (a `linear` dm
 target over `/dev/sr0`, verity on top). The root image is byte-identical on
@@ -57,7 +63,9 @@ shows the chain enforces a key; it is not production certification. A
 production image (`KRYPTIK_ROLE=production`) is signed with the key on the key
 medium that `KRYPTIK_KEYS` names, and no key is made (`build/lib/release-keys.sh`,
 [building](../building.md)). Stage 06 runs on the host: no key is ever
-inside the chroot, where the upstream build scripts run.
+inside the chroot, where the upstream build scripts run, and a release's keys
+reach only the job that signs, never the one that ran the chroot
+([release keys](../release-keys.md#where-they-are-used)).
 
 ## Mutable state
 
@@ -125,14 +133,16 @@ payloads come from [the update channel](update-channel.md) or by hand.
    cut short leaves nothing that `rollback` or `kryptik-recover --commit-slot`
    would take. Write the slot (`dd conv=fsync`) and read it back.
 3. Put its kernel on the ESP as `.efi.new`, fsync, check it, rename; write
-   its version file.
+   its version file. Keep the verified manifest and signature in
+   `/var/lib/kryptik/boot/release-<slot>/` for the [clock's floor](time.md).
 4. Record the trial (`armed=0`), run `kryptik-efiboot set-next <inactive>`,
    record `armed=1`, reboot.
 5. `boot-success` judges the trial slot: state persistent; eudev, seatd, the
    launch daemon, the net zone and the login getty up; kryptikd finding kernel
    support and the zones; an unambiguous ESP. Healthy: it copies the kernel
    over `BOOTX64.EFI` (`.new`, fsync, rename), updates `committed-slot`,
-   clears the trial and forgets the entries. Unhealthy: it records that,
+   clears the trial and forgets the entries, and the slot's kept manifest
+   raises the clock's floor if it is the newest. Unhealthy: it records that,
    forgets the entries and reboots into the committed slot, `BootNext` being
    spent. On a degraded state the trial record is out of reach, so
    `committed-slot` says whether the boot is a trial. A trial that never comes
@@ -149,6 +159,17 @@ payloads come from [the update channel](update-channel.md) or by hand.
    that net zone at will can hold a machine on its old release this way, but
    can already do as much by dropping its traffic.
 6. `kryptik-update rollback` arms the other slot the same way.
+7. The earlier release stays bootable, since rollback needs it, and its
+   kernel is signed like any other. A firmware entry or `BootNext` that
+   something outside Kryptik sets (firmware setup, another system) boots it.
+   boot-success reads the committed slot off the ESP at every boot: a slot
+   that runs with no trial on record and is not the committed one is
+   recorded as `uncommitted`, never as `ok`; its entries are forgotten and
+   the machine reboots, once, to the committed slot. If it comes up there
+   again it is left running, to be put right from it
+   (`kryptik-update status` shows the result). This does not stop someone
+   who rewrites the ESP itself: the committed slot's name there is not
+   signed.
 
 Zone data is never written. On the FAT ESP the two renames are the only
 non-atomic steps; each follows a complete, fsynced copy and leaves a system

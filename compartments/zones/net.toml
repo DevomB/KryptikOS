@@ -1,24 +1,18 @@
-# net — the only zone with a route to the physical NIC; every other zone
-# reaches the network through it. It is the most exposed zone, so its storage
-# is ephemeral (docs/architecture.md, "Known weaknesses").
+# net — the only zone on the physical NIC; the most exposed, so its storage is ephemeral.
 
 [zone]
 name        = "net"
 description = "Sole holder of a physical network route."
 
 [network]
+# Routed zones reach the network through a veth into kryptik0, this zone's bridge.
 mode = "nic"
-# Zones with mode = "routed" get a veth into kryptik0, the bridge in this zone.
-# Interfaces taken out of zone 0 when this zone starts. "*" is every one on a
-# bus device (PCI, USB, platform), wireless ones moved by their wiphy; software
-# devices (loopback, bridges, veth, tunnels) never qualify. A single name such
-# as "eth0" takes only that one.
+# Taken from zone 0 at start: "*" is every PCI, USB or platform interface, "eth0" only that one.
 nic = "*"
 
 [storage]
 mode = "ephemeral"
-# Required for ephemeral: $HOME is a tmpfs, and its pages outlive the process
-# that wrote them, so the cgroup memory limit does not bound them.
+# Required for ephemeral: $HOME is a tmpfs, which could otherwise fill host memory.
 size = "512M"
 
 [policy]
@@ -29,15 +23,13 @@ memory_max = "1G"
 pids_max   = 256
 
 [identity]
-# Host uid/gid range: root inside maps to 196608, nobody to 262142. Fixed,
-# never derived from zone order (docs/design/privileged-launch.md).
+# Root inside maps to host uid/gid 196608, nobody to 262142; fixed, never derived from zone order.
 uid_base = 196608
 
 [ui]
-# Colour, glyph and label must differ from every other zone's; the pattern
-# is checked but nothing draws it. Pick colours with `zoneid propose`;
-# `zoneid audit` checks the set, `zoneid explain` the rule.
+# Colour, glyph and label must be unique; `zoneid propose` picks colours, `zoneid audit` checks.
 border_color   = "#686573"
+# The pattern is checked, but nothing draws it.
 border_pattern = "notched"
 glyph          = "◐"
 label          = "NET"

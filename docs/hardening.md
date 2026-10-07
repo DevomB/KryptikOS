@@ -41,29 +41,29 @@ machinery.
 
 `make audit-artifacts` (`tools/check-artifact-hardening.sh`) reads the ELF
 headers of every object. Stage 06 runs it strict on the root tree as it packs
-it into the image, so a finding fails the build, and `make acceptance` runs
-it on the sysroot for the record. A
-writable and executable segment, an executable stack, text relocations or an
-RPATH into the build tree fail it. Acceptance also fails on a missing CET
-note, `BIND_NOW` or RELRO, a non-PIE executable and any other RPATH, unless
-[`artifact-accepted.txt`](../build/config/artifact-accepted.txt) names the
-object and the reason: `kryptikd` and `kryptik-wlproxy`, which stable rustc
-does not mark for CET, GMP's assembly, and the rpaths man-db, perl and glibc's
-converters need or that repeat the loader's own directory. An entry that no
-longer matches fails too, so the list holds only what the image still has. A
+it into the image, so a finding fails the build, and `make acceptance` runs it
+strict on the sysroot for the record. A writable and executable segment, an
+executable stack, text relocations or an RPATH into the build tree always
+fail it. In strict mode so do a missing CET note, `BIND_NOW` or RELRO, a
+non-PIE executable and any other RPATH, unless
+[`artifact-accepted.txt`](../build/config/artifact-accepted.txt) lists the
+object with its reason: `kryptikd` and `kryptik-wlproxy`, which stable rustc
+does not mark for CET, GMP's assembly, and the rpaths that man-db, perl and
+glibc's converters need or that repeat the loader's own directory. An entry
+that matches nothing fails too, so the list holds only what the image has. A
 new finding is fixed in its package's recipe, not by weakening the check.
 The stack protector and FORTIFY are counted, not required of each object: a
 function without a local array gets no canary and a call with no known size
 no `_chk` variant, so an object with neither shows nothing about its flags.
-The record names the objects without either.
+The record lists the objects without either.
 
-Everything stage 04 builds before its glibc, the first with `--enable-cet`,
-linked stage 01's crt files, which carry no CET note, so each of those
-packages is built a second time right after glibc. Stage 04 also builds GCC
-again with the flags and `--enable-cet`, and the step fails unless
-`libgcc_s` and `libstdc++` (which glibc's unwinder and every C++ program
-load) carry IBT and SHSTK and `gcc` itself is PIE with `BIND_NOW`. No program
-stage 02 built for the chroot is left in the image.
+Packages stage 04 builds before its glibc (the first built with
+`--enable-cet`) link stage 01's crt files, which carry no CET note, so each is
+built again right after glibc. Stage 04 also rebuilds GCC with the flags and
+`--enable-cet`, and the step fails unless `libgcc_s` and `libstdc++` (which
+glibc's unwinder and every C++ program load) carry IBT and SHSTK and `gcc`
+itself is PIE with `BIND_NOW`. No program stage 02 built for the chroot is
+left in the image.
 
 ## Allocator
 
@@ -72,9 +72,9 @@ ADR-005 makes hardened_malloc the system allocator. Stage 04 builds it without
 `/etc/ld.so.preload` into the image's root, so every process of the running
 system uses it, and kryptikd writes each zone its own preload naming only that
 library (a zone never sees the host's). The build chroot never has the file.
-Its guard pages are separate mappings, so `vm.max_map_count` is 1048576. The
-booted medium and the zones suite check that a process has it mapped. No
-benchmark numbers are claimed.
+hardened_malloc's guard pages are separate mappings, so `vm.max_map_count` is
+1048576. The booted medium and the zones suite check that a process has the
+library mapped. No benchmark numbers are claimed.
 
 ## Kernel
 
@@ -92,12 +92,11 @@ ADR-009) and `boot.fragment` (ADR-013).
   weaker than kernel access.
 - `RANDOMIZE_BASE`, `RANDOMIZE_MEMORY`: KASLR.
 - `MODULE_SIG_FORCE`: only modules signed by the build load. The key is the
-  kernel build's own (`certs/signing_key.pem`), made with the kernel tree. The
-  Actions cache keeps the tree without it, so a run that restores the tree
-  makes a new key, links the kernel with it and signs the modules again, and
-  no key leaves the machine that used it. It is a developer key like the
-  others: a release has to sign with a key it is handed (roadmap, production
-  keys).
+  kernel build's own (`certs/signing_key.pem`), made with the kernel tree, and
+  never leaves the machine that used it: the Actions cache keeps the tree
+  without it, so a run that restores the tree makes a new key, links the
+  kernel with it and signs the modules again. Releases are no different: no
+  module key is kept ([release keys](release-keys.md)).
 - `KSTACK_ERASE`, `RANDSTRUCT_FULL`: stack erasing and structure layout
   randomization (the 6.18 names; the old `GCC_PLUGIN_*` symbols are derived
   and cannot be set).
@@ -121,7 +120,7 @@ the kernel lacks.
 (`tools/check-kernel-hardening.sh`). Each failure it reports is fixed or
 listed with its reason in
 [`checker-accepted.txt`](../build/config/kernel/checker-accepted.txt), and
-entries that start passing are named so the list shrinks.
+entries that start passing are reported as stale so the list shrinks.
 
 ### Command line
 
@@ -147,18 +146,18 @@ filters do not need it), kexec, userfaultfd, 32-bit mappings or core dumps.
 
 Privilege transitions go through kryptikd, where they can be audited, not
 through setuid binaries or file capabilities. A setuid binary needs a
-justified entry in `build/config/setuid-allowlist.txt`: today `su`, the one
-way from a login to root, and `passwd`, which nothing brokers yet. A file
+justified entry in `build/config/setuid-allowlist.txt`, which lists `su`, the
+only way from a login to root, and `passwd`, which nothing brokers yet. A file
 carrying capabilities (`security.capability`) needs one in
 `build/config/capability-allowlist.txt`, which is empty. The recipes install
 no other bit: shadow's eight other tools lose theirs after its install,
 util-linux is built with `--disable-makeinstall-setuid` and
 `--disable-makeinstall-chown` (wall's setgid tty is under that hook), and
-inetutils without traceroute. Stage 06 then runs `tools/audit-setuid.sh` over the
-image's root and fails the build on any unlisted bit or capability; `--strip`
-takes them off a root staged by hand instead. Either way the audit fails when
-it cannot read a directory, on a list entry without a justification, and on
-a strip that would take the bit or the capabilities off a listed file
+inetutils without traceroute. Stage 06 runs `tools/audit-setuid.sh` over the
+image's root and fails the build on any unlisted bit or capability; on a root
+staged by hand, `--strip` takes them off instead. Either way the audit fails
+when it cannot read a directory, on a list entry without a justification, and
+on a strip that would take the bit or the capabilities off a listed file
 through a hard link. `make zones-test` audits the installed root again: the
 bits are on the listed binaries alone, no file carries capabilities, and
 every sysctl reads back as `build/config/sysctl.d` says.
@@ -166,12 +165,16 @@ every sysctl reads back as `build/config/sysctl.d` says.
 ## Zone syscall filter
 
 Every zoned process runs under a default-deny seccomp-bpf filter
-(`compartments/kryptikd/src/seccomp.rs`) allowing about 200 syscalls; anything
-else is `SECCOMP_RET_KILL_PROCESS`. `clone` with namespace flags is killed,
-`clone3` fails with `ENOSYS` so libc falls back to `clone`, the `TIOCSTI` and
-`TIOCLINUX` ioctls are killed, and `socket` is limited to `AF_UNIX`,
-`AF_INET`, `AF_INET6` and `NETLINK_ROUTE`. A zone policy file can widen this
-in named ways but never re-allow a denied syscall
+(`compartments/kryptikd/src/seccomp.rs`) allowing about 200 syscalls. Anything
+else is `SECCOMP_RET_KILL_PROCESS`, except that the `set*id` calls,
+`setgroups` and `capset` fail with `EPERM` and `inotify_init` and
+`inotify_init1` with `ENOSYS`, so programs that try them carry on. `unshare`
+and `clone` with namespace flags fail with `EPERM` too: Firefox, Chromium and
+bubblewrap probe for user namespaces at start and must hear no, as the kernel
+tells an unprivileged caller. `clone3` fails with `ENOSYS` so libc falls back
+to `clone`, the `TIOCSTI` and `TIOCLINUX` ioctls are killed, and `socket` is
+limited to `AF_UNIX`, `AF_INET`, `AF_INET6` and `NETLINK_ROUTE`. A zone policy
+file can widen this in named ways but never re-allow a denied syscall
 ([zone policy files](design/zone-policy-files.md)).
 
 | Denied | Why |
@@ -186,8 +189,8 @@ in named ways but never re-allow a denied syscall
 | `init_module`, `finit_module`, `kexec_load` | load kernel code |
 | `io_uring_*` | does I/O without syscalls, past the filter |
 
-`compartments/tests/adversarial.sh` makes 13 of these calls in a real process
-and expects SIGSYS.
+`compartments/tests/adversarial.sh` makes 12 of these calls under the filter
+and expects SIGSYS; from `unshare` and a namespace `clone` it expects `EPERM`.
 
 Other architectures are refused, and x32 calls (x86-64 numbers with bit 30
 set) are killed before the allowlist. Each allowed syscall is a compare

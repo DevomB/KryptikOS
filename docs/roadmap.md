@@ -31,6 +31,7 @@ work in zones from a terminal and a text browser, and keep it up to date.
       three machines: a wired desktop, an Intel laptop on Wi-Fi alone, an AMD
       laptop. What each lacked becomes a line in `boot.fragment` or
       `firmware.list`, and the machines start a hardware list in the README.
+      Planned for October 2026.
 - [x] **CPU microcode.** Built into the signed kernel from Intel's release and
       AMD's containers in linux-firmware; stage 05 refuses a kernel without
       the blobs. The load itself is proven only on a physical machine.
@@ -41,15 +42,18 @@ work in zones from a terminal and a text browser, and keep it up to date.
 
 ### Trusted by someone who did not build it
 
-- [ ] **Production keys.** A release key and a Secure Boot key kept offline,
-      a written ceremony for making, using, rotating and revoking them
-      ([release keys](release-keys.md)), a build that signs with a key it is
-      handed and refuses to invent one for a release, and an installed system
+- [ ] **Production keys.** A release key and a Secure Boot key held in the
+      repository's protected release environment, which only a release tag's
+      build can use, and only once the maintainer approves it; their public
+      halves in the tree under `build/config/release/`; a written procedure
+      for making, using, rotating and revoking them
+      ([release keys](release-keys.md)); a build that signs with a key it is
+      handed and refuses to invent one for a release; and an installed system
       that accepts the next release and refuses a development build.
       Acceptance's production part, with a throwaway key medium, proves a
       build signing with the medium it is handed and the installed system's
       half; `tools/tests/release-keys.sh` proves a production build refuses to
-      make keys of its own. The keys kept offline are still to be made.
+      make keys of its own. The keys are still to be made.
 - [x] **No known-vulnerable pins.** Every pin behind its upstream has a review
       in `tools/pin-reviews.tsv`, and `tools/check-pin-reviews.sh` fails CI
       without one. No pin is held, and a release runs the gate with
@@ -123,6 +127,7 @@ work in zones from a terminal and a text browser, and keep it up to date.
       encrypted zone's volume, held by `io.max` on the volume's devices
       ([design](design/resource-limits-and-ephemeral-zones.md)). The launcher
       suite measures both, and `untrusted` ships with `cpu_max = "200%"`.
+      Weights are not set: `io.weight` waits on a kernel choice, blk-iocost or BFQ.
 - [x] **The setuid audit fails.** Stage 06 refuses an unlisted setuid bit and
       a list entry without its reason; shadow's and util-linux's spare bits are
       dropped in their recipes, and traceroute is not built. The zones suite
@@ -157,14 +162,15 @@ A desktop someone can live in, built the same way.
   repository, or zones that carry their own userland. An ADR first.
 - **The laptop.** Per-zone sound brokered like the clipboard, Bluetooth,
   suspend and resume with volume keys dropped across it, power management,
-  hotplug and multiple monitors, keyboard layouts and input methods.
+  hotplug and multiple monitors, input methods and a second keyboard layout
+  to switch to.
 - **Disk unlock by the TPM.** Measured boot and a state partition sealed to
   it, with the passphrase as fallback.
 - **Reproducible builds,** checked by CI, then a bootstrappable toolchain so
   the first compiler is not the host's.
 - **A kernel built with Clang** for kernel CFI, userspace staying on GCC.
-- **Installer choices.** Beside another OS, across disks, a chosen slot size,
-  and an upgrade path when slots become too small.
+- **Installer choices.** Beside another OS, across disks, and an upgrade path
+  when slots become too small.
 - **Anonymity as a zone property.** A Tor or VPN uplink enforced by the net
   zone.
 - **A hardware certification list** from people who ran acceptance on the

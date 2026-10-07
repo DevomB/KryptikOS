@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Check that the C library can unwind. glibc dlopens libgcc_s.so.1 for
-# pthread_exit, pthread_cancel and backtrace, and if the loader misattributes
-# addresses the unwinder abort()s silently (build/patches/glibc-2.40/README.md).
+# Check that glibc unwinds through the libgcc_s.so.1 it dlopens (build/patches/glibc-2.40/README.md).
 # Run in the chroot or on a booted system; exit 77 without a compiler.
 set -uo pipefail
 
@@ -24,10 +22,9 @@ command -v "$CC" >/dev/null 2>&1 || {
 work="$(mktemp -d)" || { echo "mktemp failed"; exit 1; }
 cd "$work" || exit 1
 
-# Probes run without a controlling terminal and with glibc's fatal messages on
-# stderr, or glibc writes them to /dev/tty. setsid without -w may fork and exit
-# 0, losing the probe's status.
+# No controlling terminal, and LIBC_FATAL_STDERR_=1: glibc's fatal messages go to stderr, not the tty.
 SETSID=(setsid)
+# Without -w, setsid may fork and exit 0, losing the probe's status.
 if setsid -w true >/dev/null 2>&1; then
     SETSID=(setsid -w)
 fi
@@ -54,7 +51,7 @@ if "$CC" -O0 -o ctl_ok ctl_ok.c 2>cc.log && "$CC" -O0 -o ctl_abort ctl_abort.c 2
     if [[ $? -ne 0 ]]; then
         ok "a program that abort()s is seen as failing"
     else
-        bad "a deliberate abort() was seen as passing - this harness proves nothing"
+        bad "a program that abort()s was seen as passing - this harness proves nothing"
     fi
 else
     bad "could not build the controls"
@@ -119,8 +116,7 @@ probe() {
     else
         bad "${tag}: exited ${rc}"
         [[ -s probe.out ]] && sed 's/^/       /' probe.out
-        [[ $rc -eq 134 ]] && note "SIGABRT with no message is the signature of" \
-                          && note "libgcc's unwinder failing to find its own FDEs."
+        [[ $rc -eq 134 ]] && note "SIGABRT with no message: libgcc's unwinder did not find its own FDEs."
     fi
 }
 
@@ -131,9 +127,7 @@ probe "backtrace() returns frames"    bt.c
 echo
 echo "=== the loader knows where it is ==="
 
-# LD_TRACE_LOADED_OBJECTS (as ldd uses it) prints each object's map start. With
-# glibc bug 33088 the loader's own is 0, and _dl_find_object then blames ld.so
-# for unclaimed addresses below libc, which is where later dlopens land.
+# ldd's LD_TRACE_LOADED_OBJECTS prints each object's map start; glibc bug 33088 makes ld.so's 0.
 if [[ -x ./ctl_ok ]]; then
     trace="$(LD_TRACE_LOADED_OBJECTS=1 ./ctl_ok 2>&1 || true)"
     ldso_start="$(printf '%s\n' "$trace" | sed -n 's/.*ld-linux[^ ]* (0x\([0-9a-f]*\)).*/\1/p' | head -1)"
@@ -189,8 +183,7 @@ if "$CC" -O0 -o dlfo dlfo.c 2>cc.log; then
             bad "_dl_find_object blames the wrong object for a dlopened address"
             note "it answered: ${blamed:-<nothing>}"
             note "expected a path ending in libgcc_s.so.1."
-            note "The unwinder trusts this answer, reads that object's"
-            note ".eh_frame, finds no FDE for the address, and aborts."
+            note "The unwinder reads that object's .eh_frame, finds no FDE for the address, and aborts."
             ;;
     esac
 else
@@ -202,9 +195,8 @@ echo
 echo "passed ${pass}, failed ${fail}"
 [[ "$fail" -eq 0 ]] || {
     echo
-    echo "This system cannot unwind through a library loaded after startup."
-    echo "Programs affected: anything calling pthread_exit, pthread_cancel or"
-    echo "backtrace() that does not already link libgcc_s.so.1. They die on"
-    echo "SIGABRT with no message. See build/patches/glibc-2.40/README.md."
+    echo "This system cannot unwind through a library loaded after startup: a program calling"
+    echo "pthread_exit, pthread_cancel or backtrace() without linking libgcc_s.so.1 dies on SIGABRT."
+    echo "See build/patches/glibc-2.40/README.md."
     exit 1
 }

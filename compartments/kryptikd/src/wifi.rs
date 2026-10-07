@@ -1,13 +1,11 @@
-//! Wi-Fi credentials for the net zone (docs/design/net-zone.md).
-//!
-//! kryptikd alone writes the supplicant file in zone 0: 0400, owned by the nic
-//! zone's identity (the zone's root is that host uid). The zone gets it
-//! read-only at `/etc/wpa_supplicant.conf` on its next start.
+//! Wi-Fi credentials for the net zone (docs/design/net-zone.md). kryptikd alone writes the file,
+//! 0400 and owned by the host uid of the nic zone's root; the zone gets it read-only on next start.
 
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use crate::zone::NetworkMode;
 
@@ -61,8 +59,7 @@ pub fn check_ssid(ssid: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 8 to 63 printable ASCII characters without quote or backslash, or 64 hex
-/// digits for a raw PSK. Error messages never repeat the passphrase.
+/// 8 to 63 printable ASCII without quote or backslash, or 64 hex digits; errors never echo it.
 pub fn check_passphrase(pass: &str) -> Result<Psk, String> {
     if pass.len() == 64 && pass.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Ok(Psk::Hex(pass.to_string()));
@@ -99,9 +96,8 @@ pub fn render(nets: &[Network]) -> String {
     out
 }
 
-/// Read back what `render` writes and refuse anything else: rewriting a
-/// hand-edited file would lose the edit or keep unchecked lines. Errors name
-/// the line, never its content.
+/// Read back what `render` writes and refuse anything else, which a rewrite would lose or keep
+/// unchecked. Errors name the line, never its content.
 pub fn parse(text: &str) -> Result<Vec<Network>, String> {
     let mut nets = Vec::new();
     let mut block: Option<(Option<String>, Option<Psk>)> = None;
@@ -180,8 +176,7 @@ pub fn list(dir: &Path) -> Result<Vec<String>, String> {
     Ok(load(dir)?.into_iter().map(|n| n.ssid).collect())
 }
 
-/// The file's owner on a root run: the nic zone's identity. `None` keeps the
-/// writer's, when unprivileged or when the nic zone declares no identity.
+/// The nic zone's identity, to own the file on a root run; `None` keeps the writer's.
 pub fn owner_for(zones_dir: &Path) -> Result<Option<(u32, u32)>, String> {
     if unsafe { libc::geteuid() } != 0 {
         return Ok(None);
@@ -226,8 +221,7 @@ pub fn forget(dir: &Path, owner: Option<(u32, u32)>, ssid: &str) -> Result<(), S
     write_atomic(dir, &render(&nets), owner)
 }
 
-/// Create the directory 0711 if missing, so the zone's identity can reach
-/// the file but nobody else can list the directory.
+/// Create the directory 0711 if missing: the zone's identity reaches the file, nobody lists it.
 fn ensure_dir(dir: &Path) -> Result<(), String> {
     match fs::symlink_metadata(dir) {
         Ok(md) if md.is_dir() => Ok(()),
@@ -256,8 +250,7 @@ fn write_atomic(dir: &Path, contents: &str, owner: Option<(u32, u32)>) -> Result
     crate::files::write_atomic(&path, &[contents.as_bytes()], 0o400, owner).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Restart the net zone so it reads the new file; returns what happened and
-/// never fails. Only for the directory the service reads, so tests leave it be.
+/// Restart the net zone on the new file and say how it went; other directories (tests) skip this.
 pub fn restart_net_zone(dir: &Path) -> String {
     if dir != Path::new(DEFAULT_DIR) {
         return format!(
@@ -281,30 +274,14 @@ pub fn restart_net_zone(dir: &Path) -> String {
     }
 }
 
-/// Read one line from stdin for `kryptikd wifi add`, prompting with echo off
-/// on a terminal. The passphrase never comes from argv or the environment.
+/// Read the passphrase from stdin, echo off on a terminal; never from argv or the environment.
 pub fn read_passphrase(prompt: &str) -> Result<String, String> {
-    let tty = unsafe { libc::isatty(0) } == 1;
-    let mut saved: libc::termios = unsafe { std::mem::zeroed() };
-    if tty {
-        if unsafe { libc::tcgetattr(0, &mut saved) } < 0 {
-            return Err(format!("tcgetattr: {}", io::Error::last_os_error()));
-        }
-        let mut raw = saved;
-        raw.c_lflag &= !libc::ECHO;
-        let _ = io::stderr().write_all(prompt.as_bytes());
-        let _ = io::stderr().flush();
-        if unsafe { libc::tcsetattr(0, libc::TCSAFLUSH, &raw) } < 0 {
-            return Err(format!("tcsetattr: {}", io::Error::last_os_error()));
-        }
-    }
     let mut line = String::new();
-    let read = io::stdin().read_line(&mut line);
-    if tty {
-        unsafe { libc::tcsetattr(0, libc::TCSAFLUSH, &saved) };
-        let _ = io::stderr().write_all(b"\n");
+    if unsafe { libc::isatty(0) } == 1 {
+        line = read_silent(prompt)?;
+    } else {
+        io::stdin().read_line(&mut line).map_err(|e| format!("reading the passphrase: {e}"))?;
     }
-    read.map_err(|e| format!("reading the passphrase: {e}"))?;
     while line.ends_with('\n') || line.ends_with('\r') {
         line.pop();
     }
@@ -312,6 +289,60 @@ pub fn read_passphrase(prompt: &str) -> Result<String, String> {
         return Err("no passphrase given".into());
     }
     Ok(line)
+}
+
+static CAUGHT: AtomicI32 = AtomicI32::new(0);
+
+extern "C" fn on_signal(sig: libc::c_int) {
+    CAUGHT.store(sig, Ordering::SeqCst);
+}
+
+/// One line from the terminal on stdin with echo off from before the prompt. Ctrl-C and the
+/// like end the read, and take effect once the terminal is as it was.
+fn read_silent(prompt: &str) -> Result<String, String> {
+    let mut saved: libc::termios = unsafe { std::mem::zeroed() };
+    if unsafe { libc::tcgetattr(0, &mut saved) } < 0 {
+        return Err(format!("tcgetattr: {}", io::Error::last_os_error()));
+    }
+    let sigs = [libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGHUP];
+    let mut old: [libc::sigaction; 4] = unsafe { std::mem::zeroed() };
+    unsafe {
+        // No SA_RESTART: the signal must interrupt the read.
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = on_signal as usize;
+        libc::sigemptyset(&mut sa.sa_mask);
+        for (s, o) in sigs.iter().zip(old.iter_mut()) {
+            libc::sigaction(*s, &sa, o);
+        }
+        let mut quiet = saved;
+        quiet.c_lflag &= !libc::ECHO;
+        libc::tcsetattr(0, libc::TCSANOW, &quiet);
+    }
+    let _ = io::stderr().write_all(prompt.as_bytes());
+    let mut got = Vec::new();
+    let mut buf = [0u8; 256];
+    while CAUGHT.load(Ordering::SeqCst) == 0 && !got.ends_with(b"\n") {
+        let n = unsafe { libc::read(0, buf.as_mut_ptr().cast(), buf.len()) };
+        if n == 0 || (n < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted) {
+            break;
+        }
+        if n > 0 {
+            got.extend_from_slice(&buf[..n as usize]);
+        }
+    }
+    unsafe {
+        libc::tcsetattr(0, libc::TCSANOW, &saved);
+        for (s, o) in sigs.iter().zip(old.iter()) {
+            libc::sigaction(*s, o, std::ptr::null_mut());
+        }
+    }
+    let _ = io::stderr().write_all(b"\n");
+    let sig = CAUGHT.swap(0, Ordering::SeqCst);
+    if sig != 0 {
+        unsafe { libc::raise(sig) };
+        return Err("interrupted".into());
+    }
+    String::from_utf8(got).map_err(|_| "the passphrase is not UTF-8".into())
 }
 
 #[cfg(test)]

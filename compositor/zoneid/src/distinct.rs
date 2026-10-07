@@ -1,20 +1,15 @@
-//! The distinctness invariant. Every two border colours the compositor draws
-//! (each zone's, and its own for unzoned, unknown and urgent windows) must
-//! differ by the floor under every vision model, and zones must have distinct
-//! glyphs and labels. Patterns are not drawn, so they separate nothing.
+//! The distinctness invariant: every two border colours the compositor draws, its own included,
+//! differ by the floor under every vision model, and zones have distinct glyphs and labels.
 
 use crate::color::{ciede2000, contrast_ratio, Lab, Srgb};
 use crate::cvd::{simulate, Vision};
 use crate::identity::{Channel, ZoneIdentity};
 
-/// The colour-difference floor, in CIEDE2000 units. About 1 is just noticeable
-/// side by side in a lab, but a border is seen at the edge of vision on an
-/// uncalibrated screen. `zoneid propose` reaches 15.70 for six colours under
-/// the contrast rule, so 15.0 binds; the shipped colours reach 15.88.
+/// The colour-difference floor in CIEDE2000 units (about 1 is just noticeable side by side),
+/// set just under the 15.70 `zoneid propose` reaches for six colours under the contrast rule.
 pub const MIN_DELTA_E: f64 = 15.0;
 
-/// Minimum contrast of a zone border against the background: 3:1, as WCAG 2.1
-/// SC 1.4.11 requires for user interface components.
+/// Minimum border contrast against the background: 3:1, WCAG 2.1 SC 1.4.11 for UI components.
 pub const MIN_BORDER_CONTRAST: f64 = 3.0;
 
 /// Backgrounds a border is checked against: a colour tuned for one can vanish on the other.
@@ -25,10 +20,8 @@ pub fn backgrounds() -> Vec<(&'static str, Srgb)> {
     BACKGROUNDS.iter().filter_map(|&(name, hex)| Some((name, Srgb::from_hex(hex).ok()?))).collect()
 }
 
-/// The compositor's own border colours: unzoned windows (the chrome), zones it
-/// has no colour for, and urgent windows. gen-zone-colours.py writes the same
-/// values into dwl's header, and a test in zones.rs keeps the two equal. They
-/// are held to the floor but not the contrast rule: the unzoned grey is light.
+/// The compositor's own colours (unzoned, unknown zone, urgent), also in gen-zone-colours.py;
+/// held to the floor but not the contrast rule, as the unzoned grey is light.
 pub const COMPOSITOR_COLOURS: [(&str, &str); 3] =
     [("unzoned", "#d8d8d8"), ("unknown", "#a2c9ff"), ("urgent", "#ffd000")];
 
@@ -118,8 +111,7 @@ impl Report {
             .filter(|c| c.severity == Severity::Critical)
     }
 
-    /// Whether the zone set should be refused. Only critical collisions refuse;
-    /// missing channels and low contrast are reported.
+    /// Whether to refuse the zone set: only critical collisions do, the rest is reported.
     pub fn is_fatal(&self) -> bool {
         self.critical().next().is_some()
     }

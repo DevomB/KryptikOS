@@ -70,6 +70,26 @@ answer '\n\n\n\n\n\n'
 [[ "$RC|$GOT" == "1|" ]] && ok "three empty answers set nothing" || bad "empty answers: rc=$RC chpasswd got '$GOT'"
 start=$SECONDS; answer ''
 [[ "$RC|$GOT" == "1|" && $((SECONDS - start)) -le 3 ]] && ok "no answer: the question gives up at its time limit" || bad "no answer: rc=$RC after $((SECONDS - start)) s"
+
+# new_user, with useradd recording the name it was given.
+sed -n '/^create_user() /,/^}/p; /^new_user() /,/^}/p' "$SRC" > "$T/newuser.sh"
+# shellcheck source=/dev/null
+. "$T/newuser.sh"
+declare -F create_user >/dev/null || { echo "no create_user in $SRC"; exit 1; }
+declare -F new_user >/dev/null || { echo "no new_user in $SRC"; exit 1; }
+say() { echo "kryptik-firstboot: $*"; }
+getent() { return 0; }
+useradd() { printf '%s' "${@: -1}" > "$T/useradd.in"; }
+names() { rm -f "$T/useradd.in"; : > "$T/screen"; name=""; printf '%b' "$1" >&7; new_user; RC=$?; GOT="$(cat "$T/useradd.in" 2>/dev/null)"; }
+names 'ana\n'
+[[ "$RC|$GOT|$name" == "0|ana|ana" ]] && ok "a name of lower-case letters makes the user" || bad "a plain name: rc=$RC useradd got '$GOT', name '$name'"
+names 'Ana\nana\n'
+[[ "$RC|$GOT" == "0|ana" ]] && grep -qF "refusing user name 'Ana': lower-case" "$T/screen" \
+    && ok "a refused name is told why and asked for again" || bad "a refused name: rc=$RC useradd got '$GOT', screen: $(tr '\n' '|' < "$T/screen")"
+names 'A\n-b\n\n'
+[[ "$RC|$GOT" == "1|" ]] && ok "three refused names make no user" || bad "three refused names: rc=$RC useradd got '$GOT'"
+start=$SECONDS; names ''
+[[ "$RC|$GOT" == "1|" && $((SECONDS - start)) -le 3 ]] && ok "no name: the question gives up at its time limit" || bad "no name: rc=$RC after $((SECONDS - start)) s"
 exec 7<&-
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

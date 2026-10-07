@@ -35,6 +35,21 @@ Defined in `compartments/zones/`, installed on the verified root.
 | `untrusted` | via `net` | ephemeral | unknown files and links |
 | `dev` | via `net` | encrypted | toolchains, builds |
 
+## The programs
+
+| name | what it is |
+| --- | --- |
+| `kryptik` | the user's command (`tools/kryptik`) |
+| `kryptikd` | the zone manager |
+| `kryptikd serve` | the launch service: root's daemon, which takes the desktop's requests (older docs say launch daemon; it is the same thing) |
+| `kryptikd run` | a zone's launcher: one process per running zone, which holds its broker and its log |
+| `kryptik-launch` | the desktop's launcher: starts the zone's proxy and asks the launch service for the zone |
+| `kryptik-wlproxy` | a zone's Wayland proxy, between the zone's programs and the compositor |
+| `kryptik-chrome` | the trusted bar, menu and question windows, in zone 0 |
+
+"The launcher" on its own, in kryptikd's messages and logs, is `kryptikd run`.
+The chrome's menu is its menu window.
+
 ## Between zones
 
 Nothing crosses by default. The broker in kryptikd identifies a caller by its
@@ -55,6 +70,8 @@ No zone can reach the compositor's socket. A zone started from the desktop
 gets its own `kryptik-wlproxy`, which hides the capture, clipboard,
 input-injection and similar Wayland globals and stamps each window with its
 zone; the compositor draws the zone's border and title prefix from that.
+Over a zone's window the pointer is the compositor's own cursor: an image
+the zone set would be drawn above every window, wherever it chose.
 
 A window's border colour is how the user tells which zone it belongs to. If
 they cannot tell at a glance which zone a password prompt belongs to, the

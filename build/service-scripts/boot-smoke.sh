@@ -1,6 +1,5 @@
 #!/bin/sh
-# Report what this machine is, on the console, every boot. The poweroff at the
-# end runs only when a test control disk asks (testctl.sh, install media only).
+# Report the machine on the console every boot; power off only when a test control disk asks.
 . /usr/libexec/kryptik/testctl.sh
 
 say() { echo "KRYPTIK_SMOKE: $*"; }
@@ -29,10 +28,9 @@ fi
 say "efi=$([ -d /sys/firmware/efi ] && echo yes || echo no)"
 say "secureboot=$({ od -An -tu1 -j4 -N1 /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c 2>/dev/null || echo unreadable; } | tr -d ' ')"
 
-# --- the filesystem we booted from ----------------------------------------
-# A root the kernel mounted shows as /dev/root; name the real device from
-# mountinfo's major:minor.
+# --- the filesystem we booted from ------------------------------------------
 root_line="$(awk '$2=="/"{print $1, $3, $4; exit}' /proc/mounts)"
+# A root the kernel mounted shows as /dev/root: name its device from mountinfo's major:minor.
 case "$root_line" in
     /dev/root*)
         mm="$(awk '$5=="/"{print $3; exit}' /proc/self/mountinfo 2>/dev/null)"
@@ -87,26 +85,29 @@ for k in kernel.kptr_restrict kernel.dmesg_restrict kernel.yama.ptrace_scope \
     v=$(sysctl -n "$k" 2>/dev/null || echo "unreadable")
     say "sysctl $k=$v"
 done
-# The allocator this very process runs on, read from its own mappings.
+# The allocator, read from grep's own mappings.
 say "allocator=$(grep -q /usr/lib/libhardened_malloc.so /proc/self/maps && echo hardened_malloc || echo libc)"
 
-# --- the zone model, on this kernel ---------------------------------------
+# --- the zone model, on this kernel -----------------------------------------
 say "kryptikd_check_begin"
-/usr/bin/kryptikd check --zones /usr/lib/kryptik/zones 2>&1 | sed 's/^/KRYPTIK_SMOKE: kd: /'
-say "kryptikd_check_rc=$?"
+# Kept apart from the sed: after a pipe the status would be sed's.
+kd_out="$(/usr/bin/kryptikd check --zones /usr/lib/kryptik/zones 2>&1)"
+kd_rc=$?
+printf '%s\n' "$kd_out" | sed 's/^/KRYPTIK_SMOKE: kd: /'
+say "kryptikd_check_rc=$kd_rc"
 say "kryptikd_check_end"
 say "lsm=$(cat /sys/kernel/security/lsm 2>/dev/null || echo unreadable)"
 # Microcode revision and the early loader's message (none under a hypervisor).
 say "microcode=$(awk -F': ' '/^microcode/ {print $2; exit}' /proc/cpuinfo 2>/dev/null) loader=$(dmesg 2>/dev/null | grep -m1 -o 'microcode: .*' || echo none)"
 say "cgroup2=$(awk '$3=="cgroup2"{print $2; exit}' /proc/mounts 2>/dev/null || echo none)"
 
-# --- users and the login path -------------------------------------------
+# --- users and the login path -----------------------------------------------
 say "users=$(awk -F: '$3>=1000 && $3<65534 {printf "%s ", $1}' /etc/passwd 2>/dev/null)"
-say "root_password=$(awk -F: '$1=="root"{print ($2 ~ /^[!*]/ || $2=="") ? "none" : "set"}' /etc/shadow 2>/dev/null)"
+# An empty field is a root login with no password, which a locked one is not.
+say "root_password=$(awk -F: '$1=="root"{print (($2=="") ? "EMPTY" : ($2 ~ /^[!*]/) ? "none" : "set")}' /etc/shadow 2>/dev/null)"
 say "securetty=$([ -e /etc/securetty ] && echo "present ($(wc -l < /etc/securetty) lines)" || echo absent)"
 say "login_binary=$([ -x /usr/bin/login ] && echo present || echo MISSING)"
-# The serial getty a test driver logs in at. From the host a stuck one looks
-# like a healthy boot, so record its state here.
+# A stuck serial getty looks like a healthy boot from the host, so record its state.
 for svc in /run/service/*early-getty*; do
     [ -d "$svc" ] || continue
     say "early_getty=$(s6-svstat "$svc" 2>&1 | head -c 160)"
@@ -129,15 +130,14 @@ fi
 say "END"
 echo
 
-# --- power off only when a test asked, and only on install media -----------
+# --- power off only when a test asked, and only on install media ------------
 if testctl_load && [ "$(testctl_get smoke_poweroff)" = "1" ]; then
-    # An install requested too runs from its own service: give it install_wait.
+    # An install asked for as well runs in its own service; install_wait gives it time.
     wait_s="$(testctl_get install_wait)"
     [ -n "$wait_s" ] && sleep "$wait_s"
     say "POWEROFF"
     say "shutdownd_fifo=$( [ -p /run/service/s6-linux-init-shutdownd/fifo ] && echo present || echo absent )"
-    # If the clean poweroff does not take effect, say so (the host checks for
-    # that line) and force it.
+    # If the clean poweroff does not take effect, say so (the host checks) and force it.
     setsid sh -c 'sleep 90
         echo "KRYPTIK_SMOKE: POWEROFF_DID_NOT_TAKE_EFFECT after 90s" > /dev/console 2>/dev/null
         sync

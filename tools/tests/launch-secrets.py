@@ -33,8 +33,7 @@ s.listen(1)
 signal.pause()
 """)
         proxy.chmod(0o700)
-        # The real launcher, its fixed proxy and socket paths pointed at stand-ins;
-        # nothing installed is touched.
+        # The real launcher, its proxy and socket paths pointed at stand-ins.
         source = (root / "tools/desktop/kryptik-launch.c").read_text()
         for name, old, new in [
             ("PROXY_BIN", "/usr/bin/kryptik-wlproxy", proxy),
@@ -45,6 +44,12 @@ signal.pause()
             source = source.replace(definition, f'#define {name} "{new}"')
         (work / "launcher.c").write_text(source)
         subprocess.run(["cc", "-O2", "-o", str(work / "launcher"), str(work / "launcher.c")], check=True)
+        # A descriptor is a whole number: "3x", "" or "-1" never reaches the daemon.
+        for bad in ["3x", "", "-1", "99999999999"]:
+            run = subprocess.run([str(work / "launcher"), "--passphrase-fd", bad, "work", "--", "/bin/true"],
+                                 capture_output=True, timeout=8)
+            assert run.returncode == 2, f"--passphrase-fd {bad!r} was taken"
+        print("PASS: --passphrase-fd takes only a descriptor number")
         report = work / "proxy-fds.json"
         secret = work / "secret"
         secret.write_bytes(b"test-passphrase-only")
