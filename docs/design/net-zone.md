@@ -43,8 +43,8 @@ query and the [update](update-channel.md) fetcher. Builds on
   `fd19::<k>/64` with default routes via the bridge, follow from its declared
   identity (`netzone::host_number`: `uid_base` 131072 is `.2`, 196608 is `.3`,
   and so on), not from DHCP: one less daemon, no broadcast domain.
-  `accept_ra = 0` is set first, and `ping_group_range` names the zone's host
-  gid so unprivileged ICMP echo works (the sysctl takes host ids, so the
+  `accept_ra = 0` is set first, and `ping_group_range` is set to the zone's
+  host gid so unprivileged ICMP echo works (the sysctl takes host ids, so the
   parent writes it). The image's `ping` is iputils', built without libcap and
   given no setuid bit or file capability: it sends over that datagram socket,
   IPv4 and IPv6, and a patch keeps it from the id calls a zone refuses
@@ -53,24 +53,27 @@ query and the [update](update-channel.md) fetcher. Builds on
   zone whose root-owned file says `mode = "nic"`, never to whatever namespace
   holds a bridge: a zone could create its own `kryptik0`.
 - **A routed zone owns its namespace, not its port.** Its bounding set is
-  `CAP_NET_BIND_SERVICE`, `policy::check_for_zone` refuses a policy keeping
+  `CAP_NET_BIND_SERVICE`, `Policy::check_for_zone` refuses a policy keeping
   `CAP_NET_ADMIN` or `CAP_NET_RAW`, and seccomp refuses packet sockets. It
   cannot change its address or MAC, send from another address, or put a frame
   on the wire that the kernel did not build; `ip link set eth0 down` fails
   with `EPERM`.
-- **Every namespace starts with loopback only.** The kernel builds SIT in, so
-  the launcher sets `net.core.fb_tunnels_only_for_init_net = 1` first, and a
-  privileged launch refuses a namespace holding anything else.
+- **Every namespace starts with loopback only.** Kryptik's kernel leaves SIT
+  out (`hardening.fragment`). On a kernel whose tunnel drivers give every new
+  namespace a fallback device such as `sit0`, the launcher sets
+  `net.core.fb_tunnels_only_for_init_net = 1` first. A privileged launch
+  refuses a namespace holding anything else.
 - **The net zone is the chokepoint and is treated as hostile.** It gets no
   routed zone's data, no broker access beyond its own clipboard and the time
-  and update verbs, ephemeral storage, and the base seccomp policy plus
-  `policy/net.seccomp`: `AF_PACKET`, `NETLINK_NETFILTER`, `NETLINK_GENERIC`
-  (dhcpcd opens one for nl80211 and exits if refused), `chown` (dhcpcd chowns
-  its control socket), and `CAP_NET_ADMIN` / `CAP_NET_RAW` over its own
-  interfaces. It alone gets private tmpfs mounts at `/run` and `/var/lib`
-  (writable under Landlock, no exec), where dhcpcd keeps its pid file,
-  control socket and leases; every other zone's `/run` is read-only and holds
-  only its broker and proxy sockets.
+  and update verbs, and ephemeral storage. Its seccomp policy is the base one
+  plus `policy/net.seccomp`: `AF_PACKET`, `NETLINK_NETFILTER`,
+  `NETLINK_GENERIC` (dhcpcd opens one for nl80211 and exits if refused), and
+  `CAP_NET_ADMIN` / `CAP_NET_RAW` over its own interfaces. `chown`, which
+  dhcpcd calls on its control socket, is in the base list. The net zone alone
+  gets private tmpfs mounts at `/run` and `/var/lib` (writable under Landlock,
+  no exec), where dhcpcd keeps its pid file, control socket and leases. Every
+  other zone's `/run` is read-only and holds only its broker and proxy
+  sockets.
 
 ## The net zone's program
 
@@ -178,14 +181,15 @@ configured the zone keeps its IPv4 path and the launcher says so.
   for association.
 - **The net zone knows the passphrases.** They live in zone 0 at
   `/var/lib/kryptik/wifi/wpa_supplicant.conf`, written only by `kryptikd serve`
-  for `kryptik wifi add|forget <SSID>`; the passphrase is read on the terminal
-  and never appears on a command line or in a log, and `kryptik wifi list`
-  shows SSIDs only. The file is in wpa_supplicant's own format, so kryptikd
-  derives no keys. It is rewritten by temp-and-rename, 0400, owned by the net
-  zone's identity in a root-owned 0711 directory: the zone's root is host uid
-  N, so a root-owned 0600 file would be unreadable to it, and nothing else
-  runs as N. It is bound read-only at `/etc/wpa_supplicant.conf` in the net zone only,
-  and a change restarts the `net-zone` service (`s6-svc -r`).
+  for `kryptik wifi add|forget <SSID>`. The passphrase is read on the
+  terminal and never appears on a command line or in a log, and `kryptik wifi
+  list` shows SSIDs only. The file is in wpa_supplicant's own format, so
+  kryptikd derives no keys. It is rewritten by temp-and-rename, 0400, owned by
+  the net zone's identity in a root-owned 0711 directory: the zone's root is
+  host uid N, so a root-owned 0600 file would be unreadable to it, and nothing
+  else runs as N. Only the net zone gets it, bound read-only at
+  `/etc/wpa_supplicant.conf`, and a change restarts the `net-zone` service
+  (`s6-svc -r`).
 - On disk the file is plaintext inside the [encrypted](state-encryption.md)
   state partition, like NetworkManager's connection files. A compromised net
   zone learns the passphrases of the networks it was given, and nothing more.
@@ -196,9 +200,8 @@ into a namespace of its own as the access point (the image's `wpa_supplicant`
 in AP mode, `dnsmasq` for the lease), the other is left for the net zone,
 which joins the network `kryptik wifi add` gave it, leases an address over
 the radio and carries a routed zone's traffic to the access point. Real
-hardware is still untested: a seccomp refusal of `wpa_supplicant` there would
-show as `SIGSYS` in the zone's log and a `wifi=connecting` that never
-changes.
+hardware is untested: a seccomp refusal of `wpa_supplicant` there would show
+as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
 
 ## Gateway failure
 
@@ -276,11 +279,11 @@ changes.
 `NFT_MASQ`, `NFT_CT`, `NFT_REJECT`, `NF_NAT` and `NF_CONNTRACK`; netfilter
 cannot be modular because the net zone loads its ruleset from inside a user
 namespace, for which the kernel does not autoload modules.
-`NF_TABLES_BRIDGE` and `BRIDGE_NETFILTER` are off; `NFT_COMPAT` is not
-wanted. xtables (`IP_NF_IPTABLES`, `IP6_NF_IPTABLES`, `NETFILTER_XTABLES`) and
-ctnetlink (`NF_CT_NETLINK`) are off: the ruleset is nft's alone, and
-ctnetlink would be kernel code the nic zone reaches through its netfilter
-netlink socket for no use. For radios, `CFG80211`, `MAC80211`, `RFKILL` and
+`NF_TABLES_BRIDGE`, `BRIDGE_NETFILTER` and `NFT_COMPAT` are off. xtables
+(`IP_NF_IPTABLES`, `IP6_NF_IPTABLES`, `NETFILTER_XTABLES`) and ctnetlink
+(`NF_CT_NETLINK`) are off: the ruleset is nft's alone, and ctnetlink would be
+kernel code the nic zone reaches through its netfilter netlink socket for no
+use. For radios, `CFG80211`, `MAC80211`, `RFKILL` and
 the drivers are signed modules that eudev loads, with firmware under
 `/lib/firmware` (see `build/config/kernel/`).
 
