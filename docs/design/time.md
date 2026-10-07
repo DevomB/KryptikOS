@@ -74,6 +74,11 @@ and the net zone prints `time=<offset|no-answer|...>` in its readiness line.
    answer. No session, no answer or "no" leaves the clock alone.
 5. The bound also caps the total moved without asking since the clock was
    last anchored (by consent or by the floor), so small lies cannot add up.
+   That total and the time of the last claim live in
+   `/var/lib/kryptik/time/state`, and a claim is written there, with what it
+   adds, before the clock moves or the user is asked. A claim that cannot be
+   written is refused: unwritten, the next claim would meet neither the
+   interval nor the bound.
 6. kryptikd, the only process with `CAP_SYS_TIME`, applies it with
    `clock_settime(CLOCK_REALTIME)` and after a step sets the RTC
    (`RTC_SET_TIME` on `/dev/rtc0` if present). Each claim considered adds a

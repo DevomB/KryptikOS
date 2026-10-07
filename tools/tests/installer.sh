@@ -107,11 +107,18 @@ fi
 
 echo
 echo "-- root.json is checked for form, and against the signed command line"
-# The helpers, taken from the installer; die exits the subshell each runs in.
-eval "$(sed -n '/^decimal_field()/,/^}/p; /^hex_field()/,/^}/p; /^verity_of()/,/^}/p' "$INSTALLER")"
+# The checks kryptik-install and kryptik-recover share; die exits the subshell
+# each runs in.
+MEDIUM_ROOT="${ROOT}/build/service-scripts/medium-root.sh"
+# shellcheck source=/dev/null
+. "$MEDIUM_ROOT"
 die() { printf 'die: %s\n' "$*"; exit 1; }
-if ! declare -F decimal_field >/dev/null || ! declare -F verity_of >/dev/null; then
-    red "could not extract the record checks from the installer"
+grep -q '^\. /usr/libexec/kryptik/medium-root\.sh' "$INSTALLER" \
+    && grep -q '^ *\. /usr/libexec/kryptik/medium-root\.sh' "${ROOT}/tools/update/kryptik-recover" \
+    && green "the installer and kryptik-recover take the medium's root through the same checks" \
+    || red "the installer or kryptik-recover does not source medium-root.sh"
+if ! declare -F decimal_field >/dev/null || ! declare -F verity_of >/dev/null || ! declare -F medium_root >/dev/null; then
+    red "could not read the record checks from ${MEDIUM_ROOT}"
 else
     out="$( (decimal_field total_bytes '1$(reboot)') 2>&1 )"; rc=$?
     [[ "$rc" -ne 0 && "$out" == *"total_bytes is not a number"* ]] \
@@ -139,7 +146,50 @@ else
     [[ -z "$(verity_of "$tmp")" ]] \
         && green "a table whose root hash is not 64 hex digits reads as none" \
         || red "a malformed table was accepted"
-    rm -f "$tmp"
+    # A medium's command line naming root hash $h, and its record.
+    printf 'ro dm-mod.create="kroot,,0,ro,0 2097152 verity 1 PARTLABEL=kryptik-media PARTLABEL=kryptik-media 4096 4096 262144 262144 sha256 %s 0123abcd 1 panic_on_corruption" kryptik.media=usb\n' "$h" > "$tmp"
+    rec="$(mktemp)"
+    record() {   # record ROOT_HASH DATA_BLOCKS: root.json as stage 06 writes it
+        printf '{\n  "version": "1.0.0",\n  "root_hash": "%s",\n  "salt": "0123abcd",\n  "data_bytes": 1073741824,\n  "data_blocks": %s,\n  "data_sectors": 2097152,\n  "hash_start_block": 262144,\n  "total_bytes": 1094713344,\n  "sha256": "%s"\n}\n' "$1" "$2" "$h" > "$rec"
+    }
+    record "$h" 262144
+    out="$( (medium_root "$rec" "$tmp" && echo "took $ROOT_BYTES $VERSION $V_BLOCKS $V_HASH_START $V_SALT") 2>&1 )"; rc=$?
+    [[ "$rc" -eq 0 && "$out" == "took 1094713344 1.0.0 262144 262144 0123abcd" ]] \
+        && green "a record that names the signed root is taken, with the table's numbers" \
+        || red "a matching record: rc=${rc} ${out}"
+    b="$(printf 'b%.0s' $(seq 64))"
+    record "$b" 262144
+    out="$( (medium_root "$rec" "$tmp") 2>&1 )"; rc=$?
+    [[ "$rc" -ne 0 && "$out" == *"root.json names root hash ${b}; the signed kernel carries ${h}"* ]] \
+        && green "a record that names another root is refused, both hashes named" \
+        || red "another root hash: rc=${rc} ${out}"
+    record "$(printf '\033]0;owned\007')${h}" 262144
+    out="$( (medium_root "$rec" "$tmp") 2>&1 )"; rc=$?
+    [[ "$rc" -ne 0 && "$out" == *"root_hash is not a hash"* && "$out" != *$'\033'* ]] \
+        && green "a root hash carrying a terminal sequence is refused without printing it" \
+        || red "a terminal sequence in root_hash: rc=${rc}"
+    record "$h" 262143
+    out="$( (medium_root "$rec" "$tmp") 2>&1 )"; rc=$?
+    [[ "$rc" -ne 0 && "$out" == *"262143 data blocks; the signed kernel carries 262144"* ]] \
+        && green "a record that names another size of root is refused" \
+        || red "another data_blocks: rc=${rc} ${out}"
+    record "$h" 262144
+    printf 'ro root=/dev/sda2 kryptik.media=usb\n' > "$tmp"
+    out="$( (medium_root "$rec" "$tmp") 2>&1 )"; rc=$?
+    [[ "$rc" -ne 0 && "$out" == *"could not read the root's verity table"* ]] \
+        && green "a command line with no verity table is refused" \
+        || red "no verity table: rc=${rc} ${out}"
+    # A slot's kernel: its command line, inside the binary, names the root.
+    # shellcheck disable=SC2034  # read by the sourced kernel_names_root
+    V_HASH="$h"
+    printf 'MZ\0\0\377pe\0dm-mod.create="kroot,,0,ro,0 2097152 verity 1 PARTLABEL=kryptik-a PARTLABEL=kryptik-a 4096 4096 262144 262144 sha256 %s 0123abcd 1 panic_on_corruption"\0\001' "$h" > "$tmp"
+    kernel_names_root "$tmp" && green "a kernel whose command line carries the root hash is taken" \
+        || red "a kernel that carries the root hash was refused"
+    printf 'MZ\0\0\377pe\0dm-mod.create="kroot,,0,ro,0 2097152 verity 1 PARTLABEL=kryptik-a PARTLABEL=kryptik-a 4096 4096 262144 262144 sha256 %s 0123abcd 1 panic_on_corruption"\0\001' "$b" > "$tmp"
+    kernel_names_root "$tmp" && red "a kernel for another root was taken" \
+        || green "a kernel whose command line names another root is refused"
+    kernel_names_root "$tmp.absent" && red "a missing kernel was taken" || green "a missing kernel is refused"
+    rm -f "$tmp" "$rec"
 fi
 
 echo

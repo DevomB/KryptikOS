@@ -339,8 +339,9 @@ state partition.
 
 `--restore-slot` writes the medium's own root image and kernel into the
 slot, as the installer does, then commits it. Every byte comes from the
-medium, and the next boot checks them: the kernel refuses a root that does
-not match the hash it carries. The state partition is not touched, so users
+medium, and the slot is committed only once it verifies against the root
+hash the medium's signed kernel carries. A medium whose root or slot kernel
+is not that release's is refused with the reason, and nothing is committed. The state partition is not touched, so users
 and zone volumes survive. The result is the medium's version, which may be
 older than what was installed: the tool names the version it writes but does
 not compare it, so read `--status` first.
