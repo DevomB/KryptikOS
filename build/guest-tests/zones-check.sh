@@ -114,6 +114,20 @@ if [[ -n "$ppid" ]] && nsenter -t "$ppid" -n ping -c1 -W3 10.19.0.1 >/dev/null 2
 else
     fail "uplink-refused" "personal (init ${ppid:-none}) reached the VM gateway, or not even the bridge; $(grep -h 'netzone: nftables: zones go out' /run/uncaught-logs/current 2>/dev/null | tail -1)"
 fi
+# The net zone's own address on the uplink is the net zone, not the network the
+# uplink sits on. untrusted, which may reach that network, reaches the VM
+# gateway and neither of the net zone's addresses beside it.
+nz="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
+uplink4="$([[ -n "$nz" ]] && nsenter -t "$nz" -n ip -4 -o addr show eth0 2>/dev/null | awk '{ split($4, a, "/"); print a[1]; exit }')"
+uplink6="$([[ -n "$nz" ]] && nsenter -t "$nz" -n ip -6 -o addr show eth0 2>/dev/null | awk '$4 !~ /^fe80:/ { split($4, a, "/"); print a[1]; exit }')"
+zrun untrusted 40 -- sh -c "python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.0.2.2 3 >/dev/null 2>&1 && echo GATEWAY-OK
+python3 /usr/lib/kryptik/guest-tests/icmp-echo.py ${uplink4:-192.0.2.1} 3 >/dev/null 2>&1 && echo UPLINK4-REACHED || echo UPLINK4-REFUSED
+[ -z '${uplink6}' ] || { python3 /usr/lib/kryptik/guest-tests/icmp-echo.py '${uplink6}' 3 >/dev/null 2>&1 && echo UPLINK6-REACHED || echo UPLINK6-REFUSED; }"
+if [[ -n "$uplink4" && "$ZOUT" == *GATEWAY-OK* && "$ZOUT" == *UPLINK4-REFUSED* && "$ZOUT" != *UPLINK6-REACHED* ]]; then
+    pass "uplink-address-refused" "untrusted reaches the VM gateway and not the net zone's own uplink address ${uplink4}${uplink6:+ or ${uplink6}}"
+else
+    fail "uplink-address-refused" "the net zone's uplink addresses: ${uplink4:-none} ${uplink6:-none}; untrusted: $(tr '\n' ' ' <<<"$ZOUT")"
+fi
 
 # net zone restart: routed zones fail closed while it is down, recover after
 # Not `|| echo 0`: grep -c prints 0 and also exits 1.

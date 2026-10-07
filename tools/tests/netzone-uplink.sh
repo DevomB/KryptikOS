@@ -106,6 +106,9 @@ for sh in sh bash dash; do
     forward="$(sed -n '/chain forward {/,/^    }$/p' <<<"$rules" | grep -oE 'established,related accept|ip6? saddr @local[46] accept|rt ip6? nexthop @gw[46] ip6? daddr != @gw[46] accept|reject with icmpx type admin-prohibited|oifname "kryptik0" drop' | tr '\n' '|')"
     same "replies first, then the local zones, then what a gateway carries but the gateway itself, then the refusal" "$forward" \
         'established,related accept|ip saddr @local4 accept|ip6 saddr @local6 accept|rt ip nexthop @gw4 ip daddr != @gw4 accept|rt ip6 nexthop @gw6 ip6 daddr != @gw6 accept|reject with icmpx type admin-prohibited|oifname "kryptik0" drop|'
+    input="$(sed -n '/chain input {/,/^    }$/p' <<<"$rules" | grep -oE 'ct state new (tcp|udp) dport 53 drop|"kryptik0" ip daddr != 10\.19\.0\.1 drop|"kryptik0" ip6 daddr != \{ fd19::1, fe80::/10, ff02::/16 \} drop' | tr '\n' '|')"
+    same "into the net zone: no resolver for an uplink, and from the bridge only what is addressed to the bridge" "$input" \
+        'ct state new tcp dport 53 drop|ct state new udp dport 53 drop|"kryptik0" ip daddr != 10.19.0.1 drop|"kryptik0" ip6 daddr != { fd19::1, fe80::/10, ff02::/16 } drop|'
     rules="$(run rules "$T/none")"
     grep -qF 'set local4 { type ipv4_addr; }' <<<"$rules" && green "with no zone let through the sets are empty, and every zone is refused" || red "the empty local sets" "$(grep 'set local' <<<"$rules" | tr '\n' '|')"
 done

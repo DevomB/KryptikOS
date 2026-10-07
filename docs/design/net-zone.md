@@ -137,11 +137,20 @@ its definition says `[network] local = true`.
   can still address the router and the machines beside it, as every zone
   could before; without the key there, a network with a login page is no
   network at all.
+- **The net zone's own address on an uplink is not that network.** It is the
+  net zone, which a zone needs only for its resolver on the bridge. From the
+  bridge the input chain takes only what is addressed to `10.19.0.1` or
+  `fd19::1`, or to a link-local or link-scope multicast address for neighbour
+  discovery, so no zone, `local` or not, reaches what the net zone listens on
+  over its uplink addresses, such as dhcpcd.
 - **What it does not cover.** A network behind the gateway, such as a modem's
-  own pages on another subnet, is past the gateway and so allowed. An uplink
-  whose default route names no gateway, a point-to-point link, carries only
-  the zones that claim `local`. The net zone itself reaches the local
-  network, as DHCP and the resolver need.
+  own pages on another subnet, is past the gateway and so allowed. So is the
+  gateway's address on its far side: a router that answers its admin page on
+  its WAN address to the machines inside serves it to every zone, and the net
+  zone cannot know that address to refuse it. An uplink whose default route
+  names no gateway, a point-to-point link, carries only the zones that claim
+  `local`. The net zone itself reaches the local network, as DHCP and the
+  resolver need.
 
 ## DNS
 
@@ -249,7 +258,7 @@ changes.
   file and `kryptik wifi`.
 - `tools/tests/netzone-uplink.sh`: the zones a definition lets through, by the
   address kryptikd derives for each, the gateway sets as nft is fed them, and
-  the order of the forward rules.
+  the order of the forward and input rules.
 - The launcher suite reads a zone's bounding set (exactly `0x400`) and the
   boundary suite asks for an `AF_PACKET` socket. The launcher suite's
   routed-networking section runs only with `KRYPTIK_VM_DISPOSABLE=1`, since
@@ -259,7 +268,8 @@ changes.
   offline, a routed zone's address, NAT, ULA-only IPv6 and resolver, zones
   separated, `vault` offline, no egress while the net zone is down,
   reattachment after a restart, a zone without `local` refused the VM
-  gateway, and, on two `mac80211_hwsim` radios, the net zone associating,
+  gateway, `untrusted` refused the net zone's own uplink addresses while it
+  reaches the gateway, and, on two `mac80211_hwsim` radios, the net zone associating,
   leasing and routing over one while the other is the access point, whose own
   address that zone is refused while it reaches an address the access point
   routes. It pings with an unprivileged ICMP socket
