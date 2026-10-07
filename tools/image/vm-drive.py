@@ -70,8 +70,7 @@ class Drive:
         if self.log:
             self.log.write(d); self.log.flush()
         if self.passphrase:
-            # From the last answer, or just before this read: a prompt may
-            # straddle two reads, and none is answered twice.
+            # A prompt may straddle reads: search back a little, but never before the last answer.
             for m in UNLOCK.finditer(self.all, max(self.answered, len(self.all) - len(d) - 80)):
                 self.answered = m.end()
                 self.send_secret(self.passphrase)
@@ -155,9 +154,7 @@ class Drive:
             self._read()
 
     def login(self, user, password):
-        # agetty (built with AGETTY_RELOAD) prints "login:" only after input,
-        # and flushes input that arrives within a second of starting or waking,
-        # so one Enter can be lost: knock until the prompt appears.
+        # agetty prints "login:" only after input and may drop an early Enter, so keep knocking.
         self.drain(1)
         self.knock(r"login: ?$", self.timeout)
         self.send(user)
@@ -192,10 +189,7 @@ class Drive:
         return self.finish(tag, cmd)
 
     def finish(self, tag, cmd):
-        # Wait for the exit marker but leave the command's output for the
-        # steps that follow; only the marker is dropped. A shutdown message
-        # that matches instead stays, and is returned in place of a status.
-        # The status is read once its line has ended, as line_value's is.
+        # Only the marker goes, once its line ends; a shutdown message stays, returned in its place.
         rx = re.compile(rf"{tag}=(\d+)(?=\r?\n)|Power down|reboot: Restarting|Restarting system".encode(), re.M)
         deadline = time.time() + self.timeout
         while True:
