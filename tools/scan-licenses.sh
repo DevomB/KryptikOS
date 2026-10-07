@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# Record the licence evidence each source tarball actually carries.
+# Record the licence evidence each source tarball carries.
 #
 #   ./tools/scan-licenses.sh                  scan, using the cache
 #   ./tools/scan-licenses.sh --refresh        ignore the cache
 #   ./tools/scan-licenses.sh --only=NAME      one source
 #   ./tools/scan-licenses.sh --tsv            machine-readable (the default shape)
 #
-# Only top-level licence files are read, never per-file headers. An SPDX id is
-# given only where the text is unambiguous; anything else is `unknown`.
+# Reads top-level licence files only; an SPDX id only where the text is unambiguous, else unknown.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 load_config
@@ -19,7 +18,7 @@ for a in "$@"; do
         --refresh) REFRESH=1 ;;
         --tsv) ;;                      # the only output shape; accepted for symmetry
         --only=*) ONLY="${a#--only=}" ;;
-        -h|--help) sed -n '2,10p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,9p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $a" ;;
     esac
 done
@@ -44,13 +43,7 @@ remember() {  # remember ROW DIGEST
     CACHE_ROW["$2"]="$1"
 }
 
-# Licence files come from common.sh's licence_members, the reader
-# stage 04 installs from too.
-
-# classify <path-to-text> -> comma-separated SPDX ids, or "unknown"
-# Every marker found is reported: libcap's one file is BSD-3-Clause or GPL-2.0.
-# Matching is case-insensitive over the first 8KB, whitespace collapsed. A GNU
-# licence with no version stated stays unknown.
+# classify FILE: SPDX ids of every licence marked in its first 8KB (libcap's is dual), or unknown.
 classify() {
     local f="$1" head ids=""
     head="$(head -c 8000 "$f" 2>/dev/null)" 2>/dev/null
@@ -66,8 +59,7 @@ classify() {
     }
     has "gnu library general public license" && has "version 2" && add LGPL-2.0
     has "gnu affero general public license"  && has "version 3" && add AGPL-3.0
-    # LGPL texts cite the GPL. In one, the GPL is added unless the GPL's closing
-    # sentence is present, and the dedupe below drops the same-version GPL.
+    # An LGPL text's cited GPL is added unless the GPL's closing sentence shows; dedupe drops it.
     if has "gnu general public license"; then
         case "$head" in
             *"gnu lesser general public license"*|*"gnu library general public license"*)
@@ -115,8 +107,7 @@ classify() {
 
 emit() { printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$6"; }
 
-# One row per source:
-#   name  tarball_sha256  spdx  multi  files  method
+# One row per source: name, tarball_sha256, spdx, multi, files, method.
 while read -r name _ver url _; do
     [[ -n "$name" ]] || continue
     [[ -n "$ONLY" && "$name" != "$ONLY" ]] && continue
@@ -143,6 +134,7 @@ while read -r name _ver url _; do
             remember "$row" "$digest"; continue ;;
     esac
 
+    # common.sh's licence_members, the same reader stage 04 installs licences from.
     names="$(licence_members "$path" | head -6 || true)"
     if [[ -z "$names" ]]; then
         row="$(emit "$name" "$digest" "unknown" "no" "-" "no-top-level-licence-file")"
@@ -163,8 +155,7 @@ while read -r name _ver url _; do
     done <<< "$names"
     rm -rf "$tmp"
 
-    # Distinct ids across files; an `unknown` beside a recognised licence is
-    # not a second licence.
+    # Distinct ids across files; an unknown beside a recognised licence is not a second licence.
     uniq_ids="$(printf '%s' "$ids" | tr ',' '\n' | grep -v '^$' | sort -u | paste -sd, -)"
     if [[ "$uniq_ids" == *,* ]]; then
         stripped="$(printf '%s' "$uniq_ids" | tr ',' '\n' | grep -v '^unknown$' \

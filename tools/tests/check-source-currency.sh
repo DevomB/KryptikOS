@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
-# Tests for tools/check-source-currency.sh. Offline: listings and API answers
-# are served on 127.0.0.1 under the real hosts' paths.
+# Tests for tools/check-source-currency.sh, offline: fixtures are served on 127.0.0.1 at the real paths.
 
 set -uo pipefail
 
-# common.sh prefers these over paths derived from KRYPTIK_ROOT, so an exported
-# one would point the tool at the real tree.
+# common.sh prefers these to paths under KRYPTIK_ROOT; an exported one would point at the real tree.
 unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -60,7 +58,7 @@ page "www.kernel.org/pub/linux/utils/util-linux/v2.40" \
 page "www.kernel.org/pub/linux/utils/util-linux/v2.42" \
     "util-linux-2.42.1.tar.xz" "util-linux-2.42.3.tar.xz"
 
-# skarnet.
+# skarnet: four-part versions.
 page "skarnet.org/software/s6" "s6-2.15.1.0.tar.gz" "s6-2.15.0.0.tar.gz"
 
 # python.org: only the pinned series is relevant, and a 3.13 exists.
@@ -82,8 +80,7 @@ printf '{"tag_name": "v9.9.9", "prerelease": true}\n' \
 
 # --- hosts with an API or a page instead of a listing -----------------------
 
-# json <path> <body>: an API answer. The server ignores the query string and
-# decodes %2F, so a project path is two directories here.
+# json PATH BODY: an API answer; the server ignores the query and decodes %2F into a directory.
 json() { mkdir -p "${SERVE}/$1"; printf '%s\n' "$2" > "${SERVE}/$1/index.html"; }
 
 # freedesktop: listed by date, and a release candidate looks like 1.32.901.
@@ -119,8 +116,7 @@ page "ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable" \
 page "openssl-library.org/source" \
     "openssl-3.3.1.tar.gz" "openssl-3.6.2.tar.gz" "openssl-4.0.0.tar.gz"
 
-# glibc's release branch, read by git over HTTP from a plain info/refs: the
-# head has moved past the commit the patch set was cut from.
+# glibc's release branch, read by git over HTTP from a plain info/refs, past the patch set's commit.
 refs() { mkdir -p "${SERVE}/sourceware.org/git/glibc.git/info"; printf '%s\trefs/heads/release/2.40/master\n' "$1" > "${SERVE}/sourceware.org/git/glibc.git/info/refs"; }
 refs 1111111111111111111111111111111111111111
 
@@ -263,7 +259,7 @@ expect_row oddity "" UNKNOWN         # a way to look that the script does not kn
 expect_row norule "" UNKNOWN         # a rule the rules file does not have
 
 if [[ "$(field linux 5)" == *check-kernel-eol* ]]; then
-    green "the kernel row names the tool that does answer the question"
+    green "the kernel row points at check-kernel-eol.sh"
 else
     red "the kernel row does not point at check-kernel-eol.sh: $(field linux 5)"
 fi

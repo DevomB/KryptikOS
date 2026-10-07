@@ -1,40 +1,16 @@
-# Recorded provenance caveats that no automated assurance class can express.
-#
-# Read by tools/provenance-inventory.sh.
-#
-# A NOTE IS A CAVEAT, NEVER AN ASSURANCE CLASS. Notes are not added to the
-# per-class counts and they do not raise or lower a source's class. They exist
-# because some facts about a source are true, material, and invisible to every
-# check: a build recipe that rewrites upstream's own files, or a signature that
-# verifies against a key upstream never designated as its signer.
+# Provenance caveats no check can see, for tools/provenance-inventory.sh and verify-signatures.sh.
+# A caveat never changes a source's assurance class and is never counted as one.
+# verify-signatures.sh --strict accepts a no-usable-key source but fails a note whose key is held.
 #
 # Columns are whitespace separated; the note runs to the end of the line.
-#
 #   package   the source name, as in tools/fetch-sources.sh and sources.lock
-#   kind      recipe-transformation | undesignated-signer | no-usable-key
+#   kind      recipe-transformation  the recipe changes upstream files that end up in what ships
+#             undesignated-signer    the signature verifies, but upstream names no authorised signer
+#             no-usable-key          the signing key is unusable: no route to it, or retired
 #   location  one token: a path and the function in it, or the URL consulted
-#   note      what was found, and what would remove it
+#   note      what was found and what would remove it; for no-usable-key, the routes tried and when
 #
-# The kinds mean:
-#
-#   recipe-transformation   the build recipe modifies or replaces files from
-#                           the upstream tarball, and the result is compiled
-#                           into what ships. sources.lock therefore does not
-#                           fully describe what the artefact was built from.
-#   undesignated-signer     a signature verifies, but upstream publishes no
-#                           statement about who is authorised to sign its
-#                           releases, so the chain stops short of an
-#                           authorised signer even when the key is attested.
-#   no-usable-key           a signature is published, but no key that made it
-#                           can be used: no route to it was found, or upstream
-#                           retired it. The note names the key and says why,
-#                           with the routes tried and the date, so the search
-#                           is not repeated blind.
-#
-# A note whose package is not in the manifest is refused: a stale caveat is
-# worse than none, because it describes something that is not being shipped.
-# Add a kind only together with a row that needs it, and say here what it
-# means.
+# A note for a package not in the manifest is refused. Add a kind only with a row that needs it.
 
 # package  kind                   location                                note
 expat      undesignated-signer    https://libexpat.github.io/             The release signature verifies against primary key 3176EF7DB2367F1FCA4F306B1F9B0E909AF37285, which gentoo.org's Web Key Directory publishes over HTTPS for sping@gentoo.org - a route that does not depend on the signature, so this is NOT circular trust. What is missing is upstream's own statement: libexpat designates no release signer and publishes no fingerprint on its site, in SECURITY.md, or in its release notes. Verified absent on 2026-09-11.

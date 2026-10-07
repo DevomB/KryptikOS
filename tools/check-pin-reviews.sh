@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
-# Every pin that is behind its upstream needs a row in tools/pin-reviews.tsv:
-#
-#   package  pinned  reviewed_up_to  fine|held  date  what was read, and why
-#
-# A row lapses when the pin moves or upstream releases past reviewed_up_to.
-# `held` means a known fix is not taken, for the reason in the note; --no-held
-# (for a release) refuses it. Reads a survey, never the network:
+# Fail unless every pin behind its upstream has a current review in tools/pin-reviews.tsv.
+# A review lapses when the pin moves or upstream releases past it; --no-held refuses held pins.
 #
 #   tools/check-source-currency.sh --tsv > survey.tsv
 #   tools/check-pin-reviews.sh --survey survey.tsv [--reviews FILE] [--no-held]
@@ -27,8 +22,7 @@ same() {
     [[ "$1" == "$2" ]] && return 0
     [[ "$1" =~ ^[0-9a-f]{12,40}$ && "$2" =~ ^[0-9a-f]{12,40}$ && ( "$1" == "$2"* || "$2" == "$1"* ) ]]
 }
-# Versions have an order; two commit IDs have none, so any other commit than
-# the one reviewed is new.
+# Commit IDs have no order, so any commit other than the one reviewed is new.
 newer() {
     ! same "$1" "$2" || return 1
     [[ "$1" =~ ^[0-9a-f]{12,40}$ && "$2" =~ ^[0-9a-f]{12,40}$ ]] && return 0
@@ -47,8 +41,7 @@ while read -r pkg pinned upto verdict _date note; do
     fi
 done < "$REVIEWS"
 
-# Tabs become a separator that is not whitespace: read merges a run of tabs, so
-# an empty "newest" column would shift every field after it.
+# read merges a run of tabs, so an empty "newest" would shift the fields; \037 is not whitespace.
 while IFS=$'\037' read -r name pinned newest status _; do
     [[ -n "$name" ]] || continue
     SEEN[$name]=1
