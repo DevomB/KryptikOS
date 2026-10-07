@@ -1,8 +1,5 @@
-//! `kryptikd serve`: the launch daemon the desktop session talks to.
-//!
-//! Zones are created by root and the session is an ordinary user; this socket
-//! is the one door between them. The daemon checks the peer (SO_PEERCRED) and
-//! the request, then runs `kryptikd run`, whose every refusal still applies.
+//! `kryptikd serve`: the root daemon the unprivileged desktop session asks to launch zones.
+//! It checks the peer (SO_PEERCRED) and the request; `kryptikd run` still applies its refusals.
 //!
 //!   socket   /run/kryptik-launch/launch.sock   (root:kryptik 0660)
 //!   request  one per connection, NUL-free text lines:
@@ -59,8 +56,7 @@ fn clear_cloexec(fd: RawFd) {
     }
 }
 
-/// One recvmsg into `buf`, owning the descriptors that came with it. Control
-/// data cut short is refused, and what did arrive is closed.
+/// One recvmsg into `buf`, owning any descriptors; truncated control data is refused.
 pub fn recv_with_fds(fd: RawFd, buf: &mut [u8], flags: libc::c_int) -> std::io::Result<(usize, Vec<OwnedFd>)> {
     // Aligned for cmsghdr, with room for twelve, so an excess is refused by count.
     #[repr(C, align(8))]
@@ -117,8 +113,7 @@ fn gid_of_uid(uid: u32) -> Option<u32> {
     }
 }
 
-/// Is `uid` root, or a member (primary or supplementary) of `group`? Member
-/// names are copied out first in case getpwuid(3) reuses getgrnam(3)'s buffer.
+/// Is `uid` root, or a member (primary or supplementary) of `group`?
 fn in_group(uid: u32, group: &str) -> bool {
     if uid == 0 {
         return true;
@@ -129,6 +124,7 @@ fn in_group(uid: u32, group: &str) -> bool {
         return false;
     }
     let gid = unsafe { (*g).gr_gid };
+    // Copied out first: getpwuid(3) may reuse getgrnam(3)'s buffer.
     let mut members: Vec<String> = Vec::new();
     let mut mem = unsafe { (*g).gr_mem };
     unsafe {
@@ -161,8 +157,7 @@ pub fn peer_cred(fd: RawFd) -> std::io::Result<libc::ucred> {
 
 // --- the request -------------------------------------------------------------
 
-/// Whether the bytes so far are a whole request. `run`, `wifi-add` and
-/// `wifi-forget` end at an `end` line, other verbs at a newline.
+/// `run`, `wifi-add` and `wifi-forget` end at an `end` line, other verbs at a newline.
 fn request_complete(text: &[u8]) -> bool {
     if !text.ends_with(b"\n") {
         return false;
@@ -174,8 +169,7 @@ fn request_complete(text: &[u8]) -> bool {
     }
 }
 
-/// Read the request text and any descriptor that came with it, within
-/// `deadline`. At most one descriptor, and only with the first bytes.
+/// Read the request, and at most one descriptor (with its first bytes), within `deadline`.
 fn recv_request(fd: RawFd, deadline: Instant) -> Result<(Vec<u8>, Option<OwnedFd>), String> {
     let mut text = Vec::new();
     let mut carried: Option<OwnedFd> = None;
@@ -294,8 +288,7 @@ impl std::fmt::Debug for WifiRequest {
     }
 }
 
-/// Parse `wifi-add` or `wifi-forget`. A value is all after the first space; a
-/// refusal never repeats a line, which may hold the passphrase.
+/// Parse `wifi-add` or `wifi-forget`. A refusal never repeats a line: it may hold the passphrase.
 fn parse_wifi(text: &str) -> Result<WifiRequest, String> {
     let mut lines = text.lines();
     let verb = lines.next().unwrap_or("");
@@ -354,9 +347,7 @@ fn openat_component(dir: RawFd, name: &str, flags: libc::c_int) -> Result<OwnedF
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
-/// A verified proxy socket. `_fd` pins the inode while the launch is set up;
-/// the launcher gets the path and inode, reopens the path and refuses any
-/// other inode (spawn.rs, StagedSocket).
+/// A verified proxy socket; `_fd` pins its inode while the launch is set up.
 #[derive(Debug)]
 pub struct ProxySocket {
     pub _fd: OwnedFd,
@@ -364,8 +355,7 @@ pub struct ProxySocket {
     pub inode: InodeId,
 }
 
-/// (device, inode) of a verified object, passed to the launcher as `DEV:INO`
-/// and checked again after each later open.
+/// (device, inode) of a verified object, passed as `DEV:INO` and checked after each later open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InodeId {
     pub dev: u64,
@@ -400,8 +390,8 @@ impl std::str::FromStr for InodeId {
     }
 }
 
-/// Open `path` as O_PATH a component at a time, following no symlink. With
-/// `want_socket` the last component must be a socket.
+/// Open `path` O_PATH one component at a time, following no symlink; with `want_socket` the
+/// last component must be a socket.
 pub fn open_nofollow(path: &Path, want_socket: bool) -> Result<OwnedFd, String> {
     if !path.is_absolute() {
         return Err(format!("{}: not an absolute path", path.display()));
@@ -430,9 +420,8 @@ pub fn open_nofollow(path: &Path, want_socket: bool) -> Result<OwnedFd, String> 
     Ok(dir)
 }
 
-/// Accept only `/run/user/<uid>/kryptik/<zone>/wayland-0`, walked without
-/// following symlinks. `<uid>/`, `kryptik/`, `<zone>/` and the socket must be
-/// the session's, the last two directories private, and the listener its proxy.
+/// Accept only `/run/user/<uid>/kryptik/<zone>/wayland-0`, walked without following symlinks:
+/// the session's from `<uid>/` down, `kryptik/` and `<zone>/` private, its proxy listening.
 fn verify_proxy_socket(p: &Path, uid: u32, zone: &str, proxy_exe: Option<&Path>) -> Result<ProxySocket, String> {
     let want = PathBuf::from(format!("/run/user/{uid}/kryptik/{zone}/wayland-0"));
     if p != want {
@@ -467,14 +456,10 @@ fn verify_proxy_socket(p: &Path, uid: u32, zone: &str, proxy_exe: Option<&Path>)
     Ok(ProxySocket { _fd: sock, path: want, inode: InodeId::of(&st) })
 }
 
-/// Ask the kernel who listens on the socket's inode. SO_PEERCRED names the
-/// caller of listen(), which must be the session's uid running kryptik-wlproxy
-/// for this zone (the probe shows in its log as a client disconnect). A process
-/// handed the socket later goes unseen, but only that uid could hand it over,
-/// and it reaches the compositor directly anyway.
+/// SO_PEERCRED names whoever called listen(), which must be the session's kryptik-wlproxy for
+/// this zone. Only the session could pass the socket on, and it reaches the compositor anyway.
 fn verify_proxy_listener(sock: &OwnedFd, uid: u32, zone: &str, proxy_exe: Option<&Path>) -> Result<(), String> {
-    /* Non-blocking: the listener is the session's and may never accept; a
-     * full backlog must refuse at once, not block the root daemon. */
+    // Non-blocking: a full backlog on the session's listener must not block the root daemon.
     let s = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK, 0) };
     if s < 0 {
         return Err(format!("socket: {}", std::io::Error::last_os_error()));
@@ -524,8 +509,7 @@ struct Launch {
     log: PathBuf,
 }
 
-/// Start `kryptikd run` for the request; returns the readiness pipe's read end.
-/// The passphrase descriptor goes to the child; ours all close on every path.
+/// Start `kryptikd run` for the request; our copies of its descriptors close on every path.
 fn spawn_launcher(
     req: &Request,
     cfg: &ServeConfig,
@@ -546,9 +530,8 @@ fn spawn_launcher(
         "--ready-fd".into(),
         ready_w.as_raw_fd().to_string(),
     ];
-    /* The path, not a descriptor: one opened in this mount namespace cannot be
-     * bind-mounted from the zone's (EINVAL). The launcher reopens the path and
-     * refuses any other inode (spawn.rs, StagedSocket). */
+    /* The path, not a descriptor: one opened in this mount namespace cannot be bind-mounted
+     * from the zone's (EINVAL). The launcher refuses any other inode (spawn.rs, StagedSocket). */
     if let Some(w) = &wayland {
         args.push("--wayland-socket".into());
         args.push(w.path.display().to_string());
@@ -569,9 +552,7 @@ fn spawn_launcher(
         .chain(args.iter().map(|a| CString::new(a.as_str()).unwrap_or_else(|_| CString::new("?").unwrap())))
         .collect();
     let path = CString::new("PATH=/usr/bin:/usr/sbin").unwrap();
-    /* A developer instance's registry is under XDG_RUNTIME_DIR (registry::base),
-     * and its launcher must use the same one or `status` and `stop` would not
-     * find the zone. Nothing else of the environment crosses. */
+    // Of our environment only XDG_RUNTIME_DIR crosses: a developer launcher's registry is under it.
     let runtime_dir = if unsafe { libc::geteuid() } != 0 {
         std::env::var("XDG_RUNTIME_DIR").ok().and_then(|v| CString::new(format!("XDG_RUNTIME_DIR={v}")).ok())
     } else {
@@ -691,9 +672,8 @@ impl Pending {
     }
 }
 
-/// A slow request (`stop`, `update-apply`), answered when `reap` sees its
-/// command end so the daemon keeps serving meanwhile. Not a thread: `reap`
-/// collects every child and would take the status a thread waited for.
+/// A slow request (`stop`, `update-apply`), answered once `reap` sees its command end. Not a
+/// thread: `reap` collects every child and would take the status a thread waited for.
 struct Job {
     conn: UnixStream,
     pid: libc::pid_t,
@@ -731,7 +711,6 @@ fn start_job(conn: UnixStream, what: JobKind, cmd: &mut std::process::Command) -
         _ => return Err((conn, "could not hold the command's output".into())),
     };
     match cmd.stdin(std::process::Stdio::null()).stdout(o2).stderr(e2).spawn() {
-        // The Child is dropped without a wait: `reap` collects it.
         Ok(child) => Ok(Job { conn, pid: child.id() as libc::pid_t, what, out, err, exited: None }),
         Err(e) => Err((conn, e.to_string())),
     }
@@ -789,8 +768,7 @@ fn reply(mut c: &UnixStream, text: &str) {
     let _ = c.flush();
 }
 
-/// The write end of the pipe SIGCHLD writes to, so a launcher or job that
-/// ends is reaped at once rather than at the next request.
+/// Write end of the SIGCHLD wake pipe, so a launcher or job that ends is reaped at once.
 static CHILD_WAKE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
 extern "C" fn on_child(_sig: libc::c_int) {
@@ -823,8 +801,7 @@ fn reap(pending: &mut [Pending], jobs: &mut [Job]) {
     }
 }
 
-/// Wait up to 500 ms for a launcher's status once its pipe has closed: the
-/// close can reach us before the exit does.
+/// Wait up to 500 ms for a launcher's status after its pipe closed: the close can come first.
 fn wait_exit(p: &mut Pending) -> Option<i32> {
     if p.exited.is_some() {
         return p.exited;
@@ -925,8 +902,8 @@ fn bind(cfg: &ServeConfig) -> Result<UnixListener, String> {
     }
     let gid = gid_of_group(&cfg.group).ok_or_else(|| format!("no group {:?}; nobody could connect", cfg.group))?;
     let dir = cfg.socket.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(SOCKET_DIR));
-    /* Only the default directory is made root:kryptik 0750, so the group alone
-     * reaches the socket; a directory named with --socket is left as found. */
+    // Only the default directory becomes root:kryptik 0750, so the group alone reaches the socket;
+    // a --socket one is left as found.
     if dir == Path::new(SOCKET_DIR) {
         let _ = std::fs::create_dir_all(&dir);
         let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o750));
@@ -942,8 +919,7 @@ fn bind(cfg: &ServeConfig) -> Result<UnixListener, String> {
     Ok(l)
 }
 
-/// Create the session's /run/user/<uid> (0700, the user's). With no logind,
-/// the daemon is the one root process the session can ask.
+/// Create the session's /run/user/<uid> (0700, the user's): with no logind, nothing else can.
 fn runtime_dir(cfg: &ServeConfig, uid: u32) -> Result<PathBuf, String> {
     let dir = if cfg.developer {
         cfg.log_dir.join(format!("run-user-{uid}"))
@@ -986,8 +962,7 @@ fn zone_running(name: &str) -> bool {
     matches!(crate::registry::state(name), Ok(crate::registry::State::Running { .. }))
 }
 
-/// Serve one connection. A started launch is returned to be watched and a
-/// slow command pushed to `jobs`; anything else is answered here.
+/// Serve one connection; a started launch is returned and a slow command pushed to `jobs`.
 fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pending> {
     let fd = conn.as_raw_fd();
     let Ok(peer) = peer_cred(fd) else {
