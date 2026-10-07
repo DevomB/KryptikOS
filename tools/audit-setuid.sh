@@ -1,18 +1,14 @@
 #!/usr/bin/env bash
-# Fail on any setuid/setgid binary, or any file carrying capabilities, that
-# its allowlist does not justify; with --strip, take the bit or the
-# capabilities off each one instead (docs/hardening.md, "setuid elimination").
-# Stage 06 strips the image's root.
+# Fail on a setuid/setgid bit or file capability its allowlist does not justify (docs/hardening.md).
 #
-#   ./tools/audit-setuid.sh [--strip] ROOT
+#   ./tools/audit-setuid.sh [--strip] ROOT   --strip takes each off instead; stage 06 runs without it and fails
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 
 STRIP=0
 [[ "${1:-}" == --strip ]] && { STRIP=1; shift; }
 ARG="${1:?usage: audit-setuid.sh [--strip] ROOT}"
-# Resolved, so that a trailing slash or a symlink still yields the paths the
-# allowlist names; otherwise an allowed binary would be stripped as unknown.
+# Resolved, so a trailing slash or a symlink cannot make an allowed binary look unknown.
 TARGET="$(realpath -e -- "$ARG")" || die "no such path: ${ARG}"
 [[ -d "$TARGET" ]] || die "not a directory: ${TARGET}"
 # By device and inode, so a bind mount of / is refused as well as / itself.
@@ -21,10 +17,7 @@ TARGET="$(realpath -e -- "$ARG")" || die "no such path: ${ARG}"
 ALLOWLIST="${KRYPTIK_ROOT}/build/config/setuid-allowlist.txt"
 CAPLIST="${KRYPTIK_ROOT}/build/config/capability-allowlist.txt"
 
-# listed FILE ARRAY: the paths FILE names into the associative ARRAY, each
-# with a justification after it; an entry without one refuses the audit
-# before any file is looked at. The last entry counts even without a newline
-# after it.
+# listed FILE ARRAY: FILE's paths into ARRAY; an entry with no "# why" refuses the audit up front.
 listed() {
     local -n into="$2"; local line path
     [[ -f "$1" ]] || return 0
@@ -42,8 +35,7 @@ listed "$CAPLIST" CAP_ALLOWED
 # Stripping by a missing or empty list would take the bit off every binary.
 [[ "$STRIP" -eq 0 || "${#ALLOWED[@]}" -gt 0 ]] || die "--strip needs ${ALLOWLIST} with at least one entry"
 
-# The root's own filesystem only. A directory find cannot read may hold a
-# binary, so an unread one fails the audit instead of passing it.
+# The root's own filesystem only; a directory find cannot read may hide a binary, so it fails.
 found="$(mktemp)"
 find "$TARGET" -xdev -type f -perm /6000 -print0 > "$found" \
     || { rm -f "$found"; die "find could not read all of ${TARGET}"; }
@@ -104,8 +96,7 @@ for f in "${capped[@]}"; do
     fi
 done
 
-# A stripped name that is a hard link to an allowed file took the bit or the
-# capabilities off both; the image would ship that binary broken.
+# Stripping a hard link to an allowed file strips both; the image would ship it broken.
 for bin in "${kept[@]}"; do
     [[ -u "$bin" || -g "$bin" ]] \
         || die "${bin#"${TARGET%/}"} lost its bit: a stripped file is another name for it"
@@ -117,7 +108,6 @@ done
 echo
 if [[ "$violations" -gt 0 ]]; then
     die "${violations} unjustified setuid/setgid binary(ies) or file capabilities.
-Use a kryptikd-brokered service instead. If a binary genuinely needs the
-privilege, add it to ${ALLOWLIST} or ${CAPLIST} with a justification."
+Use a kryptikd-brokered service, or justify the privilege in ${ALLOWLIST} or ${CAPLIST}."
 fi
 ok "no unjustified setuid/setgid binaries or file capabilities"

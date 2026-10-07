@@ -10,8 +10,7 @@ fn z(mode: &str, base: Option<u32>, nic: Option<&str>) -> Zone {
     .unwrap()
 }
 
-/// This namespace plays a nic zone that inherited forwarding on; after the
-/// bridge half both forwarding knobs must read 0.
+/// A nic zone that inherited forwarding on must read 0 in both knobs after the bridge half.
 #[test]
 fn bridge_half_turns_forwarding_off() {
     use crate::netlink::tests::in_userns_netns;
@@ -52,14 +51,12 @@ fn bridge_half_turns_forwarding_off() {
     }
 }
 
-/// A veth pair and a bridge must not count. Sysfs shows the network
-/// namespace of whoever mounted it, so the child mounts its own.
+/// Veths and bridges do not count; sysfs shows its mounter's netns, so the child mounts its own.
 #[test]
-fn only_bus_devices_count_as_physical() {
+fn software_devices_not_physical() {
     use crate::netlink::tests::{in_userns_netns, step};
     use std::ffi::CString;
-    /* Before the fork: temp_dir() takes std's environment lock, and a child
-     * forked while another thread holds it waits forever. */
+    // Before the fork: temp_dir() takes std's env lock, which a forked child could wait on forever.
     let dir = std::env::temp_dir().join(format!("kryptik-sysfs-{}", std::process::id()));
     let rc = in_userns_netns(|| {
         if std::fs::create_dir_all(&dir).is_err() {
@@ -177,8 +174,7 @@ fn fresh_namespace_matches_prediction() {
     }
 }
 
-/// This namespace plays the nic zone and a holder a zone with IPv6
-/// disabled; eth0 must still come out addressed, up and routed.
+/// A routed zone with IPv6 disabled must still get eth0 addressed, up and routed.
 #[test]
 fn ipv4_survives_disabled_ipv6() {
     use crate::netlink::tests::{in_userns_netns, spawn_netns_holder, step};
@@ -226,7 +222,7 @@ fn ipv4_survives_disabled_ipv6() {
                 eprintln!("zone routes:\n{routes}");
                 return Err(8);
             }
-            // Premise: IPv6 really was refused.
+            // Premise: IPv6 was refused.
             if v6.lines().any(|l| l.contains("eth0")) {
                 eprintln!("IPv6 was not disabled in the zone namespace; this proved nothing:\n{v6}");
                 return Err(9);
@@ -250,8 +246,7 @@ fn ipv4_survives_disabled_ipv6() {
     }
 }
 
-/// A veth end with an address and default route plays the uplink; after
-/// `carry_nic` it must be up with the same configuration in the holder.
+/// A veth end plays the uplink; `carry_nic` must leave it up in the holder with its configuration.
 #[test]
 fn uplink_config_travels_with_nic() {
     use crate::netlink::tests::{in_userns_netns, spawn_netns_holder, step};

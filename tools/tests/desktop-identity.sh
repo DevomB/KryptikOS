@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Check the shipped zone colours agree: zone-colours.h matches the zone files,
-# the dwl border patch applies to the pinned dwl (if its tarball is in
-# KRYPTIK_SOURCES), and `zoneid audit` passes. Exit 0 pass, 1 fail, 77 no cargo.
+# Zone colours: zone-colours.h matches the zone files, the dwl border patch applies to the pinned
+# dwl (when its tarball is there), and `zoneid audit` passes. Exit 0 pass, 1 fail, 77 no cargo.
 
 set -uo pipefail
 
@@ -31,7 +30,7 @@ if [[ -n "$V_DWL" && -f "$SRC/dwl-v${V_DWL}.tar.gz" ]]; then
     fi
     rm -rf "$tmp"
 else
-    printf 'dwl v%s tarball not under %s; patch dry run not performed here (stage 04 performs it for real)\n' "${V_DWL:-?}" "$SRC"
+    printf 'dwl v%s tarball not under %s; no patch dry run here (stage 04 applies it)\n' "${V_DWL:-?}" "$SRC"
 fi
 
 printf '\n== zoneid audit over compartments/zones ==\n'

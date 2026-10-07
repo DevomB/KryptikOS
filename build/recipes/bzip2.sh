@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# bzip2: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
 s_bzip2() {
     local src; src="$(unpack "bzip2-${V_BZIP2}.tar.gz" "bzip2-${V_BZIP2}")"
@@ -8,9 +6,7 @@ s_bzip2() {
     # bzip2 has no configure; its docs path and shared-lib build need patching.
     sed -i 's@\(ln -s -f \)$(PREFIX)/bin/@\1@' Makefile
     sed -i "s@(PREFIX)/man@(PREFIX)/share/man@g" Makefile
-    # Both Makefiles assign CFLAGS, which beats the environment, and link the
-    # library with neither CFLAGS nor LDFLAGS: the flags go on the command
-    # line, with the -fPIC and large-file define theirs carried.
+    # Both Makefiles set CFLAGS over the environment and link without LDFLAGS: pass both here.
     sed -i -e 's/-shared -Wl,-soname/-shared $(LDFLAGS) -Wl,-soname/' \
         -e 's/$(CFLAGS) -o bzip2-shared/$(CFLAGS) $(LDFLAGS) -o bzip2-shared/' Makefile-libbz2_so
     [[ "$(grep -c 'LDFLAGS' Makefile-libbz2_so)" -eq 2 ]] || { echo "FAIL: Makefile-libbz2_so did not take LDFLAGS"; return 1; }

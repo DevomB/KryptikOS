@@ -1,8 +1,6 @@
-# Where tools/check-source-currency.sh finds the newest release of a source
-# whose manifest row (tools/fetch-sources.sh) declares "rule", and which of
-# upstream's releases the pin may move to. Tab-separated:
+# Where tools/check-source-currency.sh looks for sources whose manifest row says "rule". Tab-separated:
 #
-#   name    the source, as in the manifest
+#   name    the source, as in the manifest (tools/fetch-sources.sh)
 #   shape   listing: a page read for every match of the pattern
 #           api: a JSON answer read for every value of a key
 #   where   the page or API URL, on the project's own host

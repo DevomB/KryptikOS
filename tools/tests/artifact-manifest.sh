@@ -55,7 +55,7 @@ d2="$(sed -n 's/^# digest: //p' "$M2")"
 check "digest is stable across runs" "$([[ "$d1" == "$d2" && -n "$d1" ]] && echo ok)"
 check "body is byte-identical across runs" \
       "$(diff <(grep -v '^#' "$M1") <(grep -v '^#' "$M2") >/dev/null && echo ok)"
-check "mtime is deliberately not part of identity" "$([[ "$d1" == "$d2" ]] && echo ok)"
+check "mtime is not part of the identity" "$([[ "$d1" == "$d2" ]] && echo ok)"
 
 # An absolute path would make manifests incomparable between machines.
 check "body carries no absolute root path" \

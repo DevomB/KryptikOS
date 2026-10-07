@@ -1,13 +1,6 @@
 #!/usr/bin/env bash
-# wpa-supplicant: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
-# wpa_supplicant from its own .config: nl80211 through libnl, the unix control
-# interface for wpa_cli (no D-Bus or readline), OpenSSL for WPA3-SAE, OWE, DPP
-# and enterprise EAP, 802.11r and protected management frames, and AP mode,
-# which only the zones suite uses: its access point on mac80211_hwsim is this
-# binary in a namespace of its own. Its Makefile takes CFLAGS from the
-# environment, so the hardening flags apply.
+# CONFIG_AP is for the zones suite, whose hwsim access point is this binary in its own namespace.
 s_wpa_supplicant() {
     local src; src="$(unpack "wpa_supplicant-${V_WPA_SUPPLICANT}.tar.gz" "wpa_supplicant-${V_WPA_SUPPLICANT}")"
     cd "$src/wpa_supplicant"

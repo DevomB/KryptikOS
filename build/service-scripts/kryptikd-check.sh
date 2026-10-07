@@ -1,6 +1,5 @@
 #!/bin/sh
-# Log whether kryptikd can read the zones and the kernel supports them. Not -e:
-# a machine that cannot start zones must still boot far enough to debug.
+# Log kryptikd's zone and kernel checks; no -e, so a machine without zones still boots to debug.
 log=/var/log/kryptik/kryptikd-check.log
 mkdir -p /var/log/kryptik
 {

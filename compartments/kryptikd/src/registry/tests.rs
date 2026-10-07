@@ -11,7 +11,7 @@ fn pid_stamp_round_trips() {
 }
 
 #[test]
-fn wrong_start_time_is_not_alive() {
+fn wrong_start_time_not_alive() {
     // Same pid, different process.
     let me = unsafe { libc::getpid() };
     let real = PidStamp::of(me).unwrap();
@@ -38,8 +38,7 @@ fn registry_base_is_per_user() {
     if unsafe { libc::geteuid() } == 0 {
         assert_eq!(b, Path::new("/run/kryptik/zones"));
     } else {
-        /* As text: Path::starts_with compares whole components, and
-         * "/tmp/kryptik-" is not one. */
+        // As text: Path::starts_with compares whole components, and "/tmp/kryptik-" is not one.
         let s = b.to_string_lossy();
         assert!(
             s.starts_with("/run/user/") || s.starts_with("/tmp/kryptik-"),
@@ -69,7 +68,7 @@ fn bogus_runtime_dir_falls_back() {
 fn unsafe_registry_dir_is_refused() {
     // What an attacker could leave in /tmp before the user's first run.
     use std::os::unix::fs::MetadataExt;
-    let root = std::env::temp_dir().join(format!("kryptik-f1-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("kryptik-regdir-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
     let mode_of = |p: &Path| fs::metadata(p).unwrap().mode() & 0o777;
@@ -126,8 +125,7 @@ fn second_claim_refused_until_drop() {
         }
         other => panic!("expected Running with our pid, got {other:?}"),
     }
-    /* flock is per open file description, so a second claim from this
-     * process is refused like another launcher's. */
+    // flock is per open file description: a second claim from this process is refused too.
     match claim(&zone) {
         Err(RegistryError::AlreadyRunning { .. }) => {}
         other => panic!("a second claim must be refused, got {other:?}"),

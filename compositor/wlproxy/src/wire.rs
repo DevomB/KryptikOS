@@ -1,18 +1,15 @@
-//! The Wayland wire format, parsed defensively: every length comes from a zone,
-//! so none is used unchecked, and no input can make this panic.
+//! The Wayland wire format, parsed defensively: lengths come from a zone, and no input may panic.
 //!
-//! A message is a header (object id; `size << 16 | opcode`, `size` counting the
-//! header) and arguments padded to 4 bytes, all in host byte order. A string's
-//! length includes its NUL, and 0 means null. An fd takes no bytes: it travels
-//! by SCM_RIGHTS, so only the tables (protocol.rs) say how many a message
-//! carries, and a miscount hands a client another message's descriptor.
+//! A message is a header (object id; `size << 16 | opcode`, `size` counting the header) and
+//! arguments padded to 4 bytes, in host byte order. A string's length includes its NUL; 0 is null.
+//! An fd takes no bytes: it travels by SCM_RIGHTS, so only the tables (protocol.rs) say how many
+//! a message carries, and a miscount hands a client another message's descriptor.
 
 use std::fmt;
 
 pub const HEADER_LEN: usize = 8;
 
-/// Largest message. libwayland never sends more than its 4096-byte buffer; the
-/// 16-bit size field could claim 64 KiB for the proxy to buffer.
+/// Largest message: libwayland sends at most its 4096-byte buffer, though the size field allows 64 KiB.
 pub const MAX_MESSAGE_LEN: usize = 4096;
 
 /// Ids from here up are the server's; a client creating one is refused.
@@ -26,12 +23,15 @@ pub enum WireError {
     BadSize(u16),
     /// An argument ran past the end of the message body.
     ArgOverrun,
+    /// A second new_id in one message: the object map takes one per message.
+    SecondNewId,
     /// A string whose declared length does not end in NUL.
     UnterminatedString,
+    /// A null string where the signature does not allow one.
+    NullString,
     /// A string that is not valid UTF-8, which every Wayland string must be.
     NotUtf8,
-    /// A NUL inside a string: `"wl_shm\0_evil"` equals `"wl_shm"` only to a
-    /// C-string comparison, and policy must not depend on which kind runs.
+    /// A NUL inside a string: C would read `"wl_shm\0_evil"` as `"wl_shm"`.
     InteriorNul,
 }
 
@@ -45,7 +45,9 @@ impl fmt::Display for WireError {
                  and <= {MAX_MESSAGE_LEN})"
             ),
             WireError::ArgOverrun => write!(f, "argument runs past the end of the message"),
+            WireError::SecondNewId => write!(f, "message creates a second object"),
             WireError::UnterminatedString => write!(f, "string is not NUL-terminated"),
+            WireError::NullString => write!(f, "null string where the signature requires one"),
             WireError::NotUtf8 => write!(f, "string is not valid UTF-8"),
             WireError::InteriorNul => write!(f, "string contains an interior NUL"),
         }
@@ -61,8 +63,7 @@ pub struct Header {
 }
 
 impl Header {
-    /// Parse a header from the first 8 bytes of `buf`. `size` is validated
-    /// here, so no `Header` can carry a bad length.
+    /// Parse the first 8 bytes of `buf`; `size` is checked here, so no `Header` has a bad length.
     pub fn parse(buf: &[u8]) -> Result<Header, WireError> {
         if buf.len() < HEADER_LEN {
             return Err(WireError::Truncated);

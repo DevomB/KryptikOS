@@ -1,12 +1,11 @@
-//! Zone isolation primitives: namespaces and id maps, core scheduling, and
-//! probes of what the kernel provides. Direct `libc` calls (ADR-010).
+//! Zone isolation primitives as direct libc calls (ADR-010): namespaces, id maps, core
+//! scheduling, and probes of what the kernel provides.
 
 use std::io;
 
 use crate::zone::{NetworkMode, Zone};
 
-/// Namespaces every zone gets. The user namespace lets the others be created
-/// and makes root inside the zone weaker than root outside it.
+/// Namespaces every zone gets; the user namespace makes the zone's root weaker than the host's.
 pub const ZONE_NAMESPACES: libc::c_int = libc::CLONE_NEWUSER
     | libc::CLONE_NEWNS
     | libc::CLONE_NEWPID
@@ -46,9 +45,6 @@ fn check(call: &'static str, ret: libc::c_int) -> Result<(), IsolateError> {
     }
 }
 
-/// Namespace flags for a zone. Every zone gets its own network namespace; the
-/// nic zone's is where the parent moves the physical NIC (netzone), leaving
-/// zone 0 with loopback.
 /// The namespaces a zone can be given, by name, in the order reports list them.
 pub const NAMESPACES: [(libc::c_int, &str); 7] = [
     (libc::CLONE_NEWUSER, "user"),
@@ -64,22 +60,20 @@ pub fn namespace_names(flags: libc::c_int) -> Vec<&'static str> {
     NAMESPACES.iter().filter(|(f, _)| flags & f != 0).map(|(_, n)| *n).collect()
 }
 
+/// Every zone gets its own network namespace; the nic zone's receives the physical NIC.
 pub fn namespace_flags(zone: &Zone) -> libc::c_int {
     match zone.network {
         NetworkMode::None | NetworkMode::Routed | NetworkMode::Nic => ZONE_NAMESPACES | NS_NET,
     }
 }
 
-/// Enter new namespaces. CLONE_NEWPID puts the caller's children in the new pid
-/// namespace, not the caller, so the caller must fork afterwards.
+/// Enter new namespaces; CLONE_NEWPID applies to the caller's children, so fork afterwards.
 pub fn unshare_namespaces(flags: libc::c_int) -> Result<(), IsolateError> {
     check("unshare", unsafe { libc::unshare(flags) })
 }
 
-/// Write the uid/gid maps for a new user namespace. setgroups is denied first,
-/// or the kernel refuses an unprivileged gid_map write. `with_nobody` also maps
-/// nobody (65534) into the zone's range, which needs CAP_SETUID in the parent
-/// namespace: privileged launch only.
+/// Write a new user namespace's id maps, denying setgroups first as an unprivileged gid_map
+/// needs. `with_nobody` maps 65534 too, which needs CAP_SETUID: a root launch only.
 pub fn write_id_maps(
     pid: libc::pid_t,
     outer_uid: u32,
@@ -111,9 +105,8 @@ pub fn write_id_maps(
     Ok(())
 }
 
-/// Whether a sysctl restricts unprivileged user namespaces, and which:
-/// linux-hardened's `unprivileged_userns_clone` (0 = restricted) or Ubuntu's
-/// `apparmor_restrict_unprivileged_userns` (1 = restricted). `None`: neither.
+/// Whether a sysctl restricts unprivileged user namespaces, and which: linux-hardened's
+/// `unprivileged_userns_clone` (0) or Ubuntu's `apparmor_restrict_unprivileged_userns` (1).
 pub fn userns_restriction_sysctl() -> Option<(bool, &'static str)> {
     let read = |p: &str| std::fs::read_to_string(p).ok().and_then(|s| s.trim().parse::<u32>().ok());
     if let Some(v) = read("/proc/sys/kernel/unprivileged_userns_clone") {
@@ -125,8 +118,7 @@ pub fn userns_restriction_sysctl() -> Option<(bool, &'static str)> {
     None
 }
 
-/// Test the restriction rather than read it: in a child, as uid 65534 if we are
-/// root, try `unshare(CLONE_NEWUSER)`. `Ok(true)` means EPERM (restricted).
+/// Try `unshare(CLONE_NEWUSER)` in a child, as uid 65534 if we are root; `Ok(true)` is EPERM.
 pub fn probe_userns_restriction() -> Result<bool, IsolateError> {
     let pid = unsafe { libc::fork() };
     if pid < 0 {
@@ -175,8 +167,7 @@ pub fn probe_userns_restriction() -> Result<bool, IsolateError> {
     }
 }
 
-/// Die (SIGKILL) when the parent exits. The kernel clears this on fork and on
-/// any euid or egid change (setresuid), so set it again after either.
+/// SIGKILL when the parent exits; fork and any euid or egid change clear it, so re-arm after.
 pub fn die_with_parent() -> Result<(), IsolateError> {
     check(
         "prctl(PR_SET_PDEATHSIG)",
@@ -190,9 +181,8 @@ const PR_SCHED_CORE_GET: libc::c_ulong = 0;
 const PR_SCHED_CORE_CREATE: libc::c_ulong = 1;
 const PIDTYPE_PID: libc::c_ulong = 0;
 
-/// Give the calling task its own core-scheduling cookie, which its children
-/// inherit: a core's sibling threads then run it only alongside the same
-/// cookie. Needs no privilege. ENODEV and EINVAL are not failures (`CoreSched`).
+/// Give the calling task, and so its children, its own core-scheduling cookie: a core's
+/// siblings then run it only beside the same cookie. ENODEV and EINVAL: see `CoreSched`.
 pub fn take_core_cookie() -> io::Result<()> {
     if unsafe { libc::prctl(PR_SCHED_CORE, PR_SCHED_CORE_CREATE, 0, PIDTYPE_PID, 0) } < 0 {
         return Err(io::Error::last_os_error());
@@ -205,15 +195,13 @@ pub fn take_core_cookie() -> io::Result<()> {
 pub enum CoreSched {
     /// Sibling threads are online and scheduled by cookie.
     Cookies,
-    /// ENODEV: no sibling thread online (`nosmt`, ADR-011, or no SMT at all).
-    /// Nothing shares a core, which is what the cookie is for.
+    /// ENODEV: no sibling thread online (`nosmt`, ADR-011), so nothing shares a core.
     NoSmt,
     /// EINVAL: a kernel built without CONFIG_SCHED_CORE.
     Unavailable,
 }
 
-/// Asks by reading our own cookie: while no sibling thread is online, every
-/// PR_SCHED_CORE operation answers ENODEV first.
+/// Read our own cookie: with no sibling thread online, every PR_SCHED_CORE call gives ENODEV.
 pub fn core_scheduling() -> CoreSched {
     match core_cookie_of(0) {
         Ok(_) => CoreSched::Cookies,
@@ -222,8 +210,7 @@ pub fn core_scheduling() -> CoreSched {
     }
 }
 
-/// A task's core-scheduling cookie, 0 if none; pid 0 is the calling task.
-/// /proc does not show it. Another task's needs ptrace-read access to it.
+/// A task's core-scheduling cookie, 0 if none (pid 0: ours); another's needs ptrace-read access.
 pub fn core_cookie_of(pid: libc::pid_t) -> io::Result<u64> {
     let mut cookie: libc::c_ulong = 0;
     let rc = unsafe {
@@ -246,17 +233,15 @@ pub fn core_cookie_word(pid: libc::pid_t) -> &'static str {
     }
 }
 
-/// Set the hostname in the current UTS namespace. Needs CAP_SYS_ADMIN in the
-/// owning user namespace, which the zone's root has once the id maps exist.
+/// Set the hostname in the current UTS namespace (CAP_SYS_ADMIN there, once the id maps exist).
 pub fn set_hostname(name: &str) -> Result<(), IsolateError> {
     check("sethostname", unsafe {
         libc::sethostname(name.as_ptr() as *const libc::c_char, name.len())
     })
 }
 
-/// Drop every supplementary group. Needs CAP_SETGID in the current user
-/// namespace, so an unprivileged kryptikd gets EPERM, and setgroups is denied
-/// inside the zone's namespace.
+/// Drop every supplementary group: needs CAP_SETGID (an unprivileged kryptikd gets EPERM), and
+/// setgroups is denied inside the zone's namespace.
 pub fn drop_supplementary_groups() -> Result<(), IsolateError> {
     check("setgroups", unsafe { libc::setgroups(0, std::ptr::null()) })
 }
@@ -267,8 +252,7 @@ pub fn supplementary_group_count() -> usize {
     if n < 0 { 0 } else { n as usize }
 }
 
-/// Bring up `lo` in the zone's network namespace. Even an air-gapped zone needs
-/// it, and it reaches nothing outside the namespace.
+/// Bring up `lo`: even an air-gapped zone needs it, and it reaches nothing outside.
 pub fn bring_up_loopback() -> Result<(), IsolateError> {
     let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
     if sock < 0 {
@@ -285,9 +269,8 @@ pub fn bring_up_loopback() -> Result<(), IsolateError> {
     }
     ifr.ifr_ifru.ifru_flags = (libc::IFF_UP | libc::IFF_RUNNING) as libc::c_short;
 
-    /* `as _`: the request is c_ulong in glibc and c_int in musl (the static
-     * initramfs build). The kernel reads 32 bits and the assert checks the
-     * value fits them, so narrowing to c_int loses nothing. */
+    /* `as _`: the request is c_ulong in glibc and c_int in musl (the initramfs build); the
+     * kernel reads 32 bits, and the assert checks the value fits them. */
     const _: () = assert!((libc::SIOCSIFFLAGS as u64) <= u32::MAX as u64);
     let ret = unsafe { libc::ioctl(sock, libc::SIOCSIFFLAGS as _, &ifr) };
     unsafe { libc::close(sock) };

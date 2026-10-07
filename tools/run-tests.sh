@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Run every suite that needs no root and no build chroot, and name the ones
-# that did not run. Suites run directly, not through make, which would turn
-# their exit 77 (a missing dependency) into exit 2.
+# Run every suite that needs no root and no build chroot, and name the ones that did not run.
 #
 #   tools/run-tests.sh            exit 1 if any suite failed
 #   tools/run-tests.sh --strict   also exit 1 if any suite did not run
@@ -13,9 +11,7 @@ cd "$ROOT" || exit 1
 STRICT=0
 [[ "${1:-}" == "--strict" ]] && STRICT=1
 
-# Every tools/tests/* file is a suite, except these: the first two chroot into
-# the built system (acceptance items), the last two run with the compartment
-# suites below.
+# Not here: the first two need the built system, the last two run with the compartment suites.
 ELSEWHERE=" libc-unwind.sh userspace-smoke.sh desktop-identity.sh compositor.sh "
 SUITES=()
 for t in tools/tests/*.sh tools/tests/*.py; do
@@ -45,7 +41,7 @@ run_suite() {   # run_suite <name> <script>
         failed+=("$name")
         return
     fi
-    "$script"
+    "$script"   # not through make, which turns exit 77 (a missing dependency) into 2
     rc=$?
     if [[ "$rc" -eq 0 ]]; then
         passed+=("$name")

@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
-# tools/source-bundle.sh on a fake tree: a git checkout with a sources.lock,
-# downloaded tarballs and a signature, and a stand-in cargo. The bundle holds
-# each tarball as locked, its signature, the repository at the commit and the
-# crates, and its MANIFEST verifies; a mismatched, missing or dirty input is
-# refused.
+# tools/source-bundle.sh on a fake checkout and stand-in cargo: the bundle's contents and refusals.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PASS=0; FAIL=0

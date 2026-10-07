@@ -13,7 +13,7 @@ is [separate](state-encryption.md).
   device. kryptikd (root) opens it as `/dev/mapper/kryptik-zone-<zone>`
   (`cryptsetup open --type luks2`), runs `e2fsck -p` (damage it cannot repair
   refuses the launch), and mounts the ext4 `nosuid,nodev,noatime` at the
-  zone's data directory, owned by the zone's identity; exec stays allowed,
+  zone's data directory, owned by the zone's identity. Exec stays allowed,
   since `dev` runs what it builds. The zone sees it at `/home/<zone>` and
   never sees the container, the mapping or a loop device: nothing in its
   `/dev` names one, and all its mounts are `nodev`.
@@ -27,7 +27,7 @@ is [separate](state-encryption.md).
   the environment. For tests, `--passphrase-file` must be a non-empty regular
   file of at most 4096 bytes, owned by root or the caller, with no group or
   other bits. kryptikd passes the passphrase to `cryptsetup` on stdin and
-  zeroes its buffer with `explicit_bzero`; nothing more is claimed: the
+  zeroes its buffer with `explicit_bzero`. Nothing more is claimed: the
   buffer is not `mlock`ed, and keys are in RAM while zones run
   ([threat model](../threat-model.md)).
 - **Close happens after the zone is gone.** After `waitpid` on the
@@ -59,11 +59,11 @@ a passphrase is a UX choice; kryptikd works either way.
   `restore-header` and `status` complete the set.
 - `volume destroy NAME` erases a stopped zone's key slots and deletes its
   container file, and its data with it, so the zone is as before `volume
-  init`; the slots go first, since an unlinked file's blocks stay on the disk
-  until reused. It refuses an open mapping
-  (stop the zone first), a block device (wiped by hand, not unlinked) and a
-  file without a LUKS signature. The zone's definition stays, on the verified
-  root, as does its empty data directory.
+  init`. The slots go first, since an unlinked file's blocks stay on the disk
+  until reused. It refuses an open mapping (stop the zone first), a block
+  device (wiped by hand, not unlinked) and a file without a LUKS signature.
+  The zone's definition stays, on the verified root, as does its empty data
+  directory.
 - A wrong passphrase (`cryptsetup` exit 2) prints `zone "work": volume did not
   unlock (wrong passphrase)` and the zone does not start; the UI retries, not
   kryptikd.

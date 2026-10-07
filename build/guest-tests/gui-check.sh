@@ -9,6 +9,7 @@
 #   GT KEY-MENU                                     press Alt+p (the chrome menu)
 #   GT CONSENT-CODE 1 NN                            type NN and Enter (the question's code)
 #   GT CONSENT-WAIT 2                               type y and Enter (not the code: refused)
+#   GT POINTER-ZONE0, GT POINTER-UNTRUSTED          move the pointer onto the newest window
 #   GT HEAD-ON, GT HEAD-OFF                         plug a second monitor in, pull it out
 #   GT KEY-FOCUS-HEAD                               press Alt+period (the next monitor)
 #   GT KEY-FOCUS-HEAD-WINDOW                        press Alt+j
@@ -346,6 +347,34 @@ n=20; while [[ "$n" -gt 0 && -n "$(questions)" ]]; do n=$((n - 1)); sleep 1; don
 [[ -z "$(questions)" ]] && pass "consent-cleaned" "no question left behind" || fail "consent-cleaned" "$(questions | tr '
 ' ' ')"
 
+# --- a zone's cursor image is never drawn ---------------------------------------------
+# wlprobe cursor, once the pointer enters its window, asks for an image that,
+# drawn, covers the screen. The compositor tells a client which output each
+# of its surfaces is shown on, a cursor image among them once it is in use:
+# zone 0's image is told, so the same word missing for a zone's means the
+# compositor never took it. (A screenshot from the host holds no cursor.)
+as_user "/usr/libexec/kryptik/wlprobe cursor 12" > "$LOG/cursor-zone0.out" 2>&1 &
+probe0=$!
+wait_for 20 grep -q committed "$LOG/cursor-zone0.out"
+echo "GT POINTER-ZONE0"
+wait_for 20 grep -q 'set a ' "$LOG/cursor-zone0.out" && pass "zone0-cursor-set" "$(grep 'set a ' "$LOG/cursor-zone0.out")" || fail "zone0-cursor-set" "$(tr '\n' ' ' < "$LOG/cursor-zone0.out")"
+wait_for 10 grep -q 'the cursor image entered an output' "$LOG/cursor-zone0.out" && pass "zone0-cursor-shown" "the compositor took zone 0's image: it entered an output" || fail "zone0-cursor-shown" "zone 0's cursor image entered no output, so a zone's proves nothing: $(tr '\n' ' ' < "$LOG/cursor-zone0.out")"
+wait "$probe0" 2>/dev/null
+stop_zone untrusted
+mark cursor untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe cursor 20" > "$LOG/launch-cursor.out" 2>&1
+cursor_asked() { since_mark cursor untrusted | grep -q 'set a '; }
+wait_for 20 probe_committed cursor || fail "cursor-mapped" "the probe did not draw its window: $(tr '\n' ' ' < "$LOG/launch-cursor.out")"
+echo "GT POINTER-UNTRUSTED"
+wait_for 20 cursor_asked && pass "zone-cursor-asked" "$(since_mark cursor untrusted | grep 'set a ')" || fail "zone-cursor-asked" "$(since_mark cursor untrusted | tail -3 | tr '\n' ' '); $(zone_why untrusted)"
+sleep 6
+# The zone's client hears of its window through its proxy, so it would hear of its image.
+since_mark cursor untrusted | grep -q 'the window entered an output' && pass "zone-hears-of-outputs" "the zone's client was told its window entered an output" || fail "zone-hears-of-outputs" "$(since_mark cursor untrusted | tail -3 | tr '\n' ' ')"
+if since_mark cursor untrusted | grep -q 'the cursor image entered an output'; then
+    fail "zone-cursor-not-shown" "the compositor took the zone's cursor image: it entered an output"
+else
+    pass "zone-cursor-not-shown" "six seconds after the zone asked, its cursor image has entered no output"
+fi
 # --- a second monitor, plugged in and pulled out -------------------------------------------
 # A zone's window on the new monitor is framed and named as on the first, the
 # chrome's record follows the monitor in use, and pulling the monitor out

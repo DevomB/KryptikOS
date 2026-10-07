@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
-# fonts: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
-# havoc renders from the one TrueType file its config names
-# (/usr/share/fonts/TTF/DejaVuSansMono.ttf); Sans and the bold faces come along.
-# Licence: Bitstream Vera terms plus public-domain changes (LICENSE, installed).
+# DejaVu: havoc renders from the one file its config names; Sans and the bold faces come along.
 s_fonts() {
     local src; src="$(unpack "dejavu-fonts-ttf-${V_DEJAVU_FONTS}.tar.bz2" "dejavu-fonts-ttf-${V_DEJAVU_FONTS}")"
     install -d -m 0755 /usr/share/fonts/TTF

@@ -5,8 +5,7 @@
 #   ./tools/fetch-sources.sh --lock     download and WRITE sources.lock
 #   ./tools/fetch-sources.sh --list     print the resolved manifest, download nothing
 #
-# --lock records whatever downloads (trust on first use): audit it before
-# committing. See docs/supply-chain.md.
+# --lock trusts whatever downloads: audit sources.lock before committing it (docs/supply-chain.md).
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 load_config
@@ -21,35 +20,30 @@ esac
 
 # Test hook: tools/tests/fetch-sources.sh substitutes a manifest of file:// URLs.
 if [[ -n "${KRYPTIK_FETCH_MANIFEST:-}" ]]; then
-    [[ "${KRYPTIK_FETCH_SELFTEST:-0}" == "1" ]] || die \
-"KRYPTIK_FETCH_MANIFEST is set but KRYPTIK_FETCH_SELFTEST is not.
-Refusing to fetch or lock against a substituted manifest."
+    [[ "${KRYPTIK_FETCH_SELFTEST:-0}" == "1" ]] \
+        || die "Refusing to fetch or lock against a substituted manifest without KRYPTIK_FETCH_SELFTEST=1"
     warn "SELF-TEST MODE: the manifest is substituted, not the real one"
 fi
 
 # name|version|url|sig|new
-#
-# sig says how upstream vouches for the file (tools/verify-signatures.sh):
-#   gnu      a .sig on the canonical GNU host
-#   kernel   kernel.org's .tar.sign over the uncompressed tar
-#   sig asc  a detached signature beside the file, with that suffix
-#   stem.sig a .sig beside it, named without the .tar.* suffix (less-710.sig)
-#   sums:NAME  the signature NAME beside it, over a checksum list named NAME
-#            without its suffix, which must give the file's digest
-#   probe    whichever of .sig, .asc and .sign is published; an uploaded file
-#            with none keeps probe, so a later release's signature is found
-#   sha256   the publisher's .sha256 beside it (tools/verify-provenance.sh)
-#   sha256.txt  the same, named .sha256.txt
-#   tag      a signed tag the archive must reproduce (tools/verify-provenance.sh)
-#   none     nothing: a generated archive (GitHub /archive/, GitLab
-#            /-/archive/, sr.ht /archive/) can have nothing beside it
-# new says where its newest release is found (tools/check-source-currency.sh):
-#   gnu      the canonical GNU host's listing
-#   vdir     the listing in the newest vN/ directory beside the file's own
-#   github   the project's designated latest release
-#   listing  the listing of the directory the file is in
-#   rule     its row in tools/currency-rules.tsv
-#   eol      nowhere: the kernel's support status is tools/check-kernel-eol.sh's
+# sig: how upstream vouches for the file (tools/verify-signatures.sh)
+#   gnu           a .sig on the canonical GNU host
+#   kernel        kernel.org's .tar.sign over the uncompressed tar
+#   sig, asc      a detached signature beside the file, with that suffix
+#   stem.sig      a .sig named without the .tar.* suffix (less-710.sig)
+#   sums:NAME     signature NAME over a checksum list (NAME minus its suffix) giving the digest
+#   probe         whichever of .sig, .asc and .sign is published, now or in a later release
+#   sha256        the publisher's .sha256 beside it (tools/verify-provenance.sh)
+#   sha256.txt    the same, named .sha256.txt
+#   tag           a signed tag the archive must reproduce (tools/verify-provenance.sh)
+#   none          nothing, as beside a generated GitHub, GitLab or sr.ht archive
+# new: where its newest release is found (tools/check-source-currency.sh)
+#   gnu           the canonical GNU host's listing
+#   vdir          the listing in the newest vN/ directory beside the file's own
+#   github        the project's designated latest release
+#   listing       the listing of the directory the file is in
+#   rule          its row in tools/currency-rules.tsv
+#   eol           nowhere: tools/check-kernel-eol.sh tracks the kernel's support
 #   follows:NAME  nowhere: it moves only when NAME's pin does
 manifest() {
     if [[ -n "${KRYPTIK_FETCH_MANIFEST:-}" ]]; then
@@ -180,7 +174,7 @@ fi
 
 mkdir -p "$KRYPTIK_SOURCES"
 
-# fetch_one <url> <dest>: try each mirror in order.
+# fetch_one URL DEST: try each mirror in order.
 fetch_one() {
     local url="$1" dest="$2"
     local -a urls=("$url")
@@ -190,9 +184,7 @@ fetch_one() {
         urls+=("${MIRROR_GNU_FALLBACK}/${url#"${MIRROR_GNU}/"}")
     fi
 
-    # Per mirror: resume, then, if a partial existed, once more from zero. A
-    # .part longer than the upstream file makes every resume fail (curl 36 for
-    # file://, 33 or HTTP 416) and would otherwise fail every mirror on every run.
+    # Resume, else start over: an over-long .part fails every resume (curl 33 or 36, HTTP 416).
     local u attempt=0
     for u in "${urls[@]}"; do
         attempt=$((attempt + 1))
@@ -212,9 +204,7 @@ fetch_one() {
     return 1
 }
 
-# fetch_attempt <url> <dest> resume|fresh
-# --no-progress-meter: the bar floods logs that are not a terminal.
-# --speed-limit/--speed-time: fail a stalled transfer fast, then retry.
+# fetch_attempt URL DEST resume|fresh: no progress bar in logs, and a stalled transfer fails fast.
 fetch_attempt() {
     local u="$1" dest="$2" mode="$3"
     local -a resume=()
@@ -255,9 +245,7 @@ while IFS='|' read -r name ver url _; do
     else
         log "fetching ${name} ${ver}"
         if ! fetch_one "$url" "$dest"; then
-            die "download failed: ${name} ${ver}
-Tried every mirror. Re-run to resume — a partial download is kept unless
-resuming from it is what failed, in which case it has been discarded."
+            die "download failed: ${name} ${ver} (every mirror tried). Re-run to resume."
         fi
         fetched=$((fetched + 1))
         was_fetched=yes
@@ -270,8 +258,7 @@ resuming from it is what failed, in which case it has been discarded."
         ok "${name} ${ver}  ${actual:0:16}…"
     else
         if ! expected="$(lookup_hash "$file")"; then
-            die "no entry for ${file} in sources.lock.
-Run './tools/fetch-sources.sh --lock' to generate one, then audit it."
+            die "no entry for ${file} in sources.lock; run './tools/fetch-sources.sh --lock', then audit it."
         fi
         if [[ "$actual" != "$expected" ]]; then
             err "CHECKSUM MISMATCH for ${file}"
@@ -279,21 +266,15 @@ Run './tools/fetch-sources.sh --lock' to generate one, then audit it."
             err "  actual   ${actual}"
             # Nothing is deleted: a mismatching file is evidence.
             if [[ "$was_fetched" == yes ]]; then
-                die "This file was downloaded just now, so the DOWNLOAD is
-wrong rather than the disk: a bad mirror, or a stale partial file that
-poisoned a resume. Remove ${dest} and any ${dest}.part, then retry."
+                die "It was downloaded just now, so the download is bad: a bad mirror or a stale partial file. Remove ${dest} and any ${dest}.part, then retry."
             fi
-            die "This file was already on disk and does not match the hash
-sources.lock recorded for it, so it CHANGED after it was locked. Do not
-delete it yet - work out why first. See docs/supply-chain.md."
+            die "It was already on disk, so it CHANGED after it was locked. Do not delete it before finding out why (docs/supply-chain.md)."
         fi
         ok "${name} ${ver}  verified"
     fi
 done < <(manifest)
 
-# The GNU keyring, kept with the sources so a cache of them carries it: the
-# signature gate checks GNU signatures against it, and ftp.gnu.org does not
-# answer every runner every time.
+# Kept in the sources cache for the signature gate, as ftp.gnu.org does not answer every runner.
 keyring="${KRYPTIK_SOURCES}/.keys/gnu-keyring.gpg"
 if [[ ! -s "$keyring" ]]; then
     mkdir -p "${KRYPTIK_SOURCES}/.keys"

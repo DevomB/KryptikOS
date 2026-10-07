@@ -1,8 +1,7 @@
 use super::*;
 use std::os::unix::fs::PermissionsExt;
 
-/// A readable, delegated group this process cannot create leaves in is
-/// not available.
+/// A readable, delegated group this process cannot create leaves in is not available.
 #[test]
 fn availability_requires_creating_leaf() {
     let root = std::env::temp_dir().join(format!("kryptik-cg-{}", std::process::id()));
@@ -58,7 +57,7 @@ fn cpu_and_io_limits_parse() {
 }
 
 #[test]
-fn a_partition_stands_for_its_disk() {
+fn partition_counts_as_disk() {
     // A disk's sysfs directory with a partition's inside it, as the kernel lays them out.
     let disk = std::env::temp_dir().join(format!("kryptik-disk-{}", std::process::id()));
     let part = disk.join("sda3");
@@ -82,13 +81,15 @@ fn overflowing_limit_refused() {
 
 #[test]
 fn sweep_spares_populated_cgroup() {
-    // Checks the cgroup.procs parsing; a real hierarchy may be out of reach.
-    let populated = |s: &str| s.lines().any(|l| !l.trim().is_empty());
-    assert!(populated("1234\n"));
-    assert!(populated("1234\n5678\n"));
-    assert!(!populated(""));
-    assert!(!populated("\n"));
-    assert!(!populated("   \n"));
+    // A plain directory stands in for the leaf; /sys/fs/cgroup may be out of reach.
+    let leaf = std::env::temp_dir().join(format!("kryptik-procs-{}", std::process::id()));
+    fs::create_dir_all(&leaf).unwrap();
+    for (procs, live) in [("1234\n", true), ("1234\n5678\n", true), ("", false), ("\n", false), ("   \n", false)] {
+        fs::write(leaf.join("cgroup.procs"), procs).unwrap();
+        assert_eq!(populated(&leaf), live, "{procs:?}");
+    }
+    let _ = fs::remove_dir_all(&leaf);
+    assert!(populated(&leaf), "an unreadable cgroup.procs counts as populated");
 }
 
 #[test]
@@ -115,9 +116,7 @@ fn sweep_goes_by_launcher_pid() {
     assert_eq!(launcher_of(&gone), Some(dead));
     assert_eq!(launcher_of(&live), Some(alive as i32));
     assert_eq!(launcher_of(&unnamed), None);
-    /* Only the dead launcher's empty leaf goes. A live launcher's is a
-     * launch in progress, a populated leaf is never touched, and the
-     * pid-less one is young by the age rule. */
+    // Only the dead launcher's empty leaf goes; live, busy and young pid-less leaves stay.
     assert_eq!(abandoned_leaves(&base), vec![gone.clone()]);
     assert!(live.exists() && busy.exists() && unnamed.exists());
     let _ = fs::remove_dir_all(&base);
@@ -142,8 +141,7 @@ fn available_leaves_no_probes() {
 
 #[test]
 fn unwritable_limit_is_error() {
-    /* A read-only directory holding writable memory.max and pids.max, so
-     * the failing write is memory.oom.group's, which must be an error. */
+    // A read-only directory with only memory.max and pids.max, so memory.oom.group's write fails.
     let dir = std::env::temp_dir().join(format!("kryptik-cgtest-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
@@ -171,13 +169,4 @@ fn unwritable_limit_is_error() {
         msg.contains("memory.oom.group"),
         "set_limits must fail naming the limit it could not apply, said: {msg}"
     );
-}
-
-#[test]
-fn leaf_name_unique_per_launch() {
-    // Overlapping launches of one zone must not share a limit.
-    let base = Path::new("/sys/fs/cgroup/kryptik");
-    let a = base.join(format!("{}.{}", "work", 111));
-    let b = base.join(format!("{}.{}", "work", 222));
-    assert_ne!(a, b);
 }

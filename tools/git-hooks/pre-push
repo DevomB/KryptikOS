@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
-# Kryptik pre-push hook: refuse to push a commit under any other identity, even
-# one made past pre-commit (another checkout, a rebase, --no-verify).
+# Kryptik pre-push hook: refuse commits under another identity, even ones that bypassed pre-commit.
 # Install with ./tools/install-git-hooks.sh.
 
 set -uo pipefail
 
-# Found relative to this file, as in pre-commit; missing means refuse.
 checker="$(dirname "${BASH_SOURCE[0]}")/../check-commit-identity.sh"
 if [[ ! -f "$checker" ]]; then
     echo "pre-push: ERROR no identity checker at ${checker}; refusing to push unchecked" >&2
@@ -17,8 +15,7 @@ bad=0
 while read -r _local_ref local_sha _remote_ref remote_sha; do
     [[ "$local_sha" == "$zero" ]] && continue            # deleting a ref
 
-    # A new ref, or a force-push whose old tip is unknown here: check the
-    # whole history behind the new tip.
+    # A new ref, or a force-push over a tip unknown here: check all history behind the new tip.
     if [[ "$remote_sha" == "$zero" ]] || ! git cat-file -e "${remote_sha}^{commit}" 2>/dev/null; then
         range="$local_sha"
     else

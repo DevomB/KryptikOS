@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# Test kryptik-efiboot, built with EFIVARS pointing at a directory of stand-in
-# variables (efivarfs files: 4 bytes of attributes, then the data), SYSBLOCK at
-# a stand-in /sys/class/block and DEVICES at a stand-in devices.sh; blkid is a
-# stand-in on PATH.
+# kryptik-efiboot, built with stand-ins for its EFIVARS, SYSBLOCK and DEVICES paths, and for blkid.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PASS=0; FAIL=0
@@ -20,8 +17,7 @@ else
     bad "the tool compiles with its paths overridden"; exit 1
 fi
 
-# The ESP: /dev/esp1, partition 1, labelled kryptik-esp. Any other device
-# carries some other label.
+# The ESP is /dev/esp1, partition 1, labelled kryptik-esp; any other device has another label.
 printf '#!/bin/sh\n[ "$1 $2" = "part kryptik-esp" ] && echo /dev/esp1\n' > "$T/devices.sh"
 cat > "$T/bin/blkid" <<'EOF'
 #!/bin/sh
@@ -35,8 +31,7 @@ chmod +x "$T/devices.sh" "$T/bin/blkid"
 echo 2048 > "$T/sys/esp1/start"; echo 1048576 > "$T/sys/esp1/size"; echo 1 > "$T/sys/esp1/partition"
 efiboot() { PATH="$T/bin:$PATH" "$T/efiboot" "$@"; }
 
-# var NAME BYTES: write a variable, attributes 0x7 then BYTES (a printf
-# format, so \xNN is a byte).
+# var NAME BYTES: an efivarfs file, attributes 0x7 then BYTES as a printf format (\xNN is a byte).
 var() { printf '\x07\x00\x00\x00'"$2" > "$V/$1-$G"; }
 # data NAME: the variable's data as hex, or "absent".
 data() { if [[ -f "$V/$1-$G" ]]; then od -An -tx1 -j4 -v "$V/$1-$G" | tr -d ' \n'; else echo absent; fi; }
@@ -51,8 +46,7 @@ opt() {
 KA="$(opt 'Kryptik slot a' '\EFI\kryptik\kryptik-a.efi')"
 KB="$(opt 'Kryptik slot b' '\EFI\kryptik\kryptik-b.efi')"
 WIN="$(opt 'Windows Boot Manager' '\EFI\Microsoft\Boot\bootmgfw.efi')"
-# The firmware's own disk entry, both slot entries, an order with slot b in
-# front of the disk entry, and a BootNext for slot a.
+# The machine's disk entry, both slot entries, slot b ahead of the disk in BootOrder, BootNext a.
 MACHINE='\x01\x00\x00\x00\x00\x00U\x00E\x00F\x00I\x00\x00\x00'
 reset() {
     rm -f "$V"/*

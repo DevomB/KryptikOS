@@ -44,8 +44,7 @@ expect "an undetermined pin is reported, not swallowed"  0 'not determined.*less
 reviews "less 661 668 fine 2026-09-19 read the changes"
 expect "and a review is kept while its upstream does not answer"  0 'not determined.*less 661'
 
-# Commit IDs have no order: a branch head that sorts before the one reviewed
-# is as new as one that sorts after it.
+# Commit IDs have no order: a head that sorts before the one reviewed is as new as one after it.
 survey glibc-branch cdaa5d6db08e 111111111111 BEHIND
 reviews "glibc-branch cdaa5d6db08e aaaaaaaaaaaa fine 2026-09-25 read the branch log"
 expect "a branch head that sorts first is still new"  1 'NEW RELEASE: glibc-branch: reviewed up to aaaaaaaaaaaa'

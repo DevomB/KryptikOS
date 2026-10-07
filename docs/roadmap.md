@@ -127,6 +127,7 @@ work in zones from a terminal and a text browser, and keep it up to date.
       encrypted zone's volume, held by `io.max` on the volume's devices
       ([design](design/resource-limits-and-ephemeral-zones.md)). The launcher
       suite measures both, and `untrusted` ships with `cpu_max = "200%"`.
+      Weights are not set: `io.weight` waits on a kernel choice, blk-iocost or BFQ.
 - [x] **The setuid audit fails.** Stage 06 refuses an unlisted setuid bit and
       a list entry without its reason; shadow's and util-linux's spare bits are
       dropped in their recipes, and traceroute is not built. The zones suite

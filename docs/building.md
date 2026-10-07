@@ -114,6 +114,16 @@ The compartment suites need a Rust toolchain and a kernel with user
 namespaces, seccomp and Landlock. The privileged launch path and cgroup
 limits run as root only on the installed system, in `make zones-test`.
 
+Five kinds of test, one name each:
+
+| name | where | what |
+| --- | --- | --- |
+| tool suites | `tools/tests/*.sh`, `*.py` | a tool's own offline suite, named after the tool it tests |
+| compartment suites | `compartments/tests/*.sh` | kryptikd's suites, as root or not |
+| guest checks | `build/guest-tests/*-check.sh` | run inside the booted image; print the pass and fail lines the image suite reads |
+| image suites | `tools/image/*-test.sh` | boot the image under OVMF, drive it, judge its guest checks and screenshots |
+| acceptance | `tools/acceptance.sh` | the verdict over all of them: `make acceptance` |
+
 ## Acceptance
 
 `make acceptance` runs every suite against the built media, as root under

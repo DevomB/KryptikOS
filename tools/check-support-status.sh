@@ -10,8 +10,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 
 TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# One row per series, with the upstream page and the date it was read; the
-# file's header documents the format.
 POLICY="${TOOLS_DIR}/support-policy.tsv"
 VERSIONS="${KRYPTIK_ROOT}/build/config/versions.env"
 STRICT=0
@@ -87,9 +85,7 @@ note() {
     dim "$*"
 }
 
-[[ -f "$POLICY" ]] || die "no policy file at ${POLICY}
-This check cannot establish anything without it, and reporting nothing as
-though it were a pass is the failure mode this tool exists to prevent."
+[[ -f "$POLICY" ]] || die "no policy file at ${POLICY}; this check cannot establish anything without it"
 
 declare -a P_PKG=() P_VAR=() P_SER=() P_ST=() P_END=() P_URL=() P_RET=() P_NOTE=()
 lineno=0
@@ -118,11 +114,10 @@ while IFS= read -r line || [[ -n "$line" ]]; do
         valid_day "$f_end" || valid_month "$f_end" \
             || bad="support_ends '${f_end}' is neither YYYY-MM-DD, YYYY-MM nor -"
     fi
-    # Some upstreams publish a tier, not a date (perl supports its two newest
-    # series). Such a row never expires, so its note must name the tier.
+    # A tier instead of a date (perl's two newest series) never expires, so the note must name it.
     if [[ -z "$bad" && "$f_st" == "supported" && "$f_end" == "-" ]]; then
         case "${f_note// }" in
-            ""|"-") bad="a 'supported' row with no support_ends date must record in its note the support tier upstream published" ;;
+            ""|"-") bad="a 'supported' row with no support_ends date must name upstream's tier in its note" ;;
         esac
     fi
     if [[ -z "$bad" ]]; then
@@ -152,9 +147,7 @@ while IFS= read -r line || [[ -n "$line" ]]; do
 done < "$POLICY"
 
 if [[ "$malformed" -gt 0 ]]; then
-    die "${malformed} malformed row(s) in ${POLICY}.
-A policy file that cannot be parsed is a tooling fault, not a support result:
-nothing here has been checked, in either mode."
+    die "${malformed} malformed row(s) in ${POLICY}; nothing here has been checked"
 fi
 
 [[ "${#P_PKG[@]}" -gt 0 ]] || die "${POLICY} contains no rows"
@@ -193,11 +186,13 @@ hard_fail=0     # false support: fails in both modes
 soft_fail=0     # cannot be established: fails --strict only
 declare -a EOL_LINES=()
 seen=""
+covered=0
 
 for i in "${!P_PKG[@]}"; do
     pkg="${P_PKG[$i]}"
     case " ${seen} " in *" ${pkg} "*) continue ;; esac
     seen="${seen} ${pkg}"
+    covered=$((covered + 1))
 
     var="${P_VAR[$i]}"
     pin="$(pinned_version "$var")"
@@ -231,9 +226,8 @@ for i in "${!P_PKG[@]}"; do
         n_offmap=$((n_offmap + 1))
         soft_fail=$((soft_fail + 1))
         row FAIL "${pkg} ${pin}: series ${ser} is OFF THE POLICY MAP"
-        note "            ${POLICY} has rows for ${pkg} but none for ${ser}, so"
-        note "            whether it is still supported has not been established."
-        note "            Read the series off ${P_URL[$i]} and add the row."
+        note "            ${POLICY} has rows for ${pkg} but none for ${ser};"
+        note "            read the series off ${P_URL[$i]} and add the row."
         continue
     fi
 
@@ -256,8 +250,7 @@ for i in "${!P_PKG[@]}"; do
                 n_deleg=$((n_deleg + 1))
                 soft_fail=$((soft_fail + 1))
                 row FAIL "${pkg} ${pin}: delegated to ${tool}, which is MISSING"
-                note "            A delegation to a tool that is not there is a skipped"
-                note "            check, and a skipped check is not a pass."
+                note "            a skipped check is not a pass"
             else
                 n_deleg=$((n_deleg + 1))
                 row "NOT CHECKED" "${pkg} ${pin}: established by ${tool:-another tool}, not here"
@@ -283,8 +276,8 @@ for i in "${!P_PKG[@]}"; do
                 n_eol=$((n_eol + 1))
                 hard_fail=$((hard_fail + 1))
                 row FAIL "${pkg} ${pin}: series ${ser} went END OF LIFE on ${eff}${prec}"
-                note "            $(days_between "$eff" "$NOW") days ago. It will receive no further"
-                note "            security fixes. Source: ${url} (read ${ret})"
+                note "            $(days_between "$eff" "$NOW") days ago; it receives no further security fixes."
+                note "            Source: ${url} (read ${ret})"
                 EOL_LINES+=("${pkg} ${pin} - series ${ser} unsupported since ${eff}")
             elif [[ "$st" == "security-only" ]]; then
                 n_sec=$((n_sec + 1))
@@ -299,8 +292,8 @@ for i in "${!P_PKG[@]}"; do
                 # Tier-based: ok, but say that the row cannot expire.
                 n_ok=$((n_ok + 1))
                 row ok "${pkg} ${pin}: series ${ser} supported - ${nte}"
-                note "            upstream publishes a tier and no end date, so this row"
-                note "            cannot expire by itself; re-read ${url} when the pin moves"
+                note "            a tier with no end date: this row cannot expire by itself"
+                note "            re-read ${url} when the pin moves"
             else
                 n_ok=$((n_ok + 1))
                 row ok "${pkg} ${pin}: series ${ser} supported until ${eff}${prec}"
@@ -309,27 +302,15 @@ for i in "${!P_PKG[@]}"; do
     esac
 done
 
-covered=0
-seen=""
-for i in "${!P_PKG[@]}"; do
-    pkg="${P_PKG[$i]}"
-    case " ${seen} " in *" ${pkg} "*) continue ;; esac
-    seen="${seen} ${pkg}"
-    covered=$((covered + 1))
-done
-
 printf '\n' >> "$BUF"
 log "Summary"
 note "  ${n_ok} supported, ${n_sec} security-fixes-only, ${n_eol} END OF LIFE,"
 note "  ${n_offmap} off the policy map, ${n_deleg} established elsewhere,"
 note "  ${n_nopol} with no published window, ${n_unpinned} not pinned."
 note ""
-note "  COVERAGE FLOOR: ${covered} of ${TOTAL_PINS} pins in $(basename "$VERSIONS") have a"
-note "  retrieved upstream support policy. This check says NOTHING about the"
-note "  other $((TOTAL_PINS - covered)). Read a green run as 'the series named above are"
-note "  maintained', never as 'Kryptik ships nothing unsupported'."
-note "  It also does not measure patch gaps inside a supported series:"
-note "  that is tools/check-source-currency.sh."
+note "  COVERAGE FLOOR: ${covered} of ${TOTAL_PINS} pins in $(basename "$VERSIONS") have a recorded upstream policy."
+note "  Read a green run as 'the series above are maintained', never as 'Kryptik ships nothing unsupported'."
+note "  Patch gaps inside a supported series are tools/check-source-currency.sh's question."
 
 if [[ "$n_stale" -gt 0 ]]; then
     warn "${n_stale} policy row(s) were read more than 180 days before ${NOW}"
@@ -345,20 +326,17 @@ if [[ "$hard_fail" -gt 0 ]]; then
     printf '\n'
     err "pinned series no longer supported upstream: ${n_eol}"
     for l in "${EOL_LINES[@]}"; do err "  ${l}"; done
-    die "An end-of-life series is a false claim of support, so this fails in
-both modes. Propose the upgrade as its own change; do not edit a pin under a
-running build."
+    die "An end-of-life series is a false claim of support, so this fails in both modes.
+Move the pin in a change of its own; do not edit a pin under a running build."
 fi
 
 if [[ "$soft_fail" -gt 0 ]]; then
     if [[ "$STRICT" -eq 1 ]]; then
         printf '\n'
-        die "${soft_fail} pinned series whose support status could NOT be
-established. Unknown support is not support, so --strict fails."
+        die "${soft_fail} pinned series whose support status could not be established; unknown is not support"
     fi
     printf '\n'
-    warn "${soft_fail} pinned series whose support status could not be established."
-    warn "--strict would fail here. Informational mode does not."
+    warn "${soft_fail} pinned series whose support status could not be established; --strict would fail here"
 fi
 
 ok "no pinned series is known to be out of support"

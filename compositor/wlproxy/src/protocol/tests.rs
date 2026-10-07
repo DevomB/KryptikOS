@@ -67,6 +67,17 @@ fn trailing_byte_is_refused() {
 }
 
 #[test]
+fn null_string_refused_where_required() {
+    let top = find("xdg_toplevel").unwrap();
+    let set_title = top.requests.iter().find(|m| m.name == "set_title").unwrap();
+    let msg = MessageWriter::new(7, 2).u32(0).finish().unwrap();
+    assert_eq!(decode(set_title, &msg[8..]), Err(WireError::NullString));
+    let bind = &find("wl_registry").unwrap().requests[0];
+    let msg = MessageWriter::new(2, 0).u32(4).u32(0).u32(5).u32(3).finish().unwrap();
+    assert_eq!(decode(bind, &msg[8..]), Err(WireError::NullString));
+}
+
+#[test]
 fn strings_are_located_for_rewriting() {
     let top = find("xdg_toplevel").unwrap();
     let set_title = top.requests.iter().find(|m| m.name == "set_title").unwrap();
@@ -75,11 +86,7 @@ fn strings_are_located_for_rewriting() {
     assert_eq!(d.strings, vec![(0, "hello")]);
 }
 
-// --- the decoder, attacked ---------------------------------------------
-/* `Header::parse` and `decode` see every byte a client sends. A well-formed
- * body for each message in the tables is damaged by a fixed-seed generator,
- * so a failure repeats on every machine. The decoder must never panic or
- * read past the body, and returns Ok only for an exact parse. */
+// --- Header::parse and decode see every byte a client sends: fuzz them ---
 
 /// xorshift64*: small, seeded, the same sequence everywhere.
 pub(crate) struct Rng(pub u64);
@@ -175,7 +182,7 @@ fn decoder_survives_any_body() {
             }
         }
     }
-    // The generator must actually reach both sides of the decoder.
+    // The generator must reach both sides of the decoder.
     assert!(tried > 10_000 && accepted > tried / 50 && accepted < tried, "tried {tried}, accepted {accepted}");
 }
 

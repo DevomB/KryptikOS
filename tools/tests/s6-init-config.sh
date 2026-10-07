@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Build the s6 stack on the host and check that stage 04's s6-linux-init options
-# and skeleton scripts, read from its init and console recipes, make a bootable init image.
-# Says nothing about the target toolchain (stage 05 checks that).
+# Build the s6 stack on the host and check that the init and console recipes' s6-linux-init
+# options and skeleton scripts make a bootable init image (stage 05 checks the target toolchain).
 
 set -uo pipefail
 
@@ -27,17 +26,9 @@ for p in "${PKGS[@]}"; do
     [[ -f "${SRC}/${p}.tar.gz" ]] || missing="${missing} ${p}.tar.gz"
 done
 if [[ -n "$missing" ]]; then
-    echo
-    echo "  ############################################################"
-    echo "  #  SKIPPED - this is NOT a pass.                           #"
-    echo "  ############################################################"
-    echo
-    echo "  The s6 source tarballs are not present, so the init"
-    echo "  configuration was not exercised at all:"
+    echo "SKIPPED, not a pass: the s6 source tarballs are missing, so nothing was checked:"
     printf '    %s\n' $missing
-    echo
-    echo "  Fetch them and re-run:  make sources && tools/tests/s6-init-config.sh"
-    echo
+    echo "Fetch them and re-run: make sources && make test-s6-init-config"
     exit 77
 fi
 
@@ -59,8 +50,7 @@ for p in "${PKGS[@]}"; do
           s6-linux-init-*) extra=(--skeldir=/etc/s6-linux-init/skel) ;;
       esac
 
-      # Unlike stage 04 this installs under a DESTDIR, so point later packages
-      # at skalibs' sysdeps there, not at the host's /usr/lib copy.
+      # Installed under a DESTDIR, unlike stage 04: later packages take skalibs' sysdeps from there.
       ./configure --prefix=/usr --libdir=/usr/lib \
           --with-sysdeps="$PREFIX/usr/lib/skalibs/sysdeps" \
           --with-include="$PREFIX/usr/include" \
@@ -75,8 +65,8 @@ done
 [[ "$FAIL" -eq 0 ]] || { echo; echo "the s6 stack did not build; nothing further can be checked"; exit 1; }
 
 # --- --skeldir ---------------------------------------------------------------
-# Without it, --prefix=/usr puts the skeleton under /usr/etc, where the maker
-# never looks.
+
+# Without it, --prefix=/usr puts the skeleton under /usr/etc, where the maker never looks.
 check "skeleton installed to /etc/s6-linux-init/skel" \
       "$([[ -d "$PREFIX/etc/s6-linux-init/skel" ]] && echo ok)"
 check "nothing landed in /usr/etc" \
@@ -102,9 +92,9 @@ for f in rc.init rc.shutdown rc.shutdown.final runlevel; do
           "$(sh -n "$PREFIX/etc/s6-linux-init/skel/$f" 2>/dev/null && echo ok)"
 done
 
-# --- the maker, with stage 04's options --------------------------------------
-# Read from the init recipe; only -f and the output directory, the two that
-# name real installation paths, are overridden.
+# --- the maker, with the init recipe's options -------------------------------
+
+# Only -f and the output directory, which name real installation paths, are overridden.
 mapfile -t OPTS < <(python3 - "$INIT" <<'PY'
 import re, sys, shlex
 src = open(sys.argv[1]).read()
@@ -113,8 +103,7 @@ if not m:
     sys.exit("s6-linux-init-maker invocation not found in the init recipe")
 body = m.group(1).replace("\\\n", " ")
 body = re.sub(r'#[^\n]*', '', body)
-# The last option line still ends in the continuation that joined it to
-# "$tmp", and shlex refuses a trailing backslash with nothing after it.
+# The last option line keeps the "\" that joined it to "$tmp"; shlex refuses a trailing one.
 body = body.rstrip().rstrip("\\").rstrip()
 skip = False
 for tok in shlex.split(body):
@@ -130,8 +119,7 @@ PY
 
 echo "  maker options from the init recipe: ${OPTS[*]}"
 
-# With no options the maker still builds a default image, so check the
-# extraction before anything else.
+# With no options the maker still builds a default image, so check the extraction first.
 check "extracted a non-empty option set" "$([[ "${#OPTS[@]}" -ge 8 ]] && echo ok)"
 check "extracted the early-getty option (-G)" \
       "$(printf '%s\n' "${OPTS[@]}" | grep -qx -- '-G' && echo ok)"
@@ -139,9 +127,7 @@ check "extracted the console-output option (-1)" \
       "$(printf '%s\n' "${OPTS[@]}" | grep -qx -- '-1' && echo ok)"
 if [[ "${#OPTS[@]}" -lt 8 ]]; then
     echo
-    echo "  The maker options could not be read out of ${INIT##*/}."
-    echo "  Everything below this point would be testing a default image, not"
-    echo "  Kryptik's, so stopping here rather than reporting a green run."
+    echo "  Could not read the maker options from ${INIT##*/}; the rest would test a default image."
     exit 1
 fi
 
@@ -156,8 +142,7 @@ rc=$?
 check "s6-linux-init-maker succeeds" "$([[ $rc -eq 0 ]] && echo ok)"
 [[ $rc -eq 0 ]] || { sed 's/^/    /' "$makerlog"; echo; echo "${FAIL} failed"; exit 1; }
 
-# Any maker warning fails: an env store outside /run, for one, means init
-# writes to the read-only verity root at every boot.
+# Any maker warning fails: an env store outside /run, say, means init writes to the verity root.
 if grep -q 'warning' "$makerlog"; then
     red "s6-linux-init-maker emitted a warning:"
     sed 's/^/        /' "$makerlog"

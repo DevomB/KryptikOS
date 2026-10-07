@@ -6,7 +6,7 @@ Kryptik's kernel is linux-hardened with `CONFIG_USER_NS_UNPRIVILEGED` off
 fails with `EPERM`, and `kernel.unprivileged_userns_clone` reads 0. Zones are
 therefore created only by a root kryptikd (ADR-003, ADR-010). An unprivileged
 `kryptikd run` on WSL or a stock kernel takes a path the target does not
-have; it stays for developer hosts and CI, and is not a supported way to run
+have; it exists for developer hosts and CI, and is not a supported way to run
 Kryptik. [Resource limits](resource-limits-and-ephemeral-zones.md),
 [the net zone](net-zone.md) and [encrypted volumes](encrypted-volumes.md)
 depend on the root launcher.
@@ -130,8 +130,8 @@ mitigations stay on; ADR-011 turns SMT off altogether
 (`mitigations=auto,nosmt`), and the cookies are what would make revisiting
 that possible.
 
-A refusal is judged by what the machine is, asked with `PR_SCHED_CORE_GET`,
-not by the errno:
+A refusal is judged by what `PR_SCHED_CORE_GET` says about the machine, not
+by the refusal's errno:
 
 - Siblings online and scheduled by cookie: the cookie is all that separates
   two zones on a core, so a zone that cannot get one does not start.
@@ -149,19 +149,25 @@ anything else.
 ## Tests
 
 The launcher suite (`compartments/tests/launcher.sh`) runs as root on the
-installed system in the zones suite. It checks that a root launch without an
-identity is refused; that the zone runs as uid 0 inside, its files belong to
-N and its supplementary groups are gone; that a data directory owned by
-another uid is refused; that `KRYPTIK_EXPERIMENTAL` starts nothing on the
-target; and, from the host, which relies on nothing the zone says about
-itself, that pid 1 has `Uid`/`Gid` N, no groups, `CapEff`/`CapPrm`/`CapBnd`
-`0000000000000400`, `NoNewPrivs 1`, `Seccomp 2` and its own user, pid, mnt
-and net namespaces. `SIGKILL` of the launcher must leave no zone process: the
-only check that catches a lost parent-death signal, since only a root launch
-changes the kernel id. `build/guest-tests/zones-check.sh` runs
-`check --target`, and `zone.rs` unit-tests the identity rules. On a stock
-Ubuntu kernel, `kernel.apparmor_restrict_unprivileged_userns=1` emulates the
-restriction; results with it off say nothing about the target.
+installed system in the zones suite. It checks that:
+
+- a root launch without an identity is refused;
+- the zone runs as uid 0 inside, its files belong to N and its supplementary
+  groups are gone;
+- a data directory owned by another uid is refused;
+- `KRYPTIK_EXPERIMENTAL` starts nothing on the target;
+- from the host, which relies on nothing the zone says about itself, pid 1
+  has `Uid`/`Gid` N, no groups, `CapEff`/`CapPrm`/`CapBnd`
+  `0000000000000400`, `NoNewPrivs 1`, `Seccomp 2` and its own user, pid, mnt
+  and net namespaces;
+- `SIGKILL` of the launcher leaves no zone process. This is the only check
+  that catches a lost parent-death signal, since only a root launch changes
+  the kernel id.
+
+`build/guest-tests/zones-check.sh` runs `check --target`, and `zone.rs`
+unit-tests the identity rules. On a stock Ubuntu kernel,
+`kernel.apparmor_restrict_unprivileged_userns=1` emulates the restriction;
+results with it off say nothing about the target.
 
 ## Files
 

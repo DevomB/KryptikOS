@@ -1,8 +1,5 @@
-//! cgroup v2 memory and pid limits for a zone (`[limits]`).
-//!
-//! Every path either establishes the limits or reports that it could not. An
-//! unprivileged launcher often cannot create cgroups at all, so `available()`
-//! finds out by trying rather than by checking the uid.
+//! cgroup v2 memory, pid, cpu and io limits for a zone (`[limits]`), never silently left unset.
+//! `available()` finds out by trying: an unprivileged launcher often cannot create cgroups.
 
 use std::fs;
 use std::io;
@@ -56,10 +53,8 @@ pub fn parse_io_max(v: &str) -> Result<u64, CgroupError> {
     crate::zone::parse_size(v).ok_or_else(|| CgroupError::BadLimit { field: "io_max", value: v.to_string() })
 }
 
-/// The `MAJ:MIN` of the block device at `path`, then of the devices it is
-/// built on (`slaves` in sysfs): io.max names devices, and an encrypted
-/// volume's bytes land on the device under its mapping. A partition among
-/// them stands for its disk, the only thing io.max takes.
+/// `MAJ:MIN` of the block device at `path` and of the disks under it (sysfs `slaves`), where an
+/// encrypted volume's bytes land; a partition counts as its disk, the only thing io.max takes.
 pub fn block_devices(path: &str) -> io::Result<Vec<String>> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
     let md = fs::metadata(path)?;
@@ -81,8 +76,7 @@ pub fn block_devices(path: &str) -> io::Result<Vec<String>> {
     Ok(out)
 }
 
-/// A sysfs block entry's `MAJ:MIN`, or its disk's when the entry is a
-/// partition (`..` of a partition's directory is the disk's).
+/// A sysfs block entry's `MAJ:MIN`, or its disk's (the parent directory) for a partition.
 fn whole_device(entry: &Path) -> Option<String> {
     let dir = if entry.join("partition").exists() { entry.join("..") } else { entry.to_path_buf() };
     let dev = fs::read_to_string(dir.join("dev")).ok()?;
@@ -94,8 +88,7 @@ fn read_trim(p: &Path) -> Result<String, CgroupError> {
     Ok(fs::read_to_string(p).map_err(|e| io_err(p, e))?.trim().to_string())
 }
 
-/// Make sure `dir` delegates `NEEDED` to its children. Without that, a child
-/// is created without error but has no `memory.max`.
+/// Make `dir` delegate `NEEDED`, or a child is created without error but has no `memory.max`.
 fn ensure_subtree_control(dir: &Path) -> Result<(), CgroupError> {
     let avail_path = dir.join("cgroup.controllers");
     let avail = read_trim(&avail_path)?;
@@ -143,14 +136,12 @@ pub fn available_under(root: &Path) -> Result<PathBuf, CgroupError> {
     }
     ensure_subtree_control(&group)?;
 
-    /* The group may exist but be root's, made by a privileged launch, so prove
-     * a leaf can be created, as a launch will, and remove it. */
+    // The group may be root's, from a privileged launch: prove a leaf can be made, then remove it.
     let probe = group.join(format!(".probe.{}", std::process::id()));
     let _ = fs::remove_dir(&probe);
     if let Err(e) = fs::create_dir(&probe) {
         return Err(CgroupError::Unavailable(format!(
-            "cannot create a cgroup under {} ({e}), so this launcher could not put a \
-             zone in one",
+            "cannot create a cgroup under {} ({e})",
             group.display()
         )));
     }
@@ -166,12 +157,10 @@ pub fn available_under(root: &Path) -> Result<PathBuf, CgroupError> {
     Ok(group)
 }
 
-/// Age after which an empty leaf with no launcher pid in its name is abandoned.
-/// A live launch's leaf is empty for the microseconds before the attach.
+/// Age at which an empty pid-less leaf is abandoned; a live launch's is empty for microseconds.
 const STALE_AFTER: Duration = Duration::from_secs(5);
 
-/// Remove the empty leaves of launchers killed before `Cgroup::drop` could run.
-/// A populated leaf belongs to a live zone and is never touched.
+/// Remove empty leaves whose launcher died before `Cgroup::drop`; populated ones are left alone.
 fn sweep_stale(base: &Path) {
     for p in abandoned_leaves(base) {
         // EBUSY for a moment while the last task exits; retry, then report.
@@ -204,10 +193,8 @@ fn abandoned_leaves(base: &Path) -> Vec<PathBuf> {
         if !p.is_dir() {
             continue;
         }
-        /* Leaves are named <zone>.<launcher pid>; a leaf whose launcher is gone
-         * is abandoned, and a live (or reused) pid keeps it. Age is no guide:
-         * kernfs (6.18) dates a cgroup directory from its first stat, not its
-         * mkdir. The age rule covers only names without a pid. */
+        /* A <zone>.<pid> leaf is abandoned once its launcher is gone. kernfs (6.18) dates a
+         * cgroup directory from its first stat, not its mkdir, so only pid-less names go by age. */
         let abandoned = match launcher_of(&p) {
             Some(pid) => !Path::new(&format!("/proc/{pid}")).exists(),
             None => e
@@ -217,17 +204,18 @@ fn abandoned_leaves(base: &Path) -> Vec<PathBuf> {
                 .and_then(|m| now.duration_since(m).ok())
                 .is_some_and(|age| age > STALE_AFTER),
         };
-        if !abandoned {
-            continue;
-        }
-        let populated = fs::read_to_string(p.join("cgroup.procs"))
-            .map(|s| s.lines().any(|l| !l.trim().is_empty()))
-            .unwrap_or(true); // unreadable: assume live, leave it alone
-        if !populated {
+        if abandoned && !populated(&p) {
             out.push(p);
         }
     }
     out
+}
+
+/// Whether a leaf holds a process; an unreadable `cgroup.procs` counts, so the leaf is left alone.
+fn populated(leaf: &Path) -> bool {
+    fs::read_to_string(leaf.join("cgroup.procs"))
+        .map(|s| s.lines().any(|l| !l.trim().is_empty()))
+        .unwrap_or(true)
 }
 
 /// The launcher pid a leaf is named after (`<zone>.<pid>`), if it is.
@@ -235,10 +223,9 @@ fn launcher_of(leaf: &Path) -> Option<i32> {
     leaf.file_name()?.to_str()?.rsplit_once('.')?.1.parse().ok()
 }
 
-/// Remove every empty per-zone cgroup, for `gc`; returns how many. rmdir of a
-/// populated cgroup fails with EBUSY, so running zones are safe.
+/// Remove every empty zone cgroup for `gc` and count them; rmdir of a live one fails with EBUSY.
 pub fn sweep_now() -> usize {
-    let root = Path::new(CGROUP2_ROOT).join(KRYPTIK_GROUP);
+    let root = kryptik_root();
     let Ok(entries) = fs::read_dir(&root) else { return 0 };
     let mut n = 0;
     for e in entries.flatten() {
@@ -246,18 +233,14 @@ pub fn sweep_now() -> usize {
         if !p.is_dir() {
             continue;
         }
-        let populated = fs::read_to_string(p.join("cgroup.procs"))
-            .map(|s| s.lines().any(|l| !l.trim().is_empty()))
-            .unwrap_or(true);
-        if !populated && fs::remove_dir(&p).is_ok() {
+        if !populated(&p) && fs::remove_dir(&p).is_ok() {
             n += 1;
         }
     }
     n
 }
 
-/// The directory every zone's cgroup is created under. `registry::reclaim`
-/// checks a recorded cgroup path against it before writing `cgroup.kill`.
+/// Where zone cgroups live; `registry::reclaim` checks a recorded path is under it before a kill.
 pub fn kryptik_root() -> PathBuf {
     Path::new(CGROUP2_ROOT).join(KRYPTIK_GROUP)
 }
@@ -269,8 +252,7 @@ pub struct Cgroup {
 }
 
 impl Cgroup {
-    /// Create the leaf for one launch, named with the launcher's pid: two
-    /// overlapping launches sharing one limit could starve each other.
+    /// One launch's leaf, named with the launcher's pid so overlapping launches share no limit.
     pub fn create(base: &Path, zone: &str, launcher_pid: i32) -> Result<Self, CgroupError> {
         let path = base.join(format!("{zone}.{launcher_pid}"));
         // Never adopt a leftover leaf, and its limits, from a reused pid.
@@ -283,8 +265,7 @@ impl Cgroup {
         &self.path
     }
 
-    /// Write the limits; an absent one is written as `max`, not left as
-    /// inherited. `io_max` names the volume's devices and the bytes per second.
+    /// An absent limit is written as `max`, not inherited; `io_max` is (devices, bytes per second).
     pub fn set_limits(
         &self,
         memory_max: Option<&str>,
@@ -311,7 +292,7 @@ impl Cgroup {
             }
         }
 
-        // cpu.max is a quota per 100 ms period: a percentage of one CPU is that many thousand microseconds.
+        // cpu.max is a quota per 100 ms period: N% of one CPU is N thousand microseconds.
         let cpu = self.path.join("cpu.max");
         match cpu_max {
             Some(v) => {
@@ -332,20 +313,17 @@ impl Cgroup {
             }
         }
 
-        /* An OOM kills the whole zone at once, so no survivors keep its files
-         * and sockets open. */
+        // An OOM kills the whole zone, so no survivors keep its files and sockets open.
         let og = self.path.join("memory.oom.group");
         fs::write(&og, "1").map_err(|e| io_err(&og, e))?;
 
-        /* Cap swap too, or the zone pages out past its memory limit. ENOENT
-         * means no swap accounting in this kernel (cgroupfs never creates
-         * files), so warn; any other write failure is fatal. */
+        /* Cap swap too, or the zone pages out past its memory limit. ENOENT means no swap
+         * accounting (cgroupfs never creates files), so warn; any other failure is fatal. */
         let sw = self.path.join("memory.swap.max");
         match fs::write(&sw, "0") {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::NotFound => eprintln!(
-                "kryptikd: {} does not exist - this kernel has no swap accounting, \
-                 so the zone's memory limit does not bound what it can page out",
+                "kryptikd: no swap accounting ({} is missing): the zone can page out past its memory limit",
                 sw.display()
             ),
             Err(e) => return Err(io_err(&sw, e)),
@@ -353,15 +331,13 @@ impl Cgroup {
         Ok(())
     }
 
-    /// Move a process into this cgroup. Must happen before it unshares its
-    /// cgroup namespace, so the namespace is rooted here.
+    /// Move a process in before it unshares its cgroup namespace, so the namespace is rooted here.
     pub fn attach(&self, pid: i32) -> Result<(), CgroupError> {
         let p = self.path.join("cgroup.procs");
         fs::write(&p, pid.to_string()).map_err(|e| io_err(&p, e))
     }
 
-    /// Kill everything inside (`cgroup.kill`, Linux 5.14+), then remove the
-    /// directory, retrying for 1 s while the processes exit.
+    /// Kill all inside (`cgroup.kill`, Linux 5.14+), then retry removing the directory for 1 s.
     pub fn destroy(&self) -> Result<(), CgroupError> {
         let _ = fs::write(self.path.join("cgroup.kill"), "1");
         for _ in 0..50 {

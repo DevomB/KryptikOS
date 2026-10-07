@@ -1,8 +1,5 @@
-# Findings of tools/check-artifact-hardening.sh that the image keeps, each with
-# its reason: `FINDING PATH # why`, or `RPATH PATH RPATH # why`, since an RPATH
-# entry accepts one rpath. PATH and RPATH are globs on the object's path in the
-# image and on its rpath. A finding not listed here fails --strict, and so does
-# an entry that no longer matches anything.
+# Findings of tools/check-artifact-hardening.sh the image keeps, as globs: `FINDING PATH # why`
+# or `RPATH PATH RPATH # why`. --strict fails on an unlisted finding and on a stale entry.
 
 NO-CET  usr/bin/kryptikd                        # stable rustc marks nothing for CET, nor does the std it links
 NO-CET  usr/bin/kryptik-wlproxy                 # the same

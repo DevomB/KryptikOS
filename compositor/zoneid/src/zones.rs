@@ -1,13 +1,11 @@
-//! Zone identities from a zone directory (as kryptikd installs under
-//! /etc/kryptik/zones); only `[zone] name` and the `[ui]` channels are read.
+//! Zone identities from a zone directory; only `[zone] name` and the `[ui]` channels are read.
 
 use std::path::{Path, PathBuf};
 
 use crate::identity::ZoneIdentity;
 use crate::toml;
 
-/// Read every `*.toml` in `dir` as a zone definition, skipping any without a
-/// `[ui] border_color`: a zone with no colour is not a colour collision.
+/// Load every `*.toml` in `dir`, skipping zones with no `[ui] border_color` to collide.
 pub fn load_zones(dir: &Path) -> Result<Vec<ZoneIdentity>, String> {
     let entries = std::fs::read_dir(dir)
         .map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
@@ -56,7 +54,7 @@ pub fn load_zones(dir: &Path) -> Result<Vec<ZoneIdentity>, String> {
     Ok(out)
 }
 
-/// The zone directory this crate ships beside, for its own tests.
+/// The zone directory beside this crate in the source tree.
 pub fn shipped_zone_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../compartments/zones")
 }

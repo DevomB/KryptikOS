@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
-# Tests for tools/provenance-inventory.sh: classification, lock state, and no
-# total. Offline: the verifiers' reports are supplied through the test hook.
+# Tests for tools/provenance-inventory.sh, offline: the test hook supplies the verifiers' reports.
 
 set -uo pipefail
 
-# common.sh prefers these over paths derived from KRYPTIK_ROOT, so an exported
-# one would point the tool at the real tree.
+# common.sh prefers these, when exported, to paths derived from KRYPTIK_ROOT.
 unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -235,7 +233,7 @@ else
 fi
 
 if grep -qF "there is no total" "$OUT"; then
-    green "the per-class counts say explicitly that they are not a total"
+    green "the per-class counts say that they are not a total"
 else
     red "the output does not state that the counts are not a total"; show
 fi
@@ -423,9 +421,9 @@ else
     red "recorded caveats are printed in the text report (exit ${RC})"; show
 fi
 if grep -qF 'never added to the' "$OUT"; then
-    green "labelled explicitly as not assurance classes"
+    green "labelled as not assurance classes"
 else
-    red "labelled explicitly as not assurance classes"; show
+    red "labelled as not assurance classes"; show
 fi
 if grep -qF 'recipe-transformation' "$OUT" && grep -qF 'undesignated-signer' "$OUT"; then
     green "both kinds appear in the report"
@@ -545,9 +543,9 @@ else
     red "the refusal names the offending line number (exit ${RC})"; show
 fi
 if grep -qF 'not a provenance' "$OUT"; then
-    green "and says nothing was reported rather than reporting a partial inventory"
+    green "and says no partial inventory is reported"
 else
-    red "and says nothing was reported rather than reporting a partial inventory"; show
+    red "and says no partial inventory is reported"; show
 fi
 
 run --offline --notes="${W}/no-such-notes.tsv"
@@ -559,8 +557,7 @@ fi
 
 # --- the shipped caveat file is valid ---------------------------------------
 
-# Against the real tree. Empty KRYPTIK_SOURCES and KRYPTIK_WORK keep the real
-# manifest and caveats but skip hashing every tarball in sources/.
+# The real tree, with empty KRYPTIK_SOURCES and KRYPTIK_WORK so no tarball is hashed.
 mkdir -p "${W}/empty-sources" "${W}/realwork"
 RC=0
 KRYPTIK_SOURCES="${W}/empty-sources" KRYPTIK_WORK="${W}/realwork" NO_COLOR=1 \

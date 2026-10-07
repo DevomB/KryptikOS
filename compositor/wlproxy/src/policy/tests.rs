@@ -22,8 +22,7 @@ fn capture_and_clipboard_are_hidden() {
     }
 }
 
-/// Objects are forgotten only on delete_id, which names client-created ids,
-/// so no event a zone can reach may create one.
+/// Only delete_id frees objects, and only client-created ones: no reachable event may create one.
 #[test]
 fn no_compositor_created_objects() {
     use crate::protocol::{find, Arg};
@@ -76,7 +75,7 @@ fn title_controls_are_replaced() {
 
 /// The bound is in bytes; the cut must still land on a character boundary.
 #[test]
-fn multibyte_title_cut_on_char_boundary() {
+fn title_cut_on_char_boundary() {
     // 200 x U+00E9 is 400 bytes; byte 253 is inside a character.
     let t = title_for("vault", &"\u{00e9}".repeat(200));
     assert!(t.len() <= MAX_TITLE_BYTES, "{}", t.len());
@@ -92,7 +91,7 @@ fn multibyte_title_cut_on_char_boundary() {
     assert!(t.ends_with("..."));
     assert!(t.trim_end_matches("...").chars().skip(4).all(|c| c == '\u{1F600}'), "{t:?}");
 
-    // Mixed widths: an accented character exactly straddling the cut.
+    // Mixed widths: an accented character straddling the cut.
     let mut title = "x".repeat(MAX_TITLE_BYTES - 3 - "[work] ".len() - 1);
     title.push('\u{00e9}');
     title.push_str("tail");
