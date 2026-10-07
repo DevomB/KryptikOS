@@ -129,6 +129,87 @@ s.sendto(q, ("10.19.0.1", 53)); d, _ = s.recvfrom(512); print("DNS-STILL-ANSWERE
 printf 'personal-pass\n' > /root/zt/personal.pass; chmod 600 /root/zt/personal.pass
 "$KD" volume init personal --size 64M --passphrase-file /root/zt/personal.pass > "$LOG/vol-personal.out" 2>&1 \
     && pass "volume-init" "personal: $(tail -1 "$LOG/vol-personal.out")" || fail "volume-init" "$(tail -2 "$LOG/vol-personal.out" | tr '\n' ' ')"
+# A zone that sends from another zone's address. The rule that opens the
+# uplink's own network goes by a packet's source, and IPV6_FREEBIND lets an
+# unprivileged socket send from an address its host does not hold. personal
+# sends to the bridge from its own addresses (the control) and with FREEBIND
+# from untrusted's. Counters in the net zone say what reached it, ahead of its
+# own chains, and what it took in after them.
+net_init="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
+netns() { nsenter -t "${net_init:-0}" -n "$@"; }
+own4="10.19.0.$PER"; other4="10.19.0.$UNT"
+own6="fd19::$(printf '%x' "$PER")"; other6="fd19::$(printf '%x' "$UNT")"
+netns nft -f - > "$LOG/source-probe.err" 2>&1 <<EOF
+table inet ztprobe {
+    chain pre {
+        type filter hook prerouting priority -350;
+        iifname "kryptik0" udp dport 9 counter comment "pre-any"
+        ip saddr $own4 udp dport 9 counter comment "pre-own4"
+        ip saddr $other4 udp dport 9 counter comment "pre-other4"
+        ip6 saddr $own6 udp dport 9 counter comment "pre-own6"
+        ip6 saddr $other6 udp dport 9 counter comment "pre-other6"
+    }
+    chain taken {
+        type filter hook input priority 100;
+        ip saddr $own4 udp dport 9 counter comment "taken-own4"
+        ip saddr $other4 udp dport 9 counter comment "taken-other4"
+        ip6 saddr $own6 udp dport 9 counter comment "taken-own6"
+        ip6 saddr $other6 udp dport 9 counter comment "taken-other6"
+    }
+}
+EOF
+# Each send binds its source, so none goes from the link-local address; the
+# zone's own IPv6 address is usable only once duplicate address detection ends.
+zrun personal 40 --passphrase-file /root/zt/personal.pass -- python3 -c '
+import errno, socket, sys, time
+own4, other4, own6, other6 = sys.argv[1:5]
+def tentative():
+    try:
+        with open("/proc/net/if_inet6") as f:
+            return any(r.split()[5] == "eth0" and int(r.split()[4], 16) & 0x40 for r in f)
+    except OSError:
+        return False
+for _ in range(40):
+    if not tentative():
+        break
+    time.sleep(0.25)
+else:
+    print("DAD-PENDING")
+def send(what, family, src, dst, freebind):
+    s = socket.socket(family, socket.SOCK_DGRAM)
+    try:
+        if freebind:   # IP_FREEBIND, IPV6_FREEBIND
+            s.setsockopt(*((socket.IPPROTO_IP, 15) if family == socket.AF_INET else (socket.IPPROTO_IPV6, 78)), 1)
+        s.bind((src, 0))
+        for _ in range(3):
+            s.sendto(b"zt", (dst, 9))
+        print(what + "-SENT")
+    except OSError as e:
+        print("%s-REFUSED %s" % (what, errno.errorcode.get(e.errno, e)))
+    finally:
+        s.close()
+send("OWN4", socket.AF_INET, own4, "10.19.0.1", False)
+send("OTHER4", socket.AF_INET, other4, "10.19.0.1", True)
+send("OWN6", socket.AF_INET6, own6, "fd19::1", False)
+send("OTHER6", socket.AF_INET6, other6, "fd19::1", True)
+# a datagram still waiting on neighbour discovery goes with the namespace
+time.sleep(1)
+' "$own4" "$other4" "$own6" "$other6"
+table="$(netns nft list table inet ztprobe 2>&1)"
+netns nft delete table inet ztprobe 2>/dev/null
+declare -A seen
+for c in pre-any pre-own4 pre-other4 pre-own6 pre-other6 taken-own4 taken-other4 taken-own6 taken-other6; do
+    seen[$c]="$(sed -n "s/.*counter packets \([0-9]*\) .*\"$c\".*/\1/p" <<<"$table" | head -1)"
+done
+counts="reached the net zone (IPv4/IPv6): own ${seen[pre-own4]:--}/${seen[pre-own6]:--}, untrusted's ${seen[pre-other4]:--}/${seen[pre-other6]:--}, any ${seen[pre-any]:--}; taken in: own ${seen[taken-own4]:--}/${seen[taken-own6]:--}, untrusted's ${seen[taken-other4]:--}/${seen[taken-other6]:--}; personal: $(tr '\n' ' ' <<<"$ZOUT")"
+probe_err="$(cat "$LOG/source-probe.err"; [[ -n "${seen[pre-any]}" ]] || head -2 <<<"$table")"
+if [[ "${seen[taken-own4]:-0}" -eq 0 || "${seen[taken-own6]:-0}" -eq 0 ]]; then
+    fail "zone-source-pinned" "the probe has no path: personal's own datagrams were not taken in; ${counts}${probe_err:+; nft: $(tr '\n' ' ' <<<"$probe_err" | cut -c1-200)}"
+elif [[ "${seen[taken-other4]:-0}" -gt 0 || "${seen[taken-other6]:-0}" -gt 0 ]]; then
+    fail "zone-source-pinned" "the net zone took in datagrams personal sent from untrusted's addresses; ${counts}"
+else
+    pass "zone-source-pinned" "personal's own datagrams were taken in and none from untrusted's addresses; ${counts}"
+fi
 # personal stays up in the background for the separation and restart checks
 setsid "$KD" run personal --zones "$Z" --rootfs "$R" --passphrase-file /root/zt/personal.pass -- sh -c 'echo PERSONAL-UP; sleep 600' > "$LOG/personal-bg.out" 2>&1 &
 PBG=$!
