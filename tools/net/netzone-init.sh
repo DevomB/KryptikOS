@@ -231,28 +231,34 @@ fi
 
 # --- the resolver routed zones already point at ----------------------------
 DNSPID=""
+RESOLV=/etc/resolv.conf            # this zone's own: dhcpcd's hook, or zone 0's static copy
+UPSTREAM=/run/uplink-resolv.conf   # what dnsmasq forwards to
+# sync_upstream: the uplink's servers, written for dnsmasq; 0 when they are
+# other servers than the file held. A lease can come after the wait above, and
+# another network names other servers. A resolv.conf that names none leaves
+# the file as it is: a lease that lapsed is no reason to forget the last ones.
+sync_upstream() {
+    new="$(grep '^nameserver' "$RESOLV" 2>/dev/null)"
+    [ -n "$new" ] || return 1
+    [ "$new" != "$(cat "$UPSTREAM" 2>/dev/null)" ] || return 1
+    printf '%s\n' "$new" > "$UPSTREAM.new" 2>/dev/null && mv -f "$UPSTREAM.new" "$UPSTREAM" 2>/dev/null
+}
 start_dns() {
     command -v dnsmasq >/dev/null 2>&1 || { say "no dnsmasq; routed zones have no resolver"; return 1; }
-    up=/run/uplink-resolv.conf
-    # The uplink's servers, from dhcpcd's hook or zone 0's static copy. printf,
-    # not ':': a failed redirection on a special builtin exits a POSIX sh.
-    if [ -r /etc/resolv.conf ] && grep -q '^nameserver' /etc/resolv.conf; then
-        grep '^nameserver' /etc/resolv.conf > "$up"
-    else
-        printf '' > "$up"
-    fi
+    sync_upstream
     # QEMU user networking's resolver, when nothing else is known
-    grep -q '^nameserver' "$up" || echo "nameserver 10.0.2.3" >> "$up"
+    grep -q '^nameserver' "$UPSTREAM" 2>/dev/null || echo "nameserver 10.0.2.3" > "$UPSTREAM"
     # --local=/test/: the test TLD (RFC 6761) is never forwarded; the guest
     # check resolves kryptik.test here to prove a zone reaches this resolver.
+    # --no-poll: the file is read again on SIGHUP, which the loop below sends.
     dnsmasq --keep-in-foreground --no-daemon --no-hosts --bind-interfaces \
             --listen-address=10.19.0.1 --listen-address=fd19::1 --listen-address=127.0.0.1 \
-            --resolv-file="$up" --no-poll --cache-size=1000 --local-service --local=/test/ \
+            --resolv-file="$UPSTREAM" --no-poll --cache-size=1000 --local-service --local=/test/ \
             --pid-file=/run/dnsmasq.pid --user=root &
     DNSPID=$!
     sleep 1
     if kill -0 "$DNSPID" 2>/dev/null; then
-        say "dnsmasq listening on 10.19.0.1/fd19::1, forwarding to $(grep '^nameserver' "$up" | tr '\n' ' ')"
+        say "dnsmasq listening on 10.19.0.1/fd19::1, forwarding to $(grep '^nameserver' "$UPSTREAM" | tr '\n' ' ')"
         return 0
     fi
     say "dnsmasq exited at once"; DNSPID=""; return 1
@@ -371,6 +377,9 @@ while :; do
     if [ -n "$DNSPID" ] && ! kill -0 "$DNSPID" 2>/dev/null; then
         say "dnsmasq died; restarting"; DNSPID=""; dns_ok=0; changed=1
         start_dns && dns_ok=1
+    elif [ -n "$DNSPID" ] && sync_upstream; then
+        kill -HUP "$DNSPID" 2>/dev/null
+        say "dnsmasq: now forwarding to $(tr '\n' ' ' < "$UPSTREAM")"
     fi
     for n in $WIRELESS; do
         p="$(wpa_pid "$n")"

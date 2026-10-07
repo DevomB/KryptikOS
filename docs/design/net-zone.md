@@ -91,7 +91,11 @@ query and the [update](update-channel.md) fetcher. Builds on
   connections arriving on an uplink dropped.
 - **The resolver:** `dnsmasq` on 10.19.0.1, fd19::1 and 127.0.0.1,
   forwarding to the uplink lease's servers (QEMU's 10.0.2.3 when nothing else
-  is known), restarted if it dies. It answers the test TLD `.test` itself, so
+  is known), restarted if it dies. A lease that comes after it started, or
+  another network's, reaches it within ten seconds: the zone's loop compares
+  the servers `resolv.conf` names with the ones dnsmasq was given, and on a
+  change replaces the file and sends SIGHUP. A lease that lapsed leaves the
+  last servers in place. It answers the test TLD `.test` itself, so
   resolving `kryptik.test` tests the path to the resolver, not the internet.
 - **dhcpcd runs without its own privilege separation.** That needs
   `setgroups`, which the zone denies, a `dhcpcd` user, which its synthesized
