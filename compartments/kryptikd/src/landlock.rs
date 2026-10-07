@@ -1,8 +1,5 @@
-//! Landlock filesystem confinement (ADR-007): self-applied, irreversible, and
-//! needing no privilege. For a zone it backs up the pivoted root (`rootfs`).
-//!
-//! Rules are additive: a rule on a sub-path can only add rights, so `/` gets
-//! the fewest and every writable place is named (`zone_rules`).
+//! Landlock filesystem confinement (ADR-007), backing up a zone's pivoted root. Rules are
+//! additive, so `/` gets the fewest rights and every writable place is named (`zone_rules`).
 
 use std::ffi::CString;
 use std::io;
@@ -33,13 +30,11 @@ const FS_REFER: u64 = 1 << 13; // ABI v2
 const FS_TRUNCATE: u64 = 1 << 14; // ABI v3
 const FS_IOCTL_DEV: u64 = 1 << 15; // ABI v5
 
-/// Oldest ABI a zone may run on (Linux 6.2). Below it the kernel cannot handle
-/// REFER (v2) or TRUNCATE (v3), so the policy would not mean what it says.
+/// Oldest ABI a zone may run on (Linux 6.2), the first to restrict both REFER and TRUNCATE.
 pub const MIN_ABI: i32 = 3;
 
 pub const ACCESS_READ: u64 = FS_READ_FILE | FS_READ_DIR;
-/// Full write. Without REFER, `mv a dir/` fails with EXDEV; without TRUNCATE,
-/// `>` on an existing file fails.
+/// Full write: without REFER `mv a dir/` fails with EXDEV, without TRUNCATE `>` fails.
 pub const ACCESS_WRITE: u64 = FS_WRITE_FILE
     | FS_REMOVE_DIR
     | FS_REMOVE_FILE
@@ -93,9 +88,8 @@ impl std::fmt::Display for LandlockError {
             ),
             LandlockError::TooOld { abi, need } => write!(
                 f,
-                "landlock ABI v{abi} is too old (need v{need}, Linux 6.2+): the kernel \
-                 cannot express truncate/rename restrictions, so the zone policy \
-                 would silently mean less than it says"
+                "landlock ABI v{abi} is too old (need v{need}, Linux 6.2+): it cannot restrict \
+                 everything a zone policy says"
             ),
             LandlockError::Syscall { call, errno } => {
                 write!(f, "{call}: {}", io::Error::from_raw_os_error(*errno))
@@ -150,8 +144,7 @@ fn access_mask_for(abi: i32) -> u64 {
     mask
 }
 
-/// A ruleset under construction. Every handled access is denied unless a rule
-/// allows it.
+/// A ruleset under construction: every handled access is denied unless a rule allows it.
 pub struct Ruleset {
     fd: RawFd,
     abi: i32,
@@ -196,10 +189,8 @@ impl Ruleset {
         Ok(Ruleset { fd: fd as RawFd, abi })
     }
 
-    /// Allow `access` on everything beneath `path`. A missing path is an error,
-    /// so a typo cannot silently change confinement. So is a symbolic link
-    /// anywhere in it: a zone that swapped a granted directory for a link to a
-    /// wider one would otherwise widen its own rule at its next start.
+    /// Allow `access` beneath `path`. A missing path is an error, and so is a symlink anywhere
+    /// in it: a zone could swap a granted directory for a link to a wider one.
     pub fn allow(&mut self, path: &str, access: u64) -> Result<(), LandlockError> {
         let fd = open_exact(path)?;
 
@@ -229,8 +220,7 @@ impl Ruleset {
         Ok(())
     }
 
-    /// Apply the ruleset to this process and every descendant. Irreversible.
-    /// Sets `PR_SET_NO_NEW_PRIVS` first; without it restrict_self is EPERM.
+    /// Set no_new_privs, without which this is EPERM, and apply the ruleset irreversibly.
     pub fn restrict_self(self) -> Result<(), LandlockError> {
         let nnp = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
         if nnp < 0 {
@@ -253,9 +243,8 @@ impl Ruleset {
     }
 }
 
-/// An O_PATH descriptor for `path` as named: openat2 refuses a symbolic link
-/// in any component (ELOOP). It is older (Linux 5.6) than any kernel with the
-/// ABI a ruleset needs.
+/// An O_PATH descriptor for `path` as named: openat2 refuses a symlink in any component
+/// (ELOOP), and is older (Linux 5.6) than any kernel with the ABI a ruleset needs.
 fn open_exact(path: &str) -> Result<RawFd, LandlockError> {
     let c = CString::new(path).map_err(|_| LandlockError::BadPath { path: path.into(), errno: libc::EINVAL })?;
     // Filled in, not built: libc marks open_how non_exhaustive.
@@ -282,10 +271,8 @@ fn open_exact(path: &str) -> Result<RawFd, LandlockError> {
     Ok(fd as RawFd)
 }
 
-/// Directives of a zone's Landlock policy file (`[policy] landlock`): one
-/// `directive /path` per line, paths as the zone sees them. The file is a second
-/// Landlock layer, and layers intersect, so it can only narrow the base rules.
-/// There is no `deny`: Landlock has no subtraction.
+/// Directives of a `[policy] landlock` file, one `directive /path` per line. The file is a
+/// second layer, which can only narrow the base rules, so there is no `deny`.
 pub const FS_DIRECTIVES: &[(&str, u64)] = &[
     ("read", ACCESS_READ),
     ("read-exec", ACCESS_READ | ACCESS_EXEC),
@@ -293,8 +280,7 @@ pub const FS_DIRECTIVES: &[(&str, u64)] = &[
     ("read-write-exec", ACCESS_READ | ACCESS_WRITE | ACCESS_EXEC),
 ];
 
-/// Parse a zone's Landlock policy file. Paths must be absolute and free of `..`:
-/// they name places in the zone's pivoted root.
+/// Parse a zone's Landlock policy file; paths are absolute, free of `..`, as the zone sees them.
 pub fn parse_policy(text: &str, source: &str) -> Result<Vec<ZoneRule>, String> {
     let mut out: Vec<ZoneRule> = Vec::new();
     for (i, raw) in text.lines().enumerate() {
@@ -336,8 +322,7 @@ pub fn parse_policy(text: &str, source: &str) -> Result<Vec<ZoneRule>, String> {
     Ok(out)
 }
 
-/// Apply a zone's policy file as a layer over the base rules. Runs after
-/// `confine_pivoted_zone`, inside the zone; a missing path is an error.
+/// Apply a zone's policy file as a layer over `confine_pivoted_zone`'s rules.
 pub fn confine_further(rules: &[ZoneRule]) -> Result<(), LandlockError> {
     let mut rs = Ruleset::new()?;
     for r in rules {
@@ -346,14 +331,12 @@ pub fn confine_further(rules: &[ZoneRule]) -> Result<(), LandlockError> {
     rs.restrict_self()
 }
 
-/// For `kryptikd confine-test`: confine this process, in the caller's mount
-/// namespace, to `rootfs` (read, write, exec) and `extra_ro`.
+/// For `kryptikd confine-test`: confine this process to `rootfs` and, read-only, `extra_ro`.
 pub fn confine_to_zone(rootfs: &str, extra_ro: &[&str]) -> Result<(), LandlockError> {
     let mut rs = Ruleset::new()?;
     rs.allow(rootfs, ACCESS_READ | ACCESS_WRITE | ACCESS_EXEC)?;
     for p in extra_ro {
-        /* Optional: one that is missing, or a link as /lib is on a merged-usr
-         * host (the /usr rule covers it), is skipped. The zone rootfs is not. */
+        // Optional: a missing one, or a link like merged-usr's /lib (under /usr), is skipped.
         let _ = rs.allow(p, ACCESS_READ | ACCESS_EXEC);
     }
     rs.restrict_self()
@@ -367,9 +350,8 @@ pub struct ZoneRule {
     pub required: bool,
 }
 
-/// Rules for a zone already pivoted into its root (`rootfs::pivot_into`).
-/// "/" gets read and exec only, so what a zone must not modify is denied write
-/// by Landlock as well as by its mount flags. Writable places are named.
+/// Rules for a pivoted zone: "/" gets read and exec only, so what a zone must not modify is
+/// denied by Landlock as well as by its mount flags.
 pub fn zone_rules(home: &str) -> Vec<ZoneRule> {
     let rule = |path: &str, access: u64, required: bool| ZoneRule {
         path: path.to_string(),
@@ -390,8 +372,7 @@ pub fn zone_rules(home: &str) -> Vec<ZoneRule> {
     ]
 }
 
-/// The nic zone's extra writable places: the private tmpfs mounts on /run and
-/// /var/lib that `rootfs::pivot_into` gives it for network state. No exec.
+/// The nic zone's private /run and /var/lib tmpfs mounts, for network state; no exec.
 pub fn nic_zone_rules() -> Vec<ZoneRule> {
     ["/run", "/var/lib"]
         .iter()
@@ -423,8 +404,7 @@ pub fn describe_access(access: u64) -> String {
     parts.join("+")
 }
 
-/// Apply `zone_rules` to the current process. Must run after pivot_root and
-/// before the seccomp filter (landlock_* are not in the allowlist).
+/// Apply `zone_rules` after pivot_root and before seccomp, whose allowlist lacks landlock_*.
 pub fn confine_pivoted_zone(home: &str, nic: bool) -> Result<(), LandlockError> {
     let mut rs = Ruleset::new()?;
     let mut rules = zone_rules(home);

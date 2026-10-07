@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
-# s6: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
 s_s6_stack() {
-    # ADR-006. skarnet packages use their own configure conventions. Whole
-    # tarball names, so the step's stamp hashes each one.
+    # ADR-006. Whole tarball names, so the step's stamp hashes each one.
     local tb p
     for tb in "skalibs-${V_SKALIBS}.tar.gz" "execline-${V_EXECLINE}.tar.gz" \
               "s6-${V_S6}.tar.gz" "s6-rc-${V_S6_RC}.tar.gz" \
@@ -14,8 +11,7 @@ s_s6_stack() {
         local src; src="$(unpack "$tb" "$p")"
         cd "$src"
 
-        # --skeldir: with --prefix=/usr the skeleton would land in /usr/etc,
-        # where s6-linux-init-maker does not look, leaving no stage 2 scripts.
+        # --skeldir: under --prefix=/usr it is /usr/etc, where s6-linux-init-maker never looks.
         local extra=()
         case "$p" in
             s6-linux-init-*) extra=(--skeldir=/etc/s6-linux-init/skel) ;;

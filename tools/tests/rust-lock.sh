@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# build/config/rust.lock is what the Distro workflow checks Rust's tarballs
-# against, as a SHA256SUMS file, and where it reads the version rustc must
-# report: every line but the comments is a hash and a release tarball, and
-# the four tarballs the build installs are there once each, of one version.
+# build/config/rust.lock, the Rust SHA256SUMS: hash lines only, four tarballs, one version.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LOCK="$ROOT/build/config/rust.lock"

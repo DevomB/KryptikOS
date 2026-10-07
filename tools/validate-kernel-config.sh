@@ -5,9 +5,7 @@
 #   ./tools/validate-kernel-config.sh --hardened   hardened.fragment
 #   ./tools/validate-kernel-config.sh --boot       boot.fragment
 #
-# kconfig drops an unknown symbol silently. This checks existence only: one with
-# unmet dependencies (CFI_CLANG under GCC) is dropped too, which
-# tools/resolve-kernel-config.sh catches.
+# Existence only: a symbol dropped for unmet dependencies is caught by resolve-kernel-config.sh.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 load_config
@@ -94,9 +92,8 @@ ok "recognized: ${KNOWN}"
 if [[ "$UNKNOWN" -gt 0 ]]; then
     err "unknown:    ${UNKNOWN}"
     echo
-    dim "These symbols do not exist in the pinned kernel. Each was either renamed"
-    dim "or removed upstream. merge_config.sh will DROP them silently, so the"
-    dim "mitigation they name would simply not be present in the built kernel."
+    dim "These symbols do not exist in the pinned kernel (renamed or removed upstream);"
+    dim "merge_config.sh drops them silently, so the built kernel would lack them."
     echo
     for sym in "${UNKNOWN_LIST[@]}"; do
         # Suggest similar names, ignoring any MITIGATION_ prefix.

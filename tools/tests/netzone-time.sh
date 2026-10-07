@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Test the net zone's clock query (docs/design/time.md): ask_time from
-# netzone-init.sh and sntp-offset.py, against loopback time servers and a
-# stand-in broker, under each POSIX shell here (the image's /bin/sh may be any).
+# The net zone's clock query (ask_time, sntp-offset.py) against loopback time servers and a
+# stand-in broker, under every POSIX shell found, as the image's /bin/sh may be any of them.
 
 set -uo pipefail
 
@@ -74,8 +73,7 @@ echo "STATE=\$TIME_STATE"
 echo "UPLINKS=\$*"
 EOF
 
-# serve VAR MODE SKEW: start a server and put its port in VAR. Not via $(...),
-# whose subshell would lose the pid.
+# serve VAR MODE SKEW: start a server, port in VAR; not via $(...), whose subshell loses the pid.
 NSERVED=0
 serve() {
     NSERVED=$((NSERVED + 1))
@@ -104,8 +102,8 @@ for s in dash bash busybox; do command -v "$s" >/dev/null 2>&1 && SHELLS+=("$s")
 for s in "${SHELLS[@]}"; do
     sh_cmd="$s"; [[ "$s" == busybox ]] && sh_cmd="busybox sh"
     echo "under ${sh_cmd}:"
-    # shellcheck disable=SC2086  # "busybox sh" is two words on purpose
-    r() {   # r ADDR CONF [NOQUERY] -> OUT, ARGS (what reached the query), TOLD (what reached the broker)
+    # shellcheck disable=SC2086  # $sh_cmd may be the two words "busybox sh"
+    r() {   # r ADDR CONF [NOQUERY]: sets OUT, ARGS (what the query got), TOLD (what the broker got)
         : > "$T/args"; : > "$T/told"
         OUT="$(ARGLOG="$T/args" NOQUERY="${3:-0}" KRYPTIK_SNTP="$T/sntp-logged.py" KRYPTIK_SNTP_TIMEOUT=2 KRYPTIK_BROKER="$T/broker.sock" \
                FAKE_ADDR="$1" FAKE_CONF="$2" $sh_cmd "$T/harness.sh" 2>&1)"

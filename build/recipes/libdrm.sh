@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# libdrm: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
 s_libdrm() {
     meson_build "libdrm-${V_LIBDRM}.tar.xz" "libdrm-${V_LIBDRM}" \

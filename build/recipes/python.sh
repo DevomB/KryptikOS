@@ -1,20 +1,15 @@
 #!/usr/bin/env bash
-# python: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
 s_python() {
     local src; src="$(unpack "Python-${V_PYTHON}.tar.xz" "Python-${V_PYTHON}")"
     cd "$src"
-    # This python only serves glibc's configure. No --enable-optimizations: its
-    # PGO pass fails to link (libgcov) and triples the build time. No
-    # --with-system-expat: expat is not built yet.
+    # Only for glibc's configure; no PGO, which fails to link (libgcov), and no system expat yet.
     ./configure --prefix=/usr --enable-shared
     make
     make install
 }
 
-# The full python, rebuilt over the early one after libffi, openssl, expat and
-# readline. The step fails unless ctypes, ssl, pyexpat and readline import.
+# The full python, once libffi, openssl, expat and readline exist; their modules must import.
 s_python_final() {
     local src; src="$(unpack "Python-${V_PYTHON}.tar.xz" "Python-${V_PYTHON}")"
     cd "$src"

@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Tests for tools/channel-host.sh: its dry run, which is the same publish and
-# reissue the workflow runs, on throwaway keys and a stand-in release; and
-# what it refuses. No gh, no network.
+# Tests for tools/channel-host.sh, offline: the dry run's publish and reissue, and its refusals.
 
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

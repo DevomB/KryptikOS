@@ -44,16 +44,17 @@ Confidentiality against an offline reader, but not authentication: XTS lets an
 offline writer corrupt a block, though not choose what it decrypts to. So
 nothing deciding privilege is read from `/etc`'s upper layer without the
 allow-list (`prune_etc_upper` in `sysinit.sh`); encryption adds to that
-boundary rather than replacing it. Zone volumes are encrypted twice, and that
-stays: the inner layer protects a stopped zone's data from zone 0 and the
-other zones. It does not protect a running, unlocked machine, and the ESP, the
-root slots and the LUKS header show that the machine runs Kryptik.
+boundary and does not replace it. Zone volumes keep their own encryption
+inside the partition: the inner layer protects a stopped zone's data from
+zone 0 and the other zones. The partition's encryption does not protect a
+running, unlocked machine, and the ESP, the root slots and the LUKS header
+show that the machine runs Kryptik.
 
 ## Decisions
 
 - **A passphrase at every boot.** The machine asks before it has any state,
   so the secret cannot be the login password (the shadow file is inside).
-  Unlocking from the TPM against a measured boot is for version 2.
+  Unlocking from the TPM against a measured boot is for Version 2.
 - **Authenticated encryption later.** dm-integrity under dm-crypt
   (`--integrity hmac-sha256`) would make a modified block an I/O error, at the
   cost of a journal (roughly a third of a laptop SSD's write throughput),
@@ -91,7 +92,7 @@ root slots and the LUKS header show that the machine runs Kryptik.
 ## Files
 
 `tools/install/kryptik-install.sh`, `build/service-scripts/installer-run.sh`,
-`sysinit.sh`, `devices.sh`, `boot-success.sh`, `kryptik-console` (from stage
-04), `tools/update/kryptik-recover`, `tools/kryptik`, `tools/image/*-test.sh`,
-`suite-lib.sh`, `vm-drive.py`, `run-ovmf.sh`, and the
-[user guide](../user-guide.md).
+`sysinit.sh`, `devices.sh`, `boot-success.sh`, `build/recipes/console.sh`
+(`kryptik-console`), `tools/update/kryptik-recover`, `tools/kryptik`,
+`tools/image/*-test.sh`, `suite-lib.sh`, `vm-drive.py`, `run-ovmf.sh`, and
+the [user guide](../user-guide.md).

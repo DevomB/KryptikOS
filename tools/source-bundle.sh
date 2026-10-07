@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# Gather the corresponding source of one build: every sources.lock tarball
-# with the signatures fetched for it, the Rust crates the static binaries
-# link, and the repository at the build commit (build/patches included), with
-# a manifest of every file's sha256. The release job calls it; CI does not.
+# Gather one build's corresponding source: tarballs, signatures, crates, repository, MANIFEST.
 #
 #   ./tools/source-bundle.sh [--out DIR]     default: $KRYPTIK_OUT/source-<commit>
 
@@ -13,7 +10,7 @@ OUT=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --out) OUT="${2:?--out needs a directory}"; shift 2 ;;
-        -h|--help) sed -n '2,7p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,4p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -44,8 +41,7 @@ while read -r name _ver url sig _; do
         if [[ -f "$s" ]]; then cp -f "$s" "$OUT/signatures/"; fi
     done
 done < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list)
-# Every file the lock names, so a list that came back short cannot pass for
-# a whole bundle.
+# Every file the lock names, so a list that came back short cannot pass for a whole bundle.
 missing=()
 while read -r hash f; do
     [[ -z "$hash" || "$hash" == \#* ]] && continue
@@ -59,8 +55,7 @@ git -C "$KRYPTIK_ROOT" archive --format=tar.gz --prefix="kryptik-${commit:0:12}/
     -o "$OUT/kryptik-${commit:0:12}.tar.gz" "$commit"
 ok "the repository at ${commit:0:12}"
 
-# kryptikd and kryptik-wlproxy link their crates statically: those sources
-# are part of what the binaries were built from.
+# kryptikd and kryptik-wlproxy link their crates statically, so the crates are corresponding source.
 for ws in compartments/kryptikd compositor; do
     (cd "${KRYPTIK_ROOT}/${ws}" && cargo vendor --locked --versioned-dirs "$OUT/crates/${ws##*/}" > /dev/null) \
         || die "cargo vendor failed in ${ws}"

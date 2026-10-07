@@ -1,13 +1,8 @@
-# kernel-hardening-checker failures on the resolved config and the shipped
-# command line that Kryptik accepts, each with its reason:
+# kernel-hardening-checker failures Kryptik accepts, read by tools/check-kernel-hardening.sh:
 #   <kconfig|cmdline|sysctl>  <option>   # <why it stays>
-# tools/check-kernel-hardening.sh fails on an unlisted failure or an entry
-# without a reason, and reports an entry that now passes so it can go.
-# The checker's decision column names who recommends a setting: kspp (Kernel
-# Self-Protection Project), clipos, grsec, maintainer, a13xp0p0v (its author).
 
 # --- the toolchain is GCC (ADR-001) --------------------------------------------
-kconfig  CONFIG_CFI_CLANG         # kernel control-flow integrity needs Clang; hardening.fragment records why that split is not adopted yet
+kconfig  CONFIG_CFI_CLANG         # kernel control-flow integrity needs Clang; hardening.fragment says why the kernel is built with GCC
 kconfig  CONFIG_CFI_PERMISSIVE    # follows CFI_CLANG
 kconfig  CONFIG_CFI_AUTO_DEFAULT  # follows CFI_CLANG
 cmdline  cfi                      # cfi=kcfi selects the Clang CFI mode; no kernel CFI is built
@@ -18,7 +13,7 @@ kconfig  CONFIG_MODULES           # drivers that need firmware load after the ve
 
 # --- the desktop and the console need them ------------------------------------------
 kconfig  CONFIG_VT                # the framebuffer console and the tty1 login (boot.fragment)
-kconfig  CONFIG_KCMP              # DRM selects it (drivers/gpu/drm/Kconfig) and the compositor needs DRM; the "is not set" line for it was ignored, so it is a decision here rather than a dead line there
+kconfig  CONFIG_KCMP              # DRM selects it (drivers/gpu/drm/Kconfig), and the compositor needs DRM
 
 # --- ADR-007: Landlock and seccomp, no SELinux ------------------------------------
 kconfig  CONFIG_SECURITY_SELINUX  # the checker's author prefers SELinux; Kryptik compiles no MAC framework it loads no policy into (ADR-007)
@@ -29,4 +24,4 @@ kconfig  CONFIG_LSM_MMAP_MIN_ADDR # exists only with SELinux; CONFIG_DEFAULT_MMA
 kconfig  CONFIG_KALLSYMS          # a stack trace without symbols cannot be acted on; kernel.kptr_restrict=2 and kernel.dmesg_restrict=1 (build/config/sysctl.d) keep them from users, and KALLSYMS_ALL is off
 
 # --- the IOMMU is already on and strict by default -------------------------------
-cmdline  iommu                    # iommu=force is clipos's belt over the same braces: INTEL_IOMMU_DEFAULT_ON, AMD_IOMMU and IOMMU_DEFAULT_DMA_STRICT turn it on, strict, wherever there is one
+cmdline  iommu                    # INTEL_IOMMU_DEFAULT_ON, AMD_IOMMU and IOMMU_DEFAULT_DMA_STRICT already turn it on, strict, wherever there is one

@@ -1,7 +1,6 @@
 use super::*;
 
-/// Run `body` in a forked child and return its exit status: these tests
-/// change descriptors and mount namespaces the test harness shares.
+/// Run `body` in a forked child: these tests change descriptors and namespaces the harness shares.
 fn in_child(body: impl FnOnce() -> i32) -> i32 {
     let pid = unsafe { libc::fork() };
     assert!(pid >= 0, "fork failed");
@@ -65,7 +64,7 @@ fn device_list_is_minimal() {
 }
 
 #[test]
-fn etc_view_excludes_identity_and_secrets() {
+fn etc_view_excludes_secrets() {
     let all: Vec<&str> = ETC_RO_FILES.iter().chain(ETC_RO_DIRS).copied().collect();
     for banned in [
         "/etc/machine-id", "/etc/hostname", "/etc/hosts", "/etc/passwd", "/etc/group",
@@ -82,7 +81,7 @@ fn etc_view_excludes_identity_and_secrets() {
 }
 
 #[test]
-fn bridge_resolver_names_only_bridge() {
+fn bridge_resolver() {
     let r = resolv_conf_for_bridge();
     assert_eq!(r.lines().count(), 2);
     assert!(r.contains("nameserver 10.19.0.1") && r.contains("nameserver fd19::1"));
@@ -90,7 +89,7 @@ fn bridge_resolver_names_only_bridge() {
 }
 
 #[test]
-fn identity_names_zone_not_host() {
+fn identity_names_zone() {
     let pw = passwd_for("work", "/home/work");
     assert!(pw.starts_with("root:x:0:0:work:/home/work:"), "{pw}");
     assert_eq!(pw.lines().count(), 2);
@@ -100,7 +99,7 @@ fn identity_names_zone_not_host() {
 }
 
 #[test]
-fn data_dir_refuses_symlinks_other_owners() {
+fn data_dir_refusals() {
     let base = std::env::temp_dir().join(format!("kryptik-rootfs-test-{}", std::process::id()));
     let real = base.join("real");
     let link = base.join("link");
@@ -136,7 +135,7 @@ fn leftover_names_are_escaped() {
 }
 
 #[test]
-fn close_inherited_fds_keeps_only_stdio() {
+fn close_fds_keeps_stdio() {
     let rc = in_child(|| {
         open_at(3);
         open_at(4095);
@@ -163,7 +162,7 @@ fn close_inherited_fds_keeps_only_stdio() {
 }
 
 #[test]
-fn ensure_stdio_reopens_closed_fd() {
+fn ensure_stdio_reopens() {
     let rc = in_child(|| {
         unsafe { libc::close(0) };
         if is_open(0) {
@@ -178,12 +177,10 @@ fn ensure_stdio_reopens_closed_fd() {
     assert_eq!(rc, 0);
 }
 
-/// A submount inside the bound tree must be read-only too. Needs an
-/// unprivileged user namespace; skips without one.
+/// A submount in the bound tree must be read-only too; skips without an unprivileged userns.
 #[test]
-fn read_only_bind_is_recursive() {
-    /* Before the fork: temp_dir() takes std's environment lock, which
-     * another test thread may hold at fork time, hanging the child. */
+fn ro_bind_recursive() {
+    // Before the fork: temp_dir() takes std's env lock, which, held at fork time, hangs the child.
     let base = std::env::temp_dir().join(format!("kryptik-ro-test-{}", std::process::id()));
     let rc = in_child(|| {
         let uid = unsafe { libc::getuid() };

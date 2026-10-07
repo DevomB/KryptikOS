@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# Every source has its licence files under ROOT/usr/share/licenses/<source>/
-# (stage 04's s_licences installs them), and Kryptik has its own. A source
-# the image carries no licence file for needs a line, with its reason, in
-# build/config/licence-exceptions.txt.
+# Checks ROOT/usr/share/licenses/ holds Kryptik's licence and each source's, or its exception line.
 #
 #   ./tools/check-image-licences.sh ROOT
 
@@ -20,7 +17,6 @@ if [[ -f "$EXC" ]]; then
     done < "$EXC"
 fi
 
-# A directory with at least one file in it.
 has_files() { [[ -d "$1" && -n "$(find "$1" -type f -print -quit)" ]]; }
 
 missing=(); n=0

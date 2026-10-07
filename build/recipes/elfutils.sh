@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# elfutils: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
 s_elfutils() {
     local src; src="$(unpack "elfutils-${V_ELFUTILS}.tar.bz2" "elfutils-${V_ELFUTILS}")"

@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# cryptsetup: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
 s_cryptsetup() {
     local src; src="$(unpack "cryptsetup-${V_CRYPTSETUP}.tar.xz" "cryptsetup-${V_CRYPTSETUP}")"
@@ -12,8 +10,7 @@ s_cryptsetup() {
     echo "--- what shipped ---"
     cryptsetup --version
     veritysetup --version
-    # LUKS2 is the contract (docs/design/encrypted-volumes.md). The help text is
-    # captured, not piped into grep -q, which can SIGPIPE cryptsetup.
+    # LUKS2 is the contract (docs/design/encrypted-volumes.md); captured, as grep -q can SIGPIPE it.
     cryptsetup benchmark --help >/dev/null 2>&1 || true
     local help; help="$(cryptsetup --help 2>&1 || true)"
     case "$help" in

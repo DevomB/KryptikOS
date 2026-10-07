@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
-"""kryptik-launch --ask reads an encrypted zone's passphrase on its controlling
-terminal, and without one hands the question to the chrome. dwl's spawn keeps
-the session's stdin, a terminal, but calls setsid(): that launch must reach the
-chrome, not die for want of /dev/tty. On a terminal of its own, a passphrase
-typed before the prompt is taken whole."""
+"""kryptik-launch --ask reads a passphrase on its controlling terminal, else the chrome asks.
+dwl's spawn keeps a terminal on stdin but calls setsid(), so that launch must reach the chrome."""
 import array
 import os
 from pathlib import Path
@@ -97,8 +94,7 @@ def main():
                 assert asked == "--prompt\nwork\n--\n/bin/true\n", f"{case}: the chrome was not asked ({asked!r})"
                 print(f"PASS: {case}: the chrome asks for the passphrase")
 
-            # A terminal of its own (setsid --ctty), with the passphrase typed
-            # before the prompt appeared: it must be taken whole, not flushed.
+            # Its own terminal (setsid --ctty), a passphrase typed ahead: taken whole, not flushed.
             master, slave = os.openpty()
             os.write(master, b"typed-ahead-pass\n")
             try:

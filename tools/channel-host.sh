@@ -1,25 +1,20 @@
 #!/usr/bin/env bash
-# The update channel on GitHub: the statement of what is current on the
-# repository's Pages site, the payload among the release's files, the
-# statement key in a repository secret (docs/design/update-channel.md).
+# The update channel on GitHub: statements on the Pages site, payloads among the release's files.
 #
 #   tools/channel-host.sh publish --release TAG --key FILE --site DIR [--channel NAME] [--repo OWNER/NAME]
 #   tools/channel-host.sh reissue --key FILE --site DIR [--channel NAME] [--repo OWNER/NAME]
 #   tools/channel-host.sh dry-run --site DIR [--channel NAME]
 #
-# SITE is the directory Pages serves; a channel is SITE/NAME (stable unless
-# --channel says). Every mode first mirrors the statements the site serves
-# now, so a deployment of SITE keeps every channel and a date only moves
-# forward. publish takes the release's payload and anchor from the page,
-# verifies the payload as the image will, and writes a statement whose base
-# is the release's download address. reissue signs the current statement
-# again, against the manifest that release serves. dry-run makes throwaway
-# keys and a stand-in release under SITE and runs publish and reissue on them:
-# no gh, no network, the same code.
+#   publish  verify the release's payload as the image will; make it current at its download URL
+#   reissue  sign the current statement again, against the manifest its release serves
+#   dry-run  publish and reissue a stand-in release signed by throwaway keys
+#
+# DIR is what Pages serves, and a channel DIR/NAME (stable by default). Each mode first mirrors
+# what the site serves, so a deployment keeps every channel and dates only move forward.
 set -Eeuo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 
-usage() { sed -n '2,18p' "${BASH_SOURCE[0]}"; }
+usage() { sed -n '2,13p' "${BASH_SOURCE[0]}"; }
 CHANNEL_TOOL="${KRYPTIK_ROOT}/tools/release-channel.sh"
 MANIFEST_TOOL="${KRYPTIK_ROOT}/tools/release-manifest.sh"
 PAYLOAD_FILES=(kryptik-root.img kryptik-a.efi kryptik-b.efi root.json manifest manifest.sig)
@@ -51,10 +46,8 @@ mkdir -p "${SITE}/${CHANNEL}"
 : > "${SITE}/.nojekyll"
 
 # --- what the site serves now ------------------------------------------------------
-# The page's address, for the statements the site serves and the release
-# files. A dry run without gh or a repository is the offline test and mirrors
-# nothing; one with them mirrors, so its deployment keeps the other channels.
 SITE_URL=""; DOWNLOAD=""
+# A dry run without gh or a repository is the offline test, and mirrors nothing.
 if [[ "$MODE" != dry-run ]] || { [[ -n "$REPO" ]] && have gh; }; then
     have gh || die "gh (GitHub's command line) fetches the release; dry-run does without it"
     [[ -n "$REPO" ]] || REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || die "no repository: give --repo"
@@ -74,7 +67,7 @@ mirror() {   # mirror NAME: the statement the site serves for channel NAME, if a
         fi
     done
     if [[ -f "${SITE}/${c}/latest" && ! -f "${SITE}/${c}/latest.sig" ]]; then
-        die "${SITE_URL}${c}/latest is served without its signature; the site is broken, not to be built on"
+        die "${SITE_URL}${c}/latest is served without its signature; repair the site first"
     fi
 }
 for c in "${CHANNELS[@]}"; do mkdir -p "${SITE}/${c}"; mirror "$c"; done
@@ -122,8 +115,7 @@ case "$MODE" in
         reissue "${dl}/release-signers" "${dl}/manifest"
         ;;
     dry-run)
-        # Throwaway keys and a stand-in release, all under the site, so the
-        # only thing left afterwards is the channel's statement.
+        # Throwaway keys and a stand-in release in a temporary directory: only the statement stays.
         [[ "$CHANNEL" != stable ]] || die "dry-run: not on stable; give --channel test"
         w="$(mktemp -d)"; trap 'rm -rf "$w"' EXIT
         ssh-keygen -q -t ed25519 -N '' -C kryptik-release -f "${w}/release" < /dev/null

@@ -33,8 +33,7 @@ s.listen(1)
 signal.pause()
 """)
         proxy.chmod(0o700)
-        # The real launcher, its fixed proxy and socket paths pointed at stand-ins;
-        # nothing installed is touched.
+        # The real launcher, its proxy and socket paths pointed at stand-ins.
         source = (root / "tools/desktop/kryptik-launch.c").read_text()
         for name, old, new in [
             ("PROXY_BIN", "/usr/bin/kryptik-wlproxy", proxy),

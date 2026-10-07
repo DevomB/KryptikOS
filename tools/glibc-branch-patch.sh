@@ -8,7 +8,10 @@
 # The patch is cut only at a commit two hosts hold on the branch: a commit id names its content, so
 # the two then serve the same. GLIBC_GIT and GLIBC_GIT_SECOND name other hosts (the fixture suite's are local).
 set -Eeuo pipefail
-source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
+# The patch set of the tree this tool is in, not of a tree the environment
+# names: acceptance exports the checkout as KRYPTIK_ROOT to every suite.
+KRYPTIK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${KRYPTIK_ROOT}/build/lib/common.sh"
 load_config
 
 url="${GLIBC_GIT:-https://sourceware.org/git/glibc.git}"

@@ -6,9 +6,7 @@ set -uo pipefail
 
 fail=0
 
-# --- identity -----------------------------------------------------------------
-# Checked first: a wrong address hands the commit to another GitHub account.
-# The checker is found relative to this file; a missing one refuses.
+# --- identity, first: a wrong address gives the commit to another GitHub account ---
 checker="$(dirname "${BASH_SOURCE[0]}")/../check-commit-identity.sh"
 if [[ ! -f "$checker" ]]; then
     echo "pre-commit: ERROR no identity checker at ${checker}; refusing to commit unchecked" >&2
@@ -18,11 +16,7 @@ if ! bash "$checker" --pending; then
     exit 1
 fi
 
-# --- executable bits --------------------------------------------------------
-# NTFS has no exec bit, so a script committed from Windows records 100644 and
-# a Linux clone gets "Permission denied": set the bit in the index. Hook files
-# and tools/tests/*.py suites have no .sh suffix, so they are matched by name;
-# git silently ignores a non-executable hook.
+# --- exec bits: NTFS has none, so a script committed from Windows records 100644 ---
 while IFS= read -r f; do
     [[ -z "$f" ]] && continue
     mode="$(git ls-files -s -- "$f" | awk '{print $1}')"
@@ -36,33 +30,34 @@ done < <(git diff --cached --name-only --diff-filter=ACM \
 
 # build/lib/common.sh is sourced, not executed, and stays 644.
 
-# --- CRLF -------------------------------------------------------------------
-# .gitattributes normalises line endings, but `add -f` or an editor can still
-# stage CRLF, which gives "bad interpreter: bash^M".
+# The staged file's first line: tools/kryptik and the run files are scripts with no extension.
+first_line() { git show ":$1" 2>/dev/null | head -1; }
+
+# --- CRLF, which .gitattributes normalises but an editor or add -f can still stage ---
 while IFS= read -r f; do
     [[ -z "$f" ]] && continue
+    [[ "$f" =~ \.(sh|rs|py)$|(^|/)Makefile$ || "$(first_line "$f")" == '#!'* ]] || continue
     if git show ":${f}" 2>/dev/null | grep -qU $'\r'; then
         echo "pre-commit: ERROR ${f} contains CRLF; scripts must be LF" >&2
         fail=1
     fi
-done < <(git diff --cached --name-only --diff-filter=ACM \
-         | grep -E '\.(sh|rs)$|Makefile' || true)
+done < <(git diff --cached --name-only --diff-filter=ACM)
 
 # --- shell syntax -----------------------------------------------------------
 while IFS= read -r f; do
     [[ -z "$f" ]] && continue
     [[ -f "$f" ]] || continue
+    [[ "$f" == *.sh || "$(first_line "$f")" =~ ^#!.*[/\ ](ba|da)?sh([[:space:]]|$) ]] || continue
     if ! bash -n "$f" 2>/dev/null; then
         echo "pre-commit: ERROR ${f} has a shell syntax error" >&2
         bash -n "$f" 2>&1 | sed 's/^/    /' >&2
         fail=1
     fi
-done < <(git diff --cached --name-only --diff-filter=ACM | grep -E '\.sh$' || true)
+done < <(git diff --cached --name-only --diff-filter=ACM)
 
 if [[ "$fail" -ne 0 ]]; then
     echo >&2
-    echo "pre-commit: refusing the commit. Fix the above, or use --no-verify" >&2
-    echo "if you genuinely intend it." >&2
+    echo "pre-commit: refusing the commit. Fix the above, or commit with --no-verify if you mean it." >&2
     exit 1
 fi
 

@@ -231,7 +231,7 @@ cmd_doctor() {
     "$KRYPTIKD" check --zones "$ZONES_DIR"
 }
 
-cmd_gc() { have_kryptikd; "$KRYPTIKD" gc; }
+cmd_gc() { have_kryptikd; "$KRYPTIKD" gc --rootfs "$ROOTFS"; }
 
 cmd_stop() {
     local name="$1"; shift

@@ -71,8 +71,9 @@ done
 
 # --- every external tool, checked before the first write -------------------
 missing=""
-for tool in sfdisk partx blockdev blkid cryptsetup stty mkfs.ext4 dd sha256sum mount umount sync awk sed \
-            readlink lsblk head tail wc cmp cp mv chmod mkdir stat tr loadkeys chattr; do
+for tool in sfdisk partx blockdev blkid cryptsetup veritysetup stty mkfs.ext4 dd sha256sum mount umount sync awk sed \
+            readlink lsblk head tail wc cmp cp mkdir stat tr cut basename mv mountpoint rmdir chmod rm cat sleep \
+            loadkeys chattr; do
     command -v "$tool" >/dev/null 2>&1 || missing="${missing} ${tool}"
 done
 [ -z "$missing" ] || die "this system is missing:${missing}

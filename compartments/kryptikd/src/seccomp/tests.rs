@@ -41,8 +41,7 @@ fn arch_checked_before_syscall_number() {
     assert!(p.iter().take(3).any(|i| i.k == AUDIT_ARCH_X86_64));
 }
 
-/// Interprets the BPF subset `build_program` emits, so tests check what the
-/// filter does rather than which constants it holds.
+/// Interprets what `build_program` emits, so tests check what the filter does, not its constants.
 fn evaluate(prog: &[SockFilter], arch: u32, nr: u32) -> u32 {
     evaluate_args(prog, arch, nr, [0; 6])
 }
@@ -190,9 +189,7 @@ fn whole_allowlist_evaluates_correctly() {
     let p = build_program(BASE_ALLOWLIST).unwrap();
     for &nr in BASE_ALLOWLIST {
         let r = evaluate(&p, AUDIT_ARCH_X86_64, nr as u32);
-        /* With zero arguments clone3 gets ENOSYS and family 0 is refused
-         * to socket and socketpair; nothing listed is killed, and the rest
-         * are allowed. */
+        // With zero arguments clone3 gets ENOSYS and family 0 is refused; nothing listed is killed.
         assert_ne!(r, SECCOMP_RET_KILL_PROCESS, "allowlisted syscall {nr} was killed");
         if ![libc::SYS_clone3, libc::SYS_socket, libc::SYS_socketpair].contains(&nr) {
             assert_eq!(r, SECCOMP_RET_ALLOW, "allowlisted syscall {nr} was not allowed");
@@ -254,9 +251,9 @@ fn with_arg(i: usize, v: u64) -> [u64; 6] {
 }
 
 #[test]
-fn clone_without_namespace_flags_is_allowed() {
+fn plain_clone_allowed() {
     let p = build_program(BASE_ALLOWLIST).unwrap();
-    // What pthread_create and fork() actually pass.
+    // What pthread_create and fork() pass.
     let thread = 0x3d0f00u64; // VM|FS|FILES|SIGHAND|THREAD|SYSVSEM|SETTLS|PARENT_SETTID|CHILD_CLEARTID
     let fork = 0x1200011u64; // CHILD_SETTID|CHILD_CLEARTID|SIGCHLD
     for f in [thread, fork, 17] {
@@ -415,9 +412,8 @@ fn socketpair_unix_only() {
 
 #[test]
 fn tsync_failure_is_error() {
-    /* A thread with a filter of its own cannot take another by TSYNC: the
-     * kernel returns its id and attaches nothing. In a forked child, which
-     * exits while that thread still waits. */
+    /* TSYNC fails on a thread with a filter of its own: the kernel returns its id and attaches
+     * nothing. Run in a forked child, which exits while that thread still waits. */
     let pid = unsafe { libc::fork() };
     assert!(pid >= 0);
     if pid == 0 {
@@ -452,8 +448,7 @@ fn tsync_failure_is_error() {
 
 #[test]
 fn arg_rules_leave_allowlist_alone() {
-    /* A non-matching rule block must leave the syscall number in the
-     * accumulator; these arguments would trip any rule consulted. */
+    // A skipped rule block must leave the syscall number loaded; these arguments trip any rule.
     let p = build_program(BASE_ALLOWLIST).unwrap();
     let args = [CLONE_NS_MASK as u64, TIOCSTI as u64, 40, 7, 1 << 33, 9];
     for &nr in BASE_ALLOWLIST {
@@ -470,7 +465,8 @@ fn arg_rules_leave_allowlist_alone() {
 
 #[test]
 fn widened_refuses_denied() {
-    assert!(widened(&[libc::SYS_ptrace]).is_err());
+    let e = widened(&[libc::SYS_ptrace]).unwrap_err();
+    assert!(matches!(e, SeccompError::Denied(libc::SYS_ptrace)) && e.to_string().contains("ptrace"), "{e}");
     let w = widened(&[libc::SYS_sched_setscheduler, libc::SYS_read]).unwrap();
     assert_eq!(w.len(), BASE_ALLOWLIST.len() + 1, "a base call is not added twice");
     assert!(w.contains(&libc::SYS_sched_setscheduler));
@@ -478,8 +474,7 @@ fn widened_refuses_denied() {
 
 #[test]
 fn everyday_calls_allowed() {
-    /* Each killed a common program in a zone: tar, gzip, cp -a, rsync,
-     * install, asyncio, timeout, mmap.flush, chrt -p. */
+    // tar, gzip, cp -a, rsync, install, asyncio, timeout, mmap.flush and chrt -p need these.
     let allowed: HashSet<libc::c_long> = BASE_ALLOWLIST.iter().copied().collect();
     for nr in [
         libc::SYS_chmod, libc::SYS_fchmod, libc::SYS_fchmodat, libc::SYS_fchmodat2,
@@ -498,18 +493,15 @@ fn everyday_calls_allowed() {
 // --- zone policy widenings ---------------------------------------------
 
 #[test]
-fn widened_socket_rule_allows_named_extras() {
+fn socket_policy_extras() {
     let sp = SocketPolicy { families: vec![17], netlink_protocols: vec![12], netlink_all: false };
     let p = build_program_full(BASE_ALLOWLIST, SECCOMP_RET_KILL_PROCESS, &sp).unwrap();
-    // The base families still pass...
     for fam in [AF_UNIX, AF_INET, AF_INET6] {
         assert_eq!(evaluate_args(&p, X86, libc::SYS_socket as u32, with_arg(0, fam as u64)), SECCOMP_RET_ALLOW, "{fam}");
     }
-    // ...the extra family passes...
     assert_eq!(evaluate_args(&p, X86, libc::SYS_socket as u32, with_arg(0, 17)), SECCOMP_RET_ALLOW);
-    // ...an unnamed family still does not...
     assert_eq!(evaluate_args(&p, X86, libc::SYS_socket as u32, with_arg(0, 40)), errno_action(EAFNOSUPPORT));
-    // ...NETLINK_ROUTE and the extra protocol pass, another does not.
+    // NETLINK_ROUTE and the extra protocol pass, another does not.
     let mut a = [0u64; 6];
     a[0] = AF_NETLINK as u64;
     for (proto, want) in [(0u64, SECCOMP_RET_ALLOW), (12, SECCOMP_RET_ALLOW), (9, errno_action(EAFNOSUPPORT))] {

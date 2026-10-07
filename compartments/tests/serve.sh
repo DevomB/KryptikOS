@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
-# Tests for the launch daemon (`kryptikd serve`), driven over its socket as
-# kryptik-launch drives it; launcher.sh covers `kryptikd run` itself. Runs as a
-# user (a developer instance serving only this uid) or as root. Needs python3
-# (exit 77 without it). Exits 0 only when every check ran and passed.
-#
-# A refusal only counts once the daemon is seen answering something else, and
-# a launch only once the zone is seen doing what it was asked.
+# Launch daemon suite: drives `kryptikd serve` over its socket as kryptik-launch does.
+# Runs as a user or root and needs python3 (exit 77 without it); 0 means every check ran and passed.
 
 set -uo pipefail
 
@@ -46,8 +41,7 @@ fi
 WORK="$(mktemp -d)"
 ZONES="$WORK/zones"; ROOTFS="$WORK/rootfs"; SOCK="$WORK/launch.sock"
 mkdir -p "$ZONES" "$ROOTFS"
-# mktemp -d makes 0700, but a privileged zone's setup runs as the zone's own
-# identity and must reach its data directory.
+# mktemp -d makes 0700, but a privileged zone's setup reaches its data as the zone's identity.
 chmod 0755 "$WORK" "$ROOTFS"
 declare -a BG_PIDS=()
 cleanup() {
@@ -64,8 +58,7 @@ MARK="LAUNCH_OK_$$"
 
 # --- fixtures ----------------------------------------------------------------
 
-# uid_base (65536-aligned, >= 131072) is used by root launches only; an
-# unprivileged launch maps to the caller.
+# uid_base (65536-aligned, >= 131072) applies to root launches; others map to the caller.
 mkzone() { # name mode extra-lines uid_base
     local name="$1" mode="$2" extra="${3:-}" base="$4"
     {
@@ -81,13 +74,13 @@ mkzone alpha   none ''                                            131072
 mkzone beta    none ''                                            196608
 mkzone carrier nic  ''                                            262144
 mkzone broken  none $'[policy]\nseccomp = "policy/does-not-exist.seccomp"' 327680
-# An encrypted zone, for `info`; never launched here (that is the volume suite).
+# An encrypted zone, only for `info`: launcher.sh group F launches one.
 {
     printf '[zone]\nname = "sealed"\ndescription = "serve-suite fixture"\n[network]\nmode = "none"\n'
     printf '[storage]\nmode = "encrypted"\nvolume = "/dev/kryptik/sealed"\n[identity]\nuid_base = 393216\n[ui]\nborder_color = "#060000"\n'
 } > "$ZONES/sealed.toml"
 
-# --- the client ----------------------------------------------------------------
+# --- the client --------------------------------------------------------------
 
 cat > "$WORK/client.py" <<'PY'
 import os, socket, sys, time
@@ -132,12 +125,10 @@ while True:
     c, _ = s.accept()
 PY
 
-# --- the daemon --------------------------------------------------------------------
+# --- the daemon --------------------------------------------------------------
 
 head_ "daemon"
-# --group: the suite's own; root is authorised anyway and a developer instance
-# ignores it. --wifi-dir keeps the credentials file in $WORK, so no installed
-# one is touched and no real net zone is restarted.
+# --wifi-dir in $WORK: no installed credentials file is touched and no net zone restarted.
 "$KRYPTIKD" serve --zones "$ZONES" --rootfs "$ROOTFS" --socket "$SOCK" --proxy-exe "$WLPROXY" --group "$(id -gn)" --wifi-dir "$WORK/wifi" > "$WORK/serve.log" 2>&1 &
 DAEMON=$!; BG_PIDS+=("$DAEMON")
 for _ in $(seq 1 100); do [[ -S "$SOCK" ]] && break; sleep 0.05; done
@@ -147,7 +138,7 @@ else
     fail "S0 the daemon did not start"; sed 's/^/        /' "$WORK/serve.log"; exit 1
 fi
 
-# --- requests -----------------------------------------------------------------------
+# --- requests ----------------------------------------------------------------
 
 head_ "requests"
 r="$(ask 'status\n')"
@@ -181,7 +172,7 @@ if [[ "$r" == ok\ /* ]]; then
     if [[ -d "$d" && "$(stat -c %a "$d")" == 700 ]]; then pass "S3e runtime creates a private runtime directory ($d)"; else fail "S3e runtime dir $d missing or not 0700"; fi
 else fail "S3e runtime: $r"; fi
 
-# --- the deadline -----------------------------------------------------------------------
+# --- the deadline ------------------------------------------------------------
 
 head_ "a stalled client"
 python3 "$WORK/client.py" "$SOCK" hold 'run alpha\narg x\n' 12 > "$WORK/hold.out" 2>&1 &
@@ -199,7 +190,7 @@ fi
 wait "$HOLD" 2>/dev/null
 if grep -q "not completed within" "$WORK/hold.out"; then pass "S4b the stalled client is told its request timed out"; else fail "S4b stalled client got: $(cat "$WORK/hold.out")"; fi
 
-# --- descriptors --------------------------------------------------------------------------
+# --- descriptors -------------------------------------------------------------
 
 head_ "descriptors"
 printf 'x' > "$WORK/f1"; printf 'y' > "$WORK/f2"
@@ -213,11 +204,10 @@ r="$(python3 "$WORK/client.py" "$SOCK" latefd 'run alpha pass=fd\narg /bin/true\
 if [[ "$r" == "error: a descriptor must accompany the first bytes"* ]]; then pass "S5d a descriptor arriving after the first bytes is refused"; else fail "S5d: $r"; fi
 if [[ "$(ask 'status\n')" == "end" ]]; then pass "S5e the daemon still answers after the refusals"; else fail "S5e daemon wedged"; fi
 
-# --- launches -------------------------------------------------------------------------------
+# --- launches ----------------------------------------------------------------
 
 head_ "launches"
-# The command truncates its stdout between its two lines. O_APPEND does not
-# stop ftruncate, so that stdout must not be the log file itself.
+# The zone truncates its stdout, which O_APPEND does not stop, so that must not be the log file.
 r="$(ask "run alpha\narg /bin/sh\narg -c\narg echo $MARK; python3 -c 'import os; os.ftruncate(1, 0)' 2>/dev/null; echo after-$MARK; sleep 15\nend\n")"
 if [[ "$r" == ok\ [0-9]* ]]; then
     pass "S6a run alpha replies ok <pid> once the zone is up"
@@ -239,8 +229,7 @@ else
     fail "S6a run alpha: $r"; sed 's/^/        /' "$ZLOG" 2>/dev/null | tail -5
 fi
 
-# A zone that ignores SIGTERM is only gone at stop's SIGKILL, seconds later.
-# Another client's status, asked meanwhile, must be answered at once.
+# A zone ignoring SIGTERM holds stop for seconds; a status asked meanwhile must be answered at once.
 ms() { date +%s%3N; }
 r="$(ask "run alpha\narg /bin/sh\narg -c\narg trap '' TERM; while :; do sleep 1; done\nend\n")"
 if [[ "$r" == ok\ [0-9]* ]]; then
@@ -262,8 +251,7 @@ else
     fail "S6g run alpha (ignoring SIGTERM): $r"
 fi
 
-# A launcher that ends is reaped then, not at the daemon's next request. It
-# runs with PATH alone, plus a developer instance's XDG_RUNTIME_DIR.
+# A launcher gets PATH alone, plus XDG_RUNTIME_DIR from a developer instance.
 r="$(ask "run alpha\narg /bin/sh\narg -c\narg sleep 2\nend\n")"
 if [[ "$r" == ok\ [0-9]* ]]; then
     lp="${r#ok }"; lp="${lp%%[!0-9]*}"
@@ -297,8 +285,7 @@ else
 fi
 for _ in $(seq 1 60); do [[ "$(ask 'status\n')" == "end" ]] && break; sleep 0.1; done
 
-# A command that ends at once with 0 is ok, and its end is in the log however
-# quickly it came: a zone terminal whose shell died unseen was a silent "ok".
+# An instant exit is ok, but must reach the log, or a zone terminal's dead shell is a silent "ok".
 r="$(ask 'run alpha\narg /bin/true\nend\n')"
 for _ in $(seq 1 60); do [[ "$(ask 'status\n')" == "end" ]] && break; sleep 0.1; done
 if [[ "$r" == ok\ [0-9]* ]] && grep -q "launcher ${r#ok } exited 0" "$WORK/serve.log"; then
@@ -307,12 +294,12 @@ else
     fail "S7d ${r%$'\n'}: $(grep -F "${r#ok }" "$WORK/serve.log" | tr '\n' '|')"
 fi
 
-# --- the clipboard gesture -------------------------------------------------------------------
-# Two zones up at once, each talking to its own broker at /run/kryptik/broker,
-# one request per python3 call (a request without a newline gets one). alpha
-# sets a payload and waits for it to leave; beta waits for it to arrive.
+# --- the clipboard gesture ---------------------------------------------------
+
 head_ "the clipboard gesture"
+# One request to the zone's own broker per python3 call; a request without a newline gets one.
 BQ="python3 -c 'import socket,sys;r=sys.argv[1];r=r if chr(10) in r else r+chr(10);s=socket.socket(socket.AF_UNIX);s.connect(\"/run/kryptik/broker\");s.sendall(r.encode());s.shutdown(socket.SHUT_WR);sys.stdout.write(s.makefile(\"rb\").read().decode())'"
+# alpha sets a payload and waits for it to leave; beta waits for it to arrive.
 SA="q() { $BQ \"\$1\"; }; q \"\$(printf 'clipboard-set text/plain 5'; echo; printf hello)\"; echo SET-$MARK; i=0; while [ \$i -lt 80 ]; do case \"\$(q clipboard-get)\" in empty*) echo GONE-$MARK; break;; esac; sleep 0.5; i=\$((i+1)); done; sleep 5"
 SB="q() { $BQ \"\$1\"; }; i=0; while [ \$i -lt 80 ]; do case \"\$(q clipboard-get)\" in ok*hello*) echo GOT-$MARK; break;; esac; sleep 0.5; i=\$((i+1)); done"
 ra="$(ask "run alpha\narg /bin/sh\narg -c\narg $SA\nend\n")"
@@ -334,7 +321,7 @@ else
     fail "S7e run alpha and beta for the gesture: ${ra%$'\n'} / ${rb%$'\n'}"
 fi
 
-# --- the proxy socket ------------------------------------------------------------------------
+# --- the proxy socket --------------------------------------------------------
 
 head_ "the proxy socket"
 r="$(ask 'run alpha wayland=/tmp/wayland-0\narg /bin/true\nend\n')"
@@ -388,8 +375,7 @@ else
     fi
     for _ in $(seq 1 60); do [[ "$(ask 'status\n')" == "end" ]] && break; sleep 0.1; done
 
-    # A symlinked zone directory leading to that valid socket: the path is
-    # walked without following links.
+    # A symlinked zone directory to that valid socket: the path is walked without following links.
     mv "$RT_DIR/alpha" "$RT_DIR/alpha.real"; ln -s "$RT_DIR/alpha.real" "$RT_DIR/alpha"
     r="$(ask "run alpha wayland=$WL\narg /bin/true\nend\n")"
     if [[ "$r" == "error: wayland socket path:"* ]]; then pass "S8h a symlink on the way to the socket is refused"; else fail "S8h: $r"; fi
@@ -397,11 +383,10 @@ else
     kill "$PA" 2>/dev/null; wait "$PA" 2>/dev/null
 fi
 
-# --- the net zone's Wi-Fi credentials --------------------------------------------------
-# One file for the net zone (kryptikd's wifi.rs). The passphrase only travels
-# in a request body and never comes back out; a refusal leaves the file as it was.
+# --- the net zone's Wi-Fi credentials ----------------------------------------
 
 head_ "wi-fi credentials"
+# One file for the net zone (wifi.rs); a passphrase goes in a request body and never comes out.
 WIFI="$WORK/wifi"; WCONF="$WIFI/wpa_supplicant.conf"
 r="$(ask 'wifi-list\n')"
 if [[ "$r" == "end" ]]; then pass "S9a wifi-list with no file is an empty list"; else fail "S9a: $r"; fi
@@ -478,7 +463,7 @@ else
 fi
 if [[ "$(ask 'status\n')" == "end" ]]; then pass "S9u the daemon still answers"; else fail "S9u daemon wedged"; fi
 
-# --- summary ---------------------------------------------------------------------------
+# --- summary -----------------------------------------------------------------
 
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 if (( FAIL > 0 )); then printf 'FAILED:\n'; printf '  %s\n' "${FAILED[@]}"; fi

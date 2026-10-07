@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Test acceptance.sh's release choice, verdict and export list, running the
-# script's own code on a staged images/ directory of empty files.
+# Test acceptance.sh's own release choice, verdict and export code on staged empty images.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ACC="$ROOT/tools/acceptance.sh"
@@ -164,8 +163,7 @@ item boot record M post 0 runs > /dev/null
 R_RES[0]=SKIPPED; R_RES[1]=PASS
 [[ "$(verdict_of)" == INCOMPLETE ]] && ok "a result the verdict does not know keeps it from PASS" || bad "verdict over an unknown result: $(verdict_of)"
 
-# Every part must have tested this revision on these media, and all of them
-# on one firmware and one QEMU; the merging machine's own may differ.
+# Parts must share revision, media, firmware and QEMU; the merging machine's own may differ.
 # shellcheck disable=SC2034  # read by tested and ran_on
 { REV=abc; REV_DESC=abc; H_USB=u1; H_ISO=i1; H_FW=f1; FW_PKG="ovmf 1"; QEMU_VER="QEMU 9"; KVM=yes; }
 part() { { tested; ran_on; } > "$T/parts/$1/identity"; }

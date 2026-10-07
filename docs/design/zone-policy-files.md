@@ -22,8 +22,7 @@ keep-capability   CAP_NET_RAW         # left in the bounding set
   denied list (`DENIED_RATIONALE`: `ptrace`, `mount`, `setns`, `bpf`, ...)
   cannot be re-allowed, one on the base allowlist is reported as already
   allowed, and any other name is an error. The id and capability calls and
-  `unshare` on the denied list fail with EPERM instead of killing the caller;
-  the trace paragraph below says why.
+  `unshare` on the denied list fail with EPERM instead of killing the caller.
 - `allow-socket`: `AF_PACKET`, `AF_KEY`, `AF_ALG`, `AF_VSOCK`, `AF_BLUETOOTH`,
   `AF_CAN`, `AF_RDS`, `AF_TIPC` or `AF_XDP`; `AF_NETLINK` drops the netlink
   protocol check. `socketpair(2)` stays `AF_UNIX` only whatever the file
@@ -43,9 +42,8 @@ keep-capability   CAP_NET_RAW         # left in the bounding set
 To find what a program needs, run it under the base filter with `kryptikd
 seccomp-trace -- CMD [ARGS]`. Each call the filter would kill the program for
 is printed as `KRYPTIK_SECCOMP_DENIED <nr> <name>` and fails with ENOSYS
-instead, so one run lists them all rather than stopping at the first. A call
-a zone gets an errno for rather than being killed is printed with `soft`
-after its name and gets the same errno here:
+instead, so one run lists them all. A call that a zone gets an errno for, not
+a kill, is printed with `soft` after its name and gets the same errno here:
 
 - `inotify_init` and `inotify_init1` fail with ENOSYS: a watch on the `/usr`
   every zone shares would see each program started anywhere, and programs
@@ -68,7 +66,7 @@ list; a call refused for its arguments (namespace flags to `clone`,
 included, so a second run shows what is still refused.
 
 An unknown directive or name, a denied syscall, a capability outside
-`KEEPABLE`, a duplicate line or an unreadable file is an error that names the
+`KEEPABLE`, a duplicate line or an unreadable file is an error that gives the
 file and line; a line the base already covers is a warning. Every shipped
 zone names a policy file, and only `net.seccomp` adds anything. `kryptikd
 explain` prints the additions:
@@ -94,13 +92,19 @@ inside the zone after `pivot_root`. There is no `deny`: Landlock cannot
 subtract, and "`/home/w` except `.ssh`" would have to list every sibling of
 `.ssh` and would stop denying when a new one appeared.
 
-Refused: a relative path or one containing `..`; a path named twice; a file
-that grants nothing (omit `[policy] landlock` to keep the base rules); a path
-that does not exist when the layer is applied, since the zone would run
-narrower than its file says (so an ephemeral zone should name only paths
-that exist at launch); a path that is or passes through a symbolic link,
-since a zone that can write a granted directory's parent could swap it for
-a link to something wider and widen its own rule at its next start.
+Refused:
+
+- a relative path or one containing `..`;
+- a path named twice;
+- a file that grants nothing (omit `[policy] landlock` to keep the base
+  rules);
+- a path that does not exist when the layer is applied, since the zone would
+  run narrower than its file says (so an ephemeral zone should name only
+  paths that exist at launch);
+- a path that is or passes through a symbolic link, since a zone that can
+  write a granted directory's parent could swap it for a link to something
+  wider and widen its own rule at its next start.
+
 `explain` prints the base rules, then
 `-- and then narrowed by <file>, which grants only:` and the file's rules.
 No shipped zone has a Landlock policy yet.
@@ -108,14 +112,15 @@ No shipped zone has a Landlock policy yet.
 ## Tests
 
 Unit tests in `policy.rs` and `seccomp.rs` (a widened program still refuses
-what it does not name), and `landlock::tests::second_layer_narrows_never_widens`,
-which builds two real layers and checks that the second can remove access
-but never add it. The launcher suite's policy section checks kept
-capabilities, the NIC-only rule, refusals and `explain`. The boundary suite
-checks an allowed socket family against a zone without the policy, and that
-a zone narrowed to `/tmp` and `/dev` cannot write its `$HOME` while a control
-zone can, and that a zone which swaps a granted directory for a link to its
-`$HOME` is refused at its next start.
+what it does not name), and
+`landlock::tests::second_layer_narrows_never_widens`, which builds two real
+layers and checks that the second can remove access but never add it. The
+launcher suite's policy section checks kept capabilities, the NIC-only rule,
+refusals and `explain`. The boundary suite checks an allowed socket family
+against a zone without the policy; that a zone narrowed to `/tmp` and `/dev`
+cannot write its `$HOME` while a control zone can; and that a zone which
+swaps a granted directory for a link to its `$HOME` is refused at its next
+start.
 
 ## Files
 

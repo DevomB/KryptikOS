@@ -557,6 +557,17 @@ pub fn status(dir: &Path, now: i64, running: &str) -> String {
     out
 }
 
+/// Forget what has arrived of the wanted release: its files and the manifest
+/// verified for it. The request stands, so the next poll names everything
+/// again. False when the stage could not be removed.
+pub fn discard_stage(dir: &Path) -> bool {
+    let _ = std::fs::remove_file(dir.join("files"));
+    match std::fs::remove_dir_all(dir.join("incoming")) {
+        Ok(()) => true,
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+    }
+}
+
 /// The staged release's directory once complete, for `kryptik-update apply`.
 pub fn complete_stage(dir: &Path) -> Result<PathBuf, String> {
     let v = wanted(dir).ok_or("no release has been asked for")?;

@@ -26,13 +26,13 @@ change it.
   `cpu_max` is a percentage of one CPU (`"200%"` is two CPUs' worth of time)
   written as a quota per 100 ms period. `io_max` is bytes per second each
   way, written to `io.max` for the zone's volume mapping and for the devices
-  under it, so the bytes count wherever the encrypted writes land (a
-  partition among them counts as its disk, the only thing `io.max` takes);
-  only an encrypted zone may set it, since it bounds nothing else. The intermediate
-  is moved in before it unshares with `CLONE_NEWCGROUP`, so the zone's cgroup
-  namespace is rooted at its leaf and `/proc/self/cgroup` reads `0::/`.
-  `/sys/fs/cgroup` is not mounted in the zone: nothing there needs it, and a
-  cgroup2 mount in a user namespace is writable surface.
+  under it, so the bytes count wherever the encrypted writes land. A
+  partition among them counts as its disk, the only thing `io.max` takes.
+  Only an encrypted zone may set `io_max`, since it bounds nothing else. The
+  intermediate is moved in before it unshares with `CLONE_NEWCGROUP`, so the
+  zone's cgroup namespace is rooted at its leaf and `/proc/self/cgroup` reads
+  `0::/`. `/sys/fs/cgroup` is not mounted in the zone: nothing there needs
+  it, and a cgroup2 mount in a user namespace is writable surface.
 - Refuse, do not degrade: without one of the four controllers, or if a
   write fails, a zone with `[limits]` does not start. `KRYPTIK_EXPERIMENTAL=1`
   runs it unlimited on a developer host and says so; a root launch on the
@@ -40,18 +40,21 @@ change it.
 - Teardown writes `cgroup.kill`, the backstop for anything that escaped the
   pid namespace, and retries `rmdir` for 1 s; a leaf that stays is reported
   and left for `gc`. Every launch removes empty leaves whose launcher pid is
-  gone, and a leaf with no pid in its name after 5 s; the pid decides rather
-  than the age, because kernfs dates a cgroup directory from its first `stat`.
+  gone, and a leaf with no pid in its name after 5 s. The pid decides, not
+  the age, because kernfs dates a cgroup directory from its first `stat`.
   `kryptikd gc` removes every empty leaf and reclaims stale
   [registry](zone-registry.md) entries. Mounts need no cleanup: they die with
   the zone's mount namespace.
 
-Invariants: every process of a running zone is in its leaf; inside, there is
-no `/sys/fs/cgroup` and `/proc/self/cgroup` is `0::/`; allocating past
-`memory.max` ends the zone with `SIGKILL` (exit 137), and a fork loop stops
-at `pids.max` with `EAGAIN`; after a normal exit, a `kill -9` of kryptikd or a
-crash of pid 1, no zone process, no populated leaf and no host mount under
-the zone's data path remain, and an immediate relaunch works.
+Invariants:
+
+- every process of a running zone is in its leaf;
+- inside, there is no `/sys/fs/cgroup` and `/proc/self/cgroup` is `0::/`;
+- allocating past `memory.max` ends the zone with `SIGKILL` (exit 137), and a
+  fork loop stops at `pids.max` with `EAGAIN`;
+- after a normal exit, a `kill -9` of kryptikd or a crash of pid 1, no zone
+  process, no populated leaf and no host mount under the zone's data path
+  remain, and an immediate relaunch works.
 
 ## Ephemeral zones
 
@@ -72,29 +75,32 @@ is no unmount step for a crash to skip.
   whose writer has exited. `kryptikd explain` and the launch note say so:
   this is not secure erasure.
 
-Invariants: after a normal exit or a `kill -9` of kryptikd, the persistent
-directory is empty and the next launch sees an empty `$HOME`; the tmpfs is
-never in the host mount table; writing past `storage.size` fails with
-`ENOSPC`; the zone can still write, exec and rename in `$HOME`.
+Invariants:
+
+- after a normal exit or a `kill -9` of kryptikd, the persistent directory is
+  empty and the next launch sees an empty `$HOME`;
+- the tmpfs is never in the host mount table;
+- writing past `storage.size` fails with `ENOSPC`;
+- the zone can still write, exec and rename in `$HOME`.
 
 ## Tests
 
 The cgroup and ephemeral sections of `compartments/tests/launcher.sh` check
-each invariant above with a positive control, unprivileged where cgroups are
-delegated and as root on the installed system (the zones suite).
+each of these invariants with a positive control, unprivileged where cgroups
+are delegated and as root on the installed system (the zones suite).
 `build/guest-tests/zones-check.sh` repeats the pid limit and the tmpfs bound
 there; `cgroup.rs` and `zone.rs` unit-test the sweep, the limits and
 `storage.size`.
 
-The Wayland shmem charge is still an image measurement, not a confirmed
-property of the zone cgroup. On the installed image, record `memory.current`
-and `memory.stat` for the zone and dwl's cgroups, then run
-`wlprobe charge` through `kryptik-launch` in that zone. It commits one
+Whether a zone's Wayland shared memory is charged to its cgroup is not
+confirmed; it takes a measurement on the installed image. Record
+`memory.current` and `memory.stat` for the zone's and dwl's cgroups, then run
+`wlprobe charge` through `kryptik-launch` in that zone, which commits one
 unwritten 4 MiB buffer for ten seconds. Confirm the window was rendered and
-compare both cgroups while it is held; if dwl's cgroup is an ancestor of the
-zone, subtract the zone's change. A rise outside the zone without a
-corresponding zone charge would confirm the proposed bypass. The proxy's
-pool limits apply regardless of that result.
+compare both cgroups while the buffer is held; if dwl's cgroup is an ancestor
+of the zone's, subtract the zone's change. A rise outside the zone with no
+matching charge to the zone would mean a zone can make dwl hold memory
+outside the zone's limit. The proxy's pool limits apply either way.
 
 ## Files
 

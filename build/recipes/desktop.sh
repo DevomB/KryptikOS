@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
-# desktop: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
-# kryptik-launch (the session's client of the launch daemon), the session and
-# chrome scripts, and the per-zone Wayland proxy, built outside like kryptikd
-# (KRYPTIK_WLPROXY_BIN). Every input is a digest argument of the step.
+# The launch client, session and chrome scripts, and the Wayland proxy built outside (as kryptikd).
 s_desktop() {
     local wl="$1" wl_sha="${2:-absent}" launch_sha="${3:-none}" session_sha="${4:-none}" chrome_sha="${5:-none}" probe_sha="${6:-none}"
     [[ "$wl" == "none" ]] && wl=""
@@ -28,8 +24,7 @@ s_desktop() {
     [[ "$out" == *usage:* ]] || { echo "FAIL: kryptik-launch does not run here: ${out}"; return 1; }
     echo "kryptik-launch: built and runs"
 
-    # The Wayland probe the boundary tests run in zones and in zone 0: which
-    # globals a client is offered, and what binding a hidden one gets.
+    # The boundary tests' probe: the globals a client is offered and what binding a hidden one gets.
     # shellcheck disable=SC2086
     gcc ${CFLAGS} ${LDFLAGS} -o /usr/libexec/kryptik/wlprobe "$d/wlprobe.c"
     chmod 0755 /usr/libexec/kryptik/wlprobe

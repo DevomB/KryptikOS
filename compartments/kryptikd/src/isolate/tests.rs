@@ -9,10 +9,9 @@ fn zone(mode: &str) -> Zone {
     .unwrap()
 }
 
-/// Taken in a forked child and read from the parent, as `kryptikd status`
-/// reads a zone's; the test process itself keeps no cookie.
+/// Taken in a forked child and read from the parent, as `kryptikd status` reads a zone's.
 #[test]
-fn task_takes_own_core_cookie() {
+fn own_core_cookie() {
     let me = unsafe { libc::getpid() };
     match core_scheduling() {
         CoreSched::Cookies => {}
@@ -63,7 +62,7 @@ fn task_takes_own_core_cookie() {
 }
 
 #[test]
-fn every_zone_gets_net_namespace() {
+fn net_namespace_always() {
     assert_ne!(namespace_flags(&zone("none")) & libc::CLONE_NEWNET, 0);
     assert_ne!(namespace_flags(&zone("routed")) & libc::CLONE_NEWNET, 0);
     // The parent moves the physical NIC into this one.
@@ -71,7 +70,7 @@ fn every_zone_gets_net_namespace() {
 }
 
 #[test]
-fn every_zone_gets_core_namespaces() {
+fn core_namespaces_always() {
     for m in ["none", "routed", "nic"] {
         let f = namespace_flags(&zone(m));
         for (flag, name) in &NAMESPACES[..5] {

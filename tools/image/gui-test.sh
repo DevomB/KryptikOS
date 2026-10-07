@@ -18,6 +18,9 @@
 # trusted windows are exercised by input, not by writing answer files; and a
 # second monitor, plugged into the GPU's second output while the session
 # runs, photographed with a zone's window on it, and pulled out again.
+# With the pointer moved onto a zone's window, the cursor image the zone asks
+# for must not be taken by the compositor; zone 0's, which is, shows the
+# guest's check can tell.
 set -uo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -73,6 +76,8 @@ python3 "$DRV" --serial "$SER" --qmp "$QMP" --timeout 600 \
     "expect:GT KEY-FOCUS-PERSONAL" "key:alt+j" \
     "type-from:GT CONSENT-CODE 1 ([0-9]+)" \
     "expect:GT CONSENT-WAIT 2" "key:y" "key:ret" \
+    "expect:GT POINTER-ZONE0" "pointer:-4000,-4000" "pointer:120,120" \
+    "expect:GT POINTER-UNTRUSTED" "pointer:-4000,-4000" "pointer:120,120" \
     "expect:GT HEAD-ON" "head:${HEAD2}:1024x768" \
     "expect:GT KEY-FOCUS-HEAD\r?\n" "key:alt+dot" \
     "expect:GT KEY-FOCUS-HEAD-WINDOW" "key:alt+j" \
@@ -93,7 +98,8 @@ grep 'GT FAIL' <<<"$T" | sed 's/^/        /'
 for name in session-socket compositor-running chrome-focus-record chrome-window-is-zone0 zone0-sees-capture zone-proxy-path zone-sees-needed zone-hidden-globals zone-bind-refused proxy-logged-refusal \
             map-keeps-zone0-focus focus-shows-zone focus-shows-label title-prefixed last-zone-recorded menu-opens-on-key menu-keeps-last-zone zone-fullscreen-refused compositor-survives-close oversize-window forged-title-named-by-zone second-zone-window zone0-own-programs-only zone-app-in-cgroup no-virtual-input clipboard-isolated clipboard-move-gesture clipboard-moved \
             transfer-policy no-question-for-policy-refusal consent-code-shown transfer-approved transfer-landed plain-y-refused denied-file-absent \
-            second-head-appears chrome-follows-head second-head-zone-window second-head-names-zone second-head-gone compositor-survives-unplug zone-survives-unplug chrome-back-on-first-head; do
+            second-head-appears chrome-follows-head second-head-zone-window second-head-names-zone second-head-gone compositor-survives-unplug zone-survives-unplug chrome-back-on-first-head \
+            zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown; do
     grep -q "GT PASS ${name}" <<<"$T" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
 

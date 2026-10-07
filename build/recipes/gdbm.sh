@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# gdbm: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
 s_gdbm() {
     # No --enable-libgdbm-compat: man-db uses gdbm's native interface, not ndbm.

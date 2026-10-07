@@ -1,12 +1,14 @@
 # Compartments
 
 The compartment manager `kryptikd`, the zone definitions it loads, and the
-suites that attack it. The model is described in
-[../docs/architecture.md](../docs/architecture.md).
+suites that attack it. A zone is what this project calls a compartment: the
+word in every command, file and message is zone, and this directory is where
+the code that makes zones lives. The zone model is in
+[docs/architecture.md](../docs/architecture.md).
 
 ## Layout
 
-```
+```text
 compartments/
   zones/          One TOML definition per shipped zone (vault, net, work, …)
     policy/       Per-zone seccomp additions, named by each definition
@@ -16,7 +18,7 @@ compartments/
 
 ## A zone definition
 
-The shipped `vault`, abridged (the full file is `zones/vault.toml`):
+The shipped `vault` (`zones/vault.toml`), abridged, with a `cpu_max` added:
 
 ```toml
 [zone]
@@ -27,7 +29,7 @@ description = "Keys, password store, secrets. No network stack."
 mode = "none"          # a namespace with only loopback, not a firewall rule
 
 [storage]
-mode   = "encrypted"       # opened when the zone starts, closed (key gone) when it stops
+mode   = "encrypted"   # opened when the zone starts, closed (key gone) when it stops
 volume = "/var/lib/kryptik/volumes/vault.luks"
 
 [policy]
@@ -48,10 +50,10 @@ glyph          = "★"
 label          = "VAULT"
 ```
 
-The seccomp policy files are described in the
-[zone policy files design](../docs/design/zone-policy-files.md), and so is
-the optional `[policy] landlock` file, which narrows the Landlock ruleset
-every zone gets at entry; no shipped zone names one.
+[Zone policy files](../docs/design/zone-policy-files.md) covers the seccomp
+policy files and the optional `[policy] landlock` file, which narrows the
+Landlock ruleset every zone gets at entry. No shipped zone names a Landlock
+file.
 
 ## Test requirement
 
