@@ -1,7 +1,9 @@
 # Compartments
 
 The compartment manager `kryptikd`, the zone definitions it loads, and the
-suites that attack it. The zone model is in
+suites that attack it. A zone is what this project calls a compartment: the
+word in every command, file and message is zone, and this directory is where
+the code that makes zones lives. The zone model is in
 [docs/architecture.md](../docs/architecture.md).
 
 ## Layout
