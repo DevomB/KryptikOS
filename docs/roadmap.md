@@ -93,7 +93,8 @@ work in zones from a terminal and a text browser, and keep it up to date.
 - [x] **Core scheduling per zone, and the SMT decision.** ADR-011 decides:
       `nosmt` stays, since a zone's cookie cannot keep it off the thread
       beside the kernel, whose execution carries no cookie; each zone still
-      takes a cookie, for a machine with SMT it cannot turn off.
+      takes a cookie, since root can turn SMT back on through
+      `/sys/devices/system/cpu/smt/control`.
 - [x] **The net zone's remaining hardening.** Decided, with the reasons, in
       the [net zone design](design/net-zone.md).
 - [x] **Someone else has attacked it.** The broker protocol and
