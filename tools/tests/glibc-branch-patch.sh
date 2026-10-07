@@ -37,7 +37,7 @@ tree() {
       grep 0001 "$P/SHA256SUMS"; grep 0004 "$P/SHA256SUMS"; } > "$P/UPSTREAM-SHA256SUMS"
     printf '| `0001-release-2.40-master-%s.patch` | everything up to commit `%s` (2026-09-10, 230 commits), as one diff |\n' "${OLD:0:12}" "$OLD" > "$P/README.md"
 }
-run() { GLIBC_GIT="file://$FIRST" GLIBC_GIT_SECOND="file://$SECOND" NO_COLOR=1 bash "$R/tools/glibc-branch-patch.sh" "$@" > "$T/out" 2>&1; }
+run() { KRYPTIK_ROOT="$R" GLIBC_GIT="file://$FIRST" GLIBC_GIT_SECOND="file://$SECOND" NO_COLOR=1 bash "$R/tools/glibc-branch-patch.sh" "$@" > "$T/out" 2>&1; }
 
 tree; run; rc=$?
 new="$P/0001-release-2.40-master-${HEAD_:0:12}.patch"
