@@ -46,7 +46,14 @@ for lblname in kryptik-state kryptik-media; do
 done
 mountpoint -q /run/kryptik-recover 2>/dev/null && umount /run/kryptik-recover
 mkdir -p /run/kryptik-recover
-cleanup() { mountpoint -q /run/kryptik-recover 2>/dev/null && umount /run/kryptik-recover; rmdir /run/kryptik-recover 2>/dev/null || true; }
+# The ESP image first: it is a file on the medium.
+cleanup() {
+    for d in /run/kryptik-recover-esp /run/kryptik-recover-media /run/kryptik-recover; do
+        # One that will not unmount must not keep the others mounted.
+        mountpoint -q "$d" 2>/dev/null && umount "$d" 2>/dev/null || true
+        rmdir "$d" 2>/dev/null || true
+    done
+}
 trap cleanup EXIT INT TERM
 slot_dev() { case "$1" in a) echo "$SA" ;; b) echo "$SB" ;; *) die "slot must be a or b" ;; esac; }
 has_fs() { [ "$(dd if="$1" bs=1 skip=1080 count=2 status=none | od -An -tx1 | tr -d ' \n')" = "53ef" ]; }
@@ -55,7 +62,7 @@ has_fs() { [ "$(dd if="$1" bs=1 skip=1080 count=2 status=none | od -An -tx1 | tr
 put() { printf '%s\n' "$2" > "$1.new" && sync -f "$1.new" && mv -f "$1.new" "$1"; }   # put FILE LINE
 
 if [ "$STATUS" = 1 ]; then
-    mount -o ro "$ESP" /run/kryptik-recover || die "cannot mount the ESP"
+    mount -t vfat -o ro "$ESP" /run/kryptik-recover || die "cannot mount the ESP"
     echo "disk           $DISK"
     echo "committed slot $(cat /run/kryptik-recover/kryptik/committed-slot 2>/dev/null || echo unknown)"
     for s in a b; do
@@ -108,21 +115,27 @@ if [ -n "$RESTORE" ]; then
             . /usr/libexec/kryptik/devices.sh
             src="$(kryptik_part kryptik-media)" || die "no single kryptik-media partition on this medium"; off=0
             mesp="$(kryptik_part kryptik-esp)" || die "no single kryptik-esp partition on this medium"
-            mount -o ro "$mesp" /run/kryptik-recover-media || die "cannot mount the medium's ESP"
+            mount -t vfat -o ro "$mesp" /run/kryptik-recover-media || die "cannot mount the medium's ESP"
             rj=/run/kryptik-recover-media/kryptik/root.json; kdir=/run/kryptik-recover-media/EFI/kryptik ;;
         iso)
             mount -t iso9660 -o ro /dev/sr0 /run/kryptik-recover-media || die "cannot mount the medium"
             src=/dev/sr0; off="$(sed -n 's/.*linear \/dev\/sr0 \([0-9]*\).*/\1/p' /proc/cmdline | head -1)"; off=$(( off * 512 ))
             rj=/run/kryptik-recover-media/root.json
-            mkdir -p /run/kryptik-recover-esp && mount -o ro,loop /run/kryptik-recover-media/esp.img /run/kryptik-recover-esp || die "cannot mount the medium's ESP image"
+            mkdir -p /run/kryptik-recover-esp && mount -t vfat -o ro,loop /run/kryptik-recover-media/esp.img /run/kryptik-recover-esp || die "cannot mount the medium's ESP image"
             kdir=/run/kryptik-recover-esp/EFI/kryptik ;;
     esac
     bytes="$(sed -n 's/^  "total_bytes": \([0-9]*\).*/\1/p' "$rj")"; sha="$(sed -n 's/^  "sha256": "\([0-9a-f]*\)".*/\1/p' "$rj")"; ver="$(sed -n 's/^  "version": "\([^"]*\)".*/\1/p' "$rj")"
+    # The medium's record, not signed material: each field's form is checked, as the installer does.
+    case "$bytes" in ''|*[!0-9]*) die "root.json: total_bytes is not a number" ;; esac
+    [ "${#bytes}" -le 15 ] || die "root.json: total_bytes is too large"
+    case "$sha" in *[!0-9a-f]*) die "root.json: sha256 is not a hash" ;; esac
+    [ "${#sha}" -eq 64 ] || die "root.json: sha256 is not a hash"
+    case "$ver" in ''|*[!A-Za-z0-9._-]*) die "root.json: version is not a version" ;; esac
     [ "$(blockdev --getsize64 "$sd")" -ge "$bytes" ] || die "slot $RESTORE is smaller than the medium's root image"
     # As kryptik-update does, the ESP stops naming the slot before it is
     # rewritten, and is unmounted meanwhile: a restore cut short leaves nothing
     # --commit-slot would take, on a clean FAT.
-    mount -o rw "$ESP" /run/kryptik-recover || die "cannot mount the target ESP"
+    mount -t vfat -o rw "$ESP" /run/kryptik-recover || die "cannot mount the target ESP"
     rm -f "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi" "/run/kryptik-recover/kryptik/version-$RESTORE"
     umount /run/kryptik-recover || die "cannot unmount the target ESP"
     say "restoring slot $RESTORE from this medium (${ver}, ${bytes} bytes); the state partition is untouched"
@@ -132,7 +145,7 @@ if [ -n "$RESTORE" ]; then
     got="$(dd if="$sd" bs=4M iflag=count_bytes count="$bytes" status=none | sha256sum | cut -c1-64)"
     [ "$got" = "$sha" ] || die "slot $RESTORE reads back as $got, expected $sha"
     say "slot $RESTORE verifies"
-    mount -o rw "$ESP" /run/kryptik-recover || die "cannot mount the target ESP"
+    mount -t vfat -o rw "$ESP" /run/kryptik-recover || die "cannot mount the target ESP"
     cp "$kdir/kryptik-$RESTORE.efi" "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi.new"
     sync -f "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi.new"
     mv -f "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi.new" "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi"
@@ -146,7 +159,7 @@ if [ -n "$RESTORE" ]; then
 fi
 
 if [ -n "$COMMIT" ]; then
-    mount -o rw "$ESP" /run/kryptik-recover || die "cannot mount the target ESP"
+    mount -t vfat -o rw "$ESP" /run/kryptik-recover || die "cannot mount the target ESP"
     commit_slot "$COMMIT"
     umount /run/kryptik-recover
     exit 0

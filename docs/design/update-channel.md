@@ -23,7 +23,7 @@ wrong in every possible way yields a directory `apply` refuses.
 ```text
  the release host          net zone                     broker (zone 0)                 zone 0
  latest, latest.sig  ───▶  fetch the pointer     ───▶   update-latest: verify, compare
- <version>/manifest…       poll: is one wanted?  ◀───   update-poll: idle | fetch <v> …  ◀── `kryptik update fetch`
+ <version>/manifest…       poll: is one wanted?  ◀───   update-poll: idle | fetch <v> …  ◀── `kryptik update fetch`, or `auto on`
                            stream it, file by    ───▶   update-put: manifest first, then
                            file, holding nothing        only what it lists, at its sizes ──▶ staged directory
                                                                                           `kryptik update apply`
@@ -75,7 +75,8 @@ latest.sig    an OpenSSH signature over those bytes, namespace kryptik-latest
   keeping it from this machine". That needs a clock the net zone cannot set.
 
 **Which key signs it.** Re-signing on a schedule needs a key a timer can
-reach, and the release key is meant to stay offline, so the build uses two.
+reach, and the release key signs only in a release run its maintainer
+approves, so the build uses two.
 The anchor stage 06 puts on the image lists the release key as
 `kryptik-release namespaces="kryptik-release,kryptik-media"` (manifests, and
 the media's checksums) and the statement key as
@@ -107,9 +108,11 @@ update-put <name> <offset> <len>\n<bytes>
 ```
 
 The net zone brings the pointer every 30 minutes until one is accepted, then
-daily, and polls every minute. Once the user has asked (`kryptik update
-fetch`), `update-poll` names the version, the base from the verified pointer,
-and each missing file with the byte to resume from.
+daily, and polls every minute. Once a release is asked for (`kryptik update
+fetch`, or by [automatic fetching](#automatic-fetching)), `update-poll` names
+the version, the base from the verified pointer, and each missing file with
+the byte to resume from. For an hour after a refused manifest it answers
+`idle`, since the next one would be refused unread.
 
 ## Bytes in an order that bounds them
 
@@ -118,15 +121,18 @@ and each missing file with the byte to resume from.
 and version checks of `apply`, with no downgrade: nothing from the network is
 a recovery) and requires the manifest to be for the wanted version, to hash
 to the pointer's `manifest-sha256`, and to fit in the free space. A refused
-manifest clears the stage, and for an hour after a refusal the next one is
-refused without being verified. Then it
-takes only a listed name, at exactly the offset it holds (so a cut download
-resumes and nothing is written twice), never past the signed size.
+manifest clears the stage, and for an hour after a refusal none is asked for
+and one sent anyway is refused without being verified, so a release that does
+not fit is tried hourly, not at every poll. Then it takes only a listed name,
+at exactly the offset it holds (so a cut download resumes and nothing is
+written twice), never past the signed size.
 
 So a hostile net zone can make zone 0 store at most the declared size of a
 release the release key signed, once, in one root-only directory
 (`/var/lib/kryptik/update/incoming/<version>/`); wrong bytes of the right
-length fail `apply`'s hashes. The net zone streams HTTPS straight into the
+length fail `apply`'s hashes, and the launch service then discards what had
+arrived, so the release is fetched again and one bad download does not hold
+the machine at its release until the next one is announced. The net zone streams HTTPS straight into the
 broker, resuming with range requests. TLS, with the image's CA bundle, keeps
 the download private; authenticity does not rest on it. Each piece of at
 most 1 MiB is one request the launcher answers between looks at its zone,
@@ -134,24 +140,66 @@ under the 5 s deadline, so supervision is never more than a piece away.
 
 ## What the user sees
 
-`kryptik update status | fetch | apply` go through the launch service.
-`status` shows the running version, the newest pointer's version and age,
-and what has arrived. `fetch` asks for the release the newest pointer names.
-`apply` runs `kryptik-update apply` on the complete stage, with the usual
-trial boot and fallback; the stage goes once the machine runs that release.
-Nothing is fetched or installed unless the user asks.
+`kryptik update status | fetch | apply | auto on|off` go through the launch
+service. `status` shows the running version, the newest pointer's version and
+age, whether fetching is automatic, and what has arrived. `fetch` asks for the
+release the newest pointer names. `apply` runs `kryptik-update apply` on the
+complete stage, with the usual trial boot and fallback; the stage goes once
+the machine runs that release. Nothing is installed unless the user asks, and
+nothing is fetched unless the user asks or has turned automatic fetching on.
+
+## Automatic fetching
+
+`kryptik update auto on` lets an unattended machine fetch each release as it
+is announced; installing it stays the user's act, and off is the default.
+While it is on, each `update-poll` first asks for the release the newest
+accepted statement names, when that is newer than the running release and not
+the one asked for, as `fetch` would ask for it; what `fetch` would refuse
+(nothing newer, or a base this image does not fetch from) stays unasked, and
+the poll answers `idle`. A release is asked for at the first poll after its
+statement is accepted, so within a day of being published, and a newer one
+replaces it, stage and all. `auto off` asks for nothing more; a release
+already asked for keeps arriving, as one asked for by hand does.
+
+- **Where it lives.** `/var/lib/kryptik/update/auto`, beside `wanted`: on the
+  state partition, root's alone, and the machine's own. Not in `update.conf`,
+  which is on the verified root when the build names a channel, so the same
+  on every machine of a build: a copy written under `/etc` at run time is
+  quarantined at the next boot (`prune_etc_upper`,
+  [state encryption](state-encryption.md)), and adding it to that allow-list
+  would let the state partition name the channel too. Only `on` turns it on,
+  so a block an offline writer damages reads as off.
+- **Who changes it.** Whoever may use `fetch`: the launch service takes
+  `update-auto on|off` from those it takes `update-fetch` from (group
+  `kryptik`) and logs the change, which allows nothing `fetch` does not. No
+  zone can change it, the net zone included: the broker has no verb for it.
+  `on` is refused on an image that names no channel.
+- **What a hostile net zone gains.** The timing, not the amount. Without it,
+  zone 0 stores nothing until the user asks; with it, a release is staged
+  once an accepted statement names it. Disk use is bounded as before, by one
+  release's worth per version: the declared size of a release the release key
+  signed, one release at a time (asking for a newer one removes the older
+  stage), taken only if it fits in the free space when its manifest
+  verifies. Statements are signed and never go backwards, so the net zone
+  cannot choose the version or make zone 0 fetch, drop and fetch again; and
+  it could already spend the bandwidth.
+- **How the user learns.** `kryptik update status` says
+  `staged <version>: ... complete; kryptik update apply installs it` once a
+  release has arrived whole, and while it waits the chrome's launcher names
+  it and where to apply it.
 
 ## What a hostile net zone can still do
 
 Withhold (reported through the pointer's age, not prevented); waste bandwidth
 and one release's worth of disk per version, with right-sized wrong bytes that
-`apply` refuses; and see that the machine runs Kryptik and which release it
-wants. Whoever can crash the net zone from the network can also fail a new
-release's trial and hold the machine on its old release, as withholding does
+`apply` refuses (with automatic fetching on, without the user asking first);
+and see that the machine runs Kryptik and which release it wants. Whoever can
+crash the net zone from the network can also fail a new release's trial and
+hold the machine on its old release, as withholding does
 ([boot and updates](boot-and-updates.md) says why the net zone is checked all
 the same). It cannot install anything the release key did not sign, install an
-older release, present an old statement as current, or make zone 0 keep a byte
-the signed manifest does not provide for.
+older release, present an old statement as current, make zone 0 keep a byte
+the signed manifest does not provide for, or turn automatic fetching on.
 
 ## Publishing
 
@@ -210,8 +258,11 @@ channel's directory.
   `not-a-pointer`, the statement signed by the release key, and the update
   suite checks that `check-pointer` refuses it on the installed system.
 - The update suite's network step (`tools/image/update-test.sh`), from the
-  channel stage 06 published: nothing is fetched until asked, then the
-  release arrives whole, is applied, trial-booted and committed.
+  channel stage 06 published: nothing is fetched while that is left to the
+  user; with automatic fetching on, the release arrives whole without a
+  `fetch`, is applied, trial-booted and committed, and the setting outlasts
+  the update. A production image fetches nothing over plain http, asked or
+  automatically.
 - `tools/tests/release-channel.sh`: `publish` and `reissue` with throwaway
   keys. A wrong key, an older release, a tampered payload, a replaced
   manifest, a replayed or far-ahead date, and a second run at once are each
@@ -222,7 +273,9 @@ channel's directory.
 
 ## Open points
 
-- Whether fetching should be automatic; an unattended machine would want it.
+- A way to stop a release that is arriving: once asked for, by hand or
+  automatically, it is fetched until it is whole or a newer statement names
+  another.
 - Delta updates: dm-verity's block structure would allow fetching only
   changed blocks instead of the whole image.
 
@@ -231,6 +284,7 @@ channel's directory.
 `compartments/kryptikd/src/update.rs`, `broker.rs`, `serve.rs`,
 `rootfs.rs` (`update.conf`), `tools/kryptik` and
 `tools/desktop/kryptik-launch.c` (`kryptik update`),
+`tools/desktop/kryptik-chrome` (the launcher's line for a release that waits),
 `tools/update/kryptik-update` (`check-manifest`, `check-pointer`),
 `tools/net/update-fetch.py`, `tools/net/netzone-init.sh`,
 `tools/release-manifest.sh` (`pointer`), `tools/release-channel.sh`,

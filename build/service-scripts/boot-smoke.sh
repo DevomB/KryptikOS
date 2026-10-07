@@ -92,8 +92,11 @@ say "allocator=$(grep -q /usr/lib/libhardened_malloc.so /proc/self/maps && echo 
 
 # --- the zone model, on this kernel ---------------------------------------
 say "kryptikd_check_begin"
-/usr/bin/kryptikd check --zones /usr/lib/kryptik/zones 2>&1 | sed 's/^/KRYPTIK_SMOKE: kd: /'
-say "kryptikd_check_rc=$?"
+# Kept apart from the sed: after a pipe the status would be sed's.
+kd_out="$(/usr/bin/kryptikd check --zones /usr/lib/kryptik/zones 2>&1)"
+kd_rc=$?
+printf '%s\n' "$kd_out" | sed 's/^/KRYPTIK_SMOKE: kd: /'
+say "kryptikd_check_rc=$kd_rc"
 say "kryptikd_check_end"
 say "lsm=$(cat /sys/kernel/security/lsm 2>/dev/null || echo unreadable)"
 # Microcode revision and the early loader's message (none under a hypervisor).
@@ -102,7 +105,8 @@ say "cgroup2=$(awk '$3=="cgroup2"{print $2; exit}' /proc/mounts 2>/dev/null || e
 
 # --- users and the login path -------------------------------------------
 say "users=$(awk -F: '$3>=1000 && $3<65534 {printf "%s ", $1}' /etc/passwd 2>/dev/null)"
-say "root_password=$(awk -F: '$1=="root"{print ($2 ~ /^[!*]/ || $2=="") ? "none" : "set"}' /etc/shadow 2>/dev/null)"
+# An empty field is a root login with no password, which a locked one is not.
+say "root_password=$(awk -F: '$1=="root"{print (($2=="") ? "EMPTY" : ($2 ~ /^[!*]/) ? "none" : "set")}' /etc/shadow 2>/dev/null)"
 say "securetty=$([ -e /etc/securetty ] && echo "present ($(wc -l < /etc/securetty) lines)" || echo absent)"
 say "login_binary=$([ -x /usr/bin/login ] && echo present || echo MISSING)"
 # The serial getty a test driver logs in at. From the host a stuck one looks

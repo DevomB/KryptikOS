@@ -8,6 +8,7 @@
 #   kryptik-update status
 #   kryptik-update check-manifest DIR       verify only: signature, role, version
 #   kryptik-update check-pointer FILE SIG   verify only: the pointer's signature
+#   kryptik-update check-release DIR        verify only: signature, role; any version
 #
 #   --retry     arm again a slot whose last trial failed to boot
 #   --recovery  accept an older signed release (a downgrade)
@@ -36,10 +37,10 @@ LOG=/var/log/kryptik/update.log
 # exit trap removes it; a variable only so the offline suite can set it.
 SNAP=""
 
-# The update channel's two checks need no root and no devices, and write
-# nothing outside their own directory.
+# The checks that only verify need no root and no devices, and write nothing
+# outside their own directory.
 case "${1:-}" in
-    check-manifest|check-pointer)
+    check-manifest|check-pointer|check-release)
         tools="ssh-keygen sha256sum cp awk sed sort head mktemp" ;;
     *)
         tools="ssh-keygen sha256sum blkid dd cp mv sync flock mount umount cmp kryptik-efiboot awk sed sort head wc stat grep blockdev"
@@ -52,7 +53,7 @@ done
 # Only partitions on the root's own disk; an ambiguous label is refused, never
 # resolved by taking the first (devices.sh).
 case "${1:-}" in
-    check-manifest|check-pointer) ;;
+    check-manifest|check-pointer|check-release) ;;
     *)
         # shellcheck source=/dev/null
         . /usr/libexec/kryptik/devices.sh ;;
@@ -76,7 +77,7 @@ mount_esp() {
     dev="$(esp_dev)" || exit 1
     mkdir -p "$ESP_MNT"
     if ! mountpoint -q "$ESP_MNT"; then
-        mount -o rw,nosuid,nodev,noexec "$dev" "$ESP_MNT" || die "cannot mount the ESP"
+        mount -t vfat -o rw,nosuid,nodev,noexec "$dev" "$ESP_MNT" || die "cannot mount the ESP"
         ESP_MINE=1
     fi
 }
@@ -211,6 +212,8 @@ verify_manifest() {   # verify_manifest DIR RECOVERY -> sets dir m sig VERSION c
     [ -r "$ROLE_FILE" ] || die "no $ROLE_FILE: this image names no role, so it accepts no release"
     [ "$role" = "$(cat "$ROLE_FILE")" ] || die "manifest role is '$role'; this image requires '$(cat "$ROLE_FILE")'"
     [ -n "$VERSION" ] || die "manifest has no version"
+    # check-release reads a release already installed, older or newer.
+    if [ "$recovery" = any ]; then return 0; fi
     cur="$(running_version)"
     if [ "$VERSION" = "$cur" ]; then
         die "payload version $VERSION is the running version; nothing to apply"
@@ -277,6 +280,17 @@ cmd_check_pointer() {
     verify_signed "$SNAP/latest" "$SNAP/latest.sig" "$LATEST_NAMESPACE" pointer
 }
 
+# For the clock's floor (docs/design/time.md): the manifest a slot was applied
+# from, kept on the state partition, believed only as apply would believe it,
+# in any version order, and the date it was signed with.
+cmd_check_release() {
+    [ $# = 1 ] && [ -d "$1" ] || die "check-release needs the directory holding manifest and manifest.sig"
+    verify_manifest "$1" any >&2
+    created="$(hdr "$m" created)"
+    [ -n "$created" ] || die "the manifest has no created date"
+    printf 'version: %s\ncreated: %s\n' "$VERSION" "$created"
+}
+
 # The ESP stops naming SLOT's release: its kernel and version go, so an apply
 # cut short leaves nothing that rollback or kryptik-recover --commit-slot
 # would take. The apply puts both back once the slot verifies.
@@ -308,7 +322,7 @@ cmd_apply() {
     slot="$(running_slot)"; target="$(other_slot "$slot")"
     [ -n "$target" ] || die "cannot tell which slot is running (kryptik.slot= missing)"
     if [ -f "$B/trial" ]; then
-        die "a trial of slot $(sed -n 1p "$B/trial") is already armed; reboot first, or run rollback"
+        die "a trial of slot $(sed -n 1p "$B/trial") is already armed; reboot first"
     fi
     if [ "$retry" != 1 ] && [ -f "$B/trial.failed" ]; then
         die "the last trial of slot $(cat "$B/trial.failed") failed to boot. To try it again, run as root: kryptik-update apply $dir --retry"
@@ -324,6 +338,7 @@ cmd_apply() {
 
     # --- writes begin: the inactive slot only -------------------------------
     unlist_slot "$target"
+    rm -rf "$B/release-$target"
     say "writing kryptik-$target ($ROOT_BYTES bytes)"
     dd if=/proc/self/fd/3 of="$tdev" bs=4M conv=fsync status=none || die "writing slot $target failed"
     blockdev --flushbufs "$tdev"   # so the read-back is of the device, not of the page cache
@@ -347,6 +362,10 @@ cmd_apply() {
     sync
     umount_esp
     say "kernel for slot $target installed on the ESP (version $VERSION)"
+    # Once boot-success commits the slot, the clock's floor may rise to the
+    # date this manifest was signed with (docs/design/time.md).
+    { mkdir -p "$B/release-$target" && cp "$m" "$sig" "$B/release-$target/"; } \
+        || say "the manifest was not kept; committing $VERSION will leave the clock's floor where it is"
 
     # --- arm one trial boot --------------------------------------------------
     arm_trial "$target"
@@ -394,5 +413,6 @@ case "${1:-}" in
     status)   cmd_status ;;
     check-manifest) shift; cmd_check_manifest "$@" ;;
     check-pointer)  shift; cmd_check_pointer "$@" ;;
-    *) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    check-release)  shift; cmd_check_release "$@" ;;
+    *) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

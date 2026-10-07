@@ -25,13 +25,20 @@ fn zone_output_is_prefixed_and_sanitized() {
     let long = vec![b'a'; ZONE_LINE_MAX * 2 + 5];
     let got = relayed(&[&long]);
     assert_eq!(got.iter().map(|l| l.len() - "zone work| ".len()).collect::<Vec<_>>(), [ZONE_LINE_MAX, ZONE_LINE_MAX, 5]);
-    // Past the bound nothing more is logged, and it says so once.
+    // Past the bound nothing more is logged, and it says so once. The bound is
+    // on what reaches the log, each line's mark and end with it.
+    let logged = |got: &[String]| got.iter().filter(|l| !l.contains("is not logged")).map(|l| l.len() + 1).sum::<usize>();
+    let slack = ZONE_LINE_MAX + "zone work| ".len() + 1;
     let flood = vec![b'x'; ZONE_OUTPUT_MAX + 4096];
     let got = relayed(&[&flood, b"more\n"]);
-    let logged: usize = got.iter().filter(|l| !l.contains("is not logged")).map(|l| l.len() - "zone work| ".len()).sum();
-    assert_eq!(logged, ZONE_OUTPUT_MAX);
+    assert!(logged(&got) <= ZONE_OUTPUT_MAX + slack && logged(&got) > ZONE_OUTPUT_MAX - slack, "{} bytes logged", logged(&got));
     assert_eq!(got.iter().filter(|l| l.contains("is not logged")).count(), 1);
     assert!(!got.iter().any(|l| l.contains("more")));
+    // One-byte lines are mostly mark: they reach the bound sooner, not past it.
+    let short = b"a\n".repeat(ZONE_OUTPUT_MAX / 2);
+    let got = relayed(&[&short]);
+    assert!(logged(&got) <= ZONE_OUTPUT_MAX + slack, "{} bytes logged for {} written", logged(&got), short.len());
+    assert_eq!(got.iter().filter(|l| l.contains("is not logged")).count(), 1);
 }
 
 #[test]

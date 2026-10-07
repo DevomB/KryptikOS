@@ -17,9 +17,9 @@ s_tests() {
     for t in "${KRYPTIK_ROOT}"/compartments/kryptikd/probes/*.sh; do
         install -m 0755 "$t" "$base/compartments/kryptikd/probes/$(basename "$t")"
     done
-    # adversarial.sh checks its namespace set against isolate.rs and its proc
-    # and sysfs mounts against rootfs.rs.
-    for src in isolate.rs rootfs.rs; do
+    # adversarial.sh checks its namespace set against isolate.rs, its proc and
+    # sysfs mounts against rootfs.rs, and the filter's kill action in seccomp.rs.
+    for src in isolate.rs rootfs.rs seccomp.rs; do
         install -m 0644 "${KRYPTIK_ROOT}/compartments/kryptikd/src/${src}" "$base/compartments/kryptikd/src/${src}"
     done
     ln -sfn /usr/bin/kryptikd "$base/compartments/kryptikd/target/debug/kryptikd"

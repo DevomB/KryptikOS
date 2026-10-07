@@ -84,12 +84,18 @@ query and the [update](update-channel.md) fetcher. Builds on
   restart it reattaches running routed zones during the handshake, and with
   forwarding on before the policy they would be reachable from the uplink.
 - **The ruleset:** forward policy drop; established and related accepted;
-  bridge to uplink accepted; bridge to bridge dropped; `10.19.0.0/24` and
-  `fd19::/64` masqueraded out of every uplink; new DNS connections arriving on
-  an uplink dropped.
+  from the bridge to an uplink, what a gateway carries accepted and the
+  uplink's own network refused but to the zones whose definition opens it
+  ([below](#the-uplinks-own-networks)); bridge to bridge dropped;
+  `10.19.0.0/24` and `fd19::/64` masqueraded out of every uplink; new DNS
+  connections arriving on an uplink dropped.
 - **The resolver:** `dnsmasq` on 10.19.0.1, fd19::1 and 127.0.0.1,
   forwarding to the uplink lease's servers (QEMU's 10.0.2.3 when nothing else
-  is known), restarted if it dies. It answers the test TLD `.test` itself, so
+  is known), restarted if it dies. A lease that comes after it started, or
+  another network's, reaches it within ten seconds: the zone's loop compares
+  the servers `resolv.conf` names with the ones dnsmasq was given, and on a
+  change replaces the file and sends SIGHUP. A lease that lapsed leaves the
+  last servers in place. It answers the test TLD `.test` itself, so
   resolving `kryptik.test` tests the path to the resolver, not the internet.
 - **dhcpcd runs without its own privilege separation.** That needs
   `setgroups`, which the zone denies, a `dhcpcd` user, which its synthesized
@@ -102,6 +108,44 @@ query and the [update](update-channel.md) fetcher. Builds on
 netzone: READY uplink=<addr|none> nat=yes dns=<yes|no> wifi=<ssid|connecting|unconfigured|none> time=<offset|no-answer|...> bridge=kryptik0 uplinks=<list>
 netzone: NOT READY <reason>        (forwarding off)
 ```
+
+## The uplinks' own networks
+
+A zone needs the gateway only as a next hop, and its names go through the
+resolver here, so nothing on the network an uplink sits on is part of the
+internet a zone asked for: the router's own pages, a printer, the other
+machines of a home or a café. A routed zone is refused that network unless
+its definition says `[network] local = true`.
+
+- **The rule goes by the route, not by a list of networks.** The forward
+  chain accepts a packet from the bridge when its route leaves by a gateway
+  and it is not addressed to the gateway itself (`rt ip nexthop @gw4 ip daddr
+  != @gw4`, and the same for IPv6). Every other packet for an uplink is
+  rejected with an ICMP "prohibited", so a program fails at once instead of
+  waiting. The script fills `gw4` and `gw6` from the uplinks' routes when a
+  lease arrives and at every 10 s tick. Until a gateway is in the sets
+  nothing leaves by it, so a new lease opens no way in before the script has
+  seen it.
+- **Which zones are let through is read from their definitions.** They are on
+  the verified root, which the net zone shares read-only, and a routed zone's
+  address follows from its `uid_base`. The script puts the addresses of the
+  zones that claim `local` into `local4` and `local6` when it loads the
+  ruleset. A routed zone cannot change its address, so the address is the
+  zone. kryptikd refuses the key on a zone that is not routed, and
+  `kryptikd explain` says which way a zone is set.
+- **`untrusted` is the one shipped zone that claims it.** A hotel's or café's
+  Wi-Fi asks for a login on a page its gateway serves, and the net zone has
+  no browser, so some zone must reach that page: the ephemeral one, already
+  treated as hostile and wiped on exit. `work`, `personal` and `dev` are
+  refused the local network. The cost is that whatever runs in `untrusted`
+  can still address the router and the machines beside it, as every zone
+  could before; without the key there, a network with a login page is no
+  network at all.
+- **What it does not cover.** A network behind the gateway, such as a modem's
+  own pages on another subnet, is past the gateway and so allowed. An uplink
+  whose default route names no gateway, a point-to-point link, carries only
+  the zones that claim `local`. The net zone itself reaches the local
+  network, as DHCP and the resolver need.
 
 ## DNS
 
@@ -179,6 +223,9 @@ changes.
   is the cost of a single gateway, which owns the rules either way. "Treated
   as hostile" limits what the net zone can reach, not what it can do to the
   zones behind it.
+- A routed zone reaches the network an uplink sits on only if its definition
+  says so. The others reach what a gateway carries, and never the gateway
+  itself.
 - Addresses are identities: 10.19.0.k follows from `uid_base`, so the broker
   or a future policy can name zones by address as safely as by uid, as long
   as routed zones cannot change their address.
@@ -191,10 +238,6 @@ changes.
   hostile net zone, and need `NF_TABLES_BRIDGE` and `BRIDGE_NETFILTER` built
   in: more kernel reachable from a hostile zone for no new guarantee. Revisit
   if a routed zone may ever keep either network capability.
-- **Refusing routed-zone traffic to the uplink's own addresses.** The forward
-  chain accepts anything from the bridge to the uplink, so a routed zone can
-  address the VM gateway or QEMU's resolver directly; on real hardware that
-  is the uplink, the intended path.
 
 ## Tests
 
@@ -208,6 +251,9 @@ changes.
   (`netlink::tests::wireless_moves_by_wiphy`).
 - `wifi.rs` unit tests and the serve and cli suites cover the credentials
   file and `kryptik wifi`.
+- `tools/tests/netzone-uplink.sh`: the zones a definition lets through, by the
+  address kryptikd derives for each, the gateway sets as nft is fed them, and
+  the order of the forward rules.
 - The launcher suite reads a zone's bounding set (exactly `0x400`) and the
   boundary suite asks for an `AF_PACKET` socket. The launcher suite's
   routed-networking section runs only with `KRYPTIK_VM_DISPOSABLE=1`, since
@@ -216,9 +262,11 @@ changes.
   guarantee above under QEMU user networking: the net zone `READY`, zone 0
   offline, a routed zone's address, NAT, ULA-only IPv6 and resolver, zones
   separated, `vault` offline, no egress while the net zone is down,
-  reattachment after a restart, and, on two `mac80211_hwsim` radios, the net
-  zone associating, leasing and routing over one while the other is the
-  access point. It pings with an unprivileged ICMP socket
+  reattachment after a restart, a zone without `local` refused the VM
+  gateway, and, on two `mac80211_hwsim` radios, the net zone associating,
+  leasing and routing over one while the other is the access point, whose own
+  address that zone is refused while it reaches an address the access point
+  routes. It pings with an unprivileged ICMP socket
   (`build/guest-tests/icmp-echo.py`), since routed zones lack `CAP_NET_RAW`.
 
 ## Kernel requirements

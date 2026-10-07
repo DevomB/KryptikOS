@@ -4,6 +4,9 @@
 //! process that creates zones or moves data between them. Anything not built
 //! is refused with an error, never a silent no-op.
 
+// cargo fuzz builds this file with cfg(fuzzing), and libFuzzer brings its own main.
+#![cfg_attr(fuzzing, no_main, allow(dead_code))]
+
 mod broker;
 mod caps;
 mod cgroup;
@@ -24,6 +27,10 @@ mod update;
 mod volume;
 mod wifi;
 mod zone;
+// The parser is private to the daemon, so its fuzz target compiles inside it (fuzz/Cargo.toml).
+#[cfg(fuzzing)]
+#[path = "../fuzz/broker_request.rs"]
+mod fuzz;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -51,7 +58,8 @@ USAGE:
     kryptikd stop NAME [--now]        stop a running zone (--now = SIGKILL)
     kryptikd status NAME              running, stale or absent
     kryptikd list --running           the zones the registry knows about
-    kryptikd gc                       reclaim stale entries and empty cgroups
+    kryptikd gc [--rootfs DIR]        reclaim stale entries and empty cgroups, and
+                                      close volumes no running zone holds
     kryptikd clipboard move FROM TO   the zone 0 gesture: move FROM's clipboard
                                       payload to TO, emptying FROM (both running)
     kryptikd serve [--rootfs DIR]     the launch daemon the desktop session talks
@@ -65,9 +73,13 @@ USAGE:
                    [--wifi-dir DIR]   (the session does this through `kryptik
                                       wifi` and the launch daemon; this is root's
                                       path and the tests')
-    kryptikd time floor               at boot: a clock that reads earlier than this
-                                      system was built is set to the build date
+    kryptikd time floor               at boot: a clock that reads earlier than the
+                                      floor (the build date, or the newest release
+                                      committed to) is set to it
     kryptikd time status              the clock, the floor, and what was last done to it
+    kryptikd time committed DIR       once boot-success has committed a slot: its
+                                      release (the signed manifest in DIR) is the
+                                      floor if it is the newest
 
     --rootfs DIR   base directory for zone data (default: /var/lib/kryptik/zones);
                    the zone sees its own directory as /home/NAME
@@ -226,7 +238,7 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
-        "gc" => cmd_gc(),
+        "gc" => cmd_gc(&rootfs_base_from(&args)),
         "volume" => cmd_volume(&zone_dir, &args),
         "serve" => serve::cmd_serve(&zone_dir, &args),
         "wifi" => cmd_wifi(&zone_dir, &args),
@@ -435,7 +447,7 @@ fn cmd_list_running() -> ExitCode {
 /// Reclaim stale entries, empty zone cgroups and orphaned volume mappings.
 /// A live zone is safe: an entry is stale only if its lock can be taken, and
 /// the kernel refuses `rmdir` of a populated cgroup (EBUSY).
-fn cmd_gc() -> ExitCode {
+fn cmd_gc(base: &str) -> ExitCode {
     let mut reclaimed = 0usize;
     for n in registry::names() {
         if let Ok(registry::State::Stale { .. }) = registry::state(&n) {
@@ -451,12 +463,11 @@ fn cmd_gc() -> ExitCode {
     let swept = cgroup::sweep_now();
     // A mapping with no running zone is plaintext nobody uses; the next open runs fsck -p.
     let mut closed = 0usize;
-    let base = DEFAULT_ROOTFS_BASE.to_string();
     for z in volume::mappings() {
         if let Ok(registry::State::Running { .. }) = registry::state(&z) {
             continue;
         }
-        let mnt = volume::mountpoint_for(Path::new(&base), &z).display().to_string();
+        let mnt = volume::mountpoint_for(Path::new(base), &z).display().to_string();
         match volume::close_mapping(&z, &mnt) {
             Ok(()) => {
                 println!("closed the volume of zone {z:?}, which had no running launcher");
@@ -793,7 +804,11 @@ fn cmd_seccomp_probe(name: &str) -> Option<ExitCode> {
             if r > 0 {
                 libc::waitpid(r as libc::pid_t, std::ptr::null_mut(), 0);
             }
-            0
+            if r < 0 && *libc::__errno_location() == libc::EPERM { 7 } else { 0 }
+        },
+        "unshare-newuser" => || unsafe {
+            let r = libc::unshare(libc::CLONE_NEWUSER);
+            if r < 0 && *libc::__errno_location() == libc::EPERM { 7 } else { 0 }
         },
         "clone3" => || unsafe {
             let r = libc::syscall(libc::SYS_clone3, std::ptr::null::<u8>(), 0usize);
@@ -952,7 +967,7 @@ fn cmd_volume(dir: &Path, args: &[String]) -> ExitCode {
             }
             let old = match pass_from("--passphrase-file") { Ok(p) => p, Err(c) => return c };
             let new = match pass_from("--new-passphrase-file") { Ok(p) => p, Err(c) => return c };
-            done("passphrase changed", volume::change_key(&vol, &old, &new))
+            done("passphrase changed", volume::change_key(name, &vol, &old, &new))
         }
         "backup-header" => {
             let Some(file) = args.get(3) else { eprintln!("volume backup-header NAME FILE"); return ExitCode::from(2) };
@@ -980,9 +995,11 @@ fn wifi_dir_from(args: &[String]) -> PathBuf {
     PathBuf::from(value(args, "--wifi-dir").unwrap_or(wifi::DEFAULT_DIR))
 }
 
-/// `kryptikd time floor | status` (docs/design/time.md). The clock is set only
-/// here, from the floor, and in the broker, from a net zone claim zone 0 judged.
+/// `kryptikd time floor | status | committed DIR` (docs/design/time.md). The
+/// clock is set only here, from the floor, and in the broker, from a net zone
+/// claim zone 0 judged.
 fn cmd_time(args: &[String]) -> ExitCode {
+    use time::Clock;
     let dir = Path::new(time::STATE_DIR);
     match args.get(1).map(String::as_str) {
         Some("floor") => match time::clamp(&mut time::SystemClock, dir, time::floor_of_this_system()) {
@@ -995,12 +1012,35 @@ fn cmd_time(args: &[String]) -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some("committed") => {
+            let Some(offered) = args.get(2) else {
+                eprintln!("usage: kryptikd time committed DIR");
+                return ExitCode::from(2);
+            };
+            let running = update::running_version();
+            match time::keep_release(dir, Path::new(offered), &running, time::SystemClock.now(), &update::check_release) {
+                Ok(said) => {
+                    println!("kryptikd: time: {said}");
+                    ExitCode::SUCCESS
+                }
+                Err(why) => {
+                    eprintln!("kryptikd: time: {why}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some("status") => {
-            use time::Clock;
             println!("clock    {}", time::format_utc(time::SystemClock.now()));
-            match time::floor_of_this_system() {
-                Some(f) => println!("floor    {} (this system's build date; nothing earlier is believed)", time::format_utc(f as f64)),
-                None => println!("floor    unknown: {} is missing or unreadable, so every claim is refused", time::IMAGE_JSON),
+            let release = time::committed_release();
+            match (time::floor_of_this_system(), &release) {
+                (None, _) => println!("floor    unknown: {} is missing or unreadable, so every claim is refused", time::IMAGE_JSON),
+                (Some(f), Ok(Some((v, at)))) if *at == f => {
+                    println!("floor    {} (release {v}, the newest this machine committed to; nothing earlier is believed)", time::format_utc(f as f64))
+                }
+                (Some(f), _) => println!("floor    {} (this system's build date; nothing earlier is believed)", time::format_utc(f as f64)),
+            }
+            if let Err(why) = &release {
+                println!("release  not used: {why}");
             }
             match std::fs::read_to_string(dir.join("history")) {
                 Ok(h) => match h.lines().last() {
@@ -1012,7 +1052,7 @@ fn cmd_time(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         _ => {
-            eprintln!("usage: kryptikd time floor | status");
+            eprintln!("usage: kryptikd time floor | status | committed DIR");
             ExitCode::from(2)
         }
     }
@@ -1219,7 +1259,7 @@ fn cmd_seccomp_trace(cmd: &[String], allow: &[libc::c_long], sockets: &seccomp::
             let nr = libc::c_long::from(req.data.nr);
             let name = seccomp::name_of(nr).unwrap_or("");
             // A soft refusal gets the errno a zone gets, and is marked.
-            let soft = seccomp::REFUSED_SOFTLY.iter().find(|(n, _)| *n == nr).map(|&(_, e)| e as libc::c_int);
+            let soft = seccomp::soft_errno(&req.data).map(|e| e as libc::c_int);
             eprintln!("KRYPTIK_SECCOMP_DENIED {nr} {name}{}", if soft.is_some() { " soft" } else { "" });
             refused += 1;
             let mut resp: libc::seccomp_notif_resp = unsafe { std::mem::zeroed() };

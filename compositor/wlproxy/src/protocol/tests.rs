@@ -67,6 +67,17 @@ fn trailing_byte_is_refused() {
 }
 
 #[test]
+fn null_string_refused_where_required() {
+    let top = find("xdg_toplevel").unwrap();
+    let set_title = top.requests.iter().find(|m| m.name == "set_title").unwrap();
+    let msg = MessageWriter::new(7, 2).u32(0).finish().unwrap();
+    assert_eq!(decode(set_title, &msg[8..]), Err(WireError::NullString));
+    let bind = &find("wl_registry").unwrap().requests[0];
+    let msg = MessageWriter::new(2, 0).u32(4).u32(0).u32(5).u32(3).finish().unwrap();
+    assert_eq!(decode(bind, &msg[8..]), Err(WireError::NullString));
+}
+
+#[test]
 fn strings_are_located_for_rewriting() {
     let top = find("xdg_toplevel").unwrap();
     let set_title = top.requests.iter().find(|m| m.name == "set_title").unwrap();

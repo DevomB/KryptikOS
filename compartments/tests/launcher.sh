@@ -383,12 +383,13 @@ for f in /proc/[0-9]*/cmdline; do
     c="$(tr '\0' ' ' < "$f" 2>/dev/null)"
     case "$c" in *"$MARKER_TOKEN"*) host_hits=$((host_hits+1));; esac
 done
-if kill -0 "$MARKER_PID" 2>/dev/null && (( host_hits > 0 )); then
+kill -0 "$MARKER_PID" 2>/dev/null; marker_rc=$?
+if (( marker_rc == 0 && host_hits > 0 )); then
     pass "B2a positive control: the host marker process is running and visible in /proc"
     MARKER_LIVE=1
 else
     fail "B2a positive control FAILED: marker not running or not visible; B2b/B2c prove nothing"
-    info "kill -0 rc=$? host_hits=$host_hits"
+    info "kill -0 rc=$marker_rc host_hits=$host_hits"
     MARKER_LIVE=0
 fi
 
@@ -406,8 +407,10 @@ else
     skip "B2c a second zone cannot see it either (positive control failed)"
 fi
 
-# The same scan must find a process that is there: the zone's own child.
-zrun alpha -- /bin/sh -c "$PRO h=SELFMARK; t=ER991; pat=\"\$h\$t\"; /bin/sleep 5 & sleep 0.2; n=0; for f in /proc/[0-9]*/cmdline; do c=\$(tr \"\\0\" \" \" < \"\$f\" 2>/dev/null); case \"\$c\" in *sleep*) n=\$((n+1));; esac; done; if [ \"\$n\" -gt 0 ]; then echo PROBE=sees-own; else echo PROBE=BLIND; fi"
+# The same scan must find a process that is there: the zone's own child,
+# which alone carries the joined token, as its $0. The ":" keeps the child a
+# shell: a lone command would replace it, and the token with it.
+zrun alpha -- /bin/sh -c "$PRO h=SELFMARK; t=ER991; pat=\"\$h\$t\"; /bin/sh -c 'sleep 5; :' \"\$pat\" & sleep 0.2; n=0; for f in /proc/[0-9]*/cmdline; do c=\$(tr \"\\0\" \" \" < \"\$f\" 2>/dev/null); case \"\$c\" in *\"\$pat\"*) n=\$((n+1));; esac; done; if [ \"\$n\" -gt 0 ]; then echo PROBE=sees-own; else echo PROBE=BLIND; fi"
 probe "B2d the /proc scan is not vacuous: a zone DOES see its own child" "sees-own"
 
 # Private /tmp per zone.
@@ -856,8 +859,8 @@ probe "I1  a zone process reports seccomp mode 2 (filtered)" "2"
 zrun alpha -- /bin/sh -c "$PRO echo PROBE=\$(grep '^Seccomp_filters:' /proc/self/status | awk '{print \$2}')"
 probe "I2  exactly one filter is installed, not zero and not a stack" "1"
 
-# Each is in seccomp.rs::DENIED_RATIONALE. A denied syscall kills the zone
-# (SIGSYS, exit 159) rather than returning an error it could ignore.
+# Each is in seccomp.rs::DENIED_RATIONALE and kills the zone (SIGSYS, exit
+# 159) rather than returning an error it could ignore.
 seccomp_kill() { # desc shell-command
     local desc="$1" cmd="$2"
     zrun alpha -- /bin/sh -c "$cmd"
@@ -874,8 +877,12 @@ seccomp_kill "I3  mount(2) kills the zone (re-mount under Landlock)" \
              '/bin/mount -t tmpfs none /tmp'
 seccomp_kill "I4  chroot(2) kills the zone (double-chroot escape)" \
              '/usr/sbin/chroot / /bin/true'
-seccomp_kill "I5  unshare(2) kills the zone (nested namespace LPE surface)" \
-             '/usr/bin/unshare -U /bin/true'
+# unshare(2) is denied too, but fails with EPERM: Firefox, Chromium and
+# bubblewrap probe for user namespaces and must hear no, as the kernel tells an
+# unprivileged caller. unshare(1) lives to say so, and readlink never runs in a
+# namespace of its own.
+zrun alpha -- /bin/sh -c "$PRO o=\$(LC_ALL=C /usr/bin/unshare -U readlink /proc/self/ns/user 2>&1); rc=\$?; case \"\$rc:\$o\" in 159:*) echo PROBE=SIGSYS;; 0:user:*) echo PROBE=CREATED;; 1:*'Operation not permitted'*) echo PROBE=eperm;; *) echo \"PROBE=\$rc:\$o\";; esac"
+probe "I5  unshare(2) fails with EPERM, not SIGSYS, and makes no namespace" "eperm"
 # mknod(2) is allowed so mkfifo works; a device node is refused by Landlock
 # (MAKE_CHAR/MAKE_BLOCK granted nowhere) and by nodev on every mount.
 zrun alpha -- /bin/sh -c "$PRO /usr/bin/mknod /tmp/n c 1 3 2>/dev/null; if [ -e /tmp/n ]; then echo PROBE=CREATED; else echo PROBE=refused; fi"
@@ -1236,7 +1243,7 @@ filter_probe() { # desc probe expected
     fi
 }
 
-filter_probe "L3  clone(CLONE_NEWUSER) is killed (nested user namespace)" clone-newuser 5
+filter_probe "L3  clone(CLONE_NEWUSER) fails with EPERM rather than killing (no nested user namespace)" clone-newuser 7
 filter_probe "L4  clone3 returns ENOSYS rather than killing (glibc falls back)" clone3 7
 filter_probe "L5  socket(AF_VSOCK) is refused with an errno" socket-vsock 7
 filter_probe "L6  socket(AF_NETLINK/NETFILTER) is refused with an errno" socket-netlink-nf 7
@@ -1254,6 +1261,19 @@ if grep -qx 'KRYPTIK_SECCOMP_DENIED 169 reboot' <<<"$out" \
     pass "L9  seccomp-trace names refused calls, soft ones marked, and the program goes on"
 else
     fail "L9  seccomp-trace did not report reboot(2) and inotify_init1(2) [$(tr '\n' ' ' <<<"$out")]"
+fi
+
+# clone(CLONE_NEWUSER) and unshare(2) are named too, marked soft, and fail with
+# EPERM (1) as in a zone. A kernel may answer EPERM as well, so the names are
+# what show that the filter refuses them.
+out="$(timeout "$TIMEOUT" "$KRYPTIKD" seccomp-trace -- python3 -c \
+    'import ctypes; c = ctypes.CDLL(None, use_errno=True); [print(c.syscall(*a), ctypes.get_errno()) for a in ((56, 0x10000011, 0, 0, 0, 0), (272, 0x10000000))]' 2>&1)"
+if grep -qx 'KRYPTIK_SECCOMP_DENIED 56 clone soft' <<<"$out" \
+    && grep -qx 'KRYPTIK_SECCOMP_DENIED 272 unshare soft' <<<"$out" \
+    && [[ "$(grep -cx -e '-1 1' <<<"$out")" == 2 ]]; then
+    pass "L9b seccomp-trace names a namespace clone and unshare(2) as soft refusals, and both fail with EPERM"
+else
+    fail "L9b seccomp-trace did not refuse clone(CLONE_NEWUSER) and unshare(2) with EPERM [$(tr '\n' ' ' <<<"$out")]"
 fi
 
 # ncurses brackets each terminfo open with setfsuid and setfsgid. The filter

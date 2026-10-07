@@ -39,19 +39,15 @@ mountpoint -q /dev/shm  || mount -t tmpfs  tmpfs  /dev/shm -o nosuid,nodev
 mkdir -p /run/kryptik /run/lock
 chmod 0755 /run/kryptik
 
-# The service manager, IF a compiled database exists.
-#
-# It deliberately does not exist yet: building an s6-rc source tree and
-# compiling it belongs to the compositor and GUI isolation work. Saying so on the console is the point - a
-# system that silently boots with no services and no explanation is
-# indistinguishable from one whose service manager crashed.
+# The service manager. An image without the compiled database says so on the
+# console: a boot with no services and no explanation looks like a service
+# manager that crashed.
 if [ -d /usr/lib/kryptik/s6-rc/compiled ]; then
     s6-rc-init -c /usr/lib/kryptik/s6-rc/compiled /run/service
     s6-rc -v1 -up change "$rl"
 else
     echo "kryptik: no compiled s6-rc database at /usr/lib/kryptik/s6-rc/compiled."
     echo "kryptik: booting with the early console only; no services will start."
-    echo "kryptik: this is expected in a pre-alpha image - see docs/roadmap.md, compositor and GUI isolation."
 fi
 EOF
 
@@ -63,11 +59,9 @@ EOF
 
 exec >/dev/console 2>&1
 
-# Say so on the console at every step. Three boots could not distinguish
-# "shutdownd never spawned this script" from "this script ran and hung", and
-# the difference is the whole diagnosis: shutdownd waits for stage 3 to exit
-# before it touches the hardware, so anything that blocks here looks exactly
-# like a shutdown daemon that ignored the request.
+# Say so on the console at every step: shutdownd waits for this script to
+# exit before it touches the hardware, so a step that blocks here looks like
+# a shutdown daemon that ignored the request.
 echo "kryptik: rc.shutdown starting"
 
 if [ -d /run/service ] && command -v s6-rc >/dev/null 2>&1; then

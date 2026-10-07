@@ -28,7 +28,7 @@ complete() { u="$(regular_user)"; [ -n "$u" ] && has_password "$u" && has_passwo
 
 create_user() {   # create_user NAME
     case "$1" in
-        ''|*[!a-z0-9_-]*|-*) say "refusing user name '$1'"; return 1 ;;
+        ''|*[!a-z0-9_-]*|-*) say "refusing user name '$1': lower-case letters, digits, _ and - only"; return 1 ;;
     esac
     getent group seat >/dev/null 2>&1 || groupadd -r seat
     getent group kryptik >/dev/null 2>&1 || groupadd -r kryptik
@@ -80,18 +80,24 @@ set_password() {   # set_password USER: two matching answers, through chpasswd
     done
     return 1
 }
+new_user() {   # new_user: sets name to the user made; a refused name is asked for again
+    local made
+    for _ in 1 2 3; do
+        name=$(ask "$PROMPT_SECS" "User name: ") || return 1
+        name="$(printf '%s' "$name" | tr -d '[:space:]')"
+        made=$(create_user "$name" 2>&1) && { tell "$made"; return 0; }
+        tell "$made"
+    done
+    return 1
+}
 name="$(regular_user)"
 if [ -z "$name" ]; then
     tell "" "===== Kryptik first-boot setup =====" \
          "No user account exists yet. Create the desktop user now."
-    if ! name=$(ask "$PROMPT_SECS" "User name: "); then
-        say "no answer within 10 minutes; the next boot asks again"
+    if ! new_user; then
+        say "no user created; the next boot asks again"
         exit 0
     fi
-    name="$(printf '%s' "$name" | tr -d '[:space:]')"
-    made=$(create_user "$name" 2>&1) && ok=1 || ok=
-    tell "$made"
-    [ -n "$ok" ] || exit 0
 fi
 if ! has_password "$name"; then
     tell "Set a password for $name:"

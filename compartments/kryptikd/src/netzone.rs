@@ -306,7 +306,8 @@ fn plumb_nic_zone_bridge(zone: &Zone, zone_ns: i32) -> Result<(), NetError> {
         Some("*") => physical_interfaces().map_err(|e| io("list the physical interfaces of zone 0", e))?,
         Some(n) => {
             // A named NIC missing from zone 0 is a configuration error.
-            if unsafe { libc::if_nametoindex(std::ffi::CString::new(n).unwrap().as_ptr()) } == 0 {
+            let c = std::ffi::CString::new(n).map_err(|_| NetError::Refused(format!("[network] nic = {n:?}")))?;
+            if unsafe { libc::if_nametoindex(c.as_ptr()) } == 0 {
                 return Err(NetError::Refused(format!(
                     "[network] nic = {n:?} is not an interface in this namespace"
                 )));
@@ -479,8 +480,13 @@ fn plan_line(zone: &Zone, privileged: bool) -> String {
             Some(k) => format!(
                 "network    routed: eth0 = 10.19.0.{k}/24 fd19::{k:x}/64 via the nic zone's {BRIDGE}, \
                  isolated port {}; forwarding and NAT are the nic zone's program's to enable \
-                 once its firewall is loaded (kryptikd leaves forwarding off)",
-                port_name(&zone.name)
+                 once its firewall is loaded (kryptikd leaves forwarding off); {}",
+                port_name(&zone.name),
+                if zone.local {
+                    "may reach the networks the uplinks sit on ([network] local)"
+                } else {
+                    "refused the networks the uplinks sit on"
+                }
             ),
             None => "network    routed: needs [identity] uid_base to derive an address".into(),
         },

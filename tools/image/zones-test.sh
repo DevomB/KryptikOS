@@ -65,9 +65,9 @@ zp="$(sed -n 's/.*passed=\([0-9]*\).*/\1/p' <<<"$summary")"; zf="$(sed -n 's/.*f
 if [[ -n "$summary" && "${zf:-1}" -eq 0 && "${zp:-0}" -ge 30 ]]; then green "every guest check passed (${zp})"; else red "guest checks: ${zp:-0} passed, ${zf:-?} failed"; fi
 grep 'ZT FAIL' <<<"$T2" | sed 's/^/        /'
 # The key verdicts one by one, so a pass is not a single line.
-for name in kernel-support net-ready net-dns zone0-nic zone0-no-route zone0-offline routed-egress routed-ping routed-ping6 routed-dns routed-ipv6-noglobal zone-separation fail-closed net-restart-ready reattach-after-restart \
+for name in kernel-support policies net-ready net-dns zone0-nic zone0-no-route zone0-offline routed-egress routed-ping routed-ping6 routed-dns net-lease-names-resolver dns-follows-lease dns-after-reload routed-ipv6-noglobal zone-separation volume-hidden home-hidden fail-closed net-restart-ready reattach-after-restart uplink-refused wifi-beyond \
             wifi-module wifi-ap wifi-add wifi-associated wifi-lease wifi-egress wifi-forget \
-            time-floor-ran time-clamp time-claim-stepped time-claim-floor time-claim-consent pids-limit ephemeral-size-bound cpu-max-set \
+            time-floor-ran time-clamp time-floor-forged time-claim-stepped time-claim-floor time-claim-consent pids-limit ephemeral-size-bound cpu-max-set lifecycle-repeat lifecycle-registry \
             terminal-terminfo man-page text-browser tls-trust \
             volume-init encrypted-zone-start stop-closes-volume wrong-passphrase persist-reopen no-mapping-after ephemeral-gone concurrent-start-refused full-volume header-restore volume-destroy vault-offline vault-ping no-passphrase-leak \
             setuid-only-allowed no-file-capabilities sysctls-applied; do
@@ -126,9 +126,15 @@ drive 300 "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "after a reboot the LUKS2 volume opens with its passphrase and the data is there" || red "step 4 drive failed"
-# Only the tagged listing counts: step 2 opens and closes kryptik-personal, so
-# the name appears earlier in the transcript.
-if txt | grep -q '^MAPPER:kryptik-personal'; then red "a mapping was left open after the reboot check"; else green "no mapping left after the zone exited"; fi
+# Only the tagged listing counts: step 2 opens and closes personal's mapping,
+# so its name appears earlier in the transcript. The state partition's own
+# mapping must be in the listing, or a listing that printed nothing would pass.
+mappers="$(txt | grep '^MAPPER:')"
+if grep -qx 'MAPPER:kryptik-state' <<<"$mappers" && ! grep -q '^MAPPER:kryptik-zone-' <<<"$mappers"; then
+    green "no zone's mapping is left after the zone exited (the listing shows the state partition's alone)"
+else
+    red "after the reboot check /dev/mapper holds: $(tr '\n' ' ' <<<"${mappers:-no listing}")"
+fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 echo "Guest logs: /var/log/kryptik/zones-check.log and the suite logs on the disk ${DISK}; serial transcript ${LOG}"

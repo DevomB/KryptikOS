@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Test kryptik-update's verify_payload with the real ssh-keygen: the manifest is
 # read once, before the signature check, so files swapped in after the check
-# cannot change the version or hashes. Also tests check-manifest and
-# check-pointer. Needs ssh-keygen with -Y (OpenSSH 8.2+).
+# cannot change the version or hashes. Also tests check-manifest,
+# check-pointer and check-release. Needs ssh-keygen with -Y (OpenSSH 8.2+).
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TOOL="$ROOT/tools/update/kryptik-update"
@@ -39,6 +39,7 @@ mkpayload() {   # mkpayload DIR VERSION
         echo "KRYPTIK-MANIFEST-1"
         echo "role: development"
         echo "version: $v"
+        echo "created: 2027-03-02T12:00:00Z"
         echo "files: 4"
         echo "--"
         for f in kryptik-a.efi kryptik-b.efi kryptik-root.img root.json; do
@@ -284,12 +285,46 @@ out="$(check cmd_check_pointer "$T/ptr/manifest-as-pointer" "$T/ptr/manifest-as-
     && ok "check-pointer: a manifest presented as a pointer is refused by its first line" \
     || bad "check-pointer accepted a manifest: $(tail -2 <<<"$out" | tr '\n' ' ')"
 
-# The tool itself: the two checks need neither root nor this system's disks.
+# --- the release kept for the clock's floor ------------------------------------
+# check-release believes a kept manifest as apply would, in any version order,
+# and zone 0 reads its version and signed date from stdout alone.
+staged kept
+check cmd_check_release "$T/kept" > /dev/null
+said="$(bash "$T/check.sh" 2>/dev/null)"
+[[ "$said" == $'version: 2\ncreated: 2027-03-02T12:00:00Z' ]] \
+    && ok "check-release: a signed manifest gives its version and signed date, and nothing else, on stdout" \
+    || bad "check-release on a signed manifest printed: $(tr '\n' ' ' <<<"$said")"
+out="$(check cmd_check_release "$T/older")"
+[[ "$out" == *"version: 0.9"* && "$out" != *"REFUSED:"* ]] \
+    && ok "check-release: an older release, which check-manifest refuses, is read" \
+    || bad "check-release refused an older release: $(tail -2 <<<"$out" | tr '\n' ' ')"
+resigned running 's/^version: 2/version: 1/'
+out="$(check cmd_check_release "$T/running")"
+[[ "$out" == *"version: 1"* && "$out" != *"REFUSED:"* ]] \
+    && ok "check-release: the running release is read" \
+    || bad "check-release refused the running release: $(tail -2 <<<"$out" | tr '\n' ' ')"
+for c in "prod:this image requires 'development'" "crossed:does NOT verify" "stranger:not enrolled" "by-latest-key:does NOT verify"; do
+    out="$(check cmd_check_release "$T/${c%%:*}")"
+    [[ "$out" == *"REFUSED:"*"${c#*:}"* && "$out" != *"created:"* ]] \
+        && ok "check-release refuses what check-manifest refuses: ${c%%:*}" \
+        || bad "check-release accepted ${c%%:*}: $(tail -2 <<<"$out" | tr '\n' ' ')"
+done
+resigned undated '/^created: /d'
+out="$(check cmd_check_release "$T/undated")"
+[[ "$out" == *"REFUSED:"*"no created date"* && "$out" != *"version: 2"* ]] \
+    && ok "check-release: a signed manifest without a date gives none" \
+    || bad "check-release on a manifest without a date: $(tail -2 <<<"$out" | tr '\n' ' ')"
+
+# The tool itself: the checks need neither root nor this system's disks.
 if [[ "$(id -u)" != 0 ]]; then
     out="$(sh "$TOOL" check-pointer "$T/ptr/latest" "$T/ptr/latest.sig" 2>&1)"
     [[ "$out" != *"must run as root"* && "$out" == *"no trust anchor at /usr/share/kryptik/trust/release-signers"* ]] \
         && ok "check-pointer runs without root and stops at the image's trust anchor, which this host does not have" \
         || bad "the tool's own check-pointer, unprivileged: $(tail -2 <<<"$out" | tr '\n' ' ')"
+    out="$(sh "$TOOL" check-release "$T/kept" 2>&1)"
+    [[ "$out" != *"must run as root"* && "$out" == *"no trust anchor at /usr/share/kryptik/trust/release-signers"* ]] \
+        && ok "check-release runs without root and stops at the image's trust anchor as well" \
+        || bad "the tool's own check-release, unprivileged: $(tail -2 <<<"$out" | tr '\n' ' ')"
     # The exit trap removes the tool's copy directory, so the environment must
     # not choose it.
     mkdir -p "$T/precious"; echo keep > "$T/precious/marker"

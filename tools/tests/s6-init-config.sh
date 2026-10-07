@@ -36,9 +36,9 @@ if [[ -n "$missing" ]]; then
     echo "  configuration was not exercised at all:"
     printf '    %s\n' $missing
     echo
-    echo "  Fetch them and re-run:  make sources && make test-s6-init"
+    echo "  Fetch them and re-run:  make sources && tools/tests/s6-init-config.sh"
     echo
-    exit 0
+    exit 77
 fi
 
 W="$(mktemp -d)"

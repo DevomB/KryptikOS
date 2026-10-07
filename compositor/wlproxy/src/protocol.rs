@@ -73,7 +73,7 @@ pub struct Decoded<'a> {
 impl<'a> Decoded<'a> {
     fn created(&mut self, id: u32, name: &'a str) -> Result<(), WireError> {
         if self.new_object.is_some() {
-            return Err(WireError::ArgOverrun);
+            return Err(WireError::SecondNewId);
         }
         self.new_object = Some((id, name));
         Ok(())
@@ -95,7 +95,7 @@ pub fn decode<'a>(msg: &Message, body: &'a [u8]) -> Result<Decoded<'a>, WireErro
                 match r.string()? {
                     Some(s) => d.strings.push((at, s)),
                     None if nullable => {}
-                    None => return Err(WireError::UnterminatedString),
+                    None => return Err(WireError::NullString),
                 }
             }
             Arg::Array => {
@@ -107,7 +107,7 @@ pub fn decode<'a>(msg: &Message, body: &'a [u8]) -> Result<Decoded<'a>, WireErro
             }
             Arg::NewId { iface: None } => {
                 // wl_registry.bind: string interface, uint version, new_id
-                let name = r.string()?.ok_or(WireError::UnterminatedString)?;
+                let name = r.string()?.ok_or(WireError::NullString)?;
                 let version = r.u32()?;
                 let id = r.u32()?;
                 d.bind_version = Some(version);

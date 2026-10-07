@@ -33,21 +33,25 @@ KRYPTIK_WLPROXY_BIN ?=
 export KRYPTIK_ROOT := $(ROOT)
 # Read through the shell: versions.env is shell syntax, not make syntax.
 V_LINUX := $(shell . "$(ROOT)/build/config/versions.env" && echo $$V_LINUX)
-# Release name stamped into the media.
+# Stage 06's settings, taken as written and read from the environment, so nothing in them reaches a shell as syntax.
 KRYPTIK_VERSION ?=
+override KRYPTIK_VERSION := $(value KRYPTIK_VERSION)
 export KRYPTIK_VERSION
-# Where the image's net zone asks for releases (docs/design/update-channel.md);
-# empty, the image names none and fetches nothing. Taken as written, since make
-# would expand a $ in it ($web paths), and read by the recipes from the
-# environment, so nothing in it reaches a shell as syntax.
+# Where the image's net zone asks for releases (docs/design/update-channel.md); empty, it fetches nothing.
 KRYPTIK_CHANNEL ?=
 override KRYPTIK_CHANNEL := $(value KRYPTIK_CHANNEL)
 export KRYPTIK_CHANNEL
-# development: keys made on first use under the work tree. production: signed
-# only with the key medium KRYPTIK_KEYS names (build/lib/release-keys.sh).
-# Handed to stage 06 alone, on the host; the chroot never sees a key.
+# development: keys made on first use under the work tree; production: the key medium KRYPTIK_KEYS names.
 KRYPTIK_ROLE ?= development
+override KRYPTIK_ROLE := $(value KRYPTIK_ROLE)
+export KRYPTIK_ROLE
 KRYPTIK_KEYS ?=
+override KRYPTIK_KEYS := $(value KRYPTIK_KEYS)
+export KRYPTIK_KEYS
+# bind or sign splits a production build in two (docs/release-keys.md).
+KRYPTIK_MEDIA_PHASE ?=
+override KRYPTIK_MEDIA_PHASE := $(value KRYPTIK_MEDIA_PHASE)
+export KRYPTIK_MEDIA_PHASE
 export KRYPTIK_WORK
 export KRYPTIK_SOURCES
 export KRYPTIK_OUT
@@ -84,7 +88,7 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
         chroot chroot-enter chroot-umount chroot-status \
         iso media production-pair ovmf-vars media-smoke-usb media-smoke-iso media-smoke-secureboot \
         media-refused-foreign-keys install-test integrity-test update-test \
-        state-test zones-test gui-test acceptance \
+        state-test keyboard-test zones-test gui-test acceptance \
         zones zone-test launcher-test zone-tests cli-test serve-test \
         test test-libc-unwind smoke-userspace \
         audit-artifacts audit-artifacts-strict manifest verify-manifest source-bundle \
@@ -121,6 +125,7 @@ help:
 	@echo "  make integrity-test  Secure Boot enforced, foreign boot file refused, root tamper refused, recovery"
 	@echo "  make update-test PAYLOAD_A=.. PAYLOAD_B=..  A/B update, rollback, refusals, interruptions"
 	@echo "  make state-test | zones-test | gui-test    the state partition, zones, the desktop"
+	@echo "  make keyboard-test  a keyboard layout at the passphrase prompt, on the console, for the session"
 	@echo
 	@echo "  make verify      verify upstream GPG signatures on fetched sources"
 	@echo "  make source-bundle  the corresponding source of this commit, for a release"
@@ -167,7 +172,7 @@ help:
 	@echo "  KRYPTIK_KEYS     = $(if $(KRYPTIK_KEYS),$(KRYPTIK_KEYS),(not set - only a development image can be built))"
 	@echo "  SUDO             = $(if $(SUDO),$(SUDO),(none))"
 	@echo
-	@echo "Status: pre-alpha. See docs/roadmap.md for what actually works."
+	@echo "What is tested: docs/status.md. What remains: docs/roadmap.md."
 
 paths:
 	@echo "KRYPTIK_ROOT    = $(ROOT)"
@@ -281,12 +286,14 @@ chroot-status:
 # Stage 06 runs as root: the sysroot has root-only paths and the relink goes
 # through the chroot.
 iso: kernel
-	@$(SUDO) env $(CHROOT_ENV) KRYPTIK_VERSION="$(KRYPTIK_VERSION)" KRYPTIK_CHANNEL="$$KRYPTIK_CHANNEL" \
-	    KRYPTIK_ROLE="$(KRYPTIK_ROLE)" KRYPTIK_KEYS="$(KRYPTIK_KEYS)" "$(STAGES)"/06-iso.sh
+	@$(SUDO) env $(CHROOT_ENV) KRYPTIK_VERSION="$$KRYPTIK_VERSION" KRYPTIK_CHANNEL="$$KRYPTIK_CHANNEL" \
+	    KRYPTIK_ROLE="$$KRYPTIK_ROLE" KRYPTIK_KEYS="$$KRYPTIK_KEYS" KRYPTIK_MEDIA_PHASE="$$KRYPTIK_MEDIA_PHASE" \
+	    "$(STAGES)"/06-iso.sh
 
 media:
-	@$(SUDO) env $(CHROOT_ENV) KRYPTIK_VERSION="$(KRYPTIK_VERSION)" KRYPTIK_CHANNEL="$$KRYPTIK_CHANNEL" \
-	    KRYPTIK_ROLE="$(KRYPTIK_ROLE)" KRYPTIK_KEYS="$(KRYPTIK_KEYS)" "$(STAGES)"/06-iso.sh
+	@$(SUDO) env $(CHROOT_ENV) KRYPTIK_VERSION="$$KRYPTIK_VERSION" KRYPTIK_CHANNEL="$$KRYPTIK_CHANNEL" \
+	    KRYPTIK_ROLE="$$KRYPTIK_ROLE" KRYPTIK_KEYS="$$KRYPTIK_KEYS" KRYPTIK_MEDIA_PHASE="$$KRYPTIK_MEDIA_PHASE" \
+	    "$(STAGES)"/06-iso.sh
 
 # A production pair for acceptance's production suite, signed with a throwaway
 # key medium (tools/production-pair.sh). Before `make media` builds the
@@ -335,6 +342,10 @@ update-test:
 state-test:
 	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
 	@"$(TOOLS)"/image/state-test.sh --usb "$(MEDIA_USB)"
+
+keyboard-test:
+	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
+	@"$(TOOLS)"/image/keyboard-test.sh --usb "$(MEDIA_USB)"
 
 zones-test:
 	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }

@@ -80,7 +80,7 @@ pub fn decide(k: &Knowledge, c: &Claim) -> Decision {
     // The floor comes before consent: an impossible time is never offered.
     if to < k.floor as f64 {
         return Decision::Refuse(format!(
-            "{} is before this system was built ({}); not offered, not applied",
+            "{} is before the floor ({}); not offered, not applied",
             format_utc(to),
             format_utc(k.floor as f64)
         ));
@@ -189,7 +189,7 @@ pub fn format_utc(t: f64) -> String {
 use std::io::{self, Write};
 use std::path::Path;
 
-/// The image record whose `built_at` is the floor.
+/// The image record; its `built_at` is the lowest the floor can be.
 pub const IMAGE_JSON: &str = "/etc/kryptik-image.json";
 /// What zone 0 remembers about the clock between claims and across boots.
 pub const STATE_DIR: &str = "/var/lib/kryptik/time";
@@ -252,10 +252,53 @@ impl Clock for SystemClock {
     }
 }
 
-/// This system's floor, or None if the image record is missing or does not
-/// parse; with no floor every claim is refused.
+/// This system's floor: the image's build date, or the signed date of the
+/// newest release it has committed to if that is later. None if the image
+/// record is missing or does not parse; with no floor every claim is refused.
 pub fn floor_of_this_system() -> Option<i64> {
-    floor_from_image_json(&std::fs::read_to_string(IMAGE_JSON).ok()?)
+    let built = floor_from_image_json(&std::fs::read_to_string(IMAGE_JSON).ok()?)?;
+    Some(floor_from(built, committed_release().ok().flatten().map(|(_, at)| at)))
+}
+
+/// A committed release raises the floor and never lowers it.
+pub fn floor_from(built: i64, release: Option<i64>) -> i64 {
+    release.map_or(built, |at| at.max(built))
+}
+
+/// Under `STATE_DIR`: the manifest and signature of the newest release committed to.
+const RELEASE: &str = "release";
+
+/// The release whose signed manifest `dir` holds, as `check` (`kryptik-update
+/// check-release`) verifies it: its version and signed date, or None when
+/// there is no manifest. The files are looked at first, so a link or a huge
+/// file left on the state partition never reaches the tool.
+pub fn release_in(dir: &Path, check: &dyn Fn(&Path) -> Result<String, String>) -> Result<Option<(String, i64)>, String> {
+    for name in ["manifest", "manifest.sig"] {
+        let path = dir.join(name);
+        match std::fs::symlink_metadata(&path) {
+            Ok(m) if m.is_file() && m.len() <= crate::update::MANIFEST_MAX => {}
+            Ok(_) => return Err(format!("{} is not a file of a manifest's size", path.display())),
+            Err(e) if e.kind() == io::ErrorKind::NotFound && name == "manifest" => return Ok(None),
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        }
+    }
+    parse_release(&check(dir)?).map(Some)
+}
+
+/// `check-release`'s answer: `version: V` and `created: DATE` lines.
+pub fn parse_release(text: &str) -> Result<(String, i64), String> {
+    let field = |k: &str| text.lines().find_map(|l| l.strip_prefix(k));
+    let version = field("version: ").filter(|v| !v.is_empty()).ok_or("the check named no version")?;
+    let created = field("created: ").ok_or("the check named no date")?;
+    let at = parse_iso8601(created).ok_or_else(|| format!("created {created:?} is not a date"))?;
+    Ok((version.to_string(), at))
+}
+
+/// The newest release this machine has committed to, checked once per
+/// process: a claim from the net zone must not cost a signature check.
+pub fn committed_release() -> Result<Option<(String, i64)>, String> {
+    static KEPT: std::sync::OnceLock<Result<Option<(String, i64)>, String>> = std::sync::OnceLock::new();
+    KEPT.get_or_init(|| release_in(&Path::new(STATE_DIR).join(RELEASE), &crate::update::check_release)).clone()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -393,7 +436,7 @@ pub fn clamp(clock: &mut dyn Clock, dir: &Path, floor: Option<i64>) -> Result<St
     let floor = floor.ok_or_else(|| format!("no floor is known: {IMAGE_JSON} is missing or unreadable"))?;
     let now = clock.now();
     let Some(to) = clamp_to_floor(now, floor) else {
-        return Ok(format!("the clock ({}) is not before this system was built ({}); left alone", format_utc(now), format_utc(floor as f64)));
+        return Ok(format!("the clock ({}) is not before the floor ({}); left alone", format_utc(now), format_utc(floor as f64)));
     };
     clock.step(to).map_err(|e| format!("the clock could not be set to the floor: {e}"))?;
     let _ = clock.sync_rtc();
@@ -401,8 +444,36 @@ pub fn clamp(clock: &mut dyn Clock, dir: &Path, floor: Option<i64>) -> Result<St
     // The floor anchors the clock, as consent does.
     state.moved_unasked = 0.0;
     let _ = save_state(dir, &state);
-    record(dir, to, &format!("set to the floor: the clock read {}, before this system was built", format_utc(now)));
-    Ok(format!("the clock read {}, before this system was built; set to {}", format_utc(now), format_utc(to)))
+    record(dir, to, &format!("set to the floor: the clock read {}", format_utc(now)));
+    Ok(format!("the clock read {}, before the floor; set to {}", format_utc(now), format_utc(to)))
+}
+
+/// `kryptikd time committed DIR`, from boot-success once it has committed the
+/// running slot: DIR holds the manifest and signature `kryptik-update apply`
+/// verified for it. They are kept under `dir` if they verify, name the
+/// running release and are dated later than the release kept there.
+pub fn keep_release(dir: &Path, offered: &Path, running: &str, now: f64, check: &dyn Fn(&Path) -> Result<String, String>) -> Result<String, String> {
+    let (version, at) = release_in(offered, check)?.ok_or_else(|| format!("{} holds no manifest", offered.display()))?;
+    if version != running {
+        return Err(format!("{} holds release {version}, and this system runs {running}", offered.display()));
+    }
+    let kept = dir.join(RELEASE);
+    if let Ok(Some((v, d))) = release_in(&kept, check) {
+        if d >= at {
+            return Ok(format!("release {v} ({}) stays the floor", format_utc(d as f64)));
+        }
+    }
+    for d in [dir, kept.as_path()] {
+        crate::files::private_dir(d).map_err(|e| format!("{}: {e}", d.display()))?;
+    }
+    // A cut between the two leaves a pair that does not verify, and the build date is the floor.
+    for name in ["manifest.sig", "manifest"] {
+        let bytes = std::fs::read(offered.join(name)).map_err(|e| format!("{name}: {e}"))?;
+        crate::files::write_atomic(&kept.join(name), &[bytes.as_slice()], 0o600, None).map_err(|e| format!("{name}: {e}"))?;
+    }
+    let said = format!("release {version} ({}) is the floor now", format_utc(at as f64));
+    record(dir, now, &said);
+    Ok(said)
 }
 
 #[cfg(test)]

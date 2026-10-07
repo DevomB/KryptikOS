@@ -12,6 +12,11 @@
 #   GT KEY-MENU                                     press Alt+p (the chrome menu)
 #   GT CONSENT-CODE 1 NN                            type NN and Enter (the question's code)
 #   GT CONSENT-WAIT 2                               type y and Enter (not the code: refused)
+#   GT POINTER-ZONE0, GT POINTER-UNTRUSTED          move the pointer onto the newest window
+#   GT HEAD-ON, GT HEAD-OFF                         plug a second monitor in, pull it out
+#   GT KEY-FOCUS-HEAD                               press Alt+period (the next monitor)
+#   GT KEY-FOCUS-HEAD-WINDOW                        press Alt+j
+#   GT SCREENSHOT-HEAD                              take a screenshot of the second monitor
 #   GT END
 # Verdicts: "GT PASS|FAIL|INFO name - detail".
 set -u
@@ -89,10 +94,11 @@ launch_plain untrusted "/usr/libexec/kryptik/wlprobe list" > "$LOG/launch-probe.
 sleep 3
 out="$(since_mark probe untrusted)"
 [[ "$out" == *"connected /run/kryptik/wayland-0"* ]] && pass "zone-proxy-path" "the zone's client connected to /run/kryptik/wayland-0 (the proxy)" || fail "zone-proxy-path" "$(echo "$out" | head -3 | tr '\n' ' ') [$(cat "$LOG/launch-probe.out" | tr '\n' ' ')]"
+needed_missing=""
 for g in wl_compositor wl_shm wl_seat xdg_wm_base; do
-    [[ "$out" == *"global "*" $g "* ]] || fail "zone-sees-$g" "not offered"
+    [[ "$out" == *"global "*" $g "* ]] || needed_missing="$needed_missing $g"
 done
-[[ "$out" == *"global "*" xdg_wm_base "* ]] && pass "zone-sees-needed" "wl_compositor, wl_shm, wl_seat, xdg_wm_base offered"
+[[ -z "$needed_missing" ]] && pass "zone-sees-needed" "wl_compositor, wl_shm, wl_seat, xdg_wm_base offered" || fail "zone-sees-needed" "not offered:$needed_missing"
 hidden_seen=""
 for g in zwlr_screencopy_manager_v1 wl_data_device_manager zwlr_data_control_manager_v1 zwlr_layer_shell_v1 zwp_virtual_keyboard_manager_v1 zwlr_virtual_pointer_manager_v1 zwlr_export_dmabuf_manager_v1 zwlr_gamma_control_manager_v1 zwlr_output_manager_v1 ext_session_lock_manager_v1 zwlr_foreign_toplevel_manager_v1; do
     [[ "$out" == *" $g "* ]] && hidden_seen="$hidden_seen $g"
@@ -382,6 +388,11 @@ n=40; while [[ "$n" -gt 0 ]] && [[ "$(since_mark trf1 dev)" != *ok* && "$(since_
 out="$(since_mark trf1 dev)"
 [[ "$out" == *"ok report.txt"* ]] && pass "transfer-approved" "after the person typed the code: $(echo "$out" | grep -o 'ok .*' | head -1)" || fail "transfer-approved" "$(echo "$out" | tail -2 | tr '\n' ' '); $(zone_why work)"
 if [[ -f "$R/work/incoming/report.txt" ]] && [[ "$(cat "$R/work/incoming/report.txt")" = report-body ]]; then pass "transfer-landed" "the file is in work's incoming/, byte-identical"; else fail "transfer-landed" "$(ls -la "$R/work/incoming" 2>&1 | tail -2 | tr '\n' ' ')"; fi
+# Delivered as the destination's own: left to root or to the sender, it is a
+# file work cannot open, or one it does not hold alone.
+work_uid="$(sed -n 's/^uid_base *= *\([0-9]*\).*/\1/p' /usr/lib/kryptik/zones/work.toml)"
+landed_uid="$(stat -c %u "$R/work/incoming/report.txt" 2>/dev/null)"
+[[ -n "$work_uid" && "$landed_uid" == "$work_uid" ]] && pass "transfer-owned-by-destination" "report.txt belongs to work's identity (uid $landed_uid)" || fail "transfer-owned-by-destination" "owner uid ${landed_uid:-unreadable}; work's identity is ${work_uid:-unknown}"
 # As for personal above: wait for dev's volume to close before the next launch.
 wait_for 30 test ! -e /run/kryptik/zones/dev/init.pid; sleep 1
 mark trf2 dev
@@ -397,6 +408,84 @@ out="$(since_mark trf2 dev)"
 n=20; while [[ "$n" -gt 0 && -n "$(questions)" ]]; do n=$((n - 1)); sleep 1; done
 [[ -z "$(questions)" ]] && pass "consent-cleaned" "no question left behind" || fail "consent-cleaned" "$(questions | tr '
 ' ' ')"
+
+# --- a zone's cursor image is never drawn ---------------------------------------------
+# wlprobe cursor, once the pointer enters its window, asks for an image that,
+# drawn, covers the screen. The compositor tells a client which output each
+# of its surfaces is shown on, a cursor image among them once it is in use:
+# zone 0's image is told, so the same word missing for a zone's means the
+# compositor never took it. (A screenshot from the host holds no cursor.)
+as_user "/usr/libexec/kryptik/wlprobe cursor 12" > "$LOG/cursor-zone0.out" 2>&1 &
+probe0=$!
+wait_for 20 grep -q committed "$LOG/cursor-zone0.out"
+echo "GT POINTER-ZONE0"
+wait_for 20 grep -q 'set a ' "$LOG/cursor-zone0.out" && pass "zone0-cursor-set" "$(grep 'set a ' "$LOG/cursor-zone0.out")" || fail "zone0-cursor-set" "$(tr '\n' ' ' < "$LOG/cursor-zone0.out")"
+wait_for 10 grep -q 'the cursor image entered an output' "$LOG/cursor-zone0.out" && pass "zone0-cursor-shown" "the compositor took zone 0's image: it entered an output" || fail "zone0-cursor-shown" "zone 0's cursor image entered no output, so a zone's proves nothing: $(tr '\n' ' ' < "$LOG/cursor-zone0.out")"
+wait "$probe0" 2>/dev/null
+stop_zone untrusted
+mark cursor untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe cursor 20" > "$LOG/launch-cursor.out" 2>&1
+cursor_asked() { since_mark cursor untrusted | grep -q 'set a '; }
+wait_for 20 probe_committed cursor || fail "cursor-mapped" "the probe did not draw its window: $(tr '\n' ' ' < "$LOG/launch-cursor.out")"
+echo "GT POINTER-UNTRUSTED"
+wait_for 20 cursor_asked && pass "zone-cursor-asked" "$(since_mark cursor untrusted | grep 'set a ')" || fail "zone-cursor-asked" "$(since_mark cursor untrusted | tail -3 | tr '\n' ' '); $(zone_why untrusted)"
+sleep 6
+# The zone's client hears of its window through its proxy, so it would hear of its image.
+since_mark cursor untrusted | grep -q 'the window entered an output' && pass "zone-hears-of-outputs" "the zone's client was told its window entered an output" || fail "zone-hears-of-outputs" "$(since_mark cursor untrusted | tail -3 | tr '\n' ' ')"
+if since_mark cursor untrusted | grep -q 'the cursor image entered an output'; then
+    fail "zone-cursor-not-shown" "the compositor took the zone's cursor image: it entered an output"
+else
+    pass "zone-cursor-not-shown" "six seconds after the zone asked, its cursor image has entered no output"
+fi
+# --- a second monitor, plugged in and pulled out -------------------------------------------
+# A zone's window on the new monitor is framed and named as on the first, the
+# chrome's record follows the monitor in use, and pulling the monitor out
+# takes down neither the compositor nor the zone.
+for z in untrusted personal dev work; do stop_zone "$z"; done
+outputs() { as_user "/usr/libexec/kryptik/wlprobe list" 2>/dev/null | grep -c ' wl_output '; }
+heads() { [[ "$(outputs)" -eq "$1" ]]; }
+focus_output() { sed -n 's/^output=//p' "$RT/kryptik/focus" 2>/dev/null; }
+first_head="$(focus_output)"
+echo "GT HEAD-ON"
+if wait_for 30 heads 2; then
+    pass "second-head-appears" "the compositor offers two outputs once the second is plugged in"
+else
+    fail "second-head-appears" "$(outputs) output(s); connectors: $(for s in /sys/class/drm/card*-*/status; do printf '%s=%s ' "${s%/status}" "$(cat "$s" 2>/dev/null)"; done)"
+fi
+echo "GT KEY-FOCUS-HEAD"
+on_second_head() { local o; o="$(focus_output)"; [[ -n "$o" && "$o" != "$first_head" ]]; }
+if wait_for 20 on_second_head; then
+    pass "chrome-follows-head" "the record names $(focus_output) after Alt+period; the first monitor is ${first_head}"
+else
+    fail "chrome-follows-head" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+fi
+second_head="$(focus_output)"
+launch_plain untrusted "havoc" > "$LOG/launch-havoc-head2.out" 2>&1
+sleep 3
+echo "GT KEY-FOCUS-HEAD-WINDOW"
+zone_on_second_head() { grep -q '^zone=untrusted' "$RT/kryptik/focus" && [[ "$(focus_output)" == "$second_head" ]]; }
+if wait_for 20 zone_on_second_head; then
+    pass "second-head-zone-window" "$(tr '\n' ' ' < "$RT/kryptik/focus")"
+else
+    fail "second-head-zone-window" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); launch: $(tr '\n' ' ' < "$LOG/launch-havoc-head2.out"); $(zone_why untrusted)"
+fi
+if grep -q '^title=\[untrusted\]' "$RT/kryptik/focus" 2>/dev/null && grep -q '^label=UNTRUSTED' "$RT/kryptik/focus"; then
+    pass "second-head-names-zone" "$(grep -E '^(title|label)=' "$RT/kryptik/focus" | tr '\n' ' ')"
+else
+    fail "second-head-names-zone" "$(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+fi
+sleep 2
+echo "GT SCREENSHOT-HEAD"
+sleep 6
+echo "GT HEAD-OFF"
+if wait_for 30 heads 1; then pass "second-head-gone" "one output again"; else fail "second-head-gone" "$(outputs) output(s) after the monitor was pulled"; fi
+pgrep -u "$USER_NAME" -x dwl > /dev/null && pass "compositor-survives-unplug" "dwl still runs" \
+    || fail "compositor-survives-unplug" "session.log: $(tail -4 "$RT/kryptik/session.log" 2>/dev/null | tr '\n' ' ')"
+test -e /run/kryptik/zones/untrusted/init.pid && pass "zone-survives-unplug" "untrusted still runs" || fail "zone-survives-unplug" "$(zone_why untrusted)"
+back_on_first_head() { [[ "$(focus_output)" == "$first_head" ]]; }
+wait_for 20 back_on_first_head && pass "chrome-back-on-first-head" "$(tr '\n' ' ' < "$RT/kryptik/focus")" \
+    || fail "chrome-back-on-first-head" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+stop_zone untrusted
 
 # --- teardown ------------------------------------------------------------------------------
 # The runtime tmpfs does not survive power-off: copy the session log and the

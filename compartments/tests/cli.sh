@@ -225,6 +225,26 @@ else
     fail "doctor did not report its configuration"
 fi
 
+# --- keyboard: the layouts are the installed system's ------------------------
+out="$(K keyboard 2>&1)"; rc=$?
+if [[ -r /usr/libexec/kryptik/keyboard.sh ]]; then
+    if (( rc == 0 )) && grep -q '^\* ' <<<"$out"; then
+        pass "keyboard lists the layouts and marks the one in force"
+    else
+        fail "keyboard on an installed system: exit $rc, output '$out'"
+    fi
+elif (( rc != 0 )) && [[ "$out" == *"an installed Kryptik's"* ]]; then
+    pass "keyboard without the installed system's helper says so"
+else
+    fail "keyboard without the helper: exit $rc, output '$out'"
+fi
+out="$(K keyboard de us 2>&1)"; rc=$?
+if (( rc == 2 )) && [[ "$out" == *"one layout's name"* ]]; then
+    pass "keyboard with two names is refused"
+else
+    fail "keyboard with two names: exit $rc, output '$out'"
+fi
+
 # --- wifi: the net zone's credentials ----------------------------------------
 # A passphrase never goes on a command line, where any process could read it:
 # `kryptik wifi add` reads it (terminal with echo off, or a pipe) and passes it
@@ -273,6 +293,22 @@ if (( rc == 0 )) && [[ "$out" == *"forgot network \"Home\""* && "$(K wifi list 2
     pass "wifi forget removes the network"
 else
     fail "wifi forget: exit $rc, output '$out'"
+fi
+
+# --- update: refused here before the launch service is asked -----------------
+out="$(K update 2>&1)"; rc=$?
+if (( rc == 2 )) && [[ "$out" == *"status, fetch, apply, or auto on|off"* ]]; then
+    pass "update without a subcommand fails and names the subcommands"
+else
+    fail "update without a subcommand: exit $rc"
+    info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
+fi
+out="$(K update auto sometimes 2>&1)"; rc=$?
+if (( rc == 2 )) && [[ "$out" == *"takes on or off"* ]]; then
+    pass "update auto takes on or off, nothing else"
+else
+    fail "update auto with another word: exit $rc"
+    info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
 fi
 
 # Through the launch service, as a user in a session gets there. Its socket

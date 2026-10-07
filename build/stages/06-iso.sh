@@ -6,14 +6,15 @@
 # usage: make iso   (KRYPTIK_VERSION=... names the release, KRYPTIK_CHANNEL=...
 #                    where its net zone asks for the next one, KRYPTIK_ROLE=
 #                    production and KRYPTIK_KEYS=... the key medium it is
-#                    signed with)
+#                    signed with; KRYPTIK_MEDIA_PHASE=bind, then sign, splits
+#                    a production build in two)
 #        06-iso.sh [--redo <step>]
 set -Eeuo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/release-keys.sh"
 load_config
 require_outside_chroot "stage 06"
-[[ "$EUID" -eq 0 ]] || die "stage 06 must run as root: the sysroot has root-only paths and the kernel relink needs the chroot.
+[[ "$EUID" -eq 0 || "${KRYPTIK_MEDIA_PHASE:-}" == sign ]] || die "stage 06 must run as root: the sysroot has root-only paths and the kernel relink needs the chroot.
   sudo -E make iso     (or SUDO= as root)"
 
 stage_contract "${BASH_SOURCE[0]}" "img-" gcc
@@ -33,6 +34,14 @@ CHROOTD="${KRYPTIK_ROOT}/build/stages/03-chroot-prep.sh"
 ROLE="${KRYPTIK_ROLE:-development}"
 # Checked before the dated default: a production release names its version.
 release_version "$ROLE" "${KRYPTIK_VERSION:-}"
+# bind (chroot, public half) then sign (private keys, no chroot) keeps a release's keys off the build machine.
+PHASE="${KRYPTIK_MEDIA_PHASE:-all}"
+case "$PHASE" in
+    all) ;;
+    bind|sign) [[ "$ROLE" == production ]] || die "KRYPTIK_MEDIA_PHASE=${PHASE} splits a production build; a ${ROLE} one is built whole" ;;
+    *) die "KRYPTIK_MEDIA_PHASE=${PHASE}: all, bind or sign" ;;
+esac
+export KRYPTIK_MEDIA_PHASE="$PHASE"
 # Git trusts this checkout alone, run as root over the user's checkout.
 TOP="$(cd "$KRYPTIK_ROOT" && pwd -P)"
 KRYPTIK_VERSION="${KRYPTIK_VERSION:-0.1.$(date +%Y%m%d).$(git -c safe.directory="$TOP" -C "$TOP" rev-parse --short=8 HEAD 2>/dev/null || echo unknown)}"
@@ -75,14 +84,17 @@ channel_conf() {
 
 # --- preflight ----------------------------------------------------------------
 log "Kryptik stage 06 — install media ${KRYPTIK_VERSION}"
-for t in mkfs.ext4 tune2fs dumpe2fs veritysetup sbsign sbverify mkfs.vfat mmd mcopy \
+for t in mkfs.ext4 tune2fs dumpe2fs debugfs veritysetup sbsign sbverify mkfs.vfat mmd mcopy \
          xorriso sfdisk openssl ssh-keygen rsync truncate dd sha256sum blkid; do
     have "$t" || die "required tool not found: ${t}"
 done
-[[ -d "$SYSROOT" ]] || die "no sysroot at ${SYSROOT}"
-[[ -f "${SYSROOT}/boot/kryptik-${V_LINUX}" ]] || die "no kernel at ${SYSROOT}/boot/kryptik-${V_LINUX}; run make kernel"
-[[ -d "${SYSROOT}/lib/modules/${V_LINUX_HARDENED}" ]] || warn "no modules under lib/modules/${V_LINUX_HARDENED}"
-"$CHROOTD" guard-unmounted 2>/dev/null || die "the chroot is mounted inside ${SYSROOT}; unmount it first"
+# The signing half never touches the sysroot or the chroot.
+if [[ "$PHASE" != sign ]]; then
+    [[ -d "$SYSROOT" ]] || die "no sysroot at ${SYSROOT}"
+    [[ -f "${SYSROOT}/boot/kryptik-${V_LINUX}" ]] || die "no kernel at ${SYSROOT}/boot/kryptik-${V_LINUX}; run make kernel"
+    [[ -d "${SYSROOT}/lib/modules/${V_LINUX_HARDENED}" ]] || warn "no modules under lib/modules/${V_LINUX_HARDENED}"
+    "$CHROOTD" guard-unmounted 2>/dev/null || die "the chroot is mounted inside ${SYSROOT}; unmount it first"
+fi
 # The keys this image is signed with and the anchor it trusts: made here for a
 # development image, handed in on the key medium for a production one.
 release_keys "$ROLE"
@@ -152,9 +164,11 @@ s_rootfs() {
     fi
 
     # The image cannot hold its own hash; that goes on the ESP and in MANIFEST.
-    sed -i "/^VERSION_ID=/d;/^VERSION=/d" "$stage/etc/os-release"
-    printf 'VERSION_ID=%s\nVERSION="%s"\n' "$version" "$version" >> "$stage/etc/os-release"
+    sed -i "/^VERSION_ID=/d;/^VERSION=/d;/^PRETTY_NAME=/d" "$stage/etc/os-release"
+    printf 'VERSION_ID=%s\nVERSION="%s"\nPRETTY_NAME="Kryptik %s"\n' "$version" "$version" "$version" >> "$stage/etc/os-release"
     local kernel_sha; kernel_sha="$(sha256_of "${SYSROOT}/boot/kryptik-${V_LINUX}")"
+    # For the release record, which the signing half writes without the sysroot.
+    printf '%s\n' "$kernel_sha" > "${IMG}/kernel-unbound.sha256"
     local manifest_digest=""
     [[ -f "${KRYPTIK_WORK}/artifact-manifest.txt" ]] && \
         manifest_digest="$(sed -n 's/^# digest: //p' "${KRYPTIK_WORK}/artifact-manifest.txt" | head -1)"
@@ -280,6 +294,7 @@ s_cmdlines() {
 }
 
 bind_in_chroot() {   # bind_in_chroot VARIANT...
+    [[ "$PHASE" != sign ]] || die "the signing half never runs the chroot"
     env KRYPTIK_ROOT="$KRYPTIK_ROOT" KRYPTIK_WORK="$KRYPTIK_WORK" KRYPTIK_SOURCES="$KRYPTIK_SOURCES" \
         KRYPTIK_JOBS="${KRYPTIK_JOBS:-}" KRYPTIK_STALE="${KRYPTIK_STALE:-refuse}" NO_COLOR=1 \
         "$CHROOTD" run /kryptik/build/stages/06-kernel-bind.sh "$@"
@@ -313,15 +328,15 @@ s_sign_kernels() {
     echo "ok: a foreign certificate does not verify the signature"
 }
 
-make_esp() {   # make_esp OUT BOOTX64-VARIANT
-    local out="$1" boot="$2"
+make_esp() {   # make_esp OUT BOOTX64-VARIANT [KERNEL-SUFFIX]
+    local out="$1" boot="$2" k="${3:-.signed.efi}"
     rm -f "$out"
     truncate -s $(( ESP_MIB * 1024 * 1024 )) "$out"
     mkfs.vfat -F 32 -n KRYPTIKESP "$out" >/dev/null
     mmd -i "$out" ::/EFI ::/EFI/BOOT ::/EFI/kryptik ::/kryptik
-    mcopy -i "$out" "${IMG}/kernels/${boot}.signed.efi" ::/EFI/BOOT/BOOTX64.EFI
-    mcopy -i "$out" "${IMG}/kernels/slot-a.signed.efi" ::/EFI/kryptik/kryptik-a.efi
-    mcopy -i "$out" "${IMG}/kernels/slot-b.signed.efi" ::/EFI/kryptik/kryptik-b.efi
+    mcopy -i "$out" "${IMG}/kernels/${boot}${k}" ::/EFI/BOOT/BOOTX64.EFI
+    mcopy -i "$out" "${IMG}/kernels/slot-a${k}" ::/EFI/kryptik/kryptik-a.efi
+    mcopy -i "$out" "${IMG}/kernels/slot-b${k}" ::/EFI/kryptik/kryptik-b.efi
     local t; t="$(mktemp -d)"
     printf '%s\n' "$KRYPTIK_VERSION" > "$t/version-a"
     printf '%s\n' "$KRYPTIK_VERSION" > "$t/version-b"
@@ -400,11 +415,11 @@ EOF
 
 part2_start() { sfdisk -d "$1" 2>/dev/null | awk -F'[ ,]+' '/^\/.*2 :/ || /-2 :/ {for(i=1;i<=NF;i++) if($i=="start=") print $(i+1)}' | head -1; }
 
-s_iso() {
+# A layout pass finds the root's start sector for the ISO kernel; the ESP's size is fixed, so unsigned kernels do.
+s_bind_iso() {
     echo "inputs digest: $1"
-    local iso="${IMG}/kryptik-${KRYPTIK_VERSION}.iso"
     echo "--- pass 1: layout (a placeholder ESP of the final size) ---"
-    make_esp "${IMG}/esp-iso.img" slot-a
+    make_esp "${IMG}/esp-iso.img" slot-a .efi
     make_iso "${IMG}/layout.iso" "${IMG}/esp-iso.img"
     local start; start="$(part2_start "${IMG}/layout.iso")"
     [[ -n "$start" ]] || { echo "could not read the appended partition's start"; sfdisk -d "${IMG}/layout.iso"; return 1; }
@@ -417,22 +432,30 @@ s_iso() {
     fi
     printf 'dm-mod.create="kmedia,,0,ro,0 %s linear /dev/sr0 %s;kroot,,1,ro,%s" root=/dev/dm-1 %s kryptik.media=iso\n' \
         "$total_sectors" "$start" "$(verity_table /dev/dm-0)" "$COMMON_ARGS" > "${IMG}/cmdlines/media-iso.txt"
+    printf '%s\n' "$start" > "${IMG}/iso-root-start"
     cat "${IMG}/cmdlines/media-iso.txt"
-    echo "--- bind and sign the ISO kernel ---"
+    rm -f "${IMG}/layout.iso" "${IMG}/esp-iso.img"
+    echo "--- bind the ISO kernel ---"
     bind_in_chroot media-iso
+}
+
+s_iso() {
+    echo "inputs digest: $1"
+    local iso="${IMG}/kryptik-${KRYPTIK_VERSION}.iso" start
+    start="$(cat "${IMG}/iso-root-start")"
+    echo "--- sign the ISO kernel ---"
     sign_one media-iso
     echo "--- pass 2: the real ESP and ISO ---"
     make_esp "${IMG}/esp-iso.img" media-iso
     make_iso "$iso" "${IMG}/esp-iso.img"
     local start2; start2="$(part2_start "$iso")"
-    [[ "$start2" == "$start" ]] || { echo "FAIL: the root partition moved between passes (${start} -> ${start2})"; return 1; }
+    [[ "$start2" == "$start" ]] || { echo "FAIL: the root partition moved from where the ISO kernel was bound (${start} -> ${start2})"; return 1; }
     echo "ok: root partition start unchanged at ${start2}"
     # The bytes at that offset must be the root image.
     local off=$(( start2 * 512 ))
     local got; got="$(dd if="$iso" bs=1M iflag=skip_bytes,count_bytes skip="$off" count="$(root_json total_bytes)" status=none | sha256sum | cut -c1-64)"
     [[ "$got" == "$(root_json sha256)" ]] || { echo "FAIL: appended partition is not the root image (${got})"; return 1; }
     echo "ok: appended partition is the root image byte for byte"
-    rm -f "${IMG}/layout.iso"
     sha256sum "$iso" | sed "s| .*/| |" > "${iso}.sha256"
     xorriso -indev "$iso" -toc 2>/dev/null | grep -E 'ISO session|Media summary|El Torito' | sed 's/^/  /' || true
     sfdisk -l "$iso" | sed 's/^/  /'
@@ -542,7 +565,7 @@ s_export() {
         echo "Kryptik ${KRYPTIK_VERSION}"
         echo "commit: ${COMMIT}"
         echo "built:  $(date -Iseconds)"
-        echo "kernel: ${V_LINUX_HARDENED} (unbound bzImage sha256 $(sha256_of "${SYSROOT}/boot/kryptik-${V_LINUX}"))"
+        echo "kernel: ${V_LINUX_HARDENED} (unbound bzImage sha256 $(cat "${IMG}/kernel-unbound.sha256"))"
         echo "root hash: $(root_json root_hash)"
         echo
         echo "images (not copied here; make acceptance EXPORT=DIR delivers the tested ones):"
@@ -557,14 +580,58 @@ s_export() {
     ln -sfn "kryptik-${KRYPTIK_VERSION}" "${KRYPTIK_OUT}/latest"
 }
 
+# A binding step; the signing half chains onto its stamp instead and checks its output in check_bound.
+bound() {   # bound NAME RECIPE ARGS...
+    if [[ "$PHASE" != sign ]]; then step "$@"; return; fi
+    local fp; fp="$(_stamp_read "${STAMPS}/${STAMP_PREFIX}$1")"
+    [[ -n "$fp" ]] || die "$1 is not bound: no stamp at ${STAMPS}/${STAMP_PREFIX}$1 (KRYPTIK_MEDIA_PHASE=bind makes it)"
+    dim "  ${1}: bound before"
+    STAMP_DEPS="${STAMP_DEPS}$1=${fp};"
+}
+
+# Signed only if intact, of this version and role, trusting this medium's anchor, with kernels bound to it.
+check_bound() {
+    local f got v sum='^[0-9a-f]{64}  kryptik-root\.img$'
+    [[ -z "$(find "$IMG" ! -type f ! -type d)" ]] || die "the bound images hold more than plain files and directories"
+    for f in kryptik-root.img kryptik-root.img.sha256 root.json iso-root-start kernel-unbound.sha256 \
+             kernels/{slot-a,slot-b,media-usb,media-iso}.efi cmdlines/{slot-a,slot-b,media-usb,media-iso}.txt; do
+        [[ -f "${IMG}/${f}" && -s "${IMG}/${f}" ]] || die "the bound images have no ${f}"
+    done
+    [[ "$(cat "${IMG}/iso-root-start")" =~ ^[0-9]+$ ]] || die "iso-root-start is not a sector number"
+    [[ "$(cat "${IMG}/kernel-unbound.sha256")" =~ ^[0-9a-f]{64}$ ]] || die "kernel-unbound.sha256 is not a SHA-256"
+    [[ "$(cat "${IMG}/kryptik-root.img.sha256")" =~ $sum ]] || die "kryptik-root.img.sha256 is not the root image's hash line"
+    for f in root_hash salt sha256; do [[ "$(root_json "$f")" =~ ^[0-9a-f]{64}$ ]] || die "root.json's ${f} is not 64 hex digits"; done
+    for f in data_bytes data_blocks data_sectors hash_start_block total_bytes; do
+        [[ "$(root_json "$f")" =~ ^[0-9]+$ ]] || die "root.json's ${f} is not a number"
+    done
+    [[ "$(root_json version)" == "$KRYPTIK_VERSION" ]] || die "the bound root is $(root_json version), not ${KRYPTIK_VERSION}"
+    got="$(sha256_of "${IMG}/kryptik-root.img")"
+    [[ "$got" == "$(root_json sha256)" ]] || die "the bound root image changed since it was hashed (${got})"
+    got="$(debugfs -R 'cat /usr/share/kryptik/trust/release-signers' "${IMG}/kryptik-root.img" 2>/dev/null)"
+    [[ "$got" == "$(cat "$ANCHOR")" ]] || die "the bound root trusts another anchor than ${ANCHOR}: it would refuse what these keys sign"
+    got="$(debugfs -R 'cat /usr/share/kryptik/trust/required-role' "${IMG}/kryptik-root.img" 2>/dev/null)"
+    [[ "$got" == "$ROLE" ]] || die "the bound root takes ${got:-no role}, not ${ROLE}"
+    for v in slot-a slot-b media-usb media-iso; do
+        grep -q -a -F -e "$(root_json root_hash)" "${IMG}/kernels/${v}.efi" || die "${v}.efi is not bound to this root"
+    done
+    ok "the bound root trusts ${ANCHOR}, and its four kernels are bound to it"
+}
+
 # --- run --------------------------------------------------------------------
-step rootfs         s_rootfs "$KRYPTIK_VERSION" "$(cat "${KRYPTIK_ROOT}/build/config/setuid-allowlist.txt" "${KRYPTIK_ROOT}/build/config/capability-allowlist.txt" "${KRYPTIK_ROOT}/tools/audit-setuid.sh" "${KRYPTIK_ROOT}/build/config/artifact-accepted.txt" "${KRYPTIK_ROOT}/tools/check-artifact-hardening.sh" | sha256_of_stdin)" "$KRYPTIK_CHANNEL" "$ROLE" "$(_hash_file "$ANCHOR")"
-step cmdlines       s_cmdlines "$(_hash_file "${IMG}/root.json")"
-step bind-kernels   s_bind_kernels "$(cat "${IMG}"/cmdlines/{slot-a,slot-b,media-usb}.txt | sha256_of_stdin)"
+[[ "$PHASE" != sign ]] || check_bound
+bound rootfs        s_rootfs "$KRYPTIK_VERSION" "$(cat "${KRYPTIK_ROOT}/build/config/setuid-allowlist.txt" "${KRYPTIK_ROOT}/build/config/capability-allowlist.txt" "${KRYPTIK_ROOT}/tools/audit-setuid.sh" "${KRYPTIK_ROOT}/build/config/artifact-accepted.txt" "${KRYPTIK_ROOT}/tools/check-artifact-hardening.sh" | sha256_of_stdin)" "$KRYPTIK_CHANNEL" "$ROLE" "$(_hash_file "$ANCHOR")"
+bound cmdlines      s_cmdlines "$(_hash_file "${IMG}/root.json")"
+bound bind-kernels  s_bind_kernels "$(cat "${IMG}"/cmdlines/{slot-a,slot-b,media-usb}.txt | sha256_of_stdin)"
+bound bind-iso      s_bind_iso "$(cat "${IMG}/root.json" "$SB_CERT" | sha256_of_stdin)"
+if [[ "$PHASE" == bind ]]; then
+    echo
+    ok "Stage 06 bound ${KRYPTIK_VERSION} in ${IMG}: KRYPTIK_MEDIA_PHASE=sign signs it"
+    exit 0
+fi
 step sign-kernels   s_sign_kernels "$(cat "${IMG}"/kernels/{slot-a,slot-b,media-usb}.efi | sha256_of_stdin)$(_hash_file "$SB_CERT")"
 step esp            s_esp "$(cat "${IMG}"/kernels/{slot-a,slot-b,media-usb}.signed.efi "${IMG}/root.json" | sha256_of_stdin)"
 step usb            s_usb "$(cat "${IMG}/esp-usb.img" | sha256_of_stdin)$(root_json sha256)"
-step iso            s_iso "$(cat "${IMG}"/kernels/{slot-a,slot-b}.signed.efi "${IMG}/root.json" | sha256_of_stdin)"
+step iso            s_iso "$(cat "${IMG}"/kernels/{slot-a,slot-b}.signed.efi "${IMG}/kernels/media-iso.efi" "${IMG}/root.json" "${IMG}/iso-root-start" | sha256_of_stdin)"
 step sums           s_sums "$(cat "${IMG}/kryptik-${KRYPTIK_VERSION}"{-usb.img,.iso}.sha256 | sha256_of_stdin)$(_hash_file "$ANCHOR")"
 step payload        s_payload "$(cat "${IMG}"/kernels/{slot-a,slot-b}.signed.efi "${IMG}/root.json" "${KRYPTIK_ROOT}"/tools/release-{manifest,channel}.sh | sha256_of_stdin)" "${LATEST_KEY:+with a statement key}"
 step export         s_export "$(cat "${IMG}"/kryptik-*.sha256 "${IMG}/payload-${KRYPTIK_VERSION}/manifest" "${IMG}/kryptik-${KRYPTIK_VERSION}.SHA256SUMS.sig" "$ANCHOR" | sha256_of_stdin)"

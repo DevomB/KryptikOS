@@ -23,6 +23,8 @@ report() {   # report READY|NOT READY ...: on stdout and in a file for the tests
     say "$*"
     printf '%s\n' "$*" > "$STATUS.new" 2>/dev/null && mv -f "$STATUS.new" "$STATUS" 2>/dev/null || true
 }
+# The zone definitions, on the root this zone shares read-only with zone 0.
+ZONES="${1:-/usr/lib/kryptik/zones}"
 
 [ -d /proc/sys/net/ipv4 ] || { report "NOT READY no network stack"; exit 1; }
 # Nothing forwards until the policy is in place, whatever zone 0 set.
@@ -51,11 +53,47 @@ NICSET=""
 for n in "$@"; do NICSET="${NICSET:+$NICSET, }\"$n\""; done
 NICSET="{ $NICSET }"
 
+# The routed zones whose definition says [network] local = true, each by the
+# address kryptikd gives it (netzone.rs, host_number). A file this zone cannot
+# read names nobody.
+local_zones() {   # local_zones DIR: "10.19.0.K fd19::K" for each
+    for f in "$1"/*.toml; do
+        [ -r "$f" ] || continue
+        awk '
+            { sub(/#.*/, ""); gsub(/[ \t]/, "") }
+            /^\[/ { section = $0; next }
+            section == "[network]" && ($0 == "local=true" || $0 == "local=\"true\"") { claims = 1 }
+            section == "[network]" && $0 == "mode=\"routed\"" { routed = 1 }
+            section == "[identity]" && /^uid_base="?[0-9]+"?$/ { base = $0; gsub(/[^0-9]/, "", base) }
+            END {
+                k = (base - 131072) / 65536 + 2
+                if (claims && routed && base != "" && k == int(k) && k >= 2 && k < 250) printf "10.19.0.%d fd19::%x\n", k, k
+            }' "$f"
+    done
+}
+LOCAL4="$(local_zones "$ZONES" | awk '{ print $1 }' | tr '\n' ',' | sed 's/,$//')"
+LOCAL6="$(local_zones "$ZONES" | awk '{ print $2 }' | tr '\n' ',' | sed 's/,$//')"
+SET4="set local4 { type ipv4_addr; }"; SET6="set local6 { type ipv6_addr; }"
+[ -z "$LOCAL4" ] || SET4="set local4 { type ipv4_addr; elements = { ${LOCAL4} } }"
+[ -z "$LOCAL6" ] || SET6="set local6 { type ipv6_addr; elements = { ${LOCAL6} } }"
+
+# A zone goes out by a gateway (gw4, gw6) and never to the gateway itself:
+# the rest of what an uplink reaches is the network it sits on, open to local4
+# and local6 alone. With no gateway in the sets nothing goes out, so a new
+# lease opens no way in before sync_gateways has seen it.
 RULES="table inet kryptik {
+    set gw4 { type ipv4_addr; }
+    set gw6 { type ipv6_addr; }
+    ${SET4}
+    ${SET6}
     chain forward {
         type filter hook forward priority filter; policy drop;
         ct state established,related accept
-        iifname \"${BR}\" oifname ${NICSET} accept
+        iifname \"${BR}\" oifname ${NICSET} ip saddr @local4 accept
+        iifname \"${BR}\" oifname ${NICSET} ip6 saddr @local6 accept
+        iifname \"${BR}\" oifname ${NICSET} rt ip nexthop @gw4 ip daddr != @gw4 accept
+        iifname \"${BR}\" oifname ${NICSET} rt ip6 nexthop @gw6 ip6 daddr != @gw6 accept
+        iifname \"${BR}\" oifname ${NICSET} reject with icmpx type admin-prohibited
         iifname \"${BR}\" oifname \"${BR}\" drop
     }
     chain postrouting {
@@ -81,11 +119,37 @@ load_policy() {
         *"policy drop"*"masquerade"*) ;;
         *) say "nftables: the loaded table is not the policy (missing drop policy or masquerade)"; nft flush ruleset 2>/dev/null; return 1 ;;
     esac
+    GATEWAYS=""
     return 0
 }
 
+# The gateways the uplinks' routes go by, as "4 ADDRESS" or "6 ADDRESS".
+uplink_gateways() {   # uplink_gateways <uplink>...
+    for n in "$@"; do
+        ip -4 route show dev "$n" 2>/dev/null | awk '$2 == "via" { print 4, $3 }'
+        ip -6 route show dev "$n" 2>/dev/null | awk '$2 == "via" { print 6, $3 }'
+    done | sort -u
+}
+# Put them in gw4 and gw6 when they have changed: one transaction, so the
+# sets are never seen half filled. 1 when nft refuses it.
+GATEWAYS=""
+sync_gateways() {   # sync_gateways <uplink>...
+    now="$(uplink_gateways "$@")"
+    [ "$now" = "$GATEWAYS" ] && return 0
+    gw4="$(printf '%s\n' "$now" | sed -n 's/^4 //p' | tr '\n' ',' | sed 's/,$//')"
+    gw6="$(printf '%s\n' "$now" | sed -n 's/^6 //p' | tr '\n' ',' | sed 's/,$//')"
+    {
+        echo "flush set inet kryptik gw4"
+        echo "flush set inet kryptik gw6"
+        [ -z "$gw4" ] || echo "add element inet kryptik gw4 { $gw4 }"
+        [ -z "$gw6" ] || echo "add element inet kryptik gw6 { $gw6 }"
+    } | nft -f - 2>/tmp/nft.err || { say "nftables: the gateways could not be set: $(tr '\n' ' ' < /tmp/nft.err)"; return 1; }
+    GATEWAYS="$now"
+    say "nftables: zones go out by ${gw4:-no IPv4 gateway} and ${gw6:-no IPv6 gateway}; the uplinks' own networks are refused${LOCAL4:+ but to $LOCAL4}"
+}
+
 policy_ok=0
-if load_policy; then
+if load_policy && sync_gateways "$@"; then
     policy_ok=1
     forwarding on || { report "NOT READY cannot enable forwarding"; policy_ok=0; }
     [ "$policy_ok" = 1 ] && say "nftables: masquerade 10.19.0.0/24 and fd19::/64 via ${NICSET}; forward bridge->uplink only; forwarding enabled"
@@ -162,31 +226,39 @@ if command -v dhcpcd >/dev/null 2>&1; then
 else
     say "no dhcpcd; keeping the carried-over configuration"
 fi
+# The lease named a gateway: until it is in the sets, only local zones go out.
+[ "$policy_ok" = 1 ] && { sync_gateways "$@" || { forwarding off; policy_ok=0; }; }
 
 # --- the resolver routed zones already point at ----------------------------
 DNSPID=""
+RESOLV=/etc/resolv.conf            # this zone's own: dhcpcd's hook, or zone 0's static copy
+UPSTREAM=/run/uplink-resolv.conf   # what dnsmasq forwards to
+# sync_upstream: the uplink's servers, written for dnsmasq; 0 when they are
+# other servers than the file held. A lease can come after the wait above, and
+# another network names other servers. A resolv.conf that names none leaves
+# the file as it is: a lease that lapsed is no reason to forget the last ones.
+sync_upstream() {
+    new="$(grep '^nameserver' "$RESOLV" 2>/dev/null)"
+    [ -n "$new" ] || return 1
+    [ "$new" != "$(cat "$UPSTREAM" 2>/dev/null)" ] || return 1
+    printf '%s\n' "$new" > "$UPSTREAM.new" 2>/dev/null && mv -f "$UPSTREAM.new" "$UPSTREAM" 2>/dev/null
+}
 start_dns() {
     command -v dnsmasq >/dev/null 2>&1 || { say "no dnsmasq; routed zones have no resolver"; return 1; }
-    up=/run/uplink-resolv.conf
-    # The uplink's servers, from dhcpcd's hook or zone 0's static copy. printf,
-    # not ':': a failed redirection on a special builtin exits a POSIX sh.
-    if [ -r /etc/resolv.conf ] && grep -q '^nameserver' /etc/resolv.conf; then
-        grep '^nameserver' /etc/resolv.conf > "$up"
-    else
-        printf '' > "$up"
-    fi
+    sync_upstream
     # QEMU user networking's resolver, when nothing else is known
-    grep -q '^nameserver' "$up" || echo "nameserver 10.0.2.3" >> "$up"
+    grep -q '^nameserver' "$UPSTREAM" 2>/dev/null || echo "nameserver 10.0.2.3" > "$UPSTREAM"
     # --local=/test/: the test TLD (RFC 6761) is never forwarded; the guest
     # check resolves kryptik.test here to prove a zone reaches this resolver.
+    # --no-poll: the file is read again on SIGHUP, which the loop below sends.
     dnsmasq --keep-in-foreground --no-daemon --no-hosts --bind-interfaces \
             --listen-address=10.19.0.1 --listen-address=fd19::1 --listen-address=127.0.0.1 \
-            --resolv-file="$up" --no-poll --cache-size=1000 --local-service --local=/test/ \
+            --resolv-file="$UPSTREAM" --no-poll --cache-size=1000 --local-service --local=/test/ \
             --pid-file=/run/dnsmasq.pid --user=root &
     DNSPID=$!
     sleep 1
     if kill -0 "$DNSPID" 2>/dev/null; then
-        say "dnsmasq listening on 10.19.0.1/fd19::1, forwarding to $(grep '^nameserver' "$up" | tr '\n' ' ')"
+        say "dnsmasq listening on 10.19.0.1/fd19::1, forwarding to $(grep '^nameserver' "$UPSTREAM" | tr '\n' ' ')"
         return 0
     fi
     say "dnsmasq exited at once"; DNSPID=""; return 1
@@ -295,14 +367,19 @@ trap cleanup TERM INT
 while :; do
     changed=0
     if [ "$policy_ok" != 1 ]; then
-        if load_policy && forwarding on; then policy_ok=1; changed=1; say "nftables: policy loaded on retry; forwarding enabled"; fi
+        if load_policy && sync_gateways "$@" && forwarding on; then policy_ok=1; changed=1; say "nftables: policy loaded on retry; forwarding enabled"; fi
     elif ! nft list table inet kryptik >/dev/null 2>&1; then
         # The policy vanished (a flush inside the zone, say): close the path.
         forwarding off; policy_ok=0; changed=1; say "nftables: the policy is gone; forwarding disabled"
+    elif ! sync_gateways "$@"; then
+        forwarding off; policy_ok=0; changed=1
     fi
     if [ -n "$DNSPID" ] && ! kill -0 "$DNSPID" 2>/dev/null; then
         say "dnsmasq died; restarting"; DNSPID=""; dns_ok=0; changed=1
         start_dns && dns_ok=1
+    elif [ -n "$DNSPID" ] && sync_upstream; then
+        kill -HUP "$DNSPID" 2>/dev/null
+        say "dnsmasq: now forwarding to $(tr '\n' ' ' < "$UPSTREAM")"
     fi
     for n in $WIRELESS; do
         p="$(wpa_pid "$n")"
