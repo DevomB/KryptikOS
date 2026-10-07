@@ -58,7 +58,8 @@ USAGE:
     kryptikd stop NAME [--now]        stop a running zone (--now = SIGKILL)
     kryptikd status NAME              running, stale or absent
     kryptikd list --running           the zones the registry knows about
-    kryptikd gc                       reclaim stale entries and empty cgroups
+    kryptikd gc [--rootfs DIR]        reclaim stale entries and empty cgroups, and
+                                      close volumes no running zone holds
     kryptikd clipboard move FROM TO   the zone 0 gesture: move FROM's clipboard
                                       payload to TO, emptying FROM (both running)
     kryptikd serve [--rootfs DIR]     the launch daemon the desktop session talks
@@ -237,7 +238,7 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
-        "gc" => cmd_gc(),
+        "gc" => cmd_gc(&rootfs_base_from(&args)),
         "volume" => cmd_volume(&zone_dir, &args),
         "serve" => serve::cmd_serve(&zone_dir, &args),
         "wifi" => cmd_wifi(&zone_dir, &args),
@@ -446,7 +447,7 @@ fn cmd_list_running() -> ExitCode {
 /// Reclaim stale entries, empty zone cgroups and orphaned volume mappings.
 /// A live zone is safe: an entry is stale only if its lock can be taken, and
 /// the kernel refuses `rmdir` of a populated cgroup (EBUSY).
-fn cmd_gc() -> ExitCode {
+fn cmd_gc(base: &str) -> ExitCode {
     let mut reclaimed = 0usize;
     for n in registry::names() {
         if let Ok(registry::State::Stale { .. }) = registry::state(&n) {
@@ -462,12 +463,11 @@ fn cmd_gc() -> ExitCode {
     let swept = cgroup::sweep_now();
     // A mapping with no running zone is plaintext nobody uses; the next open runs fsck -p.
     let mut closed = 0usize;
-    let base = DEFAULT_ROOTFS_BASE.to_string();
     for z in volume::mappings() {
         if let Ok(registry::State::Running { .. }) = registry::state(&z) {
             continue;
         }
-        let mnt = volume::mountpoint_for(Path::new(&base), &z).display().to_string();
+        let mnt = volume::mountpoint_for(Path::new(base), &z).display().to_string();
         match volume::close_mapping(&z, &mnt) {
             Ok(()) => {
                 println!("closed the volume of zone {z:?}, which had no running launcher");
@@ -967,7 +967,7 @@ fn cmd_volume(dir: &Path, args: &[String]) -> ExitCode {
             }
             let old = match pass_from("--passphrase-file") { Ok(p) => p, Err(c) => return c };
             let new = match pass_from("--new-passphrase-file") { Ok(p) => p, Err(c) => return c };
-            done("passphrase changed", volume::change_key(&vol, &old, &new))
+            done("passphrase changed", volume::change_key(name, &vol, &old, &new))
         }
         "backup-header" => {
             let Some(file) = args.get(3) else { eprintln!("volume backup-header NAME FILE"); return ExitCode::from(2) };

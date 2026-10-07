@@ -79,7 +79,7 @@ deny "$P1" 'Kernel panic|Oops:'                          "no panic during the in
 # From the host side: the partition table the guest wrote.
 sfdisk -l "$DISK" 2>/dev/null | grep -E '^/|Disklabel' | sed 's/^/        /'
 if [[ "$(sfdisk -l "$DISK" 2>/dev/null | grep -c "^${DISK}")" -eq 4 ]]; then green "host sees four partitions on the target"; else red "host does not see four partitions"; fi
-lbls="$(blkid -p -O 0 "$DISK" >/dev/null 2>&1; sfdisk -d "$DISK" 2>/dev/null | grep -o 'name="[^"]*"' | tr '\n' ' ')"
+lbls="$(sfdisk -d "$DISK" 2>/dev/null | grep -o 'name="[^"]*"' | tr '\n' ' ')"
 if [[ "$lbls" == *kryptik-esp* && "$lbls" == *kryptik-a* && "$lbls" == *kryptik-b* && "$lbls" == *kryptik-state* ]]; then
     green "host sees the four partition labels"; else red "host labels: ${lbls}"; fi
 if [[ "$FAIL" -ne 0 ]]; then printf '\nphase 1 failed; not booting the result.\n%d passed, %d failed\n' "$PASS" "$FAIL"; exit 1; fi

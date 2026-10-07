@@ -34,7 +34,7 @@ medium_root() {   # medium_root JSON CMDLINE
     [ -n "$ROOT_BYTES" ] && [ -n "$ROOT_SHA" ] || die "root.json is incomplete"
     decimal_field total_bytes "$ROOT_BYTES"
     hex_field sha256 "$ROOT_SHA" 64
-    case "$VERSION" in *[!A-Za-z0-9._-]*) die "root.json: version has characters a version cannot" ;; esac
+    case "$VERSION" in ''|*[!A-Za-z0-9._-]*) die "root.json: version is not a version" ;; esac
     VERITY="$(verity_of "$2")"
     [ -n "$VERITY" ] || die "could not read the root's verity table from the signed command line"
     read -r V_BLOCKS V_HASH_START V_HASH V_SALT <<EOF

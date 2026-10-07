@@ -655,6 +655,12 @@ fn last_log_line(log: &Path) -> String {
     out
 }
 
+/// Whether a failed apply found a staged file that is not the one its manifest
+/// signs: kryptik-update's two refusals for that.
+fn spoiled(why: &str) -> bool {
+    why.contains("sha256 does not match the manifest") || why.contains("truncated or altered")
+}
+
 fn exit_text(status: i32) -> String {
     if libc::WIFEXITED(status) {
         format!("exited {}", libc::WEXITSTATUS(status))
@@ -764,8 +770,16 @@ fn finish_job(j: &mut Job, st: i32) {
         }
         JobKind::UpdateApply => {
             let why = why(j, "kryptik-update apply failed");
-            eprintln!("kryptikd serve: update-apply failed: {why}");
-            reply(&j.conn, &format!("error: {why}\n"));
+            /* A staged file that is not what the manifest signs can never be
+             * applied, and by its size the stage reads as complete for good:
+             * discarded, the release is named again at the net zone's next poll. */
+            let again = if spoiled(&why) && crate::update::discard_stage(Path::new(crate::update::STATE_DIR)) {
+                "; what had arrived was discarded and will be fetched again"
+            } else {
+                ""
+            };
+            eprintln!("kryptikd serve: update-apply failed: {why}{again}");
+            reply(&j.conn, &format!("error: {why}{again}\n"));
         }
     }
 }

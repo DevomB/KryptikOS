@@ -46,7 +46,14 @@ for lblname in kryptik-state kryptik-media; do
 done
 mountpoint -q /run/kryptik-recover 2>/dev/null && umount /run/kryptik-recover
 mkdir -p /run/kryptik-recover
-cleanup() { mountpoint -q /run/kryptik-recover 2>/dev/null && umount /run/kryptik-recover; rmdir /run/kryptik-recover 2>/dev/null || true; }
+# The ESP image first: it is a file on the medium.
+cleanup() {
+    for d in /run/kryptik-recover-esp /run/kryptik-recover-media /run/kryptik-recover; do
+        # One that will not unmount must not keep the others mounted.
+        mountpoint -q "$d" 2>/dev/null && umount "$d" 2>/dev/null || true
+        rmdir "$d" 2>/dev/null || true
+    done
+}
 trap cleanup EXIT INT TERM
 slot_dev() { case "$1" in a) echo "$SA" ;; b) echo "$SB" ;; *) die "slot must be a or b" ;; esac; }
 has_fs() { [ "$(dd if="$1" bs=1 skip=1080 count=2 status=none | od -An -tx1 | tr -d ' \n')" = "53ef" ]; }

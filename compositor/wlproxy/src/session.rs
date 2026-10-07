@@ -567,7 +567,7 @@ impl Session {
                                         .and_then(|i| i.requests.iter().position(|r| r.name == "set_app_id"))
                                         .map(|p| p as u16)
                                 })
-                                .ok_or(SessionError::Wire(WireError::ArgOverrun))?;
+                                .ok_or(SessionError::Forbidden("no xdg_toplevel.set_app_id in the tables"))?;
                             stamp = MessageWriter::new(id, opcode).string(&policy::app_id_for(&self.zone, "")).finish();
                         }
                     }

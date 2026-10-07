@@ -36,28 +36,32 @@ done < <(git diff --cached --name-only --diff-filter=ACM \
 
 # build/lib/common.sh is sourced, not executed, and stays 644.
 
+# The staged file's first line: tools/kryptik and the run files are scripts with no extension.
+first_line() { git show ":$1" 2>/dev/null | head -1; }
+
 # --- CRLF -------------------------------------------------------------------
 # .gitattributes normalises line endings, but `add -f` or an editor can still
 # stage CRLF, which gives "bad interpreter: bash^M".
 while IFS= read -r f; do
     [[ -z "$f" ]] && continue
+    [[ "$f" =~ \.(sh|rs|py)$|(^|/)Makefile$ || "$(first_line "$f")" == '#!'* ]] || continue
     if git show ":${f}" 2>/dev/null | grep -qU $'\r'; then
         echo "pre-commit: ERROR ${f} contains CRLF; scripts must be LF" >&2
         fail=1
     fi
-done < <(git diff --cached --name-only --diff-filter=ACM \
-         | grep -E '\.(sh|rs)$|Makefile' || true)
+done < <(git diff --cached --name-only --diff-filter=ACM)
 
 # --- shell syntax -----------------------------------------------------------
 while IFS= read -r f; do
     [[ -z "$f" ]] && continue
     [[ -f "$f" ]] || continue
+    [[ "$f" == *.sh || "$(first_line "$f")" =~ ^#!.*[/\ ](ba|da)?sh([[:space:]]|$) ]] || continue
     if ! bash -n "$f" 2>/dev/null; then
         echo "pre-commit: ERROR ${f} has a shell syntax error" >&2
         bash -n "$f" 2>&1 | sed 's/^/    /' >&2
         fail=1
     fi
-done < <(git diff --cached --name-only --diff-filter=ACM | grep -E '\.sh$' || true)
+done < <(git diff --cached --name-only --diff-filter=ACM)
 
 if [[ "$fail" -ne 0 ]]; then
     echo >&2

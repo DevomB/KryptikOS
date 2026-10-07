@@ -26,8 +26,12 @@ pub enum WireError {
     BadSize(u16),
     /// An argument ran past the end of the message body.
     ArgOverrun,
+    /// A second new_id in one message: the object map takes one per message.
+    SecondNewId,
     /// A string whose declared length does not end in NUL.
     UnterminatedString,
+    /// A null string where the signature does not allow one.
+    NullString,
     /// A string that is not valid UTF-8, which every Wayland string must be.
     NotUtf8,
     /// A NUL inside a string: `"wl_shm\0_evil"` equals `"wl_shm"` only to a
@@ -45,7 +49,9 @@ impl fmt::Display for WireError {
                  and <= {MAX_MESSAGE_LEN})"
             ),
             WireError::ArgOverrun => write!(f, "argument runs past the end of the message"),
+            WireError::SecondNewId => write!(f, "message creates a second object"),
             WireError::UnterminatedString => write!(f, "string is not NUL-terminated"),
+            WireError::NullString => write!(f, "null string where the signature requires one"),
             WireError::NotUtf8 => write!(f, "string is not valid UTF-8"),
             WireError::InteriorNul => write!(f, "string contains an interior NUL"),
         }

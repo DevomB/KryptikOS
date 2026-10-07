@@ -470,7 +470,8 @@ fn arg_rules_leave_allowlist_alone() {
 
 #[test]
 fn widened_refuses_denied() {
-    assert!(widened(&[libc::SYS_ptrace]).is_err());
+    let e = widened(&[libc::SYS_ptrace]).unwrap_err();
+    assert!(matches!(e, SeccompError::Denied(libc::SYS_ptrace)) && e.to_string().contains("ptrace"), "{e}");
     let w = widened(&[libc::SYS_sched_setscheduler, libc::SYS_read]).unwrap();
     assert_eq!(w.len(), BASE_ALLOWLIST.len() + 1, "a base call is not added twice");
     assert!(w.contains(&libc::SYS_sched_setscheduler));
