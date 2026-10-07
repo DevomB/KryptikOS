@@ -3,6 +3,7 @@
 # whose test control disk asks for it (testctl.sh). Users run kryptik-install.
 set -u
 . /usr/libexec/kryptik/testctl.sh
+. /usr/libexec/kryptik/esp-records.sh
 
 say() { echo "KRYPTIK_INSTALL: $*"; }
 
@@ -111,7 +112,7 @@ if [ "$rc" -eq 0 ]; then
     if [ -n "$esp" ] && mount -t vfat -o ro "$esp" /run/verify 2>/dev/null; then
         say "verify: esp_files=$(cd /run/verify && find . -type f | sort | tr '\n' ' ')"
         say "verify: bootx64_sha256=$(sha256sum /run/verify/EFI/BOOT/BOOTX64.EFI 2>/dev/null | cut -c1-64)"
-        say "verify: version_a=$(cat /run/verify/kryptik/version-a 2>/dev/null || echo none)"
+        say "verify: version_a=$(esp_version /run/verify/kryptik/version-a none)"
         umount /run/verify
     else
         say "verify: could not mount the ESP read-only"
