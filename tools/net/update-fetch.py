@@ -112,7 +112,8 @@ def main():
     try:
         return latest(args) if args.what == "latest" else poll(args)
     except (OSError, ValueError) as e:     # urllib's errors are OSErrors
-        print("update-fetch: %s" % e, file=sys.stderr)
+        # One line: the text can hold a host's own words, line ends among them.
+        print("update-fetch: %s" % " ".join(str(e).split()), file=sys.stderr)
         return 1
 
 

@@ -112,6 +112,12 @@ netzone: READY uplink=<addr|none> nat=yes dns=<yes|no> wifi=<ssid|connecting|unc
 netzone: NOT READY <reason>        (forwarding off)
 ```
 
+  The zone writes to a pipe, never to the log: its launcher marks each line
+  `zone net| ` in the catch-all log, replaces control bytes, and logs at most
+  a megabyte a start. A line without the mark is the launcher's or a zone 0
+  service's, whatever it says. The zone prints words from the network (an
+  SSID, a server's refusal) as they came, never as escapes.
+
 ## The uplinks' own networks
 
 A zone needs the gateway only as a next hop, and its names go through the

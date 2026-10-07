@@ -6,7 +6,9 @@
 #                  time=<offset|no-answer|no-uplink|...> ...
 #   netzone: NOT READY <reason>            (forwarding is off)
 set -u
-say() { echo "netzone: $*"; }
+# printf, not echo: a word from the network (an SSID, a server's reason for a
+# refusal) is printed as it came, and dash's echo would act on its backslashes.
+say() { printf 'netzone: %s\n' "$*"; }
 BR=kryptik0
 STATUS=/run/netzone-status
 WPA_CONF=/etc/wpa_supplicant.conf   # bound in read-only from zone 0 (kryptik wifi add)
@@ -311,14 +313,17 @@ UPDATE_CONF=/etc/kryptik/update.conf
 UPDATE_FETCH="${KRYPTIK_UPDATE_FETCH:-/usr/libexec/kryptik/update-fetch.py}"
 UPDATE_BROUGHT=/run/kryptik-update-statement-brought
 UPDATE_PID=""
-update_run() {   # update_run latest|poll: in the background, one at a time
+update_run() {   # update_run latest|poll: in the background, one at a time; 1 while the last one runs
     { command -v python3 >/dev/null 2>&1 && [ -r "$UPDATE_FETCH" ] && [ -r "$UPDATE_CONF" ]; } || return 0
-    [ -n "$UPDATE_PID" ] && kill -0 "$UPDATE_PID" 2>/dev/null && return 0
+    [ -n "$UPDATE_PID" ] && kill -0 "$UPDATE_PID" 2>/dev/null && return 1
     (
-        out="$(python3 "$UPDATE_FETCH" "$1" --broker "$BROKER" 2>&1 | tail -1)"
-        case "$1:$out" in
-            poll:idle|*:) ;;
-            latest:ok*) : > "$UPDATE_BROUGHT"; say "update: zone 0 on the statement of what is current: ${out}" ;;
+        out="$(python3 "$UPDATE_FETCH" "$1" --broker "$BROKER" 2>&1)"; rc=$?
+        out="$(printf '%s\n' "$out" | tail -1)"
+        # Zone 0's answer counts only from a fetch that ended well: the last
+        # line of one that failed is the far host's words.
+        case "$rc:$1:$out" in
+            0:poll:idle|*:*:) ;;
+            0:latest:ok*) : > "$UPDATE_BROUGHT"; say "update: zone 0 on the statement of what is current: ${out}" ;;
             *) say "update $1: ${out}" ;;
         esac
     ) &
@@ -393,7 +398,8 @@ while :; do
     if [ -n "$(uplink_addr "$@")" ]; then
         if [ -e "$UPDATE_BROUGHT" ]; then statement_every=8640; else statement_every=180; fi
         if [ "$statement_ticks" -ge "$statement_every" ]; then
-            statement_ticks=0; update_run latest
+            # Asked again at the next pass when a poll was still running.
+            update_run latest && statement_ticks=0
         elif [ "$update_ticks" -ge 6 ]; then
             update_ticks=0; update_run poll
         fi
