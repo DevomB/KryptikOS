@@ -1,30 +1,23 @@
-//! Wall-clock policy for zone 0 (docs/design/time.md).
-//!
-//! Only zone 0 may set the clock and it has no network, so the time arrives
-//! as a claim from the untrusted net zone. A claim may not cross the floor,
-//! and past a bound on what is believed unasked, the user decides.
-//! `decide` is pure: it reads no clock, file or environment.
+//! Wall-clock policy for zone 0 (docs/design/time.md). Only zone 0 sets the clock and it has no
+//! network, so the time is a claim from the untrusted net zone: no claim crosses the floor, and
+//! past the bound the user decides.
 
 /// Corrections below this many seconds are slewed, so the clock never runs backwards.
 pub const SLEW_BELOW_SECS: f64 = 1.0;
-/// Offsets below this many seconds are ignored.
 pub const IGNORE_BELOW_SECS: f64 = 0.005;
 /// Seconds believed without asking, per claim and in total, either direction.
 pub const DEFAULT_BOUND_SECS: i64 = 3600;
-/// One claim is considered per interval; others are refused unread, so a
-/// hostile zone cannot flood the user with consent prompts.
+/// One claim is considered per interval, so a hostile zone cannot flood the user with prompts.
 pub const CLAIM_INTERVAL_SECS: u64 = 600;
 
-/// The net zone's claim: add `offset` seconds, the median of what `sources`
-/// time servers answered. Untrusted, like the zone.
+/// The net zone's untrusted claim: add `offset` seconds, the median of `sources` time servers.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Claim {
     pub offset: f64,
     pub sources: u8,
 }
 
-/// Parse `<seconds> <sources>`: optional sign, up to ten integer and six
-/// fractional digits, and 1 to 16 sources. No exponent, infinity or NaN.
+/// Parse `<seconds> <sources>`: plain decimal seconds (no exponent, inf or NaN), 1 to 16 sources.
 pub fn parse_claim(args: &str) -> Result<Claim, String> {
     let mut it = args.split(' ');
     let (Some(secs), Some(sources), None) = (it.next(), it.next(), it.next()) else {
@@ -54,8 +47,7 @@ pub struct Knowledge {
     pub floor: i64,
     /// What is believed without asking.
     pub bound: i64,
-    /// Unasked corrections since the clock was last anchored (by consent or
-    /// the floor). The bound applies to this sum, so small lies cannot add up.
+    /// Unasked corrections since the last consent or floor, bounded so small lies cannot add up.
     pub moved_unasked: f64,
 }
 
@@ -65,13 +57,13 @@ pub enum Decision {
     Ignore,
     /// Apply gradually; the clock never steps backwards.
     Slew { offset: f64 },
-    /// Set the clock to `to`.
     Step { to: f64 },
     /// Past the bound: the user decides, shown both times.
     Ask { to: f64 },
     Refuse(String),
 }
 
+/// Pure: reads no clock, file or environment.
 pub fn decide(k: &Knowledge, c: &Claim) -> Decision {
     if !c.offset.is_finite() || !k.now.is_finite() {
         return Decision::Refuse("the offset is not a number".into());
@@ -99,8 +91,7 @@ pub fn decide(k: &Knowledge, c: &Claim) -> Decision {
     }
 }
 
-/// `moved_unasked` once `d` is carried out: an unasked correction adds to it,
-/// and consent resets it.
+/// `moved_unasked` once `d` is carried out: unasked corrections add to it, consent resets it.
 pub fn moved_after(k: &Knowledge, c: &Claim, d: &Decision, consented: bool) -> f64 {
     match d {
         Decision::Slew { .. } | Decision::Step { .. } => k.moved_unasked + c.offset.abs(),
@@ -109,14 +100,12 @@ pub fn moved_after(k: &Knowledge, c: &Claim, d: &Decision, consented: bool) -> f
     }
 }
 
-/// The time to set a clock that reads below the floor (say, after a dead RTC
-/// battery), or None. Needs no network: the system cannot predate its build.
+/// The floor if `now` is below it, as after a dead RTC battery: no system predates its build.
 pub fn clamp_to_floor(now: f64, floor: i64) -> Option<f64> {
     (now < floor as f64).then_some(floor as f64)
 }
 
-/// `built_at` from the image record, as written by `date -Iseconds`, in epoch
-/// seconds. Anything else is None: no floor known, never zero.
+/// The image record's `built_at` (from `date -Iseconds`) in epoch seconds, or None: never zero.
 pub fn floor_from_image_json(text: &str) -> Option<i64> {
     let at = text.find("\"built_at\"")?;
     let rest = &text[at + "\"built_at\"".len()..];
@@ -365,8 +354,7 @@ impl Outcome {
     }
 }
 
-/// Decide on a claim, ask the user if needed, and carry it out.
-/// `ask(now, proposed, sources)` is only called with a proposal at or above the floor.
+/// Decide on a claim and carry it out, calling `ask(now, to, sources)` only at or above the floor.
 pub fn consider(
     clock: &mut dyn Clock,
     dir: &Path,
@@ -389,6 +377,20 @@ pub fn consider(
     state.last_claim = Some(now);
     let know = Knowledge { now, floor, bound, moved_unasked: state.moved_unasked };
     let decision = decide(&know, claim);
+    /* Counted before it is believed or asked: the claim's time, as the clock
+     * will read after a step, and what it adds to the unasked sum. Unwritten,
+     * the next claim would meet neither the interval nor the bound. */
+    if matches!(decision, Decision::Slew { .. } | Decision::Step { .. } | Decision::Ask { .. }) {
+        let ahead = State {
+            moved_unasked: moved_after(&know, claim, &decision, false),
+            last_claim: Some(if let Decision::Step { to } = &decision { *to } else { now }),
+        };
+        if let Err(e) = save_state(dir, &ahead) {
+            let out = Outcome::Refused(format!("the clock's state could not be saved, so no claim is believed: {e}"));
+            record(dir, now, &format!("{} offset={:+.6} sources={}", out.reply(), claim.offset, claim.sources));
+            return out;
+        }
+    }
     let mut consented = false;
     let outcome = match &decision {
         Decision::Ignore => Outcome::Ignored,
@@ -443,9 +445,14 @@ pub fn clamp(clock: &mut dyn Clock, dir: &Path, floor: Option<i64>) -> Result<St
     let mut state = load_state(dir);
     // The floor anchors the clock, as consent does.
     state.moved_unasked = 0.0;
-    let _ = save_state(dir, &state);
+    let saved = save_state(dir, &state);
     record(dir, to, &format!("set to the floor: the clock read {}", format_utc(now)));
-    Ok(format!("the clock read {}, before the floor; set to {}", format_utc(now), format_utc(to)))
+    let said = format!("the clock read {}, before the floor; set to {}", format_utc(now), format_utc(to));
+    match saved {
+        Ok(()) => Ok(said),
+        // Unsaved, the unasked sum stays what it was: more is asked, not less.
+        Err(e) => Ok(format!("{said}; the clock's state could not be saved: {e}")),
+    }
 }
 
 /// `kryptikd time committed DIR`, from boot-success once it has committed the

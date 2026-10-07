@@ -34,9 +34,9 @@ containers.
 X11 lets any client log every other client's keystrokes and capture the whole
 screen, which ADR-003 cannot allow.
 
-**Cost:** X11 programs are not supported. No Xwayland is built, and a zone
-runs Wayland clients alone; if the graphical applications of Version 2 need
-one, it runs inside the zone, where it can leak only that zone.
+**Cost:** X11 programs are not supported. No Xwayland is built, and zones run
+only Wayland clients. If Version 2's graphical applications need Xwayland, it
+runs inside the zone, where it can leak only that zone.
 
 ## ADR-005: hardened_malloc as the system allocator
 
@@ -54,9 +54,9 @@ Socket activation and journald do not justify a large privileged PID 1 in a
 system that assumes a local attacker looking for privileged code.
 
 **Cost:** off the LFS path, so every service definition is written from
-scratch; seatd instead of logind; the `net` zone runs its own DHCP client, and
-no other zone touches a real interface; logging is s6-log per service, with no
-aggregation.
+scratch. Seats come from seatd, not logind. The `net` zone runs its own DHCP
+client, and no other zone touches a real interface. Logging is s6-log per
+service, with no aggregation.
 
 **Revisit if** writing service definitions becomes the main cost of the base
 system.
@@ -119,18 +119,19 @@ process would contradict that.
 
 **Cost:**
 
-- rustc is not built from source: that needs an existing rustc, or mrustc, a
-  project of its own. The shipped kryptikd and kryptik-wlproxy are built by
-  Rust's release tarballs, held to the hashes in `build/config/rust.lock`
-  (checked against the Rust release key when pinned): a trust anchor
-  [supply-chain.md](supply-chain.md) otherwise avoids.
+- rustc is not built from source, since that needs an existing rustc or
+  mrustc, a project of its own. The shipped kryptikd and kryptik-wlproxy are
+  built with Rust's release tarballs, held to the hashes in
+  `build/config/rust.lock` (checked against the Rust release key when
+  pinned). That is a trust anchor [supply-chain.md](supply-chain.md)
+  otherwise avoids.
 - kryptikd depends on `libc` only; every new crate is a supply-chain decision
   justified in review.
 - A Rust toolchain is a lot to carry for one daemon.
 
-**Rejected:** C (smallest bootstrap, but see above); Go, whose runtime and
-scheduler fight `clone()`, `unshare()` and per-thread namespace state; shell,
-unsuitable for holding privilege and parsing untrusted zone state.
+**Rejected:** C (smallest bootstrap, but not memory-safe); Go, whose runtime
+and scheduler fight `clone()`, `unshare()` and per-thread namespace state;
+shell, unsuitable for holding privilege and parsing untrusted zone state.
 
 Rust is for kryptikd and Kryptik's own tools, not a distribution-wide rule:
 coreutils stays coreutils.
@@ -149,9 +150,9 @@ it.
 **Cost:** half the logical CPUs on an SMT machine, roughly 15 to 30 percent of
 parallel throughput. Single-threaded performance is unchanged.
 
-**Decided:** `nosmt` stays. Each zone asks for its own core-scheduling
-cookie at launch ([privileged launch](design/privileged-launch.md#core-scheduling)),
-which keeps two zones off the two threads of one core; it cannot keep a zone
+**Decided:** `nosmt` stays. Each zone asks for its own core-scheduling cookie
+at launch ([privileged launch](design/privileged-launch.md#core-scheduling)),
+which keeps two zones off the two threads of one core. It cannot keep a zone
 off the thread beside the kernel, since the kernel's own execution carries no
 cookie, and that is the leak the mitigations exist for. Closing it with SMT on
 means a flush on every kernel entry, which costs more than the threads give.
@@ -175,10 +176,9 @@ Wi-Fi.
 These are vendor binaries, not built from source as
 [supply-chain.md](supply-chain.md) otherwise requires, and run by the device's
 own processor under the kernel's control of the bus (IOMMU on and strict).
-Kryptik establishes that the tarball is the one kernel.org signed, its hash is
-pinned, each file's licence is the one `WHENCE` records, and the copy the
-kernel loads is on the verified root, so replacing it means re-signing the
-kernel.
+Kryptik checks that the tarball is the one kernel.org signed, pins its hash
+and checks each file's licence against `WHENCE`. The kernel loads the
+firmware from the verified root, so replacing it means re-signing the kernel.
 
 **Left out:** NVIDIA (nouveau needs tens of megabytes of GSP firmware per
 generation, and the firmware framebuffer gives those machines a display);
@@ -222,7 +222,7 @@ on old microcode, and nobody would notice.
 
 The firmware loads Kryptik's kernel as the UEFI application, and nothing else
 runs before the verified root: no shim, no boot loader, no initramfs. The
-command line is compiled in and names the root slot and its dm-verity root
+command line is compiled in and carries the root slot and its dm-verity root
 hash, so the firmware's one signature check covers the code and the hash of
 everything it will run ([boot and updates](design/boot-and-updates.md)). A
 machine trusts that signature once Kryptik's certificate is in its firmware's
@@ -230,13 +230,13 @@ database ([release keys](release-keys.md)).
 
 **Why:** every stage between the firmware and the root is a file to sign, a
 parser to attack and a place for an unmeasured change. A shim chains from
-Microsoft's key, which Kryptik does not use; a boot loader chooses and edits
-what boots, which the compiled-in command line forbids on purpose; an
-initramfs finds the root, which `dm-mod.create=` does inside the kernel.
+Microsoft's key, which Kryptik does not use. A boot loader chooses and edits
+what boots, which the compiled-in command line forbids. An initramfs finds the
+root, which `dm-mod.create=` does inside the kernel.
 
 **Cost:** the certificate is enrolled by hand on every machine, and firmware
-that carries only Microsoft's keys refuses the media; the controller the root
-sits on is built into the kernel (ADR-013); A/B updates and recovery are the
+that carries only Microsoft's keys refuses the media. The controller the root
+sits on is built into the kernel (ADR-013). A/B updates and recovery are the
 firmware's boot entries and a judged trial, not a loader's menu.
 
 **Rejected:** shim and a loader, two more signed stages and a configuration

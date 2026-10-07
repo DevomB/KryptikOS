@@ -4,23 +4,25 @@ Kryptik builds what it ships from source, which turns "do I trust this
 distribution's build servers" into "do I trust these tarballs". The
 exceptions:
 
-- **Device firmware and CPU microcode** (ADR-012), selected by
-  `build/config/firmware.list` from the pinned `linux-firmware` release. The
-  tarball is signed by its kernel.org maintainer and verified like the
-  kernel's, and each file's licence is the one its `WHENCE` records. That
-  shows where the bytes came from, not what they do: they run on the device's
-  own processor, behind the IOMMU (strict by default).
+- **Device firmware and CPU microcode** (ADR-012). Device firmware, selected
+  by `build/config/firmware.list`, and AMD's microcode come from the pinned
+  `linux-firmware` release. The tarball is signed by its kernel.org
+  maintainer and verified like the kernel's, and each file's licence is the
+  one its `WHENCE` records. That shows where the bytes came from, not what
+  they do: device firmware runs on the device's own processor, behind the
+  IOMMU (strict by default). Intel's microcode comes from Intel's own
+  archive, which is unsigned ([assurance per source](#assurance-per-source)).
 - **The Rust compiler**: kryptikd and kryptik-wlproxy are built from source
   by an upstream toolchain pinned by version, not one built here (ADR-010).
 
 Two build tools that do not ship are special cases:
 
 - **cmake** (the `cmake-bin` manifest row): Kitware's Linux binary generates
-  json-c's build files in the stage 04 chroot, since compiling cmake cost a
-  quarter of stage 04 for one package. Its hash in `sources.lock` was checked
-  against Kitware's published SHA-256 list; it is unpacked under the build
-  tree, never installed, and excluded from the image by stage 06. The source
-  tarball stays in the manifest as the fallback.
+  json-c's build files in the stage 04 chroot, since compiling cmake costs a
+  quarter of stage 04 for one package. Like the source tarball, it is held to
+  Kitware's signed SHA-256 list. It is unpacked under the build tree, never
+  installed, and excluded from the image by stage 06. The source tarball
+  stays in the manifest as the fallback.
 - **kernel-hardening-checker** runs in stage 05 and CI on the resolved kernel
   configuration. Its upstream tags are lightweight and unsigned, so the hash
   of its GitHub archive in `sources.lock` is its only provenance, and
@@ -63,23 +65,24 @@ a compliance scanner.
 ### Expired keys are not tampering
 
 Some sources (glibc, gmp, mpc, patch and ncurses among them) are signed with
-keys the keyring believes expired. The signatures are valid; the keyring's
+keys the keyring believes expired. The signatures are valid: the keyring's
 copy predates the maintainer extending the key. `verify-signatures.sh` counts
 them as verified and lists them separately, because a tool that cries
-tampering at routine expiry gets ignored. `BADSIG` (the file does not match
-its signature) and `REVKEYSIG` (the key was revoked, possibly compromised)
-always fail; `--strict`, the gate CI runs on every push, also fails on a
-signature that could not be checked or a signer never established: a key
-taken from the signature itself, a key not held, a file not downloaded, a
-key whose published copy (`tools/key-provenance.tsv`) could not be read that
-run. A row there speaks only for the sources it names. A
-key that no publisher states anywhere passes it only while
-`tools/source-notes.tsv` records the routes that were tried
-(`no-usable-key`); such a note for a key that is held fails it as stale,
-while a signature the run could not fetch leaves its note untried. A
-source that publishes no OpenPGP signature is not the gate's: the lock pins
-it, and `tools/verify-provenance.sh --strict` checks whatever else its
-publisher states.
+tampering at routine expiry gets ignored.
+
+`BADSIG` (the file does not match its signature) and `REVKEYSIG` (the key was
+revoked, possibly compromised) always fail. `--strict`, the gate CI runs on
+every push, also fails on a signature that could not be checked and on a
+signer never established: a key taken from the signature itself, a key not
+held, a file not downloaded, a key whose published copy
+(`tools/key-provenance.tsv`) could not be read that run. A row there speaks
+only for the sources it names. A key that no publisher states anywhere
+passes the gate only while `tools/source-notes.tsv` records the routes that
+were tried (`no-usable-key`). Such a note for a key that is held fails the
+gate as stale, while a signature the run could not fetch leaves its note
+untried. A source that publishes no OpenPGP signature is outside this gate:
+the lock pins it, and `tools/verify-provenance.sh --strict` checks whatever
+else its publisher states.
 
 ### Signature strength varies
 
@@ -94,7 +97,7 @@ publisher states.
 DSA-1024 over SHA-1 is below what should be relied on, so the signature on
 `less` is weaker evidence than the rest. Some sources publish a signature
 that no usable key checks, file's among them; `tools/source-notes.tsv`
-names each, with the routes to a key that were tried.
+lists each, with the routes to a key that were tried.
 
 ### xz
 
@@ -124,8 +127,9 @@ declare a signed tag or a publisher's `.sha256`:
 - **iana-etc**. GitHub serves a `.sha256` beside the release tarball, from
   the same platform as the tarball itself.
 
-Neither is a signature over the artifact, and the tool says so. Under
-`--strict`, which CI uses on pushes, a check that could not run fails.
+Neither a signed tag nor a publisher's checksum is a signature over the
+artifact, and the tool says so. Under `--strict`, which CI uses on pushes, a
+check that could not run fails.
 
 ## Assurance per source
 
@@ -133,8 +137,7 @@ Neither is a signature over the artifact, and the tool says so. Under
 class, strongest first, from a key pinned in the tree down to `sources.lock`
 alone. It counts per class and prints no total: a maintainer signature, a
 signed tag and a publisher checksum are different strengths of evidence, and
-one fraction would hide the weakest links. For the same reason this document
-quotes no coverage figure.
+one coverage figure would hide the weakest links.
 
 Some sources end at `sources.lock` alone because upstream signs nothing
 Kryptik could check. One of them is guarded further along the chain:

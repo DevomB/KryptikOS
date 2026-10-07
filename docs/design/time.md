@@ -42,11 +42,10 @@ reported, so one liar among three is outvoted. The servers come from
 `/etc/kryptik/time.conf` on the verified root (`server HOST` or `pool HOST`,
 a pool giving up to four addresses; the public pool without the file). The
 zone reports an offset, not a time: it reads the same `CLOCK_REALTIME` as
-zone 0, so nothing is lost to the delay before zone 0 acts. It is a script
-rather than an NTP daemon because a daemon is a whole package for one number,
-and the script can be tested against a real server on loopback. NTS is not
-used: the image has no gnutls, and it would not authenticate a compromised
-net zone.
+zone 0, so nothing is lost to the delay before zone 0 acts. It is a script,
+not an NTP daemon, because a daemon is a whole package for one number and a
+script can be tested against a real server on loopback. NTS is not used: the
+image has no gnutls, and it would not authenticate a compromised net zone.
 
 **The claim.** `time-offset <seconds> <sources>`: a signed decimal with at
 most 10 integer and 6 fractional digits, and the number of servers (1 to 16)
@@ -74,6 +73,11 @@ and the net zone prints `time=<offset|no-answer|...>` in its readiness line.
    answer. No session, no answer or "no" leaves the clock alone.
 5. The bound also caps the total moved without asking since the clock was
    last anchored (by consent or by the floor), so small lies cannot add up.
+   That total and the time of the last claim live in
+   `/var/lib/kryptik/time/state`, and a claim is written there, with what it
+   adds, before the clock moves or the user is asked. A claim that cannot be
+   written is refused: unwritten, the next claim would meet neither the
+   interval nor the bound.
 6. kryptikd, the only process with `CAP_SYS_TIME`, applies it with
    `clock_settime(CLOCK_REALTIME)` and after a step sets the RTC
    (`RTC_SET_TIME` on `/dev/rtc0` if present). Each claim considered adds a

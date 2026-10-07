@@ -1,15 +1,11 @@
 #!/usr/bin/env bash
-# services: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
-# The s6-rc database compiled from build/services, the scripts the services run
-# (build/service-scripts) and the sysctl fragments, all on the verified root.
+# The s6-rc database, the service scripts and the sysctl fragments, all on the verified root.
 s_services() {
     local src="${KRYPTIK_ROOT}/build/services"
     [[ -d "$src" ]] || { echo "no service source tree at ${src}"; return 1; }
 
-    # The scripts live outside the s6-rc source tree: s6-rc-compile reads every
-    # directory there as a service.
+    # Outside the s6-rc source tree, where s6-rc-compile reads every directory as a service.
     local scripts="${KRYPTIK_ROOT}/build/service-scripts"
     install -d -m 0755 /usr/libexec/kryptik
     install -m 0755 "$scripts"/*.sh /usr/libexec/kryptik/
@@ -47,8 +43,7 @@ s_services() {
     echo "--- keyboard layouts ---"
     awk '!/^#/ && NF { printf "%s ", $1 } END { print "" }' "$table"
 
-    # s6-rc-compile will not overwrite: build beside and swap, as a half-written
-    # database does not boot.
+    # s6-rc-compile will not overwrite; build beside and swap, as a half-written one does not boot.
     local dbdir=/usr/lib/kryptik/s6-rc
     local tmpdb="$dbdir/compiled.new"
     rm -rf "$tmpdb"

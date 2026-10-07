@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# boot-check: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
 # Everything a boot needs, checked from the target's point of view.
 s_boot_check() {
@@ -92,6 +90,7 @@ s_boot_check() {
     chk "boot scripts"      /usr/libexec/kryptik/sysinit.sh x
     chk "test control helper" /usr/libexec/kryptik/testctl.sh
     chk "keyboard helper"   /usr/libexec/kryptik/keyboard.sh
+    chk "medium root checks" /usr/libexec/kryptik/medium-root.sh
     chk "keyboard layouts"  /usr/share/kryptik/keyboard-layouts
     chk "loadkeys"          /usr/bin/loadkeys x
     chk "boot-success"      /usr/libexec/kryptik/boot-success.sh x

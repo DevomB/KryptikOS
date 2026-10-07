@@ -24,6 +24,12 @@ zrun() {   # zrun ZONE TIMEOUT [--passphrase-file F] -- CMD...
     ZOUT="$(cat "$LOG/$zone.out")"
 }
 host_of() { local b; b="$(sed -n 's/^uid_base *= *\([0-9]*\).*/\1/p' "$Z/$1.toml")"; echo $(( (b - 131072) / 65536 + 2 )); }
+# The catch-all log, oldest first: s6-log moves current aside, through previous
+# to @<stamp>.s, at about 100 KB, so a count read from current alone can go back.
+uncaught() { cat /run/uncaught-logs/@* /run/uncaught-logs/previous /run/uncaught-logs/current 2>/dev/null; }
+netzone_said() { uncaught | grep -a "netzone: $1"; }
+ready_count() { netzone_said READY | grep -c .; }
+last_ready() { netzone_said READY | tail -1; }
 [[ "$(id -u)" = 0 ]] || { fail "root" "this must run as root"; echo "ZT END"; exit 1; }
 echo "ZT BEGIN $(date -Iseconds 2>/dev/null)"
 
@@ -41,12 +47,12 @@ zones="$("$KD" list --zones "$Z" 2>/dev/null | tr '\n' ' ')"
 if [[ "$(s6-svstat -o up /run/service/net-zone 2>/dev/null)" = true ]]; then pass "net-zone-up" "supervised and up"; else fail "net-zone-up" "$(s6-svstat /run/service/net-zone 2>&1)"; fi
 ready=""
 for _ in $(seq 1 30); do
-    ready="$(grep -h 'netzone: READY' /run/uncaught-logs/current /run/uncaught-logs/@* 2>/dev/null | tail -1)"
+    ready="$(last_ready)"
     [[ -n "$ready" ]] && break; sleep 1
 done
-if [[ "$ready" == *"nat=yes"* ]]; then pass "net-ready" "$ready"; else fail "net-ready" "no READY line with nat=yes in the catch-all log (last: $(grep -h 'netzone:' /run/uncaught-logs/current 2>/dev/null | tail -1))"; fi
+if [[ "$ready" == *"nat=yes"* ]]; then pass "net-ready" "$ready"; else fail "net-ready" "no READY line with nat=yes in the catch-all log (last: $(netzone_said '' | tail -1))"; fi
 # The routed zones' resolver, named on its own: routed-dns only times out.
-if [[ "$ready" == *" dns=yes "* ]]; then pass "net-dns" "dnsmasq is running"; else fail "net-dns" "$(grep -h 'dnsmasq' /run/uncaught-logs/current 2>/dev/null | tail -2 | tr '\n' ' ')"; fi
+if [[ "$ready" == *" dns=yes "* ]]; then pass "net-dns" "dnsmasq is running"; else fail "net-dns" "$(uncaught | grep -a 'dnsmasq' | tail -2 | tr '\n' ' ')"; fi
 # dhcpcd's privilege separation: what parses a lease runs as the net zone's
 # dhcpcd user (host uid_base + 100) in an empty root, with no capability and
 # dhcpcd's own seccomp filter over the zone's, while a helper stays its root;
@@ -154,6 +160,87 @@ s.sendto(q, ("10.19.0.1", 53)); d, _ = s.recvfrom(512); print("DNS-STILL-ANSWERE
 printf 'personal-pass\n' > /root/zt/personal.pass; chmod 600 /root/zt/personal.pass
 "$KD" volume init personal --size 64M --passphrase-file /root/zt/personal.pass > "$LOG/vol-personal.out" 2>&1 \
     && pass "volume-init" "personal: $(tail -1 "$LOG/vol-personal.out")" || fail "volume-init" "$(tail -2 "$LOG/vol-personal.out" | tr '\n' ' ')"
+# A zone that sends from another zone's address. The rule that opens the
+# uplink's own network goes by a packet's source, and IPV6_FREEBIND lets an
+# unprivileged socket send from an address its host does not hold. personal
+# sends to the bridge from its own addresses (the control) and with FREEBIND
+# from untrusted's. Counters in the net zone say what reached it, ahead of its
+# own chains, and what it took in after them.
+net_init="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
+netns() { nsenter -t "${net_init:-0}" -n "$@"; }
+own4="10.19.0.$PER"; other4="10.19.0.$UNT"
+own6="fd19::$(printf '%x' "$PER")"; other6="fd19::$(printf '%x' "$UNT")"
+netns nft -f - > "$LOG/source-probe.err" 2>&1 <<EOF
+table inet ztprobe {
+    chain pre {
+        type filter hook prerouting priority -350;
+        iifname "kryptik0" udp dport 9 counter comment "pre-any"
+        ip saddr $own4 udp dport 9 counter comment "pre-own4"
+        ip saddr $other4 udp dport 9 counter comment "pre-other4"
+        ip6 saddr $own6 udp dport 9 counter comment "pre-own6"
+        ip6 saddr $other6 udp dport 9 counter comment "pre-other6"
+    }
+    chain taken {
+        type filter hook input priority 100;
+        ip saddr $own4 udp dport 9 counter comment "taken-own4"
+        ip saddr $other4 udp dport 9 counter comment "taken-other4"
+        ip6 saddr $own6 udp dport 9 counter comment "taken-own6"
+        ip6 saddr $other6 udp dport 9 counter comment "taken-other6"
+    }
+}
+EOF
+# Each send binds its source, so none goes from the link-local address; the
+# zone's own IPv6 address is usable only once duplicate address detection ends.
+zrun personal 40 --passphrase-file /root/zt/personal.pass -- python3 -c '
+import errno, socket, sys, time
+own4, other4, own6, other6 = sys.argv[1:5]
+def tentative():
+    try:
+        with open("/proc/net/if_inet6") as f:
+            return any(r.split()[5] == "eth0" and int(r.split()[4], 16) & 0x40 for r in f)
+    except OSError:
+        return False
+for _ in range(40):
+    if not tentative():
+        break
+    time.sleep(0.25)
+else:
+    print("DAD-PENDING")
+def send(what, family, src, dst, freebind):
+    s = socket.socket(family, socket.SOCK_DGRAM)
+    try:
+        if freebind:   # IP_FREEBIND, IPV6_FREEBIND
+            s.setsockopt(*((socket.IPPROTO_IP, 15) if family == socket.AF_INET else (socket.IPPROTO_IPV6, 78)), 1)
+        s.bind((src, 0))
+        for _ in range(3):
+            s.sendto(b"zt", (dst, 9))
+        print(what + "-SENT")
+    except OSError as e:
+        print("%s-REFUSED %s" % (what, errno.errorcode.get(e.errno, e)))
+    finally:
+        s.close()
+send("OWN4", socket.AF_INET, own4, "10.19.0.1", False)
+send("OTHER4", socket.AF_INET, other4, "10.19.0.1", True)
+send("OWN6", socket.AF_INET6, own6, "fd19::1", False)
+send("OTHER6", socket.AF_INET6, other6, "fd19::1", True)
+# a datagram still waiting on neighbour discovery goes with the namespace
+time.sleep(1)
+' "$own4" "$other4" "$own6" "$other6"
+table="$(netns nft list table inet ztprobe 2>&1)"
+netns nft delete table inet ztprobe 2>/dev/null
+declare -A seen
+for c in pre-any pre-own4 pre-other4 pre-own6 pre-other6 taken-own4 taken-other4 taken-own6 taken-other6; do
+    seen[$c]="$(sed -n "s/.*counter packets \([0-9]*\) .*\"$c\".*/\1/p" <<<"$table" | head -1)"
+done
+counts="reached the net zone (IPv4/IPv6): own ${seen[pre-own4]:--}/${seen[pre-own6]:--}, untrusted's ${seen[pre-other4]:--}/${seen[pre-other6]:--}, any ${seen[pre-any]:--}; taken in: own ${seen[taken-own4]:--}/${seen[taken-own6]:--}, untrusted's ${seen[taken-other4]:--}/${seen[taken-other6]:--}; personal: $(tr '\n' ' ' <<<"$ZOUT")"
+probe_err="$(cat "$LOG/source-probe.err"; [[ -n "${seen[pre-any]}" ]] || head -2 <<<"$table")"
+if [[ "${seen[taken-own4]:-0}" -eq 0 || "${seen[taken-own6]:-0}" -eq 0 ]]; then
+    fail "zone-source-pinned" "the probe has no path: personal's own datagrams were not taken in; ${counts}${probe_err:+; nft: $(tr '\n' ' ' <<<"$probe_err" | cut -c1-200)}"
+elif [[ "${seen[taken-other4]:-0}" -gt 0 || "${seen[taken-other6]:-0}" -gt 0 ]]; then
+    fail "zone-source-pinned" "the net zone took in datagrams personal sent from untrusted's addresses; ${counts}"
+else
+    pass "zone-source-pinned" "personal's own datagrams were taken in and none from untrusted's addresses; ${counts}"
+fi
 # personal stays up in the background for the separation and restart checks
 setsid "$KD" run personal --zones "$Z" --rootfs "$R" --passphrase-file /root/zt/personal.pass -- sh -c 'echo PERSONAL-UP; sleep 600' > "$LOG/personal-bg.out" 2>&1 &
 PBG=$!
@@ -168,14 +255,23 @@ pp_seen=0; pp_leak=0
 grep -qs 'passphrase-fil[e]' /proc/[0-9]*/cmdline && pp_seen=1
 grep -rqs 'personal-pas[s]' /run/kryptik /proc/[0-9]*/cmdline && pp_leak=1
 # An echo that gets no answer shows separation only while personal holds the
-# address that was tried.
+# address that was tried, and untrusted has a path: it reaches the bridge.
 per_init="$(cut -d' ' -f1 /run/kryptik/zones/personal/init.pid 2>/dev/null)"
 per_addr="$(nsenter -t "${per_init:-0}" -n ip -4 -o addr show eth0 2>/dev/null | awk '{print $4}' | head -1)"
-zrun untrusted 30 -- sh -c "python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.19.0.$PER 2 >/dev/null 2>&1 && echo CROSS-ZONE-REACHED || echo CROSS-ZONE-BLOCKED; test -e /var/lib/kryptik/volumes && echo VOLUMES-VISIBLE || echo VOLUMES-ABSENT; echo \"HOMES=\$(ls /home 2>&1 | tr '\n' ' ')\""
-[[ "$ZOUT" == *CROSS-ZONE-BLOCKED* && "$per_addr" == "10.19.0.$PER/24" ]] && pass "zone-separation" "untrusted cannot reach personal, which holds 10.19.0.$PER on the bridge" || fail "zone-separation" "$ZOUT; personal's address: ${per_addr:-none}"
+zrun untrusted 30 -- sh -c "python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.19.0.1 3 >/dev/null 2>&1 && echo BRIDGE-OK; python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.19.0.$PER 2 >/dev/null 2>&1 && echo CROSS-ZONE-REACHED || echo CROSS-ZONE-BLOCKED; test -e /var/lib/kryptik/volumes && echo VOLUMES-VISIBLE || echo VOLUMES-ABSENT; echo \"HOMES=\$(ls /home 2>&1 | tr '\n' ' ')\""
+[[ "$ZOUT" == *BRIDGE-OK* && "$ZOUT" == *CROSS-ZONE-BLOCKED* && "$per_addr" == "10.19.0.$PER/24" ]] && pass "zone-separation" "untrusted reaches the bridge and not personal, which holds 10.19.0.$PER on it" || fail "zone-separation" "$ZOUT; personal's address: ${per_addr:-none}; $(grep -h 'network path' "$LOG/untrusted.err" | tail -1)"
 [[ "$ZOUT" == *VOLUMES-ABSENT* ]] && pass "volume-hidden" "no /var/lib/kryptik/volumes inside untrusted" || fail "volume-hidden" "the volume directory is visible from untrusted, or the probe did not run: $ZOUT"
 homes="$(sed -n 's/^HOMES=//p' <<<"$ZOUT")"
 [[ "$(tr -d ' ' <<<"$homes")" == untrusted ]] && pass "home-hidden" "/home in untrusted holds its own directory and no other zone's" || fail "home-hidden" "/home in untrusted: ${homes:-not listed}"
+# untrusted again at once: its last run's port stays in the net zone until the
+# kernel has torn that run's namespace down, and the new run must not lose its
+# path to it.
+zrun untrusted 30 -- sh -c 'python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.19.0.1 3 >/dev/null 2>&1 && echo BRIDGE-OK'
+if [[ "$ZOUT" == *BRIDGE-OK* ]] && ! grep -q 'has no network path' "$LOG/untrusted.err"; then
+    pass "routed-restart-path" "untrusted, started again as its last run ended, reaches the bridge"
+else
+    fail "routed-restart-path" "rc ${ZRC}: $(tr '\n' ' ' <<<"$ZOUT") $(grep -h 'network path' "$LOG/untrusted.err" | tail -1)"
+fi
 # The network the uplink sits on: untrusted's definition opens it ([network]
 # local) and personal's does not. The bridge answers personal, so the refusal
 # is the rule's and not a dead path.
@@ -184,28 +280,86 @@ if [[ -n "$ppid" ]] && nsenter -t "$ppid" -n ping -c1 -W3 10.19.0.1 >/dev/null 2
    && ! nsenter -t "$ppid" -n ping -c1 -W3 10.0.2.2 >/dev/null 2>&1; then
     pass "uplink-refused" "personal reaches the bridge and is refused the VM gateway, which untrusted reached"
 else
-    fail "uplink-refused" "personal (init ${ppid:-none}) reached the VM gateway, or not even the bridge; $(grep -h 'netzone: nftables: zones go out' /run/uncaught-logs/current 2>/dev/null | tail -1)"
+    fail "uplink-refused" "personal (init ${ppid:-none}) reached the VM gateway, or not even the bridge; $(netzone_said 'nftables: zones go out' | tail -1)"
+fi
+# The net zone's own address on the uplink is the net zone, not the network the
+# uplink sits on. untrusted, which may reach that network, reaches the VM
+# gateway and neither of the net zone's addresses beside it.
+nz="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
+uplink4="$([[ -n "$nz" ]] && nsenter -t "$nz" -n ip -4 -o addr show eth0 2>/dev/null | awk '{ split($4, a, "/"); print a[1]; exit }')"
+uplink6="$([[ -n "$nz" ]] && nsenter -t "$nz" -n ip -6 -o addr show eth0 2>/dev/null | awk '$4 !~ /^fe80:/ { split($4, a, "/"); print a[1]; exit }')"
+# The bridge first, as routed-egress does, so the gateway's echo is not the
+# zone's first packet; its NOPONG line says why if it still fails.
+zrun untrusted 40 -- sh -c "python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.19.0.1 3 >/dev/null 2>&1
+python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.0.2.2 5 > /tmp/gw.out 2>&1 && echo GATEWAY-OK || echo \"GATEWAY-NO \$(tail -1 /tmp/gw.out)\"
+python3 /usr/lib/kryptik/guest-tests/icmp-echo.py ${uplink4:-192.0.2.1} 3 >/dev/null 2>&1 && echo UPLINK4-REACHED || echo UPLINK4-REFUSED
+[ -z '${uplink6}' ] || { python3 /usr/lib/kryptik/guest-tests/icmp-echo.py '${uplink6}' 3 >/dev/null 2>&1 && echo UPLINK6-REACHED || echo UPLINK6-REFUSED; }"
+if [[ -n "$uplink4" && "$ZOUT" == *GATEWAY-OK* && "$ZOUT" == *UPLINK4-REFUSED* && "$ZOUT" != *UPLINK6-REACHED* ]]; then
+    pass "uplink-address-refused" "untrusted reaches the VM gateway and not the net zone's own uplink address ${uplink4}${uplink6:+ or ${uplink6}}"
+else
+    fail "uplink-address-refused" "the net zone's uplink addresses: ${uplink4:-none} ${uplink6:-none}; untrusted (rc ${ZRC}): $(tr '\n' ' ' <<<"$ZOUT") $(tail -2 "$LOG/untrusted.err" | tr '\n' ' ')"
 fi
 
 # net zone restart: routed zones fail closed while it is down, recover after
-# Not `|| echo 0`: grep -c prints 0 and also exits 1.
-before="$(grep -hc 'netzone: READY' /run/uncaught-logs/current 2>/dev/null)"; before="${before:-0}"
+before="$(ready_count)"
 s6-svc -d /run/service/net-zone; sleep 3
 zrun untrusted 20 -- sh -c 'python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.0.2.2 2 >/dev/null 2>&1 && echo EGRESS-WHILE-DOWN || echo CLOSED-WHILE-DOWN; ip -o link show eth0 >/dev/null 2>&1 && echo HAS-ETH0 || echo NO-ETH0'
 [[ "$ZOUT" == *CLOSED-WHILE-DOWN* ]] && pass "fail-closed" "no egress while the net zone is down ($(grep -o 'HAS-ETH0\|NO-ETH0' "$LOG/untrusted.out" | head -1))" || fail "fail-closed" "$ZOUT"
 s6-svc -u /run/service/net-zone
 ok=0
 for _ in $(seq 1 60); do
-    after="$(grep -hc 'netzone: READY' /run/uncaught-logs/current 2>/dev/null)"; after="${after:-0}"
+    after="$(ready_count)"
     [[ "$after" -gt "$before" ]] && { ok=1; break; }; sleep 1
 done
 [[ "$ok" = 1 ]] && pass "net-restart-ready" "the net zone came back READY after a restart" || fail "net-restart-ready" "no new READY line ($before -> $after)"
 sleep 2
 zrun untrusted 30 -- sh -c 'python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.0.2.2 3 >/dev/null 2>&1 && echo GATEWAY-OK || echo GATEWAY-FAIL'
 [[ "$ZOUT" == *GATEWAY-OK* ]] && pass "egress-after-restart" "a zone started after the restart has egress" || fail "egress-after-restart" "$ZOUT"
-# the running zone was reattached
-ppid="$(cat /run/kryptik/zones/personal/init.pid 2>/dev/null | cut -d' ' -f1)"
-if [[ -n "$ppid" ]] && nsenter -t "$ppid" -n ping -c1 -W3 10.19.0.1 >/dev/null 2>&1; then pass "reattach-after-restart" "the zone that was running reaches the net zone again"; else fail "reattach-after-restart" "personal (init $ppid) does not reach the bridge after the net restart"; fi
+# personal, running across the restart, was reattached. It is refused the VM
+# gateway, so the bridge is as far as it can show; untrusted shows egress below.
+ppid="$(cut -d' ' -f1 /run/kryptik/zones/personal/init.pid 2>/dev/null)"
+if [[ -n "$ppid" ]] && nsenter -t "$ppid" -n ping -c1 -W3 10.19.0.1 >/dev/null 2>&1; then pass "reattach-after-restart" "personal, running across the restart, reaches the net zone again"; else fail "reattach-after-restart" "personal (init ${ppid:-none}) does not reach the bridge after the net restart"; fi
+# A zone that may reach the gateway, kept running across a second restart: it
+# goes out through the gateway before, has no path while the net zone is down,
+# and goes out again once reattached. Meanwhile the uplink is back in zone 0
+# under its own name, down and with no address, and the next start takes it.
+setsid "$KD" run untrusted --zones "$Z" --rootfs "$R" -- sh -c 'echo UNTRUSTED-UP; sleep 600' > "$LOG/untrusted-bg.out" 2>&1 &
+UBG=$!
+for _ in $(seq 1 40); do grep -q UNTRUSTED-UP "$LOG/untrusted-bg.out" 2>/dev/null && break; sleep 0.5; done
+upid="$(cut -d' ' -f1 /run/kryptik/zones/untrusted/init.pid 2>/dev/null)"
+# ping, not icmp-echo.py: the zone's ping_group_range names its own gid, not
+# root's, so root in its namespace needs ping's raw socket.
+gateway_echo() { [[ -n "$upid" ]] && nsenter -t "$upid" -n ping -c1 -W"$1" 10.0.2.2 >/dev/null 2>&1; }
+physical() { local d; for d in /sys/class/net/*; do [[ -e "$d/device" ]] && printf '%s ' "${d##*/}"; done; }
+out_before=no; gateway_echo 3 && out_before=yes
+before="$(ready_count)"
+s6-svc -d /run/service/net-zone
+returned=""
+for _ in $(seq 1 20); do returned="$(ip -o link show eth0 2>/dev/null)"; [[ -n "$returned" ]] && break; sleep 0.5; done
+flags="$(sed -n 's/^[0-9]*: eth0: <\([^>]*\)>.*/\1/p' <<<"$returned")"
+held="$(ip -o addr show eth0 2>/dev/null | awk '{ print $4 }' | tr '\n' ' ')"
+if [[ -n "$flags" && ",$flags," != *",UP,"* && -z "$held" && "$(physical)" == "eth0 " ]]; then
+    pass "uplink-returned" "while the net zone is down the uplink is back in zone 0 as eth0, down and with no address"
+else
+    fail "uplink-returned" "zone 0 while the net zone is down: ${returned:-no eth0}; addresses: ${held:-none}; physical interfaces: $(physical)"
+fi
+eth0_gone=no; [[ -n "$upid" ]] && ! nsenter -t "$upid" -n ip -o link show eth0 >/dev/null 2>&1 && eth0_gone=yes
+out_down=no; gateway_echo 2 && out_down=yes
+s6-svc -u /run/service/net-zone
+ok=0
+for _ in $(seq 1 60); do
+    after="$(ready_count)"
+    [[ "$after" -gt "$before" ]] && { ok=1; break; }; sleep 1
+done
+if [[ "$ok" = 1 ]] && ! ip link show eth0 >/dev/null 2>&1; then pass "uplink-retaken" "the next net zone start took eth0 from zone 0 again and came READY"; else fail "uplink-retaken" "READY again: $ok; zone 0 still holds: $(physical)"; fi
+sleep 2
+out_after=no; gateway_echo 3 && out_after=yes
+if [[ "$out_before" = yes && "$eth0_gone" = yes && "$out_down" = no && "$out_after" = yes ]]; then
+    pass "reattach-egress" "untrusted, running across a restart, reached the VM gateway before it, had no eth0 and no path while the net zone was down, and reaches the gateway again once reattached"
+else
+    fail "reattach-egress" "untrusted (init ${upid:-none}): gateway before ${out_before}; eth0 gone while down ${eth0_gone}; gateway while down ${out_down}; gateway after ${out_after}; $(tail -2 "$LOG/untrusted-bg.out" | tr '\n' ' ')"
+fi
+"$KD" stop untrusted >/dev/null 2>&1; wait "$UBG" 2>/dev/null
 
 # --- zones: the net zone over a radio -----------------------------------------------
 # QEMU has no radio, so mac80211_hwsim makes two. phy1 goes into a network
@@ -217,8 +371,6 @@ AP_SSID=kryptik-hwsim; AP_PASS=hwsim-passphrase; AP_ADDR=192.168.77.1
 # An address the access point routes to, past the network the radio is on.
 AP_FAR=198.51.100.1
 WIFI_DIR=/var/lib/kryptik/wifi
-ready_count() { local n; n="$(grep -hc 'netzone: READY' /run/uncaught-logs/current 2>/dev/null)"; echo "${n:-0}"; }
-last_ready() { grep -h 'netzone: READY' /run/uncaught-logs/current /run/uncaught-logs/@* 2>/dev/null | tail -1; }
 ready_after() {   # ready_after COUNT TEXT SECONDS: the newest READY line once there are more than COUNT and it holds TEXT
     local before="$1" text="$2" n="$3"
     while [[ "$n" -gt 0 ]]; do
@@ -294,7 +446,7 @@ kills="$(dmesg 2>/dev/null | grep -a 'type=1326' | grep -ac 'comm="wpa_supplican
 if [[ "$line" == *" wifi=$AP_SSID "* && "${kills:-0}" = 0 ]]; then
     pass "wifi-associated" "the net zone's supplicant joined $AP_SSID over $STA_IF with no filter kill: ${line#*netzone: }"
 else
-    fail "wifi-associated" "newest READY line: ${line:-none}; filter kills of wpa_supplicant: ${kills:-0}; $(grep -h 'netzone: wifi' /run/uncaught-logs/current 2>/dev/null | tail -3 | tr '\n' ' ')"
+    fail "wifi-associated" "newest READY line: ${line:-none}; filter kills of wpa_supplicant: ${kills:-0}; $(netzone_said wifi | tail -3 | tr '\n' ' ')"
 fi
 net_init="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
 lease=""
@@ -315,7 +467,7 @@ fi
 # personal, and what lies past it is not.
 ppid="$(cut -d' ' -f1 /run/kryptik/zones/personal/init.pid 2>/dev/null)"
 for _ in $(seq 1 30); do
-    grep -h 'netzone: nftables: zones go out' /run/uncaught-logs/current 2>/dev/null | tail -1 | grep -q "$AP_ADDR" && break; sleep 1
+    netzone_said 'nftables: zones go out' | tail -1 | grep -q "$AP_ADDR" && break; sleep 1
 done
 far=1; near=0
 if [[ -n "$ppid" ]]; then
@@ -325,7 +477,7 @@ fi
 if [[ "$far" -eq 0 && "$near" -ne 0 ]]; then
     pass "wifi-beyond" "personal is refused the access point's own address and reaches $AP_FAR past it"
 else
-    fail "wifi-beyond" "personal (init ${ppid:-none}): $AP_FAR rc=$far, $AP_ADDR rc=$near; $(grep -h 'netzone: nftables: zones go out' /run/uncaught-logs/current 2>/dev/null | tail -1); routes: $(nsenter -t "$net_init" -n ip -4 route 2>/dev/null | tr '\n' ';')"
+    fail "wifi-beyond" "personal (init ${ppid:-none}): $AP_FAR rc=$far, $AP_ADDR rc=$near; $(netzone_said 'nftables: zones go out' | tail -1); routes: $(nsenter -t "$net_init" -n ip -4 route 2>/dev/null | tr '\n' ';')"
 fi
 # Back to the wire: the access point, its namespace (whose end returns phy1
 # to zone 0) and the radios go first, so the net zone the forget restarts
@@ -366,7 +518,7 @@ print(s.recv(4096).decode("utf-8", "replace").strip())' "$1" 2>&1 | head -1
 }
 
 if grep -q 'time floor' /var/log/kryptik/time.log 2>/dev/null; then pass "time-floor-ran" "$(tail -1 /var/log/kryptik/time.log | cut -c1-160)"; else fail "time-floor-ran" "the boot service left no line in /var/log/kryptik/time.log"; fi
-ready_time="$(grep -h 'netzone: READY' /run/uncaught-logs/current 2>/dev/null | tail -1 | grep -o 'time=[^ ]*')"
+ready_time="$(last_ready | grep -o 'time=[^ ]*')"
 info "time-reported ${ready_time:-the readiness line has no time= field} (no answer through this network is reported as that, never as a pass)"
 
 if [[ "$FLOOR_S" -gt 0 ]]; then
@@ -415,10 +567,10 @@ if [[ "$FLOOR_S" -gt 0 ]]; then
         case "$ready_time" in
             time=-[0-9]*|time=[0-9]*)
                 date -u -s "@$(( $(true_now) + 300 ))" >/dev/null 2>&1; rm -f /var/lib/kryptik/time/state
-                n0="$(grep -hc 'netzone: READY' /run/uncaught-logs/current 2>/dev/null)"; n0="${n0:-0}"
+                n0="$(ready_count)"
                 s6-svc -r /run/service/net-zone
-                for _ in $(seq 1 90); do n1="$(grep -hc 'netzone: READY' /run/uncaught-logs/current 2>/dev/null)"; [[ "${n1:-0}" -gt "$n0" ]] && break; sleep 1; done
-                m="$(grep -h 'netzone: READY' /run/uncaught-logs/current | tail -1 | grep -o 'time=[^ ]*' | cut -d= -f2)"
+                for _ in $(seq 1 90); do [[ "$(ready_count)" -gt "$n0" ]] && break; sleep 1; done
+                m="$(last_ready | grep -o 'time=[^ ]*' | cut -d= -f2)"
                 err=$(( $(date +%s) - $(true_now) ))
                 if [[ "$m" == -29[0-9]* || "$m" == -30[0-9]* || "$m" == -31[0-9]* ]] && (( err > -10 && err < 10 )); then
                     pass "time-sign" "a clock 300 s fast was measured as ${m} s and zone 0 put it right (now ${err} s from true)"
@@ -591,7 +743,7 @@ zrun untrusted 30 -- grep -c /usr/lib/libhardened_malloc.so /proc/self/maps
 [[ "$ZRC" = 0 ]] && pass "allocator-zone" "a process in untrusted runs on it too" || fail "allocator-zone" "rc=$ZRC $(tail -1 "$LOG/untrusted.err")"
 
 # --- the installed root: privilege only where the allowlist says -------------------
-# What stage 06 stripped stays stripped: on the root filesystem a setuid or
+# Stage 06 fails the build on any other bit; the installed root shows it: a setuid or
 # setgid bit is on the listed binaries alone (build/config/setuid-allowlist.txt)
 # and file capabilities are on none (capability-allowlist.txt is empty).
 setuid_found="$(find / -xdev -type f -perm /6000 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"

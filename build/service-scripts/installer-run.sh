@@ -1,6 +1,5 @@
 #!/bin/sh
-# Unattended install (or recovery) for the VM tests: only on an install medium
-# whose test control disk asks for it (testctl.sh). Users run kryptik-install.
+# Unattended install or recovery for the VM tests, when a test control disk asks (testctl.sh).
 set -u
 . /usr/libexec/kryptik/testctl.sh
 . /usr/libexec/kryptik/esp-records.sh
@@ -67,8 +66,7 @@ if [ ! -x /usr/sbin/kryptik-install ]; then
     exit 0
 fi
 
-# An account for the test driver: the installer writes it to the new state
-# partition, for kryptik-firstboot to consume once.
+# The test driver's account, left on the new state partition for kryptik-firstboot to consume.
 preseed_args=""
 pu="$(testctl_get preseed_user)"; ph="$(testctl_get preseed_password_hash)"
 rh="$(testctl_get preseed_root_hash)"
@@ -77,7 +75,7 @@ if [ -n "$pu" ] && [ -n "$ph" ]; then
     printf 'user=%s\npassword_hash=%s\nroot_password_hash=%s\n' "$pu" "$ph" "$rh" > /run/kryptik/firstboot.preseed
     preseed_args="--preseed /run/kryptik/firstboot.preseed"
 fi
-# Replacing an old Kryptik disk is asked for by name, here as by a user.
+# Replacing an old Kryptik disk takes the same explicit flag a user gives.
 replace_arg=""
 [ "$(testctl_get install_replace)" = "1" ] && replace_arg="--replace-kryptik"
 # install_slot_mib=MIB: a slot size, as a user gives one.
@@ -100,8 +98,7 @@ sed 's/^/KRYPTIK_INSTALL: /' "$logf"
 say "rc=${rc}"
 
 if [ "$rc" -eq 0 ]; then
-    # Check the disk independently of the installer's report, finding each
-    # partition by label as the boot chain will.
+    # Check the disk apart from the installer's report, finding partitions by label as boot does.
     say "verify: table=$(sfdisk -l "$target" 2>/dev/null | grep -c "^${target}")"
     for lbl in kryptik-esp kryptik-a kryptik-b kryptik-state; do
         dev="$(blkid -t PARTLABEL="$lbl" -o device 2>/dev/null | grep "^${target}" | head -1)"

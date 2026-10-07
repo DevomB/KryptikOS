@@ -39,10 +39,14 @@ query and the [update](update-channel.md) fetcher. Builds on
   zone waits at its handshake, kryptikd creates `kv-<zone>` in the net zone
   with its peer born in the routed zone as `eth0`, enslaves `kv-<zone>` to
   `kryptik0` and isolates the port (`IFLA_BRPORT_ISOLATED`), so no frame
-  passes between two `kv-*` ports. The zone's addresses, `10.19.0.<k>/24` and
-  `fd19::<k>/64` with default routes via the bridge, follow from its declared
-  identity (`netzone::host_number`: `uid_base` 131072 is `.2`, 196608 is `.3`,
-  and so on), not from DHCP: one less daemon, no broadcast domain.
+  passes between two `kv-*` ports. A zone's last run can still hold that name
+  for a moment, until the kernel has torn its namespace down; one instance of
+  a zone runs at a time, so kryptikd deletes the stale port and waits up to
+  5 s for the name. The zone's addresses, `10.19.0.<k>/24` and
+  `fd19::<k>/64` with default routes via the bridge, and its MAC,
+  `02:19:00:00:00:<k>`, follow from its declared identity
+  (`netzone::host_number`: `uid_base` 131072 is `.2`, 196608 is `.3`, and so
+  on), not from DHCP: one less daemon, no broadcast domain.
   `accept_ra = 0` is set first, and `ping_group_range` is set to the zone's
   host gid so unprivileged ICMP echo works (the sysctl takes host ids, so the
   parent writes it). The image's `ping` is iputils', built without libcap and
@@ -55,9 +59,18 @@ query and the [update](update-channel.md) fetcher. Builds on
 - **A routed zone owns its namespace, not its port.** Its bounding set is
   `CAP_NET_BIND_SERVICE`, `Policy::check_for_zone` refuses a policy keeping
   `CAP_NET_ADMIN` or `CAP_NET_RAW`, and seccomp refuses packet sockets. It
-  cannot change its address or MAC, send from another address, or put a frame
-  on the wire that the kernel did not build; `ip link set eth0 down` fails
-  with `EPERM`.
+  cannot change its address or MAC, or put a frame on the wire that the
+  kernel did not build; `ip link set eth0 down` fails with `EPERM`.
+- **A zone's addresses count only with its MAC.** A routed zone can still
+  send from an address it does not hold: `IPV6_FREEBIND` needs no capability
+  and IPv6 checks no source on the way out. (IPv4 refuses such a source
+  unless the socket is transparent, which needs one of the two capabilities.)
+  The net zone's ruleset therefore pairs `10.19.0.<k>` and `fd19::<k>` with
+  `02:19:00:00:00:<k>` for every host number and, at prerouting ahead of
+  conntrack, drops a packet from the bridge whose source and MAC are not a
+  pair. From a link-local address only neighbour discovery passes, so one zone
+  cannot borrow another's address to reach what that one may, or send the net
+  zone's answers to it.
 - **Every namespace starts with loopback only.** Kryptik's kernel leaves SIT
   out (`hardening.fragment`). On a kernel whose tunnel drivers give every new
   namespace a fallback device such as `sit0`, the launcher sets
@@ -153,9 +166,10 @@ its definition says `[network] local = true`.
   the verified root, which the net zone shares read-only, and a routed zone's
   address follows from its `uid_base`. The script puts the addresses of the
   zones that claim `local` into `local4` and `local6` when it loads the
-  ruleset. A routed zone cannot change its address, so the address is the
-  zone. kryptikd refuses the key on a zone that is not routed, and
-  `kryptikd explain` says which way a zone is set.
+  ruleset. A routed zone cannot change its address, and the net zone takes
+  an address only with that zone's MAC, so the address is the zone. kryptikd
+  refuses the key on a zone that is not routed, and `kryptikd explain` says
+  which way a zone is set.
 - **`untrusted` is the one shipped zone that claims it.** A hotel's or café's
   Wi-Fi asks for a login on a page its gateway serves, and the net zone has
   no browser, so some zone must reach that page: the ephemeral one, already
@@ -164,11 +178,20 @@ its definition says `[network] local = true`.
   can still address the router and the machines beside it, as every zone
   could before; without the key there, a network with a login page is no
   network at all.
+- **The net zone's own address on an uplink is not that network.** It is the
+  net zone, which a zone needs only for its resolver on the bridge. From the
+  bridge the input chain takes only what is addressed to `10.19.0.1` or
+  `fd19::1`, or to a link-local or link-scope multicast address for neighbour
+  discovery, so no zone, `local` or not, reaches what the net zone listens on
+  over its uplink addresses, such as dhcpcd.
 - **What it does not cover.** A network behind the gateway, such as a modem's
-  own pages on another subnet, is past the gateway and so allowed. An uplink
-  whose default route names no gateway, a point-to-point link, carries only
-  the zones that claim `local`. The net zone itself reaches the local
-  network, as DHCP and the resolver need.
+  own pages on another subnet, is past the gateway and so allowed. So is the
+  gateway's address on its far side: a router that answers its admin page on
+  its WAN address to the machines inside serves it to every zone, and the net
+  zone cannot know that address to refuse it. An uplink whose default route
+  names no gateway, a point-to-point link, carries only the zones that claim
+  `local`. The net zone itself reaches the local network, as DHCP and the
+  resolver need.
 
 ## DNS
 
@@ -233,7 +256,9 @@ as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
   one started before any net zone gets a path but no resolver until it
   restarts; kryptikd does not edit a running zone's sealed root.
 - The kernel returns the physical interface to the initial namespace, down
-  and unaddressed; kryptikd leaves it so until the next net zone start.
+  and unaddressed, under its own name (`dev<N>` only if zone 0 has an
+  interface by that name by then); kryptikd leaves it so until the next net
+  zone start, which takes it again whatever its name.
 
 ## What this guarantees
 
@@ -249,18 +274,18 @@ as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
 - A routed zone reaches the network an uplink sits on only if its definition
   says so. The others reach what a gateway carries, and never the gateway
   itself.
-- Addresses are identities: 10.19.0.k follows from `uid_base`, so the broker
-  or a future policy can name zones by address as safely as by uid, as long
-  as routed zones cannot change their address.
+- Addresses are identities: 10.19.0.k follows from `uid_base` and the net
+  zone takes it only with that zone's MAC, so the broker or a future policy
+  there can name zones by address as safely as by uid, as long as routed
+  zones keep neither network capability.
 
 ## Not built
 
-- **MAC/IP pinning of bridge ports** (nftables `bridge` rules dropping frames
-  with a source that is not the assigned one). A routed zone already cannot
-  re-address itself or forge frames. Pinning would check that again inside the
-  hostile net zone, and need `NF_TABLES_BRIDGE` and `BRIDGE_NETFILTER` built
-  in: more kernel reachable from a hostile zone for no new guarantee. Revisit
-  if a routed zone may ever keep either network capability.
+- **Pinning by bridge port** (nftables `bridge` rules on each `kv-*` port).
+  The `inet` table pins by MAC instead, which a routed zone can neither change
+  nor forge, so a port would add nothing, and `NF_TABLES_BRIDGE` and
+  `BRIDGE_NETFILTER` would put more kernel within reach of the hostile net
+  zone. Revisit if a routed zone may ever keep either network capability.
 
 ## Tests
 
@@ -275,8 +300,9 @@ as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
 - `wifi.rs` unit tests and the serve and cli suites cover the credentials
   file and `kryptik wifi`.
 - `tools/tests/netzone-uplink.sh`: the zones a definition lets through, by the
-  address kryptikd derives for each, the gateway sets as nft is fed them, and
-  the order of the forward rules.
+  address kryptikd derives for each, every host's addresses pinned to its own
+  MAC and the MAC the same as `netlink::zone_mac`, the gateway sets as nft is
+  fed them, and the order of the prerouting, forward and input rules.
 - The launcher suite reads a zone's bounding set (exactly `0x400`) and the
   boundary suite asks for an `AF_PACKET` socket. The launcher suite's
   routed-networking section runs only with `KRYPTIK_VM_DISPOSABLE=1`, since
@@ -284,12 +310,18 @@ as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
 - `build/guest-tests/zones-check.sh` on the installed system checks every
   guarantee above under QEMU user networking: the net zone `READY`, zone 0
   offline, a routed zone's address, NAT, ULA-only IPv6 and resolver, zones
-  separated, `vault` offline, no egress while the net zone is down,
-  reattachment after a restart, a zone without `local` refused the VM
-  gateway, and, on two `mac80211_hwsim` radios, the net zone associating,
-  leasing and routing over one while the other is the access point, whose own
-  address that zone is refused while it reaches an address the access point
-  routes. It pings with an unprivileged ICMP socket
+  separated while each reaches the bridge, a routed zone started again as its
+  last run ends keeping its path, a zone's datagrams sent from another zone's
+  addresses counted where they reach the net zone and never taken in while its
+  own are, `vault` offline, no egress while the net zone is down, the
+  uplink back in zone 0 under its own name, down and with no address until
+  the next start takes it, a zone running across a restart going out through
+  the gateway again once reattached, a zone without `local` refused the VM
+  gateway, `untrusted` refused the net zone's own uplink addresses while it
+  reaches the gateway, and, on two `mac80211_hwsim` radios, the net zone
+  associating, leasing and routing over one while the other is the access
+  point, whose own address that zone is refused while it reaches an address
+  the access point routes. It pings with an unprivileged ICMP socket
   (`build/guest-tests/icmp-echo.py`), since routed zones lack `CAP_NET_RAW`.
 
 ## Kernel requirements
