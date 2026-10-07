@@ -27,9 +27,9 @@ echo b > "$T/esp/kryptik/committed-slot"
     echo "ESP_MNT='$T/esp'; LOCK='$T/lock'; B='$T/boot'; DEGRADED='$T/degraded'"
     echo ". '$ROOT/build/service-scripts/esp-records.sh'"
     sed -n '/^mount_esp() {/,/^}/p; /^umount_esp() {/,/^}/p; /^ESP_MINE=/p; /^trap .*umount_esp/p; /^cmd_status() {/,/^}/p;
-            /^other_slot() /p; /^unlist_slot() {/,/^}/p; /^cmd_rollback() {/,/^}/p' "$TOOL"
+            /^other_slot() /p; /^unlist_slot() {/,/^}/p; /^cmd_rollback() {/,/^}/p; /^from_committed() {/,/^}/p' "$TOOL"
 } > "$T/esp.sh"
-for f in mount_esp umount_esp cmd_status other_slot unlist_slot cmd_rollback; do
+for f in mount_esp umount_esp cmd_status other_slot unlist_slot cmd_rollback from_committed; do
     grep -q "^$f() {" "$T/esp.sh" || { echo "could not extract $f from $TOOL"; exit 1; }
 done
 calls() { [[ ! -e "$T/calls" ]] || tr '\n' ' ' < "$T/calls"; }
@@ -85,6 +85,26 @@ a="$(grep -n 'arm_trial "$target"' <<< "$body" | head -1 | cut -d: -f1)"
 [[ -n "$f" && -n "$v" && -n "$k" && -n "$a" && "$f" -lt "$w" && "$v" -lt "$k" && "$k" -lt "$a" ]] \
     && ok "apply forgets the slot's kept manifest before writing it, and keeps the new one after it verifies" \
     || bad "apply: kept manifest removed at line '${f}', slot written at '${w}', verified at '${v}', kept at '${k}', armed at '${a}'"
+
+echo "-- an apply runs from the committed slot only"
+echo a > "$T/esp/kryptik/committed-slot"
+fresh; out="$(bash -c "source '$T/esp.sh'; from_committed a && echo GOES-ON" 2>&1)"
+[[ "$out" == *GOES-ON* && "$(calls)" == "mount umount " ]] \
+    && ok "from the committed slot it goes on, the ESP read and unmounted" || bad "from the committed slot: $(calls) / $out"
+echo b > "$T/esp/kryptik/committed-slot"
+fresh; out="$(bash -c "source '$T/esp.sh'; from_committed a && echo GOES-ON" 2>&1)"; rc=$?
+[[ "$rc" -ne 0 && "$out" != *GOES-ON* && "$out" == *"slot a is running, and the ESP names b as the committed slot"* && "$(calls)" == "mount umount " ]] \
+    && ok "from another slot it is refused, both named, the ESP unmounted" || bad "from another slot: rc=$rc / $(calls) / $out"
+printf 'a\033[2J\n' > "$T/esp/kryptik/committed-slot"
+fresh; out="$(bash -c "source '$T/esp.sh'; from_committed a && echo GOES-ON" 2>&1)"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *"names unknown as the committed slot"* && "$out" != *$'\033'* ]] \
+    && ok "an ESP whose record is not a slot refuses it too, without printing the record" || bad "a record that is no slot: rc=$rc / $out"
+echo b > "$T/esp/kryptik/committed-slot"
+c="$(grep -n 'from_committed "$slot"' <<< "$body" | head -1 | cut -d: -f1)"
+p="$(grep -n 'verify_payload "$dir"' <<< "$body" | head -1 | cut -d: -f1)"
+[[ -n "$c" && -n "$p" && -n "$u" && "$c" -lt "$p" && "$c" -lt "$u" ]] \
+    && ok "apply asks before it verifies the payload, and so before it writes" \
+    || bad "apply: committed slot checked at line '${c}', payload verified at '${p}', first write at '${u}'"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
