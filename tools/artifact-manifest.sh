@@ -89,13 +89,11 @@ emit_inputs() {
 emit_tree() {
     local hashes; hashes="$(mktemp)"
     local meta;   meta="$(mktemp)"
+    local ferr;   ferr="$(mktemp)"
+    local raw;    raw="$(mktemp)"
+    # A RETURN trap outlives the function, so it clears itself.
     # shellcheck disable=SC2064
-    trap "rm -f '$hashes' '$meta'" RETURN
-
-    local ferr; ferr="$(mktemp)"
-    local raw;  raw="$(mktemp)"
-    # shellcheck disable=SC2064
-    trap "rm -f '$ferr' '$raw'" RETURN
+    trap "rm -f '$hashes' '$meta' '$ferr' '$raw'; trap - RETURN" RETURN
 
     # common.sh's ERR trap exits, and it fires even under set +e.
     local frc=0

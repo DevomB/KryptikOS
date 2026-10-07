@@ -14,8 +14,8 @@ set -uo pipefail
 SURVEY=""; REVIEWS="$(dirname "${BASH_SOURCE[0]}")/pin-reviews.tsv"; NO_HELD=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --survey)  SURVEY="${2:-}"; shift 2 ;;
-        --reviews) REVIEWS="${2:-}"; shift 2 ;;
+        --survey)  SURVEY="${2:?--survey needs a file}"; shift 2 ;;
+        --reviews) REVIEWS="${2:?--reviews needs a file}"; shift 2 ;;
         --no-held) NO_HELD=1; shift ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac

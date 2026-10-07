@@ -19,7 +19,7 @@ export LFS_TGT
 
 # PATH stays the chroot's /usr/bin:/usr/sbin; never the /tools cross toolchain.
 
-KRYPTIK_JOBS="${KRYPTIK_JOBS:-$(nproc)}"
+KRYPTIK_JOBS="${KRYPTIK_JOBS:-$(kryptik_default_jobs)}"
 export MAKEFLAGS="-j${KRYPTIK_JOBS}"
 
 stage_contract "${BASH_SOURCE[0]}" "kernel-" gcc
