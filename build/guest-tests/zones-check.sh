@@ -143,14 +143,23 @@ pp_seen=0; pp_leak=0
 grep -qs 'passphrase-fil[e]' /proc/[0-9]*/cmdline && pp_seen=1
 grep -rqs 'personal-pas[s]' /run/kryptik /proc/[0-9]*/cmdline && pp_leak=1
 # An echo that gets no answer shows separation only while personal holds the
-# address that was tried.
+# address that was tried, and untrusted has a path: it reaches the bridge.
 per_init="$(cut -d' ' -f1 /run/kryptik/zones/personal/init.pid 2>/dev/null)"
 per_addr="$(nsenter -t "${per_init:-0}" -n ip -4 -o addr show eth0 2>/dev/null | awk '{print $4}' | head -1)"
-zrun untrusted 30 -- sh -c "python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.19.0.$PER 2 >/dev/null 2>&1 && echo CROSS-ZONE-REACHED || echo CROSS-ZONE-BLOCKED; test -e /var/lib/kryptik/volumes && echo VOLUMES-VISIBLE || echo VOLUMES-ABSENT; echo \"HOMES=\$(ls /home 2>&1 | tr '\n' ' ')\""
-[[ "$ZOUT" == *CROSS-ZONE-BLOCKED* && "$per_addr" == "10.19.0.$PER/24" ]] && pass "zone-separation" "untrusted cannot reach personal, which holds 10.19.0.$PER on the bridge" || fail "zone-separation" "$ZOUT; personal's address: ${per_addr:-none}"
+zrun untrusted 30 -- sh -c "python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.19.0.1 3 >/dev/null 2>&1 && echo BRIDGE-OK; python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.19.0.$PER 2 >/dev/null 2>&1 && echo CROSS-ZONE-REACHED || echo CROSS-ZONE-BLOCKED; test -e /var/lib/kryptik/volumes && echo VOLUMES-VISIBLE || echo VOLUMES-ABSENT; echo \"HOMES=\$(ls /home 2>&1 | tr '\n' ' ')\""
+[[ "$ZOUT" == *BRIDGE-OK* && "$ZOUT" == *CROSS-ZONE-BLOCKED* && "$per_addr" == "10.19.0.$PER/24" ]] && pass "zone-separation" "untrusted reaches the bridge and not personal, which holds 10.19.0.$PER on it" || fail "zone-separation" "$ZOUT; personal's address: ${per_addr:-none}; $(grep -h 'network path' "$LOG/untrusted.err" | tail -1)"
 [[ "$ZOUT" == *VOLUMES-ABSENT* ]] && pass "volume-hidden" "no /var/lib/kryptik/volumes inside untrusted" || fail "volume-hidden" "the volume directory is visible from untrusted, or the probe did not run: $ZOUT"
 homes="$(sed -n 's/^HOMES=//p' <<<"$ZOUT")"
 [[ "$(tr -d ' ' <<<"$homes")" == untrusted ]] && pass "home-hidden" "/home in untrusted holds its own directory and no other zone's" || fail "home-hidden" "/home in untrusted: ${homes:-not listed}"
+# untrusted again at once: its last run's port stays in the net zone until the
+# kernel has torn that run's namespace down, and the new run must not lose its
+# path to it.
+zrun untrusted 30 -- sh -c 'python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.19.0.1 3 >/dev/null 2>&1 && echo BRIDGE-OK'
+if [[ "$ZOUT" == *BRIDGE-OK* ]] && ! grep -q 'has no network path' "$LOG/untrusted.err"; then
+    pass "routed-restart-path" "untrusted, started again as its last run ended, reaches the bridge"
+else
+    fail "routed-restart-path" "rc ${ZRC}: $(tr '\n' ' ' <<<"$ZOUT") $(grep -h 'network path' "$LOG/untrusted.err" | tail -1)"
+fi
 # The network the uplink sits on: untrusted's definition opens it ([network]
 # local) and personal's does not. The bridge answers personal, so the refusal
 # is the rule's and not a dead path.

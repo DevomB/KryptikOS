@@ -39,7 +39,10 @@ query and the [update](update-channel.md) fetcher. Builds on
   zone waits at its handshake, kryptikd creates `kv-<zone>` in the net zone
   with its peer born in the routed zone as `eth0`, enslaves `kv-<zone>` to
   `kryptik0` and isolates the port (`IFLA_BRPORT_ISOLATED`), so no frame
-  passes between two `kv-*` ports. The zone's addresses, `10.19.0.<k>/24` and
+  passes between two `kv-*` ports. A zone's last run can still hold that name
+  for a moment, until the kernel has torn its namespace down; one instance of
+  a zone runs at a time, so kryptikd deletes the stale port and waits up to
+  5 s for the name. The zone's addresses, `10.19.0.<k>/24` and
   `fd19::<k>/64` with default routes via the bridge, follow from its declared
   identity (`netzone::host_number`: `uid_base` 131072 is `.2`, 196608 is `.3`,
   and so on), not from DHCP: one less daemon, no broadcast domain.
@@ -279,7 +282,8 @@ as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
 - `build/guest-tests/zones-check.sh` on the installed system checks every
   guarantee above under QEMU user networking: the net zone `READY`, zone 0
   offline, a routed zone's address, NAT, ULA-only IPv6 and resolver, zones
-  separated, `vault` offline, no egress while the net zone is down,
+  separated while each reaches the bridge, a routed zone started again as its
+  last run ends keeping its path, `vault` offline, no egress while the net zone is down,
   reattachment after a restart, a zone without `local` refused the VM
   gateway, `untrusted` refused the net zone's own uplink addresses while it
   reaches the gateway, and, on two `mac80211_hwsim` radios, the net zone associating,
