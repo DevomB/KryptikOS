@@ -24,7 +24,7 @@ err()   { printf '%s fail%s %s\n' "$C_RED" "$C_RST" "$*" >&2; }
 die()   { err "$*"; exit 1; }
 dim()   { printf '%s%s%s\n' "$C_DIM" "$*" "$C_RST"; }
 
-# Report the failing line rather than a bare non-zero exit.
+# Report the failing line, not a bare non-zero exit.
 _kryptik_trap() {
     local ec=$? line=${BASH_LINENO[0]} src=${BASH_SOURCE[1]:-?}
     err "aborted at ${src}:${line} (exit ${ec})"
@@ -32,8 +32,7 @@ _kryptik_trap() {
 }
 trap _kryptik_trap ERR
 
-# nproc, capped at one job per 1.5 GB of RAM, or GCC and glibc builds meet the
-# OOM killer ("internal compiler error: Killed"). KRYPTIK_JOBS overrides it.
+# nproc, capped at one job per 1.5 GB of RAM, or GCC and glibc builds meet the OOM killer.
 kryptik_default_jobs() {
     local cpus mem_kb mem_gb by_mem
     cpus="$(nproc 2>/dev/null || echo 1)"
@@ -61,26 +60,20 @@ sha256_of_stdin() {
     fi
 }
 
-# licence_members TARBALL [ERE]: a source tarball's licence files, at its top
-# or in its doc/ (attr and acl keep them there), which tools/scan-licenses.sh
-# reads and stage 04 installs, and the members matching ERE too, from one
-# listing. The pattern is local, so it is part of the fingerprint of any step
-# that calls this.
+# licence_members TARBALL [ERE]: the licence files at a tarball's top or in doc/, and ERE matches.
 licence_members() {
+    # Local, so the pattern is in the fingerprint of every step that calls this.
     local re='^[^/]+/(doc/)?(COPYING[^/]*|Copying|COPYRIGHT[^/]*|LICEN[CS]E[^/]*|License|Artistic|NOTICE)$'
     [[ -z "${2:-}" ]] || re="${re}|${2}"
     tar -tf "$1" 2>/dev/null | grep -E "$re" || true
 }
 
-# header_notices TARBALL MEMBER...: the notice at the head of each member, for
-# a source that ships no licence file. A notice runs from the first Copyright
-# line to the line ending in "SOFTWARE.", where the MIT text ends, and loses
-# its comment marks. awk reads to the end, since stopping early would kill
-# tar with SIGPIPE, and prints nothing for a notice that never ends.
+# header_notices TARBALL MEMBER...: each member's MIT notice, for sources with no licence file.
 header_notices() {
     local tarball="$1" m text
     shift
     for m in "$@"; do
+        # From Copyright to "SOFTWARE.", comment marks stripped; awk reads on, or tar would SIGPIPE.
         text="$(tar -xOf "$tarball" "$m" | awk '
             done { next }
             /Copyright/ { on = 1 }
@@ -92,8 +85,7 @@ header_notices() {
     done
 }
 
-# unpack TARBALL TOPDIR [NAME]: extract a source into the stage's BUILDDIR, as
-# NAME if given, replacing any earlier copy; print its path.
+# unpack TARBALL TOPDIR [NAME]: extract afresh into BUILDDIR, as NAME if given; print the path.
 unpack() {
     local tarball="$1" srcdir="$2" destname="${3:-}"
     local dir="${BUILDDIR}/${destname:-$srcdir}"
@@ -106,10 +98,7 @@ unpack() {
     printf '%s' "$dir"
 }
 
-# Stages 01-03 run on the host and install into ${KRYPTIK_WORK}/sysroot; stages
-# 04 and 05 run inside the chroot, where the sysroot is /. A KRYPTIK_WORK path
-# may not exist in there, and installing to it would build a nested tree.
-# KRYPTIK_DESTDIR is the DESTDIR= value: empty inside the chroot.
+# Stages 01-03 install into ${KRYPTIK_WORK}/sysroot; in the chroot (04, 05) the sysroot is /.
 KRYPTIK_CHROOT_MARKER="/etc/kryptik/inside-chroot"
 
 kryptik_in_chroot() { [[ -f "$KRYPTIK_CHROOT_MARKER" ]]; }
@@ -185,10 +174,7 @@ validate_hardening_exceptions() {
     [[ "$n" -eq 0 ]] || die "${n} undocumented hardening exception(s). See docs/hardening.md."
 }
 
-# Build stamps carry a fingerprint of the step's inputs. A mismatch stops the
-# build (KRYPTIK_STALE=refuse, the default), since one rebuilt step leaves a
-# sysroot built from two configurations; KRYPTIK_STALE=rebuild rebuilds the
-# affected steps. Stamps without a fingerprint are moved to .stamps/legacy/.
+# Stamps fingerprint each step's inputs; a change stops the build unless KRYPTIK_STALE=rebuild.
 
 # Bump when the set of fingerprint inputs changes.
 KRYPTIK_STAMP_FORMAT=4
@@ -197,23 +183,17 @@ STAMP_PREFIX=""
 STAGE_FILE=""
 STAMP_CC=""
 
-#   stage_contract <this-file> <stamp-prefix> <compiler>
-# Called before a stage's first step(). <compiler> is the one the stage drives:
-# the host gcc for stage 01, whose cross gcc exists only halfway through.
+# stage_contract FILE PREFIX CC: call before the first step(); CC is the compiler the stage drives.
 stage_contract() {
     STAGE_FILE="${1:?stage_contract needs the stage file}"
     STAMP_PREFIX="${2-}"
     STAMP_CC="${3:?stage_contract needs the compiler this stage drives}"
 }
 
-# "name=fingerprint;" for every step so far, seeded by stage_depends_on(). Each
-# stamp hashes it, so a changed step invalidates every later step and every
-# stage built on it, while an unchanged prefix still resumes.
+# "name=fingerprint;" per step so far; each stamp hashes it, so a change invalidates later ones.
 STAMP_DEPS=""
 
-#   stage_depends_on <stamp-prefix> <step-name>
-# Seed the chain from an earlier stage's step, so stamps also record the
-# toolchain a stage was built with. That stamp must exist.
+# stage_depends_on PREFIX STEP: chain onto an earlier stage's stamp, so its toolchain counts too.
 stage_depends_on() {
     local prefix="$1" name="$2"
     local stamp="${STAMPS}/${prefix}${name}" fp
@@ -230,8 +210,7 @@ _hash_file() {
     if [[ -n "$f" && -f "$f" ]]; then sha256_of "$f"; else printf 'absent'; fi
 }
 
-# One digest over what apply_repo_patches reads of a patch set: its patches
-# and their SHA256SUMS. Not a README, which a documentation edit changes.
+# One digest over a patch set's patches and SHA256SUMS: what apply_repo_patches reads, no README.
 _hash_patchset() {
     local d="${1:-}"
     if [[ -n "$d" && -d "$d" ]]; then
@@ -256,8 +235,7 @@ _expand_v() {
 # In-repository patch sets; only the harness test overrides the location.
 KRYPTIK_PATCHES="${KRYPTIK_PATCHES:-${KRYPTIK_ROOT}/build/patches}"
 
-# Apply build/patches/<set>/*.patch here in name order (-p1, no fuzz). Every
-# patch must be listed in the set's SHA256SUMS and match it.
+# Apply build/patches/<set>/*.patch in name order (-p1, no fuzz); each must match SHA256SUMS.
 apply_repo_patches() {
     local set="${1:?apply_repo_patches needs a patch-set name}"
     local pdir="${KRYPTIK_PATCHES}/${set}"
@@ -279,9 +257,7 @@ apply_repo_patches() {
     echo "applied ${n} patch(es) from ${set}"
 }
 
-# GCC's math libraries, unpacked into its tree under the names it builds them
-# from. One command per line: after `tar ... && mv ...`, a failed tar let
-# configure find the host's copies.
+# GCC's math libraries in its tree, one command per line: set -e misses a failed tar in tar && mv.
 gcc_prereqs() {
     local t
     for t in "mpfr-${V_MPFR}.tar.xz" "gmp-${V_GMP}.tar.xz" "mpc-${V_MPC}.tar.gz"; do
@@ -305,10 +281,7 @@ stamp_compiler_id() {
     fi
 }
 
-# The functions FN names, the ones those name, and so on, as text in name
-# order. declare -f leaves comments out, so only code counts. The step runner
-# and its parts run around a recipe, never inside one: "step" in a recipe's
-# message is not a call, and an edit to the runner is a stamp format change.
+# The code of every function FN reaches, in name order; never the runner, which wraps recipes.
 _helpers_of() {
     local -A seen=(["$1"]=1)
     local -a todo=("$1")
@@ -326,11 +299,7 @@ _helpers_of() {
     done
 }
 
-# What one step was built from: the text of the recipe and of every helper it
-# reaches, its arguments, the sources and patch sets they name or that text
-# reads and applies, and every V_* it reads. Not the whole stage file, so a
-# fix to one recipe does not invalidate every stamp; not all of common.sh, so
-# a comment changes none.
+# A step's inputs: its recipe's and helpers' code, arguments, named sources and patch sets, V_*.
 recipe_fingerprint() {
     local fn="${1:-}"; shift || true
     local body
@@ -366,9 +335,7 @@ recipe_fingerprint() {
                  | sed -n 's/.*apply_repo_patches[[:space:]]\{1,\}"\{0,1\}\([^" ;)]*\).*/\1/p' \
                  | sort -u || true)
 
-        # A source the recipe's text names: a tarball, wherever it is named, or
-        # any file read from the sources directory. A name still holding a
-        # variable is a helper's argument, hashed with the step's arguments.
+        # Tarballs and source files the text names; one still holding a variable is an argument.
         local sf
         while IFS= read -r sf; do
             sf="$(_expand_v "$sf")"
@@ -383,8 +350,7 @@ recipe_fingerprint() {
         while IFS= read -r v; do
             [[ -z "$v" ]] && continue
             printf 'ver:%s=%s\n' "$v" "${!v-unset}"
-        # `|| true`: grep exits 1 for a recipe with no V_*, which would fire
-        # the ERR trap inside the process substitution.
+        # || true: grep exits 1 for a recipe with no V_*, which would fire the ERR trap.
         done < <(printf '%s
 %s
 ' "$body" "$*" \
@@ -392,9 +358,7 @@ recipe_fingerprint() {
     } | sha256_of_stdin
 }
 
-# The step's inputs plus what affects every step. versions.env and
-# hardening.env are not hashed whole: they reach a step through tarball names,
-# V_* values and the flags below, so an unrelated edit invalidates nothing.
+# Inputs, compiler, flags, chain; versions.env and hardening.env count only where a step reads them.
 stamp_fingerprint() {
     local name="$1"; shift
     {
@@ -476,12 +440,8 @@ Stamp: ${stamp}"
     esac
 }
 
-#   step <name> [--check] <recipe> [args...]
-# Stages provide STAMPS, LOGS, STAMP_PREFIX and STAGE_FILE, and optionally
-# REDO, set_flags_for() (per-package hardening) and step_failure_hint().
-# A check writes nothing a later step reads. It is stamped like any step and
-# runs again when anything before it changes, but it is no link in the chain:
-# editing one reruns it alone.
+# step NAME [--check] RECIPE [ARGS...]; a check is no link in the chain: an edit reruns it alone.
+# Stages set STAMPS, LOGS, STAMP_PREFIX and STAGE_FILE [REDO, set_flags_for, step_failure_hint].
 step() {
     local name="$1"; shift
     local link=1
@@ -505,7 +465,7 @@ step() {
             [[ "$link" -eq 0 ]] || STAMP_DEPS="${STAMP_DEPS}${name}=${want};"
             return 0
         fi
-        # Dies unless KRYPTIK_STALE=rebuild, or the stamp was fingerprint-less.
+        # Dies unless KRYPTIK_STALE=rebuild, or the stamp has no fingerprint.
         _stamp_stale "$name" "$stamp" "$got"
     fi
 
@@ -514,11 +474,7 @@ step() {
     local logfile="${LOGS}/${STAMP_PREFIX}${name}.log"
     local start=$SECONDS
 
-    # A bare subshell, never a condition: `( ... ) || rc=$?` or `if ! ( ... )`
-    # turns errexit off inside the recipe too. The ERR trap fires even without
-    # errexit and would exit this shell, so it is lifted here and re-armed in
-    # the subshell, where the recipe's abort line lands in its log.
-    # Tested by tools/tests/step-errexit.sh.
+    # A bare subshell, since a condition drops errexit in the recipe; the ERR trap moves inside it.
     local rc=0
     set +e
     trap - ERR

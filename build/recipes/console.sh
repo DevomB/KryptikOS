@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
-# console: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
-# The console: a root shell on install media (agetty -n -l skips login), a
-# login prompt otherwise. The device is the kernel's active console, not a
-# guess: a serial port when there is one; a virtual terminal is left to
-# getty-tty1.
+# A root shell on install media, a login prompt otherwise, on the kernel's active console.
 s_console() {
     mkdir -p /usr/libexec
     cat > /usr/libexec/kryptik-console <<'EOF'

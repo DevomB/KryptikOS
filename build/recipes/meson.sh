@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-# meson: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
-# meson runs uninstalled from its own tree, avoiding the unpinned pip, wheel
-# and setuptools.
+# meson runs from its own tree, so no unpinned pip, wheel or setuptools.
 s_meson() {
     local src; src="$(unpack "meson-${V_MESON}.tar.gz" "meson-${V_MESON}")"
     rm -rf /usr/lib/meson

@@ -24,8 +24,7 @@ check_version() {
     fi
 }
 
-# First dotted version number in a command's output. No pipeline: under
-# pipefail, a reader that exits early (head -1, grep -q) fails the writer.
+# First dotted version in a command's output; no pipe, as an early-exiting reader fails the writer.
 ver_of() {
     local out
     out="$("$@" 2>&1 || true)"
@@ -96,8 +95,7 @@ else
     warn "yacc is not bison — some packages will fail to build"; WARN=$((WARN + 1))
 fi
 
-# Measure where the build writes: CI keeps KRYPTIK_WORK on a large second
-# disk, apart from the checkout's small root disk.
+# Measure where the build writes: CI keeps KRYPTIK_WORK on a large second disk.
 space_dir="${KRYPTIK_WORK:-$KRYPTIK_ROOT/build/work}"
 mkdir -p "$space_dir" 2>/dev/null || space_dir="$KRYPTIK_ROOT"
 avail_gb=$(df -BG --output=avail "$space_dir" 2>/dev/null | tail -1 | tr -dc '0-9' || echo 0)
