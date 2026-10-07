@@ -258,8 +258,7 @@ struct Lab {
     dev: u64,
 }
 
-/// Zones a (sender), b and c (plain) and n (nic); a destination root with
-/// homes for b and c; the lab directory's filesystem as the data mount.
+/// Zones a (sender), b, c and n (nic); homes for b and c; the lab's filesystem as data mount.
 fn lab(tag: &str, to: &str) -> Lab {
     use std::os::unix::fs::MetadataExt;
     let dir = entry(&format!("transfer-{tag}"));
@@ -302,8 +301,7 @@ fn resolver(root: std::path::PathBuf) -> impl Fn(&str) -> Result<Target, String>
     }
 }
 
-/// How many of this process's descriptors point at `p`; tests run in
-/// parallel, so a total count would be noise.
+/// How many of our descriptors point at `p` (tests run in parallel: a total would be noise).
 fn fds_pointing_at(p: &Path) -> usize {
     std::fs::read_dir("/proc/self/fd")
         .unwrap()
@@ -381,8 +379,7 @@ fn transfer_lands_in_incoming() {
     let _ = std::fs::remove_dir_all(&lab.dir);
 }
 
-/// One transfer of notes.txt ("hello transfer", 14 bytes) from a descriptor
-/// the sender left at byte 6; returns the reply.
+/// Transfer notes.txt (14 bytes) from a descriptor the sender left at byte 6; returns the reply.
 fn send_notes(sv: &Served, file: &Path) -> String {
     std::fs::write(file, b"hello transfer").unwrap();
     let src = open_flags(file, libc::O_RDONLY);
@@ -496,8 +493,7 @@ fn transfer_refusals_precede_copy() {
         let text = String::from_utf8_lossy(&r);
         assert!(text.starts_with("error: ") && text.contains(want), "request {req:?}: got {text:?}, wanted {want:?}");
     }
-    /* Every refusal closed what it was handed. Checked after the loop,
-     * since the cases open all their descriptors up front. */
+    // Every refusal closed what it was handed; checked here, as the cases open theirs up front.
     let left = fds_pointing_at(&file) + fds_pointing_at(&lab.dir) + fds_pointing_at(&big);
     assert_eq!(left, 0, "a refusal leaked a descriptor in the broker");
     // A file on another filesystem than the zone's data mount.
@@ -511,16 +507,15 @@ fn transfer_refusals_precede_copy() {
     } else {
         eprintln!("/dev/shm is on the same filesystem as the lab; the st_dev case is not exercised here");
     }
-    /* Consent and an unknown data mount each refuse on their own. This sets
-     * the variable consent's tests set, so it takes their lock. */
+    // Consent and an unknown data mount each refuse on their own. This sets the variable
+    // consent's tests set, so it takes their lock.
     sv.auto_approve = false;
     {
         let _env = crate::consent::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("KRYPTIK_CONSENT_DIR", "/nonexistent/kryptik-consent");
         let (_, r) = ask_with(&sv, "transfer b f.txt\n", &[ro()], false);
         assert!(String::from_utf8_lossy(&r).contains("no consent channel"), "{}", String::from_utf8_lossy(&r));
-        /* A destination that is not running is refused before any question:
-         * even with no consent channel, the error is about the destination. */
+        // A destination not running is refused before any question, even with no consent channel.
         sv.resolve_dest = &not_running;
         let (_, r) = ask_with(&sv, "transfer b f.txt\n", &[ro()], false);
         let text = String::from_utf8_lossy(&r);
@@ -584,8 +579,7 @@ fn zone_limits_bound_transfer() {
 
 #[test]
 fn dest_resolved_after_consent() {
-    /* The first lookup finds the zone under `before`; by the answer it runs
-     * under the lab root, as a zone restarted during the wait would. */
+    // Found under `before` first, then under the lab root: a zone restarted during the wait.
     let lab = lab("again", "b");
     let entry_dir = lab.dir.join("entry");
     let before = lab.dir.join("before");
@@ -655,8 +649,7 @@ fn dest_resolved_after_consent() {
 
 #[test]
 fn refusal_pauses_questions() {
-    /* Every question takes focus in zone 0: after a refusal the same launch
-     * may raise no other for a minute, and is told so without one. */
+    // After a refusal the launch raises no question for a minute, and is told so without one.
     let lab = lab("pause", "b");
     let entry_dir = lab.dir.join("entry");
     std::fs::create_dir_all(&entry_dir).unwrap();
@@ -719,9 +712,8 @@ fn refusal_pauses_questions() {
     let second = send();
     done.store(true, std::sync::atomic::Ordering::SeqCst);
     let asked = person.join().unwrap();
-    /* Once the pause is over the next request is asked again; with no
-     * channel, it says so. That asked nobody, so the one right after it is
-     * not paused: it reaches the channel check again. */
+    /* After the pause the next request is asked again (no channel, so it says so); that asked
+     * nobody, so the one after it is not paused either. */
     refused.set(Some(Instant::now()));
     std::env::set_var("KRYPTIK_CONSENT_DIR", "/nonexistent/kryptik-consent");
     let third = send();
@@ -814,8 +806,7 @@ fn parse_request_wire_format() {
     }
 }
 
-/// From the nic zone the claim reaches the decision, which refuses for want
-/// of a floor; no clock is touched either way.
+/// The nic zone's claim reaches the decision (refused: no floor); no clock is touched.
 #[test]
 fn only_nic_zone_reports_time() {
     let claim = crate::time::Claim { offset: 2.0, sources: 3 };
@@ -874,11 +865,8 @@ fn only_nic_zone_brings_update() {
     assert_eq!(update_refusal(&zone_of("nic", "")), None);
 }
 
-/// Requests from fuzz-corpus/broker-requests (add any that ever breaks the
-/// broker), damaged by a fixed-seed generator and sent down a real
-/// connection, each with a fresh descriptor of `attach` when given. No
-/// panic, no overrun of the deadline, one well-formed reply, and nothing
-/// accepted outside the grammar. Returns (sent, accepted).
+/// Serve each fuzz-corpus/broker-requests line damaged by a seeded generator, with a fresh
+/// `attach` fd if given: no panic or overrun, one well-formed reply. Returns (sent, accepted).
 fn fuzz_pass(s: &Served, hello: &str, attach: Option<&Path>) -> (u32, u32) {
     const CORPUS: &str = include_str!("../../fuzz-corpus/broker-requests");
     // xorshift64*: small, seeded, the same sequence everywhere.
@@ -961,9 +949,7 @@ fn broker_survives_any_request() {
     assert!(sent > 2000 && accepted > 50 && accepted < sent, "sent {sent}, accepted {accepted}");
 }
 
-/// The same damage past the transfer path's descriptor check: a sender
-/// whose policy names b, its data mount the lab's, b running under the lab
-/// root, and every request carrying a file of that mount.
+/// The same damage on the transfer path: b allowed and running, and a file on every request.
 #[test]
 fn broker_survives_any_transfer() {
     let lab = lab("fuzz", "b");
@@ -997,10 +983,8 @@ fn broker_survives_any_transfer() {
     assert!(sent > 2000, "sent {sent}");
 }
 
-/// The nic zone reaches time-offset's judgement and the update verbs'
-/// payloads, and through them this host's clock and update state. As root
-/// that would be the real thing, so it runs only unprivileged, where every
-/// such write is refused, and with no consent channel for a question.
+/// The nic zone's verbs reach this host's clock and update state, so this runs unprivileged
+/// only, where every such write is refused, and with no consent channel.
 #[test]
 fn broker_survives_any_request_from_the_nic_zone() {
     if unsafe { libc::geteuid() } == 0 {

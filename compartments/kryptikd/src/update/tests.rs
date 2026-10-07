@@ -133,7 +133,7 @@ fn poll_names_missing_files_and_offsets() {
     assert!(still_needed(&files(), |_| u64::MAX).is_empty());
 }
 
-// --- the state, against a directory of the test's own ---
+// --- the state, in a scratch directory per test ---
 
 fn scratch(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("kryptik-update-test-{}-{tag}", std::process::id()));
