@@ -12,11 +12,7 @@ runs:
   steps:
     - shell: bash
       run: |
-        # Everything the build or a test writes, temporary files and Rust
-        # targets included, goes under /mnt, and the image's SDKs are deleted:
-        # a full disk kills the runner before it writes a report. Deleting them
-        # takes minutes, so it runs on in the background, detached from the
-        # step's output; nothing needs the room that soon.
+        # A full disk kills the runner unreported: write under /mnt, delete the SDKs in the background.
         sudo mkdir -p /mnt/kryptik
         sudo chown "$(id -u):$(id -g)" /mnt/kryptik
         mkdir -p "$KRYPTIK_WORK" "$KRYPTIK_SOURCES" "$KRYPTIK_OUT" /mnt/kryptik/tmp /mnt/kryptik/cargo
@@ -33,8 +29,7 @@ runs:
       run: |
         sudo pip install --break-system-packages virt-firmware==26.9
         virt-fw-vars --help > /dev/null
-        # /dev/kvm exists on a hosted runner but only root may open it; without
-        # it every VM falls back to TCG and runs into its timeout.
+        # Only root may open /dev/kvm on a hosted runner; without it every VM falls back to TCG and times out.
         echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
         sudo udevadm control --reload-rules
         sudo udevadm trigger --name-match=kvm
@@ -46,8 +41,7 @@ runs:
       with:
         path: /mnt/kryptik/sources
         key: sources-v3-${{ hashFiles('sources.lock') }}
-        # A changed lock restores the previous set and fetches only what is
-        # new; every file is still hashed against the lock.
+        # A changed lock restores the previous set; every file is still hashed against the lock.
         restore-keys: sources-
 
     # A cache evicted since the build job is fetched again, not taken as gone.
@@ -58,12 +52,10 @@ runs:
       run: |
         make sources
         ./tools/prune-sources.sh
-        # The signatures too, so the set this job saves is the one CI's
-        # signature gate reads from disk; this pass is not the verdict.
+        # Fetches the signatures into the saved set for CI's gate; this pass is not the verdict.
         [[ "$MODE" != fetch ]] || ./tools/verify-signatures.sh > /dev/null 2>&1 || true
 
-    # Saved as soon as the set is verified, not when the job ends: a job that
-    # fails later would otherwise fetch the lock's new files again next time.
+    # Saved now rather than at the end, so a job that fails later does not refetch the new files.
     - if: inputs.sources == 'fetch' && steps.sources.outputs.cache-hit != 'true'
       uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
       with:
