@@ -206,7 +206,9 @@ changes.
   one started before any net zone gets a path but no resolver until it
   restarts; kryptikd does not edit a running zone's sealed root.
 - The kernel returns the physical interface to the initial namespace, down
-  and unaddressed; kryptikd leaves it so until the next net zone start.
+  and unaddressed, under its own name (`dev<N>` only if zone 0 has an
+  interface by that name by then); kryptikd leaves it so until the next net
+  zone start, which takes it again whatever its name.
 
 ## What this guarantees
 
@@ -257,8 +259,10 @@ changes.
 - `build/guest-tests/zones-check.sh` on the installed system checks every
   guarantee above under QEMU user networking: the net zone `READY`, zone 0
   offline, a routed zone's address, NAT, ULA-only IPv6 and resolver, zones
-  separated, `vault` offline, no egress while the net zone is down,
-  reattachment after a restart, a zone without `local` refused the VM
+  separated, `vault` offline, no egress while the net zone is down, the
+  uplink back in zone 0 under its own name, down and with no address until
+  the next start takes it, a zone running across a restart going out through
+  the gateway again once reattached, a zone without `local` refused the VM
   gateway, and, on two `mac80211_hwsim` radios, the net zone associating,
   leasing and routing over one while the other is the access point, whose own
   address that zone is refused while it reaches an address the access point
