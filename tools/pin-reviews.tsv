@@ -30,7 +30,6 @@ texinfo       7.1      7.3      fine  2026-09-19  NEWS 7.1.1 to 7.3: no security
 libtool       2.4.7    2.6.2    fine  2026-09-19  NEWS 2.5.x and 2.6.x: no security fix.
 gperf         3.1      3.3      fine  2026-09-19  NEWS 3.2 and 3.3: no security fix.
 pkgconf       2.3.0    3.0.7    fine  2026-09-19  NEWS to 3.0.7: no security fix. 3.0 breaks the libpkgconf ABI, moves to meson and changed quoting and sysroot handling twice.
-iana-etc      20240806 20260911 fine  2026-09-19  Data only: /etc/services and /etc/protocols.
 intel-microcode 20260812 20260925 fine  2026-09-27  Release notes 20260925: one functional update, Meteor Lake C0 (06-aa-04, 0x28 to 0x2b), and no security advisory.
 ca-bundle     2026-08-13 2026-09-25 fine  2026-09-27  The 2026-09-25 bundle holds the same 121 certificates, byte for byte; only its header's date and certdata.txt digest differ.
 groff         1.23.0   1.24.2   fine  2026-09-29  NEWS 1.24.0 to 1.24.2: 1.24.2 fixes command injection (CWE-78) in mmroff, pdfmom and pre-grohtml, which the image does not install (build/recipes/groff.sh); man renders for a terminal, never HTML. 1.24.0 has incompatible request-syntax changes; never that one.
