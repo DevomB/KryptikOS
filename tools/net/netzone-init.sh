@@ -76,6 +76,12 @@ LOCAL6="$(local_zones "$ZONES" | awk '{ print $2 }' | tr '\n' ',' | sed 's/,$//'
 SET4="set local4 { type ipv4_addr; }"; SET6="set local6 { type ipv6_addr; }"
 [ -z "$LOCAL4" ] || SET4="set local4 { type ipv4_addr; elements = { ${LOCAL4} } }"
 [ -z "$LOCAL6" ] || SET6="set local6 { type ipv6_addr; elements = { ${LOCAL6} } }"
+# Host K's eth0 has the MAC kryptikd gives it (netzone.rs, zone_mac),
+# 02:19:00:00:00:K, which a routed zone can neither change nor forge. With
+# IPV6_FREEBIND any socket sends from an address it does not hold, so a packet
+# from the bridge counts as from 10.19.0.K or fd19::K only with that MAC.
+PIN4="$(awk 'BEGIN { for (k = 2; k < 250; k++) printf "%s10.19.0.%d . 02:19:00:00:00:%02x", (k > 2 ? ", " : ""), k, k }')"
+PIN6="$(awk 'BEGIN { for (k = 2; k < 250; k++) printf "%sfd19::%x . 02:19:00:00:00:%02x", (k > 2 ? ", " : ""), k, k }')"
 
 # A zone goes out by a gateway (gw4, gw6) and never to the gateway itself:
 # the rest of what an uplink reaches is the network it sits on, open to local4
@@ -86,6 +92,15 @@ RULES="table inet kryptik {
     set gw6 { type ipv6_addr; }
     ${SET4}
     ${SET6}
+    set pin4 { type ipv4_addr . ether_addr; elements = { ${PIN4} } }
+    set pin6 { type ipv6_addr . ether_addr; elements = { ${PIN6} } }
+    chain prerouting {
+        type filter hook prerouting priority raw; policy accept;
+        iifname \"${BR}\" ip saddr . ether saddr != @pin4 drop
+        iifname \"${BR}\" ip6 saddr . ether saddr @pin6 accept
+        iifname \"${BR}\" ip6 saddr fe80::/10 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept
+        iifname \"${BR}\" meta nfproto ipv6 drop
+    }
     chain forward {
         type filter hook forward priority filter; policy drop;
         ct state established,related accept
@@ -115,10 +130,12 @@ load_policy() {
     nft flush ruleset 2>/dev/null || true
     printf '%s\n' "$RULES" | nft -f - 2>/tmp/nft.err || { say "nftables: load FAILED: $(tr '\n' ' ' < /tmp/nft.err)"; return 1; }
     live="$(nft list table inet kryptik 2>/dev/null)"
-    case "$live" in
-        *"policy drop"*"masquerade"*) ;;
-        *) say "nftables: the loaded table is not the policy (missing drop policy or masquerade)"; nft flush ruleset 2>/dev/null; return 1 ;;
-    esac
+    for want in "@pin6 accept" "policy drop" "masquerade"; do
+        case "$live" in
+            *"$want"*) ;;
+            *) say "nftables: the loaded table is not the policy (no \"${want}\")"; nft flush ruleset 2>/dev/null; return 1 ;;
+        esac
+    done
     GATEWAYS=""
     return 0
 }

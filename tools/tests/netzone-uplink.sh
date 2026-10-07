@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Tests for the net zone's rule on the networks its uplinks sit on
 # (tools/net/netzone-init.sh): the zones a definition lets through, by the
-# address kryptikd gives each; the gateways as the sets take them; and the
-# order of the rules. Offline, with stand-ins for ip and nft, under each POSIX
-# shell here.
+# address kryptikd gives each; each address pinned to its zone's MAC; the
+# gateways as the sets take them; and the order of the rules. Offline, with
+# stand-ins for ip and nft, under each POSIX shell here.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT="${ROOT}/tools/net/netzone-init.sh"
@@ -106,9 +106,22 @@ for sh in sh bash dash; do
     forward="$(sed -n '/chain forward {/,/^    }$/p' <<<"$rules" | grep -oE 'established,related accept|ip6? saddr @local[46] accept|rt ip6? nexthop @gw[46] ip6? daddr != @gw[46] accept|reject with icmpx type admin-prohibited|oifname "kryptik0" drop' | tr '\n' '|')"
     same "replies first, then the local zones, then what a gateway carries but the gateway itself, then the refusal" "$forward" \
         'established,related accept|ip saddr @local4 accept|ip6 saddr @local6 accept|rt ip nexthop @gw4 ip daddr != @gw4 accept|rt ip6 nexthop @gw6 ip6 daddr != @gw6 accept|reject with icmpx type admin-prohibited|oifname "kryptik0" drop|'
+    pairs4="$(grep 'set pin4 ' <<<"$rules" | grep -oE '10\.19\.0\.[0-9]+ \. 02:19:00:00:00:[0-9a-f]{2}' \
+        | awk '{ split($1, a, "."); n++; if (sprintf("%02x", a[4]) == substr($3, 16)) ok++ } END { print n + 0, ok + 0 }')"
+    pairs6="$(grep 'set pin6 ' <<<"$rules" | grep -oE 'fd19::[0-9a-f]+ \. 02:19:00:00:00:[0-9a-f]{2}' \
+        | awk '{ h = substr($1, 7); n++; if ((length(h) == 1 ? "0" h : h) == substr($3, 16)) ok++ } END { print n + 0, ok + 0 }')"
+    same "hosts 2 to 249 each have both addresses pinned to their own MAC" "$pairs4 $pairs6" "248 248 248 248"
+    pre="$(sed -n '/chain prerouting {/,/^    }$/p' <<<"$rules" | grep -oE 'priority raw|ip saddr \. ether saddr != @pin4 drop|ip6 saddr \. ether saddr @pin6 accept|ip6 saddr fe80::/10 icmpv6 type \{ nd-neighbor-solicit, nd-neighbor-advert \} accept|meta nfproto ipv6 drop' | tr '\n' '|')"
+    same "from the bridge, ahead of conntrack: IPv4 off its pin dropped, IPv6 on its pin taken, neighbour discovery from a link-local address taken, other IPv6 dropped" "$pre" \
+        'priority raw|ip saddr . ether saddr != @pin4 drop|ip6 saddr . ether saddr @pin6 accept|ip6 saddr fe80::/10 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept|meta nfproto ipv6 drop|'
     rules="$(run rules "$T/none")"
     grep -qF 'set local4 { type ipv4_addr; }' <<<"$rules" && green "with no zone let through the sets are empty, and every zone is refused" || red "the empty local sets" "$(grep 'set local' <<<"$rules" | tr '\n' '|')"
 done
+
+# The MAC the script pins each host to is the one kryptikd gives its eth0.
+grep -qF '[0x02, 0x19, 0, 0, 0, k]' "${ROOT}/compartments/kryptikd/src/netlink.rs" \
+    && green "netlink.rs gives host k the MAC 02:19:00:00:00:k the pin expects" \
+    || red "netlink.rs's zone_mac is not 02:19:00:00:00:k" "$(grep -A2 'fn zone_mac' "${ROOT}/compartments/kryptikd/src/netlink.rs" | tr '\n' ' ')"
 
 # Where this user may make a network namespace, nft itself reads the ruleset.
 # A kernel without the pieces is no finding here; a ruleset nft cannot parse is.

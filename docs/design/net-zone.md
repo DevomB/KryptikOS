@@ -40,8 +40,8 @@ query and the [update](update-channel.md) fetcher. Builds on
   with its peer born in the routed zone as `eth0`, enslaves `kv-<zone>` to
   `kryptik0` and isolates the port (`IFLA_BRPORT_ISOLATED`), so no frame
   passes between two `kv-*` ports. The zone's addresses, `10.19.0.<k>/24` and
-  `fd19::<k>/64` with default routes via the bridge, follow from its declared
-  identity (`netzone::host_number`: `uid_base` 131072 is `.2`, 196608 is `.3`,
+  `fd19::<k>/64` with default routes via the bridge, and its MAC,
+  `02:19:00:00:00:<k>`, follow from its declared identity (`netzone::host_number`: `uid_base` 131072 is `.2`, 196608 is `.3`,
   and so on), not from DHCP: one less daemon, no broadcast domain.
   `accept_ra = 0` is set first, and `ping_group_range` names the zone's host
   gid so unprivileged ICMP echo works (the sysctl takes host ids, so the
@@ -55,9 +55,18 @@ query and the [update](update-channel.md) fetcher. Builds on
 - **A routed zone owns its namespace, not its port.** Its bounding set is
   `CAP_NET_BIND_SERVICE`, `policy::check_for_zone` refuses a policy keeping
   `CAP_NET_ADMIN` or `CAP_NET_RAW`, and seccomp refuses packet sockets. It
-  cannot change its address or MAC, send from another address, or put a frame
-  on the wire that the kernel did not build; `ip link set eth0 down` fails
-  with `EPERM`.
+  cannot change its address or MAC, or put a frame on the wire that the
+  kernel did not build; `ip link set eth0 down` fails with `EPERM`.
+- **A zone's addresses count only with its MAC.** A routed zone can still
+  send from an address it does not hold: `IPV6_FREEBIND` needs no capability
+  and IPv6 checks no source on the way out. (IPv4 refuses such a source
+  unless the socket is transparent, which needs one of the two capabilities.)
+  The net zone's ruleset therefore pairs `10.19.0.<k>` and `fd19::<k>` with
+  `02:19:00:00:00:<k>` for every host number and, at prerouting ahead of
+  conntrack, drops a packet from the bridge whose source and MAC are not a
+  pair. From a link-local address only neighbour discovery passes, so one zone
+  cannot borrow another's address to reach what that one may, or send the net
+  zone's answers to it.
 - **Every namespace starts with loopback only.** The kernel builds SIT in, so
   the launcher sets `net.core.fb_tunnels_only_for_init_net = 1` first, and a
   privileged launch refuses a namespace holding anything else.
@@ -126,8 +135,8 @@ its definition says `[network] local = true`.
   the verified root, which the net zone shares read-only, and a routed zone's
   address follows from its `uid_base`. The script puts the addresses of the
   zones that claim `local` into `local4` and `local6` when it loads the
-  ruleset. A routed zone cannot change its address, so the address is the
-  zone. kryptikd refuses the key on a zone that is not routed, and
+  ruleset. A routed zone cannot change its address, and the net zone takes
+  an address only with that zone's MAC, so the address is the zone. kryptikd refuses the key on a zone that is not routed, and
   `kryptikd explain` says which way a zone is set.
 - **`untrusted` is the one shipped zone that claims it.** A hotel's or café's
   Wi-Fi asks for a login on a page its gateway serves, and the net zone has
@@ -222,18 +231,18 @@ changes.
 - A routed zone reaches the network an uplink sits on only if its definition
   says so. The others reach what a gateway carries, and never the gateway
   itself.
-- Addresses are identities: 10.19.0.k follows from `uid_base`, so the broker
-  or a future policy can name zones by address as safely as by uid, as long
-  as routed zones cannot change their address.
+- Addresses are identities: 10.19.0.k follows from `uid_base` and the net
+  zone takes it only with that zone's MAC, so the broker or a future policy
+  there can name zones by address as safely as by uid, as long as routed
+  zones keep neither network capability.
 
 ## Not built
 
-- **MAC/IP pinning of bridge ports** (nftables `bridge` rules dropping frames
-  with a source that is not the assigned one). A routed zone already cannot
-  re-address itself or forge frames. Pinning would check that again inside the
-  hostile net zone, and need `NF_TABLES_BRIDGE` and `BRIDGE_NETFILTER` built
-  in: more kernel reachable from a hostile zone for no new guarantee. Revisit
-  if a routed zone may ever keep either network capability.
+- **Pinning by bridge port** (nftables `bridge` rules on each `kv-*` port).
+  The `inet` table pins by MAC instead, which a routed zone can neither change
+  nor forge, so a port would add nothing, and `NF_TABLES_BRIDGE` and
+  `BRIDGE_NETFILTER` would put more kernel within reach of the hostile net
+  zone. Revisit if a routed zone may ever keep either network capability.
 
 ## Tests
 
@@ -248,8 +257,9 @@ changes.
 - `wifi.rs` unit tests and the serve and cli suites cover the credentials
   file and `kryptik wifi`.
 - `tools/tests/netzone-uplink.sh`: the zones a definition lets through, by the
-  address kryptikd derives for each, the gateway sets as nft is fed them, and
-  the order of the forward rules.
+  address kryptikd derives for each, every host's addresses pinned to its own
+  MAC and the MAC the same as `netlink::zone_mac`, the gateway sets as nft is
+  fed them, and the order of the prerouting and forward rules.
 - The launcher suite reads a zone's bounding set (exactly `0x400`) and the
   boundary suite asks for an `AF_PACKET` socket. The launcher suite's
   routed-networking section runs only with `KRYPTIK_VM_DISPOSABLE=1`, since
@@ -257,7 +267,9 @@ changes.
 - `build/guest-tests/zones-check.sh` on the installed system checks every
   guarantee above under QEMU user networking: the net zone `READY`, zone 0
   offline, a routed zone's address, NAT, ULA-only IPv6 and resolver, zones
-  separated, `vault` offline, no egress while the net zone is down,
+  separated, a zone's datagrams sent from another zone's addresses counted
+  where they reach the net zone and never taken in while its own are, `vault`
+  offline, no egress while the net zone is down,
   reattachment after a restart, a zone without `local` refused the VM
   gateway, and, on two `mac80211_hwsim` radios, the net zone associating,
   leasing and routing over one while the other is the access point, whose own

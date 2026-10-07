@@ -87,7 +87,7 @@ fn only_bus_devices_count_as_physical() {
                 eprintln!("a fresh namespace already counts {before:?} as physical");
                 return Err(2);
             }
-            step(3, netlink::create_veth("pa", "pb", None))?;
+            step(3, netlink::create_veth("pa", "pb", None, None))?;
             step(4, netlink::create_bridge("br-t"))?;
             if !class_net.join("pa").exists() || !class_net.join("br-t").exists() {
                 eprintln!("the mounted sysfs does not show this namespace's devices; this proved nothing");
@@ -206,16 +206,22 @@ fn ipv4_survives_disabled_ipv6() {
                 eprintln!("attach_routed: {e}");
                 5
             })?;
-            let (routes, v6, up) = netlink::with_netns(zone_ns, || {
+            let (routes, v6, up, mac) = netlink::with_netns(zone_ns, || {
                 Ok((
                     std::fs::read_to_string("/proc/self/net/route")?,
                     std::fs::read_to_string("/proc/self/net/if_inet6").unwrap_or_default(),
                     netlink::is_up("eth0")?,
+                    netlink::mac_of("eth0")?,
                 ))
             })
             .map_err(|_| 6)?;
             if !up {
                 return Err(7);
+            }
+            // The net zone takes the zone's addresses only with this MAC.
+            if mac != netlink::zone_mac(7) {
+                eprintln!("eth0 has MAC {mac:02x?}, not {:02x?}", netlink::zone_mac(7));
+                return Err(10);
             }
             let rows: Vec<&str> = routes.lines().skip(1).collect();
             let default = rows.iter().any(|l| {
@@ -261,7 +267,7 @@ fn uplink_config_travels_with_nic() {
             Err(c) => return c,
         };
         let r: Result<(), i32> = (|| {
-            step(1, netlink::create_veth("up0", "up1", None))?;
+            step(1, netlink::create_veth("up0", "up1", None, None))?;
             step(2, netlink::set_up("up1"))?;
             step(3, netlink::set_up("up0"))?;
             step(4, netlink::add_addr4("up0", [10, 77, 0, 5], 24))?;
