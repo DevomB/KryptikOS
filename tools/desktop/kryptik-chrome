@@ -96,7 +96,7 @@ status_to_focus() {
 
 run_status() {
     mkdir -p "$RT/kryptik" 2>/dev/null
-    # The launcher window, so a fresh session shows something usable.
+    # The menu window, so a fresh session shows something usable.
     "$TERMINAL" /usr/bin/kryptik-chrome --menu &
     # The consent watcher: one trusted window per question the broker leaves.
     # Holding watcher.lock exclusively tells the broker someone is here to ask

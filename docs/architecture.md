@@ -35,6 +35,21 @@ Defined in `compartments/zones/`, installed on the verified root.
 | `untrusted` | via `net` | ephemeral | unknown files and links |
 | `dev` | via `net` | encrypted | toolchains, builds |
 
+## The programs
+
+| name | what it is |
+| --- | --- |
+| `kryptik` | the user's command (`tools/kryptik`) |
+| `kryptikd` | the zone manager |
+| `kryptikd serve` | the launch service: root's daemon, which takes the desktop's requests (older docs say launch daemon; it is the same thing) |
+| `kryptikd run` | a zone's launcher: one process per running zone, which holds its broker and its log |
+| `kryptik-launch` | the desktop's launcher: starts the zone's proxy and asks the launch service for the zone |
+| `kryptik-wlproxy` | a zone's Wayland proxy, between the zone's programs and the compositor |
+| `kryptik-chrome` | the trusted bar, menu and question windows, in zone 0 |
+
+"The launcher" on its own, in kryptikd's messages and logs, is `kryptikd run`.
+The chrome's menu is its menu window.
+
 ## Between zones
 
 Nothing crosses by default. The broker in kryptikd identifies a caller by its
