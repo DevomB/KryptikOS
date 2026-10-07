@@ -1,4 +1,4 @@
-# Binaries allowed setuid or setgid; stage 06 strips the rest (tools/audit-setuid.sh --strip).
+# Binaries allowed setuid or setgid; stage 06 fails on any other (tools/audit-setuid.sh).
 #   /absolute/path   # why it stays, and what would remove it
 # A file capability is no way round this list: it needs an entry in capability-allowlist.txt.
 /usr/bin/su       # the one way from a login to root, for an administrator and for the test drivers (vm-drive.py su:); goes when kryptikd brokers a root session

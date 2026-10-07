@@ -1,2 +1,2 @@
-# Files allowed file capabilities; stage 06 strips the rest (tools/audit-setuid.sh --strip).
+# Files allowed file capabilities; stage 06 fails on any other (tools/audit-setuid.sh).
 #   /absolute/path   # justification

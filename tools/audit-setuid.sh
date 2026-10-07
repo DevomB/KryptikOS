@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fail on a setuid/setgid bit or file capability its allowlist does not justify (docs/hardening.md).
 #
-#   ./tools/audit-setuid.sh [--strip] ROOT   --strip takes each off instead, as stage 06 does
+#   ./tools/audit-setuid.sh [--strip] ROOT   --strip takes each off instead; stage 06 runs without it and fails
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 
