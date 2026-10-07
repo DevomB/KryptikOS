@@ -90,6 +90,14 @@ copies the ESP and root image from the medium, reads slot A back against the
 medium's `root.json`, creates the LUKS2 state partition and makes
 `BOOTX64.EFI` the slot A kernel. Every failure names its step.
 
+`root.json` is the medium's own record and is not signed, so the installer
+and `kryptik-recover --restore-slot` take it through the same checks
+(`build/service-scripts/medium-root.sh`): every field has its form before it
+is used, the record must name the root hash and size in the medium's signed
+command line, each slot kernel copied from the medium must carry that hash,
+and the slot written must verify against it (`veritysetup verify`) before
+anything names it. A kernel's signature is the firmware's to check, at boot.
+
 The installed disk boots `BOOTX64.EFI` through the removable-media path with
 no firmware variables. `kryptik-efiboot` adds a `Kryptik slot <x>` Boot####
 entry for a trial. When the trial ends, committed or not, `forget` removes
@@ -175,5 +183,6 @@ Host-side: `tools/tests/boot-success.sh`, `efiboot.sh`,
 
 `build/stages/06-iso.sh`, `06-kernel-bind.sh`,
 `tools/install/kryptik-install.sh`, `build/service-scripts/sysinit.sh`,
+`medium-root.sh`,
 `boot-success.sh`, `tools/update/kryptik-update`, `kryptik-recover`,
 `tools/efi/kryptik-efiboot.c`, `tools/release-manifest.sh`.

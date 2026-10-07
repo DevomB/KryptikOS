@@ -100,6 +100,7 @@ commit_slot() {   # commit_slot SLOT (ESP mounted rw at /run/kryptik-recover)
 
 if [ -n "$RESTORE" ]; then
     sd="$(slot_dev "$RESTORE")"
+    command -v veritysetup >/dev/null 2>&1 || die "missing tool: veritysetup; nothing was written"
     # The medium's own root image and kernel, found as kryptik-install finds them.
     mkdir -p /run/kryptik-recover-media
     case "$media" in
@@ -117,7 +118,13 @@ if [ -n "$RESTORE" ]; then
             mkdir -p /run/kryptik-recover-esp && mount -t vfat -o ro,loop /run/kryptik-recover-media/esp.img /run/kryptik-recover-esp || die "cannot mount the medium's ESP image"
             kdir=/run/kryptik-recover-esp/EFI/kryptik ;;
     esac
-    bytes="$(sed -n 's/^  "total_bytes": \([0-9]*\).*/\1/p' "$rj")"; sha="$(sed -n 's/^  "sha256": "\([0-9a-f]*\)".*/\1/p' "$rj")"; ver="$(sed -n 's/^  "version": "\([^"]*\)".*/\1/p' "$rj")"
+    # root.json is unsigned: it must name the root the medium's signed kernel
+    # carries, as must the kernel the slot will boot.
+    . /usr/libexec/kryptik/medium-root.sh
+    medium_root "$rj" /proc/cmdline
+    bytes="$ROOT_BYTES"; sha="$ROOT_SHA"; ver="$VERSION"
+    kernel_names_root "$kdir/kryptik-$RESTORE.efi" \
+        || die "the medium's kernel for slot $RESTORE does not carry the root hash its signed command line names; nothing was written"
     [ "$(blockdev --getsize64 "$sd")" -ge "$bytes" ] || die "slot $RESTORE is smaller than the medium's root image"
     # As kryptik-update does, the ESP stops naming the slot before it is
     # rewritten, and is unmounted meanwhile: a restore cut short leaves nothing
@@ -131,7 +138,11 @@ if [ -n "$RESTORE" ]; then
     blockdev --flushbufs "$sd"   # so the read-back is of the disk, not of the page cache
     got="$(dd if="$sd" bs=4M iflag=count_bytes count="$bytes" status=none | sha256sum | cut -c1-64)"
     [ "$got" = "$sha" ] || die "slot $RESTORE reads back as $got, expected $sha"
-    say "slot $RESTORE verifies"
+    # What reads back as root.json says is only what root.json says; the slot
+    # stays unnamed on the ESP unless it is the root the signed kernel names.
+    root_verifies "$sd" >/dev/null \
+        || die "slot $RESTORE does not verify against the root hash this medium's signed kernel carries; nothing was committed"
+    say "slot $RESTORE verifies against the root hash the signed kernel carries"
     mount -t vfat -o rw "$ESP" /run/kryptik-recover || die "cannot mount the target ESP"
     cp "$kdir/kryptik-$RESTORE.efi" "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi.new"
     sync -f "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi.new"

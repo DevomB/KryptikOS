@@ -91,6 +91,7 @@ s_boot_check() {
     chk "boot scripts"      /usr/libexec/kryptik/sysinit.sh x
     chk "test control helper" /usr/libexec/kryptik/testctl.sh
     chk "keyboard helper"   /usr/libexec/kryptik/keyboard.sh
+    chk "medium root checks" /usr/libexec/kryptik/medium-root.sh
     chk "keyboard layouts"  /usr/share/kryptik/keyboard-layouts
     chk "loadkeys"          /usr/bin/loadkeys x
     chk "boot-success"      /usr/libexec/kryptik/boot-success.sh x

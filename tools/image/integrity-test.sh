@@ -12,8 +12,9 @@
 #           (control: the signed medium boots under the same store); then
 #           kryptik-recover --commit-slot a puts the signed kernel back
 #   step 3  a byte of slot a's root flipped: dm-verity stops the boot
-#   step 4  kryptik-recover --restore-slot a from the medium; its records on
-#           the ESP are whole, and the user's data survives
+#   step 4  kryptik-recover --restore-slot a refuses a medium whose root is
+#           not the one its signed kernel names, then restores slot a from the
+#           medium; its records on the ESP are whole, and the user's data survives
 #   step 5  an anchor, zone, sysctl, preload library and udev rule planted in
 #           the state's /etc layer: none takes effect
 #   step 6  the state header saved, wiped and restored by kryptik-recover
@@ -32,12 +33,12 @@ while [[ "$#" -gt 0 ]]; do
         --usb) USB="${2:?}"; shift 2 ;;
         --disk) DISK="${2:?}"; shift 2 ;;
         --timeout) TIMEOUT="${2:?}"; shift 2 ;;
-        -h|--help) sed -n '2,21p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,22p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
 [[ -f "$USB" ]] || die "--usb IMG is required"
-for t in python3 sbsign sbverify sbattach openssl mcopy mdel mdir mtype sfdisk cryptsetup losetup; do have "$t" || die "required tool not found: $t"; done
+for t in python3 sbsign sbverify sbattach openssl mcopy mdel mdir mtype sfdisk cryptsetup losetup debugfs; do have "$t" || die "required tool not found: $t"; done
 VMDIR="${KRYPTIK_WORK}/vm"; mkdir -p "$VMDIR"
 DISK="${DISK:-${VMDIR}/integrity.img}"
 [[ -e "$DISK" && ! -f "$DISK" ]] && die "refusing: ${DISK} is not a regular file"
@@ -155,6 +156,41 @@ grep -q 'login:' <<<"$T3" && red "a login prompt appeared on a tampered root" ||
 step "step 4: recovery from the medium restores slot a; state survives"
 CTLR="${VMDIR}/testctl-recover.img"
 "${SELF}/mk-testctl.sh" --out "$CTLR" --key "$TESTCTL_KEY" recover_disk=/dev/vda recover_slot=a recover_mode=restore smoke_poweroff=1 install_wait=5 > /dev/null
+# First a medium altered as whoever can write to it could alter it: a byte of a
+# root block nothing reads at boot, and root.json rewritten to match. Slot a
+# reads back as that record says; only the signed root hash tells.
+ALT="$(mktemp -d)"; ALTUSB="${VMDIR}/integrity-altered-usb.img"
+cp --sparse=always "$USB" "$ALTUSB"
+U_ESP=$(( $(part_start "$ALTUSB" 1) * 512 )); U_ROOT=$(( $(part_start "$ALTUSB" 2) * 512 ))
+mtype -i "${ALTUSB}@@${U_ESP}" ::/kryptik/root.json > "$ALT/root.json"
+A_BLOCKS="$(sed -n 's/^  "data_blocks": \([0-9]*\).*/\1/p' "$ALT/root.json")"
+A_BYTES="$(sed -n 's/^  "total_bytes": \([0-9]*\).*/\1/p' "$ALT/root.json")"
+# A free block from the middle of the root's ext4: never read, still verified.
+A_FREE=""
+if [[ -n "$A_BLOCKS" ]] && A_LOOP="$(losetup --find --show --read-only --offset "$U_ROOT" --sizelimit $(( A_BLOCKS * 4096 )) "$ALTUSB")"; then
+    A_FREE="$(debugfs -R "ffb 1 $(( A_BLOCKS / 2 ))" "$A_LOOP" 2>/dev/null | sed -n 's/^Free blocks found: \([0-9][0-9]*\).*/\1/p')"
+    losetup -d "$A_LOOP"
+fi
+if [[ -n "$A_FREE" && -n "$A_BYTES" ]]; then
+    printf '\x5a' | dd of="$ALTUSB" bs=1 seek=$(( U_ROOT + A_FREE * 4096 + 100 )) conv=notrunc status=none
+    A_SHA="$(dd if="$ALTUSB" bs=4M iflag=skip_bytes,count_bytes skip="$U_ROOT" count="$A_BYTES" status=none | sha256sum | cut -c1-64)"
+    sed -i "s/^  \"sha256\": \"[0-9a-f]*\"/  \"sha256\": \"${A_SHA}\"/" "$ALT/root.json"
+    mcopy -o -i "${ALTUSB}@@${U_ESP}" "$ALT/root.json" ::/kryptik/root.json
+    smoke integ-p4a --usb "$ALTUSB" --disk "$DISK" --testctl "$CTLR" --vars enrolled --timeout "$TIMEOUT" > /dev/null
+    T4A="$(boot_txt)"
+    if grep -q 'KRYPTIK_RECOVER: rc=1' <<<"$T4A" && grep -q 'does not verify against the root hash' <<<"$T4A"; then
+        green "a medium whose root is not the one its signed kernel names is refused, though its root.json was rewritten to match"
+    else
+        red "the altered medium's root was not refused"; grep 'KRYPTIK_RECOVER' <<<"$T4A" | tail -5 | sed 's/^/        /'
+    fi
+    dd if="$DISK" of="$ESPIMG" bs=1M iflag=skip_bytes,count_bytes skip="$ESP_OFF" count=$((512*1024*1024)) status=none
+    mtype -i "$ESPIMG" ::/EFI/kryptik/kryptik-a.efi >/dev/null 2>&1 \
+        && red "the refused restore left a kernel for slot a on the ESP" \
+        || green "the refused restore left the ESP naming no kernel for slot a, so --commit-slot a takes nothing"
+else
+    red "could not alter a copy of the medium (free block '${A_FREE}', total_bytes '${A_BYTES}')"
+fi
+rm -rf "$ALT" "$ALTUSB"
 smoke integ-p4 --usb "$USB" --disk "$DISK" --testctl "$CTLR" --vars enrolled --timeout "$TIMEOUT" > /dev/null
 boot_txt | grep -q 'KRYPTIK_RECOVER: rc=0' && green "kryptik-recover --restore-slot a succeeded from the medium" || { red "recovery did not report success"; boot_txt | grep 'KRYPTIK_RECOVER' | tail -5 | sed 's/^/        /'; }
 # The records recovery wrote on the ESP, read from the host: whole, and
