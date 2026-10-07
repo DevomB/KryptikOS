@@ -62,7 +62,9 @@ zones have failed them. A fullscreen window keeps its border, and the
 compositor adds a bar across the top of the output in the zone's colour,
 with the zone's name, outside the window's frame, where its surfaces are
 clipped away. Only the user's key makes a zone's window fullscreen, never
-the program's own request.
+the program's own request. While it is fullscreen the focus keys do not
+reach the windows hidden below it, and a child window the zone opens ends
+the fullscreen, since nothing of the zone's is drawn above the bar.
 `zoneid audit` checks that every pair of zones stays distinguishable.
 
 ## Storage

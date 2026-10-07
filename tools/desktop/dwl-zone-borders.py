@@ -339,13 +339,84 @@ setfullscreen(Client *c, int fullscreen)
 \t\tbreak;
 \t}
 """),
-    # A zone mapping must not cancel another zone's fullscreen either.
+    # A zone's child cannot be drawn above its fullscreen parent (it stays in
+    # the tile layer), so it ends that fullscreen; zone 0's child follows its
+    # parent up, as dwl has it. A zone mapping must not cancel another zone's
+    # fullscreen either.
     ("""\t\tif (w != c && w != p && w->isfullscreen && m == w->mon && (w->tags & c->tags))
 \t\t\tsetfullscreen(w, 0);
 """,
-     """\t\tif (w != c && w != p && w->isfullscreen && m == w->mon && (w->tags & c->tags)
+     """\t\tif (w != c && (w != p || w->zoneborder != unzonedcolor) && w->isfullscreen && m == w->mon && (w->tags & c->tags)
 \t\t\t\t&& (c->zoneborder == unzonedcolor || w->zoneborder == c->zoneborder))
 \t\t\tsetfullscreen(w, 0);
+"""),
+    # A fullscreen window covers the tile and float layers, so while one shows
+    # only its own layer is on screen. The focus never walks to what is hidden:
+    # focustop and focusstack skip covered windows. Defined before focusstack,
+    # the first of the two.
+    ("""void
+focusstack(const Arg *arg)
+{
+""",
+     """/* Kryptik: with a fullscreen window on the monitor, a window in any other
+ * layer is hidden below it and must not take the focus. */
+static int
+covered(Client *c, Monitor *m)
+{
+\tClient *w;
+\tif (c->scene->node.parent == layers[LyrFS])
+\t\treturn 0;
+\twl_list_for_each(w, &clients, link)
+\t\tif (w != c && VISIBLEON(w, m) && w->scene->node.parent == layers[LyrFS])
+\t\t\treturn 1;
+\treturn 0;
+}
+
+void
+focusstack(const Arg *arg)
+{
+"""),
+    ("""\tif (arg->i > 0) {
+\t\twl_list_for_each(c, &sel->link, link) {
+\t\t\tif (&c->link == &clients)
+\t\t\t\tcontinue; /* wrap past the sentinel node */
+\t\t\tif (VISIBLEON(c, selmon))
+\t\t\t\tbreak; /* found it */
+\t\t}
+\t} else {
+\t\twl_list_for_each_reverse(c, &sel->link, link) {
+\t\t\tif (&c->link == &clients)
+\t\t\t\tcontinue; /* wrap past the sentinel node */
+\t\t\tif (VISIBLEON(c, selmon))
+\t\t\t\tbreak; /* found it */
+\t\t}
+\t}
+""",
+     """\tif (arg->i > 0) {
+\t\twl_list_for_each(c, &sel->link, link) {
+\t\t\tif (&c->link == &clients)
+\t\t\t\tcontinue; /* wrap past the sentinel node */
+\t\t\tif (VISIBLEON(c, selmon) && !covered(c, selmon))
+\t\t\t\tbreak; /* found it */
+\t\t}
+\t} else {
+\t\twl_list_for_each_reverse(c, &sel->link, link) {
+\t\t\tif (&c->link == &clients)
+\t\t\t\tcontinue; /* wrap past the sentinel node */
+\t\t\tif (VISIBLEON(c, selmon) && !covered(c, selmon))
+\t\t\t\tbreak; /* found it */
+\t\t}
+\t}
+"""),
+    ("""\twl_list_for_each(c, &fstack, flink) {
+\t\tif (VISIBLEON(c, m))
+\t\t\treturn c;
+\t}
+""",
+     """\twl_list_for_each(c, &fstack, flink) {
+\t\tif (VISIBLEON(c, m) && !covered(c, m))
+\t\t\treturn c;
+\t}
 """),
     # setmon also chooses focus after mapping; preserve another zone's actual
     # keyboard focus even when the selected monitor has changed.
