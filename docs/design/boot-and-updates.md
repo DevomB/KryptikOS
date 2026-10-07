@@ -21,6 +21,12 @@ Partitions are found by GPT label, never by device name.
 | 3 | `kryptik-b` | slot B, empty after install |
 | 4 | `kryptik-state` | LUKS2 with ext4 inside, rest of disk: `/var`, the `/etc` upper layer, `/home`, zone volumes, update staging |
 
+Nothing on the ESP is signed but the kernels. Its records reach a terminal
+and `update.log` (`kryptik-update status` and `rollback`,
+`kryptik-recover --status`) only in the shape Kryptik writes them, a slot
+`a` or `b` and a release's version (`build/service-scripts/esp-records.sh`);
+anything else reads as `unknown`.
+
 The USB image holds `kryptik-esp` and `kryptik-media`; the ISO holds the ESP
 as its El Torito image and the root image at a sector offset (a `linear` dm
 target over `/dev/sr0`, verity on top). The root image is byte-identical on

@@ -44,6 +44,8 @@ for lblname in kryptik-state kryptik-media; do
         case "$(readlink -f "$d")" in "$DISK"*) [ "$lblname" = kryptik-state ] && [ "$d" = "$ST" ] && continue; die "${DISK} is the medium; refusing" ;; esac
     done
 done
+# The disk's ESP records are shown only in the shape Kryptik writes them.
+. /usr/libexec/kryptik/esp-records.sh
 mountpoint -q /run/kryptik-recover 2>/dev/null && umount /run/kryptik-recover
 mkdir -p /run/kryptik-recover
 cleanup() { mountpoint -q /run/kryptik-recover 2>/dev/null && umount /run/kryptik-recover; rmdir /run/kryptik-recover 2>/dev/null || true; }
@@ -57,10 +59,10 @@ put() { printf '%s\n' "$2" > "$1.new" && sync -f "$1.new" && mv -f "$1.new" "$1"
 if [ "$STATUS" = 1 ]; then
     mount -t vfat -o ro "$ESP" /run/kryptik-recover || die "cannot mount the ESP"
     echo "disk           $DISK"
-    echo "committed slot $(cat /run/kryptik-recover/kryptik/committed-slot 2>/dev/null || echo unknown)"
+    echo "committed slot $(esp_slot /run/kryptik-recover/kryptik/committed-slot)"
     for s in a b; do
         printf 'slot %s         version %s, kernel %s, filesystem %s\n' "$s" \
-            "$(cat "/run/kryptik-recover/kryptik/version-$s" 2>/dev/null || echo none)" \
+            "$(esp_version "/run/kryptik-recover/kryptik/version-$s" none)" \
             "$([ -f "/run/kryptik-recover/EFI/kryptik/kryptik-$s.efi" ] && echo present || echo absent)" \
             "$(has_fs "$(slot_dev "$s")" && echo present || echo NONE)"
     done
@@ -88,7 +90,7 @@ commit_slot() {   # commit_slot SLOT (ESP mounted rw at /run/kryptik-recover)
     mv -f /run/kryptik-recover/EFI/BOOT/BOOTX64.EFI.new /run/kryptik-recover/EFI/BOOT/BOOTX64.EFI
     put /run/kryptik-recover/kryptik/committed-slot "$s" || die "cannot record slot $s as committed"
     sync
-    say "committed: BOOTX64.EFI is now slot $s ($(cat "/run/kryptik-recover/kryptik/version-$s" 2>/dev/null || echo unknown))"
+    say "committed: BOOTX64.EFI is now slot $s ($(esp_version "/run/kryptik-recover/kryptik/version-$s"))"
     # As boot-success does at each commit: Kryptik's firmware entries and
     # BootNext go, so the firmware boots BOOTX64.EFI, and the committed slot
     # gets its own entry on this disk's ESP, a second way to it.

@@ -56,7 +56,10 @@ case "${1:-}" in
     check-manifest|check-pointer|check-release) ;;
     *)
         # shellcheck source=/dev/null
-        . /usr/libexec/kryptik/devices.sh ;;
+        . /usr/libexec/kryptik/devices.sh
+        # The ESP's records, shown only in the shape Kryptik writes them.
+        # shellcheck source=/dev/null
+        . /usr/libexec/kryptik/esp-records.sh ;;
 esac
 
 running_slot() { sed -n 's/^slot=//p' /run/kryptik/boot-identity 2>/dev/null; }
@@ -100,9 +103,9 @@ cmd_status() {
     exec 9>"$LOCK"
     if flock -s -n 9; then
         mount_esp
-        echo "committed slot:   $(cat "$ESP_MNT/kryptik/committed-slot" 2>/dev/null || echo unknown)"
+        echo "committed slot:   $(esp_slot "$ESP_MNT/kryptik/committed-slot")"
         for s in a b; do
-            printf 'slot %s:           version %s, kernel %s\n' "$s" "$(cat "$ESP_MNT/kryptik/version-$s" 2>/dev/null || echo none)" \
+            printf 'slot %s:           version %s, kernel %s\n' "$s" "$(esp_version "$ESP_MNT/kryptik/version-$s" none)" \
                 "$([ -f "$ESP_MNT/EFI/kryptik/kryptik-$s.efi" ] && echo present || echo absent)"
         done
         umount_esp
@@ -395,7 +398,7 @@ cmd_rollback() {
     [ -n "$target" ] || die "cannot tell which slot is running"
     mount_esp
     [ -f "$ESP_MNT/EFI/kryptik/kryptik-$target.efi" ] || die "slot $target has no kernel on the ESP; nothing to roll back to"
-    ver="$(cat "$ESP_MNT/kryptik/version-$target" 2>/dev/null || echo unknown)"
+    ver="$(esp_version "$ESP_MNT/kryptik/version-$target")"
     umount_esp
     tdev="$(slot_dev "$target")" || exit 1
     [ -b "$tdev" ] || die "kryptik-$target ($tdev) is not a block device"
