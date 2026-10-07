@@ -1,8 +1,5 @@
-//! Colour science from published formulae, each tested against reference
-//! values (CIEDE2000 against the Sharma, Wu & Dalal 2005 data).
-//!
-//! `Srgb` is gamma-encoded and `LinearRgb` light-linear, both in 0..=1 (not
-//! 0..=255). Vision simulation and luminance work on linear values only.
+//! Colour science from published formulae, each tested against reference values.
+//! Components are in 0..=1, not 0..=255; vision simulation and luminance use linear RGB.
 
 use std::fmt;
 
@@ -14,8 +11,7 @@ pub struct Srgb {
     pub b: f64,
 }
 
-/// A light-linear RGB colour, nominally in 0..=1. Vision simulation can leave
-/// that range; values are clamped only on conversion back to `Srgb`.
+/// A light-linear RGB colour, nominally in 0..=1; clamped only on conversion back to `Srgb`.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct LinearRgb {
     pub r: f64,
@@ -59,8 +55,7 @@ impl fmt::Display for ParseHexError {
 }
 
 impl Srgb {
-    /// Parse `#RRGGBB` only: no short form, alpha or names. Coercing a bad zone
-    /// colour could give a zone another zone's identity.
+    /// Parse `#RRGGBB` only: coercing another form could give a zone another zone's colour.
     pub fn from_hex(s: &str) -> Result<Srgb, ParseHexError> {
         let bytes = s.as_bytes();
         if bytes.first() != Some(&b'#') {
@@ -131,8 +126,7 @@ const RGB_TO_XYZ: [[f64; 3]; 3] = [
     [0.019_333_9, 0.119_192_0, 0.950_304_1],
 ];
 
-/// The reference white, derived from `RGB_TO_XYZ`: the rounded matrix misses
-/// canonical D65 slightly (Y sums to 1.0000001), and deriving keeps L* = 100.
+/// The reference white from `RGB_TO_XYZ`'s row sums, so white is L* = 100 despite the rounding.
 const WHITE: (f64, f64, f64) = (
     RGB_TO_XYZ[0][0] + RGB_TO_XYZ[0][1] + RGB_TO_XYZ[0][2],
     RGB_TO_XYZ[1][0] + RGB_TO_XYZ[1][1] + RGB_TO_XYZ[1][2],
@@ -193,8 +187,7 @@ pub fn contrast_ratio(a: Srgb, b: Srgb) -> f64 {
     (hi + 0.05) / (lo + 0.05)
 }
 
-/// CIEDE2000 colour difference: CIE 142-2001 as corrected by Sharma, Wu &
-/// Dalal (2005), with kL = kC = kH = 1. The corrections matter near blue.
+/// CIEDE2000 with Sharma, Wu & Dalal's 2005 corrections (they matter near blue), kL = kC = kH = 1.
 pub fn ciede2000(p: Lab, q: Lab) -> f64 {
     const POW25_7: f64 = 6_103_515_625.0; // 25^7
 

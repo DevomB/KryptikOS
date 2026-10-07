@@ -73,12 +73,10 @@ fn delta_e_is_symmetric() {
     assert!(close(delta_e(a, b), delta_e(b, a), 1e-9));
 }
 
-/// Sharma, Wu & Dalal (2005), "The CIEDE2000 Color-Difference Formula:
-/// Implementation Notes, Supplementary Test Data, and Mathematical
-/// Observations", Table 1: pairs that catch the hue wraparounds and the RT
-/// term near blue.
+/// Sharma, Wu & Dalal (2005), "The CIEDE2000 Color-Difference Formula", Table 1: pairs that
+/// catch the hue wraparounds and the RT term near blue.
 #[test]
-fn ciede2000_against_sharma_reference_data() {
+fn ciede2000_reference_data() {
     let cases: &[(f64, f64, f64, f64, f64, f64, f64)] = &[
         // L1,      a1,       b1,       L2,      a2,       b2,       expect
         (50.0000, 2.6772, -79.7751, 50.0000, 0.0000, -82.7485, 2.0425),

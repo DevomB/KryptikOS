@@ -1,6 +1,4 @@
-//! The proxy as a process, including the event loop that session.rs's unit
-//! tests cannot reach. The "upstream" is a Unix listener the test owns,
-//! speaking hand-encoded wire messages, so no compositor is needed.
+//! The proxy as a process, event loop included; the upstream is the test's own Unix listener.
 
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -258,8 +256,7 @@ fn serves_clients_through_churn() {
     assert_eq!(read_exact_or_panic(&mut u1, 12, "client 1's get_registry at the upstream"), get_registry(2));
     p.assert_alive("after its first client's first request");
 
-    /* Events flow back filtered: an allowed global arrives, a hidden one does
-     * not, and the next allowed one arrives right after it. */
+    // Events come back filtered: the hidden global between two allowed ones never arrives.
     u1.write_all(&global(2, 1, "wl_compositor", 6)).unwrap();
     let want = global(2, 1, "wl_compositor", 6);
     assert_eq!(read_exact_or_panic(&mut c1, want.len(), "wl_compositor global at client 1"), want);
@@ -333,9 +330,7 @@ fn send_fds(s: &UnixStream, data: &[u8], fds: &[RawFd]) {
     }
 }
 
-/// The proxy raises its soft descriptor limit to the hard one and serves only
-/// the clients whose queued descriptors fit, so one that parks as many as it
-/// may cannot starve the sessions already open.
+/// Only clients whose queued fds fit the raised limit are served, so none starves the open ones.
 #[test]
 fn clients_fit_descriptor_limit() {
     // (300 - 8) / 130: two sessions.
@@ -404,8 +399,7 @@ fn once_serves_one_client() {
     assert_no_stale_socket(&listen);
 }
 
-/// Long multi-byte titles reach the upstream bounded, prefixed and valid, and
-/// the proxy survives them.
+/// Long multi-byte titles reach the upstream bounded, prefixed and valid.
 #[test]
 fn long_unicode_titles_are_rewritten() {
     let mut p = Proxy::start("work", &[]);
@@ -414,7 +408,7 @@ fn long_unicode_titles_are_rewritten() {
     let _ = read_exact_or_panic(&mut u, 12, "get_registry");
     u.write_all(&global(2, 1, "wl_compositor", 6)).unwrap();
     u.write_all(&global(2, 2, "xdg_wm_base", 6)).unwrap();
-    let _ = read_until(&mut c, |b| split_messages_ok(b, 2), "both globals at the client");
+    let _ = read_until(&mut c, |b| holds_messages(b, 2), "both globals at the client");
 
     c.write_all(&bind(2, 1, "wl_compositor", 6, 3)).unwrap();
     c.write_all(&bind(2, 2, "xdg_wm_base", 6, 4)).unwrap();
@@ -425,7 +419,7 @@ fn long_unicode_titles_are_rewritten() {
     c.write_all(&msg(4, 2, &body)).unwrap(); // xdg_wm_base.get_xdg_surface -> 6
     c.write_all(&msg(6, 1, &u32ne(7))).unwrap(); // xdg_surface.get_toplevel -> 7
     // Six: the proxy's app_id stamp follows get_toplevel.
-    let _ = read_until(&mut u, |b| split_messages_ok(b, 6), "the five setup requests and the stamped app_id at the upstream");
+    let _ = read_until(&mut u, |b| holds_messages(b, 6), "the five setup requests and the stamped app_id at the upstream");
 
     for (label, title) in [
         ("accented", "\u{00e9}".repeat(200)),
@@ -434,7 +428,7 @@ fn long_unicode_titles_are_rewritten() {
         ("ascii", "Editor".to_string()),
     ] {
         c.write_all(&msg(7, 2, &wl_string(&title))).unwrap(); // xdg_toplevel.set_title
-        let bytes = read_until(&mut u, |b| split_messages_ok(b, 1), &format!("the {label} title at the upstream"));
+        let bytes = read_until(&mut u, |b| holds_messages(b, 1), &format!("the {label} title at the upstream"));
         let msgs = split_messages(&bytes);
         assert_eq!(msgs.len(), 1);
         assert_eq!((msgs[0].0, msgs[0].1), (7, 2));
@@ -451,7 +445,7 @@ fn long_unicode_titles_are_rewritten() {
 }
 
 /// Whether `bytes` holds exactly `n` complete messages and nothing else.
-fn split_messages_ok(mut bytes: &[u8], n: usize) -> bool {
+fn holds_messages(mut bytes: &[u8], n: usize) -> bool {
     let mut count = 0;
     while bytes.len() >= 8 {
         let word = u32::from_ne_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);

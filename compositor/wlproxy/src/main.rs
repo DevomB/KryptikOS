@@ -1,12 +1,8 @@
-//! kryptik-wlproxy: the per-zone Wayland filtering proxy.
+//! kryptik-wlproxy: the per-zone Wayland filtering proxy, single-threaded and unprivileged.
 //!
 //!   kryptik-wlproxy --zone NAME --listen PATH --upstream PATH [--max-clients N] [--once]
 //!
-//! Each client on PATH (bound into the zone as /run/kryptik/wayland-0) gets a
-//! Session to the compositor at --upstream (session.rs, policy.rs). A client
-//! that breaks the protocol or reaches for something hidden gets a
-//! wl_display.error and nothing more is forwarded. Single-threaded and
-//! unprivileged; what a client can make it allocate is bounded.
+//! Each client of PATH (the zone's /run/kryptik/wayland-0) gets its own Session to --upstream.
 
 mod policy;
 mod protocol;
@@ -21,9 +17,7 @@ use std::time::{Duration, Instant};
 
 use session::{Dir, Session};
 
-/// The log is a file in /run, which is RAM, and a client can make lines at
-/// will: they are rate-limited and cut, the whole is bounded, and a failed
-/// write is ignored rather than fatal.
+/// Bounded log: the file is in /run, which is RAM, and a client can make lines at will.
 struct Log { zone: String, since: Instant, lines: u32, dropped: u32, left: usize }
 impl Log {
     const PER_SECOND: u32 = 20;
@@ -118,14 +112,13 @@ const FDS_PER_SESSION: usize = 2 + 2 * policy::MAX_PENDING_FDS;
 /// stdio, the listener and room to spare.
 const FDS_RESERVED: usize = 8;
 
-/// Clients whose descriptors fit under `limit`, and never none.
+/// How many clients' descriptors fit under `limit`; at least one.
 fn clients_within(limit: u64, wanted: usize) -> usize {
     let room = usize::try_from(limit).unwrap_or(usize::MAX).saturating_sub(FDS_RESERVED) / FDS_PER_SESSION;
     wanted.min(room).max(1)
 }
 
-/// Raise the descriptor limit to the hard one and fit max_clients under it:
-/// past the limit, accept and recvmsg fail for every client of the zone.
+/// Raise the fd limit to the hard one and fit max_clients under it; past it, accept and recvmsg fail.
 fn fit_descriptors(o: &mut Opts) {
     let mut rl = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
     if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rl) } != 0 {
@@ -168,8 +161,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    /* The zone's uid must be able to connect through the bind mount; the
-     * directory on this side keeps everyone else out. */
+    // 0666 so the zone's uid can connect through the bind mount; the directory keeps others out.
     let _ = std::fs::set_permissions(&o.listen, std::os::unix::fs::PermissionsExt::from_mode(0o666));
     listener.set_nonblocking(true).expect("nonblocking listener");
     eprintln!("kryptik-wlproxy[{}]: listening on {} -> {}", o.zone, o.listen.display(), o.upstream.display());
@@ -178,15 +170,11 @@ fn main() {
     let mut next_id = 1u64;
     let mut served = 0u64;
     let mut log = Log::new(&o.zone);
-    /* After a failed accept the listener rests until this passes: the failed
-     * connection is still pending, so polling again at once would spin (and a
-     * client can exhaust descriptors to cause that). */
+    // A failed accept leaves the connection pending, so the listener rests or poll would spin.
     let mut accept_after = Instant::now();
     let mut fds: Vec<libc::pollfd> = Vec::new();
     loop {
-        /* The poll set snapshots `sessions`: the listener, then session i at
-         * 1+2i and 2+2i. `sessions` must not change while entries are read, so
-         * accepting comes last and the service loop stops at `polled`. */
+        // fds: the listener, then session i at 1+2i and 2+2i; valid until `sessions` changes.
         let polled = sessions.len();
         fds.clear();
         let pause = accept_after.saturating_duration_since(Instant::now());
@@ -211,7 +199,6 @@ fn main() {
             eprintln!("kryptik-wlproxy[{}]: poll: {e}", o.zone);
             std::process::exit(1);
         }
-        // Service the sessions that were polled, against their own entries.
         let mut closed: Vec<usize> = Vec::new();
         let mut zone_pool_bytes: usize = sessions.iter().map(|l| l.s.shm_pool_bytes).sum();
         let mut zone_pool_count: usize = sessions.iter().map(|l| l.s.shm_pool_count).sum();
@@ -273,7 +260,7 @@ fn main() {
                 return;
             }
         }
-        // Accept last, when nothing indexes the snapshot any more.
+        // Accept last, once nothing indexes `fds` by session.
         if fds[0].revents & libc::POLLIN != 0 {
             match listener.accept() {
                 Ok((client, _)) => match UnixStream::connect(&o.upstream) {

@@ -1,6 +1,4 @@
-//! Message signatures from the generated tables (protocol_tables.rs): how many
-//! descriptors ride with each message and which object it creates, so the
-//! object map stays in step with both peers.
+//! Message signatures (protocol_tables.rs): the descriptors each carries and the object it creates.
 
 use crate::wire::{ArgReader, WireError};
 
@@ -24,8 +22,7 @@ pub struct Interface {
     pub events: &'static [Message],
 }
 
-/// The interface of that name; None is a refusal in every caller. Indexed on
-/// first use, since this runs for every new object and every advertised global.
+/// The interface of that name, indexed on first use: this runs for every new object and global.
 pub fn find(name: &str) -> Option<&'static Interface> {
     use std::collections::HashMap;
     use std::sync::OnceLock;
@@ -44,8 +41,7 @@ pub enum Arg {
     Fixed,
     String { nullable: bool },
     Object { nullable: bool },
-    /// A new object. `iface` is None for wl_registry.bind, whose new_id follows
-    /// the interface name and version the client chose.
+    /// A new object; `iface` is None for wl_registry.bind, where the client names it on the wire.
     NewId { iface: Option<&'static str> },
     Array,
     Fd,
@@ -57,12 +53,10 @@ impl Message {
     }
 }
 
-/// The object a message creates and the strings it carries (for rewriting),
-/// borrowed from the body: decoding allocates only for a message with strings.
+/// The object a message creates and its strings, borrowed: only a message with strings allocates.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Decoded<'a> {
-    /// (new object id, interface name). No message creates two (the tables are
-    /// tested for it), and a body that tries is refused.
+    /// (id, interface). No message in the tables creates two; a body that tries is refused.
     pub new_object: Option<(u32, &'a str)>,
     /// (byte offset of the string's length word within the body, value)
     pub strings: Vec<(usize, &'a str)>,
@@ -80,8 +74,7 @@ impl<'a> Decoded<'a> {
     }
 }
 
-/// Validate a body against its signature and collect what the proxy needs. It
-/// must parse exactly to its end: a trailing byte is as suspect as a missing one.
+/// Check a body against its signature to its exact end: a trailing byte is as bad as a missing one.
 pub fn decode<'a>(msg: &Message, body: &'a [u8]) -> Result<Decoded<'a>, WireError> {
     let mut r = ArgReader::new(body);
     let mut d = Decoded::default();
