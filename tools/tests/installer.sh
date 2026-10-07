@@ -180,6 +180,7 @@ else
         && green "a command line with no verity table is refused" \
         || red "no verity table: rc=${rc} ${out}"
     # A slot's kernel: its command line, inside the binary, names the root.
+    # shellcheck disable=SC2034  # read by the sourced kernel_names_root
     V_HASH="$h"
     printf 'MZ\0\0\377pe\0dm-mod.create="kroot,,0,ro,0 2097152 verity 1 PARTLABEL=kryptik-a PARTLABEL=kryptik-a 4096 4096 262144 262144 sha256 %s 0123abcd 1 panic_on_corruption"\0\001' "$h" > "$tmp"
     kernel_names_root "$tmp" && green "a kernel whose command line carries the root hash is taken" \
