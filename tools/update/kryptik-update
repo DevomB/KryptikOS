@@ -294,6 +294,16 @@ cmd_check_release() {
     printf 'version: %s\ncreated: %s\n' "$VERSION" "$created"
 }
 
+# An apply runs from the committed slot only. From another, booted from
+# outside (boot-success reports it uncommitted), its target would be the one
+# release known to boot, and a downgrade would be judged against an older one.
+from_committed() {   # from_committed RUNNING-SLOT
+    mount_esp
+    committed="$(esp_slot "$ESP_MNT/kryptik/committed-slot")"
+    umount_esp
+    [ "$committed" = "$1" ] || die "slot $1 is running, and the ESP names $committed as the committed slot. Boot the committed slot, or make this one committed from the install medium (kryptik-recover --commit-slot $1), then apply again"
+}
+
 # The ESP stops naming SLOT's release: its kernel and version go, so an apply
 # cut short leaves nothing that rollback or kryptik-recover --commit-slot
 # would take. The apply puts both back once the slot verifies.
@@ -330,6 +340,7 @@ cmd_apply() {
     if [ "$retry" != 1 ] && [ -f "$B/trial.failed" ]; then
         die "the last trial of slot $(cat "$B/trial.failed") failed to boot. To try it again, run as root: kryptik-update apply $dir --retry"
     fi
+    from_committed "$slot"
 
     say "running slot $slot ($(running_version)); target slot $target"
     verify_payload "$dir" "$recovery"

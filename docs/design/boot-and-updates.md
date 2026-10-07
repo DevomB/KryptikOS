@@ -128,7 +128,9 @@ payloads come from [the update channel](update-channel.md) or by hand.
    `--recovery` (still signed: an authorised downgrade); every file's hash and
    size, with nothing unlisted; and `root.json`'s root hash embedded in both
    kernels (`grep -a -F`). Refuse while the state is degraded, another update
-   runs or a trial is armed.
+   runs or a trial is armed, and on any slot but the one the ESP names as
+   committed: from a slot booted from outside, the target would be the one
+   release known to boot.
 2. Take the inactive slot's kernel and version file off the ESP, so an apply
    cut short leaves nothing that `rollback` or `kryptik-recover --commit-slot`
    would take. Write the slot (`dd conv=fsync`) and read it back.
