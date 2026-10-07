@@ -1,8 +1,5 @@
-//! Wi-Fi credentials for the net zone (docs/design/net-zone.md).
-//!
-//! kryptikd alone writes the supplicant file in zone 0: 0400, owned by the nic
-//! zone's identity (the zone's root is that host uid). The zone gets it
-//! read-only at `/etc/wpa_supplicant.conf` on its next start.
+//! Wi-Fi credentials for the net zone (docs/design/net-zone.md). kryptikd alone writes the file,
+//! 0400 and owned by the host uid of the nic zone's root; the zone gets it read-only on next start.
 
 use std::fs;
 use std::io::{self, Read, Write};
@@ -62,8 +59,7 @@ pub fn check_ssid(ssid: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 8 to 63 printable ASCII characters without quote or backslash, or 64 hex
-/// digits for a raw PSK. Error messages never repeat the passphrase.
+/// 8 to 63 printable ASCII without quote or backslash, or 64 hex digits; errors never echo it.
 pub fn check_passphrase(pass: &str) -> Result<Psk, String> {
     if pass.len() == 64 && pass.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Ok(Psk::Hex(pass.to_string()));
@@ -100,9 +96,8 @@ pub fn render(nets: &[Network]) -> String {
     out
 }
 
-/// Read back what `render` writes and refuse anything else: rewriting a
-/// hand-edited file would lose the edit or keep unchecked lines. Errors name
-/// the line, never its content.
+/// Read back what `render` writes and refuse anything else, which a rewrite would lose or keep
+/// unchecked. Errors name the line, never its content.
 pub fn parse(text: &str) -> Result<Vec<Network>, String> {
     let mut nets = Vec::new();
     let mut block: Option<(Option<String>, Option<Psk>)> = None;
@@ -181,8 +176,7 @@ pub fn list(dir: &Path) -> Result<Vec<String>, String> {
     Ok(load(dir)?.into_iter().map(|n| n.ssid).collect())
 }
 
-/// The file's owner on a root run: the nic zone's identity. `None` keeps the
-/// writer's, when unprivileged or when the nic zone declares no identity.
+/// The nic zone's identity, to own the file on a root run; `None` keeps the writer's.
 pub fn owner_for(zones_dir: &Path) -> Result<Option<(u32, u32)>, String> {
     if unsafe { libc::geteuid() } != 0 {
         return Ok(None);
@@ -227,8 +221,7 @@ pub fn forget(dir: &Path, owner: Option<(u32, u32)>, ssid: &str) -> Result<(), S
     write_atomic(dir, &render(&nets), owner)
 }
 
-/// Create the directory 0711 if missing, so the zone's identity can reach
-/// the file but nobody else can list the directory.
+/// Create the directory 0711 if missing: the zone's identity reaches the file, nobody lists it.
 fn ensure_dir(dir: &Path) -> Result<(), String> {
     match fs::symlink_metadata(dir) {
         Ok(md) if md.is_dir() => Ok(()),
@@ -257,8 +250,7 @@ fn write_atomic(dir: &Path, contents: &str, owner: Option<(u32, u32)>) -> Result
     crate::files::write_atomic(&path, &[contents.as_bytes()], 0o400, owner).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Restart the net zone so it reads the new file; returns what happened and
-/// never fails. Only for the directory the service reads, so tests leave it be.
+/// Restart the net zone on the new file and say how it went; other directories (tests) skip this.
 pub fn restart_net_zone(dir: &Path) -> String {
     if dir != Path::new(DEFAULT_DIR) {
         return format!(
@@ -282,8 +274,7 @@ pub fn restart_net_zone(dir: &Path) -> String {
     }
 }
 
-/// Read one line from stdin for `kryptikd wifi add`, prompting with echo off
-/// on a terminal. The passphrase never comes from argv or the environment.
+/// Read the passphrase from stdin, echo off on a terminal; never from argv or the environment.
 pub fn read_passphrase(prompt: &str) -> Result<String, String> {
     let mut line = String::new();
     if unsafe { libc::isatty(0) } == 1 {

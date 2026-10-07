@@ -120,7 +120,7 @@ fn write_is_atomic_rename() {
     let dir = tmpdir("atomic");
     add(&dir, None, "Home", "long enough").unwrap();
     let ino = fs::metadata(conf_path(&dir)).unwrap().ino();
-    // The temporary of a writer that died before its rename goes.
+    // A temporary left by a writer that died before its rename is removed.
     fs::write(dir.join(format!(".{FILE_NAME}.4294967295")), "psk=\"secret\"").unwrap();
     add(&dir, None, "Other", "long enough").unwrap();
     assert_ne!(fs::metadata(conf_path(&dir)).unwrap().ino(), ino, "a new inode replaced the old file");

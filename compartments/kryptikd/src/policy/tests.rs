@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn valid_file_adds_what_it_names() {
+fn valid_file_adds_directives() {
     let p = parse(
         "# comment\n\
              allow-syscall sched_setscheduler\n\
@@ -35,7 +35,7 @@ fn denied_syscall_cannot_be_allowed() {
 }
 
 #[test]
-fn bad_lines_error_with_line_number() {
+fn errors_carry_line_number() {
     for text in [
         "allow-syscall nosuchcall\n",
         "allow-socket AF_NOPE\n",
@@ -100,7 +100,7 @@ fn af_netlink_lifts_protocol_check() {
 }
 
 #[test]
-fn relative_path_resolves_under_zones_dir() {
+fn resolve_relative_and_absolute() {
     assert_eq!(resolve(Path::new("/etc/kryptik/zones"), "policy/net.seccomp"), PathBuf::from("/etc/kryptik/zones/policy/net.seccomp"));
     assert_eq!(resolve(Path::new("/etc/kryptik/zones"), "/abs/p.seccomp"), PathBuf::from("/abs/p.seccomp"));
 }

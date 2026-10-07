@@ -1,5 +1,4 @@
-//! Zone 0's state files, written whole: the update channel's, the Wi-Fi
-//! file, the clipboard and the clock's.
+//! Zone 0's state files, written whole: update channel, Wi-Fi, clipboard and clock.
 
 use std::fs;
 use std::io::{self, Write};
@@ -7,16 +6,13 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsE
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 
-/// Replace `path` with `parts`, whole: a temporary named for this process,
-/// O_EXCL|O_NOFOLLOW with exactly `mode` and owned as asked, synced, renamed
-/// over the file, then the directory synced where the filesystem allows. A
-/// failure leaves the old file and no temporary.
+/// Replace `path` with `parts` through a synced O_EXCL|O_NOFOLLOW temporary named for this
+/// process; a failure leaves the old file and no temporary.
 pub fn write_atomic(path: &Path, parts: &[&[u8]], mode: u32, owner: Option<(u32, u32)>) -> io::Result<()> {
     let name = path.file_name().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file name"))?;
     let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let stem = format!(".{}.", name.to_string_lossy());
-    /* A writer that died before its rename leaves its temporary, perhaps
-     * with a secret in it (the Wi-Fi file). */
+    // A writer that died before its rename left its temporary, perhaps holding a secret.
     for e in fs::read_dir(dir)?.flatten() {
         let n = e.file_name();
         let pid = n.to_str().and_then(|s| s.strip_prefix(stem.as_str())).and_then(|p| p.parse::<u32>().ok());
@@ -55,9 +51,7 @@ pub fn write_atomic(path: &Path, parts: &[&[u8]], mode: u32, owner: Option<(u32,
     Ok(())
 }
 
-/// Make or find a directory of this user's alone. One that was there is
-/// looked at: a link, another owner, or a mode that lets anyone else in is
-/// refused.
+/// Make or find a directory of this user's alone; a link, another owner or an open mode is refused.
 pub fn private_dir(p: &Path) -> io::Result<()> {
     match fs::DirBuilder::new().recursive(true).mode(0o700).create(p) {
         Ok(()) => {}

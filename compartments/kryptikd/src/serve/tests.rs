@@ -40,7 +40,7 @@ fn request_complete_at_terminator() {
 }
 
 #[test]
-fn parse_wifi_keeps_values_hides_psk() {
+fn parse_wifi_hides_psk() {
     let r = parse_wifi("wifi-add\nssid Cafe Wifi \npsk pass word\nend\n").unwrap();
     assert_eq!(r.ssid, "Cafe Wifi ");
     assert_eq!(r.psk.as_deref(), Some("pass word"));
@@ -62,7 +62,7 @@ fn parse_wifi_keeps_values_hides_psk() {
 
 /// The path rule: only the session's own `<zone>/wayland-0` is considered.
 #[test]
-fn proxy_path_must_be_sessions_own() {
+fn proxy_path_rule() {
     let bad = |p: &str, uid: u32, zone: &str| {
         let e = verify_proxy_socket(Path::new(p), uid, zone, None).unwrap_err();
         assert!(e.contains("must be") || e.contains("path"), "{p}: {e}");
@@ -78,7 +78,7 @@ fn proxy_path_must_be_sessions_own() {
 // The ownership and listener checks run against the daemon in compartments/tests/serve.sh.
 
 #[test]
-fn open_nofollow_refuses_links_and_non_sockets() {
+fn open_nofollow_refusals() {
     let dir = std::env::temp_dir().join(format!("kryptik-nofollow-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("real")).unwrap();
@@ -95,7 +95,7 @@ fn open_nofollow_refuses_links_and_non_sockets() {
 }
 
 #[test]
-fn full_proxy_backlog_does_not_block() {
+fn full_backlog_never_blocks() {
     let dir = std::env::temp_dir().join(format!("kryptik-backlog-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("socket");
