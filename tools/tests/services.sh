@@ -191,7 +191,8 @@ for s in "${SCRIPTS}"/*.sh; do
     case "$(head -1 "$s")" in "#!/bin/bash"*|"#!/usr/bin/bash"*) interp="bash" ;; esac
     check "${n}: valid ${interp}"    "$("$interp" -n "$s" 2>/dev/null && echo ok)"
     check "${n}: executable"  "$([[ -x "$s" ]] && echo ok)"
-    # Each script must be run by a service, or sourced by a script that is.
+    # Each script must be run by a service, or sourced by a script that is,
+    # or by the installer or the update tools.
     if grep -rqF "/usr/libexec/kryptik/${n}" "$SRC"/*/up "$SRC"/*/run 2>/dev/null; then
         green "${n}: referenced by a service"
     elif grep -lqE "^\s*\. +/usr/libexec/kryptik/${n}" "${SCRIPTS}"/*.sh 2>/dev/null \
@@ -199,6 +200,8 @@ for s in "${SCRIPTS}"/*.sh; do
             | xargs -r -n1 basename | while read -r u; do
                   grep -rqF "/usr/libexec/kryptik/${u}" "$SRC"/*/up "$SRC"/*/run 2>/dev/null && exit 0; done; then
         green "${n}: sourced by a script a service runs"
+    elif grep -lqE "^\s*\. +/usr/libexec/kryptik/${n}" "$ROOT"/tools/install/*.sh "$ROOT"/tools/update/kryptik-* 2>/dev/null; then
+        green "${n}: sourced by the installer or the update tools"
     else
         red "${n}: installed by the stage but no service runs it"
     fi
