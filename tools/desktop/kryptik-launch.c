@@ -1,6 +1,5 @@
-/* kryptik-launch: start a program in a zone from the desktop session. The
- * client of kryptikd's launch daemon (a root-owned socket open to group
- * `kryptik`); the compositor's keybindings and the chrome's menu run only this.
+/* kryptik-launch: start a program in a zone, as a client of kryptikd's launch daemon (a
+ * root-owned socket open to group kryptik); the compositor's keys and the chrome's menu run only this.
  *
  *   kryptik-launch [--ask | --passphrase-fd N] [--no-display] ZONE -- COMMAND [ARG...]
  *   kryptik-launch --stop ZONE
@@ -13,14 +12,10 @@
  *   kryptik-launch --update status|fetch|apply   show, fetch or install a release
  *   kryptik-launch --update auto on|off   fetch each release as it is announced, or when asked
  *
- * With a display, the zone's kryptik-wlproxy is started if needed at
- * $XDG_RUNTIME_DIR/kryptik/ZONE/wayland-0; the daemon binds that socket into
- * the zone, which never sees the compositor's own.
- *
- * --ask: for an encrypted zone, read the passphrase on the controlling terminal,
- * or without one hand over to kryptik-chrome --prompt, which calls back with
- * --passphrase-fd. The passphrase travels as a descriptor (SCM_RIGHTS), never
- * in argv or environ.
+ * A display goes through the zone's own proxy at $XDG_RUNTIME_DIR/kryptik/ZONE/wayland-0, which the
+ * daemon binds into the zone: a zone never sees the compositor's own socket.
+ * --ask reads an encrypted zone's passphrase on the controlling terminal, or hands over to
+ * kryptik-chrome --prompt; it travels as a descriptor, never in argv or environ.
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -189,8 +184,7 @@ static const char *ensure_proxy(const char *zone)
 	if (stat(upstream, &st) != 0 || !S_ISSOCK(st.st_mode))
 		die("no compositor at %s", upstream);
 
-	/* The log is in /run, which is RAM, and each proxy bounds only its own
-	 * lines: a new proxy starts a new file, and the last one is kept. */
+	/* The log is in RAM and each proxy bounds only its own lines: keep one old file. */
 	(void)rename(logfile, oldlog);
 	pid_t pid = fork();
 	if (pid < 0)
@@ -201,8 +195,7 @@ static const char *ensure_proxy(const char *zone)
 		int log = open(logfile, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0600);
 		if (null < 0 || log < 0 || dup2(null, 0) < 0 || dup2(log, 1) < 0 || dup2(log, 2) < 0)
 			_exit(127);
-		/* The proxy gets stdio only, never the passphrase fd or other session
-		 * descriptors. */
+		/* The proxy gets stdio only, never the passphrase fd or any other descriptor. */
 		if (close_range(3, ~0U, 0) < 0)
 			_exit(127);
 		execl(PROXY_BIN, "kryptik-wlproxy", "--zone", zone, "--listen", sock, "--upstream", upstream,
@@ -344,8 +337,7 @@ static void secret_from_stdin(const char *prompt, char *buf, size_t size)
 		die("empty passphrase");
 }
 
-/* The daemon's wifi verbs (kryptikd's wifi.rs): it validates, writes the net
- * zone's file and restarts it. The passphrase goes in the request body. */
+/* The daemon's wifi verbs (kryptikd's wifi.rs); the passphrase goes in the request body. */
 static int wifi_main(int argc, char **argv)
 {
 	const char *mode = argv[1];
@@ -393,9 +385,8 @@ static int wifi_main(int argc, char **argv)
 	return ok ? 0 : 1;
 }
 
-/* The daemon's update verbs (kryptikd's update.rs). The reply is an `ok` line
- * and text for the user, or one `error:` line; `apply` answers once
- * kryptik-update has written the slot. */
+/* The daemon's update verbs (kryptikd's update.rs): an `ok` line and text, or one `error:` line;
+ * `apply` answers once kryptik-update has written the slot. */
 static int update_main(int argc, char **argv)
 {
 	int automatic = argc == 4 && strcmp(argv[2], "auto") == 0 && (strcmp(argv[3], "on") == 0 || strcmp(argv[3], "off") == 0);
@@ -498,16 +489,14 @@ int main(int argc, char **argv)
 
 	const char *wl = no_display ? NULL : ensure_proxy(zone);
 
-	/* Every string in the request is counted, the socket path included (up to
-	 * PATH_MAX); 1024 covers the fixed words. */
+	/* Every string is counted, the socket path included; 1024 covers the fixed words. */
 	size_t cap = 1024 + strlen(zone) + (wl ? strlen(wl) : 0);
 	for (i = 0; i < ncmd; i++)
 		cap += strlen(cmd[i]) + 8;
 	char *req = malloc(cap);
 	if (!req)
 		die("out of memory");
-	/* snprintf returns the length it wanted: check each piece fitted before
-	 * advancing, or a short buffer becomes a write past its end. */
+	/* snprintf returns the length it wanted: unchecked, len would run past the buffer. */
 	size_t len = 0;
 	#define PUT(...) do { \
 		int n_ = snprintf(req + len, cap - len, __VA_ARGS__); \
