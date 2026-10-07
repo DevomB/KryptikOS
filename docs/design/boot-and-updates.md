@@ -153,6 +153,17 @@ payloads come from [the update channel](update-channel.md) or by hand.
    that net zone at will can hold a machine on its old release this way, but
    can already do as much by dropping its traffic.
 6. `kryptik-update rollback` arms the other slot the same way.
+7. The earlier release stays bootable, since rollback needs it, and its
+   kernel is signed like any other. A firmware entry or `BootNext` that
+   something outside Kryptik sets (firmware setup, another system) boots it.
+   boot-success reads the committed slot off the ESP at every boot: a slot
+   that runs with no trial on record and is not the committed one is
+   recorded as `uncommitted`, never as `ok`; its entries are forgotten and
+   the machine reboots, once, to the committed slot. If it comes up there
+   again it is left running, to be put right from it
+   (`kryptik-update status` shows the result). This does not stop someone
+   who rewrites the ESP itself: the committed slot's name there is not
+   signed.
 
 Zone data is never written. On the FAT ESP the two renames are the only
 non-atomic steps; each follows a complete, fsynced copy and leaves a system
