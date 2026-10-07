@@ -230,7 +230,9 @@ as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
   one started before any net zone gets a path but no resolver until it
   restarts; kryptikd does not edit a running zone's sealed root.
 - The kernel returns the physical interface to the initial namespace, down
-  and unaddressed; kryptikd leaves it so until the next net zone start.
+  and unaddressed, under its own name (`dev<N>` only if zone 0 has an
+  interface by that name by then); kryptikd leaves it so until the next net
+  zone start, which takes it again whatever its name.
 
 ## What this guarantees
 
@@ -284,8 +286,10 @@ as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
   offline, a routed zone's address, NAT, ULA-only IPv6 and resolver, zones
   separated, a zone's datagrams sent from another zone's addresses counted
   where they reach the net zone and never taken in while its own are, `vault`
-  offline, no egress while the net zone is down,
-  reattachment after a restart, a zone without `local` refused the VM
+  offline, no egress while the net zone is down, the
+  uplink back in zone 0 under its own name, down and with no address until
+  the next start takes it, a zone running across a restart going out through
+  the gateway again once reattached, a zone without `local` refused the VM
   gateway, and, on two `mac80211_hwsim` radios, the net zone associating,
   leasing and routing over one while the other is the access point, whose own
   address that zone is refused while it reaches an address the access point

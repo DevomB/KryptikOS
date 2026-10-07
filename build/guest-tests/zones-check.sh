@@ -24,6 +24,12 @@ zrun() {   # zrun ZONE TIMEOUT [--passphrase-file F] -- CMD...
     ZOUT="$(cat "$LOG/$zone.out")"
 }
 host_of() { local b; b="$(sed -n 's/^uid_base *= *\([0-9]*\).*/\1/p' "$Z/$1.toml")"; echo $(( (b - 131072) / 65536 + 2 )); }
+# The catch-all log, oldest first: s6-log moves current aside, through previous
+# to @<stamp>.s, at about 100 KB, so a count read from current alone can go back.
+uncaught() { cat /run/uncaught-logs/@* /run/uncaught-logs/previous /run/uncaught-logs/current 2>/dev/null; }
+netzone_said() { uncaught | grep -a "netzone: $1"; }
+ready_count() { netzone_said READY | grep -c .; }
+last_ready() { netzone_said READY | tail -1; }
 [[ "$(id -u)" = 0 ]] || { fail "root" "this must run as root"; echo "ZT END"; exit 1; }
 echo "ZT BEGIN $(date -Iseconds 2>/dev/null)"
 
@@ -41,12 +47,12 @@ zones="$("$KD" list --zones "$Z" 2>/dev/null | tr '\n' ' ')"
 if [[ "$(s6-svstat -o up /run/service/net-zone 2>/dev/null)" = true ]]; then pass "net-zone-up" "supervised and up"; else fail "net-zone-up" "$(s6-svstat /run/service/net-zone 2>&1)"; fi
 ready=""
 for _ in $(seq 1 30); do
-    ready="$(grep -h 'netzone: READY' /run/uncaught-logs/current /run/uncaught-logs/@* 2>/dev/null | tail -1)"
+    ready="$(last_ready)"
     [[ -n "$ready" ]] && break; sleep 1
 done
-if [[ "$ready" == *"nat=yes"* ]]; then pass "net-ready" "$ready"; else fail "net-ready" "no READY line with nat=yes in the catch-all log (last: $(grep -h 'netzone:' /run/uncaught-logs/current 2>/dev/null | tail -1))"; fi
+if [[ "$ready" == *"nat=yes"* ]]; then pass "net-ready" "$ready"; else fail "net-ready" "no READY line with nat=yes in the catch-all log (last: $(netzone_said '' | tail -1))"; fi
 # The routed zones' resolver, named on its own: routed-dns only times out.
-if [[ "$ready" == *" dns=yes "* ]]; then pass "net-dns" "dnsmasq is running"; else fail "net-dns" "$(grep -h 'dnsmasq' /run/uncaught-logs/current 2>/dev/null | tail -2 | tr '\n' ' ')"; fi
+if [[ "$ready" == *" dns=yes "* ]]; then pass "net-dns" "dnsmasq is running"; else fail "net-dns" "$(uncaught | grep -a 'dnsmasq' | tail -2 | tr '\n' ' ')"; fi
 if ip link show eth0 >/dev/null 2>&1; then fail "zone0-nic" "eth0 is still in zone 0"; else pass "zone0-nic" "eth0 is not in zone 0 (moved into the net zone)"; fi
 if [[ -z "$(ip route show default 2>/dev/null)" ]]; then pass "zone0-no-route" "zone 0 has no default route"; else fail "zone0-no-route" "$(ip route show default)"; fi
 if ping -c1 -W2 10.0.2.2 >/dev/null 2>&1; then fail "zone0-offline" "zone 0 reached the VM gateway"; else pass "zone0-offline" "zone 0 cannot reach the VM gateway"; fi
@@ -240,28 +246,69 @@ if [[ -n "$ppid" ]] && nsenter -t "$ppid" -n ping -c1 -W3 10.19.0.1 >/dev/null 2
    && ! nsenter -t "$ppid" -n ping -c1 -W3 10.0.2.2 >/dev/null 2>&1; then
     pass "uplink-refused" "personal reaches the bridge and is refused the VM gateway, which untrusted reached"
 else
-    fail "uplink-refused" "personal (init ${ppid:-none}) reached the VM gateway, or not even the bridge; $(grep -h 'netzone: nftables: zones go out' /run/uncaught-logs/current 2>/dev/null | tail -1)"
+    fail "uplink-refused" "personal (init ${ppid:-none}) reached the VM gateway, or not even the bridge; $(netzone_said 'nftables: zones go out' | tail -1)"
 fi
 
 # net zone restart: routed zones fail closed while it is down, recover after
-# Not `|| echo 0`: grep -c prints 0 and also exits 1.
-before="$(grep -hc 'netzone: READY' /run/uncaught-logs/current 2>/dev/null)"; before="${before:-0}"
+before="$(ready_count)"
 s6-svc -d /run/service/net-zone; sleep 3
 zrun untrusted 20 -- sh -c 'python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.0.2.2 2 >/dev/null 2>&1 && echo EGRESS-WHILE-DOWN || echo CLOSED-WHILE-DOWN; ip -o link show eth0 >/dev/null 2>&1 && echo HAS-ETH0 || echo NO-ETH0'
 [[ "$ZOUT" == *CLOSED-WHILE-DOWN* ]] && pass "fail-closed" "no egress while the net zone is down ($(grep -o 'HAS-ETH0\|NO-ETH0' "$LOG/untrusted.out" | head -1))" || fail "fail-closed" "$ZOUT"
 s6-svc -u /run/service/net-zone
 ok=0
 for _ in $(seq 1 60); do
-    after="$(grep -hc 'netzone: READY' /run/uncaught-logs/current 2>/dev/null)"; after="${after:-0}"
+    after="$(ready_count)"
     [[ "$after" -gt "$before" ]] && { ok=1; break; }; sleep 1
 done
 [[ "$ok" = 1 ]] && pass "net-restart-ready" "the net zone came back READY after a restart" || fail "net-restart-ready" "no new READY line ($before -> $after)"
 sleep 2
 zrun untrusted 30 -- sh -c 'python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.0.2.2 3 >/dev/null 2>&1 && echo GATEWAY-OK || echo GATEWAY-FAIL'
 [[ "$ZOUT" == *GATEWAY-OK* ]] && pass "egress-after-restart" "a zone started after the restart has egress" || fail "egress-after-restart" "$ZOUT"
-# the running zone was reattached
-ppid="$(cat /run/kryptik/zones/personal/init.pid 2>/dev/null | cut -d' ' -f1)"
-if [[ -n "$ppid" ]] && nsenter -t "$ppid" -n ping -c1 -W3 10.19.0.1 >/dev/null 2>&1; then pass "reattach-after-restart" "the zone that was running reaches the net zone again"; else fail "reattach-after-restart" "personal (init $ppid) does not reach the bridge after the net restart"; fi
+# personal, running across the restart, was reattached. It is refused the VM
+# gateway, so the bridge is as far as it can show; untrusted shows egress below.
+ppid="$(cut -d' ' -f1 /run/kryptik/zones/personal/init.pid 2>/dev/null)"
+if [[ -n "$ppid" ]] && nsenter -t "$ppid" -n ping -c1 -W3 10.19.0.1 >/dev/null 2>&1; then pass "reattach-after-restart" "personal, running across the restart, reaches the net zone again"; else fail "reattach-after-restart" "personal (init ${ppid:-none}) does not reach the bridge after the net restart"; fi
+# A zone that may reach the gateway, kept running across a second restart: it
+# goes out through the gateway before, has no path while the net zone is down,
+# and goes out again once reattached. Meanwhile the uplink is back in zone 0
+# under its own name, down and with no address, and the next start takes it.
+setsid "$KD" run untrusted --zones "$Z" --rootfs "$R" -- sh -c 'echo UNTRUSTED-UP; sleep 600' > "$LOG/untrusted-bg.out" 2>&1 &
+UBG=$!
+for _ in $(seq 1 40); do grep -q UNTRUSTED-UP "$LOG/untrusted-bg.out" 2>/dev/null && break; sleep 0.5; done
+upid="$(cut -d' ' -f1 /run/kryptik/zones/untrusted/init.pid 2>/dev/null)"
+# ping, not icmp-echo.py: the zone's ping_group_range names its own gid, not
+# root's, so root in its namespace needs ping's raw socket.
+gateway_echo() { [[ -n "$upid" ]] && nsenter -t "$upid" -n ping -c1 -W"$1" 10.0.2.2 >/dev/null 2>&1; }
+physical() { local d; for d in /sys/class/net/*; do [[ -e "$d/device" ]] && printf '%s ' "${d##*/}"; done; }
+out_before=no; gateway_echo 3 && out_before=yes
+before="$(ready_count)"
+s6-svc -d /run/service/net-zone
+returned=""
+for _ in $(seq 1 20); do returned="$(ip -o link show eth0 2>/dev/null)"; [[ -n "$returned" ]] && break; sleep 0.5; done
+flags="$(sed -n 's/^[0-9]*: eth0: <\([^>]*\)>.*/\1/p' <<<"$returned")"
+held="$(ip -o addr show eth0 2>/dev/null | awk '{ print $4 }' | tr '\n' ' ')"
+if [[ -n "$flags" && ",$flags," != *",UP,"* && -z "$held" && "$(physical)" == "eth0 " ]]; then
+    pass "uplink-returned" "while the net zone is down the uplink is back in zone 0 as eth0, down and with no address"
+else
+    fail "uplink-returned" "zone 0 while the net zone is down: ${returned:-no eth0}; addresses: ${held:-none}; physical interfaces: $(physical)"
+fi
+eth0_gone=no; [[ -n "$upid" ]] && ! nsenter -t "$upid" -n ip -o link show eth0 >/dev/null 2>&1 && eth0_gone=yes
+out_down=no; gateway_echo 2 && out_down=yes
+s6-svc -u /run/service/net-zone
+ok=0
+for _ in $(seq 1 60); do
+    after="$(ready_count)"
+    [[ "$after" -gt "$before" ]] && { ok=1; break; }; sleep 1
+done
+if [[ "$ok" = 1 ]] && ! ip link show eth0 >/dev/null 2>&1; then pass "uplink-retaken" "the next net zone start took eth0 from zone 0 again and came READY"; else fail "uplink-retaken" "READY again: $ok; zone 0 still holds: $(physical)"; fi
+sleep 2
+out_after=no; gateway_echo 3 && out_after=yes
+if [[ "$out_before" = yes && "$eth0_gone" = yes && "$out_down" = no && "$out_after" = yes ]]; then
+    pass "reattach-egress" "untrusted, running across a restart, reached the VM gateway before it, had no eth0 and no path while the net zone was down, and reaches the gateway again once reattached"
+else
+    fail "reattach-egress" "untrusted (init ${upid:-none}): gateway before ${out_before}; eth0 gone while down ${eth0_gone}; gateway while down ${out_down}; gateway after ${out_after}; $(tail -2 "$LOG/untrusted-bg.out" | tr '\n' ' ')"
+fi
+"$KD" stop untrusted >/dev/null 2>&1; wait "$UBG" 2>/dev/null
 
 # --- zones: the net zone over a radio -----------------------------------------------
 # QEMU has no radio, so mac80211_hwsim makes two. phy1 goes into a network
@@ -273,8 +320,6 @@ AP_SSID=kryptik-hwsim; AP_PASS=hwsim-passphrase; AP_ADDR=192.168.77.1
 # An address the access point routes to, past the network the radio is on.
 AP_FAR=198.51.100.1
 WIFI_DIR=/var/lib/kryptik/wifi
-ready_count() { local n; n="$(grep -hc 'netzone: READY' /run/uncaught-logs/current 2>/dev/null)"; echo "${n:-0}"; }
-last_ready() { grep -h 'netzone: READY' /run/uncaught-logs/current /run/uncaught-logs/@* 2>/dev/null | tail -1; }
 ready_after() {   # ready_after COUNT TEXT SECONDS: the newest READY line once there are more than COUNT and it holds TEXT
     local before="$1" text="$2" n="$3"
     while [[ "$n" -gt 0 ]]; do
@@ -350,7 +395,7 @@ kills="$(dmesg 2>/dev/null | grep -a 'type=1326' | grep -ac 'comm="wpa_supplican
 if [[ "$line" == *" wifi=$AP_SSID "* && "${kills:-0}" = 0 ]]; then
     pass "wifi-associated" "the net zone's supplicant joined $AP_SSID over $STA_IF with no filter kill: ${line#*netzone: }"
 else
-    fail "wifi-associated" "newest READY line: ${line:-none}; filter kills of wpa_supplicant: ${kills:-0}; $(grep -h 'netzone: wifi' /run/uncaught-logs/current 2>/dev/null | tail -3 | tr '\n' ' ')"
+    fail "wifi-associated" "newest READY line: ${line:-none}; filter kills of wpa_supplicant: ${kills:-0}; $(netzone_said wifi | tail -3 | tr '\n' ' ')"
 fi
 net_init="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
 lease=""
@@ -371,7 +416,7 @@ fi
 # personal, and what lies past it is not.
 ppid="$(cut -d' ' -f1 /run/kryptik/zones/personal/init.pid 2>/dev/null)"
 for _ in $(seq 1 30); do
-    grep -h 'netzone: nftables: zones go out' /run/uncaught-logs/current 2>/dev/null | tail -1 | grep -q "$AP_ADDR" && break; sleep 1
+    netzone_said 'nftables: zones go out' | tail -1 | grep -q "$AP_ADDR" && break; sleep 1
 done
 far=1; near=0
 if [[ -n "$ppid" ]]; then
@@ -381,7 +426,7 @@ fi
 if [[ "$far" -eq 0 && "$near" -ne 0 ]]; then
     pass "wifi-beyond" "personal is refused the access point's own address and reaches $AP_FAR past it"
 else
-    fail "wifi-beyond" "personal (init ${ppid:-none}): $AP_FAR rc=$far, $AP_ADDR rc=$near; $(grep -h 'netzone: nftables: zones go out' /run/uncaught-logs/current 2>/dev/null | tail -1); routes: $(nsenter -t "$net_init" -n ip -4 route 2>/dev/null | tr '\n' ';')"
+    fail "wifi-beyond" "personal (init ${ppid:-none}): $AP_FAR rc=$far, $AP_ADDR rc=$near; $(netzone_said 'nftables: zones go out' | tail -1); routes: $(nsenter -t "$net_init" -n ip -4 route 2>/dev/null | tr '\n' ';')"
 fi
 # Back to the wire: the access point, its namespace (whose end returns phy1
 # to zone 0) and the radios go first, so the net zone the forget restarts
@@ -422,7 +467,7 @@ print(s.recv(4096).decode("utf-8", "replace").strip())' "$1" 2>&1 | head -1
 }
 
 if grep -q 'time floor' /var/log/kryptik/time.log 2>/dev/null; then pass "time-floor-ran" "$(tail -1 /var/log/kryptik/time.log | cut -c1-160)"; else fail "time-floor-ran" "the boot service left no line in /var/log/kryptik/time.log"; fi
-ready_time="$(grep -h 'netzone: READY' /run/uncaught-logs/current 2>/dev/null | tail -1 | grep -o 'time=[^ ]*')"
+ready_time="$(last_ready | grep -o 'time=[^ ]*')"
 info "time-reported ${ready_time:-the readiness line has no time= field} (no answer through this network is reported as that, never as a pass)"
 
 if [[ "$FLOOR_S" -gt 0 ]]; then
@@ -471,10 +516,10 @@ if [[ "$FLOOR_S" -gt 0 ]]; then
         case "$ready_time" in
             time=-[0-9]*|time=[0-9]*)
                 date -u -s "@$(( $(true_now) + 300 ))" >/dev/null 2>&1; rm -f /var/lib/kryptik/time/state
-                n0="$(grep -hc 'netzone: READY' /run/uncaught-logs/current 2>/dev/null)"; n0="${n0:-0}"
+                n0="$(ready_count)"
                 s6-svc -r /run/service/net-zone
-                for _ in $(seq 1 90); do n1="$(grep -hc 'netzone: READY' /run/uncaught-logs/current 2>/dev/null)"; [[ "${n1:-0}" -gt "$n0" ]] && break; sleep 1; done
-                m="$(grep -h 'netzone: READY' /run/uncaught-logs/current | tail -1 | grep -o 'time=[^ ]*' | cut -d= -f2)"
+                for _ in $(seq 1 90); do [[ "$(ready_count)" -gt "$n0" ]] && break; sleep 1; done
+                m="$(last_ready | grep -o 'time=[^ ]*' | cut -d= -f2)"
                 err=$(( $(date +%s) - $(true_now) ))
                 if [[ "$m" == -29[0-9]* || "$m" == -30[0-9]* || "$m" == -31[0-9]* ]] && (( err > -10 && err < 10 )); then
                     pass "time-sign" "a clock 300 s fast was measured as ${m} s and zone 0 put it right (now ${err} s from true)"
