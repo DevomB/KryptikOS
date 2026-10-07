@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
-# kryptik: the user's command for zones. Fills in kryptikd's paths from
-# kryptik.conf and never offers a way past kryptikd's refusals.
-#
-# When not root and the session's launch service (kryptik-launch) answers,
-# zones start through it; otherwise kryptikd runs them directly. There is no
-# transfer, clipboard or mount command: from zone 0 those would bypass the
-# chrome, where the user approves each move.
+# kryptik: the user's zone command; fills in kryptikd's paths and offers no way past its refusals.
+# No transfer, clipboard or mount command: from zone 0 those would bypass the chrome's approval.
 set -uo pipefail
 
 PROG="${0##*/}"
@@ -82,8 +77,7 @@ $PROG has no commands for either, on purpose.
 USAGE
 }
 
-# True when not root and the session's launch service answers. --runtime-dir
-# is its cheapest request and fails fast rather than hanging.
+# Not root and the launch service answers; --runtime-dir is its cheapest request and fails fast.
 LAUNCH="${KRYPTIK_LAUNCH:-kryptik-launch}"
 via_launch() {
     [[ "$(id -u)" -ne 0 ]] || return 1
@@ -120,17 +114,14 @@ have_kryptikd() {
     arguments. Install it, or set KRYPTIKD=/path/to/kryptikd."
 }
 
-# The flags that map a zone to an unprivileged host user. kryptikd takes them
-# only as root, and then requires them unless the zone declares its own.
-# Sets an array rather than printing for `< <(...)`: process substitution
-# needs /dev/fd, which a minimal system may lack.
+# An array, not printed for `< <(...)`: process substitution needs /dev/fd, which may be missing.
 IDENTITY_ARGS=()
+# The flags mapping a zone to a host user: kryptikd takes them only as root, then requires them.
 set_identity_args() { # zone name
     IDENTITY_ARGS=()
     [[ "$(id -u)" -eq 0 ]] || return 0
 
-    # kryptikd refuses the flags for a zone with [identity] uid_base. A
-    # presence test is enough: kryptikd checks the value itself.
+    # Not for a zone with [identity] uid_base; kryptikd checks the value, so presence is enough.
     if grep -qE '^[[:space:]]*uid_base[[:space:]]*=' "$ZONES_DIR/$1.toml" 2>/dev/null; then
         return 0
     fi
@@ -175,8 +166,7 @@ require_zone() {
 }
 
 # --- running state ----------------------------------------------------------
-# A word, not a colour: it must survive a pipe, a monochrome terminal and a
-# screen reader.
+# A word, not a colour: it must survive a pipe, a monochrome terminal and a screen reader.
 running_state() {
     local out
     out="$("$KRYPTIKD" status "$1" 2>/dev/null)" || { printf 'unknown'; return; }
@@ -252,13 +242,13 @@ cmd_stop() {
 
 # --- starting ---------------------------------------------------------------
 
-# The one place that runs a zone, for both shell and run.
+# Shared by shell and run.
 start_zone() {
     local name="$1"; shift
     if via_launch; then
         [[ -f "$ZONES_DIR/$name.toml" ]] || die "no zone named $name in $ZONES_DIR"
-        # --ask reads an encrypted zone's passphrase on this terminal and passes
-        # it on a descriptor, never as an argument.
+        # --ask reads an encrypted zone's passphrase on this terminal and passes it on a
+        # descriptor, never as an argument.
         "$LAUNCH" --ask --no-display "$name" -- "$@"
         local rc=$?
         (( rc == 0 )) || printf '\n%s: %s did not start through the launch service (exit %d).\n' "$PROG" "$name" "$rc" >&2
@@ -272,8 +262,7 @@ start_zone() {
     local rc
     set_identity_args "$name"
 
-    # Not captured: a shell needs the terminal, and kryptikd's warnings and
-    # refusals must reach the user unchanged.
+    # Not captured: a shell needs the terminal, and the user must see kryptikd's refusals unchanged.
     "$KRYPTIKD" run "$name" --zones "$ZONES_DIR" \
         --rootfs "$ROOTFS" "${IDENTITY_ARGS[@]}" -- "$@"
     rc=$?
@@ -299,9 +288,8 @@ cmd_run() {
     start_zone "$name" "$@"
 }
 
-# --- the net zone's Wi-Fi networks ------------------------------------------
-# kryptikd keeps the credentials in zone 0 and restarts the net zone after a
-# change (docs/design/net-zone.md). The passphrase always goes on stdin.
+# --- the net zone's Wi-Fi networks, kept by kryptikd in zone 0 --------------
+# The passphrase always goes on stdin; kryptikd restarts the net zone after a change.
 
 # Read one line into PASSPHRASE: from the terminal with echo off, or a pipe.
 PASSPHRASE=""
@@ -341,8 +329,7 @@ cmd_wifi() {
     esac
 }
 
-# Installed systems only: the update state is zone 0's, reached through the
-# launch service.
+# Installed systems only: the update state is zone 0's, reached through the launch service.
 cmd_update() {
     case "${1:-}" in
         status|fetch|apply) [[ $# -eq 1 ]] || die "$PROG update $1 takes no argument" 2 ;;
