@@ -83,7 +83,9 @@ PIN6="$(awk 'BEGIN { for (k = 2; k < 250; k++) printf "%sfd19::%x . 02:19:00:00:
 # A zone goes out by a gateway (gw4, gw6) and never to the gateway itself:
 # the rest of what an uplink reaches is the network it sits on, open to local4
 # and local6 alone. With no gateway in the sets nothing goes out, so a new
-# lease opens no way in before sync_gateways has seen it.
+# lease opens no way in before sync_gateways has seen it. From the bridge the
+# net zone takes in only what is addressed to the bridge: its own address on an
+# uplink is the net zone, not the network a local zone may reach.
 RULES="table inet kryptik {
     set gw4 { type ipv4_addr; }
     set gw6 { type ipv6_addr; }
@@ -117,6 +119,8 @@ RULES="table inet kryptik {
         type filter hook input priority filter; policy accept;
         iifname ${NICSET} ct state new tcp dport 53 drop
         iifname ${NICSET} ct state new udp dport 53 drop
+        iifname \"${BR}\" ip daddr != 10.19.0.1 drop
+        iifname \"${BR}\" ip6 daddr != { fd19::1, fe80::/10, ff02::/16 } drop
     }
 }"
 

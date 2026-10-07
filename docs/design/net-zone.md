@@ -39,7 +39,10 @@ query and the [update](update-channel.md) fetcher. Builds on
   zone waits at its handshake, kryptikd creates `kv-<zone>` in the net zone
   with its peer born in the routed zone as `eth0`, enslaves `kv-<zone>` to
   `kryptik0` and isolates the port (`IFLA_BRPORT_ISOLATED`), so no frame
-  passes between two `kv-*` ports. The zone's addresses, `10.19.0.<k>/24` and
+  passes between two `kv-*` ports. A zone's last run can still hold that name
+  for a moment, until the kernel has torn its namespace down; one instance of
+  a zone runs at a time, so kryptikd deletes the stale port and waits up to
+  5 s for the name. The zone's addresses, `10.19.0.<k>/24` and
   `fd19::<k>/64` with default routes via the bridge, and its MAC,
   `02:19:00:00:00:<k>`, follow from its declared identity
   (`netzone::host_number`: `uid_base` 131072 is `.2`, 196608 is `.3`, and so
@@ -161,11 +164,20 @@ its definition says `[network] local = true`.
   can still address the router and the machines beside it, as every zone
   could before; without the key there, a network with a login page is no
   network at all.
+- **The net zone's own address on an uplink is not that network.** It is the
+  net zone, which a zone needs only for its resolver on the bridge. From the
+  bridge the input chain takes only what is addressed to `10.19.0.1` or
+  `fd19::1`, or to a link-local or link-scope multicast address for neighbour
+  discovery, so no zone, `local` or not, reaches what the net zone listens on
+  over its uplink addresses, such as dhcpcd.
 - **What it does not cover.** A network behind the gateway, such as a modem's
-  own pages on another subnet, is past the gateway and so allowed. An uplink
-  whose default route names no gateway, a point-to-point link, carries only
-  the zones that claim `local`. The net zone itself reaches the local
-  network, as DHCP and the resolver need.
+  own pages on another subnet, is past the gateway and so allowed. So is the
+  gateway's address on its far side: a router that answers its admin page on
+  its WAN address to the machines inside serves it to every zone, and the net
+  zone cannot know that address to refuse it. An uplink whose default route
+  names no gateway, a point-to-point link, carries only the zones that claim
+  `local`. The net zone itself reaches the local network, as DHCP and the
+  resolver need.
 
 ## DNS
 
@@ -276,7 +288,7 @@ as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
 - `tools/tests/netzone-uplink.sh`: the zones a definition lets through, by the
   address kryptikd derives for each, every host's addresses pinned to its own
   MAC and the MAC the same as `netlink::zone_mac`, the gateway sets as nft is
-  fed them, and the order of the prerouting and forward rules.
+  fed them, and the order of the prerouting, forward and input rules.
 - The launcher suite reads a zone's bounding set (exactly `0x400`) and the
   boundary suite asks for an `AF_PACKET` socket. The launcher suite's
   routed-networking section runs only with `KRYPTIK_VM_DISPOSABLE=1`, since
@@ -284,16 +296,18 @@ as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
 - `build/guest-tests/zones-check.sh` on the installed system checks every
   guarantee above under QEMU user networking: the net zone `READY`, zone 0
   offline, a routed zone's address, NAT, ULA-only IPv6 and resolver, zones
-  separated, a zone's datagrams sent from another zone's addresses counted
-  where they reach the net zone and never taken in while its own are, `vault`
-  offline, no egress while the net zone is down, the
+  separated while each reaches the bridge, a routed zone started again as its
+  last run ends keeping its path, a zone's datagrams sent from another zone's
+  addresses counted where they reach the net zone and never taken in while its
+  own are, `vault` offline, no egress while the net zone is down, the
   uplink back in zone 0 under its own name, down and with no address until
   the next start takes it, a zone running across a restart going out through
   the gateway again once reattached, a zone without `local` refused the VM
-  gateway, and, on two `mac80211_hwsim` radios, the net zone associating,
-  leasing and routing over one while the other is the access point, whose own
-  address that zone is refused while it reaches an address the access point
-  routes. It pings with an unprivileged ICMP socket
+  gateway, `untrusted` refused the net zone's own uplink addresses while it
+  reaches the gateway, and, on two `mac80211_hwsim` radios, the net zone
+  associating, leasing and routing over one while the other is the access
+  point, whose own address that zone is refused while it reaches an address
+  the access point routes. It pings with an unprivileged ICMP socket
   (`build/guest-tests/icmp-echo.py`), since routed zones lack `CAP_NET_RAW`.
 
 ## Kernel requirements

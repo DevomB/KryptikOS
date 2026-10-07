@@ -114,6 +114,9 @@ for sh in sh bash dash; do
     pre="$(sed -n '/chain prerouting {/,/^    }$/p' <<<"$rules" | grep -oE 'priority raw|ip saddr \. ether saddr != @pin4 drop|ip6 saddr \. ether saddr @pin6 accept|ip6 saddr fe80::/10 icmpv6 type \{ nd-neighbor-solicit, nd-neighbor-advert \} accept|meta nfproto ipv6 drop' | tr '\n' '|')"
     same "from the bridge, ahead of conntrack: IPv4 off its pin dropped, IPv6 on its pin taken, neighbour discovery from a link-local address taken, other IPv6 dropped" "$pre" \
         'priority raw|ip saddr . ether saddr != @pin4 drop|ip6 saddr . ether saddr @pin6 accept|ip6 saddr fe80::/10 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept|meta nfproto ipv6 drop|'
+    input="$(sed -n '/chain input {/,/^    }$/p' <<<"$rules" | grep -oE 'ct state new (tcp|udp) dport 53 drop|"kryptik0" ip daddr != 10\.19\.0\.1 drop|"kryptik0" ip6 daddr != \{ fd19::1, fe80::/10, ff02::/16 \} drop' | tr '\n' '|')"
+    same "into the net zone: no resolver for an uplink, and from the bridge only what is addressed to the bridge" "$input" \
+        'ct state new tcp dport 53 drop|ct state new udp dport 53 drop|"kryptik0" ip daddr != 10.19.0.1 drop|"kryptik0" ip6 daddr != { fd19::1, fe80::/10, ff02::/16 } drop|'
     rules="$(run rules "$T/none")"
     grep -qF 'set local4 { type ipv4_addr; }' <<<"$rules" && green "with no zone let through the sets are empty, and every zone is refused" || red "the empty local sets" "$(grep 'set local' <<<"$rules" | tr '\n' '|')"
 done
