@@ -182,39 +182,40 @@ fn release_is_staged_in_order() {
     let d = scratch("stage");
     let p = pointer_text("1.0.3", "2027-03-02T14:05:00Z");
     // Nothing asked for: nothing polled for, nothing taken.
-    assert_eq!(poll(&d, CH, "production", "1.0.2"), "idle");
+    assert_eq!(poll(&d, CH, "production", "1.0.2", T0), "idle");
     assert!(want(&d, Some(CH), "production", "1.0.2").unwrap_err().contains("no statement"));
     latest(&d, &yes(), T0, "production", "1.0.2", p.as_bytes(), b"sig").unwrap();
-    assert_eq!(poll(&d, CH, "production", "1.0.2"), "idle", "fetching began before the person asked");
+    assert_eq!(poll(&d, CH, "production", "1.0.2", T0), "idle", "fetching began before the person asked");
     assert!(put(&d, &yes(), T0, "manifest", 0, b"m").unwrap_err().contains("no release has been asked for"));
     assert_eq!(want(&d, Some(CH), "production", "1.0.2").unwrap(), "1.0.3");
     assert!(want(&d, Some(CH), "production", "1.0.3").unwrap_err().contains("newest release known"));
 
-    assert_eq!(poll(&d, CH, "production", "1.0.2"), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need manifest 0 manifest.sig 0");
+    assert_eq!(poll(&d, CH, "production", "1.0.2", T0), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need manifest 0 manifest.sig 0");
     assert!(put(&d, &yes(), T0, "kryptik-root.img", 0, b"0123456789").unwrap_err().contains("before the manifest"));
     assert_eq!(put(&d, &yes(), T0, "manifest", 0, b"the manifest").unwrap(), "manifest complete");
-    assert_eq!(poll(&d, CH, "production", "1.0.2"), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need manifest.sig 0");
+    assert_eq!(poll(&d, CH, "production", "1.0.2", T0), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need manifest.sig 0");
     assert!(put(&d, &yes(), T0, "manifest.sig", 0, b"its signature").unwrap().contains("the manifest verifies, 2 file(s), 14 bytes"));
 
-    assert_eq!(poll(&d, CH, "production", "1.0.2"), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need kryptik-root.img 0 root.json 0");
+    assert_eq!(poll(&d, CH, "production", "1.0.2", T0), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need kryptik-root.img 0 root.json 0");
     assert!(put(&d, &yes(), T0, "manifest", 0, b"another").unwrap_err().contains("not replaced"));
     assert!(put(&d, &yes(), T0, "stowaway", 0, b"x").unwrap_err().contains("does not list"));
     assert_eq!(put(&d, &yes(), T0, "kryptik-root.img", 0, b"01234").unwrap(), "kryptik-root.img 5/10");
     /* The connection dropped: the poll says where to resume, and any other
      * offset is refused without writing. */
-    assert_eq!(poll(&d, CH, "production", "1.0.2"), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need kryptik-root.img 5 root.json 0");
+    assert_eq!(poll(&d, CH, "production", "1.0.2", T0), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need kryptik-root.img 5 root.json 0");
     assert!(put(&d, &yes(), T0, "kryptik-root.img", 0, b"01234").unwrap_err().contains("5 bytes are held"));
     assert!(put(&d, &yes(), T0, "kryptik-root.img", 5, b"567890").unwrap_err().contains("past that"));
     assert!(complete_stage(&d).unwrap_err().contains("still arriving"));
     assert_eq!(put(&d, &yes(), T0, "kryptik-root.img", 5, b"56789").unwrap(), "kryptik-root.img complete");
     assert_eq!(put(&d, &yes(), T0, "root.json", 0, b"{  }").unwrap(), "root.json complete");
-    assert_eq!(poll(&d, CH, "production", "1.0.2"), "idle");
+    assert_eq!(poll(&d, CH, "production", "1.0.2", T0), "idle");
     let stage = complete_stage(&d).unwrap();
     assert_eq!(std::fs::read(stage.join("kryptik-root.img")).unwrap(), b"0123456789");
     let mut names: Vec<String> = std::fs::read_dir(&stage).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
     names.sort();
     assert_eq!(names, ["kryptik-root.img", "manifest", "manifest.sig", "root.json"], "apply refuses a directory holding anything else");
-    assert!(status(&d, T0, "1.0.2").contains("1.0.3: 14 of 14 bytes, complete"));
+    // The chrome's launcher reads this line.
+    assert!(status(&d, T0, "1.0.2").lines().any(|l| l.starts_with("staged     1.0.3: 14 of 14 bytes, complete")));
 
     // Once the machine runs it, the staging area is gone.
     forget_if_installed(&d, "1.0.2");
@@ -231,8 +232,59 @@ fn fetch_says_why_this_image_would_not_fetch() {
     assert!(want(&d, Some("http://10.0.2.2:8080/"), "production", "1.0.2").unwrap_err().contains("plain http"));
     assert!(want(&d, None, "production", "1.0.2").unwrap_err().contains("no update channel"));
     assert!(wanted(&d).is_none(), "a release this image would not fetch was asked for");
-    assert_eq!(poll(&d, "http://10.0.2.2:8080/", "production", "1.0.2"), "idle");
+    assert_eq!(poll(&d, "http://10.0.2.2:8080/", "production", "1.0.2", T0), "idle");
     assert_eq!(want(&d, Some(CH), "production", "1.0.2").unwrap(), "1.0.3");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn auto_follows_newest_release() {
+    let d = scratch("auto");
+    latest(&d, &yes(), T0, "production", "1.0.2", pointer_text("1.0.3", "2027-03-02T14:05:00Z").as_bytes(), b"sig").unwrap();
+    assert_eq!(poll(&d, CH, "production", "1.0.2", T0), "idle", "fetching began before it was turned on");
+    assert!(status(&d, T0, "1.0.2").contains("fetching   only when asked"));
+    assert!(set_auto(&d, true, None).unwrap_err().contains("no update channel"));
+    assert!(!auto(&d), "turned on with nothing to fetch from");
+    set_auto(&d, true, Some(CH)).unwrap();
+    assert!(status(&d, T0, "1.0.2").contains("fetching   automatically"));
+    assert_eq!(poll(&d, CH, "production", "1.0.2", T0), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need manifest 0 manifest.sig 0");
+    put(&d, &yes(), T0, "manifest", 0, b"m").unwrap();
+
+    // A newer statement's release replaces the one arriving, stage and all.
+    let t1 = T0 + POINTER_INTERVAL_SECS as i64;
+    latest(&d, &yes(), t1, "production", "1.0.2", pointer_text("1.0.4", "2027-03-02T15:30:00Z").as_bytes(), b"sig").unwrap();
+    assert_eq!(poll(&d, CH, "production", "1.0.2", t1), "fetch 1.0.4 https://updates.example/stable/1.0.4/ need manifest 0 manifest.sig 0");
+    assert!(!staging(&d, "1.0.3").exists(), "two releases are held");
+
+    // Off: what was asked for keeps arriving, and nothing newer is asked for.
+    set_auto(&d, false, None).unwrap();
+    assert!(poll(&d, CH, "production", "1.0.2", t1).starts_with("fetch 1.0.4 "));
+    let t2 = t1 + POINTER_INTERVAL_SECS as i64;
+    latest(&d, &yes(), t2, "production", "1.0.2", pointer_text("1.0.5", "2027-03-02T16:30:00Z").as_bytes(), b"sig").unwrap();
+    assert_eq!(poll(&d, CH, "production", "1.0.2", t2), "idle");
+    assert_eq!(wanted(&d).as_deref(), Some("1.0.4"));
+    set_auto(&d, true, Some(CH)).unwrap();
+    assert!(poll(&d, CH, "production", "1.0.2", t2).starts_with("fetch 1.0.5 "));
+
+    // Once the machine runs it, nothing newer is left to ask for.
+    forget_if_installed(&d, "1.0.5");
+    assert_eq!(poll(&d, CH, "production", "1.0.5", t2), "idle");
+    assert!(wanted(&d).is_none());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn auto_refuses_what_fetch_refuses() {
+    let d = scratch("auto-refused");
+    latest(&d, &yes(), T0, "production", "1.0.2", pointer_text("1.0.3", "2027-03-02T14:05:00Z").as_bytes(), b"sig").unwrap();
+    let plain = "http://10.0.2.2:8080/";
+    set_auto(&d, true, Some(plain)).unwrap();
+    assert_eq!(poll(&d, plain, "production", "1.0.2", T0), "idle");
+    assert!(wanted(&d).is_none(), "a release this image would not fetch was asked for");
+    // Only `on` turns it on, so a damaged file reads as off.
+    std::fs::write(d.join("auto"), b"o\xff\n").unwrap();
+    assert_eq!(poll(&d, CH, "production", "1.0.2", T0), "idle");
+    assert!(set_auto(&d, false, None).is_ok() && set_auto(&d, false, None).is_ok(), "turning it off twice failed");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -252,7 +304,10 @@ fn wrong_manifest_is_discarded() {
         put(&d, &checks, T0, "manifest", 0, b"m").unwrap();
         assert!(put(&d, &checks, T0, "manifest.sig", 0, b"s").unwrap_err().contains(why), "{tag}");
         assert!(!staging(&d, "1.0.3").exists(), "{tag}: the refused manifest was kept");
-        assert_eq!(poll(&d, CH, "production", "1.0.2"), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need manifest 0 manifest.sig 0", "{tag}");
+        // The next pair would be refused unread for an interval, so none is fetched.
+        assert_eq!(poll(&d, CH, "production", "1.0.2", T0 + 60), "idle", "{tag}");
+        let again = T0 + POINTER_INTERVAL_SECS as i64;
+        assert_eq!(poll(&d, CH, "production", "1.0.2", again), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need manifest 0 manifest.sig 0", "{tag}");
         // A verified but refused manifest starts the interval too.
         put(&d, &checks, T0 + 60, "manifest", 0, b"m").unwrap();
         assert!(put(&d, &checks, T0 + 60, "manifest.sig", 0, b"s").unwrap_err().contains("minutes ago"), "{tag}: retried within the interval");
@@ -272,6 +327,30 @@ fn wrong_manifest_is_discarded() {
     put(&d, &no, later, "manifest", 0, b"m").unwrap();
     assert!(put(&d, &no, later, "manifest.sig", 0, b"s").unwrap_err().contains("does NOT verify"));
     assert!(put(&d, &no, T0, "kryptik-root.img", 0, b"x").unwrap_err().contains("before the manifest"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn discarded_stage_is_asked_for_again() {
+    let d = scratch("discard");
+    let p = pointer_text("1.0.3", "2027-03-02T14:05:00Z");
+    latest(&d, &yes(), T0, "production", "1.0.2", p.as_bytes(), b"sig").unwrap();
+    want(&d, Some(CH), "production", "1.0.2").unwrap();
+    put(&d, &yes(), T0, "manifest", 0, b"the manifest").unwrap();
+    put(&d, &yes(), T0, "manifest.sig", 0, b"its signature").unwrap();
+    // Wrong bytes of the right sizes: by its sizes the stage is complete, and stays so.
+    put(&d, &yes(), T0, "kryptik-root.img", 0, b"xxxxxxxxxx").unwrap();
+    put(&d, &yes(), T0, "root.json", 0, b"xxxx").unwrap();
+    assert!(complete_stage(&d).is_ok());
+    assert!(put(&d, &yes(), T0, "kryptik-root.img", 0, b"0123456789").is_err(), "a whole file was taken again");
+    assert!(discard_stage(&d));
+    assert!(!d.join("incoming").exists() && !d.join("files").exists(), "something of the stage is left");
+    assert!(d.join("wanted").exists(), "the request went with the stage");
+    assert!(complete_stage(&d).unwrap_err().contains("has not arrived"));
+    // The same release can arrive again, from the manifest on.
+    assert!(put(&d, &yes(), T0, "kryptik-root.img", 0, b"0123456789").unwrap_err().contains("before the manifest"));
+    assert_eq!(put(&d, &yes(), T0, "manifest", 0, b"the manifest").unwrap(), "manifest complete");
+    assert!(discard_stage(&d) && discard_stage(&d), "nothing staged is nothing to fail on");
     let _ = std::fs::remove_dir_all(&d);
 }
 

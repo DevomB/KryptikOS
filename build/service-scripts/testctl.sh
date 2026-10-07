@@ -8,7 +8,7 @@
 #   testctl_get KEY   the value, or empty
 # Keys: install_target=/dev/vdb   smoke_poweroff=1   preseed_user=NAME
 #       preseed_password_hash=HASH  preseed_root_hash=HASH  install_wait=SECONDS
-#       recover_disk=/dev/vda recover_slot=a|b recover_mode=restore|commit|status
+#       recover_disk=/dev/vda recover_slot=a|b recover_mode=restore|commit|header|status
 
 TESTCTL_MNT=/run/kryptik/testctl
 TESTCTL_FILE=""
@@ -25,7 +25,7 @@ testctl_signed() {   # testctl_signed FILE
 
 testctl_media() {
     grep -qs '^media=.\+' /run/kryptik/boot-identity 2>/dev/null && return 0
-    grep -qw 'kryptik\.media=[a-z]' /proc/cmdline 2>/dev/null
+    grep -qE '(^| )kryptik\.media=[a-z]+( |$)' /proc/cmdline 2>/dev/null
 }
 
 testctl_load() {
@@ -35,7 +35,7 @@ testctl_load() {
     [ -n "$dev" ] && [ -b "$dev" ] || return 1
     mkdir -p "$TESTCTL_MNT"
     if ! mountpoint -q "$TESTCTL_MNT"; then
-        mount -o ro,nosuid,nodev,noexec "$dev" "$TESTCTL_MNT" 2>/dev/null || return 1
+        mount -t vfat -o ro,nosuid,nodev,noexec "$dev" "$TESTCTL_MNT" 2>/dev/null || return 1
     fi
     [ -r "$TESTCTL_MNT/kryptik-test.conf" ] || return 1
     if ! testctl_signed "$TESTCTL_MNT/kryptik-test.conf"; then

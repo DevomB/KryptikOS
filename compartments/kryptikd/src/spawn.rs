@@ -223,8 +223,9 @@ pub(crate) fn log_line(line: &str) {
     }
 }
 
-/// Most zone output one launch logs (the rest is read and dropped, so an endless
-/// writer neither blocks nor fills the state partition), and the longest line.
+/// Most zone output one launch logs, marks and line ends counted (the rest is
+/// read and dropped, so an endless writer neither blocks nor fills the state
+/// partition), and the longest line.
 const ZONE_OUTPUT_MAX: usize = 1 << 20;
 const ZONE_LINE_MAX: usize = 1024;
 
@@ -247,6 +248,9 @@ impl ZoneOutput {
         if !self.line.is_empty() {
             emit(&format!("{}{}", self.mark, String::from_utf8_lossy(&self.line)));
             self.line.clear();
+            // The mark and the line end are logged too: one-byte lines would
+            // otherwise log many times what the zone wrote.
+            self.left = self.left.saturating_sub(self.mark.len() + 1);
         }
     }
 

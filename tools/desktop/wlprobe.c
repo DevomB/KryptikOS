@@ -13,6 +13,12 @@
  *                             ("oversize" by default, at most 255 bytes)
  *   wlprobe charge            map one unwritten 4 MiB shmem buffer for 10 s;
  *                             compare zone and compositor cgroup memory.current
+ *   wlprobe cursor SECONDS    as oversize 0, and when the pointer enters, set a
+ *                             cursor image twice the screen's size, hotspot in
+ *                             its middle: drawn, it covers the whole screen.
+ *                             Says when the window, and when the cursor image,
+ *                             enters an output: the second only if the
+ *                             compositor took the image
  *
  * Exit: 0 listed, bind accepted or window held; 3 refused (wl_display.error,
  * or closed); 1 any other failure. The socket is $WAYLAND_DISPLAY, absolute
@@ -153,6 +159,55 @@ static void draw(void)
 	fflush(stdout);
 }
 
+/* cursor: the image is 2560x1600, for a 1280x800 screen, in a colour nothing
+ * else draws. */
+static const uint32_t cursor_rgb = 0x13f7a5;
+static uint32_t seat_id, pointer_id, cursor_surf;
+static int cursor;
+
+/* On every entry, as a client does; the image is made on the first. */
+static void set_cursor(uint32_t serial)
+{
+	int w = 2560, h = 1600, stride = w * 4, fd = -1;
+	size_t size = (size_t)stride * (size_t)h;
+	unsigned char b[24];
+	if (!cursor_surf) {
+		fd = memfd_create("wlprobe-cursor", MFD_CLOEXEC);
+		if (fd < 0 || ftruncate(fd, (off_t)size) < 0) {
+			printf("memfd: %s\n", strerror(errno));
+			if (fd >= 0) close(fd);
+			return;
+		}
+		uint32_t *px = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+		if (px == MAP_FAILED) { printf("mmap: %s\n", strerror(errno)); close(fd); return; }
+		for (size_t i = 0; i < size / 4; i++) px[i] = cursor_rgb;
+		munmap(px, size);
+		cursor_surf = next_id++;
+		put32(b, cursor_surf);
+		send_msg(COMPOSITOR, 0, b, 4);         /* wl_compositor.create_surface */
+	}
+	put32(b, serial); put32(b + 4, cursor_surf); put32(b + 8, (uint32_t)(w / 2)); put32(b + 12, (uint32_t)(h / 2));
+	send_msg(pointer_id, 0, b, 16);            /* wl_pointer.set_cursor */
+	if (fd >= 0) {
+		uint32_t pool = next_id++, buffer = next_id++;
+		put32(b, pool);
+		put32(b + 4, (uint32_t)size);
+		int r = send_msg_fd(SHM, 0, b, 8, fd); /* wl_shm.create_pool(id, fd, size) */
+		close(fd);
+		if (r) { printf("create_pool: %s\n", strerror(errno)); return; }
+		put32(b, buffer); put32(b + 4, 0); put32(b + 8, (uint32_t)w); put32(b + 12, (uint32_t)h);
+		put32(b + 16, (uint32_t)stride); put32(b + 20, 1);
+		send_msg(pool, 0, b, 24);              /* wl_shm_pool.create_buffer */
+		put32(b, buffer); put32(b + 4, 0); put32(b + 8, 0);
+		send_msg(cursor_surf, 1, b, 12);       /* wl_surface.attach */
+		put32(b, 0); put32(b + 4, 0); put32(b + 8, (uint32_t)w); put32(b + 12, (uint32_t)h);
+		send_msg(cursor_surf, 2, b, 16);       /* wl_surface.damage */
+		send_msg(cursor_surf, 6, b, 0);        /* wl_surface.commit */
+	}
+	printf("set a %dx%d cursor, hotspot %d,%d\n", w, h, w / 2, h / 2);
+	fflush(stdout);
+}
+
 /* Consume one message if present. Returns 1 consumed, 0 need more, -1 malformed. */
 static int handle_one(void)
 {
@@ -197,6 +252,12 @@ static int handle_one(void)
 		put32(b, get32(body));
 		send_msg(XDG_SURFACE, 4, b, 4);         /* xdg_surface.ack_configure */
 		draw();
+	} else if (cursor && object == pointer_id && opcode == 0) {
+		set_cursor(get32(body));                /* wl_pointer.enter(serial, surface, x, y) */
+	} else if (cursor && opcode == 0 && (object == SURFACE || (cursor_surf && object == cursor_surf))) {
+		/* wl_surface.enter(output) */
+		printf("%s entered an output\n", object == SURFACE ? "the window" : "the cursor image");
+		fflush(stdout);
 	} else if (!oversize) {
 		printf("event object=%u opcode=%u size=%u\n", object, opcode, size);
 	}
@@ -251,6 +312,17 @@ static int hold_oversize(int more, int seconds, const char *title)
 	send_msg(TOPLEVEL, 2, b, n);               /* xdg_toplevel.set_title */
 	n = put_string(b, "wlprobe");
 	send_msg(TOPLEVEL, 3, b, n);               /* xdg_toplevel.set_app_id */
+	if (cursor) {
+		seat_id = next_id++;
+		if (bind_global("wl_seat", seat_id)) return 1;
+		pointer_id = next_id++;
+		put32(b, pointer_id);
+		send_msg(seat_id, 0, b, 4);            /* wl_seat.get_pointer */
+		/* A client that holds an output is told when a surface of its own
+		 * enters it: the window when it is shown, a cursor image when the
+		 * compositor takes it. */
+		if (bind_global("wl_output", next_id++)) return 1;
+	}
 	send_msg(SURFACE, 6, b, 0);                /* wl_surface.commit: ask for a configure */
 	time_t end = time(NULL) + seconds;
 	while (time(NULL) < end && !closed) {
@@ -261,11 +333,13 @@ static int hold_oversize(int more, int seconds, const char *title)
 
 int main(int argc, char **argv)
 {
-	if (argc < 2 || (strcmp(argv[1], "list") && strcmp(argv[1], "bind") && strcmp(argv[1], "oversize") && strcmp(argv[1], "charge"))
+	if (argc < 2 || (strcmp(argv[1], "list") && strcmp(argv[1], "bind") && strcmp(argv[1], "oversize") && strcmp(argv[1], "charge")
+	                 && strcmp(argv[1], "cursor"))
 	    || (!strcmp(argv[1], "bind") && argc < 3) || (!strcmp(argv[1], "oversize") && argc < 4)
 	    || (!strcmp(argv[1], "oversize") && argc > 4 && strlen(argv[4]) > 255)
-	    || (!strcmp(argv[1], "charge") && argc != 2)) {
-		fprintf(stderr, "usage: wlprobe list | bind INTERFACE | oversize EXTRA SECONDS [TITLE] | charge\n");
+	    || (!strcmp(argv[1], "charge") && argc != 2)
+	    || (!strcmp(argv[1], "cursor") && argc != 3)) {
+		fprintf(stderr, "usage: wlprobe list | bind INTERFACE | oversize EXTRA SECONDS [TITLE] | charge | cursor SECONDS\n");
 		return 2;
 	}
 	const char *disp = getenv("WAYLAND_DISPLAY");
@@ -294,6 +368,7 @@ int main(int argc, char **argv)
 	if (!strcmp(argv[1], "list")) return errored ? 3 : 0;
 	if (!strcmp(argv[1], "oversize")) return hold_oversize(atoi(argv[2]), atoi(argv[3]), argc > 4 ? argv[4] : "oversize");
 	if (!strcmp(argv[1], "charge")) { charge = 1; return hold_oversize(0, 10, "shm-charge"); }
+	if (!strcmp(argv[1], "cursor")) { cursor = 1; return hold_oversize(0, atoi(argv[2]), "cursor"); }
 
 	/* A filtered client cannot know a hidden global's name, so guess 1; the
 	 * proxy must refuse either way. */

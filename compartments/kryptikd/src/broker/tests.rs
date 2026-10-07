@@ -538,6 +538,51 @@ fn transfer_refusals_precede_copy() {
 }
 
 #[test]
+fn zone_limits_bound_transfer() {
+    // Under a cap of 64, the sender takes 12 and b 8: each refuses past its own.
+    let lab = lab("limits", "b c");
+    let entry_dir = lab.dir.join("entry");
+    std::fs::create_dir_all(&entry_dir).unwrap();
+    let b = std::fs::read_to_string(lab.zones.join("b.toml")).unwrap();
+    std::fs::write(lab.zones.join("b.toml"), b.replace("[ui]", "[transfer]\nmax_bytes = 8\n[ui]")).unwrap();
+    let mut sender = lab.sender.clone();
+    sender.transfer_max = Some(12);
+    let resolve = resolver(lab.root.clone());
+    let dev = lab.dev;
+    let home_dev = move || Some(dev);
+    let sv = Served {
+        zone: &sender,
+        uid: unsafe { libc::geteuid() },
+        entry: &entry_dir,
+        zones_dir: &lab.zones,
+        home_dev: &home_dev,
+        auto_approve: true,
+        max_bytes: 64,
+        resolve_dest: &resolve,
+        asking: &crate::consent::keep,
+        log: &no_log,
+        refused_until: &Cell::new(None),
+    };
+    let send = |dest: &str, len: usize| {
+        let file = lab.dir.join(format!("f{len}"));
+        std::fs::write(&file, vec![b'x'; len]).unwrap();
+        let src = open_flags(&file, libc::O_RDONLY);
+        let r = ask_with(&sv, &format!("transfer {dest} f{len}\n"), &[src], false).1;
+        unsafe { libc::close(src) };
+        String::from_utf8_lossy(&r).into_owned()
+    };
+    let r = send("b", 9);
+    assert!(r.contains("transfer limit is 8 ([transfer] max_bytes of zone \"b\")"), "{r}");
+    assert!(!lab.root.join("home/b/incoming").exists(), "a refused file reached b");
+    assert_eq!(send("b", 8), "ok f8\n");
+    assert_eq!(send("c", 9), "ok f9\n");
+    let r = send("c", 13);
+    assert!(r.contains("transfer limit is 12 ([transfer] max_bytes of zone \"a\")"), "{r}");
+    assert!(!lab.root.join("home/c/incoming/f13").exists(), "a refused file reached c");
+    let _ = std::fs::remove_dir_all(&lab.dir);
+}
+
+#[test]
 fn dest_resolved_after_consent() {
     /* The first lookup finds the zone under `before`; by the answer it runs
      * under the lab root, as a zone restarted during the wait would. */

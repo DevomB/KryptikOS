@@ -1,17 +1,18 @@
 # Release keys
 
-How to make, keep, use, replace and give up the keys that sign Kryptik
-releases. You do all of it by hand, on machines you control. The build never
-makes these keys and never keeps a copy (`build/lib/release-keys.sh`).
+How the keys that sign Kryptik releases are made, kept, used, replaced and
+given up. They live in the repository's protected `release` environment, and
+only a release tag's build signs with them, after the maintainer approves the
+run. The build never makes these keys (`build/lib/release-keys.sh`).
 
 ## The keys
 
 | Key | Signs | Where it lives | If it is stolen |
 | --- | --- | --- | --- |
-| `kryptik-release` (Ed25519) | every release's manifest, and the checksums of its install media | offline, on the key medium | the thief can sign a release that every machine installs |
-| `kryptik-latest` (Ed25519) | the channel's "this release is current" statement, daily | on the release host, for its timer | machines can be held on an old release; nothing can be installed with it |
-| `kryptik-sb` (RSA, X.509) | the kernels, for Secure Boot | offline, on the key medium | the thief can sign kernels that machines which enrolled it will boot |
-| `kryptik-testctl` (Ed25519) | a control disk that arms an unattended install or recovery on a machine booting your medium (the suites' installs, and your own) | on the key medium, and on the build machine for `make acceptance` | the thief can wipe a disk on a machine they boot your medium on with a control disk attached; nothing can be signed or installed with it |
+| `kryptik-release` (Ed25519) | every release's manifest, and the checksums of its install media | the `release` environment's `KRYPTIK_KEY_MEDIUM` secret, and the backup | the thief can sign a release that every machine installs |
+| `kryptik-latest` (Ed25519) | the channel's "this release is current" statement, daily | the `KRYPTIK_LATEST_KEY` repository secret, `KRYPTIK_KEY_MEDIUM`, and the backup | machines can be held on an old release; nothing can be installed with it |
+| `kryptik-sb` (RSA, X.509) | the kernels, for Secure Boot | `KRYPTIK_KEY_MEDIUM`, and the backup | the thief can sign kernels that machines which enrolled it will boot |
+| `kryptik-testctl` (Ed25519) | a control disk that arms an unattended install or recovery on a machine booting a release's medium (the suites' installs) | the `release-tests` environment's `KRYPTIK_TESTCTL_KEY` secret, and the backup | the thief can wipe a disk on a machine they boot a release's medium on with a control disk attached; nothing can be signed or installed with it |
 | the module key | the kernel's modules | nowhere: each kernel build makes one and throws it away | nothing to steal |
 
 An image trusts the three Ed25519 keys through its anchor,
@@ -20,107 +21,107 @@ name and held to its own namespaces: the release key to `kryptik-release` for
 manifests and `kryptik-media` for the media's checksums, the statement key to
 `kryptik-latest`, the control-disk key to `kryptik-testctl`. So a statement
 key cannot sign a release or its media, a control-disk key can arm nothing
-but an install, and no signature passes for one of another kind. A machine trusts the Secure Boot
-key once its certificate is enrolled in the machine's firmware.
+but an install, and no signature passes for one of another kind. A machine
+trusts the Secure Boot key once its certificate is enrolled in the machine's
+firmware.
+
+The public halves are in the tree, `build/config/release/release-signers` and
+`build/config/release/kryptik-sb.crt`: a release's root is bound to that
+anchor, and a download can be compared with it.
+
+## Where they are used
+
+A release tag's Distro run builds the system as any run does, then binds each
+release's root and kernels to the public halves alone
+(`KRYPTIK_MEDIA_PHASE=bind`). That job ran every upstream build script as
+root, so no private key reaches it. The `sign` job then waits for the
+maintainer's approval and takes the key medium from the `release` environment
+on a fresh runner. It treats what the build job handed over as hostile: it
+unpacks only the bound releases and the stamps, refuses anything in them that
+is not a plain file or directory, takes the versions from the tag rather than
+from the build job, and checks the bound root against the medium. Then, as an
+unprivileged user, it signs and assembles the media with host tools
+(`KRYPTIK_MEDIA_PHASE=sign`), checks that no line of a private key is in
+anything it made or logged, and deletes the medium. Only `v*` tags may use the
+environment. The acceptance parts take the control-disk key from
+`release-tests` the same way, so no artifact carries it, and the part that
+runs sysroot programs on the host never gets it.
+
+A release is therefore as trustworthy as the maintainer's GitHub account and
+the runners that build it: whoever can push a `v*` tag and approve its run
+can sign a release. Keep the account behind a passkey or a hardware security
+key.
 
 ## Making them
 
-Do this once, on a machine that has never been on a network and will not be:
-a live system started from read-only media will do. You need two removable
-media, the key medium and its backup, ideally encrypted.
+Once, on a machine you trust.
 
-```sh
-mkdir kryptik-keys && cd kryptik-keys
-ssh-keygen -t ed25519 -C kryptik-release -f kryptik-release     # set a passphrase
-ssh-keygen -t ed25519 -C kryptik-latest -f kryptik-latest       # set a passphrase
-ssh-keygen -t ed25519 -C kryptik-testctl -f kryptik-testctl     # no passphrase: the suites sign with it unattended
-{
-    printf 'kryptik-release namespaces="kryptik-release,kryptik-media" %s\n' "$(cut -d' ' -f1,2 kryptik-release.pub)"
-    printf 'kryptik-latest namespaces="kryptik-latest" %s\n' "$(cut -d' ' -f1,2 kryptik-latest.pub)"
-    printf 'kryptik-testctl namespaces="kryptik-testctl" %s\n' "$(cut -d' ' -f1,2 kryptik-testctl.pub)"
-} > release-signers
-openssl req -new -x509 -newkey rsa:3072 -sha256 -days 3650 \
-    -subj "/CN=Kryptik Secure Boot/" -keyout kryptik-sb.key -out kryptik-sb.crt   # set a passphrase
-chmod 600 kryptik-release kryptik-latest kryptik-testctl kryptik-sb.key
-```
+1. Make the two environments. `release` takes only `v*` tags and waits for a
+   reviewer; `release-tests` takes only `v*` tags. A run that names an
+   environment before it exists creates one with no rules, so these come
+   first:
 
-The backup gets the whole directory. The key medium gets everything except
-`kryptik-latest` and `kryptik-latest.pub`: the build does not need them. The
-statement key goes to the release host, and nowhere else that is online.
-`kryptik-testctl` may also be copied to the build machine, where
-`make acceptance` signs the control disks that install the media under test
-(`KRYPTIK_TESTCTL_KEY` names it); it arms installs on machines that boot your
-medium and signs nothing else.
+   ```sh
+   me="$(gh api user --jq .id)"
+   gh api -X PUT repos/{owner}/{repo}/environments/release --input - <<EOF
+   {"reviewers": [{"type": "User", "id": ${me}}], "deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}}
+   EOF
+   gh api -X PUT repos/{owner}/{repo}/environments/release-tests --input - <<EOF
+   {"deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}}
+   EOF
+   for e in release release-tests; do
+       gh api -X POST "repos/{owner}/{repo}/environments/$e/deployment-branch-policies" -f name='v*' -f type=tag
+   done
+   ```
 
-The build takes the key medium as it is. It refuses a private key anyone but
-its owner can read, a key owned by anyone but root or the user running the
-build, a medium inside its own work tree, and an anchor not written as above.
+2. Run `tools/make-release-keys.sh BACKUP-DIR` from the checkout. It refuses
+   to go on unless `release` has a reviewer and a tag policy. It asks for a
+   passphrase for the backup and makes the four keys in a temporary
+   directory, with no passphrase of their own, since the workflow signs
+   unattended. It writes `BACKUP-DIR/kryptik-keys.tar.gz.enc` and checks
+   that the backup opens before anything leaves the machine. Only then does
+   it set the three secrets:
+   - `KRYPTIK_KEY_MEDIUM` in `release`: the medium the sign job unpacks,
+     every file its owner's alone, without the control-disk key;
+   - `KRYPTIK_TESTCTL_KEY` in `release-tests`;
+   - `KRYPTIK_LATEST_KEY` for the repository.
+
+   It copies `release-signers` and `kryptik-sb.crt` to `build/config/release/`.
+   The temporary directory goes when it exits.
+3. Commit `build/config/release/`, and keep the backup in a second place as
+   well (a password manager's file store and a USB stick, say). It opens with
+   `openssl enc -d -aes-256-cbc -pbkdf2 -iter 1000000 -in kryptik-keys.tar.gz.enc | tar -xz`.
 
 Losing `kryptik-release` without a backup means no installed machine can be
 updated again. A new key can only reach them in a release signed by the old
 one, so each machine would have to be reinstalled from a medium carrying a
-new anchor. Keep the backup somewhere else.
+new anchor.
 
 ## Using them
 
 For each release:
 
-1. Build up to the kernel on the build machine as usual (`make kernel`), in
-   an empty work directory (a new `KRYPTIK_WORK`): a tree resumed from an
-   earlier build can still hold files an older recipe installed (a known gap
-   in [status](status.md)). Then the throwaway pair the acceptance's
-   production suite updates across (`make production-pair`). No key of yours
-   is needed for either, and none is ever inside the chroot.
-2. Attach the key medium and make the media: first a release for the update
-   suite to update from, numbered `0.0.0`, then the release. `sbsign` asks
-   for the Secure Boot key's passphrase once for each kernel it signs (three
-   per build: both slots and the USB medium's), and `ssh-keygen` for the
-   release key's twice per build, for the media's checksums and for the
-   manifest. A release key on a security key asks to be touched instead,
-   each time:
+1. Tag a commit on main whose CI and Distro runs passed, and push the tag:
+   `git tag v1.0.1 <commit> && git push origin v1.0.1`.
+2. The run checks the tag, the pins, the sources and CI on the commit
+   ([releases](releases.md#cutting-one)), builds from nothing, binds, and
+   waits: approve the `sign` job's deployment to `release` on the run's page,
+   within the week its bound releases are kept.
+3. It signs, runs every suite on the signed media and drafts the release with
+   its export, source and acceptance logs. Read the draft, then publish it:
+   `gh release edit v1.0.1 --draft=false --latest`.
+4. Publish it into the channel: run the `Update channel` workflow with the
+   tag (`gh workflow run channel.yml -f release=v1.0.1`). Its daily schedule
+   signs the statement again; a machine that hears nothing for 30 days says
+   so.
 
-   ```sh
-   make media KRYPTIK_ROLE=production KRYPTIK_KEYS=/media/<medium>/kryptik-keys \
-       KRYPTIK_VERSION=0.0.0 KRYPTIK_CHANNEL=https://<host>/<channel>/
-   make media KRYPTIK_ROLE=production KRYPTIK_KEYS=/media/<medium>/kryptik-keys \
-       KRYPTIK_VERSION=<version> KRYPTIK_CHANNEL=https://<host>/<channel>/
-   ```
+`gh workflow run distro.yml -f role=production` rehearses the whole flow on
+any branch, with a throwaway medium made for that run.
 
-3. Detach the medium. The signed payload is in
-   `<work>/images/payload-<version>`, the media's signed checksums are
-   `kryptik-<version>.SHA256SUMS` and its `.sig` beside the media, and the
-   release record is under `KRYPTIK_OUT`. Publish the checksums and
-   `release-signers` with the media: they are what a download is checked by.
-4. Test the media. The suites enrol the Secure Boot certificate the media
-   carry, install them with control disks signed by the medium's
-   `kryptik-testctl`, from its copy, and update the `0.0.0` release to
-   yours; the export they write is the release as the page publishes it:
-
-   ```sh
-   make acceptance EXPORT=DIR KRYPTIK_TESTCTL_KEY=<copy>/kryptik-testctl
-   ```
-
-5. Tag the revision you built from `v<version>` and push the tag. Its run
-   builds and tests that revision the same way, signed with a throwaway key
-   medium, and drafts nothing from that. The next release's notes list what
-   changed since the tag.
-6. Put the release on the repository's Releases page from the export:
-
-   ```sh
-   tools/release-publish.sh DIR --source-bundle FILE --publish
-   ```
-
-   ([releases](releases.md); `make source-bundle` writes the bundle under
-   `KRYPTIK_OUT`). The payload goes up with it, under the names its manifest
-   gives: that page is the channel's base.
-7. Publish it into the channel: the release host is the repository's Pages
-   site and the `Update channel` workflow
-   ([update channel](design/update-channel.md#the-release-host)). Once, put
-   the statement key in the `KRYPTIK_LATEST_KEY` repository secret, made
-   without a passphrase, since it signs from a timer; it is the one key that
-   is online by design. Then run the workflow with the release's tag. Its
-   daily schedule signs the statement again; a machine that hears nothing
-   for 30 days says so.
+A production image can also be built on one machine with a key medium
+([building](building.md)). That machine then holds the keys while its chroot
+runs; `KRYPTIK_MEDIA_PHASE=bind` and then `sign` split the build as the
+workflow does.
 
 ## Numbering a release
 
@@ -135,9 +136,10 @@ machine installs only a release newer than the one it runs, ordered as
 
 A machine boots Kryptik's signed kernels once `kryptik-sb.crt` is in its
 firmware's database of allowed keys (db). The USB medium carries the
-certificate at `/kryptik/kryptik-sb.crt` and the ISO at its root, and the
-release record has it in DER form as well. How to enrol it depends on the
-firmware; most setup screens can enrol a key from a file on a FAT volume.
+certificate at `/kryptik/kryptik-sb.crt` and the ISO at its root, the release
+record has it in DER form as well, and the tree keeps it in
+`build/config/release/`. How to enrol it depends on the firmware; most setup
+screens can enrol a key from a file on a FAT volume.
 
 ## Replacing a key
 
@@ -146,13 +148,15 @@ channel names one release at a time. So a new key has to arrive in a release
 the old key signed, whose anchor lists both keys, and that release has to
 stay the channel's current one until the machines you care about have
 installed it. The build accepts an anchor that lists a name more than once,
-as long as no key is listed twice.
+as long as no key is listed twice. Each change updates the secret, the
+backup and `build/config/release/`.
 
-- **Statement key.** Make the new key offline. Ship a release whose anchor
-  lists both the old and the new `kryptik-latest`, and keep signing statements
-  with the old key until every machine runs it. Then switch the release host
-  to the new key, and drop the old line from a later release's anchor.
-- **Release key.** Make the new key offline. Ship release N+1, signed by the
+- **Statement key.** Make the new key as above. Ship a release whose anchor
+  lists both the old and the new `kryptik-latest`, and keep signing
+  statements with the old key until every machine runs it. Then switch
+  `KRYPTIK_LATEST_KEY` to the new key, and drop the old line from a later
+  release's anchor.
+- **Release key.** Make the new key as above. Ship release N+1, signed by the
   old key, with an anchor that lists both, and keep it the channel's current
   release until the machines you care about have installed it. Then sign N+2
   with the new key and drop the old line from its anchor. A machine still on
@@ -164,15 +168,18 @@ as long as no key is listed twice.
 
 ## When a key is stolen
 
+A stolen GitHub account, or a way into the `release` environment, is a stolen
+release key: revoke the account's sessions and tokens first.
+
 - **Statement key.** Machines can be held on an old release, which a hostile
   network can do anyway, and they report it after 30 days. Replace the key as
   above.
 - **Release key.** The thief can sign a release that machines will install.
   Machines trust no other key yet, so your answer has to be signed with the
-  stolen one too. Make a new release key offline, and ship a release, signed
-  by the stolen key, whose anchor lists only the new one. It is a race, since
-  the thief can ship a competing release until machines install yours:
-  publish it and tell users to update at once. A machine that installed the
-  thief's release has to be reinstalled from a medium you made.
+  stolen one too. Make a new release key, and ship a release, signed by the
+  stolen key, whose anchor lists only the new one. It is a race, since the
+  thief can ship a competing release until machines install yours: publish it
+  and tell users to update at once. A machine that installed the thief's
+  release has to be reinstalled from a medium you made.
 - **Secure Boot key.** The thief can sign kernels that enrolled machines will
   boot. Add its certificate to each machine's dbx and enrol a new one.

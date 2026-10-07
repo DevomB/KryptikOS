@@ -7,6 +7,8 @@
 # A trial slot that passes health() is committed (its kernel becomes
 # BOOTX64.EFI). One that fails reboots, and with BootNext spent that lands on
 # the committed slot. A committed slot is only reported on, never rebooted.
+# A slot that runs with no trial on record and is not the committed one was
+# booted from outside: it is reported as uncommitted and rebooted from, once.
 # The paths are overridable for tools/tests/boot-success.sh only.
 set -u
 say() { echo "boot-success: $*"; }
@@ -69,7 +71,7 @@ commit_slot() {   # commit_slot <slot>: make BOOTX64.EFI this slot's kernel
     esp="$(kryptik_part kryptik-esp 2>/dev/null)"
     [ -n "$esp" ] || { say "no unambiguous ESP on this installation's disk; cannot commit"; return 1; }
     mkdir -p "$ESP_MNT"
-    mount -o rw,nosuid,nodev,noexec "$esp" "$ESP_MNT" || { say "cannot mount ESP $esp"; return 1; }
+    mount -t vfat -o rw,nosuid,nodev,noexec "$esp" "$ESP_MNT" || { say "cannot mount ESP $esp"; return 1; }
     src="$ESP_MNT/EFI/kryptik/kryptik-$1.efi"
     dst="$ESP_MNT/EFI/BOOT/BOOTX64.EFI"
     rc=1
@@ -113,14 +115,24 @@ forget_entries() {   # forget_entries COMMITTED-SLOT
 esp_committed() {
     e="$(kryptik_part kryptik-esp 2>/dev/null)" && [ -n "$e" ] || return 0
     mkdir -p "$ESP_MNT"
-    mount -o ro,nosuid,nodev,noexec "$e" "$ESP_MNT" 2>/dev/null || return 0
+    mount -t vfat -o ro,nosuid,nodev,noexec "$e" "$ESP_MNT" 2>/dev/null || return 0
     sed -n 1p "$ESP_MNT/kryptik/committed-slot" 2>/dev/null
     umount "$ESP_MNT"
 }
-unrecorded=""
-if [ -z "$trial" ] && [ "$state" != persistent ]; then
+# With no trial on record, the slot that runs should be the committed one. On a
+# degraded state the record is out of reach, so another slot is a trial. With
+# the record readable, nothing of Kryptik's asked for this slot: the earlier
+# release stays bootable for rollback, and a firmware entry or BootNext set
+# from outside boots it.
+unrecorded=""; stray=""
+if [ -z "$trial" ]; then
     c="$(esp_committed)"
-    if [ -n "$c" ] && [ "$c" != "$slot" ]; then trial="$slot"; unrecorded=1; fi
+    case "$c" in a|b) ;; *) c="" ;; esac
+    if [ "$c" = "$slot" ]; then
+        rm -f "$B/uncommitted"
+    elif [ -n "$c" ]; then
+        if [ "$state" = persistent ]; then stray="$c"; else trial="$slot"; unrecorded=1; fi
+    fi
 fi
 
 # --- the decision -------------------------------------------------------------
@@ -134,6 +146,8 @@ if [ -n "$trial" ]; then
                 result "commit $slot"
                 forget_entries "$slot"
                 say "slot $slot is healthy and committed"
+                # Its release's signed date becomes the clock's floor if it is the newest (docs/design/time.md).
+                say "$(kryptikd time committed "$B/release-$slot" 2>&1)"
             else
                 result "commit-failed $slot"
                 say "slot $slot is healthy but the commit failed; the committed slot is unchanged"
@@ -173,6 +187,18 @@ if [ -n "$trial" ]; then
             rm -f "$B/trial"
             forget_entries "$slot"
         fi
+    fi
+elif [ -n "$stray" ]; then
+    say "slot $slot is running, slot $stray is the committed one and no trial was armed: the firmware was told to boot this slot"
+    result "uncommitted $slot"
+    # Once: an entry that is not Kryptik's own outlives the forgetting, and
+    # the machine must stay up to be put right.
+    if forget_entries "$stray" && [ ! -e "$B/uncommitted" ] && [ "${KRYPTIK_NO_REBOOT:-0}" != 1 ]; then
+        : > "$B/uncommitted"; sync
+        say "rebooting to the committed slot in 5 s"
+        { echo "boot-success: slot $slot is not the committed one; rebooting to slot $stray"; } > /dev/console 2>&1 || true
+        sleep 5
+        reboot
     fi
 else
     failures="$(health)"

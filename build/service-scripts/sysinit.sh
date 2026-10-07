@@ -55,6 +55,21 @@ unlock_state() {   # unlock_state DEVICE -> /dev/mapper/kryptik-state
     [ -b /dev/mapper/kryptik-state ]
 }
 
+# The keyboard layout the firmware names, loaded before the first question
+# and named on every console (keyboard.sh): the passphrase is typed under it.
+. /usr/libexec/kryptik/keyboard.sh
+keyboard_at_boot() {
+    want=$(kb_stored) || want=""
+    if [ -n "$want" ] && kb_load "$want" 2>/dev/null; then
+        tell "sysinit: keyboard layout ${want}"
+    else
+        [ ! -e "$KB_VAR" ] || tell "sysinit: the firmware names a keyboard layout this release does not have"
+        kb_load us 2>/dev/null || true
+        tell "sysinit: keyboard layout us"
+    fi
+    return 0
+}
+
 # The kernel mounts devtmpfs (CONFIG_DEVTMPFS_MOUNT=y); stage 2 init may
 # already have mounted the rest.
 mountpoint -q /proc    || mount -t proc  proc  /proc -o nosuid,noexec,nodev
@@ -101,6 +116,8 @@ for word in $(cat /proc/cmdline 2>/dev/null); do
         kryptik.media=*) media="${word#kryptik.media=}" ;;
     esac
 done
+# A medium keeps the kernel's layout; a second run of this script asks nothing.
+[ -n "$media" ] || mountpoint -q /var || keyboard_at_boot
 
 # --- persistent state --------------------------------------------------------
 # The root is read-only; what changes lives on the kryptik-state partition of

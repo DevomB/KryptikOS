@@ -10,6 +10,10 @@ license = "GPL-2.0-or-later"
 [dependencies]
 libc = "0.2"
 
+# Set only by cargo fuzz, which builds main.rs from fuzz/Cargo.toml.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+
 [profile.release]
 opt-level = 2
 lto = true

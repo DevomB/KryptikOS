@@ -122,8 +122,10 @@ fn vanished_sender_withdraws_question() {
     });
 }
 
-/// A group member plants symlinks and a ready "yes" under the pid-counter
-/// names: root must not write through them or believe the answer.
+/// A group member plants names before a question is asked. A symlink at a
+/// temporary's name is a taken name, never a way to its target; and the
+/// question's own name carries a nonce, so a "yes" left under the part of it
+/// that can be guessed (the pid and the counter) is not its answer.
 #[test]
 fn planted_names_are_ignored() {
     use std::os::unix::fs::symlink;
@@ -132,17 +134,30 @@ fn planted_names_are_ignored() {
         std::env::set_var("KRYPTIK_CONSENT_DIR", d);
         std::env::set_var("KRYPTIK_CONSENT_TIMEOUT", "1");
         let _w = hold_watch(d);
-        let victim = std::env::temp_dir().join(format!("kryptik-consent-victim-{}", std::process::id()));
-        std::fs::write(&victim, "precious\n").unwrap();
+        // As place_question opens its temporary: the link's target, which
+        // does not exist, must not be made through it.
+        let target = std::env::temp_dir().join(format!("kryptik-consent-planted-{}", std::process::id()));
+        let _ = std::fs::remove_file(&target);
+        let channel = open_channel(d).unwrap();
+        symlink(&target, d.join("taken.tmp")).unwrap();
+        let opened = open_entry(channel.as_raw_fd(), "taken.tmp", libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL, 0o640);
+        let made = target.exists();
+        let _ = std::fs::remove_file(&target);
+        std::fs::remove_file(d.join("taken.tmp")).unwrap();
+        assert!(!made, "a file was made through a symlink planted at a temporary's name");
+        assert_eq!(opened.err().and_then(|e| e.raw_os_error()), Some(libc::EEXIST), "the planted name was not refused as taken");
+
         let guess = format!("{}-{}", std::process::id(), COUNTER.load(Ordering::SeqCst));
-        symlink(&victim, d.join(format!("{guess}.ask.tmp"))).unwrap();
-        symlink(&victim, d.join(format!("{guess}.tmp"))).unwrap();
-        symlink(&victim, d.join(format!("{guess}.ask"))).unwrap();
         std::fs::write(d.join(format!("{guess}.answer")), "yes\n").unwrap();
+        let dd = d.to_path_buf();
+        let seen = std::thread::spawn(move || wait_for_question(&dd).0);
         let r = ask("dev", "work", "x", 1, &keep);
-        let victim_now = std::fs::read_to_string(&victim).unwrap();
-        let _ = std::fs::remove_file(&victim);
-        assert_eq!(victim_now, "precious\n", "the question was written through a planted symlink");
+        let id = seen.join().unwrap();
+        let parts: Vec<&str> = id.split('-').collect();
+        assert!(
+            parts.len() == 3 && parts[2].len() == 16 && parts[2].bytes().all(|b| b.is_ascii_hexdigit()),
+            "the question's name carries no nonce, so its answer's name can be guessed: {id}"
+        );
         let e = r.unwrap_err();
         assert!(e.contains("no answer"), "a planted answer was believed, or the question was never asked: {e}");
     });

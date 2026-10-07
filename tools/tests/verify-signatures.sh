@@ -667,7 +667,8 @@ fi
 
 # A key id in place of a full fingerprint could be collided, yet would still
 # report as signature-pinned-key.
-PINS="$(awk '/^PINNED_FPRS=\(/{f=1;next} f&&/^\)/{f=0} f' "${ROOT}/tools/verify-signatures.sh"         | grep -oE '"[0-9A-Fa-f]+"' | tr -d '"')"
+PINS="$(awk '/^PINNED_FPRS=\(/{f=1;next} f&&/^\)/{f=0} f' "${ROOT}/tools/verify-signatures.sh" \
+        | grep -oE '"[0-9A-Fa-f]+"' | tr -d '"')"
 
 if [[ -n "$PINS" ]]; then
     green "the pinned-fingerprint list is readable and non-empty"
@@ -675,18 +676,14 @@ else
     red "the pinned-fingerprint list is readable and non-empty"
 fi
 
-badshape="$(printf '%s
-' "$PINS" | grep -vE '^[0-9A-F]{40}$' | tr '
-' ' ')"
+badshape="$(printf '%s\n' "$PINS" | grep -vE '^[0-9A-F]{40}$' | tr '\n' ' ')"
 if [[ -z "${badshape// /}" ]]; then
     green "every pin is a full 40-character uppercase fingerprint"
 else
     red "pins that are not full uppercase fingerprints: ${badshape}"
 fi
 
-dupes="$(printf '%s
-' "$PINS" | sort | uniq -d | tr '
-' ' ')"
+dupes="$(printf '%s\n' "$PINS" | sort | uniq -d | tr '\n' ' ')"
 if [[ -z "${dupes// /}" ]]; then
     green "no fingerprint is pinned twice"
 else
@@ -694,8 +691,8 @@ else
 fi
 
 # Each pin needs a comment saying whose key it is.
-uncommented="$(awk '/^PINNED_FPRS=\(/{f=1;next} f&&/^\)/{f=0} f && /"[0-9A-Fa-f]{40}"/ && $0 !~ /#/'                "${ROOT}/tools/verify-signatures.sh" | tr -d ' "' | tr '
-' ' ')"
+uncommented="$(awk '/^PINNED_FPRS=\(/{f=1;next} f&&/^\)/{f=0} f && /"[0-9A-Fa-f]{40}"/ && $0 !~ /#/' \
+               "${ROOT}/tools/verify-signatures.sh" | tr -d ' "' | tr '\n' ' ')"
 if [[ -z "${uncommented// /}" ]]; then
     green "every pin carries a comment naming whose key it is"
 else
@@ -867,6 +864,36 @@ else
     red "a key that signs two sources is fetched once a run"; show
 fi
 
+# good's key recorded for another source: the row says nothing about good.
+fresh_root
+write_manifest good
+prov_table "${GOODFPR}  korg  file://${PROV}/good.asc  2026-09-11  other  good fixture, recorded for another source"
+runprov --report="${W}/r7.tsv"
+if [[ "$RC" -eq 0 && "$(klass_of "${W}/r7.tsv" good)" == "signature-keyring-key" ]]; then
+    green "a row gives its class only to the sources it names"
+else
+    red "a row gives its class only to the sources it names (exit ${RC}, got $(klass_of "${W}/r7.tsv" good))"; show
+fi
+
+# A row whose published copy cannot be read this run gives no class.
+fresh_root
+write_manifest good
+prov_table "${GOODFPR}  korg  file://${PROV}/missing.asc  2026-09-11  good  good fixture, its published copy gone"
+runprov --report="${W}/r8.tsv"
+if [[ "$RC" -eq 0 && "$(klass_of "${W}/r8.tsv" good)" == "signature-keyring-key" ]] \
+   && grep -qF "not read this run" "${W}/r8.tsv"; then
+    green "a row not read this run gives no class, and the report says so"
+else
+    red "a row not read this run gives no class (exit ${RC}, got $(klass_of "${W}/r8.tsv" good))"; show
+fi
+fresh_root
+runprov --strict
+if [[ "$RC" -ne 0 ]] && grep -qF "published copy at file://${PROV}/missing.asc not read this run" "$OUT"; then
+    green "and --strict counts its source unverifiable"
+else
+    red "and --strict counts its source unverifiable (exit ${RC})"; show
+fi
+
 # --- malformed provenance rows ----------------------------------------------
 
 bad_prov() {  # bad_prov ROW NAME
@@ -922,6 +949,21 @@ bad_prov "${UNKFPR}  github  https://github.com/acct/extra.gpg  2026-09-11  unkn
 bad_prov "${UNKFPR}  github  https://github.com/acct.gpg  2026-09-11  unknown  just a uid, no tie recorded" \
          "a github row with no recorded release author is refused"
 
+# --- the forge-published kind ---------------------------------------------------
+fresh_root
+write_manifest unknown
+prov_table "${UNKFPR}  savannah  file://${PROV}/unknown.asc  2026-09-11  unknown  unknown fixture <unknown@example.test>"
+runprov --report="${W}/s1.tsv"
+if [[ "$(klass_of "${W}/s1.tsv" unknown)" == "signature-savannah-published-key" ]]; then
+    green "a savannah row classes the signature as published by the project's forge"
+else
+    red "expected signature-savannah-published-key, got $(klass_of "${W}/s1.tsv" unknown)"; show
+fi
+bad_prov "${UNKFPR}  savannah  https://savannah.example/project/release-gpgkeys.php?group=x&download=1  2026-09-11  unknown  x" \
+         "a savannah locator on another host is refused"
+bad_prov "${UNKFPR}  savannah  https://savannah.gnu.org/project/memberlist.php?group=x  2026-09-11  unknown  x" \
+         "a savannah locator that is not the project's release keyring is refused"
+
 # Shipped github rows need both the endpoint shape and the release-author tie.
 gh_bad=0
 while read -r _fpr kind loc _ret _signs rest; do
@@ -954,10 +996,13 @@ if [[ -n "$PINS_T" ]] && [[ -z "$(printf '%s\n' "$PINS_T" | grep -vE '^[0-9A-F]{
 else
     red "the shipped provenance table has a malformed fingerprint column"
 fi
-if [[ -z "$(printf '%s\n' "$PINS_T" | sort | uniq -d)" ]]; then
-    green "no fingerprint appears twice in the shipped table"
+# A key may have a row per project; a key and source in two rows would be ambiguous.
+PAIRS_T="$(awk '/^# fingerprint/{f=1;next} f&&/^[0-9A-F]{40}/{n=split($5,s,",");for(i=1;i<=n;i++)print $1" "s[i]}' \
+           "${ROOT}/tools/key-provenance.tsv")"
+if [[ -z "$(printf '%s\n' "$PAIRS_T" | sort | uniq -d)" ]]; then
+    green "no key and source appear in two rows of the shipped table"
 else
-    red "duplicated fingerprints: $(printf '%s\n' "$PINS_T" | sort | uniq -d | tr '\n' ' ')"
+    red "a key and source in two rows: $(printf '%s\n' "$PAIRS_T" | sort | uniq -d | tr '\n' ' ')"
 fi
 
 fresh_root

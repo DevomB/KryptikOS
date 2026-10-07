@@ -103,7 +103,13 @@ jobs:
 
       - name: No CRLF in scripts
         run: |
-          if grep -rlU $'\r' --include='*.sh' --include='Makefile' . ; then
+          # By name or by shebang: tools/kryptik and the run files have no extension.
+          git ls-files | while IFS= read -r f; do
+            case "$f" in *.sh|*.rs|*.py|Makefile|*/Makefile) ;; *) [ "$(head -c 2 "$f" 2>/dev/null)" = '#!' ] || continue ;; esac
+            if grep -qU $'\r' "$f"; then echo "$f"; fi
+          done > /tmp/crlf
+          if [ -s /tmp/crlf ]; then
+            cat /tmp/crlf
             echo "CRLF found - scripts will fail on Linux with 'bad interpreter'"
             exit 1
           fi

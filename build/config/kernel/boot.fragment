@@ -109,7 +109,7 @@ CONFIG_E1000E=m
 # --- real hardware ---
 # Storage controllers a root can sit on, and USB host controllers (a root on a
 # stick, the keyboard), are built in, or the kernel waits for a disk it cannot
-# see; the rest are modules. Not yet booted on physical hardware.
+# see; the rest are modules.
 CONFIG_BLK_DEV_NVME=y
 CONFIG_MEGARAID_SAS=y
 CONFIG_SCSI_MPT3SAS=y

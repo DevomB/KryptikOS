@@ -11,7 +11,8 @@
 //!              wifi-add, `ssid <ssid>`, `psk <passphrase>`, `end`
 //!              wifi-forget, `ssid <ssid>`, `end`
 //!              stop <zone> | clipboard-move <from> <to> | info <zone> | status |
-//!              runtime | wifi-list | update-status | update-fetch | update-apply
+//!              runtime | wifi-list | update-status | update-fetch | update-apply |
+//!              update-auto on|off
 //!   reply    ok ...\n  |  error: <why>\n  |  lines ... end\n
 //!
 //! `run` replies `ok <launcher pid>` once the zone's pid 1 exists and the
@@ -562,12 +563,7 @@ fn spawn_launcher(
     args.extend(req.argv.iter().cloned());
 
     let log = cfg.log_dir.join(format!("zone-{}.log", req.zone));
-    let logf = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(&log)
-        .map_err(|e| format!("{}: {e}", log.display()))?;
+    let logf = open_zone_log(&log)?;
     let cexe = CString::new(exe.display().to_string()).map_err(|_| "NUL in exe path".to_string())?;
     let cargs: Vec<CString> = std::iter::once(CString::new("kryptikd").unwrap())
         .chain(args.iter().map(|a| CString::new(a.as_str()).unwrap_or_else(|_| CString::new("?").unwrap())))
@@ -616,6 +612,29 @@ fn spawn_launcher(
     Ok(Launch { pid, ready: ready_r, log })
 }
 
+/// A zone's log past this size starts again at its next launch.
+const ZONE_LOG_KEEP: u64 = 8 << 20;
+
+/// Open a zone's log for a launch. Each launch adds a bounded amount
+/// (spawn.rs, ZoneOutput) and nothing else trims the file, so past
+/// ZONE_LOG_KEEP it becomes `.old`, replacing the one before, and a new file
+/// starts: a zone keeps two files of that size and a launch's worth each.
+fn open_zone_log(log: &Path) -> Result<std::fs::File, String> {
+    if std::fs::symlink_metadata(log).map(|m| m.len() > ZONE_LOG_KEEP).unwrap_or(false) {
+        let mut old = log.as_os_str().to_owned();
+        old.push(".old");
+        let _ = std::fs::rename(log, old);
+    }
+    // Never through a link at the name, as last_log_line reads it.
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(log)
+        .map_err(|e| format!("{}: {e}", log.display()))
+}
+
 /// The launcher's last log line, printable and bounded, for an error reply.
 fn last_log_line(log: &Path) -> String {
     // Zone output can make the log any size and any bytes: read only the last 8 KiB.
@@ -634,6 +653,12 @@ fn last_log_line(log: &Path) -> String {
         out.push_str("...");
     }
     out
+}
+
+/// Whether a failed apply found a staged file that is not the one its manifest
+/// signs: kryptik-update's two refusals for that.
+fn spoiled(why: &str) -> bool {
+    why.contains("sha256 does not match the manifest") || why.contains("truncated or altered")
 }
 
 fn exit_text(status: i32) -> String {
@@ -745,8 +770,16 @@ fn finish_job(j: &mut Job, st: i32) {
         }
         JobKind::UpdateApply => {
             let why = why(j, "kryptik-update apply failed");
-            eprintln!("kryptikd serve: update-apply failed: {why}");
-            reply(&j.conn, &format!("error: {why}\n"));
+            /* A staged file that is not what the manifest signs can never be
+             * applied, and by its size the stage reads as complete for good:
+             * discarded, the release is named again at the net zone's next poll. */
+            let again = if spoiled(&why) && crate::update::discard_stage(Path::new(crate::update::STATE_DIR)) {
+                "; what had arrived was discarded and will be fetched again"
+            } else {
+                ""
+            };
+            eprintln!("kryptikd serve: update-apply failed: {why}{again}");
+            reply(&j.conn, &format!("error: {why}{again}\n"));
         }
     }
 }
@@ -1043,13 +1076,15 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
                 Err((conn, e)) => reply(&conn, &format!("error: {e}\n")),
             }
         }
-        /* The user's side of the update channel (update.rs). Until `fetch` the
-         * net zone is told `idle`; `apply` hands the stage to kryptik-update,
-         * which verifies it all again before writing a slot. */
-        "update-status" | "update-fetch" | "update-apply" => {
+        /* The user's side of the update channel (update.rs). Until `fetch`, or
+         * with `auto on` a newer statement, the net zone is told `idle`;
+         * `apply` hands the stage to kryptik-update, which verifies it all
+         * again before writing a slot. */
+        "update-status" | "update-fetch" | "update-apply" | "update-auto" => {
             use crate::update as up;
             let dir = std::path::Path::new(up::STATE_DIR);
             let running = up::running_version();
+            let mut said = verb.to_string();
             let done = match verb {
                 "update-status" => {
                     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
@@ -1060,6 +1095,25 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
                     up::required_role()
                         .and_then(|role| up::want(dir, up::channel_from(&conf).as_deref(), &role, &running))
                         .map(|v| format!("{v} will be fetched when the net zone next asks; `kryptik update status` shows it arriving\n"))
+                }
+                "update-auto" => {
+                    let on = match first.split_whitespace().collect::<Vec<_>>().as_slice() {
+                        [_, "on"] => true,
+                        [_, "off"] => false,
+                        _ => {
+                            reply(&conn, "error: update-auto takes on or off\n");
+                            return None;
+                        }
+                    };
+                    said = format!("{verb} {}", if on { "on" } else { "off" });
+                    let conf = std::fs::read_to_string(up::CONF).unwrap_or_default();
+                    up::set_auto(dir, on, up::channel_from(&conf).as_deref()).map(|()| {
+                        if on {
+                            "automatic fetching is on: each newer release is fetched as it is announced, and waits for `kryptik update apply`\n".to_string()
+                        } else {
+                            "automatic fetching is off: a release is fetched only when you ask (`kryptik update fetch`)\n".to_string()
+                        }
+                    })
                 }
                 _ => {
                     // Started, not waited for; one at a time.
@@ -1083,7 +1137,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
             };
             match done {
                 Ok(text) => {
-                    eprintln!("kryptikd serve: {verb}");
+                    eprintln!("kryptikd serve: {said}");
                     reply(&conn, &format!("ok\n{text}"));
                 }
                 Err(e) => reply(&conn, &format!("error: {e}\n")),
