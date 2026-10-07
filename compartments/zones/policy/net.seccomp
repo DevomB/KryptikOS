@@ -1,11 +1,7 @@
-# net: the only zone on a real interface. Its DHCP client and the bridge/NAT
-# rules for routed zones (docs/design/net-zone.md) need raw frames, netfilter
-# netlink and both network capabilities, all within its own network namespace.
-# Directives: docs/design/zone-policy-files.md.
+# net: its DHCP client and the routed zones' bridge and NAT need these, within its own netns.
 allow-socket AF_PACKET
 allow-netlink NETLINK_NETFILTER
 keep-capability CAP_NET_ADMIN
 keep-capability CAP_NET_RAW
-# dhcpcd opens a NETLINK_GENERIC socket at start (nl80211 events) and exits
-# if refused, leaving routed zones without an uplink.
+# dhcpcd exits if refused NETLINK_GENERIC (nl80211 events), leaving routed zones no uplink.
 allow-netlink NETLINK_GENERIC
