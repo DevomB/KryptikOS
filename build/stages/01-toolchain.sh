@@ -123,7 +123,8 @@ s_linux_headers() {
 
     if [[ -f "${LFS}/usr/include/linux/version.h" ]]; then
         echo "installed kernel headers:"
-        grep -E "LINUX_VERSION_(MAJOR|PATCHLEVEL|SUBLEVEL)"             "${LFS}/usr/include/linux/version.h" || true
+        grep -E "LINUX_VERSION_(MAJOR|PATCHLEVEL|SUBLEVEL)" \
+             "${LFS}/usr/include/linux/version.h" || true
     fi
 }
 

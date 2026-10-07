@@ -37,7 +37,7 @@ s_firmware() {
                 fi
             done | sort -t "$(printf '\t')" -k1,1 -k2,2nr | awk -F '\t' -v k="$keep" '{ if (++c[$1] <= k) print $3 }')"
         fi
-        n="$(printf '%s\n' "$matches" | grep -c .)"
+        n="$(printf '%s\n' "$matches" | grep -c . || true)"
         if [[ "$n" -eq 0 ]]; then
             echo "  MISSING  ${pattern}: matches nothing in linux-firmware-${V_LINUX_FIRMWARE}"
             missing=$((missing + 1))

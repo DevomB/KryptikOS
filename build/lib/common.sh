@@ -132,8 +132,8 @@ require_inside_chroot() {
   make ${2:-system}
 
 mounts the chroot, runs this stage in it and unmounts again, escalating only
-for the mount and the chroot call themselves. Set KRYPTIK_ALLOW_UNCHROOTED=1
-only if you know exactly why."
+for the mount and the chroot call themselves. KRYPTIK_ALLOW_UNCHROOTED=1
+skips this check."
 }
 
 require_linux() {
@@ -200,8 +200,7 @@ stage_depends_on() {
     [[ -f "$stamp" ]] || die "${name}: the stage this one builds on has not completed.
 No stamp at ${stamp}. Finish that stage first."
     fp="$(_stamp_read "$stamp")"
-    [[ -n "$fp" ]] || die "${stamp} carries no fingerprint. Rebuild that stage under the
-current harness before building on it."
+    [[ -n "$fp" ]] || die "${stamp} carries no fingerprint; rebuild that stage before building on it."
     STAMP_DEPS="${STAMP_DEPS}stage:${prefix}${name}=${fp};"
 }
 
@@ -403,18 +402,12 @@ _stamp_stale() {
         local archive="${STAMPS}/legacy"
         mkdir -p "$archive"
         mv -f "$stamp" "${archive}/$(basename "$stamp")"
-        warn "${name}: stamp carries no fingerprint - it predates this harness,"
-        warn "${name}: which means it was written by the step() that recorded"
-        warn "${name}: FAILED builds as successful. It proves nothing."
-        warn "${name}: archived to ${archive}/ and rebuilding."
+        warn "${name}: stamp carries no fingerprint, so it proves nothing; archived to ${archive}/, rebuilding"
         return 0
     fi
 
-    local reason="records a different fingerprint than the current inputs.
-One of: the recipe or a helper it calls, an in-repository patch set it applies,
-versions.env, the hardening flags, sources.lock, the compiler in use, an
-earlier step in this stage, or a stage this one builds on has changed since
-${name} was built."
+    local reason="records a different fingerprint than the current inputs: its recipe or a helper,
+a patch set, versions.env, the flags, sources.lock, the compiler or an earlier step or stage changed."
 
     case "${KRYPTIK_STALE:-refuse}" in
         rebuild)
@@ -425,15 +418,10 @@ ${name} was built."
             ;;
         *)
             err "${name}: stamp ${reason}"
-            die "Refusing to resume onto changed inputs.
-
-A stamped step whose inputs moved leaves a sysroot built from two different
-configurations, and nothing downstream can tell. Choose deliberately:
+            die "Refusing to resume onto changed inputs: the sysroot would mix two configurations.
 
   KRYPTIK_STALE=rebuild <command>   rebuild only the affected steps
-  make reset-stamps                 archive every stamp and start clean
-                                    (archives under .stamps/legacy, never
-                                     deletes)
+  make reset-stamps                 archive every stamp under .stamps/legacy and start clean
 
 Stamp: ${stamp}"
             ;;
