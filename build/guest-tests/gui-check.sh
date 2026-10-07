@@ -8,7 +8,7 @@
 #   GT KEY-FULLSCREEN, GT KEY-FULLSCREEN-AGAIN      press Alt+e (fullscreen, then back)
 #   GT KEY-FOCUS-CHILD, GT KEY-FOCUS-PARENT,
 #   GT KEY-FOCUS-BELOW, GT KEY-FOCUS-LATE            press Alt+j
-#   GT KEY-ZOOM-BELOW                               press Alt+Return (zoom)
+#   GT KEY-ZOOM-BELOW, GT KEY-ZOOM-AGAIN            press Alt+Return (zoom)
 #   GT KEY-PARENT-FULLSCREEN, GT KEY-LATE-FULLSCREEN press Alt+e
 #   GT KEY-MENU                                     press Alt+p (the chrome menu)
 #   GT CONSENT-CODE 1 NN                            type NN and Enter (the question's code)
@@ -166,6 +166,12 @@ child_entries() { since_mark child untrusted | grep -c 'keyboard entered the chi
 echo "GT KEY-ZOOM-BELOW"
 sleep 3
 [[ "$(child_entries)" -eq 1 ]] && focus_is child-parent 1 && pass "zoom-keeps-keyboard" "Alt+Return left the keyboard on the fullscreen window" || fail "zoom-keeps-keyboard" "$(since_mark child untrusted | grep keyboard | tail -2 | tr '\n' ' '); focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+# Twice: dwl's zoom moves the window it finds to the front of its list, and
+# only from the front does the old search pass the fullscreen window and
+# land on the hidden child.
+echo "GT KEY-ZOOM-AGAIN"
+sleep 3
+[[ "$(child_entries)" -eq 1 ]] && focus_is child-parent 1 && pass "zoom-twice-keeps-keyboard" "a second Alt+Return left it there too" || fail "zoom-twice-keeps-keyboard" "$(since_mark child untrusted | grep keyboard | tail -2 | tr '\n' ' '); focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
 # A zone 0 window opened over the fullscreen zone window ends that fullscreen
 # and takes the keyboard, as a passphrase prompt must.
 as_user "/usr/libexec/kryptik/wlprobe oversize 0 8 over-fullscreen" > "$LOG/zone0-over.out" 2>&1 &
