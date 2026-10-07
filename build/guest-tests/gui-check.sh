@@ -8,8 +8,8 @@
 #   GT KEY-FULLSCREEN, GT KEY-FULLSCREEN-AGAIN      press Alt+e (fullscreen, then back)
 #   GT KEY-FOCUS-CHILD, GT KEY-FOCUS-PARENT,
 #   GT KEY-FOCUS-BELOW, GT KEY-FOCUS-LATE            press Alt+j
-#   GT KEY-PARENT-FULLSCREEN, GT KEY-PARENT-WINDOWED,
-#   GT KEY-LATE-FULLSCREEN                          press Alt+e
+#   GT KEY-ZOOM-BELOW                               press Alt+Return (zoom)
+#   GT KEY-PARENT-FULLSCREEN, GT KEY-LATE-FULLSCREEN press Alt+e
 #   GT KEY-MENU                                     press Alt+p (the chrome menu)
 #   GT CONSENT-CODE 1 NN                            type NN and Enter (the question's code)
 #   GT CONSENT-WAIT 2                               type y and Enter (not the code: refused)
@@ -155,12 +155,29 @@ wait_for 10 focus_is child-parent 1 && pass "parent-fullscreen" || fail "parent-
 echo "GT KEY-FOCUS-BELOW"
 sleep 3
 if focus_is child-parent 1; then
-    pass "fullscreen-keeps-focus" "Alt+j left the focus on the fullscreen window"
+    pass "fullscreen-keeps-focus" "Alt+j left the record on the fullscreen window"
 else
-    fail "fullscreen-keeps-focus" "Alt+j moved the focus to a hidden window: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+    fail "fullscreen-keeps-focus" "Alt+j moved the record to a hidden window: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
 fi
-echo "GT KEY-PARENT-WINDOWED"
-wait_for 10 focus_is child-parent 0 && pass "parent-windowed-again" || fail "parent-windowed-again" "$(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+# The record names the window the compositor believes on top, which is never
+# a covered one; the probe's wl_keyboard events say where the keys go.
+child_entries() { since_mark child untrusted | grep -c 'keyboard entered the child'; }
+[[ "$(child_entries)" -eq 1 ]] && pass "keyboard-stays-on-fullscreen" "the child saw the keyboard once, before its parent went fullscreen" || fail "keyboard-stays-on-fullscreen" "the hidden child got the keyboard: $(since_mark child untrusted | grep keyboard | tr '\n' ' ')"
+echo "GT KEY-ZOOM-BELOW"
+sleep 3
+[[ "$(child_entries)" -eq 1 ]] && focus_is child-parent 1 && pass "zoom-keeps-keyboard" "Alt+Return left the keyboard on the fullscreen window" || fail "zoom-keeps-keyboard" "$(since_mark child untrusted | grep keyboard | tail -2 | tr '\n' ' '); focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+# A zone 0 window opened over the fullscreen zone window ends that fullscreen
+# and takes the keyboard, as a passphrase prompt must.
+as_user "/usr/libexec/kryptik/wlprobe oversize 0 8 over-fullscreen" > "$LOG/zone0-over.out" 2>&1 &
+over_pid=$!
+if wait_for 15 grep -q 'keyboard entered the window' "$LOG/zone0-over.out" && wait_for 10 grep -q '^title=over-fullscreen' "$RT/kryptik/focus"; then
+    pass "zone0-over-fullscreen-gets-keyboard" "$(tr '\n' ' ' < "$RT/kryptik/focus")"
+else
+    fail "zone0-over-fullscreen-gets-keyboard" "zone 0's window: $(grep -E 'keyboard|committed' "$LOG/zone0-over.out" | tail -3 | tr '\n' ' '); focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+fi
+parent_windowed() { since_mark child untrusted | sed -n '/configure (fullscreen)/,$p' | grep committed | grep -v child | grep -qv '(fullscreen)'; }
+wait_for 10 parent_windowed && pass "zone0-window-ends-fullscreen" "the parent's next configure was not fullscreen" || fail "zone0-window-ends-fullscreen" "$(since_mark child untrusted | grep committed | tail -3 | tr '\n' ' ')"
+wait "$over_pid" 2>/dev/null
 wait_for 60 zone_gone
 # A child that maps under its fullscreen parent ends the fullscreen: the
 # zone cannot have it drawn above the bar, so both are shown tiled instead.

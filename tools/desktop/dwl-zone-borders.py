@@ -291,9 +291,10 @@ applyrules(Client *c)
 \tsetfullscreen(c, client_wants_fullscreen(c));
 """,
      """\tClient *c = wl_container_of(listener, c, fullscreen);
-\t/* Kryptik: a zone window goes fullscreen only by the user's key. */
-\tsetfullscreen(c, client_wants_fullscreen(c)
-\t\t\t&& (c->zoneborder == unzonedcolor || c->isfullscreen));
+\t/* Kryptik: a zone window goes fullscreen only by the user's key, and zone
+\t * 0's only while it has the focus, so it never covers the focused window. */
+\tsetfullscreen(c, client_wants_fullscreen(c) && (c->isfullscreen
+\t\t\t|| (c->zoneborder == unzonedcolor && c->mon && c == focustop(c->mon))));
 """),
     # The bar, defined before setfullscreen, its first caller.
     ("""void
@@ -343,19 +344,39 @@ setfullscreen(Client *c, int fullscreen)
     # the tile layer), so it ends that fullscreen; zone 0's child follows its
     # parent up, as dwl has it. A zone mapping must not cancel another zone's
     # fullscreen either.
+    ("""\tMonitor *m;
+\tint i;
+
+\t/* Create scene tree for this client and its border */
+""",
+     """\tMonitor *m;
+\tint i, refocus = 0;
+
+\t/* Create scene tree for this client and its border */
+"""),
     ("""\t\tif (w != c && w != p && w->isfullscreen && m == w->mon && (w->tags & c->tags))
 \t\t\tsetfullscreen(w, 0);
+\t}
+}
 """,
      """\t\tif (w != c && (w != p || w->zoneborder != unzonedcolor) && w->isfullscreen && m == w->mon && (w->tags & c->tags)
-\t\t\t\t&& (c->zoneborder == unzonedcolor || w->zoneborder == c->zoneborder))
+\t\t\t\t&& (c->zoneborder == unzonedcolor || w->zoneborder == c->zoneborder)) {
 \t\t\tsetfullscreen(w, 0);
+\t\t\trefocus = 1;
+\t\t}
+\t}
+\t/* Kryptik: the focus was chosen above while the fullscreen window still
+\t * covered the new one; shown now, it may take the keyboard. */
+\tif (refocus)
+\t\tfocusclient(focustop(selmon), 1);
+}
 """),
     # A fullscreen window covers the tile and float layers, so while one shows
-    # only its own layer is on screen. The focus never walks to what is hidden:
-    # focustop and focusstack skip covered windows. Defined before focusstack,
-    # the first of the two.
+    # only its own layer is on screen. The keyboard never goes to what is
+    # hidden: focusclient redirects it, and focustop, focusstack and zoom skip
+    # covered windows. Defined before focusclient, the first user.
     ("""void
-focusstack(const Arg *arg)
+focusclient(Client *c, int lift)
 {
 """,
      """/* Kryptik: with a fullscreen window on the monitor, a window in any other
@@ -367,14 +388,39 @@ covered(Client *c, Monitor *m)
 \tif (c->scene->node.parent == layers[LyrFS])
 \t\treturn 0;
 \twl_list_for_each(w, &clients, link)
-\t\tif (w != c && VISIBLEON(w, m) && w->scene->node.parent == layers[LyrFS])
+\t\tif (w != c && VISIBLEON(w, m) && w->isfullscreen && w->scene->node.parent == layers[LyrFS])
 \t\t\treturn 1;
 \treturn 0;
 }
 
 void
-focusstack(const Arg *arg)
+focusclient(Client *c, int lift)
 {
+"""),
+    ("""\tLayerSurface *old_l = NULL;
+
+\tif (locked)
+\t\treturn;
+
+\t/* Raise client in stacking order if requested */
+""",
+     """\tLayerSurface *old_l = NULL;
+
+\tif (locked)
+\t\treturn;
+\t/* Kryptik: a window hidden under a fullscreen one never takes the keyboard. */
+\tif (c && c->mon && covered(c, c->mon))
+\t\tc = focustop(c->mon);
+
+\t/* Raise client in stacking order if requested */
+"""),
+    ("""\t\tif (VISIBLEON(c, selmon) && !c->isfloating) {
+\t\t\tif (c != sel)
+\t\t\t\tbreak;
+""",
+     """\t\tif (VISIBLEON(c, selmon) && !c->isfloating && !covered(c, selmon)) {
+\t\t\tif (c != sel)
+\t\t\t\tbreak;
 """),
     ("""\tif (arg->i > 0) {
 \t\twl_list_for_each(c, &sel->link, link) {

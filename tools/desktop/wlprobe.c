@@ -18,6 +18,8 @@
  *                             as oversize 0, and once drawn map a second window
  *                             that is a child of the first; with late, only
  *                             once the first's configure was fullscreen
+ *   Every held window prints "keyboard entered|left the window|the child"
+ *   as wl_keyboard reports it: where the keys go, not what a record says.
  *   wlprobe charge            map one unwritten 4 MiB shmem buffer for 10 s;
  *                             compare zone and compositor cgroup memory.current
  *   wlprobe cursor SECONDS    as oversize 0, and when the pointer enters, set a
@@ -217,6 +219,7 @@ static void open_child(void)
  * else draws. */
 static const uint32_t cursor_rgb = 0x13f7a5;
 static uint32_t seat_id, pointer_id, cursor_surf;
+static uint32_t keyboard_id;                 /* every held window says where the keyboard is */
 static int cursor;
 
 /* On every entry, as a client does; the image is made on the first. */
@@ -323,6 +326,11 @@ static int handle_one(void)
 		/* wl_surface.enter(output) */
 		printf("%s entered an output\n", object == SURFACE ? "the window" : "the cursor image");
 		fflush(stdout);
+	} else if (keyboard_id && object == keyboard_id && (opcode == 1 || opcode == 2)) {
+		uint32_t s = get32(body + 4);          /* wl_keyboard.enter|leave(serial, surface, ...) */
+		printf("keyboard %s %s\n", opcode == 1 ? "entered" : "left",
+			s == SURFACE ? "the window" : (csurface && s == csurface) ? "the child" : "another surface");
+		fflush(stdout);
 	} else if (!oversize) {
 		printf("event object=%u opcode=%u size=%u\n", object, opcode, size);
 	}
@@ -388,6 +396,15 @@ static int hold_oversize(int more, int seconds, const char *title)
 		 * compositor takes it. */
 		if (bind_global("wl_output", next_id++)) return 1;
 	}
+	/* Where the keyboard is, as the compositor tells it: the record the chrome
+	 * writes names the window it believes on top, not always the same one. */
+	if (!seat_id) {
+		seat_id = next_id++;
+		if (bind_global("wl_seat", seat_id)) return 1;
+	}
+	keyboard_id = next_id++;
+	put32(b, keyboard_id);
+	send_msg(seat_id, 1, b, 4);                /* wl_seat.get_keyboard */
 	send_msg(SURFACE, 6, b, 0);                /* wl_surface.commit: ask for a configure */
 	time_t end = time(NULL) + seconds;
 	while (time(NULL) < end && !closed) {
