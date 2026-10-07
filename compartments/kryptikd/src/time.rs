@@ -389,6 +389,20 @@ pub fn consider(
     state.last_claim = Some(now);
     let know = Knowledge { now, floor, bound, moved_unasked: state.moved_unasked };
     let decision = decide(&know, claim);
+    /* Counted before it is believed or asked: the claim's time, as the clock
+     * will read after a step, and what it adds to the unasked sum. Unwritten,
+     * the next claim would meet neither the interval nor the bound. */
+    if matches!(decision, Decision::Slew { .. } | Decision::Step { .. } | Decision::Ask { .. }) {
+        let ahead = State {
+            moved_unasked: moved_after(&know, claim, &decision, false),
+            last_claim: Some(if let Decision::Step { to } = &decision { *to } else { now }),
+        };
+        if let Err(e) = save_state(dir, &ahead) {
+            let out = Outcome::Refused(format!("the clock's state could not be saved, so no claim is believed: {e}"));
+            record(dir, now, &format!("{} offset={:+.6} sources={}", out.reply(), claim.offset, claim.sources));
+            return out;
+        }
+    }
     let mut consented = false;
     let outcome = match &decision {
         Decision::Ignore => Outcome::Ignored,
@@ -443,9 +457,14 @@ pub fn clamp(clock: &mut dyn Clock, dir: &Path, floor: Option<i64>) -> Result<St
     let mut state = load_state(dir);
     // The floor anchors the clock, as consent does.
     state.moved_unasked = 0.0;
-    let _ = save_state(dir, &state);
+    let saved = save_state(dir, &state);
     record(dir, to, &format!("set to the floor: the clock read {}", format_utc(now)));
-    Ok(format!("the clock read {}, before the floor; set to {}", format_utc(now), format_utc(to)))
+    let said = format!("the clock read {}, before the floor; set to {}", format_utc(now), format_utc(to));
+    match saved {
+        Ok(()) => Ok(said),
+        // Unsaved, the unasked sum stays what it was: more is asked, not less.
+        Err(e) => Ok(format!("{said}; the clock's state could not be saved: {e}")),
+    }
 }
 
 /// `kryptikd time committed DIR`, from boot-success once it has committed the

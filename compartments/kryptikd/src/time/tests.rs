@@ -132,6 +132,70 @@ fn refused_without_floor_or_permission() {
 }
 
 #[test]
+fn unwritable_state_believes_nothing() {
+    // Under a regular file nothing can be created, by root either.
+    let base = scratch("unwritable");
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::write(base.join("file"), b"").unwrap();
+    let dir = base.join("file").join("time");
+    let mut clock = FakeClock::at(BUILT as f64 + 1e6);
+    let mut asked = 0;
+    // A step, a slew and one past the bound, claim after claim: no interval
+    // and no sum could be kept, so none is believed and nobody is asked.
+    for offset in [1800.0, 0.5, 9e6, 1800.0] {
+        let out = consider(&mut clock, &dir, Some(BUILT), 3600, &Claim { offset, sources: 3 }, &mut |_: &str, _: &str, _: u8| {
+            asked += 1;
+            Ok(())
+        });
+        assert!(matches!(&out, Outcome::Refused(w) if w.contains("could not be saved")), "{offset}: {out:?}");
+    }
+    assert_eq!((clock.steps.len(), clock.slews.len(), clock.rtc_syncs, asked), (0, 0, 0, 0));
+    // The floor still holds at boot, and the unsaved state is said.
+    let mut dead = FakeClock::at(946_684_800.0);
+    let said = clamp(&mut dead, &dir, Some(BUILT)).unwrap();
+    assert!(said.contains("set to 2026-09-19 18:11 UTC") && said.contains("could not be saved"), "{said}");
+    assert_eq!(dead.steps, vec![BUILT as f64]);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A clock that, when set, notes what the saved state already says.
+struct Witness {
+    t: f64,
+    dir: std::path::PathBuf,
+    saw: Vec<(f64, Option<f64>)>,
+}
+impl Clock for Witness {
+    fn now(&self) -> f64 {
+        self.t
+    }
+    fn step(&mut self, to: f64) -> io::Result<()> {
+        let s = load_state(&self.dir);
+        self.saw.push((s.moved_unasked, s.last_claim));
+        self.t = to;
+        Ok(())
+    }
+    fn slew(&mut self, _: f64) -> io::Result<()> {
+        Ok(())
+    }
+    fn sync_rtc(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn claim_counted_before_clock_moves() {
+    let dir = scratch("ahead");
+    let start = BUILT as f64 + 1e6;
+    let mut clock = Witness { t: start, dir: dir.clone(), saw: vec![] };
+    let out = consider(&mut clock, &dir, Some(BUILT), 3600, &Claim { offset: 1200.0, sources: 2 }, &mut nobody);
+    assert_eq!(out, Outcome::Stepped);
+    // When the clock was set, the sum and the claim's time, as the clock reads
+    // after the step, were on disk already.
+    assert_eq!(clock.saw, vec![(1200.0, Some(start + 1200.0))]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn clamp_raises_dead_clock_to_floor() {
     let dir = scratch("clamp");
     let mut dead = FakeClock::at(946_684_800.0);
