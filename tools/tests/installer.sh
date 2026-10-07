@@ -84,8 +84,7 @@ grep -q 'testctl_get install_replace' "$RUNNER" \
 
 echo
 echo "-- the runner reports the installer's exit status, not something else's"
-# After `cmd | sed`, $? is sed's. Match a call at the start of a line, not the
-# word: comments and kryptik-install.json are not calls.
+# After `cmd | sed`, $? is sed's. A call starts its line, unlike comments or kryptik-install.json.
 piped="$(grep -nE '^[[:space:]]*(/usr/sbin/)?kryptik-install[^|#]*\|' "$RUNNER" || true)"
 if [[ -n "$piped" ]]; then
     red "the installer is still piped; rc would be the pipeline's last element"
