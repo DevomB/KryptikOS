@@ -76,10 +76,11 @@ work in zones from a terminal and a text browser, and keep it up to date.
       Stage 06 publishes each build with it, and the update suite fetches,
       stages, applies and commits the release from that channel over the
       test network. When no statement has come for 30 days, whether the
-      newest went old or none came since the install, the login prompt and
-      the launcher say so, and for an old one `kryptik update status`: the
-      update suite moves the clock to read the prompt and status, and the
-      desktop suite sets up both of the launcher's lines.
+      newest went old or none came since the install, the login prompt, the
+      launcher and `kryptik update status` say so: the update suite moves
+      the clock to read the prompt for both and status for an old one, the
+      desktop suite sets up both of the launcher's lines, and kryptikd's
+      unit tests hold status for an install that heard none.
 - [x] **An encrypted state partition** ([design](design/state-encryption.md)).
       The install suite finds it is LUKS, asked for at boot and mounted on
       `/var`; the state suite boots degraded and says why when it is
@@ -109,9 +110,9 @@ work in zones from a terminal and a text browser, and keep it up to date.
       takes a cookie, since root can turn SMT back on through
       `/sys/devices/system/cpu/smt/control`.
 - [x] **The net zone's remaining hardening.** Decided, with the reasons, in
-      the [net zone design](design/net-zone.md). Three ways to narrow what it
-      still reaches in the kernel are proposed to the owner in
-      [net zone surface](design/net-zone-surface.md).
+      the [net zone design](design/net-zone.md).
+      [Net zone surface](design/net-zone-surface.md) weighs three ways to
+      narrow what it still reaches in the kernel.
 - [x] **Someone else has attacked it.** The broker protocol and
       `kryptik-wlproxy`'s wire parser are fuzzed in the unit suites with a
       corpus in the tree ([broker design](design/broker.md)). kryptikd's
@@ -163,8 +164,8 @@ work in zones from a terminal and a text browser, and keep it up to date.
       sysctls as applied.
 - [x] **Signatures as a gate.** `tools/verify-signatures.sh --strict` runs
       on every push in CI's source-manifest job. Every key has a published
-      route to its fingerprint (`tools/key-provenance.tsv`), except ten no
-      publisher states (elfutils, file, flex, libevdev, libmnl, lvm2,
+      route to its fingerprint (`tools/key-provenance.tsv`), except ten that
+      have no usable key (elfutils, file, flex, libevdev, libmnl, lvm2,
       wpa_supplicant, xkeyboard-config, zlib, zstd), which
       `tools/source-notes.tsv` accepts with the routes that were tried; a
       note left after its key is held fails the gate.
