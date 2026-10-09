@@ -255,8 +255,8 @@ pub fn plumb_nic_zone(zone: &Zone, zone_ns: i32, zones_dir: &Path) -> Result<(),
     Ok(())
 }
 
-/// Attach every running routed zone to the nic zone in `nic_ns`, one result per zone. A zone keeps
-/// its resolv.conf, so one started before any gateway has no resolver until it restarts.
+/// Attach every running routed zone to the nic zone in `nic_ns`, one result per zone. Each names
+/// the bridge's resolver from its start, so one started before any gateway resolves once attached.
 pub fn replumb_routed_zones(zones_dir: &Path, nic_ns: i32) -> Vec<(String, Result<(), NetError>)> {
     let mut out = Vec::new();
     for name in registry::names() {

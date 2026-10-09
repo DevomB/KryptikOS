@@ -182,9 +182,11 @@ its definition says `[network] local = true`.
 ## DNS
 
 kryptikd writes each routed zone's `/etc/resolv.conf` as
-`nameserver 10.19.0.1` and `nameserver fd19::1` (`rootfs.rs`). Offline zones,
-and routed zones started while no net zone ran, get none. The net zone's own
-`resolv.conf` is a symlink into its `/tmp`, written by dhcpcd.
+`nameserver 10.19.0.1` and `nameserver fd19::1` (`rootfs.rs`), whether or
+not it has a path yet: one started while no net zone runs is attached when
+one starts, and its sealed root cannot gain the file then. Until it has a
+path a lookup fails at once, with no route. Offline zones get none. The net
+zone's own `resolv.conf` is a symlink into its `/tmp`, written by dhcpcd.
 
 ## IPv6
 
@@ -238,9 +240,9 @@ as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
   side lived in its namespace: routed zones lose `eth0` and fail closed.
 - When it starts again, kryptikd reattaches every running routed zone in the
   registry with a new veth pair, moved in through the zone's namespace
-  (`/proc/<pid 1>/ns/net`). A zone keeps the `resolv.conf` it started with, so
-  one started before any net zone gets a path but no resolver until it
-  restarts; kryptikd does not edit a running zone's sealed root.
+  (`/proc/<pid 1>/ns/net`). Its `resolv.conf` has named the bridge since it
+  started, so one started before any net zone resolves names once attached;
+  kryptikd never edits a running zone's sealed root.
 - The kernel returns the physical interface to the initial namespace, down
   and unaddressed, under its own name (`dev<N>` only if zone 0 has an
   interface by that name by then); kryptikd leaves it so until the next net
