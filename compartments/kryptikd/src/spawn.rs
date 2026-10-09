@@ -1127,6 +1127,12 @@ fn intermediate_main(
         bail!("unshare: {e}");
     }
 
+    /* Before pid 1 enters the time namespace, and before the id switch below: on a root launch
+     * that leaves this process undumpable, its /proc files host root's and unwritable to it. */
+    if let Err(e) = isolate::set_time_origin() {
+        bail!("time namespace: {e}");
+    }
+
     /* The new network namespace must hold only loopback: a root launch refuses anything else,
      * and a developer launch, which cannot set the fallback-tunnel sysctl, says what it found. */
     if flags & libc::CLONE_NEWNET != 0 {

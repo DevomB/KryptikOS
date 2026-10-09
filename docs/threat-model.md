@@ -24,10 +24,15 @@ interrupt, scheduling, load, page-fault and allocation, stall and open-file
 counters, each CPU's idle counts and frequency (`/proc/cpuinfo` is a copy
 taken as the zone starts), which would time keystrokes typed in any zone, and
 the disk tables, which would show which encrypted zones are open; `/proc`
-gives it a boot ID of its own. Still shown: the per-CPU packet counts in
-`/proc/net/softnet_stat`, as `/proc/net` follows each process; the idle time
-of all CPUs summed, to a hundredth of a second, in `/proc/uptime`, which `ps`
-and `uptime` read; the free memory in `/proc/meminfo`, coarse, which programs
+gives it a boot ID of its own, and its monotonic and boot clocks start at a
+random point each time the zone starts, so the uptime and boot time that
+crash reports and telemetry send match no other zone's. Still shown: the
+per-CPU packet counts in `/proc/net/softnet_stat`, as `/proc/net` follows
+each process; the idle time of all CPUs summed, to a hundredth of a second,
+in `/proc/uptime`, which `ps` and `uptime` read; the offsets that move the
+zone's clocks, in `/proc/self/timens_offsets`, which the kernel shows every
+process for checkpoint and restore, so code that looks for them works out the
+machine's uptime; the free memory in `/proc/meminfo`, coarse, which programs
 need; and the idle counts of a CPU brought online after the zone started.
 Escaping needs a kernel bug
 ([kernel local privilege escalation](#kernel-local-privilege-escalation)).

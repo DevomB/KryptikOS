@@ -1015,6 +1015,25 @@ zrun untrusted 20 -- python3 -c 'import ssl; print("CAS=%d" % len(ssl.create_def
 cas="$(grep -o 'CAS=[0-9]*' <<<"$ZOUT" | cut -d= -f2)"
 [[ "${cas:-0}" -ge 100 ]] && pass "tls-trust" "python's default TLS context in untrusted finds $cas CAs" || fail "tls-trust" "found ${cas:-no} CAs: $(tail -2 "$LOG/untrusted.err" | tr '\n' ' ')"
 
+# --- zones: clocks of their own, one real clock -----------------------------
+# A zone's monotonic and boot clocks start at a random point (isolate::set_time_origin), so the
+# boot time each zone works out, its real clock less its uptime, is its own; the real clock is
+# zone 0's in every zone.
+clock_line='read up idle < /proc/uptime; w=$(date +%s); echo "CLOCK $w $(( w - ${up%.*} ))"'
+read -r w0 b0 < <(sh -c "$clock_line" | cut -d' ' -f2-)
+zrun untrusted 20 -- sh -c "$clock_line"
+read -r _ wu bu < <(grep '^CLOCK ' <<<"$ZOUT")
+zrun personal 30 --passphrase-file /root/zt/personal.pass -- sh -c "$clock_line"
+read -r _ wp bp < <(grep '^CLOCK ' <<<"$ZOUT")
+w1="$(date +%s)"
+apart() { local d=$(( $1 - $2 )); echo "${d#-}"; }
+if [[ "$w0$b0$wu$bu$wp$bp" =~ ^[0-9]+$ ]] && (( wu >= w0 && wu <= w1 && wp >= w0 && wp <= w1 )) \
+   && (( $(apart "$bu" "$b0") >= 60 && $(apart "$bp" "$b0") >= 60 && $(apart "$bu" "$bp") >= 60 )); then
+    pass "zone-clocks-own" "booted, by each one's clocks: untrusted $(date -u -d "@$bu" +%FT%TZ), personal $(date -u -d "@$bp" +%FT%TZ), zone 0 $(date -u -d "@$b0" +%FT%TZ); the real clock read alike in all three"
+else
+    fail "zone-clocks-own" "zone 0 read ${w0:-?}..${w1}, booted ${b0:-?}; untrusted read ${wu:-?}, booted ${bu:-?}; personal read ${wp:-?}, booted ${bp:-?}; $(tail -qn 2 "$LOG/untrusted.err" "$LOG/personal.err" 2>/dev/null | tr '\n' ' ')"
+fi
+
 # --- storage: encrypted storage lifecycle -----------------------------------
 printf 'wrong-pass\n' > /root/zt/wrong.pass; chmod 600 /root/zt/wrong.pass
 zrun personal 30 --passphrase-file /root/zt/wrong.pass -- sh -c 'echo SHOULD-NOT-RUN'

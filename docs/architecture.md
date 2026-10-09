@@ -6,7 +6,7 @@ A zone is the unit of isolation, and every process belongs to exactly one.
 
 | Component | Mechanism |
 | --- | --- |
-| Processes | user, pid, ipc, uts, mount and cgroup namespaces |
+| Processes | user, pid, ipc, uts, mount, cgroup and time namespaces |
 | Network | own namespace; routed zones get a veth into the `net` zone's bridge |
 | Files | own root; persistent zones get a LUKS2 volume |
 | Syscalls | seccomp-bpf, default-deny allowlist |

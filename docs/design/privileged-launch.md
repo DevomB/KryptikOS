@@ -46,9 +46,11 @@ intermediate (uid 0, full capabilities in the initial namespace):
   setgroups(0, NULL)                        supplementary groups gone for good
   PR_SET_PDEATHSIG(SIGKILL); check getppid()
   wait `placed`                             the parent has put it in the zone's cgroup
-  unshare(CLONE_NEWUSER | NEWNS | NEWPID | NEWIPC | NEWUTS | NEWCGROUP | NEWNET)
+  unshare(CLONE_NEWUSER | NEWNS | NEWPID | NEWIPC | NEWUTS | NEWCGROUP | NEWTIME | NEWNET)
       needs CAP_SYS_ADMIN in the initial namespace, which it has; afterwards it
       holds a full set in the new namespace and none in the initial one
+  write /proc/self/timens_offsets           a random origin for its children's clocks,
+      while its /proc files are still its own
   signal `ready`
 parent (uid 0):
   build the zone's network path from outside (net zone, routed zones)

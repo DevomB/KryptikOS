@@ -5,13 +5,17 @@ use std::io;
 
 use crate::zone::{NetworkMode, Zone};
 
+// From <linux/sched.h>; the pinned libc crate lacks it.
+pub const CLONE_NEWTIME: libc::c_int = 0x80;
+
 /// Namespaces every zone gets; the user namespace makes the zone's root weaker than the host's.
 pub const ZONE_NAMESPACES: libc::c_int = libc::CLONE_NEWUSER
     | libc::CLONE_NEWNS
     | libc::CLONE_NEWPID
     | libc::CLONE_NEWIPC
     | libc::CLONE_NEWUTS
-    | libc::CLONE_NEWCGROUP;
+    | libc::CLONE_NEWCGROUP
+    | CLONE_NEWTIME;
 
 pub const NS_NET: libc::c_int = libc::CLONE_NEWNET;
 
@@ -46,13 +50,14 @@ fn check(call: &'static str, ret: libc::c_int) -> Result<(), IsolateError> {
 }
 
 /// The namespaces a zone can be given, by name, in the order reports list them.
-pub const NAMESPACES: [(libc::c_int, &str); 7] = [
+pub const NAMESPACES: [(libc::c_int, &str); 8] = [
     (libc::CLONE_NEWUSER, "user"),
     (libc::CLONE_NEWNS, "mount"),
     (libc::CLONE_NEWPID, "pid"),
     (libc::CLONE_NEWIPC, "ipc"),
     (libc::CLONE_NEWUTS, "uts"),
     (libc::CLONE_NEWCGROUP, "cgroup"),
+    (CLONE_NEWTIME, "time"),
     (libc::CLONE_NEWNET, "net"),
 ];
 
@@ -67,9 +72,52 @@ pub fn namespace_flags(zone: &Zone) -> libc::c_int {
     }
 }
 
-/// Enter new namespaces; CLONE_NEWPID applies to the caller's children, so fork afterwards.
+/// Enter new namespaces; CLONE_NEWPID and CLONE_NEWTIME apply to the caller's children, so fork
+/// afterwards.
 pub fn unshare_namespaces(flags: libc::c_int) -> Result<(), IsolateError> {
     check("unshare", unsafe { libc::unshare(flags) })
+}
+
+const NS_PER_SEC: i64 = 1_000_000_000;
+
+/// Where a zone's clocks start: anywhere from an hour to thirty days, as a machine's might.
+const ORIGIN_MIN_NS: u64 = 3600 * NS_PER_SEC as u64;
+const ORIGIN_MAX_NS: u64 = 30 * 86400 * NS_PER_SEC as u64;
+
+/// Start the monotonic and boot clocks of our children's time namespace at one random point, so a
+/// zone shares their base with neither zone 0 nor another zone, and each start reads as a new
+/// boot, as its boot_id does. The kernel takes offsets only until a task enters (pid 1's fork).
+/// Anyone may read them in /proc/self/timens_offsets: this hides the base from what reads clocks,
+/// not from a zone that looks for it.
+pub fn set_time_origin() -> Result<(), IsolateError> {
+    let mut b = [0u8; 8];
+    let n = unsafe { libc::getrandom(b.as_mut_ptr() as *mut libc::c_void, b.len(), 0) };
+    if n != b.len() as isize {
+        return Err(IsolateError::Syscall {
+            call: "getrandom",
+            errno: io::Error::last_os_error().raw_os_error().unwrap_or(0),
+        });
+    }
+    let origin = ORIGIN_MIN_NS + u64::from_ne_bytes(b) % (ORIGIN_MAX_NS - ORIGIN_MIN_NS);
+    let text = time_offsets(origin, clock_ns(libc::CLOCK_MONOTONIC)?, clock_ns(libc::CLOCK_BOOTTIME)?);
+    std::fs::write("/proc/self/timens_offsets", text)
+        .map_err(|e| IsolateError::Refused(format!("/proc/self/timens_offsets: {e}")))
+}
+
+fn clock_ns(clock: libc::clockid_t) -> Result<u64, IsolateError> {
+    let mut ts: libc::timespec = unsafe { std::mem::zeroed() };
+    check("clock_gettime", unsafe { libc::clock_gettime(clock, &mut ts) })?;
+    Ok(ts.tv_sec as u64 * NS_PER_SEC as u64 + ts.tv_nsec as u64)
+}
+
+/// The offsets that move both clocks from their readings now to `origin`, as the kernel parses
+/// them: whole seconds, negative when the clock is past it, then nanoseconds below a second.
+fn time_offsets(origin: u64, mono: u64, boot: u64) -> String {
+    let line = |clock: &str, now: u64| {
+        let off = origin as i64 - now as i64;
+        format!("{clock} {} {}\n", off.div_euclid(NS_PER_SEC), off.rem_euclid(NS_PER_SEC))
+    };
+    line("monotonic", mono) + &line("boottime", boot)
 }
 
 /// The id a daemon in a zone that keeps `caps::PRIVSEP` drops to: dhcpcd's, in the nic zone.
@@ -294,6 +342,7 @@ pub struct KernelSupport {
     pub user_ns: bool,
     pub pid_ns: bool,
     pub net_ns: bool,
+    pub time_ns: bool,
     pub cgroup_v2: bool,
     pub seccomp: bool,
     pub landlock: Option<i32>,
@@ -306,6 +355,7 @@ impl KernelSupport {
             user_ns: ns("user"),
             pid_ns: ns("pid"),
             net_ns: ns("net"),
+            time_ns: ns("time"),
             cgroup_v2: std::path::Path::new("/sys/fs/cgroup/cgroup.controllers").exists(),
             seccomp: std::fs::read_to_string("/proc/self/status")
                 .map(|s| s.contains("Seccomp:"))
@@ -320,6 +370,7 @@ impl KernelSupport {
         if !self.user_ns { m.push("user namespaces"); }
         if !self.pid_ns { m.push("pid namespaces"); }
         if !self.net_ns { m.push("network namespaces"); }
+        if !self.time_ns { m.push("time namespaces"); }
         if !self.cgroup_v2 { m.push("cgroup v2"); }
         if !self.seccomp { m.push("seccomp"); }
         if self.landlock.is_none() { m.push("landlock"); }

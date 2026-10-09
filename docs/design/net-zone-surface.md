@@ -1,6 +1,7 @@
 # Narrowing what the net zone reaches in the kernel
 
-**A proposal, waiting for the owner's decision.** Nothing here is built. The
+**A proposal, waiting for the owner's decision**, but for the time namespace,
+which is built. The
 [threat model](../threat-model.md#compromised-net-zone) lists what a
 compromised net zone still reaches. This note weighs three ways to narrow it:
 a filter on generic-netlink families, wpa_supplicant's privilege separation,
@@ -100,50 +101,60 @@ unprivileged user with no capability, instead of the zone's root.
 
 ## A time namespace per zone
 
-**Today.** Every zone, the net zone among them, reads the machine's
-`CLOCK_MONOTONIC` and `CLOCK_BOOTTIME`, so `/proc/uptime` and every monotonic
-timestamp agree across zones; the threat model names `/proc/uptime` as still
-shown. It narrows no kernel surface; it is a reading that links zones.
+**Why.** Without one, every zone, the net zone among them, reads the
+machine's `CLOCK_MONOTONIC` and `CLOCK_BOOTTIME`, so `/proc/uptime` and every
+monotonic timestamp agree across zones: a reading that links zones, as the
+host's boot ID would. It narrows no kernel surface.
 
-**From 6.18.** `CONFIG_TIME_NS` is built: `init/Kconfig` defaults it to yes,
-and no fragment unsets it. kryptikd creates no time namespace
-(`isolate.rs`, `ZONE_NAMESPACES`).
-
-**What it would take.** `CLONE_NEWTIME` beside `CLONE_NEWPID` in the
-intermediate's `unshare`, as both apply to its children, and a random boot and
-monotonic offset written to `/proc/self/timens_offsets` before pid 1 is forked
-(`spawn.rs`); 6.18 refuses offsets once a task has entered
-(`kernel/time/namespace.c`). Zones cannot make one themselves: their filter
-answers `clone3(2)` with ENOSYS and `unshare(2)` with EPERM, and `clone(2)`
-cannot ask for one, since `CLONE_NEWTIME` sits in its low byte, the exit
-signal (`seccomp.rs`, `CLONE_NS_MASK`).
+**Built.** `CLONE_NEWTIME` sits beside `CLONE_NEWPID` in the intermediate's
+`unshare`, as both apply to its children, and one random origin, between an
+hour and thirty days, is written for the monotonic and boot clocks to
+`/proc/self/timens_offsets` before pid 1 is forked (`isolate.rs`,
+`set_time_origin`; `spawn.rs`). The write comes before the id switch, which on
+a root launch leaves the intermediate undumpable and its `/proc` files host
+root's, and 6.18 refuses offsets once a task has entered
+(`kernel/time/namespace.c`). `CONFIG_TIME_NS` defaults to yes, and
+`hardening.fragment` requires it. Zones cannot make one themselves: their
+filter answers `clone3(2)` with ENOSYS and `unshare(2)` with EPERM, and
+`clone(2)` cannot ask for one, since `CLONE_NEWTIME` sits in its low byte, the
+exit signal (`seccomp.rs`, `CLONE_NS_MASK`).
 
 **What changes, and what does not.** A zone's `/proc/uptime` and the
 `btime` of `/proc/stat` shift with its offset (`fs/proc/uptime.c:29`,
-`fs/proc/stat.c:95-97`; `/proc/stat` is masked in zones anyway). The idle time
-summed in `/proc/uptime` does not (`uptime.c:25`), nor does
-`CLOCK_REALTIME`, which zone 0 sets for every zone. A zone's programs would
-read the compositor's input and frame times against their own clock, offset
-from it; the protocol gives those times no base to compare with, and the proxy
-offers no `wp_presentation`, the one protocol that names `CLOCK_MONOTONIC`
-(`compositor/wlproxy/src/policy.rs:7-16`), so only a program that compares
-them anyway would pace its frames wrongly. The zones suite would compare a
-zone's `/proc/uptime` with zone 0's, and the desktop suite would show a zone
-window that animates.
+`fs/proc/stat.c:95-97`; `/proc/stat` is masked in zones anyway), and like its
+boot ID the origin is new at every start, so each start reads as a new boot.
+The idle time summed in `/proc/uptime` does not shift (`uptime.c:25`), nor
+does `CLOCK_REALTIME`, which zone 0 sets for every zone. The offsets
+themselves are shown: every process may read `/proc/<pid>/timens_offsets`,
+which the kernel keeps for checkpoint and restore, and no mount covers a file
+under every pid, so a program that looks for them works out the machine's
+clocks. The namespace keeps the shared uptime and boot time out of what crash
+reports and telemetry send, as the boot ID does; it does not hide them from a
+zone set on linking itself to another, which the idle time would allow anyway.
+
+A zone's programs read the compositor's input and frame times against their
+own clock, offset from it; the protocol gives those times no base to compare
+with, and the proxy offers no `wp_presentation`, the one protocol that names
+`CLOCK_MONOTONIC` (`compositor/wlproxy/src/policy.rs:7-16`), so only a program
+that compares them anyway would pace its frames wrongly. The zones suite
+compares the boot time two zones and zone 0 each work out
+(`zone-clocks-own`), and the desktop suite animates a zone's window on its
+frame callbacks while the zone's clock stands apart from the compositor's
+(`zone-window-animates`).
 
 ## Side by side
 
 | | genl family filter | wpa_supplicant privsep | time namespace |
 | --- | --- | --- | --- |
-| closes | ethtool's setters, other families' namespace-admin commands | the zone's root for a flaw in Wi-Fi parsing | the shared boot and monotonic clocks |
-| leaves | nf_tables, packet sockets, nl80211 | `wpa_priv` as root; the kernel's own 802.11 parsing | idle time, `CLOCK_REALTIME` |
-| needs | BPF and a BPF LSM, or a kernel patch | a second build, a mapped id, a trial of WPA3 | a flag and an offsets write in kryptikd |
+| closes | ethtool's setters, other families' namespace-admin commands | the zone's root for a flaw in Wi-Fi parsing | the shared boot and monotonic clocks, for what reads clocks |
+| leaves | nf_tables, packet sockets, nl80211 | `wpa_priv` as root; the kernel's own 802.11 parsing | idle time, `CLOCK_REALTIME`, the offsets in `/proc/self/timens_offsets` |
+| needs | BPF and a BPF LSM, or a kernel patch | a second build, a mapped id, a trial of WPA3 | a flag and an offsets write in kryptikd (built) |
 | a suite can show it | yes | yes, over hwsim | yes |
 
 ## Proposed decision
 
-- **A time namespace per zone: build it.** Its cost is a flag and a write in
-  kryptikd, it needs no kernel change, and a check can prove it.
+- **A time namespace per zone: built.** A flag and a write in kryptikd, no
+  kernel change, and a check in the zones and desktop suites each.
 - **wpa_supplicant's privilege separation: a trial first.** Build it beside
   the current binary and run the hwsim suite with WPA2 and SAE; adopt it only
   if the networks Kryptik supports still join.

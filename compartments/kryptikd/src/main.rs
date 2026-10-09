@@ -528,6 +528,7 @@ fn cmd_check(dir: &Path, target: bool) -> ExitCode {
     println!("  user namespaces  {}", yn(s.user_ns));
     println!("  pid namespaces   {}", yn(s.pid_ns));
     println!("  net namespaces   {}", yn(s.net_ns));
+    println!("  time namespaces  {}", yn(s.time_ns));
     println!("  cgroup v2        {}", yn(s.cgroup_v2));
     println!("  seccomp          {}", yn(s.seccomp));
     match s.landlock {

@@ -475,6 +475,10 @@ probe "D6b /proc/irq is empty: no interrupt line's count reaches the zone" "0-0"
 HOST_BOOT_ID="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
 zrun alpha -- /bin/sh -c "$PRO b=\$(cat /proc/sys/kernel/random/boot_id); if [ -n \"\$b\" ] && [ \"\$b\" != '$HOST_BOOT_ID' ]; then echo PROBE=own; else echo PROBE=HOSTS; fi"
 probe "D7  the zone's boot_id is its own, not the one every zone would share" "own"
+# The boot time a zone works out, its real clock less its uptime, is its own; the real clock is the host's.
+HOST_BOOTED=$(( $(date +%s) - $(cut -d. -f1 /proc/uptime) )); NOW0="$(date +%s)"
+zrun alpha -- /bin/sh -c "$PRO w=\$(date +%s); d=\$(( w - \$(cut -d. -f1 /proc/uptime) - $HOST_BOOTED )); if [ \"\$w\" -lt $NOW0 ] || [ \"\$w\" -gt $(( NOW0 + TIMEOUT )) ]; then echo PROBE=REAL-CLOCK-\$w; elif [ \"\${d#-}\" -lt 60 ]; then echo PROBE=HOSTS; else echo PROBE=own; fi"
+probe "D7b the zone's boot clock starts where the host's does not, and its real clock is the host's" "own"
 
 zrun alpha -- /bin/sh -c "$PRO x=\$( { ls /sys | grep -vx -e class -e devices; ls /sys/class | grep -vx net; ls /sys/devices | grep -vx -e virtual -e system; } 2>/dev/null ); if [ -z \"\$x\" ]; then echo PROBE=narrow; else echo PROBE=WIDE; fi"
 probe "D8  /sys holds only the zone's interfaces and the CPU layout" "narrow"
@@ -1068,7 +1072,7 @@ if (( PRIVILEGED == 1 )); then
         [[ "$t11nnp" == "1" ]] || t11bad+=("NoNewPrivs is '$t11nnp', not 1")
         [[ "$t11sec" == "2" ]] || t11bad+=("Seccomp is '$t11sec', not 2 (filter mode)")
 
-        for ns in user pid mnt net; do
+        for ns in user pid mnt net time; do
             a="$(readlink "/proc/$t11init/ns/$ns" 2>/dev/null)"
             b="$(readlink "/proc/1/ns/$ns" 2>/dev/null)"
             if [[ -z "$a" ]]; then
@@ -1079,7 +1083,7 @@ if (( PRIVILEGED == 1 )); then
         done
 
         if (( ${#t11bad[@]} == 0 )); then
-            pass "T11 from the host, the zone's pid 1 is uid/gid $ZONE_UID, no groups, CapEff=CapPrm=CapBnd=0000000000000400, NoNewPrivs, seccomp filtered, and in its own user/pid/mnt/net namespaces"
+            pass "T11 from the host, the zone's pid 1 is uid/gid $ZONE_UID, no groups, CapEff=CapPrm=CapBnd=0000000000000400, NoNewPrivs, seccomp filtered, and in its own user/pid/mnt/net/time namespaces"
         else
             fail "T11 the host's view of the zone's pid 1 ($t11init) is wrong in ${#t11bad[@]} way(s)"
             for b in "${t11bad[@]}"; do info "     $b"; done
