@@ -120,16 +120,24 @@ Two settings go with any of them:
 ## What it costs, from the tree
 
 **Kernel.**
-- `CONFIG_DM_INTEGRITY`, absent from every fragment today. Under ADR-013 it
-  is a module: the state partition is not the root.
-- It is signed like every module (`build/config/kernel/hardening.fragment:34-37`).
-- `sysinit` loads it before `unlock_state`, since `STATIC_USERMODEHELPER`
-  leaves the kernel no helper to load it by itself (`hardening.fragment:31`).
-- It selects `BLK_DEV_INTEGRITY`, built in and small, and `DM_BUFIO`, which
-  dm-verity already brings.
-- The bzImage has 1,099,418 bytes of headroom under its budget (23,087,770
-  against the measured 21,988,352, `build/config/kernel/size-budget`). A
-  module stays outside it.
+- `CONFIG_DM_INTEGRITY`, absent from every fragment today.
+- Built in or a module: both work.
+  - The tree builds dm-crypt in for this same partition
+    (`build/config/kernel/boot.fragment:50-54`), and dm-integrity opens in
+    the same step, so by that precedent it is built in and counts against
+    the size budget.
+  - As a module, signed like every module (`hardening.fragment:34-37`),
+    `sysinit` would load it from the verified root before `unlock_state`,
+    since `STATIC_USERMODEHELPER` leaves the kernel no helper to load it by
+    itself (`hardening.fragment:31`).
+- In 6.18 it selects `BLK_DEV_INTEGRITY`, `DM_BUFIO` (dm-verity brings it
+  already), `CRYPTO`, `CRYPTO_SKCIPHER`, `ASYNC_XOR` and, with `AUDIT` on as
+  defconfig has it, `DM_AUDIT` (`drivers/md/Kconfig:638-646`).
+  `BLK_DEV_INTEGRITY` and `DM_AUDIT` are bools, so they land in the bzImage
+  either way.
+- The budget is 23,087,770 bytes: the 21,988,352 measured when it was set,
+  plus 5% (`build/config/kernel/size-budget`). Today's headroom is the budget
+  less the size stage 05 prints when it rebuilds the kernel (`s_size`).
 - `hmac(sha256)` needs `CRYPTO_HMAC`. defconfig's IPsec options probably
   build it in already, beside the `CRYPTO_SHA256` that `boot.fragment` sets;
   the build's own `.config` (`/proc/config.gz` on the image) settles it.
@@ -198,9 +206,9 @@ the cost twice.
   in medium-shell-test) stay as they are, unless the superblock question
   says otherwise.
 - **CI time.** Every install in every VM suite pays one full write of its
-  state partition. Test disks are sized by `tools/image/test-disk-size.sh`,
-  up to about 17.5 GiB with payloads (its example, `17536M`). Suites that
-  stage nothing could use the installer's minimum, the image plus 1152 MiB.
+  state partition. Test disks are sized by `tools/image/test-disk-size.sh`;
+  its example with payloads is `17536M`, about 17.1 GiB. Suites that stage
+  nothing could use the installer's minimum, the image plus 1152 MiB.
 
 ## Proposed decision
 
