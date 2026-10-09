@@ -283,6 +283,14 @@ configured the zone keeps its IPv4 path and the launcher says so.
   else runs as N. Only the net zone gets it, bound read-only at
   `/etc/wpa_supplicant.conf`, and a change restarts the `net-zone` service
   (`s6-svc -r`).
+- **A saved network names how it may be joined.** A passphrase by WPA2's
+  pre-shared key (`WPA-PSK`, `WPA-PSK-SHA256`) or WPA3's SAE, a raw 64-digit
+  key by the former alone, since SAE needs the passphrase, and neither by
+  802.1X, so no access point's beacon chooses EAP for a saved SSID. Unnamed,
+  wpa_supplicant would take `WPA-PSK WPA-EAP` and never SAE. Management frames
+  are protected wherever the access point offers it (`ieee80211w=1`), and SAE
+  always has them. A file an older kryptikd wrote is rewritten so as the net
+  zone starts.
 - On disk the file is plaintext inside the [encrypted](state-encryption.md)
   state partition, like NetworkManager's connection files. A compromised net
   zone learns the passphrases of the networks it was given, and nothing more.

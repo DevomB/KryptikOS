@@ -68,6 +68,7 @@ for name in kernel-support policies net-ready net-dns dhcpcd-separated dnsmasq-u
             wifi-module wifi-ap wifi-add wifi-associated wifi-lease wifi-egress wifi-forget \
             uplink-renamed-plain uplink-state-reset \
             radio-recarried \
+            wifi-wpa2-plain wifi-sae \
             zone-clocks-own \
             time-floor-ran time-clamp time-floor-forged time-claim-stepped time-claim-floor time-claim-consent pids-limit ephemeral-size-bound cpu-max-set lifecycle-repeat lifecycle-registry resolver-after-attach dns-cache-off dns-counters-hidden net-zone-sysfs-nics-only \
             terminal-terminfo man-page text-browser tls-trust no-shared-writable-mount net-zone-no-zone-data no-swap no-dbus \

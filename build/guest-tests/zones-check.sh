@@ -834,6 +834,48 @@ if [[ "$far" -eq 0 && "$near" -ne 0 ]]; then
 else
     fail "wifi-beyond" "personal (init ${ppid:-none}): $AP_FAR rc=$far, $AP_ADDR rc=$near; $(netzone_said 'nftables: zones go out' | tail -1); routes: $(nsenter -t "$net_init" -n ip -4 route 2>/dev/null | tr '\n' ';')"
 fi
+# The saved passphrase joins WPA2 by its pre-shared key, unprotected where the access point
+# offers no protected management frames, and WPA3 by SAE with them: the same SSID, SAE only.
+sta_keys() { ap_wpa all_sta | grep -E '^(AKMSuiteSelector|flags)=' | tr '\n' ' '; }
+wpa2_keys="$(sta_keys)"
+if [[ "$wpa2_keys" == *"AKMSuiteSelector=00-0f-ac-2 "* && "$wpa2_keys" != *"[MFP]"* ]]; then
+    pass "wifi-wpa2-plain" "the WPA2 access point lists the station joined by its pre-shared key, without protected management frames: ${wpa2_keys}"
+else
+    fail "wifi-wpa2-plain" "the station at the WPA2 access point: ${wpa2_keys:-none}"
+fi
+sae_up=0
+if [[ "$ap_up" = 1 ]]; then
+    ap_pid="$(cat /run/zt-ap-wpa.pid 2>/dev/null)"
+    [[ -n "$ap_pid" ]] && kill "$ap_pid" 2>/dev/null
+    for _ in $(seq 1 20); do [[ -n "$ap_pid" ]] && kill -0 "$ap_pid" 2>/dev/null || break; sleep 0.5; done
+    cat > /root/zt/ap-sae.conf <<EOF
+ctrl_interface=/run/zt-ap-ctrl
+ap_scan=2
+network={
+    ssid="$AP_SSID"
+    mode=2
+    frequency=2412
+    key_mgmt=SAE
+    ieee80211w=2
+    proto=RSN
+    pairwise=CCMP
+    psk="$AP_PASS"
+}
+EOF
+    ap wpa_supplicant -B -i "$AP_IF" -c /root/zt/ap-sae.conf -P /run/zt-ap-wpa.pid -f "$LOG/ap-sae-wpa.log" >> "$LOG/ap.err" 2>&1
+    for _ in $(seq 1 30); do ap_wpa status | grep -q '^wpa_state=COMPLETED' && { sae_up=1; break; }; sleep 1; done
+fi
+sae_keys=""
+for _ in $(seq 1 90); do
+    sae_keys="$(sta_keys)"
+    [[ "$sae_up" = 1 && "$sae_keys" == *"AKMSuiteSelector=00-0f-ac-8 "* ]] && break
+    sleep 1
+done
+if [[ "$sae_up" = 1 && "$sae_keys" == *"AKMSuiteSelector=00-0f-ac-8 "* && "$sae_keys" == *"[MFP]"* ]]; then
+    pass "wifi-sae" "offered SAE alone with protection required, the same SSID took the saved passphrase by SAE, with protected management frames: ${sae_keys}"
+else
+    fail "wifi-sae" "access point up: ${sae_up}; the station at it: ${sae_keys:-none}; $(tail -3 "$LOG/ap-sae-wpa.log" 2>/dev/null | tr '\n' ' ')"
+fi
 # Back to the wire: the radios go first, so the net zone the forget restarts finds none.
 for f in /run/zt-ap-dnsmasq.pid /run/zt-ap-wpa.pid; do p="$(cat "$f" 2>/dev/null)"; [[ -n "$p" ]] && kill "$p" 2>/dev/null; done
 [[ -n "$AP_HOLD" ]] && kill "$AP_HOLD" 2>/dev/null
