@@ -83,8 +83,10 @@ commit_slot() {   # commit_slot <slot>: make BOOTX64.EFI this slot's kernel
             cp "$src" "$dst.new" && sync -f "$dst.new" && mv -f "$dst.new" "$dst" && sync -f "$dst" && rc=0
             [ "$rc" -eq 0 ] && say "committed: BOOTX64.EFI is now slot $1"
         fi
-        printf '%s\n' "$1" > "$ESP_MNT/kryptik/committed-slot.new" && sync -f "$ESP_MNT/kryptik/committed-slot.new" && \
-            mv -f "$ESP_MNT/kryptik/committed-slot.new" "$ESP_MNT/kryptik/committed-slot"
+        # The record is part of the commit: kryptik-update applies only from the slot it names.
+        { printf '%s\n' "$1" > "$ESP_MNT/kryptik/committed-slot.new" && sync -f "$ESP_MNT/kryptik/committed-slot.new" && \
+            mv -f "$ESP_MNT/kryptik/committed-slot.new" "$ESP_MNT/kryptik/committed-slot"; } \
+            || { say "the committed-slot record could not be written; the trial stays, and the next boot commits again"; rc=1; }
     else
         say "no kernel for slot $1 on the ESP"
     fi
@@ -149,7 +151,7 @@ if [ -n "$trial" ]; then
                 say "$(kryptikd time committed "$B/release-$slot" 2>&1)"
             else
                 result "commit-failed $slot"
-                say "slot $slot is healthy but the commit failed; the committed slot is unchanged"
+                say "slot $slot is healthy but the commit failed; the trial stays for the next boot"
             fi
         else
             say "trial slot $slot came up UNHEALTHY:"

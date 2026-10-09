@@ -363,7 +363,7 @@ cmd_apply() {
     mount_esp
     mkdir -p "$ESP_MNT/EFI/kryptik" "$ESP_MNT/kryptik"
     cp "$(payload_path "kryptik-$target.efi")" "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new" || die "staging the kernel on the ESP failed"
-    sync -f "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new"
+    sync -f "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new" || die "the kernel staged on the ESP could not be flushed"
     # Check the staged kernel before it gets the name rollback and recovery use.
     want_k="$H_KA"; [ "$target" = b ] && want_k="$H_KB"
     if [ "$(sha256sum "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new" | cut -c1-64)" != "$want_k" ]; then
@@ -371,9 +371,10 @@ cmd_apply() {
         die "the kernel staged on the ESP does not hash to the manifest's kryptik-$target.efi"
     fi
     mv -f "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new" "$ESP_MNT/EFI/kryptik/kryptik-$target.efi"
-    printf '%s\n' "$VERSION" > "$ESP_MNT/kryptik/version-$target.new"
-    sync -f "$ESP_MNT/kryptik/version-$target.new"
-    mv -f "$ESP_MNT/kryptik/version-$target.new" "$ESP_MNT/kryptik/version-$target"
+    { printf '%s\n' "$VERSION" > "$ESP_MNT/kryptik/version-$target.new" \
+        && sync -f "$ESP_MNT/kryptik/version-$target.new" \
+        && mv -f "$ESP_MNT/kryptik/version-$target.new" "$ESP_MNT/kryptik/version-$target"; } \
+        || die "slot $target's version could not be recorded on the ESP"
     sync
     umount_esp
     say "kernel for slot $target installed on the ESP (version $VERSION)"
