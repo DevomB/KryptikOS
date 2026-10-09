@@ -200,7 +200,9 @@ anything else starts: on the display and, if the machine has one, on the
 serial console, and the first answer counts. Root changes it with `kryptik
 state passphrase`. A header backup made before the change, or any earlier
 copy of the disk, still opens with the old passphrase: back the header up
-again and destroy the older backups. On the
+again and destroy the older backups. That does not shut out anyone who
+already copied the old header; only re-encrypting the partition under a new
+key (`cryptsetup reencrypt`) does. On the
 first boot, before the login prompt, a setup program asks in the same places
 for a user name (lower-case letters, digits, `_` and `-` only) and that
 user's password, then for root's password (root still cannot log in at a

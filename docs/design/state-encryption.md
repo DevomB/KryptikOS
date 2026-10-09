@@ -38,7 +38,8 @@ every machine, and verified. It uses the dm-crypt and XTS support the
 - `kryptik state passphrase` (root) runs `cryptsetup luksChangeKey`, which asks
   for the old and new passphrases on the terminal. The key it protects stays
   the same, so a copy of the header made before still opens with the old
-  passphrase.
+  passphrase; only re-encrypting under a new volume key (`cryptsetup
+  reencrypt`) shuts out whoever holds one.
 
 ## What it gives
 
