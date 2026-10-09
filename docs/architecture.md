@@ -12,7 +12,7 @@ A zone is the unit of isolation, and every process belongs to exactly one.
 | Syscalls | seccomp-bpf, default-deny allowlist |
 | File access | Landlock |
 | Resources | cgroup v2 memory, pids, cpu and io limits |
-| Identity | border colour, drawn by the compositor, which has no title bars; the text identity (zone, glyph, label, the `[zone]` title prefix) is shown by the trusted chrome alone, so no window draws its own |
+| Identity | border colour, drawn by the compositor, which has no title bars; the text identity (zone, glyph, label, the `[zone]` title prefix) is shown by the trusted chrome, and over a fullscreen window by the compositor's bar, so no window draws its own |
 
 ### Zone 0
 
@@ -75,7 +75,13 @@ the zone set would be drawn above every window, wherever it chose.
 
 A window's border colour is how the user tells which zone it belongs to. If
 they cannot tell at a glance which zone a password prompt belongs to, the
-zones have failed them.
+zones have failed them. A fullscreen window keeps its border, and the
+compositor adds a bar across the top of the output in the zone's colour,
+with the zone's name, outside the window's frame, where its surfaces are
+clipped away. Only the user's key makes a zone's window fullscreen, never
+the program's own request. While it is fullscreen the focus keys do not
+reach the windows hidden below it, and a child window the zone opens ends
+the fullscreen, since nothing of the zone's is drawn above the bar.
 `zoneid audit` checks that every pair of zones stays distinguishable.
 
 ## Storage

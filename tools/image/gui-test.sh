@@ -11,9 +11,9 @@
 # What the host adds to the guest's verdicts: screenshots in which each
 # window's frame is measured on all four sides, in its zone's colour from
 # build/desktop/zone-colours.h (full width focused, narrower by the band
-# unfocused), windowed, after a refused fullscreen request and around a buffer
-# larger than its window; explicit focus (Alt+j), fullscreen refusal (Alt+e)
-# and the yes/no to the transfer
+# unfocused), windowed, fullscreen under the bar that names its zone, and
+# around a buffer larger than its window; explicit focus (Alt+j), fullscreen
+# on and off (Alt+e) and the yes/no to the transfer
 # questions, delivered as keystrokes on the guest's keyboard, so the
 # trusted windows are exercised by input, not by writing answer files; and a
 # second monitor, plugged into the GPU's second output while the session
@@ -64,6 +64,14 @@ python3 "$DRV" --serial "$SER" --qmp "$QMP" --timeout 600 \
     "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
     "send:su - root -c 'bash /usr/lib/kryptik/guest-tests/gui-check.sh ${TUSER} 2>&1 | tee /var/log/kryptik/gui-check.log; echo GCHECK-DONE'" \
     "expect:Password: ?" "send:${RPASS}" \
+    "expect:GT KEY-FOCUS-CHILD" "key:alt+j" \
+    "expect:GT KEY-FOCUS-PARENT" "key:alt+j" \
+    "expect:GT KEY-PARENT-FULLSCREEN" "key:alt+e" \
+    "expect:GT KEY-FOCUS-BELOW" "key:alt+j" \
+    "expect:GT KEY-ZOOM-BELOW" "key:alt+ret" \
+    "expect:GT KEY-ZOOM-AGAIN" "key:alt+ret" \
+    "expect:GT KEY-FOCUS-LATE" "key:alt+j" \
+    "expect:GT KEY-LATE-FULLSCREEN" "key:alt+e" \
     "expect:GT KEY-FOCUS-ZONE" "key:alt+j" \
     "expect:GT SCREENSHOT-READY" "sleep:2" "screendump:${SHOT}" \
     "expect:GT KEY-FULLSCREEN\r?\n" "key:alt+e" \
@@ -99,20 +107,21 @@ for name in session-socket compositor-running chrome-focus-record chrome-window-
             map-keeps-zone0-focus focus-shows-zone focus-shows-label title-prefixed last-zone-recorded menu-opens-on-key menu-keeps-last-zone zone-fullscreen-refused compositor-survives-close oversize-window forged-title-named-by-zone second-zone-window zone0-own-programs-only zone-app-in-cgroup no-virtual-input clipboard-isolated clipboard-move-gesture clipboard-moved \
             transfer-policy no-question-for-policy-refusal consent-code-shown transfer-approved transfer-landed plain-y-refused denied-file-absent \
             second-head-appears chrome-follows-head second-head-zone-window second-head-names-zone second-head-gone compositor-survives-unplug zone-survives-unplug chrome-back-on-first-head \
-            zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown; do
+            zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown \
+            zone0-fullscreen-granted fullscreen-by-key zone-child-mapped child-focused parent-focused parent-fullscreen fullscreen-keeps-focus keyboard-stays-on-fullscreen zoom-keeps-keyboard zoom-twice-keeps-keyboard zone0-over-fullscreen-gets-keyboard zone0-window-ends-fullscreen child-ends-fullscreen; do
     grep -q "GT PASS ${name}" <<<"$T" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
 
 # ----------------------------------------------------------------- step 3 --
 step "step 3: the screenshots show every window framed on all four sides"
-check_shot() {   # check_shot FILE WHAT ZONE:focused|unfocused...
+check_shot() {   # check_shot FILE WHAT ZONE:focused|unfocused|fullscreen...
 local shot="$1" what="$2" verdict
 shift 2
 if [[ -s "$shot" ]]; then
-    # The colours and widths dwl was built with: the headers are the single source.
-    verdict="$(python3 - "$shot" "${SELF}/../../build/desktop/zone-colours.h" "${SELF}/../../build/desktop/dwl-config.h" "$@" <<'PY'
-import re, sys
-shot, colours_h, config_h, *want = sys.argv[1:]
+    # The colours, widths and lettering dwl was built with: its inputs are the single source.
+    verdict="$(python3 - "$shot" "${SELF}/../../build/desktop/zone-colours.h" "${SELF}/../../build/desktop/dwl-config.h" "${SELF}/../desktop/dwl-zone-borders.py" "$@" <<'PY'
+import importlib.util, re, sys
+shot, colours_h, config_h, borders_py, *want = sys.argv[1:]
 h = open(colours_h).read()
 c = open(config_h).read()
 named = {z: bytes.fromhex(v) for z, v in re.findall(r'X\("(\w+)",\s*0x([0-9a-f]{6})ff\)', h)}
@@ -120,6 +129,12 @@ named["unzoned"] = bytes.fromhex(re.search(r'KRYPTIK_UNZONED_BORDER\s+0x([0-9a-f
 root = bytes.fromhex(re.search(r'rootcolor\[\]\s*=\s*COLOR\(0x([0-9a-f]{6})ff\)', c).group(1))
 bw = int(re.search(r'\bborderpx\s*=\s*(\d+)', c).group(1))
 band = int(re.search(r'\bbandpx\s*=\s*(\d+)', c).group(1))
+barpx = int(re.search(r'\bbarpx\s*=\s*(\d+)', c).group(1))
+scale = int(re.search(r'\bbarscale\s*=\s*(\d+)', c).group(1))
+src = importlib.util.spec_from_file_location("borders", borders_py)
+borders = importlib.util.module_from_spec(src)
+src.loader.exec_module(borders)
+font = {ch: rows.split() for ch, rows in borders.FONT.items()}
 data = open(shot, "rb").read()
 # P6: magic, width, height, maxval (comments allowed), one whitespace, then pixels
 tokens = []; pos = 0
@@ -167,6 +182,20 @@ def frame(col):
                                     "left": run(x, ym, 1, 0, col), "right": run(x1, ym, -1, 0, col)}
     return None, None
 
+def bar(name, col):
+    """The top barpx rows over a fullscreen window as dwl draws them: the zone's
+    colour, and its name in capitals, black on a light colour, white on a dark."""
+    ink = bytes(3) if (0.299 * col[0] + 0.587 * col[1] + 0.114 * col[2]) / 255 > 0.5 else b"\xff" * 3
+    pad = (barpx - 7 * scale) // 2
+    lit = set()
+    for i, ch in enumerate(name):
+        for r, bits in enumerate(font.get(ch, ["00000"] * 7)):
+            for k, b in enumerate(bits):
+                if b == "1":
+                    lit |= {(pad + 6 * scale * i + scale * k + dx, pad + scale * r + dy)
+                            for dx in range(scale) for dy in range(scale)}
+    return [[ink if (x, y) in lit else col for x in range(w)] for y in range(barpx)], ink
+
 ok = True
 for spec in want:
     zone, state = spec.split(":")
@@ -175,6 +204,20 @@ for spec in want:
     if box is None:
         print(f"  {zone} ({state}): no frame in #{col.hex()} on screen")
         ok = False
+        continue
+    if state == "fullscreen":
+        rows, ink = bar("zone 0" if zone == "unzoned" else zone, col)
+        wrong = sum(at(x, y) != rows[y][x] for y in range(barpx) for x in range(w))
+        good = (box == (0, 0, w - 1, hgt - 1) and sides["top"] == barpx + bw and not wrong
+                and sides["bottom"] == sides["left"] == sides["right"] == bw)
+        print(f"  {zone} (fullscreen): frame {box[0]},{box[1]}-{box[2]},{box[3]} on {w}x{hgt}: top {sides['top']} bottom {sides['bottom']}"
+              f" left {sides['left']} right {sides['right']} px, want the whole screen, {barpx} bar + {bw} on top and {bw} elsewhere;"
+              f" bar: {wrong} px unlike its name{'' if good else '  <- WRONG'}")
+        if wrong:
+            # The bar's left end as seen: # ink, . the zone's colour, ? anything else.
+            for y in range(barpx):
+                print("    " + "".join("#" if at(x, y) == ink else "." if at(x, y) == col else "?" for x in range(min(w, 150))))
+        ok = ok and good
         continue
     expect = bw if state == "focused" else bw - band
     good = all(v == expect for v in sides.values())
@@ -192,14 +235,14 @@ print("FRAME-OK" if ok else "FRAME-BAD")
 PY
 )"
     printf '%s\n' "$verdict" | grep -v 'FRAME-'
-    [[ "$verdict" == *FRAME-OK* ]] && green "${what}: every window is framed in its zone's colour, at its width, on all four sides (${shot})" || red "${what}: a window's frame is missing or the wrong width (${shot})"
+    [[ "$verdict" == *FRAME-OK* ]] && green "${what}: every window is framed in its zone's colour, at its width, on all four sides (${shot})" || red "${what}: a window's frame or bar is missing or wrong (${shot})"
 else
     red "${what}: no screenshot was taken"
 fi
 }
 check_shot "$SHOT" "windowed" untrusted:focused unzoned:unfocused
-# A zone's fullscreen request leaves it tiled beside the trusted chrome.
-check_shot "$SHOT_FS" "fullscreen refused" untrusted:focused unzoned:unfocused
+# Alt+e: the window fills the screen below a bar that names its zone.
+check_shot "$SHOT_FS" "fullscreen" untrusted:fullscreen
 # wlprobe oversize commits a buffer 40 px larger than its configure: the
 # borders must stay above the surface, or its excess covers them.
 check_shot "$SHOT_OVER" "oversized buffer" untrusted:focused unzoned:unfocused
