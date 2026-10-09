@@ -94,10 +94,12 @@ smoke state-install --usb "$USB" --disk "$DISK" --testctl "$ctl" --vars clean --
 boot_txt | grep -q 'KRYPTIK_INSTALL: rc=0' && green "installed" || { red "install failed"; exit 1; }
 boot_txt | grep -q 'KRYPTIK_INSTALL: verify: preseed=none' && green "with no preseed" || red "a preseed was written"
 start_vm state-p1
-# Root's own password, at the getty: refused, since no terminal is root's.
-drive "expect:User name: ?$" "send:${TUSER}" \
-    "expect:New password for ${TUSER}: ?$" "send:${TPASS}" "expect:Again: ?$" "send:${TPASS}" \
-    "expect:New password for root: ?$" "send:${RPASS}" "expect:Again: ?$" "send:${RPASS}" \
+# The setup's prompts are matched unanchored: a service starting meanwhile may
+# print on their line. Root's own password at the getty is refused, as no
+# terminal is root's.
+drive "expect:User name: " "send:${TUSER}" \
+    "expect:New password for ${TUSER}: " "send:${TPASS}" "expect:Again: " "send:${TPASS}" \
+    "expect:New password for root: " "send:${RPASS}" "expect:Again: " "send:${RPASS}" \
     "seen:kryptik-firstboot: created user '${TUSER}'" "seen:KRYPTIK_SMOKE: END" \
     "knock:login: ?$" "send:root" "expect:Password: ?" "send:${RPASS}" "expect:Login incorrect" \
     "login:${TUSER}:${TPASS}" \
