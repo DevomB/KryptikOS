@@ -219,8 +219,8 @@ draws no titlebar: to name it in words, press Alt+p, then type f and Enter.
 The menu shows the zone's glyph and label and the window's title, which the
 zone's proxy prefixes with the zone's name, as `[untrusted] ...`. A zone's
 window that opens while another window has the keyboard does not take it,
-nor does it get it when that window closes: Alt+j, Alt+k or a click moves
-the keyboard there. Keys (Alt is the modifier):
+nor does it get it when that window closes: Alt+j, Alt+k, a click or the
+pointer moving onto it moves the keyboard there. Keys (Alt is the modifier):
 
 | keys | what |
 | --- | --- |
