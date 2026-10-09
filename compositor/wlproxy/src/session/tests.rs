@@ -344,12 +344,14 @@ fn with_subsurfaces(nested: bool) -> (Session, UnixStream, UnixStream) {
     s.objects.place(3, (protocol::find("wl_shm").unwrap(), 1));
     s.objects.place(8, (protocol::find("wl_compositor").unwrap(), 4));
     s.objects.place(10, (protocol::find("wl_subcompositor").unwrap(), 1));
-    for id in [11, 12, 14] {
-        c.write_all(&MessageWriter::new(8, 0).u32(id).finish().unwrap()).unwrap(); // create_surface
+    let surface = |id: u32| MessageWriter::new(8, 0).u32(id).finish().unwrap(); // create_surface
+    let sub = |id: u32, child: u32, parent: u32| MessageWriter::new(10, 1).u32(id).u32(child).u32(parent).finish().unwrap();
+    // In id order: the proxy refuses an id that skips one, as libwayland never does.
+    for m in [surface(11), surface(12), sub(13, 12, 11), surface(14)] {
+        c.write_all(&m).unwrap();
     }
-    c.write_all(&MessageWriter::new(10, 1).u32(13).u32(12).u32(11).finish().unwrap()).unwrap();
     if nested {
-        c.write_all(&MessageWriter::new(10, 1).u32(15).u32(14).u32(12).finish().unwrap()).unwrap();
+        c.write_all(&sub(15, 14, 12)).unwrap();
     }
     (s, c, sv)
 }
