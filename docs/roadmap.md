@@ -38,7 +38,11 @@ work in zones from a terminal and a text browser, and keep it up to date.
 - [x] **A clock that is right.** The net zone measures the offset with SNTP;
       zone 0 never goes below the build date, applies corrections up to an
       hour, and asks the user beyond that ([time design](design/time.md)).
-      Five guest checks prove it on the installed system.
+      Six guest checks prove it on the installed system: the floor's boot
+      service ran, a clock set to 2000 came back to the build date, a
+      release dated 2099 that the release key did not sign left the floor
+      alone, a claim of two minutes was applied, one before the build date
+      was refused, and a day's jump waited for the user.
 
 ### Trusted by someone who did not build it
 
@@ -53,7 +57,11 @@ work in zones from a terminal and a text browser, and keep it up to date.
       Acceptance's production part, with a throwaway key medium, proves a
       build signing with the medium it is handed and the installed system's
       half; `tools/tests/release-keys.sh` proves a production build refuses to
-      make keys of its own. The keys are still to be made.
+      make keys of its own. The statement key goes to the `github-pages`
+      environment, which only main's workflows reach, and
+      `tools/make-release-keys.sh` refuses to store it unless that
+      environment deploys from main alone (`tools/tests/make-release-keys.sh`).
+      The keys are still to be made.
 - [x] **No known-vulnerable pins.** Every pin behind its upstream has a review
       in `tools/pin-reviews.tsv`, and `tools/check-pin-reviews.sh` fails CI
       without one. No pin is held, and a release runs the gate with
@@ -62,11 +70,16 @@ work in zones from a terminal and a text browser, and keep it up to date.
       `tools/check-source-currency.sh` also says when glibc's release branch
       has moved past the commit its patch set was cut from.
 - [x] **An update channel** ([design](design/update-channel.md)). The net zone
-      fetches a release; zone 0 verifies it as it does a payload from disk.
-      `tools/release-channel.sh` publishes a release with its signed
-      statement and re-signs the statement on a schedule. Stage 06 publishes
-      each build with it, and the update suite fetches, stages, applies and
-      commits the release from that channel over the test network.
+      fetches a release; zone 0 verifies it as it does a payload from disk,
+      as nobody, on copies. `tools/release-channel.sh` publishes a release
+      with its signed statement and re-signs the statement on a schedule.
+      Stage 06 publishes each build with it, and the update suite fetches,
+      stages, applies and commits the release from that channel over the
+      test network. When no statement has come for 30 days, whether the
+      newest went old or none came since the install, the login prompt and
+      the launcher say so, and for an old one `kryptik update status`: the
+      update suite moves the clock to read the prompt and status, and the
+      desktop suite sets up both of the launcher's lines.
 - [x] **An encrypted state partition** ([design](design/state-encryption.md)).
       The install suite finds it is LUKS, asked for at boot and mounted on
       `/var`; the state suite boots degraded and says why when it is
@@ -96,13 +109,17 @@ work in zones from a terminal and a text browser, and keep it up to date.
       takes a cookie, since root can turn SMT back on through
       `/sys/devices/system/cpu/smt/control`.
 - [x] **The net zone's remaining hardening.** Decided, with the reasons, in
-      the [net zone design](design/net-zone.md).
+      the [net zone design](design/net-zone.md). Three ways to narrow what it
+      still reaches in the kernel are proposed to the owner in
+      [net zone surface](design/net-zone-surface.md).
 - [x] **Someone else has attacked it.** The broker protocol and
       `kryptik-wlproxy`'s wire parser are fuzzed in the unit suites with a
       corpus in the tree ([broker design](design/broker.md)). kryptikd's
       launch path, the update chain, the broker and the desktop boundary
       (`kryptik-wlproxy` and the compositor) have each been reviewed by
-      someone who did not write them, and what they found is fixed.
+      someone who did not write them, and what they found is fixed. So has
+      the net zone: what that read found is fixed, or stated in the
+      [threat model](threat-model.md#compromised-net-zone) where it stays.
 - [ ] **A release, as an object.** Version numbering, release notes from the
       acceptance report, the licences of everything shipped (firmware from
       `WHENCE`), the corresponding source, and install, update and recovery
@@ -146,10 +163,11 @@ work in zones from a terminal and a text browser, and keep it up to date.
       sysctls as applied.
 - [x] **Signatures as a gate.** `tools/verify-signatures.sh --strict` runs
       on every push in CI's source-manifest job. Every key has a published
-      route to its fingerprint (`tools/key-provenance.tsv`), except three no
-      publisher states (elfutils, file, flex), which `tools/source-notes.tsv`
-      accepts with the routes that were tried; a note left after its key is
-      held fails the gate.
+      route to its fingerprint (`tools/key-provenance.tsv`), except ten no
+      publisher states (elfutils, file, flex, libevdev, libmnl, lvm2,
+      wpa_supplicant, xkeyboard-config, zlib, zstd), which
+      `tools/source-notes.tsv` accepts with the routes that were tried; a
+      note left after its key is held fails the gate.
 - [x] **Zone 0 runs no user application, proven.** The desktop suite reads
       every process with a zone's terminal up: outside the zones' cgroups only
       zone 0's own programs run, and the zone's terminal is seen in its cgroup.
