@@ -227,25 +227,37 @@ fn carry_nic(nic: &str, zone_ns: i32) -> Result<Uplink, NetError> {
 /// next zone's script, nft set and dhcpcd would take that name as it is: one that is not plain
 /// becomes `nic<N>` first. It came back down, as a rename needs.
 ///
-/// A radio comes back with whatever netdevs that zone left on it, and leaves with one, as a
-/// boot gives it: one left with none gets a station, or nothing would carry it, and one left
-/// with several keeps the first, since moving its wiphy would take an AP, mesh or monitor
-/// netdev along, and a second station can knock the first off its network.
+/// A radio comes back with whatever netdevs that zone left on it, and leaves with one station,
+/// as a boot gives it. One with several loses them all, since which to keep would be that
+/// zone's choice, and moving the wiphy would take an AP, mesh or monitor netdev along; one with
+/// none, then or before, gets a fresh station, which takes the radio's own address.
 pub fn physical_interfaces() -> io::Result<Vec<String>> {
+    let class_net = Path::new("/sys/class/net");
+    let listed = physical_interfaces_under(class_net)?;
+    let mut per_radio = std::collections::BTreeMap::new();
+    for (_, _, phy) in &listed {
+        if let Some(p) = phy {
+            *per_radio.entry(*p).or_insert(0) += 1;
+        }
+    }
+    for (name, idx, phy) in &listed {
+        if phy.is_some_and(|p| per_radio[&p] > 1) {
+            if let Err(e) = netlink::del_interface(*idx) {
+                eprintln!("kryptikd: interface {name:?} on a radio with several could not be deleted: {e}");
+            }
+        }
+    }
     for phy in bare_radios(Path::new("/sys/class")) {
         match netlink::new_station(phy, "nic%d") {
-            Ok(()) => eprintln!("kryptikd: wiphy {phy} came back with no interface; it has a station now"),
-            Err(e) => eprintln!("kryptikd: wiphy {phy} came back with no interface, and none could be added: {e}"),
+            Ok(()) => eprintln!("kryptikd: wiphy {phy} came back with no interface or several; it has one station now"),
+            Err(e) => eprintln!("kryptikd: wiphy {phy} has no interface, and none could be added: {e}"),
         }
     }
     let mut out = Vec::new();
     let mut radios = std::collections::BTreeSet::new();
-    for (name, idx, phy) in physical_interfaces_under(Path::new("/sys/class/net"))? {
+    for (name, idx, phy) in physical_interfaces_under(class_net)? {
+        // A netdev that could not be deleted goes along with its radio's first.
         if phy.is_some_and(|p| !radios.insert(p)) {
-            match netlink::del_interface(idx) {
-                Ok(()) => eprintln!("kryptikd: interface {name:?} deleted: its radio leaves with one"),
-                Err(e) => eprintln!("kryptikd: interface {name:?} not deleted, so it goes with its radio: {e}"),
-            }
             continue;
         }
         if plain_name(name.as_bytes()) {

@@ -687,13 +687,14 @@ fi
 # A net zone can leave its radio with a second netdev or with none, and the
 # radio comes back to zone 0 so. Each round makes that change in the net
 # zone, stops it, waits for phy0 in zone 0 and starts it: the next zone must
-# get the radio with one station and join the access point again.
+# get the radio with one fresh station, not one the last zone named (amon0
+# sorts before the station), and join the access point again.
 radio_rounds=""
-radio_netdevs() { nsenter -t "${1:-0}" -n iw dev 2>/dev/null | grep -c '^[[:space:]]*Interface '; }
+radio_netdevs() { nsenter -t "${1:-0}" -n iw dev 2>/dev/null | awk '$1 == "Interface" { n++; s = s " " $2 } END { printf "%d%s", n, s }'; }
 for round in extra none; do
     ninit="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
     if [[ "$round" = extra ]]; then
-        nsenter -t "${ninit:-0}" -n iw phy phy0 interface add zmon0 type monitor > "$LOG/radio-$round.out" 2>&1
+        nsenter -t "${ninit:-0}" -n iw phy phy0 interface add amon0 type monitor > "$LOG/radio-$round.out" 2>&1
     else
         for w in $(nsenter -t "${ninit:-0}" -n iw dev 2>/dev/null | awk '$1 == "Interface" { print $2 }'); do
             nsenter -t "${ninit:-0}" -n iw dev "$w" del >> "$LOG/radio-$round.out" 2>&1
@@ -708,7 +709,8 @@ for round in extra none; do
     joined="did not join"; [[ "$line" == *" wifi=$AP_SSID "* ]] && joined=joined
     radio_rounds="${radio_rounds}${round}: left ${left}, back with $(radio_netdevs "$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"), ${joined}; "
 done
-if [[ "$radio_rounds" == "extra: left 2, back with 1, joined; none: left 0, back with 1, joined; " ]]; then
+fresh_radio='^extra: left 2 [^,]*, back with 1 nic[0-9]+, joined; none: left 0, back with 1 nic[0-9]+, joined; $'
+if [[ "$radio_rounds" =~ $fresh_radio ]]; then
     pass "radio-recarried" "netdevs on the radio as the net zone left it and as the next one got it: ${radio_rounds}"
 else
     fail "radio-recarried" "${radio_rounds}$(uncaught | grep -a 'kryptikd: \(wiphy\|interface\)' | tail -3 | tr '\n' ' ') $(tr '\n' ' ' < "$LOG/radio-extra.out")"
