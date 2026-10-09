@@ -301,7 +301,11 @@ When the newest statement is more than 30 days old, `status` says so, and so
 does every login prompt: "kryptik update: no statement from the release key
 for N days". Either nothing has been published, or something, the network or
 the net zone, is keeping releases from this machine. A machine that has never
-had one says so 30 days after it was installed.
+had one says so 30 days after it was installed. A clock that reads more than
+a day before the newest statement, or before the install, would refuse every
+statement to come, so that is said instead: "no statement from the release
+key can be accepted while this machine's clock reads N days before ...: set
+the clock".
 
 A release brought by hand is a signed payload directory holding exactly
 `manifest`, `manifest.sig`, `kryptik-root.img`, `kryptik-a.efi`,

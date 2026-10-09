@@ -391,6 +391,7 @@ wait_status() { printf '(i=0; until kryptik update status | grep -q "%s"; do i=$
 # The firmware may boot the last slot tried, so check for a; a signed statement is safe over http.
 # With the channel named and no statement yet, 31 days on the clock make the install the age that counts.
 # Then 31 days on the clock age the statement: status and every login prompt say so, and putting the clock back clears it.
+# Three days back, the clock reads before that statement, so every newer one would be refused: both say that too.
 UP_TO_STATEMENT=("expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'echo P8B-BOOTED-$(sed -n "s/^slot=//p" /run/kryptik/boot-identity | head -1)')" "expect:P8B-BOOTED-a" \
     "$(ROOTSH "mkdir -p /etc/kryptik && printf \"channel = http://10.0.2.2:${CHAN_PORT}/\\n\" > /etc/kryptik/update.conf && echo CONF-OK")" "expect:CONF-OK" \
@@ -402,7 +403,10 @@ UP_TO_STATEMENT=("expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'date -s @$(( $(date +%s) + 31 * 86400 )) >/dev/null && s6-svc -r /run/service/kryptikd-serve && (i=0; until test -s /run/issue.d/kryptik-update.issue; do i=$((i+1)); [ $i -lt 30 ] || exit 1; sleep 1; done) && echo AGED-OK')" "expect:AGED-OK" \
     "run:kryptik update status | grep -q 'no statement from the release key for [0-9]* days'" \
     "send:exit" "knock:kryptik update: no statement from the release key for [0-9]+ days" "login:${TUSER}:${TPASS}" \
-    "$(ROOTSH 'date -s @$(( $(date +%s) - 31 * 86400 )) >/dev/null && s6-svc -r /run/service/kryptikd-serve && (i=0; while test -e /run/issue.d/kryptik-update.issue; do i=$((i+1)); [ $i -lt 30 ] || exit 1; sleep 1; done) && echo FRESH-OK')" "expect:FRESH-OK")
+    "$(ROOTSH 'date -s @$(( $(date +%s) - 31 * 86400 )) >/dev/null && s6-svc -r /run/service/kryptikd-serve && (i=0; while test -e /run/issue.d/kryptik-update.issue; do i=$((i+1)); [ $i -lt 30 ] || exit 1; sleep 1; done) && echo FRESH-OK')" "expect:FRESH-OK" \
+    "$(ROOTSH 'date -s @$(( $(date +%s) - 3 * 86400 )) >/dev/null && s6-svc -r /run/service/kryptikd-serve && (i=0; until grep -q "clock reads [0-9]* days before the newest one" /run/issue.d/kryptik-update.issue 2>/dev/null; do i=$((i+1)); [ $i -lt 30 ] || exit 1; sleep 1; done) && echo BEHIND-OK')" "expect:BEHIND-OK" \
+    "run:kryptik update status | grep -q 'clock reads [0-9]* days before the newest one it accepted: set the clock'" \
+    "$(ROOTSH 'date -s @$(( $(date +%s) + 3 * 86400 )) >/dev/null && s6-svc -r /run/service/kryptikd-serve && (i=0; while test -e /run/issue.d/kryptik-update.issue; do i=$((i+1)); [ $i -lt 30 ] || exit 1; sleep 1; done) && echo SET-RIGHT-OK')" "expect:SET-RIGHT-OK")
 start_vm update-p8b --net user
 if [[ "$B_ROLE" == production ]]; then
     # A production image fetches no release over plain http, and the user who

@@ -239,6 +239,33 @@ fn a_machine_never_told_counts_from_its_install() {
 }
 
 #[test]
+fn a_clock_behind_the_newest_is_said() {
+    let d = scratch("behind");
+    // None accepted yet, and the clock reads five days before the install.
+    let line = stale_line(&d, T0 - 5 * 86400, Some(T0)).unwrap();
+    assert_eq!(line, "no statement from the release key can be accepted while this machine's clock reads 5 days before its install: set the clock");
+    assert_eq!(stale_line(&d, T0 - 86400, Some(T0)), None, "a statement may lead the clock by a day");
+    // One accepted, then the clock set back three days: every newer one would be refused as ahead of it.
+    let p = pointer_text("1.0.3", "2027-03-02T14:05:00Z");
+    latest(&d, &yes(), T0, "production", "1.0.2", p.as_bytes(), b"sig").unwrap();
+    let back = T0 - 3 * 86400;
+    let line = stale_line(&d, back, Some(T0)).unwrap();
+    assert!(line.ends_with("clock reads 2 days before the newest one it accepted: set the clock"), "{line}");
+    let said = status(&d, back, "1.0.2", Some(T0));
+    assert!(said.contains("newest     1.0.3 (dated 2 day(s) after this machine's clock)\n"), "{said}");
+    assert!(said.contains(&format!("           {line}\n")), "{said}");
+    let issue = scratch("behind-issue");
+    let notice = issue.join("kryptik-update.issue");
+    refresh_login_notice(&d, &notice, back, Some(T0)).unwrap();
+    assert_eq!(std::fs::read_to_string(&notice).unwrap(), format!("kryptik update: {line}\n"));
+    // Set right, the notice goes.
+    refresh_login_notice(&d, &notice, T0, Some(T0)).unwrap();
+    assert!(!notice.exists());
+    let _ = std::fs::remove_dir_all(&issue);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn release_is_staged_in_order() {
     let d = scratch("stage");
     let p = pointer_text("1.0.3", "2027-03-02T14:05:00Z");
