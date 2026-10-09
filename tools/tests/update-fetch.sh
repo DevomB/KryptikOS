@@ -175,5 +175,27 @@ out="$(python3 "$FETCH" latest --conf "$T/dead.conf" --broker "$T/broker.sock" 2
 [[ "$rc" = 1 && "$out" == update-fetch:* ]] \
     && ok "a host that does not answer is one line and exit 1, not a traceback" || bad "dead host: rc=$rc out=$out"
 
+# --- a redirect off https ------------------------------------------------------------------
+out="$(python3 - "$FETCH" <<'EOF' 2>&1
+import importlib.util, sys, urllib.error, urllib.request
+spec = importlib.util.spec_from_file_location("fetch", sys.argv[1])
+fetch = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fetch)
+h = fetch.StayOnTLS()
+req = urllib.request.Request("https://channel.example/stable/1.0.3/kryptik-root.img")
+for to in ("http://channel.example/stable/1.0.3/kryptik-root.img", "ftp://channel.example/x"):
+    try:
+        h.redirect_request(req, None, 302, "Found", {}, to)
+        print("FOLLOWED", to)
+    except urllib.error.HTTPError as e:
+        print("REFUSED", to, e.code)
+new = h.redirect_request(req, None, 302, "Found", {}, "https://objects.example/abc")
+print("HTTPS-FOLLOWED" if new.full_url == "https://objects.example/abc" else "HTTPS-LOST")
+EOF
+)"
+[[ "$out" == *"REFUSED http://"* && "$out" == *"REFUSED ftp://"* && "$out" != *FOLLOWED\ * && "$out" == *HTTPS-FOLLOWED* ]] \
+    && ok "a redirect from https to http or ftp is refused, and one to another https host is followed" \
+    || bad "redirects off https: $(tr '\n' ' ' <<<"$out")"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
