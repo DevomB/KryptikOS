@@ -60,10 +60,8 @@ Someone holding the disk can do two things to it.
     opens it again;
   - the shadow file, so an old login password works again.
 
-Both state documents say the writer "cannot choose what a block decrypts to"
-(`docs/design/state-encryption.md:43-44`, `docs/threat-model.md:55-56`). That
-holds for new contents only. A writer with an earlier copy chooses among a
-block's earlier contents.
+So a writer cannot choose new contents for a block, but one with an earlier
+copy chooses among the block's earlier contents.
 
 The partition's own LUKS2 header is outside all this: it is in the clear, and
 an earlier header brings back an earlier passphrase whatever the data layer
@@ -219,11 +217,3 @@ the cost twice.
   and the wipe fits a stated time, with the check above.
 - Treat freshness as its own problem, solved with the TPM, not with
   dm-integrity.
-- Whatever is decided, correct the two sentences now:
-  - `state-encryption.md:43-44`: "XTS lets an offline writer corrupt a
-    block, though not choose new contents for it; one with an earlier copy
-    of the disk can put a block back as it was, and nothing notices."
-  - `threat-model.md:55-56`: "someone holding the disk cannot choose new
-    contents for a block, but can damage blocks, destroy the header, or,
-    with an earlier copy of the disk, put a block or the header back as it
-    was".
