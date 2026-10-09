@@ -1063,7 +1063,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
             let done = match verb {
                 "update-status" => {
                     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-                    Ok(up::status(dir, now, &running))
+                    Ok(up::status(dir, now, &running, up::expecting_since()))
                 }
                 "update-fetch" => {
                     let conf = std::fs::read_to_string(up::CONF).unwrap_or_default();
@@ -1279,7 +1279,8 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
         if notice_due.is_some_and(|due| Instant::now() >= due) {
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
             let notice = Path::new(crate::update::LOGIN_NOTICE);
-            if let Err(e) = crate::update::refresh_login_notice(Path::new(crate::update::STATE_DIR), notice, now) {
+            let since = crate::update::expecting_since();
+            if let Err(e) = crate::update::refresh_login_notice(Path::new(crate::update::STATE_DIR), notice, now, since) {
                 eprintln!("kryptikd serve: {e}");
             }
             notice_due = Some(Instant::now() + NOTICE_EVERY);

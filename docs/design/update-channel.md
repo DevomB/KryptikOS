@@ -74,8 +74,10 @@ latest.sig    an OpenSSH signature over those bytes, namespace kryptik-latest
   release key for N days: either nothing has been published, or something is
   keeping it from this machine", by `kryptik update status` and above every
   login prompt, from `/run/issue.d/kryptik-update.issue`, which the launch
-  service writes as it starts and checks hourly. That needs a clock the net
-  zone cannot set.
+  service writes as it starts and checks hourly. A machine whose image names a
+  channel and that has accepted none reports it 30 days after its install,
+  the time the installer wrote `/var/lib/kryptik/install.json`. That needs a
+  clock the net zone cannot set.
 
 **Which key signs it.** Re-signing on a schedule needs a key a timer can
 reach, and the release key signs only in a release run its maintainer

@@ -230,6 +230,9 @@ pub const STATE_DIR: &str = "/var/lib/kryptik/update";
 pub const TOOL: &str = "/usr/sbin/kryptik-update";
 pub const ROLE_FILE: &str = "/usr/share/kryptik/trust/required-role";
 pub const CONF: &str = "/etc/kryptik/update.conf";
+/// What the installer wrote on the state partition, once: its age is how long a machine that has
+/// never accepted a statement has gone without one.
+pub const INSTALL_RECORD: &str = "/var/lib/kryptik/install.json";
 /// Largest `update-put`, so the launcher never goes long without checking its zone.
 pub const PUT_MAX: usize = 1 << 20;
 
@@ -632,11 +635,16 @@ pub fn put(dir: &Path, checks: &Checks, now: i64, name: &str, offset: u64, bytes
     Ok(format!("{name} complete; the manifest verifies, {} file(s), {need} bytes", files.len()))
 }
 
-/// `kryptik update status`, as lines for the user.
-pub fn status(dir: &Path, now: i64, running: &str) -> String {
+/// `kryptik update status`, as lines for the user; `since` as for `stale_line`.
+pub fn status(dir: &Path, now: i64, running: &str, since: Option<i64>) -> String {
     let mut out = format!("running    {running}\n");
     match stored_pointer(dir) {
-        None => out.push_str("newest     unknown: no statement of what is current has been accepted\n"),
+        None => {
+            out.push_str("newest     unknown: no statement of what is current has been accepted\n");
+            if let Some(line) = stale_line(dir, now, since) {
+                out.push_str(&format!("           {line}\n"));
+            }
+        }
         Some(p) => {
             let (days, stale) = staleness(now, p.issued);
             out.push_str(&format!("newest     {} (stated {days} day(s) ago)\n", p.version));
@@ -669,15 +677,37 @@ fn overdue(days: i64) -> String {
     format!("no statement from the release key for {days} days: either nothing has been published, or something is keeping it from this machine")
 }
 
-/// `overdue` for the newest accepted statement, if it is; never before one was accepted.
-pub fn stale_line(dir: &Path, now: i64) -> Option<String> {
-    let (days, stale) = staleness(now, stored_pointer(dir)?.issued);
-    stale.then(|| overdue(days))
+/// The same for a machine that has never accepted one, counted from its install.
+fn never_heard(days: i64) -> String {
+    format!("no statement from the release key since this machine was installed, {days} days ago: either nothing has been published, or something is keeping it from this machine")
+}
+
+/// `overdue` for the newest accepted statement once it is stale. With none accepted, `never_heard`
+/// once `since` is as old: the install, where the image names a channel.
+pub fn stale_line(dir: &Path, now: i64, since: Option<i64>) -> Option<String> {
+    if let Some(p) = stored_pointer(dir) {
+        let (days, stale) = staleness(now, p.issued);
+        return stale.then(|| overdue(days));
+    }
+    let (days, stale) = staleness(now, since?);
+    stale.then(|| never_heard(days))
+}
+
+/// When the record was written, which is when the machine was installed.
+pub fn installed_at(record: &Path) -> Option<i64> {
+    let t = std::fs::metadata(record).ok()?.modified().ok()?;
+    t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64)
+}
+
+/// The install, if this image names a channel: from then on, statements are expected.
+pub fn expecting_since() -> Option<i64> {
+    channel_from(&std::fs::read_to_string(CONF).unwrap_or_default())?;
+    installed_at(Path::new(INSTALL_RECORD))
 }
 
 /// Write `stale_line` to `notice` for the login prompt, or remove it once there is none.
-pub fn refresh_login_notice(dir: &Path, notice: &Path, now: i64) -> Result<(), String> {
-    let Some(line) = stale_line(dir, now) else {
+pub fn refresh_login_notice(dir: &Path, notice: &Path, now: i64, since: Option<i64>) -> Result<(), String> {
+    let Some(line) = stale_line(dir, now, since) else {
         return match std::fs::remove_file(notice) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("{}: {e}", notice.display())),
             _ => Ok(()),

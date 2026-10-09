@@ -389,10 +389,13 @@ wait_arrival() { printf '%s' '(prev=; same=0; i=0; while [ $i -lt 72 ]; do s="$(
 # Prints $2 once status shows $1 (echo is off, so only output shows it); giving up fails the step.
 wait_status() { printf '(i=0; until kryptik update status | grep -q "%s"; do i=$((i+1)); [ $i -lt 72 ] || exit 1; sleep 5; done) && echo %s || { kryptik update status; false; }' "$1" "$2"; }
 # The firmware may boot the last slot tried, so check for a; a signed statement is safe over http.
+# With the channel named and no statement yet, 31 days on the clock make the install the age that counts.
 # Then 31 days on the clock age the statement: status and every login prompt say so, and putting the clock back clears it.
 UP_TO_STATEMENT=("expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'echo P8B-BOOTED-$(sed -n "s/^slot=//p" /run/kryptik/boot-identity | head -1)')" "expect:P8B-BOOTED-a" \
     "$(ROOTSH "mkdir -p /etc/kryptik && printf \"channel = http://10.0.2.2:${CHAN_PORT}/\\n\" > /etc/kryptik/update.conf && echo CONF-OK")" "expect:CONF-OK" \
+    "$(ROOTSH 'date -s @$(( $(date +%s) + 31 * 86400 )) >/dev/null && s6-svc -r /run/service/kryptikd-serve && (i=0; until test -s /run/issue.d/kryptik-update.issue; do i=$((i+1)); [ $i -lt 30 ] || exit 1; sleep 1; done) && cat /run/issue.d/kryptik-update.issue && echo NEVER-TOLD-OK')" "expect:since this machine was installed, [0-9]+ days ago" "expect:NEVER-TOLD-OK" \
+    "$(ROOTSH 'date -s @$(( $(date +%s) - 31 * 86400 )) >/dev/null && s6-svc -r /run/service/kryptikd-serve && (i=0; while test -e /run/issue.d/kryptik-update.issue; do i=$((i+1)); [ $i -lt 30 ] || exit 1; sleep 1; done) && echo NEVER-TOLD-CLEARED')" "expect:NEVER-TOLD-CLEARED" \
     "$(ROOTSH "$RESTART_NET")" "expect:NET-RESTARTED" \
     "run:kryptik update status | grep -q 'nothing asked for'" \
     "run:$(wait_status "newest     ${VB} " STATED-OK)" "expect:STATED-OK" \
