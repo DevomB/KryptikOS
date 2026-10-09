@@ -306,6 +306,72 @@ fn pool_budget_follows_buffers() {
     assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (1, 4096));
 }
 
+fn delete_ids(sv: &mut UnixStream, ids: &[u32]) {
+    for id in ids {
+        sv.write_all(&MessageWriter::new(1, WL_DISPLAY_DELETE_ID).u32(*id).finish().unwrap()).unwrap();
+    }
+}
+
+/// The compositor holds a committed buffer past its wl_buffer and pool: the pool stays charged.
+#[test]
+fn committed_buffer_keeps_its_pool_charged() {
+    let (mut s, mut c, mut sv) = make();
+    s.objects.place(3, (protocol::find("wl_shm").unwrap(), 1));
+    s.objects.place(8, (protocol::find("wl_compositor").unwrap(), 4));
+    let (fd, _) = UnixStream::pair().unwrap();
+    c.write_all(&MessageWriter::new(8, 0).u32(9).finish().unwrap()).unwrap(); // create_surface -> 9
+    send_with_fd(c.as_raw_fd(), &MessageWriter::new(3, 0).u32(4).i32(4096).finish().unwrap(), fd.as_raw_fd());
+    c.write_all(&MessageWriter::new(4, 0).u32(5).i32(0).i32(16).i32(16).i32(64).u32(1).finish().unwrap()).unwrap();
+    c.write_all(&MessageWriter::new(9, 1).u32(5).i32(0).i32(0).finish().unwrap()).unwrap(); // attach 5
+    c.write_all(&MessageWriter::new(9, 6).finish().unwrap()).unwrap(); // commit
+    c.write_all(&MessageWriter::new(5, 0).finish().unwrap()).unwrap(); // the buffer's destroy
+    c.write_all(&MessageWriter::new(4, 1).finish().unwrap()).unwrap(); // the pool's destroy
+    pump_all(&mut s).unwrap();
+    delete_ids(&mut sv, &[5, 4]);
+    pump_all(&mut s).unwrap();
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (1, 4096));
+    // A commit with no buffer lets it go.
+    c.write_all(&MessageWriter::new(9, 1).u32(0).i32(0).i32(0).finish().unwrap()).unwrap();
+    c.write_all(&MessageWriter::new(9, 6).finish().unwrap()).unwrap();
+    pump_all(&mut s).unwrap();
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (0, 0));
+}
+
+/// A subsurface's commits are cached until its root commits, each buffer with them.
+#[test]
+fn subsurface_commits_held_until_the_root_commits() {
+    let (mut s, mut c, mut sv) = make();
+    s.objects.place(3, (protocol::find("wl_shm").unwrap(), 1));
+    s.objects.place(8, (protocol::find("wl_compositor").unwrap(), 4));
+    s.objects.place(10, (protocol::find("wl_subcompositor").unwrap(), 1));
+    let (fd, _) = UnixStream::pair().unwrap();
+    c.write_all(&MessageWriter::new(8, 0).u32(11).finish().unwrap()).unwrap(); // root surface 11
+    c.write_all(&MessageWriter::new(8, 0).u32(12).finish().unwrap()).unwrap(); // surface 12
+    c.write_all(&MessageWriter::new(10, 1).u32(13).u32(12).u32(11).finish().unwrap()).unwrap(); // 12 under 11
+    for (pool, buf) in [(4u32, 5u32), (6, 7)] {
+        send_with_fd(c.as_raw_fd(), &MessageWriter::new(3, 0).u32(pool).i32(4096).finish().unwrap(), fd.as_raw_fd());
+        c.write_all(&MessageWriter::new(pool, 0).u32(buf).i32(0).i32(16).i32(16).i32(64).u32(1).finish().unwrap()).unwrap();
+        c.write_all(&MessageWriter::new(12, 1).u32(buf).i32(0).i32(0).finish().unwrap()).unwrap();
+        c.write_all(&MessageWriter::new(12, 6).finish().unwrap()).unwrap();
+        c.write_all(&MessageWriter::new(buf, 0).finish().unwrap()).unwrap();
+        c.write_all(&MessageWriter::new(pool, 1).finish().unwrap()).unwrap();
+    }
+    pump_all(&mut s).unwrap();
+    delete_ids(&mut sv, &[5, 4, 7, 6]);
+    pump_all(&mut s).unwrap();
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (2, 8192));
+    // The root's commit applies the subsurface's last: the first pool goes.
+    c.write_all(&MessageWriter::new(11, 6).finish().unwrap()).unwrap();
+    pump_all(&mut s).unwrap();
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (1, 4096));
+    // With the surface gone, nothing is held.
+    c.write_all(&MessageWriter::new(12, 0).finish().unwrap()).unwrap();
+    pump_all(&mut s).unwrap();
+    delete_ids(&mut sv, &[12]);
+    pump_all(&mut s).unwrap();
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (0, 0));
+}
+
 #[test]
 fn messages_respect_bound_versions() {
     for (interface, request, dir) in [
