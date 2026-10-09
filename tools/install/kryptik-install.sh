@@ -19,6 +19,14 @@ slot_size_ok() {   # slot_size_ok ASKED NEEDED: both in MiB, or die
     [ "$1" -ge "$2" ] || die "--slot-size $1 is less than the $2 MiB a slot needs: the image, and room for a later, larger one"
 }
 
+# First boot reads the preseed after the disk is written, so a preseed it
+# could not use is refused here, with the other refusals.
+preseed_ok() {   # preseed_ok FILE: readable, naming a user and a password hash, or die
+    [ -r "$1" ] || die "cannot read the preseed ${1}; nothing was written"
+    grep -q '^user=.' "$1" && grep -q '^password_hash=.' "$1" \
+        || die "the preseed ${1} names no user= and password_hash=; nothing was written"
+}
+
 TARGET=""
 ASSUME_YES=0
 REPLACE=0
@@ -77,6 +85,7 @@ part_dev() {
 # What the medium's root.json may be trusted for, shared with kryptik-recover.
 . /usr/libexec/kryptik/medium-root.sh
 [ -z "$KEYBOARD" ] || kb_row "$KEYBOARD" > /dev/null || die "no keyboard layout named ${KEYBOARD}: kryptik keyboard lists them"
+[ -z "$PRESEED" ] || preseed_ok "$PRESEED"
 
 # --- refuse anything that is not a disposable whole disk -------------------
 [ -b "$TARGET" ] || die "${TARGET} is not a block device.
@@ -327,9 +336,9 @@ cat > "$MNT_BASE/state/lib/kryptik/install.json" <<EOF
   "committed_slot": "a"
 }
 EOF
-if [ -n "$PRESEED" ] && [ -r "$PRESEED" ]; then
+if [ -n "$PRESEED" ]; then
     umask 077
-    cp "$PRESEED" "$MNT_BASE/state/lib/kryptik/firstboot.preseed"
+    cp "$PRESEED" "$MNT_BASE/state/lib/kryptik/firstboot.preseed" || die "could not install the preseed"
     chmod 0600 "$MNT_BASE/state/lib/kryptik/firstboot.preseed"
     say "first-boot preseed installed"
 fi
