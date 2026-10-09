@@ -1,7 +1,7 @@
 /* wlprobe: list the Wayland globals a client is offered, and try to bind one.
- * A raw-socket client without libwayland (wire format: compositor/wlproxy's
- * wire.rs). In a zone it shows what the zone's proxy lets through; in zone 0,
- * the compositor's full set.
+ * A raw-socket client without libwayland (wire format: compositor/wlproxy/src/wire.rs).
+ * In a zone it shows what the zone's proxy lets through; in zone 0, the
+ * compositor's full set.
  *
  *   wlprobe list              print "global <name> <interface> <version>" per global
  *   wlprobe bind INTERFACE    list, then bind INTERFACE by its offered name
@@ -119,8 +119,7 @@ static struct global globals[256];
 static int nglobals;
 static int errored;
 
-/* oversize: the window's objects, by the ids this client gives them. A new
- * id must be the next unused one (the registry is 2, its sync 3). */
+/* oversize's object ids: each new id is the next unused one (the registry is 2, its sync 3). */
 enum { COMPOSITOR = 4, SHM, WM_BASE, SURFACE, XDG_SURFACE, TOPLEVEL };
 static int oversize, charge, drawn, draw_failed, extra, conf_w, conf_h, closed;
 static int askfs, conf_fs;
@@ -368,8 +367,7 @@ static int bind_global(const char *iface, uint32_t id)
 	return send_msg(2, 0, b, n);               /* wl_registry.bind */
 }
 
-/* Map one window and answer each configure with an oversized buffer until
- * `seconds` pass or the compositor closes it. */
+/* Map a window and answer each configure oversized, for `seconds` or until it is closed. */
 static int hold_oversize(int more, int seconds, const char *title)
 {
 	unsigned char b[280];                      /* a 255-byte title, its length and padding */
@@ -469,8 +467,7 @@ int main(int argc, char **argv)
 	if (!strcmp(argv[1], "charge")) { charge = 1; return hold_oversize(0, 10, "shm-charge"); }
 	if (!strcmp(argv[1], "cursor")) { cursor = 1; return hold_oversize(0, atoi(argv[2]), "cursor"); }
 
-	/* A filtered client cannot know a hidden global's name, so guess 1; the
-	 * proxy must refuse either way. */
+	/* A hidden global's name is unknown to a filtered client: guess 1, refused either way. */
 	const char *want = argv[2];
 	uint32_t name = 1, version = 1;
 	for (int i = 0; i < nglobals; i++) if (!strcmp(globals[i].iface, want)) { name = globals[i].name; version = globals[i].version; }
