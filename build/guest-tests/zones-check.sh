@@ -826,6 +826,15 @@ for _ in $(seq 1 40); do
 done
 "$KD" stop untrusted >/dev/null 2>&1; wait "$UCPU" 2>/dev/null
 [[ "$cpu_line" == "200000 100000" ]] && pass "cpu-max-set" "untrusted's cgroup has cpu.max=${cpu_line} (its file says cpu_max = \"200%\")" || fail "cpu-max-set" "cpu.max=${cpu_line:-unread}: $(tail -2 "$LOG/untrusted-cpu.out" | tr '\n' ' ')"
+# The net zone parses what the network sends: the leaf its processes are in
+# holds it to one CPU's worth. The wait covers a restart still under way.
+net_cpu=""
+for _ in $(seq 1 40); do
+    for leaf in /sys/fs/cgroup/kryptik/net.*; do grep -qx 'populated 1' "$leaf/cgroup.events" 2>/dev/null && net_cpu="$(cat "$leaf/cpu.max")"; done
+    [[ -n "$net_cpu" ]] && break; sleep 0.5
+done
+[[ "$net_cpu" == "100000 100000" ]] && pass "net-cpu-max-set" "the net zone's cgroup has cpu.max=${net_cpu} (net.toml says cpu_max = \"100%\")" \
+    || fail "net-cpu-max-set" "the net zone's cpu.max=${net_cpu:-unread} ($(ls -d /sys/fs/cgroup/kryptik/net.* 2>/dev/null | tr '\n' ' '))"
 # lifecycle: repeated start/stop, stop while running, registry clean
 repeat_bad=""
 for i in 1 2 3; do zrun untrusted 20 -- true; [[ "$ZRC" = 0 ]] || repeat_bad="$repeat_bad start $i exited $ZRC;"; done

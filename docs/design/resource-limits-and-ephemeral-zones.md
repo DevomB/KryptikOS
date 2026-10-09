@@ -24,7 +24,9 @@ change it.
   `memory.oom.group = 1` (an OOM kills the whole zone, never one process
   while the rest keep its files and sockets) and `memory.swap.max = 0`.
   `cpu_max` is a percentage of one CPU (`"200%"` is two CPUs' worth of time)
-  written as a quota per 100 ms period. `io_max` is bytes per second each
+  written as a quota per 100 ms period. The shipped `untrusted` has `"200%"`
+  and `net` `"100%"`: the net zone parses what the network sends, and a flaw
+  there must not take the machine. `io_max` is bytes per second each
   way, written to `io.max` for the zone's volume mapping and for the devices
   under it, so the bytes count wherever the encrypted writes land. A
   partition among them counts as its disk, the only thing `io.max` takes.

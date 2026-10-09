@@ -21,6 +21,8 @@ seccomp  = "policy/net.seccomp"
 [limits]
 memory_max = "1G"
 pids_max   = 256
+# One CPU's worth of time: a flaw in what parses the network must not take the machine.
+cpu_max    = "100%"
 
 [identity]
 # Root inside maps to host uid/gid 196608, dhcpcd's user (100) to 196708 and nobody to 262142;
