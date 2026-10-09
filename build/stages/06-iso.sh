@@ -206,7 +206,7 @@ tmpfs    /dev/shm  tmpfs    nosuid,nodev         0 0
 EOF
 
     # The objects that ship, audited as they are packed: a finding fails the
-    # build here; make acceptance audits the sysroot again for the record.
+    # build here; make acceptance audits the image again for the record.
     "${KRYPTIK_ROOT}/tools/check-artifact-hardening.sh" --strict "$stage"
 
     echo "--- ext4 (${fs_bytes} bytes, no journal, read-only by design) ---"
