@@ -412,6 +412,48 @@ if [[ -n "$uplink4" && "$ZOUT" == *GATEWAY-OK* && "$ZOUT" == *UPLINK4-REFUSED* &
 else
     fail "uplink-address-refused" "the net zone's uplink addresses: ${uplink4:-none} ${uplink6:-none}; untrusted (rc ${ZRC}): $(tr '\n' ' ' <<<"$ZOUT") $(tail -2 "$LOG/untrusted.err" | tr '\n' ' ')"
 fi
+# One routed zone holds at most an eighth of the conntrack table every zone's
+# flows share. untrusted opens more flows than that, half through the net zone
+# toward an unused address on its local network, where nothing answers, and
+# half to the net zone's resolver from ports of their own; the table must grow
+# by no more than its share.
+ct_max="$(netns cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null)"
+ct_cap=$(( ${ct_max:-0} / 8 )); [[ "$ct_cap" -ge 1024 ]] || ct_cap=1024
+ct_before="$(netns cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null)"
+zrun untrusted 60 -- python3 -c '
+import socket, sys
+n = int(sys.argv[1])
+sent = 0
+for i in range(n // 2):
+    if i % 60000 == 0:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.sendto(b"zt", ("10.0.2.99", 1024 + i % 60000))
+        sent += 1
+    except OSError:
+        pass
+for i in range(n - n // 2):
+    t = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        t.bind(("0.0.0.0", 1024 + i % 30000))
+        t.sendto(b"zt", ("10.19.0.1", 53))
+        sent += 1
+    except OSError:
+        pass
+    t.close()
+print("SENT %d" % sent)
+' "$((ct_cap + 4000))"
+ct_after="$(netns cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null)"
+ct_sent="$(sed -n 's/^SENT \([0-9]*\)$/\1/p' <<<"$ZOUT")"
+if [[ -z "$ct_max" || -z "$ct_before" || -z "$ct_after" ]]; then
+    fail "zone-flows-capped" "the net zone's conntrack table could not be read: max ${ct_max:-?}, before ${ct_before:-?}, after ${ct_after:-?}"
+elif [[ "${ct_sent:-0}" -lt $((ct_cap + 2000)) ]]; then
+    fail "zone-flows-capped" "untrusted sent ${ct_sent:-no} flows of $((ct_cap + 4000)): $(tail -2 "$LOG/untrusted.err" | tr '\n' ' ')"
+elif (( ct_after - ct_before > ct_cap + 512 )); then
+    fail "zone-flows-capped" "untrusted's ${ct_sent} flows took $((ct_after - ct_before)) entries of ${ct_max}; its share is ${ct_cap}"
+else
+    pass "zone-flows-capped" "untrusted's ${ct_sent} new flows took $((ct_after - ct_before)) entries, within its share of ${ct_cap} of ${ct_max}"
+fi
 
 # net zone restart: routed zones fail closed while it is down, recover after
 before="$(ready_count)"

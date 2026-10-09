@@ -106,11 +106,15 @@ query and the [update](update-channel.md) fetcher. Builds on
   uplink's own network refused but to the zones whose definition opens it
   ([below](#the-uplinks-own-networks)); bridge to bridge dropped;
   `10.19.0.0/24` and `fd19::/64` masqueraded out of every uplink; new DNS
-  connections arriving on an uplink dropped. From the bridge the net zone
-  takes in only what it serves there: DNS and echo requests on `10.19.0.1`
-  and `fd19::1`, neighbour discovery, and replies. Whatever else listens in
-  it is no zone's to reach: dhcpcd, once it holds two uplinks, listens on
-  every address, the bridge's among them.
+  connections arriving on an uplink dropped. Each routed zone may hold an
+  eighth of the zone's conntrack table, which every zone's flows fill
+  together: nft's `ct count` on the MAC both its addresses are pinned to,
+  for flows through the net zone and flows to it. Past its share, a zone's
+  new flows are dropped and the others' still pass. From the bridge the net
+  zone takes in only what it serves there: DNS and echo requests on
+  `10.19.0.1` and `fd19::1`, neighbour discovery, and replies. Whatever else
+  listens in it is no zone's to reach: dhcpcd, once it holds two uplinks,
+  listens on every address, the bridge's among them.
 - **The resolver:** `dnsmasq` on 10.19.0.1, fd19::1 and 127.0.0.1,
   forwarding to the uplink lease's servers (QEMU's 10.0.2.3 when nothing else
   is known), restarted if it dies. It binds as the zone's root and then runs
@@ -352,7 +356,7 @@ as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
 
 `VETH` and `BRIDGE` (`hardening.fragment`). Built in (`boot.fragment`):
 `NF_TABLES`, `NF_TABLES_INET`, `NF_TABLES_IPV4`, `NF_TABLES_IPV6`, `NFT_NAT`,
-`NFT_MASQ`, `NFT_CT`, `NFT_REJECT`, `NF_NAT` and `NF_CONNTRACK`; netfilter
+`NFT_MASQ`, `NFT_CT`, `NFT_REJECT`, `NFT_CONNLIMIT`, `NF_NAT` and `NF_CONNTRACK`; netfilter
 cannot be modular because the net zone loads its ruleset from inside a user
 namespace, for which the kernel does not autoload modules.
 `NF_TABLES_BRIDGE`, `BRIDGE_NETFILTER` and `NFT_COMPAT` are off. xtables
