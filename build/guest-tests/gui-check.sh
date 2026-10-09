@@ -103,14 +103,15 @@ done
 [[ -z "$hidden_seen" ]] && pass "zone-hidden-globals" "no capture, clipboard, layer-shell, virtual-input, dmabuf-export, gamma, output-management or session-lock global reaches the zone" || fail "zone-hidden-globals" "reached the zone:$hidden_seen"
 # No zone reaches the compositor's socket: of every socket untrusted's user can
 # find, none is the one dwl listens on, and its own is the proxy's. Each file is
-# stat'ed: a socket bound in over a file is a file to readdir, so find's -type
-# never sees one.
+# stat'ed, which sees through a socket bound in over a file. The launcher marks
+# each line of a zone's output in its log ("zone untrusted| "), so the lines
+# are found unanchored.
 comp="$(stat -c '%d:%i' "$RT/wayland-0" 2>/dev/null)"
 mark socks untrusted
 launch_plain untrusted "sh -c 'find / -path /proc -prune -o -path /sys -prune -o -exec stat -c \"T-%F %d:%i %n\" {} + 2>/dev/null | grep \"^T-socket \" | sed \"s/^T-socket /SOCK /\"; echo SOCKS-DONE'" > "$LOG/launch-socks.out" 2>&1
 socks_done() { since_mark socks untrusted | grep -q SOCKS-DONE; }
 wait_for 120 socks_done
-socks="$(since_mark socks untrusted | grep '^SOCK ')"
+socks="$(since_mark socks untrusted | grep -o 'SOCK [0-9][0-9]*:[0-9][0-9]* .*')"
 if [[ -z "$comp" ]] || ! socks_done; then
     fail "compositor-socket-unreached" "the compositor's socket (${comp:-not found}) or the zone's list ($(since_mark socks untrusted | tail -2 | tr '\n' ' ')) could not be read"
 elif [[ "$socks" != *" /run/kryptik/wayland-0"* ]]; then
