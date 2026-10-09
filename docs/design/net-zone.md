@@ -109,19 +109,25 @@ query and the [update](update-channel.md) fetcher. Builds on
   connections arriving on an uplink dropped.
 - **The resolver:** `dnsmasq` on 10.19.0.1, fd19::1 and 127.0.0.1,
   forwarding to the uplink lease's servers (QEMU's 10.0.2.3 when nothing else
-  is known), restarted if it dies. A lease that comes after it started, or
-  another network's, reaches it within ten seconds: the zone's loop compares
-  the servers `resolv.conf` names with the ones dnsmasq was given, and on a
-  change replaces the file and sends SIGHUP. A lease that lapsed leaves the
-  last servers in place. It answers the test TLD `.test` itself, so
-  resolving `kryptik.test` tests the path to the resolver, not the internet.
+  is known), restarted if it dies. It binds as the zone's root and then runs
+  as the zone's nobody, with no capability but `CAP_NET_BIND_SERVICE` (for
+  fd19::1, which stays tentative until the bridge has a port), so a bug in
+  what parses an answer does not hold the zone's root. A lease that comes
+  after it started, or another network's, reaches it within ten seconds: the
+  zone's loop compares the servers `resolv.conf` names with the ones dnsmasq
+  was given and on a change replaces the file, which dnsmasq reads before its
+  next query (at most once a second), forgetting what the last servers
+  answered. A lease that lapsed leaves the last servers in place. It answers
+  the test TLD `.test` itself, so resolving `kryptik.test` tests the path to
+  the resolver, not the internet.
 - **dhcpcd separates its privileges.** What parses a lease, a DHCPv6 reply
   or a router advertisement runs as the zone's `dhcpcd` user, chrooted to an
   empty `/var/empty`, with no capability and dhcpcd's own seccomp filter over
   the zone's; a small helper stays the zone's root. For that the net zone
   keeps `CAP_SETUID`, `CAP_SETGID` and `CAP_SYS_CHROOT` (kept together, and
-  by the nic zone alone), its filter allows the four calls they serve
-  (`setuid`, `setgid`, `setgroups`, `chroot`; `seccomp::CAP_CALLS`), its
+  by the nic zone alone), its filter allows the five calls they serve
+  (`setuid`, `capset`, `setgid`, `setgroups`, `chroot`;
+  `seccomp::CAP_CALLS`; dnsmasq's drop to nobody uses the same), its
   user namespace maps a third id, 100, to `uid_base` + 100 and allows
   `setgroups`, and its passwd names the user. In the zone's own namespaces
   these reach only its mapped ids and its own tree.

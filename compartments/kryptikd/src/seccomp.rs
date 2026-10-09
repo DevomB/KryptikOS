@@ -299,7 +299,7 @@ syscalls! {
 
 denied! {
     /// Syscalls left out of the allowlist, and why; a zone policy cannot allow them. The one
-    /// exception is `CAP_CALLS`: a zone that keeps `caps::PRIVSEP` gets the four calls it serves.
+    /// exception is `CAP_CALLS`: a zone that keeps `caps::PRIVSEP` gets the five calls it serves.
     DENIED_RATIONALE, DENIED_NAMES = [
     (libc::SYS_ptrace, "read/write another process's memory; the classic escape"),
     (libc::SYS_process_vm_readv, "read another process's memory directly"),
@@ -670,9 +670,11 @@ pub fn confine_zone_with(extra: &[libc::c_long], sockets: &SocketPolicy, kept_ca
 
 /// Denied calls a kept capability opens again, for the one zone that may keep it
 /// (`caps::PRIVSEP`, the nic zone's): a daemon dropping to its own user makes them, and in the
-/// zone's user and mount namespaces they reach only its mapped ids and its own tree.
+/// zone's user and mount namespaces they reach only its mapped ids and its own tree. capset
+/// goes with setuid: a daemon that keeps a capability across the drop names it with capset,
+/// and capset can only narrow or move what the process already holds.
 pub const CAP_CALLS: &[(libc::c_int, &[libc::c_long])] = &[
-    (crate::caps::cap::SETUID, &[libc::SYS_setuid]),
+    (crate::caps::cap::SETUID, &[libc::SYS_setuid, libc::SYS_capset]),
     (crate::caps::cap::SETGID, &[libc::SYS_setgid, libc::SYS_setgroups]),
     (crate::caps::cap::SYS_CHROOT, &[libc::SYS_chroot]),
 ];

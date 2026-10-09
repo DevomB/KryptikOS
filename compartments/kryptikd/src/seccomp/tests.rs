@@ -465,7 +465,7 @@ fn arg_rules_leave_allowlist_alone() {
 
 #[test]
 fn kept_capabilities_open_their_calls() {
-    let calls = [libc::SYS_setuid, libc::SYS_setgid, libc::SYS_setgroups, libc::SYS_chroot];
+    let calls = [libc::SYS_setuid, libc::SYS_capset, libc::SYS_setgid, libc::SYS_setgroups, libc::SYS_chroot];
     // Kept by no zone, nothing changes.
     assert_eq!(widened_for(&[], &[]).unwrap(), widened(&[]).unwrap());
     let all = widened_for(&[], crate::caps::PRIVSEP).unwrap();
@@ -477,6 +477,8 @@ fn kept_capabilities_open_their_calls() {
     // Each capability opens its own calls and no other.
     let chroot = widened_for(&[], &[crate::caps::cap::SYS_CHROOT]).unwrap();
     assert!(chroot.contains(&libc::SYS_chroot) && !chroot.contains(&libc::SYS_setuid) && !chroot.contains(&libc::SYS_setgroups));
+    let setuid = widened_for(&[], &[crate::caps::cap::SETUID]).unwrap();
+    assert!(setuid.contains(&libc::SYS_capset) && !setuid.contains(&libc::SYS_setgid));
     let p = build_program(&all).unwrap();
     for nr in calls {
         assert_eq!(evaluate(&p, X86, nr as u32), SECCOMP_RET_ALLOW, "{nr}");
@@ -485,6 +487,7 @@ fn kept_capabilities_open_their_calls() {
     let base = build_program(BASE_ALLOWLIST).unwrap();
     assert_eq!(evaluate(&base, X86, libc::SYS_setuid as u32), errno_action(EPERM));
     assert_eq!(evaluate(&base, X86, libc::SYS_setgroups as u32), errno_action(EPERM));
+    assert_eq!(evaluate(&base, X86, libc::SYS_capset as u32), errno_action(EPERM));
     assert_eq!(evaluate(&base, X86, libc::SYS_chroot as u32), SECCOMP_RET_KILL_PROCESS);
 }
 
