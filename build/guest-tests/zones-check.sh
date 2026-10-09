@@ -711,7 +711,9 @@ radio_netdevs() { nsenter -t "${1:-0}" -n iw dev 2>/dev/null | awk '$1 == "Inter
 for round in extra none; do
     ninit="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
     if [[ "$round" = extra ]]; then
-        nsenter -t "${ninit:-0}" -n iw phy phy0 interface add amon0 type monitor > "$LOG/radio-$round.out" 2>&1
+        # By index: iw finds a phy's name in sysfs, which is zone 0's here and no longer lists it.
+        phy="$(nsenter -t "${ninit:-0}" -n iw dev 2>/dev/null | sed -n 's/^phy#\([0-9]*\)$/\1/p' | head -1)"
+        nsenter -t "${ninit:-0}" -n iw "phy#${phy:-0}" interface add amon0 type monitor > "$LOG/radio-$round.out" 2>&1
     else
         for w in $(nsenter -t "${ninit:-0}" -n iw dev 2>/dev/null | awk '$1 == "Interface" { print $2 }'); do
             nsenter -t "${ninit:-0}" -n iw dev "$w" del >> "$LOG/radio-$round.out" 2>&1
