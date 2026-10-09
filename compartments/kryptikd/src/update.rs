@@ -233,6 +233,8 @@ pub const CONF: &str = "/etc/kryptik/update.conf";
 /// What the installer wrote on the state partition, once: its age is how long a machine that has
 /// never accepted a statement has gone without one.
 pub const INSTALL_RECORD: &str = "/var/lib/kryptik/install.json";
+/// The trial `kryptik-update apply` arms and boot-success settles.
+pub const TRIAL: &str = "/var/lib/kryptik/boot/trial";
 /// Largest `update-put`, so the launcher never goes long without checking its zone.
 pub const PUT_MAX: usize = 1 << 20;
 
@@ -744,6 +746,15 @@ pub fn complete_stage(dir: &Path) -> Result<PathBuf, String> {
 
 /// Clear the staged release once the machine runs it or a newer one.
 pub fn forget_if_installed(dir: &Path, running: &str) {
+    forget_unless_trial(dir, running, Path::new(TRIAL));
+}
+
+/// forget_if_installed while no trial is still to be judged: one that fails
+/// has `kryptik-update` name this stage for `--retry`.
+fn forget_unless_trial(dir: &Path, running: &str, trial: &Path) {
+    if trial.exists() {
+        return;
+    }
     if wanted(dir).is_some_and(|v| version_cmp(&v, running) != Ordering::Greater) {
         for f in ["wanted", "files"] {
             let _ = std::fs::remove_file(dir.join(f));
