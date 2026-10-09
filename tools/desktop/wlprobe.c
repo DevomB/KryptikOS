@@ -11,9 +11,10 @@
  *                             buffer EXTRA px wider and taller than asked, in a
  *                             colour no zone has; stay SECONDS, titled TITLE
  *                             ("oversize" by default, at most 255 bytes)
- *   wlprobe fullscreen SECONDS
+ *   wlprobe fullscreen SECONDS [late]
  *                             as oversize 0, and once drawn ask for fullscreen;
- *                             a commit says when its configure was fullscreen
+ *                             a commit says when its configure was fullscreen;
+ *                             with late, ask once the keyboard has left the window
  *   wlprobe child SECONDS [late]
  *                             as oversize 0, and once drawn map a second window
  *                             that is a child of the first; with late, only
@@ -123,6 +124,7 @@ static int errored;
 enum { COMPOSITOR = 4, SHM, WM_BASE, SURFACE, XDG_SURFACE, TOPLEVEL };
 static int oversize, charge, drawn, draw_failed, extra, conf_w, conf_h, closed;
 static int askfs, conf_fs;
+static int late, kb_left;                    /* fullscreen late: ask once the keyboard has left */
 /* child: 1 wanted once drawn, 2 wanted once fullscreen, 3 mapped; its objects. */
 static int child, cconf_w, cconf_h;
 static uint32_t csurface, cxdg, ctoplevel;
@@ -328,6 +330,7 @@ static int handle_one(void)
 		fflush(stdout);
 	} else if (keyboard_id && object == keyboard_id && (opcode == 1 || opcode == 2)) {
 		uint32_t s = get32(body + 4);          /* wl_keyboard.enter|leave(serial, surface, ...) */
+		if (opcode == 2 && s == SURFACE) kb_left = 1;
 		printf("keyboard %s %s\n", opcode == 1 ? "entered" : "left",
 			s == SURFACE ? "the window" : (csurface && s == csurface) ? "the child" : "another surface");
 		fflush(stdout);
@@ -409,7 +412,7 @@ static int hold_oversize(int more, int seconds, const char *title)
 	time_t end = time(NULL) + seconds;
 	while (time(NULL) < end && !closed) {
 		if (drain(500) < 0) { puts(errored ? "refused" : "connection closed"); return 3; }
-		if (askfs == 1 && drawn) {
+		if (askfs == 1 && drawn && (!late || kb_left)) {
 			put32(b, 0);                           /* no output: the compositor's choice */
 			send_msg(TOPLEVEL, 11, b, 4);          /* xdg_toplevel.set_fullscreen */
 			askfs = 2;
@@ -429,11 +432,11 @@ int main(int argc, char **argv)
 	                 && strcmp(argv[1], "cursor"))
 	    || (!strcmp(argv[1], "bind") && argc < 3) || (!strcmp(argv[1], "oversize") && argc < 4)
 	    || (!strcmp(argv[1], "oversize") && argc > 4 && strlen(argv[4]) > 255)
-	    || (!strcmp(argv[1], "fullscreen") && argc != 3)
+	    || (!strcmp(argv[1], "fullscreen") && (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "late"))))
 	    || (!strcmp(argv[1], "child") && (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "late"))))
 	    || (!strcmp(argv[1], "charge") && argc != 2)
 	    || (!strcmp(argv[1], "cursor") && argc != 3)) {
-		fprintf(stderr, "usage: wlprobe list | bind INTERFACE | oversize EXTRA SECONDS [TITLE] | fullscreen SECONDS | child SECONDS [late] | charge | cursor SECONDS\n");
+		fprintf(stderr, "usage: wlprobe list | bind INTERFACE | oversize EXTRA SECONDS [TITLE] | fullscreen SECONDS [late] | child SECONDS [late] | charge | cursor SECONDS\n");
 		return 2;
 	}
 	const char *disp = getenv("WAYLAND_DISPLAY");
@@ -461,7 +464,7 @@ int main(int argc, char **argv)
 
 	if (!strcmp(argv[1], "list")) return errored ? 3 : 0;
 	if (!strcmp(argv[1], "oversize")) return hold_oversize(atoi(argv[2]), atoi(argv[3]), argc > 4 ? argv[4] : "oversize");
-	if (!strcmp(argv[1], "fullscreen")) { askfs = 1; return hold_oversize(0, atoi(argv[2]), "fullscreen"); }
+	if (!strcmp(argv[1], "fullscreen")) { askfs = 1; late = argc == 4; return hold_oversize(0, atoi(argv[2]), "fullscreen"); }
 	if (!strcmp(argv[1], "child")) { child = argc == 4 ? 2 : 1; return hold_oversize(0, atoi(argv[2]), "child-parent"); }
 	if (!strcmp(argv[1], "charge")) { charge = 1; return hold_oversize(0, 10, "shm-charge"); }
 	if (!strcmp(argv[1], "cursor")) { cursor = 1; return hold_oversize(0, atoi(argv[2]), "cursor"); }
