@@ -306,6 +306,129 @@ fn pool_budget_follows_buffers() {
     assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (1, 4096));
 }
 
+fn delete_ids(sv: &mut UnixStream, ids: &[u32]) {
+    for id in ids {
+        sv.write_all(&MessageWriter::new(1, WL_DISPLAY_DELETE_ID).u32(*id).finish().unwrap()).unwrap();
+    }
+}
+
+/// The compositor holds a committed buffer past its wl_buffer and pool: the pool stays charged.
+#[test]
+fn committed_buffer_keeps_its_pool_charged() {
+    let (mut s, mut c, mut sv) = make();
+    s.objects.place(3, (protocol::find("wl_shm").unwrap(), 1));
+    s.objects.place(8, (protocol::find("wl_compositor").unwrap(), 4));
+    let (fd, _) = UnixStream::pair().unwrap();
+    c.write_all(&MessageWriter::new(8, 0).u32(9).finish().unwrap()).unwrap(); // create_surface -> 9
+    send_with_fd(c.as_raw_fd(), &MessageWriter::new(3, 0).u32(4).i32(4096).finish().unwrap(), fd.as_raw_fd());
+    c.write_all(&MessageWriter::new(4, 0).u32(5).i32(0).i32(16).i32(16).i32(64).u32(1).finish().unwrap()).unwrap();
+    c.write_all(&MessageWriter::new(9, 1).u32(5).i32(0).i32(0).finish().unwrap()).unwrap(); // attach 5
+    c.write_all(&MessageWriter::new(9, 6).finish().unwrap()).unwrap(); // commit
+    c.write_all(&MessageWriter::new(5, 0).finish().unwrap()).unwrap(); // the buffer's destroy
+    c.write_all(&MessageWriter::new(4, 1).finish().unwrap()).unwrap(); // the pool's destroy
+    pump_all(&mut s).unwrap();
+    delete_ids(&mut sv, &[5, 4]);
+    pump_all(&mut s).unwrap();
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (1, 4096));
+    // A commit with no buffer lets it go.
+    c.write_all(&MessageWriter::new(9, 1).u32(0).i32(0).i32(0).finish().unwrap()).unwrap();
+    c.write_all(&MessageWriter::new(9, 6).finish().unwrap()).unwrap();
+    pump_all(&mut s).unwrap();
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (0, 0));
+}
+
+/// Surfaces 11, 12 and 14, with 12 a subsurface of 11 (as 13) and, when `nested`, 14 of 12 (as
+/// 15), over a session that knows wl_shm, wl_compositor and wl_subcompositor.
+fn with_subsurfaces(nested: bool) -> (Session, UnixStream, UnixStream) {
+    let (mut s, mut c, sv) = make();
+    s.objects.place(3, (protocol::find("wl_shm").unwrap(), 1));
+    s.objects.place(8, (protocol::find("wl_compositor").unwrap(), 4));
+    s.objects.place(10, (protocol::find("wl_subcompositor").unwrap(), 1));
+    let surface = |id: u32| MessageWriter::new(8, 0).u32(id).finish().unwrap(); // create_surface
+    let sub = |id: u32, child: u32, parent: u32| MessageWriter::new(10, 1).u32(id).u32(child).u32(parent).finish().unwrap();
+    // In id order: the proxy refuses an id that skips one, as libwayland never does.
+    for m in [surface(11), surface(12), sub(13, 12, 11), surface(14)] {
+        c.write_all(&m).unwrap();
+    }
+    if nested {
+        c.write_all(&sub(15, 14, 12)).unwrap();
+    }
+    (s, c, sv)
+}
+
+/// Each (pool, buffer) made, attached and committed on `surface`, then deleted.
+fn commit_pools(s: &mut Session, c: &mut UnixStream, sv: &mut UnixStream, surface: u32, ids: &[(u32, u32)]) {
+    let (fd, _) = UnixStream::pair().unwrap();
+    for &(pool, buf) in ids {
+        send_with_fd(c.as_raw_fd(), &MessageWriter::new(3, 0).u32(pool).i32(4096).finish().unwrap(), fd.as_raw_fd());
+        c.write_all(&MessageWriter::new(pool, 0).u32(buf).i32(0).i32(16).i32(16).i32(64).u32(1).finish().unwrap()).unwrap();
+        c.write_all(&MessageWriter::new(surface, 1).u32(buf).i32(0).i32(0).finish().unwrap()).unwrap();
+        c.write_all(&MessageWriter::new(surface, 6).finish().unwrap()).unwrap();
+        c.write_all(&MessageWriter::new(buf, 0).finish().unwrap()).unwrap();
+        c.write_all(&MessageWriter::new(pool, 1).finish().unwrap()).unwrap();
+    }
+    pump_all(s).unwrap();
+    for &(pool, buf) in ids {
+        delete_ids(sv, &[buf, pool]);
+    }
+    pump_all(s).unwrap();
+}
+
+fn send(s: &mut Session, c: &mut UnixStream, msgs: &[(u32, u16)]) {
+    for &(id, opcode) in msgs {
+        c.write_all(&MessageWriter::new(id, opcode).finish().unwrap()).unwrap();
+    }
+    pump_all(s).unwrap();
+}
+
+/// A subsurface's commits are cached until its root commits, each buffer with them.
+#[test]
+fn subsurface_commits_held_until_the_root_commits() {
+    let (mut s, mut c, mut sv) = with_subsurfaces(false);
+    commit_pools(&mut s, &mut c, &mut sv, 12, &[(4, 5), (6, 7)]);
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (2, 8192));
+    // The root's commit applies the subsurface's last: the first pool goes.
+    c.write_all(&MessageWriter::new(11, 6).finish().unwrap()).unwrap();
+    pump_all(&mut s).unwrap();
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (1, 4096));
+    // With the surface gone, nothing is held.
+    c.write_all(&MessageWriter::new(12, 0).finish().unwrap()).unwrap();
+    pump_all(&mut s).unwrap();
+    delete_ids(&mut sv, &[12]);
+    pump_all(&mut s).unwrap();
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (0, 0));
+}
+
+/// A root's commit applies a subsurface's cache only through parents with caches of their own.
+#[test]
+fn nested_subsurface_held_until_its_parent_is_applied() {
+    let (mut s, mut c, mut sv) = with_subsurfaces(true);
+    commit_pools(&mut s, &mut c, &mut sv, 14, &[(4, 5), (6, 7)]);
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (2, 8192));
+    // 12 has committed nothing, so wlroots applies nothing under it.
+    send(&mut s, &mut c, &[(11, 6)]);
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (2, 8192));
+    send(&mut s, &mut c, &[(12, 6)]);
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (2, 8192));
+    // Now the root's commit applies 12's cache and, under it, 14's.
+    send(&mut s, &mut c, &[(11, 6)]);
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (1, 4096));
+}
+
+/// A desynchronized subsurface under a synchronized one stays cached through its parents'
+/// commits; the end of its role applies the cache.
+#[test]
+fn desync_subsurface_under_a_synced_one_stays_cached() {
+    let (mut s, mut c, mut sv) = with_subsurfaces(true);
+    send(&mut s, &mut c, &[(15, 5)]); // set_desync
+    commit_pools(&mut s, &mut c, &mut sv, 14, &[(4, 5), (6, 7)]);
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (2, 8192));
+    send(&mut s, &mut c, &[(12, 6), (11, 6)]);
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (2, 8192));
+    send(&mut s, &mut c, &[(15, 0)]); // the wl_subsurface's destroy
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (1, 4096));
+}
+
 #[test]
 fn messages_respect_bound_versions() {
     for (interface, request, dir) in [
@@ -380,6 +503,26 @@ fn unnamed_toplevel_is_stamped() {
     assert_eq!(s.rewritten, 2);
 }
 
+/// A toplevel the zone's app_id cannot be stamped on is refused, never drawn as zone 0's own.
+#[test]
+fn unstampable_toplevel_is_refused() {
+    let (mut s, mut c, mut sv) = make();
+    s.zone = "z".repeat(MAX_MESSAGE_LEN);
+    c.write_all(&get_registry(2)).unwrap();
+    sv.write_all(&global(2, 1, "wl_compositor", 6)).unwrap();
+    sv.write_all(&global(2, 2, "xdg_wm_base", 6)).unwrap();
+    pump_all(&mut s).unwrap();
+    c.write_all(&MessageWriter::new(2, WL_REGISTRY_BIND).u32(1).string("wl_compositor").u32(6).u32(3).finish().unwrap()).unwrap();
+    c.write_all(&MessageWriter::new(2, WL_REGISTRY_BIND).u32(2).string("xdg_wm_base").u32(6).u32(4).finish().unwrap()).unwrap();
+    c.write_all(&MessageWriter::new(3, 0).u32(5).finish().unwrap()).unwrap(); // create_surface -> 5
+    c.write_all(&MessageWriter::new(4, 2).u32(6).u32(5).finish().unwrap()).unwrap(); // get_xdg_surface -> 6
+    pump_all(&mut s).unwrap();
+    let _ = read_all(&mut sv);
+    c.write_all(&MessageWriter::new(6, 1).u32(7).finish().unwrap()).unwrap(); // get_toplevel -> 7
+    assert!(matches!(pump_all(&mut s), Err(SessionError::Forbidden(_))));
+    assert!(read_all(&mut sv).is_empty(), "the compositor was sent the toplevel");
+}
+
 /// (object, opcode) and body of each message in a byte stream.
 fn split_messages(mut bytes: &[u8]) -> Vec<((u32, u16), Vec<u8>)> {
     let mut out = Vec::new();
@@ -390,6 +533,36 @@ fn split_messages(mut bytes: &[u8]) -> Vec<((u32, u16), Vec<u8>)> {
         bytes = &bytes[size..];
     }
     out
+}
+
+/// A monitor's make, model, name and description reach a zone blank or as the global's number;
+/// its size and modes pass unchanged.
+#[test]
+fn output_identity_blanked() {
+    let (mut s, mut c, mut sv) = make();
+    c.write_all(&get_registry(2)).unwrap();
+    sv.write_all(&global(2, 9, "wl_output", 4)).unwrap();
+    pump_all(&mut s).unwrap();
+    c.write_all(&MessageWriter::new(2, WL_REGISTRY_BIND).u32(9).string("wl_output").u32(4).u32(3).finish().unwrap()).unwrap();
+    pump_all(&mut s).unwrap();
+    let _ = read_all(&mut c);
+    let geometry = |make: &str, model: &str| {
+        MessageWriter::new(3, 0).i32(0).i32(0).i32(600).i32(340).i32(0).string(make).string(model).i32(0).finish().unwrap()
+    };
+    let mode = MessageWriter::new(3, 1).u32(3).i32(2560).i32(1440).i32(59951).finish().unwrap();
+    sv.write_all(&geometry("Dell Inc.", "DELL U2720Q")).unwrap();
+    sv.write_all(&MessageWriter::new(3, 4).string("DP-1").finish().unwrap()).unwrap(); // name
+    sv.write_all(&MessageWriter::new(3, 5).string("Dell Inc. DELL U2720Q 6JXXXXX (DP-1)").finish().unwrap()).unwrap();
+    sv.write_all(&mode).unwrap();
+    pump_all(&mut s).unwrap();
+    let got = read_all(&mut c);
+    let msgs = split_messages(&got);
+    let output_9 = MessageWriter::new(3, 4).string("output-9").finish().unwrap();
+    assert_eq!(msgs.len(), 4, "{msgs:?}");
+    assert_eq!(msgs[0], ((3, 0), geometry("", "")[HEADER_LEN..].to_vec()), "geometry keeps its numbers");
+    assert_eq!(msgs[1], ((3, 4), output_9[HEADER_LEN..].to_vec()));
+    assert_eq!(msgs[2], ((3, 5), output_9[HEADER_LEN..].to_vec()), "the description says no more");
+    assert_eq!(msgs[3], ((3, 1), mode[HEADER_LEN..].to_vec()));
 }
 
 /// Bounded, prefixed, still valid UTF-8, and the session survives it.

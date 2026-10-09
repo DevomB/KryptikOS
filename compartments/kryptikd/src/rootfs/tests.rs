@@ -238,3 +238,46 @@ fn ro_bind_recursive() {
         other => panic!("read-only bind check failed with code {other}"),
     }
 }
+
+#[test]
+fn nic_sysfs_keeps_its_devices_and_no_others() {
+    use std::os::unix::fs::symlink;
+    let base = std::env::temp_dir().join(format!("kryptik-nic-sysfs-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    // A PCI NIC, a radio on a virtual device, the bridge, and a disk, linked as sysfs links them.
+    for d in [
+        "devices/pci0000:00/0000:00:03.0/net/eth0",
+        "devices/virtual/mac80211_hwsim/hwsim0/net/wlan0",
+        "devices/virtual/mac80211_hwsim/hwsim0/ieee80211/phy0",
+        "devices/virtual/net/kryptik0",
+        "devices/pci0000:00/0000:00:1f.2/ata1/host0/block/sda",
+        "class/net",
+        "class/ieee80211",
+        "class/block",
+    ] {
+        fs::create_dir_all(base.join(d)).unwrap();
+    }
+    for (link, to) in [
+        ("devices/pci0000:00/0000:00:03.0/net/eth0/device", "../../../0000:00:03.0"),
+        ("devices/virtual/mac80211_hwsim/hwsim0/net/wlan0/device", "../../../hwsim0"),
+        ("devices/virtual/mac80211_hwsim/hwsim0/ieee80211/phy0/device", "../../../hwsim0"),
+        ("class/net/eth0", "../../devices/pci0000:00/0000:00:03.0/net/eth0"),
+        ("class/net/wlan0", "../../devices/virtual/mac80211_hwsim/hwsim0/net/wlan0"),
+        ("class/net/kryptik0", "../../devices/virtual/net/kryptik0"),
+        ("class/ieee80211/phy0", "../../devices/virtual/mac80211_hwsim/hwsim0/ieee80211/phy0"),
+        ("class/block/sda", "../../devices/pci0000:00/0000:00:1f.2/ata1/host0/block/sda"),
+    ] {
+        symlink(to, base.join(link)).unwrap();
+    }
+    let kept = nic_sysfs(base.to_str().unwrap());
+    let _ = fs::remove_dir_all(&base);
+    let want = [
+        "class/net",
+        "devices/virtual/net",
+        "devices/system/cpu",
+        "class/ieee80211",
+        "devices/pci0000:00/0000:00:03.0",
+        "devices/virtual/mac80211_hwsim/hwsim0",
+    ];
+    assert_eq!(kept, want, "the kept list, in order, once each");
+}

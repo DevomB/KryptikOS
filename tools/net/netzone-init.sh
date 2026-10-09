@@ -80,6 +80,12 @@ SET4="set local4 { type ipv4_addr; }"; SET6="set local6 { type ipv6_addr; }"
 PIN4="$(awk 'BEGIN { for (k = 2; k < 250; k++) printf "%s10.19.0.%d . 02:19:00:00:00:%02x", (k > 2 ? ", " : ""), k, k }')"
 PIN6="$(awk 'BEGIN { for (k = 2; k < 250; k++) printf "%sfd19::%x . 02:19:00:00:00:%02x", (k > 2 ? ", " : ""), k, k }')"
 
+# A routed zone may hold an eighth of the conntrack table every zone's flows
+# share, so no one zone fills it for the others: counted by the MAC both its
+# addresses are pinned to, for flows through the net zone and to it.
+FLOWCAP="$(( $(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 131072) / 8 ))"
+[ "$FLOWCAP" -ge 1024 ] 2>/dev/null || FLOWCAP=1024
+
 # A zone goes out by a gateway (gw4, gw6) and never to the gateway itself:
 # the rest of what an uplink reaches is the network it sits on, open to local4
 # and local6 alone. With no gateway in the sets nothing goes out, so a new
@@ -94,6 +100,7 @@ RULES="table inet kryptik {
     ${SET6}
     set pin4 { type ipv4_addr . ether_addr; elements = { ${PIN4} } }
     set pin6 { type ipv6_addr . ether_addr; elements = { ${PIN6} } }
+    set flows { type ether_addr; size 256; flags dynamic; }
     chain prerouting {
         type filter hook prerouting priority raw; policy accept;
         iifname \"${BR}\" ip saddr . ether saddr != @pin4 drop
@@ -104,6 +111,7 @@ RULES="table inet kryptik {
     chain forward {
         type filter hook forward priority filter; policy drop;
         ct state established,related accept
+        iifname \"${BR}\" ct state new add @flows { ether saddr ct count over ${FLOWCAP} } drop
         iifname \"${BR}\" oifname ${NICSET} ip saddr @local4 accept
         iifname \"${BR}\" oifname ${NICSET} ip6 saddr @local6 accept
         iifname \"${BR}\" oifname ${NICSET} rt ip nexthop @gw4 ip daddr != @gw4 accept
@@ -118,6 +126,7 @@ RULES="table inet kryptik {
     }
     chain input {
         type filter hook input priority filter; policy accept;
+        iifname \"${BR}\" ct state new add @flows { ether saddr ct count over ${FLOWCAP} } drop
         iifname ${NICSET} ct state new tcp dport 53 drop
         iifname ${NICSET} ct state new udp dport 53 drop
         iifname \"${BR}\" ct state established,related accept
@@ -270,11 +279,13 @@ start_dns() {
     grep -q '^nameserver' "$UPSTREAM" 2>/dev/null || { echo "nameserver 10.0.2.3" > "$UPSTREAM"; chmod 644 "$UPSTREAM"; }
     # --local=/test/ (RFC 6761) stays here: the guest check resolves kryptik.test through it.
     # It binds as root and then drops to nobody, which --no-daemon would stop. A changed
-    # file is read before the next query, at most once a second, and --clear-on-reload
-    # forgets what the last servers answered. --pid-file with no path writes none.
+    # file is read before the next query, at most once a second. Every zone shares it, so
+    # it keeps no cache and no CHAOS records (--no-ident): an answer it kept comes back
+    # sooner, with less TTL, to the next zone asking, and hits.bind and misses.bind count
+    # every zone's lookups. --pid-file with no path writes none.
     dnsmasq --keep-in-foreground --log-facility=- --no-hosts --bind-interfaces \
             --listen-address=10.19.0.1 --listen-address=fd19::1 --listen-address=127.0.0.1 \
-            --resolv-file="$UPSTREAM" --clear-on-reload --cache-size=1000 --local-service --local=/test/ \
+            --resolv-file="$UPSTREAM" --cache-size=0 --no-ident --local-service --local=/test/ \
             --pid-file --user=nobody --group=nogroup &
     DNSPID=$!
     sleep 1

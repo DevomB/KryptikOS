@@ -3,7 +3,9 @@
 #
 #   tools/image/state-test.sh --usb IMG [--disk FILE] [--timeout N]
 #
-#   step 1  install, first boot, a file on the state partition
+#   step 1  install with no preseed: the first boot asks for the user and the
+#           passwords at the serial console and only then shows its login
+#           prompt, which refuses root; a file on the state partition
 #   step 2  a clone of the disk attached: its partitions are ignored; then
 #           the clone boots alone
 #   step 3  two kryptik-state partitions on the root disk: degraded
@@ -14,7 +16,8 @@
 #   step 8  root changes the passphrase with `kryptik state passphrase`: the
 #           old one no longer unlocks, the new one does
 #
-# After each repair a login must find the user's file. Every disk is a file made here.
+# After each repair a login must find the user's file, and no degraded boot
+# writes the ESP or the state partition's header. Every disk is a file made here.
 set -uo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -43,11 +46,19 @@ source "${SELF}/suite-lib.sh"
 VARSF="${VMDIR}/state-vars.fd"; cp /usr/share/OVMF/OVMF_VARS_4M.fd "$VARSF"
 
 
+# What a boot could write on the disk: the ESP's records and boot file, and the state header.
+written() {
+    { dd if="$DISK" bs=512 count="$(part_start "$DISK" 2)" status=none
+      dd if="$DISK" bs=512 skip="$(part_start "$DISK" 4)" count=65536 status=none; } | sha256sum | cut -c1-64
+}
 # Nobody can log in to a degraded boot: stop it at its report's END and check the transcript.
 degraded_boot() {   # degraded_boot NAME REASON-REGEX
+    local before; before="$(written)"
     start_vm "$1"
     DRIVE_TIMEOUT=150 drive "expect:KRYPTIK_SMOKE: END" > /dev/null
     stop_vm
+    [[ "$(written)" == "$before" ]] && green "$1: nothing was written to the ESP or the state header" \
+        || red "$1: the degraded boot wrote to the ESP or the state header"
     local t; t="$(txt)"
     grep -q 'sysinit: \*  STATE DEGRADED' <<<"$t" && green "$1: the console banner says STATE DEGRADED" || red "$1: no degraded banner"
     grep -qE "STATE DEGRADED: $2" <<<"$t" && green "$1: the reason is named ($2)" || { red "$1: reason not as expected"; grep 'STATE DEGRADED' <<<"$t" | head -2 | sed 's/^/        /'; }
@@ -73,16 +84,34 @@ normal_boot() {   # normal_boot NAME
 }
 
 # ----------------------------------------------------------------- step 1 --
-step "step 1: install, first boot, a file on the state partition"
+step "step 1: install with no preseed; the first boot asks at the serial console"
 fresh_disk "$USB"
-install_disk state-install "$USB" --vars clean && green "installed" || { red "install failed"; exit 1; }
+# The state passphrase alone: the accounts are asked for, as when someone installs by hand.
+ctl="${VMDIR}/testctl-state-install.img"
+"${SELF}/mk-testctl.sh" --out "$ctl" --key "$TESTCTL_KEY" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
+    "state_passphrase=${KRYPTIK_STATE_PASSPHRASE}" > /dev/null || die "the install control disk"
+smoke state-install --usb "$USB" --disk "$DISK" --testctl "$ctl" --vars clean --timeout "$TIMEOUT" > /dev/null
+boot_txt | grep -q 'KRYPTIK_INSTALL: rc=0' && green "installed" || { red "install failed"; exit 1; }
+boot_txt | grep -q 'KRYPTIK_INSTALL: verify: preseed=none' && green "with no preseed" || red "a preseed was written"
 start_vm state-p1
-drive "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
+# The setup's prompts are matched unanchored: a service starting meanwhile may
+# print on their line. Root's own password at the getty is refused, as no
+# terminal is root's.
+drive "expect:User name: " "send:${TUSER}" \
+    "expect:New password for ${TUSER}: " "send:${TPASS}" "expect:Again: " "send:${TPASS}" \
+    "expect:New password for root: " "send:${RPASS}" "expect:Again: " "send:${RPASS}" \
+    "seen:kryptik-firstboot: created user '${TUSER}'" "seen:KRYPTIK_SMOKE: END" \
+    "knock:login: ?$" "send:root" "expect:Password: ?" "send:${RPASS}" "expect:Login incorrect" \
+    "login:${TUSER}:${TPASS}" \
     "run:echo state-marker > /home/${TUSER}/state-marker && sync" \
     "grab:ident:cat /run/kryptik/boot-identity" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
-[[ "$rc" -eq 0 ]] && green "first boot: user created, file written" || { red "step 1 drive failed"; exit 1; }
+[[ "$rc" -eq 0 ]] && green "first boot: the user and both passwords set at the serial console, the user logged in and wrote a file" \
+    || { red "step 1 drive failed"; exit 1; }
+txt | awk '/kryptik login:/ && !l { l = NR } /User name: |New password for |Again: / { q = NR } END { exit !(l && q && l > q) }' \
+    && green "the serial console showed its login prompt only after the setup's last question" || red "a login prompt came before the setup ended"
+txt | grep -q 'Login incorrect' && green "root, with its own password, cannot log in at a terminal" || red "root's login at the console was not refused"
 txt | grep -q 'state=persistent' && green "state=persistent on the installed disk" || red "state not persistent"
 txt | grep -q 'root_disk=/dev/vda' && green "root disk identified as /dev/vda" || red "root disk not identified"
 

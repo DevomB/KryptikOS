@@ -103,9 +103,14 @@ for sh in sh bash dash; do
     rules="$(run rules "${ROOT}/compartments/zones")"
     grep -qF 'set local4 { type ipv4_addr; elements = { 10.19.0.5 } }' <<<"$rules" && grep -qF 'set local6 { type ipv6_addr; elements = { fd19::5 } }' <<<"$rules" \
         && green "the zones let through are in the ruleset from its first load" || red "the local sets" "$(grep 'set local' <<<"$rules" | tr '\n' '|')"
-    forward="$(sed -n '/chain forward {/,/^    }$/p' <<<"$rules" | grep -oE 'established,related accept|ip6? saddr @local[46] accept|rt ip6? nexthop @gw[46] ip6? daddr != @gw[46] accept|reject with icmpx type admin-prohibited|oifname "kryptik0" drop' | tr '\n' '|')"
-    same "replies first, then the local zones, then what a gateway carries but the gateway itself, then the refusal" "$forward" \
-        'established,related accept|ip saddr @local4 accept|ip6 saddr @local6 accept|rt ip nexthop @gw4 ip daddr != @gw4 accept|rt ip6 nexthop @gw6 ip6 daddr != @gw6 accept|reject with icmpx type admin-prohibited|oifname "kryptik0" drop|'
+    forward="$(sed -n '/chain forward {/,/^    }$/p' <<<"$rules" | grep -oE 'established,related accept|add @flows \{ ether saddr ct count over [0-9]+ \} drop|ip6? saddr @local[46] accept|rt ip6? nexthop @gw[46] ip6? daddr != @gw[46] accept|reject with icmpx type admin-prohibited|oifname "kryptik0" drop' | sed 's/count over [0-9]*/count over N/' | tr '\n' '|')"
+    same "replies first, then each zone's share of the table, then the local zones, then what a gateway carries but the gateway itself, then the refusal" "$forward" \
+        'established,related accept|add @flows { ether saddr ct count over N } drop|ip saddr @local4 accept|ip6 saddr @local6 accept|rt ip nexthop @gw4 ip daddr != @gw4 accept|rt ip6 nexthop @gw6 ip6 daddr != @gw6 accept|reject with icmpx type admin-prohibited|oifname "kryptik0" drop|'
+    first_in="$(sed -n '/chain input {/,/^    }$/p' <<<"$rules" | sed -n 3p | sed 's/count over [0-9]*/count over N/; s/^ *//')"
+    same "a zone's flows to the net zone itself count in the same share, ahead of every other input rule" "$first_in" \
+        'iifname "kryptik0" ct state new add @flows { ether saddr ct count over N } drop'
+    cap="$(grep -oE 'ct count over [0-9]+' <<<"$rules" | sort -u)"
+    [[ "$(grep -c . <<<"$cap")" -eq 1 && "${cap##* }" =~ ^[0-9]+$ && "${cap##* }" -ge 1024 ]] && green "one share, a number of at least 1024: ${cap##* }" || red "the share is not one number of at least 1024" "$(tr '\n' '|' <<<"$cap")"
     pairs4="$(grep 'set pin4 ' <<<"$rules" | grep -oE '10\.19\.0\.[0-9]+ \. 02:19:00:00:00:[0-9a-f]{2}' \
         | awk '{ split($1, a, "."); n++; if (sprintf("%02x", a[4]) == substr($3, 16)) ok++ } END { print n + 0, ok + 0 }')"
     pairs6="$(grep 'set pin6 ' <<<"$rules" | grep -oE 'fd19::[0-9a-f]+ \. 02:19:00:00:00:[0-9a-f]{2}' \
@@ -114,9 +119,9 @@ for sh in sh bash dash; do
     pre="$(sed -n '/chain prerouting {/,/^    }$/p' <<<"$rules" | grep -oE 'priority raw|ip saddr \. ether saddr != @pin4 drop|ip6 saddr \. ether saddr @pin6 accept|ip6 saddr fe80::/10 icmpv6 type \{ nd-neighbor-solicit, nd-neighbor-advert \} accept|meta nfproto ipv6 drop' | tr '\n' '|')"
     same "from the bridge, ahead of conntrack: IPv4 off its pin dropped, IPv6 on its pin taken, neighbour discovery from a link-local address taken, other IPv6 dropped" "$pre" \
         'priority raw|ip saddr . ether saddr != @pin4 drop|ip6 saddr . ether saddr @pin6 accept|ip6 saddr fe80::/10 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept|meta nfproto ipv6 drop|'
-    input="$(sed -n '/chain input {/,/^    }$/p' <<<"$rules" | grep -oE 'ct state new (tcp|udp) dport 53 drop|"kryptik0" .*(accept|drop)$' | tr '\n' '|')"
-    same "into the net zone: no resolver for an uplink; from the bridge replies, DNS and echo on the bridge's addresses, neighbour discovery, and nothing else" "$input" \
-        'ct state new tcp dport 53 drop|ct state new udp dport 53 drop|"kryptik0" ct state established,related accept|"kryptik0" ip daddr 10.19.0.1 meta l4proto { tcp, udp } th dport 53 accept|"kryptik0" ip6 daddr fd19::1 meta l4proto { tcp, udp } th dport 53 accept|"kryptik0" ip daddr 10.19.0.1 icmp type echo-request accept|"kryptik0" ip6 daddr fd19::1 icmpv6 type echo-request accept|"kryptik0" icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept|"kryptik0" drop|'
+    input="$(sed -n '/chain input {/,/^    }$/p' <<<"$rules" | grep -oE 'ct state new (tcp|udp) dport 53 drop|"kryptik0" .*(accept|drop)$' | sed 's/count over [0-9]*/count over N/' | tr '\n' '|')"
+    same "into the net zone: each zone's share first; no resolver for an uplink; from the bridge replies, DNS and echo on the bridge's addresses, neighbour discovery, and nothing else" "$input" \
+        '"kryptik0" ct state new add @flows { ether saddr ct count over N } drop|ct state new tcp dport 53 drop|ct state new udp dport 53 drop|"kryptik0" ct state established,related accept|"kryptik0" ip daddr 10.19.0.1 meta l4proto { tcp, udp } th dport 53 accept|"kryptik0" ip6 daddr fd19::1 meta l4proto { tcp, udp } th dport 53 accept|"kryptik0" ip daddr 10.19.0.1 icmp type echo-request accept|"kryptik0" ip6 daddr fd19::1 icmpv6 type echo-request accept|"kryptik0" icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept|"kryptik0" drop|'
     rules="$(run rules "$T/none")"
     grep -qF 'set local4 { type ipv4_addr; }' <<<"$rules" && green "with no zone let through the sets are empty, and every zone is refused" || red "the empty local sets" "$(grep 'set local' <<<"$rules" | tr '\n' '|')"
 done

@@ -100,7 +100,11 @@ unwritten 4 MiB buffer for ten seconds. Confirm the window was rendered and
 compare both cgroups while the buffer is held; if dwl's cgroup is an ancestor
 of the zone's, subtract the zone's change. A rise outside the zone with no
 matching charge to the zone would mean a zone can make dwl hold memory
-outside the zone's limit. The proxy's pool limits apply either way.
+outside the zone's limit. The proxy's pool limits apply either way, and a
+pool stays charged while the compositor may still hold it: until it and its
+buffers are deleted and no surface shows one of them, counting each buffer a
+synchronized subsurface committed until wlroots applies that subsurface's
+cache.
 
 ## Files
 

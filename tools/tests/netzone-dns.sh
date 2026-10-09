@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Tests for the servers the net zone's resolver forwards to
 # (tools/net/netzone-init.sh, sync_upstream): a lease that comes late, another
-# network's servers, a lease that lapsed and a file that cannot be written.
-# Offline, under each POSIX shell here.
+# network's servers, a lease that lapsed and a file that cannot be written;
+# and for how start_dns runs it. Offline, under each POSIX shell here.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT="${ROOT}/tools/net/netzone-init.sh"
@@ -23,10 +23,14 @@ grep -qE '^    elif \[ -n "\$DNSPID" \] && sync_upstream; then$' "$SCRIPT" && ! 
     || red "the loop no longer writes the servers on a change, or signals a resolver it cannot"
 start="$(sed -n '/^start_dns() {/,/^}/p' "$SCRIPT" | grep -v '^ *#')"
 # --no-poll would leave the file unread, and --no-daemon keeps dnsmasq root.
-grep -q -- '--resolv-file="\$UPSTREAM" --clear-on-reload' <<<"$start" && grep -q -- '--user=nobody' <<<"$start" \
+grep -q -- '--resolv-file="\$UPSTREAM" ' <<<"$start" && grep -q -- '--user=nobody' <<<"$start" \
     && ! grep -qE -- '--no-poll|--no-daemon' <<<"$start" \
     && green "dnsmasq runs as nobody and reads the file sync_upstream writes when it changes" \
     || red "dnsmasq is not started as nobody on the file sync_upstream writes"
+# Shared by every zone: what it kept or counted would tell one zone what another looked up.
+grep -qE -- '--cache-size=0( |$)' <<<"$start" && grep -q -- '--no-ident' <<<"$start" && ! grep -q -- '--use-stale-cache' <<<"$start" \
+    && green "dnsmasq keeps no cache and no CHAOS records" \
+    || red "dnsmasq keeps a cache, or answers CHAOS queries with its counters"
 
 # step WHAT: one pass, as the loop makes it; prints its status and the file.
 # umask 077: the file must still be one dnsmasq's nobody can read.

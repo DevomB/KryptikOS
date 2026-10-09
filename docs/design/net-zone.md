@@ -35,6 +35,13 @@ query and the [update](update-channel.md) fetcher. Builds on
   gateway first and re-applies them inside; dhcpcd takes over if a DHCP
   server answers. Moving needs `CAP_NET_ADMIN` and `CAP_SYS_ADMIN` in the
   initial namespace, so an unprivileged launch gets loopback and a note.
+- **The net zone's sysfs is its NICs.** It sees what every zone sees (its
+  interfaces and the CPU layout, `SYSFS_KEPT` in `rootfs.rs`), its radios
+  (`class/ieee80211`), and the device each of its interfaces and radios sits
+  on, so that `device` and `phy80211` resolve for the uplink test above and
+  for wpa_supplicant. Disks, monitors, buses, modules and the encrypted zones
+  that are open stay out of its view, as out of every zone's. The devices are
+  found as its root is built, after the move; no NIC moves in later.
 - **veths are created from inside the net zone's namespace.** While a routed
   zone waits at its handshake, kryptikd creates `kv-<zone>` in the net zone
   with its peer born in the routed zone as `eth0`, enslaves `kv-<zone>` to
@@ -106,11 +113,15 @@ query and the [update](update-channel.md) fetcher. Builds on
   uplink's own network refused but to the zones whose definition opens it
   ([below](#the-uplinks-own-networks)); bridge to bridge dropped;
   `10.19.0.0/24` and `fd19::/64` masqueraded out of every uplink; new DNS
-  connections arriving on an uplink dropped. From the bridge the net zone
-  takes in only what it serves there: DNS and echo requests on `10.19.0.1`
-  and `fd19::1`, neighbour discovery, and replies. Whatever else listens in
-  it is no zone's to reach: dhcpcd, once it holds two uplinks, listens on
-  every address, the bridge's among them.
+  connections arriving on an uplink dropped. Each routed zone may hold an
+  eighth of the zone's conntrack table, which every zone's flows fill
+  together: nft's `ct count` on the MAC both its addresses are pinned to,
+  for flows through the net zone and flows to it. Past its share, a zone's
+  new flows are dropped and the others' still pass. From the bridge the net
+  zone takes in only what it serves there: DNS and echo requests on
+  `10.19.0.1` and `fd19::1`, neighbour discovery, and replies. Whatever else
+  listens in it is no zone's to reach: dhcpcd, once it holds two uplinks,
+  listens on every address, the bridge's among them.
 - **The resolver:** `dnsmasq` on 10.19.0.1, fd19::1 and 127.0.0.1,
   forwarding to the uplink lease's servers (QEMU's 10.0.2.3 when nothing else
   is known), restarted if it dies. It binds as the zone's root and then runs
@@ -120,10 +131,20 @@ query and the [update](update-channel.md) fetcher. Builds on
   after it started, or another network's, reaches it within ten seconds: the
   zone's loop compares the servers `resolv.conf` names with the ones dnsmasq
   was given and on a change replaces the file, which dnsmasq reads before its
-  next query (at most once a second), forgetting what the last servers
-  answered. A lease that lapsed leaves the last servers in place. It answers
-  the test TLD `.test` itself, so resolving `kryptik.test` tests the path to
-  the resolver, not the internet.
+  next query (at most once a second). A lease that lapsed leaves the last
+  servers in place. It answers the test TLD `.test` itself, so resolving
+  `kryptik.test` tests the path to the resolver, not the internet.
+- **The resolver keeps nothing for the next zone.** Every routed zone asks
+  the same dnsmasq, so it keeps no cache (`--cache-size=0`) and no CHAOS
+  records (`--no-ident`). A cached answer comes back sooner, and with less of
+  its TTL left, to the next zone that asks, and `hits.bind` and `misses.bind`
+  count every zone's lookups: either would tell one zone what another looked
+  up. Each lookup costs a round trip to the uplink's servers; what a program
+  caches itself stays in its zone. Two things remain. A zone that asks for a
+  name while another zone's lookup of it is in flight gets that lookup's
+  answer, as dnsmasq forwards identical queries once, so it can tell the name
+  was asked within the last round trip. And the uplink's servers keep caches
+  of their own, shared with every machine on that network.
 - **dhcpcd separates its privileges.** What parses a lease, a DHCPv6 reply
   or a router advertisement runs as the zone's `dhcpcd` user, chrooted to an
   empty `/var/empty`, with no capability and dhcpcd's own seccomp filter over
@@ -321,7 +342,9 @@ as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
   starting the net zone takes the host's interface.
 - `build/guest-tests/zones-check.sh` on the installed system checks every
   guarantee above under QEMU user networking: the net zone `READY`, zone 0
-  offline, a routed zone's address, NAT, ULA-only IPv6 and resolver, zones
+  offline, a routed zone's address, NAT, ULA-only IPv6 and resolver, the
+  resolver's start line saying its cache is disabled and a zone's CHAOS
+  queries getting neither its version nor its counts, zones
   separated while each reaches the bridge, a routed zone started again as its
   last run ends keeping its path, a zone's datagrams sent from another zone's
   addresses counted where they reach the net zone and never taken in while its
@@ -340,7 +363,7 @@ as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
 
 `VETH` and `BRIDGE` (`hardening.fragment`). Built in (`boot.fragment`):
 `NF_TABLES`, `NF_TABLES_INET`, `NF_TABLES_IPV4`, `NF_TABLES_IPV6`, `NFT_NAT`,
-`NFT_MASQ`, `NFT_CT`, `NFT_REJECT`, `NF_NAT` and `NF_CONNTRACK`; netfilter
+`NFT_MASQ`, `NFT_CT`, `NFT_REJECT`, `NFT_CONNLIMIT`, `NF_NAT` and `NF_CONNTRACK`; netfilter
 cannot be modular because the net zone loads its ruleset from inside a user
 namespace, for which the kernel does not autoload modules.
 `NF_TABLES_BRIDGE`, `BRIDGE_NETFILTER` and `NFT_COMPAT` are off. xtables

@@ -53,10 +53,10 @@ uid N with no capabilities in the initial namespace):
 
 **From inside the net zone**, which is treated as hostile: everything above
 except a display, plus `CAP_NET_ADMIN` and `CAP_NET_RAW` in its own
-namespace, packet and netfilter and generic netlink sockets, every routed
-zone's traffic, the Wi-Fi credentials file, and the broker's `time-offset`,
-`update-latest`, `update-poll` and `update-put` verbs, which reach zone 0's
-clock and update state.
+namespace, its NICs' and radios' devices in `/sys`, packet and netfilter and
+generic netlink sockets, every routed zone's traffic, the Wi-Fi credentials
+file, and the broker's `time-offset`, `update-latest`, `update-poll` and
+`update-put` verbs, which reach zone 0's clock and update state.
 
 **From the local network or radio:** the NIC and Wi-Fi drivers' parsing in
 the kernel, and dhcpcd, wpa_supplicant and dnsmasq in the net zone.

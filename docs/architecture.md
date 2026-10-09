@@ -69,9 +69,12 @@ D-Bus or shared `/tmp`: every channel is a confused-deputy risk.
 No zone can reach the compositor's socket. A zone started from the desktop
 gets its own `kryptik-wlproxy`, which hides the capture, clipboard,
 input-injection and similar Wayland globals and stamps each window with its
-zone; the compositor draws the zone's border and title prefix from that.
+zone; the compositor draws the zone's border and title prefix from that. A
+window it could not stamp is refused, never left to be drawn as zone 0's.
 Over a zone's window the pointer is the compositor's own cursor: an image
-the zone set would be drawn above every window, wherever it chose.
+the zone set would be drawn above every window, wherever it chose. Of the
+monitors a zone learns sizes and modes, not make, model or serial: the
+proxy blanks those and names each output by number.
 
 A window's border colour is how the user tells which zone it belongs to. If
 they cannot tell at a glance which zone a password prompt belongs to, the
@@ -81,7 +84,9 @@ with the zone's name, outside the window's frame, where its surfaces are
 clipped away. Only the user's key makes a zone's window fullscreen, never
 the program's own request. While it is fullscreen the focus keys do not
 reach the windows hidden below it, and a child window the zone opens ends
-the fullscreen, since nothing of the zone's is drawn above the bar.
+the fullscreen, since nothing of the zone's is drawn above the bar. A zone's
+window does not take the keyboard from another window, neither when it maps
+nor when the window in front of it closes: the user moves it there.
 `zoneid audit` checks that every pair of zones stays distinguishable.
 
 ## Storage

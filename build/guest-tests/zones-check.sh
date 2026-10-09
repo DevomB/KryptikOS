@@ -138,6 +138,15 @@ if [[ "$lease_dns" == nameserver* ]]; then
 else
     fail "net-lease-names-resolver" "the net zone's resolv.conf names no server (${lease_dns:-nothing read}); $(netsh 'ls -l /etc/resolv.conf; ls /tmp /run/dhcpcd 2>&1 | head -12' | tr '\n' ' ')"
 fi
+# The net zone's sysfs is its interfaces and radios and the devices they sit on:
+# no disk, monitor, bus or module, nor which encrypted zones are open, while each
+# uplink it holds still shows its device. The Wi-Fi checks below need the radio's.
+nsys="$(netsh 'for p in /sys/block /sys/class/block /sys/class/drm /sys/devices/virtual/block /sys/bus /sys/module /sys/kernel /sys/firmware; do [ -e "$p" ] && echo "SEEN $p"; done; for d in /sys/class/net/*; do [ -e "$d/device" ] && echo "NIC ${d##*/}"; done')"
+if [[ "$nsys" == *"NIC "* && "$nsys" != *SEEN* ]]; then
+    pass "net-zone-sysfs-nics-only" "the net zone's /sys shows its NICs ($(sed -n 's/^NIC //p' <<<"$nsys" | tr '\n' ' ')) and no disk, monitor, bus or module"
+else
+    fail "net-zone-sysfs-nics-only" "$(tr '\n' ' ' <<<"$nsys")"
+fi
 # The resolver follows the servers a lease names. The net zone's resolv.conf
 # is written with the servers dnsmasq has and one more, as a lease that came
 # late or another network would change it, and then without it: each time
@@ -192,6 +201,27 @@ q = struct.pack(">HHHHHH", 0x4321, 0x0100, 1, 0, 0, 0) + b"\x07kryptik\x04test\x
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(4)
 s.sendto(q, ("10.19.0.1", 53)); d, _ = s.recvfrom(512); print("DNS-STILL-ANSWERED rcode=%d" % (d[3] & 0x0f))'
 [[ "$ZOUT" == *DNS-STILL-ANSWERED* ]] && pass "dns-after-reload" "$(grep -o 'DNS-STILL-ANSWERED.*' "$LOG/untrusted.out")" || fail "dns-after-reload" "no answer from the resolver: $(tail -1 "$LOG/untrusted.err")"
+# The resolver every routed zone shares keeps nothing one zone could read back
+# about another's lookups. dnsmasq names its cache in the line it starts with;
+# and asked from a zone for its version and its hits.bind count, the CHAOS
+# records it would answer from itself, it gives neither.
+started="$(uncaught | grep -a 'dnsmasq\[[0-9]*\]: started, version' | tail -1)"
+[[ "$started" == *"cache disabled"* ]] && pass "dns-cache-off" "${started#*: }" || fail "dns-cache-off" "${started:-dnsmasq logged no start line}"
+zrun untrusted 20 -- python3 -c 'import socket, struct
+for n, t in (("version", 0x5101), ("hits", 0x5102)):
+    q = struct.pack(">HHHHHH", t, 0x0100, 1, 0, 0, 0) + bytes([len(n)]) + n.encode() + b"\x04bind\x00" + struct.pack(">HH", 16, 3)
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(3)
+    try:
+        s.sendto(q, ("10.19.0.1", 53)); d, _ = s.recvfrom(512)
+        print("CHAOS-%s rcode=%d answers=%d%s" % (n, d[3] & 0x0f, struct.unpack(">H", d[6:8])[0], " names-dnsmasq" if b"dnsmasq" in d.lower() else ""))
+    except Exception as e:
+        print("CHAOS-%s no-answer %s" % (n, e))'
+chaos="$(grep -o 'CHAOS-.*' "$LOG/untrusted.out" | tr '\n' ' ')"
+if [[ "$chaos" == *CHAOS-version* && "$chaos" == *CHAOS-hits* && "$chaos" != *names-dnsmasq* && "$chaos" != *"CHAOS-hits rcode=0 answers="[1-9]* ]]; then
+    pass "dns-counters-hidden" "$chaos"
+else
+    fail "dns-counters-hidden" "${chaos:-no output} $(tail -1 "$LOG/untrusted.err")"
+fi
 
 # (the vault is probed once its volume exists, under storage below)
 
@@ -441,6 +471,48 @@ if [[ -n "$uplink4" && "$ZOUT" == *GATEWAY-OK* && "$ZOUT" == *UPLINK4-REFUSED* &
     pass "uplink-address-refused" "untrusted reaches the VM gateway and not the net zone's own uplink address ${uplink4}${uplink6:+ or ${uplink6}}"
 else
     fail "uplink-address-refused" "the net zone's uplink addresses: ${uplink4:-none} ${uplink6:-none}; untrusted (rc ${ZRC}): $(tr '\n' ' ' <<<"$ZOUT") $(tail -2 "$LOG/untrusted.err" | tr '\n' ' ')"
+fi
+# One routed zone holds at most an eighth of the conntrack table every zone's
+# flows share. untrusted opens more flows than that, half through the net zone
+# toward an unused address on its local network, where nothing answers, and
+# half to the net zone's resolver from ports of their own; the table must grow
+# by no more than its share.
+ct_max="$(netns cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null)"
+ct_cap=$(( ${ct_max:-0} / 8 )); [[ "$ct_cap" -ge 1024 ]] || ct_cap=1024
+ct_before="$(netns cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null)"
+zrun untrusted 60 -- python3 -c '
+import socket, sys
+n = int(sys.argv[1])
+sent = 0
+for i in range(n // 2):
+    if i % 60000 == 0:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.sendto(b"zt", ("10.0.2.99", 1024 + i % 60000))
+        sent += 1
+    except OSError:
+        pass
+for i in range(n - n // 2):
+    t = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        t.bind(("0.0.0.0", 1024 + i % 30000))
+        t.sendto(b"zt", ("10.19.0.1", 53))
+        sent += 1
+    except OSError:
+        pass
+    t.close()
+print("SENT %d" % sent)
+' "$((ct_cap + 4000))"
+ct_after="$(netns cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null)"
+ct_sent="$(sed -n 's/^SENT \([0-9]*\)$/\1/p' <<<"$ZOUT")"
+if [[ -z "$ct_max" || -z "$ct_before" || -z "$ct_after" ]]; then
+    fail "zone-flows-capped" "the net zone's conntrack table could not be read: max ${ct_max:-?}, before ${ct_before:-?}, after ${ct_after:-?}"
+elif [[ "${ct_sent:-0}" -lt $((ct_cap + 2000)) ]]; then
+    fail "zone-flows-capped" "untrusted sent ${ct_sent:-no} flows of $((ct_cap + 4000)): $(tail -2 "$LOG/untrusted.err" | tr '\n' ' ')"
+elif (( ct_after - ct_before > ct_cap + 512 )); then
+    fail "zone-flows-capped" "untrusted's ${ct_sent} flows took $((ct_after - ct_before)) entries of ${ct_max}; its share is ${ct_cap}"
+else
+    pass "zone-flows-capped" "untrusted's ${ct_sent} new flows took $((ct_after - ct_before)) entries, within its share of ${ct_cap} of ${ct_max}"
 fi
 
 # net zone restart: routed zones fail closed while it is down, recover after
