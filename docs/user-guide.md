@@ -402,7 +402,8 @@ shows each timer, its timeout and whether it is running.
   resolver.
 - A network, or a net zone it has taken over, can keep releases from the
   machine: that is reported after 30 days, by `kryptik update status` and
-  above every login prompt, not prevented.
+  above every login prompt, not prevented, and not reported at all if
+  whoever withholds them also holds the channel's statement key.
 - Anyone who holds the disk, or can boot a Kryptik install medium on the
   machine, can put an older release back, still signed
   (`kryptik-recover --restore-slot` restores the medium's own, older or
