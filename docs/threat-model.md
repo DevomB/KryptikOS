@@ -64,16 +64,19 @@ It can still:
   bridge keeps its ports apart only from each other, not from the net zone's
   own routing;
 - reach kernel code that no other zone can: nf_tables, packet sockets on its
-  NICs and the bridge, and every generic-netlink family, among them the Wi-Fi
-  drivers' vendor commands and ethtool's netlink setters (offloads, rings,
-  coalescing, EEE, and a pluggable module's firmware); nl80211's testmode is
-  not built;
+  NICs and the bridge, and the generic-netlink commands a network namespace's
+  administrator may use, among them the Wi-Fi drivers' vendor commands and
+  ethtool's setters (offloads, rings, coalescing, EEE, and a pluggable
+  module's firmware, from the images on the verified root); commands that
+  need the initial namespace's administrator, devlink's among them, stay
+  closed, and nl80211's testmode is not built;
 - keep the machine offline, or a routed zone without its lookups or its
   bandwidth;
 - read the passphrase of every Wi-Fi network it was given;
-- withhold releases, which zone 0 reports once the newest statement, or with
-  none accepted the install, is 30 days old, in `kryptik update status`, above
-  the login prompt and in the launcher;
+- withhold releases, which zone 0 reports once the newest statement is 30
+  days old, or, where the image names a channel and none was accepted, the
+  install, in `kryptik update status`, above the login prompt and in the
+  launcher;
 - claim the clock is off, which zone 0 applies up to an hour and beyond that
   only when the user agrees.
 
