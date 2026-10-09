@@ -55,12 +55,16 @@ policy files and the optional `[policy] landlock` file, which narrows the
 Landlock ruleset every zone gets at entry. No shipped zone names a Landlock
 file.
 
-## Test requirement
+## What a zone cannot do
 
 From inside `untrusted`, with root in that zone, each of these must fail, and
 a committed test must show it:
 
-1. Listing processes in another zone
-2. Reading another zone's filesystem
-3. Reaching the physical NIC
-4. Reading anything in `vault`
+- listing processes in another zone
+- reading another zone's filesystem
+- reaching the physical NIC
+- reading anything in `vault`
+- making a syscall the zone filter denies
+
+`tests/adversarial.sh` makes each attempt with a zone's namespaces and filter,
+in CI and in `make acceptance`'s host suites.

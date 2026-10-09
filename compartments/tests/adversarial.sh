@@ -77,7 +77,7 @@ sleep 0.3
 if [[ -d "/proc/${VICTIM_PID}" ]]; then
     info "victim process running as pid ${VICTIM_PID} (stands in for another zone)"
 else
-    info "victim process failed to start; requirement 1 result is weaker"
+    info "victim process failed to start; the process check below is weaker"
 fi
 
 # Stands in for another zone's filesystem, and for the vault.
@@ -88,9 +88,9 @@ echo "SENSITIVE-VAULT-KEY-$RANDOM" > "$VAULT_SECRET"
 chmod 600 "$OTHER_ZONE_SECRET" "$VAULT_SECRET"
 info "planted: $(basename "$OTHER_ZONE_SECRET"), $(basename "$VAULT_SECRET")"
 
-# --- requirement 1: process isolation ---------------------------------------
+# --- another zone's processes ----------------------------------------------
 
-head_ "Requirement 1 — cannot list processes in another zone"
+head_ "Another zone's processes cannot be listed"
 
 # Without --mount-proc the zone keeps the host's /proc, whatever its pid namespace.
 visible="$(unshare "${ZONE_UNSHARE[@]}" --mount-proc bash -c 'ls /proc | grep -c "^[0-9]*$"' 2>/dev/null)"
@@ -124,9 +124,9 @@ if [[ -n "$leaked" ]] && [[ "$leaked" -gt 10 ]]; then
     info "         kryptikd MUST mount a fresh /proc; rootfs.rs::pivot_into"
 fi
 
-# --- requirement 3: network isolation ---------------------------------------
+# --- the physical NIC ------------------------------------------------------
 
-head_ "Requirement 3 — cannot reach the physical NIC"
+head_ "The physical NIC cannot be reached"
 
 # Devices every netns gets and a zone cannot remove; the same list as launcher.sh.
 KERNEL_FALLBACK_IFS="sit0"
@@ -183,9 +183,9 @@ else
     pass "zone has no default route"
 fi
 
-# --- requirement 2: filesystem isolation ------------------------------------
+# --- another zone's files --------------------------------------------------
 
-head_ "Requirement 2 — cannot read another zone's filesystem"
+head_ "Another zone's filesystem cannot be read"
 
 # Negative control: a mount namespace only copies the mount table, so it hides no file.
 if unshare "${ZONE_UNSHARE[@]}" cat "$OTHER_ZONE_SECRET" >/dev/null 2>&1; then
@@ -225,9 +225,9 @@ else
     esac
 fi
 
-# --- requirement 4: vault ---------------------------------------------------
+# --- the vault -------------------------------------------------------------
 
-head_ "Requirement 4 — cannot read the vault"
+head_ "The vault cannot be read"
 
 if [[ ! -x "${KRYPTIKD:-}" ]]; then
     fail "kryptikd not built - cannot test vault confinement"
@@ -242,9 +242,9 @@ else
     info "on Kryptik the vault's LUKS2 volume is also closed whenever the vault zone is not running"
 fi
 
-# --- requirement 5: kernel attack surface -----------------------------------
+# --- the kernel's dangerous syscalls ---------------------------------------
 
-head_ "Requirement 5 — cannot reach the kernel's dangerous syscalls"
+head_ "The kernel's dangerous syscalls cannot be made"
 # All zones share one kernel; seccomp raises the cost of finding an LPE in it.
 
 if [[ ! -x "${KRYPTIKD:-}" ]]; then
