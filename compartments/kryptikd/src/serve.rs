@@ -1233,6 +1233,9 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
     None
 }
 
+/// How often the login prompt's update notice is checked.
+const NOTICE_EVERY: Duration = Duration::from_secs(3600);
+
 pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
     let cfg = match config_from(zones_dir, args) {
         Ok(c) => c,
@@ -1269,7 +1272,18 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
 
     let mut pending: Vec<Pending> = Vec::new();
     let mut jobs: Vec<Job> = Vec::new();
+    // The login prompt carries what `kryptik update status` says of a stale statement, on the
+    // installed system's instance: checked as it starts, then hourly, as days are what count.
+    let mut notice_due = (!cfg.developer).then(Instant::now);
     loop {
+        if notice_due.is_some_and(|due| Instant::now() >= due) {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+            let notice = Path::new(crate::update::LOGIN_NOTICE);
+            if let Err(e) = crate::update::refresh_login_notice(Path::new(crate::update::STATE_DIR), notice, now) {
+                eprintln!("kryptikd serve: {e}");
+            }
+            notice_due = Some(Instant::now() + NOTICE_EVERY);
+        }
         reap(&mut pending, &mut jobs);
         jobs.retain_mut(|j| match j.exited {
             Some(st) => {
@@ -1290,6 +1304,10 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
                 watched.push(i);
             }
             let left = p.deadline().saturating_duration_since(now).as_millis() as i32;
+            timeout = if timeout < 0 { left } else { timeout.min(left) };
+        }
+        if let Some(due) = notice_due {
+            let left = due.saturating_duration_since(now).as_millis().min(i32::MAX as u128) as i32;
             timeout = if timeout < 0 { left } else { timeout.min(left) };
         }
         // Last: a child that ends wakes the loop, and `reap` at its top collects it.

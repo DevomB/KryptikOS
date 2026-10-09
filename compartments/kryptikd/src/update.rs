@@ -13,6 +13,8 @@ pub const POINTER_MAX: usize = 8 * 1024;
 pub const MANIFEST_MAX: u64 = 64 * 1024;
 /// Past this age a pointer is reported stale: it is re-issued on a schedule.
 pub const STALE_AFTER_SECS: i64 = 30 * 86400;
+/// Where a stale pointer is also reported: agetty prints its issue.d drop-ins above every login prompt.
+pub const LOGIN_NOTICE: &str = "/run/issue.d/kryptik-update.issue";
 /// Skew allowed in a statement's date; one dated later would make every genuine one a replay.
 pub const MAX_AHEAD_SECS: i64 = 86400;
 /// One pointer is considered per hour; the rest are refused unread.
@@ -639,9 +641,7 @@ pub fn status(dir: &Path, now: i64, running: &str) -> String {
             let (days, stale) = staleness(now, p.issued);
             out.push_str(&format!("newest     {} (stated {days} day(s) ago)\n", p.version));
             if stale {
-                out.push_str(&format!(
-                    "           no statement from the release key for {days} days: either nothing has been published,\n           or something is keeping it from this machine\n"
-                ));
+                out.push_str(&format!("           {}\n", overdue(days)));
             }
         }
     }
@@ -662,6 +662,32 @@ pub fn status(dir: &Path, now: i64, running: &str) -> String {
         }
     }
     out
+}
+
+/// What `status` and the login prompt say of a statement older than `STALE_AFTER_SECS`.
+fn overdue(days: i64) -> String {
+    format!("no statement from the release key for {days} days: either nothing has been published, or something is keeping it from this machine")
+}
+
+/// `overdue` for the newest accepted statement, if it is; never before one was accepted.
+pub fn stale_line(dir: &Path, now: i64) -> Option<String> {
+    let (days, stale) = staleness(now, stored_pointer(dir)?.issued);
+    stale.then(|| overdue(days))
+}
+
+/// Write `stale_line` to `notice` for the login prompt, or remove it once there is none.
+pub fn refresh_login_notice(dir: &Path, notice: &Path, now: i64) -> Result<(), String> {
+    let Some(line) = stale_line(dir, now) else {
+        return match std::fs::remove_file(notice) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("{}: {e}", notice.display())),
+            _ => Ok(()),
+        };
+    };
+    if let Some(parent) = notice.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    let text = format!("kryptik update: {line}\n");
+    crate::files::write_atomic(notice, &[text.as_bytes()], 0o644, None).map_err(|e| format!("{}: {e}", notice.display()))
 }
 
 /// Forget what has arrived of the wanted release: its files and the manifest
