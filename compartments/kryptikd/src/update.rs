@@ -749,10 +749,11 @@ pub fn forget_if_installed(dir: &Path, running: &str) {
     forget_unless_trial(dir, running, Path::new(TRIAL));
 }
 
-/// forget_if_installed while no trial is still to be judged: one that fails
-/// has `kryptik-update` name this stage for `--retry`.
+/// forget_if_installed while no trial is still to be judged and none has just failed: a failed
+/// one has `kryptik-update` name this stage for `--retry`. boot-success renames the record to
+/// `trial.failed` before it reboots, or instead of rebooting; arming a trial again removes that.
 fn forget_unless_trial(dir: &Path, running: &str, trial: &Path) {
-    if trial.exists() {
+    if trial.exists() || trial.with_file_name("trial.failed").exists() {
         return;
     }
     if wanted(dir).is_some_and(|v| version_cmp(&v, running) != Ordering::Greater) {

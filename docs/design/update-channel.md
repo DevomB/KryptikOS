@@ -161,8 +161,9 @@ service. `status` shows the running version, the newest pointer's version and
 age, whether fetching is automatic, and what has arrived. `fetch` asks for the
 release the newest pointer names. `apply` runs `kryptik-update apply` on the
 complete stage, with the usual trial boot and fallback; the stage goes once
-the machine runs that release and its trial is judged, so after a failed
-trial the `--retry` the refusal prints names a stage that is still there.
+the machine runs that release and no trial is pending or failed, so after a
+failed trial the `--retry` the refusal prints names a stage that is still
+there.
 Nothing is installed unless the user asks, and nothing is fetched unless the
 user asks or has turned automatic fetching on.
 

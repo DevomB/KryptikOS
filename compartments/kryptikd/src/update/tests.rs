@@ -446,8 +446,12 @@ fn stage_kept_through_trial() {
     // The trial runs 1.0.3, but if it fails, kryptik-update names this stage for --retry.
     forget_unless_trial(&d, "1.0.3", &trial);
     assert!(staging(&d, "1.0.3").exists() && wanted(&d).as_deref() == Some("1.0.3"));
-    // Committed: boot-success has removed the record.
-    std::fs::remove_file(&trial).unwrap();
+    // Judged unhealthy: the record is renamed while 1.0.3 still runs, until the reboot or for good.
+    std::fs::rename(&trial, d.join("trial.failed")).unwrap();
+    forget_unless_trial(&d, "1.0.3", &trial);
+    assert!(staging(&d, "1.0.3").exists() && wanted(&d).as_deref() == Some("1.0.3"));
+    // Armed again and committed: the failed record went with the arming, the trial's with the commit.
+    std::fs::remove_file(d.join("trial.failed")).unwrap();
     forget_unless_trial(&d, "1.0.3", &trial);
     assert!(!d.join("incoming").exists() && !d.join("files").exists() && wanted(&d).is_none());
     let _ = std::fs::remove_dir_all(&d);
