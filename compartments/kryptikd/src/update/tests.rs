@@ -434,3 +434,25 @@ fn channel_read_from_config() {
     assert_eq!(channel_from("channel =\n"), None);
     assert_eq!(channel_from("interval = 1\n"), None);
 }
+
+#[test]
+fn stage_kept_through_trial() {
+    let d = scratch("trial");
+    std::fs::create_dir_all(staging(&d, "1.0.3")).unwrap();
+    std::fs::write(d.join("wanted"), "1.0.3").unwrap();
+    std::fs::write(d.join("files"), LISTING).unwrap();
+    let trial = d.join("trial");
+    std::fs::write(&trial, "b\narmed=1\n").unwrap();
+    // The trial runs 1.0.3, but if it fails, kryptik-update names this stage for --retry.
+    forget_unless_trial(&d, "1.0.3", &trial);
+    assert!(staging(&d, "1.0.3").exists() && wanted(&d).as_deref() == Some("1.0.3"));
+    // Judged unhealthy: the record is renamed while 1.0.3 still runs, until the reboot or for good.
+    std::fs::rename(&trial, d.join("trial.failed")).unwrap();
+    forget_unless_trial(&d, "1.0.3", &trial);
+    assert!(staging(&d, "1.0.3").exists() && wanted(&d).as_deref() == Some("1.0.3"));
+    // Armed again and committed: the failed record went with the arming, the trial's with the commit.
+    std::fs::remove_file(d.join("trial.failed")).unwrap();
+    forget_unless_trial(&d, "1.0.3", &trial);
+    assert!(!d.join("incoming").exists() && !d.join("files").exists() && wanted(&d).is_none());
+    let _ = std::fs::remove_dir_all(&d);
+}
