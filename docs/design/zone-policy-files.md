@@ -24,8 +24,8 @@ keep-capability   CAP_NET_RAW         # left in the bounding set
   allowed, and any other name is an error. The id and capability calls and
   `unshare` on the denied list fail with EPERM instead of killing the caller.
   The one way back for a denied call is a kept capability: `CAP_SETUID`,
-  `CAP_SETGID` and `CAP_SYS_CHROOT` open `setuid`, `setgid` and `setgroups`,
-  and `chroot` (`seccomp::CAP_CALLS`).
+  `CAP_SETGID` and `CAP_SYS_CHROOT` open `setuid` and `capset`, `setgid`
+  and `setgroups`, and `chroot` (`seccomp::CAP_CALLS`).
 - `allow-socket`: `AF_PACKET`, `AF_KEY`, `AF_ALG`, `AF_VSOCK`, `AF_BLUETOOTH`,
   `AF_CAN`, `AF_RDS`, `AF_TIPC` or `AF_XDP`; `AF_NETLINK` drops the netlink
   protocol check. `socketpair(2)` stays `AF_UNIX` only whatever the file
@@ -38,12 +38,13 @@ keep-capability   CAP_NET_RAW         # left in the bounding set
   (`Policy::check_for_zone`): with either, a routed zone could re-address its
   veth or forge frames. So are `CAP_SETUID`, `CAP_SETGID` and
   `CAP_SYS_CHROOT`, which are kept together or not at all (`caps::PRIVSEP`):
-  they let dhcpcd drop to a user of its own, and a zone that keeps them also
-  gets that user, id 100, mapped and named in its passwd. The chown, chmod
-  and xattr calls are in the base list, so keeping `CAP_CHOWN`, `CAP_FOWNER`
-  or `CAP_FSETID` takes effect with no `allow-syscall` line. A zone's user
-  namespace maps only its root and nobody (and in the nic zone dhcpcd's
-  user), so the most such a zone can do is move its own files between those.
+  they let dhcpcd drop to a user of its own and dnsmasq to nobody, and a
+  zone that keeps them also gets dhcpcd's user, id 100, mapped and named in
+  its passwd. The chown, chmod and xattr calls are in the base list, so
+  keeping `CAP_CHOWN`, `CAP_FOWNER` or `CAP_FSETID` takes effect with no
+  `allow-syscall` line. A zone's user namespace maps only its root and
+  nobody (and in the nic zone dhcpcd's user), so the most such a zone can do
+  is move its own files between those.
 
 To find what a program needs, run it under the base filter with `kryptikd
 seccomp-trace -- CMD [ARGS]`. Each call the filter would kill the program for

@@ -78,6 +78,26 @@ if [[ "$separated" -ge 1 && "$helpers" -ge 1 && -n "$leased" ]]; then
 else
     fail "dhcpcd-separated" "separated ${separated}, helpers ${helpers}, lease ${leased:-none}:${seen:- no dhcpcd running}"
 fi
+# dnsmasq answers the routed zones as the net zone's nobody (host uid_base +
+# 65534), keeping at most CAP_NET_BIND_SERVICE: fd19::1 stays tentative on a
+# bridge with no port yet, so dnsmasq binds it later.
+dns_dropped=0; dns_root=0; dns_seen=""
+for p in $(pgrep -x dnsmasq); do
+    ids="$(awk '/^Uid:/ { print $2, $3, $4, $5 }' "/proc/$p/status" 2>/dev/null)"
+    eff="$(awk '/^CapEff:/ { print $2 }' "/proc/$p/status" 2>/dev/null)"
+    prm="$(awk '/^CapPrm:/ { print $2 }' "/proc/$p/status" 2>/dev/null)"
+    dns_seen="${dns_seen} ${p}:uid=${ids// /,},eff=${eff},prm=${prm}"
+    n=$((net_base + 65534))
+    if [[ "$ids" == "$n $n $n $n" && "$eff" =~ ^0000000000000(000|400)$ && "$prm" =~ ^0000000000000(000|400)$ ]]; then
+        dns_dropped=$((dns_dropped + 1))
+    fi
+    [[ "$ids" == "$net_base "* ]] && dns_root=$((dns_root + 1))
+done
+if [[ "$dns_dropped" -ge 1 && "$dns_root" -eq 0 ]]; then
+    pass "dnsmasq-unprivileged" "${dns_dropped} dnsmasq process(es) as uid $((net_base + 65534)) with no capability but CAP_NET_BIND_SERVICE, none as the net zone's root"
+else
+    fail "dnsmasq-unprivileged" "dropped ${dns_dropped}, as root ${dns_root}:${dns_seen:- no dnsmasq running}"
+fi
 if ip link show eth0 >/dev/null 2>&1; then fail "zone0-nic" "eth0 is still in zone 0"; else pass "zone0-nic" "eth0 is not in zone 0 (moved into the net zone)"; fi
 if [[ -z "$(ip route show default 2>/dev/null)" ]]; then pass "zone0-no-route" "zone 0 has no default route"; else fail "zone0-no-route" "$(ip route show default)"; fi
 if ping -c1 -W2 10.0.2.2 >/dev/null 2>&1; then fail "zone0-offline" "zone 0 reached the VM gateway"; else pass "zone0-offline" "zone 0 cannot reach the VM gateway"; fi
@@ -121,8 +141,9 @@ fi
 # The resolver follows the servers a lease names. The net zone's resolv.conf
 # is written with the servers dnsmasq has and one more, as a lease that came
 # late or another network would change it, and then without it: each time
-# dnsmasq must be told within a few of the zone's 10 s passes. Its own servers
-# stay throughout, so names still resolve.
+# the zone's 10 s pass writes dnsmasq's file, and dnsmasq, woken by a query,
+# reads it and logs the servers it now uses. Its own servers stay throughout,
+# so names still resolve.
 forwards_to() {   # forwards_to yes|no: wait until dnsmasq's file does, or does not, name the added server
     for _ in $(seq 1 40); do
         if netsh 'grep -q "^nameserver 192\.0\.2\.53$" /run/uplink-resolv.conf' > /dev/null; then [[ "$1" == yes ]] && return 0
@@ -131,18 +152,36 @@ forwards_to() {   # forwards_to yes|no: wait until dnsmasq's file does, or does 
     done
     return 1
 }
-told() { grep -hc 'netzone: dnsmasq: now forwarding to' /run/uncaught-logs/current /run/uncaught-logs/@* 2>/dev/null | awk '{ n += $1 } END { print n + 0 }'; }
-told_before="$(told)"
+reads() { uncaught | grep -ac 'dnsmasq\[[0-9]*\]: reading /run/uplink-resolv\.conf'; }
+# dnsmasq's lines from its last read of the file on.
+last_read() { uncaught | grep -a 'dnsmasq\[[0-9]*\]: ' | awk '/: reading \/run\/uplink-resolv\.conf/ { s = "" } { s = s $0 "\n" } END { printf "%s", s }'; }
+poke='import socket, struct
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(2)
+s.sendto(struct.pack(">HHHHHH", 7, 0x100, 1, 0, 0, 0) + b"\x07kryptik\x04test\x00\x00\x01\x00\x01", ("127.0.0.1", 53))
+s.recv(512)'
+read_after() {   # read_after N: query dnsmasq, which looks at its file at most once a second, until it has read it more than N times
+    for _ in $(seq 1 20); do
+        nsenter -t "${net_init:-0}" -n python3 -c "$poke" > /dev/null 2>&1
+        [[ "$(reads)" -gt "$1" ]] && { sleep 2; return 0; }   # its server lines follow
+        sleep 1
+    done
+    return 1
+}
 was="$(netsh 'grep "^nameserver" /run/uplink-resolv.conf')"
+before="$(reads)"
 if [[ "$was" == nameserver* ]] && wrote="$(netsh "printf '%s\n' '${was}' 'nameserver 192.0.2.53' > /etc/resolv.conf")"; then
     forwards_to yes; came=$?
+    read_after "$before"; read1=$?
+    gained="$(last_read | grep -c 'using nameserver 192\.0\.2\.53#53')"
+    before="$(reads)"
     netsh "printf '%s\n' '${was}' > /etc/resolv.conf" > /dev/null
     forwards_to no; went=$?
-    sleep 2   # the zone says so after it has told dnsmasq
-    if [[ "$came" -eq 0 && "$went" -eq 0 && "$(( $(told) - told_before ))" -ge 2 ]]; then
-        pass "dns-follows-lease" "a server the net zone's resolv.conf gained reached dnsmasq, and left it again with the lease"
+    read_after "$before"; read2=$?
+    kept="$(last_read | grep -c 'using nameserver 192\.0\.2\.53#53')"
+    if [[ "$came" -eq 0 && "$went" -eq 0 && "$read1" -eq 0 && "$read2" -eq 0 && "$gained" -ge 1 && "$kept" -eq 0 ]]; then
+        pass "dns-follows-lease" "a server the net zone's resolv.conf gained reached dnsmasq, which used it, and left it again with the lease"
     else
-        fail "dns-follows-lease" "gained: rc=$came, lost: rc=$went, told $(( $(told) - told_before )) time(s); $(grep -h 'netzone: dnsmasq' /run/uncaught-logs/current 2>/dev/null | tail -2 | tr '\n' ' ')"
+        fail "dns-follows-lease" "file gained: rc=$came, read: rc=$read1, used: $gained; file lost: rc=$went, read: rc=$read2, still used: $kept; $(last_read | tail -3 | tr '\n' ' ')"
     fi
 else
     fail "dns-follows-lease" "dnsmasq's servers could not be read in the net zone (init ${net_init:-none}), or its resolv.conf not written: ${was:-nothing read} ${wrote:-}"
