@@ -12,6 +12,9 @@ Steps (each one argument):
                             whose order among the others is not fixed)
     send:TEXT               send TEXT followed by Enter
     login:USER:PASSWORD     wait for "login:", authenticate, wait for a prompt
+    knock:REGEX             send an empty line every 5 seconds until REGEX
+                            matches, for a getty that prompts only after
+                            input; consumes like expect
     run:CMD                 run CMD at the shell, require exit status 0; what
                             it printed stays for the steps that follow
     run!:CMD                run CMD, any exit status
@@ -272,6 +275,7 @@ def main():
         try:
             if kind == "expect": d.expect(rest)
             elif kind == "seen": d.seen(rest)
+            elif kind == "knock": d.knock(rest)
             elif kind == "send": d.send(rest)
             elif kind == "login":
                 u, _, p = rest.partition(":"); d.login(u, p)
