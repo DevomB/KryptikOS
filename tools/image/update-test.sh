@@ -26,7 +26,8 @@
 #           then after arming: both recover
 #   step 7  a corrupt trial falls back to slot a, is recorded, needs --retry
 #   step 8  automatic fetching brings B from a loopback release host; applied.
-#           A production image fetches nothing over plain http, and says so
+#           A production image fetches nothing over plain http, and says so.
+#           Its statement aged 31 days is reported by status and at login
 #
 # Whether A and B are development or production releases is read from B's
 # manifest.
@@ -47,7 +48,7 @@ while [[ "$#" -gt 0 ]]; do
         --vars) VARS="${2:?}"; shift 2 ;;
         --vars-file) VARS_FILE="${2:?}"; shift 2 ;;
         --timeout) TIMEOUT="${2:?}"; shift 2 ;;
-        -h|--help) sed -n '2,32p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,33p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -386,12 +387,17 @@ wait_arrival() { printf '%s' '(prev=; same=0; i=0; while [ $i -lt 72 ]; do s="$(
 # Prints $2 once status shows $1 (echo is off, so only output shows it); giving up fails the step.
 wait_status() { printf '(i=0; until kryptik update status | grep -q "%s"; do i=$((i+1)); [ $i -lt 72 ] || exit 1; sleep 5; done) && echo %s || { kryptik update status; false; }' "$1" "$2"; }
 # The firmware may boot the last slot tried, so check for a; a signed statement is safe over http.
+# Then 31 days on the clock age the statement: status and every login prompt say so, and putting the clock back clears it.
 UP_TO_STATEMENT=("expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'echo P8B-BOOTED-$(sed -n "s/^slot=//p" /run/kryptik/boot-identity | head -1)')" "expect:P8B-BOOTED-a" \
     "$(ROOTSH "mkdir -p /etc/kryptik && printf \"channel = http://10.0.2.2:${CHAN_PORT}/\\n\" > /etc/kryptik/update.conf && echo CONF-OK")" "expect:CONF-OK" \
     "$(ROOTSH "$RESTART_NET")" "expect:NET-RESTARTED" \
     "run:kryptik update status | grep -q 'nothing asked for'" \
-    "run:$(wait_status "newest     ${VB} " STATED-OK)" "expect:STATED-OK")
+    "run:$(wait_status "newest     ${VB} " STATED-OK)" "expect:STATED-OK" \
+    "$(ROOTSH 'date -s @$(( $(date +%s) + 31 * 86400 )) >/dev/null && s6-svc -r /run/service/kryptikd-serve && (i=0; until test -s /run/issue.d/kryptik-update.issue; do i=$((i+1)); [ $i -lt 30 ] || exit 1; sleep 1; done) && echo AGED-OK')" "expect:AGED-OK" \
+    "run:kryptik update status | grep -q 'no statement from the release key for [0-9]* days'" \
+    "send:exit" "knock:kryptik update: no statement from the release key for [0-9]+ days" "login:${TUSER}:${TPASS}" \
+    "$(ROOTSH 'date -s @$(( $(date +%s) - 31 * 86400 )) >/dev/null && s6-svc -r /run/service/kryptikd-serve && (i=0; while test -e /run/issue.d/kryptik-update.issue; do i=$((i+1)); [ $i -lt 30 ] || exit 1; sleep 1; done) && echo FRESH-OK')" "expect:FRESH-OK")
 start_vm update-p8b --net user
 if [[ "$B_ROLE" == production ]]; then
     # A production image fetches no release over plain http, and the user who

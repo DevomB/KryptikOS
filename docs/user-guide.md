@@ -290,6 +290,11 @@ kryptik update auto on    # fetch each newer release as it is announced; `auto o
 next asks; `apply` refuses a release that is still arriving. Then reboot, as
 root (`su`, then `reboot`): the next boot is the trial.
 
+When the newest statement is more than 30 days old, `status` says so, and so
+does every login prompt: "kryptik update: no statement from the release key
+for N days". Either nothing has been published, or something, the network or
+the net zone, is keeping releases from this machine.
+
 A release brought by hand is a signed payload directory holding exactly
 `manifest`, `manifest.sig`, `kryptik-root.img`, `kryptik-a.efi`,
 `kryptik-b.efi` and `root.json` (what `make media` writes as

@@ -72,7 +72,10 @@ latest.sig    an OpenSSH signature over those bytes, namespace kryptik-latest
   no signature can show an absence. The pointer is therefore re-issued on a
   schedule, and one older than 30 days is reported: "no statement from the
   release key for N days: either nothing has been published, or something is
-  keeping it from this machine". That needs a clock the net zone cannot set.
+  keeping it from this machine", by `kryptik update status` and above every
+  login prompt, from `/run/issue.d/kryptik-update.issue`, which the launch
+  service writes as it starts and checks hourly. That needs a clock the net
+  zone cannot set.
 
 **Which key signs it.** Re-signing on a schedule needs a key a timer can
 reach, and the release key signs only in a release run its maintainer
