@@ -117,11 +117,12 @@ grep -q 'not advertised' "$RT/kryptik/untrusted/proxy.log" 2>/dev/null && pass "
 # zone 0's request is granted, which shows the probe would see a grant.
 as_user "/usr/libexec/kryptik/wlprobe fullscreen 4" > "$LOG/fullscreen-zone0.out" 2>&1
 grep -q 'configure (fullscreen)' "$LOG/fullscreen-zone0.out" && pass "zone0-fullscreen-granted" || fail "zone0-fullscreen-granted" "$(tr '\n' ' ' < "$LOG/fullscreen-zone0.out")"
-# Granted only while that window has the focus: asked three seconds in, after
-# Alt+j moved the focus to the launcher, the request gets no fullscreen configure.
+# Granted only while that window has the focus: the probe asks once the
+# keyboard has left it, after Alt+j moved the focus to the launcher, and the
+# request gets no fullscreen configure.
 as_user "/usr/libexec/kryptik/wlprobe fullscreen 7 late" > "$LOG/fullscreen-zone0-late.out" 2>&1 &
 late0_pid=$!
-wait_for 10 grep -q committed "$LOG/fullscreen-zone0-late.out"
+wait_for 10 grep -q 'keyboard entered the window' "$LOG/fullscreen-zone0-late.out"
 echo "GT KEY-FOCUS-AWAY"
 wait "$late0_pid" 2>/dev/null
 if grep -q 'asked for fullscreen' "$LOG/fullscreen-zone0-late.out" && ! grep -q 'configure (fullscreen)' "$LOG/fullscreen-zone0-late.out"; then
