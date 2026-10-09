@@ -247,6 +247,27 @@ fn check_name(name: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Rename the interface at `idx`, which must be down, and return its new name: a `%d` in `name`
+/// takes the first number free in this namespace.
+pub fn rename_index(idx: u32, name: &str) -> io::Result<String> {
+    check_name(name)?;
+    let mut m = Msg::new(RTM_NEWLINK, 0, 1);
+    m.ifinfomsg(libc::AF_UNSPEC as u8, idx as i32, 0, 0);
+    m.attr_str(IFLA_IFNAME, name);
+    transact(m.finish(), &format!("rename interface {idx} to {name:?}"))?;
+    name_of(idx)
+}
+
+/// The name of the interface at `idx` in this namespace.
+pub fn name_of(idx: u32) -> io::Result<String> {
+    let mut buf = [0 as libc::c_char; libc::IF_NAMESIZE];
+    // SAFETY: if_indextoname writes at most IF_NAMESIZE bytes, its NUL included.
+    if unsafe { libc::if_indextoname(idx, buf.as_mut_ptr()) }.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned())
+}
+
 /// Create a veth pair `a` <-> `b`, `b` born in namespace `peer_ns` and with MAC `peer_mac` when given.
 pub fn create_veth(a: &str, b: &str, peer_ns: Option<RawFd>, peer_mac: Option<[u8; 6]>) -> io::Result<()> {
     check_name(a)?;

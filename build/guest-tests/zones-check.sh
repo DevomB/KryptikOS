@@ -605,6 +605,31 @@ else
     fail "reattach-egress" "untrusted (init ${upid:-none}): gateway before ${out_before}; eth0 gone while down ${eth0_gone}; gateway while down ${out_down}; gateway after ${out_after}; $(tail -2 "$LOG/untrusted-bg.out" | tr '\n' ' ')"
 fi
 "$KD" stop untrusted >/dev/null 2>&1; wait "$UBG" 2>/dev/null
+# A net zone can rename its NIC, which comes back to zone 0 under that name:
+# a leading dash would reach the next zone's dhcpcd as an option, and a quote
+# would end the name in its nft set. The next start renames it nic<N> first.
+ninit="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
+named="$(nsenter -t "${ninit:-0}" -n sh -c 'ip link set dev eth0 down && ip link set dev eth0 name "-x\"y" && echo NAMED' 2>&1)"
+rn_before="$(ready_count)"
+s6-svc -d /run/service/net-zone
+back=""
+for _ in $(seq 1 20); do back="$(physical)"; [[ -n "$back" ]] && break; sleep 0.5; done
+s6-svc -u /run/service/net-zone
+took=""
+for _ in $(seq 1 60); do [[ "$(ready_count)" -gt "$rn_before" ]] && { took="$(last_ready)"; break; }; sleep 1; done
+plain_uplink='uplinks=nic[0-9]+( |$)'
+if [[ "$named" == *NAMED* && "$back" == '-x"y ' && "$took" =~ $plain_uplink && -z "$(physical)" ]]; then
+    pass "uplink-renamed-plain" "the net zone named its NIC -x\"y, it came back to zone 0 so named, and the next start took it as ${took##*uplinks=}"
+else
+    fail "uplink-renamed-plain" "renamed: ${named:-nothing}; back in zone 0: ${back:-nothing}; READY: ${took:-none}; $(netzone_said 'NOT READY' | tail -1); zone 0 holds: $(physical)"
+fi
+# eth0 again, for what follows: the NIC is back in zone 0, down, while the net zone is.
+s6-svc -d /run/service/net-zone
+for _ in $(seq 1 20); do [[ -n "$(physical)" ]] && break; sleep 0.5; done
+for d in /sys/class/net/*; do [[ -e "$d/device" ]] && ip link set dev "${d##*/}" name eth0; done
+rn_before="$(ready_count)"
+s6-svc -u /run/service/net-zone
+for _ in $(seq 1 60); do [[ "$(ready_count)" -gt "$rn_before" ]] && break; sleep 1; done
 
 # --- zones: the net zone over a radio ---------------------------------------
 AP_SSID=kryptik-hwsim; AP_PASS=hwsim-passphrase; AP_ADDR=192.168.77.1
