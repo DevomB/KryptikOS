@@ -149,7 +149,7 @@ fn checks_run_on_copies_of_their_own() {
     std::fs::write(&tool, "#!/bin/sh\necho verb $1; shift\nfor f; do echo \"$f $(stat -c %a \"$f\") $(cat \"$f\")\"; done\necho tmp $TMPDIR\n").unwrap();
     std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
     let (p, s) = (d.join("from/latest"), d.join("from/latest.sig"));
-    let out = run_check(&tool, &d, "check-pointer", &[(&p, "latest"), (&s, "latest.sig")], false).unwrap();
+    let out = run_check(&tool, &d, "check-pointer", &[(&p, "latest"), (&s, "latest.sig")], false, std::time::Duration::from_secs(60)).unwrap();
     let lines: Vec<&str> = out.lines().collect();
     assert_eq!(lines[0], "verb check-pointer");
     let tmp = lines[3].strip_prefix("tmp ").expect("the tool's TMPDIR");
@@ -158,6 +158,13 @@ fn checks_run_on_copies_of_their_own() {
     assert_eq!(lines[2], format!("{tmp}/latest.sig 644 signature"));
     assert!(!Path::new(tmp).exists(), "the copies outlived the check");
     assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600, "the original was left as it was");
+    // One that hangs is ended at its deadline, and its directory goes as well.
+    std::fs::write(&tool, "#!/bin/sh\necho started\nsleep 30\n").unwrap();
+    let start = std::time::Instant::now();
+    let refused = run_check(&tool, &d, "check-pointer", &[(&p, "latest"), (&s, "latest.sig")], false, std::time::Duration::from_secs(1));
+    assert!(refused.unwrap_err().contains("gave no answer within 1 s"));
+    assert!(start.elapsed() < std::time::Duration::from_secs(10), "the hung check was waited out");
+    assert!(std::fs::read_dir(&d).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().starts_with("kryptik-check.")));
     let _ = std::fs::remove_dir_all(&d);
 }
 

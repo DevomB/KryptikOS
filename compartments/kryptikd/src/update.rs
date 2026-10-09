@@ -246,19 +246,18 @@ const CHECKER: u32 = 65534;
 const CHECK_BASE: &str = "/run";
 /// One check at a time, so what is left of one can be ended without touching another.
 const CHECK_LOCK: &str = "/run/kryptik/check.lock";
+/// How long a check may take, ample for 64 KiB: one that hangs holds the lock every check waits on.
+const CHECK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// `tool VERB` on copies of `inputs`, each a file and the name its copy takes, in a directory of
 /// their own under `base`, passed whole when `whole` and one by one otherwise. Under root it runs
 /// as `CHECKER` with no new privileges, in a directory it owns and takes as its TMPDIR, one check
-/// at a time, and nothing it started outlives it.
-fn run_check(tool: &Path, base: &Path, verb: &str, inputs: &[(&Path, &str)], whole: bool) -> Result<String, String> {
+/// at a time, and nothing it started outlives it or `deadline`.
+fn run_check(tool: &Path, base: &Path, verb: &str, inputs: &[(&Path, &str)], whole: bool, deadline: std::time::Duration) -> Result<String, String> {
     let root = unsafe { libc::geteuid() } == 0;
     let _one = if root { Some(check_lock()?) } else { None };
     let dir = make_scratch(base)?;
-    let ran = check_in(tool, &dir, verb, inputs, whole);
-    if root {
-        end_checker();
-    }
+    let ran = check_in(tool, &dir, verb, inputs, whole, deadline);
     let _ = std::fs::remove_dir_all(&dir);
     ran
 }
@@ -290,7 +289,8 @@ fn end_checker() {
     let _ = cmd.status();
 }
 
-fn check_in(tool: &Path, dir: &Path, verb: &str, inputs: &[(&Path, &str)], whole: bool) -> Result<String, String> {
+fn check_in(tool: &Path, dir: &Path, verb: &str, inputs: &[(&Path, &str)], whole: bool, deadline: std::time::Duration) -> Result<String, String> {
+    use std::io::Read;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::process::CommandExt;
     let root = unsafe { libc::geteuid() } == 0;
@@ -320,11 +320,40 @@ fn check_in(tool: &Path, dir: &Path, verb: &str, inputs: &[(&Path, &str)], whole
             });
         }
     }
-    let out = cmd.output().map_err(|e| format!("{}: {e}", tool.display()))?;
-    if out.status.success() {
-        return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
+    cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| format!("{}: {e}", tool.display()))?;
+    // Its answer is a few lines, which the pipes hold until it ends.
+    let until = std::time::Instant::now() + deadline;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if std::time::Instant::now() < until => std::thread::sleep(std::time::Duration::from_millis(20)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            Err(e) => return Err(format!("{}: {e}", tool.display())),
+        }
+    };
+    // Nothing the checker started outlives it, or holds its pipes open.
+    if root {
+        end_checker();
     }
-    let err = String::from_utf8_lossy(&out.stderr);
+    let Some(status) = status else {
+        return Err(format!("{verb} gave no answer within {} s", deadline.as_secs()));
+    };
+    let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+    if let Some(mut s) = child.stdout.take() {
+        let _ = s.read_to_end(&mut stdout);
+    }
+    if let Some(mut s) = child.stderr.take() {
+        let _ = s.read_to_end(&mut stderr);
+    }
+    if status.success() {
+        return Ok(String::from_utf8_lossy(&stdout).into_owned());
+    }
+    let err = String::from_utf8_lossy(&stderr);
     Err(err.lines().last().unwrap_or("refused").trim_start_matches("kryptik-update: ").to_string())
 }
 
@@ -344,14 +373,15 @@ fn make_scratch(base: &Path) -> Result<PathBuf, String> {
 /// `kryptik-update VERB DIR` on the manifest and signature in `dir`, all it reads there.
 fn check_signed_pair(verb: &str, dir: &Path) -> Result<String, String> {
     let (m, s) = (dir.join("manifest"), dir.join("manifest.sig"));
-    run_check(Path::new(TOOL), Path::new(CHECK_BASE), verb, &[(&m, "manifest"), (&s, "manifest.sig")], true)
+    run_check(Path::new(TOOL), Path::new(CHECK_BASE), verb, &[(&m, "manifest"), (&s, "manifest.sig")], true, CHECK_DEADLINE)
 }
 
 /// The installed system's checks: `kryptik-update`, on copies, as `CHECKER`.
 pub fn tool_checks() -> Checks<'static> {
     Checks {
         pointer: &|p, s| {
-            run_check(Path::new(TOOL), Path::new(CHECK_BASE), "check-pointer", &[(p, "latest"), (s, "latest.sig")], false).map(|_| ())
+            let pair = [(p, "latest"), (s, "latest.sig")];
+            run_check(Path::new(TOOL), Path::new(CHECK_BASE), "check-pointer", &pair, false, CHECK_DEADLINE).map(|_| ())
         },
         manifest: &|d| check_signed_pair("check-manifest", d),
     }
