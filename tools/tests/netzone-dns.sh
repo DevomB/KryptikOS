@@ -21,7 +21,7 @@ grep -q '^sync_upstream() {' "$T/functions.sh" \
 grep -qE '^    elif \[ -n "\$DNSPID" \] && sync_upstream; then$' "$SCRIPT" && ! grep -q 'kill -HUP "\$DNSPID"' "$SCRIPT" \
     && green "the loop writes the servers for a running resolver, and sends it no signal" \
     || red "the loop no longer writes the servers on a change, or signals a resolver it cannot"
-start="$(sed -n '/^start_dns() {/,/^}/p' "$SCRIPT")"
+start="$(sed -n '/^start_dns() {/,/^}/p' "$SCRIPT" | grep -v '^ *#')"
 # --no-poll would leave the file unread, and --no-daemon keeps dnsmasq root.
 grep -q -- '--resolv-file="\$UPSTREAM" --clear-on-reload' <<<"$start" && grep -q -- '--user=nobody' <<<"$start" \
     && ! grep -qE -- '--no-poll|--no-daemon' <<<"$start" \
