@@ -380,11 +380,23 @@ grep -rqs 'personal-pas[s]' /run/kryptik /proc/[0-9]*/cmdline && pp_leak=1
 # address that was tried, and untrusted has a path: it reaches the bridge.
 per_init="$(cut -d' ' -f1 /run/kryptik/zones/personal/init.pid 2>/dev/null)"
 per_addr="$(nsenter -t "${per_init:-0}" -n ip -4 -o addr show eth0 2>/dev/null | awk '{print $4}' | head -1)"
-zrun untrusted 30 -- sh -c "python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.19.0.1 3 >/dev/null 2>&1 && echo BRIDGE-OK; python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.19.0.$PER 2 >/dev/null 2>&1 && echo CROSS-ZONE-REACHED || echo CROSS-ZONE-BLOCKED; test -e /var/lib/kryptik/volumes && echo VOLUMES-VISIBLE || echo VOLUMES-ABSENT; echo \"HOMES=\$(ls /home 2>&1 | tr '\n' ' ')\""
+zrun untrusted 30 -- sh -c "python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.19.0.1 3 >/dev/null 2>&1 && echo BRIDGE-OK; python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.19.0.$PER 2 >/dev/null 2>&1 && echo CROSS-ZONE-REACHED || echo CROSS-ZONE-BLOCKED; test -e /var/lib/kryptik/volumes && echo VOLUMES-VISIBLE || echo VOLUMES-ABSENT; echo \"HOMES=\$(ls /home 2>&1 | tr '\n' ' ')\"; echo \"DM=\$(cat /proc/partitions 2>/dev/null | grep -c ' dm-')\"; echo \"DISKS=\$(cat /proc/diskstats 2>/dev/null | grep -c .)\"; echo \"LOAD=\$(cat /proc/loadavg 2>/dev/null)\"; echo \"IDLE=\$(ls /sys/devices/system/cpu/cpu0/cpuidle 2>/dev/null | wc -l)\""
 [[ "$ZOUT" == *BRIDGE-OK* && "$ZOUT" == *CROSS-ZONE-BLOCKED* && "$per_addr" == "10.19.0.$PER/24" ]] && pass "zone-separation" "untrusted reaches the bridge and not personal, which holds 10.19.0.$PER on it" || fail "zone-separation" "$ZOUT; personal's address: ${per_addr:-none}; $(grep -h 'network path' "$LOG/untrusted.err" | tail -1)"
 [[ "$ZOUT" == *VOLUMES-ABSENT* ]] && pass "volume-hidden" "no /var/lib/kryptik/volumes inside untrusted" || fail "volume-hidden" "the volume directory is visible from untrusted, or the probe did not run: $ZOUT"
 homes="$(sed -n 's/^HOMES=//p' <<<"$ZOUT")"
 [[ "$(tr -d ' ' <<<"$homes")" == untrusted ]] && pass "home-hidden" "/home in untrusted holds its own directory and no other zone's" || fail "home-hidden" "/home in untrusted: ${homes:-not listed}"
+# With personal's volume open, untrusted sees no disk table that shows it, no
+# load count and no CPU idle counts, which would time keystrokes in any zone.
+# A masked file is /dev/null on a nodev mount, which opens for nobody: read
+# through cat, unreadable and empty both count 0.
+host_seen="$(grep -E '^(DM|DISKS|LOAD|IDLE)=' <<<"$ZOUT" | tr '\n' ' ')"
+if [[ ! -e /dev/mapper/kryptik-zone-personal ]]; then
+    fail "host-activity-hidden" "personal's volume is not open, so there is nothing to hide: ${host_seen}"
+elif [[ "$host_seen" == "DM=0 DISKS=0 LOAD= IDLE=0 " ]]; then
+    pass "host-activity-hidden" "with personal's volume open, untrusted's /proc/partitions, /proc/diskstats and /proc/loadavg give it nothing and it has no cpuidle counts"
+else
+    fail "host-activity-hidden" "untrusted reads ${host_seen:-nothing}"
+fi
 # untrusted again at once: its last run's port stays in the net zone until the
 # kernel has torn that run's namespace down, and the new run must not lose its
 # path to it.

@@ -19,9 +19,11 @@ contradicts the threat model changes the threat model first.
 
 **Defended.** The application sees only its own zone's files and processes,
 has no route to the physical NIC, and runs under a default-deny seccomp
-filter and a Landlock ruleset. Its `/proc` hides the machine-wide interrupt
-and scheduling counters, which would time keystrokes typed in any zone, and
-gives it a boot ID of its own. Escaping needs a kernel bug
+filter and a Landlock ruleset. Its `/proc` and `/sys` hide the machine-wide
+interrupt, scheduling, load and CPU idle counters, which would time keystrokes
+typed in any zone, and the disk tables, which would show which encrypted zones
+are open; `/proc` gives it a boot ID of its own. The per-CPU packet counts in
+`/proc/net/softnet_stat` still show, as `/proc/net` follows each process. Escaping needs a kernel bug
 ([kernel local privilege escalation](#kernel-local-privilege-escalation)).
 
 ### Malicious document or link
