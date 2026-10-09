@@ -332,7 +332,8 @@ in_test_tree() {   # in_test_tree PID: this shell, an ancestor of it, or below o
     while [[ -n "$p" && "$p" -gt 1 ]]; do [[ "$lineage" == *" $p "* ]] && return 0; p="$(ppid_of "$p")"; done
     return 1
 }
-# Outside the zones' cgroups only zone 0's own programs and this test's shell tree may run.
+# With personal's terminal up: outside the zones' cgroups only zone 0's own
+# programs and this test's shell tree may run.
 foreign=(); zoned=""
 for d in /proc/[0-9]*; do
     p="${d#/proc/}"
@@ -344,6 +345,7 @@ for d in /proc/[0-9]*; do
     in_test_tree "$p" && continue
     cmd="$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null)"
     read -r _ script _ <<<"$cmd"
+    # An interpreter only as one of Kryptik's scripts; havoc only around the chrome's menu or a launch.
     case "$exe" in
         /usr/bin/s6-*|/usr/sbin/s6-*|/usr/libexec/s6-*|/usr/sbin/udevd|/usr/sbin/agetty|/usr/bin/seatd|/usr/bin/kryptikd|/usr/bin/kryptik-wlproxy|/usr/bin/kryptik-launch|/usr/bin/dwl|/usr/bin/sleep) ;;
         /usr/bin/bash|/usr/bin/python3)
@@ -394,7 +396,7 @@ questions() {   # every consent entry except the chrome's watcher.lock (consent.
 [[ -z "$(questions)" ]] && pass "no-question-for-policy-refusal" || fail "no-question-for-policy-refusal" "$(questions | tr '
 ' ' ')"
 # dev -> work: allowed by policy, so the user is asked and types the code the question shows.
-consent_code() {   # consent_code FROM TO: that question's code, from the file beside it
+consent_code() {   # consent_code FROM TO: that question's code, from the file beside it, which no zone can read
     local a n=30
     while [[ "$n" -gt 0 ]]; do
         for a in /run/kryptik-consent/*.ask; do
