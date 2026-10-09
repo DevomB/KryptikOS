@@ -333,7 +333,7 @@ statement() {   # statement EPOCH: the stored statement, issued then, for a vers
         "$(date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ)" 0 > "$UPD/pointer"
 }
 quiet_line() { grep -o 'Update: no statement from the release key for .*' <<<"$1"; }
-mkdir -p -m 700 "$UPD"; rm -f /root/gt/pointer.kept
+[[ -d "$UPD" ]] || mkdir -m 700 "$UPD"; rm -f /root/gt/pointer.kept
 [[ -e "$UPD/pointer" ]] && cp -p "$UPD/pointer" /root/gt/pointer.kept
 statement "$(date +%s)"; fresh="$(menu_text)"
 statement "$(( $(date +%s) - 45 * 86400 ))"; old="$(menu_text)"
