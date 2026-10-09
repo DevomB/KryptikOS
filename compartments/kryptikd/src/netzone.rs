@@ -290,6 +290,12 @@ fn reset_nic(nic: &str) {
     let mtu = (sysfs_u32(&sys.join("type")) == Some(1) && sysfs_u32(&sys.join("mtu")) != Some(1500)).then_some(1500);
     let (alt, alias) = netlink::names_left(nic).unwrap_or_else(|e| {
         eprintln!("kryptikd: {nic:?}: its altnames could not be read: {e}");
+        // Still the one that would stop the start, by name; none by that name is the usual case.
+        if let Err(e) = netlink::del_altnames(nic, &[BRIDGE.as_bytes().to_vec()]) {
+            if e.kind() != io::ErrorKind::NotFound {
+                eprintln!("kryptikd: {nic:?}: an altname {BRIDGE:?} could not be removed: {e}");
+            }
+        }
         Default::default()
     });
     if !alt.is_empty() {

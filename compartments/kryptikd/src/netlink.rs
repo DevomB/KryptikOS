@@ -163,8 +163,9 @@ impl Msg {
     }
 }
 
-/// Cap on the reply payload one request gathers; replies are a few hundred bytes.
-const MAX_REPLY: usize = 64 * 1024;
+/// Cap on the reply payload one request gathers: most are a few hundred bytes, and a link's
+/// altnames, up to 64 KiB, are the most any reply here carries.
+const MAX_REPLY: usize = 128 * 1024;
 
 /// One request/ack exchange on a fresh NETLINK_ROUTE socket.
 fn transact(msg: Vec<u8>, what: &str) -> io::Result<()> {
@@ -195,9 +196,22 @@ fn transact_on(proto: libc::c_int, msg: Vec<u8>, what: &str) -> io::Result<Vec<u
         if sent < 0 {
             return Err(io::Error::last_os_error());
         }
-        let mut buf = [0u8; 8192];
+        let mut buf = Vec::new();
         let mut replies = Vec::new();
         loop {
+            // Each read sized to its message: a link's altnames alone can reach 64 KiB.
+            let need = unsafe { libc::recv(fd, std::ptr::null_mut(), 0, libc::MSG_PEEK | libc::MSG_TRUNC) };
+            if need < 0 {
+                let e = io::Error::last_os_error();
+                if e.raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                return Err(e);
+            }
+            if need as usize > MAX_REPLY {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "netlink reply too large"));
+            }
+            buf.resize((need as usize).max(16), 0);
             let n = unsafe { libc::recv(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) };
             if n < 0 {
                 let e = io::Error::last_os_error();
@@ -572,17 +586,21 @@ pub fn names_left(dev: &str) -> io::Result<(Vec<Vec<u8>>, bool)> {
     Ok((alt, alias))
 }
 
-/// Remove altnames from `dev`.
+/// Remove altnames from `dev`, 64 to a request: a property list's length is 16 bits, and one
+/// altname can take 132 bytes of it.
 pub fn del_altnames(dev: &str, names: &[Vec<u8>]) -> io::Result<()> {
     let idx = index_of(dev)?;
-    let mut m = Msg::new(RTM_DELLINKPROP, 0, 1);
-    m.ifinfomsg(libc::AF_UNSPEC as u8, idx as i32, 0, 0);
-    let list = m.begin_nested(IFLA_PROP_LIST);
-    for n in names {
-        m.attr(IFLA_ALT_IFNAME, &[n.as_slice(), b"\0"].concat());
+    for some in names.chunks(64) {
+        let mut m = Msg::new(RTM_DELLINKPROP, 0, 1);
+        m.ifinfomsg(libc::AF_UNSPEC as u8, idx as i32, 0, 0);
+        let list = m.begin_nested(IFLA_PROP_LIST);
+        for n in some {
+            m.attr(IFLA_ALT_IFNAME, &[n.as_slice(), b"\0"].concat());
+        }
+        m.end_nested(list);
+        transact(m.finish(), &format!("remove the altnames of {dev:?}"))?;
     }
-    m.end_nested(list);
-    transact(m.finish(), &format!("remove the altnames of {dev:?}"))
+    Ok(())
 }
 
 const SIOCETHTOOL: libc::c_ulong = 0x8946;

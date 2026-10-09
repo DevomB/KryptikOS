@@ -566,7 +566,9 @@ fi
 link_of() { sed -n 's/.* mtu \([0-9]*\) .*link\/ether \([0-9a-f:]*\) .*/\2 \1/p'; }
 ninit="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
 own_link="$(nsenter -t "${ninit:-0}" -n ip -o link show dev eth0 2>/dev/null | link_of)"
-named="$(nsenter -t "${ninit:-0}" -n sh -c 'ip link set dev eth0 down && ip link set dev eth0 address 02:00:5e:00:53:01 mtu 1400 && ip link property add dev eth0 altname kryptik0 && ip link set dev eth0 alias left-by-the-zone && ip link set dev eth0 name "-x\"y" && echo NAMED' 2>&1)"
+# Seventy long altnames first: the link's listing then outgrows one 8 KiB read.
+long="$(head -c 100 /dev/zero | tr '\0' a)"
+named="$(nsenter -t "${ninit:-0}" -n sh -c 'ip link set dev eth0 down && ip link set dev eth0 address 02:00:5e:00:53:01 mtu 1400 && for i in $(seq 1 70); do ip link property add dev eth0 altname "$1$i" || exit 1; done && ip link property add dev eth0 altname kryptik0 && ip link set dev eth0 alias left-by-the-zone && ip link set dev eth0 name "-x\"y" && echo NAMED' sh "$long" 2>&1)"
 rn_before="$(ready_count)"
 s6-svc -d /run/service/net-zone
 back=""
@@ -585,7 +587,7 @@ nnow="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
 taken_link="$(nsenter -t "${nnow:-0}" -n ip -o link show dev "${took##*uplinks=}" 2>/dev/null | link_of)"
 taken_extra="$(nsenter -t "${nnow:-0}" -n ip -d -o link show dev "${took##*uplinks=}" 2>/dev/null | grep -o 'altname [^ ]*\|alias [^ ]*' | tr '\n' ' ')"
 if [[ -n "$own_link" && "$back_link" == "02:00:5e:00:53:01 1400" && "$taken_link" == "${own_link% *} 1500" && -n "$taken_link" && -z "$taken_extra" ]]; then
-    pass "uplink-state-reset" "the net zone left its NIC at 02:00:5e:00:53:01, MTU 1400, altname kryptik0 and an alias; the next start took it back to ${taken_link}, with neither"
+    pass "uplink-state-reset" "the net zone left its NIC at 02:00:5e:00:53:01, MTU 1400, 71 altnames (kryptik0 among them) and an alias; the next start took it back to ${taken_link}, with neither"
 else
     fail "uplink-state-reset" "own: ${own_link:-unread}; back in zone 0: ${back_link:-unread}; in the next net zone: ${taken_link:-unread} ${taken_extra}; $(uncaught | grep -a 'kryptikd: .*\(hardware gives it\|altname\|Wake-on-LAN\)' | tail -3 | tr '\n' ' ')"
 fi
