@@ -169,9 +169,12 @@ pub const PROC_MASKED: &[&str] =
 /// /proc directories hidden behind an empty tmpfs: irq/<n>/spurious counts keyboard interrupts too.
 pub const PROC_EMPTIED: &[&str] = &["irq"];
 
-/// What a zone other than the nic zone sees of sysfs: its interfaces and the CPU layout (glibc
-/// counts CPUs there). The rest holds disk and monitor serials and which encrypted zones run.
+/// What a zone sees of sysfs: its interfaces and the CPU layout (glibc counts CPUs there). The
+/// rest holds disk and monitor serials and which encrypted zones run.
 pub const SYSFS_KEPT: &[&str] = &["class/net", "devices/virtual/net", "devices/system/cpu"];
+
+/// The nic zone's radios, kept beside `SYSFS_KEPT` with the devices under it (`nic_sysfs`).
+pub const NIC_SYSFS_KEPT: &[&str] = &["class/ieee80211"];
 
 /// Host directories under /etc a zone may read, as `ETC_RO_FILES`; lynx needs its lynx.cfg.
 pub const ETC_RO_DIRS: &[&str] = &["/etc/alternatives", "/etc/ssl/certs", "/etc/pki/tls/certs", "/etc/lynx"];
@@ -381,10 +384,11 @@ pub fn pivot_into(
     )?;
     mask_proc(root, &proc_dir)?;
 
-    /* Read-only sysfs: all of it for the nic zone, `SYSFS_KEPT` from a sysfs mounted aside for
-     * the others. Best effort: it can fail in a nested namespace. */
+    /* Read-only sysfs, from one mounted aside: `SYSFS_KEPT`, and for the nic zone also its
+     * radios and the devices under its interfaces (`nic_sysfs`). Best effort: it can fail in a
+     * nested namespace. */
     let sys_dir = mkdir("sys")?;
-    let aside = if resolver == Resolver::Writable { sys_dir.clone() } else { mkdir(".sysfs")? };
+    let aside = mkdir(".sysfs")?;
     let mounted = mount_raw(
         "sysfs",
         &aside,
@@ -394,19 +398,22 @@ pub fn pivot_into(
         None,
         "mount(sysfs)",
     );
-    if aside != sys_dir {
-        if mounted.is_ok() {
-            if let Err(e) = keep_sysfs(&aside, &sys_dir) {
-                eprintln!("kryptikd: note: the zone gets no /sys: {e}");
-            }
-            // Left mounted, the whole of sysfs would stay in the zone at the aside path.
-            let c = cs(&aside)?;
-            if unsafe { libc::umount2(c.as_ptr(), libc::MNT_DETACH) } < 0 {
-                return Err(RootfsError::Syscall { call: "umount2", path: aside, errno: errno() });
-            }
+    if mounted.is_ok() {
+        let kept = if resolver == Resolver::Writable {
+            nic_sysfs(&aside)
+        } else {
+            SYSFS_KEPT.iter().map(|s| s.to_string()).collect()
+        };
+        if let Err(e) = keep_sysfs(&aside, &sys_dir, &kept) {
+            eprintln!("kryptikd: note: the zone gets no /sys: {e}");
         }
-        let _ = fs::remove_dir(&aside);
+        // Left mounted, the whole of sysfs would stay in the zone at the aside path.
+        let c = cs(&aside)?;
+        if unsafe { libc::umount2(c.as_ptr(), libc::MNT_DETACH) } < 0 {
+            return Err(RootfsError::Syscall { call: "umount2", path: aside, errno: errno() });
+        }
     }
+    let _ = fs::remove_dir(&aside);
 
     populate_dev(root)?;
 
@@ -593,11 +600,34 @@ fn mask_proc(root: &str, proc_dir: &str) -> Result<(), RootfsError> {
     Ok(())
 }
 
-/// Bind `SYSFS_KEPT` from the sysfs at `aside` into a read-only tmpfs at `sys_dir`.
-fn keep_sysfs(aside: &str, sys_dir: &str) -> Result<(), RootfsError> {
+/// The nic zone's sysfs: `SYSFS_KEPT`, `NIC_SYSFS_KEPT`, and the device each of its interfaces
+/// and radios sits on, which their class entries link into; netzone-init.sh tells an uplink by
+/// its `device`. Its NICs are moved in before its root is built, and none after.
+fn nic_sysfs(aside: &str) -> Vec<String> {
+    let mut kept: Vec<String> = SYSFS_KEPT.iter().chain(NIC_SYSFS_KEPT).map(|s| s.to_string()).collect();
+    let Ok(base) = fs::canonicalize(aside) else { return kept };
+    let mut devices = std::collections::BTreeSet::new();
+    for class in ["class/net", "class/ieee80211"] {
+        for e in fs::read_dir(format!("{aside}/{class}")).into_iter().flatten().flatten() {
+            let Ok(dev) = fs::canonicalize(e.path().join("device")) else { continue };
+            if let Ok(rel) = dev.strip_prefix(&base) {
+                devices.insert(rel.to_string_lossy().into_owned());
+            }
+        }
+    }
+    for d in devices {
+        if !d.is_empty() && !kept.contains(&d) {
+            kept.push(d);
+        }
+    }
+    kept
+}
+
+/// Bind `kept` from the sysfs at `aside` into a read-only tmpfs at `sys_dir`.
+fn keep_sysfs(aside: &str, sys_dir: &str, kept: &[String]) -> Result<(), RootfsError> {
     let flags = (libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC) as libc::c_ulong;
     mount_raw("tmpfs", sys_dir, Some("tmpfs"), flags, Some("mode=0755,size=64k"), "mount(sys tmpfs)")?;
-    for rel in SYSFS_KEPT {
+    for rel in kept {
         let src = format!("{aside}/{rel}");
         if Path::new(&src).is_dir() {
             bind_ro_dir(&src, &format!("{sys_dir}/{rel}"))?;

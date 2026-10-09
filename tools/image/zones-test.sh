@@ -65,7 +65,7 @@ if [[ -n "$summary" && "${zf:-1}" -eq 0 && "${zp:-0}" -ge 30 ]]; then green "eve
 grep 'ZT FAIL' <<<"$T2" | sed 's/^/        /'
 # The key verdicts one by one, so a pass is not a single line.
 for name in kernel-support policies net-ready net-dns dhcpcd-separated dnsmasq-unprivileged zone0-nic zone0-no-route zone0-offline routed-egress routed-ping routed-ping6 routed-dns net-lease-names-resolver dns-follows-lease dns-after-reload routed-ipv6-noglobal zone-separation volume-hidden home-hidden fail-closed net-restart-ready reattach-after-restart uplink-returned uplink-retaken reattach-egress uplink-refused wifi-beyond routed-restart-path uplink-address-refused \
-            wifi-module wifi-ap wifi-add wifi-associated wifi-lease wifi-egress wifi-forget \
+            wifi-module wifi-ap wifi-add wifi-associated wifi-lease wifi-egress wifi-forget net-zone-sysfs-nics-only \
             time-floor-ran time-clamp time-floor-forged time-claim-stepped time-claim-floor time-claim-consent pids-limit ephemeral-size-bound cpu-max-set lifecycle-repeat lifecycle-registry resolver-after-attach \
             terminal-terminfo man-page text-browser tls-trust \
             volume-init zone-source-pinned encrypted-zone-start stop-closes-volume wrong-passphrase persist-reopen no-mapping-after ephemeral-gone concurrent-start-refused full-volume header-restore volume-destroy vault-offline vault-ping no-passphrase-leak \
