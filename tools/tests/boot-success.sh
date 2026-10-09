@@ -66,6 +66,10 @@ EOF
 cat > "$T/bin/sync" <<'EOF'
 #!/bin/sh
 echo "sync $*" >> "$KTEST/syncs"
+case "$*" in
+    *committed-slot.new) [ ! -e "$KTEST/sync_fails" ] ;;
+    *BOOTX64.EFI.new) [ ! -e "$KTEST/sync_fails_boot" ] ;;
+esac
 EOF
 chmod +x "$T"/bin/*
 
@@ -128,6 +132,12 @@ check "committed-slot records b" "$(cat "$KTEST/esp/kryptik/committed-slot")" "b
 check "the new committed-slot record is fsynced under its temporary name" "$(grep -c -x "sync -f $KTEST/run/esp/kryptik/committed-slot.new" "$KTEST/syncs" 2>/dev/null)" "1"
 check "the trial record is gone" "$([[ -e "$KTEST/boot/trial" ]] && echo present || echo gone)" "gone"
 check "the trial's firmware entries and BootNext are forgotten after the commit, the committed slot gets its own, and its release goes to the clock's floor" "$CALLS" "mount -t vfat -o rw,nosuid,nodev,noexec /dev/vda1 $KTEST/run/esp umount $KTEST/run/esp efiboot forget efiboot ensure b kryptikd time committed $KTEST/boot/release-b "
+run_case recfail b "" persistent 'b\narmed=1\n' $ALL; : > "$KTEST/sync_fails"; go
+check "a committed-slot record that cannot be written fails the commit: the trial stays, for the next boot to commit again" \
+    "$RESULT|$(cat "$KTEST/esp/kryptik/committed-slot")|$([[ -e "$KTEST/boot/trial" ]] && echo kept || echo gone)|$(grep -c 'efiboot forget' "$KTEST/calls" 2>/dev/null)" "commit-failed b|a|kept|0"
+run_case bootfail b "" persistent 'b\narmed=1\n' $ALL; : > "$KTEST/sync_fails_boot"; go
+check "a boot file that cannot be replaced fails the commit, and the record goes on naming the slot BOOTX64.EFI boots" \
+    "$RESULT|$(cat "$KTEST/esp/EFI/BOOT/BOOTX64.EFI")|$(cat "$KTEST/esp/kryptik/committed-slot")|$([[ -e "$KTEST/boot/trial" ]] && echo kept || echo gone)" "commit-failed b|kernel-a|a|kept"
 run_case commit0 b "" persistent 'b\narmed=0\n' $ALL; go
 check "a trial that booted before its armed=1 line was written is still a trial: committed" "$RESULT" "commit b"
 
