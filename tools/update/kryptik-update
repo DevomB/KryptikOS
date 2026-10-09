@@ -10,7 +10,7 @@
 #   kryptik-update check-pointer FILE SIG   verify only: the pointer's signature
 #   kryptik-update check-release DIR        verify only: signature, role; any version
 #
-#   --retry     arm again a slot whose last trial failed to boot
+#   --retry     arm again a slot whose last trial failed
 #   --recovery  accept an older signed release (a downgrade)
 #
 # DIR holds manifest, manifest.sig, kryptik-root.img, kryptik-a.efi,
@@ -101,7 +101,7 @@ cmd_status() {
     slot="$(running_slot)"; echo "running slot:     ${slot:-unknown} (version $(running_version))"
     echo "trial pending:    $(sed -n 1p "$B/trial" 2>/dev/null || true)$([ -r "$B/trial" ] && printf ' (%s)' "$(sed -n 's/^armed=//p' "$B/trial" | sed 's/1/BootNext armed/;s/0/not yet armed/')" || echo none)"
     echo "last boot result: $(cat "$B/last-result" 2>/dev/null || echo none)"
-    echo "failed trial:     $(cat "$B/trial.failed" 2>/dev/null || echo none)"
+    echo "failed trial:     $(sed -n 1p "$B/trial.failed" 2>/dev/null || echo none)"
     # The ESP is an apply's or a rollback's while one holds the lock.
     exec 9>"$LOCK"
     if flock -s -n 9; then
@@ -341,7 +341,7 @@ cmd_apply() {
         die "a trial of slot $(sed -n 1p "$B/trial") is already armed; reboot first"
     fi
     if [ "$retry" != 1 ] && [ -f "$B/trial.failed" ]; then
-        die "the last trial of slot $(cat "$B/trial.failed") failed to boot. To try it again, run as root: kryptik-update apply $dir --retry"
+        die "the last trial of slot $(sed -n 1p "$B/trial.failed") failed: it did not boot, or came up unhealthy. To try it again, run as root: kryptik-update apply $dir --retry"
     fi
     from_committed "$slot"
 
