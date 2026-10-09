@@ -16,10 +16,11 @@ fn program_has_expected_shape() {
 #[test]
 fn jump_offsets_stay_small() {
     let p = build_program(BASE_ALLOWLIST).unwrap();
-    // Arg-rule offsets reach 9, the rest are 0 or 1; all must land inside.
+    // Arg-rule offsets reach 10, the jump past ioctl's ten instructions; the rest are 0 or 1;
+    // all must land inside.
     for (i, ins) in p.iter().enumerate() {
-        assert!(ins.jt <= 9, "instruction {i} has jt={}", ins.jt);
-        assert!(ins.jf <= 9, "instruction {i} has jf={}", ins.jf);
+        assert!(ins.jt <= 10, "instruction {i} has jt={}", ins.jt);
+        assert!(ins.jf <= 10, "instruction {i} has jf={}", ins.jf);
         if ins.code & 0x07 == BPF_JMP {
             assert!((i + 1 + ins.jt as usize) < p.len(), "instruction {i} jt runs off the end");
             assert!((i + 1 + ins.jf as usize) < p.len(), "instruction {i} jf runs off the end");
@@ -68,6 +69,9 @@ fn evaluate_args(prog: &[SockFilter], arch: u32, nr: u32, args: [u64; 6]) -> u32
             }
             c if c == BPF_JMP | BPF_JEQ | BPF_K => {
                 pc += 1 + if acc == ins.k { ins.jt as usize } else { ins.jf as usize };
+            }
+            c if c == BPF_JMP | BPF_JGT | BPF_K => {
+                pc += 1 + if acc > ins.k { ins.jt as usize } else { ins.jf as usize };
             }
             c if c == BPF_JMP | BPF_JGE | BPF_K => {
                 pc += 1 + if acc >= ins.k { ins.jt as usize } else { ins.jf as usize };
@@ -364,6 +368,27 @@ fn tty_injection_ioctls_are_killed() {
         SECCOMP_RET_KILL_PROCESS
     );
     for cmd in [libc::TCGETS, libc::TIOCGWINSZ, libc::FIONREAD, libc::FIOCLEX] {
+        assert_eq!(
+            evaluate_args(&p, X86, libc::SYS_ioctl as u32, with_arg(1, cmd as u64)),
+            SECCOMP_RET_ALLOW,
+            "ioctl {cmd:#x} should be allowed"
+        );
+    }
+}
+
+/// With CAP_NET_ADMIN, which the nic zone keeps, these write a NIC's EEPROM, flash or PHY.
+#[test]
+fn nic_writing_ioctls_are_refused() {
+    let p = build_program(BASE_ALLOWLIST).unwrap();
+    for cmd in [SIOCETHTOOL, SIOCSMIIREG, SIOCDEVPRIVATE, SIOCDEVPRIVATE + 15] {
+        assert_eq!(
+            evaluate_args(&p, X86, libc::SYS_ioctl as u32, with_arg(1, cmd as u64)),
+            errno_action(EPERM),
+            "ioctl {cmd:#x} must be refused"
+        );
+    }
+    // Their neighbours, readers among them, still pass.
+    for cmd in [SIOCSMIIREG - 1, SIOCDEVPRIVATE - 1, SIOCDEVPRIVATE + 16, 0x8913, 0x8B01] {
         assert_eq!(
             evaluate_args(&p, X86, libc::SYS_ioctl as u32, with_arg(1, cmd as u64)),
             SECCOMP_RET_ALLOW,
