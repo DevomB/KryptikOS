@@ -155,7 +155,7 @@ frame callbacks while the zone's clock stands apart from the compositor's
 | | genl family filter | wpa_supplicant privsep | time namespace |
 | --- | --- | --- | --- |
 | closes | ethtool's setters, other families' namespace-admin commands | the zone's root for a flaw in Wi-Fi parsing | the shared boot and monotonic clocks, for what reads clocks |
-| leaves | nf_tables, packet sockets, nl80211 | `wpa_priv` as root; the kernel's own 802.11 parsing | idle time, `CLOCK_REALTIME`, the offsets in `/proc/self/timens_offsets`, the scheduler's clock in `/proc/<pid>/sched`, the vDSO's own time data, the CPU's timestamp counter |
+| leaves | nf_tables, packet sockets, nl80211 | `wpa_priv` as root; the kernel's own 802.11 parsing | idle time, `CLOCK_REALTIME`, the offsets in `/proc/self/timens_offsets`, the scheduler's clock in `/proc/<pid>/sched`, the machine's time data in the vDSO, the CPU's timestamp counter |
 | needs | BPF and a BPF LSM, or a kernel patch | a second build, a mapped id, a trial of WPA3 | a flag and an offsets write in kryptikd (built) |
 | a suite can show it | yes | yes, over hwsim | yes |
 
