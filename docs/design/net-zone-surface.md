@@ -122,8 +122,14 @@ signal (`seccomp.rs`, `CLONE_NS_MASK`).
 `btime` of `/proc/stat` shift with its offset (`fs/proc/uptime.c:29`,
 `fs/proc/stat.c:95-97`; `/proc/stat` is masked in zones anyway). The idle time
 summed in `/proc/uptime` does not (`uptime.c:25`), nor does
-`CLOCK_REALTIME`, which zone 0 sets for every zone. The zones suite would
-compare a zone's `/proc/uptime` with zone 0's.
+`CLOCK_REALTIME`, which zone 0 sets for every zone. A zone's programs would
+read the compositor's input and frame times against their own clock, offset
+from it; the protocol gives those times no base to compare with, and the proxy
+offers no `wp_presentation`, the one protocol that names `CLOCK_MONOTONIC`
+(`compositor/wlproxy/src/policy.rs:7-16`), so only a program that compares
+them anyway would pace its frames wrongly. The zones suite would compare a
+zone's `/proc/uptime` with zone 0's, and the desktop suite would show a zone
+window that animates.
 
 ## Side by side
 
