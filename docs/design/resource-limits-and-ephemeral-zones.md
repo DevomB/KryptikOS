@@ -103,7 +103,8 @@ matching charge to the zone would mean a zone can make dwl hold memory
 outside the zone's limit. The proxy's pool limits apply either way, and a
 pool stays charged while the compositor may still hold it: until it and its
 buffers are deleted and no surface shows one of them, counting each buffer a
-subsurface committed until the root above it commits.
+synchronized subsurface committed until wlroots applies that subsurface's
+cache.
 
 ## Files
 

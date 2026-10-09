@@ -328,11 +328,19 @@ struct Pool {
     held: usize,
 }
 
-/// The pools a wl_surface may hold in the compositor: the last one it committed, and before its
-/// root commits, each one a subsurface committed, which the compositor caches until then.
+/// The pools a wl_surface may hold in the compositor: the last one it committed, and each one a
+/// subsurface committed while synchronized, which wlroots 0.19 caches until the cache is applied
+/// (types/wlr_subcompositor.c, mirrored below).
 #[derive(Default)]
 struct Surface {
+    /// While it is a subsurface: the wl_subsurface that made it one, its parent, and that
+    /// subsurface's own sync flag.
+    role: Option<u32>,
     parent: Option<u32>,
+    sync: bool,
+    /// What it committed is cached, not yet applied.
+    cached: bool,
+    children: Vec<u32>,
     /// What the last attach named since the last commit: a pool, or no shm buffer.
     pending: Option<Option<u64>>,
     held: Vec<Option<u64>>,
@@ -445,20 +453,50 @@ impl Session {
         self.release_pool_if_unused(generation);
     }
 
-    /// The surface at the top of `id`'s subsurface tree; the walk is bounded, as the client
-    /// names the parents.
-    fn root_of(&self, mut id: u32) -> u32 {
-        for _ in 0..=self.subsurfaces.len() {
-            match self.surfaces.get(&id).and_then(|sf| sf.parent) {
-                Some(p) => id = p,
-                None => break,
-            }
-        }
-        id
+    /// `id` and the surfaces above it, nearest first; bounded, as the client names the parents.
+    fn up(&self, id: u32) -> impl Iterator<Item = u32> + '_ {
+        std::iter::successors(Some(id), |s| self.surfaces.get(s).and_then(|sf| sf.parent)).take(self.subsurfaces.len() + 1)
     }
 
-    /// A commit holds the attached buffer's pool. A root's commit applies what its subsurfaces
-    /// cached, so each surface under it keeps only its last.
+    /// wlroots' subsurface_is_synchronized: its own flag or an ancestor subsurface's.
+    fn synced(&self, id: u32) -> bool {
+        self.up(id).any(|s| self.surfaces.get(&s).is_some_and(|sf| sf.sync))
+    }
+
+    /// A surface's state applied: it keeps only its last commit, and each subsurface under it with
+    /// its own flag set and a cache is applied in turn, as wlroots' parent commit does.
+    fn apply(&mut self, id: u32) {
+        let (mut todo, mut freed) = (vec![id], Vec::new());
+        while let Some(s) = todo.pop() {
+            let Some(sf) = self.surfaces.get_mut(&s) else { continue };
+            let keep = sf.held.pop();
+            freed.extend(sf.held.drain(..).flatten());
+            sf.held.extend(keep);
+            sf.cached = false;
+            let kids = &self.surfaces[&s].children;
+            todo.extend(kids.iter().copied().filter(|k| self.surfaces.get(k).is_some_and(|c| c.sync && c.cached)));
+        }
+        for g in freed {
+            self.unhold(g);
+        }
+    }
+
+    /// A subsurface's role ends; wlroots applies what it cached first.
+    fn detach(&mut self, id: u32) {
+        if self.surfaces.get(&id).is_some_and(|sf| sf.cached) {
+            self.apply(id);
+        }
+        let Some(sf) = self.surfaces.get_mut(&id) else { return };
+        let parent = sf.parent.take();
+        sf.role = None;
+        sf.sync = false;
+        if let Some(p) = parent.and_then(|p| self.surfaces.get_mut(&p)) {
+            p.children.retain(|&c| c != id);
+        }
+    }
+
+    /// A commit holds the attached buffer's pool; a synchronized subsurface's is cached, any
+    /// other surface's applied.
     fn commit(&mut self, id: u32) -> Result<(), SessionError> {
         if let Some(sf) = self.surfaces.get_mut(&id) {
             if let Some(p) = sf.pending.take() {
@@ -474,23 +512,13 @@ impl Session {
                     }
                 }
             }
-            if sf.parent.is_some() {
-                return Ok(());
-            }
         }
-        // Only subsurfaces cache, so only they are walked.
-        let mut under: Vec<u32> = self.subsurfaces.values().copied().filter(|&s| self.root_of(s) == id).collect();
-        under.push(id);
-        let mut freed = Vec::new();
-        for s in under {
-            if let Some(sf) = self.surfaces.get_mut(&s) {
-                let keep = sf.held.pop();
-                freed.extend(sf.held.drain(..).flatten());
-                sf.held.extend(keep);
+        if self.synced(id) {
+            if let Some(sf) = self.surfaces.get_mut(&id) {
+                sf.cached = true;
             }
-        }
-        for g in freed {
-            self.unhold(g);
+        } else {
+            self.apply(id);
         }
         Ok(())
     }
@@ -624,8 +652,37 @@ impl Session {
                         }
                         let mut r = ArgReader::new(&msg[HEADER_LEN..]);
                         let (id, surface, parent) = (r.u32()?, r.u32()?, r.u32()?);
-                        self.surfaces.entry(surface).or_default().parent = Some(parent);
+                        // The compositor refuses these as well; refused here, the parents never loop.
+                        if self.surfaces.get(&surface).is_some_and(|sf| sf.role.is_some()) || self.up(parent).any(|s| s == surface) {
+                            return Err(SessionError::Forbidden("get_subsurface on a subsurface or above its parent"));
+                        }
+                        let sf = self.surfaces.entry(surface).or_default();
+                        sf.role = Some(id);
+                        sf.parent = Some(parent);
+                        sf.sync = true;
+                        self.surfaces.entry(parent).or_default().children.push(surface);
                         self.subsurfaces.insert(id, surface);
+                    }
+                    if iface.name == "wl_subsurface" {
+                        // One whose surface or parent is gone is inert, in wlroots as here.
+                        let live = self.subsurfaces.get(&h.object).copied()
+                            .filter(|s| self.surfaces.get(s).is_some_and(|sf| sf.role == Some(h.object)));
+                        match (m.name, live) {
+                            ("set_sync", Some(s)) => self.surfaces.get_mut(&s).unwrap().sync = true,
+                            ("set_desync", Some(s)) => {
+                                let sf = self.surfaces.get_mut(&s).unwrap();
+                                if std::mem::take(&mut sf.sync) && sf.cached && !self.synced(s) {
+                                    self.apply(s);
+                                }
+                            }
+                            ("destroy", _) => {
+                                self.subsurfaces.remove(&h.object);
+                                if let Some(s) = live {
+                                    self.detach(s);
+                                }
+                            }
+                            _ => {}
+                        }
                     }
                     /* Stamp the zone's app_id right behind get_toplevel: the compositor draws
                      * a toplevel with no app_id as zone 0's own, with the trusted border. */
@@ -684,15 +741,16 @@ impl Session {
                             self.pools.get_mut(&generation).unwrap().buffers -= 1;
                             self.release_pool_if_unused(generation);
                         }
+                        // A surface's end ends its subsurfaces' roles too, applying their caches.
                         if let Some(sf) = self.surfaces.remove(&id) {
+                            for c in sf.children {
+                                self.detach(c);
+                            }
+                            if let Some(p) = sf.parent.and_then(|p| self.surfaces.get_mut(&p)) {
+                                p.children.retain(|&c| c != id);
+                            }
                             for g in sf.held.into_iter().flatten() {
                                 self.unhold(g);
-                            }
-                        }
-                        // Its surface is a root again; what it holds goes at its next commit.
-                        if let Some(surface) = self.subsurfaces.remove(&id) {
-                            if let Some(sf) = self.surfaces.get_mut(&surface) {
-                                sf.parent = None;
                             }
                         }
                         self.objects.remove(id);

@@ -337,28 +337,53 @@ fn committed_buffer_keeps_its_pool_charged() {
     assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (0, 0));
 }
 
-/// A subsurface's commits are cached until its root commits, each buffer with them.
-#[test]
-fn subsurface_commits_held_until_the_root_commits() {
-    let (mut s, mut c, mut sv) = make();
+/// Surfaces 11, 12 and 14, with 12 a subsurface of 11 (as 13) and, when `nested`, 14 of 12 (as
+/// 15), over a session that knows wl_shm, wl_compositor and wl_subcompositor.
+fn with_subsurfaces(nested: bool) -> (Session, UnixStream, UnixStream) {
+    let (mut s, mut c, sv) = make();
     s.objects.place(3, (protocol::find("wl_shm").unwrap(), 1));
     s.objects.place(8, (protocol::find("wl_compositor").unwrap(), 4));
     s.objects.place(10, (protocol::find("wl_subcompositor").unwrap(), 1));
+    for id in [11, 12, 14] {
+        c.write_all(&MessageWriter::new(8, 0).u32(id).finish().unwrap()).unwrap(); // create_surface
+    }
+    c.write_all(&MessageWriter::new(10, 1).u32(13).u32(12).u32(11).finish().unwrap()).unwrap();
+    if nested {
+        c.write_all(&MessageWriter::new(10, 1).u32(15).u32(14).u32(12).finish().unwrap()).unwrap();
+    }
+    (s, c, sv)
+}
+
+/// Each (pool, buffer) made, attached and committed on `surface`, then deleted.
+fn commit_pools(s: &mut Session, c: &mut UnixStream, sv: &mut UnixStream, surface: u32, ids: &[(u32, u32)]) {
     let (fd, _) = UnixStream::pair().unwrap();
-    c.write_all(&MessageWriter::new(8, 0).u32(11).finish().unwrap()).unwrap(); // root surface 11
-    c.write_all(&MessageWriter::new(8, 0).u32(12).finish().unwrap()).unwrap(); // surface 12
-    c.write_all(&MessageWriter::new(10, 1).u32(13).u32(12).u32(11).finish().unwrap()).unwrap(); // 12 under 11
-    for (pool, buf) in [(4u32, 5u32), (6, 7)] {
+    for &(pool, buf) in ids {
         send_with_fd(c.as_raw_fd(), &MessageWriter::new(3, 0).u32(pool).i32(4096).finish().unwrap(), fd.as_raw_fd());
         c.write_all(&MessageWriter::new(pool, 0).u32(buf).i32(0).i32(16).i32(16).i32(64).u32(1).finish().unwrap()).unwrap();
-        c.write_all(&MessageWriter::new(12, 1).u32(buf).i32(0).i32(0).finish().unwrap()).unwrap();
-        c.write_all(&MessageWriter::new(12, 6).finish().unwrap()).unwrap();
+        c.write_all(&MessageWriter::new(surface, 1).u32(buf).i32(0).i32(0).finish().unwrap()).unwrap();
+        c.write_all(&MessageWriter::new(surface, 6).finish().unwrap()).unwrap();
         c.write_all(&MessageWriter::new(buf, 0).finish().unwrap()).unwrap();
         c.write_all(&MessageWriter::new(pool, 1).finish().unwrap()).unwrap();
     }
-    pump_all(&mut s).unwrap();
-    delete_ids(&mut sv, &[5, 4, 7, 6]);
-    pump_all(&mut s).unwrap();
+    pump_all(s).unwrap();
+    for &(pool, buf) in ids {
+        delete_ids(sv, &[buf, pool]);
+    }
+    pump_all(s).unwrap();
+}
+
+fn send(s: &mut Session, c: &mut UnixStream, msgs: &[(u32, u16)]) {
+    for &(id, opcode) in msgs {
+        c.write_all(&MessageWriter::new(id, opcode).finish().unwrap()).unwrap();
+    }
+    pump_all(s).unwrap();
+}
+
+/// A subsurface's commits are cached until its root commits, each buffer with them.
+#[test]
+fn subsurface_commits_held_until_the_root_commits() {
+    let (mut s, mut c, mut sv) = with_subsurfaces(false);
+    commit_pools(&mut s, &mut c, &mut sv, 12, &[(4, 5), (6, 7)]);
     assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (2, 8192));
     // The root's commit applies the subsurface's last: the first pool goes.
     c.write_all(&MessageWriter::new(11, 6).finish().unwrap()).unwrap();
@@ -370,6 +395,36 @@ fn subsurface_commits_held_until_the_root_commits() {
     delete_ids(&mut sv, &[12]);
     pump_all(&mut s).unwrap();
     assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (0, 0));
+}
+
+/// A root's commit applies a subsurface's cache only through parents with caches of their own.
+#[test]
+fn nested_subsurface_held_until_its_parent_is_applied() {
+    let (mut s, mut c, mut sv) = with_subsurfaces(true);
+    commit_pools(&mut s, &mut c, &mut sv, 14, &[(4, 5), (6, 7)]);
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (2, 8192));
+    // 12 has committed nothing, so wlroots applies nothing under it.
+    send(&mut s, &mut c, &[(11, 6)]);
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (2, 8192));
+    send(&mut s, &mut c, &[(12, 6)]);
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (2, 8192));
+    // Now the root's commit applies 12's cache and, under it, 14's.
+    send(&mut s, &mut c, &[(11, 6)]);
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (1, 4096));
+}
+
+/// A desynchronized subsurface under a synchronized one stays cached through its parents'
+/// commits; the end of its role applies the cache.
+#[test]
+fn desync_subsurface_under_a_synced_one_stays_cached() {
+    let (mut s, mut c, mut sv) = with_subsurfaces(true);
+    send(&mut s, &mut c, &[(15, 5)]); // set_desync
+    commit_pools(&mut s, &mut c, &mut sv, 14, &[(4, 5), (6, 7)]);
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (2, 8192));
+    send(&mut s, &mut c, &[(12, 6), (11, 6)]);
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (2, 8192));
+    send(&mut s, &mut c, &[(15, 0)]); // the wl_subsurface's destroy
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (1, 4096));
 }
 
 #[test]
