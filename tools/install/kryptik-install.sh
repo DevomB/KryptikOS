@@ -19,6 +19,21 @@ slot_size_ok() {   # slot_size_ok ASKED NEEDED: both in MiB, or die
     [ "$1" -ge "$2" ] || die "--slot-size $1 is less than the $2 MiB a slot needs: the image, and room for a later, larger one"
 }
 
+# First boot reads the preseed after the disk is written, so a preseed it
+# could not use is refused here, with the other refusals, by first boot's own
+# rules (firstboot.sh): the first user= is a name it would create, and each hash
+# a crypt hash, which a CRLF line end is not.
+preseed_ok() {   # preseed_ok FILE, or die
+    [ -r "$1" ] || die "cannot read the preseed ${1}; nothing was written"
+    _pu="$(sed -n 's/^user=//p' "$1" | head -1)"
+    _ph="$(sed -n 's/^password_hash=//p' "$1" | head -1)"
+    _pr="$(sed -n 's/^root_password_hash=//p' "$1" | head -1)"
+    case "$_pu" in ''|*[!a-z0-9_-]*|-*) die "the preseed ${1} names no user first boot would create (lower-case letters, digits, _ and -); nothing was written" ;; esac
+    case "$_ph" in '$'?*) ;; *) die "the preseed ${1} names no crypt password_hash=; nothing was written" ;; esac
+    case "$_ph$_pr" in *[!A-Za-z0-9./=\$]*) die "the preseed ${1} has a hash with characters no crypt hash has; nothing was written" ;; esac
+    case "$_pr" in ''|'$'?*) ;; *) die "the preseed ${1} names a root_password_hash= that is not a crypt hash; nothing was written" ;; esac
+}
+
 TARGET=""
 ASSUME_YES=0
 REPLACE=0
@@ -77,6 +92,7 @@ part_dev() {
 # What the medium's root.json may be trusted for, shared with kryptik-recover.
 . /usr/libexec/kryptik/medium-root.sh
 [ -z "$KEYBOARD" ] || kb_row "$KEYBOARD" > /dev/null || die "no keyboard layout named ${KEYBOARD}: kryptik keyboard lists them"
+[ -z "$PRESEED" ] || preseed_ok "$PRESEED"
 
 # --- refuse anything that is not a disposable whole disk -------------------
 [ -b "$TARGET" ] || die "${TARGET} is not a block device.
@@ -327,9 +343,9 @@ cat > "$MNT_BASE/state/lib/kryptik/install.json" <<EOF
   "committed_slot": "a"
 }
 EOF
-if [ -n "$PRESEED" ] && [ -r "$PRESEED" ]; then
+if [ -n "$PRESEED" ]; then
     umask 077
-    cp "$PRESEED" "$MNT_BASE/state/lib/kryptik/firstboot.preseed"
+    cp "$PRESEED" "$MNT_BASE/state/lib/kryptik/firstboot.preseed" || die "could not install the preseed"
     chmod 0600 "$MNT_BASE/state/lib/kryptik/firstboot.preseed"
     say "first-boot preseed installed"
 fi
