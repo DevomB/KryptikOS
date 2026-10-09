@@ -1072,7 +1072,7 @@ if (( PRIVILEGED == 1 )); then
         [[ "$t11nnp" == "1" ]] || t11bad+=("NoNewPrivs is '$t11nnp', not 1")
         [[ "$t11sec" == "2" ]] || t11bad+=("Seccomp is '$t11sec', not 2 (filter mode)")
 
-        for ns in user pid mnt net time; do
+        for ns in user pid mnt net time ipc uts cgroup; do
             a="$(readlink "/proc/$t11init/ns/$ns" 2>/dev/null)"
             b="$(readlink "/proc/1/ns/$ns" 2>/dev/null)"
             if [[ -z "$a" ]]; then
@@ -1083,7 +1083,7 @@ if (( PRIVILEGED == 1 )); then
         done
 
         if (( ${#t11bad[@]} == 0 )); then
-            pass "T11 from the host, the zone's pid 1 is uid/gid $ZONE_UID, no groups, CapEff=CapPrm=CapBnd=0000000000000400, NoNewPrivs, seccomp filtered, and in its own user/pid/mnt/net/time namespaces"
+            pass "T11 from the host, the zone's pid 1 is uid/gid $ZONE_UID, no groups, CapEff=CapPrm=CapBnd=0000000000000400, NoNewPrivs, seccomp filtered, and in its own user/pid/mnt/net/time/ipc/uts/cgroup namespaces"
         else
             fail "T11 the host's view of the zone's pid 1 ($t11init) is wrong in ${#t11bad[@]} way(s)"
             for b in "${t11bad[@]}"; do info "     $b"; done
