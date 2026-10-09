@@ -313,7 +313,16 @@ as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
   one that is not plain (a lower-case letter, then lower-case letters and
   digits, and not `kryptik0`, the bridge it makes there) `nic<N>`: no option,
   quote or escape a past net zone chose reaches the next one's script, nft set
-  or dhcpcd, and no name of its own stops it.
+  or dhcpcd, and no name of its own stops it. It also sets back what that zone
+  could change on the NIC itself: the address, to the one the hardware came
+  with, as one the zone chose would follow the machine from network to
+  network; Wake-on-LAN, off, as it would let anyone on the network wake the
+  machine; the MTU, to Ethernet's 1500; and its altnames and alias, which go,
+  since an altname answers as a name does (one named `kryptik0` would stop the
+  bridge being made) and `ip link` prints both. EEE, offloads, rings and
+  coalescing, which ethtool's netlink sets past the zone's ioctl rule, are not
+  set back, nor are a radio's wake triggers (nl80211 WoWLAN), which act only
+  in suspend.
 
 ## What this guarantees
 
@@ -356,7 +365,10 @@ as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
   file and `kryptik wifi`.
 - The zones suite has the net zone rename its NIC `-x"y` and restarts it: the
   NIC is back in zone 0 under that name, and the next start comes up `READY`
-  with it as `nic<N>`. `netlink::tests::rename_by_index_takes_a_template`
+  with it as `nic<N>`, with its own address and an MTU of 1500 again after
+  the zone set them to others, and without the altname `kryptik0` and the
+  alias the zone gave it. virtio-net has no Wake-on-LAN, so no suite
+  shows that being turned off. `netlink::tests::rename_by_index_takes_a_template`
   renames a veth by its index to `nic%d`. Over the simulated radio it leaves
   the net zone's radio with a monitor netdev named to sort before the
   station, then with no netdev at all, and each time the next start carries

@@ -27,9 +27,11 @@ const NLA_TYPE_MASK: u16 = 0x3fff;
 
 const RTM_NEWLINK: u16 = 16;
 const RTM_DELLINK: u16 = 17;
+const RTM_GETLINK: u16 = 18;
 const RTM_SETLINK: u16 = 19;
 const RTM_NEWADDR: u16 = 20;
 const RTM_NEWROUTE: u16 = 24;
+const RTM_DELLINKPROP: u16 = 109;
 const NLMSG_ERROR: u16 = 2;
 const NLMSG_DONE: u16 = 3;
 
@@ -41,11 +43,15 @@ const NLA_F_NESTED: u16 = 0x8000;
 
 const IFLA_ADDRESS: u16 = 1;
 const IFLA_IFNAME: u16 = 3;
+const IFLA_MTU: u16 = 4;
 const IFLA_MASTER: u16 = 10;
 // A bridge acks and ignores an unknown attribute, so the isolation test checks sysfs and the wire.
 const IFLA_PROTINFO: u16 = 12;
 const IFLA_LINKINFO: u16 = 18;
+const IFLA_IFALIAS: u16 = 20;
 const IFLA_NET_NS_FD: u16 = 28;
+const IFLA_PROP_LIST: u16 = 52;
+const IFLA_ALT_IFNAME: u16 = 53;
 const IFLA_INFO_KIND: u16 = 1;
 const IFLA_INFO_DATA: u16 = 2;
 const VETH_INFO_PEER: u16 = 1;
@@ -157,8 +163,9 @@ impl Msg {
     }
 }
 
-/// Cap on the reply payload one request gathers; replies are a few hundred bytes.
-const MAX_REPLY: usize = 64 * 1024;
+/// Cap on the reply payload one request gathers: most are a few hundred bytes, and a link's
+/// altnames, up to 64 KiB, are the most any reply here carries.
+const MAX_REPLY: usize = 128 * 1024;
 
 /// One request/ack exchange on a fresh NETLINK_ROUTE socket.
 fn transact(msg: Vec<u8>, what: &str) -> io::Result<()> {
@@ -189,9 +196,22 @@ fn transact_on(proto: libc::c_int, msg: Vec<u8>, what: &str) -> io::Result<Vec<u
         if sent < 0 {
             return Err(io::Error::last_os_error());
         }
-        let mut buf = [0u8; 8192];
+        let mut buf = Vec::new();
         let mut replies = Vec::new();
         loop {
+            // Each read sized to its message: a link's altnames alone can reach 64 KiB.
+            let need = unsafe { libc::recv(fd, std::ptr::null_mut(), 0, libc::MSG_PEEK | libc::MSG_TRUNC) };
+            if need < 0 {
+                let e = io::Error::last_os_error();
+                if e.raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                return Err(e);
+            }
+            if need as usize > MAX_REPLY {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "netlink reply too large"));
+            }
+            buf.resize((need as usize).max(16), 0);
             let n = unsafe { libc::recv(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) };
             if n < 0 {
                 let e = io::Error::last_os_error();
@@ -488,7 +508,6 @@ pub fn is_up(dev: &str) -> io::Result<bool> {
 }
 
 /// `dev`'s MAC.
-#[cfg(test)]
 pub fn mac_of(dev: &str) -> io::Result<[u8; 6]> {
     let c = CString::new(dev).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL"))?;
     let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
@@ -511,6 +530,145 @@ pub fn mac_of(dev: &str) -> io::Result<[u8; 6]> {
         *m = *b as u8;
     }
     Ok(mac)
+}
+
+/// Set `dev`'s address and MTU, which needs it down, and drop its alias.
+pub fn set_link(dev: &str, mac: Option<[u8; 6]>, mtu: Option<u32>, drop_alias: bool) -> io::Result<()> {
+    let idx = index_of(dev)?;
+    let mut m = Msg::new(RTM_NEWLINK, 0, 1);
+    m.ifinfomsg(libc::AF_UNSPEC as u8, idx as i32, 0, 0);
+    if let Some(a) = mac {
+        m.attr(IFLA_ADDRESS, &a);
+    }
+    if let Some(n) = mtu {
+        m.attr_u32(IFLA_MTU, n);
+    }
+    if drop_alias {
+        m.attr(IFLA_IFALIAS, &[]);
+    }
+    transact(m.finish(), &format!("set the address and MTU of {dev:?}"))
+}
+
+/// The (type, data) attributes in `buf` from `off`.
+fn attrs(buf: &[u8], mut off: usize) -> Vec<(u16, &[u8])> {
+    let mut out = Vec::new();
+    while off + 4 <= buf.len() {
+        let len = u16::from_ne_bytes(buf[off..off + 2].try_into().unwrap()) as usize;
+        let kind = u16::from_ne_bytes(buf[off + 2..off + 4].try_into().unwrap()) & NLA_TYPE_MASK;
+        if len < 4 || off + len > buf.len() {
+            break;
+        }
+        out.push((kind, &buf[off + 4..off + len]));
+        off += align4(len);
+    }
+    out
+}
+
+/// `dev`'s altnames, which answer to a lookup as its name does, and whether it has an alias.
+pub fn names_left(dev: &str) -> io::Result<(Vec<Vec<u8>>, bool)> {
+    let idx = index_of(dev)?;
+    let mut m = Msg::new(RTM_GETLINK, 0, 1);
+    m.ifinfomsg(libc::AF_UNSPEC as u8, idx as i32, 0, 0);
+    let reply = transact_on(NETLINK_ROUTE, m.finish(), &format!("read {dev:?}"))?;
+    let (mut alt, mut alias) = (Vec::new(), false);
+    // An ifinfomsg, 16 bytes, then the link's attributes.
+    for (kind, data) in attrs(&reply, 16) {
+        if kind == IFLA_PROP_LIST {
+            for (k, name) in attrs(data, 0) {
+                if k == IFLA_ALT_IFNAME {
+                    alt.push(name.split(|b| *b == 0).next().unwrap_or(name).to_vec());
+                }
+            }
+        } else if kind == IFLA_IFALIAS {
+            alias = data.first().is_some_and(|b| *b != 0);
+        }
+    }
+    Ok((alt, alias))
+}
+
+/// Remove altnames from `dev`, 64 to a request: a property list's length is 16 bits, and one
+/// altname can take 132 bytes of it.
+pub fn del_altnames(dev: &str, names: &[Vec<u8>]) -> io::Result<()> {
+    let idx = index_of(dev)?;
+    for some in names.chunks(64) {
+        let mut m = Msg::new(RTM_DELLINKPROP, 0, 1);
+        m.ifinfomsg(libc::AF_UNSPEC as u8, idx as i32, 0, 0);
+        let list = m.begin_nested(IFLA_PROP_LIST);
+        for n in some {
+            m.attr(IFLA_ALT_IFNAME, &[n.as_slice(), b"\0"].concat());
+        }
+        m.end_nested(list);
+        transact(m.finish(), &format!("remove the altnames of {dev:?}"))?;
+    }
+    Ok(())
+}
+
+const SIOCETHTOOL: libc::c_ulong = 0x8946;
+const ETHTOOL_GWOL: u32 = 5;
+const ETHTOOL_SWOL: u32 = 6;
+const ETHTOOL_GPERMADDR: u32 = 0x20;
+
+// As linux/ethtool.h lays them out: the kernel reads fields this code never does.
+#[allow(dead_code)]
+#[repr(C)]
+struct WolInfo {
+    cmd: u32,
+    supported: u32,
+    wolopts: u32,
+    sopass: [u8; 6],
+}
+
+#[allow(dead_code)]
+#[repr(C)]
+struct PermAddr {
+    cmd: u32,
+    size: u32,
+    data: [u8; 32],
+}
+
+/// One `SIOCETHTOOL` request on `dev`, whose answer the kernel writes back into `req`.
+fn ethtool<T>(dev: &str, req: &mut T) -> io::Result<()> {
+    let c = CString::new(dev).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL"))?;
+    let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
+    if sock < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut ifr: libc::ifreq = unsafe { std::mem::zeroed() };
+    for (i, b) in c.as_bytes_with_nul().iter().take(libc::IFNAMSIZ).enumerate() {
+        ifr.ifr_name[i] = *b as libc::c_char;
+    }
+    ifr.ifr_ifru.ifru_data = req as *mut T as *mut libc::c_char;
+    // SAFETY: the kernel reads and writes `req`, which outlives the call, as the command says.
+    let r = unsafe { libc::ioctl(sock, SIOCETHTOOL as _, &mut ifr) };
+    let e = io::Error::last_os_error();
+    unsafe { libc::close(sock) };
+    if r < 0 {
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// The address the hardware came with, if its driver gives one.
+pub fn perm_mac_of(dev: &str) -> io::Result<Option<[u8; 6]>> {
+    let mut p = PermAddr { cmd: ETHTOOL_GPERMADDR, size: 32, data: [0; 32] };
+    ethtool(dev, &mut p)?;
+    let mac: [u8; 6] = p.data[..6].try_into().unwrap();
+    Ok((p.size == 6 && mac != [0; 6]).then_some(mac))
+}
+
+/// Turn Wake-on-LAN off; false when it was off already or the driver has none.
+pub fn wol_off(dev: &str) -> io::Result<bool> {
+    let mut w = WolInfo { cmd: ETHTOOL_GWOL, supported: 0, wolopts: 0, sopass: [0; 6] };
+    match ethtool(dev, &mut w) {
+        Err(e) if e.raw_os_error() == Some(libc::EOPNOTSUPP) => return Ok(false),
+        r => r?,
+    }
+    if w.wolopts == 0 {
+        return Ok(false);
+    }
+    let mut off = WolInfo { cmd: ETHTOOL_SWOL, supported: 0, wolopts: 0, sopass: [0; 6] };
+    ethtool(dev, &mut off)?;
+    Ok(true)
 }
 
 /// Open a handle on a process's network namespace.
