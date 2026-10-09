@@ -35,6 +35,13 @@ query and the [update](update-channel.md) fetcher. Builds on
   gateway first and re-applies them inside; dhcpcd takes over if a DHCP
   server answers. Moving needs `CAP_NET_ADMIN` and `CAP_SYS_ADMIN` in the
   initial namespace, so an unprivileged launch gets loopback and a note.
+- **The net zone's sysfs is its NICs.** It sees what every zone sees (its
+  interfaces and the CPU layout, `SYSFS_KEPT` in `rootfs.rs`), its radios
+  (`class/ieee80211`), and the device each of its interfaces and radios sits
+  on, so that `device` and `phy80211` resolve for the uplink test above and
+  for wpa_supplicant. Disks, monitors, buses, modules and the encrypted zones
+  that are open stay out of its view, as out of every zone's. The devices are
+  found as its root is built, after the move; no NIC moves in later.
 - **veths are created from inside the net zone's namespace.** While a routed
   zone waits at its handshake, kryptikd creates `kv-<zone>` in the net zone
   with its peer born in the routed zone as `eth0`, enslaves `kv-<zone>` to

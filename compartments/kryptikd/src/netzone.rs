@@ -282,7 +282,8 @@ pub fn replumb_routed_zones(zones_dir: &Path, nic_ns: i32) -> Vec<(String, Resul
     out
 }
 
-/// Move the uplinks into the nic zone and create kryptik0 there.
+/// Move the uplinks into the nic zone and create kryptik0 there. Only here, before its root is
+/// built: its /sys keeps the devices of the NICs it holds then (`rootfs::nic_sysfs`).
 fn plumb_nic_zone_bridge(zone: &Zone, zone_ns: i32) -> Result<(), NetError> {
     // Without `[network] nic`, bridge only: kryptikd never picks a NIC to take from zone 0 itself.
     let nics: Vec<String> = match zone.nic.as_deref() {

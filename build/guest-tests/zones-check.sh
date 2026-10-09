@@ -138,6 +138,15 @@ if [[ "$lease_dns" == nameserver* ]]; then
 else
     fail "net-lease-names-resolver" "the net zone's resolv.conf names no server (${lease_dns:-nothing read}); $(netsh 'ls -l /etc/resolv.conf; ls /tmp /run/dhcpcd 2>&1 | head -12' | tr '\n' ' ')"
 fi
+# The net zone's sysfs is its interfaces and radios and the devices they sit on:
+# no disk, monitor, bus or module, nor which encrypted zones are open, while each
+# uplink it holds still shows its device. The Wi-Fi checks below need the radio's.
+nsys="$(netsh 'for p in /sys/block /sys/class/block /sys/class/drm /sys/devices/virtual/block /sys/bus /sys/module /sys/kernel /sys/firmware; do [ -e "$p" ] && echo "SEEN $p"; done; for d in /sys/class/net/*; do [ -e "$d/device" ] && echo "NIC ${d##*/}"; done')"
+if [[ "$nsys" == *"NIC "* && "$nsys" != *SEEN* ]]; then
+    pass "net-zone-sysfs-nics-only" "the net zone's /sys shows its NICs ($(sed -n 's/^NIC //p' <<<"$nsys" | tr '\n' ' ')) and no disk, monitor, bus or module"
+else
+    fail "net-zone-sysfs-nics-only" "$(tr '\n' ' ' <<<"$nsys")"
+fi
 # The resolver follows the servers a lease names. The net zone's resolv.conf
 # is written with the servers dnsmasq has and one more, as a lease that came
 # late or another network would change it, and then without it: each time
