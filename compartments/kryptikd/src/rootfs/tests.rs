@@ -81,6 +81,14 @@ fn etc_view_excludes_secrets() {
 }
 
 #[test]
+fn proc_hides_host_activity() {
+    // What times keystrokes in other zones, and what shows which encrypted zones are open.
+    for f in ["interrupts", "stat", "loadavg", "partitions", "diskstats"] {
+        assert!(PROC_MASKED.contains(&f), "/proc/{f} must be masked");
+    }
+}
+
+#[test]
 fn bridge_resolver() {
     let r = resolv_conf_for_bridge();
     assert_eq!(r.lines().count(), 2);

@@ -162,9 +162,13 @@ pub const ETC_RO_FILES: &[&str] =
 pub const NIC_ETC_FILES: &[&str] = &["/etc/dhcpcd.conf", "/etc/kryptik/time.conf", "/etc/kryptik/update.conf"];
 
 /// /proc files hidden behind /dev/null: interrupt and context-switch counts time every keystroke,
-/// and timer_list names other zones' tasks. Losing stat's CPU figures (top, vmstat) is the price.
-pub const PROC_MASKED: &[&str] =
-    &["interrupts", "softirqs", "stat", "schedstat", "pressure/irq", "timer_list", "sched_debug"];
+/// and so does loadavg's count of running tasks; partitions and diskstats show which encrypted
+/// zones are open, and timer_list names other zones' tasks. Losing stat's CPU figures and the load
+/// (top, vmstat, uptime) is the price.
+pub const PROC_MASKED: &[&str] = &[
+    "interrupts", "softirqs", "stat", "schedstat", "pressure/irq", "timer_list", "sched_debug",
+    "loadavg", "partitions", "diskstats",
+];
 
 /// /proc directories hidden behind an empty tmpfs: irq/<n>/spurious counts keyboard interrupts too.
 pub const PROC_EMPTIED: &[&str] = &["irq"];
@@ -601,6 +605,16 @@ fn keep_sysfs(aside: &str, sys_dir: &str) -> Result<(), RootfsError> {
         let src = format!("{aside}/{rel}");
         if Path::new(&src).is_dir() {
             bind_ro_dir(&src, &format!("{sys_dir}/{rel}"))?;
+        }
+    }
+    // Each CPU's idle-state counts are its wakeups, which a keystroke in any zone causes.
+    let cpus = format!("{sys_dir}/devices/system/cpu");
+    for e in fs::read_dir(&cpus).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let numbered = name.strip_prefix("cpu").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        let idle = format!("{cpus}/{name}/cpuidle");
+        if numbered && Path::new(&idle).is_dir() {
+            mount_raw("tmpfs", &idle, Some("tmpfs"), flags | libc::MS_RDONLY, Some("mode=0555,size=4k"), "mount(cpuidle tmpfs)")?;
         }
     }
     mount_raw("none", sys_dir, None, flags | libc::MS_REMOUNT | libc::MS_RDONLY, None, "mount(sys tmpfs, ro)")
