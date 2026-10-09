@@ -244,6 +244,28 @@ checked="$(grep -n '^\[ -z "\$PRESEED" \] || preseed_ok' "$INSTALLER" | cut -d: 
 [[ "$checked" =~ ^[0-9]+$ && "$written" =~ ^[0-9]+$ && "$checked" -lt "$written" ]] \
     && green "the preseed is checked before the first write" \
     || red "the preseed is checked at line ${checked:-none}; the disk is written from ${written:-none}"
+
+echo
+echo "-- a mounted target is found by whatever name it was mounted by"
+eval "$(sed -n '/^mounted_on()/,/^}/p' "$INSTALLER")"
+if ! declare -F mounted_on >/dev/null; then
+    red "could not extract mounted_on from the installer"
+else
+    M="$(mktemp -d)"; M="$(cd "$M" && pwd -P)"   # canonical, as readlink -f will give it
+    mkdir -p "$M/dev" "$M/by-id"
+    : > "$M/dev/vdb"; : > "$M/dev/vdb1"; : > "$M/dev/vdbb1"; : > "$M/dev/vda1"
+    ln -s ../dev/vdb1 "$M/by-id/disk-part1"
+    devs="$M/dev/vdb\n$M/dev/vdb1"
+    devs="$(printf '%b' "$devs")"
+    on() { printf '%s %s ext4 rw 0 0\n' "$1" "$2" | mounted_on "$devs"; }
+    [[ "$(on "$M/dev/vdb1" /mnt)" == "$M/dev/vdb1 on /mnt" ]] && green "a partition mounted by its own name is found" || red "canonical: $(on "$M/dev/vdb1" /mnt)"
+    [[ "$(on "$M/by-id/disk-part1" /mnt)" == "$M/by-id/disk-part1 on /mnt" ]] \
+        && green "a partition mounted through a link to it is found" || red "through a link: '$(on "$M/by-id/disk-part1" /mnt)'"
+    [[ -z "$(on "$M/dev/vdbb1" /mnt)" ]] && green "a disk whose name only starts the same is not" || red "a prefix: $(on "$M/dev/vdbb1" /mnt)"
+    [[ -z "$(on "$M/dev/vda1" /)" ]] && green "another disk's mount is not" || red "another disk: $(on "$M/dev/vda1" /)"
+    [[ -z "$(on tmpfs /tmp)" ]] && green "a mount with no device behind it is not" || red "tmpfs: $(on tmpfs /tmp)"
+    rm -rf "$M"
+fi
 echo
 printf 'passed %d, failed %d\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]] || exit 1
