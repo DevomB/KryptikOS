@@ -97,7 +97,7 @@ fn identity_names_zone() {
     // The nic zone's dhcpcd drops to the third mapped id, chrooted to an empty directory.
     let pw = passwd_for("net", "/home/net", true);
     assert_eq!(pw.lines().count(), 3);
-    assert!(pw.contains("\ndhcpcd:x:100:100:dhcpcd:/var/empty:/bin/false\n"), "{pw}");
+    assert!(pw.contains("\ndhcpcd:x:100:100:dhcpcd:/var/empty:/bin/false\n"));
     assert!(group_for(true).contains("\ndhcpcd:x:100:\n"));
     assert_eq!(crate::isolate::SERVICE_ID, 100);
     assert!(hosts_for("work").contains("127.0.0.1 localhost work"));
