@@ -76,6 +76,9 @@ esp_dev() { own_part kryptik-esp; }
 slot_dev() { own_part "kryptik-$1"; }
 hdr() { awk -F': ' -v k="$2" '$1==k {print $2; exit}' "$1"; }
 
+# Drop FILE's clean pages, so the next read is what the device holds; best effort.
+uncache() { dd if="$1" iflag=nocache count=0 status=none 2>/dev/null || :; }   # uncache FILE
+
 mount_esp() {
     dev="$(esp_dev)" || exit 1
     mkdir -p "$ESP_MNT"
@@ -364,7 +367,9 @@ cmd_apply() {
     mkdir -p "$ESP_MNT/EFI/kryptik" "$ESP_MNT/kryptik"
     cp "$(payload_path "kryptik-$target.efi")" "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new" || die "staging the kernel on the ESP failed"
     sync -f "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new" || die "the kernel staged on the ESP could not be flushed"
-    # Check the staged kernel before it gets the name rollback and recovery use.
+    # Check the staged kernel, as the device holds it, before it gets the name
+    # rollback and recovery use.
+    uncache "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new"
     want_k="$H_KA"; [ "$target" = b ] && want_k="$H_KB"
     if [ "$(sha256sum "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new" | cut -c1-64)" != "$want_k" ]; then
         rm -f "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new"
