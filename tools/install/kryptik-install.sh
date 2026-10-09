@@ -86,6 +86,17 @@ part_dev() {
     esac
 }
 
+# A mount or swap table's sources, each compared by its canonical path: a disk
+# mounted by another name (by-id, by-uuid, a link of its own) is still that disk.
+mounted_on() {   # mounted_on DEVS < TABLE: "SOURCE on WHERE" for each source that is one of DEVS, one path a line
+    while read -r src where _; do
+        case "$src" in /*) ;; *) continue ;; esac
+        real="$(readlink -f "$src" 2>/dev/null)" || continue
+        printf '%s\n' "$1" | grep -qxF -- "$real" && printf '%s on %s\n' "$src" "$where"
+    done
+    return 0
+}
+
 # kryptik_root_disk and kryptik_part, as the boot services resolve them.
 . /usr/libexec/kryptik/devices.sh
 . /usr/libexec/kryptik/keyboard.sh
@@ -117,13 +128,18 @@ done
 [ "$(lsblk -dno TYPE "$TARGET_REAL" 2>/dev/null)" = "disk" ] || die "${TARGET} is not a whole disk (lsblk type: $(lsblk -dno TYPE "$TARGET_REAL" 2>/dev/null || echo unknown))"
 [ "$(cat "/sys/class/block/$tname/ro" 2>/dev/null || echo 0)" = "0" ] || die "${TARGET} is read-only"
 
-# Nothing on the target may be mounted or used as swap.
-mounted="$(awk -v d="${TARGET_REAL}" '$1 ~ "^" d { print $1 " on " $2 }' /proc/mounts)"
+# Nothing on the target may be mounted or used as swap, by whatever name.
+devs="$TARGET_REAL"
+for p in "/sys/class/block/$tname/$tname"*; do
+    [ -e "$p/partition" ] && devs="${devs}
+/dev/${p##*/}"
+done
+mounted="$(mounted_on "$devs" < /proc/mounts)"
 if [ -n "$mounted" ]; then
     printf '%s\n' "$mounted" | sed 's/^/  /'
     die "the target has mounted filesystems. Unmount them first, or pick another disk."
 fi
-if awk -v d="${TARGET_REAL}" 'NR>1 && $1 ~ "^" d { found=1 } END { exit !found }' /proc/swaps 2>/dev/null; then
+if [ -n "$(tail -n +2 /proc/swaps 2>/dev/null | mounted_on "$devs")" ]; then
     die "${TARGET} has active swap on it. Refusing."
 fi
 # Nor held open by device-mapper (an unlocked LUKS partition, LVM) or md.
