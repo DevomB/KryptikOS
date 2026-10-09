@@ -105,7 +105,7 @@ zonebar(Client *c)
 """
 
 EDITS = [
-    # (1) Client: the zone's colour, the band that marks it unfocused, the bar.
+    # Client: the zone's colour, the band that marks it unfocused, the bar.
     ("""	struct wlr_scene_rect *border[4]; /* top, bottom, left, right */
 """,
      """	struct wlr_scene_rect *border[4]; /* top, bottom, left, right */
@@ -114,7 +114,7 @@ EDITS = [
 	struct wlr_scene_rect *bands[4]; /* top, bottom, left, right */
 	struct wlr_scene_tree *bar; /* Kryptik: names the zone above a fullscreen window */
 """),
-    # (2) The ZoneColor type, beside Rule so config.h can define the table.
+    # The ZoneColor type, beside Rule so config.h can define the table.
     ("""typedef struct {
 	const char *id;
 	const char *title;
@@ -136,7 +136,7 @@ typedef struct {
 	const float border[4];
 } ZoneColor;
 """),
-    # (3) The chooser, defined before applyrules (its first neighbour).
+    # The chooser, placed before applyrules.
     ("""void
 applyrules(Client *c)
 {
@@ -173,7 +173,7 @@ void
 applyrules(Client *c)
 {
 """),
-    # (4) mapnotify: zone-coloured borders, then the band over them as four
+    # mapnotify: zone-coloured borders, then the band over them as four
     # strips. The surface stays below both, or a buffer larger than its
     # configure would paint over the right and bottom borders. A new window
     # starts unfocused, so the band starts enabled; the bar starts hidden.
@@ -197,7 +197,7 @@ applyrules(Client *c)
 	c->bar = wlr_scene_tree_create(c->scene);
 	wlr_scene_node_set_enabled(&c->bar->node, 0);
 """),
-    # (5) resize: the band is the ring of the border nearest the surface.
+    # resize: the band is the ring of the border nearest the surface.
     ("""	wlr_scene_node_set_position(&c->border[3]->node, c->geom.width - c->bw, c->bw);
 """,
      """	wlr_scene_node_set_position(&c->border[3]->node, c->geom.width - c->bw, c->bw);
@@ -210,7 +210,7 @@ applyrules(Client *c)
 	wlr_scene_node_set_position(&c->bands[2]->node, c->bw - bandpx, c->bw);
 	wlr_scene_node_set_position(&c->bands[3]->node, c->geom.width - c->bw, c->bw);
 """),
-    # (6) focusclient: the colour is the zone's either way; focus hides the band.
+    # focusclient: the colour is the zone's either way; focus hides the band.
     ("""		if (!exclusive_focus && !seat->drag)
 			client_set_border_color(c, focuscolor);
 """,
@@ -220,7 +220,7 @@ applyrules(Client *c)
 			wlr_scene_node_set_enabled(&c->band->node, 0);
 		}
 """),
-    # (7) focusclient, the window losing focus: its band comes back.
+    # focusclient, the window losing focus: its band comes back.
     ("""		} else if (old_c && !client_is_unmanaged(old_c) && (!c || !client_wants_focus(c))) {
 			client_set_border_color(old_c, bordercolor);
 """,
@@ -228,7 +228,7 @@ applyrules(Client *c)
 			client_set_border_color(old_c, old_c->zoneborder);
 			wlr_scene_node_set_enabled(&old_c->band->node, 1);
 """),
-    # (8) setfullscreen: keep the border; dwl's 0 would let a window hide its zone.
+    # setfullscreen: keep the border; dwl's 0 would let a window hide its zone.
     ("""	c->bw = fullscreen ? 0 : borderpx;
 	client_set_fullscreen(c, fullscreen);
 """,
@@ -464,8 +464,7 @@ focusclient(Client *c, int lift)
 \t\t\treturn c;
 \t}
 """),
-    # setmon also chooses focus after mapping; preserve another zone's actual
-    # keyboard focus even when the selected monitor has changed.
+    # setmon also picks focus after mapping: keep another zone's keyboard focus across monitors.
     ("""\t\tsetfloating(c, c->isfloating);
 \t}
 \tfocusclient(focustop(selmon), 1);

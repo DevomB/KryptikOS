@@ -85,9 +85,8 @@ static const enum libinput_config_tap_button_map button_map = LIBINPUT_CONFIG_TA
 	{ MODKEY|WLR_MODIFIER_SHIFT, SKEY,           tag,             {.ui = 1 << TAG} }, \
 	{ MODKEY|WLR_MODIFIER_CTRL|WLR_MODIFIER_SHIFT,SKEY,toggletag, {.ui = 1 << TAG} }
 
-/* commands: zone launches, where --ask has the chrome prompt for a passphrase
- * if the zone needs one, and the chrome's own menu, a text program that needs
- * a zone 0 terminal of its own, as its window at login has */
+/* commands: zone launches (the chrome asks for a passphrase if needed) and the
+ * chrome's menu, a text program in a zone 0 terminal of its own */
 static const char *termcmd[]      = { "kryptik-launch", "--ask", "work",      "--", "havoc", NULL };
 static const char *personalcmd[]  = { "kryptik-launch", "--ask", "personal",  "--", "havoc", NULL };
 static const char *untrustedcmd[] = { "kryptik-launch", "--ask", "untrusted", "--", "havoc", "lynx", NULL };

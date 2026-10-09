@@ -21,24 +21,20 @@
 #                                  window, then launch (kryptik-launch hands
 #                                  over here when it has no terminal)
 #   kryptik-chrome --focus         print the focused zone, from the record
-#   kryptik-chrome --confirm ID    ask the broker's question ID in a trusted
-#                                  window and write back the answer: yes only
+#   kryptik-chrome --confirm ID    ask the broker's question ID in a trusted window: yes only
 #                                  for the code it shows, typed after it shows
 #
 # Passphrases are read by kryptik-launch on the chrome's own terminal and go
 # to the daemon as a descriptor, never in argv or the environment.
 
-# The verified root's zone files, not /etc's: /etc is an overlay the state
-# partition can shadow, and the labels shown must match the colours dwl draws.
+# The verified root's zone files, which dwl's colours match: the state partition can shadow /etc.
 ZONES=/usr/lib/kryptik/zones
 LAUNCH=/usr/bin/kryptik-launch
-# `havoc [option...] [program [args...]]`: no -e, and an unknown option makes
-# it print its usage and exit.
+# havoc takes the program as plain arguments: it has no -e, and exits on an unknown option.
 TERMINAL=/usr/bin/havoc
 RT="${XDG_RUNTIME_DIR:-/tmp}"
 FOCUS="$RT/kryptik/focus"
-# The last window from a zone. The menu shows this one: opening the menu
-# focuses the menu, so the plain record would only ever name zone 0.
+# The last zone window, for the menu: once the menu has focus, the focus record names zone 0.
 FOCUS_ZONE="$RT/kryptik/focus.zone"
 CONSENT=/run/kryptik-consent
 
@@ -99,17 +95,15 @@ run_status() {
     mkdir -p "$RT/kryptik" 2>/dev/null
     # The menu window, so a fresh session shows something usable.
     "$TERMINAL" /usr/bin/kryptik-chrome --menu &
-    # The consent watcher: one trusted window per question the broker leaves.
-    # Holding watcher.lock exclusively tells the broker someone is here to ask
-    # (consent.rs refuses at once if it can take the lock shared); the kernel
-    # drops it when this subshell dies. Confirm windows must not inherit it,
-    # and a second session's watcher exits quietly.
+    # The consent watcher. Holding watcher.lock tells the broker someone is here
+    # to ask: consent.rs refuses at once if it can take the lock shared. The
+    # kernel drops it with this subshell, and a second session's watcher exits
+    # quietly.
     (
         exec 9> "$CONSENT/watcher.lock" 2>/dev/null || exit 0
         flock -n 9 || exit 0
-        # From here a write creates, never follows or clobbers: any member of
-        # group kryptik can plant a link in the directory. That also makes the
-        # .dialog claim one exclusive create.
+        # Writes create, never follow or clobber: group kryptik can plant links here.
+        # That also makes each .dialog claim one exclusive create.
         set -C
         while :; do
             for ask in "$CONSENT"/*.ask; do
@@ -117,10 +111,10 @@ run_status() {
                 id="${ask##*/}"; id="${id%.ask}"
                 [ -e "$CONSENT/$id.dialog" ] && continue
                 : > "$CONSENT/$id.dialog" 2>/dev/null || continue
+                # A window must not hold the lock past the watcher's death.
                 "$TERMINAL" /usr/bin/kryptik-chrome --confirm "$id" 9>&- &
             done
-            # A window writes its code and answer even for a question
-            # withdrawn meanwhile; whatever outlives its question goes.
+            # A window may write its code and answer after its question is withdrawn.
             for f in "$CONSENT"/*.dialog "$CONSENT"/*.code "$CONSENT"/*.answer; do
                 [ -e "$f" ] || continue
                 [ -e "${f%.*}.ask" ] || rm -f "$f"
@@ -206,8 +200,7 @@ run_menu() {
                           b) set -- "$TERMINAL" /usr/bin/lynx ;;
                       esac
                       echo "launching in zone $z: $*"
-                      # --ask: a passphrase is read on this zone 0 terminal,
-                      # never on a zone's.
+                      # --ask: a passphrase is read on this zone 0 terminal, never a zone's.
                       "$LAUNCH" --ask "$z" -- "$@" || sleep 3
                       ;;
             *) echo "?"; sleep 1 ;;
@@ -236,8 +229,7 @@ run_confirm() { # ID
     # A question with no kind is a transfer.
     kind="$(sed -n 's/^kind=//p' "$ask")"
     if [ "$kind" = clock ]; then
-        # The clock (docs/design/time.md): the network's time is too far from
-        # this machine's to accept unasked. Only the user, with a watch, can say.
+        # The network's time is too far from this machine's to accept unasked (docs/design/time.md).
         now="$(sed -n 's/^now=//p' "$ask")"; proposed="$(sed -n 's/^proposed=//p' "$ask")"
         sources="$(sed -n 's/^sources=//p' "$ask")"
         echo "================ KRYPTIK - set the clock? (zone 0) ================"
@@ -274,14 +266,11 @@ run_confirm() { # ID
         [ "$(cat | wc -c)" -eq 0 ] || echo "(what was typed before this question showed is ignored)"
         stty "$was"
     fi
-    # The answer is a code drawn for this question alone: no zone sees this
-    # window, so none can type it. It is kept beside the question for zone 0's
-    # tests; whatever can read this directory could write the answer anyway.
-    # Writes here create, never follow or clobber: any member of group kryptik
-    # can plant a link in the directory. An answer that cannot be written is
-    # no answer, which the broker takes as a refusal.
+    # Writes create, never follow or clobber: any member of group kryptik can plant a link.
     set -C
+    # A code for this question alone: no zone sees this window, so none can type it.
     code=$(( $(od -An -N1 -tu1 /dev/urandom) % 90 + 10 ))
+    # Kept for zone 0's tests; whatever can read it could write the answer anyway.
     (umask 077; printf '%s\n' "$code" > "$CONSENT/$id.code") 2>/dev/null \
         || echo "kryptik-chrome --confirm $id: the code could not be written beside the question" >> "$RT/kryptik/session.log"
     printf 'Type %s and Enter to allow; anything else refuses: ' "$code"
@@ -289,6 +278,7 @@ run_confirm() { # ID
     if read -r reply; then
         [ "$reply" = "$code" ] && answer=yes
     fi
+    # An answer that cannot be written is none: the broker takes that as a refusal.
     if printf '%s\n' "$answer" > "$CONSENT/$id.answer.tmp" && mv -f "$CONSENT/$id.answer.tmp" "$CONSENT/$id.answer"; then
         echo "-> $answer"
     else
