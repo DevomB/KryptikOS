@@ -10,11 +10,14 @@
 #           module signing checked from inside
 #   step 2  BOOTX64.EFI re-signed with a foreign key: the firmware refuses it
 #           (control: the signed medium boots under the same store); then
-#           kryptik-recover --commit-slot a puts the signed kernel back
+#           kryptik-recover --commit-slot a puts the signed kernel back, and
+#           --status shows slot a committed
 #   step 3  a byte of slot a's root flipped: dm-verity stops the boot
 #   step 4  kryptik-recover --restore-slot a refuses a medium whose root is
-#           not the one its signed kernel names, then restores slot a from the
-#           medium; its records on the ESP are whole, and the user's data survives
+#           not the one its signed kernel names (--status then shows nothing
+#           naming slot a), then restores slot a from the medium, naming the
+#           version; its records on the ESP are whole, --status shows them, and
+#           the user's data survives
 #   step 5  an anchor, zone, sysctl, preload library and udev rule planted in
 #           the state's /etc layer: none takes effect
 #   step 6  the state header saved, wiped and restored by kryptik-recover
@@ -33,7 +36,7 @@ while [[ "$#" -gt 0 ]]; do
         --usb) USB="${2:?}"; shift 2 ;;
         --disk) DISK="${2:?}"; shift 2 ;;
         --timeout) TIMEOUT="${2:?}"; shift 2 ;;
-        -h|--help) sed -n '2,22p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,25p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -122,6 +125,8 @@ CTLC="${VMDIR}/testctl-commit.img"
 "${SELF}/mk-testctl.sh" --out "$CTLC" --key "$TESTCTL_KEY" recover_disk=/dev/vda recover_slot=a recover_mode=commit smoke_poweroff=1 install_wait=5 > /dev/null
 smoke integ-p2r --usb "$USB" --disk "$DISK" --testctl "$CTLC" --vars enrolled --timeout "$TIMEOUT" > /dev/null
 boot_txt | grep -q 'KRYPTIK_RECOVER: rc=0' && green "kryptik-recover --commit-slot a succeeded from the medium" || { red "--commit-slot did not report success"; boot_txt | grep 'KRYPTIK_RECOVER' | tail -5 | sed 's/^/        /'; }
+boot_txt | grep -qF 'KRYPTIK_RECOVER: status: committed slot a' && green "--status then shows slot a as the committed one" \
+    || red "--status after the commit: $(boot_txt | grep 'KRYPTIK_RECOVER: status:' | tr '\n' ' ')"
 dd if="$DISK" of="$ESPIMG" bs=1M iflag=skip_bytes,count_bytes skip="$ESP_OFF" count=$((512*1024*1024)) status=none
 mcopy -n -i "$ESPIMG" ::/EFI/BOOT/BOOTX64.EFI "$TMPK/committed.efi" 2>/dev/null
 mcopy -n -i "${ESPIMG}.pristine" ::/EFI/BOOT/BOOTX64.EFI "$TMPK/installed.efi" 2>/dev/null
@@ -183,6 +188,9 @@ if [[ -n "$A_FREE" && -n "$A_BYTES" ]]; then
     mtype -i "$ESPIMG" ::/EFI/kryptik/kryptik-a.efi >/dev/null 2>&1 \
         && red "the refused restore left a kernel for slot a on the ESP" \
         || green "the refused restore left the ESP naming no kernel for slot a, so --commit-slot a takes nothing"
+    grep -F 'KRYPTIK_RECOVER: status: slot a ' <<<"$T4A" | grep -qF 'version none, kernel absent' \
+        && green "--status shows slot a with no version and no kernel" \
+        || red "--status after the refused restore: $(grep 'KRYPTIK_RECOVER: status:' <<<"$T4A" | tr '\n' ' ')"
 else
     red "could not alter a copy of the medium (free block '${A_FREE}', total_bytes '${A_BYTES}')"
 fi
@@ -195,6 +203,11 @@ MVER="$(basename "$USB")"; MVER="${MVER#kryptik-}"; MVER="${MVER%-usb.img}"
 CSLOT="$(mtype -i "$ESPIMG" ::/kryptik/committed-slot 2>/dev/null)"; CVER="$(mtype -i "$ESPIMG" ::/kryptik/version-a 2>/dev/null)"
 [[ "$CSLOT" == a && "$CVER" == "$MVER" ]] && green "the ESP records slot a as committed, at the medium's version" \
     || red "the ESP records committed slot '${CSLOT}', slot a version '${CVER}' (want a, ${MVER})"
+boot_txt | grep -qF "KRYPTIK_RECOVER: kryptik-recover: restoring slot a from this medium (${MVER}, " \
+    && green "kryptik-recover named the version it writes, ${MVER}" || red "kryptik-recover did not name the version it writes"
+boot_txt | grep -F 'KRYPTIK_RECOVER: status: slot a ' | grep -qF "version ${MVER}, kernel present, filesystem present" \
+    && green "--status then shows slot a at the medium's version, with its kernel and filesystem" \
+    || red "--status after the restore: $(boot_txt | grep 'KRYPTIK_RECOVER: status:' | tr '\n' ' ')"
 LEFT="$(mdir -/ -b -i "$ESPIMG" ::/ 2>/dev/null | grep -i '\.new$' | tr '\n' ' ')"
 [[ -z "$LEFT" ]] && green "recovery left no .new file on the ESP" || red "recovery left ${LEFT}on the ESP"
 cp "$ENROLLED" "$VARSF"

@@ -154,6 +154,8 @@ boots="$(txt | grep -c 'KRYPTIK_SMOKE: BEGIN')"
 [[ "$boots" -eq 2 ]] && green "state-p6: two boots in one transcript" || red "state-p6: ${boots} boot(s) in the transcript, wanted 2"
 txt | grep -q 'KRYPTIK_SMOKE: svc_watchdog=up' && green "state-p6: the feeder is supervised and up" || red "state-p6: the feeder is not up"
 txt | grep -qE 'KRYPTIK_SMOKE: watchdog watchdog[0-9]+: .* state=active .* nowayout=1' && green "state-p6: a watchdog is armed and cannot be closed off" || red "state-p6: no armed watchdog in the boot report"
+txt | grep -qE 'KRYPTIK_SMOKE: watchdog watchdog[0-9]+: Software Watchdog state=active timeout=60s nowayout=1' \
+    && green "state-p6: the software watchdog resets after a minute (timeout=60s)" || red "state-p6: the software watchdog is not armed with a 60 s timeout"
 if txt | grep -q 'softdog: Initiating system reboot'; then green "state-p6: the software watchdog named itself as the cause"
 else echo "      note: no softdog line; the reset came from an emulated hardware timer"; fi
 txt | grep -q 'Kernel panic' && red "state-p6: kernel panic" || green "state-p6: no panic"

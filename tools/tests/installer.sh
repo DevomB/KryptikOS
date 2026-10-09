@@ -220,6 +220,65 @@ written="$(grep -n '^sfdisk --quiet' "$INSTALLER" | cut -d: -f1)"
 grep -q 'testctl_get install_slot_mib' "$RUNNER" \
     && green "the runner passes --slot-size only when the control disk asks" \
     || red "the runner has no install_slot_mib switch"
+
+echo
+echo "-- a preseed first boot could not use is refused before anything is written"
+eval "$(sed -n '/^preseed_ok()/,/^}/p' "$INSTALLER")"
+if ! declare -F preseed_ok >/dev/null; then
+    red "could not extract preseed_ok from the installer"
+else
+    P="$(mktemp -d)"
+    printf 'user=ana\npassword_hash=$6$salt$hash\n' > "$P/whole"
+    printf 'user=ana\n' > "$P/nohash"
+    printf 'password_hash=$6$salt$hash\n' > "$P/nouser"
+    printf 'user=Ana\npassword_hash=$6$salt$hash\n' > "$P/upper"
+    printf 'user=ana\r\npassword_hash=$6$salt$hash\r\n' > "$P/crlf"
+    printf 'user=ana\npassword_hash=letmein\n' > "$P/plain"
+    printf 'user=ana\npassword_hash=$6$salt$hash\nroot_password_hash=letmein\n' > "$P/rootplain"
+    printf 'user=ana\npassword_hash=$6$rounds=5000$salt$hash./\nroot_password_hash=$y$j9T$salt$hash\n' > "$P/rounds"
+    pre() { out="$( (preseed_ok "$1") 2>&1 )"; rc=$?; }
+    pre "$P/whole"; [[ "$rc" -eq 0 ]] && green "a preseed naming a user and a hash is taken" || red "a whole preseed: rc=${rc} ${out}"
+    pre "$P/absent"; [[ "$rc" -ne 0 && "$out" == *"cannot read the preseed"* ]] \
+        && green "a preseed that cannot be read is refused, not skipped" || red "an unreadable preseed: rc=${rc} ${out}"
+    pre "$P/nohash"; [[ "$rc" -ne 0 && "$out" == *"names no crypt password_hash="* ]] \
+        && green "a preseed with no password hash is refused" || red "no hash: rc=${rc} ${out}"
+    pre "$P/nouser"; [[ "$rc" -ne 0 ]] && green "a preseed with no user is refused" || red "no user: rc=${rc} ${out}"
+    pre "$P/upper"; [[ "$rc" -ne 0 && "$out" == *"names no user first boot would create"* ]] \
+        && green "a user name first boot would refuse is refused here" || red "user=Ana: rc=${rc} ${out}"
+    pre "$P/crlf"; [[ "$rc" -ne 0 ]] && green "a preseed with CRLF line ends is refused" || red "CRLF: rc=${rc} ${out}"
+    pre "$P/plain"; [[ "$rc" -ne 0 && "$out" == *"names no crypt password_hash="* ]] \
+        && green "a password that is not a crypt hash is refused" || red "a plain password: rc=${rc} ${out}"
+    pre "$P/rootplain"; [[ "$rc" -ne 0 && "$out" == *"root_password_hash= that is not a crypt hash"* ]] \
+        && green "a root hash that is not a crypt hash is refused" || red "a plain root password: rc=${rc} ${out}"
+    pre "$P/rounds"; [[ "$rc" -eq 0 ]] && green "sha512crypt with rounds= and a yescrypt root hash are taken" || red "rounds/yescrypt: rc=${rc} ${out}"
+    rm -rf "$P"
+fi
+checked="$(grep -n '^\[ -z "\$PRESEED" \] || preseed_ok' "$INSTALLER" | cut -d: -f1)"
+[[ "$checked" =~ ^[0-9]+$ && "$written" =~ ^[0-9]+$ && "$checked" -lt "$written" ]] \
+    && green "the preseed is checked before the first write" \
+    || red "the preseed is checked at line ${checked:-none}; the disk is written from ${written:-none}"
+
+echo
+echo "-- a mounted target is found by whatever name it was mounted by"
+eval "$(sed -n '/^mounted_on()/,/^}/p' "$INSTALLER")"
+if ! declare -F mounted_on >/dev/null; then
+    red "could not extract mounted_on from the installer"
+else
+    M="$(mktemp -d)"; M="$(cd "$M" && pwd -P)"   # canonical, as readlink -f will give it
+    mkdir -p "$M/dev" "$M/by-id"
+    : > "$M/dev/vdb"; : > "$M/dev/vdb1"; : > "$M/dev/vdbb1"; : > "$M/dev/vda1"
+    ln -s ../dev/vdb1 "$M/by-id/disk-part1"
+    devs="$M/dev/vdb\n$M/dev/vdb1"
+    devs="$(printf '%b' "$devs")"
+    on() { printf '%s %s ext4 rw 0 0\n' "$1" "$2" | mounted_on "$devs"; }
+    [[ "$(on "$M/dev/vdb1" /mnt)" == "$M/dev/vdb1 on /mnt" ]] && green "a partition mounted by its own name is found" || red "canonical: $(on "$M/dev/vdb1" /mnt)"
+    [[ "$(on "$M/by-id/disk-part1" /mnt)" == "$M/by-id/disk-part1 on /mnt" ]] \
+        && green "a partition mounted through a link to it is found" || red "through a link: '$(on "$M/by-id/disk-part1" /mnt)'"
+    [[ -z "$(on "$M/dev/vdbb1" /mnt)" ]] && green "a disk whose name only starts the same is not" || red "a prefix: $(on "$M/dev/vdbb1" /mnt)"
+    [[ -z "$(on "$M/dev/vda1" /)" ]] && green "another disk's mount is not" || red "another disk: $(on "$M/dev/vda1" /)"
+    [[ -z "$(on tmpfs /tmp)" ]] && green "a mount with no device behind it is not" || red "tmpfs: $(on tmpfs /tmp)"
+    rm -rf "$M"
+fi
 echo
 printf 'passed %d, failed %d\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]] || exit 1

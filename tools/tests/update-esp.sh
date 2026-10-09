@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # kryptik-update and the ESP: a subcommand unmounts only a mount it made,
-# status leaves the ESP alone while an apply holds the lock, and a slot being
-# written is named by nothing there, so rollback refuses it. The functions
-# come from the tool itself, pointed at a scratch mountpoint, with mount
-# stand-ins that keep a record; flock is the real one.
+# status leaves the ESP alone while an apply holds the lock, a slot being
+# written is named by nothing there, so rollback refuses it, and on a degraded
+# state apply and rollback refuse before they touch it. The functions come
+# from the tool itself, pointed at a scratch mountpoint, with mount stand-ins
+# that keep a record; flock is the real one.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TOOL="$ROOT/tools/update/kryptik-update"
@@ -27,9 +28,10 @@ echo b > "$T/esp/kryptik/committed-slot"
     echo "ESP_MNT='$T/esp'; LOCK='$T/lock'; B='$T/boot'; DEGRADED='$T/degraded'"
     echo ". '$ROOT/build/service-scripts/esp-records.sh'"
     sed -n '/^mount_esp() {/,/^}/p; /^umount_esp() {/,/^}/p; /^ESP_MINE=/p; /^trap .*umount_esp/p; /^cmd_status() {/,/^}/p;
-            /^other_slot() /p; /^unlist_slot() {/,/^}/p; /^cmd_rollback() {/,/^}/p; /^from_committed() {/,/^}/p' "$TOOL"
+            /^other_slot() /p; /^unlist_slot() {/,/^}/p; /^cmd_rollback() {/,/^}/p; /^from_committed() {/,/^}/p;
+            /^cmd_apply() {/,/^}/p' "$TOOL"
 } > "$T/esp.sh"
-for f in mount_esp umount_esp cmd_status other_slot unlist_slot cmd_rollback from_committed; do
+for f in mount_esp umount_esp cmd_status other_slot unlist_slot cmd_rollback from_committed cmd_apply; do
     grep -q "^$f() {" "$T/esp.sh" || { echo "could not extract $f from $TOOL"; exit 1; }
 done
 calls() { [[ ! -e "$T/calls" ]] || tr '\n' ' ' < "$T/calls"; }
@@ -93,8 +95,10 @@ fresh; out="$(bash -c "source '$T/esp.sh'; from_committed a && echo GOES-ON" 2>&
     && ok "from the committed slot it goes on, the ESP read and unmounted" || bad "from the committed slot: $(calls) / $out"
 echo b > "$T/esp/kryptik/committed-slot"
 fresh; out="$(bash -c "source '$T/esp.sh'; from_committed a && echo GOES-ON" 2>&1)"; rc=$?
-[[ "$rc" -ne 0 && "$out" != *GOES-ON* && "$out" == *"slot a is running, and the ESP names b as the committed slot"* && "$(calls)" == "mount umount " ]] \
-    && ok "from another slot it is refused, both named, the ESP unmounted" || bad "from another slot: rc=$rc / $(calls) / $out"
+[[ "$rc" -ne 0 && "$out" != *GOES-ON* && "$out" == *"slot a is running, and the ESP names b as the committed slot"* \
+   && "$out" == *"kryptik-recover --commit-slot a"* && "$(calls)" == "mount umount " ]] \
+    && ok "from another slot it is refused, both named, with the medium's command that commits the running one; the ESP unmounted" \
+    || bad "from another slot: rc=$rc / $(calls) / $out"
 printf 'a\033[2J\n' > "$T/esp/kryptik/committed-slot"
 fresh; out="$(bash -c "source '$T/esp.sh'; from_committed a && echo GOES-ON" 2>&1)"; rc=$?
 [[ "$rc" -ne 0 && "$out" == *"names unknown as the committed slot"* && "$out" != *$'\033'* ]] \
@@ -105,6 +109,22 @@ p="$(grep -n 'verify_payload "$dir"' <<< "$body" | head -1 | cut -d: -f1)"
 [[ -n "$c" && -n "$p" && -n "$u" && "$c" -lt "$p" && "$c" -lt "$u" ]] \
     && ok "apply asks before it verifies the payload, and so before it writes" \
     || bad "apply: committed slot checked at line '${c}', payload verified at '${p}', first write at '${u}'"
+
+echo "-- a degraded state: no trial that could be neither recorded nor judged"
+if grep -qx 'DEGRADED=/run/kryptik/state-degraded' "$TOOL" \
+   && grep -q '> /run/kryptik/state-degraded$' "$ROOT/build/service-scripts/sysinit.sh"; then
+    ok "the tool reads the file sysinit writes on a degraded boot"
+else
+    bad "kryptik-update's DEGRADED is not the file sysinit writes"
+fi
+echo "no kryptik-state on /dev/vda" > "$T/degraded"; mkdir -p "$T/payload"
+fresh; out="$(bash -c "source '$T/esp.sh'; cmd_apply '$T/payload' && echo GOES-ON" 2>&1)"; rc=$?
+[[ "$rc" -ne 0 && "$out" != *GOES-ON* && "$out" == *"the state partition is degraded (no kryptik-state on /dev/vda)"* && -z "$(calls)" ]] \
+    && ok "apply refuses, naming the reason, before it touches the ESP" || bad "apply on a degraded state: rc=$rc / $(calls) / $out"
+fresh; out="$(bash -c "source '$T/esp.sh'; cmd_rollback && echo GOES-ON" 2>&1)"; rc=$?
+[[ "$rc" -ne 0 && "$out" != *GOES-ON* && "$out" == *"the state partition is degraded"* && -z "$(calls)" ]] \
+    && ok "so does rollback" || bad "rollback on a degraded state: rc=$rc / $(calls) / $out"
+rm -f "$T/degraded"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
