@@ -43,20 +43,19 @@ machinery.
 headers of every object. Stage 06 runs it strict on the root tree as it packs
 it into the image, so a finding fails the build, and `make acceptance` runs it
 strict again on the root image of the release it tests, mounted read-only, for
-the record. A writable and executable segment, an
-executable stack, text relocations or an RPATH into the build tree always
-fail it. In strict mode so do a missing CET note, `BIND_NOW` or RELRO, a
-non-PIE executable and any other RPATH, unless
-[`artifact-accepted.txt`](../build/config/artifact-accepted.txt) lists the
-object with its reason: `kryptikd` and `kryptik-wlproxy`, which stable rustc
-does not mark for CET, GMP's assembly, and the rpaths that man-db, perl and
-glibc's converters need or that repeat the loader's own directory. An entry
-that matches nothing fails too, so the list holds only what the image has. A
-new finding is fixed in its package's recipe, not by weakening the check.
-The stack protector and FORTIFY are counted, not required of each object: a
-function without a local array gets no canary and a call with no known size
-no `_chk` variant, so an object with neither shows nothing about its flags.
-The record lists the objects without either.
+the record. A writable and executable segment, an executable stack, text
+relocations or an RPATH into the build tree always fail it. In strict mode so
+do a missing CET note, `BIND_NOW` or RELRO, a non-PIE executable and any other
+RPATH, unless [`artifact-accepted.txt`](../build/config/artifact-accepted.txt)
+lists the object with its reason: `kryptikd` and `kryptik-wlproxy`, which
+stable rustc does not mark for CET, GMP's assembly, and the rpaths that
+man-db, perl and glibc's converters need or that repeat the loader's own
+directory. An entry that matches nothing fails too, so the list holds only
+what the image has. A new finding is fixed in its package's recipe, not by
+weakening the check. The stack protector and FORTIFY are counted, not required
+of each object: a function without a local array gets no canary and a call
+with no known size no `_chk` variant, so an object with neither shows nothing
+about its flags. The record lists the objects without either.
 
 Packages stage 04 builds before its glibc (the first built with
 `--enable-cet`) link stage 01's crt files, which carry no CET note, so each is
