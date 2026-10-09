@@ -162,12 +162,16 @@ pub const ETC_RO_FILES: &[&str] =
 pub const NIC_ETC_FILES: &[&str] = &["/etc/dhcpcd.conf", "/etc/kryptik/time.conf", "/etc/kryptik/update.conf"];
 
 /// /proc files hidden behind /dev/null: interrupt and context-switch counts time every keystroke,
-/// and so does loadavg's count of running tasks; partitions and diskstats show which encrypted
-/// zones are open, and timer_list names other zones' tasks. Losing stat's CPU figures and the load
-/// (top, vmstat, uptime) is the price.
+/// and so do loadavg's count of running tasks, the fault and allocation counts in vmstat, zoneinfo
+/// and buddyinfo, the stall times under pressure and the open-file and dentry counts under sys/fs;
+/// partitions and diskstats show which encrypted zones are open, and timer_list names other
+/// zones' tasks. Losing stat's CPU figures and the load (top, vmstat, uptime) is the price;
+/// meminfo stays, coarse, and free and most runtimes read it.
 pub const PROC_MASKED: &[&str] = &[
     "interrupts", "softirqs", "stat", "schedstat", "pressure/irq", "timer_list", "sched_debug",
     "loadavg", "partitions", "diskstats",
+    "vmstat", "zoneinfo", "buddyinfo", "pressure/cpu", "pressure/memory", "pressure/io",
+    "sys/fs/file-nr", "sys/fs/inode-nr", "sys/fs/dentry-state",
 ];
 
 /// /proc directories hidden behind an empty tmpfs: irq/<n>/spurious counts keyboard interrupts too.
@@ -577,8 +581,8 @@ fn populate_etc(root: &str, zone: &str, home: &str, resolver: Resolver, service:
     Ok(())
 }
 
-/// Hide `PROC_MASKED` and `PROC_EMPTIED`, and give the zone its own boot_id: the host's is the
-/// same in every zone, so it would link them.
+/// Hide `PROC_MASKED` and `PROC_EMPTIED`, give the zone its own boot_id (the host's is the same
+/// in every zone, so it would link them), and a copy of cpuinfo that holds still.
 fn mask_proc(root: &str, proc_dir: &str) -> Result<(), RootfsError> {
     for f in PROC_MASKED {
         let target = format!("{proc_dir}/{f}");
@@ -599,6 +603,16 @@ fn mask_proc(root: &str, proc_dir: &str) -> Result<(), RootfsError> {
         let setup = |e: io::Error| RootfsError::Setup(format!("{own}: {e}"));
         fs::write(&own, fs::read(format!("{proc_dir}/sys/kernel/random/uuid")).map_err(setup)?).map_err(setup)?;
         bind_over_ro(&own, &boot_id)?;
+        let _ = fs::remove_file(&own);
+    }
+    // cpuinfo's "cpu MHz" is each CPU's speed over its last tick, so whether it just ran: a copy
+    // taken as the zone starts holds still.
+    let cpuinfo = format!("{proc_dir}/cpuinfo");
+    if Path::new(&cpuinfo).exists() {
+        let own = format!("{root}/.cpuinfo");
+        let setup = |e: io::Error| RootfsError::Setup(format!("{own}: {e}"));
+        fs::write(&own, fs::read(&cpuinfo).map_err(setup)?).map_err(setup)?;
+        bind_over_ro(&own, &cpuinfo)?;
         let _ = fs::remove_file(&own);
     }
     Ok(())
@@ -646,6 +660,11 @@ fn keep_sysfs(aside: &str, sys_dir: &str, kept: &[String]) -> Result<(), RootfsE
         if numbered && Path::new(&idle).is_dir() {
             mount_raw("tmpfs", &idle, Some("tmpfs"), flags | libc::MS_RDONLY, Some("mode=0555,size=4k"), "mount(cpuidle tmpfs)")?;
         }
+    }
+    // Their frequencies, where a driver scales them, fall and rise with every zone's load.
+    let freq = format!("{cpus}/cpufreq");
+    if Path::new(&freq).is_dir() {
+        mount_raw("tmpfs", &freq, Some("tmpfs"), flags | libc::MS_RDONLY, Some("mode=0555,size=4k"), "mount(cpufreq tmpfs)")?;
     }
     mount_raw("none", sys_dir, None, flags | libc::MS_REMOUNT | libc::MS_RDONLY, None, "mount(sys tmpfs, ro)")
 }

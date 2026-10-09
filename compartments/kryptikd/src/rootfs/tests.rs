@@ -83,9 +83,13 @@ fn etc_view_excludes_secrets() {
 #[test]
 fn proc_hides_host_activity() {
     // What times keystrokes in other zones, and what shows which encrypted zones are open.
-    for f in ["interrupts", "stat", "loadavg", "partitions", "diskstats"] {
+    for f in ["interrupts", "stat", "loadavg", "partitions", "diskstats", "vmstat", "zoneinfo", "buddyinfo"] {
         assert!(PROC_MASKED.contains(&f), "/proc/{f} must be masked");
     }
+    for f in ["pressure/cpu", "pressure/memory", "pressure/io", "sys/fs/file-nr", "sys/fs/inode-nr", "sys/fs/dentry-state"] {
+        assert!(PROC_MASKED.contains(&f), "/proc/{f} must be masked");
+    }
+    assert!(!PROC_MASKED.contains(&"meminfo"), "free and most runtimes read /proc/meminfo");
 }
 
 #[test]
