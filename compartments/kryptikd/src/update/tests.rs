@@ -219,9 +219,12 @@ fn a_machine_never_told_counts_from_its_install() {
     let line = stale_line(&d, T0 + 31 * 86400, Some(T0)).unwrap();
     assert!(line.starts_with("no statement from the release key since this machine was installed, 31 days ago: "));
     assert!(status(&d, T0 + 31 * 86400, "1.0.2", Some(T0)).contains(&format!("           {line}\n")));
-    let notice = d.join("issue.d").join("kryptik-update.issue");
+    // Beside the state directory, not in it: `latest` takes only one that is its owner's alone.
+    let issue = scratch("since-install-issue");
+    let notice = issue.join("kryptik-update.issue");
     refresh_login_notice(&d, &notice, T0 + 31 * 86400, Some(T0)).unwrap();
     assert_eq!(std::fs::read_to_string(&notice).unwrap(), format!("kryptik update: {line}\n"));
+    let _ = std::fs::remove_dir_all(&issue);
     // Once one is accepted, its own age counts, however old the install.
     let p = pointer_text("1.0.3", "2027-03-02T14:05:00Z");
     latest(&d, &yes(), T0, "production", "1.0.2", p.as_bytes(), b"sig").unwrap();
