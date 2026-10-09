@@ -41,8 +41,10 @@ runs inside the zone, where it can leak only that zone.
 ## ADR-005: hardened_malloc as the system allocator
 
 It adds slab quarantines, guard slabs, randomized allocation and
-heap-overflow canaries. Preloaded for every process of the running system and
-of every zone ([hardening](hardening.md#allocator)).
+heap-overflow canaries. Preloaded for every dynamically linked process of the
+running system and of every zone ([hardening](hardening.md#allocator)).
+kryptikd and kryptik-wlproxy are static musl binaries, which no preload
+reaches.
 
 **Cost:** slower on allocation-heavy workloads.
 
@@ -55,8 +57,10 @@ system that assumes a local attacker looking for privileged code.
 
 **Cost:** off the LFS path, so every service definition is written from
 scratch. Seats come from seatd, not logind. The `net` zone runs its own DHCP
-client, and no other zone touches a real interface. Logging is s6-log per
-service, with no aggregation.
+client, and no other zone touches a real interface. Services have no loggers
+of their own: their output goes to s6-linux-init's catch-all s6-log under
+`/run`, which a reboot clears. The zone launchers, the updater and two boot
+services also write files under `/var/log/kryptik`.
 
 **Revisit if** writing service definitions becomes the main cost of the base
 system.
@@ -68,8 +72,9 @@ distribution, and a policy too large to audit gives confidence, not security.
 AppArmor is path-based, which composes badly with per-zone mount namespaces,
 where one path means different things in different zones. Isolation rests on
 Landlock for file access, seccomp-bpf for syscalls, cgroup v2 for resources,
-and namespaces for network and IPC: a zone's network is an absent interface,
-not a policy rule, so Landlock's late network support does not matter.
+and namespaces for network and IPC: a zone's network is the interfaces in its
+namespace (loopback alone, or one veth into the net zone), not a policy rule
+inside the zone, so Landlock's late network support does not matter.
 
 **Cost:** a Landlock bypass has no second MAC layer behind it.
 
@@ -176,8 +181,9 @@ Wi-Fi.
 These are vendor binaries, not built from source as
 [supply-chain.md](supply-chain.md) otherwise requires, and run by the device's
 own processor under the kernel's control of the bus (IOMMU on and strict).
-Kryptik checks that the tarball is the one kernel.org signed, pins its hash
-and checks each file's licence against `WHENCE`. The kernel loads the
+Kryptik checks that the tarball is the one kernel.org signed and pins its
+hash; each file's licence is the one the release's `WHENCE` records, and the
+image carries `WHENCE` under `/usr/share/licenses`. The kernel loads the
 firmware from the verified root, so replacing it means re-signing the kernel.
 
 **Left out:** NVIDIA (nouveau needs tens of megabytes of GSP firmware per
@@ -187,12 +193,12 @@ shipped.
 
 **CPU microcode** is the same decision. The early loader runs before any
 filesystem and there is no initramfs, so Intel and AMD microcode is built into
-each signed kernel (`CONFIG_EXTRA_FIRMWARE`, stage 05), about 17 MB. Without
+each signed kernel (`CONFIG_EXTRA_FIRMWARE`, stage 05), about 18 MB. Without
 it a machine runs whatever microcode its firmware last shipped, which on older
 machines means known, unfixed CPU vulnerabilities.
 
 **Cost:** about 135 MB after zstd (385 MB of files; Intel Wi-Fi is 56 MB and
-amdgpu 38 MB compressed) on a root image of about 1.7 GB, and an input nobody
+amdgpu 38 MB compressed) on a root image of about 1.6 GB, and an input nobody
 here can read.
 
 ## ADR-013: A driver is built in only when boot needs it
@@ -212,7 +218,7 @@ module loads only where it is used, through the path real Wi-Fi and graphics
 need anyway. The VM gets no exception: with virtio-net and virtio-gpu as
 modules, every acceptance run proves module autoload.
 
-**Not shrunk:** about 17 MB of the kernel is microcode, which is encrypted and
+**Not shrunk:** about 18 MB of the kernel is microcode, which is encrypted and
 does not compress. Pre-2011 CPUs, which cannot boot Kryptik, account for 0.4 MB,
 not worth a rule. Four server-only Xeon families take 6.8 MB and stay while the
 README lists server hardware: a server whose microcode is left out still boots
