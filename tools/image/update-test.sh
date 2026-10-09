@@ -213,7 +213,7 @@ fi
 if [[ "$B_ROLE" == development ]]; then
     BY_ROLE+=("$(ROOTSH 'kryptik-update apply /run/upd/p/role; echo RC=$?')" "expect:manifest role is 'production'; this image requires 'development'")
     BY_ROLE_SAID+=", a manifest for the other role"
-    NOT_A_POINTER=("$(ROOTSH 'kryptik-update check-pointer /run/upd/p/statement/not-a-pointer /run/upd/p/statement/not-a-pointer.sig; echo RC=$?')" "expect:does NOT verify" "expect:RC=1\r?\n")
+    NOT_A_POINTER=('run!:kryptik-update check-pointer /run/upd/p/statement/not-a-pointer /run/upd/p/statement/not-a-pointer.sig; echo RC=$?' "expect:does NOT verify" "expect:RC=1\r?\n")
     NOT_A_POINTER_SAID=" and one signed by the release key does not"
 fi
 start_vm update-p3 --disk "$BADIMG" --disk "$PA"
@@ -227,14 +227,15 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'kryptik-update apply /run/upd/p/extra --recovery; echo RC=$?')" "expect:unlisted file" \
     "$(ROOTSH 'kryptik-update apply /run/upd/p/hidden --recovery; echo RC=$?')" "expect:lost\\+found is not empty" \
     "$(ROOTSH 'kryptik-update apply /run/upd/a; echo RC=$?')" "expect:older than the running" \
-    "$(ROOTSH 'kryptik-update check-pointer /run/upd/p/statement/latest /run/upd/p/statement/latest.sig && echo STATEMENT-OK')" "expect:signed by kryptik-latest" "expect:STATEMENT-OK" \
+    'run:kryptik-update check-pointer /run/upd/p/statement/latest /run/upd/p/statement/latest.sig && echo STATEMENT-OK' "expect:signed by kryptik-latest" "expect:STATEMENT-OK" \
+    "$(ROOTSH 'kryptik-update check-pointer /run/upd/p/statement/latest /run/upd/p/statement/latest.sig; echo RC=$?')" "expect:does not run as root" "expect:RC=1\r?\n" \
     "${NOT_A_POINTER[@]}" \
     "$(ROOTSH 'flock /run/kryptik/update.lock sleep 20 & sleep 1; kryptik-update apply /run/upd/a --recovery; echo RC=$?')" "expect:another update is in progress" \
     "$(ROOTSH 'fallocate -l 100G /var/filler 2>/dev/null || dd if=/dev/zero of=/var/filler bs=1M 2>/dev/null; cp -a /run/upd/a /var/lib/kryptik/updates/a-full 2>&1 | tail -1; kryptik-update apply /var/lib/kryptik/updates/a-full --recovery; echo FULL-RC=$?; rm -rf /var/filler /var/lib/kryptik/updates/a-full')" "expect:FULL-RC=1\r?\n" \
     "$(ROOTSH 'kryptik-update status')" "expect:trial pending:    none" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
-[[ "$rc" -eq 0 ]] && green "wrong key with and without --recovery${BY_ROLE_SAID}, modified image, truncated kernel, extra file, downgrade, concurrent run and full disk were all refused; no trial armed; the statement of what is current verifies against the image's anchor${NOT_A_POINTER_SAID}" || red "step 3 drive failed"
+[[ "$rc" -eq 0 ]] && green "wrong key with and without --recovery${BY_ROLE_SAID}, modified image, truncated kernel, extra file, downgrade, concurrent run and full disk were all refused; no trial armed; the statement of what is current verifies against the image's anchor${NOT_A_POINTER_SAID}; the checks refuse root" || red "step 3 drive failed"
 
 # ----------------------------------------------------------------- step 4 --
 step "step 4: authenticated recovery to ${VA} with --recovery"

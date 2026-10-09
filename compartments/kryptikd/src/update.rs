@@ -238,33 +238,159 @@ pub struct Checks<'a> {
     pub manifest: &'a dyn Fn(&Path) -> Result<String, String>,
 }
 
-fn run_tool(args: &[&std::ffi::OsStr]) -> Result<String, String> {
-    let out = std::process::Command::new(TOOL)
-        .args(args)
-        .env_clear()
-        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| format!("{TOOL}: {e}"))?;
-    if out.status.success() {
-        return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
+/// Who the checks run as. They read what the net zone sent, with ssh-keygen and the shell's text
+/// tools, and need nothing of root's, so a flaw in those parsers is not root's either.
+const CHECKER: u32 = 65534;
+/// Where the checks' copies go: a tmpfs only root writes and every account may search, which
+/// zone 0's /run/kryptik (0700) is not.
+const CHECK_BASE: &str = "/run";
+/// One check at a time, so what is left of one can be ended without touching another.
+const CHECK_LOCK: &str = "/run/kryptik/check.lock";
+/// How long a check may take, ample for 64 KiB: one that hangs holds the lock every check waits on.
+const CHECK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// `tool VERB` on copies of `inputs`, each a file and the name its copy takes, in a directory of
+/// their own under `base`, passed whole when `whole` and one by one otherwise. Under root it runs
+/// as `CHECKER` with no new privileges, in a directory it owns and takes as its TMPDIR, one check
+/// at a time, and nothing it started outlives it or `deadline`.
+fn run_check(tool: &Path, base: &Path, verb: &str, inputs: &[(&Path, &str)], whole: bool, deadline: std::time::Duration) -> Result<String, String> {
+    let root = unsafe { libc::geteuid() } == 0;
+    let _one = if root { Some(check_lock()?) } else { None };
+    let dir = make_scratch(base)?;
+    let ran = check_in(tool, &dir, verb, inputs, whole, deadline);
+    let _ = std::fs::remove_dir_all(&dir);
+    ran
+}
+
+/// The lock that keeps checks one at a time; held while the returned file is open.
+fn check_lock() -> Result<std::fs::File, String> {
+    use std::os::unix::io::AsRawFd;
+    let f = std::fs::OpenOptions::new().create(true).append(true).open(CHECK_LOCK).map_err(|e| format!("{CHECK_LOCK}: {e}"))?;
+    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } < 0 {
+        return Err(format!("{CHECK_LOCK}: {}", std::io::Error::last_os_error()));
     }
-    let err = String::from_utf8_lossy(&out.stderr);
+    Ok(f)
+}
+
+/// Kill whatever still runs as `CHECKER`: a checker taken over through a parser could leave a
+/// process behind, which would sit beside the next check in the directory that check owns. No
+/// other process on the host runs as that uid (a zone's nobody is its own base + 65534).
+fn end_checker() {
+    use std::os::unix::process::CommandExt;
+    let mut cmd = std::process::Command::new("/usr/bin/true");
+    cmd.env_clear().uid(CHECKER).gid(CHECKER).stdin(std::process::Stdio::null());
+    // SAFETY: only kill runs between fork and exec, as CHECKER, which spares the caller.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::kill(-1, libc::SIGKILL);
+            Ok(())
+        });
+    }
+    let _ = cmd.status();
+}
+
+fn check_in(tool: &Path, dir: &Path, verb: &str, inputs: &[(&Path, &str)], whole: bool, deadline: std::time::Duration) -> Result<String, String> {
+    use std::io::Read;
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt;
+    let root = unsafe { libc::geteuid() } == 0;
+    for (from, name) in inputs {
+        let to = dir.join(name);
+        std::fs::copy(from, &to).map_err(|e| format!("{}: {e}", from.display()))?;
+        std::fs::set_permissions(&to, std::fs::Permissions::from_mode(0o644)).map_err(|e| format!("{}: {e}", to.display()))?;
+    }
+    if root {
+        std::os::unix::fs::chown(dir, Some(CHECKER), Some(CHECKER)).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    let mut cmd = std::process::Command::new(tool);
+    cmd.arg(verb);
+    if whole {
+        cmd.arg(dir);
+    } else {
+        cmd.args(inputs.iter().map(|(_, name)| dir.join(name)));
+    }
+    cmd.env_clear().env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin").env("TMPDIR", dir).stdin(std::process::Stdio::null());
+    if root {
+        cmd.uid(CHECKER).gid(CHECKER);
+        // SAFETY: only prctl runs between fork and exec, after the uid has changed.
+        unsafe {
+            cmd.pre_exec(|| match libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) {
+                0 => Ok(()),
+                _ => Err(std::io::Error::last_os_error()),
+            });
+        }
+    }
+    cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| format!("{}: {e}", tool.display()))?;
+    // Its answer is a few lines, which the pipes hold until it ends.
+    let until = std::time::Instant::now() + deadline;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if std::time::Instant::now() < until => std::thread::sleep(std::time::Duration::from_millis(20)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            Err(e) => return Err(format!("{}: {e}", tool.display())),
+        }
+    };
+    // Nothing the checker started outlives it, or holds its pipes open.
+    if root {
+        end_checker();
+    }
+    let Some(status) = status else {
+        return Err(format!("{verb} gave no answer within {} s", deadline.as_secs()));
+    };
+    let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+    if let Some(mut s) = child.stdout.take() {
+        let _ = s.read_to_end(&mut stdout);
+    }
+    if let Some(mut s) = child.stderr.take() {
+        let _ = s.read_to_end(&mut stderr);
+    }
+    if status.success() {
+        return Ok(String::from_utf8_lossy(&stdout).into_owned());
+    }
+    let err = String::from_utf8_lossy(&stderr);
     Err(err.lines().last().unwrap_or("refused").trim_start_matches("kryptik-update: ").to_string())
 }
 
-/// The installed system's checks: `kryptik-update`, run with a cleared environment.
+/// A fresh directory that mkdtemp names under `base`, or under the system's temporary directory.
+fn make_scratch(base: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    let parent = if base.is_dir() { base.to_path_buf() } else { std::env::temp_dir() };
+    let mut template = parent.join("kryptik-check.XXXXXX").as_os_str().as_bytes().to_vec();
+    template.push(0);
+    if unsafe { libc::mkdtemp(template.as_mut_ptr().cast()) }.is_null() {
+        return Err(format!("{}: {}", parent.display(), std::io::Error::last_os_error()));
+    }
+    template.pop();
+    Ok(PathBuf::from(std::ffi::OsString::from_vec(template)))
+}
+
+/// `kryptik-update VERB DIR` on the manifest and signature in `dir`, all it reads there.
+fn check_signed_pair(verb: &str, dir: &Path) -> Result<String, String> {
+    let (m, s) = (dir.join("manifest"), dir.join("manifest.sig"));
+    run_check(Path::new(TOOL), Path::new(CHECK_BASE), verb, &[(&m, "manifest"), (&s, "manifest.sig")], true, CHECK_DEADLINE)
+}
+
+/// The installed system's checks: `kryptik-update`, on copies, as `CHECKER`.
 pub fn tool_checks() -> Checks<'static> {
     Checks {
-        pointer: &|p, s| run_tool(&["check-pointer".as_ref(), p.as_os_str(), s.as_os_str()]).map(|_| ()),
-        manifest: &|d| run_tool(&["check-manifest".as_ref(), d.as_os_str()]),
+        pointer: &|p, s| {
+            let pair = [(p, "latest"), (s, "latest.sig")];
+            run_check(Path::new(TOOL), Path::new(CHECK_BASE), "check-pointer", &pair, false, CHECK_DEADLINE).map(|_| ())
+        },
+        manifest: &|d| check_signed_pair("check-manifest", d),
     }
 }
 
 /// `kryptik-update check-release` on the manifest and signature in `dir`:
 /// its version and signed date once both verify, in any version order.
 pub fn check_release(dir: &Path) -> Result<String, String> {
-    run_tool(&["check-release".as_ref(), dir.as_os_str()])
+    check_signed_pair("check-release", dir)
 }
 
 /// The role this image requires. A missing file is refused, never read as
