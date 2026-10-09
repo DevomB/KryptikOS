@@ -290,6 +290,11 @@ kryptik update auto on    # fetch each newer release as it is announced; `auto o
 next asks; `apply` refuses a release that is still arriving. Then reboot, as
 root (`su`, then `reboot`): the next boot is the trial.
 
+The menu (Alt+p) names a release that has arrived whole. It also says when
+the newest statement is more than 30 days old: the channel re-signs its
+statement on a schedule, so either nothing has been published or something
+is keeping it from this machine.
+
 A release brought by hand is a signed payload directory holding exactly
 `manifest`, `manifest.sig`, `kryptik-root.img`, `kryptik-a.efi`,
 `kryptik-b.efi` and `root.json` (what `make media` writes as

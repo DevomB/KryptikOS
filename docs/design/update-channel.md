@@ -192,11 +192,15 @@ already asked for keeps arriving, as one asked for by hand does.
 - **How the user learns.** `kryptik update status` says
   `staged <version>: ... complete; kryptik update apply installs it` once a
   release has arrived whole, and while it waits the chrome's launcher names
-  it and where to apply it.
+  it and where to apply it. Once the newest accepted statement is more than
+  30 days old, `status` says so and the launcher shows one line with its
+  age: statements are re-signed on a schedule, so either nothing has been
+  published or something is keeping them from this machine.
 
 ## What a hostile net zone can still do
 
-Withhold (reported through the pointer's age, not prevented); waste bandwidth
+Withhold (reported through the pointer's age, which `status` and the
+launcher show, not prevented); waste bandwidth
 and one release's worth of disk per version, with right-sized wrong bytes that
 `apply` refuses (with automatic fetching on, without the user asking first);
 and see that the machine runs Kryptik and which release it wants. Whoever can
@@ -274,6 +278,8 @@ channel's directory.
   keys. A wrong key, an older release, a tampered payload, a replaced
   manifest, a replayed or far-ahead date, and a second run at once are each
   refused, and each leaves the old pair.
+- The desktop suite runs the launcher with a stored statement from today and
+  with one 45 days old: only the second names its age.
 - `tools/tests/channel-setting.sh`: the addresses stage 06 takes and refuses
   for `KRYPTIK_CHANNEL` for each role, and, for every address it takes, the
   fetcher reading the written `update.conf` into requests it can send.
@@ -291,7 +297,8 @@ channel's directory.
 `compartments/kryptikd/src/update.rs`, `broker.rs`, `serve.rs`,
 `rootfs.rs` (`update.conf`), `tools/kryptik` and
 `tools/desktop/kryptik-launch.c` (`kryptik update`),
-`tools/desktop/kryptik-chrome` (the launcher's line for a release that waits),
+`tools/desktop/kryptik-chrome` (the launcher's lines for a release that waits
+and for a stale statement),
 `tools/update/kryptik-update` (`check-manifest`, `check-pointer`),
 `tools/net/update-fetch.py`, `tools/net/netzone-init.sh`,
 `tools/release-manifest.sh` (`pointer`), `tools/release-channel.sh`,

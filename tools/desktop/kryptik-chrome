@@ -15,7 +15,8 @@
 #                                  focus as text (and the last zone window's
 #                                  in focus.zone), and opens the launcher
 #   kryptik-chrome --menu          the launcher: zones, their state, apps,
-#                                  and a release that waits to be installed
+#                                  a release that waits to be installed, and
+#                                  a channel with nothing new for 30 days
 #   kryptik-chrome --prompt ZONE [--no-display] -- CMD [ARG...]
 #                                  ask for the zone's passphrase in a trusted
 #                                  window, then launch (kryptik-launch hands
@@ -147,10 +148,16 @@ menu_zones() {
 }
 
 # A release that has arrived whole waits for the user, so the launcher says so.
+# So does a channel gone quiet: statements are re-signed on a schedule, and a
+# net zone that withholds them leaves only their age to show it.
 menu_update() {
-    v="$("$LAUNCH" --update status 2>/dev/null | sed -n 's/^staged *\([^:]*\): .*, complete.*/\1/p')"
-    [ -n "$v" ] || return 0
+    st="$("$LAUNCH" --update status 2>/dev/null)"
+    v="$(printf '%s\n' "$st" | sed -n 's/^staged *\([^:]*\): .*, complete.*/\1/p')"
+    days="$(printf '%s\n' "$st" | sed -n 's/^ *no statement from the release key for \([0-9]*\) days.*/\1/p')"
+    [ -n "$v$days" ] || return 0
     echo
+    [ -z "$days" ] || echo "Update: no statement from the release key for ${days} days (kryptik update status)"
+    [ -z "$v" ] && return 0
     echo "Update: ${v} has arrived. To install it: kryptik update apply, at the"
     echo "        administration login (Ctrl+Alt+F2); the next boot tries it."
 }
