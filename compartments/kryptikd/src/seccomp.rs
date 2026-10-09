@@ -44,6 +44,11 @@ pub const CLONE_NS_MASK: u32 = 0x7e02_0000;
 /// ioctls that inject into or read the tty: TIOCSTI types into the user's shell. Always denied.
 const TIOCSTI: u32 = 0x5412;
 const TIOCLINUX: u32 = 0x541C;
+/// ioctls that with CAP_NET_ADMIN rewrite a NIC: ethtool's (its EEPROM and flash among them),
+/// a PHY register write, and the drivers' private range. The nic zone keeps that capability.
+const SIOCETHTOOL: u32 = 0x8946;
+const SIOCSMIIREG: u32 = 0x8949;
+const SIOCDEVPRIVATE: u32 = 0x89F0;
 
 /// Socket families a zone may open; the rest (AF_VSOCK reaches the host; AF_ALG, AF_PACKET,
 /// AF_XDP ...) are CVE-prone and unneeded, though a policy may add some.
@@ -365,8 +370,8 @@ pub enum ArgRule {
     CloneNoNamespaces,
     /// clone3(2): ENOSYS, so libc falls back to clone(2), which the filter can read.
     Clone3Enosys,
-    /// ioctl(2): kill on TIOCSTI / TIOCLINUX (terminal injection).
-    IoctlNoTtyInject,
+    /// ioctl(2): kill on TIOCSTI / TIOCLINUX (terminal injection); EPERM on the NIC writers.
+    IoctlRefused,
     /// socket(2): the base families plus the policy's; others get EAFNOSUPPORT.
     SocketFamilies,
     /// socketpair(2): AF_UNIX only; other families' create code and module autoload run first.
@@ -376,7 +381,7 @@ pub enum ArgRule {
 pub const ARG_RULES: &[ArgRule] = &[
     ArgRule::CloneNoNamespaces,
     ArgRule::Clone3Enosys,
-    ArgRule::IoctlNoTtyInject,
+    ArgRule::IoctlRefused,
     ArgRule::SocketFamilies,
     ArgRule::SocketpairUnix,
 ];
@@ -386,7 +391,7 @@ impl ArgRule {
         match self {
             ArgRule::CloneNoNamespaces => libc::SYS_clone,
             ArgRule::Clone3Enosys => libc::SYS_clone3,
-            ArgRule::IoctlNoTtyInject => libc::SYS_ioctl,
+            ArgRule::IoctlRefused => libc::SYS_ioctl,
             ArgRule::SocketFamilies => libc::SYS_socket,
             ArgRule::SocketpairUnix => libc::SYS_socketpair,
         }
@@ -451,11 +456,16 @@ fn emit_arg_rule(p: &mut Vec<SockFilter>, rule: ArgRule, deny_action: u32, socke
             stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
         ],
         ArgRule::Clone3Enosys => vec![stmt(BPF_RET | BPF_K, errno_action(ENOSYS))],
-        ArgRule::IoctlNoTtyInject => vec![
+        ArgRule::IoctlRefused => vec![
             stmt(BPF_LD | BPF_W | BPF_ABS, arg_lo(1)),
-            jump(BPF_JMP | BPF_JEQ | BPF_K, TIOCSTI, 2, 0),
-            jump(BPF_JMP | BPF_JEQ | BPF_K, TIOCLINUX, 1, 0),
+            jump(BPF_JMP | BPF_JEQ | BPF_K, TIOCSTI, 7, 0),
+            jump(BPF_JMP | BPF_JEQ | BPF_K, TIOCLINUX, 6, 0),
+            jump(BPF_JMP | BPF_JEQ | BPF_K, SIOCETHTOOL, 4, 0),
+            jump(BPF_JMP | BPF_JEQ | BPF_K, SIOCSMIIREG, 3, 0),
+            jump(BPF_JMP | BPF_JGE | BPF_K, SIOCDEVPRIVATE, 0, 1),
+            jump(BPF_JMP | BPF_JGT | BPF_K, SIOCDEVPRIVATE + 15, 0, 1),
             stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+            stmt(BPF_RET | BPF_K, soft_refusal(EPERM, deny_action)),
             stmt(BPF_RET | BPF_K, deny_action),
         ],
         /* Generated, since a zone policy can add families and protocols:

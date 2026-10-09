@@ -372,6 +372,27 @@ fn tty_injection_ioctls_are_killed() {
     }
 }
 
+/// With CAP_NET_ADMIN, which the nic zone keeps, these write a NIC's EEPROM, flash or PHY.
+#[test]
+fn nic_writing_ioctls_are_refused() {
+    let p = build_program(BASE_ALLOWLIST).unwrap();
+    for cmd in [SIOCETHTOOL, SIOCSMIIREG, SIOCDEVPRIVATE, SIOCDEVPRIVATE + 15] {
+        assert_eq!(
+            evaluate_args(&p, X86, libc::SYS_ioctl as u32, with_arg(1, cmd as u64)),
+            errno_action(EPERM),
+            "ioctl {cmd:#x} must be refused"
+        );
+    }
+    // Their neighbours, readers among them, still pass.
+    for cmd in [SIOCSMIIREG - 1, SIOCDEVPRIVATE - 1, SIOCDEVPRIVATE + 16, 0x8913, 0x8B01] {
+        assert_eq!(
+            evaluate_args(&p, X86, libc::SYS_ioctl as u32, with_arg(1, cmd as u64)),
+            SECCOMP_RET_ALLOW,
+            "ioctl {cmd:#x} should be allowed"
+        );
+    }
+}
+
 #[test]
 fn socket_families_are_limited() {
     let p = build_program(BASE_ALLOWLIST).unwrap();

@@ -172,8 +172,11 @@ else is `SECCOMP_RET_KILL_PROCESS`, except that the `set*id` calls,
 and `clone` with namespace flags fail with `EPERM` too: Firefox, Chromium and
 bubblewrap probe for user namespaces at start and must hear no, as the kernel
 tells an unprivileged caller. `clone3` fails with `ENOSYS` so libc falls back
-to `clone`, the `TIOCSTI` and `TIOCLINUX` ioctls are killed, and `socket` is
-limited to `AF_UNIX`, `AF_INET`, `AF_INET6` and `NETLINK_ROUTE`. A zone policy
+to `clone`, the `TIOCSTI` and `TIOCLINUX` ioctls are killed, `SIOCETHTOOL`,
+`SIOCSMIIREG` and the drivers' private range fail with `EPERM` (with the nic
+zone's `CAP_NET_ADMIN` they would rewrite a NIC's EEPROM, flash or PHY, which
+outlives a reinstall), and `socket` is limited to `AF_UNIX`, `AF_INET`,
+`AF_INET6` and `NETLINK_ROUTE`. A zone policy
 file can widen this in named ways but never re-allow a denied syscall
 ([zone policy files](design/zone-policy-files.md)).
 
