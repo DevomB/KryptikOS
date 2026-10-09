@@ -685,7 +685,8 @@ fn never_heard(days: i64) -> String {
 /// A clock that reads more than a day before `what` refuses every newer statement as dated
 /// ahead of it, so none would ever go stale.
 fn clock_behind(days: i64, what: &str) -> String {
-    format!("no statement from the release key can be accepted while this machine's clock reads {days} days before {what}: set the clock")
+    let lag = if days == 1 { "1 day".to_string() } else { format!("{days} days") };
+    format!("no statement from the release key can be accepted while this machine's clock reads {lag} before {what}: set the clock")
 }
 
 /// `overdue` for the newest accepted statement once it is stale. With none accepted, `never_heard`

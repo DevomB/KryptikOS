@@ -251,6 +251,8 @@ fn a_clock_behind_the_newest_is_said() {
     let back = T0 - 3 * 86400;
     let line = stale_line(&d, back, Some(T0)).unwrap();
     assert!(line.ends_with("clock reads 2 days before the newest one it accepted: set the clock"), "{line}");
+    let near = stale_line(&d, T0 - 2 * 86400, Some(T0)).unwrap();
+    assert!(near.contains("clock reads 1 day before the newest"), "{near}");
     let said = status(&d, back, "1.0.2", Some(T0));
     assert!(said.contains("newest     1.0.3 (dated 2 day(s) after this machine's clock)\n"), "{said}");
     assert!(said.contains(&format!("           {line}\n")), "{said}");
