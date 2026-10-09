@@ -123,6 +123,21 @@ rm -f "$V"/*
 efiboot ensure b /dev/sdz9 > "$T/out" 2>&1; rc=$?
 check "a partition without the kryptik-esp label is refused, and nothing is written" "$rc|$(grep -c 'is not a kryptik-esp partition' "$T/out")|$(find "$V" -type f | wc -l)" "1|1|0"
 
+echo "-- an order longer than 254 entries"
+# 300 of the machine's own numbers, 0x1000 up: past the 508 bytes a 512-byte read held.
+rm -f "$V"/*; long=""; want=""
+for k in $(seq 0 299); do
+    n=$(( 0x1000 + k ))
+    long+="$(printf '\\x%02x\\x%02x' $(( n & 255 )) $(( n >> 8 )))"; want+="$(printf '%02x%02x' $(( n & 255 )) $(( n >> 8 )))"
+done
+var BootOrder "$long"
+efiboot ensure a > "$T/out" 2>&1; rc=$?
+check "ensure succeeds" "$rc" "0"
+check "the order keeps all 300 and gains slot a's entry at its end" "$(data BootOrder)" "${want}a000"
+efiboot forget > "$T/out" 2>&1; rc=$?
+check "forget takes out Kryptik's entry and gives back all 300" "$rc|$(data BootOrder)" "0|${want}"
+check "list names the last of them" "$(efiboot list | grep -c ' Boot112B$')" "1"
+
 echo
 printf '%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]] || exit 1
