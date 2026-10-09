@@ -16,10 +16,11 @@ fn program_has_expected_shape() {
 #[test]
 fn jump_offsets_stay_small() {
     let p = build_program(BASE_ALLOWLIST).unwrap();
-    // Arg-rule offsets reach 9, the rest are 0 or 1; all must land inside.
+    // Arg-rule offsets reach 10, the jump past ioctl's ten instructions; the rest are 0 or 1;
+    // all must land inside.
     for (i, ins) in p.iter().enumerate() {
-        assert!(ins.jt <= 9, "instruction {i} has jt={}", ins.jt);
-        assert!(ins.jf <= 9, "instruction {i} has jf={}", ins.jf);
+        assert!(ins.jt <= 10, "instruction {i} has jt={}", ins.jt);
+        assert!(ins.jf <= 10, "instruction {i} has jf={}", ins.jf);
         if ins.code & 0x07 == BPF_JMP {
             assert!((i + 1 + ins.jt as usize) < p.len(), "instruction {i} jt runs off the end");
             assert!((i + 1 + ins.jf as usize) < p.len(), "instruction {i} jf runs off the end");
