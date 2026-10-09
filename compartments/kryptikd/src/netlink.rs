@@ -27,9 +27,11 @@ const NLA_TYPE_MASK: u16 = 0x3fff;
 
 const RTM_NEWLINK: u16 = 16;
 const RTM_DELLINK: u16 = 17;
+const RTM_GETLINK: u16 = 18;
 const RTM_SETLINK: u16 = 19;
 const RTM_NEWADDR: u16 = 20;
 const RTM_NEWROUTE: u16 = 24;
+const RTM_DELLINKPROP: u16 = 109;
 const NLMSG_ERROR: u16 = 2;
 const NLMSG_DONE: u16 = 3;
 
@@ -46,7 +48,10 @@ const IFLA_MASTER: u16 = 10;
 // A bridge acks and ignores an unknown attribute, so the isolation test checks sysfs and the wire.
 const IFLA_PROTINFO: u16 = 12;
 const IFLA_LINKINFO: u16 = 18;
+const IFLA_IFALIAS: u16 = 20;
 const IFLA_NET_NS_FD: u16 = 28;
+const IFLA_PROP_LIST: u16 = 52;
+const IFLA_ALT_IFNAME: u16 = 53;
 const IFLA_INFO_KIND: u16 = 1;
 const IFLA_INFO_DATA: u16 = 2;
 const VETH_INFO_PEER: u16 = 1;
@@ -489,7 +494,6 @@ pub fn is_up(dev: &str) -> io::Result<bool> {
 }
 
 /// `dev`'s MAC.
-#[cfg(test)]
 pub fn mac_of(dev: &str) -> io::Result<[u8; 6]> {
     let c = CString::new(dev).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL"))?;
     let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
@@ -514,8 +518,8 @@ pub fn mac_of(dev: &str) -> io::Result<[u8; 6]> {
     Ok(mac)
 }
 
-/// Set `dev`'s address and MTU, which needs it down.
-pub fn set_mac_mtu(dev: &str, mac: Option<[u8; 6]>, mtu: Option<u32>) -> io::Result<()> {
+/// Set `dev`'s address and MTU, which needs it down, and drop its alias.
+pub fn set_link(dev: &str, mac: Option<[u8; 6]>, mtu: Option<u32>, drop_alias: bool) -> io::Result<()> {
     let idx = index_of(dev)?;
     let mut m = Msg::new(RTM_NEWLINK, 0, 1);
     m.ifinfomsg(libc::AF_UNSPEC as u8, idx as i32, 0, 0);
@@ -525,7 +529,60 @@ pub fn set_mac_mtu(dev: &str, mac: Option<[u8; 6]>, mtu: Option<u32>) -> io::Res
     if let Some(n) = mtu {
         m.attr_u32(IFLA_MTU, n);
     }
+    if drop_alias {
+        m.attr(IFLA_IFALIAS, &[]);
+    }
     transact(m.finish(), &format!("set the address and MTU of {dev:?}"))
+}
+
+/// The (type, data) attributes in `buf` from `off`.
+fn attrs(buf: &[u8], mut off: usize) -> Vec<(u16, &[u8])> {
+    let mut out = Vec::new();
+    while off + 4 <= buf.len() {
+        let len = u16::from_ne_bytes(buf[off..off + 2].try_into().unwrap()) as usize;
+        let kind = u16::from_ne_bytes(buf[off + 2..off + 4].try_into().unwrap()) & NLA_TYPE_MASK;
+        if len < 4 || off + len > buf.len() {
+            break;
+        }
+        out.push((kind, &buf[off + 4..off + len]));
+        off += align4(len);
+    }
+    out
+}
+
+/// `dev`'s altnames, which answer to a lookup as its name does, and whether it has an alias.
+pub fn names_left(dev: &str) -> io::Result<(Vec<Vec<u8>>, bool)> {
+    let idx = index_of(dev)?;
+    let mut m = Msg::new(RTM_GETLINK, 0, 1);
+    m.ifinfomsg(libc::AF_UNSPEC as u8, idx as i32, 0, 0);
+    let reply = transact_on(NETLINK_ROUTE, m.finish(), &format!("read {dev:?}"))?;
+    let (mut alt, mut alias) = (Vec::new(), false);
+    // An ifinfomsg, 16 bytes, then the link's attributes.
+    for (kind, data) in attrs(&reply, 16) {
+        if kind == IFLA_PROP_LIST {
+            for (k, name) in attrs(data, 0) {
+                if k == IFLA_ALT_IFNAME {
+                    alt.push(name.split(|b| *b == 0).next().unwrap_or(name).to_vec());
+                }
+            }
+        } else if kind == IFLA_IFALIAS {
+            alias = data.first().is_some_and(|b| *b != 0);
+        }
+    }
+    Ok((alt, alias))
+}
+
+/// Remove altnames from `dev`.
+pub fn del_altnames(dev: &str, names: &[Vec<u8>]) -> io::Result<()> {
+    let idx = index_of(dev)?;
+    let mut m = Msg::new(RTM_DELLINKPROP, 0, 1);
+    m.ifinfomsg(libc::AF_UNSPEC as u8, idx as i32, 0, 0);
+    let list = m.begin_nested(IFLA_PROP_LIST);
+    for n in names {
+        m.attr(IFLA_ALT_IFNAME, &[n.as_slice(), b"\0"].concat());
+    }
+    m.end_nested(list);
+    transact(m.finish(), &format!("remove the altnames of {dev:?}"))
 }
 
 const SIOCETHTOOL: libc::c_ulong = 0x8946;

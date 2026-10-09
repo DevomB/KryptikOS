@@ -281,15 +281,27 @@ pub fn physical_interfaces() -> io::Result<Vec<String>> {
 
 /// What a NIC keeps from the net zone that held it, set back as its hardware gives it: an
 /// address that zone chose would follow the machine from network to network, and Wake-on-LAN
-/// would let anyone on the network wake it. The MTU goes back to Ethernet's.
+/// would let anyone on the network wake it. The MTU goes back to Ethernet's. Its altnames go,
+/// as one named `BRIDGE` would stop the next start making the bridge, and so does its alias,
+/// free text that `ip link` prints.
 fn reset_nic(nic: &str) {
     let sys = Path::new("/sys/class/net").join(nic);
     let own = netlink::perm_mac_of(nic).ok().flatten().filter(|p| netlink::mac_of(nic).ok() != Some(*p));
     let mtu = (sysfs_u32(&sys.join("type")) == Some(1) && sysfs_u32(&sys.join("mtu")) != Some(1500)).then_some(1500);
-    if own.is_some() || mtu.is_some() {
-        match netlink::set_mac_mtu(nic, own, mtu) {
-            Ok(()) => eprintln!("kryptikd: {nic:?}: its own address and MTU are back"),
-            Err(e) => eprintln!("kryptikd: {nic:?}: its address and MTU could not be set back: {e}"),
+    let (alt, alias) = netlink::names_left(nic).unwrap_or_else(|e| {
+        eprintln!("kryptikd: {nic:?}: its altnames could not be read: {e}");
+        Default::default()
+    });
+    if !alt.is_empty() {
+        match netlink::del_altnames(nic, &alt) {
+            Ok(()) => eprintln!("kryptikd: {nic:?}: {} altname(s) removed", alt.len()),
+            Err(e) => eprintln!("kryptikd: {nic:?}: its altnames could not be removed: {e}"),
+        }
+    }
+    if own.is_some() || mtu.is_some() || alias {
+        match netlink::set_link(nic, own, mtu, alias) {
+            Ok(()) => eprintln!("kryptikd: {nic:?}: set back as its hardware gives it"),
+            Err(e) => eprintln!("kryptikd: {nic:?}: could not be set back as its hardware gives it: {e}"),
         }
     }
     match netlink::wol_off(nic) {
