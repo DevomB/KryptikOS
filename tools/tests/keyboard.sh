@@ -82,5 +82,16 @@ kb kb_store nosuchlayout 2>/dev/null; rc=$?
 KB_VAR="$T/no-such-directory/KryptikKeyboard" kb kb_store de 2>/dev/null; rc=$?
 [[ "$rc" -ne 0 ]] && ok "without firmware variables a store fails" || bad "a store with no efivars succeeded"
 
+echo "-- the installer asks under the layout it installs"
+INST="$ROOT/tools/install/kryptik-install.sh"
+at() { grep -nF -- "$1" "$INST" | head -1 | cut -d: -f1; }
+l="$(at 'kb_load "$KEYBOARD"')"; e="$(at 'Type ERASE to continue')"; p="$(at 'a passphrase for the state partition')"
+s="$(at 'kb_store "$LAYOUT"')"; w="$(at 'sfdisk --quiet')"
+[[ -n "$l" && -n "$e" && -n "$p" && "$l" -lt "$e" && "$l" -lt "$p" ]] \
+    && ok "--keyboard's layout is loaded before ERASE and the passphrase are asked" \
+    || bad "the layout is loaded at line '${l}', ERASE asked at '${e}', the passphrase at '${p}'"
+[[ -n "$s" && -n "$w" && "$s" -lt "$w" ]] && ok "and named in the firmware before the disk is partitioned" \
+    || bad "the layout is stored at line '${s}', the disk partitioned at '${w}'"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

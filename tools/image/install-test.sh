@@ -6,7 +6,8 @@
 #
 #   step 1  install onto a blank disk; check the transcript and the partition table
 #   step 2  boot the disk alone: first boot, login, reboot, login, poweroff
-#   step 3  cold boot it again (not with --quick)
+#   step 3  cold boot it again (not with --quick), with step 1's signed control
+#           disk attached: an installed system ignores it
 #   step 4  a disk too small, a read-only disk, and an I/O error in the root
 #           image copy (not with --quick): each must fail, installing nothing;
 #           the medium's own disk, even with --replace-kryptik, and a copy of
@@ -65,12 +66,15 @@ want "$P1" 'KRYPTIK_INSTALL: BEGIN target=/dev/vda'      "the installer was arme
 want "$P1" 'KRYPTIK_INSTALL: rc=0'                       "the installer exited 0"
 want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-esp=/dev/vda1 type=vfat'   "partition 1 is the ESP"
 want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-a=/dev/vda2'  "partition 2 is kryptik-a"
-want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-b=/dev/vda3'  "partition 3 is kryptik-b"
+want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-b=/dev/vda3 type=(none)?$'  "partition 3 is kryptik-b, and empty"
 want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-state=/dev/vda4 type=crypto_LUKS' "partition 4 is the state partition, and it is LUKS"
 want "$P1" 'KRYPTIK_INSTALL: verify: esp_files=.*EFI/BOOT/BOOTX64.EFI' "the ESP has the removable-media boot file"
 want "$P1" 'KRYPTIK_INSTALL: verify: install_json=yes'   "install.json was written"
 want "$P1" 'KRYPTIK_INSTALL: verify: preseed=present'    "the first-boot preseed was written"
 want "$P1" 'KRYPTIK_INSTALL: .*kryptik-a verifies'       "the root image was read back and verified"
+want "$P1" 'KRYPTIK_INSTALL: kryptik-install: installed [^ ]+ to /dev/vda: boot it from firmware with the medium removed\.' \
+    "the installer ended by naming the version and the disk, and to boot it without the medium"
+want "$P1" 'KRYPTIK_INSTALL: .*Keep a copy of its header \(kryptik-recover --backup-state-header\)' "and to keep a copy of the state header"
 deny "$P1" 'KRYPTIK_INSTALL: FAILED'                     "the installer reported no failure"
 want "$P1" 'Power down'                                  "the medium powered off afterwards"
 deny "$P1" 'Kernel panic|Oops:'                          "no panic during the install boot"
@@ -136,8 +140,9 @@ if [[ -f "$REC" ]]; then echo "  recorded:"; sed 's/^/    /' "$REC" | head -30; 
 
 # ----------------------------------------------------------------- step 3 --
 if [[ "$QUICK" -eq 0 ]]; then
-step "step 3: cold boot the installed disk again"
-start_vm install-p3; LOG3="$LOG"
+step "step 3: cold boot the installed disk again, with a signed control disk attached"
+# Step 1's: it names this disk as the target and asks for a poweroff.
+start_vm install-p3 --testctl "$CTL"; LOG3="$LOG"
 python3 "$DRV" --serial "$SER" --timeout 300 \
     "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "run:test -f /home/${TUSER}/persisted-p2" \
@@ -147,6 +152,9 @@ sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
 [[ "$drc" -eq 0 ]] && green "cold boot: login, persisted file present, clean poweroff" || red "cold boot drive failed"
 P3="${VMDIR}/install-p3.txt"; txt_of "$LOG3" > "$P3"
 deny "$P3" 'kryptik-firstboot: created user'  "first-boot setup did not run again"
+want "$P3" 'installer: not an install medium; nothing to do' "the installed system's installer service saw no medium"
+deny "$P3" 'testctl: control file read|KRYPTIK_INSTALL: BEGIN|KRYPTIK_SMOKE: POWEROFF' \
+    "and it neither read the control disk, nor installed or powered off at its word"
 fi
 
 # ----------------------------------------------------------------- step 4 --
