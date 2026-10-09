@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
-# Tests for tools/verify-signatures.sh. Offline, with real GnuPG: per-run keys
-# produce GOODSIG, EXPKEYSIG, REVKEYSIG, BADSIG and NO_PUBKEY. Each case runs
-# the tool against a throwaway KRYPTIK_ROOT.
+# Tests for tools/verify-signatures.sh: offline, real GnuPG, per-run keys, a throwaway KRYPTIK_ROOT.
 
 set -uo pipefail
 
-# common.sh prefers these over paths derived from KRYPTIK_ROOT, so an exported
-# one would point the tool at the real tree.
+# common.sh prefers these, when exported, to paths derived from KRYPTIK_ROOT.
 unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -78,8 +75,7 @@ printf 'TAMPERED AFTER SIGNING\n' >> "${SRC}/bad.tar.gz"
 # Upstream publishes nothing alongside this one.
 printf 'no signature is published for this\n' > "${SRC}/nosig.tar.gz"
 
-# The tool's keyring: good, expired and revoked (revocation applied). GnuPG
-# prefixes its revocation certificates with ':' against accidental import.
+# The tool's keyring: good, expired and revoked; sed strips the ':' guarding gpg's revocation.
 REVFPR="$(GNUPGHOME="$FIXG" gpg --batch --list-keys --with-colons revoked@example.test \
           | awk -F: '$1=="fpr"{print $10; exit}')"
 GNUPGHOME="$FIXG" gpg --batch --quiet \
@@ -90,8 +86,7 @@ sed 's/^://' "${FIXG}/openpgp-revocs.d/${REVFPR}.rev" \
     | GNUPGHOME="$BUILDG" gpg --batch --quiet --import >/dev/null 2>&1
 GNUPGHOME="$BUILDG" gpg --batch --quiet --export > "${W}/keyring.gpg"
 
-# The unknown key is reachable only by the id its signature names, as a long
-# key id or a fingerprint (gpg may report either).
+# The unknown key is served only under the id its signature names: long key id or fingerprint.
 UNKFPR="$(GNUPGHOME="$FIXG" gpg --batch --list-keys --with-colons unknown@example.test \
           | awk -F: '$1=="fpr"{print $10; exit}')"
 UNKID="${UNKFPR: -16}"
@@ -139,8 +134,7 @@ echo
 
 # --- harness ----------------------------------------------------------------
 
-# write_manifest <name>...: rows shaped like fetch-sources.sh --list, each
-# declaring probe: whichever of .sig, .asc and .sign is published.
+# write_manifest NAME...: rows shaped like fetch-sources.sh --list, each declaring probe.
 write_manifest() {
     : > "${W}/manifest"
     local n
@@ -277,8 +271,7 @@ write_manifest good
 fresh_root; run --strict "--notes=${W}/notes-stale.tsv"
 expect_fail "a no-usable-key note for a source whose key is held fails --strict" "stale note"
 
-# A noted source whose signature could not be fetched this run: unverifiable,
-# and the note untried, not stale.
+# A noted source whose signature could not be fetched: unverifiable, its note untried, not stale.
 printf 'fixture payload for unreached\n' > "${SRC}/unreached.tar.gz"
 rm -f "${SRC}/unreached.tar.gz.sig" "${SRC}/.signatures/unreached.tar.gz.sig"
 printf 'unreached  no-usable-key  https://example.invalid/  No route to the key was found. Checked 2026-09-28.\n' > "${W}/notes-unreached.tsv"
@@ -375,8 +368,7 @@ printf 'fixture payload for kern, altered\n' | gzip -c > "${SRC}/kern.tar.gz"
 fresh_root; run
 expect_fail "a kernel row whose tar is not the signed one fails" "BAD SIGNATURE"
 
-# verify-provenance.sh checks these, so nothing is fetched for them, even
-# where a signature exists.
+# verify-provenance.sh checks these, so nothing is fetched for them even where a signature exists.
 : > "${W}/manifest"; add_row good sha256; add_row expired tag; add_row nosig none
 fresh_root; run --report="${W}/declared.tsv"
 if [[ "$RC" -eq 0 ]] \
@@ -428,8 +420,7 @@ fresh_root; run
 expect_pass "a sha256.txt row is left to verify-provenance.sh" \
     "good: no OpenPGP signature upstream; the publisher's .sha256.txt is verify-provenance's"
 
-# A signature over a checksum list beside the file, like cmake's (sha256)
-# and pixman's (sha512). The list must give the file's digest.
+# A signed checksum list beside the file, like cmake's (sha256) and pixman's (sha512).
 printf 'fixture payload for summed\n' > "${SRC}/summed.tar.gz"
 { printf '%s  other.tar.gz\n' "$(printf other | sha256sum | cut -d' ' -f1)"
   printf '%s  summed.tar.gz\n' "$(sha256sum "${SRC}/summed.tar.gz" | cut -d' ' -f1)"; } \
@@ -541,8 +532,7 @@ else
     sed 's/^/        /' "${FAKE}/keys.manifest"
 fi
 
-# Known limit: keys.manifest is the only record of how a cached key got there,
-# so without it the key counts as verified. The remedy, --refresh, is next.
+# Known limit: a cached key without its keys.manifest entry counts as verified; --refresh is next.
 rm -f "${FAKE}/keys.manifest"
 run
 if grep -qF "verified:     1" "$OUT"; then
@@ -572,8 +562,7 @@ KEYRING="${W}/keyring.gpg"
 
 write_manifest good expired revoked bad nosig unknown
 fresh_root; run --fetch-unknown-keys
-# good + expired verified; unknown unaudited; nosig unverifiable;
-# revoked + bad fatal.
+# good and expired verified, unknown unaudited, nosig unsigned, revoked and bad fatal.
 for want in "verified:     2" "unaudited:    1" "unsigned:     1" \
             "REVOKED KEYS: 1" "FAILED:       2"; do
     if grep -qF "$want" "$OUT"; then
@@ -799,8 +788,7 @@ else
     red "an unresolvable wkd locator warns and leaves the source unverified (exit ${RC})"; show
 fi
 
-# A key already held is still merged from where it is published: good is in
-# the tool's keyring, and its published copy carries its revocation.
+# good is held, but its published copy carries a revocation, which the merge must pick up.
 GOODFPR="$(GNUPGHOME="$FIXG" gpg --batch --list-keys --with-colons good@example.test \
            | awk -F: '$1=="fpr"{print $10; exit}')"
 REVG="${W}/gnupg-revoke"
@@ -821,8 +809,7 @@ else
     red "a held key is merged from its locator, so a revocation published there is seen (exit ${RC})"; show
 fi
 
-# A held key whose locator now serves another key: the held copy must not
-# carry the source through.
+# A held key whose locator serves another key: the held copy must not carry the source.
 fresh_root
 write_manifest good
 prov_table "${GOODFPR}  korg  file://${PROV}/unknown.asc  2026-09-11  good  good fixture, whose locator now serves another key"
@@ -834,8 +821,7 @@ else
     red "a held key refused at its locator fails the source it signs (exit ${RC}, got $(klass_of "${W}/r6.tsv" good))"; show
 fi
 
-# A locator that serves the recorded key and another: only the recorded one is
-# taken, so a source signed by the other stays unverified.
+# A locator serving the recorded key and another: only the recorded one is taken.
 fixgpg --quick-generate-key "extra fixture <extra@example.test>" ed25519 sign never >/dev/null 2>&1
 printf 'fixture payload for extra\n' > "${SRC}/extra.tar.gz"
 fixgpg --yes --local-user extra@example.test \
@@ -927,8 +913,7 @@ bad_prov "${UNKFPR}  korg  file://${PROV}/unknown.asc  2026-09-11  unknown" \
 
 # --- the platform-published kind --------------------------------------------
 
-# github: GitHub publishes the key of the account that published the pinned
-# release. Its own class, since holding that account defeats both at once.
+# github: the release publisher's account key; its own class, as holding that account defeats both.
 fresh_root
 write_manifest unknown
 prov_table "${UNKFPR}  github  file://${PROV}/unknown.asc  2026-09-11  unknown  unknown fixture; fixture/repo v1.0 was published by nobody"

@@ -171,6 +171,11 @@ fn address_plan_is_fixed() {
     assert_eq!(zone_v4(2), [10, 19, 0, 2]);
     assert_eq!(zone_v6(2)[15], 2);
     assert_eq!(&zone_v6(2)[..2], &[0xfd, 0x19]);
+    // tools/net/netzone-init.sh pairs 10.19.0.k and fd19::k with this MAC
+    assert_eq!(zone_mac(2), [0x02, 0x19, 0, 0, 0, 2]);
+    assert_eq!(zone_mac(249)[5], 249);
+    // locally administered, unicast
+    assert_eq!(zone_mac(249)[0] & 0x03, 0x02);
     assert!(check_name("kv-untrusted").is_ok());
     assert!(check_name("kv-averylongzonename").is_err());
     assert!(check_name("a/b").is_err());
@@ -267,7 +272,7 @@ fn udp_received(fd: RawFd) -> bool {
 fn veth_bridge_addresses_routes() {
     let rc = in_userns_netns(|| {
         let r: Result<(), i32> = (|| {
-            step(1, create_veth("va", "vb", None))?;
+            step(1, create_veth("va", "vb", None, None))?;
             if index_of("va").is_err() || index_of("vb").is_err() {
                 return Err(2);
             }
@@ -288,7 +293,7 @@ fn veth_bridge_addresses_routes() {
             step(14, add_addr4("br0", [10, 99, 0, 2], 24))?;
             step(18, add_default_route4([10, 99, 0, 2], "va"))?;
             step(19, add_default_route6(zone_v6(2), "va"))?;
-            if create_veth("va", "vx", None).is_ok() {
+            if create_veth("va", "vx", None, None).is_ok() {
                 return Err(20); // EXCL: a duplicate name is refused
             }
             Ok(())
@@ -312,7 +317,7 @@ fn veth_peer_in_other_namespace() {
             Ok(v) => v,
             Err(c) => return c,
         };
-        let r = create_veth("kv-t", "eth0", Some(ns));
+        let r = create_veth("kv-t", "eth0", Some(ns), Some(zone_mac(9)));
         if let Err(e) = r {
             eprintln!("create_veth into peer ns: {e}");
             unsafe { libc::kill(gc, libc::SIGKILL) };
@@ -324,9 +329,16 @@ fn veth_peer_in_other_namespace() {
         if index_of("eth0").is_ok() {
             return 36;
         }
-        let there = with_netns(ns, || index_of("eth0").map(|_| ())).is_ok();
+        let mac = with_netns(ns, || mac_of("eth0"));
         unsafe { libc::kill(gc, libc::SIGKILL) };
-        if there { 0 } else { 38 }
+        match mac {
+            Ok(m) if m == zone_mac(9) => 0,
+            Ok(m) => {
+                eprintln!("eth0 came up with MAC {m:02x?}, not {:02x?}", zone_mac(9));
+                39
+            }
+            Err(_) => 38,
+        }
     });
     match rc {
         0 => {}
@@ -348,7 +360,7 @@ fn isolated_ports_block_zone_to_zone() {
             step(42, add_addr4("kryptik0", [10, 99, 0, 254], 24))?;
             for (k, ns) in [(1u8, ns1), (2u8, ns2)] {
                 let port = format!("kv-z{k}");
-                step(43, create_veth(&port, "eth0", Some(ns)))?;
+                step(43, create_veth(&port, "eth0", Some(ns), None))?;
                 step(44, set_master(&port, "kryptik0"))?;
                 step(45, set_port_isolated(&port, true))?;
                 let flag = fs::read_to_string(format!("/sys/class/net/{port}/brport/isolated")).map_err(|_| 49)?;

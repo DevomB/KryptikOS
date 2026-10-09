@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Test boot-success.sh's decision table with stand-ins: a fake /run/kryptik,
-# service directory and ESP, and fake s6-svstat, kryptikd, kryptik-efiboot,
-# reboot and mount that record what they were asked.
+# boot-success.sh's decision table, against a fake /run/kryptik, service directory and ESP, and
+# fake s6-svstat, kryptikd, kryptik-efiboot, reboot and mount that record what they were asked.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT="$ROOT/build/service-scripts/boot-success.sh"

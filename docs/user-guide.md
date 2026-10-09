@@ -311,9 +311,12 @@ The next boot runs the new slot; `boot-success` judges it (state partition
 usable, services up, the zone supervisor healthy) and only then makes it the
 committed boot file. An unhealthy trial reboots into the previous slot by
 itself. Persistent zone data on `kryptik-state` is never written by any of
-this. `apply` refuses while another trial is armed (reboot first) and while
-the state partition is degraded; after a trial that failed to boot it
-refuses that slot again until you pass `--retry`.
+this. `apply` refuses while another trial is armed (reboot first), while the
+state partition is degraded, and on any slot but the committed one, such as
+one picked in the firmware's boot menu: the refusal says how to boot the
+committed slot, or to make the running one committed from the medium. After
+a trial that failed to boot it refuses that slot again until you pass
+`--retry`.
 
 ```sh
 kryptik-update rollback                       # back to the other slot, if it is intact
@@ -341,10 +344,11 @@ state partition.
 slot, as the installer does, then commits it. Every byte comes from the
 medium, and the slot is committed only once it verifies against the root
 hash the medium's signed kernel carries. A medium whose root or slot kernel
-is not that release's is refused with the reason, and nothing is committed. The state partition is not touched, so users
-and zone volumes survive. The result is the medium's version, which may be
-older than what was installed: the tool names the version it writes but does
-not compare it, so read `--status` first.
+is not that release's is refused with the reason, and nothing is committed.
+The state partition is not touched, so users and zone volumes survive. The
+result is the medium's version, which may be older than what was installed:
+the tool names the version it writes but does not compare it, so read
+`--status` first.
 
 A machine that stops responding resets itself after about a minute (the
 software watchdog's timeout; a hardware watchdog keeps its own): a service
@@ -370,8 +374,10 @@ shows each timer, its timeout and whether it is running.
   planned for October 2026.
 - The builds are not reproducible bit for bit; the hashes name what was
   tested, not what a rebuild would produce.
-- A fullscreen window is framed by its zone's border colour; there is no
-  separate always-visible bar with the zone's name.
+- A program in a zone cannot make its window fullscreen; Alt+e does, and
+  the window then sits below a bar in its zone's colour that names the
+  zone. Other windows show their zone by border colour alone, and the
+  menu's f names it in words.
 - A trial boot is judged by services and the zone supervisor coming up.
   After that, a watchdog resets a machine whose userspace has stopped
   running for a minute; it does not notice a single crashed service or a

@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Structural checks on the s6-rc service tree, offline: mistakes s6-rc-compile
-# would find only at the end of stage 04, inside the chroot.
+# The s6-rc service tree, offline: mistakes s6-rc-compile would find only at the end of stage 04.
 
 set -uo pipefail
 
@@ -147,8 +146,7 @@ check "no dependency cycle" "$([[ -z "$cycle" ]] && echo ok)"
 
 echo
 echo "-- every longrun bounds its own stop"
-# s6-svc -d waits forever unless timeout-kill bounds it, and some processes
-# ignore SIGTERM (getty-tty1's interactive bash).
+# s6-svc -d waits forever without timeout-kill, and some ignore SIGTERM (getty-tty1's bash).
 for d in "${SRC}"/*/; do
     svc="$(basename "$d")"
     [[ -f "${d}type" ]] || continue
@@ -169,8 +167,7 @@ done
 
 echo
 echo "-- every directory in the source tree is a service definition"
-# s6-rc-compile reads every directory here as a service; one without a type
-# file stops the whole compile.
+# s6-rc-compile reads every directory as a service; one without a type file stops the compile.
 for d in "${SRC}"/*/; do
     svc="$(basename "$d")"
     if [[ -f "${d}type" ]]; then

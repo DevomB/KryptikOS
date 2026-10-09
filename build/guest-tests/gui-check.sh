@@ -5,7 +5,11 @@
 #   GT SCREENSHOT-OVERSIZE                          take a screenshot
 #   GT KEY-FOCUS-ZONE, GT KEY-FOCUS-OVERSIZE,
 #   GT KEY-FOCUS-FORGED, GT KEY-FOCUS-PERSONAL      press Alt+j (explicit focus)
-#   GT KEY-FULLSCREEN, GT KEY-FULLSCREEN-AGAIN      press Alt+e (zone refuses)
+#   GT KEY-FULLSCREEN, GT KEY-FULLSCREEN-AGAIN      press Alt+e (fullscreen, then back)
+#   GT KEY-FOCUS-AWAY, GT KEY-FOCUS-CHILD, GT KEY-FOCUS-PARENT,
+#   GT KEY-FOCUS-BELOW, GT KEY-FOCUS-LATE            press Alt+j
+#   GT KEY-ZOOM-BELOW, GT KEY-ZOOM-AGAIN            press Alt+Return (zoom)
+#   GT KEY-PARENT-FULLSCREEN, GT KEY-LATE-FULLSCREEN press Alt+e
 #   GT KEY-MENU                                     press Alt+p (the chrome menu)
 #   GT CONSENT-CODE 1 NN                            type NN and Enter (the question's code)
 #   GT CONSENT-WAIT 2                               type y and Enter (not the code: refused)
@@ -35,9 +39,8 @@ wait_for() {   # wait_for SECONDS CMD...
     return 1
 }
 zone_log() { cat "/var/log/kryptik/zone-$1.log" 2>/dev/null; }
-# A process the zone filter kills below the zone's pid 1 leaves nothing in the
-# zone log; the kernel's audit line (type=1326) names it and the syscall.
-zone_why() {   # zone_why ZONE: the registry's view, the zone's and its proxy's logs, what runs, the filter's last kills
+# A filter kill below the zone's pid 1 shows only in the kernel's audit line (type=1326).
+zone_why() {   # zone_why ZONE: the registry, both logs, what runs and the filter's last kills
     echo "entries: $(ls /run/kryptik/zones 2>&1 | tr '\n' ' ')| $1: $(ls -la --time-style=full-iso /run/kryptik/zones/"$1" 2>&1 | tr '\n' ' ')| running: $("$KD" list --running 2>&1 | tr '\n' ' ')| log: $(zone_log "$1" | tail -10 | tr '\n' ' ')| proxy: $(tail -4 "$RT/kryptik/$1/proxy.log" 2>&1 | tr '\n' ' ')| procs: $(pgrep -af "havoc|kryptikd run $1" 2>/dev/null | cut -c1-90 | tr '\n' ';')| seccomp: $(dmesg 2>/dev/null | grep -a 'type=1326' | tail -3 | tr '\n' ' ')"
 }
 mark() { echo "--- $1 ---" >> "/var/log/kryptik/zone-$2.log" 2>/dev/null; }
@@ -57,15 +60,12 @@ echo "GT BEGIN $(date -Iseconds 2>/dev/null)"
 for z in work dev personal; do
     "$KD" volume init "$z" --size 64M --passphrase-file "$PP" > "$LOG/vol-$z.out" 2>&1 || fail "volume-$z" "$(tail -1 "$LOG/vol-$z.out")"
 done
-# Exactly one DRM device, the native driver's: the GPU module must replace the
-# built-in simpledrm at coldplug, as two cards put wlroots on a multi-GPU path
-# the pixman renderer cannot serve. The card left is not card0 (simpledrm's).
-# virtio-gpu hangs its card on the PCI function, whose driver is the transport
-# (virtio-pci); the GPU driver is the virtio device's, under it.
+# One DRM device, the GPU's: beside simpledrm, wlroots takes a multi-GPU path pixman cannot serve.
 cards=()
 for c in /sys/class/drm/card[0-9]*; do
     [[ -e "$c" && "${c##*/}" != *-* ]] || continue
     d="$(readlink -f "$c/device")"
+    # The PCI function's driver is virtio-pci; the GPU driver is on the virtio device under it.
     drv="$(readlink -f "$d"/virtio*/driver 2>/dev/null | head -1)"
     cards+=("${c##*/}=$(basename "${drv:-$(readlink -f "$d/driver")}" 2>/dev/null)")
 done
@@ -73,7 +73,7 @@ done
 [[ "$(s6-svstat -o up /run/service/seatd 2>/dev/null)" = true ]] && pass "seatd-up" || fail "seatd-up"
 [[ "$(s6-svstat -o up /run/service/kryptikd-serve 2>/dev/null)" = true ]] && pass "launch-daemon-up" || fail "launch-daemon-up"
 
-# --- the session --------------------------------------------------------------
+# --- the session ------------------------------------------------------------
 su -s /bin/bash "$USER_NAME" -c 'setsid /usr/bin/kryptik-session </dev/null >/dev/null 2>&1 &'
 if wait_for 30 test -S "$RT/wayland-0"; then pass "session-socket" "dwl listening at $RT/wayland-0"; else fail "session-socket" "$(cat "$RT/kryptik/session.log" 2>/dev/null | tail -3 | tr '\n' ' ')"; fi
 pgrep -u "$USER_NAME" -x dwl >/dev/null && pass "compositor-running" || fail "compositor-running" "$(tail -3 "$RT/kryptik/session.log" 2>/dev/null | tr '\n' ' ')"
@@ -81,7 +81,7 @@ wait_for 20 test -f "$RT/kryptik/focus" && pass "chrome-focus-record" "$(tr '\n'
 # The record exists before the chrome's own window has mapped: wait for the window.
 wait_for 20 grep -q '^zone=0' "$RT/kryptik/focus" && pass "chrome-window-is-zone0" "the launcher window is recorded as zone 0 (trusted)" || fail "chrome-window-is-zone0" "$(cat "$RT/kryptik/focus" 2>/dev/null | tr '\n' ' '); terminals: $(pgrep -u "$USER_NAME" -a havoc 2>/dev/null | tr '\n' ';'); session.log: $(tail -4 "$RT/kryptik/session.log" 2>/dev/null | tr '\n' ' ')"
 
-# --- what zone 0 sees, and what a zone sees ---------------------------------------
+# --- what zone 0 sees, and what a zone sees ---------------------------------
 as_user "/usr/libexec/kryptik/wlprobe list" > "$LOG/probe-zone0.out" 2>&1
 grep -q 'zwlr_screencopy_manager_v1' "$LOG/probe-zone0.out" && grep -q 'wl_data_device_manager' "$LOG/probe-zone0.out" \
     && pass "zone0-sees-capture" "the compositor offers screencopy and the data device to zone 0's own client (positive control)" \
@@ -108,6 +108,110 @@ out="$(since_mark bind untrusted)"
 [[ "$out" == *"bind refused"* ]] && pass "zone-bind-refused" "a bind of the screencopy manager got wl_display.error and a closed connection" || fail "zone-bind-refused" "$(echo "$out" | tail -3 | tr '\n' ' ')"
 grep -q 'not advertised' "$RT/kryptik/untrusted/proxy.log" 2>/dev/null && pass "proxy-logged-refusal" "$(grep 'not advertised' "$RT/kryptik/untrusted/proxy.log" | tail -1 | cut -c1-120)" || fail "proxy-logged-refusal" "no refusal in the proxy log"
 
+# --- a zone window goes fullscreen only by the user's key ----------------
+# wlprobe asks for it once drawn and says which configures were fullscreen;
+# zone 0's request is granted, which shows the probe would see a grant.
+as_user "/usr/libexec/kryptik/wlprobe fullscreen 4" > "$LOG/fullscreen-zone0.out" 2>&1
+grep -q 'configure (fullscreen)' "$LOG/fullscreen-zone0.out" && pass "zone0-fullscreen-granted" || fail "zone0-fullscreen-granted" "$(tr '\n' ' ' < "$LOG/fullscreen-zone0.out")"
+# Granted only while that window has the focus: the probe asks once the
+# keyboard has left it, after Alt+j moved the focus to the launcher, and the
+# request gets no fullscreen configure.
+as_user "/usr/libexec/kryptik/wlprobe fullscreen 7 late" > "$LOG/fullscreen-zone0-late.out" 2>&1 &
+late0_pid=$!
+wait_for 10 grep -q 'keyboard entered the window' "$LOG/fullscreen-zone0-late.out"
+echo "GT KEY-FOCUS-AWAY"
+wait "$late0_pid" 2>/dev/null
+if grep -q 'asked for fullscreen' "$LOG/fullscreen-zone0-late.out" && ! grep -q 'configure (fullscreen)' "$LOG/fullscreen-zone0-late.out"; then
+    pass "zone0-fullscreen-needs-focus" "an unfocused zone 0 window asked and was not made fullscreen"
+else
+    fail "zone0-fullscreen-needs-focus" "$(grep -E 'asked|committed|keyboard' "$LOG/fullscreen-zone0-late.out" | tail -4 | tr '\n' ' ')"
+fi
+mark fs untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe fullscreen 6" > "$LOG/launch-fullscreen.out" 2>&1
+fs_answered() { since_mark fs untrusted | sed -n '/asked for fullscreen/,$p' | grep -q committed; }
+wait_for 20 fs_answered; answered=$?
+wait_for 20 test ! -e /run/kryptik/zones/untrusted/init.pid; sleep 1
+out="$(since_mark fs untrusted)"
+if [[ "$answered" = 0 && "$out" != *"(fullscreen)"* ]]; then
+    pass "zone-fullscreen-refused" "the zone's own request was answered with a configure that is not fullscreen"
+else
+    fail "zone-fullscreen-refused" "$(echo "$out" | tail -4 | tr '\n' ' '); $(tr '\n' ' ' < "$LOG/launch-fullscreen.out")"
+fi
+
+# --- a fullscreen zone window keeps the focus from what it hides -------------
+# wlprobe child maps a window and a child of it, both tiled: a zone's child
+# is never drawn above its parent. The zone starts for the probe, so its
+# windows take no focus from zone 0, and Alt+j walks there, newest window
+# first. From the fullscreen parent, Alt+j must then find nothing: every
+# other window is hidden below it, zone 0's and other zones' alike.
+focus_is() { grep -q "^title=\[untrusted\] $1\$" "$RT/kryptik/focus" 2>/dev/null && grep -q "^fullscreen=$2" "$RT/kryptik/focus"; }
+zone_gone() { test ! -e /run/kryptik/zones/untrusted/init.pid; }
+child_ready() { since_mark child untrusted | grep -q 'child committed'; }
+mark child untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe child 45" > "$LOG/launch-child.out" 2>&1
+if wait_for 20 child_ready; then
+    pass "zone-child-mapped" "$(since_mark child untrusted | grep -c committed) commits"
+else
+    fail "zone-child-mapped" "$(since_mark child untrusted | tail -3 | tr '\n' ' '); $(tr '\n' ' ' < "$LOG/launch-child.out")"
+fi
+sleep 1
+echo "GT KEY-FOCUS-CHILD"
+wait_for 10 focus_is child 0 && pass "child-focused" "$(tr '\n' ' ' < "$RT/kryptik/focus")" || fail "child-focused" "focus after Alt+j: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+echo "GT KEY-FOCUS-PARENT"
+wait_for 10 focus_is child-parent 0 && pass "parent-focused" "$(tr '\n' ' ' < "$RT/kryptik/focus")" || fail "parent-focused" "focus after Alt+j: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+echo "GT KEY-PARENT-FULLSCREEN"
+wait_for 10 focus_is child-parent 1 && pass "parent-fullscreen" || fail "parent-fullscreen" "focus after Alt+e: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+echo "GT KEY-FOCUS-BELOW"
+sleep 3
+if focus_is child-parent 1; then
+    pass "fullscreen-keeps-focus" "Alt+j left the record on the fullscreen window"
+else
+    fail "fullscreen-keeps-focus" "Alt+j moved the record to a hidden window: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+fi
+# The record names the window the compositor believes on top, which is never
+# a covered one; the probe's wl_keyboard events say where the keys go.
+child_entries() { since_mark child untrusted | grep -c 'keyboard entered the child'; }
+[[ "$(child_entries)" -eq 1 ]] && pass "keyboard-stays-on-fullscreen" "the child saw the keyboard once, before its parent went fullscreen" || fail "keyboard-stays-on-fullscreen" "the hidden child got the keyboard: $(since_mark child untrusted | grep keyboard | tr '\n' ' ')"
+echo "GT KEY-ZOOM-BELOW"
+sleep 3
+[[ "$(child_entries)" -eq 1 ]] && focus_is child-parent 1 && pass "zoom-keeps-keyboard" "Alt+Return left the keyboard on the fullscreen window" || fail "zoom-keeps-keyboard" "$(since_mark child untrusted | grep keyboard | tail -2 | tr '\n' ' '); focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+# Twice: dwl's zoom moves the window it finds to the front of its list, and
+# only from the front does the old search pass the fullscreen window and
+# land on the hidden child.
+echo "GT KEY-ZOOM-AGAIN"
+sleep 3
+[[ "$(child_entries)" -eq 1 ]] && focus_is child-parent 1 && pass "zoom-twice-keeps-keyboard" "a second Alt+Return left it there too" || fail "zoom-twice-keeps-keyboard" "$(since_mark child untrusted | grep keyboard | tail -2 | tr '\n' ' '); focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+# A zone 0 window opened over the fullscreen zone window ends that fullscreen
+# and takes the keyboard, as a passphrase prompt must.
+as_user "/usr/libexec/kryptik/wlprobe oversize 0 8 over-fullscreen" > "$LOG/zone0-over.out" 2>&1 &
+over_pid=$!
+if wait_for 15 grep -q 'keyboard entered the window' "$LOG/zone0-over.out" && wait_for 10 grep -q '^title=over-fullscreen' "$RT/kryptik/focus"; then
+    pass "zone0-over-fullscreen-gets-keyboard" "$(tr '\n' ' ' < "$RT/kryptik/focus")"
+else
+    fail "zone0-over-fullscreen-gets-keyboard" "zone 0's window: $(grep -E 'keyboard|committed' "$LOG/zone0-over.out" | tail -3 | tr '\n' ' '); focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+fi
+parent_windowed() { since_mark child untrusted | sed -n '/configure (fullscreen)/,$p' | grep committed | grep -v child | grep -qv '(fullscreen)'; }
+wait_for 10 parent_windowed && pass "zone0-window-ends-fullscreen" "the parent's next configure was not fullscreen" || fail "zone0-window-ends-fullscreen" "$(since_mark child untrusted | grep committed | tail -3 | tr '\n' ' ')"
+wait "$over_pid" 2>/dev/null
+wait_for 60 zone_gone
+# A child that maps under its fullscreen parent ends the fullscreen: the
+# zone cannot have it drawn above the bar, so both are shown tiled instead.
+late_drawn() { since_mark late untrusted | grep -q committed; }
+late_done() { since_mark late untrusted | sed -n '/asked for a child/,$p' | grep committed | grep -v child | grep -qv '(fullscreen)'; }
+mark late untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe child 25 late" > "$LOG/launch-late.out" 2>&1
+wait_for 20 late_drawn
+sleep 1
+echo "GT KEY-FOCUS-LATE"
+wait_for 10 focus_is child-parent 0
+echo "GT KEY-LATE-FULLSCREEN"
+if wait_for 20 late_done && wait_for 10 grep -q '^fullscreen=0' "$RT/kryptik/focus"; then
+    pass "child-ends-fullscreen" "$(since_mark late untrusted | grep -E 'asked for a child|committed' | tail -3 | tr '\n' ' ')"
+else
+    fail "child-ends-fullscreen" "$(since_mark late untrusted | tail -4 | tr '\n' ' '); focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+fi
+wait_for 40 zone_gone
+
 # --- a mapped zone window cannot take the chrome's focus ----------------------
 mark map untrusted
 launch_plain untrusted "/usr/libexec/kryptik/wlprobe oversize 0 8 map-focus" > "$LOG/map-focus.out" 2>&1
@@ -120,7 +224,7 @@ else
 fi
 wait_for 20 test ! -e /run/kryptik/zones/untrusted/init.pid; sleep 1
 
-# A real terminal: focus it with an explicit user key.
+# A terminal, focused by an explicit user key.
 launch_plain untrusted "havoc" > "$LOG/launch-havoc-untrusted.out" 2>&1
 echo "GT KEY-FOCUS-ZONE"
 if wait_for 20 grep -q '^zone=untrusted' "$RT/kryptik/focus"; then
@@ -135,20 +239,18 @@ sleep 2
 echo "GT SCREENSHOT-READY"
 sleep 6
 echo "GT KEY-FULLSCREEN"
-sleep 2
-if grep -q '^fullscreen=0' "$RT/kryptik/focus" && grep -q '^zone=untrusted' "$RT/kryptik/focus"; then
-    pass "zone-fullscreen-refused" "$(tr '\n' ' ' < "$RT/kryptik/focus")"
+if wait_for 20 grep -q '^fullscreen=1' "$RT/kryptik/focus" && grep -q '^zone=untrusted' "$RT/kryptik/focus"; then
+    pass "fullscreen-by-key" "$(tr '\n' ' ' < "$RT/kryptik/focus")"
 else
-    fail "zone-fullscreen-refused" "focus after Alt+e: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+    fail "fullscreen-by-key" "focus after Alt+e: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
 fi
-# The host's screenshot must still show the chrome beside the zone window.
+# The host's screenshot must show the bar naming the zone above the window.
 sleep 2
 echo "GT SCREENSHOT-FULLSCREEN"
 sleep 6
 echo "GT KEY-FULLSCREEN-AGAIN"
 wait_for 20 grep -q '^fullscreen=0' "$RT/kryptik/focus" && pass "fullscreen-off-again" || fail "fullscreen-off-again"
-# Alt+p opens one more menu window: the chrome's text menu in a zone 0
-# terminal of its own, as at login. Closed again once seen.
+# Alt+p opens another menu window (the chrome's text menu in a zone 0 terminal), closed once seen.
 menu_windows() { pgrep -u "$USER_NAME" -f 'havoc /usr/bin/kryptik-chrome --menu' | wc -l; }
 menus_before="$(menu_windows)"
 more_menus() { [[ "$(menu_windows)" -gt "$menus_before" ]]; }
@@ -159,8 +261,7 @@ if wait_for 20 more_menus; then
 else
     fail "menu-opens-on-key" "no new menu window after Alt+p: $(pgrep -u "$USER_NAME" -af 'kryptik-chrome --menu' | cut -c1-80 | tr '\n' ';')"
 fi
-# A zone 0 window taking focus, as the menu does when opened, leaves the last
-# zone window's record alone: that record is what the menu's f shows.
+# A zone 0 window taking focus keeps the last zone window's record, which the menu's f shows.
 as_user "/usr/libexec/kryptik/wlprobe oversize 0 15 zone-0" > "$LOG/zone0-window.out" 2>&1 &
 if wait_for 20 grep -q '^zone=0' "$RT/kryptik/focus"; then
     grep -q '^zone=untrusted' "$RT/kryptik/focus.zone" 2>/dev/null \
@@ -174,15 +275,14 @@ pkill -u "$USER_NAME" -f 'wlprobe oversize 0 15 zone-0' 2>/dev/null
 # A zone runs one command at a time, so its window is stopped before the next.
 stop_zone() { as_user "kryptik-launch --stop $1" > /dev/null 2>&1; wait_for 15 test ! -e "/run/kryptik/zones/$1/init.pid"; sleep 1; }
 stop_zone untrusted
-# A window closing must not take the compositor with it: every later window,
-# in any zone, would find no display behind its proxy.
+# A closing window must not kill the compositor: every later window would find no display.
 if pgrep -u "$USER_NAME" -x dwl > /dev/null; then
     pass "compositor-survives-close" "dwl still runs after the untrusted window closed"
 else
     fail "compositor-survives-close" "dwl is gone after the untrusted window closed; session.log: $(tail -4 "$RT/kryptik/session.log" 2>/dev/null | tr '\n' ' ')"
 fi
 
-# --- a window cannot cover its own frame ----------------------------------
+# --- a window cannot cover its own frame ------------------------------------
 # wlprobe answers every configure with a buffer 40 px larger than asked. dwl
 # clips a surface only to (w - bw) x (h - bw), so the excess lies under the
 # right and bottom borders; the host measures all four in its screenshot.
@@ -199,8 +299,7 @@ sleep 2
 echo "GT SCREENSHOT-OVERSIZE"
 sleep 6
 stop_zone untrusted
-# A window titled as another zone's is named by its own zone, from the app_id
-# the proxy stamps, never from its title.
+# A window titled as another zone's is named by the app_id the proxy stamps, never its title.
 mark forged untrusted
 launch_plain untrusted "/usr/libexec/kryptik/wlprobe oversize 0 20 '[vault] forged'" > "$LOG/launch-forged.out" 2>&1
 wait_for 20 probe_configured forged || fail "forged-mapped" "probe did not draw its configured window"
@@ -214,24 +313,17 @@ else
 fi
 stop_zone untrusted
 
-# --- a second zone with a window; no virtual input for either -------------
-# personal gets its probe before its window.
+# --- a second zone with a window; no virtual input for either ---------------
 mark probe personal
 launch personal "/usr/libexec/kryptik/wlprobe list" > "$LOG/launch-probe-personal.out" 2>&1
-# An encrypted zone can be launched again only once its volume has closed,
-# which follows its launcher's exit.
+# An encrypted zone relaunches only once its volume has closed, after its launcher exits.
 wait_for 30 test ! -e /run/kryptik/zones/personal/init.pid; sleep 1
 out="$(since_mark probe personal)"
 if [[ "$out" == *"global "* && "$out" != *"virtual_keyboard"* && "$out" != *"virtual_pointer"* && "$out" != *"input_method"* ]]; then pass "no-virtual-input" "no virtual keyboard/pointer or input-method global in personal either"; else fail "no-virtual-input" "$(echo "$out" | grep -c global) globals; virtual input: $(echo "$out" | grep -o 'virtual_[a-z]*' | tr '\n' ' '); $(tr '\n' ' ' < "$LOG/launch-probe-personal.out")"; fi
 launch personal "havoc" > "$LOG/launch-havoc-personal.out" 2>&1
 echo "GT KEY-FOCUS-PERSONAL"
 wait_for 20 grep -q '^zone=personal' "$RT/kryptik/focus" && pass "second-zone-window" "$(tr '\n' ' ' < "$RT/kryptik/focus")" || fail "second-zone-window" "$(cat "$LOG/launch-havoc-personal.out" | tr '\n' ' '); $(zone_why personal)"
-# --- zone 0 runs no user application (ADR-003) ----------------------------
-# With personal's terminal up, every process is read. One in a zone's cgroup
-# is that zone's. Any other must be one of zone 0's own programs (s6 and its
-# services, the session, a zone's launcher and proxy) or this test's own
-# shell tree. An interpreter counts only running one of Kryptik's scripts, the
-# terminal only as the chrome's, around its menu or a launch.
+# --- zone 0 runs no user application (ADR-003) ------------------------------
 ppid_of() { awk '/^PPid:/ { print $2 }' "/proc/$1/status" 2>/dev/null; }
 lineage=" $$ "; p="$(ppid_of "$$")"
 while [[ -n "$p" && "$p" -gt 1 ]]; do lineage="${lineage}${p} "; p="$(ppid_of "$p")"; done
@@ -240,6 +332,8 @@ in_test_tree() {   # in_test_tree PID: this shell, an ancestor of it, or below o
     while [[ -n "$p" && "$p" -gt 1 ]]; do [[ "$lineage" == *" $p "* ]] && return 0; p="$(ppid_of "$p")"; done
     return 1
 }
+# With personal's terminal up: outside the zones' cgroups only zone 0's own
+# programs and this test's shell tree may run.
 foreign=(); zoned=""
 for d in /proc/[0-9]*; do
     p="${d#/proc/}"
@@ -251,6 +345,7 @@ for d in /proc/[0-9]*; do
     in_test_tree "$p" && continue
     cmd="$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null)"
     read -r _ script _ <<<"$cmd"
+    # An interpreter only as one of Kryptik's scripts; havoc only around the chrome's menu or a launch.
     case "$exe" in
         /usr/bin/s6-*|/usr/sbin/s6-*|/usr/libexec/s6-*|/usr/sbin/udevd|/usr/sbin/agetty|/usr/bin/seatd|/usr/bin/kryptikd|/usr/bin/kryptik-wlproxy|/usr/bin/kryptik-launch|/usr/bin/dwl|/usr/bin/sleep) ;;
         /usr/bin/bash|/usr/bin/python3)
@@ -265,11 +360,9 @@ done
 
 stop_zone personal
 
-# --- clipboards: per zone, until the zone 0 gesture -----------------------
-# A zone's clipboard lives in its launcher, so both zones stay up across the
-# gesture, each running one command that talks to its broker through
-# broker-client.py and logs the answers; untrusted waits for its payload to leave.
+# --- clipboards: per zone, until the zone 0 gesture -------------------------
 BC=/usr/lib/kryptik/guest-tests/broker-client.py
+# A zone's clipboard lives in its launcher, so both zones stay up across the gesture.
 mark clip untrusted
 launch_plain untrusted "sh -c 'python3 $BC clipboard-set text/plain from-untrusted; echo SET-DONE; python3 $BC clipboard-wait-empty 90; echo WAIT-DONE'" > "$LOG/clip-set.out" 2>&1
 wait_for 15 grep -q SET-DONE /var/log/kryptik/zone-untrusted.log
@@ -286,14 +379,13 @@ wait_for 30 grep -q 'clipboard-empty' /var/log/kryptik/zone-untrusted.log; empti
 if [[ "$second" == *from-untrusted* && "$emptied" = 0 ]]; then pass "clipboard-moved" "personal holds the one payload the gesture moved, and untrusted's own broker answers empty: moved, not copied"; else fail "clipboard-moved" "personal: $(echo "$second" | tail -2 | tr '\n' ' '); untrusted: $(since_mark clip untrusted | tail -3 | tr '\n' ' ')"; fi
 stop_zone untrusted; stop_zone personal
 
-# --- transfers: the user decides --------------------------------------------------------
+# --- transfers: the user decides --------------------------------------------
 launch work "havoc" > /dev/null 2>&1   # work must be running to receive
 # policy first: untrusted names no destination
 mark trf0 untrusted
 launch_plain untrusted "sh -c 'echo nope > \$HOME/x.txt; python3 $BC transfer work x.txt \$HOME/x.txt'" > /dev/null 2>&1; sleep 3
 [[ "$(since_mark trf0 untrusted)" == *"does not name"* ]] && pass "transfer-policy" "untrusted -> work refused by policy, with no question asked" || fail "transfer-policy" "$(since_mark trf0 untrusted | tail -2 | tr '\n' ' ')"
-# watcher.lock is the chrome's watcher (kryptikd consent.rs), not a question.
-questions() {   # every entry in the consent directory except the watcher lock
+questions() {   # every consent entry except the chrome's watcher.lock (consent.rs)
     local f
     for f in /run/kryptik-consent/* /run/kryptik-consent/.[!.]*; do
         [[ -e "$f" ]] || continue
@@ -303,9 +395,8 @@ questions() {   # every entry in the consent directory except the watcher lock
 }
 [[ -z "$(questions)" ]] && pass "no-question-for-policy-refusal" || fail "no-question-for-policy-refusal" "$(questions | tr '
 ' ' ')"
-# dev -> work: allowed by policy, asked of the user, who types the code the
-# question's window shows. Zone 0 finds it beside the question, which no zone sees.
-consent_code() {   # consent_code FROM TO: the code the question FROM asks about TO shows, once it shows one
+# dev -> work: allowed by policy, so the user is asked and types the code the question shows.
+consent_code() {   # consent_code FROM TO: that question's code, from the file beside it, which no zone can read
     local a n=30
     while [[ "$n" -gt 0 ]]; do
         for a in /run/kryptik-consent/*.ask; do
@@ -341,8 +432,7 @@ n=40; while [[ "$n" -gt 0 ]] && [[ "$(since_mark trf2 dev)" != *ok* && "$(since_
 out="$(since_mark trf2 dev)"
 [[ "$out" == *"refused by the user"* ]] && pass "plain-y-refused" "y without the code is a refusal" || fail "plain-y-refused" "$(echo "$out" | tail -2 | tr '\n' ' ')"
 [[ -e "$R/work/incoming/report2.txt" ]] && fail "denied-file-absent" "the refused file landed anyway" || pass "denied-file-absent" "nothing landed"
-# The broker removes .ask and .answer at once; the chrome's watcher removes its
-# .dialog on its next one-second pass, so wait for that.
+# The chrome's watcher removes its .dialog on its next one-second pass: wait for it.
 n=20; while [[ "$n" -gt 0 && -n "$(questions)" ]]; do n=$((n - 1)); sleep 1; done
 [[ -z "$(questions)" ]] && pass "consent-cleaned" "no question left behind" || fail "consent-cleaned" "$(questions | tr '
 ' ' ')"

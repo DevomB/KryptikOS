@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
-# Install from the medium, boot the result from firmware alone (medium gone,
-# variables reset), and check that the installer's refusals refuse.
+# Install from the medium, boot the result from firmware alone, and check the installer's refusals.
 #
 #   tools/image/install-test.sh --usb IMG [--disk FILE] [--size 12G]
 #                               [--vars clean|enrolled] [--timeout N] [--quick]
 #
-#   step 1  install unattended onto a blank disk; check the transcript and,
-#           from the host, the partition table
+#   step 1  install onto a blank disk; check the transcript and the partition table
 #   step 2  boot the disk alone: first boot, login, reboot, login, poweroff
 #   step 3  cold boot it again (not with --quick)
 #   step 4  a disk too small, a read-only disk, and an I/O error in the root
@@ -208,11 +206,9 @@ EOF
     refusal_case ioerror "$SIZE" 'writing the root image failed' --blkdebug "${VMDIR}/blkdebug.conf"
 fi
 
-# The runner always passes --yes, so none of these refusals is the ERASE
-# prompt waiting.
+# The runner always passes --yes, so no refusal here is the ERASE prompt waiting.
 
-# The disk this system runs from: the medium, the one USB disk in the guest.
-# No flag opens it.
+# The medium, the guest's one USB disk, is the disk this system runs from: no flag opens it.
 ctl="${VMDIR}/testctl-medium.img"
 "${SELF}/mk-testctl.sh" --out "$ctl" --key "$TESTCTL_KEY" install_target=/dev/sda install_replace=1 smoke_poweroff=1 install_wait=5 > /dev/null
 d="${VMDIR}/refuse-medium.img"; rm -f "$d"; truncate -s "$SIZE" "$d"
@@ -222,9 +218,7 @@ want "$t" 'KRYPTIK_INSTALL: BEGIN target=/dev/sda'                     "medium: 
 want "$t" 'KRYPTIK_INSTALL: .*is the disk this system is running from' "medium: refused as the disk this system runs from, even with --replace-kryptik"
 deny "$t" 'KRYPTIK_INSTALL: rc=0'                                      "medium: never reported success"
 
-# A control disk signed by some other key: the medium honours the
-# kryptik-testctl key its anchor lists and no other, so nothing is armed. The
-# disk's poweroff is ignored with the rest, so this boot runs to its timeout.
+# The medium ignores a control disk its testctl key did not sign, poweroff too: this boot times out.
 ssh-keygen -q -t ed25519 -N '' -C stranger -f "${VMDIR}/stranger-key" < /dev/null
 ctl="${VMDIR}/testctl-stranger.img"
 "${SELF}/mk-testctl.sh" --out "$ctl" --key "${VMDIR}/stranger-key" install_target=/dev/vda smoke_poweroff=1 install_wait=5 > /dev/null
@@ -241,7 +235,7 @@ state_uuid() {
     [[ -n "$start" ]] && blkid -p -O "$(( start * 512 ))" -s UUID -o value "$1" 2>/dev/null
 }
 
-# An old installation: refused without the flag, and left exactly as it was.
+# An old installation is refused without the flag, and left as it was.
 old="${VMDIR}/old-install.img"; rm -f "$old"; cp --sparse=always "$DISK" "$old"
 ctl="${VMDIR}/testctl-oldinstall.img"
 "${SELF}/mk-testctl.sh" --out "$ctl" --key "$TESTCTL_KEY" install_target=/dev/vda smoke_poweroff=1 install_wait=5 > /dev/null

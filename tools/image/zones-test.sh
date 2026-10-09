@@ -49,8 +49,7 @@ install_disk zones-install "$USB" --vars clean && green "installed" || { red "in
 
 # ----------------------------------------------------------------- step 2 --
 step "step 2: the guest-side zone, network and storage checks (as root)"
-# 3 GB, not the default 2: ephemeral-size-bound fills untrusted's 2G tmpfs,
-# which is RAM, until ENOSPC.
+# 3 GB, not 2: ephemeral-size-bound fills untrusted's 2G tmpfs, which is RAM, until ENOSPC.
 start_vm zones-p2 --net user --mem 3072
 drive 900 "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'bash /usr/lib/kryptik/guest-tests/zones-check.sh 2>&1 | tee /var/log/kryptik/zones-check.log; echo ZCHECK-DONE')" \
@@ -65,11 +64,11 @@ zp="$(sed -n 's/.*passed=\([0-9]*\).*/\1/p' <<<"$summary")"; zf="$(sed -n 's/.*f
 if [[ -n "$summary" && "${zf:-1}" -eq 0 && "${zp:-0}" -ge 30 ]]; then green "every guest check passed (${zp})"; else red "guest checks: ${zp:-0} passed, ${zf:-?} failed"; fi
 grep 'ZT FAIL' <<<"$T2" | sed 's/^/        /'
 # The key verdicts one by one, so a pass is not a single line.
-for name in kernel-support policies net-ready net-dns zone0-nic zone0-no-route zone0-offline routed-egress routed-ping routed-ping6 routed-dns net-lease-names-resolver dns-follows-lease dns-after-reload routed-ipv6-noglobal zone-separation volume-hidden home-hidden fail-closed net-restart-ready reattach-after-restart uplink-refused wifi-beyond \
+for name in kernel-support policies net-ready net-dns zone0-nic zone0-no-route zone0-offline routed-egress routed-ping routed-ping6 routed-dns net-lease-names-resolver dns-follows-lease dns-after-reload routed-ipv6-noglobal zone-separation volume-hidden home-hidden fail-closed net-restart-ready reattach-after-restart uplink-returned uplink-retaken reattach-egress uplink-refused wifi-beyond routed-restart-path uplink-address-refused \
             wifi-module wifi-ap wifi-add wifi-associated wifi-lease wifi-egress wifi-forget \
-            time-floor-ran time-clamp time-floor-forged time-claim-stepped time-claim-floor time-claim-consent pids-limit ephemeral-size-bound cpu-max-set lifecycle-repeat lifecycle-registry \
+            time-floor-ran time-clamp time-floor-forged time-claim-stepped time-claim-floor time-claim-consent pids-limit ephemeral-size-bound cpu-max-set lifecycle-repeat lifecycle-registry resolver-after-attach \
             terminal-terminfo man-page text-browser tls-trust \
-            volume-init encrypted-zone-start stop-closes-volume wrong-passphrase persist-reopen no-mapping-after ephemeral-gone concurrent-start-refused full-volume header-restore volume-destroy vault-offline vault-ping no-passphrase-leak \
+            volume-init zone-source-pinned encrypted-zone-start stop-closes-volume wrong-passphrase persist-reopen no-mapping-after ephemeral-gone concurrent-start-refused full-volume header-restore volume-destroy vault-offline vault-ping no-passphrase-leak \
             setuid-only-allowed no-file-capabilities sysctls-applied; do
     grep -q "ZT PASS ${name}" <<<"$T2" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
@@ -77,8 +76,7 @@ done
 # ----------------------------------------------------------------- step 3 --
 if [[ "$SUITES" -eq 1 ]]; then
 step "step 3: the compartment suites on the target kernel (as root)"
-# Suites log on the guest, whose disk acceptance does not keep, so the console
-# also gets each exit code, summary tail and FAIL row with context.
+# The guest's disk is not kept, so the console also gets each exit code, summary tail and FAIL row.
 suite_cmd() {   # suite_cmd TAG TAIL_LINES COMMAND -> the guest command line
     printf '%s > /var/log/kryptik/%s-suite.log 2>&1; echo %s-RC=$?; tail -%s /var/log/kryptik/%s-suite.log; grep -n -A3 "^ *FAIL" /var/log/kryptik/%s-suite.log | sed "s/^/%s-FAIL: /" | head -80' \
         "$3" "${1,,}" "$1" "$2" "${1,,}" "${1,,}" "$1"
@@ -100,9 +98,7 @@ for s in LAUNCHER ADVERSARIAL BOUNDARY CLI; do
         grep "^${s}-FAIL: " <<<"$T3" | sed "s/^${s}-FAIL: /        /"
     fi
 done
-# The launcher gaps accepted here; any other is a failure. NETR: the real net
-# zone holds the NIC (zones-check covers it). LC15/LC16: unprivileged-only.
-# H1c: zone 0 has no interface here.
+# Only the launcher gaps named below are accepted here; any other is a failure.
 if grep -q 'LAUNCHER SUITE PASSED$' <<<"$T3"; then
     green "launcher suite passed with no gaps"
 elif grep -q 'LAUNCHER SUITE PASSED WITH GAPS' <<<"$T3"; then
