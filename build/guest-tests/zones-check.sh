@@ -311,6 +311,41 @@ if [[ "$ZOUT" == *BRIDGE-OK* ]] && ! grep -q 'has no network path' "$LOG/untrust
 else
     fail "routed-restart-path" "rc ${ZRC}: $(tr '\n' ' ' <<<"$ZOUT") $(grep -h 'network path' "$LOG/untrusted.err" | tail -1)"
 fi
+# No writable mount is shared by two zones, /tmp among them, and the net zone
+# mounts nothing of another zone's volume: net's and personal's tables, by
+# device and root, the device nodes every zone binds aside.
+writable_mounts() {   # writable_mounts PID: "dev root" of each writable mount but a device node
+    awk '{ split($0, h, " - "); split(h[2], s, " "); if ($6 ~ /^rw/ && s[3] ~ /^rw/) print $3, $4, $5 }' "/proc/$1/mountinfo" 2>/dev/null |
+        while read -r dev rt mnt; do [[ -c "/proc/$1/root$mnt" ]] || echo "$dev $rt"; done | sort -u
+}
+mount_dev() { awk -v m="$2" '$5 == m { print $3 }' "/proc/$1/mountinfo" 2>/dev/null | tail -1; }   # mount_dev PID PATH
+net_pid="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
+per_pid="$(cut -d' ' -f1 /run/kryptik/zones/personal/init.pid 2>/dev/null)"
+shared="$(comm -12 <(writable_mounts "${net_pid:-0}") <(writable_mounts "${per_pid:-0}") | tr '\n' ';')"
+net_tmp="$(mount_dev "${net_pid:-0}" /tmp)"; per_tmp="$(mount_dev "${per_pid:-0}" /tmp)"
+if [[ -z "$net_pid" || -z "$per_pid" || -z "$net_tmp" || -z "$per_tmp" ]]; then
+    fail "no-shared-writable-mount" "the zones' mount tables could not be read: net ${net_pid:-none} (/tmp ${net_tmp:-?}), personal ${per_pid:-none} (/tmp ${per_tmp:-?})"
+elif [[ -n "$shared" || "$net_tmp" == "$per_tmp" ]]; then
+    fail "no-shared-writable-mount" "net and personal share writable mounts: ${shared:-none}; /tmp ${net_tmp} and ${per_tmp}"
+else
+    pass "no-shared-writable-mount" "net and personal share no writable mount; each /tmp is its own (${net_tmp}, ${per_tmp})"
+fi
+per_home="$(mount_dev "${per_pid:-0}" /home/personal)"
+if [[ -z "$per_home" || ! -r "/proc/${net_pid:-0}/mountinfo" ]]; then
+    fail "net-zone-no-zone-data" "personal's home (${per_home:-not found}) or the net zone's table (${net_pid:-no init}) could not be read"
+elif awk -v d="$per_home" '$3 == d { f = 1 } END { exit !f }' "/proc/${net_pid}/mountinfo"; then
+    fail "net-zone-no-zone-data" "the net zone mounts personal's volume (${per_home})"
+else
+    pass "net-zone-no-zone-data" "nothing the net zone mounts is on personal's volume (${per_home})"
+fi
+# No swap area, so no zone's memory reaches a disk, and no D-Bus: no shared bus between zones.
+swaps="$(tail -n +2 /proc/swaps 2>/dev/null | grep -c .)"
+[[ "$swaps" == 0 ]] && pass "no-swap" "no swap area is active" || fail "no-swap" "$(tail -n +2 /proc/swaps | tr '\n' ' ')"
+if command -v dbus-daemon >/dev/null 2>&1 || [[ -e /run/dbus ]] || pgrep -x dbus-daemon >/dev/null 2>&1; then
+    fail "no-dbus" "a D-Bus daemon or socket exists: $(command -v dbus-daemon) $(ls -d /run/dbus 2>/dev/null)"
+else
+    pass "no-dbus" "no D-Bus daemon, socket or running bus"
+fi
 # The network the uplink sits on: untrusted's definition opens it ([network]
 # local) and personal's does not. The bridge answers personal, so the refusal
 # is the rule's and not a dead path.
