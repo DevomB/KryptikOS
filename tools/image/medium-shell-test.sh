@@ -2,7 +2,8 @@
 # The install medium's console is a root shell: whoever boots it types
 # kryptik-install there. Every suite installs through a control disk, so this
 # is the one that types: a command runs as root, the installer and the
-# recovery tool are found by name, and poweroff ends the session. On the USB
+# recovery tool are found by name, and poweroff ends the session. A NIC is
+# attached, and no net zone takes it: it stays down in zone 0. On the USB
 # medium, with a blank disk attached: /root, /var and /tmp are memory, a dry
 # run shows the plan and writes nothing, ERASE and the passphrase are asked
 # before the first write, and the installer refuses a partition, and a disk
@@ -76,7 +77,7 @@ for ((i = 0; i < ${#MEDIA[@]}; i += 2)); do
             "send:kryptik-recover --disk /dev/vda --restore-slot a" "expect:done: boot /dev/vda without the medium"
         )
     fi
-    out="$("${SELF}/run-ovmf.sh" "--${kind}" "$medium" "${disk[@]}" --mode serve --name "medium-shell-${kind}")"
+    out="$("${SELF}/run-ovmf.sh" "--${kind}" "$medium" "${disk[@]}" --net user --mode serve --name "medium-shell-${kind}")"
     SER="$(sed -n 's/^serial=//p' <<<"$out")"; PIDF="$(sed -n 's/^pid=//p' <<<"$out")"; LOG="$(sed -n 's/^log=//p' <<<"$out")"
     [[ -S "$SER" ]] || die "no serial socket: ${out}"
     # The shell's own arithmetic and substitutions answer, never the echo of
@@ -89,6 +90,8 @@ for ((i = 0; i < ${#MEDIA[@]}; i += 2)); do
         'send:echo found-$(command -v kryptik-install)-$(command -v kryptik-recover)' \
         "expect:found-/usr/sbin/kryptik-install-/usr/sbin/kryptik-recover" \
         "send:kryptik-install --help" "expect:usage: kryptik-install --target" \
+        'send:for d in /sys/class/net/*; do [ -e "$d/device" ] && echo "nic-${d##*/}-$(cat "$d/operstate")-in-zone-0"; done; echo "netzones-$(pgrep -fc "kryptikd run net")"' \
+        "expect:netzones-[0-9]+" \
         "${typed[@]}" \
         "send:poweroff" "expect:Power down" "wait-exit"
     drc=$?
@@ -96,6 +99,13 @@ for ((i = 0; i < ${#MEDIA[@]}; i += 2)); do
     [[ "$drc" -eq 0 ]] && green "${kind}: commands typed at the console ran as root, the installer is on its path, and poweroff took" \
         || red "${kind}: the console did not take commands (see above)"
     if txt | grep -q 'kryptik login:'; then red "${kind}: the medium's console asked for a login"; else green "${kind}: no login prompt on the medium"; fi
+    t="$(txt)"
+    if grep -q 'net-zone: install medium; no network' <<<"$t" && grep -qE 'nic-[a-z0-9]+-down-in-zone-0' <<<"$t" \
+        && grep -qE 'netzones-0([^0-9]|$)' <<<"$t"; then
+        green "${kind}: no net zone on the medium; its NIC stays down in zone 0"
+    else
+        red "${kind}: the medium ran a net zone, or its NIC left zone 0 or came up: $(grep -aoE 'net-zone: [a-z ;]+|nic-[a-z0-9]+-[a-z]+-in-zone-0|netzones-[0-9]+' <<<"$t" | sort -u | tr '\n' ' ')"
+    fi
     if txt | grep -qE 'KRYPTIK_SMOKE: early_getty_pid=[0-9]+ comm=bash'; then green "${kind}: the console's process is the shell"; else red "${kind}: the console's process is not a shell: $(txt | grep -m1 -o 'early_getty_pid=.*' | cut -c1-80)"; fi
     if [[ "$kind" == usb ]]; then
         t="$(txt)"
