@@ -56,6 +56,36 @@ static int read_var(const char *name, unsigned char *buf, size_t cap, size_t *le
     return 0;
 }
 
+/* Every entry's number once, and the attributes: more is no order. */
+#define ORDER_MAX ((size_t)4 + 2 * 65536)
+
+/* BootOrder whole, however long, in *ORDER for the caller to free: 0 with *LEN 0 when there is
+ * none, -1 when it cannot be read whole, so it is never written back cut short. */
+static int read_order(unsigned char **order, size_t *len) {
+    *order = NULL; *len = 0;
+    char path[512]; snprintf(path, sizeof path, EFIVARS "BootOrder-" GLOBAL_GUID);
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return errno == ENOENT ? 0 : -1;
+    unsigned char *buf = NULL; size_t cap = 0, n = 0;
+    for (;;) {
+        if (n == cap) {
+            unsigned char *b = cap < ORDER_MAX ? realloc(buf, cap = cap ? 2 * cap : 1024) : NULL;
+            if (!b) { free(buf); close(fd); errno = EFBIG; return -1; }
+            buf = b;
+        }
+        ssize_t r = read(fd, buf + n, cap - n);
+        if (r < 0 && errno == EINTR) continue;
+        if (r < 0) { free(buf); close(fd); return -1; }
+        if (r == 0) break;
+        n += (size_t)r;
+    }
+    close(fd);
+    if (n < 4) { free(buf); errno = EINVAL; return -1; }
+    memmove(buf, buf + 4, n - 4);   /* skip the 4-byte attributes header */
+    *order = buf; *len = n - 4;
+    return 0;
+}
+
 /* The kernel marks an existing variable immutable; clear that (FS_IOC_GETFLAGS/SETFLAGS). */
 static void make_mutable(const char *path) {
     int fd = open(path, O_RDONLY);
@@ -254,15 +284,13 @@ static int holds(const unsigned char *list, size_t len, uint16_t num) {
 }
 
 /* Where SLOT's entry goes: its existing entry (own number first), else its own number if free,
- * else the next number that no variable and no place in BootOrder uses. */
-static int slot_var(const char *slot, char var[9]) {
+ * else the next number that no variable and no place in ORDER uses. */
+static int slot_var(const char *slot, char var[9], const unsigned char *order, size_t ol) {
     unsigned own = !strcmp(slot, "a") ? 0x00A0 : 0x00B0;
     snprintf(var, 9, "Boot%04X", own);
     if (is_ours(var, slot)) return 0;
     char names[256][9]; int cnt = boot_vars(names, 256);
     for (int i = 0; i < cnt; i++) if (is_ours(names[i], slot)) { memcpy(var, names[i], 9); return 0; }
-    unsigned char order[512]; size_t ol = 0;
-    if (read_var("BootOrder", order, sizeof order, &ol)) ol = 0;
     for (unsigned k = 0; k < 0x10000; k++) {
         uint16_t num = (uint16_t)(own + k);
         snprintf(var, 9, "Boot%04X", (unsigned)num);
@@ -270,6 +298,8 @@ static int slot_var(const char *slot, char var[9]) {
     }
     return -1;
 }
+
+static int ensure_with(const char *slot, const struct part *esp, char var[9], const unsigned char *order, size_t ol);
 
 static int ensure_entry(const char *slot, const char *named, char var[9]) {
     if (strcmp(slot, "a") && strcmp(slot, "b")) { errno = 0; return die("slot must be a or b"); }
@@ -279,26 +309,40 @@ static int ensure_entry(const char *slot, const char *named, char var[9]) {
         char m[200]; snprintf(m, sizeof m, "%.128s is not a kryptik-esp partition that can be read", named);
         return die(m);
     }
-    if (slot_var(slot, var)) { errno = 0; return die("no Boot#### number is free"); }
+    unsigned char *order; size_t ol;
+    if (read_order(&order, &ol)) return die("BootOrder cannot be read whole, so it is not rewritten");
+    int r = ensure_with(slot, &esp, var, order, ol);
+    free(order);
+    return r;
+}
+
+/* ensure_entry, with BootOrder as read. */
+static int ensure_with(const char *slot, const struct part *esp, char var[9], const unsigned char *order, size_t ol) {
+    if (slot_var(slot, var, order, ol)) { errno = 0; return die("no Boot#### number is free"); }
     char own[9]; snprintf(own, sizeof own, "Boot%04X", !strcmp(slot, "a") ? 0x00A0u : 0x00B0u);
     if (strcmp(own, var) && var_exists(own)) printf("%s is another system's entry; slot %s's is %s\n", own, slot, var);
     char desc[64], file[64];
     snprintf(desc, sizeof desc, "Kryptik slot %s", slot);
     snprintf(file, sizeof file, "\\EFI\\kryptik\\kryptik-%s.efi", slot);
-    unsigned char buf[1024]; size_t n = build_load_option(buf, &esp, desc, file);
+    unsigned char buf[1024]; size_t n = build_load_option(buf, esp, desc, file);
     if (!n) return die("could not build the load option");
     unsigned char old[1024]; size_t olen = 0;
     if (read_var(var, old, sizeof old, &olen) == 0 && olen == n && !memcmp(old, buf, n)) {
         printf("%s already points at %s\n", var, file);
     } else {
         if (write_var(var, buf, n)) return die("writing the Boot#### entry failed");
-        printf("%s -> %s on %s (PARTUUID %s)\n", var, file, esp.dev, esp.uuid);
+        printf("%s -> %s on %s (PARTUUID %s)\n", var, file, esp->dev, esp->uuid);
     }
     /* Last in BootOrder, for a firmware that ignores BootNext; forget removes it. */
-    unsigned char order[512]; size_t ol = 0; uint16_t num = (uint16_t)strtol(var + 4, NULL, 16);
-    if (read_var("BootOrder", order, sizeof order, &ol)) ol = 0;
-    if (!holds(order, ol, num) && ol + 2 <= sizeof order) { ol += put_u16(order + ol, num); if (write_var("BootOrder", order, ol)) return die("updating BootOrder failed"); }
-    return 0;
+    uint16_t num = (uint16_t)strtol(var + 4, NULL, 16);
+    if (holds(order, ol, num)) return 0;
+    unsigned char *grown = malloc(ol + 2);
+    if (!grown) return die("updating BootOrder failed");
+    if (ol) memcpy(grown, order, ol);
+    put_u16(grown + ol, num);
+    int bad = write_var("BootOrder", grown, ol + 2);
+    free(grown);
+    return bad ? die("updating BootOrder failed") : 0;
 }
 
 static int cmd_set_next(const char *slot) {
@@ -317,15 +361,16 @@ static int cmd_forget(void) {
     unsigned char ours[512]; size_t on = 0;
     for (int i = 0; i < cnt; i++)
         if (is_ours(names[i], NULL)) { memcpy(mine[no++], names[i], 9); on += put_u16(ours + on, (uint16_t)strtol(names[i] + 4, NULL, 16)); }
-    unsigned char order[512], kept[512]; size_t ol = 0, kl = 0;
-    if (read_var("BootOrder", order, sizeof order, &ol)) ol = 0;
+    unsigned char *order, *kept; size_t ol, kl = 0;
+    if (read_order(&order, &ol)) return die("BootOrder cannot be read whole, so it is not rewritten");
+    if (!(kept = malloc(ol + 2))) { free(order); return die("updating BootOrder failed"); }
     for (size_t i = 0; i + 1 < ol; i += 2) {
         uint16_t e = (uint16_t)(order[i] | (order[i+1] << 8));
         if (!holds(ours, on, e)) kl += put_u16(kept + kl, e);
     }
-    if (kl != ol) {
-        if (kl == 0 ? delete_var("BootOrder") : write_var("BootOrder", kept, kl)) return die("updating BootOrder failed");
-    }
+    int failed = kl != ol && (kl == 0 ? delete_var("BootOrder") : write_var("BootOrder", kept, kl));
+    free(order); free(kept);
+    if (failed) return die("updating BootOrder failed");
     /* Each is tried even if the one before failed. */
     int bad = 0;
     unsigned char nx[8]; size_t nl = 0;
@@ -350,7 +395,9 @@ static int cmd_list(void) {
     unsigned char buf[512]; size_t n = 0;
     if (read_var("BootCurrent", buf, sizeof buf, &n) == 0 && n >= 2) printf("BootCurrent: Boot%04X\n", buf[0] | (buf[1] << 8));
     if (read_var("BootNext", buf, sizeof buf, &n) == 0 && n >= 2) printf("BootNext:    Boot%04X\n", buf[0] | (buf[1] << 8)); else printf("BootNext:    (none)\n");
-    if (read_var("BootOrder", buf, sizeof buf, &n) == 0) { printf("BootOrder:  "); for (size_t i = 0; i + 1 < n; i += 2) printf(" Boot%04X", buf[i] | (buf[i+1] << 8)); printf("\n"); }
+    unsigned char *order; size_t ol;
+    if (read_order(&order, &ol) == 0 && order) { printf("BootOrder:  "); for (size_t i = 0; i + 1 < ol; i += 2) printf(" Boot%04X", order[i] | (order[i+1] << 8)); printf("\n"); }
+    free(order);
     char names[256][9]; int cnt = boot_vars(names, 256);
     if (cnt < 0) return die("efivarfs is not mounted");
     for (int i = 0; i < cnt; i++) print_entry(names[i]);
