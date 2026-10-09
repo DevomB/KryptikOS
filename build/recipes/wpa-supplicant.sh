@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 
 # CONFIG_AP is for the zones suite, whose hwsim access point is this binary in its own namespace.
+# No DPP: with it the station takes DPP and GAS action frames from any radio in range,
+# unassociated, for a way of joining networks nothing here offers.
 s_wpa_supplicant() {
     local src; src="$(unpack "wpa_supplicant-${V_WPA_SUPPLICANT}.tar.gz" "wpa_supplicant-${V_WPA_SUPPLICANT}")"
     cd "$src/wpa_supplicant"
@@ -15,7 +17,6 @@ CONFIG_IEEE80211W=y
 CONFIG_IEEE80211R=y
 CONFIG_SAE=y
 CONFIG_OWE=y
-CONFIG_DPP=y
 CONFIG_EAP_TLS=y
 CONFIG_EAP_PEAP=y
 CONFIG_EAP_TTLS=y
