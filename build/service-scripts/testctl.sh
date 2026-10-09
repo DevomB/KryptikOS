@@ -22,12 +22,14 @@ testctl_signed() {   # testctl_signed FILE
 }
 
 # The file and its signature are copied once and the copy is what is verified
-# and read: a disk that served other bytes on a later read changes nothing.
+# and read: a disk that served other bytes on a later read changes nothing. At
+# most 64 KiB of each is taken, so no file fills /run before its check.
 testctl_take() {   # testctl_take DIR
     TESTCTL_FILE=""
     _tc="$(mktemp -d "${TESTCTL_COPIES:-/run/kryptik}/testctl.XXXXXX")" || return 1
-    if cp "$1/kryptik-test.conf" "$_tc/kryptik-test.conf" 2>/dev/null \
-        && cp "$1/kryptik-test.conf.sig" "$_tc/kryptik-test.conf.sig" 2>/dev/null \
+    if head -c 65537 "$1/kryptik-test.conf" > "$_tc/kryptik-test.conf" 2>/dev/null \
+        && head -c 65537 "$1/kryptik-test.conf.sig" > "$_tc/kryptik-test.conf.sig" 2>/dev/null \
+        && [ "$(wc -c < "$_tc/kryptik-test.conf")" -le 65536 ] && [ "$(wc -c < "$_tc/kryptik-test.conf.sig")" -le 65536 ] \
         && testctl_signed "$_tc/kryptik-test.conf"; then
         TESTCTL_FILE="$_tc/kryptik-test.conf"
         return 0

@@ -76,6 +76,14 @@ fi
 rm -f "${W}/disk/kryptik-test.conf.sig"
 if testctl_take "${W}/disk" 2>/dev/null; then red "a control file with no signature was taken"; else green "a control file with no signature is not taken"; fi
 [[ -z "$TESTCTL_FILE" ]] && green "and a refusal leaves no file to read keys from" || red "a refused file left TESTCTL_FILE=${TESTCTL_FILE}"
+# Signed, and too large to copy into /run before its check.
+{ printf 'install_target=/dev/vda\n'; head -c 70000 /dev/zero | tr '\0' '#'; printf '\n'; } > "${W}/disk/kryptik-test.conf"
+sign "${W}/kryptik-testctl" kryptik-testctl "${W}/disk/kryptik-test.conf"
+if testctl_signed "${W}/disk/kryptik-test.conf" && ! testctl_take "${W}/disk" 2>/dev/null; then
+    green "a control file over 64 KiB is not taken, though signed"
+else
+    red "a 70 KB control file was taken, or its signature did not hold"
+fi
 
 # --- the tool signs what it packs ------------------------------------------------------
 if command -v sfdisk >/dev/null 2>&1 && command -v mkfs.vfat >/dev/null 2>&1 && command -v mcopy >/dev/null 2>&1 && command -v mtype >/dev/null 2>&1; then
