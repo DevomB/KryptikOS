@@ -561,14 +561,15 @@ fi
 # a leading dash would reach the next zone's dhcpcd as an option, and a quote
 # would end the name in its nft set. The next start renames it nic<N> first.
 # Its address, MTU, an altname and an alias come back as that zone set them
-# too; an altname kryptik0 would stop the next start making the bridge. The
+# too; an altname kryptik0, which the zone takes once it has deleted its own
+# bridge, would stop the next start making the bridge. The
 # next start puts back the NIC's own address and MTU and drops the rest.
 link_of() { sed -n 's/.* mtu \([0-9]*\) .*link\/ether \([0-9a-f:]*\) .*/\2 \1/p'; }
 ninit="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
 own_link="$(nsenter -t "${ninit:-0}" -n ip -o link show dev eth0 2>/dev/null | link_of)"
 # Seventy long altnames first: the link's listing then outgrows one 8 KiB read.
 long="$(head -c 100 /dev/zero | tr '\0' a)"
-named="$(nsenter -t "${ninit:-0}" -n sh -c 'ip link set dev eth0 down && ip link set dev eth0 address 02:00:5e:00:53:01 mtu 1400 && for i in $(seq 1 70); do ip link property add dev eth0 altname "$1$i" || exit 1; done && ip link property add dev eth0 altname kryptik0 && ip link set dev eth0 alias left-by-the-zone && ip link set dev eth0 name "-x\"y" && echo NAMED' sh "$long" 2>&1)"
+named="$(nsenter -t "${ninit:-0}" -n sh -c 'ip link set dev eth0 down && ip link set dev eth0 address 02:00:5e:00:53:01 mtu 1400 && for i in $(seq 1 70); do ip link property add dev eth0 altname "$1$i" || exit 1; done && ip link del kryptik0 && ip link property add dev eth0 altname kryptik0 && ip link set dev eth0 alias left-by-the-zone && ip link set dev eth0 name "-x\"y" && echo NAMED' sh "$long" 2>&1)"
 rn_before="$(ready_count)"
 s6-svc -d /run/service/net-zone
 back=""
