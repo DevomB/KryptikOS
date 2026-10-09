@@ -235,7 +235,7 @@ fn index_of(dev: &str) -> io::Result<u32> {
     let c = CString::new(dev).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in name"))?;
     let idx = unsafe { libc::if_nametoindex(c.as_ptr()) };
     if idx == 0 {
-        return Err(io::Error::new(io::ErrorKind::NotFound, format!("no such interface: {dev}")));
+        return Err(io::Error::new(io::ErrorKind::NotFound, format!("no such interface: {dev:?}")));
     }
     Ok(idx)
 }
@@ -280,7 +280,7 @@ pub fn create_bridge(name: &str) -> io::Result<()> {
     let li = m.begin_nested(IFLA_LINKINFO);
     m.attr_str(IFLA_INFO_KIND, "bridge");
     m.end_nested(li);
-    transact(m.finish(), &format!("create bridge {name}"))
+    transact(m.finish(), &format!("create bridge {name:?}"))
 }
 
 /// Enslave `dev` to bridge `master`.
@@ -290,7 +290,7 @@ pub fn set_master(dev: &str, master: &str) -> io::Result<()> {
     let mut m = Msg::new(RTM_NEWLINK, 0, 1);
     m.ifinfomsg(libc::AF_UNSPEC as u8, idx as i32, 0, 0);
     m.attr_u32(IFLA_MASTER, midx);
-    transact(m.finish(), &format!("enslave {dev} to {master}"))
+    transact(m.finish(), &format!("enslave {dev:?} to {master:?}"))
 }
 
 /// Isolated bridge ports never exchange frames, and a zone cannot clear the flag from its end.
@@ -301,7 +301,7 @@ pub fn set_port_isolated(dev: &str, on: bool) -> io::Result<()> {
     let pi = m.begin_nested(IFLA_PROTINFO);
     m.attr(IFLA_BRPORT_ISOLATED, &[u8::from(on)]);
     m.end_nested(pi);
-    transact(m.finish(), &format!("set isolation of bridge port {dev} to {on}"))
+    transact(m.finish(), &format!("set isolation of bridge port {dev:?} to {on}"))
 }
 
 /// Delete `dev`. Deleting either end of a veth pair deletes both.
@@ -309,14 +309,14 @@ pub fn delete_link(dev: &str) -> io::Result<()> {
     let idx = index_of(dev)?;
     let mut m = Msg::new(RTM_DELLINK, 0, 1);
     m.ifinfomsg(libc::AF_UNSPEC as u8, idx as i32, 0, 0);
-    transact(m.finish(), &format!("delete {dev}"))
+    transact(m.finish(), &format!("delete {dev:?}"))
 }
 
 pub fn set_up(dev: &str) -> io::Result<()> {
     let idx = index_of(dev)?;
     let mut m = Msg::new(RTM_NEWLINK, 0, 1);
     m.ifinfomsg(libc::AF_UNSPEC as u8, idx as i32, libc::IFF_UP as u32, libc::IFF_UP as u32);
-    transact(m.finish(), &format!("bring up {dev}"))
+    transact(m.finish(), &format!("bring up {dev:?}"))
 }
 
 /// Move `dev` into `ns_fd`'s namespace; a wireless netdev refuses (EINVAL): see `set_wiphy_netns`.
@@ -325,7 +325,7 @@ pub fn set_netns(dev: &str, ns_fd: RawFd) -> io::Result<()> {
     let mut m = Msg::new(RTM_NEWLINK, 0, 1);
     m.ifinfomsg(libc::AF_UNSPEC as u8, idx as i32, 0, 0);
     m.attr_u32(IFLA_NET_NS_FD, ns_fd as u32);
-    transact(m.finish(), &format!("move {dev} into namespace"))
+    transact(m.finish(), &format!("move {dev:?} into namespace"))
 }
 
 /// Wiphy index of a wireless interface (sysfs `phy80211/index`); None if wired.
@@ -336,7 +336,7 @@ pub fn wiphy_index_of(dev: &str) -> io::Result<Option<u32>> {
             .trim()
             .parse::<u32>()
             .map(Some)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, format!("{dev}: phy80211/index is not a number: {s:?}"))),
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, format!("{dev:?}: phy80211/index is not a number: {s:?}"))),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
     }
@@ -383,7 +383,7 @@ pub fn add_addr4(dev: &str, addr: [u8; 4], prefix: u8) -> io::Result<()> {
     m.ifaddrmsg(libc::AF_INET as u8, prefix, idx);
     m.attr(IFA_LOCAL, &addr);
     m.attr(IFA_ADDRESS, &addr);
-    transact(m.finish(), &format!("add {} /{prefix} to {dev}", fmt4(addr)))
+    transact(m.finish(), &format!("add {} /{prefix} to {dev:?}", fmt4(addr)))
 }
 
 pub fn add_addr6(dev: &str, addr: [u8; 16], prefix: u8) -> io::Result<()> {
@@ -391,7 +391,7 @@ pub fn add_addr6(dev: &str, addr: [u8; 16], prefix: u8) -> io::Result<()> {
     let mut m = Msg::new(RTM_NEWADDR, NLM_F_CREATE | NLM_F_EXCL, 1);
     m.ifaddrmsg(libc::AF_INET6 as u8, prefix, idx);
     m.attr(IFA_ADDRESS, &addr);
-    transact(m.finish(), &format!("add v6 /{prefix} to {dev}"))
+    transact(m.finish(), &format!("add v6 /{prefix} to {dev:?}"))
 }
 
 pub fn add_default_route4(gw: [u8; 4], dev: &str) -> io::Result<()> {
@@ -400,7 +400,7 @@ pub fn add_default_route4(gw: [u8; 4], dev: &str) -> io::Result<()> {
     m.rtmsg(libc::AF_INET as u8);
     m.attr(RTA_GATEWAY, &gw);
     m.attr_u32(RTA_OIF, idx);
-    transact(m.finish(), &format!("default route via {} dev {dev}", fmt4(gw)))
+    transact(m.finish(), &format!("default route via {} dev {dev:?}", fmt4(gw)))
 }
 
 pub fn add_default_route6(gw: [u8; 16], dev: &str) -> io::Result<()> {
@@ -409,7 +409,7 @@ pub fn add_default_route6(gw: [u8; 16], dev: &str) -> io::Result<()> {
     m.rtmsg(libc::AF_INET6 as u8);
     m.attr(RTA_GATEWAY, &gw);
     m.attr_u32(RTA_OIF, idx);
-    transact(m.finish(), &format!("default v6 route dev {dev}"))
+    transact(m.finish(), &format!("default v6 route dev {dev:?}"))
 }
 
 fn fmt4(a: [u8; 4]) -> String {
