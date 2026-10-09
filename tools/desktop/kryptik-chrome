@@ -96,8 +96,9 @@ run_status() {
     # The menu window, so a fresh session shows something usable.
     "$TERMINAL" /usr/bin/kryptik-chrome --menu &
     # The consent watcher. Holding watcher.lock tells the broker someone is here
-    # to ask (consent.rs refuses at once otherwise); the kernel drops it with this
-    # subshell, and a second session's watcher exits quietly.
+    # to ask: consent.rs refuses at once if it can take the lock shared. The
+    # kernel drops it with this subshell, and a second session's watcher exits
+    # quietly.
     (
         exec 9> "$CONSENT/watcher.lock" 2>/dev/null || exit 0
         flock -n 9 || exit 0
@@ -277,6 +278,7 @@ run_confirm() { # ID
     if read -r reply; then
         [ "$reply" = "$code" ] && answer=yes
     fi
+    # An answer that cannot be written is none: the broker takes that as a refusal.
     if printf '%s\n' "$answer" > "$CONSENT/$id.answer.tmp" && mv -f "$CONSENT/$id.answer.tmp" "$CONSENT/$id.answer"; then
         echo "-> $answer"
     else
