@@ -115,8 +115,17 @@ work in zones from a terminal and a text browser, and keep it up to date.
       `Cargo.lock` names without its texts in `build/licences`. A tag
       `v<version>` builds and tests that version and drafts it on the
       repository's Releases page with its source and its acceptance record
-      ([releases](releases.md)). Still needed: someone other than their
-      author following the install, update and recovery instructions.
+      ([releases](releases.md)). The suites follow the user guide's own
+      steps: the medium's console suite types the install, the state
+      header's backup to a second disk and `kryptik-recover`'s commands as
+      the guide gives them; the state suite answers first-boot setup at the
+      console; the update suite runs `kryptik update` and `kryptik-update`
+      as the guide does; and every claim the guide's install, first-boot,
+      update and recovery text makes has a check behind it. Still needed, by
+      someone other than their author, as no virtual machine can: writing a
+      stick from a downloaded release and checking it as the guide says,
+      including from macOS or Windows; the same steps on a real machine
+      (above); and reading the guide for what it leaves unclear.
 
 ### What the architecture promises and the tree does not yet keep
 
