@@ -73,6 +73,9 @@ printf 'development\n' > role
     echo 'die() { printf "REFUSED: %s\n" "$*"; exit 1; }'
     echo 'hdr() { awk -F": " -v k="$2" '"'"'$1==k {print $2; exit}'"'"' "$1"; }'
     echo 'running_version() { echo 1; }'
+    # The checks below are the unprivileged path, whoever runs the suite: as root, verify_manifest
+    # hands the signature to kryptikd, which only the image has. The cases as root say so themselves.
+    echo 'id() { if [ "$1" = -u ]; then echo 1000; else command id "$@"; fi; }'
     sed -n '/^pin() {/,/^cmd_apply() {/p' "$TOOL" | sed '$d'
 } > verify.sh
 grep -q '^verify_payload() {' verify.sh || { echo "could not extract verify_payload from $TOOL"; exit 1; }
@@ -312,6 +315,39 @@ out="$(check cmd_check_release "$T/undated")"
 [[ "$out" == *"REFUSED:"*"no created date"* && "$out" != *"version: 2"* ]] \
     && ok "check-release: a signed manifest without a date gives none" \
     || bad "check-release on a manifest without a date: $(tail -2 <<<"$out" | tr '\n' ' ')"
+
+# --- as root, the signature is kryptikd's to check, as nobody -----------------
+# id says root, ssh-keygen says that it ran, and kryptikd answers as the real
+# one does: a refusal is the checker's last line.
+mkdir -p "$T/asroot"
+cat > "$T/asroot/kryptikd" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" > "${0%/*}/asked"
+[ -f "$2/manifest" ] && [ -f "$2/manifest.sig" ] || { echo "kryptikd: check-release: no pair in $2" >&2; exit 1; }
+[ "$(cat "${0%/*}/answer")" = ok ] && exit 0
+echo "kryptikd: check-release: FAILED: the manifest's signing key is not enrolled in /usr/share/kryptik/trust/release-signers" >&2
+exit 1
+EOF
+chmod +x "$T/asroot/kryptikd"
+asroot() {   # asroot ANSWER FUNCTION ARGS... -> the output, as root sees it
+    echo "$1" > "$T/asroot/answer"; shift
+    rm -f "$T/asroot/asked"
+    { echo "source $T/verify.sh"
+      echo 'id() { if [ "$1" = -u ]; then echo 0; else command id "$@"; fi; }'
+      echo 'ssh-keygen() { echo "ssh-keygen ran as root" >&2; return 1; }'
+      printf 'PATH=%q:$PATH\n' "$T/asroot"
+      printf 'SNAP=%q\n' "$(mktemp -d "$T/snap.XXXXXX")"
+      printf '%q ' "$@"; echo; } > "$T/check.sh"
+    bash "$T/check.sh" 2>&1
+}
+out="$(asroot ok verify_manifest "$T/signed" 0)"
+[[ "$out" == *"signature verifies, checked as nobody"* && "$out" != *"ssh-keygen ran"* && "$(cat "$T/asroot/asked" 2>/dev/null)" == "check-release $T/snap."* ]] \
+    && ok "as root, apply has kryptikd check the copied pair's signature, and runs no ssh-keygen itself" \
+    || bad "verify_manifest as root: $(tail -2 <<<"$out" | tr '\n' ' ')"
+out="$(asroot refused verify_manifest "$T/signed" 0)"
+[[ "$out" == *"REFUSED: the manifest's signing key is not enrolled in /usr/share/kryptik/trust/release-signers"* && "$out" != *"ssh-keygen ran"* ]] \
+    && ok "as root, kryptikd's refusal is apply's, in the checker's words" \
+    || bad "verify_manifest as root, refused: $(tail -2 <<<"$out" | tr '\n' ' ')"
 
 # The tool itself: the checks need neither root nor this system's disks.
 if [[ "$(id -u)" != 0 ]]; then

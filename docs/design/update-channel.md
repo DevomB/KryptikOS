@@ -126,7 +126,9 @@ a recovery) as `nobody`, with no new privileges, on copies in a directory of
 its own under `/run`, one check at a time, and ends whatever still runs as
 `nobody` after it, as it runs `check-pointer` and `check-release`: they read
 what the net zone sent with `ssh-keygen` and the shell's text tools, and
-refuse to run as root. Zone 0 then requires the manifest to be for the wanted version, to hash
+refuse to run as root. `apply`, which runs as root, has the staged pair's
+signature checked the same way (`kryptikd check-release`) before it reads the
+manifest itself. Zone 0 then requires the manifest to be for the wanted version, to hash
 to the pointer's `manifest-sha256`, and to fit in the free space. A refused
 manifest clears the stage, and for an hour after a refusal none is asked for
 and one sent anyway is refused without being verified, so a release that does

@@ -17,7 +17,8 @@
 #           slot b committed, data intact
 #   step 3  refusals on B: wrong key, with --recovery too, a build it does
 #           not trust (--foreign), modified image, truncated kernel, extra
-#           file, older release, full disk, concurrent run; no trial armed.
+#           file, older release, an anchor only root can read (nobody checks
+#           the signature), full disk, concurrent run; no trial armed.
 #           On a development B also a manifest for the other role, signed by
 #           B's own key
 #   step 4  apply A with --recovery, reboot: slot a
@@ -184,7 +185,7 @@ step "step 2: apply ${VB}, reboot into slot b"
 start_vm update-p2 --disk "$PB"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'mkdir -p /run/upd/p && mount -o ro /dev/vdb /run/upd/p && kryptik-update apply /run/upd/p && echo APPLY-OK')" \
-    "expect:armed: the next boot tries slot b" "expect:APPLY-OK" \
+    "expect:signature verifies, checked as nobody" "expect:armed: the next boot tries slot b" "expect:APPLY-OK" \
     "$(ROOTSH 'kryptik-update status')" "expect:trial pending:    b" \
     "$(ROOTSH 'kryptik-update apply /run/upd/p; echo RC=$?')" "expect:a trial of slot b is already armed; reboot first" "expect:RC=1\r?\n" \
     "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
@@ -228,6 +229,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'kryptik-update apply /run/upd/p/extra --recovery; echo RC=$?')" "expect:unlisted file" \
     "$(ROOTSH 'kryptik-update apply /run/upd/p/hidden --recovery; echo RC=$?')" "expect:lost\\+found is not empty" \
     "$(ROOTSH 'kryptik-update apply /run/upd/a; echo RC=$?')" "expect:older than the running" \
+    "$(ROOTSH 'cp /usr/share/kryptik/trust/release-signers /run/rs && chmod 600 /run/rs && mount --bind /run/rs /usr/share/kryptik/trust/release-signers && kryptik-update apply /run/upd/a; echo RC=$?; umount /usr/share/kryptik/trust/release-signers')" "expect:not enrolled" "expect:RC=1\r?\n" \
     'run:kryptik-update check-pointer /run/upd/p/statement/latest /run/upd/p/statement/latest.sig && echo STATEMENT-OK' "expect:signed by kryptik-latest" "expect:STATEMENT-OK" \
     "$(ROOTSH 'kryptik-update check-pointer /run/upd/p/statement/latest /run/upd/p/statement/latest.sig; echo RC=$?')" "expect:does not run as root" "expect:RC=1\r?\n" \
     "${NOT_A_POINTER[@]}" \
@@ -236,7 +238,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'kryptik-update status')" "expect:trial pending:    none" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
-[[ "$rc" -eq 0 ]] && green "wrong key with and without --recovery${BY_ROLE_SAID}, modified image, truncated kernel, extra file, downgrade, concurrent run and full disk were all refused; no trial armed; the statement of what is current verifies against the image's anchor${NOT_A_POINTER_SAID}; the checks refuse root" || red "step 3 drive failed"
+[[ "$rc" -eq 0 ]] && green "wrong key with and without --recovery${BY_ROLE_SAID}, modified image, truncated kernel, extra file, downgrade, a trust anchor root alone could read (apply's signature check is nobody's), concurrent run and full disk were all refused; no trial armed; the statement of what is current verifies against the image's anchor${NOT_A_POINTER_SAID}; the checks refuse root" || red "step 3 drive failed"
 
 # ----------------------------------------------------------------- step 4 --
 step "step 4: authenticated recovery to ${VA} with --recovery"
