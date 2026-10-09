@@ -273,7 +273,30 @@ pub fn physical_interfaces() -> io::Result<Vec<String>> {
         }
     }
     out.sort();
+    for n in &out {
+        reset_nic(n);
+    }
     Ok(out)
+}
+
+/// What a NIC keeps from the net zone that held it, set back as its hardware gives it: an
+/// address that zone chose would follow the machine from network to network, and Wake-on-LAN
+/// would let anyone on the network wake it. The MTU goes back to Ethernet's.
+fn reset_nic(nic: &str) {
+    let sys = Path::new("/sys/class/net").join(nic);
+    let own = netlink::perm_mac_of(nic).ok().flatten().filter(|p| netlink::mac_of(nic).ok() != Some(*p));
+    let mtu = (sysfs_u32(&sys.join("type")) == Some(1) && sysfs_u32(&sys.join("mtu")) != Some(1500)).then_some(1500);
+    if own.is_some() || mtu.is_some() {
+        match netlink::set_mac_mtu(nic, own, mtu) {
+            Ok(()) => eprintln!("kryptikd: {nic:?}: its own address and MTU are back"),
+            Err(e) => eprintln!("kryptikd: {nic:?}: its address and MTU could not be set back: {e}"),
+        }
+    }
+    match netlink::wol_off(nic) {
+        Ok(true) => eprintln!("kryptikd: {nic:?}: Wake-on-LAN turned off"),
+        Ok(false) => {}
+        Err(e) => eprintln!("kryptikd: {nic:?}: Wake-on-LAN could not be turned off: {e}"),
+    }
 }
 
 /// A name as the kernel and eudev give one: a lower-case letter, then lower-case letters and
@@ -296,9 +319,9 @@ fn physical_interfaces_under(class_net: &Path) -> io::Result<Vec<(OsString, u32,
         if name == "lo" || !e.path().join("device").exists() {
             continue;
         }
-        let idx = sysfs_index(&e.path().join("ifindex"))
+        let idx = sysfs_u32(&e.path().join("ifindex"))
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "a sysfs ifindex is not a number"))?;
-        out.push((name, idx, sysfs_index(&e.path().join("phy80211/index"))));
+        out.push((name, idx, sysfs_u32(&e.path().join("phy80211/index"))));
     }
     out.sort();
     Ok(out)
@@ -308,14 +331,14 @@ fn physical_interfaces_under(class_net: &Path) -> io::Result<Vec<(OsString, u32,
 fn bare_radios(class: &Path) -> Vec<u32> {
     let entries = |d: &str| std::fs::read_dir(class.join(d)).into_iter().flatten().flatten();
     let held: std::collections::BTreeSet<u32> =
-        entries("net").filter_map(|e| sysfs_index(&e.path().join("phy80211/index"))).collect();
+        entries("net").filter_map(|e| sysfs_u32(&e.path().join("phy80211/index"))).collect();
     let mut bare: Vec<u32> =
-        entries("ieee80211").filter_map(|e| sysfs_index(&e.path().join("index"))).filter(|p| !held.contains(p)).collect();
+        entries("ieee80211").filter_map(|e| sysfs_u32(&e.path().join("index"))).filter(|p| !held.contains(p)).collect();
     bare.sort();
     bare
 }
 
-fn sysfs_index(path: &Path) -> Option<u32> {
+fn sysfs_u32(path: &Path) -> Option<u32> {
     std::fs::read_to_string(path).ok()?.trim().parse().ok()
 }
 
@@ -375,6 +398,7 @@ fn plumb_nic_zone_bridge(zone: &Zone, zone_ns: i32) -> Result<(), NetError> {
                     "[network] nic = {n:?} is not an interface in this namespace"
                 )));
             }
+            reset_nic(n);
             vec![n.to_string()]
         }
     };

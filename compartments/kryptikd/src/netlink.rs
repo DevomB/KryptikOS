@@ -41,6 +41,7 @@ const NLA_F_NESTED: u16 = 0x8000;
 
 const IFLA_ADDRESS: u16 = 1;
 const IFLA_IFNAME: u16 = 3;
+const IFLA_MTU: u16 = 4;
 const IFLA_MASTER: u16 = 10;
 // A bridge acks and ignores an unknown attribute, so the isolation test checks sysfs and the wire.
 const IFLA_PROTINFO: u16 = 12;
@@ -511,6 +512,88 @@ pub fn mac_of(dev: &str) -> io::Result<[u8; 6]> {
         *m = *b as u8;
     }
     Ok(mac)
+}
+
+/// Set `dev`'s address and MTU, which needs it down.
+pub fn set_mac_mtu(dev: &str, mac: Option<[u8; 6]>, mtu: Option<u32>) -> io::Result<()> {
+    let idx = index_of(dev)?;
+    let mut m = Msg::new(RTM_NEWLINK, 0, 1);
+    m.ifinfomsg(libc::AF_UNSPEC as u8, idx as i32, 0, 0);
+    if let Some(a) = mac {
+        m.attr(IFLA_ADDRESS, &a);
+    }
+    if let Some(n) = mtu {
+        m.attr_u32(IFLA_MTU, n);
+    }
+    transact(m.finish(), &format!("set the address and MTU of {dev:?}"))
+}
+
+const SIOCETHTOOL: libc::c_ulong = 0x8946;
+const ETHTOOL_GWOL: u32 = 5;
+const ETHTOOL_SWOL: u32 = 6;
+const ETHTOOL_GPERMADDR: u32 = 0x20;
+
+// As linux/ethtool.h lays them out: the kernel reads fields this code never does.
+#[allow(dead_code)]
+#[repr(C)]
+struct WolInfo {
+    cmd: u32,
+    supported: u32,
+    wolopts: u32,
+    sopass: [u8; 6],
+}
+
+#[allow(dead_code)]
+#[repr(C)]
+struct PermAddr {
+    cmd: u32,
+    size: u32,
+    data: [u8; 32],
+}
+
+/// One `SIOCETHTOOL` request on `dev`, whose answer the kernel writes back into `req`.
+fn ethtool<T>(dev: &str, req: &mut T) -> io::Result<()> {
+    let c = CString::new(dev).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL"))?;
+    let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
+    if sock < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut ifr: libc::ifreq = unsafe { std::mem::zeroed() };
+    for (i, b) in c.as_bytes_with_nul().iter().take(libc::IFNAMSIZ).enumerate() {
+        ifr.ifr_name[i] = *b as libc::c_char;
+    }
+    ifr.ifr_ifru.ifru_data = req as *mut T as *mut libc::c_char;
+    // SAFETY: the kernel reads and writes `req`, which outlives the call, as the command says.
+    let r = unsafe { libc::ioctl(sock, SIOCETHTOOL as _, &mut ifr) };
+    let e = io::Error::last_os_error();
+    unsafe { libc::close(sock) };
+    if r < 0 {
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// The address the hardware came with, if its driver gives one.
+pub fn perm_mac_of(dev: &str) -> io::Result<Option<[u8; 6]>> {
+    let mut p = PermAddr { cmd: ETHTOOL_GPERMADDR, size: 32, data: [0; 32] };
+    ethtool(dev, &mut p)?;
+    let mac: [u8; 6] = p.data[..6].try_into().unwrap();
+    Ok((p.size == 6 && mac != [0; 6]).then_some(mac))
+}
+
+/// Turn Wake-on-LAN off; false when it was off already or the driver has none.
+pub fn wol_off(dev: &str) -> io::Result<bool> {
+    let mut w = WolInfo { cmd: ETHTOOL_GWOL, supported: 0, wolopts: 0, sopass: [0; 6] };
+    match ethtool(dev, &mut w) {
+        Err(e) if e.raw_os_error() == Some(libc::EOPNOTSUPP) => return Ok(false),
+        r => r?,
+    }
+    if w.wolopts == 0 {
+        return Ok(false);
+    }
+    let mut off = WolInfo { cmd: ETHTOOL_SWOL, supported: 0, wolopts: 0, sopass: [0; 6] };
+    ethtool(dev, &mut off)?;
+    Ok(true)
 }
 
 /// Open a handle on a process's network namespace.

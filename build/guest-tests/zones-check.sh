@@ -560,12 +560,17 @@ fi
 # A net zone can rename its NIC, which comes back to zone 0 under that name:
 # a leading dash would reach the next zone's dhcpcd as an option, and a quote
 # would end the name in its nft set. The next start renames it nic<N> first.
+# Its address and MTU come back as that zone set them too, and the next start
+# puts back the NIC's own.
+link_of() { sed -n 's/.* mtu \([0-9]*\) .*link\/ether \([0-9a-f:]*\) .*/\2 \1/p'; }
 ninit="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
-named="$(nsenter -t "${ninit:-0}" -n sh -c 'ip link set dev eth0 down && ip link set dev eth0 name "-x\"y" && echo NAMED' 2>&1)"
+own_link="$(nsenter -t "${ninit:-0}" -n ip -o link show dev eth0 2>/dev/null | link_of)"
+named="$(nsenter -t "${ninit:-0}" -n sh -c 'ip link set dev eth0 down && ip link set dev eth0 address 02:00:5e:00:53:01 mtu 1400 && ip link set dev eth0 name "-x\"y" && echo NAMED' 2>&1)"
 rn_before="$(ready_count)"
 s6-svc -d /run/service/net-zone
 back=""
 for _ in $(seq 1 20); do back="$(physical)"; [[ -n "$back" ]] && break; sleep 0.5; done
+back_link="$(ip -o link show dev '-x"y' 2>/dev/null | link_of)"
 s6-svc -u /run/service/net-zone
 took=""
 for _ in $(seq 1 60); do [[ "$(ready_count)" -gt "$rn_before" ]] && { took="$(last_ready)"; break; }; sleep 1; done
@@ -575,6 +580,13 @@ if [[ "$named" == *NAMED* && "$back" == '-x"y ' && "$took" =~ $plain_uplink && -
 else
     fail "uplink-renamed-plain" "renamed: ${named:-nothing}; back in zone 0: ${back:-nothing}; READY: ${took:-none}; $(netzone_said 'NOT READY' | tail -1); zone 0 holds: $(physical)"
 fi
+taken_link="$(nsenter -t "$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)" -n ip -o link show dev "${took##*uplinks=}" 2>/dev/null | link_of)"
+if [[ -n "$own_link" && "$back_link" == "02:00:5e:00:53:01 1400" && "$taken_link" == "${own_link% *} 1500" ]]; then
+    pass "uplink-state-reset" "the net zone left its NIC at 02:00:5e:00:53:01 with MTU 1400; the next start took it back to ${taken_link}"
+else
+    fail "uplink-state-reset" "own: ${own_link:-unread}; back in zone 0: ${back_link:-unread}; in the next net zone: ${taken_link:-unread}; $(uncaught | grep -a 'kryptikd: .*\(address and MTU\|Wake-on-LAN\)' | tail -2 | tr '\n' ' ')"
+fi
+info "uplink-wol virtio-net has no Wake-on-LAN, so this run shows the address and MTU being set back, not Wake-on-LAN"
 # eth0 again, for what follows: the NIC is back in zone 0, down, while the net zone is.
 s6-svc -d /run/service/net-zone
 for _ in $(seq 1 20); do [[ -n "$(physical)" ]] && break; sleep 0.5; done
