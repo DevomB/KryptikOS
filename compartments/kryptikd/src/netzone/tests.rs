@@ -361,3 +361,19 @@ fn only_plain_names_pass_on() {
     }
     assert!(!plain_name(b"\xff"));
 }
+
+#[test]
+fn bare_radios_are_the_ones_no_netdev_holds() {
+    let dir = std::env::temp_dir().join(format!("kryptik-radios-{}", std::process::id()));
+    let put = |path: &str, value: &str| {
+        let f = dir.join(path);
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(f, value).unwrap();
+    };
+    put("ieee80211/phy0/index", "0\n");
+    put("ieee80211/phy3/index", "3\n");
+    put("net/wlan0/phy80211/index", "0\n");
+    put("net/eth0/ifindex", "2\n");
+    assert_eq!(bare_radios(&dir), vec![3]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

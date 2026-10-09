@@ -14,8 +14,14 @@ const GENL_ID_CTRL: u16 = 0x10;
 const CTRL_CMD_GETFAMILY: u8 = 3;
 const CTRL_ATTR_FAMILY_ID: u16 = 1;
 const CTRL_ATTR_FAMILY_NAME: u16 = 2;
+const NL80211_CMD_NEW_INTERFACE: u8 = 7;
+const NL80211_CMD_DEL_INTERFACE: u8 = 8;
 const NL80211_CMD_SET_WIPHY_NETNS: u8 = 49;
 const NL80211_ATTR_WIPHY: u16 = 1;
+const NL80211_ATTR_IFINDEX: u16 = 3;
+const NL80211_ATTR_IFNAME: u16 = 4;
+const NL80211_ATTR_IFTYPE: u16 = 5;
+const NL80211_IFTYPE_STATION: u32 = 2;
 const NL80211_ATTR_NETNS_FD: u16 = 219;
 const NLA_TYPE_MASK: u16 = 0x3fff;
 
@@ -396,6 +402,28 @@ pub fn set_wiphy_netns(phy: u32, ns_fd: RawFd) -> io::Result<()> {
     m.attr_u32(NL80211_ATTR_WIPHY, phy);
     m.attr_u32(NL80211_ATTR_NETNS_FD, ns_fd as u32);
     transact_on(NETLINK_GENERIC, m.finish(), &format!("move wiphy {phy} into namespace")).map(|_| ())
+}
+
+/// `iw phy <phy> interface add <name> type managed`: a station netdev on a wiphy, `%d` in
+/// `name` taking the first free number.
+pub fn new_station(phy: u32, name: &str) -> io::Result<()> {
+    check_name(name)?;
+    let family = genl_family_id("nl80211")?;
+    let mut m = Msg::new(family, 0, 1);
+    m.genlmsghdr(NL80211_CMD_NEW_INTERFACE, 0);
+    m.attr_u32(NL80211_ATTR_WIPHY, phy);
+    m.attr_str(NL80211_ATTR_IFNAME, name);
+    m.attr_u32(NL80211_ATTR_IFTYPE, NL80211_IFTYPE_STATION);
+    transact_on(NETLINK_GENERIC, m.finish(), &format!("add a station to wiphy {phy}")).map(|_| ())
+}
+
+/// `iw dev <dev> del`: remove a radio's netdev, by index.
+pub fn del_interface(idx: u32) -> io::Result<()> {
+    let family = genl_family_id("nl80211")?;
+    let mut m = Msg::new(family, 0, 1);
+    m.genlmsghdr(NL80211_CMD_DEL_INTERFACE, 0);
+    m.attr_u32(NL80211_ATTR_IFINDEX, idx);
+    transact_on(NETLINK_GENERIC, m.finish(), &format!("delete wireless interface {idx}")).map(|_| ())
 }
 
 pub fn add_addr4(dev: &str, addr: [u8; 4], prefix: u8) -> io::Result<()> {
