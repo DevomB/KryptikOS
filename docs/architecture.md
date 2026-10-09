@@ -71,7 +71,9 @@ gets its own `kryptik-wlproxy`, which hides the capture, clipboard,
 input-injection and similar Wayland globals and stamps each window with its
 zone; the compositor draws the zone's border and title prefix from that.
 Over a zone's window the pointer is the compositor's own cursor: an image
-the zone set would be drawn above every window, wherever it chose.
+the zone set would be drawn above every window, wherever it chose. Of the
+monitors a zone learns sizes and modes, not make, model or serial: the
+proxy blanks those and names each output by number.
 
 A window's border colour is how the user tells which zone it belongs to. If
 they cannot tell at a glance which zone a password prompt belongs to, the

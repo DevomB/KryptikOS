@@ -392,6 +392,36 @@ fn split_messages(mut bytes: &[u8]) -> Vec<((u32, u16), Vec<u8>)> {
     out
 }
 
+/// A monitor's make, model, name and description reach a zone blank or as the global's number;
+/// its size and modes pass unchanged.
+#[test]
+fn output_identity_blanked() {
+    let (mut s, mut c, mut sv) = make();
+    c.write_all(&get_registry(2)).unwrap();
+    sv.write_all(&global(2, 9, "wl_output", 4)).unwrap();
+    pump_all(&mut s).unwrap();
+    c.write_all(&MessageWriter::new(2, WL_REGISTRY_BIND).u32(9).string("wl_output").u32(4).u32(3).finish().unwrap()).unwrap();
+    pump_all(&mut s).unwrap();
+    let _ = read_all(&mut c);
+    let geometry = |make: &str, model: &str| {
+        MessageWriter::new(3, 0).i32(0).i32(0).i32(600).i32(340).i32(0).string(make).string(model).i32(0).finish().unwrap()
+    };
+    let mode = MessageWriter::new(3, 1).u32(3).i32(2560).i32(1440).i32(59951).finish().unwrap();
+    sv.write_all(&geometry("Dell Inc.", "DELL U2720Q")).unwrap();
+    sv.write_all(&MessageWriter::new(3, 4).string("DP-1").finish().unwrap()).unwrap(); // name
+    sv.write_all(&MessageWriter::new(3, 5).string("Dell Inc. DELL U2720Q 6JXXXXX (DP-1)").finish().unwrap()).unwrap();
+    sv.write_all(&mode).unwrap();
+    pump_all(&mut s).unwrap();
+    let got = read_all(&mut c);
+    let msgs = split_messages(&got);
+    let output_9 = MessageWriter::new(3, 4).string("output-9").finish().unwrap();
+    assert_eq!(msgs.len(), 4, "{msgs:?}");
+    assert_eq!(msgs[0], ((3, 0), geometry("", "")[HEADER_LEN..].to_vec()), "geometry keeps its numbers");
+    assert_eq!(msgs[1], ((3, 4), output_9[HEADER_LEN..].to_vec()));
+    assert_eq!(msgs[2], ((3, 5), output_9[HEADER_LEN..].to_vec()), "the description says no more");
+    assert_eq!(msgs[3], ((3, 1), mode[HEADER_LEN..].to_vec()));
+}
+
 /// Bounded, prefixed, still valid UTF-8, and the session survives it.
 #[test]
 fn long_multibyte_title_is_forwarded() {
