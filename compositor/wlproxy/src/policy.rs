@@ -69,6 +69,9 @@ pub const MAX_SHM_POOLS_PER_ZONE: usize = 128;
 pub const MAX_SHM_POOL_BYTES: usize = 64 << 20; // room for a 4K RGBA frame and stride padding
 pub const MAX_SHM_BYTES_PER_SESSION: usize = 128 << 20;
 pub const MAX_SHM_BYTES_PER_ZONE: usize = 256 << 20;
+/// A pool a surface may still show stays charged, so these bound what one session can hold.
+pub const MAX_SUBSURFACES_PER_SESSION: usize = 256;
+pub const MAX_HELD_PER_SURFACE: usize = 64;
 
 #[cfg(test)]
 mod tests;
