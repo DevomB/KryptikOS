@@ -103,11 +103,14 @@ for sh in sh bash dash; do
     rules="$(run rules "${ROOT}/compartments/zones")"
     grep -qF 'set local4 { type ipv4_addr; elements = { 10.19.0.5 } }' <<<"$rules" && grep -qF 'set local6 { type ipv6_addr; elements = { fd19::5 } }' <<<"$rules" \
         && green "the zones let through are in the ruleset from its first load" || red "the local sets" "$(grep 'set local' <<<"$rules" | tr '\n' '|')"
-    forward="$(sed -n '/chain forward {/,/^    }$/p' <<<"$rules" | grep -oE 'established,related accept|add @flows[46] \{ ip6? saddr ct count over [0-9]+ \} drop|ip6? saddr @local[46] accept|rt ip6? nexthop @gw[46] ip6? daddr != @gw[46] accept|reject with icmpx type admin-prohibited|oifname "kryptik0" drop' | sed 's/count over [0-9]*/count over N/' | tr '\n' '|')"
+    forward="$(sed -n '/chain forward {/,/^    }$/p' <<<"$rules" | grep -oE 'established,related accept|add @flows \{ ether saddr ct count over [0-9]+ \} drop|ip6? saddr @local[46] accept|rt ip6? nexthop @gw[46] ip6? daddr != @gw[46] accept|reject with icmpx type admin-prohibited|oifname "kryptik0" drop' | sed 's/count over [0-9]*/count over N/' | tr '\n' '|')"
     same "replies first, then each zone's share of the table, then the local zones, then what a gateway carries but the gateway itself, then the refusal" "$forward" \
-        'established,related accept|add @flows4 { ip saddr ct count over N } drop|add @flows6 { ip6 saddr ct count over N } drop|ip saddr @local4 accept|ip6 saddr @local6 accept|rt ip nexthop @gw4 ip daddr != @gw4 accept|rt ip6 nexthop @gw6 ip6 daddr != @gw6 accept|reject with icmpx type admin-prohibited|oifname "kryptik0" drop|'
-    cap="$(grep -oE 'ct count over [0-9]+' <<<"$rules" | head -1)"
-    [[ "${cap##* }" =~ ^[0-9]+$ && "${cap##* }" -ge 1024 ]] && green "each zone's share is a number, at least 1024: ${cap##* }" || red "the share is not a number of at least 1024" "${cap:-none}"
+        'established,related accept|add @flows { ether saddr ct count over N } drop|ip saddr @local4 accept|ip6 saddr @local6 accept|rt ip nexthop @gw4 ip daddr != @gw4 accept|rt ip6 nexthop @gw6 ip6 daddr != @gw6 accept|reject with icmpx type admin-prohibited|oifname "kryptik0" drop|'
+    first_in="$(sed -n '/chain input {/,/^    }$/p' <<<"$rules" | sed -n 3p | sed 's/count over [0-9]*/count over N/; s/^ *//')"
+    same "a zone's flows to the net zone itself count in the same share, ahead of every other input rule" "$first_in" \
+        'iifname "kryptik0" ct state new add @flows { ether saddr ct count over N } drop'
+    cap="$(grep -oE 'ct count over [0-9]+' <<<"$rules" | sort -u)"
+    [[ "$(grep -c . <<<"$cap")" -eq 1 && "${cap##* }" =~ ^[0-9]+$ && "${cap##* }" -ge 1024 ]] && green "one share, a number of at least 1024: ${cap##* }" || red "the share is not one number of at least 1024" "$(tr '\n' '|' <<<"$cap")"
     pairs4="$(grep 'set pin4 ' <<<"$rules" | grep -oE '10\.19\.0\.[0-9]+ \. 02:19:00:00:00:[0-9a-f]{2}' \
         | awk '{ split($1, a, "."); n++; if (sprintf("%02x", a[4]) == substr($3, 16)) ok++ } END { print n + 0, ok + 0 }')"
     pairs6="$(grep 'set pin6 ' <<<"$rules" | grep -oE 'fd19::[0-9a-f]+ \. 02:19:00:00:00:[0-9a-f]{2}' \

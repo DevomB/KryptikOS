@@ -81,7 +81,8 @@ PIN4="$(awk 'BEGIN { for (k = 2; k < 250; k++) printf "%s10.19.0.%d . 02:19:00:0
 PIN6="$(awk 'BEGIN { for (k = 2; k < 250; k++) printf "%sfd19::%x . 02:19:00:00:00:%02x", (k > 2 ? ", " : ""), k, k }')"
 
 # A routed zone may hold an eighth of the conntrack table every zone's flows
-# share, so no one zone fills it for the others.
+# share, so no one zone fills it for the others: counted by the MAC both its
+# addresses are pinned to, for flows through the net zone and to it.
 FLOWCAP="$(( $(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 131072) / 8 ))"
 [ "$FLOWCAP" -ge 1024 ] 2>/dev/null || FLOWCAP=1024
 
@@ -98,8 +99,7 @@ RULES="table inet kryptik {
     ${SET6}
     set pin4 { type ipv4_addr . ether_addr; elements = { ${PIN4} } }
     set pin6 { type ipv6_addr . ether_addr; elements = { ${PIN6} } }
-    set flows4 { type ipv4_addr; size 256; flags dynamic; }
-    set flows6 { type ipv6_addr; size 256; flags dynamic; }
+    set flows { type ether_addr; size 256; flags dynamic; }
     chain prerouting {
         type filter hook prerouting priority raw; policy accept;
         iifname \"${BR}\" ip saddr . ether saddr != @pin4 drop
@@ -110,8 +110,7 @@ RULES="table inet kryptik {
     chain forward {
         type filter hook forward priority filter; policy drop;
         ct state established,related accept
-        iifname \"${BR}\" ct state new add @flows4 { ip saddr ct count over ${FLOWCAP} } drop
-        iifname \"${BR}\" ct state new add @flows6 { ip6 saddr ct count over ${FLOWCAP} } drop
+        iifname \"${BR}\" ct state new add @flows { ether saddr ct count over ${FLOWCAP} } drop
         iifname \"${BR}\" oifname ${NICSET} ip saddr @local4 accept
         iifname \"${BR}\" oifname ${NICSET} ip6 saddr @local6 accept
         iifname \"${BR}\" oifname ${NICSET} rt ip nexthop @gw4 ip daddr != @gw4 accept
@@ -126,6 +125,7 @@ RULES="table inet kryptik {
     }
     chain input {
         type filter hook input priority filter; policy accept;
+        iifname \"${BR}\" ct state new add @flows { ether saddr ct count over ${FLOWCAP} } drop
         iifname ${NICSET} ct state new tcp dport 53 drop
         iifname ${NICSET} ct state new udp dport 53 drop
         iifname \"${BR}\" ip daddr != 10.19.0.1 drop

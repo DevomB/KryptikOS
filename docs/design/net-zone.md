@@ -107,9 +107,10 @@ query and the [update](update-channel.md) fetcher. Builds on
   ([below](#the-uplinks-own-networks)); bridge to bridge dropped;
   `10.19.0.0/24` and `fd19::/64` masqueraded out of every uplink; new DNS
   connections arriving on an uplink dropped. Each routed zone may hold an
-  eighth of the zone's conntrack table (nft's `ct count` on its address),
-  which every zone's flows fill together: past its share, a zone's new flows
-  are dropped and the others' still pass.
+  eighth of the zone's conntrack table, which every zone's flows fill
+  together: nft's `ct count` on the MAC both its addresses are pinned to,
+  for flows through the net zone and flows to it. Past its share, a zone's
+  new flows are dropped and the others' still pass.
 - **The resolver:** `dnsmasq` on 10.19.0.1, fd19::1 and 127.0.0.1,
   forwarding to the uplink lease's servers (QEMU's 10.0.2.3 when nothing else
   is known), restarted if it dies. It binds as the zone's root and then runs
