@@ -78,6 +78,9 @@ USAGE:
     kryptikd time committed DIR       once boot-success has committed a slot: its
                                       release (the signed manifest in DIR) is the
                                       floor if it is the newest
+    kryptikd check-release DIR        whether DIR's manifest and manifest.sig verify,
+                                      checked as nobody on copies: how kryptik-update
+                                      apply, which runs as root, has a release checked
 
     --rootfs DIR   base directory for zone data (default: /var/lib/kryptik/zones);
                    the zone sees its own directory as /home/NAME
@@ -234,6 +237,22 @@ fn main() -> ExitCode {
         "serve" => serve::cmd_serve(&zone_dir, &args),
         "wifi" => cmd_wifi(&zone_dir, &args),
         "time" => cmd_time(&args),
+        "check-release" => match args.as_slice() {
+            [_, dir] => match update::check_release(Path::new(dir)) {
+                Ok(said) => {
+                    print!("{said}");
+                    ExitCode::SUCCESS
+                }
+                Err(why) => {
+                    eprintln!("kryptikd: check-release: {why}");
+                    ExitCode::FAILURE
+                }
+            },
+            _ => {
+                eprintln!("usage: kryptikd check-release DIR");
+                ExitCode::from(2)
+            }
+        },
         "clipboard" => cmd_clipboard(&args),
         "transfer" => {
             eprintln!(

@@ -132,7 +132,9 @@ the role file accepts no release: a missing file is never read as
 payloads come from [the update channel](update-channel.md) or by hand.
 
 1. Verify everything before writing, from a root-only copy of the manifest
-   and signature: the signature; the role; a newer version unless
+   and signature: the signature, which `kryptikd check-release` checks as
+   `nobody` on copies of that copy, so root never runs `ssh-keygen` on what
+   a sender signed; the role; a newer version unless
    `--recovery` (still signed: an authorised downgrade); every file's hash and
    size, with nothing unlisted; and `root.json`'s root hash embedded in both
    kernels (`grep -a -F`). Refuse while the state is degraded, another update

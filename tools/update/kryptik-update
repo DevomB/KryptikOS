@@ -45,7 +45,7 @@ case "${1:-}" in
         [ "$(id -u)" != 0 ] || die "$1 does not run as root; kryptikd runs it as nobody"
         tools="ssh-keygen sha256sum cp awk sed sort head mktemp" ;;
     *)
-        tools="ssh-keygen sha256sum blkid dd cp mv sync flock mount umount cmp kryptik-efiboot awk sed sort head wc stat grep blockdev"
+        tools="kryptikd sha256sum blkid dd cp mv sync flock mount umount cmp kryptik-efiboot awk sed sort head wc stat grep blockdev"
         [ "$(id -u)" = 0 ] || die "must run as root"
         mkdir -p "$B" /run/kryptik /var/log/kryptik ;;
 esac
@@ -210,7 +210,14 @@ verify_manifest() {   # verify_manifest DIR RECOVERY -> sets dir m sig VERSION c
     m="$SNAP/manifest"; sig="$SNAP/manifest.sig"
     [ "$(head -1 "$m")" = "$MAGIC" ] || die "manifest is not a $MAGIC"
 
-    verify_signed "$m" "$sig" "$NAMESPACE" manifest
+    # Root never runs ssh-keygen on what a sender signed: kryptikd checks this
+    # pair as nobody, on copies, as it checks what the net zone sends.
+    if [ "$(id -u)" = 0 ]; then
+        why="$({ kryptikd check-release "$SNAP" >/dev/null; } 2>&1)" || die "${why##*FAILED: }"
+        say "signature verifies, checked as nobody"
+    else
+        verify_signed "$m" "$sig" "$NAMESPACE" manifest
+    fi
 
     # Headers, from the signed bytes.
     role="$(hdr "$m" role)"; VERSION="$(hdr "$m" version)"; count="$(hdr "$m" files)"
