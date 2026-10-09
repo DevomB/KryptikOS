@@ -16,8 +16,10 @@ slot a, slot b, the USB medium and the ISO (`sbsign` in
 `build/stages/06-iso.sh:311` and `:447`), all with the one Secure Boot key.
 A production tag's run signs a 0.0.0 build of the same commit too, the
 update suite's starting point (`.github/workflows/distro.yml:337`, `:484`).
-The only version comparison is `kryptik-update`'s, made by the running
-system before it writes (`tools/update/kryptik-update:234`). `rollback` makes
+The only version comparison that guards an install is `kryptik-update`'s,
+made by the running system before it writes
+(`tools/update/kryptik-update:229-235`); kryptikd compares versions only to
+decide what to fetch. `rollback` makes
 none, and `kryptik-recover --restore-slot` commits "at the medium's (maybe
 older) version" (`tools/update/kryptik-recover:11`), from the medium's
 passwordless root shell.
@@ -111,10 +113,11 @@ the ESP, a medium, or anywhere else.
   efitools' `sign-efi-sig-list`, or a short script on OpenSSL. On the image,
   `kryptik-efiboot` would learn the append-write, a few dozen lines.
 - **Firmware space.** Each digest takes 48 bytes in `dbx` (a 16-byte owner
-  GUID and the hash), plus 28 bytes of list header per append. That is 192
-  bytes for a release's four kernels, and 384 for a production tag, which
-  signs 0.0.0 too, unless that build stops being signed with the production
-  key. The space comes out of the same variable store the firmware keeps
+  GUID and the hash), and each append adds a 28-byte list header (UEFI 2.11,
+  §32.4.1.1). One append stores 220 bytes for a release's four kernels, and
+  412 for a production tag's eight, since it signs 0.0.0 too, unless that
+  build stops being signed with the production key. An append skips digests
+  already there (§8.2.6). The space comes out of the same variable store the firmware keeps
   everything in, usually some tens of KiB, which Microsoft's own `dbx`
   updates also draw on. Some firmware mishandles large writes there, and no
   virtual machine shows which.
