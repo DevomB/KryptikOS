@@ -163,7 +163,8 @@ PACKAGES=(
     "gettext"     "native_build gettext-${V_GETTEXT}.tar.xz gettext-${V_GETTEXT} --disable-shared"
     "bison"       "native_build bison-${V_BISON}.tar.xz bison-${V_BISON} --docdir=/usr/share/doc/bison-${V_BISON}"
     "perl"        "s_perl"
-    # After perl, which generates part of its source; before python, whose _crypt needs crypt().
+    # After perl, which generates part of its source; before python, whose
+    # _crypt module needs crypt(), gone from glibc since 2.39.
     "libxcrypt"   "native_build libxcrypt-${V_LIBXCRYPT}.tar.xz libxcrypt-${V_LIBXCRYPT} --enable-hashes=strong,glibc --enable-obsolete-api=no --disable-static --disable-failure-tokens"
     # Before python, whose install (ensurepip) unzips a bundled wheel.
     "zlib"        "s_zlib"
@@ -235,7 +236,8 @@ PACKAGES=(
     "hardened-malloc" "s_hardened_malloc"
     "s6"          "s_s6_stack"
 
-    # --- encrypted volumes: cryptsetup with libdevmapper (LVM2, libaio), json-c and popt.
+    # --- encrypted volumes: cryptsetup, with libdevmapper (LVM2, which needs
+    #     libaio), json-c (built with cmake) and popt.
     "cmake"       "s_cmake"
     "json-c"      "s_json_c"
     "popt"        "native_build popt-${V_POPT}.tar.gz popt-${V_POPT} --disable-static"

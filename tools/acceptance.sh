@@ -236,7 +236,8 @@ item() {
     record "$suite" "$name" "$mand" "$kind" "$res" "$checks" "$rc" "$((SECONDS - t0))" "$log" "$note"
 }
 
-# The item's row from each part that ran it; an item no part ran is INCOMPLETE.
+# The row of every part that ran the item. A part records what it left to the
+# others as "not run (--only ...)"; an item no part ran is INCOMPLETE.
 merged() {
     local suite="$1" name="$2" mand="$3" kind="$4" f n=0 s i res checks rc secs log note
     for f in "${PARTS[@]}"; do
