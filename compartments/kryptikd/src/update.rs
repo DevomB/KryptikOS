@@ -151,6 +151,11 @@ pub fn staleness(now: i64, issued: i64) -> (i64, bool) {
     (age / 86400, age > STALE_AFTER_SECS)
 }
 
+/// Whole days the clock reads before `then`, once that is more than the day a statement may lead it.
+fn behind(now: i64, then: i64) -> Option<i64> {
+    (then > now.saturating_add(MAX_AHEAD_SECS)).then(|| (then - now) / 86400)
+}
+
 /// One file of a release, from the verified manifest.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
@@ -641,19 +646,14 @@ pub fn put(dir: &Path, checks: &Checks, now: i64, name: &str, offset: u64, bytes
 pub fn status(dir: &Path, now: i64, running: &str, since: Option<i64>) -> String {
     let mut out = format!("running    {running}\n");
     match stored_pointer(dir) {
-        None => {
-            out.push_str("newest     unknown: no statement of what is current has been accepted\n");
-            if let Some(line) = stale_line(dir, now, since) {
-                out.push_str(&format!("           {line}\n"));
-            }
-        }
-        Some(p) => {
-            let (days, stale) = staleness(now, p.issued);
-            out.push_str(&format!("newest     {} (stated {days} day(s) ago)\n", p.version));
-            if stale {
-                out.push_str(&format!("           {}\n", overdue(days)));
-            }
-        }
+        None => out.push_str("newest     unknown: no statement of what is current has been accepted\n"),
+        Some(p) => match behind(now, p.issued) {
+            Some(days) => out.push_str(&format!("newest     {} (dated {days} day(s) after this machine's clock)\n", p.version)),
+            None => out.push_str(&format!("newest     {} (stated {} day(s) ago)\n", p.version, staleness(now, p.issued).0)),
+        },
+    }
+    if let Some(line) = stale_line(dir, now, since) {
+        out.push_str(&format!("           {line}\n"));
     }
     out.push_str(if auto(dir) { "fetching   automatically, as each release is announced\n" } else { "fetching   only when asked\n" });
     match wanted(dir) {
@@ -684,14 +684,29 @@ fn never_heard(days: i64) -> String {
     format!("no statement from the release key since this machine was installed, {days} days ago: either nothing has been published, or something is keeping it from this machine")
 }
 
+/// A clock that reads more than a day before `what` refuses every newer statement as dated
+/// ahead of it, so none would ever go stale.
+fn clock_behind(days: i64, what: &str) -> String {
+    let lag = if days == 1 { "1 day".to_string() } else { format!("{days} days") };
+    format!("no statement from the release key can be accepted while this machine's clock reads {lag} before {what}: set the clock")
+}
+
 /// `overdue` for the newest accepted statement once it is stale. With none accepted, `never_heard`
-/// once `since` is as old: the install, where the image names a channel.
+/// once `since` is as old: the install, where the image names a channel. `clock_behind` while the
+/// clock reads more than a day before either.
 pub fn stale_line(dir: &Path, now: i64, since: Option<i64>) -> Option<String> {
     if let Some(p) = stored_pointer(dir) {
+        if let Some(days) = behind(now, p.issued) {
+            return Some(clock_behind(days, "the newest one it accepted"));
+        }
         let (days, stale) = staleness(now, p.issued);
         return stale.then(|| overdue(days));
     }
-    let (days, stale) = staleness(now, since?);
+    let since = since?;
+    if let Some(days) = behind(now, since) {
+        return Some(clock_behind(days, "its install"));
+    }
+    let (days, stale) = staleness(now, since);
     stale.then(|| never_heard(days))
 }
 

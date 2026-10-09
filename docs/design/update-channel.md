@@ -76,8 +76,14 @@ latest.sig    an OpenSSH signature over those bytes, namespace kryptik-latest
   login prompt, from `/run/issue.d/kryptik-update.issue`, which the launch
   service writes as it starts and checks hourly. A machine whose image names a
   channel and that has accepted none reports it 30 days after its install,
-  the time the installer wrote `/var/lib/kryptik/install.json`. That needs a
-  clock the net zone cannot set.
+  the time the installer wrote `/var/lib/kryptik/install.json`. Both count on
+  the clock. One that reads more than a day before the newest statement
+  accepted, or before the install, refuses every newer statement as dated
+  ahead of it, so the report would never come; that is said in the same
+  places instead: "no statement from the release key can be accepted while
+  this machine's clock reads N days before ...: set the clock". A clock gets
+  there from a dead RTC, which starts at the floor, or from a step back the
+  user agreed to, which a net zone can ask for ([time](time.md)).
 
 **Which key signs it.** Re-signing on a schedule needs a key a timer can
 reach, and the release key signs only in a release run its maintainer
@@ -289,7 +295,11 @@ channel's directory.
   user; with automatic fetching on, the release arrives whole without a
   `fetch`, is applied, trial-booted and committed, and the setting outlasts
   the update. A production image fetches nothing over plain http, asked or
-  automatically.
+  automatically. Before the statement arrives, the clock moved 31 days on
+  puts the install's age above the login prompt; after, 31 days on puts the
+  statement's age in `status` and above the login prompt, and 3 days back
+  puts the clock's lag behind it in both. Each goes when the clock is put
+  back.
 - `tools/tests/release-channel.sh`: `publish` and `reissue` with throwaway
   keys. A wrong key, an older release, a tampered payload, a replaced
   manifest, a replayed or far-ahead date, and a second run at once are each
