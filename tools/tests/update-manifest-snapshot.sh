@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Test kryptik-update's verify_payload with the real ssh-keygen: the manifest is
 # read once, before the signature check, so files swapped in after the check
-# cannot change the version or hashes. Also tests check-manifest,
-# check-pointer and check-release. Needs ssh-keygen with -Y (OpenSSH 8.2+).
+# cannot change the version or hashes, and a kernel made for another root is
+# refused. Also tests check-manifest, check-pointer and check-release. Needs
+# ssh-keygen with -Y (OpenSSH 8.2+).
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TOOL="$ROOT/tools/update/kryptik-update"
@@ -20,13 +21,13 @@ trap 'rm -rf "$T"' EXIT
 cd "$T" || exit 1
 
 # The signed payload (version 2) and an unsigned replacement (version 3).
-mkpayload() {   # mkpayload DIR VERSION
+mkpayload() {   # mkpayload DIR VERSION [ROOT-HASH-IN-KERNEL-B]
     local d="$1" v="$2" hash
     mkdir -p "$d"
     hash="$(printf '%*s' 64 '' | tr ' ' "$v")"
     printf 'harmless fixture root %s\n' "$v" > "$d/kryptik-root.img"
     printf '%s\n' "$hash" > "$d/kryptik-a.efi"
-    printf '%s\n' "$hash" > "$d/kryptik-b.efi"
+    printf '%s\n' "${3:-$hash}" > "$d/kryptik-b.efi"
     # The layout stage 06 writes and the tool reads: one key per line, two spaces in.
     {
         echo "{"
@@ -160,6 +161,14 @@ check() {   # check FUNCTION ARGS... -> the tool's output, REFUSED: on a refusal
 staged() {   # staged NAME -> a directory holding only the signed manifest and its signature
     rm -rf "${T:?}/$1"; mkdir -p "$T/$1"; cp "$T/signed/manifest" "$T/signed/manifest.sig" "$T/$1/"
 }
+
+# Signed, every file as listed, and kryptik-b.efi made for another root.
+mkpayload mixed 2 "$(printf '%*s' 64 '' | tr ' ' 7)"
+ssh-keygen -Y sign -f key -n kryptik-release mixed/manifest >/dev/null 2>&1
+out="$(check verify_payload "$T/mixed" 0)"
+[[ "$out" == *"match the manifest"* && "$out" == *"REFUSED: kryptik-b.efi does not embed the root hash"*"not one release"* ]] \
+    && ok "a signed release whose kernel embeds another root hash is refused, though every file matches the manifest" \
+    || bad "a kernel made for another root: $(tail -2 <<<"$out" | tr '\n' ' ')"
 
 staged stage
 out="$(check cmd_check_manifest "$T/stage")"
