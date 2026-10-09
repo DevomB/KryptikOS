@@ -346,8 +346,9 @@ fn only_plain_names_pass_on() {
     for ok in ["eth0", "wlan0", "enp0s31f6", "wlp2s0", "enx001122334455"] {
         assert!(plain_name(ok.as_bytes()), "{ok}");
     }
-    // What a net zone could leave behind: an option, a quote that ends nft's string, an escape.
-    for bad in ["-k", "x\"y", "x\",\"kryptik0", "e\u{1b}th0", "Eth0", "eth0.1", "0eth", "", "abcdefghijklmnop"] {
+    // What a net zone could leave behind: an option, a quote that ends nft's string, an escape,
+    // the bridge's own name.
+    for bad in ["-k", "x\"y", "x\",\"kryptik0", "e\u{1b}th0", "kryptik0", "Eth0", "eth0.1", "0eth", "", "abcdefghijklmnop"] {
         assert!(!plain_name(bad.as_bytes()), "{bad:?}");
     }
     assert!(!plain_name(b"\xff"));

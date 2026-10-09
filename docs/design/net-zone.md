@@ -294,8 +294,9 @@ as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
   net zone start, which takes it again. That name was the net zone's to
   choose, anything but `/`, `:` and whitespace, so the start first renames
   one that is not plain (a lower-case letter, then lower-case letters and
-  digits) `nic<N>`: no option, quote or escape a past net zone chose reaches
-  the next one's script, nft set or dhcpcd.
+  digits, and not `kryptik0`, the bridge it makes there) `nic<N>`: no option,
+  quote or escape a past net zone chose reaches the next one's script, nft set
+  or dhcpcd, and no name of its own stops it.
 
 ## What this guarantees
 

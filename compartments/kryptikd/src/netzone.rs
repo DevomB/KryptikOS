@@ -246,9 +246,11 @@ pub fn physical_interfaces() -> io::Result<Vec<String>> {
 }
 
 /// A name as the kernel and eudev give one: a lower-case letter, then lower-case letters and
-/// digits, so no option, quote, glob or control byte.
+/// digits, so no option, quote, glob or control byte. Not `BRIDGE`, which the start makes in
+/// the zone after the NICs move: a NIC by that name would fail it.
 fn plain_name(name: &[u8]) -> bool {
     name.len() < 16
+        && name != BRIDGE.as_bytes()
         && name.first().is_some_and(|b| b.is_ascii_lowercase())
         && name.iter().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
 }
