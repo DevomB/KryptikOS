@@ -581,8 +581,8 @@ fn populate_etc(root: &str, zone: &str, home: &str, resolver: Resolver, service:
     Ok(())
 }
 
-/// Hide `PROC_MASKED` and `PROC_EMPTIED`, and give the zone its own boot_id: the host's is the
-/// same in every zone, so it would link them.
+/// Hide `PROC_MASKED` and `PROC_EMPTIED`, give the zone its own boot_id (the host's is the same
+/// in every zone, so it would link them), and a copy of cpuinfo that holds still.
 fn mask_proc(root: &str, proc_dir: &str) -> Result<(), RootfsError> {
     for f in PROC_MASKED {
         let target = format!("{proc_dir}/{f}");
@@ -603,6 +603,16 @@ fn mask_proc(root: &str, proc_dir: &str) -> Result<(), RootfsError> {
         let setup = |e: io::Error| RootfsError::Setup(format!("{own}: {e}"));
         fs::write(&own, fs::read(format!("{proc_dir}/sys/kernel/random/uuid")).map_err(setup)?).map_err(setup)?;
         bind_over_ro(&own, &boot_id)?;
+        let _ = fs::remove_file(&own);
+    }
+    // cpuinfo's "cpu MHz" is each CPU's speed over its last tick, so whether it just ran: a copy
+    // taken as the zone starts holds still.
+    let cpuinfo = format!("{proc_dir}/cpuinfo");
+    if Path::new(&cpuinfo).exists() {
+        let own = format!("{root}/.cpuinfo");
+        let setup = |e: io::Error| RootfsError::Setup(format!("{own}: {e}"));
+        fs::write(&own, fs::read(&cpuinfo).map_err(setup)?).map_err(setup)?;
+        bind_over_ro(&own, &cpuinfo)?;
         let _ = fs::remove_file(&own);
     }
     Ok(())
