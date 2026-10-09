@@ -307,7 +307,7 @@ head_ "Consistency — test matches kryptikd's namespace set"
 ISOLATE_RS="$(dirname "${BASH_SOURCE[0]}")/../kryptikd/src/isolate.rs"
 if [[ -f "$ISOLATE_RS" ]]; then
     missing=0
-    for ns in NEWUSER NEWNS NEWPID NEWIPC NEWUTS NEWCGROUP NEWNET; do
+    for ns in NEWUSER NEWNS NEWPID NEWIPC NEWUTS NEWCGROUP NEWTIME NEWNET; do
         grep -q "CLONE_${ns}" "$ISOLATE_RS" || { echo "    kryptikd is missing CLONE_${ns}"; missing=1; }
     done
     # The proc and sysfs remounts matter as much; rootfs.rs::pivot_into makes them.

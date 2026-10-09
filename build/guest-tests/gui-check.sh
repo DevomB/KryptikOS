@@ -578,6 +578,36 @@ if since_mark cursor untrusted | grep -q 'the cursor image entered an output'; t
 else
     pass "zone-cursor-not-shown" "six seconds after the zone asked, its cursor image has entered no output"
 fi
+# --- a zone's window animates on a clock of its own ----------------------------------------
+# A zone's monotonic clock starts at a random point (isolate::set_time_origin), so the
+# compositor's frame times, read from zone 0's clock, share no base with the zone's.
+# wlprobe animate commits on every frame callback and says how both clocks ran; in zone 0,
+# where they are one clock, it shows the measure is sound.
+anim_fields() {   # anim_fields < OUTPUT -> "FRAMES COMP OWN GAP", from wlprobe animate's line
+    grep -o 'animated: .*' | tail -1 | sed -n 's/^animated: \([0-9]*\) frames; .* ran \([0-9]*\) ms and .* clock \(-\{0,1\}[0-9]*\) ms; .* is \(-\{0,1\}[0-9]*\) ms from.*/\1 \2 \3 \4/p'
+}
+# ran_alike FRAMES COMP OWN: 20 frames or more, and the two clocks ran within a fifth and 100 ms
+ran_alike() { (( ${1:-0} >= 20 && ${2:-0} - ${3:-0} <= ${3:-0} / 5 + 100 && ${3:-0} - ${2:-0} <= ${3:-0} / 5 + 100 )); }
+abs() { local v="${1:-0}"; echo "${v#-}"; }
+stop_zone untrusted
+as_user "/usr/libexec/kryptik/wlprobe animate 5" > "$LOG/animate-zone0.out" 2>&1
+read -r f0 c0 o0 g0 < <(anim_fields < "$LOG/animate-zone0.out")
+if ran_alike "$f0" "$c0" "$o0" && (( $(abs "$g0") < 2000 )); then
+    pass "zone0-frame-clock" "zone 0: ${f0} frames; the compositor's frame times ran ${c0} ms and its clock ${o0} ms, ${g0} ms apart: one clock"
+else
+    fail "zone0-frame-clock" "the compositor's frame times are not zone 0's clock, so a zone's proves nothing: $(tr '\n' ' ' < "$LOG/animate-zone0.out" | tail -c 300)"
+fi
+mark animate untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe animate 5" > "$LOG/launch-animate.out" 2>&1
+anim_said() { since_mark animate untrusted | grep -q 'animated: '; }
+wait_for 30 anim_said
+read -r f1 c1 o1 g1 < <(since_mark animate untrusted | anim_fields)
+if ran_alike "$f1" "$c1" "$o1" && (( $(abs "$g1") >= 60000 )); then
+    pass "zone-window-animates" "untrusted: ${f1} frames; the compositor's frame times ran ${c1} ms and the zone's clock ${o1} ms; the compositor's clock is ${g1} ms from the zone's"
+else
+    fail "zone-window-animates" "$(since_mark animate untrusted | tail -3 | tr '\n' ' '); $(zone_why untrusted)"
+fi
+stop_zone untrusted
 # --- a second monitor, plugged in and pulled out -------------------------------------------
 # A zone's window on the new monitor is framed and named as on the first, the
 # chrome's record follows the monitor in use, and pulling the monitor out

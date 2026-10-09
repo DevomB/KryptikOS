@@ -78,3 +78,26 @@ fn core_namespaces_always() {
         }
     }
 }
+
+#[test]
+fn time_namespace_always() {
+    for m in ["none", "routed", "nic"] {
+        assert_ne!(namespace_flags(&zone(m)) & CLONE_NEWTIME, 0, "zone mode {m} would read the machine's boot clock");
+    }
+    assert!(namespace_names(ZONE_NAMESPACES).contains(&"time"));
+}
+
+#[test]
+fn time_offsets_reach_the_origin() {
+    let hour = 3600 * 1_000_000_000u64;
+    // A clock short of the origin moves forward.
+    assert_eq!(
+        time_offsets(hour, 10_500_000_000, 10_500_000_000),
+        "monotonic 3589 500000000\nboottime 3589 500000000\n"
+    );
+    // One past it moves back: the seconds go negative and the nanoseconds stay below a second.
+    assert_eq!(
+        time_offsets(hour, 7_200_250_000_000, 7_300_000_000_000),
+        "monotonic -3601 750000000\nboottime -3700 0\n"
+    );
+}

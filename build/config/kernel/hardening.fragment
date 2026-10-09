@@ -50,6 +50,8 @@ CONFIG_PID_NS=y
 CONFIG_NET_NS=y
 CONFIG_IPC_NS=y
 CONFIG_UTS_NS=y
+# Each zone's own monotonic and boot clocks (isolate::set_time_origin); on by default.
+CONFIG_TIME_NS=y
 CONFIG_CGROUPS=y
 # (No CGROUP_BPF: it needs bpf(), which is off; see BPF below.)
 CONFIG_MEMCG=y

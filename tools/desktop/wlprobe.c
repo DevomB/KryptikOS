@@ -29,6 +29,11 @@
  *                             Says when the window, and when the cursor image,
  *                             enters an output: the second only if the
  *                             compositor took the image
+ *   wlprobe animate SECONDS   as oversize 0, and once drawn commit again on
+ *                             every frame callback for SECONDS; then say how
+ *                             many frames came, how far the compositor's frame
+ *                             times and this process's monotonic clock each
+ *                             ran, and how far apart the two clocks are
  *
  * Exit: 0 listed, bind accepted or window held; 3 refused (wl_display.error,
  * or closed); 1 any other failure. The socket is $WAYLAND_DISPLAY, absolute
@@ -128,6 +133,13 @@ static int late, kb_left;                    /* fullscreen late: ask once the ke
 static int child, cconf_w, cconf_h;
 static uint32_t csurface, cxdg, ctoplevel;
 static uint32_t next_id = TOPLEVEL + 1;
+/* animate: the window's last buffer, its frame callback's id (reused once the
+ * server frees it: 1 asked, 2 done, 0 freed), and the first and last frame's
+ * times by the compositor's clock and by ours. */
+static int animate, frames, frame_wait, last_w, last_h;
+static uint32_t last_buffer, frame_cb, comp_first, comp_last;
+static int64_t own_first, own_last;
+static time_t anim_end;
 
 /* A w x h buffer in magenta, which is no zone's colour, attached and
  * committed on a surface. A failure closes the probe. */
@@ -162,7 +174,37 @@ static int blit(uint32_t surface, int w, int h)
 	if (send_msg(surface, 1, b, 12)) { draw_failed = closed = 1; return -1; } /* wl_surface.attach */
 	put32(b, 0); put32(b + 4, 0); put32(b + 8, (uint32_t)w); put32(b + 12, (uint32_t)h);
 	if (send_msg(surface, 2, b, 16) || send_msg(surface, 6, b, 0)) { draw_failed = closed = 1; return -1; }
+	if (surface == SURFACE) { last_buffer = buffer; last_w = w; last_h = h; }
 	return 0;
+}
+
+/* The window's buffer again, damaged whole, with a frame callback: a client
+ * that animates commits once per callback. */
+static void next_frame(void)
+{
+	unsigned char b[16];
+	if (!frame_cb) frame_cb = next_id++;
+	put32(b, frame_cb);
+	send_msg(SURFACE, 3, b, 4);                /* wl_surface.frame */
+	put32(b, last_buffer); put32(b + 4, 0); put32(b + 8, 0);
+	send_msg(SURFACE, 1, b, 12);               /* wl_surface.attach */
+	put32(b, 0); put32(b + 4, 0); put32(b + 8, (uint32_t)last_w); put32(b + 12, (uint32_t)last_h);
+	send_msg(SURFACE, 2, b, 16);               /* wl_surface.damage */
+	send_msg(SURFACE, 6, b, 0);                /* wl_surface.commit */
+	frame_wait = 1;
+}
+
+/* A frame was shown at T ms by the compositor's clock, cut to 32 bits as the
+ * protocol carries it; ours is read as the event arrives. */
+static void frame_done(uint32_t t)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	int64_t own = (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+	if (!frames) { comp_first = t; own_first = own; }
+	comp_last = t; own_last = own;
+	frames++;
+	frame_wait = 2;
 }
 
 /* The window's buffer: `extra` px wider and taller than the last configure
@@ -333,6 +375,14 @@ static int handle_one(void)
 		printf("keyboard %s %s\n", opcode == 1 ? "entered" : "left",
 			s == SURFACE ? "the window" : (csurface && s == csurface) ? "the child" : "another surface");
 		fflush(stdout);
+	} else if (animate && frame_cb && object == frame_cb && opcode == 0) {
+		frame_done(get32(body));                /* wl_callback.done(time) */
+	} else if (animate && object == 1 && opcode == 1) {
+		/* wl_display.delete_id: the callback's id is free for the next frame */
+		if (get32(body) == frame_cb && frame_wait == 2) {
+			frame_wait = 0;
+			if (time(NULL) < anim_end) next_frame();
+		}
 	} else if (!oversize) {
 		printf("event object=%u opcode=%u size=%u\n", object, opcode, size);
 	}
@@ -408,8 +458,12 @@ static int hold_oversize(int more, int seconds, const char *title)
 	send_msg(seat_id, 1, b, 4);                /* wl_seat.get_keyboard */
 	send_msg(SURFACE, 6, b, 0);                /* wl_surface.commit: ask for a configure */
 	time_t end = time(NULL) + seconds;
+	anim_end = end;
 	while (time(NULL) < end && !closed) {
 		if (drain(500) < 0) { puts(errored ? "refused" : "connection closed"); return 3; }
+		/* Then each callback's freed id asks for the next frame, until anim_end. */
+		if (animate && drawn && !frame_cb)
+			next_frame();
 		if (askfs == 1 && drawn && (!late || kb_left)) {
 			put32(b, 0);                           /* no output: the compositor's choice */
 			send_msg(TOPLEVEL, 11, b, 4);          /* xdg_toplevel.set_fullscreen */
@@ -427,14 +481,15 @@ int main(int argc, char **argv)
 {
 	if (argc < 2 || (strcmp(argv[1], "list") && strcmp(argv[1], "bind") && strcmp(argv[1], "oversize")
 	                 && strcmp(argv[1], "fullscreen") && strcmp(argv[1], "child") && strcmp(argv[1], "charge")
-	                 && strcmp(argv[1], "cursor"))
+	                 && strcmp(argv[1], "cursor") && strcmp(argv[1], "animate"))
 	    || (!strcmp(argv[1], "bind") && argc < 3) || (!strcmp(argv[1], "oversize") && argc < 4)
 	    || (!strcmp(argv[1], "oversize") && argc > 4 && strlen(argv[4]) > 255)
 	    || (!strcmp(argv[1], "fullscreen") && (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "late"))))
 	    || (!strcmp(argv[1], "child") && (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "late"))))
 	    || (!strcmp(argv[1], "charge") && argc != 2)
-	    || (!strcmp(argv[1], "cursor") && argc != 3)) {
-		fprintf(stderr, "usage: wlprobe list | bind INTERFACE | oversize EXTRA SECONDS [TITLE] | fullscreen SECONDS [late] | child SECONDS [late] | charge | cursor SECONDS\n");
+	    || (!strcmp(argv[1], "cursor") && argc != 3)
+	    || (!strcmp(argv[1], "animate") && argc != 3)) {
+		fprintf(stderr, "usage: wlprobe list | bind INTERFACE | oversize EXTRA SECONDS [TITLE] | fullscreen SECONDS [late] | child SECONDS [late] | charge | cursor SECONDS | animate SECONDS\n");
 		return 2;
 	}
 	const char *disp = getenv("WAYLAND_DISPLAY");
@@ -466,6 +521,16 @@ int main(int argc, char **argv)
 	if (!strcmp(argv[1], "child")) { child = argc == 4 ? 2 : 1; return hold_oversize(0, atoi(argv[2]), "child-parent"); }
 	if (!strcmp(argv[1], "charge")) { charge = 1; return hold_oversize(0, 10, "shm-charge"); }
 	if (!strcmp(argv[1], "cursor")) { cursor = 1; return hold_oversize(0, atoi(argv[2]), "cursor"); }
+	if (!strcmp(argv[1], "animate")) {
+		animate = 1;
+		int held = hold_oversize(0, atoi(argv[2]), "animate");
+		/* Ours cut to 32 bits like the compositor's: their difference, signed, is the gap. */
+		printf("animated: %d frames; the compositor's frame times ran %u ms and this process's "
+		       "monotonic clock %lld ms; the compositor's clock is %d ms from this process's\n",
+		       frames, comp_last - comp_first, (long long)(own_last - own_first),
+		       (int32_t)(comp_last - (uint32_t)own_last));
+		return held ? held : frames ? 0 : 1;
+	}
 
 	/* A hidden global's name is unknown to a filtered client: guess 1, refused either way. */
 	const char *want = argv[2];
