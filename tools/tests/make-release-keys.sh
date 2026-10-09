@@ -16,6 +16,7 @@ case "$1" in
         case "$2" in
             */environments/release) printf '%s\n' "${GH_RULES-branch_policy,required_reviewers}" ;;
             */environments/release-tests) echo release-tests ;;
+            */environments/github-pages) printf '%s\n' "${GH_CUSTOM-true}" ;;
             */environments/github-pages/deployment-branch-policies) printf '%s\n' "${GH_PAGES-branch:main}" ;;
         esac ;;
     secret)
@@ -80,6 +81,11 @@ for pages in "" "branch:main,branch:dev" "tag:v*"; do
         && ok "a github-pages environment deploying from '${pages:-any branch}' gets no secret" \
         || { bad "github-pages deploying from '${pages}' (exit ${rc})"; cat "$T/out"; }
 done
+# A list left behind when the environment went over to protected branches no longer holds it.
+fresh; GH_CUSTOM=false mk "$PP" "$PP"; rc=$?
+[[ "$rc" -ne 0 && -z "$(ls -A "$T/gh")" ]] && grep -q "not main alone" "$T/out" \
+    && ok "a github-pages environment on protected branches gets no secret, whatever list it kept" \
+    || { bad "github-pages on protected branches (exit ${rc})"; cat "$T/out"; }
 
 fresh; mk "$PP" "another one entirely"; rc=$?
 [[ "$rc" -ne 0 && ! -e "$T/backup/kryptik-keys.tar.gz.enc" && -z "$(ls -A "$T/gh")" ]] \

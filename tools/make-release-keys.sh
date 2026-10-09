@@ -32,7 +32,10 @@ rules="$(gh api "repos/${repo}/environments/release" --jq '[.protection_rules[].
     || die "the release environment's rules are '${rules:-none}', not a required reviewer and a tag policy (docs/release-keys.md)"
 gh api "repos/${repo}/environments/release-tests" --jq '.name' > /dev/null 2>&1 || die "no release-tests environment (docs/release-keys.md)"
 # The statement key signs daily with no one to approve it: its environment's one rule is main.
+# The list counts only while the environment keeps to its own list, not to protected branches.
+custom="$(gh api "repos/${repo}/environments/github-pages" --jq '.deployment_branch_policy.custom_branch_policies' 2>/dev/null || true)"
 pages="$(gh api "repos/${repo}/environments/github-pages/deployment-branch-policies" --jq '[.branch_policies[] | (.type // "branch") + ":" + .name] | join(",")' 2>/dev/null || true)"
+[[ "$custom" == true ]] || pages=""
 [[ "$pages" == "branch:main" ]] \
     || die "the github-pages environment deploys from '${pages:-any branch}', not main alone (docs/release-keys.md)"
 
