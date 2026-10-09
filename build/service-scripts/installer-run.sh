@@ -47,6 +47,10 @@ if [ -n "$rdisk" ]; then
     rrc=$?
     sed 's/^/KRYPTIK_RECOVER: /' "$logr"
     echo "KRYPTIK_RECOVER: rc=${rrc}"
+    # Then the disk as --status shows it, which a user reads next.
+    case "$rmode" in
+        restore|commit) /usr/sbin/kryptik-recover --disk "$rdisk" --status 2>&1 | sed 's/^/KRYPTIK_RECOVER: status: /' ;;
+    esac
     echo "KRYPTIK_RECOVER: END"
 fi
 

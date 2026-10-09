@@ -186,6 +186,9 @@ fn release_is_staged_in_order() {
     assert!(want(&d, Some(CH), "production", "1.0.2").unwrap_err().contains("no statement"));
     latest(&d, &yes(), T0, "production", "1.0.2", p.as_bytes(), b"sig").unwrap();
     assert_eq!(poll(&d, CH, "production", "1.0.2", T0), "idle", "fetching began before the person asked");
+    // Status gives the statement's age in whole days, and says when it is overdue.
+    assert!(status(&d, T0 + 2 * 86400, "1.0.2").contains("newest     1.0.3 (stated 2 day(s) ago)\n"));
+    assert!(status(&d, T0 + 31 * 86400, "1.0.2").contains("no statement from the release key for 31 days"));
     assert!(put(&d, &yes(), T0, "manifest", 0, b"m").unwrap_err().contains("no release has been asked for"));
     assert_eq!(want(&d, Some(CH), "production", "1.0.2").unwrap(), "1.0.3");
     assert!(want(&d, Some(CH), "production", "1.0.3").unwrap_err().contains("newest release known"));

@@ -532,8 +532,9 @@ jobs:
     name: Acceptance (${{ matrix.suites }})
     needs: [system, sign]
     if: ${{ !cancelled() && needs.system.result == 'success' && (needs.sign.result == 'success' || needs.sign.result == 'skipped') }}
-    # A release's control-disk key, which no artifact may carry; release-tests takes only release tags.
-    environment: ${{ github.ref_type == 'tag' && !startsWith(github.ref_name, 'v0.') && 'release-tests' || '' }}
+    # A release's control-disk key, which no artifact may carry; release-tests takes only release tags. The part
+    # that runs the build's own programs as root stays out: its runner would hold the key in a step's environment.
+    environment: ${{ github.ref_type == 'tag' && !startsWith(github.ref_name, 'v0.') && !contains(matrix.suites, 'build') && 'release-tests' || '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     strategy:

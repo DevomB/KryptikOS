@@ -313,10 +313,10 @@ committed boot file. An unhealthy trial reboots into the previous slot by
 itself. Persistent zone data on `kryptik-state` is never written by any of
 this. `apply` refuses while another trial is armed (reboot first), while the
 state partition is degraded, and on any slot but the committed one, such as
-one picked in the firmware's boot menu: the refusal says how to boot the
+one picked in the firmware's boot menu: the refusal says to boot the
 committed slot, or to make the running one committed from the medium. After
-a trial that failed to boot it refuses that slot again until you pass
-`--retry`.
+a trial that failed, one that did not boot or came up unhealthy, it refuses
+that slot again until you pass `--retry`.
 
 ```sh
 kryptik-update rollback                       # back to the other slot, if it is intact

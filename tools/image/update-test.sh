@@ -13,11 +13,13 @@
 # A and B: stage 06 releases (make media KRYPTIK_VERSION=... twice); B's manifest says the role.
 #
 #   step 1  install A, boot, create a zone volume and a home file
-#   step 2  apply B, reboot: slot b committed, data intact
-#   step 3  refusals on B: wrong key, a build it does not trust (--foreign),
-#           modified image, truncated kernel, extra file, older release, full
-#           disk, concurrent run; no trial armed. On a development B also a
-#           manifest for the other role, signed by B's own key
+#   step 2  apply B, and again while its trial is armed (refused); reboot:
+#           slot b committed, data intact
+#   step 3  refusals on B: wrong key, with --recovery too, a build it does
+#           not trust (--foreign), modified image, truncated kernel, extra
+#           file, older release, full disk, concurrent run; no trial armed.
+#           On a development B also a manifest for the other role, signed by
+#           B's own key
 #   step 4  apply A with --recovery, reboot: slot a
 #   step 5  rollback: slot b again
 #   step 6  the VM killed mid-write (rollback then refuses the unnamed slot),
@@ -183,6 +185,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'mkdir -p /run/upd/p && mount -o ro /dev/vdb /run/upd/p && kryptik-update apply /run/upd/p && echo APPLY-OK')" \
     "expect:armed: the next boot tries slot b" "expect:APPLY-OK" \
     "$(ROOTSH 'kryptik-update status')" "expect:trial pending:    b" \
+    "$(ROOTSH 'kryptik-update apply /run/upd/p; echo RC=$?')" "expect:a trial of slot b is already armed; reboot first" "expect:RC=1\r?\n" \
     "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
     "login:${TUSER}:${TPASS}" \
     "grab:v2:grep ^VERSION_ID= /etc/os-release; cat /run/kryptik/boot-identity; cat /var/lib/kryptik/boot/last-result" \
@@ -191,7 +194,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'kryptikd time status')" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
-[[ "$rc" -eq 0 ]] && green "B applied, rebooted into slot b, home file and zone volume intact" || red "step 2 drive failed"
+[[ "$rc" -eq 0 ]] && green "B applied, a second apply refused while its trial was armed, rebooted into slot b, home file and zone volume intact" || red "step 2 drive failed"
 stop_unless_ok "$rc" "step 2"
 txt | grep -q "KRYPTIK_SMOKE: boot_identity=slot=b" && green "booted slot b" || red "did not boot slot b"
 txt | grep -q "version_id=${VB}" && green "guest reports version ${VB}" || red "guest did not report ${VB}"
@@ -217,6 +220,7 @@ start_vm update-p3 --disk "$BADIMG" --disk "$PA"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'mkdir -p /run/upd/p /run/upd/a && mount -o ro /dev/vdb /run/upd/p && mount -o ro /dev/vdc /run/upd/a && echo MNT-OK')" "expect:MNT-OK" \
     "$(ROOTSH 'kryptik-update apply /run/upd/p/wrongkey; echo RC=$?')" "expect:not enrolled" \
+    "$(ROOTSH 'kryptik-update apply /run/upd/p/wrongkey --recovery; echo RC=$?')" "expect:not enrolled" \
     "${BY_ROLE[@]}" \
     "$(ROOTSH 'kryptik-update apply /run/upd/p/modified --recovery; echo RC=$?')" "expect:sha256 does not match" \
     "$(ROOTSH 'kryptik-update apply /run/upd/p/truncated --recovery; echo RC=$?')" "expect:truncated or altered" \
@@ -230,7 +234,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'kryptik-update status')" "expect:trial pending:    none" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
-[[ "$rc" -eq 0 ]] && green "wrong key${BY_ROLE_SAID}, modified image, truncated kernel, extra file, downgrade, concurrent run and full disk were all refused; no trial armed; the statement of what is current verifies against the image's anchor${NOT_A_POINTER_SAID}" || red "step 3 drive failed"
+[[ "$rc" -eq 0 ]] && green "wrong key with and without --recovery${BY_ROLE_SAID}, modified image, truncated kernel, extra file, downgrade, concurrent run and full disk were all refused; no trial armed; the statement of what is current verifies against the image's anchor${NOT_A_POINTER_SAID}" || red "step 3 drive failed"
 
 # ----------------------------------------------------------------- step 4 --
 step "step 4: authenticated recovery to ${VA} with --recovery"
