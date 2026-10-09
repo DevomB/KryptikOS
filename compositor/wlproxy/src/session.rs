@@ -697,7 +697,9 @@ impl Session {
                                         .map(|p| p as u16)
                                 })
                                 .ok_or(SessionError::Forbidden("no xdg_toplevel.set_app_id in the tables"))?;
-                            stamp = MessageWriter::new(id, opcode).string(&policy::app_id_for(&self.zone, "")).finish();
+                            // Unstamped it would be drawn as zone 0's: refused, should the name not fit.
+                            let app_id = MessageWriter::new(id, opcode).string(&policy::app_id_for(&self.zone, "")).finish();
+                            stamp = Some(app_id.ok_or(SessionError::Forbidden("the zone's app_id does not fit a message"))?);
                         }
                     }
                 }

@@ -100,11 +100,17 @@ fn parse(args: &[String]) -> Opts {
     if o.zone.is_empty() || o.listen.as_os_str().is_empty() || o.upstream.as_os_str().is_empty() {
         usage();
     }
-    if !o.zone.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        eprintln!("kryptik-wlproxy: zone name {:?} is not a plain identifier", o.zone);
+    if !zone_ok(&o.zone) {
+        eprintln!("kryptik-wlproxy: zone name {:?} is not a plain identifier of at most 32 bytes", o.zone);
         std::process::exit(2);
     }
     o
+}
+
+/// A zone name as kryptik-launch passes one (its ident_ok), so the app_id and title prefix the
+/// proxy stamps with it always fit a message.
+fn zone_ok(zone: &str) -> bool {
+    !zone.is_empty() && zone.len() <= 32 && zone.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// Descriptors one session can hold: its two sockets and a full queue each way.
