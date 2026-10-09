@@ -17,6 +17,8 @@ ident() { sed -n "s/^$1=//p" "$RUN/boot-identity" 2>/dev/null | head -1; }
 other_slot() { case "$1" in a) echo b ;; b) echo a ;; esac; }
 slot="$(ident slot)"; media="$(ident media)"; state="$(ident state)"
 now() { date -Iseconds 2>/dev/null || date; }
+# Drop FILE's clean pages, so the next read is what the device holds; best effort.
+uncache() { dd if="$1" iflag=nocache count=0 status=none 2>/dev/null || :; }   # uncache FILE
 result() { printf '%s %s\n' "$*" "$(now)" > "$B/last-result.new" && mv -f "$B/last-result.new" "$B/last-result"; }
 
 if [ -n "$media" ]; then
@@ -72,8 +74,9 @@ commit_slot() {   # commit_slot <slot>: make BOOTX64.EFI this slot's kernel
         if cmp -s "$src" "$dst"; then
             say "BOOTX64.EFI already is slot $1"; rc=0
         else
-            # Copy, fsync, then rename: on FAT only the rename is not atomic.
-            cp "$src" "$dst.new" && sync -f "$dst.new" && mv -f "$dst.new" "$dst" && sync -f "$dst" && rc=0
+            # Copy, fsync, compare as the device holds it, then rename: on FAT only the
+            # rename is not atomic, and a copy that landed wrong never becomes the boot file.
+            cp "$src" "$dst.new" && sync -f "$dst.new" && uncache "$dst.new" && cmp -s "$src" "$dst.new" && mv -f "$dst.new" "$dst" && sync -f "$dst" && rc=0
             [ "$rc" -eq 0 ] && say "committed: BOOTX64.EFI is now slot $1"
         fi
         # The record is part of the commit, and follows the boot file: kryptik-update

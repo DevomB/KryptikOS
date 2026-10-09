@@ -150,19 +150,19 @@ payloads come from [the update channel](update-channel.md) or by hand.
 5. `boot-success` judges the trial slot: state persistent; eudev, seatd, the
    launch daemon, the net zone and the login getty up; kryptikd finding kernel
    support and the zones; an unambiguous ESP. Healthy: it copies the kernel
-   over `BOOTX64.EFI` (`.new`, fsync, rename), updates `committed-slot` alike,
-   clears the trial and forgets the entries, and the slot's kept manifest
-   raises the clock's floor if it is the newest. Unhealthy: it records that,
-   forgets the entries and reboots into the committed slot, `BootNext` being
-   spent. On a degraded state the trial record is out of reach, so
-   `committed-slot` says whether the boot is a trial. A trial that never comes
-   up also lands on the committed slot; the fallback records `trial.failed`
-   and forgets the entries, and the updater will not re-arm that payload
-   without `--retry`, which root gives (`su` from the administration login
-   on tty2; the refusal prints the command). Only a trial reboots; an
-   unhealthy committed slot is reported and left running, and so is a trial
-   on a degraded state whose ESP cannot be read, since nothing then says it
-   is one.
+   over `BOOTX64.EFI` (`.new`, fsync, compare, rename), updates
+   `committed-slot` alike, clears the trial and forgets the entries, and the
+   slot's kept manifest raises the clock's floor if it is the newest.
+   Unhealthy: it records that, forgets the entries and reboots into the
+   committed slot, `BootNext` being spent. On a degraded state the trial
+   record is out of reach, so `committed-slot` says whether the boot is a
+   trial. A trial that never comes up also lands on the committed slot; the
+   fallback records `trial.failed` and forgets the entries, and the updater
+   will not re-arm that payload without `--retry`, which root gives (`su` from
+   the administration login on tty2; the refusal prints the command). Only a
+   trial reboots; an unhealthy committed slot is reported and left running,
+   and so is a trial on a degraded state whose ESP cannot be read, since
+   nothing then says it is one.
 
    The net zone is in the check on purpose: a release whose net zone cannot
    come up could never fetch the release that fixes it. Whoever can crash

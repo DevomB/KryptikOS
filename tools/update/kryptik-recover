@@ -59,6 +59,8 @@ slot_dev() { case "$1" in a) echo "$SA" ;; b) echo "$SB" ;; *) die "slot must be
 has_fs() { [ "$(dd if="$1" bs=1 skip=1080 count=2 status=none | od -An -tx1 | tr -d ' \n')" = "53ef" ]; }
 # Written, fsynced, renamed, as the kernels are: a power cut leaves the old file whole, not empty.
 put() { printf '%s\n' "$2" > "$1.new" && sync -f "$1.new" && mv -f "$1.new" "$1"; }   # put FILE LINE
+# Drop FILE's clean pages, so the next read is what the device holds; best effort.
+uncache() { dd if="$1" iflag=nocache count=0 status=none 2>/dev/null || :; }   # uncache FILE
 
 if [ "$STATUS" = 1 ]; then
     mount -t vfat -o ro "$ESP" /run/kryptik-recover || die "cannot mount the ESP"
@@ -91,6 +93,8 @@ commit_slot() {   # commit_slot SLOT (ESP mounted rw at /run/kryptik-recover)
     has_fs "$(slot_dev "$s")" || die "slot $s holds no filesystem; use --restore-slot $s"
     cp "$k" /run/kryptik-recover/EFI/BOOT/BOOTX64.EFI.new
     sync -f /run/kryptik-recover/EFI/BOOT/BOOTX64.EFI.new
+    uncache /run/kryptik-recover/EFI/BOOT/BOOTX64.EFI.new
+    cmp -s "$k" /run/kryptik-recover/EFI/BOOT/BOOTX64.EFI.new || die "slot $s's kernel did not copy whole; BOOTX64.EFI is unchanged"
     mv -f /run/kryptik-recover/EFI/BOOT/BOOTX64.EFI.new /run/kryptik-recover/EFI/BOOT/BOOTX64.EFI
     put /run/kryptik-recover/kryptik/committed-slot "$s" || die "cannot record slot $s as committed"
     sync
@@ -148,6 +152,9 @@ if [ -n "$RESTORE" ]; then
     mount -t vfat -o rw "$ESP" /run/kryptik-recover || die "cannot mount the target ESP"
     cp "$kdir/kryptik-$RESTORE.efi" "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi.new"
     sync -f "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi.new"
+    uncache "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi.new"
+    cmp -s "$kdir/kryptik-$RESTORE.efi" "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi.new" \
+        || die "the medium's kernel for slot $RESTORE did not copy whole; nothing was committed"
     mv -f "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi.new" "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi"
     put "/run/kryptik-recover/kryptik/version-$RESTORE" "$ver" || die "cannot record slot ${RESTORE}'s version"
     commit_slot "$RESTORE"
