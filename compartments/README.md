@@ -66,5 +66,8 @@ a committed test must show it:
 - reading anything in `vault`
 - making a syscall the zone filter denies
 
-`tests/adversarial.sh` makes each attempt with a zone's namespaces and filter,
-in CI and in `make acceptance`'s host suites.
+`tests/adversarial.sh` makes each attempt under the part of a zone that
+refuses it: its namespaces, its Landlock rules or its seccomp filter, in CI
+and in `make acceptance`'s host suites. The zones suite
+(`build/guest-tests/zones-check.sh`) starts the shipped zones themselves on
+the installed system.
