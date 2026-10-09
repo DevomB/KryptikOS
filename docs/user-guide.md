@@ -123,7 +123,8 @@ the desktop is not seen this way.
 The medium presents a root shell with no password, on the display and, if
 the machine has one, on the serial console (the serial line under QEMU).
 That shell exists only on install media; installed systems have root locked
-at every terminal.
+at every terminal. The medium uses no network: a cable plugged in, or a
+radio, is left down.
 
 ## 2. Install
 

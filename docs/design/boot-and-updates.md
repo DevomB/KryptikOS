@@ -71,9 +71,10 @@ reach only the job that signs, never the one that ran the chroot
 
 `sysinit` unlocks `kryptik-state` on the disk the root came from (a label
 alone is not an identity) and mounts it at `/var`. An install medium uses a
-tmpfs. An installed system without a usable state partition boots degraded:
-`/var` is a tmpfs, and first boot, the desktop, the update commit and the
-updater refuse to run.
+tmpfs, and starts no net zone: nothing on it uses the network, so a NIC
+stays down in zone 0. An installed system without a usable state partition
+boots degraded: `/var` is a tmpfs, and first boot, the desktop, the update
+commit and the updater refuse to run.
 
 `/etc` overlays `/var/lib/kryptik/etc/upper` on the verified `/etc`. The
 state partition is not authenticated, so the upper layer may hold only the

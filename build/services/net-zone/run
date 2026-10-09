@@ -1,4 +1,10 @@
 #!/bin/sh
+# Nothing on an install medium uses the network: the installer, kryptik-recover
+# and the shell read the medium and the disks. A NIC there stays down in zone 0.
+if grep -qE '(^| )kryptik\.media=[a-z]+( |$)' /proc/cmdline 2>/dev/null; then
+    echo "net-zone: install medium; no network"
+    exec sleep infinity
+fi
 # The net zone takes every NIC on a bus device (`nic = "*"`, netzone::physical_interfaces).
 have_nic() {
     for d in /sys/class/net/*; do
