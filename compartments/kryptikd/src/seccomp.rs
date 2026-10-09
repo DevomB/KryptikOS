@@ -18,6 +18,7 @@ const BPF_W: u16 = 0x00;
 const BPF_ABS: u16 = 0x20;
 const BPF_JMP: u16 = 0x05;
 const BPF_JEQ: u16 = 0x10;
+const BPF_JGT: u16 = 0x20;
 const BPF_JGE: u16 = 0x30;
 const BPF_JSET: u16 = 0x40;
 const BPF_K: u16 = 0x00;

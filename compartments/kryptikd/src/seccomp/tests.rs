@@ -69,6 +69,9 @@ fn evaluate_args(prog: &[SockFilter], arch: u32, nr: u32, args: [u64; 6]) -> u32
             c if c == BPF_JMP | BPF_JEQ | BPF_K => {
                 pc += 1 + if acc == ins.k { ins.jt as usize } else { ins.jf as usize };
             }
+            c if c == BPF_JMP | BPF_JGT | BPF_K => {
+                pc += 1 + if acc > ins.k { ins.jt as usize } else { ins.jf as usize };
+            }
             c if c == BPF_JMP | BPF_JGE | BPF_K => {
                 pc += 1 + if acc >= ins.k { ins.jt as usize } else { ins.jf as usize };
             }
