@@ -101,27 +101,33 @@ fi
 # The update fetcher and the SNTP client read what far hosts send, as the net
 # zone's root: each gives up every capability before it reads a byte. In the
 # net zone's user namespace, where that root holds them all, each is held
-# waiting on what never answers (a broker socket, a time server) and read.
+# waiting on what never answers, a broker socket and a time server bound here
+# (a closed port's refusal could end the query at once), and read.
 quiet="$(mktemp -d)"; chmod 755 "$quiet"
 python3 -c 'import socket, sys, time
-s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(4); time.sleep(40)' "$quiet/broker" &
+b = socket.socket(socket.AF_UNIX); b.bind(sys.argv[1]); b.listen(4)
+u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); u.bind(("127.0.0.1", 0))
+open(sys.argv[2], "w").write("%d\n" % u.getsockname()[1])
+time.sleep(40)' "$quiet/broker" "$quiet/udp-port" &
 QB=$!
-for _ in $(seq 1 20); do [[ -S "$quiet/broker" ]] && break; sleep 0.25; done
+for _ in $(seq 1 20); do [[ -S "$quiet/broker" && -s "$quiet/udp-port" ]] && break; sleep 0.25; done
 chmod 666 "$quiet/broker" 2>/dev/null
-nsenter -t "${nz_init:-0}" -U python3 /usr/libexec/kryptik/update-fetch.py poll --broker "$quiet/broker" > /dev/null 2>&1 &
+nsenter -t "${nz_init:-0}" -U python3 /usr/libexec/kryptik/update-fetch.py poll --broker "$quiet/broker" > "$quiet/fetch.out" 2>&1 &
 QF=$!
-nsenter -t "${nz_init:-0}" -U python3 /usr/libexec/kryptik/sntp-offset.py --timeout 30 --server 127.0.0.1:9 > /dev/null 2>&1 &
+nsenter -t "${nz_init:-0}" -U python3 /usr/libexec/kryptik/sntp-offset.py --timeout 30 --server "127.0.0.1:$(cat "$quiet/udp-port" 2>/dev/null)" > "$quiet/sntp.out" 2>&1 &
 QS=$!
 caps_of() { awk '/^(CapInh|CapPrm|CapEff|CapAmb|NoNewPrivs):/ { printf "%s%s ", $1, $2 }' "/proc/$1/status" 2>/dev/null; }
 none="CapInh:0000000000000000 CapPrm:0000000000000000 CapEff:0000000000000000 CapAmb:0000000000000000 NoNewPrivs:1 "
 for _ in $(seq 1 40); do [[ "$(caps_of "$QF")" == "$none" && "$(caps_of "$QS")" == "$none" ]] && break; sleep 0.25; done
 held_f="$(caps_of "$QF")"; held_s="$(caps_of "$QS")"
-kill "$QF" "$QS" "$QB" 2>/dev/null; wait "$QF" "$QS" "$QB" 2>/dev/null; rm -rf "$quiet"
+kill "$QF" "$QS" "$QB" 2>/dev/null
+wait "$QF" 2>/dev/null; rc_f=$?; wait "$QS" 2>/dev/null; rc_s=$?; wait "$QB" 2>/dev/null
 if [[ "$held_f" == "$none" && "$held_s" == "$none" ]]; then
     pass "fetch-and-sntp-no-caps" "update-fetch.py and sntp-offset.py each hold no capability, with no new privileges, while they wait on the network"
 else
-    fail "fetch-and-sntp-no-caps" "update-fetch.py: ${held_f:-gone}| sntp-offset.py: ${held_s:-gone}"
+    fail "fetch-and-sntp-no-caps" "update-fetch.py: ${held_f:-gone, exit $rc_f: $(head -c 300 "$quiet/fetch.out" | tr '\n' ' ')}| sntp-offset.py: ${held_s:-gone, exit $rc_s: $(head -c 300 "$quiet/sntp.out" | tr '\n' ' ')}"
 fi
+rm -rf "$quiet"
 if ip link show eth0 >/dev/null 2>&1; then fail "zone0-nic" "eth0 is still in zone 0"; else pass "zone0-nic" "eth0 is not in zone 0 (moved into the net zone)"; fi
 if [[ -z "$(ip route show default 2>/dev/null)" ]]; then pass "zone0-no-route" "zone 0 has no default route"; else fail "zone0-no-route" "$(ip route show default)"; fi
 if ping -c1 -W2 10.0.2.2 >/dev/null 2>&1; then fail "zone0-offline" "zone 0 reached the VM gateway"; else pass "zone0-offline" "zone 0 cannot reach the VM gateway"; fi
