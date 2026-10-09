@@ -19,8 +19,8 @@ A zone is the unit of isolation, and every process belongs to exactly one.
 The trusted base, like Qubes' `dom0`: PID 1, the services, kryptikd, the
 compositor and the desktop session. It has no route out and runs no user
 applications (ADR-003), which the desktop suite checks process by process.
-kryptikd creates the other zones as root; unprivileged
-user namespaces are off ([privileged launch](design/privileged-launch.md)).
+kryptikd creates the other zones as root; unprivileged user namespaces are
+off ([privileged launch](design/privileged-launch.md)).
 
 ### Shipped zones
 
@@ -52,11 +52,11 @@ The chrome's menu is its menu window.
 
 ## Between zones
 
-Nothing crosses by default. The broker in kryptikd identifies a caller by its
-socket's peer uid and carries two things ([broker](design/broker.md)): a file
-transfer, one file one way to a zone the sender's policy names, after the user
-approves it; and the clipboard, one per zone, moved between zones only by a
-user gesture in zone 0.
+Nothing crosses by default. The [broker](design/broker.md) in kryptikd
+identifies a caller by its socket's peer uid and carries two things. A file
+transfer sends one file, one way, to a zone listed in the sender's policy,
+once the user approves it. Each zone has one clipboard, moved to another zone
+only by a user gesture in zone 0.
 
 Routed zones reach the network through isolated ports on the `net` zone's
 bridge. The `net` zone can also send zone 0 a clock offset and releases, both
