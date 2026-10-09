@@ -7,6 +7,7 @@ Prints "<offset> <answers>": the seconds to add to this clock (signed, six
 decimals) and how many servers that is the median of; nothing, and exit 1, if
 none answered. A plain SNTP query (RFC 4330) that sets nothing.
 """
+import ctypes
 import select
 import socket
 import struct
@@ -15,6 +16,17 @@ import time
 
 NTP_EPOCH = 2208988800          # seconds from 1900 to 1970
 ERA = 1 << 32
+
+
+def drop_capabilities():
+    """None of the net zone root's capabilities, CAP_NET_ADMIN among them, for what reads a far
+    host's bytes; no new privileges, so an exec cannot take them back."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    ulong = ctypes.c_ulong
+    header = (ctypes.c_uint32 * 2)(0x20080522, 0)      # capability version 3, this process
+    # 38 is PR_SET_NO_NEW_PRIVS; capset with zeroed sets empties effective, permitted and inheritable.
+    if libc.prctl(38, ulong(1), ulong(0), ulong(0), ulong(0)) or libc.capset(header, (ctypes.c_uint32 * 6)()):
+        raise OSError(ctypes.get_errno(), "the net zone's capabilities could not be dropped")
 
 
 def to_ntp(t):
@@ -87,6 +99,10 @@ def measure(targets, timeout):
 
 
 def main(argv):
+    try:
+        drop_capabilities()
+    except OSError as e:
+        sys.exit("sntp-offset: %s" % e)
     timeout, targets = 8.0, []
     it = iter(argv)
     for a in it:
