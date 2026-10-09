@@ -28,6 +28,12 @@ fn log_bounded() {
 }
 
 #[test]
+fn zone_names_bounded() {
+    assert!(zone_ok("untrusted") && zone_ok("dev-2") && zone_ok(&"z".repeat(32)));
+    assert!(!zone_ok("") && !zone_ok(&"z".repeat(33)) && !zone_ok("a b") && !zone_ok("a/b") && !zone_ok("zoné"));
+}
+
+#[test]
 fn clients_fit_limit() {
     assert_eq!(FDS_PER_SESSION, 130);
     assert_eq!(clients_within(1024, 32), 7);

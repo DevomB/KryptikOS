@@ -380,6 +380,26 @@ fn unnamed_toplevel_is_stamped() {
     assert_eq!(s.rewritten, 2);
 }
 
+/// A toplevel the zone's app_id cannot be stamped on is refused, never drawn as zone 0's own.
+#[test]
+fn unstampable_toplevel_is_refused() {
+    let (mut s, mut c, mut sv) = make();
+    s.zone = "z".repeat(MAX_MESSAGE_LEN);
+    c.write_all(&get_registry(2)).unwrap();
+    sv.write_all(&global(2, 1, "wl_compositor", 6)).unwrap();
+    sv.write_all(&global(2, 2, "xdg_wm_base", 6)).unwrap();
+    pump_all(&mut s).unwrap();
+    c.write_all(&MessageWriter::new(2, WL_REGISTRY_BIND).u32(1).string("wl_compositor").u32(6).u32(3).finish().unwrap()).unwrap();
+    c.write_all(&MessageWriter::new(2, WL_REGISTRY_BIND).u32(2).string("xdg_wm_base").u32(6).u32(4).finish().unwrap()).unwrap();
+    c.write_all(&MessageWriter::new(3, 0).u32(5).finish().unwrap()).unwrap(); // create_surface -> 5
+    c.write_all(&MessageWriter::new(4, 2).u32(6).u32(5).finish().unwrap()).unwrap(); // get_xdg_surface -> 6
+    pump_all(&mut s).unwrap();
+    let _ = read_all(&mut sv);
+    c.write_all(&MessageWriter::new(6, 1).u32(7).finish().unwrap()).unwrap(); // get_toplevel -> 7
+    assert!(matches!(pump_all(&mut s), Err(SessionError::Forbidden(_))));
+    assert!(read_all(&mut sv).is_empty(), "the compositor was sent the toplevel");
+}
+
 /// (object, opcode) and body of each message in a byte stream.
 fn split_messages(mut bytes: &[u8]) -> Vec<((u32, u16), Vec<u8>)> {
     let mut out = Vec::new();
