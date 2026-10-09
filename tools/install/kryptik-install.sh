@@ -20,11 +20,18 @@ slot_size_ok() {   # slot_size_ok ASKED NEEDED: both in MiB, or die
 }
 
 # First boot reads the preseed after the disk is written, so a preseed it
-# could not use is refused here, with the other refusals.
-preseed_ok() {   # preseed_ok FILE: readable, naming a user and a password hash, or die
+# could not use is refused here, with the other refusals, by first boot's own
+# rules (firstboot.sh): the first user= is a name it would create, and each hash
+# a crypt hash, which a CRLF line end is not.
+preseed_ok() {   # preseed_ok FILE, or die
     [ -r "$1" ] || die "cannot read the preseed ${1}; nothing was written"
-    grep -q '^user=.' "$1" && grep -q '^password_hash=.' "$1" \
-        || die "the preseed ${1} names no user= and password_hash=; nothing was written"
+    _pu="$(sed -n 's/^user=//p' "$1" | head -1)"
+    _ph="$(sed -n 's/^password_hash=//p' "$1" | head -1)"
+    _pr="$(sed -n 's/^root_password_hash=//p' "$1" | head -1)"
+    case "$_pu" in ''|*[!a-z0-9_-]*|-*) die "the preseed ${1} names no user first boot would create (lower-case letters, digits, _ and -); nothing was written" ;; esac
+    case "$_ph" in '$'?*) ;; *) die "the preseed ${1} names no crypt password_hash=; nothing was written" ;; esac
+    case "$_ph$_pr" in *[!A-Za-z0-9./=\$]*) die "the preseed ${1} has a hash with characters no crypt hash has; nothing was written" ;; esac
+    case "$_pr" in ''|'$'?*) ;; *) die "the preseed ${1} names a root_password_hash= that is not a crypt hash; nothing was written" ;; esac
 }
 
 TARGET=""
