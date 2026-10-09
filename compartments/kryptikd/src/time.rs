@@ -283,11 +283,50 @@ pub fn parse_release(text: &str) -> Result<(String, i64), String> {
     Ok((version.to_string(), at))
 }
 
-/// The newest release this machine has committed to, checked once per
-/// process: a claim from the net zone must not cost a signature check.
+/// The newest release this machine has committed to, as a process last checked it: a claim from
+/// the net zone must not cost a signature check each.
 pub fn committed_release() -> Result<Option<(String, i64)>, String> {
-    static KEPT: std::sync::OnceLock<Result<Option<(String, i64)>, String>> = std::sync::OnceLock::new();
-    KEPT.get_or_init(|| release_in(&Path::new(STATE_DIR).join(RELEASE), &crate::update::check_release)).clone()
+    static KEPT: std::sync::Mutex<Kept> = std::sync::Mutex::new(Kept::new());
+    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+    kept.get(&Path::new(STATE_DIR).join(RELEASE), std::time::Instant::now(), &crate::update::check_release)
+}
+
+/// A check that failed is tried again after this, so a flood of claims costs one check a minute.
+const RETRY_FAILED: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// What the files of a kept pair are: a pair kept anew, by rename, is new files.
+type Stamp = [Option<(u64, u64, i64, i64)>; 2];
+/// `release_in`'s answer.
+type Answer = Result<Option<(String, i64)>, String>;
+
+fn stamp(dir: &Path) -> Stamp {
+    use std::os::unix::fs::MetadataExt;
+    ["manifest", "manifest.sig"].map(|n| std::fs::symlink_metadata(dir.join(n)).ok().map(|m| (m.ino(), m.len(), m.mtime(), m.mtime_nsec())))
+}
+
+/// The kept release a process last read. A good answer stands until the pair changes, as when
+/// boot-success keeps a newer one; a failed check is tried again once the pair changes or after
+/// `RETRY_FAILED`, so one failure does not leave the floor at the build date for good.
+struct Kept {
+    seen: Option<(Stamp, std::time::Instant, Answer)>,
+}
+
+impl Kept {
+    const fn new() -> Self {
+        Kept { seen: None }
+    }
+
+    fn get(&mut self, dir: &Path, now: std::time::Instant, check: &dyn Fn(&Path) -> Result<String, String>) -> Answer {
+        let files = stamp(dir);
+        if let Some((seen, at, answer)) = &self.seen {
+            if *seen == files && (answer.is_ok() || now.saturating_duration_since(*at) < RETRY_FAILED) {
+                return answer.clone();
+            }
+        }
+        let answer = release_in(dir, check);
+        self.seen = Some((files, now, answer.clone()));
+        answer
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]

@@ -385,6 +385,38 @@ fn kept_release_must_verify() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// A process keeps a good answer until the pair changes, and tries a failed check again after a
+/// minute: one failure does not leave its floor at the build date until it ends.
+#[test]
+fn kept_release_read_again_after_a_failure_or_a_change() {
+    let d = scratch("kept-again");
+    release(&d, "1.0.1", "2026-09-19T18:11:28Z", "good");
+    let runs = std::cell::Cell::new(0);
+    let failing = |_: &Path| -> Result<String, String> {
+        runs.set(runs.get() + 1);
+        Err("kryptik-update: could not fork".into())
+    };
+    let counted = |p: &Path| {
+        runs.set(runs.get() + 1);
+        check(p)
+    };
+    let (mut kept, t0) = (Kept::new(), std::time::Instant::now());
+    let at = |s: u64| t0 + std::time::Duration::from_secs(s);
+    assert!(kept.get(&d, t0, &failing).is_err());
+    // Within the minute the failure stands, and nothing is checked again.
+    assert!(kept.get(&d, at(10), &counted).is_err());
+    assert_eq!(runs.get(), 1);
+    // After it, the check runs again, and the good answer it gives stands.
+    assert_eq!(kept.get(&d, at(61), &counted), Ok(Some(("1.0.1".into(), BUILT))));
+    assert_eq!(kept.get(&d, at(7200), &failing), Ok(Some(("1.0.1".into(), BUILT))));
+    assert_eq!(runs.get(), 2);
+    // A pair kept anew is read at once, whatever was learned before.
+    release(&d, "1.0.10", "2026-10-01T00:00:00Z", "good");
+    assert_eq!(kept.get(&d, at(7201), &counted).unwrap().unwrap().0, "1.0.10");
+    assert_eq!(runs.get(), 3);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 #[test]
 fn commit_keeps_newest_release() {
     let dir = scratch("commit");

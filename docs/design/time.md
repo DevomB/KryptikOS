@@ -96,7 +96,8 @@ a slot, `kryptikd time committed` copies that pair to
 `/var/lib/kryptik/time/release/` if it names the running release and its
 signed `created` date is later than the kept one's. The date is believed on
 the release key's signature alone. Each process that needs the floor runs
-`kryptik-update check-release` on the kept pair once, not per claim; it
+`kryptik-update check-release` on the kept pair once, not per claim, and
+again when the pair changes or a minute after a check that failed; it
 checks the signature and the role against the running root's trust anchor
 as `apply` does, in any version order. The state partition is not
 authenticated ([state encryption](state-encryption.md)), so whoever can write
