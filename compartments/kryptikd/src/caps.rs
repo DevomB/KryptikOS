@@ -5,7 +5,7 @@ use std::io;
 
 /// Capability numbers from `linux/capability.h` (stable ABI; `libc` lacks them).
 #[allow(dead_code)]
-mod cap {
+pub(crate) mod cap {
     use libc::c_int;
     pub const CHOWN: c_int = 0;
     pub const DAC_OVERRIDE: c_int = 1;
@@ -21,6 +21,7 @@ mod cap {
     pub const NET_RAW: c_int = 13;
     pub const IPC_LOCK: c_int = 14;
     pub const SYS_MODULE: c_int = 16;
+    pub const SYS_CHROOT: c_int = 18;
     pub const SYS_PTRACE: c_int = 19;
     pub const SYS_ADMIN: c_int = 21;
     pub const SYS_NICE: c_int = 23;
@@ -35,8 +36,16 @@ pub const KEEP: libc::c_int = cap::NET_BIND_SERVICE;
 pub const KEEPABLE: &[libc::c_int] = &[
     cap::NET_BIND_SERVICE, cap::NET_ADMIN, cap::NET_RAW, cap::NET_BROADCAST,
     cap::SYS_NICE, cap::IPC_LOCK, cap::KILL, cap::CHOWN, cap::FOWNER, cap::FSETID,
-    cap::DAC_READ_SEARCH,
+    cap::DAC_READ_SEARCH, cap::SETUID, cap::SETGID, cap::SYS_CHROOT,
 ];
+
+/// What a daemon needs to drop to a user of its own (dhcpcd's privilege separation): kept
+/// together or not at all, and each opens the calls `seccomp::CAP_CALLS` names.
+pub const PRIVSEP: &[libc::c_int] = &[cap::SETUID, cap::SETGID, cap::SYS_CHROOT];
+
+pub fn keeps_privsep(keep: &[libc::c_int]) -> bool {
+    PRIVSEP.iter().all(|c| keep.contains(c))
+}
 
 /// Capability numbers by name, as linux/capability.h defines them.
 pub const CAP_NAMES: &[(&str, libc::c_int)] = &[
@@ -53,9 +62,9 @@ pub const CAP_NAMES: &[(&str, libc::c_int)] = &[
     ("CAP_CHECKPOINT_RESTORE", 40),
 ];
 
-/// Only the nic zone may keep these (`policy::check_for_zone`): another zone could use them to
-/// re-address its veth or forge frames.
-pub const NIC_ONLY: &[libc::c_int] = &[cap::NET_ADMIN, cap::NET_RAW];
+/// Only the nic zone may keep these (`policy::check_for_zone`): another zone could use the
+/// network ones to re-address its veth or forge frames, and only dhcpcd there needs `PRIVSEP`.
+pub const NIC_ONLY: &[libc::c_int] = &[cap::NET_ADMIN, cap::NET_RAW, cap::SETUID, cap::SETGID, cap::SYS_CHROOT];
 
 pub fn cap_by_name(name: &str) -> Option<libc::c_int> {
     CAP_NAMES.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)

@@ -72,22 +72,33 @@ pub fn unshare_namespaces(flags: libc::c_int) -> Result<(), IsolateError> {
     check("unshare", unsafe { libc::unshare(flags) })
 }
 
+/// The id a daemon in a zone that keeps `caps::PRIVSEP` drops to: dhcpcd's, in the nic zone.
+pub const SERVICE_ID: u32 = 100;
+
 /// Write a new user namespace's id maps, denying setgroups first as an unprivileged gid_map
-/// needs. `with_nobody` maps 65534 too, which needs CAP_SETUID: a root launch only.
+/// needs. `with_nobody` maps 65534 too, which needs CAP_SETUID: a root launch only. `service`
+/// maps `SERVICE_ID` as well and leaves setgroups allowed, for that daemon's drop: a root launch
+/// of a zone that keeps `caps::PRIVSEP` only.
 pub fn write_id_maps(
     pid: libc::pid_t,
     outer_uid: u32,
     outer_gid: u32,
     with_nobody: bool,
+    service: bool,
 ) -> Result<(), IsolateError> {
     use std::fs;
 
-    let deny = format!("/proc/{pid}/setgroups");
-    fs::write(&deny, "deny")
-        .map_err(|e| IsolateError::Refused(format!("{deny}: {e}")))?;
+    if !service {
+        let deny = format!("/proc/{pid}/setgroups");
+        fs::write(&deny, "deny")
+            .map_err(|e| IsolateError::Refused(format!("{deny}: {e}")))?;
+    }
 
     let map = |outer: u32| {
         let mut m = format!("0 {outer} 1\n");
+        if service {
+            m.push_str(&format!("{SERVICE_ID} {} 1\n", outer + SERVICE_ID));
+        }
         if with_nobody {
             m.push_str(&format!("65534 {} 1\n", outer + 65534));
         }

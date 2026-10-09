@@ -80,11 +80,13 @@ query and the [update](update-channel.md) fetcher. Builds on
   routed zone's data, no broker access beyond its own clipboard and the time
   and update verbs, and ephemeral storage. Its seccomp policy is the base one
   plus `policy/net.seccomp`: `AF_PACKET`, `NETLINK_NETFILTER`,
-  `NETLINK_GENERIC` (dhcpcd opens one for nl80211 and exits if refused), and
-  `CAP_NET_ADMIN` / `CAP_NET_RAW` over its own interfaces. `chown`, which
-  dhcpcd calls on its control socket, is in the base list. The net zone alone
-  gets private tmpfs mounts at `/run` and `/var/lib` (writable under Landlock,
-  no exec), where dhcpcd keeps its pid file, control socket and leases. Every
+  `NETLINK_GENERIC` (dhcpcd opens one for nl80211 and exits if refused),
+  `CAP_NET_ADMIN` / `CAP_NET_RAW` over its own interfaces, and `CAP_SETUID`,
+  `CAP_SETGID` and `CAP_SYS_CHROOT` for dhcpcd's privilege separation.
+  `chown`, which dhcpcd calls on its control socket, is in the base list.
+  The net zone alone gets private tmpfs mounts at `/run` and `/var/lib`
+  (writable under Landlock, no exec), where dhcpcd keeps its pid file,
+  control socket and leases. Every
   other zone's `/run` is read-only and holds only its broker and proxy
   sockets.
 
@@ -113,11 +115,23 @@ query and the [update](update-channel.md) fetcher. Builds on
   change replaces the file and sends SIGHUP. A lease that lapsed leaves the
   last servers in place. It answers the test TLD `.test` itself, so
   resolving `kryptik.test` tests the path to the resolver, not the internet.
-- **dhcpcd runs without its own privilege separation.** That needs
-  `setgroups`, which the zone denies, a `dhcpcd` user, which its synthesized
-  passwd lacks, and `CAP_SETUID`, `CAP_SETGID` and `CAP_SYS_CHROOT`. Giving
-  the hostile zone three capabilities so one program can build a smaller
-  sandbox inside it would be a net loss; the zone is the sandbox.
+- **dhcpcd separates its privileges.** What parses a lease, a DHCPv6 reply
+  or a router advertisement runs as the zone's `dhcpcd` user, chrooted to an
+  empty `/var/empty`, with no capability and dhcpcd's own seccomp filter over
+  the zone's; a small helper stays the zone's root. For that the net zone
+  keeps `CAP_SETUID`, `CAP_SETGID` and `CAP_SYS_CHROOT` (kept together, and
+  by the nic zone alone), its filter allows the four calls they serve
+  (`setuid`, `setgid`, `setgroups`, `chroot`; `seccomp::CAP_CALLS`), its
+  user namespace maps a third id, 100, to `uid_base` + 100 and allows
+  `setgroups`, and its passwd names the user. In the zone's own namespaces
+  these reach only its mapped ids and its own tree.
+  The helper still does for the parsers what dhcpcd needs: addresses, routes
+  and links over netlink, the net sysctls, and dhcpcd's own files. It also
+  runs the hook, with the environment the parsers send it, so the net zone
+  does not use dhcpcd's: `dhcpcd-hook` checks every value for form and writes
+  nothing but `nameserver` lines (`tools/tests/netzone-hook.sh`). A bug in a
+  parser no longer reaches the Wi-Fi credentials, the broker's socket, the
+  firewall's netlink socket or a program to run.
 - **Readiness**, printed again on any change:
 
 ```text

@@ -221,10 +221,10 @@ uplink_addr() {   # the first IPv4 address any uplink holds
 }
 if command -v dhcpcd >/dev/null 2>&1; then
     mkdir -p /run/dhcpcd /var/lib/dhcpcd 2>/dev/null   # the zone's own tmpfs mounts
-    # -b: background and retry; --nodev: no device manager; its hook writes the zone's resolv.conf.
-    if dhcpcd -b -q --nodev "$@" 2>/tmp/dhcpcd.err; then
-        # The zone has no dhcpcd user, so dhcpcd runs as its root, sandboxed by the zone.
-        grep -v 'no such user dhcpcd' /tmp/dhcpcd.err
+    # -b: background and retry; --nodev: no device manager. Its parsers drop to the dhcpcd user;
+    # Kryptik's hook, which trusts nothing it is handed, writes the zone's resolv.conf.
+    if dhcpcd -b -q --nodev -c /usr/libexec/kryptik/dhcpcd-hook "$@" 2>/tmp/dhcpcd.err; then
+        cat /tmp/dhcpcd.err
         # Up to 15 s for a lease, so the resolver starts with its servers.
         i=0
         while [ "$i" -lt 30 ] && [ -z "$(uplink_addr "$@")" ]; do sleep 0.5; i=$((i+1)); done
@@ -368,7 +368,6 @@ cleanup() {
     [ -n "$DNSPID" ] && kill "$DNSPID" 2>/dev/null
     [ -n "$UPDATE_PID" ] && kill "$UPDATE_PID" 2>/dev/null
     for n in $WIRELESS; do p="$(wpa_pid "$n")"; [ -n "$p" ] && kill "$p" 2>/dev/null; done
-    command -v dhcpcd >/dev/null 2>&1 && dhcpcd -x 2>/dev/null
     exit 0
 }
 trap cleanup TERM INT

@@ -53,6 +53,31 @@ done
 if [[ "$ready" == *"nat=yes"* ]]; then pass "net-ready" "$ready"; else fail "net-ready" "no READY line with nat=yes in the catch-all log (last: $(netzone_said '' | tail -1))"; fi
 # The routed zones' resolver, named on its own: routed-dns only times out.
 if [[ "$ready" == *" dns=yes "* ]]; then pass "net-dns" "dnsmasq is running"; else fail "net-dns" "$(uncaught | grep -a 'dnsmasq' | tail -2 | tr '\n' ' ')"; fi
+# dhcpcd's privilege separation: what parses a lease runs as the net zone's
+# dhcpcd user (host uid_base + 100) in an empty root, with no capability and
+# dhcpcd's own seccomp filter over the zone's, while a helper stays its root;
+# and the lease, which that helper writes, arrived.
+net_base="$(sed -n 's/^uid_base *= *\([0-9]*\).*/\1/p' "$Z/net.toml")"
+nz_init="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
+separated=0; helpers=0; seen=""
+for p in $(pgrep -x dhcpcd); do
+    uid="$(awk '/^Uid:/ { print $2 }' "/proc/$p/status" 2>/dev/null)"
+    caps="$(awk '/^CapEff:/ { print $2 }' "/proc/$p/status" 2>/dev/null)"
+    filters="$(awk '/^Seccomp_filters:/ { print $2 }' "/proc/$p/status" 2>/dev/null)"
+    # 2>&1: a root that cannot be listed is not an empty one.
+    inside="$(ls -A "/proc/$p/root" 2>&1 | head -3 | tr '\n' ',')"
+    seen="${seen} ${p}:uid=${uid},caps=${caps},filters=${filters},root=$(readlink "/proc/$p/root" 2>/dev/null)[${inside}]"
+    if [[ "$uid" == "$((net_base + 100))" && "$caps" == 0000000000000000 && "${filters:-0}" -ge 2 && -z "$inside" ]]; then
+        separated=$((separated + 1))
+    fi
+    [[ "$uid" == "$net_base" ]] && helpers=$((helpers + 1))
+done
+leased="$(nsenter -t "${nz_init:-0}" -m sh -c 'ls /var/lib/dhcpcd/*.lease 2>/dev/null' | head -1)"
+if [[ "$separated" -ge 1 && "$helpers" -ge 1 && -n "$leased" ]]; then
+    pass "dhcpcd-separated" "${separated} dhcpcd process(es) as uid $((net_base + 100)) in an empty root with no capability under two filters, ${helpers} root helper, lease ${leased}"
+else
+    fail "dhcpcd-separated" "separated ${separated}, helpers ${helpers}, lease ${leased:-none}:${seen:- no dhcpcd running}"
+fi
 if ip link show eth0 >/dev/null 2>&1; then fail "zone0-nic" "eth0 is still in zone 0"; else pass "zone0-nic" "eth0 is not in zone 0 (moved into the net zone)"; fi
 if [[ -z "$(ip route show default 2>/dev/null)" ]]; then pass "zone0-no-route" "zone 0 has no default route"; else fail "zone0-no-route" "$(ip route show default)"; fi
 if ping -c1 -W2 10.0.2.2 >/dev/null 2>&1; then fail "zone0-offline" "zone 0 reached the VM gateway"; else pass "zone0-offline" "zone 0 cannot reach the VM gateway"; fi
@@ -739,7 +764,7 @@ zrun untrusted 30 -- grep -c /usr/lib/libhardened_malloc.so /proc/self/maps
 [[ "$ZRC" = 0 ]] && pass "allocator-zone" "a process in untrusted runs on it too" || fail "allocator-zone" "rc=$ZRC $(tail -1 "$LOG/untrusted.err")"
 
 # --- the installed root: privilege only where the allowlist says -------------------
-# What stage 06 stripped stays stripped: on the root filesystem a setuid or
+# Stage 06 fails the build on any other bit; the installed root shows it: a setuid or
 # setgid bit is on the listed binaries alone (build/config/setuid-allowlist.txt)
 # and file capabilities are on none (capability-allowlist.txt is empty).
 setuid_found="$(find / -xdev -type f -perm /6000 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"

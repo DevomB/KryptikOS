@@ -198,16 +198,28 @@ pub fn zone_home(zone: &str) -> String {
     format!("/home/{zone}")
 }
 
-/// Synthesized /etc/passwd: the zone's root and nobody.
-pub fn passwd_for(zone: &str, home: &str) -> String {
-    format!(
-        "root:x:0:0:{zone}:{home}:/bin/sh\n\
-         nobody:x:65534:65534:nobody:/nonexistent:/bin/false\n"
-    )
+/// The home and chroot of the user `service` adds: an empty directory on the sealed root.
+pub const SERVICE_HOME: &str = "/var/empty";
+
+/// Synthesized /etc/passwd: the zone's root and nobody, and with `service` dhcpcd at
+/// `isolate::SERVICE_ID`, the user its privilege separation drops to.
+pub fn passwd_for(zone: &str, home: &str, service: bool) -> String {
+    let mut s = format!("root:x:0:0:{zone}:{home}:/bin/sh\n");
+    if service {
+        let id = crate::isolate::SERVICE_ID;
+        s.push_str(&format!("dhcpcd:x:{id}:{id}:dhcpcd:{SERVICE_HOME}:/bin/false\n"));
+    }
+    s.push_str("nobody:x:65534:65534:nobody:/nonexistent:/bin/false\n");
+    s
 }
 
-pub fn group_for() -> String {
-    "root:x:0:\nnogroup:x:65534:\n".to_string()
+pub fn group_for(service: bool) -> String {
+    let mut s = "root:x:0:\n".to_string();
+    if service {
+        s.push_str(&format!("dhcpcd:x:{}:\n", crate::isolate::SERVICE_ID));
+    }
+    s.push_str("nogroup:x:65534:\n");
+    s
 }
 
 pub fn nsswitch() -> String {
@@ -280,7 +292,9 @@ pub fn check_data_dir(path: &str, expected_uid: u32) -> Result<(), RootfsError> 
 }
 
 /// Pivot into a root holding only what the zone should see; returns the home. Runs as root in the
-/// new user namespace, before Landlock and seccomp; `ephemeral` is a tmpfs home's size.
+/// new user namespace, before Landlock and seccomp; `ephemeral` is a tmpfs home's size, and
+/// `service` adds dhcpcd's user and `SERVICE_HOME`.
+#[allow(clippy::too_many_arguments)]
 pub fn pivot_into(
     data_dir: &str,
     zone: &str,
@@ -289,6 +303,7 @@ pub fn pivot_into(
     broker: Option<&str>,
     wayland: Option<&str>,
     wifi_conf: Option<&str>,
+    service: bool,
 ) -> Result<String, RootfsError> {
     let home = zone_home(zone);
 
@@ -348,7 +363,11 @@ pub fn pivot_into(
         }
     }
 
-    populate_etc(root, zone, &home, resolver)?;
+    populate_etc(root, zone, &home, resolver, service)?;
+    // Made on the root tmpfs, so the seal below leaves it empty and read-only.
+    if service {
+        mkdir(&SERVICE_HOME[1..])?;
+    }
 
     // Fresh /proc, showing only this zone's pid namespace.
     let proc_dir = mkdir("proc")?;
@@ -507,15 +526,15 @@ pub fn pivot_into(
 }
 
 /// The zone's /etc: synthesized identity files plus `ETC_RO_FILES` and `ETC_RO_DIRS`.
-fn populate_etc(root: &str, zone: &str, home: &str, resolver: Resolver) -> Result<(), RootfsError> {
+fn populate_etc(root: &str, zone: &str, home: &str, resolver: Resolver, service: bool) -> Result<(), RootfsError> {
     let etc = format!("{root}/etc");
     fs::create_dir_all(&etc).map_err(|e| RootfsError::Setup(format!("{etc}: {e}")))?;
     let write = |name: &str, content: String| -> Result<(), RootfsError> {
         let p = format!("{etc}/{name}");
         fs::write(&p, content).map_err(|e| RootfsError::Setup(format!("{p}: {e}")))
     };
-    write("passwd", passwd_for(zone, home))?;
-    write("group", group_for())?;
+    write("passwd", passwd_for(zone, home, service))?;
+    write("group", group_for(service))?;
     write("nsswitch.conf", nsswitch())?;
     write("hosts", hosts_for(zone))?;
     write("hostname", format!("{zone}\n"))?;

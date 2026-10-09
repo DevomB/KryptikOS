@@ -298,7 +298,8 @@ syscalls! {
 }
 
 denied! {
-    /// Syscalls left out of the allowlist, and why; a zone policy cannot allow them.
+    /// Syscalls left out of the allowlist, and why; a zone policy cannot allow them. The one
+    /// exception is `CAP_CALLS`: a zone that keeps `caps::PRIVSEP` gets the four calls it serves.
     DENIED_RATIONALE, DENIED_NAMES = [
     (libc::SYS_ptrace, "read/write another process's memory; the classic escape"),
     (libc::SYS_process_vm_readv, "read another process's memory directly"),
@@ -661,9 +662,34 @@ pub fn confine_zone() -> Result<(), SeccompError> {
     install(BASE_ALLOWLIST)
 }
 
-/// Install the zone filter widened by a policy's `extra` syscalls and `sockets` rule.
-pub fn confine_zone_with(extra: &[libc::c_long], sockets: &SocketPolicy) -> Result<(), SeccompError> {
-    install_with(&widened(extra)?, SECCOMP_RET_KILL_PROCESS, sockets, SECCOMP_FILTER_FLAG_TSYNC).map(|_| ())
+/// Install the zone filter widened by a policy's `extra` syscalls, `sockets` rule and kept
+/// capabilities.
+pub fn confine_zone_with(extra: &[libc::c_long], sockets: &SocketPolicy, kept_caps: &[libc::c_int]) -> Result<(), SeccompError> {
+    install_with(&widened_for(extra, kept_caps)?, SECCOMP_RET_KILL_PROCESS, sockets, SECCOMP_FILTER_FLAG_TSYNC).map(|_| ())
+}
+
+/// Denied calls a kept capability opens again, for the one zone that may keep it
+/// (`caps::PRIVSEP`, the nic zone's): a daemon dropping to its own user makes them, and in the
+/// zone's user and mount namespaces they reach only its mapped ids and its own tree.
+pub const CAP_CALLS: &[(libc::c_int, &[libc::c_long])] = &[
+    (crate::caps::cap::SETUID, &[libc::SYS_setuid]),
+    (crate::caps::cap::SETGID, &[libc::SYS_setgid, libc::SYS_setgroups]),
+    (crate::caps::cap::SYS_CHROOT, &[libc::SYS_chroot]),
+];
+
+/// `widened`, plus the calls `CAP_CALLS` gives the capabilities in `kept_caps`.
+pub fn widened_for(extra: &[libc::c_long], kept_caps: &[libc::c_int]) -> Result<Vec<libc::c_long>, SeccompError> {
+    let mut allow = widened(extra)?;
+    for &(cap, calls) in CAP_CALLS {
+        if kept_caps.contains(&cap) {
+            for &nr in calls {
+                if !allow.contains(&nr) {
+                    allow.push(nr);
+                }
+            }
+        }
+    }
+    Ok(allow)
 }
 
 /// The base allowlist plus a policy's `extra` syscalls, each checked again against the denied list.

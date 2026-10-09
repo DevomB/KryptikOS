@@ -952,7 +952,7 @@ pub fn run_in_zone(
     }
 
     // Map the child's root to the zone identity: this is the privilege drop.
-    if let Err(e) = isolate::write_id_maps(pid, id.uid, id.gid, id.privileged) {
+    if let Err(e) = isolate::write_id_maps(pid, id.uid, id.gid, id.privileged, maps_service(id.privileged, zone_policy.as_ref())) {
         // Close our end so the child reads EOF and dies rather than blocking.
         mapped.close_write();
         let _ = wait_for(pid);
@@ -1248,7 +1248,8 @@ fn intermediate_main(
 
     if inner == 0 {
         alive.close_write();
-        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, fs_rules, plumbed, &broker_in_zone, wayland_in_zone.as_deref(), wifi_conf, &alive);
+        let service = maps_service(id.privileged, zone_policy);
+        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, fs_rules, plumbed, &broker_in_zone, wayland_in_zone.as_deref(), wifi_conf, service, &alive);
         unsafe { libc::_exit(rc) };
     }
     alive.close_read();
@@ -1269,6 +1270,11 @@ fn intermediate_main(
     }
 }
 
+/// Whether a launch maps dhcpcd's user: a root launch of a zone that keeps `caps::PRIVSEP`.
+fn maps_service(privileged: bool, policy: Option<&policy::Policy>) -> bool {
+    privileged && policy.is_some_and(|p| caps::keeps_privsep(&p.keep_caps))
+}
+
 /// pid 1 of the zone. Returns only on failure; on success it has exec'd.
 fn zone_init(
     zone: &Zone,
@@ -1281,6 +1287,7 @@ fn zone_init(
     broker_path: &str,
     wayland_path: Option<&str>,
     wifi_conf: Option<&str>,
+    service: bool,
     alive: &SyncPipe,
 ) -> i32 {
     macro_rules! bail {
@@ -1314,7 +1321,7 @@ fn zone_init(
         (crate::zone::NetworkMode::Routed, _) => rootfs::Resolver::Bridge,
         _ => rootfs::Resolver::None,
     };
-    let home = match rootfs::pivot_into(rootfs, &zone.name, ephemeral, resolver, Some(broker_path), wayland_path, wifi_conf) {
+    let home = match rootfs::pivot_into(rootfs, &zone.name, ephemeral, resolver, Some(broker_path), wayland_path, wifi_conf, service) {
         Ok(h) => h,
         Err(e) => bail!("could not build the zone root: {e}"),
     };
@@ -1365,7 +1372,7 @@ fn zone_init(
 
     // seccomp last: mount() and the other setup calls are not in its allowlist.
     let installed = match zone_policy {
-        Some(p) => seccomp::confine_zone_with(&p.extra_syscalls, &p.sockets),
+        Some(p) => seccomp::confine_zone_with(&p.extra_syscalls, &p.sockets, &p.keep_caps),
         None => seccomp::confine_zone(),
     };
     if let Err(e) = installed {

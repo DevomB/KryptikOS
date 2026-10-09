@@ -64,8 +64,6 @@ media it tested.
   RPATHs among them. Each has a reason in
   `build/config/artifact-accepted.txt`, and acceptance fails on any other.
   Each run's audit log has the counts.
-- dhcpcd runs without its own privilege separation; the net zone is its
-  sandbox.
 - The builds are not reproducible bit for bit.
 - A resumed tree builds a changed step again over what its old version
   installed, and nothing records what a step installed. In CI a new package

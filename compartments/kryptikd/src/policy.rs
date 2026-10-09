@@ -154,12 +154,25 @@ pub fn parse(text: &str, source: &str) -> Result<Policy, PolicyError> {
             }
         }
     }
+    // One of them alone opens its calls and serves no daemon's drop to its own user.
+    let privsep = caps::PRIVSEP.iter().filter(|c| p.keep_caps.contains(c)).count();
+    if privsep != 0 && privsep != caps::PRIVSEP.len() {
+        return Err(PolicyError::Line {
+            path: source.to_string(),
+            line: 0,
+            msg: format!(
+                "{} are kept together or not at all",
+                caps::PRIVSEP.iter().map(|c| caps::cap_name(*c)).collect::<Vec<_>>().join(", ")
+            ),
+        });
+    }
     Ok(p)
 }
 
 impl Policy {
-    /// Only the nic zone may keep `CAP_NET_ADMIN` or `CAP_NET_RAW`; elsewhere they let a zone
-    /// re-address its veth, route around port isolation via the bridge address, or forge frames.
+    /// Only the nic zone may keep `caps::NIC_ONLY`: elsewhere `CAP_NET_ADMIN` or `CAP_NET_RAW` let a
+    /// zone re-address its veth, route around port isolation via the bridge address, or forge
+    /// frames, and no other zone runs a daemon that drops to a user of its own.
     pub fn check_for_zone(&self, zone: &crate::zone::Zone) -> Result<(), PolicyError> {
         if zone.network != crate::zone::NetworkMode::Nic {
             for (c, name) in self.keep_caps.iter().zip(&self.keep_cap_names) {

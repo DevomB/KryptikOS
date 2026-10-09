@@ -24,6 +24,21 @@ fn keep_is_not_dangerous() {
 }
 
 #[test]
+fn privsep_is_the_nic_zones_alone() {
+    assert_eq!(PRIVSEP, &[cap::SETUID, cap::SETGID, cap::SYS_CHROOT]);
+    for c in PRIVSEP {
+        assert!(KEEPABLE.contains(c) && NIC_ONLY.contains(c), "{}", cap_name(*c));
+    }
+    assert_eq!(cap_by_name("CAP_SYS_CHROOT"), Some(cap::SYS_CHROOT));
+    assert!(keeps_privsep(&[cap::NET_ADMIN, cap::SYS_CHROOT, cap::SETGID, cap::SETUID]));
+    assert!(!keeps_privsep(&[cap::SETUID, cap::SETGID]));
+    // Nothing else comes with them: the dangerous ones stay unkeepable.
+    for c in [cap::SYS_ADMIN, cap::SYS_PTRACE, cap::DAC_OVERRIDE, cap::SYS_MODULE, cap::MKNOD] {
+        assert!(!KEEPABLE.contains(&c), "{}", cap_name(c));
+    }
+}
+
+#[test]
 fn last_cap_is_sane() {
     let n = last_cap();
     assert!(n >= cap::SYS_ADMIN, "cap_last_cap {n} is implausibly low");
