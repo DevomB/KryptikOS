@@ -90,8 +90,9 @@ FLOWCAP="$(( $(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 
 # the rest of what an uplink reaches is the network it sits on, open to local4
 # and local6 alone. With no gateway in the sets nothing goes out, so a new
 # lease opens no way in before sync_gateways has seen it. From the bridge the
-# net zone takes in only what is addressed to the bridge: its own address on an
-# uplink is the net zone, not the network a local zone may reach.
+# net zone takes in only what it serves there, DNS and echo on the bridge's
+# addresses, and neighbour discovery: whatever else listens in it, such as
+# dhcpcd on every address once it holds two uplinks, is no zone's to reach.
 RULES="table inet kryptik {
     set gw4 { type ipv4_addr; }
     set gw6 { type ipv6_addr; }
@@ -128,8 +129,13 @@ RULES="table inet kryptik {
         iifname \"${BR}\" ct state new add @flows { ether saddr ct count over ${FLOWCAP} } drop
         iifname ${NICSET} ct state new tcp dport 53 drop
         iifname ${NICSET} ct state new udp dport 53 drop
-        iifname \"${BR}\" ip daddr != 10.19.0.1 drop
-        iifname \"${BR}\" ip6 daddr != { fd19::1, fe80::/10, ff02::/16 } drop
+        iifname \"${BR}\" ct state established,related accept
+        iifname \"${BR}\" ip daddr 10.19.0.1 meta l4proto { tcp, udp } th dport 53 accept
+        iifname \"${BR}\" ip6 daddr fd19::1 meta l4proto { tcp, udp } th dport 53 accept
+        iifname \"${BR}\" ip daddr 10.19.0.1 icmp type echo-request accept
+        iifname \"${BR}\" ip6 daddr fd19::1 icmpv6 type echo-request accept
+        iifname \"${BR}\" icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept
+        iifname \"${BR}\" drop
     }
 }"
 
@@ -139,7 +145,7 @@ load_policy() {
     nft flush ruleset 2>/dev/null || true
     printf '%s\n' "$RULES" | nft -f - 2>/tmp/nft.err || { say "nftables: load FAILED: $(tr '\n' ' ' < /tmp/nft.err)"; return 1; }
     live="$(nft list table inet kryptik 2>/dev/null)"
-    for want in "@pin6 accept" "policy drop" "masquerade"; do
+    for want in "@pin6 accept" "policy drop" "masquerade" "iifname \"${BR}\" drop"; do
         case "$live" in
             *"$want"*) ;;
             *) say "nftables: the loaded table is not the policy (no \"${want}\")"; nft flush ruleset 2>/dev/null; return 1 ;;

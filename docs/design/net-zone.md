@@ -110,7 +110,11 @@ query and the [update](update-channel.md) fetcher. Builds on
   eighth of the zone's conntrack table, which every zone's flows fill
   together: nft's `ct count` on the MAC both its addresses are pinned to,
   for flows through the net zone and flows to it. Past its share, a zone's
-  new flows are dropped and the others' still pass.
+  new flows are dropped and the others' still pass. From the bridge the net
+  zone takes in only what it serves there: DNS and echo requests on
+  `10.19.0.1` and `fd19::1`, neighbour discovery, and replies. Whatever else
+  listens in it is no zone's to reach: dhcpcd, once it holds two uplinks,
+  listens on every address, the bridge's among them.
 - **The resolver:** `dnsmasq` on 10.19.0.1, fd19::1 and 127.0.0.1,
   forwarding to the uplink lease's servers (QEMU's 10.0.2.3 when nothing else
   is known), restarted if it dies. It binds as the zone's root and then runs
@@ -190,10 +194,10 @@ its definition says `[network] local = true`.
   network at all.
 - **The net zone's own address on an uplink is not that network.** It is the
   net zone, which a zone needs only for its resolver on the bridge. From the
-  bridge the input chain takes only what is addressed to `10.19.0.1` or
-  `fd19::1`, or to a link-local or link-scope multicast address for neighbour
-  discovery, so no zone, `local` or not, reaches what the net zone listens on
-  over its uplink addresses, such as dhcpcd.
+  bridge the input chain takes only DNS and echo requests to `10.19.0.1` or
+  `fd19::1`, neighbour discovery and replies, so no zone, `local` or not,
+  reaches what the net zone listens on, over its uplink addresses or the
+  bridge's, such as dhcpcd.
 - **What it does not cover.** A network behind the gateway, such as a modem's
   own pages on another subnet, is past the gateway and so allowed. So is the
   gateway's address on its far side: a router that answers its admin page on

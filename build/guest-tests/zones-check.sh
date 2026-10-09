@@ -202,8 +202,8 @@ printf 'personal-pass\n' > /root/zt/personal.pass; chmod 600 /root/zt/personal.p
 # A zone that sends from another zone's address. The rule that opens the
 # uplink's own network goes by a packet's source, and IPV6_FREEBIND lets an
 # unprivileged socket send from an address its host does not hold. personal
-# sends to the bridge from its own addresses (the control) and with FREEBIND
-# from untrusted's. Counters in the net zone say what reached it, ahead of its
+# sends to the bridge's resolver port from its own addresses (the control) and
+# with FREEBIND from untrusted's. Counters in the net zone say what reached it, ahead of its
 # own chains, and what it took in after them.
 net_init="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
 netns() { nsenter -t "${net_init:-0}" -n "$@"; }
@@ -213,18 +213,18 @@ netns nft -f - > "$LOG/source-probe.err" 2>&1 <<EOF
 table inet ztprobe {
     chain pre {
         type filter hook prerouting priority -350;
-        iifname "kryptik0" udp dport 9 counter comment "pre-any"
-        ip saddr $own4 udp dport 9 counter comment "pre-own4"
-        ip saddr $other4 udp dport 9 counter comment "pre-other4"
-        ip6 saddr $own6 udp dport 9 counter comment "pre-own6"
-        ip6 saddr $other6 udp dport 9 counter comment "pre-other6"
+        iifname "kryptik0" udp dport 53 counter comment "pre-any"
+        ip saddr $own4 udp dport 53 counter comment "pre-own4"
+        ip saddr $other4 udp dport 53 counter comment "pre-other4"
+        ip6 saddr $own6 udp dport 53 counter comment "pre-own6"
+        ip6 saddr $other6 udp dport 53 counter comment "pre-other6"
     }
     chain taken {
         type filter hook input priority 100;
-        ip saddr $own4 udp dport 9 counter comment "taken-own4"
-        ip saddr $other4 udp dport 9 counter comment "taken-other4"
-        ip6 saddr $own6 udp dport 9 counter comment "taken-own6"
-        ip6 saddr $other6 udp dport 9 counter comment "taken-other6"
+        ip saddr $own4 udp dport 53 counter comment "taken-own4"
+        ip saddr $other4 udp dport 53 counter comment "taken-other4"
+        ip6 saddr $own6 udp dport 53 counter comment "taken-own6"
+        ip6 saddr $other6 udp dport 53 counter comment "taken-other6"
     }
 }
 EOF
@@ -252,7 +252,7 @@ def send(what, family, src, dst, freebind):
             s.setsockopt(*((socket.IPPROTO_IP, 15) if family == socket.AF_INET else (socket.IPPROTO_IPV6, 78)), 1)
         s.bind((src, 0))
         for _ in range(3):
-            s.sendto(b"zt", (dst, 9))
+            s.sendto(b"zt", (dst, 53))
         print(what + "-SENT")
     except OSError as e:
         print("%s-REFUSED %s" % (what, errno.errorcode.get(e.errno, e)))
@@ -279,6 +279,59 @@ elif [[ "${seen[taken-other4]:-0}" -gt 0 || "${seen[taken-other6]:-0}" -gt 0 ]];
     fail "zone-source-pinned" "the net zone took in datagrams personal sent from untrusted's addresses; ${counts}"
 else
     pass "zone-source-pinned" "personal's own datagrams were taken in and none from untrusted's addresses; ${counts}"
+fi
+# From the bridge the net zone takes in only what it serves there. A listener on
+# every address in its namespace stands in for one it does not serve to zones,
+# as dhcpcd's is once it holds two uplinks; a datagram over its own loopback is
+# the control, and "end" closes the listener once untrusted has sent.
+netns timeout 120 python3 -c '
+import socket
+s = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+s.bind(("::", 5467))
+s.settimeout(90)
+print("LISTENING", flush=True)
+while True:
+    d, a = s.recvfrom(64)
+    if d == b"end":
+        break
+    print("HEARD " + a[0], flush=True)
+' > "$LOG/bridge-listener.out" 2>&1 &
+lpid=$!
+for _ in $(seq 1 20); do grep -q LISTENING "$LOG/bridge-listener.out" 2>/dev/null && break; sleep 0.5; done
+zrun untrusted 40 -- python3 -c '
+import socket, time
+def tentative():
+    try:
+        with open("/proc/net/if_inet6") as f:
+            return any(r.split()[5] == "eth0" and int(r.split()[4], 16) & 0x40 for r in f)
+    except OSError:
+        return False
+for _ in range(40):
+    if not tentative():
+        break
+    time.sleep(0.25)
+for family, dst in ((socket.AF_INET, "10.19.0.1"), (socket.AF_INET6, "fd19::1")):
+    s = socket.socket(family, socket.SOCK_DGRAM)
+    for _ in range(3):
+        s.sendto(b"zt", (dst, 5467))
+    s.close()
+time.sleep(1)
+print("SENT")
+'
+netns python3 -c 'import socket
+s = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+s.sendto(b"zt", ("::1", 5467)); s.sendto(b"end", ("::1", 5467))'
+wait "$lpid"
+heard="$(grep '^HEARD' "$LOG/bridge-listener.out" | tr '\n' ' ')"
+if [[ "$heard" != *"HEARD ::1 "* ]]; then
+    fail "bridge-ports-closed" "the probe has no listener: $(head -c 300 "$LOG/bridge-listener.out" | tr '\n' ' ')"
+elif [[ "$ZOUT" != *SENT* ]]; then
+    fail "bridge-ports-closed" "untrusted did not send: rc=$ZRC $(tail -2 "$LOG/untrusted.err" | tr '\n' ' ')"
+elif [[ "$heard" == *"10.19.0."* || "$heard" == *"fd19::"* ]]; then
+    fail "bridge-ports-closed" "the net zone took in what untrusted sent to a port the bridge does not serve: ${heard}"
+else
+    pass "bridge-ports-closed" "a listener on every net zone address heard its own loopback and nothing untrusted sent to 10.19.0.1 or fd19::1"
 fi
 # personal stays up in the background for the separation and restart checks
 setsid "$KD" run personal --zones "$Z" --rootfs "$R" --passphrase-file /root/zt/personal.pass -- sh -c 'echo PERSONAL-UP; sleep 600' > "$LOG/personal-bg.out" 2>&1 &
