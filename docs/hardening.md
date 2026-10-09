@@ -42,7 +42,8 @@ machinery.
 `make audit-artifacts` (`tools/check-artifact-hardening.sh`) reads the ELF
 headers of every object. Stage 06 runs it strict on the root tree as it packs
 it into the image, so a finding fails the build, and `make acceptance` runs it
-strict on the sysroot for the record. A writable and executable segment, an
+strict again on the root image of the release it tests, mounted read-only, for
+the record. A writable and executable segment, an
 executable stack, text relocations or an RPATH into the build tree always
 fail it. In strict mode so do a missing CET note, `BIND_NOW` or RELRO, a
 non-PIE executable and any other RPATH, unless

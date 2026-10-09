@@ -269,6 +269,10 @@ merged() {
 need_host()    { if [[ "$NOHOST" -eq 1 ]]; then echo "not run (--no-host)"; else need_cargo; fi; }
 need_root()    { [[ "$EUID" -eq 0 ]] || echo "needs root (the chroot and the VM disks)"; }
 need_sysroot() { [[ -x "${SYSROOT}/usr/bin/gcc" ]] || echo "no built sysroot at ${SYSROOT} (make system)"; }
+need_root_image() {
+    [[ -f "${PAYLOAD_B}/kryptik-root.img" ]] || { echo "no root image for the release under test (make media writes images/payload-VERSION)"; return; }
+    [[ "$EUID" -eq 0 ]] || echo "needs root to mount the release's root image read-only"
+}
 need_usb()     { [[ -f "$MEDIA_USB" ]] || echo "no USB image (make media)"; }
 need_iso()     { [[ -f "$MEDIA_ISO" ]] || echo "no ISO (make media)"; }
 need_vm() {
@@ -360,7 +364,18 @@ it_media_hashes() {
 it_host_suites()   { "${SELF}/run-tests.sh" --strict; }
 it_libc_unwind()   { env KRYPTIK_ROOT="$ROOT" KRYPTIK_WORK="$KRYPTIK_WORK" KRYPTIK_SOURCES="$KRYPTIK_SOURCES" "${ROOT}/build/stages/03-chroot-prep.sh" run /kryptik/tools/tests/libc-unwind.sh; }
 it_userspace()     { "${SELF}/tests/userspace-smoke.sh"; }
-it_artifacts()     { "${SELF}/check-artifact-hardening.sh" "$SYSROOT" --strict --json "${OUT}/artifact-hardening.json"; }
+# The objects the release ships, read from its own root image: the media under
+# test, wherever they were built, not this machine's sysroot.
+it_artifacts() {
+    local mnt rc
+    mnt="$(mktemp -d "${TMPDIR:-/tmp}/kryptik-root.XXXXXX")" || return 1
+    if ! mount -o ro,loop,noexec,nosuid,nodev "${PAYLOAD_B}/kryptik-root.img" "$mnt"; then
+        echo "could not mount ${PAYLOAD_B}/kryptik-root.img read-only"; rmdir "$mnt"; return 1
+    fi
+    "${SELF}/check-artifact-hardening.sh" "$mnt" --strict --json "${OUT}/artifact-hardening.json"; rc=$?
+    umount "$mnt" && rmdir "$mnt"
+    return "$rc"
+}
 it_licences()      { "${SELF}/check-image-licences.sh" "$SYSROOT"; }
 it_kernel_config() { "${SELF}/validate-kernel-config.sh" --boot && "${SELF}/validate-kernel-config.sh" --hardened; }
 it_support_status() { "${SELF}/check-support-status.sh" --strict; }
@@ -431,7 +446,7 @@ item inputs    media-hashes               M host  0 it_media_hashes need_usb
 item build     host-suites                M host  0 it_host_suites need_host
 item build     libc-unwind                M host  0 it_libc_unwind need_sysroot
 item build     userspace-smoke            M host  0 it_userspace need_sysroot
-item build     artifact-hardening         M host  0 it_artifacts need_sysroot
+item build     artifact-hardening         M host  0 it_artifacts need_root_image
 item build     licences                   M host  0 it_licences need_sysroot
 item build     kernel-config              M host  0 it_kernel_config need_sources
 item build     support-status             M host  0 it_support_status
