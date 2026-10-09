@@ -18,6 +18,21 @@ pub const SERVICE_DIR: &str = "/run/service/net-zone";
 
 const HEADER: &str = "ctrl_interface=/run/wpa_supplicant\nupdate_config=0\n";
 
+/* How a saved network may be joined, from what was saved: a passphrase by WPA2's pre-shared
+ * key or WPA3's SAE, a raw key by the former alone (SAE needs the passphrase), and neither by
+ * 802.1X, so no access point's beacon chooses EAP for a saved SSID. Unnamed, wpa_supplicant
+ * takes WPA-PSK and WPA-EAP and never SAE. Management frames are protected where offered. */
+const KEY_MGMT_PASSPHRASE: &str = "\tkey_mgmt=WPA-PSK WPA-PSK-SHA256 SAE";
+const KEY_MGMT_KEY: &str = "\tkey_mgmt=WPA-PSK WPA-PSK-SHA256";
+const PMF: &str = "\tieee80211w=1";
+
+fn key_mgmt(psk: &Psk) -> &'static str {
+    match psk {
+        Psk::Passphrase(_) => KEY_MGMT_PASSPHRASE,
+        Psk::Hex(_) => KEY_MGMT_KEY,
+    }
+}
+
 pub fn conf_path(dir: &Path) -> PathBuf {
     dir.join(FILE_NAME)
 }
@@ -86,7 +101,7 @@ pub fn render(nets: &[Network]) -> String {
     let mut out = String::from(HEADER);
     for n in nets {
         out.push_str("\nnetwork={\n");
-        out.push_str(&format!("\tssid=\"{}\"\n", n.ssid));
+        out.push_str(&format!("\tssid=\"{}\"\n{}\n{PMF}\n", n.ssid, key_mgmt(&n.psk)));
         match &n.psk {
             Psk::Passphrase(p) => out.push_str(&format!("\tpsk=\"{p}\"\n")),
             Psk::Hex(h) => out.push_str(&format!("\tpsk={h}\n")),
@@ -100,7 +115,8 @@ pub fn render(nets: &[Network]) -> String {
 /// unchecked. Errors name the line, never its content.
 pub fn parse(text: &str) -> Result<Vec<Network>, String> {
     let mut nets = Vec::new();
-    let mut block: Option<(Option<String>, Option<Psk>)> = None;
+    // ssid, psk, key_mgmt, ieee80211w: a file an older kryptikd wrote names the last two not at all.
+    let mut block: Option<(Option<String>, Option<Psk>, Option<&str>, bool)> = None;
     for (i, line) in text.lines().enumerate() {
         let n = i + 1;
         match &mut block {
@@ -109,17 +125,24 @@ pub fn parse(text: &str) -> Result<Vec<Network>, String> {
                     continue;
                 }
                 if line == "network={" {
-                    block = Some((None, None));
+                    block = Some((None, None, None, false));
                     continue;
                 }
                 return Err(format!(
                     "line {n} is not one kryptikd writes; refusing to read a file something else edited"
                 ));
             }
-            Some((ssid, psk)) => {
+            Some((ssid, psk, km, pmf)) => {
                 if line == "}" {
                     match (ssid.take(), psk.take()) {
-                        (Some(s), Some(p)) => nets.push(Network { ssid: s, psk: p }),
+                        (Some(s), Some(p)) => {
+                            match (km.take(), *pmf) {
+                                (None, false) => {}
+                                (Some(k), true) if k == key_mgmt(&p) => {}
+                                _ => return Err(format!("line {n}: a block whose key management is not what kryptikd writes for its psk")),
+                            }
+                            nets.push(Network { ssid: s, psk: p });
+                        }
                         _ => return Err(format!("line {n}: a network block without both an ssid and a psk")),
                     }
                     block = None;
@@ -127,6 +150,14 @@ pub fn parse(text: &str) -> Result<Vec<Network>, String> {
                     check_ssid(v).map_err(|e| format!("line {n}: {e}"))?;
                     if ssid.replace(v.to_string()).is_some() {
                         return Err(format!("line {n}: a second ssid in one block"));
+                    }
+                } else if line == KEY_MGMT_PASSPHRASE || line == KEY_MGMT_KEY {
+                    if km.replace(line).is_some() {
+                        return Err(format!("line {n}: a second key_mgmt in one block"));
+                    }
+                } else if line == PMF {
+                    if std::mem::replace(pmf, true) {
+                        return Err(format!("line {n}: a second ieee80211w in one block"));
                     }
                 } else if let Some(v) = line.strip_prefix("\tpsk=") {
                     let quoted = v.strip_prefix('"').and_then(|r| r.strip_suffix('"'));
@@ -153,8 +184,8 @@ pub fn parse(text: &str) -> Result<Vec<Network>, String> {
     Ok(nets)
 }
 
-/// The configured networks, or none when there is no file yet.
-pub fn load(dir: &Path) -> Result<Vec<Network>, String> {
+/// The file's text, or none when there is no file yet.
+fn read_text(dir: &Path) -> Result<Option<String>, String> {
     let path = conf_path(dir);
     let mut f = match fs::OpenOptions::new()
         .read(true)
@@ -162,13 +193,31 @@ pub fn load(dir: &Path) -> Result<Vec<Network>, String> {
         .open(&path)
     {
         Ok(f) => f,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
     let mut bytes = Vec::new();
     f.read_to_end(&mut bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-    let text = String::from_utf8(bytes).map_err(|_| format!("{}: not UTF-8; refusing to read it", path.display()))?;
-    parse(&text).map_err(|e| format!("{}: {e}", path.display()))
+    String::from_utf8(bytes).map(Some).map_err(|_| format!("{}: not UTF-8; refusing to read it", path.display()))
+}
+
+/// The configured networks, or none when there is no file yet.
+pub fn load(dir: &Path) -> Result<Vec<Network>, String> {
+    let Some(text) = read_text(dir)? else { return Ok(Vec::new()) };
+    parse(&text).map_err(|e| format!("{}: {e}", conf_path(dir).display()))
+}
+
+/// Rewrite in today's form a file an older kryptikd wrote, so the net zone reads each network's
+/// key management; true when it was rewritten. A current, absent or foreign file is left alone.
+pub fn refresh(dir: &Path, owner: Option<(u32, u32)>) -> Result<bool, String> {
+    let Some(text) = read_text(dir)? else { return Ok(false) };
+    let nets = parse(&text).map_err(|e| format!("{}: {e}", conf_path(dir).display()))?;
+    let current = render(&nets);
+    if current == text {
+        return Ok(false);
+    }
+    write_atomic(dir, &current, owner)?;
+    Ok(true)
 }
 
 /// The SSIDs, in file order. Never a passphrase.
