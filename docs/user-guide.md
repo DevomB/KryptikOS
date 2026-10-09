@@ -293,7 +293,8 @@ root (`su`, then `reboot`): the next boot is the trial.
 When the newest statement is more than 30 days old, `status` says so, and so
 does every login prompt: "kryptik update: no statement from the release key
 for N days". Either nothing has been published, or something, the network or
-the net zone, is keeping releases from this machine.
+the net zone, is keeping releases from this machine. A machine that has never
+had one says so 30 days after it was installed.
 
 A release brought by hand is a signed payload directory holding exactly
 `manifest`, `manifest.sig`, `kryptik-root.img`, `kryptik-a.efi`,

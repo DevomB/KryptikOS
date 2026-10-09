@@ -211,6 +211,31 @@ fn latest_stores_only_valid_statements() {
 }
 
 #[test]
+fn a_machine_never_told_counts_from_its_install() {
+    let d = scratch("since-install");
+    // No statement accepted: nothing until 30 days after the install, and nothing without a channel.
+    assert_eq!(stale_line(&d, T0 + 2 * 86400, Some(T0)), None);
+    assert_eq!(stale_line(&d, T0 + 31 * 86400, None), None, "an image with no channel expects nothing");
+    let line = stale_line(&d, T0 + 31 * 86400, Some(T0)).unwrap();
+    assert!(line.starts_with("no statement from the release key since this machine was installed, 31 days ago: "));
+    assert!(status(&d, T0 + 31 * 86400, "1.0.2", Some(T0)).contains(&format!("           {line}\n")));
+    let notice = d.join("issue.d").join("kryptik-update.issue");
+    refresh_login_notice(&d, &notice, T0 + 31 * 86400, Some(T0)).unwrap();
+    assert_eq!(std::fs::read_to_string(&notice).unwrap(), format!("kryptik update: {line}\n"));
+    // Once one is accepted, its own age counts, however old the install.
+    let p = pointer_text("1.0.3", "2027-03-02T14:05:00Z");
+    latest(&d, &yes(), T0, "production", "1.0.2", p.as_bytes(), b"sig").unwrap();
+    assert_eq!(stale_line(&d, T0 + 2 * 86400, Some(T0 - 90 * 86400)), None);
+    // The install is the record's modification time.
+    let record = d.join("install.json");
+    let f = std::fs::File::create(&record).unwrap();
+    f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(T0 as u64)).unwrap();
+    assert_eq!(installed_at(&record), Some(T0));
+    assert_eq!(installed_at(&d.join("absent")), None);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn release_is_staged_in_order() {
     let d = scratch("stage");
     let p = pointer_text("1.0.3", "2027-03-02T14:05:00Z");
@@ -220,17 +245,17 @@ fn release_is_staged_in_order() {
     latest(&d, &yes(), T0, "production", "1.0.2", p.as_bytes(), b"sig").unwrap();
     assert_eq!(poll(&d, CH, "production", "1.0.2", T0), "idle", "fetching began before the person asked");
     // Status gives the statement's age in whole days, and says when it is overdue.
-    assert!(status(&d, T0 + 2 * 86400, "1.0.2").contains("newest     1.0.3 (stated 2 day(s) ago)\n"));
-    assert!(status(&d, T0 + 31 * 86400, "1.0.2").contains("no statement from the release key for 31 days"));
+    assert!(status(&d, T0 + 2 * 86400, "1.0.2", None).contains("newest     1.0.3 (stated 2 day(s) ago)\n"));
+    assert!(status(&d, T0 + 31 * 86400, "1.0.2", None).contains("no statement from the release key for 31 days"));
     // The login prompt is told the same, and only while it is so.
     let notice = d.join("issue.d").join("kryptik-update.issue");
-    refresh_login_notice(&d, &notice, T0 + 2 * 86400).unwrap();
+    refresh_login_notice(&d, &notice, T0 + 2 * 86400, None).unwrap();
     assert!(!notice.exists(), "a fresh statement gave the login prompt a notice");
-    refresh_login_notice(&d, &notice, T0 + 31 * 86400).unwrap();
+    refresh_login_notice(&d, &notice, T0 + 31 * 86400, None).unwrap();
     let said = std::fs::read_to_string(&notice).unwrap();
-    assert_eq!(said, format!("kryptik update: {}\n", stale_line(&d, T0 + 31 * 86400).unwrap()));
+    assert_eq!(said, format!("kryptik update: {}\n", stale_line(&d, T0 + 31 * 86400, None).unwrap()));
     assert!(said.contains("for 31 days: either nothing has been published, or something is keeping it from this machine"));
-    refresh_login_notice(&d, &notice, T0 + 2 * 86400).unwrap();
+    refresh_login_notice(&d, &notice, T0 + 2 * 86400, None).unwrap();
     assert!(!notice.exists(), "the notice outlived the statement's freshness");
     assert!(put(&d, &yes(), T0, "manifest", 0, b"m").unwrap_err().contains("no release has been asked for"));
     assert_eq!(want(&d, Some(CH), "production", "1.0.2").unwrap(), "1.0.3");
@@ -261,7 +286,7 @@ fn release_is_staged_in_order() {
     names.sort();
     assert_eq!(names, ["kryptik-root.img", "manifest", "manifest.sig", "root.json"], "apply refuses a directory holding anything else");
     // The chrome's launcher reads this line.
-    assert!(status(&d, T0, "1.0.2").lines().any(|l| l.starts_with("staged     1.0.3: 14 of 14 bytes, complete")));
+    assert!(status(&d, T0, "1.0.2", None).lines().any(|l| l.starts_with("staged     1.0.3: 14 of 14 bytes, complete")));
 
     // Once the machine runs it, the staging area is gone.
     forget_if_installed(&d, "1.0.2");
@@ -288,11 +313,11 @@ fn auto_follows_newest_release() {
     let d = scratch("auto");
     latest(&d, &yes(), T0, "production", "1.0.2", pointer_text("1.0.3", "2027-03-02T14:05:00Z").as_bytes(), b"sig").unwrap();
     assert_eq!(poll(&d, CH, "production", "1.0.2", T0), "idle", "fetching began before it was turned on");
-    assert!(status(&d, T0, "1.0.2").contains("fetching   only when asked"));
+    assert!(status(&d, T0, "1.0.2", None).contains("fetching   only when asked"));
     assert!(set_auto(&d, true, None).unwrap_err().contains("no update channel"));
     assert!(!auto(&d), "turned on with nothing to fetch from");
     set_auto(&d, true, Some(CH)).unwrap();
-    assert!(status(&d, T0, "1.0.2").contains("fetching   automatically"));
+    assert!(status(&d, T0, "1.0.2", None).contains("fetching   automatically"));
     assert_eq!(poll(&d, CH, "production", "1.0.2", T0), "fetch 1.0.3 https://updates.example/stable/1.0.3/ need manifest 0 manifest.sig 0");
     put(&d, &yes(), T0, "manifest", 0, b"m").unwrap();
 
