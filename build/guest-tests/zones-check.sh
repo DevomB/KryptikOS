@@ -724,6 +724,13 @@ if [[ -n "$STA_IF" && -n "$AP_IF" ]]; then
 else
     fail "wifi-module" "$(tr '\n' ' ' < "$LOG/hwsim.err") radios: $(ls /sys/class/ieee80211 2>/dev/null | tr '\n' ' ')"
 fi
+# Built with DPP, the supplicant would take DPP and GAS action frames from any radio in range.
+dpp="$(grep -ac 'DPP_BOOTSTRAP_GEN\|DPP_LISTEN' /usr/sbin/wpa_supplicant 2>/dev/null)"
+if [[ -x /usr/sbin/wpa_supplicant && "$dpp" = 0 ]]; then
+    pass "wifi-no-dpp" "/usr/sbin/wpa_supplicant is built without DPP, so it registers for no DPP or GAS action frames"
+else
+    fail "wifi-no-dpp" "/usr/sbin/wpa_supplicant holds ${dpp:-no} lines naming DPP's control commands"
+fi
 ap_up=0
 if [[ -n "$AP_IF" ]]; then
     unshare -n sleep 900 > /dev/null 2>&1 & AP_HOLD=$!

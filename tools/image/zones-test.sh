@@ -66,6 +66,7 @@ grep 'ZT FAIL' <<<"$T2" | sed 's/^/        /'
 # The key verdicts one by one, so a pass is not a single line.
 for name in kernel-support policies net-ready net-dns dhcpcd-separated dnsmasq-unprivileged zone0-nic zone0-no-route zone0-offline routed-egress routed-ping routed-ping6 routed-dns net-lease-names-resolver dns-follows-lease dns-after-reload routed-ipv6-noglobal zone-separation volume-hidden home-hidden fail-closed net-restart-ready reattach-after-restart uplink-returned uplink-retaken reattach-egress uplink-refused wifi-beyond routed-restart-path uplink-address-refused zone-flows-capped net-cpu-max-set \
             wifi-module wifi-ap wifi-add wifi-associated wifi-lease wifi-egress wifi-forget \
+            wifi-no-dpp \
             uplink-renamed-plain uplink-state-reset \
             radio-recarried \
             zone-clocks-own \
