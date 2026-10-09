@@ -226,9 +226,28 @@ fn carry_nic(nic: &str, zone_ns: i32) -> Result<Uplink, NetError> {
 /// A NIC comes back to zone 0 under whatever name the net zone that held it gave it, and the
 /// next zone's script, nft set and dhcpcd would take that name as it is: one that is not plain
 /// becomes `nic<N>` first. It came back down, as a rename needs.
+///
+/// A radio comes back with whatever netdevs that zone left on it, and leaves with one, as a
+/// boot gives it: one left with none gets a station, or nothing would carry it, and one left
+/// with several keeps the first, since moving its wiphy would take an AP, mesh or monitor
+/// netdev along, and a second station can knock the first off its network.
 pub fn physical_interfaces() -> io::Result<Vec<String>> {
+    for phy in bare_radios(Path::new("/sys/class")) {
+        match netlink::new_station(phy, "nic%d") {
+            Ok(()) => eprintln!("kryptikd: wiphy {phy} came back with no interface; it has a station now"),
+            Err(e) => eprintln!("kryptikd: wiphy {phy} came back with no interface, and none could be added: {e}"),
+        }
+    }
     let mut out = Vec::new();
-    for (name, idx) in physical_interfaces_under(Path::new("/sys/class/net"))? {
+    let mut radios = std::collections::BTreeSet::new();
+    for (name, idx, phy) in physical_interfaces_under(Path::new("/sys/class/net"))? {
+        if phy.is_some_and(|p| !radios.insert(p)) {
+            match netlink::del_interface(idx) {
+                Ok(()) => eprintln!("kryptikd: interface {name:?} deleted: its radio leaves with one"),
+                Err(e) => eprintln!("kryptikd: interface {name:?} not deleted, so it goes with its radio: {e}"),
+            }
+            continue;
+        }
         if plain_name(name.as_bytes()) {
             out.push(name.to_string_lossy().into_owned());
             continue;
@@ -255,9 +274,9 @@ fn plain_name(name: &[u8]) -> bool {
         && name.iter().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
 }
 
-/// Each physical interface's name, as the kernel holds it, and index, under any sysfs
-/// `class/net` directory, for tests.
-fn physical_interfaces_under(class_net: &Path) -> io::Result<Vec<(OsString, u32)>> {
+/// Each physical interface's name, as the kernel holds it, its index, and its wiphy's if it
+/// is a radio's, under any sysfs `class/net` directory, for tests.
+fn physical_interfaces_under(class_net: &Path) -> io::Result<Vec<(OsString, u32, Option<u32>)>> {
     let mut out = Vec::new();
     for e in std::fs::read_dir(class_net)? {
         let e = e?;
@@ -265,12 +284,27 @@ fn physical_interfaces_under(class_net: &Path) -> io::Result<Vec<(OsString, u32)
         if name == "lo" || !e.path().join("device").exists() {
             continue;
         }
-        let idx = std::fs::read_to_string(e.path().join("ifindex"))?.trim().parse::<u32>();
-        let idx = idx.map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "a sysfs ifindex is not a number"))?;
-        out.push((name, idx));
+        let idx = sysfs_index(&e.path().join("ifindex"))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "a sysfs ifindex is not a number"))?;
+        out.push((name, idx, sysfs_index(&e.path().join("phy80211/index"))));
     }
     out.sort();
     Ok(out)
+}
+
+/// The wiphys under a sysfs `class` directory that no netdev sits on, by index.
+fn bare_radios(class: &Path) -> Vec<u32> {
+    let entries = |d: &str| std::fs::read_dir(class.join(d)).into_iter().flatten().flatten();
+    let held: std::collections::BTreeSet<u32> =
+        entries("net").filter_map(|e| sysfs_index(&e.path().join("phy80211/index"))).collect();
+    let mut bare: Vec<u32> =
+        entries("ieee80211").filter_map(|e| sysfs_index(&e.path().join("index"))).filter(|p| !held.contains(p)).collect();
+    bare.sort();
+    bare
+}
+
+fn sysfs_index(path: &Path) -> Option<u32> {
+    std::fs::read_to_string(path).ok()?.trim().parse().ok()
 }
 
 /// Plumb the nic zone (uplinks and bridge), then reattach running routed zones.

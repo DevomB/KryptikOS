@@ -249,6 +249,13 @@ configured the zone keeps its IPv4 path and the launcher says so.
   `/sys/class/net/<n>/phy80211` exists. Every interface on the wiphy moves
   with its name, and cfg80211 returns the wiphy to the initial namespace when
   the net zone's namespace dies.
+- **It leaves zone 0 as a boot gives it, with one station.** The net zone
+  can add netdevs to its radio, an AP, mesh or monitor one, or delete the
+  one it has, and the radio comes back so. The next start deletes all but the
+  first (`NL80211_CMD_DEL_INTERFACE`) and gives a radio with none a station
+  named `nic<N>` (`NL80211_CMD_NEW_INTERFACE`), then carries each radio once.
+  Otherwise a second netdev failed the start once its radio had moved with
+  the first, and a radio with none stayed in zone 0 until a reboot.
 - **It associates before it leases.** The script finds radios by their
   `phy80211` link, not by name, and runs one `wpa_supplicant` per radio on
   `/etc/wpa_supplicant.conf`, restarting one that dies; dhcpcd takes the
@@ -340,7 +347,10 @@ as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
 - The zones suite has the net zone rename its NIC `-x"y` and restarts it: the
   NIC is back in zone 0 under that name, and the next start comes up `READY`
   with it as `nic<N>`. `netlink::tests::rename_by_index_takes_a_template`
-  renames a veth by its index to `nic%d`.
+  renames a veth by its index to `nic%d`. Over the simulated radio it leaves
+  the net zone's radio with a monitor netdev beside the station, then with no
+  netdev at all, and each time the next start carries it with one station
+  that joins the access point again.
 - `tools/tests/netzone-uplink.sh`: the zones a definition lets through, by the
   address kryptikd derives for each, every host's addresses pinned to its own
   MAC and the MAC the same as `netlink::zone_mac`, the gateway sets as nft is
