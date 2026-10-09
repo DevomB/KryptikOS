@@ -79,8 +79,9 @@ commit_slot() {   # commit_slot <slot>: make BOOTX64.EFI this slot's kernel
         if cmp -s "$src" "$dst"; then
             say "BOOTX64.EFI already is slot $1"; rc=0
         else
-            # Copy, fsync, then rename: on FAT only the rename is not atomic.
-            cp "$src" "$dst.new" && sync -f "$dst.new" && mv -f "$dst.new" "$dst" && sync -f "$dst" && rc=0
+            # Copy, fsync, compare, then rename: on FAT only the rename is not atomic, and a
+            # copy that reads back wrong never becomes the boot file.
+            cp "$src" "$dst.new" && sync -f "$dst.new" && cmp -s "$src" "$dst.new" && mv -f "$dst.new" "$dst" && sync -f "$dst" && rc=0
             [ "$rc" -eq 0 ] && say "committed: BOOTX64.EFI is now slot $1"
         fi
         # The record is part of the commit, and follows the boot file: kryptik-update

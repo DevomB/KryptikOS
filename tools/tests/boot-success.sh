@@ -72,6 +72,13 @@ case "$*" in
     *BOOTX64.EFI.new) [ ! -e "$KTEST/sync_fails_boot" ] ;;
 esac
 EOF
+# cmp: the real one, but a copy of a kernel to BOOTX64.EFI.new can be made to read back wrong.
+REAL_CMP="$(command -v cmp)"
+cat > "$T/bin/cmp" <<EOF
+#!/bin/sh
+case "\$*" in *BOOTX64.EFI.new) [ -e "\$KTEST/copy_bad" ] && exit 1 ;; esac
+exec "$REAL_CMP" "\$@"
+EOF
 chmod +x "$T"/bin/*
 
 run_case() {   # run_case NAME SLOT MEDIA STATE TRIAL-CONTENT SERVICES...: stage a case
@@ -138,6 +145,9 @@ check "a committed-slot record that cannot be written fails the commit: the tria
     "$RESULT|$(cat "$KTEST/esp/kryptik/committed-slot")|$([[ -e "$KTEST/boot/trial" ]] && echo kept || echo gone)|$(grep -c 'efiboot forget' "$KTEST/calls" 2>/dev/null)" "commit-failed b|a|kept|0"
 run_case bootfail b "" persistent 'b\narmed=1\n' $ALL; : > "$KTEST/sync_fails_boot"; go
 check "a boot file that cannot be replaced fails the commit, and the record goes on naming the slot BOOTX64.EFI boots" \
+    "$RESULT|$(cat "$KTEST/esp/EFI/BOOT/BOOTX64.EFI")|$(cat "$KTEST/esp/kryptik/committed-slot")|$([[ -e "$KTEST/boot/trial" ]] && echo kept || echo gone)" "commit-failed b|kernel-a|a|kept"
+run_case copybad b "" persistent 'b\narmed=1\n' $ALL; : > "$KTEST/copy_bad"; go
+check "a boot file whose copy reads back wrong is not renamed into place: the commit fails, the trial stays" \
     "$RESULT|$(cat "$KTEST/esp/EFI/BOOT/BOOTX64.EFI")|$(cat "$KTEST/esp/kryptik/committed-slot")|$([[ -e "$KTEST/boot/trial" ]] && echo kept || echo gone)" "commit-failed b|kernel-a|a|kept"
 run_case commit0 b "" persistent 'b\narmed=0\n' $ALL; go
 check "a trial that booted before its armed=1 line was written is still a trial: committed" "$RESULT" "commit b"
