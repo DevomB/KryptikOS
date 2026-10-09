@@ -136,7 +136,8 @@ work in zones from a terminal and a text browser, and keep it up to date.
       held by cgroup `cpu.max`; `io_max` is bytes per second each way on an
       encrypted zone's volume, held by `io.max` on the volume's devices
       ([design](design/resource-limits-and-ephemeral-zones.md)). The launcher
-      suite measures both, and `untrusted` ships with `cpu_max = "200%"`.
+      suite measures both; `untrusted` ships with `cpu_max = "200%"` and
+      `net` with `"100%"`, and the zones suite reads both back.
       Weights are not set: `io.weight` waits on a kernel choice, blk-iocost or BFQ.
 - [x] **The setuid audit fails.** Stage 06 refuses an unlisted setuid bit and
       a list entry without its reason; shadow's and util-linux's spare bits are
