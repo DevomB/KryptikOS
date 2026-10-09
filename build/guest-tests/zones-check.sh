@@ -192,6 +192,27 @@ q = struct.pack(">HHHHHH", 0x4321, 0x0100, 1, 0, 0, 0) + b"\x07kryptik\x04test\x
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(4)
 s.sendto(q, ("10.19.0.1", 53)); d, _ = s.recvfrom(512); print("DNS-STILL-ANSWERED rcode=%d" % (d[3] & 0x0f))'
 [[ "$ZOUT" == *DNS-STILL-ANSWERED* ]] && pass "dns-after-reload" "$(grep -o 'DNS-STILL-ANSWERED.*' "$LOG/untrusted.out")" || fail "dns-after-reload" "no answer from the resolver: $(tail -1 "$LOG/untrusted.err")"
+# The resolver every routed zone shares keeps nothing one zone could read back
+# about another's lookups. dnsmasq names its cache in the line it starts with;
+# and asked from a zone for its version and its hits.bind count, the CHAOS
+# records it would answer from itself, it gives neither.
+started="$(uncaught | grep -a 'dnsmasq\[[0-9]*\]: started, version' | tail -1)"
+[[ "$started" == *"cache disabled"* ]] && pass "dns-cache-off" "${started#*: }" || fail "dns-cache-off" "${started:-dnsmasq logged no start line}"
+zrun untrusted 20 -- python3 -c 'import socket, struct
+for n, t in (("version", 0x5101), ("hits", 0x5102)):
+    q = struct.pack(">HHHHHH", t, 0x0100, 1, 0, 0, 0) + bytes([len(n)]) + n.encode() + b"\x04bind\x00" + struct.pack(">HH", 16, 3)
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(3)
+    try:
+        s.sendto(q, ("10.19.0.1", 53)); d, _ = s.recvfrom(512)
+        print("CHAOS-%s rcode=%d answers=%d%s" % (n, d[3] & 0x0f, struct.unpack(">H", d[6:8])[0], " names-dnsmasq" if b"dnsmasq" in d.lower() else ""))
+    except Exception as e:
+        print("CHAOS-%s no-answer %s" % (n, e))'
+chaos="$(grep -o 'CHAOS-.*' "$LOG/untrusted.out" | tr '\n' ' ')"
+if [[ "$chaos" == *CHAOS-version* && "$chaos" == *CHAOS-hits* && "$chaos" != *names-dnsmasq* && "$chaos" != *"CHAOS-hits rcode=0 answers="[1-9]* ]]; then
+    pass "dns-counters-hidden" "$chaos"
+else
+    fail "dns-counters-hidden" "${chaos:-no output} $(tail -1 "$LOG/untrusted.err")"
+fi
 
 # (the vault is probed once its volume exists, under storage below)
 

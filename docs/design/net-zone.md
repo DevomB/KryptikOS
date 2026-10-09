@@ -120,10 +120,20 @@ query and the [update](update-channel.md) fetcher. Builds on
   after it started, or another network's, reaches it within ten seconds: the
   zone's loop compares the servers `resolv.conf` names with the ones dnsmasq
   was given and on a change replaces the file, which dnsmasq reads before its
-  next query (at most once a second), forgetting what the last servers
-  answered. A lease that lapsed leaves the last servers in place. It answers
-  the test TLD `.test` itself, so resolving `kryptik.test` tests the path to
-  the resolver, not the internet.
+  next query (at most once a second). A lease that lapsed leaves the last
+  servers in place. It answers the test TLD `.test` itself, so resolving
+  `kryptik.test` tests the path to the resolver, not the internet.
+- **The resolver keeps nothing for the next zone.** Every routed zone asks
+  the same dnsmasq, so it keeps no cache (`--cache-size=0`) and no CHAOS
+  records (`--no-ident`). A cached answer comes back sooner, and with less of
+  its TTL left, to the next zone that asks, and `hits.bind` and `misses.bind`
+  count every zone's lookups: either would tell one zone what another looked
+  up. Each lookup costs a round trip to the uplink's servers; what a program
+  caches itself stays in its zone. Two things remain. A zone that asks for a
+  name while another zone's lookup of it is in flight gets that lookup's
+  answer, as dnsmasq forwards identical queries once, so it can tell the name
+  was asked within the last round trip. And the uplink's servers keep caches
+  of their own, shared with every machine on that network.
 - **dhcpcd separates its privileges.** What parses a lease, a DHCPv6 reply
   or a router advertisement runs as the zone's `dhcpcd` user, chrooted to an
   empty `/var/empty`, with no capability and dhcpcd's own seccomp filter over
@@ -321,7 +331,9 @@ as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
   starting the net zone takes the host's interface.
 - `build/guest-tests/zones-check.sh` on the installed system checks every
   guarantee above under QEMU user networking: the net zone `READY`, zone 0
-  offline, a routed zone's address, NAT, ULA-only IPv6 and resolver, zones
+  offline, a routed zone's address, NAT, ULA-only IPv6 and resolver, the
+  resolver's start line saying its cache is disabled and a zone's CHAOS
+  queries getting neither its version nor its counts, zones
   separated while each reaches the bridge, a routed zone started again as its
   last run ends keeping its path, a zone's datagrams sent from another zone's
   addresses counted where they reach the net zone and never taken in while its
