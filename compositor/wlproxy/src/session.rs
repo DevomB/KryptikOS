@@ -364,6 +364,8 @@ pub struct Session {
     pub toplevels: usize,
     /// Globals let through to the client: name -> (interface, version cap).
     globals: HashMap<u32, (&'static str, u32)>,
+    /// wl_output object -> the global it was bound from, which names the output to the zone.
+    outputs: HashMap<u32, u32>,
     pub hidden_count: usize,
     pub forwarded_c2s: u64,
     pub forwarded_s2c: u64,
@@ -394,6 +396,7 @@ impl Session {
             shm_pool_count: 0,
             toplevels: 0,
             globals: HashMap::new(),
+            outputs: HashMap::new(),
             hidden_count: 0,
             forwarded_c2s: 0,
             forwarded_s2c: 0,
@@ -582,6 +585,11 @@ impl Session {
                         if version > max {
                             return Err(SessionError::VersionTooHigh { interface: name.to_string(), asked: version, max });
                         }
+                        if name == "wl_output" {
+                            if let Some((id, _)) = decoded.new_object {
+                                self.outputs.insert(id, gname);
+                            }
+                        }
                     }
                     if iface.name == "xdg_toplevel" && (m.name == "set_title" || m.name == "set_app_id") {
                         if let Some((_, s)) = decoded.strings.first() {
@@ -729,12 +737,29 @@ impl Session {
                          * a bind racing the removal is the compositor's to answer. */
                         forward = self.globals.contains_key(&gname); // hidden: never seen
                     }
+                    /* A monitor's make and model, and its serial, which wlroots puts in the
+                     * description, would follow the machine from zone to zone: blank, and the
+                     * output named by its global's number, the same in every client. */
+                    if iface.name == "wl_output" && matches!(m.name, "geometry" | "name" | "description") {
+                        let mut r = ArgReader::new(&msg[HEADER_LEN..]);
+                        let w = MessageWriter::new(h.object, h.opcode);
+                        let w = if m.name == "geometry" {
+                            let (x, y, mm_w, mm_h, subpixel) = (r.u32()?, r.u32()?, r.u32()?, r.u32()?, r.u32()?);
+                            let _ = (r.string()?, r.string()?);
+                            let transform = r.u32()?;
+                            w.u32(x).u32(y).u32(mm_w).u32(mm_h).u32(subpixel).string("").string("").u32(transform)
+                        } else {
+                            w.string(&format!("output-{}", self.outputs.get(&h.object).copied().unwrap_or(0)))
+                        };
+                        rewritten = Some(w.finish().ok_or(SessionError::Wire(WireError::BadSize(h.size)))?);
+                    }
                     if h.object == WL_DISPLAY && h.opcode == WL_DISPLAY_DELETE_ID {
                         let mut r = ArgReader::new(&msg[HEADER_LEN..]);
                         let id = r.u32()?;
                         if self.objects.get(id).is_some_and(|(i, _)| i.name == "xdg_toplevel") {
                             self.toplevels -= 1;
                         }
+                        self.outputs.remove(&id);
                         if let Some(generation) = self.pool_ids.remove(&id) {
                             self.pools.get_mut(&generation).unwrap().deleted = true;
                             self.release_pool_if_unused(generation);
