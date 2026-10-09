@@ -126,11 +126,14 @@ boot ID the origin is new at every start, so each start reads as a new boot.
 The idle time summed in `/proc/uptime` does not shift (`uptime.c:25`), nor
 does `CLOCK_REALTIME`, which zone 0 sets for every zone. The offsets
 themselves are shown: every process may read `/proc/<pid>/timens_offsets`,
-which the kernel keeps for checkpoint and restore, and no mount covers a file
-under every pid, so a program that looks for them works out the machine's
-clocks. The namespace keeps the shared uptime and boot time out of what crash
-reports and telemetry send, as the boot ID does; it does not hide them from a
-zone set on linking itself to another, which the idle time would allow anyway.
+which the kernel keeps for checkpoint and restore. So is the scheduler's
+clock, which `/proc/<pid>/sched` prints untranslated (`se.exec_start`,
+`kernel/sched/debug.c`; 6.18 builds the file without a debug option,
+`fs/proc/base.c:3330`). No mount covers a file under every pid, so a program
+that looks for either works out the machine's clocks. The namespace keeps the
+shared uptime and boot time out of what crash reports and telemetry send, as
+the boot ID does; it does not hide them from a zone set on linking itself to
+another, which the idle time would allow anyway.
 
 A zone's programs read the compositor's input and frame times against their
 own clock, offset from it; the protocol gives those times no base to compare
@@ -147,7 +150,7 @@ frame callbacks while the zone's clock stands apart from the compositor's
 | | genl family filter | wpa_supplicant privsep | time namespace |
 | --- | --- | --- | --- |
 | closes | ethtool's setters, other families' namespace-admin commands | the zone's root for a flaw in Wi-Fi parsing | the shared boot and monotonic clocks, for what reads clocks |
-| leaves | nf_tables, packet sockets, nl80211 | `wpa_priv` as root; the kernel's own 802.11 parsing | idle time, `CLOCK_REALTIME`, the offsets in `/proc/self/timens_offsets` |
+| leaves | nf_tables, packet sockets, nl80211 | `wpa_priv` as root; the kernel's own 802.11 parsing | idle time, `CLOCK_REALTIME`, the offsets in `/proc/self/timens_offsets`, the scheduler's clock in `/proc/<pid>/sched` |
 | needs | BPF and a BPF LSM, or a kernel patch | a second build, a mapped id, a trial of WPA3 | a flag and an offsets write in kryptikd (built) |
 | a suite can show it | yes | yes, over hwsim | yes |
 

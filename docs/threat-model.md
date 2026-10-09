@@ -31,9 +31,11 @@ per-CPU packet counts in `/proc/net/softnet_stat`, as `/proc/net` follows
 each process; the idle time of all CPUs summed, to a hundredth of a second,
 in `/proc/uptime`, which `ps` and `uptime` read; the offsets that move the
 zone's clocks, in `/proc/self/timens_offsets`, which the kernel shows every
-process for checkpoint and restore, so code that looks for them works out the
-machine's uptime; the free memory in `/proc/meminfo`, coarse, which programs
-need; and the idle counts of a CPU brought online after the zone started.
+process for checkpoint and restore, and the scheduler's clock in
+`/proc/<pid>/sched`, which no time namespace moves, so code that looks for
+either works out the machine's uptime; the free memory in `/proc/meminfo`,
+coarse, which programs need; and the idle counts of a CPU brought online
+after the zone started.
 Escaping needs a kernel bug
 ([kernel local privilege escalation](#kernel-local-privilege-escalation)).
 
