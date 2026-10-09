@@ -10,7 +10,7 @@ run. The build never makes these keys (`build/lib/release-keys.sh`).
 | Key | Signs | Where it lives | If it is stolen |
 | --- | --- | --- | --- |
 | `kryptik-release` (Ed25519) | every release's manifest, and the checksums of its install media | the `release` environment's `KRYPTIK_KEY_MEDIUM` secret, and the backup | the thief can sign a release that every machine installs |
-| `kryptik-latest` (Ed25519) | the channel's "this release is current" statement, daily | the `KRYPTIK_LATEST_KEY` repository secret, `KRYPTIK_KEY_MEDIUM`, and the backup | machines can be held on an old release; nothing can be installed with it |
+| `kryptik-latest` (Ed25519) | the channel's "this release is current" statement, daily | the `github-pages` environment's `KRYPTIK_LATEST_KEY` secret, which only main's workflows reach, `KRYPTIK_KEY_MEDIUM`, and the backup | machines can be held on an old release, and where the thief can also hand them statements, as a net zone they hold can, nothing reports it; nothing can be installed with it |
 | `kryptik-sb` (RSA, X.509) | the kernels, for Secure Boot | `KRYPTIK_KEY_MEDIUM`, and the backup | the thief can sign kernels that machines which enrolled it will boot |
 | `kryptik-testctl` (Ed25519) | a control disk that arms an unattended install or recovery on a machine booting a release's medium (the suites' installs) | the `release-tests` environment's `KRYPTIK_TESTCTL_KEY` secret, and the backup | the thief can wipe a disk on a machine they boot a release's medium on with a control disk attached; nothing can be signed or installed with it |
 | the module key | the kernel's modules | nowhere: each kernel build makes one and throws it away | nothing to steal |
@@ -56,10 +56,11 @@ key.
 
 Once, on a machine you trust.
 
-1. Make the two environments. `release` takes only `v*` tags and waits for a
-   reviewer; `release-tests` takes only `v*` tags. A run that names an
-   environment before it exists creates one with no rules, so these come
-   first:
+1. Make the environments. `release` takes only `v*` tags and waits for a
+   reviewer; `release-tests` takes only `v*` tags; `github-pages`, where the
+   channel workflow signs statements on its schedule with no one to approve,
+   takes only `main`. A run that names an environment before it exists
+   creates one with no rules, so these come first:
 
    ```sh
    me="$(gh api user --jq .id)"
@@ -72,10 +73,15 @@ Once, on a machine you trust.
    for e in release release-tests; do
        gh api -X POST "repos/{owner}/{repo}/environments/$e/deployment-branch-policies" -f name='v*' -f type=tag
    done
+   gh api -X PUT repos/{owner}/{repo}/environments/github-pages --input - <<EOF
+   {"deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}}
+   EOF
+   gh api -X POST repos/{owner}/{repo}/environments/github-pages/deployment-branch-policies -f name=main -f type=branch
    ```
 
 2. Run `tools/make-release-keys.sh BACKUP-DIR` from the checkout. It refuses
-   to go on unless `release` has a reviewer and a tag policy. It asks for a
+   to go on unless `release` has a reviewer and a tag policy and
+   `github-pages` deploys from `main` alone. It asks for a
    passphrase for the backup and makes the four keys in a temporary
    directory, with no passphrase of their own, since the workflow signs
    unattended. It writes `BACKUP-DIR/kryptik-keys.tar.gz.enc` and checks
@@ -84,7 +90,8 @@ Once, on a machine you trust.
    - `KRYPTIK_KEY_MEDIUM` in `release`: the medium the sign job unpacks,
      every file its owner's alone, without the control-disk key;
    - `KRYPTIK_TESTCTL_KEY` in `release-tests`;
-   - `KRYPTIK_LATEST_KEY` for the repository.
+   - `KRYPTIK_LATEST_KEY` in `github-pages`. A repository secret would reach
+     every branch's workflows, and nothing approves this key's runs.
 
    It copies `release-signers` and `kryptik-sb.crt` to `build/config/release/`.
    The temporary directory goes when it exits.
@@ -172,7 +179,9 @@ A stolen GitHub account, or a way into the `release` environment, is a stolen
 release key: revoke the account's sessions and tokens first.
 
 - **Statement key.** Machines can be held on an old release, which a hostile
-  network can do anyway, and they report it after 30 days. Replace the key as
+  network can do anyway, and they report it after 30 days, unless the thief
+  can also hand them statements, as a net zone they hold can: fresh ones
+  naming the old release keep the report from appearing. Replace the key as
   above.
 - **Release key.** The thief can sign a release that machines will install.
   Machines trust no other key yet, so your answer has to be signed with the

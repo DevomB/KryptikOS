@@ -31,6 +31,13 @@ rules="$(gh api "repos/${repo}/environments/release" --jq '[.protection_rules[].
 [[ "$rules" == "branch_policy,required_reviewers" ]] \
     || die "the release environment's rules are '${rules:-none}', not a required reviewer and a tag policy (docs/release-keys.md)"
 gh api "repos/${repo}/environments/release-tests" --jq '.name' > /dev/null 2>&1 || die "no release-tests environment (docs/release-keys.md)"
+# The statement key signs daily with no one to approve it: its environment's one rule is main.
+# The list counts only while the environment keeps to its own list, not to protected branches.
+custom="$(gh api "repos/${repo}/environments/github-pages" --jq '.deployment_branch_policy.custom_branch_policies' 2>/dev/null || true)"
+pages="$(gh api "repos/${repo}/environments/github-pages/deployment-branch-policies" --jq '[.branch_policies[] | (.type // "branch") + ":" + .name] | join(",")' 2>/dev/null || true)"
+[[ "$custom" == true ]] || pages=""
+[[ "$pages" == "branch:main" ]] \
+    || die "the github-pages environment deploys from '${pages:-any branch}', not main alone (docs/release-keys.md)"
 
 read -rs -p "Backup passphrase: " pp; echo
 read -rs -p "Again: " pp2; echo
@@ -65,8 +72,8 @@ tar --mode='go-rwx' --owner=0 --group=0 -cz release-signers kryptik-release kryp
     kryptik-latest kryptik-latest.pub kryptik-sb.key kryptik-sb.crt | base64 -w0 \
     | gh secret set KRYPTIK_KEY_MEDIUM --env release --repo "$repo"
 gh secret set KRYPTIK_TESTCTL_KEY --env release-tests --repo "$repo" < kryptik-testctl
-gh secret set KRYPTIK_LATEST_KEY --repo "$repo" < kryptik-latest
-ok "secrets: KRYPTIK_KEY_MEDIUM (release), KRYPTIK_TESTCTL_KEY (release-tests), KRYPTIK_LATEST_KEY (the repository)"
+gh secret set KRYPTIK_LATEST_KEY --env github-pages --repo "$repo" < kryptik-latest
+ok "secrets: KRYPTIK_KEY_MEDIUM (release), KRYPTIK_TESTCTL_KEY (release-tests), KRYPTIK_LATEST_KEY (github-pages)"
 
 cp release-signers kryptik-sb.crt "${public}/"
 ok "public halves: ${public}/release-signers and ${public}/kryptik-sb.crt, to commit"
