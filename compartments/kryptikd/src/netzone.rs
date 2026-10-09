@@ -193,12 +193,12 @@ pub fn uplink_config(nic: &str) -> io::Result<Uplink> {
 
 /// Move `nic` into `zone_ns`, re-applying the IPv4 configuration it loses (DHCP is the zone's job).
 fn carry_nic(nic: &str, zone_ns: i32) -> Result<Uplink, NetError> {
-    let cfg = uplink_config(nic).map_err(|e| io(&format!("read the configuration of {nic}"), e))?;
+    let cfg = uplink_config(nic).map_err(|e| io(&format!("read the configuration of {nic:?}"), e))?;
     // A wireless netdev is namespace-local; move its wiphy instead.
-    match netlink::wiphy_index_of(nic).map_err(|e| io(&format!("read the wiphy of {nic}"), e))? {
+    match netlink::wiphy_index_of(nic).map_err(|e| io(&format!("read the wiphy of {nic:?}"), e))? {
         Some(phy) => netlink::set_wiphy_netns(phy, zone_ns)
-            .map_err(|e| io(&format!("move {nic} (wiphy {phy}) into the nic zone"), e))?,
-        None => netlink::set_netns(nic, zone_ns).map_err(|e| io(&format!("move {nic} into the nic zone"), e))?,
+            .map_err(|e| io(&format!("move {nic:?} (wiphy {phy}) into the nic zone"), e))?,
+        None => netlink::set_netns(nic, zone_ns).map_err(|e| io(&format!("move {nic:?} into the nic zone"), e))?,
     }
     netlink::with_netns(zone_ns, || {
         for (a, p) in &cfg.addrs {
@@ -209,14 +209,14 @@ fn carry_nic(nic: &str, zone_ns: i32) -> Result<Uplink, NetError> {
             // The first uplink's default route stands; the zone's DHCP client sorts them out later.
             match netlink::add_default_route4(gw, nic) {
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                    eprintln!("kryptikd: {nic}: the nic zone already has a default route; keeping the first")
+                    eprintln!("kryptikd: {nic:?}: the nic zone already has a default route; keeping the first")
                 }
                 r => r?,
             }
         }
         Ok(())
     })
-    .map_err(|e| io(&format!("configure {nic} inside the nic zone"), e))?;
+    .map_err(|e| io(&format!("configure {nic:?} inside the nic zone"), e))?;
     Ok(cfg)
 }
 
@@ -314,7 +314,7 @@ fn plumb_nic_zone_bridge(zone: &Zone, zone_ns: i32) -> Result<(), NetError> {
     }
     for n in &nics {
         let carried = carry_nic(n, zone_ns)?;
-        eprintln!("kryptikd: zone {:?}: {n} moved in with {carried}", zone.name);
+        eprintln!("kryptikd: zone {:?}: {n:?} moved in with {carried}", zone.name);
     }
     netlink::with_netns(zone_ns, || {
         up_lo()?;

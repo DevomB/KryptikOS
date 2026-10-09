@@ -334,6 +334,14 @@ fn unknown_nic_refused_before_move() {
 }
 
 #[test]
+fn nic_name_escaped_in_errors() {
+    /* A net zone can rename its NIC to bytes a terminal acts on, and the NIC comes back to
+     * zone 0 under that name: kryptikd's words and netlink's both escape it. */
+    let e = carry_nic("e\u{1b}[2Jth0", -1).unwrap_err().to_string();
+    assert!(!e.contains('\u{1b}') && e.matches("\\u{1b}").count() == 2, "{e:?}");
+}
+
+#[test]
 fn replumb_empty_directory_attempts_nothing() {
     let dir = std::env::temp_dir().join(format!("kryptik-rp-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
