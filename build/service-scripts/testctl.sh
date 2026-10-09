@@ -3,6 +3,7 @@
 # Read only on an install medium, so the disk cannot reinstall or shut down an installed
 # system, and only when the anchor's kryptik-testctl key signed it, so no other disk can arm one.
 #   testctl_load      0, with TESTCTL_FILE set, when a control file was read
+#   testctl_take DIR  0, with TESTCTL_FILE set, when DIR's control file verifies
 #   testctl_get KEY   the value, or empty
 # Keys: install_target=/dev/vdb  install_replace=1  install_slot_mib=MIB  install_keyboard=NAME
 #       install_wait=SECONDS  state_passphrase=TEXT  preseed_user=NAME  preseed_password_hash=HASH
@@ -20,6 +21,23 @@ testctl_signed() {   # testctl_signed FILE
         -s "$1.sig" < "$1" > /dev/null 2>&1
 }
 
+# The file and its signature are copied once and the copy is what is verified
+# and read: a disk that served other bytes on a later read changes nothing. At
+# most 64 KiB of each is taken, so no file fills /run before its check.
+testctl_take() {   # testctl_take DIR
+    TESTCTL_FILE=""
+    _tc="$(mktemp -d "${TESTCTL_COPIES:-/run/kryptik}/testctl.XXXXXX")" || return 1
+    if head -c 65537 "$1/kryptik-test.conf" > "$_tc/kryptik-test.conf" 2>/dev/null \
+        && head -c 65537 "$1/kryptik-test.conf.sig" > "$_tc/kryptik-test.conf.sig" 2>/dev/null \
+        && [ "$(wc -c < "$_tc/kryptik-test.conf")" -le 65536 ] && [ "$(wc -c < "$_tc/kryptik-test.conf.sig")" -le 65536 ] \
+        && testctl_signed "$_tc/kryptik-test.conf"; then
+        TESTCTL_FILE="$_tc/kryptik-test.conf"
+        return 0
+    fi
+    rm -rf "$_tc"
+    return 1
+}
+
 testctl_media() {
     grep -qs '^media=.\+' /run/kryptik/boot-identity 2>/dev/null && return 0
     grep -qE '(^| )kryptik\.media=[a-z]+( |$)' /proc/cmdline 2>/dev/null
@@ -35,12 +53,11 @@ testctl_load() {
         mount -t vfat -o ro,nosuid,nodev,noexec "$dev" "$TESTCTL_MNT" 2>/dev/null || return 1
     fi
     [ -r "$TESTCTL_MNT/kryptik-test.conf" ] || return 1
-    if ! testctl_signed "$TESTCTL_MNT/kryptik-test.conf"; then
+    if ! testctl_take "$TESTCTL_MNT"; then
         echo "testctl: the control file on ${dev} is not signed by this medium's kryptik-testctl key; ignored"
         umount "$TESTCTL_MNT" 2>/dev/null
         return 1
     fi
-    TESTCTL_FILE="$TESTCTL_MNT/kryptik-test.conf"
     echo "testctl: control file read from ${dev} (install medium only)"
     return 0
 }
