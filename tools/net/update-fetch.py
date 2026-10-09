@@ -10,6 +10,7 @@ Trusted for nothing, TLS included: zone 0 names the channel in update.conf and
 verifies every piece. Keeps nothing: a release is larger than this zone's storage.
 """
 import argparse
+import ctypes
 import socket
 import ssl
 import sys
@@ -19,6 +20,17 @@ import urllib.request
 PIECE = 1 << 20        # the most one update-put carries
 SMALL = 8 * 1024       # the most a statement or its signature may be
 ROUNDS = 8             # polls per run: the manifest, then the files, then idle
+
+
+def drop_capabilities():
+    """None of the net zone root's capabilities, CAP_NET_ADMIN among them, for what reads a far
+    host's bytes; no new privileges, so an exec cannot take them back."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    ulong = ctypes.c_ulong
+    header = (ctypes.c_uint32 * 2)(0x20080522, 0)      # capability version 3, this process
+    # 38 is PR_SET_NO_NEW_PRIVS; capset with zeroed sets empties effective, permitted and inheritable.
+    if libc.prctl(38, ulong(1), ulong(0), ulong(0), ulong(0)) or libc.capset(header, (ctypes.c_uint32 * 6)()):
+        raise OSError(ctypes.get_errno(), "the net zone's capabilities could not be dropped")
 
 
 def ask(broker, header, payload=b""):
@@ -122,6 +134,7 @@ def main():
     ap.add_argument("--ca", default="/etc/ssl/certs/ca-certificates.crt")
     args = ap.parse_args()
     try:
+        drop_capabilities()
         return latest(args) if args.what == "latest" else poll(args)
     except (OSError, ValueError) as e:     # urllib's errors are OSErrors
         # One line: the text can hold a host's own words, line ends among them.

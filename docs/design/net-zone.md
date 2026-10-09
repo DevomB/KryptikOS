@@ -163,6 +163,12 @@ query and the [update](update-channel.md) fetcher. Builds on
   nothing but `nameserver` lines (`tools/tests/netzone-hook.sh`). A bug in a
   parser no longer reaches the Wi-Fi credentials, the broker's socket, the
   firewall's netlink socket or a program to run.
+- **The clock query and the update fetcher hold no capability.**
+  `sntp-offset.py` and `update-fetch.py` run as the zone's root and, before
+  they read anything from the network, set no new privileges and empty their
+  capability sets with `capset`, which the filter allows for the drops above.
+  What parses a time server's reply, TLS or HTTP keeps the zone root's files,
+  but not the firewall, the routes or a raw socket.
 - **Readiness**, printed again on any change:
 
 ```text
@@ -358,6 +364,10 @@ as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
   point, whose own address that zone is refused while it reaches an address
   the access point routes. It pings with an unprivileged ICMP socket
   (`build/guest-tests/icmp-echo.py`), since routed zones lack `CAP_NET_RAW`.
+- The zones suite runs `sntp-offset.py` and `update-fetch.py` in the net
+  zone's user namespace, where its root holds every capability, keeps each
+  waiting on something that never answers, and reads that neither holds a
+  capability and both have no new privileges.
 
 ## Kernel requirements
 
