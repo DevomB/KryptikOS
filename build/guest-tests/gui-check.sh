@@ -223,6 +223,31 @@ else
     fail "map-keeps-zone0-focus" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus"); probe: $(since_mark map untrusted | tail -3 | tr '\n' ' ')"
 fi
 wait_for 20 test ! -e /run/kryptik/zones/untrusted/init.pid; sleep 1
+# Nor the keyboard when the zone 0 window it mapped behind closes, as a
+# question does once answered: the keyboard goes back to the window before.
+as_user "/usr/libexec/kryptik/wlprobe oversize 0 90 holder" > "$LOG/holder.out" 2>&1 &
+holder_pid=$!
+wait_for 15 grep -q 'keyboard entered the window' "$LOG/holder.out"
+as_user "/usr/libexec/kryptik/wlprobe oversize 0 90 closer" > "$LOG/closer.out" 2>&1 &
+closer_pid=$!
+wait_for 15 grep -q 'keyboard entered the window' "$LOG/closer.out"
+mark behind untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe oversize 0 30 behind" > "$LOG/launch-behind.out" 2>&1
+wait_for 20 probe_committed behind; sleep 1
+pkill -u "$USER_NAME" -f 'wlprobe oversize 0 90 closer' 2>/dev/null; wait "$closer_pid" 2>/dev/null
+sleep 3
+back="$(grep -c 'keyboard entered the window' "$LOG/holder.out")"
+if ! probe_committed behind; then
+    fail "close-keeps-zone0-focus" "the zone's window never drew: $(since_mark behind untrusted | tail -3 | tr '\n' ' ')"
+elif since_mark behind untrusted | grep -q 'keyboard entered'; then
+    fail "close-keeps-zone0-focus" "the zone's window took the keyboard when the zone 0 window in front of it closed; focus: $(tr '\n' ' ' < "$RT/kryptik/focus")"
+elif [[ "$back" -lt 2 ]]; then
+    fail "close-keeps-zone0-focus" "the earlier zone 0 window had the keyboard ${back} time(s), not back again; focus: $(tr '\n' ' ' < "$RT/kryptik/focus")"
+else
+    pass "close-keeps-zone0-focus" "the keyboard went back to the earlier zone 0 window, not to the zone's window mapped behind the one that closed"
+fi
+pkill -u "$USER_NAME" -f 'wlprobe oversize 0 90 holder' 2>/dev/null; wait "$holder_pid" 2>/dev/null
+wait_for 40 test ! -e /run/kryptik/zones/untrusted/init.pid; sleep 1
 
 # A terminal, focused by an explicit user key.
 launch_plain untrusted "havoc" > "$LOG/launch-havoc-untrusted.out" 2>&1
