@@ -81,7 +81,9 @@ with the zone's name, outside the window's frame, where its surfaces are
 clipped away. Only the user's key makes a zone's window fullscreen, never
 the program's own request. While it is fullscreen the focus keys do not
 reach the windows hidden below it, and a child window the zone opens ends
-the fullscreen, since nothing of the zone's is drawn above the bar.
+the fullscreen, since nothing of the zone's is drawn above the bar. A zone's
+window does not take the keyboard from another window, neither when it maps
+nor when the window in front of it closes: the user moves it there.
 `zoneid audit` checks that every pair of zones stays distinguishable.
 
 ## Storage

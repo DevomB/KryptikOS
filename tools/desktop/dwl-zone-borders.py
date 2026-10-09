@@ -113,6 +113,7 @@ EDITS = [
 	struct wlr_scene_tree *band; /* Kryptik: over the border's inner edge while unfocused */
 	struct wlr_scene_rect *bands[4]; /* top, bottom, left, right */
 	struct wlr_scene_tree *bar; /* Kryptik: names the zone above a fullscreen window */
+	int unasked; /* Kryptik: mapped behind another zone's focus; no keyboard until the user picks it */
 """),
     # The ZoneColor type, beside Rule so config.h can define the table.
     ("""typedef struct {
@@ -238,18 +239,22 @@ applyrules(Client *c)
 	c->bw = borderpx;
 	client_set_fullscreen(c, fullscreen);
 """),
-    # Mapping a different zone must not move it ahead of the active window.
+    # Mapping a different zone must not move it ahead of the active window,
+    # nor right behind it, where it would get the keyboard when that one closes.
     ("""\twl_list_insert(&clients, &c->link);
 \twl_list_insert(&fstack, &c->flink);
 """,
      """\twl_list_insert(&clients, &c->link);
-\t/* Compare with the actual keyboard focus, which may be on another monitor. */
+\t/* Compare with the actual keyboard focus, which may be on another monitor.
+\t * Another zone's window goes to the back of the focus order: right behind
+\t * the focused window it would take the keyboard when that one closes. */
 \tw = NULL;
 \ttoplevel_from_wlr_surface(seat->keyboard_state.focused_surface, &w, NULL);
 \tif (c->zoneborder != unzonedcolor && w && !client_is_unmanaged(w)
-\t\t\t&& w->zoneborder != c->zoneborder)
-\t\twl_list_insert(&w->flink, &c->flink);
-\telse
+\t\t\t&& w->zoneborder != c->zoneborder) {
+\t\twl_list_insert(fstack.prev, &c->flink);
+\t\tc->unasked = 1;
+\t} else
 \t\twl_list_insert(&fstack, &c->flink);
 """),
     # Keep zone clients out of the float scene layer.
@@ -460,7 +465,7 @@ focusclient(Client *c, int lift)
 \t}
 """,
      """\twl_list_for_each(c, &fstack, flink) {
-\t\tif (VISIBLEON(c, m) && !covered(c, m))
+\t\tif (VISIBLEON(c, m) && !covered(c, m) && !c->unasked)
 \t\t\treturn c;
 \t}
 """),
@@ -501,6 +506,30 @@ focusclient(Client *c, int lift)
 \telse
 \t\twlr_cursor_set_surface(cursor, event->surface,
 \t\t\t\tevent->hotspot_x, event->hotspot_y);
+"""),
+    # A window nobody picked yet is passed over by focustop, so nothing but the
+    # user hands it the keyboard: focusstack starts there when nothing else
+    # shows, and focusclient marks it picked.
+    ("""\tClient *c, *sel = focustop(selmon);
+\tif (!sel || (sel->isfullscreen && !client_has_children(sel)))
+\t\treturn;
+""",
+     """\tClient *c, *sel = focustop(selmon);
+\tif (!sel)
+\t\twl_list_for_each(c, &clients, link)
+\t\t\tif (VISIBLEON(c, selmon) && !covered(c, selmon)) {
+\t\t\t\tsel = c;
+\t\t\t\tbreak;
+\t\t\t}
+\tif (!sel || (sel->isfullscreen && !client_has_children(sel)))
+\t\treturn;
+"""),
+    ("""\t\tselmon = c->mon;
+\t\tc->isurgent = 0;
+""",
+     """\t\tselmon = c->mon;
+\t\tc->isurgent = 0;
+\t\tc->unasked = 0;
 """),
 ]
 

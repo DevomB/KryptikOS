@@ -223,6 +223,57 @@ else
     fail "map-keeps-zone0-focus" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus"); probe: $(since_mark map untrusted | tail -3 | tr '\n' ' ')"
 fi
 wait_for 20 test ! -e /run/kryptik/zones/untrusted/init.pid; sleep 1
+# Nor the keyboard when the zone 0 window it mapped behind closes, as a
+# question does once answered: the keyboard goes back to the window before.
+as_user "/usr/libexec/kryptik/wlprobe oversize 0 90 holder" > "$LOG/holder.out" 2>&1 &
+holder_pid=$!
+wait_for 15 grep -q 'keyboard entered the window' "$LOG/holder.out"
+as_user "/usr/libexec/kryptik/wlprobe oversize 0 90 closer" > "$LOG/closer.out" 2>&1 &
+closer_pid=$!
+wait_for 15 grep -q 'keyboard entered the window' "$LOG/closer.out"
+mark behind untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe oversize 0 30 behind" > "$LOG/launch-behind.out" 2>&1
+wait_for 20 probe_committed behind; sleep 1
+pkill -u "$USER_NAME" -f 'wlprobe oversize 0 90 closer' 2>/dev/null; wait "$closer_pid" 2>/dev/null
+sleep 3
+back="$(grep -c 'keyboard entered the window' "$LOG/holder.out")"
+if ! probe_committed behind; then
+    fail "close-keeps-zone0-focus" "the zone's window never drew: $(since_mark behind untrusted | tail -3 | tr '\n' ' ')"
+elif since_mark behind untrusted | grep -q 'keyboard entered'; then
+    fail "close-keeps-zone0-focus" "the zone's window took the keyboard when the zone 0 window in front of it closed; focus: $(tr '\n' ' ' < "$RT/kryptik/focus")"
+elif [[ "$back" -lt 2 ]]; then
+    fail "close-keeps-zone0-focus" "the earlier zone 0 window had the keyboard ${back} time(s), not back again; focus: $(tr '\n' ' ' < "$RT/kryptik/focus")"
+else
+    pass "close-keeps-zone0-focus" "the keyboard went back to the earlier zone 0 window, not to the zone's window mapped behind the one that closed"
+fi
+pkill -u "$USER_NAME" -f 'wlprobe oversize 0 90 holder' 2>/dev/null; wait "$holder_pid" 2>/dev/null
+wait_for 40 test ! -e /run/kryptik/zones/untrusted/init.pid; sleep 1
+# With no other window on its tag the keyboard goes nowhere, until the user's
+# key takes it to the zone's window.
+echo "GT KEY-EMPTY-TAG"
+sleep 2
+as_user "/usr/libexec/kryptik/wlprobe oversize 0 90 alone" > "$LOG/alone.out" 2>&1 &
+alone_pid=$!
+wait_for 15 grep -q 'keyboard entered the window' "$LOG/alone.out"
+mark lone untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe oversize 0 30 lone" > "$LOG/launch-lone.out" 2>&1
+wait_for 20 probe_committed lone; sleep 1
+pkill -u "$USER_NAME" -f 'wlprobe oversize 0 90 alone' 2>/dev/null; wait "$alone_pid" 2>/dev/null
+sleep 3
+if ! probe_committed lone; then
+    fail "alone-keeps-no-keyboard" "the zone's window never drew: $(since_mark lone untrusted | tail -3 | tr '\n' ' ')"
+elif since_mark lone untrusted | grep -q 'keyboard entered'; then
+    fail "alone-keeps-no-keyboard" "the zone's window, alone on its tag, took the keyboard when the zone 0 window closed; focus: $(tr '\n' ' ' < "$RT/kryptik/focus")"
+else
+    pass "alone-keeps-no-keyboard" "alone on its tag after the zone 0 window closed, the zone's window got no keyboard"
+fi
+echo "GT KEY-FOCUS-LONE"
+lone_keyed() { since_mark lone untrusted | grep -q 'keyboard entered'; }
+wait_for 10 lone_keyed && pass "alone-reached-by-key" "Alt+j gave the zone's window the keyboard" \
+    || fail "alone-reached-by-key" "no keyboard for the zone's window after Alt+j: $(since_mark lone untrusted | tail -3 | tr '\n' ' ')"
+wait_for 40 test ! -e /run/kryptik/zones/untrusted/init.pid; sleep 1
+echo "GT KEY-TAG-BACK"
+sleep 2
 
 # A terminal, focused by an explicit user key.
 launch_plain untrusted "havoc" > "$LOG/launch-havoc-untrusted.out" 2>&1
