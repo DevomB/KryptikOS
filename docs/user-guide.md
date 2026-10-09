@@ -244,7 +244,9 @@ Zone windows come from the menu: Alt+p, then a zone's number and `t` (a
 terminal), `e` (the editor) or `b` (the browser), for example `1t`, then
 Enter. A zone with encrypted storage asks for its passphrase when it starts,
 in the menu's window or, for a key, in a small prompt window; the passphrase
-never appears on a command line.
+never appears on a command line. The menu also names a release that has
+arrived and waits to be installed, and says when the newest update statement
+is more than 30 days old (section 4).
 
 For administration, Ctrl+Alt+F2 gives a text login: log in as the user, and
 `su` becomes root. There `kryptik list`, `kryptik status [ZONE]`, `kryptik

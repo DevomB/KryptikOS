@@ -343,6 +343,27 @@ else
     fail "menu-keeps-last-zone" "no zone 0 window took focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); $(tr '\n' ' ' < "$LOG/zone0-window.out")"
 fi
 pkill -u "$USER_NAME" -f 'wlprobe oversize 0 15 zone-0' 2>/dev/null
+# A net zone that withholds statements shows only in their age, so the launcher
+# names a stale one. The menu runs with a stored statement from today, then with
+# one 45 days old (kryptikd verified what it stored and reads it as it is), and
+# whatever was stored before is put back.
+UPD=/var/lib/kryptik/update
+menu_text() { printf 'q\n' | as_user "TERM=dumb /usr/bin/kryptik-chrome --menu" 2>&1; }
+statement() {   # statement EPOCH: the stored statement, issued then, for a version below any real one
+    printf 'KRYPTIK-LATEST-1\nrole: development\nversion: 0.0.1\nissued: %s\nmanifest-sha256: %064d\nbase: 0.0.1/\n' \
+        "$(date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ)" 0 > "$UPD/pointer"
+}
+quiet_line() { grep -o 'Update: no statement from the release key for .*' <<<"$1"; }
+[[ -d "$UPD" ]] || mkdir -m 700 "$UPD"; rm -f /root/gt/pointer.kept
+[[ -e "$UPD/pointer" ]] && cp -p "$UPD/pointer" /root/gt/pointer.kept
+statement "$(date +%s)"; fresh="$(menu_text)"
+statement "$(( $(date +%s) - 45 * 86400 ))"; old="$(menu_text)"
+if [[ -e /root/gt/pointer.kept ]]; then mv -f /root/gt/pointer.kept "$UPD/pointer"; else rm -f "$UPD/pointer"; fi
+if [[ "$fresh" == *"trusted launcher"* && -z "$(quiet_line "$fresh")" && "$(quiet_line "$old")" == *" for 45 days "* ]]; then
+    pass "menu-names-stale-statement" "45 days old: $(quiet_line "$old"); from today: no line"
+else
+    fail "menu-names-stale-statement" "from today: $(quiet_line "$fresh" || tr '\n' ' ' <<<"$fresh" | cut -c1-200) | 45 days old: $(quiet_line "$old" || tr '\n' ' ' <<<"$old" | cut -c1-300)"
+fi
 
 # A zone runs one command at a time, so its window is stopped before the next.
 stop_zone() { as_user "kryptik-launch --stop $1" > /dev/null 2>&1; wait_for 15 test ! -e "/run/kryptik/zones/$1/init.pid"; sleep 1; }
