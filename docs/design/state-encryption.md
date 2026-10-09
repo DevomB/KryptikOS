@@ -36,12 +36,16 @@ every machine, and verified. It uses the dm-crypt and XTS support the
   warns that a lost header or passphrase is a lost partition: there is no
   escrow and no back door.
 - `kryptik state passphrase` (root) runs `cryptsetup luksChangeKey`, which asks
-  for the old and new passphrases on the terminal.
+  for the old and new passphrases on the terminal. The key it protects stays
+  the same, so a copy of the header made before still opens with the old
+  passphrase.
 
 ## What it gives
 
 Confidentiality against an offline reader, but not authentication: XTS lets an
-offline writer corrupt a block, though not choose what it decrypts to. So
+offline writer corrupt a block, though not choose new contents for it, and one
+holding an earlier copy of the disk can put a block, or the header, back as it
+was without anything noticing. So
 nothing deciding privilege is read from `/etc`'s upper layer without the
 allow-list (`prune_etc_upper` in `sysinit.sh`); encryption adds to that
 boundary and does not replace it. Zone volumes keep their own encryption
