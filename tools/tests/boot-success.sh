@@ -65,7 +65,7 @@ echo "umount $1" >> "$KTEST/calls"
 EOF
 cat > "$T/bin/sync" <<'EOF'
 #!/bin/sh
-exit 0
+echo "sync $*" >> "$KTEST/syncs"
 EOF
 chmod +x "$T"/bin/*
 
@@ -125,6 +125,7 @@ run_case commit b "" persistent 'b\narmed=1\n' $ALL; go
 check "healthy trial: committed" "$RESULT" "commit b"
 check "BOOTX64.EFI is now the slot b kernel" "$(cat "$KTEST/esp/EFI/BOOT/BOOTX64.EFI")" "kernel-b"
 check "committed-slot records b" "$(cat "$KTEST/esp/kryptik/committed-slot")" "b"
+check "the new committed-slot record is fsynced under its temporary name" "$(grep -c -x "sync -f $KTEST/run/esp/kryptik/committed-slot.new" "$KTEST/syncs" 2>/dev/null)" "1"
 check "the trial record is gone" "$([[ -e "$KTEST/boot/trial" ]] && echo present || echo gone)" "gone"
 check "the trial's firmware entries and BootNext are forgotten after the commit, the committed slot gets its own, and its release goes to the clock's floor" "$CALLS" "mount -t vfat -o rw,nosuid,nodev,noexec /dev/vda1 $KTEST/run/esp umount $KTEST/run/esp efiboot forget efiboot ensure b kryptikd time committed $KTEST/boot/release-b "
 run_case commit0 b "" persistent 'b\narmed=0\n' $ALL; go

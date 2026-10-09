@@ -76,8 +76,7 @@ commit_slot() {   # commit_slot <slot>: make BOOTX64.EFI this slot's kernel
             cp "$src" "$dst.new" && sync -f "$dst.new" && mv -f "$dst.new" "$dst" && sync -f "$dst" && rc=0
             [ "$rc" -eq 0 ] && say "committed: BOOTX64.EFI is now slot $1"
         fi
-        cp "$ESP_MNT/kryptik/version-$1" "$ESP_MNT/kryptik/version-committed" 2>/dev/null || true
-        printf '%s\n' "$1" > "$ESP_MNT/kryptik/committed-slot.new" && \
+        printf '%s\n' "$1" > "$ESP_MNT/kryptik/committed-slot.new" && sync -f "$ESP_MNT/kryptik/committed-slot.new" && \
             mv -f "$ESP_MNT/kryptik/committed-slot.new" "$ESP_MNT/kryptik/committed-slot"
     else
         say "no kernel for slot $1 on the ESP"

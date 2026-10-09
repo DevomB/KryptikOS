@@ -372,6 +372,7 @@ cmd_apply() {
     fi
     mv -f "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new" "$ESP_MNT/EFI/kryptik/kryptik-$target.efi"
     printf '%s\n' "$VERSION" > "$ESP_MNT/kryptik/version-$target.new"
+    sync -f "$ESP_MNT/kryptik/version-$target.new"
     mv -f "$ESP_MNT/kryptik/version-$target.new" "$ESP_MNT/kryptik/version-$target"
     sync
     umount_esp
