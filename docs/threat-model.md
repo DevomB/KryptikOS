@@ -48,6 +48,83 @@ already assumed hostile.
 `net` zone gets no zone's files and not `vault`. Confidentiality on the wire
 is the application's job.
 
+### Compromised net zone
+
+*Capability: root inside `net`, the one zone that holds the physical NICs,
+through a flaw in what reads the network: DHCP, DNS, Wi-Fi, NTP, TLS, HTTP.*
+
+**Contained, not prevented.** It gets no zone's files, not `vault` and not
+zone 0, but every routed zone's traffic passes through it
+([net zone](design/net-zone.md)).
+
+It can still:
+
+- read, alter, answer for or drop any routed zone's traffic, its DNS
+  included, and route packets from one routed zone to another, since the
+  bridge keeps its ports apart only from each other, not from the net zone's
+  own routing;
+- reach kernel code that no other zone can: nf_tables, packet sockets on its
+  NICs and the bridge, and the generic-netlink commands a network namespace's
+  administrator may use, among them the Wi-Fi drivers' vendor commands and
+  ethtool's setters (offloads, rings, coalescing, EEE, and a pluggable
+  module's firmware, from the images on the verified root); commands that
+  need the initial namespace's administrator, devlink's among them, stay
+  closed, and nl80211's testmode is not built;
+- keep the machine offline, or a routed zone without its lookups or its
+  bandwidth;
+- read the passphrase of every Wi-Fi network it was given;
+- withhold releases, which zone 0 reports once the newest statement is 30
+  days old, or, where the image names a channel and none was accepted, the
+  install, in `kryptik update status`, above the login prompt and in the
+  launcher;
+- claim the clock is off, which zone 0 applies up to an hour and beyond that
+  only when the user agrees.
+
+What limits it, each with its check, the zones suite's on the installed
+system unless named:
+
+- dhcpcd's parsers run as their own user in an empty root with no capability
+  (`dhcpcd-separated`), and dnsmasq answers as the zone's `nobody`
+  (`dnsmasq-unprivileged`), so a flaw in either does not get the zone's root;
+- the update fetcher and the SNTP client give up every capability before they
+  read a byte, under no new privileges (`fetch-and-sntp-no-caps`);
+- the zone runs on one CPU's worth of time (`net-cpu-max-set`), and its `/sys`
+  shows its own NICs and nothing else of the machine
+  (`net-zone-sysfs-nics-only`);
+- ethtool's ioctl, a PHY register write and the drivers' private ioctls are
+  refused, so it cannot rewrite a NIC's EEPROM or flash that way (the unit
+  test `nic_writing_ioctls_are_refused`);
+- what it leaves on a NIC does not reach the next net zone: a name that is not
+  plain becomes `nic<N>` (`uplink-renamed-plain`), the address, MTU,
+  altnames and alias are set back (`uplink-state-reset`), Wake-on-LAN is
+  turned off (no test machine's NIC has it, so no suite shows it), and a radio
+  leaves with one fresh station (`radio-recarried`).
+
+What a routed zone cannot do through it, proven the same way:
+
+- send as another zone: the net zone takes in a routed zone's packets only
+  from that zone's own addresses, pinned to its MAC (`zone-source-pinned`);
+- reach what else listens in the net zone: from the bridge it takes in only
+  DNS, echo requests, neighbour discovery and replies (`bridge-ports-closed`);
+- fill the connection-tracking table: one routed zone holds at most an eighth
+  of it (`zone-flows-capped`);
+- learn another zone's lookups: the resolver keeps no cache and no query
+  counts (`dns-cache-off`, `dns-counters-hidden`).
+
+Kept by design:
+
+- confidentiality between a zone and the net zone is the application's, as on
+  any network;
+- wpa_supplicant runs as the zone's root and reads every passphrase it was
+  given, as it must to join those networks;
+- nf_tables, packet sockets and generic netlink stay open to it, as NAT, DHCP
+  and Wi-Fi need them;
+- a routed zone that floods can hold the resolver's 150 forwarding slots, each
+  for up to 10 s, and the uplink's bandwidth from the others: its share bounds
+  its connections, not its queries or bytes;
+- EEE, offloads, rings, coalescing and a radio's wake triggers (nl80211's
+  WoWLAN) are not set back between net zones.
+
 ### Offline physical access
 
 *Capability: the disk in hand, an evil maid, a stolen laptop; booting external
