@@ -240,7 +240,9 @@ Zone windows come from the menu: Alt+p, then a zone's number and `t` (a
 terminal), `e` (the editor) or `b` (the browser), for example `1t`, then
 Enter. A zone with encrypted storage asks for its passphrase when it starts,
 in the menu's window or, for a key, in a small prompt window; the passphrase
-never appears on a command line.
+never appears on a command line. The menu also names a release that has
+arrived and waits to be installed, and says when the newest update statement
+is more than 30 days old (section 4).
 
 For administration, Ctrl+Alt+F2 gives a text login: log in as the user, and
 `su` becomes root. There `kryptik list`, `kryptik status [ZONE]`, `kryptik
@@ -289,11 +291,6 @@ kryptik update auto on    # fetch each newer release as it is announced; `auto o
 `fetch` only records the request, and the release arrives when the net zone
 next asks; `apply` refuses a release that is still arriving. Then reboot, as
 root (`su`, then `reboot`): the next boot is the trial.
-
-The menu (Alt+p) names a release that has arrived whole. It also says when
-the newest statement is more than 30 days old: the channel re-signs its
-statement on a schedule, so either nothing has been published or something
-is keeping it from this machine.
 
 A release brought by hand is a signed payload directory holding exactly
 `manifest`, `manifest.sig`, `kryptik-root.img`, `kryptik-a.efi`,
