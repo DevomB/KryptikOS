@@ -73,6 +73,9 @@ printf 'development\n' > role
     echo 'die() { printf "REFUSED: %s\n" "$*"; exit 1; }'
     echo 'hdr() { awk -F": " -v k="$2" '"'"'$1==k {print $2; exit}'"'"' "$1"; }'
     echo 'running_version() { echo 1; }'
+    # The checks below are the unprivileged path, whoever runs the suite: as root, verify_manifest
+    # hands the signature to kryptikd, which only the image has. The cases as root say so themselves.
+    echo 'id() { if [ "$1" = -u ]; then echo 1000; else command id "$@"; fi; }'
     sed -n '/^pin() {/,/^cmd_apply() {/p' "$TOOL" | sed '$d'
 } > verify.sh
 grep -q '^verify_payload() {' verify.sh || { echo "could not extract verify_payload from $TOOL"; exit 1; }
