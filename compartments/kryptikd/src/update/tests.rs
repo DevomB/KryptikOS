@@ -135,6 +135,32 @@ fn poll_names_missing_files_and_offsets() {
 
 // --- the state, in a scratch directory per test ---
 
+/// A check runs on copies of what it reads, in a directory of its own that is its TMPDIR and is
+/// gone afterwards; copies readable by the unprivileged account that runs it under root.
+#[test]
+fn checks_run_on_copies_of_their_own() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = scratch("checks-copies");
+    std::fs::create_dir_all(d.join("from")).unwrap();
+    std::fs::write(d.join("from/latest"), b"statement").unwrap();
+    std::fs::write(d.join("from/latest.sig"), b"signature").unwrap();
+    std::fs::set_permissions(d.join("from/latest"), std::fs::Permissions::from_mode(0o600)).unwrap();
+    let tool = d.join("tool");
+    std::fs::write(&tool, "#!/bin/sh\necho verb $1; shift\nfor f; do echo \"$f $(stat -c %a \"$f\") $(cat \"$f\")\"; done\necho tmp $TMPDIR\n").unwrap();
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (p, s) = (d.join("from/latest"), d.join("from/latest.sig"));
+    let out = run_check(&tool, &d, "check-pointer", &[(&p, "latest"), (&s, "latest.sig")], false).unwrap();
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines[0], "verb check-pointer");
+    let tmp = lines[3].strip_prefix("tmp ").expect("the tool's TMPDIR");
+    assert!(tmp.starts_with(d.join("check.").to_str().unwrap()), "a fresh directory under the base: {tmp}");
+    assert_eq!(lines[1], format!("{tmp}/latest 644 statement"), "a readable copy, not the original");
+    assert_eq!(lines[2], format!("{tmp}/latest.sig 644 signature"));
+    assert!(!Path::new(tmp).exists(), "the copies outlived the check");
+    assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600, "the original was left as it was");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 fn scratch(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("kryptik-update-test-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);

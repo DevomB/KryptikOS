@@ -238,14 +238,53 @@ pub struct Checks<'a> {
     pub manifest: &'a dyn Fn(&Path) -> Result<String, String>,
 }
 
-fn run_tool(args: &[&std::ffi::OsStr]) -> Result<String, String> {
-    let out = std::process::Command::new(TOOL)
-        .args(args)
-        .env_clear()
-        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| format!("{TOOL}: {e}"))?;
+/// Who the checks run as. They read what the net zone sent, with ssh-keygen and the shell's text
+/// tools, and need nothing of root's, so a flaw in those parsers is not root's either.
+const CHECKER: u32 = 65534;
+/// Where the checks' copies go: zone 0's runtime directory, which only root writes.
+const CHECK_BASE: &str = "/run/kryptik";
+
+/// `tool VERB` on copies of `inputs`, each a file and the name its copy takes, in a directory of
+/// their own under `base`, passed whole when `whole` and one by one otherwise. Under root it runs
+/// as `CHECKER` with no new privileges, in a directory it owns and takes as its TMPDIR.
+fn run_check(tool: &Path, base: &Path, verb: &str, inputs: &[(&Path, &str)], whole: bool) -> Result<String, String> {
+    let dir = make_scratch(base)?;
+    let ran = check_in(tool, &dir, verb, inputs, whole);
+    let _ = std::fs::remove_dir_all(&dir);
+    ran
+}
+
+fn check_in(tool: &Path, dir: &Path, verb: &str, inputs: &[(&Path, &str)], whole: bool) -> Result<String, String> {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt;
+    let root = unsafe { libc::geteuid() } == 0;
+    for (from, name) in inputs {
+        let to = dir.join(name);
+        std::fs::copy(from, &to).map_err(|e| format!("{}: {e}", from.display()))?;
+        std::fs::set_permissions(&to, std::fs::Permissions::from_mode(0o644)).map_err(|e| format!("{}: {e}", to.display()))?;
+    }
+    if root {
+        std::os::unix::fs::chown(dir, Some(CHECKER), Some(CHECKER)).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    let mut cmd = std::process::Command::new(tool);
+    cmd.arg(verb);
+    if whole {
+        cmd.arg(dir);
+    } else {
+        cmd.args(inputs.iter().map(|(_, name)| dir.join(name)));
+    }
+    cmd.env_clear().env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin").env("TMPDIR", dir).stdin(std::process::Stdio::null());
+    if root {
+        cmd.uid(CHECKER).gid(CHECKER);
+        // SAFETY: only prctl runs between fork and exec, after the uid has changed.
+        unsafe {
+            cmd.pre_exec(|| match libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) {
+                0 => Ok(()),
+                _ => Err(std::io::Error::last_os_error()),
+            });
+        }
+    }
+    let out = cmd.output().map_err(|e| format!("{}: {e}", tool.display()))?;
     if out.status.success() {
         return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
     }
@@ -253,18 +292,39 @@ fn run_tool(args: &[&std::ffi::OsStr]) -> Result<String, String> {
     Err(err.lines().last().unwrap_or("refused").trim_start_matches("kryptik-update: ").to_string())
 }
 
-/// The installed system's checks: `kryptik-update`, run with a cleared environment.
+/// A fresh directory that mkdtemp names under `base`, or under the system's temporary directory.
+fn make_scratch(base: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    let parent = if base.is_dir() { base.to_path_buf() } else { std::env::temp_dir() };
+    let mut template = parent.join("check.XXXXXX").as_os_str().as_bytes().to_vec();
+    template.push(0);
+    if unsafe { libc::mkdtemp(template.as_mut_ptr().cast()) }.is_null() {
+        return Err(format!("{}: {}", parent.display(), std::io::Error::last_os_error()));
+    }
+    template.pop();
+    Ok(PathBuf::from(std::ffi::OsString::from_vec(template)))
+}
+
+/// `kryptik-update VERB DIR` on the manifest and signature in `dir`, all it reads there.
+fn check_signed_pair(verb: &str, dir: &Path) -> Result<String, String> {
+    let (m, s) = (dir.join("manifest"), dir.join("manifest.sig"));
+    run_check(Path::new(TOOL), Path::new(CHECK_BASE), verb, &[(&m, "manifest"), (&s, "manifest.sig")], true)
+}
+
+/// The installed system's checks: `kryptik-update`, on copies, as `CHECKER`.
 pub fn tool_checks() -> Checks<'static> {
     Checks {
-        pointer: &|p, s| run_tool(&["check-pointer".as_ref(), p.as_os_str(), s.as_os_str()]).map(|_| ()),
-        manifest: &|d| run_tool(&["check-manifest".as_ref(), d.as_os_str()]),
+        pointer: &|p, s| {
+            run_check(Path::new(TOOL), Path::new(CHECK_BASE), "check-pointer", &[(p, "latest"), (s, "latest.sig")], false).map(|_| ())
+        },
+        manifest: &|d| check_signed_pair("check-manifest", d),
     }
 }
 
 /// `kryptik-update check-release` on the manifest and signature in `dir`:
 /// its version and signed date once both verify, in any version order.
 pub fn check_release(dir: &Path) -> Result<String, String> {
-    run_tool(&["check-release".as_ref(), dir.as_os_str()])
+    check_signed_pair("check-release", dir)
 }
 
 /// The role this image requires. A missing file is refused, never read as

@@ -119,7 +119,10 @@ the byte to resume from. For an hour after a refused manifest it answers
 `update-put` first takes only `manifest` and `manifest.sig`, whole, at most
 64 KiB each. Zone 0 runs `kryptik-update check-manifest` (the signature, role
 and version checks of `apply`, with no downgrade: nothing from the network is
-a recovery) and requires the manifest to be for the wanted version, to hash
+a recovery) as `nobody`, with no new privileges, on copies in a directory of
+its own, as it runs `check-pointer` and `check-release`: they read what the net
+zone sent with `ssh-keygen` and the shell's text tools, and refuse to run as
+root. Zone 0 then requires the manifest to be for the wanted version, to hash
 to the pointer's `manifest-sha256`, and to fit in the free space. A refused
 manifest clears the stage, and for an hour after a refusal none is asked for
 and one sent anyway is refused without being verified, so a release that does

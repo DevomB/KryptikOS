@@ -38,9 +38,11 @@ LOG=/var/log/kryptik/update.log
 SNAP=""
 
 # The checks that only verify need no root and no devices, and write nothing
-# outside their own directory.
+# outside their own directory. They read what the net zone sent, so they do not
+# run as root: kryptikd runs them as nobody, on copies.
 case "${1:-}" in
     check-manifest|check-pointer|check-release)
+        [ "$(id -u)" != 0 ] || die "$1 does not run as root; kryptikd runs it as nobody"
         tools="ssh-keygen sha256sum cp awk sed sort head mktemp" ;;
     *)
         tools="ssh-keygen sha256sum blkid dd cp mv sync flock mount umount cmp kryptik-efiboot awk sed sort head wc stat grep blockdev"
