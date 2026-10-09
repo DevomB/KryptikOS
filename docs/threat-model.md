@@ -85,7 +85,10 @@ It can still:
   install, in `kryptik update status`, above the login prompt and in the
   launcher;
 - claim the clock is off, which zone 0 applies up to an hour and beyond that
-  only when the user agrees.
+  only when the user agrees. A clock agreed back more than a day before the
+  newest statement would refuse every newer one and keep the 30-day report
+  from coming, so zone 0 says that instead, in `kryptik update status` and
+  above the login prompt.
 
 What limits it, each with its check, the zones suite's on the installed
 system unless named:
