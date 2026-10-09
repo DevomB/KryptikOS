@@ -271,12 +271,13 @@ channel's directory.
 - `update.rs` unit tests cover every rule above; `broker.rs` unit tests and
   the boundary suite check the verbs' bounds and that only the network zone
   may use them.
-- `make test-update-manifest-snapshot`: `check-manifest` and `check-pointer`
-  with the real `ssh-keygen` refuse the other namespace, an unenrolled key,
-  another role, a downgrade and a listed path that climbs.
-- `make test-update-fetch`: the fetcher against a loopback server, including
-  resuming after a cut, a server that ignores ranges, and a refused piece;
-  and its redirect rule: from https to http or ftp refused, to https followed.
+- `tools/tests/update-manifest-snapshot.sh`: `check-manifest` and
+  `check-pointer` with the real `ssh-keygen` refuse the other namespace, an
+  unenrolled key, another role, a downgrade and a listed path that climbs.
+- `tools/tests/update-fetch.sh`: the fetcher against a loopback server,
+  including resuming after a cut, a server that ignores ranges, and a refused
+  piece; and its redirect rule: from https to http or ftp refused, to https
+  followed.
 - A development build's stage 06 checks that the image's anchor refuses
   `not-a-pointer`, the statement signed by the release key, and the update
   suite checks that `check-pointer` refuses it on the installed system.
