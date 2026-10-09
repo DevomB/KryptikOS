@@ -71,8 +71,7 @@ part_dev() {
     esac
 }
 
-# The boot services' answers to which disk a device is on and which partitions
-# are this system's own.
+# kryptik_root_disk and kryptik_part, as the boot services resolve them.
 . /usr/libexec/kryptik/devices.sh
 . /usr/libexec/kryptik/keyboard.sh
 # What the medium's root.json may be trusted for, shared with kryptik-recover.
@@ -118,9 +117,7 @@ for h in "/sys/class/block/$tname/holders/"* "/sys/class/block/$tname/$tname"*/h
 done
 [ -z "$held" ] || die "${TARGET} is in use: held open by${held}. Close them first, or pick another disk."
 
-# A disk that carries Kryptik (an old installation, a medium, a test-control
-# disk) may hold the only copy of someone's state: it is replaced only when
-# asked for by name.
+# A disk that carries Kryptik may hold the only copy of someone's state: replaced only on request.
 labels=""
 for p in "/sys/class/block/$tname/$tname"*; do
     [ -e "$p/partition" ] || continue
@@ -173,8 +170,7 @@ case "$media" in
         mount -t vfat -o ro,loop "$ESP_SRC" "$MNT_BASE/esp" || die "could not mount the medium's ESP image"
         ROOT_JSON="$MNT_BASE/media/root.json"
         ROOT_SRC=/dev/sr0
-        # The signed command line's linear table is "0 N linear /dev/sr0 START":
-        # the root image starts at sector START of the medium.
+        # The signed linear table "0 N linear /dev/sr0 START" puts the root image at sector START.
         ROOT_OFF="$(sed -n 's/.*linear \/dev\/sr0 \([0-9]*\).*/\1/p' /proc/cmdline | head -1)"
         [ -n "$ROOT_OFF" ] || die "could not read the root image offset from the signed command line"
         ROOT_OFF=$(( ROOT_OFF * 512 ))
