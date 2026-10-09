@@ -396,3 +396,28 @@ shows each timer, its timeout and whether it is running.
   After that, a watchdog resets a machine whose userspace has stopped
   running for a minute; it does not notice a single crashed service or a
   frozen desktop. The reset during a trial lands on the committed slot.
+- While one zone floods the network, the others' traffic and name lookups
+  can slow or fail: the net zone holds each zone to an eighth of its
+  connection table, but every zone shares the uplink's bandwidth and its one
+  resolver.
+- A network, or a net zone it has taken over, can keep releases from the
+  machine: that is reported after 30 days, by `kryptik update status` and
+  above every login prompt, not prevented, and not reported at all if
+  whoever withholds them also holds the channel's statement key.
+- Anyone who holds the disk, or can boot a Kryptik install medium on the
+  machine, can put an older release back, still signed
+  (`kryptik-recover --restore-slot` restores the medium's own, older or
+  not), and it boots and asks for your passphrase as the current one does
+  ([a proposal against it](design/rollback-floor.md)).
+- The state partition is encrypted, not authenticated: someone who holds
+  the disk can damage it, or, with an earlier copy, put a block or its
+  header back as it was, and nothing notices
+  ([state partition](design/state-encryption.md)).
+- The installer copies the medium's ESP as it is, and only the kernels on
+  it are signed, so anything else someone put on a medium's ESP, files or
+  its FAT structures, ends up on the installed disk: write the medium from a
+  verified image and keep it out of others' hands.
+- The keyboard layout is kept in the machine's firmware, not on the disk:
+  after a firmware reset, or with the disk in another machine, the
+  passphrase is asked under the `us` layout until `kryptik keyboard NAME`,
+  as root, sets it again.
