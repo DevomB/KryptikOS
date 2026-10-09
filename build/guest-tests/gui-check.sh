@@ -364,6 +364,26 @@ if [[ "$fresh" == *"trusted launcher"* && -z "$(quiet_line "$fresh")" && "$(quie
 else
     fail "menu-names-stale-statement" "from today: $(quiet_line "$fresh" || tr '\n' ' ' <<<"$fresh" | cut -c1-200) | 45 days old: $(quiet_line "$old" || tr '\n' ' ' <<<"$old" | cut -c1-300)"
 fi
+# With none ever accepted, the install's age counts where the image names a
+# channel: the menu runs with no statement, a channel named and the install
+# record dated 45 days back, and all three are put back.
+CONF=/etc/kryptik/update.conf; REC=/var/lib/kryptik/install.json
+installed="$(stat -c %Y "$REC" 2>/dev/null)"
+rm -f /root/gt/conf.kept /root/gt/pointer.kept
+[[ -e "$CONF" ]] && cp -p "$CONF" /root/gt/conf.kept
+[[ -e "$UPD/pointer" ]] && mv -f "$UPD/pointer" /root/gt/pointer.kept
+mkdir -p /etc/kryptik && printf 'channel = https://channel.invalid/\n' > "$CONF"
+[[ -n "$installed" ]] && touch -d "@$(( $(date +%s) - 45 * 86400 ))" "$REC"
+never="$(menu_text)"
+[[ -n "$installed" ]] && touch -d "@$installed" "$REC"
+if [[ -e /root/gt/conf.kept ]]; then mv -f /root/gt/conf.kept "$CONF"; else rm -f "$CONF"; fi
+[[ -e /root/gt/pointer.kept ]] && mv -f /root/gt/pointer.kept "$UPD/pointer"
+told="$(grep -o 'Update: no statement from the release key since .*' <<<"$never")"
+if [[ -n "$installed" && "$told" == *"since this machine was installed, 45 days ago"* ]]; then
+    pass "menu-names-install-age" "$told"
+else
+    fail "menu-names-install-age" "install record dated ${installed:-unread}; the menu said: $(tr '\n' ' ' <<<"$never" | cut -c1-300)"
+fi
 
 # A zone runs one command at a time, so its window is stopped before the next.
 stop_zone() { as_user "kryptik-launch --stop $1" > /dev/null 2>&1; wait_for 15 test ! -e "/run/kryptik/zones/$1/init.pid"; sleep 1; }
