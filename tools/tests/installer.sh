@@ -231,13 +231,26 @@ else
     printf 'user=ana\npassword_hash=$6$salt$hash\n' > "$P/whole"
     printf 'user=ana\n' > "$P/nohash"
     printf 'password_hash=$6$salt$hash\n' > "$P/nouser"
+    printf 'user=Ana\npassword_hash=$6$salt$hash\n' > "$P/upper"
+    printf 'user=ana\r\npassword_hash=$6$salt$hash\r\n' > "$P/crlf"
+    printf 'user=ana\npassword_hash=letmein\n' > "$P/plain"
+    printf 'user=ana\npassword_hash=$6$salt$hash\nroot_password_hash=letmein\n' > "$P/rootplain"
+    printf 'user=ana\npassword_hash=$6$rounds=5000$salt$hash./\nroot_password_hash=$y$j9T$salt$hash\n' > "$P/rounds"
     pre() { out="$( (preseed_ok "$1") 2>&1 )"; rc=$?; }
     pre "$P/whole"; [[ "$rc" -eq 0 ]] && green "a preseed naming a user and a hash is taken" || red "a whole preseed: rc=${rc} ${out}"
     pre "$P/absent"; [[ "$rc" -ne 0 && "$out" == *"cannot read the preseed"* ]] \
         && green "a preseed that cannot be read is refused, not skipped" || red "an unreadable preseed: rc=${rc} ${out}"
-    pre "$P/nohash"; [[ "$rc" -ne 0 && "$out" == *"names no user= and password_hash="* ]] \
+    pre "$P/nohash"; [[ "$rc" -ne 0 && "$out" == *"names no crypt password_hash="* ]] \
         && green "a preseed with no password hash is refused" || red "no hash: rc=${rc} ${out}"
     pre "$P/nouser"; [[ "$rc" -ne 0 ]] && green "a preseed with no user is refused" || red "no user: rc=${rc} ${out}"
+    pre "$P/upper"; [[ "$rc" -ne 0 && "$out" == *"names no user first boot would create"* ]] \
+        && green "a user name first boot would refuse is refused here" || red "user=Ana: rc=${rc} ${out}"
+    pre "$P/crlf"; [[ "$rc" -ne 0 ]] && green "a preseed with CRLF line ends is refused" || red "CRLF: rc=${rc} ${out}"
+    pre "$P/plain"; [[ "$rc" -ne 0 && "$out" == *"names no crypt password_hash="* ]] \
+        && green "a password that is not a crypt hash is refused" || red "a plain password: rc=${rc} ${out}"
+    pre "$P/rootplain"; [[ "$rc" -ne 0 && "$out" == *"root_password_hash= that is not a crypt hash"* ]] \
+        && green "a root hash that is not a crypt hash is refused" || red "a plain root password: rc=${rc} ${out}"
+    pre "$P/rounds"; [[ "$rc" -eq 0 ]] && green "sha512crypt with rounds= and a yescrypt root hash are taken" || red "rounds/yescrypt: rc=${rc} ${out}"
     rm -rf "$P"
 fi
 checked="$(grep -n '^\[ -z "\$PRESEED" \] || preseed_ok' "$INSTALLER" | cut -d: -f1)"
