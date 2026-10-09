@@ -16,6 +16,7 @@ case "$1" in
         case "$2" in
             */environments/release) printf '%s\n' "${GH_RULES-branch_policy,required_reviewers}" ;;
             */environments/release-tests) echo release-tests ;;
+            */environments/github-pages/deployment-branch-policies) printf '%s\n' "${GH_PAGES-branch:main}" ;;
         esac ;;
     secret)
         name="$3"; shift 3; env=repository
@@ -46,10 +47,11 @@ else
     bad "the medium: ${listing}"
 fi
 if head -1 "$T/gh/release-tests-KRYPTIK_TESTCTL_KEY" | grep -q 'OPENSSH PRIVATE KEY' \
-    && head -1 "$T/gh/repository-KRYPTIK_LATEST_KEY" | grep -q 'OPENSSH PRIVATE KEY' \
+    && head -1 "$T/gh/github-pages-KRYPTIK_LATEST_KEY" | grep -q 'OPENSSH PRIVATE KEY' \
+    && [[ ! -e "$T/gh/repository-KRYPTIK_LATEST_KEY" ]] \
     && [[ "$(awk '{print $1}' "$T/public/release-signers" | tr '\n' ' ')" == "kryptik-release kryptik-latest kryptik-testctl " ]] \
     && openssl x509 -in "$T/public/kryptik-sb.crt" -noout 2>/dev/null; then
-    ok "the control-disk and statement keys go to their secrets, and the anchor and certificate to the tree"
+    ok "the control-disk and statement keys go to their environments, none to the whole repository, and the anchor and certificate to the tree"
 else
     bad "the other secrets or the public halves: $(ls "$T/gh" "$T/public")"
 fi
@@ -70,6 +72,14 @@ mk "$PP" "$PP"; rc=$?
 fresh; GH_RULES=branch_policy mk "$PP" "$PP"; rc=$?
 [[ "$rc" -ne 0 && -z "$(ls -A "$T/gh")" ]] && grep -q "not a required reviewer" "$T/out" \
     && ok "an environment without a reviewer gets no secret" || { bad "an unreviewed environment (exit ${rc})"; cat "$T/out"; }
+
+# Every branch's workflows could read a statement key that main's alone does not hold.
+for pages in "" "branch:main,branch:dev" "tag:v*"; do
+    fresh; GH_PAGES="$pages" mk "$PP" "$PP"; rc=$?
+    [[ "$rc" -ne 0 && -z "$(ls -A "$T/gh")" ]] && grep -q "not main alone" "$T/out" \
+        && ok "a github-pages environment deploying from '${pages:-any branch}' gets no secret" \
+        || { bad "github-pages deploying from '${pages}' (exit ${rc})"; cat "$T/out"; }
+done
 
 fresh; mk "$PP" "another one entirely"; rc=$?
 [[ "$rc" -ne 0 && ! -e "$T/backup/kryptik-keys.tar.gz.enc" && -z "$(ls -A "$T/gh")" ]] \

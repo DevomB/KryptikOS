@@ -90,10 +90,13 @@ namespaces only, and no key under both. While a key is replaced it lists the
 old one and the new one. A development build proves the split with a probe
 signed by each key in each namespace, and a production build refuses a key
 medium whose anchor says anything else. `tools/release-manifest.sh pointer`
-signs with the statement key. A stolen statement key can only keep claiming an old release is
-current, the freeze a withholding net zone causes anyway: it cannot sign a
-manifest, zone 0 still refuses a statement older than one it accepted, and
-replacing the key takes a release.
+signs with the statement key. A stolen statement key can keep claiming an old release is
+current, the freeze a withholding net zone causes anyway, and with a way to
+hand machines its statements, such as a net zone it holds, it hides that
+freeze: fresh statements keep the 30-day report from appearing. It cannot
+sign a manifest, zone 0 still refuses a statement older than one it
+accepted, and replacing the key takes a release. So it lives where only
+main's workflows reach it.
 
 ## The verbs
 
@@ -249,7 +252,8 @@ page (`tools/release-publish.sh` uploads them under the manifest's names, so
 `manifest`, `kryptik-root.img` and the rest), and the statement is served by
 the repository's Pages site at `https://<owner>.github.io/<repo>/stable/`,
 which is the address an image is built with. The statement key is the
-`KRYPTIK_LATEST_KEY` repository secret, and the `Update channel` workflow
+`github-pages` environment's `KRYPTIK_LATEST_KEY` secret, an environment that
+deploys from `main` alone, and the `Update channel` workflow
 (`.github/workflows/channel.yml`) is the timer: dispatched with a release's
 tag it publishes that release into the channel, dispatched with none or on
 its daily schedule it signs the current statement again, and its dry run
