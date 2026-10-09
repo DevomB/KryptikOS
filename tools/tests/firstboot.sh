@@ -42,6 +42,7 @@ not "a system account is not the desktop user"
 # boot-success, so an unanswered one would hang a headless boot.
 unbounded="$(grep -nE '\$\(ask ' "$SRC" | grep -vE '\$\(ask (-s )?"\$PROMPT_SECS" ')"
 [[ -z "$unbounded" ]] && ok "every question has a time limit" || bad "a question waits forever: ${unbounded}"
+grep -qx 'PROMPT_SECS=600' "$SRC" && ok "which is ten minutes, as the user guide says" || bad "the time limit is not 600 s: $(grep '^PROMPT_SECS=' "$SRC")"
 
 # set_password, with chpasswd recording what it was given, and ask and tell
 # (ask.sh, which test-ask.py covers) reduced to a FIFO of answers and a file
