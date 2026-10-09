@@ -153,7 +153,7 @@ fn checks_run_on_copies_of_their_own() {
     let lines: Vec<&str> = out.lines().collect();
     assert_eq!(lines[0], "verb check-pointer");
     let tmp = lines[3].strip_prefix("tmp ").expect("the tool's TMPDIR");
-    assert!(tmp.starts_with(d.join("check.").to_str().unwrap()), "a fresh directory under the base: {tmp}");
+    assert!(tmp.starts_with(d.join("kryptik-check.").to_str().unwrap()), "a fresh directory under the base: {tmp}");
     assert_eq!(lines[1], format!("{tmp}/latest 644 statement"), "a readable copy, not the original");
     assert_eq!(lines[2], format!("{tmp}/latest.sig 644 signature"));
     assert!(!Path::new(tmp).exists(), "the copies outlived the check");

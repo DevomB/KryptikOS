@@ -241,17 +241,53 @@ pub struct Checks<'a> {
 /// Who the checks run as. They read what the net zone sent, with ssh-keygen and the shell's text
 /// tools, and need nothing of root's, so a flaw in those parsers is not root's either.
 const CHECKER: u32 = 65534;
-/// Where the checks' copies go: zone 0's runtime directory, which only root writes.
-const CHECK_BASE: &str = "/run/kryptik";
+/// Where the checks' copies go: a tmpfs only root writes and every account may search, which
+/// zone 0's /run/kryptik (0700) is not.
+const CHECK_BASE: &str = "/run";
+/// One check at a time, so what is left of one can be ended without touching another.
+const CHECK_LOCK: &str = "/run/kryptik/check.lock";
 
 /// `tool VERB` on copies of `inputs`, each a file and the name its copy takes, in a directory of
 /// their own under `base`, passed whole when `whole` and one by one otherwise. Under root it runs
-/// as `CHECKER` with no new privileges, in a directory it owns and takes as its TMPDIR.
+/// as `CHECKER` with no new privileges, in a directory it owns and takes as its TMPDIR, one check
+/// at a time, and nothing it started outlives it.
 fn run_check(tool: &Path, base: &Path, verb: &str, inputs: &[(&Path, &str)], whole: bool) -> Result<String, String> {
+    let root = unsafe { libc::geteuid() } == 0;
+    let _one = if root { Some(check_lock()?) } else { None };
     let dir = make_scratch(base)?;
     let ran = check_in(tool, &dir, verb, inputs, whole);
+    if root {
+        end_checker();
+    }
     let _ = std::fs::remove_dir_all(&dir);
     ran
+}
+
+/// The lock that keeps checks one at a time; held while the returned file is open.
+fn check_lock() -> Result<std::fs::File, String> {
+    use std::os::unix::io::AsRawFd;
+    let f = std::fs::OpenOptions::new().create(true).append(true).open(CHECK_LOCK).map_err(|e| format!("{CHECK_LOCK}: {e}"))?;
+    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } < 0 {
+        return Err(format!("{CHECK_LOCK}: {}", std::io::Error::last_os_error()));
+    }
+    Ok(f)
+}
+
+/// Kill whatever still runs as `CHECKER`: a checker taken over through a parser could leave a
+/// process behind, which would sit beside the next check in the directory that check owns. No
+/// other process on the host runs as that uid (a zone's nobody is its own base + 65534).
+fn end_checker() {
+    use std::os::unix::process::CommandExt;
+    let mut cmd = std::process::Command::new("/usr/bin/true");
+    cmd.env_clear().uid(CHECKER).gid(CHECKER).stdin(std::process::Stdio::null());
+    // SAFETY: only kill runs between fork and exec, as CHECKER, which spares the caller.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::kill(-1, libc::SIGKILL);
+            Ok(())
+        });
+    }
+    let _ = cmd.status();
 }
 
 fn check_in(tool: &Path, dir: &Path, verb: &str, inputs: &[(&Path, &str)], whole: bool) -> Result<String, String> {
@@ -296,7 +332,7 @@ fn check_in(tool: &Path, dir: &Path, verb: &str, inputs: &[(&Path, &str)], whole
 fn make_scratch(base: &Path) -> Result<PathBuf, String> {
     use std::os::unix::ffi::{OsStrExt, OsStringExt};
     let parent = if base.is_dir() { base.to_path_buf() } else { std::env::temp_dir() };
-    let mut template = parent.join("check.XXXXXX").as_os_str().as_bytes().to_vec();
+    let mut template = parent.join("kryptik-check.XXXXXX").as_os_str().as_bytes().to_vec();
     template.push(0);
     if unsafe { libc::mkdtemp(template.as_mut_ptr().cast()) }.is_null() {
         return Err(format!("{}: {}", parent.display(), std::io::Error::last_os_error()));
