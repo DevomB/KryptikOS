@@ -95,6 +95,9 @@ CONFIG_NFT_CT=y
 CONFIG_NFT_REJECT=y
 CONFIG_NF_NAT=y
 CONFIG_NF_CONNTRACK=y
+# nft's ct count: each routed zone may hold only a share of the net zone's
+# conntrack table, which every zone's flows fill together (netzone-init.sh).
+CONFIG_NFT_CONNLIMIT=y
 # No xtables: the ruleset is nft's alone, and NFT_COMPAT is off, so nothing
 # reaches them. No ctnetlink: the nic zone could reach it through its netfilter
 # netlink socket, and nothing uses it. The iptables options select xtables.

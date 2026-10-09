@@ -106,7 +106,10 @@ query and the [update](update-channel.md) fetcher. Builds on
   uplink's own network refused but to the zones whose definition opens it
   ([below](#the-uplinks-own-networks)); bridge to bridge dropped;
   `10.19.0.0/24` and `fd19::/64` masqueraded out of every uplink; new DNS
-  connections arriving on an uplink dropped.
+  connections arriving on an uplink dropped. Each routed zone may hold an
+  eighth of the zone's conntrack table (nft's `ct count` on its address),
+  which every zone's flows fill together: past its share, a zone's new flows
+  are dropped and the others' still pass.
 - **The resolver:** `dnsmasq` on 10.19.0.1, fd19::1 and 127.0.0.1,
   forwarding to the uplink lease's servers (QEMU's 10.0.2.3 when nothing else
   is known), restarted if it dies. It binds as the zone's root and then runs
@@ -336,7 +339,7 @@ as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
 
 `VETH` and `BRIDGE` (`hardening.fragment`). Built in (`boot.fragment`):
 `NF_TABLES`, `NF_TABLES_INET`, `NF_TABLES_IPV4`, `NF_TABLES_IPV6`, `NFT_NAT`,
-`NFT_MASQ`, `NFT_CT`, `NFT_REJECT`, `NF_NAT` and `NF_CONNTRACK`; netfilter
+`NFT_MASQ`, `NFT_CT`, `NFT_REJECT`, `NFT_CONNLIMIT`, `NF_NAT` and `NF_CONNTRACK`; netfilter
 cannot be modular because the net zone loads its ruleset from inside a user
 namespace, for which the kernel does not autoload modules.
 `NF_TABLES_BRIDGE`, `BRIDGE_NETFILTER` and `NFT_COMPAT` are off. xtables
