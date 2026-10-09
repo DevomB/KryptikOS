@@ -230,7 +230,7 @@ wifi_last="$(wifi_state)"
 # --- uplink: DHCP if anyone answers, else what zone 0 carried over ---------
 uplink_addr() {   # the first IPv4 address any uplink holds
     for n in "$@"; do
-        a="$(ip -4 -o addr show "$n" 2>/dev/null | awk '{print $4}' | head -1)"
+        a="$(ip -4 -o addr show dev "$n" 2>/dev/null | awk '{print $4}' | head -1)"
         [ -n "$a" ] && { echo "$a"; return; }
     done
 }

@@ -289,9 +289,13 @@ as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
   started, so one started before any net zone resolves names once attached;
   kryptikd never edits a running zone's sealed root.
 - The kernel returns the physical interface to the initial namespace, down
-  and unaddressed, under its own name (`dev<N>` only if zone 0 has an
-  interface by that name by then); kryptikd leaves it so until the next net
-  zone start, which takes it again whatever its name.
+  and unaddressed, under the name it had there (`dev<N>` only if zone 0 has
+  an interface by that name by then); kryptikd leaves it so until the next
+  net zone start, which takes it again. That name was the net zone's to
+  choose, anything but `/`, `:` and whitespace, so the start first renames
+  one that is not plain (a lower-case letter, then lower-case letters and
+  digits) `nic<N>`: no option, quote or escape a past net zone chose reaches
+  the next one's script, nft set or dhcpcd.
 
 ## What this guarantees
 
@@ -332,6 +336,10 @@ as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
   (`netlink::tests::wireless_moves_by_wiphy`).
 - `wifi.rs` unit tests and the serve and cli suites cover the credentials
   file and `kryptik wifi`.
+- The zones suite has the net zone rename its NIC `-x"y` and restarts it: the
+  NIC is back in zone 0 under that name, and the next start comes up `READY`
+  with it as `nic<N>`. `netlink::tests::rename_by_index_takes_a_template`
+  renames a veth by its index to `nic%d`.
 - `tools/tests/netzone-uplink.sh`: the zones a definition lets through, by the
   address kryptikd derives for each, every host's addresses pinned to its own
   MAC and the MAC the same as `netlink::zone_mac`, the gateway sets as nft is

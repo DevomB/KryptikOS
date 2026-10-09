@@ -13,8 +13,9 @@
 //! Runs in the root parent while the zone waits at its handshake; an unprivileged launch gets
 //! loopback only. NAT, forwarding policy and the resolver belong to tools/net/netzone-init.sh.
 
-use std::ffi::CStr;
+use std::ffi::{CStr, OsString};
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::Path;
 
@@ -221,22 +222,50 @@ fn carry_nic(nic: &str, zone_ns: i32) -> Result<Uplink, NetError> {
 }
 
 /// Interfaces on a bus device (`/sys/class/net/<n>/device`): what `[network] nic = "*"` moves.
+///
+/// A NIC comes back to zone 0 under whatever name the net zone that held it gave it, and the
+/// next zone's script, nft set and dhcpcd would take that name as it is: one that is not plain
+/// becomes `nic<N>` first. It came back down, as a rename needs.
 pub fn physical_interfaces() -> io::Result<Vec<String>> {
-    physical_interfaces_under(Path::new("/sys/class/net"))
+    let mut out = Vec::new();
+    for (name, idx) in physical_interfaces_under(Path::new("/sys/class/net"))? {
+        if plain_name(name.as_bytes()) {
+            out.push(name.to_string_lossy().into_owned());
+            continue;
+        }
+        match netlink::rename_index(idx, "nic%d") {
+            Ok(now) => {
+                eprintln!("kryptikd: interface {name:?} renamed {now:?} before it moves");
+                out.push(now);
+            }
+            Err(e) => eprintln!("kryptikd: interface {name:?} left in zone 0: {e}"),
+        }
+    }
+    out.sort();
+    Ok(out)
 }
 
-/// `physical_interfaces` over any sysfs `class/net` directory, for tests.
-fn physical_interfaces_under(class_net: &Path) -> io::Result<Vec<String>> {
+/// A name as the kernel and eudev give one: a lower-case letter, then lower-case letters and
+/// digits, so no option, quote, glob or control byte.
+fn plain_name(name: &[u8]) -> bool {
+    name.len() < 16
+        && name.first().is_some_and(|b| b.is_ascii_lowercase())
+        && name.iter().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+}
+
+/// Each physical interface's name, as the kernel holds it, and index, under any sysfs
+/// `class/net` directory, for tests.
+fn physical_interfaces_under(class_net: &Path) -> io::Result<Vec<(OsString, u32)>> {
     let mut out = Vec::new();
     for e in std::fs::read_dir(class_net)? {
         let e = e?;
-        let name = e.file_name().to_string_lossy().into_owned();
-        if name == "lo" {
+        let name = e.file_name();
+        if name == "lo" || !e.path().join("device").exists() {
             continue;
         }
-        if e.path().join("device").exists() {
-            out.push(name);
-        }
+        let idx = std::fs::read_to_string(e.path().join("ifindex"))?.trim().parse::<u32>();
+        let idx = idx.map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "a sysfs ifindex is not a number"))?;
+        out.push((name, idx));
     }
     out.sort();
     Ok(out)

@@ -424,3 +424,29 @@ fn isolated_ports_block_zone_to_zone() {
         other => panic!("bridge isolation test failed at step {other}"),
     }
 }
+
+/// A name a net zone could leave on a NIC is replaced by index, the kernel numbering `nic%d`.
+#[test]
+fn rename_by_index_takes_a_template() {
+    let rc = in_userns_netns(|| {
+        let r: Result<(), i32> = (|| {
+            step(1, create_veth("x\"y", "pb", None, None))?;
+            let idx = index_of("x\"y").map_err(|_| 2)?;
+            let now = rename_index(idx, "nic%d").map_err(|e| {
+                eprintln!("rename_index: {e}");
+                3
+            })?;
+            if now != "nic0" || index_of("x\"y").is_ok() || index_of("nic0").ok() != Some(idx) {
+                eprintln!("renamed {now:?}");
+                return Err(4);
+            }
+            Ok(())
+        })();
+        r.err().unwrap_or(0)
+    });
+    match rc {
+        0 => {}
+        77 => eprintln!("no unprivileged user namespace; skipping"),
+        other => panic!("rename test failed at step {other}"),
+    }
+}

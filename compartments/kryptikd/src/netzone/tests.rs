@@ -340,3 +340,15 @@ fn replumb_empty_directory_attempts_nothing() {
     assert!(replumb_routed_zones(&dir, -1).is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn only_plain_names_pass_on() {
+    for ok in ["eth0", "wlan0", "enp0s31f6", "wlp2s0", "enx001122334455"] {
+        assert!(plain_name(ok.as_bytes()), "{ok}");
+    }
+    // What a net zone could leave behind: an option, a quote that ends nft's string, an escape.
+    for bad in ["-k", "x\"y", "x\",\"kryptik0", "e\u{1b}th0", "Eth0", "eth0.1", "0eth", "", "abcdefghijklmnop"] {
+        assert!(!plain_name(bad.as_bytes()), "{bad:?}");
+    }
+    assert!(!plain_name(b"\xff"));
+}
