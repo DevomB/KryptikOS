@@ -280,6 +280,11 @@ before="$(ready_count)"
 s6-svc -d /run/service/net-zone; sleep 3
 zrun untrusted 20 -- sh -c 'python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.0.2.2 2 >/dev/null 2>&1 && echo EGRESS-WHILE-DOWN || echo CLOSED-WHILE-DOWN; ip -o link show eth0 >/dev/null 2>&1 && echo HAS-ETH0 || echo NO-ETH0'
 [[ "$ZOUT" == *CLOSED-WHILE-DOWN* ]] && pass "fail-closed" "no egress while the net zone is down ($(grep -o 'HAS-ETH0\|NO-ETH0' "$LOG/untrusted.out" | head -1))" || fail "fail-closed" "$ZOUT"
+# untrusted again, kept running from while the net zone is down: attached when
+# it comes back, it must resolve through the bridge, with no restart.
+setsid "$KD" run untrusted --zones "$Z" --rootfs "$R" -- sh -c 'echo UNTRUSTED-UP; sleep 600' > "$LOG/untrusted-down.out" 2>&1 &
+UDOWN=$!
+for _ in $(seq 1 40); do grep -q UNTRUSTED-UP "$LOG/untrusted-down.out" 2>/dev/null && break; sleep 0.5; done
 s6-svc -u /run/service/net-zone
 ok=0
 for _ in $(seq 1 60); do
@@ -288,6 +293,22 @@ for _ in $(seq 1 60); do
 done
 [[ "$ok" = 1 ]] && pass "net-restart-ready" "the net zone came back READY after a restart" || fail "net-restart-ready" "no new READY line ($before -> $after)"
 sleep 2
+# kryptik.test is local to the bridge's dnsmasq: NXDOMAIN (EAI_NONAME) is its
+# answer, where a zone with no resolver gets EAI_AGAIN.
+udpid="$(cut -d' ' -f1 /run/kryptik/zones/untrusted/init.pid 2>/dev/null)"
+resolved="$([[ -n "$udpid" ]] && nsenter -t "$udpid" -m -n /usr/bin/python3 -c 'import os, socket
+names = open("/etc/resolv.conf").read().splitlines() if os.path.exists("/etc/resolv.conf") else ["NO-RESOLV-CONF"]
+print(" ".join(names[:2]))
+try:
+    socket.getaddrinfo("kryptik.test", 53); print("ANSWERED")
+except socket.gaierror as e:
+    print("ANSWERED" if e.errno == socket.EAI_NONAME else "NO-ANSWER %s" % e)' 2>&1 | tr '\n' ' ')"
+if [[ "$resolved" == *ANSWERED* && "$resolved" != *NO-ANSWER* ]]; then
+    pass "resolver-after-attach" "untrusted, started while the net zone was down, resolves through the bridge once attached (${resolved})"
+else
+    fail "resolver-after-attach" "untrusted (init ${udpid:-none}): ${resolved:-nothing ran}; $(tail -2 "$LOG/untrusted-down.out" | tr '\n' ' ')"
+fi
+"$KD" stop untrusted >/dev/null 2>&1; wait "$UDOWN" 2>/dev/null
 zrun untrusted 30 -- sh -c 'python3 /usr/lib/kryptik/guest-tests/icmp-echo.py 10.0.2.2 3 >/dev/null 2>&1 && echo GATEWAY-OK || echo GATEWAY-FAIL'
 [[ "$ZOUT" == *GATEWAY-OK* ]] && pass "egress-after-restart" "a zone started after the restart has egress" || fail "egress-after-restart" "$ZOUT"
 # personal, running across the restart, was reattached. It is refused the VM

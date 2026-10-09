@@ -223,9 +223,9 @@ pub fn hosts_for(zone: &str) -> String {
 /// What a zone finds at /etc/resolv.conf (docs/design/net-zone.md, DNS).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resolver {
-    /// No file at all: offline zones, and routed zones that got no path.
+    /// No file at all: offline zones, and a nic zone that got no network.
     None,
-    /// A routed zone with a path: only the nic zone's bridge address is named.
+    /// A routed zone, with a path or before it gets one: only the nic zone's bridge address is named.
     Bridge,
     /// The nic zone's DHCP client writes it, through a symlink into /tmp: the root is sealed.
     Writable,

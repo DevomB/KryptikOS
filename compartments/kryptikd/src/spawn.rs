@@ -1307,10 +1307,11 @@ fn zone_init(
         // None: the data directory is the home, encrypted or not.
         StorageMode::Encrypted | StorageMode::Persistent => None,
     };
-    // resolv.conf follows the path the parent built, not the declared mode.
+    /* A routed zone names the bridge's resolver with or without a path: one started while no
+     * net zone runs is attached when one starts, and its root is sealed by then. */
     let resolver = match (zone.network, plumbed) {
         (crate::zone::NetworkMode::Nic, true) => rootfs::Resolver::Writable,
-        (crate::zone::NetworkMode::Routed, true) => rootfs::Resolver::Bridge,
+        (crate::zone::NetworkMode::Routed, _) => rootfs::Resolver::Bridge,
         _ => rootfs::Resolver::None,
     };
     let home = match rootfs::pivot_into(rootfs, &zone.name, ephemeral, resolver, Some(broker_path), wayland_path, wifi_conf) {
