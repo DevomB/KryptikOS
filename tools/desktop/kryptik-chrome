@@ -153,10 +153,11 @@ menu_zones() {
 menu_update() {
     st="$("$LAUNCH" --update status 2>/dev/null)"
     v="$(printf '%s\n' "$st" | sed -n 's/^staged *\([^:]*\): .*, complete.*/\1/p')"
-    days="$(printf '%s\n' "$st" | sed -n 's/^ *no statement from the release key for \([0-9]*\) days.*/\1/p')"
-    [ -n "$v$days" ] || return 0
+    # kryptikd's words up to their reason: the newest statement's age or, with none ever accepted, the install's.
+    quiet="$(printf '%s\n' "$st" | sed -n 's/^ *\(no statement from the release key [^:]*\):.*/\1/p' | head -1)"
+    [ -n "$v$quiet" ] || return 0
     echo
-    [ -z "$days" ] || echo "Update: no statement from the release key for ${days} days (kryptik update status)"
+    [ -z "$quiet" ] || echo "Update: ${quiet} (kryptik update status)"
     [ -z "$v" ] && return 0
     echo "Update: ${v} has arrived. To install it: kryptik update apply, at the"
     echo "        administration login (Ctrl+Alt+F2); the next boot tries it."

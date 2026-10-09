@@ -203,9 +203,10 @@ already asked for keeps arriving, as one asked for by hand does.
   `staged <version>: ... complete; kryptik update apply installs it` once a
   release has arrived whole, and while it waits the chrome's launcher names
   it and where to apply it. Once the newest accepted statement is more than
-  30 days old, `status` says so and the launcher shows one line with its
-  age: statements are re-signed on a schedule, so either nothing has been
-  published or something is keeping them from this machine.
+  30 days old, or, on a machine that names a channel and has accepted none,
+  once its install is, `status` says so and the launcher shows one line with
+  that age: statements are re-signed on a schedule, so either nothing has
+  been published or something is keeping them from this machine.
 
 ## What a hostile net zone can still do
 
@@ -290,7 +291,8 @@ channel's directory.
   manifest, a replayed or far-ahead date, and a second run at once are each
   refused, and each leaves the old pair.
 - The desktop suite runs the launcher with a stored statement from today and
-  with one 45 days old: only the second names its age.
+  with one 45 days old, and with none and the install 45 days old: only the
+  last two name the age.
 - `tools/tests/channel-setting.sh`: the addresses stage 06 takes and refuses
   for `KRYPTIK_CHANNEL` for each role, and, for every address it takes, the
   fetcher reading the written `update.conf` into requests it can send.
