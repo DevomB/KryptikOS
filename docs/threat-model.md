@@ -53,8 +53,9 @@ fail to boot. The state partition (`/home`, `/var`, the Wi-Fi passphrases, the
 shadow file, the `/etc` overlay, the zone volumes' headers) is LUKS2 with a
 passphrase at every boot, and the zone volumes inside it are encrypted again;
 a stolen disk gives up none of it. It is not authenticated: someone holding
-the disk cannot choose what a block decrypts to, but can damage blocks or
-destroy the header, so what the system honours from `/etc` without asking is
+the disk cannot choose new contents for a block, but can damage blocks,
+destroy the header, or, with an earlier copy of the disk, put a block or the
+header back as it was, so what the system honours from `/etc` without asking is
 limited to a list on the verified root
 ([state partition](design/state-encryption.md)). The ESP, the root slots and
 the LUKS header are in the clear, so the disk shows it is Kryptik.
