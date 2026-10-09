@@ -38,6 +38,8 @@ EOF
 cat > "$T/bin/kryptik-efiboot" <<'EOF'
 #!/bin/sh
 echo "efiboot $*" >> "$KTEST/calls"
+# Whether the trial record still stood when the entries were forgotten.
+[ "$1" = forget ] && { [ -e "$KTEST/boot/trial" ] && echo kept || echo gone; } >> "$KTEST/forget-saw"
 [ ! -e "$KTEST/efiboot_fails" ] && [ ! -e "$KTEST/efiboot_fails_$1" ]
 EOF
 cat > "$T/bin/reboot" <<'EOF'
@@ -139,6 +141,7 @@ check "BOOTX64.EFI is now the slot b kernel" "$(cat "$KTEST/esp/EFI/BOOT/BOOTX64
 check "committed-slot records b" "$(cat "$KTEST/esp/kryptik/committed-slot")" "b"
 check "the new committed-slot record is fsynced under its temporary name" "$(grep -c -x "sync -f $KTEST/run/esp/kryptik/committed-slot.new" "$KTEST/syncs" 2>/dev/null)" "1"
 check "the trial record is gone" "$([[ -e "$KTEST/boot/trial" ]] && echo present || echo gone)" "gone"
+check "the entries are forgotten while the trial record still stands, so no apply arms in between" "$(cat "$KTEST/forget-saw" 2>/dev/null)" "kept"
 check "the trial's firmware entries and BootNext are forgotten after the commit, the committed slot gets its own, and its release goes to the clock's floor" "$CALLS" "mount -t vfat -o rw,nosuid,nodev,noexec /dev/vda1 $KTEST/run/esp umount $KTEST/run/esp efiboot forget efiboot ensure b kryptikd time committed $KTEST/boot/release-b "
 run_case recfail b "" persistent 'b\narmed=1\n' $ALL; : > "$KTEST/sync_fails"; go
 check "a committed-slot record that cannot be written fails the commit: the trial stays, for the next boot to commit again" \
@@ -165,6 +168,7 @@ run_case unzones b "" persistent 'b\narmed=1\n' $ALL; rm -f "$KTEST/zones_ok"; g
 check "trial whose zones do not load: not committed" "${RESULT%%:*}" "trial-unhealthy b"
 run_case unforget b "" persistent 'b\narmed=1\n' eudev; go
 check "an unhealthy trial forgets its entries, gives the committed slot its own, then reboots" "$CALLS" "efiboot forget efiboot ensure a reboot "
+check "an unhealthy trial's entries go before its record is set aside" "$(cat "$KTEST/forget-saw" 2>/dev/null)" "kept"
 run_case unforget2 b "" persistent 'b\narmed=1\n' eudev; : > "$KTEST/efiboot_fails"; go
 check "... and reboots if they stay: its record, now trial.failed, keeps it from coming back" "$(reboots)" "1"
 # On a degraded state /var is a tmpfs, so the trial record is out of reach.
@@ -192,9 +196,11 @@ check "back on the old slot with BootNext consumed: trial-failed" "$RESULT" "tri
 check "the record moved to trial.failed" "$([[ -e "$KTEST/boot/trial.failed" ]] && cat "$KTEST/boot/trial.failed" | head -1)" "b"
 check "BOOTX64.EFI untouched" "$(cat "$KTEST/esp/EFI/BOOT/BOOTX64.EFI")" "kernel-a"
 check "the failed trial's entries are forgotten, and the committed slot gets its own" "$CALLS" "efiboot forget efiboot ensure a "
+check "... before its record is set aside" "$(cat "$KTEST/forget-saw" 2>/dev/null)" "kept"
 run_case interrupted a "" persistent 'b\narmed=0\n' $ALL; go
 check "old slot with an armed=0 record: arming was interrupted, nothing failed" "$RESULT" "arming-interrupted b"
 check "the interrupted arming's entry is forgotten, and the committed slot gets its own" "$CALLS" "efiboot forget efiboot ensure a "
+check "... before its record goes" "$(cat "$KTEST/forget-saw" 2>/dev/null)" "kept"
 check "no trial.failed for an interruption" "$([[ -e "$KTEST/boot/trial.failed" ]] && echo present || echo none)" "none"
 run_case legacy a "" persistent 'b\n' $ALL; go
 check "a record without an armed line (older updater) counts as armed" "$RESULT" "trial-failed b"

@@ -104,7 +104,9 @@ commit_slot() {   # commit_slot <slot>: make BOOTX64.EFI this slot's kernel
 # firmware re-adds that entry at the end of BootOrder when devices change, so a
 # leftover entry for the other slot would win every cold boot. The committed
 # slot then gets its own entry back: it boots what BOOTX64.EFI boots, and is a
-# second way to it should that one file be lost.
+# second way to it should that one file be lost. It runs before the trial record
+# is removed or set aside: while that stands kryptik-update arms nothing, so no
+# BootNext an apply has just set is forgotten here.
 forget_entries() {   # forget_entries COMMITTED-SLOT
     if ! kryptik-efiboot forget >/dev/null 2>&1; then
         say "the firmware's Kryptik entries could not be removed; its own boot order may not name the committed slot"
@@ -147,9 +149,9 @@ if [ -n "$trial" ]; then
         failures="$(health)"
         if [ -z "$failures" ]; then
             if commit_slot "$slot"; then
+                forget_entries "$slot"
                 rm -f "$B/trial"
                 result "commit $slot"
-                forget_entries "$slot"
                 say "slot $slot is healthy and committed"
                 # Its release's signed date becomes the clock's floor if it is the newest (docs/design/time.md).
                 say "$(kryptikd time committed "$B/release-$slot" 2>&1)"
@@ -162,9 +164,10 @@ if [ -n "$trial" ]; then
             printf '%s\n' "$failures" | sed 's/^/boot-success:   - /'
             printf 'trial-unhealthy %s: %s\n' "$slot" "$(printf '%s' "$failures" | tr '\n' ';')" > "$B/last-result.new" \
                 && mv -f "$B/last-result.new" "$B/last-result"
+            forgot=1; forget_entries "$(other_slot "$slot")" || forgot=0
             [ ! -f "$B/trial" ] || mv -f "$B/trial" "$B/trial.failed"
             sync
-            if ! forget_entries "$(other_slot "$slot")" && [ -n "$unrecorded" ]; then
+            if [ "$forgot" = 0 ] && [ -n "$unrecorded" ]; then
                 # With no record of this trial, only removing its entries
                 # stops the next boot from repeating it.
                 say "not rebooting: with its entries still there the firmware could boot this trial again"
@@ -183,14 +186,14 @@ if [ -n "$trial" ]; then
             # come up. The updater will not re-arm this payload without --retry.
             say "trial slot $trial did NOT boot; running slot $slot again"
             result "trial-failed $trial"
-            mv -f "$B/trial" "$B/trial.failed"
             forget_entries "$slot"
+            mv -f "$B/trial" "$B/trial.failed"
         else
             # The updater stopped before setting BootNext: nothing was tried.
             say "the arming of slot $trial was interrupted before BootNext was set; nothing was tried"
             result "arming-interrupted $trial"
-            rm -f "$B/trial"
             forget_entries "$slot"
+            rm -f "$B/trial"
         fi
     fi
 elif [ -n "$stray" ]; then
