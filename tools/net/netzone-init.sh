@@ -264,11 +264,13 @@ start_dns() {
     grep -q '^nameserver' "$UPSTREAM" 2>/dev/null || { echo "nameserver 10.0.2.3" > "$UPSTREAM"; chmod 644 "$UPSTREAM"; }
     # --local=/test/ (RFC 6761) stays here: the guest check resolves kryptik.test through it.
     # It binds as root and then drops to nobody, which --no-daemon would stop. A changed
-    # file is read before the next query, at most once a second, and --clear-on-reload
-    # forgets what the last servers answered. --pid-file with no path writes none.
+    # file is read before the next query, at most once a second. Every zone shares it, so
+    # it keeps no cache and no CHAOS records (--no-ident): an answer it kept comes back
+    # sooner, with less TTL, to the next zone asking, and hits.bind and misses.bind count
+    # every zone's lookups. --pid-file with no path writes none.
     dnsmasq --keep-in-foreground --log-facility=- --no-hosts --bind-interfaces \
             --listen-address=10.19.0.1 --listen-address=fd19::1 --listen-address=127.0.0.1 \
-            --resolv-file="$UPSTREAM" --clear-on-reload --cache-size=1000 --local-service --local=/test/ \
+            --resolv-file="$UPSTREAM" --cache-size=0 --no-ident --local-service --local=/test/ \
             --pid-file --user=nobody --group=nogroup &
     DNSPID=$!
     sleep 1
