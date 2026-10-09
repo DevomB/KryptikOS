@@ -13,6 +13,7 @@ import argparse
 import socket
 import ssl
 import sys
+import urllib.error
 import urllib.request
 
 PIECE = 1 << 20        # the most one update-put carries
@@ -37,11 +38,22 @@ def ask(broker, header, payload=b""):
     return reply.decode("utf-8", "replace").strip()
 
 
+class StayOnTLS(urllib.request.HTTPRedirectHandler):
+    """Off https, a redirect is refused: zone 0 chose how releases travel (update.rs), and a
+    production image's channel is https, which one 302 would otherwise end."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if req.full_url.startswith("https://") and not newurl.startswith("https://"):
+            raise urllib.error.HTTPError(req.full_url, code, "redirect off https refused", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def fetch(url, ca, offset=0):
     """An open response at `offset`; if the server ignores Range, skip to it."""
     headers = {"Range": "bytes=%d-" % offset} if offset else {}
     context = ssl.create_default_context(cafile=ca) if url.startswith("https://") else None
-    r = urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=30, context=context)
+    opener = urllib.request.build_opener(StayOnTLS, urllib.request.HTTPSHandler(context=context))
+    r = opener.open(urllib.request.Request(url, headers=headers), timeout=30)
     if offset and r.status != 206:
         left = offset
         while left:

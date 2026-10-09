@@ -134,7 +134,9 @@ length fail `apply`'s hashes, and the launch service then discards what had
 arrived, so the release is fetched again and one bad download does not hold
 the machine at its release until the next one is announced. The net zone streams HTTPS straight into the
 broker, resuming with range requests. TLS, with the image's CA bundle, keeps
-the download private; authenticity does not rest on it. Each piece of at
+the download private; authenticity does not rest on it. A redirect from https
+is followed only to https, so a server cannot move a production image's
+download into the clear. Each piece of at
 most 1 MiB is one request the launcher answers between looks at its zone,
 under the 5 s deadline, so supervision is never more than a piece away.
 
@@ -253,7 +255,8 @@ channel's directory.
   with the real `ssh-keygen` refuse the other namespace, an unenrolled key,
   another role, a downgrade and a listed path that climbs.
 - `make test-update-fetch`: the fetcher against a loopback server, including
-  resuming after a cut, a server that ignores ranges, and a refused piece.
+  resuming after a cut, a server that ignores ranges, and a refused piece;
+  and its redirect rule: from https to http or ftp refused, to https followed.
 - A development build's stage 06 checks that the image's anchor refuses
   `not-a-pointer`, the statement signed by the release key, and the update
   suite checks that `check-pointer` refuses it on the installed system.
