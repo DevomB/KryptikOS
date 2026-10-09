@@ -312,8 +312,9 @@ else
     fail "routed-restart-path" "rc ${ZRC}: $(tr '\n' ' ' <<<"$ZOUT") $(grep -h 'network path' "$LOG/untrusted.err" | tail -1)"
 fi
 # No writable mount is shared by two zones, /tmp among them, and the net zone
-# mounts nothing of another zone's volume: net's and personal's tables, by
-# device and root, the device nodes every zone binds aside.
+# mounts nothing of another zone's volume: every pair of the zones running
+# now (net and personal at least), by device and root, the device nodes every
+# zone binds aside.
 writable_mounts() {   # writable_mounts PID: "dev root" of each writable mount but a device node
     awk '{ split($0, h, " - "); split(h[2], s, " "); if ($6 ~ /^rw/ && s[3] ~ /^rw/) print $3, $4, $5 }' "/proc/$1/mountinfo" 2>/dev/null |
         while read -r dev rt mnt; do [[ -c "/proc/$1/root$mnt" ]] || echo "$dev $rt"; done | sort -u
@@ -321,14 +322,29 @@ writable_mounts() {   # writable_mounts PID: "dev root" of each writable mount b
 mount_dev() { awk -v m="$2" '$5 == m { print $3 }' "/proc/$1/mountinfo" 2>/dev/null | tail -1; }   # mount_dev PID PATH
 net_pid="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
 per_pid="$(cut -d' ' -f1 /run/kryptik/zones/personal/init.pid 2>/dev/null)"
-shared="$(comm -12 <(writable_mounts "${net_pid:-0}") <(writable_mounts "${per_pid:-0}") | tr '\n' ';')"
-net_tmp="$(mount_dev "${net_pid:-0}" /tmp)"; per_tmp="$(mount_dev "${per_pid:-0}" /tmp)"
-if [[ -z "$net_pid" || -z "$per_pid" || -z "$net_tmp" || -z "$per_tmp" ]]; then
-    fail "no-shared-writable-mount" "the zones' mount tables could not be read: net ${net_pid:-none} (/tmp ${net_tmp:-?}), personal ${per_pid:-none} (/tmp ${per_tmp:-?})"
-elif [[ -n "$shared" || "$net_tmp" == "$per_tmp" ]]; then
-    fail "no-shared-writable-mount" "net and personal share writable mounts: ${shared:-none}; /tmp ${net_tmp} and ${per_tmp}"
+running=()
+for f in /run/kryptik/zones/*/init.pid; do
+    p="$(cut -d' ' -f1 "$f" 2>/dev/null)"; z="${f%/init.pid}"
+    # A stopped zone's pid may be anyone's now: a zone's init has a mount namespace of its own.
+    [[ -n "$p" && -r "/proc/$p/mountinfo" && "$(readlink "/proc/$p/ns/mnt")" != "$(readlink /proc/self/ns/mnt)" ]] \
+        && running+=("${z##*/} $p $(mount_dev "$p" /tmp)")
+done
+shared=""
+for ((i = 0; i < ${#running[@]}; i++)); do
+    read -r zi pi ti <<<"${running[i]}"
+    for ((j = i + 1; j < ${#running[@]}; j++)); do
+        read -r zj pj tj <<<"${running[j]}"
+        both="$(comm -12 <(writable_mounts "$pi") <(writable_mounts "$pj") | tr '\n' ';')"
+        [[ -z "$both" && "$ti" != "$tj" ]] || shared="${shared} ${zi}+${zj}: ${both:-/tmp ${ti}}"
+    done
+done
+names="$(for r in "${running[@]}"; do printf '%s ' "${r%% *}"; done)"
+if [[ " $names" != *" net "* || " $names" != *" personal "* || "$(printf '%s\n' "${running[@]}" | awk 'NF < 3' | grep -c .)" -gt 0 ]]; then
+    fail "no-shared-writable-mount" "the running zones' mount tables could not be read: $(printf '%s; ' "${running[@]}")"
+elif [[ -n "$shared" ]]; then
+    fail "no-shared-writable-mount" "zones share writable mounts:${shared}"
 else
-    pass "no-shared-writable-mount" "net and personal share no writable mount; each /tmp is its own (${net_tmp}, ${per_tmp})"
+    pass "no-shared-writable-mount" "no two of the running zones (${names% }) share a writable mount, and each /tmp is its own"
 fi
 per_home="$(mount_dev "${per_pid:-0}" /home/personal)"
 if [[ -z "$per_home" || ! -r "/proc/${net_pid:-0}/mountinfo" ]]; then
