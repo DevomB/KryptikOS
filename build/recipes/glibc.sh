@@ -15,7 +15,7 @@ s_glibc() {
     cd build
     echo "rootsbindir=/usr/sbin" > configparms
 
-    # glibc applies the strong stack protector and FORTIFY itself, sparing the files that implement them.
+    # glibc applies the strong stack protector and FORTIFY itself, sparing its loader, startup and checking code.
     # --enable-cet: CFLAGS' -fcf-protection makes rtld call _dl_cet_*, built only with this flag.
     ../configure \
         --prefix=/usr \
