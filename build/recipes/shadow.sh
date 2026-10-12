@@ -19,6 +19,6 @@ s_shadow() {
         --without-libbsd --with-group-name-max-length=32
     make
     make exec_prefix=/usr install
-    # Only su and passwd keep a setuid bit (build/config/setuid-allowlist.txt).
-    chmod ug-s /usr/bin/{chage,chfn,chsh,expiry,gpasswd,newgidmap,newgrp,newuidmap}
+    # Only su keeps a setuid bit (build/config/setuid-allowlist.txt); passwords change through it.
+    chmod ug-s /usr/bin/{chage,chfn,chsh,expiry,gpasswd,newgidmap,newgrp,newuidmap,passwd}
 }

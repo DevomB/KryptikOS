@@ -251,7 +251,8 @@ is more than 30 days old, or, with none ever accepted, when the install is
 (section 4).
 
 For administration, Ctrl+Alt+F2 gives a text login: log in as the user, and
-`su` becomes root. There `kryptik list`, `kryptik status [ZONE]`, `kryptik
+`su` becomes root, and a password changes only there: `passwd NAME`. There
+`kryptik list`, `kryptik status [ZONE]`, `kryptik
 explain ZONE` and `kryptik doctor` describe the zones, and `kryptik stop ZONE`
 stops one. `kryptik shell ZONE` and `kryptik run ZONE -- COMMAND` start the
 zone through the launch service when run as the user, detached: its output
