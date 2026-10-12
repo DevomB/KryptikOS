@@ -348,8 +348,8 @@ configured the zone keeps its IPv4 path and the launcher says so.
   wherever the access point offers it, and by the older loop only where it
   does not (`sae_pwe=2` in the file's header): the loop alone,
   wpa_supplicant's default, passes over an access point that takes
-  hash-to-element only, and side channels have leaked passwords from it. A
-  file an older kryptikd wrote is rewritten so. A network
+  hash-to-element only, and it is the method side channels have leaked
+  passwords from. A file an older kryptikd wrote is rewritten so. A network
   saved as open (`kryptik wifi add SSID --open`, an `open` line in place of
   `psk` in the request) is joined by no key at all (`key_mgmt=NONE`), so a
   beacon offering one changes nothing, and has no management frames to
