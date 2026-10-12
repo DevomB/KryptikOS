@@ -94,9 +94,9 @@ got: `KRYPTIK_SMOKE: secureboot=1` or `=0` on the console.
 **AMD processors.** Update the machine's firmware (BIOS) first. With a
 firmware older than AMD's 2025 fix for microcode signatures, the kernel loads
 only the microcode patches it holds a digest for, which leaves out every Zen 5
-processor (Ryzen 9000, Ryzen AI 300, EPYC 9005) and a few older EPYC models:
-they keep the firmware's own microcode, and the kernel log says
-`No sha256 digest for patch ID`.
+processor (Ryzen 9000, Ryzen AI 300 and Ryzen AI Max, EPYC 9005) and a few
+older EPYC models: they keep the firmware's own microcode, and the kernel log
+says `No sha256 digest for patch ID`.
 
 **Under QEMU** (a checkout of the source tree is needed):
 
