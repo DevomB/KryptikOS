@@ -404,8 +404,8 @@ shows each timer, its timeout and whether it is running.
   frozen desktop. The reset during a trial lands on the committed slot.
 - While one zone floods the network, the others' traffic and name lookups
   can slow or fail: the net zone holds each zone to an eighth of its
-  connection table, but every zone shares the uplink's bandwidth and its one
-  resolver.
+  connection table and gives each a resolver of its own, but every zone
+  shares the uplink's bandwidth.
 - A network, or a net zone it has taken over, can keep releases from the
   machine: that is reported after 30 days, by `kryptik update status` and
   above every login prompt, not prevented, and not reported at all if
