@@ -73,6 +73,10 @@ rtlwifi/rtl8723bu_nic.bin
 # Broadcom over PCIe (Dell and Apple machines); the SDIO parts are not.
 brcm/brcmfmac*-pcie*
 
+# Intel PRO/100 (e100): an 82551 does not come up without d102e_ucode.bin, which fixes its receive
+# path; the D101M and D101S microcode is optional (firmware-accepted.txt).
+e100/d102e_ucode.bin
+
 # Broadcom Tigon3 (tg3): a 5701 A0 does not come up without tg3.bin, the 5703 to 5705 lose TSO
 # without theirs, and the 57766 loads its own.
 tigon/tg3.bin
