@@ -83,7 +83,7 @@ for ((i = 0; i < ${#MEDIA[@]}; i += 2)); do
     # The shell's own arithmetic and substitutions answer, never the echo of
     # what was typed; a getty drops its first second's input, so the first
     # line goes twice.
-    python3 "$DRV" --serial "$SER" --timeout "$TIMEOUT" \
+    DRIVE_TIMEOUT="$TIMEOUT" drive \
         "expect:KRYPTIK_SMOKE: END" "sleep:3" \
         'send:echo shell-$((6 * 7))' "sleep:2" 'send:echo shell-$((6 * 7))' "expect:shell-42" \
         'send:echo uid-$(id -u)' "expect:uid-0" \
@@ -130,7 +130,7 @@ for ((i = 0; i < ${#MEDIA[@]}; i += 2)); do
         out="$("${SELF}/run-ovmf.sh" --no-media --disk "$TARGET" --mode serve --name medium-shell-installed)"
         SER="$(sed -n 's/^serial=//p' <<<"$out")"; PIDF="$(sed -n 's/^pid=//p' <<<"$out")"; LOG="$(sed -n 's/^log=//p' <<<"$out")"
         [[ -S "$SER" ]] || die "no serial socket: ${out}"
-        python3 "$DRV" --serial "$SER" --timeout "$TIMEOUT" "expect:User name: "
+        DRIVE_TIMEOUT="$TIMEOUT" drive "expect:User name: "
         irc=$?
         stop_vm
         [[ "$irc" -eq 0 ]] && green "usb: that disk boots alone, unlocks with the passphrase typed at the console, and asks for its first user" \
