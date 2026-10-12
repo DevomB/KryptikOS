@@ -913,6 +913,28 @@ if [[ "$radio_rounds" =~ $fresh_radio ]]; then
 else
     fail "radio-recarried" "${radio_rounds}$(uncaught | grep -a 'kryptikd: \(wiphy\|interface\)' | tail -3 | tr '\n' ' ') $(tr '\n' ' ' < "$LOG/radio-extra.out")"
 fi
+# A radio switched off as the net zone starts, by an airplane-mode key or a switch, moves in down:
+# brought up, its link would be refused (ERFKILL) and the zone with it, wire and all. Switched on,
+# the next start joins again.
+off_new=0; off_line=""; on_line=""
+if [[ -n "$STA_RFKILL" ]]; then
+    # Switched off while no net zone runs, so only the next one can say READY.
+    s6-svc -d /run/service/net-zone
+    for _ in $(seq 1 30); do [[ -e /sys/class/ieee80211/phy0 ]] && break; sleep 0.5; done
+    rfkill_soft "$STA_RFKILL" 1
+    before="$(ready_count)"
+    s6-svc -u /run/service/net-zone
+    off_line="$(ready_after "$before" " nat=yes " 60)" && off_new=1
+    before="$(ready_count)"
+    rfkill_soft "$STA_RFKILL" 0
+    s6-svc -r /run/service/net-zone
+    on_line="$(ready_after "$before" " wifi=$AP_SSID " 90)"
+fi
+if [[ "$off_new" = 1 && "$off_line" != *" wifi=$AP_SSID "* && "$on_line" == *" wifi=$AP_SSID "* ]]; then
+    pass "radio-off-at-start" "switched off, the net zone came up on its wire: ${off_line#*netzone: }; switched on, the next start joined: ${on_line#*netzone: }"
+else
+    fail "radio-off-at-start" "rfkill: ${STA_RFKILL:+rfkill}${STA_RFKILL:-none named phy0}; switched off, a new READY: ${off_new} (${off_line:-none}); switched on: ${on_line:-none}; $(uncaught | grep -a 'kryptikd: zone "net"' | tail -3 | tr '\n' ' ')"
+fi
 # personal's definition does not open the radio's own network: once the net
 # zone has taken the access point as a gateway, its address is refused
 # personal, and what lies past it is not.
