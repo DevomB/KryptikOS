@@ -20,7 +20,7 @@ temporary tools (stages 01 and 02) are built without them.
 | `-Wl,-z,noexecstack` | executable stack payloads | none |
 | `-ftrivial-auto-var-init=zero` | uninitialized-memory disclosure | ~0.5% |
 | `-fno-delete-null-pointer-checks` | NULL checks removed as dead code | none |
-| `-D_GLIBCXX_ASSERTIONS` (C++) | an index or iterator past a libstdc++ container's end: the program aborts | small |
+| `-D_GLIBCXX_ASSERTIONS` (C++) | an index past a libstdc++ container's end, front or back of an empty one, or a null smart pointer dereferenced: the program aborts | small |
 
 It also passes `-fno-strict-aliasing`, `-Wl,-z,separate-code` and
 `-Wl,--as-needed`.
