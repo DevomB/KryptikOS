@@ -97,25 +97,10 @@ NO-SSP  usr/bin/kryptikd            # Rust: stable rustc has no stack protector,
 NO-SSP  usr/bin/kryptik-wlproxy     # the same
 
 # Imports of calls that _FORTIFY_SOURCE=2 or 3 always turns into _chk ones.
-NO-FORTIFY  usr/bin/gencat          # glibc's build leaves FORTIFY out of its own code (hardening-exceptions.txt)
-NO-FORTIFY  usr/bin/getconf         # the same
-NO-FORTIFY  usr/libexec/getconf/*   # the same
-NO-FORTIFY  usr/bin/getent          # the same
-NO-FORTIFY  usr/bin/iconv           # the same
-NO-FORTIFY  usr/bin/locale          # the same
-NO-FORTIFY  usr/bin/localedef       # the same
-NO-FORTIFY  usr/bin/makedb          # the same
-NO-FORTIFY  usr/bin/pcprofiledump   # the same
-NO-FORTIFY  usr/bin/pldd            # the same
-NO-FORTIFY  usr/bin/sprof           # the same
-NO-FORTIFY  usr/bin/zdump           # the same
-NO-FORTIFY  usr/sbin/iconvconfig    # the same
-NO-FORTIFY  usr/sbin/zic            # the same
-NO-FORTIFY  usr/lib/audit/sotruss-lib.so    # the same
-NO-FORTIFY  usr/lib/libc_malloc_debug.so.0  # the same
-NO-FORTIFY  usr/lib/libmemusage.so  # the same
-NO-FORTIFY  usr/lib/libnsl.so.1     # the same
-NO-FORTIFY  usr/lib/libresolv.so.2  # the same
+NO-FORTIFY  usr/bin/pldd            # glibc builds elf/, dlfcn/, csu/ and debug/ without FORTIFY (Makeconfig's do-fortify): the loader's bootstrap and the checks themselves
+NO-FORTIFY  usr/bin/sprof           # the same: elf/
+NO-FORTIFY  usr/lib/audit/sotruss-lib.so  # the same: elf/
+NO-FORTIFY  usr/bin/pcprofiledump   # the same: debug/
 NO-FORTIFY  usr/bin/gawk            # passes fprintf as its printing function (print_vars, pp_string_fp, the debugger's print_func)
 NO-FORTIFY  usr/bin/gawk-*          # the same
 NO-FORTIFY  usr/bin/msg*            # gettext's bundled libxml, linked into each tool, keeps fprintf as its error channel
