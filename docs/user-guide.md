@@ -347,7 +347,8 @@ kernel on the ESP under its own name and arms one trial boot (`BootNext`).
 The next boot runs the new slot; `boot-success` judges it (state partition
 usable, services up, the zone supervisor healthy) and only then makes it the
 committed boot file. An unhealthy trial reboots into the previous slot by
-itself. Persistent zone data on `kryptik-state` is never written by any of
+itself, and `kryptik update status` and the menu then say what it found.
+Persistent zone data on `kryptik-state` is never written by any of
 this. `apply` refuses while another trial is armed (reboot first), while the
 state partition is degraded, and on any slot but the committed one, such as
 one picked in the firmware's boot menu: the refusal says to boot the

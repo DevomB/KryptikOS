@@ -165,7 +165,11 @@ payloads come from [the update channel](update-channel.md) or by hand.
    committed slot, `BootNext` being spent. On a degraded state the trial
    record is out of reach, so `committed-slot` says whether the boot is a
    trial. A trial that never comes up also lands on the committed slot; the
-   fallback records `trial.failed` and forgets the entries, and the updater
+   fallback records `trial.failed` and forgets the entries. Either way
+   `trial.failed` keeps a `why=` line (the failures, or that it never came up
+   to be judged), since the next boot's own result replaces `last-result`;
+   `kryptik update status`, `kryptik-update status` and the launcher repeat
+   it, so the release reads as tried, not as waiting. The updater
    will not re-arm that payload without `--retry`, which root gives (`su` from
    the administration login on tty2; the refusal prints the command). Only a
    trial reboots; an unhealthy committed slot is reported and left running,
