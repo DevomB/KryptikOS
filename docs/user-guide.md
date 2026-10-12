@@ -81,6 +81,13 @@ any offer to initialise or format the stick afterwards.
 
 **Optical.** Burn `kryptik-VERSION.iso` as an image.
 
+**Firmware settings.** A firmware's fast boot can skip USB devices, so the
+stick never shows in its boot menu: turn fast boot off for the install. Some
+older laptops set their disk controller to RAID (Intel RST), which hides an
+NVMe disk from Linux, and the kernel log then says `Switch your BIOS from RAID
+to AHCI mode`: set it to AHCI in the firmware setup. A newer machine's RST
+(Intel VMD) needs no change.
+
 **Secure Boot.** The kernel is signed with the build's Secure Boot key: a
 release's, from 1.0.0 on, is the project's ([release keys](release-keys.md)),
 enrolled once for every release after it; a development build's is made by
