@@ -111,8 +111,9 @@ the firmware from the pinned linux-firmware release
   USB adapters (AX88179, RTL8152); virtio, VMware vmxnet3, Hyper-V.
 - **Wi-Fi:** Intel from the 7260 on; Qualcomm QCA6174, QCA9377, QCA6390,
   WCN6855, QCA2066, QCA6698AQ, WCN7850; MediaTek MT7920, MT7921, MT7922,
-  MT7925; Realtek rtw88, rtw89 and rtl8xxxu; Broadcom over PCIe. The net zone
-  owns the radio ([net zone design](docs/design/net-zone.md)). No Bluetooth.
+  MT7925; Realtek rtw88, rtw89 and rtl8xxxu (not its RTL8188CU and RTL8192CU
+  sticks); Broadcom over PCIe. The net zone owns the radio
+  ([net zone design](docs/design/net-zone.md)). No Bluetooth.
 - **Display:** the firmware framebuffer (simpledrm) everywhere; Intel (i915,
   xe) and AMD (amdgpu) with their firmware; ASPEED and Matrox server BMCs;
   virtio-gpu, VMware SVGA, Hyper-V. NVIDIA machines use the firmware
