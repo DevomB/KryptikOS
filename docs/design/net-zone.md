@@ -317,6 +317,20 @@ configured the zone keeps its IPv4 path and the launcher says so.
   protect. Anyone in range reads what crosses it, as on any open network,
   and any access point may take its name: what a zone sends there is private
   only where the zone encrypts it.
+- **Each saved network sees an address of its own.** kryptikd gives every
+  network a random, locally administered unicast address when it is first
+  saved, or when a file an older kryptikd wrote is rewritten, and keeps it
+  through a new passphrase (`mac_addr=3`, `mac_value=`: wpa_supplicant sets
+  it before it associates). A network sees the same station each time, and
+  no other network, nor the radio's own address, is seen there. dhcpcd runs
+  RFC 7844's anonymity profile (`anonymous` in the image's
+  `/etc/dhcpcd.conf`): no hostname, no vendor class, and a client ID made
+  from the address the interface has when it asks, not a DUID made from a
+  hardware address, which the stock configuration would send to every
+  network. Left as before: a scan goes out from the address the radio has
+  then, its own until it first joins and the last network's after; random
+  scan addresses would change the interface's address at every disconnect.
+  A wired uplink keeps its own address.
 - On disk the file is plaintext inside the [encrypted](state-encryption.md)
   state partition, like NetworkManager's connection files. A compromised net
   zone learns the passphrases of the networks it was given, and nothing more.

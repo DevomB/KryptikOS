@@ -270,8 +270,12 @@ passphrase; the net zone restarts and joins it, by WPA3 where the network
 offers it. A network with no passphrase, a café's or an airport's, is saved
 with `kryptik wifi add SSID --open`: anyone in range can read what crosses it
 unencrypted, so only what a zone encrypts itself, as HTTPS does, stays
-private there. `kryptik wifi list` names the saved networks, and `kryptik
-wifi forget SSID` removes one.
+private there. Each saved network sees the machine by an address of its own,
+made when the network was saved and kept with it, never the radio's: two
+networks cannot tell they saw one machine by its address or by what it asks
+for a lease. A scan, before a network is joined, goes out from whatever
+address the radio has then. `kryptik wifi list` names the saved networks,
+and `kryptik wifi forget SSID` removes one.
 
 **The local network.** Every zone with a network reaches the internet through
 the net zone. The network the machine itself is on, with its router, its

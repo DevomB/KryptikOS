@@ -55,6 +55,44 @@ pub enum Psk {
 pub struct Network {
     pub ssid: String,
     pub psk: Psk,
+    /// The station's address on this network alone (`mac_value`); none in a file an older
+    /// kryptikd wrote, until it is rewritten.
+    pub mac: Option<String>,
+}
+
+/* Each saved network is joined from an address of its own, made when it is first saved and
+ * kept with it: the network sees the same station each time, and no other network, nor the
+ * radio's own address, is seen there (wpa_supplicant's dedicated address per ESS). */
+const MAC_POLICY: &str = "\tmac_addr=3";
+
+/// A locally administered unicast address, as `mac_value` holds one.
+fn check_mac(v: &str) -> Result<(), String> {
+    let octets: Vec<&str> = v.split(':').collect();
+    let hex = octets.len() == 6 && octets.iter().all(|o| o.len() == 2 && o.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')));
+    match hex.then(|| u8::from_str_radix(octets[0], 16)) {
+        Some(Ok(first)) if first & 0x03 == 0x02 => Ok(()),
+        _ => Err("an address is six lowercase hex octets, locally administered and unicast".into()),
+    }
+}
+
+/// A new address for a network: random, with the locally administered bit set and the
+/// group bit clear.
+fn new_mac() -> Result<String, String> {
+    let mut b = [0u8; 6];
+    let n = unsafe { libc::getrandom(b.as_mut_ptr() as *mut libc::c_void, b.len(), 0) };
+    if n != b.len() as isize {
+        return Err(format!("no randomness for a network's address: {}", io::Error::last_os_error()));
+    }
+    b[0] = (b[0] & 0xfc) | 0x02;
+    Ok(b.iter().map(|o| format!("{o:02x}")).collect::<Vec<_>>().join(":"))
+}
+
+/// Give each network without an address one of its own.
+fn give_addresses(nets: &mut [Network]) -> Result<(), String> {
+    for n in nets.iter_mut().filter(|n| n.mac.is_none()) {
+        n.mac = Some(new_mac()?);
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,76 +152,101 @@ pub fn render(nets: &[Network]) -> String {
             Psk::Hex(h) => out.push_str(&format!("{PMF}\n\tpsk={h}\n")),
             Psk::Open => {}
         }
+        if let Some(m) = &n.mac {
+            out.push_str(&format!("{MAC_POLICY}\n\tmac_value={m}\n"));
+        }
         out.push_str("}\n");
     }
     out
+}
+
+/// What one `network={` block has said so far.
+#[derive(Default)]
+struct Block {
+    ssid: Option<String>,
+    psk: Option<Psk>,
+    key_mgmt: Option<&'static str>,
+    pmf: bool,
+    mac_policy: bool,
+    mac: Option<String>,
+}
+
+impl Block {
+    /// The network the closed block names; `n` is its closing line.
+    fn close(self, n: usize) -> Result<Network, String> {
+        let Some(ssid) = self.ssid else {
+            return Err(format!("line {n}: a network block without an ssid"));
+        };
+        // A file an older kryptikd wrote names neither key management nor protection, and no address.
+        let psk = match (self.psk, self.key_mgmt, self.pmf) {
+            (Some(p), None, false) => p,
+            (Some(p), Some(k), true) if k == key_mgmt(&p) => p,
+            (None, Some(KEY_MGMT_OPEN), false) => Psk::Open,
+            (None, None, _) => return Err(format!("line {n}: a network block with neither a psk nor key_mgmt=NONE")),
+            _ => return Err(format!("line {n}: a block whose key management is not what kryptikd writes for its psk")),
+        };
+        if self.mac_policy != self.mac.is_some() {
+            return Err(format!("line {n}: a block with only one of mac_addr and mac_value"));
+        }
+        Ok(Network { ssid, psk, mac: self.mac })
+    }
 }
 
 /// Read back what `render` writes and refuse anything else, which a rewrite would lose or keep
 /// unchecked. Errors name the line, never its content.
 pub fn parse(text: &str) -> Result<Vec<Network>, String> {
     let mut nets = Vec::new();
-    // ssid, psk, key_mgmt, ieee80211w: a file an older kryptikd wrote names the last two not at all.
-    let mut block: Option<(Option<String>, Option<Psk>, Option<&str>, bool)> = None;
+    let mut block: Option<Block> = None;
+    let foreign = |n: usize| format!("line {n} is not one kryptikd writes; refusing to read a file something else edited");
     for (i, line) in text.lines().enumerate() {
         let n = i + 1;
-        match &mut block {
-            None => {
-                if line.trim().is_empty() || HEADER.lines().any(|h| h == line) {
-                    continue;
-                }
-                if line == "network={" {
-                    block = Some((None, None, None, false));
-                    continue;
-                }
-                return Err(format!(
-                    "line {n} is not one kryptikd writes; refusing to read a file something else edited"
-                ));
+        let Some(b) = &mut block else {
+            if line.trim().is_empty() || HEADER.lines().any(|h| h == line) {
+                continue;
             }
-            Some((ssid, psk, km, pmf)) => {
-                if line == "}" {
-                    let Some(s) = ssid.take() else {
-                        return Err(format!("line {n}: a network block without an ssid"));
-                    };
-                    let p = match (psk.take(), km.take(), *pmf) {
-                        (Some(p), None, false) => p,
-                        (Some(p), Some(k), true) if k == key_mgmt(&p) => p,
-                        (None, Some(KEY_MGMT_OPEN), false) => Psk::Open,
-                        (None, None, _) => return Err(format!("line {n}: a network block with neither a psk nor key_mgmt=NONE")),
-                        _ => return Err(format!("line {n}: a block whose key management is not what kryptikd writes for its psk")),
-                    };
-                    nets.push(Network { ssid: s, psk: p });
-                    block = None;
-                } else if let Some(v) = line.strip_prefix("\tssid=\"").and_then(|r| r.strip_suffix('"')) {
-                    check_ssid(v).map_err(|e| format!("line {n}: {e}"))?;
-                    if ssid.replace(v.to_string()).is_some() {
-                        return Err(format!("line {n}: a second ssid in one block"));
-                    }
-                } else if line == KEY_MGMT_PASSPHRASE || line == KEY_MGMT_KEY || line == KEY_MGMT_OPEN {
-                    if km.replace(line).is_some() {
-                        return Err(format!("line {n}: a second key_mgmt in one block"));
-                    }
-                } else if line == PMF {
-                    if std::mem::replace(pmf, true) {
-                        return Err(format!("line {n}: a second ieee80211w in one block"));
-                    }
-                } else if let Some(v) = line.strip_prefix("\tpsk=") {
-                    let quoted = v.strip_prefix('"').and_then(|r| r.strip_suffix('"'));
-                    let value = match (quoted, check_passphrase(quoted.unwrap_or(v))) {
-                        (Some(_), Ok(p @ Psk::Passphrase(_))) => p,
-                        (None, Ok(p @ Psk::Hex(_))) => p,
-                        (_, Ok(_)) => return Err(format!("line {n}: the psk is quoted the wrong way for its form")),
-                        (_, Err(e)) => return Err(format!("line {n}: {e}")),
-                    };
-                    if psk.replace(value).is_some() {
-                        return Err(format!("line {n}: a second psk in one block"));
-                    }
-                } else {
-                    return Err(format!(
-                        "line {n} is not one kryptikd writes; refusing to read a file something else edited"
-                    ));
-                }
+            if line != "network={" {
+                return Err(foreign(n));
             }
+            block = Some(Block::default());
+            continue;
+        };
+        if line == "}" {
+            nets.push(block.take().expect("a block is open").close(n)?);
+        } else if let Some(v) = line.strip_prefix("\tssid=\"").and_then(|r| r.strip_suffix('"')) {
+            check_ssid(v).map_err(|e| format!("line {n}: {e}"))?;
+            if b.ssid.replace(v.to_string()).is_some() {
+                return Err(format!("line {n}: a second ssid in one block"));
+            }
+        } else if let Some(k) = [KEY_MGMT_PASSPHRASE, KEY_MGMT_KEY, KEY_MGMT_OPEN].into_iter().find(|k| *k == line) {
+            if b.key_mgmt.replace(k).is_some() {
+                return Err(format!("line {n}: a second key_mgmt in one block"));
+            }
+        } else if line == PMF {
+            if std::mem::replace(&mut b.pmf, true) {
+                return Err(format!("line {n}: a second ieee80211w in one block"));
+            }
+        } else if line == MAC_POLICY {
+            if std::mem::replace(&mut b.mac_policy, true) {
+                return Err(format!("line {n}: a second mac_addr in one block"));
+            }
+        } else if let Some(v) = line.strip_prefix("\tmac_value=") {
+            check_mac(v).map_err(|e| format!("line {n}: {e}"))?;
+            if b.mac.replace(v.to_string()).is_some() {
+                return Err(format!("line {n}: a second mac_value in one block"));
+            }
+        } else if let Some(v) = line.strip_prefix("\tpsk=") {
+            let quoted = v.strip_prefix('"').and_then(|r| r.strip_suffix('"'));
+            let value = match (quoted, check_passphrase(quoted.unwrap_or(v))) {
+                (Some(_), Ok(p @ Psk::Passphrase(_))) => p,
+                (None, Ok(p @ Psk::Hex(_))) => p,
+                (_, Ok(_)) => return Err(format!("line {n}: the psk is quoted the wrong way for its form")),
+                (_, Err(e)) => return Err(format!("line {n}: {e}")),
+            };
+            if b.psk.replace(value).is_some() {
+                return Err(format!("line {n}: a second psk in one block"));
+            }
+        } else {
+            return Err(foreign(n));
         }
     }
     if block.is_some() {
@@ -216,12 +279,13 @@ pub fn load(dir: &Path) -> Result<Vec<Network>, String> {
 }
 
 /// Rewrite in today's form, owner and mode a file an older kryptikd wrote, so the net zone's
-/// supplicant reads it and each network's key management; true when it was rewritten. A
-/// current, absent or foreign file is left alone.
+/// supplicant reads it, each network's key management and an address of its own; true when it
+/// was rewritten. A current, absent or foreign file is left alone.
 pub fn refresh(dir: &Path, owner: Option<(u32, u32)>) -> Result<bool, String> {
     use std::os::unix::fs::MetadataExt;
     let Some(text) = read_text(dir)? else { return Ok(false) };
-    let nets = parse(&text).map_err(|e| format!("{}: {e}", conf_path(dir).display()))?;
+    let mut nets = parse(&text).map_err(|e| format!("{}: {e}", conf_path(dir).display()))?;
+    give_addresses(&mut nets)?;
     let current = render(&nets);
     let md = fs::symlink_metadata(conf_path(dir)).map_err(|e| format!("{}: {e}", conf_path(dir).display()))?;
     let owned = owner.map_or(true, |(u, g)| md.uid() == u && md.gid() == g);
@@ -269,10 +333,12 @@ pub fn add(dir: &Path, owner: Option<(u32, u32)>, ssid: &str, passphrase: Option
             Added::Replaced
         }
         None => {
-            nets.push(Network { ssid: ssid.to_string(), psk });
+            nets.push(Network { ssid: ssid.to_string(), psk, mac: None });
             Added::New
         }
     };
+    // A replaced network keeps its address; a new one, and any an older kryptikd wrote, get one.
+    give_addresses(&mut nets)?;
     write_atomic(dir, &render(&nets), owner)?;
     Ok(outcome)
 }
@@ -296,6 +362,7 @@ pub fn forget(dir: &Path, owner: Option<(u32, u32)>, ssid: &str) -> Result<(), S
     if nets.len() == before {
         return Err(format!("no network named {ssid:?} is configured"));
     }
+    give_addresses(&mut nets)?;
     write_atomic(dir, &render(&nets), owner)
 }
 
