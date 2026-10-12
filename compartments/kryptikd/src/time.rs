@@ -182,6 +182,9 @@ use std::path::Path;
 pub const IMAGE_JSON: &str = "/etc/kryptik-image.json";
 /// What zone 0 remembers about the clock between claims and across boots.
 pub const STATE_DIR: &str = "/var/lib/kryptik/time";
+/// sysinit's mark of a boot whose state partition could not be used: its `/var`, and with it
+/// `STATE_DIR`, is memory.
+pub const DEGRADED: &str = "/run/kryptik/state-degraded";
 
 /// The wall clock, behind a trait so tests can use a fake: no test should set the real one.
 pub trait Clock {
@@ -402,6 +405,21 @@ pub fn consider(
     claim: &Claim,
     ask: &mut dyn FnMut(&str, &str, u8) -> Result<(), String>,
 ) -> Outcome {
+    /* A degraded boot keeps the unasked sum in memory, so every such boot starts it afresh:
+     * its steps stay out of the hardware clock that the next boot starts from. */
+    consider_with(clock, dir, floor, bound, claim, ask, !Path::new(DEGRADED).exists())
+}
+
+/// `consider`, setting the hardware clock after a step only when `set_rtc`.
+fn consider_with(
+    clock: &mut dyn Clock,
+    dir: &Path,
+    floor: Option<i64>,
+    bound: i64,
+    claim: &Claim,
+    ask: &mut dyn FnMut(&str, &str, u8) -> Result<(), String>,
+    set_rtc: bool,
+) -> Outcome {
     let Some(floor) = floor else {
         return Outcome::Refused(format!("no floor is known ({IMAGE_JSON} is missing or unreadable), so no claim can be judged"));
     };
@@ -458,7 +476,9 @@ pub fn consider(
     if applied {
         state.moved_unasked = moved_after(&know, claim, &decision, consented);
         if !matches!(outcome, Outcome::Slewed) {
-            if let Err(e) = clock.sync_rtc() {
+            if !set_rtc {
+                record(dir, clock.now(), "the hardware clock was left alone: this boot's state is in memory");
+            } else if let Err(e) = clock.sync_rtc() {
                 record(dir, clock.now(), &format!("the hardware clock was not updated: {e}"));
             }
         }
