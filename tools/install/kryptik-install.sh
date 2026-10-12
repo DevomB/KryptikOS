@@ -102,6 +102,8 @@ mounted_on() {   # mounted_on DEVS < TABLE: "SOURCE on WHERE" for each source th
 . /usr/libexec/kryptik/keyboard.sh
 # What the medium's root.json may be trusted for, shared with kryptik-recover.
 . /usr/libexec/kryptik/medium-root.sh
+# The ESP's kernels and records, written as every other tool writes them.
+. /usr/libexec/kryptik/esp-records.sh
 [ -z "$KEYBOARD" ] || kb_row "$KEYBOARD" > /dev/null || die "no keyboard layout named ${KEYBOARD}: kryptik keyboard lists them"
 [ -z "$PRESEED" ] || preseed_ok "$PRESEED"
 
@@ -335,11 +337,9 @@ mkfs.ext4 -q -F -L kryptik-state "/dev/mapper/$MAPPING" || die "mkfs.ext4 inside
 # --- the target ESP: slot A is the committed boot file ----------------------
 mount -t vfat -o rw "$P1" "$MNT_BASE/tesp" || die "could not mount the new ESP"
 [ -f "$MNT_BASE/tesp/EFI/kryptik/kryptik-a.efi" ] || die "the copied ESP has no slot A kernel"
-cp "$MNT_BASE/tesp/EFI/kryptik/kryptik-a.efi" "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI.new" || die "could not stage BOOTX64.EFI"
-sync -f "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI.new"
-mv -f "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI.new" "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI" || die "could not install BOOTX64.EFI"
-cmp -s "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI" "$MNT_BASE/tesp/EFI/kryptik/kryptik-a.efi" || die "BOOTX64.EFI is not the slot A kernel"
-printf 'a\n' > "$MNT_BASE/tesp/kryptik/committed-slot"
+esp_place "$MNT_BASE/tesp/EFI/kryptik/kryptik-a.efi" "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI" \
+    || die "BOOTX64.EFI could not be made the slot A kernel"
+esp_put "$MNT_BASE/tesp/kryptik/committed-slot" a || die "slot A could not be recorded as committed"
 rm -f "$MNT_BASE/tesp/kryptik/media-kernel"
 sync
 umount "$MNT_BASE/tesp" || die "could not unmount the new ESP"
