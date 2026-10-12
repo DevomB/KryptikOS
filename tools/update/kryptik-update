@@ -301,7 +301,7 @@ cmd_check_pointer() {
 
 # For the clock's floor (docs/design/time.md): the manifest a slot was applied
 # from, kept on the state partition, believed only as apply would believe it,
-# in any version order, and the date it was signed with.
+# in any version order, and the created date its signed manifest names.
 cmd_check_release() {
     [ $# = 1 ] && [ -d "$1" ] || die "check-release needs the directory holding manifest and manifest.sig"
     verify_manifest "$1" any >&2
@@ -395,7 +395,7 @@ cmd_apply() {
     umount_esp
     say "kernel for slot $target installed on the ESP (version $VERSION)"
     # Once boot-success commits the slot, the clock's floor may rise to the
-    # date this manifest was signed with (docs/design/time.md).
+    # created date this signed manifest names (docs/design/time.md).
     { mkdir -p "$B/release-$target" && cp "$m" "$sig" "$B/release-$target/"; } \
         || say "the manifest was not kept; committing $VERSION will leave the clock's floor where it is"
 
