@@ -20,11 +20,12 @@ s_python_final() {
     # The first build's test files outlive it here, and tkinter cannot import without _tkinter, which nothing builds.
     local lib="/usr/lib/python${V_PYTHON%.*}"
     rm -rf "$lib"/test "$lib"/idlelib "$lib"/tkinter "$lib"/turtledemo "$lib"/turtle.py "$lib"/__pycache__/turtle.* \
-        "$lib"/lib-dynload/{_test,_ctypes_test,xx}*.so /usr/bin/idle3 "/usr/bin/idle${V_PYTHON%.*}" \
+        "$lib"/lib-dynload/{_test,_ctypes_test,xx,_xxtestfuzz}*.so /usr/bin/idle3 "/usr/bin/idle${V_PYTHON%.*}" \
         "$lib"/config-*/libpython*.a
     # Bytecode for python -O and -OO, which nothing runs; such a run compiles in memory on a read-only root.
     find "$lib" -name '*.opt-[12].pyc' -delete
     [[ ! -e "$lib/test" ]] && ! compgen -G "$lib/lib-dynload/_test*.so" > /dev/null \
+        && ! compgen -G "$lib/lib-dynload/_xxtestfuzz*.so" > /dev/null \
         || { echo "FAIL: python's test suite is still installed"; return 1; }
     local m
     for m in ctypes ssl pyexpat readline; do
