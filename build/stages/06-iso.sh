@@ -115,16 +115,22 @@ stage_depends_on "bs-" licences
 
 # --- steps ------------------------------------------------------------------
 
-# strip_root DIR: symbols and debug sections off every x86-64 program and library, once per file; signed
-# modules (ET_REL) and other architectures' firmware stay as they are, and a file capability would be lost.
+# strip_root DIR: symbols and debug sections off every x86-64 program and library, debug sections off every
+# static archive; signed modules (ET_REL) and foreign firmware are left alone, and a file capability would be lost.
 strip_root() {
-    local f mode owner n=0
+    local f mode owner n=0 a=0
     while IFS= read -r -d '' f; do
         mode="$(stat -c %a "$f")"; owner="$(stat -c %u:%g "$f")"
-        strip --strip-all --preserve-dates "$f"
+        if [[ "$f" == *.a ]]; then
+            # The archive keeps every symbol a link needs; -D zeroes the members' times and owners.
+            strip --strip-debug -D --preserve-dates "$f"
+            a=$((a + 1))
+        else
+            strip --strip-all --preserve-dates "$f"
+            n=$((n + 1))
+        fi
         # chown before chmod: a change of owner clears the setuid bit.
         chown "$owner" "$f"; chmod "$mode" "$f"
-        n=$((n + 1))
     done < <(python3 - "$1" <<'EOF'
 import os, stat, sys
 root = sys.argv[1]
@@ -139,13 +145,14 @@ for d, dirs, files in os.walk(root):
             continue
         with open(p, "rb") as fh:
             h = fh.read(20)
-        # 64-bit little-endian ELF, ET_EXEC or ET_DYN, for x86-64
-        if h[:6] == b"\x7fELF\x02\x01" and h[16:18] in (b"\x02\x00", b"\x03\x00") and h[18:20] == b"\x3e\x00":
+        # 64-bit little-endian ELF, ET_EXEC or ET_DYN, for x86-64; or an ar archive named .a
+        elf = h[:6] == b"\x7fELF\x02\x01" and h[16:18] in (b"\x02\x00", b"\x03\x00") and h[18:20] == b"\x3e\x00"
+        if elf or (name.endswith(".a") and h[:8] == b"!<arch>\n"):
             seen.add(st.st_ino)
             sys.stdout.buffer.write(os.fsencode(p) + b"\0")
 EOF
 )
-    echo "stripped ${n} objects"
+    echo "stripped ${n} objects, and the debug sections of ${a} archives"
 }
 
 s_rootfs() {
