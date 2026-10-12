@@ -15,9 +15,10 @@
 #   step 3  a byte of slot a's root flipped: dm-verity stops the boot
 #   step 4  kryptik-recover --restore-slot a refuses a medium whose root is
 #           not the one its signed kernel names (--status then shows nothing
-#           naming slot a), then restores slot a from the medium, naming the
-#           version; its records on the ESP are whole, --status shows them, and
-#           the user's data survives
+#           naming slot a), then, with the ESP's boot sector zeroed, rewrites
+#           the ESP from the medium and restores slot a, naming the version;
+#           its records on the ESP are whole, slot b is unlisted, --status
+#           shows them, and the user's data survives
 #   step 5  an anchor, zone, sysctl, preload library and udev rule planted in
 #           the state's /etc layer: none takes effect
 #   step 6  the state header saved, wiped and restored by kryptik-recover
@@ -36,7 +37,7 @@ while [[ "$#" -gt 0 ]]; do
         --usb) USB="${2:?}"; shift 2 ;;
         --disk) DISK="${2:?}"; shift 2 ;;
         --timeout) TIMEOUT="${2:?}"; shift 2 ;;
-        -h|--help) sed -n '2,25p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,26p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -195,8 +196,13 @@ else
     red "could not alter a copy of the medium (free block '${A_FREE}', total_bytes '${A_BYTES}')"
 fi
 rm -rf "$ALT" "$ALTUSB"
+# The ESP's boot sector zeroed, as a write cut short can leave it: it no longer
+# mounts, and the restore rewrites it from the medium before the slot.
+dd if=/dev/zero of="$DISK" bs=512 seek=$(( ESP_OFF / 512 )) count=1 conv=notrunc status=none
 smoke integ-p4 --usb "$USB" --disk "$DISK" --testctl "$CTLR" --vars enrolled --timeout "$TIMEOUT" > /dev/null
 boot_txt | grep -q 'KRYPTIK_RECOVER: rc=0' && green "kryptik-recover --restore-slot a succeeded from the medium" || { red "recovery did not report success"; boot_txt | grep 'KRYPTIK_RECOVER' | tail -5 | sed 's/^/        /'; }
+boot_txt | grep -qF "KRYPTIK_RECOVER: kryptik-recover: /dev/vda1 does not mount: rewriting it from this medium's ESP" \
+    && green "an ESP that did not mount was rewritten from the medium" || red "kryptik-recover did not say it rewrote the ESP that did not mount"
 # Recovery's records on the ESP, read from the host: whole, and no .new file left behind.
 dd if="$DISK" of="$ESPIMG" bs=1M iflag=skip_bytes,count_bytes skip="$ESP_OFF" count=$((512*1024*1024)) status=none
 MVER="$(basename "$USB")"; MVER="${MVER#kryptik-}"; MVER="${MVER%-usb.img}"
@@ -210,6 +216,14 @@ boot_txt | grep -F 'KRYPTIK_RECOVER: status: slot a ' | grep -qF "version ${MVER
     || red "--status after the restore: $(boot_txt | grep 'KRYPTIK_RECOVER: status:' | tr '\n' ' ')"
 LEFT="$(mdir -/ -b -i "$ESPIMG" ::/ 2>/dev/null | grep -i '\.new$' | tr '\n' ' ')"
 [[ -z "$LEFT" ]] && green "recovery left no .new file on the ESP" || red "recovery left ${LEFT}on the ESP"
+# The medium's kernel for slot b need not boot what slot b holds.
+if mtype -i "$ESPIMG" ::/EFI/kryptik/kryptik-b.efi >/dev/null 2>&1 || mtype -i "$ESPIMG" ::/kryptik/version-b >/dev/null 2>&1; then
+    red "the rewritten ESP still names a kernel or version for slot b"
+else
+    green "the rewritten ESP names no kernel or version for slot b"
+fi
+mtype -i "$ESPIMG" ::/kryptik/media-kernel >/dev/null 2>&1 && red "the rewritten ESP kept the medium's media-kernel record" \
+    || green "the rewritten ESP has no media-kernel record"
 cp "$ENROLLED" "$VARSF"
 start_vm integ-p4b; LOG4="$LOG"
 python3 "$DRV" --serial "$SER" --timeout 300 \

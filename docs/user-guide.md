@@ -373,7 +373,11 @@ The state partition is not touched, so users and zone volumes survive. The
 result is the medium's version, which may be older than what was installed:
 the tool does not compare versions, so read `--status` first. It shows each
 slot's version, which slot's kernel the firmware boots by default, and the
-medium's own version, the one `--restore-slot` writes.
+medium's own version, the one `--restore-slot` writes. If the disk's boot
+partition (the ESP) no longer mounts, `--status` says so, and `--restore-slot`
+first rewrites it from the medium, as the installer does. The other slot then
+has no kernel there, so it cannot be committed or rolled back to; the next
+update writes it again.
 
 A machine that stops responding resets itself after about a minute (the
 software watchdog's timeout; a hardware watchdog keeps its own): a service
