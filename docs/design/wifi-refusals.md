@@ -35,25 +35,31 @@ recommendation.
 - `wpa_cli -a` hands its script CONNECTED, DISCONNECTED and a fixed list of
   access point, mesh, P2P, WPS and DPP events (`wpa_cli.c:4582-4690`);
   neither TEMP-DISABLED nor AUTH-REJECT is among them.
-- The net zone starts the supplicant with `-B`
-  (`tools/net/netzone-init.sh:204`), so its own output goes nowhere. The
-  recipe builds `CONFIG_DEBUG_FILE` (`build/recipes/wpa-supplicant.sh:24`),
-  so `-f FILE` would keep its messages, events among them.
+- The net zone starts the supplicant with `-B`, so its own output goes
+  nowhere. The recipe builds `CONFIG_DEBUG_FILE`
+  (`build/recipes/wpa-supplicant.sh:24`), so `-f FILE` would keep its
+  messages, events among them.
+- The supplicant's control socket is its own user's. The net zone's loop
+  (`wifi_state` in `tools/net/netzone-init.sh`) reads the link from the
+  kernel instead, `operstate` and `iw dev N link`; the zone's root reaches
+  the socket only through `kryptikd supplicant -- wpa_cli …`, as
+  `start_wifi` does once per start.
 
 ## Three ways
 
-**Read the flag in the loop.** `wifi_state` (`netzone-init.sh:212`) asks
-each radio's supplicant for `status` every ten seconds already. While no
-radio has joined, it would also ask `list_networks`, and a saved network
-flagged `[TEMP-DISABLED]` would give the status a word of its own, shown as
-"SSID refused the last joins: the passphrase may be wrong, or the network is
-out of reach". It adds one control command to a loop that exists and one
-status word: no process, no file, no privilege. It cannot tell a wrong
+**Read the flag in the loop.** While no radio has joined, each pass of the
+ten-second loop would also run `list_networks` through that door, and a
+saved network flagged `[TEMP-DISABLED]` would give the status a shape of its
+own, `wifi=refused:SSID`, shown as "SSID refused the last joins: the
+passphrase may be wrong, or the network is out of reach". It adds a
+short-lived door call to each pass while nothing is joined, and one status
+shape: no process that stays, no file, no privilege. It cannot tell a wrong
 passphrase from an absent network, and on WPA3 nothing can.
 
 **Keep the supplicant's log.** Started with
-`-f /run/wpa_supplicant.RADIO.log`, the supplicant writes every event to a
-file in the zone's tmpfs. The loop would take the last TEMP-DISABLED and
+`-f /run/wpa_supplicant/RADIO.log` (its Landlock rules let it write under
+`/run/wpa_supplicant` alone), the supplicant writes every event to a file
+in the zone's tmpfs. The loop would take the last TEMP-DISABLED and
 AUTH-REJECT lines and turn `reason=WRONG_KEY`, or SAE's `status_code=15`
 (the access point could not verify the station's confirm), into "the
 passphrase is wrong". Every scan and event lengthens the file, so the loop
@@ -69,8 +75,17 @@ same answers as the log, at the cost of a program to build, review and ship.
 
 ## Recommendation
 
-The first. It adds nothing that runs and no file, and what it says is true
-on every network; neither of the others can say more on a WPA3 network that
-drops a wrong confirm. If the owner also wants WPA2's definite answer, the
-log is the smaller step on top of it, and the listener is not worth its
-program.
+The first. It adds nothing that stays running and no file, and what it says
+is true on every network; neither of the others can say more on a WPA3
+network that drops a wrong confirm. If the owner also wants WPA2's definite
+answer, the log is the smaller step on top of it, and the listener is not
+worth its program.
+
+Two things for whoever builds it. The flag clears once its hold-off has
+passed and the supplicant picks networks again (10 s at first, then 20, 30,
+60, 120 and 300 s), so on a ten-second loop it would come and go between
+attempts: the status should keep `refused` until a join, or until the saved
+networks change. And `wifi=` already mixes words with SSIDs (`none`,
+`unconfigured`, `connecting`, or the SSID), so a network named like a word
+reads as that word; a shape that is no SSID, `refused:SSID`, adds no such
+name.
