@@ -74,7 +74,7 @@ fresh; out="$(bash -c "source '$T/esp.sh'; cmd_rollback" 2>&1)"; rc=$?
     && ok "rollback refuses a slot whose write never finished" || bad "rollback: rc=$rc / $out"
 body="$(sed -n '/^cmd_apply() {/,/^}/p' "$TOOL")"
 u="$(grep -n 'unlist_slot "$target"' <<< "$body" | head -1 | cut -d: -f1)"
-w="$(grep -n 'dd if=/proc/self/fd/3 of=' <<< "$body" | head -1 | cut -d: -f1)"
+w="$(grep -n '< /proc/self/fd/3 | dd of=' <<< "$body" | head -1 | cut -d: -f1)"
 [[ -n "$u" && -n "$w" && "$u" -lt "$w" ]] \
     && ok "apply takes the slot off the ESP before it writes a byte of it" \
     || bad "apply: the slot is taken off the ESP at line '${u}', written at line '${w}'"

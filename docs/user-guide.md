@@ -310,8 +310,8 @@ key can be accepted while this machine's clock reads N days before ...: set
 the clock".
 
 A release brought by hand is a signed payload directory holding exactly
-`manifest`, `manifest.sig`, `kryptik-root.img`, `kryptik-a.efi`,
-`kryptik-b.efi` and `root.json` (what `make media` writes as
+`manifest`, `manifest.sig`, `kryptik-root.img.zst` (the root image,
+compressed), `kryptik-a.efi`, `kryptik-b.efi` and `root.json` (what `make media` writes as
 `images/payload-VERSION`, and what a release on the repository's page
 carries). Bring it onto the state partition, for example under
 `/var/lib/kryptik/updates/`, and as root (the administration login, then

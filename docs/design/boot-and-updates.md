@@ -119,10 +119,15 @@ entry left alone.
 
 ## Updates
 
-A payload directory holds exactly `kryptik-root.img`, `kryptik-a.efi`,
+A payload directory holds exactly `kryptik-root.img.zst`, `kryptik-a.efi`,
 `kryptik-b.efi`, `root.json`, `manifest` and `manifest.sig`. The manifest
 lists each file's sha256 and size, the version and the role, and is signed by
-the release key (Ed25519, `ssh-keygen -Y`, namespace `kryptik-release`).
+the release key (Ed25519, `ssh-keygen -Y`, namespace `kryptik-release`). The
+root image travels compressed, at about a quarter of its size; `root.json`,
+which the manifest lists, names the image's own sha256 and size. `apply`
+decompresses only a file whose hash matched the manifest, and checks what it
+decompresses to against `root.json` before it writes the inactive slot, then
+writes it decompressing again and reads the slot back.
 Versions are ordered as `sort -V` orders them. A production release is
 numbered MAJOR.MINOR.PATCH, which that order reads as a person does
 ([release keys](../release-keys.md)). The trust anchor and required role are on the verified root in
