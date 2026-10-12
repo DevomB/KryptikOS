@@ -85,7 +85,7 @@ channel_conf() {
 # --- preflight ----------------------------------------------------------------
 log "Kryptik stage 06 — install media ${KRYPTIK_VERSION}"
 for t in mkfs.ext4 tune2fs dumpe2fs debugfs veritysetup sbsign sbverify mkfs.vfat mmd mcopy \
-         xorriso sfdisk openssl ssh-keygen rsync truncate dd sha256sum blkid zstd; do
+         xorriso sfdisk openssl ssh-keygen rsync truncate dd sha256sum blkid; do
     have "$t" || die "required tool not found: ${t}"
 done
 # The signing half never touches the sysroot or the chroot.
@@ -491,6 +491,7 @@ s_sums() {
 # decompresses to against root.json, before it writes a byte of it.
 s_payload() {
     echo "inputs digest: $1"
+    have zstd || { echo "zstd is required: the payload's image travels compressed"; return 1; }
     local out="${IMG}/payload-${KRYPTIK_VERSION}"
     rm -rf "$out"; mkdir -p "$out"
     zstd -q -T0 -19 "${IMG}/kryptik-root.img" -o "$out/kryptik-root.img.zst" || { echo "could not compress the root image"; return 1; }
