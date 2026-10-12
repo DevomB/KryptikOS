@@ -253,7 +253,7 @@ PACKAGES=(
     "dnsmasq"     "s_dnsmasq"
     "dhcpcd"      "s_dhcpcd"
     # --- the net zone's Wi-Fi (docs/design/net-zone.md).
-    "libnl"       "native_build libnl-${V_LIBNL}.tar.gz libnl-${V_LIBNL} --sysconfdir=/etc --disable-static"
+    "libnl"       "s_libnl"
     "wpa-supplicant" "s_wpa_supplicant"
     "iw"          "s_iw"
     # --- what the net zone verifies a release server by.
