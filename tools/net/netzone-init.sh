@@ -52,10 +52,10 @@ NICSET=""
 for n in "$@"; do NICSET="${NICSET:+$NICSET, }\"$n\""; done
 NICSET="{ $NICSET }"
 
-# The routed zones whose definition says [network] local = true, each by the
-# address kryptikd gives it (netzone.rs, host_number). A file this zone cannot
-# read names nobody.
-local_zones() {   # local_zones DIR: "10.19.0.K fd19::K" for each
+# Every routed zone by its host number K, which gives it 10.19.0.K and fd19::K
+# (netzone.rs, host_number), and whether its definition says [network]
+# local = true. A file this zone cannot read names nobody.
+routed_zones() {   # routed_zones DIR: "K 1|0" for each
     for f in "$1"/*.toml; do
         [ -r "$f" ] || continue
         awk '
@@ -66,9 +66,12 @@ local_zones() {   # local_zones DIR: "10.19.0.K fd19::K" for each
             section == "[identity]" && /^uid_base="?[0-9]+"?$/ { base = $0; gsub(/[^0-9]/, "", base) }
             END {
                 k = (base - 131072) / 65536 + 2
-                if (claims && routed && base != "" && k == int(k) && k >= 2 && k < 250) printf "10.19.0.%d fd19::%x\n", k, k
+                if (routed && base != "" && k == int(k) && k >= 2 && k < 250) printf "%d %d\n", k, claims
             }' "$f"
     done
+}
+local_zones() {   # local_zones DIR: "10.19.0.K fd19::K" for each that claims local
+    routed_zones "$1" | awk '$2 == 1 { printf "10.19.0.%d fd19::%x\n", $1, $1 }'
 }
 LOCAL4="$(local_zones "$ZONES" | awk '{ print $1 }' | tr '\n' ',' | sed 's/,$//')"
 LOCAL6="$(local_zones "$ZONES" | awk '{ print $2 }' | tr '\n' ',' | sed 's/,$//')"
@@ -86,6 +89,10 @@ PIN6="$(awk 'BEGIN { for (k = 2; k < 250; k++) printf "%sfd19::%x . 02:19:00:00:
 FLOWCAP="$(( $(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 131072) / 8 ))"
 [ "$FLOWCAP" -ge 1024 ] 2>/dev/null || FLOWCAP=1024
 
+# Zone K's own resolver takes its queries on the bridge's addresses at port 5300 + K.
+DNS_PORT_BASE=5300
+ZONE_DNS_PORTS="$((DNS_PORT_BASE + 2))-$((DNS_PORT_BASE + 249))"
+
 # A zone goes out by a gateway (gw4, gw6) and never to the gateway itself:
 # the rest of what an uplink reaches is the network it sits on, open to local4
 # and local6 alone. With no gateway in the sets nothing goes out, so a new
@@ -93,6 +100,10 @@ FLOWCAP="$(( $(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 
 # net zone takes in only what it serves there, DNS and echo on the bridge's
 # addresses, and neighbour discovery: whatever else listens in it, such as
 # dhcpcd on every address once it holds two uplinks, is no zone's to reach.
+# A zone's DNS goes to a resolver of its own where the dns chain sends it
+# (sync_dnsnat), and a resolver's own port takes nothing that chain did not.
+# No resolver answers an uplink: Linux takes a packet for 10.19.0.1 on any
+# interface, so a host on the uplink's network could otherwise ask one.
 RULES="table inet kryptik {
     set gw4 { type ipv4_addr; }
     set gw6 { type ipv6_addr; }
@@ -119,6 +130,9 @@ RULES="table inet kryptik {
         iifname \"${BR}\" oifname ${NICSET} reject with icmpx type admin-prohibited
         iifname \"${BR}\" oifname \"${BR}\" drop
     }
+    chain dns {
+        type nat hook prerouting priority dstnat; policy accept;
+    }
     chain postrouting {
         type nat hook postrouting priority srcnat; policy accept;
         oifname ${NICSET} ip saddr 10.19.0.0/24 masquerade
@@ -127,11 +141,12 @@ RULES="table inet kryptik {
     chain input {
         type filter hook input priority filter; policy accept;
         iifname \"${BR}\" ct state new add @flows { ether saddr ct count over ${FLOWCAP} } drop
-        iifname ${NICSET} ct state new tcp dport 53 drop
-        iifname ${NICSET} ct state new udp dport 53 drop
+        iifname ${NICSET} ct state new meta l4proto { tcp, udp } th dport { 53, ${ZONE_DNS_PORTS} } drop
         iifname \"${BR}\" ct state established,related accept
         iifname \"${BR}\" ip daddr 10.19.0.1 meta l4proto { tcp, udp } th dport 53 accept
         iifname \"${BR}\" ip6 daddr fd19::1 meta l4proto { tcp, udp } th dport 53 accept
+        iifname \"${BR}\" ct status dnat ip daddr 10.19.0.1 meta l4proto { tcp, udp } th dport ${ZONE_DNS_PORTS} accept
+        iifname \"${BR}\" ct status dnat ip6 daddr fd19::1 meta l4proto { tcp, udp } th dport ${ZONE_DNS_PORTS} accept
         iifname \"${BR}\" ip daddr 10.19.0.1 icmp type echo-request accept
         iifname \"${BR}\" ip6 daddr fd19::1 icmpv6 type echo-request accept
         iifname \"${BR}\" icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept
@@ -151,7 +166,7 @@ load_policy() {
             *) say "nftables: the loaded table is not the policy (no \"${want}\")"; nft flush ruleset 2>/dev/null; return 1 ;;
         esac
     done
-    GATEWAYS=""
+    GATEWAYS=""; DNSNAT=""
     return 0
 }
 
@@ -272,7 +287,7 @@ sync_upstream() {
     printf '%s\n' "$new" > "$UPSTREAM.new" 2>/dev/null && chmod 644 "$UPSTREAM.new" && mv -f "$UPSTREAM.new" "$UPSTREAM" 2>/dev/null
 }
 # dnsmasq runs as nobody, whom this zone's root cannot signal, so kill -0 cannot tell.
-dns_alive() { [ -d "/proc/$DNSPID" ] && ! grep -q '^State:.*zombie' "/proc/$DNSPID/status" 2>/dev/null; }
+dns_alive() { [ -n "$1" ] && [ -d "/proc/$1" ] && ! grep -q '^State:.*zombie' "/proc/$1/status" 2>/dev/null; }   # dns_alive PID
 start_dns() {
     command -v dnsmasq >/dev/null 2>&1 || { say "no dnsmasq; routed zones have no resolver"; return 1; }
     sync_upstream
@@ -280,24 +295,81 @@ start_dns() {
     grep -q '^nameserver' "$UPSTREAM" 2>/dev/null || { echo "nameserver 10.0.2.3" > "$UPSTREAM"; chmod 644 "$UPSTREAM"; }
     # --local=/test/ (RFC 6761) stays here: the guest check resolves kryptik.test through it.
     # It binds as root and then drops to nobody, which --no-daemon would stop. A changed
-    # file is read before the next query, at most once a second. Every zone shares it, so
-    # it keeps no cache and no CHAOS records (--no-ident): an answer it kept comes back
-    # sooner, with less TTL, to the next zone asking, and hits.bind and misses.bind count
-    # every zone's lookups. --pid-file with no path writes none.
+    # file is read before the next query, at most once a second. It answers every zone
+    # without a resolver of its own, so it keeps no cache and no CHAOS records (--no-ident):
+    # an answer it kept comes back sooner, with less TTL, to the next zone asking, and
+    # hits.bind and misses.bind count every zone's lookups. --pid-file with no path writes none.
+    # Its queries go out from ports above the zones' resolvers' (--min-port), so none holds
+    # the port one of them is about to listen on.
     dnsmasq --keep-in-foreground --log-facility=- --no-hosts --bind-interfaces \
             --listen-address=10.19.0.1 --listen-address=fd19::1 --listen-address=127.0.0.1 \
             --resolv-file="$UPSTREAM" --cache-size=0 --no-ident --local-service --local=/test/ \
-            --pid-file --user=nobody --group=nogroup &
+            --min-port="$((DNS_PORT_BASE + 250))" --pid-file --user=nobody --group=nogroup &
     DNSPID=$!
     sleep 1
-    if dns_alive; then
-        say "dnsmasq listening on 10.19.0.1/fd19::1, forwarding to $(grep '^nameserver' "$UPSTREAM" | tr '\n' ' ')"
+    if dns_alive "$DNSPID"; then
+        say "dnsmasq (pid ${DNSPID}) listening on 10.19.0.1/fd19::1, forwarding to $(grep '^nameserver' "$UPSTREAM" | tr '\n' ' ')"
         return 0
     fi
     say "dnsmasq exited at once"; DNSPID=""; return 1
 }
 dns_ok=0
 start_dns && dns_ok=1
+
+# Each routed zone's own resolver, on port 5300 + K, where the dns chain sends
+# 10.19.0.K's and fd19::K's queries: its cache, the lookups it has in flight and
+# the 150 it forwards at once are that zone's alone. One for every routed zone
+# defined when this zone starts; a zone defined later, or whose resolver could
+# not start, asks the shared one. The same flags as that one's, but its cache.
+ZONEDNS=""   # "K:PID ..."; no PID once one did not start
+zone_dns_set() {   # zone_dns_set K PID
+    ZONEDNS="$(for e in $ZONEDNS; do [ "${e%%:*}" = "$1" ] || printf '%s ' "$e"; done)$1:$2"
+}
+zone_dns_pid() { for e in $ZONEDNS; do [ "${e%%:*}" = "$1" ] && echo "${e#*:}"; done; }   # zone_dns_pid K
+start_zone_dns() {   # start_zone_dns K: started; zone_dns_said tells whether it stayed
+    dnsmasq --keep-in-foreground --log-facility=- --no-hosts --bind-interfaces \
+            --listen-address=10.19.0.1 --listen-address=fd19::1 --port="$((DNS_PORT_BASE + $1))" \
+            --resolv-file="$UPSTREAM" --no-ident --local-service --local=/test/ \
+            --min-port="$((DNS_PORT_BASE + 250))" --pid-file --user=nobody --group=nogroup &
+    zone_dns_set "$1" "$!"
+}
+zone_dns_said() {   # zone_dns_said K: a second after its start
+    zp="$(zone_dns_pid "$1")"
+    if dns_alive "$zp"; then
+        say "dnsmasq (pid ${zp}) for 10.19.0.${1} on port $((DNS_PORT_BASE + $1))"
+        return 0
+    fi
+    say "dnsmasq for 10.19.0.${1} exited at once; that zone asks the shared resolver"
+    zone_dns_set "$1" ""
+    return 1
+}
+# The dns chain: each zone whose resolver runs is sent to it, in one transaction,
+# rewritten only when that set changes; every other query stays on port 53.
+DNSNAT=""
+sync_dnsnat() {
+    up=""
+    for e in $ZONEDNS; do dns_alive "${e#*:}" && up="${up} ${e%%:*}"; done
+    [ "$up" = "$DNSNAT" ] && return 0
+    {
+        echo "flush chain inet kryptik dns"
+        for k in $up; do
+            for l4 in udp tcp; do
+                echo "add rule inet kryptik dns iifname \"${BR}\" ip saddr 10.19.0.${k} ip daddr 10.19.0.1 ${l4} dport 53 counter dnat ip to 10.19.0.1:$((DNS_PORT_BASE + k))"
+                echo "add rule inet kryptik dns iifname \"${BR}\" ip6 saddr fd19::$(printf %x "$k") ip6 daddr fd19::1 ${l4} dport 53 counter dnat ip6 to [fd19::1]:$((DNS_PORT_BASE + k))"
+            done
+        done
+    } | nft -f - 2>/tmp/nft.err || { say "nftables: the zones' own resolvers could not be set: $(tr '\n' ' ' < /tmp/nft.err)"; return 1; }
+    DNSNAT="$up"
+    names="$(for k in $up; do printf ' 10.19.0.%s' "$k"; done)"
+    say "nftables: zones with a resolver of their own:${names:- none}"
+}
+if command -v dnsmasq >/dev/null 2>&1; then
+    ZONE_HOSTS="$(routed_zones "$ZONES" | awk '{ print $1 }')"
+    for k in $ZONE_HOSTS; do start_zone_dns "$k"; done
+    [ -z "$ZONE_HOSTS" ] || sleep 1
+    for k in $ZONE_HOSTS; do zone_dns_said "$k"; done
+    [ "$policy_ok" = 1 ] && sync_dnsnat
+fi
 
 # --- the time: measured here, decided in zone 0 (docs/design/time.md) --------
 
@@ -404,12 +476,21 @@ while :; do
     elif ! sync_gateways "$@"; then
         forwarding off; policy_ok=0; changed=1
     fi
-    if [ -n "$DNSPID" ] && ! dns_alive; then
+    if [ -n "$DNSPID" ] && ! dns_alive "$DNSPID"; then
         say "dnsmasq died; restarting"; DNSPID=""; dns_ok=0; changed=1
         start_dns && dns_ok=1
     elif [ -n "$DNSPID" ] && sync_upstream; then
         say "dnsmasq: forwarding to $(tr '\n' ' ' < "$UPSTREAM")from its next query"
     fi
+    # A zone's resolver that died is started once more; until it answers, the dns chain
+    # leaves that zone on the shared one.
+    for e in $ZONEDNS; do
+        zp="${e#*:}"
+        [ -n "$zp" ] && ! dns_alive "$zp" || continue
+        say "dnsmasq for 10.19.0.${e%%:*} died; restarting"
+        start_zone_dns "${e%%:*}"; sleep 1; zone_dns_said "${e%%:*}"
+    done
+    [ "$policy_ok" = 1 ] && sync_dnsnat
     for n in $WIRELESS; do
         # Its stale pid file is its own user's to replace, which the next one does.
         if [ -n "$(wpa_pid "$n")" ] && ! wpa_alive "$n"; then

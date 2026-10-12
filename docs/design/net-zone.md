@@ -113,8 +113,9 @@ query and the [update](update-channel.md) fetcher. Builds on
   from the bridge to an uplink, what a gateway carries accepted and the
   uplink's own network refused but to the zones whose definition opens it
   ([below](#the-uplinks-own-networks)); bridge to bridge dropped;
-  `10.19.0.0/24` and `fd19::/64` masqueraded out of every uplink; new DNS
-  connections arriving on an uplink dropped. Each routed zone may hold an
+  `10.19.0.0/24` and `fd19::/64` masqueraded out of every uplink; new
+  connections arriving on an uplink for DNS, or for a zone's own resolver,
+  dropped. Each routed zone may hold an
   eighth of the zone's conntrack table, which every zone's flows fill
   together: nft's `ct count` on the MAC both its addresses are pinned to,
   for flows through the net zone and flows to it. Past its share, a zone's
@@ -135,17 +136,29 @@ query and the [update](update-channel.md) fetcher. Builds on
   next query (at most once a second). A lease that lapsed leaves the last
   servers in place. It answers the test TLD `.test` itself, so resolving
   `kryptik.test` tests the path to the resolver, not the internet.
-- **The resolver keeps nothing for the next zone.** Every routed zone asks
-  the same dnsmasq, so it keeps no cache (`--cache-size=0`) and no CHAOS
-  records (`--no-ident`). A cached answer comes back sooner, and with less of
-  its TTL left, to the next zone that asks, and `hits.bind` and `misses.bind`
-  count every zone's lookups: either would tell one zone what another looked
-  up. Each lookup costs a round trip to the uplink's servers; what a program
-  caches itself stays in its zone. Two things remain. A zone that asks for a
-  name while another zone's lookup of it is in flight gets that lookup's
-  answer, as dnsmasq forwards identical queries once, so it can tell the name
-  was asked within the last round trip. And the uplink's servers keep caches
-  of their own, shared with every machine on that network.
+- **Each routed zone has a resolver of its own.** One dnsmasq for every
+  zone would tell one zone what another looked up: a cached answer comes
+  back sooner, and with less of its TTL left, to the next zone that asks;
+  `hits.bind` and `misses.bind` count every zone's lookups; and a zone that
+  asks for a name while another's lookup of it is in flight gets that
+  lookup's answer, as dnsmasq forwards identical queries once. A zone that
+  floods it would also hold its 150 forwarding slots, each for up to 10 s,
+  from the others. So the net zone starts one more dnsmasq for each routed
+  zone defined when it starts, as the shared one runs but with a cache, on
+  port 5300 + K of the bridge's addresses, and its `dns` chain sends
+  10.19.0.K's and fd19::K's queries for port 53 there (`dnat`, from the NAT
+  the masquerade already needs: no kernel option is added). The addresses are
+  pinned to the zone's MAC, so no zone is sent to another's resolver, and a
+  resolver's port takes only what the chain sent it, so none is asked there
+  directly, and none is asked from an uplink: Linux takes a packet for the
+  bridge's addresses on any interface, so the uplinks' drop names the
+  resolvers' ports beside 53. Every dnsmasq sends its own queries from ports
+  above them (`--min-port`). A zone defined after the net zone started, or
+  whose resolver could not start, asks the shared one, which keeps no cache
+  (`--cache-size=0`) and no CHAOS records (`--no-ident`); one that dies is
+  started once more, and its zone is on the shared one until it answers.
+  The uplink's servers keep caches of their own, shared with every machine
+  on that network.
 - **dhcpcd separates its privileges.** What parses a lease, a DHCPv6 reply
   or a router advertisement runs as the zone's `dhcpcd` user, chrooted to an
   empty `/var/empty`, with no capability and dhcpcd's own seccomp filter over
