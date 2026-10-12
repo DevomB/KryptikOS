@@ -121,7 +121,9 @@ tools/image/run-ovmf.sh --no-media --disk disk.img --vars-file vars.fd --allow-r
 the desktop is not seen this way.
 
 The medium presents a root shell with no password, on the display and, if
-the machine has one, on the serial console (the serial line under QEMU).
+the machine has one, on the serial console (the serial line under QEMU),
+under a few lines naming the commands that list the disks, show the
+install's plan and read an installed disk.
 That shell exists only on install media; installed systems have root locked
 at every terminal. The medium uses no network: a cable plugged in, or a
 radio, is left down.
