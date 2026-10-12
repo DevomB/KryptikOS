@@ -229,6 +229,9 @@ s_build() {
     echo "host link flags: ${1:-none}"
     echo "config digest  : ${2:-none}"
     cd "$KSRC"
+    # The banner's time, user, host and build number, the same in every build of one commit.
+    export KBUILD_BUILD_USER=kryptik KBUILD_BUILD_HOST=kryptik KBUILD_BUILD_VERSION=1
+    [[ -z "${SOURCE_DATE_EPOCH:-}" ]] || { KBUILD_BUILD_TIMESTAMP="$(date -u -d "@${SOURCE_DATE_EPOCH}")"; export KBUILD_BUILD_TIMESTAMP; }
     make
     # The banner (/proc/version) records which compiler built the image.
     echo "--- linux_banner ---"
