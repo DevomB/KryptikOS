@@ -317,6 +317,14 @@ configured the zone keeps its IPv4 path and the launcher says so.
   protect. Anyone in range reads what crosses it, as on any open network,
   and any access point may take its name: what a zone sends there is private
   only where the zone encrypts it.
+- **A failed join is followed by a scan.** The file's header sets
+  `scan_res_valid_for_connect=0`, so the supplicant never joins from an
+  earlier scan without a new one. With two networks saved, wpa_supplicant
+  2.12 answers a first failed join by picking again from its last scan; when
+  it picks the access point that just failed (one switched off, whose entry
+  the kernel's scan cache keeps for 30 s), it counts itself still joining it,
+  asks for no scan, and waits until something else scans. A file an older
+  kryptikd wrote is rewritten so.
 - On disk the file is plaintext inside the [encrypted](state-encryption.md)
   state partition, like NetworkManager's connection files. A compromised net
   zone learns the passphrases of the networks it was given, and nothing more.
@@ -326,7 +334,8 @@ kernel's simulated radio, from the signed module the image carries: one goes
 into a namespace of its own as the access point (the image's `wpa_supplicant`
 in AP mode, `dnsmasq` for the lease), the other is left for the net zone,
 which joins the network `kryptik wifi add` gave it, leases an address over
-the radio and carries a routed zone's traffic to the access point. Real
+the radio and carries a routed zone's traffic to the access point. Once that
+access point is gone, a second saved network is joined when it appears. Real
 hardware is untested: a seccomp refusal of `wpa_supplicant` there would show
 as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
 

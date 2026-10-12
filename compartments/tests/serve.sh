@@ -430,7 +430,8 @@ else
 fi
 r="$(ask 'wifi-forget\nssid Home\nend\n')"
 if [[ "$r" == "ok forgot network \"Home\";"* ]] && ! grep -qF Home "$WCONF" && grep -qxF $'\tssid="Cafe Wifi"' "$WCONF" \
-   && grep -qxF 'ctrl_interface=/run/wpa_supplicant' "$WCONF" && grep -qxF 'update_config=0' "$WCONF"; then
+   && grep -qxF 'ctrl_interface=/run/wpa_supplicant' "$WCONF" && grep -qxF 'update_config=0' "$WCONF" \
+   && grep -qxF 'scan_res_valid_for_connect=0' "$WCONF"; then
     pass "S9m wifi-forget removes only its block; the header and the other network stay"
 else
     fail "S9m: $r"; sed 's/^/        /' "$WCONF"
