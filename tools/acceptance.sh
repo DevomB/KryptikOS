@@ -367,10 +367,10 @@ on_root_image() {   # on_root_image CMD...: CMD, given the image mounted read-on
 }
 audit_root()       { "${SELF}/check-artifact-hardening.sh" "$1" --strict --json "${OUT}/artifact-hardening.json"; }
 it_artifacts()     { on_root_image audit_root; }
+it_licences()      { on_root_image "${SELF}/check-image-licences.sh"; }
 # Every entry of the image under test, hashed: what a release ships, and what the next one changes.
 record_root()      { "${SELF}/artifact-manifest.sh" --root "$1" --out "${OUT}/image-manifest.txt"; }
 it_manifest()      { on_root_image record_root; }
-it_licences()      { on_root_image "${SELF}/check-image-licences.sh"; }
 it_kernel_config() { "${SELF}/validate-kernel-config.sh" --boot && "${SELF}/validate-kernel-config.sh" --hardened; }
 it_support_status() { "${SELF}/check-support-status.sh" --strict; }
 it_ovmf_vars() {
@@ -440,8 +440,8 @@ item build     host-suites                M host  0 it_host_suites need_host
 item build     libc-unwind                M host  0 it_libc_unwind need_sysroot
 item build     userspace-smoke            M host  0 it_userspace need_sysroot
 item build     artifact-hardening         M host  0 it_artifacts need_root_image
-item build     image-manifest             M host  0 it_manifest need_root_image
 item build     licences                   M host  0 it_licences need_root_image
+item build     image-manifest             M host  0 it_manifest need_root_image
 item build     kernel-config              M host  0 it_kernel_config need_sources
 item build     support-status             M host  0 it_support_status
 item boot      media-smoke-usb            M vm   25 it_smoke_usb need_vm
