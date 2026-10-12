@@ -20,6 +20,8 @@
 #   GT SCREENSHOT-HEAD                              take a screenshot of the second monitor
 #   GT KEY-MENU-WIFI                                press Alt+p (a menu window for Wi-Fi)
 #   GT WIFI-TYPE N TEXT                             type TEXT and Enter (letters and digits)
+#   GT KEY-MENU-OPEN                                press Alt+p (a menu window for an open network)
+#   GT OPEN-TYPE N TEXT                             type TEXT and Enter (letters and digits)
 #   GT END
 # Verdicts: "GT PASS|FAIL|INFO name - detail".
 set -u
@@ -692,6 +694,25 @@ else
 fi
 pkill -n -u "$USER_NAME" -f 'havoc /usr/bin/kryptik-chrome --menu' 2>/dev/null
 "$KD" wifi forget ztmenunet --wifi-dir /var/lib/kryptik/wifi > /dev/null 2>&1
+# An open network from the same menu, with o: no passphrase is asked for or saved.
+menus_before="$(menu_windows)"
+echo "GT KEY-MENU-OPEN"
+open_typed=no
+if wait_for 20 more_menus; then
+    sleep 2; echo "GT OPEN-TYPE 1 w"
+    sleep 3; echo "GT OPEN-TYPE 2 o"
+    sleep 2; echo "GT OPEN-TYPE 3 ztmenuopen"
+    open_typed=yes
+fi
+open_block() { sed -n '/^\tssid="ztmenuopen"$/,/^}$/p' "$WCONF" 2>/dev/null; }
+if [[ "$open_typed" == yes ]] && wait_for 30 grep -qx $'\tssid="ztmenuopen"' "$WCONF" \
+   && open_block | grep -qx $'\tkey_mgmt=NONE' && ! open_block | grep -q 'psk='; then
+    pass "chrome-wifi-add-open" "the menu's w, then o, saved ztmenuopen as an open network without asking for a passphrase"
+else
+    fail "chrome-wifi-add-open" "typed: ${open_typed}; ztmenuopen's block: $(open_block | tr '\n\t' '  '); menu windows: $(menu_windows)"
+fi
+pkill -n -u "$USER_NAME" -f 'havoc /usr/bin/kryptik-chrome --menu' 2>/dev/null
+"$KD" wifi forget ztmenuopen --wifi-dir /var/lib/kryptik/wifi > /dev/null 2>&1
 
 # --- teardown ------------------------------------------------------------------------------
 # The runtime tmpfs does not survive power-off: copy the session log and the
