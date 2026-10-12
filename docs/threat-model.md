@@ -157,7 +157,9 @@ media.*
 
 **Defended at rest against a reader, not against a writer of the state
 partition.** dm-verity and Secure Boot make a modified root or a swapped kernel
-fail to boot. The state partition (`/home`, `/var`, the Wi-Fi passphrases, the
+fail to boot, and the kernel takes no initramfs, so a loader the firmware also
+trusts cannot run code of its own before the verified root. The state
+partition (`/home`, `/var`, the Wi-Fi passphrases, the
 shadow file, the `/etc` overlay, the zone volumes' headers) is LUKS2 with a
 passphrase at every boot, and the zone volumes inside it are encrypted again;
 a stolen disk gives up none of it. It is not authenticated: someone holding
