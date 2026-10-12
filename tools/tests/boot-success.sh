@@ -40,6 +40,8 @@ cat > "$T/bin/kryptik-efiboot" <<'EOF'
 echo "efiboot $*" >> "$KTEST/calls"
 # Whether the trial record still stood when the entries were forgotten.
 [ "$1" = forget ] && { [ -e "$KTEST/boot/trial" ] && echo kept || echo gone; } >> "$KTEST/forget-saw"
+# What the firmware's variables say, as the case wrote them.
+[ "$1" = list ] && cat "$KTEST/efilist" 2>/dev/null
 [ ! -e "$KTEST/efiboot_fails" ] && [ ! -e "$KTEST/efiboot_fails_$1" ]
 EOF
 cat > "$T/bin/reboot" <<'EOF'
@@ -200,8 +202,17 @@ check "back on the old slot with BootNext consumed: trial-failed" "$RESULT" "tri
 check "the record moved to trial.failed" "$([[ -e "$KTEST/boot/trial.failed" ]] && cat "$KTEST/boot/trial.failed" | head -1)" "b"
 check "... saying it never came up to be judged" "$(sed -n 's/^why=//p' "$KTEST/boot/trial.failed")" "did not come up to be judged"
 check "BOOTX64.EFI untouched" "$(cat "$KTEST/esp/EFI/BOOT/BOOTX64.EFI")" "kernel-a"
-check "the failed trial's entries are forgotten, and the committed slot gets its own" "$CALLS" "efiboot forget efiboot ensure a "
+check "the failed trial's entries are forgotten, and the committed slot gets its own" "$CALLS" "efiboot list efiboot forget efiboot ensure a "
 check "... before its record is set aside" "$(cat "$KTEST/forget-saw" 2>/dev/null)" "kept"
+run_case untried a "" persistent 'b\narmed=1\n' $ALL
+printf 'BootNext:    BootB0B0\nBootOrder:   Boot0001 BootB0B0\n  BootB0B0: Kryptik slot b  file=\\EFI\\kryptik\\kryptik-b.efi  [active]\n' > "$KTEST/efilist"; go
+check "BootNext still naming the trial's entry: the firmware never tried it, and the record says so" \
+    "$RESULT|$(sed -n 's/^why=//p' "$KTEST/boot/trial.failed")" \
+    'trial-failed b|was never started: the firmware left BootNext set, so it may ignore a one-time boot request (after --retry, pick "Kryptik slot b" in its boot menu)'
+check "... and its entries and BootNext are forgotten as for any failed trial" "$CALLS" "efiboot list efiboot forget efiboot ensure a "
+run_case untried2 a "" persistent 'b\narmed=1\n' $ALL
+printf 'BootNext:    Boot0003\n  Boot0003: Windows Boot Manager  file=\\EFI\\Microsoft\\Boot\\bootmgfw.efi  [active]\n' > "$KTEST/efilist"; go
+check "a BootNext naming another system's entry says nothing about the trial" "$(sed -n 's/^why=//p' "$KTEST/boot/trial.failed")" "did not come up to be judged"
 run_case interrupted a "" persistent 'b\narmed=0\n' $ALL; go
 check "old slot with an armed=0 record: arming was interrupted, nothing failed" "$RESULT" "arming-interrupted b"
 check "the interrupted arming's entry is forgotten, and the committed slot gets its own" "$CALLS" "efiboot forget efiboot ensure a "
