@@ -414,12 +414,12 @@ smoke-userspace:
 # --- build output -----------------------------------------------------------
 
 # Reads the ELF headers of what stage 04 installed: a package can ignore the
-# hardening flags without failing its build.
+# hardening flags without failing its build. Stage 06 strips what ships, not the sysroot.
 audit-artifacts:
-	@"$(TOOLS)"/check-artifact-hardening.sh "$(KRYPTIK_WORK)/sysroot"
+	@"$(TOOLS)"/check-artifact-hardening.sh "$(KRYPTIK_WORK)/sysroot" --unstripped
 
 audit-artifacts-strict:
-	@"$(TOOLS)"/check-artifact-hardening.sh "$(KRYPTIK_WORK)/sysroot" --strict
+	@"$(TOOLS)"/check-artifact-hardening.sh "$(KRYPTIK_WORK)/sysroot" --unstripped --strict
 
 # A record of the tree and of what produced it.
 manifest:
