@@ -282,6 +282,12 @@ CONFIG_HID_TOPSEED=m
 # and does not compress.
 CONFIG_KERNEL_ZSTD=y
 # CONFIG_KERNEL_GZIP is not set
+# Modules as well, compressed by modules_install after it signs them. kmod
+# decompresses them, so the kernel parses no compressed module itself.
+CONFIG_MODULE_COMPRESS=y
+CONFIG_MODULE_COMPRESS_ZSTD=y
+CONFIG_MODULE_COMPRESS_ALL=y
+# CONFIG_MODULE_DECOMPRESS is not set
 # --- a machine that has stopped reboots itself -------------------------------
 # build/services/watchdog feeds these. Built in, so recovery does not depend on
 # module loading. NOWAYOUT: killing the feeder does not stop the timer.

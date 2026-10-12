@@ -90,7 +90,7 @@ s_compiler_check() {
     # Kernel build prerequisites, checked before a long compile.
     local missing=0 t2
     for t2 in make ld objcopy objdump ar nm perl bison flex openssl python3 \
-              gawk tar xz gzip depmod; do
+              gawk tar xz gzip zstd depmod; do
         if have "$t2"; then
             printf '  ok      %s\n' "$t2"
         else
@@ -259,8 +259,9 @@ s_size() {
 s_modules() {
     echo "config digest: ${1:-none}"
     cd "$KSRC"
-    # KRYPTIK_DESTDIR is empty: inside the chroot the target is the root.
-    make INSTALL_MOD_PATH="${KRYPTIK_DESTDIR}" modules_install
+    # KRYPTIK_DESTDIR is empty: inside the chroot the target is the root. -19, as for
+    # the firmware: a module costs the same to decompress at any level.
+    make INSTALL_MOD_PATH="${KRYPTIK_DESTDIR}" ZSTD="zstd -19" modules_install
 }
 
 s_install() {
@@ -299,8 +300,10 @@ s_verify_install() {
     echo "kernel release: ${krel}"
     local modver="${MODDIR}/${krel}"
     if [[ -d "$modver" ]]; then
-        echo "modules      : ${modver} ($(find "$modver" -name '*.ko*' | wc -l) objects)"
+        echo "modules      : ${modver} ($(find "$modver" -name '*.ko*' | wc -l) objects, $(du -sh "$modver" | cut -f1))"
         [[ -f "${modver}/modules.dep" ]] || { echo "FAIL: depmod did not run"; n=$((n + 1)); }
+        local plain; plain="$(find "$modver" -name '*.ko' | wc -l)"
+        [[ "$plain" -eq 0 ]] || { echo "FAIL: ${plain} modules are not compressed (CONFIG_MODULE_COMPRESS_ALL)"; n=$((n + 1)); }
     else
         echo "FAIL: no module tree at ${modver}"; n=$((n + 1))
     fi
