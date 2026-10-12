@@ -367,6 +367,7 @@ on_root_image() {   # on_root_image CMD...: CMD, given the image mounted read-on
 }
 audit_root()       { "${SELF}/check-artifact-hardening.sh" "$1" --strict --json "${OUT}/artifact-hardening.json"; }
 it_artifacts()     { on_root_image audit_root; }
+it_setuid()        { on_root_image "${SELF}/audit-setuid.sh"; }
 it_licences()      { on_root_image "${SELF}/check-image-licences.sh"; }
 it_kernel_config() { "${SELF}/validate-kernel-config.sh" --boot && "${SELF}/validate-kernel-config.sh" --hardened; }
 it_support_status() { "${SELF}/check-support-status.sh" --strict; }
@@ -437,6 +438,7 @@ item build     host-suites                M host  0 it_host_suites need_host
 item build     libc-unwind                M host  0 it_libc_unwind need_sysroot
 item build     userspace-smoke            M host  0 it_userspace need_sysroot
 item build     artifact-hardening         M host  0 it_artifacts need_root_image
+item build     setuid-bits                M host  0 it_setuid need_root_image
 item build     licences                   M host  0 it_licences need_root_image
 item build     kernel-config              M host  0 it_kernel_config need_sources
 item build     support-status             M host  0 it_support_status
