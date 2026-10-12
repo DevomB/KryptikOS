@@ -187,6 +187,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'mkdir -p /run/upd/p && mount -o ro /dev/vdb /run/upd/p && kryptik-update apply /run/upd/p && echo APPLY-OK')" \
     "expect:signature verifies, checked as nobody" "expect:armed: the next boot tries slot b" "expect:APPLY-OK" \
     "$(ROOTSH 'kryptik-update status')" "expect:trial pending:    b" \
+    "run:kryptik update status" "expect:trial +slot b is armed: the next boot tries it" \
     "$(ROOTSH 'kryptik-update apply /run/upd/p; echo RC=$?')" "expect:a trial of slot b is already armed; reboot first" "expect:RC=1\r?\n" \
     "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
     "login:${TUSER}:${TPASS}" \

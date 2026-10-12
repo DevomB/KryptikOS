@@ -155,15 +155,15 @@ menu_update() {
     v="$(printf '%s\n' "$st" | sed -n 's/^staged *\([^:]*\): .*, complete.*/\1/p')"
     # kryptikd's words up to their reason: the newest statement's age or, with none ever accepted, the install's.
     quiet="$(printf '%s\n' "$st" | sed -n 's/^ *\(no statement from the release key [^:]*\):.*/\1/p' | head -1)"
-    # A trial that failed: what is staged is the release it tried, which apply would refuse.
-    failed="$(printf '%s\n' "$st" | sed -n 's/^trial *\(the trial of [^;]*\);.*/\1/p' | head -1)"
-    [ -n "$v$quiet$failed" ] || return 0
+    # A trial armed or failed: what is staged is the release it tries or tried, which apply would refuse.
+    trial="$(printf '%s\n' "$st" | sed -n 's/^trial *//p' | head -1)"
+    [ -n "$v$quiet$trial" ] || return 0
     echo
     [ -z "$quiet" ] || echo "Update: ${quiet} (u for more)"
-    if [ -n "$failed" ]; then
-        echo "Update: ${failed}; this machine runs the release before it (u for more)"
-        return 0
-    fi
+    case "$trial" in
+        "the trial of "*) echo "Update: ${trial%%;*}; this machine runs the release before it (u for more)"; return 0 ;;
+        "slot "?" is armed:"*) echo "Update: ${trial%%:*}: the next boot tries it (u for more)"; return 0 ;;
+    esac
     [ -z "$v" ] && return 0
     echo "Update: ${v} has arrived. u installs it, and the next boot tries it."
 }

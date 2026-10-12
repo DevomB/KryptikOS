@@ -332,8 +332,9 @@ root hash. It writes the inactive slot, reads it back, installs the slot's
 kernel on the ESP under its own name and arms one trial boot (`BootNext`).
 The next boot runs the new slot; `boot-success` judges it (state partition
 usable, services up, the zone supervisor healthy) and only then makes it the
-committed boot file. An unhealthy trial reboots into the previous slot by
-itself, and `kryptik update status` and the menu then say what it found.
+committed boot file. Until that boot, `kryptik update status` and the menu
+say the trial is armed. An unhealthy trial reboots into the previous slot by
+itself, and they then say what it found.
 Persistent zone data on `kryptik-state` is never written by any of
 this. `apply` refuses while another trial is armed (reboot first), while the
 state partition is degraded, and on any slot but the committed one, such as

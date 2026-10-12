@@ -457,6 +457,12 @@ fn a_failed_trial_is_said_with_its_reason() {
     assert_eq!(trial_line(&trial, "1.0.2"), None);
     std::fs::write(&failed, "b\nwhy=did not \u{1b}[2Jcome up\n").unwrap();
     assert!(!trial_line(&trial, "1.0.2").unwrap().contains('\u{1b}'));
+    // A trial armed again, as apply --retry arms it, is said as armed, not as the old failure.
+    std::fs::write(&trial, "b\narmed=1\n").unwrap();
+    assert_eq!(
+        trial_line(&trial, "1.0.2").as_deref(),
+        Some("trial      slot b is armed: the next boot tries it, and it stays once it comes up healthy\n")
+    );
     let _ = std::fs::remove_dir_all(&d);
 }
 

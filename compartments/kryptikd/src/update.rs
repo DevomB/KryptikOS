@@ -815,9 +815,13 @@ pub fn complete_stage(dir: &Path) -> Result<PathBuf, String> {
     }
 }
 
-/// `status`'s line for a trial that failed, from the record boot-success set aside as
-/// `trial.failed` with its `why=`: the release it tried still reads as staged and complete.
+/// `status`'s line for a trial: one armed for the next boot, or one that failed, from the
+/// record boot-success set aside as `trial.failed` with its `why=`. Either way the release it
+/// tries, or tried, still reads as staged and complete.
 pub fn trial_line(trial: &Path, running: &str) -> Option<String> {
+    if let Some(slot) = std::fs::read_to_string(trial).ok().and_then(|t| t.lines().next().filter(|s| matches!(*s, "a" | "b")).map(str::to_string)) {
+        return Some(format!("trial      slot {slot} is armed: the next boot tries it, and it stays once it comes up healthy\n"));
+    }
     let text = std::fs::read_to_string(trial.with_file_name("trial.failed")).ok()?;
     let slot = text.lines().next().filter(|s| matches!(*s, "a" | "b"))?;
     // A record from before boot-success said why reads as failed.
