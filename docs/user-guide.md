@@ -144,7 +144,9 @@ uses it too. `kryptik keyboard NAME`, as root, changes it later
 
 The installer refuses the disk the medium is on; anything with a mounted
 partition, active swap, or a partition held open (an unlocked LUKS volume,
-LVM); anything that is not a whole, writable disk; and a disk too small to
+LVM); anything that is not a whole, writable disk; a disk with 4096-byte
+logical sectors (an NVMe drive can be formatted so), where neither the
+firmware nor Linux reads the medium's boot partition; and a disk too small to
 hold the boot partition, two root slots with room to grow, and a state
 partition with space for one update and a gigabyte of data (about 8 GB for
 the current image; the refusal names the exact minimum). A disk that already

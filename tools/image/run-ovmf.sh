@@ -16,6 +16,8 @@
 #   --disk-readonly, --blkdebug CONF
 #                  failure injection for the first --disk: read-only, or I/O
 #                  errors through QEMU's blkdebug driver
+#   --disk-4k      the first --disk with 4096-byte logical sectors (4Kn), as an
+#                  NVMe drive formatted so presents itself
 #   --testctl FILE a disk labelled kryptik-testctl (tools/image/mk-testctl.sh)
 #   --vars X       variable store template, copied fresh for this run:
 #                  clean    OVMF_VARS_4M.fd, no keys, Secure Boot off
@@ -42,7 +44,7 @@ source "${SELF}/../../build/lib/common.sh"
 
 USB=""; ISO=""; NOMEDIA=0; DISKS=(); TESTCTL=""; VARS="clean"; VARS_FILE=""
 MODE="smoke"; TIMEOUT=300; LOG=""; NET="none"; MEM=2048; CPUS=2; GPU=0; HEAD2=0; ALLOW_REBOOT=0; NAME="vm"
-DISK_RO=0; BLKDEBUG=""; UNTIL=""
+DISK_RO=0; DISK_4K=0; BLKDEBUG=""; UNTIL=""
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
         --usb)       USB="${2:?}"; shift 2 ;;
@@ -50,6 +52,7 @@ while [[ "$#" -gt 0 ]]; do
         --no-media)  NOMEDIA=1; shift ;;
         --disk)      DISKS+=("${2:?}"); shift 2 ;;
         --disk-readonly) DISK_RO=1; shift ;;
+        --disk-4k)   DISK_4K=1; shift ;;
         --blkdebug)  BLKDEBUG="${2:?}"; shift 2 ;;
         --testctl)   TESTCTL="${2:?}"; shift 2 ;;
         --vars)      VARS="${2:?}"; shift 2 ;;
@@ -171,6 +174,9 @@ for d in "${DISKS[@]}"; do
         ARGS+=( -drive "file=blkdebug:${BLKDEBUG}:${d},format=raw,if=virtio,cache=writeback,id=vd${i}" )
     elif [[ "$i" -eq 0 && "$DISK_RO" -eq 1 ]]; then
         ARGS+=( -drive "file=${d},format=raw,if=virtio,readonly=on,id=vd${i}" )
+    elif [[ "$i" -eq 0 && "$DISK_4K" -eq 1 ]]; then
+        ARGS+=( -drive "file=${d},format=raw,if=none,cache=writeback,id=vd${i}"
+                -device "virtio-blk-pci,drive=vd${i},logical_block_size=4096,physical_block_size=4096" )
     else
         ARGS+=( -drive "file=${d},format=raw,if=virtio,cache=writeback,id=vd${i}" )
     fi
