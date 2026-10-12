@@ -229,7 +229,7 @@ pointer moving onto it moves the keyboard there. Keys (Alt is the modifier):
 
 | keys | what |
 | --- | --- |
-| Alt+p | the chrome menu: zones, their applications, stop a zone, move a clipboard between zones, and with f the zone of the window you last had |
+| Alt+p | the chrome menu: zones, their applications, stop a zone, move a clipboard between zones, the Wi-Fi networks with w, and with f the zone of the window you last had |
 | Alt+Shift+Return | a terminal (havoc) in the work zone |
 | Alt+Shift+p | a terminal in the personal zone |
 | Alt+Shift+u | the browser (lynx) in the untrusted zone |
@@ -248,7 +248,9 @@ in the menu's window or, for a key, in a small prompt window; the passphrase
 never appears on a command line. The menu also names a release that has
 arrived and waits to be installed, and says when the newest update statement
 is more than 30 days old, or, with none ever accepted, when the install is
-(section 4).
+(section 4). With `w` it lists the Wi-Fi networks the net zone may join, adds
+one, asking for its passphrase in the menu's own window, or forgets one, as
+`kryptik wifi` does at the administration login.
 
 For administration, Ctrl+Alt+F2 gives a text login: log in as the user, and
 `su` becomes root, where passwords change: `passwd NAME` for the user,
