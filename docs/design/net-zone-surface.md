@@ -112,8 +112,8 @@ confinement cannot add an nf_tables table, and `wifi-wpa2-plain` and
 **What it closes.** A flaw in what parses scan results, EAPOL or EAP gets
 that user: not nf_tables, the broker's socket, or the zone root's and
 dhcpcd's files. **What it leaves:** the network administrator's capability
-over the zone's links and routes, and nl80211, which hostap's way would have
-held in `wpa_priv` as root instead.
+over the zone's links and routes, the bridge ports' isolation among them, and
+nl80211, which hostap's way would have held in `wpa_priv` as root instead.
 
 ## A time namespace per zone
 

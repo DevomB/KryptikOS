@@ -127,10 +127,11 @@ Kept by design:
 - confidentiality between a zone and the net zone is the application's, as on
   any network;
 - wpa_supplicant reads every passphrase it was given, as it must to join
-  those networks, and keeps `CAP_NET_ADMIN` and `CAP_NET_RAW` over the zone's
-  links and routes for nl80211 and EAPOL; it runs as its own user, without
-  nf_tables, the broker's socket or the zone root's files
-  (`wifi-supplicant-unprivileged`, `wifi-supplicant-no-nft`);
+  those networks, and keeps `CAP_NET_ADMIN` and `CAP_NET_RAW` for nl80211
+  and EAPOL, which reach the zone's links and routes, the bridge ports'
+  isolation among them; it runs as its own user, without nf_tables, the
+  broker's socket or the zone root's files (`wifi-supplicant-unprivileged`,
+  `wifi-supplicant-no-nft`);
 - nf_tables, packet sockets and generic netlink stay open to it, as NAT, DHCP
   and Wi-Fi need them;
 - a routed zone that floods can hold the resolver's 150 forwarding slots, each
