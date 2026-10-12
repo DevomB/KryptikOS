@@ -283,13 +283,19 @@ configured the zone keeps its IPv4 path and the launcher says so.
   switch) as the net zone starts moves in down, as kryptikd reads its rfkill
   state in zone 0 first: brought up, its link is refused (`ERFKILL`), and that
   once failed the whole start, wire and all, until the radio was switched on.
-  Switched on, it is joined at the net zone's next start.
 - **It associates before it leases.** The script finds radios by their
   `phy80211` link, not by name, and runs one `wpa_supplicant` per radio on
   `/etc/wpa_supplicant.conf`, restarting one that dies; dhcpcd takes the
-  lease once there is a carrier. `wifi=` is `none`, `unconfigured` (no
-  credentials), `connecting`, or the associated SSID; `READY` does not wait
-  for association.
+  lease once there is a carrier. `wifi=` is `none`, `off` (every radio
+  switched off by rfkill, its switch or an airplane-mode key), `unconfigured`
+  (no credentials), `connecting`, or the associated SSID; `READY` does not
+  wait for association. Switching a radio off takes its link down
+  (`cfg80211_rfkill_set_block`), and a supplicant brings it up again only on
+  rfkill's events, which `/dev/rfkill` would give and the zone's `/dev` does
+  not hold: the script's loop brings a supplicant's radio up once it is
+  switched on again, within ten seconds. A radio switched off as the net
+  zone starts gets no supplicant at first, as one cannot bring its link up
+  and ends; the loop starts it once the radio is switched on.
 - **It scans when zone 0 asks.** `kryptik wifi scan`, and `s` in the menu's
   Wi-Fi window, have kryptikd send the net zone's pid 1 a SIGUSR1, which
   carries nothing. The zone scans each radio with `iw` and writes a line per
@@ -463,7 +469,9 @@ as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
   that holds everything a zone might write. The zones suite asks for a scan
   before the net zone holds a radio and after it has joined the simulated
   access point (`wifi-scan-no-radio`, `wifi-scan`), and the desktop suite asks
-  through the launcher (`chrome-wifi-scan`).
+  through the launcher (`chrome-wifi-scan`). The zones suite switches the
+  station's radio off through rfkill and on again: the status says `off`, the
+  scan names the radio, and the radio joins again (`wifi-radio-off`).
 - The zones suite has the net zone rename its NIC `-x"y` and restarts it: the
   NIC is back in zone 0 under that name, and the next start comes up `READY`
   with it as `nic<N>`, with its own address and an MTU of 1500 again after

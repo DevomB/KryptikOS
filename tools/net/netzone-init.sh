@@ -2,7 +2,7 @@
 # The net zone's command (docs/design/net-zone.md): firewall, Wi-Fi, DHCP, DNS, time and updates.
 # Fails closed: forwarding stays off until the nft policy is loaded and read back. Reports:
 #
-#   netzone: READY uplink=<addr|none> nat=yes dns=<yes|no> wifi=<ssid|connecting|unconfigured|none>
+#   netzone: READY uplink=<addr|none> nat=yes dns=<yes|no> wifi=<ssid|connecting|unconfigured|off|none>
 #                  time=<offset|no-answer|no-uplink|...> ...
 #   netzone: NOT READY <reason>            (forwarding is off)
 set -u
@@ -239,11 +239,22 @@ start_wifi() {   # start_wifi <radio>: 0 started or already running, 1 not
     say "wifi: wpa_supplicant did not start on ${n}: $(tr '\n' ' ' < /tmp/wpa.err)"
     return 1
 }
-# The status line's wifi=: none (no radio), unconfigured (no credentials), connecting, or the SSID.
-# Read from the kernel, as the supplicant's control socket is its own user's: a link the
-# supplicant holds dormant until it has the keys, then up, and the SSID it is associated with.
+# Is a radio switched off by rfkill, its switch or an airplane-mode key (soft or hard)?
+radio_off() {
+    for k in /sys/class/net/"$1"/phy80211/rfkill*/soft /sys/class/net/"$1"/phy80211/rfkill*/hard; do
+        [ "$(cat "$k" 2>/dev/null)" = 1 ] && return 0
+    done
+    return 1
+}
+# The status line's wifi=: none (no radio), off (every radio switched off), unconfigured (no
+# credentials), connecting, or the SSID. Read from the kernel, as the supplicant's control socket
+# is its own user's: a link the supplicant holds dormant until it has the keys, then up, and the
+# SSID it is associated with.
 wifi_state() {
     [ -n "$WIRELESS" ] || { echo none; return; }
+    on=""
+    for n in $WIRELESS; do radio_off "$n" || on=1; done
+    [ -n "$on" ] || { echo off; return; }
     [ -r "$WPA_CONF" ] || { echo unconfigured; return; }
     st=connecting
     for n in $WIRELESS; do
@@ -255,7 +266,12 @@ wifi_state() {
     done
     echo "$st"
 }
-for n in $WIRELESS; do start_wifi "$n"; done
+# A radio switched off already gets no supplicant, which fails to bring its link up and ends:
+# it is held, and the loop starts one once the radio is switched on.
+wifi_held=""
+for n in $WIRELESS; do
+    if ! start_wifi "$n" && [ -r "$WPA_CONF" ] && radio_off "$n"; then wifi_held="$wifi_held $n"; fi
+done
 wifi_last="$(wifi_state)"
 
 # --- uplink: DHCP if anyone answers, else what zone 0 carried over ---------
@@ -509,9 +525,7 @@ scan_radios() {
     {
         echo "radios ${WIRELESS:-none}"
         for n in $WIRELESS; do
-            for k in /sys/class/net/"$n"/phy80211/rfkill*/soft /sys/class/net/"$n"/phy80211/rfkill*/hard; do
-                [ "$(cat "$k" 2>/dev/null)" = 1 ] && { echo "off $n"; break; }
-            done
+            radio_off "$n" && echo "off $n"
             ip link set dev "$n" up 2>/dev/null
             { iw dev "$n" scan randomise 2>/dev/null || iw dev "$n" scan passive 2>/dev/null || iw dev "$n" scan dump 2>/dev/null; } | scan_lines
         done
@@ -560,7 +574,24 @@ while :; do
         if [ -n "$(wpa_pid "$n")" ] && ! wpa_alive "$n"; then
             say "wifi: wpa_supplicant on ${n} died; restarting"; start_wifi "$n"; changed=1
         fi
+        # Switching a radio off takes its interface down, and its supplicant, which cannot
+        # read rfkill's events here, would leave it so once it is switched on again: up it goes,
+        # and the supplicant carries on.
+        flags="$(cat "/sys/class/net/$n/flags" 2>/dev/null)"
+        if [ -n "$flags" ] && [ $((flags & 1)) = 0 ] && wpa_alive "$n" && ! radio_off "$n" \
+           && ip link set dev "$n" up 2>/dev/null; then
+            say "wifi: ${n} is switched on again; up"
+        fi
     done
+    # A radio held since the start gets its supplicant once switched on, tried once, so one
+    # that fails for another reason says so and is not tried every pass.
+    held=""
+    for n in $wifi_held; do
+        if radio_off "$n"; then held="$held $n"; continue; fi
+        say "wifi: ${n} is switched on; starting its supplicant"
+        start_wifi "$n"; changed=1
+    done
+    wifi_held="$held"
     wifi_now="$(wifi_state)"
     if [ "$wifi_now" != "$wifi_last" ]; then
         wifi_last="$wifi_now"; changed=1; say "wifi: ${wifi_now}"

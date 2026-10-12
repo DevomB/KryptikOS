@@ -1019,6 +1019,7 @@ fn net_summary(line: &str) -> Option<String> {
     let wifi = match &rest[from..to] {
         "none" => None,
         "unconfigured" => Some("Wi-Fi with no network saved".to_string()),
+        "off" => Some("Wi-Fi switched off".to_string()),
         "connecting" => Some("Wi-Fi connecting".to_string()),
         "associated" => Some("Wi-Fi joined".to_string()),
         ssid if !ssid.is_empty() && ssid.len() <= 32 => Some(format!("Wi-Fi {ssid:?}")),

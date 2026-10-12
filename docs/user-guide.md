@@ -246,8 +246,10 @@ terminal), `e` (the editor) or `b` (the browser), for example `1t`, then
 Enter. A zone with encrypted storage asks for its passphrase when it starts,
 in the menu's window or, for a key, in a small prompt window; the passphrase
 never appears on a command line. Under the zones, a Network line says what
-the net zone reports: whether it is ready, the Wi-Fi network it joined, its
-address on the uplink and whether there is DNS. The menu also names a
+the net zone reports: whether it is ready, the Wi-Fi network it joined (or
+that Wi-Fi is switched off, by a switch or an airplane-mode key; switched on
+again, it rejoins by itself), its address on the uplink and whether there is
+DNS. The menu also names a
 release that has arrived and waits to be installed, and says when the newest
 update statement is more than 30 days old, or, with none ever accepted, when
 the install is (section 4). With `w` it lists the Wi-Fi networks the net zone may join,
