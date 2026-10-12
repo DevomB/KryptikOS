@@ -239,6 +239,21 @@ run_menu() {
 
 # --- Wi-Fi ----------------------------------------------------------------------
 
+# A scan's answer with the networks numbered; the lines about radios as they came.
+heard_list() {   # heard_list SCAN
+    printf '%s\n' "$1" | awk '/^"/ { printf "%2d %s\n", ++n, $0; next } { print "   " $0 }'
+}
+# The name of the Nth network a scan heard, from the daemon's quoted line. A name with a
+# backslash in that line holds a byte quoted so no terminal acts on it: it is typed instead.
+heard_name() {   # heard_name SCAN N
+    line="$(printf '%s\n' "$1" | grep '^"' | sed -n "${2}p" 2>/dev/null)"
+    case "$line" in
+        "" | *\\*) return 1 ;;
+    esac
+    line="${line#\"}"
+    printf '%s\n' "${line%%\"*}"
+}
+
 # The net zone's saved networks, through the launch daemon, as `kryptik wifi` has
 # them at the administration login: kryptik-launch reads a passphrase here,
 # unechoed, and the net zone restarts to join.
@@ -256,16 +271,33 @@ run_wifi() {
         read -r c || return 0
         case "$c" in
             "") return 0 ;;
-            # The net zone scans every channel, which takes some seconds.
+            # The net zone scans every channel, which takes some seconds. Its answer is kept, so
+            # a or o can take a network by its number.
             s) echo "asking the net zone what it hears..."
-               "$LAUNCH" --wifi-scan
+               heard="$("$LAUNCH" --wifi-scan 2>&1)"
+               heard_list "$heard"
                printf 'Enter: back to the networks '
                read -r c || return 0 ;;
             # IFS=: an SSID may begin or end with a space.
             a|o|f) [ "$c" = o ] && echo "An open network has no passphrase: anyone in range reads what crosses it."
-                   printf 'network name (SSID): '
+                   if [ "$c" != f ] && [ -n "${heard:-}" ]; then
+                       printf 'network name (SSID), or its number from the scan: '
+                   else
+                       printf 'network name (SSID): '
+                   fi
                    IFS= read -r ssid || return 0
                    [ -n "$ssid" ] || continue
+                   case "$c:$ssid" in
+                       [ao]:[1-9] | [ao]:[1-9][0-9])
+                           if [ -n "${heard:-}" ]; then
+                               n="$ssid"
+                               ssid="$(heard_name "$heard" "$n")" || {
+                                   echo "the scan has no network $n the menu can pass on by number: type its name"
+                                   sleep 3; continue
+                               }
+                               echo "network: $ssid"
+                           fi ;;
+                   esac
                    case "$c" in
                        a) "$LAUNCH" --wifi-add "$ssid" ;;
                        o) "$LAUNCH" --wifi-add-open "$ssid" ;;
