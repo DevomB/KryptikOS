@@ -203,7 +203,11 @@ payloads come from [the update channel](update-channel.md) or by hand.
 Zone data is never written. On the FAT ESP the renames are the only
 non-atomic steps; each follows a complete, fsynced copy and leaves a system
 that boots either way. From the medium, `kryptik-recover` commits or rewrites
-a slot and restores the state header ([user guide](../user-guide.md)).
+a slot and restores the state header ([user guide](../user-guide.md)). The
+ESP is the one place both slots' kernels live, so a FAT that no longer
+mounts is rewritten from the medium's before a slot is restored; its kernel
+for the other slot is the medium's, which need not boot what that slot
+holds, so that slot is left unlisted.
 
 ## Tests
 

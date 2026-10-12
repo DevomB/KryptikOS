@@ -9,6 +9,7 @@
 #   kryptik-recover --disk DEV --restore-state-header FILE
 #
 # --restore-slot also commits the slot, at the medium's (maybe older) version; state is untouched.
+# It rewrites an ESP that no longer mounts from the medium's, and the other slot then has no kernel.
 # The state partition is lost without its LUKS2 header (no escrow): keep a backup off this disk.
 set -eu
 PROG=kryptik-recover
@@ -23,7 +24,7 @@ while [ $# -gt 0 ]; do
         --status) STATUS=1; shift ;;
         --backup-state-header) HDR_OUT="${2:-}"; shift 2 ;;
         --restore-state-header) HDR_IN="${2:-}"; shift 2 ;;
-        -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -56,34 +57,47 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 slot_dev() { case "$1" in a) echo "$SA" ;; b) echo "$SB" ;; *) die "slot must be a or b" ;; esac; }
+# A FAT that will not mount but reads is damaged; one whose first block will not read is a failing disk.
+esp_readable() { dd if="$ESP" of=/dev/null bs=4096 count=1 status=none 2>/dev/null; }
 has_fs() { [ "$(dd if="$1" bs=1 skip=1080 count=2 status=none | od -An -tx1 | tr -d ' \n')" = "53ef" ]; }
 
 if [ "$STATUS" = 1 ]; then
-    mount -t vfat -o ro "$ESP" /run/kryptik-recover || die "cannot mount the ESP"
-    committed="$(esp_slot /run/kryptik-recover/kryptik/committed-slot)"
     echo "disk           $DISK"
-    echo "committed slot $committed"
-    for s in a b; do
-        printf 'slot %s         version %s, kernel %s, filesystem %s\n' "$s" \
-            "$(esp_version "/run/kryptik-recover/kryptik/version-$s" none)" \
-            "$([ -f "/run/kryptik-recover/EFI/kryptik/kryptik-$s.efi" ] && echo present || echo absent)" \
-            "$(has_fs "$(slot_dev "$s")" && echo present || echo NONE)"
-    done
-    # The kernel the firmware boots by default, by which slot's it is, and what --restore-slot writes.
-    boot=/run/kryptik-recover/EFI/BOOT/BOOTX64.EFI; boots=""
-    for s in a b; do
-        cmp -s "$boot" "/run/kryptik-recover/EFI/kryptik/kryptik-$s.efi" && boots="$s"
-    done
-    if [ -n "$boots" ]; then
-        echo "BOOTX64.EFI    slot ${boots}'s kernel"
-    elif [ -f "$boot" ]; then
-        echo "BOOTX64.EFI    neither slot's kernel (sha256 $(sha256sum "$boot" | cut -c1-16)...)"
+    if mount -t vfat -o ro "$ESP" /run/kryptik-recover; then
+        committed="$(esp_slot /run/kryptik-recover/kryptik/committed-slot)"
+        echo "committed slot $committed"
+        for s in a b; do
+            printf 'slot %s         version %s, kernel %s, filesystem %s\n' "$s" \
+                "$(esp_version "/run/kryptik-recover/kryptik/version-$s" none)" \
+                "$([ -f "/run/kryptik-recover/EFI/kryptik/kryptik-$s.efi" ] && echo present || echo absent)" \
+                "$(has_fs "$(slot_dev "$s")" && echo present || echo NONE)"
+        done
+        # The kernel the firmware boots by default, by which slot's it is, and what --restore-slot writes.
+        boot=/run/kryptik-recover/EFI/BOOT/BOOTX64.EFI; boots=""
+        for s in a b; do
+            cmp -s "$boot" "/run/kryptik-recover/EFI/kryptik/kryptik-$s.efi" && boots="$s"
+        done
+        if [ -n "$boots" ]; then
+            echo "BOOTX64.EFI    slot ${boots}'s kernel"
+        elif [ -f "$boot" ]; then
+            echo "BOOTX64.EFI    neither slot's kernel (sha256 $(sha256sum "$boot" | cut -c1-16)...)"
+        else
+            echo "BOOTX64.EFI    absent: the firmware finds nothing to boot by default"
+        fi
+        case "$committed" in
+            a|b) [ "$boots" = "$committed" ] || echo "               not the committed slot's kernel: --commit-slot $committed makes it so" ;;
+        esac
     else
-        echo "BOOTX64.EFI    absent: the firmware finds nothing to boot by default"
+        # A FAT that no longer mounts records nothing: only the slots' own filesystems are known.
+        if esp_readable; then
+            echo "ESP            ${ESP} does not mount: --restore-slot a or b rewrites it from this medium"
+        else
+            echo "ESP            ${ESP} cannot be read: the disk may be failing, which no rewrite mends"
+        fi
+        for s in a b; do
+            printf 'slot %s         filesystem %s\n' "$s" "$(has_fs "$(slot_dev "$s")" && echo present || echo NONE)"
+        done
     fi
-    case "$committed" in
-        a|b) [ "$boots" = "$committed" ] || echo "               not the committed slot's kernel: --commit-slot $committed makes it so" ;;
-    esac
     # The firmware's entries for the slots, which --commit-slot writes: some firmware boots a
     # fixed disk only from one. They are kept by slot, not disk, so one may be another Kryptik's.
     if [ -d /sys/firmware/efi/efivars ] && fw="$(kryptik-efiboot list 2>/dev/null)"; then
@@ -158,8 +172,28 @@ if [ -n "$RESTORE" ]; then
     kernel_names_root "$kdir/kryptik-$RESTORE.efi" \
         || die "the medium's kernel for slot $RESTORE does not carry the root hash its signed command line names; nothing was written"
     [ "$(blockdev --getsize64 "$sd")" -ge "$bytes" ] || die "slot $RESTORE is smaller than the medium's root image"
+    if ! mount -t vfat -o rw "$ESP" /run/kryptik-recover; then
+        # An ESP that no longer mounts is rewritten from this medium's, as the
+        # installer writes it. Its kernel for the other slot is this medium's,
+        # which need not boot what that slot holds, so that slot is unlisted.
+        esp_readable || die "${ESP} cannot be read: the disk may be failing, which no rewrite mends; nothing was written"
+        # Mounted read-only elsewhere, it refuses a second, writable mount: that is not damage.
+        while read -r msrc mwhere _; do
+            case "$msrc" in /*) ;; *) continue ;; esac
+            if [ "$(readlink -f "$msrc")" = "$ESP" ]; then
+                die "${ESP} is mounted on ${mwhere}: unmount it, then run this again; nothing was written"
+            fi
+        done < /proc/mounts
+        case "$media" in usb) esrc="$mesp" ;; *) esrc=/run/kryptik-recover-media/esp.img ;; esac
+        ebytes="$(stat -c %s "$esrc")"; [ -b "$esrc" ] && ebytes="$(blockdev --getsize64 "$esrc")"
+        [ "$(blockdev --getsize64 "$ESP")" -ge "$ebytes" ] || die "${ESP} does not mount, and it is smaller than this medium's ESP; nothing was written"
+        say "${ESP} does not mount: rewriting it from this medium's ESP"
+        dd if="$esrc" of="$ESP" bs=4M conv=fsync status=none || die "rewriting ${ESP} failed"
+        mount -t vfat -o rw "$ESP" /run/kryptik-recover || die "cannot mount ${ESP} after rewriting it"
+        o=b; [ "$RESTORE" = b ] && o=a
+        rm -f /run/kryptik-recover/kryptik/media-kernel "/run/kryptik-recover/EFI/kryptik/kryptik-$o.efi" "/run/kryptik-recover/kryptik/version-$o"
+    fi
     # Like kryptik-update: unlist the slot and unmount, so a cut restore leaves nothing to commit.
-    mount -t vfat -o rw "$ESP" /run/kryptik-recover || die "cannot mount the target ESP"
     rm -f "/run/kryptik-recover/EFI/kryptik/kryptik-$RESTORE.efi" "/run/kryptik-recover/kryptik/version-$RESTORE"
     umount /run/kryptik-recover || die "cannot unmount the target ESP"
     say "restoring slot $RESTORE from this medium (${ver}, ${bytes} bytes); the state partition is untouched"
@@ -186,7 +220,8 @@ if [ -n "$RESTORE" ]; then
 fi
 
 if [ -n "$COMMIT" ]; then
-    mount -t vfat -o rw "$ESP" /run/kryptik-recover || die "cannot mount the target ESP"
+    mount -t vfat -o rw "$ESP" /run/kryptik-recover \
+        || die "${ESP} does not mount, so it holds no kernel to commit: --restore-slot $COMMIT rewrites it, and the slot, from this medium"
     commit_slot "$COMMIT"
     umount /run/kryptik-recover
     exit 0
