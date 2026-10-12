@@ -67,6 +67,7 @@ for name in kernel-support policies net-ready net-dns dhcpcd-separated dnsmasq-u
             wifi-module wifi-ap wifi-add wifi-associated wifi-lease wifi-egress wifi-forget \
             wifi-no-dpp \
             wifi-second-network \
+            wifi-bss-age \
             uplink-renamed-plain uplink-state-reset \
             radio-off-at-start \
             radio-recarried \

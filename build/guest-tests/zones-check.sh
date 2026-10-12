@@ -939,6 +939,18 @@ if [[ "$door_rc" = 0 && "${nft_out,,}" == *"not permitted"* && "${probe_tables:-
 else
     fail "wifi-supplicant-no-nft" "the door: rc=$door_rc $(tr '\n' ' ' < "$LOG/supplicant-door.out" | cut -c1-120); nft: $(tr '\n' ' ' <<<"$nft_out" | cut -c1-160); tables named supplicant-probe: ${probe_tables:-unread}"
 fi
+# The supplicant ages a scan result by the kernel's own count. The kernel also stamps the
+# machine's boot clock, which the net zone's time namespace starts an hour or more apart: read
+# against that, the access point it joined would be hours old, as would every scan result.
+sta_ctl() { nsenter -t "${net_init:-0}" -U -m -n /usr/bin/kryptikd supplicant -- wpa_cli -s /run/wpa_supplicant -p /run/wpa_supplicant "$@" 2>&1; }
+net_if="$(nsenter -t "${net_init:-0}" -n iw dev 2>/dev/null | awk '$1 == "Interface" { print $2; exit }')"
+joined="$(sta_ctl -i "$net_if" status | sed -n 's/^bssid=//p')"
+bss_age=""; [[ -n "$joined" ]] && bss_age="$(sta_ctl -i "$net_if" bss "$joined" | sed -n 's/^age=//p')"
+if [[ "$bss_age" =~ ^[0-9]+$ && "$bss_age" -lt 600 ]]; then
+    pass "wifi-bss-age" "the supplicant counts the access point it joined ($joined) as heard ${bss_age} s ago"
+else
+    fail "wifi-bss-age" "joined: ${joined:-none}; its age: ${bss_age:-unread}; the net zone's boot clock offset: $(sed -n 's/^boottime //p' "/proc/${net_init:-0}/timens_offsets" 2>/dev/null)"
+fi
 zrun untrusted 40 -- sh -c "python3 /usr/lib/kryptik/guest-tests/icmp-echo.py $AP_ADDR 3 >/dev/null 2>&1 && echo AP-REACHED || echo AP-UNREACHED"
 sta_seen="$(ap_wpa all_sta | grep -ciE '^[0-9a-f]{2}(:[0-9a-f]{2}){5}$')"
 if [[ "$ZOUT" == *AP-REACHED* && "${sta_seen:-0}" -ge 1 ]]; then
