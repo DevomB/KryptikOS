@@ -148,7 +148,7 @@ libxkbcommon|${V_LIBXKBCOMMON}|${MIRROR_GITHUB}/xkbcommon/libxkbcommon/archive/x
 xkeyboard-config|${V_XKEYBOARD_CONFIG}|${MIRROR_XORG}/data/xkeyboard-config/xkeyboard-config-${V_XKEYBOARD_CONFIG}.tar.xz|sig|listing
 pixman|${V_PIXMAN}|${MIRROR_CAIRO}/pixman-${V_PIXMAN}.tar.gz|sums:pixman-${V_PIXMAN}.tar.gz.sha512.asc|listing
 libdrm|${V_LIBDRM}|${MIRROR_DRI}/libdrm-${V_LIBDRM}.tar.xz|sig|listing
-libevdev|${V_LIBEVDEV}|${MIRROR_FDO_SW}/libevdev/libevdev-${V_LIBEVDEV}.tar.xz|sig|listing
+libevdev|${V_LIBEVDEV}|${MIRROR_FDO_SW}/libevdev/libevdev-${V_LIBEVDEV}.tar.xz|sig|rule
 mtdev|${V_MTDEV}|${MIRROR_BITMATH}/mtdev-${V_MTDEV}.tar.bz2|probe|listing
 libinput|${V_LIBINPUT}|${MIRROR_FDO_GITLAB}/libinput/libinput/-/archive/${V_LIBINPUT}/libinput-${V_LIBINPUT}.tar.gz|none|rule
 seatd|${V_SEATD}|${MIRROR_SRHT}/~kennylevinsen/seatd/archive/${V_SEATD}.tar.gz|none|rule
