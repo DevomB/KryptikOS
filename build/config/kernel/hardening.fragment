@@ -254,12 +254,15 @@ CONFIG_LSM="landlock,lockdown,yama"
 # CONFIG_NF_CONNTRACK_IRC is not set
 # CONFIG_NF_CONNTRACK_SIP is not set
 # CONFIG_NETCONSOLE is not set
-# Kernel IP autoconfiguration (ip=, for an NFS root), multicast routing, the
-# packet labels of SELinux and Smack (neither is built), NFLOG (left on by
-# xtables' NFLOG target; the net zone's rules log nothing), tc's classifier,
-# ematch and action frameworks (no filter is ever added), and the network
-# filesystems' DNS upcall. The net zone's capabilities reach most of them.
+# Kernel IP autoconfiguration (ip=, for an NFS root), policy and multipath
+# routing (nothing adds a rule, and kryptikd's routes are a gateway and a
+# device), multicast routing, the packet labels of SELinux and Smack (neither
+# is built), NFLOG (left on by xtables' NFLOG target; the net zone's rules log
+# nothing), tc's classifier, ematch and action frameworks (no filter is ever
+# added), and the network filesystems' DNS upcall. The net zone's
+# capabilities reach most of them.
 # CONFIG_IP_PNP is not set
+# CONFIG_IP_ADVANCED_ROUTER is not set
 # CONFIG_IP_MROUTE is not set
 # CONFIG_NETLABEL is not set
 # CONFIG_NETWORK_SECMARK is not set
