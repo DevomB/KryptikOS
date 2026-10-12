@@ -275,7 +275,7 @@ fn uplink_config_travels_with_nic() {
                 eprintln!("read back {before}");
                 return Err(7);
             }
-            let carried = carry_nic("up0", zone_ns).map_err(|e| {
+            let carried = carry_nic("up0", zone_ns, false).map_err(|e| {
                 eprintln!("carry_nic: {e}");
                 8
             })?;
@@ -337,7 +337,7 @@ fn unknown_nic_refused_before_move() {
 fn nic_name_escaped_in_errors() {
     /* A net zone can rename its NIC to bytes a terminal acts on, and the NIC comes back to
      * zone 0 under that name: kryptikd's words and netlink's both escape it. */
-    let e = carry_nic("e\u{1b}[2Jth0", -1).unwrap_err().to_string();
+    let e = carry_nic("e\u{1b}[2Jth0", -1, false).unwrap_err().to_string();
     assert!(!e.contains('\u{1b}') && e.matches("\\u{1b}").count() == 2, "{e:?}");
 }
 
