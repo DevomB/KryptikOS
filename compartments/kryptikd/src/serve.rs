@@ -7,8 +7,9 @@
 //!                (with pass=fd, one descriptor rides with the first bytes)
 //!              wifi-add, `ssid <ssid>`, `psk <passphrase>` or `open`, `end`
 //!              wifi-forget, `ssid <ssid>`, `end`
+//!              wifi-scan, answered once the nic zone has scanned
 //!              stop <zone> | clipboard-move <from> <to> | info <zone> | status |
-//!              runtime | wifi-list | wifi-scan | update-status | update-fetch | update-apply |
+//!              runtime | wifi-list | update-status | update-fetch | update-apply |
 //!              update-auto on|off
 //!   reply    ok ...\n  |  error: <why>\n  |  lines ... end\n
 //!
