@@ -241,8 +241,25 @@ have_mib=$(( size_bytes / MIB ))
 [ "$have_mib" -ge "$need_mib" ] || die "${TARGET} is ${have_mib} MiB; this layout needs at least ${need_mib} MiB
 (ESP ${esp_mib} + two root slots of ${slot_mib} + state ${state_min_mib})."
 
+# The disk by its model and what it holds, read before ERASE is typed: on a medium nothing is
+# mounted, so a backup disk passes every refusal above. Each partition is probed afresh, and
+# what a device or a filesystem calls itself reaches the terminal as printable bytes only.
+shown() { printf '%s' "$1" | LC_ALL=C tr -c '[:print:]' '?'; }
+model="$(shown "$(lsblk -dno MODEL "$TARGET_REAL" 2>/dev/null | sed 's/ *$//')")"
+holds=""
+for p in "/sys/class/block/$tname/$tname"*; do
+    [ -e "$p/partition" ] || continue
+    pn="${p##*/}"
+    fs="$(shown "$(blkid -p -o value -s TYPE "/dev/$pn" 2>/dev/null)")"
+    lb="$(shown "$(blkid -p -o value -s LABEL "/dev/$pn" 2>/dev/null)")"
+    sz="$(lsblk -dno SIZE "/dev/$pn" 2>/dev/null || true)"
+    holds="${holds:+$holds; }${pn} ${fs:-unformatted}${lb:+ \"$lb\"} ${sz}"
+done
+pt="$(blkid -p -o value -s PTTYPE "$TARGET_REAL" 2>/dev/null || true)"
+
 say "medium       ${media} (version ${VERSION})"
-say "target       ${TARGET} -> ${TARGET_REAL}, ${have_mib} MiB"
+say "target       ${TARGET} -> ${TARGET_REAL}, ${have_mib} MiB${model:+, ${model}}"
+say "holds        ${pt:+${pt}: }${holds:-no partition}"
 say "running root ${root_src} on ${root_disks:-unknown}"
 say "layout       esp ${esp_mib} MiB, kryptik-a ${slot_mib} MiB, kryptik-b ${slot_mib} MiB, kryptik-state $(( have_mib - need_mib + state_min_mib )) MiB"
 say "root image   ${ROOT_BYTES} bytes, sha256 ${ROOT_SHA}"
