@@ -69,8 +69,10 @@ left in the image.
 
 ADR-005 makes hardened_malloc the system allocator. Stage 04 builds it without
 `-march=native` and installs `/usr/lib/libhardened_malloc.so`. Stage 06 writes
-`/etc/ld.so.preload` into the image's root, so every process of the running
-system uses it, and kryptikd writes each zone its own preload naming only that
+`/etc/ld.so.preload` into the image's root, so every dynamically linked
+process of the running system uses it (kryptikd and kryptik-wlproxy are
+static musl binaries, which no preload reaches), and kryptikd writes each
+zone its own preload naming only that
 library (a zone never sees the host's). The build chroot never has the file.
 hardened_malloc's guard pages are separate mappings, so `vm.max_map_count` is
 1048576. The booted medium and the zones suite check that a process has the
