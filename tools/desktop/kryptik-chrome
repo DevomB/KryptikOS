@@ -182,6 +182,7 @@ run_update() {
             i) printf 'install it, for a trial at the next boot? (y/N): '
                read -r yes || return 0
                [ "$yes" = y ] || continue
+               echo "installing: the other slot is written and read back, which takes a few minutes"
                if "$LAUNCH" --update apply; then
                    echo "To try it, reboot: at the administration login (Ctrl+Alt+F2), su, then reboot."
                fi
