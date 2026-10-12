@@ -391,6 +391,7 @@ it_manifest()      { on_root_image record_root; }
 it_kernel_config() { "${SELF}/validate-kernel-config.sh" --boot && "${SELF}/validate-kernel-config.sh" --hardened; }
 it_firmware()      { on_root_image "${SELF}/check-firmware-requested.sh"; }
 it_support_status() { "${SELF}/check-support-status.sh" --strict; }
+it_programs()      { on_root_image "${SELF}/check-image-programs.sh"; }
 it_ovmf_vars() {
     [[ -n "$MEDIUM_CERT" ]] || { echo "no certificate could be read out of ${MEDIA_USB:-(no medium)}: /kryptik/kryptik-sb.crt on its ESP"; return 1; }
     echo "the certificate the medium carries: ${CERT_NAME} ($(openssl x509 -in "$MEDIUM_CERT" -noout -fingerprint -sha256 | cut -d= -f2))"
@@ -466,6 +467,7 @@ item build     image-manifest             M host  0 it_manifest need_root_image
 item build     kernel-config              M host  0 it_kernel_config need_sources
 item build     firmware-requested         M host  0 it_firmware need_root_image
 item build     support-status             M host  0 it_support_status
+item build     image-programs             M host  0 it_programs need_root_image
 item boot      media-smoke-usb            M vm   25 it_smoke_usb need_vm
 item boot      medium-shell               M vm    3 it_medium_shell need_vm
 item boot      media-smoke-iso            M vm   25 it_smoke_iso need_vm_iso

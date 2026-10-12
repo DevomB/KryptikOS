@@ -71,7 +71,10 @@ media it tested.
   from the stage 02 tree, but a recipe change does not: a file its new
   version no longer installs stays in the image, as it does in a local work
   directory rebuilt with `KRYPTIK_STALE=rebuild`. A tag's run restores no
-  cache, so a release is free of this; the dated builds are not. Removing such files safely
-  needs a record of what each rebuild wrote, not a before and after listing,
-  with removals held to the end of the stage and never of a shared object
-  something still links.
+  cache, so a release is free of this; the dated builds are not. Stage 06 and
+  the acceptance refuse an image whose executable files differ from
+  `build/config/image-programs.txt`, so a program left behind fails the build
+  until its recipe removes it; a data file left behind is not caught.
+  Removing such files without the recipe needs a record of what each rebuild
+  wrote, not a before and after listing, with removals held to the end of the
+  stage and never of a shared object something still links.
