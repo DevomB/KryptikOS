@@ -31,8 +31,8 @@ pub fn exec(argv: &[String]) -> String {
     }
 }
 
-/// Become the supplicant's user as `exec` does, and listen to the supplicant on `radio`
-/// (`listen`). Returns when that supplicant is gone.
+/// Become the supplicant's user as `exec` does, with no capability, and listen to the
+/// supplicant on `radio` (`listen`). Returns when that supplicant is gone.
 pub fn watch(radio: &str) -> Result<(), String> {
     // It becomes a path here: an interface's name as the kernel takes one, and nothing else.
     let bad = |c: char| c == '/' || c == ':' || c.is_whitespace();
@@ -40,6 +40,8 @@ pub fn watch(radio: &str) -> Result<(), String> {
         return Err(format!("{radio:?} is not an interface's name"));
     }
     confine()?;
+    // It reads events and writes a file: it keeps none of the supplicant's capabilities.
+    set_caps(&[])?;
     listen(Path::new(RUN_DIR), radio).map_err(|e| format!("{radio}: {e}"))
 }
 
