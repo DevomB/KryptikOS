@@ -92,7 +92,7 @@ with nothing mounted, swapped on or held open by device-mapper or md, and
 enough room. A disk that carries any `kryptik-` partition (an old
 installation, a medium, a test-control disk) is refused unless
 `--replace-kryptik` asks for it; nothing overrides the other refusals. Then it
-asks for the state passphrase, partitions,
+asks for the state passphrase (8 characters at least), partitions,
 copies the ESP and root image from the medium, reads slot A back against the
 medium's `root.json`, creates the LUKS2 state partition and makes
 `BOOTX64.EFI` the slot A kernel. Every failure names its step.
