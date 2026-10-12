@@ -1267,7 +1267,7 @@ EOF
     # Its beacons name nothing, as the station hears them. The supplicant, which lost its access
     # point a moment ago, scans on its own and holds the radio (EBUSY), and what its scans heard
     # stays in the kernel's results: a scan of the station's own or those results, a while apart.
-    nameless() { awk '/^BSS 02:00:00:00:01:03/ { b = 1 } b && /^[[:space:]]*SSID:/ { print; exit }'; }
+    nameless() { awk '/^BSS / { b = ($2 ~ /^02:00:00:00:01:03/) } b && /^[[:space:]]*SSID:/ { print; exit }'; }
     for _ in $(seq 1 15); do
         sta_scan="$(sta_iw scan passive)"
         heard_nameless="$(nameless <<<"$sta_scan")"
