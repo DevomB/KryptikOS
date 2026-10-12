@@ -71,6 +71,42 @@ rtlwifi/rtl8723bu_nic.bin
 # Broadcom over PCIe (Dell and Apple machines); the SDIO parts are not.
 brcm/brcmfmac*-pcie*
 
+# Realtek Ethernet: the PHY and MAC patches r8169 and r8152 ask for by chip revision (rtl_fw.c).
+# Without one the NIC still runs, unpatched.
+rtl_nic/rtl8105e-1.fw
+rtl_nic/rtl8106e-1.fw
+rtl_nic/rtl8106e-2.fw
+rtl_nic/rtl8107e-2.fw
+rtl_nic/rtl8125a-3.fw
+rtl_nic/rtl8125b-2.fw
+rtl_nic/rtl8125bp-2.fw
+rtl_nic/rtl8125d-1.fw
+rtl_nic/rtl8125d-2.fw
+rtl_nic/rtl8126a-2.fw
+rtl_nic/rtl8126a-3.fw
+rtl_nic/rtl8127a-1.fw
+rtl_nic/rtl8153a-2.fw
+rtl_nic/rtl8153a-3.fw
+rtl_nic/rtl8153a-4.fw
+rtl_nic/rtl8153b-2.fw
+rtl_nic/rtl8153c-1.fw
+rtl_nic/rtl8156a-2.fw
+rtl_nic/rtl8156b-2.fw
+rtl_nic/rtl8168d-1.fw
+rtl_nic/rtl8168d-2.fw
+rtl_nic/rtl8168e-1.fw
+rtl_nic/rtl8168e-2.fw
+rtl_nic/rtl8168e-3.fw
+rtl_nic/rtl8168f-1.fw
+rtl_nic/rtl8168f-2.fw
+rtl_nic/rtl8168fp-3.fw
+rtl_nic/rtl8168g-2.fw
+rtl_nic/rtl8168g-3.fw
+rtl_nic/rtl8168h-2.fw
+rtl_nic/rtl8402-1.fw
+rtl_nic/rtl8411-1.fw
+rtl_nic/rtl8411-2.fw
+
 # Graphics: Intel and AMD, not NVIDIA (GSP firmware is tens of MB; the framebuffer still works).
 # Intel: the files 6.18's i915 and xe name (intel_uc_fw.c, xe_uc_fw.c, intel_dmc.c), not the
 # older versions linux-firmware keeps for older kernels, and xe's fan control, which it asks
