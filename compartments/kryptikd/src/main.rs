@@ -70,8 +70,9 @@ USAGE:
                    [--group G]        instance that serves only your own uid)
                    [--proxy-exe P] [--wifi-dir DIR]
     kryptikd wifi list                the net zone's Wi-Fi networks, SSIDs only
-    kryptikd wifi add SSID            add one, or replace its passphrase; the
-                                      passphrase is read from stdin, never argv
+    kryptikd wifi add SSID [--open]   add one, or replace its passphrase; the
+                                      passphrase is read from stdin, never argv;
+                                      --open saves it with none, an open network
     kryptikd wifi forget SSID         remove one
                    [--wifi-dir DIR]   (the session does this through `kryptik
                                       wifi` and the launch daemon; this is root's
@@ -1079,7 +1080,7 @@ fn cmd_wifi(zones_dir: &Path, args: &[String]) -> ExitCode {
     let sub = args.get(1).map(String::as_str).unwrap_or("");
     let ssid = args.get(2).filter(|a| !a.starts_with("--"));
     let usage = || {
-        eprintln!("usage: kryptikd wifi list | add SSID | forget SSID   [--wifi-dir DIR]");
+        eprintln!("usage: kryptikd wifi list | add SSID [--open] | forget SSID   [--wifi-dir DIR]");
         ExitCode::from(2)
     };
     let refused = |e: String| {
@@ -1101,19 +1102,21 @@ fn cmd_wifi(zones_dir: &Path, args: &[String]) -> ExitCode {
             if let Err(e) = wifi::check_ssid(ssid) {
                 return refused(e);
             }
-            let pass = match wifi::read_passphrase(&format!("passphrase for {ssid}: ")) {
-                Ok(p) => p,
-                Err(e) => return refused(e),
+            let open = args.iter().any(|a| a == "--open");
+            let pass = if open {
+                None
+            } else {
+                match wifi::read_passphrase(&format!("passphrase for {ssid}: ")) {
+                    Ok(p) => Some(p),
+                    Err(e) => return refused(e),
+                }
             };
             let owner = match wifi::owner_for(zones_dir) {
                 Ok(o) => o,
                 Err(e) => return refused(e),
             };
-            match wifi::add(&dir, owner, ssid, &pass) {
-                Ok(wifi::Added::New) => println!("added network {ssid:?}; {}", wifi::restart_net_zone(&dir)),
-                Ok(wifi::Added::Replaced) => {
-                    println!("replaced the passphrase of network {ssid:?}; {}", wifi::restart_net_zone(&dir))
-                }
+            match wifi::add(&dir, owner, ssid, pass.as_deref()) {
+                Ok(a) => println!("{}; {}", wifi::said(ssid, a, open), wifi::restart_net_zone(&dir)),
                 Err(e) => return refused(e),
             }
             ExitCode::SUCCESS

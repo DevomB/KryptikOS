@@ -797,6 +797,16 @@ wl_of_phy() {   # wl_of_phy phyN: the netdev on that wiphy, in this namespace
 # A sleeper's network namespace alone: a cloned mount namespace would keep a zone's volume open.
 ap() { nsenter -t "$AP_HOLD" -n "$@"; }
 ap_wpa() { ap wpa_cli -p /run/zt-ap-ctrl -i "$AP_IF" "$@" 2>/dev/null; }
+# The station in the net zone, by the name that zone gave it (nicN once the radio has moved).
+sta_if() { nsenter -t "$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)" -n iw dev 2>/dev/null | awk '$1 == "Interface" { print $2; exit }'; }
+# What the station's radio itself is and hears, beside its supplicant's view.
+sta_iw() { nsenter -t "$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)" -n iw dev "$(sta_if)" "$@" 2>&1; }
+# What the net zone's supplicant sees, for a failure's message: its socket is its own user's.
+sta_wpa() {
+    local ni; ni="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
+    nsenter -t "${ni:-0}" -U -m -n /usr/bin/kryptikd supplicant -- \
+        wpa_cli -s /run/wpa_supplicant -p /run/wpa_supplicant -i "$(sta_if)" "$@" 2>&1 | tr '\n' ' '
+}
 STA_IF=""; AP_IF=""; AP_HOLD=""
 # QEMU has no radio, so hwsim makes two: phy1 is the access point, phy0 goes to the net zone.
 if modprobe mac80211_hwsim radios=2 2> "$LOG/hwsim.err"; then
@@ -1099,6 +1109,45 @@ if [[ "$second_up" = 1 && -n "$tried" && "$line" == *" wifi=$AP2_SSID "* ]]; the
     pass "wifi-second-network" "the restarted net zone tried the departed access point, then joined $AP2_SSID once it beaconed: ${line#*netzone: }"
 else
     fail "wifi-second-network" "access point up: ${second_up}; the departed one tried: ${tried:-no}; $(tr '\n' ' ' < "$LOG/wifi-add-2.out"); newest READY: ${line:-none}; $(netzone_said wifi | tail -2 | tr '\n' ' '); the kernel: $(dmesg 2>/dev/null | grep -aE 'nic[0-9]+:' | tail -6 | tr '\n' ';' | cut -c1-600)"
+fi
+# A network saved as open is joined without a key: the access point offers none under another
+# SSID, `wifi add --open` saves it with no passphrase, and the restarted net zone leases there.
+OPEN_SSID=kryptik-hwsim-open
+open_up=0
+if [[ "$ap_up" = 1 ]]; then
+    ap_pid="$(cat /run/zt-ap-wpa.pid 2>/dev/null)"
+    [[ -n "$ap_pid" ]] && kill "$ap_pid" 2>/dev/null
+    for _ in $(seq 1 20); do [[ -n "$ap_pid" ]] && kill -0 "$ap_pid" 2>/dev/null || break; sleep 0.5; done
+    # An address of its own again: under the second network's, the station would hold both
+    # networks under one BSSID for the 30 s the kernel keeps an entry.
+    ap ip link set dev "$AP_IF" down
+    ap ip link set dev "$AP_IF" address 02:00:00:00:01:02 >> "$LOG/ap.err" 2>&1
+    cat > /root/zt/ap-open.conf <<EOF
+ctrl_interface=/run/zt-ap-ctrl
+ap_scan=2
+network={
+    ssid="$OPEN_SSID"
+    mode=2
+    frequency=2412
+    key_mgmt=NONE
+}
+EOF
+    ap wpa_supplicant -B -i "$AP_IF" -c /root/zt/ap-open.conf -P /run/zt-ap-wpa.pid -f "$LOG/ap-open-wpa.log" >> "$LOG/ap.err" 2>&1
+    for _ in $(seq 1 30); do ap_wpa status | grep -q '^wpa_state=COMPLETED' && { open_up=1; break; }; sleep 1; done
+fi
+before="$(ready_count)"
+"$KD" wifi add "$OPEN_SSID" --open --wifi-dir "$WIFI_DIR" --zones "$Z" < /dev/null > "$LOG/wifi-add-open.out" 2>&1
+line="$(ready_after "$before" " wifi=$OPEN_SSID " 90)"
+open_lease=""
+for _ in $(seq 1 40); do
+    open_lease="$(nsenter -t "$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)" -n ip -4 -o addr show "$(sta_if)" 2>/dev/null | awk '{print $4}' | head -1)"
+    [[ "$open_lease" == 192.168.77.* ]] && break; sleep 1
+done
+if [[ "$open_up" = 1 && "$line" == *" wifi=$OPEN_SSID "* && "$open_lease" == 192.168.77.* ]] \
+   && grep -q "added open network \"$OPEN_SSID\"" "$LOG/wifi-add-open.out"; then
+    pass "wifi-open" "saved with --open and no passphrase, $OPEN_SSID was joined and the net zone leased ${open_lease} there"
+else
+    fail "wifi-open" "access point up: ${open_up} ($(ap iw dev "$AP_IF" info 2>&1 | grep -E 'addr|ssid|type|channel' | tr -s '\t\n' '  ')); $(tr '\n' ' ' < "$LOG/wifi-add-open.out"); newest READY: ${line:-none}; lease: ${open_lease:-none}; $(tail -2 "$LOG/ap-open-wpa.log" 2>/dev/null | tr '\n' ' '); the station: $(sta_wpa status | cut -c1-240); networks: $(sta_wpa list_networks | cut -c1-240); seen: $(sta_wpa scan_results | cut -c1-400); ignored: $(sta_wpa bssid_ignore | cut -c1-120); its radio: $(sta_iw info | grep -E 'addr|type|channel' | tr -s '\t\n' '  '); link: $(sta_iw link | head -2 | tr '\n' ' '); a scan of its own: $(sta_iw scan | grep -E '^BSS|SSID:|command failed' | tr -s '\t\n' '  ' | cut -c1-300); the access point's stations: $(ap iw dev "$AP_IF" station dump 2>&1 | grep -c '^Station'); the kernel: $(dmesg 2>/dev/null | grep -aE 'nic[0-9]+:|wlan[0-9]+:' | tail -12 | tr '\n' ';' | cut -c1-900)"
 fi
 # Back to the wire: the radios go first, so the net zone the forget restarts finds none.
 for f in /run/zt-ap-dnsmasq.pid /run/zt-ap-wpa.pid; do p="$(cat "$f" 2>/dev/null)"; [[ -n "$p" ]] && kill "$p" 2>/dev/null; done
