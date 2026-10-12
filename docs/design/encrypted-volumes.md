@@ -54,7 +54,9 @@ a passphrase is a UX choice; kryptikd works either way.
   runs `mkfs.ext4 -E root_owner=<uid>:<gid>` and closes. The installer
   creates no zone volumes.
 - `volume passwd` runs `cryptsetup luksChangeKey` with both passphrases in
-  memfds. `volume backup-header NAME FILE` writes the header only and never
+  memfds. A passphrase either sets has at least 8 characters, as a copied
+  header can be guessed at offline; one a volume already has still opens it.
+  `volume backup-header NAME FILE` writes the header only and never
   over an existing file; the backup holds the wrapped key, so it is sensitive.
   `restore-header` and `status` complete the set.
 - `volume destroy NAME` erases a stopped zone's key slots and deletes its

@@ -48,9 +48,24 @@ impl std::fmt::Display for VolumeError {
 /// A passphrase that is zeroed when it goes out of scope.
 pub struct Passphrase(Vec<u8>);
 
+/// The fewest characters a passphrase set on a volume may have: a copied volume header can be
+/// guessed at offline.
+const MIN_CHARS: usize = 8;
+
 impl Passphrase {
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
+    }
+    /// Refuse one too short to set on a volume; an existing volume opens with whatever it has.
+    /// UTF-8 characters are counted by their lead bytes, so the bytes are never copied.
+    pub fn check_new(&self) -> Result<(), VolumeError> {
+        let n = self.0.iter().filter(|&&b| b & 0xc0 != 0x80).count();
+        if n < MIN_CHARS {
+            return Err(VolumeError::Passphrase(format!(
+                "{n} characters, and a new one needs at least {MIN_CHARS}: a copied volume header can be guessed at offline"
+            )));
+        }
+        Ok(())
     }
     /// Read from a regular file owned by root or the caller, with no group or other access.
     pub fn from_file(path: &Path) -> Result<Self, VolumeError> {
@@ -300,6 +315,7 @@ pub fn is_mountpoint(path: &str) -> bool {
 
 /// Create LUKS2 (argon2id) on a sparse file or blank device, holding an ext4 owned by the zone.
 pub fn init(zone: &str, volume: &str, size: u64, pass: &Passphrase, uid: u32, gid: u32) -> Result<(), VolumeError> {
+    pass.check_new()?;
     let p = Path::new(volume);
     if p.exists() {
         let md = fs::metadata(p).map_err(|e| VolumeError::Io(format!("{volume}: {e}")))?;
@@ -346,6 +362,7 @@ pub fn init(zone: &str, volume: &str, size: u64, pass: &Passphrase, uid: u32, gi
 
 /// Replace passphrase `old` with `new`; both travel through memfds, never argv.
 pub fn change_key(zone: &str, volume: &str, old: &Passphrase, new: &Passphrase) -> Result<(), VolumeError> {
+    new.check_new()?;
     let oldfd = memfd("old", old.as_bytes())?;
     let newfd = memfd("new", new.as_bytes())?;
     let oldp = format!("/proc/self/fd/{}", oldfd.as_raw_fd());

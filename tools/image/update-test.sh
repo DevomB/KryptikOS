@@ -169,7 +169,7 @@ start_vm update-p1 --disk "$PA"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "grab:v1:grep ^VERSION_ID= /etc/os-release; cat /run/kryptik/boot-identity" \
     "run:echo before-update > /home/${TUSER}/marker && sync" \
-    "$(ROOTSH 'printf zone-pw > /root/zp && chmod 600 /root/zp && kryptikd volume init work --size 64M --passphrase-file /root/zp && sha256sum /var/lib/kryptik/volumes/work.luks > /root/work.sha && echo VOL-OK')" \
+    "$(ROOTSH 'printf zone-pass > /root/zp && chmod 600 /root/zp && kryptikd volume init work --size 64M --passphrase-file /root/zp && sha256sum /var/lib/kryptik/volumes/work.luks > /root/work.sha && echo VOL-OK')" \
     "expect:VOL-OK" \
     "$(ROOTSH 'kryptikd time status')" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
