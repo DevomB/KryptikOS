@@ -354,7 +354,8 @@ fi
 # unprivileged socket send from an address its host does not hold. personal
 # sends to the bridge's resolver port from its own addresses (the control) and
 # with FREEBIND from untrusted's. Counters in the net zone say what reached it, ahead of its
-# own chains, and what it took in after them.
+# own chains, and what it took in after them, by the port it was sent to: a zone's own
+# resolver takes its queries on another (the dns chain).
 net_init="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
 netns() { nsenter -t "${net_init:-0}" -n "$@"; }
 own4="10.19.0.$PER"; other4="10.19.0.$UNT"
@@ -371,10 +372,10 @@ table inet ztprobe {
     }
     chain taken {
         type filter hook input priority 100;
-        ip saddr $own4 udp dport 53 counter comment "taken-own4"
-        ip saddr $other4 udp dport 53 counter comment "taken-other4"
-        ip6 saddr $own6 udp dport 53 counter comment "taken-own6"
-        ip6 saddr $other6 udp dport 53 counter comment "taken-other6"
+        ip saddr $own4 meta l4proto udp ct original proto-dst 53 counter comment "taken-own4"
+        ip saddr $other4 meta l4proto udp ct original proto-dst 53 counter comment "taken-other4"
+        ip6 saddr $own6 meta l4proto udp ct original proto-dst 53 counter comment "taken-own6"
+        ip6 saddr $other6 meta l4proto udp ct original proto-dst 53 counter comment "taken-other6"
     }
 }
 EOF
