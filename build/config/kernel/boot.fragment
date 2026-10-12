@@ -241,6 +241,8 @@ CONFIG_RTW89_8852CE=m
 CONFIG_RTW89_8922AE=m
 CONFIG_BRCMFMAC=m
 CONFIG_BRCMFMAC_PCIE=y
+# SDIO is on by default with MMC; firmware.list ships no SDIO firmware, so its bus would drive nothing.
+# CONFIG_BRCMFMAC_SDIO is not set
 CONFIG_RTL8XXXU=m
 CONFIG_MAC80211_HWSIM=m
 
