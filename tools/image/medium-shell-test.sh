@@ -49,7 +49,7 @@ for ((i = 0; i < ${#MEDIA[@]}; i += 2)); do
         # As above, each answer is made by the shell or said by the installer.
         typed=(
             'send:echo mem-$(stat -f -c %T /root)-$(stat -f -c %T /var)-$(stat -f -c %T /tmp)' "expect:mem-tmpfs-tmpfs-tmpfs"
-            "send:kryptik-install --target /dev/vda --dry-run" "expect:layout +esp [0-9]+ MiB, kryptik-a [0-9]+ MiB"
+            "send:kryptik-install --target /dev/vda --dry-run" "expect:holds +no partition" "expect:layout +esp [0-9]+ MiB, kryptik-a [0-9]+ MiB"
             "expect:dry run: every check passed; nothing was written"
             "send:kryptik-install --target /dev/vda" "expect:Type ERASE to continue: ?" "send:no" "expect:not confirmed; nothing was written"
             "send:kryptik-install --target /dev/vda" "expect:Type ERASE to continue: ?" "send:ERASE"
@@ -65,7 +65,7 @@ for ((i = 0; i < ${#MEDIA[@]}; i += 2)); do
             "send:printf x | cryptsetup -q luksFormat --type luks2 --pbkdf pbkdf2 --pbkdf-force-iterations 1000 --key-file=- /dev/vda1 && printf x | cryptsetup open --key-file=- /dev/vda1 held; kryptik-install --target /dev/vda --dry-run; cryptsetup close held"
             "expect:is in use: held open by"
             "send:kryptik keyboard" 'expect:\* us\r?\n +uk'
-            "send:kryptik-install --target /dev/vda" "expect:Type ERASE to continue: " "send:ERASE"
+            "send:kryptik-install --target /dev/vda" "expect:holds +gpt: vda1 crypto_LUKS 64M" "expect:Type ERASE to continue: " "send:ERASE"
             "expect:asked at every boot: " "send:${KRYPTIK_STATE_PASSPHRASE}" "expect:again: " "send:${KRYPTIK_STATE_PASSPHRASE}"
             "expect:installed [^ ]+ to /dev/vda: boot it from firmware with the medium removed"
             'send:echo ,,L | sfdisk -q -X gpt /dev/vdb; sleep 1; mkfs.ext4 -q -F /dev/vdb1; echo second-$(test -b /dev/vdb1 && echo disk)' "expect:second-disk"
