@@ -271,7 +271,11 @@ configured the zone keeps its IPv4 path and the launcher says so.
   `/etc/wpa_supplicant.conf`, restarting one that dies; dhcpcd takes the
   lease once there is a carrier. `wifi=` is `none`, `unconfigured` (no
   credentials), `connecting`, or the associated SSID; `READY` does not wait
-  for association.
+  for association. A radio switched off by rfkill (an airplane-mode key, a
+  switch) as the net zone starts moves in down, as kryptikd reads its rfkill
+  state in zone 0 first: brought up, its link is refused (`ERFKILL`), and that
+  once failed the whole start, wire and all, until the radio was switched on.
+  Switched on, it is joined at the net zone's next start.
 - **The net zone knows the passphrases.** They live in zone 0 at
   `/var/lib/kryptik/wifi/wpa_supplicant.conf`, written only by `kryptikd serve`
   for `kryptik wifi add|forget <SSID>`. The passphrase is read on the
