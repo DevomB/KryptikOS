@@ -170,14 +170,16 @@ sibling thread online the kernel refuses the cookie (`ENODEV`) and
 
 ## ADR-012: Device firmware from linux-firmware, on the verified root
 
-The image ships the firmware laptop graphics and Wi-Fi need, from the pinned
-`linux-firmware` release, as selected by `build/config/firmware.list`,
-zstd-compressed under `/lib/firmware` on the dm-verity root. The drivers that
-load it are signed modules, so they probe after the root is mounted.
+The image ships the firmware laptop graphics, Wi-Fi and Ethernet need, from
+the pinned `linux-firmware` release, as selected by
+`build/config/firmware.list`, zstd-compressed under `/lib/firmware` on the
+dm-verity root. The drivers that load it are signed modules, so they probe
+after the root is mounted.
 
 **Why:** Intel, AMD and Qualcomm Wi-Fi and AMD GPUs do not run without vendor
-firmware, and Intel graphics runs degraded. Without it most laptops have no
-Wi-Fi.
+firmware, Intel graphics runs degraded, Realtek Ethernet runs without its
+chips' patches, and an old Broadcom Tigon3 does not come up. Without it most
+laptops have no Wi-Fi.
 
 These are vendor binaries, not built from source as
 [supply-chain.md](supply-chain.md) otherwise requires, and run by the device's
@@ -198,9 +200,10 @@ each signed kernel (`CONFIG_EXTRA_FIRMWARE`, stage 05), about 18 MB. Without
 it a machine runs whatever microcode its firmware last shipped, which on older
 machines means known, unfixed CPU vulnerabilities.
 
-**Cost:** about 135 MB after zstd (385 MB of files; Intel Wi-Fi is 56 MB and
-amdgpu 38 MB compressed) on a root image of about 1.6 GB, and an input nobody
-here can read.
+**Cost:** about 81 MB after zstd (amdgpu is 38 MB of it, Intel Wi-Fi 15 MB and
+Intel graphics 6 MB; for Intel, Realtek and Atheros the list names the files
+each driver asks for, not the versions linux-firmware keeps for other kernels)
+on a root image of about 1.6 GB, and an input nobody here can read.
 
 ## ADR-013: A driver is built in only when boot needs it
 
