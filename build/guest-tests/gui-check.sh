@@ -384,6 +384,24 @@ if [[ -n "$installed" && "$told" == *"since this machine was installed, 45 days 
 else
     fail "menu-names-install-age" "install record dated ${installed:-unread}; the menu said: $(tr '\n' ' ' <<<"$never" | cut -c1-300)"
 fi
+# The menu's u reaches the channel's verbs as the user: automatic fetching turned on
+# there is on in kryptikd's record, and off again. A channel is named for it, and the
+# setting and the configuration are put back.
+rm -f /root/gt/conf.kept /root/gt/auto.kept
+[[ -e "$CONF" ]] && cp -p "$CONF" /root/gt/conf.kept
+[[ -e "$UPD/auto" ]] && cp -p "$UPD/auto" /root/gt/auto.kept
+printf 'channel = https://channel.invalid/\n' > "$CONF"
+printf 'u\na\n\nq\n' | as_user "TERM=dumb /usr/bin/kryptik-chrome --menu" > "$LOG/menu-update.out" 2>&1
+auto_on="$(cat "$UPD/auto" 2>/dev/null)"
+printf 'u\nm\n\nq\n' | as_user "TERM=dumb /usr/bin/kryptik-chrome --menu" >> "$LOG/menu-update.out" 2>&1
+auto_off=gone; [[ -e "$UPD/auto" ]] && auto_off="still $(cat "$UPD/auto")"
+if [[ -e /root/gt/conf.kept ]]; then mv -f /root/gt/conf.kept "$CONF"; else rm -f "$CONF"; fi
+if [[ -e /root/gt/auto.kept ]]; then mv -f /root/gt/auto.kept "$UPD/auto"; else rm -f "$UPD/auto"; fi
+if [[ "$auto_on" == on && "$auto_off" == gone ]]; then
+    pass "menu-update-auto" "the menu's u, then a, turned automatic fetching on through the launch daemon, and u, then m, off"
+else
+    fail "menu-update-auto" "after a: ${auto_on:-no record}; after m: ${auto_off}; $(tail -4 "$LOG/menu-update.out" | tr '\n' ' ')"
+fi
 
 # A zone runs one command at a time, so its window is stopped before the next.
 stop_zone() { as_user "kryptik-launch --stop $1" > /dev/null 2>&1; wait_for 15 test ! -e "/run/kryptik/zones/$1/init.pid"; sleep 1; }

@@ -297,7 +297,9 @@ kryptik update auto on    # fetch each newer release as it is announced; `auto o
 
 `fetch` only records the request, and the release arrives when the net zone
 next asks; `apply` refuses a release that is still arriving. Then reboot, as
-root (`su`, then `reboot`): the next boot is the trial.
+root (`su`, then `reboot`): the next boot is the trial. The desktop's menu
+(Alt+p) does the same under `u`: it shows the status and fetches, forgets,
+installs (after a `y`) or turns automatic fetching on and off.
 
 When the newest statement is more than 30 days old, `status` says so, and so
 does every login prompt: "kryptik update: no statement from the release key
