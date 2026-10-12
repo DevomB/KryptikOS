@@ -71,6 +71,14 @@ want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-state=/dev/vda4 type=crypto_LUKS' "
 want "$P1" 'KRYPTIK_INSTALL: verify: esp_files=.*EFI/BOOT/BOOTX64.EFI' "the ESP has the removable-media boot file"
 want "$P1" 'KRYPTIK_INSTALL: kryptik-install: firmware +Boot[0-9A-F]{4} -> .EFI.kryptik.kryptik-a\.efi on /dev/vda1 ' \
     "the firmware has an entry for slot a on the new ESP as well"
+# The entry names the partition by PARTUUID: the one the new GPT holds, not one a cache kept.
+fw_uuid="$(sed -n 's/.*kryptik-install: firmware .*(PARTUUID \([0-9A-Fa-f-]*\)).*/\1/p' "$P1" | head -1)"
+gpt_uuid="$(sfdisk -d "$DISK" 2>/dev/null | awk -v p="${DISK}1" '$1 == p && match($0, /uuid=[0-9A-Fa-f-]+/) { print substr($0, RSTART + 5, RLENGTH - 5) }')"
+if [[ -n "$fw_uuid" && "${fw_uuid,,}" == "${gpt_uuid,,}" ]]; then
+    green "the entry names the new ESP by its PARTUUID (${gpt_uuid})"
+else
+    red "the entry names PARTUUID ${fw_uuid:-none}; the new GPT gives the ESP ${gpt_uuid:-none}"
+fi
 want "$P1" 'KRYPTIK_INSTALL: verify: install_json=yes'   "install.json was written"
 want "$P1" 'KRYPTIK_INSTALL: verify: preseed=present'    "the first-boot preseed was written"
 want "$P1" 'KRYPTIK_INSTALL: .*kryptik-a verifies'       "the root image was read back and verified"

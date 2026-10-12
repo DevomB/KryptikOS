@@ -110,6 +110,8 @@ no firmware variables. Some firmware boots an internal disk only from a
 Boot#### entry, so the installer also gives slot a its own, last in
 `BootOrder`, after `forget` has removed an earlier install's; a firmware that
 refuses it leaves the disk to `BOOTX64.EFI`, and the installer says so.
+Entries are kept by slot, not by disk, so a machine holds one Kryptik's: a
+second Kryptik disk in it boots by its own `BOOTX64.EFI`.
 `kryptik-efiboot` adds a `Kryptik slot <x>` Boot####
 entry for a trial. When the trial ends, committed or not, `forget` removes
 Kryptik's entries and `BootNext`, and the committed slot gets its own entry
