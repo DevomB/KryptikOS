@@ -63,9 +63,6 @@ never see the host's paths. Stage 06 and the Rust binaries do.
   the directories it creates. Their contents are fixed by the inputs except
   `built_at`, which is `date -Iseconds`, and the default version,
   `0.1.<date>.<commit>`. Their times are now; mke2fs 1.47.1 clamps them.
-- **The update manifest's `created:` line**, written by
-  `tools/release-manifest.sh create` from `s_payload`, is the second it ran,
-  unless `SOURCE_DATE_EPOCH` is set: then it is that second, in UTC.
 
 The fix is one `SOURCE_DATE_EPOCH`, the commit's time, exported for the
 whole build, with `built_at` written from it in UTC, and the same
@@ -78,9 +75,7 @@ there, the floor becomes the time of the commit rather than of the build:
 earlier by hours for a dated build, by days at most for a release tagged
 after its commit. A floor may be early and never late, so every rule in the
 time design still holds. The parser takes the `+00:00` offset that
-`date -u -Iseconds` prints. The manifest's signed `created:` date, the
-floor once its release is committed (`release_in` in `time.rs`), moves
-earlier the same way.
+`date -u -Iseconds` prints.
 
 ### Stage 05's kernel
 
