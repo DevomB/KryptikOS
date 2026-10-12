@@ -43,7 +43,7 @@ printf '/usr/bin/hostname\n' > "$L"
 out="$(check)"; rc=$?
 [[ "$rc" -ne 0 && "$out" == *"no leading /"* ]] && ok "an absolute entry is refused" || bad "absolute entry: rc=$rc: $out"
 
-out="$(NO_COLOR=1 bash "$CHECK" "$R" --write "$T/written.txt" 2>&1)"; rc=$?
+out="$(check --write "$T/written.txt")"; rc=$?
 [[ "$rc" -eq 0 && "$(cat "$T/written.txt")" == $'usr/bin/hostname\nusr/bin/ifconfig\nusr/lib/libz.so.1.3.1' ]] \
     && ok "--write lists what the root holds, sorted" || bad "--write: rc=$rc: $out"
 
