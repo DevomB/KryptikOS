@@ -291,10 +291,18 @@ if [[ "$direct" == "DIRECT-OTHER none DIRECT-OWN none " ]]; then
 else
     fail "dns-own-port-closed" "${direct:-no output} $(tail -1 "$LOG/untrusted.err")"
 fi
-# Each zone's cache is its own. A stand-in upstream on 127.0.0.53 in the net
-# zone answers every name with one address for 300 s and prints each name that
-# reaches it: one untrusted asks twice reaches it once, and asked from personal,
-# once more. One cache for all zones would let it through once in all; none, three times.
+
+# The vault is probed under storage, once its volume exists.
+
+# --- zones: separation between routed zones; fail-closed on a net restart ---
+printf 'personal-pass\n' > /root/zt/personal.pass; chmod 600 /root/zt/personal.pass
+"$KD" volume init personal --size 64M --passphrase-file /root/zt/personal.pass > "$LOG/vol-personal.out" 2>&1 \
+    && pass "volume-init" "personal: $(tail -1 "$LOG/vol-personal.out")" || fail "volume-init" "$(tail -2 "$LOG/vol-personal.out" | tr '\n' ' ')"
+# Each zone's cache is its own, checked here, once personal's volume exists. A
+# stand-in upstream on 127.0.0.53 in the net zone answers every name with one
+# address for 300 s and prints each name that reaches it: one untrusted asks
+# twice reaches it once, and asked from personal, once more. One cache for all
+# zones would let it through once in all; none, three times.
 stub='import socket, struct
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("127.0.0.53", 53))
 while True:
@@ -341,13 +349,6 @@ if [[ "$switched" == yes && "$per_zone" == "untrusted: PROBE 1 1; personal: PROB
 else
     fail "dns-cache-per-zone" "the upstream switched: ${switched}; ${per_zone:-no zone asked}; reached it: ${probes:-0} times; $(tail -2 "$LOG/dns-stub.err" 2>/dev/null | tr '\n' ' ')"
 fi
-
-# The vault is probed under storage, once its volume exists.
-
-# --- zones: separation between routed zones; fail-closed on a net restart ---
-printf 'personal-pass\n' > /root/zt/personal.pass; chmod 600 /root/zt/personal.pass
-"$KD" volume init personal --size 64M --passphrase-file /root/zt/personal.pass > "$LOG/vol-personal.out" 2>&1 \
-    && pass "volume-init" "personal: $(tail -1 "$LOG/vol-personal.out")" || fail "volume-init" "$(tail -2 "$LOG/vol-personal.out" | tr '\n' ' ')"
 # A zone that sends from another zone's address. The rule that opens the
 # uplink's own network goes by a packet's source, and IPV6_FREEBIND lets an
 # unprivileged socket send from an address its host does not hold. personal
