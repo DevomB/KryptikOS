@@ -54,6 +54,8 @@ for ((i = 0; i < ${#MEDIA[@]}; i += 2)); do
             "send:kryptik-install --target /dev/vda" "expect:Type ERASE to continue: ?" "send:no" "expect:not confirmed; nothing was written"
             "send:kryptik-install --target /dev/vda" "expect:Type ERASE to continue: ?" "send:ERASE"
             "expect:asked at every boot: ?" "send:one" "expect:again: ?" "send:two" "expect:the two passphrases differ; nothing was written"
+            "send:kryptik-install --target /dev/vda" "expect:Type ERASE to continue: ?" "send:ERASE"
+            "expect:asked at every boot: ?" "send:short" "expect:again: ?" "send:short" "expect:is 5 characters; it needs at least 8, as a stolen disk can be guessed at offline; nothing was written"
             'send:echo written-$(head -c 4194304 /dev/vda | tr -d "\000" | wc -c)-table-$(sfdisk -d /dev/vda >/dev/null 2>&1 && echo yes || echo no)'
             "expect:written-0-table-no"
             'send:echo size=64M | sfdisk -q -X gpt /dev/vda; sleep 1; echo part-$(test -b /dev/vda1 && echo made)' "expect:part-made"
