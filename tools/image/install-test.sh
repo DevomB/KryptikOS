@@ -93,7 +93,7 @@ cp "/usr/share/OVMF/OVMF_VARS_4M.fd" "$VARSF"
 [[ "$VARS" == "enrolled" ]] && cp "${KRYPTIK_WORK}/keys/sb/vars/enrolled.fd" "$VARSF"
 start_vm install-p2; LOG2="$LOG"
 REC="${VMDIR}/install-p2.json"
-python3 "$DRV" --serial "$SER" --timeout 300 --record "$REC" \
+drive --record "$REC" \
     "expect:KRYPTIK_SMOKE: END" \
     "seen:kryptik-firstboot: created user '${TUSER}'" \
     "login:${TUSER}:${TPASS}" \
@@ -113,7 +113,7 @@ python3 "$DRV" --serial "$SER" --timeout 300 --record "$REC" \
     "expect:Power down" \
     "wait-exit"
 drc=$?
-sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
+stop_vm
 P2="${VMDIR}/install-p2.txt"; txt_of "$LOG2" > "$P2"
 echo "  transcript: ${LOG2}"
 [[ "$drc" -eq 0 ]] && green "first boot, login, reboot, second login and clean poweroff all happened" || red "the serial drive failed (see above)"
@@ -143,12 +143,12 @@ if [[ "$QUICK" -eq 0 ]]; then
 step "step 3: cold boot the installed disk again, with a signed control disk attached"
 # Step 1's: it names this disk as the target and asks for a poweroff.
 start_vm install-p3 --testctl "$CTL"; LOG3="$LOG"
-python3 "$DRV" --serial "$SER" --timeout 300 \
+drive \
     "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "run:test -f /home/${TUSER}/persisted-p2" \
     "su:${RPASS}:poweroff" "expect:Power down" "wait-exit"
 drc=$?
-sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
+stop_vm
 [[ "$drc" -eq 0 ]] && green "cold boot: login, persisted file present, clean poweroff" || red "cold boot drive failed"
 P3="${VMDIR}/install-p3.txt"; txt_of "$LOG3" > "$P3"
 deny "$P3" 'kryptik-firstboot: created user'  "first-boot setup did not run again"
@@ -308,12 +308,12 @@ if [[ "$QUICK" -eq 0 && -n "$SLOT" ]]; then
     cp "/usr/share/OVMF/OVMF_VARS_4M.fd" "$VARSF"
     [[ "$VARS" == "enrolled" ]] && cp "${KRYPTIK_WORK}/keys/sb/vars/enrolled.fd" "$VARSF"
     start_vm slot-size-boot
-    python3 "$DRV" --serial "$SER" --timeout 300 \
+    drive \
         "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
         "run:test \"\$(cat /sys/class/block/vda2/size)\" = $(( BIG * 2048 ))" \
         "su:${RPASS}:poweroff" "expect:Power down" "wait-exit"
     drc=$?
-    sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
+    stop_vm
     DISK="$SAVED_DISK"
     [[ "$drc" -eq 0 ]] && green "slot-size: the disk boots alone, and slot a is ${BIG} MiB from inside" || red "slot-size: the boot of the disk with larger slots failed"
 fi

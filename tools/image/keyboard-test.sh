@@ -62,7 +62,7 @@ step "step 2: the passphrase pressed where a German keyboard has it"
 start_vm keyboard-p2
 # No answer on the serial line: the passphrase goes in through the keyboard.
 # The Y key gives z, the Z key y, and the key right of the full stop gives -.
-KRYPTIK_STATE_PASSPHRASE='' python3 "$DRV" --serial "$SER" --qmp "$QMP" --timeout 300 \
+KRYPTIK_STATE_PASSPHRASE='' drive --qmp "$QMP" \
     "expect:sysinit: keyboard layout de" \
     "expect:passphrase for the state partition \(try 1 of 3\): " "sleep:2" \
     "key:l" "key:a" "key:y" "key:z" "key:slash" "key:y" "key:e" "key:b" "key:r" "key:a" "key:ret" \

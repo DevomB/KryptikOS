@@ -59,7 +59,7 @@ install_disk integ-install "$USB" --vars enrolled && green "installed from the m
 boot_txt | grep -q 'KRYPTIK_SMOKE: secureboot=1' && green "the medium itself booted with Secure Boot enforced" || red "medium did not report secureboot=1"
 
 start_vm integ-p1; LOG1="$LOG"
-python3 "$DRV" --serial "$SER" --timeout 300 \
+drive \
     "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "run:test \"\$(od -An -tu1 -j4 -N1 /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c | tr -d ' ')\" = 1" \
     "run:echo integrity-marker > /home/${TUSER}/marker && sync" \
@@ -67,7 +67,7 @@ python3 "$DRV" --serial "$SER" --timeout 300 \
     "$(printf 'su:%s:%s' "$RPASS" 'insmod /usr/lib/kryptik/kernel/mac80211_hwsim-unsigned.ko 2>&1; echo UNSIGNED-RC=$?; test ! -d /sys/module/mac80211_hwsim && echo UNSIGNED=refused')" "expect:UNSIGNED=refused" \
     "$(printf 'su:%s:%s' "$RPASS" 'modprobe mac80211_hwsim radios=0 && test -d /sys/module/mac80211_hwsim && echo SIGNED=loaded')" "expect:SIGNED=loaded" \
     "su:${RPASS}:poweroff" "expect:Power down" "wait-exit"
-rc=$?; sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
+rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "installed system boots with Secure Boot enforced (SecureBoot=1 inside the guest)" || red "step 1 drive failed"
 T1="$(tr -d '\r' < "$LOG1")"
 grep -q 'KRYPTIK_SMOKE: verity_root=0 [0-9]* verity V' <<<"$T1" && green "dm-verity reports the root valid" || red "no valid verity root reported"
@@ -212,11 +212,11 @@ LEFT="$(mdir -/ -b -i "$ESPIMG" ::/ 2>/dev/null | grep -i '\.new$' | tr '\n' ' '
 [[ -z "$LEFT" ]] && green "recovery left no .new file on the ESP" || red "recovery left ${LEFT}on the ESP"
 cp "$ENROLLED" "$VARSF"
 start_vm integ-p4b; LOG4="$LOG"
-python3 "$DRV" --serial "$SER" --timeout 300 \
+drive \
     "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "run:test \"\$(cat /home/${TUSER}/marker)\" = integrity-marker" \
     "su:${RPASS}:poweroff" "expect:Power down" "wait-exit"
-rc=$?; sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
+rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "the recovered disk boots alone under Secure Boot; the user and the home file survived" || red "step 4 drive failed"
 tr -d '\r' < "$LOG4" | grep -q 'KRYPTIK_SMOKE: verity_root=0 [0-9]* verity V' && green "dm-verity reports the restored root valid" || red "restored root not reported valid"
 tr -d '\r' < "$LOG4" | grep -q 'kryptik-firstboot: created user' && red "first-boot setup ran again (state was lost)" || green "first-boot setup did not run again"
@@ -277,7 +277,7 @@ fi
 cp "$ENROLLED" "$VARSF"
 start_vm integ-p5 "${EXTRA[@]}"; LOG5="$LOG"
 # The root has its own ld.so.preload (the allocator), so the planted library is looked for by name.
-python3 "$DRV" --serial "$SER" --timeout 300 \
+drive \
     "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "grab:overlay:ls /etc/kryptik/ /var/lib/kryptik/etc/quarantine/ 2>&1 | head -12" \
     "run:test ! -e /etc/kryptik/trust/release-signers" \
@@ -297,7 +297,7 @@ python3 "$DRV" --serial "$SER" --timeout 300 \
     ${EXTRA:+"$(printf 'su:%s:%s' "$RPASS" 'mkdir -p /run/upd/x && mount -o ro /dev/vdb /run/upd/x && kryptik-update apply /run/upd/x; echo UPD-RC=$?')"} \
     ${EXTRA:+"expect:not enrolled"} \
     "$(printf 'su:%s:%s' "$RPASS" 'poweroff')" "expect:Power down" "wait-exit"
-rc=$?; sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
+rc=$?; stop_vm
 T5="$(tr -d '\r' < "$LOG5")"
 [[ "$rc" -eq 0 ]] && green "the planted /etc content was quarantined before the overlay was mounted (preload, udev rule, zone, anchor, sysctl), the allowed change is in effect, and nothing planted ran" || red "step 5 drive failed"
 grep -q 'no zone named "evil"' <<<"$T5" && green "the launch daemon does not know the planted zone (it reads /usr/lib/kryptik/zones)" || red "the daemon honoured a planted zone"
@@ -330,11 +330,11 @@ else
 fi
 cp "$ENROLLED" "$VARSF"
 start_vm integ-p6b; LOG6="$LOG"
-python3 "$DRV" --serial "$SER" --timeout 300 \
+drive \
     "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "run:test \"\$(cat /home/${TUSER}/marker)\" = integrity-marker" \
     "su:${RPASS}:poweroff" "expect:Power down" "wait-exit"
-rc=$?; sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
+rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "the disk unlocks with the restored header; the user and the home file are there" || red "step 6 drive failed"
 tr -d '\r' < "$LOG6" | grep -q 'STATE DEGRADED' && red "degraded after the header was restored" || green "the state is not degraded after the restore"
 
