@@ -91,6 +91,17 @@ refuses either (the acceptance run proves the refusal:
 the firmware setup menu; or turn Secure Boot off. The medium reports which it
 got: `KRYPTIK_SMOKE: secureboot=1` or `=0` on the console.
 
+A firmware that also keeps Microsoft's certificates in `db` boots whatever
+Microsoft signs, so someone with the machine in hand can start such a system
+and have it ask for the state passphrase as Kryptik does. Taking Microsoft's
+certificates out of `db`, leaving Kryptik's alone there, and setting a
+firmware password, so that neither the keys nor Secure Boot can be changed
+without it, closes that. Whatever Microsoft signed then no longer starts:
+another operating system on the machine, and the firmware drivers that
+discrete graphics cards and some other cards carry. Where the screen hangs
+off such a card, even the firmware's own menus can stay dark until the
+firmware is reset, so do it only on a machine whose screen works without one.
+
 **Under QEMU** (a checkout of the source tree is needed):
 
 ```sh
