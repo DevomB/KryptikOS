@@ -60,7 +60,7 @@ install_disk gui-install "$USB" --vars clean && green "installed" || { red "inst
 step "step 2: the desktop, driven"
 rm -f "$SHOT" "$SHOT_FS" "$SHOT_OVER" "$SHOT_HEAD"
 start_vm gui-p2 --net user --gpu --second-head --mem 3072
-python3 "$DRV" --serial "$SER" --qmp "$QMP" --timeout 600 \
+DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
     "send:su - root -c 'bash /usr/lib/kryptik/guest-tests/gui-check.sh ${TUSER} 2>&1 | tee /var/log/kryptik/gui-check.log; echo GCHECK-DONE'" \
     "expect:Password: ?" "send:${RPASS}" \
@@ -99,7 +99,7 @@ python3 "$DRV" --serial "$SER" --qmp "$QMP" --timeout 600 \
     "send:su - root -c 'poweroff'" "expect:Password: ?" "send:${RPASS}" \
     "expect:Power down" "wait-exit"
 drc=$?
-sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
+stop_vm
 T="$(tr -d '\r' < "$LOG")"
 [[ "$drc" -eq 0 ]] && green "the guest checks ran to their end with the keystrokes delivered" || red "the drive failed (see above)"
 summary="$(grep -o 'GT SUMMARY passed=[0-9]* failed=[0-9]*' <<<"$T" | tail -1)"

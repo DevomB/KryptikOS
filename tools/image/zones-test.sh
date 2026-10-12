@@ -40,7 +40,6 @@ DISK="${DISK:-${VMDIR}/zones.img}"
 # shellcheck source=tools/image/suite-lib.sh
 source "${SELF}/suite-lib.sh"
 VARSF="${VMDIR}/zones-vars.fd"; cp /usr/share/OVMF/OVMF_VARS_4M.fd "$VARSF"
-drive() { python3 "$DRV" --serial "$SER" --timeout "$1" "${@:2}"; }
 
 # ----------------------------------------------------------------- step 1 --
 step "step 1: install and boot alone with a NIC"
@@ -51,7 +50,7 @@ install_disk zones-install "$USB" --vars clean && green "installed" || { red "in
 step "step 2: the guest-side zone, network and storage checks (as root)"
 # 3 GB, not 2: ephemeral-size-bound fills untrusted's 2G tmpfs, which is RAM, until ENOSPC.
 start_vm zones-p2 --net user --mem 3072
-drive 900 "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
+DRIVE_TIMEOUT=900 drive "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'bash /usr/lib/kryptik/guest-tests/zones-check.sh 2>&1 | tee /var/log/kryptik/zones-check.log; echo ZCHECK-DONE')" \
     "expect:ZT END" "expect:ZCHECK-DONE"
 rc=$?
@@ -86,7 +85,7 @@ suite_cmd() {   # suite_cmd TAG TAIL_LINES COMMAND -> the guest command line
     printf '%s > /var/log/kryptik/%s-suite.log 2>&1; echo %s-RC=$?; tail -%s /var/log/kryptik/%s-suite.log; grep -n -A3 "^ *FAIL" /var/log/kryptik/%s-suite.log | sed "s/^/%s-FAIL: /" | head -80' \
         "$3" "${1,,}" "$1" "$2" "${1,,}" "${1,,}" "$1"
 }
-drive 1800 \
+DRIVE_TIMEOUT=1800 drive \
     "$(ROOTSH "$(suite_cmd LAUNCHER 12 'cd /usr/lib/kryptik/compartments/tests && KRYPTIKD=/usr/bin/kryptikd KRYPTIK_SKIP_STALE_CHECK=1 NO_COLOR=1 bash ./launcher.sh')")" "expect:LAUNCHER-RC=[0-9]+" \
     "$(ROOTSH "$(suite_cmd ADVERSARIAL 6 'cd /usr/lib/kryptik/compartments/tests && KRYPTIKD=/usr/bin/kryptikd NO_COLOR=1 bash ./adversarial.sh')")" "expect:ADVERSARIAL-RC=[0-9]+" \
     "$(ROOTSH "$(suite_cmd BOUNDARY 6 'cd /usr/lib/kryptik/compartments/kryptikd/probes && NO_COLOR=1 bash ./boundary-checks.sh /usr/bin/kryptikd')")" "expect:BOUNDARY-RC=[0-9]+" \
@@ -121,7 +120,7 @@ fi
 
 # ----------------------------------------------------------------- step 4 --
 step "step 4: reboot; the encrypted zone's data is still there"
-drive 300 "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
+drive "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'kryptikd run personal --zones /usr/lib/kryptik/zones --rootfs /var/lib/kryptik/zones --passphrase-file /root/zt/personal.pass -- cat /home/personal/keep; echo REOPEN-RC=$?')" "expect:secret-data-1" "expect:REOPEN-RC=0" \
     "$(ROOTSH 'ls /dev/mapper | sed s/^/MAPPER:/; echo MAPPER-DONE')" "expect:MAPPER-DONE" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
