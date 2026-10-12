@@ -1474,6 +1474,21 @@ done < /usr/lib/kryptik/sysctl.d/99-kryptik-hardening.conf
 # A file that is missing or holds no key reads back nothing wrong.
 [[ "$sysctl_keys" -gt 0 && -z "$sysctl_bad" ]] && pass "sysctls-applied" "all $sysctl_keys keys in 99-kryptik-hardening.conf read back as written" || fail "sysctls-applied" "${sysctl_bad:-no key read from 99-kryptik-hardening.conf}"
 
+# --- microcode the kernel refused, on the login prompt ----------------------
+# A virtual machine loads no microcode, so the kernel's line for a refused AMD patch is written
+# to its log here, and the boot's script run again.
+mc_notice=/run/issue.d/kryptik-microcode.issue
+mc_boot="$(cat "$mc_notice" 2>/dev/null)"
+echo '<3>microcode: No sha256 digest for patch ID: 0xb404108 found' > /dev/kmsg
+sh -c '. /usr/libexec/kryptik/microcode-notice.sh; microcode_notice' > /dev/null 2>&1
+mc_told="$(cat "$mc_notice" 2>/dev/null)"
+rm -f "$mc_notice"
+if [[ -z "$mc_boot" && "$mc_told" == "kryptik microcode: "*": update the machine's firmware (BIOS)" ]]; then
+    pass "microcode-notice" "no notice at boot here; a refused patch in the kernel log puts one in issue.d: ${mc_told:0:120}"
+else
+    fail "microcode-notice" "at boot: ${mc_boot:-none}; after the kernel's line: ${mc_told:-none}"
+fi
+
 echo "ZT SUMMARY passed=$PASS failed=$FAIL"
 echo "ZT END"
 [[ "$FAIL" -eq 0 ]]
