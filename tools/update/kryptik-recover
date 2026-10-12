@@ -102,6 +102,12 @@ if [ "$STATUS" = 1 ]; then
             printf 'slot %s         filesystem %s\n' "$s" "$(has_fs "$(slot_dev "$s")" && echo present || echo NONE)"
         done
     fi
+    # The state partition opens with its header and nothing else.
+    if cryptsetup isLuks --type luks2 "$ST" 2>/dev/null; then
+        echo "state          ${ST}: a LUKS2 header"
+    else
+        echo "state          ${ST}: no LUKS2 header, so nothing opens it: --restore-state-header FILE puts a backup back"
+    fi
     # The firmware's entries for the slots, which --commit-slot writes: some firmware boots a
     # fixed disk only from one. They are kept by slot, not disk, so one may be another Kryptik's.
     if [ -d /sys/firmware/efi/efivars ] && fw="$(kryptik-efiboot list 2>/dev/null)"; then

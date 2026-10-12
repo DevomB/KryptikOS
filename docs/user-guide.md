@@ -362,7 +362,8 @@ after `--commit-slot`, which writes one for the slot it commits.
 back the state partition's LUKS2 header. FILE is on a disk mounted for it, as
 in section 2: the medium keeps nothing of its own. Keep the backup somewhere
 that is not the installed disk: a damaged header with no backup is a lost
-state partition.
+state partition. `--status` says whether the state partition still has its
+header.
 
 `--restore-slot` writes the medium's own root image and kernel into the
 slot, as the installer does, then commits it. Every byte comes from the
