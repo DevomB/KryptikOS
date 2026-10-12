@@ -713,6 +713,14 @@ wl_of_phy() {   # wl_of_phy phyN: the netdev on that wiphy, in this namespace
 # A sleeper's network namespace alone: a cloned mount namespace would keep a zone's volume open.
 ap() { nsenter -t "$AP_HOLD" -n "$@"; }
 ap_wpa() { ap wpa_cli -p /run/zt-ap-ctrl -i "$AP_IF" "$@" 2>/dev/null; }
+# The station in the net zone, by the name that zone gave it (nicN once the radio has moved).
+sta_if() { nsenter -t "$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)" -n iw dev 2>/dev/null | awk '$1 == "Interface" { print $2; exit }'; }
+# What the net zone's supplicant sees, for a failure's message: its socket is its own user's.
+sta_wpa() {
+    local ni; ni="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
+    nsenter -t "${ni:-0}" -U -m -n /usr/bin/kryptikd supplicant -- \
+        wpa_cli -s /run/wpa_supplicant -p /run/wpa_supplicant -i "$(sta_if)" "$@" 2>&1 | tr '\n' ' '
+}
 STA_IF=""; AP_IF=""; AP_HOLD=""
 # QEMU has no radio, so hwsim makes two: phy1 is the access point, phy0 goes to the net zone.
 if modprobe mac80211_hwsim radios=2 2> "$LOG/hwsim.err"; then
@@ -764,11 +772,11 @@ before="$(ready_count)"
 printf '%s\n' "$AP_PASS" | "$KD" wifi add "$AP_SSID" --wifi-dir "$WIFI_DIR" --zones "$Z" > "$LOG/wifi-add.out" 2>&1
 NET_UID="$(sed -n 's/^uid_base *= *\([0-9]*\).*/\1/p' "$Z/net.toml")"
 if grep -q "added network \"$AP_SSID\"; the net zone is restarting" "$LOG/wifi-add.out" \
-   && [[ "$(stat -c '%a %u' "$WIFI_DIR/wpa_supplicant.conf" 2>/dev/null)" = "400 $NET_UID" ]] \
+   && [[ "$(stat -c '%a %u %g' "$WIFI_DIR/wpa_supplicant.conf" 2>/dev/null)" = "440 $((NET_UID + 101)) $NET_UID" ]] \
    && "$KD" wifi list --wifi-dir "$WIFI_DIR" 2>/dev/null | grep -qx "$AP_SSID"; then
-    pass "wifi-add" "kryptikd wifi add wrote the file 0400 for uid $NET_UID, lists the SSID, and restarted the net zone"
+    pass "wifi-add" "kryptikd wifi add wrote the file 0440 for the net zone's supplicant ($((NET_UID + 101))) and root's group ($NET_UID), lists the SSID, and restarted the net zone"
 else
-    fail "wifi-add" "$(tr '\n' ' ' < "$LOG/wifi-add.out") file: $(stat -c '%a %u' "$WIFI_DIR/wpa_supplicant.conf" 2>&1) list: $("$KD" wifi list --wifi-dir "$WIFI_DIR" 2>&1 | tr '\n' ' ')"
+    fail "wifi-add" "$(tr '\n' ' ' < "$LOG/wifi-add.out") file: $(stat -c '%a %u %g' "$WIFI_DIR/wpa_supplicant.conf" 2>&1) list: $("$KD" wifi list --wifi-dir "$WIFI_DIR" 2>&1 | tr '\n' ' ')"
 fi
 line="$(ready_after "$before" " wifi=$AP_SSID " 90)"
 kills="$(dmesg 2>/dev/null | grep -a 'type=1326' | grep -ac 'comm="wpa_supplicant"')"
@@ -784,6 +792,33 @@ for _ in $(seq 1 40); do
     [[ "$lease" == 192.168.77.* ]] && break; sleep 1
 done
 [[ "$lease" == 192.168.77.* ]] && pass "wifi-lease" "$STA_IF in the net zone leased $lease from the access point" || fail "wifi-lease" "$STA_IF holds ${lease:-no address}; leases given: $(tr '\n' ' ' < /run/zt-ap.leases 2>/dev/null)"
+# The supplicant that joined runs as its own user with CAP_NET_ADMIN and CAP_NET_RAW alone,
+# under its own filter on top of the zone's (supplicant.rs).
+sup="$(pgrep -f 'wpa_supplicant -B -i [^ ]* -c /etc/wpa_supplicant.conf' | head -1)"
+sup_status="$(cat "/proc/${sup:-0}/status" 2>/dev/null)"
+want_id=$(( NET_UID + 101 ))
+sup_ids="$(awk '/^(Uid|Gid):/ { print $2, $3, $4, $5 }' <<<"$sup_status" | tr '\n' ' ')"
+sup_caps="$(awk '/^Cap(Inh|Prm|Eff|Amb):/ { sub(":", "", $1); printf "%s=%s ", $1, $2 }' <<<"$sup_status")"
+sup_filters="$(sed -n 's/^Seccomp_filters:[[:space:]]*//p' <<<"$sup_status")"
+if [[ "$sup_ids" == "$(printf '%s ' "$want_id" "$want_id" "$want_id" "$want_id" "$want_id" "$want_id" "$want_id" "$want_id")" \
+      && "$sup_caps" == "CapInh=0000000000003000 CapPrm=0000000000003000 CapEff=0000000000003000 CapAmb=0000000000003000 " \
+      && "${sup_filters:-0}" -ge 2 ]]; then
+    pass "wifi-supplicant-unprivileged" "wpa_supplicant (pid $sup) runs as uid/gid $want_id with ${sup_caps}under $sup_filters filters"
+else
+    fail "wifi-supplicant-unprivileged" "pid ${sup:-none}: ids ${sup_ids:-unread}; ${sup_caps:-no caps read}; filters ${sup_filters:-unread}"
+fi
+# Through the same door, a command runs as that user, and nft cannot reach the zone's nf_tables.
+door_rc=1; nft_out="no net zone"
+if [[ -n "$net_init" ]]; then
+    nsenter -t "$net_init" -U -m -n /usr/bin/kryptikd supplicant -- /usr/bin/true > "$LOG/supplicant-door.out" 2>&1; door_rc=$?
+    nft_out="$(nsenter -t "$net_init" -U -m -n /usr/bin/kryptikd supplicant -- nft add table inet supplicant-probe 2>&1)"
+fi
+probe_tables="$(nsenter -t "${net_init:-0}" -n nft list tables 2>/dev/null | grep -c supplicant-probe)"
+if [[ "$door_rc" = 0 && "${nft_out,,}" == *"not permitted"* && "${probe_tables:-1}" = 0 ]]; then
+    pass "wifi-supplicant-no-nft" "as the supplicant's user and filter a command ran, and nft was refused: $(tr '\n' ' ' <<<"$nft_out" | cut -c1-120)"
+else
+    fail "wifi-supplicant-no-nft" "the door: rc=$door_rc $(tr '\n' ' ' < "$LOG/supplicant-door.out" | cut -c1-120); nft: $(tr '\n' ' ' <<<"$nft_out" | cut -c1-160); tables named supplicant-probe: ${probe_tables:-unread}"
+fi
 zrun untrusted 40 -- sh -c "python3 /usr/lib/kryptik/guest-tests/icmp-echo.py $AP_ADDR 3 >/dev/null 2>&1 && echo AP-REACHED || echo AP-UNREACHED"
 sta_seen="$(ap_wpa all_sta | grep -ciE '^[0-9a-f]{2}(:[0-9a-f]{2}){5}$')"
 if [[ "$ZOUT" == *AP-REACHED* && "${sta_seen:-0}" -ge 1 ]]; then
@@ -882,6 +917,45 @@ if [[ "$sae_up" = 1 && "$sae_keys" == *"AKMSuiteSelector=00-0f-ac-8 "* && "$sae_
     pass "wifi-sae" "offered SAE alone with protection required, the same SSID took the saved passphrase by SAE, with protected management frames: ${sae_keys}"
 else
     fail "wifi-sae" "access point up: ${sae_up}; the station at it: ${sae_keys:-none}; $(tail -3 "$LOG/ap-sae-wpa.log" 2>/dev/null | tr '\n' ' ')"
+fi
+# A network saved as open is joined without a key: the access point offers none under another
+# SSID, `wifi add --open` saves it with no passphrase, and the restarted net zone leases there.
+OPEN_SSID=kryptik-hwsim-open
+open_up=0
+if [[ "$ap_up" = 1 ]]; then
+    ap_pid="$(cat /run/zt-ap-wpa.pid 2>/dev/null)"
+    [[ -n "$ap_pid" ]] && kill "$ap_pid" 2>/dev/null
+    for _ in $(seq 1 20); do [[ -n "$ap_pid" ]] && kill -0 "$ap_pid" 2>/dev/null || break; sleep 0.5; done
+    # Another network is another access point, with an address of its own: at the WPA3 one's,
+    # the station would hold both networks under one BSSID for the 30 s the kernel keeps an entry.
+    ap ip link set dev "$AP_IF" down
+    ap ip link set dev "$AP_IF" address 02:00:00:00:01:01 >> "$LOG/ap.err" 2>&1
+    cat > /root/zt/ap-open.conf <<EOF
+ctrl_interface=/run/zt-ap-ctrl
+ap_scan=2
+network={
+    ssid="$OPEN_SSID"
+    mode=2
+    frequency=2412
+    key_mgmt=NONE
+}
+EOF
+    ap wpa_supplicant -B -i "$AP_IF" -c /root/zt/ap-open.conf -P /run/zt-ap-wpa.pid -f "$LOG/ap-open-wpa.log" >> "$LOG/ap.err" 2>&1
+    for _ in $(seq 1 30); do ap_wpa status | grep -q '^wpa_state=COMPLETED' && { open_up=1; break; }; sleep 1; done
+fi
+before="$(ready_count)"
+"$KD" wifi add "$OPEN_SSID" --open --wifi-dir "$WIFI_DIR" --zones "$Z" < /dev/null > "$LOG/wifi-add-open.out" 2>&1
+line="$(ready_after "$before" " wifi=$OPEN_SSID " 90)"
+open_lease=""
+for _ in $(seq 1 40); do
+    open_lease="$(nsenter -t "$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)" -n ip -4 -o addr show "$(sta_if)" 2>/dev/null | awk '{print $4}' | head -1)"
+    [[ "$open_lease" == 192.168.77.* ]] && break; sleep 1
+done
+if [[ "$open_up" = 1 && "$line" == *" wifi=$OPEN_SSID "* && "$open_lease" == 192.168.77.* ]] \
+   && grep -q "added open network \"$OPEN_SSID\"" "$LOG/wifi-add-open.out"; then
+    pass "wifi-open" "saved with --open and no passphrase, $OPEN_SSID was joined and the net zone leased ${open_lease} there"
+else
+    fail "wifi-open" "access point up: ${open_up} ($(ap iw dev "$AP_IF" info 2>&1 | grep -E 'addr|ssid|type|channel' | tr -s '\t\n' '  ')); $(tr '\n' ' ' < "$LOG/wifi-add-open.out"); newest READY: ${line:-none}; lease: ${open_lease:-none}; $(tail -2 "$LOG/ap-open-wpa.log" 2>/dev/null | tr '\n' ' '); the station: $(sta_wpa status | cut -c1-240); networks: $(sta_wpa list_networks | cut -c1-240); seen: $(sta_wpa scan_results | cut -c1-400); ignored: $(sta_wpa bssid_ignore | cut -c1-120)"
 fi
 # Back to the wire: the radios go first, so the net zone the forget restarts finds none.
 for f in /run/zt-ap-dnsmasq.pid /run/zt-ap-wpa.pid; do p="$(cat "$f" 2>/dev/null)"; [[ -n "$p" ]] && kill "$p" 2>/dev/null; done

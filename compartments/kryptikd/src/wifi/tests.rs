@@ -11,8 +11,8 @@ fn tmpdir(tag: &str) -> PathBuf {
 fn add_list_forget_round_trip() {
     let dir = tmpdir("roundtrip");
     assert_eq!(list(&dir).unwrap(), Vec::<String>::new(), "no file is no networks");
-    assert_eq!(add(&dir, None, "Home", "correct horse battery").unwrap(), Added::New);
-    assert_eq!(add(&dir, None, "Cafe Wifi", "0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789abcdef").unwrap(), Added::New);
+    assert_eq!(add(&dir, None, "Home", Some("correct horse battery")).unwrap(), Added::New);
+    assert_eq!(add(&dir, None, "Cafe Wifi", Some("0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789abcdef")).unwrap(), Added::New);
     assert_eq!(list(&dir).unwrap(), vec!["Home", "Cafe Wifi"]);
     let text = fs::read_to_string(conf_path(&dir)).unwrap();
     assert_eq!(
@@ -22,7 +22,7 @@ fn add_list_forget_round_trip() {
              \nnetwork={\n\tssid=\"Cafe Wifi\"\n\tkey_mgmt=WPA-PSK WPA-PSK-SHA256\n\tieee80211w=1\n\tpsk=0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789abcdef\n}\n"
     );
     let md = fs::metadata(conf_path(&dir)).unwrap();
-    assert_eq!(md.mode() & 0o7777, 0o400);
+    assert_eq!(md.mode() & 0o7777, 0o440);
     assert_eq!(fs::metadata(&dir).unwrap().mode() & 0o7777, 0o711);
     forget(&dir, None, "Home").unwrap();
     assert_eq!(list(&dir).unwrap(), vec!["Cafe Wifi"]);
@@ -33,6 +33,36 @@ fn add_list_forget_round_trip() {
     forget(&dir, None, "Cafe Wifi").unwrap();
     assert_eq!(fs::read_to_string(conf_path(&dir)).unwrap(), HEADER, "an emptied file keeps its header");
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn open_network_saved_without_key_or_protection() {
+    let dir = tmpdir("open");
+    assert_eq!(add(&dir, None, "Cafe", None).unwrap(), Added::New);
+    add(&dir, None, "Home", Some("correct horse battery")).unwrap();
+    let text = fs::read_to_string(conf_path(&dir)).unwrap();
+    assert!(text.contains("\nnetwork={\n\tssid=\"Cafe\"\n\tkey_mgmt=NONE\n}\n"), "{text}");
+    assert_eq!(list(&dir).unwrap(), vec!["Cafe", "Home"]);
+    // A passphrase given later replaces the open block, and saving it open again drops it.
+    assert_eq!(add(&dir, None, "Cafe", Some("now it has one")).unwrap(), Added::Replaced);
+    assert!(fs::read_to_string(conf_path(&dir)).unwrap().contains("\tssid=\"Cafe\"\n\tkey_mgmt=WPA-PSK WPA-PSK-SHA256 SAE\n"));
+    assert_eq!(add(&dir, None, "Home", None).unwrap(), Added::Replaced);
+    assert_eq!(load(&dir).unwrap()[1], Network { ssid: "Home".into(), psk: Psk::Open });
+    assert!(!fs::read_to_string(conf_path(&dir)).unwrap().contains("correct horse battery"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn open_block_refused_with_a_key_or_protection() {
+    let head = "ctrl_interface=/run/wpa_supplicant\nupdate_config=0\n\nnetwork={\n\tssid=\"Cafe\"\n";
+    for (body, why) in [
+        ("\tkey_mgmt=NONE\n\tpsk=\"long enough\"\n}\n", "key management"),
+        ("\tkey_mgmt=NONE\n\tieee80211w=1\n}\n", "key management"),
+        ("}\n", "neither a psk nor key_mgmt=NONE"),
+    ] {
+        let e = parse(&format!("{head}{body}")).unwrap_err();
+        assert!(e.contains(why), "{body:?}: {e}");
+    }
 }
 
 #[test]
@@ -89,12 +119,12 @@ fn ssid_and_passphrase_rules() {
 
     // A refusal writes nothing and leaves an existing file as it was.
     let dir = tmpdir("refusals");
-    assert!(add(&dir, None, "bad\"ssid", "long enough").is_err());
+    assert!(add(&dir, None, "bad\"ssid", Some("long enough")).is_err());
     assert!(!conf_path(&dir).exists(), "nothing written on refusal");
-    add(&dir, None, "Home", "long enough").unwrap();
+    add(&dir, None, "Home", Some("long enough")).unwrap();
     let before = fs::read(conf_path(&dir)).unwrap();
     let ino = fs::metadata(conf_path(&dir)).unwrap().ino();
-    assert!(add(&dir, None, "Home", "short").is_err());
+    assert!(add(&dir, None, "Home", Some("short")).is_err());
     assert!(forget(&dir, None, "Nowhere").unwrap_err().contains("no network named"));
     assert_eq!(fs::read(conf_path(&dir)).unwrap(), before);
     assert_eq!(fs::metadata(conf_path(&dir)).unwrap().ino(), ino, "a refusal does not rewrite the file");
@@ -104,9 +134,9 @@ fn ssid_and_passphrase_rules() {
 #[test]
 fn readd_replaces_block_in_place() {
     let dir = tmpdir("replace");
-    add(&dir, None, "First", "first pass").unwrap();
-    add(&dir, None, "Second", "second pass").unwrap();
-    assert_eq!(add(&dir, None, "First", "changed pass").unwrap(), Added::Replaced);
+    add(&dir, None, "First", Some("first pass")).unwrap();
+    add(&dir, None, "Second", Some("second pass")).unwrap();
+    assert_eq!(add(&dir, None, "First", Some("changed pass")).unwrap(), Added::Replaced);
     let nets = load(&dir).unwrap();
     assert_eq!(nets.len(), 2, "replaced, not appended");
     assert_eq!(nets[0], Network { ssid: "First".into(), psk: Psk::Passphrase("changed pass".into()) });
@@ -118,11 +148,11 @@ fn readd_replaces_block_in_place() {
 #[test]
 fn write_is_atomic_rename() {
     let dir = tmpdir("atomic");
-    add(&dir, None, "Home", "long enough").unwrap();
+    add(&dir, None, "Home", Some("long enough")).unwrap();
     let ino = fs::metadata(conf_path(&dir)).unwrap().ino();
     // A temporary left by a writer that died before its rename is removed.
     fs::write(dir.join(format!(".{FILE_NAME}.4294967295")), "psk=\"secret\"").unwrap();
-    add(&dir, None, "Other", "long enough").unwrap();
+    add(&dir, None, "Other", Some("long enough")).unwrap();
     assert_ne!(fs::metadata(conf_path(&dir)).unwrap().ino(), ino, "a new inode replaced the old file");
     let names: Vec<String> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
     assert_eq!(names, vec![FILE_NAME], "only the file itself is in the directory");
@@ -148,7 +178,7 @@ fn foreign_file_refused() {
     let dir = tmpdir("foreign");
     fs::create_dir_all(&dir).unwrap();
     fs::write(conf_path(&dir), "ap_scan=1\n").unwrap();
-    let e = add(&dir, None, "Home", "long enough").unwrap_err();
+    let e = add(&dir, None, "Home", Some("long enough")).unwrap_err();
     assert!(e.contains("something else edited"), "{e}");
     assert_eq!(fs::read_to_string(conf_path(&dir)).unwrap(), "ap_scan=1\n");
     let _ = fs::remove_dir_all(&dir);
@@ -191,9 +221,14 @@ fn older_file_rewritten_with_key_management() {
     assert!(refresh(&dir, None).unwrap());
     let now = fs::read_to_string(conf_path(&dir)).unwrap();
     assert!(now.contains("\tkey_mgmt=WPA-PSK WPA-PSK-SHA256 SAE\n\tieee80211w=1\n"), "{now}");
-    assert_eq!(fs::metadata(conf_path(&dir)).unwrap().mode() & 0o7777, 0o400);
+    assert_eq!(fs::metadata(conf_path(&dir)).unwrap().mode() & 0o7777, 0o440);
     assert!(!refresh(&dir, None).unwrap(), "a current file is left alone");
-    // Replaced, as the 0400 file takes no write.
+    // An older kryptikd's mode, which the supplicant's own user cannot read through its group.
+    fs::set_permissions(conf_path(&dir), fs::Permissions::from_mode(0o400)).unwrap();
+    assert!(refresh(&dir, None).unwrap(), "a current file at 0400 is rewritten");
+    assert_eq!(fs::metadata(conf_path(&dir)).unwrap().mode() & 0o7777, 0o440);
+    assert_eq!(fs::read_to_string(conf_path(&dir)).unwrap(), now, "and keeps its text");
+    // Replaced, as the 0440 file takes no write.
     fs::remove_file(conf_path(&dir)).unwrap();
     fs::write(conf_path(&dir), "ap_scan=1\n").unwrap();
     assert!(refresh(&dir, None).unwrap_err().contains("something else edited"));

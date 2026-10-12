@@ -78,8 +78,13 @@ fn parse_wifi_hides_psk() {
     assert_eq!(r.psk.as_deref(), Some("pass word"));
     let r = parse_wifi("wifi-forget\nssid Home\nend\n").unwrap();
     assert_eq!((r.ssid.as_str(), r.psk), ("Home", None));
+    let r = parse_wifi("wifi-add\nssid Cafe\nopen\nend\n").unwrap();
+    assert_eq!((r.ssid.as_str(), r.psk, r.open), ("Cafe", None, true));
     for bad in [
         "wifi-add\nssid a\nend\n",                    // no psk
+        "wifi-add\nssid a\npsk secret\nopen\nend\n",  // a psk and open
+        "wifi-add\nssid a\nopen\nopen\nend\n",        // one open
+        "wifi-forget\nssid a\nopen\nend\n",           // forget takes no open
         "wifi-add\npsk secret\nend\n",                // no ssid
         "wifi-add\nssid a\npsk se\ncret\nend\n",      // a newline in the psk
         "wifi-add\nssid a\npsk secret\n",             // no end

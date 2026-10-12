@@ -1,5 +1,6 @@
 //! Wi-Fi credentials for the net zone (docs/design/net-zone.md). kryptikd alone writes the file,
-//! 0400 and owned by the host uid of the nic zone's root; the zone gets it read-only on next start.
+//! 0440, owned by the nic zone's wpa_supplicant user and grouped with its root, which checks it is
+//! there; the zone gets it read-only on next start.
 
 use std::fs;
 use std::io::{self, Read, Write};
@@ -21,15 +22,19 @@ const HEADER: &str = "ctrl_interface=/run/wpa_supplicant\nupdate_config=0\n";
 /* How a saved network may be joined, from what was saved: a passphrase by WPA2's pre-shared
  * key or WPA3's SAE, a raw key by the former alone (SAE needs the passphrase), and neither by
  * 802.1X, so no access point's beacon chooses EAP for a saved SSID. Unnamed, wpa_supplicant
- * takes WPA-PSK and WPA-EAP and never SAE. Management frames are protected where offered. */
+ * takes WPA-PSK and WPA-EAP and never SAE. Management frames are protected where offered.
+ * A network saved as open is joined only without a key, so a beacon offering one changes
+ * nothing; it has no management frames to protect. */
 const KEY_MGMT_PASSPHRASE: &str = "\tkey_mgmt=WPA-PSK WPA-PSK-SHA256 SAE";
 const KEY_MGMT_KEY: &str = "\tkey_mgmt=WPA-PSK WPA-PSK-SHA256";
+const KEY_MGMT_OPEN: &str = "\tkey_mgmt=NONE";
 const PMF: &str = "\tieee80211w=1";
 
 fn key_mgmt(psk: &Psk) -> &'static str {
     match psk {
         Psk::Passphrase(_) => KEY_MGMT_PASSPHRASE,
         Psk::Hex(_) => KEY_MGMT_KEY,
+        Psk::Open => KEY_MGMT_OPEN,
     }
 }
 
@@ -37,11 +42,13 @@ pub fn conf_path(dir: &Path) -> PathBuf {
     dir.join(FILE_NAME)
 }
 
-/// A `psk=` value: a passphrase (written quoted) or the raw 64-hex-digit key.
+/// A `psk=` value: a passphrase (written quoted) or the raw 64-hex-digit key; or none, for a
+/// network saved as open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Psk {
     Passphrase(String),
     Hex(String),
+    Open,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,10 +108,11 @@ pub fn render(nets: &[Network]) -> String {
     let mut out = String::from(HEADER);
     for n in nets {
         out.push_str("\nnetwork={\n");
-        out.push_str(&format!("\tssid=\"{}\"\n{}\n{PMF}\n", n.ssid, key_mgmt(&n.psk)));
+        out.push_str(&format!("\tssid=\"{}\"\n{}\n", n.ssid, key_mgmt(&n.psk)));
         match &n.psk {
-            Psk::Passphrase(p) => out.push_str(&format!("\tpsk=\"{p}\"\n")),
-            Psk::Hex(h) => out.push_str(&format!("\tpsk={h}\n")),
+            Psk::Passphrase(p) => out.push_str(&format!("{PMF}\n\tpsk=\"{p}\"\n")),
+            Psk::Hex(h) => out.push_str(&format!("{PMF}\n\tpsk={h}\n")),
+            Psk::Open => {}
         }
         out.push_str("}\n");
     }
@@ -134,24 +142,24 @@ pub fn parse(text: &str) -> Result<Vec<Network>, String> {
             }
             Some((ssid, psk, km, pmf)) => {
                 if line == "}" {
-                    match (ssid.take(), psk.take()) {
-                        (Some(s), Some(p)) => {
-                            match (km.take(), *pmf) {
-                                (None, false) => {}
-                                (Some(k), true) if k == key_mgmt(&p) => {}
-                                _ => return Err(format!("line {n}: a block whose key management is not what kryptikd writes for its psk")),
-                            }
-                            nets.push(Network { ssid: s, psk: p });
-                        }
-                        _ => return Err(format!("line {n}: a network block without both an ssid and a psk")),
-                    }
+                    let Some(s) = ssid.take() else {
+                        return Err(format!("line {n}: a network block without an ssid"));
+                    };
+                    let p = match (psk.take(), km.take(), *pmf) {
+                        (Some(p), None, false) => p,
+                        (Some(p), Some(k), true) if k == key_mgmt(&p) => p,
+                        (None, Some(KEY_MGMT_OPEN), false) => Psk::Open,
+                        (None, None, _) => return Err(format!("line {n}: a network block with neither a psk nor key_mgmt=NONE")),
+                        _ => return Err(format!("line {n}: a block whose key management is not what kryptikd writes for its psk")),
+                    };
+                    nets.push(Network { ssid: s, psk: p });
                     block = None;
                 } else if let Some(v) = line.strip_prefix("\tssid=\"").and_then(|r| r.strip_suffix('"')) {
                     check_ssid(v).map_err(|e| format!("line {n}: {e}"))?;
                     if ssid.replace(v.to_string()).is_some() {
                         return Err(format!("line {n}: a second ssid in one block"));
                     }
-                } else if line == KEY_MGMT_PASSPHRASE || line == KEY_MGMT_KEY {
+                } else if line == KEY_MGMT_PASSPHRASE || line == KEY_MGMT_KEY || line == KEY_MGMT_OPEN {
                     if km.replace(line).is_some() {
                         return Err(format!("line {n}: a second key_mgmt in one block"));
                     }
@@ -207,13 +215,17 @@ pub fn load(dir: &Path) -> Result<Vec<Network>, String> {
     parse(&text).map_err(|e| format!("{}: {e}", conf_path(dir).display()))
 }
 
-/// Rewrite in today's form a file an older kryptikd wrote, so the net zone reads each network's
-/// key management; true when it was rewritten. A current, absent or foreign file is left alone.
+/// Rewrite in today's form, owner and mode a file an older kryptikd wrote, so the net zone's
+/// supplicant reads it and each network's key management; true when it was rewritten. A
+/// current, absent or foreign file is left alone.
 pub fn refresh(dir: &Path, owner: Option<(u32, u32)>) -> Result<bool, String> {
+    use std::os::unix::fs::MetadataExt;
     let Some(text) = read_text(dir)? else { return Ok(false) };
     let nets = parse(&text).map_err(|e| format!("{}: {e}", conf_path(dir).display()))?;
     let current = render(&nets);
-    if current == text {
+    let md = fs::symlink_metadata(conf_path(dir)).map_err(|e| format!("{}: {e}", conf_path(dir).display()))?;
+    let owned = owner.map_or(true, |(u, g)| md.uid() == u && md.gid() == g);
+    if current == text && owned && md.mode() & 0o7777 == MODE {
         return Ok(false);
     }
     write_atomic(dir, &current, owner)?;
@@ -225,7 +237,7 @@ pub fn list(dir: &Path) -> Result<Vec<String>, String> {
     Ok(load(dir)?.into_iter().map(|n| n.ssid).collect())
 }
 
-/// The nic zone's identity, to own the file on a root run; `None` keeps the writer's.
+/// Who owns the file on a root run, from the nic zone's identity; `None` keeps the writer's.
 pub fn owner_for(zones_dir: &Path) -> Result<Option<(u32, u32)>, String> {
     if unsafe { libc::geteuid() } != 0 {
         return Ok(None);
@@ -236,13 +248,20 @@ pub fn owner_for(zones_dir: &Path) -> Result<Option<(u32, u32)>, String> {
         .iter()
         .find(|z| z.network == NetworkMode::Nic)
         .and_then(|z| z.uid_base)
-        .map(|b| (b, b)))
+        .map(|b| owner_in(b, b)))
 }
 
-/// Add a network or replace its block; nothing is written unless both values pass.
-pub fn add(dir: &Path, owner: Option<(u32, u32)>, ssid: &str, passphrase: &str) -> Result<Added, String> {
+/// The host ids that own the file for a nic zone whose root is host `uid`/`gid`: its
+/// supplicant's user, which reads it, and its root's group, as `MODE` lets both read.
+pub fn owner_in(uid: u32, gid: u32) -> (u32, u32) {
+    (uid + crate::isolate::WIFI_ID, gid)
+}
+
+/// Add a network or replace its block, open when there is no passphrase; nothing is written
+/// unless both values pass.
+pub fn add(dir: &Path, owner: Option<(u32, u32)>, ssid: &str, passphrase: Option<&str>) -> Result<Added, String> {
     check_ssid(ssid)?;
-    let psk = check_passphrase(passphrase)?;
+    let psk = passphrase.map_or(Ok(Psk::Open), check_passphrase)?;
     let mut nets = load(dir)?;
     let outcome = match nets.iter_mut().find(|n| n.ssid == ssid) {
         Some(n) => {
@@ -256,6 +275,16 @@ pub fn add(dir: &Path, owner: Option<(u32, u32)>, ssid: &str, passphrase: &str) 
     };
     write_atomic(dir, &render(&nets), owner)?;
     Ok(outcome)
+}
+
+/// What `add` did, in the words the command and the daemon both print.
+pub fn said(ssid: &str, added: Added, open: bool) -> String {
+    match (added, open) {
+        (Added::New, false) => format!("added network {ssid:?}"),
+        (Added::Replaced, false) => format!("replaced the passphrase of network {ssid:?}"),
+        (Added::New, true) => format!("added open network {ssid:?}"),
+        (Added::Replaced, true) => format!("network {ssid:?} is now open, joined without a passphrase"),
+    }
 }
 
 /// Remove one network's block; an unknown SSID is an error and writes nothing.
@@ -292,11 +321,15 @@ fn ensure_dir(dir: &Path) -> Result<(), String> {
     }
 }
 
-/// The file, 0400 and owned as asked, replaced whole.
+/// Read by its owner, the supplicant's user, and its group, the zone's root; dhcpcd and nobody
+/// in the zone cannot.
+const MODE: u32 = 0o440;
+
+/// The file, `MODE` and owned as asked, replaced whole.
 fn write_atomic(dir: &Path, contents: &str, owner: Option<(u32, u32)>) -> Result<(), String> {
     ensure_dir(dir)?;
     let path = conf_path(dir);
-    crate::files::write_atomic(&path, &[contents.as_bytes()], 0o400, owner).map_err(|e| format!("{}: {e}", path.display()))
+    crate::files::write_atomic(&path, &[contents.as_bytes()], MODE, owner).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Restart the net zone on the new file and say how it went; other directories (tests) skip this.

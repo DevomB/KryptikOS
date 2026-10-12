@@ -264,8 +264,8 @@ else
     fail "wifi add: exit $rc"
     info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-240)"
 fi
-if [[ "$(stat -c %a "$WCONF" 2>/dev/null)" == 400 ]] && grep -qxF $'\tssid="Home"' "$WCONF" && grep -qxF $'\tpsk="correct horse battery"' "$WCONF"; then
-    pass "the file is 0400 and holds the ssid= and psk= lines kryptikd writes"
+if [[ "$(stat -c %a "$WCONF" 2>/dev/null)" == 440 ]] && grep -qxF $'\tssid="Home"' "$WCONF" && grep -qxF $'\tpsk="correct horse battery"' "$WCONF"; then
+    pass "the file is 0440 and holds the ssid= and psk= lines kryptikd writes"
 else
     fail "the file is not as kryptikd writes it (mode $(stat -c %a "$WCONF" 2>&1))"
 fi
@@ -336,6 +336,8 @@ case "\${1:-}" in
     --wifi-add)    IFS= read -r pass
                    r="\$(printf 'wifi-add\nssid %s\npsk %s\nend\n' "\$2" "\$pass" | client)"
                    printf '%s\n' "\$r"; [[ "\$r" == ok* ]] ;;
+    --wifi-add-open) r="\$(printf 'wifi-add\nssid %s\nopen\nend\n' "\$2" | client)"
+                   printf '%s\n' "\$r"; [[ "\$r" == ok* ]] ;;
     --wifi-forget) r="\$(printf 'wifi-forget\nssid %s\nend\n' "\$2" | client)"
                    printf '%s\n' "\$r"; [[ "\$r" == ok* ]] ;;
     *) exit 2 ;;
@@ -364,6 +366,12 @@ SHIM
             pass "a refusal comes back as the daemon's error line and a failing exit"
         else
             fail "a too-short passphrase through the launch service: exit $rc, output '$out'"
+        fi
+        out="$(KRYPTIK_LAUNCH="$WORK/launch-shim" K wifi add Airport --open < /dev/null 2>&1)"; rc=$?
+        if (( rc == 0 )) && [[ "$out" == "ok added open network \"Airport\";"* ]] && grep -qxF $'\tkey_mgmt=NONE' "$WDAEMON/wpa_supplicant.conf"; then
+            pass "wifi add --open asks for no passphrase and saves an open network through the launch service"
+        else
+            fail "wifi add --open through the launch service: exit $rc, output '$out'"
         fi
     else
         fail "the launch daemon did not start for the launch-service checks"

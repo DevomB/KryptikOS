@@ -5,7 +5,7 @@
 //!   request  one per connection, NUL-free text lines:
 //!              run <zone> [wayland=<path>] [pass=fd], `arg <word>` lines, `end`
 //!                (with pass=fd, one descriptor rides with the first bytes)
-//!              wifi-add, `ssid <ssid>`, `psk <passphrase>`, `end`
+//!              wifi-add, `ssid <ssid>`, `psk <passphrase>` or `open`, `end`
 //!              wifi-forget, `ssid <ssid>`, `end`
 //!              stop <zone> | clipboard-move <from> <to> | info <zone> | status |
 //!              runtime | wifi-list | update-status | update-fetch | update-apply |
@@ -276,15 +276,18 @@ fn parse_run(text: &str) -> Result<Request, String> {
     Ok(req)
 }
 
-/// Debug prints the SSID only: the passphrase is never formatted.
+/// Debug prints the SSID only: the passphrase is never formatted. `open`: a network saved
+/// with no passphrase, which `wifi-add` takes in place of `psk`.
 struct WifiRequest {
     ssid: String,
     psk: Option<String>,
+    open: bool,
 }
 
 impl std::fmt::Debug for WifiRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "WifiRequest {{ ssid: {:?}, psk: {} }}", self.ssid, if self.psk.is_some() { "<set>" } else { "None" })
+        let psk = if self.psk.is_some() { "<set>" } else { "None" };
+        write!(f, "WifiRequest {{ ssid: {:?}, psk: {psk}, open: {} }}", self.ssid, self.open)
     }
 }
 
@@ -296,8 +299,8 @@ fn parse_wifi(text: &str) -> Result<WifiRequest, String> {
         let word = verb.split_whitespace().next().unwrap_or("wifi");
         return Err(format!("{word}: the verb stands alone on its line"));
     }
-    let shape = if verb == "wifi-add" { "`ssid <SSID>`, `psk <PASSPHRASE>`, `end`" } else { "`ssid <SSID>`, `end`" };
-    let (mut ssid, mut psk, mut ended) = (None, None, false);
+    let shape = if verb == "wifi-add" { "`ssid <SSID>`, `psk <PASSPHRASE>` or `open`, `end`" } else { "`ssid <SSID>`, `end`" };
+    let (mut ssid, mut psk, mut open, mut ended) = (None, None, false, false);
     for l in lines {
         if l == "end" {
             ended = true;
@@ -311,6 +314,10 @@ fn parse_wifi(text: &str) -> Result<WifiRequest, String> {
             if psk.replace(v.to_string()).is_some() {
                 return Err(format!("{verb}: two psk lines"));
             }
+        } else if l == "open" && verb == "wifi-add" {
+            if std::mem::replace(&mut open, true) {
+                return Err(format!("{verb}: two open lines"));
+            }
         } else {
             return Err(format!(
                 "{verb}: unexpected line; the request is {shape}, one per line, and neither value may hold a newline"
@@ -321,10 +328,10 @@ fn parse_wifi(text: &str) -> Result<WifiRequest, String> {
         return Err(format!("{verb}: request not terminated by `end`"));
     }
     let ssid = ssid.ok_or_else(|| format!("{verb}: no ssid line"))?;
-    if verb == "wifi-add" && psk.is_none() {
-        return Err("wifi-add: no psk line".into());
+    if verb == "wifi-add" && psk.is_some() == open {
+        return Err("wifi-add: a psk line or an open line, one of them".into());
     }
-    Ok(WifiRequest { ssid, psk })
+    Ok(WifiRequest { ssid, psk, open })
 }
 
 // --- the proxy socket ----------------------------------------------------------
@@ -1219,20 +1226,17 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
                 }
             };
             let done = if verb == "wifi-add" {
-                crate::wifi::add(&cfg.wifi_dir, owner, &req.ssid, req.psk.as_deref().unwrap_or("")).map(|a| match a {
-                    crate::wifi::Added::New => "added network",
-                    crate::wifi::Added::Replaced => "replaced the passphrase of network",
-                })
+                crate::wifi::add(&cfg.wifi_dir, owner, &req.ssid, req.psk.as_deref()).map(|a| crate::wifi::said(&req.ssid, a, req.open))
             } else {
-                crate::wifi::forget(&cfg.wifi_dir, owner, &req.ssid).map(|()| "forgot network")
+                crate::wifi::forget(&cfg.wifi_dir, owner, &req.ssid).map(|()| format!("forgot network {:?}", req.ssid))
             };
             match done {
                 Ok(what) => {
                     /* The file is bound in at zone start, so a restart applies it. A
                      * restart that cannot happen is reported, not a failure. */
                     let restart = crate::wifi::restart_net_zone(&cfg.wifi_dir);
-                    eprintln!("kryptikd serve: uid {uid} {what} {:?}; {restart}", req.ssid);
-                    reply(&conn, &format!("ok {what} {:?}; {restart}\n", req.ssid));
+                    eprintln!("kryptikd serve: uid {uid} {what}; {restart}");
+                    reply(&conn, &format!("ok {what}; {restart}\n"));
                 }
                 Err(e) => {
                     eprintln!("kryptikd serve: uid {uid} {verb} {:?} refused: {e}", req.ssid);
