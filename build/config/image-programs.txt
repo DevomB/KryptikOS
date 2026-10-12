@@ -1106,6 +1106,7 @@ usr/libexec/kryptik/installer-run.sh
 usr/libexec/kryptik/keyboard.sh
 usr/libexec/kryptik/kryptikd-check.sh
 usr/libexec/kryptik/medium-root.sh
+usr/libexec/kryptik/microcode-notice.sh
 usr/libexec/kryptik/netzone-init.sh
 usr/libexec/kryptik/sntp-offset.py
 usr/libexec/kryptik/sysinit.sh
