@@ -52,7 +52,9 @@ fn each_network_has_an_address_of_its_own() {
     assert_eq!(address("Home"), home);
     let text = fs::read_to_string(conf_path(&dir)).unwrap();
     assert!(text.contains(&format!("\tpsk=\"a different one\"\n\tmac_addr=3\n\tmac_value={home}\n}}\n")), "{text}");
-    // A file an older kryptikd wrote gets one per network once, then is current.
+    // A file an older kryptikd wrote gets one per network once, then is current. Put in place
+    // of the 0440 file, which takes no write.
+    fs::remove_file(conf_path(&dir)).unwrap();
     fs::write(conf_path(&dir), "ctrl_interface=/run/wpa_supplicant\nupdate_config=0\n\nnetwork={\n\tssid=\"Old\"\n\tpsk=\"older pass\"\n}\n").unwrap();
     assert!(refresh(&dir, None).unwrap());
     let old = address("Old");
