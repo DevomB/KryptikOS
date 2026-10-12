@@ -1105,6 +1105,7 @@ usr/libexec/kryptik/firstboot.sh
 usr/libexec/kryptik/installer-run.sh
 usr/libexec/kryptik/keyboard.sh
 usr/libexec/kryptik/kryptikd-check.sh
+usr/libexec/kryptik/medium-banner.sh
 usr/libexec/kryptik/medium-root.sh
 usr/libexec/kryptik/netzone-init.sh
 usr/libexec/kryptik/sntp-offset.py
