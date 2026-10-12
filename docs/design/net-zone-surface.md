@@ -166,6 +166,14 @@ compares the boot time two zones and zone 0 each work out
 frame callbacks while the zone's clock stands apart from the compositor's
 (`zone-window-animates`).
 
+The kernel's own stamps on the boot clock are not translated either. nl80211
+gives each scan result one (`NL80211_BSS_LAST_SEEN_BOOTTIME`), which
+wpa_supplicant 2.12 reads against its own boot clock, so in the net zone every
+result read as hours or days old and left its BSS table within ten seconds of
+the scan that found it. Kryptik's patch keeps the kernel's own millisecond age
+whenever the two disagree (`build/patches/wpa_supplicant-2.12`), and the zones
+suite reads the age of the access point the station joined (`wifi-bss-age`).
+
 ## Side by side
 
 | | genl family filter | wpa_supplicant's own user | time namespace |
