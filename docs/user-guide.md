@@ -44,10 +44,15 @@ you took. `SHA256SUMS` describes this directory as the acceptance run wrote
 it, so `sha256sum -c SHA256SUMS` checks every other file there, and does not
 fit a download from the page.
 
-On macOS the hash check is `shasum -a 256 -c --ignore-missing`. On Windows,
-run the `ssh-keygen` line in Command Prompt, on one line (PowerShell has no
-`<`), and compare what `certutil -hashfile kryptik-VERSION-usb.img SHA256`
-prints with the image's line in `kryptik-VERSION.SHA256SUMS`.
+Neither macOS nor Windows comes with `zstd`. On macOS, `brew install zstd`
+(Homebrew) adds it, and the hash check is `shasum -a 256 -c --ignore-missing`.
+On Windows, `zstd.exe` from zstd's releases page runs `zstd -d` as above,
+and 7-Zip 24 and later unpacks the image too, as the README says. Run the
+`ssh-keygen` line in Command Prompt, on one line (PowerShell has no `<`), and
+compare what `certutil -hashfile kryptik-VERSION-usb.img SHA256` prints with
+the image's line in `kryptik-VERSION.SHA256SUMS`. `certutil -hashfile
+kryptik-sb.der SHA256` prints the certificate's SHA-256 fingerprint: the hex
+`openssl` shows, in lower case and without the colons.
 
 The signature is only as good as the `release-signers` it is checked with,
 and whoever could change the download could change that file too. From 1.0.0
