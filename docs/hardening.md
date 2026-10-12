@@ -109,11 +109,13 @@ ADR-009) and `boot.fragment` (ADR-013).
   hibernation, IA-32 emulation, debugfs, ftrace, kprobes, io_uring, sysrq,
   ACPI table overrides, core dumps, `/proc/pid/pagemap`.
 - Off as well: initramfs support and the EFI stub's handover entry, so
-  nothing that starts the kernel can run code before the verified root;
-  `MSG_OOB` on unix sockets, TCP MD5 signatures and HugeTLB pages, which any
-  zone could reach; and what defconfig left on that nothing here uses: IP
-  autoconfiguration, policy, multipath and multicast routing, NetLabel and
-  SECMARK, NFLOG, tc's classifiers and actions, forced module unloading.
+  nothing that starts the kernel can give it code to run before the verified
+  root; `MSG_OOB` on unix sockets, TCP MD5 signatures and HugeTLB pages,
+  which any zone could reach; and what defconfig left on that nothing here
+  uses: IP autoconfiguration, policy, multipath and multicast routing,
+  NetLabel and SECMARK, NFLOG, tc's classifiers and actions, the network
+  filesystems' DNS upcall, forced module unloading, the power-management and
+  cgroup debug hooks, `/dev/nvram` and `/dev/hpet`.
 
 Stage 05 refuses a `.config` that lost any fragment line
 (`build/lib/kconfig-check.sh`, shared with `tools/resolve-kernel-config.sh`
