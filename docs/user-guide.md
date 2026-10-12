@@ -367,8 +367,9 @@ hash the medium's signed kernel carries. A medium whose root or slot kernel
 is not that release's is refused with the reason, and nothing is committed.
 The state partition is not touched, so users and zone volumes survive. The
 result is the medium's version, which may be older than what was installed:
-the tool names the version it writes but does not compare it, so read
-`--status` first.
+the tool does not compare versions, so read `--status` first. It shows each
+slot's version, which slot's kernel the firmware boots by default, and the
+medium's own version, the one `--restore-slot` writes.
 
 A machine that stops responding resets itself after about a minute (the
 software watchdog's timeout; a hardware watchdog keeps its own): a service
