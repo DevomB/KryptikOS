@@ -405,9 +405,10 @@ pub fn scan(zones_dir: &Path) -> Result<Scan, String> {
     let before = init.file_in_root(SCAN_FILE).as_ref().and_then(stamp);
     if let Err(e) = init.signal(libc::SIGUSR1) {
         // Ended since the registry said it runs, as a zone restarting after a save does.
-        return Err(match init.still_alive() {
-            true => format!("the {name} zone could not be asked: {e}"),
-            false => format!("the {name} zone is not running"),
+        return Err(if init.still_alive() {
+            format!("the {name} zone could not be asked: {e}")
+        } else {
+            format!("the {name} zone is not running")
         });
     }
     let until = std::time::Instant::now() + SCAN_WAIT;
