@@ -193,7 +193,8 @@ pub fn uplink_config(nic: &str) -> io::Result<Uplink> {
 }
 
 /// Move `nic` into `zone_ns`, re-applying the IPv4 configuration it loses (DHCP is the zone's job).
-fn carry_nic(nic: &str, zone_ns: i32) -> Result<Uplink, NetError> {
+/// A radio switched `off` moves down and stays so.
+fn carry_nic(nic: &str, zone_ns: i32, off: bool) -> Result<Uplink, NetError> {
     let cfg = uplink_config(nic).map_err(|e| io(&format!("read the configuration of {nic:?}"), e))?;
     // A wireless netdev is namespace-local; move its wiphy instead.
     match netlink::wiphy_index_of(nic).map_err(|e| io(&format!("read the wiphy of {nic:?}"), e))? {
@@ -205,7 +206,9 @@ fn carry_nic(nic: &str, zone_ns: i32) -> Result<Uplink, NetError> {
         for (a, p) in &cfg.addrs {
             netlink::add_addr4(nic, *a, *p)?;
         }
-        netlink::set_up(nic)?;
+        if !off {
+            netlink::set_up(nic)?;
+        }
         if let Some(gw) = cfg.gateway {
             // The first uplink's default route stands; the zone's DHCP client sorts them out later.
             match netlink::add_default_route4(gw, nic) {
@@ -364,6 +367,17 @@ fn bare_radios(class: &Path) -> Vec<u32> {
     bare
 }
 
+/// Whether `nic`'s radio is switched off by rfkill, by software or by a switch, as a sysfs
+/// `class/net` directory says. Read in zone 0 before the radio moves, as its sysfs moves with it.
+fn switched_off(class_net: &Path, nic: &str) -> bool {
+    std::fs::read_dir(class_net.join(nic).join("phy80211"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_name().as_bytes().starts_with(b"rfkill"))
+        .any(|e| ["soft", "hard"].iter().any(|k| sysfs_u32(&e.path().join(k)).is_some_and(|v| v != 0)))
+}
+
 fn sysfs_u32(path: &Path) -> Option<u32> {
     std::fs::read_to_string(path).ok()?.trim().parse().ok()
 }
@@ -439,9 +453,15 @@ fn plumb_nic_zone_bridge(zone: &Zone, zone_ns: i32) -> Result<(), NetError> {
         ),
         _ => {}
     }
+    /* A radio switched off stays down: brought up, its link is refused (ERFKILL), and with it the
+     * whole zone, wire and all. Bringing it up once it is switched on is the zone's. */
+    let off: Vec<&String> = nics.iter().filter(|n| switched_off(Path::new("/sys/class/net"), n)).collect();
     for n in &nics {
-        let carried = carry_nic(n, zone_ns)?;
+        let carried = carry_nic(n, zone_ns, off.contains(&n))?;
         eprintln!("kryptikd: zone {:?}: {n:?} moved in with {carried}", zone.name);
+        if off.contains(&n) {
+            eprintln!("kryptikd: zone {:?}: {n:?} is switched off (rfkill), so it is left down", zone.name);
+        }
     }
     netlink::with_netns(zone_ns, || {
         up_lo()?;
@@ -458,7 +478,7 @@ fn plumb_nic_zone_bridge(zone: &Zone, zone_ns: i32) -> Result<(), NetError> {
         if Path::new("/proc/sys/net/ipv6").exists() {
             sysctl("/proc/sys/net/ipv6/conf/all/forwarding", "0")?;
         }
-        for n in &nics {
+        for n in nics.iter().filter(|n| !off.contains(n)) {
             netlink::set_up(n)?;
         }
         Ok(())

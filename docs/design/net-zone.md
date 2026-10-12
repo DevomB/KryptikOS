@@ -279,7 +279,11 @@ configured the zone keeps its IPv4 path and the launcher says so.
   netdev failed the start once its radio had moved with the first, and a
   radio with none stayed in zone 0 until a reboot. A driver that cannot add
   an interface (some FullMAC ones) leaves such a radio in zone 0, and the
-  log says why.
+  log says why. A radio switched off by rfkill (an airplane-mode key, a
+  switch) as the net zone starts moves in down, as kryptikd reads its rfkill
+  state in zone 0 first: brought up, its link is refused (`ERFKILL`), and that
+  once failed the whole start, wire and all, until the radio was switched on.
+  Switched on, it is joined at the net zone's next start.
 - **It associates before it leases.** The script finds radios by their
   `phy80211` link, not by name, and runs one `wpa_supplicant` per radio on
   `/etc/wpa_supplicant.conf`, restarting one that dies; dhcpcd takes the
