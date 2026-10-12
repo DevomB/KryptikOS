@@ -165,7 +165,9 @@ uses it too. `kryptik keyboard NAME`, as root, changes it later
 
 The installer refuses the disk the medium is on; anything with a mounted
 partition, active swap, or a partition held open (an unlocked LUKS volume,
-LVM); anything that is not a whole, writable disk; and a disk too small to
+LVM); anything that is not a whole, writable disk; a disk with 4096-byte
+logical sectors (an NVMe drive can be formatted so), where Linux does not
+mount the medium's boot partition; and a disk too small to
 hold the boot partition, two root slots with room to grow, and a state
 partition with space for one update and a gigabyte of data (about 8 GB for
 the current image; the refusal names the exact minimum). A disk that already
@@ -451,6 +453,9 @@ shows each timer, its timeout and whether it is running.
 - No independent security review has been made.
 - Tested under QEMU with OVMF firmware. Testing on physical hardware is
   planned for October 2026.
+- A disk with 4096-byte logical sectors (4Kn) is refused, as the medium's
+  boot partition is a FAT of 512-byte sectors that Linux does not mount
+  there. Disks that present 512-byte sectors (512e), as most do, are fine.
 - The builds are not reproducible bit for bit; the hashes name what was
   tested, not what a rebuild would produce.
 - A program in a zone cannot make its window fullscreen; Alt+e does, and

@@ -88,8 +88,9 @@ from `/etc`. There is no swap.
 `kryptik-install --target DISK [--yes] [--dry-run] [--replace-kryptik]`
 checks everything first: a whole, writable disk that is not the running
 root's (through any dm or loop layer, so from a medium never the medium),
-with nothing mounted, swapped on or held open by device-mapper or md, and
-enough room. A disk that carries any `kryptik-` partition (an old
+with nothing mounted, swapped on or held open by device-mapper or md,
+enough room, and logical sectors no larger than the medium's FAT's (512
+bytes: Linux does not mount that ESP on a 4Kn disk). A disk that carries any `kryptik-` partition (an old
 installation, a medium, a test-control disk) is refused unless
 `--replace-kryptik` asks for it; nothing overrides the other refusals. Then it
 asks for the state passphrase (8 characters at least), partitions,

@@ -8,7 +8,8 @@
 #   step 2  boot the disk alone: first boot, login, reboot, login, poweroff
 #   step 3  cold boot it again (not with --quick), with step 1's signed control
 #           disk attached: an installed system ignores it
-#   step 4  a disk too small, a read-only disk, and an I/O error in the root
+#   step 4  a disk too small, a read-only disk, one with 4096-byte logical
+#           sectors, and an I/O error in the root
 #           image copy (not with --quick): each must fail, installing nothing;
 #           the medium's own disk, even with --replace-kryptik, and a copy of
 #           the installed disk without it: each refused, the copy untouched;
@@ -207,6 +208,8 @@ refusal_case() {   # refusal_case NAME DISK-SIZE WHY EXTRA-RUN-ARGS... ; expects
 }
 refusal_case toosmall 1G 'this layout needs at least'
 refusal_case readonly "$SIZE" 'is read-only' --disk-readonly
+# A disk with 4096-byte logical sectors, which the medium's 512-byte FAT cannot boot from.
+refusal_case sector4k "$SIZE" '4096-byte logical sectors' --disk-4k
 # An I/O error in the root image copy, after the partition table is written;
 # the runner must report that failure. A disk of step 1's size is laid out as
 # step 1's was, so the error sits 4 MiB into where kryptik-a will be: past
