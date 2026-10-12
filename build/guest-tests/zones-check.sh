@@ -850,6 +850,13 @@ fi
 # the status and the scan say so. Switched on again, the net zone brings the link up, which its
 # supplicant cannot see for itself, and the radio joins again. Switched off when the net zone
 # starts, it gets no supplicant, which cannot bring the link up; switched on, it gets one.
+# Switch rfkill INDEX soft-off (1) or on (0) through its control device, which takes no name:
+# struct rfkill_event { u32 idx; u8 type (0, any); u8 op (2, change one); u8 soft; u8 hard; }.
+rfkill_soft() {
+    python3 -c 'import os, struct, sys
+fd = os.open("/dev/rfkill", os.O_WRONLY)
+os.write(fd, struct.pack("=IBBBB", int(sys.argv[1]), 0, 2, int(sys.argv[2]), 0))' "$1" "$2"
+}
 off_line=""; off_scan=""; back_line=""; start_off=""; start_back=""
 if [[ -n "$STA_RFKILL" ]]; then
     before="$(ready_count)"
@@ -909,13 +916,6 @@ fi
 # A radio switched off as the net zone starts, by an airplane-mode key or a switch, moves in down:
 # brought up, its link would be refused (ERFKILL) and the zone with it, wire and all. Switched on,
 # the next start joins again.
-# Switch rfkill INDEX soft-off (1) or on (0) through its control device, which takes no name:
-# struct rfkill_event { u32 idx; u8 type (0, any); u8 op (2, change one); u8 soft; u8 hard; }.
-rfkill_soft() {
-    python3 -c 'import os, struct, sys
-fd = os.open("/dev/rfkill", os.O_WRONLY)
-os.write(fd, struct.pack("=IBBBB", int(sys.argv[1]), 0, 2, int(sys.argv[2]), 0))' "$1" "$2"
-}
 off_new=0; off_line=""; on_line=""
 if [[ -n "$STA_RFKILL" ]]; then
     # Switched off while no net zone runs, so only the next one can say READY.
