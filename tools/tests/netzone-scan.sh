@@ -14,9 +14,10 @@ red()   { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); [[ $# -gt 1 ]] && prin
 same()  { if [[ "$2" == "$3" ]]; then green "$1"; else red "$1" "got '$(tr '\n\t' '|>' <<<"$2")', want '$(tr '\n\t' '|>' <<<"$3")'"; fi; }
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 
-{ sed -n '/^scan_lines() {/,/^}/p' "$SCRIPT"; sed -n '/^scan_radios() {/,/^}/p' "$SCRIPT"; } > "$T/functions.sh"
-grep -q '^scan_lines() {' "$T/functions.sh" && grep -q '^scan_radios() {' "$T/functions.sh" \
-    || { echo "could not find scan_lines or scan_radios in ${SCRIPT#"$ROOT"/} (did their first lines move?)"; exit 1; }
+{ for f in radio_off scan_lines scan_radios; do sed -n "/^$f() {/,/^}/p" "$SCRIPT"; done; } > "$T/functions.sh"
+for f in radio_off scan_lines scan_radios; do
+    grep -q "^$f() {" "$T/functions.sh" || { echo "could not find $f in ${SCRIPT#"$ROOT"/} (did its first line move?)"; exit 1; }
+done
 grep -q "^trap 'scan_wanted=1' USR1" "$SCRIPT" \
     && green "the zone takes zone 0's ask (SIGUSR1) from its first lines, so one sent at its start is not lost" \
     || red "netzone-init.sh sets no SIGUSR1 handler before its start"

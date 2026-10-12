@@ -8,6 +8,8 @@ fn net_summary_passes_on_known_fields_only() {
     assert_eq!(net_summary(wired).as_deref(), Some("ready: no uplink address, no DNS"));
     let joining = "READY uplink=10.0.2.15/24 nat=yes dns=yes wifi=connecting time=-2";
     assert_eq!(net_summary(joining).as_deref(), Some("ready: Wi-Fi connecting, uplink 10.0.2.15/24, DNS"));
+    let off = "READY uplink=10.0.2.15/24 nat=yes dns=yes wifi=off time=-2";
+    assert_eq!(net_summary(off).as_deref(), Some("ready: Wi-Fi switched off, uplink 10.0.2.15/24, DNS"));
     let down = "NOT READY firewall policy not loaded; forwarding off; uplink=none dns=no wifi=none time=x";
     assert_eq!(net_summary(down).as_deref(), Some("not ready: forwarding is off"));
     // An SSID is any access point's: what a terminal would act on comes out escaped, and words
