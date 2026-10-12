@@ -266,7 +266,10 @@ configured the zone keeps its IPv4 path and the launcher says so.
   netdev failed the start once its radio had moved with the first, and a
   radio with none stayed in zone 0 until a reboot. A driver that cannot add
   an interface (some FullMAC ones) leaves such a radio in zone 0, and the
-  log says why.
+  log says why. A radio switched off by rfkill (an airplane-mode key, a
+  switch) as the net zone starts moves in down, as kryptikd reads its rfkill
+  state in zone 0 first: brought up, its link is refused (`ERFKILL`), and that
+  once failed the whole start, wire and all, until the radio was switched on.
 - **It associates before it leases.** The script finds radios by their
   `phy80211` link, not by name, and runs one `wpa_supplicant` per radio on
   `/etc/wpa_supplicant.conf`, restarting one that dies; dhcpcd takes the
@@ -278,11 +281,8 @@ configured the zone keeps its IPv4 path and the launcher says so.
   rfkill's events, which `/dev/rfkill` would give and the zone's `/dev` does
   not hold: the script's loop brings a supplicant's radio up once it is
   switched on again, within ten seconds. A radio switched off as the net
-  zone starts moves in down, as kryptikd reads its rfkill state in zone 0
-  first: brought up, its link is refused (`ERFKILL`), and that once failed
-  the whole start, wire and all, until the radio was switched on. It gets no
-  supplicant at first, as one cannot bring its link up and ends; the loop
-  starts it once the radio is switched on.
+  zone starts gets no supplicant at first, as one cannot bring its link up
+  and ends; the loop starts it once the radio is switched on.
 - **It scans when zone 0 asks.** `kryptik wifi scan`, and `s` in the menu's
   Wi-Fi window, have kryptikd send the net zone's pid 1 a SIGUSR1, which
   carries nothing. The zone scans each radio with `iw` and writes a line per
