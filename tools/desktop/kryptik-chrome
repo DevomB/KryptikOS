@@ -250,11 +250,17 @@ run_wifi() {
         nets="$("$LAUNCH" --wifi-list 2>&1)"
         printf '%s\n' "${nets:-none}" | sed 's/^/  /'
         echo
-        echo "a add, or change a passphrase   o add an open one   f forget one   Enter back"
+        echo "s the networks in range   a add, or change a passphrase   o add an open one"
+        echo "f forget one   Enter back"
         printf 'choice: '
         read -r c || return 0
         case "$c" in
             "") return 0 ;;
+            # The net zone scans every channel, which takes some seconds.
+            s) echo "asking the net zone what it hears..."
+               "$LAUNCH" --wifi-scan
+               printf 'Enter: back to the networks '
+               read -r c || return 0 ;;
             # IFS=: an SSID may begin or end with a space.
             a|o|f) [ "$c" = o ] && echo "An open network has no passphrase: anyone in range reads what crosses it."
                    printf 'network name (SSID): '

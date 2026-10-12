@@ -732,6 +732,14 @@ if [[ -n "$STA_IF" && -n "$AP_IF" ]]; then
 else
     fail "wifi-module" "$(tr '\n' ' ' < "$LOG/hwsim.err") radios: $(ls /sys/class/ieee80211 2>/dev/null | tr '\n' ' ')"
 fi
+# Asked what is in range while the radios are still zone 0's, the net zone says it has none:
+# kryptikd signals it, and reads the answer it writes in its own /run.
+noradio="$("$KD" wifi scan --zones "$Z" --wifi-dir "$WIFI_DIR" 2>&1)"
+if [[ "$noradio" == "the net zone has no Wi-Fi radio" ]]; then
+    pass "wifi-scan-no-radio" "kryptikd wifi scan before the net zone holds a radio: $noradio"
+else
+    fail "wifi-scan-no-radio" "$(tr '\n' ' ' <<<"$noradio" | cut -c1-200); $(netzone_said 'scan' | tail -2 | tr '\n' ' ')"
+fi
 # Built with DPP, the supplicant would take DPP and GAS action frames from any radio in range.
 dpp="$(grep -ac 'DPP_BOOTSTRAP_GEN\|DPP_LISTEN' /usr/sbin/wpa_supplicant 2>/dev/null)"
 if [[ -x /usr/sbin/wpa_supplicant && "$dpp" = 0 ]]; then
@@ -825,6 +833,14 @@ if [[ "$ZOUT" == *AP-REACHED* && "${sta_seen:-0}" -ge 1 ]]; then
     pass "wifi-egress" "a routed zone reached the access point ($AP_ADDR) through the net zone over the radio, which lists $sta_seen station"
 else
     fail "wifi-egress" "$ZOUT; stations at the access point: ${sta_seen:-0}; $(tail -2 "$LOG/untrusted.err" | tr '\n' ' ')"
+fi
+# Joined, the radio's scan only listens, and the access point is named with its security, its
+# signal and that it is saved.
+scan_out="$("$KD" wifi scan --zones "$Z" --wifi-dir "$WIFI_DIR" 2>&1)"
+if grep -qxE "\"$AP_SSID\"  WPA2  -[0-9]+ dBm  saved" <<<"$scan_out"; then
+    pass "wifi-scan" "kryptikd wifi scan, joined: $(tr '\n' ';' <<<"$scan_out" | cut -c1-200)"
+else
+    fail "wifi-scan" "$(tr '\n' ';' <<<"$scan_out" | cut -c1-300); $(netzone_said 'scan' | tail -2 | tr '\n' ' ')"
 fi
 # A net zone can leave its radio with a second netdev or with none, and the
 # radio comes back to zone 0 so. Each round makes that change in the net

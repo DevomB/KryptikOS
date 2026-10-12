@@ -273,6 +273,17 @@ configured the zone keeps its IPv4 path and the launcher says so.
   lease once there is a carrier. `wifi=` is `none`, `unconfigured` (no
   credentials), `connecting`, or the associated SSID; `READY` does not wait
   for association.
+- **It scans when zone 0 asks.** `kryptik wifi scan`, and `s` in the menu's
+  Wi-Fi window, have kryptikd send the net zone's pid 1 a SIGUSR1, which
+  carries nothing. The zone scans each radio with `iw` and writes a line per
+  network heard to its own `/run/netzone-scan`. kryptikd reads that file
+  inside the zone's root with no link followed, as it reads the status line,
+  and takes it as an untrusted zone's word: each line is checked, an SSID is
+  shown quoted with nothing unprintable, and at most 40 networks are listed.
+  A scan goes out from a random address while no network is joined; once one
+  is, it only listens, so nothing goes out from the address that network
+  knows. A radio rfkill holds off is named. Nothing else scans but the
+  supplicant, to join what is saved.
 - **It takes no provisioning frames.** `wpa_supplicant` is built without
   DPP: with it a station registers for DPP's and GAS's public action frames
   (`nl80211_mgmt_subscribe_non_ap` in hostap's `driver_nl80211.c`), which any
@@ -396,7 +407,13 @@ as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
   radio refusing to move as a netdev and moving by its wiphy
   (`netlink::tests::wireless_moves_by_wiphy`).
 - `wifi.rs` unit tests and the serve and cli suites cover the credentials
-  file and `kryptik wifi`.
+  file and `kryptik wifi`. `tools/tests/netzone-scan.sh` turns iw's listing
+  into the zone's answer and follows the scan from a random address to a
+  listening one to the kernel's last results; `wifi.rs` tests read an answer
+  that holds everything a zone might write. The zones suite asks for a scan
+  before the net zone holds a radio and after it has joined the simulated
+  access point (`wifi-scan-no-radio`, `wifi-scan`), and the desktop suite asks
+  through the launcher (`chrome-wifi-scan`).
 - The zones suite has the net zone rename its NIC `-x"y` and restarts it: the
   NIC is back in zone 0 under that name, and the next start comes up `READY`
   with it as `nic<N>`, with its own address and an MTU of 1500 again after

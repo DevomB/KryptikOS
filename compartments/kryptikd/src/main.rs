@@ -70,6 +70,8 @@ USAGE:
                    [--group G]        instance that serves only your own uid)
                    [--proxy-exe P] [--wifi-dir DIR]
     kryptikd wifi list                the net zone's Wi-Fi networks, SSIDs only
+    kryptikd wifi scan                the networks in range, as the net zone hears
+                                      them, with their security and signal
     kryptikd wifi add SSID [--open]   add one, or replace its passphrase; the
                                       passphrase is read from stdin, never argv;
                                       --open saves it with none, an open network
@@ -1080,7 +1082,7 @@ fn cmd_wifi(zones_dir: &Path, args: &[String]) -> ExitCode {
     let sub = args.get(1).map(String::as_str).unwrap_or("");
     let ssid = args.get(2).filter(|a| !a.starts_with("--"));
     let usage = || {
-        eprintln!("usage: kryptikd wifi list | add SSID [--open] | forget SSID   [--wifi-dir DIR]");
+        eprintln!("usage: kryptikd wifi list | scan | add SSID [--open] | forget SSID   [--wifi-dir DIR]");
         ExitCode::from(2)
     };
     let refused = |e: String| {
@@ -1093,6 +1095,14 @@ fn cmd_wifi(zones_dir: &Path, args: &[String]) -> ExitCode {
                 for n in names {
                     println!("{n}");
                 }
+                ExitCode::SUCCESS
+            }
+            Err(e) => refused(e),
+        },
+        // Run as root, as `kryptikd serve` runs it for the desktop: it signals the nic zone.
+        ("scan", None) => match wifi::scan(zones_dir) {
+            Ok(s) => {
+                print!("{}", wifi::scan_said(&s, &wifi::list(&dir).unwrap_or_default()));
                 ExitCode::SUCCESS
             }
             Err(e) => refused(e),

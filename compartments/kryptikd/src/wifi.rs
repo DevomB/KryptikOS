@@ -1,6 +1,7 @@
 //! Wi-Fi credentials for the net zone (docs/design/net-zone.md). kryptikd alone writes the file,
 //! 0440, owned by the nic zone's wpa_supplicant user and grouped with its root, which checks it is
-//! there; the zone gets it read-only on next start.
+//! there; the zone gets it read-only on next start. A scan of what is in range is asked of the
+//! zone, which holds the radios, and its answer read as an untrusted zone's.
 
 use std::fs;
 use std::io::{self, Read, Write};
@@ -354,6 +355,171 @@ pub fn restart_net_zone(dir: &Path) -> String {
         ),
         Err(e) => format!("the net zone was not restarted: s6-svc: {e}"),
     }
+}
+
+/// Where the nic zone answers a scan, in its own root (tools/net/netzone-init.sh, `scan_radios`).
+const SCAN_FILE: &str = "run/netzone-scan";
+/// From the ask to the answer: the zone scans every channel of each radio, after anything its
+/// start or a supplicant is busy with.
+const SCAN_WAIT: std::time::Duration = std::time::Duration::from_secs(25);
+const SCAN_CAP: u64 = 64 * 1024;
+const MAX_HEARD: usize = 40;
+const SECURITIES: [&str; 9] = ["open", "wep", "wpa", "wpa2", "wpa3", "wpa2/wpa3", "owe", "enterprise", "other"];
+
+/// A network the nic zone heard, as its scan put it.
+#[derive(Debug, PartialEq)]
+pub struct Heard {
+    pub ssid: Vec<u8>,
+    pub security: &'static str,
+    pub signal: i32,
+}
+
+/// The nic zone's answer to a scan: its radios, those the kernel holds switched off, and each
+/// network heard once, at its strongest, strongest first.
+#[derive(Debug, Default, PartialEq)]
+pub struct Scan {
+    pub radios: Vec<String>,
+    pub off: Vec<String>,
+    pub heard: Vec<Heard>,
+}
+
+/// Ask the nic zone to scan, and read its answer. The ask is a signal, which carries nothing;
+/// the answer is a file of the zone's, read as `parse_scan` reads what an untrusted zone wrote.
+pub fn scan(zones_dir: &Path) -> Result<Scan, String> {
+    use std::os::unix::fs::MetadataExt;
+    let zones = crate::zone::load_all(zones_dir).map_err(|e| format!("the zone definitions: {e}"))?;
+    let name = zones
+        .iter()
+        .find(|z| z.network == NetworkMode::Nic)
+        .map(|z| z.name.clone())
+        .ok_or("no zone holds the network (mode = \"nic\")")?;
+    let Ok(crate::registry::State::Running { init: Some(init), .. }) = crate::registry::state(&name) else {
+        return Err(format!("the {name} zone is not running"));
+    };
+    // A new answer is a new file: the zone renames each one into place.
+    let stamp = |f: &fs::File| f.metadata().ok().map(|m| (m.ino(), m.mtime(), m.mtime_nsec()));
+    let before = init.file_in_root(SCAN_FILE).as_ref().and_then(stamp);
+    init.signal(libc::SIGUSR1).map_err(|e| format!("the {name} zone could not be asked: {e}"))?;
+    let until = std::time::Instant::now() + SCAN_WAIT;
+    while std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        if let Some(f) = init.file_in_root(SCAN_FILE).filter(|f| stamp(f) != before) {
+            let mut raw = Vec::new();
+            f.take(SCAN_CAP).read_to_end(&mut raw).map_err(|e| format!("the {name} zone's answer: {e}"))?;
+            return Ok(parse_scan(&String::from_utf8_lossy(&raw)));
+        }
+        if !init.still_alive() {
+            return Err(format!("the {name} zone stopped before it answered"));
+        }
+    }
+    Err(format!("the {name} zone did not answer within {} s", SCAN_WAIT.as_secs()))
+}
+
+/// Read an answer the nic zone wrote: `radios NAME...` (or `none`), `off NAME` for a radio
+/// switched off, and a line per network heard: its signal in dBm, its security and its SSID as
+/// iw escapes one, tab-separated. The zone is untrusted, so a line of any other form is left
+/// out, and so is a network with no name, which cannot be added by it.
+pub fn parse_scan(text: &str) -> Scan {
+    let plain = |n: &str| (1..16).contains(&n.len()) && n.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+    let mut s = Scan::default();
+    for line in text.lines().take(1000) {
+        if let Some(names) = line.strip_prefix("radios ") {
+            s.radios = names.split(' ').filter(|&n| n != "none" && plain(n)).map(String::from).collect();
+        } else if let Some(n) = line.strip_prefix("off ").filter(|&n| plain(n)) {
+            s.off.push(n.to_string());
+        } else if let Some(h) = heard_line(line) {
+            match s.heard.iter_mut().find(|o| o.ssid == h.ssid && o.security == h.security) {
+                Some(o) => o.signal = o.signal.max(h.signal),
+                None => s.heard.push(h),
+            }
+        }
+    }
+    s.heard.sort_by(|a, b| b.signal.cmp(&a.signal).then_with(|| a.ssid.cmp(&b.ssid)));
+    s.heard.truncate(MAX_HEARD);
+    s
+}
+
+fn heard_line(line: &str) -> Option<Heard> {
+    let mut f = line.split('\t');
+    let (signal, security, ssid) = (f.next()?, f.next()?, f.next()?);
+    if f.next().is_some() {
+        return None;
+    }
+    let signal = signal.parse::<i32>().ok().filter(|s| (-150..=0).contains(s))?;
+    let security = SECURITIES.into_iter().find(|s| *s == security)?;
+    let ssid = unescape_iw(ssid).filter(|b| (1..=32).contains(&b.len()) && b.iter().any(|c| *c != 0))?;
+    Some(Heard { ssid, security, signal })
+}
+
+/// An SSID as iw prints one: printable ASCII but a backslash, and \xHH for every other byte.
+fn unescape_iw(s: &str) -> Option<Vec<u8>> {
+    let b = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'\\' {
+            let hex = b.get(i + 1..i + 4).filter(|h| h[0] == b'x' && h[1..].iter().all(u8::is_ascii_hexdigit))?;
+            out.push(u8::from_str_radix(std::str::from_utf8(&hex[1..]).ok()?, 16).ok()?);
+            i += 4;
+        } else if b[i] == b' ' || b[i].is_ascii_graphic() {
+            out.push(b[i]);
+            i += 1;
+        } else {
+            return None;
+        }
+    }
+    Some(out)
+}
+
+/// An SSID for a terminal: quoted as Rust quotes a string where it is UTF-8, so nothing
+/// unprintable reaches the screen, else with \xHH for each byte that is not printable ASCII.
+pub fn shown(ssid: &[u8]) -> String {
+    match std::str::from_utf8(ssid) {
+        Ok(s) => format!("{s:?}"),
+        Err(_) => {
+            let mut out = String::from("\"");
+            for &c in ssid {
+                if c == b' ' || (c.is_ascii_graphic() && c != b'"' && c != b'\\') {
+                    out.push(c as char);
+                } else {
+                    out.push_str(&format!("\\x{c:02x}"));
+                }
+            }
+            out.push('"');
+            out
+        }
+    }
+}
+
+/// A scan in words, a line each: a radio switched off, then every network heard with its
+/// security and signal, and whether it is saved.
+pub fn scan_said(s: &Scan, saved: &[String]) -> String {
+    if s.radios.is_empty() {
+        return "the net zone has no Wi-Fi radio\n".into();
+    }
+    let mut out = String::new();
+    for r in &s.off {
+        out.push_str(&format!("radio {r} is switched off, by its switch or an airplane-mode key\n"));
+    }
+    if s.heard.is_empty() {
+        out.push_str("no network heard\n");
+    }
+    for h in &s.heard {
+        let security = match h.security {
+            "open" => "open",
+            "wep" => "WEP, which Kryptik does not join",
+            "wpa" => "WPA",
+            "wpa2" => "WPA2",
+            "wpa3" => "WPA3",
+            "wpa2/wpa3" => "WPA2/WPA3",
+            "owe" => "OWE, which Kryptik does not join yet",
+            "enterprise" => "802.1X, which Kryptik does not join",
+            _ => "another kind",
+        };
+        let is_saved = std::str::from_utf8(&h.ssid).is_ok_and(|n| saved.iter().any(|s| s == n));
+        out.push_str(&format!("{}  {security}  {} dBm{}\n", shown(&h.ssid), h.signal, if is_saved { "  saved" } else { "" }));
+    }
+    out
 }
 
 /// Read the passphrase from stdin, echo off on a terminal; never from argv or the environment.

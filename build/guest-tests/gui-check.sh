@@ -717,6 +717,14 @@ else
 fi
 pkill -n -u "$USER_NAME" -f 'havoc /usr/bin/kryptik-chrome --menu' 2>/dev/null
 "$KD" wifi forget ztmenuopen --wifi-dir /var/lib/kryptik/wifi > /dev/null 2>&1
+# The menu's s, as the user's launcher asks it: the daemon's scan job signals the net zone,
+# which has no radio here, and passes on its answer.
+scan_said="$(as_user "kryptik-launch --wifi-scan" 2>&1)"
+if [[ "$scan_said" == "the net zone has no Wi-Fi radio" ]]; then
+    pass "chrome-wifi-scan" "kryptik-launch --wifi-scan: $scan_said"
+else
+    fail "chrome-wifi-scan" "kryptik-launch --wifi-scan: $(tr '\n' ' ' <<<"$scan_said" | cut -c1-200)"
+fi
 
 # --- teardown ------------------------------------------------------------------------------
 # The runtime tmpfs does not survive power-off: copy the session log and the
