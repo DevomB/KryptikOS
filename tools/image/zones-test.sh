@@ -71,7 +71,7 @@ for name in kernel-support policies net-ready net-dns dhcpcd-separated dnsmasq-u
             radio-recarried \
             wifi-wpa2-plain wifi-sae \
             zone-clocks-own \
-            time-floor-ran time-clamp time-floor-forged time-claim-stepped time-claim-floor time-claim-consent pids-limit ephemeral-size-bound cpu-max-set lifecycle-repeat lifecycle-registry resolver-after-attach dns-cache-off dns-counters-hidden net-zone-sysfs-nics-only \
+            time-floor-ran time-clamp time-floor-forged time-claim-stepped time-claim-floor time-claim-consent pids-limit ephemeral-size-bound cpu-max-set lifecycle-repeat lifecycle-registry resolver-after-attach dns-cache-off dns-counters-hidden dns-own-resolver dns-own-port-closed dns-cache-per-zone net-zone-sysfs-nics-only \
             terminal-terminfo man-page text-browser tls-trust no-shared-writable-mount net-zone-no-zone-data no-swap no-dbus \
             volume-init zone-source-pinned bridge-ports-closed encrypted-zone-start stop-closes-volume wrong-passphrase persist-reopen no-mapping-after ephemeral-gone concurrent-start-refused full-volume header-restore volume-destroy vault-offline vault-ping no-passphrase-leak \
             setuid-only-allowed no-file-capabilities sysctls-applied host-activity-hidden fetch-and-sntp-no-caps; do

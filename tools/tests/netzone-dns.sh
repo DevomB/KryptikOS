@@ -31,6 +31,12 @@ grep -q -- '--resolv-file="\$UPSTREAM" ' <<<"$start" && grep -q -- '--user=nobod
 grep -qE -- '--cache-size=0( |$)' <<<"$start" && grep -q -- '--no-ident' <<<"$start" && ! grep -q -- '--use-stale-cache' <<<"$start" \
     && green "dnsmasq keeps no cache and no CHAOS records" \
     || red "dnsmasq keeps a cache, or answers CHAOS queries with its counters"
+# A zone's own: as the shared one runs, on its own port and off loopback, and with a cache.
+zone="$(sed -n '/^start_zone_dns() {/,/^}/p' "$SCRIPT" | grep -v '^ *#')"
+grep -q -- '--resolv-file="\$UPSTREAM" ' <<<"$zone" && grep -q -- '--user=nobody' <<<"$zone" && grep -q -- '--no-ident' <<<"$zone" \
+    && grep -qF -- '--port="$((DNS_PORT_BASE + $1))"' <<<"$zone" && ! grep -qE -- '--cache-size=0|--no-poll|--no-daemon|127\.0\.0\.1' <<<"$zone" \
+    && green "a zone's dnsmasq runs as nobody on the same file, on its own port, with a cache and no CHAOS records" \
+    || red "a zone's dnsmasq is not started as the shared one is, on its own port, with a cache"
 
 # step WHAT: one pass, as the loop makes it; prints its status and the file.
 # umask 077: the file must still be one dnsmasq's nobody can read.
@@ -67,6 +73,43 @@ for sh in sh bash dash; do
     out="$(UPSTREAM_AT="$T/absent/uplink-resolv.conf" step | tail -n 1)"
     [[ "$out" =~ ^rc=[1-9][0-9]*\ $ ]] && green "a file that cannot be written is no change, and is tried at the next pass" \
         || red "a file that cannot be written" "got '${out}'"
+done
+
+# The dns chain (sync_dnsnat): each zone whose resolver runs is sent to it, by its
+# addresses, on its port; a dead one's zone and one that never started are not.
+sed -n '/^dns_alive() {/p; /^zone_dns_set() {/,/^}/p; /^sync_dnsnat() {/,/^}/p' "$SCRIPT" > "$T/dnsnat.sh"
+grep -q '^sync_dnsnat() {' "$T/dnsnat.sh" || { echo "could not find sync_dnsnat in ${SCRIPT#"$ROOT"/}"; exit 1; }
+# A pid past pid_max is never alive; the harness's own always is.
+cat > "$T/dnsnat-harness.sh" <<EOF
+. "$T/dnsnat.sh"
+say() { printf 'say: %s\n' "\$*"; }
+nft() { cat >> "\$NFT_IN"; echo "-- sent" >> "\$NFT_IN"; }
+BR=kryptik0; DNS_PORT_BASE=5300; DNSNAT=""
+ZONEDNS="5:\$\$ 4:999999999 10:\$\$ 2:"
+sync_dnsnat; echo "rc=\$? [\$DNSNAT]"
+sync_dnsnat; echo "rc=\$? [\$DNSNAT]"
+zone_dns_set 10 999999999
+sync_dnsnat; echo "rc=\$? [\$DNSNAT]"
+EOF
+for sh in sh bash dash; do
+    command -v "$sh" >/dev/null 2>&1 || continue
+    echo "-- ${sh}: the dns chain"
+    : > "$T/nft.in"
+    out="$(NFT_IN="$T/nft.in" "$sh" "$T/dnsnat-harness.sh" 2>&1)"
+    same "set for the zones whose resolver runs, unchanged without a change, and set again without one that died" \
+        "$(grep '^rc=' <<<"$out")" "$(printf 'rc=0 [ 5 10]\nrc=0 [ 5 10]\nrc=0 [ 5]')"
+    same "the net zone says which zones have their own" \
+        "$(grep '^say: ' <<<"$out")" "$(printf 'say: nftables: zones with a resolver of their own: 10.19.0.5 10.19.0.10\nsay: nftables: zones with a resolver of their own: 10.19.0.5')"
+    same "each set is one transaction that starts empty: two sent, none for the pass with no change" \
+        "$(grep -c -e '^-- sent$' "$T/nft.in")|$(grep -c -x 'flush chain inet kryptik dns' "$T/nft.in")" "2|2"
+    first="$(sed '/^-- sent$/q' "$T/nft.in")"
+    same "zone 5 by both its addresses and both protocols, to port 5305" \
+        "$(grep -c 'saddr \(10\.19\.0\.5\|fd19::5\) .* dport 53 counter dnat ip6\? to \(10\.19\.0\.1\|\[fd19::1\]\):5305$' <<<"$first")" "4"
+    grep -qF 'ip6 saddr fd19::a ip6 daddr fd19::1 udp dport 53 counter dnat ip6 to [fd19::1]:5310' <<<"$first" \
+        && green "zone 10's IPv6 address is fd19::a, as the pins have it" || red "zone 10's IPv6 rule" "$(grep 'fd19::' <<<"$first" | tail -2)"
+    ! grep -q '10\.19\.0\.[24] \|fd19::[24] ' "$T/nft.in" && green "no rule for a zone whose resolver died or never started" \
+        || red "a rule names zone 2 or 4" "$(grep '10\.19\.0\.[24] ' "$T/nft.in")"
+    same "after zone 10's died, only zone 5's four" "$(sed '1,/^-- sent$/d' "$T/nft.in" | grep -c '^add rule')" "4"
 done
 
 echo

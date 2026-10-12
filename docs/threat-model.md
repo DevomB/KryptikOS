@@ -119,8 +119,11 @@ What a routed zone cannot do through it, proven the same way:
   DNS, echo requests, neighbour discovery and replies (`bridge-ports-closed`);
 - fill the connection-tracking table: one routed zone holds at most an eighth
   of it (`zone-flows-capped`);
-- learn another zone's lookups: the resolver keeps no cache and no query
-  counts (`dns-cache-off`, `dns-counters-hidden`).
+- learn another zone's lookups: each routed zone asks a resolver of its own,
+  whose cache only it fills, and the one a zone without its own asks keeps
+  none; none answers for its counters (`dns-own-resolver`,
+  `dns-own-port-closed`, `dns-cache-per-zone`, `dns-cache-off`,
+  `dns-counters-hidden`).
 
 Kept by design:
 
@@ -130,9 +133,9 @@ Kept by design:
   given, as it must to join those networks;
 - nf_tables, packet sockets and generic netlink stay open to it, as NAT, DHCP
   and Wi-Fi need them;
-- a routed zone that floods can hold the resolver's 150 forwarding slots, each
-  for up to 10 s, and the uplink's bandwidth from the others: its share bounds
-  its connections, not its queries or bytes;
+- a routed zone that floods can take the uplink's bandwidth and the net
+  zone's CPU time from the others: its share bounds its connections, not its
+  queries or bytes, and the forwarding slots it fills are its own resolver's;
 - EEE, offloads, rings, coalescing and a radio's wake triggers (nl80211's
   WoWLAN) are not set back between net zones.
 

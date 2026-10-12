@@ -238,12 +238,17 @@ q = struct.pack(">HHHHHH", 0x4321, 0x0100, 1, 0, 0, 0) + b"\x07kryptik\x04test\x
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(4)
 s.sendto(q, ("10.19.0.1", 53)); d, _ = s.recvfrom(512); print("DNS-STILL-ANSWERED rcode=%d" % (d[3] & 0x0f))'
 [[ "$ZOUT" == *DNS-STILL-ANSWERED* ]] && pass "dns-after-reload" "$(grep -o 'DNS-STILL-ANSWERED.*' "$LOG/untrusted.out")" || fail "dns-after-reload" "no answer from the resolver: $(tail -1 "$LOG/untrusted.err")"
-# The resolver every routed zone shares keeps nothing one zone could read back
-# about another's lookups. dnsmasq names its cache in the line it starts with;
+# The shared resolver, which answers a zone without one of its own, keeps
+# nothing one zone could read back about another's lookups. dnsmasq names its
+# cache in the line it starts with, under the pid the net zone logged for it;
 # and asked from a zone for its version and its hits.bind count, the CHAOS
-# records it would answer from itself, it gives neither.
-started="$(uncaught | grep -a 'dnsmasq\[[0-9]*\]: started, version' | tail -1)"
-[[ "$started" == *"cache disabled"* ]] && pass "dns-cache-off" "${started#*: }" || fail "dns-cache-off" "${started:-dnsmasq logged no start line}"
+# records it would answer from itself, a zone's resolver gives neither.
+dns_started() {   # dns_started WHAT: the start line of the dnsmasq the net zone last logged as "dnsmasq (pid N) WHAT"
+    local p; p="$(uncaught | sed -n "s/.*netzone: dnsmasq (pid \([0-9]*\)) $1.*/\1/p" | tail -1)"
+    uncaught | grep -a "dnsmasq\[${p:-none}\]: started, version" | tail -1
+}
+started="$(dns_started 'listening on 10\.19\.0\.1')"
+[[ "$started" == *"cache disabled"* ]] && pass "dns-cache-off" "the shared one: ${started#*: }" || fail "dns-cache-off" "${started:-the shared dnsmasq logged no start line}"
 zrun untrusted 20 -- python3 -c 'import socket, struct
 for n, t in (("version", 0x5101), ("hits", 0x5102)):
     q = struct.pack(">HHHHHH", t, 0x0100, 1, 0, 0, 0) + bytes([len(n)]) + n.encode() + b"\x04bind\x00" + struct.pack(">HH", 16, 3)
@@ -258,6 +263,83 @@ if [[ "$chaos" == *CHAOS-version* && "$chaos" == *CHAOS-hits* && "$chaos" != *na
     pass "dns-counters-hidden" "$chaos"
 else
     fail "dns-counters-hidden" "${chaos:-no output} $(tail -1 "$LOG/untrusted.err")"
+fi
+# untrusted's queries to the bridge's resolver went to its own, on port 5300 + K:
+# the dns chain's counter for it moved, and that resolver keeps a cache.
+dnsnat="$(nsenter -t "${net_init:-0}" -n nft list chain inet kryptik dns 2>&1)"
+own_hits="$(awk -v a="ip saddr 10.19.0.${UNT} " 'index($0, a) && / udp dport 53 / { for (i = 1; i < NF; i++) if ($i == "packets") print $(i + 1) }' <<<"$dnsnat" | head -1)"
+own_started="$(dns_started "for 10\.19\.0\.${UNT} on port $((5300 + UNT))")"
+own_rss="$(awk '/^VmRSS:/ { print $2 " kB" }' "/proc/$(pgrep -f -- "--port=$((5300 + UNT)) " | head -1)/status" 2>/dev/null)"
+if [[ "${own_hits:-0}" -ge 1 && "$own_started" == *cachesize* ]]; then
+    pass "dns-own-resolver" "untrusted's queries reached its own resolver on port $((5300 + UNT)) (${own_hits} packets; it holds ${own_rss:-an unread amount of memory}): ${own_started#*: }"
+else
+    fail "dns-own-resolver" "to untrusted's own: ${own_hits:-no} packets; its start: ${own_started:-none}; the dns chain: $(tr '\n' ' ' <<<"$dnsnat" | cut -c1-300)"
+fi
+# A resolver's own port takes only what the dns chain sent it: asked there
+# directly, neither personal's nor untrusted's own answers untrusted.
+zrun untrusted 20 -- python3 -c 'import socket, struct, sys
+q = struct.pack(">HHHHHH", 0x5252, 0x0100, 1, 0, 0, 0) + b"\x07kryptik\x04test\x00" + struct.pack(">HH", 1, 1)
+for what, port in (("OTHER", int(sys.argv[1])), ("OWN", int(sys.argv[2]))):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(2)
+    try:
+        s.sendto(q, ("10.19.0.1", port)); s.recvfrom(512); print("DIRECT-%s answered" % what)
+    except OSError:
+        print("DIRECT-%s none" % what)' "$((5300 + PER))" "$((5300 + UNT))"
+direct="$(grep -o 'DIRECT-.*' "$LOG/untrusted.out" | tr '\n' ' ')"
+if [[ "$direct" == "DIRECT-OTHER none DIRECT-OWN none " ]]; then
+    pass "dns-own-port-closed" "asked directly on ports $((5300 + PER)) and $((5300 + UNT)), neither resolver answered untrusted"
+else
+    fail "dns-own-port-closed" "${direct:-no output} $(tail -1 "$LOG/untrusted.err")"
+fi
+# Each zone's cache is its own. A stand-in upstream on 127.0.0.53 in the net
+# zone answers every name with one address for 300 s and prints each name that
+# reaches it: one untrusted asks twice reaches it once, and asked from personal,
+# once more. One cache for all zones would let it through once in all; none, three times.
+stub='import socket, struct
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("127.0.0.53", 53))
+while True:
+    d, a = s.recvfrom(512)
+    i, labels = 12, []
+    while i < len(d) and d[i]:
+        labels.append(d[i + 1:i + 1 + d[i]].decode("ascii", "replace")); i += 1 + d[i]
+    print(".".join(labels), flush=True)
+    s.sendto(d[:2] + struct.pack(">HHHHH", 0x8180, 1, 1, 0, 0) + d[12:i + 5] + struct.pack(">HHHIH", 0xc00c, 1, 1, 300, 4) + bytes([192, 0, 2, 1]), a)'
+# Asked until a fresh name comes back from the stand-in, then the probe name.
+asks='import socket, struct, sys, time
+def ask(name):
+    q = struct.pack(">HHHHHH", 0x5353, 0x0100, 1, 0, 0, 0) + b"".join(bytes([len(l)]) + l.encode() for l in name.split(".")) + b"\x00" + struct.pack(">HH", 1, 1)
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(3)
+    try:
+        s.sendto(q, ("10.19.0.1", 53)); d, _ = s.recvfrom(512)
+        return struct.unpack(">H", d[6:8])[0]
+    except OSError:
+        return -1
+for n in range(20):
+    if ask("warm-%s-%d.cache.example" % (sys.argv[1], n)) == 1:
+        break
+    time.sleep(1)
+else:
+    print("STUB-UNREACHED")
+    sys.exit()
+print("PROBE " + " ".join(str(ask("probe.cache.example")) for _ in range(int(sys.argv[2]))))'
+switched=no; per_zone=""
+if [[ -n "$net_init" && "$was" == nameserver* ]]; then
+    nsenter -t "$net_init" -n python3 -c "$stub" > "$LOG/dns-stub.out" 2> "$LOG/dns-stub.err" & STUB=$!
+    netsh "printf 'nameserver 127.0.0.53\n' > /etc/resolv.conf" > /dev/null
+    for _ in $(seq 1 40); do netsh 'grep -qx "nameserver 127.0.0.53" /run/uplink-resolv.conf' > /dev/null && { switched=yes; break; }; sleep 1; done
+    zrun untrusted 60 -- python3 -c "$asks" u 2
+    per_zone="untrusted: $(grep -o 'PROBE.*\|STUB-UNREACHED' "$LOG/untrusted.out")"
+    zrun personal 60 --passphrase-file /root/zt/personal.pass -- python3 -c "$asks" p 1
+    per_zone="${per_zone}; personal: $(grep -o 'PROBE.*\|STUB-UNREACHED' "$LOG/personal.out")"
+    netsh "printf '%s\n' '${was}' > /etc/resolv.conf" > /dev/null
+    for _ in $(seq 1 40); do netsh 'grep -q "127\.0\.0\.53" /run/uplink-resolv.conf' > /dev/null || break; sleep 1; done
+    kill "$STUB" 2>/dev/null
+fi
+probes="$(grep -cx 'probe\.cache\.example' "$LOG/dns-stub.out" 2>/dev/null)"
+if [[ "$switched" == yes && "$per_zone" == "untrusted: PROBE 1 1; personal: PROBE 1" && "$probes" == 2 ]]; then
+    pass "dns-cache-per-zone" "a name untrusted asked twice and personal once reached the upstream twice: each zone's resolver keeps its own cache"
+else
+    fail "dns-cache-per-zone" "the upstream switched: ${switched}; ${per_zone:-no zone asked}; reached it: ${probes:-0} times; $(tail -2 "$LOG/dns-stub.err" 2>/dev/null | tr '\n' ' ')"
 fi
 
 # The vault is probed under storage, once its volume exists.
