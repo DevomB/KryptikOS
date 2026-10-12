@@ -243,6 +243,12 @@ CONFIG_BRCMFMAC=m
 CONFIG_BRCMFMAC_PCIE=y
 CONFIG_RTL8XXXU=m
 CONFIG_MAC80211_HWSIM=m
+# Airplane-mode keys that come through the platform's ACPI device rather than
+# the keyboard: Intel's HID event filter, the AMD, HP and Xiaomi wireless
+# button, and ASUS's radio control. rfkill-input acts on the key.
+CONFIG_INTEL_HID_EVENT=m
+CONFIG_WIRELESS_HOTKEY=m
+CONFIG_ASUS_WIRELESS=m
 
 # --- built in by defconfig, needed only as modules --------------------------
 # As a module, cfg80211 reads the regulatory database from the verified root
