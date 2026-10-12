@@ -178,6 +178,44 @@ impl PidStamp {
         }
     }
 
+    /// A regular file at `rel` in this process's root, resolved inside it with no link
+    /// followed, as the broker reaches a zone; none once the pid names another process.
+    pub fn file_in_root(&self, rel: &str) -> Option<fs::File> {
+        use crate::broker::{openat2, RESOLVE_IN_ROOT, RESOLVE_NO_MAGICLINKS, RESOLVE_NO_SYMLINKS};
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::io::AsRawFd;
+        let root = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC)
+            .open(format!("/proc/{}/root", self.pid))
+            .ok()?;
+        let flags = (libc::O_RDONLY | libc::O_NONBLOCK | libc::O_CLOEXEC) as u64;
+        let resolve = RESOLVE_IN_ROOT | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS;
+        let f = fs::File::from(openat2(root.as_raw_fd(), rel, flags, 0, resolve).ok()?);
+        (f.metadata().ok()?.is_file() && self.still_alive()).then_some(f)
+    }
+
+    /// Send `sig` through a pidfd taken while the start time still matches, so a pid reused
+    /// since is never signalled.
+    pub fn signal(&self, sig: libc::c_int) -> io::Result<()> {
+        use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, self.pid, 0) } as libc::c_int;
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        if !self.still_alive() {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "the process has ended"));
+        }
+        let sent = unsafe {
+            libc::syscall(libc::SYS_pidfd_send_signal, fd.as_raw_fd(), sig, std::ptr::null::<libc::siginfo_t>(), 0)
+        };
+        if sent < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
     fn encode(&self) -> String {
         format!("{} {}\n", self.pid, self.start)
     }

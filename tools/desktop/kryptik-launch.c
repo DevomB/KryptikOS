@@ -7,6 +7,7 @@
  *   kryptik-launch --runtime-dir        print the session's XDG_RUNTIME_DIR, creating it
  *   kryptik-launch --clipboard-move FROM TO   the zone 0 gesture: move FROM's clipboard to TO
  *   kryptik-launch --wifi-list          the net zone's Wi-Fi SSIDs, one per line
+ *   kryptik-launch --wifi-scan          the networks in range, as the net zone hears them
  *   kryptik-launch --wifi-add SSID      add one or replace its passphrase (one line on stdin)
  *   kryptik-launch --wifi-add-open SSID add one as an open network, with no passphrase
  *   kryptik-launch --wifi-forget SSID   remove one
@@ -297,7 +298,7 @@ static void usage(void)
 	      "       kryptik-launch --info ZONE\n"
 	      "       kryptik-launch --runtime-dir\n"
 	      "       kryptik-launch --clipboard-move FROM TO\n"
-	      "       kryptik-launch --wifi-list | --wifi-add SSID | --wifi-add-open SSID | --wifi-forget SSID\n"
+	      "       kryptik-launch --wifi-list | --wifi-scan | --wifi-add SSID | --wifi-add-open SSID | --wifi-forget SSID\n"
 	      "                      (--wifi-add reads the passphrase from standard input)\n"
 	      "       kryptik-launch --update status|fetch|apply | --update auto on|off\n", stderr);
 	exit(2);
@@ -361,6 +362,15 @@ static int wifi_main(int argc, char **argv)
 			p += n + (nl ? 1 : 0);
 		}
 		return 0;
+	}
+	/* An `ok` line and the daemon's lines, or one `error:` line; the net zone takes seconds. */
+	if (strcmp(mode, "--wifi-scan") == 0) {
+		if (argc != 2)
+			usage();
+		char *r = talk("wifi-scan\n", -1);
+		int ok = strncmp(r, "ok\n", 3) == 0;
+		fputs(ok ? r + 3 : r, ok ? stdout : stderr);
+		return ok ? 0 : 1;
 	}
 	int add = strcmp(mode, "--wifi-add") == 0, add_open = strcmp(mode, "--wifi-add-open") == 0;
 	if (argc != 3 || (!add && !add_open && strcmp(mode, "--wifi-forget") != 0))

@@ -7,6 +7,7 @@
 //!                (with pass=fd, one descriptor rides with the first bytes)
 //!              wifi-add, `ssid <ssid>`, `psk <passphrase>` or `open`, `end`
 //!              wifi-forget, `ssid <ssid>`, `end`
+//!              wifi-scan, answered once the nic zone has scanned
 //!              stop <zone> | clipboard-move <from> <to> | info <zone> | status |
 //!              runtime | wifi-list | update-status | update-fetch | update-apply |
 //!              update-auto on|off
@@ -695,6 +696,7 @@ struct Job {
 enum JobKind {
     Stop { uid: u32, zone: String },
     UpdateApply,
+    WifiScan,
 }
 
 fn memfile(name: &str) -> Result<std::fs::File, String> {
@@ -766,6 +768,12 @@ fn finish_job(j: &mut Job, st: i32) {
             };
             eprintln!("kryptikd serve: update-apply failed: {why}{again}");
             reply(&j.conn, &format!("error: {why}{again}\n"));
+        }
+        // `kryptikd wifi scan` printed its lines from what it made of the zone's answer.
+        JobKind::WifiScan if ok => reply(&j.conn, &format!("ok\n{}", read_back(&mut j.out))),
+        JobKind::WifiScan => {
+            let why = why(j, "the scan failed");
+            reply(&j.conn, &format!("error: {why}\n"));
         }
     }
 }
@@ -973,28 +981,11 @@ fn zone_running(name: &str) -> bool {
 /// (tools/net/netzone-init.sh, `report`) in its own /run. The zone is untrusted, so only
 /// `net_summary`'s words leave here, and zone 0's window shows nothing else of the line.
 fn net_status(name: &str) -> Option<String> {
-    use crate::broker::{openat2, RESOLVE_IN_ROOT, RESOLVE_NO_MAGICLINKS, RESOLVE_NO_SYMLINKS};
-    use std::io::Read;
-    use std::os::unix::fs::OpenOptionsExt;
-    use std::os::unix::io::AsRawFd;
     let Ok(crate::registry::State::Running { init: Some(init), .. }) = crate::registry::state(name) else {
         return None;
     };
-    // Resolved inside the zone's root with no link followed, as the broker reaches a zone.
-    let root = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC)
-        .open(format!("/proc/{}/root", init.pid))
-        .ok()?;
-    let flags = (libc::O_RDONLY | libc::O_NONBLOCK | libc::O_CLOEXEC) as u64;
-    let resolve = RESOLVE_IN_ROOT | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS;
-    let f = std::fs::File::from(openat2(root.as_raw_fd(), "run/netzone-status", flags, 0, resolve).ok()?);
-    // A regular file of the zone the pid still names, not of one that has reused it.
-    if !f.metadata().ok()?.is_file() || !init.still_alive() {
-        return None;
-    }
     let mut text = String::new();
-    f.take(1024).read_to_string(&mut text).ok()?;
+    init.file_in_root("run/netzone-status")?.take(1024).read_to_string(&mut text).ok()?;
     net_summary(text.lines().next()?)
 }
 
@@ -1127,6 +1118,19 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
             }
             let what = JobKind::Stop { uid, zone: zone.to_string() };
             match start_job(conn, what, std::process::Command::new("/proc/self/exe").args(["stop", zone])) {
+                Ok(j) => jobs.push(j),
+                Err((conn, e)) => reply(&conn, &format!("error: {e}\n")),
+            }
+        }
+        // The networks in range: the nic zone scans for seconds, so a job answers, one at a time.
+        "wifi-scan" => {
+            if jobs.iter().any(|j| j.what == JobKind::WifiScan) {
+                reply(&conn, "error: a scan is already running\n");
+                return None;
+            }
+            let mut cmd = std::process::Command::new("/proc/self/exe");
+            cmd.args(["wifi", "scan", "--zones"]).arg(&cfg.zones_dir).arg("--wifi-dir").arg(&cfg.wifi_dir);
+            match start_job(conn, JobKind::WifiScan, &mut cmd) {
                 Ok(j) => jobs.push(j),
                 Err((conn, e)) => reply(&conn, &format!("error: {e}\n")),
             }

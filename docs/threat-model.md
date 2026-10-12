@@ -85,6 +85,9 @@ It can still:
 - keep the machine offline, or a routed zone without its lookups or its
   bandwidth;
 - read the passphrase of every Wi-Fi network it was given;
+- list networks in range that are not there, or leave out ones that are, in
+  `kryptik wifi scan` and the menu, which show its answer quoted and checked
+  line by line;
 - withhold releases, which zone 0 reports once the newest statement is 30
   days old, or, where the image names a channel and none was accepted, the
   install, in `kryptik update status`, above the login prompt and in the

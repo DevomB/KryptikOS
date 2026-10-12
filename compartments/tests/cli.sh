@@ -242,7 +242,7 @@ fi
 # A passphrase never goes on a command line, where any process could read it: `kryptik wifi add`
 # takes it from the terminal or a pipe and passes it on stdin.
 out="$(K wifi 2>&1)"; rc=$?
-if (( rc != 0 )) && [[ "$out" == *"list, add SSID or forget SSID"* ]]; then
+if (( rc != 0 )) && [[ "$out" == *"list, scan, add SSID or forget SSID"* ]]; then
     pass "wifi without a subcommand fails and names the subcommands"
 else
     fail "wifi without a subcommand: exit $rc"
@@ -340,6 +340,8 @@ case "\${1:-}" in
                    printf '%s\n' "\$r"; [[ "\$r" == ok* ]] ;;
     --wifi-forget) r="\$(printf 'wifi-forget\nssid %s\nend\n' "\$2" | client)"
                    printf '%s\n' "\$r"; [[ "\$r" == ok* ]] ;;
+    --wifi-scan)   r="\$(printf 'wifi-scan\n' | client)"
+                   printf '%s\n' "\$r"; [[ "\$r" == ok* ]] ;;
     *) exit 2 ;;
 esac
 SHIM
@@ -372,6 +374,14 @@ SHIM
             pass "wifi add --open asks for no passphrase and saves an open network through the launch service"
         else
             fail "wifi add --open through the launch service: exit $rc, output '$out'"
+        fi
+        # No zone runs here: the daemon's scan job asks the registry and says the nic zone is down.
+        out="$(KRYPTIK_LAUNCH="$WORK/launch-shim" K wifi scan 2>&1)"; rc=$?
+        if (( rc != 0 )) && [[ "$out" == "error: kryptikd: wifi: the carrier zone is not running" ]]; then
+            pass "through the launch service, wifi scan runs as the daemon's job and says when the nic zone is not running"
+        else
+            fail "wifi scan through the launch service: exit $rc, output '$out'"
+            sed 's/^/        /' "$WORK/serve.log"
         fi
     else
         fail "the launch daemon did not start for the launch-service checks"

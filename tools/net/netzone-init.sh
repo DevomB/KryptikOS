@@ -13,6 +13,11 @@ BR=kryptik0
 STATUS=/run/netzone-status
 WPA_CONF=/etc/wpa_supplicant.conf   # bound in read-only from zone 0 (kryptik wifi add)
 WPA_CTRL=/run/wpa_supplicant       # the supplicant's own: kryptikd makes it for its user alone
+SCAN=/run/netzone-scan             # the networks in range, when zone 0 asks (kryptikd wifi scan)
+# zone 0 asks with SIGUSR1, which carries nothing; the main loop answers, so a scan asked for
+# while the zone starts waits for it.
+scan_wanted=0
+trap 'scan_wanted=1' USR1
 
 forwarding() {   # forwarding on|off
     v=0; [ "$1" = on ] && v=1
@@ -466,6 +471,53 @@ status_line() {
 }
 status_line "$@"
 
+# --- what is in range, when zone 0 asks (kryptikd wifi scan) -----------------
+
+# iw's listing reduced to a line per network heard: its signal in dBm, its security, and its
+# SSID as iw prints one (printable ASCII but a backslash, \xHH for any other byte), with tabs
+# between. zone 0 checks each line again: this zone's word is not taken on trust.
+scan_lines() {
+    awk -v OFS='\t' '
+        function out() {
+            if (!bss) return
+            sec = "open"
+            if (rsn != "") {
+                if (rsn ~ / SAE/) sec = (rsn ~ / PSK/) ? "wpa2/wpa3" : "wpa3"
+                else if (rsn ~ / OWE/) sec = "owe"
+                else if (rsn ~ / PSK/) sec = "wpa2"
+                else if (rsn ~ /802\.1X/) sec = "enterprise"
+                else sec = "other"
+            } else if (wpa) sec = "wpa"
+            else if (priv) sec = "wep"
+            print sig, sec, ssid
+        }
+        /^BSS / { out(); bss = 1; sig = "?"; ssid = ""; rsn = ""; wpa = 0; priv = 0; sect = ""; next }
+        /^\t[^\t]/ { sect = $1 }
+        /^\tsignal: / { sig = $2; sub(/\..*/, "", sig) }
+        /^\tcapability: / { priv = ($0 ~ / Privacy /) }
+        /^\tSSID: / { ssid = substr($0, 8) }
+        /^\tWPA:/ { wpa = 1 }
+        sect == "RSN:" && /Authentication suites:/ { s = $0; sub(/.*suites:/, "", s); rsn = rsn s }
+        END { out() }'
+}
+# Every radio's networks in range. A scan goes out from a random address while no network is
+# joined. Once one is, the kernel refuses a random address, as a driver without them always
+# does, and the scan only listens, so nothing goes out from an address a network knows. A
+# radio its supplicant is scanning with answers busy, and the kernel's last results are read
+# instead. A radio rfkill holds off is named.
+scan_radios() {
+    {
+        echo "radios ${WIRELESS:-none}"
+        for n in $WIRELESS; do
+            for k in /sys/class/net/"$n"/phy80211/rfkill*/soft /sys/class/net/"$n"/phy80211/rfkill*/hard; do
+                [ "$(cat "$k" 2>/dev/null)" = 1 ] && { echo "off $n"; break; }
+            done
+            ip link set dev "$n" up 2>/dev/null
+            { iw dev "$n" scan randomise 2>/dev/null || iw dev "$n" scan passive 2>/dev/null || iw dev "$n" scan dump 2>/dev/null; } | scan_lines
+        done
+    } > "$SCAN.new" 2>/dev/null && mv -f "$SCAN.new" "$SCAN"
+}
+
 # Until SIGTERM: retry a failed policy, restart a dead resolver or supplicant, report any change.
 cleanup() {
     say "stopping"
@@ -478,6 +530,8 @@ cleanup() {
 trap cleanup TERM INT
 while :; do
     changed=0
+    # A scan zone 0 asked for: its signal ends the wait below at once.
+    if [ "$scan_wanted" = 1 ]; then scan_wanted=0; scan_radios; fi
     if [ "$policy_ok" != 1 ]; then
         if load_policy && sync_gateways "$@" && forwarding on; then policy_ok=1; changed=1; say "nftables: policy loaded on retry; forwarding enabled"; fi
     elif ! nft list table inet kryptik >/dev/null 2>&1; then
@@ -514,6 +568,7 @@ while :; do
         case "$wifi_now" in none|unconfigured|connecting) ;; *) time_ticks=999999 ;; esac
     fi
     # 10 s ticks: the time hourly once measured, else every 5 min (zone 0 takes a claim per 10 min).
+    # A scan's signal ends a wait early, so each scan brings what follows forward by up to 10 s.
     time_ticks=$((time_ticks + 1))
     case "$TIME_STATE" in
         -*|+*|[0-9]*) time_every=360 ;;
@@ -536,6 +591,9 @@ while :; do
         fi
     fi
     [ "$changed" = 1 ] && status_line "$@"
+    # A scan asked for while this pass ran (its signal lands once a foreground step such as the
+    # time query ends) is answered now, not after the wait.
+    [ "$scan_wanted" = 1 ] && continue
     sleep 10 &
     wait $!
 done
