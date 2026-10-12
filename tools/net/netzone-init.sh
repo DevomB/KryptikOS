@@ -241,7 +241,12 @@ wifi_state() {
     done
     echo "$st"
 }
-for n in $WIRELESS; do start_wifi "$n"; done
+# A radio switched off already gets no supplicant, which fails to bring its link up and ends:
+# it is held, and the loop starts one once the radio is switched on.
+wifi_held=""
+for n in $WIRELESS; do
+    if ! start_wifi "$n" && [ -r "$WPA_CONF" ] && radio_off "$n"; then wifi_held="$wifi_held $n"; fi
+done
 wifi_last="$(wifi_state)"
 
 # --- uplink: DHCP if anyone answers, else what zone 0 carried over ---------
@@ -487,6 +492,15 @@ while :; do
             say "wifi: ${n} is switched on again; up"
         fi
     done
+    # A radio held since the start gets its supplicant once switched on, tried once, so one
+    # that fails for another reason says so and is not tried every pass.
+    held=""
+    for n in $wifi_held; do
+        if radio_off "$n"; then held="$held $n"; continue; fi
+        say "wifi: ${n} is switched on; starting its supplicant"
+        start_wifi "$n"; changed=1
+    done
+    wifi_held="$held"
     wifi_now="$(wifi_state)"
     if [ "$wifi_now" != "$wifi_last" ]; then
         wifi_last="$wifi_now"; changed=1; say "wifi: ${wifi_now}"
