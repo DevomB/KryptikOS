@@ -37,10 +37,11 @@ mediatek/WIFI_MT7922_patch_mcu_1_1_hdr.bin
 mediatek/WIFI_RAM_CODE_MT7922_1.bin
 mediatek/mt7925/WIFI_*
 
-# Realtek: the PCIe chips rtw88 and rtw89 drive here, and every USB stick rtl8xxxu drives (its
-# MODULE_FIRMWARE names; linux-firmware has no rtl8723bu_bt). rtw89 asks for the newest format it
-# reads first (fw_format_max); linux-firmware also has formats only later kernels read, and chips
-# not built here (8852BT, 8922D).
+# Realtek: the PCIe chips rtw88 and rtw89 drive here, and the USB sticks rtl8xxxu drives (its
+# MODULE_FIRMWARE names; linux-firmware has no rtl8723bu_bt, and the 8192CU ids are behind
+# RTL8XXXU_UNTESTED, which is not built). rtw89 asks for the newest format it reads first
+# (fw_format_max); linux-firmware also has formats only later kernels read, and chips not built
+# here (8852BT, 8922D).
 rtw88/rtw8723d_fw.bin
 rtw88/rtw8821c_fw.bin
 rtw88/rtw8822b_fw.bin
@@ -53,9 +54,6 @@ rtw89/rtw8852c_fw-2.bin
 rtw89/rtw8922a_fw-4.bin
 rtlwifi/rtl8188eufw.bin
 rtlwifi/rtl8188fufw.bin
-rtlwifi/rtl8192cufw_A.bin
-rtlwifi/rtl8192cufw_B.bin
-rtlwifi/rtl8192cufw_TMSC.bin
 rtlwifi/rtl8192eu_nic.bin
 rtlwifi/rtl8192fufw.bin
 rtlwifi/rtl8710bufw_SMIC.bin
