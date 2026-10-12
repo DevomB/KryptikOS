@@ -299,9 +299,8 @@ static void usage(void)
 	      "       kryptik-launch --info ZONE\n"
 	      "       kryptik-launch --runtime-dir\n"
 	      "       kryptik-launch --clipboard-move FROM TO\n"
-	      "       kryptik-launch --wifi-list | --wifi-scan | --wifi-add SSID | --wifi-add-open SSID | --wifi-forget SSID\n"
-	      "                      (--wifi-add reads the passphrase from standard input; an add takes\n"
-	      "                      --hidden for a network that hides its name)\n"
+	      "       kryptik-launch --wifi-list | --wifi-scan | --wifi-add SSID [--hidden] | --wifi-add-open SSID [--hidden] | --wifi-forget SSID\n"
+	      "                      (--wifi-add reads the passphrase from standard input)\n"
 	      "       kryptik-launch --update status|fetch|apply | --update auto on|off\n", stderr);
 	exit(2);
 }
