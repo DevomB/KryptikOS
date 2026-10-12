@@ -134,7 +134,7 @@ fn main() -> ExitCode {
 
     match args[0].as_str() {
         "check" => cmd_check(&zone_dir, args.iter().any(|a| a == "--target")),
-        "list" if args.iter().any(|a| a == "--running") => cmd_list_running(),
+        "list" if args.iter().any(|a| a == "--running") => cmd_list_running(&zone_dir),
         "list" => cmd_list(&zone_dir),
         "show" => match args.get(1) {
             Some(name) if !name.starts_with("--") => cmd_show(&zone_dir, name),
@@ -460,14 +460,14 @@ fn cmd_status(dir: &Path, name: &str) -> ExitCode {
     }
 }
 
-fn cmd_list_running() -> ExitCode {
+fn cmd_list_running(dir: &Path) -> ExitCode {
     let names = registry::names();
     if names.is_empty() {
         println!("no zones are running");
         return ExitCode::SUCCESS;
     }
     for n in names {
-        let _ = cmd_status(&n);
+        let _ = cmd_status(dir, &n);
     }
     ExitCode::SUCCESS
 }
