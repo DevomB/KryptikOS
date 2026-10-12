@@ -842,6 +842,26 @@ if grep -qxE "\"$AP_SSID\"  WPA2  -[0-9]+ dBm  saved" <<<"$scan_out"; then
 else
     fail "wifi-scan" "$(tr '\n' ';' <<<"$scan_out" | cut -c1-300); $(netzone_said 'scan' | tail -2 | tr '\n' ' ')"
 fi
+# Switched off by rfkill, as its switch or an airplane-mode key would, the radio's link goes down:
+# the status and the scan say so. Switched on again, the net zone brings the link up, which its
+# supplicant cannot see for itself, and the radio joins again.
+sta_kill=""
+for r in /sys/class/rfkill/rfkill*; do [[ "$(cat "$r/name" 2>/dev/null)" == phy0 ]] && sta_kill="$r"; done
+off_line=""; off_scan=""; back_line=""
+if [[ -n "$sta_kill" ]]; then
+    before="$(ready_count)"
+    echo 1 > "$sta_kill/soft"
+    off_line="$(ready_after "$before" " wifi=off " 60)"
+    off_scan="$("$KD" wifi scan --zones "$Z" --wifi-dir "$WIFI_DIR" 2>&1)"
+    before="$(ready_count)"
+    echo 0 > "$sta_kill/soft"
+    back_line="$(ready_after "$before" " wifi=$AP_SSID " 90)"
+fi
+if [[ "$off_line" == *" wifi=off "* && "$off_scan" == *" is switched off"* && "$back_line" == *" wifi=$AP_SSID "* ]]; then
+    pass "wifi-radio-off" "switched off: ${off_line#*netzone: }; scan: $(head -1 <<<"$off_scan"); switched on, joined again: ${back_line#*netzone: }"
+else
+    fail "wifi-radio-off" "rfkill: ${sta_kill:-none named phy0}; off: ${off_line:-none}; scan: $(tr '\n' ';' <<<"$off_scan" | cut -c1-120); back: ${back_line:-none}; $(netzone_said 'wifi' | tail -3 | tr '\n' ' ')"
+fi
 # A net zone can leave its radio with a second netdev or with none, and the
 # radio comes back to zone 0 so. Each round makes that change in the net
 # zone, stops it, waits for phy0 in zone 0 and starts it: the next zone must

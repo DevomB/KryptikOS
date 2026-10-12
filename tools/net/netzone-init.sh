@@ -2,7 +2,7 @@
 # The net zone's command (docs/design/net-zone.md): firewall, Wi-Fi, DHCP, DNS, time and updates.
 # Fails closed: forwarding stays off until the nft policy is loaded and read back. Reports:
 #
-#   netzone: READY uplink=<addr|none> nat=yes dns=<yes|no> wifi=<ssid|connecting|unconfigured|none>
+#   netzone: READY uplink=<addr|none> nat=yes dns=<yes|no> wifi=<ssid|connecting|unconfigured|off|none>
 #                  time=<offset|no-answer|no-uplink|...> ...
 #   netzone: NOT READY <reason>            (forwarding is off)
 set -u
@@ -214,11 +214,22 @@ start_wifi() {   # start_wifi <radio>: 0 started or already running, 1 not
     say "wifi: wpa_supplicant did not start on ${n}: $(tr '\n' ' ' < /tmp/wpa.err)"
     return 1
 }
-# The status line's wifi=: none (no radio), unconfigured (no credentials), connecting, or the SSID.
-# Read from the kernel, as the supplicant's control socket is its own user's: a link the
-# supplicant holds dormant until it has the keys, then up, and the SSID it is associated with.
+# Is a radio switched off by rfkill, its switch or an airplane-mode key (soft or hard)?
+radio_off() {
+    for k in /sys/class/net/"$1"/phy80211/rfkill*/soft /sys/class/net/"$1"/phy80211/rfkill*/hard; do
+        [ "$(cat "$k" 2>/dev/null)" = 1 ] && return 0
+    done
+    return 1
+}
+# The status line's wifi=: none (no radio), off (every radio switched off), unconfigured (no
+# credentials), connecting, or the SSID. Read from the kernel, as the supplicant's control socket
+# is its own user's: a link the supplicant holds dormant until it has the keys, then up, and the
+# SSID it is associated with.
 wifi_state() {
     [ -n "$WIRELESS" ] || { echo none; return; }
+    on=""
+    for n in $WIRELESS; do radio_off "$n" || on=1; done
+    [ -n "$on" ] || { echo off; return; }
     [ -r "$WPA_CONF" ] || { echo unconfigured; return; }
     st=connecting
     for n in $WIRELESS; do
@@ -427,9 +438,7 @@ scan_radios() {
     {
         echo "radios ${WIRELESS:-none}"
         for n in $WIRELESS; do
-            for k in /sys/class/net/"$n"/phy80211/rfkill*/soft /sys/class/net/"$n"/phy80211/rfkill*/hard; do
-                [ "$(cat "$k" 2>/dev/null)" = 1 ] && { echo "off $n"; break; }
-            done
+            radio_off "$n" && echo "off $n"
             ip link set dev "$n" up 2>/dev/null
             { iw dev "$n" scan randomise 2>/dev/null || iw dev "$n" scan passive 2>/dev/null || iw dev "$n" scan dump 2>/dev/null; } | scan_lines
         done
@@ -468,6 +477,14 @@ while :; do
         # Its stale pid file is its own user's to replace, which the next one does.
         if [ -n "$(wpa_pid "$n")" ] && ! wpa_alive "$n"; then
             say "wifi: wpa_supplicant on ${n} died; restarting"; start_wifi "$n"; changed=1
+        fi
+        # Switching a radio off takes its interface down, and its supplicant, which cannot
+        # read rfkill's events here, would leave it so once it is switched on again: up it goes,
+        # and the supplicant carries on.
+        flags="$(cat "/sys/class/net/$n/flags" 2>/dev/null)"
+        if [ -n "$flags" ] && [ $((flags & 1)) = 0 ] && wpa_alive "$n" && ! radio_off "$n" \
+           && ip link set dev "$n" up 2>/dev/null; then
+            say "wifi: ${n} is switched on again; up"
         fi
     done
     wifi_now="$(wifi_state)"
