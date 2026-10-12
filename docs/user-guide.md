@@ -354,16 +354,23 @@ kryptik-recover --disk /dev/sdY --commit-slot a     # the other slot is intact: 
 kryptik-recover --disk /dev/sdY --restore-slot a    # the slot's root is damaged: rewrite it from this medium
 ```
 
-`--status` also names the firmware's Kryptik entries. A firmware that boots
-a fixed disk only from such an entry, and has none, boots the disk again
-after `--commit-slot`, which writes one for the slot it commits.
+Start with `--status`. It shows which slot is committed, each slot's version
+and whether its kernel and filesystem are there, which slot's kernel the
+firmware boots by default, the firmware's Kryptik entries, whether the state
+partition still has its LUKS2 header, and the medium's own version, the one
+`--restore-slot` writes. Where something is wrong it names the repair: a
+boot file that is missing or is not the committed slot's kernel is put back
+by `--commit-slot`, a boot partition (the ESP) that no longer mounts is
+rewritten by `--restore-slot`, and a state partition with no header takes a
+backup with `--restore-state-header`. `--commit-slot` also writes the
+firmware an entry for the slot it commits, which a firmware that boots a
+fixed disk only from such an entry needs.
 
 `--backup-state-header FILE` and `--restore-state-header FILE` save and put
 back the state partition's LUKS2 header. FILE is on a disk mounted for it, as
 in section 2: the medium keeps nothing of its own. Keep the backup somewhere
 that is not the installed disk: a damaged header with no backup is a lost
-state partition. `--status` says whether the state partition still has its
-header.
+state partition.
 
 `--restore-slot` writes the medium's own root image and kernel into the
 slot, as the installer does, then commits it. Every byte comes from the
@@ -372,13 +379,10 @@ hash the medium's signed kernel carries. A medium whose root or slot kernel
 is not that release's is refused with the reason, and nothing is committed.
 The state partition is not touched, so users and zone volumes survive. The
 result is the medium's version, which may be older than what was installed:
-the tool does not compare versions, so read `--status` first. It shows each
-slot's version, which slot's kernel the firmware boots by default, and the
-medium's own version, the one `--restore-slot` writes. If the disk's boot
-partition (the ESP) no longer mounts, `--status` says so, and `--restore-slot`
-first rewrites it from the medium, as the installer does. The other slot then
-has no kernel there, so it cannot be committed or rolled back to; the next
-update writes it again.
+the tool does not compare versions, which is why `--status` shows both. An
+ESP that no longer mounts is first rewritten from the medium, as the
+installer does. The other slot then has no kernel there, so it cannot be
+committed or rolled back to; the next update writes it again.
 
 A machine that stops responding resets itself after about a minute (the
 software watchdog's timeout; a hardware watchdog keeps its own): a service
