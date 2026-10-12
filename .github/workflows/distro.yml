@@ -244,10 +244,17 @@ jobs:
         run: |
           want="$(sed -n 's/.*  rustc-\([0-9.]*\)-x86_64-unknown-linux-gnu\.tar\.xz$/\1/p' build/config/rust.lock)"
           rustc --version | grep -qF "rustc ${want} " || { echo "refusing to build what ships with $(rustc --version); the pin is ${want}"; exit 1; }
+          # The checkout's, cargo's and the target directory's paths would land in panic
+          # locations, which then differ between two builds of one tree.
+          home="${CARGO_HOME:-$HOME/.cargo}"
+          export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=/kryptik --remap-path-prefix=${home}=/cargo --remap-path-prefix=${CARGO_TARGET_DIR}=/target"
           (cd compartments/kryptikd && cargo build --locked --release --target x86_64-unknown-linux-musl)
           (cd compositor && cargo build --locked --release --target x86_64-unknown-linux-musl -p wlproxy --bin kryptik-wlproxy)
           cp /mnt/kryptik/cargo/x86_64-unknown-linux-musl/release/kryptikd /mnt/kryptik/kryptikd-musl
           cp /mnt/kryptik/cargo/x86_64-unknown-linux-musl/release/kryptik-wlproxy /mnt/kryptik/kryptik-wlproxy-musl
+          for b in /mnt/kryptik/kryptikd-musl /mnt/kryptik/kryptik-wlproxy-musl; do
+            ! grep -aqF -e "$GITHUB_WORKSPACE" -e "$home" -e "$CARGO_TARGET_DIR" "$b" || { echo "$b names a path of this build"; exit 1; }
+          done
           file /mnt/kryptik/kryptikd-musl /mnt/kryptik/kryptik-wlproxy-musl
           # The licence texts build/licences ships for what they link.
           tools/check-rust-licences.sh /mnt/kryptik/rust-dist
