@@ -368,6 +368,8 @@ esp_place "$MNT_BASE/tesp/EFI/kryptik/kryptik-a.efi" "$MNT_BASE/tesp/EFI/BOOT/BO
     || die "BOOTX64.EFI could not be made the slot A kernel"
 esp_put "$MNT_BASE/tesp/kryptik/committed-slot" a || die "slot A could not be recorded as committed"
 rm -f "$MNT_BASE/tesp/kryptik/media-kernel"
+# Slot b was cleared above: the medium's kernel and version for it would name a release it does not hold.
+rm -f "$MNT_BASE/tesp/EFI/kryptik/kryptik-b.efi" "$MNT_BASE/tesp/kryptik/version-b"
 sync
 umount "$MNT_BASE/tesp" || die "could not unmount the new ESP"
 # A firmware entry for slot a as well, last in BootOrder, as kryptik-recover and boot-success

@@ -96,7 +96,8 @@ installation, a medium, a test-control disk) is refused unless
 asks for the state passphrase (8 characters at least), partitions,
 copies the ESP and root image from the medium, reads slot A back against the
 medium's `root.json`, creates the LUKS2 state partition and makes
-`BOOTX64.EFI` the slot A kernel. Every failure names its step.
+`BOOTX64.EFI` the slot A kernel. Slot B is cleared, and the ESP names no
+kernel or version for it until an update writes one. Every failure names its step.
 
 `root.json` is the medium's own record and is not signed, so the installer
 and `kryptik-recover --restore-slot` take it through the same checks
