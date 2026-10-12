@@ -718,17 +718,9 @@ STA_IF=""; AP_IF=""; AP_HOLD=""
 if modprobe mac80211_hwsim radios=2 2> "$LOG/hwsim.err"; then
     for _ in $(seq 1 20); do [[ -e /sys/class/ieee80211/phy1 ]] && break; sleep 0.5; done
     STA_IF="$(wl_of_phy phy0)"; AP_IF="$(wl_of_phy phy1)"
+    # phy0's rfkill switch by index, read while zone 0 still sees it: its sysfs leaves with the radio.
+    for r in /sys/class/rfkill/rfkill*; do [[ "$(cat "$r/name" 2>/dev/null)" == phy0 ]] && STA_RFKILL="${r##*/rfkill}"; done
 fi
-# phy0's rfkill switch by index, read while zone 0 still sees it: its sysfs leaves with the radio.
-STA_RFKILL=""
-for r in /sys/class/rfkill/rfkill*; do [[ "$(cat "$r/name" 2>/dev/null)" == phy0 ]] && STA_RFKILL="${r##*/rfkill}"; done
-# Switch rfkill INDEX soft-off (1) or on (0) through its control device, which takes no name:
-# struct rfkill_event { u32 idx; u8 type (0, any); u8 op (2, change one); u8 soft; u8 hard; }.
-rfkill_soft() {
-    python3 -c 'import os, struct, sys
-fd = os.open("/dev/rfkill", os.O_WRONLY)
-os.write(fd, struct.pack("=IBBBB", int(sys.argv[1]), 0, 2, int(sys.argv[2]), 0))' "$1" "$2"
-}
 if [[ -n "$STA_IF" && -n "$AP_IF" ]]; then
     pass "wifi-module" "the signed mac80211_hwsim loaded with two radios: $STA_IF on phy0, $AP_IF on phy1"
 else
@@ -830,6 +822,13 @@ fi
 # A radio switched off as the net zone starts, by an airplane-mode key or a switch, moves in down:
 # brought up, its link would be refused (ERFKILL) and the zone with it, wire and all. Switched on,
 # the next start joins again.
+# Switch rfkill INDEX soft-off (1) or on (0) through its control device, which takes no name:
+# struct rfkill_event { u32 idx; u8 type (0, any); u8 op (2, change one); u8 soft; u8 hard; }.
+rfkill_soft() {
+    python3 -c 'import os, struct, sys
+fd = os.open("/dev/rfkill", os.O_WRONLY)
+os.write(fd, struct.pack("=IBBBB", int(sys.argv[1]), 0, 2, int(sys.argv[2]), 0))' "$1" "$2"
+}
 off_new=0; off_line=""; on_line=""
 if [[ -n "$STA_RFKILL" ]]; then
     # Switched off while no net zone runs, so only the next one can say READY.
