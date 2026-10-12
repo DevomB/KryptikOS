@@ -115,9 +115,8 @@ stage_depends_on "bs-" licences
 
 # --- steps ------------------------------------------------------------------
 
-# strip_root DIR: symbol tables and debug sections off every x86-64 program and
-# library under DIR, each name once per file. Signed kernel modules are ET_REL
-# and other architectures' firmware is not x86-64, so neither is touched.
+# strip_root DIR: symbols and debug sections off every x86-64 program and library, once per file; signed
+# modules (ET_REL) and other architectures' firmware stay as they are, and a file capability would be lost.
 strip_root() {
     local f mode owner n=0
     while IFS= read -r -d '' f; do

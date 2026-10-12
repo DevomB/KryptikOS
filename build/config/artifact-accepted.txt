@@ -21,6 +21,111 @@ RPATH   usr/lib/gcc/*/*/plugin/libc[cp]1plugin.so.*  /usr/lib/../lib   # the sam
 RPATH   usr/lib/libskarnet.so.*      /usr/lib            # skalibs' own link line
 RPATH   usr/lib/perl5/*/auto/Time/HiRes/HiRes.so  /usr/lib   # Time::HiRes, linking librt
 
-# Every object without a canary or calling an unchecked printf, recorded once for the named entries that replace these two.
-NO-SSP      *    # recorded for the list
-NO-FORTIFY  *    # recorded for the list
+# No canary anywhere in the object's code. -fstack-protector-strong (in CFLAGS, and GCC's default
+# here) guards only functions with a local array or an address-taken local; these have none.
+NO-SSP  usr/bin/bzip2recover        # no function with a local array or an address-taken local
+NO-SSP  usr/bin/exch                # the same
+NO-SSP  usr/bin/getconf             # the same
+NO-SSP  usr/libexec/getconf/*       # getconf again, under the names of the specifications it reports
+NO-SSP  usr/bin/nl-link-enslave     # no function with a local array or an address-taken local
+NO-SSP  usr/bin/nl-link-name2ifindex  # the same
+NO-SSP  usr/bin/nl-link-release     # the same
+NO-SSP  usr/bin/rev                 # the same
+NO-SSP  usr/bin/s6-linux-init-nuke  # the same
+NO-SSP  usr/lib/bash/basename       # the same
+NO-SSP  usr/lib/bash/csv            # the same
+NO-SSP  usr/lib/bash/dirname        # the same
+NO-SSP  usr/lib/bash/dsv            # the same
+NO-SSP  usr/lib/bash/getconf        # the same
+NO-SSP  usr/lib/bash/head           # the same
+NO-SSP  usr/lib/bash/logname        # the same
+NO-SSP  usr/lib/bash/mkfifo         # the same
+NO-SSP  usr/lib/bash/mypid          # the same
+NO-SSP  usr/lib/bash/printenv       # the same
+NO-SSP  usr/lib/bash/push           # the same
+NO-SSP  usr/lib/bash/rmdir          # the same
+NO-SSP  usr/lib/bash/sync           # the same
+NO-SSP  usr/lib/bash/tee            # the same
+NO-SSP  usr/lib/bash/truefalse      # the same
+NO-SSP  usr/lib/bash/tty            # the same
+NO-SSP  usr/lib/bash/unlink         # the same
+NO-SSP  usr/lib/bash/whoami         # the same
+NO-SSP  usr/lib/gawk/revtwoway.so   # the same
+NO-SSP  usr/libexec/awk/grcat       # the same
+NO-SSP  usr/libexec/awk/pwcat       # the same
+NO-SSP  usr/lib/libfl.so.2.*        # the same
+NO-SSP  usr/lib/libmvec.so.1        # the same
+NO-SSP  usr/lib/libpanelw.so.6.*    # the same
+NO-SSP  usr/lib/libwayland-egl.so.1.*  # the same
+NO-SSP  usr/lib/gconv/libCNS.so     # glibc's conversion tables, with no function that takes a buffer
+NO-SSP  usr/lib/gconv/libGB.so      # the same
+NO-SSP  usr/lib/gconv/libISOIR165.so  # the same
+NO-SSP  usr/lib/gconv/libJIS.so     # the same
+NO-SSP  usr/lib/gconv/libJISX0213.so  # the same
+NO-SSP  usr/lib/gconv/libKSC.so     # the same
+NO-SSP  usr/lib/perl5/*/auto/Devel/Peek/Peek.so          # no function with a local array or an address-taken local
+NO-SSP  usr/lib/perl5/*/auto/Encode/Byte/Byte.so         # Encode's conversion tables, with no function that takes a buffer
+NO-SSP  usr/lib/perl5/*/auto/Encode/CN/CN.so             # the same
+NO-SSP  usr/lib/perl5/*/auto/Encode/EBCDIC/EBCDIC.so     # the same
+NO-SSP  usr/lib/perl5/*/auto/Encode/JP/JP.so             # the same
+NO-SSP  usr/lib/perl5/*/auto/Encode/KR/KR.so             # the same
+NO-SSP  usr/lib/perl5/*/auto/Encode/Symbol/Symbol.so     # the same
+NO-SSP  usr/lib/perl5/*/auto/Encode/TW/TW.so             # the same
+NO-SSP  usr/lib/perl5/*/auto/Fcntl/Fcntl.so              # no function with a local array or an address-taken local
+NO-SSP  usr/lib/perl5/*/auto/File/DosGlob/DosGlob.so     # the same
+NO-SSP  usr/lib/perl5/*/auto/Filter/Util/Call/Call.so    # the same
+NO-SSP  usr/lib/perl5/*/auto/I18N/Langinfo/Langinfo.so   # the same
+NO-SSP  usr/lib/python3.*/lib-dynload/_contextvars.cpython-*.so          # the same
+NO-SSP  usr/lib/python3.*/lib-dynload/_heapq.cpython-*.so                # the same
+NO-SSP  usr/lib/python3.*/lib-dynload/_statistics.cpython-*.so           # the same
+NO-SSP  usr/lib/python3.*/lib-dynload/_testimportmultiple.cpython-*.so   # the same
+NO-SSP  usr/sbin/accessdb           # the same
+NO-SSP  usr/sbin/findfs             # the same
+NO-SSP  usr/sbin/nologin            # the same
+NO-SSP  usr/sbin/pivot_root         # the same
+NO-SSP  usr/bin/perl                # its main() hands everything to libperl, which carries the canaries
+NO-SSP  usr/bin/perl5.*             # the same
+NO-SSP  usr/bin/python3.*           # its main() hands everything to libpython, which carries the canaries
+NO-SSP  usr/lib/libpython3.so       # the stable-ABI library forwards to libpython and has no code of its own
+NO-SSP  usr/lib/engines-3/capi.so   # OpenSSL's CAPI engine wraps a Windows API: on Linux it builds empty
+NO-SSP  usr/lib/libanl.so.1         # glibc 2.34 moved this library's code into libc, leaving an empty stub
+NO-SSP  usr/lib/libdl.so.2          # the same
+NO-SSP  usr/lib/libpthread.so.0     # the same
+NO-SSP  usr/lib/librt.so.1          # the same
+NO-SSP  usr/lib/libutil.so.1        # the same
+NO-SSP  usr/lib/libnss_dns.so.2     # the same
+NO-SSP  usr/lib/libnss_files.so.2   # the same
+NO-SSP  usr/lib/ld-linux-x86-64.so.2  # glibc builds the loader without the stack protector: the loader sets up the guard
+NO-SSP  usr/lib/libgcc_s.so.1       # GCC builds libgcc with -fno-stack-protector: it runs beneath any stack guard
+NO-SSP  usr/bin/kryptikd            # Rust: stable rustc has no stack protector, and safe Rust checks every index
+NO-SSP  usr/bin/kryptik-wlproxy     # the same
+
+# Imports of calls that _FORTIFY_SOURCE=2 or 3 always turns into _chk ones.
+NO-FORTIFY  usr/bin/gencat          # glibc's build leaves FORTIFY out of its own code (hardening-exceptions.txt)
+NO-FORTIFY  usr/bin/getconf         # the same
+NO-FORTIFY  usr/libexec/getconf/*   # the same
+NO-FORTIFY  usr/bin/getent          # the same
+NO-FORTIFY  usr/bin/iconv           # the same
+NO-FORTIFY  usr/bin/locale          # the same
+NO-FORTIFY  usr/bin/localedef       # the same
+NO-FORTIFY  usr/bin/makedb          # the same
+NO-FORTIFY  usr/bin/pcprofiledump   # the same
+NO-FORTIFY  usr/bin/pldd            # the same
+NO-FORTIFY  usr/bin/sprof           # the same
+NO-FORTIFY  usr/bin/zdump           # the same
+NO-FORTIFY  usr/sbin/iconvconfig    # the same
+NO-FORTIFY  usr/sbin/zic            # the same
+NO-FORTIFY  usr/lib/audit/sotruss-lib.so    # the same
+NO-FORTIFY  usr/lib/libc_malloc_debug.so.0  # the same
+NO-FORTIFY  usr/lib/libmemusage.so  # the same
+NO-FORTIFY  usr/lib/libnsl.so.1     # the same
+NO-FORTIFY  usr/lib/libresolv.so.2  # the same
+NO-FORTIFY  usr/bin/gawk            # passes fprintf as its printing function (print_vars, pp_string_fp, the debugger's print_func)
+NO-FORTIFY  usr/bin/gawk-*          # the same
+NO-FORTIFY  usr/bin/msg*            # gettext's bundled libxml, linked into each tool, keeps fprintf as its error channel
+NO-FORTIFY  usr/bin/xgettext        # the same
+NO-FORTIFY  usr/lib/gettext/cldr-plurals  # the same
+NO-FORTIFY  usr/bin/objdump         # passes fprintf as the disassembler's print function (fprintf_func)
+NO-FORTIFY  usr/lib/libbfd-*.so     # passes fprintf as the print callback of its error output (_bfd_doprnt)
+NO-FORTIFY  usr/lib/libgmp.so.*     # gmp_printf's output tables hold vfprintf and obstack_vprintf
+NO-FORTIFY  usr/bin/bison           # one plain fprintf import beside its fortified calls, from code not yet found: no fprintf taken as a value in bison's tree
