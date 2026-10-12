@@ -27,10 +27,7 @@ NO-SSP  usr/bin/bzip2recover        # no function with a local array or an addre
 NO-SSP  usr/bin/exch                # the same
 NO-SSP  usr/bin/getconf             # the same
 NO-SSP  usr/libexec/getconf/*       # getconf again, under the names of the specifications it reports
-NO-SSP  usr/bin/nl-link-enslave     # no function with a local array or an address-taken local
-NO-SSP  usr/bin/nl-link-name2ifindex  # the same
-NO-SSP  usr/bin/nl-link-release     # the same
-NO-SSP  usr/bin/rev                 # the same
+NO-SSP  usr/bin/rev                 # no function with a local array or an address-taken local
 NO-SSP  usr/bin/s6-linux-init-nuke  # the same
 NO-SSP  usr/lib/bash/basename       # the same
 NO-SSP  usr/lib/bash/csv            # the same
