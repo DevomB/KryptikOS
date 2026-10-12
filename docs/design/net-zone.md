@@ -310,7 +310,13 @@ configured the zone keeps its IPv4 path and the launcher says so.
   802.1X, so no access point's beacon chooses EAP for a saved SSID. Unnamed,
   wpa_supplicant would take `WPA-PSK WPA-EAP` and never SAE. Management frames
   are protected wherever the access point offers it (`ieee80211w=1`), and SAE
-  always has them. A file an older kryptikd wrote is rewritten so.
+  always has them. A file an older kryptikd wrote is rewritten so. A network
+  saved as open (`kryptik wifi add SSID --open`, an `open` line in place of
+  `psk` in the request) is joined by no key at all (`key_mgmt=NONE`), so a
+  beacon offering one changes nothing, and has no management frames to
+  protect. Anyone in range reads what crosses it, as on any open network,
+  and any access point may take its name: what a zone sends there is private
+  only where the zone encrypts it.
 - On disk the file is plaintext inside the [encrypted](state-encryption.md)
   state partition, like NetworkManager's connection files. A compromised net
   zone learns the passphrases of the networks it was given, and nothing more.

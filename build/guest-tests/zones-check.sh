@@ -910,6 +910,41 @@ if [[ "$sae_up" = 1 && "$sae_keys" == *"AKMSuiteSelector=00-0f-ac-8 "* && "$sae_
 else
     fail "wifi-sae" "access point up: ${sae_up}; the station at it: ${sae_keys:-none}; $(tail -3 "$LOG/ap-sae-wpa.log" 2>/dev/null | tr '\n' ' ')"
 fi
+# A network saved as open is joined without a key: the access point offers none under another
+# SSID, `wifi add --open` saves it with no passphrase, and the restarted net zone leases there.
+OPEN_SSID=kryptik-hwsim-open
+open_up=0
+if [[ "$ap_up" = 1 ]]; then
+    ap_pid="$(cat /run/zt-ap-wpa.pid 2>/dev/null)"
+    [[ -n "$ap_pid" ]] && kill "$ap_pid" 2>/dev/null
+    for _ in $(seq 1 20); do [[ -n "$ap_pid" ]] && kill -0 "$ap_pid" 2>/dev/null || break; sleep 0.5; done
+    cat > /root/zt/ap-open.conf <<EOF
+ctrl_interface=/run/zt-ap-ctrl
+ap_scan=2
+network={
+    ssid="$OPEN_SSID"
+    mode=2
+    frequency=2412
+    key_mgmt=NONE
+}
+EOF
+    ap wpa_supplicant -B -i "$AP_IF" -c /root/zt/ap-open.conf -P /run/zt-ap-wpa.pid -f "$LOG/ap-open-wpa.log" >> "$LOG/ap.err" 2>&1
+    for _ in $(seq 1 30); do ap_wpa status | grep -q '^wpa_state=COMPLETED' && { open_up=1; break; }; sleep 1; done
+fi
+before="$(ready_count)"
+"$KD" wifi add "$OPEN_SSID" --open --wifi-dir "$WIFI_DIR" --zones "$Z" < /dev/null > "$LOG/wifi-add-open.out" 2>&1
+line="$(ready_after "$before" " wifi=$OPEN_SSID " 90)"
+open_lease=""
+for _ in $(seq 1 40); do
+    open_lease="$(nsenter -t "$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)" -n ip -4 -o addr show "$STA_IF" 2>/dev/null | awk '{print $4}' | head -1)"
+    [[ "$open_lease" == 192.168.77.* ]] && break; sleep 1
+done
+if [[ "$open_up" = 1 && "$line" == *" wifi=$OPEN_SSID "* && "$open_lease" == 192.168.77.* ]] \
+   && grep -q "added open network \"$OPEN_SSID\"" "$LOG/wifi-add-open.out"; then
+    pass "wifi-open" "saved with --open and no passphrase, $OPEN_SSID was joined and the net zone leased ${open_lease} there"
+else
+    fail "wifi-open" "access point up: ${open_up}; $(tr '\n' ' ' < "$LOG/wifi-add-open.out"); newest READY: ${line:-none}; lease: ${open_lease:-none}; $(tail -2 "$LOG/ap-open-wpa.log" 2>/dev/null | tr '\n' ' ')"
+fi
 # Back to the wire: the radios go first, so the net zone the forget restarts finds none.
 for f in /run/zt-ap-dnsmasq.pid /run/zt-ap-wpa.pid; do p="$(cat "$f" 2>/dev/null)"; [[ -n "$p" ]] && kill "$p" 2>/dev/null; done
 [[ -n "$AP_HOLD" ]] && kill "$AP_HOLD" 2>/dev/null

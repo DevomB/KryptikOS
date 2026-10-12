@@ -437,6 +437,19 @@ else
 fi
 r="$(ask 'wifi-forget\nssid Home\nend\n')"
 if [[ "$r" == "error: no network named \"Home\""* ]]; then pass "S9n forgetting a network that is not there is an error"; else fail "S9n: $r"; fi
+# A network with no passphrase, a cafe's: `open` in place of the psk line, joined only without a key.
+r="$(ask 'wifi-add\nssid Airport\nopen\nend\n')"
+if [[ "$r" == "ok added open network \"Airport\";"* && "$(sed -n '/^\tssid="Airport"$/,/^}$/p' "$WCONF")" == $'\tssid="Airport"\n\tkey_mgmt=NONE\n}' ]]; then
+    pass "S9v an open network is saved as key_mgmt=NONE, with no psk and no ieee80211w"
+else
+    fail "S9v: $r"; sed 's/^/        /' "$WCONF"
+fi
+r="$(ask 'wifi-add\nssid Airport\npsk now has one\nopen\nend\n')"
+if [[ "$r" == "error: wifi-add: a psk line or an open line, one of them"* ]] && ! grep -qF 'now has one' "$WCONF"; then
+    pass "S9w a request with both a psk and open is refused, and writes nothing"
+else
+    fail "S9w: $r"
+fi
 
 # Refusals: each names its rule, and the file is byte-identical afterwards.
 cp "$WCONF" "$WORK/wifi-before"
