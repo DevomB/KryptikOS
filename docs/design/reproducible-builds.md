@@ -23,7 +23,8 @@ the media checksums' `.sig`.
 Inside the chroot, paths are fixed whatever the host's work directory:
 sources at `/kryptik-sources`, work at `/kryptik-work`, the tree at
 `/kryptik` (`build/stages/03-chroot-prep.sh`). Stages 04 and 05 therefore
-never see the host's paths. Stage 06 and the Rust binaries do.
+never see the host's paths. Stage 06 does; the Rust binaries are built at
+them but name none (below).
 
 ## What differs between two builds today
 
@@ -107,9 +108,10 @@ which nothing does today, would take most of them. The comparison finds the rest
 ### The Rust binaries
 
 kryptikd and kryptik-wlproxy are built on the runner by cargo, at the
-checkout's path and with the runner's `CARGO_HOME`, and both paths end up in
-panic locations. `--remap-path-prefix` for each removes them. The toolchain
-is already pinned by hash (`build/config/rust.lock`).
+checkout's path, with the runner's `CARGO_HOME` and into `/mnt/kryptik/cargo`,
+and each of those paths would end up in panic locations. The Distro workflow
+passes `--remap-path-prefix` for all three, and refuses a binary that still
+names one. The toolchain is already pinned by hash (`build/config/rust.lock`).
 
 ### The media
 
