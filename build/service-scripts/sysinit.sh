@@ -229,5 +229,6 @@ if [ -d /usr/lib/kryptik/sysctl.d ]; then
     done
 fi
 # Before the first login prompt: microcode the kernel refused is named there.
-/usr/libexec/kryptik/microcode-notice.sh || true
+. /usr/libexec/kryptik/microcode-notice.sh
+microcode_notice || true
 echo "sysinit: complete"

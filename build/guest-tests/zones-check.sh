@@ -1162,7 +1162,7 @@ done < /usr/lib/kryptik/sysctl.d/99-kryptik-hardening.conf
 mc_notice=/run/issue.d/kryptik-microcode.issue
 mc_boot="$(cat "$mc_notice" 2>/dev/null)"
 echo '<3>microcode: No sha256 digest for patch ID: 0xb404108 found' > /dev/kmsg
-/usr/libexec/kryptik/microcode-notice.sh > /dev/null 2>&1
+sh -c '. /usr/libexec/kryptik/microcode-notice.sh; microcode_notice' > /dev/null 2>&1
 mc_told="$(cat "$mc_notice" 2>/dev/null)"
 rm -f "$mc_notice"
 if [[ -z "$mc_boot" && "$mc_told" == "kryptik microcode: "*": update the machine's firmware (BIOS)" ]]; then

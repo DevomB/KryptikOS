@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Tests for build/service-scripts/microcode-notice.sh: the login prompt names microcode the
-# kernel refused, and says nothing once none was. Offline, with dmesg stood in for.
+# Tests for build/service-scripts/microcode-notice.sh, sourced as sysinit sources it: the login
+# prompt names microcode the kernel refused, and says nothing once none was. Offline, with dmesg
+# stood in for.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT="${ROOT}/build/service-scripts/microcode-notice.sh"
+SYSINIT="${ROOT}/build/service-scripts/sysinit.sh"
 
 PASS=0; FAIL=0
 green() { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
@@ -14,10 +16,10 @@ mkdir -p "$T/bin"
 printf '#!/bin/sh\ncat "%s/kernel.log"\n' "$T" > "$T/bin/dmesg"
 chmod +x "$T/bin/dmesg"
 NOTICE="$T/issue.d/kryptik-microcode.issue"
-boot() {   # boot SHELL LOG-LINE...: the script under SHELL, with that kernel log
+boot() {   # boot SHELL LOG-LINE...: microcode_notice under SHELL, with that kernel log
     local sh="$1"; shift
     printf '%s\n' "$@" > "$T/kernel.log"
-    PATH="$T/bin:$PATH" KRYPTIK_MICROCODE_NOTICE="$NOTICE" "$sh" "$SCRIPT" > "$T/said" 2>&1
+    PATH="$T/bin:$PATH" MICROCODE_NOTICE="$NOTICE" "$sh" -c '. "$1"; microcode_notice' sh "$SCRIPT" > "$T/said" 2>&1
 }
 
 for sh in sh bash dash; do
@@ -43,16 +45,20 @@ for sh in sh bash dash; do
     [[ "$rc" -eq 0 && ! -e "$NOTICE" && ! -s "$T/said" ]] && green "applied microcode leaves no notice, and clears an old one" \
         || red "applied microcode" "exit ${rc}; notice: $(cat "$NOTICE" 2>&1); said: $(cat "$T/said")"
 
-    # A kernel log it cannot read is not a refusal; sysinit runs under sh -e, so it exits 0.
+    # A kernel log it cannot read is not a refusal, and the function returns 0.
     printf '#!/bin/sh\nexit 1\n' > "$T/bin/dmesg"
     boot "$sh"; rc=$?
     printf '#!/bin/sh\ncat "%s/kernel.log"\n' "$T" > "$T/bin/dmesg"
-    [[ "$rc" -eq 0 && ! -e "$NOTICE" ]] && green "an unreadable kernel log names nothing, and exits 0" \
+    [[ "$rc" -eq 0 && ! -e "$NOTICE" ]] && green "an unreadable kernel log names nothing, and returns 0" \
         || red "an unreadable kernel log" "exit ${rc}; notice: $(cat "$NOTICE" 2>&1)"
 done
 
-grep -q '^/usr/libexec/kryptik/microcode-notice.sh || true$' "${ROOT}/build/service-scripts/sysinit.sh" \
-    && green "sysinit runs it before the first login prompt" || red "sysinit does not run microcode-notice.sh"
+# sysinit runs under sh -e: it sources the file and calls the function where a failure is let pass.
+if grep -qxF '. /usr/libexec/kryptik/microcode-notice.sh' "$SYSINIT" && grep -qxF 'microcode_notice || true' "$SYSINIT"; then
+    green "sysinit sources it and calls it before the first login prompt"
+else
+    red "sysinit does not source microcode-notice.sh and call microcode_notice || true"
+fi
 
 echo
 echo "${PASS} passed, ${FAIL} failed"
