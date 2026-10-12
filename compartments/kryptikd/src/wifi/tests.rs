@@ -18,8 +18,8 @@ fn add_list_forget_round_trip() {
     assert_eq!(
         text,
         "ctrl_interface=/run/wpa_supplicant\nupdate_config=0\n\
-             \nnetwork={\n\tssid=\"Home\"\n\tpsk=\"correct horse battery\"\n}\n\
-             \nnetwork={\n\tssid=\"Cafe Wifi\"\n\tpsk=0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789abcdef\n}\n"
+             \nnetwork={\n\tssid=\"Home\"\n\tkey_mgmt=WPA-PSK WPA-PSK-SHA256 SAE\n\tieee80211w=1\n\tpsk=\"correct horse battery\"\n}\n\
+             \nnetwork={\n\tssid=\"Cafe Wifi\"\n\tkey_mgmt=WPA-PSK WPA-PSK-SHA256\n\tieee80211w=1\n\tpsk=0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789abcdef\n}\n"
     );
     let md = fs::metadata(conf_path(&dir)).unwrap();
     assert_eq!(md.mode() & 0o7777, 0o400);
@@ -151,6 +151,53 @@ fn foreign_file_refused() {
     let e = add(&dir, None, "Home", "long enough").unwrap_err();
     assert!(e.contains("something else edited"), "{e}");
     assert_eq!(fs::read_to_string(conf_path(&dir)).unwrap(), "ap_scan=1\n");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn key_management_follows_what_was_saved() {
+    let hex = "f".repeat(64);
+    let text = render(&[
+        Network { ssid: "a".into(), psk: Psk::Passphrase("pass word".into()) },
+        Network { ssid: "b".into(), psk: Psk::Hex(hex.clone()) },
+    ]);
+    // A passphrase allows SAE, a raw key cannot; neither ever names 802.1X.
+    assert!(text.contains("\tssid=\"a\"\n\tkey_mgmt=WPA-PSK WPA-PSK-SHA256 SAE\n\tieee80211w=1\n\tpsk=\"pass word\"\n"), "{text}");
+    assert!(text.contains(&format!("\tssid=\"b\"\n\tkey_mgmt=WPA-PSK WPA-PSK-SHA256\n\tieee80211w=1\n\tpsk={hex}\n")), "{text}");
+    assert!(!text.contains("EAP"), "{text}");
+    for bad in [
+        // The key management a raw key cannot have, and a passphrase's without its protection.
+        format!("network={{\n\tssid=\"b\"\n\tkey_mgmt=WPA-PSK WPA-PSK-SHA256 SAE\n\tieee80211w=1\n\tpsk={hex}\n}}\n"),
+        "network={\n\tssid=\"a\"\n\tkey_mgmt=WPA-PSK WPA-PSK-SHA256 SAE\n\tpsk=\"pass word\"\n}\n".to_string(),
+        "network={\n\tssid=\"a\"\n\tieee80211w=1\n\tpsk=\"pass word\"\n}\n".to_string(),
+        "network={\n\tssid=\"a\"\n\tkey_mgmt=WPA-EAP\n\tieee80211w=1\n\tpsk=\"pass word\"\n}\n".to_string(),
+        "network={\n\tssid=\"a\"\n\tieee80211w=1\n\tieee80211w=1\n\tpsk=\"pass word\"\n}\n".to_string(),
+    ] {
+        let e = parse(&bad).unwrap_err();
+        assert!(e.contains("line "), "{bad:?}: {e}");
+        assert!(!e.contains("pass word"), "{e}");
+    }
+}
+
+#[test]
+fn older_file_rewritten_with_key_management() {
+    let dir = tmpdir("refresh");
+    assert!(!refresh(&dir, None).unwrap(), "no file: nothing to rewrite");
+    fs::create_dir_all(&dir).unwrap();
+    // As an older kryptikd wrote it: no key management, so wpa_supplicant's default with EAP and without SAE.
+    let older = "ctrl_interface=/run/wpa_supplicant\nupdate_config=0\n\nnetwork={\n\tssid=\"Home\"\n\tpsk=\"correct horse battery\"\n}\n";
+    fs::write(conf_path(&dir), older).unwrap();
+    assert_eq!(list(&dir).unwrap(), vec!["Home"], "an older file still reads");
+    assert!(refresh(&dir, None).unwrap());
+    let now = fs::read_to_string(conf_path(&dir)).unwrap();
+    assert!(now.contains("\tkey_mgmt=WPA-PSK WPA-PSK-SHA256 SAE\n\tieee80211w=1\n"), "{now}");
+    assert_eq!(fs::metadata(conf_path(&dir)).unwrap().mode() & 0o7777, 0o400);
+    assert!(!refresh(&dir, None).unwrap(), "a current file is left alone");
+    // Replaced, as the 0400 file takes no write.
+    fs::remove_file(conf_path(&dir)).unwrap();
+    fs::write(conf_path(&dir), "ap_scan=1\n").unwrap();
+    assert!(refresh(&dir, None).unwrap_err().contains("something else edited"));
+    assert_eq!(fs::read_to_string(conf_path(&dir)).unwrap(), "ap_scan=1\n", "a foreign file is not rewritten");
     let _ = fs::remove_dir_all(&dir);
 }
 
