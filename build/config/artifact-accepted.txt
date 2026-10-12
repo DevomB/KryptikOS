@@ -78,7 +78,6 @@ NO-SSP  usr/lib/perl5/*/auto/I18N/Langinfo/Langinfo.so   # the same
 NO-SSP  usr/lib/python3.*/lib-dynload/_contextvars.cpython-*.so          # the same
 NO-SSP  usr/lib/python3.*/lib-dynload/_heapq.cpython-*.so                # the same
 NO-SSP  usr/lib/python3.*/lib-dynload/_statistics.cpython-*.so           # the same
-NO-SSP  usr/lib/python3.*/lib-dynload/_testimportmultiple.cpython-*.so   # the same
 NO-SSP  usr/sbin/accessdb           # the same
 NO-SSP  usr/sbin/findfs             # the same
 NO-SSP  usr/sbin/nologin            # the same
