@@ -1,0 +1,12 @@
+# What the sysroot keeps for the build and the image leaves out; stage 06 passes each to rsync --exclude.
+#   /path-or-pattern   # what reads it, and why nothing in the image does
+
+/usr/bin/cmake         # json-c's build files; cmake is never part of the image
+/usr/bin/ccmake        # the same
+/usr/bin/cpack         # the same
+/usr/bin/ctest         # the same
+/usr/share/cmake*      # the same
+/usr/share/hwdata                 # libdisplay-info compiles pnp.ids into itself at build time, and udev's hwdb carries the PCI and USB names
+/usr/share/pkgconfig/hwdata.pc    # the same
+/usr/bin/lto-dump                 # GCC's dump of LTO bytecode, which no build runs
+/usr/share/man/man1/lto-dump.1    # the same
