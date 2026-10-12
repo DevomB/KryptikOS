@@ -33,7 +33,8 @@ ath11k/WCN6855/hw2.0/[!n]*
 ath11k/WCN6855/hw2.1/[!n]*
 ath12k/WCN7850/hw2.0/[!n]*
 
-# MediaTek MT7921 (7961 firmware), MT7922 and MT7925, without their Bluetooth.
+# MediaTek MT7920 and MT7921 (the 7961 firmware, 1a for the MT7920), MT7922 and MT7925, without
+# their Bluetooth.
 mediatek/WIFI_MT7961_patch_mcu_1_2_hdr.bin
 mediatek/WIFI_MT7961_patch_mcu_1a_2_hdr.bin
 mediatek/WIFI_RAM_CODE_MT7961_1.bin
@@ -44,9 +45,9 @@ mediatek/mt7925/WIFI_*
 
 # Realtek: the PCIe chips rtw88 and rtw89 drive here, and the USB sticks rtl8xxxu drives (its
 # MODULE_FIRMWARE names; linux-firmware has no rtl8723bu_bt, and the 8192CU ids are behind
-# RTL8XXXU_UNTESTED, which this kernel leaves unset). rtw89 asks for the newest format it reads first
-# (fw_format_max); linux-firmware also has formats only later kernels read, and chips not built
-# here (8852BT, 8922D).
+# RTL8XXXU_UNTESTED, which this kernel leaves unset). rtw89 asks for the newest format it reads
+# first (fw_format_max); linux-firmware also has formats only later kernels read, and chips not
+# built here (8852BT, 8922D).
 rtw88/rtw8723d_fw.bin
 rtw88/rtw8821c_fw.bin
 rtw88/rtw8822b_fw.bin
