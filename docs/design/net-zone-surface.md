@@ -84,12 +84,12 @@ kernel.
 
 - **What works.** The privsep wrapper (`src/drivers/driver_privsep.c`)
   implements scan, keys, authentication, association and a few events, and
-  the README warns that it lags the full driver interface. Whether SAE, OWE
-  and DPP, which the recipe builds (`wpa-supplicant.sh:16-18`), work through
+  the README warns that it lags the full driver interface. Whether SAE and
+  OWE, which the recipe builds (`wpa-supplicant.sh:18-19`), work through
   it is for the hwsim suite to show.
 - **The build.** With `CONFIG_PRIVSEP`, wpa_supplicant drives only the privsep
   wrapper, so the zones suite's access point, the same binary in AP mode
-  (`CONFIG_AP`, `wpa-supplicant.sh:12`), needs a build of its own.
+  (`CONFIG_AP`, `wpa-supplicant.sh:14`), needs a build of its own.
 - **The zone.** A fourth mapped id, beside root, dhcpcd's 100 and nobody;
   `wpa_priv`'s socket directory; `netzone-init.sh` starting `wpa_priv` for each
   radio, then wpa_supplicant as that user; and its control socket, which

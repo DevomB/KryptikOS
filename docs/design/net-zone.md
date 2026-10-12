@@ -272,6 +272,11 @@ configured the zone keeps its IPv4 path and the launcher says so.
   lease once there is a carrier. `wifi=` is `none`, `unconfigured` (no
   credentials), `connecting`, or the associated SSID; `READY` does not wait
   for association.
+- **It takes no provisioning frames.** `wpa_supplicant` is built without
+  DPP: with it a station registers for DPP's and GAS's public action frames
+  (`nl80211_mgmt_subscribe_non_ap` in hostap's `driver_nl80211.c`), which any
+  radio in range can send it unassociated, for a way of joining networks
+  Kryptik does not offer.
 - **The net zone knows the passphrases.** They live in zone 0 at
   `/var/lib/kryptik/wifi/wpa_supplicant.conf`, written only by `kryptikd serve`
   for `kryptik wifi add|forget <SSID>`. The passphrase is read on the
