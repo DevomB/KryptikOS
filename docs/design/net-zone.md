@@ -364,9 +364,9 @@ configured the zone keeps its IPv4 path and the launcher says so.
   `wpa_cli` passes on neither event that means a refused passphrase. Beside
   each supplicant the net zone starts `kryptikd supplicant --watch RADIO`, as
   the supplicant's user, under its confinement and with no capability. The
-  listener keeps
-  `/run/wpa_supplicant/RADIO.refused` naming the network after WPA2's 4-way
-  handshake fails (`CTRL-EVENT-SSID-TEMP-DISABLED ... reason=WRONG_KEY`), or
+  listener keeps `/run/wpa_supplicant/RADIO.refused` naming the network after
+  WPA2's 4-way handshake fails (`CTRL-EVENT-SSID-TEMP-DISABLED ...
+  reason=WRONG_KEY`), or
   after the access point being joined refuses the station's SAE confirm
   (`CTRL-EVENT-AUTH-REJECT ... auth_type=3 auth_transaction=2
   status_code=15`, which wpa_supplicant itself takes for a passphrase
