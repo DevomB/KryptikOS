@@ -122,11 +122,13 @@ fn time_offsets(origin: u64, mono: u64, boot: u64) -> String {
 
 /// The id a daemon in a zone that keeps `caps::PRIVSEP` drops to: dhcpcd's, in the nic zone.
 pub const SERVICE_ID: u32 = 100;
+/// wpa_supplicant's own user in the nic zone, mapped beside `SERVICE_ID` (supplicant.rs).
+pub const WIFI_ID: u32 = 101;
 
 /// Write a new user namespace's id maps, denying setgroups first as an unprivileged gid_map
 /// needs. `with_nobody` maps 65534 too, which needs CAP_SETUID: a root launch only. `service`
-/// maps `SERVICE_ID` as well and leaves setgroups allowed, for that daemon's drop: a root launch
-/// of a zone that keeps `caps::PRIVSEP` only.
+/// maps `SERVICE_ID` and `WIFI_ID` as well and leaves setgroups allowed, for those daemons'
+/// drops: a root launch of a zone that keeps `caps::PRIVSEP` only.
 pub fn write_id_maps(
     pid: libc::pid_t,
     outer_uid: u32,
@@ -146,6 +148,7 @@ pub fn write_id_maps(
         let mut m = format!("0 {outer} 1\n");
         if service {
             m.push_str(&format!("{SERVICE_ID} {} 1\n", outer + SERVICE_ID));
+            m.push_str(&format!("{WIFI_ID} {} 1\n", outer + WIFI_ID));
         }
         if with_nobody {
             m.push_str(&format!("65534 {} 1\n", outer + 65534));

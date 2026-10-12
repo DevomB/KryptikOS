@@ -1,7 +1,7 @@
 # Narrowing what the net zone reaches in the kernel
 
-**A proposal, waiting for the owner's decision**, but for the time namespace,
-which is built. The
+**A proposal, waiting for the owner's decision**, but for the time namespace
+and the supplicant's own user, which are built. The
 [threat model](../threat-model.md#compromised-net-zone) lists what a
 compromised net zone still reaches. This note weighs three ways to narrow it:
 a filter on generic-netlink families, wpa_supplicant's privilege separation,
@@ -22,7 +22,8 @@ Its policy (`compartments/zones/policy/net.seccomp`) opens packet sockets
   which it exits; its root helper keeps `CAP_NET_ADMIN`, its parsers keep
   nothing;
 - wpa_supplicant: nl80211 through generic netlink, and a packet socket for
-  EAPOL, as the zone's root (`netzone-init.sh:204`).
+  EAPOL, as its own user with `CAP_NET_ADMIN` and `CAP_NET_RAW`
+  (`compartments/kryptikd/src/supplicant.rs`).
 
 Generic netlink is one protocol for every family the kernel builds, so the
 policy cannot open nl80211 alone. A family's commands marked
@@ -66,9 +67,9 @@ working.
 
 ## wpa_supplicant's privilege separation
 
-**Today.** wpa_supplicant runs as the zone's root with every capability the
+**Before.** wpa_supplicant ran as the zone's root with every capability the
 zone keeps, and parses what the air sends: scan results, EAPOL and EAP. A
-flaw there gets `CAP_NET_ADMIN` over nf_tables and the routes, and the
+flaw there got `CAP_NET_ADMIN` over nf_tables and the routes, and the
 broker's socket.
 
 **What hostap offers.** `CONFIG_PRIVSEP` (still in hostap 2.12's defconfig,
@@ -80,24 +81,39 @@ README's other way, `CAP_NET_ADMIN` and `CAP_NET_RAW` without root, keeps the
 network administrator's capability, so it narrows file access and not the
 kernel.
 
-**What it costs.**
+**Why not hostap's.** Its wrapper lags the driver interface where the
+networks Kryptik joins need it. In hostap 2.12, as the recipe builds it:
 
-- **What works.** The privsep wrapper (`src/drivers/driver_privsep.c`)
-  implements scan, keys, authentication, association and a few events, and
-  the README warns that it lags the full driver interface. Whether SAE and
-  OWE, which the recipe builds (`wpa-supplicant.sh:18-19`), work through
-  it is for the hwsim suite to show.
-- **The build.** With `CONFIG_PRIVSEP`, wpa_supplicant drives only the privsep
-  wrapper, so the zones suite's access point, the same binary in AP mode
-  (`CONFIG_AP`, `wpa-supplicant.sh:14`), needs a build of its own.
-- **The zone.** A fourth mapped id, beside root, dhcpcd's 100 and nobody;
-  `wpa_priv`'s socket directory; `netzone-init.sh` starting `wpa_priv` for each
-  radio, then wpa_supplicant as that user; and its control socket, which
-  `netzone-init.sh:217` reads for the status line, moved where that user can
-  create it.
+- the associate command has no field for protected management frames
+  (`struct privsep_cmd_associate`, `src/common/privsep_commands.h:60-74`), so
+  `wpa_priv` never asks nl80211 for them (`wpa_supplicant/wpa_priv.c:296-337`),
+  and SAE needs them, as every saved network asks for them where offered;
+- a deauthentication never reaches the driver:
+  `wpa_driver_privsep_deauthenticate` logs a TODO and returns 0
+  (`src/drivers/driver_privsep.c:379-387`);
+- with `CONFIG_PRIVSEP` the binary drives only that wrapper, so the zones
+  suite's access point, the same binary in AP mode (`CONFIG_AP`,
+  `wpa-supplicant.sh:14`), would need a build of its own.
 
-**What it closes.** A flaw in what parses scan results, EAPOL or EAP gets an
-unprivileged user with no capability, instead of the zone's root.
+SAE's own frames would pass (`driver_privsep.c:290-291`,
+`wpa_priv.c:286-288`); the association after them would not be protected.
+
+**Built instead.** The README's other way, without root:
+`kryptikd supplicant` starts wpa_supplicant as the zone's id 101 with
+`CAP_NET_ADMIN` and `CAP_NET_RAW` as ambient capabilities, under a socket
+filter of its own (unix, packet and datagram inet sockets, route and generic
+netlink) and a Landlock ruleset that writes in `/run/wpa_supplicant` alone.
+The credentials file is 0440, readable by that user and the zone root's
+group. `wifi-supplicant-unprivileged` checks the running supplicant's ids,
+capability sets and filters, `wifi-supplicant-no-nft` that the same
+confinement cannot add an nf_tables table, and `wifi-wpa2-plain` and
+`wifi-sae` that it still joins both ways.
+
+**What it closes.** A flaw in what parses scan results, EAPOL or EAP gets
+that user: not nf_tables, the broker's socket, or the zone root's and
+dhcpcd's files. **What it leaves:** the network administrator's capability
+over the zone's links and routes, and nl80211, which hostap's way would have
+held in `wpa_priv` as root instead.
 
 ## A time namespace per zone
 
@@ -152,20 +168,21 @@ frame callbacks while the zone's clock stands apart from the compositor's
 
 ## Side by side
 
-| | genl family filter | wpa_supplicant privsep | time namespace |
+| | genl family filter | wpa_supplicant's own user | time namespace |
 | --- | --- | --- | --- |
-| closes | ethtool's setters, other families' namespace-admin commands | the zone's root for a flaw in Wi-Fi parsing | the shared boot and monotonic clocks, for what reads clocks |
-| leaves | nf_tables, packet sockets, nl80211 | `wpa_priv` as root; the kernel's own 802.11 parsing | idle time, `CLOCK_REALTIME`, the offsets in `/proc/self/timens_offsets`, the scheduler's clock in `/proc/<pid>/sched`, the machine's time data in the vDSO, the CPU's timestamp counter |
-| needs | BPF and a BPF LSM, or a kernel patch | a second build, a mapped id, a trial of WPA3 | a flag and an offsets write in kryptikd (built) |
+| closes | ethtool's setters, other families' namespace-admin commands | nf_tables, the broker's socket and the zone root's files, for a flaw in Wi-Fi parsing | the shared boot and monotonic clocks, for what reads clocks |
+| leaves | nf_tables, packet sockets, nl80211 | `CAP_NET_ADMIN` and `CAP_NET_RAW` over the zone's links; the kernel's own 802.11 parsing | idle time, `CLOCK_REALTIME`, the offsets in `/proc/self/timens_offsets`, the scheduler's clock in `/proc/<pid>/sched`, the machine's time data in the vDSO, the CPU's timestamp counter |
+| needs | BPF and a BPF LSM, or a kernel patch | a mapped id, a socket filter and a ruleset in kryptikd (built) | a flag and an offsets write in kryptikd (built) |
 | a suite can show it | yes | yes, over hwsim | yes |
 
 ## Proposed decision
 
 - **A time namespace per zone: built.** A flag and a write in kryptikd, no
   kernel change, and a check in the zones and desktop suites each.
-- **wpa_supplicant's privilege separation: a trial first.** Build it beside
-  the current binary and run the hwsim suite with WPA2 and SAE; adopt it only
-  if the networks Kryptik supports still join.
+- **wpa_supplicant as its own user: built.** hostap's privilege separation
+  cannot ask for protected management frames, which SAE needs, so the
+  supplicant runs as its own user with the two capabilities nl80211 and
+  EAPOL take, and the hwsim suite joins WPA2 and SAE that way.
 - **The family filter: not now.** Each way to enforce it either builds BPF,
   which the hardening leaves out for the whole machine, or carries a kernel
   patch through every LTS bump, for families the zone's root alone reaches.

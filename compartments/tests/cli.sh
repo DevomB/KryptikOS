@@ -264,8 +264,8 @@ else
     fail "wifi add: exit $rc"
     info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-240)"
 fi
-if [[ "$(stat -c %a "$WCONF" 2>/dev/null)" == 400 ]] && grep -qxF $'\tssid="Home"' "$WCONF" && grep -qxF $'\tpsk="correct horse battery"' "$WCONF"; then
-    pass "the file is 0400 and holds the ssid= and psk= lines kryptikd writes"
+if [[ "$(stat -c %a "$WCONF" 2>/dev/null)" == 440 ]] && grep -qxF $'\tssid="Home"' "$WCONF" && grep -qxF $'\tpsk="correct horse battery"' "$WCONF"; then
+    pass "the file is 0440 and holds the ssid= and psk= lines kryptikd writes"
 else
     fail "the file is not as kryptikd writes it (mode $(stat -c %a "$WCONF" 2>&1))"
 fi

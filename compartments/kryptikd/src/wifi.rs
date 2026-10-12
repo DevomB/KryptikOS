@@ -1,5 +1,6 @@
 //! Wi-Fi credentials for the net zone (docs/design/net-zone.md). kryptikd alone writes the file,
-//! 0400 and owned by the host uid of the nic zone's root; the zone gets it read-only on next start.
+//! 0440, owned by the nic zone's wpa_supplicant user and grouped with its root, which checks it is
+//! there; the zone gets it read-only on next start.
 
 use std::fs;
 use std::io::{self, Read, Write};
@@ -207,13 +208,17 @@ pub fn load(dir: &Path) -> Result<Vec<Network>, String> {
     parse(&text).map_err(|e| format!("{}: {e}", conf_path(dir).display()))
 }
 
-/// Rewrite in today's form a file an older kryptikd wrote, so the net zone reads each network's
-/// key management; true when it was rewritten. A current, absent or foreign file is left alone.
+/// Rewrite in today's form, owner and mode a file an older kryptikd wrote, so the net zone's
+/// supplicant reads it and each network's key management; true when it was rewritten. A
+/// current, absent or foreign file is left alone.
 pub fn refresh(dir: &Path, owner: Option<(u32, u32)>) -> Result<bool, String> {
+    use std::os::unix::fs::MetadataExt;
     let Some(text) = read_text(dir)? else { return Ok(false) };
     let nets = parse(&text).map_err(|e| format!("{}: {e}", conf_path(dir).display()))?;
     let current = render(&nets);
-    if current == text {
+    let md = fs::symlink_metadata(conf_path(dir)).map_err(|e| format!("{}: {e}", conf_path(dir).display()))?;
+    let owned = owner.map_or(true, |(u, g)| md.uid() == u && md.gid() == g);
+    if current == text && owned && md.mode() & 0o7777 == MODE {
         return Ok(false);
     }
     write_atomic(dir, &current, owner)?;
@@ -225,7 +230,7 @@ pub fn list(dir: &Path) -> Result<Vec<String>, String> {
     Ok(load(dir)?.into_iter().map(|n| n.ssid).collect())
 }
 
-/// The nic zone's identity, to own the file on a root run; `None` keeps the writer's.
+/// Who owns the file on a root run, from the nic zone's identity; `None` keeps the writer's.
 pub fn owner_for(zones_dir: &Path) -> Result<Option<(u32, u32)>, String> {
     if unsafe { libc::geteuid() } != 0 {
         return Ok(None);
@@ -236,7 +241,13 @@ pub fn owner_for(zones_dir: &Path) -> Result<Option<(u32, u32)>, String> {
         .iter()
         .find(|z| z.network == NetworkMode::Nic)
         .and_then(|z| z.uid_base)
-        .map(|b| (b, b)))
+        .map(|b| owner_in(b, b)))
+}
+
+/// The host ids that own the file for a nic zone whose root is host `uid`/`gid`: its
+/// supplicant's user, which reads it, and its root's group, as `MODE` lets both read.
+pub fn owner_in(uid: u32, gid: u32) -> (u32, u32) {
+    (uid + crate::isolate::WIFI_ID, gid)
 }
 
 /// Add a network or replace its block; nothing is written unless both values pass.
@@ -292,11 +303,15 @@ fn ensure_dir(dir: &Path) -> Result<(), String> {
     }
 }
 
-/// The file, 0400 and owned as asked, replaced whole.
+/// Read by its owner, the supplicant's user, and its group, the zone's root; dhcpcd and nobody
+/// in the zone cannot.
+const MODE: u32 = 0o440;
+
+/// The file, `MODE` and owned as asked, replaced whole.
 fn write_atomic(dir: &Path, contents: &str, owner: Option<(u32, u32)>) -> Result<(), String> {
     ensure_dir(dir)?;
     let path = conf_path(dir);
-    crate::files::write_atomic(&path, &[contents.as_bytes()], 0o400, owner).map_err(|e| format!("{}: {e}", path.display()))
+    crate::files::write_atomic(&path, &[contents.as_bytes()], MODE, owner).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Restart the net zone on the new file and say how it went; other directories (tests) skip this.
