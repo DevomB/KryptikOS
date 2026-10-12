@@ -65,7 +65,7 @@ exception_flags_for() {
 set_flags_for() {
     local pkg="$1" drop
     export CFLAGS="${KRYPTIK_OPT} ${KRYPTIK_CFLAGS_HARDENING}"
-    export CXXFLAGS="${KRYPTIK_OPT} ${KRYPTIK_CFLAGS_HARDENING}"
+    export CXXFLAGS="${KRYPTIK_OPT} ${KRYPTIK_CFLAGS_HARDENING} ${KRYPTIK_CXXFLAGS_HARDENING}"
     export LDFLAGS="${KRYPTIK_LDFLAGS_HARDENING}"
 
     while read -r drop; do
