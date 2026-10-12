@@ -5,7 +5,10 @@
 # unassociated, for a way of joining networks nothing here offers.
 s_wpa_supplicant() {
     local src; src="$(unpack "wpa_supplicant-${V_WPA_SUPPLICANT}.tar.gz" "wpa_supplicant-${V_WPA_SUPPLICANT}")"
-    cd "$src/wpa_supplicant"
+    cd "$src"
+    # Scan ages that the net zone's time namespace would otherwise put hours in the past.
+    apply_repo_patches "wpa_supplicant-${V_WPA_SUPPLICANT}"
+    cd wpa_supplicant
     cat > .config <<'EOF'
 CONFIG_DRIVER_NL80211=y
 CONFIG_LIBNL32=y
