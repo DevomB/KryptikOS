@@ -715,6 +715,8 @@ ap() { nsenter -t "$AP_HOLD" -n "$@"; }
 ap_wpa() { ap wpa_cli -p /run/zt-ap-ctrl -i "$AP_IF" "$@" 2>/dev/null; }
 # The station in the net zone, by the name that zone gave it (nicN once the radio has moved).
 sta_if() { nsenter -t "$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)" -n iw dev 2>/dev/null | awk '$1 == "Interface" { print $2; exit }'; }
+# What the station's radio itself is and hears, beside its supplicant's view.
+sta_iw() { nsenter -t "$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)" -n iw dev "$(sta_if)" "$@" 2>&1; }
 # What the net zone's supplicant sees, for a failure's message: its socket is its own user's.
 sta_wpa() {
     local ni; ni="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
@@ -955,7 +957,7 @@ if [[ "$open_up" = 1 && "$line" == *" wifi=$OPEN_SSID "* && "$open_lease" == 192
    && grep -q "added open network \"$OPEN_SSID\"" "$LOG/wifi-add-open.out"; then
     pass "wifi-open" "saved with --open and no passphrase, $OPEN_SSID was joined and the net zone leased ${open_lease} there"
 else
-    fail "wifi-open" "access point up: ${open_up} ($(ap iw dev "$AP_IF" info 2>&1 | grep -E 'addr|ssid|type|channel' | tr -s '\t\n' '  ')); $(tr '\n' ' ' < "$LOG/wifi-add-open.out"); newest READY: ${line:-none}; lease: ${open_lease:-none}; $(tail -2 "$LOG/ap-open-wpa.log" 2>/dev/null | tr '\n' ' '); the station: $(sta_wpa status | cut -c1-240); networks: $(sta_wpa list_networks | cut -c1-240); seen: $(sta_wpa scan_results | cut -c1-400); ignored: $(sta_wpa bssid_ignore | cut -c1-120)"
+    fail "wifi-open" "access point up: ${open_up} ($(ap iw dev "$AP_IF" info 2>&1 | grep -E 'addr|ssid|type|channel' | tr -s '\t\n' '  ')); $(tr '\n' ' ' < "$LOG/wifi-add-open.out"); newest READY: ${line:-none}; lease: ${open_lease:-none}; $(tail -2 "$LOG/ap-open-wpa.log" 2>/dev/null | tr '\n' ' '); the station: $(sta_wpa status | cut -c1-240); networks: $(sta_wpa list_networks | cut -c1-240); seen: $(sta_wpa scan_results | cut -c1-400); ignored: $(sta_wpa bssid_ignore | cut -c1-120); its radio: $(sta_iw info | grep -E 'addr|type|channel' | tr -s '\t\n' '  '); link: $(sta_iw link | head -2 | tr '\n' ' '); a scan of its own: $(sta_iw scan | grep -E '^BSS|SSID:|command failed' | tr -s '\t\n' '  ' | cut -c1-300); the access point's stations: $(ap iw dev "$AP_IF" station dump 2>&1 | grep -c '^Station'); the kernel: $(dmesg 2>/dev/null | grep -aE 'nic[0-9]+:|wlan[0-9]+:' | tail -12 | tr '\n' ';' | cut -c1-900)"
 fi
 # Back to the wire: the radios go first, so the net zone the forget restarts finds none.
 for f in /run/zt-ap-dnsmasq.pid /run/zt-ap-wpa.pid; do p="$(cat "$f" 2>/dev/null)"; [[ -n "$p" ]] && kill "$p" 2>/dev/null; done
