@@ -162,13 +162,16 @@ under the 5 s deadline, so supervision is never more than a piece away.
 
 ## What the user sees
 
-`kryptik update status | fetch | apply | auto on|off` go through the launch
-service. `status` shows the running version, the newest pointer's version and
-age, whether fetching is automatic, and what has arrived. `fetch` asks for the
-release the newest pointer names. `apply` runs `kryptik-update apply` on the
-complete stage, with the usual trial boot and fallback; the stage goes once
-the machine runs that release and no trial is pending or failed, so after a
-failed trial the `--retry` the refusal prints names a stage that is still
+`kryptik update status | fetch | forget | apply | auto on|off` go through the
+launch service. `status` shows the running version, the newest pointer's
+version and age, whether fetching is automatic, and what has arrived. `fetch`
+asks for the release the newest pointer names. `forget` drops the release
+asked for and what has arrived of it, and automatic fetching then passes that
+version over until a newer statement names another or `fetch` asks for it
+again; it is refused while an apply runs. `apply` runs `kryptik-update apply`
+on the complete stage, with the usual trial boot and fallback; the stage goes
+once the machine runs that release and no trial is pending or failed, so after
+a failed trial the `--retry` the refusal prints names a stage that is still
 there.
 Nothing is installed unless the user asks, and nothing is fetched unless the
 user asks or has turned automatic fetching on.
@@ -313,9 +316,6 @@ channel's directory.
 
 ## Open points
 
-- A way to stop a release that is arriving: once asked for, by hand or
-  automatically, it is fetched until it is whole or a newer statement names
-  another.
 - Delta updates: dm-verity's block structure would allow fetching only
   changed blocks instead of the whole image.
 

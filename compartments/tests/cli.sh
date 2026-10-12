@@ -289,7 +289,7 @@ fi
 
 # --- update: refused here before the launch service is asked -----------------
 out="$(K update 2>&1)"; rc=$?
-if (( rc == 2 )) && [[ "$out" == *"status, fetch, apply, or auto on|off"* ]]; then
+if (( rc == 2 )) && [[ "$out" == *"status, fetch, forget, apply, or auto on|off"* ]]; then
     pass "update without a subcommand fails and names the subcommands"
 else
     fail "update without a subcommand: exit $rc"

@@ -292,6 +292,7 @@ at the administration login without `su`:
 kryptik update status     # the running version, the newest release the channel names and how old that statement is, what has arrived
 kryptik update fetch      # ask for that release: the net zone brings it onto the state partition; it is verified against the signed manifest before anything is installed
 kryptik update status     # again, until the staged release reads "complete"
+kryptik update forget     # or stop fetching it and delete what has arrived; automatic fetching then passes that release over
 kryptik update apply      # install it, with the trial boot described below
 kryptik update auto on    # fetch each newer release as it is announced; `auto off`, the default, waits for `fetch`
 ```

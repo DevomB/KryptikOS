@@ -377,6 +377,68 @@ fn auto_follows_newest_release() {
 }
 
 #[test]
+fn forget_drops_a_release_that_auto_then_passes_over() {
+    let d = scratch("forget");
+    assert!(forget(&d).unwrap_err().contains("no release has been asked for"));
+    latest(&d, &yes(), T0, "production", "1.0.2", pointer_text("1.0.3", "2027-03-02T14:05:00Z").as_bytes(), b"sig").unwrap();
+    set_auto(&d, true, Some(CH)).unwrap();
+    assert!(poll(&d, CH, "production", "1.0.2", T0).starts_with("fetch 1.0.3 "));
+    put(&d, &yes(), T0, "manifest", 0, b"m").unwrap();
+    // Forgotten: nothing of it is kept, and automatic fetching does not ask for it again.
+    assert_eq!(forget(&d).unwrap(), "1.0.3");
+    assert!(wanted(&d).is_none() && !d.join("incoming").exists() && !d.join("files").exists());
+    assert_eq!(poll(&d, CH, "production", "1.0.2", T0), "idle");
+    assert!(status(&d, T0, "1.0.2", None).contains("staged     nothing asked for; 1.0.3 was forgotten"));
+    assert!(status(&d, T0, "1.0.3", None).contains("staged     nothing asked for\n"), "a forgotten release the machine now runs is not named");
+    // A newer statement's release is fetched as before.
+    let t1 = T0 + POINTER_INTERVAL_SECS as i64;
+    latest(&d, &yes(), t1, "production", "1.0.2", pointer_text("1.0.4", "2027-03-02T15:30:00Z").as_bytes(), b"sig").unwrap();
+    assert!(poll(&d, CH, "production", "1.0.2", t1).starts_with("fetch 1.0.4 "));
+    // And `fetch` asks for a forgotten one again.
+    forget(&d).unwrap();
+    assert_eq!(poll(&d, CH, "production", "1.0.2", t1), "idle");
+    assert_eq!(want(&d, Some(CH), "production", "1.0.2").unwrap(), "1.0.4");
+    assert!(poll(&d, CH, "production", "1.0.2", t1).starts_with("fetch 1.0.4 "));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn forget_waits_for_a_put_in_flight() {
+    let d = scratch("forget-waits");
+    latest(&d, &yes(), T0, "production", "1.0.2", pointer_text("1.0.3", "2027-03-02T14:05:00Z").as_bytes(), b"sig").unwrap();
+    want(&d, Some(CH), "production", "1.0.2").unwrap();
+    // Held as `put` holds it, from its first look at the stage to its last write there.
+    let held = stage_lock(&d).unwrap();
+    let dir = d.clone();
+    let forgetting = std::thread::spawn(move || forget(&dir));
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(!forgetting.is_finished() && wanted(&d).is_some(), "forget went ahead while a put held the stage");
+    drop(held);
+    assert_eq!(forgetting.join().unwrap().unwrap(), "1.0.3");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_manifest_checked_while_its_stage_was_cleared_is_not_kept() {
+    let d = scratch("cleared-mid-check");
+    latest(&d, &yes(), T0, "production", "1.0.2", pointer_text("1.0.3", "2027-03-02T14:05:00Z").as_bytes(), b"sig").unwrap();
+    want(&d, Some(CH), "production", "1.0.2").unwrap();
+    // `forget` and `fetch` run while the pair is checked, which they do not wait for.
+    let meanwhile = |stage: &Path| {
+        forget(&d).unwrap();
+        want(&d, Some(CH), "production", "1.0.2").unwrap();
+        (yes().manifest)(stage)
+    };
+    let checks = Checks { pointer: &|_, _| Ok(()), manifest: &meanwhile };
+    put(&d, &checks, T0, "manifest", 0, b"m").unwrap();
+    assert!(put(&d, &checks, T0, "manifest.sig", 0, b"s").unwrap_err().contains("cleared while its manifest was checked"));
+    // The new request starts from nothing, and no refusal holds its pair back.
+    assert!(verified_files(&d, "1.0.3").is_none() && !d.join("refused").exists());
+    assert!(poll(&d, CH, "production", "1.0.2", T0).ends_with(" need manifest 0 manifest.sig 0"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn auto_refuses_what_fetch_refuses() {
     let d = scratch("auto-refused");
     latest(&d, &yes(), T0, "production", "1.0.2", pointer_text("1.0.3", "2027-03-02T14:05:00Z").as_bytes(), b"sig").unwrap();
@@ -467,6 +529,8 @@ fn channel_read_from_config() {
 #[test]
 fn stage_kept_through_trial() {
     let d = scratch("trial");
+    // As zone 0 makes it: the stage lock is refused in a directory others can reach.
+    private_dir(&d).unwrap();
     std::fs::create_dir_all(staging(&d, "1.0.3")).unwrap();
     std::fs::write(d.join("wanted"), "1.0.3").unwrap();
     std::fs::write(d.join("files"), LISTING).unwrap();

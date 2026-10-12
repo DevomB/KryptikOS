@@ -3,7 +3,7 @@
 
 use std::cmp::Ordering;
 use std::io::Write as _;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 pub const POINTER_MAGIC: &str = "KRYPTIK-LATEST-1";
@@ -276,10 +276,16 @@ fn run_check(tool: &Path, base: &Path, verb: &str, inputs: &[(&Path, &str)], who
 
 /// The lock that keeps checks one at a time; held while the returned file is open.
 fn check_lock() -> Result<std::fs::File, String> {
+    lock(Path::new(CHECK_LOCK))
+}
+
+/// An exclusive flock on `path`, made if missing; held while the returned file is open.
+fn lock(path: &Path) -> Result<std::fs::File, String> {
     use std::os::unix::io::AsRawFd;
-    let f = std::fs::OpenOptions::new().create(true).append(true).open(CHECK_LOCK).map_err(|e| format!("{CHECK_LOCK}: {e}"))?;
+    let f = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } < 0 {
-        return Err(format!("{CHECK_LOCK}: {}", std::io::Error::last_os_error()));
+        return Err(format!("{}: {}", path.display(), std::io::Error::last_os_error()));
     }
     Ok(f)
 }
@@ -440,12 +446,25 @@ fn put_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     crate::files::write_atomic(path, &[bytes], 0o600, None).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Held by `put`, `want`, `forget` and the discards while they read and change the request and
+/// its stage, so a piece checked against one stage never lands in the next.
+fn stage_lock(dir: &Path) -> Result<std::fs::File, String> {
+    private_dir(dir)?;
+    lock(&dir.join("stage.lock"))
+}
+
 fn stored_pointer(dir: &Path) -> Option<Pointer> {
     parse_pointer(&std::fs::read_to_string(dir.join("pointer")).ok()?).ok()
 }
 
 fn wanted(dir: &Path) -> Option<String> {
     let v = std::fs::read_to_string(dir.join("wanted")).ok()?.trim().to_string();
+    is_version(&v).then_some(v)
+}
+
+/// A release the user dropped (`forget`), which automatic fetching then leaves alone.
+fn declined(dir: &Path) -> Option<String> {
+    let v = std::fs::read_to_string(dir.join("declined")).ok()?.trim().to_string();
     is_version(&v).then_some(v)
 }
 
@@ -498,12 +517,28 @@ pub fn want(dir: &Path, channel: Option<&str>, role: &str, running: &str) -> Res
     let channel = channel.ok_or_else(|| format!("this image names no update channel ({CONF})"))?;
     // Refused here if this image would not fetch it: the poll would only say `idle`.
     resolve_base(channel, &p.base, role).map_err(|e| format!("{} cannot be fetched: {e}", p.version))?;
+    let _lock = stage_lock(dir)?;
     if wanted(dir).as_deref() != Some(p.version.as_str()) {
-        let _ = std::fs::remove_file(dir.join("files"));
-        let _ = std::fs::remove_dir_all(dir.join("incoming"));
+        clear_stage(dir);
     }
     put_file(&dir.join("wanted"), p.version.as_bytes())?;
+    // Asked for again: a forgotten version is no longer passed over.
+    let _ = std::fs::remove_file(dir.join("declined"));
     Ok(p.version)
+}
+
+/// `kryptik update forget`: drop the release asked for and what has arrived of it. Automatic
+/// fetching then passes that version over; a newer one, or `fetch`, asks again.
+pub fn forget(dir: &Path) -> Result<String, String> {
+    let _lock = stage_lock(dir)?;
+    let v = wanted(dir).ok_or("no release has been asked for")?;
+    // Recorded first, so the next poll never asks for it again in between.
+    put_file(&dir.join("declined"), v.as_bytes())?;
+    let _ = std::fs::remove_file(dir.join("wanted"));
+    if !clear_stage(dir) {
+        return Err(format!("{v} is no longer asked for, but what had arrived of it could not be deleted"));
+    }
+    Ok(v)
 }
 
 /// Anything but `on` is off, a damaged block among them.
@@ -560,7 +595,9 @@ fn outstanding(dir: &Path, channel: &str, role: &str, running: &str, now: i64) -
 /// on, the release the newest statement names is first asked for, as `fetch`
 /// would ask for it.
 pub fn poll(dir: &Path, channel: &str, role: &str, running: &str, now: i64) -> String {
-    if auto(dir) && stored_pointer(dir).is_some_and(|p| wanted(dir) != Some(p.version)) {
+    if auto(dir)
+        && stored_pointer(dir).is_some_and(|p| wanted(dir).as_ref() != Some(&p.version) && declined(dir).as_ref() != Some(&p.version))
+    {
         // Refused as `fetch` would be: nothing newer, or not fetchable here.
         let _ = want(dir, Some(channel), role, running);
     }
@@ -582,6 +619,7 @@ fn free_bytes(path: &Path) -> Option<u64> {
 
 /// `update-put`: bytes for the wanted release, under `may_put`'s rule.
 pub fn put(dir: &Path, checks: &Checks, now: i64, name: &str, offset: u64, bytes: &[u8]) -> Result<String, String> {
+    let lock = stage_lock(dir)?;
     let version = wanted(dir).ok_or("no release has been asked for")?;
     let p = stored_pointer(dir).filter(|p| p.version == version).ok_or("the release asked for is not the one the newest statement names")?;
     let stage = staging(dir, &version);
@@ -620,7 +658,16 @@ pub fn put(dir: &Path, checks: &Checks, now: i64, name: &str, offset: u64, bytes
         put_file(&dir.join("refused"), now.to_string().as_bytes())?;
         refuse(why)
     };
-    let listing = match (checks.manifest)(&stage) {
+    /* Checked unlocked, so `forget` and `fetch` need not wait for it; the stage held open
+     * meanwhile shows whether one of them cleared it. */
+    let held_open = std::fs::File::open(&stage).map_err(|e| format!("{}: {e}", stage.display()))?;
+    drop(lock);
+    let checked = (checks.manifest)(&stage);
+    let _lock = stage_lock(dir)?;
+    if !held_open.metadata().is_ok_and(|m| m.nlink() > 0) {
+        return Err(format!("the stage of {version} was cleared while its manifest was checked"));
+    }
+    let listing = match checked {
         Ok(l) => l,
         Err(why) => return refuse_checked(why),
     };
@@ -657,7 +704,10 @@ pub fn status(dir: &Path, now: i64, running: &str, since: Option<i64>) -> String
     }
     out.push_str(if auto(dir) { "fetching   automatically, as each release is announced\n" } else { "fetching   only when asked\n" });
     match wanted(dir) {
-        None => out.push_str("staged     nothing asked for\n"),
+        None => match declined(dir).filter(|v| version_cmp(v, running) == Ordering::Greater) {
+            Some(v) => out.push_str(&format!("staged     nothing asked for; {v} was forgotten, and `kryptik update fetch` asks for it again\n")),
+            None => out.push_str("staged     nothing asked for\n"),
+        },
         Some(v) => {
             let stage = staging(dir, &v);
             match verified_files(dir, &v) {
@@ -741,6 +791,12 @@ pub fn refresh_login_notice(dir: &Path, notice: &Path, now: i64, since: Option<i
 /// verified for it. The request stands, so the next poll names everything
 /// again. False when the stage could not be removed.
 pub fn discard_stage(dir: &Path) -> bool {
+    let Ok(_lock) = stage_lock(dir) else { return false };
+    clear_stage(dir)
+}
+
+/// `discard_stage` for a caller that holds the lock.
+fn clear_stage(dir: &Path) -> bool {
     let _ = std::fs::remove_file(dir.join("files"));
     match std::fs::remove_dir_all(dir.join("incoming")) {
         Ok(()) => true,
@@ -771,11 +827,10 @@ fn forget_unless_trial(dir: &Path, running: &str, trial: &Path) {
     if trial.exists() || trial.with_file_name("trial.failed").exists() {
         return;
     }
+    let Ok(_lock) = stage_lock(dir) else { return };
     if wanted(dir).is_some_and(|v| version_cmp(&v, running) != Ordering::Greater) {
-        for f in ["wanted", "files"] {
-            let _ = std::fs::remove_file(dir.join(f));
-        }
-        let _ = std::fs::remove_dir_all(dir.join("incoming"));
+        let _ = std::fs::remove_file(dir.join("wanted"));
+        clear_stage(dir);
     }
 }
 
