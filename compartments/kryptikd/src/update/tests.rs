@@ -403,6 +403,42 @@ fn forget_drops_a_release_that_auto_then_passes_over() {
 }
 
 #[test]
+fn forget_waits_for_a_put_in_flight() {
+    let d = scratch("forget-waits");
+    latest(&d, &yes(), T0, "production", "1.0.2", pointer_text("1.0.3", "2027-03-02T14:05:00Z").as_bytes(), b"sig").unwrap();
+    want(&d, Some(CH), "production", "1.0.2").unwrap();
+    // Held as `put` holds it, from its first look at the stage to its last write there.
+    let held = stage_lock(&d).unwrap();
+    let dir = d.clone();
+    let forgetting = std::thread::spawn(move || forget(&dir));
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(!forgetting.is_finished() && wanted(&d).is_some(), "forget went ahead while a put held the stage");
+    drop(held);
+    assert_eq!(forgetting.join().unwrap().unwrap(), "1.0.3");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_manifest_checked_while_its_stage_was_cleared_is_not_kept() {
+    let d = scratch("cleared-mid-check");
+    latest(&d, &yes(), T0, "production", "1.0.2", pointer_text("1.0.3", "2027-03-02T14:05:00Z").as_bytes(), b"sig").unwrap();
+    want(&d, Some(CH), "production", "1.0.2").unwrap();
+    // `forget` and `fetch` run while the pair is checked, which they do not wait for.
+    let meanwhile = |stage: &Path| {
+        forget(&d).unwrap();
+        want(&d, Some(CH), "production", "1.0.2").unwrap();
+        (yes().manifest)(stage)
+    };
+    let checks = Checks { pointer: &|_, _| Ok(()), manifest: &meanwhile };
+    put(&d, &checks, T0, "manifest", 0, b"m").unwrap();
+    assert!(put(&d, &checks, T0, "manifest.sig", 0, b"s").unwrap_err().contains("cleared while its manifest was checked"));
+    // The new request starts from nothing, and no refusal holds its pair back.
+    assert!(verified_files(&d, "1.0.3").is_none() && !d.join("refused").exists());
+    assert!(poll(&d, CH, "production", "1.0.2", T0).ends_with(" need manifest 0 manifest.sig 0"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn auto_refuses_what_fetch_refuses() {
     let d = scratch("auto-refused");
     latest(&d, &yes(), T0, "production", "1.0.2", pointer_text("1.0.3", "2027-03-02T14:05:00Z").as_bytes(), b"sig").unwrap();
