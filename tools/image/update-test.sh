@@ -342,9 +342,10 @@ drive "expect:BdsDxe: starting Boot" \
     "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
     "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'cat /run/kryptik/boot-identity | head -1; cat /var/lib/kryptik/boot/last-result; kryptik-update status; echo P7B-OK')" \
-    "expect:slot=a" "expect:trial-failed b" "expect:failed trial: +b\r?\ncommitted slot:" "expect:P7B-OK" \
+    "expect:slot=a" "expect:trial-failed b" "expect:failed trial: +b: did not come up to be judged\r?\ncommitted slot:" "expect:P7B-OK" \
+    "run:kryptik update status" "expect:trial +the trial of slot b did not come up to be judged; this machine runs [^ ]+ again" \
     "$(ROOTSH 'mkdir -p /run/upd/p && mount -o ro /dev/vdb /run/upd/p; kryptik-update apply /run/upd/p; echo RC=$?')" \
-    "expect:the last trial of slot b failed: it did not boot, or came up unhealthy" "expect:RC=1\r?\n" \
+    "expect:the last trial of slot b did not come up to be judged\. To try it again" "expect:RC=1\r?\n" \
     "$(ROOTSH 'kryptik-update apply /run/upd/p --retry && echo RETRY-OK')" "expect:slot b verifies after write" "expect:RETRY-OK" \
     "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
     "login:${TUSER}:${TPASS}" \

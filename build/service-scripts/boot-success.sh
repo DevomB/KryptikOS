@@ -155,7 +155,11 @@ if [ -n "$trial" ]; then
             printf 'trial-unhealthy %s: %s\n' "$slot" "$(printf '%s' "$failures" | tr '\n' ';')" > "$B/last-result.new" \
                 && mv -f "$B/last-result.new" "$B/last-result"
             forgot=1; forget_entries "$(other_slot "$slot")" || forgot=0
-            [ ! -f "$B/trial" ] || mv -f "$B/trial" "$B/trial.failed"
+            if [ -f "$B/trial" ]; then
+                mv -f "$B/trial" "$B/trial.failed"
+                # Why, kept with the record: the next boot's own result replaces last-result.
+                printf 'why=came up unhealthy: %s\n' "$(printf '%s' "$failures" | tr '\n' ';' | sed 's/;$//; s/;/; /g')" >> "$B/trial.failed"
+            fi
             sync
             if [ "$forgot" = 0 ] && [ -n "$unrecorded" ]; then
                 # No trial record: only removing its entries stops the next boot repeating it.
@@ -176,6 +180,7 @@ if [ -n "$trial" ]; then
             result "trial-failed $trial"
             forget_entries "$slot"
             mv -f "$B/trial" "$B/trial.failed"
+            echo "why=did not come up to be judged" >> "$B/trial.failed"
         else
             say "the arming of slot $trial was interrupted before BootNext was set; nothing was tried"
             result "arming-interrupted $trial"

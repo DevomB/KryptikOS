@@ -402,6 +402,20 @@ if [[ "$auto_on" == on && "$auto_off" == gone ]]; then
 else
     fail "menu-update-auto" "after a: ${auto_on:-no record}; after m: ${auto_off}; $(tail -4 "$LOG/menu-update.out" | tr '\n' ' ')"
 fi
+# A trial that failed reads as one, not as a release to install: the menu names it from
+# kryptikd's status with boot-success's reason, and the record is put back as it was.
+BOOTST=/var/lib/kryptik/boot
+rm -f /root/gt/trial.failed.kept
+[[ -e "$BOOTST/trial.failed" ]] && cp -p "$BOOTST/trial.failed" /root/gt/trial.failed.kept
+printf 'b\narmed=1\nwhy=came up unhealthy: service net-zone is not up\n' > "$BOOTST/trial.failed"
+failed_menu="$(menu_text)"
+if [[ -e /root/gt/trial.failed.kept ]]; then mv -f /root/gt/trial.failed.kept "$BOOTST/trial.failed"; else rm -f "$BOOTST/trial.failed"; fi
+told="$(grep -o 'Update: the trial of slot b .*' <<<"$failed_menu")"
+if [[ "$told" == "Update: the trial of slot b came up unhealthy: service net-zone is not up; this machine runs the release before it (u for more)" ]]; then
+    pass "menu-names-failed-trial" "$told"
+else
+    fail "menu-names-failed-trial" "the menu said: $(tr '\n' ' ' <<<"$failed_menu" | cut -c1-300)"
+fi
 
 # A zone runs one command at a time, so its window is stopped before the next.
 stop_zone() { as_user "kryptik-launch --stop $1" > /dev/null 2>&1; wait_for 15 test ! -e "/run/kryptik/zones/$1/init.pid"; sleep 1; }

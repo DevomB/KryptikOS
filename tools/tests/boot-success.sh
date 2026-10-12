@@ -162,6 +162,8 @@ for missing in net-zone kryptikd-serve seatd getty-tty1 eudev; do
     check "trial with $missing down: not committed, recorded, rebooted" "${RESULT%%:*}|$(cat "$KTEST/esp/EFI/BOOT/BOOTX64.EFI")|$([[ -e "$KTEST/boot/trial.failed" ]] && echo failed)|$(reboots)" "trial-unhealthy b|kernel-a|failed|1"
 done
 run_case unkernel b "" persistent 'b\narmed=1\n' $ALL; rm -f "$KTEST/kernel_ok"; go
+check "... and the set-aside record says why, which the next boot's result does not replace" \
+    "$(sed -n 's/^why=//p' "$KTEST/boot/trial.failed")" "came up unhealthy: service eudev is not up"
 check "trial without kernel zone support: not committed, rebooted" "${RESULT%%:*}|$(reboots)" "trial-unhealthy b|1"
 run_case unzones b "" persistent 'b\narmed=1\n' $ALL; rm -f "$KTEST/zones_ok"; go
 check "trial whose zones do not load: not committed" "${RESULT%%:*}" "trial-unhealthy b"
@@ -193,6 +195,7 @@ echo "-- a trial that did not boot"
 run_case failed a "" persistent 'b\narmed=1\n' $ALL; go
 check "back on the old slot with BootNext consumed: trial-failed" "$RESULT" "trial-failed b"
 check "the record moved to trial.failed" "$([[ -e "$KTEST/boot/trial.failed" ]] && cat "$KTEST/boot/trial.failed" | head -1)" "b"
+check "... saying it never came up to be judged" "$(sed -n 's/^why=//p' "$KTEST/boot/trial.failed")" "did not come up to be judged"
 check "BOOTX64.EFI untouched" "$(cat "$KTEST/esp/EFI/BOOT/BOOTX64.EFI")" "kernel-a"
 check "the failed trial's entries are forgotten, and the committed slot gets its own" "$CALLS" "efiboot forget efiboot ensure a "
 check "... before its record is set aside" "$(cat "$KTEST/forget-saw" 2>/dev/null)" "kept"

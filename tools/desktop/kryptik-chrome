@@ -155,9 +155,15 @@ menu_update() {
     v="$(printf '%s\n' "$st" | sed -n 's/^staged *\([^:]*\): .*, complete.*/\1/p')"
     # kryptikd's words up to their reason: the newest statement's age or, with none ever accepted, the install's.
     quiet="$(printf '%s\n' "$st" | sed -n 's/^ *\(no statement from the release key [^:]*\):.*/\1/p' | head -1)"
-    [ -n "$v$quiet" ] || return 0
+    # A trial that failed: what is staged is the release it tried, which apply would refuse.
+    failed="$(printf '%s\n' "$st" | sed -n 's/^trial *\(the trial of [^;]*\);.*/\1/p' | head -1)"
+    [ -n "$v$quiet$failed" ] || return 0
     echo
     [ -z "$quiet" ] || echo "Update: ${quiet} (u for more)"
+    if [ -n "$failed" ]; then
+        echo "Update: ${failed}; this machine runs the release before it (u for more)"
+        return 0
+    fi
     [ -z "$v" ] && return 0
     echo "Update: ${v} has arrived. u installs it, and the next boot tries it."
 }

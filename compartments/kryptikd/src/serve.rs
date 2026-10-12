@@ -1063,7 +1063,9 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
             let done = match verb {
                 "update-status" => {
                     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-                    Ok(up::status(dir, now, &running, up::expecting_since()))
+                    let mut out = up::status(dir, now, &running, up::expecting_since());
+                    out.extend(up::trial_line(Path::new(up::TRIAL), &running));
+                    Ok(out)
                 }
                 "update-fetch" => {
                     let conf = std::fs::read_to_string(up::CONF).unwrap_or_default();

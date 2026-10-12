@@ -103,7 +103,7 @@ cmd_status() {
     slot="$(running_slot)"; echo "running slot:     ${slot:-unknown} (version $(running_version))"
     echo "trial pending:    $(sed -n 1p "$B/trial" 2>/dev/null || true)$([ -r "$B/trial" ] && printf ' (%s)' "$(sed -n 's/^armed=//p' "$B/trial" | sed 's/1/BootNext armed/;s/0/not yet armed/')" || echo none)"
     echo "last boot result: $(cat "$B/last-result" 2>/dev/null || echo none)"
-    echo "failed trial:     $(sed -n 1p "$B/trial.failed" 2>/dev/null || echo none)"
+    echo "failed trial:     $(sed -n 1p "$B/trial.failed" 2>/dev/null || echo none)$(sed -n 's/^why=/: /p' "$B/trial.failed" 2>/dev/null | head -1)"
     # The ESP is an apply's or a rollback's while one holds the lock.
     exec 9>"$LOCK"
     if flock -s -n 9; then
@@ -350,7 +350,8 @@ cmd_apply() {
         die "a trial of slot $(sed -n 1p "$B/trial") is already armed; reboot first"
     fi
     if [ "$retry" != 1 ] && [ -f "$B/trial.failed" ]; then
-        die "the last trial of slot $(sed -n 1p "$B/trial.failed") failed: it did not boot, or came up unhealthy. To try it again, run as root: kryptik-update apply $dir --retry"
+        why="$(sed -n 's/^why=//p' "$B/trial.failed" | head -1)"
+        die "the last trial of slot $(sed -n 1p "$B/trial.failed") ${why:-failed: it did not boot, or came up unhealthy}. To try it again, run as root: kryptik-update apply $dir --retry"
     fi
     from_committed "$slot"
 

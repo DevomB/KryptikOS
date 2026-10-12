@@ -439,6 +439,28 @@ fn a_manifest_checked_while_its_stage_was_cleared_is_not_kept() {
 }
 
 #[test]
+fn a_failed_trial_is_said_with_its_reason() {
+    let d = scratch("trial-line");
+    std::fs::create_dir_all(&d).unwrap();
+    let trial = d.join("trial");
+    assert_eq!(trial_line(&trial, "1.0.2"), None, "no record, no line");
+    let failed = d.join("trial.failed");
+    std::fs::write(&failed, "b\narmed=1\nwhy=came up unhealthy: service net-zone is not up; service seatd is not up\n").unwrap();
+    assert_eq!(
+        trial_line(&trial, "1.0.2").as_deref(),
+        Some("trial      the trial of slot b came up unhealthy: service net-zone is not up; service seatd is not up; this machine runs 1.0.2 again, and `kryptik update apply` says how to try once more\n")
+    );
+    // An older record has no reason; one naming no slot, or carrying control characters, is not repeated as it is.
+    std::fs::write(&failed, "a\narmed=1\n").unwrap();
+    assert!(trial_line(&trial, "1.0.2").unwrap().starts_with("trial      the trial of slot a failed; "));
+    std::fs::write(&failed, "c\nwhy=x\n").unwrap();
+    assert_eq!(trial_line(&trial, "1.0.2"), None);
+    std::fs::write(&failed, "b\nwhy=did not \u{1b}[2Jcome up\n").unwrap();
+    assert!(!trial_line(&trial, "1.0.2").unwrap().contains('\u{1b}'));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn auto_refuses_what_fetch_refuses() {
     let d = scratch("auto-refused");
     latest(&d, &yes(), T0, "production", "1.0.2", pointer_text("1.0.3", "2027-03-02T14:05:00Z").as_bytes(), b"sig").unwrap();

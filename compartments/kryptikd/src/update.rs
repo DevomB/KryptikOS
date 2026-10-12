@@ -815,6 +815,16 @@ pub fn complete_stage(dir: &Path) -> Result<PathBuf, String> {
     }
 }
 
+/// `status`'s line for a trial that failed, from the record boot-success set aside as
+/// `trial.failed` with its `why=`: the release it tried still reads as staged and complete.
+pub fn trial_line(trial: &Path, running: &str) -> Option<String> {
+    let text = std::fs::read_to_string(trial.with_file_name("trial.failed")).ok()?;
+    let slot = text.lines().next().filter(|s| matches!(*s, "a" | "b"))?;
+    // A record from before boot-success said why reads as failed.
+    let why: String = text.lines().find_map(|l| l.strip_prefix("why=")).unwrap_or("failed").chars().filter(|c| !c.is_control()).take(300).collect();
+    Some(format!("trial      the trial of slot {slot} {why}; this machine runs {running} again, and `kryptik update apply` says how to try once more\n"))
+}
+
 /// Clear the staged release once the machine runs it or a newer one.
 pub fn forget_if_installed(dir: &Path, running: &str) {
     forget_unless_trial(dir, running, Path::new(TRIAL));
