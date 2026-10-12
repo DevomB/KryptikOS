@@ -764,11 +764,11 @@ before="$(ready_count)"
 printf '%s\n' "$AP_PASS" | "$KD" wifi add "$AP_SSID" --wifi-dir "$WIFI_DIR" --zones "$Z" > "$LOG/wifi-add.out" 2>&1
 NET_UID="$(sed -n 's/^uid_base *= *\([0-9]*\).*/\1/p' "$Z/net.toml")"
 if grep -q "added network \"$AP_SSID\"; the net zone is restarting" "$LOG/wifi-add.out" \
-   && [[ "$(stat -c '%a %u' "$WIFI_DIR/wpa_supplicant.conf" 2>/dev/null)" = "400 $NET_UID" ]] \
+   && [[ "$(stat -c '%a %u %g' "$WIFI_DIR/wpa_supplicant.conf" 2>/dev/null)" = "440 $((NET_UID + 101)) $NET_UID" ]] \
    && "$KD" wifi list --wifi-dir "$WIFI_DIR" 2>/dev/null | grep -qx "$AP_SSID"; then
-    pass "wifi-add" "kryptikd wifi add wrote the file 0400 for uid $NET_UID, lists the SSID, and restarted the net zone"
+    pass "wifi-add" "kryptikd wifi add wrote the file 0440 for the net zone's supplicant ($((NET_UID + 101))) and root's group ($NET_UID), lists the SSID, and restarted the net zone"
 else
-    fail "wifi-add" "$(tr '\n' ' ' < "$LOG/wifi-add.out") file: $(stat -c '%a %u' "$WIFI_DIR/wpa_supplicant.conf" 2>&1) list: $("$KD" wifi list --wifi-dir "$WIFI_DIR" 2>&1 | tr '\n' ' ')"
+    fail "wifi-add" "$(tr '\n' ' ' < "$LOG/wifi-add.out") file: $(stat -c '%a %u %g' "$WIFI_DIR/wpa_supplicant.conf" 2>&1) list: $("$KD" wifi list --wifi-dir "$WIFI_DIR" 2>&1 | tr '\n' ' ')"
 fi
 line="$(ready_after "$before" " wifi=$AP_SSID " 90)"
 kills="$(dmesg 2>/dev/null | grep -a 'type=1326' | grep -ac 'comm="wpa_supplicant"')"
@@ -784,6 +784,33 @@ for _ in $(seq 1 40); do
     [[ "$lease" == 192.168.77.* ]] && break; sleep 1
 done
 [[ "$lease" == 192.168.77.* ]] && pass "wifi-lease" "$STA_IF in the net zone leased $lease from the access point" || fail "wifi-lease" "$STA_IF holds ${lease:-no address}; leases given: $(tr '\n' ' ' < /run/zt-ap.leases 2>/dev/null)"
+# The supplicant that joined runs as its own user with CAP_NET_ADMIN and CAP_NET_RAW alone,
+# under its own filter on top of the zone's (supplicant.rs).
+sup="$(pgrep -f 'wpa_supplicant -B -i [^ ]* -c /etc/wpa_supplicant.conf' | head -1)"
+sup_status="$(cat "/proc/${sup:-0}/status" 2>/dev/null)"
+want_id=$(( NET_UID + 101 ))
+sup_ids="$(awk '/^(Uid|Gid):/ { print $2, $3, $4, $5 }' <<<"$sup_status" | tr '\n' ' ')"
+sup_caps="$(awk '/^Cap(Inh|Prm|Eff|Amb):/ { sub(":", "", $1); printf "%s=%s ", $1, $2 }' <<<"$sup_status")"
+sup_filters="$(sed -n 's/^Seccomp_filters:[[:space:]]*//p' <<<"$sup_status")"
+if [[ "$sup_ids" == "$(printf '%s ' "$want_id" "$want_id" "$want_id" "$want_id" "$want_id" "$want_id" "$want_id" "$want_id")" \
+      && "$sup_caps" == "CapInh=0000000000003000 CapPrm=0000000000003000 CapEff=0000000000003000 CapAmb=0000000000003000 " \
+      && "${sup_filters:-0}" -ge 2 ]]; then
+    pass "wifi-supplicant-unprivileged" "wpa_supplicant (pid $sup) runs as uid/gid $want_id with ${sup_caps}under $sup_filters filters"
+else
+    fail "wifi-supplicant-unprivileged" "pid ${sup:-none}: ids ${sup_ids:-unread}; ${sup_caps:-no caps read}; filters ${sup_filters:-unread}"
+fi
+# Through the same door, a command runs as that user, and nft cannot reach the zone's nf_tables.
+door_rc=1; nft_out="no net zone"
+if [[ -n "$net_init" ]]; then
+    nsenter -t "$net_init" -U -m -n /usr/bin/kryptikd supplicant -- /usr/bin/true > "$LOG/supplicant-door.out" 2>&1; door_rc=$?
+    nft_out="$(nsenter -t "$net_init" -U -m -n /usr/bin/kryptikd supplicant -- nft add table inet supplicant-probe 2>&1)"
+fi
+probe_tables="$(nsenter -t "${net_init:-0}" -n nft list tables 2>/dev/null | grep -c supplicant-probe)"
+if [[ "$door_rc" = 0 && "${nft_out,,}" == *"not permitted"* && "${probe_tables:-1}" = 0 ]]; then
+    pass "wifi-supplicant-no-nft" "as the supplicant's user and filter a command ran, and nft was refused: $(tr '\n' ' ' <<<"$nft_out" | cut -c1-120)"
+else
+    fail "wifi-supplicant-no-nft" "the door: rc=$door_rc $(tr '\n' ' ' < "$LOG/supplicant-door.out" | cut -c1-120); nft: $(tr '\n' ' ' <<<"$nft_out" | cut -c1-160); tables named supplicant-probe: ${probe_tables:-unread}"
+fi
 zrun untrusted 40 -- sh -c "python3 /usr/lib/kryptik/guest-tests/icmp-echo.py $AP_ADDR 3 >/dev/null 2>&1 && echo AP-REACHED || echo AP-UNREACHED"
 sta_seen="$(ap_wpa all_sta | grep -ciE '^[0-9a-f]{2}(:[0-9a-f]{2}){5}$')"
 if [[ "$ZOUT" == *AP-REACHED* && "${sta_seen:-0}" -ge 1 ]]; then

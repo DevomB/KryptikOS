@@ -797,9 +797,10 @@ pub fn run_in_zone(
         } else {
             opts.wifi_dir.clone()
         };
-        // A file an older kryptikd wrote leaves key management to wpa_supplicant's default.
-        match crate::wifi::refresh(&dir, id.privileged.then_some((id.uid, id.gid))) {
-            Ok(true) => eprintln!("kryptikd: zone {:?}: the Wi-Fi file now names each network's key management", zone.name),
+        // A file an older kryptikd wrote leaves key management to wpa_supplicant's default, and
+        // its user cannot read it.
+        match crate::wifi::refresh(&dir, id.privileged.then_some(crate::wifi::owner_in(id.uid, id.gid))) {
+            Ok(true) => eprintln!("kryptikd: zone {:?}: the Wi-Fi file was rewritten for this kryptikd", zone.name),
             Ok(false) => {}
             Err(e) => eprintln!("kryptikd: zone {:?}: the Wi-Fi file was not brought up to date: {e}", zone.name),
         }

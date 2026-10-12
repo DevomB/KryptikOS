@@ -20,6 +20,7 @@ mod rootfs;
 mod seccomp;
 mod serve;
 mod spawn;
+mod supplicant;
 mod time;
 mod update;
 mod volume;
@@ -52,6 +53,10 @@ USAGE:
     kryptikd seccomp-trace -- CMD     run CMD under the base seccomp filter; every
                    [--zone NAME]      call it refuses is named and fails with ENOSYS
                                       (--zone: NAME's filter, with its policy file)
+    kryptikd supplicant -- CMD [ARGS] in the net zone, as its root: run CMD (its
+                                      wpa_supplicant) as user 101 with CAP_NET_ADMIN
+                                      and CAP_NET_RAW alone, no nf_tables socket, and
+                                      writes only under /run/wpa_supplicant
     kryptikd run NAME -- CMD [ARGS]   create the zone and run CMD inside it
     kryptikd stop NAME [--now]        stop a running zone (--now = SIGKILL)
     kryptikd status NAME              running, stale or absent
@@ -194,6 +199,16 @@ fn main() -> ExitCode {
             }
         },
         "run" => cmd_run(&zone_dir, &args),
+        "supplicant" => match args.get(1).map(String::as_str) {
+            Some("--") if args.len() > 2 => {
+                eprintln!("kryptikd supplicant: {}", supplicant::exec(&args[2..]));
+                ExitCode::FAILURE
+            }
+            _ => {
+                eprintln!("supplicant: expected `-- COMMAND`");
+                ExitCode::from(2)
+            }
+        },
         "seccomp-trace" => {
             let Some(sep) = args.iter().position(|a| a == "--") else {
                 eprintln!("seccomp-trace: expected `-- COMMAND`");

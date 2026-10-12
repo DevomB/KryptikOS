@@ -213,12 +213,14 @@ pub fn zone_home(zone: &str) -> String {
 pub const SERVICE_HOME: &str = "/var/empty";
 
 /// Synthesized /etc/passwd: the zone's root and nobody, and with `service` dhcpcd at
-/// `isolate::SERVICE_ID`, the user its privilege separation drops to.
+/// `isolate::SERVICE_ID`, the user its privilege separation drops to, and wpa_supplicant's.
 pub fn passwd_for(zone: &str, home: &str, service: bool) -> String {
     let mut s = format!("root:x:0:0:{zone}:{home}:/bin/sh\n");
     if service {
         let id = crate::isolate::SERVICE_ID;
         s.push_str(&format!("dhcpcd:x:{id}:{id}:dhcpcd:{SERVICE_HOME}:/bin/false\n"));
+        let wpa = crate::isolate::WIFI_ID;
+        s.push_str(&format!("wpa:x:{wpa}:{wpa}:wpa_supplicant:{}:/bin/false\n", crate::supplicant::RUN_DIR));
     }
     s.push_str("nobody:x:65534:65534:nobody:/nonexistent:/bin/false\n");
     s
@@ -228,6 +230,7 @@ pub fn group_for(service: bool) -> String {
     let mut s = "root:x:0:\n".to_string();
     if service {
         s.push_str(&format!("dhcpcd:x:{}:\n", crate::isolate::SERVICE_ID));
+        s.push_str(&format!("wpa:x:{}:\n", crate::isolate::WIFI_ID));
     }
     s.push_str("nogroup:x:65534:\n");
     s
@@ -449,6 +452,15 @@ pub fn pivot_into(
                 Some("mode=0755,size=8m"),
                 call,
             )?;
+        }
+        // wpa_supplicant's own directory: its control socket and pid files, which its user alone
+        // writes, and anyone may look up by name (supplicant.rs).
+        if service {
+            use std::os::unix::fs::PermissionsExt;
+            let d = mkdir(&crate::supplicant::RUN_DIR[1..])?;
+            let id = crate::isolate::WIFI_ID;
+            std::os::unix::fs::chown(&d, Some(id), Some(id)).map_err(|e| RootfsError::Setup(format!("{d}: {e}")))?;
+            fs::set_permissions(&d, fs::Permissions::from_mode(0o711)).map_err(|e| RootfsError::Setup(format!("{d}: {e}")))?;
         }
     }
 
