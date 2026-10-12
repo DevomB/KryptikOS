@@ -34,6 +34,7 @@ esac
 if [ -x /usr/sbin/agetty ]; then
     # Install media (kryptik.media= on the signed command line) get a root shell, others a login.
     if grep -qE '(^| )kryptik\.media=[a-z]+( |$)' /proc/cmdline 2>/dev/null; then
+        /usr/libexec/kryptik/medium-banner.sh > "/dev/$dev" 2>/dev/null || true
         exec /usr/sbin/agetty -n -l /usr/bin/bash --keep-baud \
              115200,57600,38400,9600 "$dev" vt220
     fi

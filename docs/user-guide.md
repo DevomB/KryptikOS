@@ -101,8 +101,9 @@ that build and is its own. A firmware that carries only Microsoft's keys
 refuses either (the acceptance run proves the refusal:
 `media-refused-foreign-keys`). To boot with Secure Boot on, enrol
 `kryptik-sb.der` in the firmware's `db` (and, on most machines, PK/KEK) from
-the firmware setup menu; or turn Secure Boot off. The medium reports which it
-got: `KRYPTIK_SMOKE: secureboot=1` or `=0` on the console.
+the firmware setup menu; or turn Secure Boot off. The medium says which it
+got above its shell (`Secure Boot is on` or `off`), and as
+`KRYPTIK_SMOKE: secureboot=1` or `=0` on a serial console.
 
 **AMD processors.** Update the machine's firmware (BIOS) first. With a
 firmware older than AMD's 2025 fix for microcode signatures, the kernel loads
@@ -142,7 +143,9 @@ tools/image/run-ovmf.sh --no-media --disk disk.img --vars-file vars.fd --allow-r
 the desktop is not seen this way.
 
 The medium presents a root shell with no password, on the display and, if
-the machine has one, on the serial console (the serial line under QEMU).
+the machine has one, on the serial console (the serial line under QEMU),
+under a few lines naming the commands that list the disks, show the
+install's plan and read an installed disk.
 That shell exists only on install media; installed systems have root locked
 at every terminal. The medium uses no network: a cable plugged in, or a
 radio, is left down.

@@ -102,6 +102,11 @@ for ((i = 0; i < ${#MEDIA[@]}; i += 2)); do
     [[ "$drc" -eq 0 ]] && green "${kind}: commands typed at the console ran as root, the installer is on its path, and poweroff took" \
         || red "${kind}: the console did not take commands (see above)"
     if txt | grep -q 'kryptik login:'; then red "${kind}: the medium's console asked for a login"; else green "${kind}: no login prompt on the medium"; fi
+    if txt | grep -qE 'install medium: a root shell\. Secure Boot is (on|off)' && txt | grep -q 'kryptik-install --target /dev/sdY --dry-run'; then
+        green "${kind}: the console says what the medium's shell is for, whether Secure Boot is on, and the installer's first command"
+    else
+        red "${kind}: nothing on the console says what the medium's shell is for"
+    fi
     t="$(txt)"
     if grep -q 'net-zone: install medium; no network' <<<"$t" && grep -qE 'nic-[a-z0-9]+-down-in-zone-0' <<<"$t" \
         && grep -qE 'netzones-0([^0-9]|$)' <<<"$t"; then
