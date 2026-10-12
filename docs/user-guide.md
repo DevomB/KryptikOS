@@ -201,7 +201,8 @@ holds (`<work>/keys/release/kryptik-testctl` for a development build).
 Every boot asks for the state passphrase, three times at most, before
 anything else starts: on the display and, if the machine has one, on the
 serial console, and the first answer counts. Root changes it with `kryptik
-state passphrase`. A header backup made before the change, or any earlier
+state passphrase`, which asks for the current one, then twice for a new one
+of at least 8 characters. A header backup made before the change, or any earlier
 copy of the disk, still opens with the old passphrase: back the header up
 again and destroy the older backups. That does not shut out anyone who
 already copied the old header; only re-encrypting the partition under a new

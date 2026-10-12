@@ -35,8 +35,9 @@ every machine, and verified. It uses the dm-crypt and XTS support the
   and `--restore-state-header FILE` run from the medium, and the installer
   warns that a lost header or passphrase is a lost partition: there is no
   escrow and no back door.
-- `kryptik state passphrase` (root) runs `cryptsetup luksChangeKey`, which asks
-  for the old and new passphrases on the terminal. The key it protects stays
+- `kryptik state passphrase` (root) asks for the current passphrase and checks
+  it, then for a new one twice, held to the installer's 8 characters, and
+  hands both to `cryptsetup luksChangeKey` through pipes. The key it protects stays
   the same, so a copy of the header made before still opens with the old
   passphrase; only re-encrypting under a new volume key (`cryptsetup
   reencrypt`) shuts out whoever holds one.
@@ -91,8 +92,11 @@ show that the machine runs Kryptik.
 - `integrity-test.sh` plants its `/etc` entries through the mapping opened on
   the host (`suite-lib.sh`), and they are still quarantined.
 - `update-test.sh` and `zones-test.sh` answer the prompt at each boot.
-- Not covered yet: `kryptik state passphrase` and `kryptik-recover`'s header
-  commands.
+- `state-test.sh` changes the passphrase with `kryptik state passphrase`,
+  after it refuses a wrong current one and a new one of 5 characters; the
+  old one then fails three times and the new one unlocks. `integrity-test.sh`
+  saves the header on the medium with `kryptik-recover --backup-state-header`,
+  wipes it, and puts it back with `--restore-state-header`.
 
 ## Files
 

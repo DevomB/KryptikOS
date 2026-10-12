@@ -46,7 +46,8 @@ USAGE:
     $PROG update apply              install what has arrived; the next boot
                                     tries it once and falls back if it fails
     $PROG state passphrase          change the passphrase the state partition
-                                    asks for at boot (root; the old one first)
+                                    asks for at boot (root; the old one first,
+                                    then a new one of 8 characters or more)
     $PROG keyboard                  the keyboard layouts, the one in force marked
     $PROG keyboard NAME             use that layout (root): the console now, the
                                     desktop at its next login, the passphrase's
@@ -288,20 +289,20 @@ cmd_run() {
     start_zone "$name" "$@"
 }
 
-# --- the net zone's Wi-Fi networks, kept by kryptikd in zone 0 --------------
-# The passphrase always goes on stdin; kryptikd restarts the net zone after a change.
-
 # Read one line into PASSPHRASE: from the terminal with echo off, or a pipe.
 PASSPHRASE=""
-read_passphrase() { # ssid
+read_passphrase() { # prompt
     if [[ -t 0 ]]; then
-        IFS= read -rs -p "passphrase for $1: " PASSPHRASE
+        IFS= read -rs -p "$1" PASSPHRASE
         printf '\n' >&2
     else
         IFS= read -r PASSPHRASE
     fi
     [[ -n "$PASSPHRASE" ]] || die "no passphrase given"
 }
+
+# --- the net zone's Wi-Fi networks, kept by kryptikd in zone 0 --------------
+# The passphrase always goes on stdin; kryptikd restarts the net zone after a change.
 
 cmd_wifi() {
     local sub="${1:-}"; [[ $# -gt 0 ]] && shift
@@ -313,7 +314,7 @@ cmd_wifi() {
     if via_launch; then
         case "$sub" in
             list)   "$LAUNCH" --wifi-list ;;
-            add)    read_passphrase "$1"
+            add)    read_passphrase "passphrase for $1: "
                     # printf is a builtin, so the passphrase is never in argv.
                     printf '%s\n' "$PASSPHRASE" | "$LAUNCH" --wifi-add "$1" ;;
             forget) "$LAUNCH" --wifi-forget "$1" ;;
@@ -323,7 +324,7 @@ cmd_wifi() {
     have_kryptikd
     case "$sub" in
         list)   "$KRYPTIKD" wifi list --wifi-dir "$WIFI_DIR" ;;
-        add)    read_passphrase "$1"
+        add)    read_passphrase "passphrase for $1: "
                 printf '%s\n' "$PASSPHRASE" | "$KRYPTIKD" wifi add "$1" --wifi-dir "$WIFI_DIR" --zones "$ZONES_DIR" ;;
         forget) "$KRYPTIKD" wifi forget "$1" --wifi-dir "$WIFI_DIR" --zones "$ZONES_DIR" ;;
     esac
@@ -340,13 +341,34 @@ cmd_update() {
     "$LAUNCH" --update "$@"
 }
 
-# cryptsetup asks for the passphrases on the terminal; none pass through here.
+# Asked for here, so the new one is held to the installer's floor: on a
+# terminal the new one twice, else two lines of stdin, the old then the new.
+# They reach cryptsetup through pipes from the printf builtin, never argv.
 cmd_state() {
     [[ "${1:-}" == passphrase && $# -eq 1 ]] || { usage >&2; die "state needs a subcommand: passphrase" 2; }
     [[ $EUID -eq 0 ]] || die "the state passphrase is root's to change"
-    local dev; dev="$(sed -n 's/^state_dev=//p' /run/kryptik/boot-identity 2>/dev/null)"
+    local dev old new n
+    dev="$(sed -n 's/^state_dev=//p' /run/kryptik/boot-identity 2>/dev/null)"
     [[ -b "$dev" ]] || die "this system has no state partition in use"
-    exec cryptsetup luksChangeKey "$dev"
+    read_passphrase "the state passphrase now: "; old="$PASSPHRASE"
+    printf '%s' "$old" | cryptsetup open --test-passphrase --type luks2 --key-file=- "$dev" 2>/dev/null
+    case $? in
+        0) ;;
+        2) die "that is not the state passphrase; nothing was changed" ;;
+        *) die "cryptsetup could not check the passphrase against $dev; nothing was changed" ;;
+    esac
+    read_passphrase "a new one, asked at every boot: "; new="$PASSPHRASE"
+    if [[ -t 0 ]]; then
+        read_passphrase "again: "
+        [[ "$PASSPHRASE" == "$new" ]] || die "the two passphrases differ; nothing was changed"
+    fi
+    PASSPHRASE=""
+    # Characters, not the C locale's bytes.
+    n="$(LC_ALL=C.UTF-8; echo "${#new}")"
+    (( n >= 8 )) || die "the new passphrase is $n characters; it needs at least 8, as a stolen disk can be guessed at offline; nothing was changed"
+    cryptsetup luksChangeKey --batch-mode --key-file=<(printf '%s' "$old") "$dev" <(printf '%s' "$new") \
+        || die "cryptsetup did not change the state passphrase"
+    echo "the state passphrase is changed; the next boot asks for the new one"
 }
 
 # The layout's name is kept in the firmware and its keymaps on the verified
