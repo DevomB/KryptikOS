@@ -298,3 +298,89 @@ fn no_restart_for_other_directory() {
     let m = restart_net_zone(Path::new("/nonexistent/wifi"));
     assert!(m.contains("not restarted") && m.contains(DEFAULT_DIR), "{m}");
 }
+
+#[test]
+fn scan_answer_read_strongest_first_once_each() {
+    let text = "radios nic0\n\
+                -71\topen\tCafe\n\
+                -40\twpa2/wpa3\tHome Net\n\
+                -55\topen\tCafe\n\
+                -80\twpa2\tCafe\n\
+                -63\twpa3\tcaf\\xc3\\xa9\n";
+    let s = parse_scan(text);
+    assert_eq!(s.radios, vec!["nic0"]);
+    assert!(s.off.is_empty());
+    let got: Vec<(Vec<u8>, &str, i32)> = s.heard.iter().map(|h| (h.ssid.clone(), h.security, h.signal)).collect();
+    assert_eq!(
+        got,
+        vec![
+            (b"Home Net".to_vec(), "wpa2/wpa3", -40),
+            (b"Cafe".to_vec(), "open", -55),
+            ("café".as_bytes().to_vec(), "wpa3", -63),
+            (b"Cafe".to_vec(), "wpa2", -80),
+        ],
+        "one entry per name and security, at its strongest, strongest first"
+    );
+}
+
+#[test]
+fn scan_answer_drops_what_is_not_its_form() {
+    let text = "radios nic0 ../etc NIC1 nic2\n\
+                off nic0\n\
+                off nic0;rm\n\
+                -30\topen\tfine\n\
+                +5\topen\tpositive\n\
+                -30\topen\tthree\textra\n\
+                -30\twpa9\tunknown kind\n\
+                -200\topen\ttoo weak\n\
+                -30\topen\t\n\
+                -30\topen\t\\x00\\x00\n\
+                -30\topen\tlone \\ backslash\n\
+                -30\topen\tbad \\xZZ hex\n\
+                -30\topen\tshort \\x4\n\
+                -30\topen\tabcdefghijklmnopqrstuvwxyz0123456\n\
+                -30\topen\ttab\u{1b}[2Jescape\n\
+                -30\topen\tdel\u{7f}\n";
+    let s = parse_scan(text);
+    assert_eq!(s.radios, vec!["nic0", "nic2"], "a radio's name is a plain one");
+    assert_eq!(s.off, vec!["nic0"]);
+    assert_eq!(s.heard.len(), 1, "{:?}", s.heard);
+    assert_eq!(s.heard[0].ssid, b"fine".to_vec());
+    assert_eq!(parse_scan("radios none\n").radios, Vec::<String>::new());
+}
+
+#[test]
+fn scan_answer_is_bounded() {
+    let mut text = String::from("radios nic0\n");
+    for i in 0..200 {
+        text.push_str(&format!("-{}\topen\tnet{i}\n", 20 + i % 80));
+    }
+    let s = parse_scan(&text);
+    assert_eq!(s.heard.len(), MAX_HEARD);
+    assert!(s.heard.windows(2).all(|w| w[0].signal >= w[1].signal));
+}
+
+#[test]
+fn ssid_shown_with_nothing_unprintable() {
+    assert_eq!(shown(b"Home"), "\"Home\"");
+    assert_eq!(shown("café".as_bytes()), "\"café\"");
+    assert_eq!(shown(b"a\"b\\c"), "\"a\\\"b\\\\c\"");
+    assert_eq!(shown(b"x\x1b[2Jy"), "\"x\\u{1b}[2Jy\"");
+    assert_eq!(shown(b"\xff\xfeok \"q\""), "\"\\xff\\xfeok \\x22q\\x22\"");
+}
+
+#[test]
+fn scan_said_in_words() {
+    let none = Scan::default();
+    assert_eq!(scan_said(&none, &[]), "the net zone has no Wi-Fi radio\n");
+    let quiet = Scan { radios: vec!["nic0".into()], off: vec!["nic0".into()], heard: vec![] };
+    assert_eq!(
+        scan_said(&quiet, &[]),
+        "radio nic0 is switched off, by its switch or an airplane-mode key\nno network heard\n"
+    );
+    let s = parse_scan("radios nic0\n-40\twpa2\tHome\n-70\tenterprise\tWork\n-75\topen\tCafe\n");
+    assert_eq!(
+        scan_said(&s, &["Cafe".to_string()]),
+        "\"Home\"  WPA2  -40 dBm\n\"Work\"  802.1X, which Kryptik does not join  -70 dBm\n\"Cafe\"  open  -75 dBm  saved\n"
+    );
+}

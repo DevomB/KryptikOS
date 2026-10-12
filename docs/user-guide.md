@@ -287,9 +287,10 @@ the net zone reports: whether it is ready, the Wi-Fi network it joined, its
 address on the uplink and whether there is DNS. The menu also names a
 release that has arrived and waits to be installed, and says when the newest
 update statement is more than 30 days old, or, with none ever accepted, when
-the install is (section 4). With `w` it lists the Wi-Fi networks the net zone may join, adds
-one, asking for its passphrase in the menu's own window, adds an open one
-with `o`, or forgets one, as `kryptik wifi` does at the administration login.
+the install is (section 4). With `w` it lists the Wi-Fi networks the net zone may join,
+shows the ones in range with `s`, adds one, asking for its passphrase in the
+menu's own window, adds an open one with `o`, or forgets one, as `kryptik
+wifi` does at the administration login.
 
 For administration, Ctrl+Alt+F2 gives a text login: log in as the user, and
 `su` becomes root, where passwords change: `passwd NAME` for the user,
@@ -307,7 +308,11 @@ typed and then Enter, allows the file. Anything else refuses, keys typed
 before the code appears are dropped, and after a refusal that zone may not
 ask again for a minute.
 
-**Wi-Fi.** `kryptik wifi add SSID` saves a network and asks for its
+**Wi-Fi.** `kryptik wifi scan` lists the networks in range with their
+security and signal, as the net zone hears them; it scans only when asked,
+from a random address while no network is joined where the radio allows one,
+and otherwise only listens.
+`kryptik wifi add SSID` saves a network and asks for its
 passphrase; the net zone restarts and joins it, by WPA3 where the network
 offers it. A network with no passphrase, a café's or an airport's, is saved
 with `kryptik wifi add SSID --open`: anyone in range can read what crosses it
