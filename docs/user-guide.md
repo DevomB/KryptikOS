@@ -167,8 +167,11 @@ system then asks for at every boot. There is no escrow: without the
 passphrase, or without the partition's header, the state is lost. It ends
 with `kryptik-install: installed VERSION to /dev/sdY: boot it from firmware
 with the medium removed.` and a reminder to keep a copy of that header. Make
-the copy now, on a second removable disk (FAT or ext4): `/root`, `/var` and
-`/tmp` on a medium are memory, and a file left there is gone at power-off.
+the copy now, on a second removable disk: `/root`, `/var` and `/tmp` on a
+medium are memory, and a file left there is gone at power-off. The medium
+reads FAT and ext4, not exFAT or NTFS, which large sticks and Windows disks
+often come as; `mkfs.ext4 /dev/sdZ1` at the medium's shell makes such a
+partition ext4, erasing what it holds.
 
 ```sh
 mount /dev/sdZ1 /mnt
