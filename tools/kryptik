@@ -291,7 +291,7 @@ cmd_run() {
 
 # Read one line into PASSPHRASE: from the terminal with echo off, or a pipe.
 PASSPHRASE=""
-read_passphrase() { # prompt
+ask_passphrase() { # prompt
     if [[ -t 0 ]]; then
         IFS= read -rs -p "$1" PASSPHRASE
         printf '\n' >&2
@@ -304,6 +304,8 @@ read_passphrase() { # prompt
 # --- the net zone's Wi-Fi networks, kept by kryptikd in zone 0 --------------
 # The passphrase always goes on stdin; kryptikd restarts the net zone after a change.
 
+read_passphrase() { ask_passphrase "passphrase for $1: "; }   # read_passphrase SSID
+
 cmd_wifi() {
     local sub="${1:-}"; [[ $# -gt 0 ]] && shift
     case "$sub" in
@@ -314,7 +316,7 @@ cmd_wifi() {
     if via_launch; then
         case "$sub" in
             list)   "$LAUNCH" --wifi-list ;;
-            add)    read_passphrase "passphrase for $1: "
+            add)    read_passphrase "$1"
                     # printf is a builtin, so the passphrase is never in argv.
                     printf '%s\n' "$PASSPHRASE" | "$LAUNCH" --wifi-add "$1" ;;
             forget) "$LAUNCH" --wifi-forget "$1" ;;
@@ -324,7 +326,7 @@ cmd_wifi() {
     have_kryptikd
     case "$sub" in
         list)   "$KRYPTIKD" wifi list --wifi-dir "$WIFI_DIR" ;;
-        add)    read_passphrase "passphrase for $1: "
+        add)    read_passphrase "$1"
                 printf '%s\n' "$PASSPHRASE" | "$KRYPTIKD" wifi add "$1" --wifi-dir "$WIFI_DIR" --zones "$ZONES_DIR" ;;
         forget) "$KRYPTIKD" wifi forget "$1" --wifi-dir "$WIFI_DIR" --zones "$ZONES_DIR" ;;
     esac
@@ -350,16 +352,16 @@ cmd_state() {
     local dev old new n
     dev="$(sed -n 's/^state_dev=//p' /run/kryptik/boot-identity 2>/dev/null)"
     [[ -b "$dev" ]] || die "this system has no state partition in use"
-    read_passphrase "the state passphrase now: "; old="$PASSPHRASE"
+    ask_passphrase "the state passphrase now: "; old="$PASSPHRASE"
     printf '%s' "$old" | cryptsetup open --test-passphrase --type luks2 --key-file=- "$dev" 2>/dev/null
     case $? in
         0) ;;
         2) die "that is not the state passphrase; nothing was changed" ;;
         *) die "cryptsetup could not check the passphrase against $dev; nothing was changed" ;;
     esac
-    read_passphrase "a new one, asked at every boot: "; new="$PASSPHRASE"
+    ask_passphrase "a new one, asked at every boot: "; new="$PASSPHRASE"
     if [[ -t 0 ]]; then
-        read_passphrase "again: "
+        ask_passphrase "again: "
         [[ "$PASSPHRASE" == "$new" ]] || die "the two passphrases differ; nothing was changed"
     fi
     PASSPHRASE=""
