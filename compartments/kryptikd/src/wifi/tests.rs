@@ -17,7 +17,7 @@ fn add_list_forget_round_trip() {
     let text = fs::read_to_string(conf_path(&dir)).unwrap();
     assert_eq!(
         text,
-        "ctrl_interface=/run/wpa_supplicant\nupdate_config=0\n\
+        "ctrl_interface=/run/wpa_supplicant\nupdate_config=0\nscan_res_valid_for_connect=0\n\
              \nnetwork={\n\tssid=\"Home\"\n\tkey_mgmt=WPA-PSK WPA-PSK-SHA256 SAE\n\tieee80211w=1\n\tpsk=\"correct horse battery\"\n}\n\
              \nnetwork={\n\tssid=\"Cafe Wifi\"\n\tkey_mgmt=WPA-PSK WPA-PSK-SHA256\n\tieee80211w=1\n\tpsk=0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789abcdef\n}\n"
     );
@@ -221,6 +221,8 @@ fn older_file_rewritten_with_key_management() {
     assert!(refresh(&dir, None).unwrap());
     let now = fs::read_to_string(conf_path(&dir)).unwrap();
     assert!(now.contains("\tkey_mgmt=WPA-PSK WPA-PSK-SHA256 SAE\n\tieee80211w=1\n"), "{now}");
+    // And the header's line that keeps the supplicant scanning after a failed join.
+    assert!(now.starts_with(HEADER) && HEADER.contains("\nscan_res_valid_for_connect=0\n"), "{now}");
     assert_eq!(fs::metadata(conf_path(&dir)).unwrap().mode() & 0o7777, 0o440);
     assert!(!refresh(&dir, None).unwrap(), "a current file is left alone");
     // An older kryptikd's mode, which the supplicant's own user cannot read through its group.
