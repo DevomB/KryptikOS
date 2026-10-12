@@ -394,6 +394,9 @@ shows each timer, its timeout and whether it is running.
 - No independent security review has been made.
 - Tested under QEMU with OVMF firmware. Testing on physical hardware is
   planned for October 2026.
+- A disk with 4096-byte logical sectors (4Kn) is refused, as the medium's
+  boot partition is a FAT of 512-byte sectors that Linux does not mount
+  there. Disks that present 512-byte sectors (512e), as most do, are fine.
 - The builds are not reproducible bit for bit; the hashes name what was
   tested, not what a rebuild would produce.
 - A program in a zone cannot make its window fullscreen; Alt+e does, and
