@@ -3,9 +3,19 @@
 #   newest N PATTERN   only the N highest trailing -NUMBERs (API versions) per device
 # A pattern that matches nothing fails the build.
 
-# Intel Wi-Fi: three API versions per device, as which one loads depends on MAC and RF (iwl-drv.c).
-# The glob also keeps about 2 MB of DVM firmware this kernel cannot load.
-newest 3 iwlwifi-*.ucode
+# Intel Wi-Fi (iwlmvm and iwlmld; iwldvm is not built). iwlwifi asks for a device's highest API
+# version first and loads the first file it finds (iwl-drv.c), which for every device here is its
+# newest numbered file. 6.18 asks for core 99 at most, so the -cNNN files (c101 up) never load.
+iwlwifi-3160-17.ucode
+iwlwifi-3168-29.ucode
+iwlwifi-7260-17.ucode
+iwlwifi-7265-17.ucode
+iwlwifi-7265D-29.ucode
+iwlwifi-8000C-36.ucode
+iwlwifi-8265-36.ucode
+iwlwifi-9000-pu-b0-jf-b0-46.ucode
+iwlwifi-9260-th-b0-jf-b0-46.ucode
+newest 1 iwlwifi-[[:alpha:]]*-[0-9]*.ucode
 iwlwifi-*.pnvm
 
 # Qualcomm Atheros: the laptop parts, by board revision.
@@ -36,6 +46,54 @@ rtlwifi/rtl8188eufw.bin
 brcm/brcmfmac*-pcie*
 
 # Graphics: Intel and AMD, not NVIDIA (GSP firmware is tens of MB; the framebuffer still works).
-i915/*
-xe/*
+# Intel: the files 6.18's i915 and xe name (intel_uc_fw.c, xe_uc_fw.c, intel_dmc.c), not the
+# older versions linux-firmware keeps for older kernels, and xe's fan control, which it asks
+# for by the card's ids (xe_late_bind_fw.c).
+i915/*_guc_70.bin
+i915/adlp_guc_69.0.3.bin
+i915/adlp_guc_70.1.1.bin
+i915/bxt_guc_70.1.1.bin
+i915/cml_guc_70.1.1.bin
+i915/ehl_guc_70.1.1.bin
+i915/glk_guc_70.1.1.bin
+i915/icl_guc_70.1.1.bin
+i915/kbl_guc_70.1.1.bin
+i915/skl_guc_70.1.1.bin
+i915/tgl_guc_69.0.3.bin
+i915/tgl_guc_70.1.1.bin
+i915/*_huc_gsc.bin
+i915/dg1_huc.bin
+i915/tgl_huc.bin
+i915/bxt_huc_2.0.0.bin
+i915/cml_huc_4.0.0.bin
+i915/ehl_huc_9.0.0.bin
+i915/glk_huc_4.0.0.bin
+i915/icl_huc_9.0.0.bin
+i915/kbl_huc_4.0.0.bin
+i915/skl_huc_2.0.0.bin
+i915/tgl_huc_7.9.3.bin
+i915/mtl_gsc_1.bin
+i915/adlp_dmc.bin
+i915/bmg_dmc.bin
+i915/mtl_dmc.bin
+i915/xe2lpd_dmc.bin
+i915/xe3lpd_dmc.bin
+i915/xe3lpd_3002_dmc.bin
+i915/adlp_dmc_ver2_16.bin
+i915/adls_dmc_ver2_01.bin
+i915/bxt_dmc_ver1_07.bin
+i915/dg1_dmc_ver2_02.bin
+i915/dg2_dmc_ver2_08.bin
+i915/glk_dmc_ver1_04.bin
+i915/icl_dmc_ver1_09.bin
+i915/kbl_dmc_ver1_04.bin
+i915/rkl_dmc_ver2_03.bin
+i915/skl_dmc_ver1_27.bin
+i915/tgl_dmc_ver2_12.bin
+xe/bmg_guc_70.bin
+xe/lnl_guc_70.bin
+xe/ptl_guc_70.bin
+xe/*_huc.bin
+xe/lnl_gsc_1.bin
+xe/fan_control_*.bin
 amdgpu/*
